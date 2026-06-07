@@ -1,0 +1,28 @@
+RemoteDeskHarmonyOS
+Copyright 2026 Li Jiong
+
+This product includes software developed at:
+
+  - FreeRDP (https://github.com/FreeRDP/FreeRDP)
+    Licensed under the Apache License, Version 2.0
+
+  - RustDesk (https://github.com/rustdesk/rustdesk)
+    Licensed under the GNU Affero General Public License v3.0 (AGPL-3.0)
+
+  - HarmonyOS SDK / HMS Core
+    Copyright (c) Huawei Technologies Co., Ltd.
+    Licensed under the HarmonyOS SDK License Agreement
+
+=================================================================
+AGPL-3.0 Compliance Note (RustDesk)
+
+RustDesk core library is licensed under AGPL-3.0. To avoid copyleft 
+contamination, this project adopts an independent-process architecture:
+
+  - RustDesk FFI runs in a SEPARATE process
+  - Communication via Unix Domain Socket (process boundary)
+  - No static linking or dynamic linking with the AGPL code
+  - The rest of the project remains Apache 2.0
+
+See LICENSE-RUSTDESK.txt for the full AGPL-3.0 license text.
+=================================================================

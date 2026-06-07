@@ -1,0 +1,19 @@
+# Cargo configuration for cross-compiling to HarmonyOS ARM64
+# Usage: cargo build --target aarch64-unknown-linux-ohos --release
+
+[target.aarch64-unknown-linux-ohos]
+linker = "/opt/ohos-sdk/native/llvm/bin/clang"
+ar = "/opt/ohos-sdk/native/llvm/bin/llvm-ar"
+runner = "hdc"
+
+[target.aarch64-unknown-linux-ohos]
+rustflags = [
+    "-C", "link-arg=--target=aarch64-linux-ohos",
+    "-C", "link-arg=-fuse-ld=lld",
+]
+
+[build]
+target = "aarch64-unknown-linux-ohos"
+
+[unstable]
+build-std = ["core", "alloc", "std"]

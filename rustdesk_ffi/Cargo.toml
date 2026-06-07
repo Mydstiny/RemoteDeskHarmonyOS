@@ -1,0 +1,17 @@
+[package]
+name = "rustdesk_ffi"
+version = "0.1.0"
+edition = "2021"
+description = "RustDesk FFI bridge for HarmonyOS remote desktop client"
+
+[lib]
+name = "rustdesk_ffi"
+crate-type = ["staticlib"]
+
+[dependencies]
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true

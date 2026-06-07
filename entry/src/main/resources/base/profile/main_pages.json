@@ -1,0 +1,10 @@
+{
+  "src": [
+    "pages/LoginPage",
+    "pages/HostListPage",
+    "pages/ConnectionForm",
+    "pages/RemoteDesktop",
+    "pages/Settings",
+    "pages/QuickConnect"
+  ]
+}

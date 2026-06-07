@@ -1,0 +1,32 @@
+{
+  "string": [
+    {
+      "name": "app_name",
+      "value": "远程桌面"
+    },
+    {
+      "name": "module_desc",
+      "value": "鸿蒙双协议远程桌面客户端"
+    },
+    {
+      "name": "entry_desc",
+      "value": "主界面入口"
+    },
+    {
+      "name": "mic_reason",
+      "value": "用于远程语音通话"
+    },
+    {
+      "name": "camera_reason",
+      "value": "用于远程摄像头重定向"
+    },
+    {
+      "name": "media_read_reason",
+      "value": "用于文件传输与重定向"
+    },
+    {
+      "name": "printer_reason",
+      "value": "用于远程打印重定向"
+    }
+  ]
+}

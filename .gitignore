@@ -1,0 +1,31 @@
+# OS/IDE generated files
+.idea/
+.gradle/
+build/
+.hvigor/
+node_modules/
+oh_modules/
+*.hap
+*.app
+*.log
+
+# DevEco Studio
+local.properties
+.cxx/
+
+# Environment
+.env
+*.local
+
+# OS files
+.DS_Store
+Thumbs.db
+*.swp
+*~
+
+# Build outputs
+freerdp/build_ohos/
+rustdesk_ffi/target/
+
+# OpenCode
+.opencode/
