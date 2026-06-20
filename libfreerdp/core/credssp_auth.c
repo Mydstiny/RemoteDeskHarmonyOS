@@ -26,6 +26,10 @@
 #include <freerdp/build-config.h>
 #include <freerdp/peer.h>
 
+#if defined(__OHOS__) || defined(__MUSL__)
+#include <hilog/log.h>
+#endif
+
 #include <winpr/crt.h>
 #include <winpr/wtypes.h>
 #include <winpr/assert.h>
@@ -90,6 +94,62 @@ static const char* credssp_auth_state_string(const rdpCredsspAuth* auth)
 			return "AUTH_STATE_UNKNOWN";
 	}
 }
+
+#if defined(__OHOS__) || defined(__MUSL__)
+#undef LOG_DOMAIN
+#undef LOG_TAG
+#define LOG_DOMAIN 0x0001
+#define LOG_TAG "RDP_FREERDP_NLA"
+
+static const char* credssp_auth_spn_utf8(const rdpCredsspAuth* auth, char* buffer, size_t size)
+{
+	if (!auth || !auth->spn)
+		return "";
+#if defined(UNICODE)
+	char* utf8 = ConvertWCharToUtf8Alloc(auth->spn, nullptr);
+	if (!utf8)
+		return "";
+	snprintf(buffer, size, "%s", utf8);
+	free(utf8);
+	return buffer;
+#else
+	return auth->spn;
+#endif
+}
+
+static void credssp_hilog_status(const rdpCredsspAuth* auth, const char* step,
+                                 SECURITY_STATUS status)
+{
+	char spn[256] = WINPR_C_ARRAY_INIT;
+	OH_LOG_ERROR(LOG_APP,
+	             "[RDP_NLA] %{public}s status=%{public}s 0x%{public}08X pkg=%{public}s authState=%{public}s server=%{public}d flags=0x%{public}08X input=%{public}u output=%{public}u spn=%{public}s",
+	             step ? step : "credssp", GetSecurityStatusString(status), (UINT32)status,
+	             auth ? credssp_auth_pkg_name(auth) : "", auth ? credssp_auth_state_string(auth) : "",
+	             auth ? auth->server : 0, auth ? auth->flags : 0,
+	             auth ? auth->input_buffer.cbBuffer : 0, auth ? auth->output_buffer.cbBuffer : 0,
+	             credssp_auth_spn_utf8(auth, spn, sizeof(spn)));
+}
+
+static void credssp_hilog_identity(const rdpCredsspAuth* auth,
+                                   const SEC_WINNT_AUTH_IDENTITY* identity)
+{
+	OH_LOG_ERROR(LOG_APP,
+	             "[RDP_NLA] credssp identity pkg=%{public}s userLen=%{public}u domainLen=%{public}u passwordLen=%{public}u flags=0x%{public}08X",
+	             auth ? credssp_auth_pkg_name(auth) : "", identity ? identity->UserLength : 0,
+	             identity ? identity->DomainLength : 0, identity ? identity->PasswordLength : 0,
+	             identity ? identity->Flags : 0);
+}
+#else
+#define credssp_hilog_status(auth, step, status) \
+	do                                          \
+	{                                           \
+	} while (0)
+#define credssp_hilog_identity(auth, identity) \
+	do                                        \
+	{                                         \
+	} while (0)
+#endif
+
 static BOOL parseKerberosDeltat(const char* value, INT32* dest, const char* message);
 static BOOL credssp_auth_setup_identity(rdpCredsspAuth* auth);
 static SecurityFunctionTable* auth_resolve_sspi_table(const rdpSettings* settings);
@@ -298,10 +358,14 @@ BOOL credssp_auth_setup_client(rdpCredsspAuth* auth, const char* target_service,
 
 	/* Construct the service principal name */
 	if (!credssp_auth_set_spn(auth, target_service, target_hostname))
+	{
+		credssp_hilog_status(auth, "credssp_auth_set_spn failed", ERROR_INTERNAL_ERROR);
 		return FALSE;
+	}
 
 	if (identity)
 	{
+		credssp_hilog_identity(auth, identity);
 		credssp_auth_setup_auth_data(auth, identity, &winprAuthData);
 
 		if (pkinit)
@@ -322,11 +386,13 @@ BOOL credssp_auth_setup_client(rdpCredsspAuth* auth, const char* target_service,
 	    nullptr, auth->info->Name, SECPKG_CRED_OUTBOUND, nullptr, pAuthData, nullptr, nullptr,
 	    &auth->credentials, nullptr);
 
+	credssp_hilog_status(auth, "AcquireCredentialsHandleA client", status);
 	if (status != SEC_E_OK)
 		return log_status(status, WLOG_ERROR, "AcquireCredentialsHandleA");
 
 	if (!credssp_auth_client_init_cred_attributes(auth))
 	{
+		credssp_hilog_status(auth, "cred attributes failed", ERROR_INTERNAL_ERROR);
 		WLog_ERR(TAG, "Fatal error setting credential attributes");
 		return FALSE;
 	}
@@ -467,6 +533,7 @@ int credssp_auth_authenticate(rdpCredsspAuth* auth)
 		status = auth->table->AcceptSecurityContext(
 		    &auth->credentials, context, &input_buffer_desc, auth->flags, SECURITY_NATIVE_DREP,
 		    &auth->context, &output_buffer_desc, &auth->flags, nullptr);
+		credssp_hilog_status(auth, "AcceptSecurityContext", status);
 	}
 	else
 	{
@@ -474,6 +541,7 @@ int credssp_auth_authenticate(rdpCredsspAuth* auth)
 		status = auth->table->InitializeSecurityContext(
 		    &auth->credentials, context, auth->spn, auth->flags, 0, SECURITY_NATIVE_DREP,
 		    &input_buffer_desc, 0, &auth->context, &output_buffer_desc, &auth->flags, nullptr);
+		credssp_hilog_status(auth, "InitializeSecurityContext", status);
 	}
 
 	if (status == SEC_E_OK)
@@ -487,6 +555,7 @@ int credssp_auth_authenticate(rdpCredsspAuth* auth)
 		WINPR_ASSERT(auth->table->QueryContextAttributes);
 		status =
 		    auth->table->QueryContextAttributes(&auth->context, SECPKG_ATTR_SIZES, &auth->sizes);
+		credssp_hilog_status(auth, "QueryContextAttributes sizes", status);
 		(void)log_status(status, WLOG_DEBUG, "QueryContextAttributes");
 		WLog_DBG(TAG, "Context sizes: cbMaxSignature=%" PRIu32 ", cbSecurityTrailer=%" PRIu32 "",
 		         auth->sizes.cbMaxSignature, auth->sizes.cbSecurityTrailer);

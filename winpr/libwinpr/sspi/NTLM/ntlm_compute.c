@@ -31,10 +31,23 @@
 #include <winpr/crypto.h>
 #include <winpr/sysinfo.h>
 
+#if defined(__OHOS__) || defined(__MUSL__)
+#include <hilog/log.h>
+#endif
+
 #include "ntlm_compute.h"
 
 #include "../../log.h"
 #define TAG WINPR_TAG("sspi.NTLM")
+
+#if defined(__OHOS__) || defined(__MUSL__)
+#define RDP_NTLM_HILOG(fmt, ...) OH_LOG_ERROR(LOG_APP, "[RDP_NTLM] " fmt, ##__VA_ARGS__)
+#else
+#define RDP_NTLM_HILOG(fmt, ...) \
+	do                            \
+	{                             \
+	} while (0)
+#endif
 
 #define NTLM_CheckAndLogRequiredCapacity(tag, s, nmemb, what)                                    \
 	Stream_CheckAndLogRequiredCapacityEx(tag, WLOG_WARN, s, nmemb, 1, "%s(%s:%" PRIuz ") " what, \
@@ -452,12 +465,24 @@ static BOOL ntlm_compute_ntlm_v2_hash(NTLM_CONTEXT* context, BYTE* hash)
 #endif
 
 	if (memcmp(context->NtlmV2Hash, NTLM_NULL_BUFFER, 16) != 0)
+	{
+		RDP_NTLM_HILOG("ntlm_v2_hash cached state=%{public}d flags=0x%{public}08X",
+		               ntlm_get_state(context), context->NegotiateFlags);
 		return TRUE;
+	}
 
 	if (!credentials)
+	{
+		RDP_NTLM_HILOG("ntlm_v2_hash failed: missing credentials state=%{public}d",
+		               ntlm_get_state(context));
 		return FALSE;
+	}
 	else if (memcmp(context->NtlmHash, NTLM_NULL_BUFFER, 16) != 0)
 	{
+		RDP_NTLM_HILOG("ntlm_v2_hash branch=precomputed-hash state=%{public}d idFlags=0x%{public}08X userLen=%{public}u domainLen=%{public}u passwordLen=%{public}u",
+		               ntlm_get_state(context), credentials->identity.Flags,
+		               credentials->identity.UserLength, credentials->identity.DomainLength,
+		               credentials->identity.PasswordLength);
 		if ((credentials->identity.Flags & SEC_WINNT_AUTH_IDENTITY_UNICODE) != 0)
 		{
 			return NTOWFv2FromHashW(context->NtlmHash, (LPWSTR)credentials->identity.User,
@@ -473,13 +498,25 @@ static BOOL ntlm_compute_ntlm_v2_hash(NTLM_CONTEXT* context, BYTE* hash)
 			                        credentials->identity.DomainLength, hash);
 		}
 		else
+		{
+			RDP_NTLM_HILOG("ntlm_v2_hash failed: precomputed hash without ansi/unicode idFlags=0x%{public}08X",
+			               credentials->identity.Flags);
 			return FALSE;
+		}
 	}
 	else if (credentials->identity.Flags & SEC_WINPR_AUTH_IDENTITY_PASSWORD_HASH)
 	{
+		RDP_NTLM_HILOG("ntlm_v2_hash branch=password-hash state=%{public}d idFlags=0x%{public}08X userLen=%{public}u domainLen=%{public}u passwordLen=%{public}u",
+		               ntlm_get_state(context), credentials->identity.Flags,
+		               credentials->identity.UserLength, credentials->identity.DomainLength,
+		               credentials->identity.PasswordLength);
 		/* Special case for WinPR: password hash */
 		if (ntlm_convert_password_hash(context, context->NtlmHash, sizeof(context->NtlmHash)) < 0)
+		{
+			RDP_NTLM_HILOG("ntlm_v2_hash failed: password-hash conversion failed passwordLen=%{public}u",
+			               credentials->identity.PasswordLength);
 			return FALSE;
+		}
 
 		return NTOWFv2FromHashW(context->NtlmHash, (LPWSTR)credentials->identity.User,
 		                        credentials->identity.UserLength * 2,
@@ -488,13 +525,25 @@ static BOOL ntlm_compute_ntlm_v2_hash(NTLM_CONTEXT* context, BYTE* hash)
 	}
 	else if (credentials->identity.Password)
 	{
-		return NTOWFv2W(
+		RDP_NTLM_HILOG("ntlm_v2_hash branch=plaintext state=%{public}d idFlags=0x%{public}08X userLen=%{public}u domainLen=%{public}u passwordLen=%{public}u unicode=%{public}d ansi=%{public}d",
+		               ntlm_get_state(context), credentials->identity.Flags,
+		               credentials->identity.UserLength, credentials->identity.DomainLength,
+		               credentials->identity.PasswordLength,
+		               (credentials->identity.Flags & SEC_WINNT_AUTH_IDENTITY_UNICODE) ? 1 : 0,
+		               (credentials->identity.Flags & SEC_WINNT_AUTH_IDENTITY_ANSI) ? 1 : 0);
+		const BOOL rc = NTOWFv2W(
 		    (LPWSTR)credentials->identity.Password, credentials->identity.PasswordLength * 2,
 		    (LPWSTR)credentials->identity.User, credentials->identity.UserLength * 2,
 		    (LPWSTR)credentials->identity.Domain, credentials->identity.DomainLength * 2, hash);
+		RDP_NTLM_HILOG("ntlm_v2_hash plaintext result=%{public}d", rc ? 1 : 0);
+		return rc;
 	}
 	else if (context->HashCallback)
 	{
+		RDP_NTLM_HILOG("ntlm_v2_hash branch=hash-callback state=%{public}d idFlags=0x%{public}08X userLen=%{public}u domainLen=%{public}u passwordLen=%{public}u",
+		               ntlm_get_state(context), credentials->identity.Flags,
+		               credentials->identity.UserLength, credentials->identity.DomainLength,
+		               credentials->identity.PasswordLength);
 		SecBuffer proofValue = WINPR_C_ARRAY_INIT;
 		SecBuffer micValue = WINPR_C_ARRAY_INIT;
 
@@ -517,9 +566,18 @@ static BOOL ntlm_compute_ntlm_v2_hash(NTLM_CONTEXT* context, BYTE* hash)
 	}
 	else if (context->UseSamFileDatabase)
 	{
+		RDP_NTLM_HILOG("ntlm_v2_hash branch=sam state=%{public}d idFlags=0x%{public}08X userLen=%{public}u domainLen=%{public}u passwordLen=%{public}u",
+		               ntlm_get_state(context), credentials->identity.Flags,
+		               credentials->identity.UserLength, credentials->identity.DomainLength,
+		               credentials->identity.PasswordLength);
 		return ntlm_fetch_ntlm_v2_hash(context, hash);
 	}
 
+	RDP_NTLM_HILOG("ntlm_v2_hash fallthrough true: no password/hash/callback/sam state=%{public}d idFlags=0x%{public}08X userLen=%{public}u domainLen=%{public}u passwordLen=%{public}u passwordPtr=%{public}d hashCb=%{public}d sam=%{public}d",
+	               ntlm_get_state(context), credentials->identity.Flags,
+	               credentials->identity.UserLength, credentials->identity.DomainLength,
+	               credentials->identity.PasswordLength, credentials->identity.Password ? 1 : 0,
+	               context->HashCallback ? 1 : 0, context->UseSamFileDatabase ? 1 : 0);
 	return TRUE;
 }
 

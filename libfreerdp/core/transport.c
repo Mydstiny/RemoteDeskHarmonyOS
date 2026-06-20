@@ -39,6 +39,10 @@
 #include <errno.h>
 #include <fcntl.h>
 
+#if defined(__OHOS__) || defined(__MUSL__)
+#include <hilog/log.h>
+#endif
+
 #ifndef _WIN32
 #include <netdb.h>
 #include <sys/socket.h>
@@ -98,6 +102,62 @@ struct rdp_transport
 	BOOL useIoEvent;
 	BOOL earlyUserAuth;
 };
+
+#if defined(__OHOS__) || defined(__MUSL__)
+#undef LOG_DOMAIN
+#undef LOG_TAG
+#define LOG_DOMAIN 0x0001
+#define LOG_TAG "RDP_FREERDP_CORE"
+
+static void rdp_transport_hilog_ssl_error(const char* op, rdpContext* context, rdpTransport* transport,
+                                          int status, size_t requested, SSIZE_T progressed,
+                                          int shouldRetry)
+{
+	char sslError[160] = WINPR_C_ARRAY_INIT;
+	const unsigned long err = ERR_peek_error();
+	if (err != 0)
+		ERR_error_string_n(err, sslError, sizeof(sslError));
+	else
+		snprintf(sslError, sizeof(sslError), "none");
+
+	const int state = context ? freerdp_get_state(context) : -1;
+	const char* stateName = context ? freerdp_state_string((CONNECTION_STATE)state) : "no-context";
+	UINT32 selectedProtocol = 0;
+	if (context && context->settings)
+		selectedProtocol = freerdp_settings_get_uint32(context->settings, FreeRDP_SelectedProtocol);
+
+	OH_LOG_ERROR(LOG_APP,
+	             "[RDP_CORE] %{public}s failed: status=%{public}d requested=%{public}zu progressed=%{public}zd retry=%{public}d blocking=%{public}d layer=%{public}d selectedProtocol=0x%{public}08X state=%{public}d(%{public}s) ssl=%{public}s",
+	             op ? op : "BIO", status, requested, progressed, shouldRetry,
+	             transport ? transport->blocking : -1, transport ? transport->layer : -1,
+	             selectedProtocol, state, stateName ? stateName : "unknown", sslError);
+}
+
+static void rdp_transport_hilog_status(const char* op, rdpContext* context, rdpTransport* transport,
+                                       int status)
+{
+	const int state = context ? freerdp_get_state(context) : -1;
+	const char* stateName = context ? freerdp_state_string((CONNECTION_STATE)state) : "no-context";
+	UINT32 selectedProtocol = 0;
+	if (context && context->settings)
+		selectedProtocol = freerdp_settings_get_uint32(context->settings, FreeRDP_SelectedProtocol);
+
+	OH_LOG_ERROR(LOG_APP,
+	             "[RDP_CORE] %{public}s: status=%{public}d blocking=%{public}d layer=%{public}d selectedProtocol=0x%{public}08X state=%{public}d(%{public}s)",
+	             op ? op : "transport", status, transport ? transport->blocking : -1,
+	             transport ? transport->layer : -1, selectedProtocol, state,
+	             stateName ? stateName : "unknown");
+}
+#else
+#define rdp_transport_hilog_ssl_error(op, context, transport, status, requested, progressed, shouldRetry) \
+	do                                                                                                  \
+	{                                                                                                   \
+	} while (0)
+#define rdp_transport_hilog_status(op, context, transport, status) \
+	do                                                            \
+	{                                                             \
+	} while (0)
+#endif
 
 typedef struct
 {
@@ -844,6 +904,9 @@ static SSIZE_T transport_read_layer(rdpTransport* transport, BYTE* data, size_t 
 
 	if (!transport->frontBio || (bytes > SSIZE_MAX))
 	{
+		rdp_transport_hilog_status(!transport->frontBio ? "transport_read_layer frontBio null"
+		                                                : "transport_read_layer bytes overflow",
+		                           context, transport, -1);
 		transport->layer = TRANSPORT_LAYER_CLOSED;
 		freerdp_set_last_error_if_not(context, FREERDP_ERROR_CONNECT_TRANSPORT_FAILED);
 		return -1;
@@ -866,10 +929,13 @@ static SSIZE_T transport_read_layer(rdpTransport* transport, BYTE* data, size_t 
 				/* something unexpected happened, let's close */
 				if (!transport->frontBio)
 				{
+					rdp_transport_hilog_status("BIO_read frontBio null", context, transport, status);
 					WLog_Print(transport->log, WLOG_ERROR, "BIO_read: transport->frontBio null");
 					return -1;
 				}
 
+				rdp_transport_hilog_ssl_error("BIO_read", context, transport, status, bytes, read,
+				                              BIO_should_retry(transport->frontBio) ? 1 : 0);
 				WLog_ERR_BIO(transport, "BIO_read", transport->frontBio);
 				transport->layer = TRANSPORT_LAYER_CLOSED;
 				freerdp_set_last_error_if_not(context, FREERDP_ERROR_CONNECT_TRANSPORT_FAILED);
@@ -884,6 +950,8 @@ static SSIZE_T transport_read_layer(rdpTransport* transport, BYTE* data, size_t 
 			 * bytes */
 			if (BIO_wait_read(transport->frontBio, 100) < 0)
 			{
+				rdp_transport_hilog_ssl_error("BIO_wait_read", context, transport, status, bytes, read,
+				                              BIO_should_retry(transport->frontBio) ? 1 : 0);
 				WLog_ERR_BIO(transport, "BIO_wait_read", transport->frontBio);
 				return -1;
 			}
@@ -1218,7 +1286,10 @@ static int transport_default_write(rdpTransport* transport, wStream* s)
 
 	EnterCriticalSection(&(transport->WriteLock));
 	if (!transport->frontBio)
+	{
+		rdp_transport_hilog_status("transport_default_write frontBio null", context, transport, status);
 		goto out_cleanup;
+	}
 
 	{
 		size_t length = Stream_GetPosition(s);
@@ -1245,6 +1316,8 @@ static int transport_default_write(rdpTransport* transport, wStream* s)
 				 */
 				if (!BIO_should_retry(transport->frontBio))
 				{
+					rdp_transport_hilog_ssl_error("BIO_write no retry", context, transport, status,
+					                              length, (SSIZE_T)(writtenlength - length), 0);
 					WLog_ERR_BIO(transport, "BIO_should_retry", transport->frontBio);
 					goto out_cleanup;
 				}
@@ -1252,12 +1325,18 @@ static int transport_default_write(rdpTransport* transport, wStream* s)
 				/* non-blocking can live with blocked IOs */
 				if (!transport->blocking)
 				{
+					rdp_transport_hilog_ssl_error("BIO_write nonblocking", context, transport, status,
+					                              length, (SSIZE_T)(writtenlength - length),
+					                              BIO_should_retry(transport->frontBio) ? 1 : 0);
 					WLog_ERR_BIO(transport, "BIO_write", transport->frontBio);
 					goto out_cleanup;
 				}
 
 				if (BIO_wait_write(transport->frontBio, 100) < 0)
 				{
+					rdp_transport_hilog_ssl_error("BIO_wait_write", context, transport, status,
+					                              length, (SSIZE_T)(writtenlength - length),
+					                              BIO_should_retry(transport->frontBio) ? 1 : 0);
 					WLog_ERR_BIO(transport, "BIO_wait_write", transport->frontBio);
 					status = -1;
 					goto out_cleanup;
@@ -1273,6 +1352,9 @@ static int transport_default_write(rdpTransport* transport, wStream* s)
 				{
 					if (BIO_wait_write(transport->frontBio, 100) < 0)
 					{
+						rdp_transport_hilog_ssl_error("BIO_write_blocked wait", context, transport, status,
+						                              length, (SSIZE_T)(writtenlength - length),
+						                              BIO_should_retry(transport->frontBio) ? 1 : 0);
 						WLog_Print(transport->log, WLOG_ERROR, "error when selecting for write");
 						status = -1;
 						goto out_cleanup;
@@ -1280,6 +1362,9 @@ static int transport_default_write(rdpTransport* transport, wStream* s)
 
 					if (BIO_flush(transport->frontBio) < 1)
 					{
+						rdp_transport_hilog_ssl_error("BIO_flush", context, transport, status,
+						                              length, (SSIZE_T)(writtenlength - length),
+						                              BIO_should_retry(transport->frontBio) ? 1 : 0);
 						WLog_Print(transport->log, WLOG_ERROR, "error when flushing outputBuffer");
 						status = -1;
 						goto out_cleanup;
@@ -1290,6 +1375,7 @@ static int transport_default_write(rdpTransport* transport, wStream* s)
 			const size_t ustatus = (size_t)status;
 			if (ustatus > length)
 			{
+				rdp_transport_hilog_status("BIO_write oversized status", context, transport, status);
 				status = -1;
 				goto out_cleanup;
 			}
@@ -1304,6 +1390,7 @@ out_cleanup:
 
 	if (status < 0)
 	{
+		rdp_transport_hilog_status("transport_default_write final failure", context, transport, status);
 		/* A write error indicates that the peer has dropped the connection */
 		transport->layer = TRANSPORT_LAYER_CLOSED;
 		freerdp_set_last_error_if_not(context, FREERDP_ERROR_CONNECT_TRANSPORT_FAILED);
@@ -1478,6 +1565,7 @@ int transport_check_fds(rdpTransport* transport)
 
 	if (transport->layer == TRANSPORT_LAYER_CLOSED)
 	{
+		rdp_transport_hilog_status("transport_check_fds layer closed", context, transport, -1);
 		WLog_Print(transport->log, WLOG_DEBUG, "transport_check_fds: transport layer closed");
 		freerdp_set_last_error_if_not(context, FREERDP_ERROR_CONNECT_TRANSPORT_FAILED);
 		return -1;
@@ -1495,8 +1583,12 @@ int transport_check_fds(rdpTransport* transport)
 	if ((status = transport_read_pdu(transport, transport->ReceiveBuffer)) <= 0)
 	{
 		if (status < 0)
+		{
+			rdp_transport_hilog_status("transport_check_fds transport_read_pdu", context, transport,
+			                           status);
 			WLog_Print(transport->log, WLOG_DEBUG, "transport_check_fds: transport_read_pdu() - %i",
 			           status);
+		}
 		if (transport->haveMoreBytesToRead)
 		{
 			transport->haveMoreBytesToRead = FALSE;
@@ -1509,6 +1601,7 @@ int transport_check_fds(rdpTransport* transport)
 	transport->ReceiveBuffer = StreamPool_Take(transport->ReceivePool, 0);
 	if (!transport->ReceiveBuffer)
 	{
+		rdp_transport_hilog_status("transport_check_fds StreamPool_Take failed", context, transport, -1);
 		Stream_Release(received);
 		return -1;
 	}
@@ -1526,6 +1619,8 @@ int transport_check_fds(rdpTransport* transport)
 	if (state_run_failed(recv_status))
 	{
 		char buffer[64] = WINPR_C_ARRAY_INIT;
+		rdp_transport_hilog_status("transport_check_fds ReceiveCallback failed", context, transport,
+		                           (int)recv_status);
 		WLog_Print(transport->log, WLOG_ERROR,
 		           "transport_check_fds: transport->ReceiveCallback() - %s",
 		           state_run_result_string(recv_status, buffer, ARRAYSIZE(buffer)));

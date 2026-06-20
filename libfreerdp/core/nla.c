@@ -29,6 +29,10 @@
 #include <time.h>
 #include <ctype.h>
 
+#if defined(__OHOS__) || defined(__MUSL__)
+#include <hilog/log.h>
+#endif
+
 #include <freerdp/log.h>
 #include <freerdp/build-config.h>
 
@@ -55,6 +59,16 @@
 #define TAG FREERDP_TAG("core.nla")
 
 #define NLA_AUTH_PKG NEGO_SSP_NAME
+
+static TCHAR* nla_client_auth_package(const rdpSettings* settings)
+{
+	if (settings && settings->AuthenticationPackageList &&
+	    _stricmp(settings->AuthenticationPackageList, "ntlm") == 0)
+	{
+		return NTLM_SSP_NAME;
+	}
+	return NLA_AUTH_PKG;
+}
 
 typedef enum
 {
@@ -135,6 +149,30 @@ struct rdp_nla
 	BYTE certSha1[20];
 	BOOL earlyUserAuth;
 };
+
+#if defined(__OHOS__) || defined(__MUSL__)
+#undef LOG_DOMAIN
+#undef LOG_TAG
+#define LOG_DOMAIN 0x0001
+#define LOG_TAG "RDP_FREERDP_NLA"
+
+static void nla_hilog_state(const rdpNla* nla, const char* step, int rc)
+{
+	const UINT32 lastError = (nla && nla->rdpcontext) ? freerdp_get_last_error(nla->rdpcontext) : 0;
+	const INT32 sspi = nla ? credssp_auth_sspi_error(nla->auth) : 0;
+	OH_LOG_ERROR(LOG_APP,
+	             "[RDP_NLA] %{public}s rc=%{public}d nlaState=%{public}s peerVersion=%{public}u errorCode=0x%{public}08X sspi=0x%{public}08X lastError=0x%{public}08X nego=%{public}u pubKey=%{public}u authInfo=%{public}u",
+	             step ? step : "nla", rc, nla ? nla_get_state_str(nla_get_state(nla)) : "null",
+	             nla ? nla->peerVersion : 0, nla ? (UINT32)nla->errorCode : 0, (UINT32)sspi,
+	             lastError, nla ? nla->negoToken.cbBuffer : 0, nla ? nla->pubKeyAuth.cbBuffer : 0,
+	             nla ? nla->authInfo.cbBuffer : 0);
+}
+#else
+#define nla_hilog_state(nla, step, rc) \
+	do                                \
+	{                                 \
+	} while (0)
+#endif
 
 static BOOL nla_send(rdpNla* nla);
 static int nla_server_recv(rdpNla* nla);
@@ -441,7 +479,12 @@ static int nla_client_init(rdpNla* nla)
 	if (!nla_adjust_settings_from_smartcard(nla))
 		return -1;
 
-	if (!credssp_auth_init(nla->auth, NLA_AUTH_PKG, nullptr))
+	TCHAR* authPackage = nla_client_auth_package(settings);
+#if defined(__OHOS__) || defined(__MUSL__)
+	OH_LOG_ERROR(LOG_APP, "[RDP_NLA] nla_client_init auth package=%{public}s packageList=%{public}s",
+	             authPackage, settings->AuthenticationPackageList ? settings->AuthenticationPackageList : "");
+#endif
+	if (!credssp_auth_init(nla->auth, authPackage, nullptr))
 		return -1;
 
 	if (!nla_client_setup_identity(nla))
@@ -450,7 +493,10 @@ static int nla_client_init(rdpNla* nla)
 	const char* hostname = freerdp_settings_get_server_name(settings);
 
 	if (!credssp_auth_setup_client(nla->auth, "TERMSRV", hostname, nla->identity, nla->pkinitArgs))
+	{
+		nla_hilog_state(nla, "nla_client_init credssp_auth_setup_client failed", -1);
 		return -1;
+	}
 
 	const BYTE* data = nullptr;
 	DWORD length = 0;
@@ -474,7 +520,10 @@ int nla_client_begin(rdpNla* nla)
 	WINPR_ASSERT(nla);
 
 	if (nla_client_init(nla) < 1)
+	{
+		nla_hilog_state(nla, "nla_client_begin init failed", -1);
 		return -1;
+	}
 
 	if (nla_get_state(nla) != NLA_STATE_INITIAL)
 		return -1;
@@ -489,19 +538,26 @@ int nla_client_begin(rdpNla* nla)
 	credssp_auth_set_flags(nla->auth, ISC_REQ_MUTUAL_AUTH | ISC_REQ_CONFIDENTIALITY);
 
 	const int rc = credssp_auth_authenticate(nla->auth);
+	nla_hilog_state(nla, "nla_client_begin credssp_auth_authenticate", rc);
 
 	switch (rc)
 	{
 		case 0:
 			if (!nla_send(nla))
+			{
+				nla_hilog_state(nla, "nla_client_begin nla_send failed", -1);
 				return -1;
+			}
 			nla_set_state(nla, NLA_STATE_NEGO_TOKEN);
 			break;
 		case 1:
 			if (credssp_auth_have_output_token(nla->auth))
 			{
 				if (!nla_send(nla))
+				{
+					nla_hilog_state(nla, "nla_client_begin final nla_send failed", -1);
 					return -1;
+				}
 			}
 			nla_set_state(nla, NLA_STATE_FINAL);
 			break;
@@ -516,6 +572,7 @@ int nla_client_begin(rdpNla* nla)
 				default:
 					break;
 			}
+			nla_hilog_state(nla, "nla_client_begin auth failed", -1);
 			return -1;
 	}
 
@@ -526,12 +583,16 @@ static int nla_client_recv_nego_token(rdpNla* nla)
 {
 	credssp_auth_take_input_buffer(nla->auth, &nla->negoToken);
 	const int rc = credssp_auth_authenticate(nla->auth);
+	nla_hilog_state(nla, "nla_client_recv_nego_token credssp_auth_authenticate", rc);
 
 	switch (rc)
 	{
 		case 0:
 			if (!nla_send(nla))
+			{
+				nla_hilog_state(nla, "nla_client_recv_nego_token nla_send failed", -1);
 				return -1;
+			}
 			break;
 		case 1: /* completed */
 		{
@@ -542,16 +603,23 @@ static int nla_client_recv_nego_token(rdpNla* nla)
 				res = nla_encrypt_public_key_hash(nla);
 
 			if (!res)
+			{
+				nla_hilog_state(nla, "nla_client_recv_nego_token public key encrypt failed", -1);
 				return -1;
+			}
 
 			if (!nla_send(nla))
+			{
+				nla_hilog_state(nla, "nla_client_recv_nego_token pubkey nla_send failed", -1);
 				return -1;
+			}
 
 			nla_set_state(nla, NLA_STATE_PUB_KEY_AUTH);
 		}
 		break;
 
 		default:
+			nla_hilog_state(nla, "nla_client_recv_nego_token auth failed", -1);
 			return -1;
 	}
 
@@ -573,15 +641,24 @@ static int nla_client_recv_pub_key_auth(rdpNla* nla)
 	sspi_SecBufferFree(&nla->pubKeyAuth);
 
 	if (!rc)
+	{
+		nla_hilog_state(nla, "nla_client_recv_pub_key_auth verify failed", -1);
 		return -1;
+	}
 
 	/* Send encrypted credentials */
 	rc = nla_encrypt_ts_credentials(nla);
 	if (!rc)
+	{
+		nla_hilog_state(nla, "nla_client_recv_pub_key_auth credentials encrypt failed", -1);
 		return -1;
+	}
 
 	if (!nla_send(nla))
+	{
+		nla_hilog_state(nla, "nla_client_recv_pub_key_auth nla_send failed", -1);
 		return -1;
+	}
 
 	if (nla->earlyUserAuth)
 	{
@@ -2195,6 +2272,7 @@ int nla_recv_pdu(rdpNla* nla, wStream* s)
 			WLog_DBG(TAG, "Early User Auth active: FAILURE code 0x%08" PRIX32 "", code);
 			code = FREERDP_ERROR_AUTHENTICATION_FAILED;
 			freerdp_set_last_error_log(nla->rdpcontext, code);
+			nla_hilog_state(nla, "nla_recv_pdu early user auth failed", -1);
 			return -1;
 		}
 		else
@@ -2203,7 +2281,11 @@ int nla_recv_pdu(rdpNla* nla, wStream* s)
 	else
 	{
 		if (nla_decode_ts_request(nla, s) < 1)
+		{
+			nla_hilog_state(nla, "nla_recv_pdu decode ts request failed", -1);
 			return -1;
+		}
+		nla_hilog_state(nla, "nla_recv_pdu decoded ts request", 1);
 
 		if (nla->errorCode)
 		{
@@ -2260,11 +2342,17 @@ int nla_recv_pdu(rdpNla* nla, wStream* s)
 			}
 
 			freerdp_set_last_error_log(nla->rdpcontext, code);
+			nla_hilog_state(nla, "nla_recv_pdu peer errorCode", -1);
 			return -1;
 		}
 	}
 
-	return nla_client_recv(nla);
+	const int rc = nla_client_recv(nla);
+	if (rc < 1)
+		nla_hilog_state(nla, "nla_recv_pdu nla_client_recv failed", rc);
+	else
+		nla_hilog_state(nla, "nla_recv_pdu nla_client_recv ok", rc);
+	return rc;
 }
 
 int nla_server_recv(rdpNla* nla)

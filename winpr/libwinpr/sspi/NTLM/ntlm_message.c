@@ -28,12 +28,29 @@
 #include <winpr/stream.h>
 #include <winpr/sysinfo.h>
 
+#if defined(__OHOS__) || defined(__MUSL__)
+#include <hilog/log.h>
+#endif
+
 #include "ntlm_compute.h"
 
 #include "ntlm_message.h"
 
 #include "../../log.h"
 #define TAG WINPR_TAG("sspi.NTLM")
+
+#if defined(__OHOS__) || defined(__MUSL__)
+#undef LOG_DOMAIN
+#undef LOG_TAG
+#define LOG_DOMAIN 0x0001
+#define LOG_TAG "RDP_FREERDP_NTLM"
+#define RDP_NTLM_HILOG(fmt, ...) OH_LOG_ERROR(LOG_APP, "[RDP_NTLM] " fmt, ##__VA_ARGS__)
+#else
+#define RDP_NTLM_HILOG(fmt, ...) \
+	do                            \
+	{                             \
+	} while (0)
+#endif
 
 #define NTLM_CheckAndLogRequiredCapacity(tag, s, nmemb, what)                                    \
 	Stream_CheckAndLogRequiredCapacityEx(tag, WLOG_WARN, s, nmemb, 1, "%s(%s:%" PRIuz ") " what, \
@@ -668,8 +685,14 @@ SECURITY_STATUS ntlm_read_ChallengeMessage(NTLM_CONTEXT* context, PSecBuffer buf
 	if (!context || !buffer)
 		return SEC_E_INTERNAL_ERROR;
 
+	RDP_NTLM_HILOG("ntlm_read_ChallengeMessage enter state=%{public}u input=%{public}u ntlmv2=%{public}u",
+	               (UINT32)ntlm_get_state(context), buffer->cbBuffer, context->NTLMv2 ? 1U : 0U);
+
 	if (!ntlm_generate_client_challenge(context))
+	{
+		RDP_NTLM_HILOG("ntlm_read_ChallengeMessage failed: client challenge");
 		return SEC_E_INTERNAL_ERROR;
+	}
 
 	NTLM_CHALLENGE_MESSAGE* message = &context->CHALLENGE_MESSAGE;
 	WINPR_ASSERT(message);
@@ -684,30 +707,53 @@ SECURITY_STATUS ntlm_read_ChallengeMessage(NTLM_CONTEXT* context, PSecBuffer buf
 	StartOffset = Stream_GetPosition(s);
 
 	if (!ntlm_read_message_header(s, &message->header, MESSAGE_TYPE_CHALLENGE))
+	{
+		RDP_NTLM_HILOG("ntlm_read_ChallengeMessage failed: header input=%{public}u",
+		               buffer->cbBuffer);
 		goto fail;
+	}
 
 	if (!ntlm_read_message_fields(s, &(message->TargetName))) /* TargetNameFields (8 bytes) */
+	{
+		RDP_NTLM_HILOG("ntlm_read_ChallengeMessage failed: target name fields");
 		goto fail;
+	}
 
 	if (!ntlm_read_negotiate_flags(s, &message->NegotiateFlags, 0, "NTLM_CHALLENGE_MESSAGE"))
+	{
+		RDP_NTLM_HILOG("ntlm_read_ChallengeMessage failed: negotiate flags");
 		goto fail;
+	}
 
 	context->NegotiateFlags = message->NegotiateFlags;
+	RDP_NTLM_HILOG("ntlm_read_ChallengeMessage flags=0x%{public}08X targetNameLen=%{public}u targetNameOffset=%{public}u",
+	               message->NegotiateFlags, message->TargetName.Len, message->TargetName.BufferOffset);
 
 	if (!Stream_CheckAndLogRequiredLength(TAG, s, 16))
+	{
+		RDP_NTLM_HILOG("ntlm_read_ChallengeMessage failed: server challenge length");
 		goto fail;
+	}
 
 	Stream_Read(s, message->ServerChallenge, 8); /* ServerChallenge (8 bytes) */
 	CopyMemory(context->ServerChallenge, message->ServerChallenge, 8);
 	Stream_Read(s, message->Reserved, 8); /* Reserved (8 bytes), should be ignored */
 
 	if (!ntlm_read_message_fields(s, &(message->TargetInfo))) /* TargetInfoFields (8 bytes) */
+	{
+		RDP_NTLM_HILOG("ntlm_read_ChallengeMessage failed: target info fields");
 		goto fail;
+	}
+	RDP_NTLM_HILOG("ntlm_read_ChallengeMessage targetInfoLen=%{public}u targetInfoOffset=%{public}u",
+	               message->TargetInfo.Len, message->TargetInfo.BufferOffset);
 
 	if (context->NegotiateFlags & NTLMSSP_NEGOTIATE_VERSION)
 	{
 		if (!ntlm_read_version_info(s, &(message->Version))) /* Version (8 bytes) */
+		{
+			RDP_NTLM_HILOG("ntlm_read_ChallengeMessage failed: version");
 			goto fail;
+		}
 	}
 
 	/* Payload (variable) */
@@ -717,7 +763,11 @@ SECURITY_STATUS ntlm_read_ChallengeMessage(NTLM_CONTEXT* context, PSecBuffer buf
 	if (message->TargetName.Len > 0)
 	{
 		if (!ntlm_read_message_fields_buffer(s, &(message->TargetName)))
+		{
+			RDP_NTLM_HILOG("ntlm_read_ChallengeMessage failed: target name buffer len=%{public}u offset=%{public}u",
+			               message->TargetName.Len, message->TargetName.BufferOffset);
 			goto fail;
+		}
 	}
 
 	if (message->TargetInfo.Len > 0)
@@ -725,7 +775,11 @@ SECURITY_STATUS ntlm_read_ChallengeMessage(NTLM_CONTEXT* context, PSecBuffer buf
 		size_t cbAvTimestamp = 0;
 
 		if (!ntlm_read_message_fields_buffer(s, &(message->TargetInfo)))
+		{
+			RDP_NTLM_HILOG("ntlm_read_ChallengeMessage failed: target info buffer len=%{public}u offset=%{public}u",
+			               message->TargetInfo.Len, message->TargetInfo.BufferOffset);
 			goto fail;
+		}
 
 		context->ChallengeTargetInfo.pvBuffer = message->TargetInfo.Buffer;
 		context->ChallengeTargetInfo.cbBuffer = message->TargetInfo.Len;
@@ -738,7 +792,11 @@ SECURITY_STATUS ntlm_read_ChallengeMessage(NTLM_CONTEXT* context, PSecBuffer buf
 			PBYTE ptr = ntlm_av_pair_get_value_pointer(AvTimestamp, cbAvTimestamp);
 
 			if (!ptr || (AvTimestamp->AvLen < 8))
+			{
+				RDP_NTLM_HILOG("ntlm_read_ChallengeMessage failed: timestamp av pair avLen=%{public}u",
+				               AvTimestamp ? AvTimestamp->AvLen : 0);
 				goto fail;
+			}
 
 			if (context->NTLMv2)
 				context->UseMIC = TRUE;
@@ -749,10 +807,19 @@ SECURITY_STATUS ntlm_read_ChallengeMessage(NTLM_CONTEXT* context, PSecBuffer buf
 
 	length = (PayloadOffset - StartOffset) + message->TargetName.Len + message->TargetInfo.Len;
 	if (length > buffer->cbBuffer)
+	{
+		RDP_NTLM_HILOG("ntlm_read_ChallengeMessage failed: payload length=%{public}zu input=%{public}u payloadOffset=%{public}zu startOffset=%{public}zu",
+		               length, buffer->cbBuffer, PayloadOffset, StartOffset);
 		goto fail;
+	}
+	RDP_NTLM_HILOG("ntlm_read_ChallengeMessage parsed payload length=%{public}zu useMic=%{public}u",
+	               length, context->UseMIC ? 1U : 0U);
 
 	if (!sspi_SecBufferAlloc(&context->ChallengeMessage, (ULONG)length))
+	{
+		RDP_NTLM_HILOG("ntlm_read_ChallengeMessage failed: challenge alloc length=%{public}zu", length);
 		goto fail;
+	}
 
 	if (context->ChallengeMessage.pvBuffer)
 		CopyMemory(context->ChallengeMessage.pvBuffer, Stream_Buffer(s) + StartOffset, length);
@@ -764,17 +831,24 @@ SECURITY_STATUS ntlm_read_ChallengeMessage(NTLM_CONTEXT* context, PSecBuffer buf
 	if (context->NTLMv2)
 	{
 		if (!ntlm_construct_authenticate_target_info(context))
+		{
+			RDP_NTLM_HILOG("ntlm_read_ChallengeMessage failed: construct authenticate target info");
 			goto fail;
+		}
 
 		sspi_SecBufferFree(&context->ChallengeTargetInfo);
 		context->ChallengeTargetInfo.pvBuffer = context->AuthenticateTargetInfo.pvBuffer;
 		context->ChallengeTargetInfo.cbBuffer = context->AuthenticateTargetInfo.cbBuffer;
+		RDP_NTLM_HILOG("ntlm_read_ChallengeMessage authenticate target info len=%{public}u",
+		               context->AuthenticateTargetInfo.cbBuffer);
 	}
 
 	ntlm_generate_timestamp(context); /* Timestamp */
 
 	{
 		const SECURITY_STATUS rc = ntlm_compute_lm_v2_response(context); /* LmChallengeResponse */
+		RDP_NTLM_HILOG("ntlm_read_ChallengeMessage lm_v2_response rc=0x%{public}08X len=%{public}u",
+		               (UINT32)rc, context->LmChallengeResponse.cbBuffer);
 		if (rc != SEC_E_OK)
 		{
 			status = rc;
@@ -785,6 +859,8 @@ SECURITY_STATUS ntlm_read_ChallengeMessage(NTLM_CONTEXT* context, PSecBuffer buf
 	{
 		const SECURITY_STATUS rc2 =
 		    ntlm_compute_ntlm_v2_response(context); /* NtChallengeResponse */
+		RDP_NTLM_HILOG("ntlm_read_ChallengeMessage ntlm_v2_response rc=0x%{public}08X len=%{public}u",
+		               (UINT32)rc2, context->NtChallengeResponse.cbBuffer);
 		if (rc2 != SEC_E_OK)
 		{
 			status = rc2;
@@ -821,6 +897,10 @@ SECURITY_STATUS ntlm_read_ChallengeMessage(NTLM_CONTEXT* context, PSecBuffer buf
 	ntlm_change_state(context, NTLM_STATE_AUTHENTICATE);
 	status = SEC_I_CONTINUE_NEEDED;
 fail:
+	RDP_NTLM_HILOG("ntlm_read_ChallengeMessage exit status=0x%{public}08X state=%{public}u flags=0x%{public}08X targetNameLen=%{public}u targetInfoLen=%{public}u lmLen=%{public}u ntLen=%{public}u",
+	               (UINT32)status, (UINT32)ntlm_get_state(context), context->NegotiateFlags,
+	               message->TargetName.Len, message->TargetInfo.Len,
+	               context->LmChallengeResponse.cbBuffer, context->NtChallengeResponse.cbBuffer);
 	ntlm_free_message_fields_buffer(&(message->TargetName));
 	return status;
 }

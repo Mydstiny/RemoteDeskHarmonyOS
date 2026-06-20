@@ -36,17 +36,30 @@
 typedef struct
 {
 	rdpsndDevicePlugin device;
+	AUDIO_FORMAT format;
+	BOOL isOpen;
 } rdpsndFakePlugin;
 
-static BOOL rdpsnd_fake_open(WINPR_ATTR_UNUSED rdpsndDevicePlugin* device,
-                             WINPR_ATTR_UNUSED const AUDIO_FORMAT* format,
+extern UINT freerdp_ohos_rdpsnd_play(const BYTE* data, size_t size, UINT32 sampleRate,
+                                     UINT16 channels, UINT16 bitsPerSample) __attribute__((weak));
+
+static BOOL rdpsnd_fake_open(rdpsndDevicePlugin* device,
+                             const AUDIO_FORMAT* format,
                              WINPR_ATTR_UNUSED UINT32 latency)
 {
+	rdpsndFakePlugin* fake = (rdpsndFakePlugin*)device;
+	if (!fake || !format)
+		return FALSE;
+	fake->format = *format;
+	fake->isOpen = TRUE;
 	return TRUE;
 }
 
-static void rdpsnd_fake_close(WINPR_ATTR_UNUSED rdpsndDevicePlugin* device)
+static void rdpsnd_fake_close(rdpsndDevicePlugin* device)
 {
+	rdpsndFakePlugin* fake = (rdpsndFakePlugin*)device;
+	if (fake)
+		fake->isOpen = FALSE;
 }
 
 static BOOL rdpsnd_fake_set_volume(WINPR_ATTR_UNUSED rdpsndDevicePlugin* device,
@@ -66,14 +79,22 @@ static void rdpsnd_fake_free(rdpsndDevicePlugin* device)
 }
 
 static BOOL rdpsnd_fake_format_supported(WINPR_ATTR_UNUSED rdpsndDevicePlugin* device,
-                                         WINPR_ATTR_UNUSED const AUDIO_FORMAT* format)
+                                         const AUDIO_FORMAT* format)
 {
-	return TRUE;
+	if (!format)
+		return FALSE;
+	return (format->wFormatTag == WAVE_FORMAT_PCM) && (format->wBitsPerSample == 16) &&
+	       (format->nChannels > 0) && (format->nSamplesPerSec > 0);
 }
 
-static UINT rdpsnd_fake_play(WINPR_ATTR_UNUSED rdpsndDevicePlugin* device,
-                             WINPR_ATTR_UNUSED const BYTE* data, WINPR_ATTR_UNUSED size_t size)
+static UINT rdpsnd_fake_play(rdpsndDevicePlugin* device, const BYTE* data, size_t size)
 {
+	rdpsndFakePlugin* fake = (rdpsndFakePlugin*)device;
+	if (!fake || !fake->isOpen || !data || (size == 0))
+		return CHANNEL_RC_OK;
+	if (freerdp_ohos_rdpsnd_play)
+		return freerdp_ohos_rdpsnd_play(data, size, fake->format.nSamplesPerSec,
+		                                fake->format.nChannels, fake->format.wBitsPerSample);
 	return CHANNEL_RC_OK;
 }
 

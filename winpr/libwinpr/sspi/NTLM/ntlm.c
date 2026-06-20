@@ -30,6 +30,10 @@
 #include <winpr/endian.h>
 #include <winpr/build-config.h>
 
+#if defined(__OHOS__) || defined(__MUSL__)
+#include <hilog/log.h>
+#endif
+
 #include "ntlm.h"
 #include "ntlm_export.h"
 #include "../sspi.h"
@@ -41,6 +45,19 @@
 #include "../../log.h"
 #define TAG WINPR_TAG("sspi.NTLM")
 
+#if defined(__OHOS__) || defined(__MUSL__)
+#undef LOG_DOMAIN
+#undef LOG_TAG
+#define LOG_DOMAIN 0x0001
+#define LOG_TAG "RDP_FREERDP_NTLM"
+#define RDP_NTLM_HILOG(fmt, ...) OH_LOG_ERROR(LOG_APP, "[RDP_NTLM] " fmt, ##__VA_ARGS__)
+#else
+#define RDP_NTLM_HILOG(fmt, ...) \
+	do                            \
+	{                             \
+	} while (0)
+#endif
+
 #ifndef MIN
 #define MIN(a, b) ((a) < (b)) ? (a) : (b)
 #endif
@@ -48,6 +65,26 @@
 #define WINPR_KEY "Software\\%s\\WinPR\\NTLM"
 
 static char* NTLM_PACKAGE_NAME = "NTLM";
+
+static void ntlm_hilog_context(const char* step, NTLM_CONTEXT* context, SSPI_CREDENTIALS* credentials,
+                               PSecBuffer input, PSecBuffer output, SECURITY_STATUS status)
+{
+	const UINT32 state = context ? (UINT32)ntlm_get_state(context) : 0;
+	const UINT32 flags = context ? context->NegotiateFlags : 0;
+	const UINT32 ntlmv2 = context ? (context->NTLMv2 ? 1U : 0U) : 0U;
+	const UINT32 useMic = context ? (context->UseMIC ? 1U : 0U) : 0U;
+	const UINT32 inputLen = input ? input->cbBuffer : 0;
+	const UINT32 outputLen = output ? output->cbBuffer : 0;
+	const UINT32 idFlags = credentials ? credentials->identity.Flags : 0;
+	const UINT32 userLen = credentials ? credentials->identity.UserLength : 0;
+	const UINT32 domainLen = credentials ? credentials->identity.DomainLength : 0;
+	const UINT32 passwordLen = credentials ? credentials->identity.PasswordLength : 0;
+	const UINT32 hasPassword = (credentials && credentials->identity.Password) ? 1U : 0U;
+
+	RDP_NTLM_HILOG("%{public}s status=0x%{public}08X state=%{public}u flags=0x%{public}08X ntlmv2=%{public}u useMic=%{public}u input=%{public}u output=%{public}u idFlags=0x%{public}08X userLen=%{public}u domainLen=%{public}u passwordLen=%{public}u hasPassword=%{public}u",
+	               step ? step : "ntlm", (UINT32)status, state, flags, ntlmv2, useMic, inputLen,
+	               outputLen, idFlags, userLen, domainLen, passwordLen, hasPassword);
+}
 
 #define check_context(ctx) check_context_((ctx), __FILE__, __func__, __LINE__)
 static BOOL check_context_(NTLM_CONTEXT* context, const char* file, const char* fkt, size_t line)
@@ -646,6 +683,8 @@ static SECURITY_STATUS SEC_ENTRY ntlm_InitializeSecurityContextW(
 	{
 		input_buffer = sspi_FindSecBuffer(pInput, SECBUFFER_TOKEN);
 	}
+	credentials = (SSPI_CREDENTIALS*)sspi_SecureHandleGetLowerPointer(phCredential);
+	ntlm_hilog_context("InitializeSecurityContextW enter", context, credentials, input_buffer, nullptr, SEC_E_OK);
 
 	if (!context)
 	{
@@ -657,8 +696,9 @@ static SECURITY_STATUS SEC_ENTRY ntlm_InitializeSecurityContextW(
 		if (fContextReq & ISC_REQ_CONFIDENTIALITY)
 			context->confidentiality = TRUE;
 
-		credentials = (SSPI_CREDENTIALS*)sspi_SecureHandleGetLowerPointer(phCredential);
 		context->credentials = credentials;
+		ntlm_hilog_context("InitializeSecurityContextW new context", context, credentials,
+		                   input_buffer, nullptr, SEC_E_OK);
 
 		if (context->Workstation.Length < 1)
 		{
@@ -677,6 +717,12 @@ static SECURITY_STATUS SEC_ENTRY ntlm_InitializeSecurityContextW(
 
 		sspi_SecureHandleSetLowerPointer(phNewContext, context);
 		sspi_SecureHandleSetUpperPointer(phNewContext, NTLM_SSP_NAME);
+		ntlm_hilog_context("InitializeSecurityContextW context ready", context, credentials,
+		                   input_buffer, nullptr, SEC_E_OK);
+	}
+	else if (!credentials)
+	{
+		credentials = context->credentials;
 	}
 
 	if ((!input_buffer) || (ntlm_get_state(context) == NTLM_STATE_AUTHENTICATE))
@@ -699,8 +745,15 @@ static SECURITY_STATUS SEC_ENTRY ntlm_InitializeSecurityContextW(
 			ntlm_change_state(context, NTLM_STATE_NEGOTIATE);
 
 		if (ntlm_get_state(context) == NTLM_STATE_NEGOTIATE)
-			return ntlm_write_NegotiateMessage(context, output_buffer);
+		{
+			status = ntlm_write_NegotiateMessage(context, output_buffer);
+			ntlm_hilog_context("InitializeSecurityContextW write NegotiateMessage", context,
+			                   credentials, input_buffer, output_buffer, status);
+			return status;
+		}
 
+		ntlm_hilog_context("InitializeSecurityContextW negotiate branch out of sequence", context,
+		                   credentials, input_buffer, output_buffer, SEC_E_OUT_OF_SEQUENCE);
 		return SEC_E_OUT_OF_SEQUENCE;
 	}
 	else
@@ -721,7 +774,11 @@ static SECURITY_STATUS SEC_ENTRY ntlm_InitializeSecurityContextW(
 
 		if (ntlm_get_state(context) == NTLM_STATE_CHALLENGE)
 		{
+			ntlm_hilog_context("InitializeSecurityContextW read ChallengeMessage begin", context,
+			                   credentials, input_buffer, nullptr, SEC_E_OK);
 			status = ntlm_read_ChallengeMessage(context, input_buffer);
+			ntlm_hilog_context("InitializeSecurityContextW read ChallengeMessage end", context,
+			                   credentials, input_buffer, nullptr, status);
 
 			if (status != SEC_I_CONTINUE_NEEDED)
 				return status;
@@ -741,12 +798,21 @@ static SECURITY_STATUS SEC_ENTRY ntlm_InitializeSecurityContextW(
 				return SEC_E_INSUFFICIENT_MEMORY;
 
 			if (ntlm_get_state(context) == NTLM_STATE_AUTHENTICATE)
-				return ntlm_write_AuthenticateMessage(context, output_buffer);
+			{
+				status = ntlm_write_AuthenticateMessage(context, output_buffer);
+				ntlm_hilog_context("InitializeSecurityContextW write AuthenticateMessage", context,
+				                   credentials, input_buffer, output_buffer, status);
+				return status;
+			}
 		}
 
+		ntlm_hilog_context("InitializeSecurityContextW challenge branch out of sequence", context,
+		                   credentials, input_buffer, output_buffer, SEC_E_OUT_OF_SEQUENCE);
 		return SEC_E_OUT_OF_SEQUENCE;
 	}
 
+	ntlm_hilog_context("InitializeSecurityContextW final out of sequence", context, credentials,
+	                   input_buffer, output_buffer, SEC_E_OUT_OF_SEQUENCE);
 	return SEC_E_OUT_OF_SEQUENCE;
 }
 
