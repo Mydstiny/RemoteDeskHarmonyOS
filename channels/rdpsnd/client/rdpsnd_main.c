@@ -47,9 +47,15 @@
 #include <freerdp/freerdp.h>
 #include <freerdp/codec/dsp.h>
 #include <freerdp/client/channels.h>
+#include <hilog/log.h>
 
 #include "rdpsnd_common.h"
 #include "rdpsnd_main.h"
+
+#undef LOG_DOMAIN
+#undef LOG_TAG
+#define LOG_DOMAIN 0x0001
+#define LOG_TAG "RDP_RDPSND_MAIN"
 
 struct rdpsnd_plugin
 {
@@ -1058,6 +1064,10 @@ static UINT rdpsnd_process_connect(rdpsndPlugin* rdpsnd)
 	WINPR_ASSERT(rdpsnd);
 	rdpsnd->latency = 0;
 	args = (const ADDIN_ARGV*)rdpsnd->channelEntryPoints.pExtendedData;
+	OH_LOG_INFO(LOG_APP,
+	            "[RDP] rdpsnd process_connect dynamic=%{public}s args=%{public}p argc=%{public}d subsystem=%{public}s",
+	            rdpsnd->dynamic ? "true" : "false", args, args ? args->argc : -1,
+	            rdpsnd->subsystem ? rdpsnd->subsystem : "unset");
 
 	if (args)
 	{
@@ -1069,6 +1079,8 @@ static UINT rdpsnd_process_connect(rdpsndPlugin* rdpsnd)
 
 	if (rdpsnd->subsystem)
 	{
+		OH_LOG_INFO(LOG_APP, "[RDP] rdpsnd load requested subsystem=%{public}s",
+		            rdpsnd->subsystem);
 		if ((status = rdpsnd_load_device_plugin(rdpsnd, rdpsnd->subsystem, args)))
 		{
 			WLog_ERR(TAG,
@@ -1083,6 +1095,8 @@ static UINT rdpsnd_process_connect(rdpsndPlugin* rdpsnd)
 		{
 			const char* subsystem_name = backends[x].subsystem;
 			const char* device_name = backends[x].device;
+			OH_LOG_INFO(LOG_APP, "[RDP] rdpsnd try backend subsystem=%{public}s device=%{public}s",
+			            subsystem_name, device_name);
 
 			if ((status = rdpsnd_load_device_plugin(rdpsnd, subsystem_name, args)))
 				WLog_WARN(TAG,
@@ -1096,6 +1110,8 @@ static UINT rdpsnd_process_connect(rdpsndPlugin* rdpsnd)
 			if (!rdpsnd_set_subsystem(rdpsnd, subsystem_name) ||
 			    !rdpsnd_set_device_name(rdpsnd, device_name))
 				return CHANNEL_RC_NO_MEMORY;
+			OH_LOG_INFO(LOG_APP, "[RDP] rdpsnd backend selected subsystem=%{public}s device=%{public}s",
+			            subsystem_name, device_name);
 
 			break;
 		}
@@ -1202,6 +1218,9 @@ static VOID VCAPITYPE rdpsnd_virtual_channel_open_event_ex(LPVOID lpUserParam, D
 {
 	UINT error = CHANNEL_RC_OK;
 	rdpsndPlugin* rdpsnd = (rdpsndPlugin*)lpUserParam;
+	OH_LOG_INFO(LOG_APP,
+	            "[RDP] rdpsnd static open_event event=%{public}u openHandle=%{public}u dataLength=%{public}u totalLength=%{public}u flags=0x%{public}08X plugin=%{public}p",
+	            event, openHandle, dataLength, totalLength, dataFlags, rdpsnd);
 	WINPR_ASSERT(rdpsnd);
 	WINPR_ASSERT(!rdpsnd->dynamic);
 
@@ -1259,6 +1278,9 @@ static UINT rdpsnd_virtual_channel_event_connected(rdpsndPlugin* rdpsnd, LPVOID 
 {
 	UINT32 status = 0;
 	DWORD opened = 0;
+	OH_LOG_INFO(LOG_APP,
+	            "[RDP] rdpsnd static event_connected plugin=%{public}p dataLength=%{public}u dynamic=%{public}s",
+	            rdpsnd, dataLength, rdpsnd && rdpsnd->dynamic ? "true" : "false");
 	WINPR_UNUSED(pData);
 	WINPR_UNUSED(dataLength);
 
@@ -1596,6 +1618,9 @@ FREERDP_ENTRY_POINT(BOOL VCAPITYPE rdpsnd_VirtualChannelEntryEx(
 	UINT rc = 0;
 	rdpsndPlugin* rdpsnd = nullptr;
 	CHANNEL_ENTRY_POINTS_FREERDP_EX* pEntryPointsEx = nullptr;
+	OH_LOG_INFO(LOG_APP,
+	            "[RDP] rdpsnd static VirtualChannelEntryEx entry=%{public}p initHandle=%{public}p",
+	            pEntryPoints, pInitHandle);
 
 	if (!pEntryPoints)
 		return FALSE;
@@ -1643,6 +1668,7 @@ static UINT rdpsnd_on_open(IWTSVirtualChannelCallback* pChannelCallback)
 {
 	GENERIC_CHANNEL_CALLBACK* callback = (GENERIC_CHANNEL_CALLBACK*)pChannelCallback;
 	rdpsndPlugin* rdpsnd = nullptr;
+	OH_LOG_INFO(LOG_APP, "[RDP] rdpsnd dynamic on_open callback=%{public}p", pChannelCallback);
 
 	WINPR_ASSERT(callback);
 
@@ -1734,6 +1760,9 @@ static UINT rdpsnd_on_new_channel_connection(IWTSListenerCallback* pListenerCall
 {
 	GENERIC_CHANNEL_CALLBACK* callback = nullptr;
 	GENERIC_LISTENER_CALLBACK* listener_callback = (GENERIC_LISTENER_CALLBACK*)pListenerCallback;
+	OH_LOG_INFO(LOG_APP,
+	            "[RDP] rdpsnd dynamic new_channel listener=%{public}p channel=%{public}p data=%{public}p",
+	            pListenerCallback, pChannel, Data);
 	WINPR_ASSERT(listener_callback);
 	WINPR_ASSERT(pChannel);
 	WINPR_ASSERT(ppCallback);
@@ -1829,6 +1858,7 @@ FREERDP_ENTRY_POINT(UINT VCAPITYPE rdpsnd_DVCPluginEntry(IDRDYNVC_ENTRY_POINTS* 
 {
 	UINT error = CHANNEL_RC_OK;
 	rdpsndPlugin* rdpsnd = nullptr;
+	OH_LOG_INFO(LOG_APP, "[RDP] rdpsnd dynamic DVCPluginEntry entry=%{public}p", pEntryPoints);
 
 	WINPR_ASSERT(pEntryPoints);
 	WINPR_ASSERT(pEntryPoints->GetPlugin);

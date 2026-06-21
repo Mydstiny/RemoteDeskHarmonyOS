@@ -71,10 +71,37 @@
 #include <openssl/tls1.h>
 #include "cmdline.h"
 
+#include <hilog/log.h>
+
+#undef LOG_DOMAIN
+#undef LOG_TAG
+#define LOG_DOMAIN 0x0001
+#define LOG_TAG "RDP_ADDIN"
+
 #include <freerdp/log.h>
 #define TAG CLIENT_TAG("common.cmdline")
 
 static const char str_force[] = "force";
+
+static BOOL freerdp_client_add_dynamic_channel_once(rdpSettings* settings, size_t count,
+                                                    const char* const* params)
+{
+	if (!settings || !params || (count == 0) || !params[0])
+		return FALSE;
+	if (freerdp_dynamic_channel_collection_find(settings, params[0]))
+		return TRUE;
+	return freerdp_client_add_dynamic_channel(settings, count, params);
+}
+
+static BOOL freerdp_client_add_static_channel_once(rdpSettings* settings, size_t count,
+                                                   const char* const* params)
+{
+	if (!settings || !params || (count == 0) || !params[0])
+		return FALSE;
+	if (freerdp_static_channel_collection_find(settings, params[0]))
+		return TRUE;
+	return freerdp_client_add_static_channel(settings, count, params);
+}
 
 static const char* credential_args[] = { "p",         "smartcard-logon",
 #if defined(WITH_FREERDP_DEPRECATED_COMMANDLINE)
@@ -6188,6 +6215,15 @@ BOOL freerdp_client_load_addins(rdpChannels* channels, rdpSettings* settings)
 #endif
 	};
 
+	const BOOL audioPlayback = freerdp_settings_get_bool(settings, FreeRDP_AudioPlayback);
+	OH_LOG_INFO(LOG_APP,
+	            "[RDP][addin] load_addins begin static=%{public}u dynamic=%{public}u audio=%{public}s clipboard=%{public}s rdpdr=%{public}s",
+	            freerdp_settings_get_uint32(settings, FreeRDP_StaticChannelCount),
+	            freerdp_settings_get_uint32(settings, FreeRDP_DynamicChannelCount),
+	            audioPlayback ? "true" : "false",
+	            freerdp_settings_get_bool(settings, FreeRDP_RedirectClipboard) ? "true" : "false",
+	            freerdp_settings_get_bool(settings, FreeRDP_DeviceRedirection) ? "true" : "false");
+
 	/**
 	 * Step 1: first load dynamic channels according to the settings
 	 */
@@ -6198,10 +6234,31 @@ BOOL freerdp_client_load_addins(rdpChannels* channels, rdpSettings* settings)
 		{
 			const char* const p[] = { dynChannels[i].channelName };
 
-			if (!freerdp_client_add_dynamic_channel(settings, ARRAYSIZE(p), p))
+			if (audioPlayback && (strcmp(dynChannels[i].channelName, RDPSND_CHANNEL_NAME) == 0))
+				continue;
+
+			if (!freerdp_client_add_dynamic_channel_once(settings, ARRAYSIZE(p), p))
 				return FALSE;
 		}
 	}
+
+#ifdef CHANNEL_RDPSND_CLIENT
+	if (audioPlayback)
+	{
+		const char* const params[] = { RDPSND_CHANNEL_NAME, "sys:fake" };
+		const BOOL staticOk = freerdp_client_add_static_channel_once(settings, ARRAYSIZE(params), params);
+		const BOOL dynamicOk = freerdp_client_add_dynamic_channel_once(settings, ARRAYSIZE(params), params);
+		OH_LOG_INFO(LOG_APP,
+		            "[RDP] rdpsnd channel sys=fake add static=%{public}s dynamic=%{public}s",
+		            staticOk ? "true" : "false",
+		            dynamicOk ? "true" : "false");
+		if (!staticOk || !dynamicOk)
+			return FALSE;
+		OH_LOG_INFO(LOG_APP, "[RDP][addin] after-rdpsnd-add static=%{public}u dynamic=%{public}u",
+		            freerdp_settings_get_uint32(settings, FreeRDP_StaticChannelCount),
+		            freerdp_settings_get_uint32(settings, FreeRDP_DynamicChannelCount));
+	}
+#endif
 
 	/**
 	 * step 2: do various adjustments in the settings to handle channels and settings dependencies
@@ -6339,15 +6396,15 @@ BOOL freerdp_client_load_addins(rdpChannels* channels, rdpSettings* settings)
 		                                              settings))
 			return FALSE;
 
-		if (!freerdp_static_channel_collection_find(settings, RDPSND_CHANNEL_NAME) &&
+		if (audioPlayback && !freerdp_static_channel_collection_find(settings, RDPSND_CHANNEL_NAME) &&
 		    !freerdp_dynamic_channel_collection_find(settings, RDPSND_CHANNEL_NAME))
 		{
 			const char* const params[] = { RDPSND_CHANNEL_NAME, "sys:fake" };
 
-			if (!freerdp_client_add_static_channel(settings, ARRAYSIZE(params), params))
+			if (!freerdp_client_add_static_channel_once(settings, ARRAYSIZE(params), params))
 				return FALSE;
 
-			if (!freerdp_client_add_dynamic_channel(settings, ARRAYSIZE(params), params))
+			if (!freerdp_client_add_dynamic_channel_once(settings, ARRAYSIZE(params), params))
 				return FALSE;
 		}
 	}
@@ -6412,6 +6469,9 @@ BOOL freerdp_client_load_addins(rdpChannels* channels, rdpSettings* settings)
 		if ((staticChannels[i].settingId == 0) ||
 		    freerdp_settings_get_bool(settings, staticChannels[i].settingId))
 		{
+			if (audioPlayback && (strcmp(staticChannels[i].channelName, RDPSND_CHANNEL_NAME) == 0))
+				continue;
+
 			if (staticChannels[i].args)
 			{
 				if (!freerdp_client_load_static_channel_addin(
@@ -6421,7 +6481,7 @@ BOOL freerdp_client_load_addins(rdpChannels* channels, rdpSettings* settings)
 			else
 			{
 				const char* const p[] = { staticChannels[i].channelName };
-				if (!freerdp_client_add_static_channel(settings, ARRAYSIZE(p), p))
+				if (!freerdp_client_add_static_channel_once(settings, ARRAYSIZE(p), p))
 					return FALSE;
 			}
 		}

@@ -30,8 +30,14 @@
 
 #include <freerdp/types.h>
 #include <freerdp/settings.h>
+#include <hilog/log.h>
 
 #include "rdpsnd_main.h"
+
+#undef LOG_DOMAIN
+#undef LOG_TAG
+#define LOG_DOMAIN 0x0001
+#define LOG_TAG "RDP_RDPSND_FAKE"
 
 typedef struct
 {
@@ -52,6 +58,10 @@ static BOOL rdpsnd_fake_open(rdpsndDevicePlugin* device,
 		return FALSE;
 	fake->format = *format;
 	fake->isOpen = TRUE;
+	OH_LOG_INFO(LOG_APP,
+	            "[RDP] rdpsnd fake open format=%{public}u rate=%{public}u channels=%{public}u bits=%{public}u latency=%{public}u bridge=%{public}s",
+	            format->wFormatTag, format->nSamplesPerSec, format->nChannels,
+	            format->wBitsPerSample, latency, freerdp_ohos_rdpsnd_play ? "yes" : "no");
 	return TRUE;
 }
 
@@ -59,7 +69,10 @@ static void rdpsnd_fake_close(rdpsndDevicePlugin* device)
 {
 	rdpsndFakePlugin* fake = (rdpsndFakePlugin*)device;
 	if (fake)
+	{
 		fake->isOpen = FALSE;
+		OH_LOG_INFO(LOG_APP, "[RDP] rdpsnd fake close");
+	}
 }
 
 static BOOL rdpsnd_fake_set_volume(WINPR_ATTR_UNUSED rdpsndDevicePlugin* device,
@@ -83,15 +96,41 @@ static BOOL rdpsnd_fake_format_supported(WINPR_ATTR_UNUSED rdpsndDevicePlugin* d
 {
 	if (!format)
 		return FALSE;
-	return (format->wFormatTag == WAVE_FORMAT_PCM) && (format->wBitsPerSample == 16) &&
-	       (format->nChannels > 0) && (format->nSamplesPerSec > 0);
+	const BOOL supported = (format->wFormatTag == WAVE_FORMAT_PCM) && (format->wBitsPerSample == 16) &&
+	                       (format->nChannels > 0) && (format->nSamplesPerSec > 0);
+	OH_LOG_INFO(LOG_APP,
+	            "[RDP] rdpsnd fake format_supported=%{public}s format=%{public}u rate=%{public}u channels=%{public}u bits=%{public}u",
+	            supported ? "true" : "false", format->wFormatTag, format->nSamplesPerSec,
+	            format->nChannels, format->wBitsPerSample);
+	return supported;
 }
 
 static UINT rdpsnd_fake_play(rdpsndDevicePlugin* device, const BYTE* data, size_t size)
 {
 	rdpsndFakePlugin* fake = (rdpsndFakePlugin*)device;
 	if (!fake || !fake->isOpen || !data || (size == 0))
+	{
+		static UINT64 skipped = 0;
+		skipped++;
+		if ((skipped <= 10) || ((skipped % 100) == 0))
+		{
+			OH_LOG_WARN(LOG_APP,
+			            "[RDP] rdpsnd fake play skipped #%{public}llu fake=%{public}s open=%{public}s data=%{public}p size=%{public}zu",
+			            (unsigned long long)skipped, fake ? "yes" : "no",
+			            (fake && fake->isOpen) ? "true" : "false", data, size);
+		}
 		return CHANNEL_RC_OK;
+	}
+	static UINT64 playCount = 0;
+	playCount++;
+	if ((playCount <= 10) || ((playCount % 100) == 0))
+	{
+		OH_LOG_INFO(LOG_APP,
+		            "[RDP] rdpsnd fake play #%{public}llu size=%{public}zu rate=%{public}u channels=%{public}u bits=%{public}u bridge=%{public}s",
+		            (unsigned long long)playCount, size, fake->format.nSamplesPerSec,
+		            fake->format.nChannels, fake->format.wBitsPerSample,
+		            freerdp_ohos_rdpsnd_play ? "yes" : "no");
+	}
 	if (freerdp_ohos_rdpsnd_play)
 		return freerdp_ohos_rdpsnd_play(data, size, fake->format.nSamplesPerSec,
 		                                fake->format.nChannels, fake->format.wBitsPerSample);
@@ -142,6 +181,7 @@ FREERDP_ENTRY_POINT(UINT VCAPITYPE fake_freerdp_rdpsnd_client_subsystem_entry(
 	const ADDIN_ARGV* args = nullptr;
 	rdpsndFakePlugin* fake = nullptr;
 	UINT ret = CHANNEL_RC_OK;
+	OH_LOG_INFO(LOG_APP, "[RDP] rdpsnd fake subsystem entry");
 	fake = (rdpsndFakePlugin*)calloc(1, sizeof(rdpsndFakePlugin));
 
 	if (!fake)
@@ -167,6 +207,8 @@ FREERDP_ENTRY_POINT(UINT VCAPITYPE fake_freerdp_rdpsnd_client_subsystem_entry(
 	}
 
 	pEntryPoints->pRegisterRdpsndDevice(pEntryPoints->rdpsnd, &fake->device);
+	OH_LOG_INFO(LOG_APP, "[RDP] rdpsnd fake device registered bridge=%{public}s",
+	            freerdp_ohos_rdpsnd_play ? "yes" : "no");
 	return ret;
 error:
 	rdpsnd_fake_free(&fake->device);
