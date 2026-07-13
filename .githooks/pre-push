@@ -34,10 +34,14 @@ while read -r local_ref local_sha remote_ref remote_sha; do
 
   case "$remote_ref" in
     refs/heads/*|refs/tags/*)
-      commit_sha="$(git rev-parse "${local_sha}^{commit}" 2>/dev/null)" || {
+      commit_sha="$(git rev-list -n 1 "$local_sha" 2>/dev/null)" || {
         echo "Open-source compliance: $remote_ref does not resolve to a commit." >&2
         exit 1
       }
+      if [ -z "$commit_sha" ] || [ "$(git cat-file -t "$commit_sha" 2>/dev/null)" != "commit" ]; then
+        echo "Open-source compliance: $remote_ref does not resolve to a commit." >&2
+        exit 1
+      fi
       if ! git merge-base --is-ancestor "$base_sha" "$commit_sha"; then
         echo "Open-source compliance: refusing to publish history unrelated to public main: $remote_ref" >&2
         echo "Create the branch from origin/main and cherry-pick only audited changes." >&2
