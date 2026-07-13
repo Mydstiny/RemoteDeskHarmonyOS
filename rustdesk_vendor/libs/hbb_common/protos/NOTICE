@@ -1,0 +1,5 @@
+These protocol definitions come from RustDesk commit
+93d064a9b0eb58ab94db88ff727a877ef773c0d8, whose hbb_common gitlink is
+387603f47cbb15c0d3dc3d67ae3396d3eb707daf, and remain under AGPL-3.0.
+Local copies remove trailing whitespace only; the release gate hashes their
+LF-normalized UTF-8 content so checkout line endings cannot change the result.

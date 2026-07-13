@@ -1,0 +1,15 @@
+project: RustDesk
+repository: https://github.com/rustdesk/rustdesk
+commit: 93d064a9b0eb58ab94db88ff727a877ef773c0d8
+hbb_common_repository: https://github.com/rustdesk/hbb_common
+hbb_common_commit: 387603f47cbb15c0d3dc3d67ae3396d3eb707daf
+license: AGPL-3.0
+retrieved_at: 2026-07-13
+local_modifications: trailing whitespace removed; line endings are checkout-dependent
+files:
+  - path: libs/hbb_common/protos/message.proto
+    upstream_sha256: c3ed1f35473fef26e4ecac7cf54bfc84773e84eeb5df4ac5e3168b6bd54a109f
+    local_normalized_sha256: f3c2c1e3478bc020337a80aa63d8091033d959a194401294a1cabae7472b4ceb
+  - path: libs/hbb_common/protos/rendezvous.proto
+    upstream_sha256: ed4cf45383d6c268cf8aa62031ba3c0f4b8350ad76382c0eb0a62985331e4e72
+    local_normalized_sha256: ea98b0150971f226a0281f8aa5cfbecc404be3f12723ef6f20f919fb7819bd78

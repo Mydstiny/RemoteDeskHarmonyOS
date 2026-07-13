@@ -1,0 +1,7 @@
+{
+  "credentialsRotated": false,
+  "rotationVerifiedAtUtc": null,
+  "deviceMatrixVerified": false,
+  "legalApproval": "repository-owner-instruction-2026-07-13",
+  "notes": "Set booleans only after external evidence; never record secret values."
+}

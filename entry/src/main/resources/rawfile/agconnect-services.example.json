@@ -1,0 +1,12 @@
+{
+  "client": {
+    "cp_id": "YOUR_CP_ID",
+    "product_id": "YOUR_PRODUCT_ID",
+    "client_id": "YOUR_CLIENT_ID",
+    "client_secret": "INJECT_FROM_PRIVATE_CONFIGURATION",
+    "project_id": "YOUR_PROJECT_ID",
+    "app_id": "YOUR_APP_ID",
+    "api_key": "INJECT_FROM_PRIVATE_CONFIGURATION",
+    "package_name": "com.example.remotedesktop"
+  }
+}

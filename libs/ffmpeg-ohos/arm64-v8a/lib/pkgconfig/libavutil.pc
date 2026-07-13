@@ -1,0 +1,14 @@
+prefix=C:/Users/14288/DevEcoStudioProjects/RemoteDesktop/libs/ffmpeg-ohos/arm64-v8a
+exec_prefix=${prefix}
+libdir=C:/Users/14288/DevEcoStudioProjects/RemoteDesktop/libs/ffmpeg-ohos/arm64-v8a/lib
+includedir=C:/Users/14288/DevEcoStudioProjects/RemoteDesktop/libs/ffmpeg-ohos/arm64-v8a/include
+
+Name: libavutil
+Description: FFmpeg utility library
+Version: 60.26.102
+Requires: 
+Requires.private: 
+Conflicts:
+Libs: -L${libdir}  -lavutil -lm -pthread
+Libs.private: 
+Cflags: -I${includedir}

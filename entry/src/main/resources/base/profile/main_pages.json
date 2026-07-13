@@ -1,0 +1,9 @@
+{
+  "src": [
+    "pages/GuidePage",
+    "pages/LoginPage",
+    "pages/HostListPage",
+    "pages/RemoteDesktop",
+    "pages/SshTerminal"
+  ]
+}

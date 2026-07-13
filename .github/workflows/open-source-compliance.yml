@@ -1,0 +1,25 @@
+name: Open source compliance
+
+on:
+  push:
+    branches: ['main']
+    tags: ['v*']
+  pull_request:
+    branches: ['main']
+
+permissions:
+  contents: read
+
+jobs:
+  open-source-compliance:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: false
+      - name: Verify licenses, provenance, SBOM, and secrets
+        shell: pwsh
+        run: |
+          $mode = if ('${{ github.ref_type }}' -eq 'tag') { 'Release' } else { 'Light' }
+          ./scripts/verify_open_source_release.ps1 -Mode $mode

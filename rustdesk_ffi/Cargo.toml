@@ -1,0 +1,58 @@
+[package]
+name = "rustdesk_ffi"
+version = "0.1.0"
+edition = "2021"
+description = "RustDesk Core FFI bridge for HarmonyOS NEXT"
+license = "AGPL-3.0-or-later"
+authors = ["RemoteDesktop Team"]
+
+[features]
+default = ["opus-audio"]
+opus-audio = []
+# Audio: Opus decode is built-in (src/opus_ffi.rs)
+# Requires libopus.a built via scripts/build_opus_ohos.sh
+# Set OPUS_LIB_DIR to point to the built libopus.a directory
+
+[lib]
+name = "rustdesk_ffi"
+crate-type = ["cdylib", "staticlib"]
+
+# 构建配置
+[profile.release]
+opt-level = 2          # 优化级别
+lto = true             # 链接时优化
+strip = true           # 去除符号表
+codegen-units = 1      # 更好的优化
+
+[profile.dev]
+opt-level = 0
+debug = true
+
+# 依赖
+# 当前 Mock 阶段无外部依赖
+# 真实实现时需要:
+# [dependencies]
+# rustdesk-core = { git = "https://github.com/rustdesk/rustdesk" }
+# tokio = { version = "1", features = ["rt"] }
+# libc = "0.2"
+
+[dependencies]
+libc = "0.2"           # C 类型兼容 (c_char, c_void, c_int)
+unicode-width = "0.1"
+vte = "0.15"
+
+# RustDesk 协议 — protobuf 纯 Rust 实现 (零 C 依赖)
+protobuf = "2.28"                    # protobuf 运行时
+
+# NaCl crypto_box 纯 Rust 实现 (替代 sodiumoxide, 零 C 依赖)
+x25519-dalek = { version = "2", features = ["static_secrets"] }  # Curve25519 ECDH
+xsalsa20poly1305 = "0.9"             # XSalsa20-Poly1305 AEAD
+salsa20 = "0.10"
+rand = "0.8"                         # 随机数 (keypair, nonce)
+
+base64 = "0.22"
+ed25519-dalek = "2"
+sha2 = "0.10"
+
+[build-dependencies]
+protobuf-codegen-pure = "2.28"       # build.rs 中编译 .proto → Rust (无需 protoc 二进制)

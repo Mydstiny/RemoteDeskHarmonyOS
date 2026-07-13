@@ -1,0 +1,12 @@
+RemoteDeskHarmonyOS
+Copyright 2026 Li Jiong and contributors
+
+The project-owned combined work is distributed under AGPL-3.0-or-later.
+Third-party components retain their original copyrights and licenses. See
+THIRD_PARTY_NOTICES.md, LICENSES/, docs/compliance/SBOM.spdx.json, and the
+notices shipped with each third-party component.
+
+This distribution includes protocol definitions derived from RustDesk and
+binary/source components from FreeRDP, OpenSSL, FFmpeg, libssh2, Mbed TLS,
+Opus, Huawei/OpenHarmony SDK packages, and Rust crates. No project license
+statement removes or replaces their upstream notices.

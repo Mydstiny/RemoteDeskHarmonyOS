@@ -1,0 +1,504 @@
+{
+  "string": [
+    {
+      "name": "module_desc",
+      "value": "鸿蒙PC双协议远程桌面客户端"
+    },
+    {
+      "name": "EntryAbility_desc",
+      "value": "远程桌面主入口"
+    },
+    {
+      "name": "EntryAbility_label",
+      "value": "RemoteDesktop"
+    },
+    {
+      "name": "internet_reason",
+      "value": "用于远程桌面连接和数据传输"
+    },
+    {
+      "name": "network_reason",
+      "value": "用于检测网络状态以优化连接质量"
+    },
+    {
+      "name": "mic_reason",
+      "value": "用于远程桌面语音通话和音频传输"
+    },
+    {
+      "name": "background_reason",
+      "value": "用于保持远程桌面连接在后台运行"
+    },
+    {
+      "name": "biometric_reason",
+      "value": "用于主机安全锁的身份验证"
+    },
+    {
+      "name": "biometric_permission_reason",
+      "value": "用于主机安全锁和 TOTP 隐私保护的身份验证，仅在您主动开启或解锁相关功能时使用，本应用不会获取指纹或面部特征数据"
+    },
+    {
+      "name": "camera_permission_reason",
+      "value": "用于扫描二维码添加 2FA 验证器，不会拍摄照片或视频，仅在您主动点击扫描按钮时启用"
+    },
+    {
+      "name": "datasync_reason",
+      "value": "用于跨设备同步远程主机配置"
+    },
+    {
+      "name": "app_name",
+      "value": "RemoteDesktop"
+    },
+    {
+      "name": "login_title",
+      "value": "华为账号登录"
+    },
+    {
+      "name": "login_button",
+      "value": "华为账号一键登录"
+    },
+    {
+      "name": "login_loading",
+      "value": "正在登录..."
+    },
+    {
+      "name": "login_error",
+      "value": "登录失败，请重试"
+    },
+    {
+      "name": "host_list_title",
+      "value": "远程主机"
+    },
+    {
+      "name": "host_list_empty",
+      "value": "还没有远程主机"
+    },
+    {
+      "name": "search_placeholder",
+      "value": "搜索远程主机..."
+    },
+    {
+      "name": "add_host_title",
+      "value": "添加主机"
+    },
+    {
+      "name": "edit_host_title",
+      "value": "编辑主机"
+    },
+    {
+      "name": "connect_button",
+      "value": "连接"
+    },
+    {
+      "name": "disconnect_button",
+      "value": "断开连接"
+    },
+    {
+      "name": "save_button",
+      "value": "保存"
+    },
+    {
+      "name": "cancel_button",
+      "value": "取消"
+    },
+    {
+      "name": "delete_button",
+      "value": "删除"
+    },
+    {
+      "name": "settings_title",
+      "value": "设置"
+    },
+    {
+      "name": "lock_title",
+      "value": "主机安全锁"
+    },
+    {
+      "name": "lock_type_biometric",
+      "value": "生物识别"
+    },
+    {
+      "name": "lock_type_pin",
+      "value": "PIN 码"
+    },
+    {
+      "name": "lock_type_password",
+      "value": "密码"
+    },
+    {
+      "name": "protocol_rdp",
+      "value": "RDP (远程桌面协议)"
+    },
+    {
+      "name": "protocol_rustdesk",
+      "value": "RustDesk (跨平台远程)"
+    },
+    {
+      "name": "connecting",
+      "value": "正在连接..."
+    },
+    {
+      "name": "connected",
+      "value": "已连接"
+    },
+    {
+      "name": "disconnected",
+      "value": "已断开"
+    },
+    {
+      "name": "connection_error",
+      "value": "连接失败"
+    },
+    {
+      "name": "clipboard_sync",
+      "value": "剪贴板同步"
+    },
+    {
+      "name": "microphone_toggle",
+      "value": "麦克风开关"
+    },
+    {
+      "name": "keyboard_toggle",
+      "value": "虚拟键盘"
+    },
+    {
+      "name": "about_version",
+      "value": "应用版本"
+    },
+    {
+      "name": "about_sdk",
+      "value": "SDK 版本"
+    },
+    {
+      "name": "logout_button",
+      "value": "退出登录"
+    },
+    {
+      "name": "grip_reason",
+      "value": "用于检测握持手势并优化单手操作布局，不会收集通讯录、位置或其他个人数据"
+    },
+    {
+      "name": "permission_dialog_title",
+      "value": "权限请求"
+    },
+    {
+      "name": "biometric_dialog_title",
+      "value": "验证身份以解锁主机"
+    },
+    {
+      "name": "wallpaper_select",
+      "value": "选择壁纸"
+    },
+    {
+      "name": "wallpaper_add_photo",
+      "value": "照片"
+    },
+    {
+      "name": "tab_hosts",
+      "value": "主机"
+    },
+    {
+      "name": "tab_settings",
+      "value": "设置"
+    },
+    {
+      "name": "hms_unavailable_title",
+      "value": "需要华为账号"
+    },
+    {
+      "name": "hms_unavailable_desc",
+      "value": "请在 AppGallery Connect 开通 Account Kit 后使用官方 HMS 登录。当前可跳过登录，以离线模式使用本地远程桌面功能。"
+    },
+    {
+      "name": "skip_login",
+      "value": "跳过登录（离线模式）"
+    },
+    {
+      "name": "btn_login_huawei",
+      "value": "华为账号登录"
+    },
+    {
+      "name": "btn_offline_mode",
+      "value": "离线模式进入"
+    },
+    {
+      "name": "btn_back",
+      "value": "返回"
+    },
+    {
+      "name": "btn_disconnect",
+      "value": "断开"
+    },
+    {
+      "name": "btn_add",
+      "value": "添加"
+    },
+    {
+      "name": "btn_confirm",
+      "value": "确认"
+    },
+    {
+      "name": "btn_edit",
+      "value": "编辑"
+    },
+    {
+      "name": "btn_unlock",
+      "value": "验证身份"
+    },
+    {
+      "name": "btn_i_know",
+      "value": "我知道了"
+    },
+    {
+      "name": "btn_return_login",
+      "value": "返回登录"
+    },
+    {
+      "name": "btn_confirm_skip",
+      "value": "确认跳过"
+    },
+    {
+      "name": "offline_warning_title",
+      "value": "如果不登录，将无法上传主机信息到云端"
+    },
+    {
+      "name": "offline_warning_desc",
+      "value": "您可以进入主页面后再选择登录"
+    },
+    {
+      "name": "enterprise_info_title",
+      "value": "华为账号登录说明"
+    },
+    {
+      "name": "enterprise_info_desc1",
+      "value": "HMS Account Kit 需要企业开发者认证才能调用。"
+    },
+    {
+      "name": "enterprise_info_desc2",
+      "value": "个人开发者可使用离线模式，所有数据仅存储在本地。"
+    },
+    {
+      "name": "toast_login_success",
+      "value": "华为账号登录成功"
+    },
+    {
+      "name": "toast_login_cancelled",
+      "value": "用户取消了登录"
+    },
+    {
+      "name": "toast_login_no_data",
+      "value": "登录失败，未获取到账号信息"
+    },
+    {
+      "name": "page_title_keyvault",
+      "value": "密钥保险库"
+    },
+    {
+      "name": "tab_ssh_keys",
+      "value": "SSH 密钥"
+    },
+    {
+      "name": "tab_2fa",
+      "value": "2FA 验证器"
+    },
+    {
+      "name": "empty_ssh_keys",
+      "value": "还没有 SSH 密钥"
+    },
+    {
+      "name": "empty_totp",
+      "value": "还没有 2FA 验证器"
+    },
+    {
+      "name": "hint_tap_to_add",
+      "value": "点击下方加号添加"
+    },
+    {
+      "name": "privacy_verify_title",
+      "value": "需要验证身份"
+    },
+    {
+      "name": "privacy_verify_desc",
+      "value": "此内容已通过 TOTP 隐私保护加密"
+    },
+    {
+      "name": "status_locked_need_verify",
+      "value": "已锁定 · 需要验证"
+    },
+    {
+      "name": "status_connecting",
+      "value": "正在连接..."
+    },
+    {
+      "name": "status_connection_failed",
+      "value": "连接失败"
+    },
+    {
+      "name": "status_host_not_found",
+      "value": "主机不存在"
+    },
+    {
+      "name": "status_auth_cancelled",
+      "value": "身份验证未通过，已取消连接"
+    },
+    {
+      "name": "dialog_confirm_delete",
+      "value": "确认删除"
+    },
+    {
+      "name": "dialog_batch_delete",
+      "value": "批量删除"
+    },
+    {
+      "name": "dialog_delete_message",
+      "value": "此操作不可恢复"
+    },
+    {
+      "name": "terminal_placeholder",
+      "value": "命令..."
+    },
+    {
+      "name": "terminal_connecting",
+      "value": "Connecting..."
+    },
+    {
+      "name": "ssh_connection_failed",
+      "value": "SSH 连接失败"
+    },
+    {
+      "name": "auth_verify_failed",
+      "value": "验证未通过"
+    },
+    {
+      "name": "version_info",
+      "value": "v1.0 · FreeRDP + RustDesk + SSH"
+    },
+    {
+      "name": "tagline",
+      "value": "HarmonyOS NEXT · 双协议远程桌面"
+    },
+    {
+      "name": "theme_color",
+      "value": "主题色"
+    },
+    {
+      "name": "dark_mode",
+      "value": "深色模式"
+    },
+    {
+      "name": "follow_system",
+      "value": "跟随系统"
+    },
+    {
+      "name": "wallpaper",
+      "value": "壁纸"
+    },
+    {
+      "name": "appearance",
+      "value": "外观"
+    },
+    {
+      "name": "connection",
+      "value": "连接"
+    },
+    {
+      "name": "about",
+      "value": "关于"
+    },
+    {
+      "name": "version_label",
+      "value": "版本"
+    },
+    {
+      "name": "totp_privacy",
+      "value": "TOTP 隐私保护"
+    },
+    {
+      "name": "account_management",
+      "value": "账号管理"
+    },
+    {
+      "name": "not_logged_in",
+      "value": "未登录"
+    },
+    {
+      "name": "add_ssh_key",
+      "value": "添加 SSH 密钥"
+    },
+    {
+      "name": "edit_ssh_key",
+      "value": "编辑 SSH 密钥"
+    },
+    {
+      "name": "add_2fa",
+      "value": "添加 2FA 验证器"
+    },
+    {
+      "name": "paste_private_key",
+      "value": "粘贴私钥"
+    },
+    {
+      "name": "generate_new_key",
+      "value": "生成新密钥"
+    },
+    {
+      "name": "import_otpauth",
+      "value": "导入 otpauth URI"
+    },
+    {
+      "name": "import_atsf",
+      "value": "导入 .atsf 文件"
+    },
+    {
+      "name": "or_manual_input",
+      "value": "— 或手动输入 —"
+    },
+    {
+      "name": "label_name",
+      "value": "名称"
+    },
+    {
+      "name": "label_issuer",
+      "value": "发行方 (Issuer)"
+    },
+    {
+      "name": "label_account",
+      "value": "账户名 (可选)"
+    },
+    {
+      "name": "label_secret",
+      "value": "密钥 (Secret)"
+    },
+    {
+      "name": "label_comment",
+      "value": "备注"
+    },
+    {
+      "name": "security_verify",
+      "value": "安全验证"
+    },
+    {
+      "name": "input_pin",
+      "value": "输入 PIN 码"
+    },
+    {
+      "name": "unknown_connection_error",
+      "value": "未知连接错误"
+    },
+    {
+      "name": "add_ssh_terminal",
+      "value": "添加 SSH 终端"
+    },
+    {
+      "name": "select_wallpaper",
+      "value": "选择壁纸"
+    },
+    {
+      "name": "select_ssh_key",
+      "value": "选择 SSH 密钥"
+    },
+    {
+      "name": "search_hosts",
+      "value": "搜索主机..."
+    }
+  ]
+}

@@ -1,0 +1,488 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Remote Modifier Keybar Mockup</title>
+  <style>
+    :root {
+      --accent: #007dff;
+      --bg: #080a0f;
+      --text: #eef3ff;
+      --muted: rgba(238, 243, 255, 0.64);
+      --faint: rgba(238, 243, 255, 0.34);
+      --glass: rgba(14, 18, 28, 0.74);
+      --glass-strong: rgba(18, 24, 36, 0.9);
+      --stroke: rgba(255, 255, 255, 0.14);
+      --key: rgba(255, 255, 255, 0.08);
+      --key-hover: rgba(255, 255, 255, 0.14);
+      --active: rgba(0, 125, 255, 0.46);
+      --locked: rgba(0, 125, 255, 0.72);
+      --danger: #ff8a80;
+      font-family: "HarmonyOS Sans", "Segoe UI", Arial, sans-serif;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      color: var(--text);
+      background: #0b0e14;
+      display: grid;
+      place-items: center;
+    }
+
+    .board {
+      width: min(1180px, 96vw);
+      display: grid;
+      grid-template-columns: 390px 1fr;
+      gap: 18px;
+      padding: 18px;
+    }
+
+    .notes {
+      min-height: 760px;
+      border: 1px solid var(--stroke);
+      border-radius: 14px;
+      padding: 18px;
+      background: rgba(255, 255, 255, 0.06);
+    }
+
+    .notes h1 {
+      margin: 0 0 10px;
+      font-size: 22px;
+      font-weight: 700;
+      letter-spacing: 0;
+    }
+
+    .notes p {
+      margin: 0 0 16px;
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.55;
+    }
+
+    .rule {
+      display: grid;
+      gap: 10px;
+      margin-top: 18px;
+    }
+
+    .rule-row {
+      display: grid;
+      grid-template-columns: 92px 1fr;
+      gap: 12px;
+      align-items: start;
+      padding: 12px;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 12px;
+      background: rgba(0, 0, 0, 0.18);
+    }
+
+    .rule-row strong {
+      font-size: 13px;
+      color: #fff;
+    }
+
+    .rule-row span {
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.45;
+    }
+
+    .legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 16px;
+    }
+
+    .legend .pill {
+      padding: 7px 10px;
+      border-radius: 10px;
+      border: 1px solid var(--stroke);
+      background: rgba(255, 255, 255, 0.06);
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .stage {
+      min-height: 760px;
+      border: 1px solid rgba(255, 255, 255, 0.16);
+      border-radius: 18px;
+      overflow: hidden;
+      position: relative;
+      background:
+        linear-gradient(135deg, rgba(0, 125, 255, 0.2), transparent 30%),
+        linear-gradient(25deg, rgba(102, 221, 122, 0.16), transparent 24%),
+        radial-gradient(circle at 68% 30%, rgba(255, 255, 255, 0.14), transparent 14%),
+        linear-gradient(145deg, #111722, #06080d 58%, #11131a);
+      box-shadow: 0 22px 70px rgba(0, 0, 0, 0.44);
+    }
+
+    .remote-window {
+      position: absolute;
+      inset: 42px 40px 150px;
+      border-radius: 10px;
+      overflow: hidden;
+      border: 1px solid rgba(255, 255, 255, 0.16);
+      background: #10151f;
+    }
+
+    .remote-top {
+      height: 38px;
+      background: rgba(255, 255, 255, 0.08);
+      display: flex;
+      align-items: center;
+      padding: 0 14px;
+      gap: 8px;
+      color: rgba(255, 255, 255, 0.68);
+      font-size: 12px;
+    }
+
+    .dot {
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+      background: #ff5f57;
+    }
+
+    .dot:nth-child(2) {
+      background: #ffbd2e;
+    }
+
+    .dot:nth-child(3) {
+      background: #28c840;
+      margin-right: 8px;
+    }
+
+    .desktop {
+      height: calc(100% - 38px);
+      padding: 28px;
+      display: grid;
+      grid-template-columns: repeat(3, 90px);
+      grid-auto-rows: 84px;
+      gap: 18px;
+      align-content: start;
+      background:
+        linear-gradient(90deg, rgba(255,255,255,0.04) 1px, transparent 1px),
+        linear-gradient(0deg, rgba(255,255,255,0.04) 1px, transparent 1px),
+        #172033;
+      background-size: 48px 48px;
+    }
+
+    .icon {
+      display: grid;
+      justify-items: center;
+      gap: 8px;
+      color: rgba(255, 255, 255, 0.76);
+      font-size: 12px;
+    }
+
+    .icon-box {
+      width: 42px;
+      height: 42px;
+      border-radius: 10px;
+      background: rgba(255, 255, 255, 0.14);
+      border: 1px solid rgba(255, 255, 255, 0.18);
+    }
+
+    .top-chip {
+      position: absolute;
+      top: 18px;
+      left: 18px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 9px 12px;
+      border-radius: 12px;
+      border: 1px solid rgba(255, 255, 255, 0.14);
+      background: rgba(0, 0, 0, 0.38);
+      color: rgba(255, 255, 255, 0.78);
+      font-size: 12px;
+      backdrop-filter: blur(18px);
+    }
+
+    .disconnect {
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+      background: var(--danger);
+      box-shadow: 0 0 14px rgba(255, 138, 128, 0.65);
+    }
+
+    .keybar {
+      position: absolute;
+      left: 50%;
+      bottom: 28px;
+      transform: translateX(-50%);
+      width: min(720px, calc(100% - 34px));
+      border: 1px solid rgba(255, 255, 255, 0.16);
+      border-radius: 16px;
+      background: var(--glass);
+      backdrop-filter: blur(26px);
+      padding: 8px;
+      box-shadow: 0 18px 48px rgba(0, 0, 0, 0.42);
+    }
+
+    .keybar-row {
+      display: grid;
+      grid-template-columns: repeat(8, minmax(0, 1fr));
+      gap: 7px;
+    }
+
+    .keybar-row + .keybar-row {
+      margin-top: 7px;
+    }
+
+    .key {
+      height: 42px;
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      border-radius: 11px;
+      background: var(--key);
+      color: rgba(255, 255, 255, 0.84);
+      display: grid;
+      place-items: center;
+      font-size: 13px;
+      font-weight: 600;
+      position: relative;
+    }
+
+    .key.small {
+      font-size: 12px;
+      font-weight: 500;
+    }
+
+    .key.primary {
+      background: rgba(0, 125, 255, 0.62);
+      border-color: rgba(255, 255, 255, 0.24);
+      color: white;
+    }
+
+    .key.once {
+      background: var(--active);
+      border-color: rgba(0, 125, 255, 0.85);
+      color: white;
+    }
+
+    .key.locked {
+      background: var(--locked);
+      border-color: rgba(255, 255, 255, 0.54);
+      color: white;
+      box-shadow: 0 0 0 1px rgba(0, 125, 255, 0.24), 0 0 22px rgba(0, 125, 255, 0.34);
+    }
+
+    .key.locked::after {
+      content: "锁";
+      position: absolute;
+      right: 7px;
+      top: 5px;
+      color: rgba(255, 255, 255, 0.8);
+      font-size: 9px;
+      font-weight: 700;
+    }
+
+    .key.fn {
+      background: rgba(102, 221, 122, 0.24);
+      border-color: rgba(102, 221, 122, 0.45);
+      color: #dfffe6;
+    }
+
+    .shortcut-panel {
+      position: absolute;
+      right: 30px;
+      bottom: 140px;
+      width: 310px;
+      border: 1px solid rgba(255, 255, 255, 0.16);
+      border-radius: 16px;
+      background: var(--glass-strong);
+      backdrop-filter: blur(28px);
+      padding: 12px;
+      box-shadow: 0 18px 46px rgba(0, 0, 0, 0.42);
+    }
+
+    .panel-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 10px;
+      padding: 2px 2px 0;
+    }
+
+    .panel-head strong {
+      font-size: 14px;
+    }
+
+    .panel-head span {
+      color: var(--faint);
+      font-size: 12px;
+    }
+
+    .shortcut-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+    }
+
+    .shortcut {
+      min-height: 38px;
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      border-radius: 10px;
+      background: rgba(255, 255, 255, 0.07);
+      color: rgba(255, 255, 255, 0.84);
+      display: grid;
+      place-items: center;
+      font-size: 12px;
+      font-weight: 600;
+      white-space: nowrap;
+    }
+
+    .shortcut.warning {
+      grid-column: span 2;
+      color: #fff;
+      background: rgba(255, 138, 128, 0.24);
+      border-color: rgba(255, 138, 128, 0.4);
+    }
+
+    .state-callout {
+      position: absolute;
+      left: 32px;
+      bottom: 146px;
+      width: 280px;
+      border: 1px solid rgba(255, 255, 255, 0.14);
+      border-radius: 14px;
+      background: rgba(0, 0, 0, 0.36);
+      backdrop-filter: blur(20px);
+      padding: 12px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.45;
+    }
+
+    .state-callout strong {
+      color: #fff;
+      display: block;
+      margin-bottom: 6px;
+      font-size: 13px;
+    }
+
+    @media (max-width: 900px) {
+      .board {
+        grid-template-columns: 1fr;
+      }
+
+      .notes {
+        min-height: 0;
+      }
+
+      .stage {
+        min-height: 720px;
+      }
+
+      .shortcut-panel {
+        right: 18px;
+        left: 18px;
+        width: auto;
+      }
+
+      .state-callout {
+        display: none;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="board">
+    <section class="notes">
+      <h1>远程桌面修饰键 UI</h1>
+      <p>这是接入正式页面前的视觉稿。它遵循中转站里 Claude 留下的规则：移动端不恢复旧底部工具栏，只保留低遮挡的输入工具条；控制入口仍由三指面板或键盘按钮拉出。</p>
+      <div class="rule">
+        <div class="rule-row">
+          <strong>短按</strong>
+          <span>Ctrl / Alt / Shift / Win 进入一次性状态。下一个按键发送组合键后自动释放。</span>
+        </div>
+        <div class="rule-row">
+          <strong>长按</strong>
+          <span>修饰键进入锁定状态，右上角显示“锁”。再次点击同一个键释放。</span>
+        </div>
+        <div class="rule-row">
+          <strong>Fn</strong>
+          <span>不是远程真实按键，只切换功能层，展示 F1-F12、Home、End、PgUp、PgDn、Ins、PrtSc。</span>
+        </div>
+        <div class="rule-row">
+          <strong>快捷键</strong>
+          <span>常用组合键收进右侧面板，避免主工具条过宽。Ctrl+Alt+Del 作为协议特殊动作独立显示。</span>
+        </div>
+      </div>
+      <div class="legend">
+        <span class="pill">一次性: 蓝色半透明</span>
+        <span class="pill">锁定: 高亮 + 锁标</span>
+        <span class="pill">Fn层: 绿色提示</span>
+        <span class="pill">危险动作: 红色</span>
+      </div>
+    </section>
+
+    <section class="stage">
+      <div class="top-chip"><span class="disconnect"></span><span>断开</span></div>
+      <div class="remote-window">
+        <div class="remote-top"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span>Windows 远程桌面</span></div>
+        <div class="desktop">
+          <div class="icon"><span class="icon-box"></span><span>文件</span></div>
+          <div class="icon"><span class="icon-box"></span><span>浏览器</span></div>
+          <div class="icon"><span class="icon-box"></span><span>终端</span></div>
+          <div class="icon"><span class="icon-box"></span><span>设置</span></div>
+        </div>
+      </div>
+
+      <div class="state-callout">
+        <strong>当前状态示例</strong>
+        Ctrl 是“一次性”，Shift 是“锁定”。用户点 C 时发送 Ctrl+Shift+C；Ctrl 自动释放，Shift 保持。
+      </div>
+
+      <div class="shortcut-panel">
+        <div class="panel-head">
+          <strong>快捷键</strong>
+          <span>常用组合</span>
+        </div>
+        <div class="shortcut-grid">
+          <div class="shortcut">Ctrl + C</div>
+          <div class="shortcut">Ctrl + V</div>
+          <div class="shortcut">Alt + Tab</div>
+          <div class="shortcut">Alt + F4</div>
+          <div class="shortcut">Win + R</div>
+          <div class="shortcut">Win + D</div>
+          <div class="shortcut">Ctrl + Shift + Esc</div>
+          <div class="shortcut">Win + E</div>
+          <div class="shortcut warning">Ctrl + Alt + Del</div>
+        </div>
+      </div>
+
+      <div class="keybar" aria-label="modifier keybar">
+        <div class="keybar-row">
+          <div class="key once">Ctrl</div>
+          <div class="key">Alt</div>
+          <div class="key locked">Shift</div>
+          <div class="key">Win</div>
+          <div class="key fn">Fn</div>
+          <div class="key small">Esc</div>
+          <div class="key small">Tab</div>
+          <div class="key primary">⌨</div>
+        </div>
+        <div class="keybar-row">
+          <div class="key small">F1</div>
+          <div class="key small">F2</div>
+          <div class="key small">F3</div>
+          <div class="key small">F4</div>
+          <div class="key small">Home</div>
+          <div class="key small">End</div>
+          <div class="key small">PgUp</div>
+          <div class="key small">PgDn</div>
+        </div>
+      </div>
+    </section>
+  </main>
+</body>
+</html>

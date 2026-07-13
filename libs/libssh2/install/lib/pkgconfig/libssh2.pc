@@ -1,0 +1,21 @@
+###########################################################################
+# libssh2 installation details
+#
+# Copyright (C) The libssh2 project and its contributors.
+# SPDX-License-Identifier: BSD-3-Clause
+###########################################################################
+
+prefix=C:/Users/14288/DevEcoStudioProjects/RemoteDesktop/libs/libssh2/install
+exec_prefix=${prefix}
+libdir=${exec_prefix}/lib
+includedir=${prefix}/include
+
+Name: libssh2
+URL: https://libssh2.org/
+Description: Library for SSH-based communication
+Version: 1.11.1
+Requires: mbedcrypto
+Requires.private: mbedcrypto
+Libs: -L${libdir} -lssh2 -LC:/Users/14288/DevEcoStudioProjects/RemoteDesktop/libs/mbedtls/install/lib -lmbedcrypto
+Libs.private: -LC:/Users/14288/DevEcoStudioProjects/RemoteDesktop/libs/mbedtls/install/lib -lmbedcrypto
+Cflags: -I${includedir}

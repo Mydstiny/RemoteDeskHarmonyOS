@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "RemoteDeskHarmonyOS open-source release manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["releaseTag", "sourceCommit", "hapSha256", "sbomSha256", "rustdeskProtocolCommit", "rustdeskProtocolSha256", "freerdpSubmoduleCommit", "buildCommand", "toolchainVersions", "sourceOfferUrl", "generatedAtUtc"],
+  "properties": {
+    "releaseTag": { "type": "string", "minLength": 1 },
+    "sourceCommit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "hapSha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "sbomSha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "rustdeskProtocolCommit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "rustdeskProtocolSha256": { "type": "array", "items": { "type": "string", "pattern": "^[0-9a-f]{64}$" }, "minItems": 2 },
+    "freerdpSubmoduleCommit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "buildCommand": { "type": "string" },
+    "toolchainVersions": { "type": "object" },
+    "sourceOfferUrl": { "type": "string", "format": "uri" },
+    "generatedAtUtc": { "type": "string", "format": "date-time" }
+  }
+}

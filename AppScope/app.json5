@@ -1,0 +1,11 @@
+{
+  "app": {
+    "bundleName": "com.example.remotedesktop",
+    "vendor": "example",
+    "versionCode": 1000005,
+    "versionName": "1.0.5",
+    "icon": "$media:layered_image",
+    "label": "$string:app_name",
+    "cloudStructuredDataSyncEnabled": true
+  }
+}

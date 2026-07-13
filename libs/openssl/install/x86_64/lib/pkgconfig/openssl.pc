@@ -1,0 +1,9 @@
+prefix=C:/Users/14288/DevEcoStudioProjects/RemoteDesktop/libs/openssl/install/x86_64
+exec_prefix=${prefix}
+libdir=${exec_prefix}/lib64
+includedir=${prefix}/include 
+
+Name: OpenSSL
+Description: Secure Sockets Layer and cryptography libraries and tools
+Version: 3.4.1
+Requires: libssl libcrypto

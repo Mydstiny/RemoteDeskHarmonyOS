@@ -1,0 +1,43 @@
+import abilityTest from './Ability.test';
+import componentTest from './Component.test';
+import cloudSyncTest from './CloudSync.test';
+import dataCryptoTest from './DataCrypto.test';
+import fileTransferProgressModelTest from './FileTransferProgressModel.test';
+import remoteSessionStateTest from './RemoteSessionState.test';
+import nativeSessionHandlesTest from './NativeSessionHandles.test';
+import activeRemoteSessionRegistryTest from './ActiveRemoteSessionRegistry.test';
+import remoteDesktopBackgroundLifecyclePolicyTest from './RemoteDesktopBackgroundLifecyclePolicy.test';
+import hostListFilterServiceTest from './HostListFilterService.test';
+import hostSyncServiceTest from './HostSyncService.test';
+import remoteRestoreFrameRefreshPolicyTest from './RemoteRestoreFrameRefreshPolicy.test';
+import safeLoggerTest from './SafeLogger.test';
+import rustDeskHostConfigPolicyTest from './RustDeskHostConfigPolicy.test';
+import backgroundVideoPrewarmPolicyTest from './BackgroundVideoPrewarmPolicy.test';
+import remoteImeSessionPolicyTest from './RemoteImeSessionPolicy.test';
+import remoteImeCommandQueueTest from './RemoteImeCommandQueue.test';
+import remoteImmersivePolicyTest from './RemoteImmersivePolicy.test';
+import rdpCertificateProbeLifecyclePolicyTest from './RdpCertificateProbeLifecyclePolicy.test';
+import hostWorkspacePolicyTest from './HostWorkspacePolicy.test';
+
+export default function testsuite() {
+  abilityTest();
+  componentTest();
+  cloudSyncTest();
+  dataCryptoTest();
+  fileTransferProgressModelTest();
+  remoteSessionStateTest();
+  nativeSessionHandlesTest();
+  activeRemoteSessionRegistryTest();
+  remoteDesktopBackgroundLifecyclePolicyTest();
+  remoteRestoreFrameRefreshPolicyTest();
+  hostListFilterServiceTest();
+  hostSyncServiceTest();
+  safeLoggerTest();
+  rustDeskHostConfigPolicyTest();
+  backgroundVideoPrewarmPolicyTest();
+  remoteImeSessionPolicyTest();
+  remoteImeCommandQueueTest();
+  remoteImmersivePolicyTest();
+  rdpCertificateProbeLifecyclePolicyTest();
+  hostWorkspacePolicyTest();
+}

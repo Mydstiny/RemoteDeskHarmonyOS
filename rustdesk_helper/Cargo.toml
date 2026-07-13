@@ -1,0 +1,17 @@
+[package]
+name = "rustdesk_helper"
+version = "0.1.0"
+edition = "2021"
+description = "RustDesk IPC helper — AGPL隔离独立进程, Unix Domain Socket → RustDesk core"
+
+# AGPL-3.0: 本 helper 进程链接 RustDesk core (AGPL), 通过 IPC 与主应用通信
+# 主应用 (Apache-2.0) 不链接 RustDesk, 避免许可证传染
+license = "AGPL-3.0"
+
+[lib]
+name = "rustdesk_helper"
+crate-type = ["cdylib"]
+
+[dependencies]
+# TODO: 添加 rustdesk core 依赖 (需决定使用官方 crate 还是 fork)
+# rustdesk-core = { git = "..." }

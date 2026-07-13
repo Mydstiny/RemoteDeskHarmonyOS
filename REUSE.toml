@@ -1,0 +1,13 @@
+version = 1
+
+[[annotations]]
+path = ["AppScope/**", "entry/src/**", "rustdesk_ffi/src/**", "scripts/**", "docs/**", "*.json5", "*.ts", "*.md"]
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2026 Li Jiong and contributors"
+SPDX-License-Identifier = "AGPL-3.0-or-later"
+
+[[annotations]]
+path = ["freerdp/**", "libs/**", "rustdesk_vendor/**", "LICENSES/**"]
+precedence = "aggregate"
+SPDX-FileCopyrightText = "Upstream authors; see THIRD_PARTY_NOTICES.md"
+SPDX-License-Identifier = "LicenseRef-ThirdParty"

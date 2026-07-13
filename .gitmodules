@@ -1,0 +1,4 @@
+[submodule "freerdp"]
+	path = freerdp
+	url = https://github.com/Mydstiny/RemoteDeskHarmonyOS.git
+	branch = freerdp-ohos

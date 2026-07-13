@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Remote Modifier Keybar — Phase 3 紧凑半透明版</title>
+  <style>
+    :root {
+      --accent: #007DFF;
+      --panel-bg: rgba(14,18,28,0.55);
+      --panel-border: rgba(255,255,255,0.10);
+      --key-bg: rgba(255,255,255,0.05);
+      --key-border: rgba(255,255,255,0.08);
+      --once-bg: rgba(0,125,255,0.27);
+      --once-border: rgba(0,125,255,0.85);
+      --locked-bg: rgba(0,125,255,0.40);
+      --locked-border: rgba(0,125,255,0.80);
+      --fn-bg: rgba(102,221,122,0.24);
+      --fn-border: rgba(102,221,122,0.45);
+      --danger: #ff8a80;
+      font-family: "HarmonyOS Sans", "Segoe UI", Arial, sans-serif;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: #0b0e14; color: #eef3ff;
+      display: flex; flex-direction: column; align-items: center;
+      padding: 20px; gap: 18px;
+    }
+    h1 { font-size: 20px; }
+    .subtitle { color: rgba(238,243,255,0.55); font-size: 12px; }
+
+    /* Controls */
+    .controls {
+      display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+      padding: 12px 16px; background: rgba(255,255,255,0.03);
+      border: 1px solid rgba(255,255,255,0.12); border-radius: 10px;
+      max-width: 900px; width: 100%; font-size: 12px;
+    }
+    .controls label { color: rgba(255,255,255,0.55); display: flex; align-items: center; gap: 3px; }
+    .controls select {
+      background: rgba(255,255,255,0.08); color: #fff;
+      border: 1px solid rgba(255,255,255,0.14); border-radius: 5px;
+      padding: 3px 8px; font-size: 11px;
+    }
+    .controls button {
+      background: var(--accent); color: #fff; border: none;
+      border-radius: 6px; padding: 5px 12px; font-size: 11px; cursor: pointer;
+    }
+
+    /* Stage */
+    .stage-wrap { display: flex; gap: 18px; max-width: 900px; width: 100%; flex-wrap: wrap; justify-content: center; }
+    .stage {
+      width: 460px; min-height: 520px;
+      border: 1px solid rgba(255,255,255,0.14); border-radius: 16px;
+      position: relative; overflow: hidden;
+      background: linear-gradient(135deg, rgba(0,125,255,0.08), transparent 30%),
+                  linear-gradient(25deg, rgba(102,221,122,0.06), transparent 24%),
+                  radial-gradient(circle at 68% 30%, rgba(255,255,255,0.04), transparent 14%),
+                  linear-gradient(145deg, #111722, #06080d 58%, #11131a);
+      box-shadow: 0 18px 60px rgba(0,0,0,0.40);
+    }
+
+    .desktop {
+      position: absolute; inset: 38px 24px 160px;
+      border-radius: 10px; border: 1px solid rgba(255,255,255,0.12);
+      background: linear-gradient(90deg, rgba(255,255,255,0.02) 1px, transparent 1px),
+                  linear-gradient(0deg, rgba(255,255,255,0.02) 1px, transparent 1px), #131c2b;
+      background-size: 44px 44px;
+      display: flex; align-items: center; justify-content: center;
+      color: rgba(255,255,255,0.18); font-size: 12px;
+    }
+
+    .top-chip {
+      position: absolute; top: 12px; left: 12px;
+      display: flex; align-items: center; gap: 6px;
+      padding: 6px 10px; border-radius: 8px;
+      border: 1px solid rgba(255,255,255,0.10);
+      background: rgba(0,0,0,0.32); color: rgba(255,255,255,0.65);
+      font-size: 10px;
+    }
+    .disconnect-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--danger); }
+
+    /* CAPSULE */
+    .capsule {
+      position: absolute; right: 8px; top: 35%;
+      height: 36px; padding: 0 12px; display: flex; align-items: center;
+      border-radius: 12px; background: rgba(14,18,28,0.60);
+      border: 1px solid rgba(255,255,255,0.12);
+      color: #E6E6E6; font-size: 11px; font-weight: 500;
+      box-shadow: 0 3px 12px rgba(0,0,0,0.28);
+      white-space: nowrap; cursor: pointer; transition: all 0.16s;
+      z-index: 10;
+    }
+    .capsule.active {
+      background: rgba(20,28,40,0.72); border-color: rgba(0,125,255,0.60);
+      box-shadow: 0 3px 16px rgba(0,125,255,0.18); font-weight: 700; color: #fff;
+    }
+
+    /* MAIN PANEL — compact + transparent */
+    .panel {
+      position: absolute; right: 8px; top: 62px; width: 260px;
+      padding: 10px; border: 1px solid var(--panel-border);
+      border-radius: 14px; background: var(--panel-bg);
+      backdrop-filter: blur(16px);
+      box-shadow: 0 12px 36px rgba(0,0,0,0.32);
+      display: flex; flex-direction: column; gap: 6px;
+      transition: all 0.18s ease-out; z-index: 9;
+    }
+    .panel-header {
+      display: flex; justify-content: space-between; align-items: center;
+      font-size: 12px; padding: 1px 4px 6px;
+    }
+    .panel-header strong { color: #E6E6E6; }
+    .panel-close { color: rgba(255,255,255,0.35); cursor: pointer; font-size: 13px; padding: 1px 4px; }
+
+    .key-row { display: flex; gap: 4px; width: 100%; }
+    .key {
+      flex: 1; height: 34px; display: flex; align-items: center; justify-content: center;
+      border-radius: 10px; border: 0.5px solid var(--key-border);
+      background: var(--key-bg); color: rgba(242,244,247,0.80);
+      font-size: 11px; font-weight: 500; cursor: pointer; position: relative;
+      transition: all 0.10s;
+    }
+    .key.once {
+      background: var(--once-bg); border: 2px solid var(--once-border);
+      color: #fff; font-weight: 700; box-shadow: 0 0 12px rgba(0,125,255,0.22);
+    }
+    .key.locked {
+      background: var(--locked-bg); border: 2px solid var(--locked-border);
+      color: #fff; font-weight: 700; box-shadow: 0 0 16px rgba(0,125,255,0.34);
+    }
+    .key.locked::after {
+      content: "锁"; position: absolute; right: 5px; top: 2px;
+      font-size: 6px; font-weight: 700; color: rgba(255,255,255,0.75);
+    }
+    .key.fn-on {
+      background: var(--fn-bg); border: 2px solid var(--fn-border);
+      color: #DFFFE6; font-weight: 700;
+    }
+    .key.enter {
+      background: rgba(0,125,255,0.55); border: 1px solid var(--accent);
+      color: #fff; font-weight: 600;
+    }
+    .key.danger {
+      background: rgba(255,138,128,0.24); border: 1px solid rgba(255,138,128,0.38);
+      color: #fff; font-weight: 700;
+    }
+
+    /* SHORTCUT PANEL — separate, long-press capsule */
+    .shortcut-panel {
+      position: absolute; right: 8px; top: 190px; width: 260px;
+      padding: 10px; border: 1px solid var(--panel-border);
+      border-radius: 14px; background: var(--panel-bg);
+      backdrop-filter: blur(16px);
+      box-shadow: 0 12px 36px rgba(0,0,0,0.32);
+      display: flex; flex-direction: column; gap: 6px;
+      transition: all 0.18s ease-out; z-index: 8;
+    }
+    .shortcut-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; width: 100%; }
+    .shortcut-grid .key { font-size: 10px; }
+
+    .divider { height: 1px; background: rgba(255,255,255,0.08); }
+    .section-label { font-size: 11px; color: rgba(255,255,255,0.30); padding: 2px 2px; }
+
+    /* Legend */
+    .legend {
+      width: 260px; padding: 14px; border-radius: 14px;
+      border: 1px solid rgba(255,255,255,0.10);
+      background: rgba(255,255,255,0.03); font-size: 11px; line-height: 1.6;
+    }
+    .legend h3 { font-size: 14px; margin-bottom: 8px; }
+    .chip {
+      display: inline-block; padding: 1px 7px; border-radius: 5px;
+      font-size: 10px; font-weight: 600;
+    }
+    .chip.off { background: rgba(255,255,255,0.08); color: rgba(255,255,255,0.55); }
+    .chip.once { background: var(--once-bg); border: 1px solid var(--once-border); color: #fff; }
+    .chip.locked { background: var(--locked-bg); border: 1px solid var(--locked-border); color: #fff; padding-right: 16px; }
+    .chip.locked::after { content: "锁"; position: absolute; right: 3px; top: 0px; font-size: 6px; font-weight: 700; }
+  </style>
+</head>
+<body>
+
+<h1>Phase 3 — 紧凑半透明面板 + 快捷键分离</h1>
+<p class="subtitle">主面板 ~100vp · 快捷键面板长按胶囊弹出 · 面板 55% 透明度</p>
+
+<div class="controls">
+  <label>Ctrl:<select id="selCtrl" onchange="update()">
+    <option value="off">off</option><option value="once">once</option><option value="locked">locked</option>
+  </select></label>
+  <label>Alt:<select id="selAlt" onchange="update()">
+    <option value="off">off</option><option value="once">once</option><option value="locked">locked</option>
+  </select></label>
+  <label>Shift:<select id="selShift" onchange="update()">
+    <option value="off">off</option><option value="once">once</option><option value="locked">locked</option>
+  </select></label>
+  <label>Win:<select id="selWin" onchange="update()">
+    <option value="off">off</option><option value="once">once</option><option value="locked">locked</option>
+  </select></label>
+  <label>Fn:<select id="selFn" onchange="update()">
+    <option value="off">off</option><option value="on">on</option>
+  </select></label>
+  <label>快捷键:<select id="selShort" onchange="update()">
+    <option value="off">隐藏</option><option value="on">显示 (长按胶囊)</option>
+  </select></label>
+  <button onclick="resetAll()">全部重置</button>
+</div>
+
+<div class="stage-wrap">
+  <div class="stage" id="stage">
+    <div class="top-chip"><span class="disconnect-dot"></span><span>断开</span></div>
+    <div class="desktop">Windows 远程桌面</div>
+
+    <!-- CAPSULE -->
+    <div class="capsule" id="capsule">⌨</div>
+
+    <!-- MAIN PANEL — compact -->
+    <div class="panel" id="panel">
+      <div class="panel-header"><strong>修饰键</strong><span class="panel-close">✕</span></div>
+      <div class="key-row">
+        <div class="key" id="key-ctrl">Ctrl</div>
+        <div class="key" id="key-alt">Alt</div>
+        <div class="key" id="key-shift">⇧</div>
+        <div class="key" id="key-win">Win</div>
+        <div class="key" id="key-fn">Fn</div>
+      </div>
+      <div class="key-row">
+        <div class="key">Esc</div><div class="key">Tab</div>
+        <div class="key">Del</div><div class="key enter">Enter</div>
+      </div>
+      <!-- Fn layer -->
+      <div id="fn-layer" style="display:none;flex-direction:column;gap:4px;">
+        <div class="key-row"><div class="key">F1</div><div class="key">F2</div><div class="key">F3</div><div class="key">F4</div></div>
+        <div class="key-row"><div class="key">F5</div><div class="key">F6</div><div class="key">F7</div><div class="key">F8</div></div>
+        <div class="key-row"><div class="key">F9</div><div class="key">F10</div><div class="key">F11</div><div class="key">F12</div></div>
+        <div class="key-row"><div class="key">Home</div><div class="key">End</div><div class="key">PgUp</div><div class="key">PgDn</div></div>
+      </div>
+    </div>
+
+    <!-- SHORTCUT PANEL — separate -->
+    <div class="shortcut-panel" id="shortcut">
+      <div class="panel-header"><strong>快捷键</strong><span class="panel-close">✕</span></div>
+      <div class="shortcut-grid">
+        <div class="key">Ctrl + C</div><div class="key">Ctrl + V</div>
+        <div class="key">Alt + Tab</div><div class="key">Alt + F4</div>
+        <div class="key">Win + R</div><div class="key">Win + D</div>
+        <div class="key">Ctrl+Shift+Esc</div><div class="key">Win + E</div>
+      </div>
+      <div class="key-row"><div class="key danger">Ctrl + Alt + Del</div></div>
+    </div>
+  </div>
+
+  <div class="legend">
+    <h3>Phase 3 变更</h3>
+    <p style="color:rgba(255,255,255,0.5); margin-bottom:8px;">
+      ✅ 面板宽度 320→260vp<br>
+      ✅ 面板透明度 0.92→0.55<br>
+      ✅ 按键透明度 0.08→0.05<br>
+      ✅ 按键高度 40→34vp<br>
+      ✅ 快捷键独立弹出 (长按胶囊)<br>
+      ✅ 主面板 ~100vp (无 Fn) / ~280vp (含 Fn)
+    </p>
+    <div><span class="chip off">off</span> → 短按 → <span class="chip once">once</span></div>
+    <div><span class="chip once">once</span> → 短按 → <span class="chip off">off</span> | 长按 → <span class="chip locked">locked</span></div>
+    <div><span class="chip locked">locked</span> → 短按 → <span class="chip off">off</span></div>
+  </div>
+</div>
+
+<script>
+function get(id) { return document.getElementById(id); }
+function update() {
+  const ctrl = get('selCtrl').value, alt = get('selAlt').value;
+  const shift = get('selShift').value, win = get('selWin').value;
+  const fn = get('selFn').value, showShort = get('selShort').value;
+
+  ['key-ctrl','key-alt','key-shift','key-win'].forEach((id,i) => {
+    const el = get(id); el.classList.remove('off','once','locked','fn-on');
+    const v = [ctrl,alt,shift,win][i];
+    if (v !== 'off') el.classList.add(v);
+  });
+  const elFn = get('key-fn'); elFn.classList.remove('once','locked','fn-on');
+  if (fn === 'on') elFn.classList.add('fn-on');
+
+  get('fn-layer').style.display = fn === 'on' ? 'flex' : 'none';
+  get('shortcut').style.display = showShort === 'on' ? 'flex' : 'none';
+
+  const parts = [];
+  if (fn === 'on') parts.push('Fn');
+  else {
+    if (ctrl!=='off') parts.push('Ctrl');
+    if (alt!=='off') parts.push('Alt');
+    if (shift!=='off') parts.push('⇧');
+    if (win!=='off') parts.push('Win');
+  }
+  const c = get('capsule');
+  c.textContent = parts.length>0 ? parts.join(' ') : '⌨';
+  if (parts.length>0) c.classList.add('active'); else c.classList.remove('active');
+}
+function resetAll() {
+  ['selCtrl','selAlt','selShift','selWin'].forEach(id => get(id).value='off');
+  get('selFn').value='off'; get('selShort').value='off'; update();
+}
+update();
+</script>
+</body>
+</html>
