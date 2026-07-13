@@ -805,7 +805,7 @@ struct HostListPage {
 
   private async createLocalBackup(): Promise<void> {
     try {
-      const saved: boolean = await LocalBackupService.getInstance().saveBackup('1.0.5');
+      const saved: boolean = await LocalBackupService.getInstance().saveBackup('1.0.6');
       if (saved) { promptAction.showToast({ message: '本地备份已保存', duration: 1600 }); this.closeSettingsLeafSheet(); }
     } catch (_e) { this.cloudSyncError = '备份失败，请检查保存位置后重试'; }
   }
@@ -926,7 +926,7 @@ struct HostListPage {
 
   private async openFeedbackEmail(): Promise<void> {
     const ctx: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
-    const versionName: string = '1.0.5';
+    const versionName: string = '1.0.6';
     const attempts: SettingsFeedbackLaunchAttempt[] =
       settingsFeedbackLaunchAttempts(versionName, this.breakpoint, this.isDesktopDevice);
     const params: Record<string, Object> =
@@ -4334,7 +4334,7 @@ struct HostListPage {
             Text('关于').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text3)
               .fontFamily(this.font()).padding({ left: 8, bottom: 8 })
             Column() {
-              this.cardItemRow($r('app.media.icon_info'), '版本', '1.0.5 · FreeRDP+RustDesk+SSH')
+              this.cardItemRow($r('app.media.icon_info'), '版本', '1.0.6 · FreeRDP+RustDesk+SSH')
               this.cardDivider()
               this.cardActionRow($r('app.media.icon_info'), '关于应用', '开源协议、作者说明和联系方式',
                 (): void => {

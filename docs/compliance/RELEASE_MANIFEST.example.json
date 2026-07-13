@@ -1,5 +1,5 @@
 {
-  "releaseTag": "v1.0.5-agpl.1",
+  "releaseTag": "v1.0.6-unsigned.1",
   "sourceCommit": "0000000000000000000000000000000000000000",
   "hapSha256": "0000000000000000000000000000000000000000000000000000000000000000",
   "sbomSha256": "0000000000000000000000000000000000000000000000000000000000000000",
@@ -8,6 +8,6 @@
   "freerdpSubmoduleCommit": "dae8276ac7361b8d14f7b87d41163fe03dbb944e",
   "buildCommand": "hvigorw.js --mode module -p module=entry -p product=default assembleHap",
   "toolchainVersions": {},
-  "sourceOfferUrl": "https://github.com/Mydstiny/RemoteDeskHarmonyOS/tree/v1.0.5-agpl.1",
+  "sourceOfferUrl": "https://github.com/Mydstiny/RemoteDeskHarmonyOS",
   "generatedAtUtc": "2026-07-13T00:00:00Z"
 }

@@ -2,10 +2,10 @@
     "spdxVersion":  "SPDX-2.3",
     "dataLicense":  "CC0-1.0",
     "SPDXID":  "SPDXRef-DOCUMENT",
-    "name":  "RemoteDeskHarmonyOS-4c5a573a13000844fc558667449ca4d7770e9d6b",
-    "documentNamespace":  "https://github.com/Mydstiny/RemoteDeskHarmonyOS/spdx/4c5a573a13000844fc558667449ca4d7770e9d6b",
+    "name":  "RemoteDeskHarmonyOS-90326ed47a2602abd120fbd71e456fb88b4c4c20",
+    "documentNamespace":  "https://github.com/Mydstiny/RemoteDeskHarmonyOS/spdx/90326ed47a2602abd120fbd71e456fb88b4c4c20",
     "creationInfo":  {
-                         "created":  "2026-07-13T12:04:23Z",
+                         "created":  "2026-07-13T15:20:51Z",
                          "creators":  [
                                           "Tool: scripts/generate_sbom.ps1",
                                           "Organization: RemoteDeskHarmonyOS"
@@ -15,7 +15,7 @@
                      {
                          "name":  "RemoteDeskHarmonyOS",
                          "SPDXID":  "SPDXRef-Package-RemoteDeskHarmonyOS",
-                         "versionInfo":  "1.0.5",
+                         "versionInfo":  "1.0.6",
                          "downloadLocation":  "https://github.com/Mydstiny/RemoteDeskHarmonyOS",
                          "filesAnalyzed":  false,
                          "licenseConcluded":  "AGPL-3.0-or-later",
@@ -615,8 +615,8 @@
                      {
                          "name":  "RustDesk-protocol",
                          "SPDXID":  "SPDXRef-Native-RustDesk-protocol",
-                         "versionInfo":  "rustdesk:93d064a9b0eb58ab94db88ff727a877ef773c0d8 hbb_common:387603f47cbb15c0d3dc3d67ae3396d3eb707daf",
-                         "downloadLocation":  "https://github.com/rustdesk/hbb_common",
+                         "versionInfo":  "93d064a9b0eb58ab94db88ff727a877ef773c0d8",
+                         "downloadLocation":  "https://github.com/rustdesk/rustdesk",
                          "filesAnalyzed":  false,
                          "licenseConcluded":  "AGPL-3.0",
                          "licenseDeclared":  "AGPL-3.0",
