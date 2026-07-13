@@ -1,4 +1,63 @@
 #!/usr/bin/env sh
 set -eu
 repo_root="$(git rev-parse --show-toplevel)"
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$repo_root/scripts/verify_open_source_release.ps1" -Mode Light -RepositoryRoot "$repo_root"
+remote_name="${1:-origin}"
+zero_sha="0000000000000000000000000000000000000000"
+base_ref="refs/remotes/$remote_name/main"
+
+if ! git show-ref --verify --quiet "$base_ref"; then
+  base_ref="refs/remotes/origin/main"
+fi
+if ! git show-ref --verify --quiet "$base_ref"; then
+  base_ref="refs/heads/main"
+fi
+if ! git show-ref --verify --quiet "$base_ref"; then
+  echo "Open-source compliance: public main reference is unavailable; fetch origin/main first." >&2
+  exit 1
+fi
+
+base_sha="$(git rev-parse "$base_ref")"
+mode="Light"
+verify_sha=""
+while read -r local_ref local_sha remote_ref remote_sha; do
+  [ -n "${local_ref:-}" ] || continue
+  [ "$local_sha" != "$zero_sha" ] || continue
+
+  case "$remote_ref" in
+    refs/heads/freerdp-ohos)
+      continue
+      ;;
+    refs/tags/*)
+      mode="Release"
+      ;;
+  esac
+
+  case "$remote_ref" in
+    refs/heads/*|refs/tags/*)
+      commit_sha="$(git rev-parse "${local_sha}^{commit}" 2>/dev/null)" || {
+        echo "Open-source compliance: $remote_ref does not resolve to a commit." >&2
+        exit 1
+      }
+      if ! git merge-base --is-ancestor "$base_sha" "$commit_sha"; then
+        echo "Open-source compliance: refusing to publish history unrelated to public main: $remote_ref" >&2
+        echo "Create the branch from origin/main and cherry-pick only audited changes." >&2
+        exit 1
+      fi
+      if [ -n "$verify_sha" ] && [ "$verify_sha" != "$commit_sha" ]; then
+        echo "Open-source compliance: push one audited commit tip at a time." >&2
+        exit 1
+      fi
+      verify_sha="$commit_sha"
+      ;;
+  esac
+done
+
+[ -n "$verify_sha" ] || exit 0
+
+temp_worktree="$repo_root/.worktrees/pre-push-$$"
+cleanup() {
+  git -C "$repo_root" worktree remove --force "$temp_worktree" >/dev/null 2>&1 || true
+}
+trap cleanup EXIT INT TERM
+git -C "$repo_root" worktree add --detach --quiet "$temp_worktree" "$verify_sha"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$temp_worktree/scripts/verify_open_source_release.ps1" -Mode "$mode" -RepositoryRoot "$temp_worktree"
