@@ -38,4 +38,9 @@ if ($LASTEXITCODE -ne 0) {
   throw "Compliance gate returned exit code $LASTEXITCODE."
 }
 
+& (Join-Path $PSScriptRoot 'test_pre_push_history_guard.ps1')
+if ($LASTEXITCODE -ne 0) {
+  throw "Pre-push history guard test returned exit code $LASTEXITCODE."
+}
+
 Write-Host 'Open-source compliance gate smoke test passed.'
