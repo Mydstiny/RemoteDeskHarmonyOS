@@ -32,10 +32,31 @@ Phase 5+ 完成 → Phase 6 (主机安全锁 40%) + Phase 7 (测试/发布)
 
 > **编代码前先查 `CODEWALK.md`** — 里面有所有编码规则、架构约束和已知坑位。
 
+## 唯一工作区与开源 Push 铁律
+
+- 唯一允许进行开发、构建、提交和发布操作的工作区是
+  `C:\Users\14288\DevEcoStudioProjects\RemoteDesktop`。
+- 每个新任务必须先切到公开 `main`，执行 `git pull --ff-only`，再在同一
+  工作区创建 `codex/...` 功能分支。除非用户明确重新授权，不得使用旧
+  worktree，也不得从旧私有历史分支继续开发。
+- 只暂存本任务文件。禁止 `git add -A` 混入用户文件，禁止
+  `git push --all`、直接推送 `main`、force-push、推送与公开 `main`
+  无祖先关系的历史，以及恢复已删除的旧 tag。
+- 推送前必须确认 `core.hooksPath=.githooks`。`.githooks/pre-push` 会对实际
+  推送 commit 运行开源合规门：普通分支为 Light，tag 为 Release。
+- 标准流程固定为：公开 `main` → `git pull --ff-only` → `codex/...` →
+  修改与验证 → push 功能分支 → PR → required `open-source-compliance`
+  通过 → 合入受保护 `main` → 切回 `main` → `git pull --ff-only`。
+- 依赖、proto、许可证或构建输入变化必须在同一 PR 更新 SBOM、NOTICE、
+  provenance 和哈希。Release gate 未通过前禁止发布 tag 或正式二进制
+  Release；未签名测试 HAP 只能按用户明确批准的 Draft/Pre-release 流程
+  上传，且绝不能上传本地签名 HAP。
+
 ## 本地参考
 - API 23 文档：`C:\Users\14288\harmonyos_support\openharmony-docs-api23\zh-cn\application-dev\reference\`
 - Codex 记忆：`C:\Users\14288\.codex\projects\C--Users-14288\memory\`
 - 构建命令：见 `CODEWALK.md` §8
+- Git/Push 规则记忆：`open-source-git-workflow.md`
 
 ---
 
