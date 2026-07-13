@@ -5,6 +5,8 @@ $hook = Join-Path $repo '.githooks\pre-push'
 $bash = 'C:\Program Files\Git\bin\bash.exe'
 $zero = '0' * 40
 
+Push-Location $repo
+
 $tree = (& git -C $repo rev-parse 'HEAD^{tree}').Trim()
 $publicHead = (& git -C $repo rev-parse HEAD).Trim()
 $oldAuthorName = $env:GIT_AUTHOR_NAME
@@ -61,5 +63,6 @@ if (($unrelatedOutput -join "`n") -notmatch 'unrelated to public main') {
   throw 'Pre-push history guard rejected unrelated history for an unexpected reason.'
 }
 
+Pop-Location
 Write-Host 'Pre-push public-history guard test passed.'
 exit 0
