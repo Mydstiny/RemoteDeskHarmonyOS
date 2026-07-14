@@ -32,21 +32,23 @@ struct Settings {
 inline Settings RecommendedLanSettings(bool gfxAvailable,
                                        bool h264Available,
                                        bool gfxConsumerAvailable = true,
-                                       bool gfxResetPathSafe = true) {
+                                       bool gfxResetPathSafe = true,
+                                       bool h264PathSafe = true) {
     const bool effectiveGfxAvailable = gfxAvailable && gfxConsumerAvailable && gfxResetPathSafe;
     Settings settings;
     settings.supportGraphicsPipeline = effectiveGfxAvailable;
     settings.remoteFxCodec = effectiveGfxAvailable;
-    settings.gfxH264 = effectiveGfxAvailable && h264Available;
+    settings.gfxH264 = effectiveGfxAvailable && h264Available && h264PathSafe;
     return settings;
 }
 
 inline GraphicsMode SelectGraphicsMode(bool gfxAvailable,
                                        bool h264Available,
                                        bool gfxConsumerAvailable = true,
-                                       bool gfxResetPathSafe = true) {
+                                       bool gfxResetPathSafe = true,
+                                       bool h264PathSafe = true) {
     const bool effectiveGfxAvailable = gfxAvailable && gfxConsumerAvailable && gfxResetPathSafe;
-    if (effectiveGfxAvailable && h264Available) {
+    if (effectiveGfxAvailable && h264Available && h264PathSafe) {
         return GraphicsMode::GfxH264;
     }
     if (effectiveGfxAvailable) {

@@ -2198,6 +2198,27 @@ struct RemoteDesktop {
         return;
       }
       const state: number = this.loader.getConnectionState(sessionId);
+      try {
+        const vp = this.loader.getRendererViewport(this.rendererHandle);
+        if (vp !== null) {
+          const sourceWidth: number = vp['sourceWidth'] as number;
+          const sourceHeight: number = vp['sourceHeight'] as number;
+          if (sourceWidth > 0 && sourceHeight > 0 &&
+            (sourceWidth !== this.remoteWidth || sourceHeight !== this.remoteHeight)) {
+            this.updateRemoteSize({
+              width: sourceWidth,
+              height: sourceHeight,
+              colorDepth: 32,
+              multiMonitor: false,
+              monitorCount: 1
+            });
+            hilog.info(RD_DOMAIN, RD_TAG, 'RDP desktop size synchronized from renderer: ' +
+              sourceWidth.toString() + 'x' + sourceHeight.toString());
+          }
+        }
+      } catch (_e) {
+        // Renderer may be temporarily unavailable while a resize transaction is rebuilding GDI.
+      }
       if (state === 4 || state === 0) {
         const nativeMessage: string = this.loader.getConnectionLastMessage(sessionId);
         hilog.error(RD_DOMAIN, RD_TAG, 'RDP native post-connect state=' + state.toString() +
@@ -2252,6 +2273,11 @@ struct RemoteDesktop {
         ' uploadSwapP95=' + stats.glUploadSwapP95Us.toString() +
         ' uploadShare=' + stats.glUploadSharePermille.toString() +
         ' gateSamples=' + stats.glUploadEvaluatedSamples.toString() +
+        ' desktop=' + stats.desktopWidth.toString() + 'x' + stats.desktopHeight.toString() +
+        ' gfxEpoch=' + stats.graphicsEpoch.toString() +
+        ' resize=' + stats.desktopResizeCount.toString() + '/' +
+          stats.desktopResizeFailures.toString() +
+        ' gfxChannel=' + (stats.gfxChannelConnected ? 'connected' : 'disconnected') +
         ' inputQ=' + stats.inputQueueDepth.toString() + '/' + stats.inputQueueMax.toString() +
         ' inputTextUnits=' + stats.inputTextUnits.toString() +
         ' inputMouseDrops=' + stats.inputDroppedMouseMoves.toString() +

@@ -111,6 +111,7 @@ private:
     static void cbPostDisconnect(freerdp* instance);
     static BOOL cbBeginPaint(rdpContext* context);
     static BOOL cbEndPaint(rdpContext* context);
+    static BOOL cbDesktopResize(rdpContext* context);
     static DWORD WINAPI cbVerifyCertificate(freerdp* instance, const char* common_name,
                                             const char* subject, const char* issuer,
                                             const char* fingerprint, BOOL host_mismatch);

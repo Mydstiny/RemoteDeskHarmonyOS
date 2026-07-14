@@ -17,6 +17,7 @@
 #include "rdp_background_frame_cache.h"
 #include "rdp_certificate_policy.h"
 #include "rdp_frame_pump.h"
+#include "rdp_graphics_lifecycle.h"
 #include "rdp_keymap.h"
 #include "rdp_performance_policy.h"
 #include "rdp_input_queue.h"
@@ -538,6 +539,7 @@ struct FreeRdpAdapter::Impl {
     std::atomic<uint64_t>   sessionGeneration {0};
     std::atomic<int64_t>    shutdownStartedUs {0};
     RdpFramePump            framePump;
+    RdpGraphicsLifecycle    graphicsLifecycle;
     std::shared_ptr<RdpDamageAccumulator> damageAccumulator {
         std::make_shared<RdpDamageAccumulator>()
     };
@@ -738,6 +740,7 @@ static std::mutex g_rdpAudioCallbackMutex;
 static AudioDataCallback g_rdpAudioCallback;
 static FreeRdpAdapter* g_rdpAudioCallbackOwner = nullptr;
 static std::once_flag g_rdpAddinProviderOnce;
+static RdpNextConnectionGfxFallback g_nextConnectionGfxFallback;
 
 static void ensureFreeRdpStaticAddinProvider() {
     std::call_once(g_rdpAddinProviderOnce, []() {
@@ -789,26 +792,37 @@ static bool rdpGfxPipelineConsumerAvailable() {
 }
 
 static bool rdpGfxResetPathSafe() {
-    // Current OHOS RDP renderer consumes GDI primary buffers and does not yet
-    // implement the full RDPGFX ResetGraphics/DesktopResize path safely.
+    // The path is implemented, but production advertisement stays closed until
+    // the final dynamic-resize and reconnect device matrix passes.
+    return false;
+}
+
+static bool rdpGfxH264PathSafe() {
+    // Keep H.264 disabled until decoder lifecycle, visual, and stress gates pass.
     return false;
 }
 
 static RdpPerformancePolicy::GraphicsMode applyRdpPerformanceSettings(rdpSettings* settings) {
-    const bool gfxAvailable = compiledWithRdpGfx();
-    const bool h264Available = compiledWithGfxH264();
+    const bool compiledGfx = compiledWithRdpGfx();
+    const bool compiledH264 = compiledWithGfxH264();
+    const bool fallbackForThisConnection = g_nextConnectionGfxFallback.consume();
+    const bool gfxAvailable = compiledGfx && !fallbackForThisConnection;
+    const bool h264Available = compiledH264;
     const bool gfxConsumerAvailable = rdpGfxPipelineConsumerAvailable();
     const bool gfxResetSafe = rdpGfxResetPathSafe();
+    const bool h264PathSafe = rdpGfxH264PathSafe();
     const RdpPerformancePolicy::Settings perf =
         RdpPerformancePolicy::RecommendedLanSettings(gfxAvailable,
                                                      h264Available,
                                                      gfxConsumerAvailable,
-                                                     gfxResetSafe);
+                                                     gfxResetSafe,
+                                                     h264PathSafe);
     const RdpPerformancePolicy::GraphicsMode mode =
         RdpPerformancePolicy::SelectGraphicsMode(gfxAvailable,
                                                  h264Available,
                                                  gfxConsumerAvailable,
-                                                 gfxResetSafe);
+                                                 gfxResetSafe,
+                                                 h264PathSafe);
 
     freerdp_settings_set_bool(settings, FreeRDP_NetworkAutoDetect,
                               perf.networkAutoDetect ? TRUE : FALSE);
@@ -832,12 +846,14 @@ static RdpPerformancePolicy::GraphicsMode applyRdpPerformanceSettings(rdpSetting
     freerdp_settings_set_uint32(settings, FreeRDP_FrameAcknowledge, perf.frameAcknowledge);
 
     OH_LOG_INFO(LOG_APP,
-                "[RDP] performance settings: mode=%{public}s compiledGfx=%{public}s compiledH264=%{public}s gfxConsumer=%{public}s gfxResetSafe=%{public}s networkAuto=%{public}s connectionType=%{public}u gfx=%{public}s h264=%{public}s rfx=%{public}s frameAck=%{public}u",
+                "[RDP] performance settings: mode=%{public}s compiledGfx=%{public}s compiledH264=%{public}s gfxConsumer=%{public}s gfxResetSafe=%{public}s h264PathSafe=%{public}s nextFallback=%{public}s networkAuto=%{public}s connectionType=%{public}u gfx=%{public}s h264=%{public}s rfx=%{public}s frameAck=%{public}u",
                 RdpPerformancePolicy::GraphicsModeName(mode),
-                gfxAvailable ? "true" : "false",
-                h264Available ? "true" : "false",
+                compiledGfx ? "true" : "false",
+                compiledH264 ? "true" : "false",
                 gfxConsumerAvailable ? "true" : "false",
                 gfxResetSafe ? "true" : "false",
+                h264PathSafe ? "true" : "false",
+                fallbackForThisConnection ? "true" : "false",
                 freerdp_settings_get_bool(settings, FreeRDP_NetworkAutoDetect) ? "true" : "false",
                 freerdp_settings_get_uint32(settings, FreeRDP_ConnectionType),
                 freerdp_settings_get_bool(settings, FreeRDP_SupportGraphicsPipeline) ? "true" : "false",
@@ -1078,26 +1094,47 @@ void FreeRdpAdapter::cbChannelConnected(void* context, const ChannelConnectedEve
     if (std::strcmp(e->name, RDPGFX_DVC_CHANNEL_NAME) == 0) {
         auto* freeRdpContext = reinterpret_cast<FreeRdpContext*>(rdpContext);
         FreeRdpAdapter* adapter = freeRdpContext ? freeRdpContext->adapter : nullptr;
+        auto failGfxChannel = [rdpContext, adapter](const char* message) {
+            g_nextConnectionGfxFallback.mark();
+            if (adapter && adapter->impl_) {
+                adapter->impl_->setState(ConnectionState::ERROR, message);
+            }
+            freerdp_abort_connect_context(rdpContext);
+        };
         if (!rdpContext->gdi || !e->pInterface) {
             OH_LOG_ERROR(LOG_APP, "[RDP] RDPGFX channel connected before GDI is ready [E-RDP-GFX-GDI]");
-            if (adapter && adapter->impl_) {
-                adapter->impl_->setState(ConnectionState::ERROR, "RDP graphics pipeline missing GDI [E-RDP-GFX-GDI]");
-            }
+            failGfxChannel("RDP graphics pipeline missing GDI [E-RDP-GFX-GDI]");
             return;
         }
         if (!freerdp_settings_get_bool(rdpContext->settings, FreeRDP_SoftwareGdi)) {
             OH_LOG_ERROR(LOG_APP, "[RDP] RDPGFX requires SoftwareGdi in OHOS renderer [E-RDP-GFX-GDI-MODE]");
-            if (adapter && adapter->impl_) {
-                adapter->impl_->setState(ConnectionState::ERROR, "RDP graphics pipeline requires SoftwareGdi [E-RDP-GFX-GDI-MODE]");
-            }
+            failGfxChannel("RDP graphics pipeline requires SoftwareGdi [E-RDP-GFX-GDI-MODE]");
             return;
         }
-        if (!gdi_graphics_pipeline_init(rdpContext->gdi,
-                                        reinterpret_cast<RdpgfxClientContext*>(e->pInterface))) {
+        if (!adapter || !adapter->impl_) {
+            OH_LOG_ERROR(LOG_APP, "[RDP] RDPGFX channel owner missing [E-RDP-GFX-OWNER]");
+            failGfxChannel("RDP graphics pipeline owner missing [E-RDP-GFX-OWNER]");
+            return;
+        }
+        const uintptr_t channelContext = reinterpret_cast<uintptr_t>(e->pInterface);
+        const RdpGfxChannelAction action =
+            adapter->impl_->graphicsLifecycle.onChannelConnected(channelContext);
+        if (action == RdpGfxChannelAction::Ignore) {
+            OH_LOG_INFO(LOG_APP, "[RDP] duplicate RDPGFX channel connect ignored");
+            return;
+        }
+        if (action != RdpGfxChannelAction::Initialize) {
+            OH_LOG_ERROR(LOG_APP, "[RDP] conflicting RDPGFX channel connect rejected [E-RDP-GFX-CONFLICT]");
+            failGfxChannel("RDP graphics pipeline channel conflict [E-RDP-GFX-CONFLICT]");
+            return;
+        }
+        const bool initialized = gdi_graphics_pipeline_init(
+            rdpContext->gdi, reinterpret_cast<RdpgfxClientContext*>(e->pInterface)) == TRUE;
+        adapter->impl_->graphicsLifecycle.completeChannelInitialization(
+            channelContext, initialized);
+        if (!initialized) {
             OH_LOG_ERROR(LOG_APP, "[RDP] gdi_graphics_pipeline_init failed [E-RDP-GFX-INIT]");
-            if (adapter && adapter->impl_) {
-                adapter->impl_->setState(ConnectionState::ERROR, "RDP graphics pipeline init failed [E-RDP-GFX-INIT]");
-            }
+            failGfxChannel("RDP graphics pipeline init failed [E-RDP-GFX-INIT]");
             return;
         }
         OH_LOG_INFO(LOG_APP, "[RDP] GDI graphics pipeline initialized for RDPGFX");
@@ -1177,10 +1214,18 @@ void FreeRdpAdapter::cbChannelDisconnected(void* context, const ChannelDisconnec
                 e->name, e->pInterface);
 #if defined(CHANNEL_RDPGFX_CLIENT)
     if (std::strcmp(e->name, RDPGFX_DVC_CHANNEL_NAME) == 0) {
-        if (rdpContext->gdi && e->pInterface) {
+        auto* freeRdpContext = reinterpret_cast<FreeRdpContext*>(rdpContext);
+        FreeRdpAdapter* adapter = freeRdpContext ? freeRdpContext->adapter : nullptr;
+        const uintptr_t channelContext = reinterpret_cast<uintptr_t>(e->pInterface);
+        const RdpGfxChannelAction action = adapter && adapter->impl_ ?
+            adapter->impl_->graphicsLifecycle.onChannelDisconnected(channelContext) :
+            RdpGfxChannelAction::Ignore;
+        if (action == RdpGfxChannelAction::Release && rdpContext->gdi && e->pInterface) {
             gdi_graphics_pipeline_uninit(rdpContext->gdi,
                                          reinterpret_cast<RdpgfxClientContext*>(e->pInterface));
             OH_LOG_INFO(LOG_APP, "[RDP] GDI graphics pipeline released for RDPGFX");
+        } else {
+            OH_LOG_INFO(LOG_APP, "[RDP] stale or duplicate RDPGFX channel disconnect ignored");
         }
     }
 #endif
@@ -1230,6 +1275,7 @@ BOOL FreeRdpAdapter::cbPostConnect(freerdp* instance) {
 
     instance->update->BeginPaint = cbBeginPaint;
     instance->update->EndPaint = cbEndPaint;
+    instance->update->DesktopResize = cbDesktopResize;
     self->impl_->gdiInitialized.store(true, std::memory_order_release);
     self->impl_->paintCount.store(0, std::memory_order_release);
     self->impl_->firstPaintUs.store(0, std::memory_order_release);
@@ -1423,6 +1469,93 @@ BOOL FreeRdpAdapter::cbEndPaint(rdpContext* context) {
                 static_cast<unsigned long long>(perf.bytesTotal));
         }
     }
+    return TRUE;
+}
+
+BOOL FreeRdpAdapter::cbDesktopResize(rdpContext* context) {
+    if (!context || !context->settings || !context->gdi) {
+        OH_LOG_ERROR(LOG_APP, "[RDP-RESIZE] missing context, settings, or GDI [E-RDP-RESIZE-CONTEXT]");
+        return FALSE;
+    }
+    auto* freeRdpContext = reinterpret_cast<FreeRdpContext*>(context);
+    FreeRdpAdapter* adapter = freeRdpContext ? freeRdpContext->adapter : nullptr;
+    if (!adapter || !adapter->impl_) {
+        OH_LOG_ERROR(LOG_APP, "[RDP-RESIZE] adapter owner missing [E-RDP-RESIZE-OWNER]");
+        return FALSE;
+    }
+
+    const UINT32 requestedWidth =
+        freerdp_settings_get_uint32(context->settings, FreeRDP_DesktopWidth);
+    const UINT32 requestedHeight =
+        freerdp_settings_get_uint32(context->settings, FreeRDP_DesktopHeight);
+    const bool dimensionsValid =
+        requestedWidth <= static_cast<UINT32>(RdpGraphicsLifecycle::kMaxDesktopDimension) &&
+        requestedHeight <= static_cast<UINT32>(RdpGraphicsLifecycle::kMaxDesktopDimension);
+    const RdpResizeTicket ticket = dimensionsValid ?
+        adapter->impl_->graphicsLifecycle.beginResize(
+            static_cast<int>(requestedWidth), static_cast<int>(requestedHeight)) :
+        RdpResizeTicket();
+    if (!ticket.accepted) {
+        const RdpGraphicsLifecycleSnapshot lifecycle =
+            adapter->impl_->graphicsLifecycle.snapshot();
+        if (lifecycle.gfxRequested) {
+            g_nextConnectionGfxFallback.mark();
+        }
+        OH_LOG_ERROR(LOG_APP,
+            "[RDP-RESIZE] rejected size=%{public}ux%{public}u inProgress=%{public}s [E-RDP-RESIZE-INVALID]",
+            requestedWidth, requestedHeight,
+            lifecycle.resizeInProgress ? "true" : "false");
+        adapter->impl_->setState(ConnectionState::ERROR,
+            "RDP desktop resize rejected [E-RDP-RESIZE-INVALID]");
+        freerdp_abort_connect_context(context);
+        return FALSE;
+    }
+
+    OH_LOG_INFO(LOG_APP,
+        "[RDP-RESIZE] begin epoch=%{public}llu size=%{public}dx%{public}d",
+        static_cast<unsigned long long>(ticket.epoch), ticket.width, ticket.height);
+    adapter->impl_->presentationEnabled.store(false, std::memory_order_release);
+    adapter->impl_->framePump.invalidatePending();
+
+    bool resized = false;
+    bool pumpStarted = false;
+    {
+        std::lock_guard<std::mutex> lifecycleLock(adapter->impl_->workerLifecycleMutex);
+        adapter->impl_->framePump.stop();
+        resized = gdi_resize(context->gdi, requestedWidth, requestedHeight) == TRUE;
+        adapter->impl_->damageAccumulator->clear();
+        if (resized) {
+            adapter->impl_->lastFrameWidth = 0;
+            adapter->impl_->lastFrameHeight = 0;
+            adapter->impl_->lastRenderBytes.store(0, std::memory_order_release);
+            adapter->impl_->forceNextFullFrame = true;
+            RendererNapi::SetActiveSourceSize(ticket.width, ticket.height);
+            pumpStarted = adapter->impl_->framePump.start();
+        }
+    }
+
+    const bool success = resized && pumpStarted;
+    adapter->impl_->graphicsLifecycle.completeResize(ticket.epoch, success);
+    adapter->impl_->presentationEnabled.store(success, std::memory_order_release);
+    if (!success) {
+        const RdpGraphicsLifecycleSnapshot lifecycle =
+            adapter->impl_->graphicsLifecycle.snapshot();
+        if (lifecycle.gfxRequested) {
+            g_nextConnectionGfxFallback.mark();
+        }
+        OH_LOG_ERROR(LOG_APP,
+            "[RDP-RESIZE] failed epoch=%{public}llu gdi=%{public}s pump=%{public}s [E-RDP-RESIZE-FAILED]",
+            static_cast<unsigned long long>(ticket.epoch),
+            resized ? "true" : "false", pumpStarted ? "true" : "false");
+        adapter->impl_->setState(ConnectionState::ERROR,
+            "RDP desktop resize failed [E-RDP-RESIZE-FAILED]");
+        freerdp_abort_connect_context(context);
+        return FALSE;
+    }
+
+    OH_LOG_INFO(LOG_APP,
+        "[RDP-RESIZE] complete epoch=%{public}llu size=%{public}dx%{public}d fullResync=true",
+        static_cast<unsigned long long>(ticket.epoch), ticket.width, ticket.height);
     return TRUE;
 }
 
@@ -1777,6 +1910,7 @@ void FreeRdpAdapter::connectThreadFunc() {
                                 static_cast<UINT32>(cfg.width > 0 ? cfg.width : 1920));
     freerdp_settings_set_uint32(s, FreeRDP_DesktopHeight,
                                 static_cast<UINT32>(cfg.height > 0 ? cfg.height : 1080));
+    freerdp_settings_set_bool(s, FreeRDP_DesktopResize, TRUE);
 
     // 色深 — 使用 cfg 值, 不再硬编码 32
     freerdp_settings_set_uint32(s, FreeRDP_ColorDepth,
@@ -1807,6 +1941,10 @@ void FreeRdpAdapter::connectThreadFunc() {
         std::lock_guard<std::mutex> renderLock(impl_->renderMutex);
         impl_->graphicsMode = RdpPerformancePolicy::GraphicsModeName(graphicsMode);
     }
+    impl_->graphicsLifecycle.reset(
+        static_cast<int>(freerdp_settings_get_uint32(s, FreeRDP_DesktopWidth)),
+        static_cast<int>(freerdp_settings_get_uint32(s, FreeRDP_DesktopHeight)),
+        graphicsMode != RdpPerformancePolicy::GraphicsMode::GdiFallback);
 
     const bool requestedDriveEnabled = !cfg.rdDrivePath.empty();
     // 二阶段共享盘: 连接阶段只加载 rdpdr 通道, 不注册文件盘设备。
@@ -2161,6 +2299,13 @@ RdpRenderStats FreeRdpAdapter::getRdpRenderStats() {
     stats.glUploadEvaluatedSamples = uploadGate.evaluatedSamples;
     stats.glUploadSwapP95Us = uploadGate.uploadSwapP95Us;
     stats.glUploadSharePermille = uploadGate.uploadSwapSharePermille;
+    const RdpGraphicsLifecycleSnapshot graphics = impl_->graphicsLifecycle.snapshot();
+    stats.desktopWidth = graphics.desktopWidth;
+    stats.desktopHeight = graphics.desktopHeight;
+    stats.graphicsEpoch = graphics.epoch;
+    stats.desktopResizeCount = graphics.resizeCount;
+    stats.desktopResizeFailures = graphics.resizeFailures;
+    stats.gfxChannelConnected = graphics.gfxInitialized;
     stats.graphicsMode = impl_->graphicsMode;
     {
         std::lock_guard<std::mutex> inputLock(impl_->inputQueueMutex);

@@ -64,3 +64,13 @@ RDP_TEST_CASE(rdp_performance_policy_keeps_gdi_when_gfx_reset_path_is_not_safe) 
     RDP_ASSERT_EQ(RdpPerformancePolicy::SelectGraphicsMode(true, true, true, false),
                   RdpPerformancePolicy::GraphicsMode::GdiFallback);
 }
+
+RDP_TEST_CASE(rdp_performance_policy_keeps_gfx_but_blocks_unproven_h264_path) {
+    RdpPerformancePolicy::Settings settings =
+        RdpPerformancePolicy::RecommendedLanSettings(true, true, true, true, false);
+    RDP_ASSERT(settings.supportGraphicsPipeline);
+    RDP_ASSERT(settings.remoteFxCodec);
+    RDP_ASSERT(!settings.gfxH264);
+    RDP_ASSERT_EQ(RdpPerformancePolicy::SelectGraphicsMode(true, true, true, true, false),
+                  RdpPerformancePolicy::GraphicsMode::Gfx);
+}

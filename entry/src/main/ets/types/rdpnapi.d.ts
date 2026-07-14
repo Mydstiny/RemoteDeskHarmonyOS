@@ -187,6 +187,12 @@ export interface RdpRenderStats {
   glUploadEvaluatedSamples: number;
   glUploadSwapP95Us: number;
   glUploadSharePermille: number;
+  desktopWidth: number;
+  desktopHeight: number;
+  graphicsEpoch: number;
+  desktopResizeCount: number;
+  desktopResizeFailures: number;
+  gfxChannelConnected: boolean;
   inputQueueDepth: number;
   inputQueueMax: number;
   inputTextUnits: number;
