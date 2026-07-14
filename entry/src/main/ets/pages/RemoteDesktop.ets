@@ -2243,8 +2243,15 @@ struct RemoteDesktop {
         ' bytes=' + stats.lastRenderBytes.toString() +
         ' copied=' + stats.copiedBytes.toString() +
         ' callbackP95=' + stats.callbackP95Us.toString() +
+        ' copyP95=' + stats.copyP95Us.toString() +
         ' queueP95=' + stats.queueP95Us.toString() +
+        ' uploadP95=' + stats.uploadP95Us.toString() +
+        ' swapP95=' + stats.swapP95Us.toString() +
         ' workerP95=' + stats.workerP95Us.toString() +
+        ' uploadGate=' + stats.glUploadGateDecision.toString() +
+        ' uploadSwapP95=' + stats.glUploadSwapP95Us.toString() +
+        ' uploadShare=' + stats.glUploadSharePermille.toString() +
+        ' gateSamples=' + stats.glUploadEvaluatedSamples.toString() +
         ' inputQ=' + stats.inputQueueDepth.toString() + '/' + stats.inputQueueMax.toString() +
         ' inputTextUnits=' + stats.inputTextUnits.toString() +
         ' inputMouseDrops=' + stats.inputDroppedMouseMoves.toString() +

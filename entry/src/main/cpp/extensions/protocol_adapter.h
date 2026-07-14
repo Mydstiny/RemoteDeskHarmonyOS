@@ -190,6 +190,10 @@ struct RdpRenderStats {
     int64_t workerP50Us = 0;
     int64_t workerP95Us = 0;
     int64_t workerMaxUs = 0;
+    int glUploadGateDecision = 0;
+    uint64_t glUploadEvaluatedSamples = 0;
+    int64_t glUploadSwapP95Us = 0;
+    int glUploadSharePermille = 0;
     int inputQueueDepth = 0;
     int inputQueueMax = 0;
     int64_t inputTextUnits = 0;

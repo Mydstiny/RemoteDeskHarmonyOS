@@ -183,6 +183,10 @@ export interface RdpRenderStats {
   workerP50Us: number;
   workerP95Us: number;
   workerMaxUs: number;
+  glUploadGateDecision: number;
+  glUploadEvaluatedSamples: number;
+  glUploadSwapP95Us: number;
+  glUploadSharePermille: number;
   inputQueueDepth: number;
   inputQueueMax: number;
   inputTextUnits: number;
