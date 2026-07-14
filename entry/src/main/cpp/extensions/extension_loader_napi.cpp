@@ -473,6 +473,14 @@ napi_value NapiGetRdpRenderStats(napi_env env, napi_callback_info info) {
                    static_cast<int64_t>(stats.glUploadEvaluatedSamples));
     SetObjectInt64(env, result, "glUploadSwapP95Us", stats.glUploadSwapP95Us);
     SetObjectInt32(env, result, "glUploadSharePermille", stats.glUploadSharePermille);
+    SetObjectInt32(env, result, "desktopWidth", stats.desktopWidth);
+    SetObjectInt32(env, result, "desktopHeight", stats.desktopHeight);
+    SetObjectInt64(env, result, "graphicsEpoch", static_cast<int64_t>(stats.graphicsEpoch));
+    SetObjectInt64(env, result, "desktopResizeCount",
+                   static_cast<int64_t>(stats.desktopResizeCount));
+    SetObjectInt64(env, result, "desktopResizeFailures",
+                   static_cast<int64_t>(stats.desktopResizeFailures));
+    SetObjectBool(env, result, "gfxChannelConnected", stats.gfxChannelConnected);
     SetObjectInt32(env, result, "inputQueueDepth", stats.inputQueueDepth);
     SetObjectInt32(env, result, "inputQueueMax", stats.inputQueueMax);
     SetObjectInt64(env, result, "inputTextUnits", stats.inputTextUnits);

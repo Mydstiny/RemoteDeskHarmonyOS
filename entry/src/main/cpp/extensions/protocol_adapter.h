@@ -194,6 +194,12 @@ struct RdpRenderStats {
     uint64_t glUploadEvaluatedSamples = 0;
     int64_t glUploadSwapP95Us = 0;
     int glUploadSharePermille = 0;
+    int desktopWidth = 0;
+    int desktopHeight = 0;
+    uint64_t graphicsEpoch = 0;
+    uint64_t desktopResizeCount = 0;
+    uint64_t desktopResizeFailures = 0;
+    bool gfxChannelConnected = false;
     int inputQueueDepth = 0;
     int inputQueueMax = 0;
     int64_t inputTextUnits = 0;
