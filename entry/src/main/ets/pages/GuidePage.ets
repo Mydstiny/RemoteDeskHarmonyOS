@@ -18,6 +18,8 @@ const GUIDE_KEY = 'guide_shown_v4';
 const LAST_SEEN_RELEASE_KEY = 'last_seen_release_version';
 // TEMP: 1.0.6 更新说明视觉验收期间，每次冷启动都展示；用户确认后删除。
 const FORCE_RELEASE_NOTES_PREVIEW: boolean = true;
+const RELEASE_DIALOG_ENTER_DELAY_MS = 120;
+const RELEASE_DIALOG_MOTION_MS = 260;
 
 @Entry
 @Component
@@ -31,6 +33,7 @@ struct GuidePage {
   @State mode: StartupMode = StartupMode.FIRST_INSTALL_GUIDE;
   @State activePages: GuideContentPage[] = [];
   private tutorialPages: GuideContentPage[] = firstInstallGuidePages();
+  private isFinishing: boolean = false;
 
   async aboutToAppear(): Promise<void> {
     try {
@@ -49,7 +52,7 @@ struct GuidePage {
       this.activePages = this.mode === StartupMode.RELEASE_NOTES ? releasePages : this.tutorialPages;
     } catch (_e) { /* 出错继续显示 */ }
     if (this.activePages.length === 0) { this.activePages = this.tutorialPages; }
-    setTimeout(() => { this.showContent = true; }, 150);
+    setTimeout(() => { this.showContent = true; }, RELEASE_DIALOG_ENTER_DELAY_MS);
   }
 
   private pal(): Palette {
@@ -74,6 +77,8 @@ struct GuidePage {
         Column()
           .width('100%').height('100%')
           .backgroundColor('rgba(0,0,0,0.28)')
+          .opacity(this.showContent ? 1 : 0)
+          .animation({ duration: RELEASE_DIALOG_MOTION_MS, curve: Curve.EaseOut })
       }
       Column() {
       Swiper(this.swiperController) {
@@ -168,6 +173,15 @@ struct GuidePage {
       .shadow(this.presentReleaseNotesAsDialog() ?
         { radius: 28, color: 'rgba(0,0,0,0.22)', offsetY: 12 } :
         { radius: 0, color: Color.Transparent, offsetY: 0 })
+      .opacity(this.presentReleaseNotesAsDialog() ? (this.showContent ? 1 : 0) : 1)
+      .scale({
+        x: this.presentReleaseNotesAsDialog() ? (this.showContent ? 1 : 0.94) : 1,
+        y: this.presentReleaseNotesAsDialog() ? (this.showContent ? 1 : 0.94) : 1
+      })
+      .translate({
+        y: this.presentReleaseNotesAsDialog() ? (this.showContent ? 0 : 20) : 0
+      })
+      .animation({ duration: RELEASE_DIALOG_MOTION_MS, curve: Curve.FastOutSlowIn })
       .align(Alignment.Center)
     }
     .width('100%').height('100%')
@@ -176,12 +190,21 @@ struct GuidePage {
   }
 
   private finish(): void {
+    if (this.isFinishing) { return; }
+    this.isFinishing = true;
     try {
       const prefs = preferences.getPreferencesSync(getContext(this), { name: 'RemoteDesktopAppPrefs' });
       if (this.mode === StartupMode.FIRST_INSTALL_GUIDE) { prefs.putSync(GUIDE_KEY, true); }
       prefs.putSync(LAST_SEEN_RELEASE_KEY, CURRENT_RELEASE_VERSION);
       prefs.flushSync();
     } catch (_e) { /* ignore */ }
+    if (this.presentReleaseNotesAsDialog()) {
+      this.showContent = false;
+      setTimeout((): void => {
+        router.replaceUrl({ url: 'pages/LoginPage' });
+      }, RELEASE_DIALOG_MOTION_MS);
+      return;
+    }
     router.replaceUrl({ url: 'pages/LoginPage' });
   }
 }
