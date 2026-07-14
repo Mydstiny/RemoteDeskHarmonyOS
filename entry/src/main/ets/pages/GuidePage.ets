@@ -63,11 +63,13 @@ struct GuidePage {
     return shouldPresentReleaseNotesAsDialog(this.mode, this.breakpoint);
   }
 
-  private releaseNotesDialogWidth(): number {
+  private releaseNotesDialogWidth(): string | number {
+    if (this.breakpoint === 'sm') { return '92%'; }
     return this.breakpoint === 'xl' ? 640 : 560;
   }
 
   private releaseNotesDialogHeight(): string {
+    if (this.breakpoint === 'sm') { return '64%'; }
     return this.breakpoint === 'xl' ? '60%' : '58%';
   }
 
