@@ -4325,7 +4325,7 @@ struct HostListPage {
             Text('教程').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text3)
               .fontFamily(this.font()).padding({ left: 8, bottom: 8 })
             Column() {
-              this.cardActionRow($r('app.media.icon_info'), '简单使用教程', '快速了解连接、同步和加密',
+              this.cardActionRow($r('app.media.icon_info'), '简单使用教程', '了解连接、传输、同步、安全与反馈',
                 (): void => {
                   this.aboutSheetMode = 0;
                   this.popupSheetMode = 1;
