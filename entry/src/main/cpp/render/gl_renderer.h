@@ -154,6 +154,8 @@ namespace RendererNapi {
     int RenderRawBgraRectActive(const uint8_t* data, size_t size, int width, int height, int stride,
                                 int dirtyX, int dirtyY, int dirtyWidth, int dirtyHeight);
     void SetActiveRenderer(int64_t handle);
+    void DeactivateRenderer(int64_t handle);
+    void DestroyRendererHandle(int64_t handle);
 }
 
 #endif // GL_RENDERER_H

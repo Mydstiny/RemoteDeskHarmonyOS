@@ -1074,21 +1074,8 @@ napi_value NapiDestroyDecoder(napi_env env, napi_callback_info info) {
 
     int64_t handleVal;
     napi_get_value_int64(env, args[0], &handleVal);
-    auto* ctx = reinterpret_cast<DecoderContext*>(handleVal);
-
-    if (ctx) {
-        if (g_activeDecoderHandle.load() == handleVal) {
-            g_activeDecoderHandle.store(0);
-        }
-        StopSoftwareWorker(ctx);
-        if (ctx->decoder) {
-            ctx->decoder->Destroy();
-        }
-        if (ctx->softwareDecoder) {
-            ctx->softwareDecoder->Destroy();
-        }
-        delete ctx;
-    }
+    DecoderNapi::DeactivateDecoder(handleVal);
+    DecoderNapi::DestroyDecoderHandle(handleVal);
 
     napi_value undefined;
     napi_get_undefined(env, &undefined);
@@ -1252,6 +1239,32 @@ int DecoderNapi::DecodeActiveNative(const VideoFrame& frame) {
         return -1;
     }
     return DecodeNative(handle, frame);
+}
+
+void DecoderNapi::DeactivateDecoder(int64_t handle) {
+    if (handle <= 0) {
+        return;
+    }
+    int64_t expected = handle;
+    g_activeDecoderHandle.compare_exchange_strong(expected, 0);
+}
+
+void DecoderNapi::DestroyDecoderHandle(int64_t handle) {
+    if (handle <= 0) {
+        return;
+    }
+    auto* ctx = reinterpret_cast<DecoderContext*>(handle);
+    if (!ctx) {
+        return;
+    }
+    StopSoftwareWorker(ctx);
+    if (ctx->decoder) {
+        ctx->decoder->Destroy();
+    }
+    if (ctx->softwareDecoder) {
+        ctx->softwareDecoder->Destroy();
+    }
+    delete ctx;
 }
 
 int DecoderNapi::ActiveVideoPressureLevel() {

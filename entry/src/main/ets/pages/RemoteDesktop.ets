@@ -2306,6 +2306,9 @@ struct RemoteDesktop {
   private async doConnect(host: RemoteHost): Promise<void> {
     const attemptId: number = ++this.connectAttemptId;
     try {
+      if (!(await this.loader.waitForPendingTeardown())) {
+        throw new Error('上一会话资源清理未完成 [E-TEARDOWN-PENDING]');
+      }
       const desktop: DesktopSize = this.desktopSize(host);
       this.updateRemoteSize(desktop);
       const credentials: RdpCredentialParts = this.rdpCredentialParts(host);
@@ -2646,32 +2649,26 @@ struct RemoteDesktop {
       this.connectAttemptId++;
       this.inputForwardReady = false;
       const shouldRestoreOrientation: boolean = this.orientationApplied;
-      if (this.sessionId > 0) {
-        this.disableRdpBackgroundVideoPrewarm('disconnect-cleanup');
+      if (this.sessionId > 0 || this.rendererHandle > 0 || this.decoderHandle > 0) {
+        if (this.sessionId > 0) {
+          this.disableRdpBackgroundVideoPrewarm('disconnect-cleanup');
+        }
         this.flushMouseMove();
+        if (this.rendererHandle > 0) {
+          this.markXComponentSurfaceDetached('disconnectAndCleanup');
+        }
         const nativeDisconnectStartedAtMs: number = Date.now();
         hilog.info(RD_DOMAIN, RD_TAG, '[RDP-SHUTDOWN] phase=native-disconnect-begin sessionId=' +
           this.sessionId.toString());
-        this.loader.disconnect();
-        hilog.info(RD_DOMAIN, RD_TAG, '[RDP-SHUTDOWN] phase=native-disconnect-return elapsedMs=' +
+        const disconnectRequestId: number = this.loader.disconnect();
+        hilog.info(RD_DOMAIN, RD_TAG, '[RDP-SHUTDOWN] phase=native-disconnect-return requestId=' +
+          disconnectRequestId.toString() + ' elapsedMs=' +
           (Date.now() - nativeDisconnectStartedAtMs).toString());
         this.sessionId = -1;
-        this.nativeHandles.markProtocolDisconnected();
-      }
-      if (this.decoderHandle > 0) {
-        this.loader.destroyDecoder();
-        this.decoderHandle = -1;
-      }
-      if (this.rendererHandle > 0) {
-        const rendererDestroyStartedAtMs: number = Date.now();
-        hilog.info(RD_DOMAIN, RD_TAG, '[RDP-SHUTDOWN] phase=renderer-destroy-begin');
-        this.markXComponentSurfaceDetached('disconnectAndCleanup');
-        this.loader.destroyRenderer();
         this.rendererHandle = -1;
-        hilog.info(RD_DOMAIN, RD_TAG, '[RDP-SHUTDOWN] phase=renderer-destroy-return elapsedMs=' +
-          (Date.now() - rendererDestroyStartedAtMs).toString());
+        this.decoderHandle = -1;
+        this.nativeHandles.markAsyncTeardownTransferred();
       }
-      this.loader.destroyAudioPlayer();
       this.clearFileTransferAutoHide();
       this.fileTransferBusy = false;
       this.fileTransferProgress = -1;

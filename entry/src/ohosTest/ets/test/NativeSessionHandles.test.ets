@@ -118,7 +118,7 @@ export default function nativeSessionHandlesTest(): void {
       expect(spy.calls.length).assertEqual(0);
     });
 
-    // ----- 完全断连 (核心测试 — 验证调用顺序) -----
+    // ----- 完全断连 (UI 只提交异步 teardown) -----
 
     it('disconnect_and_release_should_follow_safe_order', 0, (): void => {
       const spy = new SpyAdapter();
@@ -130,23 +130,16 @@ export default function nativeSessionHandlesTest(): void {
 
       handles.disconnectAndRelease('test');
 
-      // 严格顺序: surface → renderer → audio → protocol
-      // 至少有 4 个调用
-      expect(spy.calls.length >= 4).assertEqual(true);
+      // UI 线程只标记 surface 并提交协议 teardown；资源释放由 native executor 完成。
+      expect(spy.calls.length).assertEqual(2);
       const surfaceIdx: number = spy.calls.indexOf('markXComponentSurfaceDestroyed');
-      const renderIdx: number = spy.calls.indexOf('destroyRendererOnly');
-      const audioIdx: number = spy.calls.indexOf('destroyAudio');
       const protoIdx: number = spy.calls.indexOf('disconnectProtocol');
 
       expect(surfaceIdx >= 0).assertEqual(true);
-      expect(renderIdx >= 0).assertEqual(true);
-      expect(audioIdx >= 0).assertEqual(true);
       expect(protoIdx >= 0).assertEqual(true);
-
-      // surface 必须在 renderer 之前
-      expect(surfaceIdx < renderIdx).assertEqual(true);
-      // audio 必须在 protocol 之前
-      expect(audioIdx < protoIdx).assertEqual(true);
+      expect(surfaceIdx < protoIdx).assertEqual(true);
+      expect(spy.calls.indexOf('destroyRendererOnly') < 0).assertEqual(true);
+      expect(spy.calls.indexOf('destroyAudio') < 0).assertEqual(true);
     });
 
     it('disconnect_and_release_should_clear_all_state', 0, (): void => {

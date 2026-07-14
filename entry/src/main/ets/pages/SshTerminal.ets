@@ -683,6 +683,9 @@ struct SshTerminal {
 
   private async connect(host: RemoteHost): Promise<void> {
     try {
+      if (!(await this.loader.waitForPendingTeardown())) {
+        throw new Error('上一会话资源清理未完成 [E-TEARDOWN-PENDING]');
+      }
       this.sshHost = host.host;
       this.sshPort = host.port;
       // 密钥解析: sshKeyId 优先 (引用 KeyVault), 回退 sshKeyData (旧副本)

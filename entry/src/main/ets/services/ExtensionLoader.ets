@@ -36,6 +36,7 @@ export class ExtensionLoader {
   private rendererHandle: number = -1;
   private decoderHandle: number = -1;
   private audioPlayerHandle: number = -1;
+  private teardownRequestId: number = 0;
 
   static getInstance(): ExtensionLoader {
     if (!ExtensionLoader.instance) { ExtensionLoader.instance = new ExtensionLoader(); }
@@ -54,20 +55,32 @@ export class ExtensionLoader {
     }
   }
 
-  disconnect(): void {
+  disconnect(): number {
+    let requestId: number = 0;
     try {
-      if (this.currentSessionId > 0) {
-        rdpnapi.disconnect(this.currentSessionId);
+      if (this.currentSessionId > 0 || this.rendererHandle > 0 ||
+        this.decoderHandle > 0 || this.audioPlayerHandle > 0) {
+        requestId = rdpnapi.beginDisconnect(this.currentSessionId, this.rendererHandle,
+          this.decoderHandle, this.audioPlayerHandle) as number;
       }
     } catch (err) {
       hilog.error(DOMAIN, TAG, '[ExtensionLoader] disconnect: ' + JSON.stringify(err));
     }
     this.currentSessionId = -1;
+    this.rendererHandle = -1;
+    this.decoderHandle = -1;
+    this.audioPlayerHandle = -1;
+    if (requestId > 0) {
+      this.teardownRequestId = requestId;
+    }
+    return requestId;
   }
 
-  disconnectAll(): void {
+  disconnectAll(): number {
+    let requestId: number = 0;
     try {
-      rdpnapi.disconnectAll();
+      requestId = rdpnapi.disconnectAll(
+        this.rendererHandle, this.decoderHandle, this.audioPlayerHandle) as number;
     } catch (err) {
       hilog.error(DOMAIN, TAG, '[ExtensionLoader] disconnectAll: ' + JSON.stringify(err));
     }
@@ -75,6 +88,39 @@ export class ExtensionLoader {
     this.rendererHandle = -1;
     this.decoderHandle = -1;
     this.audioPlayerHandle = -1;
+    if (requestId > 0) {
+      this.teardownRequestId = requestId;
+    }
+    return requestId;
+  }
+
+  getDisconnectState(requestId: number): number {
+    try {
+      return rdpnapi.getDisconnectState(requestId) as number;
+    } catch (_err) {
+      return 0;
+    }
+  }
+
+  async waitForPendingTeardown(timeoutMs: number = 10000): Promise<boolean> {
+    if (this.teardownRequestId <= 0) {
+      return true;
+    }
+    const startedAtMs: number = Date.now();
+    while (Date.now() - startedAtMs < timeoutMs) {
+      const state: number = this.getDisconnectState(this.teardownRequestId);
+      if (state === 3 || state === 0) {
+        this.teardownRequestId = 0;
+        return true;
+      }
+      if (state === 4) {
+        return false;
+      }
+      await new Promise<void>((resolve: () => void): void => {
+        setTimeout(resolve, 20);
+      });
+    }
+    return false;
   }
 
   isConnected(): boolean { return this.currentSessionId > 0; }
@@ -827,10 +873,11 @@ export class ExtensionLoader {
    */
   disconnectForExit(reason: string): ExtensionResult<void> {
     try {
-      if (this.currentSessionId > 0) {
-        rdpnapi.disconnect(this.currentSessionId);
+      const sessionId: number = this.currentSessionId;
+      const requestId: number = this.disconnect();
+      if (requestId > 0) {
         hilog.info(DOMAIN, TAG, '[ExtensionLoader] disconnectForExit: reason=' + reason +
-          ' sessionId=' + this.currentSessionId.toString());
+          ' sessionId=' + sessionId.toString() + ' requestId=' + requestId.toString());
       }
     } catch (err) {
       hilog.error(DOMAIN, TAG, '[ExtensionLoader] disconnectForExit: ' + JSON.stringify(err));

@@ -7,6 +7,7 @@
 
 #include "extension_registry.h"
 #include "protocol_adapter.h"
+#include "session_teardown_executor.h"
 #include "rdp/freerdp_adapter.h"
 #include "ssh/ssh_adapter.h"
 #include "ssh/ssh_key_tool.h"
@@ -30,6 +31,7 @@
 #include <cstring>
 #include <exception>
 #include <new>
+#include <stdexcept>
 #include <vector>
 
 #ifdef RUSTDESK_USE_REAL_CORE
@@ -62,13 +64,25 @@ static std::shared_ptr<ProtocolAdapter> g_activeConnection = nullptr;
 
 // 连接会话上下文
 struct SessionContext {
+    enum class Lifecycle : uint8_t {
+        Active = 0,
+        Disconnecting,
+        Complete,
+        Failed,
+    };
+
     std::shared_ptr<ProtocolAdapter> adapter;
     std::string protocolName;
     std::string lastStateMessage;
     std::mutex messageMutex;
+    std::atomic<Lifecycle> lifecycle {Lifecycle::Active};
+    std::atomic<uint64_t> teardownRequestId {0};
 };
 
 static std::map<int, std::shared_ptr<SessionContext>> g_sessions;
+static std::map<int, uint64_t> g_disconnectRequestBySession;
+static SessionTeardown::Executor g_teardownExecutor;
+static uint64_t g_disconnectAllRequestId = 0;
 static int g_nextSessionId = 1;
 static std::atomic<uint64_t> g_napiWheelSendCount {0};
 static std::atomic<uint64_t> g_napiTextSendCount {0};
@@ -684,6 +698,20 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
     session->protocolName = protocolName;
 
     int sessionId = g_nextSessionId++;
+    g_disconnectAllRequestId = 0;
+    if (g_disconnectRequestBySession.size() > 256) {
+        for (auto it = g_disconnectRequestBySession.begin();
+             it != g_disconnectRequestBySession.end();) {
+            const SessionTeardown::State state = g_teardownExecutor.state(it->second);
+            if (state == SessionTeardown::State::Complete ||
+                state == SessionTeardown::State::Failed ||
+                state == SessionTeardown::State::Unknown) {
+                it = g_disconnectRequestBySession.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
     g_sessions[sessionId] = session;
     g_activeConnection = adapter;
 
@@ -800,16 +828,148 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
     return result;
 }
 
+struct TeardownNativeResources {
+    int64_t rendererHandle = -1;
+    int64_t decoderHandle = -1;
+    int64_t audioHandle = -1;
+    std::shared_ptr<AudioPlayer> activeAudioPlayer;
+};
+
+static int64_t GetOptionalHandle(napi_env env, size_t argc, napi_value* args, size_t index) {
+    int64_t handle = -1;
+    if (index < argc) {
+        napi_get_value_int64(env, args[index], &handle);
+    }
+    return handle;
+}
+
+static void DeactivateNativeResources(TeardownNativeResources& resources) {
+    RendererNapi::DeactivateRenderer(resources.rendererHandle);
+    DecoderNapi::DeactivateDecoder(resources.decoderHandle);
+    resources.activeAudioPlayer = AudioPlayerNapi::TakeActiveNative();
+    resetRemoteVideoActivity();
+}
+
+static void DestroyNativeResources(TeardownNativeResources resources) {
+    OH_LOG_INFO(LOG_APP, "[ExtLoader][SHUTDOWN] phase=decoder-destroy-begin");
+    DecoderNapi::DestroyDecoderHandle(resources.decoderHandle);
+    OH_LOG_INFO(LOG_APP, "[ExtLoader][SHUTDOWN] phase=decoder-destroy-return");
+    OH_LOG_INFO(LOG_APP, "[ExtLoader][SHUTDOWN] phase=renderer-destroy-begin");
+    RendererNapi::DestroyRendererHandle(resources.rendererHandle);
+    OH_LOG_INFO(LOG_APP, "[ExtLoader][SHUTDOWN] phase=renderer-destroy-return");
+    OH_LOG_INFO(LOG_APP, "[ExtLoader][SHUTDOWN] phase=audio-destroy-begin");
+    AudioPlayerNapi::DestroyDetachedNative(
+        resources.audioHandle, std::move(resources.activeAudioPlayer));
+    OH_LOG_INFO(LOG_APP, "[ExtLoader][SHUTDOWN] phase=audio-destroy-return");
+}
+
+static void PrepareAdapterForTeardown(const std::shared_ptr<ProtocolAdapter>& adapter) {
+    if (!adapter) {
+        return;
+    }
+    adapter->setVideoCallback(nullptr);
+    adapter->setAudioCallback(nullptr);
+}
+
+static bool HasNativeResources(const TeardownNativeResources& resources) {
+    return resources.rendererHandle > 0 || resources.decoderHandle > 0 ||
+        resources.audioHandle > 0;
+}
+
+static uint64_t BeginSessionTeardown(
+    int32_t sessionId, TeardownNativeResources resources) {
+    if (sessionId > 0) {
+        const auto existing = g_disconnectRequestBySession.find(sessionId);
+        if (existing != g_disconnectRequestBySession.end()) {
+            return existing->second;
+        }
+    }
+
+    auto it = g_sessions.find(sessionId);
+    if (it == g_sessions.end() || !it->second) {
+        if (!HasNativeResources(resources)) {
+            return 0;
+        }
+        DeactivateNativeResources(resources);
+        auto resourceTask = [resources = std::move(resources)]() mutable {
+            DestroyNativeResources(std::move(resources));
+        };
+        const uint64_t resourceRequestId = g_teardownExecutor.enqueue(resourceTask);
+        if (resourceRequestId == 0) {
+            resourceTask();
+        }
+        return resourceRequestId;
+    }
+    const std::shared_ptr<SessionContext> session = it->second;
+    SessionContext::Lifecycle expected = SessionContext::Lifecycle::Active;
+    if (!session->lifecycle.compare_exchange_strong(
+            expected, SessionContext::Lifecycle::Disconnecting)) {
+        return session->teardownRequestId.load(std::memory_order_acquire);
+    }
+
+    const std::shared_ptr<ProtocolAdapter> adapter = session->adapter;
+    PrepareAdapterForTeardown(adapter);
+    if (g_activeConnection == adapter) {
+        InputHandler::instance().setActiveAdapter(nullptr);
+        g_activeConnection = nullptr;
+    }
+    DeactivateNativeResources(resources);
+    g_sessions.erase(it);
+
+    auto task = [sessionId, session, adapter, resources = std::move(resources)]() mutable {
+        const auto startedAt = std::chrono::steady_clock::now();
+        OH_LOG_INFO(LOG_APP,
+            "[ExtLoader][SHUTDOWN] sessionId=%{public}d phase=executor-start",
+            sessionId);
+        bool failed = false;
+        try {
+            if (adapter) {
+                adapter->disconnect();
+            }
+        } catch (...) {
+            failed = true;
+        }
+        try {
+            DestroyNativeResources(std::move(resources));
+        } catch (...) {
+            failed = true;
+        }
+        session->adapter.reset();
+        session->lifecycle.store(
+            failed ? SessionContext::Lifecycle::Failed : SessionContext::Lifecycle::Complete,
+            std::memory_order_release);
+        const auto elapsedUs = std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now() - startedAt).count();
+        OH_LOG_INFO(LOG_APP,
+            "[ExtLoader][SHUTDOWN] sessionId=%{public}d phase=executor-return result=%{public}s elapsedUs=%{public}lld",
+            sessionId, failed ? "failed" : "complete", static_cast<long long>(elapsedUs));
+        if (failed) {
+            throw std::runtime_error("session teardown failed");
+        }
+    };
+
+    uint64_t requestId = g_teardownExecutor.enqueue(task);
+    if (requestId == 0) {
+        task();
+        return 0;
+    }
+    session->teardownRequestId.store(requestId, std::memory_order_release);
+    g_disconnectRequestBySession[sessionId] = requestId;
+    return requestId;
+}
+
 /**
- * NAPI: disconnect(sessionId: number): void
+ * NAPI: beginDisconnect(sessionId, rendererHandle, decoderHandle, audioHandle): number
  */
 napi_value NapiDisconnect(napi_env env, napi_callback_info info) {
-    size_t argc = 1;
-    napi_value args[1];
+    size_t argc = 4;
+    napi_value args[4];
     napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
 
-    int32_t sessionId;
-    napi_get_value_int32(env, args[0], &sessionId);
+    int32_t sessionId = -1;
+    if (argc > 0) {
+        napi_get_value_int32(env, args[0], &sessionId);
+    }
     const auto shutdownStartedAt = std::chrono::steady_clock::now();
     OH_LOG_INFO(LOG_APP, "[ExtLoader][SHUTDOWN] sessionId=%{public}d phase=napi-entry", sessionId);
 
@@ -828,73 +988,149 @@ napi_value NapiDisconnect(napi_env env, napi_callback_info info) {
         }
     }
 
-    auto it = g_sessions.find(sessionId);
-    if (it != g_sessions.end() && it->second->adapter) {
-        if (g_activeConnection == it->second->adapter) {
-            InputHandler::instance().setActiveAdapter(nullptr);
-            g_activeConnection = nullptr;
-        }
-        it->second->adapter->disconnect();
-    }
-    g_sessions.erase(sessionId);
-    AudioPlayerNapi::DestroyActiveNative();
-
-    if (g_activeConnection && g_sessions.empty()) {
-        g_activeConnection = nullptr;
-        InputHandler::instance().setActiveAdapter(nullptr);
-    }
-    resetRemoteVideoActivity();
+    TeardownNativeResources resources;
+    resources.rendererHandle = GetOptionalHandle(env, argc, args, 1);
+    resources.decoderHandle = GetOptionalHandle(env, argc, args, 2);
+    resources.audioHandle = GetOptionalHandle(env, argc, args, 3);
+    const uint64_t requestId = BeginSessionTeardown(sessionId, std::move(resources));
 
     const auto shutdownElapsedUs = std::chrono::duration_cast<std::chrono::microseconds>(
         std::chrono::steady_clock::now() - shutdownStartedAt).count();
     OH_LOG_INFO(LOG_APP,
-        "[ExtLoader][SHUTDOWN] sessionId=%{public}d phase=napi-return elapsedUs=%{public}lld",
-        sessionId, static_cast<long long>(shutdownElapsedUs));
+        "[ExtLoader][SHUTDOWN] sessionId=%{public}d requestId=%{public}llu phase=napi-return elapsedUs=%{public}lld",
+        sessionId, static_cast<unsigned long long>(requestId),
+        static_cast<long long>(shutdownElapsedUs));
 
-    napi_value undefined;
-    napi_get_undefined(env, &undefined);
-    return undefined;
+    napi_value result;
+    napi_create_int64(env, static_cast<int64_t>(requestId), &result);
+    return result;
 }
 
 /**
- * NAPI: disconnectAll(): void
+ * NAPI: disconnectAll(rendererHandle, decoderHandle, audioHandle): number
  *
  * Ability 退后台/销毁时兜底释放所有协议会话。RDP 如果只靠页面 aboutToDisappear,
  * 在系统手势回桌面或后台清理时可能来不及触发, Windows 侧会保留会话。
  */
 napi_value NapiDisconnectAll(napi_env env, napi_callback_info info) {
-    (void)info;
+    size_t argc = 3;
+    napi_value args[3];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
     const auto shutdownStartedAt = std::chrono::steady_clock::now();
 
-    std::vector<std::shared_ptr<SessionContext>> sessions;
+    const SessionTeardown::State existingState =
+        g_teardownExecutor.state(g_disconnectAllRequestId);
+    if (g_disconnectAllRequestId > 0 &&
+        (existingState == SessionTeardown::State::Queued ||
+         existingState == SessionTeardown::State::Running)) {
+        napi_value existingResult;
+        napi_create_int64(env, static_cast<int64_t>(g_disconnectAllRequestId), &existingResult);
+        return existingResult;
+    }
+
+    std::vector<std::pair<int, std::shared_ptr<SessionContext>>> sessions;
     sessions.reserve(g_sessions.size());
     for (const auto& item : g_sessions) {
         if (item.second) {
-            sessions.push_back(item.second);
+            sessions.push_back(item);
         }
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(g_dataTsfnMutex);
+        for (const auto& entry : g_dataTsfnMap) {
+            const auto sessionIt = g_sessions.find(entry.first);
+            if (sessionIt != g_sessions.end() && sessionIt->second &&
+                sessionIt->second->adapter) {
+                const auto sshAdapter =
+                    std::dynamic_pointer_cast<SshAdapter>(sessionIt->second->adapter);
+                if (sshAdapter) {
+                    sshAdapter->setOnDataCallback(nullptr);
+                }
+            }
+            napi_release_threadsafe_function(entry.second, napi_tsfn_release);
+        }
+        g_dataTsfnMap.clear();
     }
 
     g_activeConnection = nullptr;
     InputHandler::instance().setActiveAdapter(nullptr);
-    for (const auto& session : sessions) {
-        if (session->adapter) {
-            session->adapter->disconnect();
+    for (const auto& item : sessions) {
+        item.second->lifecycle.store(SessionContext::Lifecycle::Disconnecting,
+                                     std::memory_order_release);
+        PrepareAdapterForTeardown(item.second->adapter);
+    }
+    g_sessions.clear();
+
+    TeardownNativeResources resources;
+    resources.rendererHandle = GetOptionalHandle(env, argc, args, 0);
+    resources.decoderHandle = GetOptionalHandle(env, argc, args, 1);
+    resources.audioHandle = GetOptionalHandle(env, argc, args, 2);
+    DeactivateNativeResources(resources);
+
+    auto task = [sessions, resources = std::move(resources)]() mutable {
+        bool failed = false;
+        for (const auto& item : sessions) {
+            const std::shared_ptr<SessionContext>& session = item.second;
+            bool sessionFailed = false;
+            try {
+                if (session->adapter) {
+                    session->adapter->disconnect();
+                }
+            } catch (...) {
+                failed = true;
+                sessionFailed = true;
+            }
+            session->adapter.reset();
+            session->lifecycle.store(
+                sessionFailed ? SessionContext::Lifecycle::Failed : SessionContext::Lifecycle::Complete,
+                std::memory_order_release);
+        }
+        try {
+            DestroyNativeResources(std::move(resources));
+        } catch (...) {
+            failed = true;
+        }
+        if (failed) {
+            throw std::runtime_error("disconnectAll teardown failed");
+        }
+    };
+
+    const uint64_t requestId = g_teardownExecutor.enqueue(task);
+    if (requestId == 0) {
+        task();
+    } else {
+        g_disconnectAllRequestId = requestId;
+        for (const auto& item : sessions) {
+            item.second->teardownRequestId.store(requestId, std::memory_order_release);
+            g_disconnectRequestBySession[item.first] = requestId;
         }
     }
-
-    g_sessions.clear();
-    AudioPlayerNapi::DestroyActiveNative();
-    resetRemoteVideoActivity();
 
     const auto shutdownElapsedUs = std::chrono::duration_cast<std::chrono::microseconds>(
         std::chrono::steady_clock::now() - shutdownStartedAt).count();
     OH_LOG_INFO(LOG_APP,
-        "[ExtLoader][SHUTDOWN] phase=disconnect-all-return sessions=%{public}zu elapsedUs=%{public}lld",
-        sessions.size(), static_cast<long long>(shutdownElapsedUs));
+        "[ExtLoader][SHUTDOWN] requestId=%{public}llu phase=disconnect-all-return sessions=%{public}zu elapsedUs=%{public}lld",
+        static_cast<unsigned long long>(requestId), sessions.size(),
+        static_cast<long long>(shutdownElapsedUs));
 
-    napi_value undefined;
-    napi_get_undefined(env, &undefined);
-    return undefined;
+    napi_value result;
+    napi_create_int64(env, static_cast<int64_t>(requestId), &result);
+    return result;
+}
+
+napi_value NapiGetDisconnectState(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value args[1];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    int64_t requestId = 0;
+    if (argc > 0) {
+        napi_get_value_int64(env, args[0], &requestId);
+    }
+    napi_value result;
+    napi_create_int32(env, static_cast<int32_t>(
+        g_teardownExecutor.state(static_cast<uint64_t>(requestId))), &result);
+    return result;
 }
 
 /**
@@ -2084,9 +2320,17 @@ napi_value ExtensionLoaderNapi::Init(napi_env env, napi_value exports) {
                          NapiDisconnect, nullptr, &fn);
     napi_set_named_property(env, exports, "disconnect", fn);
 
+    napi_create_function(env, "beginDisconnect", NAPI_AUTO_LENGTH,
+                         NapiDisconnect, nullptr, &fn);
+    napi_set_named_property(env, exports, "beginDisconnect", fn);
+
     napi_create_function(env, "disconnectAll", NAPI_AUTO_LENGTH,
                          NapiDisconnectAll, nullptr, &fn);
     napi_set_named_property(env, exports, "disconnectAll", fn);
+
+    napi_create_function(env, "getDisconnectState", NAPI_AUTO_LENGTH,
+                         NapiGetDisconnectState, nullptr, &fn);
+    napi_set_named_property(env, exports, "getDisconnectState", fn);
 
     napi_create_function(env, "sendKey", NAPI_AUTO_LENGTH,
                          NapiSendKey, nullptr, &fn);

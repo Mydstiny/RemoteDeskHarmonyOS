@@ -567,16 +567,39 @@ int AudioPlayerNapi::DispatchActiveNative(const uint8_t* data, size_t size, int 
 }
 
 void AudioPlayerNapi::DestroyActiveNative() {
+    std::shared_ptr<AudioPlayer> player = TakeActiveNative();
+    if (player) {
+        player->Destroy();
+    }
+}
+
+std::shared_ptr<AudioPlayer> AudioPlayerNapi::TakeActiveNative() {
     std::shared_ptr<AudioPlayer> player;
     {
         std::lock_guard<std::mutex> lock(g_activeAudioMutex);
         player = g_activeAudioPlayer;
         g_activeAudioPlayer = nullptr;
     }
-    if (player) {
-        player->Destroy();
-    }
     g_audioActivityState.reset();
+    return player;
+}
+
+void AudioPlayerNapi::DestroyDetachedNative(
+    int64_t handle, std::shared_ptr<AudioPlayer> activePlayer) {
+    std::shared_ptr<AudioPlayer> handlePlayer;
+    if (handle > 0) {
+        auto* ctx = reinterpret_cast<AudioPlayerContext*>(handle);
+        if (ctx) {
+            handlePlayer = ctx->player;
+            delete ctx;
+        }
+    }
+    if (handlePlayer) {
+        handlePlayer->Destroy();
+    }
+    if (activePlayer && activePlayer != handlePlayer) {
+        activePlayer->Destroy();
+    }
 }
 
 bool AudioPlayerNapi::IsActivePlaybackReceiving() {

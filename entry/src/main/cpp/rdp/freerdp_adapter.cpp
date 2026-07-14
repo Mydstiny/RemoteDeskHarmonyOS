@@ -856,6 +856,7 @@ struct FreeRdpAdapter::Impl {
 
 static std::mutex g_rdpAudioCallbackMutex;
 static AudioDataCallback g_rdpAudioCallback;
+static FreeRdpAdapter* g_rdpAudioCallbackOwner = nullptr;
 static std::once_flag g_rdpAddinProviderOnce;
 
 static void ensureFreeRdpStaticAddinProvider() {
@@ -1825,7 +1826,13 @@ int FreeRdpAdapter::connect(const ConnectionConfig& cfg) {
     impl_->stopRequested = false;
     {
         std::lock_guard<std::mutex> lock(g_rdpAudioCallbackMutex);
-        g_rdpAudioCallback = cfg.rdAudioEnabled ? impl_->audioCallback : nullptr;
+        if (cfg.rdAudioEnabled && impl_->audioCallback) {
+            g_rdpAudioCallbackOwner = this;
+            g_rdpAudioCallback = impl_->audioCallback;
+        } else if (g_rdpAudioCallbackOwner == this) {
+            g_rdpAudioCallbackOwner = nullptr;
+            g_rdpAudioCallback = nullptr;
+        }
     }
     impl_->setState(ConnectionState::CONNECTING, "Connecting...");
 
@@ -2150,7 +2157,10 @@ void FreeRdpAdapter::disconnect() {
     cleanupInstance();
     {
         std::lock_guard<std::mutex> lock(g_rdpAudioCallbackMutex);
-        g_rdpAudioCallback = nullptr;
+        if (g_rdpAudioCallbackOwner == this) {
+            g_rdpAudioCallbackOwner = nullptr;
+            g_rdpAudioCallback = nullptr;
+        }
     }
 
     if (impl_->state != ConnectionState::DISCONNECTED &&
@@ -2389,7 +2399,13 @@ void FreeRdpAdapter::setAudioCallback(AudioDataCallback cb) {
     impl_->audioCallback = std::move(cb);
     if (impl_->config.rdAudioEnabled) {
         std::lock_guard<std::mutex> lock(g_rdpAudioCallbackMutex);
-        g_rdpAudioCallback = impl_->audioCallback;
+        if (impl_->audioCallback) {
+            g_rdpAudioCallbackOwner = this;
+            g_rdpAudioCallback = impl_->audioCallback;
+        } else if (g_rdpAudioCallbackOwner == this) {
+            g_rdpAudioCallbackOwner = nullptr;
+            g_rdpAudioCallback = nullptr;
+        }
     }
 }
 void FreeRdpAdapter::setConnectionStateCallback(ConnectionStateCallback cb) { impl_->stateCallback = std::move(cb); }

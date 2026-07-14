@@ -52,7 +52,8 @@ hdc hilog | grep -E "RDP_NAPI|GL_RENDERER|HW_DECODER|RDP_ADAPTER|RUSTDESK|AUDIO|
 采集 `RDP-SHUTDOWN` 与 `ExtLoader][SHUTDOWN` 日志。每次退出必须按同一 generation
 出现 `request`、`input-stop`、`trailing-stop`、`frame-pump-stop`、
 `connect-join`、`event-stop`、`drive-join`、`freerdp-disconnect`、`post-disconnect`、`context-free`、
-`complete`，并以 ArkTS `native-disconnect-return` 和 `arkts-return` 结束。
+`complete`，随后出现 executor 的 `decoder-destroy`、`renderer-destroy`、`audio-destroy`
+与 `executor-return`。ArkTS `native-disconnect-return` 必须先返回且不等待上述后台阶段。
 
 | # | 场景 | 预期 | 实际 |
 |---|------|------|------|
