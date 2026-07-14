@@ -15,6 +15,19 @@ function responseCodeIsSuccess(code: number): boolean {
   return code >= 200 && code < 300;
 }
 
+function responseBytes(result: Object): ArrayBuffer {
+  if (result instanceof ArrayBuffer) {
+    return result as ArrayBuffer;
+  }
+  if (result instanceof Uint8Array) {
+    const view: Uint8Array = result as Uint8Array;
+    const copy: Uint8Array = new Uint8Array(view.byteLength);
+    copy.set(view);
+    return copy.buffer;
+  }
+  throw new Error('云端二维码响应类型无效: ' + typeof result);
+}
+
 export class FeedbackCommunityService {
   async fetchManifest(): Promise<FeedbackCommunityManifest> {
     const request: http.HttpRequest = http.createHttp();
@@ -57,10 +70,11 @@ export class FeedbackCommunityService {
       if (!responseCodeIsSuccess(response.responseCode as number)) {
         throw new Error('二维码下载失败: HTTP ' + (response.responseCode as number).toString());
       }
-      if (!(response.result instanceof ArrayBuffer) || response.result.byteLength === 0) {
+      const bytes: ArrayBuffer = responseBytes(response.result as Object);
+      if (bytes.byteLength === 0) {
         throw new Error('云端二维码内容为空');
       }
-      return response.result as ArrayBuffer;
+      return bytes;
     } finally {
       request.destroy();
     }

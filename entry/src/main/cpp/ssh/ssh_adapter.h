@@ -175,6 +175,7 @@ private:
     std::thread        readerThread_;
     std::atomic<bool>  readerRunning_{false};
     DataCallback       onDataCallback_;
+    std::string        pendingData_;             // 回调注册前到达的首批 shell 输出
     std::mutex         callbackMutex_;          // 保护 onDataCallback_
     std::mutex         sessionMutex_;           // 串行化 libssh2 session/channel 操作
 

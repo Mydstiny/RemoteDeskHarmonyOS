@@ -3,7 +3,6 @@
  */
 import { promptAction } from '@kit.ArkUI';
 import { common, Want } from '@kit.AbilityKit';
-import { fileIo } from '@kit.CoreFileKit';
 import { image } from '@kit.ImageKit';
 import { photoAccessHelper } from '@kit.MediaLibraryKit';
 import { HdsTabs, HdsTabsController } from '@kit.UIDesignKit';
@@ -58,6 +57,15 @@ export struct FeedbackSettingsSheet {
   private errorMessage(error: Object): string {
     if (error instanceof Error && error.message !== '') {
       return error.message;
+    }
+    const details: Record<string, Object> = error as Record<string, Object>;
+    const message: Object | undefined = details['message'];
+    const code: Object | undefined = details['code'];
+    if (typeof message === 'string' && (message as string) !== '') {
+      if (typeof code === 'number') {
+        return '错误码 ' + (code as number).toString() + '：' + (message as string);
+      }
+      return message as string;
     }
     return '暂时无法读取云端二维码，请稍后重试。';
   }
@@ -129,7 +137,10 @@ export struct FeedbackSettingsSheet {
   }
 
   private async saveQrImage(result: SaveButtonOnClickResult): Promise<void> {
-    if (result !== SaveButtonOnClickResult.SUCCESS) { return; }
+    if (result !== SaveButtonOnClickResult.SUCCESS) {
+      promptAction.showToast({ message: '未获得相册保存授权，请重试', duration: 2200 });
+      return;
+    }
     const manifest: FeedbackCommunityManifest | null = this.community;
     if (manifest === null || this.savingQr) { return; }
     this.savingQr = true;
@@ -139,14 +150,15 @@ export struct FeedbackSettingsSheet {
       );
       const ctx: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
       const helper = photoAccessHelper.getPhotoAccessHelper(ctx);
-      const uri: string = await helper.createAsset(photoAccessHelper.PhotoType.IMAGE, 'png');
-      const file = fileIo.openSync(uri, fileIo.OpenMode.READ_WRITE | fileIo.OpenMode.CREATE);
-      try {
-        const written: number = fileIo.writeSync(file.fd, bytes);
-        if (written <= 0) { throw new Error('二维码文件写入失败'); }
-      } finally {
-        fileIo.closeSync(file);
-      }
+      const assetChangeRequest: photoAccessHelper.MediaAssetChangeRequest =
+        photoAccessHelper.MediaAssetChangeRequest.createAssetRequest(
+          ctx,
+          photoAccessHelper.PhotoType.IMAGE,
+          'jpg',
+          { title: '畅联群聊二维码' }
+        );
+      assetChangeRequest.addResource(photoAccessHelper.ResourceType.IMAGE_RESOURCE, bytes);
+      await helper.applyChanges(assetChangeRequest);
       promptAction.showToast({ message: '二维码已保存到相册', duration: 1800 });
     } catch (error) {
       promptAction.showToast({ message: '保存失败：' + this.errorMessage(error as Object), duration: 2400 });

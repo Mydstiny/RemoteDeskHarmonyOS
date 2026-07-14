@@ -72,7 +72,7 @@ export function terminalSparseContentGridTop(
   topInset: number,
   visibleViewportHeight: number,
   contentHeight: number,
-  sparseContentMaxHeight: number,
+  _sparseContentMaxHeight: number,
   hasScrollback: boolean
 ): number {
   const safeTopInset: number = Math.max(0, topInset);
@@ -81,8 +81,7 @@ export function terminalSparseContentGridTop(
   }
   const safeViewportHeight: number = Math.max(0, visibleViewportHeight);
   const safeContentHeight: number = Math.max(0, contentHeight);
-  const safeSparseMaxHeight: number = Math.max(0, sparseContentMaxHeight);
-  if (safeContentHeight >= safeViewportHeight || safeContentHeight > safeSparseMaxHeight) {
+  if (safeContentHeight >= safeViewportHeight) {
     return safeTopInset;
   }
   return Math.floor(safeTopInset + safeViewportHeight - safeContentHeight);
@@ -94,16 +93,14 @@ export function terminalGridTop(
   visibleViewportHeight: number,
   gridHeight: number,
   contentHeight: number,
-  sparseContentMaxHeight: number,
+  _sparseContentMaxHeight: number,
   hasScrollback: boolean
 ): number {
   const safeTopInset: number = Math.max(0, topInset);
   const safeVisibleHeight: number = Math.max(0, visibleViewportHeight);
   const safeGridHeight: number = Math.max(0, gridHeight);
   const safeContentHeight: number = Math.max(0, contentHeight);
-  const safeSparseMaxHeight: number = Math.max(0, sparseContentMaxHeight);
-  if (bottomAlignSparseContent && !hasScrollback &&
-    safeContentHeight < safeVisibleHeight && safeContentHeight <= safeSparseMaxHeight) {
+  if (bottomAlignSparseContent && !hasScrollback && safeContentHeight < safeVisibleHeight) {
     return Math.floor(safeTopInset + safeVisibleHeight - safeContentHeight);
   }
   if (safeGridHeight > safeVisibleHeight) {
