@@ -21,6 +21,7 @@
 #include "rdp_performance_policy.h"
 #include "rdp_input_queue.h"
 #include "rdp_render_policy.h"
+#include "rdp_shutdown_state.h"
 #ifdef USE_REAL_FREERDP
 #include <freerdp/channels/rdpgfx.h>
 #include <freerdp/client/rdpgfx.h>
@@ -44,6 +45,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstring>
+#include <functional>
 #include <iomanip>
 #include <sstream>
 #include <thread>
@@ -514,6 +516,8 @@ static std::vector<UINT16> utf8ToUtf16(const std::string& text) {
     return result;
 }
 
+static std::atomic<uint64_t> g_nextRdpSessionGeneration {1};
+
 struct FreeRdpAdapter::Impl {
     TransferRuntimeStatus transferStatus;
     ConnectionConfig        config;
@@ -528,7 +532,12 @@ struct FreeRdpAdapter::Impl {
     pthread_t               driveThread = 0;
     std::mutex              stateMutex;
     std::mutex              instanceMutex;
+    std::mutex              shutdownMutex;
+    std::mutex              workerLifecycleMutex;
     std::mutex              renderMutex;
+    RdpShutdown::State      shutdownState;
+    std::atomic<uint64_t>   sessionGeneration {0};
+    std::atomic<int64_t>    shutdownStartedUs {0};
     RdpFramePump            framePump;
     std::atomic<bool>       backgroundVideoPrewarmEnabled {false};
     std::atomic<uint32_t>   backgroundVideoPrewarmIntervalMs {1000};
@@ -540,11 +549,11 @@ struct FreeRdpAdapter::Impl {
     uint64_t                inputQueueGeneration = 0;
     bool                    inputQueueRunning = false;
     bool                    inputQueueStop = false;
-    bool                    connecting = false;
-    bool                    connectThreadStarted = false;
-    bool                    driveThreadStarted = false;
-    bool                    stopRequested = false;
-    bool                    gdiInitialized = false;
+    std::atomic<bool>       connecting {false};
+    std::atomic<bool>       connectThreadStarted {false};
+    std::atomic<bool>       driveThreadStarted {false};
+    std::atomic<bool>       stopRequested {false};
+    std::atomic<bool>       gdiInitialized {false};
     uint32_t                driveDeviceId = 0;
     int                     paintCount = 0;
     int                     renderedPaintCount = 0;
@@ -574,6 +583,25 @@ struct FreeRdpAdapter::Impl {
     int                     trailingFrameHeight = 0;
     int                     trailingFrameStride = 0;
     int64_t                 trailingFrameDueUs = 0;
+
+    void beginShutdownTrace() {
+        shutdownStartedUs.store(steadyNowUs(), std::memory_order_release);
+        traceShutdown("request", "begin");
+    }
+
+    void traceShutdown(const char* phase, const char* result) const {
+        const int64_t startedUs = shutdownStartedUs.load(std::memory_order_acquire);
+        const int64_t elapsedUs = startedUs > 0 ? steadyNowUs() - startedUs : 0;
+        const uint64_t threadId = static_cast<uint64_t>(
+            std::hash<std::thread::id>{}(std::this_thread::get_id()));
+        OH_LOG_INFO(LOG_APP,
+            "[RDP-SHUTDOWN] generation=%{public}llu phase=%{public}s result=%{public}s elapsedUs=%{public}lld thread=%{public}llu",
+            static_cast<unsigned long long>(sessionGeneration.load(std::memory_order_acquire)),
+            phase ? phase : "unknown",
+            result ? result : "unknown",
+            static_cast<long long>(elapsedUs),
+            static_cast<unsigned long long>(threadId));
+    }
 
     void sendQueuedInputEvent(FreeRdpAdapter* owner, const RdpQueuedInputEvent& event,
                               uint64_t workerGeneration) {
@@ -794,6 +822,29 @@ struct FreeRdpAdapter::Impl {
             trailingFrameRequested = true;
         }
         trailingFrameCv.notify_one();
+    }
+
+    void startSessionWorkers(FreeRdpAdapter* owner) {
+        std::lock_guard<std::mutex> lifecycleLock(workerLifecycleMutex);
+        startInputQueueWorker(owner);
+        if (!framePump.start()) {
+            OH_LOG_WARN(LOG_APP, "[RDP] frame pump unavailable; falling back to direct render path");
+            return;
+        }
+        startTrailingFrameWorker();
+    }
+
+    void stopSessionWorkers() {
+        std::lock_guard<std::mutex> lifecycleLock(workerLifecycleMutex);
+        traceShutdown("input-stop", "begin");
+        stopInputQueueWorker();
+        traceShutdown("input-stop", "complete");
+        traceShutdown("trailing-stop", "begin");
+        stopTrailingFrameWorker();
+        traceShutdown("trailing-stop", "complete");
+        traceShutdown("frame-pump-stop", "begin");
+        framePump.stop();
+        traceShutdown("frame-pump-stop", "complete");
     }
 
     void setState(ConnectionState s, const std::string& msg = "") {
@@ -1298,7 +1349,7 @@ BOOL FreeRdpAdapter::cbPostConnect(freerdp* instance) {
 
     instance->update->BeginPaint = cbBeginPaint;
     instance->update->EndPaint = cbEndPaint;
-    self->impl_->gdiInitialized = true;
+    self->impl_->gdiInitialized.store(true, std::memory_order_release);
     self->impl_->paintCount = 0;
     self->impl_->renderedPaintCount = 0;
     self->impl_->skippedPaintCount = 0;
@@ -1310,12 +1361,7 @@ BOOL FreeRdpAdapter::cbPostConnect(freerdp* instance) {
     self->impl_->lastFrameWidth = 0;
     self->impl_->lastFrameHeight = 0;
     self->impl_->forceNextFullFrame = false;
-    self->impl_->startInputQueueWorker(self);
-    if (!self->impl_->framePump.start()) {
-        OH_LOG_WARN(LOG_APP, "[RDP] frame pump unavailable; falling back to direct render path");
-    } else {
-        self->impl_->startTrailingFrameWorker();
-    }
+    self->impl_->startSessionWorkers(self);
     OH_LOG_INFO(LOG_APP, "[RDP] GDI initialized: BGRA32 primary buffer ready");
     return TRUE;
 }
@@ -1326,14 +1372,14 @@ void FreeRdpAdapter::cbPostDisconnect(freerdp* instance) {
     auto* self = ctx ? ctx->adapter : nullptr;
     if (!self) return;
 
-    if (self->impl_->gdiInitialized && instance->context->gdi) {
-        self->impl_->stopInputQueueWorker();
-        self->impl_->stopTrailingFrameWorker();
-        self->impl_->framePump.stop();
+    self->impl_->traceShutdown("post-disconnect", "begin");
+    self->impl_->stopSessionWorkers();
+    if (self->impl_->gdiInitialized.exchange(false, std::memory_order_acq_rel) &&
+        instance->context->gdi) {
         gdi_free(instance);
-        self->impl_->gdiInitialized = false;
         OH_LOG_INFO(LOG_APP, "[RDP] GDI resources released");
     }
+    self->impl_->traceShutdown("post-disconnect", "complete");
 }
 
 BOOL FreeRdpAdapter::cbBeginPaint(rdpContext* context) {
@@ -1518,7 +1564,7 @@ BOOL FreeRdpAdapter::cbEndPaint(rdpContext* context) {
 
 // ---- 事件循环线程 ----
 void FreeRdpAdapter::startEventLoop() {
-    eventLoopRunning_ = true;
+    eventLoopRunning_.store(true, std::memory_order_release);
     const int rc = pthread_create(&impl_->eventThread, nullptr,
         [](void* arg) -> void* {
             auto* self = static_cast<FreeRdpAdapter*>(arg);
@@ -1526,23 +1572,27 @@ void FreeRdpAdapter::startEventLoop() {
             return nullptr;
         }, this);
     if (rc != 0) {
-        eventLoopRunning_ = false;
+        eventLoopRunning_.store(false, std::memory_order_release);
         impl_->eventThread = 0;
         OH_LOG_ERROR(LOG_APP, "[RDP] event loop pthread_create failed rc=%{public}d", rc);
     }
 }
 
 void FreeRdpAdapter::stopEventLoop() {
-    eventLoopRunning_ = false;
+    impl_->traceShutdown("event-stop", "begin");
+    eventLoopRunning_.store(false, std::memory_order_release);
     if (impl_->eventThread) {
-        pthread_join(impl_->eventThread, nullptr);
+        if (!pthread_equal(pthread_self(), impl_->eventThread)) {
+            pthread_join(impl_->eventThread, nullptr);
+        }
         impl_->eventThread = 0;
     }
+    impl_->traceShutdown("event-stop", "complete");
 }
 
 void FreeRdpAdapter::processEventLoop() {
     HANDLE handles[64];
-    while (eventLoopRunning_) {
+    while (eventLoopRunning_.load(std::memory_order_acquire)) {
         rdpContext* context = nullptr;
         {
             std::lock_guard<std::mutex> lock(impl_->instanceMutex);
@@ -1558,17 +1608,16 @@ void FreeRdpAdapter::processEventLoop() {
             continue;
         }
         DWORD ret = WaitForMultipleObjects(count, handles, FALSE, 100);
-        if (!eventLoopRunning_) {
+        if (!eventLoopRunning_.load(std::memory_order_acquire)) {
             break;
         }
         if (ret >= WAIT_OBJECT_0 && ret < WAIT_OBJECT_0 + count) {
-            std::lock_guard<std::mutex> lock(impl_->instanceMutex);
-            if (!eventLoopRunning_ || !instance_ || !instance_->context) {
+            if (!eventLoopRunning_.load(std::memory_order_acquire)) {
                 break;
             }
-            if (!freerdp_check_event_handles(instance_->context)) {
+            if (!freerdp_check_event_handles(context)) {
                 OH_LOG_WARN(LOG_APP, "[RDP] freerdp_check_event_handles returned false, stopping event loop");
-                eventLoopRunning_ = false;
+                eventLoopRunning_.store(false, std::memory_order_release);
                 break;
             }
         }
@@ -1577,27 +1626,35 @@ void FreeRdpAdapter::processEventLoop() {
 
 // ---- 构造/析构 ----
 void FreeRdpAdapter::joinConnectThread() {
+    impl_->traceShutdown("connect-join", "begin");
     if (!impl_->connectThreadStarted || !impl_->connectThread) {
+        impl_->traceShutdown("connect-join", "not-started");
         return;
     }
     if (pthread_equal(pthread_self(), impl_->connectThread)) {
+        impl_->traceShutdown("connect-join", "self-skip");
         return;
     }
     pthread_join(impl_->connectThread, nullptr);
     impl_->connectThread = 0;
     impl_->connectThreadStarted = false;
+    impl_->traceShutdown("connect-join", "complete");
 }
 
 void FreeRdpAdapter::joinDriveThread() {
+    impl_->traceShutdown("drive-join", "begin");
     if (!impl_->driveThreadStarted || !impl_->driveThread) {
+        impl_->traceShutdown("drive-join", "not-started");
         return;
     }
     if (pthread_equal(pthread_self(), impl_->driveThread)) {
+        impl_->traceShutdown("drive-join", "self-skip");
         return;
     }
     pthread_join(impl_->driveThread, nullptr);
     impl_->driveThread = 0;
     impl_->driveThreadStarted = false;
+    impl_->traceShutdown("drive-join", "complete");
 }
 
 struct RdpDriveMountRequest {
@@ -1647,15 +1704,21 @@ void FreeRdpAdapter::mountDriveAfterConnected(const std::string& driveName, cons
 
     uint32_t driveId = 0;
     UINT driveRc = ERROR_NOT_READY;
+    rdpContext* driveContext = nullptr;
     {
         std::lock_guard<std::mutex> lock(impl_->instanceMutex);
         if (impl_->stopRequested || !instance_ || !instance_->context) {
             OH_LOG_INFO(LOG_APP, "[RDP] redirected drive async mount skipped: instance unavailable");
             return;
         }
-        driveRc = freerdp_ohos_rdpdr_register_drive(instance_->context, driveName.c_str(),
-                                                    drivePath.c_str(), &driveId);
+        driveContext = instance_->context;
     }
+    if (impl_->stopRequested.load(std::memory_order_acquire)) {
+        OH_LOG_INFO(LOG_APP, "[RDP] redirected drive async mount skipped: shutdown requested");
+        return;
+    }
+    driveRc = freerdp_ohos_rdpdr_register_drive(driveContext, driveName.c_str(),
+                                                drivePath.c_str(), &driveId);
 
     if (driveRc == CHANNEL_RC_OK) {
         impl_->driveDeviceId = driveId;
@@ -1676,44 +1739,59 @@ void FreeRdpAdapter::mountDriveAfterConnected(const std::string& driveName, cons
 }
 
 void FreeRdpAdapter::abortActiveConnection() {
-    std::lock_guard<std::mutex> lock(impl_->instanceMutex);
-    if (!instance_) {
-        return;
+    rdpContext* context = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(impl_->instanceMutex);
+        context = instance_ ? instance_->context : nullptr;
     }
-    if (instance_->context) {
+    if (context) {
+        impl_->traceShutdown("connect-abort", "begin");
         OH_LOG_INFO(LOG_APP, "[RDP] abort active connection context");
-        freerdp_abort_connect_context(instance_->context);
+        freerdp_abort_connect_context(context);
+        impl_->traceShutdown("connect-abort", "complete");
     }
 }
 
 void FreeRdpAdapter::disconnectActiveInstance() {
-    std::lock_guard<std::mutex> lock(impl_->instanceMutex);
-    if (!instance_) {
+    freerdp* activeInstance = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(impl_->instanceMutex);
+        activeInstance = instance_;
+    }
+    if (!activeInstance) {
+        impl_->traceShutdown("freerdp-disconnect", "no-instance");
         return;
     }
-    if (instance_->context) {
-        freerdp_abort_connect_context(instance_->context);
+    impl_->traceShutdown("freerdp-disconnect", "begin");
+    if (activeInstance->context) {
+        freerdp_abort_connect_context(activeInstance->context);
     }
-    freerdp_disconnect(instance_);
+    freerdp_disconnect(activeInstance);
+    impl_->traceShutdown("freerdp-disconnect", "complete");
 }
 
 void FreeRdpAdapter::cleanupInstance() {
-    std::lock_guard<std::mutex> lock(impl_->instanceMutex);
-    if (!instance_) {
+    impl_->stopSessionWorkers();
+    freerdp* doomedInstance = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(impl_->instanceMutex);
+        doomedInstance = instance_;
+        instance_ = nullptr;
+    }
+    if (!doomedInstance) {
+        impl_->traceShutdown("context-free", "no-instance");
         return;
     }
-    if (impl_->gdiInitialized && instance_->context && instance_->context->gdi) {
-        impl_->stopInputQueueWorker();
-        impl_->stopTrailingFrameWorker();
-        impl_->framePump.stop();
-        gdi_free(instance_);
-        impl_->gdiInitialized = false;
+    impl_->traceShutdown("context-free", "begin");
+    if (impl_->gdiInitialized.exchange(false, std::memory_order_acq_rel) &&
+        doomedInstance->context && doomedInstance->context->gdi) {
+        gdi_free(doomedInstance);
     }
-    if (instance_->context) {
-        freerdp_context_free(instance_);
+    if (doomedInstance->context) {
+        freerdp_context_free(doomedInstance);
     }
-    freerdp_free(instance_);
-    instance_ = nullptr;
+    freerdp_free(doomedInstance);
+    impl_->traceShutdown("context-free", "complete");
 }
 
 FreeRdpAdapter::FreeRdpAdapter() : impl_(std::make_unique<Impl>()) {
@@ -1734,6 +1812,14 @@ std::string FreeRdpAdapter::protocolVersion() { return FREERDP_VERSION_FULL; }
 // ---- 连接管理 (异步, 不阻塞 NAPI 线程) ----
 int FreeRdpAdapter::connect(const ConnectionConfig& cfg) {
     if (impl_->state == ConnectionState::CONNECTED || impl_->connecting) { disconnect(); }
+    {
+        std::lock_guard<std::mutex> shutdownLock(impl_->shutdownMutex);
+        impl_->shutdownState.reset();
+        impl_->sessionGeneration.store(
+            g_nextRdpSessionGeneration.fetch_add(1, std::memory_order_relaxed),
+            std::memory_order_release);
+        impl_->shutdownStartedUs.store(0, std::memory_order_release);
+    }
     impl_->config = cfg;
     impl_->connecting = true;
     impl_->stopRequested = false;
@@ -1786,6 +1872,12 @@ void FreeRdpAdapter::connectThreadFunc() {
     }
     auto* ctx = reinterpret_cast<FreeRdpContext*>(instance_->context);
     ctx->adapter = this;
+    if (impl_->stopRequested.load(std::memory_order_acquire)) {
+        impl_->traceShutdown("connect-cancel", "after-context");
+        cleanupInstance();
+        impl_->connecting = false;
+        return;
+    }
 
     int port = cfg.port > 0 ? cfg.port : RDP_TCP_PORT;
 
@@ -1988,6 +2080,12 @@ void FreeRdpAdapter::connectThreadFunc() {
                 freerdp_settings_get_uint32(s, FreeRDP_DynamicChannelCount));
 
     // ---- 执行连接 ----
+    if (impl_->stopRequested.load(std::memory_order_acquire)) {
+        impl_->traceShutdown("connect-cancel", "before-connect");
+        cleanupInstance();
+        impl_->connecting = false;
+        return;
+    }
     OH_LOG_INFO(LOG_APP, "[RDP] 开始 freerdp_connect...");
     BOOL ok = freerdp_connect(instance_);
     if (!ok) {
@@ -2026,23 +2124,28 @@ void FreeRdpAdapter::connectThreadFunc() {
 }
 
 void FreeRdpAdapter::disconnect() {
-    const bool wasConnecting = impl_->connecting && impl_->connectThreadStarted;
-    impl_->stopRequested = true;
-
-    if (wasConnecting) {
-        abortActiveConnection();
-        joinConnectThread();
-        joinDriveThread();
-        if (impl_->state == ConnectionState::CONNECTED) {
-            stopEventLoop();
-            disconnectActiveInstance();
-        }
-    } else {
-        joinDriveThread();
-        stopEventLoop();
-        disconnectActiveInstance();
-        joinConnectThread();
+    std::lock_guard<std::mutex> shutdownLock(impl_->shutdownMutex);
+    if (!impl_->shutdownState.requestDisconnect()) {
+        impl_->traceShutdown("request", "duplicate");
+        return;
     }
+    impl_->beginShutdownTrace();
+    impl_->stopRequested.store(true, std::memory_order_release);
+
+    impl_->stopSessionWorkers();
+    abortActiveConnection();
+
+    // The connect thread can start both event and drive workers. Join the producer
+    // first so no worker can appear after the corresponding stop/join returns.
+    joinConnectThread();
+    stopEventLoop();
+    joinDriveThread();
+
+    impl_->shutdownState.advance(RdpShutdown::Phase::Quiescing,
+                                 RdpShutdown::Phase::TransportDisconnecting);
+    disconnectActiveInstance();
+    impl_->shutdownState.advance(RdpShutdown::Phase::TransportDisconnecting,
+                                 RdpShutdown::Phase::Releasing);
     impl_->connecting = false;
     cleanupInstance();
     {
@@ -2054,6 +2157,9 @@ void FreeRdpAdapter::disconnect() {
         impl_->state != ConnectionState::ERROR) {
         impl_->setState(ConnectionState::DISCONNECTED, "Disconnected");
     }
+    impl_->shutdownState.advance(RdpShutdown::Phase::Releasing,
+                                 RdpShutdown::Phase::Complete);
+    impl_->traceShutdown("complete", "success");
     OH_LOG_INFO(LOG_APP, "[RDP] FreeRDP session disconnected/cleaned");
     return;
 #if 0

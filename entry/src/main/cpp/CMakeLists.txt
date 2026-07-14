@@ -120,6 +120,7 @@ include_directories(
 # 原生单元测试 (纯 C++ 策略测试, 不依赖 OHOS NAPI/GL)
 # ============================================================
 option(RDP_BUILD_TESTS "Build lightweight native unit tests" OFF)
+option(RDP_TESTS_ONLY "Configure only lightweight native unit tests" OFF)
 if(RDP_BUILD_TESTS)
     add_executable(rdp_native_tests
         test/test_main.cpp
@@ -132,6 +133,7 @@ if(RDP_BUILD_TESTS)
         test/audio_queue_policy_test.cpp
         test/audio_activity_state_test.cpp
         test/rdp_frame_pump_contract_test.cpp
+        test/rdp_shutdown_state_test.cpp
         test/rdp_background_frame_cache_test.cpp
         test/rdp_certificate_policy_test.cpp
         test/rdp_auth_identity_policy_test.cpp
@@ -156,6 +158,14 @@ if(RDP_BUILD_TESTS)
     target_include_directories(rdp_native_tests PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}
     )
+endif()
+
+if(RDP_TESTS_ONLY)
+    if(NOT RDP_BUILD_TESTS)
+        message(FATAL_ERROR "RDP_TESTS_ONLY requires RDP_BUILD_TESTS=ON")
+    endif()
+    message(STATUS "Configured lightweight native tests only")
+    return()
 endif()
 
 

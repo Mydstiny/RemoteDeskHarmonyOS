@@ -26,6 +26,7 @@
 #include <algorithm>
 #include <cctype>
 #include <atomic>
+#include <chrono>
 #include <cstring>
 #include <exception>
 #include <new>
@@ -809,6 +810,8 @@ napi_value NapiDisconnect(napi_env env, napi_callback_info info) {
 
     int32_t sessionId;
     napi_get_value_int32(env, args[0], &sessionId);
+    const auto shutdownStartedAt = std::chrono::steady_clock::now();
+    OH_LOG_INFO(LOG_APP, "[ExtLoader][SHUTDOWN] sessionId=%{public}d phase=napi-entry", sessionId);
 
     // 先清掉 SSH 数据回调 TSFN, 避免 reader 线程已停后还有 push 在排队
     {
@@ -827,6 +830,10 @@ napi_value NapiDisconnect(napi_env env, napi_callback_info info) {
 
     auto it = g_sessions.find(sessionId);
     if (it != g_sessions.end() && it->second->adapter) {
+        if (g_activeConnection == it->second->adapter) {
+            InputHandler::instance().setActiveAdapter(nullptr);
+            g_activeConnection = nullptr;
+        }
         it->second->adapter->disconnect();
     }
     g_sessions.erase(sessionId);
@@ -838,7 +845,11 @@ napi_value NapiDisconnect(napi_env env, napi_callback_info info) {
     }
     resetRemoteVideoActivity();
 
-    OH_LOG_INFO(LOG_APP, "[ExtLoader] 断开连接, sessionId=%{public}d", sessionId);
+    const auto shutdownElapsedUs = std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::steady_clock::now() - shutdownStartedAt).count();
+    OH_LOG_INFO(LOG_APP,
+        "[ExtLoader][SHUTDOWN] sessionId=%{public}d phase=napi-return elapsedUs=%{public}lld",
+        sessionId, static_cast<long long>(shutdownElapsedUs));
 
     napi_value undefined;
     napi_get_undefined(env, &undefined);
@@ -853,6 +864,7 @@ napi_value NapiDisconnect(napi_env env, napi_callback_info info) {
  */
 napi_value NapiDisconnectAll(napi_env env, napi_callback_info info) {
     (void)info;
+    const auto shutdownStartedAt = std::chrono::steady_clock::now();
 
     std::vector<std::shared_ptr<SessionContext>> sessions;
     sessions.reserve(g_sessions.size());
@@ -862,6 +874,8 @@ napi_value NapiDisconnectAll(napi_env env, napi_callback_info info) {
         }
     }
 
+    g_activeConnection = nullptr;
+    InputHandler::instance().setActiveAdapter(nullptr);
     for (const auto& session : sessions) {
         if (session->adapter) {
             session->adapter->disconnect();
@@ -869,13 +883,14 @@ napi_value NapiDisconnectAll(napi_env env, napi_callback_info info) {
     }
 
     g_sessions.clear();
-    g_activeConnection = nullptr;
-    InputHandler::instance().setActiveAdapter(nullptr);
     AudioPlayerNapi::DestroyActiveNative();
     resetRemoteVideoActivity();
 
-    OH_LOG_INFO(LOG_APP, "[ExtLoader] disconnectAll: closed %{public}zu session(s)",
-                sessions.size());
+    const auto shutdownElapsedUs = std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::steady_clock::now() - shutdownStartedAt).count();
+    OH_LOG_INFO(LOG_APP,
+        "[ExtLoader][SHUTDOWN] phase=disconnect-all-return sessions=%{public}zu elapsedUs=%{public}lld",
+        sessions.size(), static_cast<long long>(shutdownElapsedUs));
 
     napi_value undefined;
     napi_get_undefined(env, &undefined);

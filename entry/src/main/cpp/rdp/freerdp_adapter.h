@@ -10,6 +10,7 @@
 #define FREERDP_ADAPTER_H
 
 #include "extensions/protocol_adapter.h"
+#include <atomic>
 #include <memory>
 #ifdef USE_REAL_FREERDP
 #include <freerdp/freerdp.h>
@@ -85,7 +86,7 @@ private:
 #ifdef USE_REAL_FREERDP
     // FreeRDP 客户端实例 + 事件循环
     freerdp*  instance_ = nullptr;
-    bool      eventLoopRunning_ = false;
+    std::atomic<bool> eventLoopRunning_ {false};
 
     void startEventLoop();
     void stopEventLoop();

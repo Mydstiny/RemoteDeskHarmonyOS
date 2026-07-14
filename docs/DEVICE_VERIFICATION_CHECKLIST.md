@@ -47,6 +47,23 @@ hdc hilog | grep -E "RDP_NAPI|GL_RENDERER|HW_DECODER|RDP_ADAPTER|RUSTDESK|AUDIO|
 | 3.2 | TCP 握手到 MCS | hilog: "RDP skeleton session" (或连接失败) | ⬜ |
 | 3.3 | FreeRDP submodule 存在 | `git submodule status` 显示 freerdp/ commit | ⬜ |
 
+### R3.1: RDP 长连接退出稳定性
+
+采集 `RDP-SHUTDOWN` 与 `ExtLoader][SHUTDOWN` 日志。每次退出必须按同一 generation
+出现 `request`、`input-stop`、`trailing-stop`、`frame-pump-stop`、
+`connect-join`、`event-stop`、`drive-join`、`freerdp-disconnect`、`post-disconnect`、`context-free`、
+`complete`，并以 ArkTS `native-disconnect-return` 和 `arkts-return` 结束。
+
+| # | 场景 | 预期 | 实际 |
+|---|------|------|------|
+| 3.1.1 | 连接 2 分钟后正常退出 | 主界面立即可交互，无缺失 teardown 阶段 | ⬜ |
+| 3.1.2 | 持续鼠标与键盘输入时退出 | input worker 完成后才进入 FreeRDP disconnect | ⬜ |
+| 3.1.3 | 连接 30 分钟后退出 | 无 ANR/崩溃，所有 worker/context 释放 | ⬜ |
+| 3.1.4 | Home/前台恢复 10 次后退出 | renderer detach/restore 后 teardown 完整 | ⬜ |
+| 3.1.5 | 共享盘、音频、剪贴板分别开关 | connect/drive join 均有结束日志 | ⬜ |
+| 3.1.6 | 连续连接/断开 20 次 | 无残留 session、线程、renderer 或 audio | ⬜ |
+| 3.1.7 | 连接 2 小时后退出 | UI 不冻结，RSS/PSS 不持续线性增长 | ⬜ |
+
 ## R4: RustDesk 安全
 
 | # | 验证项 | 预期 | 实际 |
