@@ -17,8 +17,6 @@ import { firstInstallGuidePages, GuideContentPage } from '../services/GuideConte
 
 const GUIDE_KEY = 'guide_shown_v4';
 const LAST_SEEN_RELEASE_KEY = 'last_seen_release_version';
-// TEMP: 1.0.6 更新说明视觉验收期间，每次冷启动都展示；用户确认后删除。
-const FORCE_RELEASE_NOTES_PREVIEW: boolean = true;
 const RELEASE_DIALOG_ENTER_DELAY_MS = 120;
 const RELEASE_DIALOG_MOTION_MS = 260;
 
@@ -44,9 +42,7 @@ struct GuidePage {
       const shown: boolean = prefs.getSync(GUIDE_KEY, false) as boolean;
       const lastSeen: string = prefs.getSync(LAST_SEEN_RELEASE_KEY, '') as string;
       const releasePages: ReleaseNotePage[] = pagesForReleasedVersion(CURRENT_RELEASE_VERSION);
-      this.mode = FORCE_RELEASE_NOTES_PREVIEW && releasePages.length > 0 ?
-        StartupMode.RELEASE_NOTES :
-        resolveStartupMode(shown, lastSeen, CURRENT_RELEASE_VERSION, releasePages.length > 0);
+      this.mode = resolveStartupMode(shown, lastSeen, CURRENT_RELEASE_VERSION, releasePages.length > 0);
       if (this.mode === StartupMode.LOGIN) {
         router.replaceUrl({ url: 'pages/LoginPage' });
         return;
