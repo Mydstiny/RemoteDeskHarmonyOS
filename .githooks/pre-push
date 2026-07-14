@@ -23,6 +23,13 @@ while read -r local_ref local_sha remote_ref remote_sha; do
   [ -n "${local_ref:-}" ] || continue
   [ "$local_sha" != "$zero_sha" ] || continue
 
+  case "$local_ref:$remote_ref" in
+    refs/archive/*:*|*:refs/archive/*|refs/codex/*:*|*:refs/codex/*|refs/stash:*|*:refs/stash|refs/heads/archive/*:*|*:refs/heads/archive/*)
+      echo "Open-source compliance: refusing to publish local archive/session refs: $local_ref -> $remote_ref" >&2
+      exit 1
+      ;;
+  esac
+
   case "$remote_ref" in
     refs/heads/freerdp-ohos)
       continue
