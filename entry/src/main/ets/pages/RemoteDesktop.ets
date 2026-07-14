@@ -2615,6 +2615,7 @@ struct RemoteDesktop {
       return;
     }
     this.cleanupStarted = true;
+    const cleanupStartedAtMs: number = Date.now();
     if (shouldRestoreRemoteNavigation(reason, false)) {
       this.setRemoteNavigationHidden(false, reason);
     }
@@ -2623,7 +2624,8 @@ struct RemoteDesktop {
     this.activeSessionRegistry.clear(reason);
     this.clearRdpRenderWatchdog();
     this.clearRdpNativeStateMonitor();
-    hilog.info(RD_DOMAIN, RD_TAG, 'disconnectAndCleanup: reason=' + reason);
+    hilog.info(RD_DOMAIN, RD_TAG, '[RDP-SHUTDOWN] phase=arkts-entry reason=' + reason +
+      ' sessionId=' + this.sessionId.toString());
     // T-171: 断开时隐藏胶囊和面板 + 释放所有修饰键
     this.handleVisible = false;
     this.modifierPanelMounted = false;
@@ -2647,7 +2649,12 @@ struct RemoteDesktop {
       if (this.sessionId > 0) {
         this.disableRdpBackgroundVideoPrewarm('disconnect-cleanup');
         this.flushMouseMove();
+        const nativeDisconnectStartedAtMs: number = Date.now();
+        hilog.info(RD_DOMAIN, RD_TAG, '[RDP-SHUTDOWN] phase=native-disconnect-begin sessionId=' +
+          this.sessionId.toString());
         this.loader.disconnect();
+        hilog.info(RD_DOMAIN, RD_TAG, '[RDP-SHUTDOWN] phase=native-disconnect-return elapsedMs=' +
+          (Date.now() - nativeDisconnectStartedAtMs).toString());
         this.sessionId = -1;
         this.nativeHandles.markProtocolDisconnected();
       }
@@ -2656,9 +2663,13 @@ struct RemoteDesktop {
         this.decoderHandle = -1;
       }
       if (this.rendererHandle > 0) {
+        const rendererDestroyStartedAtMs: number = Date.now();
+        hilog.info(RD_DOMAIN, RD_TAG, '[RDP-SHUTDOWN] phase=renderer-destroy-begin');
         this.markXComponentSurfaceDetached('disconnectAndCleanup');
         this.loader.destroyRenderer();
         this.rendererHandle = -1;
+        hilog.info(RD_DOMAIN, RD_TAG, '[RDP-SHUTDOWN] phase=renderer-destroy-return elapsedMs=' +
+          (Date.now() - rendererDestroyStartedAtMs).toString());
       }
       this.loader.destroyAudioPlayer();
       this.clearFileTransferAutoHide();
@@ -2694,8 +2705,11 @@ struct RemoteDesktop {
       }
       this.connected = false;
       this.connectStarted = false;
+      hilog.info(RD_DOMAIN, RD_TAG, '[RDP-SHUTDOWN] phase=arkts-return elapsedMs=' +
+        (Date.now() - cleanupStartedAtMs).toString());
     } catch (err) {
-      // 清理阶段忽略异常
+      hilog.error(RD_DOMAIN, RD_TAG, '[RDP-SHUTDOWN] phase=arkts-error elapsedMs=' +
+        (Date.now() - cleanupStartedAtMs).toString() + ' err=' + JSON.stringify(err));
     }
   }
 
