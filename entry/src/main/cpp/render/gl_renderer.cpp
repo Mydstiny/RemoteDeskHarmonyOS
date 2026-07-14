@@ -11,6 +11,8 @@
 #include <cstring>
 #include <cstdlib>
 #include <chrono>
+#include <atomic>
+#include <memory>
 #include <GLES2/gl2ext.h>
 #include <ace/xcomponent/native_interface_xcomponent.h>
 #include <native_window/external_window.h>
@@ -27,12 +29,17 @@
 static OH_NativeXComponent* g_xc = nullptr;
 static EGLNativeWindowType g_nativeWindow = 0;
 static uint64_t g_surfaceId = 0;
-static bool g_surfaceReady = false;
+static std::atomic<bool> g_surfaceReady {false};
 static uint64_t g_surfaceWidth = 1920;
 static uint64_t g_surfaceHeight = 1080;
 static napi_ref g_exportsRef = nullptr;  // exports 持久引用, 用于延迟 XComponent 查询
 static bool g_surfaceIdWindowOwned = false;
-static bool g_surfaceDetached = false;
+static std::atomic<bool> g_surfaceDetached {false};
+static std::atomic<uint64_t> g_rendererGeneration {1};
+
+static uint64_t AdvanceRendererGeneration() {
+    return g_rendererGeneration.fetch_add(1, std::memory_order_acq_rel) + 1;
+}
 
 static void OnSurfaceCreatedCB(OH_NativeXComponent* component, void* window);
 static void OnSurfaceChangedCB(OH_NativeXComponent* component, void* window);
@@ -90,7 +97,8 @@ static bool RegisterXComponentCallbacks(const char* source) {
     OH_LOG_INFO(LOG_APP, "[GL] %{public}s: XComponent 已获取 (id=rdpSurface),"
                 " 窗口生命周期由 ArkTS SurfaceId 轮询驱动", source);
     OH_LOG_INFO(LOG_APP, "[GL-DIAG] g_surfaceReady=%{public}d g_nativeWindow=%{public}p",
-                g_surfaceReady ? 1 : 0, reinterpret_cast<void*>(g_nativeWindow));
+                g_surfaceReady.load(std::memory_order_acquire) ? 1 : 0,
+                reinterpret_cast<void*>(g_nativeWindow));
     return true;
 }
 
@@ -102,9 +110,10 @@ static bool SetNativeWindowFromSurfaceId(const char* surfaceId, int width, int h
     uint64_t id = strtoull(surfaceId, nullptr, 10);
     const bool hasNativeWindow = g_nativeWindow != 0;
     const bool replaceWindow = Render::ShouldReplaceSurfaceWindow(
-        hasNativeWindow, g_surfaceId, id, g_surfaceDetached);
+        hasNativeWindow, g_surfaceId, id,
+        g_surfaceDetached.load(std::memory_order_acquire));
     if (!replaceWindow) {
-        g_surfaceReady = true;
+        g_surfaceReady.store(true, std::memory_order_release);
         if (width > 0) { g_surfaceWidth = static_cast<uint64_t>(width); }
         if (height > 0) { g_surfaceHeight = static_cast<uint64_t>(height); }
         OH_LOG_INFO(LOG_APP, "[GL] setXComponentSurfaceId: reuse surfaceId=%{public}s win=%{public}p size=%{public}llux%{public}llu",
@@ -122,10 +131,10 @@ static bool SetNativeWindowFromSurfaceId(const char* surfaceId, int width, int h
                     "[GL] setXComponentSurfaceId: replace stale window oldSurfaceId=%{public}llu newSurfaceId=%{public}s detached=%{public}d win=%{public}p",
                     static_cast<unsigned long long>(g_surfaceId),
                     surfaceId,
-                    g_surfaceDetached ? 1 : 0,
+                    g_surfaceDetached.load(std::memory_order_acquire) ? 1 : 0,
                     reinterpret_cast<void*>(g_nativeWindow));
         g_nativeWindow = 0;
-        g_surfaceReady = false;
+        g_surfaceReady.store(false, std::memory_order_release);
         g_surfaceIdWindowOwned = false;
     }
 
@@ -139,9 +148,10 @@ static bool SetNativeWindowFromSurfaceId(const char* surfaceId, int width, int h
 
     g_nativeWindow = reinterpret_cast<EGLNativeWindowType>(window);
     g_surfaceId = id;
-    g_surfaceReady = true;
+    g_surfaceReady.store(true, std::memory_order_release);
     g_surfaceIdWindowOwned = true;
-    g_surfaceDetached = false;
+    g_surfaceDetached.store(false, std::memory_order_release);
+    AdvanceRendererGeneration();
     if (width > 0) { g_surfaceWidth = static_cast<uint64_t>(width); }
     if (height > 0) { g_surfaceHeight = static_cast<uint64_t>(height); }
     OH_LOG_INFO(LOG_APP, "[GL] setXComponentSurfaceId: surfaceId=%{public}s win=%{public}p size=%{public}llux%{public}llu",
@@ -154,8 +164,11 @@ static void OnSurfaceCreatedCB(OH_NativeXComponent* component, void* window) {
     if (g_surfaceIdWindowOwned && g_nativeWindow != 0) {
         OH_LOG_INFO(LOG_APP, "[GL] XComponent SurfaceCreated: 保留 SurfaceId window=%{public}p callbackWin=%{public}p size=%{public}llux%{public}llu",
                     reinterpret_cast<void*>(g_nativeWindow), window, g_surfaceWidth, g_surfaceHeight);
-        g_surfaceReady = true;
-        g_surfaceDetached = false;
+        const bool wasDetached = g_surfaceDetached.exchange(false, std::memory_order_acq_rel);
+        g_surfaceReady.store(true, std::memory_order_release);
+        if (wasDetached) {
+            AdvanceRendererGeneration();
+        }
         return;
     }
     if (window == nullptr) {
@@ -164,8 +177,9 @@ static void OnSurfaceCreatedCB(OH_NativeXComponent* component, void* window) {
     }
     g_nativeWindow = reinterpret_cast<EGLNativeWindowType>(window);
     g_surfaceId = 0;
-    g_surfaceReady = true;
-    g_surfaceDetached = false;
+    g_surfaceReady.store(true, std::memory_order_release);
+    g_surfaceDetached.store(false, std::memory_order_release);
+    AdvanceRendererGeneration();
     OH_LOG_INFO(LOG_APP, "[GL] XComponent SurfaceCreated: win=%{public}p size deferred %{public}llux%{public}llu",
                 window, g_surfaceWidth, g_surfaceHeight);
 }
@@ -188,8 +202,9 @@ static void OnSurfaceDestroyedCB(OH_NativeXComponent* component, void* window) {
     // 仅重置 flag — 不调用任何框架 API 避免触发框架内部崩溃路径
     OH_LOG_INFO(LOG_APP, "[GL] XComponent SurfaceDestroyed (win=%{public}p owned=%{public}d)",
                 window, g_surfaceIdWindowOwned ? 1 : 0);
-    g_surfaceReady = false;
-    g_surfaceDetached = true;
+    g_surfaceReady.store(false, std::memory_order_release);
+    g_surfaceDetached.store(true, std::memory_order_release);
+    AdvanceRendererGeneration();
     // 注意: 不在这里销毁 NativeWindow — 框架会在 detach 后自行清理。
     // 如果 SurfaceId 创建的 window 需要销毁, 由 ArkTS 侧 onSurfaceDestroyed 触发。
 }
@@ -199,8 +214,9 @@ static void MarkXComponentSurfaceDestroyed(const char* source) {
                 source,
                 reinterpret_cast<void*>(g_nativeWindow),
                 g_surfaceIdWindowOwned ? 1 : 0);
-    g_surfaceReady = false;
-    g_surfaceDetached = true;
+    g_surfaceReady.store(false, std::memory_order_release);
+    g_surfaceDetached.store(true, std::memory_order_release);
+    AdvanceRendererGeneration();
     // API 23 上 SurfaceId/native window 由 ArkUI XComponent 生命周期托管。
     // detach 后继续持有这个裸指针容易在 egl/native window 释放路径触发 vendor double free。
     g_nativeWindow = 0;
@@ -327,7 +343,7 @@ bool GLRenderer::MakeCurrent() {
         OH_LOG_WARN(LOG_APP, "[GL] eglMakeCurrent skipped: EGL not ready");
         return false;
     }
-    if (g_surfaceDetached) {
+    if (g_surfaceDetached.load(std::memory_order_acquire)) {
         OH_LOG_WARN(LOG_APP, "[GL] eglMakeCurrent skipped: XComponent surface already detached");
         return false;
     }
@@ -420,9 +436,10 @@ bool GLRenderer::InitEGL(const std::string& xcomponentId) {
 
     // R1: 优先使用 XComponent 窗口表面, 不可用时回退 Pbuffer
     OH_LOG_INFO(LOG_APP, "[GL-DIAG] InitEGL: g_surfaceReady=%{public}d g_nativeWindow=%{public}p",
-                g_surfaceReady ? 1 : 0, reinterpret_cast<void*>(g_nativeWindow));
+                g_surfaceReady.load(std::memory_order_acquire) ? 1 : 0,
+                reinterpret_cast<void*>(g_nativeWindow));
     bool windowSurfaceCreated = false;
-    if (g_surfaceReady && g_nativeWindow != 0) {
+    if (g_surfaceReady.load(std::memory_order_acquire) && g_nativeWindow != 0) {
         eglSurface_ = eglCreateWindowSurface(eglDisplay_, eglConfig_, g_nativeWindow, nullptr);
         if (eglSurface_ == EGL_NO_SURFACE) {
             OH_LOG_WARN(LOG_APP, "[GL] eglCreateWindowSurface 失败(%{public}x), 回退 Pbuffer", eglGetError());
@@ -435,7 +452,8 @@ bool GLRenderer::InitEGL(const std::string& xcomponentId) {
         }
     } else {
         OH_LOG_WARN(LOG_APP, "[GL] XComponent surface 未就绪 (ready=%{public}d win=%{public}p), 回退 Pbuffer",
-                    g_surfaceReady ? 1 : 0, reinterpret_cast<void*>(g_nativeWindow));
+                    g_surfaceReady.load(std::memory_order_acquire) ? 1 : 0,
+                    reinterpret_cast<void*>(g_nativeWindow));
     }
     if (eglSurface_ == EGL_NO_SURFACE) {
         // 回退: Pbuffer 离屏 (无 XComponent 或窗口创建失败时使用)
@@ -620,33 +638,66 @@ void GLRenderer::SetupRawTexture(int width, int height) {
 }
 
 void GLRenderer::RenderRawBGRA(const uint8_t* bgraData, int width, int height, int stride) {
-    RenderRawBGRAInternal(bgraData, width, height, stride, false, 0, 0, 0, 0);
+    (void)PresentRawBGRA(bgraData, width, height, stride, 0);
 }
 
 void GLRenderer::RenderRawBGRARect(const uint8_t* bgraData, int width, int height, int stride,
                                    int dirtyX, int dirtyY, int dirtyWidth, int dirtyHeight) {
-    RenderRawBGRAInternal(bgraData, width, height, stride, true,
-                          dirtyX, dirtyY, dirtyWidth, dirtyHeight);
+    (void)PresentRawBGRARect(bgraData, width, height, stride,
+                            dirtyX, dirtyY, dirtyWidth, dirtyHeight, 0);
 }
 
-void GLRenderer::RenderRawBGRAInternal(const uint8_t* bgraData, int width, int height, int stride,
-                                       bool useDirtyRect, int dirtyX, int dirtyY,
-                                       int dirtyWidth, int dirtyHeight) {
+RdpPresentMetrics GLRenderer::PresentRawBGRA(const uint8_t* bgraData, int width, int height,
+                                             int stride, uint64_t generation) {
+    return RenderRawBGRAInternal(bgraData, width, height, stride,
+                                 false, 0, 0, 0, 0, generation);
+}
+
+RdpPresentMetrics GLRenderer::PresentRawBGRARect(
+    const uint8_t* bgraData, int width, int height, int stride,
+    int dirtyX, int dirtyY, int dirtyWidth, int dirtyHeight, uint64_t generation) {
+    return RenderRawBGRAInternal(bgraData, width, height, stride, true,
+                                 dirtyX, dirtyY, dirtyWidth, dirtyHeight, generation);
+}
+
+bool GLRenderer::IsPresentationReady() {
+    std::lock_guard<std::mutex> lock(lifecycleMutex_);
+    return !destroying_ && initialized_ && rawShaderProgram_ != 0 &&
+        g_surfaceReady.load(std::memory_order_acquire) &&
+        !g_surfaceDetached.load(std::memory_order_acquire);
+}
+
+RdpPresentMetrics GLRenderer::RenderRawBGRAInternal(
+    const uint8_t* bgraData, int width, int height, int stride, bool useDirtyRect,
+    int dirtyX, int dirtyY, int dirtyWidth, int dirtyHeight, uint64_t generation) {
+    RdpPresentMetrics metrics;
+    metrics.generation = generation;
     std::lock_guard<std::mutex> lock(lifecycleMutex_);
     using clock = std::chrono::steady_clock;
-    const auto beginAt = clock::now();
-    if (destroying_ || g_surfaceDetached || !initialized_ || rawShaderProgram_ == 0) {
-        OH_LOG_WARN(LOG_APP, "[GL] RenderRawBGRA skipped: not ready init=%{public}d shader=%{public}u",
-                    initialized_ ? 1 : 0, rawShaderProgram_);
-        return;
+    if (generation != 0 &&
+        generation != g_rendererGeneration.load(std::memory_order_acquire)) {
+        metrics.result = RdpPresentResult::GenerationMismatch;
+        return metrics;
+    }
+    if (g_surfaceDetached.load(std::memory_order_acquire) ||
+        !g_surfaceReady.load(std::memory_order_acquire)) {
+        metrics.result = RdpPresentResult::SurfaceDetached;
+        return metrics;
+    }
+    if (destroying_ || !initialized_ || rawShaderProgram_ == 0) {
+        metrics.result = RdpPresentResult::RendererNotReady;
+        return metrics;
     }
     if (!bgraData || width <= 0 || height <= 0) {
-        return;
+        metrics.result = RdpPresentResult::InvalidFrame;
+        return metrics;
     }
     if (!MakeCurrent()) {
-        return;
+        metrics.result = RdpPresentResult::MakeCurrentFailed;
+        return metrics;
     }
 
+    const auto uploadBeginAt = clock::now();
     int rowStride = stride > 0 ? stride : width * 4;
     const bool textureWouldChange =
         rawTexture_ == 0 || width != rawTextureWidth_ || height != rawTextureHeight_;
@@ -655,7 +706,8 @@ void GLRenderer::RenderRawBGRAInternal(const uint8_t* bgraData, int width, int h
         OH_LOG_WARN(LOG_APP,
                     "[GL] RenderRawBGRA dirty skipped: texture not initialized for %{public}dx%{public}d",
                     width, height);
-        return;
+        metrics.result = RdpPresentResult::RendererNotReady;
+        return metrics;
     }
 
     // 首次或软解输出尺寸变化时重建纹理；sourceWidth_/sourceHeight_ 保持远端真实尺寸用于坐标映射。
@@ -720,7 +772,7 @@ void GLRenderer::RenderRawBGRAInternal(const uint8_t* bgraData, int width, int h
     glBindVertexArray(0);
     const auto drawAt = clock::now();
 
-    eglSwapBuffers(eglDisplay_, eglSurface_);
+    const bool swapped = eglSwapBuffers(eglDisplay_, eglSurface_) == EGL_TRUE;
     const auto swapAt = clock::now();
 
     GLenum err = glGetError();
@@ -729,19 +781,14 @@ void GLRenderer::RenderRawBGRAInternal(const uint8_t* bgraData, int width, int h
     }
     ReleaseCurrent();
     rawFrameCount_++;
-    const auto uploadUs = std::chrono::duration_cast<std::chrono::microseconds>(uploadAt - beginAt).count();
-    const auto drawUs = std::chrono::duration_cast<std::chrono::microseconds>(drawAt - uploadAt).count();
-    const auto swapUs = std::chrono::duration_cast<std::chrono::microseconds>(swapAt - drawAt).count();
-    const auto totalUs = std::chrono::duration_cast<std::chrono::microseconds>(swapAt - beginAt).count();
-    if (rawFrameCount_ <= 5 || rawFrameCount_ % 120 == 0 || totalUs > 20000 || swapUs > 16000) {
-        OH_LOG_INFO(LOG_APP,
-                    "[GL] RenderRawBGRA frame=%{public}d src=%{public}dx%{public}d surface=%{public}dx%{public}d"
-                    " upload=%{public}lldus draw=%{public}lldus swap=%{public}lldus total=%{public}lldus mode=%{public}s rect=%{public}d,%{public}d %{public}dx%{public}d",
-                    rawFrameCount_, width, height, width_, height_,
-                    static_cast<long long>(uploadUs), static_cast<long long>(drawUs),
-                    static_cast<long long>(swapUs), static_cast<long long>(totalUs),
-                    partialUpload ? "dirty" : "full", uploadX, uploadY, uploadW, uploadH);
-    }
+    metrics.uploadUs = std::chrono::duration_cast<std::chrono::microseconds>(
+        uploadAt - uploadBeginAt).count();
+    metrics.drawUs = std::chrono::duration_cast<std::chrono::microseconds>(
+        drawAt - uploadAt).count();
+    metrics.swapUs = std::chrono::duration_cast<std::chrono::microseconds>(
+        swapAt - drawAt).count();
+    metrics.result = swapped ? RdpPresentResult::Presented : RdpPresentResult::SwapFailed;
+    return metrics;
 }
 
 void GLRenderer::CreateQuadGeometry() {
@@ -770,7 +817,7 @@ void GLRenderer::CreateQuadGeometry() {
 
 void GLRenderer::RenderFrame(GLuint textureId) {
     std::lock_guard<std::mutex> lock(lifecycleMutex_);
-    if (destroying_ || g_surfaceDetached || !initialized_) {
+    if (destroying_ || g_surfaceDetached.load(std::memory_order_acquire) || !initialized_) {
         OH_LOG_WARN(LOG_APP, "[GL] 渲染器未初始化, 跳过渲染");
         return;
     }
@@ -847,6 +894,20 @@ void GLRenderer::SetSourceSize(int width, int height) {
     OH_LOG_INFO(LOG_APP, "[GL] 视频源尺寸更新为 %{public}dx%{public}d", width, height);
 }
 
+void GLRenderer::GetViewportSnapshot(int& vpX, int& vpY, int& vpW, int& vpH,
+                                     int& sourceWidth, int& sourceHeight,
+                                     int& surfaceWidth, int& surfaceHeight) {
+    std::lock_guard<std::mutex> lock(lifecycleMutex_);
+    vpX = lastVpX_;
+    vpY = lastVpY_;
+    vpW = lastVpW_;
+    vpH = lastVpH_;
+    sourceWidth = sourceWidth_;
+    sourceHeight = sourceHeight_;
+    surfaceWidth = width_;
+    surfaceHeight = height_;
+}
+
 void GLRenderer::Destroy() {
     std::lock_guard<std::mutex> lock(lifecycleMutex_);
     if (destroying_) {
@@ -854,7 +915,8 @@ void GLRenderer::Destroy() {
         return;
     }
     destroying_ = true;
-    const bool detachedWindowSurface = g_surfaceDetached && eglSurface_ != EGL_NO_SURFACE;
+    const bool detachedWindowSurface =
+        g_surfaceDetached.load(std::memory_order_acquire) && eglSurface_ != EGL_NO_SURFACE;
     OH_LOG_INFO(LOG_APP,
                 "[GL] Destroy begin init=%{public}d display=%{public}p surface=%{public}p context=%{public}p detached=%{public}d win=%{public}p owned=%{public}d",
                 initialized_ ? 1 : 0,
@@ -931,7 +993,7 @@ void GLRenderer::Destroy() {
                     reinterpret_cast<void*>(g_nativeWindow));
         g_nativeWindow = 0;
         g_surfaceId = 0;
-        g_surfaceReady = false;
+        g_surfaceReady.store(false, std::memory_order_release);
         g_surfaceIdWindowOwned = false;
     }
     initialized_ = false;
@@ -948,10 +1010,12 @@ namespace {
 // 存储活跃的渲染器实例 (NAPI 层传回的用户数据中)
 struct RendererContext {
     std::shared_ptr<GLRenderer> renderer;
+    uint64_t generation = 0;
 };
 
 // 活跃渲染器句柄 — 供 RenderRawBgraActive 零参数调用
 static std::atomic<int64_t> g_activeRendererHandle {0};
+static std::mutex g_activeRendererMutex;
 
 /**
  * NAPI: initRenderer(xcomponentId: string, width: number, height: number): number
@@ -988,7 +1052,7 @@ napi_value NapiInitRenderer(napi_env env, napi_callback_info info) {
     napi_create_int64(env, handleVal, &handle);
 
     // 设置为活跃渲染器 — 供 RenderRawBgraActive 等内部调用使用
-    g_activeRendererHandle.store(handleVal);
+    RendererNapi::SetActiveRenderer(handleVal);
 
     OH_LOG_INFO(LOG_APP, "[GL] NAPI initRenderer 成功, active renderer=%{public}lld",
                 static_cast<long long>(handleVal));
@@ -1029,14 +1093,24 @@ napi_value NapiResizeRenderer(napi_env env, napi_callback_info info) {
 
     int64_t handleVal;
     napi_get_value_int64(env, args[0], &handleVal);
-    auto* ctx = reinterpret_cast<RendererContext*>(handleVal);
 
     int32_t width, height;
     napi_get_value_int32(env, args[1], &width);
     napi_get_value_int32(env, args[2], &height);
 
-    if (ctx && ctx->renderer) {
-        ctx->renderer->Resize(width, height);
+    std::shared_ptr<GLRenderer> renderer;
+    {
+        std::lock_guard<std::mutex> lock(g_activeRendererMutex);
+        if (g_activeRendererHandle.load(std::memory_order_acquire) == handleVal) {
+            auto* ctx = reinterpret_cast<RendererContext*>(handleVal);
+            if (ctx && ctx->renderer) {
+                ctx->generation = AdvanceRendererGeneration();
+                renderer = ctx->renderer;
+            }
+        }
+    }
+    if (renderer) {
+        renderer->Resize(width, height);
     }
 
     napi_value undefined;
@@ -1200,20 +1274,26 @@ napi_value NapiGetRendererViewport(napi_env env, napi_callback_info info) {
         napi_get_value_int64(env, args[0], &handle);
     }
 
-    auto* ctx = reinterpret_cast<RendererContext*>(handle);
-    if (!ctx || !ctx->renderer || !ctx->renderer->IsInitialized()) {
+    std::shared_ptr<GLRenderer> renderer;
+    {
+        std::lock_guard<std::mutex> lock(g_activeRendererMutex);
+        if (handle == g_activeRendererHandle.load(std::memory_order_acquire)) {
+            auto* ctx = reinterpret_cast<RendererContext*>(handle);
+            if (ctx) {
+                renderer = ctx->renderer;
+            }
+        }
+    }
+    if (!renderer) {
         napi_value nullVal;
         napi_get_null(env, &nullVal);
         return nullVal;
     }
 
     int vpX = 0, vpY = 0, vpW = 0, vpH = 0;
-    ctx->renderer->GetLastViewport(vpX, vpY, vpW, vpH);
-
-    int srcW = ctx->renderer->GetSourceWidth();
-    int srcH = ctx->renderer->GetSourceHeight();
-    int surfW = ctx->renderer->GetWidth();
-    int surfH = ctx->renderer->GetHeight();
+    int srcW = 0, srcH = 0, surfW = 0, surfH = 0;
+    renderer->GetViewportSnapshot(vpX, vpY, vpW, vpH,
+                                  srcW, srcH, surfW, surfH);
 
     napi_value result;
     napi_create_object(env, &result);
@@ -1242,17 +1322,48 @@ napi_value NapiGetRendererViewport(napi_env env, napi_callback_info info) {
 } // anonymous namespace
 
 void RendererNapi::SetActiveRenderer(int64_t handle) {
-    g_activeRendererHandle.store(handle);
+    std::lock_guard<std::mutex> lock(g_activeRendererMutex);
+    const uint64_t generation = AdvanceRendererGeneration();
+    auto* ctx = reinterpret_cast<RendererContext*>(handle);
+    if (ctx) {
+        ctx->generation = generation;
+    }
+    g_activeRendererHandle.store(handle, std::memory_order_release);
     OH_LOG_INFO(LOG_APP, "[GL] active renderer set handle=%{public}lld",
                 static_cast<long long>(handle));
+}
+
+void RendererNapi::InvalidateActivePresentation() {
+    std::lock_guard<std::mutex> lock(g_activeRendererMutex);
+    if (g_activeRendererHandle.load(std::memory_order_acquire) > 0) {
+        AdvanceRendererGeneration();
+    }
+}
+
+bool RendererNapi::ReenableActivePresentation() {
+    std::lock_guard<std::mutex> lock(g_activeRendererMutex);
+    const int64_t handle = g_activeRendererHandle.load(std::memory_order_acquire);
+    if (handle <= 0 || g_surfaceDetached.load(std::memory_order_acquire) ||
+        !g_surfaceReady.load(std::memory_order_acquire)) {
+        return false;
+    }
+    auto* ctx = reinterpret_cast<RendererContext*>(handle);
+    if (!ctx || !ctx->renderer) {
+        return false;
+    }
+    ctx->generation = AdvanceRendererGeneration();
+    return true;
 }
 
 void RendererNapi::DeactivateRenderer(int64_t handle) {
     if (handle <= 0) {
         return;
     }
-    int64_t expected = handle;
-    g_activeRendererHandle.compare_exchange_strong(expected, 0);
+    std::lock_guard<std::mutex> lock(g_activeRendererMutex);
+    if (g_activeRendererHandle.load(std::memory_order_acquire) == handle) {
+        g_activeRendererHandle.store(0, std::memory_order_release);
+        AdvanceRendererGeneration();
+    }
 }
 
 void RendererNapi::DestroyRendererHandle(int64_t handle) {
@@ -1263,44 +1374,178 @@ void RendererNapi::DestroyRendererHandle(int64_t handle) {
     if (!ctx) {
         return;
     }
-    if (ctx->renderer) {
-        ctx->renderer->Destroy();
+    std::shared_ptr<GLRenderer> renderer;
+    {
+        std::lock_guard<std::mutex> lock(g_activeRendererMutex);
+        if (g_activeRendererHandle.load(std::memory_order_acquire) == handle) {
+            g_activeRendererHandle.store(0, std::memory_order_release);
+            AdvanceRendererGeneration();
+        }
+        renderer = std::move(ctx->renderer);
+    }
+    if (renderer) {
+        renderer->Destroy();
     }
     delete ctx;
 }
 
+RdpPresentationTarget RendererNapi::GetActivePresentationTarget() {
+    RdpPresentationTarget target;
+    std::shared_ptr<GLRenderer> renderer;
+    int64_t handle = 0;
+    {
+        std::lock_guard<std::mutex> lock(g_activeRendererMutex);
+        target.generation = g_rendererGeneration.load(std::memory_order_acquire);
+        if (g_surfaceDetached.load(std::memory_order_acquire) ||
+            !g_surfaceReady.load(std::memory_order_acquire)) {
+            target.rejection = RdpPresentResult::SurfaceDetached;
+            return target;
+        }
+        handle = g_activeRendererHandle.load(std::memory_order_acquire);
+        if (handle <= 0) {
+            target.rejection = RdpPresentResult::NoActiveRenderer;
+            return target;
+        }
+        auto* ctx = reinterpret_cast<RendererContext*>(handle);
+        if (!ctx || !ctx->renderer) {
+            target.rejection = RdpPresentResult::RendererNotReady;
+            return target;
+        }
+        if (ctx->generation != target.generation) {
+            target.rejection = RdpPresentResult::GenerationMismatch;
+            return target;
+        }
+        renderer = ctx->renderer;
+    }
+    if (!renderer->IsPresentationReady()) {
+        target.rejection = g_surfaceDetached.load(std::memory_order_acquire) ?
+            RdpPresentResult::SurfaceDetached : RdpPresentResult::RendererNotReady;
+        return target;
+    }
+    {
+        std::lock_guard<std::mutex> lock(g_activeRendererMutex);
+        if (handle != g_activeRendererHandle.load(std::memory_order_acquire) ||
+            target.generation != g_rendererGeneration.load(std::memory_order_acquire)) {
+            target.rejection = RdpPresentResult::GenerationMismatch;
+            return target;
+        }
+    }
+    target.rejection = RdpPresentResult::Presented;
+    return target;
+}
+
+bool RendererNapi::HasReadyActiveRenderer(uint64_t* generation) {
+    const RdpPresentationTarget target = GetActivePresentationTarget();
+    if (generation) {
+        *generation = target.generation;
+    }
+    return target.ready();
+}
+
+RdpPresentMetrics RendererNapi::PresentRawBgraActive(
+    const uint8_t* data, size_t size, int width, int height, int stride,
+    uint64_t generation) {
+    RdpPresentMetrics metrics;
+    metrics.generation = generation;
+    if (!data || size == 0 || width <= 0 || height <= 0 || stride <= 0) {
+        metrics.result = RdpPresentResult::InvalidFrame;
+        return metrics;
+    }
+    std::shared_ptr<GLRenderer> renderer;
+    {
+        std::lock_guard<std::mutex> lock(g_activeRendererMutex);
+        if (generation == 0 ||
+            generation != g_rendererGeneration.load(std::memory_order_acquire)) {
+            metrics.result = RdpPresentResult::GenerationMismatch;
+            return metrics;
+        }
+        if (g_surfaceDetached.load(std::memory_order_acquire) ||
+            !g_surfaceReady.load(std::memory_order_acquire)) {
+            metrics.result = RdpPresentResult::SurfaceDetached;
+            return metrics;
+        }
+        const int64_t handle = g_activeRendererHandle.load(std::memory_order_acquire);
+        if (handle <= 0) {
+            metrics.result = RdpPresentResult::NoActiveRenderer;
+            return metrics;
+        }
+        auto* ctx = reinterpret_cast<RendererContext*>(handle);
+        if (!ctx || !ctx->renderer) {
+            metrics.result = RdpPresentResult::RendererNotReady;
+            return metrics;
+        }
+        if (ctx->generation != generation) {
+            metrics.result = RdpPresentResult::GenerationMismatch;
+            return metrics;
+        }
+        renderer = ctx->renderer;
+    }
+    return renderer->PresentRawBGRA(data, width, height, stride, generation);
+}
+
+RdpPresentMetrics RendererNapi::PresentRawBgraRectActive(
+    const uint8_t* data, size_t size, int width, int height, int stride,
+    int dirtyX, int dirtyY, int dirtyWidth, int dirtyHeight, uint64_t generation) {
+    RdpPresentMetrics metrics;
+    metrics.generation = generation;
+    if (!data || size == 0 || width <= 0 || height <= 0 || stride <= 0 ||
+        dirtyX < 0 || dirtyY < 0 || dirtyWidth <= 0 || dirtyHeight <= 0) {
+        metrics.result = RdpPresentResult::InvalidFrame;
+        return metrics;
+    }
+    std::shared_ptr<GLRenderer> renderer;
+    {
+        std::lock_guard<std::mutex> lock(g_activeRendererMutex);
+        if (generation == 0 ||
+            generation != g_rendererGeneration.load(std::memory_order_acquire)) {
+            metrics.result = RdpPresentResult::GenerationMismatch;
+            return metrics;
+        }
+        if (g_surfaceDetached.load(std::memory_order_acquire) ||
+            !g_surfaceReady.load(std::memory_order_acquire)) {
+            metrics.result = RdpPresentResult::SurfaceDetached;
+            return metrics;
+        }
+        const int64_t handle = g_activeRendererHandle.load(std::memory_order_acquire);
+        if (handle <= 0) {
+            metrics.result = RdpPresentResult::NoActiveRenderer;
+            return metrics;
+        }
+        auto* ctx = reinterpret_cast<RendererContext*>(handle);
+        if (!ctx || !ctx->renderer) {
+            metrics.result = RdpPresentResult::RendererNotReady;
+            return metrics;
+        }
+        if (ctx->generation != generation) {
+            metrics.result = RdpPresentResult::GenerationMismatch;
+            return metrics;
+        }
+        renderer = ctx->renderer;
+    }
+    return renderer->PresentRawBGRARect(data, width, height, stride,
+                                        dirtyX, dirtyY, dirtyWidth, dirtyHeight, generation);
+}
+
 int RendererNapi::RenderRawBgraActive(
-    const uint8_t* data, size_t /*size*/, int width, int height, int stride) {
-    int64_t handle = g_activeRendererHandle.load();
-    if (handle <= 0) {
-        OH_LOG_WARN(LOG_APP, "[GL] RenderRawBgraActive skipped: no active renderer");
-        return -1;
+    const uint8_t* data, size_t size, int width, int height, int stride) {
+    const RdpPresentationTarget target = GetActivePresentationTarget();
+    if (!target.ready()) {
+        return static_cast<int>(target.rejection);
     }
-    auto* ctx = reinterpret_cast<RendererContext*>(handle);
-    if (!ctx || !ctx->renderer || !ctx->renderer->IsInitialized()) {
-        OH_LOG_WARN(LOG_APP, "[GL] RenderRawBgraActive skipped: renderer not ready");
-        return -2;
-    }
-    ctx->renderer->RenderRawBGRA(data, width, height, stride);
-    return 0;
+    return static_cast<int>(PresentRawBgraActive(
+        data, size, width, height, stride, target.generation).result);
 }
 
 int RendererNapi::RenderRawBgraRectActive(
-    const uint8_t* data, size_t /*size*/, int width, int height, int stride,
+    const uint8_t* data, size_t size, int width, int height, int stride,
     int dirtyX, int dirtyY, int dirtyWidth, int dirtyHeight) {
-    int64_t handle = g_activeRendererHandle.load();
-    if (handle <= 0) {
-        OH_LOG_WARN(LOG_APP, "[GL] RenderRawBgraRectActive skipped: no active renderer");
-        return -1;
+    const RdpPresentationTarget target = GetActivePresentationTarget();
+    if (!target.ready()) {
+        return static_cast<int>(target.rejection);
     }
-    auto* ctx = reinterpret_cast<RendererContext*>(handle);
-    if (!ctx || !ctx->renderer || !ctx->renderer->IsInitialized()) {
-        OH_LOG_WARN(LOG_APP, "[GL] RenderRawBgraRectActive skipped: renderer not ready");
-        return -2;
-    }
-    ctx->renderer->RenderRawBGRARect(data, width, height, stride,
-                                     dirtyX, dirtyY, dirtyWidth, dirtyHeight);
-    return 0;
+    return static_cast<int>(PresentRawBgraRectActive(
+        data, size, width, height, stride, dirtyX, dirtyY,
+        dirtyWidth, dirtyHeight, target.generation).result);
 }
 
 void RendererNapi::MakeCurrent(int64_t handle) {
@@ -1325,13 +1570,20 @@ void RendererNapi::RenderNative(int64_t handle, GLuint textureId) {
 }
 
 void RendererNapi::SetActiveSourceSize(int width, int height) {
-    int64_t handle = g_activeRendererHandle.load();
-    if (handle <= 0) {
-        return;
+    std::shared_ptr<GLRenderer> renderer;
+    {
+        std::lock_guard<std::mutex> lock(g_activeRendererMutex);
+        const int64_t handle = g_activeRendererHandle.load(std::memory_order_acquire);
+        if (handle <= 0) {
+            return;
+        }
+        auto* ctx = reinterpret_cast<RendererContext*>(handle);
+        if (ctx) {
+            renderer = ctx->renderer;
+        }
     }
-    auto* ctx = reinterpret_cast<RendererContext*>(handle);
-    if (ctx && ctx->renderer && ctx->renderer->IsInitialized()) {
-        ctx->renderer->SetSourceSize(width, height);
+    if (renderer) {
+        renderer->SetSourceSize(width, height);
     }
 }
 

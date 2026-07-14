@@ -60,14 +60,3 @@ RDP_TEST_CASE(rdp_render_policy_escalates_pump_replacement_to_full_frame) {
     RDP_ASSERT(RdpRenderPolicy::ShouldEscalatePumpSubmitToFullFrame(true, true, false));
     RDP_ASSERT(RdpRenderPolicy::ShouldEscalatePumpSubmitToFullFrame(true, false, true));
 }
-
-RDP_TEST_CASE(rdp_render_policy_queues_trailing_frame_for_throttled_paints) {
-    RDP_ASSERT(!RdpRenderPolicy::ShouldQueueTrailingFrameForSkippedPaint(true, 3));
-    RDP_ASSERT(!RdpRenderPolicy::ShouldQueueTrailingFrameForSkippedPaint(false, 2));
-    RDP_ASSERT(RdpRenderPolicy::ShouldQueueTrailingFrameForSkippedPaint(false, 3));
-}
-
-RDP_TEST_CASE(rdp_render_policy_delays_trailing_frame_to_coalesce_skipped_paints) {
-    RDP_ASSERT_EQ(RdpRenderPolicy::TrailingFrameDelayUs(1000), 16667);
-    RDP_ASSERT_EQ(RdpRenderPolicy::TrailingFrameDelayUs(33333), 33333);
-}

@@ -554,6 +554,7 @@ struct FreeRdpAdapter::Impl {
     std::atomic<bool>       driveThreadStarted {false};
     std::atomic<bool>       stopRequested {false};
     std::atomic<bool>       gdiInitialized {false};
+    std::atomic<bool>       presentationEnabled {false};
     uint32_t                driveDeviceId = 0;
     int                     paintCount = 0;
     int                     renderedPaintCount = 0;
@@ -571,18 +572,6 @@ struct FreeRdpAdapter::Impl {
     int                     lastFrameHeight = 0;
     bool                    forceNextFullFrame = false;
     std::string             graphicsMode = "gdi";
-    std::mutex              trailingFrameMutex;
-    std::condition_variable trailingFrameCv;
-    std::thread             trailingFrameThread;
-    bool                    trailingFrameWorkerRunning = false;
-    bool                    trailingFrameStop = false;
-    bool                    trailingFrameRequested = false;
-    const uint8_t*          trailingFrameData = nullptr;
-    size_t                  trailingFrameSize = 0;
-    int                     trailingFrameWidth = 0;
-    int                     trailingFrameHeight = 0;
-    int                     trailingFrameStride = 0;
-    int64_t                 trailingFrameDueUs = 0;
 
     void beginShutdownTrace() {
         shutdownStartedUs.store(steadyNowUs(), std::memory_order_release);
@@ -722,108 +711,6 @@ struct FreeRdpAdapter::Impl {
         inputQueueCv.notify_one();
     }
 
-    void trailingFrameWorkerLoop() {
-        while (true) {
-            const uint8_t* data = nullptr;
-            size_t size = 0;
-            int width = 0;
-            int height = 0;
-            int stride = 0;
-            {
-                std::unique_lock<std::mutex> lock(trailingFrameMutex);
-                trailingFrameCv.wait(lock, [this]() {
-                    return trailingFrameStop || trailingFrameRequested;
-                });
-                if (trailingFrameStop) {
-                    break;
-                }
-                const int64_t nowUs = steadyNowUs();
-                if (trailingFrameDueUs > nowUs) {
-                    trailingFrameCv.wait_for(
-                        lock, std::chrono::microseconds(trailingFrameDueUs - nowUs));
-                    continue;
-                }
-                data = trailingFrameData;
-                size = trailingFrameSize;
-                width = trailingFrameWidth;
-                height = trailingFrameHeight;
-                stride = trailingFrameStride;
-                trailingFrameRequested = false;
-            }
-
-            if (data && size > 0 && framePump.isRunning()) {
-                framePump.submitLatest(data, size, width, height, stride, 0, 0, 0, 0, false);
-            }
-        }
-    }
-
-    void startTrailingFrameWorker() {
-        std::lock_guard<std::mutex> lock(trailingFrameMutex);
-        if (trailingFrameWorkerRunning) {
-            return;
-        }
-        trailingFrameStop = false;
-        trailingFrameRequested = false;
-        trailingFrameWorkerRunning = true;
-        try {
-            trailingFrameThread = std::thread([this]() { trailingFrameWorkerLoop(); });
-        } catch (const std::exception& e) {
-            trailingFrameWorkerRunning = false;
-            OH_LOG_WARN(LOG_APP, "[RDP] trailing frame worker start failed: %{public}s", e.what());
-        } catch (...) {
-            trailingFrameWorkerRunning = false;
-            OH_LOG_WARN(LOG_APP, "[RDP] trailing frame worker start failed: unknown");
-        }
-    }
-
-    void stopTrailingFrameWorker() {
-        {
-            std::lock_guard<std::mutex> lock(trailingFrameMutex);
-            if (!trailingFrameWorkerRunning) {
-                return;
-            }
-            trailingFrameStop = true;
-            trailingFrameRequested = false;
-        }
-        trailingFrameCv.notify_all();
-        if (trailingFrameThread.joinable()) {
-            trailingFrameThread.join();
-        }
-        {
-            std::lock_guard<std::mutex> lock(trailingFrameMutex);
-            trailingFrameWorkerRunning = false;
-            trailingFrameStop = false;
-            trailingFrameData = nullptr;
-            trailingFrameSize = 0;
-        }
-    }
-
-    void cancelTrailingFrame() {
-        std::lock_guard<std::mutex> lock(trailingFrameMutex);
-        trailingFrameRequested = false;
-        trailingFrameData = nullptr;
-        trailingFrameSize = 0;
-    }
-
-    void scheduleTrailingFrame(const uint8_t* data, size_t size, int width, int height,
-                               int stride, int64_t nowUs) {
-        {
-            std::lock_guard<std::mutex> lock(trailingFrameMutex);
-            if (!trailingFrameWorkerRunning || trailingFrameStop) {
-                return;
-            }
-            trailingFrameData = data;
-            trailingFrameSize = size;
-            trailingFrameWidth = width;
-            trailingFrameHeight = height;
-            trailingFrameStride = stride;
-            trailingFrameDueUs =
-                nowUs + RdpRenderPolicy::TrailingFrameDelayUs(minRenderIntervalUs);
-            trailingFrameRequested = true;
-        }
-        trailingFrameCv.notify_one();
-    }
-
     void startSessionWorkers(FreeRdpAdapter* owner) {
         std::lock_guard<std::mutex> lifecycleLock(workerLifecycleMutex);
         startInputQueueWorker(owner);
@@ -831,7 +718,6 @@ struct FreeRdpAdapter::Impl {
             OH_LOG_WARN(LOG_APP, "[RDP] frame pump unavailable; falling back to direct render path");
             return;
         }
-        startTrailingFrameWorker();
     }
 
     void stopSessionWorkers() {
@@ -839,9 +725,6 @@ struct FreeRdpAdapter::Impl {
         traceShutdown("input-stop", "begin");
         stopInputQueueWorker();
         traceShutdown("input-stop", "complete");
-        traceShutdown("trailing-stop", "begin");
-        stopTrailingFrameWorker();
-        traceShutdown("trailing-stop", "complete");
         traceShutdown("frame-pump-stop", "begin");
         framePump.stop();
         traceShutdown("frame-pump-stop", "complete");
@@ -1361,7 +1244,9 @@ BOOL FreeRdpAdapter::cbPostConnect(freerdp* instance) {
     self->impl_->lastRenderResult = 0;
     self->impl_->lastFrameWidth = 0;
     self->impl_->lastFrameHeight = 0;
-    self->impl_->forceNextFullFrame = false;
+    self->impl_->forceNextFullFrame = true;
+    RendererNapi::ReenableActivePresentation();
+    self->impl_->presentationEnabled.store(true, std::memory_order_release);
     self->impl_->startSessionWorkers(self);
     OH_LOG_INFO(LOG_APP, "[RDP] GDI initialized: BGRA32 primary buffer ready");
     return TRUE;
@@ -1374,6 +1259,9 @@ void FreeRdpAdapter::cbPostDisconnect(freerdp* instance) {
     if (!self) return;
 
     self->impl_->traceShutdown("post-disconnect", "begin");
+    self->impl_->presentationEnabled.store(false, std::memory_order_release);
+    RendererNapi::InvalidateActivePresentation();
+    self->impl_->framePump.invalidatePending();
     self->impl_->stopSessionWorkers();
     if (self->impl_->gdiInitialized.exchange(false, std::memory_order_acq_rel) &&
         instance->context->gdi) {
@@ -1391,6 +1279,7 @@ BOOL FreeRdpAdapter::cbBeginPaint(rdpContext* context) {
 }
 
 BOOL FreeRdpAdapter::cbEndPaint(rdpContext* context) {
+    const int64_t callbackBeginUs = steadyNowUs();
     auto* ctx = reinterpret_cast<FreeRdpContext*>(context);
     if (!ctx) return FALSE;
     auto* self = ctx->adapter;
@@ -1418,7 +1307,8 @@ BOOL FreeRdpAdapter::cbEndPaint(rdpContext* context) {
         const bool frameSizeChanged =
             self->impl_->lastFrameWidth != 0 &&
             (self->impl_->lastFrameWidth != w || self->impl_->lastFrameHeight != h);
-        const bool requiresFullFrameResync = self->impl_->forceNextFullFrame;
+        const bool requiresFullFrameResync = self->impl_->forceNextFullFrame ||
+            self->impl_->framePump.consumeFullResyncRequired();
         // Keep the June 26 stable presentation path: throttled frames render full primary buffers.
         constexpr bool kEnableDirtyRectUploads = false;
         const bool useDirtyRect = !frameSizeChanged &&
@@ -1466,8 +1356,7 @@ BOOL FreeRdpAdapter::cbEndPaint(rdpContext* context) {
         recordRemoteVideoFrame(renderBytes, w, h);
         g_rdpVideoPerf.recordIngressFrame("rdp", w, h, renderBytes, true);
 
-        // FreeRDP 的更新回调运行在协议事件线程。首连桌面会收到大量条带更新，
-        // 每条都同步全屏上传/Swap 会反过来阻塞协议接收，表现为 CRT 扫描式刷屏。
+        // Keep protocol callbacks bounded. Queued submissions own their pixels before return.
         constexpr int64_t kBaseRenderIntervalUs = 16667; // 约 60fps
         constexpr int64_t kModerateRenderIntervalUs = 33333; // 约 30fps
         constexpr int64_t kHeavyRenderIntervalUs = 50000; // 约 20fps
@@ -1477,65 +1366,108 @@ BOOL FreeRdpAdapter::cbEndPaint(rdpContext* context) {
         int ret = 0;
         int64_t renderCostUs = 0;
         if (shouldRender) {
-            self->impl_->cancelTrailingFrame();
-            const int64_t renderBeginUs = steadyNowUs();
+            const RdpPresentationTarget target =
+                RendererNapi::GetActivePresentationTarget();
+            const bool presentationAllowed =
+                self->impl_->presentationEnabled.load(std::memory_order_acquire) && target.ready();
             bool queued = false;
-            if (self->impl_->renderedPaintCount >= 3) {
-                queued = self->impl_->framePump.submitLatest(
-                    data, size, w, h, stride,
-                    dirtyRect.x, dirtyRect.y, dirtyRect.width, dirtyRect.height, useDirtyRect);
+            RdpPresentMetrics present;
+            present.generation = target.generation;
+            if (!self->impl_->presentationEnabled.load(std::memory_order_acquire)) {
+                present.result = RdpPresentResult::RendererNotReady;
+            } else if (!target.ready()) {
+                present.result = target.rejection;
+            } else if (self->impl_->renderedPaintCount >= 3) {
+                RdpFrameSubmission submission;
+                const int64_t copyBeginUs = steadyNowUs();
+                try {
+                    submission.pixels.assign(data, data + size);
+                } catch (const std::exception& e) {
+                    OH_LOG_WARN(LOG_APP, "[RDP-PRESENT] frame copy failed: %{public}s", e.what());
+                } catch (...) {
+                    OH_LOG_WARN(LOG_APP, "[RDP-PRESENT] frame copy failed: unknown");
+                }
+                if (!submission.pixels.empty()) {
+                    submission.width = w;
+                    submission.height = h;
+                    submission.stride = stride;
+                    submission.dirtyX = dirtyRect.x;
+                    submission.dirtyY = dirtyRect.y;
+                    submission.dirtyWidth = dirtyRect.width;
+                    submission.dirtyHeight = dirtyRect.height;
+                    submission.dirtyValid = false;
+                    submission.rendererGeneration = target.generation;
+                    submission.copiedBytes = size;
+                    submission.copyUs = steadyNowUs() - copyBeginUs;
+                    submission.callbackUs = steadyNowUs() - callbackBeginUs;
+                    submission.enqueuedAtUs = steadyNowUs();
+                    queued = self->impl_->framePump.submitLatest(std::move(submission));
+                }
             }
-            if (RdpRenderPolicy::ShouldRenderDirect(self->impl_->renderedPaintCount, queued)) {
+            if (presentationAllowed &&
+                RdpRenderPolicy::ShouldRenderDirect(self->impl_->renderedPaintCount, queued)) {
                 std::lock_guard<std::mutex> renderLock(self->impl_->renderMutex);
                 if (useDirtyRect) {
                     const uint8_t* dirtyData = data +
                         static_cast<size_t>(dirtyRect.y) * static_cast<size_t>(stride) +
                         static_cast<size_t>(dirtyRect.x) * 4U;
-                    ret = RendererNapi::RenderRawBgraRectActive(
+                    present = RendererNapi::PresentRawBgraRectActive(
                         dirtyData, renderBytes, w, h, stride,
-                        dirtyRect.x, dirtyRect.y, dirtyRect.width, dirtyRect.height);
+                        dirtyRect.x, dirtyRect.y, dirtyRect.width, dirtyRect.height,
+                        target.generation);
                 } else {
-                    ret = RendererNapi::RenderRawBgraActive(data, size, w, h, stride);
+                    present = RendererNapi::PresentRawBgraActive(
+                        data, size, w, h, stride, target.generation);
                 }
+                self->impl_->framePump.recordDirectPresent(present, steadyNowUs());
+            } else if (queued) {
+                present.result = RdpPresentResult::Presented;
+            } else {
+                self->impl_->framePump.recordDirectPresent(present, steadyNowUs());
             }
+            ret = static_cast<int>(present.result);
             self->impl_->lastRenderResult = ret;
-            renderCostUs = steadyNowUs() - renderBeginUs;
+            renderCostUs = queued ? self->impl_->framePump.lastWorkerCostUs() : present.workerUs();
             self->impl_->lastRenderCostUs = renderCostUs;
             self->impl_->lastRenderBytes = static_cast<uint64_t>(renderBytes);
-            g_rdpVideoPerf.recordRenderCostUs(0, 0, 0, renderCostUs);
-            self->impl_->lastRenderUs = steadyNowUs();
-            self->impl_->lastFrameWidth = w;
-            self->impl_->lastFrameHeight = h;
-            if (!useDirtyRect) {
-                self->impl_->forceNextFullFrame = false;
+            if (renderCostUs > 0) {
+                g_rdpVideoPerf.recordRenderCostUs(0, 0, 0, renderCostUs);
             }
-            self->impl_->renderedPaintCount++;
-            if (renderCostUs > 50000) {
+            if (queued || present.presented()) {
+                self->impl_->lastRenderUs = steadyNowUs();
+                self->impl_->lastFrameWidth = w;
+                self->impl_->lastFrameHeight = h;
+                self->impl_->forceNextFullFrame = false;
+                self->impl_->renderedPaintCount++;
+            } else {
+                self->impl_->forceNextFullFrame = true;
+            }
+            if (renderCostUs > 50000 && (queued || present.presented())) {
                 self->impl_->slowRenderCount++;
                 self->impl_->minRenderIntervalUs = kHeavyRenderIntervalUs;
-            } else if (renderCostUs > 25000) {
+            } else if (renderCostUs > 25000 && (queued || present.presented())) {
                 self->impl_->slowRenderCount++;
                 self->impl_->minRenderIntervalUs = kModerateRenderIntervalUs;
-            } else if (renderCostUs < 12000 && self->impl_->minRenderIntervalUs > kBaseRenderIntervalUs) {
+            } else if (renderCostUs > 0 && renderCostUs < 12000 &&
+                       self->impl_->minRenderIntervalUs > kBaseRenderIntervalUs) {
                 self->impl_->slowRenderCount = 0;
                 self->impl_->minRenderIntervalUs = kBaseRenderIntervalUs;
             }
         } else {
             self->impl_->skippedPaintCount++;
             self->impl_->forceNextFullFrame = true;
-            if (RdpRenderPolicy::ShouldQueueTrailingFrameForSkippedPaint(
-                    shouldRender, self->impl_->renderedPaintCount)) {
-                self->impl_->scheduleTrailingFrame(data, size, w, h, stride, nowUs);
-            }
         }
 
         clearInvalid();
+        self->impl_->framePump.recordInvalid(
+            dirtyRect.valid ? static_cast<uint64_t>(dirtyRect.width) *
+                static_cast<uint64_t>(dirtyRect.height) : 0,
+            steadyNowUs() - callbackBeginUs, steadyNowUs());
 
         const int64_t sinceFirstMs = (nowUs - self->impl_->firstPaintUs) / 1000;
         const bool diagDue = self->impl_->lastRenderDiagUs == 0 ||
             nowUs - self->impl_->lastRenderDiagUs >= 1000000;
-        if (self->impl_->paintCount <= 5 || self->impl_->paintCount % 120 == 0 ||
-            ret != 0 || diagDue) {
+        if (diagDue) {
             self->impl_->lastRenderDiagUs = nowUs;
             Render::VideoPerfSnapshot perf = g_rdpVideoPerf.snapshotAndReset();
             Render::VideoPressureLevel pressure = Render::classifyVideoPressure(perf);
@@ -1772,6 +1704,9 @@ void FreeRdpAdapter::disconnectActiveInstance() {
 }
 
 void FreeRdpAdapter::cleanupInstance() {
+    impl_->presentationEnabled.store(false, std::memory_order_release);
+    RendererNapi::InvalidateActivePresentation();
+    impl_->framePump.invalidatePending();
     impl_->stopSessionWorkers();
     freerdp* doomedInstance = nullptr;
     {
@@ -2138,6 +2073,9 @@ void FreeRdpAdapter::disconnect() {
     }
     impl_->beginShutdownTrace();
     impl_->stopRequested.store(true, std::memory_order_release);
+    impl_->presentationEnabled.store(false, std::memory_order_release);
+    RendererNapi::InvalidateActivePresentation();
+    impl_->framePump.invalidatePending();
 
     impl_->stopSessionWorkers();
     abortActiveConnection();
@@ -2209,21 +2147,44 @@ ConnectionState FreeRdpAdapter::getState() {
 }
 
 void FreeRdpAdapter::requestFrameRefresh() {
-    if (!instance_ || !instance_->context || !instance_->context->gdi ||
-        !instance_->context->gdi->primary_buffer) {
-        OH_LOG_WARN(LOG_APP, "[RDP] requestFrameRefresh skipped: GDI primary buffer not ready");
+    if (!impl_->presentationEnabled.load(std::memory_order_acquire)) {
         return;
     }
-    auto* gdi = instance_->context->gdi;
-    const int w = gdi->width;
-    const int h = gdi->height;
-    const int stride = gdi->stride;
-    const size_t size = static_cast<size_t>(stride * h);
-    std::lock_guard<std::mutex> renderLock(impl_->renderMutex);
-    const int ret = RendererNapi::RenderRawBgraActive(gdi->primary_buffer, size, w, h, stride);
-    OH_LOG_INFO(LOG_APP,
-        "[RDP] requestFrameRefresh rendered current primary ret=%{public}d frame=%{public}dx%{public}d stride=%{public}d",
-        ret, w, h, stride);
+    const RdpPresentationTarget target = RendererNapi::GetActivePresentationTarget();
+    if (!target.ready()) {
+        return;
+    }
+
+    RdpFrameSubmission submission;
+    const int64_t copyBeginUs = steadyNowUs();
+    {
+        std::lock_guard<std::mutex> instanceLock(impl_->instanceMutex);
+        if (!instance_ || !instance_->context || !instance_->context->gdi ||
+            !instance_->context->gdi->primary_buffer) {
+            OH_LOG_WARN(LOG_APP, "[RDP] requestFrameRefresh skipped: GDI primary buffer not ready");
+            return;
+        }
+        auto* gdi = instance_->context->gdi;
+        submission.width = gdi->width;
+        submission.height = gdi->height;
+        submission.stride = gdi->stride;
+        const size_t size = static_cast<size_t>(submission.stride) *
+            static_cast<size_t>(submission.height);
+        try {
+            submission.pixels.assign(gdi->primary_buffer, gdi->primary_buffer + size);
+        } catch (...) {
+            OH_LOG_WARN(LOG_APP, "[RDP] requestFrameRefresh skipped: frame copy failed");
+            return;
+        }
+    }
+    submission.rendererGeneration = target.generation;
+    submission.copiedBytes = submission.pixels.size();
+    submission.copyUs = steadyNowUs() - copyBeginUs;
+    submission.callbackUs = submission.copyUs;
+    submission.enqueuedAtUs = steadyNowUs();
+    if (!impl_->framePump.submitLatest(std::move(submission))) {
+        OH_LOG_WARN(LOG_APP, "[RDP] requestFrameRefresh skipped: frame pump unavailable");
+    }
 }
 
 RdpCertificateInfo FreeRdpAdapter::probeRdpCertificate(const std::string& host, int port,
@@ -2250,6 +2211,37 @@ RdpRenderStats FreeRdpAdapter::getRdpRenderStats() {
     stats.pumpSubmitted = impl_->framePump.submitted();
     stats.pumpRendered = impl_->framePump.rendered();
     stats.pumpReplaced = impl_->framePump.replaced();
+    stats.pumpRejected = impl_->framePump.rejected();
+    const RdpPresentationMetricsSnapshot presentation =
+        impl_->framePump.metricsSnapshot(steadyNowUs());
+    stats.invalidEvents = presentation.invalidEvents;
+    stats.invalidPixels = presentation.invalidPixels;
+    stats.copiedBytes = presentation.copiedBytes;
+    stats.presentationRejected = presentation.rejectedFrames;
+    stats.surfaceDetachedRejections = presentation.surfaceDetachedRejections;
+    stats.generationRejections = presentation.generationRejections;
+    stats.presentationWindowSamples = presentation.windowSamples;
+    stats.callbackP50Us = presentation.callbackUs.p50;
+    stats.callbackP95Us = presentation.callbackUs.p95;
+    stats.callbackMaxUs = presentation.callbackUs.max;
+    stats.copyP50Us = presentation.copyUs.p50;
+    stats.copyP95Us = presentation.copyUs.p95;
+    stats.copyMaxUs = presentation.copyUs.max;
+    stats.queueP50Us = presentation.queueWaitUs.p50;
+    stats.queueP95Us = presentation.queueWaitUs.p95;
+    stats.queueMaxUs = presentation.queueWaitUs.max;
+    stats.uploadP50Us = presentation.uploadUs.p50;
+    stats.uploadP95Us = presentation.uploadUs.p95;
+    stats.uploadMaxUs = presentation.uploadUs.max;
+    stats.drawP50Us = presentation.drawUs.p50;
+    stats.drawP95Us = presentation.drawUs.p95;
+    stats.drawMaxUs = presentation.drawUs.max;
+    stats.swapP50Us = presentation.swapUs.p50;
+    stats.swapP95Us = presentation.swapUs.p95;
+    stats.swapMaxUs = presentation.swapUs.max;
+    stats.workerP50Us = presentation.workerUs.p50;
+    stats.workerP95Us = presentation.workerUs.p95;
+    stats.workerMaxUs = presentation.workerUs.max;
     stats.graphicsMode = impl_->graphicsMode;
     {
         std::lock_guard<std::mutex> inputLock(impl_->inputQueueMutex);
@@ -2286,13 +2278,19 @@ bool FreeRdpAdapter::presentCachedBackgroundFrame() {
         OH_LOG_INFO(LOG_APP, "[RDP-PREWARM] no cached frame to present");
         return false;
     }
-    std::lock_guard<std::mutex> renderLock(impl_->renderMutex);
-    const int ret = RendererNapi::RenderRawBgraActive(
-        snapshot.data.data(), snapshot.data.size(), snapshot.width, snapshot.height, snapshot.stride);
-    OH_LOG_INFO(LOG_APP,
-        "[RDP-PREWARM] present cached frame ret=%{public}d size=%{public}dx%{public}d",
-        ret, snapshot.width, snapshot.height);
-    return ret == 0;
+    const RdpPresentationTarget target = RendererNapi::GetActivePresentationTarget();
+    if (!impl_->presentationEnabled.load(std::memory_order_acquire) || !target.ready()) {
+        return false;
+    }
+    RdpFrameSubmission submission;
+    submission.pixels = std::move(snapshot.data);
+    submission.width = snapshot.width;
+    submission.height = snapshot.height;
+    submission.stride = snapshot.stride;
+    submission.rendererGeneration = target.generation;
+    submission.copiedBytes = 0;
+    submission.enqueuedAtUs = steadyNowUs();
+    return impl_->framePump.submitLatest(std::move(submission));
 }
 
 // ---- 输入事件 ----
