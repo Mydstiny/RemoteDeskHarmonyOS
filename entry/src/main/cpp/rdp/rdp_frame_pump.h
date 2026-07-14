@@ -6,17 +6,20 @@
 #define RDP_FRAME_PUMP_H
 
 #include "rdp_presentation_metrics.h"
+#include "rdp_damage_accumulator.h"
 
 #include <atomic>
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <mutex>
+#include <memory>
 #include <thread>
 #include <vector>
 
 struct RdpFrameSubmission {
     std::vector<uint8_t> pixels;
+    std::shared_ptr<RdpDamageAccumulator> damageSource;
     int width = 0;
     int height = 0;
     int stride = 0;
@@ -45,6 +48,7 @@ public:
     bool isRunning() const;
 
     void recordInvalid(uint64_t pixels, int64_t callbackUs, int64_t nowUs);
+    void recordCopy(uint64_t copiedBytes, int64_t copyUs, int64_t nowUs);
     void recordDirectPresent(const RdpPresentMetrics& present, int64_t nowUs);
     RdpPresentationMetricsSnapshot metricsSnapshot(int64_t nowUs);
     int64_t lastWorkerCostUs() const;
