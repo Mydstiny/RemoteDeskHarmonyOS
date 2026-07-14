@@ -63,6 +63,21 @@ if (($unrelatedOutput -join "`n") -notmatch 'unrelated to public main') {
   throw 'Pre-push history guard rejected unrelated history for an unexpected reason.'
 }
 
+$archiveLine = "refs/archive/heads/legacy $publicHead refs/archive/heads/legacy $zero"
+$ErrorActionPreference = 'Continue'
+try {
+  $archiveOutput = @($archiveLine | & $bash $hook origin 'https://github.com/Mydstiny/RemoteDeskHarmonyOS.git' 2>&1)
+  $archiveExit = $LASTEXITCODE
+} finally {
+  $ErrorActionPreference = $previousErrorAction
+}
+if ($archiveExit -eq 0) {
+  throw 'Pre-push history guard allowed a local archive ref.'
+}
+if (($archiveOutput -join "`n") -notmatch 'archive/session refs') {
+  throw 'Pre-push history guard rejected an archive ref for an unexpected reason.'
+}
+
 Pop-Location
 Write-Host 'Pre-push public-history guard test passed.'
 exit 0

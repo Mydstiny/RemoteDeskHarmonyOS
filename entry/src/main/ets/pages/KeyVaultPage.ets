@@ -701,9 +701,16 @@ export struct KeyVaultPage {
           if (this.sshKeys.length === 0) {
             ListItem() {
               Column() {
-                Text('还没有 SSH 密钥').fontSize(AppTheme.fontSize.body).fontColor(this.pal().text2).fontFamily(this.font())
-                Text('点击下方加号添加').fontSize(12).fontColor(this.pal().text3).margin({ top: 6 }).fontFamily(this.font())
+                SymbolGlyph($r('sys.symbol.key_fill'))
+                  .fontSize(48).fontColor([this.pal().text3])
+                Text('还没有 SSH 密钥')
+                  .fontSize(17).fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font())
+                  .margin({ top: 16 })
+                Text('点击底部 + 添加 SSH 密钥')
+                  .fontSize(13).fontColor(this.pal().text3).fontFamily(this.font())
+                  .margin({ top: 6 }).lineHeight(20)
               }.width('100%').constraintSize({ minHeight: 400 }).justifyContent(FlexAlign.Center)
+                .alignItems(HorizontalAlign.Center)
             }
           } else {
             LazyForEach(this.sshKeyDataSource, (key: SshKey) => {
@@ -777,9 +784,16 @@ export struct KeyVaultPage {
           } else if (this.totpEntries.length === 0) {
             ListItem() {
               Column() {
-                Text('还没有 2FA 验证器').fontSize(AppTheme.fontSize.body).fontColor(this.pal().text2).fontFamily(this.font())
-                Text('点击下方加号添加').fontSize(12).fontColor(this.pal().text3).margin({ top: 6 }).fontFamily(this.font())
+                SymbolGlyph($r('sys.symbol.checkmark_shield'))
+                  .fontSize(48).fontColor([this.pal().text3])
+                Text('还没有 2FA 验证器')
+                  .fontSize(17).fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font())
+                  .margin({ top: 16 })
+                Text('点击底部 + 添加 2FA 验证器')
+                  .fontSize(13).fontColor(this.pal().text3).fontFamily(this.font())
+                  .margin({ top: 6 }).lineHeight(20)
               }.width('100%').constraintSize({ minHeight: 400 }).justifyContent(FlexAlign.Center)
+                .alignItems(HorizontalAlign.Center)
             }
           } else {
             LazyForEach(this.totpEntryDataSource, (entry: TotpEntry) => {
@@ -1055,10 +1069,17 @@ export struct KeyVaultPage {
         }
         if (this.sshKeys.length === 0) {
           Column() {
-            Text('还没有 SSH 密钥').fontSize(AppTheme.fontSize.body).fontColor(this.pal().text2).fontFamily(this.font())
-            Text('点击下方加号添加').fontSize(12).fontColor(this.pal().text3).margin({ top: 6 }).fontFamily(this.font())
+            SymbolGlyph($r('sys.symbol.key_fill'))
+              .fontSize(48).fontColor([this.pal().text3])
+            Text('还没有 SSH 密钥')
+              .fontSize(17).fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font())
+              .margin({ top: 16 })
+            Text('点击底部 + 添加 SSH 密钥')
+              .fontSize(13).fontColor(this.pal().text3).fontFamily(this.font())
+              .margin({ top: 6 }).lineHeight(20)
           }
           .width('100%').layoutWeight(1).justifyContent(FlexAlign.Center)
+          .alignItems(HorizontalAlign.Center)
         } else {
           List({ space: 8 }) {
             LazyForEach(this.sshKeyDataSource, (key: SshKey) => {
@@ -1117,10 +1138,17 @@ export struct KeyVaultPage {
       Column() {
         if (this.totpEntries.length === 0) {
           Column() {
-            Text('还没有 2FA 验证器').fontSize(AppTheme.fontSize.body).fontColor(this.pal().text2).fontFamily(this.font())
-            Text('点击下方加号添加').fontSize(12).fontColor(this.pal().text3).margin({ top: 6 }).fontFamily(this.font())
+            SymbolGlyph($r('sys.symbol.checkmark_shield'))
+              .fontSize(48).fontColor([this.pal().text3])
+            Text('还没有 2FA 验证器')
+              .fontSize(17).fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font())
+              .margin({ top: 16 })
+            Text('点击底部 + 添加 2FA 验证器')
+              .fontSize(13).fontColor(this.pal().text3).fontFamily(this.font())
+              .margin({ top: 6 }).lineHeight(20)
           }
           .width('100%').layoutWeight(1).justifyContent(FlexAlign.Center)
+          .alignItems(HorizontalAlign.Center)
         } else {
           // 选择工具栏
           if (this.selectionMode && this.keyVaultInnerTab === 1) {

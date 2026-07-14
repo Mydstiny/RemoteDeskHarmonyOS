@@ -74,6 +74,7 @@ import { sheetOpenDelayMsAfterDismiss } from '../services/SheetTransitionPolicy'
 import { cloudSyncDetailSpec } from '../services/CloudSyncGuidancePolicy';
 import {
   settingsLeafSheetClosedState,
+  settingsLeafSheetDismissRequestedState,
   shouldOpenRestoreConfirmation
 } from '../services/SettingsLeafSheetLifecyclePolicy';
 import {
@@ -735,6 +736,17 @@ struct HostListPage {
       this.settingsLeafSheetCloseRequested = true;
       this.settingsLeafSheetClosingMode = this.settingsLeafSheetMode;
       this.settingsLeafSheetClosingPopupMode = this.popupSheetMode;
+      const next = settingsLeafSheetDismissRequestedState(this.settingsLeafSheetMode);
+      if (next.cancelPendingOpen && this.pendingSheetOpenTimer !== -1) {
+        clearTimeout(this.pendingSheetOpenTimer);
+        this.pendingSheetOpenTimer = -1;
+      }
+      this.closeLegacySettingsSheetFlags();
+      // Keep the current mode mounted until onDisappear. Resetting it here
+      // swaps the builder to an empty Column before ArkUI can play the exit
+      // transition, which makes button-driven dismissals look instantaneous.
+      this.showSettingsLeafSheet = next.visible;
+      return;
     }
     this.closeLegacySettingsSheetFlags();
     this.resetSettingsLeafSheetAfterDismiss();
@@ -762,12 +774,11 @@ struct HostListPage {
     this.settingsLeafSheetCloseRequested = false;
     this.settingsLeafSheetClosingMode = SETTINGS_SHEET_NONE;
     this.settingsLeafSheetClosingPopupMode = 0;
-    if (wasProgrammaticClose) {
-      this.noteSheetDismissed();
-    } else {
-      this.closeLegacySettingsSheetFlags();
-      this.resetSettingsLeafSheetAfterDismiss();
-    }
+    // Both system (outside/drag/close button) and programmatic dismissals
+    // finish here. Cleanup is deliberately delayed until after the native
+    // Sheet transition has completed so the outgoing builder remains visible.
+    this.closeLegacySettingsSheetFlags();
+    this.resetSettingsLeafSheetAfterDismiss();
     if (dismissedMode === SETTINGS_SHEET_POPUP && dismissedPopupMode === 0) {
       this.refreshCryptoStatus();
     }
@@ -3250,9 +3261,16 @@ struct HostListPage {
         } else if (this.filteredHosts.length === 0) {
           ListItem() {
             Column() {
-              Text('还没有主机').fontSize(15).fontColor(this.pal().text2).fontFamily(this.font())
-              Text('点击下方加号添加').fontSize(12).fontColor(this.pal().text3).margin({ top: 6 }).fontFamily(this.font())
+              SymbolGlyph($r('sys.symbol.desktop_fill'))
+                .fontSize(48).fontColor([this.pal().text3])
+              Text('还没有远程主机')
+                .fontSize(17).fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font())
+                .margin({ top: 16 })
+              Text('点击底部 + 添加远程主机')
+                .fontSize(13).fontColor(this.pal().text3).fontFamily(this.font())
+                .margin({ top: 6 }).lineHeight(20)
             }.width('100%').constraintSize({ minHeight: 400 }).justifyContent(FlexAlign.Center)
+              .alignItems(HorizontalAlign.Center)
           }
         } else {
           LazyForEach(this.hostDataSource, (host: RemoteHost, idx: number) => {
