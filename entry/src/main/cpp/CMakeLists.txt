@@ -34,6 +34,7 @@ set(PROTOCOL_SOURCES
     rdp/rdp_auth_identity_policy.cpp
     rdp/rdp_background_frame_cache.cpp
     rdp/rdp_damage_accumulator.cpp
+    rdp/rdp_frame_scheduler.cpp
     rdp/rdp_frame_pump.cpp
     rustdesk/rustdesk_bridge.cpp
 )
@@ -140,11 +141,11 @@ if(RDP_BUILD_TESTS)
         test/session_teardown_executor_test.cpp
         test/rdp_background_frame_cache_test.cpp
         test/rdp_damage_accumulator_test.cpp
+        test/rdp_frame_scheduler_test.cpp
         test/rdp_certificate_policy_test.cpp
         test/rdp_auth_identity_policy_test.cpp
         test/rdp_performance_policy_test.cpp
         test/transfer_runtime_status_test.cpp
-        test/rdp_render_policy_test.cpp
         test/rdp_input_queue_test.cpp
         test/gl_surface_lifecycle_policy_test.cpp
         test/native_image_context_policy_test.cpp
@@ -155,6 +156,7 @@ if(RDP_BUILD_TESTS)
         rdp/rdp_auth_identity_policy.cpp
         rdp/rdp_background_frame_cache.cpp
         rdp/rdp_damage_accumulator.cpp
+        rdp/rdp_frame_scheduler.cpp
         audio/audio_queue_policy.cpp
         audio/audio_activity_state.cpp
         video/video_activity_state.cpp

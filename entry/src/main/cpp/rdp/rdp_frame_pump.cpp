@@ -41,6 +41,7 @@ bool RdpFramePump::start() {
     frame_ = RdpFrameSubmission();
     fullResyncRequired_.store(true, std::memory_order_release);
     metrics_.reset(SteadyNowUs());
+    scheduler_.reset();
     submitted_.store(0, std::memory_order_relaxed);
     rendered_.store(0, std::memory_order_relaxed);
     replaced_.store(0, std::memory_order_relaxed);
@@ -78,16 +79,11 @@ void RdpFramePump::stop() {
 }
 
 bool RdpFramePump::submitLatest(RdpFrameSubmission&& submission) {
-    const bool validOwnedPixels = !submission.pixels.empty() &&
-        submission.width > 0 && submission.height > 0 && submission.stride > 0 &&
-        submission.rendererGeneration != 0;
-    if (!submission.damageSource && !validOwnedPixels) {
+    if (!submission.damageSource) {
         return false;
     }
 
     const int64_t enqueuedAtUs = submission.enqueuedAtUs;
-    const uint64_t copiedBytes = submission.copiedBytes;
-    const int64_t copyUs = submission.copyUs;
     const int64_t callbackUs = submission.callbackUs;
     bool replaced = false;
     {
@@ -103,9 +99,11 @@ bool RdpFramePump::submitLatest(RdpFrameSubmission&& submission) {
         frame_ = std::move(submission);
         hasFrame_ = true;
         submitted_.fetch_add(1, std::memory_order_relaxed);
-        metrics_.recordSubmission(enqueuedAtUs, copiedBytes, copyUs, callbackUs, replaced);
+        metrics_.recordSubmission(enqueuedAtUs, 0, 0, callbackUs, replaced);
     }
-    cv_.notify_one();
+    if (!replaced) {
+        cv_.notify_one();
+    }
     return true;
 }
 
@@ -116,7 +114,6 @@ void RdpFramePump::invalidatePending() {
         std::lock_guard<std::mutex> lock(mutex_);
         ++pumpGeneration_;
         rejectedPending = hasFrame_;
-        rendererGeneration = frame_.rendererGeneration;
         hasFrame_ = false;
         frame_ = RdpFrameSubmission();
         fullResyncRequired_.store(true, std::memory_order_release);
@@ -128,61 +125,67 @@ void RdpFramePump::invalidatePending() {
         rejected.generation = rendererGeneration;
         metrics_.recordPresent(SteadyNowUs(), rejected);
     }
+    cv_.notify_all();
 }
 
 void RdpFramePump::loop() {
     OH_LOG_INFO(LOG_APP, "[RDP-PUMP] render worker started");
+    int64_t nextPresentAtUs = 0;
     while (true) {
         RdpFrameSubmission frame;
         {
             std::unique_lock<std::mutex> lock(mutex_);
-            cv_.wait(lock, [this]() { return !running_ || hasFrame_; });
+            while (running_) {
+                cv_.wait(lock, [this]() { return !running_ || hasFrame_; });
+                if (!running_) {
+                    break;
+                }
+                const int64_t nowUs = SteadyNowUs();
+                if (!RdpFrameScheduler::IsDue(nowUs, nextPresentAtUs)) {
+                    cv_.wait_for(lock, std::chrono::microseconds(nextPresentAtUs - nowUs));
+                    continue;
+                }
+                frame = std::move(frame_);
+                frame_ = RdpFrameSubmission();
+                hasFrame_ = false;
+                if (frame.pumpGeneration == pumpGeneration_) {
+                    break;
+                }
+                frame = RdpFrameSubmission();
+            }
             if (!running_) {
                 break;
             }
-            frame = std::move(frame_);
-            frame_ = RdpFrameSubmission();
-            hasFrame_ = false;
-            if (frame.pumpGeneration != pumpGeneration_) {
+            if (!frame.damageSource) {
                 continue;
             }
         }
 
-        RdpPresentMetrics present;
-        present.generation = frame.rendererGeneration;
         const int64_t queueWaitUs =
             frame.enqueuedAtUs > 0 ? SteadyNowUs() - frame.enqueuedAtUs : 0;
-        if (frame.damageSource) {
-            const int64_t snapshotBeginUs = SteadyNowUs();
-            RdpDamageSnapshot snapshot = frame.damageSource->takeSnapshot();
-            const int64_t snapshotCopyUs = SteadyNowUs() - snapshotBeginUs;
-            if (snapshot.valid) {
-                metrics_.recordCopy(SteadyNowUs(), snapshot.snapshotCopiedBytes, snapshotCopyUs);
-                frame.pixels = std::move(snapshot.pixels);
-                frame.width = snapshot.width;
-                frame.height = snapshot.height;
-                frame.stride = snapshot.stride;
-                frame.dirtyX = snapshot.damage.x;
-                frame.dirtyY = snapshot.damage.y;
-                frame.dirtyWidth = snapshot.damage.width;
-                frame.dirtyHeight = snapshot.damage.height;
-                frame.dirtyValid = !snapshot.fullFrame;
-                frame.rendererGeneration = snapshot.rendererGeneration;
-            }
+        const int64_t snapshotBeginUs = SteadyNowUs();
+        RdpDamageSnapshot snapshot = frame.damageSource->takeSnapshot();
+        const int64_t snapshotCopyUs = SteadyNowUs() - snapshotBeginUs;
+        if (snapshot.valid) {
+            metrics_.recordCopy(SteadyNowUs(), snapshot.snapshotCopiedBytes, snapshotCopyUs);
+        } else if (!frame.damageSource->hasPending()) {
+            continue;
         }
+
+        RdpPresentMetrics present;
+        present.generation = snapshot.rendererGeneration;
         try {
-            if (frame.pixels.empty()) {
+            if (!snapshot.valid || snapshot.pixels.empty()) {
                 present.result = RdpPresentResult::InvalidFrame;
-                present.generation = frame.rendererGeneration;
             } else {
-                present = frame.dirtyValid ?
+                present = !snapshot.fullFrame ?
                 RendererNapi::PresentRawBgraRectActive(
-                    frame.pixels.data(), frame.pixels.size(), frame.width, frame.height,
-                    frame.stride, frame.dirtyX, frame.dirtyY, frame.dirtyWidth,
-                    frame.dirtyHeight, frame.rendererGeneration) :
+                    snapshot.pixels.data(), snapshot.pixels.size(), snapshot.width, snapshot.height,
+                    snapshot.stride, snapshot.damage.x, snapshot.damage.y, snapshot.damage.width,
+                    snapshot.damage.height, snapshot.rendererGeneration) :
                 RendererNapi::PresentRawBgraActive(
-                    frame.pixels.data(), frame.pixels.size(), frame.width, frame.height,
-                    frame.stride, frame.rendererGeneration);
+                    snapshot.pixels.data(), snapshot.pixels.size(), snapshot.width, snapshot.height,
+                    snapshot.stride, snapshot.rendererGeneration);
             }
             present.queueWaitUs = queueWaitUs;
         } catch (const std::exception& e) {
@@ -205,7 +208,9 @@ void RdpFramePump::loop() {
                 fullResyncRequired_.store(true, std::memory_order_release);
             }
         }
+        scheduler_.recordPresent(present);
         metrics_.recordPresent(SteadyNowUs(), present);
+        nextPresentAtUs = scheduler_.nextDeadlineUs(SteadyNowUs());
 
         RdpPresentationMetricsSnapshot window;
         if (metrics_.takeCompletedWindow(window)) {
@@ -213,7 +218,8 @@ void RdpFramePump::loop() {
                 "[RDP-PRESENT] submitted=%{public}llu presented=%{public}llu replaced=%{public}llu"
                 " rejected=%{public}llu detached=%{public}llu copied=%{public}llu"
                 " callbackP95=%{public}lldus queueP95=%{public}lldus uploadP95=%{public}lldus"
-                " drawP95=%{public}lldus swapP95=%{public}lldus workerP95=%{public}lldus",
+                " drawP95=%{public}lldus swapP95=%{public}lldus workerP95=%{public}lldus"
+                " targetFps=%{public}d schedulerP95=%{public}lldus adaptations=%{public}llu",
                 static_cast<unsigned long long>(window.submittedFrames),
                 static_cast<unsigned long long>(window.presentedFrames),
                 static_cast<unsigned long long>(window.replacedFrames),
@@ -225,7 +231,10 @@ void RdpFramePump::loop() {
                 static_cast<long long>(window.uploadUs.p95),
                 static_cast<long long>(window.drawUs.p95),
                 static_cast<long long>(window.swapUs.p95),
-                static_cast<long long>(window.workerUs.p95));
+                static_cast<long long>(window.workerUs.p95),
+                scheduler_.targetFps(),
+                static_cast<long long>(scheduler_.lastP95Us()),
+                static_cast<unsigned long long>(scheduler_.adaptationCount()));
         }
     }
     OH_LOG_INFO(LOG_APP, "[RDP-PUMP] render worker stopped");
@@ -239,19 +248,24 @@ void RdpFramePump::recordCopy(uint64_t copiedBytes, int64_t copyUs, int64_t nowU
     metrics_.recordCopy(nowUs, copiedBytes, copyUs);
 }
 
-void RdpFramePump::recordDirectPresent(const RdpPresentMetrics& present, int64_t nowUs) {
-    if (present.presented()) {
-        lastWorkerCostUs_.store(present.workerUs(), std::memory_order_release);
-    }
-    metrics_.recordPresent(nowUs, present);
-}
-
 RdpPresentationMetricsSnapshot RdpFramePump::metricsSnapshot(int64_t nowUs) {
     return metrics_.snapshot(nowUs);
 }
 
 int64_t RdpFramePump::lastWorkerCostUs() const {
     return lastWorkerCostUs_.load(std::memory_order_acquire);
+}
+
+int RdpFramePump::targetFps() const {
+    return scheduler_.targetFps();
+}
+
+int64_t RdpFramePump::targetIntervalUs() const {
+    return scheduler_.targetIntervalUs();
+}
+
+uint64_t RdpFramePump::adaptationCount() const {
+    return scheduler_.adaptationCount();
 }
 
 bool RdpFramePump::consumeFullResyncRequired() {
