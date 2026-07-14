@@ -4,6 +4,7 @@
 import { promptAction } from '@kit.ArkUI';
 import { common, Want } from '@kit.AbilityKit';
 import { fileIo } from '@kit.CoreFileKit';
+import { image } from '@kit.ImageKit';
 import { photoAccessHelper } from '@kit.MediaLibraryKit';
 import { HdsTabs, HdsTabsController } from '@kit.UIDesignKit';
 import { AppConfig, Palette, buildDark, buildLight } from '../common/Theme';
@@ -28,6 +29,7 @@ export struct FeedbackSettingsSheet {
   onOpenMail: () => void = (): void => {};
 
   @State community: FeedbackCommunityManifest | null = null;
+  @State communityQrPixelMap: image.PixelMap | null = null;
   @State communityLoading: boolean = false;
   @State communityError: string = '';
   @State nowMs: number = Date.now();
@@ -39,6 +41,10 @@ export struct FeedbackSettingsSheet {
 
   aboutToAppear(): void {
     this.refreshCommunityQr();
+  }
+
+  aboutToDisappear(): void {
+    this.clearQrPixelMap();
   }
 
   private pal(): Palette {
@@ -62,13 +68,45 @@ export struct FeedbackSettingsSheet {
     this.communityError = '';
     try {
       const manifest: FeedbackCommunityManifest = await this.communityService.fetchManifest();
+      const bytes: ArrayBuffer = await this.communityService.downloadQrImage(
+        feedbackCommunityImageUrl(manifest)
+      );
+      const source: image.ImageSource = image.createImageSource(bytes);
+      let pixelMap: image.PixelMap;
+      try {
+        pixelMap = await source.createPixelMap({
+          desiredPixelFormat: image.PixelMapFormat.RGBA_8888
+        });
+      } finally {
+        source.release();
+      }
+      const previousPixelMap: image.PixelMap | null = this.communityQrPixelMap;
+      this.communityQrPixelMap = pixelMap;
       this.community = manifest;
       this.nowMs = Date.now();
+      this.releasePixelMap(previousPixelMap);
     } catch (error) {
+      this.community = null;
+      this.clearQrPixelMap();
       this.communityError = this.errorMessage(error as Object);
     } finally {
       this.communityLoading = false;
     }
+  }
+
+  private releasePixelMap(pixelMap: image.PixelMap | null): void {
+    if (pixelMap === null) { return; }
+    try {
+      pixelMap.release();
+    } catch (_error) {
+      // 解码对象释放失败不影响页面关闭或重试。
+    }
+  }
+
+  private clearQrPixelMap(): void {
+    const pixelMap: image.PixelMap | null = this.communityQrPixelMap;
+    this.communityQrPixelMap = null;
+    this.releasePixelMap(pixelMap);
   }
 
   private async openJoinLink(): Promise<void> {
@@ -224,13 +262,13 @@ export struct FeedbackSettingsSheet {
               .margin({ top: 18 }).onClick((): void => { this.refreshCommunityQr(); })
           }.width('100%').height(360).justifyContent(FlexAlign.Center)
             .alignItems(HorizontalAlign.Center)
-        } else if (this.community !== null) {
+        } else if (this.community !== null && this.communityQrPixelMap !== null) {
           Text(this.community.title).fontSize(20).fontWeight(FontWeight.Medium)
             .fontColor(this.pal().text).fontFamily(this.font()).margin({ top: 18, bottom: 6 })
           Text(this.community.notice).fontSize(13).lineHeight(20).textAlign(TextAlign.Center)
             .fontColor(this.pal().text2).fontFamily(this.font()).width('100%')
           Column() {
-            Image(feedbackCommunityImageUrl(this.community))
+            Image(this.communityQrPixelMap)
               .width(this.breakpoint === 'sm' ? 250 : 286)
               .height(this.breakpoint === 'sm' ? 250 : 286)
               .objectFit(ImageFit.Contain)
