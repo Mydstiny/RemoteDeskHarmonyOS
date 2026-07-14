@@ -8,6 +8,7 @@ import { preferences } from '@kit.ArkData';
 import { Palette, buildDark, buildLight } from '../common/Theme';
 import {
   resolveStartupMode,
+  shouldPresentReleaseNotesAsBottomSheet,
   shouldPresentReleaseNotesAsDialog,
   StartupMode
 } from '../services/ReleaseNotesPolicy';
@@ -30,6 +31,7 @@ struct GuidePage {
   @StorageProp('currentBreakpoint') breakpoint: string = 'sm';
   @State currentIndex: number = 0;
   @State showContent: boolean = false;
+  @State showPhoneReleaseSheet: boolean = false;
   @State mode: StartupMode = StartupMode.FIRST_INSTALL_GUIDE;
   @State activePages: GuideContentPage[] = [];
   private tutorialPages: GuideContentPage[] = firstInstallGuidePages();
@@ -52,7 +54,10 @@ struct GuidePage {
       this.activePages = this.mode === StartupMode.RELEASE_NOTES ? releasePages : this.tutorialPages;
     } catch (_e) { /* 出错继续显示 */ }
     if (this.activePages.length === 0) { this.activePages = this.tutorialPages; }
-    setTimeout(() => { this.showContent = true; }, RELEASE_DIALOG_ENTER_DELAY_MS);
+    setTimeout(() => {
+      this.showContent = true;
+      if (this.presentReleaseNotesAsBottomSheet()) { this.showPhoneReleaseSheet = true; }
+    }, RELEASE_DIALOG_ENTER_DELAY_MS);
   }
 
   private pal(): Palette {
@@ -63,26 +68,20 @@ struct GuidePage {
     return shouldPresentReleaseNotesAsDialog(this.mode, this.breakpoint);
   }
 
-  private releaseNotesDialogWidth(): string | number {
-    if (this.breakpoint === 'sm') { return '92%'; }
+  private presentReleaseNotesAsBottomSheet(): boolean {
+    return shouldPresentReleaseNotesAsBottomSheet(this.mode, this.breakpoint);
+  }
+
+  private releaseNotesDialogWidth(): number {
     return this.breakpoint === 'xl' ? 640 : 560;
   }
 
   private releaseNotesDialogHeight(): string {
-    if (this.breakpoint === 'sm') { return '64%'; }
     return this.breakpoint === 'xl' ? '60%' : '58%';
   }
 
-  build() {
-    Stack() {
-      if (this.presentReleaseNotesAsDialog()) {
-        Column()
-          .width('100%').height('100%')
-          .backgroundColor('rgba(0,0,0,0.28)')
-          .opacity(this.showContent ? 1 : 0)
-          .animation({ duration: RELEASE_DIALOG_MOTION_MS, curve: Curve.EaseOut })
-      }
-      Column() {
+  @Builder guidePanel(isSheet: boolean) {
+    Column() {
       Swiper(this.swiperController) {
         ForEach(this.activePages, (page: GuideContentPage, index: number) => {
           Column() {
@@ -165,41 +164,88 @@ struct GuidePage {
       }
       .width('100%').padding({ left: 28, right: 28, bottom: 48, top: 12 })
       }
-      .width(this.presentReleaseNotesAsDialog() ? this.releaseNotesDialogWidth() : '100%')
-      .height(this.presentReleaseNotesAsDialog() ? this.releaseNotesDialogHeight() : '100%')
+      .width(isSheet ? '100%' : (this.presentReleaseNotesAsDialog() ? this.releaseNotesDialogWidth() : '100%'))
+      .height(isSheet ? '100%' : (this.presentReleaseNotesAsDialog() ? this.releaseNotesDialogHeight() : '100%'))
       .backgroundColor(this.pal().bg)
-      .borderRadius(this.presentReleaseNotesAsDialog() ? 24 : 0)
-      .border(this.presentReleaseNotesAsDialog() ?
+      .borderRadius(!isSheet && this.presentReleaseNotesAsDialog() ? 24 : 0)
+      .border(!isSheet && this.presentReleaseNotesAsDialog() ?
         { width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid } :
         { width: 0, color: Color.Transparent, style: BorderStyle.Solid })
-      .shadow(this.presentReleaseNotesAsDialog() ?
+      .shadow(!isSheet && this.presentReleaseNotesAsDialog() ?
         { radius: 28, color: 'rgba(0,0,0,0.22)', offsetY: 12 } :
         { radius: 0, color: Color.Transparent, offsetY: 0 })
-      .opacity(this.presentReleaseNotesAsDialog() ? (this.showContent ? 1 : 0) : 1)
+      .opacity(!isSheet && this.presentReleaseNotesAsDialog() ? (this.showContent ? 1 : 0) : 1)
       .scale({
-        x: this.presentReleaseNotesAsDialog() ? (this.showContent ? 1 : 0.94) : 1,
-        y: this.presentReleaseNotesAsDialog() ? (this.showContent ? 1 : 0.94) : 1
+        x: !isSheet && this.presentReleaseNotesAsDialog() ? (this.showContent ? 1 : 0.94) : 1,
+        y: !isSheet && this.presentReleaseNotesAsDialog() ? (this.showContent ? 1 : 0.94) : 1
       })
       .translate({
-        y: this.presentReleaseNotesAsDialog() ? (this.showContent ? 0 : 20) : 0
+        y: !isSheet && this.presentReleaseNotesAsDialog() ? (this.showContent ? 0 : 20) : 0
       })
       .animation({ duration: RELEASE_DIALOG_MOTION_MS, curve: Curve.FastOutSlowIn })
       .align(Alignment.Center)
+  }
+
+  @Builder phoneReleaseNotesSheet() {
+    this.guidePanel(true)
+  }
+
+  build() {
+    Stack() {
+      if (this.presentReleaseNotesAsBottomSheet()) {
+        Column().width('100%').height('100%').backgroundColor(this.pal().bg)
+      } else {
+        if (this.presentReleaseNotesAsDialog()) {
+          Column()
+            .width('100%').height('100%')
+            .backgroundColor('rgba(0,0,0,0.28)')
+            .opacity(this.showContent ? 1 : 0)
+            .animation({ duration: RELEASE_DIALOG_MOTION_MS, curve: Curve.EaseOut })
+        }
+        this.guidePanel(false)
+      }
     }
     .width('100%').height('100%')
     .backgroundColor(this.pal().bg)
     .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
+    .bindSheet($$this.showPhoneReleaseSheet, this.phoneReleaseNotesSheet(), {
+      height: '64%',
+      preferType: SheetType.BOTTOM,
+      dragBar: true,
+      backgroundColor: this.pal().bg,
+      blurStyle: BlurStyle.NONE,
+      showClose: false,
+      maskColor: 'rgba(0,0,0,0.28)',
+      onDisappear: (): void => { this.handlePhoneReleaseSheetDisappear(); }
+    })
   }
 
-  private finish(): void {
-    if (this.isFinishing) { return; }
-    this.isFinishing = true;
+  private persistCompletion(): void {
     try {
       const prefs = preferences.getPreferencesSync(getContext(this), { name: 'RemoteDesktopAppPrefs' });
       if (this.mode === StartupMode.FIRST_INSTALL_GUIDE) { prefs.putSync(GUIDE_KEY, true); }
       prefs.putSync(LAST_SEEN_RELEASE_KEY, CURRENT_RELEASE_VERSION);
       prefs.flushSync();
     } catch (_e) { /* ignore */ }
+  }
+
+  private handlePhoneReleaseSheetDisappear(): void {
+    if (!this.presentReleaseNotesAsBottomSheet()) { return; }
+    if (!this.isFinishing) {
+      this.isFinishing = true;
+      this.persistCompletion();
+    }
+    router.replaceUrl({ url: 'pages/LoginPage' });
+  }
+
+  private finish(): void {
+    if (this.isFinishing) { return; }
+    this.isFinishing = true;
+    this.persistCompletion();
+    if (this.presentReleaseNotesAsBottomSheet()) {
+      this.showPhoneReleaseSheet = false;
+      return;
+    }
     if (this.presentReleaseNotesAsDialog()) {
       this.showContent = false;
       setTimeout((): void => {
