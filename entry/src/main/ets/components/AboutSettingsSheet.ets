@@ -6,12 +6,7 @@
  */
 import { common, Want } from '@kit.AbilityKit';
 import { AppConfig, AppTheme, Palette, buildLight, buildDark } from '../common/Theme';
-
-interface HelpGuideItem {
-  symbol: ResourceStr;
-  title: string;
-  desc: string;
-}
+import { GuideContentPage, settingsUsageGuidePages } from '../services/GuideContentRegistry';
 
 @Component
 export struct AboutSettingsSheet {
@@ -23,46 +18,7 @@ export struct AboutSettingsSheet {
 
   @State usageGuideIndex: number = 0;
   private usageGuideController: SwiperController = new SwiperController();
-  private readonly usageGuideItems: HelpGuideItem[] = [
-    {
-      symbol: $rawfile('icons/computer-desktop.svg'),
-      title: '添加连接',
-      desc: '在主机页点击添加，按目标设备选择 RDP、RustDesk 或 SSH。Windows 推荐 RDP，跨平台远控推荐 RustDesk，服务器维护推荐 SSH。'
-    },
-    {
-      symbol: $rawfile('icons/cloud.svg'),
-      title: '同步与离线',
-      desc: '登录华为账号后可跨设备同步主机、密钥和验证器。选择离线模式时，数据只保存在当前设备。'
-    },
-    {
-      symbol: $rawfile('icons/key.svg'),
-      title: '保护密钥',
-      desc: '首次使用敏感数据前建议启用端到端加密。主密码丢失无法恢复，请自行妥善保管。'
-    },
-    {
-      symbol: $rawfile('icons/command-line.svg'),
-      title: '使用 SSH',
-      desc: 'SSH 支持密码、私钥和跳板机。移动端可用虚拟键栏，PC 端可直接使用物理键盘。'
-    },
-    {
-      symbol: $rawfile('icons/folder-open.svg'),
-      title: 'SFTP 文件传输',
-      desc: '连接 SSH 后点击顶部栏文件图标即可浏览远端目录。支持上传本地文件（最大 512MB）、下载远端文件、新建目录、重命名和删除。' +
-        '选中文件或目录后可用底部操作按钮完成对应操作。'
-    },
-    {
-      symbol: $rawfile('icons/shield-check.svg'),
-      title: '连接前检查',
-      desc: '确认目标主机已开启对应服务，网络可达，RustDesk 中继配置正确。个人 Microsoft 账户推荐填写邮箱和密码，账号格式使用“MSA域”；' +
-        '企业/学校账号可使用 AzureAD 格式。本地或域账户仍可按 whoami 输出填写。'
-    },
-    {
-      symbol: $rawfile('icons/computer-desktop.svg'),
-      title: 'RDP / RustDesk 虚拟触控板',
-      desc: '连接 RDP 或 RustDesk 远程桌面后，屏幕即为虚拟触控板。单指轻点为左键，双指轻点为右键，单指停留并移动为左键拖拽。' +
-        '拖拽时光标变为红色提醒，右键时光标变为橙色。三指同时触摸屏幕可唤起控制面板，支持文件传输和拉出虚拟键盘。'
-    }
-  ];
+  private readonly usageGuideItems: GuideContentPage[] = settingsUsageGuidePages();
 
   private pal(): Palette {
     return this.theme === 'light' ? buildLight(this.accentColor) : buildDark(this.accentColor);
@@ -109,7 +65,7 @@ export struct AboutSettingsSheet {
       }.width('100%').padding({ left: 24, right: 20, top: 20 }).margin({ bottom: 4 })
 
       Swiper(this.usageGuideController) {
-        ForEach(this.usageGuideItems, (item: HelpGuideItem, index: number) => {
+        ForEach(this.usageGuideItems, (item: GuideContentPage, index: number) => {
           Column() {
             Column() {
               Image(item.symbol).width(52).height(52).fillColor(this.accentColor)
@@ -135,7 +91,7 @@ export struct AboutSettingsSheet {
           }
           .width('100%').justifyContent(FlexAlign.Center)
           .padding({ bottom: 40 })
-        }, (item: HelpGuideItem) => item.title)
+        }, (item: GuideContentPage) => item.id)
       }
       .loop(false).indicator(false).duration(250).curve(Curve.EaseOut)
       .onChange((i: number): void => { this.usageGuideIndex = i; })
@@ -153,12 +109,12 @@ export struct AboutSettingsSheet {
           })
         Blank()
         Row({ space: 7 }) {
-          ForEach(this.usageGuideItems, (_dot: HelpGuideItem, i: number) => {
+          ForEach(this.usageGuideItems, (_dot: GuideContentPage, i: number) => {
             Column()
               .width(this.usageGuideIndex === i ? 22 : 7).height(7).borderRadius(4)
               .backgroundColor(this.usageGuideIndex === i ? this.accentColor : this.pal().divider)
               .animation({ duration: 200, curve: Curve.EaseOut })
-          }, (_dot: HelpGuideItem) => _dot.title)
+          }, (_dot: GuideContentPage) => _dot.id)
         }
         Blank()
         Text(this.usageGuideIndex < this.usageGuideItems.length - 1 ? '下一步' : '完成')
@@ -230,7 +186,7 @@ export struct AboutSettingsSheet {
               .fontSize(14).fontColor(this.pal().text).fontWeight(FontWeight.Medium)
               .fontFamily(this.font()).width('100%').margin({ bottom: 6 })
             Text('作者正在准备考研，回复和更新可能不及时，尽量半月更新一版。\n' +
-              '如有建议可发至 lijiong1219@petalmail.com，可附带手机号，人数足够会拉畅联群交流。')
+              '如有建议，可从设置中的“反馈”发送邮件或获取最新畅联群聊二维码。')
               .fontSize(13).fontColor(this.pal().text2).lineHeight(22)
               .fontFamily(this.font()).width('100%')
           }

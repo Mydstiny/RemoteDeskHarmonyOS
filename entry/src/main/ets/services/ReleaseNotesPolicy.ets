@@ -33,6 +33,10 @@ export function resolveStartupMode(guideShown: boolean, lastSeen: string, curren
   return compareReleaseVersion(previous, current) < 0 ? StartupMode.RELEASE_NOTES : StartupMode.LOGIN;
 }
 
+export function shouldPresentReleaseNotesAsBottomSheet(mode: StartupMode, breakpoint: string): boolean {
+  return mode === StartupMode.RELEASE_NOTES && breakpoint === 'sm';
+}
+
 export function shouldPresentReleaseNotesAsDialog(mode: StartupMode, breakpoint: string): boolean {
   return mode === StartupMode.RELEASE_NOTES && breakpoint !== 'sm';
 }

@@ -32,6 +32,9 @@ import remoteImmersivePolicyTest from './RemoteImmersivePolicy.test';
 import rdpCertificateProbeLifecyclePolicyTest from './RdpCertificateProbeLifecyclePolicy.test';
 import cloudSyncGuidancePolicyTest from './CloudSyncGuidancePolicy.test';
 import settingsLeafSheetLifecyclePolicyTest from './SettingsLeafSheetLifecyclePolicy.test';
+import feedbackCommunityPolicyTest from './FeedbackCommunityPolicy.test';
+import guideContentRegistryTest from './GuideContentRegistry.test';
+import releaseNotesRegistryTest from './ReleaseNotesRegistry.test';
 
 export default function testsuite() {
   localUnitTest();
@@ -68,4 +71,7 @@ export default function testsuite() {
   rdpCertificateProbeLifecyclePolicyTest();
   cloudSyncGuidancePolicyTest();
   settingsLeafSheetLifecyclePolicyTest();
+  feedbackCommunityPolicyTest();
+  guideContentRegistryTest();
+  releaseNotesRegistryTest();
 }

@@ -1,26 +1,24 @@
 /**
  * GuidePage.ets — 应用引导页 (首次安装展示)
  *
- * 内容与设置页「简单使用教程」同步, 额外新增最后一页提示可在设置中重新查看.
+ * 内容与设置页「简单使用教程」共享功能介绍，仅收尾页按入口区分。
  */
 import { router } from '@kit.ArkUI';
 import { preferences } from '@kit.ArkData';
 import { Palette, buildDark, buildLight } from '../common/Theme';
 import {
   resolveStartupMode,
+  shouldPresentReleaseNotesAsBottomSheet,
   shouldPresentReleaseNotesAsDialog,
   StartupMode
 } from '../services/ReleaseNotesPolicy';
 import { CURRENT_RELEASE_VERSION, pagesForReleasedVersion, ReleaseNotePage } from '../services/ReleaseNotesRegistry';
+import { firstInstallGuidePages, GuideContentPage } from '../services/GuideContentRegistry';
 
 const GUIDE_KEY = 'guide_shown_v4';
 const LAST_SEEN_RELEASE_KEY = 'last_seen_release_version';
-
-interface GuidePageData {
-  symbol: ResourceStr;
-  title: string;
-  desc: string;
-}
+const RELEASE_DIALOG_ENTER_DELAY_MS = 120;
+const RELEASE_DIALOG_MOTION_MS = 260;
 
 @Entry
 @Component
@@ -31,52 +29,11 @@ struct GuidePage {
   @StorageProp('currentBreakpoint') breakpoint: string = 'sm';
   @State currentIndex: number = 0;
   @State showContent: boolean = false;
+  @State showPhoneReleaseSheet: boolean = false;
   @State mode: StartupMode = StartupMode.FIRST_INSTALL_GUIDE;
-  @State activePages: GuidePageData[] = [];
-
-  /** 与 HostListPage.usageGuideItems 同步, 末尾新增 "可重新查看" 提示页 */
-  private tutorialPages: GuidePageData[] = [
-    {
-      symbol: $rawfile('icons/computer-desktop.svg'),
-      title: '添加连接',
-      desc: '在主机页点击添加，按目标设备选择 RDP、RustDesk 或 SSH。Windows 推荐 RDP，跨平台远控推荐 RustDesk，服务器维护推荐 SSH。'
-    },
-    {
-      symbol: $rawfile('icons/cloud.svg'),
-      title: '同步与离线',
-      desc: '登录华为账号后可跨设备同步主机、密钥和验证器。选择离线模式时，数据只保存在当前设备。'
-    },
-    {
-      symbol: $rawfile('icons/key.svg'),
-      title: '保护密钥',
-      desc: '首次使用敏感数据前建议启用端到端加密。主密码丢失无法恢复，请自行妥善保管。'
-    },
-    {
-      symbol: $rawfile('icons/command-line.svg'),
-      title: '使用 SSH',
-      desc: 'SSH 支持密码、私钥和跳板机。移动端可用虚拟键栏，PC 端可直接使用物理键盘。'
-    },
-    {
-      symbol: $rawfile('icons/folder-open.svg'),
-      title: 'SFTP 文件传输',
-      desc: '连接 SSH 后点击顶部栏文件图标即可浏览远端目录。支持上传本地文件（最大 512MB）、下载远端文件、新建目录、重命名和删除。选中文件或目录后可用底部操作按钮完成对应操作。'
-    },
-    {
-      symbol: $rawfile('icons/shield-check.svg'),
-      title: '连接前检查',
-      desc: '确认目标主机已开启对应服务，网络可达，RustDesk 中继配置正确。个人 Microsoft 账户推荐填写邮箱和密码，账号格式使用“MSA域”；企业/学校账号可使用 AzureAD 格式。本地或域账户仍可按 whoami 输出填写。'
-    },
-    {
-      symbol: $rawfile('icons/computer-desktop.svg'),
-      title: 'RDP / RustDesk 虚拟触控板',
-      desc: '连接 RDP 或 RustDesk 远程桌面后，屏幕即为虚拟触控板。单指轻点为左键，双指轻点为右键，单指停留并移动为左键拖拽。拖拽时光标变为红色提醒，右键时光标变为橙色。三指同时触摸屏幕可唤起控制面板，支持文件传输和拉出虚拟键盘。'
-    },
-    {
-      symbol: $rawfile('icons/cog-6-tooth.svg'),
-      title: '随时重新查看',
-      desc: '本教程可在 设置 → 关于 → 简单使用教程 中随时重新查看。'
-    }
-  ];
+  @State activePages: GuideContentPage[] = [];
+  private tutorialPages: GuideContentPage[] = firstInstallGuidePages();
+  private isFinishing: boolean = false;
 
   async aboutToAppear(): Promise<void> {
     try {
@@ -93,7 +50,10 @@ struct GuidePage {
       this.activePages = this.mode === StartupMode.RELEASE_NOTES ? releasePages : this.tutorialPages;
     } catch (_e) { /* 出错继续显示 */ }
     if (this.activePages.length === 0) { this.activePages = this.tutorialPages; }
-    setTimeout(() => { this.showContent = true; }, 150);
+    setTimeout(() => {
+      this.showContent = true;
+      if (this.presentReleaseNotesAsBottomSheet()) { this.showPhoneReleaseSheet = true; }
+    }, RELEASE_DIALOG_ENTER_DELAY_MS);
   }
 
   private pal(): Palette {
@@ -104,6 +64,10 @@ struct GuidePage {
     return shouldPresentReleaseNotesAsDialog(this.mode, this.breakpoint);
   }
 
+  private presentReleaseNotesAsBottomSheet(): boolean {
+    return shouldPresentReleaseNotesAsBottomSheet(this.mode, this.breakpoint);
+  }
+
   private releaseNotesDialogWidth(): number {
     return this.breakpoint === 'xl' ? 640 : 560;
   }
@@ -112,16 +76,10 @@ struct GuidePage {
     return this.breakpoint === 'xl' ? '60%' : '58%';
   }
 
-  build() {
-    Stack() {
-      if (this.presentReleaseNotesAsDialog()) {
-        Column()
-          .width('100%').height('100%')
-          .backgroundColor('rgba(0,0,0,0.28)')
-      }
-      Column() {
+  @Builder guidePanel(isSheet: boolean) {
+    Column() {
       Swiper(this.swiperController) {
-        ForEach(this.activePages, (page: GuidePageData, index: number) => {
+        ForEach(this.activePages, (page: GuideContentPage, index: number) => {
           Column() {
             Column() {
               Column() {
@@ -174,13 +132,13 @@ struct GuidePage {
         Blank()
 
         Row({ space: 8 }) {
-          ForEach(this.activePages, (_: GuidePageData, i: number) => {
+          ForEach(this.activePages, (_: GuideContentPage, i: number) => {
             Column()
               .width(this.currentIndex === i ? 24 : 8).height(8)
               .borderRadius(4)
               .backgroundColor(this.currentIndex === i ? this.accentColor : this.pal().divider)
               .animation({ duration: 200, curve: Curve.EaseOut })
-          })
+          }, (page: GuideContentPage) => page.id)
         }
 
         Blank()
@@ -202,30 +160,95 @@ struct GuidePage {
       }
       .width('100%').padding({ left: 28, right: 28, bottom: 48, top: 12 })
       }
-      .width(this.presentReleaseNotesAsDialog() ? this.releaseNotesDialogWidth() : '100%')
-      .height(this.presentReleaseNotesAsDialog() ? this.releaseNotesDialogHeight() : '100%')
+      .width(isSheet ? '100%' : (this.presentReleaseNotesAsDialog() ? this.releaseNotesDialogWidth() : '100%'))
+      .height(isSheet ? '100%' : (this.presentReleaseNotesAsDialog() ? this.releaseNotesDialogHeight() : '100%'))
       .backgroundColor(this.pal().bg)
-      .borderRadius(this.presentReleaseNotesAsDialog() ? 24 : 0)
-      .border(this.presentReleaseNotesAsDialog() ?
+      .borderRadius(!isSheet && this.presentReleaseNotesAsDialog() ? 24 : 0)
+      .border(!isSheet && this.presentReleaseNotesAsDialog() ?
         { width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid } :
         { width: 0, color: Color.Transparent, style: BorderStyle.Solid })
-      .shadow(this.presentReleaseNotesAsDialog() ?
+      .shadow(!isSheet && this.presentReleaseNotesAsDialog() ?
         { radius: 28, color: 'rgba(0,0,0,0.22)', offsetY: 12 } :
         { radius: 0, color: Color.Transparent, offsetY: 0 })
+      .opacity(!isSheet && this.presentReleaseNotesAsDialog() ? (this.showContent ? 1 : 0) : 1)
+      .scale({
+        x: !isSheet && this.presentReleaseNotesAsDialog() ? (this.showContent ? 1 : 0.94) : 1,
+        y: !isSheet && this.presentReleaseNotesAsDialog() ? (this.showContent ? 1 : 0.94) : 1
+      })
+      .translate({
+        y: !isSheet && this.presentReleaseNotesAsDialog() ? (this.showContent ? 0 : 20) : 0
+      })
+      .animation({ duration: RELEASE_DIALOG_MOTION_MS, curve: Curve.FastOutSlowIn })
       .align(Alignment.Center)
+  }
+
+  @Builder phoneReleaseNotesSheet() {
+    this.guidePanel(true)
+  }
+
+  build() {
+    Stack() {
+      if (this.presentReleaseNotesAsBottomSheet()) {
+        Column().width('100%').height('100%').backgroundColor(this.pal().bg)
+      } else {
+        if (this.presentReleaseNotesAsDialog()) {
+          Column()
+            .width('100%').height('100%')
+            .backgroundColor('rgba(0,0,0,0.28)')
+            .opacity(this.showContent ? 1 : 0)
+            .animation({ duration: RELEASE_DIALOG_MOTION_MS, curve: Curve.EaseOut })
+        }
+        this.guidePanel(false)
+      }
     }
     .width('100%').height('100%')
     .backgroundColor(this.pal().bg)
     .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
+    .bindSheet($$this.showPhoneReleaseSheet, this.phoneReleaseNotesSheet(), {
+      height: '64%',
+      preferType: SheetType.BOTTOM,
+      dragBar: true,
+      backgroundColor: this.pal().bg,
+      blurStyle: BlurStyle.NONE,
+      showClose: false,
+      maskColor: 'rgba(0,0,0,0.28)',
+      onDisappear: (): void => { this.handlePhoneReleaseSheetDisappear(); }
+    })
   }
 
-  private finish(): void {
+  private persistCompletion(): void {
     try {
       const prefs = preferences.getPreferencesSync(getContext(this), { name: 'RemoteDesktopAppPrefs' });
       if (this.mode === StartupMode.FIRST_INSTALL_GUIDE) { prefs.putSync(GUIDE_KEY, true); }
       prefs.putSync(LAST_SEEN_RELEASE_KEY, CURRENT_RELEASE_VERSION);
       prefs.flushSync();
     } catch (_e) { /* ignore */ }
+  }
+
+  private handlePhoneReleaseSheetDisappear(): void {
+    if (!this.presentReleaseNotesAsBottomSheet()) { return; }
+    if (!this.isFinishing) {
+      this.isFinishing = true;
+      this.persistCompletion();
+    }
+    router.replaceUrl({ url: 'pages/LoginPage' });
+  }
+
+  private finish(): void {
+    if (this.isFinishing) { return; }
+    this.isFinishing = true;
+    this.persistCompletion();
+    if (this.presentReleaseNotesAsBottomSheet()) {
+      this.showPhoneReleaseSheet = false;
+      return;
+    }
+    if (this.presentReleaseNotesAsDialog()) {
+      this.showContent = false;
+      setTimeout((): void => {
+        router.replaceUrl({ url: 'pages/LoginPage' });
+      }, RELEASE_DIALOG_MOTION_MS);
+      return;
+    }
     router.replaceUrl({ url: 'pages/LoginPage' });
   }
 }

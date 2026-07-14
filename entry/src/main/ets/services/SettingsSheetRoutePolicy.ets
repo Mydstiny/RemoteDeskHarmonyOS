@@ -9,6 +9,7 @@ export const SETTINGS_SHEET_POPUP: number = 7;
 export const SETTINGS_SHEET_RDP_CREDENTIALS: number = 8;
 export const SETTINGS_SHEET_RDP_CREDENTIAL_EDITOR: number = 9;
 export const SETTINGS_SHEET_KEY_VAULT: number = 10;
+export const SETTINGS_SHEET_FEEDBACK: number = 11;
 
 export const SETTINGS_PANEL_DISMISS_TO_LEAF_OPEN_MS: number = 360;
 

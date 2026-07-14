@@ -18,6 +18,7 @@ import remoteImeCommandQueueTest from './RemoteImeCommandQueue.test';
 import remoteImmersivePolicyTest from './RemoteImmersivePolicy.test';
 import rdpCertificateProbeLifecyclePolicyTest from './RdpCertificateProbeLifecyclePolicy.test';
 import hostWorkspacePolicyTest from './HostWorkspacePolicy.test';
+import guideContentRegistryTest from './GuideContentRegistry.test';
 
 export default function testsuite() {
   abilityTest();
@@ -40,4 +41,5 @@ export default function testsuite() {
   remoteImmersivePolicyTest();
   rdpCertificateProbeLifecyclePolicyTest();
   hostWorkspacePolicyTest();
+  guideContentRegistryTest();
 }
