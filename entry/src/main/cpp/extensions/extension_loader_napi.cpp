@@ -435,6 +435,39 @@ napi_value NapiGetRdpRenderStats(napi_env env, napi_callback_info info) {
     SetObjectInt64(env, result, "pumpSubmitted", static_cast<int64_t>(stats.pumpSubmitted));
     SetObjectInt64(env, result, "pumpRendered", static_cast<int64_t>(stats.pumpRendered));
     SetObjectInt64(env, result, "pumpReplaced", static_cast<int64_t>(stats.pumpReplaced));
+    SetObjectInt64(env, result, "pumpRejected", static_cast<int64_t>(stats.pumpRejected));
+    SetObjectInt64(env, result, "invalidEvents", static_cast<int64_t>(stats.invalidEvents));
+    SetObjectInt64(env, result, "invalidPixels", static_cast<int64_t>(stats.invalidPixels));
+    SetObjectInt64(env, result, "copiedBytes", static_cast<int64_t>(stats.copiedBytes));
+    SetObjectInt64(env, result, "presentationRejected",
+                   static_cast<int64_t>(stats.presentationRejected));
+    SetObjectInt64(env, result, "surfaceDetachedRejections",
+                   static_cast<int64_t>(stats.surfaceDetachedRejections));
+    SetObjectInt64(env, result, "generationRejections",
+                   static_cast<int64_t>(stats.generationRejections));
+    SetObjectInt64(env, result, "presentationWindowSamples",
+                   static_cast<int64_t>(stats.presentationWindowSamples));
+    SetObjectInt64(env, result, "callbackP50Us", stats.callbackP50Us);
+    SetObjectInt64(env, result, "callbackP95Us", stats.callbackP95Us);
+    SetObjectInt64(env, result, "callbackMaxUs", stats.callbackMaxUs);
+    SetObjectInt64(env, result, "copyP50Us", stats.copyP50Us);
+    SetObjectInt64(env, result, "copyP95Us", stats.copyP95Us);
+    SetObjectInt64(env, result, "copyMaxUs", stats.copyMaxUs);
+    SetObjectInt64(env, result, "queueP50Us", stats.queueP50Us);
+    SetObjectInt64(env, result, "queueP95Us", stats.queueP95Us);
+    SetObjectInt64(env, result, "queueMaxUs", stats.queueMaxUs);
+    SetObjectInt64(env, result, "uploadP50Us", stats.uploadP50Us);
+    SetObjectInt64(env, result, "uploadP95Us", stats.uploadP95Us);
+    SetObjectInt64(env, result, "uploadMaxUs", stats.uploadMaxUs);
+    SetObjectInt64(env, result, "drawP50Us", stats.drawP50Us);
+    SetObjectInt64(env, result, "drawP95Us", stats.drawP95Us);
+    SetObjectInt64(env, result, "drawMaxUs", stats.drawMaxUs);
+    SetObjectInt64(env, result, "swapP50Us", stats.swapP50Us);
+    SetObjectInt64(env, result, "swapP95Us", stats.swapP95Us);
+    SetObjectInt64(env, result, "swapMaxUs", stats.swapMaxUs);
+    SetObjectInt64(env, result, "workerP50Us", stats.workerP50Us);
+    SetObjectInt64(env, result, "workerP95Us", stats.workerP95Us);
+    SetObjectInt64(env, result, "workerMaxUs", stats.workerMaxUs);
     SetObjectInt32(env, result, "inputQueueDepth", stats.inputQueueDepth);
     SetObjectInt32(env, result, "inputQueueMax", stats.inputQueueMax);
     SetObjectInt64(env, result, "inputTextUnits", stats.inputTextUnits);

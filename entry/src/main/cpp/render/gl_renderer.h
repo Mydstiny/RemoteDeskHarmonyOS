@@ -11,6 +11,8 @@
 #ifndef GL_RENDERER_H
 #define GL_RENDERER_H
 
+#include "rdp/rdp_presentation_metrics.h"
+
 #include <cstdint>
 #include <mutex>
 #include <string>
@@ -57,6 +59,11 @@ public:
     void RenderRawBGRA(const uint8_t* bgraData, int width, int height, int stride = 0);
     void RenderRawBGRARect(const uint8_t* bgraData, int width, int height, int stride,
                            int dirtyX, int dirtyY, int dirtyWidth, int dirtyHeight);
+    RdpPresentMetrics PresentRawBGRA(const uint8_t* bgraData, int width, int height,
+                                     int stride, uint64_t generation);
+    RdpPresentMetrics PresentRawBGRARect(const uint8_t* bgraData, int width, int height,
+                                         int stride, int dirtyX, int dirtyY,
+                                         int dirtyWidth, int dirtyHeight, uint64_t generation);
 
     /**
      * 调整渲染区域大小
@@ -69,6 +76,7 @@ public:
 
     /** 是否已初始化 */
     bool IsInitialized() const { return initialized_; }
+    bool IsPresentationReady();
 
     /** 获取当前宽度 */
     int GetWidth() const { return width_; }
@@ -84,6 +92,9 @@ public:
     void GetLastViewport(int& vpX, int& vpY, int& vpW, int& vpH) const {
         vpX = lastVpX_; vpY = lastVpY_; vpW = lastVpW_; vpH = lastVpH_;
     }
+    void GetViewportSnapshot(int& vpX, int& vpY, int& vpW, int& vpH,
+                             int& sourceWidth, int& sourceHeight,
+                             int& surfaceWidth, int& surfaceHeight);
 
     // R1: NapiTestRender 使用的 accessor
     bool MakeCurrent();
@@ -135,9 +146,10 @@ private:
     GLuint CreateRawShaderProgram();
     void   CreateQuadGeometry();
     void   SetupRawTexture(int width, int height);
-    void   RenderRawBGRAInternal(const uint8_t* bgraData, int width, int height, int stride,
-                                 bool useDirtyRect, int dirtyX, int dirtyY,
-                                 int dirtyWidth, int dirtyHeight);
+    RdpPresentMetrics RenderRawBGRAInternal(const uint8_t* bgraData, int width, int height,
+                                            int stride, bool useDirtyRect, int dirtyX,
+                                            int dirtyY, int dirtyWidth, int dirtyHeight,
+                                            uint64_t generation);
 };
 
 // ============================================================
@@ -150,10 +162,20 @@ namespace RendererNapi {
     void ReleaseCurrent(int64_t handle);
     void RenderNative(int64_t handle, GLuint textureId);
     void SetActiveSourceSize(int width, int height);
+    RdpPresentationTarget GetActivePresentationTarget();
+    bool HasReadyActiveRenderer(uint64_t* generation = nullptr);
+    RdpPresentMetrics PresentRawBgraActive(const uint8_t* data, size_t size, int width,
+                                           int height, int stride, uint64_t generation);
+    RdpPresentMetrics PresentRawBgraRectActive(const uint8_t* data, size_t size, int width,
+                                               int height, int stride, int dirtyX, int dirtyY,
+                                               int dirtyWidth, int dirtyHeight,
+                                               uint64_t generation);
     int RenderRawBgraActive(const uint8_t* data, size_t size, int width, int height, int stride);
     int RenderRawBgraRectActive(const uint8_t* data, size_t size, int width, int height, int stride,
                                 int dirtyX, int dirtyY, int dirtyWidth, int dirtyHeight);
     void SetActiveRenderer(int64_t handle);
+    void InvalidateActivePresentation();
+    bool ReenableActivePresentation();
     void DeactivateRenderer(int64_t handle);
     void DestroyRendererHandle(int64_t handle);
 }

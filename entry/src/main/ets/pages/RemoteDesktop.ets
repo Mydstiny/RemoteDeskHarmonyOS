@@ -2236,8 +2236,15 @@ struct RemoteDesktop {
         ' skipped=' + stats.skippedPaintCount.toString() +
         ' pump=' + stats.pumpRendered.toString() + '/' + stats.pumpSubmitted.toString() +
         ' replaced=' + stats.pumpReplaced.toString() +
+        ' rejected=' + stats.presentationRejected.toString() +
+        ' detached=' + stats.surfaceDetachedRejections.toString() +
+        ' generation=' + stats.generationRejections.toString() +
         ' renderCostUs=' + stats.lastRenderCostUs.toString() +
         ' bytes=' + stats.lastRenderBytes.toString() +
+        ' copied=' + stats.copiedBytes.toString() +
+        ' callbackP95=' + stats.callbackP95Us.toString() +
+        ' queueP95=' + stats.queueP95Us.toString() +
+        ' workerP95=' + stats.workerP95Us.toString() +
         ' inputQ=' + stats.inputQueueDepth.toString() + '/' + stats.inputQueueMax.toString() +
         ' inputTextUnits=' + stats.inputTextUnits.toString() +
         ' inputMouseDrops=' + stats.inputDroppedMouseMoves.toString() +

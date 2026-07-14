@@ -56,17 +56,6 @@ inline bool ShouldEscalatePumpSubmitToFullFrame(bool hasPendingFrame,
     return hasPendingFrame && (pendingDirtyValid || incomingDirtyValid);
 }
 
-inline bool ShouldQueueTrailingFrameForSkippedPaint(bool shouldRender,
-                                                    int renderedPaintCount) {
-    return !shouldRender && renderedPaintCount >= 3;
-}
-
-inline long long TrailingFrameDelayUs(long long minRenderIntervalUs) {
-    constexpr long long kMinimumTrailingDelayUs = 16667;
-    return minRenderIntervalUs > kMinimumTrailingDelayUs ?
-        minRenderIntervalUs : kMinimumTrailingDelayUs;
-}
-
 } // namespace RdpRenderPolicy
 
 #endif // RDP_RENDER_POLICY_H
