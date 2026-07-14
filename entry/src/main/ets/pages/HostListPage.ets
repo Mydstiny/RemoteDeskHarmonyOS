@@ -74,6 +74,7 @@ import { sheetOpenDelayMsAfterDismiss } from '../services/SheetTransitionPolicy'
 import { cloudSyncDetailSpec } from '../services/CloudSyncGuidancePolicy';
 import {
   settingsLeafSheetClosedState,
+  settingsLeafSheetDismissRequestedState,
   shouldOpenRestoreConfirmation
 } from '../services/SettingsLeafSheetLifecyclePolicy';
 import {
@@ -735,6 +736,17 @@ struct HostListPage {
       this.settingsLeafSheetCloseRequested = true;
       this.settingsLeafSheetClosingMode = this.settingsLeafSheetMode;
       this.settingsLeafSheetClosingPopupMode = this.popupSheetMode;
+      const next = settingsLeafSheetDismissRequestedState(this.settingsLeafSheetMode);
+      if (next.cancelPendingOpen && this.pendingSheetOpenTimer !== -1) {
+        clearTimeout(this.pendingSheetOpenTimer);
+        this.pendingSheetOpenTimer = -1;
+      }
+      this.closeLegacySettingsSheetFlags();
+      // Keep the current mode mounted until onDisappear. Resetting it here
+      // swaps the builder to an empty Column before ArkUI can play the exit
+      // transition, which makes button-driven dismissals look instantaneous.
+      this.showSettingsLeafSheet = next.visible;
+      return;
     }
     this.closeLegacySettingsSheetFlags();
     this.resetSettingsLeafSheetAfterDismiss();
@@ -762,12 +774,11 @@ struct HostListPage {
     this.settingsLeafSheetCloseRequested = false;
     this.settingsLeafSheetClosingMode = SETTINGS_SHEET_NONE;
     this.settingsLeafSheetClosingPopupMode = 0;
-    if (wasProgrammaticClose) {
-      this.noteSheetDismissed();
-    } else {
-      this.closeLegacySettingsSheetFlags();
-      this.resetSettingsLeafSheetAfterDismiss();
-    }
+    // Both system (outside/drag/close button) and programmatic dismissals
+    // finish here. Cleanup is deliberately delayed until after the native
+    // Sheet transition has completed so the outgoing builder remains visible.
+    this.closeLegacySettingsSheetFlags();
+    this.resetSettingsLeafSheetAfterDismiss();
     if (dismissedMode === SETTINGS_SHEET_POPUP && dismissedPopupMode === 0) {
       this.refreshCryptoStatus();
     }
