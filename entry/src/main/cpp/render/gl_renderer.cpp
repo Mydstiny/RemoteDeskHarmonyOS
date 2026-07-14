@@ -1054,17 +1054,8 @@ napi_value NapiDestroyRenderer(napi_env env, napi_callback_info info) {
 
     int64_t handleVal;
     napi_get_value_int64(env, args[0], &handleVal);
-    auto* ctx = reinterpret_cast<RendererContext*>(handleVal);
-
-    if (ctx) {
-        if (g_activeRendererHandle.load() == handleVal) {
-            g_activeRendererHandle.store(0);
-        }
-        if (ctx->renderer) {
-            ctx->renderer->Destroy();
-        }
-        delete ctx;
-    }
+    RendererNapi::DeactivateRenderer(handleVal);
+    RendererNapi::DestroyRendererHandle(handleVal);
 
     napi_value undefined;
     napi_get_undefined(env, &undefined);
@@ -1254,6 +1245,28 @@ void RendererNapi::SetActiveRenderer(int64_t handle) {
     g_activeRendererHandle.store(handle);
     OH_LOG_INFO(LOG_APP, "[GL] active renderer set handle=%{public}lld",
                 static_cast<long long>(handle));
+}
+
+void RendererNapi::DeactivateRenderer(int64_t handle) {
+    if (handle <= 0) {
+        return;
+    }
+    int64_t expected = handle;
+    g_activeRendererHandle.compare_exchange_strong(expected, 0);
+}
+
+void RendererNapi::DestroyRendererHandle(int64_t handle) {
+    if (handle <= 0) {
+        return;
+    }
+    auto* ctx = reinterpret_cast<RendererContext*>(handle);
+    if (!ctx) {
+        return;
+    }
+    if (ctx->renderer) {
+        ctx->renderer->Destroy();
+    }
+    delete ctx;
 }
 
 int RendererNapi::RenderRawBgraActive(

@@ -67,7 +67,7 @@ export class ProductionNativeHandleAdapter implements NativeHandleAdapter {
 // ====== ExtensionLoader 所需的最小接口 (避免循环导入) ======
 
 export interface ExtensionLoaderLike {
-  disconnect(): void;
+  disconnect(): number;
   destroyRenderer(): void;
   destroyAudioPlayer(): void;
   initRenderer(surfaceId: string, width: number, height: number): number;
@@ -140,30 +140,30 @@ export class NativeSessionHandles {
   }
 
   /**
-   * 完全断连+释放: 先 mark surface destroyed → 渲染清理 → 音频清理 → 协议断连。
-   * 严格顺序: surface → renderer → audio → protocol。
+   * 完全断连+释放: UI 只标记 surface 并提交异步 native teardown。
+   * renderer/audio 的真实销毁由 native executor 在协议 worker 停止后完成。
    */
   disconnectAndRelease(reason: string): void {
-    // 1. 标记 surface destroyed (如果渲染仍然 attached)
     if (this.renderAttached) {
       this.adapter.markXComponentSurfaceDestroyed();
-      this.adapter.destroyRendererOnly();
       this.renderAttached = false;
       this.rendererHandle = -1;
     }
 
-    // 2. 销毁音频
-    if (this.audioActive) {
-      this.adapter.destroyAudio();
-      this.audioActive = false;
-    }
-
-    // 3. 断开协议
     if (this.protocolConnected) {
       this.adapter.disconnectProtocol();
       this.protocolConnected = false;
     }
 
+    this.audioActive = false;
+    this.sessionId = -1;
+  }
+
+  markAsyncTeardownTransferred(): void {
+    this.protocolConnected = false;
+    this.renderAttached = false;
+    this.audioActive = false;
+    this.rendererHandle = -1;
     this.sessionId = -1;
   }
 

@@ -15,6 +15,7 @@
 #include <cstdint>
 #include <functional>
 #include <mutex>
+#include <memory>
 #include <string>
 #include <vector>
 #include <ohaudio/native_audiostream_base.h>
@@ -129,6 +130,8 @@ namespace AudioPlayerNapi {
     napi_value Init(napi_env env, napi_value exports);
     int DispatchActiveNative(const uint8_t* data, size_t size, int sampleRate, int channels);
     void DestroyActiveNative();
+    std::shared_ptr<AudioPlayer> TakeActiveNative();
+    void DestroyDetachedNative(int64_t handle, std::shared_ptr<AudioPlayer> activePlayer);
     bool IsActivePlaybackReceiving();
     bool IsActiveAudioMuted();
     void SetActiveAudioMuted(bool muted);

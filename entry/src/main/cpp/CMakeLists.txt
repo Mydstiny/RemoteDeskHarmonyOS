@@ -24,6 +24,7 @@ set(COMMON_SOURCES
 # -- 扩展框架 --
 set(EXTENSION_SOURCES
     extensions/extension_loader_napi.cpp
+    extensions/session_teardown_executor.cpp
 )
 
 # -- 协议适配器 --
@@ -134,6 +135,7 @@ if(RDP_BUILD_TESTS)
         test/audio_activity_state_test.cpp
         test/rdp_frame_pump_contract_test.cpp
         test/rdp_shutdown_state_test.cpp
+        test/session_teardown_executor_test.cpp
         test/rdp_background_frame_cache_test.cpp
         test/rdp_certificate_policy_test.cpp
         test/rdp_auth_identity_policy_test.cpp
@@ -154,6 +156,7 @@ if(RDP_BUILD_TESTS)
         video/video_activity_state.cpp
         render/video_backpressure_controller.cpp
         render/video_perf_counters.cpp
+        extensions/session_teardown_executor.cpp
     )
     target_include_directories(rdp_native_tests PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}

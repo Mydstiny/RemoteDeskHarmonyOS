@@ -4,8 +4,13 @@ declare module 'librdpnapi.so' {
   export function listProtocols(): ProtocolInfo[];
 
   export function connect(config: SessionConfig): number;
-  export function disconnect(sessionId: number): void;
-  export function disconnectAll(): void;
+  export function disconnect(sessionId: number, rendererHandle?: number,
+    decoderHandle?: number, audioHandle?: number): number;
+  export function beginDisconnect(sessionId: number, rendererHandle: number,
+    decoderHandle: number, audioHandle: number): number;
+  export function disconnectAll(rendererHandle?: number, decoderHandle?: number,
+    audioHandle?: number): number;
+  export function getDisconnectState(requestId: number): number;
 
   export function sendKey(sessionId: number, scancode: number, pressed: boolean): void;
   export function sendMouse(sessionId: number, x: number, y: number, button: number, pressed: boolean): void;

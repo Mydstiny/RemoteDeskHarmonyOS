@@ -222,6 +222,8 @@ namespace DecoderNapi {
     bool BindVideoPipeline(int64_t decoderHandle, int64_t rendererHandle);
     bool DetachVideoPipeline(int64_t decoderHandle);
     bool RequestDecoderRecovery(int64_t decoderHandle);
+    void DeactivateDecoder(int64_t decoderHandle);
+    void DestroyDecoderHandle(int64_t decoderHandle);
 }
 
 #endif // HW_DECODER_H
