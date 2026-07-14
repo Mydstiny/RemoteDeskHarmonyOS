@@ -111,6 +111,14 @@ public:
         (void)callbackUs;
     }
 
+    void recordCopy(int64_t nowUs, uint64_t copiedBytes, int64_t copyUs) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        rollWindowLocked(nowUs);
+        totals_.copiedBytes += copiedBytes;
+        current_.copiedBytes += copiedBytes;
+        appendNonNegative(current_.copyUs, copyUs);
+    }
+
     void recordPresent(int64_t nowUs, const RdpPresentMetrics& present) {
         std::lock_guard<std::mutex> lock(mutex_);
         rollWindowLocked(nowUs);

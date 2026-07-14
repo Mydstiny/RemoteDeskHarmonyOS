@@ -78,8 +78,10 @@ void RdpFramePump::stop() {
 }
 
 bool RdpFramePump::submitLatest(RdpFrameSubmission&& submission) {
-    if (submission.pixels.empty() || submission.width <= 0 || submission.height <= 0 ||
-        submission.stride <= 0 || submission.rendererGeneration == 0) {
+    const bool validOwnedPixels = !submission.pixels.empty() &&
+        submission.width > 0 && submission.height > 0 && submission.stride > 0 &&
+        submission.rendererGeneration != 0;
+    if (!submission.damageSource && !validOwnedPixels) {
         return false;
     }
 
@@ -150,8 +152,30 @@ void RdpFramePump::loop() {
         present.generation = frame.rendererGeneration;
         const int64_t queueWaitUs =
             frame.enqueuedAtUs > 0 ? SteadyNowUs() - frame.enqueuedAtUs : 0;
+        if (frame.damageSource) {
+            const int64_t snapshotBeginUs = SteadyNowUs();
+            RdpDamageSnapshot snapshot = frame.damageSource->takeSnapshot();
+            const int64_t snapshotCopyUs = SteadyNowUs() - snapshotBeginUs;
+            if (snapshot.valid) {
+                metrics_.recordCopy(SteadyNowUs(), snapshot.snapshotCopiedBytes, snapshotCopyUs);
+                frame.pixels = std::move(snapshot.pixels);
+                frame.width = snapshot.width;
+                frame.height = snapshot.height;
+                frame.stride = snapshot.stride;
+                frame.dirtyX = snapshot.damage.x;
+                frame.dirtyY = snapshot.damage.y;
+                frame.dirtyWidth = snapshot.damage.width;
+                frame.dirtyHeight = snapshot.damage.height;
+                frame.dirtyValid = !snapshot.fullFrame;
+                frame.rendererGeneration = snapshot.rendererGeneration;
+            }
+        }
         try {
-            present = frame.dirtyValid ?
+            if (frame.pixels.empty()) {
+                present.result = RdpPresentResult::InvalidFrame;
+                present.generation = frame.rendererGeneration;
+            } else {
+                present = frame.dirtyValid ?
                 RendererNapi::PresentRawBgraRectActive(
                     frame.pixels.data(), frame.pixels.size(), frame.width, frame.height,
                     frame.stride, frame.dirtyX, frame.dirtyY, frame.dirtyWidth,
@@ -159,6 +183,7 @@ void RdpFramePump::loop() {
                 RendererNapi::PresentRawBgraActive(
                     frame.pixels.data(), frame.pixels.size(), frame.width, frame.height,
                     frame.stride, frame.rendererGeneration);
+            }
             present.queueWaitUs = queueWaitUs;
         } catch (const std::exception& e) {
             present.result = RdpPresentResult::Exception;
@@ -175,7 +200,8 @@ void RdpFramePump::loop() {
             rejected_.fetch_add(1, std::memory_order_relaxed);
             if (present.result == RdpPresentResult::SurfaceDetached ||
                 present.result == RdpPresentResult::GenerationMismatch ||
-                present.result == RdpPresentResult::RendererNotReady) {
+                present.result == RdpPresentResult::RendererNotReady ||
+                present.result == RdpPresentResult::InvalidFrame) {
                 fullResyncRequired_.store(true, std::memory_order_release);
             }
         }
@@ -207,6 +233,10 @@ void RdpFramePump::loop() {
 
 void RdpFramePump::recordInvalid(uint64_t pixels, int64_t callbackUs, int64_t nowUs) {
     metrics_.recordInvalid(nowUs, pixels, callbackUs);
+}
+
+void RdpFramePump::recordCopy(uint64_t copiedBytes, int64_t copyUs, int64_t nowUs) {
+    metrics_.recordCopy(nowUs, copiedBytes, copyUs);
 }
 
 void RdpFramePump::recordDirectPresent(const RdpPresentMetrics& present, int64_t nowUs) {
