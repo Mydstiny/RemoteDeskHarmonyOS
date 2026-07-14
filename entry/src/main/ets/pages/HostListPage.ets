@@ -92,6 +92,7 @@ import {
 import {
   SETTINGS_SHEET_ACCOUNT,
   SETTINGS_SHEET_ACCENT_COLOR,
+  SETTINGS_SHEET_FEEDBACK,
   SETTINGS_SHEET_HALO_COLOR,
   SETTINGS_SHEET_KEY_VAULT,
   SETTINGS_SHEET_NONE,
@@ -118,7 +119,6 @@ import {
   SETTINGS_SECTION_RUSTDESK,
   SETTINGS_SECTION_SECURITY,
   SETTINGS_SECTION_TUTORIAL,
-  SETTINGS_SUPPORT_EMAIL,
   SettingsFeedbackLaunchAttempt,
   settingsFeedbackLaunchAttempts,
   settingsFeedbackMailPanelParams,
@@ -150,6 +150,7 @@ import {
   shouldMigrateLegacyHaloColorToTheme
 } from '../services/HaloColorPolicy';
 import { AboutSettingsSheet } from '../components/AboutSettingsSheet';
+import { FeedbackSettingsSheet } from '../components/FeedbackSettingsSheet';
 import { RdpCertificateInfo, SshHostKeyInfo, SshPrivateKeyInfo } from '../types/rdpnapi';
 import { motion } from '@kit.MultimodalAwarenessKit';
 import { HostDataSource } from '../datasources/DataSources';
@@ -965,6 +966,10 @@ struct HostListPage {
       }
     }
     promptAction.showToast({ message: '未找到可用的邮件应用', duration: 2200 });
+  }
+
+  private openFeedbackSheet(): void {
+    this.openSettingsLeafSheet(SETTINGS_SHEET_FEEDBACK);
   }
 
   private openFeedbackEmailPanel(
@@ -3639,6 +3644,11 @@ struct HostListPage {
       this.rdpCredentialEditorSheet()
     } else if (this.settingsLeafSheetMode === SETTINGS_SHEET_KEY_VAULT) {
       this.keyVaultSheet()
+    } else if (this.settingsLeafSheetMode === SETTINGS_SHEET_FEEDBACK) {
+      FeedbackSettingsSheet({
+        onClose: (): void => { this.closeSettingsLeafSheet(); },
+        onOpenMail: (): void => { this.openFeedbackEmail(); }
+      })
     } else {
       Column().width('100%').height(1)
     }
@@ -4382,8 +4392,8 @@ struct HostListPage {
 
         ListItem() {
           this.settingsActionHeader($r('sys.symbol.message'), '反馈',
-            '通过系统邮箱发送到 ' + SETTINGS_SUPPORT_EMAIL,
-            (): void => { this.openFeedbackEmail(); })
+            '邮箱反馈或加入畅联群聊',
+            (): void => { this.openFeedbackSheet(); })
         }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 10 })
 
         ListItem() {
