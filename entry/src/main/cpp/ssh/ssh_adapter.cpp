@@ -513,6 +513,12 @@ void SshAdapter::disconnect() {
     // 先停 reader 线程, 避免后续 channel/session free 时的竞态
     stopReader();
 
+    {
+        std::lock_guard<std::mutex> callbackLock(callbackMutex_);
+        onDataCallback_ = nullptr;
+        pendingData_.clear();
+    }
+
     std::lock_guard<std::mutex> sessionLock(sessionMutex_);
     if (sftp_) {
         libssh2_sftp_shutdown(sftp_);
@@ -1071,6 +1077,9 @@ int SshAdapter::measureLatencyMs() {
 void SshAdapter::setOnDataCallback(DataCallback cb) {
     std::lock_guard<std::mutex> lk(callbackMutex_);
     onDataCallback_ = std::move(cb);
+    if (!onDataCallback_) {
+        pendingData_.clear();
+    }
     OH_LOG_INFO(LOG_APP, "[SSH] onDataCallback %{public}s",
                 onDataCallback_ ? "已注册" : "已清除");
 }
@@ -1096,6 +1105,7 @@ void SshAdapter::stopReader() {
 
 void SshAdapter::readerLoop() {
     constexpr size_t kBufSize = SSH_BUFFER_SIZE;
+    constexpr size_t kMaxPendingData = SSH_BUFFER_SIZE * 4;
     std::vector<uint8_t> buf(kBufSize);
 
     while (readerRunning_.load()) {
@@ -1107,6 +1117,21 @@ void SshAdapter::readerLoop() {
             struct timeval tv = {0, 100 * 1000};  // 100ms
             select(0, nullptr, nullptr, nullptr, &tv);
             continue;
+        }
+
+        // connect() 会先启动 reader, ArkTS 只能在 connect() 返回后注册回调。
+        // 把这段空窗期收到的登录 banner 延迟到回调就绪后再发送，避免首次连接丢首屏。
+        DataCallback pendingCb;
+        std::string pending;
+        {
+            std::lock_guard<std::mutex> lk(callbackMutex_);
+            if (onDataCallback_ && !pendingData_.empty()) {
+                pendingCb = onDataCallback_;
+                pending.swap(pendingData_);
+            }
+        }
+        if (pendingCb && !pending.empty()) {
+            try { pendingCb(pending); } catch (...) { /* 静默, 不中断 reader */ }
         }
 
         // 100ms select 等待 socket 可读
@@ -1151,12 +1176,22 @@ void SshAdapter::readerLoop() {
 
         if (gotData && !accumulated.empty()) {
             DataCallback cb;
+            std::string dataToDeliver;
             {
                 std::lock_guard<std::mutex> lk(callbackMutex_);
-                cb = onDataCallback_;
+                if (onDataCallback_) {
+                    cb = onDataCallback_;
+                    dataToDeliver.swap(pendingData_);
+                    dataToDeliver.append(accumulated);
+                } else {
+                    pendingData_.append(accumulated);
+                    if (pendingData_.size() > kMaxPendingData) {
+                        pendingData_.erase(0, pendingData_.size() - kMaxPendingData);
+                    }
+                }
             }
             if (cb) {
-                try { cb(accumulated); } catch (...) { /* 静默, 不中断 reader */ }
+                try { cb(dataToDeliver); } catch (...) { /* 静默, 不中断 reader */ }
             }
         }
     }

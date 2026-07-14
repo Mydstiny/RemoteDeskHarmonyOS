@@ -247,6 +247,7 @@ export struct TerminalEmulator {
   private lastViewportHeight: number = 0;
 
   aboutToAppear(): void {
+    this.resetLifecycleState();
     this.scrollBottom = this.rows - 1;
     this.lastRows = this.rows;
     this.fgColor = this.terminalFgColor;
@@ -264,6 +265,20 @@ export struct TerminalEmulator {
       clearInterval(this.blinkTimer);
       this.blinkTimer = -1;
     }
+    this.resetLifecycleState();
+  }
+
+  /** ArkUI 复用组件时清除上一 SSH 会话的增量、滚动和选择状态。 */
+  private resetLifecycleState(): void {
+    this.lastInputLen = 0;
+    this.followBottom = true;
+    this.lastGridTop = 0;
+    this.lastViewportHeight = 0;
+    this.cursorVisible = true;
+    this.lastCursorX = 0;
+    this.lastCursorAbsR = 0;
+    this.clearSelection();
+    this.resetTerminalState();
   }
 
   /** 容器尺寸 / cols / rows 变化 */

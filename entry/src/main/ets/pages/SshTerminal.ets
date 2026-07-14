@@ -343,6 +343,12 @@ struct SshTerminal {
 
   async aboutToAppear(): Promise<void> {
     this.terminalClosing = false;
+    // ArkUI 可能复用页面实例；每次进入都必须从全新的会话输出开始。
+    this.termOutput = '';
+    this.connected = false;
+    this.connecting = true;
+    this.connectionError = '';
+    this.sessionId = -1;
     this.updateCellSize();
     this.termRows = this.calcRowsFallback();
     this.termCols = this.calcColsFallback();
@@ -413,6 +419,8 @@ struct SshTerminal {
     }
     this.loader.disconnect();
     this.sessionId = -1;
+    this.connected = false;
+    this.termOutput = '';
   }
 
   private setupKeyboardAvoidMode(): void {

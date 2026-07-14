@@ -80,6 +80,7 @@ export struct NativeTerminalRenderer {
   private lastGridTop: number = 0;
 
   aboutToAppear(): void {
+    this.resetLifecycleState();
     this.lastRows = this.rows;
     this.calcCellSize();
     this.handle = this.bridge.create(this.cols, this.rows);
@@ -99,6 +100,21 @@ export struct NativeTerminalRenderer {
       this.bridge.destroy(this.handle);
       this.handle = 0;
     }
+    this.resetLifecycleState();
+  }
+
+  /** ArkUI 可能复用组件实例；Rust handle 重建时增量游标也必须同步归零。 */
+  private resetLifecycleState(): void {
+    this.lastSnapshot = null;
+    this.dirtyRows.clear();
+    this.cursorVisible = true;
+    this.lastCursorX = 0;
+    this.lastCursorY = 0;
+    this.lastInputLen = 0;
+    this.followBottom = true;
+    this.frameCount = 0;
+    this.lastGridTop = 0;
+    this.lastViewportHeight = 0;
   }
 
   // ============================================================

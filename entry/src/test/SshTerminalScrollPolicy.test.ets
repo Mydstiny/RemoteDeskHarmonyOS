@@ -82,8 +82,9 @@ export default function sshTerminalScrollPolicyTest(): void {
       expect(terminalSparseContentGridTop(true, 122, 627, 48, 128, false)).assertEqual(701);
     });
 
-    it('should_top_align_non_sparse_command_history_before_scrollback_exists', 0, (): void => {
-      expect(terminalSparseContentGridTop(true, 122, 627, 320, 128, false)).assertEqual(122);
+    it('should_bottom_align_login_banner_before_scrollback_exists', 0, (): void => {
+      expect(terminalSparseContentGridTop(true, 122, 627, 320, 128, false)).assertEqual(429);
+      expect(terminalGridTop(true, 122, 627, 627, 320, 128, false)).assertEqual(429);
     });
 
     it('should_anchor_full_grid_bottom_when_keyboard_reduces_visible_viewport', 0, (): void => {
