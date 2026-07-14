@@ -5,7 +5,7 @@
  */
 
 export const FEEDBACK_COMMUNITY_MANIFEST_URL: string =
-  'https://mydstiny.github.io/RemoteDeskHarmonyOS/feedback/chanlian.json';
+  'https://lijiong.online/feedback/chanlian.json';
 export const FEEDBACK_COMMUNITY_QR_MAX_AGE_MS: number = 7 * 24 * 60 * 60 * 1000;
 export const FEEDBACK_COMMUNITY_CLOCK_SKEW_MS: number = 5 * 60 * 1000;
 
