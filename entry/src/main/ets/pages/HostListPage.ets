@@ -3250,9 +3250,16 @@ struct HostListPage {
         } else if (this.filteredHosts.length === 0) {
           ListItem() {
             Column() {
-              Text('还没有主机').fontSize(15).fontColor(this.pal().text2).fontFamily(this.font())
-              Text('点击下方加号添加').fontSize(12).fontColor(this.pal().text3).margin({ top: 6 }).fontFamily(this.font())
+              SymbolGlyph($r('sys.symbol.desktop_fill'))
+                .fontSize(48).fontColor([this.pal().text3])
+              Text('还没有远程主机')
+                .fontSize(17).fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font())
+                .margin({ top: 16 })
+              Text('点击底部 + 添加远程主机')
+                .fontSize(13).fontColor(this.pal().text3).fontFamily(this.font())
+                .margin({ top: 6 }).lineHeight(20)
             }.width('100%').constraintSize({ minHeight: 400 }).justifyContent(FlexAlign.Center)
+              .alignItems(HorizontalAlign.Center)
           }
         } else {
           LazyForEach(this.hostDataSource, (host: RemoteHost, idx: number) => {
