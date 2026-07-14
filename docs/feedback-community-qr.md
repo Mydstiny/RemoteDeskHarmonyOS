@@ -4,17 +4,23 @@
 
 `https://mydstiny.github.io/RemoteDeskHarmonyOS/feedback/chanlian.json`
 
-每次更新群二维码时，上传新的图片并替换清单。时间戳使用 Unix 毫秒，`expiresAt - issuedAt` 不得超过 7 天：
+当前线上文件位于 `docs/feedback/chanlian-current.jpg` 和 `docs/feedback/chanlian.json`。GitHub Pages 工作流只发布 `docs/feedback` 下的这三个静态文件，不发布仓库其他文档。
+
+每次更新群二维码时，替换 `chanlian-current.jpg` 和 `chanlian.json` 中的时间、提示文案。时间戳使用 Unix 毫秒，`expiresAt - issuedAt` 不得超过 7 天：
 
 ```json
 {
   "issuedAt": 1783987200000,
   "expiresAt": 1784592000000,
-  "qrImageUrl": "https://mydstiny.github.io/RemoteDeskHarmonyOS/feedback/chanlian-20260714.png",
-  "joinUrl": "https://example.com/your-huawei-app-linking-url",
+  "qrImageUrl": "https://mydstiny.github.io/RemoteDeskHarmonyOS/feedback/chanlian-current.jpg",
+  "joinUrl": "",
   "title": "加入 RemoteDesktop 畅联群聊",
   "notice": "二维码每 7 天更新一次，请保存后使用另一台设备扫描。"
 }
 ```
 
 `joinUrl` 是可选项。建议使用华为 App Linking 或你维护的 HTTPS 落地页；畅连没有在公开开发者文档中承诺一个可跨版本使用的群聊 URI，因此应用只在清单提供该链接时尝试直接跳转，失败后仍可保存二维码扫描。
+
+首次启用前，在仓库 Settings → Pages 中将 Source 设置为 **GitHub Actions**。GitHub Pages 会通过 HTTPS 提供 `https://mydstiny.github.io/RemoteDeskHarmonyOS/feedback/chanlian.json`；GitHub 官方说明所有 `github.io` Pages 站点支持 HTTPS，且可以用 Actions 发布静态 artifact。
+
+二维码是公开入群凭证，不要把管理员口令、私有 API token 或其他敏感信息写入图片、JSON 或仓库。旧图片虽然不再由当前路径引用，但仍可能存在 Git 历史中；因此每次轮换后应让畅连侧的旧二维码立即失效，并保持 7 天上限。
