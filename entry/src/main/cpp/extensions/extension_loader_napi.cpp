@@ -468,6 +468,11 @@ napi_value NapiGetRdpRenderStats(napi_env env, napi_callback_info info) {
     SetObjectInt64(env, result, "workerP50Us", stats.workerP50Us);
     SetObjectInt64(env, result, "workerP95Us", stats.workerP95Us);
     SetObjectInt64(env, result, "workerMaxUs", stats.workerMaxUs);
+    SetObjectInt32(env, result, "glUploadGateDecision", stats.glUploadGateDecision);
+    SetObjectInt64(env, result, "glUploadEvaluatedSamples",
+                   static_cast<int64_t>(stats.glUploadEvaluatedSamples));
+    SetObjectInt64(env, result, "glUploadSwapP95Us", stats.glUploadSwapP95Us);
+    SetObjectInt32(env, result, "glUploadSharePermille", stats.glUploadSharePermille);
     SetObjectInt32(env, result, "inputQueueDepth", stats.inputQueueDepth);
     SetObjectInt32(env, result, "inputQueueMax", stats.inputQueueMax);
     SetObjectInt64(env, result, "inputTextUnits", stats.inputTextUnits);

@@ -2156,6 +2156,11 @@ RdpRenderStats FreeRdpAdapter::getRdpRenderStats() {
     stats.workerP50Us = presentation.workerUs.p50;
     stats.workerP95Us = presentation.workerUs.p95;
     stats.workerMaxUs = presentation.workerUs.max;
+    const RdpGlUploadGateSnapshot uploadGate = impl_->framePump.glUploadGateSnapshot();
+    stats.glUploadGateDecision = static_cast<int>(uploadGate.decision);
+    stats.glUploadEvaluatedSamples = uploadGate.evaluatedSamples;
+    stats.glUploadSwapP95Us = uploadGate.uploadSwapP95Us;
+    stats.glUploadSharePermille = uploadGate.uploadSwapSharePermille;
     stats.graphicsMode = impl_->graphicsMode;
     {
         std::lock_guard<std::mutex> inputLock(impl_->inputQueueMutex);

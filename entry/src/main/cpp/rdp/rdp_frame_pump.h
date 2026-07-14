@@ -8,6 +8,7 @@
 #include "rdp_presentation_metrics.h"
 #include "rdp_damage_accumulator.h"
 #include "rdp_frame_scheduler.h"
+#include "rdp_gl_upload_gate.h"
 
 #include <atomic>
 #include <condition_variable>
@@ -42,6 +43,7 @@ public:
     int targetFps() const;
     int64_t targetIntervalUs() const;
     uint64_t adaptationCount() const;
+    RdpGlUploadGateSnapshot glUploadGateSnapshot() const;
     bool consumeFullResyncRequired();
 
     uint64_t submitted() const;
@@ -61,6 +63,7 @@ private:
     RdpFrameSubmission frame_;
     RdpPresentationMetrics metrics_;
     RdpFrameScheduler scheduler_;
+    RdpGlUploadGate glUploadGate_;
     std::atomic<uint64_t> submitted_ {0};
     std::atomic<uint64_t> rendered_ {0};
     std::atomic<uint64_t> replaced_ {0};

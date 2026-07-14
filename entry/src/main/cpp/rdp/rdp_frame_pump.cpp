@@ -42,6 +42,7 @@ bool RdpFramePump::start() {
     fullResyncRequired_.store(true, std::memory_order_release);
     metrics_.reset(SteadyNowUs());
     scheduler_.reset();
+    glUploadGate_.reset();
     submitted_.store(0, std::memory_order_relaxed);
     rendered_.store(0, std::memory_order_relaxed);
     replaced_.store(0, std::memory_order_relaxed);
@@ -209,17 +210,21 @@ void RdpFramePump::loop() {
             }
         }
         scheduler_.recordPresent(present);
+        glUploadGate_.recordPresent(present);
         metrics_.recordPresent(SteadyNowUs(), present);
         nextPresentAtUs = scheduler_.nextDeadlineUs(SteadyNowUs());
 
         RdpPresentationMetricsSnapshot window;
         if (metrics_.takeCompletedWindow(window)) {
+            const RdpGlUploadGateSnapshot uploadGate = glUploadGate_.snapshot();
             OH_LOG_INFO(LOG_APP,
                 "[RDP-PRESENT] submitted=%{public}llu presented=%{public}llu replaced=%{public}llu"
                 " rejected=%{public}llu detached=%{public}llu copied=%{public}llu"
                 " callbackP95=%{public}lldus queueP95=%{public}lldus uploadP95=%{public}lldus"
                 " drawP95=%{public}lldus swapP95=%{public}lldus workerP95=%{public}lldus"
-                " targetFps=%{public}d schedulerP95=%{public}lldus adaptations=%{public}llu",
+                " targetFps=%{public}d schedulerP95=%{public}lldus adaptations=%{public}llu"
+                " uploadGate=%{public}s uploadSwapP95=%{public}lldus"
+                " uploadShare=%{public}dpermille gateSamples=%{public}llu",
                 static_cast<unsigned long long>(window.submittedFrames),
                 static_cast<unsigned long long>(window.presentedFrames),
                 static_cast<unsigned long long>(window.replacedFrames),
@@ -234,7 +239,11 @@ void RdpFramePump::loop() {
                 static_cast<long long>(window.workerUs.p95),
                 scheduler_.targetFps(),
                 static_cast<long long>(scheduler_.lastP95Us()),
-                static_cast<unsigned long long>(scheduler_.adaptationCount()));
+                static_cast<unsigned long long>(scheduler_.adaptationCount()),
+                RdpGlUploadGate::DecisionName(uploadGate.decision),
+                static_cast<long long>(uploadGate.uploadSwapP95Us),
+                uploadGate.uploadSwapSharePermille,
+                static_cast<unsigned long long>(uploadGate.evaluatedSamples));
         }
     }
     OH_LOG_INFO(LOG_APP, "[RDP-PUMP] render worker stopped");
@@ -266,6 +275,10 @@ int64_t RdpFramePump::targetIntervalUs() const {
 
 uint64_t RdpFramePump::adaptationCount() const {
     return scheduler_.adaptationCount();
+}
+
+RdpGlUploadGateSnapshot RdpFramePump::glUploadGateSnapshot() const {
+    return glUploadGate_.snapshot();
 }
 
 bool RdpFramePump::consumeFullResyncRequired() {
