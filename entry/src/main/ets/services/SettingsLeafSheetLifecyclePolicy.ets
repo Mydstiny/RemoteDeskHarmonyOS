@@ -20,6 +20,14 @@ export function settingsLeafSheetClosedState(): SettingsLeafSheetClosedState {
   return { visible: false, mode: 0, cancelPendingOpen: true };
 }
 
+export function shouldQueueSettingsLeafSheetOpen(sheetVisible: boolean, dismissRequested: boolean): boolean {
+  return sheetVisible || dismissRequested;
+}
+
+export function settingsLeafSheetPendingMode(_currentPendingMode: number, requestedMode: number): number {
+  return requestedMode;
+}
+
 export function shouldOpenRestoreConfirmation(hasValidDocument: boolean): boolean {
   return hasValidDocument;
 }

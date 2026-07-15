@@ -2,6 +2,8 @@ import { describe, it, expect } from '@ohos/hypium';
 import {
   settingsLeafSheetClosedState,
   settingsLeafSheetDismissRequestedState,
+  settingsLeafSheetPendingMode,
+  shouldQueueSettingsLeafSheetOpen,
   shouldOpenRestoreConfirmation
 } from '../main/ets/services/SettingsLeafSheetLifecyclePolicy';
 
@@ -19,6 +21,17 @@ export default function settingsLeafSheetLifecyclePolicyTest(): void {
       expect(state.visible).assertFalse();
       expect(state.mode).assertEqual(7);
       expect(state.cancelPendingOpen).assertTrue();
+    });
+
+    it('queues_an_open_while_a_leaf_is_visible_or_dismissing', 0, (): void => {
+      expect(shouldQueueSettingsLeafSheetOpen(true, false)).assertTrue();
+      expect(shouldQueueSettingsLeafSheetOpen(false, true)).assertTrue();
+      expect(shouldQueueSettingsLeafSheetOpen(false, false)).assertFalse();
+    });
+
+    it('keeps_only_the_last_rapidly_requested_mode', 0, (): void => {
+      expect(settingsLeafSheetPendingMode(2, 7)).assertEqual(7);
+      expect(settingsLeafSheetPendingMode(7, 11)).assertEqual(11);
     });
 
     it('opens_restore_confirmation_only_for_a_valid_backup', 0, (): void => {
