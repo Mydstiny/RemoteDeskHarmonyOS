@@ -16,6 +16,7 @@ import { socket } from '@kit.NetworkKit';
 import { RustDeskRelayConfig } from '../model/RustDeskRelayConfig';
 import { RustDeskAccount } from '../model/RustDeskAccount';
 import { HostSyncService } from '../services/HostSyncService';
+import { snapshotSelectedRelay } from '../services/RustDeskRelayHealthPolicy';
 import { Palette, buildDark, buildLight, AppTheme } from '../common/Theme';
 
 class TcpTestResult {
@@ -90,7 +91,14 @@ export struct RustDeskRelayPage {
       });
     }
   }
-  private load(): void { this.relays = this.srv.getAllRelays(); }
+  private load(): void {
+    const selectedRelayId = this.selectedPcRelay ? this.selectedPcRelay.id : '';
+    const nextRelays = this.srv.getAllRelays();
+    this.relays = nextRelays;
+    if (selectedRelayId !== '') {
+      this.selectedPcRelay = snapshotSelectedRelay(nextRelays, selectedRelayId);
+    }
+  }
   onAddTrigger(): void {
     if (this.addTrigger > 0) { this.openAddRelaySheet(); }
   }
