@@ -36,6 +36,33 @@ RDP_TEST_CASE(rdp_graphics_lifecycle_rejects_invalid_or_overlapping_resize) {
     RDP_ASSERT_EQ(snapshot.resizeFailures, 1ULL);
 }
 
+RDP_TEST_CASE(rdp_graphics_lifecycle_reset_invalidates_stale_resize_ticket) {
+    RdpGraphicsLifecycle lifecycle;
+    lifecycle.reset(1920, 1080, true);
+
+    const RdpResizeTicket stale = lifecycle.beginResize(2560, 1440);
+    RDP_ASSERT(stale.accepted);
+
+    lifecycle.reset(1280, 720, false);
+    const RdpResizeTicket current = lifecycle.beginResize(1600, 900);
+    RDP_ASSERT(current.accepted);
+    RDP_ASSERT(stale.epoch != current.epoch);
+    RDP_ASSERT(!lifecycle.completeResize(stale.epoch, true));
+
+    const RdpGraphicsLifecycleSnapshot pending = lifecycle.snapshot();
+    RDP_ASSERT(pending.resizeInProgress);
+    RDP_ASSERT(!pending.presentationAllowed);
+    RDP_ASSERT_EQ(pending.desktopWidth, 1280);
+    RDP_ASSERT_EQ(pending.desktopHeight, 720);
+
+    RDP_ASSERT(lifecycle.completeResize(current.epoch, true));
+    const RdpGraphicsLifecycleSnapshot completed = lifecycle.snapshot();
+    RDP_ASSERT(completed.presentationAllowed);
+    RDP_ASSERT_EQ(completed.desktopWidth, 1600);
+    RDP_ASSERT_EQ(completed.desktopHeight, 900);
+    RDP_ASSERT_EQ(completed.resizeCount, 1ULL);
+}
+
 RDP_TEST_CASE(rdp_graphics_lifecycle_ignores_duplicate_and_stale_channel_events) {
     RdpGraphicsLifecycle lifecycle;
     lifecycle.reset(1920, 1080, true);

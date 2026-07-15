@@ -1550,7 +1550,14 @@ BOOL FreeRdpAdapter::cbDesktopResize(rdpContext* context) {
     }
 
     const bool success = resized && pumpStarted;
-    adapter->impl_->graphicsLifecycle.completeResize(ticket.epoch, success);
+    const bool committed =
+        adapter->impl_->graphicsLifecycle.completeResize(ticket.epoch, success);
+    if (!committed) {
+        OH_LOG_WARN(LOG_APP,
+            "[RDP-RESIZE] stale completion ignored epoch=%{public}llu [E-RDP-RESIZE-STALE]",
+            static_cast<unsigned long long>(ticket.epoch));
+        return FALSE;
+    }
     adapter->impl_->presentationEnabled.store(success, std::memory_order_release);
     if (!success) {
         const RdpGraphicsLifecycleSnapshot lifecycle =

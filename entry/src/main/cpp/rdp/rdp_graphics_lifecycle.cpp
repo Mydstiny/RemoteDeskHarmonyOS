@@ -27,7 +27,11 @@ RdpResizeTicket RdpGraphicsLifecycle::beginResize(int width, int height) {
     }
     snapshot_.resizeInProgress = true;
     snapshot_.presentationAllowed = false;
-    ++snapshot_.epoch;
+    ++nextResizeEpoch_;
+    if (nextResizeEpoch_ == 0) {
+        ++nextResizeEpoch_;
+    }
+    snapshot_.epoch = nextResizeEpoch_;
     pendingWidth_ = width;
     pendingHeight_ = height;
     ticket.accepted = true;
@@ -37,10 +41,10 @@ RdpResizeTicket RdpGraphicsLifecycle::beginResize(int width, int height) {
     return ticket;
 }
 
-void RdpGraphicsLifecycle::completeResize(uint64_t epoch, bool success) {
+bool RdpGraphicsLifecycle::completeResize(uint64_t epoch, bool success) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (!snapshot_.resizeInProgress || epoch == 0 || epoch != snapshot_.epoch) {
-        return;
+        return false;
     }
     snapshot_.resizeInProgress = false;
     if (success) {
@@ -54,6 +58,7 @@ void RdpGraphicsLifecycle::completeResize(uint64_t epoch, bool success) {
     }
     pendingWidth_ = 0;
     pendingHeight_ = 0;
+    return true;
 }
 
 RdpGfxChannelAction RdpGraphicsLifecycle::onChannelConnected(uintptr_t context) {
