@@ -24,6 +24,7 @@ pub mod connector;
 pub mod crypto;
 pub mod crypto_channel;
 mod control_inbox;
+mod net;
 #[cfg(feature = "opus-audio")]
 pub mod opus_ffi;
 pub mod protocol;

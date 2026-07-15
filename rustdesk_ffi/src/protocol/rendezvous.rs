@@ -10,6 +10,7 @@ use super::rendezvous_proto::{
 };
 use super::wire;
 use crate::crypto;
+use crate::net;
 use protobuf::Message;
 use rand::RngCore;
 use std::io;
@@ -64,13 +65,7 @@ impl RendezvousClient {
     ) -> io::Result<()> {
         self.state = RdState::Connecting;
 
-        let addr = format!("{}:{}", host, port);
-        let stream = TcpStream::connect_timeout(
-            &addr
-                .parse()
-                .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?,
-            Duration::from_secs(10),
-        )?;
+        let stream = net::connect_tcp_host(host, port, "rendezvous", Duration::from_secs(10))?;
 
         stream.set_read_timeout(Some(Duration::from_secs(30)))?;
         stream.set_write_timeout(Some(Duration::from_secs(10)))?;
@@ -333,11 +328,10 @@ impl RendezvousClient {
         server_key: &str,
     ) -> io::Result<TcpStream> {
         let licence_key = server_key.trim();
-        let relay_addr = with_port(relay_server, 21117);
-        let mut stream = TcpStream::connect_timeout(
-            &relay_addr
-                .parse()
-                .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?,
+        let mut stream = net::connect_tcp_endpoint(
+            relay_server,
+            21117,
+            "relay",
             Duration::from_secs(10),
         )?;
         stream.set_read_timeout(Some(Duration::from_secs(30)))?;
@@ -598,18 +592,6 @@ fn decode_socket_addr(bytes: &[u8]) -> io::Result<SocketAddr> {
     )))
 }
 
-fn with_port(host: &str, default_port: u16) -> String {
-    let trimmed = host.trim();
-    if trimmed.is_empty() {
-        return format!("127.0.0.1:{}", default_port);
-    }
-    if trimmed.starts_with('[') || trimmed.rsplit_once(':').is_some() {
-        trimmed.to_string()
-    } else {
-        format!("{}:{}", trimmed, default_port)
-    }
-}
-
 fn new_relay_uuid() -> String {
     let mut bytes = [0u8; 16];
     rand::thread_rng().fill_bytes(&mut bytes);
@@ -653,6 +635,9 @@ impl Drop for RendezvousClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::ErrorKind;
+    use std::net::TcpListener;
+    use std::thread;
 
     #[test]
     fn test_rendezvous_message_construction() {
@@ -696,5 +681,63 @@ mod tests {
             }
             _ => panic!("wrong oneof variant: {:?}", parsed.union),
         }
+    }
+
+    #[test]
+    fn rendezvous_connect_accepts_hostname_endpoint() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("listener bind failed");
+        let port = listener
+            .local_addr()
+            .expect("listener address missing")
+            .port();
+        let accept_thread = thread::spawn(move || {
+            let _ = listener
+                .accept()
+                .expect("hostname connection was not accepted");
+        });
+
+        let mut client = RendezvousClient::new();
+        client
+            .connect("localhost", port, "", false)
+            .expect("localhost should resolve and connect");
+        accept_thread.join().expect("accept thread panicked");
+    }
+
+    #[test]
+    fn relay_connect_accepts_hostname_endpoint_with_explicit_port() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("listener bind failed");
+        let port = listener
+            .local_addr()
+            .expect("listener address missing")
+            .port();
+        let accept_thread = thread::spawn(move || {
+            let (mut stream, _) = listener
+                .accept()
+                .expect("relay connection was not accepted");
+            let payload = wire::read_frame(&mut stream).expect("relay request frame missing");
+            assert!(!payload.is_empty(), "relay request frame should not be empty");
+        });
+
+        let client = RendezvousClient::new();
+        let relay_endpoint = format!("localhost:{}", port);
+        let stream = client
+            .create_relay("peer", "uuid", &relay_endpoint, "")
+            .expect("relay hostname should resolve and connect");
+        drop(stream);
+        accept_thread.join().expect("accept thread panicked");
+    }
+
+    #[test]
+    fn rendezvous_rejects_url_schemes_before_socket_connect() {
+        let mut client = RendezvousClient::new();
+        let error = client
+            .connect("https://localhost", 21116, "", false)
+            .expect_err("URL scheme must not be accepted as a raw endpoint");
+        assert_eq!(error.kind(), ErrorKind::InvalidInput);
+        assert!(
+            error.to_string().contains("scheme") || error.to_string().contains("endpoint"),
+            "error should identify endpoint format: {}",
+            error
+        );
     }
 }

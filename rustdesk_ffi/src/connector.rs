@@ -17,6 +17,7 @@
 use crate::crypto::{self, KeyPair};
 use crate::crypto_channel::CryptoChannel;
 use crate::control_inbox::{CONTROL_BATCH_LIMIT, ControlInbox};
+use crate::net;
 use crate::protocol::message_proto::{
     AudioFormat, AudioFrame, Clipboard, ClipboardFormat, ControlKey, EncodedVideoFrames,
     FileAction, FileAction_oneof_union, FileEntry, FileResponse, FileResponse_oneof_union,
@@ -244,12 +245,14 @@ impl RustDeskConnector {
     ) -> io::Result<()> {
         // === Phase 1: TCP 直连 peer ===
         self.state = ConnState::ConnectingToPeer;
-        let addr = format!("{}:{}", peer_host, peer_port);
-        eprintln!("[RustDesk-FFI] direct connect to peer {}", addr);
-        let mut stream = TcpStream::connect_timeout(
-            &addr
-                .parse()
-                .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?,
+        eprintln!(
+            "[RustDesk-FFI] direct connect to peer {}:{}",
+            peer_host, peer_port
+        );
+        let mut stream = net::connect_tcp_host(
+            peer_host,
+            peer_port,
+            "direct",
             Duration::from_secs(10),
         )?;
         stream.set_read_timeout(Some(Duration::from_secs(30)))?;
@@ -2053,6 +2056,8 @@ mod tests {
         should_refresh_for_video_starvation, ControlKey, KeyEvent_oneof_union, Message_oneof_union,
         RustDeskConnector,
     };
+    use std::net::TcpListener;
+    use std::thread;
 
     #[test]
     fn video_starvation_refreshes_when_audio_is_alive() {
@@ -2178,5 +2183,29 @@ mod tests {
             start,
             start + std::time::Duration::from_secs(5)
         ));
+    }
+
+    #[test]
+    fn direct_connect_resolves_hostname_before_peer_handshake() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("listener bind failed");
+        let port = listener
+            .local_addr()
+            .expect("listener address missing")
+            .port();
+        let accept_thread = thread::spawn(move || {
+            let _ = listener
+                .accept()
+                .expect("direct hostname connection was not accepted");
+        });
+
+        let error = RustDeskConnector::new()
+            .connect_direct("localhost", port, "", 0, 1, false, false, 30)
+            .expect_err("fake peer should fail after TCP connect, not during endpoint parsing");
+        assert_ne!(
+            error.kind(),
+            std::io::ErrorKind::InvalidInput,
+            "hostname should be resolved before the direct protocol is read"
+        );
+        accept_thread.join().expect("accept thread panicked");
     }
 }
