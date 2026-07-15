@@ -79,11 +79,13 @@ import {
 } from '../services/RdpSessionErrorPolicy';
 import {
   REMOTE_IME_CENTER,
+  REMOTE_IME_PREVIEW_ENABLED,
   RemoteImeSelectionAction,
   createRemoteImeDiagnostic,
   createRemoteImeShadow,
   resolveRemoteImeDelete,
   resolveRemoteImeSelection,
+  shouldAcceptRemoteImeTextChange,
   shouldRecenterRemoteImeShadow
 } from '../services/RemoteImeSessionPolicy';
 import {
@@ -3765,6 +3767,18 @@ struct RemoteDesktop {
     this.enqueueRemoteImeDelete(deletion.backwardCount, deletion.forwardCount);
   }
 
+  private handleKeyboardTextChange(value: string, previewText?: PreviewText): void {
+    const previewUnits: number = previewText ? previewText.value.length : 0;
+    if (!shouldAcceptRemoteImeTextChange(this.keyboardImeActive, previewUnits)) {
+      if (previewUnits > 0) {
+        hilog.debug(RD_DOMAIN, RD_TAG,
+          'kbd-ime-change ignored previewUnits=' + previewUnits.toString());
+      }
+      return;
+    }
+    this.keyboardText = value;
+  }
+
   private enqueueRemoteImeDelete(backwardCount: number, forwardCount: number): void {
     if (backwardCount > 0) {
       this.keyboardCommandQueue.enqueueKeyTaps(KEYCODE_DEL, backwardCount,
@@ -4993,6 +5007,7 @@ struct RemoteDesktop {
         .defaultFocus(false)
         .focusOnTouch(true)
         .enableKeyboardOnFocus(true)
+        .enablePreviewText(REMOTE_IME_PREVIEW_ENABLED)
         .selectionMenuHidden(true)
         .enterKeyType(EnterKeyType.Send)
         .onWillInsert((info: InsertValue): boolean => {
@@ -5021,8 +5036,8 @@ struct RemoteDesktop {
             this.markKeyboardClosed('ime');
           }
         })
-        .onChange((value: string) => {
-          this.keyboardText = value;
+        .onChange((value: string, previewText?: PreviewText) => {
+          this.handleKeyboardTextChange(value, previewText);
         })
         .onSubmit((enterKey: EnterKeyType, event: SubmitEvent): void => {
           hilog.info(RD_DOMAIN, RD_TAG, 'kbd-submit enterKey=' + enterKey.toString());

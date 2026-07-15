@@ -7,6 +7,9 @@
 
 export const REMOTE_IME_CENTER: number = 2048;
 export const REMOTE_IME_EDGE_THRESHOLD: number = 256;
+// The remote editor cannot mirror HarmonyOS composing text. Keep the local
+// IME responsible for candidate selection and forward only committed text.
+export const REMOTE_IME_PREVIEW_ENABLED: boolean = false;
 
 export enum RemoteImeSelectionAction {
   IGNORE_INACTIVE = 0,
@@ -159,6 +162,10 @@ export function resolveRemoteImeDelete(
 
 export function shouldRecenterRemoteImeShadow(caret: number, textLength: number): boolean {
   return caret < REMOTE_IME_EDGE_THRESHOLD || caret > textLength - REMOTE_IME_EDGE_THRESHOLD;
+}
+
+export function shouldAcceptRemoteImeTextChange(active: boolean, previewTextLength: number): boolean {
+  return active && previewTextLength === 0;
 }
 
 export function createRemoteImeDiagnostic(

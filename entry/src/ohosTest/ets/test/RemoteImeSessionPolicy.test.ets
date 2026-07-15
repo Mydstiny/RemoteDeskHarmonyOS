@@ -4,11 +4,13 @@
 import { describe, it, expect } from '@ohos/hypium';
 import {
   REMOTE_IME_CENTER,
+  REMOTE_IME_PREVIEW_ENABLED,
   RemoteImeSelectionAction,
   createRemoteImeDiagnostic,
   createRemoteImeShadow,
   resolveRemoteImeDelete,
   resolveRemoteImeSelection,
+  shouldAcceptRemoteImeTextChange,
   shouldRecenterRemoteImeShadow,
   splitRemoteImeCaretMovement
 } from '../../../main/ets/services/RemoteImeSessionPolicy';
@@ -19,6 +21,16 @@ export default function remoteImeSessionPolicyTest(): void {
       const shadow = createRemoteImeShadow();
       expect(shadow.caret).assertEqual(REMOTE_IME_CENTER);
       expect(shadow.text.length).assertEqual(REMOTE_IME_CENTER * 2);
+    });
+
+    it('disables_preview_text_for_remote_virtual_keyboard', 0, (): void => {
+      expect(REMOTE_IME_PREVIEW_ENABLED).assertFalse();
+    });
+
+    it('does_not_rebind_shadow_while_preview_text_is_active', 0, (): void => {
+      expect(shouldAcceptRemoteImeTextChange(true, 4)).assertFalse();
+      expect(shouldAcceptRemoteImeTextChange(true, 0)).assertTrue();
+      expect(shouldAcceptRemoteImeTextChange(false, 0)).assertFalse();
     });
 
     it('ignores_expected_and_programmatic_selection', 0, (): void => {
