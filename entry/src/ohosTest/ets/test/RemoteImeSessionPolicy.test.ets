@@ -39,6 +39,7 @@ export default function remoteImeSessionPolicyTest(): void {
     it('keeps_session_open_for_initial_editing_false_transition', 0, (): void => {
       expect(shouldCloseRemoteImeSessionOnEditChange(true, false, false)).assertFalse();
       expect(shouldCloseRemoteImeSessionOnEditChange(true, false, true)).assertTrue();
+      expect(shouldCloseRemoteImeSessionOnEditChange(true, false, true, true)).assertFalse();
       expect(shouldCloseRemoteImeSessionOnEditChange(true, true, false)).assertFalse();
       expect(shouldCloseRemoteImeSessionOnEditChange(false, false, true)).assertFalse();
     });

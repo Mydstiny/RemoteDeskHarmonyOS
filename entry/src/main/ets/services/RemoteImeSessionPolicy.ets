@@ -191,9 +191,10 @@ export function shouldAcceptRemoteImeTextChange(active: boolean, previewTextLeng
 export function shouldCloseRemoteImeSessionOnEditChange(
   keyboardOpen: boolean,
   isEditing: boolean,
-  editingObserved: boolean
+  editingObserved: boolean,
+  selectionAcknowledgementPending: boolean = false
 ): boolean {
-  return keyboardOpen && !isEditing && editingObserved;
+  return keyboardOpen && !isEditing && editingObserved && !selectionAcknowledgementPending;
 }
 
 export function shouldWaitForRemoteImeInput(

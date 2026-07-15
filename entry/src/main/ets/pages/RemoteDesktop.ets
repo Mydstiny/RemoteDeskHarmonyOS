@@ -5324,7 +5324,8 @@ struct RemoteDesktop {
             return;
           }
           if (shouldCloseRemoteImeSessionOnEditChange(
-            this.keyboardOpen, isEditing, this.keyboardImeEditingObserved)) {
+            this.keyboardOpen, isEditing, this.keyboardImeEditingObserved,
+            this.keyboardProgrammaticSelection)) {
             if (this.keyboardSubmitRefocusPending || this.keepKeyboardAfterSheetClose) {
               hilog.info(RD_DOMAIN, RD_TAG, 'kbd-editing-close ignored: refocus pending');
               return;
