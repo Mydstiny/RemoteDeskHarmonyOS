@@ -17,6 +17,7 @@
 #include "rdp_background_frame_cache.h"
 #include "rdp_certificate_policy.h"
 #include "rdp_frame_pump.h"
+#include "rdp_file_clipboard_bridge.h"
 #include "rdp_graphics_lifecycle.h"
 #include "rdp_keymap.h"
 #include "rdp_performance_policy.h"
@@ -527,6 +528,7 @@ struct FreeRdpAdapter::Impl {
     ConnectionStateCallback stateCallback;
     std::string             clipboardText;
     CliprdrClientContext*   cliprdr = nullptr;
+    std::unique_ptr<RdpFileClipboardBridge> fileClipboard;
     pthread_t               eventThread = 0;
     pthread_t               connectThread = 0;
     pthread_t               driveThread = 0;
@@ -1081,13 +1083,17 @@ void FreeRdpAdapter::cbChannelConnected(void* context, const ChannelConnectedEve
     if (std::strcmp(e->name, CLIPRDR_SVC_CHANNEL_NAME) == 0 && e->pInterface) {
         auto* owner = reinterpret_cast<FreeRdpContext*>(rdpContext)->adapter;
         auto* cliprdr = reinterpret_cast<CliprdrClientContext*>(e->pInterface);
-        if (owner && owner->impl_) {
+        if (owner && owner->impl_ && owner->impl_->fileClipboard &&
+            owner->impl_->fileClipboard->attach(cliprdr)) {
             owner->impl_->cliprdr = cliprdr;
-            cliprdr->custom = owner;
+            cliprdr->ServerCapabilities = cbCliprdrServerCapabilities;
             cliprdr->MonitorReady = cbCliprdrMonitorReady;
             cliprdr->ServerFormatList = cbCliprdrServerFormatList;
             cliprdr->ServerFormatDataRequest = cbCliprdrServerFormatDataRequest;
             cliprdr->ServerFormatDataResponse = cbCliprdrServerFormatDataResponse;
+        } else {
+            OH_LOG_WARN(LOG_APP,
+                        "[RDP] file clipboard bridge unavailable; clipboard disabled for this session");
         }
     }
 #if defined(CHANNEL_RDPGFX_CLIENT)
@@ -1144,19 +1150,47 @@ void FreeRdpAdapter::cbChannelConnected(void* context, const ChannelConnectedEve
 
 UINT FreeRdpAdapter::cbCliprdrMonitorReady(CliprdrClientContext* context,
                                            const CLIPRDR_MONITOR_READY*) {
-    if (!context || !context->ClientFormatList) return ERROR_INVALID_PARAMETER;
-    CLIPRDR_FORMAT format {};
-    format.formatId = CF_UNICODETEXT;
-    CLIPRDR_FORMAT_LIST list {};
-    list.common.msgType = CB_FORMAT_LIST;
-    list.numFormats = 1;
-    list.formats = &format;
-    return context->ClientFormatList(context, &list);
+    auto* owner = context ? static_cast<FreeRdpAdapter*>(
+        RdpFileClipboardBridge::ownerFromContext(context)) : nullptr;
+    if (!owner || !owner->impl_ || !owner->impl_->fileClipboard) {
+        return ERROR_INVALID_PARAMETER;
+    }
+    const UINT capabilityResult = owner->impl_->fileClipboard->sendClientCapabilities();
+    if (capabilityResult != CHANNEL_RC_OK) {
+        return capabilityResult;
+    }
+    return owner->impl_->fileClipboard->sendCurrentFormatList(true);
+}
+
+UINT FreeRdpAdapter::cbCliprdrServerCapabilities(
+    CliprdrClientContext* context, const CLIPRDR_CAPABILITIES* capabilities) {
+    auto* owner = context ? static_cast<FreeRdpAdapter*>(
+        RdpFileClipboardBridge::ownerFromContext(context)) : nullptr;
+    if (!owner || !owner->impl_ || !owner->impl_->fileClipboard) {
+        return ERROR_INVALID_PARAMETER;
+    }
+    return owner->impl_->fileClipboard->updateServerCapabilities(capabilities);
 }
 
 UINT FreeRdpAdapter::cbCliprdrServerFormatList(CliprdrClientContext* context,
                                                const CLIPRDR_FORMAT_LIST* list) {
-    if (!context || !list || !context->ClientFormatDataRequest) return ERROR_INVALID_PARAMETER;
+    auto* owner = context ? static_cast<FreeRdpAdapter*>(
+        RdpFileClipboardBridge::ownerFromContext(context)) : nullptr;
+    if (!owner || !owner->impl_ || !owner->impl_->fileClipboard || !list ||
+        !context->ClientFormatListResponse) {
+        return ERROR_INVALID_PARAMETER;
+    }
+    const UINT notifyResult = owner->impl_->fileClipboard->notifyServerFormatList();
+    if (notifyResult != CHANNEL_RC_OK) {
+        return notifyResult;
+    }
+    CLIPRDR_FORMAT_LIST_RESPONSE response {};
+    response.common.msgType = CB_FORMAT_LIST_RESPONSE;
+    response.common.msgFlags = CB_RESPONSE_OK;
+    const UINT responseResult = context->ClientFormatListResponse(context, &response);
+    if (responseResult != CHANNEL_RC_OK || !context->ClientFormatDataRequest) {
+        return responseResult;
+    }
     for (UINT32 i = 0; i < list->numFormats; ++i) {
         if (list->formats[i].formatId == CF_UNICODETEXT) {
             CLIPRDR_FORMAT_DATA_REQUEST request {};
@@ -1170,9 +1204,18 @@ UINT FreeRdpAdapter::cbCliprdrServerFormatList(CliprdrClientContext* context,
 
 UINT FreeRdpAdapter::cbCliprdrServerFormatDataRequest(CliprdrClientContext* context,
                                                       const CLIPRDR_FORMAT_DATA_REQUEST* request) {
-    auto* owner = context ? static_cast<FreeRdpAdapter*>(context->custom) : nullptr;
-    if (!owner || !owner->impl_ || !context->ClientFormatDataResponse || !request ||
-        request->requestedFormatId != CF_UNICODETEXT) return ERROR_INVALID_PARAMETER;
+    auto* owner = context ? static_cast<FreeRdpAdapter*>(
+        RdpFileClipboardBridge::ownerFromContext(context)) : nullptr;
+    if (!owner || !owner->impl_ || !context->ClientFormatDataResponse || !request) {
+        return ERROR_INVALID_PARAMETER;
+    }
+    if (owner->impl_->fileClipboard &&
+        owner->impl_->fileClipboard->isFileFormat(request->requestedFormatId)) {
+        return owner->impl_->fileClipboard->respondToFileFormatRequest(request);
+    }
+    if (request->requestedFormatId != CF_UNICODETEXT) {
+        return ERROR_INVALID_PARAMETER;
+    }
     std::vector<uint16_t> wide = utf8ToUtf16(owner->impl_->clipboardText);
     wide.push_back(0);
     CLIPRDR_FORMAT_DATA_RESPONSE response {};
@@ -1185,7 +1228,8 @@ UINT FreeRdpAdapter::cbCliprdrServerFormatDataRequest(CliprdrClientContext* cont
 
 UINT FreeRdpAdapter::cbCliprdrServerFormatDataResponse(CliprdrClientContext* context,
                                                        const CLIPRDR_FORMAT_DATA_RESPONSE* response) {
-    auto* owner = context ? static_cast<FreeRdpAdapter*>(context->custom) : nullptr;
+    auto* owner = context ? static_cast<FreeRdpAdapter*>(
+        RdpFileClipboardBridge::ownerFromContext(context)) : nullptr;
     if (!owner || !owner->impl_ || !response || !response->requestedFormatData) return ERROR_INVALID_PARAMETER;
     const auto* data = reinterpret_cast<const uint16_t*>(response->requestedFormatData);
     const size_t count = response->common.dataLen / sizeof(uint16_t);
@@ -1212,6 +1256,16 @@ void FreeRdpAdapter::cbChannelDisconnected(void* context, const ChannelDisconnec
     }
     OH_LOG_INFO(LOG_APP, "[RDP] channel disconnected: %{public}s interface=%{public}p",
                 e->name, e->pInterface);
+    if (std::strcmp(e->name, CLIPRDR_SVC_CHANNEL_NAME) == 0) {
+        auto* freeRdpContext = reinterpret_cast<FreeRdpContext*>(rdpContext);
+        auto* owner = freeRdpContext ? freeRdpContext->adapter : nullptr;
+        if (owner && owner->impl_) {
+            if (owner->impl_->fileClipboard) {
+                owner->impl_->fileClipboard->detach();
+            }
+            owner->impl_->cliprdr = nullptr;
+        }
+    }
 #if defined(CHANNEL_RDPGFX_CLIENT)
     if (std::strcmp(e->name, RDPGFX_DVC_CHANNEL_NAME) == 0) {
         auto* freeRdpContext = reinterpret_cast<FreeRdpContext*>(rdpContext);
@@ -1772,6 +1826,9 @@ void FreeRdpAdapter::cleanupInstance() {
     RendererNapi::InvalidateActivePresentation();
     impl_->framePump.invalidatePending();
     impl_->stopSessionWorkers();
+    if (impl_->fileClipboard) {
+        impl_->fileClipboard->detach();
+    }
     freerdp* doomedInstance = nullptr;
     {
         std::lock_guard<std::mutex> lock(impl_->instanceMutex);
@@ -1796,6 +1853,7 @@ void FreeRdpAdapter::cleanupInstance() {
 
 FreeRdpAdapter::FreeRdpAdapter() : impl_(std::make_unique<Impl>()) {
     ensureFreeRdpStaticAddinProvider();
+    impl_->fileClipboard = std::make_unique<RdpFileClipboardBridge>(this);
     OH_LOG_INFO(LOG_APP, "[RDP] FreeRdpAdapter created (FreeRDP 3.x)");
 }
 
@@ -1964,6 +2022,10 @@ void FreeRdpAdapter::connectThreadFunc() {
     freerdp_settings_set_bool(s, FreeRDP_DeviceRedirection,
                               (cfg.rdAudioEnabled || driveEnabled) ? TRUE : FALSE);
     freerdp_settings_set_bool(s, FreeRDP_RedirectClipboard, cfg.rdClipboardEnabled ? TRUE : FALSE);
+    const UINT32 clipboardFeatureMask = cfg.rdClipboardEnabled ?
+        (CLIPRDR_FLAG_LOCAL_TO_REMOTE | CLIPRDR_FLAG_REMOTE_TO_LOCAL |
+         CLIPRDR_FLAG_LOCAL_TO_REMOTE_FILES) : 0;
+    freerdp_settings_set_uint32(s, FreeRDP_ClipboardFeatureMask, clipboardFeatureMask);
     const std::string driveName = sanitizeRdpDriveName(cfg.rdDriveName);
     // 不在连接握手前注册自定义 drive。rdpdr 通道加载后由异步线程 post-connected 挂载。
     freerdp_settings_set_bool(s, FreeRDP_RedirectDrives, FALSE);
@@ -2480,15 +2542,19 @@ void FreeRdpAdapter::setConnectionStateCallback(ConnectionStateCallback cb) { im
 
 void FreeRdpAdapter::setClipboardText(const std::string& t) {
     impl_->clipboardText = t;
-    if (impl_->cliprdr && impl_->cliprdr->ClientFormatList) {
-        CLIPRDR_FORMAT format {};
-        format.formatId = CF_UNICODETEXT;
-        CLIPRDR_FORMAT_LIST list {};
-        list.common.msgType = CB_FORMAT_LIST;
-        list.numFormats = 1;
-        list.formats = &format;
-        impl_->cliprdr->ClientFormatList(impl_->cliprdr, &list);
+    if (impl_->fileClipboard) {
+        impl_->fileClipboard->clearLocalFiles();
+        if (impl_->cliprdr) {
+            impl_->fileClipboard->sendCurrentFormatList(true);
+        }
     }
+}
+bool FreeRdpAdapter::setClipboardFiles(const std::vector<std::string>& paths) {
+    if (!impl_->fileClipboard || !impl_->cliprdr) {
+        return false;
+    }
+    return impl_->fileClipboard->publishLocalFiles(paths) ==
+        RdpFileClipboardOfferResult::Ready;
 }
 void FreeRdpAdapter::sendClipboardData(const uint8_t* data, uint32_t len) {
     if (data == nullptr || len == 0) return;
@@ -2786,6 +2852,7 @@ void FreeRdpAdapter::setAudioCallback(AudioDataCallback cb) { impl_->audioCallba
 void FreeRdpAdapter::setConnectionStateCallback(ConnectionStateCallback cb) { impl_->stateCallback = std::move(cb); }
 
 void FreeRdpAdapter::setClipboardText(const std::string& t) { impl_->clipboardText = t; }
+bool FreeRdpAdapter::setClipboardFiles(const std::vector<std::string>&) { return false; }
 void FreeRdpAdapter::sendClipboardData(const uint8_t* data, uint32_t len) {
     if (data == nullptr || len == 0) return;
     setClipboardText(std::string(reinterpret_cast<const char*>(data), len));

@@ -73,7 +73,7 @@ export function resolveSessionCapabilities(state: SessionCapabilityState): Remot
       connect,
       clipboardSend: available(),
       clipboardReceive: inbound,
-      fileUpload: drive,
+      fileUpload: state.rdpClipboardReady ? available() : unavailable('RDP 文件剪贴板通道尚未就绪'),
       fileDownload: drive,
       multiDisplay: unavailable('当前 RDP 渲染仅支持单显示器')
     };

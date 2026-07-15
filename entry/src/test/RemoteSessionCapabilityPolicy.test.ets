@@ -12,12 +12,12 @@ export default function remoteSessionCapabilityPolicyTest(): void {
       expect(capabilities.connect.reason).assertEqual('当前版本尚未提供 VNC 连接支持');
     });
 
-    it('rdp_should_not_offer_file_transfer_before_drive_mount', 0, (): void => {
+    it('rdp_should_offer_clipboard_upload_without_drive_mount', 0, (): void => {
       const capabilities = resolveSessionCapabilities({
-        protocol: 'rdp', connected: true, rdpDriveMounted: false, rdpClipboardReady: false, sftpConnected: false,
+        protocol: 'rdp', connected: true, rdpDriveMounted: false, rdpClipboardReady: true, sftpConnected: false,
         rustDeskVerifiedPeer: false, rustDeskInboundClipboard: false, rustDeskTransferConfirmed: false
       });
-      expect(capabilities.fileUpload.enabled).assertFalse();
+      expect(capabilities.fileUpload.enabled).assertTrue();
       expect(capabilities.fileDownload.enabled).assertFalse();
     });
 
