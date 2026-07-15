@@ -52,8 +52,14 @@
       {
         "name": "ohos.permission.KEEP_BACKGROUND_RUNNING"
       },
-      // Temporarily disabled for emulator deployment: this restricted permission
-      // requires an ACL-enabled signing profile. Restore it for RDP system-file paste.
+      {
+        "name": "ohos.permission.READ_PASTEBOARD",
+        "reason": "$string:pasteboard_permission_reason",
+        "usedScene": {
+          "abilities": ["EntryAbility"],
+          "when": "inuse"
+        }
+      },
       {
         "name": "ohos.permission.CAMERA",
         "reason": "$string:camera_permission_reason",
