@@ -11,6 +11,7 @@ import {
   resolveRemoteImeDelete,
   resolveRemoteImeSelection,
   shouldAcceptRemoteImeTextChange,
+  shouldCloseRemoteImeSessionOnEditChange,
   shouldRecenterRemoteImeShadow,
   splitRemoteImeCaretMovement
 } from '../../../main/ets/services/RemoteImeSessionPolicy';
@@ -31,6 +32,13 @@ export default function remoteImeSessionPolicyTest(): void {
       expect(shouldAcceptRemoteImeTextChange(true, 4)).assertFalse();
       expect(shouldAcceptRemoteImeTextChange(true, 0)).assertTrue();
       expect(shouldAcceptRemoteImeTextChange(false, 0)).assertFalse();
+    });
+
+    it('keeps_session_open_for_initial_editing_false_transition', 0, (): void => {
+      expect(shouldCloseRemoteImeSessionOnEditChange(true, false, false)).assertFalse();
+      expect(shouldCloseRemoteImeSessionOnEditChange(true, false, true)).assertTrue();
+      expect(shouldCloseRemoteImeSessionOnEditChange(true, true, false)).assertFalse();
+      expect(shouldCloseRemoteImeSessionOnEditChange(false, false, true)).assertFalse();
     });
 
     it('ignores_expected_and_programmatic_selection', 0, (): void => {

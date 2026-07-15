@@ -87,6 +87,7 @@ import {
   resolveRemoteImeDelete,
   resolveRemoteImeSelection,
   shouldAcceptRemoteImeTextChange,
+  shouldCloseRemoteImeSessionOnEditChange,
   shouldRecenterRemoteImeShadow
 } from '../services/RemoteImeSessionPolicy';
 import {
@@ -363,6 +364,7 @@ struct RemoteDesktop {
   private keyboardController: TextAreaController = new TextAreaController();
   private keyboardImeActive: boolean = false;
   private keyboardImeGeneration: number = 0;
+  private keyboardImeEditingObserved: boolean = false;
   private keyboardSyncedCaret: number = REMOTE_IME_CENTER;
   private keyboardExpectedStart: number = -1;
   private keyboardExpectedEnd: number = -1;
@@ -3898,6 +3900,7 @@ struct RemoteDesktop {
     this.keyboardCommandQueue.clear();
     this.keyboardText = shadow.text;
     this.keyboardImeActive = true;
+    this.keyboardImeEditingObserved = false;
     this.keyboardSyncedCaret = shadow.caret;
     this.keyboardExpectedStart = shadow.caret;
     this.keyboardExpectedEnd = shadow.caret;
@@ -3918,6 +3921,7 @@ struct RemoteDesktop {
     }
     this.keyboardImeGeneration++;
     this.keyboardImeActive = false;
+    this.keyboardImeEditingObserved = false;
     this.keyboardCommandQueue.clear();
     this.keyboardText = '';
     this.keyboardSyncedCaret = REMOTE_IME_CENTER;
@@ -3946,6 +3950,7 @@ struct RemoteDesktop {
   }
 
   private handleKeyboardWillInsert(info: InsertValue): boolean {
+    this.keyboardImeEditingObserved = true;
     this.keyboardExpectedStart = info.insertOffset + info.insertValue.length;
     this.keyboardExpectedEnd = this.keyboardExpectedStart;
     return this.keyboardImeActive;
@@ -3961,6 +3966,7 @@ struct RemoteDesktop {
   }
 
   private handleKeyboardWillDelete(info: DeleteValue): boolean {
+    this.keyboardImeEditingObserved = true;
     this.keyboardExpectedStart = info.deleteOffset;
     this.keyboardExpectedEnd = info.deleteOffset;
     return this.keyboardImeActive;
@@ -5222,7 +5228,12 @@ struct RemoteDesktop {
         .id('RemoteDesktopKeyboard')
         .width(1).height(1)
         .opacity(0.01)
+        .fontColor('#00000000')
+        .backgroundColor('#00000000')
+        .caretColor('#00000000')
+        .border({ width: 0 })
         .position({ x: 0, y: 0 })
+        .hitTestBehavior(HitTestMode.Transparent)
         .defaultFocus(false)
         .focusOnTouch(true)
         .enableKeyboardOnFocus(true)
@@ -5247,7 +5258,12 @@ struct RemoteDesktop {
         .onEditChange((isEditing: boolean): void => {
           hilog.info(RD_DOMAIN, RD_TAG, 'kbd-editing=' + (isEditing ? 'true' : 'false') +
             ' open=' + (this.keyboardOpen ? 'true' : 'false'));
-          if (!isEditing && this.keyboardOpen) {
+          if (isEditing) {
+            this.keyboardImeEditingObserved = true;
+            return;
+          }
+          if (shouldCloseRemoteImeSessionOnEditChange(
+            this.keyboardOpen, isEditing, this.keyboardImeEditingObserved)) {
             if (this.keyboardSubmitRefocusPending || this.keepKeyboardAfterSheetClose) {
               hilog.info(RD_DOMAIN, RD_TAG, 'kbd-editing-close ignored: refocus pending');
               return;

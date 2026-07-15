@@ -168,6 +168,14 @@ export function shouldAcceptRemoteImeTextChange(active: boolean, previewTextLeng
   return active && previewTextLength === 0;
 }
 
+export function shouldCloseRemoteImeSessionOnEditChange(
+  keyboardOpen: boolean,
+  isEditing: boolean,
+  editingObserved: boolean
+): boolean {
+  return keyboardOpen && !isEditing && editingObserved;
+}
+
 export function createRemoteImeDiagnostic(
   source: string,
   units: number,
