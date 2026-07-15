@@ -158,7 +158,7 @@ private:
 
 namespace RendererNapi {
     napi_value Init(napi_env env, napi_value exports);
-    void MakeCurrent(int64_t handle);
+    bool MakeCurrent(int64_t handle);
     void ReleaseCurrent(int64_t handle);
     void RenderNative(int64_t handle, GLuint textureId);
     void SetActiveSourceSize(int width, int height);

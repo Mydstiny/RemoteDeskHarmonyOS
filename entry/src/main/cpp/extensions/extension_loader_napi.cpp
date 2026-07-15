@@ -487,6 +487,13 @@ napi_value NapiGetRdpRenderStats(napi_env env, napi_callback_info info) {
     SetObjectInt64(env, result, "inputDroppedMouseMoves", stats.inputDroppedMouseMoves);
     SetObjectInt64(env, result, "inputNonDisposableOverflow", stats.inputNonDisposableOverflow);
     SetObjectString(env, result, "graphicsMode", stats.graphicsMode);
+    SetObjectBool(env, result, "h264Avc420Enabled", stats.h264Avc420Enabled);
+    SetObjectBool(env, result, "h264Avc444Enabled", stats.h264Avc444Enabled);
+    SetObjectBool(env, result, "h264DirectTextureEnabled", stats.h264DirectTextureEnabled);
+    SetObjectInt32(env, result, "h264PerformanceGainPermille", stats.h264PerformanceGainPermille);
+    SetObjectString(env, result, "h264Avc420Reason", stats.h264Avc420Reason);
+    SetObjectString(env, result, "h264Avc444Reason", stats.h264Avc444Reason);
+    SetObjectString(env, result, "h264DirectTextureReason", stats.h264DirectTextureReason);
     return result;
 }
 

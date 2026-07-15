@@ -41,44 +41,83 @@ constexpr size_t kMaxQueuedFrames = 12;  // was 4 — too small for 45+fps w/ sa
 
 void HardwareDecoder::OnError(OH_AVCodec* /*codec*/, int32_t errorCode, void* userData) {
     auto* cb = static_cast<CallbackUserData*>(userData);
+    auto* self = cb ? cb->self.load(std::memory_order_acquire) : nullptr;
+    if (!self) return;
+    const DecoderCallbackLease lease = self->lifecycle_.acquireCallback();
+    if (!lease.accepted) return;
     OH_LOG_ERROR(LOG_APP, "[Decoder] 解码器错误: code=%{public}d", errorCode);
-    if (cb && cb->self && cb->self->errorCallback_) {
-        cb->self->errorCallback_(DecoderError::OUTPUT_FAILED,
-            "OH_AVCodec error " + std::to_string(errorCode));
-    }
+    self->notifyError(DecoderError::OUTPUT_FAILED,
+        "OH_AVCodec error " + std::to_string(errorCode));
+    self->lifecycle_.releaseCallback(lease);
 }
 
-void HardwareDecoder::OnStreamChanged(OH_AVCodec* /*codec*/, OH_AVFormat* /*format*/, void* userData) {
-    (void)userData;
-    OH_LOG_INFO(LOG_APP, "[Decoder] 码流格式变更");
+void HardwareDecoder::OnStreamChanged(OH_AVCodec* /*codec*/, OH_AVFormat* format, void* userData) {
+    auto* cb = static_cast<CallbackUserData*>(userData);
+    auto* self = cb ? cb->self.load(std::memory_order_acquire) : nullptr;
+    if (!self) return;
+    const DecoderCallbackLease lease = self->lifecycle_.acquireCallback();
+    if (!lease.accepted) return;
+    int32_t width = 0;
+    int32_t height = 0;
+    int32_t pixelFormat = -1;
+    if (format) {
+        if (!OH_AVFormat_GetIntValue(format, OH_MD_KEY_VIDEO_PIC_WIDTH, &width)) {
+            OH_AVFormat_GetIntValue(format, OH_MD_KEY_WIDTH, &width);
+        }
+        if (!OH_AVFormat_GetIntValue(format, OH_MD_KEY_VIDEO_PIC_HEIGHT, &height)) {
+            OH_AVFormat_GetIntValue(format, OH_MD_KEY_HEIGHT, &height);
+        }
+        OH_AVFormat_GetIntValue(format, OH_MD_KEY_PIXEL_FORMAT, &pixelFormat);
+    }
+    if (width > 0 && height > 0 && width <= 16384 && height <= 16384) {
+        self->width_.store(width, std::memory_order_release);
+        self->height_.store(height, std::memory_order_release);
+    }
+    self->outputPixelFormat_.store(pixelFormat, std::memory_order_release);
+    OH_LOG_INFO(LOG_APP, "[Decoder] stream changed size=%{public}dx%{public}d format=%{public}d",
+                width, height, pixelFormat);
+    self->lifecycle_.releaseCallback(lease);
 }
 
 void HardwareDecoder::OnNeedInputBuffer(OH_AVCodec* /*codec*/, uint32_t index,
                                          OH_AVBuffer* buffer, void* userData) {
-    auto* self = static_cast<CallbackUserData*>(userData)->self;
-    self->handleInputBuffer(index, buffer);
+    auto* cb = static_cast<CallbackUserData*>(userData);
+    auto* self = cb ? cb->self.load(std::memory_order_acquire) : nullptr;
+    if (!self) return;
+    const DecoderCallbackLease lease = self->lifecycle_.acquireCallback();
+    if (!lease.accepted) return;
+    self->handleInputBuffer(index, buffer, lease.generation);
+    self->lifecycle_.releaseCallback(lease);
 }
 
 void HardwareDecoder::OnNewOutputBuffer(OH_AVCodec* codec, uint32_t index,
-                                         OH_AVBuffer* /*buffer*/, void* userData) {
-    auto* self = static_cast<CallbackUserData*>(userData)->self;
-    OH_AVErrCode ret = OH_VideoDecoder_RenderOutputBuffer(codec, index);
+                                         OH_AVBuffer* buffer, void* userData) {
+    auto* cb = static_cast<CallbackUserData*>(userData);
+    auto* self = cb ? cb->self.load(std::memory_order_acquire) : nullptr;
+    if (!self) return;
+    const DecoderCallbackLease lease = self->lifecycle_.acquireCallback();
+    if (!lease.accepted) return;
+    OH_AVCodecBufferAttr attr {};
+    const bool eos = buffer && OH_AVBuffer_GetBufferAttr(buffer, &attr) == AV_ERR_OK &&
+        (attr.flags & AVCODEC_BUFFER_FLAGS_EOS) != 0;
+    OH_AVErrCode ret = eos ? OH_VideoDecoder_FreeOutputBuffer(codec, index) :
+        OH_VideoDecoder_RenderOutputBuffer(codec, index);
     if (ret != AV_ERR_OK) {
-        if (self) {
-            ++self->renderOutputFailureCount_;
-        }
-        OH_LOG_WARN(LOG_APP, "[Decoder] RenderOutputBuffer failed: %{public}d index=%{public}u",
-                    ret, index);
-        return;
+        ++self->renderOutputFailureCount_;
+        OH_LOG_WARN(LOG_APP, "[Decoder] output buffer release failed: %{public}d index=%{public}u eos=%{public}s",
+                    ret, index, eos ? "true" : "false");
     }
-    // NativeImage/GL is consumed by the dedicated render thread after OnFrameAvailable.
+    self->lifecycle_.releaseCallback(lease);
 }
 
 void HardwareDecoder::OnFrameAvailable(void* context) {
     auto* cb = static_cast<CallbackUserData*>(context);
-    if (cb && cb->self) {
-        cb->self->noteFrameAvailable();
-    }
+    auto* self = cb ? cb->self.load(std::memory_order_acquire) : nullptr;
+    if (!self) return;
+    const DecoderCallbackLease lease = self->lifecycle_.acquireCallback();
+    if (!lease.accepted) return;
+    self->noteFrameAvailable();
+    self->lifecycle_.releaseCallback(lease);
 }
 
 // ============================================================
@@ -86,7 +125,7 @@ void HardwareDecoder::OnFrameAvailable(void* context) {
 // ============================================================
 
 HardwareDecoder::HardwareDecoder() {
-    cbUserData_.self = this;
+    cbUserData_.self.store(this, std::memory_order_release);
 }
 
 HardwareDecoder::~HardwareDecoder() {
@@ -110,24 +149,30 @@ const char* HardwareDecoder::GetMimeType(CodecType codec) {
 }
 
 int HardwareDecoder::Init(int width, int height, CodecType codec) {
+    if (width <= 0 || height <= 0 || width > 16384 || height > 16384 ||
+        !lifecycle_.beginInitialization()) {
+        return -1;
+    }
+    cbUserData_.self.store(this, std::memory_order_release);
+    initialized_.store(false, std::memory_order_release);
+    decoderStarted_ = false;
     OH_LOG_INFO(LOG_APP, "[Decoder] Init: %{public}dx%{public}d codec=%{public}s",
                 width, height, GetMimeType(codec));
 
-    width_ = width;
-    height_ = height;
+    width_.store(width, std::memory_order_release);
+    height_.store(height, std::memory_order_release);
+    outputPixelFormat_.store(-1, std::memory_order_release);
     codecType_ = codec;
-    auto releaseTexture = [this]() {
-        if (textureId_ != 0) {
-            glDeleteTextures(1, &textureId_);
-            textureId_ = 0;
-        }
+    auto fail = [this](int code) {
+        Destroy();
+        return code;
     };
 
     // 1. 创建解码器
     decoder_ = OH_VideoDecoder_CreateByMime(GetMimeType(codec));
     if (!decoder_) {
         OH_LOG_ERROR(LOG_APP, "[Decoder] OH_VideoDecoder_CreateByMime 失败");
-        return -1;
+        return fail(-1);
     }
 
     // 2. 注册回调 (必须在 Configure 之前)
@@ -139,9 +184,7 @@ int HardwareDecoder::Init(int width, int height, CodecType codec) {
     OH_AVErrCode ret = OH_VideoDecoder_RegisterCallback(decoder_, cb, &cbUserData_);
     if (ret != AV_ERR_OK) {
         OH_LOG_ERROR(LOG_APP, "[Decoder] RegisterCallback 失败: %{public}d", ret);
-        OH_VideoDecoder_Destroy(decoder_);
-        decoder_ = nullptr;
-        return -2;
+        return fail(-2);
     }
 
     // 3. 创建 NativeImage 并获取 surface (零拷贝纹理)
@@ -156,19 +199,13 @@ int HardwareDecoder::Init(int width, int height, CodecType codec) {
     if (textureId_ == 0 || glErr != GL_NO_ERROR) {
         OH_LOG_ERROR(LOG_APP, "[Decoder] 创建 GL 外部纹理失败: texture=%{public}u err=%{public}x",
                      textureId_, glErr);
-        releaseTexture();
-        OH_VideoDecoder_Destroy(decoder_);
-        decoder_ = nullptr;
-        return -3;
+        return fail(-3);
     }
 
     nativeImage_ = OH_NativeImage_Create(textureId_, GL_TEXTURE_EXTERNAL_OES);
     if (!nativeImage_) {
         OH_LOG_ERROR(LOG_APP, "[Decoder] OH_NativeImage_Create 失败");
-        releaseTexture();
-        OH_VideoDecoder_Destroy(decoder_);
-        decoder_ = nullptr;
-        return -3;
+        return fail(-3);
     }
     OH_OnFrameAvailableListener listener;
     listener.context = &cbUserData_;
@@ -184,15 +221,14 @@ int HardwareDecoder::Init(int width, int height, CodecType codec) {
     nativeWindow_ = OH_NativeImage_AcquireNativeWindow(nativeImage_);
     if (!nativeWindow_) {
         OH_LOG_ERROR(LOG_APP, "[Decoder] AcquireNativeWindow 失败");
-        OH_NativeImage_Destroy(&nativeImage_);
-        releaseTexture();
-        OH_VideoDecoder_Destroy(decoder_);
-        decoder_ = nullptr;
-        return -4;
+        return fail(-4);
     }
 
     // 4. 配置解码器参数
     OH_AVFormat* format = OH_AVFormat_Create();
+    if (!format) {
+        return fail(-6);
+    }
     OH_AVFormat_SetIntValue(format, OH_MD_KEY_WIDTH, width);
     OH_AVFormat_SetIntValue(format, OH_MD_KEY_HEIGHT, height);
     // Surface 模式不需要 OH_MD_KEY_PIXEL_FORMAT
@@ -201,47 +237,34 @@ int HardwareDecoder::Init(int width, int height, CodecType codec) {
     OH_AVFormat_Destroy(format);
     if (ret != AV_ERR_OK) {
         OH_LOG_ERROR(LOG_APP, "[Decoder] Configure 失败: %{public}d", ret);
-        OH_NativeImage_Destroy(&nativeImage_);
-        releaseTexture();
-        OH_VideoDecoder_Destroy(decoder_);
-        decoder_ = nullptr;
-        return -6;
+        return fail(-6);
     }
 
     // 5. 设置解码输出 surface。必须在 Prepare 前，且部分设备要求 Configure 后调用。
     ret = OH_VideoDecoder_SetSurface(decoder_, static_cast<OHNativeWindow*>(nativeWindow_));
     if (ret != AV_ERR_OK) {
         OH_LOG_ERROR(LOG_APP, "[Decoder] SetSurface 失败: %{public}d", ret);
-        OH_NativeImage_Destroy(&nativeImage_);
-        releaseTexture();
-        OH_VideoDecoder_Destroy(decoder_);
-        decoder_ = nullptr;
-        return -5;
+        return fail(-5);
     }
 
     // 6. Prepare
     ret = OH_VideoDecoder_Prepare(decoder_);
     if (ret != AV_ERR_OK) {
         OH_LOG_ERROR(LOG_APP, "[Decoder] Prepare 失败: %{public}d", ret);
-        OH_NativeImage_Destroy(&nativeImage_);
-        releaseTexture();
-        OH_VideoDecoder_Destroy(decoder_);
-        decoder_ = nullptr;
-        return -7;
+        return fail(-7);
     }
 
     // 7. Start
+    initialized_.store(true, std::memory_order_release);
+    lifecycle_.markRunning();
     ret = OH_VideoDecoder_Start(decoder_);
     if (ret != AV_ERR_OK) {
         OH_LOG_ERROR(LOG_APP, "[Decoder] Start 失败: %{public}d", ret);
-        OH_NativeImage_Destroy(&nativeImage_);
-        releaseTexture();
-        OH_VideoDecoder_Destroy(decoder_);
-        decoder_ = nullptr;
-        return -8;
+        initialized_.store(false, std::memory_order_release);
+        return fail(-8);
     }
 
-    initialized_ = true;
+    decoderStarted_ = true;
     OH_LOG_INFO(LOG_APP, "[Decoder] ✓ 解码器启动成功 (Surface模式, %{public}dx%{public}d texture=%{public}u)",
                 width, height, textureId_);
     return 0;
@@ -268,10 +291,16 @@ size_t HardwareDecoder::dropOldestInputFramesLocked(size_t count) {
 }
 
 int HardwareDecoder::Decode(const uint8_t* data, size_t size, uint64_t timestamp, bool isKeyFrame) {
-    if (!initialized_) {
+    const DecoderCallbackLease operationLease = lifecycle_.acquireCallback();
+    if (!operationLease.accepted || !initialized_.load(std::memory_order_acquire)) {
         OH_LOG_WARN(LOG_APP, "[Decoder] 解码器未初始化");
         return -1;
     }
+    struct LeaseGuard {
+        DecoderLifecycleGate& gate;
+        DecoderCallbackLease lease;
+        ~LeaseGuard() { gate.releaseCallback(lease); }
+    } operationGuard {lifecycle_, operationLease};
     if (!data || size == 0) {
         return 0;
     }
@@ -353,15 +382,25 @@ int HardwareDecoder::Decode(const uint8_t* data, size_t size, uint64_t timestamp
     return 0;
 }
 
-void HardwareDecoder::handleInputBuffer(uint32_t index, OH_AVBuffer* buffer) {
+void HardwareDecoder::handleInputBuffer(uint32_t index, OH_AVBuffer* buffer, uint64_t generation) {
+    if (!buffer || !lifecycle_.isCurrent(generation)) {
+        return;
+    }
     {
         std::lock_guard<std::mutex> lk(mutex_);
-        pendingInputBuffers_.push_back({index, buffer});
+        pendingInputBuffers_.push_back({index, buffer, generation});
     }
     drainInputBuffers();
 }
 
 void HardwareDecoder::drainInputBuffers() {
+    const DecoderCallbackLease operationLease = lifecycle_.acquireCallback();
+    if (!operationLease.accepted) return;
+    struct LeaseGuard {
+        DecoderLifecycleGate& gate;
+        DecoderCallbackLease lease;
+        ~LeaseGuard() { gate.releaseCallback(lease); }
+    } operationGuard {lifecycle_, operationLease};
     while (true) {
         PendingInputBuffer input {};
         EncodedFrame frame {};
@@ -371,7 +410,8 @@ void HardwareDecoder::drainInputBuffers() {
 
         {
             std::lock_guard<std::mutex> lk(mutex_);
-            if (!initialized_ || !decoder_ || pendingInputBuffers_.empty() || inputQueue_.empty()) {
+            if (!initialized_.load(std::memory_order_acquire) || !decoder_ ||
+                pendingInputBuffers_.empty() || inputQueue_.empty()) {
                 return;
             }
             input = pendingInputBuffers_.front();
@@ -381,6 +421,12 @@ void HardwareDecoder::drainInputBuffers() {
             decoder = decoder_;
             queuedFrames = inputQueue_.size();
             pendingBuffers = pendingInputBuffers_.size();
+        }
+
+        if (input.generation != operationLease.generation ||
+            !lifecycle_.isCurrent(input.generation)) {
+            delete[] frame.data;
+            continue;
         }
 
         if (!input.buffer) {
@@ -463,9 +509,11 @@ void HardwareDecoder::noteFrameAvailable() {
 bool HardwareDecoder::waitForFrameAvailable() {
     std::unique_lock<std::mutex> lk(mutex_);
     bool ok = frameAvailableCv_.wait_for(lk, std::chrono::milliseconds(50), [this]() {
-        return renderThreadStop_.load() || !initialized_ || frameAvailableCount_ > frameConsumeCount_;
+        return renderThreadStop_.load() || !initialized_.load(std::memory_order_acquire) ||
+            frameAvailableCount_ > frameConsumeCount_;
     });
-    if (ok && !renderThreadStop_.load() && initialized_ && frameAvailableCount_ > frameConsumeCount_) {
+    if (ok && !renderThreadStop_.load() && initialized_.load(std::memory_order_acquire) &&
+        frameAvailableCount_ > frameConsumeCount_) {
         ++frameConsumeCount_;
         return true;
     }
@@ -473,14 +521,28 @@ bool HardwareDecoder::waitForFrameAvailable() {
 }
 
 void HardwareDecoder::handleOutputBuffer(uint32_t /*index*/) {
+    const DecoderCallbackLease operationLease = lifecycle_.acquireCallback();
+    if (!operationLease.accepted) return;
+    struct LeaseGuard {
+        DecoderLifecycleGate& gate;
+        DecoderCallbackLease lease;
+        ~LeaseGuard() { gate.releaseCallback(lease); }
+    } operationGuard {lifecycle_, operationLease};
     if (!nativeImage_) { return; }
 
     if (!waitForFrameAvailable()) {
         return;
     }
 
-    if (makeCurrentCallback_) {
-        makeCurrentCallback_();
+    DecoderMakeCurrentCallback makeCurrent;
+    DecoderFrameCallback frameCallback;
+    {
+        std::lock_guard<std::mutex> lock(callbackMutex_);
+        makeCurrent = makeCurrentCallback_;
+        frameCallback = frameCallback_;
+    }
+    if (makeCurrent) {
+        makeCurrent();
     }
 
     if (!nativeImageContextAttached_) {
@@ -513,8 +575,10 @@ void HardwareDecoder::handleOutputBuffer(uint32_t /*index*/) {
     }
 
     // 通知渲染器: 纹理就绪
-    if (frameCallback_) {
-        frameCallback_(textureId_, width_, height_);
+    const int outputWidth = width_.load(std::memory_order_acquire);
+    const int outputHeight = height_.load(std::memory_order_acquire);
+    if (frameCallback) {
+        frameCallback(textureId_, outputWidth, outputHeight);
     }
     uint64_t count = ++outputFrameCount_;
     if (count <= 3 || count % 300 == 0) {
@@ -522,14 +586,15 @@ void HardwareDecoder::handleOutputBuffer(uint32_t /*index*/) {
                     "[Decoder] output frame #%{public}llu texture=%{public}u size=%{public}dx%{public}d drops=%{public}llu waitDrops=%{public}llu trunc=%{public}llu renderFail=%{public}llu updateFail=%{public}llu",
                     static_cast<unsigned long long>(count),
                     textureId_,
-                    width_,
-                    height_,
+                    outputWidth,
+                    outputHeight,
                     static_cast<unsigned long long>(inputDropCount_.load()),
                     static_cast<unsigned long long>(waitKeyframeDropCount_.load()),
                     static_cast<unsigned long long>(inputTruncatedCount_.load()),
                     static_cast<unsigned long long>(renderOutputFailureCount_.load()),
                     static_cast<unsigned long long>(updateSurfaceFailureCount_.load()));
     }
+    outputFrameCv_.notify_all();
 }
 
 void HardwareDecoder::StartRenderThread() {
@@ -559,8 +624,13 @@ void HardwareDecoder::renderLoop() {
                     detachRet,
                     textureId_);
     }
-    if (releaseCurrentCallback_) {
-        releaseCurrentCallback_();
+    DecoderReleaseCurrentCallback releaseCurrent;
+    {
+        std::lock_guard<std::mutex> lock(callbackMutex_);
+        releaseCurrent = releaseCurrentCallback_;
+    }
+    if (releaseCurrent) {
+        releaseCurrent();
     }
     nativeImageContextAttached_ = false;
     OH_LOG_INFO(LOG_APP, "[Decoder] render thread stopped");
@@ -579,14 +649,39 @@ GLuint HardwareDecoder::GetTextureId() const {
 }
 
 void HardwareDecoder::Flush() {
-    if (initialized_ && decoder_) {
-        OH_LOG_INFO(LOG_APP, "[Decoder] Flush");
-        OH_VideoDecoder_Flush(decoder_);
+    if (!initialized_.load(std::memory_order_acquire) || !decoder_ || !lifecycle_.beginFlush()) {
+        return;
+    }
+    OH_LOG_INFO(LOG_APP, "[Decoder] Flush");
+    {
         std::lock_guard<std::mutex> lk(mutex_);
         clearInputQueueLocked();
         pendingInputBuffers_.clear();
         backpressure_.reset();
+        frameConsumeCount_ = frameAvailableCount_;
     }
+    const OH_AVErrCode ret = OH_VideoDecoder_Flush(decoder_);
+    {
+        std::lock_guard<std::mutex> lk(mutex_);
+        clearInputQueueLocked();
+        pendingInputBuffers_.clear();
+        backpressure_.reset();
+        frameConsumeCount_ = frameAvailableCount_;
+    }
+    lifecycle_.finishFlush(ret == AV_ERR_OK);
+    if (ret != AV_ERR_OK) {
+        initialized_.store(false, std::memory_order_release);
+        notifyError(DecoderError::FLUSH_FAILED,
+                    "OH_VideoDecoder_Flush failed " + std::to_string(ret));
+    }
+}
+
+bool HardwareDecoder::WaitForOutputFrame(uint64_t afterCount, int timeoutMs) {
+    std::unique_lock<std::mutex> lock(mutex_);
+    return outputFrameCv_.wait_for(lock, std::chrono::milliseconds(timeoutMs), [this, afterCount]() {
+        return outputFrameCount_.load(std::memory_order_acquire) > afterCount ||
+            !initialized_.load(std::memory_order_acquire);
+    }) && outputFrameCount_.load(std::memory_order_acquire) > afterCount;
 }
 
 size_t HardwareDecoder::QueuedFrameCount() const {
@@ -599,53 +694,80 @@ uint64_t HardwareDecoder::DroppedFrameCount() const {
 }
 
 void HardwareDecoder::Destroy() {
+    if (!lifecycle_.beginDestroy()) {
+        return;
+    }
+    initialized_.store(false, std::memory_order_release);
+    frameAvailableCv_.notify_all();
+    outputFrameCv_.notify_all();
     stopRenderThread();
-    if (initialized_) {
-        OH_LOG_INFO(LOG_APP, "[Decoder] Destroy");
-        if (decoder_) {
+    OH_LOG_INFO(LOG_APP, "[Decoder] Destroy");
+    if (decoder_) {
+        if (decoderStarted_) {
             OH_VideoDecoder_Stop(decoder_);
-            OH_VideoDecoder_Destroy(decoder_);
-            decoder_ = nullptr;
+            decoderStarted_ = false;
         }
-        if (nativeImage_) {
-            OH_NativeImage_Destroy(&nativeImage_);
-            nativeImage_ = nullptr;
+        OH_VideoDecoder_Destroy(decoder_);
+        decoder_ = nullptr;
+    }
+    cbUserData_.self.store(nullptr, std::memory_order_release);
+    if (nativeImage_) {
+        OH_NativeImage_Destroy(&nativeImage_);
+        nativeImage_ = nullptr;
+    }
+    if (textureId_ != 0) {
+        DecoderMakeCurrentCallback makeCurrent;
+        DecoderReleaseCurrentCallback releaseCurrent;
+        {
+            std::lock_guard<std::mutex> lock(callbackMutex_);
+            makeCurrent = makeCurrentCallback_;
+            releaseCurrent = releaseCurrentCallback_;
         }
-        if (textureId_ != 0) {
-            if (makeCurrentCallback_) {
-                makeCurrentCallback_();
-            }
-            glDeleteTextures(1, &textureId_);
-            textureId_ = 0;
-            if (releaseCurrentCallback_) {
-                releaseCurrentCallback_();
-            }
-        }
-        nativeWindow_ = nullptr;
-        initialized_ = false;
-
-        // 清空未处理的输入队列
+        if (makeCurrent) makeCurrent();
+        glDeleteTextures(1, &textureId_);
+        textureId_ = 0;
+        if (releaseCurrent) releaseCurrent();
+    }
+    nativeWindow_ = nullptr;
+    nativeImageContextAttached_ = false;
+    {
         std::lock_guard<std::mutex> lk(mutex_);
         clearInputQueueLocked();
         pendingInputBuffers_.clear();
         backpressure_.reset();
+        frameAvailableCount_ = 0;
+        frameConsumeCount_ = 0;
     }
+    lifecycle_.markDestroyed();
 }
 
 void HardwareDecoder::SetFrameCallback(DecoderFrameCallback callback) {
+    std::lock_guard<std::mutex> lock(callbackMutex_);
     frameCallback_ = std::move(callback);
 }
 
 void HardwareDecoder::SetMakeCurrentCallback(DecoderMakeCurrentCallback callback) {
+    std::lock_guard<std::mutex> lock(callbackMutex_);
     makeCurrentCallback_ = std::move(callback);
 }
 
 void HardwareDecoder::SetReleaseCurrentCallback(DecoderReleaseCurrentCallback callback) {
+    std::lock_guard<std::mutex> lock(callbackMutex_);
     releaseCurrentCallback_ = std::move(callback);
 }
 
 void HardwareDecoder::SetErrorCallback(DecoderErrorCallback callback) {
+    std::lock_guard<std::mutex> lock(callbackMutex_);
     errorCallback_ = std::move(callback);
+}
+
+void HardwareDecoder::notifyError(DecoderError error, const std::string& message) {
+    DecoderErrorCallback callback;
+    {
+        std::lock_guard<std::mutex> lock(callbackMutex_);
+        callback = errorCallback_;
+    }
+    if (callback) callback(error, message);
 }
 
 // ============================================================
@@ -899,11 +1021,10 @@ bool RecreateDecoderForFrame(DecoderContext* ctx, const VideoFrame& frame) {
     ctx->useSoftware = false;
 
     auto decoder = std::shared_ptr<HardwareDecoder>(new HardwareDecoder());
-    if (ctx->rendererHandle > 0) {
+    const bool contextCurrent = ctx->rendererHandle > 0 &&
         RendererNapi::MakeCurrent(ctx->rendererHandle);
-    }
-    int result = decoder->Init(frame.width, frame.height, frame.codec);
-    if (ctx->rendererHandle > 0) {
+    const int result = contextCurrent ? decoder->Init(frame.width, frame.height, frame.codec) : -9;
+    if (contextCurrent) {
         RendererNapi::ReleaseCurrent(ctx->rendererHandle);
     }
     if (result == 0) {
@@ -953,26 +1074,41 @@ bool RecreateDecoderForFrame(DecoderContext* ctx, const VideoFrame& frame) {
 }
 
 /**
- * NAPI: initDecoder(width: number, height: number, codec: number): number
+ * NAPI: initDecoder(width: number, height: number, codec: number, rendererHandle: number): number
  */
 napi_value NapiInitDecoder(napi_env env, napi_callback_info info) {
-    size_t argc = 3;
-    napi_value args[3];
+    size_t argc = 4;
+    napi_value args[4];
     napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
 
-    int32_t width, height, codecInt;
+    int32_t width = 0;
+    int32_t height = 0;
+    int32_t codecInt = 0;
+    int64_t rendererHandle = 0;
     napi_get_value_int32(env, args[0], &width);
     napi_get_value_int32(env, args[1], &height);
     napi_get_value_int32(env, args[2], &codecInt);
+    if (argc > 3) {
+        napi_get_value_int64(env, args[3], &rendererHandle);
+    }
 
     CodecType codec = static_cast<CodecType>(codecInt);
 
     auto decoder = std::shared_ptr<HardwareDecoder>(new HardwareDecoder());
-    int result = decoder->Init(width, height, codec);
+    const bool contextCurrent = rendererHandle > 0 && RendererNapi::MakeCurrent(rendererHandle);
+    const int result = contextCurrent ? decoder->Init(width, height, codec) : -9;
+    if (contextCurrent) {
+        RendererNapi::ReleaseCurrent(rendererHandle);
+    } else {
+        OH_LOG_WARN(LOG_APP,
+                    "[Decoder] hardware init skipped: renderer context unavailable handle=%{public}lld",
+                    static_cast<long long>(rendererHandle));
+    }
     if (result == 0) {
         auto* ctx = new DecoderContext();
         ctx->decoder = decoder;
         ctx->useSoftware = false;
+        ctx->rendererHandle = rendererHandle;
         ctx->width = width;
         ctx->height = height;
         napi_value handle;
@@ -987,6 +1123,7 @@ napi_value NapiInitDecoder(napi_env env, napi_callback_info info) {
             auto* ctx = new DecoderContext();
             ctx->softwareDecoder = softwareDecoder;
             ctx->useSoftware = true;
+            ctx->rendererHandle = rendererHandle;
             ctx->width = width;
             ctx->height = height;
             napi_value handle;
@@ -1104,6 +1241,91 @@ napi_value NapiTestDecoderH264(napi_env env, napi_callback_info info) {
     OH_LOG_INFO(LOG_APP, "[Decoder] testDecoderH264: 已送入 %{public}zu bytes, ret=%{public}d",
                 H264_BLUE_IDR_SIZE, ret);
     napi_value r; napi_create_int32(env, ret, &r); return r;
+}
+
+/**
+ * Diagnostic-only isolated AVC420 lifecycle probe. It owns a temporary decoder
+ * and never binds a frame callback to the active user session.
+ */
+napi_value NapiProbeAvc420Decoder(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value args[1];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    int64_t rendererHandle = 0;
+    if (argc > 0) {
+        napi_get_value_int64(env, args[0], &rendererHandle);
+    }
+
+    bool contextReady = rendererHandle > 0 && RendererNapi::MakeCurrent(rendererHandle);
+    int initCode = -9;
+    int decodeCode = -1;
+    bool outputObserved = false;
+    int outputWidth = 0;
+    int outputHeight = 0;
+    int outputPixelFormat = -1;
+    std::string status = "renderer-context-unavailable";
+
+    auto decoder = std::shared_ptr<HardwareDecoder>(new HardwareDecoder());
+    if (contextReady) {
+        initCode = decoder->Init(64, 64, CodecType::H264);
+        RendererNapi::ReleaseCurrent(rendererHandle);
+        if (initCode == 0) {
+            decoder->SetMakeCurrentCallback([rendererHandle]() {
+                RendererNapi::MakeCurrent(rendererHandle);
+            });
+            decoder->SetReleaseCurrentCallback([rendererHandle]() {
+                RendererNapi::ReleaseCurrent(rendererHandle);
+            });
+            decoder->StartRenderThread();
+            const uint64_t before = decoder->OutputFrameCount();
+            decodeCode = decoder->Decode(H264_BLUE_IDR_64x64, H264_BLUE_IDR_SIZE, 0, true);
+            if (decodeCode == 0) {
+                outputObserved = decoder->WaitForOutputFrame(before, 1500);
+            }
+            outputWidth = decoder->GetOutputWidth();
+            outputHeight = decoder->GetOutputHeight();
+            outputPixelFormat = decoder->GetOutputPixelFormat();
+            status = outputObserved ? "passed" :
+                (decodeCode == 0 ? "output-timeout" : "decode-failed");
+            decoder->StopRenderThreadForDetach();
+            if (RendererNapi::MakeCurrent(rendererHandle)) {
+                decoder->Destroy();
+                RendererNapi::ReleaseCurrent(rendererHandle);
+            } else {
+                decoder->Destroy();
+            }
+        } else {
+            status = "init-failed";
+        }
+    }
+
+    napi_value result;
+    napi_create_object(env, &result);
+    auto setBool = [env, result](const char* name, bool value) {
+        napi_value item;
+        napi_get_boolean(env, value, &item);
+        napi_set_named_property(env, result, name, item);
+    };
+    auto setInt = [env, result](const char* name, int32_t value) {
+        napi_value item;
+        napi_create_int32(env, value, &item);
+        napi_set_named_property(env, result, name, item);
+    };
+    auto setString = [env, result](const char* name, const std::string& value) {
+        napi_value item;
+        napi_create_string_utf8(env, value.c_str(), value.size(), &item);
+        napi_set_named_property(env, result, name, item);
+    };
+    setString("status", status);
+    setBool("contextReady", contextReady);
+    setBool("outputObserved", outputObserved);
+    setBool("lifecyclePassed", outputObserved && initCode == 0 && decodeCode == 0);
+    setInt("initCode", initCode);
+    setInt("decodeCode", decodeCode);
+    setInt("outputWidth", outputWidth);
+    setInt("outputHeight", outputHeight);
+    setInt("outputPixelFormat", outputPixelFormat);
+    return result;
 }
 
 /**
@@ -1394,6 +1616,10 @@ napi_value DecoderNapi::Init(napi_env env, napi_value exports) {
     napi_create_function(env, "testDecoderH264", NAPI_AUTO_LENGTH,
                          NapiTestDecoderH264, nullptr, &fn);
     napi_set_named_property(env, exports, "testDecoderH264", fn);
+
+    napi_create_function(env, "probeAvc420Decoder", NAPI_AUTO_LENGTH,
+                         NapiProbeAvc420Decoder, nullptr, &fn);
+    napi_set_named_property(env, exports, "probeAvc420Decoder", fn);
 
     napi_create_function(env, "bindVideoPipeline", NAPI_AUTO_LENGTH,
                          NapiBindVideoPipeline, nullptr, &fn);

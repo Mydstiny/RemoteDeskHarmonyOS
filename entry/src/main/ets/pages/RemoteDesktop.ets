@@ -95,6 +95,7 @@ import {
 } from '../services/RemoteImeCommandQueue';
 import { hashForLog, maskHost, maskUser, safeError } from '../utils/SafeLogger';
 import { RdpRenderStats, SessionConfig, SessionTransferStatus } from '../types/rdpnapi';
+import { shouldInitializeRemoteVideoDecoder } from '../services/RemoteVideoDecoderPolicy';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { picker } from '@kit.CoreFileKit';
 import { fileIo } from '@kit.CoreFileKit';
@@ -2284,7 +2285,11 @@ struct RemoteDesktop {
         ' inputTextUnits=' + stats.inputTextUnits.toString() +
         ' inputMouseDrops=' + stats.inputDroppedMouseMoves.toString() +
         ' inputPriorityOverflow=' + stats.inputNonDisposableOverflow.toString() +
-        ' gfx=' + stats.graphicsMode);
+        ' gfx=' + stats.graphicsMode +
+        ' avc420=' + (stats.h264Avc420Enabled ? 'enabled' : stats.h264Avc420Reason) +
+        ' avc444=' + (stats.h264Avc444Enabled ? 'enabled' : stats.h264Avc444Reason) +
+        ' directTexture=' + (stats.h264DirectTextureEnabled ? 'enabled' : stats.h264DirectTextureReason) +
+        ' h264GainPermille=' + stats.h264PerformanceGainPermille.toString());
       if (stats.renderedPaintCount <= 0 || stats.lastRenderResult < 0) {
         const model: RdpSessionErrorDialogModel = rdpNoFrameWatchdogError();
         this.connectionError = model.title;
@@ -2374,10 +2379,8 @@ struct RemoteDesktop {
           ' remote=' + w.toString() + 'x' + h.toString());
       }
 
-      // 初始化解码器 (非阻塞 — 解码器未就绪不影响连接建立)
       const rdCodecVal: number = AppStorage.get<number>('rustdeskCodec') ?? 0;
-      // RustDesk 自动模式不强制 H264；本地解码器按 RustDesk 常见 VP9 起步。
-      let decoderCodec: number = host.protocol === 'rustdesk' ? 3 : 0;
+      let decoderCodec: number = 3;
       if (rdCodecVal === 1) {
         decoderCodec = 2;
       } else if (rdCodecVal === 2) {
@@ -2389,14 +2392,20 @@ struct RemoteDesktop {
       } else if (rdCodecVal === 5) {
         decoderCodec = 1;
       }
-      let dHandle: number = this.loader.initDecoder(w, h, decoderCodec);
-      hilog.info(RD_DOMAIN, RD_TAG, 'initDecoder returned: ' + dHandle);
-      if (dHandle > 0) {
-        this.decoderHandle = dHandle;
-        const bindOk: boolean = this.loader.bindVideoPipeline(this.decoderHandle, this.rendererHandle);
-        hilog.info(RD_DOMAIN, RD_TAG, 'bindVideoPipeline returned: ' + bindOk);
+      if (shouldInitializeRemoteVideoDecoder(host.protocol)) {
+        // RustDesk delivers encoded VideoFrame packets through the shared decoder pipeline.
+        const dHandle: number = this.loader.initDecoder(w, h, decoderCodec, this.rendererHandle);
+        hilog.info(RD_DOMAIN, RD_TAG, 'initDecoder returned: ' + dHandle);
+        if (dHandle > 0) {
+          this.decoderHandle = dHandle;
+          const bindOk: boolean = this.loader.bindVideoPipeline(this.decoderHandle, this.rendererHandle);
+          hilog.info(RD_DOMAIN, RD_TAG, 'bindVideoPipeline returned: ' + bindOk);
+        } else {
+          hilog.warn(RD_DOMAIN, RD_TAG, '解码器未就绪 (rc=' + dHandle + '), 连接将继续, 待后续初始化');
+        }
       } else {
-        hilog.warn(RD_DOMAIN, RD_TAG, '解码器未就绪 (rc=' + dHandle + '), 连接将继续, 待后续初始化');
+        this.decoderHandle = -1;
+        hilog.info(RD_DOMAIN, RD_TAG, 'shared video decoder skipped for protocol=' + host.protocol);
       }
 
       if (host.protocol === 'rustdesk') {

@@ -35,6 +35,7 @@ import settingsLeafSheetLifecyclePolicyTest from './SettingsLeafSheetLifecyclePo
 import feedbackCommunityPolicyTest from './FeedbackCommunityPolicy.test';
 import guideContentRegistryTest from './GuideContentRegistry.test';
 import releaseNotesRegistryTest from './ReleaseNotesRegistry.test';
+import remoteVideoDecoderPolicyTest from './RemoteVideoDecoderPolicy.test';
 
 export default function testsuite() {
   localUnitTest();
@@ -74,4 +75,5 @@ export default function testsuite() {
   feedbackCommunityPolicyTest();
   guideContentRegistryTest();
   releaseNotesRegistryTest();
+  remoteVideoDecoderPolicyTest();
 }

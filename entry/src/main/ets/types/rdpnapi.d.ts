@@ -67,11 +67,12 @@ declare module 'librdpnapi.so' {
   export function requestFrameRefresh(): void;
   export function getRendererViewport(handle: number): RendererViewport | null;
 
-  export function initDecoder(width: number, height: number, codecType: number): number;
+  export function initDecoder(width: number, height: number, codecType: number, rendererHandle: number): number;
   export function destroyDecoder(handle: number): void;
   export function decodeFrame(handle: number, data: ArrayBuffer, size: number, timestamp: number): number;
   export function getTextureId(handle: number): number;
   export function testDecoderH264(handle: number): number;
+  export function probeAvc420Decoder(rendererHandle: number): Avc420DecoderProbeResult;
   export function bindVideoPipeline(decoderHandle: number, rendererHandle: number): boolean;
   export function detachVideoPipeline(decoderHandle: number): boolean;
   export function requestDecoderRecovery(decoderHandle: number): boolean;
@@ -199,6 +200,25 @@ export interface RdpRenderStats {
   inputDroppedMouseMoves: number;
   inputNonDisposableOverflow: number;
   graphicsMode: string;
+  h264Avc420Enabled: boolean;
+  h264Avc444Enabled: boolean;
+  h264DirectTextureEnabled: boolean;
+  h264PerformanceGainPermille: number;
+  h264Avc420Reason: string;
+  h264Avc444Reason: string;
+  h264DirectTextureReason: string;
+}
+
+export interface Avc420DecoderProbeResult {
+  status: string;
+  contextReady: boolean;
+  outputObserved: boolean;
+  lifecyclePassed: boolean;
+  initCode: number;
+  decodeCode: number;
+  outputWidth: number;
+  outputHeight: number;
+  outputPixelFormat: number;
 }
 
 export interface SessionTransferStatus {

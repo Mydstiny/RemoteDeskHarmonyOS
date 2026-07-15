@@ -206,6 +206,13 @@ struct RdpRenderStats {
     int64_t inputDroppedMouseMoves = 0;
     int64_t inputNonDisposableOverflow = 0;
     std::string graphicsMode;
+    bool h264Avc420Enabled = false;
+    bool h264Avc444Enabled = false;
+    bool h264DirectTextureEnabled = false;
+    int h264PerformanceGainPermille = 0;
+    std::string h264Avc420Reason;
+    std::string h264Avc444Reason;
+    std::string h264DirectTextureReason;
 };
 
 /** SFTP 远端文件条目 */
