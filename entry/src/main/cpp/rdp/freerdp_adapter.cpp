@@ -341,6 +341,7 @@ RdpCertificateInfo probeRdpCertificateOverTls(const std::string& host, int port,
 // 路径 1: 真实 FreeRDP 3.x 客户端
 // ============================================================
 #include <freerdp/freerdp.h>
+#include <freerdp/settings.h>
 #include <freerdp/client.h>
 #include <freerdp/client/channels.h>
 #include <freerdp/client/cmdline.h>
@@ -366,9 +367,6 @@ RdpCertificateInfo probeRdpCertificateOverTls(const std::string& host, int port,
 #define LOG_TAG "RDP_ADAPTER"
 
 #define RDP_TCP_PORT 3389
-
-extern "C" UINT freerdp_ohos_rdpdr_register_drive(rdpContext* context, const char* name,
-                                                  const char* path, uint32_t* pid);
 
 static const char* safeFreeRdpString(const char* value, const char* fallback) {
     return value ? value : fallback;
@@ -529,7 +527,6 @@ struct FreeRdpAdapter::Impl {
     CliprdrClientContext*   cliprdr = nullptr;
     pthread_t               eventThread = 0;
     pthread_t               connectThread = 0;
-    pthread_t               driveThread = 0;
     std::mutex              stateMutex;
     std::mutex              instanceMutex;
     std::mutex              shutdownMutex;
@@ -555,11 +552,9 @@ struct FreeRdpAdapter::Impl {
     bool                    inputQueueStop = false;
     std::atomic<bool>       connecting {false};
     std::atomic<bool>       connectThreadStarted {false};
-    std::atomic<bool>       driveThreadStarted {false};
     std::atomic<bool>       stopRequested {false};
     std::atomic<bool>       gdiInitialized {false};
     std::atomic<bool>       presentationEnabled {false};
-    uint32_t                driveDeviceId = 0;
     std::atomic<int>        paintCount {0};
     std::atomic<int64_t>    firstPaintUs {0};
     std::atomic<int64_t>    lastPaintUs {0};
@@ -1638,103 +1633,6 @@ void FreeRdpAdapter::joinConnectThread() {
     impl_->traceShutdown("connect-join", "complete");
 }
 
-void FreeRdpAdapter::joinDriveThread() {
-    impl_->traceShutdown("drive-join", "begin");
-    if (!impl_->driveThreadStarted || !impl_->driveThread) {
-        impl_->traceShutdown("drive-join", "not-started");
-        return;
-    }
-    if (pthread_equal(pthread_self(), impl_->driveThread)) {
-        impl_->traceShutdown("drive-join", "self-skip");
-        return;
-    }
-    pthread_join(impl_->driveThread, nullptr);
-    impl_->driveThread = 0;
-    impl_->driveThreadStarted = false;
-    impl_->traceShutdown("drive-join", "complete");
-}
-
-struct RdpDriveMountRequest {
-    FreeRdpAdapter* adapter;
-    std::string driveName;
-    std::string drivePath;
-};
-
-void FreeRdpAdapter::startDriveMountAfterConnected(const std::string& driveName, const std::string& drivePath) {
-    if (drivePath.empty()) {
-        return;
-    }
-    joinDriveThread();
-
-    auto* request = new RdpDriveMountRequest { this, driveName, drivePath };
-    const int rc = pthread_create(&impl_->driveThread, nullptr,
-        [](void* arg) -> void* {
-            auto* request = static_cast<RdpDriveMountRequest*>(arg);
-            request->adapter->mountDriveAfterConnected(request->driveName, request->drivePath);
-            delete request;
-            return nullptr;
-        }, request);
-    if (rc != 0) {
-        delete request;
-        OH_LOG_WARN(LOG_APP, "[RDP] redirected drive async mount thread failed rc=%{public}d", rc);
-        return;
-    }
-    impl_->driveThreadStarted = true;
-    const std::string drivePathId = SafeLog::HashForLog(drivePath);
-    OH_LOG_INFO(LOG_APP, "[RDP] redirected drive async mount scheduled: \\\\tsclient\\%{public}s drivePathId=%{public}s",
-                driveName.c_str(), drivePathId.c_str());
-}
-
-void FreeRdpAdapter::mountDriveAfterConnected(const std::string& driveName, const std::string& drivePath) {
-    // Give the event loop and rdpdr plugin a short window to finish post-connect setup.
-    for (int i = 0; i < 10; i++) {
-        if (impl_->stopRequested) {
-            OH_LOG_INFO(LOG_APP, "[RDP] redirected drive async mount canceled before start");
-            return;
-        }
-        usleep(100000);
-    }
-    if (impl_->stopRequested || getState() != ConnectionState::CONNECTED) {
-        OH_LOG_INFO(LOG_APP, "[RDP] redirected drive async mount skipped: session no longer connected");
-        return;
-    }
-
-    uint32_t driveId = 0;
-    UINT driveRc = ERROR_NOT_READY;
-    rdpContext* driveContext = nullptr;
-    {
-        std::lock_guard<std::mutex> lock(impl_->instanceMutex);
-        if (impl_->stopRequested || !instance_ || !instance_->context) {
-            OH_LOG_INFO(LOG_APP, "[RDP] redirected drive async mount skipped: instance unavailable");
-            return;
-        }
-        driveContext = instance_->context;
-    }
-    if (impl_->stopRequested.load(std::memory_order_acquire)) {
-        OH_LOG_INFO(LOG_APP, "[RDP] redirected drive async mount skipped: shutdown requested");
-        return;
-    }
-    driveRc = freerdp_ohos_rdpdr_register_drive(driveContext, driveName.c_str(),
-                                                drivePath.c_str(), &driveId);
-
-    if (driveRc == CHANNEL_RC_OK) {
-        impl_->driveDeviceId = driveId;
-        impl_->transferStatus.markRdpDriveMounted();
-        const std::string drivePathId = SafeLog::HashForLog(drivePath);
-        OH_LOG_INFO(LOG_APP,
-                    "[RDP] redirected drive mounted asynchronously: \\\\tsclient\\%{public}s drivePathId=%{public}s id=%{public}u",
-                    driveName.c_str(), drivePathId.c_str(), driveId);
-        impl_->setState(ConnectionState::CONNECTED, "RDP session established; drive redirection mounted");
-    } else {
-        impl_->transferStatus.markRdpDriveUnavailable("drive_unavailable");
-        const std::string drivePathId = SafeLog::HashForLog(drivePath);
-        OH_LOG_WARN(LOG_APP,
-                    "[RDP] redirected drive async mount unavailable rc=%{public}u name=%{public}s drivePathId=%{public}s",
-                    driveRc, driveName.c_str(), drivePathId.c_str());
-        impl_->setState(ConnectionState::CONNECTED, "RDP session established; drive redirection unavailable");
-    }
-}
-
 void FreeRdpAdapter::abortActiveConnection() {
     rdpContext* context = nullptr;
     {
@@ -1821,6 +1719,8 @@ int FreeRdpAdapter::connect(const ConnectionConfig& cfg) {
         impl_->shutdownStartedUs.store(0, std::memory_order_release);
     }
     impl_->config = cfg;
+    impl_->transferStatus.markRdpDriveUnavailable(
+        cfg.rdDrivePath.empty() ? "drive_not_requested" : "drive_not_registered");
     impl_->connecting = true;
     impl_->stopRequested = false;
     {
@@ -1947,15 +1847,38 @@ void FreeRdpAdapter::connectThreadFunc() {
         graphicsMode != RdpPerformancePolicy::GraphicsMode::GdiFallback);
 
     const bool requestedDriveEnabled = !cfg.rdDrivePath.empty();
-    // 二阶段共享盘: 连接阶段只加载 rdpdr 通道, 不注册文件盘设备。
-    // 文件盘挂载必须发生在 CONNECTED 上报之后, 失败也不能影响远程桌面进入。
-    const bool driveEnabled = requestedDriveEnabled;
+    const std::string driveName = sanitizeRdpDriveName(cfg.rdDriveName);
+    bool driveEnabled = false;
     if (requestedDriveEnabled) {
         const std::string drivePathId = SafeLog::HashForLog(cfg.rdDrivePath);
-        OH_LOG_INFO(LOG_APP,
-                    "[RDP] redirected drive requested for async post-connected mount: name=%{public}s drivePathId=%{public}s",
-                    cfg.rdDriveName.empty() ? "RemoteDesktop" : cfg.rdDriveName.c_str(),
-                    drivePathId.c_str());
+        ensureFreeRdpStaticAddinProvider();
+        const bool driveServiceAvailable =
+            freerdp_load_channel_addin_entry("drive", nullptr, "DeviceServiceEntry", 0) != nullptr;
+        const bool drivePathAccessible = access(cfg.rdDrivePath.c_str(), R_OK | W_OK) == 0;
+        if (!driveServiceAvailable || !drivePathAccessible) {
+            impl_->transferStatus.markRdpDriveUnavailable(
+                driveServiceAvailable ? "drive_path_unavailable" : "drive_service_unavailable");
+            OH_LOG_WARN(LOG_APP,
+                        "[RDP] redirected drive disabled without blocking connection: service=%{public}s pathAccessible=%{public}s drivePathId=%{public}s",
+                        driveServiceAvailable ? "available" : "missing",
+                        drivePathAccessible ? "true" : "false", drivePathId.c_str());
+        } else {
+            const char* driveArgs[] = { driveName.c_str(), cfg.rdDrivePath.c_str() };
+            RDPDR_DEVICE* drive = freerdp_device_new(RDPDR_DTYP_FILESYSTEM, 2, driveArgs);
+            if (drive && freerdp_device_collection_add(s, drive)) {
+                driveEnabled = true;
+                impl_->transferStatus.markRdpDriveMounted();
+                OH_LOG_INFO(LOG_APP,
+                            "[RDP] redirected drive registered before connect: \\\\tsclient\\%{public}s drivePathId=%{public}s",
+                            driveName.c_str(), drivePathId.c_str());
+            } else {
+                freerdp_device_free(drive);
+                impl_->transferStatus.markRdpDriveUnavailable("drive_registration_failed");
+                OH_LOG_WARN(LOG_APP,
+                            "[RDP] redirected drive registration failed without blocking connection: name=%{public}s drivePathId=%{public}s",
+                            driveName.c_str(), drivePathId.c_str());
+            }
+        }
     }
 
     // RDP 远端音频: rdpsnd 依赖客户端通道和 rdpdr，数据由 FreeRDP fake 后端转发到 OHAudio。
@@ -1964,8 +1887,7 @@ void FreeRdpAdapter::connectThreadFunc() {
     freerdp_settings_set_bool(s, FreeRDP_DeviceRedirection,
                               (cfg.rdAudioEnabled || driveEnabled) ? TRUE : FALSE);
     freerdp_settings_set_bool(s, FreeRDP_RedirectClipboard, cfg.rdClipboardEnabled ? TRUE : FALSE);
-    const std::string driveName = sanitizeRdpDriveName(cfg.rdDriveName);
-    // 不在连接握手前注册自定义 drive。rdpdr 通道加载后由异步线程 post-connected 挂载。
+    // 仅公告上面显式注册的沙箱目录，不自动共享本机所有磁盘。
     freerdp_settings_set_bool(s, FreeRDP_RedirectDrives, FALSE);
     if (cfg.rdAudioEnabled) {
         OH_LOG_INFO(LOG_APP, "[RDP] rdpsnd enabled: channel loading delegated to FreeRDP PreConnect");
@@ -2129,9 +2051,6 @@ void FreeRdpAdapter::connectThreadFunc() {
     impl_->connecting = false;
     OH_LOG_INFO(LOG_APP, "[RDP] ✓ FreeRDP session: %{public}s:%{public}d (user=%{public}s)",
                 logHost.c_str(), port, logUser.c_str());
-    if (driveEnabled) {
-        startDriveMountAfterConnected(driveName, cfg.rdDrivePath);
-    }
 }
 
 void FreeRdpAdapter::disconnect() {
@@ -2149,11 +2068,9 @@ void FreeRdpAdapter::disconnect() {
     impl_->stopSessionWorkers();
     abortActiveConnection();
 
-    // The connect thread can start both event and drive workers. Join the producer
-    // first so no worker can appear after the corresponding stop/join returns.
+    // Join the producer first so no event worker can appear after stop/join returns.
     joinConnectThread();
     stopEventLoop();
-    joinDriveThread();
 
     impl_->shutdownState.advance(RdpShutdown::Phase::Quiescing,
                                  RdpShutdown::Phase::TransportDisconnecting);

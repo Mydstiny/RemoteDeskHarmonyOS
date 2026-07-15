@@ -129,7 +129,8 @@ build_arch() {
         -DCHANNEL_DISP=OFF \
         -DCHANNEL_DRDYNVC=ON \
         -DCHANNEL_DRDYNVC_CLIENT=ON \
-        -DCHANNEL_DRIVE=OFF \
+        -DCHANNEL_DRIVE=ON \
+        -DCHANNEL_DRIVE_CLIENT=ON \
         -DCHANNEL_ECHO=OFF \
         -DCHANNEL_ENCOMSP=OFF \
         -DCHANNEL_GEOMETRY=OFF \
@@ -223,6 +224,7 @@ build_arch() {
         rdpsnd-common \
         rdpsnd-client-fake \
         rdpdr-client \
+        drive-client \
         cliprdr-client \
         rdpei-client \
         ainput-client \
@@ -248,6 +250,7 @@ build_arch() {
         "$BUILD/channels/rdpsnd/common/CMakeFiles/rdpsnd-common.dir"
         "$BUILD/channels/rdpsnd/client/fake/CMakeFiles/rdpsnd-client-fake.dir"
         "$BUILD/channels/rdpdr/client/CMakeFiles/rdpdr-client.dir"
+        "$BUILD/channels/drive/client/CMakeFiles/drive-client.dir"
         "$BUILD/channels/cliprdr/client/CMakeFiles/cliprdr-client.dir"
         "$BUILD/channels/rdpei/client/CMakeFiles/rdpei-client.dir"
         "$BUILD/channels/ainput/client/CMakeFiles/ainput-client.dir"

@@ -92,13 +92,10 @@ private:
     void stopEventLoop();
     void processEventLoop();
     void joinConnectThread();
-    void joinDriveThread();
     void abortActiveConnection();
     void disconnectActiveInstance();
     void cleanupInstance();
     void connectThreadFunc();    // 连接线程 (异步, 不阻塞 NAPI)
-    void startDriveMountAfterConnected(const std::string& driveName, const std::string& drivePath);
-    void mountDriveAfterConnected(const std::string& driveName, const std::string& drivePath);
     DWORD evaluateCertificate(const char* host, UINT16 port, const char* commonName,
                               const char* subject, const char* issuer,
                               const std::string& fingerprint, DWORD flags);
