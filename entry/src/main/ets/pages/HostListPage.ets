@@ -75,6 +75,8 @@ import { cloudSyncDetailSpec } from '../services/CloudSyncGuidancePolicy';
 import {
   settingsLeafSheetClosedState,
   settingsLeafSheetDismissRequestedState,
+  settingsLeafSheetPendingMode,
+  shouldQueueSettingsLeafSheetOpen,
   shouldOpenRestoreConfirmation
 } from '../services/SettingsLeafSheetLifecyclePolicy';
 import {
@@ -363,6 +365,10 @@ struct HostListPage {
   private gripPermissionGranted: boolean = false;
   private lastSheetDismissAtMs: number = 0;
   private pendingSheetOpenTimer: number = -1;
+  private pendingSettingsLeafOpenTimer: number = -1;
+  private pendingSettingsLeafOpenAtMs: number = 0;
+  private pendingSettingsLeafSheetMode: number = SETTINGS_SHEET_NONE;
+  private pendingSettingsLeafPrepare: (() => void) | null = null;
   private settingsLeafSheetCloseRequested: boolean = false;
   private settingsLeafSheetClosingMode: number = SETTINGS_SHEET_NONE;
   private settingsLeafSheetClosingPopupMode: number = 0;
@@ -704,35 +710,103 @@ struct HostListPage {
     this.showKeyVaultSelect = false;
   }
 
-  private openSettingsLeafSheet(mode: number): void {
-    if (this.pendingSheetOpenTimer !== -1) {
-      clearTimeout(this.pendingSheetOpenTimer);
-      this.pendingSheetOpenTimer = -1;
+  private clearPendingSettingsLeafOpen(clearRequest: boolean = true): void {
+    if (this.pendingSettingsLeafOpenTimer !== -1) {
+      clearTimeout(this.pendingSettingsLeafOpenTimer);
+      this.pendingSettingsLeafOpenTimer = -1;
+    }
+    if (clearRequest) {
+      this.pendingSettingsLeafOpenAtMs = 0;
+      this.pendingSettingsLeafSheetMode = SETTINGS_SHEET_NONE;
+      this.pendingSettingsLeafPrepare = null;
+    }
+  }
+
+  private applySettingsLeafSheetOpen(mode: number, prepareAction: (() => void) | null): void {
+    if (prepareAction !== null) {
+      prepareAction();
     }
     this.closeLegacySettingsSheetFlags();
     this.settingsLeafSheetMode = mode;
-    if (this.showSettingsLeafSheet) {
+    this.showSettingsLeafSheet = true;
+  }
+
+  private scheduleSettingsLeafSheetOpen(mode: number, prepareAction: (() => void) | null,
+    delayMs: number): void {
+    const nowMs: number = Date.now();
+    const requestedOpenAtMs: number = nowMs + (delayMs > 0 ? delayMs : 0);
+    const openAtMs: number = this.pendingSettingsLeafOpenAtMs > requestedOpenAtMs
+      ? this.pendingSettingsLeafOpenAtMs
+      : requestedOpenAtMs;
+    this.clearPendingSettingsLeafOpen(false);
+    this.pendingSettingsLeafOpenAtMs = openAtMs;
+    this.pendingSettingsLeafSheetMode = settingsLeafSheetPendingMode(
+      this.pendingSettingsLeafSheetMode, mode);
+    this.pendingSettingsLeafPrepare = prepareAction;
+    this.pendingSettingsLeafOpenTimer = setTimeout((): void => {
+      this.pendingSettingsLeafOpenTimer = -1;
+      this.pendingSettingsLeafOpenAtMs = 0;
+      if (this.settingsLeafSheetCloseRequested || this.showSettingsLeafSheet) {
+        return;
+      }
+      const remainingDelayMs: number = sheetOpenDelayMsAfterDismiss(Date.now(), this.lastSheetDismissAtMs);
+      if (remainingDelayMs > 0) {
+        this.scheduleSettingsLeafSheetOpen(this.pendingSettingsLeafSheetMode,
+          this.pendingSettingsLeafPrepare, remainingDelayMs);
+        return;
+      }
+      const pendingMode: number = this.pendingSettingsLeafSheetMode;
+      const pendingPrepare: (() => void) | null = this.pendingSettingsLeafPrepare;
+      this.pendingSettingsLeafSheetMode = SETTINGS_SHEET_NONE;
+      this.pendingSettingsLeafPrepare = null;
+      if (pendingMode !== SETTINGS_SHEET_NONE && this.pageActive) {
+        this.applySettingsLeafSheetOpen(pendingMode, pendingPrepare);
+      }
+    }, openAtMs - nowMs);
+  }
+
+  private requestSettingsLeafSheetReplacement(mode: number, prepareAction: (() => void) | null): void {
+    this.pendingSettingsLeafSheetMode = mode;
+    this.pendingSettingsLeafPrepare = prepareAction;
+    this.settingsLeafSheetCloseRequested = true;
+    this.settingsLeafSheetClosingMode = this.settingsLeafSheetMode;
+    this.settingsLeafSheetClosingPopupMode = this.popupSheetMode;
+    this.lastSheetDismissAtMs = Date.now();
+    const next = settingsLeafSheetDismissRequestedState(this.settingsLeafSheetMode);
+    this.showSettingsLeafSheet = next.visible;
+    this.scheduleSettingsLeafSheetOpen(mode, prepareAction,
+      sheetOpenDelayMsAfterDismiss(Date.now(), this.lastSheetDismissAtMs));
+  }
+
+  private openSettingsLeafSheet(mode: number, prepareAction: (() => void) | null = null): void {
+    if (shouldQueueSettingsLeafSheetOpen(this.showSettingsLeafSheet,
+      this.settingsLeafSheetCloseRequested)) {
+      if (this.showSettingsLeafSheet) {
+        this.requestSettingsLeafSheetReplacement(mode, prepareAction);
+        return;
+      }
+      const delayMs: number = sheetOpenDelayMsAfterDismiss(Date.now(), this.lastSheetDismissAtMs);
+      this.scheduleSettingsLeafSheetOpen(mode, prepareAction, delayMs);
       return;
     }
     const panelWasOpen: boolean = this.showSettingsPanel;
     if (panelWasOpen) {
+      this.lastSheetDismissAtMs = Date.now();
       this.showSettingsPanel = false;
     }
     const panelDelayMs: number = settingsLeafOpenDelayMs(panelWasOpen);
     const transitionDelayMs: number = sheetOpenDelayMsAfterDismiss(Date.now(), this.lastSheetDismissAtMs);
     const delayMs: number = panelDelayMs > transitionDelayMs ? panelDelayMs : transitionDelayMs;
     if (delayMs <= 0) {
-      this.showSettingsLeafSheet = true;
+      this.applySettingsLeafSheetOpen(mode, prepareAction);
       return;
     }
-    this.pendingSheetOpenTimer = setTimeout((): void => {
-      this.pendingSheetOpenTimer = -1;
-      this.showSettingsLeafSheet = true;
-    }, delayMs);
+    this.scheduleSettingsLeafSheetOpen(mode, prepareAction, delayMs);
   }
 
   private closeSettingsLeafSheet(): void {
     const sheetWasVisible: boolean = this.showSettingsLeafSheet;
+    this.clearPendingSettingsLeafOpen();
     if (sheetWasVisible) {
       this.settingsLeafSheetCloseRequested = true;
       this.settingsLeafSheetClosingMode = this.settingsLeafSheetMode;
@@ -743,6 +817,7 @@ struct HostListPage {
         this.pendingSheetOpenTimer = -1;
       }
       this.closeLegacySettingsSheetFlags();
+      this.lastSheetDismissAtMs = Date.now();
       // Keep the current mode mounted until onDisappear. Resetting it here
       // swaps the builder to an empty Column before ArkUI can play the exit
       // transition, which makes button-driven dismissals look instantaneous.
@@ -780,26 +855,33 @@ struct HostListPage {
     // Sheet transition has completed so the outgoing builder remains visible.
     this.closeLegacySettingsSheetFlags();
     this.resetSettingsLeafSheetAfterDismiss();
+    if (this.pendingSettingsLeafSheetMode !== SETTINGS_SHEET_NONE) {
+      this.scheduleSettingsLeafSheetOpen(this.pendingSettingsLeafSheetMode,
+        this.pendingSettingsLeafPrepare,
+        sheetOpenDelayMsAfterDismiss(Date.now(), this.lastSheetDismissAtMs));
+    }
     if (dismissedMode === SETTINGS_SHEET_POPUP && dismissedPopupMode === 0) {
       this.refreshCryptoStatus();
     }
   }
 
   private openCloudSyncSheet(): void {
-    this.cloudSyncSelectedTables = CloudSyncSelectionStore.getInstance().selectedBusinessTables();
-    this.cloudSyncError = '';
-    this.cloudSyncStep = !CloudStore.getInstance().requiresCloudServiceGuidance()
-      ? CLOUD_SYNC_SHEET_ACTIONS
-      : CLOUD_SYNC_SHEET_UNAVAILABLE;
-    this.popupSheetMode = 3;
-    this.openSettingsLeafSheet(SETTINGS_SHEET_POPUP);
+    this.openSettingsLeafSheet(SETTINGS_SHEET_POPUP, (): void => {
+      this.cloudSyncSelectedTables = CloudSyncSelectionStore.getInstance().selectedBusinessTables();
+      this.cloudSyncError = '';
+      this.cloudSyncStep = !CloudStore.getInstance().requiresCloudServiceGuidance()
+        ? CLOUD_SYNC_SHEET_ACTIONS
+        : CLOUD_SYNC_SHEET_UNAVAILABLE;
+      this.popupSheetMode = 3;
+    });
   }
 
   private openCloudSyncDetailsSheet(): void {
-    this.cloudSyncError = '';
-    this.cloudSyncStep = CLOUD_SYNC_SHEET_DETAILS;
-    this.popupSheetMode = 3;
-    this.openSettingsLeafSheet(SETTINGS_SHEET_POPUP);
+    this.openSettingsLeafSheet(SETTINGS_SHEET_POPUP, (): void => {
+      this.cloudSyncError = '';
+      this.cloudSyncStep = CLOUD_SYNC_SHEET_DETAILS;
+      this.popupSheetMode = 3;
+    });
   }
 
   private returnToCloudSyncActions(): void {
@@ -829,11 +911,12 @@ struct HostListPage {
         promptAction.showToast({ message: '未选择有效的本地备份文件', duration: 1800 });
         return;
       }
-      this.pendingLocalRestore = document;
-      this.cloudSyncError = '';
-      this.cloudSyncStep = CLOUD_SYNC_SHEET_RESTORE_CONFIRM;
-      this.popupSheetMode = 3;
-      this.openSettingsLeafSheet(SETTINGS_SHEET_POPUP);
+      this.openSettingsLeafSheet(SETTINGS_SHEET_POPUP, (): void => {
+        this.pendingLocalRestore = document;
+        this.cloudSyncError = '';
+        this.cloudSyncStep = CLOUD_SYNC_SHEET_RESTORE_CONFIRM;
+        this.popupSheetMode = 3;
+      });
     } catch (_e) {
       promptAction.showToast({ message: '读取或校验备份文件失败', duration: 1800 });
     }
@@ -1117,6 +1200,7 @@ struct HostListPage {
 
   aboutToDisappear(): void {
     this.pageActive = false;
+    this.clearPendingSettingsLeafOpen();
     this.unregisterDataRefreshListeners();
     this.stopGripMonitor(true);
     try {
@@ -4234,9 +4318,10 @@ struct HostListPage {
                     Row() {
                       Text('已锁定').fontSize(12).fontColor(this.pal().danger).fontWeight(FontWeight.Medium)
                         .onClick(() => {
-                          this.cryptoMode = 1;
-                          this.popupSheetMode = 0;
-                          this.openSettingsLeafSheet(SETTINGS_SHEET_POPUP);
+                          this.openSettingsLeafSheet(SETTINGS_SHEET_POPUP, (): void => {
+                            this.cryptoMode = 1;
+                            this.popupSheetMode = 0;
+                          });
                         })
                         .margin({ right: 6 })
                       Text('重置').fontSize(11).fontColor(this.pal().danger)
@@ -4247,9 +4332,10 @@ struct HostListPage {
                   Button('启用').height(32).fontSize(12)
                     .backgroundColor(this.accentColor).fontColor('#FFFFFF').borderRadius(8)
                     .onClick(() => {
-                      this.cryptoMode = 0;
-                      this.popupSheetMode = 0;
-                      this.openSettingsLeafSheet(SETTINGS_SHEET_POPUP);
+                      this.openSettingsLeafSheet(SETTINGS_SHEET_POPUP, (): void => {
+                        this.cryptoMode = 0;
+                        this.popupSheetMode = 0;
+                      });
                     })
                 }
               }.width('100%').height(64).padding({ left: 16, right: 16 })
@@ -4298,8 +4384,9 @@ struct HostListPage {
               this.cardActionRow($r('app.media.icon_terminal'), 'SSH 主机指纹',
                 this.sshTrustedHostsView.length.toString() + ' 条已信任记录',
                 (): void => {
-                  this.popupSheetMode = 2;
-                  this.openSettingsLeafSheet(SETTINGS_SHEET_POPUP);
+                  this.openSettingsLeafSheet(SETTINGS_SHEET_POPUP, (): void => {
+                    this.popupSheetMode = 2;
+                  });
                 })
             }.borderRadius(24).backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
             .shadow({ radius: 16, color: 'rgba(0,0,0,0.04)', offsetY: 4 })
@@ -4327,16 +4414,18 @@ struct HostListPage {
             Column() {
               this.cardActionRow($r('app.media.icon_info'), '简单使用教程', '了解连接、传输、同步、安全与反馈',
                 (): void => {
-                  this.aboutSheetMode = 0;
-                  this.popupSheetMode = 1;
-                  this.openSettingsLeafSheet(SETTINGS_SHEET_POPUP);
+                  this.openSettingsLeafSheet(SETTINGS_SHEET_POPUP, (): void => {
+                    this.aboutSheetMode = 0;
+                    this.popupSheetMode = 1;
+                  });
                 })
               this.cardDivider()
               this.cardActionRow($r('app.media.icon_info'), '如何进行前置操作', 'FreeRDP 与 RustDesk 部署指南',
                 (): void => {
-                  this.aboutSheetMode = 3;
-                  this.popupSheetMode = 1;
-                  this.openSettingsLeafSheet(SETTINGS_SHEET_POPUP);
+                  this.openSettingsLeafSheet(SETTINGS_SHEET_POPUP, (): void => {
+                    this.aboutSheetMode = 3;
+                    this.popupSheetMode = 1;
+                  });
                 })
             }.borderRadius(24).backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
             .shadow({ radius: 16, color: 'rgba(0,0,0,0.04)', offsetY: 4 })
@@ -4366,16 +4455,18 @@ struct HostListPage {
               this.cardDivider()
               this.cardActionRow($r('app.media.icon_info'), '关于应用', '开源协议、作者说明和联系方式',
                 (): void => {
-                  this.aboutSheetMode = 1;
-                  this.popupSheetMode = 1;
-                  this.openSettingsLeafSheet(SETTINGS_SHEET_POPUP);
+                  this.openSettingsLeafSheet(SETTINGS_SHEET_POPUP, (): void => {
+                    this.aboutSheetMode = 1;
+                    this.popupSheetMode = 1;
+                  });
                 })
               this.cardDivider()
               this.cardActionRow($r('app.media.icon_lock'), '隐私政策', '数据收集、权限和安全说明',
                 (): void => {
-                  this.aboutSheetMode = 2;
-                  this.popupSheetMode = 1;
-                  this.openSettingsLeafSheet(SETTINGS_SHEET_POPUP);
+                  this.openSettingsLeafSheet(SETTINGS_SHEET_POPUP, (): void => {
+                    this.aboutSheetMode = 2;
+                    this.popupSheetMode = 1;
+                  });
                 })
             }.borderRadius(24).backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
             .shadow({ radius: 16, color: 'rgba(0,0,0,0.04)', offsetY: 4 })
@@ -5307,21 +5398,23 @@ struct HostListPage {
   }
 
   private confirmResetEncryption(): void {
-    this.cryptoPwd = '';
-    this.cryptoResetCountdown = 5;
-    this.cryptoMode = 3;
-    this.popupSheetMode = 0;
-    this.openSettingsLeafSheet(SETTINGS_SHEET_POPUP);
-    setTimeout(() => { this.doCountdownTick(); }, 1000);
+    this.openSettingsLeafSheet(SETTINGS_SHEET_POPUP, (): void => {
+      this.cryptoPwd = '';
+      this.cryptoResetCountdown = 5;
+      this.cryptoMode = 3;
+      this.popupSheetMode = 0;
+      setTimeout(() => { this.doCountdownTick(); }, 1000);
+    });
   }
 
   private confirmDisableEncryption(): void {
-    this.cryptoPwd = '';
-    this.cryptoResetCountdown = 5;
-    this.cryptoMode = 2;
-    this.popupSheetMode = 0;
-    this.openSettingsLeafSheet(SETTINGS_SHEET_POPUP);
-    setTimeout(() => { this.doCountdownTick(); }, 1000);
+    this.openSettingsLeafSheet(SETTINGS_SHEET_POPUP, (): void => {
+      this.cryptoPwd = '';
+      this.cryptoResetCountdown = 5;
+      this.cryptoMode = 2;
+      this.popupSheetMode = 0;
+      setTimeout(() => { this.doCountdownTick(); }, 1000);
+    });
   }
 
   @Builder cardItemRow(icon: Resource, label: string, value: string) {
