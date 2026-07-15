@@ -12,6 +12,7 @@ import hostSyncServiceTest from './HostSyncService.test';
 import remoteRestoreFrameRefreshPolicyTest from './RemoteRestoreFrameRefreshPolicy.test';
 import safeLoggerTest from './SafeLogger.test';
 import rustDeskHostConfigPolicyTest from './RustDeskHostConfigPolicy.test';
+import rustDeskRelayHealthPolicyTest from './RustDeskRelayHealthPolicy.test';
 import backgroundVideoPrewarmPolicyTest from './BackgroundVideoPrewarmPolicy.test';
 import remoteImeSessionPolicyTest from './RemoteImeSessionPolicy.test';
 import remoteImeCommandQueueTest from './RemoteImeCommandQueue.test';
@@ -35,6 +36,7 @@ export default function testsuite() {
   hostSyncServiceTest();
   safeLoggerTest();
   rustDeskHostConfigPolicyTest();
+  rustDeskRelayHealthPolicyTest();
   backgroundVideoPrewarmPolicyTest();
   remoteImeSessionPolicyTest();
   remoteImeCommandQueueTest();

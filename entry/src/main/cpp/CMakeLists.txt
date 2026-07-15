@@ -38,6 +38,8 @@ set(PROTOCOL_SOURCES
     rdp/rdp_gl_upload_gate.cpp
     rdp/rdp_graphics_lifecycle.cpp
     rdp/rdp_frame_pump.cpp
+    rdp/rdp_file_clipboard_bridge.cpp
+    rdp/rdp_file_clipboard_offer.cpp
     rustdesk/rustdesk_bridge.cpp
 )
 
@@ -151,6 +153,7 @@ if(RDP_BUILD_TESTS)
         test/rdp_performance_policy_test.cpp
         test/transfer_runtime_status_test.cpp
         test/rdp_input_queue_test.cpp
+        test/rdp_file_clipboard_offer_test.cpp
         test/gl_surface_lifecycle_policy_test.cpp
         test/native_image_context_policy_test.cpp
         test/decoder_recovery_policy_test.cpp
@@ -163,6 +166,7 @@ if(RDP_BUILD_TESTS)
         rdp/rdp_frame_scheduler.cpp
         rdp/rdp_gl_upload_gate.cpp
         rdp/rdp_graphics_lifecycle.cpp
+        rdp/rdp_file_clipboard_offer.cpp
         audio/audio_queue_policy.cpp
         audio/audio_activity_state.cpp
         video/video_activity_state.cpp

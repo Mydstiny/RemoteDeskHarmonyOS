@@ -73,6 +73,7 @@ public:
 
     // ---- 扩展功能 ----
     void        setClipboardText(const std::string& text) override;
+    bool        setClipboardFiles(const std::vector<std::string>& paths) override;
     void        sendClipboardData(const uint8_t* data, uint32_t len) override;
     std::string getClipboardText() override;
     bool        isClipboardReceiveReady() override;
@@ -130,6 +131,8 @@ private:
     static void cbChannelConnected(void* context, const ChannelConnectedEventArgs* e);
     static void cbChannelDisconnected(void* context, const ChannelDisconnectedEventArgs* e);
     static UINT cbCliprdrMonitorReady(CliprdrClientContext* context, const CLIPRDR_MONITOR_READY* ready);
+    static UINT cbCliprdrServerCapabilities(CliprdrClientContext* context,
+                                           const CLIPRDR_CAPABILITIES* capabilities);
     static UINT cbCliprdrServerFormatList(CliprdrClientContext* context, const CLIPRDR_FORMAT_LIST* list);
     static UINT cbCliprdrServerFormatDataRequest(CliprdrClientContext* context,
                                                 const CLIPRDR_FORMAT_DATA_REQUEST* request);

@@ -599,6 +599,15 @@ export class ExtensionLoader {
     }
   }
 
+  setSessionClipboardFiles(sessionId: number, paths: string[]): boolean {
+    try {
+      return rdpnapi.setSessionClipboardFiles(sessionId, paths) as boolean;
+    } catch (err) {
+      hilog.error(DOMAIN, TAG, '[ExtensionLoader] setSessionClipboardFiles: ' + JSON.stringify(err));
+      return false;
+    }
+  }
+
   readData(sessionId: number): string {
     try {
       const result: string = rdpnapi.readData(sessionId) as string;

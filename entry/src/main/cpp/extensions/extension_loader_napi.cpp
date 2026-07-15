@@ -1681,6 +1681,58 @@ napi_value NapiSendClipboard(napi_env env, napi_callback_info info) {
     return undefined;
 }
 
+/**
+ * NAPI: setSessionClipboardFiles(sessionId: number, paths: string[]): boolean
+ * paths 必须是已复制到应用沙箱中的稳定绝对路径。
+ */
+napi_value NapiSetSessionClipboardFiles(napi_env env, napi_callback_info info) {
+    size_t argc = 2;
+    napi_value args[2];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+
+    int32_t sessionId = 0;
+    bool accepted = false;
+    bool isArray = false;
+    if (argc == 2 && napi_get_value_int32(env, args[0], &sessionId) == napi_ok &&
+        napi_is_array(env, args[1], &isArray) == napi_ok && isArray) {
+        uint32_t length = 0;
+        if (napi_get_array_length(env, args[1], &length) == napi_ok &&
+            length > 0 && length <= 15) {
+            std::vector<std::string> paths;
+            paths.reserve(length);
+            bool valid = true;
+            for (uint32_t index = 0; index < length; ++index) {
+                napi_value item;
+                napi_valuetype type = napi_undefined;
+                size_t byteLength = 0;
+                if (napi_get_element(env, args[1], index, &item) != napi_ok ||
+                    napi_typeof(env, item, &type) != napi_ok || type != napi_string ||
+                    napi_get_value_string_utf8(env, item, nullptr, 0, &byteLength) != napi_ok ||
+                    byteLength == 0 || byteLength > 4096) {
+                    valid = false;
+                    break;
+                }
+                std::vector<char> buffer(byteLength + 1, '\0');
+                size_t written = 0;
+                if (napi_get_value_string_utf8(env, item, buffer.data(), buffer.size(),
+                                               &written) != napi_ok || written != byteLength) {
+                    valid = false;
+                    break;
+                }
+                paths.emplace_back(buffer.data(), written);
+            }
+            auto it = g_sessions.find(sessionId);
+            if (valid && it != g_sessions.end() && it->second->adapter) {
+                accepted = it->second->adapter->setClipboardFiles(paths);
+            }
+        }
+    }
+
+    napi_value result;
+    napi_get_boolean(env, accepted, &result);
+    return result;
+}
+
 napi_value NapiGetSessionClipboardText(napi_env env, napi_callback_info info) {
     size_t argc = 1;
     napi_value args[1];
@@ -2433,6 +2485,9 @@ napi_value ExtensionLoaderNapi::Init(napi_env env, napi_value exports) {
     napi_create_function(env, "sendClipboard", NAPI_AUTO_LENGTH,
                          NapiSendClipboard, nullptr, &fn);
     napi_set_named_property(env, exports, "sendClipboard", fn);
+    napi_create_function(env, "setSessionClipboardFiles", NAPI_AUTO_LENGTH,
+                         NapiSetSessionClipboardFiles, nullptr, &fn);
+    napi_set_named_property(env, exports, "setSessionClipboardFiles", fn);
     napi_create_function(env, "getSessionClipboardText", NAPI_AUTO_LENGTH,
                          NapiGetSessionClipboardText, nullptr, &fn);
     napi_set_named_property(env, exports, "getSessionClipboardText", fn);

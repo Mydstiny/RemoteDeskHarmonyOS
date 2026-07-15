@@ -26,6 +26,7 @@ declare module 'librdpnapi.so' {
   export function makeRemoteDir(sessionId: number, remotePath: string): number;
   export function renameRemotePath(sessionId: number, oldPath: string, newPath: string): number;
   export function sendClipboard(sessionId: number, data: ArrayBuffer): void;
+  export function setSessionClipboardFiles(sessionId: number, paths: string[]): boolean;
   export function getSessionClipboardText(sessionId: number): string;
   export function isSessionClipboardReady(sessionId: number): boolean;
 
