@@ -17,7 +17,8 @@ export enum RemoteImeSelectionAction {
   IGNORE_EXPECTED = 2,
   MOVE_LEFT = 3,
   MOVE_RIGHT = 4,
-  COLLAPSE_LOCAL = 5
+  COLLAPSE_LOCAL = 5,
+  IGNORE_INITIAL = 6
 }
 
 export interface RemoteImeShadow {
@@ -28,6 +29,7 @@ export interface RemoteImeShadow {
 export interface RemoteImeSelectionInput {
   active: boolean;
   programmatic: boolean;
+  initialSelectionPending: boolean;
   expectedStart: number;
   expectedEnd: number;
   syncedCaret: number;
@@ -40,6 +42,7 @@ export interface RemoteImeSelectionResult {
   count: number;
   nextSyncedCaret: number;
   consumeExpected: boolean;
+  consumeInitial: boolean;
 }
 
 export interface RemoteImeDeleteResult {
@@ -80,7 +83,18 @@ export function resolveRemoteImeSelection(
       action: RemoteImeSelectionAction.IGNORE_INACTIVE,
       count: 0,
       nextSyncedCaret: input.syncedCaret,
-      consumeExpected: false
+      consumeExpected: false,
+      consumeInitial: false
+    };
+  }
+
+  if (input.initialSelectionPending) {
+    return {
+      action: RemoteImeSelectionAction.IGNORE_INITIAL,
+      count: 0,
+      nextSyncedCaret: input.syncedCaret,
+      consumeExpected: false,
+      consumeInitial: true
     };
   }
 
@@ -89,7 +103,8 @@ export function resolveRemoteImeSelection(
       action: RemoteImeSelectionAction.IGNORE_PROGRAMMATIC,
       count: 0,
       nextSyncedCaret: input.syncedCaret,
-      consumeExpected: false
+      consumeExpected: false,
+      consumeInitial: false
     };
   }
 
@@ -98,7 +113,8 @@ export function resolveRemoteImeSelection(
       action: RemoteImeSelectionAction.IGNORE_EXPECTED,
       count: 0,
       nextSyncedCaret: input.syncedCaret,
-      consumeExpected: true
+      consumeExpected: true,
+      consumeInitial: false
     };
   }
 
@@ -107,7 +123,8 @@ export function resolveRemoteImeSelection(
       action: RemoteImeSelectionAction.COLLAPSE_LOCAL,
       count: 0,
       nextSyncedCaret: input.syncedCaret,
-      consumeExpected: false
+      consumeExpected: false,
+      consumeInitial: false
     };
   }
 
@@ -117,7 +134,8 @@ export function resolveRemoteImeSelection(
       action: RemoteImeSelectionAction.MOVE_LEFT,
       count: -delta,
       nextSyncedCaret: input.selectionStart,
-      consumeExpected: false
+      consumeExpected: false,
+      consumeInitial: false
     };
   }
 
@@ -126,7 +144,8 @@ export function resolveRemoteImeSelection(
       action: RemoteImeSelectionAction.MOVE_RIGHT,
       count: delta,
       nextSyncedCaret: input.selectionStart,
-      consumeExpected: false
+      consumeExpected: false,
+      consumeInitial: false
     };
   }
 
@@ -134,7 +153,8 @@ export function resolveRemoteImeSelection(
     action: RemoteImeSelectionAction.COLLAPSE_LOCAL,
     count: 0,
     nextSyncedCaret: input.syncedCaret,
-    consumeExpected: false
+    consumeExpected: false,
+    consumeInitial: false
   };
 }
 
@@ -174,6 +194,18 @@ export function shouldCloseRemoteImeSessionOnEditChange(
   editingObserved: boolean
 ): boolean {
   return keyboardOpen && !isEditing && editingObserved;
+}
+
+export function shouldWaitForRemoteImeInput(
+  connected: boolean,
+  sessionId: number,
+  inputForwardReady: boolean
+): boolean {
+  return connected && sessionId > 0 && !inputForwardReady;
+}
+
+export function shouldResetRemoteImeOnPointerDown(keyboardOpen: boolean): boolean {
+  return !keyboardOpen;
 }
 
 export function createRemoteImeDiagnostic(

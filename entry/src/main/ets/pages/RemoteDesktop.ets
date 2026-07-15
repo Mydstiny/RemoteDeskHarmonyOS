@@ -88,7 +88,9 @@ import {
   resolveRemoteImeSelection,
   shouldAcceptRemoteImeTextChange,
   shouldCloseRemoteImeSessionOnEditChange,
-  shouldRecenterRemoteImeShadow
+  shouldRecenterRemoteImeShadow,
+  shouldResetRemoteImeOnPointerDown,
+  shouldWaitForRemoteImeInput
 } from '../services/RemoteImeSessionPolicy';
 import {
   RemoteImeCommand,
@@ -114,6 +116,8 @@ const TOUCHPAD_SCROLL_GAIN = 0.08;
 const TOUCHPAD_SCROLL_FLUSH_MS = 24;
 const TOUCHPAD_SCROLL_MAX_DELTA = 2;
 const TOUCH_DIRECT_RIGHT_CLICK_MS = 650;
+const REMOTE_IME_SELECTION_ACK_TIMEOUT_MS = 600;
+const REMOTE_IME_COMMAND_RETRY_MS = 50;
 const INPUT_LOG_SAMPLE_MS = 1000;
 const MOUSE_MOVE_FLUSH_MS = 16;
 const TOUCH_INDICATOR_BUTTON_RIGHT = 2;
@@ -365,10 +369,12 @@ struct RemoteDesktop {
   private keyboardImeActive: boolean = false;
   private keyboardImeGeneration: number = 0;
   private keyboardImeEditingObserved: boolean = false;
+  private keyboardInitialSelectionPending: boolean = false;
   private keyboardSyncedCaret: number = REMOTE_IME_CENTER;
   private keyboardExpectedStart: number = -1;
   private keyboardExpectedEnd: number = -1;
   private keyboardProgrammaticSelection: boolean = false;
+  private keyboardSelectionAckTimer: number = -1;
   private keyboardCommandQueue: RemoteImeCommandQueue = new RemoteImeCommandQueue();
   private keyboardCommandPumpTimer: number = -1;
   private touchIndicatorTimer: number = -1;
@@ -3901,6 +3907,7 @@ struct RemoteDesktop {
     this.keyboardText = shadow.text;
     this.keyboardImeActive = true;
     this.keyboardImeEditingObserved = false;
+    this.keyboardInitialSelectionPending = true;
     this.keyboardSyncedCaret = shadow.caret;
     this.keyboardExpectedStart = shadow.caret;
     this.keyboardExpectedEnd = shadow.caret;
@@ -3922,13 +3929,26 @@ struct RemoteDesktop {
     this.keyboardImeGeneration++;
     this.keyboardImeActive = false;
     this.keyboardImeEditingObserved = false;
+    this.keyboardInitialSelectionPending = false;
     this.keyboardCommandQueue.clear();
     this.keyboardText = '';
     this.keyboardSyncedCaret = REMOTE_IME_CENTER;
     this.keyboardExpectedStart = -1;
     this.keyboardExpectedEnd = -1;
     this.keyboardProgrammaticSelection = false;
+    if (this.keyboardSelectionAckTimer >= 0) {
+      clearTimeout(this.keyboardSelectionAckTimer);
+      this.keyboardSelectionAckTimer = -1;
+    }
     hilog.info(RD_DOMAIN, RD_TAG, 'kbd-ime-reset source=' + source);
+  }
+
+  private clearRemoteImeSelectionAcknowledgement(): void {
+    if (this.keyboardSelectionAckTimer >= 0) {
+      clearTimeout(this.keyboardSelectionAckTimer);
+      this.keyboardSelectionAckTimer = -1;
+    }
+    this.keyboardProgrammaticSelection = false;
   }
 
   private setRemoteImeSelection(caret: number, source: string): void {
@@ -3936,15 +3956,26 @@ struct RemoteDesktop {
     this.keyboardExpectedStart = safeCaret;
     this.keyboardExpectedEnd = safeCaret;
     this.keyboardProgrammaticSelection = true;
+    if (this.keyboardSelectionAckTimer >= 0) {
+      clearTimeout(this.keyboardSelectionAckTimer);
+    }
+    const generation = this.keyboardImeGeneration;
+    const initialSelection = this.keyboardInitialSelectionPending;
+    this.keyboardSelectionAckTimer = setTimeout((): void => {
+      this.keyboardSelectionAckTimer = -1;
+      if (this.keyboardImeActive && generation === this.keyboardImeGeneration) {
+        this.keyboardProgrammaticSelection = false;
+        if (initialSelection) {
+          this.keyboardInitialSelectionPending = false;
+        }
+      }
+    }, REMOTE_IME_SELECTION_ACK_TIMEOUT_MS);
     try {
       this.keyboardController.setTextSelection(safeCaret, safeCaret, { menuPolicy: MenuPolicy.HIDE });
     } catch (_err) {
       // Controller calls may fail before the hidden editor has mounted.  The
       // expected selection remains so the next component callback is ignored.
     }
-    setTimeout((): void => {
-      this.keyboardProgrammaticSelection = false;
-    }, 0);
     hilog.debug(RD_DOMAIN, RD_TAG,
       'kbd-ime-selection source=' + source + ' caret=' + safeCaret.toString());
   }
@@ -4012,15 +4043,33 @@ struct RemoteDesktop {
     const result = resolveRemoteImeSelection({
       active: this.keyboardImeActive,
       programmatic: this.keyboardProgrammaticSelection,
+      initialSelectionPending: this.keyboardInitialSelectionPending,
       expectedStart: this.keyboardExpectedStart,
       expectedEnd: this.keyboardExpectedEnd,
       syncedCaret: oldCaret,
       selectionStart,
       selectionEnd
     });
+    if (result.consumeInitial) {
+      this.keyboardInitialSelectionPending = false;
+      this.clearRemoteImeSelectionAcknowledgement();
+      this.keyboardExpectedStart = -1;
+      this.keyboardExpectedEnd = -1;
+      if (this.keyboardImeActive &&
+        (selectionStart !== this.keyboardSyncedCaret || selectionEnd !== this.keyboardSyncedCaret)) {
+        this.setRemoteImeSelection(this.keyboardSyncedCaret, 'initial-collapse');
+      }
+      return;
+    }
     if (result.consumeExpected) {
       this.keyboardExpectedStart = -1;
       this.keyboardExpectedEnd = -1;
+    }
+    if (result.action === RemoteImeSelectionAction.IGNORE_PROGRAMMATIC) {
+      this.keyboardExpectedStart = -1;
+      this.keyboardExpectedEnd = -1;
+      this.clearRemoteImeSelectionAcknowledgement();
+      return;
     }
     if (result.action === RemoteImeSelectionAction.MOVE_LEFT) {
       this.keyboardSyncedCaret = result.nextSyncedCaret;
@@ -4053,13 +4102,13 @@ struct RemoteDesktop {
         ' delta=' + diagnostic.delta.toString() + ' result=' + diagnostic.result);
   }
 
-  private scheduleRemoteImeCommandPump(): void {
+  private scheduleRemoteImeCommandPump(delayMs: number = 0): void {
     if (this.keyboardCommandPumpTimer >= 0 || this.keyboardCommandQueue.size() === 0) {
       return;
     }
     this.keyboardCommandPumpTimer = setTimeout((): void => {
       this.pumpRemoteImeCommands();
-    }, 0);
+    }, delayMs);
   }
 
   private pumpRemoteImeCommands(): void {
@@ -4069,8 +4118,18 @@ struct RemoteDesktop {
       this.recenterRemoteImeAnchor();
       return;
     }
-    if (command.generation !== this.keyboardImeGeneration || !this.keyboardImeActive ||
-      !this.canForwardInput('key')) {
+    if (command.generation !== this.keyboardImeGeneration || !this.keyboardImeActive) {
+      this.resetRemoteImeSession('input-unavailable');
+      return;
+    }
+    if (shouldWaitForRemoteImeInput(this.connected, this.sessionId, this.inputForwardReady)) {
+      this.keyboardCommandQueue.pushFront(command);
+      this.scheduleRemoteImeCommandPump(REMOTE_IME_COMMAND_RETRY_MS);
+      hilog.debug(RD_DOMAIN, RD_TAG,
+        'kbd-ime-wait-input queue=' + this.keyboardCommandQueue.size().toString());
+      return;
+    }
+    if (!this.canForwardInput('key')) {
       this.resetRemoteImeSession('input-unavailable');
       return;
     }
@@ -4363,7 +4422,7 @@ struct RemoteDesktop {
       }
 
       if (event.type === TouchType.Down) {
-        if (this.touchFingerCount <= 0) {
+        if (this.touchFingerCount <= 0 && shouldResetRemoteImeOnPointerDown(this.keyboardOpen)) {
           this.resetRemoteImeSession('touchpad-down');
         }
         const oldMaxFingers: number = this.touchMaxFingers;
@@ -4540,7 +4599,7 @@ struct RemoteDesktop {
         return;
       }
       if (event.type === TouchType.Down) {
-        if (this.touchFingerCount <= 0) {
+        if (this.touchFingerCount <= 0 && shouldResetRemoteImeOnPointerDown(this.keyboardOpen)) {
           this.resetRemoteImeSession('touch-down');
         }
         const oldMaxFingers: number = this.touchMaxFingers;
@@ -4851,7 +4910,9 @@ struct RemoteDesktop {
             ' remote=' + mapped.x.toString() + ',' + mapped.y.toString());
       }
       if (event.action === MouseAction.Press) {
-        this.resetRemoteImeSession('mouse-press');
+        if (shouldResetRemoteImeOnPointerDown(this.keyboardOpen)) {
+          this.resetRemoteImeSession('mouse-press');
+        }
         if (sendButton >= 0) {
           this.physicalMouseDownButton = sendButton;
           this.sendMouseNow(mapped.x, mapped.y, sendButton, true);

@@ -10,9 +10,11 @@ import {
   createRemoteImeShadow,
   resolveRemoteImeDelete,
   resolveRemoteImeSelection,
+  shouldResetRemoteImeOnPointerDown,
   shouldAcceptRemoteImeTextChange,
   shouldCloseRemoteImeSessionOnEditChange,
   shouldRecenterRemoteImeShadow,
+  shouldWaitForRemoteImeInput,
   splitRemoteImeCaretMovement
 } from '../../../main/ets/services/RemoteImeSessionPolicy';
 
@@ -45,6 +47,7 @@ export default function remoteImeSessionPolicyTest(): void {
       const expected = resolveRemoteImeSelection({
         active: true,
         programmatic: false,
+        initialSelectionPending: false,
         expectedStart: 2050,
         expectedEnd: 2050,
         syncedCaret: 2048,
@@ -57,6 +60,7 @@ export default function remoteImeSessionPolicyTest(): void {
       const programmatic = resolveRemoteImeSelection({
         active: true,
         programmatic: true,
+        initialSelectionPending: false,
         expectedStart: -1,
         expectedEnd: -1,
         syncedCaret: 2048,
@@ -64,12 +68,42 @@ export default function remoteImeSessionPolicyTest(): void {
         selectionEnd: 2048
       });
       expect(programmatic.action).assertEqual(RemoteImeSelectionAction.IGNORE_PROGRAMMATIC);
+
+      const expandedProgrammatic = resolveRemoteImeSelection({
+        active: true,
+        programmatic: true,
+        initialSelectionPending: false,
+        expectedStart: -1,
+        expectedEnd: -1,
+        syncedCaret: 2048,
+        selectionStart: 2030,
+        selectionEnd: 2048
+      });
+      expect(expandedProgrammatic.action).assertEqual(RemoteImeSelectionAction.IGNORE_PROGRAMMATIC);
+      expect(expandedProgrammatic.count).assertEqual(0);
+    });
+
+    it('ignores_initial_shadow_selection_without_remote_movement', 0, (): void => {
+      const initial = resolveRemoteImeSelection({
+        active: true,
+        programmatic: false,
+        initialSelectionPending: true,
+        expectedStart: 2048,
+        expectedEnd: 2048,
+        syncedCaret: 2048,
+        selectionStart: 4096,
+        selectionEnd: 4096
+      });
+      expect(initial.action).assertEqual(RemoteImeSelectionAction.IGNORE_INITIAL);
+      expect(initial.count).assertEqual(0);
+      expect(initial.consumeInitial).assertTrue();
     });
 
     it('converts_collapsed_selection_to_relative_movement', 0, (): void => {
       const left = resolveRemoteImeSelection({
         active: true,
         programmatic: false,
+        initialSelectionPending: false,
         expectedStart: -1,
         expectedEnd: -1,
         syncedCaret: 2048,
@@ -83,6 +117,7 @@ export default function remoteImeSessionPolicyTest(): void {
       const right = resolveRemoteImeSelection({
         active: true,
         programmatic: false,
+        initialSelectionPending: false,
         expectedStart: -1,
         expectedEnd: -1,
         syncedCaret: 2035,
@@ -97,6 +132,7 @@ export default function remoteImeSessionPolicyTest(): void {
       const result = resolveRemoteImeSelection({
         active: true,
         programmatic: false,
+        initialSelectionPending: false,
         expectedStart: -1,
         expectedEnd: -1,
         syncedCaret: 2048,
@@ -112,6 +148,7 @@ export default function remoteImeSessionPolicyTest(): void {
       const result = resolveRemoteImeSelection({
         active: false,
         programmatic: false,
+        initialSelectionPending: false,
         expectedStart: -1,
         expectedEnd: -1,
         syncedCaret: 2048,
@@ -138,6 +175,18 @@ export default function remoteImeSessionPolicyTest(): void {
       expect(shouldRecenterRemoteImeShadow(255, 4096)).assertTrue();
       expect(shouldRecenterRemoteImeShadow(2048, 4096)).assertFalse();
       expect(shouldRecenterRemoteImeShadow(3841, 4096)).assertTrue();
+    });
+
+    it('keeps_remote_ime_commands_until_input_is_ready', 0, (): void => {
+      expect(shouldWaitForRemoteImeInput(true, 7, false)).assertTrue();
+      expect(shouldWaitForRemoteImeInput(false, 7, false)).assertFalse();
+      expect(shouldWaitForRemoteImeInput(true, 0, false)).assertFalse();
+      expect(shouldWaitForRemoteImeInput(true, 7, true)).assertFalse();
+    });
+
+    it('does_not_reset_active_ime_on_pointer_down', 0, (): void => {
+      expect(shouldResetRemoteImeOnPointerDown(true)).assertFalse();
+      expect(shouldResetRemoteImeOnPointerDown(false)).assertTrue();
     });
 
     it('creates_privacy_safe_diagnostics_without_input_text', 0, (): void => {
