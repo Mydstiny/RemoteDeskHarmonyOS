@@ -656,6 +656,11 @@ export class CloudStore implements CryptoCloudStore {
       // 旧库已迁移时会报重复列名, 忽略即可。
     }
     try {
+      await this.store.executeSql('ALTER TABLE rustdeskrelays ADD COLUMN updatedat INTEGER');
+    } catch (_e) {
+      // 旧库已迁移时会报重复列名, 忽略即可。
+    }
+    try {
       await this.store.executeSql('ALTER TABLE remotehosts ADD COLUMN rustdeskrelayid TEXT');
     } catch (_e) {
       // 旧库已迁移时会报重复列名, 忽略即可。
@@ -1402,6 +1407,7 @@ export class CloudStore implements CryptoCloudStore {
     vb['apiloginstatus'] = relay.apiLoginStatus;
     vb['accountsjson'] = this.relayAccountsToJson(relay);
     vb['syncversion'] = relay.syncVersion;
+    vb['updatedat'] = relay.updatedAt;
     return vb;
   }
 
@@ -1427,6 +1433,7 @@ export class CloudStore implements CryptoCloudStore {
     vb['apiloginstatus'] = relay.apiLoginStatus;
     vb['accountsjson'] = JSON.stringify(items);
     vb['syncversion'] = relay.syncVersion;
+    vb['updatedat'] = relay.updatedAt;
     return vb;
   }
 
@@ -1459,8 +1466,10 @@ export class CloudStore implements CryptoCloudStore {
   private upsertRelayLocalInternal(relay: RustDeskRelayConfig, encrypt: boolean): boolean {
     if (!this.store) { return false; }
     try {
+      const updatedAt: number = Date.now();
+      relay.updatedAt = updatedAt;
       const vb = encrypt ? this.relayToBucket(relay) : this.relayToBucketRaw(relay);
-      vb['updatedat'] = Date.now();
+      vb['updatedat'] = updatedAt;
       const predicates = new relationalStore.RdbPredicates('rustdeskrelays');
       predicates.equalTo('id', relay.id);
       const rs = this.store.querySync(predicates);
@@ -1521,10 +1530,12 @@ export class CloudStore implements CryptoCloudStore {
         relay.apiLoginStatus = rs.getString(rs.getColumnIndex('apiloginstatus'));
         const accountsColumn: number = rs.getColumnIndex('accountsjson');
         if (accountsColumn >= 0) {
-          relay.accounts = decrypt ? this.relayAccountsFromJson(rs.getString(accountsColumn)) : this.relayAccountsFromJsonRaw(rs.getString(accountsColumn));
+        relay.accounts = decrypt ? this.relayAccountsFromJson(rs.getString(accountsColumn)) : this.relayAccountsFromJsonRaw(rs.getString(accountsColumn));
         }
         relay.syncVersion = rs.getLong(rs.getColumnIndex('syncversion'));
         relay.createdAt = rs.getLong(rs.getColumnIndex('createdat'));
+        const updatedAtColumn: number = rs.getColumnIndex('updatedat');
+        relay.updatedAt = updatedAtColumn >= 0 ? rs.getLong(updatedAtColumn) : 0;
         result.push(relay);
       }
       rs.close();
@@ -1675,7 +1686,7 @@ export class CloudStore implements CryptoCloudStore {
     h.rustdeskDirectEnabled = rdDirectEnabledIdx >= 0 && rs.getLong(rdDirectEnabledIdx) === 1;
     h.rustdeskDirectHost = getStr('rustdeskdirecthost');
     const rdDirectPortIdx: number = rs.getColumnIndex('rustdeskdirectport');
-    h.rustdeskDirectPort = rdDirectPortIdx >= 0 ? rs.getLong(rdDirectPortIdx) : 21116;
+    h.rustdeskDirectPort = rdDirectPortIdx >= 0 ? rs.getLong(rdDirectPortIdx) : 21118;
     h.rdpCredentialId = getStr('rdpcredentialid');
     h.sourceType = getStr('sourcetype') || 'manual';
     h.rustdeskProAccountId = getStr('rustdeskproaccountid');
@@ -1733,7 +1744,8 @@ export class CloudStore implements CryptoCloudStore {
       apiLoginStatus: json.apiLoginStatus,
       accounts: [],
       syncVersion: json.syncVersion,
-      createdAt: json.createdAt
+      createdAt: json.createdAt,
+      updatedAt: json.updatedAt ?? 0
     };
     if (json.accounts) {
       for (let i = 0; i < json.accounts.length; i++) {
@@ -2019,7 +2031,7 @@ export class CloudStore implements CryptoCloudStore {
       'request_approval' : 'password';
     h.rustdeskDirectEnabled = rdDirectEnabledIdx2 >= 0 && rs.getLong(rdDirectEnabledIdx2) === 1;
     h.rustdeskDirectHost = rdDirectHostIdx2 >= 0 ? rs.getString(rdDirectHostIdx2) : '';
-    h.rustdeskDirectPort = rdDirectPortIdx2 >= 0 ? rs.getLong(rdDirectPortIdx2) : 21116;
+    h.rustdeskDirectPort = rdDirectPortIdx2 >= 0 ? rs.getLong(rdDirectPortIdx2) : 21118;
     h.rdpCredentialId = rdpCredIdx >= 0 ? rs.getString(rdpCredIdx) : '';
     const rdSourceTypeIdx: number = rs.getColumnIndex('sourcetype');
     const rdProAccountIdx: number = rs.getColumnIndex('rustdeskproaccountid');

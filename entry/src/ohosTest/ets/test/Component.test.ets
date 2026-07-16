@@ -55,6 +55,33 @@ export default function componentTest() {
       expect(host.getValidationErrors().length).assertEqual(0);
       expect(host.isValid()).assertTrue();
     });
+
+    it('rustdesk_direct_host_without_remote_id_should_pass_validation', 0, () => {
+      const host = new RemoteHost();
+      host.label = 'Desk';
+      host.protocol = 'rustdesk';
+      host.password = 'secret';
+      host.rustdeskDirectEnabled = true;
+      host.rustdeskDirectHost = '192.168.1.20';
+      host.rustdeskDirectPort = 21118;
+      host.host = '192.168.1.20';
+      host.port = 21118;
+
+      expect(host.getValidationErrors().length).assertEqual(0);
+      expect(host.isValid()).assertTrue();
+    });
+
+    it('rustdesk_direct_approval_without_password_should_fail_validation', 0, () => {
+      const host = new RemoteHost();
+      host.label = 'Desk';
+      host.protocol = 'rustdesk';
+      host.rustdeskDirectEnabled = true;
+      host.rustdeskDirectHost = '192.168.1.20';
+      host.rustdeskDirectPort = 21118;
+      host.rustdeskAuthMode = 'request_approval';
+
+      expect(host.getValidationErrors().includes('RustDesk 直连模式需要设备密码')).assertTrue();
+    });
   });
 
   describe('Protocol_Default_Ports', () => {

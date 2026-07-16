@@ -50,6 +50,7 @@ import {
   shouldPersistRdpCertificateTrust
 } from '../services/RdpCertificatePreflightPolicy';
 import { ExtensionLoader } from '../services/ExtensionLoader';
+import { SshKeyImportService, SshKeyImportResult } from '../services/SshKeyImportService';
 import {
   nextRdpCertificateProbeGeneration,
   shouldApplyRdpCertificateProbeResult
@@ -68,6 +69,8 @@ import {
 } from '../services/HostWorkspacePolicy';
 import {
   resolveRustDeskHostEndpoint,
+  rustDeskAuthModeForConnection,
+  RUSTDESK_PEER_TCP_PORT,
   RustDeskHostEndpoint
 } from '../services/RustDeskHostConfigPolicy';
 import { sheetOpenDelayMsAfterDismiss } from '../services/SheetTransitionPolicy';
@@ -211,6 +214,8 @@ struct HostListPage {
   @State proto: string = 'rdp';
   @State hostAddr: string = '';
   @State portVal: number = 3389;
+  @State rdpPortVal: number = 3389;
+  @State sshPortVal: number = 22;
   @State username: string = '';
   @State chn: string = '';
   @State sheetErr: string = '';
@@ -290,7 +295,7 @@ struct HostListPage {
   @State sheetRustdeskAuthMode: string = 'password'; // password | request_approval
   @State sheetRustdeskDirectEnabled: boolean = false; // per-host 直连开关
   @State sheetRustdeskDirectHost: string = '';
-  @State sheetRustdeskDirectPort: number = 21116;
+  @State sheetRustdeskDirectPort: number = RUSTDESK_PEER_TCP_PORT;
   @State sheetProxyHost: string = '';
   @State sheetProxyPort: number = 22;
   @State sheetProxyUser: string = '';
@@ -381,6 +386,7 @@ struct HostListPage {
   private auth: AuthService = AuthService.getInstance();
   private keyVault: KeyVaultService = KeyVaultService.getInstance();
   private loader: ExtensionLoader = ExtensionLoader.getInstance();
+  private sshKeyImporter: SshKeyImportService = new SshKeyImportService();
   private lightSensing: LightSensingService = LightSensingService.getInstance();
   @State showPassphraseSheet: boolean = false;
   private hlPassphraseResolve: ((v: string) => void) | null = null;
@@ -1394,6 +1400,7 @@ struct HostListPage {
 
   async load(): Promise<void> {
     this.isLoading = true;
+    this.refreshCryptoStatus();
     this.refreshHostListView();
     this.rdpCredentials = this.srv.getAllRdpCredentials();
     this.hostCount = this.srv.getHostCount();
@@ -1444,7 +1451,10 @@ struct HostListPage {
   }
 
   private refreshHostListView(): void {
-    this.hosts = this.srv.getAllHosts();
+    // 用新对象快照驱动列表和详情，避免服务层原地更新同一 RemoteHost
+    // 引用时，LazyForEach/卡片内部只收到 reload 却继续显示旧字段。
+    this.hosts = this.srv.getAllHosts().map((host: RemoteHost): RemoteHost =>
+      RemoteHost.fromJSON(host.toJSON()));
     this.hostCount = this.srv.getHostCount();
     this.lockedCount = this.srv.getLockedHostCount();
     this.rdpCount = this.srv.getRdpCount();
@@ -1731,23 +1741,12 @@ struct HostListPage {
     }).then((result: Object): void => {
       const r: Record<string, number> = result as Record<string, number>;
       if (r['index'] === 1) {
-        // 收集索引, 降序排列避免删除时索引错位
-        const indices: number[] = [];
-        this.hostSelectedIds.forEach((id: string) => {
-          const idx: number = this.filteredHosts.findIndex(h => h.id === id);
-          if (idx >= 0) { indices.push(idx); }
-        });
-        indices.sort((a, b) => b - a);
-        // 先删数据, 再 animateTo 触发退场动画
-        this.hostSelectedIds.forEach((id: string) => { this.srv.removeHost(id); });
-        this.hosts = this.srv.getAllHosts();
-        this.filteredHosts = this.visibleHostsForCurrentMode();
-        animateTo({ duration: 350, curve: curves.interpolatingSpring(0, 0.8, 300, 20) }, () => {
-          this.hostSelectionMode = false; this.hostSelectedIds = new Set();
-          for (let i = 0; i < indices.length; i++) {
-            this.hostDataSource.removeItem(indices[i]);
-          }
-        });
+        const ids: string[] = [];
+        this.hostSelectedIds.forEach((id: string): void => { ids.push(id); });
+        this.srv.removeHosts(ids);
+        this.hostSelectionMode = false;
+        this.hostSelectedIds = new Set<string>();
+        this.load();
       }
     });
   }
@@ -2291,15 +2290,11 @@ struct HostListPage {
     }
     host.locked = !host.locked;
     host.lockType = host.locked ? LockType.BIOMETRIC : LockType.NONE;
-    this.srv.updateHost(host);
-    this.hostCount = this.srv.getHostCount();
-    this.lockedCount = this.srv.getLockedHostCount();
-    this.rdpCount = this.srv.getRdpCount();
-    this.rustdeskCount = this.srv.getRustdeskCount();
-    this.sshCount = this.srv.getSshCount();
-    this.hosts = this.srv.getAllHosts();
-    this.filteredHosts = this.visibleHostsForCurrentMode();
-    this.hostDataSource.replaceAll(this.filteredHosts);
+    if (!this.srv.updateHost(host)) {
+      promptAction.showToast({ message: '保存主机状态失败', duration: 2000 });
+      return;
+    }
+    this.refreshHostListView();
     promptAction.showToast({ message: host.locked ? '已锁定' : '已解锁', duration: 1500 });
   }
 
@@ -2321,6 +2316,11 @@ struct HostListPage {
     this.proto = latestHost.protocol;
     this.hostAddr = latestHost.host;
     this.portVal = latestHost.port;
+    if (latestHost.protocol === 'rdp') {
+      this.rdpPortVal = latestHost.port;
+    } else if (latestHost.protocol === 'ssh') {
+      this.sshPortVal = latestHost.port;
+    }
     this.username = latestHost.username;
     this.sheetPwd = latestHost.password;
     this.chn = latestHost.customHostname;
@@ -2328,14 +2328,17 @@ struct HostListPage {
     this.selectedAccountId = latestHost.rustdeskAccountId;
     this.selectedRdpCredentialId = latestHost.rdpCredentialId;
     this.sheetPwdMode = latestHost.rustdeskPasswordMode;
-    this.sheetRustdeskAuthMode = latestHost.rustdeskAuthMode === 'request_approval' ?
-      'request_approval' : 'password';
+    this.sheetRustdeskAuthMode = latestHost.rustdeskDirectEnabled ? 'password' :
+      (latestHost.rustdeskAuthMode === 'request_approval' ? 'request_approval' : 'password');
     this.sheetRustdeskDirectEnabled = latestHost.rustdeskDirectEnabled;
     this.sheetRustdeskDirectHost = latestHost.rustdeskDirectHost;
-    this.sheetRustdeskDirectPort = latestHost.rustdeskDirectPort > 0 ? latestHost.rustdeskDirectPort : 21116;
+    this.sheetRustdeskDirectPort = latestHost.rustdeskDirectPort > 0 ? latestHost.rustdeskDirectPort : RUSTDESK_PEER_TCP_PORT;
     this.sheetUseKey = latestHost.sshUseKey;
     this.sheetKeyPath = latestHost.sshKeyPath;
     this.sheetKeyText = latestHost.sshKeyData;
+    this.sheetKeyId = latestHost.sshKeyId;
+    this.sheetKeyPassphrase = latestHost.sshKeyPassphrase;
+    this.sheetKeyMode = latestHost.sshKeyId !== '' ? 1 : 0;
     this.sheetProxyHost = latestHost.proxyHost;
     this.sheetProxyPort = latestHost.proxyPort;
     this.sheetProxyUser = latestHost.proxyUsername;
@@ -2382,18 +2385,7 @@ struct HostListPage {
     }).then((result: Object): void => {
       const r: Record<string, number> = result as Record<string, number>;
       if (r['index'] === 1) {
-        const idx: number = this.filteredHosts.findIndex((h: RemoteHost): boolean => h.id === host.id);
-        if (idx >= 0) {
-          this.srv.removeHost(host.id);
-          this.hosts = this.srv.getAllHosts();
-          animateTo({ duration: 350, curve: curves.interpolatingSpring(0, 0.8, 300, 20),
-            onFinish: () => {
-              this.filteredHosts = this.visibleHostsForCurrentMode();
-            }
-          }, () => {
-            this.hostDataSource.removeItem(idx);
-          });
-        }
+        if (this.srv.removeHost(host.id)) { this.load(); }
       }
     });
   }
@@ -3054,7 +3046,8 @@ struct HostListPage {
             // PC 全屏侧边栏: RDP/RustDesk/SSH/密钥/2FA/中继
             if (this.curTab <= 2) {
               this.resetForm();
-              this.proto = this.activeFilterProto !== '' ? this.activeFilterProto : 'rdp';
+              const nextProto: string = this.activeFilterProto !== '' ? this.activeFilterProto : 'rdp';
+              this.switchHostProtocol(nextProto, RemoteHost.getDefaultPort(nextProto));
               this.openSheetSafely((): void => { this.showAddSheet = true; });
             } else if (this.curTab === 3) {
               this.kvAddTrigger++;
@@ -6179,9 +6172,19 @@ struct HostListPage {
             // 端口 + 用户名
             Row() {
               Column() {
-                this.fieldRow('端口', this.portVal.toString(), this.portVal.toString(), (v: string): void => {
-                  const n: number = parseInt(v); this.portVal = isNaN(n) ? RemoteHost.getDefaultPort(this.proto) : n;
-                })
+                if (this.proto === 'ssh') {
+                  this.fieldRow('端口', '22', this.sshPortVal.toString(), (v: string): void => {
+                    const n: number = parseInt(v);
+                    this.sshPortVal = isNaN(n) ? RemoteHost.getDefaultPort('ssh') : n;
+                    this.portVal = this.sshPortVal;
+                  })
+                } else {
+                  this.fieldRow('端口', '3389', this.rdpPortVal.toString(), (v: string): void => {
+                    const n: number = parseInt(v);
+                    this.rdpPortVal = isNaN(n) ? RemoteHost.getDefaultPort('rdp') : n;
+                    this.portVal = this.rdpPortVal;
+                  })
+                }
               }.width('30%')
               Column() {
                 this.fieldRow('用户名', this.proto === 'rdp' && this.selectedRdpCredentialId !== '' ? '已使用 Windows 凭据' :
@@ -6205,7 +6208,9 @@ struct HostListPage {
 
           if (this.proto === 'rustdesk') {
             // RustDesk 远程设备 ID
-            this.fieldRow('远程 ID', 'Pro 设备 ID（只读）', this.chn, (v: string): void => { this.chn = v; }, !this.isEditingProHost())
+            this.fieldRow('远程 ID', this.isEditingProHost() ? 'Pro 设备 ID（只读）' :
+              (this.sheetRustdeskDirectEnabled ? '直连模式可留空' : '中继模式必填'),
+              this.chn, (v: string): void => { this.chn = v; }, !this.isEditingProHost())
 
             // 密码模式切换
             Text('密码模式').fontSize(11).fontColor(this.pal().text2).margin({ bottom: 4 }).fontFamily(this.font())
@@ -6384,7 +6389,14 @@ struct HostListPage {
                 .selectedColor(this.accentColor)
                 .scale({ x: 0.82, y: 0.82 })
                 .enabled(!this.isEditingProHost())
-                .onChange((on: boolean) => { this.sheetRustdeskDirectEnabled = on; })
+                .onChange((on: boolean) => {
+                  this.sheetRustdeskDirectEnabled = on;
+                  if (on) {
+                    this.sheetRustdeskAuthMode = 'password';
+                    this.selectedRelayId = '';
+                    this.selectedAccountId = '';
+                  }
+                })
             }.width('100%').margin({ bottom: 8 })
             if (this.sheetRustdeskDirectEnabled) {
               Row() {
@@ -6393,10 +6405,10 @@ struct HostListPage {
                     (v: string): void => { this.sheetRustdeskDirectHost = v; }, !this.isEditingProHost())
                 }.width('60%')
                 Column() {
-                  this.fieldRow('端口', '21116', this.sheetRustdeskDirectPort.toString(),
+                  this.fieldRow('端口', RUSTDESK_PEER_TCP_PORT.toString(), this.sheetRustdeskDirectPort.toString(),
                     (v: string): void => {
                       const n: number = parseInt(v);
-                      this.sheetRustdeskDirectPort = isNaN(n) ? 21116 : n;
+                      this.sheetRustdeskDirectPort = isNaN(n) ? RUSTDESK_PEER_TCP_PORT : n;
                     }, !this.isEditingProHost())
                 }.width('30%').margin({ left: 12 })
               }.width('100%').margin({ bottom: 8 })
@@ -6444,7 +6456,7 @@ struct HostListPage {
       .opacity(this.editingHostId === '' || this.proto === protoVal ? 1.0 : 0.4)
       .onClick(() => {
         if (this.editingHostId !== '') { return; }
-        this.proto = protoVal; this.portVal = defaultPort;
+        this.switchHostProtocol(protoVal, defaultPort);
         if (protoVal === 'rustdesk') { this.sheetPwdMode = 0; }
       })
   }
@@ -6688,12 +6700,12 @@ struct HostListPage {
             .fontWeight(this.sheetKeyMode === 0 ? FontWeight.Medium : FontWeight.Normal)
             .padding({ left: 12, right: 12, top: 6, bottom: 6 }).borderRadius(8)
             .backgroundColor(this.sheetKeyMode === 0 ? this.pal().surface : Color.Transparent)
-            .onClick(() => { this.sheetKeyMode = 0; })
+            .onClick(() => { this.switchSshKeyMode(0); })
           Text('粘贴').fontSize(12).fontColor(this.sheetKeyMode === 1 ? this.accentColor : this.pal().text3)
             .fontWeight(this.sheetKeyMode === 1 ? FontWeight.Medium : FontWeight.Normal)
             .padding({ left: 12, right: 12, top: 6, bottom: 6 }).borderRadius(8)
             .backgroundColor(this.sheetKeyMode === 1 ? this.pal().surface : Color.Transparent)
-            .margin({ left: 8 }).onClick(() => { this.sheetKeyMode = 1; })
+            .margin({ left: 8 }).onClick(() => { this.switchSshKeyMode(1); })
         }.width('100%').margin({ bottom: 10 })
 
         if (this.sheetKeyMode === 0) {
@@ -6709,7 +6721,12 @@ struct HostListPage {
             .fontColor(this.pal().text).placeholderColor(this.pal().text3)
             .fontFamily('monospace').fontSize(12)
             .padding({ left: 12, right: 12, top: 10, bottom: 10 })
-            .onChange((v: string): void => { this.sheetKeyText = v; })
+            .onChange((v: string): void => {
+              this.sheetKeyText = v;
+              this.sheetKeyId = '';
+              this.sheetKeyPath = '';
+              this.sheetKeyPassphrase = '';
+            })
             .margin({ bottom: 8 })
         }
       }
@@ -6739,14 +6756,42 @@ struct HostListPage {
     }.width('100%')
   }
 
+  private switchSshKeyMode(mode: number): void {
+    if (this.sheetKeyMode === mode) { return; }
+    this.sheetKeyMode = mode;
+    this.sheetKeyId = '';
+    this.sheetKeyPassphrase = '';
+    this.sheetKeyPath = '';
+    this.sheetKeyText = '';
+  }
+
   private async pickSshKey(): Promise<void> {
-    try {
-      const opts: photoAccessHelper.PhotoSelectOptions = new photoAccessHelper.PhotoSelectOptions();
-      opts.maxSelectNumber = 1;
-      const pp: photoAccessHelper.PhotoViewPicker = new photoAccessHelper.PhotoViewPicker();
-      const result: photoAccessHelper.PhotoSelectResult = await pp.select(opts);
-      if (result.photoUris.length > 0) { this.sheetKeyPath = result.photoUris[0]; }
-    } catch (err) { promptAction.showToast({ message: '未选择文件', duration: 1500 }); }
+    const result: SshKeyImportResult | null = await this.sshKeyImporter.pickAndInspect();
+    if (result === null) { return; }
+    if (!result.ok || result.key === null) {
+      promptAction.showToast({ message: result.error || '私钥文件不可用', duration: 2500 });
+      return;
+    }
+
+    let key: SshKey = result.key;
+    if (key.fingerprint !== '') {
+      const existing: SshKey | undefined = this.keyVault.getAllSshKeys().find(
+        (item: SshKey): boolean => item.fingerprint === key.fingerprint);
+      if (existing !== undefined) { key = existing; }
+    }
+    if (key.id === result.key.id && !this.keyVault.addSshKey(key)) {
+      promptAction.showToast({ message: '私钥保存到密钥保险库失败', duration: 2500 });
+      return;
+    }
+
+    this.sheetUseKey = true;
+    this.sheetKeyPath = result.fileName;
+    this.sheetKeyText = key.privateKey;
+    this.sheetKeyId = key.id;
+    this.sheetKeyPassphrase = '';
+    this.sheetKeyMode = 0;
+    this.sheetErr = '';
+    promptAction.showToast({ message: '私钥已保存到密钥保险库', duration: 1800 });
   }
 
   @Builder keyVaultContent() {
@@ -6995,15 +7040,37 @@ struct HostListPage {
   }
 
   // ==================== Private ====================
+  private rememberCurrentHostPort(): void {
+    if (this.proto === 'rdp') {
+      this.rdpPortVal = this.portVal;
+    } else if (this.proto === 'ssh') {
+      this.sshPortVal = this.portVal;
+    }
+  }
+
+  private switchHostProtocol(protocol: string, defaultPort: number): void {
+    this.rememberCurrentHostPort();
+    this.proto = protocol;
+    if (protocol === 'rdp') {
+      this.portVal = this.rdpPortVal > 0 ? this.rdpPortVal : defaultPort;
+    } else if (protocol === 'ssh') {
+      this.portVal = this.sshPortVal > 0 ? this.sshPortVal : defaultPort;
+    } else {
+      // RustDesk 的主机端点由中继/直连配置决定，通用端口只作为表单过渡值。
+      this.portVal = defaultPort;
+    }
+  }
+
   private resetForm(): void {
     this.editingHostId = '';
     this.label = ''; this.proto = 'rdp'; this.hostAddr = ''; this.portVal = 3389;
+    this.rdpPortVal = 3389; this.sshPortVal = 22;
     this.username = ''; this.sheetPwd = ''; this.chn = ''; this.sheetErr = '';
     this.sheetPwdMode = 0;
     this.sheetRustdeskAuthMode = 'password';
     this.sheetRustdeskDirectEnabled = false;
     this.sheetRustdeskDirectHost = '';
-    this.sheetRustdeskDirectPort = 21116;
+    this.sheetRustdeskDirectPort = RUSTDESK_PEER_TCP_PORT;
     this.selectedRelayId = ''; this.selectedAccountId = '';
     this.selectedRdpCredentialId = '';
     this.sheetUseKey = false; this.sheetKeyPath = ''; this.sheetKeyText = '';
@@ -7034,13 +7101,14 @@ struct HostListPage {
       h.port = endpoint.port;
       h.username = '';  // RustDesk 不使用用户名
       h.customHostname = this.chn;  // 远程设备ID
-      h.rustdeskRelayId = this.selectedRelayId;
-      h.rustdeskAccountId = this.selectedAccountId;
+      h.rustdeskRelayId = this.sheetRustdeskDirectEnabled ? '' : this.selectedRelayId;
+      h.rustdeskAccountId = this.sheetRustdeskDirectEnabled ? '' : this.selectedAccountId;
       h.rustdeskPasswordMode = this.sheetPwdMode;
-      h.rustdeskAuthMode = this.sheetRustdeskAuthMode === 'request_approval' ? 'request_approval' : 'password';
+      h.rustdeskAuthMode = rustDeskAuthModeForConnection(
+        this.sheetRustdeskDirectEnabled, this.sheetRustdeskAuthMode);
       h.rustdeskDirectEnabled = this.sheetRustdeskDirectEnabled;
       h.rustdeskDirectHost = this.sheetRustdeskDirectHost;
-      h.rustdeskDirectPort = this.sheetRustdeskDirectPort > 0 ? this.sheetRustdeskDirectPort : 21116;
+      h.rustdeskDirectPort = this.sheetRustdeskDirectPort > 0 ? this.sheetRustdeskDirectPort : RUSTDESK_PEER_TCP_PORT;
       h.rdpCredentialId = '';
       // Server Pro 管理主机的连接身份由地址簿控制；本地编辑只允许修改显示/凭据等字段。
       if (existingHost && existingHost.rustdeskProManaged && existingHost.sourceType === 'rustdesk_pro') {
@@ -7062,7 +7130,9 @@ struct HostListPage {
         h.rustdeskProSyncError = existingHost.rustdeskProSyncError;
       }
     } else {
-      h.host = this.hostAddr; h.port = this.portVal;
+      h.host = this.hostAddr;
+      h.port = this.proto === 'rdp' ? this.rdpPortVal : this.sshPortVal;
+      this.portVal = h.port;
       h.customHostname = this.chn;
       if (this.proto === 'rdp' && this.selectedRdpCredentialId !== '') {
         h.rdpCredentialId = this.selectedRdpCredentialId;

@@ -8,7 +8,7 @@ import { RemoteHost } from '../model/RemoteHost';
 import { ExtensionLoader } from '../services/ExtensionLoader';
 import { KeyVaultService } from '../services/KeyVaultService';
 import { SshPreflightService } from '../services/SshPreflightService';
-import { CloudStore } from '../services/CloudStore';
+import { HostSyncService } from '../services/HostSyncService';
 import { SshHostKeyInfo } from '../types/rdpnapi';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 
@@ -38,14 +38,14 @@ export class SshPreflightController {
   private onReadyCallback: (() => void) | null = null;
   private onCancelCallback: (() => void) | null = null;
   private loader: ExtensionLoader;
-  private srv: CloudStore;
+  private srv: HostSyncService;
 
   constructor(host: RemoteHost, onReady: () => void, onCancel: () => void) {
     this.host = host;
     this.onReadyCallback = onReady;
     this.onCancelCallback = onCancel;
     this.loader = ExtensionLoader.getInstance();
-    this.srv = CloudStore.getInstance();
+    this.srv = HostSyncService.getInstance();
   }
 
   start(): void {

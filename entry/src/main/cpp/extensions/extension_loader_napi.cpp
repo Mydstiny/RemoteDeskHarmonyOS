@@ -683,13 +683,21 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
     getString("rdAccountId", cfg.rdAccountId);
     getString("rdServerKey", cfg.rdServerKey);
 
-    if (cfg.port == 0) cfg.port = 3389; // 默认端口
+    if (cfg.rdDirectPort <= 0) cfg.rdDirectPort = 21118;
+    if (cfg.port == 0) {
+        // RustDesk 的通用端口字段在直连模式代表 peer TCP 端口；
+        // 非直连模式才代表 ID/rendezvous 端口，不能落回 RDP 3389。
+        if (protocolName == "rustdesk") {
+            cfg.port = cfg.rdDirectIp ? cfg.rdDirectPort : 21116;
+        } else {
+            cfg.port = 3389;
+        }
+    }
     if (cfg.width == 0) cfg.width = 1920;
     if (cfg.height == 0) cfg.height = 1080;
     if (cfg.gatewayPort == 0) cfg.gatewayPort = 443;
     if (cfg.colorDepth == 0) cfg.colorDepth = 32;
     if (cfg.rdImageQuality < 0 || cfg.rdImageQuality > 2) cfg.rdImageQuality = 1;
-    if (cfg.rdDirectPort <= 0) cfg.rdDirectPort = 21118;
     if (cfg.rdPasswordMode != 1) cfg.rdPasswordMode = 0;
     if (cfg.rdAuthMode != 1) cfg.rdAuthMode = 0;
     if (cfg.rdPasswordLength != 8 && cfg.rdPasswordLength != 10) cfg.rdPasswordLength = 6;

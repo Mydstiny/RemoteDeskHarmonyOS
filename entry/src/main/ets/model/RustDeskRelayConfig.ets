@@ -25,6 +25,7 @@ export interface RustDeskRelayJSON {
   accounts: RustDeskAccountJSON[]
   syncVersion: number
   createdAt: number
+  updatedAt: number
 }
 
 export class RustDeskRelayConfig {
@@ -45,6 +46,7 @@ export class RustDeskRelayConfig {
   accounts: RustDeskAccount[] = [];  // 该中继下属的 API Admin 账户列表 (JSON序列化)
   syncVersion: number = 0;
   createdAt: number = Date.now();
+  updatedAt: number = 0;             // 本地/云端配置最后写入时间
 
   /** 外部显示名: 直接用 ID 服务器域名或 IP */
   displayName(): string {
@@ -75,7 +77,8 @@ export class RustDeskRelayConfig {
       apiLoginStatus: this.apiLoginStatus,
       accounts: this.accounts.map((account: RustDeskAccount): RustDeskAccountJSON => account.toJSON()),
       syncVersion: this.syncVersion,
-      createdAt: this.createdAt
+      createdAt: this.createdAt,
+      updatedAt: this.updatedAt
     };
   }
 
@@ -100,6 +103,7 @@ export class RustDeskRelayConfig {
     }
     if (json.syncVersion !== undefined) { cfg.syncVersion = json.syncVersion; }
     if (json.createdAt) { cfg.createdAt = json.createdAt; }
+    if (json.updatedAt !== undefined) { cfg.updatedAt = json.updatedAt; }
     return cfg;
   }
 

@@ -650,10 +650,21 @@ pub extern "C" fn rustdesk_connect(
     let host = ffi_string(config.host);
     let port = if config.port > 0 {
         config.port as u16
+    } else if config.direct_connection {
+        // Direct mode targets the peer listener, not the ID/rendezvous server.
+        21118u16
     } else {
         21116u16
     };
-    let peer_id = ffi_string(config.username);
+    // Direct IP access follows the RustDesk client path: the connected peer
+    // address is the login username. The stored remote ID is still retained
+    // by the host model for display/discovery, but must not be sent as the
+    // direct login identity.
+    let peer_id = if config.direct_connection {
+        host.clone()
+    } else {
+        ffi_string(config.username)
+    };
     let server_key = ffi_string(config.key);
     let password = ffi_string(config.password);
     let request_approval = config.auth_mode == 1 && !config.direct_connection;
@@ -699,6 +710,7 @@ pub extern "C" fn rustdesk_connect(
         c.connect_direct(
             &host,
             port,
+            &peer_id,
             &password,
             preferred_codec,
             image_quality,

@@ -8,8 +8,22 @@ export interface RustDeskHostEndpoint {
   port: number;
 }
 
-export function normalizeRustDeskPort(port: number): number {
-  return port > 0 && port <= 65535 ? port : 21116;
+export const RUSTDESK_ID_SERVER_PORT: number = 21116;
+export const RUSTDESK_PEER_TCP_PORT: number = 21118;
+
+/**
+ * 直连没有 ID/中继批准通道，只能使用被控端设备密码。
+ * 统一在表单保存和连接参数生成处调用，兼容旧版本已保存的组合。
+ */
+export function rustDeskAuthModeForConnection(directEnabled: boolean, requestedMode: string): string {
+  if (directEnabled) {
+    return 'password';
+  }
+  return requestedMode === 'request_approval' ? 'request_approval' : 'password';
+}
+
+export function normalizeRustDeskPort(port: number, fallback: number = RUSTDESK_ID_SERVER_PORT): number {
+  return port > 0 && port <= 65535 ? port : fallback;
 }
 
 export function resolveRustDeskHostEndpoint(relay: RustDeskRelayConfig | null, fallbackHost: string,
@@ -17,7 +31,7 @@ export function resolveRustDeskHostEndpoint(relay: RustDeskRelayConfig | null, f
   if (directEnabled) {
     return {
       host: directHost.trim(),
-      port: normalizeRustDeskPort(directPort)
+      port: normalizeRustDeskPort(directPort, RUSTDESK_PEER_TCP_PORT)
     };
   }
   if (relay !== null) {
@@ -28,6 +42,6 @@ export function resolveRustDeskHostEndpoint(relay: RustDeskRelayConfig | null, f
   }
   return {
     host: fallbackHost.trim(),
-    port: 21116
+    port: RUSTDESK_ID_SERVER_PORT
   };
 }

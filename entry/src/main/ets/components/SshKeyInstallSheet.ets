@@ -37,6 +37,7 @@ export struct SshKeyInstallSheet {
   private loader: ExtensionLoader = ExtensionLoader.getInstance();
   private hostSync: HostSyncService = HostSyncService.getInstance();
   private kvs: KeyVaultService = KeyVaultService.getInstance();
+  private hostDataUnsubscribe: (() => void) | null = null;
 
   private pal(): Palette {
     return this.theme === 'light' ? buildLight(this.accentColor) : buildDark(this.accentColor);
@@ -45,9 +46,32 @@ export struct SshKeyInstallSheet {
   private font(): string { return AppTheme.fontFamily; }
 
   aboutToAppear(): void {
-    // 获取所有 SSH 主机
+    this.loadHosts();
+    if (!this.hostDataUnsubscribe) {
+      this.hostDataUnsubscribe = this.hostSync.onDataChange((): void => {
+        this.loadHosts();
+      });
+    }
+  }
+
+  aboutToDisappear(): void {
+    if (this.hostDataUnsubscribe) {
+      this.hostDataUnsubscribe();
+      this.hostDataUnsubscribe = null;
+    }
+  }
+
+  private loadHosts(): void {
+    const selectedId: string = this.selectedHost === null ? '' : this.selectedHost.id;
     const allHosts: RemoteHost[] = this.hostSync.getAllHosts();
     this.hosts = allHosts.filter((h: RemoteHost) => h.protocol === 'ssh');
+    if (selectedId !== '') {
+      const refreshed: RemoteHost | undefined = this.hosts.find((h: RemoteHost): boolean => h.id === selectedId);
+      this.selectedHost = refreshed === undefined ? null : refreshed;
+      if (refreshed === undefined && this.step === 0 && !this.installing) {
+        promptAction.showToast({ message: '所选 SSH 主机已被删除，请重新选择', duration: 2000 });
+      }
+    }
   }
 
   // ====== 安装流程 ======

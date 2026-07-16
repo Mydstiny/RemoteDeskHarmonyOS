@@ -72,6 +72,7 @@ export struct RustDeskRelayPage {
   private srv: HostSyncService = HostSyncService.getInstance();
   private proSync: RustDeskProSyncService = RustDeskProSyncService.getInstance();
   private dataUnsubscribe: (() => void) | null = null;
+  private proDataUnsubscribe: (() => void) | null = null;
   private pageActive: boolean = false;
 
   private pal(): Palette {
@@ -100,12 +101,21 @@ export struct RustDeskRelayPage {
       this.dataUnsubscribe();
       this.dataUnsubscribe = null;
     }
+    if (this.proDataUnsubscribe) {
+      this.proDataUnsubscribe();
+      this.proDataUnsubscribe = null;
+    }
   }
   private registerDataRefreshListener(): void {
     if (!this.dataUnsubscribe) {
       this.dataUnsubscribe = this.srv.onDataChange((): void => {
         this.load();
         this.loadProAccounts();
+      });
+    }
+    if (!this.proDataUnsubscribe) {
+      this.proDataUnsubscribe = this.proSync.onDataChange((): void => {
+        if (this.pageActive) { this.loadProAccounts(); }
       });
     }
   }

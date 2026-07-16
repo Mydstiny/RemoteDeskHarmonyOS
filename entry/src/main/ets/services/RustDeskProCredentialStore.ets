@@ -11,6 +11,7 @@ export class RustDeskProCredentialStore {
   private context: common.Context | null = null;
   private accounts: RustDeskProAccountState[] = [];
   private loaded: boolean = false;
+  private dataChangeListeners: Array<() => void> = [];
 
   static getInstance(): RustDeskProCredentialStore {
     if (!RustDeskProCredentialStore.instance) {
@@ -22,6 +23,23 @@ export class RustDeskProCredentialStore {
   init(context: common.Context): void {
     this.context = context;
     if (!this.loaded) { this.load(); }
+  }
+
+  onDataChange(callback: () => void): () => void {
+    if (this.dataChangeListeners.indexOf(callback) < 0) {
+      this.dataChangeListeners.push(callback);
+    }
+    return (): void => {
+      const index = this.dataChangeListeners.indexOf(callback);
+      if (index >= 0) { this.dataChangeListeners.splice(index, 1); }
+    };
+  }
+
+  private emitDataChange(): void {
+    const listeners: Array<() => void> = this.dataChangeListeners.slice();
+    for (let i = 0; i < listeners.length; i++) {
+      try { listeners[i](); } catch (_err) { /* 一个页面监听失败不能阻断其他监听 */ }
+    }
   }
 
   private load(): void {
@@ -117,10 +135,12 @@ export class RustDeskProCredentialStore {
     if (index >= 0) { this.accounts[index] = this.clone(account); }
     else { this.accounts.push(this.clone(account)); }
     this.persist();
+    this.emitDataChange();
   }
 
   clear(id: string): void {
     this.accounts = this.accounts.filter((account: RustDeskProAccountState): boolean => account.id !== id);
     this.persist();
+    this.emitDataChange();
   }
 }

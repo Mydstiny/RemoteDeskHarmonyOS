@@ -99,6 +99,11 @@ import {
 } from '../services/RemoteImeCommandQueue';
 import { hashForLog, maskHost, maskUser, safeError } from '../utils/SafeLogger';
 import { RdpRenderStats, SessionConfig, SessionTransferStatus } from '../types/rdpnapi';
+import {
+  normalizeRustDeskPort,
+  RUSTDESK_PEER_TCP_PORT,
+  rustDeskAuthModeForConnection
+} from '../services/RustDeskHostConfigPolicy';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { fileIo, fileUri, picker } from '@kit.CoreFileKit';
 import { preferences, unifiedDataChannel, uniformDataStruct, uniformTypeDescriptor } from '@kit.ArkData';
@@ -205,6 +210,7 @@ interface LocalPoint {
 
 type ModifierLatch = 'off' | 'once' | 'locked';
 type RustDeskAuthChoice = 'password' | 'request_approval';
+type RustDeskAuthDismissReason = 'none' | 'confirm' | 'cancel';
 
 class RemoteDesktopXComponentController extends XComponentController {
   private listener: RemoteDesktopSurfaceListener | null = null;
@@ -303,6 +309,7 @@ struct RemoteDesktop {
   private orientationApplied: boolean = false;
   private connectAttemptId: number = 0;
   private pendingHost: RemoteHost | null = null;
+  private rustDeskAuthDismissReason: RustDeskAuthDismissReason = 'none';
   private rustDeskSessionAuthChoice: RustDeskAuthChoice = 'password';
   private rustDeskSessionPassword: string = '';
   private rustDeskSessionRememberPassword: boolean = false;
@@ -556,10 +563,13 @@ struct RemoteDesktop {
     this.rustDeskAuthPasswordShow = false;
     this.rustDeskAuthRememberPassword = true;
     this.rustDeskAuthError = message;
+    this.rustDeskAuthDismissReason = 'none';
     this.showRustDeskAuthSheet = true;
+    setTimeout((): void => { this.focusRustDeskAuthPassword(); }, 120);
   }
 
   private cancelRustDeskAuthChoice(): void {
+    this.rustDeskAuthDismissReason = 'cancel';
     this.showRustDeskAuthSheet = false;
     this.rustDeskAuthError = '';
     this.connectStarted = false;
@@ -573,6 +583,7 @@ struct RemoteDesktop {
     const host: RemoteHost | null = this.pendingHost;
     if (host === null || host.protocol !== 'rustdesk' || host.sourceType !== 'rustdesk_pro' ||
       !host.rustdeskProManaged) {
+      this.rustDeskAuthDismissReason = 'confirm';
       this.showRustDeskAuthSheet = false;
       this.tryStartConnect();
       return;
@@ -600,6 +611,7 @@ struct RemoteDesktop {
     }
     this.rustDeskSessionAuthChoice = this.rustDeskAuthChoice;
     this.pendingHost = selected;
+    this.rustDeskAuthDismissReason = 'confirm';
     this.showRustDeskAuthSheet = false;
     this.rustDeskAuthError = '';
     this.connectionError = '';
@@ -607,6 +619,35 @@ struct RemoteDesktop {
     this.connectStarted = false;
     this.connecting = true;
     this.tryStartConnect();
+  }
+
+  private focusRustDeskAuthPassword(): void {
+    if (!this.showRustDeskAuthSheet || this.rustDeskAuthChoice !== 'password') {
+      return;
+    }
+    try {
+      this.getUIContext().getFocusController().requestFocus('RustDeskAuthPassword');
+    } catch (err) {
+      hilog.warn(RD_DOMAIN, RD_TAG, 'RustDesk auth password focus failed: ' + JSON.stringify(err));
+    }
+  }
+
+  private handleRustDeskAuthSheetDismiss(action: DismissSheetAction): void {
+    if (this.rustDeskAuthDismissReason === 'confirm' || this.rustDeskAuthDismissReason === 'cancel') {
+      action.dismiss();
+      return;
+    }
+    this.cancelRustDeskAuthChoice();
+    action.dismiss();
+  }
+
+  private handleRustDeskAuthSheetDisappear(): void {
+    const reason: RustDeskAuthDismissReason = this.rustDeskAuthDismissReason;
+    this.rustDeskAuthDismissReason = 'none';
+    // 系统下滑/返回键关闭时必须视为取消，不能让连接绕过授权选择。
+    if (reason === 'none') {
+      this.cancelRustDeskAuthChoice();
+    }
   }
 
   private persistRustDeskSessionAuth(host: RemoteHost): void {
@@ -2506,6 +2547,7 @@ struct RemoteDesktop {
           .onClick(() => {
             this.rustDeskAuthChoice = 'password';
             this.rustDeskAuthError = '';
+            setTimeout((): void => { this.focusRustDeskAuthPassword(); }, 30);
           })
         Button('请求远端同意').fontSize(13).height(40).layoutWeight(1)
           .margin({ left: 10 })
@@ -2524,11 +2566,19 @@ struct RemoteDesktop {
           .margin({ bottom: 5 })
         Row() {
           TextInput({ placeholder: '输入设备密码', text: this.rustDeskAuthPasswordInput })
+            .id('RustDeskAuthPassword')
             .type(this.rustDeskAuthPasswordShow ? InputType.Normal : InputType.Password)
             .height(42).backgroundColor(this.pal().surface).borderRadius(9)
             .fontColor(this.pal().text).placeholderColor(this.pal().text3)
             .layoutWeight(1).padding({ left: 12, right: 12 })
+            .focusOnTouch(true)
+            .enableKeyboardOnFocus(true)
+            .defaultFocus(this.rustDeskAuthChoice === 'password')
             .onChange((v: string) => { this.rustDeskAuthPasswordInput = v; })
+            .onSubmit((_enterKey: EnterKeyType, event: SubmitEvent): void => {
+              event.keepEditableState();
+              this.confirmRustDeskAuthChoice();
+            })
           SymbolGlyph(this.rustDeskAuthPasswordShow ? $r('sys.symbol.eye_slash') : $r('sys.symbol.eye'))
             .fontSize(18).fontColor([this.pal().text3]).margin({ left: 8 })
             .onClick(() => { this.rustDeskAuthPasswordShow = !this.rustDeskAuthPasswordShow; })
@@ -2562,27 +2612,11 @@ struct RemoteDesktop {
           .onClick(() => { this.confirmRustDeskAuthChoice(); })
       }.width('100%')
     }
-    .width('92%').constraintSize({ maxWidth: 520 })
+    .width('100%').constraintSize({ maxWidth: 520 })
     .padding({ left: 22, right: 22, top: 20, bottom: 22 })
     .backgroundColor(this.pal().bg).borderRadius(20)
     .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
     .shadow({ radius: 24, color: 'rgba(0,0,0,0.24)', offsetY: 8 })
-  }
-
-  @Builder rustDeskAuthOverlay() {
-    Column() {
-      if (this.showRustDeskAuthSheet) {
-        Column() {
-          this.rustDeskAuthChoiceBuilder()
-        }
-        .width('100%').height('100%')
-        .justifyContent(FlexAlign.Center)
-        .backgroundColor('rgba(0,0,0,0.58)')
-      }
-    }
-    .width('100%').height('100%')
-    .position({ x: 0, y: 0 })
-    .hitTestBehavior(this.showRustDeskAuthSheet ? HitTestMode.Default : HitTestMode.None)
   }
 
   // XComponent 就绪后初始化渲染管线并连接
@@ -2680,10 +2714,18 @@ struct RemoteDesktop {
           .find((r: RustDeskRelayConfig): boolean => r.id === host.rustdeskRelayId);
         if (relay) { rdServerKey = relay.key; }
       }
+      const rustDeskDirect: boolean = host.protocol === 'rustdesk' && host.rustdeskDirectEnabled;
+      const directHost: string = host.rustdeskDirectHost.trim();
+      if (rustDeskDirect && directHost.length === 0) {
+        throw new Error('RustDesk 直连地址为空，请在主机编辑中填写局域网地址 [E-RUSTDESK-DIRECT-HOST]');
+      }
+      const sessionHost: string = rustDeskDirect ? directHost : host.host;
+      const sessionPort: number = rustDeskDirect ?
+        normalizeRustDeskPort(host.rustdeskDirectPort, RUSTDESK_PEER_TCP_PORT) : host.port;
       const cfg: SessionConfig = {
         protocol: host.protocol,
-        host: host.host,
-        port: host.port,
+        host: sessionHost,
+        port: sessionPort,
         username: credentials.username,
         password: host.password,
         width: w,
@@ -2702,8 +2744,8 @@ struct RemoteDesktop {
         privateKeyPassphrase: keyPassphrase,
         // RustDesk 设置 — 从 AppStorage 全局偏好 + 主机绑定中继/账户
         rdImageQuality: AppStorage.get<number>('rustdeskImageQuality') ?? 1,
-        rdDirectIp: host.rustdeskDirectEnabled ?? false,
-        rdDirectPort: host.rustdeskDirectPort ?? 21118,
+        rdDirectIp: rustDeskDirect,
+        rdDirectPort: sessionPort,
         rdLanDiscovery: AppStorage.get<boolean>('rustdeskLanDiscovery') ?? true,
         rdPrivacyMode: AppStorage.get<boolean>('rustdeskPrivacyMode') ?? false,
         rdAudioEnabled: host.protocol === 'rdp' ?
@@ -2718,7 +2760,8 @@ struct RemoteDesktop {
         rdpAllowUntrustedRoot: host.rdpCertificateAllowUntrustedRoot,
         rdpAllowHostMismatch: host.rdpCertificateAllowHostMismatch,
         rdPasswordMode: host.rustdeskPasswordMode,
-        rdAuthMode: host.rustdeskAuthMode === 'request_approval' ? 1 : 0,
+        rdAuthMode: rustDeskAuthModeForConnection(rustDeskDirect, host.rustdeskAuthMode) ===
+          'request_approval' ? 1 : 0,
         rdRelayId: host.rustdeskRelayId,
         rdAccountId: host.rustdeskAccountId,
         rdServerKey: rdServerKey
@@ -2758,7 +2801,8 @@ struct RemoteDesktop {
       this.sessionId = sid;
       this.inputForwardReady = false;
       const rustDeskApprovalWait: boolean = host.protocol === 'rustdesk' &&
-        host.rustdeskAuthMode === 'request_approval';
+        rustDeskAuthModeForConnection(host.rustdeskDirectEnabled, host.rustdeskAuthMode) ===
+        'request_approval';
       const nativeReady: boolean = await this.waitForNativeConnected(
         sid, host.protocol === 'rustdesk' ? (rustDeskApprovalWait ? 100000 : 25000) : 45000,
         attemptId, host.protocol);
@@ -2789,11 +2833,9 @@ struct RemoteDesktop {
       await this.setPreferredOrientation(window.Orientation.LANDSCAPE, 'LANDSCAPE');
       await this.setRemoteKeepScreenOn(true);
       await this.setRemoteNavigationHidden(true, 'connect-success');
-      if (host.protocol === 'rdp') {
-        hilog.info(RD_DOMAIN, RD_TAG, 'RDP active session: skip lastConnected cloud push for stable video diagnosis');
-      } else {
-        await this.srv.updateLastConnected(host.id);
-      }
+      // 所有协议统一记录成功连接时间；健康字段由实际探测结果另行更新。
+      // RDP 之前为了诊断临时跳过该写入，导致卡片和详情长期显示旧状态。
+      await this.srv.updateLastConnected(host.id);
       this.startClipboardBridgeBestEffort(sid, attemptId,
         clipboardSyncEnabledForProtocol(host.protocol,
           AppStorage.get<boolean>('rdpClipboardEnabled') ?? true, this.rustdeskClipboardEnabled));
@@ -2817,6 +2859,9 @@ struct RemoteDesktop {
       this.connectStarted = false;
       this.connecting = false;
       const errObj: Error = err as Error;
+      // 连接失败也要立即刷新本机健康状态；云写入由服务按节流策略处理，
+      // 页面监听器仍会立刻收到 UNKNOWN，避免缩略卡片继续显示上次成功结果。
+      await this.srv.updateConnectionHealth(host.id, -1, false);
       this.connectionError = '无法建立远程连接';
       this.connectionErrorDetail = errObj.message ? errObj.message : '未知连接错误 [E-CONNECT-UNKNOWN]';
       if (this.isProRustDeskHost(host) && this.shouldOfferRustDeskAuthRetry(this.connectionErrorDetail)) {
@@ -5542,6 +5587,22 @@ struct RemoteDesktop {
           onDisappear: (): void => { this.handleRdpSessionErrorSheetDisappear(); }
         })
 
+      // Pro RustDesk 鉴权必须使用纵向底部 bindSheet；不能在横屏远程画布上用全屏 overlay。
+      Column().width('100%').height('100%').hitTestBehavior(HitTestMode.None)
+        .bindSheet($$this.showRustDeskAuthSheet, this.rustDeskAuthChoiceBuilder(), {
+          height: SheetSize.FIT_CONTENT,
+          preferType: SheetType.BOTTOM,
+          dragBar: true,
+          backgroundColor: Color.Transparent,
+          blurStyle: BlurStyle.NONE,
+          showClose: false,
+          maskColor: 'rgba(0,0,0,0.58)',
+          onWillDismiss: (action: DismissSheetAction): void => {
+            this.handleRustDeskAuthSheetDismiss(action);
+          },
+          onDisappear: (): void => { this.handleRustDeskAuthSheetDisappear(); }
+        })
+
 
       // 持久影子 TextArea：保留系统输入法的空格滑动/光标拖拽状态，内容只在本地使用。
       TextArea({ text: this.keyboardText, controller: this.keyboardController })
@@ -5617,7 +5678,6 @@ struct RemoteDesktop {
     .width('100%').height('100%')
     .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
     .overlay(this.passphraseOverlay(), { align: Alignment.Top })
-    .overlay(this.rustDeskAuthOverlay(), { align: Alignment.Top })
     .bindSheet($$this.showControlPanel, this.controlPanelBuilder(), {
       preferType: SheetType.CENTER,
       backgroundColor: this.pal().bg,

@@ -15,6 +15,7 @@ const MAX_DECRYPT_RESYNC_FRAMES: usize = 8;
 /// 加密 peer 通道。
 pub struct CryptoChannel {
     stream: TcpStream,
+    encrypted: bool,
     tx_key: [u8; 32],
     rx_key: [u8; 32],
     tx_nonce: u64,
@@ -26,6 +27,7 @@ impl CryptoChannel {
     pub fn new(stream: TcpStream, tx_key: &[u8; 32], rx_key: &[u8; 32]) -> Self {
         Self {
             stream,
+            encrypted: true,
             tx_key: *tx_key,
             rx_key: *rx_key,
             tx_nonce: 0,
@@ -34,8 +36,28 @@ impl CryptoChannel {
         }
     }
 
+    /// Create the plain peer channel used by RustDesk's explicit LAN/direct
+    /// listener.  A direct listener is not the rendezvous secure channel: it
+    /// sends the login Hash immediately and then exchanges framed protobuf
+    /// messages without the SignedId/PublicKey negotiation.
+    pub fn new_plain(stream: TcpStream) -> Self {
+        Self {
+            stream,
+            encrypted: false,
+            tx_key: [0u8; 32],
+            rx_key: [0u8; 32],
+            tx_nonce: 0,
+            rx_nonce: 0,
+            rx_buffer: Vec::new(),
+        }
+    }
+
     /// 发送加密帧。nonce 仅在 TCP 写入成功后递增。
     pub fn send(&mut self, plaintext: &[u8]) -> io::Result<()> {
+        if !self.encrypted {
+            wire::write_frame(&mut self.stream, plaintext)?;
+            return Ok(());
+        }
         let next_nonce = self.tx_nonce.wrapping_add(1);
         let mut nonce = [0u8; 24];
         nonce[..8].copy_from_slice(&next_nonce.to_le_bytes());
@@ -53,6 +75,9 @@ impl CryptoChannel {
     /// RustDesk upstream 先递增 encrypted sequence 再使用，所以正常用 rx_nonce + 1 解密。
     /// streaming 阶段有短 read timeout，必须保留半包，否则超时会造成 BytesCodec 边界错位。
     pub fn recv(&mut self) -> io::Result<Vec<u8>> {
+        if !self.encrypted {
+            return self.read_plain_frame();
+        }
         let mut dropped_bad_frames = 0usize;
         let mut first_failure = None;
 
@@ -102,6 +127,27 @@ impl CryptoChannel {
                 "[RustDesk-FFI] crypto: dropping undecryptable frame #{} {}",
                 dropped_bad_frames, detail
             );
+        }
+    }
+
+    fn read_plain_frame(&mut self) -> io::Result<Vec<u8>> {
+        loop {
+            if let Some(frame) = try_take_frame(&mut self.rx_buffer)? {
+                return Ok(frame);
+            }
+
+            let mut chunk = [0u8; 8192];
+            match self.stream.read(&mut chunk) {
+                Ok(0) => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::UnexpectedEof,
+                        "connection closed while reading plain frame",
+                    ));
+                }
+                Ok(n) => self.rx_buffer.extend_from_slice(&chunk[..n]),
+                Err(err) if err.kind() == io::ErrorKind::Interrupted => continue,
+                Err(err) => return Err(err),
+            }
         }
     }
 
@@ -313,6 +359,24 @@ mod tests {
             Err(err) => panic!("unexpected recv error: {err}"),
         }
 
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn plain_channel_round_trips_unencrypted_peer_frame() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            wire::write_frame(&mut stream, b"hash-challenge").unwrap();
+            let login = wire::read_frame(&mut stream).unwrap();
+            assert_eq!(login, b"login-request");
+        });
+
+        let stream = TcpStream::connect(addr).unwrap();
+        let mut channel = CryptoChannel::new_plain(stream);
+        assert_eq!(channel.recv().unwrap(), b"hash-challenge");
+        channel.send(b"login-request").unwrap();
         handle.join().unwrap();
     }
 

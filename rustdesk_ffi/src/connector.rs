@@ -229,15 +229,21 @@ impl RustDeskConnector {
     /// 直连模式: TCP 直连 peer (跳过 rendezvous)
     ///
     /// peer_host: 对端 IP 地址
-    /// peer_port: 对端端口 (默认 21116)
+    /// peer_port: 对端 peer TCP 端口 (默认 21118)
+    /// peer_id: 配置中的远程 ID（直连登录时由 peer_host 作为 LoginRequest.username）
     /// password: 远程主机密码
     ///
-    /// 直连协议 (无 rendezvous 签名):
-    ///   TCP → 读对端 PublicKey → 生成 session key → 发我方 PublicKey → CryptoChannel → Login
+    /// 直连协议 (RustDesk 官方 LAN/direct listener):
+    ///   TCP → 明文 Hash challenge → 明文 LoginRequest/LoginResponse → streaming
+    ///
+    /// 直连监听器不会走 rendezvous 的 SignedId/PublicKey 加密协商。之前把首包
+    /// 当成 PublicKey 会在真实 RustDesk 被控端收到 Hash 后立即失败，因此这里
+    /// 复用同一个帧通道和登录/流处理，只关闭 peer 加密层。
     pub fn connect_direct(
         &mut self,
         peer_host: &str,
         peer_port: u16,
+        peer_id: &str,
         password: &str,
         preferred_codec: i32,
         image_quality: i32,
@@ -260,70 +266,21 @@ impl RustDeskConnector {
         stream.set_read_timeout(Some(Duration::from_secs(30)))?;
         stream.set_write_timeout(Some(Duration::from_secs(10)))?;
 
-        // === Phase 2: 读对端 PublicKey (直连模式下对端发送原始公钥，非 SignedId) ===
-        self.state = ConnState::KeyExchanging;
-        let payload = wire::read_frame(&mut stream)?;
-        let msg: Message = protobuf::parse_from_bytes(&payload)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-
-        let their_pk_bytes = match msg.union {
-            Some(Message_oneof_union::public_key(ref pk)) => {
-                let asym = pk.get_asymmetric_value();
-                if asym.len() != 32 {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        format!(
-                            "direct peer public key length invalid: {} (expected 32)",
-                            asym.len()
-                        ),
-                    ));
-                }
-                let mut pk = [0u8; 32];
-                pk.copy_from_slice(asym);
-                pk
-            }
-            Some(Message_oneof_union::signed_id(_)) => {
-                // 对端发送了 SignedId — 这意味着它在等 rendezvous 流程
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "direct connection received SignedId (peer may not be in direct-accept mode)",
-                ));
-            }
-            other => {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!("expected PublicKey from direct peer, got: {:?}", other),
-                ));
-            }
-        };
-
-        // === Phase 3: 生成 session key，加密后用我方 PublicKey 回复 ===
-        let (our_pk, encrypted_key, session_key) =
-            crypto::create_symmetric_key_msg(&their_pk_bytes).ok_or_else(|| {
-                io::Error::new(io::ErrorKind::Other, "failed to create direct session key")
-            })?;
-
-        let mut pub_key_msg = PublicKey::new();
-        pub_key_msg.set_asymmetric_value(our_pk.to_vec());
-        pub_key_msg.set_symmetric_value(encrypted_key);
-        let mut out = Message::new();
-        out.union = Some(Message_oneof_union::public_key(pub_key_msg));
-        let bytes = out
-            .write_to_bytes()
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
-        wire::write_frame(&mut stream, &bytes)?;
-
-        self.peer_pk = Some(their_pk_bytes);
-
-        // === Phase 4: CryptoChannel + Login ===
-        let crypto = CryptoChannel::new(stream, &session_key, &session_key);
+        // === Phase 2: plain peer channel + login ===
+        // The first frame is the Hash challenge sent by Connection::on_open;
+        // Session::login_encrypted only describes the existing API name and
+        // works with either encrypted or plain CryptoChannel frames.
+        self.state = ConnState::LoggingIn;
+        let crypto = CryptoChannel::new_plain(stream);
         self.crypto_channel = Some(crypto);
 
-        self.state = ConnState::LoggingIn;
         let crypto = self.crypto_channel.as_mut().unwrap();
+        // RustDesk 官方 Direct IP 路径把用户输入的直连地址作为 peer
+        // 标识发送给被控端；把地址簿里的远程 ID 放在这里会被真实
+        // 被控端判定为错误的 direct login username。
         self.session.login_encrypted(
             crypto,
-            "", // peer_id: 直连不需要
+            peer_host,
             password,
             preferred_codec,
             image_quality,
@@ -334,7 +291,7 @@ impl RustDeskConnector {
         )?;
 
         self.state = ConnState::Connected;
-        eprintln!("[RustDesk-FFI] direct connection established");
+        eprintln!("[RustDesk-FFI] direct plain connection established");
         Ok(())
     }
 
@@ -2060,6 +2017,9 @@ mod tests {
         should_refresh_for_video_starvation, ControlKey, KeyEvent_oneof_union, Message_oneof_union,
         RustDeskConnector,
     };
+    use crate::protocol::message_proto::{Hash, LoginResponse, Message};
+    use crate::protocol::wire;
+    use protobuf::Message as ProtoMessage;
     use std::net::TcpListener;
     use std::thread;
 
@@ -2203,13 +2163,55 @@ mod tests {
         });
 
         let error = RustDeskConnector::new()
-            .connect_direct("localhost", port, "", 0, 1, false, false, 30)
+            .connect_direct("localhost", port, "", "", 0, 1, false, false, 30)
             .expect_err("fake peer should fail after TCP connect, not during endpoint parsing");
         assert_ne!(
             error.kind(),
             std::io::ErrorKind::InvalidInput,
             "hostname should be resolved before the direct protocol is read"
         );
+        accept_thread.join().expect("accept thread panicked");
+    }
+
+    #[test]
+    fn direct_login_uses_direct_address_and_plain_hash_challenge() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("listener bind failed");
+        let port = listener
+            .local_addr()
+            .expect("listener address missing")
+            .port();
+        let accept_thread = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("direct connection missing");
+            let mut hash = Hash::new();
+            hash.set_salt("salt".to_string());
+            hash.set_challenge("challenge".to_string());
+            let mut challenge = Message::new();
+            challenge.union = Some(Message_oneof_union::hash(hash));
+            wire::write_frame(&mut stream, &challenge.write_to_bytes().unwrap()).unwrap();
+
+            let login_payload = wire::read_frame(&mut stream).unwrap();
+            let login: Message = protobuf::parse_from_bytes(&login_payload).unwrap();
+            match login.union {
+                Some(Message_oneof_union::login_request(request)) => {
+                    assert_eq!(request.get_username(), "127.0.0.1");
+                    assert_eq!(request.get_my_platform(), "OHOS");
+                }
+                other => panic!("expected plain LoginRequest, got: {:?}", other),
+            }
+
+            let mut response = LoginResponse::new();
+            let mut response_message = Message::new();
+            response_message.union = Some(Message_oneof_union::login_response(response));
+            wire::write_frame(&mut stream, &response_message.write_to_bytes().unwrap()).unwrap();
+            // Login completion sends runtime options and refresh_video as two
+            // additional plain frames before the connector returns.
+            wire::read_frame(&mut stream).unwrap();
+            wire::read_frame(&mut stream).unwrap();
+        });
+
+        RustDeskConnector::new()
+            .connect_direct("127.0.0.1", port, "peer-123", "", 0, 1, false, false, 30)
+            .expect("official direct login should accept a plain Hash challenge");
         accept_thread.join().expect("accept thread panicked");
     }
 }

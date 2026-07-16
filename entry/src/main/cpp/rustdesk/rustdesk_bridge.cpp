@@ -674,7 +674,8 @@ static int rdIpcSendConnectReq(int fd, const ConnectionConfig& cfg) {
     RdIpcConnectReq req;
     memset(&req, 0, sizeof(req));
     strncpy(req.host, cfg.host.c_str(), sizeof(req.host) - 1);
-    req.port = static_cast<uint32_t>(cfg.port > 0 ? cfg.port : RD_DEFAULT_TCP_PORT);
+    req.port = static_cast<uint32_t>(cfg.port > 0 ? cfg.port :
+        (cfg.rdDirectIp ? 21118 : RD_DEFAULT_TCP_PORT));
     strncpy(req.peerId, cfg.customHostname.c_str(), sizeof(req.peerId) - 1);
     strncpy(req.username, cfg.username.c_str(), sizeof(req.username) - 1);
     req.passwordLen = static_cast<uint32_t>(cfg.password.length());
@@ -683,7 +684,7 @@ static int rdIpcSendConnectReq(int fd, const ConnectionConfig& cfg) {
     req.codec = static_cast<uint32_t>(cfg.codec);
     req.imageQuality = static_cast<uint32_t>(cfg.rdImageQuality);
     req.directIp = cfg.rdDirectIp ? 1 : 0;
-    req.directPort = static_cast<uint32_t>(cfg.rdDirectPort > 0 ? cfg.rdDirectPort : RD_DEFAULT_TCP_PORT);
+    req.directPort = static_cast<uint32_t>(cfg.rdDirectPort > 0 ? cfg.rdDirectPort : 21118);
     req.lanDiscovery = cfg.rdLanDiscovery ? 1 : 0;
     req.privacyMode = cfg.rdPrivacyMode ? 1 : 0;
     req.passwordMode = static_cast<uint32_t>(cfg.rdPasswordMode == 1 ? 1 : 0);
@@ -778,9 +779,13 @@ int RustDeskBridge::connect(const ConnectionConfig& cfg) {
         // ---- FFI 模式: 直接调用 librustdesk_ffi.a ----
         OH_LOG_INFO(LOG_APP, "[RustDesk-FFI] Using real core (protobuf protocol)");
         const std::string logHost = SafeLog::MaskHost(cfg.host);
+        const int effectivePort = cfg.port > 0 ? cfg.port :
+            (cfg.rdDirectIp ? 21118 : RD_DEFAULT_TCP_PORT);
         OH_LOG_INFO(LOG_APP, "[RustDesk-FFI] Connecting to %{public}s:%{public}d",
-                    logHost.c_str(), cfg.port > 0 ? cfg.port : RD_DEFAULT_TCP_PORT);
-        const std::string ffiPeerId = cfg.customHostname.empty() ? cfg.username : cfg.customHostname;
+                    logHost.c_str(), effectivePort);
+        const std::string ffiPeerId = cfg.rdDirectIp && !cfg.host.empty()
+            ? cfg.host
+            : (cfg.customHostname.empty() ? cfg.username : cfg.customHostname);
         const std::string logPeer = SafeLog::MaskUser(ffiPeerId);
         const std::string serverKeyId = cfg.rdServerKey.empty() ? "default" : SafeLog::HashForLog(cfg.rdServerKey);
         OH_LOG_INFO(LOG_APP, "[RustDesk-FFI] Request peer=%{public}s keyId=%{public}s key=%{public}s",
@@ -791,7 +796,8 @@ int RustDeskBridge::connect(const ConnectionConfig& cfg) {
         std::thread([impl, cfg, ffiPeerId, logHost, serial]() {
             RustDeskFfiConfig ffiCfg = {};  // 零初始化 — 消除未初始化 padding/新字段风险
             ffiCfg.host     = cfg.host.c_str();
-            ffiCfg.port     = cfg.port > 0 ? cfg.port : RD_DEFAULT_TCP_PORT;
+            ffiCfg.port     = cfg.port > 0 ? cfg.port :
+                (cfg.rdDirectIp ? 21118 : RD_DEFAULT_TCP_PORT);
             ffiCfg.key      = cfg.rdServerKey.c_str();
             ffiCfg.username = ffiPeerId.c_str();
             ffiCfg.password = cfg.password.c_str();

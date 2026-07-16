@@ -191,7 +191,7 @@ export class RemoteHost {
   rustdeskAuthMode: string = 'password';
   rustdeskDirectEnabled: boolean = false; // 直连模式 (跳过 ID 服务器)
   rustdeskDirectHost: string = ''; // 直连 peer IP 地址
-  rustdeskDirectPort: number = 21116; // 直连端口 (默认 21116)
+  rustdeskDirectPort: number = 21118; // 直连端口 (默认 21118; RustDesk peer TCP)
   rdpCredentialId: string = ''; // RDP 绑定的 Windows 凭据 ID
   sourceType: string = 'manual'; // manual | rustdesk_pro
   rustdeskProAccountId: string = ''; // Pro 账号设备端绑定 ID
@@ -220,11 +220,13 @@ export class RemoteHost {
     const basic: boolean = this.label.length > 0 &&
            (this.protocol === 'rdp' || this.protocol === 'rustdesk' || this.protocol === 'ssh');
     if (this.protocol === 'rustdesk') {
-      // RustDesk: 需要远程ID (customHostname), 不需要host/username
+      // RustDesk 中继模式需要远程 ID；直连模式使用直连地址完成登录，远程 ID 可选。
       const hasEndpoint: boolean = this.rustdeskDirectEnabled ?
-        this.rustdeskDirectHost.length > 0 && this.host.length > 0 && this.port > 0 && this.port <= 65535 :
+        this.rustdeskDirectHost.trim().length > 0 && this.rustdeskDirectPort > 0 &&
+        this.rustdeskDirectPort <= 65535 :
         (this.rustdeskRelayId.length > 0 || this.host.length > 0) && this.port > 0 && this.port <= 65535;
-      return basic && this.customHostname.length > 0 && hasEndpoint;
+      const hasPeerIdentity: boolean = this.rustdeskDirectEnabled || this.customHostname.trim().length > 0;
+      return basic && hasPeerIdentity && hasEndpoint;
     }
     return basic && this.host.length > 0 &&
            (this.username.length > 0 || this.rdpCredentialId.length > 0) &&
@@ -238,16 +240,18 @@ export class RemoteHost {
     const errors: string[] = [];
     if (!this.label) { errors.push('主机名称不能为空'); }
     if (this.protocol === 'rustdesk') {
-      if (!this.customHostname) { errors.push('远程ID不能为空'); }
       if (this.rustdeskDirectEnabled) {
-        if (!this.rustdeskDirectHost || !this.host) { errors.push('RustDesk 直连地址不能为空'); }
-        if (this.port <= 0 || this.port > 65535 || this.rustdeskDirectPort <= 0 || this.rustdeskDirectPort > 65535) {
+        if (!this.rustdeskDirectHost.trim()) { errors.push('RustDesk 直连地址不能为空'); }
+        if (this.rustdeskDirectPort <= 0 || this.rustdeskDirectPort > 65535) {
           errors.push('端口号必须在 1-65535 之间');
         }
-      } else if (!this.rustdeskRelayId && !this.host) {
-        errors.push('RustDesk 需要选择中继配置或填写直连地址');
-      } else if (this.port <= 0 || this.port > 65535) {
-        errors.push('端口号必须在 1-65535 之间');
+      } else {
+        if (!this.customHostname.trim()) { errors.push('远程ID不能为空'); }
+        if (!this.rustdeskRelayId && !this.host) {
+          errors.push('RustDesk 需要选择中继配置或填写直连地址');
+        } else if (this.port <= 0 || this.port > 65535) {
+          errors.push('端口号必须在 1-65535 之间');
+        }
       }
     } else {
       if (!this.host) { errors.push('主机地址不能为空'); }
@@ -261,12 +265,17 @@ export class RemoteHost {
       if (this.port <= 0 || this.port > 65535) { errors.push('端口号必须在 1-65535 之间'); }
     }
     if (this.protocol !== 'rdp' && this.protocol !== 'rustdesk' && this.protocol !== 'ssh') { errors.push('协议类型无效'); }
-    const rustDeskApproval: boolean = this.protocol === 'rustdesk' && this.rustdeskAuthMode === 'request_approval';
+    // 直连跳过 ID/中继，不存在 RustDesk 的远端批准通道；即使是旧数据
+    // 仍带有 request_approval，也必须按设备密码校验，避免保存后连接层
+    // 被迫用空密码发起直连。
+    const rustDeskApproval: boolean = this.protocol === 'rustdesk' &&
+      !this.rustdeskDirectEnabled && this.rustdeskAuthMode === 'request_approval';
     if (!this.password && !rustDeskApproval && this.rdpCredentialId === '' && !(this.protocol === 'ssh' && this.sshUseKey)) {
       if (this.protocol === 'rdp') {
         errors.push('密码不能为空 (或选择 Windows 凭据)');
       } else if (this.protocol === 'rustdesk') {
-        errors.push('密码不能为空，或选择“请求被控端批准”');
+        errors.push(this.rustdeskDirectEnabled ? 'RustDesk 直连模式需要设备密码' :
+          '密码不能为空，或选择“请求被控端批准”');
       } else {
         errors.push('密码不能为空 (或选择私钥认证)');
       }

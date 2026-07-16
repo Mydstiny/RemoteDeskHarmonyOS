@@ -51,6 +51,11 @@ import {
   encodeSoftDelete,
   encodeTextInput
 } from '../services/SshTerminalInputPolicy';
+import {
+  defaultSshTerminalOrientation,
+  SshTerminalOrientation,
+  toggleSshTerminalOrientation
+} from '../services/SshTerminalOrientationPolicy';
 import { VirtualKeyBar } from '../components/VirtualKeyBar';
 import {
   TransferSession,
@@ -129,6 +134,7 @@ struct SshTerminal {
   @State sftpProgress: number = -1;
   @State sftpProgressLabel: string = '处理中';
   @State sftpTransferSession: TransferSession | null = null;
+  @State isLandscape: boolean = false;
   // Kept only in-memory to retry the current picker grant; never logged or placed in diagnostics.
   private sftpTransferUri: string = '';
   private sftpTransferRemotePath: string = '';
@@ -145,6 +151,7 @@ struct SshTerminal {
   private hostId: string = '';
   private sessionId: number = -1;
   private win: window.Window | null = null;
+  private orientationApplied: boolean = false;
   private avoidCb: ((data: window.AvoidAreaOptions) => void) | null = null;
   private resizePtyTimer: number = -1;
   private latencyTimer: number = -1;
@@ -343,6 +350,7 @@ struct SshTerminal {
 
   async aboutToAppear(): Promise<void> {
     this.terminalClosing = false;
+    this.orientationApplied = false;
     // ArkUI 可能复用页面实例；每次进入都必须从全新的会话输出开始。
     this.termOutput = '';
     this.connected = false;
@@ -352,6 +360,13 @@ struct SshTerminal {
     this.updateCellSize();
     this.termRows = this.calcRowsFallback();
     this.termCols = this.calcColsFallback();
+
+    // 手机/平板 SSH 默认竖屏；桌面/2in1 由系统窗口管理当前方向。
+    const defaultOrientation: SshTerminalOrientation = defaultSshTerminalOrientation(this.isDesktopDevice);
+    this.isLandscape = defaultOrientation === 'landscape';
+    if (!this.isDesktopDevice) {
+      await this.setPreferredOrientation(window.Orientation.PORTRAIT, 'SSH-PORTRAIT');
+    }
 
     // SSH 终端始终深色模式 — 强制系统状态栏/导航栏亮色图标
     this.forceStatusBarDark();
@@ -421,6 +436,43 @@ struct SshTerminal {
     this.sessionId = -1;
     this.connected = false;
     this.termOutput = '';
+    if (this.orientationApplied) {
+      setTimeout((): void => {
+        this.setPreferredOrientation(window.Orientation.UNSPECIFIED, 'SSH-UNSPECIFIED');
+      }, 250);
+    }
+  }
+
+  private async setPreferredOrientation(orientation: window.Orientation, label: string): Promise<void> {
+    try {
+      const ctx = this.getUIContext().getHostContext();
+      if (!ctx) { return; }
+      const win: window.Window = await window.getLastWindow(ctx);
+      await win.setPreferredOrientation(orientation);
+      this.orientationApplied = orientation !== window.Orientation.UNSPECIFIED;
+      if (orientation === window.Orientation.LANDSCAPE) {
+        this.isLandscape = true;
+      } else if (orientation === window.Orientation.PORTRAIT) {
+        this.isLandscape = false;
+      }
+      hilog.info(0x0000, 'SshTerminal', 'setPreferredOrientation(' + label + ') OK');
+    } catch (err) {
+      hilog.warn(0x0001, 'SshTerminal', 'setPreferredOrientation(' + label + ') failed: ' + JSON.stringify(err));
+    }
+  }
+
+  private async toggleSshOrientation(): Promise<void> {
+    if (this.isDesktopDevice) {
+      return;
+    }
+    const current: SshTerminalOrientation = this.isLandscape ? 'landscape' : 'portrait';
+    const next: SshTerminalOrientation = toggleSshTerminalOrientation(current);
+    this.isLandscape = next === 'landscape';
+    await this.setPreferredOrientation(
+      this.isLandscape ? window.Orientation.LANDSCAPE : window.Orientation.PORTRAIT,
+      this.isLandscape ? 'SSH-LANDSCAPE-MANUAL' : 'SSH-PORTRAIT-MANUAL'
+    );
+    this.recalcGrid();
   }
 
   private setupKeyboardAvoidMode(): void {
@@ -593,9 +645,11 @@ struct SshTerminal {
     this.tcpLatencyTest(this.sshHost, this.sshPort).then((latency: number): void => {
       this.latencyMs = latency;
       this.latencyProbeRunning = false;
+      this.srv.updateConnectionHealth(this.hostId, latency, false);
     }).catch((err: BusinessError): void => {
       this.latencyMs = -1;
       this.latencyProbeRunning = false;
+      this.srv.updateConnectionHealth(this.hostId, -1, false);
       hilog.warn(0x0001, 'SshTerminal', '[latency] TCP 检测失败: ' + err.message);
     });
   }
@@ -750,6 +804,7 @@ struct SshTerminal {
       }
       this.connected = true;
       this.connecting = false;
+      await this.srv.updateLastConnected(this.hostId);
       this.startLatencyProbe();
 
       // 推送式数据接收: C++ reader 线程读到数据 → TSFN → 这里
@@ -775,6 +830,7 @@ struct SshTerminal {
     } catch (err) {
       this.connecting = false;
       const msg: string = (err as Error).message || 'SSH 连接失败';
+      await this.srv.updateConnectionHealth(this.hostId, -1, false);
       hilog.error(0x0001, 'SshTerminal', '[connect] 异常: ' + msg);
       this.connectionError = msg;
     }
@@ -1606,6 +1662,18 @@ struct SshTerminal {
             .margin({ right: 12 })
         }
         if (this.connected) {
+          if (!this.isDesktopDevice) {
+            Row() {
+              Text('↻').fontSize(19).fontColor('rgba(242,244,247,0.86)')
+            }
+            .width(34)
+            .height(34)
+            .justifyContent(FlexAlign.Center)
+            .borderRadius(17)
+            .backgroundColor(this.chromeChipBg())
+            .margin({ right: 8 })
+            .onClick((): void => { this.toggleSshOrientation(); })
+          }
           Row() {
             SymbolGlyph($r('sys.symbol.doc'))
               .fontSize(18)
@@ -1711,6 +1779,7 @@ struct SshTerminal {
               .defaultFocus(this.isDesktopDevice)
               .focusOnTouch(true)
               .enableKeyboardOnFocus(true)
+              .autoCapitalizationMode(AutoCapitalizationMode.NONE)
               .enterKeyType(EnterKeyType.Send)
               .copyOption(CopyOptions.None)
               .selectionMenuHidden(true)
@@ -1723,9 +1792,13 @@ struct SshTerminal {
               .onChange((v: string): void => {
                 this.handleChangeGuard(v);
               })
-              .onSubmit((): void => {
+              .onSubmit((_enterKey: EnterKeyType, event: SubmitEvent): void => {
                 this.onTerminalData('\r');
                 this.resetKeyboardBuffer();
+                // HarmonyOS 非 TV 设备默认会在提交后失焦并收起软键盘。
+                // SSH 终端需要连续输入命令, 保持隐藏输入框的编辑态。
+                event.keepEditableState();
+                setTimeout((): void => { this.focusKeyboard(); }, 30);
               })
               .onPaste((content: string): void => {
                 this.handlePaste(content);

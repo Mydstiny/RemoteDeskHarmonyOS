@@ -14,6 +14,7 @@ import { ExtensionLoader } from '../services/ExtensionLoader';
 import { GeneratedSshKeyPair, SshPrivateKeyInfo } from '../types/rdpnapi';
 import { TotpEntry, TotpEntryJSON } from '../model/TotpEntry';
 import { KeyVaultService } from '../services/KeyVaultService';
+import { SshKeyImportService, SshKeyImportResult } from '../services/SshKeyImportService';
 import { TotpEngine } from '../services/TotpEngine';
 import { SshKeyCard } from '../components/SshKeyCard';
 import { SshKeyManagerSheet, SshKeyPassphraseSubSheet } from '../components/SshKeyManagerSheet';
@@ -58,6 +59,7 @@ export struct KeyVaultPage {
   @State formKeyType: number = SshKeyType.ED25519;
   @State formComment: string = '';
   @State formPasteKey: string = '';
+  @State formFileName: string = '';
   @State formMode: number = 0; // 0=paste, 1=generate
   // TOTP 表单
   @State formIssuer: string = '';
@@ -67,6 +69,7 @@ export struct KeyVaultPage {
   @State formPeriod: number = 30;
   private kvs: KeyVaultService = KeyVaultService.getInstance();
   private loader: ExtensionLoader = ExtensionLoader.getInstance();
+  private sshKeyImporter: SshKeyImportService = new SshKeyImportService();
   private dataUnsubscribe: (() => void) | null = null;
   private pageActive: boolean = false;
 
@@ -170,14 +173,7 @@ export struct KeyVaultPage {
   // SshKeyManagerSheet 回调: 删除
   private onKeyManagerDelete(keyId: string): void {
     this.showSheet = false;
-    const idx: number = this.sshKeys.findIndex(k => k.id === keyId);
-    if (idx >= 0) {
-      this.kvs.removeSshKey(keyId);
-      this.sshKeys = this.kvs.getAllSshKeys();
-      animateTo({ duration: 350, curve: curves.interpolatingSpring(0, 0.8, 300, 20) }, () => {
-        this.sshKeyDataSource.removeItem(idx);
-      });
-    }
+    if (this.kvs.removeSshKey(keyId)) { this.load(); }
   }
 
   // SshKeyManagerSheet 回调: 安装到主机
@@ -204,12 +200,7 @@ export struct KeyVaultPage {
     }).then((result: Object): void => {
       const r: Record<string, number> = result as Record<string, number>;
       if (r['index'] === 1) {
-        const idx: number = this.sshKeys.findIndex(k => k.id === key.id);
-        if (idx >= 0) {
-          this.kvs.removeSshKey(key.id);
-          this.sshKeys = this.kvs.getAllSshKeys();
-          animateTo({ duration: 350, curve: curves.interpolatingSpring(0, 0.8, 300, 20) }, () => { this.sshKeyDataSource.removeItem(idx); });
-        }
+        if (this.kvs.removeSshKey(key.id)) { this.load(); }
       }
     });
   }
@@ -305,14 +296,7 @@ export struct KeyVaultPage {
       }).then((result: Object): void => {
         const r: Record<string, number> = result as Record<string, number>;
         if (r['index'] === 1) {
-          const idx: number = this.sshKeys.findIndex(k => k.id === key.id);
-          if (idx >= 0) {
-            this.kvs.removeSshKey(key.id);
-            this.sshKeys = this.kvs.getAllSshKeys();
-            animateTo({ duration: 350, curve: curves.interpolatingSpring(0, 0.8, 300, 20) }, () => {
-              this.sshKeyDataSource.removeItem(idx);
-            });
-          }
+          if (this.kvs.removeSshKey(key.id)) { this.load(); }
         }
       });
     })
@@ -350,14 +334,7 @@ export struct KeyVaultPage {
       }).then((result: Object): void => {
         const r: Record<string, number> = result as Record<string, number>;
         if (r['index'] === 1) {
-          const idx: number = this.totpEntries.findIndex(e => e.id === entry.id);
-          if (idx >= 0) {
-            this.kvs.removeTotpEntry(entry.id);
-            this.totpEntries = this.kvs.getAllTotpEntries();
-            animateTo({ duration: 350, curve: curves.interpolatingSpring(0, 0.8, 300, 20) }, () => {
-              this.totpEntryDataSource.removeItem(idx);
-            });
-          }
+          if (this.kvs.removeTotpEntry(entry.id)) { this.load(); }
         }
       });
     })
@@ -426,31 +403,18 @@ export struct KeyVaultPage {
     }).then((result: Object): void => {
       const r: Record<string, number> = result as Record<string, number>;
       if (r['index'] === 1) {
-        const idxList: number[] = [];
+        const ids: string[] = [];
         this.selectedIds.forEach((id: string) => {
-          if (this.keyVaultInnerTab === 0) {
-            const idx: number = this.sshKeys.findIndex(k => k.id === id);
-            if (idx >= 0) { idxList.push(idx); }
-            this.kvs.removeSshKey(id);
-          } else {
-            const idx: number = this.totpEntries.findIndex(e => e.id === id);
-            if (idx >= 0) { idxList.push(idx); }
-            this.kvs.removeTotpEntry(id);
-          }
+          ids.push(id);
         });
-        idxList.sort((a: number, b: number) => b - a);
-        this.sshKeys = this.kvs.getAllSshKeys();
-        this.totpEntries = this.kvs.getAllTotpEntries();
-        animateTo({ duration: 350, curve: curves.interpolatingSpring(0, 0.8, 300, 20) }, () => {
-          this.selectionMode = false; this.selectedIds = new Set();
-          for (let i = 0; i < idxList.length; i++) {
-            if (this.keyVaultInnerTab === 0) {
-              this.sshKeyDataSource.removeItem(idxList[i]);
-            } else {
-              this.totpEntryDataSource.removeItem(idxList[i]);
-            }
-          }
-        });
+        if (this.keyVaultInnerTab === 0) {
+          this.kvs.removeSshKeys(ids);
+        } else {
+          this.kvs.removeTotpEntries(ids);
+        }
+        this.selectionMode = false;
+        this.selectedIds = new Set<string>();
+        this.load();
       }
     });
   }
@@ -470,31 +434,18 @@ export struct KeyVaultPage {
           }).then((result: Object): void => {
             const r: Record<string, number> = result as Record<string, number>;
             if (r['index'] === 1) {
-              const idxList: number[] = [];
+              const ids: string[] = [];
               this.selectedIds.forEach((id: string) => {
-                if (this.keyVaultInnerTab === 0) {
-                  const idx: number = this.sshKeys.findIndex(k => k.id === id);
-                  if (idx >= 0) { idxList.push(idx); }
-                  this.kvs.removeSshKey(id);
-                } else {
-                  const idx: number = this.totpEntries.findIndex(e => e.id === id);
-                  if (idx >= 0) { idxList.push(idx); }
-                  this.kvs.removeTotpEntry(id);
-                }
+                ids.push(id);
               });
-              idxList.sort((a: number, b: number) => b - a);
-              this.sshKeys = this.kvs.getAllSshKeys();
-              this.totpEntries = this.kvs.getAllTotpEntries();
-              animateTo({ duration: 350, curve: curves.interpolatingSpring(0, 0.8, 300, 20) }, () => {
-                this.selectionMode = false; this.selectedIds = new Set();
-                for (let i = 0; i < idxList.length; i++) {
-                  if (this.keyVaultInnerTab === 0) {
-                    this.sshKeyDataSource.removeItem(idxList[i]);
-                  } else {
-                    this.totpEntryDataSource.removeItem(idxList[i]);
-                  }
-                }
-              });
+              if (this.keyVaultInnerTab === 0) {
+                this.kvs.removeSshKeys(ids);
+              } else {
+                this.kvs.removeTotpEntries(ids);
+              }
+              this.selectionMode = false;
+              this.selectedIds = new Set<string>();
+              this.load();
             }
           });
         })
@@ -505,7 +456,23 @@ export struct KeyVaultPage {
   private resetSshForm(): void {
     this.editingSshKey = new SshKey();
     this.formLabel = ''; this.formKeyType = SshKeyType.ED25519;
-    this.formComment = ''; this.formPasteKey = ''; this.formMode = 0;
+    this.formComment = ''; this.formPasteKey = ''; this.formFileName = ''; this.formMode = 0;
+  }
+
+  private async importSshKeyFile(): Promise<void> {
+    const result: SshKeyImportResult | null = await this.sshKeyImporter.pickAndInspect();
+    if (result === null) { return; }
+    if (!result.ok || result.key === null) {
+      promptAction.showToast({ message: result.error || '私钥文件不可用', duration: 2500 });
+      return;
+    }
+    const imported: SshKey = result.key;
+    this.formPasteKey = imported.privateKey;
+    this.formFileName = result.fileName;
+    this.formKeyType = imported.keyType;
+    if (this.formLabel.trim() === '') { this.formLabel = imported.label; }
+    this.formMode = 0;
+    promptAction.showToast({ message: '私钥已读取，请保存到密钥保险库', duration: 1800 });
   }
 
   private async doAddSshKey(): Promise<void> {
@@ -1267,13 +1234,24 @@ export struct KeyVaultPage {
       // 私钥内容 (仅粘贴模式 formMode=0 或编辑模式显示)
       if (this.formMode === 0 || this.editingSshKey.id !== '') {
         Column() {
+          if (this.editingSshKey.id === '') {
+            Button(this.formFileName === '' ? '从文件导入私钥' : '重新选择私钥文件')
+              .width('100%').height(36).fontSize(12)
+              .backgroundColor(this.pal().surface).fontColor(this.accentColor).borderRadius(8)
+              .margin({ bottom: 8 }).onClick(() => { this.importSshKeyFile(); })
+            if (this.formFileName !== '') {
+              Text('已读取: ' + this.formFileName).fontSize(11).fontColor(this.pal().text3)
+                .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+                .width('100%').margin({ bottom: 6 })
+            }
+          }
           Text('私钥内容').fontSize(11).fontColor(this.pal().text2).margin({ bottom: 4 })
           TextInput({ placeholder: '粘贴 OpenSSH 格式私钥...', text: this.formPasteKey })
             .height(100).backgroundColor(this.pal().surface).borderRadius(8)
             .fontColor(this.pal().text).placeholderColor(this.pal().text3)
             .fontFamily('monospace').fontSize(12)
             .padding({ left: 12, right: 12, top: 10, bottom: 10 })
-            .onChange((v: string) => { this.formPasteKey = v; })
+            .onChange((v: string) => { this.formPasteKey = v; this.formFileName = ''; })
         }.width('100%').margin({ bottom: 10 })
       }
 

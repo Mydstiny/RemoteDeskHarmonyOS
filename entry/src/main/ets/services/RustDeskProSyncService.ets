@@ -41,6 +41,10 @@ export class RustDeskProSyncService {
     return this.credentials.getAll();
   }
 
+  onDataChange(callback: () => void): () => void {
+    return this.credentials.onDataChange(callback);
+  }
+
   private cloneAccount(account: RustDeskProAccountState): RustDeskProAccountState {
     return {
       id: account.id,
