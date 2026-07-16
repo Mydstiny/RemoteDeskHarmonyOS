@@ -7,6 +7,7 @@
 
 export const REMOTE_IME_CENTER: number = 2048;
 export const REMOTE_IME_EDGE_THRESHOLD: number = 256;
+export const REMOTE_IME_MAX_CARET_MOVEMENT: number = 32;
 // The remote editor cannot mirror HarmonyOS composing text. Keep the local
 // IME responsible for candidate selection and forward only committed text.
 export const REMOTE_IME_PREVIEW_ENABLED: boolean = false;
@@ -129,6 +130,15 @@ export function resolveRemoteImeSelection(
   }
 
   const delta = input.selectionStart - input.syncedCaret;
+  if (Math.abs(delta) > REMOTE_IME_MAX_CARET_MOVEMENT) {
+    return {
+      action: RemoteImeSelectionAction.COLLAPSE_LOCAL,
+      count: 0,
+      nextSyncedCaret: input.syncedCaret,
+      consumeExpected: false,
+      consumeInitial: false
+    };
+  }
   if (delta < 0) {
     return {
       action: RemoteImeSelectionAction.MOVE_LEFT,

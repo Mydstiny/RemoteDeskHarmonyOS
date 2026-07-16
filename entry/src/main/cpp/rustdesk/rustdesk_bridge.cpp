@@ -321,6 +321,7 @@ struct RustDeskBridge::Impl {
     std::mutex              mutex;
     std::atomic<uint64_t>   connectSerial {0};
     std::atomic<bool>       disconnectRequested {false};
+    std::atomic<bool>       ffiStreamEnded {false};
     int                     ipcFd = -1;   // IPC socket fd (IPC 模式)
     int                     sockFd = -1;  // TCP socket fd (实验模式)
 #ifdef RUSTDESK_USE_REAL_CORE
@@ -364,6 +365,20 @@ static std::atomic<uint64_t> g_ffiKeySendCount {0};
 static std::atomic<uint64_t> g_ffiWheelSendCount {0};
 static std::atomic<uint64_t> g_ffiTextSendCount {0};
 static std::atomic<uint64_t> g_ffiFileSendCount {0};
+
+static void releaseFfiHandle(void* ffiHandle, const char* reason) {
+    if (ffiHandle == nullptr) {
+        return;
+    }
+    OH_LOG_INFO(LOG_APP,
+        "[RustDesk-FFI] releasing stale handle=%{public}p reason=%{public}s",
+        ffiHandle, reason ? reason : "unknown");
+    // rustdesk_disconnect joins the streaming thread. Never call it from the
+    // stream callback itself, otherwise the stream thread would join itself.
+    std::thread([ffiHandle]() {
+        rustdesk_disconnect(ffiHandle);
+    }).detach();
+}
 
 static const char* rdCodecName(int codec) {
     switch (codec) {
@@ -548,11 +563,20 @@ void RustDeskBridge::onFfiDisconnect(int state, const char* message, void* userD
     bool wasConnected = false;
     bool requested = false;
     if (impl) {
+        impl->ffiStreamEnded.store(true);
         std::lock_guard<std::mutex> lock(impl->mutex);
         wasConnected = impl->state == ConnectionState::CONNECTED;
         requested = impl->disconnectRequested.load();
     }
-    if (requested || state == 0) {
+    void* endedHandle = nullptr;
+    if (impl && !requested) {
+        std::lock_guard<std::mutex> lock(impl->mutex);
+        // The FFI callback runs on the streaming thread. Move ownership out
+        // here and release it on a separate thread after this callback returns.
+        endedHandle = impl->ffiHandle;
+        impl->ffiHandle = nullptr;
+    }
+    if (requested) {
         OH_LOG_INFO(LOG_APP,
             "[RustDesk-FFI] stream stopped state=%{public}d msg=%{public}s connected=%{public}s requested=%{public}s",
             state,
@@ -561,15 +585,21 @@ void RustDeskBridge::onFfiDisconnect(int state, const char* message, void* userD
             requested ? "yes" : "no");
         return;
     }
-    OH_LOG_WARN(LOG_APP,
-        "[RustDesk-FFI] stream stopped state=%{public}d msg=%{public}s connected=%{public}s requested=%{public}s",
-        state,
-        message ? message : "",
-        wasConnected ? "yes" : "no",
-        "no");
     if (impl) {
-        impl->setState(ConnectionState::ERROR, message ? message : "RustDesk stream stopped");
+        const char* stopMessage = message ? message : "RustDesk stream stopped";
+        if (state == 0) {
+            OH_LOG_INFO(LOG_APP,
+                "[RustDesk-FFI] stream ended normally state=%{public}d msg=%{public}s connected=%{public}s requested=%{public}s",
+                state, stopMessage, wasConnected ? "yes" : "no", "no");
+            impl->setState(ConnectionState::DISCONNECTED, stopMessage);
+        } else {
+            OH_LOG_WARN(LOG_APP,
+                "[RustDesk-FFI] stream stopped state=%{public}d msg=%{public}s connected=%{public}s requested=%{public}s",
+                state, stopMessage, wasConnected ? "yes" : "no", "no");
+            impl->setState(ConnectionState::ERROR, stopMessage);
+        }
     }
+    releaseFfiHandle(endedHandle, "stream-ended");
 }
 #endif
 
@@ -581,7 +611,14 @@ RustDeskBridge::RustDeskBridge(RustDeskMode mode)
 }
 
 RustDeskBridge::~RustDeskBridge() {
-    if (getState() == ConnectionState::CONNECTED) { disconnect(); }
+    bool hasFfiHandle = false;
+#ifdef RUSTDESK_USE_REAL_CORE
+    {
+        std::lock_guard<std::mutex> lock(impl_->mutex);
+        hasFfiHandle = impl_->ffiHandle != nullptr;
+    }
+#endif
+    if (getState() != ConnectionState::DISCONNECTED || hasFfiHandle) { disconnect(); }
 }
 
 std::string RustDeskBridge::protocolName() { return "RustDesk"; }
@@ -712,9 +749,17 @@ static int rdIpcConnectFlow(int fd, const ConnectionConfig& cfg) {
 // ============================================================
 
 int RustDeskBridge::connect(const ConnectionConfig& cfg) {
-    if (getState() == ConnectionState::CONNECTED) { disconnect(); }
+    bool hasFfiHandle = false;
+#ifdef RUSTDESK_USE_REAL_CORE
+    {
+        std::lock_guard<std::mutex> lock(impl_->mutex);
+        hasFfiHandle = impl_->ffiHandle != nullptr;
+    }
+#endif
+    if (getState() != ConnectionState::DISCONNECTED || hasFfiHandle) { disconnect(); }
     impl_->config = cfg;
     impl_->disconnectRequested.store(false);
+    impl_->ffiStreamEnded.store(false);
     const uint64_t serial = ++impl_->connectSerial;
     impl_->setState(ConnectionState::CONNECTING, "Connecting...");
 
@@ -771,9 +816,21 @@ int RustDeskBridge::connect(const ConnectionConfig& cfg) {
                 ffiCfg.fps);
 
             void* ffiHandle = rustdesk_connect(&ffiCfg, onFfiFrame, onFfiAudio, onFfiDisconnect, impl);
-            if (serial != impl->connectSerial.load() || impl->disconnectRequested.load()) {
+            bool discardHandle = serial != impl->connectSerial.load() ||
+                impl->disconnectRequested.load() || impl->ffiStreamEnded.load();
+            if (!discardHandle) {
+                std::lock_guard<std::mutex> lock(impl->mutex);
+                discardHandle = serial != impl->connectSerial.load() ||
+                    impl->disconnectRequested.load() || impl->ffiStreamEnded.load();
+                if (!discardHandle) {
+                    impl->ffiHandle = ffiHandle;
+                }
+            }
+            if (discardHandle) {
                 if (ffiHandle != nullptr) {
-                    OH_LOG_INFO(LOG_APP, "[RustDesk-FFI] late connect result discarded");
+                    OH_LOG_INFO(LOG_APP,
+                        "[RustDesk-FFI] late/ended connect result discarded handle=%{public}p",
+                        ffiHandle);
                     rustdesk_disconnect(ffiHandle);
                 }
                 return;
@@ -790,12 +847,32 @@ int RustDeskBridge::connect(const ConnectionConfig& cfg) {
                 return;
             }
 
+            const char* connectedMessage = "Connected via Rust FFI (protobuf protocol)";
+            ConnectionStateCallback connectedCallback;
+            bool publishedConnected = false;
             {
                 std::lock_guard<std::mutex> lock(impl->mutex);
-                impl->ffiHandle = ffiHandle;
+                // Publish CONNECTED and verify handle ownership atomically with
+                // the disconnect callback. This prevents a stream that ended
+                // during connect from being resurrected as CONNECTED.
+                if (impl->ffiHandle == ffiHandle &&
+                    serial == impl->connectSerial.load() &&
+                    !impl->disconnectRequested.load() &&
+                    !impl->ffiStreamEnded.load()) {
+                    impl->state = ConnectionState::CONNECTED;
+                    connectedCallback = impl->stateCallback;
+                    publishedConnected = true;
+                }
             }
-            impl->setState(ConnectionState::CONNECTED,
-                "Connected via Rust FFI (protobuf protocol)");
+            if (!publishedConnected) {
+                OH_LOG_INFO(LOG_APP,
+                    "[RustDesk-FFI] connect completed after teardown, handle=%{public}p",
+                    ffiHandle);
+                return;
+            }
+            if (connectedCallback) {
+                connectedCallback(ConnectionState::CONNECTED, connectedMessage);
+            }
             OH_LOG_INFO(LOG_APP, "[RustDesk-FFI] Connected handle=%{public}p", ffiHandle);
         }).detach();
         return 0;

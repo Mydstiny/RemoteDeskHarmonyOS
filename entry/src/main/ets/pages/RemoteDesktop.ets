@@ -4068,7 +4068,6 @@ struct RemoteDesktop {
     if (result.action === RemoteImeSelectionAction.IGNORE_PROGRAMMATIC) {
       this.keyboardExpectedStart = -1;
       this.keyboardExpectedEnd = -1;
-      this.clearRemoteImeSelectionAcknowledgement();
       return;
     }
     if (result.action === RemoteImeSelectionAction.MOVE_LEFT) {

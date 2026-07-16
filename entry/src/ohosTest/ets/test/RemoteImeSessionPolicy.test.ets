@@ -4,6 +4,7 @@
 import { describe, it, expect } from '@ohos/hypium';
 import {
   REMOTE_IME_CENTER,
+  REMOTE_IME_MAX_CARET_MOVEMENT,
   REMOTE_IME_PREVIEW_ENABLED,
   RemoteImeSelectionAction,
   createRemoteImeDiagnostic,
@@ -127,6 +128,22 @@ export default function remoteImeSessionPolicyTest(): void {
       });
       expect(right.action).assertEqual(RemoteImeSelectionAction.MOVE_RIGHT);
       expect(right.count).assertEqual(7);
+    });
+
+    it('does_not_flood_remote_control_queue_for_large_selection_jump', 0, (): void => {
+      const result = resolveRemoteImeSelection({
+        active: true,
+        programmatic: false,
+        initialSelectionPending: false,
+        expectedStart: -1,
+        expectedEnd: -1,
+        syncedCaret: REMOTE_IME_CENTER,
+        selectionStart: 0,
+        selectionEnd: 0
+      });
+      expect(REMOTE_IME_MAX_CARET_MOVEMENT).assertEqual(32);
+      expect(result.action).assertEqual(RemoteImeSelectionAction.COLLAPSE_LOCAL);
+      expect(result.count).assertEqual(0);
     });
 
     it('does_not_translate_expanded_selection', 0, (): void => {
