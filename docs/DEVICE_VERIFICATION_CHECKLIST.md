@@ -5,12 +5,20 @@
 ## 前置条件
 
 ```bash
-# 1. 安装 HAP 到设备
+# 1. 首次安装 HAP 到设备（会创建新的应用数据）
 hdc install entry/build/default/outputs/default/entry-default-signed.hap
 
-# 2. 查看日志 (另开终端)
+# 2. 老设备升级验证：保留现有 Preferences/RDB 数据
+hdc install -r entry/build/default/outputs/default/entry-default-signed.hap
+
+# 3. 查看日志 (另开终端)
 hdc hilog | grep -E "RDP_NAPI|GL_RENDERER|HW_DECODER|RDP_ADAPTER|RUSTDESK|AUDIO|CLIPBOARD|ExtLoader"
 ```
+
+> 重要：`onDeviceTest` 的设备覆盖流程可能先执行 `uninstallBundle` 再安装测试包，
+> 会清除应用数据并让应用重新进入首次安装引导。它只用于测试 HAP/设备覆盖编译链，
+> 不用于老设备升级、Preferences/RDB 保留或发布数据验证。需要验证升级行为时，
+> 使用上面的 `hdc install -r`，并确认包名、签名配置与设备上现有安装一致。
 
 ## R0: 基础通路
 

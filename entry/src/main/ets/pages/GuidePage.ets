@@ -8,8 +8,8 @@ import { preferences } from '@kit.ArkData';
 import { Palette, buildDark, buildLight } from '../common/Theme';
 import {
   resolveStartupMode,
-  shouldPresentReleaseNotesAsBottomSheet,
-  shouldPresentReleaseNotesAsDialog,
+  shouldPresentGuideAsBottomSheet,
+  shouldPresentGuideAsDialog,
   StartupMode
 } from '../services/ReleaseNotesPolicy';
 import { CURRENT_RELEASE_VERSION, pagesForReleasedVersion, ReleaseNotePage } from '../services/ReleaseNotesRegistry';
@@ -29,7 +29,7 @@ struct GuidePage {
   @StorageProp('currentBreakpoint') breakpoint: string = 'sm';
   @State currentIndex: number = 0;
   @State showContent: boolean = false;
-  @State showPhoneReleaseSheet: boolean = false;
+  @State showPhoneGuideSheet: boolean = false;
   @State mode: StartupMode = StartupMode.FIRST_INSTALL_GUIDE;
   @State activePages: GuideContentPage[] = [];
   private tutorialPages: GuideContentPage[] = firstInstallGuidePages();
@@ -52,7 +52,7 @@ struct GuidePage {
     if (this.activePages.length === 0) { this.activePages = this.tutorialPages; }
     setTimeout(() => {
       this.showContent = true;
-      if (this.presentReleaseNotesAsBottomSheet()) { this.showPhoneReleaseSheet = true; }
+      if (this.presentGuideAsBottomSheet()) { this.showPhoneGuideSheet = true; }
     }, RELEASE_DIALOG_ENTER_DELAY_MS);
   }
 
@@ -60,12 +60,12 @@ struct GuidePage {
     return this.theme === 'light' ? buildLight(this.accentColor) : buildDark(this.accentColor);
   }
 
-  private presentReleaseNotesAsDialog(): boolean {
-    return shouldPresentReleaseNotesAsDialog(this.mode, this.breakpoint);
+  private presentGuideAsDialog(): boolean {
+    return shouldPresentGuideAsDialog(this.mode, this.breakpoint);
   }
 
-  private presentReleaseNotesAsBottomSheet(): boolean {
-    return shouldPresentReleaseNotesAsBottomSheet(this.mode, this.breakpoint);
+  private presentGuideAsBottomSheet(): boolean {
+    return shouldPresentGuideAsBottomSheet(this.mode, this.breakpoint);
   }
 
   private releaseNotesDialogWidth(): number {
@@ -160,38 +160,38 @@ struct GuidePage {
       }
       .width('100%').padding({ left: 28, right: 28, bottom: 48, top: 12 })
       }
-      .width(isSheet ? '100%' : (this.presentReleaseNotesAsDialog() ? this.releaseNotesDialogWidth() : '100%'))
-      .height(isSheet ? '100%' : (this.presentReleaseNotesAsDialog() ? this.releaseNotesDialogHeight() : '100%'))
+      .width(isSheet ? '100%' : (this.presentGuideAsDialog() ? this.releaseNotesDialogWidth() : '100%'))
+      .height(isSheet ? '100%' : (this.presentGuideAsDialog() ? this.releaseNotesDialogHeight() : '100%'))
       .backgroundColor(this.pal().bg)
-      .borderRadius(!isSheet && this.presentReleaseNotesAsDialog() ? 24 : 0)
-      .border(!isSheet && this.presentReleaseNotesAsDialog() ?
+      .borderRadius(!isSheet && this.presentGuideAsDialog() ? 24 : 0)
+      .border(!isSheet && this.presentGuideAsDialog() ?
         { width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid } :
         { width: 0, color: Color.Transparent, style: BorderStyle.Solid })
-      .shadow(!isSheet && this.presentReleaseNotesAsDialog() ?
+      .shadow(!isSheet && this.presentGuideAsDialog() ?
         { radius: 28, color: 'rgba(0,0,0,0.22)', offsetY: 12 } :
         { radius: 0, color: Color.Transparent, offsetY: 0 })
-      .opacity(!isSheet && this.presentReleaseNotesAsDialog() ? (this.showContent ? 1 : 0) : 1)
+      .opacity(!isSheet && this.presentGuideAsDialog() ? (this.showContent ? 1 : 0) : 1)
       .scale({
-        x: !isSheet && this.presentReleaseNotesAsDialog() ? (this.showContent ? 1 : 0.94) : 1,
-        y: !isSheet && this.presentReleaseNotesAsDialog() ? (this.showContent ? 1 : 0.94) : 1
+        x: !isSheet && this.presentGuideAsDialog() ? (this.showContent ? 1 : 0.94) : 1,
+        y: !isSheet && this.presentGuideAsDialog() ? (this.showContent ? 1 : 0.94) : 1
       })
       .translate({
-        y: !isSheet && this.presentReleaseNotesAsDialog() ? (this.showContent ? 0 : 20) : 0
+        y: !isSheet && this.presentGuideAsDialog() ? (this.showContent ? 0 : 20) : 0
       })
       .animation({ duration: RELEASE_DIALOG_MOTION_MS, curve: Curve.FastOutSlowIn })
       .align(Alignment.Center)
   }
 
-  @Builder phoneReleaseNotesSheet() {
+  @Builder phoneGuideSheet() {
     this.guidePanel(true)
   }
 
   build() {
     Stack() {
-      if (this.presentReleaseNotesAsBottomSheet()) {
+      if (this.presentGuideAsBottomSheet()) {
         Column().width('100%').height('100%').backgroundColor(this.pal().bg)
       } else {
-        if (this.presentReleaseNotesAsDialog()) {
+        if (this.presentGuideAsDialog()) {
           Column()
             .width('100%').height('100%')
             .backgroundColor('rgba(0,0,0,0.28)')
@@ -204,7 +204,7 @@ struct GuidePage {
     .width('100%').height('100%')
     .backgroundColor(this.pal().bg)
     .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
-    .bindSheet($$this.showPhoneReleaseSheet, this.phoneReleaseNotesSheet(), {
+    .bindSheet($$this.showPhoneGuideSheet, this.phoneGuideSheet(), {
       height: '64%',
       preferType: SheetType.BOTTOM,
       dragBar: true,
@@ -212,7 +212,7 @@ struct GuidePage {
       blurStyle: BlurStyle.NONE,
       showClose: false,
       maskColor: 'rgba(0,0,0,0.28)',
-      onDisappear: (): void => { this.handlePhoneReleaseSheetDisappear(); }
+      onDisappear: (): void => { this.handlePhoneGuideSheetDisappear(); }
     })
   }
 
@@ -225,8 +225,8 @@ struct GuidePage {
     } catch (_e) { /* ignore */ }
   }
 
-  private handlePhoneReleaseSheetDisappear(): void {
-    if (!this.presentReleaseNotesAsBottomSheet()) { return; }
+  private handlePhoneGuideSheetDisappear(): void {
+    if (!this.presentGuideAsBottomSheet()) { return; }
     if (!this.isFinishing) {
       this.isFinishing = true;
       this.persistCompletion();
@@ -238,11 +238,11 @@ struct GuidePage {
     if (this.isFinishing) { return; }
     this.isFinishing = true;
     this.persistCompletion();
-    if (this.presentReleaseNotesAsBottomSheet()) {
-      this.showPhoneReleaseSheet = false;
+    if (this.presentGuideAsBottomSheet()) {
+      this.showPhoneGuideSheet = false;
       return;
     }
-    if (this.presentReleaseNotesAsDialog()) {
+    if (this.presentGuideAsDialog()) {
       this.showContent = false;
       setTimeout((): void => {
         router.replaceUrl({ url: 'pages/LoginPage' });

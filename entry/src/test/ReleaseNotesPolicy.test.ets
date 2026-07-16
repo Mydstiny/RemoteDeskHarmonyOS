@@ -1,8 +1,8 @@
 import { describe, it, expect } from '@ohos/hypium';
 import {
   resolveStartupMode,
-  shouldPresentReleaseNotesAsBottomSheet,
-  shouldPresentReleaseNotesAsDialog,
+  shouldPresentGuideAsBottomSheet,
+  shouldPresentGuideAsDialog,
   StartupMode
 } from '../main/ets/services/ReleaseNotesPolicy';
 
@@ -20,16 +20,18 @@ export default function releaseNotesPolicyTest(): void {
     it('rejects_invalid_release_versions', 0, (): void => {
       expect(resolveStartupMode(true, 'bad', '1.0.7', true)).assertEqual(StartupMode.LOGIN);
     });
-    it('uses_bottom_sheet_for_phone_release_notes', 0, (): void => {
-      expect(shouldPresentReleaseNotesAsBottomSheet(StartupMode.RELEASE_NOTES, 'sm')).assertTrue();
-      expect(shouldPresentReleaseNotesAsBottomSheet(StartupMode.RELEASE_NOTES, 'md')).assertFalse();
-      expect(shouldPresentReleaseNotesAsBottomSheet(StartupMode.FIRST_INSTALL_GUIDE, 'sm')).assertFalse();
+    it('uses_bottom_sheet_for_phone_guides', 0, (): void => {
+      expect(shouldPresentGuideAsBottomSheet(StartupMode.FIRST_INSTALL_GUIDE, 'sm')).assertTrue();
+      expect(shouldPresentGuideAsBottomSheet(StartupMode.RELEASE_NOTES, 'sm')).assertTrue();
+      expect(shouldPresentGuideAsBottomSheet(StartupMode.RELEASE_NOTES, 'md')).assertFalse();
+      expect(shouldPresentGuideAsBottomSheet(StartupMode.LOGIN, 'sm')).assertFalse();
     });
     it('uses_dialog_for_non_phone_release_notes', 0, (): void => {
-      expect(shouldPresentReleaseNotesAsDialog(StartupMode.RELEASE_NOTES, 'sm')).assertFalse();
-      expect(shouldPresentReleaseNotesAsDialog(StartupMode.RELEASE_NOTES, 'md')).assertTrue();
-      expect(shouldPresentReleaseNotesAsDialog(StartupMode.RELEASE_NOTES, 'xl')).assertTrue();
-      expect(shouldPresentReleaseNotesAsDialog(StartupMode.FIRST_INSTALL_GUIDE, 'xl')).assertFalse();
+      expect(shouldPresentGuideAsDialog(StartupMode.RELEASE_NOTES, 'sm')).assertFalse();
+      expect(shouldPresentGuideAsDialog(StartupMode.RELEASE_NOTES, 'md')).assertTrue();
+      expect(shouldPresentGuideAsDialog(StartupMode.RELEASE_NOTES, 'xl')).assertTrue();
+      expect(shouldPresentGuideAsDialog(StartupMode.FIRST_INSTALL_GUIDE, 'xl')).assertFalse();
+      expect(shouldPresentGuideAsDialog(StartupMode.LOGIN, 'xl')).assertFalse();
     });
   });
 }

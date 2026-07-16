@@ -33,10 +33,17 @@ export function resolveStartupMode(guideShown: boolean, lastSeen: string, curren
   return compareReleaseVersion(previous, current) < 0 ? StartupMode.RELEASE_NOTES : StartupMode.LOGIN;
 }
 
-export function shouldPresentReleaseNotesAsBottomSheet(mode: StartupMode, breakpoint: string): boolean {
-  return mode === StartupMode.RELEASE_NOTES && breakpoint === 'sm';
+/**
+ * 手机端的首次介绍和版本更新说明都使用底部半屏 Sheet。
+ * 登录模式没有引导内容，不应触发 Sheet。
+ */
+export function shouldPresentGuideAsBottomSheet(mode: StartupMode, breakpoint: string): boolean {
+  return mode !== StartupMode.LOGIN && breakpoint === 'sm';
 }
 
-export function shouldPresentReleaseNotesAsDialog(mode: StartupMode, breakpoint: string): boolean {
+/**
+ * Pad/PC 端只将版本更新说明放入居中弹窗；首次介绍继续使用全屏教程。
+ */
+export function shouldPresentGuideAsDialog(mode: StartupMode, breakpoint: string): boolean {
   return mode === StartupMode.RELEASE_NOTES && breakpoint !== 'sm';
 }
