@@ -39,10 +39,11 @@ export default function guideContentRegistryTest(): void {
       const release: ReleaseNotePage[] = pagesForReleasedVersion(CURRENT_RELEASE_VERSION);
       expect(containsGuidePage(guide, 'feedback-community')).assertTrue();
       expect(containsGuidePage(guide, 'sync-backup')).assertTrue();
-      expect(release.length).assertEqual(9);
-      expect(containsReleasePage(release, 'input-clipboard')).assertTrue();
-      expect(containsReleasePage(release, 'feedback-community')).assertTrue();
-      expect(release[release.length - 1].id).assertEqual('welcome-1-0-6');
+      expect(release.length).assertEqual(4);
+      expect(containsReleasePage(release, 'ime-session-stability')).assertTrue();
+      expect(containsReleasePage(release, 'rdp-certificate-trust')).assertTrue();
+      expect(containsReleasePage(release, 'rustdesk-session-stability')).assertTrue();
+      expect(release[release.length - 1].id).assertEqual('welcome-1-0-7');
     });
   });
 }

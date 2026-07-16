@@ -11,7 +11,7 @@ $packages = [System.Collections.Generic.List[object]]::new()
 $packages.Add([ordered]@{
   name = 'RemoteDeskHarmonyOS'
   SPDXID = 'SPDXRef-Package-RemoteDeskHarmonyOS'
-  versionInfo = '1.0.6'
+  versionInfo = '1.0.7'
   downloadLocation = 'https://github.com/Mydstiny/RemoteDeskHarmonyOS'
   filesAnalyzed = $false
   licenseConcluded = 'AGPL-3.0-or-later'
