@@ -942,7 +942,7 @@ export struct RustDeskRelayPage {
             Column() {
               // 账户标题
               Row() {
-                Text('账户 (' + (this.selectedPcRelay as RustDeskRelayConfig).accounts.length + ')')
+                Text('手动账户 (' + (this.selectedPcRelay as RustDeskRelayConfig).accounts.length + ')')
                   .fontSize(13).fontColor(this.pal().text3).fontFamily(this.font()).fontWeight(FontWeight.Medium)
                 Blank()
                 Text('+ 添加').fontSize(14).fontColor(this.accentColor).fontFamily(this.font())
@@ -951,7 +951,7 @@ export struct RustDeskRelayPage {
               // 账户列表
               Column() {
                 if ((this.selectedPcRelay as RustDeskRelayConfig).accounts.length === 0) {
-                  Text('暂无账户').fontSize(13).fontColor(this.pal().text3).fontFamily(this.font())
+                  Text('暂无手动账户').fontSize(13).fontColor(this.pal().text3).fontFamily(this.font())
                     .width('100%').textAlign(TextAlign.Center).padding({ top: 10, bottom: 10 })
                 }
                 ForEach((this.selectedPcRelay as RustDeskRelayConfig).accounts, (acct: RustDeskAccount) => {
@@ -1115,47 +1115,10 @@ export struct RustDeskRelayPage {
           .width('100%').borderRadius(10).backgroundColor(this.pal().surface)
           .padding({ left: 10, right: 10, top: 6, bottom: 6 }).margin({ top: 8 })
 
-          // Account section
-          Row() {
-            Text('账户 (' + relay.accounts.length + ')')
-              .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
-            Blank()
-            Text('+ 添加').fontSize(11).fontColor(this.accentColor).fontFamily(this.font())
-              .onClick(() => { this.openAccountSheet(relay); })
-          }.width('100%').margin({ top: 8, bottom: 4 })
-
-          if (relay.accounts.length === 0) {
-            Text('暂无账户，点击添加')
-              .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
-              .width('100%').textAlign(TextAlign.Center)
-              .padding({ top: 8, bottom: 8 })
-              .borderRadius(10).backgroundColor(this.pal().surface)
-          }
-
-          ForEach(relay.accounts, (acct: RustDeskAccount) => {
-            Row() {
-              SymbolGlyph($r('sys.symbol.key_fill'))
-                .fontSize(this.breakpoint === 'sm' ? 15 : 18)
-                .fontColor([this.accountStatusColor(acct)])
-              Column() {
-                Text(acct.displayName()).fontSize(this.breakpoint === 'sm' ? 13 : 15)
-                  .fontColor(this.pal().text).fontFamily(this.font())
-                Text(this.accountStatusLabel(acct) + ' · ' + this.hostCountForAccount(relay.id, acct.id) + '台主机')
-                  .fontSize(this.breakpoint === 'sm' ? 10 : 11)
-                  .fontColor(this.pal().text3).fontFamily(this.font())
-              }.alignItems(HorizontalAlign.Start).layoutWeight(1)
-              .margin({ left: this.breakpoint === 'sm' ? 8 : 10 })
-              SymbolGlyph($r('sys.symbol.chevron_right'))
-                .fontSize(this.breakpoint === 'sm' ? 14 : 16).fontColor([this.pal().text3])
-            }
-            .width('100%')
-            .constraintSize({ minHeight: this.breakpoint === 'sm' ? 52 : 68 })
-            .padding(this.breakpoint === 'sm' ? { left: 10, right: 10, top: 7, bottom: 7 } : 12)
-            .borderRadius(10).backgroundColor(this.pal().surface)
-            .margin({ bottom: 3 })
-            .onClick(() => { this.openAccountSheet(relay, acct); })
-          })
-          this.proAccountSection(relay)
+          // Account directory: keep manual credentials and Server Pro in one
+          // clearly grouped surface so they read as different sources, not
+          // two competing login cards.
+          this.compactAccountDirectory(relay)
         }
         .transition(
           TransitionEffect.OPACITY
@@ -1184,15 +1147,106 @@ export struct RustDeskRelayPage {
     }.width('100%').padding({ top: 2, bottom: 2 })
   }
 
+  @Builder compactAccountDirectory(relay: RustDeskRelayConfig) {
+    Column() {
+      Row() {
+        Text('账户与地址簿').fontSize(13).fontColor(this.pal().text3).fontFamily(this.font())
+          .fontWeight(FontWeight.Medium)
+        Blank()
+        Text(relay.accounts.length + this.proAccountsForRelay(relay.id).length + ' 个来源')
+          .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
+      }.width('100%').margin({ bottom: 9 })
+
+      Row() {
+        SymbolGlyph($r('sys.symbol.key_fill')).fontSize(16).fontColor([this.accentColor])
+        Column() {
+          Text('手动账户').fontSize(12).fontColor(this.pal().text).fontFamily(this.font())
+          Text(relay.accounts.length > 0 ? '用于手动登录与本地凭据' : '未配置手动账户')
+            .fontSize(10).fontColor(this.pal().text3).fontFamily(this.font())
+        }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 8 })
+        Text('添加').fontSize(12).fontColor(this.accentColor).fontFamily(this.font())
+          .onClick(() => { this.openAccountSheet(relay); })
+      }.width('100%').padding({ left: 10, right: 10, top: 8, bottom: 8 })
+        .borderRadius(9).backgroundColor(this.pal().card)
+
+      ForEach(relay.accounts, (acct: RustDeskAccount) => {
+        Row() {
+          SymbolGlyph($r('sys.symbol.key_fill'))
+            .fontSize(this.breakpoint === 'sm' ? 15 : 18)
+            .fontColor([this.accountStatusColor(acct)])
+          Column() {
+            Text(acct.displayName()).fontSize(this.breakpoint === 'sm' ? 13 : 15)
+              .fontColor(this.pal().text).fontFamily(this.font())
+            Text(this.accountStatusLabel(acct) + ' · ' + this.hostCountForAccount(relay.id, acct.id) + '台主机')
+              .fontSize(this.breakpoint === 'sm' ? 10 : 11)
+              .fontColor(this.pal().text3).fontFamily(this.font())
+          }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+            .margin({ left: this.breakpoint === 'sm' ? 8 : 10 })
+          SymbolGlyph($r('sys.symbol.chevron_right'))
+            .fontSize(this.breakpoint === 'sm' ? 14 : 16).fontColor([this.pal().text3])
+        }
+        .width('100%')
+        .constraintSize({ minHeight: this.breakpoint === 'sm' ? 52 : 68 })
+        .padding(this.breakpoint === 'sm' ? { left: 10, right: 10, top: 7, bottom: 7 } : 12)
+        .borderRadius(9).backgroundColor(this.pal().surface)
+        .margin({ top: 4 })
+        .onClick(() => { this.openAccountSheet(relay, acct); })
+      })
+
+      Divider().strokeWidth(0.5).color(this.pal().divider).margin({ top: 10, bottom: 10 })
+
+      Row() {
+        SymbolGlyph($r('sys.symbol.person_crop_circle_fill')).fontSize(16).fontColor([this.accentColor])
+        Column() {
+          Text('Server Pro 地址簿').fontSize(12).fontColor(this.pal().text).fontFamily(this.font())
+          Text(this.proAccountsForRelay(relay.id).length > 0 ? '同步云端主机并显示设备平台' : '用于同步云端主机与平台信息')
+            .fontSize(10).fontColor(this.pal().text3).fontFamily(this.font())
+        }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 8 })
+        Text(this.proAccountsForRelay(relay.id).length > 0 ? '管理' : '登录')
+          .fontSize(12).fontColor(this.accentColor).fontFamily(this.font())
+          .onClick(() => { this.openProAccountSheet(relay); })
+      }.width('100%').padding({ left: 10, right: 10, top: 8, bottom: 8 })
+        .borderRadius(9).backgroundColor(this.pal().card)
+
+      if (this.proAccountsForRelay(relay.id).length === 0) {
+        Text('尚未连接 Server Pro 地址簿')
+          .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
+          .width('100%').textAlign(TextAlign.Center).padding({ top: 8, bottom: 2 })
+      }
+      ForEach(this.proAccountsForRelay(relay.id), (account: RustDeskProAccountState) => {
+        Row() {
+          SymbolGlyph($r('sys.symbol.person_crop_circle_fill')).fontSize(15).fontColor([this.proStatusColor(account)])
+          Column() {
+            Text(account.displayName.length > 0 ? account.displayName : account.username)
+              .fontSize(13).fontColor(this.pal().text).fontFamily(this.font())
+            Text(this.proStatusLabel(account) + ' · ' + account.serverUrl)
+              .fontSize(10).fontColor(this.pal().text3).fontFamily(this.font())
+              .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+          }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 7 })
+          if (account.loginStatus === 'logged_in') {
+            Text('同步').fontSize(11).fontColor(this.accentColor).fontFamily(this.font())
+              .margin({ right: 8 }).onClick(() => { this.doProSync(account.id); })
+          }
+          Text('管理').fontSize(11).fontColor(this.accentColor).fontFamily(this.font())
+            .onClick(() => { this.openProAccountSheet(relay, account); })
+        }
+        .width('100%').padding({ left: 9, right: 9, top: 7, bottom: 7 })
+        .borderRadius(9).backgroundColor(this.pal().surface).margin({ top: 4 })
+      }, (account: RustDeskProAccountState): string => account.id)
+    }
+    .width('100%').borderRadius(12).backgroundColor(this.pal().surface)
+    .padding(10).margin({ top: 12, bottom: 14 })
+  }
+
   @Builder proAccountSection(relay: RustDeskRelayConfig) {
     Column() {
       Row() {
         Row() {
           SymbolGlyph($r('sys.symbol.person_crop_circle_fill')).fontSize(16).fontColor([this.accentColor])
-          Text('Pro 账号').fontSize(13).fontColor(this.pal().text3).fontFamily(this.font()).margin({ left: 6 })
+          Text('Server Pro 地址簿').fontSize(13).fontColor(this.pal().text3).fontFamily(this.font()).margin({ left: 6 })
         }
         Blank()
-        Text('+ 登录').fontSize(13).fontColor(this.accentColor).fontFamily(this.font())
+        Text('登录').fontSize(13).fontColor(this.accentColor).fontFamily(this.font())
           .onClick(() => { this.openProAccountSheet(relay); })
       }.width('100%').margin({ bottom: 7 })
       if (this.proAccountsForRelay(relay.id).length === 0) {
