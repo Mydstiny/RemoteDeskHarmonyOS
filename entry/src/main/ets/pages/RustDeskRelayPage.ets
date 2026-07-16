@@ -267,6 +267,20 @@ export struct RustDeskRelayPage {
     return this.proAccounts.filter((account: RustDeskProAccountState): boolean => account.relayId === relayId);
   }
 
+  private preferredProAccountForRelay(relayId: string): RustDeskProAccountState | undefined {
+    const accounts = this.proAccountsForRelay(relayId);
+    if (accounts.length === 0) { return undefined; }
+    let preferred = accounts[0];
+    for (let i = 1; i < accounts.length; i++) {
+      const candidate = accounts[i];
+      if (candidate.lastLoginAt > preferred.lastLoginAt ||
+        (candidate.lastLoginAt === preferred.lastLoginAt && candidate.lastSyncAt > preferred.lastSyncAt)) {
+        preferred = candidate;
+      }
+    }
+    return preferred;
+  }
+
   private proStatusLabel(account: RustDeskProAccountState): string {
     if (account.loginStatus === 'logged_in') { return '已登录'; }
     if (account.loginStatus === 'expired') { return '登录过期'; }
@@ -280,10 +294,15 @@ export struct RustDeskRelayPage {
   }
 
   private openProAccountSheet(relay: RustDeskRelayConfig, account?: RustDeskProAccountState): void {
+    // A relay normally has one Pro identity.  The compact header used to
+    // open a fresh account every time, leaving the first endpoint/token in
+    // the credential store and making later syncs look stale.  Reuse the
+    // existing account when the caller did not provide one explicitly.
+    const storedAccount = account ?? this.preferredProAccountForRelay(relay.id);
     this.proRelayId = relay.id;
-    this.proAccountId = account ? account.id : '';
-    this.formProServer = account ? account.serverUrl : relay.apiServer;
-    this.formProUser = account ? account.username : '';
+    this.proAccountId = storedAccount ? storedAccount.id : '';
+    this.formProServer = storedAccount ? storedAccount.serverUrl : relay.apiServer;
+    this.formProUser = storedAccount ? storedAccount.username : '';
     this.formProPwd = '';
     this.formProError = '';
     this.proBusy = false;
@@ -433,20 +452,28 @@ export struct RustDeskRelayPage {
   }
 
   private async doProLogin(): Promise<void> {
-    if (this.proRelayId === '' || this.formProServer.trim() === '' || this.formProUser.trim() === '' || this.formProPwd === '') {
+    const serverUrl = this.formProServer.trim();
+    const username = this.formProUser.trim();
+    const password = this.formProPwd;
+    if (this.proRelayId === '' || serverUrl === '' || username === '' || password === '') {
       this.formProError = '服务器地址、用户名和密码不能为空';
       return;
     }
     this.proBusy = true;
     this.formProError = '';
-    const accountId = this.proAccountId !== '' ? this.proAccountId : 'rdpro_' + Date.now().toString(36);
+    this.formProServer = serverUrl;
+    this.formProUser = username;
+    const existing = this.preferredProAccountForRelay(this.proRelayId);
+    const accountId = this.proAccountId !== ''
+      ? this.proAccountId
+      : (existing ? existing.id : 'rdpro_' + Date.now().toString(36));
     try {
       await this.proSync.login({
         id: accountId,
         relayId: this.proRelayId,
-        serverUrl: this.formProServer,
-        username: this.formProUser,
-        password: this.formProPwd
+        serverUrl,
+        username,
+        password
       });
       await this.proSync.sync(accountId);
       this.loadProAccounts();
@@ -1305,7 +1332,7 @@ export struct RustDeskRelayPage {
           this._f('ID服务器端口', '21116', this.formIdPort.toString(), (v: string) => { const n = parseInt(v); this.formIdPort = isNaN(n) ? 21116 : n; })
           this._f('中继服务器地址', 'relay.example.com', this.formRelayServer, (v: string) => { this.formRelayServer = v; })
           this._f('中继端口', '21117', this.formRelayPort.toString(), (v: string) => { const n = parseInt(v); this.formRelayPort = isNaN(n) ? 21117 : n; })
-          this._f('API服务器(可选)', '', this.formApiServer, (v: string) => { this.formApiServer = v; })
+          this._f('通用 API服务器(可选)', '', this.formApiServer, (v: string) => { this.formApiServer = v; })
           this._f('密钥(可选)', '', this.formKey, (v: string) => { this.formKey = v; })
           if (this.formTestResult !== '') {
             Text(this.formTestResult).fontSize(12).fontColor(this.formTestResult.startsWith('✓') ? this.accentColor : this.pal().danger).margin({ top: 4 })
@@ -1371,10 +1398,10 @@ export struct RustDeskRelayPage {
       Text(this.proAccountId === '' ? '登录 RustDesk Server Pro' : '管理 Pro 账号')
         .fontSize(19).fontWeight(FontWeight.Bold).fontColor(this.pal().text).fontFamily(this.font())
         .width('100%').margin({ bottom: 8 })
-      Text('Pro 设备会自动进入主机列表；访问令牌仅保存在本机，不参与华为云同步。')
+      Text('Pro API 地址独立于中继配置；修改地址后请重新登录并同步。访问令牌仅保存在本机，不参与华为云同步。')
         .fontSize(12).fontColor(this.pal().text3).fontFamily(this.font()).lineHeight(18)
         .width('100%').margin({ bottom: 14 })
-      this._f('Pro API 地址', 'https://pro.example.com', this.formProServer, (v: string) => { this.formProServer = v; })
+      this._f('Server Pro API 地址', 'http://pro.example.com:21114', this.formProServer, (v: string) => { this.formProServer = v; })
       this._f('用户名', 'user@example.com', this.formProUser, (v: string) => { this.formProUser = v; })
       this._f('密码', '不会保存密码', this.formProPwd, (v: string) => { this.formProPwd = v; })
       if (this.formProError !== '') {
