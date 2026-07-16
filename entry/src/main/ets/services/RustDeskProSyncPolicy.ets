@@ -56,6 +56,7 @@ export function reconcileRustDeskProHosts(existing: RemoteHost[], relayId: strin
       host.rustdeskProManaged = true;
       host.rustdeskProAccountId = accountId;
       host.rustdeskProPeerId = peerId;
+      host.rustdeskProPlatform = peer.platform;
       host.createdAt = syncedAt;
       hosts.push(host);
       byPeer.set(peerId, host);
@@ -71,6 +72,7 @@ export function reconcileRustDeskProHosts(existing: RemoteHost[], relayId: strin
     host.rustdeskProManaged = true;
     host.rustdeskProAccountId = accountId;
     host.rustdeskProPeerId = peerId;
+    host.rustdeskProPlatform = peer.platform;
     host.rustdeskProLastSeenAt = syncedAt;
     host.rustdeskProSyncError = '';
   }

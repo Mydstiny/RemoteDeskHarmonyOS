@@ -3,10 +3,11 @@ import { RemoteHost } from '../main/ets/model/RemoteHost';
 import { RustDeskProPeer } from '../main/ets/model/RustDeskProModels';
 import { reconcileRustDeskProHosts, rustDeskProHostId } from '../main/ets/services/RustDeskProSyncPolicy';
 
-function peer(id: string, alias: string): RustDeskProPeer {
+function peer(id: string, alias: string, platform: string = ''): RustDeskProPeer {
   const value = new RustDeskProPeer();
   value.id = id;
   value.alias = alias;
+  value.platform = platform;
   return value;
 }
 
@@ -24,12 +25,13 @@ function manualHost(id: string): RemoteHost {
 export default function rustDeskProSyncPolicyTest() {
   describe('RustDeskProSyncPolicy', () => {
     it('creates_stable_managed_hosts', 0, () => {
-      const result = reconcileRustDeskProHosts([], 'relay-1', 'acct-1', [peer('123', 'Office')], 100);
+      const result = reconcileRustDeskProHosts([], 'relay-1', 'acct-1', [peer('123', 'Office', 'Windows')], 100);
       expect(result.addedIds.length).assertEqual(1);
       expect(result.hosts.length).assertEqual(1);
       expect(result.hosts[0].id).assertEqual(rustDeskProHostId('relay-1', 'acct-1', '123'));
       expect(result.hosts[0].sourceType).assertEqual('rustdesk_pro');
       expect(result.hosts[0].rustdeskProManaged).assertTrue();
+      expect(result.hosts[0].rustdeskProPlatform).assertEqual('Windows');
       expect(result.hosts[0].label).assertEqual('Office');
     });
 

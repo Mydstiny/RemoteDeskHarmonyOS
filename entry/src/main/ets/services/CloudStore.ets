@@ -513,6 +513,7 @@ export class CloudStore implements CryptoCloudStore {
         sourcetype TEXT,
         rustdeskproaccountid TEXT,
         rustdeskpropeerid TEXT,
+        rustdeskproplatform TEXT,
         rustdeskpromanaged INTEGER,
         rustdeskprolastseenat INTEGER,
         rustdeskprosyncerror TEXT,
@@ -690,6 +691,7 @@ export class CloudStore implements CryptoCloudStore {
       'sourcetype TEXT',
       'rustdeskproaccountid TEXT',
       'rustdeskpropeerid TEXT',
+      'rustdeskproplatform TEXT',
       'rustdeskpromanaged INTEGER',
       'rustdeskprolastseenat INTEGER',
       'rustdeskprosyncerror TEXT'
@@ -1587,6 +1589,7 @@ export class CloudStore implements CryptoCloudStore {
     vb['sourcetype'] = h.sourceType;
     vb['rustdeskproaccountid'] = h.rustdeskProAccountId;
     vb['rustdeskpropeerid'] = h.rustdeskProPeerId;
+    vb['rustdeskproplatform'] = h.rustdeskProPlatform;
     vb['rustdeskpromanaged'] = h.rustdeskProManaged ? 1 : 0;
     vb['rustdeskprolastseenat'] = h.rustdeskProLastSeenAt;
     vb['rustdeskprosyncerror'] = h.rustdeskProSyncError;
@@ -1667,6 +1670,7 @@ export class CloudStore implements CryptoCloudStore {
     h.sourceType = getStr('sourcetype') || 'manual';
     h.rustdeskProAccountId = getStr('rustdeskproaccountid');
     h.rustdeskProPeerId = getStr('rustdeskpropeerid');
+    h.rustdeskProPlatform = getStr('rustdeskproplatform');
     const rdProManagedIdx: number = rs.getColumnIndex('rustdeskpromanaged');
     h.rustdeskProManaged = rdProManagedIdx >= 0 && rs.getLong(rdProManagedIdx) === 1;
     const rdProLastSeenIdx: number = rs.getColumnIndex('rustdeskprolastseenat');
@@ -2007,12 +2011,14 @@ export class CloudStore implements CryptoCloudStore {
     const rdSourceTypeIdx: number = rs.getColumnIndex('sourcetype');
     const rdProAccountIdx: number = rs.getColumnIndex('rustdeskproaccountid');
     const rdProPeerIdx: number = rs.getColumnIndex('rustdeskpropeerid');
+    const rdProPlatformIdx: number = rs.getColumnIndex('rustdeskproplatform');
     const rdProManagedIdx2: number = rs.getColumnIndex('rustdeskpromanaged');
     const rdProLastSeenIdx2: number = rs.getColumnIndex('rustdeskprolastseenat');
     const rdProSyncErrorIdx: number = rs.getColumnIndex('rustdeskprosyncerror');
     h.sourceType = rdSourceTypeIdx >= 0 ? rs.getString(rdSourceTypeIdx) || 'manual' : 'manual';
     h.rustdeskProAccountId = rdProAccountIdx >= 0 ? rs.getString(rdProAccountIdx) : '';
     h.rustdeskProPeerId = rdProPeerIdx >= 0 ? rs.getString(rdProPeerIdx) : '';
+    h.rustdeskProPlatform = rdProPlatformIdx >= 0 ? rs.getString(rdProPlatformIdx) : '';
     h.rustdeskProManaged = rdProManagedIdx2 >= 0 && rs.getLong(rdProManagedIdx2) === 1;
     h.rustdeskProLastSeenAt = rdProLastSeenIdx2 >= 0 ? rs.getLong(rdProLastSeenIdx2) : 0;
     h.rustdeskProSyncError = rdProSyncErrorIdx >= 0 ? rs.getString(rdProSyncErrorIdx) : '';
@@ -2160,6 +2166,7 @@ export class CloudStore implements CryptoCloudStore {
     vb['sourcetype'] = h.sourceType;
     vb['rustdeskproaccountid'] = h.rustdeskProAccountId;
     vb['rustdeskpropeerid'] = h.rustdeskProPeerId;
+    vb['rustdeskproplatform'] = h.rustdeskProPlatform;
     vb['rustdeskpromanaged'] = h.rustdeskProManaged ? 1 : 0;
     vb['rustdeskprolastseenat'] = h.rustdeskProLastSeenAt;
     vb['rustdeskprosyncerror'] = h.rustdeskProSyncError;

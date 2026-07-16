@@ -2348,6 +2348,13 @@ struct HostListPage {
     return host !== undefined && host.rustdeskProManaged && host.sourceType === 'rustdesk_pro';
   }
 
+  private hostPlatformText(host: RemoteHost): string {
+    if (host.rustdeskProManaged && host.rustdeskProPlatform.trim() !== '') {
+      return host.rustdeskProPlatform.trim();
+    }
+    return host.protocol.toUpperCase();
+  }
+
   // 直接删除主机 (滑动触发)
   private deleteHost(host: RemoteHost): void {
     this.srv.removeHost(host.id);
@@ -3418,7 +3425,7 @@ struct HostListPage {
                     }
                   }
                   if (!host.locked) {
-                    Text(host.protocol.toUpperCase() + '  ·  ' + host.host + ':' + host.port)
+                    Text(this.hostPlatformText(host) + '  ·  ' + host.host + ':' + host.port)
                       .fontSize(this.breakpoint === 'sm' ? 12 : 14)
                       .fontColor(this.pal().text2).margin({ top: this.breakpoint === 'sm' ? 3 : 4 })
                       .fontFamily(this.font())
@@ -7025,6 +7032,7 @@ struct HostListPage {
         h.sourceType = existingHost.sourceType;
         h.rustdeskProAccountId = existingHost.rustdeskProAccountId;
         h.rustdeskProPeerId = existingHost.rustdeskProPeerId;
+        h.rustdeskProPlatform = existingHost.rustdeskProPlatform;
         h.rustdeskProManaged = existingHost.rustdeskProManaged;
         h.rustdeskProLastSeenAt = existingHost.rustdeskProLastSeenAt;
         h.rustdeskProSyncError = existingHost.rustdeskProSyncError;

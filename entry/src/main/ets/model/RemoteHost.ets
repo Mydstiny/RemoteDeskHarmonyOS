@@ -87,6 +87,7 @@ export interface RemoteHostJSON {
   sourceType: string
   rustdeskProAccountId: string
   rustdeskProPeerId: string
+  rustdeskProPlatform: string
   rustdeskProManaged: boolean
   rustdeskProLastSeenAt: number
   rustdeskProSyncError: string
@@ -192,6 +193,7 @@ export class RemoteHost {
   sourceType: string = 'manual'; // manual | rustdesk_pro
   rustdeskProAccountId: string = ''; // Pro 账号设备端绑定 ID
   rustdeskProPeerId: string = ''; // Pro 地址簿中的稳定 peer ID
+  rustdeskProPlatform: string = ''; // Pro 地址簿返回的平台: Windows/Linux/macOS 等
   rustdeskProManaged: boolean = false; // 是否由 Server Pro 地址簿管理
   rustdeskProLastSeenAt: number = 0; // 最近一次地址簿同步看到该 peer 的时间
   rustdeskProSyncError: string = ''; // not_seen 或最近一次同步错误码
@@ -335,6 +337,7 @@ export class RemoteHost {
       sourceType: this.sourceType,
       rustdeskProAccountId: this.rustdeskProAccountId,
       rustdeskProPeerId: this.rustdeskProPeerId,
+      rustdeskProPlatform: this.rustdeskProPlatform,
       rustdeskProManaged: this.rustdeskProManaged,
       rustdeskProLastSeenAt: this.rustdeskProLastSeenAt,
       rustdeskProSyncError: this.rustdeskProSyncError
@@ -407,6 +410,7 @@ export class RemoteHost {
     if (json.sourceType) { host.sourceType = json.sourceType; }
     if (json.rustdeskProAccountId) { host.rustdeskProAccountId = json.rustdeskProAccountId; }
     if (json.rustdeskProPeerId) { host.rustdeskProPeerId = json.rustdeskProPeerId; }
+    if (json.rustdeskProPlatform) { host.rustdeskProPlatform = json.rustdeskProPlatform; }
     if (json.rustdeskProManaged !== undefined) { host.rustdeskProManaged = json.rustdeskProManaged; }
     if (json.rustdeskProLastSeenAt !== undefined) { host.rustdeskProLastSeenAt = json.rustdeskProLastSeenAt; }
     if (json.rustdeskProSyncError) { host.rustdeskProSyncError = json.rustdeskProSyncError; }
