@@ -689,9 +689,6 @@ export struct RustDeskRelayPage {
         ListItem() {
           this.relayCardContent(relay, false)
         }
-        // Keep the card itself tappable on HarmonyOS mobile. Some releases
-        // deliver ListItem gestures without bubbling the nested Column click.
-        .onClick(() => { this.toggleRelayExpanded(relay.id); })
         .swipeAction({
           start: {
             builder: () => { this.rightSwipeActions(relay) },
@@ -1114,83 +1111,90 @@ export struct RustDeskRelayPage {
 
   @Builder relayCardContent(relay: RustDeskRelayConfig, enableTap: boolean) {
     Column() {
-      // Card header
+      // Card header.  Keep the health action and overflow menu outside the
+      // expand hit target so a tap expands while a horizontal swipe can still
+      // be handled continuously by ListItem.swipeAction.
       Row() {
         SymbolGlyph($r('sys.symbol.cloud_fill'))
           .fontSize(this.breakpoint === 'sm' ? 22 : 24)
           .fontColor([this.accentColor])
-        Column() {
-          Text(relay.displayName())
-            .fontSize(this.breakpoint === 'sm' ? 15 : 17).fontWeight(FontWeight.Medium)
-            .fontColor(this.pal().text).fontFamily(this.font())
-            .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-          Row() {
-            Column().width(this.breakpoint === 'sm' ? 6 : 7)
-              .height(this.breakpoint === 'sm' ? 6 : 7)
-              .borderRadius(this.breakpoint === 'sm' ? 3 : 4)
-              .backgroundColor(this.relayStatusColor(relay))
-            Text(this.relayStatusLabel(relay))
-              .fontSize(this.breakpoint === 'sm' ? 11 : 13)
-              .fontColor(this.relayStatusColor(relay)).fontFamily(this.font())
-              .margin({ left: this.breakpoint === 'sm' ? 4 : 5 })
-            Text(' · ' + this.hostCountForRelay(relay.id) + '台')
-              .fontSize(this.breakpoint === 'sm' ? 11 : 12)
-              .fontColor(this.pal().text3).fontFamily(this.font())
-            Text(' · ' + this.accountCountForRelay(relay.id) + '账户')
-              .fontSize(this.breakpoint === 'sm' ? 11 : 12)
-              .fontColor(this.pal().text3).fontFamily(this.font())
-          }.margin({ top: this.breakpoint === 'sm' ? 2 : 3 })
-        }.alignItems(HorizontalAlign.Start).layoutWeight(1)
-        .margin({ left: this.breakpoint === 'sm' ? 10 : 12 })
-
-        // Right-side controls: [▸ chevron] [⋯ menu]
-        // sm: direct health test + chevron | md/lg/xl: chevron + ⋯ | PC: ⋯ only
-        // All vertically centered in card, chevron between text and ⋯ button
+        // The title/status/chevron region is the expand hit target.  A click
+        // is delivered only after a tap; ListItem.swipeAction keeps ownership
+        // of horizontal drags, so swipe-to-reveal remains continuous.
         Row() {
+          Column() {
+            Text(relay.displayName())
+              .fontSize(this.breakpoint === 'sm' ? 15 : 17).fontWeight(FontWeight.Medium)
+              .fontColor(this.pal().text).fontFamily(this.font())
+              .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+            Row() {
+              Column().width(this.breakpoint === 'sm' ? 6 : 7)
+                .height(this.breakpoint === 'sm' ? 6 : 7)
+                .borderRadius(this.breakpoint === 'sm' ? 3 : 4)
+                .backgroundColor(this.relayStatusColor(relay))
+              Text(this.relayStatusLabel(relay))
+                .fontSize(this.breakpoint === 'sm' ? 11 : 13)
+                .fontColor(this.relayStatusColor(relay)).fontFamily(this.font())
+                .margin({ left: this.breakpoint === 'sm' ? 4 : 5 })
+              Text(' · ' + this.hostCountForRelay(relay.id) + '台')
+                .fontSize(this.breakpoint === 'sm' ? 11 : 12)
+                .fontColor(this.pal().text3).fontFamily(this.font())
+              Text(' · ' + this.accountCountForRelay(relay.id) + '账户')
+                .fontSize(this.breakpoint === 'sm' ? 11 : 12)
+                .fontColor(this.pal().text3).fontFamily(this.font())
+            }.margin({ top: this.breakpoint === 'sm' ? 2 : 3 })
+          }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+
           if (!this.isPC()) {
-            if (this.breakpoint === 'sm') {
-              Button() {
-                SymbolGlyph($r('sys.symbol.bolt_fill')).fontSize(15).fontColor([this.accentColor])
-              }
-              .width(32).height(32).borderRadius(16)
-              .backgroundColor(this.pal().surface)
-              .enabled(this.testingRelayId !== relay.id)
-              .onClick(() => { void this.doTestRelay(relay); })
-              .margin({ right: 6 })
-            }
             SymbolGlyph($r('sys.symbol.chevron_right'))
-              .fontSize(14)
-              .fontColor([this.pal().text3])
+              .fontSize(14).fontColor([this.pal().text3])
               .rotate({ angle: this.isRelayExpanded(relay.id) ? 90 : 0 })
               .animation({ duration: 250, curve: Curve.FastOutSlowIn })
-              .margin({ right: this.breakpoint !== 'sm' ? 10 : 0 })
+              .margin({ left: 8, right: this.breakpoint !== 'sm' ? 10 : 0 })
           }
-          if (this.breakpoint !== 'sm') {
-            Button() {
-              Text('⋯').fontSize(18).fontColor(this.pal().text)
+        }
+        .layoutWeight(1)
+        .margin({ left: this.breakpoint === 'sm' ? 10 : 12 })
+        .onClick(() => {
+          if (enableTap || !this.isPC()) { this.toggleRelayExpanded(relay.id); }
+        })
+
+        // Controls outside the expand hit target.
+        if (!this.isPC() && this.breakpoint === 'sm') {
+          Button() {
+            SymbolGlyph($r('sys.symbol.bolt_fill')).fontSize(15).fontColor([this.accentColor])
+          }
+          .width(32).height(32).borderRadius(16)
+          .backgroundColor(this.pal().surface)
+          .enabled(this.testingRelayId !== relay.id)
+          .onClick(() => { void this.doTestRelay(relay); })
+          .margin({ left: 6 })
+        }
+        if (this.breakpoint !== 'sm') {
+          Button() {
+            Text('⋯').fontSize(18).fontColor(this.pal().text)
+          }
+          .width(32).height(32).borderRadius(16)
+          .backgroundColor(this.pal().surface)
+          .bindPopup(this.menuVisibleRelayId === relay.id, {
+            builder: this.pcMenuBuilder(relay),
+            placement: Placement.BottomRight,
+            enableArrow: true,
+            popupColor: this.pal().card,
+            onStateChange: (e: Object) => {
+              const ev: Record<string, boolean> = e as Record<string, boolean>;
+              if (!ev['isVisible']) { this.menuVisibleRelayId = ''; }
             }
-            .width(32).height(32).borderRadius(16)
-            .backgroundColor(this.pal().surface)
-            .bindPopup(this.menuVisibleRelayId === relay.id, {
-              builder: this.pcMenuBuilder(relay),
-              placement: Placement.BottomRight,
-              enableArrow: true,
-              popupColor: this.pal().card,
-              onStateChange: (e: Object) => {
-                const ev: Record<string, boolean> = e as Record<string, boolean>;
-                if (!ev['isVisible']) { this.menuVisibleRelayId = ''; }
-              }
-            })
-            .onClick(() => {
-              animateTo({ duration: 200, curve: Curve.FastOutSlowIn }, () => {
-                this.menuVisibleRelayId = (this.menuVisibleRelayId === relay.id) ? '' : relay.id;
-              });
-            })
-          }
-        }.alignItems(VerticalAlign.Center).margin({ right: 6 })
+          })
+          .onClick(() => {
+            animateTo({ duration: 200, curve: Curve.FastOutSlowIn }, () => {
+              this.menuVisibleRelayId = (this.menuVisibleRelayId === relay.id) ? '' : relay.id;
+            });
+          })
+          .margin({ left: 6 })
+        }
       }
       .width('100%')
-      .onClick(() => { if (enableTap) { this.toggleRelayExpanded(relay.id); } })
 
       // Expanded: server info
       if (this.isRelayExpanded(relay.id)) {
