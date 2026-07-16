@@ -1,3 +1,5 @@
+import { buffer, util } from '@kit.ArkTS';
+
 /**
  * RustDesk Server Pro 账号与地址簿模型。
  *
@@ -24,6 +26,14 @@ export class RustDeskProPeer {
   tags: string[] = [];
   note: string = '';
 
+  /**
+   * RustDesk personal address books return the remembered password as a
+   * base64-encoded `hash` field. Shared address books may return `password`.
+   * Keep the decoded value in memory only; RemoteHost/CloudStore encrypt it
+   * when it is persisted locally.
+   */
+  password: string = '';
+
   static fromJSON(json: Record<string, Object>): RustDeskProPeer {
     const peer = new RustDeskProPeer();
     peer.id = typeof json['id'] === 'string' ? json['id'] as string : '';
@@ -32,6 +42,17 @@ export class RustDeskProPeer {
     peer.hostname = typeof json['hostname'] === 'string' ? json['hostname'] as string : '';
     peer.platform = typeof json['platform'] === 'string' ? json['platform'] as string : '';
     peer.note = typeof json['note'] === 'string' ? json['note'] as string : '';
+    if (typeof json['password'] === 'string') {
+      peer.password = json['password'] as string;
+    }
+    if (peer.password.length === 0 && typeof json['hash'] === 'string') {
+      try {
+        const bytes: Uint8Array = new util.Base64Helper().decodeSync(json['hash'] as string);
+        peer.password = buffer.from(bytes).toString('utf-8');
+      } catch (_err) {
+        // A malformed/unsupported hash must not make the whole address book fail.
+      }
+    }
     const rawTags: Object | undefined = json['tags'];
     if (Array.isArray(rawTags)) {
       const tags: string[] = [];
@@ -62,7 +83,7 @@ export class RustDeskProAddressBook {
     }
     if (!data || typeof data !== 'object') { return result; }
     const body = data as Record<string, Object>;
-    const rawPeers: Object | undefined = body['peers'];
+    const rawPeers: Object | undefined = Array.isArray(data) ? data : body['peers'];
     if (Array.isArray(rawPeers)) {
       const values: Object[] = rawPeers as Object[];
       for (let i = 0; i < values.length; i++) {

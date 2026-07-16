@@ -13,6 +13,7 @@
  */
 import { promptAction, curves } from '@kit.ArkUI';
 import { socket } from '@kit.NetworkKit';
+import { hilog } from '@kit.PerformanceAnalysisKit';
 import { common } from '@kit.AbilityKit';
 import { RustDeskRelayConfig } from '../model/RustDeskRelayConfig';
 import { RustDeskAccount } from '../model/RustDeskAccount';
@@ -67,6 +68,7 @@ export struct RustDeskRelayPage {
   @State formProPwd: string = '';
   @State formProError: string = '';
   @State proBusy: boolean = false;
+  @State testingRelayId: string = '';
   private srv: HostSyncService = HostSyncService.getInstance();
   private proSync: RustDeskProSyncService = RustDeskProSyncService.getInstance();
   private dataUnsubscribe: (() => void) | null = null;
@@ -103,12 +105,14 @@ export struct RustDeskRelayPage {
     if (!this.dataUnsubscribe) {
       this.dataUnsubscribe = this.srv.onDataChange((): void => {
         this.load();
+        this.loadProAccounts();
       });
     }
   }
   private load(): void {
     const selectedRelayId = this.selectedPcRelay ? this.selectedPcRelay.id : '';
-    const nextRelays = this.srv.getAllRelays();
+    const nextRelays = this.srv.getAllRelays().map((relay: RustDeskRelayConfig): RustDeskRelayConfig =>
+      RustDeskRelayConfig.fromJSON(relay.toJSON()));
     this.relays = nextRelays;
     if (selectedRelayId !== '') {
       this.selectedPcRelay = snapshotSelectedRelay(nextRelays, selectedRelayId);
@@ -135,7 +139,7 @@ export struct RustDeskRelayPage {
   }
   private totalAccountCount(): number {
     let c = 0;
-    this.relays.forEach((r: RustDeskRelayConfig) => { c += r.accounts.length; });
+    this.relays.forEach((r: RustDeskRelayConfig) => { c += this.accountCountForRelay(r.id); });
     return c;
   }
   private totalHostCount(): number {
@@ -168,6 +172,7 @@ export struct RustDeskRelayPage {
   }
 
   private relayStatusLabel(relay: RustDeskRelayConfig): string {
+    if (this.testingRelayId === relay.id) { return '检测中'; }
     if (relay.healthStatus === 'online') {
       return relay.healthLatency > 0 ? '在线 · ' + relay.healthLatency + 'ms' : '在线';
     }
@@ -199,6 +204,11 @@ export struct RustDeskRelayPage {
       if (h.rustdeskRelayId === relayId && h.rustdeskAccountId === accountId) { count++; }
     });
     return count;
+  }
+
+  private accountCountForRelay(relayId: string): number {
+    const relay = this.relays.find((item: RustDeskRelayConfig): boolean => item.id === relayId);
+    return (relay ? relay.accounts.length : 0) + this.proAccountsForRelay(relayId).length;
   }
 
   private accountStatusLabel(acct: RustDeskAccount): string {
@@ -380,8 +390,9 @@ export struct RustDeskRelayPage {
 
   private _updateRelayHealth(status: string, latency: number): void {
     if (this.editingRelayId !== '') {
-      const relay = this.relays.find((x: RustDeskRelayConfig) => x.id === this.editingRelayId);
-      if (relay) {
+      const current = this.relays.find((x: RustDeskRelayConfig) => x.id === this.editingRelayId);
+      if (current) {
+        const relay = RustDeskRelayConfig.fromJSON(current.toJSON());
         relay.healthStatus = status;
         relay.healthLatency = latency;
         relay.healthCheckedAt = Date.now();
@@ -392,26 +403,38 @@ export struct RustDeskRelayPage {
   }
 
   private async doTestRelay(relay: RustDeskRelayConfig): Promise<void> {
-    relay.healthStatus = 'unknown';
-    this.srv.updateRelay(relay);
+    const target = RustDeskRelayConfig.fromJSON(relay.toJSON());
+    this.testingRelayId = target.id;
+    hilog.info(0x0001, 'RustDeskRelay', 'health test start id=' + target.id +
+      ' relay=' + target.relayServer + ':' + target.relayPort.toString());
+    target.healthStatus = 'unknown';
+    const pendingSaved = this.srv.updateRelay(target);
+    hilog.info(0x0001, 'RustDeskRelay', 'health test pending saved=' + pendingSaved.toString());
     this.load();
-    const r1 = await this.tcpTest(relay.relayServer, relay.relayPort);
-    if (r1.ok) {
-      relay.healthStatus = 'online';
-      relay.healthLatency = r1.lat;
-    } else {
-      const r2 = await this.tcpTest(relay.idServer, relay.idServerPort);
-      if (r2.ok) {
-        relay.healthStatus = 'error';
-        relay.healthLatency = r2.lat;
+    try {
+      const r1 = await this.tcpTest(target.relayServer, target.relayPort);
+      if (r1.ok) {
+        target.healthStatus = 'online';
+        target.healthLatency = r1.lat;
       } else {
-        relay.healthStatus = 'offline';
-        relay.healthLatency = 0;
+        const r2 = await this.tcpTest(target.idServer, target.idServerPort);
+        if (r2.ok) {
+          target.healthStatus = 'error';
+          target.healthLatency = r2.lat;
+        } else {
+          target.healthStatus = 'offline';
+          target.healthLatency = 0;
+        }
       }
+      target.healthCheckedAt = Date.now();
+      const saved = this.srv.updateRelay(target);
+      hilog.info(0x0001, 'RustDeskRelay', 'health test result id=' + target.id +
+        ' status=' + target.healthStatus + ' latency=' + target.healthLatency.toString() +
+        ' saved=' + saved.toString());
+      this.load();
+    } finally {
+      this.testingRelayId = '';
     }
-    relay.healthCheckedAt = Date.now();
-    this.srv.updateRelay(relay);
-    this.load();
   }
 
   private doDeleteRelay(id: string): void {
@@ -468,17 +491,20 @@ export struct RustDeskRelayPage {
       ? this.proAccountId
       : (existing ? existing.id : 'rdpro_' + Date.now().toString(36));
     try {
-      await this.proSync.login({
+      const result = await this.proSync.loginAndSync({
         id: accountId,
         relayId: this.proRelayId,
         serverUrl,
         username,
         password
       });
-      await this.proSync.sync(accountId);
       this.loadProAccounts();
       this.formProPwd = '';
-      promptAction.showToast({ message: 'Pro 登录并同步成功', duration: 2000 });
+      const count = result.addedIds.length + result.updatedIds.length;
+      promptAction.showToast({
+        message: count > 0 ? 'Pro 已同步 ' + count.toString() + ' 台设备' : '登录成功，但个人地址簿为空',
+        duration: 2200
+      });
       this.closeSheet();
     } catch (err) {
       this.formProError = err instanceof Error ? err.message : 'Pro 登录失败';
@@ -489,9 +515,13 @@ export struct RustDeskRelayPage {
 
   private async doProSync(accountId: string): Promise<void> {
     try {
-      await this.proSync.sync(accountId);
+      const result = await this.proSync.sync(accountId);
       this.loadProAccounts();
-      promptAction.showToast({ message: 'Pro 设备已同步', duration: 1800 });
+      const count = result.addedIds.length + result.updatedIds.length;
+      promptAction.showToast({
+        message: count > 0 ? 'Pro 已同步 ' + count.toString() + ' 台设备' : '同步完成，但个人地址簿为空',
+        duration: 2200
+      });
     } catch (err) {
       this.formProError = err instanceof Error ? err.message : 'Pro 同步失败';
       promptAction.showToast({ message: this.formProError, duration: 2200 });
@@ -657,16 +687,19 @@ export struct RustDeskRelayPage {
     List() {
       ForEach(this.relays, (relay: RustDeskRelayConfig) => {
         ListItem() {
-          this.relayCardContent(relay)
+          this.relayCardContent(relay, false)
         }
+        // Keep the card itself tappable on HarmonyOS mobile. Some releases
+        // deliver ListItem gestures without bubbling the nested Column click.
+        .onClick(() => { this.toggleRelayExpanded(relay.id); })
         .swipeAction({
           start: {
             builder: () => { this.rightSwipeActions(relay) },
             actionAreaDistance: 100
           },
           end: {
-            builder: () => { this.leftSwipeDelete(relay) },
-            actionAreaDistance: 60
+            builder: () => { this.leftSwipeActions(relay) },
+            actionAreaDistance: 112
           },
           edgeEffect: SwipeEdgeEffect.Spring
         })
@@ -710,6 +743,27 @@ export struct RustDeskRelayPage {
   }
 
   // Left swipe: delete — square 60×60 all breakpoints
+  @Builder leftSwipeActions(relay: RustDeskRelayConfig) {
+    Row() {
+      Button() {
+        SymbolGlyph($r('sys.symbol.bolt_fill')).fontSize(17).fontColor([Color.White])
+      }
+      .width(48).height(48).borderRadius(12)
+      .backgroundColor(this.accentColor)
+      .onClick(() => { void this.doTestRelay(relay); })
+      Button() {
+        SymbolGlyph($r('sys.symbol.ohos_trash')).fontSize(17).fontColor([Color.White])
+      }
+      .width(48).height(48).borderRadius(12)
+      .backgroundColor(this.pal().danger)
+      .margin({ left: 4 })
+      .onClick(() => { this.doDeleteRelay(relay.id); })
+    }
+    .height('100%').alignItems(VerticalAlign.Center)
+    .borderRadius(14)
+  }
+
+  // Legacy single-action builder retained for compatibility with callers.
   @Builder leftSwipeDelete(relay: RustDeskRelayConfig) {
     Column() {
       SymbolGlyph($r('sys.symbol.ohos_trash'))
@@ -735,7 +789,7 @@ export struct RustDeskRelayPage {
     Grid() {
       ForEach(this.relays, (relay: RustDeskRelayConfig) => {
         GridItem() {
-          this.relayCardContent(relay)
+          this.relayCardContent(relay, true)
         }
         .transition(
           TransitionEffect.asymmetric(
@@ -815,7 +869,7 @@ export struct RustDeskRelayPage {
           Column().width(6).height(6).borderRadius(3).backgroundColor(this.relayStatusColor(relay))
           Text(this.relayStatusLabel(relay)).fontSize(12).fontColor(this.relayStatusColor(relay)).margin({ left: 4 })
           Text(' · ' + this.hostCountForRelay(relay.id) + '台').fontSize(11).fontColor(this.pal().text3)
-          Text(' · ' + relay.accounts.length + '账户').fontSize(11).fontColor(this.pal().text3)
+          Text(' · ' + this.accountCountForRelay(relay.id) + '账户').fontSize(11).fontColor(this.pal().text3)
         }.margin({ top: 2 })
       }.alignItems(HorizontalAlign.Start).layoutWeight(1)
       // ⋯ menu
@@ -1058,7 +1112,7 @@ export struct RustDeskRelayPage {
 
   // ==================== Relay Card Content (shared by mobile & tablet) ====================
 
-  @Builder relayCardContent(relay: RustDeskRelayConfig) {
+  @Builder relayCardContent(relay: RustDeskRelayConfig, enableTap: boolean) {
     Column() {
       // Card header
       Row() {
@@ -1082,7 +1136,7 @@ export struct RustDeskRelayPage {
             Text(' · ' + this.hostCountForRelay(relay.id) + '台')
               .fontSize(this.breakpoint === 'sm' ? 11 : 12)
               .fontColor(this.pal().text3).fontFamily(this.font())
-            Text(' · ' + relay.accounts.length + '账户')
+            Text(' · ' + this.accountCountForRelay(relay.id) + '账户')
               .fontSize(this.breakpoint === 'sm' ? 11 : 12)
               .fontColor(this.pal().text3).fontFamily(this.font())
           }.margin({ top: this.breakpoint === 'sm' ? 2 : 3 })
@@ -1090,10 +1144,20 @@ export struct RustDeskRelayPage {
         .margin({ left: this.breakpoint === 'sm' ? 10 : 12 })
 
         // Right-side controls: [▸ chevron] [⋯ menu]
-        // sm: chevron only | md/lg/xl: chevron + ⋯ | PC: ⋯ only
+        // sm: direct health test + chevron | md/lg/xl: chevron + ⋯ | PC: ⋯ only
         // All vertically centered in card, chevron between text and ⋯ button
         Row() {
           if (!this.isPC()) {
+            if (this.breakpoint === 'sm') {
+              Button() {
+                SymbolGlyph($r('sys.symbol.bolt_fill')).fontSize(15).fontColor([this.accentColor])
+              }
+              .width(32).height(32).borderRadius(16)
+              .backgroundColor(this.pal().surface)
+              .enabled(this.testingRelayId !== relay.id)
+              .onClick(() => { void this.doTestRelay(relay); })
+              .margin({ right: 6 })
+            }
             SymbolGlyph($r('sys.symbol.chevron_right'))
               .fontSize(14)
               .fontColor([this.pal().text3])
@@ -1126,7 +1190,7 @@ export struct RustDeskRelayPage {
         }.alignItems(VerticalAlign.Center).margin({ right: 6 })
       }
       .width('100%')
-      .onClick(() => { this.toggleRelayExpanded(relay.id); })
+      .onClick(() => { if (enableTap) { this.toggleRelayExpanded(relay.id); } })
 
       // Expanded: server info
       if (this.isRelayExpanded(relay.id)) {

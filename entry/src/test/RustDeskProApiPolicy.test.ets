@@ -4,6 +4,9 @@ import {
   normalizeRustDeskProServerUrl,
   parseRustDeskProAddressBookResponse,
   parseRustDeskProLoginResponse,
+  parseRustDeskProAddressBookPage,
+  parseRustDeskProPersonalAddressBookResponse,
+  parseRustDeskProSharedAddressBookProfiles,
   RustDeskProApiError
 } from '../main/ets/services/RustDeskProApiPolicy';
 
@@ -60,6 +63,25 @@ export default function rustDeskProApiPolicyTest() {
       try { parseRustDeskProAddressBookResponse({}, 401); }
       catch (err) { code = err instanceof RustDeskProApiError ? err.code : ''; }
       expect(code).assertEqual('token_expired');
+    });
+
+    it('parses_modern_personal_address_book_page', 0, () => {
+      expect(parseRustDeskProPersonalAddressBookResponse({ guid: 'ab-1' }, 200)).assertEqual('ab-1');
+      const page = parseRustDeskProAddressBookPage({ total: 1, data: [
+        { id: '123', alias: 'Office', hostname: 'pc-1', platform: 'Windows' }
+      ] }, 200);
+      expect(page.total).assertEqual(1);
+      expect(page.addressBook.peers.length).assertEqual(1);
+      expect(page.addressBook.peers[0].platform).assertEqual('Windows');
+    });
+
+    it('parses_shared_address_book_profiles', 0, () => {
+      const profiles = parseRustDeskProSharedAddressBookProfiles({
+        total: 1,
+        data: [{ guid: 'shared-1', name: 'Team' }]
+      }, 200);
+      expect(profiles.length).assertEqual(1);
+      expect(profiles[0]).assertEqual('shared-1');
     });
   });
 }

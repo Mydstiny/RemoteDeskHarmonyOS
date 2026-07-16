@@ -35,6 +35,13 @@ export default function rustDeskProSyncPolicyTest() {
       expect(result.hosts[0].label).assertEqual('Office');
     });
 
+    it('stores_relay_endpoint_for_imported_hosts', 0, () => {
+      const result = reconcileRustDeskProHosts([], 'relay-1', 'acct-1', [peer('123', 'Office')], 100,
+        'relay.example.com', 21116);
+      expect(result.hosts[0].host).assertEqual('relay.example.com');
+      expect(result.hosts[0].port).assertEqual(21116);
+    });
+
     it('does_not_take_over_same_id_manual_host', 0, () => {
       const result = reconcileRustDeskProHosts([manualHost('manual-1')], 'relay-1', 'acct-1', [peer('123', 'Office')], 100);
       expect(result.hosts.length).assertEqual(2);

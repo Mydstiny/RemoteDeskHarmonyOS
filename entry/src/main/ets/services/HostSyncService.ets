@@ -88,10 +88,43 @@ export class HostSyncService {
     try {
       const relays: RustDeskRelayConfig[] = this.cloud.loadAllRelays();
       hilog.info(0x0001, 'CloudSync', "HostSyncService.loadFromCloud: 中继=" + relays.length.toString() + "组");
+      // Health probes are local observations. A distributed-table callback can
+      // arrive with the previous cloud snapshot immediately after a local
+      // probe was saved, so never roll a newer local result back to an older
+      // health timestamp.
+      const localRelays = new Map<string, RustDeskRelayConfig>();
+      this.relays.forEach((relay: RustDeskRelayConfig): void => { localRelays.set(relay.id, relay); });
       this.relays.clear();
       for (let i = 0; i < relays.length; i++) {
-        this.relays.set(relays[i].id, relays[i]);
+        const next = relays[i];
+        const local = localRelays.get(next.id);
+        if (local && local.healthCheckedAt > next.healthCheckedAt) {
+          next.healthStatus = local.healthStatus;
+          next.healthLatency = local.healthLatency;
+          next.healthCheckedAt = local.healthCheckedAt;
+        }
+        this.relays.set(next.id, next);
       }
+      // Migrate older Pro imports that were created before the relay endpoint
+      // was stored on the host record. Keep explicit direct-connect hosts
+      // untouched; managed rendezvous hosts inherit the bound ID server.
+      let migratedProHosts = false;
+      this.hosts.forEach((host: RemoteHost, hostId: string): void => {
+        if (!host.rustdeskProManaged || host.sourceType !== 'rustdesk_pro' ||
+          host.protocol !== 'rustdesk' || host.rustdeskDirectEnabled) { return; }
+        const relay = this.relays.get(host.rustdeskRelayId);
+        if (!relay || relay.idServer.length === 0 ||
+          (host.host === relay.idServer && host.port === relay.idServerPort)) { return; }
+        const next = RemoteHost.fromJSON(host.toJSON());
+        next.host = relay.idServer;
+        next.port = relay.idServerPort;
+        if (this.ready && !this.cloud.updateHost(next)) {
+          hilog.warn(0x0001, 'CloudSync', 'Pro 主机路由迁移写入失败: ' + hostId);
+        }
+        this.hosts.set(hostId, next);
+        migratedProHosts = true;
+      });
+      if (migratedProHosts && this.ready) { this.cloud.pushTable('remotehosts'); }
     } catch (err) {
       hilog.error(0x0001, 'CloudSync', "HostSyncService.loadRelays 失败: " + JSON.stringify(err));
     }
@@ -331,8 +364,18 @@ export class HostSyncService {
    * 也不因一次同步缺少设备而删除已有记录。
    */
   reconcileRustDeskProHosts(relayId: string, accountId: string, peers: RustDeskProPeer[],
-    syncedAt: number = Date.now()): RustDeskProReconcileResult {
-    const result = reconcileRustDeskProHosts(this.getAllHosts(), relayId, accountId, peers, syncedAt);
+    syncedAt: number = Date.now(), relayHost: string = '', relayPort: number = 21116): RustDeskProReconcileResult {
+    let endpointHost = relayHost;
+    let endpointPort = relayPort;
+    if (endpointHost.length === 0) {
+      const relay = this.relays.get(relayId);
+      if (relay) {
+        endpointHost = relay.idServer;
+        endpointPort = relay.idServerPort;
+      }
+    }
+    const result = reconcileRustDeskProHosts(this.getAllHosts(), relayId, accountId, peers, syncedAt,
+      endpointHost, endpointPort);
     const changedIds: Set<string> = new Set<string>();
     result.addedIds.forEach((id: string): void => { changedIds.add(id); });
     result.updatedIds.forEach((id: string): void => { changedIds.add(id); });

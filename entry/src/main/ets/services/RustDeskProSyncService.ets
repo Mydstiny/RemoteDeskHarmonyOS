@@ -19,6 +19,7 @@ export class RustDeskProSyncService {
   private readonly api: RustDeskProApiService = RustDeskProApiService.getInstance();
   private readonly credentials: RustDeskProCredentialStore = RustDeskProCredentialStore.getInstance();
   private readonly hosts: HostSyncService = HostSyncService.getInstance();
+  private context: common.Context | null = null;
 
   static getInstance(): RustDeskProSyncService {
     if (!RustDeskProSyncService.instance) {
@@ -28,7 +29,12 @@ export class RustDeskProSyncService {
   }
 
   init(context: common.Context): void {
+    this.context = context;
     this.credentials.init(context);
+    // EntryAbility starts this initialization too; HostSyncService safely
+    // coalesces concurrent init calls. Pro sync must never race the first
+    // CloudStore load and then lose imported hosts.
+    void this.hosts.init(context);
   }
 
   getAccounts(): RustDeskProAccountState[] {
@@ -53,7 +59,7 @@ export class RustDeskProSyncService {
     };
   }
 
-  async login(input: RustDeskProLoginInput): Promise<RustDeskProAccountState> {
+  private async authenticate(input: RustDeskProLoginInput): Promise<RustDeskProAccountState> {
     const previous = this.credentials.get(input.id);
     const account: RustDeskProAccountState = {
       id: input.id,
@@ -79,20 +85,45 @@ export class RustDeskProSyncService {
     account.loginStatus = 'logged_in';
     account.lastLoginAt = Date.now();
     account.lastSyncError = '';
+    return account;
+  }
+
+  private async syncAccount(account: RustDeskProAccountState): Promise<RustDeskProReconcileResult> {
+    if (this.context !== null) {
+      await this.hosts.init(this.context);
+    }
+    await this.hosts.whenReady();
+    const addressBook = await this.api.getAddressBook(account);
+    const relay = this.hosts.getAllRelays().find((item) => item.id === account.relayId);
+    const result = this.hosts.reconcileRustDeskProHosts(account.relayId, account.id, addressBook.peers,
+      addressBook.updatedAt > 0 ? addressBook.updatedAt : Date.now(),
+      relay ? relay.idServer : '', relay ? relay.idServerPort : 21116);
+    account.loginStatus = 'logged_in';
+    account.lastSyncAt = Date.now();
+    account.lastSyncError = '';
+    return result;
+  }
+
+  async login(input: RustDeskProLoginInput): Promise<RustDeskProAccountState> {
+    const account = await this.authenticate(input);
     this.credentials.save(account);
     return this.cloneAccount(account);
+  }
+
+  async loginAndSync(input: RustDeskProLoginInput): Promise<RustDeskProReconcileResult> {
+    // Keep login + first address-book pull atomic. A successful login followed
+    // by a failed address-book request must not leave a half-created account.
+    const account = await this.authenticate(input);
+    const result = await this.syncAccount(account);
+    this.credentials.save(account);
+    return result;
   }
 
   async sync(accountId: string): Promise<RustDeskProReconcileResult> {
     const account = this.credentials.get(accountId);
     if (!account) { throw new RustDeskProApiError('account_missing', 'Pro 账号不存在'); }
     try {
-      const addressBook = await this.api.getAddressBook(account);
-      const result = this.hosts.reconcileRustDeskProHosts(account.relayId, account.id, addressBook.peers,
-        addressBook.updatedAt > 0 ? addressBook.updatedAt : Date.now());
-      account.loginStatus = 'logged_in';
-      account.lastSyncAt = Date.now();
-      account.lastSyncError = '';
+      const result = await this.syncAccount(account);
       this.credentials.save(account);
       return result;
     } catch (err) {

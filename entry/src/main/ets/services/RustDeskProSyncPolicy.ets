@@ -24,7 +24,7 @@ function isManagedByAccount(host: RemoteHost, relayId: string, accountId: string
 }
 
 export function reconcileRustDeskProHosts(existing: RemoteHost[], relayId: string, accountId: string,
-  peers: RustDeskProPeer[], syncedAt: number): RustDeskProReconcileResult {
+  peers: RustDeskProPeer[], syncedAt: number, relayHost: string = '', relayPort: number = 21116): RustDeskProReconcileResult {
   const hosts: RemoteHost[] = existing.map((host: RemoteHost): RemoteHost => RemoteHost.fromJSON(host.toJSON()));
   const byPeer: Map<string, RemoteHost> = new Map();
   for (let i = 0; i < hosts.length; i++) {
@@ -47,10 +47,10 @@ export function reconcileRustDeskProHosts(existing: RemoteHost[], relayId: strin
       host = new RemoteHost();
       host.id = rustDeskProHostId(relayId, accountId, peerId);
       host.label = peerLabel(peer);
-      host.host = '';
-      host.port = 21116;
+      host.host = relayHost;
+      host.port = relayPort > 0 ? relayPort : 21116;
       host.protocol = 'rustdesk';
-      host.password = '';
+      host.password = peer.password;
       host.rustdeskPasswordMode = 0;
       host.sourceType = 'rustdesk_pro';
       host.rustdeskProManaged = true;
@@ -66,6 +66,11 @@ export function reconcileRustDeskProHosts(existing: RemoteHost[], relayId: strin
     }
     // Server-owned routing identity only. Local label/group/password/display settings stay intact.
     host.customHostname = peerId;
+    // The peer API returns the remote ID, not the rendezvous endpoint. Keep
+    // the endpoint on every managed record so an imported host can connect
+    // without requiring a manual edit first.
+    if (relayHost.length > 0) { host.host = relayHost; }
+    if (relayPort > 0) { host.port = relayPort; }
     host.rustdeskRelayId = relayId;
     host.rustdeskAccountId = accountId;
     host.sourceType = 'rustdesk_pro';
@@ -75,6 +80,7 @@ export function reconcileRustDeskProHosts(existing: RemoteHost[], relayId: strin
     host.rustdeskProPlatform = peer.platform;
     host.rustdeskProLastSeenAt = syncedAt;
     host.rustdeskProSyncError = '';
+    if (peer.password.length > 0) { host.password = peer.password; }
   }
 
   const missingIds: string[] = [];

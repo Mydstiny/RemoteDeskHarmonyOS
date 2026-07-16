@@ -24,6 +24,11 @@ export interface RustDeskProLoginResult {
   requiresTwoFactor: boolean
 }
 
+export interface RustDeskProAddressBookPage {
+  total: number
+  addressBook: RustDeskProAddressBook
+}
+
 export class RustDeskProApiError extends Error {
   code: string;
   status: number;
@@ -103,4 +108,83 @@ export function parseRustDeskProAddressBookResponse(payload: Object, status: num
     throw new RustDeskProApiError('api_error', root['error'] as string, status);
   }
   return RustDeskProAddressBook.fromResponse(payload);
+}
+
+export function parseRustDeskProPersonalAddressBookResponse(payload: Object, status: number): string {
+  if (status === 401 || status === 403) {
+    throw new RustDeskProApiError('token_expired', 'Pro 登录已过期，请重新登录', status);
+  }
+  if (status === 404) { return ''; }
+  if (status !== 200) {
+    const root = payload as Record<string, Object>;
+    const rawError: Object | undefined = root['error'];
+    const message = typeof rawError === 'string' ? rawError as string :
+      'Pro 个人地址簿查询失败 (HTTP ' + status.toString() + ')';
+    throw new RustDeskProApiError('http_error', message, status);
+  }
+  const root = payload as Record<string, Object>;
+  if (typeof root['error'] === 'string') {
+    throw new RustDeskProApiError('api_error', root['error'] as string, status);
+  }
+  const guid = typeof root['guid'] === 'string' ? root['guid'] as string : '';
+  if (guid.length === 0) {
+    throw new RustDeskProApiError('invalid_response', 'Pro 个人地址簿响应缺少 guid', status);
+  }
+  return guid;
+}
+
+export function parseRustDeskProAddressBookPage(payload: Object, status: number): RustDeskProAddressBookPage {
+  if (status === 401 || status === 403) {
+    throw new RustDeskProApiError('token_expired', 'Pro 登录已过期，请重新登录', status);
+  }
+  if (status !== 200) {
+    const root = payload as Record<string, Object>;
+    const rawError: Object | undefined = root['error'];
+    const message = typeof rawError === 'string' ? rawError as string :
+      'Pro 地址簿分页同步失败 (HTTP ' + status.toString() + ')';
+    throw new RustDeskProApiError('http_error', message, status);
+  }
+  const root = payload as Record<string, Object>;
+  if (typeof root['error'] === 'string') {
+    throw new RustDeskProApiError('api_error', root['error'] as string, status);
+  }
+  const rawTotal: Object | undefined = root['total'];
+  const total = typeof rawTotal === 'number' ? rawTotal as number : 0;
+  const result: RustDeskProAddressBookPage = {
+    total,
+    addressBook: RustDeskProAddressBook.fromResponse(payload)
+  };
+  return result;
+}
+
+export function parseRustDeskProSharedAddressBookProfiles(payload: Object, status: number): string[] {
+  if (status === 401 || status === 403) {
+    throw new RustDeskProApiError('token_expired', 'Pro 登录已过期，请重新登录', status);
+  }
+  // Older compatible servers may not expose shared address books.
+  if (status === 404) { return []; }
+  if (status !== 200) {
+    const root = payload as Record<string, Object>;
+    const rawError: Object | undefined = root['error'];
+    const message = typeof rawError === 'string' ? rawError as string :
+      'Pro 共享地址簿列表查询失败 (HTTP ' + status.toString() + ')';
+    throw new RustDeskProApiError('http_error', message, status);
+  }
+  const root = payload as Record<string, Object>;
+  if (typeof root['error'] === 'string') {
+    throw new RustDeskProApiError('api_error', root['error'] as string, status);
+  }
+  const result: string[] = [];
+  const data: Object | undefined = root['data'];
+  if (Array.isArray(data)) {
+    const rows: Object[] = data as Object[];
+    for (let i = 0; i < rows.length; i++) {
+      if (!rows[i] || typeof rows[i] !== 'object') { continue; }
+      const row = rows[i] as Record<string, Object>;
+      if (typeof row['guid'] === 'string' && (row['guid'] as string).length > 0) {
+        result.push(row['guid'] as string);
+      }
+    }
+  }
+  return result;
 }
