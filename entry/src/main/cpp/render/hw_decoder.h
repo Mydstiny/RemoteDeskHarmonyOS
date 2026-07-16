@@ -12,6 +12,7 @@
 #define HW_DECODER_H
 
 #include "extensions/protocol_adapter.h"
+#include "decoder_lifecycle_gate.h"
 #include "video_backpressure_controller.h"
 #include <GLES3/gl3.h>
 #include <napi/native_api.h>
@@ -63,6 +64,7 @@ struct EncodedFrame {
 struct PendingInputBuffer {
     uint32_t     index;
     OH_AVBuffer* buffer;
+    uint64_t     generation;
 };
 
 /**
@@ -108,10 +110,15 @@ public:
     void Destroy();
 
     /** 是否已初始化 */
-    bool IsInitialized() const { return initialized_; }
+    bool IsInitialized() const { return initialized_.load(std::memory_order_acquire); }
 
     /** 当前解码器编码类型 */
     CodecType GetCodecType() const { return codecType_; }
+    int GetOutputWidth() const { return width_.load(std::memory_order_acquire); }
+    int GetOutputHeight() const { return height_.load(std::memory_order_acquire); }
+    int GetOutputPixelFormat() const { return outputPixelFormat_.load(std::memory_order_acquire); }
+    uint64_t OutputFrameCount() const { return outputFrameCount_.load(std::memory_order_acquire); }
+    bool WaitForOutputFrame(uint64_t afterCount, int timeoutMs);
     size_t QueuedFrameCount() const;
     uint64_t DroppedFrameCount() const;
 
@@ -153,15 +160,19 @@ private:
     OH_NativeImage* nativeImage_ = nullptr;    // NativeImage (零拷贝纹理)
     void*          nativeWindow_ = nullptr;     // OHNativeWindow* (从 NativeImage 获取, 存为 void* 避免头文件冲突)
     GLuint          textureId_ = 0;            // NativeImage 关联的 GL 纹理 ID
-    int             width_ = 0;
-    int             height_ = 0;
+    std::atomic<int> width_ {0};
+    std::atomic<int> height_ {0};
+    std::atomic<int> outputPixelFormat_ {-1};
     CodecType       codecType_ = CodecType::H264;
-    bool            initialized_ = false;
+    std::atomic<bool> initialized_ {false};
+    bool decoderStarted_ = false;
+    DecoderLifecycleGate lifecycle_;
 
     DecoderFrameCallback  frameCallback_;
     DecoderMakeCurrentCallback makeCurrentCallback_;
     DecoderReleaseCurrentCallback releaseCurrentCallback_;
     DecoderErrorCallback  errorCallback_;
+    mutable std::mutex callbackMutex_;
 
     // 输入队列 + 线程安全
     mutable std::mutex      mutex_;
@@ -176,6 +187,7 @@ private:
     std::atomic<uint64_t> updateSurfaceFailureCount_ {0};
     std::atomic<uint64_t> outputFrameCount_ {0};
     std::condition_variable frameAvailableCv_;
+    std::condition_variable outputFrameCv_;
     uint64_t frameAvailableCount_ = 0;
     uint64_t frameConsumeCount_ = 0;
     Render::VideoBackpressureController backpressure_;
@@ -185,7 +197,7 @@ private:
 
     // 回调上下文 (静态函数 + userData)
     struct CallbackUserData {
-        HardwareDecoder* self;
+        std::atomic<HardwareDecoder*> self {nullptr};
     };
     CallbackUserData cbUserData_;
 
@@ -201,13 +213,14 @@ private:
 
     size_t clearInputQueueLocked();
     size_t dropOldestInputFramesLocked(size_t count);
-    void handleInputBuffer(uint32_t index, OH_AVBuffer* buffer);
+    void handleInputBuffer(uint32_t index, OH_AVBuffer* buffer, uint64_t generation);
     void drainInputBuffers();
     bool waitForFrameAvailable();
     void handleOutputBuffer(uint32_t index);
     void noteFrameAvailable();
     void stopRenderThread();
     void renderLoop();
+    void notifyError(DecoderError error, const std::string& message);
 };
 
 // ============================================================

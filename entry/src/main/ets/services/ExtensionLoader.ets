@@ -5,6 +5,7 @@
  */
 import rdpnapi from 'librdpnapi.so';
 import {
+  Avc420DecoderProbeResult,
   SessionConfig,
   SftpFileEntry,
   GeneratedSshKeyPair,
@@ -243,7 +244,14 @@ export class ExtensionLoader {
         inputTextUnits: 0,
         inputDroppedMouseMoves: 0,
         inputNonDisposableOverflow: 0,
-        graphicsMode: 'unknown'
+        graphicsMode: 'unknown',
+        h264Avc420Enabled: false,
+        h264Avc444Enabled: false,
+        h264DirectTextureEnabled: false,
+        h264PerformanceGainPermille: 0,
+        h264Avc420Reason: 'stats-unavailable',
+        h264Avc444Reason: 'stats-unavailable',
+        h264DirectTextureReason: 'stats-unavailable'
       };
     }
   }
@@ -267,9 +275,9 @@ export class ExtensionLoader {
     this.rendererHandle = -1;
   }
 
-  initDecoder(w: number, h: number, c: number): number {
+  initDecoder(w: number, h: number, c: number, rendererHandle: number): number {
     try {
-      this.decoderHandle = rdpnapi.initDecoder(w, h, c) as number;
+      this.decoderHandle = rdpnapi.initDecoder(w, h, c, rendererHandle) as number;
     } catch (err) {
       hilog.error(DOMAIN, TAG, '[ExtensionLoader] initDecoder: ' + JSON.stringify(err));
       this.decoderHandle = -1;
@@ -300,6 +308,10 @@ export class ExtensionLoader {
       hilog.error(DOMAIN, TAG, '[ExtensionLoader] getTextureId: ' + JSON.stringify(err));
       return 0;
     }
+  }
+
+  probeAvc420Decoder(rendererHandle: number): Avc420DecoderProbeResult {
+    return rdpnapi.probeAvc420Decoder(rendererHandle) as Avc420DecoderProbeResult;
   }
 
   getRendererHandle(): number { return this.rendererHandle; }

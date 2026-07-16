@@ -151,12 +151,14 @@ if(RDP_BUILD_TESTS)
         test/rdp_certificate_policy_test.cpp
         test/rdp_auth_identity_policy_test.cpp
         test/rdp_performance_policy_test.cpp
+        test/rdp_h264_capability_gate_test.cpp
         test/transfer_runtime_status_test.cpp
         test/rdp_input_queue_test.cpp
         test/rdp_file_clipboard_offer_test.cpp
         test/gl_surface_lifecycle_policy_test.cpp
         test/native_image_context_policy_test.cpp
         test/decoder_recovery_policy_test.cpp
+        test/decoder_lifecycle_gate_test.cpp
         test/safe_log_test.cpp
         common/safe_log.cpp
         rdp/rdp_audio_policy.cpp

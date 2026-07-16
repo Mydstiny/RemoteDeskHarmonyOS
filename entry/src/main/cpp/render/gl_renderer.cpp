@@ -1548,11 +1548,12 @@ int RendererNapi::RenderRawBgraRectActive(
         dirtyWidth, dirtyHeight, target.generation).result);
 }
 
-void RendererNapi::MakeCurrent(int64_t handle) {
+bool RendererNapi::MakeCurrent(int64_t handle) {
     auto* ctx = reinterpret_cast<RendererContext*>(handle);
     if (ctx && ctx->renderer && ctx->renderer->IsInitialized()) {
-        ctx->renderer->MakeCurrent();
+        return ctx->renderer->MakeCurrent();
     }
+    return false;
 }
 
 void RendererNapi::ReleaseCurrent(int64_t handle) {

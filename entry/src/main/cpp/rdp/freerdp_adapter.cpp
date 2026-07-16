@@ -19,6 +19,7 @@
 #include "rdp_frame_pump.h"
 #include "rdp_file_clipboard_bridge.h"
 #include "rdp_graphics_lifecycle.h"
+#include "rdp_h264_capability_gate.h"
 #include "rdp_keymap.h"
 #include "rdp_performance_policy.h"
 #include "rdp_input_queue.h"
@@ -571,6 +572,7 @@ struct FreeRdpAdapter::Impl {
     int                     lastFrameHeight = 0;
     bool                    forceNextFullFrame = false;
     std::string             graphicsMode = "gdi";
+    RdpH264CapabilitySnapshot h264Capabilities;
 
     void beginShutdownTrace() {
         shutdownStartedUs.store(steadyNowUs(), std::memory_order_release);
@@ -800,11 +802,13 @@ static bool rdpGfxResetPathSafe() {
 }
 
 static bool rdpGfxH264PathSafe() {
-    // Keep H.264 disabled until decoder lifecycle, visual, and stress gates pass.
-    return false;
+    RdpH264CapabilityEvidence evidence;
+    evidence.gfxResetMatrixPassed = rdpGfxResetPathSafe();
+    return EvaluateRdpH264Capabilities(evidence).avc420Enabled;
 }
 
-static RdpPerformancePolicy::GraphicsMode applyRdpPerformanceSettings(rdpSettings* settings) {
+static RdpPerformancePolicy::GraphicsMode applyRdpPerformanceSettings(
+    rdpSettings* settings, RdpH264CapabilitySnapshot* h264Capabilities) {
     const bool compiledGfx = compiledWithRdpGfx();
     const bool compiledH264 = compiledWithGfxH264();
     const bool fallbackForThisConnection = g_nextConnectionGfxFallback.consume();
@@ -812,7 +816,13 @@ static RdpPerformancePolicy::GraphicsMode applyRdpPerformanceSettings(rdpSetting
     const bool h264Available = compiledH264;
     const bool gfxConsumerAvailable = rdpGfxPipelineConsumerAvailable();
     const bool gfxResetSafe = rdpGfxResetPathSafe();
-    const bool h264PathSafe = rdpGfxH264PathSafe();
+    RdpH264CapabilityEvidence h264Evidence;
+    h264Evidence.gfxResetMatrixPassed = gfxResetSafe;
+    const RdpH264CapabilitySnapshot h264Gate = EvaluateRdpH264Capabilities(h264Evidence);
+    const bool h264PathSafe = h264Gate.avc420Enabled && rdpGfxH264PathSafe();
+    if (h264Capabilities) {
+        *h264Capabilities = h264Gate;
+    }
     const RdpPerformancePolicy::Settings perf =
         RdpPerformancePolicy::RecommendedLanSettings(gfxAvailable,
                                                      h264Available,
@@ -848,13 +858,18 @@ static RdpPerformancePolicy::GraphicsMode applyRdpPerformanceSettings(rdpSetting
     freerdp_settings_set_uint32(settings, FreeRDP_FrameAcknowledge, perf.frameAcknowledge);
 
     OH_LOG_INFO(LOG_APP,
-                "[RDP] performance settings: mode=%{public}s compiledGfx=%{public}s compiledH264=%{public}s gfxConsumer=%{public}s gfxResetSafe=%{public}s h264PathSafe=%{public}s nextFallback=%{public}s networkAuto=%{public}s connectionType=%{public}u gfx=%{public}s h264=%{public}s rfx=%{public}s frameAck=%{public}u",
+                "[RDP] performance settings: mode=%{public}s compiledGfx=%{public}s compiledH264=%{public}s gfxConsumer=%{public}s gfxResetSafe=%{public}s h264PathSafe=%{public}s h264Reason=%{public}s avc444=%{public}s avc444Reason=%{public}s directTexture=%{public}s directTextureReason=%{public}s nextFallback=%{public}s networkAuto=%{public}s connectionType=%{public}u gfx=%{public}s h264=%{public}s rfx=%{public}s frameAck=%{public}u",
                 RdpPerformancePolicy::GraphicsModeName(mode),
                 compiledGfx ? "true" : "false",
                 compiledH264 ? "true" : "false",
                 gfxConsumerAvailable ? "true" : "false",
                 gfxResetSafe ? "true" : "false",
                 h264PathSafe ? "true" : "false",
+                RdpH264GateReasonName(h264Gate.avc420Reason),
+                h264Gate.avc444Enabled ? "true" : "false",
+                RdpH264GateReasonName(h264Gate.avc444Reason),
+                h264Gate.directTextureEnabled ? "true" : "false",
+                RdpH264GateReasonName(h264Gate.directTextureReason),
                 fallbackForThisConnection ? "true" : "false",
                 freerdp_settings_get_bool(settings, FreeRDP_NetworkAutoDetect) ? "true" : "false",
                 freerdp_settings_get_uint32(settings, FreeRDP_ConnectionType),
@@ -1589,7 +1604,14 @@ BOOL FreeRdpAdapter::cbDesktopResize(rdpContext* context) {
     }
 
     const bool success = resized && pumpStarted;
-    adapter->impl_->graphicsLifecycle.completeResize(ticket.epoch, success);
+    const bool committed =
+        adapter->impl_->graphicsLifecycle.completeResize(ticket.epoch, success);
+    if (!committed) {
+        OH_LOG_WARN(LOG_APP,
+            "[RDP-RESIZE] stale completion ignored epoch=%{public}llu [E-RDP-RESIZE-STALE]",
+            static_cast<unsigned long long>(ticket.epoch));
+        return FALSE;
+    }
     adapter->impl_->presentationEnabled.store(success, std::memory_order_release);
     if (!success) {
         const RdpGraphicsLifecycleSnapshot lifecycle =
@@ -1994,10 +2016,13 @@ void FreeRdpAdapter::connectThreadFunc() {
     freerdp_settings_set_bool(s, FreeRDP_RestrictedAdminModeRequired, FALSE);
     freerdp_settings_set_bool(s, FreeRDP_RestrictedAdminModeSupported, FALSE);
     freerdp_settings_set_bool(s, FreeRDP_SupportErrorInfoPdu, TRUE);
-    const RdpPerformancePolicy::GraphicsMode graphicsMode = applyRdpPerformanceSettings(s);
+    RdpH264CapabilitySnapshot h264Capabilities;
+    const RdpPerformancePolicy::GraphicsMode graphicsMode =
+        applyRdpPerformanceSettings(s, &h264Capabilities);
     {
         std::lock_guard<std::mutex> renderLock(impl_->renderMutex);
         impl_->graphicsMode = RdpPerformancePolicy::GraphicsModeName(graphicsMode);
+        impl_->h264Capabilities = h264Capabilities;
     }
     impl_->graphicsLifecycle.reset(
         static_cast<int>(freerdp_settings_get_uint32(s, FreeRDP_DesktopWidth)),
@@ -2369,6 +2394,14 @@ RdpRenderStats FreeRdpAdapter::getRdpRenderStats() {
     stats.desktopResizeFailures = graphics.resizeFailures;
     stats.gfxChannelConnected = graphics.gfxInitialized;
     stats.graphicsMode = impl_->graphicsMode;
+    stats.h264Avc420Enabled = impl_->h264Capabilities.avc420Enabled;
+    stats.h264Avc444Enabled = impl_->h264Capabilities.avc444Enabled;
+    stats.h264DirectTextureEnabled = impl_->h264Capabilities.directTextureEnabled;
+    stats.h264PerformanceGainPermille = impl_->h264Capabilities.performanceGainPermille;
+    stats.h264Avc420Reason = RdpH264GateReasonName(impl_->h264Capabilities.avc420Reason);
+    stats.h264Avc444Reason = RdpH264GateReasonName(impl_->h264Capabilities.avc444Reason);
+    stats.h264DirectTextureReason =
+        RdpH264GateReasonName(impl_->h264Capabilities.directTextureReason);
     {
         std::lock_guard<std::mutex> inputLock(impl_->inputQueueMutex);
         stats.inputQueueDepth = static_cast<int>(impl_->inputQueue.depth());

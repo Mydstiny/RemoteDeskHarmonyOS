@@ -38,7 +38,7 @@ public:
 
     void reset(int width, int height, bool gfxRequested);
     RdpResizeTicket beginResize(int width, int height);
-    void completeResize(uint64_t epoch, bool success);
+    bool completeResize(uint64_t epoch, bool success);
 
     RdpGfxChannelAction onChannelConnected(uintptr_t context);
     void completeChannelInitialization(uintptr_t context, bool success);
@@ -53,6 +53,7 @@ private:
     RdpGraphicsLifecycleSnapshot snapshot_;
     int pendingWidth_ = 0;
     int pendingHeight_ = 0;
+    uint64_t nextResizeEpoch_ = 0;
     bool channelInitializing_ = false;
 };
 
