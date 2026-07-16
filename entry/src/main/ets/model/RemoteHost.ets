@@ -84,6 +84,12 @@ export interface RemoteHostJSON {
   rustdeskDirectHost: string
   rustdeskDirectPort: number
   rdpCredentialId: string
+  sourceType: string
+  rustdeskProAccountId: string
+  rustdeskProPeerId: string
+  rustdeskProManaged: boolean
+  rustdeskProLastSeenAt: number
+  rustdeskProSyncError: string
 }
 
 /** 显示器配置 */
@@ -183,6 +189,12 @@ export class RemoteHost {
   rustdeskDirectHost: string = ''; // 直连 peer IP 地址
   rustdeskDirectPort: number = 21116; // 直连端口 (默认 21116)
   rdpCredentialId: string = ''; // RDP 绑定的 Windows 凭据 ID
+  sourceType: string = 'manual'; // manual | rustdesk_pro
+  rustdeskProAccountId: string = ''; // Pro 账号设备端绑定 ID
+  rustdeskProPeerId: string = ''; // Pro 地址簿中的稳定 peer ID
+  rustdeskProManaged: boolean = false; // 是否由 Server Pro 地址簿管理
+  rustdeskProLastSeenAt: number = 0; // 最近一次地址簿同步看到该 peer 的时间
+  rustdeskProSyncError: string = ''; // not_seen 或最近一次同步错误码
   syncVersion: number = 0;     // 同步版本号 (冲突检测)
   groupId: string = '';        // 工作区分组 ID
   sortOrder: number = 0;       // 手动排序序号
@@ -319,7 +331,13 @@ export class RemoteHost {
       rustdeskDirectEnabled: this.rustdeskDirectEnabled,
       rustdeskDirectHost: this.rustdeskDirectHost,
       rustdeskDirectPort: this.rustdeskDirectPort,
-      rdpCredentialId: this.rdpCredentialId
+      rdpCredentialId: this.rdpCredentialId,
+      sourceType: this.sourceType,
+      rustdeskProAccountId: this.rustdeskProAccountId,
+      rustdeskProPeerId: this.rustdeskProPeerId,
+      rustdeskProManaged: this.rustdeskProManaged,
+      rustdeskProLastSeenAt: this.rustdeskProLastSeenAt,
+      rustdeskProSyncError: this.rustdeskProSyncError
     };
   }
 
@@ -386,6 +404,12 @@ export class RemoteHost {
     if (json.rustdeskDirectHost) { host.rustdeskDirectHost = json.rustdeskDirectHost; }
     if (json.rustdeskDirectPort) { host.rustdeskDirectPort = json.rustdeskDirectPort; }
     if (json.rdpCredentialId) { host.rdpCredentialId = json.rdpCredentialId; }
+    if (json.sourceType) { host.sourceType = json.sourceType; }
+    if (json.rustdeskProAccountId) { host.rustdeskProAccountId = json.rustdeskProAccountId; }
+    if (json.rustdeskProPeerId) { host.rustdeskProPeerId = json.rustdeskProPeerId; }
+    if (json.rustdeskProManaged !== undefined) { host.rustdeskProManaged = json.rustdeskProManaged; }
+    if (json.rustdeskProLastSeenAt !== undefined) { host.rustdeskProLastSeenAt = json.rustdeskProLastSeenAt; }
+    if (json.rustdeskProSyncError) { host.rustdeskProSyncError = json.rustdeskProSyncError; }
     return host;
   }
 

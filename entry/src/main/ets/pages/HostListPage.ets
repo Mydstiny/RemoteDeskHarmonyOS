@@ -2342,6 +2342,12 @@ struct HostListPage {
     this.openSheetSafely((): void => { this.showAddSheet = true; });
   }
 
+  private isEditingProHost(): boolean {
+    if (this.editingHostId === '') { return false; }
+    const host = this.srv.getHost(this.editingHostId);
+    return host !== undefined && host.rustdeskProManaged && host.sourceType === 'rustdesk_pro';
+  }
+
   // 直接删除主机 (滑动触发)
   private deleteHost(host: RemoteHost): void {
     this.srv.removeHost(host.id);
@@ -3399,6 +3405,11 @@ struct HostListPage {
                       .fontSize(this.breakpoint === 'sm' ? (AppTheme.fontSize.body as number) : 17)
                       .fontWeight(FontWeight.Medium)
                       .fontColor(this.pal().text).fontFamily(this.font()).layoutWeight(1)
+                    if (host.rustdeskProManaged && host.sourceType === 'rustdesk_pro') {
+                      Text('Pro').fontSize(10).fontColor(this.accentColor).fontFamily(this.font())
+                        .padding({ left: 6, right: 6, top: 2, bottom: 2 }).borderRadius(6)
+                        .backgroundColor(this.pal().surface).margin({ left: 6 })
+                    }
                     if (host.locked) {
                       SymbolGlyph($r('sys.symbol.ohos_lock'))
                         .fontSize(this.breakpoint === 'sm' ? 14 : 18)
@@ -6187,7 +6198,7 @@ struct HostListPage {
 
           if (this.proto === 'rustdesk') {
             // RustDesk 远程设备 ID
-            this.fieldRow('远程 ID', '对方设备 RustDesk ID', this.chn, (v: string): void => { this.chn = v; })
+            this.fieldRow('远程 ID', 'Pro 设备 ID（只读）', this.chn, (v: string): void => { this.chn = v; }, !this.isEditingProHost())
 
             // 密码模式切换
             Text('密码模式').fontSize(11).fontColor(this.pal().text2).margin({ bottom: 4 }).fontFamily(this.font())
@@ -6197,6 +6208,7 @@ struct HostListPage {
                 .fontWeight(this.sheetPwdMode === 0 ? FontWeight.Medium : FontWeight.Normal)
               Toggle({ type: ToggleType.Switch, isOn: this.sheetPwdMode === 1 })
                 .selectedColor(this.accentColor).scale({ x: 0.82, y: 0.82 }).margin({ left: 8, right: 8 })
+                .enabled(!this.isEditingProHost())
                 .onChange((on: boolean) => { this.sheetPwdMode = on ? 1 : 0; })
               Text('永久密码').fontSize(13)
                 .fontColor(this.sheetPwdMode === 1 ? this.accentColor : this.pal().text2)
@@ -6276,6 +6288,7 @@ struct HostListPage {
                   }.width('100%').padding({ left: 10, right: 10, top: 8, bottom: 8 })
                   .backgroundColor(this.selectedRelayId === relay.id ? this.pal().surface : Color.Transparent)
                   .borderRadius(8)
+                  .enabled(!this.isEditingProHost())
                   .onClick(() => { this.selectedRelayId = relay.id; this.selectedAccountId = ''; })
                 })
               }.width('100%').backgroundColor(this.pal().surface).borderRadius(8).padding(6).margin({ bottom: 10 })
@@ -6306,7 +6319,7 @@ struct HostListPage {
                       }
                     }.width('100%').padding({ left: 10, right: 10, top: 8, bottom: 8 })
                     .backgroundColor(this.selectedAccountId === acct.id ? this.pal().surface : Color.Transparent)
-                    .borderRadius(8).onClick(() => { this.selectedAccountId = acct.id; })
+                    .borderRadius(8).enabled(!this.isEditingProHost()).onClick(() => { this.selectedAccountId = acct.id; })
                   })
                 } else {
                   Row() {
@@ -6341,20 +6354,21 @@ struct HostListPage {
               Toggle({ type: ToggleType.Switch, isOn: this.sheetRustdeskDirectEnabled })
                 .selectedColor(this.accentColor)
                 .scale({ x: 0.82, y: 0.82 })
+                .enabled(!this.isEditingProHost())
                 .onChange((on: boolean) => { this.sheetRustdeskDirectEnabled = on; })
             }.width('100%').margin({ bottom: 8 })
             if (this.sheetRustdeskDirectEnabled) {
               Row() {
                 Column() {
                   this.fieldRow('直连地址', '192.168.1.100', this.sheetRustdeskDirectHost,
-                    (v: string): void => { this.sheetRustdeskDirectHost = v; })
+                    (v: string): void => { this.sheetRustdeskDirectHost = v; }, !this.isEditingProHost())
                 }.width('60%')
                 Column() {
                   this.fieldRow('端口', '21116', this.sheetRustdeskDirectPort.toString(),
                     (v: string): void => {
                       const n: number = parseInt(v);
                       this.sheetRustdeskDirectPort = isNaN(n) ? 21116 : n;
-                    })
+                    }, !this.isEditingProHost())
                 }.width('30%').margin({ left: 12 })
               }.width('100%').margin({ bottom: 8 })
             }
@@ -6997,6 +7011,24 @@ struct HostListPage {
       h.rustdeskDirectHost = this.sheetRustdeskDirectHost;
       h.rustdeskDirectPort = this.sheetRustdeskDirectPort > 0 ? this.sheetRustdeskDirectPort : 21116;
       h.rdpCredentialId = '';
+      // Server Pro 管理主机的连接身份由地址簿控制；本地编辑只允许修改显示/凭据等字段。
+      if (existingHost && existingHost.rustdeskProManaged && existingHost.sourceType === 'rustdesk_pro') {
+        h.protocol = existingHost.protocol;
+        h.host = existingHost.host;
+        h.port = existingHost.port;
+        h.customHostname = existingHost.customHostname;
+        h.rustdeskRelayId = existingHost.rustdeskRelayId;
+        h.rustdeskAccountId = existingHost.rustdeskAccountId;
+        h.rustdeskDirectEnabled = existingHost.rustdeskDirectEnabled;
+        h.rustdeskDirectHost = existingHost.rustdeskDirectHost;
+        h.rustdeskDirectPort = existingHost.rustdeskDirectPort;
+        h.sourceType = existingHost.sourceType;
+        h.rustdeskProAccountId = existingHost.rustdeskProAccountId;
+        h.rustdeskProPeerId = existingHost.rustdeskProPeerId;
+        h.rustdeskProManaged = existingHost.rustdeskProManaged;
+        h.rustdeskProLastSeenAt = existingHost.rustdeskProLastSeenAt;
+        h.rustdeskProSyncError = existingHost.rustdeskProSyncError;
+      }
     } else {
       h.host = this.hostAddr; h.port = this.portVal;
       h.customHostname = this.chn;

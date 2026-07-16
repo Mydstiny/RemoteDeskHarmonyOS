@@ -8,6 +8,8 @@ import { hilog } from '@kit.PerformanceAnalysisKit';
 import { common } from '@kit.AbilityKit';
 import { CloudStore } from './CloudStore';
 import { normalizeGroupId } from './HostWorkspacePolicy';
+import { RustDeskProPeer } from '../model/RustDeskProModels';
+import { reconcileRustDeskProHosts, RustDeskProReconcileResult } from './RustDeskProSyncPolicy';
 
 export class HostSyncService {
   private static instance: HostSyncService;
@@ -321,6 +323,44 @@ export class HostSyncService {
       if (h.rustdeskRelayId === relayId) { count++; }
     });
     return count;
+  }
+
+  /**
+   * 将 Server Pro 地址簿 reconcile 到统一主机列表。
+   * 只创建/更新 sourceType=rustdesk_pro 的记录，绝不接管同 ID 的手动主机，
+   * 也不因一次同步缺少设备而删除已有记录。
+   */
+  reconcileRustDeskProHosts(relayId: string, accountId: string, peers: RustDeskProPeer[],
+    syncedAt: number = Date.now()): RustDeskProReconcileResult {
+    const result = reconcileRustDeskProHosts(this.getAllHosts(), relayId, accountId, peers, syncedAt);
+    const changedIds: Set<string> = new Set<string>();
+    result.addedIds.forEach((id: string): void => { changedIds.add(id); });
+    result.updatedIds.forEach((id: string): void => { changedIds.add(id); });
+    result.missingIds.forEach((id: string): void => { changedIds.add(id); });
+    let changed = false;
+    changedIds.forEach((id: string): void => {
+      const next = result.hosts.find((host: RemoteHost): boolean => host.id === id);
+      if (!next) { return; }
+      const current = this.hosts.get(id);
+      if (!current) {
+        if (this.ready && !this.cloud.insertHost(next)) {
+          hilog.error(0x0001, 'CloudSync', 'Pro 主机写入失败: ' + id);
+          return;
+        }
+        this.hosts.set(id, next);
+        changed = true;
+        return;
+      }
+      if (this.ready && !this.cloud.updateHost(next)) {
+        hilog.error(0x0001, 'CloudSync', 'Pro 主机更新失败: ' + id);
+        return;
+      }
+      this.hosts.set(id, next);
+      changed = true;
+    });
+    if (changed && this.ready) { this.cloud.pushTable('remotehosts'); }
+    if (changed) { this.emitDataChange(); }
+    return result;
   }
 
   addRelay(relay: RustDeskRelayConfig): boolean {

@@ -13,9 +13,12 @@
  */
 import { promptAction, curves } from '@kit.ArkUI';
 import { socket } from '@kit.NetworkKit';
+import { common } from '@kit.AbilityKit';
 import { RustDeskRelayConfig } from '../model/RustDeskRelayConfig';
 import { RustDeskAccount } from '../model/RustDeskAccount';
+import { RustDeskProAccountState } from '../model/RustDeskProModels';
 import { HostSyncService } from '../services/HostSyncService';
+import { RustDeskProSyncService } from '../services/RustDeskProSyncService';
 import { snapshotSelectedRelay } from '../services/RustDeskRelayHealthPolicy';
 import { Palette, buildDark, buildLight, AppTheme } from '../common/Theme';
 
@@ -55,7 +58,17 @@ export struct RustDeskRelayPage {
   @State accountRelayId: string = '';
   @State formAcctUser: string = '';
   @State formAcctPwd: string = '';
+  // Server Pro account form and local-only account state
+  @State proAccounts: RustDeskProAccountState[] = [];
+  @State proRelayId: string = '';
+  @State proAccountId: string = '';
+  @State formProServer: string = '';
+  @State formProUser: string = '';
+  @State formProPwd: string = '';
+  @State formProError: string = '';
+  @State proBusy: boolean = false;
   private srv: HostSyncService = HostSyncService.getInstance();
+  private proSync: RustDeskProSyncService = RustDeskProSyncService.getInstance();
   private dataUnsubscribe: (() => void) | null = null;
   private pageActive: boolean = false;
 
@@ -70,8 +83,10 @@ export struct RustDeskRelayPage {
 
   aboutToAppear(): void {
     this.pageActive = true;
+    this.proSync.init(getContext(this) as common.Context);
     this.registerDataRefreshListener();
     this.load();
+    this.loadProAccounts();
     this.srv.whenReady().then((): void => {
       if (this.pageActive) { this.load(); }
     });
@@ -98,6 +113,9 @@ export struct RustDeskRelayPage {
     if (selectedRelayId !== '') {
       this.selectedPcRelay = snapshotSelectedRelay(nextRelays, selectedRelayId);
     }
+  }
+  private loadProAccounts(): void {
+    this.proAccounts = this.proSync.getAccounts();
   }
   onAddTrigger(): void {
     if (this.addTrigger > 0) { this.openAddRelaySheet(); }
@@ -211,7 +229,15 @@ export struct RustDeskRelayPage {
     this.accountRelayId = '';
     this.formAcctUser = '';
     this.formAcctPwd = '';
+    this.proRelayId = '';
+    this.proAccountId = '';
+    this.formProServer = '';
+    this.formProUser = '';
+    this.formProPwd = '';
+    this.formProError = '';
+    this.proBusy = false;
     this.load();
+    this.loadProAccounts();
   }
 
   private openEditRelaySheet(relay: RustDeskRelayConfig): void {
@@ -234,6 +260,34 @@ export struct RustDeskRelayPage {
     this.formAcctUser = account ? account.username : '';
     this.formAcctPwd = account ? account.password : '';
     this.sheetContent = 2;
+    this.showSheet = true;
+  }
+
+  private proAccountsForRelay(relayId: string): RustDeskProAccountState[] {
+    return this.proAccounts.filter((account: RustDeskProAccountState): boolean => account.relayId === relayId);
+  }
+
+  private proStatusLabel(account: RustDeskProAccountState): string {
+    if (account.loginStatus === 'logged_in') { return '已登录'; }
+    if (account.loginStatus === 'expired') { return '登录过期'; }
+    return '未登录';
+  }
+
+  private proStatusColor(account: RustDeskProAccountState): string {
+    if (account.loginStatus === 'logged_in') { return this.pal().success; }
+    if (account.loginStatus === 'expired') { return this.pal().danger; }
+    return this.pal().text3;
+  }
+
+  private openProAccountSheet(relay: RustDeskRelayConfig, account?: RustDeskProAccountState): void {
+    this.proRelayId = relay.id;
+    this.proAccountId = account ? account.id : '';
+    this.formProServer = account ? account.serverUrl : relay.apiServer;
+    this.formProUser = account ? account.username : '';
+    this.formProPwd = '';
+    this.formProError = '';
+    this.proBusy = false;
+    this.sheetContent = 3;
     this.showSheet = true;
   }
 
@@ -376,6 +430,51 @@ export struct RustDeskRelayPage {
       this.expandedRelayIds = ids;
     }
     this.srv.updateRelay(relay); this.closeSheet();
+  }
+
+  private async doProLogin(): Promise<void> {
+    if (this.proRelayId === '' || this.formProServer.trim() === '' || this.formProUser.trim() === '' || this.formProPwd === '') {
+      this.formProError = '服务器地址、用户名和密码不能为空';
+      return;
+    }
+    this.proBusy = true;
+    this.formProError = '';
+    const accountId = this.proAccountId !== '' ? this.proAccountId : 'rdpro_' + Date.now().toString(36);
+    try {
+      await this.proSync.login({
+        id: accountId,
+        relayId: this.proRelayId,
+        serverUrl: this.formProServer,
+        username: this.formProUser,
+        password: this.formProPwd
+      });
+      await this.proSync.sync(accountId);
+      this.loadProAccounts();
+      this.formProPwd = '';
+      promptAction.showToast({ message: 'Pro 登录并同步成功', duration: 2000 });
+      this.closeSheet();
+    } catch (err) {
+      this.formProError = err instanceof Error ? err.message : 'Pro 登录失败';
+    } finally {
+      this.proBusy = false;
+    }
+  }
+
+  private async doProSync(accountId: string): Promise<void> {
+    try {
+      await this.proSync.sync(accountId);
+      this.loadProAccounts();
+      promptAction.showToast({ message: 'Pro 设备已同步', duration: 1800 });
+    } catch (err) {
+      this.formProError = err instanceof Error ? err.message : 'Pro 同步失败';
+      promptAction.showToast({ message: this.formProError, duration: 2200 });
+    }
+  }
+
+  private async doProLogout(accountId: string): Promise<void> {
+    await this.proSync.logout(accountId);
+    this.loadProAccounts();
+    this.closeSheet();
   }
 
   private doDeleteAccount(accountId: string): void {
@@ -874,6 +973,8 @@ export struct RustDeskRelayPage {
               }
               .width('100%').borderRadius(10).backgroundColor(this.pal().surface).padding(10).margin({ bottom: 14 })
 
+              this.proAccountSection(this.selectedPcRelay as RustDeskRelayConfig)
+
               // 绑定主机
               Text('绑定主机').fontSize(13).fontColor(this.pal().text3).fontFamily(this.font())
                 .fontWeight(FontWeight.Medium).margin({ bottom: 8 }).width('100%')
@@ -1054,6 +1155,7 @@ export struct RustDeskRelayPage {
             .margin({ bottom: 3 })
             .onClick(() => { this.openAccountSheet(relay, acct); })
           })
+          this.proAccountSection(relay)
         }
         .transition(
           TransitionEffect.OPACITY
@@ -1080,6 +1182,45 @@ export struct RustDeskRelayPage {
       Text(value).fontSize(12).fontColor(this.pal().text2).fontFamily(this.font())
         .textOverflow({ overflow: TextOverflow.Ellipsis }).maxLines(1).layoutWeight(1)
     }.width('100%').padding({ top: 2, bottom: 2 })
+  }
+
+  @Builder proAccountSection(relay: RustDeskRelayConfig) {
+    Column() {
+      Row() {
+        Row() {
+          SymbolGlyph($r('sys.symbol.person_crop_circle_fill')).fontSize(16).fontColor([this.accentColor])
+          Text('Pro 账号').fontSize(13).fontColor(this.pal().text3).fontFamily(this.font()).margin({ left: 6 })
+        }
+        Blank()
+        Text('+ 登录').fontSize(13).fontColor(this.accentColor).fontFamily(this.font())
+          .onClick(() => { this.openProAccountSheet(relay); })
+      }.width('100%').margin({ bottom: 7 })
+      if (this.proAccountsForRelay(relay.id).length === 0) {
+        Text('Server Pro 地址簿未连接').fontSize(12).fontColor(this.pal().text3).fontFamily(this.font())
+          .width('100%').textAlign(TextAlign.Center).padding({ top: 8, bottom: 8 })
+      }
+      ForEach(this.proAccountsForRelay(relay.id), (account: RustDeskProAccountState) => {
+        Row() {
+          SymbolGlyph($r('sys.symbol.person_crop_circle_fill')).fontSize(15).fontColor([this.proStatusColor(account)])
+          Column() {
+            Text(account.displayName.length > 0 ? account.displayName : account.username)
+              .fontSize(13).fontColor(this.pal().text).fontFamily(this.font())
+            Text(this.proStatusLabel(account) + ' · ' + account.serverUrl)
+              .fontSize(10).fontColor(this.pal().text3).fontFamily(this.font())
+              .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+          }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 7 })
+          if (account.loginStatus === 'logged_in') {
+            Text('同步').fontSize(11).fontColor(this.accentColor).fontFamily(this.font())
+              .margin({ right: 8 }).onClick(() => { this.doProSync(account.id); })
+          }
+          Text('管理').fontSize(11).fontColor(this.accentColor).fontFamily(this.font())
+            .onClick(() => { this.openProAccountSheet(relay, account); })
+        }
+        .width('100%').padding({ left: 9, right: 9, top: 7, bottom: 7 })
+        .borderRadius(9).backgroundColor(this.pal().card).margin({ bottom: 3 })
+      }, (account: RustDeskProAccountState): string => account.id)
+    }
+    .width('100%').borderRadius(10).backgroundColor(this.pal().surface).padding(10).margin({ bottom: 14 })
   }
 
   // ==================== Title Bar ====================
@@ -1171,11 +1312,51 @@ export struct RustDeskRelayPage {
       : { width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
   }
 
+  @Builder proAccountEditSheet() {
+    Column() {
+      Text(this.proAccountId === '' ? '登录 RustDesk Server Pro' : '管理 Pro 账号')
+        .fontSize(19).fontWeight(FontWeight.Bold).fontColor(this.pal().text).fontFamily(this.font())
+        .width('100%').margin({ bottom: 8 })
+      Text('Pro 设备会自动进入主机列表；访问令牌仅保存在本机，不参与华为云同步。')
+        .fontSize(12).fontColor(this.pal().text3).fontFamily(this.font()).lineHeight(18)
+        .width('100%').margin({ bottom: 14 })
+      this._f('Pro API 地址', 'https://pro.example.com', this.formProServer, (v: string) => { this.formProServer = v; })
+      this._f('用户名', 'user@example.com', this.formProUser, (v: string) => { this.formProUser = v; })
+      this._f('密码', '不会保存密码', this.formProPwd, (v: string) => { this.formProPwd = v; })
+      if (this.formProError !== '') {
+        Text(this.formProError).fontSize(12).fontColor(this.pal().danger).fontFamily(this.font())
+          .width('100%').margin({ top: 2, bottom: 4 })
+      }
+      Button(this.proBusy ? '登录中…' : '登录并同步设备')
+        .width('100%').height(40).fontSize(14).fontWeight(FontWeight.Medium)
+        .backgroundColor(this.proBusy ? this.pal().text3 : this.accentColor).fontColor('#FFFFFF').borderRadius(10)
+        .enabled(!this.proBusy).onClick(() => { this.doProLogin(); })
+      if (this.proAccountId !== '') {
+        Button('退出 Pro 账号').width('100%').height(40).fontSize(14)
+          .backgroundColor(Color.Transparent).fontColor(this.pal().danger).borderRadius(10).margin({ top: 8 })
+          .onClick(() => { this.doProLogout(this.proAccountId); })
+      }
+      Blank().height(24)
+    }.width('100%')
+    .padding({ left: 24, right: 24, top: 24, bottom: 40 })
+    .borderRadius(this.breakpoint === 'sm' ? 0 : 20)
+    .backgroundColor(this.pal().bg)
+    .backgroundBlurStyle(BlurStyle.Regular)
+    .shadow(this.breakpoint === 'sm'
+      ? { radius: 0, color: 'rgba(0,0,0,0)', offsetY: 0 } as ShadowOptions
+      : { radius: 24, color: 'rgba(0,0,0,0.12)', offsetY: 6 } as ShadowOptions)
+    .border(this.breakpoint === 'sm'
+      ? { width: 0, color: Color.Transparent, style: BorderStyle.Solid }
+      : { width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
+  }
+
   @Builder relaySheetBuilder() {
     if (this.sheetContent === 1) {
       this.relayEditSheet()
     } else if (this.sheetContent === 2) {
       this.accountEditSheet()
+    } else if (this.sheetContent === 3) {
+      this.proAccountEditSheet()
     }
   }
 
