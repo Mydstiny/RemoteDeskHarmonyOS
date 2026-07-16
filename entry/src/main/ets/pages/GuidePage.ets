@@ -26,7 +26,7 @@ struct GuidePage {
   private swiperController: SwiperController = new SwiperController();
   @StorageLink('currentTheme') theme: string = 'light';
   @StorageProp('accentColor') accentColor: string = '#007DFF';
-  @StorageProp('currentBreakpoint') breakpoint: string = 'sm';
+  @StorageLink('currentBreakpoint') @Watch('onBreakpointChange') breakpoint: string = 'sm';
   @State currentIndex: number = 0;
   @State showContent: boolean = false;
   @State showPhoneGuideSheet: boolean = false;
@@ -34,6 +34,7 @@ struct GuidePage {
   @State activePages: GuideContentPage[] = [];
   private tutorialPages: GuideContentPage[] = firstInstallGuidePages();
   private isFinishing: boolean = false;
+  private isReflowingGuideSheet: boolean = false;
 
   async aboutToAppear(): Promise<void> {
     try {
@@ -58,6 +59,14 @@ struct GuidePage {
 
   private pal(): Palette {
     return this.theme === 'light' ? buildLight(this.accentColor) : buildDark(this.accentColor);
+  }
+
+  private onBreakpointChange(): void {
+    if (!this.showContent || this.mode === StartupMode.LOGIN) { return; }
+    const shouldUseSheet: boolean = this.presentGuideAsBottomSheet();
+    if (this.showPhoneGuideSheet === shouldUseSheet) { return; }
+    this.isReflowingGuideSheet = true;
+    this.showPhoneGuideSheet = shouldUseSheet;
   }
 
   private presentGuideAsDialog(): boolean {
@@ -226,6 +235,10 @@ struct GuidePage {
   }
 
   private handlePhoneGuideSheetDisappear(): void {
+    if (this.isReflowingGuideSheet) {
+      this.isReflowingGuideSheet = false;
+      return;
+    }
     if (!this.presentGuideAsBottomSheet()) { return; }
     if (!this.isFinishing) {
       this.isFinishing = true;
