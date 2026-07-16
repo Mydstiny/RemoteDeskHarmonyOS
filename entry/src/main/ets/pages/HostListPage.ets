@@ -1537,13 +1537,11 @@ struct HostListPage {
     } catch (_e) { /* 静默 */ }
   }
 
-  // 光晕颜色 → 渐变遮罩色 (浅色20%alpha, 深色加深至50%alpha)
+  // 光晕颜色 → 渐变遮罩色；保持材质透亮，避免暗色模式被深色蒙层压成灰块。
   private haloMaskColor(): string {
-    let alphaValue: number = this.theme === 'light' ? 0x33 : 0x80;
+    let alphaValue: number = 0x33;
     if (this.ambientLightEffectEnabled) {
-      alphaValue = this.theme === 'light'
-        ? 0x22 + this.ambientLightIntensity * 0x34
-        : 0x55 + this.ambientLightIntensity * 0x55;
+      alphaValue = 0x22 + this.ambientLightIntensity * 0x22;
     }
     const alpha: string = this.alphaHex(alphaValue);
     return '#' + alpha + this.haloColor.substring(1);
@@ -3012,9 +3010,8 @@ struct HostListPage {
           .priorityGesture(PanGesture({ direction: PanDirection.Horizontal, distance: 10 }))
           .barPosition(BarPosition.End).vertical(false).barHeight(64)
           .barFloatingStyle({
-            barWidth: { smallWidth: 280, mediumWidth: 320, largeWidth: 380 },
-            barBottomMargin: this.breakpoint === 'lg' ? 24 : (this.breakpoint === 'md' ? 20 : 24),
-            barSideMargin: 8,
+            // 交给 HDS 根据 Tab 数量、容器宽度和断点计算官方宽度/侧距。
+            barBottomMargin: 28,
             gradientMask: {
               maskColor: this.haloMaskColor(),
               maskHeight: 92
@@ -3025,7 +3022,7 @@ struct HostListPage {
             },
             adaptToHandedness: true
           })
-          .divider({ mode: DividerMode.NONE })
+          .divider({ mode: DividerMode.FOLLOW_SCROLL })
           .animationDuration(300)
           .onChange((i: number) => {
             this.curTab = i;
