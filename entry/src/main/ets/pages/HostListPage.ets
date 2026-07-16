@@ -168,6 +168,7 @@ const ENV_COLOR_MODE_LIGHT = 0;
 const ENV_COLOR_MODE_DARK = 1;
 const RDP_DRIVE_REDIRECTION_ENABLED = true;
 const SETTINGS_ACCORDION_ANIMATION_MS = 280;
+const POPUP_SHEET_RDP_CERTIFICATES = 4;
 
 @Entry
 @Component
@@ -225,7 +226,7 @@ struct HostListPage {
   @State aboutSheetMode: number = 0; // 0=使用教程 1=关于应用 2=隐私政策 3=前置操作
   // 合并 Sheet: 单 bindSheet + mode 切换 (避免 $$ 多 bindSheet 错位)
   @State showPopupSheet: boolean = false;
-  @State popupSheetMode: number = 0; // 0=crypto, 1=about(用 aboutSheetMode 子路由), 2=SSH host key
+  @State popupSheetMode: number = 0; // 0=crypto, 1=about(用 aboutSheetMode 子路由), 2=SSH host key, 4=RDP certificate
   @State cloudSyncStep: string = CLOUD_SYNC_SHEET_ACTIONS;
   @State cloudSyncError: string = '';
   @State cloudSyncSelectedTables: string[] = [];
@@ -348,6 +349,8 @@ struct HostListPage {
   @State cryptoResetCountdown: number = 0;
   @State sshHostKeyBusyId: string = '';
   @State sshTrustedHostsView: RemoteHost[] = [];
+  @State rdpCertificateBusyId: string = '';
+  @State rdpTrustedHostsView: RemoteHost[] = [];
   @State dbgDgPerm: string = '?';
   @State dbgAmPerm: string = '?';
   @State dbgMonitor: string = '未注册';
@@ -899,7 +902,7 @@ struct HostListPage {
 
   private async createLocalBackup(): Promise<void> {
     try {
-      const saved: boolean = await LocalBackupService.getInstance().saveBackup('1.0.6');
+      const saved: boolean = await LocalBackupService.getInstance().saveBackup('1.0.7');
       if (saved) { promptAction.showToast({ message: '本地备份已保存', duration: 1600 }); this.closeSettingsLeafSheet(); }
     } catch (_e) { this.cloudSyncError = '备份失败，请检查保存位置后重试'; }
   }
@@ -1021,7 +1024,7 @@ struct HostListPage {
 
   private async openFeedbackEmail(): Promise<void> {
     const ctx: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
-    const versionName: string = '1.0.6';
+    const versionName: string = '1.0.7';
     const attempts: SettingsFeedbackLaunchAttempt[] =
       settingsFeedbackLaunchAttempts(versionName, this.breakpoint, this.isDesktopDevice);
     const params: Record<string, Object> =
@@ -1449,6 +1452,7 @@ struct HostListPage {
     this.filteredHosts = this.visibleHostsForCurrentMode();
     this.hostDataSource.replaceAll(this.filteredHosts);
     this.refreshSshTrustedHostsView();
+    this.refreshRdpTrustedHostsView();
   }
 
   private visibleHostsForCurrentMode(): RemoteHost[] {
@@ -4388,6 +4392,14 @@ struct HostListPage {
                     this.popupSheetMode = 2;
                   });
                 })
+              this.cardDivider()
+              this.cardActionRow($r('app.media.icon_desktop'), 'RDP 证书信任',
+                this.rdpTrustedHostsView.length.toString() + ' 条已信任记录',
+                (): void => {
+                  this.openSettingsLeafSheet(SETTINGS_SHEET_POPUP, (): void => {
+                    this.popupSheetMode = POPUP_SHEET_RDP_CERTIFICATES;
+                  });
+                })
             }.borderRadius(24).backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
             .shadow({ radius: 16, color: 'rgba(0,0,0,0.04)', offsetY: 4 })
             .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
@@ -4451,7 +4463,7 @@ struct HostListPage {
             Text('关于').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text3)
               .fontFamily(this.font()).padding({ left: 8, bottom: 8 })
             Column() {
-              this.cardItemRow($r('app.media.icon_info'), '版本', '1.0.6 · FreeRDP+RustDesk+SSH')
+              this.cardItemRow($r('app.media.icon_info'), '版本', '1.0.7 · FreeRDP+RustDesk+SSH')
               this.cardDivider()
               this.cardActionRow($r('app.media.icon_info'), '关于应用', '开源协议、作者说明和联系方式',
                 (): void => {
@@ -4857,6 +4869,8 @@ struct HostListPage {
       this.cryptoSheet()
     } else if (this.popupSheetMode === 2) {
       this.sshHostKeyManagerSheet()
+    } else if (this.popupSheetMode === POPUP_SHEET_RDP_CERTIFICATES) {
+      this.rdpCertificateManagerSheet()
     } else if (this.popupSheetMode === 3) {
       this.cloudSyncSheet()
     } else {
@@ -5127,6 +5141,89 @@ struct HostListPage {
                     .backgroundColor(this.pal().surface).fontColor(this.pal().danger)
                     .borderRadius(8).margin({ left: 8 }).enabled(this.sshHostKeyBusyId === '')
                     .onClick((): void => { this.forgetSshHostKey(host); })
+                }.width('100%').margin({ top: 10 })
+              }
+              .width('100%').padding(14).borderRadius(14)
+              .backgroundColor(this.pal().card)
+              .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
+              .margin({ bottom: 10 })
+            }, (host: RemoteHost) => host.id)
+          }.width('100%').padding({ left: 24, right: 24, bottom: 18 })
+        }
+        .constraintSize({ maxHeight: 480 }).scrollBar(BarState.Auto).edgeEffect(EdgeEffect.Spring)
+      }
+    }
+    .width('100%')
+    .constraintSize({ maxWidth: 620 })
+    .backgroundColor(this.pal().bg)
+    .backgroundBlurStyle(BlurStyle.Regular)
+    .borderRadius(this.breakpoint === 'sm' ? { topLeft: 22, topRight: 22, bottomLeft: 0, bottomRight: 0 } : 24)
+  }
+
+  @Builder rdpCertificateManagerSheet() {
+    Column() {
+      Row() {
+        Text('RDP 证书信任').fontSize(20).fontWeight(FontWeight.Bold)
+          .fontColor(this.pal().text).fontFamily(this.font())
+        Blank()
+        SymbolGlyph($r('sys.symbol.xmark')).fontSize(18).fontColor([this.pal().text2])
+          .width(36).height(36).onClick((): void => { this.closeSettingsLeafSheet(); })
+      }.width('100%').padding({ left: 24, right: 20, top: 20 }).margin({ bottom: 6 })
+
+      if (this.rdpTrustedHostsView.length === 0) {
+        Column() {
+          SymbolGlyph($r('sys.symbol.lock_shield_fill')).fontSize(34).fontColor([this.pal().text3])
+          Text('暂无已信任的 RDP 证书')
+            .fontSize(15).fontColor(this.pal().text).fontFamily(this.font()).margin({ top: 12 })
+          Text('在首次连接 RDP 主机时选择“信任”，记录会显示在这里。')
+            .fontSize(12).fontColor(this.pal().text3).fontFamily(this.font())
+            .textAlign(TextAlign.Center).margin({ top: 6 })
+        }
+        .width('100%').padding({ left: 24, right: 24, top: 34, bottom: 38 })
+      } else {
+        Scroll() {
+          Column() {
+            ForEach(this.rdpTrustedHostsView, (host: RemoteHost) => {
+              Column() {
+                Row() {
+                  Column() {
+                    Text(host.label).fontSize(15).fontWeight(FontWeight.Medium)
+                      .fontColor(this.pal().text).fontFamily(this.font()).maxLines(1)
+                    Text(host.host + ':' + host.port.toString())
+                      .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
+                      .maxLines(1).margin({ top: 2 })
+                  }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+                  Text('RDP').fontSize(11).fontColor(this.accentColor).fontWeight(FontWeight.Medium)
+                    .padding({ left: 8, right: 8, top: 4, bottom: 4 })
+                    .borderRadius(6).backgroundColor(this.pal().surface)
+                }.width('100%').margin({ bottom: 8 })
+
+                Text('CN: ' + (host.rdpCertificateCommonName || '(无)'))
+                  .fontSize(11).fontColor(this.pal().text2).fontFamily('monospace')
+                  .maxLines(1).width('100%')
+                Text('Issuer: ' + (host.rdpCertificateIssuer || '(无)'))
+                  .fontSize(11).fontColor(this.pal().text2).fontFamily('monospace')
+                  .maxLines(1).width('100%').margin({ top: 3 })
+                Text(host.rdpCertificateFingerprintSha256 || '(无指纹)')
+                  .fontSize(11).fontColor(this.pal().text2).fontFamily('monospace')
+                  .maxLines(2).width('100%')
+                  .padding({ left: 10, right: 10, top: 8, bottom: 8 })
+                  .borderRadius(8).backgroundColor(this.pal().surface).margin({ top: 8 })
+
+                Row() {
+                  Text('信任时间 ' + this.formatTimestamp(host.rdpCertificateTrustedAt))
+                    .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
+                    .layoutWeight(1)
+                  Button(this.rdpCertificateBusyId === host.id ? '更新中' : '重新获取')
+                    .height(32).fontSize(12).padding({ left: 10, right: 10 })
+                    .backgroundColor(this.pal().surface).fontColor(this.accentColor)
+                    .borderRadius(8).enabled(this.rdpCertificateBusyId === '')
+                    .onClick((): void => { this.refreshRdpCertificate(host); })
+                  Button('忘记')
+                    .height(32).fontSize(12).padding({ left: 10, right: 10 })
+                    .backgroundColor(this.pal().surface).fontColor(this.pal().danger)
+                    .borderRadius(8).margin({ left: 8 }).enabled(this.rdpCertificateBusyId === '')
+                    .onClick((): void => { this.forgetRdpCertificate(host); })
                 }.width('100%').margin({ top: 10 })
               }
               .width('100%').padding(14).borderRadius(14)
@@ -7058,6 +7155,18 @@ struct HostListPage {
     this.sshTrustedHostsView = this.collectSshTrustedHosts();
   }
 
+  private collectRdpTrustedHosts(): RemoteHost[] {
+    return this.srv.getAllHosts().filter((h: RemoteHost): boolean => {
+      return h.protocol === 'rdp' &&
+        h.rdpCertificateTrustMode === RDP_CERTIFICATE_EXPLICIT_TRUST_MODE &&
+        h.rdpCertificateFingerprintSha256 !== '';
+    });
+  }
+
+  private refreshRdpTrustedHostsView(): void {
+    this.rdpTrustedHostsView = this.collectRdpTrustedHosts();
+  }
+
   private formatTimestamp(ts: number): string {
     if (ts <= 0) { return '未知'; }
     const d: Date = new Date(ts);
@@ -7122,6 +7231,75 @@ struct HostListPage {
       promptAction.showToast({ message: '重新获取异常: ' + JSON.stringify(err), duration: 2500 });
     } finally {
       this.sshHostKeyBusyId = '';
+    }
+  }
+
+  private forgetRdpCertificate(host: RemoteHost): void {
+    promptAction.showDialog({
+      title: '忘记 RDP 证书',
+      message: '确定忘记“' + host.label + '”的已信任 RDP 证书吗？下次连接会重新要求确认。',
+      buttons: [
+        { text: '取消', color: this.pal().text2 },
+        { text: '忘记', color: this.pal().danger }
+      ]
+    }).then((result: Object): void => {
+      const r: Record<string, number> = result as Record<string, number>;
+      if (r['index'] !== 1) { return; }
+      const updated: RemoteHost = RemoteHost.fromJSON(host.toJSON());
+      updated.rdpCertificateFingerprintSha256 = '';
+      updated.rdpCertificateSubject = '';
+      updated.rdpCertificateIssuer = '';
+      updated.rdpCertificateCommonName = '';
+      updated.rdpCertificateTrustedAt = 0;
+      updated.rdpCertificateTrustMode = RDP_CERTIFICATE_UNKNOWN_TRUST_MODE;
+      updated.rdpCertificateAllowUntrustedRoot = false;
+      updated.rdpCertificateAllowHostMismatch = false;
+      this.srv.updateHost(updated);
+      this.refreshHostListView();
+      promptAction.showToast({ message: '已忘记 RDP 证书', duration: 1500 });
+    });
+  }
+
+  private async refreshRdpCertificate(host: RemoteHost): Promise<void> {
+    if (this.rdpCertificateBusyId !== '') { return; }
+    if (host.locked) {
+      const r = await showLockGate(host.label, 'biometric');
+      if (!r.ok) {
+        const msg: string = lockGateErrorMessage(r);
+        if (msg !== '') { promptAction.showToast({ message: msg, duration: 2000 }); }
+        return;
+      }
+    }
+    this.rdpCertificateBusyId = host.id;
+    try {
+      const info: RdpCertificateInfo = await this.loader.probeRdpCertificateAsync(
+        host.host,
+        host.port,
+        host.customHostname
+      );
+      if (!info.ok || info.fingerprintSha256.length === 0) {
+        promptAction.showToast({
+          message: '重新获取失败: ' + (info.errorMessage || '无法读取 RDP 主机证书'),
+          duration: 2500
+        });
+        return;
+      }
+      const updated: RemoteHost = RemoteHost.fromJSON(host.toJSON());
+      updated.rdpCertificateFingerprintSha256 = info.fingerprintSha256;
+      updated.rdpCertificateSubject = info.subject;
+      updated.rdpCertificateIssuer = info.issuer;
+      updated.rdpCertificateCommonName = info.commonName;
+      updated.rdpCertificateTrustedAt = Date.now();
+      updated.rdpCertificateTrustMode = RDP_CERTIFICATE_EXPLICIT_TRUST_MODE;
+      updated.rdpCertificateAllowUntrustedRoot = !info.rootTrusted;
+      updated.rdpCertificateAllowHostMismatch = info.hostMismatch;
+      this.srv.updateHost(updated);
+      this.refreshHostListView();
+      promptAction.showToast({ message: 'RDP 证书已更新并信任', duration: 1500 });
+    } catch (err) {
+      promptAction.showToast({ message: '重新获取异常: ' + JSON.stringify(err), duration: 2500 });
+    } finally {
+      this.rdpCertificateBusyId = '';
     }
   }
 

@@ -7,6 +7,7 @@
 
 export const REMOTE_IME_CENTER: number = 2048;
 export const REMOTE_IME_EDGE_THRESHOLD: number = 256;
+export const REMOTE_IME_MAX_CARET_MOVEMENT: number = 32;
 // The remote editor cannot mirror HarmonyOS composing text. Keep the local
 // IME responsible for candidate selection and forward only committed text.
 export const REMOTE_IME_PREVIEW_ENABLED: boolean = false;
@@ -17,7 +18,8 @@ export enum RemoteImeSelectionAction {
   IGNORE_EXPECTED = 2,
   MOVE_LEFT = 3,
   MOVE_RIGHT = 4,
-  COLLAPSE_LOCAL = 5
+  COLLAPSE_LOCAL = 5,
+  IGNORE_INITIAL = 6
 }
 
 export interface RemoteImeShadow {
@@ -28,6 +30,7 @@ export interface RemoteImeShadow {
 export interface RemoteImeSelectionInput {
   active: boolean;
   programmatic: boolean;
+  initialSelectionPending: boolean;
   expectedStart: number;
   expectedEnd: number;
   syncedCaret: number;
@@ -40,6 +43,7 @@ export interface RemoteImeSelectionResult {
   count: number;
   nextSyncedCaret: number;
   consumeExpected: boolean;
+  consumeInitial: boolean;
 }
 
 export interface RemoteImeDeleteResult {
@@ -80,7 +84,18 @@ export function resolveRemoteImeSelection(
       action: RemoteImeSelectionAction.IGNORE_INACTIVE,
       count: 0,
       nextSyncedCaret: input.syncedCaret,
-      consumeExpected: false
+      consumeExpected: false,
+      consumeInitial: false
+    };
+  }
+
+  if (input.initialSelectionPending) {
+    return {
+      action: RemoteImeSelectionAction.IGNORE_INITIAL,
+      count: 0,
+      nextSyncedCaret: input.syncedCaret,
+      consumeExpected: false,
+      consumeInitial: true
     };
   }
 
@@ -89,7 +104,8 @@ export function resolveRemoteImeSelection(
       action: RemoteImeSelectionAction.IGNORE_PROGRAMMATIC,
       count: 0,
       nextSyncedCaret: input.syncedCaret,
-      consumeExpected: false
+      consumeExpected: false,
+      consumeInitial: false
     };
   }
 
@@ -98,7 +114,8 @@ export function resolveRemoteImeSelection(
       action: RemoteImeSelectionAction.IGNORE_EXPECTED,
       count: 0,
       nextSyncedCaret: input.syncedCaret,
-      consumeExpected: true
+      consumeExpected: true,
+      consumeInitial: false
     };
   }
 
@@ -107,17 +124,28 @@ export function resolveRemoteImeSelection(
       action: RemoteImeSelectionAction.COLLAPSE_LOCAL,
       count: 0,
       nextSyncedCaret: input.syncedCaret,
-      consumeExpected: false
+      consumeExpected: false,
+      consumeInitial: false
     };
   }
 
   const delta = input.selectionStart - input.syncedCaret;
+  if (Math.abs(delta) > REMOTE_IME_MAX_CARET_MOVEMENT) {
+    return {
+      action: RemoteImeSelectionAction.COLLAPSE_LOCAL,
+      count: 0,
+      nextSyncedCaret: input.syncedCaret,
+      consumeExpected: false,
+      consumeInitial: false
+    };
+  }
   if (delta < 0) {
     return {
       action: RemoteImeSelectionAction.MOVE_LEFT,
       count: -delta,
       nextSyncedCaret: input.selectionStart,
-      consumeExpected: false
+      consumeExpected: false,
+      consumeInitial: false
     };
   }
 
@@ -126,7 +154,8 @@ export function resolveRemoteImeSelection(
       action: RemoteImeSelectionAction.MOVE_RIGHT,
       count: delta,
       nextSyncedCaret: input.selectionStart,
-      consumeExpected: false
+      consumeExpected: false,
+      consumeInitial: false
     };
   }
 
@@ -134,7 +163,8 @@ export function resolveRemoteImeSelection(
     action: RemoteImeSelectionAction.COLLAPSE_LOCAL,
     count: 0,
     nextSyncedCaret: input.syncedCaret,
-    consumeExpected: false
+    consumeExpected: false,
+    consumeInitial: false
   };
 }
 
@@ -171,9 +201,22 @@ export function shouldAcceptRemoteImeTextChange(active: boolean, previewTextLeng
 export function shouldCloseRemoteImeSessionOnEditChange(
   keyboardOpen: boolean,
   isEditing: boolean,
-  editingObserved: boolean
+  editingObserved: boolean,
+  selectionAcknowledgementPending: boolean = false
 ): boolean {
-  return keyboardOpen && !isEditing && editingObserved;
+  return keyboardOpen && !isEditing && editingObserved && !selectionAcknowledgementPending;
+}
+
+export function shouldWaitForRemoteImeInput(
+  connected: boolean,
+  sessionId: number,
+  inputForwardReady: boolean
+): boolean {
+  return connected && sessionId > 0 && !inputForwardReady;
+}
+
+export function shouldResetRemoteImeOnPointerDown(keyboardOpen: boolean): boolean {
+  return !keyboardOpen;
 }
 
 export function createRemoteImeDiagnostic(
