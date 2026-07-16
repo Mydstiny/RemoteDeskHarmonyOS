@@ -204,6 +204,7 @@ interface LocalPoint {
 }
 
 type ModifierLatch = 'off' | 'once' | 'locked';
+type RustDeskAuthChoice = 'password' | 'request_approval';
 
 class RemoteDesktopXComponentController extends XComponentController {
   private listener: RemoteDesktopSurfaceListener | null = null;
@@ -264,6 +265,12 @@ struct RemoteDesktop {
   @State rdpSessionErrorTitle: string = '你的会话已断开';
   @State rdpSessionErrorMessage: string = '';
   @State rdpSessionErrorCode: string = '';
+  @State showRustDeskAuthSheet: boolean = false;
+  @State rustDeskAuthChoice: RustDeskAuthChoice = 'password';
+  @State rustDeskAuthPasswordInput: string = '';
+  @State rustDeskAuthPasswordShow: boolean = false;
+  @State rustDeskAuthRememberPassword: boolean = true;
+  @State rustDeskAuthError: string = '';
   private rdpSessionErrorBackPending: boolean = false;
   private rdpSessionErrorPendingCleanupReason: string = '';
   private rdpSessionErrorPendingAfterControlPanel: boolean = false;
@@ -296,6 +303,9 @@ struct RemoteDesktop {
   private orientationApplied: boolean = false;
   private connectAttemptId: number = 0;
   private pendingHost: RemoteHost | null = null;
+  private rustDeskSessionAuthChoice: RustDeskAuthChoice = 'password';
+  private rustDeskSessionPassword: string = '';
+  private rustDeskSessionRememberPassword: boolean = false;
   private remoteNavigationHidden: boolean = false;
   private backgroundAudioPollTimer: number = -1;
   private backgroundSessionInfo: RemoteSessionBgInfo | null = null;
@@ -522,6 +532,114 @@ struct RemoteDesktop {
   private isRustDeskSession(): boolean {
     const host: RemoteHost | null = this.pendingHost;
     return host !== null && host.protocol === 'rustdesk';
+  }
+
+  private isProRustDeskHost(host: RemoteHost | null): boolean {
+    return host !== null && host.protocol === 'rustdesk' &&
+      host.sourceType === 'rustdesk_pro' && host.rustdeskProManaged;
+  }
+
+  /**
+   * Pro 地址簿主机每次新建会话都显式选择认证方式；后台恢复不经过这里，
+   * 因为恢复的是已有 RustDesk 会话而不是重新认证。
+   */
+  private openRustDeskAuthSheet(message: string = ''): void {
+    const host: RemoteHost | null = this.pendingHost;
+    if (host === null || host.protocol !== 'rustdesk' || host.sourceType !== 'rustdesk_pro' ||
+      !host.rustdeskProManaged) {
+      this.tryStartConnect();
+      return;
+    }
+    this.rustDeskAuthChoice = host.rustdeskDirectEnabled ? 'password' :
+      (host.rustdeskAuthMode === 'request_approval' ? 'request_approval' : 'password');
+    this.rustDeskAuthPasswordInput = host.password;
+    this.rustDeskAuthPasswordShow = false;
+    this.rustDeskAuthRememberPassword = true;
+    this.rustDeskAuthError = message;
+    this.showRustDeskAuthSheet = true;
+  }
+
+  private cancelRustDeskAuthChoice(): void {
+    this.showRustDeskAuthSheet = false;
+    this.rustDeskAuthError = '';
+    this.connectStarted = false;
+    this.connecting = false;
+    this.connectionError = '连接已取消';
+    this.connectionErrorDetail = '未建立 RustDesk 会话';
+    this.goBack();
+  }
+
+  private confirmRustDeskAuthChoice(): void {
+    const host: RemoteHost | null = this.pendingHost;
+    if (host === null || host.protocol !== 'rustdesk' || host.sourceType !== 'rustdesk_pro' ||
+      !host.rustdeskProManaged) {
+      this.showRustDeskAuthSheet = false;
+      this.tryStartConnect();
+      return;
+    }
+    if (this.rustDeskAuthChoice === 'request_approval' && host.rustdeskDirectEnabled) {
+      this.rustDeskAuthError = '当前主机使用直连模式，不能请求远端批准，请改用设备密码。';
+      return;
+    }
+
+    const selected = RemoteHost.fromJSON(host.toJSON());
+    if (this.rustDeskAuthChoice === 'password') {
+      if (this.rustDeskAuthPasswordInput.trim().length === 0) {
+        this.rustDeskAuthError = '请输入远程 RustDesk 设备密码。';
+        return;
+      }
+      selected.password = this.rustDeskAuthPasswordInput;
+      selected.rustdeskAuthMode = 'password';
+      this.rustDeskSessionPassword = this.rustDeskAuthPasswordInput;
+      this.rustDeskSessionRememberPassword = this.rustDeskAuthRememberPassword;
+    } else {
+      // 保留已保存密码作为回退材料，但本次 FFI 连接明确走批准模式。
+      selected.rustdeskAuthMode = 'request_approval';
+      this.rustDeskSessionPassword = '';
+      this.rustDeskSessionRememberPassword = false;
+    }
+    this.rustDeskSessionAuthChoice = this.rustDeskAuthChoice;
+    this.pendingHost = selected;
+    this.showRustDeskAuthSheet = false;
+    this.rustDeskAuthError = '';
+    this.connectionError = '';
+    this.connectionErrorDetail = '';
+    this.connectStarted = false;
+    this.connecting = true;
+    this.tryStartConnect();
+  }
+
+  private persistRustDeskSessionAuth(host: RemoteHost): void {
+    if (!this.isProRustDeskHost(host)) {
+      return;
+    }
+    const existing = this.srv.getHost(host.id);
+    if (!existing) {
+      return;
+    }
+    const next = RemoteHost.fromJSON(existing.toJSON());
+    next.rustdeskAuthMode = this.rustDeskSessionAuthChoice;
+    if (this.rustDeskSessionAuthChoice === 'password' &&
+      this.rustDeskSessionRememberPassword && this.rustDeskSessionPassword.length > 0) {
+      next.password = this.rustDeskSessionPassword;
+    }
+    if (this.srv.updateHost(next)) {
+      hilog.info(RD_DOMAIN, RD_TAG, 'RustDesk Pro auth choice persisted host=' +
+        host.id + ' mode=' + this.rustDeskSessionAuthChoice +
+        ' passwordSaved=' + (this.rustDeskSessionAuthChoice === 'password' &&
+          this.rustDeskSessionRememberPassword ? 'true' : 'false'));
+    } else {
+      hilog.warn(RD_DOMAIN, RD_TAG, 'RustDesk Pro auth choice persistence failed host=' + host.id);
+    }
+  }
+
+  private shouldOfferRustDeskAuthRetry(detail: string): boolean {
+    const value: string = detail.toLowerCase();
+    return value.indexOf('wrong password') >= 0 ||
+      value.indexOf('empty password') >= 0 ||
+      value.indexOf('no password access') >= 0 ||
+      value.indexOf('remote approval timed out') >= 0 ||
+      value.indexOf('approval') >= 0;
   }
 
   private currentProtocolName(): string {
@@ -1222,10 +1340,15 @@ struct RemoteDesktop {
           const resolvedHost: RemoteHost = this.hostWithResolvedCredential(host);
           this.pendingHost = this.hostWithRdpOneTimeCertificate(resolvedHost, p);
           this.applyDesktopKeyboardMouseMode();
-          if (this.prepareRegistryRestore(host)) {
+          const restoring: boolean = this.prepareRegistryRestore(host);
+          if (restoring) {
             this.restoreFromBackground();
+            this.tryStartConnect();
+          } else if (this.isProRustDeskHost(this.pendingHost)) {
+            this.openRustDeskAuthSheet();
+          } else {
+            this.tryStartConnect();
           }
-          this.tryStartConnect();
         } else {
           this.connecting = false;
           this.connectionError = '主机不存在 [E-REMOTE-HOST-404]';
@@ -1285,7 +1408,8 @@ struct RemoteDesktop {
       return;
     }
 
-    if (this.connectStarted || !this.pendingHost || this.connected || !this.connecting) {
+    if (this.connectStarted || !this.pendingHost || this.connected || !this.connecting ||
+      this.showRustDeskAuthSheet) {
       return;
     }
     this.resetRemoteImeSession('session-connect');
@@ -2360,6 +2484,107 @@ struct RemoteDesktop {
     }.padding(20)
   }
 
+  @Builder rustDeskAuthChoiceBuilder() {
+    Column() {
+      Text('选择连接授权').fontSize(20).fontWeight(FontWeight.Bold)
+        .fontColor(this.pal().text).margin({ bottom: 6 })
+      Text(this.pendingHost ? this.pendingHost.label : 'RustDesk 主机').fontSize(13)
+        .fontColor(this.pal().text2).margin({ bottom: 4 })
+      if (this.pendingHost && this.pendingHost.rustdeskProPlatform.length > 0) {
+        Text('平台：' + this.pendingHost.rustdeskProPlatform).fontSize(11)
+          .fontColor(this.pal().text3).margin({ bottom: 14 })
+      } else {
+        Text('Pro 地址簿主机').fontSize(11)
+          .fontColor(this.pal().text3).margin({ bottom: 14 })
+      }
+
+      Row() {
+        Button('使用设备密码').fontSize(13).height(40).layoutWeight(1)
+          .backgroundColor(this.rustDeskAuthChoice === 'password' ? this.accentColor : this.pal().surface)
+          .fontColor(this.rustDeskAuthChoice === 'password' ? '#FFFFFF' : this.pal().text2)
+          .borderRadius(10)
+          .onClick(() => {
+            this.rustDeskAuthChoice = 'password';
+            this.rustDeskAuthError = '';
+          })
+        Button('请求远端同意').fontSize(13).height(40).layoutWeight(1)
+          .margin({ left: 10 })
+          .backgroundColor(this.rustDeskAuthChoice === 'request_approval' ? this.accentColor : this.pal().surface)
+          .fontColor(this.rustDeskAuthChoice === 'request_approval' ? '#FFFFFF' : this.pal().text2)
+          .borderRadius(10)
+          .enabled(!(this.pendingHost && this.pendingHost.rustdeskDirectEnabled))
+          .onClick(() => {
+            this.rustDeskAuthChoice = 'request_approval';
+            this.rustDeskAuthError = '';
+          })
+      }.width('100%').margin({ bottom: 14 })
+
+      if (this.rustDeskAuthChoice === 'password') {
+        Text('远程 RustDesk 设备密码').fontSize(12).fontColor(this.pal().text2)
+          .margin({ bottom: 5 })
+        Row() {
+          TextInput({ placeholder: '输入设备密码', text: this.rustDeskAuthPasswordInput })
+            .type(this.rustDeskAuthPasswordShow ? InputType.Normal : InputType.Password)
+            .height(42).backgroundColor(this.pal().surface).borderRadius(9)
+            .fontColor(this.pal().text).placeholderColor(this.pal().text3)
+            .layoutWeight(1).padding({ left: 12, right: 12 })
+            .onChange((v: string) => { this.rustDeskAuthPasswordInput = v; })
+          SymbolGlyph(this.rustDeskAuthPasswordShow ? $r('sys.symbol.eye_slash') : $r('sys.symbol.eye'))
+            .fontSize(18).fontColor([this.pal().text3]).margin({ left: 8 })
+            .onClick(() => { this.rustDeskAuthPasswordShow = !this.rustDeskAuthPasswordShow; })
+        }.width('100%').margin({ bottom: 8 })
+        Row() {
+          Text('记住此设备密码').fontSize(12).fontColor(this.pal().text2).layoutWeight(1)
+          Toggle({ type: ToggleType.Switch, isOn: this.rustDeskAuthRememberPassword })
+            .selectedColor(this.accentColor).scale({ x: 0.8, y: 0.8 })
+            .onChange((on: boolean) => { this.rustDeskAuthRememberPassword = on; })
+        }.width('100%').margin({ bottom: 8 })
+        Text('Pro 账户密码不能代替远程设备密码；一次性密码过期后需要重新输入。')
+          .fontSize(11).fontColor(this.pal().text3).lineHeight(16).margin({ bottom: 8 })
+      } else {
+        Text('应用会保持 RustDesk 加密连接，等待被控端点击允许。')
+          .fontSize(12).fontColor(this.pal().text2).lineHeight(18).margin({ bottom: 8 })
+        Text('对方需要启用“点击批准”；直连模式不支持此方式。')
+          .fontSize(11).fontColor(this.pal().text3).lineHeight(16).margin({ bottom: 8 })
+      }
+
+      if (this.rustDeskAuthError.length > 0) {
+        Text(this.rustDeskAuthError).fontSize(12).fontColor(this.pal().danger)
+          .lineHeight(17).margin({ bottom: 10 })
+      }
+      Row() {
+        Button('取消').fontSize(14).height(40).layoutWeight(1)
+          .backgroundColor(this.pal().surface).fontColor(this.pal().text2).borderRadius(10)
+          .onClick(() => { this.cancelRustDeskAuthChoice(); })
+        Button('开始连接').fontSize(14).height(40).layoutWeight(1)
+          .margin({ left: 10 }).backgroundColor(this.accentColor).fontColor('#FFFFFF')
+          .borderRadius(10)
+          .onClick(() => { this.confirmRustDeskAuthChoice(); })
+      }.width('100%')
+    }
+    .width('92%').constraintSize({ maxWidth: 520 })
+    .padding({ left: 22, right: 22, top: 20, bottom: 22 })
+    .backgroundColor(this.pal().bg).borderRadius(20)
+    .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
+    .shadow({ radius: 24, color: 'rgba(0,0,0,0.24)', offsetY: 8 })
+  }
+
+  @Builder rustDeskAuthOverlay() {
+    Column() {
+      if (this.showRustDeskAuthSheet) {
+        Column() {
+          this.rustDeskAuthChoiceBuilder()
+        }
+        .width('100%').height('100%')
+        .justifyContent(FlexAlign.Center)
+        .backgroundColor('rgba(0,0,0,0.58)')
+      }
+    }
+    .width('100%').height('100%')
+    .position({ x: 0, y: 0 })
+    .hitTestBehavior(this.showRustDeskAuthSheet ? HitTestMode.Default : HitTestMode.None)
+  }
+
   // XComponent 就绪后初始化渲染管线并连接
   private async doConnect(host: RemoteHost): Promise<void> {
     const attemptId: number = ++this.connectAttemptId;
@@ -2544,6 +2769,7 @@ struct RemoteDesktop {
       this.nativeHandles.attachConnectedSession(sid, this.remoteProtocolOf(host));
       this.connected = true;
       this.connecting = false;
+      this.persistRustDeskSessionAuth(host);
       this.recordActiveSession(host, sid, true);
       // T-171: 连接成功后显示悬浮胶囊
       this.initHandlePosition();
@@ -2593,6 +2819,14 @@ struct RemoteDesktop {
       const errObj: Error = err as Error;
       this.connectionError = '无法建立远程连接';
       this.connectionErrorDetail = errObj.message ? errObj.message : '未知连接错误 [E-CONNECT-UNKNOWN]';
+      if (this.isProRustDeskHost(host) && this.shouldOfferRustDeskAuthRetry(this.connectionErrorDetail)) {
+        const fresh: RemoteHost | undefined = this.srv.getHost(host.id);
+        if (fresh) { this.pendingHost = RemoteHost.fromJSON(fresh.toJSON()); }
+        this.connectionError = '';
+        this.connectionErrorDetail = '';
+        this.connecting = true;
+        this.openRustDeskAuthSheet('上次认证未完成，请重新选择设备密码或请求远端批准。');
+      }
       if (host.protocol === 'rdp') {
         const model: RdpSessionErrorDialogModel =
           rdpSessionErrorFromNativeMessage(this.connectionErrorDetail, '0x10');
@@ -5383,6 +5617,7 @@ struct RemoteDesktop {
     .width('100%').height('100%')
     .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
     .overlay(this.passphraseOverlay(), { align: Alignment.Top })
+    .overlay(this.rustDeskAuthOverlay(), { align: Alignment.Top })
     .bindSheet($$this.showControlPanel, this.controlPanelBuilder(), {
       preferType: SheetType.CENTER,
       backgroundColor: this.pal().bg,

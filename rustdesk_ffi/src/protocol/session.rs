@@ -406,21 +406,26 @@ impl Session {
     pub fn send_refresh_video(
         channel: &mut crate::crypto_channel::CryptoChannel,
     ) -> io::Result<()> {
-        let mut misc = Misc::new();
-        // 同时使用新旧字段 + video_received ack — 覆盖各种 RustDesk 版本
-        misc.set_refresh_video(true);
-        misc.set_video_received(true); // 告知对端我们还在接收，不要停止
-        misc.set_refresh_video_display(0); // 新字段 (1.2.4+), display=0=主显示器
-
-        let mut msg = Message::new();
-        msg.union = Some(Message_oneof_union::misc(misc));
-
-        let payload = msg
+        // Misc.union 是 protobuf oneof，refresh_video、video_received 和
+        // refresh_video_display 不能写入同一个 Misc；后一次 setter 会覆盖前一次。
+        // 官方客户端会按对端版本发送独立消息。这里始终发送兼容旧版本的
+        // refresh_video=true，确保被控端真正触发首帧刷新；video_received 只在
+        // 收到视频帧后由 send_video_received() 单独发送。
+        let payload = Self::build_refresh_video_message()
             .write_to_bytes()
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
         channel.send(&payload)?;
-        eprintln!("[RustDesk-FFI] sent refresh_video + video_received + refresh_video_display(0)");
+        eprintln!("[RustDesk-FFI] sent refresh_video=true");
         Ok(())
+    }
+
+    fn build_refresh_video_message() -> Message {
+        let mut misc = Misc::new();
+        misc.set_refresh_video(true);
+
+        let mut msg = Message::new();
+        msg.union = Some(Message_oneof_union::misc(misc));
+        msg
     }
 
     pub fn send_video_received(
@@ -809,5 +814,28 @@ impl Session {
     /// 获取远端信息
     pub fn peer_info(&self) -> Option<&PeerInfo> {
         self.peer_info.as_ref()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use protobuf::Message as ProtoMessage;
+
+    #[test]
+    fn refresh_video_message_keeps_refresh_video_oneof_variant() {
+        let encoded = Session::build_refresh_video_message()
+            .write_to_bytes()
+            .expect("refresh message should serialize");
+        let decoded: Message = protobuf::parse_from_bytes(&encoded)
+            .expect("refresh message should deserialize");
+
+        match decoded.union {
+            Some(Message_oneof_union::misc(misc)) => match misc.union {
+                Some(Misc_oneof_union::refresh_video(value)) => assert!(value),
+                other => panic!("unexpected Misc oneof variant: {:?}", other),
+            },
+            other => panic!("unexpected Message variant: {:?}", other),
+        }
     }
 }
