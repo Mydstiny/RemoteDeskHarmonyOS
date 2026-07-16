@@ -17,12 +17,14 @@ use protobuf::Message as ProtoMessage;
 use sha2::{Digest, Sha256};
 use std::io;
 use std::net::TcpStream;
+use std::time::{Duration, Instant};
 
 /// 会话状态
 #[derive(Debug, Clone, PartialEq)]
 pub enum SessionState {
     Disconnected,
     LoggingIn,
+    WaitingRemoteApproval,
     Connected,
     Error(String),
 }
@@ -31,6 +33,7 @@ pub enum SessionState {
 pub struct Session {
     state: SessionState,
     peer_info: Option<PeerInfo>,
+    connect_epoch: u64,
 }
 
 impl Session {
@@ -38,6 +41,7 @@ impl Session {
         Self {
             state: SessionState::Disconnected,
             peer_info: None,
+            connect_epoch: crate::current_connect_epoch(),
         }
     }
 
@@ -52,6 +56,7 @@ impl Session {
         privacy_mode: bool,
         audio_enabled: bool,
         fps: u32,
+        request_approval: bool,
     ) -> io::Result<()> {
         self.login_encrypted_inner(
             channel,
@@ -62,6 +67,7 @@ impl Session {
             privacy_mode,
             audio_enabled,
             fps,
+            request_approval,
             None,
         )?;
         eprintln!("[RustDesk-FFI] login_encrypted response ok, sending stream options");
@@ -81,6 +87,7 @@ impl Session {
         peer_id: &str,
         password: &str,
         remote_dir: &str,
+        request_approval: bool,
     ) -> io::Result<()> {
         self.login_encrypted_inner(
             channel,
@@ -91,6 +98,7 @@ impl Session {
             false,
             false,
             30,
+            request_approval,
             Some(remote_dir),
         )?;
         eprintln!(
@@ -110,6 +118,7 @@ impl Session {
         privacy_mode: bool,
         audio_enabled: bool,
         fps: u32,
+        request_approval: bool,
         file_transfer_dir: Option<&str>,
     ) -> io::Result<()> {
         self.state = SessionState::LoggingIn;
@@ -135,7 +144,50 @@ impl Session {
             }
         };
 
-        let hashed_password = if password.is_empty() {
+        Self::send_login_request(
+            channel,
+            peer_id,
+            password,
+            &hash,
+            preferred_codec,
+            image_quality,
+            privacy_mode,
+            audio_enabled,
+            fps,
+            file_transfer_dir,
+            request_approval,
+        )?;
+
+        self.wait_login_response(
+            channel,
+            peer_id,
+            password,
+            preferred_codec,
+            image_quality,
+            privacy_mode,
+            audio_enabled,
+            fps,
+            file_transfer_dir,
+            request_approval,
+            &hash,
+        )?;
+        Ok(())
+    }
+
+    fn send_login_request(
+        channel: &mut crate::crypto_channel::CryptoChannel,
+        peer_id: &str,
+        password: &str,
+        hash: &super::message_proto::Hash,
+        preferred_codec: i32,
+        image_quality: i32,
+        privacy_mode: bool,
+        audio_enabled: bool,
+        fps: u32,
+        file_transfer_dir: Option<&str>,
+        request_approval: bool,
+    ) -> io::Result<()> {
+        let hashed_password = if request_approval || password.is_empty() {
             Vec::new()
         } else {
             let mut hasher = Sha256::new();
@@ -182,14 +234,10 @@ impl Session {
 
         let mut msg = Message::new();
         msg.union = Some(Message_oneof_union::login_request(login));
-
         let payload = msg
             .write_to_bytes()
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
-        channel.send(&payload)?;
-
-        self.wait_login_response(channel)?;
-        Ok(())
+        channel.send(&payload)
     }
 
     fn image_quality_from_pref(image_quality: i32) -> ImageQuality {
@@ -394,22 +442,117 @@ impl Session {
     fn wait_login_response(
         &mut self,
         channel: &mut crate::crypto_channel::CryptoChannel,
+        peer_id: &str,
+        password: &str,
+        preferred_codec: i32,
+        image_quality: i32,
+        privacy_mode: bool,
+        audio_enabled: bool,
+        fps: u32,
+        file_transfer_dir: Option<&str>,
+        request_approval: bool,
+        initial_hash: &super::message_proto::Hash,
     ) -> io::Result<()> {
+        const APPROVAL_TIMEOUT: Duration = Duration::from_secs(90);
+        const PASSWORD_TIMEOUT: Duration = Duration::from_secs(30);
+        const NO_PASSWORD_ACCESS: &str = "No Password Access";
+        let deadline = Instant::now()
+            + if request_approval {
+                APPROVAL_TIMEOUT
+            } else {
+                PASSWORD_TIMEOUT
+            };
+        let mut last_challenge = Self::challenge_fingerprint(initial_hash);
         let mut last_variant = "none".to_string();
 
-        for _ in 0..16 {
-            let response_payload = channel.recv().map_err(|e| {
-                io::Error::new(
-                    e.kind(),
-                    format!("login response read failed after encrypted LoginRequest: {e}"),
-                )
-            })?;
-            let response: Message = protobuf::parse_from_bytes(&response_payload)
-                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        // 官方在等待被控端批准时保持加密通道，期间允许 TestDelay 保活。
+        channel.set_read_timeout(Some(Duration::from_millis(250)))?;
+        let result = loop {
+            if crate::connect_cancelled(self.connect_epoch) {
+                self.state = SessionState::Error("connection cancelled".to_string());
+                break Err(io::Error::new(
+                    io::ErrorKind::Interrupted,
+                    "connection cancelled",
+                ));
+            }
+            if Instant::now() >= deadline {
+                self.state = SessionState::Error(if request_approval {
+                    "remote approval timed out after 90s".to_string()
+                } else {
+                    "login response timed out after 30s".to_string()
+                });
+                break Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    if request_approval {
+                        "remote approval timed out after 90s"
+                    } else {
+                        "login response timed out after 30s"
+                    },
+                ));
+            }
+
+            let response_payload = match channel.recv() {
+                Ok(payload) => payload,
+                Err(err)
+                    if err.kind() == io::ErrorKind::WouldBlock
+                        || err.kind() == io::ErrorKind::TimedOut =>
+                {
+                    continue;
+                }
+                Err(err) => {
+                    break Err(io::Error::new(
+                        err.kind(),
+                        format!("login response read failed after encrypted LoginRequest: {err}"),
+                    ));
+                }
+            };
+            let response: Message = match protobuf::parse_from_bytes(&response_payload) {
+                Ok(message) => message,
+                Err(err) => {
+                    break Err(io::Error::new(io::ErrorKind::InvalidData, err));
+                }
+            };
 
             match response.union {
                 Some(Message_oneof_union::login_response(resp)) => {
-                    return self.handle_login_response(resp);
+                    if resp.has_error() {
+                        let err = resp.get_error().to_string();
+                        if request_approval && err == NO_PASSWORD_ACCESS {
+                            self.state = SessionState::WaitingRemoteApproval;
+                            last_variant = "no_password_access".to_string();
+                            continue;
+                        }
+                        self.state = SessionState::Error(err.clone());
+                        break Err(io::Error::new(io::ErrorKind::PermissionDenied, err));
+                    }
+                    if let Some(LoginResponse_oneof_union::peer_info(info)) = resp.union {
+                        self.peer_info = Some(info);
+                    }
+                    self.state = SessionState::Connected;
+                    break Ok(());
+                }
+                Some(Message_oneof_union::hash(hash)) if request_approval => {
+                    let fingerprint = Self::challenge_fingerprint(&hash);
+                    if fingerprint == last_challenge {
+                        last_variant = "duplicate_hash".to_string();
+                        continue;
+                    }
+                    last_challenge = fingerprint;
+                    self.state = SessionState::WaitingRemoteApproval;
+                    Self::send_login_request(
+                        channel,
+                        peer_id,
+                        password,
+                        &hash,
+                        preferred_codec,
+                        image_quality,
+                        privacy_mode,
+                        audio_enabled,
+                        fps,
+                        file_transfer_dir,
+                        true,
+                    )?;
+                    self.state = SessionState::LoggingIn;
                 }
                 Some(Message_oneof_union::test_delay(test_delay)) => {
                     last_variant = "test_delay".to_string();
@@ -428,16 +571,20 @@ impl Session {
                     last_variant = Self::message_variant_name(&other).to_string();
                 }
             }
+        };
+        channel.set_read_timeout(None).ok();
+        if result.is_err() && last_variant == "no_password_access" && request_approval {
+            eprintln!("[RustDesk-FFI] waiting for remote approval ended with error");
         }
+        result
+    }
 
-        self.state = SessionState::Error(format!(
-            "unexpected login response variant: {}",
-            last_variant
-        ));
-        Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("unexpected login response variant: {}", last_variant),
-        ))
+    fn challenge_fingerprint(hash: &super::message_proto::Hash) -> [u8; 32] {
+        let mut digest = Sha256::new();
+        digest.update(hash.get_salt().as_bytes());
+        digest.update([0]);
+        digest.update(hash.get_challenge().as_bytes());
+        digest.finalize().into()
     }
 
     fn message_variant_name(union: &Option<Message_oneof_union>) -> &'static str {

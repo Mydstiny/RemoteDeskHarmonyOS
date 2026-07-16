@@ -287,6 +287,7 @@ struct HostListPage {
   @StorageLink('rdpAuthIdentityMode') rdpAuthIdentityMode: number = 1; // 0=MicrosoftAccount\\邮箱, 1=域+邮箱, 2=裸邮箱, 3=.\\AzureAD\\邮箱, 4=AzureAD域
   @State sheetUseProxy: boolean = false;
   @State sheetPwdMode: number = 0; // 0=一次性密码, 1=永久密码
+  @State sheetRustdeskAuthMode: string = 'password'; // password | request_approval
   @State sheetRustdeskDirectEnabled: boolean = false; // per-host 直连开关
   @State sheetRustdeskDirectHost: string = '';
   @State sheetRustdeskDirectPort: number = 21116;
@@ -2329,6 +2330,8 @@ struct HostListPage {
     this.selectedAccountId = latestHost.rustdeskAccountId;
     this.selectedRdpCredentialId = latestHost.rdpCredentialId;
     this.sheetPwdMode = latestHost.rustdeskPasswordMode;
+    this.sheetRustdeskAuthMode = latestHost.rustdeskAuthMode === 'request_approval' ?
+      'request_approval' : 'password';
     this.sheetRustdeskDirectEnabled = latestHost.rustdeskDirectEnabled;
     this.sheetRustdeskDirectHost = latestHost.rustdeskDirectHost;
     this.sheetRustdeskDirectPort = latestHost.rustdeskDirectPort > 0 ? latestHost.rustdeskDirectPort : 21116;
@@ -6238,6 +6241,28 @@ struct HostListPage {
               }.width('100%').margin({ bottom: 8 })
             }
 
+            Text('连接授权').fontSize(11).fontColor(this.pal().text2).margin({ bottom: 4 }).fontFamily(this.font())
+            Row() {
+              Text('使用设备密码').fontSize(13)
+                .fontColor(this.sheetRustdeskAuthMode === 'password' ? this.accentColor : this.pal().text2)
+                .fontWeight(this.sheetRustdeskAuthMode === 'password' ? FontWeight.Medium : FontWeight.Normal)
+              Toggle({ type: ToggleType.Switch, isOn: this.sheetRustdeskAuthMode === 'request_approval' })
+                .selectedColor(this.accentColor).scale({ x: 0.82, y: 0.82 }).margin({ left: 8, right: 8 })
+                .onChange((on: boolean) => {
+                  this.sheetRustdeskAuthMode = on ? 'request_approval' : 'password';
+                })
+              Text('请求被控端批准').fontSize(13)
+                .fontColor(this.sheetRustdeskAuthMode === 'request_approval' ? this.accentColor : this.pal().text2)
+                .fontWeight(this.sheetRustdeskAuthMode === 'request_approval' ? FontWeight.Medium : FontWeight.Normal)
+            }.width('100%').justifyContent(FlexAlign.Start).margin({ bottom: 4 })
+            Row() {
+              SymbolGlyph($r('sys.symbol.info_circle')).fontSize(14).fontColor([this.pal().text3])
+              Text(this.sheetRustdeskAuthMode === 'request_approval' ?
+                '对方需启用点击批准；应用会保持连接等待批准，不会把空密码当成密码登录' :
+                '一次性/永久密码由对方 RustDesk 设置决定；账户密码不能代替设备密码')
+                .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font()).margin({ left: 4 })
+            }.width('100%').margin({ bottom: 8 })
+
             // 中继服务器选择
             Row() {
               Text('中继配置').fontSize(11).fontColor(this.pal().text2).margin({ bottom: 4 }).fontFamily(this.font())
@@ -6978,6 +7003,7 @@ struct HostListPage {
     this.label = ''; this.proto = 'rdp'; this.hostAddr = ''; this.portVal = 3389;
     this.username = ''; this.sheetPwd = ''; this.chn = ''; this.sheetErr = '';
     this.sheetPwdMode = 0;
+    this.sheetRustdeskAuthMode = 'password';
     this.sheetRustdeskDirectEnabled = false;
     this.sheetRustdeskDirectHost = '';
     this.sheetRustdeskDirectPort = 21116;
@@ -7014,6 +7040,7 @@ struct HostListPage {
       h.rustdeskRelayId = this.selectedRelayId;
       h.rustdeskAccountId = this.selectedAccountId;
       h.rustdeskPasswordMode = this.sheetPwdMode;
+      h.rustdeskAuthMode = this.sheetRustdeskAuthMode === 'request_approval' ? 'request_approval' : 'password';
       h.rustdeskDirectEnabled = this.sheetRustdeskDirectEnabled;
       h.rustdeskDirectHost = this.sheetRustdeskDirectHost;
       h.rustdeskDirectPort = this.sheetRustdeskDirectPort > 0 ? this.sheetRustdeskDirectPort : 21116;

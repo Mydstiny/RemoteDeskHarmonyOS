@@ -677,6 +677,7 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
     getBool("rdpAllowUntrustedRoot", cfg.rdpAllowUntrustedRoot);
     getBool("rdpAllowHostMismatch", cfg.rdpAllowHostMismatch);
     getInt("rdPasswordMode", cfg.rdPasswordMode);
+    getInt("rdAuthMode", cfg.rdAuthMode);
     getInt("rdPasswordLength", cfg.rdPasswordLength);
     getString("rdRelayId", cfg.rdRelayId);
     getString("rdAccountId", cfg.rdAccountId);
@@ -690,6 +691,7 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
     if (cfg.rdImageQuality < 0 || cfg.rdImageQuality > 2) cfg.rdImageQuality = 1;
     if (cfg.rdDirectPort <= 0) cfg.rdDirectPort = 21118;
     if (cfg.rdPasswordMode != 1) cfg.rdPasswordMode = 0;
+    if (cfg.rdAuthMode != 1) cfg.rdAuthMode = 0;
     if (cfg.rdPasswordLength != 8 && cfg.rdPasswordLength != 10) cfg.rdPasswordLength = 6;
 
     const std::string logHost = SafeLog::MaskHost(cfg.host);
@@ -708,11 +710,11 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
         const std::string relayLog = cfg.rdRelayId.empty() ? "未设置" : SafeLog::HashForLog(cfg.rdRelayId);
         const std::string accountLog = cfg.rdAccountId.empty() ? "未设置" : SafeLog::MaskUser(cfg.rdAccountId);
         const std::string serverKeyLog = cfg.rdServerKey.empty() ? "default" : SafeLog::HashForLog(cfg.rdServerKey);
-        OH_LOG_INFO(LOG_APP, "[ExtLoader] RustDesk配置: quality=%{public}d direct=%{public}s:%{public}d lan=%{public}s privacy=%{public}s audio=%{public}s pwdMode=%{public}d pwdLen=%{public}d relayId=%{public}s account=%{public}s serverKeyId=%{public}s",
+        OH_LOG_INFO(LOG_APP, "[ExtLoader] RustDesk配置: quality=%{public}d direct=%{public}s:%{public}d lan=%{public}s privacy=%{public}s audio=%{public}s pwdMode=%{public}d authMode=%{public}d pwdLen=%{public}d relayId=%{public}s account=%{public}s serverKeyId=%{public}s",
                     cfg.rdImageQuality, cfg.rdDirectIp ? "on" : "off", cfg.rdDirectPort,
                     cfg.rdLanDiscovery ? "on" : "off", cfg.rdPrivacyMode ? "on" : "off",
                     cfg.rdAudioEnabled ? "on" : "off",
-                    cfg.rdPasswordMode, cfg.rdPasswordLength,
+                    cfg.rdPasswordMode, cfg.rdAuthMode, cfg.rdPasswordLength,
                     relayLog.c_str(), accountLog.c_str(),
                     serverKeyLog.c_str());
     } else if (protocolName == "rdp") {

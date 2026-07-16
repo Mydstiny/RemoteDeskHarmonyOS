@@ -506,6 +506,7 @@ export class CloudStore implements CryptoCloudStore {
         rustdeskrelayid TEXT,
         rustdeskaccountid TEXT,
         rustdeskpasswordmode INTEGER,
+        rustdeskauthmode TEXT,
         rustdeskdirectenabled INTEGER,
         rustdeskdirecthost TEXT,
         rustdeskdirectport INTEGER,
@@ -684,6 +685,11 @@ export class CloudStore implements CryptoCloudStore {
     }
     try {
       await this.store.executeSql('ALTER TABLE remotehosts ADD COLUMN rdpcredentialid TEXT');
+    } catch (_e) {
+      // 旧库已迁移时会报重复列名, 忽略即可。
+    }
+    try {
+      await this.store.executeSql('ALTER TABLE remotehosts ADD COLUMN rustdeskauthmode TEXT');
     } catch (_e) {
       // 旧库已迁移时会报重复列名, 忽略即可。
     }
@@ -1582,6 +1588,7 @@ export class CloudStore implements CryptoCloudStore {
     vb['rustdeskrelayid'] = h.rustdeskRelayId;
     vb['rustdeskaccountid'] = h.rustdeskAccountId;
     vb['rustdeskpasswordmode'] = h.rustdeskPasswordMode;
+    vb['rustdeskauthmode'] = h.rustdeskAuthMode;
     vb['rustdeskdirectenabled'] = h.rustdeskDirectEnabled ? 1 : 0;
     vb['rustdeskdirecthost'] = h.rustdeskDirectHost;
     vb['rustdeskdirectport'] = h.rustdeskDirectPort;
@@ -1661,6 +1668,9 @@ export class CloudStore implements CryptoCloudStore {
     h.rustdeskAccountId = getStr('rustdeskaccountid');
     const rdPwdModeIdx: number = rs.getColumnIndex('rustdeskpasswordmode');
     h.rustdeskPasswordMode = rdPwdModeIdx >= 0 && rs.getLong(rdPwdModeIdx) === 1 ? 1 : 0;
+    const rdAuthModeIdx: number = rs.getColumnIndex('rustdeskauthmode');
+    h.rustdeskAuthMode = rdAuthModeIdx >= 0 && rs.getString(rdAuthModeIdx) === 'request_approval' ?
+      'request_approval' : 'password';
     const rdDirectEnabledIdx: number = rs.getColumnIndex('rustdeskdirectenabled');
     h.rustdeskDirectEnabled = rdDirectEnabledIdx >= 0 && rs.getLong(rdDirectEnabledIdx) === 1;
     h.rustdeskDirectHost = getStr('rustdeskdirecthost');
@@ -2004,6 +2014,9 @@ export class CloudStore implements CryptoCloudStore {
     h.rustdeskRelayId = rdRelayIdx >= 0 ? rs.getString(rdRelayIdx) : '';
     h.rustdeskAccountId = rdAcctIdx >= 0 ? rs.getString(rdAcctIdx) : '';
     h.rustdeskPasswordMode = rdPwdModeIdx >= 0 && rs.getLong(rdPwdModeIdx) === 1 ? 1 : 0;
+    const rdAuthModeIdx: number = rs.getColumnIndex('rustdeskauthmode');
+    h.rustdeskAuthMode = rdAuthModeIdx >= 0 && rs.getString(rdAuthModeIdx) === 'request_approval' ?
+      'request_approval' : 'password';
     h.rustdeskDirectEnabled = rdDirectEnabledIdx2 >= 0 && rs.getLong(rdDirectEnabledIdx2) === 1;
     h.rustdeskDirectHost = rdDirectHostIdx2 >= 0 ? rs.getString(rdDirectHostIdx2) : '';
     h.rustdeskDirectPort = rdDirectPortIdx2 >= 0 ? rs.getLong(rdDirectPortIdx2) : 21116;
@@ -2159,6 +2172,7 @@ export class CloudStore implements CryptoCloudStore {
     vb['rustdeskrelayid'] = h.rustdeskRelayId;
     vb['rustdeskaccountid'] = h.rustdeskAccountId;
     vb['rustdeskpasswordmode'] = h.rustdeskPasswordMode;
+    vb['rustdeskauthmode'] = h.rustdeskAuthMode;
     vb['rustdeskdirectenabled'] = h.rustdeskDirectEnabled ? 1 : 0;
     vb['rustdeskdirecthost'] = h.rustdeskDirectHost;
     vb['rustdeskdirectport'] = h.rustdeskDirectPort;

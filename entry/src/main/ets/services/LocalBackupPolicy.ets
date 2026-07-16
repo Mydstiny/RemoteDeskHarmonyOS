@@ -18,7 +18,7 @@ function localBackupColumns(table: string): string[] {
   if (table === 'cryptoparams') { return ['id', 'key', 'value']; }
   if (table === 'usersettings') { return ['id', 'userid', 'key', 'value', 'updatedat']; }
   if (table === 'remotehosts') {
-    return ['id', 'userid', 'label', 'protocol', 'host', 'port', 'username', 'password', 'customhostname', 'sshusekey', 'sshkeypath', 'sshkeydata', 'sshkeypassphrase', 'sshkeyid', 'sshhostkeyalgorithm', 'sshhostkeyfingerprintsha256', 'sshhostkeyrawbase64', 'sshhostkeytrustedat', 'sshhostkeytrustmode', 'rdpcertificatefingerprintsha256', 'rdpcertificatesubject', 'rdpcertificateissuer', 'rdpcertificatecommonname', 'rdpcertificatetrustedat', 'rdpcertificatetrustmode', 'rdpcertificateallowuntrustedroot', 'rdpcertificateallowhostmismatch', 'proxyhost', 'proxyport', 'proxyusername', 'gatewayhost', 'gatewayport', 'displayconfig', 'locked', 'locktype', 'isfavorite', 'groupid', 'sortorder', 'icon', 'lastconnected', 'lasthealth', 'lastlatency', 'syncversion', 'rustdeskrelayid', 'rustdeskaccountid', 'rustdeskpasswordmode', 'rustdeskdirectenabled', 'rustdeskdirecthost', 'rustdeskdirectport', 'rdpcredentialid', 'sourcetype', 'rustdeskproaccountid', 'rustdeskpropeerid', 'rustdeskproplatform', 'rustdeskpromanaged', 'rustdeskprolastseenat', 'rustdeskprosyncerror', 'createdat', 'updatedat'];
+    return ['id', 'userid', 'label', 'protocol', 'host', 'port', 'username', 'password', 'customhostname', 'sshusekey', 'sshkeypath', 'sshkeydata', 'sshkeypassphrase', 'sshkeyid', 'sshhostkeyalgorithm', 'sshhostkeyfingerprintsha256', 'sshhostkeyrawbase64', 'sshhostkeytrustedat', 'sshhostkeytrustmode', 'rdpcertificatefingerprintsha256', 'rdpcertificatesubject', 'rdpcertificateissuer', 'rdpcertificatecommonname', 'rdpcertificatetrustedat', 'rdpcertificatetrustmode', 'rdpcertificateallowuntrustedroot', 'rdpcertificateallowhostmismatch', 'proxyhost', 'proxyport', 'proxyusername', 'gatewayhost', 'gatewayport', 'displayconfig', 'locked', 'locktype', 'isfavorite', 'groupid', 'sortorder', 'icon', 'lastconnected', 'lasthealth', 'lastlatency', 'syncversion', 'rustdeskrelayid', 'rustdeskaccountid', 'rustdeskpasswordmode', 'rustdeskauthmode', 'rustdeskdirectenabled', 'rustdeskdirecthost', 'rustdeskdirectport', 'rdpcredentialid', 'sourcetype', 'rustdeskproaccountid', 'rustdeskpropeerid', 'rustdeskproplatform', 'rustdeskpromanaged', 'rustdeskprolastseenat', 'rustdeskprosyncerror', 'createdat', 'updatedat'];
   }
   if (table === 'rdpcredentials') { return ['id', 'label', 'username', 'password', 'createdat', 'updatedat']; }
   if (table === 'rustdeskrelays') { return ['id', 'userid', 'idserver', 'idserverport', 'relayserver', 'relayport', 'apiserver', 'apiusername', 'apipassword', 'key', 'healthstatus', 'healthlatency', 'healthcheckedat', 'apiloginstatus', 'accountsjson', 'syncversion', 'createdat', 'updatedat']; }
@@ -35,6 +35,16 @@ function localBackupIntegerColumns(table: string): string[] {
   if (table === 'sshkeys') { return ['keytype', 'locked', 'locktype', 'syncversion', 'createdat', 'updatedat', 'formatversion', 'privatekeyencrypted']; }
   if (table === 'totpentries') { return ['algorithm', 'digits', 'period', 'locked', 'locktype', 'syncversion', 'createdat', 'updatedat']; }
   return [];
+}
+
+function legacyLocalBackupColumns(table: string): string[] {
+  const columns: string[] = localBackupColumns(table);
+  if (table !== 'remotehosts') { return columns; }
+  const legacy: string[] = [];
+  for (let i = 0; i < columns.length; i++) {
+    if (columns[i] !== 'rustdeskauthmode') { legacy.push(columns[i]); }
+  }
+  return legacy;
 }
 
 export function localBackupCanonicalPayload(
@@ -90,6 +100,7 @@ export function validateLocalBackupDocument(text: string): LocalBackupDocument |
 
 function validateLocalBackupRows(table: string, rows: Array<Record<string, string>>): boolean {
   const allowed: string[] = localBackupColumns(table);
+  const legacyAllowed: string[] = legacyLocalBackupColumns(table);
   const integerColumns: string[] = localBackupIntegerColumns(table);
   if (allowed.length === 0) { return false; }
   for (let i = 0; i < rows.length; i++) {
@@ -97,14 +108,15 @@ function validateLocalBackupRows(table: string, rows: Array<Record<string, strin
     if (!row || typeof row !== 'object' || row['id'] === undefined ||
       typeof row['id'] !== 'string' || row['id'].length === 0) { return false; }
     const keys: string[] = Object.keys(row);
-    if (keys.length !== allowed.length) { return false; }
+    const keySet: string[] = keys.length === allowed.length ? allowed : legacyAllowed;
+    if (keys.length !== keySet.length) { return false; }
     for (let k = 0; k < keys.length; k++) {
       const key: string = keys[k];
-      if (allowed.indexOf(key) < 0 || typeof row[key] !== 'string') { return false; }
+      if (keySet.indexOf(key) < 0 || typeof row[key] !== 'string') { return false; }
       if (integerColumns.indexOf(key) >= 0 && !isStrictIntegerText(row[key])) { return false; }
     }
-    for (let k = 0; k < allowed.length; k++) {
-      if (row[allowed[k]] === undefined) { return false; }
+    for (let k = 0; k < keySet.length; k++) {
+      if (row[keySet[k]] === undefined) { return false; }
     }
   }
   return true;

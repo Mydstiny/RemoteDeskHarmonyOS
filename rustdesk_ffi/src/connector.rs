@@ -139,6 +139,7 @@ impl RustDeskConnector {
         privacy_mode: bool,
         audio_enabled: bool,
         fps: u32,
+        request_approval: bool,
     ) -> io::Result<()> {
         // === Phase 1: Rendezvous 握手 ===
         self.state = ConnState::RendezvousConnecting;
@@ -218,6 +219,7 @@ impl RustDeskConnector {
             privacy_mode,
             audio_enabled,
             fps,
+            request_approval,
         )?;
 
         self.state = ConnState::Connected;
@@ -328,6 +330,7 @@ impl RustDeskConnector {
             privacy_mode,
             audio_enabled,
             fps,
+            false,
         )?;
 
         self.state = ConnState::Connected;
@@ -343,6 +346,7 @@ impl RustDeskConnector {
         peer_id: &str,
         password: &str,
         remote_dir: &str,
+        request_approval: bool,
     ) -> io::Result<()> {
         crate::set_last_error(format!(
             "file-transfer connecting rendezvous host={} port={} peer={} dir={}",
@@ -422,7 +426,7 @@ impl RustDeskConnector {
         self.state = ConnState::LoggingIn;
         let crypto = self.crypto_channel.as_mut().unwrap();
         self.session
-            .login_file_transfer_encrypted(crypto, peer_id, password, remote_dir)?;
+            .login_file_transfer_encrypted(crypto, peer_id, password, remote_dir, request_approval)?;
         crate::set_last_error(format!("login_file_transfer ok dir={}", remote_dir));
         self.state = ConnState::Connected;
         Ok(())

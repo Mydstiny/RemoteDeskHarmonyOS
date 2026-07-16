@@ -52,6 +52,8 @@ export function reconcileRustDeskProHosts(existing: RemoteHost[], relayId: strin
       host.protocol = 'rustdesk';
       host.password = peer.password;
       host.rustdeskPasswordMode = 0;
+      // Server Pro 地址簿经常不返回远端密码；新导入主机默认走官方的点击批准路径。
+      host.rustdeskAuthMode = peer.password.length > 0 ? 'password' : 'request_approval';
       host.sourceType = 'rustdesk_pro';
       host.rustdeskProManaged = true;
       host.rustdeskProAccountId = accountId;
@@ -81,6 +83,12 @@ export function reconcileRustDeskProHosts(existing: RemoteHost[], relayId: strin
     host.rustdeskProLastSeenAt = syncedAt;
     host.rustdeskProSyncError = '';
     if (peer.password.length > 0) { host.password = peer.password; }
+    if (peer.password.length === 0 && host.password.length === 0) {
+      // 空密码没有可用的设备凭据；只要用户没有保存密码，就使用官方点击批准闭环。
+      host.rustdeskAuthMode = 'request_approval';
+    } else if (peer.password.length > 0 && host.rustdeskAuthMode !== 'request_approval') {
+      host.rustdeskAuthMode = 'password';
+    }
   }
 
   const missingIds: string[] = [];

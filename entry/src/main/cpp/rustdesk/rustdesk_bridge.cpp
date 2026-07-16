@@ -29,6 +29,7 @@ extern "C" {
         void (*on_disconnect)(int, const char*, void*),
         void* user_data);
     void  rustdesk_disconnect(void* handle);
+    void  rustdesk_cancel_pending_connect();
     void  rustdesk_send_key(void* handle, unsigned int scancode, bool pressed);
     void  rustdesk_send_mouse(void* handle, int x, int y, unsigned int button, bool pressed);
     void  rustdesk_send_mouse_wheel(void* handle, int x, int y, int delta);
@@ -763,6 +764,15 @@ int RustDeskBridge::connect(const ConnectionConfig& cfg) {
     const uint64_t serial = ++impl_->connectSerial;
     impl_->setState(ConnectionState::CONNECTING, "Connecting...");
 
+    if (cfg.rdAuthMode == 1 && cfg.rdDirectIp) {
+        // 点击批准依赖 ID/中继会话返回新的 Hash；直连模式没有这条批准通道。
+        impl_->setState(ConnectionState::ERROR,
+            "RustDesk remote approval requires rendezvous/relay mode; disable direct connection or use a device password.");
+        OH_LOG_WARN(LOG_APP,
+            "[RustDesk] remote approval is unavailable in direct mode; refusing ambiguous login");
+        return -41;
+    }
+
 #ifdef RUSTDESK_USE_REAL_CORE
     if (mode_ == RustDeskMode::FFI) {
         // ---- FFI 模式: 直接调用 librustdesk_ffi.a ----
@@ -794,6 +804,7 @@ int RustDeskBridge::connect(const ConnectionConfig& cfg) {
             // T-121: Default to Balanced profile, allow override
             ffiCfg.profile  = 1; // Balanced
             ffiCfg.fps      = 0; // From profile
+            ffiCfg.auth_mode = (cfg.rdAuthMode == 1) ? 1 : 0;
             // T-209: 直连模式映射
             ffiCfg.direct_connection = false;
             if (cfg.rdDirectIp && !cfg.host.empty()) {
@@ -804,12 +815,13 @@ int RustDeskBridge::connect(const ConnectionConfig& cfg) {
                     logHost.c_str(), ffiCfg.port);
             }
             OH_LOG_INFO(LOG_APP,
-                "[RustDesk-FFI] ffiCfg codec=%{public}d(%{public}s) quality=%{public}d privacy=%{public}s audio=%{public}s size=%{public}dx%{public}d profile=%{public}d fps=%{public}d",
+                "[RustDesk-FFI] ffiCfg codec=%{public}d(%{public}s) quality=%{public}d privacy=%{public}s audio=%{public}s authMode=%{public}d size=%{public}dx%{public}d profile=%{public}d fps=%{public}d",
                 ffiCfg.codec,
                 rdCodecName(static_cast<int>(cfg.codec)),
                 ffiCfg.imageQuality,
                 ffiCfg.privacyMode ? "on" : "off",
                 ffiCfg.audioEnabled ? "on" : "off",
+                ffiCfg.auth_mode,
                 ffiCfg.width,
                 ffiCfg.height,
                 ffiCfg.profile,
@@ -882,6 +894,15 @@ int RustDeskBridge::connect(const ConnectionConfig& cfg) {
 
     if (mode_ == RustDeskMode::IPC) {
         // ---- IPC 模式: 连接 rustdesk_helper ----
+        if (cfg.rdAuthMode == 1) {
+            // helper 当前只转发基础连接帧，尚未暴露 RustDesk 的
+            // No Password Access/远端批准状态机；禁止静默降级为空密码登录。
+            impl_->setState(ConnectionState::ERROR,
+                "RustDesk helper does not support remote approval; use the real FFI core or a device password.");
+            OH_LOG_WARN(LOG_APP,
+                "[RustDesk-IPC] remote approval is unavailable in helper mode; refusing empty-password fallback");
+            return -40;
+        }
         int ret = rdIpcConnect(g_socketPath.c_str(), impl_->ipcFd);
         if (ret < 0) {
             // 尝试自动启动 helper
@@ -929,6 +950,9 @@ void RustDeskBridge::disconnect() {
         impl_->ipcFd = -1;
     }
 #ifdef RUSTDESK_USE_REAL_CORE
+    // FFI 句柄在登录完成前尚未返回，先取消等待中的连接尝试，避免点击返回后
+    // 审批等待线程继续占用中继连接。
+    rustdesk_cancel_pending_connect();
     void* ffiHandle = nullptr;
     {
         std::lock_guard<std::mutex> lock(impl_->mutex);

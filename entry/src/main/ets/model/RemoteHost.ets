@@ -80,6 +80,7 @@ export interface RemoteHostJSON {
   rustdeskRelayId: string
   rustdeskAccountId: string
   rustdeskPasswordMode: number
+  rustdeskAuthMode?: string
   rustdeskDirectEnabled: boolean
   rustdeskDirectHost: string
   rustdeskDirectPort: number
@@ -186,6 +187,8 @@ export class RemoteHost {
   rustdeskRelayId: string = ''; // RustDesk 中继服务器配置 ID
   rustdeskAccountId: string = ''; // RustDesk API 账户 ID
   rustdeskPasswordMode: number = 0; // RustDesk 密码模式: 0=一次性, 1=永久
+  // RustDesk 登录授权: password=使用一次性/永久密码, request_approval=请求被控端点击批准
+  rustdeskAuthMode: string = 'password';
   rustdeskDirectEnabled: boolean = false; // 直连模式 (跳过 ID 服务器)
   rustdeskDirectHost: string = ''; // 直连 peer IP 地址
   rustdeskDirectPort: number = 21116; // 直连端口 (默认 21116)
@@ -258,11 +261,12 @@ export class RemoteHost {
       if (this.port <= 0 || this.port > 65535) { errors.push('端口号必须在 1-65535 之间'); }
     }
     if (this.protocol !== 'rdp' && this.protocol !== 'rustdesk' && this.protocol !== 'ssh') { errors.push('协议类型无效'); }
-    if (!this.password && this.rdpCredentialId === '' && !(this.protocol === 'ssh' && this.sshUseKey)) {
+    const rustDeskApproval: boolean = this.protocol === 'rustdesk' && this.rustdeskAuthMode === 'request_approval';
+    if (!this.password && !rustDeskApproval && this.rdpCredentialId === '' && !(this.protocol === 'ssh' && this.sshUseKey)) {
       if (this.protocol === 'rdp') {
         errors.push('密码不能为空 (或选择 Windows 凭据)');
       } else if (this.protocol === 'rustdesk') {
-        errors.push('密码不能为空 (或使用一次性密码模式)');
+        errors.push('密码不能为空，或选择“请求被控端批准”');
       } else {
         errors.push('密码不能为空 (或选择私钥认证)');
       }
@@ -330,6 +334,7 @@ export class RemoteHost {
       rustdeskRelayId: this.rustdeskRelayId,
       rustdeskAccountId: this.rustdeskAccountId,
       rustdeskPasswordMode: this.rustdeskPasswordMode,
+      rustdeskAuthMode: this.rustdeskAuthMode,
       rustdeskDirectEnabled: this.rustdeskDirectEnabled,
       rustdeskDirectHost: this.rustdeskDirectHost,
       rustdeskDirectPort: this.rustdeskDirectPort,
@@ -403,6 +408,7 @@ export class RemoteHost {
     if (json.rustdeskRelayId) { host.rustdeskRelayId = json.rustdeskRelayId; }
     if (json.rustdeskAccountId) { host.rustdeskAccountId = json.rustdeskAccountId; }
     if (json.rustdeskPasswordMode !== undefined) { host.rustdeskPasswordMode = json.rustdeskPasswordMode; }
+    if (json.rustdeskAuthMode === 'request_approval') { host.rustdeskAuthMode = 'request_approval'; }
     if (json.rustdeskDirectEnabled !== undefined) { host.rustdeskDirectEnabled = json.rustdeskDirectEnabled; }
     if (json.rustdeskDirectHost) { host.rustdeskDirectHost = json.rustdeskDirectHost; }
     if (json.rustdeskDirectPort) { host.rustdeskDirectPort = json.rustdeskDirectPort; }

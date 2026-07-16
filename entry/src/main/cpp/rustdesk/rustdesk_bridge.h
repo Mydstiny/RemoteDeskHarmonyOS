@@ -35,6 +35,7 @@ struct RustDeskFfiConfig {
     int         profile;    // 0=Stable, 1=Balanced, 2=Performance, 3=Custom
     int         fps;        // 期望 FPS (0=from profile)
     bool        direct_connection; // 直连模式: false=rendezvous (默认), true=TCP直连peer
+    int         auth_mode;  // 0=设备密码, 1=请求被控端点击批准
 };
 
 enum class RustDeskMode {

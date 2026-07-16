@@ -36,6 +36,21 @@ use protocol::message_proto::{
 use control_inbox::ControlInbox;
 
 static LAST_ERROR: Mutex<String> = Mutex::new(String::new());
+// 每次连接尝试都有单调递增 epoch；取消时递增 epoch，使等待批准的旧线程可退出，
+// 同时避免新连接把旧线程的取消状态重置掉。
+static CONNECT_EPOCH: AtomicU64 = AtomicU64::new(0);
+
+pub(crate) fn begin_connect_epoch() -> u64 {
+    CONNECT_EPOCH.fetch_add(1, Ordering::SeqCst).wrapping_add(1)
+}
+
+pub(crate) fn current_connect_epoch() -> u64 {
+    CONNECT_EPOCH.load(Ordering::SeqCst)
+}
+
+pub(crate) fn connect_cancelled(epoch: u64) -> bool {
+    CONNECT_EPOCH.load(Ordering::SeqCst) != epoch
+}
 
 fn set_last_error(message: impl Into<String>) {
     if let Ok(mut err) = LAST_ERROR.lock() {
@@ -130,7 +145,8 @@ pub struct RustDeskConfig {
     pub profile: RustDeskProfile, // 性能 profile (Stable/Balanced/Performance/Custom)
     pub fps: c_int,               // 期望 FPS (0=from profile)
     /// 直连模式: false=走 rendezvous 服务器 (默认), true=TCP 直连 peer (跳过 rendezvous)
-    pub direct_connection: bool, // (末尾追加，填充 trailing padding，struct 大小不变 72 bytes)
+    pub direct_connection: bool,
+    pub auth_mode: c_int, // 0=设备密码, 1=请求被控端点击批准
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -284,6 +300,7 @@ struct RustDeskClient {
     port: u16,
     server_key: String,
     password: String,
+    request_approval: bool,
     controls: Arc<ControlInbox>,
     shutdown_stream: Option<TcpStream>,
     stream_handle: Option<std::thread::JoinHandle<io::Result<()>>>,
@@ -623,6 +640,7 @@ pub extern "C" fn rustdesk_connect(
     user_data: *mut c_void,
 ) -> *mut c_void {
     clear_last_error();
+    let _connect_epoch = begin_connect_epoch();
     if cfg.is_null() {
         set_last_error("config pointer is null");
         return std::ptr::null_mut();
@@ -638,6 +656,7 @@ pub extern "C" fn rustdesk_connect(
     let peer_id = ffi_string(config.username);
     let server_key = ffi_string(config.key);
     let password = ffi_string(config.password);
+    let request_approval = config.auth_mode == 1 && !config.direct_connection;
     let privacy_mode = config.privacy_mode;
     let audio_enabled = config.audio_enabled;
 
@@ -699,6 +718,7 @@ pub extern "C" fn rustdesk_connect(
             privacy_mode,
             audio_enabled,
             effective_fps,
+            request_approval,
         )
     };
 
@@ -797,6 +817,7 @@ pub extern "C" fn rustdesk_connect(
                 port,
                 server_key,
                 password,
+                request_approval,
                 controls,
                 shutdown_stream,
                 stream_handle: Some(stream_handle),
@@ -815,6 +836,12 @@ pub extern "C" fn rustdesk_connect(
             std::ptr::null_mut()
         }
     }
+}
+
+/// 取消尚未返回会话句柄的连接尝试（尤其是等待被控端批准的连接）。
+#[no_mangle]
+pub extern "C" fn rustdesk_cancel_pending_connect() {
+    CONNECT_EPOCH.fetch_add(1, Ordering::SeqCst);
 }
 
 /// 复制最近一次连接错误到调用方缓冲区，返回完整错误长度。
@@ -977,6 +1004,7 @@ pub extern "C" fn rustdesk_send_file(
     let server_key = ctx.server_key.clone();
     let peer_id = ctx.peer_id.clone();
     let password = ctx.password.clone();
+    let request_approval = ctx.request_approval;
     let remote_path_owned = path.clone();
     let remote_dir = split_remote_file_path(&path).0.to_string();
     let transfer_status = Arc::clone(&ctx.transfer_status);
@@ -985,7 +1013,8 @@ pub extern "C" fn rustdesk_send_file(
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let mut connector = connector::RustDeskConnector::new();
             connector
-                .connect_file_transfer(&host, port, &server_key, &peer_id, &password, &remote_dir)
+                .connect_file_transfer(&host, port, &server_key, &peer_id, &password, &remote_dir,
+                    request_approval)
                 .and_then(|_| {
                     connector.upload_file_once(
                         &remote_path_owned,
@@ -1114,6 +1143,7 @@ mod tests {
             profile: RustDeskProfile::Balanced,
             fps: 0,
             direct_connection: false,
+            auth_mode: 0,
         };
 
         extern "C" fn dummy_frame(_frame: *const FfiVideoFrame, _data: *mut c_void) {}
@@ -1168,6 +1198,7 @@ mod tests {
             profile: RustDeskProfile::Balanced,
             fps: 0,
             direct_connection: false,
+            auth_mode: 0,
         };
 
         let params = resolve_stream_params_for_config(&cfg);

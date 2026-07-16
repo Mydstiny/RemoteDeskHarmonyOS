@@ -2076,6 +2076,13 @@ struct RemoteDesktop {
           const ffiError: string = this.loader.getRustDeskLastError();
           const detail: string = ffiError.length > 0 ? '：' + ffiError :
             (nativeMessage.length > 0 ? '：' + nativeMessage : '');
+          if (ffiError.indexOf('remote approval timed out') >= 0) {
+            throw new Error('等待被控端批准超时，请确认对方已启用点击批准' + detail +
+              ' [E-RUSTDESK-APPROVAL-TIMEOUT]');
+          }
+          if (ffiError.indexOf('connection cancelled') >= 0) {
+            throw new Error('连接请求已取消' + detail + ' [E-RUSTDESK-CANCELLED]');
+          }
           throw new Error('RustDesk 握手失败或连接已断开' + detail +
             ' [E-RUSTDESK-STATE-' + state.toString() + ']');
         }
@@ -2486,6 +2493,7 @@ struct RemoteDesktop {
         rdpAllowUntrustedRoot: host.rdpCertificateAllowUntrustedRoot,
         rdpAllowHostMismatch: host.rdpCertificateAllowHostMismatch,
         rdPasswordMode: host.rustdeskPasswordMode,
+        rdAuthMode: host.rustdeskAuthMode === 'request_approval' ? 1 : 0,
         rdRelayId: host.rustdeskRelayId,
         rdAccountId: host.rustdeskAccountId,
         rdServerKey: rdServerKey
@@ -2513,13 +2521,22 @@ struct RemoteDesktop {
         else if (sid === -2 && host.protocol === 'rustdesk') { errMsg = 'RustDesk helper 未运行 [E-CONNECT-2]'; }
         else if (sid === -2) { errMsg = '连接被拒绝 (' + host.host + ':' + host.port + ') [E-CONNECT-2]'; }
         else if (sid === -3) { errMsg = 'RustDesk helper 未运行 [E-CONNECT-3]'; }
+        else if (sid === -40 && host.protocol === 'rustdesk') {
+          errMsg = '当前 RustDesk helper 不支持请求被控端批准，请切换到真实 FFI 核心或填写设备密码 [E-RUSTDESK-APPROVAL-UNSUPPORTED]';
+        }
+        else if (sid === -41 && host.protocol === 'rustdesk') {
+          errMsg = '请求被控端批准不能用于直连模式，请关闭直连或改用设备密码 [E-RUSTDESK-DIRECT-APPROVAL]';
+        }
         else if (sid === -31 && host.protocol === 'rustdesk') { errMsg = 'RustDesk 握手失败，请查看 FFI 日志 [E-CONNECT-31]'; }
         throw new Error(errMsg);
       }
       this.sessionId = sid;
       this.inputForwardReady = false;
+      const rustDeskApprovalWait: boolean = host.protocol === 'rustdesk' &&
+        host.rustdeskAuthMode === 'request_approval';
       const nativeReady: boolean = await this.waitForNativeConnected(
-        sid, host.protocol === 'rustdesk' ? 25000 : 45000, attemptId, host.protocol);
+        sid, host.protocol === 'rustdesk' ? (rustDeskApprovalWait ? 100000 : 25000) : 45000,
+        attemptId, host.protocol);
       if (!nativeReady) {
         return;
       }
@@ -4989,6 +5006,15 @@ struct RemoteDesktop {
               Text(this.hostLabel).fontSize(12)
                 .fontColor('rgba(255,255,255,0.35)')
                 .margin({ top: 8 })
+            }
+            if (this.pendingHost !== null && this.pendingHost.protocol === 'rustdesk' &&
+              this.pendingHost.rustdeskAuthMode === 'request_approval') {
+              Text('已请求被控端批准，请在对方设备上点击允许')
+                .fontSize(12).fontColor('rgba(255,255,255,0.65)')
+                .margin({ top: 12 })
+              Text('等待最多约 90 秒，可返回后改用设备密码')
+                .fontSize(11).fontColor('rgba(255,255,255,0.38)')
+                .margin({ top: 5 })
             }
           } else {
             Text($r('app.string.connection_error')).fontSize(18).fontColor(this.pal().danger)

@@ -247,6 +247,7 @@ export interface SessionConfig {
   rdDriveName?: string;       // RDP Windows 侧共享盘名称
   rdDrivePath?: string;       // RDP 本地重定向盘路径
   rdPasswordMode?: number;   // 0=一次性, 1=永久
+  rdAuthMode?: number;       // 0=设备密码, 1=请求被控端点击批准
   rdPasswordLength?: number; // 临时密码长度 (6/8/10)
   rdRelayId?: string;        // 中继配置ID
   rdAccountId?: string;      // API账户ID
