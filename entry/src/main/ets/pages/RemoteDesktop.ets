@@ -50,6 +50,18 @@ import {
   shouldUseSystemMousePointer
 } from '../services/RemotePointerModePolicy';
 import {
+  normalizeRemoteCursorStyle,
+  RemoteCursorStyle,
+  shouldRenderArrowCursor,
+  shouldRenderCircleCursor
+} from '../services/RemoteCursorStylePolicy';
+import {
+  clampTouchpadEffectiveGain,
+  resetTouchpadPointerCurveState,
+  TouchpadPointerCurveState,
+  touchpadPointerCurve
+} from '../services/TouchpadPointerCurvePolicy';
+import {
   remoteInputBlockedReason,
   shouldBlockRemoteInputForBrowseMode
 } from '../services/RemoteInputGuardPolicy';
@@ -259,6 +271,7 @@ struct RemoteDesktop {
   @StorageLink('rustdeskReverseWheel') rustdeskReverseWheel: boolean = false;
   @StorageLink('rustdeskSwapMouseButtons') rustdeskSwapMouseButtons: boolean = false;
   @StorageLink('rustdeskTouchpadSpeed') rustdeskTouchpadSpeed: number = 1.0;
+  @StorageLink('virtualMouseStyle') virtualMouseStyle: string = 'circle';
   @StorageLink('rdpControlMode') rdpControlMode: number = 0; // 0=touchpad, 1=direct touch, 2=keyboard/mouse
   @StorageLink('rdpDriveEnabled') rdpDriveEnabled: boolean = true;
   @StorageLink('rdpDriveName') rdpDriveName: string = 'RemoteDesktop';
@@ -328,7 +341,11 @@ struct RemoteDesktop {
   private remoteHeight: number = 1080;
   private remoteCursorX: number = 960;
   private remoteCursorY: number = 540;
+  private remoteCursorPreciseX: number = 960;
+  private remoteCursorPreciseY: number = 540;
   private remoteCursorReady: boolean = false;
+  private touchpadCurveState: TouchpadPointerCurveState = resetTouchpadPointerCurveState();
+  private touchpadPointerDown: boolean = false;
   // 触控板手势状态机
   private touchFingerCount: number = 0;   // 当前屏幕上的手指数
   private touchDragActive: boolean = false; // 单指长按拖拽进行中 (左键已按下)
@@ -541,6 +558,18 @@ struct RemoteDesktop {
     return host !== null && host.protocol === 'rustdesk';
   }
 
+  private isTouchpadControlMode(): boolean {
+    const host: RemoteHost | null = this.pendingHost;
+    if (!host || !this.connected) { return false; }
+    if (host.protocol === 'rdp') { return this.rdpControlMode === 0; }
+    if (host.protocol === 'rustdesk') { return this.rustdeskControlMode === 0; }
+    return false;
+  }
+
+  private remoteCursorDisplayStyle(): RemoteCursorStyle {
+    return normalizeRemoteCursorStyle(this.virtualMouseStyle);
+  }
+
   private isProRustDeskHost(host: RemoteHost | null): boolean {
     return host !== null && host.protocol === 'rustdesk' &&
       host.sourceType === 'rustdesk_pro' && host.rustdeskProManaged;
@@ -704,9 +733,23 @@ struct RemoteDesktop {
   }
 
   private shouldShowTouchIndicator(): boolean {
-    return shouldRenderTouchPointerIndicator(this.touchIndicatorVisible,
+    return shouldRenderCircleCursor(this.remoteCursorDisplayStyle(), this.touchIndicatorVisible,
+      this.connected, this.isTouchpadControlMode()) && shouldRenderTouchPointerIndicator(true,
       shouldUseSystemMousePointer(this.isKeyboardMouseControlMode()));
   }
+
+  private shouldShowArrowCursor(): boolean {
+    return shouldRenderArrowCursor(this.remoteCursorDisplayStyle(), this.connected,
+      this.isTouchpadControlMode(), this.remoteCursorReady);
+  }
+
+  private arrowCursorPoint(): LocalPoint {
+    return this.remoteToLocalPoint(this.remoteCursorX, this.remoteCursorY);
+  }
+
+  private arrowCursorInside(): boolean { return this.arrowCursorPoint().inside; }
+  private arrowCursorLocalX(): number { return this.arrowCursorPoint().x; }
+  private arrowCursorLocalY(): number { return this.arrowCursorPoint().y; }
 
   private setRemoteSurfacePointerStyle(useSystemPointer: boolean): void {
     try {
@@ -1836,10 +1879,24 @@ struct RemoteDesktop {
     if (!this.remoteCursorReady) {
       this.remoteCursorX = Math.round(this.remoteWidth / 2);
       this.remoteCursorY = Math.round(this.remoteHeight / 2);
+      this.remoteCursorPreciseX = this.remoteCursorX;
+      this.remoteCursorPreciseY = this.remoteCursorY;
     } else {
-      this.remoteCursorX = this.clampRemoteX(this.remoteCursorX);
-      this.remoteCursorY = this.clampRemoteY(this.remoteCursorY);
+      this.remoteCursorPreciseX = this.clampRemotePreciseX(this.remoteCursorPreciseX);
+      this.remoteCursorPreciseY = this.clampRemotePreciseY(this.remoteCursorPreciseY);
+      this.remoteCursorX = this.clampRemoteX(this.remoteCursorPreciseX);
+      this.remoteCursorY = this.clampRemoteY(this.remoteCursorPreciseY);
     }
+  }
+
+  private clampRemotePreciseX(x: number): number {
+    const maxX: number = Math.max(0, (this.remoteWidth > 0 ? this.remoteWidth : 1280) - 1);
+    return Math.max(0, Math.min(maxX, Number.isFinite(x) ? x : 0));
+  }
+
+  private clampRemotePreciseY(y: number): number {
+    const maxY: number = Math.max(0, (this.remoteHeight > 0 ? this.remoteHeight : 720) - 1);
+    return Math.max(0, Math.min(maxY, Number.isFinite(y) ? y : 0));
   }
 
   private clampRemoteX(x: number): number {
@@ -1853,9 +1910,15 @@ struct RemoteDesktop {
   }
 
   private rememberRemoteCursor(x: number, y: number): void {
-    this.remoteCursorX = this.clampRemoteX(x);
-    this.remoteCursorY = this.clampRemoteY(y);
+    this.remoteCursorPreciseX = this.clampRemotePreciseX(x);
+    this.remoteCursorPreciseY = this.clampRemotePreciseY(y);
+    this.remoteCursorX = this.clampRemoteX(this.remoteCursorPreciseX);
+    this.remoteCursorY = this.clampRemoteY(this.remoteCursorPreciseY);
     this.remoteCursorReady = true;
+  }
+
+  private resetTouchpadPointerCurve(): void {
+    this.touchpadCurveState = resetTouchpadPointerCurveState();
   }
 
   private localDeltaToSurfacePx(delta: number, axis: 'x' | 'y'): number {
@@ -2970,6 +3033,10 @@ struct RemoteDesktop {
       this.setRemoteNavigationHidden(false, reason);
     }
     this.resetRemoteImeSession('disconnect-' + reason);
+    this.resetTouchpadPointerCurve();
+    this.remoteCursorReady = false;
+    this.remoteCursorPreciseX = 960;
+    this.remoteCursorPreciseY = 540;
     this.bgRestorePending = false; // 清除任何待恢复状态
     this.activeSessionRegistry.clear(reason);
     this.clearRdpRenderWatchdog();
@@ -4598,6 +4665,7 @@ struct RemoteDesktop {
     this.touchMaxFingers = 0;
     this.touchWheelRemainder = 0;
     this.lastTouchWheelMs = 0;
+    this.resetTouchpadPointerCurve();
     if (wasDragging) {
       this.showRemoteCursorIndicator(-1, true);
     }
@@ -4757,6 +4825,7 @@ struct RemoteDesktop {
       }
 
       if (event.type === TouchType.Down) {
+        this.resetTouchpadPointerCurve();
         if (this.touchFingerCount <= 0 && shouldResetRemoteImeOnPointerDown(this.keyboardOpen)) {
           this.resetRemoteImeSession('touchpad-down');
         }
@@ -4832,11 +4901,13 @@ struct RemoteDesktop {
         } else if (this.touchMaxFingers < 2 && (this.touchDragActive || !this.touchGestureDone) &&
           (Math.abs(stepDx) >= 0.1 || Math.abs(stepDy) >= 0.1)) {
           // 单指移动光标
-          const pointerSpeed: number = this.isRustDeskSession() ?
-            Math.max(0.4, Math.min(2.2, this.rustdeskTouchpadSpeed)) : 1.0;
-          const nextX: number = this.remoteCursorX +
+          const curve = touchpadPointerCurve(stepDx, stepDy, Date.now(), this.touchpadCurveState);
+          this.touchpadCurveState = curve.state;
+          const userSpeed: number = this.isRustDeskSession() ? this.rustdeskTouchpadSpeed : 1.0;
+          const pointerSpeed: number = clampTouchpadEffectiveGain(curve.gain, userSpeed);
+          const nextX: number = this.remoteCursorPreciseX +
             this.remoteDeltaFromLocal(stepDx, 'x') * pointerSpeed;
-          const nextY: number = this.remoteCursorY +
+          const nextY: number = this.remoteCursorPreciseY +
             this.remoteDeltaFromLocal(stepDy, 'y') * pointerSpeed;
           this.rememberRemoteCursor(nextX, nextY);
           this.queueMouseMove(this.remoteCursorX, this.remoteCursorY);
@@ -5523,6 +5594,21 @@ struct RemoteDesktop {
         .hitTestBehavior(HitTestMode.None)
       }
 
+      if (this.connected && this.shouldShowArrowCursor()) {
+        if (this.arrowCursorInside()) {
+          Text('➤')
+            .fontSize(this.touchDragActive ? 23 : 26)
+            .fontColor('#FFFFFF')
+            .fontWeight(FontWeight.Bold)
+            .shadow({ radius: 3, color: '#000000', offsetX: 1, offsetY: 1 })
+            .rotate({ angle: -45 })
+            .position({ x: this.arrowCursorLocalX() - 8, y: this.arrowCursorLocalY() - 22 })
+            .scale({ x: this.touchDragActive ? 0.92 : 1, y: this.touchDragActive ? 0.92 : 1 })
+            .animation({ duration: 100, curve: Curve.EaseOut })
+            .hitTestBehavior(HitTestMode.None)
+        }
+      }
+
       // PC 模式: 拖拽文件悬停视觉反馈
       if (this.connected && this.dropHoverActive && this.isDesktopDevice && this.breakpoint === 'xl') {
         Stack() {
@@ -5620,7 +5706,7 @@ struct RemoteDesktop {
           preferType: rdpSessionErrorSheetPrefersLandscapeCenter(true) ? SheetType.CENTER :
             (this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER),
           dragBar: false,
-          backgroundColor: this.pal().card,
+          backgroundColor: this.pal().sheetBg,
           blurStyle: BlurStyle.NONE,
           showClose: false,
           maskColor: 'rgba(0,0,0,0.48)',
@@ -5633,7 +5719,7 @@ struct RemoteDesktop {
           height: SheetSize.FIT_CONTENT,
           preferType: SheetType.BOTTOM,
           dragBar: true,
-          backgroundColor: this.pal().card,
+          backgroundColor: this.pal().sheetBg,
           blurStyle: BlurStyle.NONE,
           showClose: false,
           maskColor: 'rgba(0,0,0,0.58)',
@@ -5720,7 +5806,7 @@ struct RemoteDesktop {
     .overlay(this.passphraseOverlay(), { align: Alignment.Top })
     .bindSheet($$this.showControlPanel, this.controlPanelBuilder(), {
       preferType: SheetType.CENTER,
-      backgroundColor: this.pal().bg,
+      backgroundColor: this.pal().sheetBg,
       onDisappear: (): void => { this.handleControlPanelDisappear(); }
     })
   }
@@ -5765,7 +5851,7 @@ struct RemoteDesktop {
     .width('100%')
     .constraintSize({ maxWidth: 520 })
     .padding({ left: 24, right: 24, top: 18, bottom: 28 })
-    .backgroundColor(this.pal().bg)
+    .backgroundColor(this.pal().sheetBg)
     .backgroundBlurStyle(BlurStyle.Regular)
     .borderRadius(rdpSessionErrorSheetPrefersLandscapeCenter(true) ? 24 :
       (this.breakpoint === 'sm' ? { topLeft: 22, topRight: 22, bottomLeft: 0, bottomRight: 0 } : 24))

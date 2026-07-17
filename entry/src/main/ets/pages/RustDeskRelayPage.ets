@@ -82,6 +82,7 @@ export struct RustDeskRelayPage {
   @State formProError: string = '';
   @State proBusy: boolean = false;
   @State testingRelayId: string = '';
+  @State relaySheetClosing: boolean = false;
   private srv: HostSyncService = HostSyncService.getInstance();
   private proSync: RustDeskProSyncService = RustDeskProSyncService.getInstance();
   private vncSrv: VncRelayConfigService = VncRelayConfigService.getInstance();
@@ -255,6 +256,7 @@ export struct RustDeskRelayPage {
   // ==================== Sheet openers ====================
 
   private openAddRelaySheet(): void {
+    if (this.relaySheetClosing) { return; }
     this.resetRelayForm();
     this.resetVncRelayForm();
     this.relayKind = 'oss';
@@ -263,7 +265,12 @@ export struct RustDeskRelayPage {
   }
 
   private closeSheet(): void {
+    this.relaySheetClosing = true;
     this.showSheet = false;
+  }
+
+  private finishSheetDismiss(): void {
+    this.relaySheetClosing = false;
     this.sheetContent = 1;
     this.resetRelayForm();
     this.resetVncRelayForm();
@@ -282,6 +289,7 @@ export struct RustDeskRelayPage {
   }
 
   private openEditRelaySheet(relay: RustDeskRelayConfig): void {
+    if (this.relaySheetClosing) { return; }
     this.menuVisibleRelayId = '';
     this.editingRelayId = relay.id;
     this.formIdServer = relay.idServer;
@@ -327,6 +335,7 @@ export struct RustDeskRelayPage {
   }
 
   private openProAccountSheet(relay: RustDeskRelayConfig, account?: RustDeskProAccountState): void {
+    if (this.relaySheetClosing) { return; }
     // A relay normally has one Pro identity.  The compact header used to
     // open a fresh account every time, leaving the first endpoint/token in
     // the credential store and making later syncs look stale.  Reuse the
@@ -345,6 +354,7 @@ export struct RustDeskRelayPage {
   }
 
   private openNewProAccountSheet(relay: RustDeskRelayConfig): void {
+    if (this.relaySheetClosing) { return; }
     this.proRelayId = relay.id;
     this.proAccountId = '';
     this.proCreateNewAccount = true;
@@ -433,6 +443,7 @@ export struct RustDeskRelayPage {
   }
 
   private openEditVncRelaySheet(relay: VncRelayConfig): void {
+    if (this.relaySheetClosing) { return; }
     this.editingVncRelayId = relay.id;
     this.formVncName = relay.name;
     this.formVncHost = relay.host;
@@ -724,8 +735,8 @@ export struct RustDeskRelayPage {
       height: SheetSize.FIT_CONTENT,
       preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
       dragBar: false,
-      backgroundColor: this.pal().card, blurStyle: BlurStyle.NONE, showClose: false,
-      onDisappear: () => { this.closeSheet(); }
+      backgroundColor: this.pal().sheetBg, blurStyle: BlurStyle.NONE, showClose: false,
+      onDisappear: () => { this.finishSheetDismiss(); }
     })
   }
 
@@ -1497,7 +1508,7 @@ export struct RustDeskRelayPage {
     }.width('100%')
     .padding({ left: 24, right: 24, top: 24, bottom: 40 })
     .borderRadius(this.breakpoint === 'sm' ? 0 : 20)
-    .backgroundColor(this.pal().bg)
+    .backgroundColor(this.pal().sheetBg)
     .backgroundBlurStyle(BlurStyle.Regular)
     .shadow(this.breakpoint === 'sm'
       ? { radius: 0, color: 'rgba(0,0,0,0)', offsetY: 0 } as ShadowOptions
@@ -1514,7 +1525,7 @@ export struct RustDeskRelayPage {
         if (option === 'rustdesk') { this.sheetContent = 6; }
         else { this.sheetContent = 7; }
       },
-      onClose: (): void => { this.showSheet = false; }
+      onClose: (): void => { this.closeSheet(); }
     })
   }
 
@@ -1522,7 +1533,7 @@ export struct RustDeskRelayPage {
     ResourceFabPicker({
       kind: 'relay',
       onSelect: (option: string): void => { this.relayKind = option; this.sheetContent = 1; },
-      onClose: (): void => { this.showSheet = false; }
+      onClose: (): void => { this.closeSheet(); }
     })
   }
 
@@ -1546,7 +1557,7 @@ export struct RustDeskRelayPage {
           })
       }.width('100%')
     }.width('100%').padding({ left: 24, right: 24, top: 30, bottom: 40 })
-      .borderRadius(this.breakpoint === 'sm' ? 0 : 20).backgroundColor(this.pal().bg)
+      .borderRadius(this.breakpoint === 'sm' ? 0 : 20).backgroundColor(this.pal().sheetBg)
   }
 
   @Builder vncRelayEditSheet() {
@@ -1572,7 +1583,7 @@ export struct RustDeskRelayPage {
         .onClick((): void => { this.doSaveVncRelay(); })
       Blank().height(24)
     }.width('100%').padding({ left: 24, right: 24, top: 24, bottom: 40 })
-      .borderRadius(this.breakpoint === 'sm' ? 0 : 20).backgroundColor(this.pal().bg)
+      .borderRadius(this.breakpoint === 'sm' ? 0 : 20).backgroundColor(this.pal().sheetBg)
       .backgroundBlurStyle(BlurStyle.Regular)
       .border(this.breakpoint === 'sm'
         ? { width: 0, color: Color.Transparent, style: BorderStyle.Solid }
@@ -1608,7 +1619,7 @@ export struct RustDeskRelayPage {
     }.width('100%')
     .padding({ left: 24, right: 24, top: 24, bottom: 40 })
     .borderRadius(this.breakpoint === 'sm' ? 0 : 20)
-    .backgroundColor(this.pal().bg)
+    .backgroundColor(this.pal().sheetBg)
     .backgroundBlurStyle(BlurStyle.Regular)
     .shadow(this.breakpoint === 'sm'
       ? { radius: 0, color: 'rgba(0,0,0,0)', offsetY: 0 } as ShadowOptions
@@ -1633,7 +1644,7 @@ export struct RustDeskRelayPage {
       this.vncRelayEditSheet()
     } else if (this.sheetContent === 8) {
       ModernRelayAddFlow({
-        onClose: (): void => { this.showSheet = false; },
+        onClose: (): void => { this.closeSheet(); },
         onSaved: (_resourceId: string): void => { this.load(); this.loadVncRelays(); }
       })
     }

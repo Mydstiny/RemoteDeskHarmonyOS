@@ -410,7 +410,7 @@ export struct ModernKeyVaultAddFlow {
           else if (this.step === 'totp-file-preview') { this.totpFilePreview() }
         }.width('100%').padding({ left: 20, right: 20, top: 20, bottom: 28 })
       }
-    }.width('100%').constraintSize({ maxWidth: 760 }).backgroundColor(this.pal().card)
+    }.width('100%').constraintSize({ maxWidth: 760 }).backgroundColor(this.pal().sheetBg)
       .borderRadius(this.resourceKind === 'ssh_key' || this.resourceKind === 'totp' ? 0 : 20)
   }
 }

@@ -171,7 +171,7 @@ struct GuidePage {
       }
       .width(isSheet ? '100%' : (this.presentGuideAsDialog() ? this.releaseNotesDialogWidth() : '100%'))
       .height(isSheet ? '100%' : (this.presentGuideAsDialog() ? this.releaseNotesDialogHeight() : '100%'))
-      .backgroundColor(this.pal().bg)
+      .backgroundColor(isSheet ? this.pal().sheetBg : this.pal().bg)
       .borderRadius(!isSheet && this.presentGuideAsDialog() ? 24 : 0)
       .border(!isSheet && this.presentGuideAsDialog() ?
         { width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid } :
@@ -217,7 +217,7 @@ struct GuidePage {
       height: '64%',
       preferType: SheetType.BOTTOM,
       dragBar: true,
-      backgroundColor: this.pal().bg,
+      backgroundColor: this.pal().sheetBg,
       blurStyle: BlurStyle.NONE,
       showClose: false,
       maskColor: 'rgba(0,0,0,0.28)',

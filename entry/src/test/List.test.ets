@@ -42,6 +42,8 @@ import rustDeskLanDiscoveryServiceTest from './RustDeskLanDiscoveryService.test'
 import rustDeskRelaySyncPolicyTest from './RustDeskRelaySyncPolicy.test';
 import hostSyncMergePolicyTest from './HostSyncMergePolicy.test';
 import sshTerminalOrientationPolicyTest from './SshTerminalOrientationPolicy.test';
+import remoteCursorStylePolicyTest from './RemoteCursorStylePolicy.test';
+import touchpadPointerCurvePolicyTest from './TouchpadPointerCurvePolicy.test';
 
 export default function testsuite() {
   localUnitTest();
@@ -88,4 +90,6 @@ export default function testsuite() {
   rustDeskRelaySyncPolicyTest();
   hostSyncMergePolicyTest();
   sshTerminalOrientationPolicyTest();
+  remoteCursorStylePolicyTest();
+  touchpadPointerCurvePolicyTest();
 }

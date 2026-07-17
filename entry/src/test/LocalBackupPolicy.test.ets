@@ -39,10 +39,10 @@ export default function localBackupPolicyTest(): void {
       expect(validateLocalBackupDocument(signedText(document)) === null).assertTrue();
     });
 
-    it('rejects_rows_missing_declared_columns', 0, (): void => {
+    it('accepts_rows_missing_columns_added_by_later_versions', 0, (): void => {
       const document = createLocalBackupDocument(emptyTables(), 100, '1.0.5');
       document.tables['rdpcredentials'].push({ id: 'credential-1' });
-      expect(validateLocalBackupDocument(signedText(document)) === null).assertTrue();
+      expect(validateLocalBackupDocument(signedText(document)) !== null).assertTrue();
     });
   });
 }

@@ -59,7 +59,8 @@ export struct ModernRelayAddFlow {
     this.importedFileName = ''; this.importBusy = false;
   }
 
-  private close(): void { this.onClose(); this.reset(); }
+  // 仅请求宿主关闭；等待 Sheet onDisappear 后再清理，避免退出动画中闪现第一步。
+  private close(): void { this.onClose(); }
   private back(): void {
     this.errorText = '';
     if (this.step === 'pro') { this.step = 'saved'; }
@@ -280,6 +281,6 @@ export struct ModernRelayAddFlow {
           else if (this.step === 'vnc') { this.vncForm() }
         }.width('100%').padding({ left: 20, right: 20, top: 20, bottom: 28 })
       }
-    }.width('100%').constraintSize({ maxWidth: 760 }).backgroundColor(this.pal().card)
+    }.width('100%').constraintSize({ maxWidth: 760 }).backgroundColor(this.pal().sheetBg)
   }
 }

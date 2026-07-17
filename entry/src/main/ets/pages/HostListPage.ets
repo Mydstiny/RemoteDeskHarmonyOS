@@ -226,8 +226,10 @@ struct HostListPage {
   @State showAddSheet: boolean = false;
   @State addSheetShowsModernPicker: boolean = false;
   @State modernAddProtocol: string = '';
+  @State addSheetClosing: boolean = false;
   // Keep the released storage/cloud key while exposing the broader FAB-style semantics in UI code.
   @StorageLink('hostAddMode') fabAddStyle: string = 'modern';
+  @StorageLink('virtualMouseStyle') virtualMouseStyle: string = 'circle';
   @State lanScanning: boolean = false;
   @State lanScanResults: DiscoveredRustDeskPeer[] = [];
   private lanDiscovery: RustDeskLanDiscoveryService = new RustDeskLanDiscoveryService();
@@ -404,6 +406,7 @@ struct HostListPage {
   private gripPermissionGranted: boolean = false;
   private lastSheetDismissAtMs: number = 0;
   private pendingSheetOpenTimer: number = -1;
+  // 添加主机 Sheet 关闭动画期间禁止重入，避免现代/经典 builder 竞态切换。
   private pendingSettingsLeafOpenTimer: number = -1;
   private pendingSettingsLeafOpenAtMs: number = 0;
   private pendingSettingsLeafSheetMode: number = SETTINGS_SHEET_NONE;
@@ -522,7 +525,11 @@ struct HostListPage {
   private onBreakpointChange(): void {
     // 清理弹窗/多选状态
     this.hostActionPopupId = '';
-    this.showAddSheet = false;
+    if (this.showAddSheet) {
+      this.requestAddSheetClose();
+    } else {
+      this.showAddSheet = false;
+    }
     this.showSettingsPanel = false;
     this.showSettingsLeafSheet = false;
     this.settingsLeafSheetMode = SETTINGS_SHEET_NONE;
@@ -568,6 +575,7 @@ struct HostListPage {
       const savedLiveViewEnabled: boolean = prefs.getSync('liveViewEnabled', true) as boolean;
       const savedLiveViewMode: number = prefs.getSync('liveViewMode', 1) as number;
       const savedHostAddMode: string = prefs.getSync('hostAddMode', 'modern') as string;
+      const savedVirtualMouseStyle: string = prefs.getSync('virtualMouseStyle', 'circle') as string;
       const savedWallpaper: string = prefs.getSync('wallpaperColor', '') as string;
       // 终端设置
       const savedTermFg: string = prefs.getSync('terminalFgColor', '') as string;
@@ -593,6 +601,8 @@ struct HostListPage {
       AppStorage.setOrCreate('liveViewMode', this.liveViewMode);
       this.fabAddStyle = savedHostAddMode === 'classic' ? 'classic' : 'modern';
       AppStorage.setOrCreate('hostAddMode', this.fabAddStyle);
+      this.virtualMouseStyle = savedVirtualMouseStyle === 'arrow' ? 'arrow' : 'circle';
+      AppStorage.setOrCreate('virtualMouseStyle', this.virtualMouseStyle);
       if (savedWallpaper !== '') { AppStorage.setOrCreate('wallpaperColor', savedWallpaper); }
       const savedWallIdx: number = prefs.getSync('wallpaperIdx', -1) as number;
       if (savedWallIdx >= 0 && savedWallIdx < this.wallpaperItems.length) {
@@ -729,6 +739,9 @@ struct HostListPage {
   }
 
   private openSheetSafely(openAction: () => void): void {
+    if (this.addSheetClosing) {
+      return;
+    }
     if (this.pendingSheetOpenTimer !== -1) {
       clearTimeout(this.pendingSheetOpenTimer);
       this.pendingSheetOpenTimer = -1;
@@ -740,8 +753,20 @@ struct HostListPage {
     }
     this.pendingSheetOpenTimer = setTimeout((): void => {
       this.pendingSheetOpenTimer = -1;
+      if (this.addSheetClosing) {
+        return;
+      }
       openAction();
     }, delayMs);
+  }
+
+  private requestAddSheetClose(): void {
+    if (this.pendingSheetOpenTimer !== -1) {
+      clearTimeout(this.pendingSheetOpenTimer);
+      this.pendingSheetOpenTimer = -1;
+    }
+    this.addSheetClosing = true;
+    this.showAddSheet = false;
   }
 
   private noteSheetDismissed(): void {
@@ -2696,6 +2721,14 @@ struct HostListPage {
       this.refreshHaloPresets();
       this.syncHaloColorForCurrentTheme();
     }
+    const syncedVirtualMouseStyle = settings['virtualMouseStyle'];
+    this.virtualMouseStyle = syncedVirtualMouseStyle === 'arrow' ? 'arrow' : 'circle';
+    AppStorage.setOrCreate('virtualMouseStyle', this.virtualMouseStyle);
+    try {
+      const prefs = preferences.getPreferencesSync(getContext(this), { name: 'RemoteDesktopAppPrefs' });
+      prefs.putSync('virtualMouseStyle', this.virtualMouseStyle);
+      prefs.flushSync();
+    } catch (_e) { /* ignore */ }
   }
 
   private saveRustDeskImageQuality(mode: number): void {
@@ -2735,6 +2768,11 @@ struct HostListPage {
     this.fabAddStyle = style === 'classic' ? 'classic' : 'modern';
     // CloudSyncSettingsPolicy intentionally still whitelists this legacy key.
     this.persistPref('hostAddMode', this.fabAddStyle);
+  }
+
+  private saveVirtualMouseStyle(style: string): void {
+    this.virtualMouseStyle = style === 'arrow' ? 'arrow' : 'circle';
+    this.persistPref('virtualMouseStyle', this.virtualMouseStyle);
   }
 
   private saveRustDeskLanDiscovery(on: boolean): void {
@@ -3074,7 +3112,7 @@ struct HostListPage {
         height: this.sshPreflightSheetHeight(),
         preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
         dragBar: this.breakpoint === 'sm',
-        backgroundColor: this.pal().card,
+        backgroundColor: this.pal().sheetBg,
         blurStyle: BlurStyle.NONE,
         showClose: false,
         maskColor: 'rgba(0,0,0,0.4)',
@@ -3087,7 +3125,7 @@ struct HostListPage {
         height: SheetSize.FIT_CONTENT,
         preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
         dragBar: this.breakpoint === 'sm',
-        backgroundColor: this.pal().card,
+        backgroundColor: this.pal().sheetBg,
         blurStyle: BlurStyle.NONE,
         showClose: false,
         maskColor: 'rgba(0,0,0,0.4)',
@@ -3100,7 +3138,7 @@ struct HostListPage {
         height: SheetSize.FIT_CONTENT,
         preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
         dragBar: this.breakpoint === 'sm',
-        backgroundColor: this.pal().card,
+        backgroundColor: this.pal().sheetBg,
         blurStyle: BlurStyle.NONE,
         showClose: false,
         maskColor: 'rgba(0,0,0,0.4)',
@@ -3118,7 +3156,7 @@ struct HostListPage {
         height: SheetSize.FIT_CONTENT,
         preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
         dragBar: this.breakpoint === 'sm',
-        backgroundColor: this.pal().card,
+        backgroundColor: this.pal().sheetBg,
         blurStyle: BlurStyle.NONE,
         showClose: false,
         maskColor: 'rgba(0,0,0,0.4)',
@@ -3136,7 +3174,7 @@ struct HostListPage {
         height: SheetSize.FIT_CONTENT,
         preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
         dragBar: this.breakpoint === 'sm',
-        backgroundColor: this.pal().card,
+        backgroundColor: this.pal().sheetBg,
         blurStyle: BlurStyle.NONE,
         showClose: false,
         maskColor: 'rgba(0,0,0,0.4)',
@@ -3153,7 +3191,7 @@ struct HostListPage {
         height: SheetSize.FIT_CONTENT,
         preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
         dragBar: this.breakpoint === 'sm',
-        backgroundColor: this.pal().card,
+        backgroundColor: this.pal().sheetBg,
         blurStyle: BlurStyle.NONE,
         showClose: settingsLeafSheetUsesSystemCloseButton(),
         maskColor: 'rgba(0,0,0,0.4)',
@@ -3288,11 +3326,12 @@ struct HostListPage {
           height: SheetSize.FIT_CONTENT,
           preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
           dragBar: false,
-          backgroundColor: this.pal().card,
+          backgroundColor: this.pal().sheetBg,
           blurStyle: BlurStyle.NONE,
           showClose: false,
           onDisappear: () => {
             this.noteSheetDismissed();
+            this.addSheetClosing = false;
             this.addSheetShowsModernPicker = false;
             this.modernAddProtocol = '';
             this.resetForm();
@@ -3313,7 +3352,7 @@ struct HostListPage {
       height: this.breakpoint === 'xl' ? 760 : SheetSize.FIT_CONTENT,
       preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
       dragBar: false,
-      backgroundColor: this.pal().bg,
+      backgroundColor: this.pal().sheetBg,
       blurStyle: BlurStyle.Regular,
       showClose: true,
       maskColor: Color.Transparent,
@@ -4329,6 +4368,29 @@ struct HostListPage {
                     .fontColor(this.fabAddStyle === 'classic' ? Color.White : this.pal().text2)
                     .backgroundColor(this.fabAddStyle === 'classic' ? this.accentColor : this.pal().surface)
                     .borderRadius(10).onClick((): void => { this.saveFabAddStyle('classic'); })
+                }.width('100%').padding({ left: 16, right: 16, bottom: 12 })
+              }
+              this.cardDivider()
+              Column() {
+                Row() {
+                  Row() { Text('⌖').fontSize(22).fontColor(this.pal().text) }
+                    .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
+                  Column() {
+                    Text('虚拟鼠标样式').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
+                      .fontColor(this.pal().text).fontFamily(this.font())
+                    Text('触控板模式下远端指针的显示方式').fontSize(11).fontColor(this.pal().text3)
+                      .fontFamily(this.font())
+                  }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
+                }.width('100%').padding({ left: 16, right: 16, top: 12, bottom: 8 })
+                Row() {
+                  Button('圆环').layoutWeight(1).height(36).fontSize(13)
+                    .fontColor(this.virtualMouseStyle === 'circle' ? Color.White : this.pal().text2)
+                    .backgroundColor(this.virtualMouseStyle === 'circle' ? this.accentColor : this.pal().surface)
+                    .borderRadius(10).onClick((): void => { this.saveVirtualMouseStyle('circle'); })
+                  Button('标准箭头').layoutWeight(1).height(36).fontSize(13).margin({ left: 8 })
+                    .fontColor(this.virtualMouseStyle === 'arrow' ? Color.White : this.pal().text2)
+                    .backgroundColor(this.virtualMouseStyle === 'arrow' ? this.accentColor : this.pal().surface)
+                    .borderRadius(10).onClick((): void => { this.saveVirtualMouseStyle('arrow'); })
                 }.width('100%').padding({ left: 16, right: 16, bottom: 12 })
               }
               this.cardDivider()
@@ -6589,7 +6651,7 @@ struct HostListPage {
             this.switchHostProtocol(protocol, RemoteHost.getDefaultPort(protocol));
           }
         },
-        onClose: (): void => { this.showAddSheet = false; }
+        onClose: (): void => { this.requestAddSheetClose(); }
       })
     } else if (this.modernAddProtocol === 'rdp') {
       RdpAddFlow({
@@ -6601,7 +6663,7 @@ struct HostListPage {
             promptAction.showToast({ message: '保存主机失败，请稍后重试', duration: 1800 });
             return;
           }
-          this.showAddSheet = false;
+          this.requestAddSheetClose();
           this.refreshHostListView();
           if (connectNow) { setTimeout((): void => { this.handleHostCardClick(host); }, 260); }
         }
@@ -6623,7 +6685,7 @@ struct HostListPage {
           if (!this.srv.addHost(host)) {
             promptAction.showToast({ message: '保存主机失败，请稍后重试', duration: 1800 }); return;
           }
-          this.showAddSheet = false; this.refreshHostListView();
+          this.requestAddSheetClose(); this.refreshHostListView();
           if (connectNow) { setTimeout((): void => { this.handleHostCardClick(host); }, 260); }
         }
       })
@@ -6635,7 +6697,7 @@ struct HostListPage {
           if (!this.srv.addHost(host)) {
             promptAction.showToast({ message: '保存主机失败，请稍后重试', duration: 1800 }); return;
           }
-          this.showAddSheet = false; this.refreshHostListView();
+          this.requestAddSheetClose(); this.refreshHostListView();
           if (connectNow) { setTimeout((): void => { this.handleHostCardClick(host); }, 260); }
         }
       })
@@ -6838,7 +6900,7 @@ struct HostListPage {
                   .backgroundColor(this.accentColor).fontColor('#FFFFFF').borderRadius(16)
                   .margin({ top: 10 }).padding({ left: 16, right: 16 })
                   .onClick(() => {
-                    this.showAddSheet = false;
+                    this.requestAddSheetClose();
                     // PC侧边栏 relay=5, 移动 Tabs relay=2
                     if (this.isDesktopDevice && this.breakpoint === 'xl') {
                       this.curTab = 5;
@@ -6919,7 +6981,7 @@ struct HostListPage {
                     Blank()
                     Text('去添加 →').fontSize(11).fontColor(this.accentColor).fontFamily(this.font())
                       .onClick(() => {
-                        this.showAddSheet = false;
+                        this.requestAddSheetClose();
                         if (this.isDesktopDevice && this.breakpoint === 'xl') {
                           this.curTab = 5;
                         } else {
@@ -7799,7 +7861,7 @@ struct HostListPage {
     hilog.info(0x0001, 'HostList', 'save host protocol=' + h.protocol +
       ' host=' + maskHost(h.host) + ':' + h.port +
       ' rdpCredentialHash=' + hashForLog(h.rdpCredentialId));
-    this.showAddSheet = false;
+    this.requestAddSheetClose();
     this.rdpCredentials = this.srv.getAllRdpCredentials();
     this.refreshHostListView();
   }

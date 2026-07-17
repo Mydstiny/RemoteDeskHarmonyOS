@@ -100,7 +100,6 @@ export function validateLocalBackupDocument(text: string): LocalBackupDocument |
 
 function validateLocalBackupRows(table: string, rows: Array<Record<string, string>>): boolean {
   const allowed: string[] = localBackupColumns(table);
-  const legacyAllowed: string[] = legacyLocalBackupColumns(table);
   const integerColumns: string[] = localBackupIntegerColumns(table);
   if (allowed.length === 0) { return false; }
   for (let i = 0; i < rows.length; i++) {
@@ -108,15 +107,14 @@ function validateLocalBackupRows(table: string, rows: Array<Record<string, strin
     if (!row || typeof row !== 'object' || row['id'] === undefined ||
       typeof row['id'] !== 'string' || row['id'].length === 0) { return false; }
     const keys: string[] = Object.keys(row);
-    const keySet: string[] = keys.length === allowed.length ? allowed : legacyAllowed;
-    if (keys.length !== keySet.length) { return false; }
+    // 备份格式采用向前兼容的行结构：后续版本新增的列可以缺失，
+    // 恢复时由 RDB 保留 NULL/默认值；未知列仍然拒绝。这样旧备份不会
+    // 因为 RustDesk/证书等后来新增字段而被误判为无效。
+    const keySet: string[] = allowed;
     for (let k = 0; k < keys.length; k++) {
       const key: string = keys[k];
       if (keySet.indexOf(key) < 0 || typeof row[key] !== 'string') { return false; }
       if (integerColumns.indexOf(key) >= 0 && !isStrictIntegerText(row[key])) { return false; }
-    }
-    for (let k = 0; k < keySet.length; k++) {
-      if (row[keySet[k]] === undefined) { return false; }
     }
   }
   return true;

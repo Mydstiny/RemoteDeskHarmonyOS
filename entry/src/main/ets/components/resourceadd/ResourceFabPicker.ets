@@ -68,6 +68,6 @@ export struct ResourceFabPicker {
         this.option('advanced', '高级自定义', '配置完整服务器地址与端口')
       }
     }.width('100%').padding({ left: 20, right: 20, top: 20, bottom: 18 })
-      .backgroundColor(this.pal().card)
+      .backgroundColor(this.pal().sheetBg)
   }
 }

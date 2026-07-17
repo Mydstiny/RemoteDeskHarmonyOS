@@ -830,7 +830,7 @@ export struct KeyVaultPage {
       height: SheetSize.FIT_CONTENT,
       preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
       dragBar: this.sheetMode !== 1 && this.sheetMode !== 5 && this.sheetMode !== 6,
-      backgroundColor: this.pal().card, blurStyle: BlurStyle.NONE, showClose: false,
+      backgroundColor: this.pal().sheetBg, blurStyle: BlurStyle.NONE, showClose: false,
       onDisappear: () => {
         if (this.sheetMode === 0) { this.resetSshForm(); this.resetTotpForm(); }
         else { this.load(); }
@@ -879,7 +879,7 @@ export struct KeyVaultPage {
     .padding({ left: 24, right: 24, top: 24, bottom: 40 }).width('100%')
     .constraintSize({ maxWidth: 760 })
     .borderRadius(this.breakpoint === 'sm' ? { topLeft: 20, topRight: 20, bottomLeft: 0, bottomRight: 0 } : 20)
-    .backgroundColor(this.pal().bg).backgroundBlurStyle(BlurStyle.Regular)
+    .backgroundColor(this.pal().sheetBg).backgroundBlurStyle(BlurStyle.Regular)
   }
 
   @Builder addChoiceWrapper() {
@@ -1328,7 +1328,7 @@ export struct KeyVaultPage {
         height: SheetSize.FIT_CONTENT,
         preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
         dragBar: false,
-        backgroundColor: this.pal().card, blurStyle: BlurStyle.NONE, showClose: false
+        backgroundColor: this.pal().sheetBg, blurStyle: BlurStyle.NONE, showClose: false
       })
 
       // 导入 .atsf 文件
@@ -1412,7 +1412,7 @@ export struct KeyVaultPage {
     .padding({ left: 24, right: 24, top: 24, bottom: 40 })
     .width('100%')
     .borderRadius(this.breakpoint === 'sm' ? 0 : 20)
-    .backgroundColor(this.pal().bg)
+    .backgroundColor(this.pal().sheetBg)
     .backgroundBlurStyle(BlurStyle.Regular)
     .shadow(this.breakpoint === 'sm'
       ? { radius: 0, color: 'rgba(0,0,0,0)', offsetY: 0 } as ShadowOptions

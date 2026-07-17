@@ -289,7 +289,7 @@ struct LoginPage {
               height: SheetSize.FIT_CONTENT,
               preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
               dragBar: this.breakpoint === 'sm',
-              backgroundColor: this.pal().card,
+              backgroundColor: this.pal().sheetBg,
               blurStyle: BlurStyle.NONE,
               showClose: false
             })
@@ -309,7 +309,7 @@ struct LoginPage {
         height: SheetSize.FIT_CONTENT,
         preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
         dragBar: this.breakpoint === 'sm',
-        backgroundColor: this.pal().card,
+        backgroundColor: this.pal().sheetBg,
         blurStyle: BlurStyle.NONE,
         showClose: false
       })

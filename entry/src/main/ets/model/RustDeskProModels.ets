@@ -3,8 +3,8 @@ import { buffer, util } from '@kit.ArkTS';
 /**
  * RustDesk Server Pro 账号与地址簿模型。
  *
- * 这些模型只描述 Pro API 响应和设备端凭据状态，不参与 rustdeskrelays.accountsjson
- * 云同步，也不把 access token 放入 RemoteHost。
+ * 这些模型只描述 Pro API 响应和设备端凭据状态；账户的非敏感元数据通过
+ * rustdeskrelays.accountsjson 复用旧云表保存，access token 永不进入云表或 RemoteHost。
  */
 
 export interface RustDeskProPeerJSON {
