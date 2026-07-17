@@ -27,6 +27,7 @@ import { QrCodeScanner } from '../components/QrCodeScanner';
 import { showLockGate, lockGateErrorMessage } from '../components/LockGate';
 import { Palette, buildDark, buildLight, AppTheme } from '../common/Theme';
 import { SshKeyDataSource, TotpEntryDataSource } from '../datasources/DataSources';
+import { resolveFabAddStyle } from '../services/FabAddStylePolicy';
 
 @Component
 export struct KeyVaultPage {
@@ -39,12 +40,13 @@ export struct KeyVaultPage {
   @StorageProp('currentBreakpoint') breakpoint: string = 'sm';
   @StorageProp('isDesktopDevice') isDesktopDevice: boolean = false;
   @StorageProp('topRectHeight') topRectHeight: number = 0;
+  @StorageProp('hostAddMode') fabAddStyle: string = 'modern';
   @State showAddTab: number = 0;
   @State totpUnlocked: boolean = false;
   @State selectionMode: boolean = false;
   // 统一 Sheet: 单 bindSheet + mode 切换内容 (KeyVaultPage 非 @Entry, 限 1 个 bindSheet)
   @State showSheet: boolean = false;
-  @State sheetMode: number = 0; // 0=addForm, 1=addChoice, 2=manage, 3=install, 4=passphrase
+  @State sheetMode: number = 0; // 0=form, 1=SSH choice, 2=manage, 3=install, 4=passphrase, 5=2FA choice
   @State sheetKey: SshKey = new SshKey();
   @State selectedIds: Set<string> = new Set();
   @State editingSshKey: SshKey = new SshKey();
@@ -120,15 +122,16 @@ export struct KeyVaultPage {
 
   onAddTrigger(): void {
     if (this.addTrigger > 0) {
+      const modern: boolean = resolveFabAddStyle(this.fabAddStyle, this.isDesktopDevice) === 'modern';
       if (this.keyVaultInnerTab === 1) {
-        // TOTP: 直接打开添加表单
         this.resetTotpForm();
         this.showAddTab = 1;
-        this.sheetMode = 0;
+        this.sheetMode = modern ? 5 : 0;
         this.showSheet = true;
       } else {
-        // SSH: 三选一
-        this.sheetMode = 1;
+        this.resetSshForm();
+        this.showAddTab = 0;
+        this.sheetMode = modern ? 1 : 0;
         this.showSheet = true;
       }
     }
@@ -820,7 +823,7 @@ export struct KeyVaultPage {
     .bindSheet($$this.showSheet, this.unifiedSheet(), {
       height: SheetSize.FIT_CONTENT,
       preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
-      dragBar: this.sheetMode !== 1,
+      dragBar: this.sheetMode !== 1 && this.sheetMode !== 5,
       backgroundColor: Color.Transparent, blurStyle: BlurStyle.NONE, showClose: false,
       onDisappear: () => {
         if (this.sheetMode === 0) { this.resetSshForm(); this.resetTotpForm(); }
@@ -841,6 +844,8 @@ export struct KeyVaultPage {
       this.installWrapper()
     } else if (this.sheetMode === 4) {
       this.passphraseWrapper()
+    } else if (this.sheetMode === 5) {
+      this.totpChoiceWrapper()
     }
   }
 
@@ -880,6 +885,26 @@ export struct KeyVaultPage {
         tempKey.keyType = SshKeyType.ED25519;
         this.sheetKey = tempKey;
         this.sheetMode = 3;
+      })
+    }
+    .padding({ left: 24, right: 24, top: 24, bottom: 40 }).width('100%')
+    .borderRadius(this.breakpoint === 'sm' ? { topLeft: 20, topRight: 20, bottomLeft: 0, bottomRight: 0 } : 20)
+    .backgroundColor(this.pal().bg).backgroundBlurStyle(BlurStyle.Regular)
+  }
+
+  @Builder totpChoiceWrapper() {
+    Column() {
+      Text('添加 2FA 验证器').fontSize(19).fontWeight(FontWeight.Bold)
+        .fontColor(this.pal().text).fontFamily(this.font()).width('100%').margin({ bottom: 14 })
+      this.choiceItem2('扫描二维码', $r('sys.symbol.camera_fill'), () => {
+        this.showSheet = false;
+        this.showQrScan = true;
+      })
+      this.choiceItem2('导入 otpauth 配置', $r('sys.symbol.doc_plaintext'), () => {
+        this.resetTotpForm(); this.showAddTab = 1; this.sheetMode = 0;
+      })
+      this.choiceItem2('手动输入', $r('sys.symbol.keyboard'), () => {
+        this.resetTotpForm(); this.showAddTab = 1; this.sheetMode = 0;
       })
     }
     .padding({ left: 24, right: 24, top: 24, bottom: 40 }).width('100%')

@@ -1,7 +1,8 @@
-/** HostAddModePolicy — resolve the FAB add-host experience per device class. */
-export type HostAddMode = 'modern' | 'classic';
+/** @deprecated Use FabAddStylePolicy. Kept for source compatibility. */
+import { FabAddStyle, resolveFabAddStyle } from './FabAddStylePolicy';
+
+export type HostAddMode = FabAddStyle;
 
 export function resolveHostAddMode(savedMode: string, isDesktopDevice: boolean): HostAddMode {
-  if (isDesktopDevice) { return 'classic'; }
-  return savedMode === 'classic' ? 'classic' : 'modern';
+  return resolveFabAddStyle(savedMode, isDesktopDevice);
 }

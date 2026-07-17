@@ -81,7 +81,7 @@ import {
   RustDeskHostEndpoint
 } from '../services/RustDeskHostConfigPolicy';
 import { sheetOpenDelayMsAfterDismiss } from '../services/SheetTransitionPolicy';
-import { resolveHostAddMode } from '../services/HostAddModePolicy';
+import { resolveFabAddStyle } from '../services/FabAddStylePolicy';
 import { resolveRustDeskBadges } from '../services/RustDeskCardBadgePolicy';
 import { cloudSyncDetailSpec } from '../services/CloudSyncGuidancePolicy';
 import {
@@ -226,7 +226,8 @@ struct HostListPage {
   @State showAddSheet: boolean = false;
   @State addSheetShowsModernPicker: boolean = false;
   @State modernAddProtocol: string = '';
-  @StorageLink('hostAddMode') hostAddMode: string = 'modern';
+  // Keep the released storage/cloud key while exposing the broader FAB-style semantics in UI code.
+  @StorageLink('hostAddMode') fabAddStyle: string = 'modern';
   @State lanScanning: boolean = false;
   @State lanScanResults: DiscoveredRustDeskPeer[] = [];
   private lanDiscovery: RustDeskLanDiscoveryService = new RustDeskLanDiscoveryService();
@@ -583,8 +584,8 @@ struct HostListPage {
       AppStorage.setOrCreate('liveViewEnabled', this.liveViewEnabled);
       this.liveViewMode = savedLiveViewMode >= 0 && savedLiveViewMode <= 2 ? savedLiveViewMode : 1;
       AppStorage.setOrCreate('liveViewMode', this.liveViewMode);
-      this.hostAddMode = savedHostAddMode === 'classic' ? 'classic' : 'modern';
-      AppStorage.setOrCreate('hostAddMode', this.hostAddMode);
+      this.fabAddStyle = savedHostAddMode === 'classic' ? 'classic' : 'modern';
+      AppStorage.setOrCreate('hostAddMode', this.fabAddStyle);
       if (savedWallpaper !== '') { AppStorage.setOrCreate('wallpaperColor', savedWallpaper); }
       const savedWallIdx: number = prefs.getSync('wallpaperIdx', -1) as number;
       if (savedWallIdx >= 0 && savedWallIdx < this.wallpaperItems.length) {
@@ -2723,9 +2724,10 @@ struct HostListPage {
     this.refreshHostListView();
   }
 
-  private saveHostAddMode(mode: string): void {
-    this.hostAddMode = mode === 'classic' ? 'classic' : 'modern';
-    this.persistPref('hostAddMode', this.hostAddMode);
+  private saveFabAddStyle(style: string): void {
+    this.fabAddStyle = style === 'classic' ? 'classic' : 'modern';
+    // CloudSyncSettingsPolicy intentionally still whitelists this legacy key.
+    this.persistPref('hostAddMode', this.fabAddStyle);
   }
 
   private saveRustDeskLanDiscovery(on: boolean): void {
@@ -3250,7 +3252,7 @@ struct HostListPage {
             if (this.curTab === 0) {
               this.resetForm();
               this.addSheetShowsModernPicker =
-                resolveHostAddMode(this.hostAddMode, this.isDesktopDevice) === 'modern';
+                resolveFabAddStyle(this.fabAddStyle, this.isDesktopDevice) === 'modern';
               this.modernAddProtocol = '';
               this.openSheetSafely((): void => { this.showAddSheet = true; });
             }
@@ -4122,21 +4124,22 @@ struct HostListPage {
                   Row() { SymbolGlyph($r('sys.symbol.plus_circle_fill')).fontSize(22).fontColor([this.pal().text]) }
                     .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
                   Column() {
-                    Text('添加主机方式').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
+                    Text('添加 FAB 风格').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
                       .fontColor(this.pal().text).fontFamily(this.font())
-                    Text('切换到经典模式或全新模式').fontSize(11).fontColor(this.pal().text3)
+                    Text('控制添加主机、SSH 密钥、2FA 和 RustDesk 中继的界面风格')
+                      .fontSize(11).fontColor(this.pal().text3)
                       .fontFamily(this.font())
                   }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
                 }.width('100%').padding({ left: 16, right: 16, top: 12, bottom: 8 })
                 Row() {
                   Button('全新模式').layoutWeight(1).height(36).fontSize(13)
-                    .fontColor(this.hostAddMode === 'modern' ? Color.White : this.pal().text2)
-                    .backgroundColor(this.hostAddMode === 'modern' ? this.accentColor : this.pal().surface)
-                    .borderRadius(10).onClick((): void => { this.saveHostAddMode('modern'); })
+                    .fontColor(this.fabAddStyle === 'modern' ? Color.White : this.pal().text2)
+                    .backgroundColor(this.fabAddStyle === 'modern' ? this.accentColor : this.pal().surface)
+                    .borderRadius(10).onClick((): void => { this.saveFabAddStyle('modern'); })
                   Button('经典模式').layoutWeight(1).height(36).fontSize(13).margin({ left: 8 })
-                    .fontColor(this.hostAddMode === 'classic' ? Color.White : this.pal().text2)
-                    .backgroundColor(this.hostAddMode === 'classic' ? this.accentColor : this.pal().surface)
-                    .borderRadius(10).onClick((): void => { this.saveHostAddMode('classic'); })
+                    .fontColor(this.fabAddStyle === 'classic' ? Color.White : this.pal().text2)
+                    .backgroundColor(this.fabAddStyle === 'classic' ? this.accentColor : this.pal().surface)
+                    .borderRadius(10).onClick((): void => { this.saveFabAddStyle('classic'); })
                 }.width('100%').padding({ left: 16, right: 16, bottom: 12 })
               }
               this.cardDivider()
