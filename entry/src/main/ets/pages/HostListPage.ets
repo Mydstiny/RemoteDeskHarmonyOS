@@ -3143,7 +3143,10 @@ struct HostListPage {
         onWillDismiss: (action: DismissSheetAction): void => {
           if (!this.sshPublicKeyInstallBusy) { this.closeSshPublicKeyInstallSheet(); action.dismiss(); }
         },
-        onDisappear: (): void => { this.closeSshPublicKeyInstallSheet(); }
+        onDisappear: (): void => {
+          this.resetSshPublicKeyInstallSheetState();
+          this.noteSheetDismissed();
+        }
       })
       Column().width('100%').height('100%').hitTestBehavior(HitTestMode.None)
       .bindSheet($$this.showSettingsLeafSheet, this.settingsLeafSheet(), {
@@ -3853,12 +3856,15 @@ struct HostListPage {
   }
 
   private closeSshPublicKeyInstallSheet(): void {
-    if (this.sshPublicKeyInstallBusy) { return; }
     this.showSshPublicKeyInstallSheet = false;
+  }
+
+  private resetSshPublicKeyInstallSheetState(): void {
     this.sshPublicKeyInstallHost = null;
     this.sshPublicKeyInstallKeyId = '';
     this.sshPublicKeyInstallPassword = '';
     this.sshPublicKeyInstallPassphrase = '';
+    this.sshPublicKeyInstallBusy = false;
     this.sshPublicKeyInstallError = '';
   }
 
