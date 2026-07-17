@@ -165,7 +165,7 @@ import {
 } from '../services/HaloColorPolicy';
 import { AboutSettingsSheet } from '../components/AboutSettingsSheet';
 import { FeedbackSettingsSheet } from '../components/FeedbackSettingsSheet';
-import { RdpCertificateInfo, SshHostKeyInfo, SshPrivateKeyInfo } from '../types/rdpnapi';
+import { RdpCertificateInfo, SshHostKeyInfo, SshPrivateKeyInfo, SshPublicKeyInstallResult } from '../types/rdpnapi';
 import { SessionConfig } from '../types/rdpnapi';
 import { ActiveRemoteSessionRegistry, ActiveRemoteSessionRecord } from '../services/ActiveRemoteSessionRegistry';
 import { RemoteProtocol } from '../services/RemoteSessionState';
@@ -422,6 +422,13 @@ struct HostListPage {
   private hlPassphraseResolve: ((v: string) => void) | null = null;
   @State hlPassphraseInput: string = '';
   @State hlPassphraseShowPw: boolean = false;
+  @State showSshPublicKeyInstallSheet: boolean = false;
+  @State sshPublicKeyInstallHost: RemoteHost | null = null;
+  @State sshPublicKeyInstallKeyId: string = '';
+  @State sshPublicKeyInstallPassword: string = '';
+  @State sshPublicKeyInstallPassphrase: string = '';
+  @State sshPublicKeyInstallBusy: boolean = false;
+  @State sshPublicKeyInstallError: string = '';
 
   private promptKeyPassphrase(): Promise<string> {
     return new Promise<string>((resolve: (v: string) => void) => {
@@ -3125,6 +3132,20 @@ struct HostListPage {
         onDisappear: (): void => { this.noteSheetDismissed(); }
       })
       Column().width('100%').height('100%').hitTestBehavior(HitTestMode.None)
+      .bindSheet($$this.showSshPublicKeyInstallSheet, this.sshPublicKeyInstallPanel(), {
+        height: SheetSize.FIT_CONTENT,
+        preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
+        dragBar: this.breakpoint === 'sm',
+        backgroundColor: Color.Transparent,
+        blurStyle: BlurStyle.NONE,
+        showClose: false,
+        maskColor: 'rgba(0,0,0,0.4)',
+        onWillDismiss: (action: DismissSheetAction): void => {
+          if (!this.sshPublicKeyInstallBusy) { this.closeSshPublicKeyInstallSheet(); action.dismiss(); }
+        },
+        onDisappear: (): void => { this.closeSshPublicKeyInstallSheet(); }
+      })
+      Column().width('100%').height('100%').hitTestBehavior(HitTestMode.None)
       .bindSheet($$this.showSettingsLeafSheet, this.settingsLeafSheet(), {
         height: SheetSize.FIT_CONTENT,
         preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
@@ -3815,6 +3836,142 @@ struct HostListPage {
     .width('100%').height('100%')
   }
 
+  private async openSshPublicKeyInstall(host: RemoteHost): Promise<void> {
+    const latest = this.srv.getHost(host.id) ?? host;
+    if (latest.locked) {
+      const gate = await showLockGate(latest.label, 'biometric');
+      if (!gate.ok) { return; }
+    }
+    this.sshPublicKeyInstallHost = latest;
+    const keys = this.keyVault.getAllSshKeys();
+    this.sshPublicKeyInstallKeyId = keys.length > 0 ? keys[0].id : '';
+    this.sshPublicKeyInstallPassword = latest.sshUseKey ? '' : latest.password;
+    this.sshPublicKeyInstallPassphrase = latest.sshUseKey ? latest.sshKeyPassphrase : '';
+    this.sshPublicKeyInstallError = '';
+    this.sshPublicKeyInstallBusy = false;
+    this.openSheetSafely((): void => { this.showSshPublicKeyInstallSheet = true; });
+  }
+
+  private closeSshPublicKeyInstallSheet(): void {
+    if (this.sshPublicKeyInstallBusy) { return; }
+    this.showSshPublicKeyInstallSheet = false;
+    this.sshPublicKeyInstallHost = null;
+    this.sshPublicKeyInstallKeyId = '';
+    this.sshPublicKeyInstallPassword = '';
+    this.sshPublicKeyInstallPassphrase = '';
+    this.sshPublicKeyInstallError = '';
+  }
+
+  private async doSshPublicKeyInstall(): Promise<void> {
+    const host = this.sshPublicKeyInstallHost;
+    if (host === null || this.sshPublicKeyInstallBusy) { return; }
+    const targetKey = this.keyVault.getSshKey(this.sshPublicKeyInstallKeyId);
+    if (targetKey === undefined) { this.sshPublicKeyInstallError = '请先选择要部署的 SSH 公钥'; return; }
+    if (!host.sshUseKey && this.sshPublicKeyInstallPassword.length === 0) {
+      this.sshPublicKeyInstallError = '请输入当前服务器密码'; return;
+    }
+    let publicKey = targetKey.publicKey.trim();
+    if (publicKey.length === 0) {
+      const info = this.loader.inspectSshPrivateKey(targetKey.privateKey, this.sshPublicKeyInstallPassphrase);
+      if (!info.ok || info.publicKeyOpenSsh.length === 0) {
+        this.sshPublicKeyInstallError = '无法读取所选私钥的公钥，请检查密钥密码'; return;
+      }
+      publicKey = info.publicKeyOpenSsh.trim();
+    }
+    if (!this.loader.validatePublicKeyForAuthorizedKeys(publicKey)) {
+      this.sshPublicKeyInstallError = '所选密钥不是有效的 SSH 公钥'; return;
+    }
+    let authPrivateKey = '';
+    if (host.sshUseKey) {
+      const authKey = this.keyVault.getSshKey(host.sshKeyId);
+      if (authKey === undefined) { this.sshPublicKeyInstallError = '当前主机的认证私钥不在密钥保险库中'; return; }
+      authPrivateKey = authKey.privateKey;
+    }
+    this.sshPublicKeyInstallBusy = true;
+    this.sshPublicKeyInstallError = '';
+    try {
+      const result: SshPublicKeyInstallResult = await new Promise<SshPublicKeyInstallResult>((resolve) => {
+        setTimeout((): void => {
+          resolve(this.loader.installSshPublicKey(host.host, host.port, host.username,
+            host.sshUseKey ? '' : this.sshPublicKeyInstallPassword, authPrivateKey,
+            this.sshPublicKeyInstallPassphrase, publicKey));
+        }, 0);
+      });
+      if (!result.ok) {
+        this.sshPublicKeyInstallError = result.message || '公钥部署失败，请检查认证信息和服务器权限';
+        return;
+      }
+      promptAction.showToast({
+        message: result.alreadyInstalled ? '公钥已存在，无需重复部署' : 'SSH 公钥已部署到服务器', duration: 1800
+      });
+      this.closeSshPublicKeyInstallSheet();
+    } catch (_err) {
+      this.sshPublicKeyInstallError = '公钥部署失败，请稍后重试';
+    } finally {
+      this.sshPublicKeyInstallBusy = false;
+    }
+  }
+
+  @Builder sshPublicKeyInstallPanel() {
+    Column() {
+      Row() {
+        Column() {
+          Text('部署 SSH 公钥').fontSize(20).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
+          if (this.sshPublicKeyInstallHost !== null) {
+            Text(this.sshPublicKeyInstallHost.username + '@' + this.sshPublicKeyInstallHost.host + ':' +
+              this.sshPublicKeyInstallHost.port.toString()).fontSize(12).fontColor(this.pal().text3).margin({ top: 4 })
+          }
+        }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+        Button() { SymbolGlyph($r('sys.symbol.xmark')).fontSize(17).fontColor([this.pal().text2]) }
+          .width(36).height(36).borderRadius(18).padding(0).backgroundColor(this.pal().surface)
+          .enabled(!this.sshPublicKeyInstallBusy).onClick((): void => { this.closeSshPublicKeyInstallSheet(); })
+      }.width('100%').margin({ bottom: 14 })
+      Text('选择密钥后，将公钥追加到远端 authorized_keys；不会上传私钥。')
+        .fontSize(12).fontColor(this.pal().text2).width('100%').margin({ bottom: 12 })
+      if (this.keyVault.getAllSshKeys().length === 0) {
+        Text('密钥保险库为空，请先添加 SSH 密钥。').fontSize(13).fontColor(this.pal().danger)
+          .width('100%').padding(12).backgroundColor(this.pal().surface).borderRadius(10)
+      } else {
+        ForEach(this.keyVault.getAllSshKeys(), (key: SshKey) => {
+          Row() {
+            SymbolGlyph(key.id === this.sshPublicKeyInstallKeyId
+              ? $r('sys.symbol.checkmark_circle_fill') : $r('sys.symbol.circle'))
+              .fontSize(20).fontColor([key.id === this.sshPublicKeyInstallKeyId ? this.accentColor : this.pal().text3])
+            Column() {
+              Text(key.label !== '' ? key.label : SshKey.typeLabel(key.keyType)).fontSize(14).fontColor(this.pal().text)
+              Text(key.fingerprint !== '' ? key.fingerprint : '未生成指纹').fontSize(10).fontColor(this.pal().text3)
+                .maxLines(1).margin({ top: 3 })
+            }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 10 })
+          }.width('100%').padding(11).borderRadius(10).backgroundColor(this.pal().surface).margin({ bottom: 7 })
+            .onClick((): void => { this.sshPublicKeyInstallKeyId = key.id; })
+        }, (key: SshKey): string => key.id)
+        if (this.sshPublicKeyInstallHost !== null && this.sshPublicKeyInstallHost.sshUseKey) {
+          Text('将使用当前主机配置的私钥进行服务器认证。').fontSize(11).fontColor(this.pal().text3)
+            .width('100%').margin({ top: 2, bottom: 8 })
+        } else {
+          TextInput({ text: this.sshPublicKeyInstallPassword, placeholder: '当前服务器密码' })
+            .type(InputType.Password).showPasswordIcon(true).height(44).width('100%')
+            .backgroundColor(this.pal().surface).borderRadius(10).fontColor(this.pal().text)
+            .onChange((value: string): void => { this.sshPublicKeyInstallPassword = value; })
+            .margin({ top: 2, bottom: 8 })
+        }
+        TextInput({ text: this.sshPublicKeyInstallPassphrase, placeholder: '认证私钥密码（如有）' })
+          .type(InputType.Password).showPasswordIcon(true).height(44).width('100%')
+          .backgroundColor(this.pal().surface).borderRadius(10).fontColor(this.pal().text)
+          .onChange((value: string): void => { this.sshPublicKeyInstallPassphrase = value; })
+          .margin({ bottom: 10 })
+      }
+      if (this.sshPublicKeyInstallError.length > 0) {
+        Text(this.sshPublicKeyInstallError).fontSize(12).fontColor(this.pal().danger).width('100%')
+          .padding(10).backgroundColor(this.pal().surface).borderRadius(9).margin({ bottom: 10 })
+      }
+      Button(this.sshPublicKeyInstallBusy ? '部署中…' : '部署公钥').width('100%').height(44).borderRadius(11)
+        .backgroundColor(this.sshPublicKeyInstallBusy ? this.pal().text3 : this.accentColor).fontColor(Color.White)
+        .enabled(!this.sshPublicKeyInstallBusy && this.keyVault.getAllSshKeys().length > 0)
+        .onClick((): void => { void this.doSshPublicKeyInstall(); })
+    }.width('100%').padding({ left: 20, right: 20, top: 20, bottom: 24 }).backgroundColor(this.pal().card)
+  }
+
   // PC/2in1: 省略号弹出操作菜单 (小巧精致 + 过渡动画)
   @Builder hostActionMenuBuilder(host: RemoteHost) {
     Column() {
@@ -3827,6 +3984,20 @@ struct HostListPage {
       .onClick(() => { animateTo({ duration: 150 }, () => { this.hostActionPopupId = ''; }); this.editHost(host); })
 
       Divider().strokeWidth(0.5).color(this.pal().cardBorder).width('100%')
+
+      if (host.protocol === 'ssh') {
+        Row() {
+          SymbolGlyph($r('sys.symbol.key_fill')).fontSize(16).fontColor([this.pal().text])
+          Text('部署公钥').fontSize(13).fontColor(this.pal().text).fontFamily(this.font()).margin({ left: 8 })
+        }
+        .width('100%').padding({ left: 12, right: 12, top: 8, bottom: 8 })
+        .onClick(() => {
+          animateTo({ duration: 150 }, () => { this.hostActionPopupId = ''; });
+          void this.openSshPublicKeyInstall(host);
+        })
+
+        Divider().strokeWidth(0.5).color(this.pal().cardBorder).width('100%')
+      }
 
       Row() {
         SymbolGlyph(host.locked ? $r('sys.symbol.lock_open') : $r('sys.symbol.ohos_lock'))
@@ -3908,6 +4079,18 @@ struct HostListPage {
       .backgroundColor(host.locked ? this.pal().success : this.accentColor)
       .margin({ left: 4 })
       .onClick(() => { this.toggleLock(host); })
+
+      if (host.protocol === 'ssh') {
+        Button() {
+          SymbolGlyph($r('sys.symbol.key_fill'))
+            .fontSize(17)
+            .fontColor([Color.White])
+        }
+        .width(48).height(48).borderRadius(12)
+        .backgroundColor(this.accentColor)
+        .margin({ left: 4 })
+        .onClick(() => { void this.openSshPublicKeyInstall(host); })
+      }
     }
     .height('100%').alignItems(VerticalAlign.Center)
     .borderRadius(14)
