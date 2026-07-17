@@ -67,6 +67,7 @@ export struct KeyVaultPage {
   @State formIssuer: string = '';
   @State formAccount: string = '';
   @State formSecret: string = '';
+  @State formOtpAuthUri: string = '';
   @State formDigits: number = 6;
   @State formPeriod: number = 30;
   private kvs: KeyVaultService = KeyVaultService.getInstance();
@@ -569,7 +570,7 @@ export struct KeyVaultPage {
 
   // ==================== TOTP 表单 ====================
   private resetTotpForm(): void {
-    this.formIssuer = ''; this.formAccount = ''; this.formSecret = '';
+    this.formIssuer = ''; this.formAccount = ''; this.formSecret = ''; this.formOtpAuthUri = '';
     this.formDigits = 6; this.formPeriod = 30;
   }
 
@@ -890,6 +891,20 @@ export struct KeyVaultPage {
     .padding({ left: 24, right: 24, top: 24, bottom: 40 }).width('100%')
     .borderRadius(this.breakpoint === 'sm' ? { topLeft: 20, topRight: 20, bottomLeft: 0, bottomRight: 0 } : 20)
     .backgroundColor(this.pal().bg).backgroundBlurStyle(BlurStyle.Regular)
+  }
+
+  private parseOtpAuthInput(): void {
+    const parsed: TotpEntry | null = TotpEngine.parseOtpAuthUri(this.formOtpAuthUri.trim());
+    if (parsed === null) {
+      promptAction.showToast({ message: 'otpauth URI 无效，请检查格式', duration: 2200 });
+      return;
+    }
+    this.formIssuer = parsed.issuer;
+    this.formAccount = parsed.account;
+    this.formSecret = parsed.secret;
+    this.formDigits = parsed.digits;
+    this.formPeriod = parsed.period;
+    promptAction.showToast({ message: '配置已解析，请确认后保存', duration: 1500 });
   }
 
   @Builder totpChoiceWrapper() {
@@ -1343,6 +1358,12 @@ export struct KeyVaultPage {
 
       Text('— 或手动输入 —').fontSize(11).fontColor(this.pal().text3)
         .width('100%').textAlign(TextAlign.Center).margin({ bottom: 12 })
+
+      this._f('otpauth URI（可选）', 'otpauth://totp/…', this.formOtpAuthUri,
+        (v: string) => { this.formOtpAuthUri = v; })
+      Button('解析 otpauth URI').width('100%').height(36).fontSize(12)
+        .backgroundColor(this.pal().surface).fontColor(this.accentColor).borderRadius(8)
+        .margin({ bottom: 12 }).onClick(() => { this.parseOtpAuthInput(); })
 
       this._f('发行方 (Issuer)', '如 GitHub', this.formIssuer,
         (v: string) => { this.formIssuer = v; })

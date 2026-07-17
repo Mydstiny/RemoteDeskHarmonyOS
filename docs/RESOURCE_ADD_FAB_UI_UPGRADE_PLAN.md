@@ -783,3 +783,12 @@ rustDeskProAccountRevision
 - 已引入统一 `FabAddStylePolicy`，PC 固定桌面表单，手机与 Pad 响应 modern/classic 偏好。
 - SSH 密钥和 2FA FAB 已接入首层 modern/classic 路由；2FA 全新模式提供扫码、otpauth 与手动输入入口。
 - `default@OhosTestCompileArkTS` 已通过；后续继续完善公共向导、嵌套回填和中继流程。
+
+### 2026-07-17：Pro 适配与中继事务
+
+- 已新增旧 `accountsjson` 到 Server Pro 元数据适配器；旧记录首次加载时迁移并清空密码，新的 Pro Token 仍只保存在设备本地。
+- 已移除中继页旧 Admin/手动账户 UI、状态和 CRUD；Pro 账户成为唯一账户入口。
+- 已加入 OSS、Server Pro、高级自定义的中继类型选择。
+- Server Pro 中继保存后先落库，再显示“暂不添加 / 添加 Pro 账户”；登录失败或取消不回滚服务器。
+- Pro 账户删除会同时清理本地凭据和旧云元数据。
+- `default@OhosTestCompileArkTS`、生产 `assembleHap` 和 Light 合规门已通过。

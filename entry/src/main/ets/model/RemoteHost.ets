@@ -185,7 +185,7 @@ export class RemoteHost {
   proxyPort: number = 22;       // SSH 代理端口
   proxyUsername: string = '';   // SSH 代理用户名
   rustdeskRelayId: string = ''; // RustDesk 中继服务器配置 ID
-  rustdeskAccountId: string = ''; // RustDesk API 账户 ID
+  rustdeskAccountId: string = ''; // RustDesk Server Pro account ID
   rustdeskPasswordMode: number = 0; // RustDesk 密码模式: 0=一次性, 1=永久
   // RustDesk 登录授权: password=使用一次性/永久密码, request_approval=请求被控端点击批准
   rustdeskAuthMode: string = 'password';
