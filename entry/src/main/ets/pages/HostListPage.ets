@@ -77,6 +77,7 @@ import {
   RustDeskHostEndpoint
 } from '../services/RustDeskHostConfigPolicy';
 import { sheetOpenDelayMsAfterDismiss } from '../services/SheetTransitionPolicy';
+import { resolveHostAddMode } from '../services/HostAddModePolicy';
 import { cloudSyncDetailSpec } from '../services/CloudSyncGuidancePolicy';
 import {
   settingsLeafSheetClosedState,
@@ -217,6 +218,8 @@ struct HostListPage {
   @StorageLink('remoteDesktopBgFlag') @Watch('onRemoteDesktopBgFlagChange') appInBackground: boolean = false;
   @StorageProp('colorMode') @Watch('onSystemColorModeChange') systemUiColorMode: number = ENV_COLOR_MODE_UNKNOWN;
   @State showAddSheet: boolean = false;
+  @State addSheetShowsModernPicker: boolean = false;
+  @StorageLink('hostAddMode') hostAddMode: string = 'modern';
   @State lanScanning: boolean = false;
   @State lanScanResults: DiscoveredRustDeskPeer[] = [];
   private lanDiscovery: RustDeskLanDiscoveryService = new RustDeskLanDiscoveryService();
@@ -549,6 +552,7 @@ struct HostListPage {
       const savedAmbientLightEffect: boolean = prefs.getSync('ambientLightEffectEnabled', false) as boolean;
       const savedLiveViewEnabled: boolean = prefs.getSync('liveViewEnabled', true) as boolean;
       const savedLiveViewMode: number = prefs.getSync('liveViewMode', 1) as number;
+      const savedHostAddMode: string = prefs.getSync('hostAddMode', 'modern') as string;
       const savedWallpaper: string = prefs.getSync('wallpaperColor', '') as string;
       // 终端设置
       const savedTermFg: string = prefs.getSync('terminalFgColor', '') as string;
@@ -572,6 +576,8 @@ struct HostListPage {
       AppStorage.setOrCreate('liveViewEnabled', this.liveViewEnabled);
       this.liveViewMode = savedLiveViewMode >= 0 && savedLiveViewMode <= 2 ? savedLiveViewMode : 1;
       AppStorage.setOrCreate('liveViewMode', this.liveViewMode);
+      this.hostAddMode = savedHostAddMode === 'classic' ? 'classic' : 'modern';
+      AppStorage.setOrCreate('hostAddMode', this.hostAddMode);
       if (savedWallpaper !== '') { AppStorage.setOrCreate('wallpaperColor', savedWallpaper); }
       const savedWallIdx: number = prefs.getSync('wallpaperIdx', -1) as number;
       if (savedWallIdx >= 0 && savedWallIdx < this.wallpaperItems.length) {
@@ -2706,6 +2712,11 @@ struct HostListPage {
     this.refreshHostListView();
   }
 
+  private saveHostAddMode(mode: string): void {
+    this.hostAddMode = mode === 'classic' ? 'classic' : 'modern';
+    this.persistPref('hostAddMode', this.hostAddMode);
+  }
+
   private saveRustDeskLanDiscovery(on: boolean): void {
     this.rustdeskLanDiscovery = on;
     this.persistRustDeskBooleanPref('rustdeskLanDiscovery', this.rustdeskLanDiscovery);
@@ -3225,13 +3236,15 @@ struct HostListPage {
             // 手机/平板/PC小窗: 主机/密钥/中继/设置
             if (this.curTab === 0) {
               this.resetForm();
+              this.addSheetShowsModernPicker =
+                resolveHostAddMode(this.hostAddMode, this.isDesktopDevice) === 'modern';
               this.openSheetSafely((): void => { this.showAddSheet = true; });
             }
             if (this.curTab === 1) { this.kvAddTrigger++; }
             if (this.curTab === 2) { this.relayAddTrigger++; }
           }
         })
-        .bindSheet($$this.showAddSheet, this.sheetBuilder(), {
+        .bindSheet($$this.showAddSheet, this.hostAddSheetContent(), {
           height: SheetSize.FIT_CONTENT,
           preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
           dragBar: false,
@@ -3240,6 +3253,7 @@ struct HostListPage {
           showClose: false,
           onDisappear: () => {
             this.noteSheetDismissed();
+            this.addSheetShowsModernPicker = false;
             this.resetForm();
             this.load();
           }
@@ -4065,15 +4079,38 @@ struct HostListPage {
 
         ListItem() {
           this.settingsAccordionHeader(SETTINGS_SECTION_APPEARANCE, $r('sys.symbol.paintpalette_fill'),
-            '外观', '主题色、壁纸、光晕和终端显示')
+            '个性化', '添加方式、主题色、壁纸、光晕和终端显示')
         }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 10 })
 
-        // --- 外观卡片 ---
+        // --- 个性化卡片 ---
         ListItem() {
           Column() {
-            Text('外观').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text3)
+            Text('个性化').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text3)
               .fontFamily(this.font()).padding({ left: 8, bottom: 8 })
             Column() {
+              Column() {
+                Row() {
+                  Row() { SymbolGlyph($r('sys.symbol.plus_circle_fill')).fontSize(22).fontColor([this.pal().text]) }
+                    .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
+                  Column() {
+                    Text('添加主机方式').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
+                      .fontColor(this.pal().text).fontFamily(this.font())
+                    Text('切换到经典模式或全新模式').fontSize(11).fontColor(this.pal().text3)
+                      .fontFamily(this.font())
+                  }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
+                }.width('100%').padding({ left: 16, right: 16, top: 12, bottom: 8 })
+                Row() {
+                  Button('全新模式').layoutWeight(1).height(36).fontSize(13)
+                    .fontColor(this.hostAddMode === 'modern' ? Color.White : this.pal().text2)
+                    .backgroundColor(this.hostAddMode === 'modern' ? this.accentColor : this.pal().surface)
+                    .borderRadius(10).onClick((): void => { this.saveHostAddMode('modern'); })
+                  Button('经典模式').layoutWeight(1).height(36).fontSize(13).margin({ left: 8 })
+                    .fontColor(this.hostAddMode === 'classic' ? Color.White : this.pal().text2)
+                    .backgroundColor(this.hostAddMode === 'classic' ? this.accentColor : this.pal().surface)
+                    .borderRadius(10).onClick((): void => { this.saveHostAddMode('classic'); })
+                }.width('100%').padding({ left: 16, right: 16, bottom: 12 })
+              }
+              this.cardDivider()
               Row() {
                 Row() { SymbolGlyph($r('sys.symbol.paintpalette_fill')).fontSize(22).fontColor([this.pal().text]) }
                   .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
@@ -6311,6 +6348,63 @@ struct HostListPage {
   }
 
   // ==================== Sheet builder ====================
+  @Builder hostAddSheetContent() {
+    if (this.addSheetShowsModernPicker) {
+      this.modernHostProtocolPicker()
+    } else {
+      this.sheetBuilder()
+    }
+  }
+
+  @Builder modernHostProtocolOption(protocol: string, title: string, subtitle: string, enabled: boolean) {
+    Row() {
+      Column() {
+        Text(title).fontSize(16).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
+          .fontFamily(this.font())
+        Text(subtitle).fontSize(12).fontColor(this.pal().text3).fontFamily(this.font()).margin({ top: 3 })
+      }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+      if (!enabled) {
+        Text('即将支持').fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
+          .padding({ left: 8, right: 8, top: 3, bottom: 3 }).borderRadius(8)
+          .backgroundColor(this.pal().surface)
+      } else {
+        SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(18).fontColor([this.pal().text3])
+      }
+    }.width('100%').height(68).padding({ left: 18, right: 18 })
+    .borderRadius(16).backgroundColor(this.pal().surface).margin({ bottom: 10 })
+    .opacity(enabled ? 1 : 0.58)
+    .onClick((): void => {
+      if (!enabled) {
+        promptAction.showToast({ message: 'VNC 已预埋，将在后续版本开放', duration: 1600 });
+        return;
+      }
+      this.switchHostProtocol(protocol, RemoteHost.getDefaultPort(protocol));
+      this.addSheetShowsModernPicker = false;
+    })
+  }
+
+  @Builder modernHostProtocolPicker() {
+    Column() {
+      Row() {
+        Column() {
+          Text('添加远程主机').fontSize(22).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
+            .fontFamily(this.font())
+          Text('选择要连接的协议').fontSize(13).fontColor(this.pal().text3).fontFamily(this.font())
+            .margin({ top: 4 })
+        }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+        Button() { SymbolGlyph($r('sys.symbol.xmark')).fontSize(18).fontColor([this.pal().text2]) }
+          .width(36).height(36).borderRadius(18).padding(0).backgroundColor(this.pal().surface)
+          .onClick((): void => { this.showAddSheet = false; })
+      }.width('100%').margin({ bottom: 18 })
+      this.modernHostProtocolOption('rdp', 'RDP', '连接 Windows 远程桌面', true)
+      this.modernHostProtocolOption('rustdesk', 'RustDesk', '中继、直连与局域网发现', true)
+      this.modernHostProtocolOption('ssh', 'SSH', '密码或密钥登录服务器', true)
+      this.modernHostProtocolOption('vnc', 'VNC', '跨平台屏幕控制', false)
+    }.width('100%').padding({ left: 20, right: 20, top: 20, bottom: 18 })
+    .backgroundColor(this.pal().card).borderRadius(this.breakpoint === 'sm' ?
+      { topLeft: 24, topRight: 24, bottomLeft: 0, bottomRight: 0 } : 24)
+  }
+
   @Builder sheetBuilder() {
     Column() {
       // 标题

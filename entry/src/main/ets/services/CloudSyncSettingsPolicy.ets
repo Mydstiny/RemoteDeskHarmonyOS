@@ -9,6 +9,7 @@ const CLOUD_USER_SETTING_NAMES: string[] = [
   'ambientLightEffectEnabled',
   'liveViewEnabled',
   'liveViewMode',
+  'hostAddMode',
   'terminalFgColor',
   'terminalFontSize',
   'useNativeTerminalCore',
