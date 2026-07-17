@@ -12,3 +12,8 @@ export function shouldRouteAfterRustDeskProPreflight(state: RustDeskProPreflight
 export function shouldKeepRustDeskProSheetOpen(state: RustDeskProPreflightState): boolean {
   return state === RustDeskProPreflightState.CONNECTING || state === RustDeskProPreflightState.ERROR;
 }
+
+export function rustDeskProPeerIdForConnection(stablePeerId: string, legacyPeerId: string): string {
+  const stable: string = stablePeerId.trim();
+  return stable.length > 0 ? stable : legacyPeerId.trim();
+}

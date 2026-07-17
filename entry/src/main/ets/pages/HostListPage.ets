@@ -161,7 +161,10 @@ import { RdpCertificateInfo, SshHostKeyInfo, SshPrivateKeyInfo } from '../types/
 import { SessionConfig } from '../types/rdpnapi';
 import { ActiveRemoteSessionRegistry, ActiveRemoteSessionRecord } from '../services/ActiveRemoteSessionRegistry';
 import { RemoteProtocol } from '../services/RemoteSessionState';
-import { RustDeskProPreflightState } from '../services/RustDeskProConnectionPreflightPolicy';
+import {
+  RustDeskProPreflightState,
+  rustDeskProPeerIdForConnection
+} from '../services/RustDeskProConnectionPreflightPolicy';
 import { motion } from '@kit.MultimodalAwarenessKit';
 import { HostDataSource } from '../datasources/DataSources';
 import { hashForLog, maskHost } from '../utils/SafeLogger';
@@ -2346,7 +2349,8 @@ struct HostListPage {
       host: direct ? host.rustdeskDirectHost.trim() : host.host,
       port: direct ? normalizeRustDeskPort(host.rustdeskDirectPort, RUSTDESK_PEER_TCP_PORT) : host.port,
       username: '', password: host.password, width: 1920, height: 1080,
-      customHostname: '', gatewayHost: '', gatewayPort: 0, domain: '', codec: '',
+      customHostname: rustDeskProPeerIdForConnection(host.rustdeskProPeerId, host.customHostname),
+      gatewayHost: '', gatewayPort: 0, domain: '', codec: '',
       multiMonitor: false, monitorCount: 1, colorDepth: 32,
       authMethod: 'password', privateKeyPem: '', privateKeyPassphrase: '',
       rdImageQuality: this.rustdeskImageQuality, rdDirectIp: direct,
