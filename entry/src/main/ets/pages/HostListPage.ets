@@ -6493,9 +6493,11 @@ struct HostListPage {
               .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
             }
           }, (host: RemoteHost): string => host.id)
-        }.width('100%').layoutWeight(1).padding({ left: 20, right: 20 })
+        }.width('100%')
+        .height(this.rustDeskHosts().length > 4 ? 420 : (this.rustDeskHosts().length * 112 + 12))
+        .padding({ left: 20, right: 20 }).margin({ bottom: 22 })
       }
-    }.width('100%').height('78%').backgroundColor(this.pal().bg)
+    }.width('100%').backgroundColor(this.pal().bg).constraintSize({ maxWidth: 620, maxHeight: 620 })
     .borderRadius(this.breakpoint === 'sm' ? { topLeft: 20, topRight: 20, bottomLeft: 0, bottomRight: 0 } : 20)
   }
 
