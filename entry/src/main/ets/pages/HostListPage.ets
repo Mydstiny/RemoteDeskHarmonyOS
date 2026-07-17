@@ -70,6 +70,7 @@ import {
 import {
   resolveRustDeskHostEndpoint,
   rustDeskAuthModeForConnection,
+  normalizeRustDeskPort,
   RUSTDESK_PEER_TCP_PORT,
   RustDeskHostEndpoint
 } from '../services/RustDeskHostConfigPolicy';
@@ -157,6 +158,10 @@ import {
 import { AboutSettingsSheet } from '../components/AboutSettingsSheet';
 import { FeedbackSettingsSheet } from '../components/FeedbackSettingsSheet';
 import { RdpCertificateInfo, SshHostKeyInfo, SshPrivateKeyInfo } from '../types/rdpnapi';
+import { SessionConfig } from '../types/rdpnapi';
+import { ActiveRemoteSessionRegistry, ActiveRemoteSessionRecord } from '../services/ActiveRemoteSessionRegistry';
+import { RemoteProtocol } from '../services/RemoteSessionState';
+import { RustDeskProPreflightState } from '../services/RustDeskProConnectionPreflightPolicy';
 import { motion } from '@kit.MultimodalAwarenessKit';
 import { HostDataSource } from '../datasources/DataSources';
 import { hashForLog, maskHost } from '../utils/SafeLogger';
@@ -266,6 +271,15 @@ struct HostListPage {
   @State rdpCertificateShowDetails: boolean = false;
   private rdpCertificatePendingRouteParams: Record<string, Object> | null = null;
   private rdpCertificateProbeGeneration: number = 0;
+  @State showRustDeskProPreflight: boolean = false;
+  @State rustDeskProPreflightState: number = RustDeskProPreflightState.IDLE;
+  @State rustDeskProPreflightHostId: string = '';
+  @State rustDeskProAuthMode: string = 'password';
+  @State rustDeskProPassword: string = '';
+  @State rustDeskProPasswordVisible: boolean = false;
+  @State rustDeskProRememberPassword: boolean = true;
+  @State rustDeskProPreflightError: string = '';
+  private rustDeskProPreflightGeneration: number = 0;
   @StorageLink('rustdeskImageQuality') rustdeskImageQuality: number = 1; // 0=fast, 1=balanced, 2=quality
   @StorageLink('rustdeskCodec') rustdeskCodec: number = 0; // 0=auto, 1=VP8, 2=VP9, 3=AV1, 4=H264, 5=H265
   @StorageLink('rustdeskDirectIp') rustdeskDirectIp: boolean = false;
@@ -1782,6 +1796,8 @@ struct HostListPage {
       this.openSshPreflight(host);
     } else if (host.protocol === 'rdp') {
       this.openRdpCertificatePreflight(host);
+    } else if (host.protocol === 'rustdesk' && host.sourceType === 'rustdesk_pro' && host.rustdeskProManaged) {
+      this.openRustDeskProPreflight(host);
     } else {
       const params: Record<string, Object> = {};
       params['hostId'] = host.id;
@@ -2296,6 +2312,118 @@ struct HostListPage {
     }
     this.refreshHostListView();
     promptAction.showToast({ message: host.locked ? '已锁定' : '已解锁', duration: 1500 });
+  }
+
+  private openRustDeskProPreflight(host: RemoteHost): void {
+    this.rustDeskProPreflightGeneration += 1;
+    this.rustDeskProPreflightHostId = host.id;
+    this.rustDeskProAuthMode = host.rustdeskDirectEnabled ? 'password' :
+      (host.rustdeskAuthMode === 'request_approval' ? 'request_approval' : 'password');
+    this.rustDeskProPassword = host.password;
+    this.rustDeskProPasswordVisible = false;
+    this.rustDeskProRememberPassword = true;
+    this.rustDeskProPreflightError = '';
+    this.rustDeskProPreflightState = RustDeskProPreflightState.IDLE;
+    this.openSheetSafely((): void => { this.showRustDeskProPreflight = true; });
+  }
+
+  private cancelRustDeskProPreflight(): void {
+    this.rustDeskProPreflightGeneration += 1;
+    if (this.rustDeskProPreflightState === RustDeskProPreflightState.CONNECTING) {
+      this.loader.disconnect();
+    }
+    this.rustDeskProPreflightState = RustDeskProPreflightState.IDLE;
+    this.showRustDeskProPreflight = false;
+    this.rustDeskProPreflightHostId = '';
+  }
+
+  private rustDeskProConfig(host: RemoteHost): SessionConfig {
+    const relay: RustDeskRelayConfig | undefined = this.srv.getAllRelays()
+      .find((item: RustDeskRelayConfig): boolean => item.id === host.rustdeskRelayId);
+    const direct: boolean = host.rustdeskDirectEnabled;
+    return {
+      protocol: 'rustdesk',
+      host: direct ? host.rustdeskDirectHost.trim() : host.host,
+      port: direct ? normalizeRustDeskPort(host.rustdeskDirectPort, RUSTDESK_PEER_TCP_PORT) : host.port,
+      username: '', password: host.password, width: 1920, height: 1080,
+      customHostname: '', gatewayHost: '', gatewayPort: 0, domain: '', codec: '',
+      multiMonitor: false, monitorCount: 1, colorDepth: 32,
+      authMethod: 'password', privateKeyPem: '', privateKeyPassphrase: '',
+      rdImageQuality: this.rustdeskImageQuality, rdDirectIp: direct,
+      rdDirectPort: direct ? normalizeRustDeskPort(host.rustdeskDirectPort, RUSTDESK_PEER_TCP_PORT) : host.port,
+      rdLanDiscovery: this.rustdeskLanDiscovery, rdPrivacyMode: this.rustdeskPrivacyMode,
+      rdAudioEnabled: this.rustdeskAudioEnabled, rdClipboardEnabled: this.rustdeskClipboardEnabled,
+      rdPasswordMode: host.rustdeskPasswordMode,
+      rdAuthMode: rustDeskAuthModeForConnection(direct, host.rustdeskAuthMode) === 'request_approval' ? 1 : 0,
+      rdRelayId: host.rustdeskRelayId, rdAccountId: host.rustdeskAccountId,
+      rdServerKey: relay ? relay.key : ''
+    };
+  }
+
+  private async confirmRustDeskProPreflight(): Promise<void> {
+    const stored: RemoteHost | undefined = this.srv.getHost(this.rustDeskProPreflightHostId);
+    if (!stored || this.rustDeskProPreflightState === RustDeskProPreflightState.CONNECTING) { return; }
+    if (this.rustDeskProAuthMode === 'password' && this.rustDeskProPassword.trim().length === 0) {
+      this.rustDeskProPreflightError = '请输入远程 RustDesk 设备密码。';
+      return;
+    }
+    if (this.rustDeskProAuthMode === 'request_approval' && stored.rustdeskDirectEnabled) {
+      this.rustDeskProPreflightError = '直连模式只能使用设备密码。';
+      return;
+    }
+    const generation: number = ++this.rustDeskProPreflightGeneration;
+    const host: RemoteHost = RemoteHost.fromJSON(stored.toJSON());
+    host.rustdeskAuthMode = this.rustDeskProAuthMode === 'request_approval' ? 'request_approval' : 'password';
+    if (host.rustdeskAuthMode === 'password') { host.password = this.rustDeskProPassword; }
+    this.rustDeskProPreflightError = '';
+    this.rustDeskProPreflightState = RustDeskProPreflightState.CONNECTING;
+    try {
+      if (!await this.loader.waitForPendingTeardown(5000)) {
+        throw new Error('上一连接尚未完全结束，请稍后重试。');
+      }
+      const sid: number = this.loader.connect(this.rustDeskProConfig(host));
+      if (sid <= 0) { throw new Error('无法启动 RustDesk 连接 [E-RUSTDESK-PREFLIGHT-' + Math.abs(sid).toString() + ']'); }
+      const timeoutMs: number = host.rustdeskAuthMode === 'request_approval' ? 100000 : 25000;
+      const startedAt: number = Date.now();
+      while (Date.now() - startedAt < timeoutMs) {
+        if (generation !== this.rustDeskProPreflightGeneration) { return; }
+        const state: number = this.loader.getConnectionState(sid);
+        if (state === 2) {
+          this.rustDeskProPreflightState = RustDeskProPreflightState.AUTHENTICATED;
+          const saved: RemoteHost = RemoteHost.fromJSON(stored.toJSON());
+          saved.rustdeskAuthMode = host.rustdeskAuthMode;
+          if (this.rustDeskProRememberPassword && host.rustdeskAuthMode === 'password') {
+            saved.password = host.password;
+          }
+          this.srv.updateHost(saved);
+          const now: number = Date.now();
+          const record: ActiveRemoteSessionRecord = {
+            sessionId: sid, hostId: host.id, protocol: RemoteProtocol.rustdesk,
+            hostAddress: host.host, protocolConnected: true, renderAttached: false,
+            restoreNeeded: true, latestSurfaceId: '', createdAtMs: now, updatedAtMs: now
+          };
+          ActiveRemoteSessionRegistry.getInstance().setActive(record);
+          this.showRustDeskProPreflight = false;
+          this.rustDeskProPreflightHostId = '';
+          const params: Record<string, Object> = {};
+          params['hostId'] = host.id;
+          params['rustdeskPreauthenticated'] = true;
+          setTimeout((): void => { router.pushUrl({ url: 'pages/RemoteDesktop', params: params }); }, 80);
+          return;
+        }
+        if (state === 4 || state === 0) {
+          const detail: string = this.loader.getRustDeskLastError() || this.loader.getConnectionLastMessage(sid);
+          throw new Error(detail || '远端鉴权失败，请检查密码后重试。');
+        }
+        await new Promise<void>((resolve: () => void): void => { setTimeout(resolve, 100); });
+      }
+      throw new Error(host.rustdeskAuthMode === 'request_approval' ? '等待远端批准超时，请重新发起。' : '鉴权超时，请检查网络或密码。');
+    } catch (err) {
+      if (generation !== this.rustDeskProPreflightGeneration) { return; }
+      this.loader.disconnect();
+      this.rustDeskProPreflightState = RustDeskProPreflightState.ERROR;
+      this.rustDeskProPreflightError = err instanceof Error ? err.message : JSON.stringify(err);
+    }
   }
 
   // 编辑主机 (锁定状态需先鉴权)
@@ -2913,6 +3041,23 @@ struct HostListPage {
         maskColor: 'rgba(0,0,0,0.4)',
         onWillDismiss: (action: DismissSheetAction): void => { this.handleRdpCertificateSheetDismiss(action); },
         onDisappear: (): void => { this.handleRdpCertificateSheetDisappear(); }
+      })
+
+      Column().width('100%').height('100%').hitTestBehavior(HitTestMode.None)
+      .bindSheet($$this.showRustDeskProPreflight, this.rustDeskProPreflightPanel(), {
+        height: SheetSize.FIT_CONTENT,
+        preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
+        dragBar: this.breakpoint === 'sm',
+        backgroundColor: Color.Transparent,
+        blurStyle: BlurStyle.NONE,
+        showClose: false,
+        maskColor: 'rgba(0,0,0,0.4)',
+        onWillDismiss: (action: DismissSheetAction): void => {
+          if (this.rustDeskProPreflightState !== RustDeskProPreflightState.CONNECTING) {
+            this.cancelRustDeskProPreflight();
+            action.dismiss();
+          }
+        }
       })
 
       Column().width('100%').height('100%').hitTestBehavior(HitTestMode.None)
@@ -6763,6 +6908,68 @@ struct HostListPage {
     this.sheetKeyPassphrase = '';
     this.sheetKeyPath = '';
     this.sheetKeyText = '';
+  }
+
+  @Builder rustDeskProPreflightPanel() {
+    Column({ space: 14 }) {
+      Row() {
+        Column({ space: 4 }) {
+          Text('连接鉴权').fontSize(20).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
+          Text('鉴权成功后才会进入远程画面').fontSize(13).fontColor(this.pal().text2)
+        }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+        Button('取消').fontSize(14).backgroundColor(Color.Transparent).fontColor(this.accentColor)
+          .enabled(this.rustDeskProPreflightState !== RustDeskProPreflightState.CONNECTING)
+          .onClick((): void => { this.cancelRustDeskProPreflight(); })
+      }.width('100%')
+
+      Row({ space: 8 }) {
+        Button('设备密码')
+          .backgroundColor(this.rustDeskProAuthMode === 'password' ? this.accentColor : this.pal().surface)
+          .fontColor(this.rustDeskProAuthMode === 'password' ? Color.White : this.pal().text)
+          .enabled(this.rustDeskProPreflightState !== RustDeskProPreflightState.CONNECTING)
+          .onClick((): void => { this.rustDeskProAuthMode = 'password'; this.rustDeskProPreflightError = ''; })
+        Button('请求远端批准')
+          .backgroundColor(this.rustDeskProAuthMode === 'request_approval' ? this.accentColor : this.pal().surface)
+          .fontColor(this.rustDeskProAuthMode === 'request_approval' ? Color.White : this.pal().text)
+          .enabled(this.rustDeskProPreflightState !== RustDeskProPreflightState.CONNECTING)
+          .onClick((): void => { this.rustDeskProAuthMode = 'request_approval'; this.rustDeskProPreflightError = ''; })
+      }.width('100%')
+
+      if (this.rustDeskProAuthMode === 'password') {
+        TextInput({ text: this.rustDeskProPassword, placeholder: '远程 RustDesk 设备密码' })
+          .type(this.rustDeskProPasswordVisible ? InputType.Normal : InputType.Password)
+          .showPasswordIcon(true)
+          .enabled(this.rustDeskProPreflightState !== RustDeskProPreflightState.CONNECTING)
+          .height(48).width('100%').backgroundColor(this.pal().surface).borderRadius(10)
+          .onChange((value: string): void => { this.rustDeskProPassword = value; this.rustDeskProPreflightError = ''; })
+        Row({ space: 8 }) {
+          Checkbox({ name: 'rememberRustDeskProPassword', group: 'rustDeskProAuth' })
+            .select(this.rustDeskProRememberPassword)
+            .onChange((value: boolean): void => { this.rustDeskProRememberPassword = value; })
+          Text('记住设备密码').fontSize(14).fontColor(this.pal().text2)
+        }.width('100%')
+      } else {
+        Text('连接请求会发送到远端设备，请在对方设备上点击批准。')
+          .fontSize(14).fontColor(this.pal().text2).width('100%')
+      }
+
+      if (this.rustDeskProPreflightError.length > 0) {
+        Text(this.rustDeskProPreflightError).fontSize(13).fontColor('#D92D20').width('100%')
+      }
+      if (this.rustDeskProPreflightState === RustDeskProPreflightState.CONNECTING) {
+        Row({ space: 10 }) {
+          LoadingProgress().width(20).height(20).color(this.accentColor)
+          Text(this.rustDeskProAuthMode === 'request_approval' ? '等待远端批准…' : '正在后台验证密码…')
+            .fontSize(14).fontColor(this.pal().text2)
+        }.width('100%')
+      }
+      Button(this.rustDeskProPreflightState === RustDeskProPreflightState.ERROR ? '重新连接' : '连接')
+        .width('100%').height(46).backgroundColor(this.accentColor).fontColor(Color.White)
+        .enabled(this.rustDeskProPreflightState !== RustDeskProPreflightState.CONNECTING)
+        .onClick((): void => { this.confirmRustDeskProPreflight(); })
+    }
+    .width('100%').padding({ left: 20, right: 20, top: 18, bottom: 24 })
+    .backgroundColor(this.pal().card)
   }
 
   private async pickSshKey(): Promise<void> {

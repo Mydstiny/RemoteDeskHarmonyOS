@@ -3205,6 +3205,42 @@ struct RemoteDesktop {
     try {
       const desktop: DesktopSize = this.desktopSize(this.pendingHost);
       const surfaceId: string = this.latestSurfaceId.length > 0 ? this.latestSurfaceId : this.xcId;
+      // Pro 主机从列表页完成真实鉴权后交接的是“无画布会话”。此时不能走
+      // reattach 路径，必须在远程页首次创建 renderer/decoder，再绑定到同一 session。
+      if (this.loader.getRendererHandle() <= 0 && this.pendingHost !== null &&
+        this.pendingHost.protocol === 'rustdesk') {
+        const renderer: number = this.loader.initRenderer(surfaceId, desktop.width, desktop.height);
+        if (renderer <= 0) {
+          throw new Error('预鉴权会话画布初始化失败 [E-RUSTDESK-PREFLIGHT-RENDERER]');
+        }
+        this.rendererHandle = renderer;
+        this.nativeHandles.markSurfaceAttached(renderer);
+        const codecPref: number = AppStorage.get<number>('rustdeskCodec') ?? 0;
+        let decoderCodec: number = 3;
+        if (codecPref === 1) { decoderCodec = 2; }
+        else if (codecPref === 2) { decoderCodec = 3; }
+        else if (codecPref === 3) { decoderCodec = 4; }
+        else if (codecPref === 4) { decoderCodec = 0; }
+        else if (codecPref === 5) { decoderCodec = 1; }
+        const decoder: number = this.loader.initDecoder(desktop.width, desktop.height, decoderCodec);
+        if (decoder > 0) {
+          this.decoderHandle = decoder;
+          this.loader.bindVideoPipeline(decoder, renderer);
+          this.loader.requestDecoderRecovery();
+        }
+        this.nativeHandles.attachConnectedSession(this.sessionId, RemoteProtocol.rustdesk);
+        this.connected = true;
+        this.connecting = false;
+        this.inputForwardReady = true;
+        this.activeSessionRegistry.markRenderAttached(surfaceId);
+        this.setRemoteKeepScreenOn(true);
+        this.setRemoteNavigationHidden(true, 'preauthenticated-session-handoff');
+        this.loader.requestFrameRefresh();
+        this.scheduleRestoreFrameRefreshPump();
+        AppStorage.setOrCreate<boolean>('remoteDesktopBgFlag', false);
+        hilog.info(RD_DOMAIN, RD_TAG, 'doBackgroundRestoreRender: preauthenticated session attached');
+        return;
+      }
       const result = this.loader.reattachRenderForForeground(
         surfaceId, desktop.width, desktop.height);
       if (result.ok && result.value !== undefined && result.value > 0) {
