@@ -22,6 +22,7 @@ import { RustDeskProSyncService } from '../services/RustDeskProSyncService';
 import { snapshotSelectedRelay } from '../services/RustDeskRelayHealthPolicy';
 import { Palette, buildDark, buildLight, AppTheme } from '../common/Theme';
 import { resolveFabAddStyle } from '../services/FabAddStylePolicy';
+import { ResourceFabPicker } from '../components/resourceadd/ResourceFabPicker';
 
 class TcpTestResult {
   ok: boolean = false;
@@ -1319,27 +1320,11 @@ export struct RustDeskRelayPage {
   }
 
   @Builder relayTypeChoiceSheet() {
-    Column() {
-      Text('添加 RustDesk 中继').fontSize(19).fontWeight(FontWeight.Bold)
-        .fontColor(this.pal().text).fontFamily(this.font()).width('100%').margin({ bottom: 6 })
-      Text('选择服务器类型，下一步填写对应配置').fontSize(12).fontColor(this.pal().text3)
-        .fontFamily(this.font()).width('100%').margin({ bottom: 14 })
-      this.relayTypeChoice('RustDesk OSS', '自建开源 ID 与 Relay 服务', 'oss')
-      this.relayTypeChoice('RustDesk Server Pro', '增加 API 登录与地址簿同步', 'pro')
-      this.relayTypeChoice('高级自定义', '显示全部服务器与端口字段', 'advanced')
-    }.width('100%').padding({ left: 24, right: 24, top: 24, bottom: 40 })
-      .borderRadius(this.breakpoint === 'sm' ? 0 : 20).backgroundColor(this.pal().bg)
-  }
-
-  @Builder relayTypeChoice(title: string, detail: string, kind: string) {
-    Row() {
-      Column() {
-        Text(title).fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font())
-        Text(detail).fontSize(11).fontColor(this.pal().text3).fontFamily(this.font()).margin({ top: 3 })
-      }.alignItems(HorizontalAlign.Start).layoutWeight(1)
-      SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(15).fontColor([this.pal().text3])
-    }.width('100%').padding(13).borderRadius(11).backgroundColor(this.pal().card).margin({ bottom: 8 })
-      .onClick((): void => { this.relayKind = kind; this.sheetContent = 1; })
+    ResourceFabPicker({
+      kind: 'relay',
+      onSelect: (option: string): void => { this.relayKind = option; this.sheetContent = 1; },
+      onClose: (): void => { this.showSheet = false; }
+    })
   }
 
   @Builder relaySavedSheet() {

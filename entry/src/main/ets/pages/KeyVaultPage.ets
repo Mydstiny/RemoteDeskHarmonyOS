@@ -28,6 +28,7 @@ import { showLockGate, lockGateErrorMessage } from '../components/LockGate';
 import { Palette, buildDark, buildLight, AppTheme } from '../common/Theme';
 import { SshKeyDataSource, TotpEntryDataSource } from '../datasources/DataSources';
 import { resolveFabAddStyle } from '../services/FabAddStylePolicy';
+import { ResourceFabPicker } from '../components/resourceadd/ResourceFabPicker';
 
 @Component
 export struct KeyVaultPage {
@@ -872,25 +873,18 @@ export struct KeyVaultPage {
   }
 
   @Builder addChoiceWrapper() {
-    Column() {
-      this.choiceItem2('导入已有私钥', $r('sys.symbol.doc_plaintext'), () => {
-        this.resetSshForm(); this.formMode = 0; this.showAddTab = 0; this.sheetMode = 0;
-      })
-      this.choiceItem2('生成新密钥', $r('sys.symbol.star_fill'), () => {
-        this.resetSshForm(); this.formMode = 1; this.showAddTab = 0; this.sheetMode = 0;
-      })
-      this.choiceItem2('生成并安装到主机', $r('sys.symbol.arrowshape_right_fill'), () => {
-        const tempKey: SshKey = new SshKey();
-        tempKey.id = SshKey.generateId();
-        tempKey.label = '';
-        tempKey.keyType = SshKeyType.ED25519;
-        this.sheetKey = tempKey;
-        this.sheetMode = 3;
-      })
-    }
-    .padding({ left: 24, right: 24, top: 24, bottom: 40 }).width('100%')
-    .borderRadius(this.breakpoint === 'sm' ? { topLeft: 20, topRight: 20, bottomLeft: 0, bottomRight: 0 } : 20)
-    .backgroundColor(this.pal().bg).backgroundBlurStyle(BlurStyle.Regular)
+    ResourceFabPicker({
+      kind: 'ssh_key',
+      onSelect: (option: string): void => {
+        this.resetSshForm(); this.showAddTab = 0; this.sheetMode = 0;
+        if (option === 'generate') { this.formMode = 1; }
+        else {
+          this.formMode = 0;
+          if (option === 'file') { void this.importSshKeyFile(); }
+        }
+      },
+      onClose: (): void => { this.showSheet = false; }
+    })
   }
 
   private parseOtpAuthInput(): void {
@@ -908,23 +902,15 @@ export struct KeyVaultPage {
   }
 
   @Builder totpChoiceWrapper() {
-    Column() {
-      Text('添加 2FA 验证器').fontSize(19).fontWeight(FontWeight.Bold)
-        .fontColor(this.pal().text).fontFamily(this.font()).width('100%').margin({ bottom: 14 })
-      this.choiceItem2('扫描二维码', $r('sys.symbol.camera_fill'), () => {
-        this.showSheet = false;
-        this.showQrScan = true;
-      })
-      this.choiceItem2('导入 otpauth 配置', $r('sys.symbol.doc_plaintext'), () => {
-        this.resetTotpForm(); this.showAddTab = 1; this.sheetMode = 0;
-      })
-      this.choiceItem2('手动输入', $r('sys.symbol.keyboard'), () => {
-        this.resetTotpForm(); this.showAddTab = 1; this.sheetMode = 0;
-      })
-    }
-    .padding({ left: 24, right: 24, top: 24, bottom: 40 }).width('100%')
-    .borderRadius(this.breakpoint === 'sm' ? { topLeft: 20, topRight: 20, bottomLeft: 0, bottomRight: 0 } : 20)
-    .backgroundColor(this.pal().bg).backgroundBlurStyle(BlurStyle.Regular)
+    ResourceFabPicker({
+      kind: 'totp',
+      onSelect: (option: string): void => {
+        this.resetTotpForm(); this.showAddTab = 1;
+        if (option === 'scan') { this.showSheet = false; this.showQrScan = true; }
+        else { this.sheetMode = 0; }
+      },
+      onClose: (): void => { this.showSheet = false; }
+    })
   }
 
   @Builder manageWrapper() {
@@ -985,21 +971,6 @@ export struct KeyVaultPage {
     .border(this.breakpoint === 'sm'
       ? { width: 0, color: Color.Transparent, style: BorderStyle.Solid }
       : { width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
-  }
-
-  @Builder choiceItem2(l: string, icon: Resource, cb: () => void) {
-    Row() {
-      SymbolGlyph(icon).fontSize(22).fontColor([this.accentColor])
-      Text(l).fontSize(14).fontWeight(FontWeight.Medium)
-        .fontColor(this.pal().text).fontFamily(this.font())
-        .layoutWeight(1).margin({ left: 12 })
-      SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(14).fontColor([this.pal().text3])
-    }
-    .width('100%').padding(12).borderRadius(10)
-    .backgroundColor(this.pal().card)
-    .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
-    .margin({ bottom: 8 })
-    .onClick(cb)
   }
 
   /** 沉浸顶栏 (参照设置页: 常驻透明overlay, 无模糊切换) */
