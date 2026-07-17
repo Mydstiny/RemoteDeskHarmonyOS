@@ -5,6 +5,9 @@ import { RustDeskProApiService } from './RustDeskProApiService';
 import { RustDeskProCredentialStore } from './RustDeskProCredentialStore';
 import { normalizeRustDeskProServerUrl, RustDeskProApiError } from './RustDeskProApiPolicy';
 import { RustDeskProReconcileResult } from './RustDeskProSyncPolicy';
+import { LegacyRustDeskAccountCloudAdapter } from './LegacyRustDeskAccountCloudAdapter';
+import { RustDeskAccount } from '../model/RustDeskAccount';
+import { RustDeskRelayConfig } from '../model/RustDeskRelayConfig';
 
 export interface RustDeskProLoginInput {
   id: string
@@ -34,7 +37,7 @@ export class RustDeskProSyncService {
     // EntryAbility starts this initialization too; HostSyncService safely
     // coalesces concurrent init calls. Pro sync must never race the first
     // CloudStore load and then lose imported hosts.
-    void this.hosts.init(context);
+    void this.hosts.init(context).then((): void => { this.importCloudAccountMetadata(); });
   }
 
   getAccounts(): RustDeskProAccountState[] {
@@ -43,6 +46,31 @@ export class RustDeskProSyncService {
 
   onDataChange(callback: () => void): () => void {
     return this.credentials.onDataChange(callback);
+  }
+
+  private importCloudAccountMetadata(): void {
+    const relays: RustDeskRelayConfig[] = this.hosts.getAllRelays();
+    for (let i = 0; i < relays.length; i++) {
+      const relay: RustDeskRelayConfig = relays[i];
+      for (let j = 0; j < relay.accounts.length; j++) {
+        const legacy: RustDeskAccount = relay.accounts[j];
+        if (!LegacyRustDeskAccountCloudAdapter.isProMetadata(legacy)) { continue; }
+        const local: RustDeskProAccountState | undefined = this.credentials.get(legacy.id);
+        if (local !== undefined && local.accessToken.length > 0) { continue; }
+        this.credentials.save(LegacyRustDeskAccountCloudAdapter.fromLegacy(legacy, relay.apiServer));
+      }
+    }
+  }
+
+  private persistCloudAccountMetadata(account: RustDeskProAccountState): void {
+    const relay: RustDeskRelayConfig | undefined = this.hosts.getAllRelays().find(
+      (item: RustDeskRelayConfig): boolean => item.id === account.relayId);
+    if (relay === undefined) { return; }
+    const next: RustDeskRelayConfig = RustDeskRelayConfig.fromJSON(relay.toJSON());
+    const metadata: RustDeskAccount = LegacyRustDeskAccountCloudAdapter.toLegacy(account);
+    const index: number = next.accounts.findIndex((item: RustDeskAccount): boolean => item.id === account.id);
+    if (index >= 0) { next.accounts[index] = metadata; } else { next.accounts.push(metadata); }
+    this.hosts.updateRelay(next);
   }
 
   private cloneAccount(account: RustDeskProAccountState): RustDeskProAccountState {
@@ -111,6 +139,7 @@ export class RustDeskProSyncService {
   async login(input: RustDeskProLoginInput): Promise<RustDeskProAccountState> {
     const account = await this.authenticate(input);
     this.credentials.save(account);
+    this.persistCloudAccountMetadata(account);
     return this.cloneAccount(account);
   }
 
@@ -120,6 +149,7 @@ export class RustDeskProSyncService {
     const account = await this.authenticate(input);
     const result = await this.syncAccount(account);
     this.credentials.save(account);
+    this.persistCloudAccountMetadata(account);
     return result;
   }
 

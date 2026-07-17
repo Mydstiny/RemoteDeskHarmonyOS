@@ -24,6 +24,7 @@ import guideContentRegistryTest from './GuideContentRegistry.test';
 import sshKeyImportServiceTest from './SshKeyImportService.test';
 import rustDeskLanDiscoveryServiceTest from './RustDeskLanDiscoveryService.test';
 import hostAddModePolicyTest from './HostAddModePolicy.test';
+import legacyRustDeskAccountCloudAdapterTest from './LegacyRustDeskAccountCloudAdapter.test';
 import hostAddDraftTest from './HostAddDraft.test';
 import rustDeskCardBadgePolicyTest from './RustDeskCardBadgePolicy.test';
 
@@ -54,6 +55,7 @@ export default function testsuite() {
   sshKeyImportServiceTest();
   rustDeskLanDiscoveryServiceTest();
   hostAddModePolicyTest();
+  legacyRustDeskAccountCloudAdapterTest();
   hostAddDraftTest();
   rustDeskCardBadgePolicyTest();
 }
