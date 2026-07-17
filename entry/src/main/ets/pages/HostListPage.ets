@@ -188,6 +188,7 @@ const ENV_COLOR_MODE_DARK = 1;
 const RDP_DRIVE_REDIRECTION_ENABLED = true;
 const SETTINGS_ACCORDION_ANIMATION_MS = 280;
 const POPUP_SHEET_RDP_CERTIFICATES = 4;
+const POPUP_SHEET_RUSTDESK_AUTH_TRUST = 5;
 
 @Entry
 @Component
@@ -1813,7 +1814,7 @@ struct HostListPage {
       this.openSshPreflight(host);
     } else if (host.protocol === 'rdp') {
       this.openRdpCertificatePreflight(host);
-    } else if (host.protocol === 'rustdesk' && host.sourceType === 'rustdesk_pro' && host.rustdeskProManaged) {
+    } else if (host.protocol === 'rustdesk') {
       this.openRustDeskProPreflight(host);
     } else {
       const params: Record<string, Object> = {};
@@ -2342,6 +2343,11 @@ struct HostListPage {
     this.rustDeskProPreflightError = '';
     this.rustDeskProPreflightState = RustDeskProPreflightState.IDLE;
     this.openSheetSafely((): void => { this.showRustDeskProPreflight = true; });
+  }
+
+  private isCurrentRustDeskPreflightDirect(): boolean {
+    const host: RemoteHost | undefined = this.srv.getHost(this.rustDeskProPreflightHostId);
+    return host !== undefined && host.rustdeskDirectEnabled;
   }
 
   private cancelRustDeskProPreflight(): void {
@@ -4628,6 +4634,14 @@ struct HostListPage {
                     this.popupSheetMode = POPUP_SHEET_RDP_CERTIFICATES;
                   });
                 })
+              this.cardDivider()
+              this.cardActionRow($r('app.media.icon_lock'), 'RustDesk 认证信任',
+                this.rustDeskHosts().length.toString() + ' 台主机',
+                (): void => {
+                  this.openSettingsLeafSheet(SETTINGS_SHEET_POPUP, (): void => {
+                    this.popupSheetMode = POPUP_SHEET_RUSTDESK_AUTH_TRUST;
+                  });
+                })
             }.borderRadius(24).backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
             .shadow({ radius: 16, color: 'rgba(0,0,0,0.04)', offsetY: 4 })
             .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
@@ -5099,6 +5113,8 @@ struct HostListPage {
       this.sshHostKeyManagerSheet()
     } else if (this.popupSheetMode === POPUP_SHEET_RDP_CERTIFICATES) {
       this.rdpCertificateManagerSheet()
+    } else if (this.popupSheetMode === POPUP_SHEET_RUSTDESK_AUTH_TRUST) {
+      this.rustDeskAuthTrustManagerSheet()
     } else if (this.popupSheetMode === 3) {
       this.cloudSyncSheet()
     } else {
@@ -6427,6 +6443,62 @@ struct HostListPage {
     }
   }
 
+  @Builder rustDeskAuthTrustManagerSheet() {
+    Column() {
+      Row() {
+        Column() {
+          Text('RustDesk 认证信任').fontSize(20).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
+          Text('管理各主机默认认证方式；密码内容不会在此显示').fontSize(11).fontColor(this.pal().text3)
+            .margin({ top: 3 })
+        }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+        Text('完成').fontSize(13).fontColor(this.accentColor).onClick((): void => { this.closeSettingsLeafSheet(); })
+      }.width('100%').padding({ left: 22, right: 22, top: 22 }).margin({ bottom: 14 })
+      if (this.rustDeskHosts().length === 0) {
+        Text('暂无 RustDesk 主机').fontSize(13).fontColor(this.pal().text3)
+          .width('100%').textAlign(TextAlign.Center).padding(32)
+      } else {
+        List({ space: 8 }) {
+          ForEach(this.rustDeskHosts(), (host: RemoteHost) => {
+            ListItem() {
+              Column() {
+                Row() {
+                  Column() {
+                    Text(host.label).fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
+                    Text((host.customHostname !== '' ? host.customHostname : host.host) + ' · ' +
+                      (host.rustdeskDirectEnabled ? '直连' : (host.rustdeskProManaged ? 'Pro 中继' : '中继')))
+                      .fontSize(11).fontColor(this.pal().text3).margin({ top: 2 })
+                  }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+                  Text(this.rustDeskAuthTrustLabel(host)).fontSize(11).fontColor(this.accentColor)
+                    .padding({ left: 8, right: 8, top: 4, bottom: 4 }).borderRadius(8)
+                    .backgroundColor(this.pal().surface)
+                }.width('100%')
+                Row() {
+                  if (!host.rustdeskDirectEnabled) {
+                    Button(host.rustdeskAuthMode === 'request_approval' ? '改用密码' : '改为请求批准')
+                      .height(32).layoutWeight(1).fontSize(11).borderRadius(8)
+                      .backgroundColor(this.pal().surface).fontColor(this.accentColor)
+                      .onClick((): void => { this.toggleRustDeskAuthTrust(host); })
+                  }
+                  if (host.password !== '') {
+                    Button('清除密码').height(32).layoutWeight(1).fontSize(11).borderRadius(8)
+                      .margin({ left: host.rustdeskDirectEnabled ? 0 : 6 })
+                      .backgroundColor(this.pal().surface).fontColor(this.pal().danger)
+                      .onClick((): void => { this.clearRustDeskSavedPassword(host); })
+                  }
+                  Button('每次询问').height(32).layoutWeight(1).fontSize(11).borderRadius(8).margin({ left: 6 })
+                    .backgroundColor(this.pal().surface).fontColor(this.pal().text2)
+                    .onClick((): void => { this.clearRustDeskAuthTrust(host); })
+                }.width('100%').margin({ top: 10 })
+              }.width('100%').padding(13).borderRadius(12).backgroundColor(this.pal().card)
+              .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
+            }
+          }, (host: RemoteHost): string => host.id)
+        }.width('100%').layoutWeight(1).padding({ left: 20, right: 20 })
+      }
+    }.width('100%').height('78%').backgroundColor(this.pal().bg)
+    .borderRadius(this.breakpoint === 'sm' ? { topLeft: 20, topRight: 20, bottomLeft: 0, bottomRight: 0 } : 20)
+  }
+
   @Builder sheetBuilder() {
     Column() {
       // 标题
@@ -7066,11 +7138,13 @@ struct HostListPage {
           .fontColor(this.rustDeskProAuthMode === 'password' ? Color.White : this.pal().text)
           .enabled(this.rustDeskProPreflightState !== RustDeskProPreflightState.CONNECTING)
           .onClick((): void => { this.rustDeskProAuthMode = 'password'; this.rustDeskProPreflightError = ''; })
-        Button('请求远端批准')
-          .backgroundColor(this.rustDeskProAuthMode === 'request_approval' ? this.accentColor : this.pal().surface)
-          .fontColor(this.rustDeskProAuthMode === 'request_approval' ? Color.White : this.pal().text)
-          .enabled(this.rustDeskProPreflightState !== RustDeskProPreflightState.CONNECTING)
-          .onClick((): void => { this.rustDeskProAuthMode = 'request_approval'; this.rustDeskProPreflightError = ''; })
+        if (!this.isCurrentRustDeskPreflightDirect()) {
+          Button('请求远端批准')
+            .backgroundColor(this.rustDeskProAuthMode === 'request_approval' ? this.accentColor : this.pal().surface)
+            .fontColor(this.rustDeskProAuthMode === 'request_approval' ? Color.White : this.pal().text)
+            .enabled(this.rustDeskProPreflightState !== RustDeskProPreflightState.CONNECTING)
+            .onClick((): void => { this.rustDeskProAuthMode = 'request_approval'; this.rustDeskProPreflightError = ''; })
+        }
       }.width('100%')
 
       if (this.rustDeskProAuthMode === 'password') {
@@ -7635,6 +7709,43 @@ struct HostListPage {
       return h.protocol === 'ssh' &&
         (h.sshHostKeyTrustMode === 1 || h.sshHostKeyFingerprintSha256 !== '' || h.sshHostKeyRawBase64 !== '');
     });
+  }
+
+  private rustDeskHosts(): RemoteHost[] {
+    return this.hosts.filter((host: RemoteHost): boolean => host.protocol === 'rustdesk');
+  }
+
+  private rustDeskAuthTrustLabel(host: RemoteHost): string {
+    if (host.rustdeskAuthMode === 'request_approval' && !host.rustdeskDirectEnabled) { return '请求远端批准'; }
+    if (host.password !== '') {
+      return host.rustdeskPasswordMode === 1 ? '永久密码 · 已保存' : '一次性密码 · 已保存';
+    }
+    return '每次询问';
+  }
+
+  private toggleRustDeskAuthTrust(host: RemoteHost): void {
+    const updated: RemoteHost = RemoteHost.fromJSON(host.toJSON());
+    updated.rustdeskAuthMode = host.rustdeskAuthMode === 'request_approval' ? 'password' : 'request_approval';
+    if (this.srv.updateHost(updated)) { this.refreshHostListView(); }
+  }
+
+  private clearRustDeskSavedPassword(host: RemoteHost): void {
+    const updated: RemoteHost = RemoteHost.fromJSON(host.toJSON());
+    updated.password = '';
+    if (this.srv.updateHost(updated)) {
+      this.refreshHostListView();
+      promptAction.showToast({ message: '已清除保存的 RustDesk 密码', duration: 1500 });
+    }
+  }
+
+  private clearRustDeskAuthTrust(host: RemoteHost): void {
+    const updated: RemoteHost = RemoteHost.fromJSON(host.toJSON());
+    updated.rustdeskAuthMode = 'password';
+    updated.password = '';
+    if (this.srv.updateHost(updated)) {
+      this.refreshHostListView();
+      promptAction.showToast({ message: '下次连接将重新询问认证方式', duration: 1500 });
+    }
   }
 
   private refreshSshTrustedHostsView(): void {
