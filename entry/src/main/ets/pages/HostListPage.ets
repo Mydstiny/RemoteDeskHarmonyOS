@@ -35,6 +35,7 @@ import { ColorPickerSheet } from '../components/ColorPickerSheet';
 import { HostAddWizardSheet } from '../components/hostadd/HostAddWizardSheet';
 import { RdpAddFlow } from '../components/hostadd/RdpAddFlow';
 import { RustDeskAddFlow } from '../components/hostadd/RustDeskAddFlow';
+import { SshAddFlow } from '../components/hostadd/SshAddFlow';
 // Passphrase uses bindSheet (HostListPage is @Entry, no bindSheet limit)
 import { KeyVaultPage } from './KeyVaultPage';
 import { SshPreflightState } from '../components/SshPreflightSheet';
@@ -6408,6 +6409,19 @@ struct HostListPage {
           if (connectNow) { setTimeout((): void => { this.handleHostCardClick(host); }, 260); }
         }
       })
+    } else if (this.modernAddProtocol === 'ssh') {
+      SshAddFlow({
+        keys: this.keyVault.getAllSshKeys(),
+        onBackToProtocols: (): void => { this.modernAddProtocol = ''; this.addSheetShowsModernPicker = true; },
+        onImportKey: (): Promise<SshKey | null> => { return this.importSshKeyToVault(); },
+        onSave: (host: RemoteHost, connectNow: boolean): void => {
+          if (!this.srv.addHost(host)) {
+            promptAction.showToast({ message: '保存主机失败，请稍后重试', duration: 1800 }); return;
+          }
+          this.showAddSheet = false; this.refreshHostListView();
+          if (connectNow) { setTimeout((): void => { this.handleHostCardClick(host); }, 260); }
+        }
+      })
     } else {
       this.sheetBuilder()
     }
@@ -7096,12 +7110,12 @@ struct HostListPage {
     .backgroundColor(this.pal().card)
   }
 
-  private async pickSshKey(): Promise<void> {
+  private async importSshKeyToVault(): Promise<SshKey | null> {
     const result: SshKeyImportResult | null = await this.sshKeyImporter.pickAndInspect();
-    if (result === null) { return; }
+    if (result === null) { return null; }
     if (!result.ok || result.key === null) {
       promptAction.showToast({ message: result.error || '私钥文件不可用', duration: 2500 });
-      return;
+      return null;
     }
 
     let key: SshKey = result.key;
@@ -7112,17 +7126,24 @@ struct HostListPage {
     }
     if (key.id === result.key.id && !this.keyVault.addSshKey(key)) {
       promptAction.showToast({ message: '私钥保存到密钥保险库失败', duration: 2500 });
-      return;
+      return null;
     }
 
+    promptAction.showToast({ message: '私钥已保存到密钥保险库', duration: 1800 });
+    return key;
+  }
+
+  private async pickSshKey(): Promise<void> {
+    const key: SshKey | null = await this.importSshKeyToVault();
+    if (key === null) { return; }
+
     this.sheetUseKey = true;
-    this.sheetKeyPath = result.fileName;
+    this.sheetKeyPath = '';
     this.sheetKeyText = key.privateKey;
     this.sheetKeyId = key.id;
     this.sheetKeyPassphrase = '';
     this.sheetKeyMode = 0;
     this.sheetErr = '';
-    promptAction.showToast({ message: '私钥已保存到密钥保险库', duration: 1800 });
   }
 
   @Builder keyVaultContent() {
