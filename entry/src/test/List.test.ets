@@ -37,6 +37,7 @@ import feedbackCommunityPolicyTest from './FeedbackCommunityPolicy.test';
 import guideContentRegistryTest from './GuideContentRegistry.test';
 import releaseNotesRegistryTest from './ReleaseNotesRegistry.test';
 import sshKeyImportServiceTest from './SshKeyImportService.test';
+import totpImportServiceTest from './TotpImportService.test';
 import rustDeskLanDiscoveryServiceTest from './RustDeskLanDiscoveryService.test';
 import rustDeskRelaySyncPolicyTest from './RustDeskRelaySyncPolicy.test';
 import hostSyncMergePolicyTest from './HostSyncMergePolicy.test';
@@ -82,6 +83,7 @@ export default function testsuite() {
   guideContentRegistryTest();
   releaseNotesRegistryTest();
   sshKeyImportServiceTest();
+  totpImportServiceTest();
   rustDeskLanDiscoveryServiceTest();
   rustDeskRelaySyncPolicyTest();
   hostSyncMergePolicyTest();

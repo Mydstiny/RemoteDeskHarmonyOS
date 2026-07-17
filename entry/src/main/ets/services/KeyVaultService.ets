@@ -7,6 +7,11 @@ import { SshKey } from '../model/SshKey';
 import { TotpEntry } from '../model/TotpEntry';
 import { CloudStore } from './CloudStore';
 
+export interface TotpBatchAddResult {
+  savedIds: string[]
+  failedCount: number
+}
+
 export class KeyVaultService {
   private static instance: KeyVaultService;
   private sshKeys: Map<string, SshKey> = new Map();
@@ -255,6 +260,25 @@ export class KeyVaultService {
     if (this.ready) { this.cloud.pushTable('totpentries'); hilog.info(0x0001, 'CloudSync', "TOTP已写入: " + entry.issuer); }
     this.emitDataChange();
     return true;
+  }
+
+  /** Batch import with one observer notification and one cloud upload trigger. */
+  addTotpEntries(entries: TotpEntry[]): TotpBatchAddResult {
+    const savedIds: string[] = [];
+    let failedCount = 0;
+    for (let i = 0; i < entries.length; i++) {
+      const entry = entries[i];
+      if (!entry.id) { entry.id = TotpEntry.generateId(); }
+      entry.createdAt = Date.now();
+      if (this.ready && !this.cloud.insertTotpEntry(entry)) { failedCount++; continue; }
+      this.totpEntries.set(entry.id, entry);
+      this.localTotpObservationAt.set(entry.id, Date.now());
+      this.deletedTotpAt.delete(entry.id);
+      savedIds.push(entry.id);
+    }
+    if (savedIds.length > 0 && this.ready) { this.cloud.pushTable('totpentries'); }
+    if (savedIds.length > 0) { this.emitDataChange(); }
+    return { savedIds, failedCount };
   }
 
   updateTotpEntry(entry: TotpEntry): boolean {

@@ -29,6 +29,7 @@ import { Palette, buildDark, buildLight, AppTheme } from '../common/Theme';
 import { SshKeyDataSource, TotpEntryDataSource } from '../datasources/DataSources';
 import { resolveFabAddStyle } from '../services/FabAddStylePolicy';
 import { ResourceFabPicker } from '../components/resourceadd/ResourceFabPicker';
+import { ModernKeyVaultAddFlow } from '../components/resourceadd/modern/ModernKeyVaultAddFlow';
 
 @Component
 export struct KeyVaultPage {
@@ -47,7 +48,8 @@ export struct KeyVaultPage {
   @State selectionMode: boolean = false;
   // 统一 Sheet: 单 bindSheet + mode 切换内容 (KeyVaultPage 非 @Entry, 限 1 个 bindSheet)
   @State showSheet: boolean = false;
-  @State sheetMode: number = 0; // 0=form, 1=SSH choice, 2=manage, 3=install, 4=passphrase, 5=2FA choice
+  @State sheetMode: number = 0; // 0=classic form, 1/5=legacy choice, 2-4=manage, 6=isolated modern add flow
+  @State modernResourceKind: string = 'ssh_key';
   @State sheetKey: SshKey = new SshKey();
   @State selectedIds: Set<string> = new Set();
   @State editingSshKey: SshKey = new SshKey();
@@ -128,12 +130,14 @@ export struct KeyVaultPage {
       if (this.keyVaultInnerTab === 1) {
         this.resetTotpForm();
         this.showAddTab = 1;
-        this.sheetMode = modern ? 5 : 0;
+        this.modernResourceKind = 'totp';
+        this.sheetMode = modern ? 6 : 0;
         this.showSheet = true;
       } else {
         this.resetSshForm();
         this.showAddTab = 0;
-        this.sheetMode = modern ? 1 : 0;
+        this.modernResourceKind = 'ssh_key';
+        this.sheetMode = modern ? 6 : 0;
         this.showSheet = true;
       }
     }
@@ -825,7 +829,7 @@ export struct KeyVaultPage {
     .bindSheet($$this.showSheet, this.unifiedSheet(), {
       height: SheetSize.FIT_CONTENT,
       preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
-      dragBar: this.sheetMode !== 1 && this.sheetMode !== 5,
+      dragBar: this.sheetMode !== 1 && this.sheetMode !== 5 && this.sheetMode !== 6,
       backgroundColor: Color.Transparent, blurStyle: BlurStyle.NONE, showClose: false,
       onDisappear: () => {
         if (this.sheetMode === 0) { this.resetSshForm(); this.resetTotpForm(); }
@@ -848,6 +852,12 @@ export struct KeyVaultPage {
       this.passphraseWrapper()
     } else if (this.sheetMode === 5) {
       this.totpChoiceWrapper()
+    } else if (this.sheetMode === 6) {
+      ModernKeyVaultAddFlow({
+        resourceKind: this.modernResourceKind,
+        onClose: (): void => { this.showSheet = false; },
+        onSaved: (_resourceId: string): void => { this.load(); }
+      })
     }
   }
 

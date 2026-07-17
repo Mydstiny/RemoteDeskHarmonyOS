@@ -1,6 +1,8 @@
 import { Palette, buildDark, buildLight } from '../../common/Theme';
 import { RemoteHost } from '../../model/RemoteHost';
 import { SshKey } from '../../model/SshKey';
+import { KeyVaultService } from '../../services/KeyVaultService';
+import { ModernKeyVaultAddFlow } from '../resourceadd/modern/ModernKeyVaultAddFlow';
 
 @Component
 export struct SshAddFlow {
@@ -8,7 +10,6 @@ export struct SshAddFlow {
   @StorageProp('accentColor') accentColor: string = '#007DFF';
   @Prop keys: SshKey[] = [];
   onBackToProtocols: () => void = (): void => {};
-  onImportKey: () => Promise<SshKey | null> = (): Promise<SshKey | null> => Promise.resolve(null);
   onSave: (host: RemoteHost, connectNow: boolean) => void =
     (_host: RemoteHost, _connectNow: boolean): void => {};
   @State step: number = 1;
@@ -20,8 +21,11 @@ export struct SshAddFlow {
   @State password: string = '';
   @State keyId: string = '';
   @State passphrase: string = '';
-  @State importing: boolean = false;
+  @State addingKey: boolean = false;
+  @State newlyAddedKeys: SshKey[] = [];
   @State errorText: string = '';
+
+  private keyVault = KeyVaultService.getInstance();
 
   private pal(): Palette { return this.theme === 'light' ? buildLight(this.accentColor) : buildDark(this.accentColor); }
   private buildHost(): RemoteHost | null {
@@ -41,13 +45,21 @@ export struct SshAddFlow {
     return host;
   }
 
-  private importKey(): void {
-    if (this.importing) { return; }
-    this.importing = true;
-    this.onImportKey().then((key: SshKey | null): void => {
-      this.importing = false;
-      if (key !== null) { this.useKey = true; this.keyId = key.id; this.passphrase = ''; this.errorText = ''; }
-    }).catch((): void => { this.importing = false; this.errorText = '私钥导入失败'; });
+  private availableKeys(): SshKey[] {
+    const result: SshKey[] = this.keys.slice();
+    for (let i = 0; i < this.newlyAddedKeys.length; i++) {
+      const key = this.newlyAddedKeys[i];
+      if (result.find((item: SshKey): boolean => item.id === key.id) === undefined) { result.push(key); }
+    }
+    return result;
+  }
+
+  private onKeySaved(id: string): void {
+    const key = this.keyVault.getAllSshKeys().find((item: SshKey): boolean => item.id === id);
+    if (key !== undefined && this.newlyAddedKeys.find((item: SshKey): boolean => item.id === id) === undefined) {
+      this.newlyAddedKeys = this.newlyAddedKeys.concat([key]);
+    }
+    this.useKey = true; this.keyId = id; this.passphrase = ''; this.errorText = ''; this.addingKey = false;
   }
 
   @Builder private field(title: string, value: string, hint: string, change: (value: string) => void,
@@ -74,7 +86,14 @@ export struct SshAddFlow {
   }
 
   build() {
-    Column() {
+    if (this.addingKey) {
+      ModernKeyVaultAddFlow({
+        resourceKind: 'ssh_key',
+        onClose: (): void => { this.addingKey = false; },
+        onSaved: (id: string): void => { this.onKeySaved(id); }
+      })
+    } else {
+      Column() {
       this.header()
       if (this.step === 1) {
         this.field('名称', this.label, '例如：生产服务器', (v: string): void => { this.label = v; })
@@ -96,17 +115,18 @@ export struct SshAddFlow {
           Button('密钥登录').layoutWeight(1).height(38).borderRadius(10).margin({ left: 8 })
             .backgroundColor(this.useKey ? this.accentColor : this.pal().surface)
             .fontColor(this.useKey ? Color.White : this.pal().text2).onClick((): void => {
-              this.useKey = true; if (this.keyId === '' && this.keys.length > 0) { this.keyId = this.keys[0].id; }
+              const keys = this.availableKeys();
+              this.useKey = true; if (this.keyId === '' && keys.length > 0) { this.keyId = keys[0].id; }
             })
         }.width('100%').margin({ bottom: 14 })
         if (!this.useKey) {
           this.field('密码', this.password, 'SSH 登录密码', (v: string): void => { this.password = v; }, true)
         } else {
-          if (this.keys.length === 0) {
-            Text('密钥保险库为空，请从文件导入私钥。').fontSize(12).fontColor(this.pal().text3)
+          if (this.availableKeys().length === 0) {
+            Text('密钥保险库为空，请添加或导入 SSH 私钥。').fontSize(12).fontColor(this.pal().text3)
               .width('100%').textAlign(TextAlign.Center).padding(14)
           } else {
-            ForEach(this.keys, (key: SshKey) => {
+            ForEach(this.availableKeys(), (key: SshKey) => {
               Row() {
                 Column() {
                   Text(key.label !== '' ? key.label : SshKey.typeLabel(key.keyType)).fontSize(14).fontColor(this.pal().text)
@@ -118,9 +138,9 @@ export struct SshAddFlow {
               .onClick((): void => { this.keyId = key.id; })
             }, (key: SshKey): string => key.id)
           }
-          Button(this.importing ? '正在导入…' : '从文件导入到密钥保险库').width('100%').height(38).borderRadius(10)
-            .backgroundColor(this.pal().surface).fontColor(this.accentColor).enabled(!this.importing)
-            .onClick((): void => { this.importKey(); }).margin({ bottom: 12 })
+          Button('添加到 SSH 密钥保险库').width('100%').height(38).borderRadius(10)
+            .backgroundColor(this.pal().surface).fontColor(this.accentColor)
+            .onClick((): void => { this.addingKey = true; }).margin({ bottom: 12 })
           this.field('私钥密码（如有）', this.passphrase, '加密私钥的 passphrase',
             (v: string): void => { this.passphrase = v; }, true)
         }
@@ -133,6 +153,7 @@ export struct SshAddFlow {
         }.width('100%')
       }
       if (this.errorText !== '') { Text(this.errorText).fontSize(12).fontColor(this.pal().danger).margin({ top: 10 }) }
-    }.width('100%').padding({ left: 20, right: 20, top: 20, bottom: 22 }).backgroundColor(this.pal().card)
+      }.width('100%').padding({ left: 20, right: 20, top: 20, bottom: 22 }).backgroundColor(this.pal().card)
+    }
   }
 }

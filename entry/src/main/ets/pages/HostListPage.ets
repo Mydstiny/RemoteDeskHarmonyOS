@@ -6442,7 +6442,6 @@ struct HostListPage {
       SshAddFlow({
         keys: this.keyVault.getAllSshKeys(),
         onBackToProtocols: (): void => { this.modernAddProtocol = ''; this.addSheetShowsModernPicker = true; },
-        onImportKey: (): Promise<SshKey | null> => { return this.importSshKeyToVault(); },
         onSave: (host: RemoteHost, connectNow: boolean): void => {
           if (!this.srv.addHost(host)) {
             promptAction.showToast({ message: '保存主机失败，请稍后重试', duration: 1800 }); return;

@@ -25,6 +25,7 @@ import { Palette, buildDark, buildLight, AppTheme } from '../common/Theme';
 import { resolveFabAddStyle } from '../services/FabAddStylePolicy';
 import { ResourceFabPicker } from '../components/resourceadd/ResourceFabPicker';
 import { VncRelayConfigService } from '../services/VncRelayConfigService';
+import { ModernRelayAddFlow } from '../components/resourceadd/modern/ModernRelayAddFlow';
 
 class TcpTestResult {
   ok: boolean = false;
@@ -45,7 +46,7 @@ export struct RustDeskRelayPage {
   @State vncRelays: VncRelayConfig[] = [];
   @State expandedRelayIds: string[] = [];
   @State showSheet: boolean = false;
-  @State sheetContent: number = 1;  // 1=RustDesk form, 3=Pro, 4=saved, 5=protocol, 6=RustDesk type, 7=VNC form
+  @State sheetContent: number = 1;  // 1/3/4/7=legacy/edit surfaces, 8=isolated modern add flow
   @State savedRelayId: string = '';
   @State relayKind: string = 'oss';
   @State editingRelayId: string = '';
@@ -251,7 +252,7 @@ export struct RustDeskRelayPage {
     this.resetRelayForm();
     this.resetVncRelayForm();
     this.relayKind = 'oss';
-    this.sheetContent = resolveFabAddStyle(this.fabAddStyle, this.isDesktopDevice) === 'modern' ? 5 : 1;
+    this.sheetContent = resolveFabAddStyle(this.fabAddStyle, this.isDesktopDevice) === 'modern' ? 8 : 1;
     this.showSheet = true;
   }
 
@@ -1566,6 +1567,11 @@ export struct RustDeskRelayPage {
       this.relayTypeChoiceSheet()
     } else if (this.sheetContent === 7) {
       this.vncRelayEditSheet()
+    } else if (this.sheetContent === 8) {
+      ModernRelayAddFlow({
+        onClose: (): void => { this.showSheet = false; },
+        onSaved: (_resourceId: string): void => { this.load(); this.loadVncRelays(); }
+      })
     }
   }
 
