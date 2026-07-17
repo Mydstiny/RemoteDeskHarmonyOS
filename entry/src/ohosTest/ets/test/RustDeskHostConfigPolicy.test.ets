@@ -5,7 +5,9 @@ import { describe, it, expect } from '@ohos/hypium';
 import { RustDeskRelayConfig } from '../../../main/ets/model/RustDeskRelayConfig';
 import {
   resolveRustDeskHostEndpoint,
-  rustDeskAuthModeForConnection
+  rustDeskAuthModeForConnection,
+  rustDeskCardEndpoint,
+  shouldAdoptRustDeskDirectPort
 } from '../../../main/ets/services/RustDeskHostConfigPolicy';
 
 function makeRelay(): RustDeskRelayConfig {
@@ -47,6 +49,17 @@ export default function rustDeskHostConfigPolicyTest(): void {
 
     it('relay_mode_should_keep_approval_auth', 0, (): void => {
       expect(rustDeskAuthModeForConnection(false, 'request_approval')).assertEqual('request_approval');
+    });
+
+    it('direct_card_should_show_direct_endpoint', 0, (): void => {
+      const endpoint = rustDeskCardEndpoint(true, '192.168.1.20', 21117, 'relay.example.com', 21116);
+      expect(endpoint).assertEqual('192.168.1.20:21117');
+    });
+
+    it('default_port_change_should_only_update_hosts_following_old_default', 0, (): void => {
+      expect(shouldAdoptRustDeskDirectPort(true, 21118, 21118)).assertTrue();
+      expect(shouldAdoptRustDeskDirectPort(true, 22000, 21118)).assertFalse();
+      expect(shouldAdoptRustDeskDirectPort(false, 21118, 21118)).assertFalse();
     });
   });
 }

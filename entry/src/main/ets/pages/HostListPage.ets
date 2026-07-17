@@ -69,6 +69,8 @@ import {
 } from '../services/HostWorkspacePolicy';
 import {
   resolveRustDeskHostEndpoint,
+  rustDeskCardEndpoint,
+  shouldAdoptRustDeskDirectPort,
   rustDeskAuthModeForConnection,
   normalizeRustDeskPort,
   RUSTDESK_PEER_TCP_PORT,
@@ -2687,8 +2689,21 @@ struct HostListPage {
   }
 
   private saveRustDeskDirectPort(port: number): void {
+    const previousPort: number = this.rustdeskDirectPort;
     this.rustdeskDirectPort = port > 0 ? port : 21118;
     this.persistRustDeskNumberPref('rustdeskDirectPort', this.rustdeskDirectPort);
+    if (this.rustdeskDirectPort === previousPort) { return; }
+    const hosts: RemoteHost[] = this.srv.getAllHosts();
+    for (let i: number = 0; i < hosts.length; i++) {
+      const host: RemoteHost = hosts[i];
+      if (!shouldAdoptRustDeskDirectPort(host.rustdeskDirectEnabled,
+        host.rustdeskDirectPort, previousPort)) { continue; }
+      const next: RemoteHost = RemoteHost.fromJSON(host.toJSON());
+      next.rustdeskDirectPort = this.rustdeskDirectPort;
+      next.port = this.rustdeskDirectPort;
+      this.srv.updateHost(next);
+    }
+    this.refreshHostListView();
   }
 
   private saveRustDeskLanDiscovery(on: boolean): void {
@@ -3567,7 +3582,10 @@ struct HostListPage {
                     }
                   }
                   if (!host.locked) {
-                    Text(this.hostPlatformText(host) + '  ·  ' + host.host + ':' + host.port)
+                    Text(this.hostPlatformText(host) + '  ·  ' +
+                      (host.protocol === 'rustdesk' ? rustDeskCardEndpoint(host.rustdeskDirectEnabled,
+                        host.rustdeskDirectHost, host.rustdeskDirectPort, host.host, host.port) :
+                        host.host + ':' + host.port))
                       .fontSize(this.breakpoint === 'sm' ? 12 : 14)
                       .fontColor(this.pal().text2).margin({ top: this.breakpoint === 'sm' ? 3 : 4 })
                       .fontFamily(this.font())

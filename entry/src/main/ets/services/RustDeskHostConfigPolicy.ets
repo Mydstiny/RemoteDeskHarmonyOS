@@ -26,6 +26,19 @@ export function normalizeRustDeskPort(port: number, fallback: number = RUSTDESK_
   return port > 0 && port <= 65535 ? port : fallback;
 }
 
+export function rustDeskCardEndpoint(directEnabled: boolean, directHost: string, directPort: number,
+  host: string, port: number): string {
+  const displayHost: string = directEnabled ? directHost.trim() : host.trim();
+  const displayPort: number = directEnabled ?
+    normalizeRustDeskPort(directPort, RUSTDESK_PEER_TCP_PORT) : port;
+  return displayHost + ':' + displayPort;
+}
+
+export function shouldAdoptRustDeskDirectPort(directEnabled: boolean, hostDirectPort: number,
+  previousDefaultPort: number): boolean {
+  return directEnabled && hostDirectPort === previousDefaultPort;
+}
+
 export function resolveRustDeskHostEndpoint(relay: RustDeskRelayConfig | null, fallbackHost: string,
   directEnabled: boolean, directHost: string, directPort: number): RustDeskHostEndpoint {
   if (directEnabled) {
