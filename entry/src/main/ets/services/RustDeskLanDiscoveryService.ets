@@ -2,7 +2,8 @@
  * RustDeskLanDiscoveryService — 局域网 RustDesk 设备发现
  *
  * 使用 RustDesk 官方 PeerDiscovery protobuf，通过 UDP 广播到 255.255.255.255:21119
- * 发现局域网内的 RustDesk 设备。发现响应的直连 TCP 端口为 21118。
+ * 发现局域网内的 RustDesk 设备。PeerDiscovery 不携带连接端口，
+ * RustDesk 桌面端直连使用默认 TCP 端口 21117。
  * 手动触发扫描，独立服务，不嵌入 streaming 主链路。
  */
 import { socket } from '@kit.NetworkKit';
@@ -12,15 +13,15 @@ import { hilog } from '@kit.PerformanceAnalysisKit';
 
 const TAG = 'RustDeskLanDisc';
 const RD_DISCOVERY_PORT: number = 21119;
-const RD_DIRECT_PORT: number = 21118;
-const SCAN_TIMEOUT_MS = 15000;
+const RD_DIRECT_PORT: number = 21117;
+const SCAN_TIMEOUT_MS = 5000;
 
 /** 发现的局域网设备 */
 export interface DiscoveredRustDeskPeer {
   peerId: string;     // RustDesk 远程 ID
   deviceName: string; // 设备名称
   host: string;       // 局域网 IP 地址
-  port: number;       // 直连端口 (RustDesk peer TCP, 默认 21118)
+  port: number;       // 直连端口 (RustDesk peer TCP, 默认 21117)
   version: string;    // RustDesk 版本 (如能解析)
 }
 
@@ -193,10 +194,12 @@ export class RustDeskLanDiscoveryService {
 
   /**
    * 启动局域网扫描
-   * @param timeoutMs 超时时间 (默认 15s)
+   * @param timeoutMs 超时时间 (默认 5s)
    * @returns 发现的设备列表
    */
-  startScan(timeoutMs: number = SCAN_TIMEOUT_MS): Promise<DiscoveredRustDeskPeer[]> {
+  startScan(timeoutMs: number = SCAN_TIMEOUT_MS,
+    onPeer: (peer: DiscoveredRustDeskPeer) => void = (_peer: DiscoveredRustDeskPeer): void => {}):
+    Promise<DiscoveredRustDeskPeer[]> {
     return new Promise<DiscoveredRustDeskPeer[]>((resolve) => {
       if (this.scanning) {
         resolve([]);
@@ -237,6 +240,7 @@ export class RustDeskLanDiscoveryService {
               if (peer && !seenPeers.has(peer.peerId)) {
                 seenPeers.add(peer.peerId);
                 discovered.push(peer);
+                onPeer(peer);
                 hilog.info(0x0001, TAG,
                   `discovered: ${peer.peerId} @ ${peer.host}:${peer.port} [${peer.deviceName}]`);
               }

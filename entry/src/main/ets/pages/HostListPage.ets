@@ -2739,7 +2739,9 @@ struct HostListPage {
     }
     this.lanScanResults = [];
     this.lanScanning = true;
-    this.lanDiscovery.startScan(15000).then((peers: DiscoveredRustDeskPeer[]) => {
+    this.lanDiscovery.startScan(5000, (peer: DiscoveredRustDeskPeer): void => {
+      this.lanScanResults = this.lanScanResults.concat([peer]);
+    }).then((peers: DiscoveredRustDeskPeer[]) => {
       this.lanScanResults = peers;
       this.lanScanning = false;
     });

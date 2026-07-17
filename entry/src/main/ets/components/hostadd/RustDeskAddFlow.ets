@@ -19,6 +19,7 @@ export struct RustDeskAddFlow {
   @State step: number = 1;
   @State direct: boolean = false;
   @State useLan: boolean = false;
+  @State selectedLanPeerId: string = '';
   @State label: string = '';
   @State controlId: string = '';
   @State directHost: string = '';
@@ -103,12 +104,15 @@ export struct RustDeskAddFlow {
     }.width('100%').margin({ bottom: 18 })
   }
 
-  @Builder private modeButton(title: string, subtitle: string, selected: boolean, click: () => void) {
+  @Builder private modeButton(title: string, subtitle: string, directMode: boolean) {
     Column() {
-      Text(title).fontSize(15).fontWeight(FontWeight.Medium).fontColor(selected ? Color.White : this.pal().text)
-      Text(subtitle).fontSize(11).fontColor(selected ? '#DDEEFF' : this.pal().text3).margin({ top: 4 })
+      Text(title).fontSize(15).fontWeight(FontWeight.Medium)
+        .fontColor(this.direct === directMode ? Color.White : this.pal().text)
+      Text(subtitle).fontSize(11)
+        .fontColor(this.direct === directMode ? '#DDEEFF' : this.pal().text3).margin({ top: 4 })
     }.alignItems(HorizontalAlign.Start).layoutWeight(1).padding(14).borderRadius(12)
-    .backgroundColor(selected ? this.accentColor : this.pal().surface).onClick(click)
+    .backgroundColor(this.direct === directMode ? this.accentColor : this.pal().surface)
+    .onClick((): void => { this.direct = directMode; })
   }
 
   build() {
@@ -116,9 +120,9 @@ export struct RustDeskAddFlow {
       this.header()
       if (this.step === 1) {
         Row() {
-          this.modeButton('中继连接', '通过已配置服务器连接', !this.direct, (): void => { this.direct = false; })
+          this.modeButton('中继连接', '通过已配置服务器连接', false)
           Blank().width(8)
-          this.modeButton('局域网直连', 'IP + 端口直接连接', this.direct, (): void => { this.direct = true; })
+          this.modeButton('局域网直连', 'IP + 端口直接连接', true)
         }.width('100%').margin({ bottom: 16 })
         if (!this.direct) {
           if (this.addingRelay) {
@@ -164,27 +168,48 @@ export struct RustDeskAddFlow {
               .fontColor(!this.useLan ? Color.White : this.pal().text2).onClick((): void => { this.useLan = false; })
             Button('局域网搜索').layoutWeight(1).height(38).borderRadius(10).margin({ left: 8 })
               .backgroundColor(this.useLan ? this.accentColor : this.pal().surface)
-              .fontColor(this.useLan ? Color.White : this.pal().text2).onClick((): void => { this.useLan = true; this.onStartLanScan(); })
+              .fontColor(this.useLan ? Color.White : this.pal().text2).onClick((): void => {
+                this.useLan = true; this.selectedLanPeerId = ''; this.onStartLanScan();
+              })
           }.width('100%').margin({ bottom: 10 })
           if (this.useLan) {
-            Text(this.lanScanning ? '正在搜索同一局域网设备…' : (this.lanPeers.length === 0 ? '暂未发现设备，可重试搜索' :
-              '发现 ' + this.lanPeers.length.toString() + ' 台设备')).fontSize(12).fontColor(this.pal().text3).margin({ bottom: 8 })
+            if (this.lanScanning) {
+              Row() {
+                LoadingProgress().width(18).height(18).color(this.accentColor)
+                Text('正在搜索同一局域网设备… 已发现 ' + this.lanPeers.length.toString() + ' 台')
+                  .fontSize(12).fontColor(this.pal().text3).margin({ left: 8 })
+              }.width('100%').margin({ bottom: 8 })
+            } else {
+              Text(this.lanPeers.length === 0 ? '暂未发现设备，可重试搜索' :
+                '发现 ' + this.lanPeers.length.toString() + ' 台设备，请选择一台')
+                .fontSize(12).fontColor(this.pal().text3).margin({ bottom: 8 })
+            }
             ForEach(this.lanPeers, (peer: DiscoveredRustDeskPeer) => {
               Row() {
                 Column() {
                   Text(peer.deviceName).fontSize(14).fontColor(this.pal().text)
                   Text(peer.peerId + ' · ' + peer.host).fontSize(11).fontColor(this.pal().text3)
                 }.alignItems(HorizontalAlign.Start).layoutWeight(1)
-                Text('选择').fontSize(12).fontColor(this.accentColor)
+                if (this.selectedLanPeerId === peer.peerId) {
+                  SymbolGlyph($r('sys.symbol.checkmark')).fontSize(18).fontColor([this.accentColor])
+                } else {
+                  Text('选择').fontSize(12).fontColor(this.accentColor)
+                }
               }.width('100%').padding(11).borderRadius(10).backgroundColor(this.pal().surface).margin({ bottom: 6 })
-              .onClick((): void => { this.label = peer.deviceName; this.controlId = peer.peerId;
-                this.directHost = peer.host; this.directPortText = this.defaultDirectPort.toString(); })
+              .border({ width: this.selectedLanPeerId === peer.peerId ? 1 : 0, color: this.accentColor })
+              .onClick((): void => {
+                this.selectedLanPeerId = peer.peerId; this.label = peer.deviceName; this.controlId = peer.peerId;
+                this.directHost = peer.host; this.directPortText = peer.port.toString();
+              })
             }, (peer: DiscoveredRustDeskPeer): string => peer.peerId)
           }
         }
         Button('下一步').width('100%').height(44).borderRadius(12).margin({ top: 10 })
           .backgroundColor(this.accentColor).fontColor(Color.White).onClick((): void => {
             if (!this.direct && this.selectedRelay() === undefined) { this.errorText = '请选择中继服务器'; return; }
+            if (this.direct && this.useLan && this.selectedLanPeerId === '') {
+              this.errorText = '请先选择一台已发现的设备'; return;
+            }
             this.errorText = ''; this.step = 2;
           })
       } else {
