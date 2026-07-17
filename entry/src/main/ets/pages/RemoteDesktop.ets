@@ -2813,8 +2813,8 @@ struct RemoteDesktop {
       this.nativeHandles.attachConnectedSession(sid, this.remoteProtocolOf(host));
       this.connected = true;
       this.connecting = false;
-      this.persistRustDeskSessionAuth(host);
       this.recordActiveSession(host, sid, true);
+      this.persistRustDeskSessionAuth(host);
       // T-171: 连接成功后显示悬浮胶囊
       this.initHandlePosition();
       this.handleVisible = true;
@@ -3236,7 +3236,11 @@ struct RemoteDesktop {
         this.setRemoteKeepScreenOn(true);
         this.setRemoteNavigationHidden(true, 'preauthenticated-session-handoff');
         this.loader.requestFrameRefresh();
-        this.scheduleRestoreFrameRefreshPump();
+        // This is a first renderer attachment for an already-authenticated stream,
+        // not a foreground restore. The decoder recovery armed above waits for the
+        // first keyframe; scheduling the restore watchdog here would recreate a
+        // healthy decoder at 7 seconds and cause a visible video stall.
+        this.clearRestoreFrameRefreshPump();
         AppStorage.setOrCreate<boolean>('remoteDesktopBgFlag', false);
         hilog.info(RD_DOMAIN, RD_TAG, 'doBackgroundRestoreRender: preauthenticated session attached');
         return;

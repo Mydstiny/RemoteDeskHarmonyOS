@@ -705,6 +705,7 @@ struct HostListPage {
 
   onPageShow(): void {
     this.pageActive = true;
+    CloudSyncCoordinator.getInstance().flushDeferredAutomaticPushes();
     this.updateWindowMetrics();
     if (this.followSystem) {
       this.syncFollowSystemTheme('page-show');
@@ -2419,7 +2420,6 @@ struct HostListPage {
           if (this.rustDeskProRememberPassword && host.rustdeskAuthMode === 'password') {
             saved.password = host.password;
           }
-          this.srv.updateHost(saved);
           const now: number = Date.now();
           const record: ActiveRemoteSessionRecord = {
             sessionId: sid, hostId: host.id, protocol: RemoteProtocol.rustdesk,
@@ -2427,6 +2427,7 @@ struct HostListPage {
             restoreNeeded: true, latestSurfaceId: '', createdAtMs: now, updatedAtMs: now
           };
           ActiveRemoteSessionRegistry.getInstance().setActive(record);
+          this.srv.updateHost(saved);
           this.showRustDeskProPreflight = false;
           this.rustDeskProPreflightHostId = '';
           const params: Record<string, Object> = {};
@@ -2605,8 +2606,6 @@ struct HostListPage {
       this.accountDisplayName = nickName || '华为用户';
       this.accountAvatarUrl = avatarUri;
       this.loginRefreshKey++;
-      // 云同步
-      await CloudSyncCoordinator.getInstance().requestForegroundPull();
       this.applyCloudUserSettings();
       this.load();
       promptAction.showToast({ message: '登录成功', duration: 1500 });

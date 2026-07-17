@@ -217,8 +217,7 @@ export class CloudStore implements CryptoCloudStore {
           this.lastSyncTime = Date.now();
           this.syncSuccessCount++;
           hilog.info(0x0001, 'CloudSync',
-            "云端数据变更: " + accounts.length.toString() + " 个账号, 触发拉取同步");
-          CloudSyncCoordinator.getInstance().requestCloudEventPull();
+            '云端数据变更: ' + accounts.length.toString() + ' 个账号, 延迟到下次启动或手动下载');
         }
       );
       hilog.info(0x0001, 'CloudSync', '已订阅云空间数据变更事件');

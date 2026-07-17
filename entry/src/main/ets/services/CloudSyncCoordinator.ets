@@ -3,6 +3,7 @@ import { preferences } from '@kit.ArkData';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { CloudSyncSelectionStore } from './CloudSyncSelectionStore';
 import { CloudSyncDirection } from './CloudSyncPolicy';
+import { ActiveRemoteSessionRegistry } from './ActiveRemoteSessionRegistry';
 import {
   CLOUD_SYNC_MAX_RETRY_ATTEMPTS,
   CloudSyncRequest,
@@ -126,6 +127,7 @@ export class CloudSyncCoordinator {
   private readonly selection: CloudSyncSelectionStore = CloudSyncSelectionStore.getInstance();
   private queueTail: Promise<void> = Promise.resolve();
   private pendingAutomaticTables: string[] = [];
+  private deferredAutomaticTables: string[] = [];
   private pendingPull: Promise<CloudSyncOperationResult> | null = null;
   private onCloudFirstApplied: ((tables: string[]) => void) | null = null;
   private hooks: CloudSyncCoordinatorHooks | null = null;
@@ -179,6 +181,14 @@ export class CloudSyncCoordinator {
     if (selected.indexOf(table) < 0 || this.restorePending) {
       return Promise.resolve(this.skippedResult('automaticPush'));
     }
+    const activeSession = ActiveRemoteSessionRegistry.getInstance().getActive();
+    if (activeSession !== null && activeSession.protocolConnected) {
+      if (this.deferredAutomaticTables.indexOf(table) < 0) {
+        this.deferredAutomaticTables.push(table);
+      }
+      hilog.info(DOMAIN, TAG, 'defer automatic push during remote session table=' + table);
+      return Promise.resolve(this.skippedResult('automaticPush'));
+    }
     for (let i = 0; i < this.pendingAutomaticTables.length; i++) {
       if (coalesceAutomaticPush(this.pendingAutomaticTables[i], table)) {
         return Promise.resolve(this.skippedResult('automaticPush'));
@@ -190,6 +200,17 @@ export class CloudSyncCoordinator {
       candidate === 'cryptoparams' || candidate === table
     );
     return this.enqueueAutomaticRequest({ source: 'automaticPush', direction: 'nativeFirst', tables }, table);
+  }
+
+  /** Flushes mutations collected while audio/video had priority. */
+  flushDeferredAutomaticPushes(): void {
+    const activeSession = ActiveRemoteSessionRegistry.getInstance().getActive();
+    if (activeSession !== null && activeSession.protocolConnected) { return; }
+    const tables: string[] = this.deferredAutomaticTables.slice();
+    this.deferredAutomaticTables = [];
+    for (let i = 0; i < tables.length; i++) {
+      this.requestAutomaticPush(tables[i]);
+    }
   }
 
   private enqueueAutomaticRequest(request: CloudSyncRequest, retryKey: string): Promise<CloudSyncOperationResult> {
