@@ -830,7 +830,7 @@ export struct KeyVaultPage {
       height: SheetSize.FIT_CONTENT,
       preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
       dragBar: this.sheetMode !== 1 && this.sheetMode !== 5 && this.sheetMode !== 6,
-      backgroundColor: Color.Transparent, blurStyle: BlurStyle.NONE, showClose: false,
+      backgroundColor: this.pal().card, blurStyle: BlurStyle.NONE, showClose: false,
       onDisappear: () => {
         if (this.sheetMode === 0) { this.resetSshForm(); this.resetTotpForm(); }
         else { this.load(); }
@@ -1328,7 +1328,7 @@ export struct KeyVaultPage {
         height: SheetSize.FIT_CONTENT,
         preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
         dragBar: false,
-        backgroundColor: Color.Transparent, blurStyle: BlurStyle.NONE, showClose: false
+        backgroundColor: this.pal().card, blurStyle: BlurStyle.NONE, showClose: false
       })
 
       // 导入 .atsf 文件

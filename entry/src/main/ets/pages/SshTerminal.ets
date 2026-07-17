@@ -2036,7 +2036,7 @@ struct SshTerminal {
       height: SheetSize.FIT_CONTENT,
       preferType: this.isDesktopDevice ? SheetType.CENTER : SheetType.BOTTOM,
       dragBar: !this.isDesktopDevice,
-      backgroundColor: Color.Transparent,
+      backgroundColor: this.pal().card,
       blurStyle: BlurStyle.NONE,
       showClose: false,
       maskColor: 'rgba(0,0,0,0.4)',
@@ -2051,7 +2051,7 @@ struct SshTerminal {
       height: this.sftpSheetHeight(),
       preferType: this.isDesktopDevice ? SheetType.CENTER : SheetType.BOTTOM,
       dragBar: !this.isDesktopDevice,
-      backgroundColor: Color.Transparent,
+      backgroundColor: this.pal().card,
       blurStyle: BlurStyle.NONE,
       showClose: false,
       onWillDismiss: (action: DismissSheetAction): void => { this.handleSftpSheetDismiss(action); }

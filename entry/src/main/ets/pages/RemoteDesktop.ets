@@ -5620,7 +5620,7 @@ struct RemoteDesktop {
           preferType: rdpSessionErrorSheetPrefersLandscapeCenter(true) ? SheetType.CENTER :
             (this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER),
           dragBar: false,
-          backgroundColor: Color.Transparent,
+          backgroundColor: this.pal().card,
           blurStyle: BlurStyle.NONE,
           showClose: false,
           maskColor: 'rgba(0,0,0,0.48)',
@@ -5633,7 +5633,7 @@ struct RemoteDesktop {
           height: SheetSize.FIT_CONTENT,
           preferType: SheetType.BOTTOM,
           dragBar: true,
-          backgroundColor: Color.Transparent,
+          backgroundColor: this.pal().card,
           blurStyle: BlurStyle.NONE,
           showClose: false,
           maskColor: 'rgba(0,0,0,0.58)',

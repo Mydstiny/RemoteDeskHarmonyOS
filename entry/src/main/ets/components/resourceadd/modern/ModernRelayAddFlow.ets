@@ -8,6 +8,7 @@ import { VncRelayConfigService } from '../../../services/VncRelayConfigService';
 import { Palette, buildDark, buildLight, AppTheme } from '../../../common/Theme';
 import { ResourceFabPicker } from '../ResourceFabPicker';
 import { RustDeskRelayImportService, RustDeskRelayImportResult } from '../../../services/RustDeskRelayImportService';
+import { ClipboardBridgeService } from '../../../services/ClipboardBridgeService';
 
 @Component
 export struct ModernRelayAddFlow {
@@ -40,6 +41,7 @@ export struct ModernRelayAddFlow {
   private pro = RustDeskProSyncService.getInstance();
   private vnc = VncRelayConfigService.getInstance();
   private relayImporter = new RustDeskRelayImportService();
+  private clipboard = new ClipboardBridgeService();
 
   private pal(): Palette { return this.theme === 'light' ? buildLight(this.accentColor) : buildDark(this.accentColor); }
   private font(): string { return AppTheme.fontFamily; }
@@ -97,6 +99,20 @@ export struct ModernRelayAddFlow {
     this.apiServer = result.apiServer; this.serverKey = result.key;
     this.importedFileName = result.fileName;
     promptAction.showToast({ message: '已导入 RustDesk 配置，请确认后保存', duration: 1800 });
+  }
+
+  private async importRustDeskClipboard(): Promise<void> {
+    if (this.importBusy) { return; }
+    this.importBusy = true; this.errorText = '';
+    const text = await this.clipboard.getSystemText();
+    const result: RustDeskRelayImportResult = this.relayImporter.parse('剪贴板配置', text.trim());
+    this.importBusy = false;
+    if (!result.ok) { this.errorText = text.trim() === '' ? '剪贴板中没有 RustDesk 配置，请先复制客户端“导出服务器配置”的内容' : result.error; return; }
+    this.idServer = result.idServer; this.idPort = result.idServerPort;
+    this.relayServer = result.relayServer; this.relayPort = result.relayPort;
+    this.apiServer = result.apiServer; this.serverKey = result.key;
+    this.importedFileName = '剪贴板配置';
+    promptAction.showToast({ message: '已读取剪贴板配置，请确认后保存', duration: 1800 });
   }
 
   private confirmRustDesk(): void {
@@ -172,9 +188,13 @@ export struct ModernRelayAddFlow {
     this.header('添加 RustDesk 中继', '填写服务器内置连接选项')
     Scroll() {
       Column() {
-        Button(this.importBusy ? '读取 RustDesk 配置中…' : '从 RustDesk 客户端导入配置')
+        Button(this.importBusy ? '读取 RustDesk 配置中…' : '从剪贴板导入 RustDesk 配置')
           .width('100%').height(40).borderRadius(10).backgroundColor(this.pal().surface)
           .fontColor(this.accentColor).enabled(!this.importBusy)
+          .onClick((): void => { void this.importRustDeskClipboard(); })
+        Button('从文件导入配置（兼容）')
+          .width('100%').height(36).borderRadius(10).backgroundColor(this.pal().surface)
+          .fontColor(this.pal().text2).enabled(!this.importBusy).margin({ top: 7 })
           .onClick((): void => { void this.importRustDeskConfig(); })
         if (this.importedFileName.length > 0) {
           Text('已读取：' + this.importedFileName + '（请检查字段后保存）')

@@ -27,6 +27,7 @@ import { ResourceFabPicker } from '../components/resourceadd/ResourceFabPicker';
 import { VncRelayConfigService } from '../services/VncRelayConfigService';
 import { ModernRelayAddFlow } from '../components/resourceadd/modern/ModernRelayAddFlow';
 import { RustDeskRelayImportService, RustDeskRelayImportResult } from '../services/RustDeskRelayImportService';
+import { ClipboardBridgeService } from '../services/ClipboardBridgeService';
 
 class TcpTestResult {
   ok: boolean = false;
@@ -85,6 +86,7 @@ export struct RustDeskRelayPage {
   private proSync: RustDeskProSyncService = RustDeskProSyncService.getInstance();
   private vncSrv: VncRelayConfigService = VncRelayConfigService.getInstance();
   private relayImporter: RustDeskRelayImportService = new RustDeskRelayImportService();
+  private clipboard: ClipboardBridgeService = new ClipboardBridgeService();
   private dataUnsubscribe: (() => void) | null = null;
   private proDataUnsubscribe: (() => void) | null = null;
   private vncDataUnsubscribe: (() => void) | null = null;
@@ -406,6 +408,22 @@ export struct RustDeskRelayPage {
     this.formTestResult = '✓ 已导入 ' + result.fileName + '，请确认后保存';
   }
 
+  private async importRelayClipboard(): Promise<void> {
+    if (this.importingRelayConfig) { return; }
+    this.importingRelayConfig = true;
+    const text = await this.clipboard.getSystemText();
+    const result: RustDeskRelayImportResult = this.relayImporter.parse('剪贴板配置', text.trim());
+    this.importingRelayConfig = false;
+    if (!result.ok) {
+      promptAction.showToast({ message: text.trim() === '' ? '剪贴板中没有 RustDesk 配置' : result.error, duration: 2400 });
+      return;
+    }
+    this.formIdServer = result.idServer; this.formIdPort = result.idServerPort;
+    this.formRelayServer = result.relayServer; this.formRelayPort = result.relayPort;
+    this.formApiServer = result.apiServer; this.formKey = result.key;
+    this.formTestResult = '✓ 已读取剪贴板配置，请确认后保存';
+  }
+
   private resetVncRelayForm(): void {
     this.editingVncRelayId = '';
     this.formVncName = '';
@@ -706,7 +724,7 @@ export struct RustDeskRelayPage {
       height: SheetSize.FIT_CONTENT,
       preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
       dragBar: false,
-      backgroundColor: Color.Transparent, blurStyle: BlurStyle.NONE, showClose: false,
+      backgroundColor: this.pal().card, blurStyle: BlurStyle.NONE, showClose: false,
       onDisappear: () => { this.closeSheet(); }
     })
   }
@@ -1452,6 +1470,10 @@ export struct RustDeskRelayPage {
           Button(this.importingRelayConfig ? '读取 RustDesk 配置中…' : '从 RustDesk 客户端导入配置')
             .width('100%').height(36).fontSize(13).backgroundColor(this.pal().surface)
             .fontColor(this.accentColor).borderRadius(8).enabled(!this.importingRelayConfig)
+            .margin({ bottom: 6 }).onClick((): void => { void this.importRelayClipboard(); })
+          Button('从文件导入配置（兼容）')
+            .width('100%').height(32).fontSize(12).backgroundColor(this.pal().surface)
+            .fontColor(this.pal().text2).borderRadius(8).enabled(!this.importingRelayConfig)
             .margin({ bottom: 10 }).onClick((): void => { void this.importRelayConfig(); })
           this._f('ID服务器地址', 'rs.example.com', this.formIdServer, (v: string) => { this.formIdServer = v; })
           this._f('ID服务器端口', '21116', this.formIdPort.toString(), (v: string) => { const n = parseInt(v); this.formIdPort = isNaN(n) ? 21116 : n; })
