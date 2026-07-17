@@ -3,7 +3,7 @@
  *
  * 使用 RustDesk 官方 PeerDiscovery protobuf，通过 UDP 广播到 255.255.255.255:21119
  * 发现局域网内的 RustDesk 设备。PeerDiscovery 不携带连接端口，
- * RustDesk 桌面端直连使用默认 TCP 端口 21117。
+ * RustDesk 桌面端直连使用默认 TCP 端口 21118；21119 仅用于 UDP 发现。
  * 手动触发扫描，独立服务，不嵌入 streaming 主链路。
  */
 import { socket } from '@kit.NetworkKit';
@@ -13,7 +13,7 @@ import { hilog } from '@kit.PerformanceAnalysisKit';
 
 const TAG = 'RustDeskLanDisc';
 const RD_DISCOVERY_PORT: number = 21119;
-const RD_DIRECT_PORT: number = 21117;
+const RD_DIRECT_PORT: number = 21118;
 const SCAN_TIMEOUT_MS = 5000;
 
 /** 发现的局域网设备 */
@@ -21,7 +21,7 @@ export interface DiscoveredRustDeskPeer {
   peerId: string;     // RustDesk 远程 ID
   deviceName: string; // 设备名称
   host: string;       // 局域网 IP 地址
-  port: number;       // 直连端口 (RustDesk peer TCP, 默认 21117)
+  port: number;       // 直连端口 (RustDesk direct access TCP, 默认 21118)
   version: string;    // RustDesk 版本 (如能解析)
 }
 
@@ -235,6 +235,11 @@ export class RustDeskLanDiscoveryService {
               return;
             }
             try {
+              const rawPeer: RustDeskLanPeerDiscovery | null = parseRustDeskLanPeerDiscovery(data.message);
+              hilog.info(0x0001, TAG,
+                `UDP response from ${data.remoteInfo.address} bytes=${data.message.byteLength} ` +
+                `parsed=${rawPeer !== null} cmd=${rawPeer?.cmd ?? ''} id=${rawPeer?.id ?? ''} ` +
+                `platform=${rawPeer?.platform ?? ''}`);
               const peer: DiscoveredRustDeskPeer | null = this.parseDiscoveryResponse(
                 data.message, data.remoteInfo.address);
               if (peer && !seenPeers.has(peer.peerId)) {
@@ -245,7 +250,8 @@ export class RustDeskLanDiscoveryService {
                   `discovered: ${peer.peerId} @ ${peer.host}:${peer.port} [${peer.deviceName}]`);
               }
             } catch (e) {
-              // 解析失败 — 忽略非 RustDesk 响应
+              hilog.warn(0x0001, TAG,
+                `UDP response parse failed from ${data.remoteInfo.address}: ${JSON.stringify(e)}`);
             }
           });
 

@@ -3608,6 +3608,13 @@ struct HostListPage {
                           .borderRadius(6).backgroundColor(this.pal().surface).margin({ left: 6 })
                       })
                     }
+                    if (host.protocol === 'ssh' &&
+                      displayConnectionHealth(host.lastHealth, host.lastLatency).length > 0) {
+                      Text(displayConnectionHealth(host.lastHealth, host.lastLatency))
+                        .fontSize(10).fontColor(this.pal().text3).fontFamily(this.font())
+                        .padding({ left: 6, right: 6, top: 2, bottom: 2 })
+                        .borderRadius(6).backgroundColor(this.pal().surface).margin({ left: 6 })
+                    }
                     if (host.locked) {
                       SymbolGlyph($r('sys.symbol.ohos_lock'))
                         .fontSize(this.breakpoint === 'sm' ? 14 : 18)
@@ -3634,7 +3641,9 @@ struct HostListPage {
                     if (host.groupId.length > 0) {
                       Blank().width(6)
                     }
-                    this.HostConnectionHealth(host)
+                    if (host.protocol !== 'ssh') {
+                      this.HostConnectionHealth(host)
+                    }
                   }
                   .margin({ top: 2 })
                 }

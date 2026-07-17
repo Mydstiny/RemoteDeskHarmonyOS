@@ -68,6 +68,7 @@ export struct TerminalEmulator {
   /** 父组件 SshTerminal 传入的 cell 尺寸 (vp), 与 Canvas 解耦以保证 cols×cellW 精确填满终端宽度 */
   @Prop @Watch('onCellSizeChange') cellWvp: number = 9;
   @Prop @Watch('onCellSizeChange') cellHvp: number = 20;
+  @Prop @Watch('onViewportSizeChange') viewportWidth: number = 0;
   @Prop @Watch('onViewportHeightChange') viewportHeight: number = 0;
   @Prop @Watch('onViewportHeightChange') visibleViewportHeight: number = 0;
   @Prop @Watch('onFontChange') fontSize: number = 18;
@@ -78,6 +79,7 @@ export struct TerminalEmulator {
   @Prop bottomAlignSparseContent: boolean = false;
   /** 父页面请求回到底部 — 键盘弹起/终端高度变化后保证最新行可见 */
   @Prop @Watch('onScrollToBottomRequest') scrollToBottomRequest: number = 0;
+  @Prop @Watch('onForceScrollToBottomRequest') forceScrollToBottomRequest: number = 0;
   @Prop externalScrollLines: number = 0;
   @Prop @Watch('onExternalScrollRequest') externalScrollRequest: number = 0;
   /** 复制请求计数器 — 父级 ++ 触发本组件把选区/整屏文本写入 copiedText */
@@ -145,6 +147,14 @@ export struct TerminalEmulator {
     this.renderFull();
   }
 
+  private onForceScrollToBottomRequest(): void {
+    this.followBottom = true;
+    this.viewOffset = this.screenTop;
+    this.cursorVisible = true;
+    this.markAllDirty();
+    this.renderFull();
+  }
+
   private onExternalScrollRequest(): void {
     hilog.info(0x0000, 'TerminalEmu',
       `[touchDiag] external req=${this.externalScrollRequest} lines=${this.externalScrollLines} ` +
@@ -159,6 +169,10 @@ export struct TerminalEmulator {
       this.viewOffset = this.screenTop;
     }
     this.markAllDirty();
+    this.renderFull();
+  }
+
+  private onViewportSizeChange(): void {
     this.renderFull();
   }
 
@@ -365,7 +379,9 @@ export struct TerminalEmulator {
     const contentH: number = (bottomRow + 1) * this.cellH;
     const visibleH: number = this.visibleViewportHeight > 0 ? this.visibleViewportHeight : this.viewportHeight;
     const topInset: number = Math.max(0, this.viewportHeight - visibleH);
-    const hasScrollback: boolean = this.screenTop > 0 || this.viewOffset > 0;
+    // 存在历史缓冲不等于当前正在浏览历史。回到底部后，横屏扩大为竖屏时
+    // 当前内容可能只占前几行，移动端需要继续执行稀疏内容的底对齐。
+    const hasScrollback: boolean = this.viewOffset < this.screenTop;
     const sparseLimit: number = Math.min(visibleH * 0.35, this.cellH * 8);
     return terminalGridTop(
       this.bottomAlignSparseContent,
@@ -383,7 +399,11 @@ export struct TerminalEmulator {
     if (top <= 0) { return; }
     const ctx: CanvasRenderingContext2D = this.ctx;
     ctx.fillStyle = DEFAULT_BG;
-    ctx.fillRect(0, 0, this.cols * this.cellW, top);
+    ctx.fillRect(0, 0, this.canvasWidth(), top);
+  }
+
+  private canvasWidth(): number {
+    return Math.max(this.cols * this.cellW, Math.ceil(this.viewportWidth));
   }
 
   private canvasHeight(): number {
@@ -523,7 +543,7 @@ export struct TerminalEmulator {
     const gridTop: number = this.gridTop();
     const ctx: CanvasRenderingContext2D = this.ctx;
     ctx.fillStyle = DEFAULT_BG;
-    ctx.fillRect(0, 0, this.cols * this.cellW, this.canvasHeight());
+    ctx.fillRect(0, 0, this.canvasWidth(), this.canvasHeight());
     this.clearTopInset();
     for (let r = 0; r < this.rows; r++) {
       this.drawRow(r);
@@ -597,7 +617,7 @@ export struct TerminalEmulator {
     const y: number = this.gridTop() + r * this.cellH;
     // 清整行
     ctx.fillStyle = DEFAULT_BG;
-    ctx.fillRect(0, y, this.cols * this.cellW, this.cellH);
+    ctx.fillRect(0, y, this.canvasWidth(), this.cellH);
     if (absR >= this.buffer.length) { return; }
     const row: TerminalCell[] = this.buffer[absR];
     const selOnRow: boolean = this.hasSelection();
