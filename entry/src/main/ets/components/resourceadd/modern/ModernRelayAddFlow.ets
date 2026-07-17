@@ -7,6 +7,7 @@ import { RustDeskProSyncService } from '../../../services/RustDeskProSyncService
 import { VncRelayConfigService } from '../../../services/VncRelayConfigService';
 import { Palette, buildDark, buildLight, AppTheme } from '../../../common/Theme';
 import { ResourceFabPicker } from '../ResourceFabPicker';
+import { RustDeskRelayImportService, RustDeskRelayImportResult } from '../../../services/RustDeskRelayImportService';
 
 @Component
 export struct ModernRelayAddFlow {
@@ -32,10 +33,13 @@ export struct ModernRelayAddFlow {
   @State vncHost: string = '';
   @State vncPort: number = 5901;
   @State vncTargetId: string = '';
+  @State importedFileName: string = '';
+  @State importBusy: boolean = false;
 
   private hosts = HostSyncService.getInstance();
   private pro = RustDeskProSyncService.getInstance();
   private vnc = VncRelayConfigService.getInstance();
+  private relayImporter = new RustDeskRelayImportService();
 
   private pal(): Palette { return this.theme === 'light' ? buildLight(this.accentColor) : buildDark(this.accentColor); }
   private font(): string { return AppTheme.fontFamily; }
@@ -50,6 +54,7 @@ export struct ModernRelayAddFlow {
     this.idServer = ''; this.idPort = 21116; this.relayServer = ''; this.relayPort = 21117;
     this.apiServer = ''; this.serverKey = ''; this.proServer = ''; this.proUser = ''; this.proPassword = '';
     this.proBusy = false; this.vncName = ''; this.vncHost = ''; this.vncPort = 5901; this.vncTargetId = '';
+    this.importedFileName = ''; this.importBusy = false;
   }
 
   private close(): void { this.onClose(); this.reset(); }
@@ -78,6 +83,20 @@ export struct ModernRelayAddFlow {
     if (!this.hosts.addRelay(relay)) { this.errorText = '中继服务器保存失败'; return; }
     this.savedRelayId = relay.id; this.proServer = relay.apiServer; this.step = 'saved'; this.errorText = '';
     this.onSaved(relay.id);
+  }
+
+  private async importRustDeskConfig(): Promise<void> {
+    if (this.importBusy) { return; }
+    this.importBusy = true; this.errorText = '';
+    const result: RustDeskRelayImportResult | null = await this.relayImporter.pickAndParse();
+    this.importBusy = false;
+    if (result === null) { return; }
+    if (!result.ok) { this.errorText = result.error; return; }
+    this.idServer = result.idServer; this.idPort = result.idServerPort;
+    this.relayServer = result.relayServer; this.relayPort = result.relayPort;
+    this.apiServer = result.apiServer; this.serverKey = result.key;
+    this.importedFileName = result.fileName;
+    promptAction.showToast({ message: '已导入 RustDesk 配置，请确认后保存', duration: 1800 });
   }
 
   private confirmRustDesk(): void {
@@ -153,6 +172,15 @@ export struct ModernRelayAddFlow {
     this.header('添加 RustDesk 中继', '填写服务器内置连接选项')
     Scroll() {
       Column() {
+        Button(this.importBusy ? '读取 RustDesk 配置中…' : '从 RustDesk 客户端导入配置')
+          .width('100%').height(40).borderRadius(10).backgroundColor(this.pal().surface)
+          .fontColor(this.accentColor).enabled(!this.importBusy)
+          .onClick((): void => { void this.importRustDeskConfig(); })
+        if (this.importedFileName.length > 0) {
+          Text('已读取：' + this.importedFileName + '（请检查字段后保存）')
+            .fontSize(11).fontColor(this.pal().success).fontFamily(this.font())
+            .width('100%').margin({ top: 7, bottom: 4 })
+        }
         this.field('ID / Rendezvous 服务器', 'rs.example.com', this.idServer,
           (value: string): void => { this.idServer = value; })
         this.field('ID 服务器端口', '21116', this.idPort.toString(),

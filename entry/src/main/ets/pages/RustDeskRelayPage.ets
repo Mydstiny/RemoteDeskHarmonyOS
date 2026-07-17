@@ -26,6 +26,7 @@ import { resolveFabAddStyle } from '../services/FabAddStylePolicy';
 import { ResourceFabPicker } from '../components/resourceadd/ResourceFabPicker';
 import { VncRelayConfigService } from '../services/VncRelayConfigService';
 import { ModernRelayAddFlow } from '../components/resourceadd/modern/ModernRelayAddFlow';
+import { RustDeskRelayImportService, RustDeskRelayImportResult } from '../services/RustDeskRelayImportService';
 
 class TcpTestResult {
   ok: boolean = false;
@@ -62,6 +63,7 @@ export struct RustDeskRelayPage {
   @State formApiServer: string = '';
   @State formKey: string = '';
   @State formTestResult: string = '';
+  @State importingRelayConfig: boolean = false;
   // UltraVNC Repeater form (device-local until VNC sessions are enabled)
   @State editingVncRelayId: string = '';
   @State formVncName: string = '';
@@ -82,6 +84,7 @@ export struct RustDeskRelayPage {
   private srv: HostSyncService = HostSyncService.getInstance();
   private proSync: RustDeskProSyncService = RustDeskProSyncService.getInstance();
   private vncSrv: VncRelayConfigService = VncRelayConfigService.getInstance();
+  private relayImporter: RustDeskRelayImportService = new RustDeskRelayImportService();
   private dataUnsubscribe: (() => void) | null = null;
   private proDataUnsubscribe: (() => void) | null = null;
   private vncDataUnsubscribe: (() => void) | null = null;
@@ -385,6 +388,22 @@ export struct RustDeskRelayPage {
       return;
     }
     this.closeSheet();
+  }
+
+  private async importRelayConfig(): Promise<void> {
+    if (this.importingRelayConfig) { return; }
+    this.importingRelayConfig = true;
+    const result: RustDeskRelayImportResult | null = await this.relayImporter.pickAndParse();
+    this.importingRelayConfig = false;
+    if (result === null) { return; }
+    if (!result.ok) {
+      promptAction.showToast({ message: result.error, duration: 2400 });
+      return;
+    }
+    this.formIdServer = result.idServer; this.formIdPort = result.idServerPort;
+    this.formRelayServer = result.relayServer; this.formRelayPort = result.relayPort;
+    this.formApiServer = result.apiServer; this.formKey = result.key;
+    this.formTestResult = '✓ 已导入 ' + result.fileName + '，请确认后保存';
   }
 
   private resetVncRelayForm(): void {
@@ -1430,6 +1449,10 @@ export struct RustDeskRelayPage {
         .width('100%').margin({ bottom: 16 })
       Scroll() {
         Column() {
+          Button(this.importingRelayConfig ? '读取 RustDesk 配置中…' : '从 RustDesk 客户端导入配置')
+            .width('100%').height(36).fontSize(13).backgroundColor(this.pal().surface)
+            .fontColor(this.accentColor).borderRadius(8).enabled(!this.importingRelayConfig)
+            .margin({ bottom: 10 }).onClick((): void => { void this.importRelayConfig(); })
           this._f('ID服务器地址', 'rs.example.com', this.formIdServer, (v: string) => { this.formIdServer = v; })
           this._f('ID服务器端口', '21116', this.formIdPort.toString(), (v: string) => { const n = parseInt(v); this.formIdPort = isNaN(n) ? 21116 : n; })
           this._f('中继服务器地址', 'relay.example.com', this.formRelayServer, (v: string) => { this.formRelayServer = v; })
