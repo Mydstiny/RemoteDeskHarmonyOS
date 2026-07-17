@@ -174,5 +174,11 @@ export class RustDeskProSyncService {
     if (!account) { return; }
     await this.api.logout(account);
     this.credentials.clear(accountId);
+    const relay = this.hosts.getAllRelays().find((item: RustDeskRelayConfig): boolean => item.id === account.relayId);
+    if (relay !== undefined) {
+      const next: RustDeskRelayConfig = RustDeskRelayConfig.fromJSON(relay.toJSON());
+      next.accounts = next.accounts.filter((item: RustDeskAccount): boolean => item.id !== accountId);
+      this.hosts.updateRelay(next);
+    }
   }
 }

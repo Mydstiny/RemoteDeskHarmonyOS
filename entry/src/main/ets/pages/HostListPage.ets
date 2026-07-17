@@ -6698,10 +6698,10 @@ struct HostListPage {
               }.width('100%').backgroundColor(this.pal().surface).borderRadius(8).padding(6).margin({ bottom: 10 })
             }
 
-            // API 账户选择 (二级: 依赖选中的 relay)
+            // Server Pro 账户选择 (二级: 依赖选中的 relay)
             if (this.selectedRelayId !== '') {
               Row() {
-                Text('API 账户').fontSize(11).fontColor(this.pal().text2).margin({ bottom: 4 }).fontFamily(this.font())
+                Text('Server Pro 账户').fontSize(11).fontColor(this.pal().text2).margin({ bottom: 4 }).fontFamily(this.font())
                 Blank()
               }.width('100%')
               Column() {

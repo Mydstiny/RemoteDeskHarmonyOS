@@ -16,7 +16,6 @@ import { socket } from '@kit.NetworkKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { common } from '@kit.AbilityKit';
 import { RustDeskRelayConfig } from '../model/RustDeskRelayConfig';
-import { RustDeskAccount } from '../model/RustDeskAccount';
 import { RustDeskProAccountState } from '../model/RustDeskProModels';
 import { HostSyncService } from '../services/HostSyncService';
 import { RustDeskProSyncService } from '../services/RustDeskProSyncService';
@@ -58,11 +57,6 @@ export struct RustDeskRelayPage {
   @State formApiServer: string = '';
   @State formKey: string = '';
   @State formTestResult: string = '';
-  // Account form
-  @State editingAccountId: string = '';
-  @State accountRelayId: string = '';
-  @State formAcctUser: string = '';
-  @State formAcctPwd: string = '';
   // Server Pro account form and local-only account state
   @State proAccounts: RustDeskProAccountState[] = [];
   @State proRelayId: string = '';
@@ -224,18 +218,6 @@ export struct RustDeskRelayPage {
     return this.proAccountsForRelay(relayId).length;
   }
 
-  private accountStatusLabel(acct: RustDeskAccount): string {
-    if (acct.loginStatus === 'logged_in') { return '已登录'; }
-    if (acct.loginStatus === 'expired') { return '已过期'; }
-    return '未登录';
-  }
-
-  private accountStatusColor(acct: RustDeskAccount): string {
-    if (acct.loginStatus === 'logged_in') { return this.pal().success; }
-    if (acct.loginStatus === 'expired') { return this.pal().danger; }
-    return this.pal().text3;
-  }
-
   // ==================== Sheet openers ====================
 
   private openAddRelaySheet(): void {
@@ -249,10 +231,6 @@ export struct RustDeskRelayPage {
     this.showSheet = false;
     this.sheetContent = 1;
     this.resetRelayForm();
-    this.editingAccountId = '';
-    this.accountRelayId = '';
-    this.formAcctUser = '';
-    this.formAcctPwd = '';
     this.proRelayId = '';
     this.proAccountId = '';
     this.formProServer = '';
@@ -279,14 +257,6 @@ export struct RustDeskRelayPage {
     this.showSheet = true;
   }
 
-  private openAccountSheet(relay: RustDeskRelayConfig, account?: RustDeskAccount): void {
-    this.accountRelayId = relay.id;
-    this.editingAccountId = account ? account.id : '';
-    this.formAcctUser = account ? account.username : '';
-    this.formAcctPwd = account ? account.password : '';
-    this.sheetContent = 2;
-    this.showSheet = true;
-  }
 
   private proAccountsForRelay(relayId: string): RustDeskProAccountState[] {
     return this.proAccounts.filter((account: RustDeskProAccountState): boolean => account.relayId === relayId);
@@ -478,27 +448,6 @@ export struct RustDeskRelayPage {
     });
   }
 
-  // ==================== Account CRUD ====================
-
-  private doSaveAccount(): void {
-    if (this.formAcctUser.trim() === '') { promptAction.showToast({ message: '用户名不能为空', duration: 2000 }); return; }
-    const relay = this.relays.find((x: RustDeskRelayConfig) => x.id === this.accountRelayId);
-    if (!relay) { return; }
-    const a = new RustDeskAccount();
-    a.id = this.editingAccountId !== '' ? this.editingAccountId : RustDeskAccount.generateId();
-    a.relayId = this.accountRelayId; a.username = this.formAcctUser.trim(); a.password = this.formAcctPwd.trim();
-    if (this.editingAccountId !== '') {
-      const idx = relay.accounts.findIndex((x: RustDeskAccount) => x.id === this.editingAccountId);
-      if (idx >= 0) { relay.accounts[idx] = a; }
-    } else { relay.accounts.push(a); }
-    if (!this.isRelayExpanded(relay.id)) {
-      const ids: string[] = this.expandedRelayIds.slice();
-      ids.push(relay.id);
-      this.expandedRelayIds = ids;
-    }
-    this.srv.updateRelay(relay); this.closeSheet();
-  }
-
   private async doProLogin(): Promise<void> {
     const serverUrl = this.formProServer.trim();
     const username = this.formProUser.trim();
@@ -557,21 +506,6 @@ export struct RustDeskRelayPage {
     await this.proSync.logout(accountId);
     this.loadProAccounts();
     this.closeSheet();
-  }
-
-  private doDeleteAccount(accountId: string): void {
-    promptAction.showDialog({
-      title: '确认删除', message: '确定要删除此账户吗？',
-      buttons: [{ text: '取消', color: this.pal().text2 }, { text: '删除', color: this.pal().danger }]
-    }).then((result: Object): void => {
-      const r: Record<string, number> = result as Record<string, number>;
-      if (r['index'] === 1) {
-        const relay = this.relays.find((x: RustDeskRelayConfig) =>
-          x.accounts.some((a: RustDeskAccount) => a.id === accountId));
-        if (relay) { relay.accounts = relay.accounts.filter((a: RustDeskAccount) => a.id !== accountId); this.srv.updateRelay(relay); }
-        this.closeSheet();
-      }
-    });
   }
 
   // ==================== Layout helpers ====================
@@ -1431,39 +1365,6 @@ export struct RustDeskRelayPage {
       .borderRadius(this.breakpoint === 'sm' ? 0 : 20).backgroundColor(this.pal().bg)
   }
 
-  @Builder accountEditSheet() {
-    Column() {
-      Text(this.editingAccountId === '' ? '添加账户' : '编辑账户')
-        .fontSize(19).fontWeight(FontWeight.Bold).fontColor(this.pal().text).fontFamily(this.font())
-        .width('100%').margin({ bottom: 16 })
-      this._f('用户名', 'admin', this.formAcctUser, (v: string) => { this.formAcctUser = v; })
-      this._f('密码', '', this.formAcctPwd, (v: string) => { this.formAcctPwd = v; })
-      Row() {
-        Button('保存').width('100%').height(40).fontSize(14).fontWeight(FontWeight.Medium)
-          .backgroundColor(this.accentColor).fontColor('#FFFFFF').borderRadius(10).margin({ top: 12 })
-          .onClick(() => { this.doSaveAccount(); })
-      }.width('100%')
-      if (this.editingAccountId !== '') {
-        Row() {
-          Button('删除账户').width('100%').height(40).fontSize(14)
-            .backgroundColor(Color.Transparent).fontColor(this.pal().danger).borderRadius(10).margin({ top: 8 })
-            .onClick(() => { this.doDeleteAccount(this.editingAccountId); })
-        }.width('100%')
-      }
-      Blank().height(24)
-    }.width('100%')
-    .padding({ left: 24, right: 24, top: 24, bottom: 40 })
-    .borderRadius(this.breakpoint === 'sm' ? 0 : 20)
-    .backgroundColor(this.pal().bg)
-    .backgroundBlurStyle(BlurStyle.Regular)
-    .shadow(this.breakpoint === 'sm'
-      ? { radius: 0, color: 'rgba(0,0,0,0)', offsetY: 0 } as ShadowOptions
-      : { radius: 24, color: 'rgba(0,0,0,0.12)', offsetY: 6 } as ShadowOptions)
-    .border(this.breakpoint === 'sm'
-      ? { width: 0, color: Color.Transparent, style: BorderStyle.Solid }
-      : { width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
-  }
-
   @Builder proAccountEditSheet() {
     Column() {
       Text(this.proAccountId === '' ? '登录 RustDesk Server Pro' : '管理 Pro 账号')
@@ -1484,7 +1385,7 @@ export struct RustDeskRelayPage {
         .backgroundColor(this.proBusy ? this.pal().text3 : this.accentColor).fontColor('#FFFFFF').borderRadius(10)
         .enabled(!this.proBusy).onClick(() => { this.doProLogin(); })
       if (this.proAccountId !== '') {
-        Button('退出 Pro 账号').width('100%').height(40).fontSize(14)
+          Button('删除此 Pro 账户').width('100%').height(40).fontSize(14)
           .backgroundColor(Color.Transparent).fontColor(this.pal().danger).borderRadius(10).margin({ top: 8 })
           .onClick(() => { this.doProLogout(this.proAccountId); })
       }
@@ -1505,8 +1406,6 @@ export struct RustDeskRelayPage {
   @Builder relaySheetBuilder() {
     if (this.sheetContent === 1) {
       this.relayEditSheet()
-    } else if (this.sheetContent === 2) {
-      this.accountEditSheet()
     } else if (this.sheetContent === 3) {
       this.proAccountEditSheet()
     } else if (this.sheetContent === 4) {
