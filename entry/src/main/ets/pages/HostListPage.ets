@@ -34,6 +34,7 @@ import { showLockGate, lockGateErrorMessage } from '../components/LockGate';
 import { ColorPickerSheet } from '../components/ColorPickerSheet';
 import { HostAddWizardSheet } from '../components/hostadd/HostAddWizardSheet';
 import { RdpAddFlow } from '../components/hostadd/RdpAddFlow';
+import { RustDeskAddFlow } from '../components/hostadd/RustDeskAddFlow';
 // Passphrase uses bindSheet (HostListPage is @Entry, no bindSheet limit)
 import { KeyVaultPage } from './KeyVaultPage';
 import { SshPreflightState } from '../components/SshPreflightSheet';
@@ -6383,6 +6384,27 @@ struct HostListPage {
           }
           this.showAddSheet = false;
           this.refreshHostListView();
+          if (connectNow) { setTimeout((): void => { this.handleHostCardClick(host); }, 260); }
+        }
+      })
+    } else if (this.modernAddProtocol === 'rustdesk') {
+      RustDeskAddFlow({
+        relays: this.srv.getAllRelays(),
+        lanScanning: this.lanScanning,
+        lanPeers: this.lanScanResults,
+        defaultDirectPort: this.rustdeskDirectPort,
+        onBackToProtocols: (): void => { this.modernAddProtocol = ''; this.addSheetShowsModernPicker = true; },
+        onStartLanScan: (): void => { this.startLanScan(); },
+        onAddRelay: (relay: RustDeskRelayConfig): boolean => {
+          const saved: boolean = this.srv.addRelay(relay);
+          if (saved) { this.refreshHostListView(); }
+          return saved;
+        },
+        onSave: (host: RemoteHost, connectNow: boolean): void => {
+          if (!this.srv.addHost(host)) {
+            promptAction.showToast({ message: '保存主机失败，请稍后重试', duration: 1800 }); return;
+          }
+          this.showAddSheet = false; this.refreshHostListView();
           if (connectNow) { setTimeout((): void => { this.handleHostCardClick(host); }, 260); }
         }
       })
