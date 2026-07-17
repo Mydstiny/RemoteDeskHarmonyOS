@@ -24,6 +24,7 @@ import guideContentRegistryTest from './GuideContentRegistry.test';
 import sshKeyImportServiceTest from './SshKeyImportService.test';
 import rustDeskLanDiscoveryServiceTest from './RustDeskLanDiscoveryService.test';
 import hostAddModePolicyTest from './HostAddModePolicy.test';
+import hostAddDraftTest from './HostAddDraft.test';
 
 export default function testsuite() {
   abilityTest();
@@ -52,4 +53,5 @@ export default function testsuite() {
   sshKeyImportServiceTest();
   rustDeskLanDiscoveryServiceTest();
   hostAddModePolicyTest();
+  hostAddDraftTest();
 }
