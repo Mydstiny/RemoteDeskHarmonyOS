@@ -52,13 +52,24 @@ export class RustDeskProSyncService {
     const relays: RustDeskRelayConfig[] = this.hosts.getAllRelays();
     for (let i = 0; i < relays.length; i++) {
       const relay: RustDeskRelayConfig = relays[i];
+      let migrated: RustDeskRelayConfig | null = null;
       for (let j = 0; j < relay.accounts.length; j++) {
         const legacy: RustDeskAccount = relay.accounts[j];
-        if (!LegacyRustDeskAccountCloudAdapter.isProMetadata(legacy)) { continue; }
+        // Released versions called these records "Admin" accounts. They
+        // are now Pro metadata; migrate every legacy row without carrying
+        // its old password into the new local-only credential model.
+        if (!LegacyRustDeskAccountCloudAdapter.isProMetadata(legacy)) {
+          if (migrated === null) { migrated = RustDeskRelayConfig.fromJSON(relay.toJSON()); }
+          const migratedRow: RustDeskAccount = migrated.accounts[j];
+          migrated.accounts[j] = LegacyRustDeskAccountCloudAdapter.toLegacy(
+            LegacyRustDeskAccountCloudAdapter.fromLegacy(legacy, relay.apiServer));
+          migrated.accounts[j].id = migratedRow.id;
+        }
         const local: RustDeskProAccountState | undefined = this.credentials.get(legacy.id);
         if (local !== undefined && local.accessToken.length > 0) { continue; }
         this.credentials.save(LegacyRustDeskAccountCloudAdapter.fromLegacy(legacy, relay.apiServer));
       }
+      if (migrated !== null) { this.hosts.updateRelay(migrated); }
     }
   }
 
