@@ -176,7 +176,10 @@ fn resolve_stream_params_for_config(config: &RustDeskConfig) -> ResolvedStreamPa
         profile_params.fps
     };
 
-    if matches!(preferred_codec, 1 | 2 | 3) && config.fps <= 0 {
+    // VP8/AV1 retain the conservative default. VP9 is deliberately requested
+    // at the profile's full rate; local device capability determines achieved
+    // throughput instead of an artificial client-side 45 FPS ceiling.
+    if matches!(preferred_codec, 1 | 3) && config.fps <= 0 {
         effective_fps = effective_fps.min(45);
     }
     if matches!(config.profile, RustDeskProfile::Stable) && config.fps <= 0 {
@@ -1220,5 +1223,28 @@ mod tests {
         assert_eq!(params.effective_fps, 60);
         assert_eq!(params.req_width, 742);
         assert_eq!(params.req_height, 1600);
+    }
+
+    #[test]
+    fn vp9_uses_profile_60fps_without_an_implicit_cap() {
+        let cfg = RustDeskConfig {
+            host: std::ptr::null(),
+            port: 21116,
+            key: std::ptr::null(),
+            username: std::ptr::null(),
+            password: std::ptr::null(),
+            width: 1600,
+            height: 1040,
+            codec: 2,
+            image_quality: 1,
+            privacy_mode: false,
+            audio_enabled: true,
+            profile: RustDeskProfile::Balanced,
+            fps: 0,
+            direct_connection: false,
+            auth_mode: 0,
+        };
+
+        assert_eq!(resolve_stream_params_for_config(&cfg).effective_fps, 60);
     }
 }

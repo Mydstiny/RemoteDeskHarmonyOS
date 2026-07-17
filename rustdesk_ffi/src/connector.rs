@@ -42,6 +42,20 @@ const VIDEO_STARVATION_REFRESH_INTERVAL_MS: u128 = 2500;
 const CONTROL_DIAGNOSTIC_INTERVAL: Duration = Duration::from_secs(5);
 const SLOW_VIDEO_CALLBACK_WARN: Duration = Duration::from_millis(50);
 const SLOW_VIDEO_ACK_WARN: Duration = Duration::from_millis(50);
+const VP9_CODEC_PREFERENCE: i32 = 2;
+const BACKPRESSURE_FPS: [u32; 4] = [60, 45, 30, 15];
+
+fn pressure_target_fps(
+    preferred_codec: i32,
+    active_codec: i32,
+    configured_fps: u32,
+    pressure_level: u32,
+) -> u32 {
+    if preferred_codec == VP9_CODEC_PREFERENCE || active_codec == VP9_CODEC_PREFERENCE {
+        return configured_fps;
+    }
+    configured_fps.min(BACKPRESSURE_FPS[pressure_level.min(3) as usize])
+}
 
 fn should_emit_control_diagnostics(last_report: Instant, now: Instant) -> bool {
     now.duration_since(last_report) >= CONTROL_DIAGNOSTIC_INTERVAL
@@ -712,11 +726,10 @@ impl RustDeskConnector {
         let mut current_backpressure_level: u32 = 0; // 0=normal, 1=mild, 2=moderate, 3=severe
         let mut requested_pressure_level: u32 = 0;
         let mut applied_pressure_level: u32 = 0;
+        let mut active_video_codec: i32 = 0;
         const DEGRADE_AFTER_OVERLOAD_WINDOWS: u32 = 5; // need 5s of overload before degrade
         const RECOVER_AFTER_CLEAN_WINDOWS: u32 = 30; // 30s of clean before recover
         const OVERLOAD_VIDEO_THRESHOLD: u64 = 3; // <3 fps sustained = genuine decoder overload
-                                                 // Backpressure FPS/quality table: [normal, mild, moderate, severe]
-        const BP_FPS: [u32; 4] = [60, 45, 30, 15];
         if let Err(err) = Session::send_stream_options(
             crypto,
             preferred_codec,
@@ -906,6 +919,7 @@ impl RustDeskConnector {
                     }
                     last_video_at = Some(now);
                     let actual_codec = Self::video_frame_codec_preference(vf);
+                    active_video_codec = actual_codec;
                     if !stream_options_reasserted
                         && preferred_codec != 0
                         && actual_codec != 0
@@ -1067,7 +1081,12 @@ impl RustDeskConnector {
                     current_backpressure_level = applied_pressure_level;
                     consecutive_overload_windows = 0;
                     consecutive_clean_windows = 0;
-                    let fps = BP_FPS[applied_pressure_level as usize];
+                    let fps = pressure_target_fps(
+                        preferred_codec,
+                        active_video_codec,
+                        fps,
+                        applied_pressure_level,
+                    );
                     eprintln!(
                         "[RustDesk-FFI] LOCAL PRESSURE level={} fps={} quality={} total_video={}",
                         applied_pressure_level, fps, image_quality, video_count
@@ -1096,7 +1115,12 @@ impl RustDeskConnector {
                     {
                         current_backpressure_level += 1;
                         consecutive_overload_windows = 0;
-                        let fps = BP_FPS[current_backpressure_level as usize];
+                        let fps = pressure_target_fps(
+                            preferred_codec,
+                            active_video_codec,
+                            fps,
+                            current_backpressure_level,
+                        );
                         let quality = image_quality;
                         eprintln!(
                             "[RustDesk-FFI] BACKPRESSURE DEGRADE level={} fps={} quality={} window_video={} total_video={}",
@@ -1120,7 +1144,12 @@ impl RustDeskConnector {
                     {
                         current_backpressure_level -= 1;
                         consecutive_clean_windows = 0;
-                        let fps = BP_FPS[current_backpressure_level as usize];
+                        let fps = pressure_target_fps(
+                            preferred_codec,
+                            active_video_codec,
+                            fps,
+                            current_backpressure_level,
+                        );
                         let quality = image_quality;
                         eprintln!(
                             "[RustDesk-FFI] BACKPRESSURE RECOVER level={} fps={} quality={} total_video={}",
@@ -2014,8 +2043,8 @@ impl RustDeskConnector {
 #[cfg(test)]
 mod tests {
     use super::{
-        should_refresh_for_video_starvation, ControlKey, KeyEvent_oneof_union, Message_oneof_union,
-        RustDeskConnector,
+        pressure_target_fps, should_refresh_for_video_starvation, ControlKey,
+        KeyEvent_oneof_union, Message_oneof_union, RustDeskConnector,
     };
     use crate::protocol::message_proto::{Hash, LoginResponse, Message};
     use crate::protocol::wire;
@@ -2054,6 +2083,21 @@ mod tests {
             Some(3_000),
             None,
         ));
+    }
+
+    #[test]
+    fn vp9_pressure_keeps_the_configured_60fps_target() {
+        for level in 0..=3 {
+            assert_eq!(pressure_target_fps(2, 0, 60, level), 60);
+            assert_eq!(pressure_target_fps(4, 2, 60, level), 60);
+        }
+    }
+
+    #[test]
+    fn non_vp9_pressure_never_raises_the_configured_target() {
+        assert_eq!(pressure_target_fps(4, 4, 30, 0), 30);
+        assert_eq!(pressure_target_fps(4, 4, 60, 2), 30);
+        assert_eq!(pressure_target_fps(4, 4, 60, 3), 15);
     }
 
     #[test]
