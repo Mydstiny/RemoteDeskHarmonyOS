@@ -72,6 +72,7 @@ export struct RustDeskRelayPage {
   @State proAccounts: RustDeskProAccountState[] = [];
   @State proRelayId: string = '';
   @State proAccountId: string = '';
+  @State proCreateNewAccount: boolean = false;
   @State formProServer: string = '';
   @State formProUser: string = '';
   @State formProPwd: string = '';
@@ -263,6 +264,7 @@ export struct RustDeskRelayPage {
     this.resetVncRelayForm();
     this.proRelayId = '';
     this.proAccountId = '';
+    this.proCreateNewAccount = false;
     this.formProServer = '';
     this.formProUser = '';
     this.formProPwd = '';
@@ -327,8 +329,22 @@ export struct RustDeskRelayPage {
     const storedAccount = account ?? this.preferredProAccountForRelay(relay.id);
     this.proRelayId = relay.id;
     this.proAccountId = storedAccount ? storedAccount.id : '';
+    this.proCreateNewAccount = false;
     this.formProServer = storedAccount ? storedAccount.serverUrl : relay.apiServer;
     this.formProUser = storedAccount ? storedAccount.username : '';
+    this.formProPwd = '';
+    this.formProError = '';
+    this.proBusy = false;
+    this.sheetContent = 3;
+    this.showSheet = true;
+  }
+
+  private openNewProAccountSheet(relay: RustDeskRelayConfig): void {
+    this.proRelayId = relay.id;
+    this.proAccountId = '';
+    this.proCreateNewAccount = true;
+    this.formProServer = relay.apiServer;
+    this.formProUser = '';
     this.formProPwd = '';
     this.formProError = '';
     this.proBusy = false;
@@ -532,7 +548,7 @@ export struct RustDeskRelayPage {
     this.formProError = '';
     this.formProServer = serverUrl;
     this.formProUser = username;
-    const existing = this.preferredProAccountForRelay(this.proRelayId);
+    const existing = this.proCreateNewAccount ? undefined : this.preferredProAccountForRelay(this.proRelayId);
     const accountId = this.proAccountId !== ''
       ? this.proAccountId
       : (existing ? existing.id : 'rdpro_' + Date.now().toString(36));
@@ -1302,6 +1318,8 @@ export struct RustDeskRelayPage {
         Blank()
         Text(this.proAccountsForRelay(relay.id).length + ' 个 Pro 账户')
           .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
+        Text('新增账户').fontSize(11).fontColor(this.accentColor).fontFamily(this.font()).margin({ left: 10 })
+          .onClick((): void => { this.openNewProAccountSheet(relay); })
       }.width('100%').margin({ bottom: 9 })
 
       Row() {
@@ -1355,8 +1373,8 @@ export struct RustDeskRelayPage {
           Text('Server Pro 地址簿').fontSize(13).fontColor(this.pal().text3).fontFamily(this.font()).margin({ left: 6 })
         }
         Blank()
-        Text('登录').fontSize(13).fontColor(this.accentColor).fontFamily(this.font())
-          .onClick(() => { this.openProAccountSheet(relay); })
+        Text('新增账户').fontSize(13).fontColor(this.accentColor).fontFamily(this.font())
+          .onClick(() => { this.openNewProAccountSheet(relay); })
       }.width('100%').margin({ bottom: 7 })
       if (this.proAccountsForRelay(relay.id).length === 0) {
         Text('Server Pro 地址簿未连接').fontSize(12).fontColor(this.pal().text3).fontFamily(this.font())
@@ -1518,7 +1536,8 @@ export struct RustDeskRelayPage {
 
   @Builder proAccountEditSheet() {
     Column() {
-      Text(this.proAccountId === '' ? '登录 RustDesk Server Pro' : '管理 Pro 账号')
+      Text(this.proCreateNewAccount ? '添加 RustDesk Server Pro 账户' :
+        (this.proAccountId === '' ? '登录 RustDesk Server Pro' : '管理 Pro 账号'))
         .fontSize(19).fontWeight(FontWeight.Bold).fontColor(this.pal().text).fontFamily(this.font())
         .width('100%').margin({ bottom: 8 })
       Text('Pro API 地址独立于中继配置；修改地址后请重新登录并同步。访问令牌仅保存在本机，不参与华为云同步。')
