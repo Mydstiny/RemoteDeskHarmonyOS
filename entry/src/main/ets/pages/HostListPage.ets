@@ -79,6 +79,7 @@ import {
 } from '../services/RustDeskHostConfigPolicy';
 import { sheetOpenDelayMsAfterDismiss } from '../services/SheetTransitionPolicy';
 import { resolveHostAddMode } from '../services/HostAddModePolicy';
+import { resolveRustDeskBadges } from '../services/RustDeskCardBadgePolicy';
 import { cloudSyncDetailSpec } from '../services/CloudSyncGuidancePolicy';
 import {
   settingsLeafSheetClosedState,
@@ -3584,10 +3585,15 @@ struct HostListPage {
                       .fontSize(this.breakpoint === 'sm' ? (AppTheme.fontSize.body as number) : 17)
                       .fontWeight(FontWeight.Medium)
                       .fontColor(this.pal().text).fontFamily(this.font()).layoutWeight(1)
-                    if (host.rustdeskProManaged && host.sourceType === 'rustdesk_pro') {
-                      Text('Pro').fontSize(10).fontColor(this.accentColor).fontFamily(this.font())
-                        .padding({ left: 6, right: 6, top: 2, bottom: 2 }).borderRadius(6)
-                        .backgroundColor(this.pal().surface).margin({ left: 6 })
+                    if (host.protocol === 'rustdesk') {
+                      ForEach(resolveRustDeskBadges(host.rustdeskDirectEnabled,
+                        host.rustdeskProManaged && host.sourceType === 'rustdesk_pro'), (badge: string) => {
+                        Text(badge).fontSize(10)
+                          .fontColor(badge === 'Pro' ? this.accentColor :
+                            (badge === '直连' ? this.pal().success : this.pal().text2))
+                          .fontFamily(this.font()).padding({ left: 6, right: 6, top: 2, bottom: 2 })
+                          .borderRadius(6).backgroundColor(this.pal().surface).margin({ left: 6 })
+                      })
                     }
                     if (host.locked) {
                       SymbolGlyph($r('sys.symbol.ohos_lock'))

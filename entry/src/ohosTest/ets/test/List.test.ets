@@ -25,6 +25,7 @@ import sshKeyImportServiceTest from './SshKeyImportService.test';
 import rustDeskLanDiscoveryServiceTest from './RustDeskLanDiscoveryService.test';
 import hostAddModePolicyTest from './HostAddModePolicy.test';
 import hostAddDraftTest from './HostAddDraft.test';
+import rustDeskCardBadgePolicyTest from './RustDeskCardBadgePolicy.test';
 
 export default function testsuite() {
   abilityTest();
@@ -54,4 +55,5 @@ export default function testsuite() {
   rustDeskLanDiscoveryServiceTest();
   hostAddModePolicyTest();
   hostAddDraftTest();
+  rustDeskCardBadgePolicyTest();
 }
