@@ -16,6 +16,7 @@ import { socket } from '@kit.NetworkKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { common } from '@kit.AbilityKit';
 import { RustDeskRelayConfig } from '../model/RustDeskRelayConfig';
+import { VncRelayConfig } from '../model/VncRelayConfig';
 import { RustDeskProAccountState } from '../model/RustDeskProModels';
 import { HostSyncService } from '../services/HostSyncService';
 import { RustDeskProSyncService } from '../services/RustDeskProSyncService';
@@ -23,6 +24,7 @@ import { snapshotSelectedRelay } from '../services/RustDeskRelayHealthPolicy';
 import { Palette, buildDark, buildLight, AppTheme } from '../common/Theme';
 import { resolveFabAddStyle } from '../services/FabAddStylePolicy';
 import { ResourceFabPicker } from '../components/resourceadd/ResourceFabPicker';
+import { VncRelayConfigService } from '../services/VncRelayConfigService';
 
 class TcpTestResult {
   ok: boolean = false;
@@ -40,9 +42,10 @@ export struct RustDeskRelayPage {
   @StorageProp('topRectHeight') topRectHeight: number = 0;
   @StorageProp('hostAddMode') fabAddStyle: string = 'modern';
   @State relays: RustDeskRelayConfig[] = [];
+  @State vncRelays: VncRelayConfig[] = [];
   @State expandedRelayIds: string[] = [];
   @State showSheet: boolean = false;
-  @State sheetContent: number = 1;  // 1=relay, 2=legacy account, 3=Pro, 4=saved, 5=relay type
+  @State sheetContent: number = 1;  // 1=RustDesk form, 3=Pro, 4=saved, 5=protocol, 6=RustDesk type, 7=VNC form
   @State savedRelayId: string = '';
   @State relayKind: string = 'oss';
   @State editingRelayId: string = '';
@@ -58,6 +61,12 @@ export struct RustDeskRelayPage {
   @State formApiServer: string = '';
   @State formKey: string = '';
   @State formTestResult: string = '';
+  // UltraVNC Repeater form (device-local until VNC sessions are enabled)
+  @State editingVncRelayId: string = '';
+  @State formVncName: string = '';
+  @State formVncHost: string = '';
+  @State formVncPort: number = 5901;
+  @State formVncTargetId: string = '';
   // Server Pro account form and local-only account state
   @State proAccounts: RustDeskProAccountState[] = [];
   @State proRelayId: string = '';
@@ -70,8 +79,10 @@ export struct RustDeskRelayPage {
   @State testingRelayId: string = '';
   private srv: HostSyncService = HostSyncService.getInstance();
   private proSync: RustDeskProSyncService = RustDeskProSyncService.getInstance();
+  private vncSrv: VncRelayConfigService = VncRelayConfigService.getInstance();
   private dataUnsubscribe: (() => void) | null = null;
   private proDataUnsubscribe: (() => void) | null = null;
+  private vncDataUnsubscribe: (() => void) | null = null;
   private pageActive: boolean = false;
 
   private pal(): Palette {
@@ -86,14 +97,16 @@ export struct RustDeskRelayPage {
   aboutToAppear(): void {
     this.pageActive = true;
     this.proSync.init(getContext(this) as common.Context);
+    this.vncSrv.init(getContext(this) as common.Context);
     this.registerDataRefreshListener();
     this.load();
     this.loadProAccounts();
+    this.loadVncRelays();
     this.srv.whenReady().then((): void => {
       if (this.pageActive) { this.load(); }
     });
   }
-  onPageShow(): void { this.load(); }
+  onPageShow(): void { this.load(); this.loadVncRelays(); }
   aboutToDisappear(): void {
     this.pageActive = false;
     if (this.dataUnsubscribe) {
@@ -103,6 +116,10 @@ export struct RustDeskRelayPage {
     if (this.proDataUnsubscribe) {
       this.proDataUnsubscribe();
       this.proDataUnsubscribe = null;
+    }
+    if (this.vncDataUnsubscribe) {
+      this.vncDataUnsubscribe();
+      this.vncDataUnsubscribe = null;
     }
   }
   private registerDataRefreshListener(): void {
@@ -117,6 +134,11 @@ export struct RustDeskRelayPage {
         if (this.pageActive) { this.loadProAccounts(); }
       });
     }
+    if (!this.vncDataUnsubscribe) {
+      this.vncDataUnsubscribe = this.vncSrv.onDataChange((): void => {
+        if (this.pageActive) { this.loadVncRelays(); }
+      });
+    }
   }
   private load(): void {
     const selectedRelayId = this.selectedPcRelay ? this.selectedPcRelay.id : '';
@@ -129,6 +151,9 @@ export struct RustDeskRelayPage {
   }
   private loadProAccounts(): void {
     this.proAccounts = this.proSync.getAccounts();
+  }
+  private loadVncRelays(): void {
+    this.vncRelays = this.vncSrv.getAll();
   }
   onAddTrigger(): void {
     if (this.addTrigger > 0) { this.openAddRelaySheet(); }
@@ -156,6 +181,7 @@ export struct RustDeskRelayPage {
     this.relays.forEach((r: RustDeskRelayConfig) => { c += this.hostCountForRelay(r.id); });
     return c;
   }
+  private totalRelayCount(): number { return this.relays.length + this.vncRelays.length; }
 
   // ==================== Expand / Collapse ====================
 
@@ -223,6 +249,7 @@ export struct RustDeskRelayPage {
 
   private openAddRelaySheet(): void {
     this.resetRelayForm();
+    this.resetVncRelayForm();
     this.relayKind = 'oss';
     this.sheetContent = resolveFabAddStyle(this.fabAddStyle, this.isDesktopDevice) === 'modern' ? 5 : 1;
     this.showSheet = true;
@@ -232,6 +259,7 @@ export struct RustDeskRelayPage {
     this.showSheet = false;
     this.sheetContent = 1;
     this.resetRelayForm();
+    this.resetVncRelayForm();
     this.proRelayId = '';
     this.proAccountId = '';
     this.formProServer = '';
@@ -242,6 +270,7 @@ export struct RustDeskRelayPage {
     this.savedRelayId = '';
     this.load();
     this.loadProAccounts();
+    this.loadVncRelays();
   }
 
   private openEditRelaySheet(relay: RustDeskRelayConfig): void {
@@ -333,11 +362,52 @@ export struct RustDeskRelayPage {
       this.srv.updateRelay(r);
     } else { this.srv.addRelay(r); }
     this.load();
-    if (isNew && r.apiServer !== '') {
+    if (isNew) {
       this.savedRelayId = r.id;
       this.sheetContent = 4;
       return;
     }
+    this.closeSheet();
+  }
+
+  private resetVncRelayForm(): void {
+    this.editingVncRelayId = '';
+    this.formVncName = '';
+    this.formVncHost = '';
+    this.formVncPort = 5901;
+    this.formVncTargetId = '';
+  }
+
+  private openEditVncRelaySheet(relay: VncRelayConfig): void {
+    this.editingVncRelayId = relay.id;
+    this.formVncName = relay.name;
+    this.formVncHost = relay.host;
+    this.formVncPort = relay.port;
+    this.formVncTargetId = relay.targetId;
+    this.sheetContent = 7;
+    this.showSheet = true;
+  }
+
+  private doSaveVncRelay(): void {
+    if (this.formVncHost.trim() === '') {
+      promptAction.showToast({ message: 'Repeater 地址不能为空', duration: 2000 });
+      return;
+    }
+    if (this.formVncPort <= 0 || this.formVncPort > 65535) {
+      promptAction.showToast({ message: '端口必须在 1–65535 之间', duration: 2000 });
+      return;
+    }
+    const relay = new VncRelayConfig();
+    relay.id = this.editingVncRelayId.length > 0 ? this.editingVncRelayId : VncRelayConfig.generateId();
+    relay.name = this.formVncName.trim();
+    relay.host = this.formVncHost.trim();
+    relay.port = this.formVncPort;
+    relay.targetId = this.formVncTargetId.trim();
+    const existing = this.vncRelays.find((item: VncRelayConfig): boolean => item.id === relay.id);
+    relay.createdAt = existing ? existing.createdAt : Date.now();
+    relay.updatedAt = Date.now();
+    this.vncSrv.save(relay);
+    promptAction.showToast({ message: 'VNC 中继配置已保存', duration: 1800 });
     this.closeSheet();
   }
 
@@ -488,6 +558,16 @@ export struct RustDeskRelayPage {
     }
   }
 
+  private doDeleteVncRelay(id: string): void {
+    promptAction.showDialog({
+      title: '确认删除', message: '确定要删除此 VNC 中继配置吗？',
+      buttons: [{ text: '取消', color: this.pal().text2 }, { text: '删除', color: this.pal().danger }]
+    }).then((result: Object): void => {
+      const value = result as Record<string, number>;
+      if (value['index'] === 1) { this.vncSrv.remove(id); }
+    });
+  }
+
   private async doProSync(accountId: string): Promise<void> {
     try {
       const result = await this.proSync.sync(accountId);
@@ -543,10 +623,10 @@ export struct RustDeskRelayPage {
         // PC: fixed-height layout — left list + right detail each scroll independently
         Column() {
           Column().height(this.contentTopSpacer())
-          if (this.relays.length > 0) {
+          if (this.totalRelayCount() > 0) {
             this.statsBar()
           }
-          if (this.relays.length === 0) {
+          if (this.totalRelayCount() === 0) {
             Column() {
               this.emptyState()
             }.width('100%').layoutWeight(1).alignItems(HorizontalAlign.Start)
@@ -562,10 +642,10 @@ export struct RustDeskRelayPage {
         Scroll() {
           Column() {
             Column().height(this.contentTopSpacer())
-            if (this.relays.length > 0) {
+            if (this.totalRelayCount() > 0) {
               this.statsBar()
             }
-            if (this.relays.length === 0) {
+            if (this.totalRelayCount() === 0) {
               Column() {
                 this.emptyState()
               }.width('100%').alignItems(HorizontalAlign.Start)
@@ -600,7 +680,7 @@ export struct RustDeskRelayPage {
   @Builder statsBar() {
     Scroll() {
       Row() {
-        this._statChip('中继', this.relays.length.toString(), this.pal().text)
+        this._statChip('中继', this.totalRelayCount().toString(), this.pal().text)
         this._statChip('在线', this.onlineCount().toString(), this.pal().success)
         this._statChip('异常', this.errorCount().toString(), this.pal().danger)
         this._statChip('账户', this.totalAccountCount().toString(), this.pal().text)
@@ -629,7 +709,7 @@ export struct RustDeskRelayPage {
       SymbolGlyph($r('sys.symbol.cloud_fill'))
         .fontSize(48)
         .fontColor([this.pal().text3])
-      Text('还没有 RustDesk 中继')
+      Text('还没有中继服务器')
         .fontSize(17).fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font())
         .margin({ top: 16 })
       Text('点击底部 + 添加中继服务器')
@@ -643,8 +723,46 @@ export struct RustDeskRelayPage {
 
   // ==================== Mobile List (swipeAction) ====================
 
+  @Builder vncRelayCard(relay: VncRelayConfig) {
+    Column() {
+      Row() {
+        SymbolGlyph($r('sys.symbol.cloud_fill')).fontSize(22).fontColor([this.accentColor])
+          .margin({ right: 10 })
+        Column() {
+          Text(relay.displayName()).fontSize(15).fontWeight(FontWeight.Medium)
+            .fontColor(this.pal().text).fontFamily(this.font()).maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+          Text(relay.host + ':' + relay.port.toString()).fontSize(11).fontColor(this.pal().text3)
+            .fontFamily(this.font()).margin({ top: 3 }).maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+        }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+        Text('VNC').fontSize(10).fontWeight(FontWeight.Medium).fontColor(this.accentColor)
+          .padding({ left: 8, right: 8, top: 4, bottom: 4 }).borderRadius(8)
+          .backgroundColor(this.pal().surface)
+      }.width('100%')
+      if (relay.targetId.length > 0) {
+        Text('目标 ID · ' + relay.targetId).fontSize(11).fontColor(this.pal().text2)
+          .fontFamily(this.font()).width('100%').margin({ top: 10 })
+      }
+      Row() {
+        Text('等待 VNC 连接能力启用').fontSize(11).fontColor(this.pal().text3)
+          .fontFamily(this.font()).layoutWeight(1)
+        Button('编辑').height(30).fontSize(11).fontColor(this.accentColor)
+          .backgroundColor(this.pal().surface).borderRadius(8)
+          .onClick((): void => { this.openEditVncRelaySheet(relay); })
+        Button('删除').height(30).fontSize(11).fontColor(this.pal().danger)
+          .backgroundColor(Color.Transparent).borderRadius(8).margin({ left: 4 })
+          .onClick((): void => { this.doDeleteVncRelay(relay.id); })
+      }.width('100%').margin({ top: 10 })
+    }.width('100%').padding(14).borderRadius(14).backgroundColor(this.pal().card)
+      .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
+  }
+
   @Builder mobileList() {
     List() {
+      ForEach(this.vncRelays, (relay: VncRelayConfig) => {
+        ListItem() { this.vncRelayCard(relay) }
+      }, (relay: VncRelayConfig): string => relay.id)
       ForEach(this.relays, (relay: RustDeskRelayConfig) => {
         ListItem() {
           this.relayCardContent(relay, false)
@@ -744,6 +862,9 @@ export struct RustDeskRelayPage {
 
   @Builder tabletGrid() {
     Grid() {
+      ForEach(this.vncRelays, (relay: VncRelayConfig) => {
+        GridItem() { this.vncRelayCard(relay) }
+      }, (relay: VncRelayConfig): string => relay.id)
       ForEach(this.relays, (relay: RustDeskRelayConfig) => {
         GridItem() {
           this.relayCardContent(relay, true)
@@ -772,6 +893,9 @@ export struct RustDeskRelayPage {
       // Left: relay list
       Column() {
         List() {
+          ForEach(this.vncRelays, (relay: VncRelayConfig) => {
+            ListItem() { this.vncRelayCard(relay) }
+          }, (relay: VncRelayConfig): string => relay.id)
           ForEach(this.relays, (relay: RustDeskRelayConfig) => {
             ListItem() {
               this.pcListItem(relay)
@@ -1268,7 +1392,7 @@ export struct RustDeskRelayPage {
       Column() {
         Row().width('100%').height(this.topSafeH() + this.titleOffsetY())
         Row() {
-          Text('RustDesk 中继').fontSize(27).fontWeight(FontWeight.Bold)
+          Text('中继服务器').fontSize(27).fontWeight(FontWeight.Bold)
             .fontColor(this.pal().text).fontFamily(this.font())
           Blank()
         }.width('100%').padding({ left: 24, right: 24, bottom: 8 })
@@ -1319,6 +1443,17 @@ export struct RustDeskRelayPage {
       : { width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
   }
 
+  @Builder relayProtocolChoiceSheet() {
+    ResourceFabPicker({
+      kind: 'gateway',
+      onSelect: (option: string): void => {
+        if (option === 'rustdesk') { this.sheetContent = 6; }
+        else { this.sheetContent = 7; }
+      },
+      onClose: (): void => { this.showSheet = false; }
+    })
+  }
+
   @Builder relayTypeChoiceSheet() {
     ResourceFabPicker({
       kind: 'relay',
@@ -1336,10 +1471,10 @@ export struct RustDeskRelayPage {
         .fontSize(12).fontColor(this.pal().text3).fontFamily(this.font()).textAlign(TextAlign.Center)
         .lineHeight(19).margin({ top: 8, bottom: 18 })
       Row() {
-        Button('暂不添加').layoutWeight(1).height(42).borderRadius(11)
+        Button('保存并完成').layoutWeight(1).height(42).borderRadius(11)
           .backgroundColor(this.pal().surface).fontColor(this.pal().text2)
           .onClick((): void => { this.closeSheet(); })
-        Button('添加 Pro 账户').layoutWeight(1).height(42).borderRadius(11).margin({ left: 10 })
+        Button('下一步：Pro 账户').layoutWeight(1).height(42).borderRadius(11).margin({ left: 10 })
           .backgroundColor(this.accentColor).fontColor(Color.White).onClick((): void => {
             const relay: RustDeskRelayConfig | undefined = this.srv.getAllRelays().find(
               (item: RustDeskRelayConfig): boolean => item.id === this.savedRelayId);
@@ -1348,6 +1483,36 @@ export struct RustDeskRelayPage {
       }.width('100%')
     }.width('100%').padding({ left: 24, right: 24, top: 30, bottom: 40 })
       .borderRadius(this.breakpoint === 'sm' ? 0 : 20).backgroundColor(this.pal().bg)
+  }
+
+  @Builder vncRelayEditSheet() {
+    Column() {
+      Text(this.editingVncRelayId.length > 0 ? '编辑 VNC 中继' : '添加 VNC 中继')
+        .fontSize(19).fontWeight(FontWeight.Bold).fontColor(this.pal().text).fontFamily(this.font())
+        .width('100%').margin({ bottom: 8 })
+      Text('配置 UltraVNC Repeater。当前先保存服务器信息，待 VNC 连接引擎启用后用于建立会话。')
+        .fontSize(12).fontColor(this.pal().text3).fontFamily(this.font()).lineHeight(18)
+        .width('100%').margin({ bottom: 14 })
+      this._f('配置名称（可选）', '办公室 VNC 中继', this.formVncName,
+        (v: string): void => { this.formVncName = v; })
+      this._f('Repeater 地址', 'vnc.example.com', this.formVncHost,
+        (v: string): void => { this.formVncHost = v; })
+      this._f('Repeater 端口', '5901', this.formVncPort.toString(), (v: string): void => {
+        const port = parseInt(v);
+        this.formVncPort = isNaN(port) ? 5901 : port;
+      })
+      this._f('目标 ID（可选）', '123456', this.formVncTargetId,
+        (v: string): void => { this.formVncTargetId = v; })
+      Button('保存 VNC 中继').width('100%').height(42).fontSize(14).fontWeight(FontWeight.Medium)
+        .backgroundColor(this.accentColor).fontColor(Color.White).borderRadius(10).margin({ top: 6 })
+        .onClick((): void => { this.doSaveVncRelay(); })
+      Blank().height(24)
+    }.width('100%').padding({ left: 24, right: 24, top: 24, bottom: 40 })
+      .borderRadius(this.breakpoint === 'sm' ? 0 : 20).backgroundColor(this.pal().bg)
+      .backgroundBlurStyle(BlurStyle.Regular)
+      .border(this.breakpoint === 'sm'
+        ? { width: 0, color: Color.Transparent, style: BorderStyle.Solid }
+        : { width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
   }
 
   @Builder proAccountEditSheet() {
@@ -1396,7 +1561,11 @@ export struct RustDeskRelayPage {
     } else if (this.sheetContent === 4) {
       this.relaySavedSheet()
     } else if (this.sheetContent === 5) {
+      this.relayProtocolChoiceSheet()
+    } else if (this.sheetContent === 6) {
       this.relayTypeChoiceSheet()
+    } else if (this.sheetContent === 7) {
+      this.vncRelayEditSheet()
     }
   }
 

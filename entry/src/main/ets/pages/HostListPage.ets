@@ -531,7 +531,7 @@ struct HostListPage {
       this.updateHostFilter(); // 非xl显示全部主机
     } else {
       // 非xl→xl: 标题跟随当前 tab
-      const titles: string[] = ['RDP 远程主机', 'RustDesk 远程主机', 'SSH 终端', '', '', 'RustDesk 中继'];
+      const titles: string[] = ['RDP 远程主机', 'RustDesk 远程主机', 'SSH 终端', '', '', '中继服务器'];
       this.hostPageTitle = titles[this.curTab] || '';
       this.updateHostFilter();
     }
@@ -3155,7 +3155,7 @@ struct HostListPage {
                 this.sidebarTab('SSH 终端', $rawfile('icons/command-line.svg'), 2)
                 this.sidebarTab('密钥保险库', $rawfile('icons/key.svg'), 3)
                 this.sidebarTab('2FA 验证器', $rawfile('icons/shield-check.svg'), 4)
-                this.sidebarRelayTab('RustDesk 中继', 5)
+                this.sidebarRelayTab('中继服务器', 5)
               }.layoutWeight(1).padding({ top: 24 })
               // 设置
               this.sidebarSettingsBtn()
@@ -3363,7 +3363,7 @@ struct HostListPage {
     .onClick(() => {
       this.curTab = index;
       if (this.isDesktopDevice) {
-        const titles: string[] = ['RDP 远程主机', 'RustDesk 远程主机', 'SSH 终端', '', '', 'RustDesk 中继'];
+        const titles: string[] = ['RDP 远程主机', 'RustDesk 远程主机', 'SSH 终端', '', '', '中继服务器'];
         this.hostPageTitle = titles[index] || '';
         if (index === 3) { this.keyVaultInnerTab = 0; }
         if (index === 4) { this.keyVaultInnerTab = 1; }
@@ -3388,7 +3388,7 @@ struct HostListPage {
     .onClick(() => {
       this.curTab = index;
       if (this.isDesktopDevice) {
-        const titles: string[] = ['RDP 远程主机', 'RustDesk 远程主机', 'SSH 终端', '', '', 'RustDesk 中继'];
+        const titles: string[] = ['RDP 远程主机', 'RustDesk 远程主机', 'SSH 终端', '', '', '中继服务器'];
         this.hostPageTitle = titles[index] || '';
       }
       this.updateHostFilter();
@@ -4126,7 +4126,7 @@ struct HostListPage {
                   Column() {
                     Text('添加 FAB 风格').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
                       .fontColor(this.pal().text).fontFamily(this.font())
-                    Text('控制添加主机、SSH 密钥、2FA 和 RustDesk 中继的界面风格')
+                Text('控制添加主机、SSH 密钥、2FA 和中继服务器的界面风格')
                       .fontSize(11).fontColor(this.pal().text3)
                       .fontFamily(this.font())
                   }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })

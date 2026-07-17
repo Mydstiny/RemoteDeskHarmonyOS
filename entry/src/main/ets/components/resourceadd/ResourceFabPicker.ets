@@ -15,12 +15,14 @@ export struct ResourceFabPicker {
 
   private title(): string {
     if (this.kind === 'totp') { return '添加 2FA 验证器'; }
+    if (this.kind === 'gateway') { return '添加中继服务器'; }
     if (this.kind === 'relay') { return '添加 RustDesk 中继'; }
     return '添加 SSH 密钥';
   }
 
   private subtitle(): string {
     if (this.kind === 'totp') { return '选择验证器配置方式'; }
+    if (this.kind === 'gateway') { return '选择中继协议'; }
     if (this.kind === 'relay') { return '选择服务器类型'; }
     return '选择密钥添加方式';
   }
@@ -56,6 +58,9 @@ export struct ResourceFabPicker {
         this.option('scan', '扫描二维码', '使用相机读取 TOTP 配置')
         this.option('uri', '导入 otpauth 配置', '粘贴 otpauth:// URI 后解析')
         this.option('manual', '手动输入', '填写发行方、账户和 Secret')
+      } else if (this.kind === 'gateway') {
+        this.option('rustdesk', 'RustDesk 中继', '配置 RustDesk ID、Relay 与 Server Pro')
+        this.option('vnc', 'VNC 中继', '配置 UltraVNC Repeater 服务器')
       } else {
         this.option('oss', 'RustDesk OSS', '自建开源 ID 与 Relay 服务')
         this.option('pro', 'RustDesk Server Pro', 'API 登录与地址簿设备同步')
