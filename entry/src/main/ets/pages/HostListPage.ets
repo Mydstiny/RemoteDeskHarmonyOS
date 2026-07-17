@@ -33,6 +33,7 @@ import { AppConfig, AppTheme, Palette, buildDark, buildLight } from '../common/T
 import { showLockGate, lockGateErrorMessage } from '../components/LockGate';
 import { ColorPickerSheet } from '../components/ColorPickerSheet';
 import { HostAddWizardSheet } from '../components/hostadd/HostAddWizardSheet';
+import { RdpAddFlow } from '../components/hostadd/RdpAddFlow';
 // Passphrase uses bindSheet (HostListPage is @Entry, no bindSheet limit)
 import { KeyVaultPage } from './KeyVaultPage';
 import { SshPreflightState } from '../components/SshPreflightSheet';
@@ -221,6 +222,7 @@ struct HostListPage {
   @StorageProp('colorMode') @Watch('onSystemColorModeChange') systemUiColorMode: number = ENV_COLOR_MODE_UNKNOWN;
   @State showAddSheet: boolean = false;
   @State addSheetShowsModernPicker: boolean = false;
+  @State modernAddProtocol: string = '';
   @StorageLink('hostAddMode') hostAddMode: string = 'modern';
   @State lanScanning: boolean = false;
   @State lanScanResults: DiscoveredRustDeskPeer[] = [];
@@ -3240,6 +3242,7 @@ struct HostListPage {
               this.resetForm();
               this.addSheetShowsModernPicker =
                 resolveHostAddMode(this.hostAddMode, this.isDesktopDevice) === 'modern';
+              this.modernAddProtocol = '';
               this.openSheetSafely((): void => { this.showAddSheet = true; });
             }
             if (this.curTab === 1) { this.kvAddTrigger++; }
@@ -3256,6 +3259,7 @@ struct HostListPage {
           onDisappear: () => {
             this.noteSheetDismissed();
             this.addSheetShowsModernPicker = false;
+            this.modernAddProtocol = '';
             this.resetForm();
             this.load();
           }
@@ -6359,10 +6363,28 @@ struct HostListPage {
     if (this.addSheetShowsModernPicker) {
       HostAddWizardSheet({
         onSelectProtocol: (protocol: string): void => {
-          this.switchHostProtocol(protocol, RemoteHost.getDefaultPort(protocol));
+          this.modernAddProtocol = protocol;
           this.addSheetShowsModernPicker = false;
+          if (protocol !== 'rdp') {
+            this.switchHostProtocol(protocol, RemoteHost.getDefaultPort(protocol));
+          }
         },
         onClose: (): void => { this.showAddSheet = false; }
+      })
+    } else if (this.modernAddProtocol === 'rdp') {
+      RdpAddFlow({
+        credentials: this.rdpCredentials,
+        onBackToProtocols: (): void => { this.modernAddProtocol = ''; this.addSheetShowsModernPicker = true; },
+        onAddCredential: (): void => { this.openRdpCredentialManager(); },
+        onSave: (host: RemoteHost, connectNow: boolean): void => {
+          if (!this.srv.addHost(host)) {
+            promptAction.showToast({ message: '保存主机失败，请稍后重试', duration: 1800 });
+            return;
+          }
+          this.showAddSheet = false;
+          this.refreshHostListView();
+          if (connectNow) { setTimeout((): void => { this.handleHostCardClick(host); }, 260); }
+        }
       })
     } else {
       this.sheetBuilder()
