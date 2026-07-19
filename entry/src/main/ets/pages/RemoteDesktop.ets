@@ -274,7 +274,7 @@ struct RemoteDesktop {
   @StorageLink('rustdeskReverseWheel') rustdeskReverseWheel: boolean = false;
   @StorageLink('rustdeskSwapMouseButtons') rustdeskSwapMouseButtons: boolean = false;
   @StorageLink('rustdeskTouchpadSpeed') rustdeskTouchpadSpeed: number = 1.0;
-  @StorageLink('virtualMouseStyle') virtualMouseStyle: string = 'arrow';
+  @StorageLink('virtualMouseStyle') virtualMouseStyle: string = 'circle';
   @StorageLink('showVirtualMouse') showVirtualMouse: boolean = false;
   @StorageLink('showVirtualJoystick') showVirtualJoystick: boolean = false;
   @StorageLink('rdpControlMode') rdpControlMode: number = 0; // 0=touchpad, 1=direct touch, 2=keyboard/mouse

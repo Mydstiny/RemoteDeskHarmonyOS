@@ -10,7 +10,7 @@ const CLOUD_USER_SETTING_NAMES: string[] = [
   'liveViewEnabled',
   'liveViewMode',
   'hostAddMode',
-  'virtualMouseStyle',
+  // 'virtualMouseStyle', // 发布版本暂时固定圆环，恢复官方光标开关后再启用
   'showVirtualMouse',
   'showVirtualJoystick',
   'terminalFgColor',

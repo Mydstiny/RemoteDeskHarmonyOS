@@ -241,7 +241,7 @@ struct HostListPage {
   @State addSheetClosing: boolean = false;
   // Keep the released storage/cloud key while exposing the broader FAB-style semantics in UI code.
   @StorageLink('hostAddMode') fabAddStyle: string = 'modern';
-  @StorageLink('virtualMouseStyle') virtualMouseStyle: string = 'arrow';
+  @StorageLink('virtualMouseStyle') virtualMouseStyle: string = 'circle';
   @StorageLink('showVirtualMouse') showVirtualMouse: boolean = false;
   @StorageLink('showVirtualJoystick') showVirtualJoystick: boolean = false;
   @State lanScanning: boolean = false;
@@ -592,7 +592,6 @@ struct HostListPage {
       const savedLiveViewEnabled: boolean = prefs.getSync('liveViewEnabled', true) as boolean;
       const savedLiveViewMode: number = prefs.getSync('liveViewMode', 1) as number;
       const savedHostAddMode: string = prefs.getSync('hostAddMode', 'modern') as string;
-      const savedVirtualMouseStyle: string = prefs.getSync('virtualMouseStyle', 'arrow') as string;
       const savedShowVirtualMouse: boolean = prefs.getSync('showVirtualMouse', false) as boolean;
       const savedShowVirtualJoystick: boolean = prefs.getSync('showVirtualJoystick', false) as boolean;
       const savedWallpaper: string = prefs.getSync('wallpaperColor', '') as string;
@@ -620,8 +619,11 @@ struct HostListPage {
       AppStorage.setOrCreate('liveViewMode', this.liveViewMode);
       this.fabAddStyle = savedHostAddMode === 'classic' ? 'classic' : 'modern';
       AppStorage.setOrCreate('hostAddMode', this.fabAddStyle);
-      this.virtualMouseStyle = savedVirtualMouseStyle === 'arrow' ? 'arrow' : 'circle';
+      // 发布版本暂时固定使用圆环；保留 virtualMouseStyle 存储键，后续恢复官方光标开关时继续兼容。
+      this.virtualMouseStyle = 'circle';
       AppStorage.setOrCreate('virtualMouseStyle', this.virtualMouseStyle);
+      prefs.putSync('virtualMouseStyle', 'circle');
+      prefs.flushSync();
       this.showVirtualMouse = savedShowVirtualMouse;
       this.showVirtualJoystick = savedShowVirtualJoystick;
       AppStorage.setOrCreate('showVirtualMouse', this.showVirtualMouse);
@@ -2824,6 +2826,8 @@ struct HostListPage {
       const prefs = preferences.getPreferencesSync(getContext(this), { name: 'RemoteDesktopAppPrefs' });
       for (let i = 0; i < keys.length; i++) {
         const key: string = keys[i];
+        // 发布版本暂时不接受云端恢复的远端光标样式，避免旧设备的 arrow 偏好覆盖圆环默认值。
+        if (key === 'virtualMouseStyle') { continue; }
         const value = settings[key];
         prefs.putSync(key, value);
         AppStorage.setOrCreate(key, value);
@@ -2842,11 +2846,9 @@ struct HostListPage {
       this.refreshHaloPresets();
       this.syncHaloColorForCurrentTheme();
     }
-    const syncedVirtualMouseStyle = settings['virtualMouseStyle'];
-    if (syncedVirtualMouseStyle === 'arrow' || syncedVirtualMouseStyle === 'circle') {
-      this.virtualMouseStyle = syncedVirtualMouseStyle;
-      AppStorage.setOrCreate('virtualMouseStyle', this.virtualMouseStyle);
-    }
+    // 发布版本暂时固定圆环；恢复设置开关后再重新接入云端样式同步。
+    this.virtualMouseStyle = 'circle';
+    AppStorage.setOrCreate('virtualMouseStyle', this.virtualMouseStyle);
     try {
       const prefs = preferences.getPreferencesSync(getContext(this), { name: 'RemoteDesktopAppPrefs' });
       prefs.putSync('virtualMouseStyle', this.virtualMouseStyle);
@@ -4501,6 +4503,7 @@ struct HostListPage {
               }
               this.cardDivider()
               Column() {
+                /*
                 Row() {
                   Row() { Text('⌖').fontSize(22).fontColor(this.pal().text) }
                     .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
@@ -4521,6 +4524,7 @@ struct HostListPage {
                     .backgroundColor(this.virtualMouseStyle === 'arrow' ? this.accentColor : this.pal().surface)
                     .borderRadius(10).onClick((): void => { this.saveVirtualMouseStyle('arrow'); })
                 }.width('100%').padding({ left: 16, right: 16, bottom: 12 })
+                */
                 Row() {
                   Column() {
                     Text('浮动鼠标').fontSize(14).fontColor(this.pal().text)

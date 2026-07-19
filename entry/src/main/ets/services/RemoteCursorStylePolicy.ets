@@ -6,7 +6,7 @@ export function remoteCursorSnapshotChanged(previousX: number, previousY: number
 }
 
 export function normalizeRemoteCursorStyle(value: string | undefined): RemoteCursorStyle {
-  return value === 'circle' ? 'circle' : 'arrow';
+  return value === 'arrow' ? 'arrow' : 'circle';
 }
 
 export function shouldRenderVirtualTouchpadCursor(connected: boolean, touchpadMode: boolean,
