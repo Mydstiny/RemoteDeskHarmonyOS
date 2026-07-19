@@ -64,6 +64,7 @@ extern "C" {
 #include <atomic>
 #include <mutex>
 #include <chrono>
+#include <future>
 #include <pthread.h>
 
 #undef LOG_DOMAIN
@@ -329,6 +330,12 @@ struct RustDeskBridge::Impl {
     int                     sockFd = -1;  // TCP socket fd (实验模式)
 #ifdef RUSTDESK_USE_REAL_CORE
     void*                   ffiHandle = nullptr;  // Rust FFI 连接句柄
+    // FFI connect() 在后台执行，但不能 detach：断开时必须等待它结束，
+    // 否则旧连接可能在下一次连接已经开始后仍持有 rendezvous/relay 资源。
+    std::thread              ffiConnectThread;
+    // 流线程通过 onFfiDisconnect 回调结束时，不能从自身 join；把延迟释放
+    // 的线程保留下来，由 disconnect() 统一 join，避免释放任务悬空。
+    std::vector<std::thread> ffiCleanupThreads;
 #endif
 
     void setState(ConnectionState s, const std::string& msg = "") {
@@ -382,20 +389,6 @@ static std::atomic<uint64_t> g_ffiKeySendCount {0};
 static std::atomic<uint64_t> g_ffiWheelSendCount {0};
 static std::atomic<uint64_t> g_ffiTextSendCount {0};
 static std::atomic<uint64_t> g_ffiFileSendCount {0};
-
-static void releaseFfiHandle(void* ffiHandle, const char* reason) {
-    if (ffiHandle == nullptr) {
-        return;
-    }
-    OH_LOG_INFO(LOG_APP,
-        "[RustDesk-FFI] releasing stale handle=%{public}p reason=%{public}s",
-        ffiHandle, reason ? reason : "unknown");
-    // rustdesk_disconnect joins the streaming thread. Never call it from the
-    // stream callback itself, otherwise the stream thread would join itself.
-    std::thread([ffiHandle]() {
-        rustdesk_disconnect(ffiHandle);
-    }).detach();
-}
 
 static const char* rdCodecName(int codec) {
     switch (codec) {
@@ -607,6 +600,7 @@ void RustDeskBridge::onFfiDisconnect(int state, const char* message, void* userD
     auto* impl = static_cast<RustDeskBridge::Impl*>(userData);
     bool wasConnected = false;
     bool requested = false;
+    std::shared_ptr<std::promise<void>> cleanupGate;
     if (impl) {
         impl->cursorStore.setVisible(false);
         impl->ffiStreamEnded.store(true);
@@ -619,8 +613,25 @@ void RustDeskBridge::onFfiDisconnect(int state, const char* message, void* userD
         std::lock_guard<std::mutex> lock(impl->mutex);
         // The FFI callback runs on the streaming thread. Move ownership out
         // here and release it on a separate thread after this callback returns.
+        // The cleanup thread is retained by Impl and joined from disconnect().
         endedHandle = impl->ffiHandle;
         impl->ffiHandle = nullptr;
+        if (endedHandle != nullptr) {
+            OH_LOG_INFO(LOG_APP,
+                "[RustDesk-FFI] scheduling stale handle cleanup=%{public}p reason=stream-ended",
+                endedHandle);
+            cleanupGate = std::make_shared<std::promise<void>>();
+            std::future<void> cleanupReady = cleanupGate->get_future();
+            impl->ffiCleanupThreads.emplace_back([endedHandle,
+                                                   cleanupReady = std::move(cleanupReady)]() mutable {
+                // rustdesk_disconnect joins the streaming thread. Waiting for
+                // the callback to return is mandatory; otherwise this cleanup
+                // worker could try to join the thread that is executing this
+                // callback and deadlock.
+                cleanupReady.wait();
+                rustdesk_disconnect(endedHandle);
+            });
+        }
     }
     if (requested) {
         OH_LOG_INFO(LOG_APP,
@@ -645,7 +656,9 @@ void RustDeskBridge::onFfiDisconnect(int state, const char* message, void* userD
             impl->setState(ConnectionState::ERROR, stopMessage);
         }
     }
-    releaseFfiHandle(endedHandle, "stream-ended");
+    if (cleanupGate) {
+        cleanupGate->set_value();
+    }
 }
 #endif
 
@@ -666,13 +679,20 @@ RemoteCursorSnapshot RustDeskBridge::getRemoteCursorSnapshot(bool includePixels)
 
 RustDeskBridge::~RustDeskBridge() {
     bool hasFfiHandle = false;
+    bool hasFfiConnectThread = false;
+    bool hasFfiCleanupThreads = false;
 #ifdef RUSTDESK_USE_REAL_CORE
     {
         std::lock_guard<std::mutex> lock(impl_->mutex);
         hasFfiHandle = impl_->ffiHandle != nullptr;
+        hasFfiConnectThread = impl_->ffiConnectThread.joinable();
+        hasFfiCleanupThreads = !impl_->ffiCleanupThreads.empty();
     }
 #endif
-    if (getState() != ConnectionState::DISCONNECTED || hasFfiHandle) { disconnect(); }
+    if (getState() != ConnectionState::DISCONNECTED || hasFfiHandle ||
+        hasFfiConnectThread || hasFfiCleanupThreads) {
+        disconnect();
+    }
 }
 
 std::string RustDeskBridge::protocolName() { return "RustDesk"; }
@@ -805,13 +825,20 @@ static int rdIpcConnectFlow(int fd, const ConnectionConfig& cfg) {
 
 int RustDeskBridge::connect(const ConnectionConfig& cfg) {
     bool hasFfiHandle = false;
+    bool hasFfiConnectThread = false;
+    bool hasFfiCleanupThreads = false;
 #ifdef RUSTDESK_USE_REAL_CORE
     {
         std::lock_guard<std::mutex> lock(impl_->mutex);
         hasFfiHandle = impl_->ffiHandle != nullptr;
+        hasFfiConnectThread = impl_->ffiConnectThread.joinable();
+        hasFfiCleanupThreads = !impl_->ffiCleanupThreads.empty();
     }
 #endif
-    if (getState() != ConnectionState::DISCONNECTED || hasFfiHandle) { disconnect(); }
+    if (getState() != ConnectionState::DISCONNECTED || hasFfiHandle ||
+        hasFfiConnectThread || hasFfiCleanupThreads) {
+        disconnect();
+    }
     impl_->config = cfg;
     impl_->disconnectRequested.store(false);
     impl_->ffiStreamEnded.store(false);
@@ -846,7 +873,7 @@ int RustDeskBridge::connect(const ConnectionConfig& cfg) {
                     SafeLog::MaskSecretLenOnly(cfg.rdServerKey).c_str());
 
         RustDeskBridge::Impl* impl = impl_.get();
-        std::thread([impl, cfg, ffiPeerId, logHost, serial]() {
+        std::thread connectThread([impl, cfg, ffiPeerId, logHost, serial]() {
             RustDeskFfiConfig ffiCfg = {};  // 零初始化 — 消除未初始化 padding/新字段风险
             ffiCfg.host     = cfg.host.c_str();
             ffiCfg.port     = cfg.port > 0 ? cfg.port :
@@ -946,7 +973,11 @@ int RustDeskBridge::connect(const ConnectionConfig& cfg) {
                 connectedCallback(ConnectionState::CONNECTED, connectedMessage);
             }
             OH_LOG_INFO(LOG_APP, "[RustDesk-FFI] Connected handle=%{public}p", ffiHandle);
-        }).detach();
+        });
+        {
+            std::lock_guard<std::mutex> lock(impl_->mutex);
+            impl_->ffiConnectThread = std::move(connectThread);
+        }
         return 0;
 
     }
@@ -1015,13 +1046,38 @@ void RustDeskBridge::disconnect() {
     // 审批等待线程继续占用中继连接。
     rustdesk_cancel_pending_connect();
     void* ffiHandle = nullptr;
+    std::thread ffiConnectThread;
+    std::vector<std::thread> ffiCleanupThreads;
     {
         std::lock_guard<std::mutex> lock(impl_->mutex);
         ffiHandle = impl_->ffiHandle;
         impl_->ffiHandle = nullptr;
+        ffiConnectThread = std::move(impl_->ffiConnectThread);
+        ffiCleanupThreads = std::move(impl_->ffiCleanupThreads);
     }
     if (mode_ == RustDeskMode::FFI && ffiHandle != nullptr) {
         rustdesk_disconnect(ffiHandle);
+    }
+    if (ffiConnectThread.joinable()) {
+        if (ffiConnectThread.get_id() == std::this_thread::get_id()) {
+            OH_LOG_ERROR(LOG_APP,
+                "[RustDesk-FFI] disconnect called from connect thread; refusing self-join");
+            ffiConnectThread.detach();
+        } else {
+            ffiConnectThread.join();
+        }
+    }
+    for (std::thread& cleanupThread : ffiCleanupThreads) {
+        if (!cleanupThread.joinable()) {
+            continue;
+        }
+        if (cleanupThread.get_id() == std::this_thread::get_id()) {
+            OH_LOG_ERROR(LOG_APP,
+                "[RustDesk-FFI] cleanup thread attempted self-join; refusing self-join");
+            cleanupThread.detach();
+        } else {
+            cleanupThread.join();
+        }
     }
 #endif
     if (impl_->sockFd >= 0) {
