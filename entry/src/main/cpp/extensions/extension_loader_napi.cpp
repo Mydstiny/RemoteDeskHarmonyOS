@@ -754,6 +754,7 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
     session->protocolName = protocolName;
 
     int sessionId = g_nextSessionId++;
+    adapter->setSessionIdentity(static_cast<uint64_t>(sessionId));
     g_disconnectAllRequestId = 0;
     if (g_disconnectRequestBySession.size() > 256) {
         for (auto it = g_disconnectRequestBySession.begin();
@@ -1795,6 +1796,69 @@ napi_value NapiGetConnectionState(napi_env env, napi_callback_info info) {
 }
 
 /**
+ * NAPI: getRemoteCursorSnapshot(sessionId: number, includePixels?: boolean): object
+ * Positions and shapes use independent revisions so ArkUI can poll without copying pixels.
+ */
+napi_value NapiGetRemoteCursorSnapshot(napi_env env, napi_callback_info info) {
+    size_t argc = 2;
+    napi_value args[2];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+
+    int32_t sessionId = 0;
+    bool includePixels = false;
+    if (argc > 0) {
+        napi_get_value_int32(env, args[0], &sessionId);
+    }
+    if (argc > 1) {
+        napi_get_value_bool(env, args[1], &includePixels);
+    }
+
+    RemoteCursorSnapshot snapshot;
+    auto it = g_sessions.find(sessionId);
+    if (it != g_sessions.end() && it->second->adapter) {
+        snapshot = it->second->adapter->getRemoteCursorSnapshot(includePixels);
+    }
+
+    napi_value result;
+    napi_create_object(env, &result);
+    const auto setInt32 = [env, result](const char* name, int32_t value) {
+        napi_value field;
+        napi_create_int32(env, value, &field);
+        napi_set_named_property(env, result, name, field);
+    };
+    const auto setUint64 = [env, result](const char* name, uint64_t value) {
+        napi_value field;
+        napi_create_double(env, static_cast<double>(value), &field);
+        napi_set_named_property(env, result, name, field);
+    };
+    setUint64("sessionId", snapshot.sessionId);
+    setUint64("shapeId", snapshot.shapeId);
+    setUint64("shapeRevision", snapshot.shapeRevision);
+    setUint64("positionRevision", snapshot.positionRevision);
+    setInt32("x", snapshot.x);
+    setInt32("y", snapshot.y);
+    setInt32("width", snapshot.width);
+    setInt32("height", snapshot.height);
+    setInt32("hotX", snapshot.hotX);
+    setInt32("hotY", snapshot.hotY);
+    napi_value visible;
+    napi_get_boolean(env, snapshot.visible, &visible);
+    napi_set_named_property(env, result, "visible", visible);
+    napi_value protocol;
+    napi_create_string_utf8(env, snapshot.protocol.c_str(), snapshot.protocol.size(), &protocol);
+    napi_set_named_property(env, result, "protocol", protocol);
+
+    napi_value pixels;
+    void* pixelsData = nullptr;
+    napi_create_arraybuffer(env, snapshot.rgba.size(), &pixelsData, &pixels);
+    if (pixelsData && !snapshot.rgba.empty()) {
+        std::memcpy(pixelsData, snapshot.rgba.data(), snapshot.rgba.size());
+    }
+    napi_set_named_property(env, result, "rgba", pixels);
+    return result;
+}
+
+/**
  * NAPI: getConnectionLastMessage(sessionId: number): string
  * 返回协议适配器最近一次连接状态消息。
  */
@@ -2508,6 +2572,10 @@ napi_value ExtensionLoaderNapi::Init(napi_env env, napi_value exports) {
     napi_create_function(env, "getConnectionState", NAPI_AUTO_LENGTH,
                          NapiGetConnectionState, nullptr, &fn);
     napi_set_named_property(env, exports, "getConnectionState", fn);
+
+    napi_create_function(env, "getRemoteCursorSnapshot", NAPI_AUTO_LENGTH,
+                         NapiGetRemoteCursorSnapshot, nullptr, &fn);
+    napi_set_named_property(env, exports, "getRemoteCursorSnapshot", fn);
 
     napi_create_function(env, "getConnectionLastMessage", NAPI_AUTO_LENGTH,
                          NapiGetConnectionLastMessage, nullptr, &fn);

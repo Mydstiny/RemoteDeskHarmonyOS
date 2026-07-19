@@ -16,7 +16,7 @@ function emptyTables(): Record<string, Array<Record<string, string>>> {
 
 function signedText(document: LocalBackupDocument): string {
   document.sha256 = localBackupSha256(localBackupCanonicalPayload(
-    document.createdAt, document.appVersion, document.tables));
+    document.createdAt, document.appVersion, document.tables, document.extensions, document.version));
   return JSON.stringify(document);
 }
 
@@ -43,6 +43,16 @@ export default function localBackupPolicyTest(): void {
       const document = createLocalBackupDocument(emptyTables(), 100, '1.0.5');
       document.tables['rdpcredentials'].push({ id: 'credential-1' });
       expect(validateLocalBackupDocument(signedText(document)) !== null).assertTrue();
+    });
+
+    it('round_trips_local_extension_rows_in_v2', 0, (): void => {
+      const document = createLocalBackupDocument(emptyTables(), 100, '1.0.7', [{
+        id: 'remotehosts:h1', tablename: 'remotehosts', recordid: 'h1',
+        payload: '{"rustdeskdirectport":"21117"}', updatedat: '100'
+      }]);
+      const parsed = validateLocalBackupDocument(JSON.stringify(document));
+      expect(parsed !== null).assertTrue();
+      expect(parsed?.extensions?.length).assertEqual(1);
     });
   });
 }

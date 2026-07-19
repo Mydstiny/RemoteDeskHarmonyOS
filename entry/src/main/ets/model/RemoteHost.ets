@@ -224,7 +224,7 @@ export class RemoteHost {
       const hasEndpoint: boolean = this.rustdeskDirectEnabled ?
         this.rustdeskDirectHost.trim().length > 0 && this.rustdeskDirectPort > 0 &&
         this.rustdeskDirectPort <= 65535 :
-        (this.rustdeskRelayId.length > 0 || this.host.length > 0) && this.port > 0 && this.port <= 65535;
+        this.rustdeskRelayId.trim().length > 0 && this.port > 0 && this.port <= 65535;
       const hasPeerIdentity: boolean = this.rustdeskDirectEnabled || this.customHostname.trim().length > 0;
       return basic && hasPeerIdentity && hasEndpoint;
     }
@@ -247,8 +247,8 @@ export class RemoteHost {
         }
       } else {
         if (!this.customHostname.trim()) { errors.push('远程ID不能为空'); }
-        if (!this.rustdeskRelayId && !this.host) {
-          errors.push('RustDesk 需要选择中继配置或填写直连地址');
+        if (!this.rustdeskRelayId) {
+          errors.push('RustDesk 中继连接必须绑定中继配置');
         } else if (this.port <= 0 || this.port > 65535) {
           errors.push('端口号必须在 1-65535 之间');
         }
@@ -265,12 +265,11 @@ export class RemoteHost {
       if (this.port <= 0 || this.port > 65535) { errors.push('端口号必须在 1-65535 之间'); }
     }
     if (this.protocol !== 'rdp' && this.protocol !== 'rustdesk' && this.protocol !== 'ssh') { errors.push('协议类型无效'); }
-    // 直连跳过 ID/中继，不存在 RustDesk 的远端批准通道；即使是旧数据
-    // 仍带有 request_approval，也必须按设备密码校验，避免保存后连接层
-    // 被迫用空密码发起直连。
-    const rustDeskApproval: boolean = this.protocol === 'rustdesk' &&
-      !this.rustdeskDirectEnabled && this.rustdeskAuthMode === 'request_approval';
-    if (!this.password && !rustDeskApproval && this.rdpCredentialId === '' && !(this.protocol === 'ssh' && this.sshUseKey)) {
+    // 中继连接的密码可以留空，表示在连接弹窗中临时输入；只有直连没有
+    // ID/中继批准通道，才必须在主机配置中预先填写设备密码。
+    const rustDeskRelayCanPrompt: boolean = this.protocol === 'rustdesk' &&
+      !this.rustdeskDirectEnabled;
+    if (!this.password && !rustDeskRelayCanPrompt && this.rdpCredentialId === '' && !(this.protocol === 'ssh' && this.sshUseKey)) {
       if (this.protocol === 'rdp') {
         errors.push('密码不能为空 (或选择 Windows 凭据)');
       } else if (this.protocol === 'rustdesk') {

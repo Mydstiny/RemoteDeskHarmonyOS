@@ -14,6 +14,7 @@ import {
   SshHostKeyInfo,
   RdpCertificateInfo,
   RdpRenderStats,
+  RemoteCursorSnapshot,
   SessionTransferStatus
 } from '../types/rdpnapi';
 import { hilog } from '@kit.PerformanceAnalysisKit';
@@ -624,6 +625,15 @@ export class ExtensionLoader {
     } catch (err) {
       hilog.error(DOMAIN, TAG, '[ExtensionLoader] getConnectionState: ' + JSON.stringify(err));
       return 0;
+    }
+  }
+
+  getRemoteCursorSnapshot(sessionId: number, includePixels: boolean = false): RemoteCursorSnapshot | null {
+    try {
+      return rdpnapi.getRemoteCursorSnapshot(sessionId, includePixels) as RemoteCursorSnapshot;
+    } catch (err) {
+      hilog.error(DOMAIN, TAG, '[ExtensionLoader] getRemoteCursorSnapshot: ' + JSON.stringify(err));
+      return null;
     }
   }
 

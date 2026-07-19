@@ -77,10 +77,12 @@ import {
   shouldAdoptRustDeskDirectPort,
   rustDeskAuthModeForConnection,
   normalizeRustDeskPort,
+  rustDeskConnectionError,
   RUSTDESK_PEER_TCP_PORT,
   RustDeskHostEndpoint
 } from '../services/RustDeskHostConfigPolicy';
 import { sheetOpenDelayMsAfterDismiss } from '../services/SheetTransitionPolicy';
+import { shouldPreserveManagedRustDeskRoute } from '../services/RustDeskProSyncPolicy';
 import { resolveFabAddStyle } from '../services/FabAddStylePolicy';
 import { resolveRustDeskBadges } from '../services/RustDeskCardBadgePolicy';
 import { cloudSyncDetailSpec } from '../services/CloudSyncGuidancePolicy';
@@ -171,8 +173,15 @@ import { ActiveRemoteSessionRegistry, ActiveRemoteSessionRecord } from '../servi
 import { RemoteProtocol } from '../services/RemoteSessionState';
 import {
   RustDeskProPreflightState,
-  rustDeskProPeerIdForConnection
+  rustDeskProPeerIdForConnection,
+  shouldOpenRustDeskProPreflight
 } from '../services/RustDeskProConnectionPreflightPolicy';
+import { shouldFallbackToNativeRdpConnectionAfterResolverFailure } from '../services/RdpCertificatePreflightPolicy';
+import {
+  nextConnectionAttemptGeneration,
+  shouldBeginConnectionAttempt,
+  shouldApplyConnectionAttempt
+} from '../services/ConnectionAttemptPolicy';
 import { motion } from '@kit.MultimodalAwarenessKit';
 import { HostDataSource } from '../datasources/DataSources';
 import { hashForLog, maskHost } from '../utils/SafeLogger';
@@ -197,7 +206,9 @@ struct HostListPage {
   @State filteredHosts: RemoteHost[] = [];
   @State rdpCredentials: RdpCredential[] = [];
   private hostDataSource: HostDataSource = new HostDataSource();
+  private hostDataSignature: string = '';
   private hostDataUnsubscribe: (() => void) | null = null;
+  private skipInitialPageShowLoad: boolean = true;
   private keyVaultDataUnsubscribe: (() => void) | null = null;
   private pageActive: boolean = false;
   @State searchText: string = '';
@@ -213,6 +224,7 @@ struct HostListPage {
   @State sshCount: number = 0;
   @State keyCount: number = 0;
   @State totpCount: number = 0;
+  @State hostViewRevision: number = 0;
   @State hostPageTitle: string = '远程主机';
   @State loginRefreshKey: number = 0;
   @State accountDisplayName: string = '';
@@ -229,7 +241,9 @@ struct HostListPage {
   @State addSheetClosing: boolean = false;
   // Keep the released storage/cloud key while exposing the broader FAB-style semantics in UI code.
   @StorageLink('hostAddMode') fabAddStyle: string = 'modern';
-  @StorageLink('virtualMouseStyle') virtualMouseStyle: string = 'circle';
+  @StorageLink('virtualMouseStyle') virtualMouseStyle: string = 'arrow';
+  @StorageLink('showVirtualMouse') showVirtualMouse: boolean = false;
+  @StorageLink('showVirtualJoystick') showVirtualJoystick: boolean = false;
   @State lanScanning: boolean = false;
   @State lanScanResults: DiscoveredRustDeskPeer[] = [];
   private lanDiscovery: RustDeskLanDiscoveryService = new RustDeskLanDiscoveryService();
@@ -294,10 +308,13 @@ struct HostListPage {
   @State rustDeskProPreflightHostId: string = '';
   @State rustDeskProAuthMode: string = 'password';
   @State rustDeskProPassword: string = '';
+  @State rustDeskProPasswordMode: number = 0;
   @State rustDeskProPasswordVisible: boolean = false;
   @State rustDeskProRememberPassword: boolean = true;
   @State rustDeskProPreflightError: string = '';
   private rustDeskProPreflightGeneration: number = 0;
+  private connectionAttemptGeneration: number = 0;
+  private connectionAttemptHostId: string = '';
   @StorageLink('rustdeskImageQuality') rustdeskImageQuality: number = 1; // 0=fast, 1=balanced, 2=quality
   @StorageLink('rustdeskCodec') rustdeskCodec: number = 0; // 0=auto, 1=VP8, 2=VP9, 3=AV1, 4=H264, 5=H265
   @StorageLink('rustdeskDirectIp') rustdeskDirectIp: boolean = false;
@@ -575,7 +592,9 @@ struct HostListPage {
       const savedLiveViewEnabled: boolean = prefs.getSync('liveViewEnabled', true) as boolean;
       const savedLiveViewMode: number = prefs.getSync('liveViewMode', 1) as number;
       const savedHostAddMode: string = prefs.getSync('hostAddMode', 'modern') as string;
-      const savedVirtualMouseStyle: string = prefs.getSync('virtualMouseStyle', 'circle') as string;
+      const savedVirtualMouseStyle: string = prefs.getSync('virtualMouseStyle', 'arrow') as string;
+      const savedShowVirtualMouse: boolean = prefs.getSync('showVirtualMouse', false) as boolean;
+      const savedShowVirtualJoystick: boolean = prefs.getSync('showVirtualJoystick', false) as boolean;
       const savedWallpaper: string = prefs.getSync('wallpaperColor', '') as string;
       // 终端设置
       const savedTermFg: string = prefs.getSync('terminalFgColor', '') as string;
@@ -603,6 +622,10 @@ struct HostListPage {
       AppStorage.setOrCreate('hostAddMode', this.fabAddStyle);
       this.virtualMouseStyle = savedVirtualMouseStyle === 'arrow' ? 'arrow' : 'circle';
       AppStorage.setOrCreate('virtualMouseStyle', this.virtualMouseStyle);
+      this.showVirtualMouse = savedShowVirtualMouse;
+      this.showVirtualJoystick = savedShowVirtualJoystick;
+      AppStorage.setOrCreate('showVirtualMouse', this.showVirtualMouse);
+      AppStorage.setOrCreate('showVirtualJoystick', this.showVirtualJoystick);
       if (savedWallpaper !== '') { AppStorage.setOrCreate('wallpaperColor', savedWallpaper); }
       const savedWallIdx: number = prefs.getSync('wallpaperIdx', -1) as number;
       if (savedWallIdx >= 0 && savedWallIdx < this.wallpaperItems.length) {
@@ -725,12 +748,16 @@ struct HostListPage {
     this.pageActive = true;
     CloudSyncCoordinator.getInstance().flushDeferredAutomaticPushes();
     this.updateWindowMetrics();
-    if (this.followSystem) {
-      this.syncFollowSystemTheme('page-show');
+    if (this.skipInitialPageShowLoad) {
+      this.skipInitialPageShowLoad = false;
     } else {
-      this.reapplyManualTheme('page-show');
+      if (this.followSystem) {
+        this.syncFollowSystemTheme('page-show');
+      } else {
+        this.reapplyManualTheme('page-show');
+      }
+      this.load();
     }
-    this.load();
     this.refreshCryptoStatus();
     this.applyDesktopRdpInputMode();
     this.applyDesktopRustDeskInputMode();
@@ -1482,13 +1509,18 @@ struct HostListPage {
   }
 
   private loadAfterServiceReady(): void {
-    this.srv.whenReady().then((): void => {
-      this.applyCloudUserSettings();
-      if (this.pageActive) { this.load(); }
-    });
-    KeyVaultService.getInstance().whenReady().then((): void => {
-      if (this.pageActive) { this.load(); }
-    });
+    if (!this.srv.isReady()) {
+      this.srv.whenReady().then((): void => {
+        this.applyCloudUserSettings();
+        if (this.pageActive) { this.load(); }
+      });
+    }
+    const keyVault: KeyVaultService = KeyVaultService.getInstance();
+    if (!keyVault.isReady()) {
+      keyVault.whenReady().then((): void => {
+        if (this.pageActive) { this.load(); }
+      });
+    }
   }
 
   private registerDataRefreshListeners(): void {
@@ -1519,15 +1551,21 @@ struct HostListPage {
   private refreshHostListView(): void {
     // 用新对象快照驱动列表和详情，避免服务层原地更新同一 RemoteHost
     // 引用时，LazyForEach/卡片内部只收到 reload 却继续显示旧字段。
-    this.hosts = this.srv.getAllHosts().map((host: RemoteHost): RemoteHost =>
+    const nextHosts: RemoteHost[] = this.srv.getAllHosts().map((host: RemoteHost): RemoteHost =>
       RemoteHost.fromJSON(host.toJSON()));
     this.hostCount = this.srv.getHostCount();
     this.lockedCount = this.srv.getLockedHostCount();
     this.rdpCount = this.srv.getRdpCount();
     this.rustdeskCount = this.srv.getRustdeskCount();
     this.sshCount = this.srv.getSshCount();
+    const nextSignature: string = JSON.stringify(
+      nextHosts.map((host: RemoteHost): Object => host.toJSON()));
+    if (nextSignature === this.hostDataSignature) { return; }
+    this.hostDataSignature = nextSignature;
+    this.hosts = nextHosts;
     this.filteredHosts = this.visibleHostsForCurrentMode();
     this.hostDataSource.replaceAll(this.filteredHosts);
+    this.hostViewRevision += 1;
     this.refreshSshTrustedHostsView();
     this.refreshRdpTrustedHostsView();
   }
@@ -1812,7 +1850,6 @@ struct HostListPage {
         this.srv.removeHosts(ids);
         this.hostSelectionMode = false;
         this.hostSelectedIds = new Set<string>();
-        this.load();
       }
     });
   }
@@ -1832,16 +1869,50 @@ struct HostListPage {
     }, 300);
   }
 
+  private beginConnectionAttempt(hostId: string): number {
+    if (!shouldBeginConnectionAttempt(this.connectionAttemptHostId)) { return 0; }
+    const generation: number = nextConnectionAttemptGeneration(this.connectionAttemptGeneration);
+    this.connectionAttemptGeneration = generation;
+    this.connectionAttemptHostId = hostId;
+    return generation;
+  }
+
+  private isCurrentConnectionAttempt(hostId: string, generation: number): boolean {
+    return shouldApplyConnectionAttempt(
+      this.connectionAttemptGeneration,
+      generation,
+      this.connectionAttemptHostId,
+      hostId
+    );
+  }
+
+  private releaseConnectionAttempt(hostId: string): void {
+    if (hostId.length > 0 && this.connectionAttemptHostId === hostId) {
+      this.connectionAttemptHostId = '';
+    }
+  }
+
   private async connectToHost(host: RemoteHost): Promise<void> {
     hilog.info(0x0001, 'HostList', 'connectToHost: proto=' + host.protocol +
       ' host=' + maskHost(host.host) + ':' + host.port);
+    const protocolNeedsArbitration: boolean = host.protocol === 'rdp' || host.protocol === 'rustdesk';
+    const connectionGeneration: number = protocolNeedsArbitration ?
+      this.beginConnectionAttempt(host.id) : 0;
+    if (protocolNeedsArbitration && connectionGeneration === 0) {
+      promptAction.showToast({ message: '已有连接请求正在处理，请等待当前弹窗结束', duration: 1800 });
+      return;
+    }
     if (host.locked) {
       const r = await showLockGate(host.label, 'biometric');
       if (!r.ok) {
+        this.releaseConnectionAttempt(host.id);
         const msg: string = lockGateErrorMessage(r);
         if (msg !== '') { promptAction.showToast({ message: msg, duration: 2000 }); }
         return;
       }
+    }
+    if (protocolNeedsArbitration && !this.isCurrentConnectionAttempt(host.id, connectionGeneration)) {
+      return;
     }
     if (host.protocol === 'ssh') {
       // T-210: SSH 前置校验 (指纹 + 私钥密码) → 通过后才路由
@@ -1849,7 +1920,32 @@ struct HostListPage {
     } else if (host.protocol === 'rdp') {
       this.openRdpCertificatePreflight(host);
     } else if (host.protocol === 'rustdesk') {
-      this.openRustDeskProPreflight(host);
+      const relay: RustDeskRelayConfig | undefined = host.rustdeskDirectEnabled ? undefined :
+        this.srv.getAllRelays().find((item: RustDeskRelayConfig): boolean => item.id === host.rustdeskRelayId);
+      const rustDeskError: string = rustDeskConnectionError({
+        directEnabled: host.rustdeskDirectEnabled,
+        directHost: host.rustdeskDirectHost,
+        directPort: host.rustdeskDirectPort,
+        relayId: host.rustdeskRelayId,
+        relayExists: relay !== undefined,
+        relayHost: relay ? relay.idServer : '',
+        relayPort: relay ? relay.idServerPort : 0,
+        relayKey: relay ? relay.key : '',
+        proManaged: host.rustdeskProManaged && host.sourceType === 'rustdesk_pro'
+      });
+      if (rustDeskError !== '') {
+        this.releaseConnectionAttempt(host.id);
+        promptAction.showToast({ message: rustDeskError, duration: 2600 });
+        return;
+      }
+      if (shouldOpenRustDeskProPreflight(host.protocol, host.sourceType, host.rustdeskProManaged)) {
+        this.openRustDeskProPreflight(host);
+      } else {
+        const params: Record<string, Object> = {};
+        params['hostId'] = host.id;
+        router.pushUrl({ url: 'pages/RemoteDesktop', params: params });
+        this.releaseConnectionAttempt(host.id);
+      }
     } else {
       const params: Record<string, Object> = {};
       params['hostId'] = host.id;
@@ -1896,21 +1992,27 @@ struct HostListPage {
   }
 
   private doRdpCertificateCancel(): void {
+    const hostId: string = this.rdpCertificateHostId;
     this.rdpCertificateProbeGeneration = nextRdpCertificateProbeGeneration(
       this.rdpCertificateProbeGeneration
     );
     this.rdpCertificatePendingRouteParams = null;
     this.showRdpCertificatePreflight = false;
     this.rdpCertificateHostId = '';
+    this.releaseConnectionAttempt(hostId);
   }
 
   private handleRdpCertificateSheetDisappear(): void {
     this.noteSheetDismissed();
     if (this.rdpCertificatePendingRouteParams === null) {
+      this.releaseConnectionAttempt(this.rdpCertificateHostId);
       return;
     }
+    const routeHostId: string = this.rdpCertificateHostId;
     const params: Record<string, Object> = this.rdpCertificatePendingRouteParams;
     this.rdpCertificatePendingRouteParams = null;
+    this.releaseConnectionAttempt(routeHostId);
+    this.rdpCertificateHostId = '';
     setTimeout((): void => {
       router.pushUrl({ url: 'pages/RemoteDesktop', params: params });
     }, rdpCertificateRouteDelayMsAfterSheetClose());
@@ -1975,8 +2077,20 @@ struct HostListPage {
           ' ok=' + (info.ok ? 'true' : 'false') + ' code=' + info.errorCode.toString() +
           ' elapsedMs=' + elapsed.toString());
       if (!info.ok || info.fingerprintSha256.length === 0) {
+        if (shouldFallbackToNativeRdpConnectionAfterResolverFailure(
+          info.errorCode,
+          host.rdpCertificateTrustMode,
+          host.rdpCertificateFingerprintSha256
+        )) {
+          hilog.warn(0x0001, 'HostList',
+            'RDP certificate probe resolver failed; using saved fingerprint with native connection');
+          this.doRdpCertificateRoute(host);
+          return;
+        }
         this.rdpCertificateState = RdpCertificatePreflightState.ERROR;
-        this.rdpCertificateError = info.errorMessage || '无法读取 RDP 主机证书';
+        this.rdpCertificateError = info.errorCode === -11 ?
+          '当前设备无法解析该 RDP 地址，请检查设备 DNS、VPN 或 TUN；Windows 侧可解析不代表本设备可用。' :
+          (info.errorMessage || '无法读取 RDP 主机证书');
         if (!this.showRdpCertificatePreflight) {
           this.openSheetSafely((): void => { this.showRdpCertificatePreflight = true; });
         }
@@ -2071,7 +2185,6 @@ struct HostListPage {
       RdpCertificatePreflightDecision.TRUST
     );
     this.srv.updateHost(updated);
-    this.refreshHostListView();
     this.doRdpCertificateRoute(updated);
   }
 
@@ -2086,10 +2199,10 @@ struct HostListPage {
     if (shouldRouteRdpCertificateAfterSheetDisappear(this.showRdpCertificatePreflight)) {
       this.rdpCertificatePendingRouteParams = params;
       this.showRdpCertificatePreflight = false;
-      this.rdpCertificateHostId = '';
       return;
     }
     this.rdpCertificateHostId = '';
+    this.releaseConnectionAttempt(host.id);
     setTimeout((): void => {
       router.pushUrl({ url: 'pages/RemoteDesktop', params: params });
     }, rdpCertificateRouteDelayMsAfterSheetClose());
@@ -2216,7 +2329,6 @@ struct HostListPage {
     updated.sshHostKeyTrustedAt = Date.now();
     updated.sshHostKeyTrustMode = 1;
     this.srv.updateHost(updated);
-    this.refreshHostListView();
     this.doSshPreflightCheckPassphrase(updated);
   }
 
@@ -2231,7 +2343,6 @@ struct HostListPage {
     updated.sshHostKeyTrustedAt = Date.now();
     updated.sshHostKeyTrustMode = 1;
     this.srv.updateHost(updated);
-    this.refreshHostListView();
     this.doSshPreflightCheckPassphrase(updated);
   }
 
@@ -2310,7 +2421,6 @@ struct HostListPage {
         if (this.sshPreflightPassphraseSaveToHost) {
           host.sshKeyPassphrase = this.sshPreflightPassphraseInput;
           this.srv.updateHost(host);
-          this.refreshHostListView();
         }
         this.doSshPreflightReady(host);
       } else {
@@ -2362,7 +2472,6 @@ struct HostListPage {
       promptAction.showToast({ message: '保存主机状态失败', duration: 2000 });
       return;
     }
-    this.refreshHostListView();
     promptAction.showToast({ message: host.locked ? '已锁定' : '已解锁', duration: 1500 });
   }
 
@@ -2372,6 +2481,7 @@ struct HostListPage {
     this.rustDeskProAuthMode = host.rustdeskDirectEnabled ? 'password' :
       (host.rustdeskAuthMode === 'request_approval' ? 'request_approval' : 'password');
     this.rustDeskProPassword = host.password;
+    this.rustDeskProPasswordMode = host.rustdeskPasswordMode === 1 ? 1 : 0;
     this.rustDeskProPasswordVisible = false;
     this.rustDeskProRememberPassword = true;
     this.rustDeskProPreflightError = '';
@@ -2385,6 +2495,7 @@ struct HostListPage {
   }
 
   private cancelRustDeskProPreflight(): void {
+    const hostId: string = this.rustDeskProPreflightHostId;
     this.rustDeskProPreflightGeneration += 1;
     if (this.rustDeskProPreflightState === RustDeskProPreflightState.CONNECTING) {
       this.loader.disconnect();
@@ -2392,23 +2503,31 @@ struct HostListPage {
     this.rustDeskProPreflightState = RustDeskProPreflightState.IDLE;
     this.showRustDeskProPreflight = false;
     this.rustDeskProPreflightHostId = '';
+    this.releaseConnectionAttempt(hostId);
   }
 
   private rustDeskProConfig(host: RemoteHost): SessionConfig {
     const relay: RustDeskRelayConfig | undefined = this.srv.getAllRelays()
       .find((item: RustDeskRelayConfig): boolean => item.id === host.rustdeskRelayId);
     const direct: boolean = host.rustdeskDirectEnabled;
+    const endpoint: RustDeskHostEndpoint = resolveRustDeskHostEndpoint(
+      relay ?? null,
+      host.host,
+      direct,
+      host.rustdeskDirectHost,
+      host.rustdeskDirectPort
+    );
     return {
       protocol: 'rustdesk',
-      host: direct ? host.rustdeskDirectHost.trim() : host.host,
-      port: direct ? normalizeRustDeskPort(host.rustdeskDirectPort, RUSTDESK_PEER_TCP_PORT) : host.port,
+      host: endpoint.host,
+      port: endpoint.port,
       username: '', password: host.password, width: 1920, height: 1080,
       customHostname: rustDeskProPeerIdForConnection(host.rustdeskProPeerId, host.customHostname),
       gatewayHost: '', gatewayPort: 0, domain: '', codec: '',
       multiMonitor: false, monitorCount: 1, colorDepth: 32,
       authMethod: 'password', privateKeyPem: '', privateKeyPassphrase: '',
       rdImageQuality: this.rustdeskImageQuality, rdDirectIp: direct,
-      rdDirectPort: direct ? normalizeRustDeskPort(host.rustdeskDirectPort, RUSTDESK_PEER_TCP_PORT) : host.port,
+      rdDirectPort: endpoint.port,
       rdLanDiscovery: this.rustdeskLanDiscovery, rdPrivacyMode: this.rustdeskPrivacyMode,
       rdAudioEnabled: this.rustdeskAudioEnabled, rdClipboardEnabled: this.rustdeskClipboardEnabled,
       rdPasswordMode: host.rustdeskPasswordMode,
@@ -2432,6 +2551,7 @@ struct HostListPage {
     const generation: number = ++this.rustDeskProPreflightGeneration;
     const host: RemoteHost = RemoteHost.fromJSON(stored.toJSON());
     host.rustdeskAuthMode = this.rustDeskProAuthMode === 'request_approval' ? 'request_approval' : 'password';
+    host.rustdeskPasswordMode = this.rustDeskProPasswordMode === 1 ? 1 : 0;
     if (host.rustdeskAuthMode === 'password') { host.password = this.rustDeskProPassword; }
     this.rustDeskProPreflightError = '';
     this.rustDeskProPreflightState = RustDeskProPreflightState.CONNECTING;
@@ -2450,6 +2570,7 @@ struct HostListPage {
           this.rustDeskProPreflightState = RustDeskProPreflightState.AUTHENTICATED;
           const saved: RemoteHost = RemoteHost.fromJSON(stored.toJSON());
           saved.rustdeskAuthMode = host.rustdeskAuthMode;
+          saved.rustdeskPasswordMode = host.rustdeskPasswordMode;
           if (this.rustDeskProRememberPassword && host.rustdeskAuthMode === 'password') {
             saved.password = host.password;
           }
@@ -2462,6 +2583,7 @@ struct HostListPage {
           ActiveRemoteSessionRegistry.getInstance().setActive(record);
           this.srv.updateHost(saved);
           this.showRustDeskProPreflight = false;
+          this.releaseConnectionAttempt(host.id);
           this.rustDeskProPreflightHostId = '';
           const params: Record<string, Object> = {};
           params['hostId'] = host.id;
@@ -2548,7 +2670,6 @@ struct HostListPage {
   // 直接删除主机 (滑动触发)
   private deleteHost(host: RemoteHost): void {
     this.srv.removeHost(host.id);
-    this.load();
   }
 
   // PC大屏模式 + 滑动删除共用: 锁验证 + 确认弹窗 + 动画移除
@@ -2571,7 +2692,7 @@ struct HostListPage {
     }).then((result: Object): void => {
       const r: Record<string, number> = result as Record<string, number>;
       if (r['index'] === 1) {
-        if (this.srv.removeHost(host.id)) { this.load(); }
+        this.srv.removeHost(host.id);
       }
     });
   }
@@ -2722,8 +2843,10 @@ struct HostListPage {
       this.syncHaloColorForCurrentTheme();
     }
     const syncedVirtualMouseStyle = settings['virtualMouseStyle'];
-    this.virtualMouseStyle = syncedVirtualMouseStyle === 'arrow' ? 'arrow' : 'circle';
-    AppStorage.setOrCreate('virtualMouseStyle', this.virtualMouseStyle);
+    if (syncedVirtualMouseStyle === 'arrow' || syncedVirtualMouseStyle === 'circle') {
+      this.virtualMouseStyle = syncedVirtualMouseStyle;
+      AppStorage.setOrCreate('virtualMouseStyle', this.virtualMouseStyle);
+    }
     try {
       const prefs = preferences.getPreferencesSync(getContext(this), { name: 'RemoteDesktopAppPrefs' });
       prefs.putSync('virtualMouseStyle', this.virtualMouseStyle);
@@ -2761,7 +2884,6 @@ struct HostListPage {
       next.port = this.rustdeskDirectPort;
       this.srv.updateHost(next);
     }
-    this.refreshHostListView();
   }
 
   private saveFabAddStyle(style: string): void {
@@ -2773,6 +2895,16 @@ struct HostListPage {
   private saveVirtualMouseStyle(style: string): void {
     this.virtualMouseStyle = style === 'arrow' ? 'arrow' : 'circle';
     this.persistPref('virtualMouseStyle', this.virtualMouseStyle);
+  }
+
+  private saveShowVirtualMouse(enabled: boolean): void {
+    this.showVirtualMouse = enabled;
+    this.persistPref('showVirtualMouse', enabled);
+  }
+
+  private saveShowVirtualJoystick(enabled: boolean): void {
+    this.showVirtualJoystick = enabled;
+    this.persistPref('showVirtualJoystick', enabled);
   }
 
   private saveRustDeskLanDiscovery(on: boolean): void {
@@ -3335,7 +3467,6 @@ struct HostListPage {
             this.addSheetShowsModernPicker = false;
             this.modernAddProtocol = '';
             this.resetForm();
-            this.load();
           }
         })
       }
@@ -3665,7 +3796,7 @@ struct HostListPage {
                       .fontColor(this.pal().text).fontFamily(this.font()).layoutWeight(1)
                     if (host.protocol === 'rustdesk') {
                       ForEach(resolveRustDeskBadges(host.rustdeskDirectEnabled,
-                        host.rustdeskProManaged && host.sourceType === 'rustdesk_pro'), (badge: string) => {
+                        host.rustdeskProManaged || host.sourceType === 'rustdesk_pro'), (badge: string) => {
                         Text(badge).fontSize(10)
                           .fontColor(badge === 'Pro' ? this.accentColor :
                             (badge === '直连' ? this.pal().success : this.pal().text2))
@@ -3776,7 +3907,7 @@ struct HostListPage {
                   .animation({ duration: 350, curve: curves.interpolatingSpring(0, 0.8, 300, 20) })
               )
             )
-          }, (host: RemoteHost, idx: number) => host.id)
+          }, (host: RemoteHost, idx: number) => host.id + ':' + this.hostViewRevision.toString())
         }
 
         // 底部 FAB 占位
@@ -3989,7 +4120,7 @@ struct HostListPage {
             }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 10 })
           }.width('100%').padding(11).borderRadius(10).backgroundColor(this.pal().surface).margin({ bottom: 7 })
             .onClick((): void => { this.sshPublicKeyInstallKeyId = key.id; })
-        }, (key: SshKey): string => key.id)
+        }, (key: SshKey): string => key.id + ':' + this.hostViewRevision.toString())
         if (this.sshPublicKeyInstallHost !== null && this.sshPublicKeyInstallHost.sshUseKey) {
           Text('将使用当前主机配置的私钥进行服务器认证。').fontSize(11).fontColor(this.pal().text3)
             .width('100%').margin({ top: 2, bottom: 8 })
@@ -4076,9 +4207,7 @@ struct HostListPage {
       .width('100%').padding({ left: 12, right: 12, top: 8, bottom: 8 })
       .onClick(() => {
         const nextGroup = host.groupId === 'ops' ? '' : 'ops';
-        if (this.srv.setGroup(host.id, nextGroup)) {
-          this.refreshHostListView();
-        } else {
+        if (!this.srv.setGroup(host.id, nextGroup)) {
           promptAction.showToast({ message: '工作组保存失败 [E-HOST-WS-2]', duration: 1800 });
         }
         animateTo({ duration: 150 }, () => { this.hostActionPopupId = ''; });
@@ -4387,10 +4516,28 @@ struct HostListPage {
                     .fontColor(this.virtualMouseStyle === 'circle' ? Color.White : this.pal().text2)
                     .backgroundColor(this.virtualMouseStyle === 'circle' ? this.accentColor : this.pal().surface)
                     .borderRadius(10).onClick((): void => { this.saveVirtualMouseStyle('circle'); })
-                  Button('标准箭头').layoutWeight(1).height(36).fontSize(13).margin({ left: 8 })
+                  Button('远端鼠标指针').layoutWeight(1).height(36).fontSize(13).margin({ left: 8 })
                     .fontColor(this.virtualMouseStyle === 'arrow' ? Color.White : this.pal().text2)
                     .backgroundColor(this.virtualMouseStyle === 'arrow' ? this.accentColor : this.pal().surface)
                     .borderRadius(10).onClick((): void => { this.saveVirtualMouseStyle('arrow'); })
+                }.width('100%').padding({ left: 16, right: 16, bottom: 12 })
+                Row() {
+                  Column() {
+                    Text('浮动鼠标').fontSize(14).fontColor(this.pal().text)
+                    Text('显示左右键、滚轮和拖动手柄').fontSize(11).fontColor(this.pal().text3)
+                  }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+                  Toggle({ type: ToggleType.Switch, isOn: this.showVirtualMouse })
+                    .selectedColor(this.accentColor)
+                    .onChange((enabled: boolean): void => { this.saveShowVirtualMouse(enabled); })
+                }.width('100%').padding({ left: 16, right: 16, bottom: 10 })
+                Row() {
+                  Column() {
+                    Text('浮动摇杆').fontSize(14).fontColor(this.pal().text)
+                    Text('通过摇杆连续移动远端指针').fontSize(11).fontColor(this.pal().text3)
+                  }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+                  Toggle({ type: ToggleType.Switch, isOn: this.showVirtualJoystick })
+                    .selectedColor(this.accentColor)
+                    .onChange((enabled: boolean): void => { this.saveShowVirtualJoystick(enabled); })
                 }.width('100%').padding({ left: 16, right: 16, bottom: 12 })
               }
               this.cardDivider()
@@ -5655,7 +5802,7 @@ struct HostListPage {
               .backgroundColor(this.pal().card)
               .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
               .margin({ bottom: 10 })
-            }, (host: RemoteHost) => host.id)
+            }, (host: RemoteHost) => host.id + ':' + this.hostViewRevision.toString())
           }.width('100%').padding({ left: 24, right: 24, bottom: 18 })
         }
         .constraintSize({ maxHeight: 480 }).scrollBar(BarState.Auto).edgeEffect(EdgeEffect.Spring)
@@ -5738,7 +5885,7 @@ struct HostListPage {
               .backgroundColor(this.pal().card)
               .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
               .margin({ bottom: 10 })
-            }, (host: RemoteHost) => host.id)
+            }, (host: RemoteHost) => host.id + ':' + this.hostViewRevision.toString())
           }.width('100%').padding({ left: 24, right: 24, bottom: 18 })
         }
         .constraintSize({ maxHeight: 480 }).scrollBar(BarState.Auto).edgeEffect(EdgeEffect.Spring)
@@ -6664,7 +6811,6 @@ struct HostListPage {
             return;
           }
           this.requestAddSheetClose();
-          this.refreshHostListView();
           if (connectNow) { setTimeout((): void => { this.handleHostCardClick(host); }, 260); }
         }
       })
@@ -6677,15 +6823,13 @@ struct HostListPage {
         onBackToProtocols: (): void => { this.modernAddProtocol = ''; this.addSheetShowsModernPicker = true; },
         onStartLanScan: (): void => { this.startLanScan(); },
         onAddRelay: (relay: RustDeskRelayConfig): boolean => {
-          const saved: boolean = this.srv.addRelay(relay);
-          if (saved) { this.refreshHostListView(); }
-          return saved;
+          return this.srv.addRelay(relay);
         },
         onSave: (host: RemoteHost, connectNow: boolean): void => {
           if (!this.srv.addHost(host)) {
             promptAction.showToast({ message: '保存主机失败，请稍后重试', duration: 1800 }); return;
           }
-          this.requestAddSheetClose(); this.refreshHostListView();
+          this.requestAddSheetClose();
           if (connectNow) { setTimeout((): void => { this.handleHostCardClick(host); }, 260); }
         }
       })
@@ -6697,7 +6841,7 @@ struct HostListPage {
           if (!this.srv.addHost(host)) {
             promptAction.showToast({ message: '保存主机失败，请稍后重试', duration: 1800 }); return;
           }
-          this.requestAddSheetClose(); this.refreshHostListView();
+          this.requestAddSheetClose();
           if (connectNow) { setTimeout((): void => { this.handleHostCardClick(host); }, 260); }
         }
       })
@@ -6755,7 +6899,7 @@ struct HostListPage {
               }.width('100%').padding(13).borderRadius(12).backgroundColor(this.pal().card)
               .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
             }
-          }, (host: RemoteHost): string => host.id)
+          }, (host: RemoteHost): string => host.id + ':' + this.hostViewRevision.toString())
         }.width('100%')
         .height(this.rustDeskHosts().length > 4 ? 420 : (this.rustDeskHosts().length * 112 + 12))
         .padding({ left: 20, right: 20 }).margin({ bottom: 22 })
@@ -6944,7 +7088,8 @@ struct HostListPage {
                   .borderRadius(8)
                   .enabled(!this.isEditingProHost())
                   .onClick(() => { this.selectedRelayId = relay.id; this.selectedAccountId = ''; })
-                })
+                }, (relay: RustDeskRelayConfig): string =>
+                  relay.id + ':' + this.hostViewRevision.toString())
               }.width('100%').backgroundColor(this.pal().surface).borderRadius(8).padding(6).margin({ bottom: 10 })
             }
 
@@ -6974,7 +7119,8 @@ struct HostListPage {
                     }.width('100%').padding({ left: 10, right: 10, top: 8, bottom: 8 })
                     .backgroundColor(this.selectedAccountId === acct.id ? this.pal().surface : Color.Transparent)
                     .borderRadius(8).enabled(!this.isEditingProHost()).onClick(() => { this.selectedAccountId = acct.id; })
-                  })
+                  }, (acct: RustDeskAccount): string =>
+                    acct.id + ':' + this.hostViewRevision.toString())
                 } else {
                   Row() {
                     Text('该中继暂无账户').fontSize(12).fontColor(this.pal().text3).fontFamily(this.font())
@@ -7022,14 +7168,14 @@ struct HostListPage {
               Row() {
                 Column() {
                   this.fieldRow('直连地址', '192.168.1.100', this.sheetRustdeskDirectHost,
-                    (v: string): void => { this.sheetRustdeskDirectHost = v; }, !this.isEditingProHost())
+                    (v: string): void => { this.sheetRustdeskDirectHost = v; })
                 }.width('60%')
                 Column() {
                   this.fieldRow('端口', RUSTDESK_PEER_TCP_PORT.toString(), this.sheetRustdeskDirectPort.toString(),
                     (v: string): void => {
                       const n: number = parseInt(v);
                       this.sheetRustdeskDirectPort = isNaN(n) ? RUSTDESK_PEER_TCP_PORT : n;
-                    }, !this.isEditingProHost())
+                    })
                 }.width('30%').margin({ left: 12 })
               }.width('100%').margin({ bottom: 8 })
             }
@@ -7143,7 +7289,7 @@ struct HostListPage {
           .onClick(() => {
             this.selectRdpCredential(credential.id);
           })
-        }, (credential: RdpCredential) => credential.id)
+        }, (credential: RdpCredential) => credential.id + ':' + this.hostViewRevision.toString())
       }.width('100%').backgroundColor(this.pal().surface).borderRadius(8).padding(6).margin({ bottom: 8 })
 
       if (this.selectedRdpCredentialId !== '') {
@@ -7200,7 +7346,7 @@ struct HostListPage {
               .borderRadius(12).backgroundColor(this.pal().card)
               .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
             }
-          }, (credential: RdpCredential) => credential.id)
+          }, (credential: RdpCredential) => credential.id + ':' + this.hostViewRevision.toString())
         }.height(this.rdpCredentials.length > 2 ? 220 : (this.rdpCredentials.length * 66 + 10))
         .width('100%').padding({ left: 24, right: 24 }).margin({ bottom: 14 })
       }
@@ -7419,6 +7565,24 @@ struct HostListPage {
           .enabled(this.rustDeskProPreflightState !== RustDeskProPreflightState.CONNECTING)
           .height(48).width('100%').backgroundColor(this.pal().surface).borderRadius(10)
           .onChange((value: string): void => { this.rustDeskProPassword = value; this.rustDeskProPreflightError = ''; })
+        Text('密码类型').fontSize(12).fontColor(this.pal().text2)
+          .margin({ top: 2, bottom: 5 })
+        Row({ space: 8 }) {
+          Button('一次性密码').layoutWeight(1).height(36).fontSize(12)
+            .backgroundColor(this.rustDeskProPasswordMode === 0 ? this.accentColor : this.pal().surface)
+            .fontColor(this.rustDeskProPasswordMode === 0 ? Color.White : this.pal().text2)
+            .enabled(this.rustDeskProPreflightState !== RustDeskProPreflightState.CONNECTING)
+            .onClick((): void => { this.rustDeskProPasswordMode = 0; })
+          Button('永久密码').layoutWeight(1).height(36).fontSize(12)
+            .backgroundColor(this.rustDeskProPasswordMode === 1 ? this.accentColor : this.pal().surface)
+            .fontColor(this.rustDeskProPasswordMode === 1 ? Color.White : this.pal().text2)
+            .enabled(this.rustDeskProPreflightState !== RustDeskProPreflightState.CONNECTING)
+            .onClick((): void => { this.rustDeskProPasswordMode = 1; })
+        }.width('100%').margin({ bottom: 6 })
+        Text(this.rustDeskProPasswordMode === 0 ?
+          '一次性密码过期后，下次连接需要重新输入。' :
+          '永久密码由被控端 RustDesk 设置决定。')
+          .fontSize(11).fontColor(this.pal().text3).width('100%').margin({ bottom: 8 })
         Row({ space: 8 }) {
           Checkbox({ name: 'rememberRustDeskProPassword', group: 'rustDeskProAuth' })
             .select(this.rustDeskProRememberPassword)
@@ -7552,7 +7716,7 @@ struct HostListPage {
                 this.closeSettingsLeafSheet();
               })
             }
-          }, (key: SshKey) => key.id)
+          }, (key: SshKey) => key.id + ':' + this.hostViewRevision.toString())
         }.height(260)
       }
     }
@@ -7803,6 +7967,8 @@ struct HostListPage {
       h.rdpCredentialId = '';
       // Server Pro 管理主机的连接身份由地址簿控制；本地编辑只允许修改显示/凭据等字段。
       if (existingHost && existingHost.rustdeskProManaged && existingHost.sourceType === 'rustdesk_pro') {
+        const preserveManagedRoute: boolean = shouldPreserveManagedRustDeskRoute(
+          existingHost.rustdeskProManaged, existingHost.rustdeskDirectEnabled);
         h.protocol = existingHost.protocol;
         h.host = existingHost.host;
         h.port = existingHost.port;
@@ -7810,8 +7976,10 @@ struct HostListPage {
         h.rustdeskRelayId = existingHost.rustdeskRelayId;
         h.rustdeskAccountId = existingHost.rustdeskAccountId;
         h.rustdeskDirectEnabled = existingHost.rustdeskDirectEnabled;
-        h.rustdeskDirectHost = existingHost.rustdeskDirectHost;
-        h.rustdeskDirectPort = existingHost.rustdeskDirectPort;
+        if (preserveManagedRoute) {
+          h.rustdeskDirectHost = existingHost.rustdeskDirectHost;
+          h.rustdeskDirectPort = existingHost.rustdeskDirectPort;
+        }
         h.sourceType = existingHost.sourceType;
         h.rustdeskProAccountId = existingHost.rustdeskProAccountId;
         h.rustdeskProPeerId = existingHost.rustdeskProPeerId;
@@ -7860,10 +8028,11 @@ struct HostListPage {
     }
     hilog.info(0x0001, 'HostList', 'save host protocol=' + h.protocol +
       ' host=' + maskHost(h.host) + ':' + h.port +
+      (h.protocol === 'rustdesk' && h.rustdeskDirectEnabled
+        ? ' direct=' + maskHost(h.rustdeskDirectHost) + ':' + h.rustdeskDirectPort : '') +
       ' rdpCredentialHash=' + hashForLog(h.rdpCredentialId));
     this.requestAddSheetClose();
     this.rdpCredentials = this.srv.getAllRdpCredentials();
-    this.refreshHostListView();
   }
 
   private saveCurrentRdpCredential(): void {
@@ -7959,7 +8128,6 @@ struct HostListPage {
         if (this.selectedRdpCredentialId === credential.id) { this.selectedRdpCredentialId = ''; }
         if (this.rdpCredEditId === credential.id) { this.resetRdpCredentialEditor(); }
         this.rdpCredentials = this.srv.getAllRdpCredentials();
-        this.refreshHostListView();
         promptAction.showToast({ message: 'Windows 凭据已删除', duration: 1500 });
       }
     });
@@ -7991,14 +8159,13 @@ struct HostListPage {
   private toggleRustDeskAuthTrust(host: RemoteHost): void {
     const updated: RemoteHost = RemoteHost.fromJSON(host.toJSON());
     updated.rustdeskAuthMode = host.rustdeskAuthMode === 'request_approval' ? 'password' : 'request_approval';
-    if (this.srv.updateHost(updated)) { this.refreshHostListView(); }
+    this.srv.updateHost(updated);
   }
 
   private clearRustDeskSavedPassword(host: RemoteHost): void {
     const updated: RemoteHost = RemoteHost.fromJSON(host.toJSON());
     updated.password = '';
     if (this.srv.updateHost(updated)) {
-      this.refreshHostListView();
       promptAction.showToast({ message: '已清除保存的 RustDesk 密码', duration: 1500 });
     }
   }
@@ -8008,7 +8175,6 @@ struct HostListPage {
     updated.rustdeskAuthMode = 'password';
     updated.password = '';
     if (this.srv.updateHost(updated)) {
-      this.refreshHostListView();
       promptAction.showToast({ message: '下次连接将重新询问认证方式', duration: 1500 });
     }
   }
@@ -8055,7 +8221,6 @@ struct HostListPage {
       updated.sshHostKeyTrustedAt = 0;
       updated.sshHostKeyTrustMode = 0;
       this.srv.updateHost(updated);
-      this.refreshHostListView();
       promptAction.showToast({ message: '已忘记 SSH 指纹', duration: 1500 });
     });
   }
@@ -8087,7 +8252,6 @@ struct HostListPage {
       updated.sshHostKeyTrustedAt = Date.now();
       updated.sshHostKeyTrustMode = 1;
       this.srv.updateHost(updated);
-      this.refreshHostListView();
       promptAction.showToast({ message: 'SSH 指纹已更新', duration: 1500 });
     } catch (err) {
       promptAction.showToast({ message: '重新获取异常: ' + JSON.stringify(err), duration: 2500 });
@@ -8117,7 +8281,6 @@ struct HostListPage {
       updated.rdpCertificateAllowUntrustedRoot = false;
       updated.rdpCertificateAllowHostMismatch = false;
       this.srv.updateHost(updated);
-      this.refreshHostListView();
       promptAction.showToast({ message: '已忘记 RDP 证书', duration: 1500 });
     });
   }
@@ -8156,7 +8319,6 @@ struct HostListPage {
       updated.rdpCertificateAllowUntrustedRoot = !info.rootTrusted;
       updated.rdpCertificateAllowHostMismatch = info.hostMismatch;
       this.srv.updateHost(updated);
-      this.refreshHostListView();
       promptAction.showToast({ message: 'RDP 证书已更新并信任', duration: 1500 });
     } catch (err) {
       promptAction.showToast({ message: '重新获取异常: ' + JSON.stringify(err), duration: 2500 });

@@ -10,9 +10,17 @@ import { CloudStore } from './CloudStore';
 import { normalizeGroupId } from './HostWorkspacePolicy';
 import { RustDeskProPeer } from '../model/RustDeskProModels';
 import { reconcileRustDeskProHosts, RustDeskProReconcileResult } from './RustDeskProSyncPolicy';
-import { RUSTDESK_PEER_TCP_PORT } from './RustDeskHostConfigPolicy';
+import {
+  normalizeRustDeskPort,
+  RUSTDESK_PEER_TCP_PORT,
+  shouldBindLegacyRustDeskHostToRelay
+} from './RustDeskHostConfigPolicy';
 import { shouldKeepDeletedRelay, shouldKeepLocalRelayConfig } from './RustDeskRelaySyncPolicy';
-import { shouldKeepDeletedHost, shouldKeepLocalHostConfig } from './HostSyncMergePolicy';
+import {
+  serializedSnapshotChanged,
+  shouldKeepDeletedHost,
+  shouldKeepLocalHostConfig
+} from './HostSyncMergePolicy';
 
 export class HostSyncService {
   private static instance: HostSyncService;
@@ -81,6 +89,7 @@ export class HostSyncService {
 
   private loadFromCloud(): void {
     if (!this.cloud.isReady()) { return; }
+    const beforeSignature: string = this.visibleDataSignature();
     const previousSnapshotAt: number = this.lastCloudSnapshotLoadedAt;
     try {
       const previousHosts: Map<string, RemoteHost> = new Map();
@@ -239,11 +248,39 @@ export class HostSyncService {
         migratedProHosts = true;
       });
       if (migratedProHosts && this.ready) { this.cloud.pushTable('remotehosts'); }
+      let migratedUnboundRustDeskHosts = false;
+      this.relays.forEach((relay: RustDeskRelayConfig): void => {
+        if (this.bindUniqueUnboundRustDeskHost(relay)) {
+          migratedUnboundRustDeskHosts = true;
+        }
+      });
+      if (migratedUnboundRustDeskHosts && this.ready) { this.cloud.pushTable('remotehosts'); }
     } catch (err) {
       hilog.error(0x0001, 'CloudSync', "HostSyncService.loadRelays 失败: " + JSON.stringify(err));
     }
     this.lastCloudSnapshotLoadedAt = Date.now();
-    this.emitDataChange();
+    const changed: boolean = serializedSnapshotChanged(beforeSignature, this.visibleDataSignature());
+    if (changed) {
+      this.emitDataChange();
+    } else {
+      hilog.info(0x0001, 'CloudSync', 'HostSyncService.loadFromCloud: visible snapshot unchanged');
+    }
+  }
+
+  private visibleDataSignature(): string {
+    const hosts: string[] = [];
+    const credentials: string[] = [];
+    const relays: string[] = [];
+    this.hosts.forEach((host: RemoteHost): void => { hosts.push(JSON.stringify(host.toJSON())); });
+    this.rdpCredentials.forEach((credential: RdpCredential): void => {
+      credentials.push(JSON.stringify(credential.toJSON()));
+    });
+    this.relays.forEach((relay: RustDeskRelayConfig): void => { relays.push(JSON.stringify(relay.toJSON())); });
+    hosts.sort();
+    credentials.sort();
+    relays.sort();
+    return hosts.join('\n') + '\n--credentials--\n' + credentials.join('\n') +
+      '\n--relays--\n' + relays.join('\n');
   }
 
   isReady(): boolean {
@@ -310,7 +347,12 @@ export class HostSyncService {
   }
 
   updateHost(host: RemoteHost): boolean {
-    if (!this.hosts.has(host.id)) { return false; }
+    const current: RemoteHost | undefined = this.hosts.get(host.id);
+    if (!current) { return false; }
+    if (!serializedSnapshotChanged(JSON.stringify(current.toJSON()), JSON.stringify(host.toJSON()))) {
+      hilog.info(0x0001, 'CloudSync', 'HostSyncService.updateHost: unchanged host skipped id=' + host.id);
+      return true;
+    }
     const observedAt: number = Date.now();
     this.localHostConfigObservationAt.set(host.id, observedAt);
     this.deletedHostAt.delete(host.id);
@@ -562,6 +604,43 @@ export class HostSyncService {
   }
 
   /**
+   * 将旧版“只有 endpoint、没有 relayId”的普通 RustDesk 主机安全绑定到 relay。
+   * 只有 endpoint+port 唯一命中时才迁移；多个同 endpoint 配置保持未绑定，交给用户选择。
+   */
+  private bindUniqueUnboundRustDeskHost(relay: RustDeskRelayConfig): boolean {
+    const relayHost: string = relay.idServer.trim().toLowerCase();
+    if (relayHost.length === 0) { return false; }
+    const relayPort: number = normalizeRustDeskPort(relay.idServerPort);
+    const candidates: RemoteHost[] = [];
+    this.hosts.forEach((host: RemoteHost): void => {
+      if (shouldBindLegacyRustDeskHostToRelay(
+        host.protocol,
+        host.rustdeskDirectEnabled,
+        host.rustdeskRelayId,
+        host.host,
+        host.port,
+        relayHost,
+        relayPort
+      )) {
+        candidates.push(host);
+      }
+    });
+    if (candidates.length !== 1) { return false; }
+    const current: RemoteHost = candidates[0];
+    const next: RemoteHost = RemoteHost.fromJSON(current.toJSON());
+    next.rustdeskRelayId = relay.id;
+    const observedAt: number = Date.now();
+    this.localHostConfigObservationAt.set(next.id, observedAt);
+    if (this.ready && !this.cloud.updateHost(next)) {
+      this.localHostConfigObservationAt.delete(next.id);
+      hilog.warn(0x0001, 'CloudSync', 'RustDesk 旧主机 relay 绑定写入失败: ' + current.id);
+      return false;
+    }
+    this.hosts.set(next.id, next);
+    return true;
+  }
+
+  /**
    * 将 Server Pro 地址簿 reconcile 到统一主机列表。
    * 只创建/更新 sourceType=rustdesk_pro 的记录，绝不接管同 ID 的手动主机，
    * 也不因一次同步缺少设备而删除已有记录。
@@ -623,6 +702,7 @@ export class HostSyncService {
     this.localRelayObservationAt.set(relay.id, observedAt);
     this.deletedRelayAt.delete(relay.id);
     this.relays.set(relay.id, relay);
+    this.bindUniqueUnboundRustDeskHost(relay);
     this.emitDataChange();
     return true;
   }
@@ -635,6 +715,7 @@ export class HostSyncService {
     this.localRelayObservationAt.set(relay.id, observedAt);
     this.deletedRelayAt.delete(relay.id);
     this.relays.set(relay.id, relay);
+    this.bindUniqueUnboundRustDeskHost(relay);
     this.emitDataChange();
     return true;
   }

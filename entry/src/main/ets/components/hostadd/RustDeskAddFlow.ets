@@ -30,8 +30,11 @@ export struct RustDeskAddFlow {
   @State errorText: string = '';
   @State addingRelay: boolean = false;
   @State relayIdServer: string = '';
+  @State relayIdServerPortText: string = '21116';
   @State relayServer: string = '';
+  @State relayServerPortText: string = '21117';
   @State relayApiServer: string = '';
+  @State relayKey: string = '';
 
   aboutToAppear(): void { this.directPortText = this.defaultDirectPort.toString(); }
   private pal(): Palette { return this.theme === 'light' ? buildLight(this.accentColor) : buildDark(this.accentColor); }
@@ -68,11 +71,20 @@ export struct RustDeskAddFlow {
     if (this.relayIdServer.trim() === '' || this.relayServer.trim() === '') {
       this.errorText = 'ID 服务器和中继服务器不能为空'; return;
     }
+    const idServerPort: number = parseInt(this.relayIdServerPortText);
+    const relayPort: number = parseInt(this.relayServerPortText);
+    if (isNaN(idServerPort) || idServerPort <= 0 || idServerPort > 65535 ||
+      isNaN(relayPort) || relayPort <= 0 || relayPort > 65535) {
+      this.errorText = '服务器端口必须在 1-65535 之间'; return;
+    }
     const relay = new RustDeskRelayConfig();
     relay.id = RustDeskRelayConfig.generateId();
     relay.idServer = this.relayIdServer.trim();
+    relay.idServerPort = idServerPort;
     relay.relayServer = this.relayServer.trim();
+    relay.relayPort = relayPort;
     relay.apiServer = this.relayApiServer.trim();
+    relay.key = this.relayKey.trim();
     relay.updatedAt = Date.now();
     if (!this.onAddRelay(relay)) { this.errorText = '保存中继服务器失败'; return; }
     this.relayId = relay.id;
@@ -128,10 +140,16 @@ export struct RustDeskAddFlow {
           if (this.addingRelay) {
             this.field('ID 服务器', this.relayIdServer, 'hbbs.example.com',
               (v: string): void => { this.relayIdServer = v; })
+            this.field('ID 服务器端口', this.relayIdServerPortText, '21116',
+              (v: string): void => { this.relayIdServerPortText = v; })
             this.field('中继服务器', this.relayServer, 'hbbr.example.com',
               (v: string): void => { this.relayServer = v; })
+            this.field('中继服务器端口', this.relayServerPortText, '21117',
+              (v: string): void => { this.relayServerPortText = v; })
             this.field('API 地址（可选）', this.relayApiServer, 'https://api.example.com',
               (v: string): void => { this.relayApiServer = v; })
+            this.field('服务器密钥（Pro 必填）', this.relayKey, '可选，粘贴 hbbs 公钥',
+              (v: string): void => { this.relayKey = v; })
             Row() {
               Button('取消').layoutWeight(1).height(38).borderRadius(10).backgroundColor(this.pal().surface)
                 .fontColor(this.pal().text2).onClick((): void => { this.addingRelay = false; })
@@ -154,7 +172,7 @@ export struct RustDeskAddFlow {
                 if (this.relayId === relay.id) { SymbolGlyph($r('sys.symbol.checkmark')).fontColor([this.accentColor]) }
               }.width('100%').padding(12).borderRadius(10).backgroundColor(this.pal().surface).margin({ bottom: 7 })
               .onClick((): void => { this.relayId = relay.id; })
-            }, (relay: RustDeskRelayConfig): string => relay.id)
+            }, (relay: RustDeskRelayConfig): string => relay.id + ':' + relay.updatedAt.toString())
             Button('添加其他中继服务器').width('100%').height(36).borderRadius(9)
               .backgroundColor(this.pal().surface).fontColor(this.accentColor)
               .onClick((): void => { this.addingRelay = true; })

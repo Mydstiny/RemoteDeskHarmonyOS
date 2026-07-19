@@ -10,7 +10,8 @@ import {
   shouldRouteRdpCertificateAfterSheetDisappear,
   shouldShowRdpCertificateProbeSheetBeforeProbe,
   shouldPersistRdpCertificateTrust,
-  shouldRequireRdpCertificateConfirmation
+  shouldRequireRdpCertificateConfirmation,
+  shouldFallbackToNativeRdpConnectionAfterResolverFailure
 } from '../main/ets/services/RdpCertificatePreflightPolicy';
 
 export default function rdpCertificatePreflightPolicyTest() {
@@ -148,6 +149,15 @@ export default function rdpCertificatePreflightPolicyTest() {
       expect(shouldShowRdpCertificateProbeSheetBeforeProbe(RDP_CERTIFICATE_EXPLICIT_TRUST_MODE,
         'SHA256:same')).assertFalse();
       expect(shouldShowRdpCertificateProbeSheetBeforeProbe(RDP_CERTIFICATE_EXPLICIT_TRUST_MODE, '')).assertTrue();
+    });
+
+    it('allows_a_trusted_host_to_try_the_real_rdp_resolver_after_dns_probe_failure', 0, (): void => {
+      expect(shouldFallbackToNativeRdpConnectionAfterResolverFailure(
+        -11, RDP_CERTIFICATE_EXPLICIT_TRUST_MODE, 'SHA256:same')).assertTrue();
+      expect(shouldFallbackToNativeRdpConnectionAfterResolverFailure(
+        -11, RDP_CERTIFICATE_UNKNOWN_TRUST_MODE, '')).assertFalse();
+      expect(shouldFallbackToNativeRdpConnectionAfterResolverFailure(
+        -12, RDP_CERTIFICATE_EXPLICIT_TRUST_MODE, 'SHA256:same')).assertFalse();
     });
   });
 }

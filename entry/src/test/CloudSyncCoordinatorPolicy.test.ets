@@ -5,10 +5,13 @@ import {
   CloudSyncRetryRecord,
   cloudLocalMutationAllowed,
   cloudDistributedTableAutoSync,
+  cloudSyncProgressFinished,
+  cloudSyncProgressSucceeded,
   coalesceAutomaticPush,
   nextCloudSyncRetryDelayMs,
   retryTablesStillSelected,
   snapshotCloudSyncTables,
+  shouldReplayAutomaticPush,
   upsertAutomaticRetryRecord
 } from '../main/ets/services/CloudSyncCoordinatorPolicy';
 import { executeCloudSyncRequest } from '../main/ets/services/CloudSyncCoordinator';
@@ -29,6 +32,23 @@ export default function cloudSyncCoordinatorPolicyTest(): void {
     it('does_not_coalesce_distinct_automatic_table_pushes', 0, (): void => {
       expect(coalesceAutomaticPush('sshkeys', 'sshkeys')).assertTrue();
       expect(coalesceAutomaticPush('sshkeys', 'totpentries')).assertFalse();
+    });
+
+    it('replays_a_table_changed_while_its_upload_was_pending', 0, (): void => {
+      expect(shouldReplayAutomaticPush(1, 2)).assertTrue();
+      expect(shouldReplayAutomaticPush(2, 2)).assertFalse();
+    });
+
+    it('waits_for_the_terminal_progress_event_before_confirming_cloud_upload', 0, (): void => {
+      expect(cloudSyncProgressFinished(0)).assertFalse();
+      expect(cloudSyncProgressFinished(1)).assertFalse();
+      expect(cloudSyncProgressFinished(2)).assertTrue();
+    });
+
+    it('accepts_only_a_successful_terminal_cloud_progress_event', 0, (): void => {
+      expect(cloudSyncProgressSucceeded(2, 0)).assertTrue();
+      expect(cloudSyncProgressSucceeded(1, 0)).assertFalse();
+      expect(cloudSyncProgressSucceeded(2, 2)).assertFalse();
     });
 
     it('uses_bounded_retry_delays', 0, (): void => {

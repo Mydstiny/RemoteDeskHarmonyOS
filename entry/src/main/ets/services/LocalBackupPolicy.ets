@@ -3,7 +3,7 @@ import { util } from '@kit.ArkTS';
 import { CLOUD_SYNC_TABLES } from './CloudSyncPolicy';
 
 export const LOCAL_BACKUP_FORMAT: string = 'remotedesktop-local-backup';
-export const LOCAL_BACKUP_VERSION: number = 1;
+export const LOCAL_BACKUP_VERSION: number = 2;
 
 export interface LocalBackupDocument {
   format: string;
@@ -11,14 +11,15 @@ export interface LocalBackupDocument {
   createdAt: number;
   appVersion: string;
   tables: Record<string, Array<Record<string, string>>>;
+  extensions?: Array<Record<string, string>>;
   sha256: string;
 }
 
 function localBackupColumns(table: string): string[] {
   if (table === 'cryptoparams') { return ['id', 'key', 'value']; }
-  if (table === 'usersettings') { return ['id', 'userid', 'key', 'value', 'updatedat']; }
+  if (table === 'usersettings') { return ['id', 'userid', 'key', 'value', 'payload', 'schemaversion', 'updatedat']; }
   if (table === 'remotehosts') {
-    return ['id', 'userid', 'label', 'protocol', 'host', 'port', 'username', 'password', 'customhostname', 'sshusekey', 'sshkeypath', 'sshkeydata', 'sshkeypassphrase', 'sshkeyid', 'sshhostkeyalgorithm', 'sshhostkeyfingerprintsha256', 'sshhostkeyrawbase64', 'sshhostkeytrustedat', 'sshhostkeytrustmode', 'rdpcertificatefingerprintsha256', 'rdpcertificatesubject', 'rdpcertificateissuer', 'rdpcertificatecommonname', 'rdpcertificatetrustedat', 'rdpcertificatetrustmode', 'rdpcertificateallowuntrustedroot', 'rdpcertificateallowhostmismatch', 'proxyhost', 'proxyport', 'proxyusername', 'gatewayhost', 'gatewayport', 'displayconfig', 'locked', 'locktype', 'isfavorite', 'groupid', 'sortorder', 'icon', 'lastconnected', 'lasthealth', 'lastlatency', 'syncversion', 'rustdeskrelayid', 'rustdeskaccountid', 'rustdeskpasswordmode', 'rustdeskauthmode', 'rustdeskdirectenabled', 'rustdeskdirecthost', 'rustdeskdirectport', 'rdpcredentialid', 'sourcetype', 'rustdeskproaccountid', 'rustdeskpropeerid', 'rustdeskproplatform', 'rustdeskpromanaged', 'rustdeskprolastseenat', 'rustdeskprosyncerror', 'createdat', 'updatedat'];
+    return ['id', 'userid', 'label', 'protocol', 'host', 'port', 'username', 'password', 'passward', 'customhostname', 'sshusekey', 'sshkeypath', 'sshkeydata', 'sshkeypassphrase', 'sshkeyid', 'sshhostkeyalgorithm', 'sshhostkeyfingerprintsha256', 'sshhostkeyrawbase64', 'sshhostkeytrustedat', 'sshhostkeytrustmode', 'rdpcertificatefingerprintsha256', 'rdpcertificatesubject', 'rdpcertificateissuer', 'rdpcertificatecommonname', 'rdpcertificatetrustedat', 'rdpcertificatetrustmode', 'rdpcertificateallowuntrustedroot', 'rdpcertificateallowhostmismatch', 'proxyhost', 'proxyport', 'proxyusername', 'gatewayhost', 'gatewayport', 'displayconfig', 'locked', 'locktype', 'isfavorite', 'groupid', 'sortorder', 'icon', 'lastconnected', 'lasthealth', 'lastlatency', 'syncversion', 'rustdeskrelayid', 'rustdeskaccountid', 'rustdeskpasswordmode', 'rustdeskauthmode', 'rustdeskdirectenabled', 'rustdeskdirecthost', 'rustdeskdirectport', 'rdpcredentialid', 'sourcetype', 'rustdeskproaccountid', 'rustdeskpropeerid', 'rustdeskproplatform', 'rustdeskpromanaged', 'rustdeskprolastseenat', 'rustdeskprosyncerror', 'createdat', 'updatedat'];
   }
   if (table === 'rdpcredentials') { return ['id', 'label', 'username', 'password', 'createdat', 'updatedat']; }
   if (table === 'rustdeskrelays') { return ['id', 'userid', 'idserver', 'idserverport', 'relayserver', 'relayport', 'apiserver', 'apiusername', 'apipassword', 'key', 'healthstatus', 'healthlatency', 'healthcheckedat', 'apiloginstatus', 'accountsjson', 'syncversion', 'createdat', 'updatedat']; }
@@ -28,7 +29,7 @@ function localBackupColumns(table: string): string[] {
 }
 
 function localBackupIntegerColumns(table: string): string[] {
-  if (table === 'usersettings') { return ['updatedat']; }
+  if (table === 'usersettings') { return ['schemaversion', 'updatedat']; }
   if (table === 'remotehosts') { return ['port', 'sshusekey', 'sshhostkeytrustedat', 'sshhostkeytrustmode', 'rdpcertificatetrustedat', 'rdpcertificatetrustmode', 'rdpcertificateallowuntrustedroot', 'rdpcertificateallowhostmismatch', 'proxyport', 'gatewayport', 'locked', 'locktype', 'isfavorite', 'sortorder', 'lastconnected', 'lasthealth', 'lastlatency', 'syncversion', 'rustdeskpasswordmode', 'rustdeskdirectenabled', 'rustdeskdirectport', 'rustdeskpromanaged', 'rustdeskprolastseenat', 'createdat', 'updatedat']; }
   if (table === 'rdpcredentials') { return ['createdat', 'updatedat']; }
   if (table === 'rustdeskrelays') { return ['idserverport', 'relayport', 'healthlatency', 'healthcheckedat', 'syncversion', 'createdat', 'updatedat']; }
@@ -48,14 +49,22 @@ function legacyLocalBackupColumns(table: string): string[] {
 }
 
 export function localBackupCanonicalPayload(
-  createdAt: number, appVersion: string, tables: Record<string, Array<Record<string, string>>>
+  createdAt: number, appVersion: string, tables: Record<string, Array<Record<string, string>>>,
+  extensions?: Array<Record<string, string>>, version: number = LOCAL_BACKUP_VERSION
 ): string {
   const ordered: Record<string, Array<Record<string, string>>> = {};
   for (let i = 0; i < CLOUD_SYNC_TABLES.length; i++) {
     const table: string = CLOUD_SYNC_TABLES[i];
     ordered[table] = tables[table] || [];
   }
-  return JSON.stringify({ format: LOCAL_BACKUP_FORMAT, version: LOCAL_BACKUP_VERSION, createdAt, appVersion, tables: ordered });
+  const base: Record<string, Object> = {};
+  base['format'] = LOCAL_BACKUP_FORMAT;
+  base['version'] = version;
+  base['createdAt'] = createdAt;
+  base['appVersion'] = appVersion;
+  base['tables'] = ordered;
+  if (version >= 2) { base['extensions'] = extensions || []; }
+  return JSON.stringify(base);
 }
 
 export function localBackupSha256(text: string): string {
@@ -68,9 +77,10 @@ export function localBackupSha256(text: string): string {
 }
 
 export function createLocalBackupDocument(
-  tables: Record<string, Array<Record<string, string>>>, createdAt: number, appVersion: string
+  tables: Record<string, Array<Record<string, string>>>, createdAt: number, appVersion: string,
+  extensions: Array<Record<string, string>> = []
 ): LocalBackupDocument {
-  const payload: string = localBackupCanonicalPayload(createdAt, appVersion, tables);
+  const payload: string = localBackupCanonicalPayload(createdAt, appVersion, tables, extensions);
   const parsed = JSON.parse(payload) as Record<string, Object>;
   return {
     format: LOCAL_BACKUP_FORMAT,
@@ -78,6 +88,7 @@ export function createLocalBackupDocument(
     createdAt,
     appVersion,
     tables: parsed['tables'] as Record<string, Array<Record<string, string>>>,
+    extensions,
     sha256: localBackupSha256(payload)
   };
 }
@@ -85,7 +96,8 @@ export function createLocalBackupDocument(
 export function validateLocalBackupDocument(text: string): LocalBackupDocument | null {
   try {
     const document = JSON.parse(text) as LocalBackupDocument;
-    if (document.format !== LOCAL_BACKUP_FORMAT || document.version !== LOCAL_BACKUP_VERSION || !document.tables) { return null; }
+    if (document.format !== LOCAL_BACKUP_FORMAT ||
+      (document.version !== 1 && document.version !== LOCAL_BACKUP_VERSION) || !document.tables) { return null; }
     const names: string[] = Object.keys(document.tables);
     if (names.length !== CLOUD_SYNC_TABLES.length) { return null; }
     for (let i = 0; i < CLOUD_SYNC_TABLES.length; i++) {
@@ -93,9 +105,26 @@ export function validateLocalBackupDocument(text: string): LocalBackupDocument |
       const rows: Array<Record<string, string>> = document.tables[table];
       if (!Array.isArray(rows) || names.indexOf(table) < 0 || !validateLocalBackupRows(table, rows)) { return null; }
     }
-    const canonical: string = localBackupCanonicalPayload(document.createdAt, document.appVersion, document.tables);
+    if (document.version >= 2 && !validateLocalExtensions(document.extensions || [])) { return null; }
+    const canonical: string = localBackupCanonicalPayload(document.createdAt, document.appVersion,
+      document.tables, document.extensions, document.version);
     return localBackupSha256(canonical) === document.sha256 ? document : null;
   } catch (_e) { return null; }
+}
+
+function validateLocalExtensions(rows: Array<Record<string, string>>): boolean {
+  const allowed: string[] = ['id', 'tablename', 'recordid', 'payload', 'updatedat'];
+  for (let i = 0; i < rows.length; i++) {
+    const keys: string[] = Object.keys(rows[i]);
+    if ((rows[i]['id'] || '') === '' || (rows[i]['tablename'] || '') === '' ||
+      (rows[i]['recordid'] || '') === '' || (rows[i]['payload'] || '') === '') { return false; }
+    for (let k = 0; k < keys.length; k++) {
+      if (allowed.indexOf(keys[k]) < 0 || typeof rows[i][keys[k]] !== 'string') { return false; }
+    }
+    if (rows[i]['updatedat'] !== undefined && !isStrictIntegerText(rows[i]['updatedat'])) { return false; }
+    try { JSON.parse(rows[i]['payload']) as Object; } catch (_e) { return false; }
+  }
+  return true;
 }
 
 function validateLocalBackupRows(table: string, rows: Array<Record<string, string>>): boolean {

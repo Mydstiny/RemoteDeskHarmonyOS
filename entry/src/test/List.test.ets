@@ -44,6 +44,7 @@ import hostSyncMergePolicyTest from './HostSyncMergePolicy.test';
 import sshTerminalOrientationPolicyTest from './SshTerminalOrientationPolicy.test';
 import remoteCursorStylePolicyTest from './RemoteCursorStylePolicy.test';
 import touchpadPointerCurvePolicyTest from './TouchpadPointerCurvePolicy.test';
+import connectionAttemptPolicyTest from './ConnectionAttemptPolicy.test';
 
 export default function testsuite() {
   localUnitTest();
@@ -92,4 +93,5 @@ export default function testsuite() {
   sshTerminalOrientationPolicyTest();
   remoteCursorStylePolicyTest();
   touchpadPointerCurvePolicyTest();
+  connectionAttemptPolicyTest();
 }

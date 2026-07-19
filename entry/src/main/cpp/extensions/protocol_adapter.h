@@ -16,6 +16,7 @@
 #include <functional>
 #include <string>
 #include <vector>
+#include "input/remote_cursor_snapshot.h"
 #include "transfer_runtime_status.h"
 
 // ============================================================
@@ -274,6 +275,12 @@ public:
 
     /** 获取当前连接状态 */
     virtual ConnectionState getState() = 0;
+
+    /** Inject the loader-owned identity before starting a new connection. */
+    virtual void setSessionIdentity(uint64_t /*sessionId*/) {}
+
+    /** Return the latest protocol-native cursor state. */
+    virtual RemoteCursorSnapshot getRemoteCursorSnapshot(bool /*includePixels*/) { return {}; }
 
     // ---- 输入事件 ----
 

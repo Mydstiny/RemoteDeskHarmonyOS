@@ -53,6 +53,7 @@ rand = "0.8"                         # 随机数 (keypair, nonce)
 base64 = "0.22"
 ed25519-dalek = "2"
 sha2 = "0.10"
+zstd = { version = "0.13", default-features = false, features = ["no_asm"] }
 
 [build-dependencies]
 protobuf-codegen-pure = "2.28"       # build.rs 中编译 .proto → Rust (无需 protoc 二进制)

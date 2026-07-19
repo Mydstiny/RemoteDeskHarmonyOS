@@ -20,10 +20,12 @@ export struct RdpAddFlow {
   @State password: string = '';
   @State credentialId: string = '';
   @State errorText: string = '';
+  @State credentialsViewRevision: number = 0;
   private awaitingNewCredential: boolean = false;
   private credentialIdsBeforeAdd: string[] = [];
 
   private onCredentialsChanged(): void {
+    this.credentialsViewRevision += 1;
     if (!this.awaitingNewCredential) { return; }
     const added: RdpCredential | undefined = this.credentials.find((credential: RdpCredential): boolean =>
       this.credentialIdsBeforeAdd.indexOf(credential.id) < 0);
@@ -131,7 +133,8 @@ export struct RdpAddFlow {
             }.width('100%').padding(12).borderRadius(10).margin({ bottom: 6 })
             .backgroundColor(this.pal().surface)
             .onClick((): void => { this.credentialId = credential.id; })
-          }, (credential: RdpCredential): string => credential.id)
+          }, (credential: RdpCredential): string =>
+            credential.id + ':' + this.credentialsViewRevision.toString())
         }
         Button('添加 Windows 凭据').width('100%').height(38).borderRadius(10)
           .backgroundColor(this.pal().surface).fontColor(this.accentColor).margin({ bottom: 12 })

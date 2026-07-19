@@ -15,6 +15,17 @@ export const RDP_CERTIFICATE_UNKNOWN_TRUST_MODE: number = 0;
 export const RDP_CERTIFICATE_LEGACY_IMPLICIT_TRUST_MODE: number = 1;
 export const RDP_CERTIFICATE_EXPLICIT_TRUST_MODE: number = 2;
 
+/**
+ * 证书预检使用独立 TLS probe，而真实 FreeRDP 连接有自己的 endpoint/resolver 路径。
+ * 已明确 pin 过指纹的主机在 probe 仅因 resolver 失败时可以继续交给真实连接，
+ * 由 native 的指纹校验作为第二道闸门；首次信任不能在无法读证书时绕过预检。
+ */
+export function shouldFallbackToNativeRdpConnectionAfterResolverFailure(errorCode: number,
+  trustMode: number, savedFingerprintSha256: string): boolean {
+  return errorCode === -11 && trustMode === RDP_CERTIFICATE_EXPLICIT_TRUST_MODE &&
+    savedFingerprintSha256.trim().length > 0;
+}
+
 export interface RdpCertificateProbeView {
   ok: boolean;
   fingerprintSha256: string;

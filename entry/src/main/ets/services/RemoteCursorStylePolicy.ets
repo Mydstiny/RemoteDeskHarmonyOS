@@ -1,7 +1,12 @@
 export type RemoteCursorStyle = 'circle' | 'arrow';
 
+export function remoteCursorSnapshotChanged(previousX: number, previousY: number,
+  previousReady: boolean, nextX: number, nextY: number, nextReady: boolean): boolean {
+  return previousX !== nextX || previousY !== nextY || previousReady !== nextReady;
+}
+
 export function normalizeRemoteCursorStyle(value: string | undefined): RemoteCursorStyle {
-  return value === 'arrow' ? 'arrow' : 'circle';
+  return value === 'circle' ? 'circle' : 'arrow';
 }
 
 export function shouldRenderVirtualTouchpadCursor(connected: boolean, touchpadMode: boolean,
@@ -14,7 +19,7 @@ export function shouldRenderArrowCursor(style: RemoteCursorStyle, connected: boo
   return style === 'arrow' && shouldRenderVirtualTouchpadCursor(connected, touchpadMode, cursorReady);
 }
 
-export function shouldRenderCircleCursor(style: RemoteCursorStyle, indicatorVisible: boolean,
+export function shouldRenderCircleCursor(style: RemoteCursorStyle, cursorReady: boolean,
   connected: boolean, touchpadMode: boolean): boolean {
-  return style === 'circle' && indicatorVisible && connected && touchpadMode;
+  return style === 'circle' && shouldRenderVirtualTouchpadCursor(connected, touchpadMode, cursorReady);
 }

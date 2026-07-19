@@ -1,7 +1,11 @@
 import { describe, it, expect } from '@ohos/hypium';
 import { RemoteHost } from '../main/ets/model/RemoteHost';
 import { RustDeskProPeer } from '../main/ets/model/RustDeskProModels';
-import { reconcileRustDeskProHosts, rustDeskProHostId } from '../main/ets/services/RustDeskProSyncPolicy';
+import {
+  reconcileRustDeskProHosts,
+  rustDeskProHostId,
+  shouldPreserveManagedRustDeskRoute
+} from '../main/ets/services/RustDeskProSyncPolicy';
 
 function peer(id: string, alias: string, platform: string = ''): RustDeskProPeer {
   const value = new RustDeskProPeer();
@@ -66,6 +70,12 @@ export default function rustDeskProSyncPolicyTest() {
       expect(second.hosts.length).assertEqual(1);
       expect(second.missingIds.length).assertEqual(1);
       expect(second.hosts[0].rustdeskProSyncError).assertEqual('not_seen');
+    });
+
+    it('allows_a_managed_direct_host_to_edit_its_local_lan_endpoint', 0, () => {
+      expect(shouldPreserveManagedRustDeskRoute(true, false)).assertTrue();
+      expect(shouldPreserveManagedRustDeskRoute(true, true)).assertFalse();
+      expect(shouldPreserveManagedRustDeskRoute(false, true)).assertFalse();
     });
   });
 }

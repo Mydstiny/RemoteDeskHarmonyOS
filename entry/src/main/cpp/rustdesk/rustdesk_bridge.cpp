@@ -26,6 +26,7 @@ extern "C" {
         const void* cfg,
         void (*on_frame)(const void*, void*),
         void (*on_audio)(const void*, void*),
+        void (*on_cursor)(const void*, void*),
         void (*on_disconnect)(int, const char*, void*),
         void* user_data);
     void  rustdesk_disconnect(void* handle);
@@ -323,6 +324,7 @@ struct RustDeskBridge::Impl {
     std::atomic<uint64_t>   connectSerial {0};
     std::atomic<bool>       disconnectRequested {false};
     std::atomic<bool>       ffiStreamEnded {false};
+    RemoteCursorStore       cursorStore;
     int                     ipcFd = -1;   // IPC socket fd (IPC 模式)
     int                     sockFd = -1;  // TCP socket fd (实验模式)
 #ifdef RUSTDESK_USE_REAL_CORE
@@ -357,6 +359,20 @@ struct RustDeskFfiAudioData {
     int            sampleRate;
     int            channels;
     uint64_t       timestamp;
+};
+
+struct RustDeskFfiCursorUpdate {
+    uint32_t       kind;
+    uint64_t       shapeId;
+    int            x;
+    int            y;
+    int            width;
+    int            height;
+    int            hotX;
+    int            hotY;
+    const uint8_t* rgba;
+    size_t         rgbaLen;
+    bool           visible;
 };
 
 static std::atomic<uint64_t> g_ffiVideoFrameCount {0};
@@ -559,11 +575,40 @@ void RustDeskBridge::onFfiAudio(const void* audioPtr, void* userData) {
     }
 }
 
+void RustDeskBridge::onFfiCursor(const void* cursorPtr, void* userData) {
+    auto* impl = static_cast<RustDeskBridge::Impl*>(userData);
+    auto* cursor = static_cast<const RustDeskFfiCursorUpdate*>(cursorPtr);
+    if (!impl || !cursor) {
+        return;
+    }
+
+    switch (cursor->kind) {
+        case 0: {
+            if (!cursor->rgba || cursor->rgbaLen == 0 || cursor->rgbaLen > kRemoteCursorMaxBytes) {
+                return;
+            }
+            std::vector<uint8_t> rgba(cursor->rgba, cursor->rgba + cursor->rgbaLen);
+            impl->cursorStore.setShape(cursor->shapeId, cursor->width, cursor->height,
+                                       cursor->hotX, cursor->hotY, rgba);
+            break;
+        }
+        case 1:
+            impl->cursorStore.setPosition(cursor->x, cursor->y);
+            break;
+        case 2:
+            impl->cursorStore.setVisible(cursor->visible);
+            break;
+        default:
+            break;
+    }
+}
+
 void RustDeskBridge::onFfiDisconnect(int state, const char* message, void* userData) {
     auto* impl = static_cast<RustDeskBridge::Impl*>(userData);
     bool wasConnected = false;
     bool requested = false;
     if (impl) {
+        impl->cursorStore.setVisible(false);
         impl->ffiStreamEnded.store(true);
         std::lock_guard<std::mutex> lock(impl->mutex);
         wasConnected = impl->state == ConnectionState::CONNECTED;
@@ -609,6 +654,14 @@ RustDeskBridge::RustDeskBridge(RustDeskMode mode)
     const char* modeLabel = (mode == RustDeskMode::IPC) ? "IPC" :
         (mode == RustDeskMode::FFI ? "FFI" : "EXPERIMENTAL");
     OH_LOG_INFO(LOG_APP, "[RustDesk] RustDeskBridge created (mode=%{public}s)", modeLabel);
+}
+
+void RustDeskBridge::setSessionIdentity(uint64_t sessionId) {
+    impl_->cursorStore.reset(sessionId, "rustdesk");
+}
+
+RemoteCursorSnapshot RustDeskBridge::getRemoteCursorSnapshot(bool includePixels) {
+    return impl_->cursorStore.snapshot(includePixels);
 }
 
 RustDeskBridge::~RustDeskBridge() {
@@ -833,7 +886,8 @@ int RustDeskBridge::connect(const ConnectionConfig& cfg) {
                 ffiCfg.profile,
                 ffiCfg.fps);
 
-            void* ffiHandle = rustdesk_connect(&ffiCfg, onFfiFrame, onFfiAudio, onFfiDisconnect, impl);
+            void* ffiHandle = rustdesk_connect(
+                &ffiCfg, onFfiFrame, onFfiAudio, onFfiCursor, onFfiDisconnect, impl);
             bool discardHandle = serial != impl->connectSerial.load() ||
                 impl->disconnectRequested.load() || impl->ffiStreamEnded.load();
             if (!discardHandle) {
@@ -949,6 +1003,7 @@ int RustDeskBridge::connect(const ConnectionConfig& cfg) {
 
 void RustDeskBridge::disconnect() {
     impl_->disconnectRequested.store(true);
+    impl_->cursorStore.setVisible(false);
     ++impl_->connectSerial;
     if (impl_->ipcFd >= 0) {
         shutdown(impl_->ipcFd, SHUT_RDWR);

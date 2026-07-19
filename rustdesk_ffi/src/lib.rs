@@ -24,6 +24,7 @@ pub mod connector;
 pub mod crypto;
 pub mod crypto_channel;
 mod control_inbox;
+mod cursor_state;
 mod net;
 #[cfg(feature = "opus-audio")]
 pub mod opus_ffi;
@@ -34,6 +35,7 @@ use protocol::message_proto::{
     AudioFormat, AudioFrame, EncodedVideoFrames, VideoFrame, VideoFrame_oneof_union,
 };
 use control_inbox::ControlInbox;
+use cursor_state::CursorStreamUpdate;
 
 static LAST_ERROR: Mutex<String> = Mutex::new(String::new());
 // 每次连接尝试都有单调递增 epoch；取消时递增 epoch，使等待批准的旧线程可退出，
@@ -231,6 +233,22 @@ pub struct FfiAudioData {
     pub timestamp: u64,
 }
 
+/// Remote cursor update. Pixel bytes are valid only for the callback duration.
+#[repr(C)]
+pub struct FfiCursorUpdate {
+    pub kind: c_int, // 0=shape, 1=position, 2=visibility
+    pub shape_id: u64,
+    pub x: c_int,
+    pub y: c_int,
+    pub width: c_int,
+    pub height: c_int,
+    pub hot_x: c_int,
+    pub hot_y: c_int,
+    pub rgba: *const u8,
+    pub rgba_len: usize,
+    pub visible: bool,
+}
+
 /// 连接状态
 #[repr(C)]
 pub enum FfiConnectionState {
@@ -250,6 +268,9 @@ pub type FrameCallback = extern "C" fn(frame: *const FfiVideoFrame, user_data: *
 
 /// 音频数据回调
 pub type AudioCallback = extern "C" fn(audio: *const FfiAudioData, user_data: *mut c_void);
+
+/// Remote cursor callback.
+pub type CursorCallback = extern "C" fn(cursor: *const FfiCursorUpdate, user_data: *mut c_void);
 
 /// 断开连接回调
 pub type DisconnectCallback =
@@ -625,6 +646,55 @@ fn notify_disconnect(
     on_disconnect(state, c_message.as_ptr(), user_data);
 }
 
+fn dispatch_cursor_update(
+    update: CursorStreamUpdate,
+    on_cursor: Option<CursorCallback>,
+    user_data: *mut c_void,
+) {
+    let Some(on_cursor) = on_cursor else {
+        return;
+    };
+    let mut ffi = FfiCursorUpdate {
+        kind: 0,
+        shape_id: 0,
+        x: 0,
+        y: 0,
+        width: 0,
+        height: 0,
+        hot_x: 0,
+        hot_y: 0,
+        rgba: std::ptr::null(),
+        rgba_len: 0,
+        visible: false,
+    };
+    match update {
+        CursorStreamUpdate::Shape(shape) => {
+            ffi.kind = 0;
+            ffi.shape_id = shape.id;
+            ffi.width = shape.width;
+            ffi.height = shape.height;
+            ffi.hot_x = shape.hot_x;
+            ffi.hot_y = shape.hot_y;
+            ffi.rgba = shape.rgba.as_ptr();
+            ffi.rgba_len = shape.rgba.len();
+            ffi.visible = true;
+            on_cursor(&ffi, user_data);
+        }
+        CursorStreamUpdate::Position { x, y } => {
+            ffi.kind = 1;
+            ffi.x = x;
+            ffi.y = y;
+            ffi.visible = true;
+            on_cursor(&ffi, user_data);
+        }
+        CursorStreamUpdate::Visibility(visible) => {
+            ffi.kind = 2;
+            ffi.visible = visible;
+            on_cursor(&ffi, user_data);
+        }
+    }
+}
+
 // ============================================================
 // FFI 导出函数
 // ============================================================
@@ -639,6 +709,7 @@ pub extern "C" fn rustdesk_connect(
     cfg: *const RustDeskConfig,
     on_frame: Option<FrameCallback>,
     on_audio: Option<AudioCallback>,
+    on_cursor: Option<CursorCallback>,
     on_disconnect: Option<DisconnectCallback>,
     user_data: *mut c_void,
 ) -> *mut c_void {
@@ -794,6 +865,9 @@ pub extern "C" fn rustdesk_connect(
                             clipboard.clear();
                             clipboard.extend_from_slice(&content[..content.len().min(65536)]);
                         }
+                    },
+                    |cursor| {
+                        dispatch_cursor_update(cursor, on_cursor, callback_user_data);
                     },
                 );
 
@@ -1129,6 +1203,7 @@ mod tests {
             std::ptr::null(),
             Some(dummy_frame),
             Some(dummy_audio),
+            None,
             Some(dummy_disconnect),
             std::ptr::null_mut(),
         );
@@ -1175,6 +1250,7 @@ mod tests {
             &cfg,
             Some(dummy_frame),
             Some(dummy_audio),
+            None,
             Some(dummy_disconnect),
             std::ptr::null_mut(),
         );

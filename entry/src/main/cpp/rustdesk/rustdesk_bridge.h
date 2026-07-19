@@ -61,6 +61,8 @@ public:
     int             connect(const ConnectionConfig& cfg) override;
     void            disconnect() override;
     ConnectionState getState() override;
+    void            setSessionIdentity(uint64_t sessionId) override;
+    RemoteCursorSnapshot getRemoteCursorSnapshot(bool includePixels) override;
     void            requestFrameRefresh() override;
     void            reportVideoPressure(int level) override;
 
@@ -96,6 +98,7 @@ private:
 #ifdef RUSTDESK_USE_REAL_CORE
     static void onFfiFrame(const void* frame, void* userData);
     static void onFfiAudio(const void* audio, void* userData);
+    static void onFfiCursor(const void* cursor, void* userData);
     static void onFfiDisconnect(int state, const char* message, void* userData);
 #endif
 

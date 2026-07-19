@@ -83,6 +83,9 @@ export struct RustDeskRelayPage {
   @State proBusy: boolean = false;
   @State testingRelayId: string = '';
   @State relaySheetClosing: boolean = false;
+  @State relayViewRevision: number = 0;
+  @State vncViewRevision: number = 0;
+  @State proViewRevision: number = 0;
   private srv: HostSyncService = HostSyncService.getInstance();
   private proSync: RustDeskProSyncService = RustDeskProSyncService.getInstance();
   private vncSrv: VncRelayConfigService = VncRelayConfigService.getInstance();
@@ -153,15 +156,18 @@ export struct RustDeskRelayPage {
     const nextRelays = this.srv.getAllRelays().map((relay: RustDeskRelayConfig): RustDeskRelayConfig =>
       RustDeskRelayConfig.fromJSON(relay.toJSON()));
     this.relays = nextRelays;
+    this.relayViewRevision += 1;
     if (selectedRelayId !== '') {
       this.selectedPcRelay = snapshotSelectedRelay(nextRelays, selectedRelayId);
     }
   }
   private loadProAccounts(): void {
     this.proAccounts = this.proSync.getAccounts();
+    this.proViewRevision += 1;
   }
   private loadVncRelays(): void {
     this.vncRelays = this.vncSrv.getAll();
+    this.vncViewRevision += 1;
   }
   onAddTrigger(): void {
     if (this.addTrigger > 0) { this.openAddRelaySheet(); }
@@ -827,7 +833,7 @@ export struct RustDeskRelayPage {
     List() {
       ForEach(this.vncRelays, (relay: VncRelayConfig) => {
         ListItem() { this.vncRelayCard(relay) }
-      }, (relay: VncRelayConfig): string => relay.id)
+      }, (relay: VncRelayConfig): string => relay.id + ':' + this.vncViewRevision.toString())
       ForEach(this.relays, (relay: RustDeskRelayConfig) => {
         ListItem() {
           this.relayCardContent(relay, false)
@@ -851,7 +857,7 @@ export struct RustDeskRelayPage {
               .combine(TransitionEffect.OPACITY)
           )
         )
-      }, (relay: RustDeskRelayConfig): string => relay.id)
+      }, (relay: RustDeskRelayConfig): string => relay.id + ':' + this.relayViewRevision.toString())
     }
     .width('100%')
     .listDirection(Axis.Vertical)
@@ -929,7 +935,7 @@ export struct RustDeskRelayPage {
     Grid() {
       ForEach(this.vncRelays, (relay: VncRelayConfig) => {
         GridItem() { this.vncRelayCard(relay) }
-      }, (relay: VncRelayConfig): string => relay.id)
+      }, (relay: VncRelayConfig): string => relay.id + ':' + this.vncViewRevision.toString())
       ForEach(this.relays, (relay: RustDeskRelayConfig) => {
         GridItem() {
           this.relayCardContent(relay, true)
@@ -942,7 +948,8 @@ export struct RustDeskRelayPage {
               .combine(TransitionEffect.OPACITY)
           )
         )
-      }, (relay: RustDeskRelayConfig): string => relay.id)
+            }, (relay: RustDeskRelayConfig): string =>
+              relay.id + ':' + this.relayViewRevision.toString())
     }
     .columnsTemplate(this.gridColumnsTemplate())
     .columnsGap(this.cardGap())
@@ -960,12 +967,12 @@ export struct RustDeskRelayPage {
         List() {
           ForEach(this.vncRelays, (relay: VncRelayConfig) => {
             ListItem() { this.vncRelayCard(relay) }
-          }, (relay: VncRelayConfig): string => relay.id)
+          }, (relay: VncRelayConfig): string => relay.id + ':' + this.vncViewRevision.toString())
           ForEach(this.relays, (relay: RustDeskRelayConfig) => {
             ListItem() {
               this.pcListItem(relay)
             }
-          }, (relay: RustDeskRelayConfig): string => relay.id)
+      }, (relay: RustDeskRelayConfig): string => relay.id + ':' + this.relayViewRevision.toString())
         }
         .width('100%').layoutWeight(1)
         .scrollBar(BarState.Off).edgeEffect(EdgeEffect.Spring)
@@ -1407,7 +1414,8 @@ export struct RustDeskRelayPage {
         }
         .width('100%').padding({ left: 9, right: 9, top: 7, bottom: 7 })
         .borderRadius(9).backgroundColor(this.pal().surface).margin({ top: 4 })
-      }, (account: RustDeskProAccountState): string => account.id)
+      }, (account: RustDeskProAccountState): string =>
+        account.id + ':' + this.proViewRevision.toString())
     }
     .width('100%').borderRadius(12).backgroundColor(this.pal().surface)
     .padding(10).margin({ top: 12, bottom: 14 })
@@ -1447,7 +1455,8 @@ export struct RustDeskRelayPage {
         }
         .width('100%').padding({ left: 9, right: 9, top: 7, bottom: 7 })
         .borderRadius(9).backgroundColor(this.pal().card).margin({ bottom: 3 })
-      }, (account: RustDeskProAccountState): string => account.id)
+      }, (account: RustDeskProAccountState): string =>
+        account.id + ':' + this.proViewRevision.toString())
     }
     .width('100%').borderRadius(10).backgroundColor(this.pal().surface).padding(10).margin({ bottom: 14 })
   }

@@ -56,6 +56,8 @@ export struct KeyVaultPage {
   @State editingTotpEntry: TotpEntry = new TotpEntry();
   @State sshKeys: SshKey[] = [];
   @State totpEntries: TotpEntry[] = [];
+  @State keyViewRevision: number = 0;
+  @State totpViewRevision: number = 0;
   private sshKeyDataSource: SshKeyDataSource = new SshKeyDataSource();
   private totpEntryDataSource: TotpEntryDataSource = new TotpEntryDataSource();
   @State showQrScan: boolean = false;
@@ -354,6 +356,8 @@ export struct KeyVaultPage {
     this.totpEntries = this.kvs.getAllTotpEntries();
     this.sshKeyDataSource.replaceAll(this.sshKeys);
     this.totpEntryDataSource.replaceAll(this.totpEntries);
+    this.keyViewRevision += 1;
+    this.totpViewRevision += 1;
   }
 
   // ==================== 批量选择 ====================
@@ -731,7 +735,7 @@ export struct KeyVaultPage {
                     .animation({ duration: 350, curve: curves.interpolatingSpring(0, 0.8, 300, 20) })
                 )
               )
-            }, (key: SshKey) => key.id)
+            }, (key: SshKey) => key.id + ':' + this.keyViewRevision.toString())
           }
         }
 
@@ -811,7 +815,7 @@ export struct KeyVaultPage {
                     .animation({ duration: 350, curve: curves.interpolatingSpring(0, 0.8, 300, 20) })
                 )
               )
-            }, (entry: TotpEntry) => entry.id)
+            }, (entry: TotpEntry) => entry.id + ':' + this.totpViewRevision.toString())
           }
         }
 
@@ -1112,7 +1116,7 @@ export struct KeyVaultPage {
                     .animation({ duration: 350, curve: curves.interpolatingSpring(0, 0.8, 300, 20) })
                 )
               )
-            }, (key: SshKey) => key.id)
+            }, (key: SshKey) => key.id + ':' + this.keyViewRevision.toString())
           }
           .layoutWeight(1).padding({ left: 16, right: 16, top: 4, bottom: 140 })
         }
@@ -1182,7 +1186,7 @@ export struct KeyVaultPage {
                     .animation({ duration: 350, curve: curves.interpolatingSpring(0, 0.8, 300, 20) })
                 )
               )
-            }, (entry: TotpEntry) => entry.id)
+            }, (entry: TotpEntry) => entry.id + ':' + this.totpViewRevision.toString())
           }
           .layoutWeight(1).padding({ left: 16, right: 16, top: 4, bottom: 140 })
         }

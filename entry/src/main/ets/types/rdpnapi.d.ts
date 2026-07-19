@@ -31,6 +31,7 @@ declare module 'librdpnapi.so' {
   export function isSessionClipboardReady(sessionId: number): boolean;
 
   export function getConnectionState(sessionId: number): number;
+  export function getRemoteCursorSnapshot(sessionId: number, includePixels?: boolean): RemoteCursorSnapshot;
   export function getConnectionLastMessage(sessionId: number): string;
   export function getRustDeskLastError(): string;
   export function probeRdpCertificate(host: string, port: number, serverName: string): RdpCertificateInfo;
@@ -200,6 +201,22 @@ export interface RdpRenderStats {
   inputDroppedMouseMoves: number;
   inputNonDisposableOverflow: number;
   graphicsMode: string;
+}
+
+export interface RemoteCursorSnapshot {
+  sessionId: number;
+  protocol: string;
+  shapeId: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  hotX: number;
+  hotY: number;
+  visible: boolean;
+  shapeRevision: number;
+  positionRevision: number;
+  rgba: ArrayBuffer;
 }
 
 export interface SessionTransferStatus {

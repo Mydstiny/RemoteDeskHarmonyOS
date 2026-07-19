@@ -11,3 +11,7 @@ export function shouldKeepLocalHostConfig(localObservedAt: number, previousSnaps
 export function shouldKeepDeletedHost(deletedAt: number, previousSnapshotAt: number): boolean {
   return deletedAt > previousSnapshotAt;
 }
+
+export function serializedSnapshotChanged(before: string, after: string): boolean {
+  return before !== after;
+}

@@ -42,7 +42,7 @@
 
 - `entry/src/main/cpp/extensions/protocol_adapter.h`
 - `entry/src/main/cpp/CMakeLists.txt`
-- `entry/src/main/cpp/napi_init.cpp`
+- `entry/src/main/cpp/extensions/extension_loader_napi.cpp`
 - `entry/src/main/cpp/rdp/freerdp_adapter.h`
 - `entry/src/main/cpp/rdp/freerdp_adapter.cpp`
 - `entry/src/main/cpp/rustdesk/rustdesk_bridge.h`
@@ -71,7 +71,7 @@
 
 **Interfaces:**
 - Produces: `RemoteCursorShape`, `RemoteCursorSnapshot`, `RemoteCursorStore::setShape`, `setPosition`, `setVisible`, `snapshot`, and `reset`.
-- Produces: `ProtocolAdapter::getRemoteCursorSnapshot(bool includePixels)` with an empty default implementation.
+- Produces: `ProtocolAdapter::setSessionIdentity(uint64_t sessionId)` with a no-op default and `getRemoteCursorSnapshot(bool includePixels)` with an empty default implementation.
 
 - [ ] **Step 1: Write the failing native tests**
 
@@ -152,6 +152,8 @@ virtual RemoteCursorSnapshot getRemoteCursorSnapshot(bool includePixels) {
 }
 ```
 
+Also add `virtual void setSessionIdentity(uint64_t sessionId) {}`. The extension loader owns the NAPI session ID and calls this hook before `connect`; adapters must not invent or infer it.
+
 Register `input/remote_cursor_snapshot.cpp` in production and `test/remote_cursor_snapshot_test.cpp` in the native test executable.
 
 - [ ] **Step 5: Run native tests and verify GREEN**
@@ -171,8 +173,11 @@ git commit -m "feat(input): add native remote cursor snapshot"
 
 **Files:**
 - Create: `rustdesk_ffi/src/cursor_state.rs`
+- Modify: `rustdesk_ffi/Cargo.toml`
+- Modify: `rustdesk_ffi/Cargo.lock`
 - Modify: `rustdesk_ffi/src/lib.rs`
 - Modify: `rustdesk_ffi/src/connector.rs`
+- Modify when dependency inventory requires it: `sbom.spdx.json`, `NOTICE`, and repository provenance/hash metadata selected by `scripts/verify_open_source_release.ps1`.
 
 **Interfaces:**
 - Produces: `CursorState::apply_data`, `apply_id`, `apply_position`, `current_shape`.
@@ -209,7 +214,7 @@ Expected: compile failure because `cursor_state` is absent.
 
 - [ ] **Step 3: Implement bounded RustDesk cache**
 
-Implement a four-entry LRU-like cache keyed by cursor ID. Validate maximum 384×384, RGBA length, and hotspot. `colors` is copied once on `cursor_data`; `cursor_id` emits the cached shape without reparsing.
+Add `zstd = "0.13"` to `rustdesk_ffi/Cargo.toml`. Implement a four-entry LRU-like cache keyed by cursor ID. RustDesk `CursorData.colors` is Zstandard-compressed, so `apply_data` must call `zstd::decode_all`, then validate maximum 384×384, decompressed RGBA length, and hotspot. Decompressed colors are copied once on `cursor_data`; `cursor_id` emits the cached shape without reparsing.
 
 - [ ] **Step 4: Extend the C ABI**
 
@@ -249,7 +254,7 @@ Expected: all Rust tests pass.
 - [ ] **Step 7: Commit only Task 2 files**
 
 ```powershell
-git add -- rustdesk_ffi/src/cursor_state.rs rustdesk_ffi/src/lib.rs rustdesk_ffi/src/connector.rs
+git add -- rustdesk_ffi/Cargo.toml rustdesk_ffi/Cargo.lock rustdesk_ffi/src/cursor_state.rs rustdesk_ffi/src/lib.rs rustdesk_ffi/src/connector.rs sbom.spdx.json NOTICE
 git commit -m "feat(rustdesk): forward remote cursor updates"
 ```
 
@@ -264,7 +269,7 @@ git commit -m "feat(rustdesk): forward remote cursor updates"
 
 **Interfaces:**
 - Consumes: `FfiCursorUpdate` from Task 2.
-- Produces: `RustDeskBridge::getRemoteCursorSnapshot(bool)`.
+- Produces: `RustDeskBridge::setSessionIdentity(uint64_t)` and `getRemoteCursorSnapshot(bool)`.
 
 - [ ] **Step 1: Add a failing callback-copy test**
 
@@ -276,7 +281,7 @@ Expected: missing conversion helper / callback.
 
 - [ ] **Step 3: Wire the FFI callback into `RemoteCursorStore`**
 
-Add `RemoteCursorStore cursorStore` to `RustDeskBridge::Impl`, reset it with the active session generation at connect, clear it at disconnect, and map update kinds to `setShape`, `setPosition`, or `setVisible`. Do not log pixel bytes or raw peer identity.
+Add `RemoteCursorStore cursorStore` to `RustDeskBridge::Impl`, reset it from `setSessionIdentity` before connect, clear it at disconnect, and map update kinds to `setShape`, `setPosition`, or `setVisible`. Do not log pixel bytes or raw peer identity.
 
 - [ ] **Step 4: Add the adapter getter**
 
@@ -317,7 +322,7 @@ The Rust static archives and target directories are generated and must not be st
 
 **Interfaces:**
 - Consumes: FreeRDP `rdpPointer` callbacks and `freerdp_image_copy_from_pointer_data`.
-- Produces: `FreeRDPAdapter::getRemoteCursorSnapshot(bool)`.
+- Produces: `FreeRDPAdapter::setSessionIdentity(uint64_t)` and `getRemoteCursorSnapshot(bool)`.
 
 - [ ] **Step 1: Write failing mask conversion/cache tests**
 
@@ -351,7 +356,7 @@ git commit -m "feat(rdp): expose protocol-native cursor"
 ### Task 5: NAPI cursor snapshot bridge
 
 **Files:**
-- Modify: `entry/src/main/cpp/napi_init.cpp`
+- Modify: `entry/src/main/cpp/extensions/extension_loader_napi.cpp`
 - Modify: `entry/src/main/ets/types/rdpnapi.d.ts`
 - Modify: `entry/src/main/cpp/test/remote_cursor_snapshot_test.cpp`
 
@@ -387,6 +392,8 @@ interface RemoteCursorSnapshot {
 
 Use a copied ArrayBuffer only when requested. Never expose native vector memory with a lifetime shorter than the JS object.
 
+In `NapiConnect`, call `adapter->setSessionIdentity(sessionId)` after allocating the ID and before registering callbacks or calling `adapter->connect(cfg)`. This makes every callback snapshot carry the loader-owned session identity.
+
 - [ ] **Step 3: Run native tests and ArkTS compile**
 
 Expected: serialization tests and `default@OhosTestCompileArkTS` pass.
@@ -394,7 +401,7 @@ Expected: serialization tests and `default@OhosTestCompileArkTS` pass.
 - [ ] **Step 4: Commit Task 5 files**
 
 ```powershell
-git add -- entry/src/main/cpp/napi_init.cpp entry/src/main/ets/types/rdpnapi.d.ts entry/src/main/cpp/test/remote_cursor_snapshot_test.cpp
+git add -- entry/src/main/cpp/extensions/extension_loader_napi.cpp entry/src/main/ets/types/rdpnapi.d.ts entry/src/main/cpp/test/remote_cursor_snapshot_test.cpp
 git commit -m "feat(napi): bridge remote cursor snapshots"
 ```
 

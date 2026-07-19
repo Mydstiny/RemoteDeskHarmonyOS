@@ -5,6 +5,7 @@ import { display, promptAction, router, window } from '@kit.ArkUI';
 import { inputDevice, pointer } from '@kit.InputKit';
 import { abilityAccessCtrl, common } from '@kit.AbilityKit';
 import { pasteboard } from '@kit.BasicServicesKit';
+import { image } from '@kit.ImageKit';
 import { HostSyncService } from '../services/HostSyncService';
 import { ExtensionLoader } from '../services/ExtensionLoader';
 import { KeyVaultService } from '../services/KeyVaultService';
@@ -51,6 +52,7 @@ import {
 } from '../services/RemotePointerModePolicy';
 import {
   normalizeRemoteCursorStyle,
+  remoteCursorSnapshotChanged,
   RemoteCursorStyle,
   shouldRenderArrowCursor,
   shouldRenderCircleCursor
@@ -110,11 +112,12 @@ import {
   RemoteImeCommandQueue
 } from '../services/RemoteImeCommandQueue';
 import { hashForLog, maskHost, maskUser, safeError } from '../utils/SafeLogger';
-import { RdpRenderStats, SessionConfig, SessionTransferStatus } from '../types/rdpnapi';
+import { RdpRenderStats, RemoteCursorSnapshot, SessionConfig, SessionTransferStatus } from '../types/rdpnapi';
 import {
   normalizeRustDeskPort,
   RUSTDESK_PEER_TCP_PORT,
-  rustDeskAuthModeForConnection
+  rustDeskAuthModeForConnection,
+  rustDeskConnectionError
 } from '../services/RustDeskHostConfigPolicy';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { fileIo, fileUri, picker } from '@kit.CoreFileKit';
@@ -271,7 +274,9 @@ struct RemoteDesktop {
   @StorageLink('rustdeskReverseWheel') rustdeskReverseWheel: boolean = false;
   @StorageLink('rustdeskSwapMouseButtons') rustdeskSwapMouseButtons: boolean = false;
   @StorageLink('rustdeskTouchpadSpeed') rustdeskTouchpadSpeed: number = 1.0;
-  @StorageLink('virtualMouseStyle') virtualMouseStyle: string = 'circle';
+  @StorageLink('virtualMouseStyle') virtualMouseStyle: string = 'arrow';
+  @StorageLink('showVirtualMouse') showVirtualMouse: boolean = false;
+  @StorageLink('showVirtualJoystick') showVirtualJoystick: boolean = false;
   @StorageLink('rdpControlMode') rdpControlMode: number = 0; // 0=touchpad, 1=direct touch, 2=keyboard/mouse
   @StorageLink('rdpDriveEnabled') rdpDriveEnabled: boolean = true;
   @StorageLink('rdpDriveName') rdpDriveName: string = 'RemoteDesktop';
@@ -287,6 +292,7 @@ struct RemoteDesktop {
   @State showRustDeskAuthSheet: boolean = false;
   @State rustDeskAuthChoice: RustDeskAuthChoice = 'password';
   @State rustDeskAuthPasswordInput: string = '';
+  @State rustDeskAuthPasswordMode: number = 0;
   @State rustDeskAuthPasswordShow: boolean = false;
   @State rustDeskAuthRememberPassword: boolean = true;
   @State rustDeskAuthError: string = '';
@@ -326,6 +332,7 @@ struct RemoteDesktop {
   private rustDeskSessionAuthChoice: RustDeskAuthChoice = 'password';
   private rustDeskSessionPassword: string = '';
   private rustDeskSessionRememberPassword: boolean = false;
+  private rustDeskSessionPasswordMode: number = 0;
   private remoteNavigationHidden: boolean = false;
   private backgroundAudioPollTimer: number = -1;
   private backgroundSessionInfo: RemoteSessionBgInfo | null = null;
@@ -344,6 +351,23 @@ struct RemoteDesktop {
   private remoteCursorPreciseX: number = 960;
   private remoteCursorPreciseY: number = 540;
   private remoteCursorReady: boolean = false;
+  @State remoteCursorViewRevision: number = 0;
+  @State remoteCursorPixelMap: image.PixelMap | null = null;
+  private remoteCursorShapeRevision: number = -1;
+  private remoteCursorPositionRevision: number = -1;
+  private remoteCursorNativeVisible: boolean = false;
+  private remoteCursorShapeWidth: number = 0;
+  private remoteCursorShapeHeight: number = 0;
+  private remoteCursorHotX: number = 0;
+  private remoteCursorHotY: number = 0;
+  @State virtualMouseX: number = 24;
+  @State virtualMouseY: number = 140;
+  private virtualMouseDragStartX: number = 0;
+  private virtualMouseDragStartY: number = 0;
+  private virtualWheelLastOffset: number = 0;
+  private virtualJoystickLastX: number = 0;
+  private virtualJoystickLastY: number = 0;
+  private virtualJoystickTimer: number = -1;
   private touchpadCurveState: TouchpadPointerCurveState = resetTouchpadPointerCurveState();
   private touchpadPointerDown: boolean = false;
   // 触控板手势状态机
@@ -432,6 +456,7 @@ struct RemoteDesktop {
   private rdpClipboardBatchSequence: number = 0;
   private rdpRenderWatchdogTimer: number = -1;
   private rdpNativeStateMonitorTimer: number = -1;
+  private remoteCursorPollTimer: number = -1;
   private lastBrowseModeBlockedToastMs: number = 0;
 
   private inputDeviceListener: Callback<inputDevice.DeviceListener> =
@@ -589,6 +614,7 @@ struct RemoteDesktop {
     this.rustDeskAuthChoice = host.rustdeskDirectEnabled ? 'password' :
       (host.rustdeskAuthMode === 'request_approval' ? 'request_approval' : 'password');
     this.rustDeskAuthPasswordInput = host.password;
+    this.rustDeskAuthPasswordMode = host.rustdeskPasswordMode === 1 ? 1 : 0;
     this.rustDeskAuthPasswordShow = false;
     this.rustDeskAuthRememberPassword = true;
     this.rustDeskAuthError = message;
@@ -623,6 +649,7 @@ struct RemoteDesktop {
     }
 
     const selected = RemoteHost.fromJSON(host.toJSON());
+    selected.rustdeskPasswordMode = this.rustDeskAuthPasswordMode === 1 ? 1 : 0;
     if (this.rustDeskAuthChoice === 'password') {
       if (this.rustDeskAuthPasswordInput.trim().length === 0) {
         this.rustDeskAuthError = '请输入远程 RustDesk 设备密码。';
@@ -638,6 +665,7 @@ struct RemoteDesktop {
       this.rustDeskSessionPassword = '';
       this.rustDeskSessionRememberPassword = false;
     }
+    this.rustDeskSessionPasswordMode = this.rustDeskAuthPasswordMode === 1 ? 1 : 0;
     this.rustDeskSessionAuthChoice = this.rustDeskAuthChoice;
     this.pendingHost = selected;
     this.rustDeskAuthDismissReason = 'confirm';
@@ -689,6 +717,7 @@ struct RemoteDesktop {
     }
     const next = RemoteHost.fromJSON(existing.toJSON());
     next.rustdeskAuthMode = this.rustDeskSessionAuthChoice;
+    next.rustdeskPasswordMode = this.rustDeskSessionPasswordMode;
     if (this.rustDeskSessionAuthChoice === 'password' &&
       this.rustDeskSessionRememberPassword && this.rustDeskSessionPassword.length > 0) {
       next.password = this.rustDeskSessionPassword;
@@ -733,23 +762,59 @@ struct RemoteDesktop {
   }
 
   private shouldShowTouchIndicator(): boolean {
-    return shouldRenderCircleCursor(this.remoteCursorDisplayStyle(), this.touchIndicatorVisible,
+    const cursorViewRevision: number = this.remoteCursorViewRevision;
+    return shouldRenderCircleCursor(this.remoteCursorDisplayStyle(), this.remoteCursorReady,
       this.connected, this.isTouchpadControlMode()) && shouldRenderTouchPointerIndicator(true,
-      shouldUseSystemMousePointer(this.isKeyboardMouseControlMode()));
+      shouldUseSystemMousePointer(this.isKeyboardMouseControlMode())) && cursorViewRevision >= 0;
   }
 
   private shouldShowArrowCursor(): boolean {
+    const cursorViewRevision: number = this.remoteCursorViewRevision;
     return shouldRenderArrowCursor(this.remoteCursorDisplayStyle(), this.connected,
-      this.isTouchpadControlMode(), this.remoteCursorReady);
+      this.isTouchpadControlMode(), this.remoteCursorReady) && this.remoteCursorNativeVisible &&
+      this.remoteCursorPixelMap !== null && cursorViewRevision >= 0;
   }
 
   private arrowCursorPoint(): LocalPoint {
-    return this.remoteToLocalPoint(this.remoteCursorX, this.remoteCursorY);
+    const reactiveX: number = this.remoteCursorX + this.remoteCursorViewRevision * 0;
+    return this.remoteToLocalPoint(reactiveX, this.remoteCursorY);
   }
 
   private arrowCursorInside(): boolean { return this.arrowCursorPoint().inside; }
   private arrowCursorLocalX(): number { return this.arrowCursorPoint().x; }
   private arrowCursorLocalY(): number { return this.arrowCursorPoint().y; }
+  private remoteCursorLocalScaleX(): number {
+    if (this.remoteCursorShapeWidth <= 0) { return 1; }
+    const origin: LocalPoint = this.remoteToLocalPoint(this.remoteCursorX, this.remoteCursorY);
+    const edge: LocalPoint = this.remoteToLocalPoint(
+      this.remoteCursorX + this.remoteCursorShapeWidth, this.remoteCursorY);
+    return Math.max(0.1, Math.abs(edge.x - origin.x) / this.remoteCursorShapeWidth);
+  }
+  private remoteCursorLocalScaleY(): number {
+    if (this.remoteCursorShapeHeight <= 0) { return 1; }
+    const origin: LocalPoint = this.remoteToLocalPoint(this.remoteCursorX, this.remoteCursorY);
+    const edge: LocalPoint = this.remoteToLocalPoint(
+      this.remoteCursorX, this.remoteCursorY + this.remoteCursorShapeHeight);
+    return Math.max(0.1, Math.abs(edge.y - origin.y) / this.remoteCursorShapeHeight);
+  }
+  private remoteCursorLocalWidth(): number {
+    return this.remoteCursorShapeWidth * this.remoteCursorLocalScaleX();
+  }
+  private remoteCursorLocalHeight(): number {
+    return this.remoteCursorShapeHeight * this.remoteCursorLocalScaleY();
+  }
+  private remoteCursorImageX(): number {
+    return this.arrowCursorLocalX() - this.remoteCursorHotX * this.remoteCursorLocalScaleX();
+  }
+  private remoteCursorImageY(): number {
+    return this.arrowCursorLocalY() - this.remoteCursorHotY * this.remoteCursorLocalScaleY();
+  }
+  private circleCursorLocalX(): number {
+    return this.touchIndicatorVisible ? this.touchIndicatorX : this.arrowCursorLocalX();
+  }
+  private circleCursorLocalY(): number {
+    return this.touchIndicatorVisible ? this.touchIndicatorY : this.arrowCursorLocalY();
+  }
 
   private setRemoteSurfacePointerStyle(useSystemPointer: boolean): void {
     try {
@@ -1874,6 +1939,9 @@ struct RemoteDesktop {
   }
 
   private updateRemoteSize(desktop: DesktopSize): void {
+    const previousX: number = this.remoteCursorX;
+    const previousY: number = this.remoteCursorY;
+    const previousReady: boolean = this.remoteCursorReady;
     this.remoteWidth = desktop.width;
     this.remoteHeight = desktop.height;
     if (!this.remoteCursorReady) {
@@ -1881,12 +1949,14 @@ struct RemoteDesktop {
       this.remoteCursorY = Math.round(this.remoteHeight / 2);
       this.remoteCursorPreciseX = this.remoteCursorX;
       this.remoteCursorPreciseY = this.remoteCursorY;
+      this.remoteCursorReady = true;
     } else {
       this.remoteCursorPreciseX = this.clampRemotePreciseX(this.remoteCursorPreciseX);
       this.remoteCursorPreciseY = this.clampRemotePreciseY(this.remoteCursorPreciseY);
       this.remoteCursorX = this.clampRemoteX(this.remoteCursorPreciseX);
       this.remoteCursorY = this.clampRemoteY(this.remoteCursorPreciseY);
     }
+    this.invalidateRemoteCursorViewIfChanged(previousX, previousY, previousReady);
   }
 
   private clampRemotePreciseX(x: number): number {
@@ -1910,11 +1980,23 @@ struct RemoteDesktop {
   }
 
   private rememberRemoteCursor(x: number, y: number): void {
+    const previousX: number = this.remoteCursorX;
+    const previousY: number = this.remoteCursorY;
+    const previousReady: boolean = this.remoteCursorReady;
     this.remoteCursorPreciseX = this.clampRemotePreciseX(x);
     this.remoteCursorPreciseY = this.clampRemotePreciseY(y);
     this.remoteCursorX = this.clampRemoteX(this.remoteCursorPreciseX);
     this.remoteCursorY = this.clampRemoteY(this.remoteCursorPreciseY);
     this.remoteCursorReady = true;
+    this.invalidateRemoteCursorViewIfChanged(previousX, previousY, previousReady);
+  }
+
+  private invalidateRemoteCursorViewIfChanged(previousX: number, previousY: number,
+    previousReady: boolean): void {
+    if (remoteCursorSnapshotChanged(previousX, previousY, previousReady, this.remoteCursorX,
+      this.remoteCursorY, this.remoteCursorReady)) {
+      this.remoteCursorViewRevision += 1;
+    }
   }
 
   private resetTouchpadPointerCurve(): void {
@@ -2588,6 +2670,101 @@ struct RemoteDesktop {
     }.padding(20)
   }
 
+  private releaseRemoteCursorPixelMap(): void {
+    const previous: image.PixelMap | null = this.remoteCursorPixelMap;
+    this.remoteCursorPixelMap = null;
+    if (previous !== null) {
+      try {
+        previous.release();
+      } catch (_e) {
+        // PixelMap may already have been released by the image pipeline.
+      }
+    }
+  }
+
+  private clearRemoteCursorPolling(): void {
+    this.stopVirtualJoystickMotion();
+    if (this.remoteCursorPollTimer !== -1) {
+      clearInterval(this.remoteCursorPollTimer);
+      this.remoteCursorPollTimer = -1;
+    }
+    this.remoteCursorNativeVisible = false;
+    this.remoteCursorShapeRevision = -1;
+    this.remoteCursorPositionRevision = -1;
+    this.remoteCursorShapeWidth = 0;
+    this.remoteCursorShapeHeight = 0;
+    this.remoteCursorHotX = 0;
+    this.remoteCursorHotY = 0;
+    this.releaseRemoteCursorPixelMap();
+    this.remoteCursorViewRevision += 1;
+  }
+
+  private applyRemoteCursorShape(snapshot: RemoteCursorSnapshot): void {
+    if (snapshot.width <= 0 || snapshot.height <= 0 ||
+      snapshot.rgba.byteLength !== snapshot.width * snapshot.height * 4) {
+      return;
+    }
+    try {
+      const next: image.PixelMap = image.createPixelMapSync(snapshot.rgba, {
+        editable: false,
+        srcPixelFormat: image.PixelMapFormat.RGBA_8888,
+        pixelFormat: image.PixelMapFormat.RGBA_8888,
+        alphaType: image.AlphaType.UNPREMUL,
+        size: { width: snapshot.width, height: snapshot.height }
+      });
+      const previous: image.PixelMap | null = this.remoteCursorPixelMap;
+      this.remoteCursorPixelMap = next;
+      this.remoteCursorShapeWidth = snapshot.width;
+      this.remoteCursorShapeHeight = snapshot.height;
+      this.remoteCursorHotX = snapshot.hotX;
+      this.remoteCursorHotY = snapshot.hotY;
+      this.remoteCursorViewRevision += 1;
+      if (previous !== null) {
+        try { previous.release(); } catch (_e) { /* already released */ }
+      }
+    } catch (err) {
+      hilog.warn(RD_DOMAIN, RD_TAG, 'remote cursor PixelMap rejected: ' + JSON.stringify(err));
+    }
+  }
+
+  private pollRemoteCursor(sessionId: number): void {
+    if (!this.connected || this.sessionId !== sessionId || sessionId <= 0) {
+      return;
+    }
+    const snapshot: RemoteCursorSnapshot | null =
+      this.loader.getRemoteCursorSnapshot(sessionId, false);
+    if (snapshot === null || snapshot.sessionId !== sessionId) {
+      return;
+    }
+    if (snapshot.shapeRevision !== this.remoteCursorShapeRevision) {
+      this.remoteCursorShapeRevision = snapshot.shapeRevision;
+      if (snapshot.shapeRevision > 0) {
+        const pixels: RemoteCursorSnapshot | null =
+          this.loader.getRemoteCursorSnapshot(sessionId, true);
+        if (pixels !== null && pixels.shapeRevision === snapshot.shapeRevision) {
+          this.applyRemoteCursorShape(pixels);
+        }
+      }
+    }
+    if (snapshot.positionRevision !== this.remoteCursorPositionRevision) {
+      this.remoteCursorPositionRevision = snapshot.positionRevision;
+      this.remoteCursorNativeVisible = snapshot.visible;
+      if (snapshot.visible) {
+        this.rememberRemoteCursor(snapshot.x, snapshot.y);
+      } else {
+        this.remoteCursorViewRevision += 1;
+      }
+    }
+  }
+
+  private startRemoteCursorPolling(sessionId: number): void {
+    this.clearRemoteCursorPolling();
+    this.pollRemoteCursor(sessionId);
+    this.remoteCursorPollTimer = setInterval((): void => {
+      this.pollRemoteCursor(sessionId);
+    }, 16);
+  }
+
   @Builder rustDeskAuthChoiceBuilder() {
     Column() {
       Text('选择连接授权').fontSize(20).fontWeight(FontWeight.Bold)
@@ -2652,6 +2829,21 @@ struct RemoteDesktop {
             .selectedColor(this.accentColor).scale({ x: 0.8, y: 0.8 })
             .onChange((on: boolean) => { this.rustDeskAuthRememberPassword = on; })
         }.width('100%').margin({ bottom: 8 })
+        Text('密码类型').fontSize(12).fontColor(this.pal().text2).margin({ bottom: 5 })
+        Row({ space: 8 }) {
+          Button('一次性密码').layoutWeight(1).height(36).fontSize(12)
+            .backgroundColor(this.rustDeskAuthPasswordMode === 0 ? this.accentColor : this.pal().surface)
+            .fontColor(this.rustDeskAuthPasswordMode === 0 ? Color.White : this.pal().text2)
+            .onClick((): void => { this.rustDeskAuthPasswordMode = 0; })
+          Button('永久密码').layoutWeight(1).height(36).fontSize(12)
+            .backgroundColor(this.rustDeskAuthPasswordMode === 1 ? this.accentColor : this.pal().surface)
+            .fontColor(this.rustDeskAuthPasswordMode === 1 ? Color.White : this.pal().text2)
+            .onClick((): void => { this.rustDeskAuthPasswordMode = 1; })
+        }.width('100%').margin({ bottom: 6 })
+        Text(this.rustDeskAuthPasswordMode === 0 ?
+          '一次性密码过期后，下次连接需要重新输入。' :
+          '永久密码由被控端 RustDesk 设置决定。')
+          .fontSize(11).fontColor(this.pal().text3).lineHeight(16).margin({ bottom: 8 })
         Text('Pro 账户密码不能代替远程设备密码；一次性密码过期后需要重新输入。')
           .fontSize(11).fontColor(this.pal().text3).lineHeight(16).margin({ bottom: 8 })
       } else {
@@ -2772,19 +2964,36 @@ struct RemoteDesktop {
       const rdpDrivePath: string = host.protocol === 'rdp' && this.rdpDriveEnabled && RDP_DRIVE_REDIRECTION_ENABLED ?
         this.ensureRdpTransferDir() : '';
       let rdServerKey: string = '';
+      let rustDeskRelay: RustDeskRelayConfig | undefined;
       if (host.protocol === 'rustdesk' && host.rustdeskRelayId.length > 0) {
-        const relay: RustDeskRelayConfig | undefined = this.srv.getAllRelays()
+        rustDeskRelay = this.srv.getAllRelays()
           .find((r: RustDeskRelayConfig): boolean => r.id === host.rustdeskRelayId);
-        if (relay) { rdServerKey = relay.key; }
+        if (rustDeskRelay) { rdServerKey = rustDeskRelay.key; }
       }
       const rustDeskDirect: boolean = host.protocol === 'rustdesk' && host.rustdeskDirectEnabled;
       const directHost: string = host.rustdeskDirectHost.trim();
       if (rustDeskDirect && directHost.length === 0) {
         throw new Error('RustDesk 直连地址为空，请在主机编辑中填写局域网地址 [E-RUSTDESK-DIRECT-HOST]');
       }
-      const sessionHost: string = rustDeskDirect ? directHost : host.host;
-      const sessionPort: number = rustDeskDirect ?
+      let sessionHost: string = rustDeskDirect ? directHost : host.host;
+      let sessionPort: number = rustDeskDirect ?
         normalizeRustDeskPort(host.rustdeskDirectPort, RUSTDESK_PEER_TCP_PORT) : host.port;
+      if (host.protocol === 'rustdesk' && !rustDeskDirect) {
+        const rustDeskError: string = rustDeskConnectionError({
+          directEnabled: false,
+          directHost: '',
+          directPort: host.rustdeskDirectPort,
+          relayId: host.rustdeskRelayId,
+          relayExists: rustDeskRelay !== undefined,
+          relayHost: rustDeskRelay ? rustDeskRelay.idServer : '',
+          relayPort: rustDeskRelay ? rustDeskRelay.idServerPort : 0,
+          relayKey: rustDeskRelay ? rustDeskRelay.key : '',
+          proManaged: host.rustdeskProManaged && host.sourceType === 'rustdesk_pro'
+        });
+        if (rustDeskError !== '') { throw new Error(rustDeskError + ' [E-RUSTDESK-CONFIG]'); }
+        sessionHost = rustDeskRelay?.idServer.trim() ?? '';
+        sessionPort = normalizeRustDeskPort(rustDeskRelay?.idServerPort ?? 0);
+      }
       const cfg: SessionConfig = {
         protocol: host.protocol,
         host: sessionHost,
@@ -2876,6 +3085,7 @@ struct RemoteDesktop {
       this.nativeHandles.attachConnectedSession(sid, this.remoteProtocolOf(host));
       this.connected = true;
       this.connecting = false;
+      this.startRemoteCursorPolling(sid);
       this.recordActiveSession(host, sid, true);
       this.persistRustDeskSessionAuth(host);
       // T-171: 连接成功后显示悬浮胶囊
@@ -2905,6 +3115,7 @@ struct RemoteDesktop {
     } catch (err) {
       this.clearRdpRenderWatchdog();
       this.clearRdpNativeStateMonitor();
+      this.clearRemoteCursorPolling();
       // 停止剪贴板桥
       if (this.clipboardBridge !== null) {
         this.clipboardBridge.stopMonitoring();
@@ -3034,13 +3245,21 @@ struct RemoteDesktop {
     }
     this.resetRemoteImeSession('disconnect-' + reason);
     this.resetTouchpadPointerCurve();
+    const previousCursorX: number = this.remoteCursorX;
+    const previousCursorY: number = this.remoteCursorY;
+    const previousCursorReady: boolean = this.remoteCursorReady;
     this.remoteCursorReady = false;
     this.remoteCursorPreciseX = 960;
     this.remoteCursorPreciseY = 540;
+    this.remoteCursorX = 960;
+    this.remoteCursorY = 540;
+    this.invalidateRemoteCursorViewIfChanged(previousCursorX, previousCursorY,
+      previousCursorReady);
     this.bgRestorePending = false; // 清除任何待恢复状态
     this.activeSessionRegistry.clear(reason);
     this.clearRdpRenderWatchdog();
     this.clearRdpNativeStateMonitor();
+    this.clearRemoteCursorPolling();
     hilog.info(RD_DOMAIN, RD_TAG, '[RDP-SHUTDOWN] phase=arkts-entry reason=' + reason +
       ' sessionId=' + this.sessionId.toString());
     // T-171: 断开时隐藏胶囊和面板 + 释放所有修饰键
@@ -3138,6 +3357,7 @@ struct RemoteDesktop {
     this.clearRestoreFrameRefreshPump();
     this.clearRdpRenderWatchdog();
     this.clearRdpNativeStateMonitor();
+    this.clearRemoteCursorPolling();
 
     // 隐藏 UI 元素
     this.handleVisible = false;
@@ -3298,6 +3518,7 @@ struct RemoteDesktop {
         this.nativeHandles.attachConnectedSession(this.sessionId, RemoteProtocol.rustdesk);
         this.connected = true;
         this.connecting = false;
+        this.startRemoteCursorPolling(this.sessionId);
         this.inputForwardReady = true;
         this.activeSessionRegistry.markRenderAttached(surfaceId);
         this.setRemoteKeepScreenOn(true);
@@ -3345,6 +3566,7 @@ struct RemoteDesktop {
         // 恢复状态
         this.connected = true;
         this.inputForwardReady = true;
+        this.startRemoteCursorPolling(this.sessionId);
         this.activeSessionRegistry.markRenderAttached(surfaceId);
         this.setRemoteKeepScreenOn(true);
         if (shouldReapplyRemoteNavigation(this.currentProtocolName(), this.connected, true)) {
@@ -5587,8 +5809,8 @@ struct RemoteDesktop {
         .width(this.getTouchIndicatorOuterSize())
         .height(this.getTouchIndicatorOuterSize())
         .position({
-          x: this.touchIndicatorX - this.getTouchIndicatorOuterSize() / 2,
-          y: this.touchIndicatorY - this.getTouchIndicatorOuterSize() / 2
+          x: this.circleCursorLocalX() - this.getTouchIndicatorOuterSize() / 2,
+          y: this.circleCursorLocalY() - this.getTouchIndicatorOuterSize() / 2
         })
         .animation({ duration: 180, curve: Curve.EaseOut })
         .hitTestBehavior(HitTestMode.None)
@@ -5596,17 +5818,21 @@ struct RemoteDesktop {
 
       if (this.connected && this.shouldShowArrowCursor()) {
         if (this.arrowCursorInside()) {
-          Text('➤')
-            .fontSize(this.touchDragActive ? 23 : 26)
-            .fontColor('#FFFFFF')
-            .fontWeight(FontWeight.Bold)
-            .shadow({ radius: 3, color: '#000000', offsetX: 1, offsetY: 1 })
-            .rotate({ angle: -45 })
-            .position({ x: this.arrowCursorLocalX() - 8, y: this.arrowCursorLocalY() - 22 })
-            .scale({ x: this.touchDragActive ? 0.92 : 1, y: this.touchDragActive ? 0.92 : 1 })
-            .animation({ duration: 100, curve: Curve.EaseOut })
+          Image(this.remoteCursorPixelMap)
+            .width(this.remoteCursorLocalWidth())
+            .height(this.remoteCursorLocalHeight())
+            .objectFit(ImageFit.Fill)
+            .position({ x: this.remoteCursorImageX(), y: this.remoteCursorImageY() })
             .hitTestBehavior(HitTestMode.None)
         }
+      }
+
+      if (this.connected && this.isTouchpadControlMode() && this.showVirtualMouse) {
+        this.floatingVirtualMouseBuilder()
+      }
+
+      if (this.connected && this.isTouchpadControlMode() && this.showVirtualJoystick) {
+        this.floatingVirtualJoystickBuilder()
       }
 
       // PC 模式: 拖拽文件悬停视觉反馈
@@ -5917,6 +6143,131 @@ struct RemoteDesktop {
     .position({ x: '4%', y: '84%' })
   }
 
+  private pressVirtualMouseButton(button: number, pressed: boolean): void {
+    if (!this.connected || !this.isTouchpadControlMode()) { return; }
+    this.sendMouseNow(this.remoteCursorX, this.remoteCursorY, button, pressed);
+  }
+
+  private moveVirtualPointer(deltaX: number, deltaY: number): void {
+    if (!this.connected || !this.isTouchpadControlMode()) { return; }
+    const nextX: number = this.remoteCursorPreciseX + this.remoteDeltaFromLocal(deltaX, 'x');
+    const nextY: number = this.remoteCursorPreciseY + this.remoteDeltaFromLocal(deltaY, 'y');
+    this.rememberRemoteCursor(nextX, nextY);
+    this.queueMouseMove(this.remoteCursorX, this.remoteCursorY);
+  }
+
+  private stopVirtualJoystickMotion(): void {
+    if (this.virtualJoystickTimer !== -1) {
+      clearInterval(this.virtualJoystickTimer);
+      this.virtualJoystickTimer = -1;
+    }
+    this.virtualJoystickLastX = 0;
+    this.virtualJoystickLastY = 0;
+  }
+
+  private startVirtualJoystickMotion(): void {
+    this.stopVirtualJoystickMotion();
+    this.virtualJoystickTimer = setInterval((): void => {
+      if (!this.connected || !this.showVirtualJoystick || !this.isTouchpadControlMode()) {
+        this.stopVirtualJoystickMotion();
+        return;
+      }
+      this.moveVirtualPointer(this.virtualJoystickLastX / 7,
+        this.virtualJoystickLastY / 7);
+    }, 16);
+  }
+
+  @Builder floatingVirtualMouseBuilder() {
+    Column() {
+      Row() {
+        Column() { Text('左').fontSize(12).fontColor('#EAF2FF') }
+          .width(43).height(56).justifyContent(FlexAlign.Center)
+          .backgroundColor('rgba(36,39,48,0.96)').borderRadius({ topLeft: 16 })
+          .onTouch((event: TouchEvent): void => {
+            if (event.type === TouchType.Down) { this.pressVirtualMouseButton(0, true); }
+            if (event.type === TouchType.Up || event.type === TouchType.Cancel) {
+              this.pressVirtualMouseButton(0, false);
+            }
+          })
+        Column() {
+          Column().width(6).height(26).borderRadius(3).backgroundColor('#9FA7B5')
+        }
+        .width(26).height(56).justifyContent(FlexAlign.Center)
+        .backgroundColor('rgba(24,26,32,0.98)')
+        .gesture(PanGesture({ direction: PanDirection.Vertical, distance: 1 })
+          .onActionStart((_event: GestureEvent): void => { this.virtualWheelLastOffset = 0; })
+          .onActionUpdate((event: GestureEvent): void => {
+            const delta: number = event.offsetY - this.virtualWheelLastOffset;
+            this.virtualWheelLastOffset = event.offsetY;
+            if (Math.abs(delta) >= 1) { this.sendTouchPadWheel(delta); }
+          }))
+        .onClick((): void => {
+          this.pressVirtualMouseButton(1, true);
+          this.pressVirtualMouseButton(1, false);
+        })
+        Column() { Text('右').fontSize(12).fontColor('#EAF2FF') }
+          .width(43).height(56).justifyContent(FlexAlign.Center)
+          .backgroundColor('rgba(36,39,48,0.96)').borderRadius({ topRight: 16 })
+          .onTouch((event: TouchEvent): void => {
+            if (event.type === TouchType.Down) { this.pressVirtualMouseButton(2, true); }
+            if (event.type === TouchType.Up || event.type === TouchType.Cancel) {
+              this.pressVirtualMouseButton(2, false);
+            }
+          })
+      }
+      Column() {
+        Text('•••').fontSize(16).fontColor('#9FA7B5').letterSpacing(2)
+      }
+      .width(112).height(30).justifyContent(FlexAlign.Center)
+      .backgroundColor('rgba(28,30,37,0.97)')
+      .borderRadius({ bottomLeft: 16, bottomRight: 16 })
+      .gesture(PanGesture({ fingers: 1, distance: 3 })
+        .onActionStart((_event: GestureEvent): void => {
+          this.virtualMouseDragStartX = this.virtualMouseX;
+          this.virtualMouseDragStartY = this.virtualMouseY;
+        })
+        .onActionUpdate((event: GestureEvent): void => {
+          const maxX: number = Math.max(0, this.surfaceWidth - 112);
+          const maxY: number = Math.max(0, this.surfaceHeight - 86);
+          this.virtualMouseX = Math.max(0, Math.min(maxX,
+            this.virtualMouseDragStartX + event.offsetX));
+          this.virtualMouseY = Math.max(0, Math.min(maxY,
+            this.virtualMouseDragStartY + event.offsetY));
+        }))
+    }
+    .width(112).height(86)
+    .position({ x: this.virtualMouseX, y: this.virtualMouseY })
+    .shadow({ radius: 14, color: 'rgba(0,0,0,0.34)', offsetY: 5 })
+    .hitTestBehavior(HitTestMode.Default)
+  }
+
+  @Builder floatingVirtualJoystickBuilder() {
+    Stack() {
+      Stack().width(74).height(74).borderRadius(37)
+        .backgroundColor('rgba(28,30,37,0.78)')
+        .border({ width: 1, color: 'rgba(255,255,255,0.22)' })
+      Stack().width(30).height(30).borderRadius(15)
+        .backgroundColor('rgba(234,242,255,0.90)')
+    }
+    .width(82).height(82)
+    .position({ x: 24, y: Math.max(110, this.surfaceHeight - 116) })
+    .gesture(PanGesture({ fingers: 1, distance: 1 })
+      .onActionStart((_event: GestureEvent): void => {
+        this.virtualJoystickLastX = 0;
+        this.virtualJoystickLastY = 0;
+        this.startVirtualJoystickMotion();
+      })
+      .onActionUpdate((event: GestureEvent): void => {
+        const length: number = Math.sqrt(event.offsetX * event.offsetX + event.offsetY * event.offsetY);
+        const scale: number = length > 30 ? 30 / length : 1;
+        this.virtualJoystickLastX = event.offsetX * scale;
+        this.virtualJoystickLastY = event.offsetY * scale;
+      })
+      .onActionEnd((_event: GestureEvent): void => { this.stopVirtualJoystickMotion(); })
+      .onActionCancel((): void => { this.stopVirtualJoystickMotion(); }))
+    .hitTestBehavior(HitTestMode.Default)
+  }
+
   @Builder controlPanelBuilder() {
     Column() {
       Text('控制面板')
@@ -5971,6 +6322,32 @@ struct RemoteDesktop {
           this.openModifierPanel();
         }, 200);
       })
+      if (this.isTouchpadControlMode()) {
+        Row() {
+          Text('浮动鼠标').fontSize(15).fontColor(this.pal().text).layoutWeight(1)
+          Toggle({ type: ToggleType.Switch, isOn: this.showVirtualMouse })
+            .selectedColor(this.pal().primary)
+            .onChange((enabled: boolean): void => {
+              this.showVirtualMouse = enabled;
+              AppStorage.setOrCreate('showVirtualMouse', enabled);
+            })
+        }
+        .width('100%').height(48).padding({ left: 18, right: 18 })
+        .backgroundColor(this.pal().card).borderRadius(12)
+        .margin({ bottom: 8, left: 24, right: 24 })
+        Row() {
+          Text('浮动摇杆').fontSize(15).fontColor(this.pal().text).layoutWeight(1)
+          Toggle({ type: ToggleType.Switch, isOn: this.showVirtualJoystick })
+            .selectedColor(this.pal().primary)
+            .onChange((enabled: boolean): void => {
+              this.showVirtualJoystick = enabled;
+              AppStorage.setOrCreate('showVirtualJoystick', enabled);
+            })
+        }
+        .width('100%').height(48).padding({ left: 18, right: 18 })
+        .backgroundColor(this.pal().card).borderRadius(12)
+        .margin({ bottom: 12, left: 24, right: 24 })
+      }
       // 文件传输按钮
       Row() {
         SymbolGlyph($r('sys.symbol.doc'))

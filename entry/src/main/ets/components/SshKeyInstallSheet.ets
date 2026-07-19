@@ -33,6 +33,7 @@ export struct SshKeyInstallSheet {
   @State verifyResult: SshAuthTestResult | null = null;
   @State step: number = 0; // 0=select host, 1=install, 2=verify, 3=done
   @State switchToNewKey: boolean = true;
+  @State hostViewRevision: number = 0;
 
   private loader: ExtensionLoader = ExtensionLoader.getInstance();
   private hostSync: HostSyncService = HostSyncService.getInstance();
@@ -65,6 +66,7 @@ export struct SshKeyInstallSheet {
     const selectedId: string = this.selectedHost === null ? '' : this.selectedHost.id;
     const allHosts: RemoteHost[] = this.hostSync.getAllHosts();
     this.hosts = allHosts.filter((h: RemoteHost) => h.protocol === 'ssh');
+    this.hostViewRevision += 1;
     if (selectedId !== '') {
       const refreshed: RemoteHost | undefined = this.hosts.find((h: RemoteHost): boolean => h.id === selectedId);
       this.selectedHost = refreshed === undefined ? null : refreshed;
@@ -209,7 +211,7 @@ export struct SshKeyInstallSheet {
               ForEach(this.hosts, (host: RemoteHost) => {
                 this.hostItem(host)
                 Blank().height(6)
-              }, (host: RemoteHost) => host.id)
+              }, (host: RemoteHost) => host.id + ':' + this.hostViewRevision.toString())
             }.width('100%')
           }.constraintSize({ maxHeight: 240 }).scrollBar(BarState.Off)
         }

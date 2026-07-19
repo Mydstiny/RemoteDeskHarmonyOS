@@ -12,6 +12,11 @@ export function rustDeskProHostId(relayId: string, accountId: string, peerId: st
   return 'rdpro_' + encodeURIComponent(relayId + ':' + accountId + ':' + peerId);
 }
 
+/** Managed rendezvous routes stay server-owned; a LAN direct endpoint is local and editable. */
+export function shouldPreserveManagedRustDeskRoute(managed: boolean, directEnabled: boolean): boolean {
+  return managed && !directEnabled;
+}
+
 function peerLabel(peer: RustDeskProPeer): string {
   if (peer.alias.length > 0) { return peer.alias; }
   if (peer.hostname.length > 0) { return peer.hostname; }

@@ -19,6 +19,7 @@ project(rdpnapi)
 # -- 通用工具 --
 set(COMMON_SOURCES
     common/safe_log.cpp
+    input/remote_cursor_snapshot.cpp
 )
 
 # -- 扩展框架 --
@@ -134,6 +135,8 @@ if(RDP_BUILD_TESTS)
         ../../test/cpp/extension_registry_test.cpp
         test/perf_test.cpp
         test/video_backpressure_test.cpp
+        test/software_decode_latency_policy_test.cpp
+        test/remote_cursor_snapshot_test.cpp
         test/video_perf_counters_test.cpp
         test/video_activity_state_test.cpp
         test/rdp_audio_policy_test.cpp
@@ -159,6 +162,7 @@ if(RDP_BUILD_TESTS)
         test/decoder_recovery_policy_test.cpp
         test/safe_log_test.cpp
         common/safe_log.cpp
+        input/remote_cursor_snapshot.cpp
         rdp/rdp_audio_policy.cpp
         rdp/rdp_auth_identity_policy.cpp
         rdp/rdp_background_frame_cache.cpp
@@ -433,7 +437,10 @@ endif()
 
 add_custom_command(
     OUTPUT ${RUSTDESK_FFI_LIB}
-    COMMAND ${CMAKE_COMMAND} -E env "OPUS_LIB_DIR=${RUSTDESK_OPUS_LIB_DIR}"
+    COMMAND ${CMAKE_COMMAND} -E env
+        "OPUS_LIB_DIR=${RUSTDESK_OPUS_LIB_DIR}"
+        "CC_${RUSTDESK_FFI_TARGET}=${CMAKE_C_COMPILER}"
+        "AR_${RUSTDESK_FFI_TARGET}=${CMAKE_AR}"
         ${RUSTDESK_CARGO_EXECUTABLE} build --release --target ${RUSTDESK_FFI_TARGET}
     WORKING_DIRECTORY ${RUSTDESK_FFI_DIR}
     DEPENDS

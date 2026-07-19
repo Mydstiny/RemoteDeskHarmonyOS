@@ -177,7 +177,8 @@ int SoftwareDecoder::Init(int width, int height, CodecType codec) {
 #endif
 }
 
-int SoftwareDecoder::Decode(const uint8_t* data, size_t size, uint64_t timestamp, bool isKeyFrame) {
+int SoftwareDecoder::Decode(const uint8_t* data, size_t size, uint64_t timestamp,
+                            bool isKeyFrame, bool presentOutput) {
     (void)isKeyFrame;
     if (!initialized_ || !data || size == 0) {
         return -1;
@@ -227,7 +228,7 @@ int SoftwareDecoder::Decode(const uint8_t* data, size_t size, uint64_t timestamp
             return kErrReceiveFrameFailed;
         }
 
-        const int renderRet = renderFrame();
+        const int renderRet = presentOutput ? renderFrame() : 0;
         av_frame_unref(impl_->frame);
         if (renderRet != 0) {
             return renderRet;

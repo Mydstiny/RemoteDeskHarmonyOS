@@ -8,7 +8,7 @@ import { ModernKeyVaultAddFlow } from '../resourceadd/modern/ModernKeyVaultAddFl
 export struct SshAddFlow {
   @StorageProp('currentTheme') theme: string = 'light';
   @StorageProp('accentColor') accentColor: string = '#007DFF';
-  @Prop keys: SshKey[] = [];
+  @Prop @Watch('onKeysChanged') keys: SshKey[] = [];
   onBackToProtocols: () => void = (): void => {};
   onSave: (host: RemoteHost, connectNow: boolean) => void =
     (_host: RemoteHost, _connectNow: boolean): void => {};
@@ -26,6 +26,10 @@ export struct SshAddFlow {
   @State errorText: string = '';
 
   private keyVault = KeyVaultService.getInstance();
+
+  private onKeysChanged(): void {
+    this.newlyAddedKeys = [];
+  }
 
   private pal(): Palette { return this.theme === 'light' ? buildLight(this.accentColor) : buildDark(this.accentColor); }
   private buildHost(): RemoteHost | null {
@@ -136,7 +140,7 @@ export struct SshAddFlow {
                 if (this.keyId === key.id) { SymbolGlyph($r('sys.symbol.checkmark')).fontColor([this.accentColor]) }
               }.width('100%').padding(11).borderRadius(10).backgroundColor(this.pal().surface).margin({ bottom: 6 })
               .onClick((): void => { this.keyId = key.id; })
-            }, (key: SshKey): string => key.id)
+            }, (key: SshKey): string => key.id + ':' + key.createdAt.toString())
           }
           Button('添加到 SSH 密钥保险库').width('100%').height(38).borderRadius(10)
             .backgroundColor(this.pal().surface).fontColor(this.accentColor)

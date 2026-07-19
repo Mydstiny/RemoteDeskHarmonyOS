@@ -17,6 +17,7 @@
 use crate::crypto::{self, KeyPair};
 use crate::crypto_channel::CryptoChannel;
 use crate::control_inbox::{CONTROL_BATCH_LIMIT, ControlInbox};
+use crate::cursor_state::{CursorState, CursorStreamUpdate};
 use crate::net;
 use crate::protocol::message_proto::{
     AudioFormat, AudioFrame, Clipboard, ClipboardFormat, ControlKey, EncodedVideoFrames,
@@ -669,7 +670,7 @@ impl RustDeskConnector {
     /// 运行 streaming 循环 (阻塞)
     ///
     /// 持续接收加密消息，分发到回调。
-    pub fn run_streaming<VF, AFF, AF, CF>(
+    pub fn run_streaming<VF, AFF, AF, CF, CU>(
         &mut self,
         preferred_codec: i32,
         image_quality: i32,
@@ -681,12 +682,14 @@ impl RustDeskConnector {
         mut on_audio_format: AFF,
         mut on_audio: AF,
         mut on_clipboard: CF,
+        mut on_cursor: CU,
     ) -> io::Result<()>
     where
         VF: FnMut(&VideoFrame),
         AFF: FnMut(&AudioFormat),
         AF: FnMut(&AudioFrame),
         CF: FnMut(&[u8]),
+        CU: FnMut(CursorStreamUpdate),
     {
         let remote_upload_dir = self.default_remote_upload_dir();
         let crypto = self
@@ -718,6 +721,7 @@ impl RustDeskConnector {
         let mut last_control_diagnostic_at = Instant::now();
         let mut last_successful_receive_at = Instant::now();
         let mut last_msg_kind = "none";
+        let mut cursor_state = CursorState::new(4);
         let mut pending_file_uploads: Vec<PendingFileUpload> = Vec::new();
         let mut awaiting_file_done: Vec<AwaitingFileDone> = Vec::new();
         // T-131: Backpressure hysteresis state
@@ -1037,13 +1041,35 @@ impl RustDeskConnector {
                     }
                 }
                 // switch_display / message_query 等其他类型由 _ arm 统一处理
-                Some(Message_oneof_union::cursor_position(_)) => {
+                Some(Message_oneof_union::cursor_position(position)) => {
                     last_msg_kind = "cursor_position";
                     *msg_stats.entry("cursor_position").or_default() += 1;
+                    if cursor_state.apply_position(position.get_x(), position.get_y()) {
+                        on_cursor(CursorStreamUpdate::Position {
+                            x: position.get_x(),
+                            y: position.get_y(),
+                        });
+                    }
                 }
-                Some(Message_oneof_union::cursor_data(_)) => {
+                Some(Message_oneof_union::cursor_data(data)) => {
                     last_msg_kind = "cursor_data";
                     *msg_stats.entry("cursor_data").or_default() += 1;
+                    if cursor_state.apply_data(data) {
+                        if let Some(shape) = cursor_state.current_shape().cloned() {
+                            on_cursor(CursorStreamUpdate::Shape(shape));
+                            on_cursor(CursorStreamUpdate::Visibility(true));
+                        }
+                    }
+                }
+                Some(Message_oneof_union::cursor_id(id)) => {
+                    last_msg_kind = "cursor_id";
+                    *msg_stats.entry("cursor_id").or_default() += 1;
+                    if cursor_state.apply_id(id) {
+                        if let Some(shape) = cursor_state.current_shape().cloned() {
+                            on_cursor(CursorStreamUpdate::Shape(shape));
+                            on_cursor(CursorStreamUpdate::Visibility(true));
+                        }
+                    }
                 }
                 Some(Message_oneof_union::peer_info(_)) => {
                     last_msg_kind = "peer_info";
@@ -1551,6 +1577,7 @@ impl RustDeskConnector {
             Some(Message_oneof_union::clipboard(_)) => "clipboard",
             Some(Message_oneof_union::cursor_position(_)) => "cursor_position",
             Some(Message_oneof_union::cursor_data(_)) => "cursor_data",
+            Some(Message_oneof_union::cursor_id(_)) => "cursor_id",
             Some(Message_oneof_union::peer_info(_)) => "peer_info",
             Some(Message_oneof_union::file_response(_)) => "file_response",
             Some(Message_oneof_union::file_action(_)) => "file_action",
