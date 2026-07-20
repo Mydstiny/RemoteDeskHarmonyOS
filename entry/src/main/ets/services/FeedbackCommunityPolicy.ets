@@ -6,10 +6,14 @@
 
 export const FEEDBACK_COMMUNITY_MANIFEST_URL: string =
   'https://lijiong.online/feedback/chanlian.json';
+export const FEEDBACK_COMMUNITY_ASSET_PREFIX: string =
+  'https://lijiong.online/feedback/';
 export const FEEDBACK_COMMUNITY_QR_MAX_AGE_MS: number = 7 * 24 * 60 * 60 * 1000;
+export const FEEDBACK_COMMUNITY_QR_MAX_BYTES: number = 10 * 1024 * 1024;
 export const FEEDBACK_COMMUNITY_CLOCK_SKEW_MS: number = 5 * 60 * 1000;
 
 export interface FeedbackCommunityManifest {
+  version: string;
   issuedAt: number;
   expiresAt: number;
   qrImageUrl: string;
@@ -36,6 +40,10 @@ function isHttpsUrl(value: string): boolean {
   return value.indexOf('https://') === 0;
 }
 
+export function isFeedbackCommunityQrImageUrl(value: string): boolean {
+  return value.indexOf(FEEDBACK_COMMUNITY_ASSET_PREFIX) === 0;
+}
+
 export function validateFeedbackCommunityManifest(
   payload: Object,
   now: number
@@ -43,6 +51,7 @@ export function validateFeedbackCommunityManifest(
   const raw: Record<string, Object> = payload as Record<string, Object>;
   const issuedAt: number = numberValue(raw['issuedAt']);
   const expiresAt: number = numberValue(raw['expiresAt']);
+  const version: string = stringValue(raw['version']);
   const qrImageUrl: string = stringValue(raw['qrImageUrl']);
   const joinUrl: string = stringValue(raw['joinUrl']);
   if (issuedAt <= 0 || expiresAt <= 0 || expiresAt <= issuedAt) {
@@ -57,13 +66,15 @@ export function validateFeedbackCommunityManifest(
   if (expiresAt <= now) {
     return { ok: false, message: '二维码已过期，请刷新后重试', manifest: null };
   }
-  if (!isHttpsUrl(qrImageUrl)) {
-    return { ok: false, message: '二维码地址必须使用 HTTPS', manifest: null };
+  if (!isFeedbackCommunityQrImageUrl(qrImageUrl)) {
+    return { ok: false, message: '二维码地址必须来自 lijiong.online', manifest: null };
   }
   if (joinUrl !== '' && !isHttpsUrl(joinUrl)) {
     return { ok: false, message: '畅联跳转地址必须使用 HTTPS', manifest: null };
   }
   const manifest: FeedbackCommunityManifest = {
+    // 兼容旧服务器清单：没有 version 时使用 expiresAt 作为缓存版本。
+    version: version || expiresAt.toString(),
     issuedAt: issuedAt,
     expiresAt: expiresAt,
     qrImageUrl: qrImageUrl,
@@ -76,7 +87,7 @@ export function validateFeedbackCommunityManifest(
 
 export function feedbackCommunityImageUrl(manifest: FeedbackCommunityManifest): string {
   const separator: string = manifest.qrImageUrl.indexOf('?') >= 0 ? '&' : '?';
-  return manifest.qrImageUrl + separator + 'v=' + manifest.expiresAt.toString();
+  return manifest.qrImageUrl + separator + 'v=' + encodeURIComponent(manifest.version);
 }
 
 export function feedbackCommunityRemainingText(expiresAt: number, now: number): string {

@@ -9,6 +9,7 @@ import { Palette, buildDark, buildLight, AppTheme } from '../../../common/Theme'
 import { ResourceFabPicker } from '../ResourceFabPicker';
 import { RustDeskRelayImportService, RustDeskRelayImportResult } from '../../../services/RustDeskRelayImportService';
 import { ClipboardBridgeService } from '../../../services/ClipboardBridgeService';
+import { rustDeskServerKeyError } from '../../../services/RustDeskHostConfigPolicy';
 
 @Component
 export struct ModernRelayAddFlow {
@@ -79,6 +80,8 @@ export struct ModernRelayAddFlow {
     if (!this.validPort(this.idPort) || !this.validPort(this.relayPort)) {
       this.errorText = '服务器端口必须在 1–65535 之间'; return;
     }
+    const keyError: string = rustDeskServerKeyError(this.serverKey, false);
+    if (keyError !== '') { this.errorText = keyError; return; }
     const relay = new RustDeskRelayConfig(); relay.id = RustDeskRelayConfig.generateId();
     relay.idServer = this.idServer.trim(); relay.idServerPort = this.idPort;
     relay.relayServer = this.relayServer.trim(); relay.relayPort = this.relayPort;

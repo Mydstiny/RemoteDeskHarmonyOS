@@ -18,7 +18,7 @@ import { firstInstallGuidePages, GuideContentPage } from '../services/GuideConte
 const GUIDE_KEY = 'guide_shown_v4';
 const LAST_SEEN_RELEASE_KEY = 'last_seen_release_version';
 const RELEASE_DIALOG_ENTER_DELAY_MS = 120;
-const RELEASE_DIALOG_MOTION_MS = 260;
+const GUIDE_SHEET_REFLOW_DELAY_MS = 80;
 
 @Entry
 @Component
@@ -29,7 +29,7 @@ struct GuidePage {
   @StorageLink('currentBreakpoint') @Watch('onBreakpointChange') breakpoint: string = 'sm';
   @State currentIndex: number = 0;
   @State showContent: boolean = false;
-  @State showPhoneGuideSheet: boolean = false;
+  @State showGuideSheet: boolean = false;
   @State mode: StartupMode = StartupMode.FIRST_INSTALL_GUIDE;
   @State activePages: GuideContentPage[] = [];
   private tutorialPages: GuideContentPage[] = firstInstallGuidePages();
@@ -53,7 +53,7 @@ struct GuidePage {
     if (this.activePages.length === 0) { this.activePages = this.tutorialPages; }
     setTimeout(() => {
       this.showContent = true;
-      if (this.presentGuideAsBottomSheet()) { this.showPhoneGuideSheet = true; }
+      this.showGuideSheet = true;
     }, RELEASE_DIALOG_ENTER_DELAY_MS);
   }
 
@@ -63,10 +63,11 @@ struct GuidePage {
 
   private onBreakpointChange(): void {
     if (!this.showContent || this.mode === StartupMode.LOGIN) { return; }
-    const shouldUseSheet: boolean = this.presentGuideAsBottomSheet();
-    if (this.showPhoneGuideSheet === shouldUseSheet) { return; }
+    if (!this.showGuideSheet) { return; }
+    // preferType 在 Sheet 已显示时不会可靠地从 BOTTOM 切换为 CENTER，
+    // 折叠/展开或跨窗口断点时先完成原生退出，再按新断点重新打开。
     this.isReflowingGuideSheet = true;
-    this.showPhoneGuideSheet = shouldUseSheet;
+    this.showGuideSheet = false;
   }
 
   private presentGuideAsDialog(): boolean {
@@ -77,12 +78,13 @@ struct GuidePage {
     return shouldPresentGuideAsBottomSheet(this.mode, this.breakpoint);
   }
 
-  private releaseNotesDialogWidth(): number {
+  private guideCenterWidth(): number {
     return this.breakpoint === 'xl' ? 640 : 560;
   }
 
-  private releaseNotesDialogHeight(): string {
-    return this.breakpoint === 'xl' ? '60%' : '58%';
+  private guideSheetHeight(): string | number {
+    if (this.presentGuideAsBottomSheet()) { return '72%'; }
+    return this.breakpoint === 'xl' ? 620 : 580;
   }
 
   @Builder guidePanel(isSheet: boolean) {
@@ -169,59 +171,36 @@ struct GuidePage {
       }
       .width('100%').padding({ left: 28, right: 28, bottom: 48, top: 12 })
       }
-      .width(isSheet ? '100%' : (this.presentGuideAsDialog() ? this.releaseNotesDialogWidth() : '100%'))
-      .height(isSheet ? '100%' : (this.presentGuideAsDialog() ? this.releaseNotesDialogHeight() : '100%'))
-      .backgroundColor(isSheet ? this.pal().sheetBg : this.pal().bg)
-      .borderRadius(!isSheet && this.presentGuideAsDialog() ? 24 : 0)
-      .border(!isSheet && this.presentGuideAsDialog() ?
+      .width(isSheet && this.presentGuideAsDialog() ? this.guideCenterWidth() : '100%')
+      .height('100%')
+      .backgroundColor(this.pal().sheetBg)
+      .borderRadius(this.presentGuideAsDialog() ? 24 : 0)
+      .border(this.presentGuideAsDialog() ?
         { width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid } :
         { width: 0, color: Color.Transparent, style: BorderStyle.Solid })
-      .shadow(!isSheet && this.presentGuideAsDialog() ?
-        { radius: 28, color: 'rgba(0,0,0,0.22)', offsetY: 12 } :
-        { radius: 0, color: Color.Transparent, offsetY: 0 })
-      .opacity(!isSheet && this.presentGuideAsDialog() ? (this.showContent ? 1 : 0) : 1)
-      .scale({
-        x: !isSheet && this.presentGuideAsDialog() ? (this.showContent ? 1 : 0.94) : 1,
-        y: !isSheet && this.presentGuideAsDialog() ? (this.showContent ? 1 : 0.94) : 1
-      })
-      .translate({
-        y: !isSheet && this.presentGuideAsDialog() ? (this.showContent ? 0 : 20) : 0
-      })
-      .animation({ duration: RELEASE_DIALOG_MOTION_MS, curve: Curve.FastOutSlowIn })
       .align(Alignment.Center)
   }
 
-  @Builder phoneGuideSheet() {
+  @Builder guideSheet() {
     this.guidePanel(true)
   }
 
   build() {
     Stack() {
-      if (this.presentGuideAsBottomSheet()) {
-        Column().width('100%').height('100%').backgroundColor(this.pal().bg)
-      } else {
-        if (this.presentGuideAsDialog()) {
-          Column()
-            .width('100%').height('100%')
-            .backgroundColor('rgba(0,0,0,0.28)')
-            .opacity(this.showContent ? 1 : 0)
-            .animation({ duration: RELEASE_DIALOG_MOTION_MS, curve: Curve.EaseOut })
-        }
-        this.guidePanel(false)
-      }
+      Column().width('100%').height('100%').backgroundColor(this.pal().bg)
     }
     .width('100%').height('100%')
     .backgroundColor(this.pal().bg)
     .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
-    .bindSheet($$this.showPhoneGuideSheet, this.phoneGuideSheet(), {
-      height: '64%',
-      preferType: SheetType.BOTTOM,
-      dragBar: true,
+    .bindSheet($$this.showGuideSheet, this.guideSheet(), {
+      height: this.guideSheetHeight(),
+      preferType: this.presentGuideAsBottomSheet() ? SheetType.BOTTOM : SheetType.CENTER,
+      dragBar: this.presentGuideAsBottomSheet(),
       backgroundColor: this.pal().sheetBg,
       blurStyle: BlurStyle.NONE,
       showClose: false,
       maskColor: 'rgba(0,0,0,0.28)',
-      onDisappear: (): void => { this.handlePhoneGuideSheetDisappear(); }
+      onDisappear: (): void => { this.handleGuideSheetDisappear(); }
     })
   }
 
@@ -234,12 +213,14 @@ struct GuidePage {
     } catch (_e) { /* ignore */ }
   }
 
-  private handlePhoneGuideSheetDisappear(): void {
+  private handleGuideSheetDisappear(): void {
     if (this.isReflowingGuideSheet) {
       this.isReflowingGuideSheet = false;
+      setTimeout((): void => {
+        if (!this.isFinishing && this.mode !== StartupMode.LOGIN) { this.showGuideSheet = true; }
+      }, GUIDE_SHEET_REFLOW_DELAY_MS);
       return;
     }
-    if (!this.presentGuideAsBottomSheet()) { return; }
     if (!this.isFinishing) {
       this.isFinishing = true;
       this.persistCompletion();
@@ -251,17 +232,6 @@ struct GuidePage {
     if (this.isFinishing) { return; }
     this.isFinishing = true;
     this.persistCompletion();
-    if (this.presentGuideAsBottomSheet()) {
-      this.showPhoneGuideSheet = false;
-      return;
-    }
-    if (this.presentGuideAsDialog()) {
-      this.showContent = false;
-      setTimeout((): void => {
-        router.replaceUrl({ url: 'pages/LoginPage' });
-      }, RELEASE_DIALOG_MOTION_MS);
-      return;
-    }
-    router.replaceUrl({ url: 'pages/LoginPage' });
+    this.showGuideSheet = false;
   }
 }

@@ -2,11 +2,11 @@
 export type FabAddStyle = 'modern' | 'classic';
 
 /**
- * PC keeps its desktop-optimized forms. Phone and Pad honor the persisted
- * preference. The persisted/cloud key intentionally remains `hostAddMode`
- * for compatibility with released cloud settings records.
+ * All device classes honor the persisted preference. The persisted/cloud key
+ * intentionally remains `hostAddMode` for compatibility with released cloud
+ * settings records. Desktop-specific layout is handled by the page/sheet,
+ * not by silently replacing the selected add flow.
  */
-export function resolveFabAddStyle(savedStyle: string, isDesktopDevice: boolean): FabAddStyle {
-  if (isDesktopDevice) { return 'classic'; }
+export function resolveFabAddStyle(savedStyle: string, _isDesktopDevice: boolean): FabAddStyle {
   return savedStyle === 'classic' ? 'classic' : 'modern';
 }

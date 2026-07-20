@@ -23,7 +23,7 @@ export default function guideContentRegistryTest(): void {
     it('keeps_both_guides_equal_except_the_final_page', 0, (): void => {
       const firstInstall: GuideContentPage[] = firstInstallGuidePages();
       const settings: GuideContentPage[] = settingsUsageGuidePages();
-      expect(firstInstall.length).assertEqual(9);
+      expect(firstInstall.length).assertEqual(11);
       expect(settings.length).assertEqual(firstInstall.length);
       for (let i = 0; i < firstInstall.length - 1; i++) {
         expect(settings[i].id).assertEqual(firstInstall[i].id);
@@ -39,10 +39,12 @@ export default function guideContentRegistryTest(): void {
       const release: ReleaseNotePage[] = pagesForReleasedVersion(CURRENT_RELEASE_VERSION);
       expect(containsGuidePage(guide, 'feedback-community')).assertTrue();
       expect(containsGuidePage(guide, 'sync-backup')).assertTrue();
-      expect(release.length).assertEqual(4);
-      expect(containsReleasePage(release, 'ime-session-stability')).assertTrue();
-      expect(containsReleasePage(release, 'rdp-certificate-trust')).assertTrue();
-      expect(containsReleasePage(release, 'rustdesk-session-stability')).assertTrue();
+      expect(release.length).assertEqual(9);
+      expect(containsReleasePage(release, 'rdp-render-session')).assertTrue();
+      expect(containsReleasePage(release, 'remote-input-keyboard')).assertTrue();
+      expect(containsReleasePage(release, 'rdp-file-certificate')).assertTrue();
+      expect(containsReleasePage(release, 'rustdesk-relay-domain')).assertTrue();
+      expect(containsReleasePage(release, 'rustdesk-pro-auth')).assertTrue();
       expect(release[release.length - 1].id).assertEqual('welcome-1-0-7');
     });
   });

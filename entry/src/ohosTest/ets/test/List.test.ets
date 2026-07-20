@@ -27,6 +27,9 @@ import hostAddModePolicyTest from './HostAddModePolicy.test';
 import legacyRustDeskAccountCloudAdapterTest from './LegacyRustDeskAccountCloudAdapter.test';
 import hostAddDraftTest from './HostAddDraft.test';
 import rustDeskCardBadgePolicyTest from './RustDeskCardBadgePolicy.test';
+import remotePhysicalKeyboardPolicyTest from './RemotePhysicalKeyboardPolicy.test';
+import touchpadPointerCurvePolicyTest from './TouchpadPointerCurvePolicy.test';
+import remoteSurfaceTransformPolicyTest from './RemoteSurfaceTransformPolicy.test';
 
 export default function testsuite() {
   abilityTest();
@@ -58,4 +61,7 @@ export default function testsuite() {
   legacyRustDeskAccountCloudAdapterTest();
   hostAddDraftTest();
   rustDeskCardBadgePolicyTest();
+  remotePhysicalKeyboardPolicyTest();
+  touchpadPointerCurvePolicyTest();
+  remoteSurfaceTransformPolicyTest();
 }

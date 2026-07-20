@@ -407,10 +407,16 @@ endif()
 if(OHOS_ARCH STREQUAL "x86_64")
     set(RUSTDESK_FFI_TARGET x86_64-unknown-linux-ohos)
     set(RUSTDESK_FFI_LIB ${CMAKE_CURRENT_SOURCE_DIR}/../../../../rustdesk_ffi/target/x86_64-unknown-linux-ohos/release/librustdesk_ffi.a)
-else()
+elseif(OHOS_ARCH STREQUAL "arm64-v8a" OR OHOS_ARCH STREQUAL "aarch64")
     set(RUSTDESK_FFI_TARGET aarch64-unknown-linux-ohos)
     set(RUSTDESK_FFI_LIB ${CMAKE_CURRENT_SOURCE_DIR}/../../../../rustdesk_ffi/target/aarch64-unknown-linux-ohos/release/librustdesk_ffi.a)
+else()
+    message(FATAL_ERROR
+        "RustDesk: unsupported OHOS_ARCH='${OHOS_ARCH}'. "
+        "Expected x86_64 or arm64-v8a.")
 endif()
+
+message(STATUS "RustDesk: selected FFI target=${RUSTDESK_FFI_TARGET} library=${RUSTDESK_FFI_LIB}")
 
 set(RUSTDESK_FFI_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../../../rustdesk_ffi)
 set(RUSTDESK_PROTO_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../../../rustdesk_vendor/libs/hbb_common/protos)

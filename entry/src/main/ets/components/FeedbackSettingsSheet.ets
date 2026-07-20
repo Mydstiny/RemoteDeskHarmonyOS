@@ -37,12 +37,21 @@ export struct FeedbackSettingsSheet {
 
   private readonly tabsController: HdsTabsController = new HdsTabsController();
   private readonly communityService: FeedbackCommunityService = new FeedbackCommunityService();
+  private communityLoadEpoch: number = 0;
 
   aboutToAppear(): void {
+    this.communityLoadEpoch++;
+    this.community = null;
+    this.clearQrPixelMap();
+    this.communityLoading = false;
+    this.communityError = '';
+    this.nowMs = Date.now();
     this.refreshCommunityQr();
   }
 
   aboutToDisappear(): void {
+    this.communityLoadEpoch++;
+    this.communityLoading = false;
     this.clearQrPixelMap();
   }
 
@@ -72,6 +81,7 @@ export struct FeedbackSettingsSheet {
 
   private async refreshCommunityQr(): Promise<void> {
     if (this.communityLoading) { return; }
+    const loadEpoch: number = this.communityLoadEpoch;
     this.communityLoading = true;
     this.communityError = '';
     try {
@@ -88,17 +98,24 @@ export struct FeedbackSettingsSheet {
       } finally {
         source.release();
       }
+      if (loadEpoch !== this.communityLoadEpoch) {
+        this.releasePixelMap(pixelMap);
+        return;
+      }
       const previousPixelMap: image.PixelMap | null = this.communityQrPixelMap;
       this.communityQrPixelMap = pixelMap;
       this.community = manifest;
       this.nowMs = Date.now();
       this.releasePixelMap(previousPixelMap);
     } catch (error) {
+      if (loadEpoch !== this.communityLoadEpoch) { return; }
       this.community = null;
       this.clearQrPixelMap();
       this.communityError = this.errorMessage(error as Object);
     } finally {
-      this.communityLoading = false;
+      if (loadEpoch === this.communityLoadEpoch) {
+        this.communityLoading = false;
+      }
     }
   }
 
@@ -115,6 +132,15 @@ export struct FeedbackSettingsSheet {
     const pixelMap: image.PixelMap | null = this.communityQrPixelMap;
     this.communityQrPixelMap = null;
     this.releasePixelMap(pixelMap);
+  }
+
+  private communityManifestIsCurrent(
+    current: FeedbackCommunityManifest,
+    latest: FeedbackCommunityManifest
+  ): boolean {
+    return current.version === latest.version &&
+      current.qrImageUrl === latest.qrImageUrl &&
+      current.expiresAt === latest.expiresAt;
   }
 
   private async openJoinLink(): Promise<void> {
@@ -145,8 +171,18 @@ export struct FeedbackSettingsSheet {
     if (manifest === null || this.savingQr) { return; }
     this.savingQr = true;
     try {
+      if (manifest.expiresAt <= Date.now()) {
+        await this.refreshCommunityQr();
+        throw new Error('二维码已过期，已刷新，请重试保存');
+      }
+      // 保存前重新读取清单，防止用户打开页面后服务器已经轮换二维码。
+      const latest: FeedbackCommunityManifest = await this.communityService.fetchManifest();
+      if (!this.communityManifestIsCurrent(manifest, latest)) {
+        await this.refreshCommunityQr();
+        throw new Error('二维码已更新，已刷新，请使用最新二维码重试');
+      }
       const bytes: ArrayBuffer = await this.communityService.downloadQrImage(
-        feedbackCommunityImageUrl(manifest)
+        feedbackCommunityImageUrl(latest)
       );
       const ctx: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
       const helper = photoAccessHelper.getPhotoAccessHelper(ctx);
@@ -288,6 +324,8 @@ export struct FeedbackSettingsSheet {
             .borderRadius(18).shadow({ radius: 12, color: 'rgba(0,0,0,0.12)', offsetY: 4 })
           Text(feedbackCommunityRemainingText(this.community.expiresAt, this.nowMs))
             .fontSize(12).fontColor(this.pal().text3).fontFamily(this.font()).margin({ top: 10 })
+          Button('刷新').height(32).fontSize(12).backgroundColor(Color.Transparent)
+            .fontColor(this.accentColor).onClick((): void => { this.refreshCommunityQr(); })
           Row() {
             Row() {
               SaveButton().width('100%').height(42)

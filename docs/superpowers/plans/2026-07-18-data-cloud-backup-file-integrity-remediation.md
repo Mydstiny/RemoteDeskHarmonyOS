@@ -1,6 +1,10 @@
 # Data, Cloud Sync, Backup, and File Integrity Remediation Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+**Last code-baseline review:** 2026-07-19, branch `codex/rustdesk-pro-account-sync`, commit `a019ea96f` (`main...HEAD = 0/46`).
+
+**Urgent focused addendum:** The three currently reported issues are specified in [2026-07-19-backup-relay-paste-rustdesk-password.md](2026-07-19-backup-relay-paste-rustdesk-password.md). Execute its Tasks 0–3 before the broader encryption/record-journal/backup-v3 work below; do not duplicate or revert the current cloud adapter foundation.
+
+> **Execution rule:** Use the repository-native Codex/Git workflow and execute this plan task-by-task. Keep every committed checkpoint green; RED tests are written first but are committed only with the corresponding GREEN implementation. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Eliminate data rollback, stale-password shadowing, plaintext secret upload, incomplete backup/restore, duplicate UI refresh, and file-transfer residue while preserving the existing Huawei cloud schemas and all recoverable user data.
 
@@ -14,6 +18,7 @@
 - Do not add, delete, rename, or change the type of any Huawei cloud-table column.
 - Preserve existing cloud rows and local data; every migration must be idempotent, resumable, and rollback-safe.
 - Preserve unrelated dirty files and stage only files explicitly owned by the current task.
+- Before Task 1, resolve or explicitly checkpoint the current overlapping edits in `HostListPage.ets` and `CMakeLists.txt`; the 2026-07-19 worktree also contains `FabAddStylePolicy.ets`, `HostAddModePolicy.test.ets`, `rustdesk_ffi/src/net.rs`, and `.appanalyzer/`, none of which belongs to this remediation by default.
 - Never use `git add -A`, `git reset --hard`, `git checkout --`, force-push, or direct push to `main`.
 - Never log passwords, private keys, TOTP secrets, relay keys, access tokens, backup passphrases, or unmasked host/user identity.
 - A local data mutation is successful only after every required local row is committed; cloud upload may be asynchronous but must have a durable dirty record.
@@ -67,7 +72,44 @@ The implementation must not introduce another secret shadow copy. A value may be
 
 ---
 
-## 3. Planned File Structure
+## 3. Current Code Baseline (2026-07-19)
+
+This plan is incremental. Do not discard or rewrite the following working foundations:
+
+| Area | Current implementation that must be preserved | Remaining gap |
+|---|---|---|
+| Cloud schema adapter | `CloudTableAdapter.ets` contains the cloud column whitelist, `remotehosts.password -> passward`, `usersettings` payload compatibility, and `displayconfig._remoteDeskExtensionV2`; `CloudStore.cloudBucket()` is the production filter | `projectLocalRow()`/`projectCloudRow()` are not the production bucket path; add wiring tests and remove dead exports instead of replacing the working adapter |
+| Cloud operation queue | `CloudSyncCoordinator` serializes operations, persists dirty **table names**, retries failed automatic pushes, coalesces same-table pushes, defers pushes during active sessions, and performs startup/manual operations | Dirty intent is table-level rather than record/revision-level; terminal acknowledgement and same-record conflict behavior are not fully durable |
+| Manual download | `CloudStore.coordinatorHooks()` snapshots all cloud tables plus `localextensions` and restores them on failure | Snapshot metadata does not include record journal/secure-store references; publish boundaries still need exactly-once verification |
+| Local backup | Backup v2 includes all cloud tables plus `localextensions`, validates SHA-256 and schema, restores inside one RDB transaction, suppresses upload, locks the old DEK, and accepts v1 | File reading allocates declared file size without a cap, read/write completion is unchecked, payload can expose plaintext secrets, and there is no authenticated/password-protected v3 envelope |
+| Host freshness | `HostSyncService` keeps recent local edits/deletes over immediately stale cloud callbacks and skips unchanged visible signatures | Timestamps are process-local, so crash/restart loses record intent; mutation and extension writes are still not one transaction |
+| UI refresh | Host lists clone models, compare signatures, and use revision keys; KeyVault and relay lists also use revision keys | `aboutToAppear()` still calls `load()`, `loadAfterServiceReady()` can call it again, listeners call it again, and `onPageShow()` may add another load; revisions are page-global rather than item/snapshot revisions |
+| Imports | SSH (2 MiB), TOTP (4 MiB), and RustDesk relay (256 KiB) imports already enforce file-size limits and check one read length | Complete-read logic is duplicated; format validation/error codes and batch atomicity remain inconsistent |
+| Transfer | RDP remote-file writes already use bounded chunks and live-task tracking exists | RustDesk still allocates one buffer up to 100 MiB and calls one-shot `sendFile`; staging collision/TTL/restart cleanup and terminal task draining remain incomplete |
+| Encryption | `DataCrypto.encrypt()`/`decrypt()` throw when DEK is unavailable and business-table transforms use transactions in several paths | `CloudStore.encryptIfReady()` and `hostToBucket()` still return plaintext while locked; disable reads `remotehosts.password` rather than canonical `passward`; extension secrets are omitted from disable/reset transforms |
+| RustDesk remembered password | Pre-auth saves only after authentication and host adapter upload now works in current device testing | `confirmRustDeskProPreflight()` ignores `HostSyncService.updateHost()` failure; `localextensions.password` can overwrite `passward` on restart |
+| Pro account secrets | Pro account metadata and login state are centralized in `RustDeskProCredentialStore` | The complete account array, including token/device identity, remains plain Preferences JSON and persistence errors are swallowed |
+| RDP credentials | Password uses the existing cloud column and username is cached in `localextensions` | Username does not cross devices; main row and extension are written separately |
+| Legacy sync path | Production code uses `CloudStore` plus `CloudSyncCoordinator` | `CloudSyncService.ets` remains as a no-caller REST implementation and must be removed only after a repository-wide caller proof |
+
+### Baseline disposition by task
+
+- **Not started:** Tasks 1-6 and the record-level portion of Task 7.
+- **Partially implemented:** Tasks 7-12; retain the foundations listed above and close only the stated gaps.
+- **Pending:** Task 13 device/fault/release verification.
+- None of the planned new focused files currently exists; their creation remains intentional rather than a rename of existing services.
+
+### Mandatory preflight before implementation
+
+1. Capture `git status --short --branch` and an exact diff of every overlapping file.
+2. Do not begin Task 1 while unrelated uncommitted changes overlap `HostListPage.ets`, `RemoteDesktop.ets`, `CMakeLists.txt`, or RustDesk FFI files; checkpoint the existing feature work first or carry an explicitly reviewed patch map.
+3. Create sanitized local/cloud/backup fixtures before any migration write. Never use the only copy of a real user database for tests.
+4. Record the currently passing cloud-edit device behavior as a regression baseline: edit RustDesk/RDP/SSH port, automatic upload, kill app, cold start, and verify the edited value remains.
+5. Treat any regression in the live `passward`, `displayconfig`, or dirty-table adapter as a stop condition, not as permission to redesign the cloud schema.
+
+---
+
+## 4. Planned File Structure
 
 ### New focused files
 
@@ -106,7 +148,10 @@ The implementation must not introduce another secret shadow copy. A value may be
 - `entry/src/main/ets/entryability/EntryAbility.ets`
 - `entry/src/main/cpp/extensions/extension_loader_napi.cpp`
 - `entry/src/main/ets/types/rdpnapi.d.ts`
-- RustDesk FFI files only if the current send API cannot accept bounded chunks.
+- `entry/src/main/cpp/rustdesk/rustdesk_bridge.h`
+- `entry/src/main/cpp/rustdesk/rustdesk_bridge.cpp`
+- `rustdesk_ffi/src/connector.rs`
+- `rustdesk_ffi/src/protocol/session.rs`
 
 ### Legacy code to remove after proving no callers
 
@@ -116,60 +161,56 @@ The implementation must not introduce another secret shadow copy. A value may be
 
 ### Task 1: Lock down production-path regression tests before migration
 
+**Current status:** Existing `CloudStore`, `CloudTableAdapter`, `CloudSyncCoordinatorPolicy`, `HostSyncMergePolicy`, and `LocalBackupPolicy` tests cover useful pure policies, but the canonical secret ownership and production transaction paths below are not covered.
+
 **Files:**
-- Create: `entry/src/test/SensitiveDataStatePolicy.test.ets`
-- Create: `entry/src/test/SensitiveDataMigrationPolicy.test.ets`
-- Create: `entry/src/test/RdpCredentialCloudEnvelope.test.ets`
 - Modify: `entry/src/test/CloudStore.test.ets`
 - Modify: `entry/src/test/CloudTableAdapter.test.ets`
+- Modify: `entry/src/test/CloudSyncCoordinatorPolicy.test.ets`
+- Modify: `entry/src/test/HostSyncMergePolicy.test.ets`
+- Modify: `entry/src/test/LocalBackupPolicy.test.ets`
 - Modify: `entry/src/test/List.test.ets`
 
 **Interfaces:**
-- Produces executable specifications for every later task.
+- Freezes currently working adapter, coordinator, merge, and backup behavior before later tasks change ownership.
 - No production behavior changes in this task.
 
-- [ ] **Step 1: Add a failing remembered-password precedence test**
+- [ ] **Step 1: Freeze the currently working cloud adapter behavior**
 
-Create a production-path fixture with `passward = new-secret` and a legacy `localextensions.password = old-secret`; assert the loaded host uses `new-secret` and marks the shadow field for removal.
+Assert that a local host password projects to cloud `passward`, unknown local columns never enter the cloud bucket, `usersettings` payloads retain their compatibility shape, and `displayconfig._remoteDeskExtensionV2` round-trips all currently supported host extensions.
 
-- [ ] **Step 2: Add failing encryption-state tests**
+- [ ] **Step 2: Freeze the current dirty-table/startup ordering behavior**
 
-Specify exact decisions:
+Assert that a pending dirty table is restored from Preferences, pushed before startup cloud-first pull, retained after failure, cleared after terminal success, and coalesced without losing a later same-table mutation.
 
-```ts
-expect(secretWriteDecision('disabled')).assertEqual('allow_plain_local');
-expect(secretWriteDecision('unlocked')).assertEqual('allow_encrypted');
-expect(secretWriteDecision('locked')).assertEqual('reject_unlock_required');
-expect(secretCloudSyncDecision('disabled')).assertEqual('reject_encryption_required');
-expect(secretCloudSyncDecision('unlocked')).assertEqual('allow');
-```
+- [ ] **Step 3: Freeze stale-cloud merge protection**
 
-- [ ] **Step 3: Add failing disable/reset coverage**
+Assert that an immediately stale cloud callback cannot replace a newer local host edit/delete, RDP credential edit/delete, relay edit/delete, or newer local health observation.
 
-Assert that the sensitive inventory contains `remotehosts.passward`, SSH key data/passphrase, RDP credential envelope, relay API password/key/accounts, SSH private key, TOTP secret, secure Pro credentials, and sensitive extension rows. Assert no `password`/`passward` ambiguity remains.
+- [ ] **Step 4: Freeze backup v1/v2 compatibility and no-auto-upload restore behavior**
 
-- [ ] **Step 4: Add failing production-adapter wiring tests**
+Assert that v1 remains readable, v2 includes/validates extensions, corruption is rejected, and restore policy does not schedule automatic upload. Add a production test seam around `CloudStore.cloudBucket()`; remove `projectLocalRow()`/`projectCloudRow()` only if the repository-wide caller scan still shows they are test-only.
 
-Replace tests that call only `projectLocalRow()` with tests against the bucket/row conversion interface actually consumed by `CloudStore`. The test must fail if a helper is dead code.
-
-- [ ] **Step 5: Run RED gate**
+- [ ] **Step 5: Run the green baseline gate**
 
 ```powershell
 & 'C:\Program Files\Huawei\DevEco Studio\tools\node\node.exe' 'C:\Program Files\Huawei\DevEco Studio\tools\hvigor\bin\hvigorw.js' --mode module -p module=entry -p product=default default@OhosTestCompileArkTS --analyze=normal --parallel --incremental --daemon
 ```
 
-Expected: new tests fail because the policies and canonical production adapter do not exist.
+Expected: all baseline tests and ArkTS compilation pass before any ownership/migration behavior changes.
 
-- [ ] **Step 6: Commit test specifications only**
+- [ ] **Step 6: Commit the green regression baseline**
 
 ```powershell
-git add -- entry/src/test/SensitiveDataStatePolicy.test.ets entry/src/test/SensitiveDataMigrationPolicy.test.ets entry/src/test/RdpCredentialCloudEnvelope.test.ets entry/src/test/CloudStore.test.ets entry/src/test/CloudTableAdapter.test.ets entry/src/test/List.test.ets
-git commit -m "test(data): specify canonical persistence and encryption gates"
+git add -- entry/src/test/CloudStore.test.ets entry/src/test/CloudTableAdapter.test.ets entry/src/test/CloudSyncCoordinatorPolicy.test.ets entry/src/test/HostSyncMergePolicy.test.ets entry/src/test/LocalBackupPolicy.test.ets entry/src/test/List.test.ets
+git commit -m "test(data): freeze current sync and backup behavior"
 ```
 
 ---
 
 ### Task 2: Introduce typed mutation results and transactional record writes
+
+**Current status:** Open. `CloudStore.insertHost()`/`updateHost()` commit the main row and then call `saveHostExtension()` without checking the result; service APIs return only `boolean`.
 
 **Files:**
 - Create: `entry/src/main/ets/services/DataMutationResult.ets`
@@ -218,6 +259,8 @@ git commit -m "refactor(data): make local mutations transactional"
 ---
 
 ### Task 3: Remove password shadowing and migrate legacy local extensions
+
+**Current status:** Open and highest-priority data fix. `mergeHostExtension()` currently gives `localextensions.password` precedence over the already mapped `passward`, and `migrateLocalExtensions()` rewrites the extension on every initialization without a migration-version marker.
 
 **Files:**
 - Create: `entry/src/main/ets/services/SensitiveDataMigrationPolicy.ets`
@@ -268,6 +311,8 @@ git commit -m "fix(data): make passward the canonical host secret"
 
 ### Task 4: Make encryption fail closed and reload decrypted snapshots
 
+**Current status:** Open. `CloudStore.encryptIfReady()` and the lambda inside `hostToBucket()` still return the input unchanged when encryption is configured but the DEK is locked.
+
 **Files:**
 - Create: `entry/src/main/ets/services/SensitiveDataStatePolicy.ets`
 - Modify: `entry/src/main/ets/services/DataCrypto.ets`
@@ -313,6 +358,8 @@ git commit -m "fix(security): reject secret writes while encryption is locked"
 
 ### Task 5: Repair encryption disable, reset, and cross-device state transitions
 
+**Current status:** Open. `decryptAllData()` reads and updates `remotehosts.password`, while runtime/cloud ownership is `passward`; it does not transform sensitive `localextensions` payloads. `clearAllTables()` also leaves `localextensions` behind.
+
 **Files:**
 - Modify: `entry/src/main/ets/services/DataCrypto.ets`
 - Modify: `entry/src/main/ets/services/CloudStore.ets`
@@ -355,6 +402,8 @@ git commit -m "fix(security): make encryption transitions atomic"
 ---
 
 ### Task 6: Complete RDP credential and Pro credential persistence without cloud-schema changes
+
+**Current status:** Open. RDP username is stored only in `localextensions`; `RustDeskProCredentialStore` stores token/device identity in plain Preferences JSON, returns `void`, and swallows persistence failures.
 
 **Files:**
 - Create: `entry/src/main/ets/services/RdpCredentialCloudEnvelope.ets`
@@ -404,6 +453,8 @@ git commit -m "fix(credentials): secure Pro tokens and complete RDP sync"
 
 ### Task 7: Harden cloud mutation journaling, conflict handling, and manual operations
 
+**Current status:** Partially implemented. Keep the current serialized coordinator, dirty-table Preferences, retry/coalescing logic, active-session deferral, startup dirty-first behavior, and manual-download table/extension rollback. Extend them to record/revision ownership rather than replacing them.
+
 **Files:**
 - Modify: `entry/src/main/ets/services/CloudSyncCoordinator.ets`
 - Modify: `entry/src/main/ets/services/CloudSyncCoordinatorPolicy.ets`
@@ -421,9 +472,9 @@ git commit -m "fix(credentials): secure Pro tokens and complete RDP sync"
 
 Verify `add→update` uploads latest row, `update→update` keeps latest revision, `add→delete` produces no phantom row, and `delete→add` creates a new current revision.
 
-- [ ] **Step 2: Persist dirty intent in the same local transaction**
+- [ ] **Step 2: Upgrade dirty-table intent to record/revision intent in the same local transaction**
 
-If the app is killed after local commit but before cloudSync starts, startup must upload the dirty revision before cloud-first pull. Clear journal entries only after the terminal successful progress callback for that revision.
+Migrate the existing `cloudSyncDirtyTables` state forward without losing pending tables. If the app is killed after local commit but before cloudSync starts, startup must upload the dirty revision before cloud-first pull. Clear a record journal entry only after the terminal successful progress callback covers that revision; retain the existing table-level key as a compatibility/recovery summary until the migration is proven on device.
 
 - [ ] **Step 3: Remove extension side effects from row decoding**
 
@@ -447,6 +498,8 @@ git commit -m "fix(sync): journal durable record mutations"
 ---
 
 ### Task 8: Replace backup v2 with bounded authenticated backup v3
+
+**Current status:** Partially implemented. Preserve v1/v2 validation, v2 `extensions`, transactional `replaceAllTableRows()`, upload suppression, and post-restore DEK lock. Add v3 as a backward-compatible envelope rather than replacing the v1/v2 reader.
 
 **Files:**
 - Create: `entry/src/main/ets/services/BackupCryptoPolicy.ets`
@@ -498,6 +551,8 @@ git commit -m "feat(backup): add bounded encrypted backup v3"
 
 ### Task 9: Unify and validate all file imports
 
+**Current status:** Partially implemented. Preserve the existing per-format size limits and partial-read rejection; replace duplicated file I/O with the shared helper and strengthen semantic validation/batch commit behavior.
+
 **Files:**
 - Modify: `entry/src/main/ets/services/SshKeyImportService.ets`
 - Modify: `entry/src/main/ets/services/TotpImportService.ets`
@@ -538,6 +593,8 @@ git commit -m "fix(import): validate and bound credential files"
 
 ### Task 10: Make UI refresh revision-driven and exactly once
 
+**Current status:** Partially implemented. Preserve `HostSyncService.visibleDataSignature()`, unchanged-host skipping, local-newer merge guards, cloned page models, and current revision-key coverage. The remaining root cause is multiple page/service load entry points and page-global revisions.
+
 **Files:**
 - Create: `entry/src/main/ets/services/DataSnapshotRevisionPolicy.ets`
 - Modify: `entry/src/main/ets/services/HostSyncService.ets`
@@ -558,7 +615,7 @@ Assert: initial ready snapshot = one event; unchanged cloud callback = zero; one
 
 - [ ] **Step 2: Remove startup double-load path**
 
-`HostListPage.aboutToAppear()` subscribes first and awaits a single `whenReadySnapshot()`. Remove the parallel immediate `load()` plus `whenReady().then(load)` combination.
+`HostListPage.aboutToAppear()` subscribes first and awaits a single `whenReadySnapshot()`. Remove the current parallel `await load()`, `loadAfterServiceReady()` callbacks, listener-triggered duplicate, and initial `onPageShow()` load combination. Keep one initial snapshot publication and one later publication per semantic revision.
 
 - [ ] **Step 3: Stop unchanged KeyVault refreshes**
 
@@ -582,6 +639,8 @@ git commit -m "fix(ui): publish one revision per data change"
 ---
 
 ### Task 11: Repair transfer staging, streaming, and live-task cleanup
+
+**Current status:** Partially implemented. Preserve the current RDP chunk loop, remote file chunk APIs, transfer status polling, and live-task service. Replace only RustDesk's one-shot 100 MiB buffer path and unify staging/cleanup ownership.
 
 **Files:**
 - Create: `entry/src/main/ets/services/TransferStagingService.ets`
@@ -636,6 +695,8 @@ git commit -m "fix(transfer): stream files and clean staging state"
 ---
 
 ### Task 12: Remove alternate persistence paths and align settings writes
+
+**Current status:** Partially implemented. The repository-wide scan currently finds only the `CloudSyncService.ets` definition, while production uses `CloudStore`/`CloudSyncCoordinator`. Settings still mix direct Preferences/AppStorage writes with `usersettings` writes.
 
 **Files:**
 - Delete after no-caller proof: `entry/src/main/ets/services/CloudSyncService.ets`
@@ -737,7 +798,7 @@ Use exact-file staging, push the current `codex/...` branch, open a PR, wait for
 
 ---
 
-## 4. Mandatory Acceptance Criteria
+## 5. Mandatory Acceptance Criteria
 
 The remediation is complete only when all conditions below are true:
 
@@ -758,7 +819,7 @@ The remediation is complete only when all conditions below are true:
 - Existing v1/v2 backups and legacy databases retain all recoverable data.
 - Automated gates and the complete device `38451` matrix pass with sanitized evidence.
 
-## 5. Stop/rollback conditions
+## 6. Stop/rollback conditions
 
 Stop the implementation and restore the pre-task local snapshot if any of these occur:
 
@@ -770,7 +831,7 @@ Stop the implementation and restore the pre-task local snapshot if any of these 
 - Encryption-enabled tests find plaintext in RDB, local extensions, Preferences, backup output, logs, or cloud-bound buckets.
 - Three consecutive fixes reveal new independent state owners; pause and redesign the ownership boundary before a fourth patch.
 
-## 6. Recommended execution checkpoints
+## 7. Recommended execution checkpoints
 
 1. Tasks 1–3: canonical storage and transaction checkpoint; run device migration read-only verification.
 2. Tasks 4–5: encryption checkpoint; do not continue until plaintext scans and interruption tests pass.

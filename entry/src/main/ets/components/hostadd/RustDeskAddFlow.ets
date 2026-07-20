@@ -2,6 +2,7 @@ import { Palette, buildDark, buildLight } from '../../common/Theme';
 import { RemoteHost } from '../../model/RemoteHost';
 import { RustDeskRelayConfig } from '../../model/RustDeskRelayConfig';
 import { DiscoveredRustDeskPeer } from '../../services/RustDeskLanDiscoveryService';
+import { rustDeskServerKeyError } from '../../services/RustDeskHostConfigPolicy';
 
 @Component
 export struct RustDeskAddFlow {
@@ -77,6 +78,8 @@ export struct RustDeskAddFlow {
       isNaN(relayPort) || relayPort <= 0 || relayPort > 65535) {
       this.errorText = '服务器端口必须在 1-65535 之间'; return;
     }
+    const keyError: string = rustDeskServerKeyError(this.relayKey, false);
+    if (keyError !== '') { this.errorText = keyError; return; }
     const relay = new RustDeskRelayConfig();
     relay.id = RustDeskRelayConfig.generateId();
     relay.idServer = this.relayIdServer.trim();

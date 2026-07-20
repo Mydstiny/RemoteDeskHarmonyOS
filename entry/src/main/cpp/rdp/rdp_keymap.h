@@ -81,6 +81,18 @@ inline uint32_t mapHarmonyKeyCodeToRdpScancode(uint32_t keyCode) {
         case 56: return 0x09;  // 8
         case 57: return 0x0A;  // 9
 
+        // Harmony number row.
+        case 2000: return 0x0B; // 0
+        case 2001: return 0x02; // 1
+        case 2002: return 0x03; // 2
+        case 2003: return 0x04; // 3
+        case 2004: return 0x05; // 4
+        case 2005: return 0x06; // 5
+        case 2006: return 0x07; // 6
+        case 2007: return 0x08; // 7
+        case 2008: return 0x09; // 8
+        case 2009: return 0x0A; // 9
+
         // Navigation/control keys from RemoteDesktop.ets.
         case 2012: return 0xE048; // Up
         case 2013: return 0xE050; // Down
@@ -101,6 +113,8 @@ inline uint32_t mapHarmonyKeyCodeToRdpScancode(uint32_t keyCode) {
         case 2071: return 0xE053; // Delete
         case 2072: return 0x1D;   // Left Ctrl
         case 2073: return 0xE01D; // Right Ctrl
+        case 2074: return 0x3A;   // Caps Lock
+        case 2075: return 0x46;   // Scroll Lock
         case 2076: return 0xE05B; // Left Meta
         case 2077: return 0xE05C; // Right Meta
         case 2079: return 0xE037; // Print Screen / SysRq
@@ -122,6 +136,7 @@ inline uint32_t mapHarmonyKeyCodeToRdpScancode(uint32_t keyCode) {
         case 2099: return 0x44; // F10
         case 2100: return 0x57; // F11
         case 2101: return 0x58; // F12
+        case 2102: return 0x45; // Num Lock
 
         // Numpad keys from rustdesk_ffi/src/connector.rs.
         case 2103: return 0x52;   // Numpad 0
@@ -143,6 +158,19 @@ inline uint32_t mapHarmonyKeyCodeToRdpScancode(uint32_t keyCode) {
         case 2120: return 0x0D;   // Equals
 
         // Common symbol keys observed from desktop-style key events.
+        case 2043: return 0x33; // Harmony comma
+        case 2044: return 0x34; // Harmony period
+        case 2056: return 0x29; // Harmony backtick
+        case 2057: return 0x0C; // Harmony minus
+        case 2058: return 0x0D; // Harmony equals
+        case 2059: return 0x1A; // Harmony left bracket
+        case 2060: return 0x1B; // Harmony right bracket
+        case 2061: return 0x2B; // Harmony backslash
+        case 2062: return 0x27; // Harmony semicolon
+        case 2063: return 0x28; // Harmony apostrophe
+        case 2064: return 0x35; // Harmony slash
+        case 2065: return 0x03; // Harmony @ (physical 2 key)
+        case 2066: return 0x0D; // Harmony + (physical equals key)
         case 186: return 0x27; // Semicolon
         case 187: return 0x0D; // Equals
         case 188: return 0x33; // Comma

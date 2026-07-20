@@ -13,10 +13,15 @@ export default function releaseNotesRegistryTest(): void {
   describe('ReleaseNotesRegistry', (): void => {
     it('describes_the_complete_1_0_7_update', 0, (): void => {
       const pages: ReleaseNotePage[] = pagesForReleasedVersion(CURRENT_RELEASE_VERSION);
-      expect(pages.length).assertEqual(4);
-      expect(containsPage(pages, 'ime-session-stability')).assertTrue();
-      expect(containsPage(pages, 'rdp-certificate-trust')).assertTrue();
-      expect(containsPage(pages, 'rustdesk-session-stability')).assertTrue();
+      expect(pages.length).assertEqual(9);
+      expect(containsPage(pages, 'rdp-render-session')).assertTrue();
+      expect(containsPage(pages, 'remote-input-keyboard')).assertTrue();
+      expect(containsPage(pages, 'rdp-file-certificate')).assertTrue();
+      expect(containsPage(pages, 'rustdesk-relay-domain')).assertTrue();
+      expect(containsPage(pages, 'rustdesk-pro-auth')).assertTrue();
+      expect(containsPage(pages, 'modern-add-security')).assertTrue();
+      expect(containsPage(pages, 'sync-backup-feedback')).assertTrue();
+      expect(containsPage(pages, 'responsive-onboarding')).assertTrue();
       expect(pages[pages.length - 1].id).assertEqual('welcome-1-0-7');
       expect(pages[pages.length - 1].title).assertEqual('欢迎使用 1.0.7');
     });

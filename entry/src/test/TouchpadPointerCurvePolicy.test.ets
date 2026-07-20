@@ -20,7 +20,15 @@ export default function touchpadPointerCurvePolicyTest() {
     it('handles invalid inputs without NaN and caps user speed composition', 0, (): void => {
       const result = touchpadPointerCurve(NaN, Infinity, 0, resetTouchpadPointerCurveState());
       expect(Number.isFinite(result.gain)).assertTrue();
-      expect(clampTouchpadEffectiveGain(99, 2.2)).assertEqual(3.0);
+      expect(clampTouchpadEffectiveGain(99, 2.2)).assertEqual(2.4);
+    });
+    it('repairs an invalid previous velocity state', 0, (): void => {
+      const result = touchpadPointerCurve(1, 0, 1000, {
+        smoothedSpeed: NaN,
+        lastTimeMs: Infinity
+      });
+      expect(Number.isFinite(result.gain)).assertTrue();
+      expect(Number.isFinite(result.state.smoothedSpeed)).assertTrue();
     });
   });
 }

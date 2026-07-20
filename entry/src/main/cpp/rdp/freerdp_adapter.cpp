@@ -2098,6 +2098,10 @@ void FreeRdpAdapter::connectThreadFunc() {
     freerdp_settings_set_uint32(s, FreeRDP_DesktopHeight,
                                 static_cast<UINT32>(cfg.height > 0 ? cfg.height : 1080));
     freerdp_settings_set_bool(s, FreeRDP_DesktopResize, TRUE);
+    // FreeRDP only dispatches protocol pointer-position updates to
+    // pointer.SetPosition when mouse grabbing is enabled.  The ArkTS cursor
+    // overlay consumes the callback; it does not change the system pointer.
+    freerdp_settings_set_bool(s, FreeRDP_GrabMouse, TRUE);
 
     // 色深 — 使用 cfg 值, 不再硬编码 32
     freerdp_settings_set_uint32(s, FreeRDP_ColorDepth,

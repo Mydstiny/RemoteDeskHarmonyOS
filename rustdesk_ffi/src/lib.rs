@@ -773,6 +773,23 @@ pub extern "C" fn rustdesk_connect(
         return std::ptr::null_mut();
     }
 
+    // Keep the protocol input invariant identical on every ABI.  The hbbs
+    // PunchHoleRequest licence_key is the rendezvous public key, not an
+    // encrypted local-storage value or an arbitrary Pro credential token.
+    // Direct IP sessions do not use rendezvous and therefore do not need this
+    // field at all.
+    if !config.direct_connection
+        && crypto::normalized_server_public_key(&server_key).is_none()
+    {
+        let message = if server_key.trim_start().starts_with("1:") {
+            "rendezvous server public key is encrypted; unlock local data before connecting"
+        } else {
+            "invalid rendezvous server public key; expected Base64-encoded 32-byte key"
+        };
+        set_last_error(message);
+        return std::ptr::null_mut();
+    }
+
     // 运行完整连接管线
     let mut c = connector::RustDeskConnector::new();
     let result = if config.direct_connection {
@@ -1255,6 +1272,50 @@ mod tests {
             std::ptr::null_mut(),
         );
         assert!(handle.is_null(), "无效地址应返回 null");
+    }
+
+    #[test]
+    fn test_rustdesk_connect_rejects_encrypted_server_key_before_network() {
+        let host = CString::new("127.0.0.1").unwrap();
+        let key = CString::new("1:encrypted-value").unwrap();
+        let username = CString::new("test").unwrap();
+        let password = CString::new("").unwrap();
+        let cfg = RustDeskConfig {
+            host: host.as_ptr(),
+            port: 21116,
+            key: key.as_ptr(),
+            username: username.as_ptr(),
+            password: password.as_ptr(),
+            width: 1920,
+            height: 1080,
+            codec: 4,
+            image_quality: 1,
+            privacy_mode: false,
+            audio_enabled: true,
+            profile: RustDeskProfile::Balanced,
+            fps: 0,
+            direct_connection: false,
+            auth_mode: 0,
+        };
+
+        extern "C" fn dummy_frame(_frame: *const FfiVideoFrame, _data: *mut c_void) {}
+        extern "C" fn dummy_audio(_audio: *const FfiAudioData, _data: *mut c_void) {}
+        extern "C" fn dummy_disconnect(
+            _state: FfiConnectionState,
+            _msg: *const c_char,
+            _data: *mut c_void,
+        ) {
+        }
+
+        let handle = rustdesk_connect(
+            &cfg,
+            Some(dummy_frame),
+            Some(dummy_audio),
+            None,
+            Some(dummy_disconnect),
+            std::ptr::null_mut(),
+        );
+        assert!(handle.is_null(), "encrypted key must not reach rendezvous");
     }
 
     /// 测试 disconnect(null) 不崩溃

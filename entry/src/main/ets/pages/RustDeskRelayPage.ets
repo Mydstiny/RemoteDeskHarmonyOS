@@ -28,6 +28,7 @@ import { VncRelayConfigService } from '../services/VncRelayConfigService';
 import { ModernRelayAddFlow } from '../components/resourceadd/modern/ModernRelayAddFlow';
 import { RustDeskRelayImportService, RustDeskRelayImportResult } from '../services/RustDeskRelayImportService';
 import { ClipboardBridgeService } from '../services/ClipboardBridgeService';
+import { rustDeskServerKeyError } from '../services/RustDeskHostConfigPolicy';
 
 class TcpTestResult {
   ok: boolean = false;
@@ -387,6 +388,10 @@ export struct RustDeskRelayPage {
     }
     if (this.relayKind === 'pro' && this.formApiServer.trim() === '') {
       promptAction.showToast({ message: 'Server Pro 必须填写 API 地址', duration: 2000 }); return;
+    }
+    const keyError: string = rustDeskServerKeyError(this.formKey, false);
+    if (keyError !== '') {
+      promptAction.showToast({ message: keyError, duration: 2600 }); return;
     }
     const isNew: boolean = this.editingRelayId === '';
     const r = new RustDeskRelayConfig();

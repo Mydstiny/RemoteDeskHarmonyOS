@@ -197,6 +197,12 @@ fn connect_parsed_endpoint(
             ),
         ));
     }
+    eprintln!(
+        "[RustDesk-FFI] {} resolved endpoint={} addresses={}",
+        stage,
+        display,
+        candidates.len()
+    );
 
     let deadline = Instant::now() + timeout;
     let mut last_error = None;
@@ -206,7 +212,13 @@ fn connect_parsed_endpoint(
             break;
         }
         match TcpStream::connect_timeout(&address, remaining) {
-            Ok(stream) => return Ok(stream),
+            Ok(stream) => {
+                eprintln!(
+                    "[RustDesk-FFI] {} connected endpoint={} address={}",
+                    stage, display, address
+                );
+                return Ok(stream);
+            }
             Err(error) => last_error = Some((address, error)),
         }
     }

@@ -46,6 +46,73 @@ const SLOW_VIDEO_ACK_WARN: Duration = Duration::from_millis(50);
 const VP9_CODEC_PREFERENCE: i32 = 2;
 const BACKPRESSURE_FPS: [u32; 4] = [60, 45, 30, 15];
 
+#[derive(Default, Debug)]
+struct PhysicalModifierState {
+    held_scancodes: Vec<u32>,
+}
+
+impl PhysicalModifierState {
+    fn modifier_group_for_scancode(scancode: u32) -> Option<ControlKey> {
+        match scancode {
+            2045 | 2046 => Some(ControlKey::Alt),
+            2047 | 2048 => Some(ControlKey::Shift),
+            2072 | 2073 => Some(ControlKey::Control),
+            2076 | 2077 => Some(ControlKey::Meta),
+            _ => None,
+        }
+    }
+
+    fn modifier_group_for_control_key(key: ControlKey) -> Option<ControlKey> {
+        match key {
+            ControlKey::Alt | ControlKey::RAlt => Some(ControlKey::Alt),
+            ControlKey::Shift | ControlKey::RShift => Some(ControlKey::Shift),
+            ControlKey::Control | ControlKey::RControl => Some(ControlKey::Control),
+            ControlKey::Meta | ControlKey::RWin => Some(ControlKey::Meta),
+            _ => None,
+        }
+    }
+
+    fn update(&mut self, scancode: u32, pressed: bool) {
+        if Self::modifier_group_for_scancode(scancode).is_none() {
+            return;
+        }
+        if pressed {
+            if !self.held_scancodes.contains(&scancode) {
+                self.held_scancodes.push(scancode);
+            }
+        } else {
+            self.held_scancodes.retain(|held| *held != scancode);
+        }
+    }
+
+    fn active_groups(&self) -> Vec<ControlKey> {
+        let candidates = [
+            (ControlKey::Alt, [2045, 2046]),
+            (ControlKey::Shift, [2047, 2048]),
+            (ControlKey::Control, [2072, 2073]),
+            (ControlKey::Meta, [2076, 2077]),
+        ];
+        candidates
+            .into_iter()
+            .filter_map(|(group, scancodes)| {
+                self.held_scancodes
+                    .iter()
+                    .any(|held| scancodes.contains(held))
+                    .then_some(group)
+            })
+            .collect()
+    }
+
+    fn apply_to_key(&self, key: &mut KeyEvent, current: Option<ControlKey>) {
+        let current_group = current.and_then(Self::modifier_group_for_control_key);
+        for group in self.active_groups() {
+            if Some(group) != current_group {
+                key.modifiers.push(group.into());
+            }
+        }
+    }
+}
+
 fn pressure_target_fps(
     preferred_codec: i32,
     active_codec: i32,
@@ -605,10 +672,16 @@ impl RustDeskConnector {
                 "rendezvous response missing signed peer public key",
             ));
         }
-        let key = if server_key.trim().is_empty() {
+        let supplied_key = crypto::normalized_server_public_key(server_key).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "invalid rendezvous server public key; expected Base64-encoded 32-byte key",
+            )
+        })?;
+        let key = if supplied_key.is_empty() {
             crypto::RUSTDESK_SERVER_PUBLIC_KEY
         } else {
-            server_key.trim()
+            supplied_key
         };
         let rs_pk = crypto::decode_base64_key(key).ok_or_else(|| {
             io::Error::new(
@@ -691,6 +764,11 @@ impl RustDeskConnector {
         CF: FnMut(&[u8]),
         CU: FnMut(CursorStreamUpdate),
     {
+        let remote_is_macos = self
+            .session
+            .peer_info()
+            .map(|info| info.get_platform().to_ascii_lowercase().contains("mac"))
+            .unwrap_or(false);
         let remote_upload_dir = self.default_remote_upload_dir();
         let crypto = self
             .crypto_channel
@@ -722,6 +800,7 @@ impl RustDeskConnector {
         let mut last_successful_receive_at = Instant::now();
         let mut last_msg_kind = "none";
         let mut cursor_state = CursorState::new(4);
+        let mut physical_modifiers = PhysicalModifierState::default();
         let mut pending_file_uploads: Vec<PendingFileUpload> = Vec::new();
         let mut awaiting_file_done: Vec<AwaitingFileDone> = Vec::new();
         // T-131: Backpressure hysteresis state
@@ -835,7 +914,12 @@ impl RustDeskConnector {
                             "[RustDesk-FFI] streaming: control msg kind={}",
                             Self::control_msg_kind(&msg)
                         );
-                        if let Err(e) = Self::send_control_message(crypto, msg) {
+                        if let Err(e) = Self::send_control_message(
+                            crypto,
+                            msg,
+                            &mut physical_modifiers,
+                            remote_is_macos,
+                        ) {
                             eprintln!("[RustDesk-FFI] streaming: control msg error: {}", e);
                         }
                     }
@@ -1253,6 +1337,8 @@ impl RustDeskConnector {
     fn send_control_message(
         crypto: &mut CryptoChannel,
         control: crate::ControlMsg,
+        physical_modifiers: &mut PhysicalModifierState,
+        remote_is_macos: bool,
     ) -> io::Result<()> {
         match control {
             crate::ControlMsg::Shutdown => Ok(()),
@@ -1262,7 +1348,13 @@ impl RustDeskConnector {
             }
             crate::ControlMsg::VideoPressure { .. } => Ok(()),
             crate::ControlMsg::KeyEvent { scancode, pressed } => {
-                Self::send_key_event_encrypted(crypto, scancode, pressed)
+                Self::send_key_event_encrypted(
+                    crypto,
+                    scancode,
+                    pressed,
+                    physical_modifiers,
+                    remote_is_macos,
+                )
             }
             crate::ControlMsg::MouseEvent {
                 x,
@@ -1775,50 +1867,108 @@ impl RustDeskConnector {
         Ok(())
     }
 
-    fn build_key_message(scancode: u32, pressed: bool) -> Option<Message> {
+    fn build_key_message(
+        scancode: u32,
+        pressed: bool,
+        physical_modifiers: &mut PhysicalModifierState,
+    ) -> Option<Message> {
         let mut key = KeyEvent::new();
         key.set_mode(KeyboardMode::Legacy);
-        if let Some(control_key) = Self::harmony_keycode_to_control_key(scancode) {
-            if Self::is_modifier_control_key(control_key) {
-                key.set_down(pressed);
-            } else if pressed {
-                key.set_press(true);
-            } else {
-                return None;
-            }
+        physical_modifiers.update(scancode, pressed);
+        let control_key = Self::harmony_keycode_to_control_key(scancode);
+        if let Some(control_key) = control_key {
+            key.set_down(pressed);
             key.union = Some(KeyEvent_oneof_union::control_key(control_key));
         } else {
-            if pressed {
-                key.set_press(true);
-            } else {
-                return None;
-            }
+            key.set_down(pressed);
             let chr_code = Self::harmony_keycode_to_chr(scancode);
             key.union = Some(KeyEvent_oneof_union::chr(chr_code));
         }
+        physical_modifiers.apply_to_key(&mut key, control_key);
         let mut msg = Message::new();
         msg.union = Some(Message_oneof_union::key_event(key));
         Some(msg)
+    }
+
+    const MACOS_CAPS_LOCK_RAW_SCANCODE: u32 = 0x10039;
+
+    /// RustDesk's official client defaults to Map mode for supported desktop peers.
+    /// macOS must receive physical virtual-key events for its active input source to
+    /// compose text. Legacy `chr` events are handled by the server with
+    /// `Enigo::key_sequence`, which inserts characters directly and bypasses the IME.
+    fn build_macos_map_message(keycode: u32, pressed: bool) -> Message {
+        let mut key = KeyEvent::new();
+        key.set_mode(KeyboardMode::Map);
+        key.set_down(pressed);
+        key.union = Some(KeyEvent_oneof_union::chr(keycode));
+        let mut msg = Message::new();
+        msg.union = Some(Message_oneof_union::key_event(key));
+        msg
+    }
+
+    /// HarmonyOS keyCode -> macOS ANSI virtual keycode (Carbon `kVK_*`).
+    /// Values are physical positions, not characters, so the remote macOS input
+    /// source receives and composes the keystrokes exactly like a local keyboard.
+    fn harmony_keycode_to_macos_keycode(scancode: u32) -> Option<u32> {
+        Some(match scancode {
+            // Number row.
+            2000 => 0x1D, 2001 => 0x12, 2002 => 0x13, 2003 => 0x14, 2004 => 0x15,
+            2005 => 0x17, 2006 => 0x16, 2007 => 0x1A, 2008 => 0x1C, 2009 => 0x19,
+            // Letters A-Z.
+            2017 => 0x00, 2018 => 0x0B, 2019 => 0x08, 2020 => 0x02, 2021 => 0x0E,
+            2022 => 0x03, 2023 => 0x05, 2024 => 0x04, 2025 => 0x22, 2026 => 0x26,
+            2027 => 0x28, 2028 => 0x25, 2029 => 0x2E, 2030 => 0x2D, 2031 => 0x1F,
+            2032 => 0x23, 2033 => 0x0C, 2034 => 0x0F, 2035 => 0x01, 2036 => 0x11,
+            2037 => 0x20, 2038 => 0x09, 2039 => 0x0D, 2040 => 0x07, 2041 => 0x10,
+            2042 => 0x06,
+            // Punctuation and editing keys.
+            2043 => 0x2B, 2044 => 0x2F, 2056 => 0x32, 2057 => 0x1B, 2058 => 0x18,
+            2059 => 0x21, 2060 => 0x1E, 2061 => 0x2A, 2062 => 0x29, 2063 => 0x27,
+            2064 => 0x2C, 2049 => 0x30, 2050 => 0x31, 2054 => 0x24,
+            42 | 2055 => 0x33, 2070 => 0x35, 2071 => 0x75,
+            // Modifiers. ArkTS swaps Ctrl/Meta for the selected macOS layout before FFI.
+            2045 => 0x3A, 2046 => 0x3D, 2047 => 0x38, 2048 => 0x3C,
+            2072 => 0x3B, 2073 => 0x3E, 2074 => 0x39, 2076 => 0x37, 2077 => 0x36,
+            // Navigation and function keys.
+            2012 => 0x7E, 2013 => 0x7D, 2014 => 0x7B, 2015 => 0x7C,
+            2068 => 0x74, 2069 => 0x79, 2081 => 0x73, 2082 => 0x77,
+            2090 => 0x7A, 2091 => 0x78, 2092 => 0x63, 2093 => 0x76,
+            2094 => 0x60, 2095 => 0x61, 2096 => 0x62, 2097 => 0x64,
+            2098 => 0x65, 2099 => 0x6D, 2100 => 0x67, 2101 => 0x6F,
+            _ => return None,
+        })
+    }
+
+    fn should_use_macos_caps_lock_map(scancode: u32, remote_is_macos: bool) -> bool {
+        scancode == Self::MACOS_CAPS_LOCK_RAW_SCANCODE ||
+            (remote_is_macos && scancode == 2074)
     }
 
     pub(crate) fn next_control_batch(controls: &ControlInbox) -> Vec<crate::ControlMsg> {
         controls.take_batch(CONTROL_BATCH_LIMIT)
     }
 
-    fn log_key_message(scancode: u32, pressed: bool) {
+    fn log_key_message(
+        scancode: u32,
+        pressed: bool,
+        physical_modifiers: &PhysicalModifierState,
+    ) {
+        let modifiers = format!("{:?}", physical_modifiers.active_groups());
         let message = if let Some(control_key) = Self::harmony_keycode_to_control_key(scancode) {
             format!(
-                "send control key scancode={} control_key={} pressed={}",
+                "send control key scancode={} control_key={} pressed={} modifiers={}",
                 scancode,
                 control_key.value(),
-                pressed
+                pressed,
+                modifiers,
             )
         } else {
             format!(
-                "send raw key scancode={} chr={} pressed={}",
+                "send raw key scancode={} chr={} pressed={} modifiers={}",
                 scancode,
                 Self::harmony_keycode_to_chr(scancode),
-                pressed
+                pressed,
+                modifiers,
             )
         };
         crate::set_last_error(message.clone());
@@ -1829,11 +1979,36 @@ impl RustDeskConnector {
         crypto: &mut CryptoChannel,
         scancode: u32,
         pressed: bool,
+        physical_modifiers: &mut PhysicalModifierState,
+        remote_is_macos: bool,
     ) -> io::Result<()> {
-        let Some(msg) = Self::build_key_message(scancode, pressed) else {
+        if Self::should_use_macos_caps_lock_map(scancode, remote_is_macos) {
+            let msg = Self::build_macos_map_message(0x39, pressed);
+            let status = format!(
+                "send macos caps lock pressed={} mode=map keycode=0x39",
+                pressed,
+            );
+            crate::set_last_error(status.clone());
+            eprintln!("[RustDesk-FFI] {}", status);
+            return Self::send_message_encrypted(crypto, &msg);
+        }
+        if remote_is_macos {
+            if let Some(keycode) = Self::harmony_keycode_to_macos_keycode(scancode) {
+                physical_modifiers.update(scancode, pressed);
+                let msg = Self::build_macos_map_message(keycode, pressed);
+                let status = format!(
+                    "send macos physical scancode={} pressed={} mode=map keycode=0x{:X}",
+                    scancode, pressed, keycode,
+                );
+                crate::set_last_error(status.clone());
+                eprintln!("[RustDesk-FFI] {}", status);
+                return Self::send_message_encrypted(crypto, &msg);
+            }
+        }
+        let Some(msg) = Self::build_key_message(scancode, pressed, physical_modifiers) else {
             return Ok(());
         };
-        Self::log_key_message(scancode, pressed);
+        Self::log_key_message(scancode, pressed, physical_modifiers);
         Self::send_message_encrypted(crypto, &msg)
     }
 
@@ -1863,7 +2038,9 @@ impl RustDeskConnector {
             2048 => Some(ControlKey::RShift),
             2072 => Some(ControlKey::Control),
             2073 => Some(ControlKey::RControl),
-            2076 => Some(ControlKey::RWin),
+            2074 => Some(ControlKey::CapsLock),
+            2075 => Some(ControlKey::Scroll),
+            2076 => Some(ControlKey::Meta),
             2077 => Some(ControlKey::RWin),
             2090 => Some(ControlKey::F1),
             2091 => Some(ControlKey::F2),
@@ -1877,6 +2054,7 @@ impl RustDeskConnector {
             2099 => Some(ControlKey::F10),
             2100 => Some(ControlKey::F11),
             2101 => Some(ControlKey::F12),
+            2102 => Some(ControlKey::NumLock),
             2103 => Some(ControlKey::Numpad0),
             2104 => Some(ControlKey::Numpad1),
             2105 => Some(ControlKey::Numpad2),
@@ -1900,23 +2078,27 @@ impl RustDeskConnector {
 
     fn harmony_keycode_to_chr(scancode: u32) -> u32 {
         match scancode {
-            2017..=2042 => scancode - 2017 + 65,
+            2000..=2009 => scancode - 2000 + b'0' as u32,
+            // RustDesk Legacy mode carries the physical letter key as a lowercase
+            // layout character. Shift/Caps/Meta are expressed through modifiers.
+            // macOS Enigo's fallback key map only accepts lowercase a-z; sending
+            // uppercase ASCII here turns Command+C/V into an invalid virtual key.
+            2017..=2042 => scancode - 2017 + b'a' as u32,
+            2043 => b',' as u32,
+            2044 => b'.' as u32,
+            2056 => b'`' as u32,
+            2057 => b'-' as u32,
+            2058 => b'=' as u32,
+            2059 => b'[' as u32,
+            2060 => b']' as u32,
+            2061 => b'\\' as u32,
+            2062 => b';' as u32,
+            2063 => b'\'' as u32,
+            2064 => b'/' as u32,
+            2065 => b'@' as u32,
+            2066 => b'+' as u32,
             _ => scancode,
         }
-    }
-
-    fn is_modifier_control_key(key: ControlKey) -> bool {
-        matches!(
-            key,
-            ControlKey::Alt
-                | ControlKey::RAlt
-                | ControlKey::Shift
-                | ControlKey::RShift
-                | ControlKey::Control
-                | ControlKey::RControl
-                | ControlKey::Meta
-                | ControlKey::RWin
-        )
     }
 
     fn build_text_message(text: &str) -> Option<Message> {
@@ -2072,8 +2254,10 @@ mod tests {
     use super::{
         pressure_target_fps, should_refresh_for_video_starvation, ControlKey,
         KeyEvent_oneof_union, Message_oneof_union, RustDeskConnector,
+        PhysicalModifierState,
     };
     use crate::protocol::message_proto::{Hash, LoginResponse, Message};
+    use crate::protocol::message_proto::KeyboardMode;
     use crate::protocol::wire;
     use protobuf::Message as ProtoMessage;
     use std::net::TcpListener;
@@ -2140,7 +2324,8 @@ mod tests {
             _ => panic!("text input must be a key event"),
         }
 
-        let left_down = RustDeskConnector::build_key_message(2014, true).unwrap();
+        let mut modifiers = PhysicalModifierState::default();
+        let left_down = RustDeskConnector::build_key_message(2014, true, &mut modifiers).unwrap();
         match left_down.union {
             Some(Message_oneof_union::key_event(key)) => match key.union {
                 Some(KeyEvent_oneof_union::control_key(key)) => {
@@ -2150,7 +2335,125 @@ mod tests {
             },
             _ => panic!("left down must be a key event"),
         }
-        assert!(RustDeskConnector::build_key_message(2014, false).is_none());
+        let left_up = RustDeskConnector::build_key_message(2014, false, &mut modifiers).unwrap();
+        match left_up.union {
+            Some(Message_oneof_union::key_event(key)) => assert!(!key.down),
+            _ => panic!("left up must be a key event"),
+        }
+    }
+
+    #[test]
+    fn legacy_hotkeys_embed_held_modifier_on_every_key_event() {
+        let mut modifiers = PhysicalModifierState::default();
+        RustDeskConnector::build_key_message(2076, true, &mut modifiers).unwrap();
+        let c_down = RustDeskConnector::build_key_message(2019, true, &mut modifiers).unwrap();
+        match c_down.union {
+            Some(Message_oneof_union::key_event(key)) => {
+                assert!(key.down);
+                assert!(key.modifiers.iter().any(|modifier| *modifier == ControlKey::Meta));
+            }
+            _ => panic!("command-c down must be a key event"),
+        }
+        let c_up = RustDeskConnector::build_key_message(2019, false, &mut modifiers).unwrap();
+        match c_up.union {
+            Some(Message_oneof_union::key_event(key)) => {
+                assert!(!key.down);
+                assert!(key.modifiers.iter().any(|modifier| *modifier == ControlKey::Meta));
+            }
+            _ => panic!("command-c up must be a key event"),
+        }
+        RustDeskConnector::build_key_message(2076, false, &mut modifiers).unwrap();
+        assert!(modifiers.active_groups().is_empty());
+    }
+
+    #[test]
+    fn legacy_letter_keycodes_use_lowercase_layout_characters() {
+        assert_eq!(RustDeskConnector::harmony_keycode_to_chr(2017), b'a' as u32);
+        assert_eq!(RustDeskConnector::harmony_keycode_to_chr(2019), b'c' as u32);
+        assert_eq!(RustDeskConnector::harmony_keycode_to_chr(2038), b'v' as u32);
+        assert_eq!(RustDeskConnector::harmony_keycode_to_chr(2042), b'z' as u32);
+    }
+
+    #[test]
+    fn caps_lock_preserves_physical_hold_duration() {
+        let mut modifiers = PhysicalModifierState::default();
+        let down = RustDeskConnector::build_key_message(2074, true, &mut modifiers).unwrap();
+        let up = RustDeskConnector::build_key_message(2074, false, &mut modifiers).unwrap();
+        for (message, expected_down) in [(down, true), (up, false)] {
+            match message.union {
+                Some(Message_oneof_union::key_event(key)) => {
+                    assert_eq!(key.down, expected_down);
+                    match key.union {
+                        Some(KeyEvent_oneof_union::control_key(control)) => {
+                            assert_eq!(control, ControlKey::CapsLock)
+                        }
+                        _ => panic!("caps lock must remain a control key"),
+                    }
+                }
+                _ => panic!("caps lock must be a key event"),
+            }
+        }
+    }
+
+    #[test]
+    fn macos_caps_lock_uses_raw_map_keycode() {
+        assert!(RustDeskConnector::should_use_macos_caps_lock_map(
+            RustDeskConnector::MACOS_CAPS_LOCK_RAW_SCANCODE,
+            false,
+        ));
+        assert!(RustDeskConnector::should_use_macos_caps_lock_map(2074, true));
+        assert!(!RustDeskConnector::should_use_macos_caps_lock_map(2074, false));
+        for pressed in [true, false] {
+            let message = RustDeskConnector::build_macos_map_message(0x39, pressed);
+            match message.union {
+                Some(Message_oneof_union::key_event(key)) => {
+                    assert_eq!(key.down, pressed);
+                    assert_eq!(key.mode, KeyboardMode::Map);
+                    assert!(matches!(key.union, Some(KeyEvent_oneof_union::chr(0x39))));
+                    assert!(key.modifiers.is_empty());
+                }
+                _ => panic!("macOS Caps Lock must remain a key event"),
+            }
+        }
+    }
+
+    #[test]
+    fn macos_physical_letters_and_controls_use_carbon_virtual_keycodes() {
+        assert_eq!(RustDeskConnector::harmony_keycode_to_macos_keycode(2017), Some(0x00));
+        assert_eq!(RustDeskConnector::harmony_keycode_to_macos_keycode(2035), Some(0x01));
+        assert_eq!(RustDeskConnector::harmony_keycode_to_macos_keycode(2020), Some(0x02));
+        assert_eq!(RustDeskConnector::harmony_keycode_to_macos_keycode(2050), Some(0x31));
+        assert_eq!(RustDeskConnector::harmony_keycode_to_macos_keycode(2072), Some(0x3B));
+        assert_eq!(RustDeskConnector::harmony_keycode_to_macos_keycode(2076), Some(0x37));
+        assert_eq!(RustDeskConnector::harmony_keycode_to_macos_keycode(2014), Some(0x7B));
+    }
+
+    #[test]
+    fn macos_map_message_keeps_physical_down_up_events() {
+        for pressed in [true, false] {
+            let message = RustDeskConnector::build_macos_map_message(0x00, pressed);
+            match message.union {
+                Some(Message_oneof_union::key_event(key)) => {
+                    assert_eq!(key.down, pressed);
+                    assert_eq!(key.mode, KeyboardMode::Map);
+                    assert!(matches!(key.union, Some(KeyEvent_oneof_union::chr(0x00))));
+                    assert!(key.modifiers.is_empty());
+                }
+                _ => panic!("macOS physical letter must be a key event"),
+            }
+        }
+    }
+
+    #[test]
+    fn harmony_meta_keys_keep_left_and_right_identity() {
+        assert_eq!(
+            RustDeskConnector::harmony_keycode_to_control_key(2076),
+            Some(ControlKey::Meta)
+        );
+        assert_eq!(
+            RustDeskConnector::harmony_keycode_to_control_key(2077),
+            Some(ControlKey::RWin)
+        );
     }
 
     #[test]

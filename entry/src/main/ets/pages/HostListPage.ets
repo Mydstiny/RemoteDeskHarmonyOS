@@ -303,6 +303,12 @@ struct HostListPage {
   @State rdpCertificateShowDetails: boolean = false;
   private rdpCertificatePendingRouteParams: Record<string, Object> | null = null;
   private rdpCertificateProbeGeneration: number = 0;
+  // RDP certificate Sheet 的 native 退出动画完成前，不允许复用同一 bindSheet 宿主。
+  private rdpCertificateClosing: boolean = false;
+  private rdpCertificateClosingHostId: string = '';
+  private rdpCertificatePendingHostId: string = '';
+  private rdpCertificateAttemptGeneration: number = 0;
+  private rdpCertificateClosingAttemptGeneration: number = 0;
   @State showRustDeskProPreflight: boolean = false;
   @State rustDeskProPreflightState: number = RustDeskProPreflightState.IDLE;
   @State rustDeskProPreflightHostId: string = '';
@@ -313,6 +319,11 @@ struct HostListPage {
   @State rustDeskProRememberPassword: boolean = true;
   @State rustDeskProPreflightError: string = '';
   private rustDeskProPreflightGeneration: number = 0;
+  // RustDesk preflight Sheet 退出动画完成前，不允许复用同一 bindSheet 宿主。
+  private rustDeskProPreflightClosing: boolean = false;
+  private rustDeskProPreflightClosingHostId: string = '';
+  private rustDeskProPreflightPendingHostId: string = '';
+  private rustDeskProPreflightPendingRouteParams: Record<string, Object> | null = null;
   private connectionAttemptGeneration: number = 0;
   private connectionAttemptHostId: string = '';
   @StorageLink('rustdeskImageQuality') rustdeskImageQuality: number = 1; // 0=fast, 1=balanced, 2=quality
@@ -768,7 +779,7 @@ struct HostListPage {
   }
 
   private openSheetSafely(openAction: () => void): void {
-    if (this.addSheetClosing) {
+    if (this.addSheetClosing || this.rustDeskProPreflightClosing) {
       return;
     }
     if (this.pendingSheetOpenTimer !== -1) {
@@ -782,9 +793,9 @@ struct HostListPage {
     }
     this.pendingSheetOpenTimer = setTimeout((): void => {
       this.pendingSheetOpenTimer = -1;
-      if (this.addSheetClosing) {
-        return;
-      }
+       if (this.addSheetClosing || this.rustDeskProPreflightClosing) {
+         return;
+       }
       openAction();
     }, delayMs);
   }
@@ -1894,6 +1905,13 @@ struct HostListPage {
     }
   }
 
+  private releaseConnectionAttemptIfCurrent(hostId: string, generation: number): void {
+    if (generation !== this.connectionAttemptGeneration) {
+      return;
+    }
+    this.releaseConnectionAttempt(hostId);
+  }
+
   private async connectToHost(host: RemoteHost): Promise<void> {
     hilog.info(0x0001, 'HostList', 'connectToHost: proto=' + host.protocol +
       ' host=' + maskHost(host.host) + ':' + host.port);
@@ -1956,8 +1974,18 @@ struct HostListPage {
   }
 
   private openRdpCertificatePreflight(host: RemoteHost): void {
+    if (this.rdpCertificateClosing || this.showRdpCertificatePreflight) {
+      // connectToHost 已经为该主机占住了连接尝试；等旧 Sheet 的 onDisappear
+      // 完成后再打开，避免旧退出动画和新 builder 同时存在。
+      this.rdpCertificatePendingHostId = host.id;
+      hilog.info(0x0001, 'HostList', 'RDP certificate preflight queued until previous Sheet disappears host=' +
+        host.id);
+      return;
+    }
     const generation: number = nextRdpCertificateProbeGeneration(this.rdpCertificateProbeGeneration);
     this.rdpCertificateProbeGeneration = generation;
+    this.rdpCertificateAttemptGeneration = this.connectionAttemptGeneration;
+    this.rdpCertificatePendingHostId = '';
     this.rdpCertificateOpenedAt = Date.now();
     this.rdpCertificateHostId = host.id;
     this.rdpCertificateHostLabel = host.host;
@@ -1982,7 +2010,7 @@ struct HostListPage {
   }
 
   private handleRdpCertificateSheetDismiss(action: DismissSheetAction): void {
-    if (this.rdpCertificatePendingRouteParams !== null) {
+    if (this.rdpCertificateClosing || this.rdpCertificatePendingRouteParams !== null) {
       return;
     }
     const elapsed: number = Date.now() - this.rdpCertificateOpenedAt;
@@ -1994,30 +2022,82 @@ struct HostListPage {
   }
 
   private doRdpCertificateCancel(): void {
+    if (this.rdpCertificateClosing) {
+      return;
+    }
     const hostId: string = this.rdpCertificateHostId;
     this.rdpCertificateProbeGeneration = nextRdpCertificateProbeGeneration(
       this.rdpCertificateProbeGeneration
     );
     this.rdpCertificatePendingRouteParams = null;
+    this.rdpCertificateClosingHostId = hostId;
+    this.rdpCertificateClosingAttemptGeneration = this.rdpCertificateAttemptGeneration;
+    this.rdpCertificateClosing = true;
+    this.lastSheetDismissAtMs = Date.now();
     this.showRdpCertificatePreflight = false;
-    this.rdpCertificateHostId = '';
-    this.releaseConnectionAttempt(hostId);
+    // 允许下一次连接请求排队，但保留 builder 状态直到 onDisappear，避免退出动画期间闪烁。
+    this.releaseConnectionAttemptIfCurrent(hostId, this.rdpCertificateAttemptGeneration);
   }
 
   private handleRdpCertificateSheetDisappear(): void {
     this.noteSheetDismissed();
-    if (this.rdpCertificatePendingRouteParams === null) {
-      this.releaseConnectionAttempt(this.rdpCertificateHostId);
+    const closingHostId: string = this.rdpCertificateClosingHostId.length > 0
+      ? this.rdpCertificateClosingHostId : this.rdpCertificateHostId;
+    const closingAttemptGeneration: number = this.rdpCertificateClosingAttemptGeneration > 0
+      ? this.rdpCertificateClosingAttemptGeneration : this.rdpCertificateAttemptGeneration;
+    const params: Record<string, Object> | null = this.rdpCertificatePendingRouteParams;
+    const nextHostId: string = this.rdpCertificatePendingHostId;
+    this.rdpCertificatePendingRouteParams = null;
+    this.rdpCertificatePendingHostId = '';
+    this.rdpCertificateClosingHostId = '';
+    this.rdpCertificateClosingAttemptGeneration = 0;
+    this.rdpCertificateClosing = false;
+    this.rdpCertificateHostId = '';
+    this.rdpCertificateHostLabel = '';
+    this.rdpCertificateInfo = null;
+    this.rdpCertificateWarning = '';
+    this.rdpCertificateError = '';
+    this.rdpCertificateShowDetails = false;
+    this.rdpCertificateAttemptGeneration = 0;
+    // 取消时已经释放过；generation 检查避免旧 Sheet 的 onDisappear 清掉同一主机的新请求。
+    this.releaseConnectionAttemptIfCurrent(closingHostId, closingAttemptGeneration);
+
+    if (params !== null) {
+      if (nextHostId.length > 0) {
+        this.releaseConnectionAttempt(nextHostId);
+      }
+      setTimeout((): void => {
+        router.pushUrl({ url: 'pages/RemoteDesktop', params: params });
+      }, rdpCertificateRouteDelayMsAfterSheetClose());
       return;
     }
-    const routeHostId: string = this.rdpCertificateHostId;
-    const params: Record<string, Object> = this.rdpCertificatePendingRouteParams;
-    this.rdpCertificatePendingRouteParams = null;
-    this.releaseConnectionAttempt(routeHostId);
-    this.rdpCertificateHostId = '';
-    setTimeout((): void => {
-      router.pushUrl({ url: 'pages/RemoteDesktop', params: params });
-    }, rdpCertificateRouteDelayMsAfterSheetClose());
+    if (nextHostId.length === 0) {
+      return;
+    }
+    const nextHost: RemoteHost | undefined = this.srv.getHost(nextHostId);
+    if (!nextHost) {
+      this.releaseConnectionAttempt(nextHostId);
+      return;
+    }
+    const queuedAttemptGeneration: number = this.connectionAttemptGeneration;
+    const reopen: () => void = (): void => {
+      if (this.connectionAttemptGeneration !== queuedAttemptGeneration ||
+        this.connectionAttemptHostId !== nextHostId) {
+        return;
+      }
+      const queuedHost: RemoteHost | undefined = this.srv.getHost(nextHostId);
+      if (queuedHost) {
+        this.openRdpCertificatePreflight(queuedHost);
+      } else {
+        this.releaseConnectionAttempt(nextHostId);
+      }
+    };
+    const delayMs: number = sheetOpenDelayMsAfterDismiss(Date.now(), this.lastSheetDismissAtMs);
+    if (delayMs <= 0) {
+      reopen();
+    } else {
+      setTimeout(reopen, delayMs);
+    }
   }
 
   private doRdpCertificateRetryWrap(): void {
@@ -2191,6 +2271,9 @@ struct HostListPage {
   }
 
   private doRdpCertificateRoute(host: RemoteHost, oneTimeInfo?: RdpCertificateInfo): void {
+    if (this.rdpCertificateClosing) {
+      return;
+    }
     const params: Record<string, Object> = {};
     params['hostId'] = host.id;
     if (oneTimeInfo) {
@@ -2200,6 +2283,10 @@ struct HostListPage {
     }
     if (shouldRouteRdpCertificateAfterSheetDisappear(this.showRdpCertificatePreflight)) {
       this.rdpCertificatePendingRouteParams = params;
+      this.rdpCertificateClosingHostId = host.id;
+      this.rdpCertificateClosingAttemptGeneration = this.rdpCertificateAttemptGeneration;
+      this.rdpCertificateClosing = true;
+      this.lastSheetDismissAtMs = Date.now();
       this.showRdpCertificatePreflight = false;
       return;
     }
@@ -2477,8 +2564,9 @@ struct HostListPage {
     promptAction.showToast({ message: host.locked ? '已锁定' : '已解锁', duration: 1500 });
   }
 
-  private openRustDeskProPreflight(host: RemoteHost): void {
+  private prepareRustDeskProPreflight(host: RemoteHost): number {
     this.rustDeskProPreflightGeneration += 1;
+    const generation: number = this.rustDeskProPreflightGeneration;
     this.rustDeskProPreflightHostId = host.id;
     this.rustDeskProAuthMode = host.rustdeskDirectEnabled ? 'password' :
       (host.rustdeskAuthMode === 'request_approval' ? 'request_approval' : 'password');
@@ -2488,7 +2576,25 @@ struct HostListPage {
     this.rustDeskProRememberPassword = true;
     this.rustDeskProPreflightError = '';
     this.rustDeskProPreflightState = RustDeskProPreflightState.IDLE;
-    this.openSheetSafely((): void => { this.showRustDeskProPreflight = true; });
+    return generation;
+  }
+
+  private openRustDeskProPreflight(host: RemoteHost): void {
+    if (this.rustDeskProPreflightClosing || this.showRustDeskProPreflight) {
+      // connectToHost 已经为该主机占住了连接尝试；等旧 Sheet 的 onDisappear
+      // 完成后再把同一个请求打开，避免旧动画和新 builder 同时存在。
+      this.rustDeskProPreflightPendingHostId = host.id;
+      hilog.info(0x0001, 'HostList', 'RustDesk preflight queued until previous Sheet disappears host=' +
+        host.id);
+      return;
+    }
+    const generation: number = this.prepareRustDeskProPreflight(host);
+    this.openSheetSafely((): void => {
+      if (generation !== this.rustDeskProPreflightGeneration || this.rustDeskProPreflightClosing) {
+        return;
+      }
+      this.showRustDeskProPreflight = true;
+    });
   }
 
   private isCurrentRustDeskPreflightDirect(): boolean {
@@ -2502,10 +2608,54 @@ struct HostListPage {
     if (this.rustDeskProPreflightState === RustDeskProPreflightState.CONNECTING) {
       this.loader.disconnect();
     }
-    this.rustDeskProPreflightState = RustDeskProPreflightState.IDLE;
+    this.rustDeskProPreflightPendingRouteParams = null;
+    this.rustDeskProPreflightClosingHostId = hostId;
+    this.rustDeskProPreflightClosing = true;
+    this.lastSheetDismissAtMs = Date.now();
     this.showRustDeskProPreflight = false;
-    this.rustDeskProPreflightHostId = '';
+    // 保留 hostId 到 onDisappear，避免退出动画期间清空 builder 状态并误伤下一次请求。
     this.releaseConnectionAttempt(hostId);
+  }
+
+  private handleRustDeskProPreflightDisappear(): void {
+    this.noteSheetDismissed();
+    const closingHostId: string = this.rustDeskProPreflightClosingHostId.length > 0
+      ? this.rustDeskProPreflightClosingHostId : this.rustDeskProPreflightHostId;
+    const routeParams: Record<string, Object> | null = this.rustDeskProPreflightPendingRouteParams;
+    const nextHostId: string = this.rustDeskProPreflightPendingHostId;
+    this.rustDeskProPreflightPendingRouteParams = null;
+    this.rustDeskProPreflightPendingHostId = '';
+    this.rustDeskProPreflightClosingHostId = '';
+    this.rustDeskProPreflightClosing = false;
+    this.rustDeskProPreflightHostId = '';
+    this.rustDeskProPreflightState = RustDeskProPreflightState.IDLE;
+    this.rustDeskProPreflightError = '';
+    this.rustDeskProPassword = '';
+    this.releaseConnectionAttempt(closingHostId);
+
+    if (routeParams !== null) {
+      // 认证成功的会话必须先完成 Sheet 退出，再切换页面；连接尝试也在这里
+      // 释放，防止新页面出现时 HostList 仍被旧请求占用。
+      if (nextHostId.length > 0) {
+        this.releaseConnectionAttempt(nextHostId);
+      }
+      setTimeout((): void => {
+        router.pushUrl({ url: 'pages/RemoteDesktop', params: routeParams });
+      }, 0);
+      return;
+    }
+
+    if (nextHostId.length === 0) {
+      return;
+    }
+    const nextHost: RemoteHost | undefined = this.srv.getHost(nextHostId);
+    if (!nextHost) {
+      this.releaseConnectionAttempt(nextHostId);
+      return;
+    }
+    // openSheetSafely 会使用刚刚记录的 dismiss 时间，再等待一个完整的
+    // Sheet 防重入窗口；此时旧 native Sheet 已经收到 onDisappear。
+    this.openRustDeskProPreflight(nextHost);
   }
 
   private rustDeskProConfig(host: RemoteHost): SessionConfig {
@@ -2584,13 +2734,14 @@ struct HostListPage {
           };
           ActiveRemoteSessionRegistry.getInstance().setActive(record);
           this.srv.updateHost(saved);
-          this.showRustDeskProPreflight = false;
-          this.releaseConnectionAttempt(host.id);
-          this.rustDeskProPreflightHostId = '';
           const params: Record<string, Object> = {};
           params['hostId'] = host.id;
           params['rustdeskPreauthenticated'] = true;
-          setTimeout((): void => { router.pushUrl({ url: 'pages/RemoteDesktop', params: params }); }, 80);
+          this.rustDeskProPreflightPendingRouteParams = params;
+          this.rustDeskProPreflightClosingHostId = host.id;
+          this.rustDeskProPreflightClosing = true;
+          this.lastSheetDismissAtMs = Date.now();
+          this.showRustDeskProPreflight = false;
           return;
         }
         if (state === 4 || state === 0) {
@@ -3277,11 +3428,15 @@ struct HostListPage {
         showClose: false,
         maskColor: 'rgba(0,0,0,0.4)',
         onWillDismiss: (action: DismissSheetAction): void => {
+          if (this.rustDeskProPreflightClosing || this.rustDeskProPreflightPendingRouteParams !== null) {
+            return;
+          }
           if (this.rustDeskProPreflightState !== RustDeskProPreflightState.CONNECTING) {
             this.cancelRustDeskProPreflight();
             action.dismiss();
           }
-        }
+        },
+        onDisappear: (): void => { this.handleRustDeskProPreflightDisappear(); }
       })
 
       Column().width('100%').height('100%').hitTestBehavior(HitTestMode.None)
@@ -3434,6 +3589,9 @@ struct HostListPage {
               this.resetForm();
               const nextProto: string = this.activeFilterProto !== '' ? this.activeFilterProto : 'rdp';
               this.switchHostProtocol(nextProto, RemoteHost.getDefaultPort(nextProto));
+              this.addSheetShowsModernPicker =
+                resolveFabAddStyle(this.fabAddStyle, this.isDesktopDevice) === 'modern';
+              this.modernAddProtocol = '';
               this.openSheetSafely((): void => { this.showAddSheet = true; });
             } else if (this.curTab === 3) {
               this.kvAddTrigger++;

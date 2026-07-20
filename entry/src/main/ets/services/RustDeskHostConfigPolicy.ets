@@ -23,6 +23,28 @@ export interface RustDeskConnectionCheckInput {
 export const RUSTDESK_ID_SERVER_PORT: number = 21116;
 export const RUSTDESK_PEER_TCP_PORT: number = 21118;
 
+const RUSTDESK_SERVER_KEY_PATTERN: RegExp = /^[A-Za-z0-9+/]{43}=$/;
+
+/**
+ * Validate the same wire invariant as the Rust FFI: a configured rendezvous
+ * key is the standard Base64 encoding of one 32-byte public key. Empty is
+ * valid for ordinary OSS/default-key connections. A `1:` value is a local
+ * DataCrypto ciphertext and must never be passed to hbbs as licence_key.
+ */
+export function rustDeskServerKeyError(value: string, required: boolean = false): string {
+  const key: string = value.trim();
+  if (key.length === 0) {
+    return required ? 'Server Pro 中继缺少服务器密钥' : '';
+  }
+  if (key.startsWith('1:')) {
+    return 'RustDesk 中继服务器密钥已加密且当前未解锁，请先解锁数据';
+  }
+  if (!RUSTDESK_SERVER_KEY_PATTERN.test(key)) {
+    return 'RustDesk 中继服务器密钥格式无效，应为 32 字节 Base64 公钥';
+  }
+  return '';
+}
+
 /**
  * 连接前校验 RustDesk 的地址来源。
  * 非直连主机的 host 只是历史兼容字段，不能再作为 relay 绑定的替代品。
@@ -50,8 +72,9 @@ export function rustDeskConnectionError(input: RustDeskConnectionCheckInput): st
   if (input.relayPort <= 0 || input.relayPort > 65535) {
     return 'RustDesk 中继 ID 服务器端口无效';
   }
-  if (input.proManaged && input.relayKey.trim().length === 0) {
-    return 'Server Pro 中继缺少服务器密钥';
+  const serverKeyError: string = rustDeskServerKeyError(input.relayKey, input.proManaged);
+  if (serverKeyError !== '') {
+    return serverKeyError;
   }
   return '';
 }
