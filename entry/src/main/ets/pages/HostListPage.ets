@@ -4682,7 +4682,6 @@ struct HostListPage {
                     .backgroundColor(this.virtualMouseStyle === 'arrow' ? this.accentColor : this.pal().surface)
                     .borderRadius(10).onClick((): void => { this.saveVirtualMouseStyle('arrow'); })
                 }.width('100%').padding({ left: 16, right: 16, bottom: 12 })
-                */
                 Row() {
                   Column() {
                     Text('浮动鼠标').fontSize(14).fontColor(this.pal().text)
@@ -4701,6 +4700,7 @@ struct HostListPage {
                     .selectedColor(this.accentColor)
                     .onChange((enabled: boolean): void => { this.saveShowVirtualJoystick(enabled); })
                 }.width('100%').padding({ left: 16, right: 16, bottom: 12 })
+                */
               }
               this.cardDivider()
               Row() {
