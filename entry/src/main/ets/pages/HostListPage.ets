@@ -86,7 +86,12 @@ import { shouldPreserveManagedRustDeskRoute } from '../services/RustDeskProSyncP
 import { resolveFabAddStyle } from '../services/FabAddStylePolicy';
 import { resolveRustDeskBadges } from '../services/RustDeskCardBadgePolicy';
 import { cloudSyncDetailSpec } from '../services/CloudSyncGuidancePolicy';
-import { normalizeRemoteCursorStyle } from '../services/RemoteCursorStylePolicy';
+import {
+  normalizeRemoteCursorStyle,
+  shouldApplyCloudVirtualMouseStyle,
+  VIRTUAL_MOUSE_STYLE_RESTORE_VERSION,
+  VIRTUAL_MOUSE_STYLE_RESTORE_VERSION_KEY
+} from '../services/RemoteCursorStylePolicy';
 import {
   settingsLeafSheetClosedState,
   settingsLeafSheetDismissRequestedState,
@@ -750,6 +755,7 @@ struct HostListPage {
       await this.requestGripPermission();
     }
     await this.load();
+    this.migrateVirtualMouseStyleCloudSetting();
     this.loadAfterServiceReady();
     this.applyDesktopRdpInputMode();
     this.applyDesktopRustDeskInputMode();
@@ -760,6 +766,7 @@ struct HostListPage {
   onPageShow(): void {
     this.pageActive = true;
     CloudSyncCoordinator.getInstance().flushDeferredAutomaticPushes();
+    this.migrateVirtualMouseStyleCloudSetting();
     this.updateWindowMetrics();
     if (this.skipInitialPageShowLoad) {
       this.skipInitialPageShowLoad = false;
@@ -2976,17 +2983,37 @@ struct HostListPage {
     CloudStore.getInstance().upsertUserSetting(key, value);
   }
 
+  /**
+   * Re-enable style sync without allowing the old release's cloud value to
+   * override the local choice on first launch after the feature is restored.
+   */
+  private migrateVirtualMouseStyleCloudSetting(): void {
+    const cloud = CloudStore.getInstance();
+    if (!cloud.isReady()) { return; }
+    try {
+      const prefs = preferences.getPreferencesSync(getContext(this), { name: 'RemoteDesktopAppPrefs' });
+      const restoreVersion: number = prefs.getSync(VIRTUAL_MOUSE_STYLE_RESTORE_VERSION_KEY, 0) as number;
+      if (shouldApplyCloudVirtualMouseStyle(restoreVersion)) { return; }
+      const style: string = normalizeRemoteCursorStyle(this.virtualMouseStyle);
+      if (!cloud.upsertUserSetting('virtualMouseStyle', style)) { return; }
+      prefs.putSync(VIRTUAL_MOUSE_STYLE_RESTORE_VERSION_KEY, VIRTUAL_MOUSE_STYLE_RESTORE_VERSION);
+      prefs.flushSync();
+    } catch (_e) { /* cloud migration retries on the next page show */ }
+  }
+
   /** 初始云端恢复完成后覆盖本地的可同步偏好；账号/锁定状态不会进入此路径。 */
   private applyCloudUserSettings(): void {
     const settings = CloudStore.getInstance().loadUserSettings();
     const keys: string[] = Object.keys(settings);
     if (keys.length === 0) { return; }
+    let applyVirtualMouseStyle: boolean = false;
     try {
       const prefs = preferences.getPreferencesSync(getContext(this), { name: 'RemoteDesktopAppPrefs' });
+      const restoreVersion: number = prefs.getSync(VIRTUAL_MOUSE_STYLE_RESTORE_VERSION_KEY, 0) as number;
+      applyVirtualMouseStyle = shouldApplyCloudVirtualMouseStyle(restoreVersion);
       for (let i = 0; i < keys.length; i++) {
         const key: string = keys[i];
-        // 发布版本暂时不接受云端恢复的远端光标样式，避免旧设备的 arrow 偏好覆盖圆环默认值。
-        if (key === 'virtualMouseStyle') { continue; }
+        if (key === 'virtualMouseStyle' && !applyVirtualMouseStyle) { continue; }
         const value = settings[key];
         prefs.putSync(key, value);
         AppStorage.setOrCreate(key, value);
@@ -3004,6 +3031,11 @@ struct HostListPage {
       this.theme = syncedTheme;
       this.refreshHaloPresets();
       this.syncHaloColorForCurrentTheme();
+    }
+    const syncedVirtualMouseStyle = settings['virtualMouseStyle'];
+    if (applyVirtualMouseStyle && typeof syncedVirtualMouseStyle === 'string') {
+      this.virtualMouseStyle = normalizeRemoteCursorStyle(syncedVirtualMouseStyle);
+      AppStorage.setOrCreate('virtualMouseStyle', this.virtualMouseStyle);
     }
   }
 

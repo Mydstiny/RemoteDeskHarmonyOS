@@ -2,7 +2,9 @@ import { describe, it, expect } from '@ohos/hypium';
 import {
   normalizeRemoteCursorStyle,
   shouldRenderArrowCursor,
-  shouldRenderCircleCursor
+  shouldRenderCircleCursor,
+  shouldApplyCloudVirtualMouseStyle,
+  VIRTUAL_MOUSE_STYLE_RESTORE_VERSION
 } from '../../../main/ets/services/RemoteCursorStylePolicy';
 
 export default function remoteCursorStylePolicyTest(): void {
@@ -29,6 +31,13 @@ export default function remoteCursorStylePolicyTest(): void {
       expect(shouldRenderArrowCursor('arrow', false, true, true)).assertFalse();
       expect(shouldRenderArrowCursor('arrow', true, false, true)).assertFalse();
       expect(shouldRenderCircleCursor('circle', true, true, false)).assertFalse();
+    });
+
+    it('gates_cloud_style_until_local_restore_is_complete', 0, (): void => {
+      expect(shouldApplyCloudVirtualMouseStyle(0)).assertFalse();
+      expect(shouldApplyCloudVirtualMouseStyle(VIRTUAL_MOUSE_STYLE_RESTORE_VERSION - 1)).assertFalse();
+      expect(shouldApplyCloudVirtualMouseStyle(VIRTUAL_MOUSE_STYLE_RESTORE_VERSION)).assertTrue();
+      expect(shouldApplyCloudVirtualMouseStyle(NaN)).assertFalse();
     });
   });
 }

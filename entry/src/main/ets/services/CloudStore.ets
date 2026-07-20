@@ -41,6 +41,10 @@ import {
   CloudUserSettingValue
 } from './CloudSyncSettingsPolicy';
 import {
+  VIRTUAL_MOUSE_STYLE_RESTORE_VERSION_KEY,
+  shouldApplyCloudVirtualMouseStyle
+} from './RemoteCursorStylePolicy';
+import {
   cloudTableColumns,
   encodeUserSettingsPayload,
   decodeUserSettingsPayload,
@@ -477,11 +481,15 @@ export class CloudStore implements CryptoCloudStore {
     const settings: Record<string, CloudUserSettingValue> = this.loadUserSettings();
     const keys: string[] = Object.keys(settings);
     if (keys.length === 0) { return; }
+    let applyVirtualMouseStyle: boolean = false;
     try {
       const prefs = preferences.getPreferencesSync(this.appContext, { name: 'RemoteDesktopAppPrefs' });
+      const restoreVersion: number = prefs.getSync(VIRTUAL_MOUSE_STYLE_RESTORE_VERSION_KEY, 0) as number;
+      applyVirtualMouseStyle = shouldApplyCloudVirtualMouseStyle(restoreVersion);
       for (let i = 0; i < keys.length; i++) {
         const key: string = keys[i];
         if (!cloudUserSettingIsSyncable(key)) { continue; }
+        if (key === 'virtualMouseStyle' && !applyVirtualMouseStyle) { continue; }
         prefs.putSync(key, settings[key]);
         AppStorage.setOrCreate(key, settings[key]);
       }

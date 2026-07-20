@@ -1,5 +1,8 @@
 export type RemoteCursorStyle = 'circle' | 'arrow';
 
+export const VIRTUAL_MOUSE_STYLE_RESTORE_VERSION: number = 1;
+export const VIRTUAL_MOUSE_STYLE_RESTORE_VERSION_KEY: string = 'virtualMouseStyleRestoreVersion';
+
 export function remoteCursorSnapshotChanged(previousX: number, previousY: number,
   previousReady: boolean, nextX: number, nextY: number, nextReady: boolean): boolean {
   return previousX !== nextX || previousY !== nextY || previousReady !== nextReady;
@@ -7,6 +10,10 @@ export function remoteCursorSnapshotChanged(previousX: number, previousY: number
 
 export function normalizeRemoteCursorStyle(value: string | undefined): RemoteCursorStyle {
   return value === 'arrow' ? 'arrow' : 'circle';
+}
+
+export function shouldApplyCloudVirtualMouseStyle(localVersion: number): boolean {
+  return Number.isFinite(localVersion) && localVersion >= VIRTUAL_MOUSE_STYLE_RESTORE_VERSION;
 }
 
 export function shouldRenderVirtualTouchpadCursor(connected: boolean, touchpadMode: boolean,
