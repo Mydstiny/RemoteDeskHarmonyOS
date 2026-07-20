@@ -202,6 +202,11 @@ const ENV_COLOR_MODE_LIGHT = 0;
 const ENV_COLOR_MODE_DARK = 1;
 const RDP_DRIVE_REDIRECTION_ENABLED = true;
 const SETTINGS_ACCORDION_ANIMATION_MS = 280;
+// The appearance card is taller than the original 620vp cap after the
+// touchpad cursor controls are restored. Keep a stable expansion floor so an
+// animation's intermediate layout height cannot collapse the card into a
+// self-reinforcing narrow strip.
+const APPEARANCE_EXPANDED_MIN_HEIGHT = 900;
 const POPUP_SHEET_RDP_CERTIFICATES = 4;
 const POPUP_SHEET_RUSTDESK_AUTH_TRUST = 5;
 
@@ -1145,9 +1150,10 @@ struct HostListPage {
   private appearanceExpandedMaxHeight(): number {
     const measured: number = Number.isFinite(this.appearanceContentHeight) ?
       this.appearanceContentHeight : 0;
-    // Give the first expanded layout enough room to report its natural height;
-    // subsequent renders use the measured value plus a small border margin.
-    return measured > 0 ? Math.ceil(measured + 8) : 900;
+    // constraintSize() changes the measured area while the accordion animates.
+    // Never let those transient values become the next expansion's cap.
+    return Math.max(APPEARANCE_EXPANDED_MIN_HEIGHT,
+      measured > 0 ? Math.ceil(measured + 8) : 0);
   }
 
   private async openFeedbackEmail(): Promise<void> {
@@ -4858,8 +4864,13 @@ struct HostListPage {
           }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 20 })
           .onAreaChange((_old: Area, next: Area): void => {
             const nextHeight: number = next.height as number;
-            if (Number.isFinite(nextHeight) && nextHeight > 0 &&
-              Math.abs(nextHeight - this.appearanceContentHeight) >= 1) {
+            // Ignore the collapse animation and its intermediate frames. A
+            // max-height animation reports those clipped heights here; using
+            // one as the cached natural height is what previously locked this
+            // card at a few dozen vp after the first expansion.
+            if (this.settingsSectionExpanded(SETTINGS_SECTION_APPEARANCE) &&
+              Number.isFinite(nextHeight) && nextHeight >= APPEARANCE_EXPANDED_MIN_HEIGHT &&
+              nextHeight > this.appearanceContentHeight) {
               this.appearanceContentHeight = nextHeight;
             }
           })
