@@ -18,8 +18,18 @@ import remoteImeSessionPolicyTest from './RemoteImeSessionPolicy.test';
 import remoteImeCommandQueueTest from './RemoteImeCommandQueue.test';
 import remoteImmersivePolicyTest from './RemoteImmersivePolicy.test';
 import rdpCertificateProbeLifecyclePolicyTest from './RdpCertificateProbeLifecyclePolicy.test';
+import rustDeskProConnectionPreflightPolicyTest from './RustDeskProConnectionPreflightPolicy.test';
 import hostWorkspacePolicyTest from './HostWorkspacePolicy.test';
 import guideContentRegistryTest from './GuideContentRegistry.test';
+import sshKeyImportServiceTest from './SshKeyImportService.test';
+import rustDeskLanDiscoveryServiceTest from './RustDeskLanDiscoveryService.test';
+import hostAddModePolicyTest from './HostAddModePolicy.test';
+import legacyRustDeskAccountCloudAdapterTest from './LegacyRustDeskAccountCloudAdapter.test';
+import hostAddDraftTest from './HostAddDraft.test';
+import rustDeskCardBadgePolicyTest from './RustDeskCardBadgePolicy.test';
+import remotePhysicalKeyboardPolicyTest from './RemotePhysicalKeyboardPolicy.test';
+import touchpadPointerCurvePolicyTest from './TouchpadPointerCurvePolicy.test';
+import remoteSurfaceTransformPolicyTest from './RemoteSurfaceTransformPolicy.test';
 
 export default function testsuite() {
   abilityTest();
@@ -42,6 +52,16 @@ export default function testsuite() {
   remoteImeCommandQueueTest();
   remoteImmersivePolicyTest();
   rdpCertificateProbeLifecyclePolicyTest();
+  rustDeskProConnectionPreflightPolicyTest();
   hostWorkspacePolicyTest();
   guideContentRegistryTest();
+  sshKeyImportServiceTest();
+  rustDeskLanDiscoveryServiceTest();
+  hostAddModePolicyTest();
+  legacyRustDeskAccountCloudAdapterTest();
+  hostAddDraftTest();
+  rustDeskCardBadgePolicyTest();
+  remotePhysicalKeyboardPolicyTest();
+  touchpadPointerCurvePolicyTest();
+  remoteSurfaceTransformPolicyTest();
 }

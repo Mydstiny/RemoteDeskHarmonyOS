@@ -24,6 +24,7 @@ pub mod connector;
 pub mod crypto;
 pub mod crypto_channel;
 mod control_inbox;
+mod cursor_state;
 mod net;
 #[cfg(feature = "opus-audio")]
 pub mod opus_ffi;
@@ -34,8 +35,24 @@ use protocol::message_proto::{
     AudioFormat, AudioFrame, EncodedVideoFrames, VideoFrame, VideoFrame_oneof_union,
 };
 use control_inbox::ControlInbox;
+use cursor_state::CursorStreamUpdate;
 
 static LAST_ERROR: Mutex<String> = Mutex::new(String::new());
+// 每次连接尝试都有单调递增 epoch；取消时递增 epoch，使等待批准的旧线程可退出，
+// 同时避免新连接把旧线程的取消状态重置掉。
+static CONNECT_EPOCH: AtomicU64 = AtomicU64::new(0);
+
+pub(crate) fn begin_connect_epoch() -> u64 {
+    CONNECT_EPOCH.fetch_add(1, Ordering::SeqCst).wrapping_add(1)
+}
+
+pub(crate) fn current_connect_epoch() -> u64 {
+    CONNECT_EPOCH.load(Ordering::SeqCst)
+}
+
+pub(crate) fn connect_cancelled(epoch: u64) -> bool {
+    CONNECT_EPOCH.load(Ordering::SeqCst) != epoch
+}
 
 fn set_last_error(message: impl Into<String>) {
     if let Ok(mut err) = LAST_ERROR.lock() {
@@ -130,7 +147,8 @@ pub struct RustDeskConfig {
     pub profile: RustDeskProfile, // 性能 profile (Stable/Balanced/Performance/Custom)
     pub fps: c_int,               // 期望 FPS (0=from profile)
     /// 直连模式: false=走 rendezvous 服务器 (默认), true=TCP 直连 peer (跳过 rendezvous)
-    pub direct_connection: bool, // (末尾追加，填充 trailing padding，struct 大小不变 72 bytes)
+    pub direct_connection: bool,
+    pub auth_mode: c_int, // 0=设备密码, 1=请求被控端点击批准
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -160,7 +178,10 @@ fn resolve_stream_params_for_config(config: &RustDeskConfig) -> ResolvedStreamPa
         profile_params.fps
     };
 
-    if matches!(preferred_codec, 1 | 2 | 3) && config.fps <= 0 {
+    // VP8/AV1 retain the conservative default. VP9 is deliberately requested
+    // at the profile's full rate; local device capability determines achieved
+    // throughput instead of an artificial client-side 45 FPS ceiling.
+    if matches!(preferred_codec, 1 | 3) && config.fps <= 0 {
         effective_fps = effective_fps.min(45);
     }
     if matches!(config.profile, RustDeskProfile::Stable) && config.fps <= 0 {
@@ -212,6 +233,22 @@ pub struct FfiAudioData {
     pub timestamp: u64,
 }
 
+/// Remote cursor update. Pixel bytes are valid only for the callback duration.
+#[repr(C)]
+pub struct FfiCursorUpdate {
+    pub kind: c_int, // 0=shape, 1=position, 2=visibility
+    pub shape_id: u64,
+    pub x: c_int,
+    pub y: c_int,
+    pub width: c_int,
+    pub height: c_int,
+    pub hot_x: c_int,
+    pub hot_y: c_int,
+    pub rgba: *const u8,
+    pub rgba_len: usize,
+    pub visible: bool,
+}
+
 /// 连接状态
 #[repr(C)]
 pub enum FfiConnectionState {
@@ -231,6 +268,9 @@ pub type FrameCallback = extern "C" fn(frame: *const FfiVideoFrame, user_data: *
 
 /// 音频数据回调
 pub type AudioCallback = extern "C" fn(audio: *const FfiAudioData, user_data: *mut c_void);
+
+/// Remote cursor callback.
+pub type CursorCallback = extern "C" fn(cursor: *const FfiCursorUpdate, user_data: *mut c_void);
 
 /// 断开连接回调
 pub type DisconnectCallback =
@@ -284,6 +324,7 @@ struct RustDeskClient {
     port: u16,
     server_key: String,
     password: String,
+    request_approval: bool,
     controls: Arc<ControlInbox>,
     shutdown_stream: Option<TcpStream>,
     stream_handle: Option<std::thread::JoinHandle<io::Result<()>>>,
@@ -605,6 +646,55 @@ fn notify_disconnect(
     on_disconnect(state, c_message.as_ptr(), user_data);
 }
 
+fn dispatch_cursor_update(
+    update: CursorStreamUpdate,
+    on_cursor: Option<CursorCallback>,
+    user_data: *mut c_void,
+) {
+    let Some(on_cursor) = on_cursor else {
+        return;
+    };
+    let mut ffi = FfiCursorUpdate {
+        kind: 0,
+        shape_id: 0,
+        x: 0,
+        y: 0,
+        width: 0,
+        height: 0,
+        hot_x: 0,
+        hot_y: 0,
+        rgba: std::ptr::null(),
+        rgba_len: 0,
+        visible: false,
+    };
+    match update {
+        CursorStreamUpdate::Shape(shape) => {
+            ffi.kind = 0;
+            ffi.shape_id = shape.id;
+            ffi.width = shape.width;
+            ffi.height = shape.height;
+            ffi.hot_x = shape.hot_x;
+            ffi.hot_y = shape.hot_y;
+            ffi.rgba = shape.rgba.as_ptr();
+            ffi.rgba_len = shape.rgba.len();
+            ffi.visible = true;
+            on_cursor(&ffi, user_data);
+        }
+        CursorStreamUpdate::Position { x, y } => {
+            ffi.kind = 1;
+            ffi.x = x;
+            ffi.y = y;
+            ffi.visible = true;
+            on_cursor(&ffi, user_data);
+        }
+        CursorStreamUpdate::Visibility(visible) => {
+            ffi.kind = 2;
+            ffi.visible = visible;
+            on_cursor(&ffi, user_data);
+        }
+    }
+}
+
 // ============================================================
 // FFI 导出函数
 // ============================================================
@@ -619,10 +709,12 @@ pub extern "C" fn rustdesk_connect(
     cfg: *const RustDeskConfig,
     on_frame: Option<FrameCallback>,
     on_audio: Option<AudioCallback>,
+    on_cursor: Option<CursorCallback>,
     on_disconnect: Option<DisconnectCallback>,
     user_data: *mut c_void,
 ) -> *mut c_void {
     clear_last_error();
+    let _connect_epoch = begin_connect_epoch();
     if cfg.is_null() {
         set_last_error("config pointer is null");
         return std::ptr::null_mut();
@@ -632,12 +724,24 @@ pub extern "C" fn rustdesk_connect(
     let host = ffi_string(config.host);
     let port = if config.port > 0 {
         config.port as u16
+    } else if config.direct_connection {
+        // Direct mode targets the peer listener, not the ID/rendezvous server.
+        21118u16
     } else {
         21116u16
     };
-    let peer_id = ffi_string(config.username);
+    // Direct IP access follows the RustDesk client path: the connected peer
+    // address is the login username. The stored remote ID is still retained
+    // by the host model for display/discovery, but must not be sent as the
+    // direct login identity.
+    let peer_id = if config.direct_connection {
+        host.clone()
+    } else {
+        ffi_string(config.username)
+    };
     let server_key = ffi_string(config.key);
     let password = ffi_string(config.password);
+    let request_approval = config.auth_mode == 1 && !config.direct_connection;
     let privacy_mode = config.privacy_mode;
     let audio_enabled = config.audio_enabled;
 
@@ -669,6 +773,23 @@ pub extern "C" fn rustdesk_connect(
         return std::ptr::null_mut();
     }
 
+    // Keep the protocol input invariant identical on every ABI.  The hbbs
+    // PunchHoleRequest licence_key is the rendezvous public key, not an
+    // encrypted local-storage value or an arbitrary Pro credential token.
+    // Direct IP sessions do not use rendezvous and therefore do not need this
+    // field at all.
+    if !config.direct_connection
+        && crypto::normalized_server_public_key(&server_key).is_none()
+    {
+        let message = if server_key.trim_start().starts_with("1:") {
+            "rendezvous server public key is encrypted; unlock local data before connecting"
+        } else {
+            "invalid rendezvous server public key; expected Base64-encoded 32-byte key"
+        };
+        set_last_error(message);
+        return std::ptr::null_mut();
+    }
+
     // 运行完整连接管线
     let mut c = connector::RustDeskConnector::new();
     let result = if config.direct_connection {
@@ -680,6 +801,7 @@ pub extern "C" fn rustdesk_connect(
         c.connect_direct(
             &host,
             port,
+            &peer_id,
             &password,
             preferred_codec,
             image_quality,
@@ -699,6 +821,7 @@ pub extern "C" fn rustdesk_connect(
             privacy_mode,
             audio_enabled,
             effective_fps,
+            request_approval,
         )
     };
 
@@ -760,6 +883,9 @@ pub extern "C" fn rustdesk_connect(
                             clipboard.extend_from_slice(&content[..content.len().min(65536)]);
                         }
                     },
+                    |cursor| {
+                        dispatch_cursor_update(cursor, on_cursor, callback_user_data);
+                    },
                 );
 
                 // Stop audio worker
@@ -797,6 +923,7 @@ pub extern "C" fn rustdesk_connect(
                 port,
                 server_key,
                 password,
+                request_approval,
                 controls,
                 shutdown_stream,
                 stream_handle: Some(stream_handle),
@@ -815,6 +942,12 @@ pub extern "C" fn rustdesk_connect(
             std::ptr::null_mut()
         }
     }
+}
+
+/// 取消尚未返回会话句柄的连接尝试（尤其是等待被控端批准的连接）。
+#[no_mangle]
+pub extern "C" fn rustdesk_cancel_pending_connect() {
+    CONNECT_EPOCH.fetch_add(1, Ordering::SeqCst);
 }
 
 /// 复制最近一次连接错误到调用方缓冲区，返回完整错误长度。
@@ -977,6 +1110,7 @@ pub extern "C" fn rustdesk_send_file(
     let server_key = ctx.server_key.clone();
     let peer_id = ctx.peer_id.clone();
     let password = ctx.password.clone();
+    let request_approval = ctx.request_approval;
     let remote_path_owned = path.clone();
     let remote_dir = split_remote_file_path(&path).0.to_string();
     let transfer_status = Arc::clone(&ctx.transfer_status);
@@ -985,7 +1119,8 @@ pub extern "C" fn rustdesk_send_file(
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let mut connector = connector::RustDeskConnector::new();
             connector
-                .connect_file_transfer(&host, port, &server_key, &peer_id, &password, &remote_dir)
+                .connect_file_transfer(&host, port, &server_key, &peer_id, &password, &remote_dir,
+                    request_approval)
                 .and_then(|_| {
                     connector.upload_file_once(
                         &remote_path_owned,
@@ -1085,6 +1220,7 @@ mod tests {
             std::ptr::null(),
             Some(dummy_frame),
             Some(dummy_audio),
+            None,
             Some(dummy_disconnect),
             std::ptr::null_mut(),
         );
@@ -1114,6 +1250,7 @@ mod tests {
             profile: RustDeskProfile::Balanced,
             fps: 0,
             direct_connection: false,
+            auth_mode: 0,
         };
 
         extern "C" fn dummy_frame(_frame: *const FfiVideoFrame, _data: *mut c_void) {}
@@ -1130,10 +1267,55 @@ mod tests {
             &cfg,
             Some(dummy_frame),
             Some(dummy_audio),
+            None,
             Some(dummy_disconnect),
             std::ptr::null_mut(),
         );
         assert!(handle.is_null(), "无效地址应返回 null");
+    }
+
+    #[test]
+    fn test_rustdesk_connect_rejects_encrypted_server_key_before_network() {
+        let host = CString::new("127.0.0.1").unwrap();
+        let key = CString::new("1:encrypted-value").unwrap();
+        let username = CString::new("test").unwrap();
+        let password = CString::new("").unwrap();
+        let cfg = RustDeskConfig {
+            host: host.as_ptr(),
+            port: 21116,
+            key: key.as_ptr(),
+            username: username.as_ptr(),
+            password: password.as_ptr(),
+            width: 1920,
+            height: 1080,
+            codec: 4,
+            image_quality: 1,
+            privacy_mode: false,
+            audio_enabled: true,
+            profile: RustDeskProfile::Balanced,
+            fps: 0,
+            direct_connection: false,
+            auth_mode: 0,
+        };
+
+        extern "C" fn dummy_frame(_frame: *const FfiVideoFrame, _data: *mut c_void) {}
+        extern "C" fn dummy_audio(_audio: *const FfiAudioData, _data: *mut c_void) {}
+        extern "C" fn dummy_disconnect(
+            _state: FfiConnectionState,
+            _msg: *const c_char,
+            _data: *mut c_void,
+        ) {
+        }
+
+        let handle = rustdesk_connect(
+            &cfg,
+            Some(dummy_frame),
+            Some(dummy_audio),
+            None,
+            Some(dummy_disconnect),
+            std::ptr::null_mut(),
+        );
+        assert!(handle.is_null(), "encrypted key must not reach rendezvous");
     }
 
     /// 测试 disconnect(null) 不崩溃
@@ -1168,6 +1350,7 @@ mod tests {
             profile: RustDeskProfile::Balanced,
             fps: 0,
             direct_connection: false,
+            auth_mode: 0,
         };
 
         let params = resolve_stream_params_for_config(&cfg);
@@ -1177,5 +1360,28 @@ mod tests {
         assert_eq!(params.effective_fps, 60);
         assert_eq!(params.req_width, 742);
         assert_eq!(params.req_height, 1600);
+    }
+
+    #[test]
+    fn vp9_uses_profile_60fps_without_an_implicit_cap() {
+        let cfg = RustDeskConfig {
+            host: std::ptr::null(),
+            port: 21116,
+            key: std::ptr::null(),
+            username: std::ptr::null(),
+            password: std::ptr::null(),
+            width: 1600,
+            height: 1040,
+            codec: 2,
+            image_quality: 1,
+            privacy_mode: false,
+            audio_enabled: true,
+            profile: RustDeskProfile::Balanced,
+            fps: 0,
+            direct_connection: false,
+            auth_mode: 0,
+        };
+
+        assert_eq!(resolve_stream_params_for_config(&cfg).effective_fps, 60);
     }
 }

@@ -30,11 +30,22 @@ import localBackupPolicyTest from './LocalBackupPolicy.test';
 import cloudStoreMutationPolicyTest from './CloudStoreMutationPolicy.test';
 import remoteImmersivePolicyTest from './RemoteImmersivePolicy.test';
 import rdpCertificateProbeLifecyclePolicyTest from './RdpCertificateProbeLifecyclePolicy.test';
+import rustDeskProConnectionPreflightPolicyTest from './RustDeskProConnectionPreflightPolicy.test';
 import cloudSyncGuidancePolicyTest from './CloudSyncGuidancePolicy.test';
 import settingsLeafSheetLifecyclePolicyTest from './SettingsLeafSheetLifecyclePolicy.test';
 import feedbackCommunityPolicyTest from './FeedbackCommunityPolicy.test';
 import guideContentRegistryTest from './GuideContentRegistry.test';
 import releaseNotesRegistryTest from './ReleaseNotesRegistry.test';
+import sshKeyImportServiceTest from './SshKeyImportService.test';
+import totpImportServiceTest from './TotpImportService.test';
+import rustDeskLanDiscoveryServiceTest from './RustDeskLanDiscoveryService.test';
+import rustDeskRelaySyncPolicyTest from './RustDeskRelaySyncPolicy.test';
+import hostSyncMergePolicyTest from './HostSyncMergePolicy.test';
+import sshTerminalOrientationPolicyTest from './SshTerminalOrientationPolicy.test';
+import remoteCursorStylePolicyTest from './RemoteCursorStylePolicy.test';
+import touchpadPointerCurvePolicyTest from './TouchpadPointerCurvePolicy.test';
+import connectionAttemptPolicyTest from './ConnectionAttemptPolicy.test';
+import rustDeskRelayImportServiceTest from './RustDeskRelayImportService.test';
 
 export default function testsuite() {
   localUnitTest();
@@ -69,9 +80,20 @@ export default function testsuite() {
   cloudStoreMutationPolicyTest();
   remoteImmersivePolicyTest();
   rdpCertificateProbeLifecyclePolicyTest();
+  rustDeskProConnectionPreflightPolicyTest();
   cloudSyncGuidancePolicyTest();
   settingsLeafSheetLifecyclePolicyTest();
   feedbackCommunityPolicyTest();
   guideContentRegistryTest();
   releaseNotesRegistryTest();
+  sshKeyImportServiceTest();
+  totpImportServiceTest();
+  rustDeskLanDiscoveryServiceTest();
+  rustDeskRelaySyncPolicyTest();
+  hostSyncMergePolicyTest();
+  sshTerminalOrientationPolicyTest();
+  remoteCursorStylePolicyTest();
+  touchpadPointerCurvePolicyTest();
+  connectionAttemptPolicyTest();
+  rustDeskRelayImportServiceTest();
 }

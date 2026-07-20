@@ -14,6 +14,7 @@ import { ExtensionLoader } from '../services/ExtensionLoader';
 import { GeneratedSshKeyPair, SshPrivateKeyInfo } from '../types/rdpnapi';
 import { TotpEntry, TotpEntryJSON } from '../model/TotpEntry';
 import { KeyVaultService } from '../services/KeyVaultService';
+import { SshKeyImportService, SshKeyImportResult } from '../services/SshKeyImportService';
 import { TotpEngine } from '../services/TotpEngine';
 import { SshKeyCard } from '../components/SshKeyCard';
 import { SshKeyManagerSheet, SshKeyPassphraseSubSheet } from '../components/SshKeyManagerSheet';
@@ -26,6 +27,9 @@ import { QrCodeScanner } from '../components/QrCodeScanner';
 import { showLockGate, lockGateErrorMessage } from '../components/LockGate';
 import { Palette, buildDark, buildLight, AppTheme } from '../common/Theme';
 import { SshKeyDataSource, TotpEntryDataSource } from '../datasources/DataSources';
+import { resolveFabAddStyle } from '../services/FabAddStylePolicy';
+import { ResourceFabPicker } from '../components/resourceadd/ResourceFabPicker';
+import { ModernKeyVaultAddFlow } from '../components/resourceadd/modern/ModernKeyVaultAddFlow';
 
 @Component
 export struct KeyVaultPage {
@@ -38,18 +42,22 @@ export struct KeyVaultPage {
   @StorageProp('currentBreakpoint') breakpoint: string = 'sm';
   @StorageProp('isDesktopDevice') isDesktopDevice: boolean = false;
   @StorageProp('topRectHeight') topRectHeight: number = 0;
+  @StorageProp('hostAddMode') fabAddStyle: string = 'modern';
   @State showAddTab: number = 0;
   @State totpUnlocked: boolean = false;
   @State selectionMode: boolean = false;
   // 统一 Sheet: 单 bindSheet + mode 切换内容 (KeyVaultPage 非 @Entry, 限 1 个 bindSheet)
   @State showSheet: boolean = false;
-  @State sheetMode: number = 0; // 0=addForm, 1=addChoice, 2=manage, 3=install, 4=passphrase
+  @State sheetMode: number = 0; // 0=classic form, 1/5=legacy choice, 2-4=manage, 6=isolated modern add flow
+  @State modernResourceKind: string = 'ssh_key';
   @State sheetKey: SshKey = new SshKey();
   @State selectedIds: Set<string> = new Set();
   @State editingSshKey: SshKey = new SshKey();
   @State editingTotpEntry: TotpEntry = new TotpEntry();
   @State sshKeys: SshKey[] = [];
   @State totpEntries: TotpEntry[] = [];
+  @State keyViewRevision: number = 0;
+  @State totpViewRevision: number = 0;
   private sshKeyDataSource: SshKeyDataSource = new SshKeyDataSource();
   private totpEntryDataSource: TotpEntryDataSource = new TotpEntryDataSource();
   @State showQrScan: boolean = false;
@@ -58,15 +66,18 @@ export struct KeyVaultPage {
   @State formKeyType: number = SshKeyType.ED25519;
   @State formComment: string = '';
   @State formPasteKey: string = '';
+  @State formFileName: string = '';
   @State formMode: number = 0; // 0=paste, 1=generate
   // TOTP 表单
   @State formIssuer: string = '';
   @State formAccount: string = '';
   @State formSecret: string = '';
+  @State formOtpAuthUri: string = '';
   @State formDigits: number = 6;
   @State formPeriod: number = 30;
   private kvs: KeyVaultService = KeyVaultService.getInstance();
   private loader: ExtensionLoader = ExtensionLoader.getInstance();
+  private sshKeyImporter: SshKeyImportService = new SshKeyImportService();
   private dataUnsubscribe: (() => void) | null = null;
   private pageActive: boolean = false;
 
@@ -117,15 +128,18 @@ export struct KeyVaultPage {
 
   onAddTrigger(): void {
     if (this.addTrigger > 0) {
+      const modern: boolean = resolveFabAddStyle(this.fabAddStyle, this.isDesktopDevice) === 'modern';
       if (this.keyVaultInnerTab === 1) {
-        // TOTP: 直接打开添加表单
         this.resetTotpForm();
         this.showAddTab = 1;
-        this.sheetMode = 0;
+        this.modernResourceKind = 'totp';
+        this.sheetMode = modern ? 6 : 0;
         this.showSheet = true;
       } else {
-        // SSH: 三选一
-        this.sheetMode = 1;
+        this.resetSshForm();
+        this.showAddTab = 0;
+        this.modernResourceKind = 'ssh_key';
+        this.sheetMode = modern ? 6 : 0;
         this.showSheet = true;
       }
     }
@@ -170,14 +184,7 @@ export struct KeyVaultPage {
   // SshKeyManagerSheet 回调: 删除
   private onKeyManagerDelete(keyId: string): void {
     this.showSheet = false;
-    const idx: number = this.sshKeys.findIndex(k => k.id === keyId);
-    if (idx >= 0) {
-      this.kvs.removeSshKey(keyId);
-      this.sshKeys = this.kvs.getAllSshKeys();
-      animateTo({ duration: 350, curve: curves.interpolatingSpring(0, 0.8, 300, 20) }, () => {
-        this.sshKeyDataSource.removeItem(idx);
-      });
-    }
+    if (this.kvs.removeSshKey(keyId)) { this.load(); }
   }
 
   // SshKeyManagerSheet 回调: 安装到主机
@@ -204,12 +211,7 @@ export struct KeyVaultPage {
     }).then((result: Object): void => {
       const r: Record<string, number> = result as Record<string, number>;
       if (r['index'] === 1) {
-        const idx: number = this.sshKeys.findIndex(k => k.id === key.id);
-        if (idx >= 0) {
-          this.kvs.removeSshKey(key.id);
-          this.sshKeys = this.kvs.getAllSshKeys();
-          animateTo({ duration: 350, curve: curves.interpolatingSpring(0, 0.8, 300, 20) }, () => { this.sshKeyDataSource.removeItem(idx); });
-        }
+        if (this.kvs.removeSshKey(key.id)) { this.load(); }
       }
     });
   }
@@ -305,14 +307,7 @@ export struct KeyVaultPage {
       }).then((result: Object): void => {
         const r: Record<string, number> = result as Record<string, number>;
         if (r['index'] === 1) {
-          const idx: number = this.sshKeys.findIndex(k => k.id === key.id);
-          if (idx >= 0) {
-            this.kvs.removeSshKey(key.id);
-            this.sshKeys = this.kvs.getAllSshKeys();
-            animateTo({ duration: 350, curve: curves.interpolatingSpring(0, 0.8, 300, 20) }, () => {
-              this.sshKeyDataSource.removeItem(idx);
-            });
-          }
+          if (this.kvs.removeSshKey(key.id)) { this.load(); }
         }
       });
     })
@@ -350,14 +345,7 @@ export struct KeyVaultPage {
       }).then((result: Object): void => {
         const r: Record<string, number> = result as Record<string, number>;
         if (r['index'] === 1) {
-          const idx: number = this.totpEntries.findIndex(e => e.id === entry.id);
-          if (idx >= 0) {
-            this.kvs.removeTotpEntry(entry.id);
-            this.totpEntries = this.kvs.getAllTotpEntries();
-            animateTo({ duration: 350, curve: curves.interpolatingSpring(0, 0.8, 300, 20) }, () => {
-              this.totpEntryDataSource.removeItem(idx);
-            });
-          }
+          if (this.kvs.removeTotpEntry(entry.id)) { this.load(); }
         }
       });
     })
@@ -368,6 +356,8 @@ export struct KeyVaultPage {
     this.totpEntries = this.kvs.getAllTotpEntries();
     this.sshKeyDataSource.replaceAll(this.sshKeys);
     this.totpEntryDataSource.replaceAll(this.totpEntries);
+    this.keyViewRevision += 1;
+    this.totpViewRevision += 1;
   }
 
   // ==================== 批量选择 ====================
@@ -426,31 +416,18 @@ export struct KeyVaultPage {
     }).then((result: Object): void => {
       const r: Record<string, number> = result as Record<string, number>;
       if (r['index'] === 1) {
-        const idxList: number[] = [];
+        const ids: string[] = [];
         this.selectedIds.forEach((id: string) => {
-          if (this.keyVaultInnerTab === 0) {
-            const idx: number = this.sshKeys.findIndex(k => k.id === id);
-            if (idx >= 0) { idxList.push(idx); }
-            this.kvs.removeSshKey(id);
-          } else {
-            const idx: number = this.totpEntries.findIndex(e => e.id === id);
-            if (idx >= 0) { idxList.push(idx); }
-            this.kvs.removeTotpEntry(id);
-          }
+          ids.push(id);
         });
-        idxList.sort((a: number, b: number) => b - a);
-        this.sshKeys = this.kvs.getAllSshKeys();
-        this.totpEntries = this.kvs.getAllTotpEntries();
-        animateTo({ duration: 350, curve: curves.interpolatingSpring(0, 0.8, 300, 20) }, () => {
-          this.selectionMode = false; this.selectedIds = new Set();
-          for (let i = 0; i < idxList.length; i++) {
-            if (this.keyVaultInnerTab === 0) {
-              this.sshKeyDataSource.removeItem(idxList[i]);
-            } else {
-              this.totpEntryDataSource.removeItem(idxList[i]);
-            }
-          }
-        });
+        if (this.keyVaultInnerTab === 0) {
+          this.kvs.removeSshKeys(ids);
+        } else {
+          this.kvs.removeTotpEntries(ids);
+        }
+        this.selectionMode = false;
+        this.selectedIds = new Set<string>();
+        this.load();
       }
     });
   }
@@ -470,31 +447,18 @@ export struct KeyVaultPage {
           }).then((result: Object): void => {
             const r: Record<string, number> = result as Record<string, number>;
             if (r['index'] === 1) {
-              const idxList: number[] = [];
+              const ids: string[] = [];
               this.selectedIds.forEach((id: string) => {
-                if (this.keyVaultInnerTab === 0) {
-                  const idx: number = this.sshKeys.findIndex(k => k.id === id);
-                  if (idx >= 0) { idxList.push(idx); }
-                  this.kvs.removeSshKey(id);
-                } else {
-                  const idx: number = this.totpEntries.findIndex(e => e.id === id);
-                  if (idx >= 0) { idxList.push(idx); }
-                  this.kvs.removeTotpEntry(id);
-                }
+                ids.push(id);
               });
-              idxList.sort((a: number, b: number) => b - a);
-              this.sshKeys = this.kvs.getAllSshKeys();
-              this.totpEntries = this.kvs.getAllTotpEntries();
-              animateTo({ duration: 350, curve: curves.interpolatingSpring(0, 0.8, 300, 20) }, () => {
-                this.selectionMode = false; this.selectedIds = new Set();
-                for (let i = 0; i < idxList.length; i++) {
-                  if (this.keyVaultInnerTab === 0) {
-                    this.sshKeyDataSource.removeItem(idxList[i]);
-                  } else {
-                    this.totpEntryDataSource.removeItem(idxList[i]);
-                  }
-                }
-              });
+              if (this.keyVaultInnerTab === 0) {
+                this.kvs.removeSshKeys(ids);
+              } else {
+                this.kvs.removeTotpEntries(ids);
+              }
+              this.selectionMode = false;
+              this.selectedIds = new Set<string>();
+              this.load();
             }
           });
         })
@@ -505,7 +469,23 @@ export struct KeyVaultPage {
   private resetSshForm(): void {
     this.editingSshKey = new SshKey();
     this.formLabel = ''; this.formKeyType = SshKeyType.ED25519;
-    this.formComment = ''; this.formPasteKey = ''; this.formMode = 0;
+    this.formComment = ''; this.formPasteKey = ''; this.formFileName = ''; this.formMode = 0;
+  }
+
+  private async importSshKeyFile(): Promise<void> {
+    const result: SshKeyImportResult | null = await this.sshKeyImporter.pickAndInspect();
+    if (result === null) { return; }
+    if (!result.ok || result.key === null) {
+      promptAction.showToast({ message: result.error || '私钥文件不可用', duration: 2500 });
+      return;
+    }
+    const imported: SshKey = result.key;
+    this.formPasteKey = imported.privateKey;
+    this.formFileName = result.fileName;
+    this.formKeyType = imported.keyType;
+    if (this.formLabel.trim() === '') { this.formLabel = imported.label; }
+    this.formMode = 0;
+    promptAction.showToast({ message: '私钥已读取，请保存到密钥保险库', duration: 1800 });
   }
 
   private async doAddSshKey(): Promise<void> {
@@ -599,7 +579,7 @@ export struct KeyVaultPage {
 
   // ==================== TOTP 表单 ====================
   private resetTotpForm(): void {
-    this.formIssuer = ''; this.formAccount = ''; this.formSecret = '';
+    this.formIssuer = ''; this.formAccount = ''; this.formSecret = ''; this.formOtpAuthUri = '';
     this.formDigits = 6; this.formPeriod = 30;
   }
 
@@ -755,7 +735,7 @@ export struct KeyVaultPage {
                     .animation({ duration: 350, curve: curves.interpolatingSpring(0, 0.8, 300, 20) })
                 )
               )
-            }, (key: SshKey) => key.id)
+            }, (key: SshKey) => key.id + ':' + this.keyViewRevision.toString())
           }
         }
 
@@ -835,7 +815,7 @@ export struct KeyVaultPage {
                     .animation({ duration: 350, curve: curves.interpolatingSpring(0, 0.8, 300, 20) })
                 )
               )
-            }, (entry: TotpEntry) => entry.id)
+            }, (entry: TotpEntry) => entry.id + ':' + this.totpViewRevision.toString())
           }
         }
 
@@ -853,8 +833,8 @@ export struct KeyVaultPage {
     .bindSheet($$this.showSheet, this.unifiedSheet(), {
       height: SheetSize.FIT_CONTENT,
       preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
-      dragBar: this.sheetMode !== 1,
-      backgroundColor: Color.Transparent, blurStyle: BlurStyle.NONE, showClose: false,
+      dragBar: this.sheetMode !== 1 && this.sheetMode !== 5 && this.sheetMode !== 6,
+      backgroundColor: this.pal().sheetBg, blurStyle: BlurStyle.NONE, showClose: false,
       onDisappear: () => {
         if (this.sheetMode === 0) { this.resetSshForm(); this.resetTotpForm(); }
         else { this.load(); }
@@ -874,6 +854,14 @@ export struct KeyVaultPage {
       this.installWrapper()
     } else if (this.sheetMode === 4) {
       this.passphraseWrapper()
+    } else if (this.sheetMode === 5) {
+      this.totpChoiceWrapper()
+    } else if (this.sheetMode === 6) {
+      ModernKeyVaultAddFlow({
+        resourceKind: this.modernResourceKind,
+        onClose: (): void => { this.showSheet = false; },
+        onSaved: (_resourceId: string): void => { this.load(); }
+      })
     }
   }
 
@@ -895,29 +883,48 @@ export struct KeyVaultPage {
     .padding({ left: 24, right: 24, top: 24, bottom: 40 }).width('100%')
     .constraintSize({ maxWidth: 760 })
     .borderRadius(this.breakpoint === 'sm' ? { topLeft: 20, topRight: 20, bottomLeft: 0, bottomRight: 0 } : 20)
-    .backgroundColor(this.pal().bg).backgroundBlurStyle(BlurStyle.Regular)
+    .backgroundColor(this.pal().sheetBg).backgroundBlurStyle(BlurStyle.Regular)
   }
 
   @Builder addChoiceWrapper() {
-    Column() {
-      this.choiceItem2('导入已有私钥', $r('sys.symbol.doc_plaintext'), () => {
-        this.resetSshForm(); this.formMode = 0; this.showAddTab = 0; this.sheetMode = 0;
-      })
-      this.choiceItem2('生成新密钥', $r('sys.symbol.star_fill'), () => {
-        this.resetSshForm(); this.formMode = 1; this.showAddTab = 0; this.sheetMode = 0;
-      })
-      this.choiceItem2('生成并安装到主机', $r('sys.symbol.arrowshape_right_fill'), () => {
-        const tempKey: SshKey = new SshKey();
-        tempKey.id = SshKey.generateId();
-        tempKey.label = '';
-        tempKey.keyType = SshKeyType.ED25519;
-        this.sheetKey = tempKey;
-        this.sheetMode = 3;
-      })
+    ResourceFabPicker({
+      kind: 'ssh_key',
+      onSelect: (option: string): void => {
+        this.resetSshForm(); this.showAddTab = 0; this.sheetMode = 0;
+        if (option === 'generate') { this.formMode = 1; }
+        else {
+          this.formMode = 0;
+          if (option === 'file') { void this.importSshKeyFile(); }
+        }
+      },
+      onClose: (): void => { this.showSheet = false; }
+    })
+  }
+
+  private parseOtpAuthInput(): void {
+    const parsed: TotpEntry | null = TotpEngine.parseOtpAuthUri(this.formOtpAuthUri.trim());
+    if (parsed === null) {
+      promptAction.showToast({ message: 'otpauth URI 无效，请检查格式', duration: 2200 });
+      return;
     }
-    .padding({ left: 24, right: 24, top: 24, bottom: 40 }).width('100%')
-    .borderRadius(this.breakpoint === 'sm' ? { topLeft: 20, topRight: 20, bottomLeft: 0, bottomRight: 0 } : 20)
-    .backgroundColor(this.pal().bg).backgroundBlurStyle(BlurStyle.Regular)
+    this.formIssuer = parsed.issuer;
+    this.formAccount = parsed.account;
+    this.formSecret = parsed.secret;
+    this.formDigits = parsed.digits;
+    this.formPeriod = parsed.period;
+    promptAction.showToast({ message: '配置已解析，请确认后保存', duration: 1500 });
+  }
+
+  @Builder totpChoiceWrapper() {
+    ResourceFabPicker({
+      kind: 'totp',
+      onSelect: (option: string): void => {
+        this.resetTotpForm(); this.showAddTab = 1;
+        if (option === 'scan') { this.showSheet = false; this.showQrScan = true; }
+        else { this.sheetMode = 0; }
+      },
+      onClose: (): void => { this.showSheet = false; }
+    })
   }
 
   @Builder manageWrapper() {
@@ -978,21 +985,6 @@ export struct KeyVaultPage {
     .border(this.breakpoint === 'sm'
       ? { width: 0, color: Color.Transparent, style: BorderStyle.Solid }
       : { width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
-  }
-
-  @Builder choiceItem2(l: string, icon: Resource, cb: () => void) {
-    Row() {
-      SymbolGlyph(icon).fontSize(22).fontColor([this.accentColor])
-      Text(l).fontSize(14).fontWeight(FontWeight.Medium)
-        .fontColor(this.pal().text).fontFamily(this.font())
-        .layoutWeight(1).margin({ left: 12 })
-      SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(14).fontColor([this.pal().text3])
-    }
-    .width('100%').padding(12).borderRadius(10)
-    .backgroundColor(this.pal().card)
-    .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
-    .margin({ bottom: 8 })
-    .onClick(cb)
   }
 
   /** 沉浸顶栏 (参照设置页: 常驻透明overlay, 无模糊切换) */
@@ -1124,7 +1116,7 @@ export struct KeyVaultPage {
                     .animation({ duration: 350, curve: curves.interpolatingSpring(0, 0.8, 300, 20) })
                 )
               )
-            }, (key: SshKey) => key.id)
+            }, (key: SshKey) => key.id + ':' + this.keyViewRevision.toString())
           }
           .layoutWeight(1).padding({ left: 16, right: 16, top: 4, bottom: 140 })
         }
@@ -1194,7 +1186,7 @@ export struct KeyVaultPage {
                     .animation({ duration: 350, curve: curves.interpolatingSpring(0, 0.8, 300, 20) })
                 )
               )
-            }, (entry: TotpEntry) => entry.id)
+            }, (entry: TotpEntry) => entry.id + ':' + this.totpViewRevision.toString())
           }
           .layoutWeight(1).padding({ left: 16, right: 16, top: 4, bottom: 140 })
         }
@@ -1267,13 +1259,24 @@ export struct KeyVaultPage {
       // 私钥内容 (仅粘贴模式 formMode=0 或编辑模式显示)
       if (this.formMode === 0 || this.editingSshKey.id !== '') {
         Column() {
+          if (this.editingSshKey.id === '') {
+            Button(this.formFileName === '' ? '从文件导入私钥' : '重新选择私钥文件')
+              .width('100%').height(36).fontSize(12)
+              .backgroundColor(this.pal().surface).fontColor(this.accentColor).borderRadius(8)
+              .margin({ bottom: 8 }).onClick(() => { this.importSshKeyFile(); })
+            if (this.formFileName !== '') {
+              Text('已读取: ' + this.formFileName).fontSize(11).fontColor(this.pal().text3)
+                .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+                .width('100%').margin({ bottom: 6 })
+            }
+          }
           Text('私钥内容').fontSize(11).fontColor(this.pal().text2).margin({ bottom: 4 })
           TextInput({ placeholder: '粘贴 OpenSSH 格式私钥...', text: this.formPasteKey })
             .height(100).backgroundColor(this.pal().surface).borderRadius(8)
             .fontColor(this.pal().text).placeholderColor(this.pal().text3)
             .fontFamily('monospace').fontSize(12)
             .padding({ left: 12, right: 12, top: 10, bottom: 10 })
-            .onChange((v: string) => { this.formPasteKey = v; })
+            .onChange((v: string) => { this.formPasteKey = v; this.formFileName = ''; })
         }.width('100%').margin({ bottom: 10 })
       }
 
@@ -1329,7 +1332,7 @@ export struct KeyVaultPage {
         height: SheetSize.FIT_CONTENT,
         preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
         dragBar: false,
-        backgroundColor: Color.Transparent, blurStyle: BlurStyle.NONE, showClose: false
+        backgroundColor: this.pal().sheetBg, blurStyle: BlurStyle.NONE, showClose: false
       })
 
       // 导入 .atsf 文件
@@ -1340,6 +1343,12 @@ export struct KeyVaultPage {
 
       Text('— 或手动输入 —').fontSize(11).fontColor(this.pal().text3)
         .width('100%').textAlign(TextAlign.Center).margin({ bottom: 12 })
+
+      this._f('otpauth URI（可选）', 'otpauth://totp/…', this.formOtpAuthUri,
+        (v: string) => { this.formOtpAuthUri = v; })
+      Button('解析 otpauth URI').width('100%').height(36).fontSize(12)
+        .backgroundColor(this.pal().surface).fontColor(this.accentColor).borderRadius(8)
+        .margin({ bottom: 12 }).onClick(() => { this.parseOtpAuthInput(); })
 
       this._f('发行方 (Issuer)', '如 GitHub', this.formIssuer,
         (v: string) => { this.formIssuer = v; })
@@ -1407,7 +1416,7 @@ export struct KeyVaultPage {
     .padding({ left: 24, right: 24, top: 24, bottom: 40 })
     .width('100%')
     .borderRadius(this.breakpoint === 'sm' ? 0 : 20)
-    .backgroundColor(this.pal().bg)
+    .backgroundColor(this.pal().sheetBg)
     .backgroundBlurStyle(BlurStyle.Regular)
     .shadow(this.breakpoint === 'sm'
       ? { radius: 0, color: 'rgba(0,0,0,0)', offsetY: 0 } as ShadowOptions

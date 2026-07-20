@@ -11,9 +11,10 @@ export default function feedbackCommunityPolicyTest() {
     it('accepts_https_qr_with_a_maximum_seven_day_lifetime', 0, (): void => {
       const now: number = 1000000000;
       const payload: Record<string, Object> = {
+        'version': '20260720-01',
         'issuedAt': now - 1000,
         'expiresAt': now - 1000 + FEEDBACK_COMMUNITY_QR_MAX_AGE_MS,
-        'qrImageUrl': 'https://cdn.example.com/qr.png?tenant=feedback',
+        'qrImageUrl': 'https://lijiong.online/feedback/chanlian-20260720-01.jpg?tenant=feedback',
         'joinUrl': 'https://example.com/join',
         'title': '群聊',
         'notice': '每周更新'
@@ -23,6 +24,7 @@ export default function feedbackCommunityPolicyTest() {
       expect(result.manifest !== null).assertTrue();
       if (result.manifest !== null) {
         expect(feedbackCommunityImageUrl(result.manifest).indexOf('&v=') >= 0).assertTrue();
+        expect(feedbackCommunityImageUrl(result.manifest).indexOf('v=20260720-01') >= 0).assertTrue();
         expect(feedbackCommunityRemainingText(result.manifest.expiresAt, now)).assertEqual('将在约 7 天后更新');
       }
     });
@@ -53,11 +55,41 @@ export default function feedbackCommunityPolicyTest() {
       const insecureJoin: Record<string, Object> = {
         'issuedAt': now,
         'expiresAt': now + 3600000,
-        'qrImageUrl': 'https://cdn.example.com/qr.png',
+        'qrImageUrl': 'https://lijiong.online/feedback/chanlian-current.jpg',
         'joinUrl': 'hwid://join'
       };
       expect(validateFeedbackCommunityManifest(insecureQr, now).ok).assertFalse();
       expect(validateFeedbackCommunityManifest(insecureJoin, now).ok).assertFalse();
+    });
+
+    it('rejects_qr_assets_outside_the_feedback_origin', 0, (): void => {
+      const now: number = 1000000000;
+      const foreignHttps: Record<string, Object> = {
+        'issuedAt': now,
+        'expiresAt': now + 3600000,
+        'qrImageUrl': 'https://cdn.example.com/qr.png'
+      };
+      const lookalikeHost: Record<string, Object> = {
+        'issuedAt': now,
+        'expiresAt': now + 3600000,
+        'qrImageUrl': 'https://lijiong.online.evil/feedback/qr.png'
+      };
+      expect(validateFeedbackCommunityManifest(foreignHttps, now).ok).assertFalse();
+      expect(validateFeedbackCommunityManifest(lookalikeHost, now).ok).assertFalse();
+    });
+
+    it('uses_expiry_as_a_compatible_version_for_old_manifests', 0, (): void => {
+      const now: number = 1000000000;
+      const payload: Record<string, Object> = {
+        'issuedAt': now,
+        'expiresAt': now + 3600000,
+        'qrImageUrl': 'https://lijiong.online/feedback/chanlian-current.jpg'
+      };
+      const result = validateFeedbackCommunityManifest(payload, now);
+      expect(result.ok).assertTrue();
+      if (result.manifest !== null) {
+        expect(result.manifest.version).assertEqual((now + 3600000).toString());
+      }
     });
   });
 }

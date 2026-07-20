@@ -244,6 +244,69 @@ fn primary_full_screen_scroll_preserves_scrollback() {
 }
 
 #[test]
+fn resize_taller_restores_scrollback_above_bottom_cursor() {
+    let mut term = Terminal::new(8, 3);
+    term.write(b"1\r\n2\r\n3\r\n4\r\n5");
+    let before = term.snapshot();
+    assert_eq!(before.screen_top, 2);
+    assert_eq!(before.cursor_y, 2);
+
+    term.resize(8, 5);
+
+    let after = term.snapshot();
+    assert_eq!(after.screen_top, 0);
+    assert_eq!(after.view_top, 0);
+    assert_eq!(after.cursor_y, 4);
+    assert_eq!(screen_text(&term).iter().map(|row| &row[..1]).collect::<Vec<_>>(), vec!["1", "2", "3", "4", "5"]);
+}
+
+#[test]
+fn resize_shorter_then_taller_preserves_content_and_absolute_cursor() {
+    let mut term = Terminal::new(8, 5);
+    term.write(b"1\r\n2\r\n3\r\n4\r\n5");
+
+    term.resize(8, 3);
+    let short = term.snapshot();
+    assert_eq!(short.screen_top, 2);
+    assert_eq!(short.cursor_y, 2);
+    assert_eq!(screen_text(&term).iter().map(|row| &row[..1]).collect::<Vec<_>>(), vec!["3", "4", "5"]);
+
+    term.resize(8, 5);
+    let tall = term.snapshot();
+    assert_eq!(tall.screen_top, 0);
+    assert_eq!(tall.cursor_y, 4);
+    assert_eq!(screen_text(&term).iter().map(|row| &row[..1]).collect::<Vec<_>>(), vec!["1", "2", "3", "4", "5"]);
+}
+
+#[test]
+fn resize_taller_with_insufficient_history_keeps_absolute_cursor() {
+    let mut term = Terminal::new(8, 3);
+    term.write(b"one\r\ntwo");
+
+    term.resize(8, 8);
+
+    let snap = term.snapshot();
+    assert_eq!(snap.screen_top, 0);
+    assert_eq!(snap.cursor_y, 1);
+    assert_eq!(&screen_text(&term)[0][..3], "one");
+    assert_eq!(&screen_text(&term)[1][..3], "two");
+}
+
+#[test]
+fn resize_while_scrolled_up_does_not_force_view_to_bottom() {
+    let mut term = Terminal::new(8, 3);
+    term.write(b"1\r\n2\r\n3\r\n4\r\n5\r\n6");
+    term.scroll_view(-2);
+    let parked = term.snapshot().view_top;
+
+    term.resize(8, 4);
+
+    let snap = term.snapshot();
+    assert!(!snap.is_at_bottom);
+    assert_eq!(snap.view_top, parked.min(snap.screen_top));
+}
+
+#[test]
 fn user_scroll_changes_view_not_cursor_or_screen() {
     let mut term = Terminal::new(4, 2);
     term.write(b"1\r\n2\r\n3");
@@ -471,6 +534,24 @@ fn alt_screen_scroll_does_not_extend_main_scrollback() {
     let rows = screen_text(&term);
     assert_eq!(&rows[0][..1], "2");
     assert_eq!(&rows[1][..1], "3");
+}
+
+#[test]
+fn resize_in_alt_screen_reflows_saved_main_view_without_alt_content() {
+    let mut term = Terminal::new(8, 3);
+    term.write(b"1\r\n2\r\n3\r\n4\r\n5");
+
+    term.write(b"\x1b[?1049h");
+    term.write(b"ALT");
+    term.resize(8, 5);
+    assert_eq!(&screen_text(&term)[0][..3], "ALT");
+
+    term.write(b"\x1b[?1049l");
+    let restored = term.snapshot();
+    assert_eq!(restored.screen_top, 0);
+    assert_eq!(restored.view_top, 0);
+    assert_eq!(restored.cursor_y, 4);
+    assert_eq!(screen_text(&term).iter().map(|row| &row[..1]).collect::<Vec<_>>(), vec!["1", "2", "3", "4", "5"]);
 }
 
 // ── 光标保存/恢复 ──────────────────────────────────────────────────────

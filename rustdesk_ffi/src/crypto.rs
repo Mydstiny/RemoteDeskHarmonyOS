@@ -116,6 +116,23 @@ pub fn decode_base64_key(encoded: &str) -> Option<[u8; 32]> {
     Some(key)
 }
 
+/// Normalize and validate a configured RustDesk rendezvous public key.
+///
+/// An empty value is intentional: it selects the built-in public-server key
+/// for peer-signature verification and sends an empty licence_key to hbbs.
+/// Any non-empty value must be the standard Base64 encoding of one Ed25519
+/// public key (32 bytes).  Keeping this check at the FFI boundary prevents an
+/// encrypted DataCrypto value or an arbitrary Pro token from being sent as a
+/// protocol licence_key.
+pub fn normalized_server_public_key(encoded: &str) -> Option<&str> {
+    let trimmed = encoded.trim();
+    if trimmed.is_empty() || decode_base64_key(trimmed).is_some() {
+        Some(trimmed)
+    } else {
+        None
+    }
+}
+
 pub fn verify_signed_message(signed: &[u8], public_key: &[u8; 32]) -> Option<Vec<u8>> {
     use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 
@@ -215,5 +232,20 @@ mod tests {
         let kp2 = keypair_from_secret(&kp1.secret_key);
         assert_eq!(kp1.public_key, kp2.public_key);
         assert_eq!(kp1.secret_key, kp2.secret_key);
+    }
+
+    #[test]
+    fn server_public_key_validation_accepts_empty_and_standard_key() {
+        assert_eq!(normalized_server_public_key(""), Some(""));
+        assert_eq!(
+            normalized_server_public_key("  OeVuKk5nlHiXp+APNn0Y3pC1Iwpwn44JGqrQCsWqmBw=  "),
+            Some("OeVuKk5nlHiXp+APNn0Y3pC1Iwpwn44JGqrQCsWqmBw=")
+        );
+    }
+
+    #[test]
+    fn server_public_key_validation_rejects_ciphertext_and_wrong_length() {
+        assert!(normalized_server_public_key("1:encrypted-value").is_none());
+        assert!(normalized_server_public_key("not-a-server-key").is_none());
     }
 }

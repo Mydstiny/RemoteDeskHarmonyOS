@@ -17,6 +17,7 @@
 #include <freerdp/client.h>
 #include <freerdp/client/channels.h>
 #include <freerdp/event.h>
+#include <freerdp/graphics.h>
 #include <freerdp/client/cliprdr.h>
 #include <freerdp/version.h>
 #endif
@@ -49,6 +50,8 @@ public:
     int             connect(const ConnectionConfig& cfg) override;
     void            disconnect() override;
     ConnectionState getState() override;
+    void            setSessionIdentity(uint64_t sessionId) override;
+    RemoteCursorSnapshot getRemoteCursorSnapshot(bool includePixels) override;
     void            requestFrameRefresh() override;
     RdpCertificateInfo probeRdpCertificate(const std::string& host, int port,
                                            const std::string& serverName) override;
@@ -113,6 +116,12 @@ private:
     static BOOL cbBeginPaint(rdpContext* context);
     static BOOL cbEndPaint(rdpContext* context);
     static BOOL cbDesktopResize(rdpContext* context);
+    static BOOL cbPointerNew(rdpContext* context, rdpPointer* pointer);
+    static void cbPointerFree(rdpContext* context, rdpPointer* pointer);
+    static BOOL cbPointerSet(rdpContext* context, rdpPointer* pointer);
+    static BOOL cbPointerSetPosition(rdpContext* context, UINT32 x, UINT32 y);
+    static BOOL cbPointerSetNull(rdpContext* context);
+    static BOOL cbPointerSetDefault(rdpContext* context);
     static DWORD WINAPI cbVerifyCertificate(freerdp* instance, const char* common_name,
                                             const char* subject, const char* issuer,
                                             const char* fingerprint, BOOL host_mismatch);

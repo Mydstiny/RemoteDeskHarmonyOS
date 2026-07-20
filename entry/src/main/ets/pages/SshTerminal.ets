@@ -51,6 +51,11 @@ import {
   encodeSoftDelete,
   encodeTextInput
 } from '../services/SshTerminalInputPolicy';
+import {
+  defaultSshTerminalOrientation,
+  SshTerminalOrientation,
+  toggleSshTerminalOrientation
+} from '../services/SshTerminalOrientationPolicy';
 import { VirtualKeyBar } from '../components/VirtualKeyBar';
 import {
   TransferSession,
@@ -110,6 +115,7 @@ struct SshTerminal {
   @State @Watch('onCopiedTextChange') copiedText: string = '';
   /** 移动端键盘/视口变化时递增, 通知终端渲染器回到底部 */
   @State scrollToBottomRequest: number = 0;
+  @State forceScrollToBottomRequest: number = 0;
   @State terminalExternalScrollLines: number = 0;
   @State terminalExternalScrollRequest: number = 0;
   /** SSH 协议级 keepalive 延迟 */
@@ -129,6 +135,7 @@ struct SshTerminal {
   @State sftpProgress: number = -1;
   @State sftpProgressLabel: string = '处理中';
   @State sftpTransferSession: TransferSession | null = null;
+  @State isLandscape: boolean = false;
   // Kept only in-memory to retry the current picker grant; never logged or placed in diagnostics.
   private sftpTransferUri: string = '';
   private sftpTransferRemotePath: string = '';
@@ -145,6 +152,13 @@ struct SshTerminal {
   private hostId: string = '';
   private sessionId: number = -1;
   private win: window.Window | null = null;
+  private orientationApplied: boolean = false;
+  private orientationTransitioning: boolean = false;
+  private orientationSettleTimer: number = -1;
+  private orientationFinalTimer: number = -1;
+  private restoreKeyboardAfterOrientation: boolean = false;
+  private lastTermAreaPosition: string = '';
+  private lastShellAreaPosition: string = '';
   private avoidCb: ((data: window.AvoidAreaOptions) => void) | null = null;
   private resizePtyTimer: number = -1;
   private latencyTimer: number = -1;
@@ -343,6 +357,9 @@ struct SshTerminal {
 
   async aboutToAppear(): Promise<void> {
     this.terminalClosing = false;
+    this.lastTermAreaPosition = '';
+    this.lastShellAreaPosition = '';
+    this.orientationApplied = false;
     // ArkUI 可能复用页面实例；每次进入都必须从全新的会话输出开始。
     this.termOutput = '';
     this.connected = false;
@@ -352,6 +369,13 @@ struct SshTerminal {
     this.updateCellSize();
     this.termRows = this.calcRowsFallback();
     this.termCols = this.calcColsFallback();
+
+    // 手机/平板 SSH 默认竖屏；桌面/2in1 由系统窗口管理当前方向。
+    const defaultOrientation: SshTerminalOrientation = defaultSshTerminalOrientation(this.isDesktopDevice);
+    this.isLandscape = defaultOrientation === 'landscape';
+    if (!this.isDesktopDevice) {
+      await this.setPreferredOrientation(window.Orientation.PORTRAIT, 'SSH-PORTRAIT');
+    }
 
     // SSH 终端始终深色模式 — 强制系统状态栏/导航栏亮色图标
     this.forceStatusBarDark();
@@ -406,6 +430,16 @@ struct SshTerminal {
       clearTimeout(this.resizePtyTimer);
       this.resizePtyTimer = -1;
     }
+    if (this.orientationSettleTimer !== -1) {
+      clearTimeout(this.orientationSettleTimer);
+      this.orientationSettleTimer = -1;
+    }
+    if (this.orientationFinalTimer !== -1) {
+      clearTimeout(this.orientationFinalTimer);
+      this.orientationFinalTimer = -1;
+    }
+    this.orientationTransitioning = false;
+    this.restoreKeyboardAfterOrientation = false;
     this.clearSftpRefreshTimer();
     this.sftpBusy = false;
     this.sftpProgress = -1;
@@ -421,8 +455,85 @@ struct SshTerminal {
     this.sessionId = -1;
     this.connected = false;
     this.termOutput = '';
+    if (this.orientationApplied) {
+      setTimeout((): void => {
+        this.setPreferredOrientation(window.Orientation.UNSPECIFIED, 'SSH-UNSPECIFIED');
+      }, 250);
+    }
   }
 
+  private async setPreferredOrientation(orientation: window.Orientation, label: string): Promise<void> {
+    try {
+      const ctx = this.getUIContext().getHostContext();
+      if (!ctx) { return; }
+      const win: window.Window = await window.getLastWindow(ctx);
+      await win.setPreferredOrientation(orientation);
+      this.orientationApplied = orientation !== window.Orientation.UNSPECIFIED;
+      if (orientation === window.Orientation.LANDSCAPE) {
+        this.isLandscape = true;
+      } else if (orientation === window.Orientation.PORTRAIT) {
+        this.isLandscape = false;
+      }
+      hilog.info(0x0000, 'SshTerminal', 'setPreferredOrientation(' + label + ') OK');
+    } catch (err) {
+      hilog.warn(0x0001, 'SshTerminal', 'setPreferredOrientation(' + label + ') failed: ' + JSON.stringify(err));
+    }
+  }
+
+  private async toggleSshOrientation(): Promise<void> {
+    if (this.isDesktopDevice || this.orientationTransitioning) { return; }
+    this.orientationTransitioning = true;
+    this.restoreKeyboardAfterOrientation = this.kbHeight > this.navHeight + 1;
+    if (this.orientationSettleTimer !== -1) {
+      clearTimeout(this.orientationSettleTimer);
+      this.orientationSettleTimer = -1;
+    }
+    if (this.orientationFinalTimer !== -1) {
+      clearTimeout(this.orientationFinalTimer);
+      this.orientationFinalTimer = -1;
+    }
+    // 旋转前解除隐藏输入框焦点，防止 IME 继续使用旧窗口坐标定位输入光标。
+    try { this.getUIContext().getFocusController().clearFocus(); } catch (_e) { /* ignore */ }
+    this.resetKeyboardBuffer();
+    const current: SshTerminalOrientation = this.isLandscape ? 'landscape' : 'portrait';
+    const next: SshTerminalOrientation = toggleSshTerminalOrientation(current);
+    this.isLandscape = next === 'landscape';
+    await this.setPreferredOrientation(
+      this.isLandscape ? window.Orientation.LANDSCAPE : window.Orientation.PORTRAIT,
+      this.isLandscape ? 'SSH-LANDSCAPE-MANUAL' : 'SSH-PORTRAIT-MANUAL'
+    );
+    this.scheduleOrientationSettle();
+  }
+
+  private scheduleOrientationSettle(): void {
+    if (this.orientationSettleTimer !== -1) { clearTimeout(this.orientationSettleTimer); }
+    if (this.orientationFinalTimer !== -1) { clearTimeout(this.orientationFinalTimer); }
+    this.orientationSettleTimer = setTimeout((): void => {
+      this.orientationSettleTimer = -1;
+      if (this.terminalClosing) { return; }
+      this.recalcGrid();
+      this.forceScrollToBottomRequest = this.forceScrollToBottomRequest + 1;
+      this.requestTerminalScrollToBottom();
+      // 第一阶段只确认尺寸已停止变化；PTY resize 和 Canvas 属性更新可能还在同一帧之后提交。
+      // 保持 transitioning，避免最后一组 onAreaChange 被当作普通布局变化处理。
+      this.orientationFinalTimer = setTimeout((): void => {
+        this.orientationFinalTimer = -1;
+        if (this.terminalClosing) { return; }
+        this.recalcGrid();
+        this.forceScrollToBottomRequest = this.forceScrollToBottomRequest + 1;
+        this.requestTerminalScrollToBottom();
+        this.orientationTransitioning = false;
+        this.resetKeyboardBuffer();
+        if (this.restoreKeyboardAfterOrientation) {
+          this.focusKeyboard();
+        }
+        this.restoreKeyboardAfterOrientation = false;
+        hilog.info(0x0000, 'SshTerminal',
+          `[orientation] settled landscape=${this.isLandscape} shell=${this.shellAreaW}x${this.shellAreaH} ` +
+          `term=${this.termAreaW}x${this.termAreaH} grid=${this.termCols}x${this.termRows}`);
+      }, 220);
+    }, 260);
+  }
   private setupKeyboardAvoidMode(): void {
     try {
       const ui = this.getUIContext();
@@ -468,7 +579,11 @@ struct SshTerminal {
     if (!this.isDesktopDevice && this.connected &&
       (Math.abs(oldKbHeight - this.kbHeight) >= 1 || Math.abs(oldNavHeight - this.navHeight) >= 1)) {
       this.recalcGrid();
-      this.requestTerminalScrollToBottomSettled();
+      if (this.orientationTransitioning) {
+        this.scheduleOrientationSettle();
+      } else {
+        this.requestTerminalScrollToBottomSettled();
+      }
     }
   }
 
@@ -593,9 +708,11 @@ struct SshTerminal {
     this.tcpLatencyTest(this.sshHost, this.sshPort).then((latency: number): void => {
       this.latencyMs = latency;
       this.latencyProbeRunning = false;
+      this.srv.updateConnectionHealth(this.hostId, latency, false);
     }).catch((err: BusinessError): void => {
       this.latencyMs = -1;
       this.latencyProbeRunning = false;
+      this.srv.updateConnectionHealth(this.hostId, -1, false);
       hilog.warn(0x0001, 'SshTerminal', '[latency] TCP 检测失败: ' + err.message);
     });
   }
@@ -750,6 +867,7 @@ struct SshTerminal {
       }
       this.connected = true;
       this.connecting = false;
+      await this.srv.updateLastConnected(this.hostId);
       this.startLatencyProbe();
 
       // 推送式数据接收: C++ reader 线程读到数据 → TSFN → 这里
@@ -775,6 +893,7 @@ struct SshTerminal {
     } catch (err) {
       this.connecting = false;
       const msg: string = (err as Error).message || 'SSH 连接失败';
+      await this.srv.updateConnectionHealth(this.hostId, -1, false);
       hilog.error(0x0001, 'SshTerminal', '[connect] 异常: ' + msg);
       this.connectionError = msg;
     }
@@ -1606,6 +1725,18 @@ struct SshTerminal {
             .margin({ right: 12 })
         }
         if (this.connected) {
+          if (!this.isDesktopDevice) {
+            Row() {
+              Text('↻').fontSize(19).fontColor('rgba(242,244,247,0.86)')
+            }
+            .width(34)
+            .height(34)
+            .justifyContent(FlexAlign.Center)
+            .borderRadius(17)
+            .backgroundColor(this.chromeChipBg())
+            .margin({ right: 8 })
+            .onClick((): void => { this.toggleSshOrientation(); })
+          }
           Row() {
             SymbolGlyph($r('sys.symbol.doc'))
               .fontSize(18)
@@ -1662,6 +1793,7 @@ struct SshTerminal {
               NativeTerminalRenderer({
                 cols: this.termCols,
                 rows: this.termRows,
+                viewportWidth: this.termAreaW,
                 cellWvp: this.cellWvp,
                 cellHvp: this.cellHvp,
                 fontSize: this.renderFontVp,
@@ -1673,6 +1805,7 @@ struct SshTerminal {
                 copyRequest: this.copyRequest,
                 copiedText: this.copiedText,
                 scrollToBottomRequest: this.scrollToBottomRequest,
+                forceScrollToBottomRequest: this.forceScrollToBottomRequest,
                 externalScrollLines: this.terminalExternalScrollLines,
                 externalScrollRequest: this.terminalExternalScrollRequest,
                 onData: (data: string): void => { this.onTerminalData(data); }
@@ -1681,6 +1814,7 @@ struct SshTerminal {
               TerminalEmulator({
                 cols: this.termCols,
                 rows: this.termRows,
+                viewportWidth: this.termAreaW,
                 cellWvp: this.cellWvp,
                 cellHvp: this.cellHvp,
                 fontSize: this.renderFontVp,
@@ -1692,6 +1826,7 @@ struct SshTerminal {
                 copyRequest: this.copyRequest,
                 copiedText: this.copiedText,
                 scrollToBottomRequest: this.scrollToBottomRequest,
+                forceScrollToBottomRequest: this.forceScrollToBottomRequest,
                 externalScrollLines: this.terminalExternalScrollLines,
                 externalScrollRequest: this.terminalExternalScrollRequest,
                 onData: (data: string): void => { this.onTerminalData(data); }
@@ -1701,6 +1836,12 @@ struct SshTerminal {
             // 隐藏 TextInput — 1×1 可点击, 软键盘锚点
             TextInput({ text: this.kbInput, controller: this.kbCtrl })
               .id('sshKbInput')
+              // Treat terminal input like a username: IMEs normally start in
+              // lowercase, while explicit Shift/Caps Lock remains available.
+              // Never lowercase command text in the app because shells are
+              // case-sensitive.
+              .type(InputType.USER_NAME)
+              .enableAutoFill(false)
               .fontSize(this.renderFontVp)
               .fontColor('#00000000').fontFamily('monospace')
               .backgroundColor('#00000000')
@@ -1711,6 +1852,7 @@ struct SshTerminal {
               .defaultFocus(this.isDesktopDevice)
               .focusOnTouch(true)
               .enableKeyboardOnFocus(true)
+              .autoCapitalizationMode(AutoCapitalizationMode.NONE)
               .enterKeyType(EnterKeyType.Send)
               .copyOption(CopyOptions.None)
               .selectionMenuHidden(true)
@@ -1723,9 +1865,13 @@ struct SshTerminal {
               .onChange((v: string): void => {
                 this.handleChangeGuard(v);
               })
-              .onSubmit((): void => {
+              .onSubmit((_enterKey: EnterKeyType, event: SubmitEvent): void => {
                 this.onTerminalData('\r');
                 this.resetKeyboardBuffer();
+                // HarmonyOS 非 TV 设备默认会在提交后失焦并收起软键盘。
+                // SSH 终端需要连续输入命令, 保持隐藏输入框的编辑态。
+                event.keepEditableState();
+                setTimeout((): void => { this.focusKeyboard(); }, 30);
               })
               .onPaste((content: string): void => {
                 this.handlePaste(content);
@@ -1771,16 +1917,28 @@ struct SshTerminal {
           .onAreaChange((_o: Area, n: Area): void => {
             const h: number = n.height as number;
             const w: number = n.width as number;
-            if (Math.abs(h - this.termAreaH) < 1 && Math.abs(w - this.termAreaW) < 1) { return; }
+            const position: string = JSON.stringify(n.position) ?? '';
+            const globalPosition: string = JSON.stringify(n.globalPosition) ?? '';
+            const sizeChanged: boolean = Math.abs(h - this.termAreaH) >= 1 || Math.abs(w - this.termAreaW) >= 1;
+            const positionChanged: boolean = position !== this.lastTermAreaPosition;
+            if (!sizeChanged && !positionChanged) { return; }
+            this.lastTermAreaPosition = position;
             this.termAreaH = h;
             this.termAreaW = w;
+            hilog.info(0x0000, 'SshTerminal',
+              `[areaDiag] term size=${w}x${h} position=${position} global=${globalPosition} ` +
+              `offset=${this.terminalCanvasOffsetY()} transition=${this.orientationTransitioning}`);
             this.recalcGrid();
-            if (!this.isDesktopDevice && this.connected) {
+            if (positionChanged) {
+              this.forceScrollToBottomRequest = this.forceScrollToBottomRequest + 1;
+            }
+            if (this.orientationTransitioning) {
+              this.scheduleOrientationSettle();
+            } else if (!this.isDesktopDevice && this.connected) {
               this.requestTerminalScrollToBottomSettled();
             }
           })
           .bindContextMenu(this.TermMenu(), ResponseType.LongPress)
-          .animation({ duration: 120, curve: Curve.FastOutSlowIn })
 
           if (!this.selectMode) {
             Stack() {
@@ -1850,15 +2008,27 @@ struct SshTerminal {
         .onAreaChange((_o: Area, n: Area): void => {
           const h: number = n.height as number;
           const w: number = n.width as number;
-          if (Math.abs(h - this.shellAreaH) < 1 && Math.abs(w - this.shellAreaW) < 1) { return; }
+          const position: string = JSON.stringify(n.position) ?? '';
+          const globalPosition: string = JSON.stringify(n.globalPosition) ?? '';
+          const sizeChanged: boolean = Math.abs(h - this.shellAreaH) >= 1 || Math.abs(w - this.shellAreaW) >= 1;
+          const positionChanged: boolean = position !== this.lastShellAreaPosition;
+          if (!sizeChanged && !positionChanged) { return; }
+          this.lastShellAreaPosition = position;
           this.shellAreaH = h;
           this.shellAreaW = w;
+          hilog.info(0x0000, 'SshTerminal',
+            `[areaDiag] shell size=${w}x${h} position=${position} global=${globalPosition} ` +
+            `transition=${this.orientationTransitioning}`);
           this.recalcGrid();
-          if (!this.isDesktopDevice && this.connected) {
+          if (positionChanged) {
+            this.forceScrollToBottomRequest = this.forceScrollToBottomRequest + 1;
+          }
+          if (this.orientationTransitioning) {
+            this.scheduleOrientationSettle();
+          } else if (!this.isDesktopDevice && this.connected) {
             this.requestTerminalScrollToBottomSettled();
           }
         })
-        .animation({ duration: 120, curve: Curve.FastOutSlowIn })
       }
     }
     .width('100%').height('100%').backgroundColor('#0D0D0D')
@@ -1866,7 +2036,7 @@ struct SshTerminal {
       height: SheetSize.FIT_CONTENT,
       preferType: this.isDesktopDevice ? SheetType.CENTER : SheetType.BOTTOM,
       dragBar: !this.isDesktopDevice,
-      backgroundColor: Color.Transparent,
+      backgroundColor: this.pal().sheetBg,
       blurStyle: BlurStyle.NONE,
       showClose: false,
       maskColor: 'rgba(0,0,0,0.4)',
@@ -1881,7 +2051,7 @@ struct SshTerminal {
       height: this.sftpSheetHeight(),
       preferType: this.isDesktopDevice ? SheetType.CENTER : SheetType.BOTTOM,
       dragBar: !this.isDesktopDevice,
-      backgroundColor: Color.Transparent,
+      backgroundColor: this.pal().sheetBg,
       blurStyle: BlurStyle.NONE,
       showClose: false,
       onWillDismiss: (action: DismissSheetAction): void => { this.handleSftpSheetDismiss(action); }

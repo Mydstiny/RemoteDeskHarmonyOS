@@ -44,6 +44,15 @@ pub struct PunchHoleInfo {
     pub relay_uuid: Option<String>,
 }
 
+fn validated_server_key(server_key: &str) -> io::Result<&str> {
+    crypto::normalized_server_public_key(server_key).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "invalid rendezvous server public key; expected Base64-encoded 32-byte key",
+        )
+    })
+}
+
 impl RendezvousClient {
     pub fn new() -> Self {
         Self {
@@ -83,7 +92,7 @@ impl RendezvousClient {
         server_key: &str,
     ) -> io::Result<PunchHoleInfo> {
         self.ensure_connected()?;
-        let licence_key = server_key.trim();
+        let licence_key = validated_server_key(server_key)?;
         let req_debug = format!(
             "peer_id={}, key_len={}, nat=SYMMETRIC, conn=DEFAULT_CONN, force_relay=true, version=harmonyos-rustdesk-ffi",
             peer_id,
@@ -327,7 +336,7 @@ impl RendezvousClient {
         relay_server: &str,
         server_key: &str,
     ) -> io::Result<TcpStream> {
-        let licence_key = server_key.trim();
+        let licence_key = validated_server_key(server_key)?;
         let mut stream = net::connect_tcp_endpoint(
             relay_server,
             21117,
@@ -408,10 +417,11 @@ impl RendezvousClient {
             ));
         }
 
-        let key = if server_key.trim().is_empty() {
+        let supplied_key = validated_server_key(server_key)?;
+        let key = if supplied_key.is_empty() {
             crypto::RUSTDESK_SERVER_PUBLIC_KEY
         } else {
-            server_key.trim()
+            supplied_key
         };
         let rs_pk = crypto::decode_base64_key(key).ok_or_else(|| {
             io::Error::new(

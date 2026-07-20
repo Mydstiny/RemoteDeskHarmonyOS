@@ -239,6 +239,20 @@ export default function keyVaultServiceTest() {
       srv.addTotpEntry(makeTotpEntry('AWS', 'e@f.com'));
       expect(srv.getTotpCount()).assertEqual(3);
     });
+
+    it('batch_add_should_emit_once_and_return_all_ids', 0, () => {
+      let notifications = 0;
+      const unsubscribe = srv.onDataChange((): void => { notifications++; });
+      const result = srv.addTotpEntries([
+        makeTotpEntry('GitHub', 'batch-a@example.com'),
+        makeTotpEntry('GitLab', 'batch-b@example.com')
+      ]);
+      unsubscribe();
+      expect(result.savedIds.length).assertEqual(2);
+      expect(result.failedCount).assertEqual(0);
+      expect(srv.getTotpCount()).assertEqual(2);
+      expect(notifications).assertEqual(1);
+    });
   });
 
   describe('KeyVaultService_TOTP_updateTotpEntry', () => {

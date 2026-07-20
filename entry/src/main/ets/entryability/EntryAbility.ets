@@ -207,7 +207,6 @@ export default class EntryAbility extends UIAbility {
     // 注意: 实况窗由 RemoteDesktop.restoreFromBackground() 控制, 不在此处提前关闭
     AppStorage.setOrCreate<boolean>(BG_FLAG_KEY, false);
     this.syncEffectiveTheme('foreground');
-    CloudSyncCoordinator.getInstance().requestForegroundPull();
     try {
       RemoteSessionBackgroundTaskService.getInstance().stopSessionTask(this.context);
     } catch (err) {

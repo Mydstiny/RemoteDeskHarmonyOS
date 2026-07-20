@@ -8,8 +8,110 @@ export interface RustDeskHostEndpoint {
   port: number;
 }
 
-export function normalizeRustDeskPort(port: number): number {
-  return port > 0 && port <= 65535 ? port : 21116;
+export interface RustDeskConnectionCheckInput {
+  directEnabled: boolean;
+  directHost: string;
+  directPort: number;
+  relayId: string;
+  relayExists: boolean;
+  relayHost: string;
+  relayPort: number;
+  relayKey: string;
+  proManaged: boolean;
+}
+
+export const RUSTDESK_ID_SERVER_PORT: number = 21116;
+export const RUSTDESK_PEER_TCP_PORT: number = 21118;
+
+const RUSTDESK_SERVER_KEY_PATTERN: RegExp = /^[A-Za-z0-9+/]{43}=$/;
+
+/**
+ * Validate the same wire invariant as the Rust FFI: a configured rendezvous
+ * key is the standard Base64 encoding of one 32-byte public key. Empty is
+ * valid for ordinary OSS/default-key connections. A `1:` value is a local
+ * DataCrypto ciphertext and must never be passed to hbbs as licence_key.
+ */
+export function rustDeskServerKeyError(value: string, required: boolean = false): string {
+  const key: string = value.trim();
+  if (key.length === 0) {
+    return required ? 'Server Pro 中继缺少服务器密钥' : '';
+  }
+  if (key.startsWith('1:')) {
+    return 'RustDesk 中继服务器密钥已加密且当前未解锁，请先解锁数据';
+  }
+  if (!RUSTDESK_SERVER_KEY_PATTERN.test(key)) {
+    return 'RustDesk 中继服务器密钥格式无效，应为 32 字节 Base64 公钥';
+  }
+  return '';
+}
+
+/**
+ * 连接前校验 RustDesk 的地址来源。
+ * 非直连主机的 host 只是历史兼容字段，不能再作为 relay 绑定的替代品。
+ * 普通 OSS 中继允许没有 server key；只有 Server Pro 托管主机必须提供 key。
+ */
+export function rustDeskConnectionError(input: RustDeskConnectionCheckInput): string {
+  if (input.directEnabled) {
+    if (input.directHost.trim().length === 0) {
+      return 'RustDesk 直连地址为空';
+    }
+    if (input.directPort <= 0 || input.directPort > 65535) {
+      return 'RustDesk 直连端口无效';
+    }
+    return '';
+  }
+  if (input.relayId.trim().length === 0) {
+    return 'RustDesk 中继连接未绑定中继配置';
+  }
+  if (!input.relayExists) {
+    return 'RustDesk 绑定的中继配置不存在，请重新选择';
+  }
+  if (input.relayHost.trim().length === 0) {
+    return 'RustDesk 中继配置缺少 ID 服务器地址';
+  }
+  if (input.relayPort <= 0 || input.relayPort > 65535) {
+    return 'RustDesk 中继 ID 服务器端口无效';
+  }
+  const serverKeyError: string = rustDeskServerKeyError(input.relayKey, input.proManaged);
+  if (serverKeyError !== '') {
+    return serverKeyError;
+  }
+  return '';
+}
+
+/**
+ * 直连没有 ID/中继批准通道，只能使用被控端设备密码。
+ * 统一在表单保存和连接参数生成处调用，兼容旧版本已保存的组合。
+ */
+export function rustDeskAuthModeForConnection(directEnabled: boolean, requestedMode: string): string {
+  if (directEnabled) {
+    return 'password';
+  }
+  return requestedMode === 'request_approval' ? 'request_approval' : 'password';
+}
+
+export function normalizeRustDeskPort(port: number, fallback: number = RUSTDESK_ID_SERVER_PORT): number {
+  return port > 0 && port <= 65535 ? port : fallback;
+}
+
+export function shouldBindLegacyRustDeskHostToRelay(protocol: string, directEnabled: boolean,
+  relayId: string, host: string, port: number, relayHost: string, relayPort: number): boolean {
+  return protocol === 'rustdesk' && !directEnabled && relayId.trim().length === 0 &&
+    host.trim().toLowerCase() === relayHost.trim().toLowerCase() &&
+    normalizeRustDeskPort(port) === normalizeRustDeskPort(relayPort);
+}
+
+export function rustDeskCardEndpoint(directEnabled: boolean, directHost: string, directPort: number,
+  host: string, port: number): string {
+  const displayHost: string = directEnabled ? directHost.trim() : host.trim();
+  const displayPort: number = directEnabled ?
+    normalizeRustDeskPort(directPort, RUSTDESK_PEER_TCP_PORT) : port;
+  return displayHost + ':' + displayPort;
+}
+
+export function shouldAdoptRustDeskDirectPort(directEnabled: boolean, hostDirectPort: number,
+  previousDefaultPort: number): boolean {
+  return directEnabled && hostDirectPort === previousDefaultPort;
 }
 
 export function resolveRustDeskHostEndpoint(relay: RustDeskRelayConfig | null, fallbackHost: string,
@@ -17,7 +119,7 @@ export function resolveRustDeskHostEndpoint(relay: RustDeskRelayConfig | null, f
   if (directEnabled) {
     return {
       host: directHost.trim(),
-      port: normalizeRustDeskPort(directPort)
+      port: normalizeRustDeskPort(directPort, RUSTDESK_PEER_TCP_PORT)
     };
   }
   if (relay !== null) {
@@ -28,6 +130,6 @@ export function resolveRustDeskHostEndpoint(relay: RustDeskRelayConfig | null, f
   }
   return {
     host: fallbackHost.trim(),
-    port: 21116
+    port: RUSTDESK_ID_SERVER_PORT
   };
 }

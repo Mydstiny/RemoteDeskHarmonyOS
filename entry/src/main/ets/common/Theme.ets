@@ -71,7 +71,7 @@ export const COLOR_PRESETS: ColorPreset[] = [
 
 // ==================== Palette 接口 ====================
 export interface Palette {
-  bg: string; card: string; cardBorder: string; surface: string; divider: string;
+  bg: string; card: string; sheetBg: string; cardBorder: string; surface: string; divider: string;
   text: string; text2: string; text3: string;
   searchBg: string; searchBorder: string;
   floatBg: string; floatBorder: string;
@@ -126,7 +126,7 @@ export function getHaloColorForTheme(theme: string): string {
 export function buildDark(accent: string): Palette {
   const halo: string = getHaloColorForTheme('dark');
   return {
-    bg:'#000000', card:'rgba(255,255,255,0.08)', cardBorder:'rgba(255,255,255,0.10)',
+    bg:'#000000', card:'rgba(255,255,255,0.08)', sheetBg:'#1C1C1F', cardBorder:'rgba(255,255,255,0.10)',
     surface:'rgba(255,255,255,0.12)', divider:'rgba(255,255,255,0.10)',
     // text_primary: #E6E6E6 非纯白, 避免 21:1 极端对比度 (深色背景上 ≈ 16:1 舒适)
     text:'#E6E6E6', text2:'rgba(230,230,230,0.75)', text3:'rgba(230,230,230,0.50)',
@@ -148,7 +148,7 @@ export function buildDark(accent: string): Palette {
 export function buildLight(accent: string): Palette {
   const halo: string = getHaloColorForTheme('light');
   return {
-    bg:'#FFFFFF', card:'#FFFFFF', cardBorder:'rgba(0,0,0,0.06)',
+    bg:'#FFFFFF', card:'#FFFFFF', sheetBg:'#FFFFFF', cardBorder:'rgba(0,0,0,0.06)',
     surface:'#F2F3F5', divider:'rgba(0,0,0,0.06)',
     text:'#1C1C1C', text2:'rgba(0,0,0,0.55)', text3:'rgba(0,0,0,0.30)',
     searchBg:'#F2F3F5', searchBorder:'rgba(0,0,0,0.08)',

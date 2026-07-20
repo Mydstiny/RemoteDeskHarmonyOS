@@ -80,10 +80,18 @@ export interface RemoteHostJSON {
   rustdeskRelayId: string
   rustdeskAccountId: string
   rustdeskPasswordMode: number
+  rustdeskAuthMode?: string
   rustdeskDirectEnabled: boolean
   rustdeskDirectHost: string
   rustdeskDirectPort: number
   rdpCredentialId: string
+  sourceType: string
+  rustdeskProAccountId: string
+  rustdeskProPeerId: string
+  rustdeskProPlatform: string
+  rustdeskProManaged: boolean
+  rustdeskProLastSeenAt: number
+  rustdeskProSyncError: string
 }
 
 /** 显示器配置 */
@@ -177,12 +185,21 @@ export class RemoteHost {
   proxyPort: number = 22;       // SSH 代理端口
   proxyUsername: string = '';   // SSH 代理用户名
   rustdeskRelayId: string = ''; // RustDesk 中继服务器配置 ID
-  rustdeskAccountId: string = ''; // RustDesk API 账户 ID
+  rustdeskAccountId: string = ''; // RustDesk Server Pro account ID
   rustdeskPasswordMode: number = 0; // RustDesk 密码模式: 0=一次性, 1=永久
+  // RustDesk 登录授权: password=使用一次性/永久密码, request_approval=请求被控端点击批准
+  rustdeskAuthMode: string = 'password';
   rustdeskDirectEnabled: boolean = false; // 直连模式 (跳过 ID 服务器)
   rustdeskDirectHost: string = ''; // 直连 peer IP 地址
-  rustdeskDirectPort: number = 21116; // 直连端口 (默认 21116)
+  rustdeskDirectPort: number = 21118; // 直连端口 (默认 21118; RustDesk peer TCP)
   rdpCredentialId: string = ''; // RDP 绑定的 Windows 凭据 ID
+  sourceType: string = 'manual'; // manual | rustdesk_pro
+  rustdeskProAccountId: string = ''; // Pro 账号设备端绑定 ID
+  rustdeskProPeerId: string = ''; // Pro 地址簿中的稳定 peer ID
+  rustdeskProPlatform: string = ''; // Pro 地址簿返回的平台: Windows/Linux/macOS 等
+  rustdeskProManaged: boolean = false; // 是否由 Server Pro 地址簿管理
+  rustdeskProLastSeenAt: number = 0; // 最近一次地址簿同步看到该 peer 的时间
+  rustdeskProSyncError: string = ''; // not_seen 或最近一次同步错误码
   syncVersion: number = 0;     // 同步版本号 (冲突检测)
   groupId: string = '';        // 工作区分组 ID
   sortOrder: number = 0;       // 手动排序序号
@@ -203,11 +220,13 @@ export class RemoteHost {
     const basic: boolean = this.label.length > 0 &&
            (this.protocol === 'rdp' || this.protocol === 'rustdesk' || this.protocol === 'ssh');
     if (this.protocol === 'rustdesk') {
-      // RustDesk: 需要远程ID (customHostname), 不需要host/username
+      // RustDesk 中继模式需要远程 ID；直连模式使用直连地址完成登录，远程 ID 可选。
       const hasEndpoint: boolean = this.rustdeskDirectEnabled ?
-        this.rustdeskDirectHost.length > 0 && this.host.length > 0 && this.port > 0 && this.port <= 65535 :
-        (this.rustdeskRelayId.length > 0 || this.host.length > 0) && this.port > 0 && this.port <= 65535;
-      return basic && this.customHostname.length > 0 && hasEndpoint;
+        this.rustdeskDirectHost.trim().length > 0 && this.rustdeskDirectPort > 0 &&
+        this.rustdeskDirectPort <= 65535 :
+        this.rustdeskRelayId.trim().length > 0 && this.port > 0 && this.port <= 65535;
+      const hasPeerIdentity: boolean = this.rustdeskDirectEnabled || this.customHostname.trim().length > 0;
+      return basic && hasPeerIdentity && hasEndpoint;
     }
     return basic && this.host.length > 0 &&
            (this.username.length > 0 || this.rdpCredentialId.length > 0) &&
@@ -221,16 +240,18 @@ export class RemoteHost {
     const errors: string[] = [];
     if (!this.label) { errors.push('主机名称不能为空'); }
     if (this.protocol === 'rustdesk') {
-      if (!this.customHostname) { errors.push('远程ID不能为空'); }
       if (this.rustdeskDirectEnabled) {
-        if (!this.rustdeskDirectHost || !this.host) { errors.push('RustDesk 直连地址不能为空'); }
-        if (this.port <= 0 || this.port > 65535 || this.rustdeskDirectPort <= 0 || this.rustdeskDirectPort > 65535) {
+        if (!this.rustdeskDirectHost.trim()) { errors.push('RustDesk 直连地址不能为空'); }
+        if (this.rustdeskDirectPort <= 0 || this.rustdeskDirectPort > 65535) {
           errors.push('端口号必须在 1-65535 之间');
         }
-      } else if (!this.rustdeskRelayId && !this.host) {
-        errors.push('RustDesk 需要选择中继配置或填写直连地址');
-      } else if (this.port <= 0 || this.port > 65535) {
-        errors.push('端口号必须在 1-65535 之间');
+      } else {
+        if (!this.customHostname.trim()) { errors.push('远程ID不能为空'); }
+        if (!this.rustdeskRelayId) {
+          errors.push('RustDesk 中继连接必须绑定中继配置');
+        } else if (this.port <= 0 || this.port > 65535) {
+          errors.push('端口号必须在 1-65535 之间');
+        }
       }
     } else {
       if (!this.host) { errors.push('主机地址不能为空'); }
@@ -244,11 +265,16 @@ export class RemoteHost {
       if (this.port <= 0 || this.port > 65535) { errors.push('端口号必须在 1-65535 之间'); }
     }
     if (this.protocol !== 'rdp' && this.protocol !== 'rustdesk' && this.protocol !== 'ssh') { errors.push('协议类型无效'); }
-    if (!this.password && this.rdpCredentialId === '' && !(this.protocol === 'ssh' && this.sshUseKey)) {
+    // 中继连接的密码可以留空，表示在连接弹窗中临时输入；只有直连没有
+    // ID/中继批准通道，才必须在主机配置中预先填写设备密码。
+    const rustDeskRelayCanPrompt: boolean = this.protocol === 'rustdesk' &&
+      !this.rustdeskDirectEnabled;
+    if (!this.password && !rustDeskRelayCanPrompt && this.rdpCredentialId === '' && !(this.protocol === 'ssh' && this.sshUseKey)) {
       if (this.protocol === 'rdp') {
         errors.push('密码不能为空 (或选择 Windows 凭据)');
       } else if (this.protocol === 'rustdesk') {
-        errors.push('密码不能为空 (或使用一次性密码模式)');
+        errors.push(this.rustdeskDirectEnabled ? 'RustDesk 直连模式需要设备密码' :
+          '密码不能为空，或选择“请求被控端批准”');
       } else {
         errors.push('密码不能为空 (或选择私钥认证)');
       }
@@ -316,10 +342,18 @@ export class RemoteHost {
       rustdeskRelayId: this.rustdeskRelayId,
       rustdeskAccountId: this.rustdeskAccountId,
       rustdeskPasswordMode: this.rustdeskPasswordMode,
+      rustdeskAuthMode: this.rustdeskAuthMode,
       rustdeskDirectEnabled: this.rustdeskDirectEnabled,
       rustdeskDirectHost: this.rustdeskDirectHost,
       rustdeskDirectPort: this.rustdeskDirectPort,
-      rdpCredentialId: this.rdpCredentialId
+      rdpCredentialId: this.rdpCredentialId,
+      sourceType: this.sourceType,
+      rustdeskProAccountId: this.rustdeskProAccountId,
+      rustdeskProPeerId: this.rustdeskProPeerId,
+      rustdeskProPlatform: this.rustdeskProPlatform,
+      rustdeskProManaged: this.rustdeskProManaged,
+      rustdeskProLastSeenAt: this.rustdeskProLastSeenAt,
+      rustdeskProSyncError: this.rustdeskProSyncError
     };
   }
 
@@ -382,10 +416,18 @@ export class RemoteHost {
     if (json.rustdeskRelayId) { host.rustdeskRelayId = json.rustdeskRelayId; }
     if (json.rustdeskAccountId) { host.rustdeskAccountId = json.rustdeskAccountId; }
     if (json.rustdeskPasswordMode !== undefined) { host.rustdeskPasswordMode = json.rustdeskPasswordMode; }
+    if (json.rustdeskAuthMode === 'request_approval') { host.rustdeskAuthMode = 'request_approval'; }
     if (json.rustdeskDirectEnabled !== undefined) { host.rustdeskDirectEnabled = json.rustdeskDirectEnabled; }
     if (json.rustdeskDirectHost) { host.rustdeskDirectHost = json.rustdeskDirectHost; }
     if (json.rustdeskDirectPort) { host.rustdeskDirectPort = json.rustdeskDirectPort; }
     if (json.rdpCredentialId) { host.rdpCredentialId = json.rdpCredentialId; }
+    if (json.sourceType) { host.sourceType = json.sourceType; }
+    if (json.rustdeskProAccountId) { host.rustdeskProAccountId = json.rustdeskProAccountId; }
+    if (json.rustdeskProPeerId) { host.rustdeskProPeerId = json.rustdeskProPeerId; }
+    if (json.rustdeskProPlatform) { host.rustdeskProPlatform = json.rustdeskProPlatform; }
+    if (json.rustdeskProManaged !== undefined) { host.rustdeskProManaged = json.rustdeskProManaged; }
+    if (json.rustdeskProLastSeenAt !== undefined) { host.rustdeskProLastSeenAt = json.rustdeskProLastSeenAt; }
+    if (json.rustdeskProSyncError) { host.rustdeskProSyncError = json.rustdeskProSyncError; }
     return host;
   }
 

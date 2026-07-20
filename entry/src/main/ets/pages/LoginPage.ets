@@ -10,7 +10,6 @@ import { AppConfig, Palette, buildDark, buildLight } from '../common/Theme';
 import { AuthService } from '../services/AuthService';
 import { AccountKitService } from '../services/AccountKitService';
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import { CloudSyncCoordinator } from '../services/CloudSyncCoordinator';
 
 const PREFS_NAME: string = 'RemoteDesktopAppPrefs';
 const KEY_LOGIN_MODE: string = 'loginMode';
@@ -193,7 +192,6 @@ struct LoginPage {
       unionID: unionId, openID: openId, authorizationCode: authCode,
       idToken: '', displayName: displayName
     });
-    CloudSyncCoordinator.getInstance().requestForegroundPull();
     this.saveLoginMode('account');
     if (showToast) {
       promptAction.showToast({ message: '华为账号登录成功', duration: 2000 });
@@ -291,7 +289,7 @@ struct LoginPage {
               height: SheetSize.FIT_CONTENT,
               preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
               dragBar: this.breakpoint === 'sm',
-              backgroundColor: Color.Transparent,
+              backgroundColor: this.pal().sheetBg,
               blurStyle: BlurStyle.NONE,
               showClose: false
             })
@@ -311,7 +309,7 @@ struct LoginPage {
         height: SheetSize.FIT_CONTENT,
         preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
         dragBar: this.breakpoint === 'sm',
-        backgroundColor: Color.Transparent,
+        backgroundColor: this.pal().sheetBg,
         blurStyle: BlurStyle.NONE,
         showClose: false
       })

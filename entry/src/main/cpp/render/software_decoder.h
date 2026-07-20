@@ -23,7 +23,8 @@ public:
     ~SoftwareDecoder();
 
     int Init(int width, int height, CodecType codec);
-    int Decode(const uint8_t* data, size_t size, uint64_t timestamp, bool isKeyFrame = false);
+    int Decode(const uint8_t* data, size_t size, uint64_t timestamp,
+               bool isKeyFrame = false, bool presentOutput = true);
     void Destroy();
 
     bool IsInitialized() const { return initialized_; }

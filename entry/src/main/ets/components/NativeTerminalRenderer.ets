@@ -33,6 +33,7 @@ const SELECTION_BG: string = 'rgba(90,140,255,0.40)';
 export struct NativeTerminalRenderer {
   @Prop @Watch('onResize') cols: number = 80;
   @Prop @Watch('onResize') rows: number = 24;
+  @Prop @Watch('onViewportSizeChange') viewportWidth: number = 0;
   @Prop @Watch('onViewportHeightChange') viewportHeight: number = 0;
   @Prop @Watch('onViewportHeightChange') visibleViewportHeight: number = 0;
   /** SshTerminal 传入的 cell 尺寸 (vp), 与 Canvas 测量解耦, 保证 cols×cellW 精确填满终端宽度 */
@@ -44,6 +45,7 @@ export struct NativeTerminalRenderer {
   @Prop selectMode: boolean = false;
   @Prop bottomAlignSparseContent: boolean = false;
   @Prop @Watch('onScrollToBottomRequest') scrollToBottomRequest: number = 0;
+  @Prop @Watch('onForceScrollToBottomRequest') forceScrollToBottomRequest: number = 0;
   @Prop externalScrollLines: number = 0;
   @Prop @Watch('onExternalScrollRequest') externalScrollRequest: number = 0;
   @Link @Watch('onCopyRequest') copyRequest: number;
@@ -78,6 +80,7 @@ export struct NativeTerminalRenderer {
   private frameCount: number = 0;
   /** 上一次绘制使用的顶部偏移, 偏移变化时需要全量重绘避免残影 */
   private lastGridTop: number = 0;
+  private lastCanvasArea: string = '';
 
   aboutToAppear(): void {
     this.resetLifecycleState();
@@ -115,6 +118,7 @@ export struct NativeTerminalRenderer {
     this.frameCount = 0;
     this.lastGridTop = 0;
     this.lastViewportHeight = 0;
+    this.lastCanvasArea = '';
   }
 
   // ============================================================
@@ -146,6 +150,19 @@ export struct NativeTerminalRenderer {
     this.scrollToBottomAndRender();
   }
 
+  private onForceScrollToBottomRequest(): void {
+    this.followBottom = true;
+    this.scrollToBottomAndRender();
+    const snap: TerminalCoreSnapshot | null = this.lastSnapshot;
+    if (snap) {
+      hilog.info(0x0000, 'NativeTerminal',
+        `[layoutDiag] force cols=${snap.cols} rows=${snap.rows} ` +
+        `viewTop=${snap.viewTop} screenTop=${snap.screenTop} atBottom=${snap.isAtBottom} ` +
+        `viewport=${this.viewportWidth}x${this.viewportHeight} visibleH=${this.visibleViewportHeight} ` +
+        `gridTop=${this.gridTop()}`);
+    }
+  }
+
   private onExternalScrollRequest(): void {
     hilog.info(0x0000, 'NativeTerminal',
       `[touchDiag] external req=${this.externalScrollRequest} lines=${this.externalScrollLines} ` +
@@ -163,6 +180,10 @@ export struct NativeTerminalRenderer {
       this.lastSnapshot = this.bridge.snapshot(this.handle);
     }
     this.lastRows = this.rows;
+    this.renderFull();
+  }
+
+  private onViewportSizeChange(): void {
     this.renderFull();
   }
 
@@ -311,7 +332,11 @@ export struct NativeTerminalRenderer {
     const contentH: number = (bottomRow + 1) * this.cellH;
     const visibleH: number = this.visibleViewportHeight > 0 ? this.visibleViewportHeight : this.viewportHeight;
     const topInset: number = Math.max(0, this.viewportHeight - visibleH);
-    const hasScrollback: boolean = snap.screenTop > 0 || snap.viewTop > 0;
+    // screenTop > 0 只说明缓冲区存在历史内容，不代表当前可见区正在浏览历史。
+    // 横屏输入命令后切回竖屏时，PTY 会扩大 rows，但光标仍可能停在横屏的第 11 行；
+    // 此时 viewTop === screenTop，移动端应把当前可见的稀疏内容贴到可视区底部。
+    // 只有用户主动上滑、viewTop 落后于 screenTop 时，才保持历史浏览的顶部布局。
+    const hasScrollback: boolean = snap.viewTop < snap.screenTop;
     const sparseLimit: number = Math.min(visibleH * 0.35, this.cellH * 8);
     return terminalGridTop(
       this.bottomAlignSparseContent,
@@ -329,7 +354,11 @@ export struct NativeTerminalRenderer {
     if (top <= 0) { return; }
     const ctx: CanvasRenderingContext2D = this.ctx;
     ctx.fillStyle = TERMINAL_BG_CSS;
-    ctx.fillRect(0, 0, this.cols * this.cellW, top);
+    ctx.fillRect(0, 0, this.canvasWidth(), top);
+  }
+
+  private canvasWidth(): number {
+    return Math.max(this.cols * this.cellW, Math.ceil(this.viewportWidth));
   }
 
   private canvasHeight(): number {
@@ -363,7 +392,7 @@ export struct NativeTerminalRenderer {
     const top: number = this.gridTop();
     const ctx: CanvasRenderingContext2D = this.ctx;
     ctx.fillStyle = TERMINAL_BG_CSS;
-    ctx.fillRect(0, 0, this.cols * this.cellW, this.canvasHeight());
+    ctx.fillRect(0, 0, this.canvasWidth(), this.canvasHeight());
     this.clearTopInset();
     for (let r = 0; r < this.rows; r++) {
       this.drawRow(r);
@@ -424,7 +453,7 @@ export struct NativeTerminalRenderer {
     const y: number = this.gridTop() + r * this.cellH;
     // 清整行 — 使用统一终端背景色
     ctx.fillStyle = TERMINAL_BG_CSS;
-    ctx.fillRect(0, y, this.cols * this.cellW, this.cellH);
+    ctx.fillRect(0, y, this.canvasWidth(), this.cellH);
     for (let c = 0; c < this.cols; c++) {
       const idx: number = r * snap.cols + c;
       if (idx >= snap.cells.length) { continue; }
@@ -521,6 +550,15 @@ export struct NativeTerminalRenderer {
       .width('100%')
       .height('100%')
       .backgroundColor(TERMINAL_BG_CSS)
+      .onAreaChange((_o: Area, n: Area): void => {
+        const area: string =
+          `size=${n.width}x${n.height} position=${JSON.stringify(n.position) ?? ''} ` +
+          `global=${JSON.stringify(n.globalPosition) ?? ''}`;
+        if (area !== this.lastCanvasArea) {
+          this.lastCanvasArea = area;
+          hilog.info(0x0000, 'NativeTerminal', `[areaDiag] canvas ${area}`);
+        }
+      })
       .focusable(false)
   }
 }

@@ -33,10 +33,12 @@ export struct SshKeyInstallSheet {
   @State verifyResult: SshAuthTestResult | null = null;
   @State step: number = 0; // 0=select host, 1=install, 2=verify, 3=done
   @State switchToNewKey: boolean = true;
+  @State hostViewRevision: number = 0;
 
   private loader: ExtensionLoader = ExtensionLoader.getInstance();
   private hostSync: HostSyncService = HostSyncService.getInstance();
   private kvs: KeyVaultService = KeyVaultService.getInstance();
+  private hostDataUnsubscribe: (() => void) | null = null;
 
   private pal(): Palette {
     return this.theme === 'light' ? buildLight(this.accentColor) : buildDark(this.accentColor);
@@ -45,9 +47,33 @@ export struct SshKeyInstallSheet {
   private font(): string { return AppTheme.fontFamily; }
 
   aboutToAppear(): void {
-    // 获取所有 SSH 主机
+    this.loadHosts();
+    if (!this.hostDataUnsubscribe) {
+      this.hostDataUnsubscribe = this.hostSync.onDataChange((): void => {
+        this.loadHosts();
+      });
+    }
+  }
+
+  aboutToDisappear(): void {
+    if (this.hostDataUnsubscribe) {
+      this.hostDataUnsubscribe();
+      this.hostDataUnsubscribe = null;
+    }
+  }
+
+  private loadHosts(): void {
+    const selectedId: string = this.selectedHost === null ? '' : this.selectedHost.id;
     const allHosts: RemoteHost[] = this.hostSync.getAllHosts();
     this.hosts = allHosts.filter((h: RemoteHost) => h.protocol === 'ssh');
+    this.hostViewRevision += 1;
+    if (selectedId !== '') {
+      const refreshed: RemoteHost | undefined = this.hosts.find((h: RemoteHost): boolean => h.id === selectedId);
+      this.selectedHost = refreshed === undefined ? null : refreshed;
+      if (refreshed === undefined && this.step === 0 && !this.installing) {
+        promptAction.showToast({ message: '所选 SSH 主机已被删除，请重新选择', duration: 2000 });
+      }
+    }
   }
 
   // ====== 安装流程 ======
@@ -185,7 +211,7 @@ export struct SshKeyInstallSheet {
               ForEach(this.hosts, (host: RemoteHost) => {
                 this.hostItem(host)
                 Blank().height(6)
-              }, (host: RemoteHost) => host.id)
+              }, (host: RemoteHost) => host.id + ':' + this.hostViewRevision.toString())
             }.width('100%')
           }.constraintSize({ maxHeight: 240 }).scrollBar(BarState.Off)
         }

@@ -8,6 +8,7 @@
 #include "hw_decoder.h"
 #include "decoder_recovery_policy.h"
 #include "software_decoder.h"
+#include "software_decode_latency_policy.h"
 #include "gl_renderer.h"
 #include "native_image_context_policy.h"
 #include <napi/native_api.h>
@@ -704,6 +705,7 @@ struct DecoderContext {
     std::atomic<uint64_t> softQueued {0};
     std::atomic<uint64_t> softDecoded {0};
     std::atomic<uint64_t> softDropped {0};
+    std::atomic<uint64_t> softSkippedPresent {0};
     std::atomic<bool> recoveryRequested {false};
 };
 
@@ -755,18 +757,25 @@ void StartSoftwareWorkerIfNeeded(DecoderContext* ctx) {
             }
             item.frame.data = item.data.data();
             item.frame.size = item.data.size();
+            const bool presentOutput = Render::shouldPresentSoftwareDecodedFrame(queueLeft);
+            if (!presentOutput) {
+                ctx->softSkippedPresent.fetch_add(1);
+            }
             const int ret = ctx->softwareDecoder->Decode(item.frame.data, item.frame.size,
-                                                         item.frame.timestamp, item.frame.isKeyFrame);
+                                                         item.frame.timestamp, item.frame.isKeyFrame,
+                                                         presentOutput);
             const uint64_t decoded = ctx->softDecoded.fetch_add(1) + 1;
-            if (decoded <= 5 || decoded % 120 == 0 || ret != 0 || queueLeft > 8) {
+            if (decoded <= 5 || decoded % 120 == 0 || ret != 0 || queueLeft > 8 || !presentOutput) {
                 OH_LOG_INFO(LOG_APP,
-                            "[Decoder] software worker frame=%{public}llu ret=%{public}d codec=%{public}d size=%{public}zu queue=%{public}zu dropped=%{public}llu key=%{public}s",
+                            "[Decoder] software worker frame=%{public}llu ret=%{public}d codec=%{public}d size=%{public}zu queue=%{public}zu dropped=%{public}llu present=%{public}s skippedPresent=%{public}llu key=%{public}s",
                             static_cast<unsigned long long>(decoded),
                             ret,
                             static_cast<int>(item.frame.codec),
                             item.frame.size,
                             queueLeft,
                             static_cast<unsigned long long>(ctx->softDropped.load()),
+                            presentOutput ? "yes" : "no",
+                            static_cast<unsigned long long>(ctx->softSkippedPresent.load()),
                             item.frame.isKeyFrame ? "yes" : "no");
             }
         }

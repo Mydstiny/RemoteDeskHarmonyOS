@@ -3,8 +3,10 @@
  */
 import { http } from '@kit.NetworkKit';
 import {
+  FEEDBACK_COMMUNITY_QR_MAX_BYTES,
   FEEDBACK_COMMUNITY_MANIFEST_URL,
   FeedbackCommunityManifest,
+  isFeedbackCommunityQrImageUrl,
   validateFeedbackCommunityManifest
 } from './FeedbackCommunityPolicy';
 
@@ -57,6 +59,9 @@ export class FeedbackCommunityService {
   }
 
   async downloadQrImage(url: string): Promise<ArrayBuffer> {
+    if (!isFeedbackCommunityQrImageUrl(url)) {
+      throw new Error('二维码地址不是受信任的反馈资源地址');
+    }
     const request: http.HttpRequest = http.createHttp();
     try {
       const response: http.HttpResponse = await request.request(url, {
@@ -73,6 +78,9 @@ export class FeedbackCommunityService {
       const bytes: ArrayBuffer = responseBytes(response.result as Object);
       if (bytes.byteLength === 0) {
         throw new Error('云端二维码内容为空');
+      }
+      if (bytes.byteLength > FEEDBACK_COMMUNITY_QR_MAX_BYTES) {
+        throw new Error('云端二维码文件过大');
       }
       return bytes;
     } finally {

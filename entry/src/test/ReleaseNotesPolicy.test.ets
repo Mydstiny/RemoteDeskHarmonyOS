@@ -26,11 +26,12 @@ export default function releaseNotesPolicyTest(): void {
       expect(shouldPresentGuideAsBottomSheet(StartupMode.RELEASE_NOTES, 'md')).assertFalse();
       expect(shouldPresentGuideAsBottomSheet(StartupMode.LOGIN, 'sm')).assertFalse();
     });
-    it('uses_dialog_for_non_phone_release_notes', 0, (): void => {
+    it('uses_center_sheet_for_all_non_phone_guides', 0, (): void => {
       expect(shouldPresentGuideAsDialog(StartupMode.RELEASE_NOTES, 'sm')).assertFalse();
       expect(shouldPresentGuideAsDialog(StartupMode.RELEASE_NOTES, 'md')).assertTrue();
       expect(shouldPresentGuideAsDialog(StartupMode.RELEASE_NOTES, 'xl')).assertTrue();
-      expect(shouldPresentGuideAsDialog(StartupMode.FIRST_INSTALL_GUIDE, 'xl')).assertFalse();
+      expect(shouldPresentGuideAsDialog(StartupMode.FIRST_INSTALL_GUIDE, 'md')).assertTrue();
+      expect(shouldPresentGuideAsDialog(StartupMode.FIRST_INSTALL_GUIDE, 'xl')).assertTrue();
       expect(shouldPresentGuideAsDialog(StartupMode.LOGIN, 'xl')).assertFalse();
     });
   });

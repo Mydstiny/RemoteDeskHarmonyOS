@@ -35,6 +35,7 @@ struct RustDeskFfiConfig {
     int         profile;    // 0=Stable, 1=Balanced, 2=Performance, 3=Custom
     int         fps;        // 期望 FPS (0=from profile)
     bool        direct_connection; // 直连模式: false=rendezvous (默认), true=TCP直连peer
+    int         auth_mode;  // 0=设备密码, 1=请求被控端点击批准
 };
 
 enum class RustDeskMode {
@@ -60,6 +61,8 @@ public:
     int             connect(const ConnectionConfig& cfg) override;
     void            disconnect() override;
     ConnectionState getState() override;
+    void            setSessionIdentity(uint64_t sessionId) override;
+    RemoteCursorSnapshot getRemoteCursorSnapshot(bool includePixels) override;
     void            requestFrameRefresh() override;
     void            reportVideoPressure(int level) override;
 
@@ -95,6 +98,7 @@ private:
 #ifdef RUSTDESK_USE_REAL_CORE
     static void onFfiFrame(const void* frame, void* userData);
     static void onFfiAudio(const void* audio, void* userData);
+    static void onFfiCursor(const void* cursor, void* userData);
     static void onFfiDisconnect(int state, const char* message, void* userData);
 #endif
 

@@ -12,9 +12,13 @@ export default function cloudSyncSettingsPolicyTest() {
       expect(names.indexOf('wallpaperColor') >= 0).assertTrue();
       expect(names.indexOf('rdpColorDepth') >= 0).assertTrue();
       expect(names.indexOf('rustdeskImageQuality') >= 0).assertTrue();
+      expect(names.indexOf('virtualMouseStyle') >= 0).assertTrue();
+      expect(names.indexOf('showVirtualMouse') >= 0).assertTrue();
+      expect(names.indexOf('showVirtualJoystick') >= 0).assertTrue();
       expect(cloudUserSettingIsSyncable('loginMode')).assertFalse();
       expect(cloudUserSettingIsSyncable('totpLocked')).assertFalse();
       expect(cloudUserSettingIsSyncable('remoteDesktopBgFlag')).assertFalse();
+      expect(cloudUserSettingIsSyncable('virtualMouseSession')).assertFalse();
     });
   });
 }

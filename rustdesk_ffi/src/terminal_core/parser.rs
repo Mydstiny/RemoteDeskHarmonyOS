@@ -70,8 +70,8 @@ impl<'a> TerminalPerformer<'a> {
         match mode {
             25 => self.terminal.set_cursor_visible(true),
             1049 => {
-                // 保存光标 + 进入备用屏并清屏
-                self.terminal.save_cursor_full();
+                // enter_alt_screen stores the complete primary-screen cursor
+                // state. Keep DECSC/SCOSC's independent saved cursor intact.
                 self.terminal.enter_alt_screen(true);
                 eprintln!("[terminal_core] alternate screen ENTER (?1049h)");
             }
@@ -122,7 +122,6 @@ impl<'a> TerminalPerformer<'a> {
             25 => self.terminal.set_cursor_visible(false),
             1049 => {
                 self.terminal.leave_alt_screen(true);
-                self.terminal.restore_cursor_full();
                 eprintln!("[terminal_core] alternate screen LEAVE (?1049l)");
             }
             47 => {

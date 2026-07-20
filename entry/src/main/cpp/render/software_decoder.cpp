@@ -4,9 +4,11 @@
 
 #include "software_decoder.h"
 #include <hilog/log.h>
+#include <algorithm>
 #include <cstring>
 #include <string>
 #include <chrono>
+#include <thread>
 
 #ifdef USE_FFMPEG_SOFTWARE_DECODER
 extern "C" {
@@ -34,6 +36,14 @@ constexpr int kErrReceiveFrameFailed = -107;
 constexpr int kErrConvertFailed = -108;
 constexpr int kErrRenderFailed = -109;
 constexpr int kSoftwareDecodeMaxOutputEdge = 1600;
+constexpr int kSoftwareDecodeMinThreads = 4;
+constexpr int kSoftwareDecodeMaxThreads = 8;
+
+int softwareDecodeThreadCount() {
+    const unsigned int detected = std::thread::hardware_concurrency();
+    const int available = detected == 0 ? kSoftwareDecodeMinThreads : static_cast<int>(detected);
+    return std::clamp(available, kSoftwareDecodeMinThreads, kSoftwareDecodeMaxThreads);
+}
 
 void computeOutputSize(int srcWidth, int srcHeight, int& outWidth, int& outHeight) {
     outWidth = srcWidth;
@@ -142,8 +152,11 @@ int SoftwareDecoder::Init(int width, int height, CodecType codec) {
 
     impl_->codecCtx->width = width;
     impl_->codecCtx->height = height;
-    impl_->codecCtx->thread_count = 4;
-    impl_->codecCtx->thread_type = FF_THREAD_SLICE;
+    impl_->codecCtx->thread_count = softwareDecodeThreadCount();
+    // VP9 tile/slice parallelism keeps latency low, while frame parallelism
+    // provides enough throughput for a 60 FPS stream when the peer emits
+    // frames that cannot be split into enough tiles.
+    impl_->codecCtx->thread_type = FF_THREAD_SLICE | FF_THREAD_FRAME;
     impl_->codecCtx->flags |= AV_CODEC_FLAG_LOW_DELAY;
 
     const int openRet = avcodec_open2(impl_->codecCtx, decoder, nullptr);
@@ -164,7 +177,8 @@ int SoftwareDecoder::Init(int width, int height, CodecType codec) {
 #endif
 }
 
-int SoftwareDecoder::Decode(const uint8_t* data, size_t size, uint64_t timestamp, bool isKeyFrame) {
+int SoftwareDecoder::Decode(const uint8_t* data, size_t size, uint64_t timestamp,
+                            bool isKeyFrame, bool presentOutput) {
     (void)isKeyFrame;
     if (!initialized_ || !data || size == 0) {
         return -1;
@@ -214,7 +228,7 @@ int SoftwareDecoder::Decode(const uint8_t* data, size_t size, uint64_t timestamp
             return kErrReceiveFrameFailed;
         }
 
-        const int renderRet = renderFrame();
+        const int renderRet = presentOutput ? renderFrame() : 0;
         av_frame_unref(impl_->frame);
         if (renderRet != 0) {
             return renderRet;

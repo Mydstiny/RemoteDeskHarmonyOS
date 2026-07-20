@@ -107,6 +107,12 @@ impl Terminal {
 
     pub fn resize(&mut self, cols: usize, rows: usize) {
         let was_at_bottom = self.is_at_bottom();
+        let old_rows = self.rows;
+        let absolute_cursor = self.screen_top.saturating_add(self.cursor_y);
+        let bottom_distance = self
+            .rows
+            .saturating_sub(1)
+            .saturating_sub(self.cursor_y);
         self.cols = cols.max(1);
         self.rows = rows.max(1);
 
@@ -127,12 +133,51 @@ impl Terminal {
             for wrapped in &mut self.main_wrapped_rows {
                 *wrapped = false;
             }
+
+            let main_was_at_bottom = self.main_view_top >= self.main_screen_top;
+            let main_absolute_cursor = self.main_screen_top.saturating_add(self.main_cursor_y);
+            let main_bottom_distance = old_rows
+                .saturating_sub(1)
+                .saturating_sub(self.main_cursor_y);
+            let desired_main_cursor_y = self
+                .rows
+                .saturating_sub(1)
+                .saturating_sub(main_bottom_distance);
+            self.main_screen_top = main_absolute_cursor.saturating_sub(desired_main_cursor_y);
+            self.main_cursor_y = main_absolute_cursor.saturating_sub(self.main_screen_top);
+            self.main_view_top = if main_was_at_bottom {
+                self.main_screen_top
+            } else {
+                self.main_view_top.min(self.main_screen_top)
+            };
+            let required_main_rows = self.main_screen_top.saturating_add(self.rows);
+            while self.main_buffer.len() < required_main_rows {
+                self.main_buffer.push(blank_row(self.cols, self.main_attrs));
+                self.main_wrapped_rows.push(false);
+            }
+        }
+        self.cursor_x = self.cursor_x.min(self.cols.saturating_sub(1));
+        if self.alt_active {
+            // The alternate screen has no scrollback. Keep its cursor in bounds;
+            // resizing it must not manufacture history in the primary buffer.
+            self.cursor_y = self.cursor_y.min(self.rows.saturating_sub(1));
+            self.screen_top = 0;
+        } else {
+            // Keep the cursor's absolute buffer row and its distance from the
+            // viewport bottom. When rows grow this pulls existing scrollback
+            // back into view instead of appending blank rows below the cursor.
+            let desired_cursor_y = self
+                .rows
+                .saturating_sub(1)
+                .saturating_sub(bottom_distance);
+            self.screen_top = absolute_cursor.saturating_sub(desired_cursor_y);
+            self.cursor_y = absolute_cursor.saturating_sub(self.screen_top);
         }
         self.ensure_abs_row(self.screen_top + self.rows.saturating_sub(1));
-
-        self.cursor_x = self.cursor_x.min(self.cols.saturating_sub(1));
-        self.cursor_y = self.cursor_y.min(self.rows.saturating_sub(1));
         self.screen_top = self.screen_top.min(self.max_screen_top());
+        self.cursor_y = absolute_cursor
+            .saturating_sub(self.screen_top)
+            .min(self.rows.saturating_sub(1));
         self.view_top = if was_at_bottom {
             self.screen_top
         } else {

@@ -1,7 +1,7 @@
 /**
- * RustDeskAccount.ets — RustDesk API Admin 账户 (中继服务器下属)
+ * RustDeskAccount.ets — legacy cloud account metadata container.
  *
- * 每个中继服务器可配置多个 API Admin 账户, 互相隔离。
+ * The released accountsjson shape is retained for Server Pro metadata.
  * 主机绑定: RemoteHost → rustdeskRelayId + rustdeskAccountId 二级锁定。
  */
 import { cryptoFramework } from '@kit.CryptoArchitectureKit';
@@ -19,8 +19,8 @@ export interface RustDeskAccountJSON {
 export class RustDeskAccount {
   id: string = '';               // UUID
   relayId: string = '';          // 所属中继配置 ID
-  username: string = '';         // API Admin 用户名
-  password: string = '';         // API Admin 密码 (加密存储)
+  username: string = '';         // Pro account username metadata
+  password: string = '';         // Always empty for Pro metadata
   loginStatus: string = 'none';  // none|logged_in|expired
   lastLoginAt: number = 0;
   createdAt: number = Date.now();

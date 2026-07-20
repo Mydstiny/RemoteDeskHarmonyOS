@@ -3,6 +3,7 @@ import { preferences } from '@kit.ArkData';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { CloudSyncSelectionStore } from './CloudSyncSelectionStore';
 import { CloudSyncDirection } from './CloudSyncPolicy';
+import { ActiveRemoteSessionRegistry } from './ActiveRemoteSessionRegistry';
 import {
   CLOUD_SYNC_MAX_RETRY_ATTEMPTS,
   CloudSyncRequest,
@@ -13,6 +14,7 @@ import {
   isAutomaticRetryRecord,
   nextCloudSyncRetryDelayMs,
   retryTablesStillSelected,
+  shouldReplayAutomaticPush,
   snapshotCloudSyncTables,
   upsertAutomaticRetryRecord
 } from './CloudSyncCoordinatorPolicy';
@@ -21,6 +23,7 @@ const DOMAIN = 0x0001;
 const TAG = 'CloudSyncCoordinator';
 const PREFS_NAME = 'RemoteDesktopAppPrefs';
 const RETRY_PREFERENCE_KEY = 'cloudSyncRetryRecord';
+const DIRTY_PREFERENCE_KEY = 'cloudSyncDirtyTables';
 
 export interface CloudSyncOperationResult {
   ok: boolean;
@@ -126,6 +129,7 @@ export class CloudSyncCoordinator {
   private readonly selection: CloudSyncSelectionStore = CloudSyncSelectionStore.getInstance();
   private queueTail: Promise<void> = Promise.resolve();
   private pendingAutomaticTables: string[] = [];
+  private deferredAutomaticTables: string[] = [];
   private pendingPull: Promise<CloudSyncOperationResult> | null = null;
   private onCloudFirstApplied: ((tables: string[]) => void) | null = null;
   private hooks: CloudSyncCoordinatorHooks | null = null;
@@ -133,6 +137,8 @@ export class CloudSyncCoordinator {
   private retryRecords: CloudSyncRetryRecord[] = [];
   private restorePending: boolean = false;
   private automaticRetryAttempts: Record<string, number> = {};
+  private automaticMutationVersions: Record<string, number> = {};
+  private dirtyAutomaticTables: string[] = [];
 
   static getInstance(): CloudSyncCoordinator {
     if (!CloudSyncCoordinator.instance) {
@@ -152,10 +158,30 @@ export class CloudSyncCoordinator {
     this.onCloudFirstApplied = onCloudFirstApplied;
     this.hooks = hooks;
     this.restoreRetryRecord();
+    this.restoreDirtyTables();
   }
 
   requestStartupPull(): Promise<CloudSyncOperationResult> {
-    return this.requestCloudFirst('startup');
+    const selected: string[] = this.selectedTables();
+    const dirty: string[] = this.dirtyAutomaticTables.filter((table: string): boolean =>
+      selected.indexOf(table) >= 0);
+    if (dirty.length === 0) { return this.requestCloudFirst('startup'); }
+    const versions: Record<string, number> = {};
+    dirty.forEach((table: string): void => {
+      versions[table] = this.automaticMutationVersions[table] || 1;
+    });
+    const request: CloudSyncRequest = {
+      source: 'automaticPush', direction: 'nativeFirst', tables: snapshotCloudSyncTables(dirty)
+    };
+    return this.enqueue(request).then((result: CloudSyncOperationResult): Promise<CloudSyncOperationResult> => {
+      if (!result.ok) { return Promise.resolve(result); }
+      dirty.forEach((table: string): void => {
+        if ((this.automaticMutationVersions[table] || versions[table]) === versions[table]) {
+          this.clearDirtyTable(table);
+        }
+      });
+      return this.requestCloudFirst('startup');
+    });
   }
 
   requestForegroundPull(): Promise<CloudSyncOperationResult> {
@@ -179,8 +205,20 @@ export class CloudSyncCoordinator {
     if (selected.indexOf(table) < 0 || this.restorePending) {
       return Promise.resolve(this.skippedResult('automaticPush'));
     }
+    const version: number = (this.automaticMutationVersions[table] || 0) + 1;
+    this.automaticMutationVersions[table] = version;
+    this.markDirtyTable(table);
+    const activeSession = ActiveRemoteSessionRegistry.getInstance().getActive();
+    if (activeSession !== null && activeSession.protocolConnected) {
+      if (this.deferredAutomaticTables.indexOf(table) < 0) {
+        this.deferredAutomaticTables.push(table);
+      }
+      hilog.info(DOMAIN, TAG, 'defer automatic push during remote session table=' + table);
+      return Promise.resolve(this.skippedResult('automaticPush'));
+    }
     for (let i = 0; i < this.pendingAutomaticTables.length; i++) {
       if (coalesceAutomaticPush(this.pendingAutomaticTables[i], table)) {
+        hilog.info(DOMAIN, TAG, 'coalesce latest mutation for table=' + table);
         return Promise.resolve(this.skippedResult('automaticPush'));
       }
     }
@@ -189,10 +227,22 @@ export class CloudSyncCoordinator {
     const tables: string[] = selected.filter((candidate: string): boolean =>
       candidate === 'cryptoparams' || candidate === table
     );
-    return this.enqueueAutomaticRequest({ source: 'automaticPush', direction: 'nativeFirst', tables }, table);
+    return this.enqueueAutomaticRequest({ source: 'automaticPush', direction: 'nativeFirst', tables }, table, version);
   }
 
-  private enqueueAutomaticRequest(request: CloudSyncRequest, retryKey: string): Promise<CloudSyncOperationResult> {
+  /** Flushes mutations collected while audio/video had priority. */
+  flushDeferredAutomaticPushes(): void {
+    const activeSession = ActiveRemoteSessionRegistry.getInstance().getActive();
+    if (activeSession !== null && activeSession.protocolConnected) { return; }
+    const tables: string[] = this.deferredAutomaticTables.slice();
+    this.deferredAutomaticTables = [];
+    for (let i = 0; i < tables.length; i++) {
+      this.requestAutomaticPush(tables[i]);
+    }
+  }
+
+  private enqueueAutomaticRequest(request: CloudSyncRequest, retryKey: string,
+    completedVersion: number = this.automaticMutationVersions[retryKey] || 1): Promise<CloudSyncOperationResult> {
     for (let i = 0; i < this.pendingAutomaticTables.length; i++) {
       if (coalesceAutomaticPush(this.pendingAutomaticTables[i], retryKey)) {
         return Promise.resolve(this.skippedResult('automaticPush'));
@@ -205,6 +255,16 @@ export class CloudSyncCoordinator {
       if (result.ok) {
         this.automaticRetryAttempts[retryKey] = 0;
         this.removeAutomaticRetry(retryKey);
+        const latestVersion: number = this.automaticMutationVersions[retryKey] || completedVersion;
+        if (shouldReplayAutomaticPush(completedVersion, latestVersion)) {
+          const selected: string[] = this.selectedTables();
+          const tables: string[] = selected.filter((candidate: string): boolean =>
+            candidate === 'cryptoparams' || candidate === retryKey);
+          this.enqueueAutomaticRequest({ source: 'automaticPush', direction: 'nativeFirst', tables },
+            retryKey, latestVersion);
+        } else {
+          this.clearDirtyTable(retryKey);
+        }
       } else {
         const attempt: number = (this.automaticRetryAttempts[retryKey] || 0) + 1;
         this.automaticRetryAttempts[retryKey] = attempt;
@@ -309,6 +369,55 @@ export class CloudSyncCoordinator {
       this.scheduleRetryTimer();
     } catch (err) {
       hilog.warn(DOMAIN, TAG, 'restore retry ignored: ' + JSON.stringify(err));
+    }
+  }
+
+  private restoreDirtyTables(): void {
+    if (!this.context) { return; }
+    try {
+      const prefs = preferences.getPreferencesSync(this.context, { name: PREFS_NAME });
+      const raw: string = prefs.getSync(DIRTY_PREFERENCE_KEY, '[]') as string;
+      const parsed = JSON.parse(raw) as Object;
+      if (!Array.isArray(parsed)) { return; }
+      const values = parsed as string[];
+      for (let i = 0; i < values.length; i++) {
+        if (this.dirtyAutomaticTables.indexOf(values[i]) < 0) {
+          this.dirtyAutomaticTables.push(values[i]);
+          this.automaticMutationVersions[values[i]] = 1;
+        }
+      }
+    } catch (err) {
+      hilog.warn(DOMAIN, TAG, 'restore dirty tables ignored: ' + JSON.stringify(err));
+    }
+  }
+
+  private writeDirtyTables(): void {
+    if (!this.context) { return; }
+    try {
+      const prefs = preferences.getPreferencesSync(this.context, { name: PREFS_NAME });
+      if (this.dirtyAutomaticTables.length === 0) {
+        prefs.deleteSync(DIRTY_PREFERENCE_KEY);
+      } else {
+        prefs.putSync(DIRTY_PREFERENCE_KEY, JSON.stringify(this.dirtyAutomaticTables));
+      }
+      prefs.flushSync();
+    } catch (err) {
+      hilog.warn(DOMAIN, TAG, 'write dirty tables failed: ' + JSON.stringify(err));
+    }
+  }
+
+  private markDirtyTable(table: string): void {
+    if (this.dirtyAutomaticTables.indexOf(table) < 0) {
+      this.dirtyAutomaticTables.push(table);
+      this.writeDirtyTables();
+    }
+  }
+
+  private clearDirtyTable(table: string): void {
+    const index: number = this.dirtyAutomaticTables.indexOf(table);
+    if (index >= 0) {
+      this.dirtyAutomaticTables.splice(index, 1);
+      this.writeDirtyTables();
     }
   }
 

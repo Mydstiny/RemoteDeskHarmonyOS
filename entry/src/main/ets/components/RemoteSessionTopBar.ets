@@ -51,6 +51,7 @@ export struct RemoteSessionTopBar {
   @Prop reverseWheel: boolean = false;
   @Prop swapMouseButtons: boolean = false;
   @Prop touchpadSpeed: number = 1.0;
+  @Prop keyboardOpen: boolean = false;
   @Prop capabilities: RemoteSessionCapabilities = {
     connect: { enabled: false, reason: '远程会话尚未连接' },
     clipboardSend: { enabled: false, reason: '远程会话尚未连接' },
@@ -284,7 +285,9 @@ export struct RemoteSessionTopBar {
   @Builder
   private keyboardMouseMenu() {
     Column() {
-      this.menuItem('打开虚拟键盘', 'toggleKeyboard', (): void => { this.actions.onOpenKeyboard(); })
+      this.menuItem(this.keyboardOpen ? '关闭虚拟键盘' : '打开虚拟键盘', 'toggleKeyboard', (): void => {
+        this.actions.onOpenKeyboard();
+      }, this.keyboardOpen)
       this.menuItem('浏览模式', 'browseMode', (): void => {
         this.actions.onToggleBrowseMode(!this.browseMode);
       }, this.browseMode)
@@ -340,7 +343,8 @@ export struct RemoteSessionTopBar {
         Blank().width(this.layout.itemGap)
         this.iconButton($r('sys.symbol.desktop_fill'), this.accentColor, (): void => { this.toggleMenu('display'); })
         Blank().width(this.layout.itemGap)
-        this.iconButton($r('sys.symbol.keyboard'), this.accentColor, (): void => { this.toggleMenu('keyboardMouse'); })
+        this.iconButton($r('sys.symbol.keyboard'), this.keyboardOpen ? '#2A9D8F' : this.accentColor,
+          (): void => { this.toggleMenu('keyboardMouse'); })
         Blank().width(this.layout.itemGap)
         this.iconButton($r('sys.symbol.message'), this.accentColor, (): void => { this.toggleMenu('chat'); })
         Blank().width(this.layout.itemGap)

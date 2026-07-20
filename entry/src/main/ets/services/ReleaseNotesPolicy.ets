@@ -42,8 +42,8 @@ export function shouldPresentGuideAsBottomSheet(mode: StartupMode, breakpoint: s
 }
 
 /**
- * Pad/PC 端只将版本更新说明放入居中弹窗；首次介绍继续使用全屏教程。
+ * Pad/PC 端的版本更新说明和首次介绍都使用居中系统 Sheet。
  */
 export function shouldPresentGuideAsDialog(mode: StartupMode, breakpoint: string): boolean {
-  return mode === StartupMode.RELEASE_NOTES && breakpoint !== 'sm';
+  return mode !== StartupMode.LOGIN && breakpoint !== 'sm';
 }

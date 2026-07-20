@@ -14,7 +14,7 @@ export default function guideContentRegistryTest(): void {
     it('keeps_first_install_and_settings_guides_equal_except_final_page', 0, (): void => {
       const firstInstall: GuideContentPage[] = firstInstallGuidePages();
       const settings: GuideContentPage[] = settingsUsageGuidePages();
-      expect(firstInstall.length).assertEqual(9);
+      expect(firstInstall.length).assertEqual(11);
       expect(settings.length).assertEqual(firstInstall.length);
       for (let i = 0; i < firstInstall.length - 1; i++) {
         expect(settings[i].id).assertEqual(firstInstall[i].id);
@@ -30,10 +30,12 @@ export default function guideContentRegistryTest(): void {
     it('covers_current_user_facing_capabilities', 0, (): void => {
       const pages: GuideContentPage[] = firstInstallGuidePages();
       expect(containsPage(pages, 'protocols')).assertTrue();
-      expect(containsPage(pages, 'host-management')).assertTrue();
+      expect(containsPage(pages, 'resource-wizard')).assertTrue();
+      expect(containsPage(pages, 'connection-check')).assertTrue();
       expect(containsPage(pages, 'remote-input')).assertTrue();
       expect(containsPage(pages, 'transfer-clipboard')).assertTrue();
       expect(containsPage(pages, 'ssh-security')).assertTrue();
+      expect(containsPage(pages, 'rustdesk-relay-pro')).assertTrue();
       expect(containsPage(pages, 'sync-backup')).assertTrue();
       expect(containsPage(pages, 'background-responsive')).assertTrue();
       expect(containsPage(pages, 'feedback-community')).assertTrue();

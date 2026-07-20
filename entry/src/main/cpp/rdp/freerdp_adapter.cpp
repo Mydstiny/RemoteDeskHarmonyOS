@@ -26,6 +26,7 @@
 #ifdef USE_REAL_FREERDP
 #include <freerdp/channels/rdpgfx.h>
 #include <freerdp/client/rdpgfx.h>
+#include <freerdp/codec/color.h>
 #include <freerdp/gdi/gfx.h>
 #endif
 #include <hilog/log.h>
@@ -41,6 +42,7 @@
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <unistd.h>
+#include <algorithm>
 #include <atomic>
 #include <cerrno>
 #include <chrono>
@@ -539,6 +541,7 @@ struct FreeRdpAdapter::Impl {
     std::mutex              renderMutex;
     RdpShutdown::State      shutdownState;
     std::atomic<uint64_t>   sessionGeneration {0};
+    RemoteCursorStore       cursorStore;
     std::atomic<int64_t>    shutdownStartedUs {0};
     RdpFramePump            framePump;
     RdpGraphicsLifecycle    graphicsLifecycle;
@@ -1310,6 +1313,113 @@ BOOL FreeRdpAdapter::cbLoadChannels(freerdp* instance) {
     return ok;
 }
 
+struct HarmonyRdpPointer {
+    rdpPointer pointer;
+    uint8_t* rgba = nullptr;
+    size_t rgbaLen = 0;
+    uint64_t shapeId = 0;
+};
+
+static uint64_t hashRdpPointer(const uint8_t* data, size_t size, const rdpPointer* pointer) {
+    uint64_t hash = 1469598103934665603ULL;
+    const auto mix = [&hash](uint8_t value) {
+        hash ^= value;
+        hash *= 1099511628211ULL;
+    };
+    for (size_t i = 0; i < size; ++i) {
+        mix(data[i]);
+    }
+    const uint32_t metadata[] = {
+        pointer->width, pointer->height, pointer->xPos, pointer->yPos
+    };
+    for (uint32_t value : metadata) {
+        for (int shift = 0; shift < 32; shift += 8) {
+            mix(static_cast<uint8_t>((value >> shift) & 0xFFU));
+        }
+    }
+    return hash;
+}
+
+BOOL FreeRdpAdapter::cbPointerNew(rdpContext* context, rdpPointer* pointer) {
+    if (!context || !context->gdi || !pointer || pointer->width == 0 || pointer->height == 0 ||
+        pointer->width > static_cast<UINT32>(kRemoteCursorMaxDimension) ||
+        pointer->height > static_cast<UINT32>(kRemoteCursorMaxDimension)) {
+        return FALSE;
+    }
+    auto* cursor = reinterpret_cast<HarmonyRdpPointer*>(pointer);
+    cursor->rgbaLen = static_cast<size_t>(pointer->width) * pointer->height * 4U;
+    cursor->rgba = static_cast<uint8_t*>(std::malloc(cursor->rgbaLen));
+    if (!cursor->rgba) {
+        return FALSE;
+    }
+    if (!freerdp_image_copy_from_pointer_data(
+            cursor->rgba, PIXEL_FORMAT_BGRA32, 0, 0, 0, pointer->width, pointer->height,
+            pointer->xorMaskData, pointer->lengthXorMask, pointer->andMaskData,
+            pointer->lengthAndMask, pointer->xorBpp, &context->gdi->palette)) {
+        std::free(cursor->rgba);
+        cursor->rgba = nullptr;
+        cursor->rgbaLen = 0;
+        return FALSE;
+    }
+    for (size_t i = 0; i < cursor->rgbaLen; i += 4) {
+        std::swap(cursor->rgba[i], cursor->rgba[i + 2]);
+    }
+    cursor->shapeId = hashRdpPointer(cursor->rgba, cursor->rgbaLen, pointer);
+    return TRUE;
+}
+
+void FreeRdpAdapter::cbPointerFree(rdpContext*, rdpPointer* pointer) {
+    auto* cursor = reinterpret_cast<HarmonyRdpPointer*>(pointer);
+    if (cursor) {
+        std::free(cursor->rgba);
+        cursor->rgba = nullptr;
+        cursor->rgbaLen = 0;
+    }
+}
+
+BOOL FreeRdpAdapter::cbPointerSet(rdpContext* context, rdpPointer* pointer) {
+    auto* ctx = reinterpret_cast<FreeRdpContext*>(context);
+    auto* cursor = reinterpret_cast<HarmonyRdpPointer*>(pointer);
+    if (!ctx || !ctx->adapter || !cursor || !cursor->rgba || cursor->rgbaLen == 0) {
+        return FALSE;
+    }
+    std::vector<uint8_t> rgba(cursor->rgba, cursor->rgba + cursor->rgbaLen);
+    const bool accepted = ctx->adapter->impl_->cursorStore.setShape(
+        cursor->shapeId, static_cast<int>(pointer->width), static_cast<int>(pointer->height),
+        static_cast<int>(pointer->xPos), static_cast<int>(pointer->yPos), rgba);
+    if (accepted) {
+        ctx->adapter->impl_->cursorStore.setVisible(true);
+    }
+    return accepted ? TRUE : FALSE;
+}
+
+BOOL FreeRdpAdapter::cbPointerSetPosition(rdpContext* context, UINT32 x, UINT32 y) {
+    auto* ctx = reinterpret_cast<FreeRdpContext*>(context);
+    if (!ctx || !ctx->adapter) {
+        return FALSE;
+    }
+    ctx->adapter->impl_->cursorStore.setPosition(static_cast<int>(x), static_cast<int>(y));
+    return TRUE;
+}
+
+BOOL FreeRdpAdapter::cbPointerSetNull(rdpContext* context) {
+    auto* ctx = reinterpret_cast<FreeRdpContext*>(context);
+    if (!ctx || !ctx->adapter) {
+        return FALSE;
+    }
+    ctx->adapter->impl_->cursorStore.setVisible(false);
+    return TRUE;
+}
+
+BOOL FreeRdpAdapter::cbPointerSetDefault(rdpContext* context) {
+    auto* ctx = reinterpret_cast<FreeRdpContext*>(context);
+    if (!ctx || !ctx->adapter) {
+        return FALSE;
+    }
+    ctx->adapter->impl_->cursorStore.setVisible(true);
+    return TRUE;
+}
+
 // ---- GDI BeginPaint/EndPaint — 首帧上屏 (BGRA raw → GLRenderer) ----
 BOOL FreeRdpAdapter::cbPostConnect(freerdp* instance) {
     if (!instance || !instance->context) return FALSE;
@@ -1326,6 +1436,16 @@ BOOL FreeRdpAdapter::cbPostConnect(freerdp* instance) {
         gdi_free(instance);
         return FALSE;
     }
+
+    rdpPointer pointer = {};
+    pointer.size = sizeof(HarmonyRdpPointer);
+    pointer.New = cbPointerNew;
+    pointer.Free = cbPointerFree;
+    pointer.Set = cbPointerSet;
+    pointer.SetPosition = cbPointerSetPosition;
+    pointer.SetNull = cbPointerSetNull;
+    pointer.SetDefault = cbPointerSetDefault;
+    graphics_register_pointer(instance->context->graphics, &pointer);
 
     instance->update->BeginPaint = cbBeginPaint;
     instance->update->EndPaint = cbEndPaint;
@@ -1353,6 +1473,7 @@ void FreeRdpAdapter::cbPostDisconnect(freerdp* instance) {
     auto* self = ctx ? ctx->adapter : nullptr;
     if (!self) return;
 
+    self->impl_->cursorStore.setVisible(false);
     self->impl_->traceShutdown("post-disconnect", "begin");
     self->impl_->presentationEnabled.store(false, std::memory_order_release);
     RendererNapi::InvalidateActivePresentation();
@@ -1857,6 +1978,14 @@ FreeRdpAdapter::FreeRdpAdapter() : impl_(std::make_unique<Impl>()) {
     OH_LOG_INFO(LOG_APP, "[RDP] FreeRdpAdapter created (FreeRDP 3.x)");
 }
 
+void FreeRdpAdapter::setSessionIdentity(uint64_t sessionId) {
+    impl_->cursorStore.reset(sessionId, "rdp");
+}
+
+RemoteCursorSnapshot FreeRdpAdapter::getRemoteCursorSnapshot(bool includePixels) {
+    return impl_->cursorStore.snapshot(includePixels);
+}
+
 FreeRdpAdapter::~FreeRdpAdapter() {
     // 断开活跃连接或等待连接线程结束
     disconnect();
@@ -1969,6 +2098,10 @@ void FreeRdpAdapter::connectThreadFunc() {
     freerdp_settings_set_uint32(s, FreeRDP_DesktopHeight,
                                 static_cast<UINT32>(cfg.height > 0 ? cfg.height : 1080));
     freerdp_settings_set_bool(s, FreeRDP_DesktopResize, TRUE);
+    // FreeRDP only dispatches protocol pointer-position updates to
+    // pointer.SetPosition when mouse grabbing is enabled.  The ArkTS cursor
+    // overlay consumes the callback; it does not change the system pointer.
+    freerdp_settings_set_bool(s, FreeRDP_GrabMouse, TRUE);
 
     // 色深 — 使用 cfg 值, 不再硬编码 32
     freerdp_settings_set_uint32(s, FreeRDP_ColorDepth,
@@ -2204,6 +2337,7 @@ void FreeRdpAdapter::disconnect() {
     }
     impl_->beginShutdownTrace();
     impl_->stopRequested.store(true, std::memory_order_release);
+    impl_->cursorStore.setVisible(false);
     impl_->presentationEnabled.store(false, std::memory_order_release);
     RendererNapi::InvalidateActivePresentation();
     impl_->framePump.invalidatePending();
@@ -2618,6 +2752,7 @@ struct FreeRdpAdapter::Impl {
     int                     sockFd = -1;
     uint32_t                selectedProtocol = 0;
     bool                    tlsEnabled = false;
+    RemoteCursorStore       cursorStore;
 
     void setState(ConnectionState s, const std::string& msg = "") {
         state = s;
@@ -2744,6 +2879,14 @@ FreeRdpAdapter::FreeRdpAdapter() : impl_(std::make_unique<Impl>()) {
     OH_LOG_INFO(LOG_APP, "[RDP] FreeRdpAdapter created (skeleton)");
 }
 
+void FreeRdpAdapter::setSessionIdentity(uint64_t sessionId) {
+    impl_->cursorStore.reset(sessionId, "rdp");
+}
+
+RemoteCursorSnapshot FreeRdpAdapter::getRemoteCursorSnapshot(bool includePixels) {
+    return impl_->cursorStore.snapshot(includePixels);
+}
+
 FreeRdpAdapter::~FreeRdpAdapter() {
     if (impl_->state == ConnectionState::CONNECTED) { disconnect(); }
 }
@@ -2785,6 +2928,7 @@ int FreeRdpAdapter::connect(const ConnectionConfig& cfg) {
 }
 
 void FreeRdpAdapter::disconnect() {
+    impl_->cursorStore.setVisible(false);
     if (impl_->sockFd >= 0) {
         shutdown(impl_->sockFd, SHUT_RDWR);
         close(impl_->sockFd);

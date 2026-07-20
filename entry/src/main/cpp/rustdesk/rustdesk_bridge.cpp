@@ -26,9 +26,11 @@ extern "C" {
         const void* cfg,
         void (*on_frame)(const void*, void*),
         void (*on_audio)(const void*, void*),
+        void (*on_cursor)(const void*, void*),
         void (*on_disconnect)(int, const char*, void*),
         void* user_data);
     void  rustdesk_disconnect(void* handle);
+    void  rustdesk_cancel_pending_connect();
     void  rustdesk_send_key(void* handle, unsigned int scancode, bool pressed);
     void  rustdesk_send_mouse(void* handle, int x, int y, unsigned int button, bool pressed);
     void  rustdesk_send_mouse_wheel(void* handle, int x, int y, int delta);
@@ -62,6 +64,7 @@ extern "C" {
 #include <atomic>
 #include <mutex>
 #include <chrono>
+#include <future>
 #include <pthread.h>
 
 #undef LOG_DOMAIN
@@ -322,10 +325,17 @@ struct RustDeskBridge::Impl {
     std::atomic<uint64_t>   connectSerial {0};
     std::atomic<bool>       disconnectRequested {false};
     std::atomic<bool>       ffiStreamEnded {false};
+    RemoteCursorStore       cursorStore;
     int                     ipcFd = -1;   // IPC socket fd (IPC 模式)
     int                     sockFd = -1;  // TCP socket fd (实验模式)
 #ifdef RUSTDESK_USE_REAL_CORE
     void*                   ffiHandle = nullptr;  // Rust FFI 连接句柄
+    // FFI connect() 在后台执行，但不能 detach：断开时必须等待它结束，
+    // 否则旧连接可能在下一次连接已经开始后仍持有 rendezvous/relay 资源。
+    std::thread              ffiConnectThread;
+    // 流线程通过 onFfiDisconnect 回调结束时，不能从自身 join；把延迟释放
+    // 的线程保留下来，由 disconnect() 统一 join，避免释放任务悬空。
+    std::vector<std::thread> ffiCleanupThreads;
 #endif
 
     void setState(ConnectionState s, const std::string& msg = "") {
@@ -358,6 +368,20 @@ struct RustDeskFfiAudioData {
     uint64_t       timestamp;
 };
 
+struct RustDeskFfiCursorUpdate {
+    uint32_t       kind;
+    uint64_t       shapeId;
+    int            x;
+    int            y;
+    int            width;
+    int            height;
+    int            hotX;
+    int            hotY;
+    const uint8_t* rgba;
+    size_t         rgbaLen;
+    bool           visible;
+};
+
 static std::atomic<uint64_t> g_ffiVideoFrameCount {0};
 static std::atomic<uint64_t> g_ffiAudioFrameCount {0};
 static std::atomic<uint64_t> g_ffiMouseSendCount {0};
@@ -365,20 +389,6 @@ static std::atomic<uint64_t> g_ffiKeySendCount {0};
 static std::atomic<uint64_t> g_ffiWheelSendCount {0};
 static std::atomic<uint64_t> g_ffiTextSendCount {0};
 static std::atomic<uint64_t> g_ffiFileSendCount {0};
-
-static void releaseFfiHandle(void* ffiHandle, const char* reason) {
-    if (ffiHandle == nullptr) {
-        return;
-    }
-    OH_LOG_INFO(LOG_APP,
-        "[RustDesk-FFI] releasing stale handle=%{public}p reason=%{public}s",
-        ffiHandle, reason ? reason : "unknown");
-    // rustdesk_disconnect joins the streaming thread. Never call it from the
-    // stream callback itself, otherwise the stream thread would join itself.
-    std::thread([ffiHandle]() {
-        rustdesk_disconnect(ffiHandle);
-    }).detach();
-}
 
 static const char* rdCodecName(int codec) {
     switch (codec) {
@@ -558,11 +568,41 @@ void RustDeskBridge::onFfiAudio(const void* audioPtr, void* userData) {
     }
 }
 
+void RustDeskBridge::onFfiCursor(const void* cursorPtr, void* userData) {
+    auto* impl = static_cast<RustDeskBridge::Impl*>(userData);
+    auto* cursor = static_cast<const RustDeskFfiCursorUpdate*>(cursorPtr);
+    if (!impl || !cursor) {
+        return;
+    }
+
+    switch (cursor->kind) {
+        case 0: {
+            if (!cursor->rgba || cursor->rgbaLen == 0 || cursor->rgbaLen > kRemoteCursorMaxBytes) {
+                return;
+            }
+            std::vector<uint8_t> rgba(cursor->rgba, cursor->rgba + cursor->rgbaLen);
+            impl->cursorStore.setShape(cursor->shapeId, cursor->width, cursor->height,
+                                       cursor->hotX, cursor->hotY, rgba);
+            break;
+        }
+        case 1:
+            impl->cursorStore.setPosition(cursor->x, cursor->y);
+            break;
+        case 2:
+            impl->cursorStore.setVisible(cursor->visible);
+            break;
+        default:
+            break;
+    }
+}
+
 void RustDeskBridge::onFfiDisconnect(int state, const char* message, void* userData) {
     auto* impl = static_cast<RustDeskBridge::Impl*>(userData);
     bool wasConnected = false;
     bool requested = false;
+    std::shared_ptr<std::promise<void>> cleanupGate;
     if (impl) {
+        impl->cursorStore.setVisible(false);
         impl->ffiStreamEnded.store(true);
         std::lock_guard<std::mutex> lock(impl->mutex);
         wasConnected = impl->state == ConnectionState::CONNECTED;
@@ -573,8 +613,25 @@ void RustDeskBridge::onFfiDisconnect(int state, const char* message, void* userD
         std::lock_guard<std::mutex> lock(impl->mutex);
         // The FFI callback runs on the streaming thread. Move ownership out
         // here and release it on a separate thread after this callback returns.
+        // The cleanup thread is retained by Impl and joined from disconnect().
         endedHandle = impl->ffiHandle;
         impl->ffiHandle = nullptr;
+        if (endedHandle != nullptr) {
+            OH_LOG_INFO(LOG_APP,
+                "[RustDesk-FFI] scheduling stale handle cleanup=%{public}p reason=stream-ended",
+                endedHandle);
+            cleanupGate = std::make_shared<std::promise<void>>();
+            std::future<void> cleanupReady = cleanupGate->get_future();
+            impl->ffiCleanupThreads.emplace_back([endedHandle,
+                                                   cleanupReady = std::move(cleanupReady)]() mutable {
+                // rustdesk_disconnect joins the streaming thread. Waiting for
+                // the callback to return is mandatory; otherwise this cleanup
+                // worker could try to join the thread that is executing this
+                // callback and deadlock.
+                cleanupReady.wait();
+                rustdesk_disconnect(endedHandle);
+            });
+        }
     }
     if (requested) {
         OH_LOG_INFO(LOG_APP,
@@ -599,7 +656,9 @@ void RustDeskBridge::onFfiDisconnect(int state, const char* message, void* userD
             impl->setState(ConnectionState::ERROR, stopMessage);
         }
     }
-    releaseFfiHandle(endedHandle, "stream-ended");
+    if (cleanupGate) {
+        cleanupGate->set_value();
+    }
 }
 #endif
 
@@ -610,15 +669,30 @@ RustDeskBridge::RustDeskBridge(RustDeskMode mode)
     OH_LOG_INFO(LOG_APP, "[RustDesk] RustDeskBridge created (mode=%{public}s)", modeLabel);
 }
 
+void RustDeskBridge::setSessionIdentity(uint64_t sessionId) {
+    impl_->cursorStore.reset(sessionId, "rustdesk");
+}
+
+RemoteCursorSnapshot RustDeskBridge::getRemoteCursorSnapshot(bool includePixels) {
+    return impl_->cursorStore.snapshot(includePixels);
+}
+
 RustDeskBridge::~RustDeskBridge() {
     bool hasFfiHandle = false;
+    bool hasFfiConnectThread = false;
+    bool hasFfiCleanupThreads = false;
 #ifdef RUSTDESK_USE_REAL_CORE
     {
         std::lock_guard<std::mutex> lock(impl_->mutex);
         hasFfiHandle = impl_->ffiHandle != nullptr;
+        hasFfiConnectThread = impl_->ffiConnectThread.joinable();
+        hasFfiCleanupThreads = !impl_->ffiCleanupThreads.empty();
     }
 #endif
-    if (getState() != ConnectionState::DISCONNECTED || hasFfiHandle) { disconnect(); }
+    if (getState() != ConnectionState::DISCONNECTED || hasFfiHandle ||
+        hasFfiConnectThread || hasFfiCleanupThreads) {
+        disconnect();
+    }
 }
 
 std::string RustDeskBridge::protocolName() { return "RustDesk"; }
@@ -673,7 +747,8 @@ static int rdIpcSendConnectReq(int fd, const ConnectionConfig& cfg) {
     RdIpcConnectReq req;
     memset(&req, 0, sizeof(req));
     strncpy(req.host, cfg.host.c_str(), sizeof(req.host) - 1);
-    req.port = static_cast<uint32_t>(cfg.port > 0 ? cfg.port : RD_DEFAULT_TCP_PORT);
+    req.port = static_cast<uint32_t>(cfg.port > 0 ? cfg.port :
+        (cfg.rdDirectIp ? 21118 : RD_DEFAULT_TCP_PORT));
     strncpy(req.peerId, cfg.customHostname.c_str(), sizeof(req.peerId) - 1);
     strncpy(req.username, cfg.username.c_str(), sizeof(req.username) - 1);
     req.passwordLen = static_cast<uint32_t>(cfg.password.length());
@@ -682,7 +757,7 @@ static int rdIpcSendConnectReq(int fd, const ConnectionConfig& cfg) {
     req.codec = static_cast<uint32_t>(cfg.codec);
     req.imageQuality = static_cast<uint32_t>(cfg.rdImageQuality);
     req.directIp = cfg.rdDirectIp ? 1 : 0;
-    req.directPort = static_cast<uint32_t>(cfg.rdDirectPort > 0 ? cfg.rdDirectPort : RD_DEFAULT_TCP_PORT);
+    req.directPort = static_cast<uint32_t>(cfg.rdDirectPort > 0 ? cfg.rdDirectPort : 21118);
     req.lanDiscovery = cfg.rdLanDiscovery ? 1 : 0;
     req.privacyMode = cfg.rdPrivacyMode ? 1 : 0;
     req.passwordMode = static_cast<uint32_t>(cfg.rdPasswordMode == 1 ? 1 : 0);
@@ -750,27 +825,47 @@ static int rdIpcConnectFlow(int fd, const ConnectionConfig& cfg) {
 
 int RustDeskBridge::connect(const ConnectionConfig& cfg) {
     bool hasFfiHandle = false;
+    bool hasFfiConnectThread = false;
+    bool hasFfiCleanupThreads = false;
 #ifdef RUSTDESK_USE_REAL_CORE
     {
         std::lock_guard<std::mutex> lock(impl_->mutex);
         hasFfiHandle = impl_->ffiHandle != nullptr;
+        hasFfiConnectThread = impl_->ffiConnectThread.joinable();
+        hasFfiCleanupThreads = !impl_->ffiCleanupThreads.empty();
     }
 #endif
-    if (getState() != ConnectionState::DISCONNECTED || hasFfiHandle) { disconnect(); }
+    if (getState() != ConnectionState::DISCONNECTED || hasFfiHandle ||
+        hasFfiConnectThread || hasFfiCleanupThreads) {
+        disconnect();
+    }
     impl_->config = cfg;
     impl_->disconnectRequested.store(false);
     impl_->ffiStreamEnded.store(false);
     const uint64_t serial = ++impl_->connectSerial;
     impl_->setState(ConnectionState::CONNECTING, "Connecting...");
 
+    if (cfg.rdAuthMode == 1 && cfg.rdDirectIp) {
+        // 点击批准依赖 ID/中继会话返回新的 Hash；直连模式没有这条批准通道。
+        impl_->setState(ConnectionState::ERROR,
+            "RustDesk remote approval requires rendezvous/relay mode; disable direct connection or use a device password.");
+        OH_LOG_WARN(LOG_APP,
+            "[RustDesk] remote approval is unavailable in direct mode; refusing ambiguous login");
+        return -41;
+    }
+
 #ifdef RUSTDESK_USE_REAL_CORE
     if (mode_ == RustDeskMode::FFI) {
         // ---- FFI 模式: 直接调用 librustdesk_ffi.a ----
         OH_LOG_INFO(LOG_APP, "[RustDesk-FFI] Using real core (protobuf protocol)");
         const std::string logHost = SafeLog::MaskHost(cfg.host);
+        const int effectivePort = cfg.port > 0 ? cfg.port :
+            (cfg.rdDirectIp ? 21118 : RD_DEFAULT_TCP_PORT);
         OH_LOG_INFO(LOG_APP, "[RustDesk-FFI] Connecting to %{public}s:%{public}d",
-                    logHost.c_str(), cfg.port > 0 ? cfg.port : RD_DEFAULT_TCP_PORT);
-        const std::string ffiPeerId = cfg.customHostname.empty() ? cfg.username : cfg.customHostname;
+                    logHost.c_str(), effectivePort);
+        const std::string ffiPeerId = cfg.rdDirectIp && !cfg.host.empty()
+            ? cfg.host
+            : (cfg.customHostname.empty() ? cfg.username : cfg.customHostname);
         const std::string logPeer = SafeLog::MaskUser(ffiPeerId);
         const std::string serverKeyId = cfg.rdServerKey.empty() ? "default" : SafeLog::HashForLog(cfg.rdServerKey);
         OH_LOG_INFO(LOG_APP, "[RustDesk-FFI] Request peer=%{public}s keyId=%{public}s key=%{public}s",
@@ -778,10 +873,11 @@ int RustDeskBridge::connect(const ConnectionConfig& cfg) {
                     SafeLog::MaskSecretLenOnly(cfg.rdServerKey).c_str());
 
         RustDeskBridge::Impl* impl = impl_.get();
-        std::thread([impl, cfg, ffiPeerId, logHost, serial]() {
+        std::thread connectThread([impl, cfg, ffiPeerId, logHost, serial]() {
             RustDeskFfiConfig ffiCfg = {};  // 零初始化 — 消除未初始化 padding/新字段风险
             ffiCfg.host     = cfg.host.c_str();
-            ffiCfg.port     = cfg.port > 0 ? cfg.port : RD_DEFAULT_TCP_PORT;
+            ffiCfg.port     = cfg.port > 0 ? cfg.port :
+                (cfg.rdDirectIp ? 21118 : RD_DEFAULT_TCP_PORT);
             ffiCfg.key      = cfg.rdServerKey.c_str();
             ffiCfg.username = ffiPeerId.c_str();
             ffiCfg.password = cfg.password.c_str();
@@ -794,6 +890,7 @@ int RustDeskBridge::connect(const ConnectionConfig& cfg) {
             // T-121: Default to Balanced profile, allow override
             ffiCfg.profile  = 1; // Balanced
             ffiCfg.fps      = 0; // From profile
+            ffiCfg.auth_mode = (cfg.rdAuthMode == 1) ? 1 : 0;
             // T-209: 直连模式映射
             ffiCfg.direct_connection = false;
             if (cfg.rdDirectIp && !cfg.host.empty()) {
@@ -804,18 +901,20 @@ int RustDeskBridge::connect(const ConnectionConfig& cfg) {
                     logHost.c_str(), ffiCfg.port);
             }
             OH_LOG_INFO(LOG_APP,
-                "[RustDesk-FFI] ffiCfg codec=%{public}d(%{public}s) quality=%{public}d privacy=%{public}s audio=%{public}s size=%{public}dx%{public}d profile=%{public}d fps=%{public}d",
+                "[RustDesk-FFI] ffiCfg codec=%{public}d(%{public}s) quality=%{public}d privacy=%{public}s audio=%{public}s authMode=%{public}d size=%{public}dx%{public}d profile=%{public}d fps=%{public}d",
                 ffiCfg.codec,
                 rdCodecName(static_cast<int>(cfg.codec)),
                 ffiCfg.imageQuality,
                 ffiCfg.privacyMode ? "on" : "off",
                 ffiCfg.audioEnabled ? "on" : "off",
+                ffiCfg.auth_mode,
                 ffiCfg.width,
                 ffiCfg.height,
                 ffiCfg.profile,
                 ffiCfg.fps);
 
-            void* ffiHandle = rustdesk_connect(&ffiCfg, onFfiFrame, onFfiAudio, onFfiDisconnect, impl);
+            void* ffiHandle = rustdesk_connect(
+                &ffiCfg, onFfiFrame, onFfiAudio, onFfiCursor, onFfiDisconnect, impl);
             bool discardHandle = serial != impl->connectSerial.load() ||
                 impl->disconnectRequested.load() || impl->ffiStreamEnded.load();
             if (!discardHandle) {
@@ -874,7 +973,11 @@ int RustDeskBridge::connect(const ConnectionConfig& cfg) {
                 connectedCallback(ConnectionState::CONNECTED, connectedMessage);
             }
             OH_LOG_INFO(LOG_APP, "[RustDesk-FFI] Connected handle=%{public}p", ffiHandle);
-        }).detach();
+        });
+        {
+            std::lock_guard<std::mutex> lock(impl_->mutex);
+            impl_->ffiConnectThread = std::move(connectThread);
+        }
         return 0;
 
     }
@@ -882,6 +985,15 @@ int RustDeskBridge::connect(const ConnectionConfig& cfg) {
 
     if (mode_ == RustDeskMode::IPC) {
         // ---- IPC 模式: 连接 rustdesk_helper ----
+        if (cfg.rdAuthMode == 1) {
+            // helper 当前只转发基础连接帧，尚未暴露 RustDesk 的
+            // No Password Access/远端批准状态机；禁止静默降级为空密码登录。
+            impl_->setState(ConnectionState::ERROR,
+                "RustDesk helper does not support remote approval; use the real FFI core or a device password.");
+            OH_LOG_WARN(LOG_APP,
+                "[RustDesk-IPC] remote approval is unavailable in helper mode; refusing empty-password fallback");
+            return -40;
+        }
         int ret = rdIpcConnect(g_socketPath.c_str(), impl_->ipcFd);
         if (ret < 0) {
             // 尝试自动启动 helper
@@ -922,6 +1034,7 @@ int RustDeskBridge::connect(const ConnectionConfig& cfg) {
 
 void RustDeskBridge::disconnect() {
     impl_->disconnectRequested.store(true);
+    impl_->cursorStore.setVisible(false);
     ++impl_->connectSerial;
     if (impl_->ipcFd >= 0) {
         shutdown(impl_->ipcFd, SHUT_RDWR);
@@ -929,14 +1042,42 @@ void RustDeskBridge::disconnect() {
         impl_->ipcFd = -1;
     }
 #ifdef RUSTDESK_USE_REAL_CORE
+    // FFI 句柄在登录完成前尚未返回，先取消等待中的连接尝试，避免点击返回后
+    // 审批等待线程继续占用中继连接。
+    rustdesk_cancel_pending_connect();
     void* ffiHandle = nullptr;
+    std::thread ffiConnectThread;
+    std::vector<std::thread> ffiCleanupThreads;
     {
         std::lock_guard<std::mutex> lock(impl_->mutex);
         ffiHandle = impl_->ffiHandle;
         impl_->ffiHandle = nullptr;
+        ffiConnectThread = std::move(impl_->ffiConnectThread);
+        ffiCleanupThreads = std::move(impl_->ffiCleanupThreads);
     }
     if (mode_ == RustDeskMode::FFI && ffiHandle != nullptr) {
         rustdesk_disconnect(ffiHandle);
+    }
+    if (ffiConnectThread.joinable()) {
+        if (ffiConnectThread.get_id() == std::this_thread::get_id()) {
+            OH_LOG_ERROR(LOG_APP,
+                "[RustDesk-FFI] disconnect called from connect thread; refusing self-join");
+            ffiConnectThread.detach();
+        } else {
+            ffiConnectThread.join();
+        }
+    }
+    for (std::thread& cleanupThread : ffiCleanupThreads) {
+        if (!cleanupThread.joinable()) {
+            continue;
+        }
+        if (cleanupThread.get_id() == std::this_thread::get_id()) {
+            OH_LOG_ERROR(LOG_APP,
+                "[RustDesk-FFI] cleanup thread attempted self-join; refusing self-join");
+            cleanupThread.detach();
+        } else {
+            cleanupThread.join();
+        }
     }
 #endif
     if (impl_->sockFd >= 0) {

@@ -16,6 +16,7 @@
 #include <functional>
 #include <string>
 #include <vector>
+#include "input/remote_cursor_snapshot.h"
 #include "transfer_runtime_status.h"
 
 // ============================================================
@@ -87,6 +88,7 @@ struct ConnectionConfig {
     bool        rdpAllowUntrustedRoot; // RDP: 当前连接允许无法回溯根证书
     bool        rdpAllowHostMismatch;  // RDP: 当前连接允许证书名称不匹配
     int         rdPasswordMode;    // RustDesk: 0=一次性, 1=永久
+    int         rdAuthMode;        // RustDesk: 0=设备密码, 1=请求被控端点击批准
     int         rdPasswordLength;  // RustDesk: 临时密码长度
     std::string rdRelayId;         // RustDesk: 绑定中继 ID
     std::string rdAccountId;       // RustDesk: 绑定 API 账户 ID
@@ -99,7 +101,7 @@ struct ConnectionConfig {
           rdImageQuality(1), rdDirectIp(false), rdDirectPort(21118),
           rdLanDiscovery(true), rdPrivacyMode(false), rdAudioEnabled(true), rdClipboardEnabled(true),
           rdDriveName("RemoteDesktop"), rdpAllowUntrustedRoot(false), rdpAllowHostMismatch(false),
-          rdPasswordMode(0), rdPasswordLength(6) {}
+          rdPasswordMode(0), rdAuthMode(0), rdPasswordLength(6) {}
 };
 
 /** 视频帧数据 — 从协议后端传递到渲染管线 */
@@ -273,6 +275,12 @@ public:
 
     /** 获取当前连接状态 */
     virtual ConnectionState getState() = 0;
+
+    /** Inject the loader-owned identity before starting a new connection. */
+    virtual void setSessionIdentity(uint64_t /*sessionId*/) {}
+
+    /** Return the latest protocol-native cursor state. */
+    virtual RemoteCursorSnapshot getRemoteCursorSnapshot(bool /*includePixels*/) { return {}; }
 
     // ---- 输入事件 ----
 

@@ -2,7 +2,8 @@ param([string]$RepositoryRoot = (Join-Path $PSScriptRoot '..'))
 
 $ErrorActionPreference = 'Stop'
 $root = (Resolve-Path $RepositoryRoot).Path
-$metadataJson = & cargo metadata --format-version 1 --locked --manifest-path (Join-Path $root 'rustdesk_ffi/Cargo.toml')
+$metadataJson = & cargo metadata --format-version 1 --locked --filter-platform aarch64-unknown-linux-ohos `
+  --manifest-path (Join-Path $root 'rustdesk_ffi/Cargo.toml')
 if ($LASTEXITCODE -ne 0) { throw 'cargo metadata failed.' }
 $metadata = $metadataJson | ConvertFrom-Json
 $commit = (& git -C $root rev-parse HEAD).Trim()

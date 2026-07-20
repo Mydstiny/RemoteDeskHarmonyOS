@@ -677,19 +677,29 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
     getBool("rdpAllowUntrustedRoot", cfg.rdpAllowUntrustedRoot);
     getBool("rdpAllowHostMismatch", cfg.rdpAllowHostMismatch);
     getInt("rdPasswordMode", cfg.rdPasswordMode);
+    getInt("rdAuthMode", cfg.rdAuthMode);
     getInt("rdPasswordLength", cfg.rdPasswordLength);
     getString("rdRelayId", cfg.rdRelayId);
     getString("rdAccountId", cfg.rdAccountId);
     getString("rdServerKey", cfg.rdServerKey);
 
-    if (cfg.port == 0) cfg.port = 3389; // 默认端口
+    if (cfg.rdDirectPort <= 0) cfg.rdDirectPort = 21118;
+    if (cfg.port == 0) {
+        // RustDesk 的通用端口字段在直连模式代表 peer TCP 端口；
+        // 非直连模式才代表 ID/rendezvous 端口，不能落回 RDP 3389。
+        if (protocolName == "rustdesk") {
+            cfg.port = cfg.rdDirectIp ? cfg.rdDirectPort : 21116;
+        } else {
+            cfg.port = 3389;
+        }
+    }
     if (cfg.width == 0) cfg.width = 1920;
     if (cfg.height == 0) cfg.height = 1080;
     if (cfg.gatewayPort == 0) cfg.gatewayPort = 443;
     if (cfg.colorDepth == 0) cfg.colorDepth = 32;
     if (cfg.rdImageQuality < 0 || cfg.rdImageQuality > 2) cfg.rdImageQuality = 1;
-    if (cfg.rdDirectPort <= 0) cfg.rdDirectPort = 21118;
     if (cfg.rdPasswordMode != 1) cfg.rdPasswordMode = 0;
+    if (cfg.rdAuthMode != 1) cfg.rdAuthMode = 0;
     if (cfg.rdPasswordLength != 8 && cfg.rdPasswordLength != 10) cfg.rdPasswordLength = 6;
 
     const std::string logHost = SafeLog::MaskHost(cfg.host);
@@ -708,11 +718,11 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
         const std::string relayLog = cfg.rdRelayId.empty() ? "未设置" : SafeLog::HashForLog(cfg.rdRelayId);
         const std::string accountLog = cfg.rdAccountId.empty() ? "未设置" : SafeLog::MaskUser(cfg.rdAccountId);
         const std::string serverKeyLog = cfg.rdServerKey.empty() ? "default" : SafeLog::HashForLog(cfg.rdServerKey);
-        OH_LOG_INFO(LOG_APP, "[ExtLoader] RustDesk配置: quality=%{public}d direct=%{public}s:%{public}d lan=%{public}s privacy=%{public}s audio=%{public}s pwdMode=%{public}d pwdLen=%{public}d relayId=%{public}s account=%{public}s serverKeyId=%{public}s",
+        OH_LOG_INFO(LOG_APP, "[ExtLoader] RustDesk配置: quality=%{public}d direct=%{public}s:%{public}d lan=%{public}s privacy=%{public}s audio=%{public}s pwdMode=%{public}d authMode=%{public}d pwdLen=%{public}d relayId=%{public}s account=%{public}s serverKeyId=%{public}s",
                     cfg.rdImageQuality, cfg.rdDirectIp ? "on" : "off", cfg.rdDirectPort,
                     cfg.rdLanDiscovery ? "on" : "off", cfg.rdPrivacyMode ? "on" : "off",
                     cfg.rdAudioEnabled ? "on" : "off",
-                    cfg.rdPasswordMode, cfg.rdPasswordLength,
+                    cfg.rdPasswordMode, cfg.rdAuthMode, cfg.rdPasswordLength,
                     relayLog.c_str(), accountLog.c_str(),
                     serverKeyLog.c_str());
     } else if (protocolName == "rdp") {
@@ -744,6 +754,7 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
     session->protocolName = protocolName;
 
     int sessionId = g_nextSessionId++;
+    adapter->setSessionIdentity(static_cast<uint64_t>(sessionId));
     g_disconnectAllRequestId = 0;
     if (g_disconnectRequestBySession.size() > 256) {
         for (auto it = g_disconnectRequestBySession.begin();
@@ -1785,6 +1796,69 @@ napi_value NapiGetConnectionState(napi_env env, napi_callback_info info) {
 }
 
 /**
+ * NAPI: getRemoteCursorSnapshot(sessionId: number, includePixels?: boolean): object
+ * Positions and shapes use independent revisions so ArkUI can poll without copying pixels.
+ */
+napi_value NapiGetRemoteCursorSnapshot(napi_env env, napi_callback_info info) {
+    size_t argc = 2;
+    napi_value args[2];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+
+    int32_t sessionId = 0;
+    bool includePixels = false;
+    if (argc > 0) {
+        napi_get_value_int32(env, args[0], &sessionId);
+    }
+    if (argc > 1) {
+        napi_get_value_bool(env, args[1], &includePixels);
+    }
+
+    RemoteCursorSnapshot snapshot;
+    auto it = g_sessions.find(sessionId);
+    if (it != g_sessions.end() && it->second->adapter) {
+        snapshot = it->second->adapter->getRemoteCursorSnapshot(includePixels);
+    }
+
+    napi_value result;
+    napi_create_object(env, &result);
+    const auto setInt32 = [env, result](const char* name, int32_t value) {
+        napi_value field;
+        napi_create_int32(env, value, &field);
+        napi_set_named_property(env, result, name, field);
+    };
+    const auto setUint64 = [env, result](const char* name, uint64_t value) {
+        napi_value field;
+        napi_create_double(env, static_cast<double>(value), &field);
+        napi_set_named_property(env, result, name, field);
+    };
+    setUint64("sessionId", snapshot.sessionId);
+    setUint64("shapeId", snapshot.shapeId);
+    setUint64("shapeRevision", snapshot.shapeRevision);
+    setUint64("positionRevision", snapshot.positionRevision);
+    setInt32("x", snapshot.x);
+    setInt32("y", snapshot.y);
+    setInt32("width", snapshot.width);
+    setInt32("height", snapshot.height);
+    setInt32("hotX", snapshot.hotX);
+    setInt32("hotY", snapshot.hotY);
+    napi_value visible;
+    napi_get_boolean(env, snapshot.visible, &visible);
+    napi_set_named_property(env, result, "visible", visible);
+    napi_value protocol;
+    napi_create_string_utf8(env, snapshot.protocol.c_str(), snapshot.protocol.size(), &protocol);
+    napi_set_named_property(env, result, "protocol", protocol);
+
+    napi_value pixels;
+    void* pixelsData = nullptr;
+    napi_create_arraybuffer(env, snapshot.rgba.size(), &pixelsData, &pixels);
+    if (pixelsData && !snapshot.rgba.empty()) {
+        std::memcpy(pixelsData, snapshot.rgba.data(), snapshot.rgba.size());
+    }
+    napi_set_named_property(env, result, "rgba", pixels);
+    return result;
+}
+
+/**
  * NAPI: getConnectionLastMessage(sessionId: number): string
  * 返回协议适配器最近一次连接状态消息。
  */
@@ -2498,6 +2572,10 @@ napi_value ExtensionLoaderNapi::Init(napi_env env, napi_value exports) {
     napi_create_function(env, "getConnectionState", NAPI_AUTO_LENGTH,
                          NapiGetConnectionState, nullptr, &fn);
     napi_set_named_property(env, exports, "getConnectionState", fn);
+
+    napi_create_function(env, "getRemoteCursorSnapshot", NAPI_AUTO_LENGTH,
+                         NapiGetRemoteCursorSnapshot, nullptr, &fn);
+    napi_set_named_property(env, exports, "getRemoteCursorSnapshot", fn);
 
     napi_create_function(env, "getConnectionLastMessage", NAPI_AUTO_LENGTH,
                          NapiGetConnectionLastMessage, nullptr, &fn);

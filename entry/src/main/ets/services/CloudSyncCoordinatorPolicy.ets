@@ -92,6 +92,20 @@ export function coalesceAutomaticPush(pendingTable: string, incomingTable: strin
   return pendingTable === incomingTable;
 }
 
+export function shouldReplayAutomaticPush(completedVersion: number, currentVersion: number): boolean {
+  return currentVersion > completedVersion;
+}
+
+/** Progress.SYNC_FINISH is the only event that confirms the transfer settled. */
+export function cloudSyncProgressFinished(schedule: number): boolean {
+  return schedule === 2;
+}
+
+/** ProgressCode.SUCCESS is meaningful only on the terminal progress event. */
+export function cloudSyncProgressSucceeded(schedule: number, code: number): boolean {
+  return cloudSyncProgressFinished(schedule) && code === 0;
+}
+
 /** Returns -1 after the last allowed retry attempt. */
 export function nextCloudSyncRetryDelayMs(attempt: number): number {
   if (attempt === 1) { return 1000; }

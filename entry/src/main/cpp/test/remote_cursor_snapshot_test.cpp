@@ -1,0 +1,66 @@
+/**
+ * remote_cursor_snapshot_test.cpp — protocol-neutral remote cursor state tests
+ */
+
+#include "test_runner.h"
+#include "input/remote_cursor_snapshot.h"
+
+#include <vector>
+
+RDP_TEST_CASE(remote_cursor_shape_revision_changes_only_for_valid_shape) {
+    RemoteCursorStore store;
+    store.reset(42, "rustdesk");
+    const std::vector<uint8_t> rgba(16 * 16 * 4, 0xFF);
+
+    RDP_ASSERT(store.setShape(7, 16, 16, 2, 3, rgba));
+    const RemoteCursorSnapshot first = store.snapshot(true);
+    RDP_ASSERT_EQ(first.sessionId, 42);
+    RDP_ASSERT_EQ(first.shapeRevision, 1);
+    RDP_ASSERT_EQ(first.hotX, 2);
+    RDP_ASSERT_EQ(first.hotY, 3);
+    RDP_ASSERT_EQ(first.rgba.size(), rgba.size());
+
+    RDP_ASSERT(!store.setShape(8, 16, 16, 0, 0, std::vector<uint8_t>(3)));
+    RDP_ASSERT_EQ(store.snapshot(false).shapeRevision, 1);
+}
+
+RDP_TEST_CASE(remote_cursor_position_does_not_copy_or_rev_shape) {
+    RemoteCursorStore store;
+    store.reset(9, "rdp");
+    store.setPosition(100, 200);
+
+    const RemoteCursorSnapshot snapshot = store.snapshot(false);
+    RDP_ASSERT_EQ(snapshot.positionRevision, 1);
+    RDP_ASSERT_EQ(snapshot.shapeRevision, 0);
+    RDP_ASSERT_EQ(snapshot.x, 100);
+    RDP_ASSERT_EQ(snapshot.y, 200);
+    RDP_ASSERT(snapshot.rgba.empty());
+}
+
+RDP_TEST_CASE(remote_cursor_rejects_invalid_dimensions_and_hotspot) {
+    RemoteCursorStore store;
+    store.reset(3, "rdp");
+    const std::vector<uint8_t> pixel(4, 0xFF);
+
+    RDP_ASSERT(!store.setShape(1, 0, 1, 0, 0, pixel));
+    RDP_ASSERT(!store.setShape(2, 385, 1, 0, 0, std::vector<uint8_t>(385 * 4)));
+    RDP_ASSERT(!store.setShape(3, 1, 1, 1, 0, pixel));
+    RDP_ASSERT_EQ(store.snapshot(false).shapeRevision, 0);
+}
+
+RDP_TEST_CASE(remote_cursor_reset_isolates_sessions_and_revisions) {
+    RemoteCursorStore store;
+    store.reset(11, "rustdesk");
+    store.setPosition(10, 20);
+    store.setVisible(true);
+    RDP_ASSERT(store.setShape(5, 1, 1, 0, 0, std::vector<uint8_t>(4, 0xFF)));
+
+    store.reset(12, "rdp");
+    const RemoteCursorSnapshot snapshot = store.snapshot(true);
+    RDP_ASSERT_EQ(snapshot.sessionId, 12);
+    RDP_ASSERT(snapshot.protocol == "rdp");
+    RDP_ASSERT_EQ(snapshot.shapeRevision, 0);
+    RDP_ASSERT_EQ(snapshot.positionRevision, 0);
+    RDP_ASSERT(!snapshot.visible);
+    RDP_ASSERT(snapshot.rgba.empty());
+}

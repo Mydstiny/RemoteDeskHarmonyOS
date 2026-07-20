@@ -25,6 +25,7 @@ export interface RustDeskRelayJSON {
   accounts: RustDeskAccountJSON[]
   syncVersion: number
   createdAt: number
+  updatedAt: number
 }
 
 export class RustDeskRelayConfig {
@@ -35,16 +36,17 @@ export class RustDeskRelayConfig {
   relayServer: string = '';   // Relay 中继服务器地址
   relayPort: number = 21117;
   apiServer: string = '';     // API 服务器 (可选)
-  apiUsername: string = '';   // API Admin 用户名
-  apiPassword: string = '';   // API Admin 密码
+  apiUsername: string = '';   // Legacy field retained for cloud compatibility
+  apiPassword: string = '';   // Never used by Server Pro login
   key: string = '';           // 加密密钥 (可选)
   healthStatus: string = 'unknown';  // unknown|online|offline|error
   healthLatency: number = 0;         // 上次检测延迟(ms)
   healthCheckedAt: number = 0;       // 上次检测时间戳
   apiLoginStatus: string = 'none';   // none|logged_in|expired
-  accounts: RustDeskAccount[] = [];  // 该中继下属的 API Admin 账户列表 (JSON序列化)
+  accounts: RustDeskAccount[] = [];  // Legacy accountsjson container for Pro metadata
   syncVersion: number = 0;
   createdAt: number = Date.now();
+  updatedAt: number = 0;             // 本地/云端配置最后写入时间
 
   /** 外部显示名: 直接用 ID 服务器域名或 IP */
   displayName(): string {
@@ -75,7 +77,8 @@ export class RustDeskRelayConfig {
       apiLoginStatus: this.apiLoginStatus,
       accounts: this.accounts.map((account: RustDeskAccount): RustDeskAccountJSON => account.toJSON()),
       syncVersion: this.syncVersion,
-      createdAt: this.createdAt
+      createdAt: this.createdAt,
+      updatedAt: this.updatedAt
     };
   }
 
@@ -100,6 +103,7 @@ export class RustDeskRelayConfig {
     }
     if (json.syncVersion !== undefined) { cfg.syncVersion = json.syncVersion; }
     if (json.createdAt) { cfg.createdAt = json.createdAt; }
+    if (json.updatedAt !== undefined) { cfg.updatedAt = json.updatedAt; }
     return cfg;
   }
 
