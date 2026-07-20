@@ -27,8 +27,8 @@ import { ResourceFabPicker } from '../components/resourceadd/ResourceFabPicker';
 import { VncRelayConfigService } from '../services/VncRelayConfigService';
 import { ModernRelayAddFlow } from '../components/resourceadd/modern/ModernRelayAddFlow';
 import { RustDeskRelayImportService, RustDeskRelayImportResult } from '../services/RustDeskRelayImportService';
-import { ClipboardBridgeService } from '../services/ClipboardBridgeService';
 import { rustDeskServerKeyError } from '../services/RustDeskHostConfigPolicy';
+import { RustDeskRelayConfigPasteSheet } from '../components/resourceadd/modern/RustDeskRelayConfigPasteSheet';
 
 class TcpTestResult {
   ok: boolean = false;
@@ -91,7 +91,6 @@ export struct RustDeskRelayPage {
   private proSync: RustDeskProSyncService = RustDeskProSyncService.getInstance();
   private vncSrv: VncRelayConfigService = VncRelayConfigService.getInstance();
   private relayImporter: RustDeskRelayImportService = new RustDeskRelayImportService();
-  private clipboard: ClipboardBridgeService = new ClipboardBridgeService();
   private dataUnsubscribe: (() => void) | null = null;
   private proDataUnsubscribe: (() => void) | null = null;
   private vncDataUnsubscribe: (() => void) | null = null;
@@ -382,16 +381,23 @@ export struct RustDeskRelayPage {
     this.formApiServer = ''; this.formKey = ''; this.formTestResult = '';
   }
 
-  private doSaveRelay(): void {
+  private doSaveRelay(): string {
     if (this.formIdServer.trim() === '' || this.formRelayServer.trim() === '') {
-      promptAction.showToast({ message: 'ID服务器和中继服务器地址不能为空', duration: 2000 }); return;
+      const error = 'ID服务器和中继服务器地址不能为空';
+      promptAction.showToast({ message: error, duration: 2000 }); return error;
+    }
+    if (this.formIdPort <= 0 || this.formIdPort > 65535 ||
+      this.formRelayPort <= 0 || this.formRelayPort > 65535) {
+      const error = '服务器端口必须在 1–65535 之间';
+      promptAction.showToast({ message: error, duration: 2000 }); return error;
     }
     if (this.relayKind === 'pro' && this.formApiServer.trim() === '') {
-      promptAction.showToast({ message: 'Server Pro 必须填写 API 地址', duration: 2000 }); return;
+      const error = 'Server Pro 必须填写 API 地址';
+      promptAction.showToast({ message: error, duration: 2000 }); return error;
     }
     const keyError: string = rustDeskServerKeyError(this.formKey, false);
     if (keyError !== '') {
-      promptAction.showToast({ message: keyError, duration: 2600 }); return;
+      promptAction.showToast({ message: keyError, duration: 2600 }); return keyError;
     }
     const isNew: boolean = this.editingRelayId === '';
     const r = new RustDeskRelayConfig();
@@ -399,18 +405,36 @@ export struct RustDeskRelayPage {
     r.idServer = this.formIdServer.trim(); r.idServerPort = this.formIdPort;
     r.relayServer = this.formRelayServer.trim(); r.relayPort = this.formRelayPort;
     r.apiServer = this.formApiServer.trim(); r.key = this.formKey.trim();
+    let saved: boolean;
     if (!isNew) {
       const existing = this.relays.find((x: RustDeskRelayConfig) => x.id === this.editingRelayId);
       if (existing) { r.accounts = existing.accounts; }
-      this.srv.updateRelay(r);
-    } else { this.srv.addRelay(r); }
+      saved = this.srv.updateRelay(r);
+    } else { saved = this.srv.addRelay(r); }
+    if (!saved) {
+      const error = '中继服务器保存失败';
+      promptAction.showToast({ message: error, duration: 2200 });
+      return error;
+    }
     this.load();
     if (isNew) {
       this.savedRelayId = r.id;
       this.sheetContent = 4;
-      return;
+      return '';
     }
     this.closeSheet();
+    return '';
+  }
+
+  private applyRelayImport(result: RustDeskRelayImportResult): void {
+    this.formIdServer = result.idServer; this.formIdPort = result.idServerPort;
+    this.formRelayServer = result.relayServer; this.formRelayPort = result.relayPort;
+    this.formApiServer = result.apiServer; this.formKey = result.key;
+  }
+
+  private importAndSavePastedRelay(result: RustDeskRelayImportResult): string {
+    this.applyRelayImport(result);
+    return this.doSaveRelay();
   }
 
   private async importRelayConfig(): Promise<void> {
@@ -423,26 +447,8 @@ export struct RustDeskRelayPage {
       promptAction.showToast({ message: result.error, duration: 2400 });
       return;
     }
-    this.formIdServer = result.idServer; this.formIdPort = result.idServerPort;
-    this.formRelayServer = result.relayServer; this.formRelayPort = result.relayPort;
-    this.formApiServer = result.apiServer; this.formKey = result.key;
+    this.applyRelayImport(result);
     this.formTestResult = '✓ 已导入 ' + result.fileName + '，请确认后保存';
-  }
-
-  private async importRelayClipboard(): Promise<void> {
-    if (this.importingRelayConfig) { return; }
-    this.importingRelayConfig = true;
-    const text = await this.clipboard.getSystemText();
-    const result: RustDeskRelayImportResult = this.relayImporter.parse('剪贴板配置', text.trim());
-    this.importingRelayConfig = false;
-    if (!result.ok) {
-      promptAction.showToast({ message: text.trim() === '' ? '剪贴板中没有 RustDesk 配置' : result.error, duration: 2400 });
-      return;
-    }
-    this.formIdServer = result.idServer; this.formIdPort = result.idServerPort;
-    this.formRelayServer = result.relayServer; this.formRelayPort = result.relayPort;
-    this.formApiServer = result.apiServer; this.formKey = result.key;
-    this.formTestResult = '✓ 已读取剪贴板配置，请确认后保存';
   }
 
   private resetVncRelayForm(): void {
@@ -1492,10 +1498,10 @@ export struct RustDeskRelayPage {
         .width('100%').margin({ bottom: 16 })
       Scroll() {
         Column() {
-          Button(this.importingRelayConfig ? '读取 RustDesk 配置中…' : '从 RustDesk 客户端导入配置')
+          Button('粘贴从Rustdesk复制来的加密配置')
             .width('100%').height(36).fontSize(13).backgroundColor(this.pal().surface)
             .fontColor(this.accentColor).borderRadius(8).enabled(!this.importingRelayConfig)
-            .margin({ bottom: 6 }).onClick((): void => { void this.importRelayClipboard(); })
+            .margin({ bottom: 6 }).onClick((): void => { this.sheetContent = 9; })
           Button('从文件导入配置（兼容）')
             .width('100%').height(32).fontSize(12).backgroundColor(this.pal().surface)
             .fontColor(this.pal().text2).borderRadius(8).enabled(!this.importingRelayConfig)
@@ -1660,6 +1666,11 @@ export struct RustDeskRelayPage {
       ModernRelayAddFlow({
         onClose: (): void => { this.closeSheet(); },
         onSaved: (_resourceId: string): void => { this.load(); this.loadVncRelays(); }
+      })
+    } else if (this.sheetContent === 9) {
+      RustDeskRelayConfigPasteSheet({
+        onCancel: (): void => { this.sheetContent = 1; },
+        onImported: (result: RustDeskRelayImportResult): string => this.importAndSavePastedRelay(result)
       })
     }
   }

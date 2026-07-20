@@ -45,6 +45,7 @@ import sshTerminalOrientationPolicyTest from './SshTerminalOrientationPolicy.tes
 import remoteCursorStylePolicyTest from './RemoteCursorStylePolicy.test';
 import touchpadPointerCurvePolicyTest from './TouchpadPointerCurvePolicy.test';
 import connectionAttemptPolicyTest from './ConnectionAttemptPolicy.test';
+import rustDeskRelayImportServiceTest from './RustDeskRelayImportService.test';
 
 export default function testsuite() {
   localUnitTest();
@@ -94,4 +95,5 @@ export default function testsuite() {
   remoteCursorStylePolicyTest();
   touchpadPointerCurvePolicyTest();
   connectionAttemptPolicyTest();
+  rustDeskRelayImportServiceTest();
 }

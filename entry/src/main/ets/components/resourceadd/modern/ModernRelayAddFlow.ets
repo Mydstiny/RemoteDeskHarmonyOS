@@ -8,8 +8,8 @@ import { VncRelayConfigService } from '../../../services/VncRelayConfigService';
 import { Palette, buildDark, buildLight, AppTheme } from '../../../common/Theme';
 import { ResourceFabPicker } from '../ResourceFabPicker';
 import { RustDeskRelayImportService, RustDeskRelayImportResult } from '../../../services/RustDeskRelayImportService';
-import { ClipboardBridgeService } from '../../../services/ClipboardBridgeService';
 import { rustDeskServerKeyError } from '../../../services/RustDeskHostConfigPolicy';
+import { RustDeskRelayConfigPasteSheet } from './RustDeskRelayConfigPasteSheet';
 
 @Component
 export struct ModernRelayAddFlow {
@@ -42,7 +42,6 @@ export struct ModernRelayAddFlow {
   private pro = RustDeskProSyncService.getInstance();
   private vnc = VncRelayConfigService.getInstance();
   private relayImporter = new RustDeskRelayImportService();
-  private clipboard = new ClipboardBridgeService();
 
   private pal(): Palette { return this.theme === 'light' ? buildLight(this.accentColor) : buildDark(this.accentColor); }
   private font(): string { return AppTheme.fontFamily; }
@@ -65,6 +64,7 @@ export struct ModernRelayAddFlow {
   private back(): void {
     this.errorText = '';
     if (this.step === 'pro') { this.step = 'saved'; }
+    else if (this.step === 'rustdesk-paste') { this.step = 'rustdesk'; }
     else { this.step = 'protocol'; }
   }
 
@@ -73,22 +73,35 @@ export struct ModernRelayAddFlow {
     this.step = option === 'rustdesk' ? 'rustdesk' : 'vnc';
   }
 
-  private saveRustDesk(): void {
+  private saveRustDesk(): string {
     if (this.idServer.trim().length === 0 || this.relayServer.trim().length === 0) {
-      this.errorText = 'ID 服务器和 Relay 服务器不能为空'; return;
+      this.errorText = 'ID 服务器和 Relay 服务器不能为空'; return this.errorText;
     }
     if (!this.validPort(this.idPort) || !this.validPort(this.relayPort)) {
-      this.errorText = '服务器端口必须在 1–65535 之间'; return;
+      this.errorText = '服务器端口必须在 1–65535 之间'; return this.errorText;
     }
     const keyError: string = rustDeskServerKeyError(this.serverKey, false);
-    if (keyError !== '') { this.errorText = keyError; return; }
+    if (keyError !== '') { this.errorText = keyError; return this.errorText; }
     const relay = new RustDeskRelayConfig(); relay.id = RustDeskRelayConfig.generateId();
     relay.idServer = this.idServer.trim(); relay.idServerPort = this.idPort;
     relay.relayServer = this.relayServer.trim(); relay.relayPort = this.relayPort;
     relay.apiServer = this.apiServer.trim(); relay.key = this.serverKey.trim();
-    if (!this.hosts.addRelay(relay)) { this.errorText = '中继服务器保存失败'; return; }
+    if (!this.hosts.addRelay(relay)) { this.errorText = '中继服务器保存失败'; return this.errorText; }
     this.savedRelayId = relay.id; this.proServer = relay.apiServer; this.step = 'saved'; this.errorText = '';
     this.onSaved(relay.id);
+    return '';
+  }
+
+  private applyRustDeskImport(result: RustDeskRelayImportResult): void {
+    this.idServer = result.idServer; this.idPort = result.idServerPort;
+    this.relayServer = result.relayServer; this.relayPort = result.relayPort;
+    this.apiServer = result.apiServer; this.serverKey = result.key;
+    this.importedFileName = result.fileName;
+  }
+
+  private importAndSavePastedRustDesk(result: RustDeskRelayImportResult): string {
+    this.applyRustDeskImport(result);
+    return this.saveRustDesk();
   }
 
   private async importRustDeskConfig(): Promise<void> {
@@ -98,25 +111,8 @@ export struct ModernRelayAddFlow {
     this.importBusy = false;
     if (result === null) { return; }
     if (!result.ok) { this.errorText = result.error; return; }
-    this.idServer = result.idServer; this.idPort = result.idServerPort;
-    this.relayServer = result.relayServer; this.relayPort = result.relayPort;
-    this.apiServer = result.apiServer; this.serverKey = result.key;
-    this.importedFileName = result.fileName;
+    this.applyRustDeskImport(result);
     promptAction.showToast({ message: '已导入 RustDesk 配置，请确认后保存', duration: 1800 });
-  }
-
-  private async importRustDeskClipboard(): Promise<void> {
-    if (this.importBusy) { return; }
-    this.importBusy = true; this.errorText = '';
-    const text = await this.clipboard.getSystemText();
-    const result: RustDeskRelayImportResult = this.relayImporter.parse('剪贴板配置', text.trim());
-    this.importBusy = false;
-    if (!result.ok) { this.errorText = text.trim() === '' ? '剪贴板中没有 RustDesk 配置，请先复制客户端“导出服务器配置”的内容' : result.error; return; }
-    this.idServer = result.idServer; this.idPort = result.idServerPort;
-    this.relayServer = result.relayServer; this.relayPort = result.relayPort;
-    this.apiServer = result.apiServer; this.serverKey = result.key;
-    this.importedFileName = '剪贴板配置';
-    promptAction.showToast({ message: '已读取剪贴板配置，请确认后保存', duration: 1800 });
   }
 
   private confirmRustDesk(): void {
@@ -192,10 +188,10 @@ export struct ModernRelayAddFlow {
     this.header('添加 RustDesk 中继', '填写服务器内置连接选项')
     Scroll() {
       Column() {
-        Button(this.importBusy ? '读取 RustDesk 配置中…' : '从剪贴板导入 RustDesk 配置')
+        Button('粘贴从Rustdesk复制来的加密配置')
           .width('100%').height(40).borderRadius(10).backgroundColor(this.pal().surface)
           .fontColor(this.accentColor).enabled(!this.importBusy)
-          .onClick((): void => { void this.importRustDeskClipboard(); })
+          .onClick((): void => { this.errorText = ''; this.step = 'rustdesk-paste'; })
         Button('从文件导入配置（兼容）')
           .width('100%').height(36).borderRadius(10).backgroundColor(this.pal().surface)
           .fontColor(this.pal().text2).enabled(!this.importBusy).margin({ top: 7 })
@@ -279,6 +275,12 @@ export struct ModernRelayAddFlow {
       } else {
         Column() {
           if (this.step === 'rustdesk') { this.rustDeskForm() }
+          else if (this.step === 'rustdesk-paste') {
+            RustDeskRelayConfigPasteSheet({
+              onCancel: (): void => { this.step = 'rustdesk'; },
+              onImported: (result: RustDeskRelayImportResult): string => this.importAndSavePastedRustDesk(result)
+            })
+          }
           else if (this.step === 'saved') { this.savedResult() }
           else if (this.step === 'pro') { this.proForm() }
           else if (this.step === 'vnc') { this.vncForm() }

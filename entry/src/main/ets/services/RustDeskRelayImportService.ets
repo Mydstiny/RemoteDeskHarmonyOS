@@ -34,6 +34,7 @@ interface RustDeskExportObject {
 class RustDeskEndpoint {
   host: string = '';
   port: number = 0;
+  valid: boolean = true;
 }
 
 function fileNameFromUri(uri: string): string {
@@ -58,8 +59,11 @@ function endpoint(value: string, defaultPort: number): RustDeskEndpoint {
     if (end > 0) {
       const suffix = input.substring(end + 1);
       const port = suffix.startsWith(':') ? parseInt(suffix.substring(1)) : defaultPort;
-      result.host = input.substring(1, end); result.port = isNaN(port) ? defaultPort : port; return result;
+      result.host = input.substring(1, end); result.port = port;
+      result.valid = (suffix === '' || suffix.startsWith(':')) && !isNaN(port) && port > 0 && port <= 65535;
+      return result;
     }
+    result.valid = false; return result;
   }
   const colon = input.lastIndexOf(':');
   if (colon > 0 && input.indexOf(':') === colon) {
@@ -67,6 +71,7 @@ function endpoint(value: string, defaultPort: number): RustDeskEndpoint {
     if (!isNaN(port) && port > 0 && port <= 65535) {
       result.host = input.substring(0, colon); result.port = port; return result;
     }
+    result.valid = false; return result;
   }
   result.host = input; result.port = defaultPort; return result;
 }
@@ -116,9 +121,15 @@ export class RustDeskRelayImportService {
     const rawRelay = (object.relay ?? object.relayServer ?? '').trim();
     if (rawId.length === 0) { return this.failure(fileName, '导出配置缺少 ID 服务器'); }
     const id = endpoint(rawId, 21116);
+    if (!id.valid || id.host.trim().length === 0) {
+      return this.failure(fileName, 'ID 服务器地址或端口无效');
+    }
     // RustDesk 官方允许 Relay 留空，客户端会按 ID 服务器推导；本地模型要求地址，
     // 因此只在导入结果中显式回填同一主机，用户仍可在预览表单中修改。
     const relay = endpoint(rawRelay.length > 0 ? rawRelay : id.host, 21117);
+    if (!relay.valid || relay.host.trim().length === 0) {
+      return this.failure(fileName, 'Relay 服务器地址或端口无效');
+    }
     return {
       ok: true, fileName, idServer: id.host, idServerPort: id.port,
       relayServer: relay.host, relayPort: relay.port,
