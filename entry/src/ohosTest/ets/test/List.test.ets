@@ -30,6 +30,7 @@ import rustDeskCardBadgePolicyTest from './RustDeskCardBadgePolicy.test';
 import remotePhysicalKeyboardPolicyTest from './RemotePhysicalKeyboardPolicy.test';
 import touchpadPointerCurvePolicyTest from './TouchpadPointerCurvePolicy.test';
 import remoteSurfaceTransformPolicyTest from './RemoteSurfaceTransformPolicy.test';
+import remoteCursorStylePolicyTest from './RemoteCursorStylePolicy.test';
 
 export default function testsuite() {
   abilityTest();
@@ -64,4 +65,5 @@ export default function testsuite() {
   remotePhysicalKeyboardPolicyTest();
   touchpadPointerCurvePolicyTest();
   remoteSurfaceTransformPolicyTest();
+  remoteCursorStylePolicyTest();
 }

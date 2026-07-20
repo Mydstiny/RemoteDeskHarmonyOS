@@ -37,6 +37,22 @@ RDP_TEST_CASE(remote_cursor_position_does_not_copy_or_rev_shape) {
     RDP_ASSERT(snapshot.rgba.empty());
 }
 
+RDP_TEST_CASE(remote_cursor_default_shape_replaces_previous_shape) {
+    RemoteCursorStore store;
+    store.reset(17, "rdp");
+    RDP_ASSERT(store.setShape(99, 2, 2, 1, 1, std::vector<uint8_t>(16, 0xFF)));
+
+    RDP_ASSERT(store.setDefaultShape());
+    const RemoteCursorSnapshot snapshot = store.snapshot(true);
+    RDP_ASSERT_EQ(snapshot.shapeId, 0x72656D6F74656466ULL);
+    RDP_ASSERT_EQ(snapshot.width, 16);
+    RDP_ASSERT_EQ(snapshot.height, 16);
+    RDP_ASSERT_EQ(snapshot.hotX, 0);
+    RDP_ASSERT_EQ(snapshot.hotY, 0);
+    RDP_ASSERT_EQ(snapshot.rgba.size(), static_cast<size_t>(16 * 16 * 4));
+    RDP_ASSERT_EQ(snapshot.shapeRevision, 2);
+}
+
 RDP_TEST_CASE(remote_cursor_rejects_invalid_dimensions_and_hotspot) {
     RemoteCursorStore store;
     store.reset(3, "rdp");

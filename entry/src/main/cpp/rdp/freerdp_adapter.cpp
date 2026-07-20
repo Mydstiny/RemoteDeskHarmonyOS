@@ -1416,8 +1416,11 @@ BOOL FreeRdpAdapter::cbPointerSetDefault(rdpContext* context) {
     if (!ctx || !ctx->adapter) {
         return FALSE;
     }
-    ctx->adapter->impl_->cursorStore.setVisible(true);
-    return TRUE;
+    const bool accepted = ctx->adapter->impl_->cursorStore.setDefaultShape();
+    if (accepted) {
+        ctx->adapter->impl_->cursorStore.setVisible(true);
+    }
+    return accepted ? TRUE : FALSE;
 }
 
 // ---- GDI BeginPaint/EndPaint — 首帧上屏 (BGRA raw → GLRenderer) ----

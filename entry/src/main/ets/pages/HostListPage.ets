@@ -86,6 +86,7 @@ import { shouldPreserveManagedRustDeskRoute } from '../services/RustDeskProSyncP
 import { resolveFabAddStyle } from '../services/FabAddStylePolicy';
 import { resolveRustDeskBadges } from '../services/RustDeskCardBadgePolicy';
 import { cloudSyncDetailSpec } from '../services/CloudSyncGuidancePolicy';
+import { normalizeRemoteCursorStyle } from '../services/RemoteCursorStylePolicy';
 import {
   settingsLeafSheetClosedState,
   settingsLeafSheetDismissRequestedState,
@@ -272,6 +273,7 @@ struct HostListPage {
   @State cloudSyncStep: string = CLOUD_SYNC_SHEET_ACTIONS;
   @State cloudSyncError: string = '';
   @State cloudSyncSelectedTables: string[] = [];
+  @State appearanceContentHeight: number = 0;
   private pendingLocalRestore: LocalBackupDocument | null = null;
   @State sheetPwd: string = '';
   @State sheetUseKey: boolean = false;
@@ -603,6 +605,7 @@ struct HostListPage {
       const savedLiveViewEnabled: boolean = prefs.getSync('liveViewEnabled', true) as boolean;
       const savedLiveViewMode: number = prefs.getSync('liveViewMode', 1) as number;
       const savedHostAddMode: string = prefs.getSync('hostAddMode', 'modern') as string;
+      const savedVirtualMouseStyle: string = prefs.getSync('virtualMouseStyle', 'circle') as string;
       const savedShowVirtualMouse: boolean = prefs.getSync('showVirtualMouse', false) as boolean;
       const savedShowVirtualJoystick: boolean = prefs.getSync('showVirtualJoystick', false) as boolean;
       const savedWallpaper: string = prefs.getSync('wallpaperColor', '') as string;
@@ -630,11 +633,8 @@ struct HostListPage {
       AppStorage.setOrCreate('liveViewMode', this.liveViewMode);
       this.fabAddStyle = savedHostAddMode === 'classic' ? 'classic' : 'modern';
       AppStorage.setOrCreate('hostAddMode', this.fabAddStyle);
-      // 发布版本暂时固定使用圆环；保留 virtualMouseStyle 存储键，后续恢复官方光标开关时继续兼容。
-      this.virtualMouseStyle = 'circle';
+      this.virtualMouseStyle = normalizeRemoteCursorStyle(savedVirtualMouseStyle);
       AppStorage.setOrCreate('virtualMouseStyle', this.virtualMouseStyle);
-      prefs.putSync('virtualMouseStyle', 'circle');
-      prefs.flushSync();
       this.showVirtualMouse = savedShowVirtualMouse;
       this.showVirtualJoystick = savedShowVirtualJoystick;
       AppStorage.setOrCreate('showVirtualMouse', this.showVirtualMouse);
@@ -1112,7 +1112,7 @@ struct HostListPage {
 
   private settingsSectionExpandedMaxHeight(section: string): number {
     if (section === SETTINGS_SECTION_APPEARANCE) {
-      return 620;
+      return this.appearanceExpandedMaxHeight();
     }
     if (section === SETTINGS_SECTION_CONNECTION_LIVE) {
       return 520;
@@ -1133,6 +1133,14 @@ struct HostListPage {
       return 300;
     }
     return 0;
+  }
+
+  private appearanceExpandedMaxHeight(): number {
+    const measured: number = Number.isFinite(this.appearanceContentHeight) ?
+      this.appearanceContentHeight : 0;
+    // Give the first expanded layout enough room to report its natural height;
+    // subsequent renders use the measured value plus a small border margin.
+    return measured > 0 ? Math.ceil(measured + 8) : 900;
   }
 
   private async openFeedbackEmail(): Promise<void> {
@@ -2997,14 +3005,6 @@ struct HostListPage {
       this.refreshHaloPresets();
       this.syncHaloColorForCurrentTheme();
     }
-    // 发布版本暂时固定圆环；恢复设置开关后再重新接入云端样式同步。
-    this.virtualMouseStyle = 'circle';
-    AppStorage.setOrCreate('virtualMouseStyle', this.virtualMouseStyle);
-    try {
-      const prefs = preferences.getPreferencesSync(getContext(this), { name: 'RemoteDesktopAppPrefs' });
-      prefs.putSync('virtualMouseStyle', this.virtualMouseStyle);
-      prefs.flushSync();
-    } catch (_e) { /* ignore */ }
   }
 
   private saveRustDeskImageQuality(mode: number): void {
@@ -4661,14 +4661,13 @@ struct HostListPage {
               }
               this.cardDivider()
               Column() {
-                /*
                 Row() {
                   Row() { Text('⌖').fontSize(22).fontColor(this.pal().text) }
                     .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
                   Column() {
-                    Text('虚拟鼠标样式').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
+                    Text('触控板鼠标样式').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
                       .fontColor(this.pal().text).fontFamily(this.font())
-                    Text('触控板模式下远端指针的显示方式').fontSize(11).fontColor(this.pal().text3)
+                    Text('仅手机和平板触控板模式，选择圆环或官方远端鼠标').fontSize(11).fontColor(this.pal().text3)
                       .fontFamily(this.font())
                   }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
                 }.width('100%').padding({ left: 16, right: 16, top: 12, bottom: 8 })
@@ -4677,7 +4676,7 @@ struct HostListPage {
                     .fontColor(this.virtualMouseStyle === 'circle' ? Color.White : this.pal().text2)
                     .backgroundColor(this.virtualMouseStyle === 'circle' ? this.accentColor : this.pal().surface)
                     .borderRadius(10).onClick((): void => { this.saveVirtualMouseStyle('circle'); })
-                  Button('远端鼠标指针').layoutWeight(1).height(36).fontSize(13).margin({ left: 8 })
+                  Button('官方远端鼠标').layoutWeight(1).height(36).fontSize(13).margin({ left: 8 })
                     .fontColor(this.virtualMouseStyle === 'arrow' ? Color.White : this.pal().text2)
                     .backgroundColor(this.virtualMouseStyle === 'arrow' ? this.accentColor : this.pal().surface)
                     .borderRadius(10).onClick((): void => { this.saveVirtualMouseStyle('arrow'); })
@@ -4700,7 +4699,6 @@ struct HostListPage {
                     .selectedColor(this.accentColor)
                     .onChange((enabled: boolean): void => { this.saveShowVirtualJoystick(enabled); })
                 }.width('100%').padding({ left: 16, right: 16, bottom: 12 })
-                */
               }
               this.cardDivider()
               Row() {
@@ -4826,6 +4824,13 @@ struct HostListPage {
             .shadow({ radius: 16, color: 'rgba(0,0,0,0.04)', offsetY: 4 })
             .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
           }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 20 })
+          .onAreaChange((_old: Area, next: Area): void => {
+            const nextHeight: number = next.height as number;
+            if (Number.isFinite(nextHeight) && nextHeight > 0 &&
+              Math.abs(nextHeight - this.appearanceContentHeight) >= 1) {
+              this.appearanceContentHeight = nextHeight;
+            }
+          })
         }
         .constraintSize({ maxHeight: this.settingsSectionExpanded(SETTINGS_SECTION_APPEARANCE) ?
           this.settingsSectionExpandedMaxHeight(SETTINGS_SECTION_APPEARANCE) : 0 })

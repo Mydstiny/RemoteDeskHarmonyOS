@@ -915,8 +915,7 @@ struct RemoteDesktop {
   }
 
   private arrowCursorPoint(): LocalPoint {
-    const reactiveX: number = this.remoteCursorX + this.remoteCursorViewRevision * 0;
-    return this.remoteToLocalPoint(reactiveX, this.remoteCursorY);
+    return this.remoteToLocalPoint(this.remoteCursorX, this.remoteCursorY);
   }
 
   private arrowCursorInside(): boolean { return this.arrowCursorPoint().inside; }
