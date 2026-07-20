@@ -30,3 +30,17 @@ export function shouldRenderCircleCursor(style: RemoteCursorStyle, cursorReady: 
   connected: boolean, touchpadMode: boolean): boolean {
   return style === 'circle' && shouldRenderVirtualTouchpadCursor(connected, touchpadMode, cursorReady);
 }
+
+export function shouldRefreshRemoteCursorBitmap(shapeRevision: number, hasPixelMap: boolean,
+  visible: boolean, lastRefreshAtMs: number, nowMs: number, refreshIntervalMs: number): boolean {
+  if (shapeRevision <= 0) {
+    return false;
+  }
+  if (!hasPixelMap) {
+    const retryIntervalMs: number = Math.min(refreshIntervalMs, 1000);
+    return lastRefreshAtMs <= 0 || retryIntervalMs <= 0 ||
+      nowMs - lastRefreshAtMs >= retryIntervalMs;
+  }
+  return visible && lastRefreshAtMs > 0 && refreshIntervalMs > 0 &&
+    nowMs - lastRefreshAtMs >= refreshIntervalMs;
+}

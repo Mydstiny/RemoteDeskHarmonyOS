@@ -1983,6 +1983,8 @@ FreeRdpAdapter::FreeRdpAdapter() : impl_(std::make_unique<Impl>()) {
 
 void FreeRdpAdapter::setSessionIdentity(uint64_t sessionId) {
     impl_->cursorStore.reset(sessionId, "rdp");
+    impl_->cursorStore.setDefaultShape();
+    impl_->cursorStore.setVisible(true);
 }
 
 RemoteCursorSnapshot FreeRdpAdapter::getRemoteCursorSnapshot(bool includePixels) {
@@ -2884,6 +2886,8 @@ FreeRdpAdapter::FreeRdpAdapter() : impl_(std::make_unique<Impl>()) {
 
 void FreeRdpAdapter::setSessionIdentity(uint64_t sessionId) {
     impl_->cursorStore.reset(sessionId, "rdp");
+    impl_->cursorStore.setDefaultShape();
+    impl_->cursorStore.setVisible(true);
 }
 
 RemoteCursorSnapshot FreeRdpAdapter::getRemoteCursorSnapshot(bool includePixels) {

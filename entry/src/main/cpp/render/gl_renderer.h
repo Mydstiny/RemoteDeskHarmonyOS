@@ -13,6 +13,7 @@
 
 #include "rdp/rdp_presentation_metrics.h"
 
+#include <atomic>
 #include <cstdint>
 #include <mutex>
 #include <string>
@@ -79,22 +80,24 @@ public:
     bool IsPresentationReady();
 
     /** 获取当前宽度 */
-    int GetWidth() const { return width_; }
+    int GetWidth() const { return snapshotSurfaceWidth_.load(std::memory_order_acquire); }
 
     /** 获取当前高度 */
-    int GetHeight() const { return height_; }
+    int GetHeight() const { return snapshotSurfaceHeight_.load(std::memory_order_acquire); }
 
     /** 获取视频源宽高 */
-    int GetSourceWidth() const { return sourceWidth_; }
-    int GetSourceHeight() const { return sourceHeight_; }
+    int GetSourceWidth() const { return snapshotSourceWidth_.load(std::memory_order_acquire); }
+    int GetSourceHeight() const { return snapshotSourceHeight_.load(std::memory_order_acquire); }
 
     /** 获取上次渲染的视口 */
     void GetLastViewport(int& vpX, int& vpY, int& vpW, int& vpH) const {
-        vpX = lastVpX_; vpY = lastVpY_; vpW = lastVpW_; vpH = lastVpH_;
+        int sourceWidth = 0, sourceHeight = 0, surfaceWidth = 0, surfaceHeight = 0;
+        GetViewportSnapshot(vpX, vpY, vpW, vpH,
+            sourceWidth, sourceHeight, surfaceWidth, surfaceHeight);
     }
     void GetViewportSnapshot(int& vpX, int& vpY, int& vpW, int& vpH,
                              int& sourceWidth, int& sourceHeight,
-                             int& surfaceWidth, int& surfaceHeight);
+                             int& surfaceWidth, int& surfaceHeight) const;
 
     // R1: NapiTestRender 使用的 accessor
     bool MakeCurrent();
@@ -133,6 +136,18 @@ private:
     int  lastVpY_;
     int  lastVpW_;
     int  lastVpH_;
+    // Lock-free viewport snapshot for ArkTS/NAPI coordinate mapping. The
+    // render lifecycle mutex may be held across eglSwapBuffers(), so readers
+    // must never wait on it from the UI thread.
+    std::atomic<uint64_t> viewportSnapshotVersion_;
+    std::atomic<int> snapshotVpX_;
+    std::atomic<int> snapshotVpY_;
+    std::atomic<int> snapshotVpW_;
+    std::atomic<int> snapshotVpH_;
+    std::atomic<int> snapshotSourceWidth_;
+    std::atomic<int> snapshotSourceHeight_;
+    std::atomic<int> snapshotSurfaceWidth_;
+    std::atomic<int> snapshotSurfaceHeight_;
     int  rawFrameCount_;
     bool initialized_;
     bool destroying_;
@@ -146,6 +161,7 @@ private:
     GLuint CreateRawShaderProgram();
     void   CreateQuadGeometry();
     void   SetupRawTexture(int width, int height);
+    void   PublishViewportSnapshot(int vpX, int vpY, int vpW, int vpH);
     RdpPresentMetrics RenderRawBGRAInternal(const uint8_t* bgraData, int width, int height,
                                             int stride, bool useDirtyRect, int dirtyX,
                                             int dirtyY, int dirtyWidth, int dirtyHeight,

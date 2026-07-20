@@ -3,6 +3,7 @@ import {
   normalizeRemoteCursorStyle,
   shouldRenderArrowCursor,
   shouldRenderCircleCursor,
+  shouldRefreshRemoteCursorBitmap,
   shouldApplyCloudVirtualMouseStyle,
   VIRTUAL_MOUSE_STYLE_RESTORE_VERSION
 } from '../../../main/ets/services/RemoteCursorStylePolicy';
@@ -38,6 +39,16 @@ export default function remoteCursorStylePolicyTest(): void {
       expect(shouldApplyCloudVirtualMouseStyle(VIRTUAL_MOUSE_STYLE_RESTORE_VERSION - 1)).assertFalse();
       expect(shouldApplyCloudVirtualMouseStyle(VIRTUAL_MOUSE_STYLE_RESTORE_VERSION)).assertTrue();
       expect(shouldApplyCloudVirtualMouseStyle(NaN)).assertFalse();
+    });
+
+    it('refreshes_missing_or_stale_cursor_bitmaps', 0, (): void => {
+      expect(shouldRefreshRemoteCursorBitmap(1, false, true, 0, 1000, 30000)).assertTrue();
+      expect(shouldRefreshRemoteCursorBitmap(1, false, true, 1000, 1500, 30000)).assertFalse();
+      expect(shouldRefreshRemoteCursorBitmap(1, false, true, 1000, 2000, 30000)).assertTrue();
+      expect(shouldRefreshRemoteCursorBitmap(1, true, true, 1000, 31000, 30000)).assertTrue();
+      expect(shouldRefreshRemoteCursorBitmap(1, true, true, 1000, 30999, 30000)).assertFalse();
+      expect(shouldRefreshRemoteCursorBitmap(1, true, false, 1000, 60000, 30000)).assertFalse();
+      expect(shouldRefreshRemoteCursorBitmap(0, false, true, 0, 60000, 30000)).assertFalse();
     });
   });
 }

@@ -331,6 +331,9 @@ GLRenderer::GLRenderer()
       vbo_(0), vao_(0),
       width_(0), height_(0), sourceWidth_(0), sourceHeight_(0),
       lastVpX_(0), lastVpY_(0), lastVpW_(0), lastVpH_(0),
+      viewportSnapshotVersion_(0), snapshotVpX_(0), snapshotVpY_(0),
+      snapshotVpW_(0), snapshotVpH_(0), snapshotSourceWidth_(0),
+      snapshotSourceHeight_(0), snapshotSurfaceWidth_(0), snapshotSurfaceHeight_(0),
       rawFrameCount_(0), initialized_(false), destroying_(false) {}
 
 GLRenderer::~GLRenderer() {
@@ -368,6 +371,7 @@ int GLRenderer::Init(const std::string& xcomponentId, int width, int height) {
     height_ = height;
     sourceWidth_ = width;
     sourceHeight_ = height;
+    PublishViewportSnapshot(0, 0, width, height);
 
     if (!InitEGL(xcomponentId)) {
         OH_LOG_ERROR(LOG_APP, "[GL] EGL 初始化失败");
@@ -763,6 +767,7 @@ RdpPresentMetrics GLRenderer::RenderRawBGRAInternal(
     lastVpY_ = vpY;
     lastVpW_ = vpW;
     lastVpH_ = vpH;
+    PublishViewportSnapshot(vpX, vpY, vpW, vpH);
 
     glUseProgram(rawShaderProgram_);
     glUniform1i(rawSamplerLocation_, 0);
@@ -852,6 +857,7 @@ void GLRenderer::RenderFrame(GLuint textureId) {
     lastVpY_ = viewportY;
     lastVpW_ = viewportW;
     lastVpH_ = viewportH;
+    PublishViewportSnapshot(viewportX, viewportY, viewportW, viewportH);
 
     glUseProgram(shaderProgram_);
 
@@ -878,6 +884,7 @@ void GLRenderer::Resize(int width, int height) {
     std::lock_guard<std::mutex> lock(lifecycleMutex_);
     width_ = width;
     height_ = height;
+    PublishViewportSnapshot(lastVpX_, lastVpY_, lastVpW_, lastVpH_);
     OH_LOG_INFO(LOG_APP, "[GL] 渲染区域大小改为 %{public}dx%{public}d", width, height);
 }
 
@@ -891,21 +898,44 @@ void GLRenderer::SetSourceSize(int width, int height) {
     }
     sourceWidth_ = width;
     sourceHeight_ = height;
+    PublishViewportSnapshot(lastVpX_, lastVpY_, lastVpW_, lastVpH_);
     OH_LOG_INFO(LOG_APP, "[GL] 视频源尺寸更新为 %{public}dx%{public}d", width, height);
 }
 
 void GLRenderer::GetViewportSnapshot(int& vpX, int& vpY, int& vpW, int& vpH,
                                      int& sourceWidth, int& sourceHeight,
-                                     int& surfaceWidth, int& surfaceHeight) {
-    std::lock_guard<std::mutex> lock(lifecycleMutex_);
-    vpX = lastVpX_;
-    vpY = lastVpY_;
-    vpW = lastVpW_;
-    vpH = lastVpH_;
-    sourceWidth = sourceWidth_;
-    sourceHeight = sourceHeight_;
-    surfaceWidth = width_;
-    surfaceHeight = height_;
+                                     int& surfaceWidth, int& surfaceHeight) const {
+    for (;;) {
+        const uint64_t before = viewportSnapshotVersion_.load(std::memory_order_acquire);
+        if ((before & 1U) != 0U) {
+            continue;
+        }
+        vpX = snapshotVpX_.load(std::memory_order_relaxed);
+        vpY = snapshotVpY_.load(std::memory_order_relaxed);
+        vpW = snapshotVpW_.load(std::memory_order_relaxed);
+        vpH = snapshotVpH_.load(std::memory_order_relaxed);
+        sourceWidth = snapshotSourceWidth_.load(std::memory_order_relaxed);
+        sourceHeight = snapshotSourceHeight_.load(std::memory_order_relaxed);
+        surfaceWidth = snapshotSurfaceWidth_.load(std::memory_order_relaxed);
+        surfaceHeight = snapshotSurfaceHeight_.load(std::memory_order_relaxed);
+        const uint64_t after = viewportSnapshotVersion_.load(std::memory_order_acquire);
+        if (before == after) {
+            return;
+        }
+    }
+}
+
+void GLRenderer::PublishViewportSnapshot(int vpX, int vpY, int vpW, int vpH) {
+    viewportSnapshotVersion_.fetch_add(1, std::memory_order_acq_rel);
+    snapshotVpX_.store(vpX, std::memory_order_relaxed);
+    snapshotVpY_.store(vpY, std::memory_order_relaxed);
+    snapshotVpW_.store(vpW, std::memory_order_relaxed);
+    snapshotVpH_.store(vpH, std::memory_order_relaxed);
+    snapshotSourceWidth_.store(sourceWidth_, std::memory_order_relaxed);
+    snapshotSourceHeight_.store(sourceHeight_, std::memory_order_relaxed);
+    snapshotSurfaceWidth_.store(width_, std::memory_order_relaxed);
+    snapshotSurfaceHeight_.store(height_, std::memory_order_relaxed);
+    viewportSnapshotVersion_.fetch_add(1, std::memory_order_release);
 }
 
 void GLRenderer::Destroy() {

@@ -7,6 +7,7 @@ import { abilityAccessCtrl, common } from '@kit.AbilityKit';
 import { pasteboard } from '@kit.BasicServicesKit';
 import { image } from '@kit.ImageKit';
 import { HostSyncService } from '../services/HostSyncService';
+import { CloudStore } from '../services/CloudStore';
 import { ExtensionLoader } from '../services/ExtensionLoader';
 import { KeyVaultService } from '../services/KeyVaultService';
 import { RemoteHost, LockType } from '../model/RemoteHost';
@@ -55,7 +56,8 @@ import {
   remoteCursorSnapshotChanged,
   RemoteCursorStyle,
   shouldRenderArrowCursor,
-  shouldRenderCircleCursor
+  shouldRenderCircleCursor,
+  shouldRefreshRemoteCursorBitmap
 } from '../services/RemoteCursorStylePolicy';
 import {
   clampTouchpadEffectiveGain,
@@ -158,6 +160,9 @@ const INPUT_LOG_SAMPLE_MS = 1000;
 const MOUSE_MOVE_FLUSH_MS = 16;
 const MOUSE_MOVE_ACK_TIMEOUT_MS = 250;
 const MOUSE_MOVE_ACK_TOLERANCE_PX = 4;
+const RENDERER_VIEWPORT_CACHE_MS = 250;
+const REMOTE_CURSOR_BITMAP_REFRESH_MS = 30000;
+const REMOTE_CURSOR_LOG_SAMPLE_MS = 5000;
 const TOUCHPAD_MAX_LOCAL_STEP_RATIO = 0.75;
 const TOUCHPAD_MAX_LOCAL_STEP_VP = 420;
 const TOUCH_INDICATOR_BUTTON_RIGHT = 2;
@@ -403,6 +408,9 @@ struct RemoteDesktop {
   private renderHeightPx: number = 0;
   private rendererSourceWidth: number = 0;
   private rendererSourceHeight: number = 0;
+  private rendererViewportCache: RendererViewportSnapshot | null = null;
+  private rendererViewportCacheHandle: number = -1;
+  private rendererViewportReadAtMs: number = 0;
   private remoteWidth: number = 1920;
   private remoteHeight: number = 1080;
   private remoteCursorX: number = 960;
@@ -423,6 +431,8 @@ struct RemoteDesktop {
   private remoteCursorShapeHeight: number = 0;
   private remoteCursorHotX: number = 0;
   private remoteCursorHotY: number = 0;
+  private remoteCursorShapeRefreshAtMs: number = 0;
+  private remoteCursorLastLogMs: number = 0;
   @State virtualMouseX: number = 24;
   @State virtualMouseY: number = 140;
   private virtualMouseDragStartX: number = 0;
@@ -985,6 +995,18 @@ struct RemoteDesktop {
     } catch (err) {
       hilog.warn(RD_DOMAIN, RD_TAG, 'persistSessionPref failed key=' + key + ': ' + JSON.stringify(err));
     }
+  }
+
+  private saveShowVirtualMouse(enabled: boolean): void {
+    this.showVirtualMouse = enabled;
+    this.persistSessionPref('showVirtualMouse', enabled);
+    CloudStore.getInstance().upsertUserSetting('showVirtualMouse', enabled);
+  }
+
+  private saveShowVirtualJoystick(enabled: boolean): void {
+    this.showVirtualJoystick = enabled;
+    this.persistSessionPref('showVirtualJoystick', enabled);
+    CloudStore.getInstance().upsertUserSetting('showVirtualJoystick', enabled);
   }
 
   private setRustDeskPrivacyMode(on: boolean): void {
@@ -2294,7 +2316,30 @@ struct RemoteDesktop {
       ' discontinuity=' + (discontinuity ? '1' : '0'));
   }
 
-  private readRendererViewport(): RendererViewportSnapshot | null {
+  private invalidateRendererViewportCache(): void {
+    this.rendererViewportCache = null;
+    this.rendererViewportCacheHandle = this.rendererHandle;
+    this.rendererViewportReadAtMs = 0;
+  }
+
+  private readRendererViewport(forceRefresh: boolean = false): RendererViewportSnapshot | null {
+    const now: number = Date.now();
+    if (this.rendererViewportCacheHandle !== this.rendererHandle) {
+      this.rendererViewportCache = null;
+      this.rendererViewportCacheHandle = this.rendererHandle;
+      this.rendererViewportReadAtMs = 0;
+    }
+    if (!forceRefresh && this.rendererViewportCache !== null &&
+      now - this.rendererViewportReadAtMs < RENDERER_VIEWPORT_CACHE_MS) {
+      return this.rendererViewportCache;
+    }
+    // Throttle failed reads as well. A detached/rebuilding surface must not
+    // turn every touch Move and every cursor Builder evaluation into NAPI work.
+    if (!forceRefresh && this.rendererViewportReadAtMs > 0 &&
+      now - this.rendererViewportReadAtMs < RENDERER_VIEWPORT_CACHE_MS) {
+      return this.rendererViewportCache;
+    }
+    this.rendererViewportReadAtMs = now;
     try {
       const raw = this.loader.getRendererViewport(this.rendererHandle);
       if (raw && raw['sourceWidth'] > 0 && raw['sourceHeight'] > 0 &&
@@ -2309,12 +2354,13 @@ struct RemoteDesktop {
         };
         this.rendererSourceWidth = snapshot.sourceWidth;
         this.rendererSourceHeight = snapshot.sourceHeight;
-        return snapshot;
+        this.rendererViewportCache = snapshot;
+        return this.rendererViewportCache;
       }
     } catch (_e) {
       // Renderer may be unavailable while a surface is being rebuilt.
     }
-    return null;
+    return this.rendererViewportCache;
   }
 
   /** RustDesk frame dimensions are the peer display dimensions in this FFI. */
@@ -2634,6 +2680,18 @@ struct RemoteDesktop {
     this.localMouseMoveInFlight = false;
     this.localMouseMoveSentAtMs = 0;
     this.remotePredictionActive = false;
+  }
+
+  private expireMouseMoveAcknowledgement(now: number = Date.now()): void {
+    if (!this.localMouseMoveInFlight || this.pendingMouseMoveValid ||
+      this.localMouseMoveSentAtMs <= 0 ||
+      now - this.localMouseMoveSentAtMs < MOUSE_MOVE_ACK_TIMEOUT_MS) {
+      return;
+    }
+    this.localMouseMoveInFlight = false;
+    hilog.debug(RD_DOMAIN, RD_TAG, 'mouse move acknowledgement expired sequence=' +
+      this.localMouseMoveSequence.toString() + ' sent=' +
+      this.localMouseMoveSentX.toFixed(2) + ',' + this.localMouseMoveSentY.toFixed(2));
   }
 
   private flushMouseMove(): void {
@@ -3140,11 +3198,16 @@ struct RemoteDesktop {
     }
   }
 
-  private clearRemoteCursorPolling(): void {
+  private clearRemoteCursorPolling(releaseVisual: boolean = true,
+    reason: string = 'session-stop'): void {
     this.stopVirtualJoystickMotion();
     if (this.remoteCursorPollTimer !== -1) {
       clearInterval(this.remoteCursorPollTimer);
       this.remoteCursorPollTimer = -1;
+    }
+    if (!releaseVisual) {
+      hilog.info(RD_DOMAIN, RD_TAG, 'remote-cursor polling stopped preserve=1 reason=' + reason);
+      return;
     }
     this.remoteCursorNativeVisible = false;
     this.remoteCursorShapeRevision = -1;
@@ -3153,8 +3216,11 @@ struct RemoteDesktop {
     this.remoteCursorShapeHeight = 0;
     this.remoteCursorHotX = 0;
     this.remoteCursorHotY = 0;
+    this.remoteCursorShapeRefreshAtMs = 0;
+    this.remoteCursorLastLogMs = 0;
     this.releaseRemoteCursorPixelMap();
     this.remoteCursorViewRevision += 1;
+    hilog.info(RD_DOMAIN, RD_TAG, 'remote-cursor polling stopped preserve=0 reason=' + reason);
   }
 
   private applyRemoteCursorShape(snapshot: RemoteCursorSnapshot): void {
@@ -3176,6 +3242,7 @@ struct RemoteDesktop {
       this.remoteCursorShapeHeight = snapshot.height;
       this.remoteCursorHotX = snapshot.hotX;
       this.remoteCursorHotY = snapshot.hotY;
+      this.remoteCursorShapeRefreshAtMs = Date.now();
       this.remoteCursorViewRevision += 1;
       if (previous !== null) {
         try { previous.release(); } catch (_e) { /* already released */ }
@@ -3189,35 +3256,65 @@ struct RemoteDesktop {
     if (!this.connected || this.sessionId !== sessionId || sessionId <= 0) {
       return;
     }
+    const now: number = Date.now();
+    this.expireMouseMoveAcknowledgement(now);
     this.syncRustDeskLogicalSizeFromRenderer();
     const snapshot: RemoteCursorSnapshot | null =
       this.loader.getRemoteCursorSnapshot(sessionId, false);
     if (snapshot === null || snapshot.sessionId !== sessionId) {
       return;
     }
-    if (snapshot.shapeRevision !== this.remoteCursorShapeRevision) {
+    const shapeChanged: boolean = snapshot.shapeRevision !== this.remoteCursorShapeRevision;
+    const shapeRefreshDue: boolean = shouldRefreshRemoteCursorBitmap(snapshot.shapeRevision,
+      this.remoteCursorPixelMap !== null, snapshot.visible, this.remoteCursorShapeRefreshAtMs,
+      now, REMOTE_CURSOR_BITMAP_REFRESH_MS);
+    if (shapeChanged || shapeRefreshDue) {
       this.remoteCursorShapeRevision = snapshot.shapeRevision;
       if (snapshot.shapeRevision > 0) {
+        // Record the attempt before crossing NAPI so a rejected/missing bitmap
+        // retries at a bounded cadence instead of spinning every 16 ms.
+        this.remoteCursorShapeRefreshAtMs = now;
         const pixels: RemoteCursorSnapshot | null =
           this.loader.getRemoteCursorSnapshot(sessionId, true);
         if (pixels !== null && pixels.shapeRevision === snapshot.shapeRevision) {
           this.applyRemoteCursorShape(pixels);
+        } else {
+          hilog.warn(RD_DOMAIN, RD_TAG, 'remote-cursor pixels unavailable shapeRevision=' +
+            snapshot.shapeRevision.toString() + ' refresh=' + (shapeRefreshDue ? '1' : '0'));
         }
       }
     }
-    if (snapshot.positionRevision !== this.remoteCursorPositionRevision) {
+    const positionChanged: boolean = snapshot.positionRevision !== this.remoteCursorPositionRevision;
+    if (positionChanged) {
       this.remoteCursorPositionRevision = snapshot.positionRevision;
-      this.remoteCursorNativeVisible = snapshot.visible;
+      // RustDesk's FFI marks the cursor hidden when its stream callback ends,
+      // but the ArkTS session may still be connected/recovering and continue
+      // to accept local input. Keep the last valid bitmap visible in that
+      // state; a true disconnect is already gated by this.connected.
+      this.remoteCursorNativeVisible = snapshot.visible || this.isRustDeskSession();
       if (snapshot.visible) {
         this.applyAuthoritativeRemoteCursor(snapshot.x, snapshot.y);
       } else {
         this.remoteCursorViewRevision += 1;
       }
     }
+    if (shapeChanged || positionChanged ||
+      this.remoteCursorLastLogMs === 0 || now - this.remoteCursorLastLogMs >= REMOTE_CURSOR_LOG_SAMPLE_MS) {
+      this.remoteCursorLastLogMs = now;
+      hilog.info(RD_DOMAIN, RD_TAG, 'remote-cursor state session=' + sessionId.toString() +
+        ' shapeRevision=' + snapshot.shapeRevision.toString() +
+        ' positionRevision=' + snapshot.positionRevision.toString() +
+        ' visible=' + (snapshot.visible ? '1' : '0') +
+        ' pixelMap=' + (this.remoteCursorPixelMap !== null ? '1' : '0') +
+        ' position=' + snapshot.x.toString() + ',' + snapshot.y.toString());
+    }
   }
 
   private startRemoteCursorPolling(sessionId: number): void {
-    this.clearRemoteCursorPolling();
+    // Restarting a timer (connect handoff / foreground restore) must not erase
+    // the last valid cursor. The native snapshot may not repeat an unchanged
+    // shape, so clearing here can otherwise make the arrow disappear forever.
+    this.clearRemoteCursorPolling(false, 'poll-restart');
     this.pollRemoteCursor(sessionId);
     this.remoteCursorPollTimer = setInterval((): void => {
       this.pollRemoteCursor(sessionId);
@@ -3577,7 +3674,7 @@ struct RemoteDesktop {
     } catch (err) {
       this.clearRdpRenderWatchdog();
       this.clearRdpNativeStateMonitor();
-      this.clearRemoteCursorPolling();
+      this.clearRemoteCursorPolling(true, 'connect-error');
       // 停止剪贴板桥
       if (this.clipboardBridge !== null) {
         this.clipboardBridge.stopMonitoring();
@@ -3729,7 +3826,7 @@ struct RemoteDesktop {
     this.activeSessionRegistry.clear(reason);
     this.clearRdpRenderWatchdog();
     this.clearRdpNativeStateMonitor();
-    this.clearRemoteCursorPolling();
+    this.clearRemoteCursorPolling(true, reason);
     hilog.info(RD_DOMAIN, RD_TAG, '[RDP-SHUTDOWN] phase=arkts-entry reason=' + reason +
       ' sessionId=' + this.sessionId.toString());
     // T-171: 断开时隐藏胶囊和面板 + 释放所有修饰键
@@ -3829,7 +3926,7 @@ struct RemoteDesktop {
     this.clearRestoreFrameRefreshPump();
     this.clearRdpRenderWatchdog();
     this.clearRdpNativeStateMonitor();
-    this.clearRemoteCursorPolling();
+    this.clearRemoteCursorPolling(false, 'background-detach');
 
     // 隐藏 UI 元素
     this.handleVisible = false;
@@ -5342,6 +5439,12 @@ struct RemoteDesktop {
       this.hideTouchIndicator();
       return;
     }
+    if (this.remoteCursorDisplayStyle() === 'arrow') {
+      if (this.touchIndicatorVisible) {
+        this.hideTouchIndicator();
+      }
+      return;
+    }
     const local: LocalPoint = this.remoteToLocalPoint(this.remoteCursorX, this.remoteCursorY);
     if (!local.inside) { return; }
     const actualButton: number = this.touchDragActive && button < 0 ? TOUCH_INDICATOR_BUTTON_DRAG : button;
@@ -6479,6 +6582,7 @@ struct RemoteDesktop {
         this.surfaceHeight = hVp;
         this.renderWidthPx = wPx;
         this.renderHeightPx = hPx;
+        this.invalidateRendererViewportCache();
         // A resize/orientation change can move the local TouchEvent origin
         // while a finger is still down.  Consume the first post-resize move
         // as a new anchor so the old coordinate space cannot create a jump.
@@ -7250,8 +7354,7 @@ struct RemoteDesktop {
           Toggle({ type: ToggleType.Switch, isOn: this.showVirtualMouse })
             .selectedColor(this.pal().primary)
             .onChange((enabled: boolean): void => {
-              this.showVirtualMouse = enabled;
-              AppStorage.setOrCreate('showVirtualMouse', enabled);
+              this.saveShowVirtualMouse(enabled);
             })
         }
         .width('100%').height(48).padding({ left: 18, right: 18 })
@@ -7262,8 +7365,7 @@ struct RemoteDesktop {
           Toggle({ type: ToggleType.Switch, isOn: this.showVirtualJoystick })
             .selectedColor(this.pal().primary)
             .onChange((enabled: boolean): void => {
-              this.showVirtualJoystick = enabled;
-              AppStorage.setOrCreate('showVirtualJoystick', enabled);
+              this.saveShowVirtualJoystick(enabled);
             })
         }
         .width('100%').height(48).padding({ left: 18, right: 18 })

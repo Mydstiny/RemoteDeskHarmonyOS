@@ -53,6 +53,21 @@ RDP_TEST_CASE(remote_cursor_default_shape_replaces_previous_shape) {
     RDP_ASSERT_EQ(snapshot.shapeRevision, 2);
 }
 
+RDP_TEST_CASE(remote_cursor_default_shape_can_bootstrap_a_visible_session) {
+    RemoteCursorStore store;
+    store.reset(23, "rustdesk");
+    RDP_ASSERT(store.setDefaultShape());
+    store.setVisible(true);
+
+    const RemoteCursorSnapshot snapshot = store.snapshot(true);
+    RDP_ASSERT_EQ(snapshot.sessionId, 23);
+    RDP_ASSERT(snapshot.visible);
+    RDP_ASSERT_EQ(snapshot.shapeRevision, 1);
+    RDP_ASSERT_EQ(snapshot.positionRevision, 1);
+    RDP_ASSERT_EQ(snapshot.width, 16);
+    RDP_ASSERT_EQ(snapshot.height, 16);
+}
+
 RDP_TEST_CASE(remote_cursor_rejects_invalid_dimensions_and_hotspot) {
     RemoteCursorStore store;
     store.reset(3, "rdp");

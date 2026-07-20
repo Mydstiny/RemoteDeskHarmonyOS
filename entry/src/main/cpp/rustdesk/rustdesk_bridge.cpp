@@ -389,6 +389,9 @@ static std::atomic<uint64_t> g_ffiKeySendCount {0};
 static std::atomic<uint64_t> g_ffiWheelSendCount {0};
 static std::atomic<uint64_t> g_ffiTextSendCount {0};
 static std::atomic<uint64_t> g_ffiFileSendCount {0};
+static std::atomic<uint64_t> g_ffiCursorShapeCount {0};
+static std::atomic<uint64_t> g_ffiCursorPositionCount {0};
+static std::atomic<uint64_t> g_ffiCursorVisibilityCount {0};
 
 static const char* rdCodecName(int codec) {
     switch (codec) {
@@ -578,19 +581,40 @@ void RustDeskBridge::onFfiCursor(const void* cursorPtr, void* userData) {
     switch (cursor->kind) {
         case 0: {
             if (!cursor->rgba || cursor->rgbaLen == 0 || cursor->rgbaLen > kRemoteCursorMaxBytes) {
+                OH_LOG_WARN(LOG_APP,
+                    "[RustDesk-FFI] cursor shape rejected id=%{public}llu bytes=%{public}zu",
+                    static_cast<unsigned long long>(cursor->shapeId), cursor->rgbaLen);
                 return;
             }
             std::vector<uint8_t> rgba(cursor->rgba, cursor->rgba + cursor->rgbaLen);
-            impl->cursorStore.setShape(cursor->shapeId, cursor->width, cursor->height,
-                                       cursor->hotX, cursor->hotY, rgba);
+            const bool accepted = impl->cursorStore.setShape(cursor->shapeId, cursor->width,
+                cursor->height, cursor->hotX, cursor->hotY, rgba);
+            const uint64_t index = ++g_ffiCursorShapeCount;
+            OH_LOG_INFO(LOG_APP,
+                "[RustDesk-FFI] cursor shape #%{public}llu id=%{public}llu size=%{public}dx%{public}d hot=%{public}d,%{public}d accepted=%{public}s",
+                static_cast<unsigned long long>(index),
+                static_cast<unsigned long long>(cursor->shapeId), cursor->width, cursor->height,
+                cursor->hotX, cursor->hotY, accepted ? "yes" : "no");
             break;
         }
-        case 1:
+        case 1: {
             impl->cursorStore.setPosition(cursor->x, cursor->y);
+            const uint64_t index = ++g_ffiCursorPositionCount;
+            if (index <= 10 || index % 300 == 0) {
+                OH_LOG_INFO(LOG_APP,
+                    "[RustDesk-FFI] cursor position #%{public}llu x=%{public}d y=%{public}d",
+                    static_cast<unsigned long long>(index), cursor->x, cursor->y);
+            }
             break;
-        case 2:
+        }
+        case 2: {
             impl->cursorStore.setVisible(cursor->visible);
+            const uint64_t index = ++g_ffiCursorVisibilityCount;
+            OH_LOG_INFO(LOG_APP,
+                "[RustDesk-FFI] cursor visibility #%{public}llu visible=%{public}s",
+                static_cast<unsigned long long>(index), cursor->visible ? "yes" : "no");
             break;
+        }
         default:
             break;
     }
@@ -671,6 +695,11 @@ RustDeskBridge::RustDeskBridge(RustDeskMode mode)
 
 void RustDeskBridge::setSessionIdentity(uint64_t sessionId) {
     impl_->cursorStore.reset(sessionId, "rustdesk");
+    // RustDesk does not guarantee that an unchanged cursor shape is repeated
+    // after every UI/surface handoff. Keep a valid official-style arrow ready
+    // until the first protocol cursor_data/cursor_id update replaces it.
+    impl_->cursorStore.setDefaultShape();
+    impl_->cursorStore.setVisible(true);
 }
 
 RemoteCursorSnapshot RustDeskBridge::getRemoteCursorSnapshot(bool includePixels) {
