@@ -78,16 +78,12 @@ struct GuidePage {
     return shouldPresentGuideAsBottomSheet(this.mode, this.breakpoint);
   }
 
-  private guideCenterWidth(): number {
-    return this.breakpoint === 'xl' ? 640 : 560;
-  }
-
   private guideSheetHeight(): string | number {
     if (this.presentGuideAsBottomSheet()) { return '72%'; }
     return this.breakpoint === 'xl' ? 620 : 580;
   }
 
-  @Builder guidePanel(isSheet: boolean) {
+  @Builder guidePanel() {
     Column() {
       Swiper(this.swiperController) {
         ForEach(this.activePages, (page: GuideContentPage, index: number) => {
@@ -171,7 +167,9 @@ struct GuidePage {
       }
       .width('100%').padding({ left: 28, right: 28, bottom: 48, top: 12 })
       }
-      .width(isSheet && this.presentGuideAsDialog() ? this.guideCenterWidth() : '100%')
+      // CENTER Sheet 的外框宽度由系统按窗口尺寸决定；内部再次写死 560/640vp
+      // 会在 Pad/PC 上超过实际内容区，裁掉正文和左右导航。
+      .width('100%')
       .height('100%')
       .backgroundColor(this.pal().sheetBg)
       .borderRadius(this.presentGuideAsDialog() ? 24 : 0)
@@ -182,7 +180,7 @@ struct GuidePage {
   }
 
   @Builder guideSheet() {
-    this.guidePanel(true)
+    this.guidePanel()
   }
 
   build() {
