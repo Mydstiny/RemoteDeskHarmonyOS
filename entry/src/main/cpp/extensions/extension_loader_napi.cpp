@@ -1734,6 +1734,122 @@ napi_value NapiSendMouseWheel(napi_env env, napi_callback_info info) {
     return undefined;
 }
 
+/** NAPI: getRustDeskDisplayCapabilities(sessionId): object */
+napi_value NapiGetRustDeskDisplayCapabilities(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value args[1];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    int32_t sessionId = 0;
+    if (argc > 0) napi_get_value_int32(env, args[0], &sessionId);
+
+    RustDeskDisplayCapabilities capabilities;
+    auto it = g_sessions.find(sessionId);
+    if (it != g_sessions.end() && it->second && it->second->protocolName == "rustdesk" &&
+        it->second->adapter) {
+        auto* bridge = dynamic_cast<RustDeskBridge*>(it->second->adapter.get());
+        if (bridge) capabilities = bridge->getDisplayCapabilities();
+    }
+
+    napi_value result;
+    napi_create_object(env, &result);
+    SetObjectBool(env, result, "supported", capabilities.supported);
+    SetObjectInt32(env, result, "currentDisplay", capabilities.currentDisplay);
+    SetObjectInt32(env, result, "width", capabilities.width);
+    SetObjectInt32(env, result, "height", capabilities.height);
+    SetObjectInt32(env, result, "originalWidth", capabilities.originalWidth);
+    SetObjectInt32(env, result, "originalHeight", capabilities.originalHeight);
+    SetObjectInt32(env, result, "scaleMilli", capabilities.scaleMilli);
+    SetObjectInt32(env, result, "geometryEpoch", static_cast<int32_t>(capabilities.geometryEpoch));
+    napi_value resolutions;
+    napi_create_array_with_length(env, capabilities.resolutions.size(), &resolutions);
+    for (size_t index = 0; index < capabilities.resolutions.size(); ++index) {
+        napi_value item;
+        napi_create_object(env, &item);
+        SetObjectInt32(env, item, "width", capabilities.resolutions[index].width);
+        SetObjectInt32(env, item, "height", capabilities.resolutions[index].height);
+        napi_set_element(env, resolutions, static_cast<uint32_t>(index), item);
+    }
+    napi_set_named_property(env, result, "resolutions", resolutions);
+    return result;
+}
+
+/** NAPI: changeRustDeskDisplayResolution(sessionId, display, width, height): boolean */
+napi_value NapiChangeRustDeskDisplayResolution(napi_env env, napi_callback_info info) {
+    size_t argc = 4;
+    napi_value args[4];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    int32_t sessionId = 0;
+    int32_t display = 0;
+    int32_t width = 0;
+    int32_t height = 0;
+    if (argc >= 4) {
+        napi_get_value_int32(env, args[0], &sessionId);
+        napi_get_value_int32(env, args[1], &display);
+        napi_get_value_int32(env, args[2], &width);
+        napi_get_value_int32(env, args[3], &height);
+    }
+    bool accepted = false;
+    auto it = g_sessions.find(sessionId);
+    if (it != g_sessions.end() && it->second && it->second->protocolName == "rustdesk" &&
+        it->second->adapter) {
+        auto* bridge = dynamic_cast<RustDeskBridge*>(it->second->adapter.get());
+        if (bridge) accepted = bridge->changeDisplayResolution(display, width, height);
+    }
+    napi_value result;
+    napi_get_boolean(env, accepted, &result);
+    return result;
+}
+
+/** NAPI: sendRustDeskTouchScale(sessionId, scale): boolean */
+napi_value NapiSendRustDeskTouchScale(napi_env env, napi_callback_info info) {
+    size_t argc = 2;
+    napi_value args[2];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    int32_t sessionId = 0;
+    int32_t scale = 0;
+    if (argc >= 2) {
+        napi_get_value_int32(env, args[0], &sessionId);
+        napi_get_value_int32(env, args[1], &scale);
+    }
+    bool accepted = false;
+    auto it = g_sessions.find(sessionId);
+    if (it != g_sessions.end() && it->second && it->second->protocolName == "rustdesk" &&
+        it->second->adapter) {
+        auto* bridge = dynamic_cast<RustDeskBridge*>(it->second->adapter.get());
+        if (bridge) accepted = bridge->sendTouchScale(scale);
+    }
+    napi_value result;
+    napi_get_boolean(env, accepted, &result);
+    return result;
+}
+
+/** NAPI: sendRustDeskTouchPan(sessionId, phase, x, y): boolean */
+napi_value NapiSendRustDeskTouchPan(napi_env env, napi_callback_info info) {
+    size_t argc = 4;
+    napi_value args[4];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    int32_t sessionId = 0;
+    int32_t phase = -1;
+    int32_t x = 0;
+    int32_t y = 0;
+    if (argc >= 4) {
+        napi_get_value_int32(env, args[0], &sessionId);
+        napi_get_value_int32(env, args[1], &phase);
+        napi_get_value_int32(env, args[2], &x);
+        napi_get_value_int32(env, args[3], &y);
+    }
+    bool accepted = false;
+    auto it = g_sessions.find(sessionId);
+    if (it != g_sessions.end() && it->second && it->second->protocolName == "rustdesk" &&
+        it->second->adapter) {
+        auto* bridge = dynamic_cast<RustDeskBridge*>(it->second->adapter.get());
+        if (bridge) accepted = bridge->sendTouchPan(phase, x, y);
+    }
+    napi_value result;
+    napi_get_boolean(env, accepted, &result);
+    return result;
+}
+
 /**
  * NAPI: sendText(sessionId: number, text: string): void
  */
@@ -2958,6 +3074,22 @@ napi_value ExtensionLoaderNapi::Init(napi_env env, napi_value exports) {
     napi_create_function(env, "sendMouseWheel", NAPI_AUTO_LENGTH,
                          NapiSendMouseWheel, nullptr, &fn);
     napi_set_named_property(env, exports, "sendMouseWheel", fn);
+
+    napi_create_function(env, "getRustDeskDisplayCapabilities", NAPI_AUTO_LENGTH,
+                         NapiGetRustDeskDisplayCapabilities, nullptr, &fn);
+    napi_set_named_property(env, exports, "getRustDeskDisplayCapabilities", fn);
+
+    napi_create_function(env, "changeRustDeskDisplayResolution", NAPI_AUTO_LENGTH,
+                         NapiChangeRustDeskDisplayResolution, nullptr, &fn);
+    napi_set_named_property(env, exports, "changeRustDeskDisplayResolution", fn);
+
+    napi_create_function(env, "sendRustDeskTouchScale", NAPI_AUTO_LENGTH,
+                         NapiSendRustDeskTouchScale, nullptr, &fn);
+    napi_set_named_property(env, exports, "sendRustDeskTouchScale", fn);
+
+    napi_create_function(env, "sendRustDeskTouchPan", NAPI_AUTO_LENGTH,
+                         NapiSendRustDeskTouchPan, nullptr, &fn);
+    napi_set_named_property(env, exports, "sendRustDeskTouchPan", fn);
 
     napi_create_function(env, "sendText", NAPI_AUTO_LENGTH,
                          NapiSendText, nullptr, &fn);

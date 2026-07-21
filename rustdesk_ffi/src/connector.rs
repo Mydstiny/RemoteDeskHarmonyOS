@@ -23,8 +23,10 @@ use crate::protocol::message_proto::{
     AudioFormat, AudioFrame, Clipboard, ClipboardFormat, ControlKey, EncodedVideoFrames,
     FileAction, FileAction_oneof_union, FileEntry, FileResponse, FileResponse_oneof_union,
     FileTransferBlock, FileTransferDone, FileTransferReceiveRequest,
-    FileTransferSendConfirmRequest, FileType, IdPk, KeyEvent, KeyEvent_oneof_union, KeyboardMode,
-    Message, Message_oneof_union, Misc, Misc_oneof_union, MouseEvent, PublicKey, VideoFrame,
+    DisplayResolution, FileTransferSendConfirmRequest, FileType, IdPk, KeyEvent,
+    KeyEvent_oneof_union, KeyboardMode, Message, Message_oneof_union, Misc, Misc_oneof_union,
+    MouseEvent, PointerDeviceEvent, PublicKey, Resolution, SwitchDisplay, TouchEvent,
+    TouchPanEnd, TouchPanStart, TouchPanUpdate, TouchScaleUpdate, VideoFrame,
     VideoFrame_oneof_union,
 };
 use crate::protocol::rendezvous::RendezvousClient;
@@ -752,6 +754,7 @@ impl RustDeskConnector {
         fps: u32,
         controls: Arc<ControlInbox>,
         stream_stats: Arc<Mutex<crate::RustDeskStreamStats>>,
+        display_state: Arc<Mutex<crate::RustDeskDisplayState>>,
         mut on_video: VF,
         mut on_audio_format: AFF,
         mut on_audio: AF,
@@ -1126,12 +1129,16 @@ impl RustDeskConnector {
                         Some(Misc_oneof_union::close_reason(_)) => "misc/close_reason",
                         Some(Misc_oneof_union::refresh_video(_)) => "misc/refresh_video",
                         Some(Misc_oneof_union::video_received(_)) => "misc/video_received",
+                        Some(Misc_oneof_union::switch_display(_)) => "misc/switch_display",
                         _ => "misc/other",
                     };
                     last_msg_kind = misc_key;
                     *msg_stats.entry(misc_key).or_default() += 1;
                     if let Some(Misc_oneof_union::audio_format(ref format)) = misc.union {
                         on_audio_format(format);
+                    }
+                    if let Some(Misc_oneof_union::switch_display(ref display)) = misc.union {
+                        Self::apply_switch_display_geometry(&display_state, display, &stream_stats);
                     }
                 }
                 Some(Message_oneof_union::login_response(ref resp)) => {
@@ -1365,6 +1372,63 @@ impl RustDeskConnector {
         Ok(())
     }
 
+    fn build_display_resolution_message(display: i32, width: i32, height: i32) -> Message {
+        let mut resolution = Resolution::new();
+        resolution.set_width(width);
+        resolution.set_height(height);
+        let mut change = DisplayResolution::new();
+        change.set_display(display);
+        change.set_resolution(resolution);
+        let mut misc = Misc::new();
+        misc.union = Some(Misc_oneof_union::change_display_resolution(change));
+        let mut message = Message::new();
+        message.union = Some(Message_oneof_union::misc(misc));
+        message
+    }
+
+    fn build_touch_scale_message(scale: i32) -> Message {
+        let mut update = TouchScaleUpdate::new();
+        update.set_scale(scale);
+        let mut touch = TouchEvent::new();
+        touch.set_scale_update(update);
+        Self::build_touch_event_message(touch)
+    }
+
+    fn build_touch_pan_start_message(x: i32, y: i32) -> Message {
+        let mut pan = TouchPanStart::new();
+        pan.set_x(x);
+        pan.set_y(y);
+        let mut touch = TouchEvent::new();
+        touch.set_pan_start(pan);
+        Self::build_touch_event_message(touch)
+    }
+
+    fn build_touch_pan_update_message(x: i32, y: i32) -> Message {
+        let mut pan = TouchPanUpdate::new();
+        pan.set_x(x);
+        pan.set_y(y);
+        let mut touch = TouchEvent::new();
+        touch.set_pan_update(pan);
+        Self::build_touch_event_message(touch)
+    }
+
+    fn build_touch_pan_end_message(x: i32, y: i32) -> Message {
+        let mut pan = TouchPanEnd::new();
+        pan.set_x(x);
+        pan.set_y(y);
+        let mut touch = TouchEvent::new();
+        touch.set_pan_end(pan);
+        Self::build_touch_event_message(touch)
+    }
+
+    fn build_touch_event_message(touch: TouchEvent) -> Message {
+        let mut pointer = PointerDeviceEvent::new();
+        pointer.set_touch_event(touch);
+        let mut message = Message::new();
+        message.union = Some(Message_oneof_union::pointer_device_event(pointer));
+        message
+    }
+
     fn send_control_message(
         crypto: &mut CryptoChannel,
         control: crate::ControlMsg,
@@ -1411,6 +1475,26 @@ impl RustDeskConnector {
                 Self::send_mouse_event_encrypted(crypto, 0, delta, 3)
             }
             crate::ControlMsg::Text { text } => Self::send_text_event_encrypted(crypto, &text),
+            crate::ControlMsg::ChangeDisplayResolution { display, width, height } => {
+                let message = Self::build_display_resolution_message(display, width, height);
+                Self::send_message_encrypted(crypto, &message)
+            }
+            crate::ControlMsg::TouchScale { scale } => {
+                let message = Self::build_touch_scale_message(scale);
+                Self::send_message_encrypted(crypto, &message)
+            }
+            crate::ControlMsg::TouchPanStart { x, y } => {
+                let message = Self::build_touch_pan_start_message(x, y);
+                Self::send_message_encrypted(crypto, &message)
+            }
+            crate::ControlMsg::TouchPanUpdate { x, y } => {
+                let message = Self::build_touch_pan_update_message(x, y);
+                Self::send_message_encrypted(crypto, &message)
+            }
+            crate::ControlMsg::TouchPanEnd { x, y } => {
+                let message = Self::build_touch_pan_end_message(x, y);
+                Self::send_message_encrypted(crypto, &message)
+            }
             crate::ControlMsg::SendFile { .. } => Err(io::Error::new(
                 io::ErrorKind::Other,
                 "SendFile handled by streaming loop",
@@ -1434,6 +1518,11 @@ impl RustDeskConnector {
             crate::ControlMsg::Text { .. } => "text",
             crate::ControlMsg::SendFile { .. } => "send_file",
             crate::ControlMsg::Clipboard { .. } => "clipboard",
+            crate::ControlMsg::ChangeDisplayResolution { .. } => "change_display_resolution",
+            crate::ControlMsg::TouchScale { .. } => "touch_scale",
+            crate::ControlMsg::TouchPanStart { .. } => "touch_pan_start",
+            crate::ControlMsg::TouchPanUpdate { .. } => "touch_pan_update",
+            crate::ControlMsg::TouchPanEnd { .. } => "touch_pan_end",
         }
     }
 
@@ -2303,6 +2392,97 @@ impl RustDeskConnector {
         }
     }
 
+    pub fn peer_display_state(&self) -> crate::RustDeskDisplayState {
+        let mut state = crate::RustDeskDisplayState::default();
+        let Some(info) = self.session.peer_info() else {
+            return state;
+        };
+        let displays = info.get_displays();
+        let current = info.get_current_display();
+        state.current_display = if current >= 0 { current } else { 0 };
+        let display = if current >= 0 {
+            displays.get(current as usize)
+        } else {
+            None
+        }
+        .or_else(|| displays.iter().find(|display| display.get_online()))
+        .or_else(|| displays.first());
+        let Some(display) = display else {
+            return state;
+        };
+        state.width = display.get_width().max(0);
+        state.height = display.get_height().max(0);
+        state.original_width = display.get_original_resolution().get_width().max(0);
+        state.original_height = display.get_original_resolution().get_height().max(0);
+        let scale = display.get_scale();
+        state.scale_milli = if scale.is_finite() && scale > 0.0 {
+            (scale * 1000.0).round() as i32
+        } else {
+            1000
+        };
+        state.resolutions = info
+            .get_resolutions()
+            .get_resolutions()
+            .iter()
+            .filter_map(|resolution| {
+                let width = resolution.get_width();
+                let height = resolution.get_height();
+                if width > 0 && height > 0 { Some((width, height)) } else { None }
+            })
+            .take(crate::RUSTDESK_MAX_DISPLAY_RESOLUTIONS)
+            .collect();
+        state.geometry_epoch = 1;
+        state
+    }
+
+    fn apply_switch_display_geometry(
+        display_state: &Arc<Mutex<crate::RustDeskDisplayState>>,
+        display: &SwitchDisplay,
+        stream_stats: &Arc<Mutex<crate::RustDeskStreamStats>>,
+    ) {
+        let Ok(mut state) = display_state.lock() else {
+            return;
+        };
+        let width = display.get_width().max(0);
+        let height = display.get_height().max(0);
+        let original_width = display.get_original_resolution().get_width().max(0);
+        let original_height = display.get_original_resolution().get_height().max(0);
+        let resolutions: Vec<(i32, i32)> = display
+            .get_resolutions()
+            .get_resolutions()
+            .iter()
+            .filter_map(|resolution| {
+                let width = resolution.get_width();
+                let height = resolution.get_height();
+                if width > 0 && height > 0 { Some((width, height)) } else { None }
+            })
+            .take(crate::RUSTDESK_MAX_DISPLAY_RESOLUTIONS)
+            .collect();
+        let changed = state.current_display != display.get_display()
+            || state.width != width
+            || state.height != height
+            || state.original_width != original_width
+            || state.original_height != original_height
+            || state.resolutions != resolutions;
+        state.current_display = display.get_display();
+        if width > 0 { state.width = width; }
+        if height > 0 { state.height = height; }
+        if original_width > 0 { state.original_width = original_width; }
+        if original_height > 0 { state.original_height = original_height; }
+        state.resolutions = resolutions;
+        if changed {
+            state.geometry_epoch = state.geometry_epoch.wrapping_add(1).max(1);
+            if let Ok(mut stats) = stream_stats.lock() {
+                stats.width = state.width;
+                stats.height = state.height;
+            }
+            eprintln!(
+                "[RustDesk-FFI] display geometry epoch={} display={} size={}x{}",
+                state.geometry_epoch, state.current_display, state.width, state.height
+            );
+        }
+    }
+
     pub fn keypair(&self) -> &KeyPair {
         &self.keypair
     }
@@ -2315,12 +2495,111 @@ mod tests {
         KeyEvent_oneof_union, Message_oneof_union, RustDeskConnector,
         PhysicalModifierState,
     };
-    use crate::protocol::message_proto::{Hash, LoginResponse, Message};
+    use crate::protocol::message_proto::{
+        Hash, LoginResponse, Message, Misc_oneof_union, PointerDeviceEvent_oneof_union,
+        Resolution, SupportedResolutions, SwitchDisplay, TouchEvent_oneof_union,
+    };
     use crate::protocol::message_proto::KeyboardMode;
     use crate::protocol::wire;
     use protobuf::Message as ProtoMessage;
     use std::net::TcpListener;
+    use std::sync::{Arc, Mutex};
     use std::thread;
+
+    fn resolution(width: i32, height: i32) -> Resolution {
+        let mut value = Resolution::new();
+        value.set_width(width);
+        value.set_height(height);
+        value
+    }
+
+    #[test]
+    fn display_and_touch_control_messages_match_the_official_protobuf_variants() {
+        let resolution_message = RustDeskConnector::build_display_resolution_message(2, 1080, 1920);
+        match resolution_message.union {
+            Some(Message_oneof_union::misc(misc)) => match misc.union {
+                Some(Misc_oneof_union::change_display_resolution(change)) => {
+                    assert_eq!(change.get_display(), 2);
+                    assert_eq!(change.get_resolution().get_width(), 1080);
+                    assert_eq!(change.get_resolution().get_height(), 1920);
+                }
+                _ => panic!("display change must use Misc.change_display_resolution"),
+            },
+            _ => panic!("display change must use a Misc message"),
+        }
+
+        let scale_message = RustDeskConnector::build_touch_scale_message(1250);
+        match scale_message.union {
+            Some(Message_oneof_union::pointer_device_event(pointer)) => match pointer.union {
+                Some(PointerDeviceEvent_oneof_union::touch_event(touch)) => match touch.union {
+                    Some(TouchEvent_oneof_union::scale_update(update)) => assert_eq!(update.get_scale(), 1250),
+                    _ => panic!("touch scale must use TouchEvent.scale_update"),
+                },
+                _ => panic!("touch scale must use PointerDeviceEvent.touch_event"),
+            },
+            _ => panic!("touch scale must use a pointer device event"),
+        }
+
+        let pan_start = RustDeskConnector::build_touch_pan_start_message(100, 200);
+        let pan_update = RustDeskConnector::build_touch_pan_update_message(-10, 12);
+        let pan_end = RustDeskConnector::build_touch_pan_end_message(90, 212);
+        for (message, expected) in [(pan_start, 0), (pan_update, 1), (pan_end, 2)] {
+            match message.union {
+                Some(Message_oneof_union::pointer_device_event(pointer)) => match pointer.union {
+                    Some(PointerDeviceEvent_oneof_union::touch_event(touch)) => match (expected, touch.union) {
+                        (0, Some(TouchEvent_oneof_union::pan_start(pan))) => {
+                            assert_eq!((pan.get_x(), pan.get_y()), (100, 200));
+                        }
+                        (1, Some(TouchEvent_oneof_union::pan_update(pan))) => {
+                            assert_eq!((pan.get_x(), pan.get_y()), (-10, 12));
+                        }
+                        (2, Some(TouchEvent_oneof_union::pan_end(pan))) => {
+                            assert_eq!((pan.get_x(), pan.get_y()), (90, 212));
+                        }
+                        _ => panic!("touch pan phase must use its matching TouchEvent variant"),
+                    },
+                    _ => panic!("touch pan must use PointerDeviceEvent.touch_event"),
+                },
+                _ => panic!("touch pan must use a pointer device event"),
+            }
+        }
+    }
+
+    #[test]
+    fn switch_display_updates_android_rotation_geometry_and_frame_stats() {
+        let display_state = Arc::new(Mutex::new(crate::RustDeskDisplayState {
+            current_display: 0,
+            width: 1920,
+            height: 1080,
+            original_width: 1920,
+            original_height: 1080,
+            scale_milli: 1250,
+            geometry_epoch: 4,
+            resolutions: vec![(1920, 1080)],
+        }));
+        let stream_stats = Arc::new(Mutex::new(crate::RustDeskStreamStats::default()));
+        let mut supported = SupportedResolutions::new();
+        supported.mut_resolutions().push(resolution(1080, 1920));
+        supported.mut_resolutions().push(resolution(720, 1280));
+        let mut rotation = SwitchDisplay::new();
+        rotation.set_display(0);
+        rotation.set_width(1080);
+        rotation.set_height(1920);
+        rotation.set_original_resolution(resolution(1440, 2560));
+        rotation.set_resolutions(supported);
+
+        RustDeskConnector::apply_switch_display_geometry(&display_state, &rotation, &stream_stats);
+
+        let state = display_state.lock().expect("display state lock");
+        assert_eq!((state.width, state.height), (1080, 1920));
+        assert_eq!((state.original_width, state.original_height), (1440, 2560));
+        assert_eq!(state.scale_milli, 1250);
+        assert_eq!(state.geometry_epoch, 5);
+        assert_eq!(state.resolutions, vec![(1080, 1920), (720, 1280)]);
+        drop(state);
+        let stats = stream_stats.lock().expect("stream stats lock");
+        assert_eq!((stats.width, stats.height), (1080, 1920));
+    }
 
     #[test]
     fn video_starvation_refreshes_when_audio_is_alive() {

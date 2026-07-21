@@ -14,6 +14,7 @@ import {
   SshHostKeyInfo,
   RdpCertificateInfo,
   RdpRenderStats,
+  RustDeskDisplayCapabilities,
   RustDeskDiagnosticsSnapshot,
   LocalResourceStats,
   RemoteCursorSnapshot,
@@ -400,6 +401,63 @@ export class ExtensionLoader {
       rdpnapi.resizeRenderer(handle, width, height);
     } catch (err) {
       hilog.error(DOMAIN, TAG, '[ExtensionLoader] resizeRenderer: ' + JSON.stringify(err));
+    }
+  }
+
+  getRustDeskDisplayCapabilities(sessionId: number): RustDeskDisplayCapabilities {
+    try {
+      return rdpnapi.getRustDeskDisplayCapabilities(sessionId) as RustDeskDisplayCapabilities;
+    } catch (err) {
+      hilog.warn(DOMAIN, TAG,
+        '[ExtensionLoader] getRustDeskDisplayCapabilities unavailable: ' + JSON.stringify(err));
+      return {
+        supported: false,
+        currentDisplay: 0,
+        width: 0,
+        height: 0,
+        originalWidth: 0,
+        originalHeight: 0,
+        scaleMilli: 1000,
+        geometryEpoch: 0,
+        resolutions: []
+      };
+    }
+  }
+
+  changeRustDeskDisplayResolution(sessionId: number, display: number, width: number,
+    height: number): boolean {
+    try {
+      return rdpnapi.changeRustDeskDisplayResolution(sessionId, display, width, height) as boolean;
+    } catch (err) {
+      hilog.warn(DOMAIN, TAG,
+        '[ExtensionLoader] changeRustDeskDisplayResolution unavailable: ' + JSON.stringify(err));
+      return false;
+    }
+  }
+
+  sendRustDeskTouchScale(sessionId: number, scale: number): boolean {
+    try {
+      return rdpnapi.sendRustDeskTouchScale(sessionId, scale) as boolean;
+    } catch (err) {
+      hilog.warn(DOMAIN, TAG, '[ExtensionLoader] sendRustDeskTouchScale unavailable: ' + JSON.stringify(err));
+      return false;
+    }
+  }
+
+  sendRustDeskTouchPan(sessionId: number, phase: number, x: number, y: number): boolean {
+    try {
+      return rdpnapi.sendRustDeskTouchPan(sessionId, phase, x, y) as boolean;
+    } catch (err) {
+      hilog.warn(DOMAIN, TAG, '[ExtensionLoader] sendRustDeskTouchPan unavailable: ' + JSON.stringify(err));
+      return false;
+    }
+  }
+
+  setRendererCanvasTransform(handle: number, scale: number, panX: number, panY: number): void {
+    try {
+      rdpnapi.setRendererCanvasTransform(handle, scale, panX, panY);
+    } catch (err) {
+      hilog.error(DOMAIN, TAG, '[ExtensionLoader] setRendererCanvasTransform: ' + JSON.stringify(err));
     }
   }
 

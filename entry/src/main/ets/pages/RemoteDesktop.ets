@@ -85,6 +85,19 @@ import {
   surfacePointToRemote
 } from '../services/RemoteSurfaceTransformPolicy';
 import {
+  baseCanvasTransform,
+  CanvasTransform,
+  CanvasViewport,
+  clampCanvasTransform,
+  LocalViewScaleMode,
+  normalizeLocalViewScaleMode,
+  pinchCanvasTransform
+} from '../services/RemoteCanvasTransformPolicy';
+import {
+  normalizeRdpResolutionId,
+  rdpResolutionPresetForId
+} from '../services/RemoteResolutionPresetPolicy';
+import {
   remoteInputBlockedReason,
   shouldBlockRemoteInputForBrowseMode
 } from '../services/RemoteInputGuardPolicy';
@@ -137,6 +150,8 @@ import {
   LocalResourceStats,
   RdpRenderStats,
   RemoteCursorSnapshot,
+  RustDeskDisplayCapabilities,
+  RustDeskDisplayResolution,
   RustDeskDiagnosticsSnapshot,
   SessionConfig,
   SessionTransferStatus
@@ -319,6 +334,18 @@ const EMPTY_RUSTDESK_DIAGNOSTICS: RustDeskDiagnosticsSnapshot = {
   droppedFrames: 0, decoderBackend: 'unknown'
 };
 
+const EMPTY_RUSTDESK_DISPLAY_CAPABILITIES: RustDeskDisplayCapabilities = {
+  supported: false,
+  currentDisplay: 0,
+  width: 0,
+  height: 0,
+  originalWidth: 0,
+  originalHeight: 0,
+  scaleMilli: 1000,
+  geometryEpoch: 0,
+  resolutions: []
+};
+
 const EMPTY_LOCAL_RESOURCE_STATS: LocalResourceStats = {
   supported: false, cpuAvailable: false, cpuPercent: -1, memoryBytes: 0,
   memoryAvailable: false, gpuAvailable: false, gpuPercent: -1, sampledAtMs: 0
@@ -368,7 +395,11 @@ struct RemoteDesktop {
   rustdeskShowProDiagnostics: boolean = false;
   @StorageLink('rustdeskClipboardEnabled') rustdeskClipboardEnabled: boolean = true;
   @StorageLink('rustdeskFilePasteEnabled') rustdeskFilePasteEnabled: boolean = true;
+  @StorageLink('rustdeskRemoteAppTouchScaleEnabled') rustdeskRemoteAppTouchScaleEnabled: boolean = false;
   @StorageLink('rustdeskViewScaleMode') rustdeskViewScaleMode: string = 'fit';
+  @StorageLink('remoteDisplayScaleMode') remoteDisplayScaleMode: string = 'fit';
+  @StorageLink('remoteDisplayCustomScalePercent') remoteDisplayCustomScalePercent: number = 100;
+  @StorageLink('canvasGestureZoomEnabled') canvasGestureZoomEnabled: boolean = false;
   @StorageLink('rustdeskShowLocalCursor') rustdeskShowLocalCursor: boolean = true;
   @StorageLink('rustdeskBrowseMode') rustdeskBrowseMode: boolean = false;
   @StorageLink('rustdeskRelativeMouseMode') rustdeskRelativeMouseMode: boolean = false;
@@ -392,6 +423,8 @@ struct RemoteDesktop {
   @State rdpSessionErrorCode: string = '';
   @State showRustDeskAuthSheet: boolean = false;
   @State rustDeskDiagnostics: RustDeskDiagnosticsSnapshot = EMPTY_RUSTDESK_DIAGNOSTICS;
+  @State rustDeskDisplayCapabilities: RustDeskDisplayCapabilities = EMPTY_RUSTDESK_DISPLAY_CAPABILITIES;
+  @State showRustDeskDisplayResolutionMenu: boolean = false;
   @State localResourceStats: LocalResourceStats = EMPTY_LOCAL_RESOURCE_STATS;
   @State rustDeskAuthChoice: RustDeskAuthChoice = 'password';
   @State rustDeskAuthPasswordInput: string = '';
@@ -504,6 +537,17 @@ struct RemoteDesktop {
   private touchLeftDown: boolean = false; // 直接模式用: 左键是否按下
   private touchGestureDone: boolean = false; // 双指手势已完成, 抑制剩余手指的多余点击
   private touchMaxFingers: number = 0;       // 本次手势最高手指数 (用于三指检测)
+  private canvasTransform: CanvasTransform = { scale: 1, panX: 0, panY: 0 };
+  private canvasTransformInitialized: boolean = false;
+  private canvasPinchActive: boolean = false;
+  private canvasPinchInputConsumed: boolean = false;
+  private canvasPinchLastScale: number = 1;
+  private canvasPinchLastCenterX: number = 0;
+  private canvasPinchLastCenterY: number = 0;
+  private rustDeskTouchPinchActive: boolean = false;
+  private rustDeskTouchPinchLastScale: number = 1;
+  private rustDeskTouchPinchLastRemoteX: number = 0;
+  private rustDeskTouchPinchLastRemoteY: number = 0;
   private keepKeyboardAfterSheetClose: boolean = false;
   // 三指控制面板
   @State showControlPanel: boolean = false;
@@ -1082,11 +1126,222 @@ struct RemoteDesktop {
     promptAction.showToast({ message: on ? 'RustDesk 文件粘贴已允许' : 'RustDesk 文件粘贴已禁用', duration: 1600 });
   }
 
-  private setRustDeskViewScaleMode(mode: string): void {
-    const next: string = mode === 'original' || mode === 'custom' ? mode : 'fit';
-    this.rustdeskViewScaleMode = next;
-    this.persistSessionPref('rustdeskViewScaleMode', next);
-    promptAction.showToast({ message: '显示缩放已切换为 ' + this.rustDeskViewScaleLabel(next), duration: 1400 });
+  private setRemoteDisplayScaleMode(mode: string): void {
+    const next: LocalViewScaleMode = normalizeLocalViewScaleMode(mode);
+    this.remoteDisplayScaleMode = next;
+    this.persistSessionPref('remoteDisplayScaleMode', next);
+    this.rustdeskViewScaleMode = next === '100' ? 'original' : next === 'custom' ? 'custom' : 'fit';
+    this.persistSessionPref('rustdeskViewScaleMode', this.rustdeskViewScaleMode);
+    this.resetCanvasToDisplayDefault();
+    promptAction.showToast({ message: '显示缩放已切换为 ' +
+      (next === 'fit' ? '适应窗口' : (next === 'custom' ? '自定义' : next + '%')), duration: 1400 });
+  }
+
+  private resetCanvasTransformFromMenu(): void {
+    this.resetCanvasToDisplayDefault();
+    promptAction.showToast({ message: '画面已重新居中', duration: 1200 });
+  }
+
+  private openRustDeskDisplayResolutionMenu(): void {
+    if (!this.isRustDeskSession() || this.sessionId <= 0) {
+      return;
+    }
+    const capabilities: RustDeskDisplayCapabilities =
+      this.loader.getRustDeskDisplayCapabilities(this.sessionId);
+    if (!capabilities.supported) {
+      promptAction.showToast({ message: '远端尚未提供显示分辨率能力', duration: 1800 });
+      return;
+    }
+    if (capabilities.resolutions.length === 0) {
+      promptAction.showToast({ message: '此远端显示器不支持切换分辨率', duration: 1800 });
+      return;
+    }
+    this.rustDeskDisplayCapabilities = capabilities;
+    this.showRustDeskDisplayResolutionMenu = true;
+  }
+
+  private changeRustDeskDisplayResolution(width: number, height: number): void {
+    const capabilities: RustDeskDisplayCapabilities = this.rustDeskDisplayCapabilities;
+    if (!this.loader.changeRustDeskDisplayResolution(this.sessionId, capabilities.currentDisplay,
+      width, height)) {
+      promptAction.showToast({ message: '分辨率请求未被远端会话接受', duration: 1800 });
+      return;
+    }
+    this.showRustDeskDisplayResolutionMenu = false;
+    promptAction.showToast({ message: '已请求远端切换为 ' + width.toString() + ' × ' + height.toString(), duration: 1800 });
+  }
+
+  private isRustDeskDisplayResolutionSelected(resolution: RustDeskDisplayResolution): boolean {
+    return resolution.width === this.rustDeskDisplayCapabilities.width &&
+      resolution.height === this.rustDeskDisplayCapabilities.height;
+  }
+
+  private currentCanvasViewport(): CanvasViewport {
+    const viewport: RendererViewportSnapshot | null = this.readRendererViewport();
+    const sourceWidth: number = viewport !== null ? viewport.sourceWidth :
+      (this.rendererSourceWidth > 0 ? this.rendererSourceWidth : this.remoteWidth);
+    const sourceHeight: number = viewport !== null ? viewport.sourceHeight :
+      (this.rendererSourceHeight > 0 ? this.rendererSourceHeight : this.remoteHeight);
+    return {
+      surfaceWidth: this.renderWidthPx > 0 ? this.renderWidthPx : this.vpToPx(this.surfaceWidth),
+      surfaceHeight: this.renderHeightPx > 0 ? this.renderHeightPx : this.vpToPx(this.surfaceHeight),
+      sourceWidth: Math.max(1, sourceWidth),
+      sourceHeight: Math.max(1, sourceHeight)
+    };
+  }
+
+  private resetCanvasToDisplayDefault(): void {
+    const mode: LocalViewScaleMode = normalizeLocalViewScaleMode(this.remoteDisplayScaleMode);
+    this.canvasTransform = baseCanvasTransform(mode, this.remoteDisplayCustomScalePercent,
+      this.currentCanvasViewport());
+    this.canvasTransformInitialized = true;
+    this.applyCanvasTransform();
+  }
+
+  private applyCanvasTransform(): void {
+    if (this.rendererHandle <= 0) {
+      return;
+    }
+    const viewport: CanvasViewport = this.currentCanvasViewport();
+    this.canvasTransform = clampCanvasTransform(this.canvasTransform, viewport);
+    this.loader.setRendererCanvasTransform(this.rendererHandle, this.canvasTransform.scale,
+      this.canvasTransform.panX, this.canvasTransform.panY);
+    this.invalidateRendererViewportCache();
+  }
+
+  private shouldUseRustDeskRemoteAppTouchScale(): boolean {
+    return this.rustdeskRemoteAppTouchScaleEnabled && this.isRustDeskSession() &&
+      this.connected && this.sessionId > 0;
+  }
+
+  private startRustDeskRemoteAppTouchScale(event: GestureEvent): void {
+    if (!this.shouldUseRustDeskRemoteAppTouchScale() || !this.canForwardInput('rustdesk-touch-scale')) {
+      return;
+    }
+    const mapped: MappedPoint = this.mapInputPoint(event.pinchCenterX, event.pinchCenterY);
+    this.rustDeskTouchPinchActive = true;
+    this.rustDeskTouchPinchLastScale = 1;
+    this.rustDeskTouchPinchLastRemoteX = mapped.x;
+    this.rustDeskTouchPinchLastRemoteY = mapped.y;
+    this.loader.sendRustDeskTouchPan(this.sessionId, 0, mapped.x, mapped.y);
+  }
+
+  private updateRustDeskRemoteAppTouchScale(event: GestureEvent): void {
+    if (!this.rustDeskTouchPinchActive || !this.shouldUseRustDeskRemoteAppTouchScale()) {
+      return;
+    }
+    const nextScale: number = Number.isFinite(event.scale) && event.scale > 0 ?
+      event.scale : this.rustDeskTouchPinchLastScale;
+    const relative: number = Math.max(0.5, Math.min(2.0, nextScale / this.rustDeskTouchPinchLastScale));
+    this.loader.sendRustDeskTouchScale(this.sessionId, Math.round(relative * 1000));
+    const mapped: MappedPoint = this.mapInputPoint(event.pinchCenterX, event.pinchCenterY);
+    const deltaX: number = mapped.x - this.rustDeskTouchPinchLastRemoteX;
+    const deltaY: number = mapped.y - this.rustDeskTouchPinchLastRemoteY;
+    if (deltaX !== 0 || deltaY !== 0) {
+      this.loader.sendRustDeskTouchPan(this.sessionId, 1, deltaX, deltaY);
+      this.rustDeskTouchPinchLastRemoteX = mapped.x;
+      this.rustDeskTouchPinchLastRemoteY = mapped.y;
+    }
+    this.rustDeskTouchPinchLastScale = nextScale;
+  }
+
+  private finishRustDeskRemoteAppTouchScale(): void {
+    if (!this.rustDeskTouchPinchActive) {
+      return;
+    }
+    if (this.sessionId > 0 && this.isRustDeskSession()) {
+      this.loader.sendRustDeskTouchScale(this.sessionId, 0);
+      this.loader.sendRustDeskTouchPan(this.sessionId, 2,
+        this.rustDeskTouchPinchLastRemoteX, this.rustDeskTouchPinchLastRemoteY);
+    }
+    this.rustDeskTouchPinchActive = false;
+    this.rustDeskTouchPinchLastScale = 1;
+  }
+
+  private startCanvasPinch(event: GestureEvent): void {
+    if (this.shouldUseRustDeskRemoteAppTouchScale()) {
+      this.startRustDeskRemoteAppTouchScale(event);
+      return;
+    }
+    if (!this.canvasGestureZoomEnabled) {
+      return;
+    }
+    if (!this.canvasTransformInitialized) {
+      this.resetCanvasToDisplayDefault();
+    }
+    this.canvasPinchActive = true;
+    this.canvasPinchInputConsumed = true;
+    this.canvasPinchLastScale = 1;
+    this.canvasPinchLastCenterX = this.vpToPx(event.pinchCenterX);
+    this.canvasPinchLastCenterY = this.vpToPx(event.pinchCenterY);
+    this.clearTouchRightClickTimer();
+    this.clearTouchDirectRightClickTimer();
+    if (this.touchLeftDown) {
+      this.sendMouseNow(this.remoteCursorX, this.remoteCursorY, 0, false);
+      this.touchLeftDown = false;
+    }
+    this.touchDragActive = false;
+    this.touchDragPending = false;
+    this.touchGestureDone = true;
+  }
+
+  private updateCanvasPinch(event: GestureEvent): void {
+    if (this.rustDeskTouchPinchActive) {
+      this.updateRustDeskRemoteAppTouchScale(event);
+      return;
+    }
+    if (!this.canvasPinchActive || !this.canvasGestureZoomEnabled) {
+      return;
+    }
+    const nextScale: number = Number.isFinite(event.scale) && event.scale > 0 ? event.scale : this.canvasPinchLastScale;
+    const centerX: number = this.vpToPx(event.pinchCenterX);
+    const centerY: number = this.vpToPx(event.pinchCenterY);
+    this.canvasTransform = pinchCanvasTransform(this.canvasTransform, this.currentCanvasViewport(),
+      centerX, centerY, nextScale / this.canvasPinchLastScale,
+      centerX - this.canvasPinchLastCenterX, centerY - this.canvasPinchLastCenterY);
+    this.canvasPinchLastScale = nextScale;
+    this.canvasPinchLastCenterX = centerX;
+    this.canvasPinchLastCenterY = centerY;
+    this.applyCanvasTransform();
+  }
+
+  private finishCanvasPinch(): void {
+    if (this.rustDeskTouchPinchActive) {
+      this.finishRustDeskRemoteAppTouchScale();
+      return;
+    }
+    this.canvasPinchActive = false;
+    this.canvasPinchLastScale = 1;
+  }
+
+  private consumeCanvasPinchTouch(event: TouchEvent): boolean {
+    if (!this.canvasGestureZoomEnabled && !this.shouldUseRustDeskRemoteAppTouchScale()) {
+      return false;
+    }
+    const currentTouches: number = event.touches.length;
+    if (!this.canvasPinchInputConsumed && event.type === TouchType.Down && currentTouches >= 2) {
+      this.canvasPinchInputConsumed = true;
+      this.clearTouchRightClickTimer();
+      this.clearTouchDirectRightClickTimer();
+      this.touchDragPending = false;
+      if (this.touchLeftDown) {
+        this.sendMouseNow(this.remoteCursorX, this.remoteCursorY, 0, false);
+        this.touchLeftDown = false;
+      }
+    }
+    if (!this.canvasPinchInputConsumed) {
+      return false;
+    }
+    if (event.type === TouchType.Up || event.type === TouchType.Cancel) {
+      const remaining: number = this.remainingTouchCountAfterLift(event);
+      if (remaining <= 0) {
+        this.canvasPinchInputConsumed = false;
+        this.finishCanvasPinch();
+        this.resetTouchGesture();
+      }
+    }
+    event.stopPropagation();
+    return true;
   }
 
   private rustDeskViewScaleLabel(mode: string): string {
@@ -1183,7 +1438,13 @@ struct RemoteDesktop {
         this.setRustDeskFilePasteEnabled(on);
       },
       onSetViewScaleMode: (mode: string): void => {
-        this.setRustDeskViewScaleMode(mode);
+        this.setRemoteDisplayScaleMode(mode);
+      },
+      onResetCanvasTransform: (): void => {
+        this.resetCanvasTransformFromMenu();
+      },
+      onOpenRustDeskResolution: (): void => {
+        this.openRustDeskDisplayResolutionMenu();
       },
       onSetRustDeskImageQuality: (quality: number): void => {
         this.setRustDeskImageQualityPref(quality);
@@ -1688,6 +1949,11 @@ struct RemoteDesktop {
     this.physicalKeyboardLayoutConfirmed = false;
     this.physicalKeyboardLayoutPromptVisible = false;
     this.xComponentController.setListener(this);
+    if (AppStorage.get<string>('remoteDisplayScaleMode') === undefined) {
+      this.remoteDisplayScaleMode = this.rustdeskViewScaleMode === 'original' ? '100' :
+        this.rustdeskViewScaleMode === 'custom' ? 'custom' : 'fit';
+      AppStorage.setOrCreate('remoteDisplayScaleMode', this.remoteDisplayScaleMode);
+    }
     await this.setPreferredOrientation(window.Orientation.LANDSCAPE, 'LANDSCAPE');
     this.registerInputDeviceWatcher();
     this.registerKeyboardAvoidListener();
@@ -1881,10 +2147,12 @@ struct RemoteDesktop {
       }
     }
     if (host.protocol === 'rdp') {
-      const preset: number = AppStorage.get<number>('rdpDesktopPreset') ?? 1;
+      const legacyPreset: number = AppStorage.get<number>('rdpDesktopPreset') ?? 1;
+      const resolutionId: string = normalizeRdpResolutionId(
+        AppStorage.get<string>('rdpDesktopResolutionId') ?? '', legacyPreset);
       const colorDepthPref: number = AppStorage.get<number>('rdpColorDepth') ?? 32;
       const colorDepth: number = colorDepthPref === 16 || colorDepthPref === 24 ? colorDepthPref : 32;
-      if (preset === 0) {
+      if (resolutionId === 'auto') {
         const adaptiveRdp: DesktopSize | null = this.adaptiveSurfaceSize(3840);
         if (adaptiveRdp) {
           adaptiveRdp.colorDepth = colorDepth;
@@ -1893,15 +2161,9 @@ struct RemoteDesktop {
           return adaptiveRdp;
         }
       }
-      let width: number = 1920;
-      let height: number = 1080;
-      if (preset === 2) {
-        width = 2560;
-        height = 1440;
-      } else if (preset === 3) {
-        width = 3840;
-        height = 2160;
-      }
+      const preset = rdpResolutionPresetForId(resolutionId);
+      const width: number = preset !== null ? preset.width : 1920;
+      const height: number = preset !== null ? preset.height : 1080;
       hilog.info(RD_DOMAIN, RD_TAG, 'RDP preset size=' + width.toString() + 'x' +
         height.toString() + ' colorDepth=' + colorDepth.toString());
       if (display.multiMonitor) {
@@ -3579,6 +3841,7 @@ struct RemoteDesktop {
       }
       this.rendererHandle = rHandle;
       this.nativeHandles.markSurfaceAttached(this.rendererHandle);
+      this.resetCanvasToDisplayDefault();
       if (this.renderWidthPx > 0 && this.renderHeightPx > 0 &&
         (this.renderWidthPx !== w || this.renderHeightPx !== h)) {
         this.loader.resizeRenderer(this.rendererHandle, this.renderWidthPx, this.renderHeightPx);
@@ -4207,6 +4470,7 @@ struct RemoteDesktop {
         }
         this.rendererHandle = renderer;
         this.nativeHandles.markSurfaceAttached(renderer);
+        this.resetCanvasToDisplayDefault();
         const codecPref: number = AppStorage.get<number>('rustdeskCodec') ?? 0;
         let decoderCodec: number = 3;
         if (codecPref === 1) { decoderCodec = 2; }
@@ -4247,6 +4511,7 @@ struct RemoteDesktop {
       if (result.ok && result.value !== undefined && result.value > 0) {
         this.rendererHandle = result.value;
         this.nativeHandles.markSurfaceAttached(this.rendererHandle);
+        this.applyCanvasTransform();
         hilog.info(RD_DOMAIN, RD_TAG, 'doBackgroundRestoreRender: renderer reattached handle=' +
           this.rendererHandle.toString());
         if (this.renderWidthPx > 0 && this.renderHeightPx > 0 &&
@@ -6099,6 +6364,9 @@ struct RemoteDesktop {
     }
     const host: RemoteHost | null = this.pendingHost;
     const controlMode: number = host && host.protocol === 'rdp' ? this.rdpControlMode : this.rustdeskControlMode;
+    if (this.consumeCanvasPinchTouch(event)) {
+      return;
+    }
     if (controlMode === 2) {
       this.hideTouchIndicator();
       if (event.touches.length >= 3 || this.touchMaxFingers >= 3) {
@@ -6689,6 +6957,48 @@ struct RemoteDesktop {
     return Math.max(0, (this.surfaceHeight - 1) / 2);
   }
 
+  @Builder
+  private rustDeskDisplayResolutionMenu() {
+    Column({ space: 8 }) {
+      Row() {
+        Column() {
+          Text('远端显示分辨率').fontSize(15).fontWeight(FontWeight.Medium).fontColor('#1B1B1B')
+          Text(this.rustDeskDisplayCapabilities.width.toString() + ' × ' +
+            this.rustDeskDisplayCapabilities.height.toString())
+            .fontSize(11).fontColor('#6B7280').margin({ top: 2 })
+        }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+        Button() {
+          SymbolGlyph($r('sys.symbol.xmark')).fontSize(16).fontColor(['#4B5563'])
+        }
+        .width(32).height(32).backgroundColor(Color.Transparent)
+        .onClick((): void => { this.showRustDeskDisplayResolutionMenu = false; })
+      }.width('100%')
+      Scroll() {
+        Column({ space: 6 }) {
+          ForEach(this.rustDeskDisplayCapabilities.resolutions,
+            (resolution: RustDeskDisplayResolution): void => {
+              Row() {
+                Text(resolution.width.toString() + ' × ' + resolution.height.toString())
+                  .fontSize(13).fontColor(this.isRustDeskDisplayResolutionSelected(resolution) ? '#FFFFFF' : '#374151')
+                  .layoutWeight(1)
+                if (this.isRustDeskDisplayResolutionSelected(resolution)) {
+                  SymbolGlyph($r('sys.symbol.checkmark')).fontSize(15).fontColor(['#FFFFFF'])
+                }
+              }
+              .width('100%').height(40).padding({ left: 12, right: 12 })
+              .backgroundColor(this.isRustDeskDisplayResolutionSelected(resolution) ? this.accentColor : '#F3F4F6')
+              .borderRadius(6)
+              .onClick((): void => { this.changeRustDeskDisplayResolution(resolution.width, resolution.height); })
+            }, (resolution: RustDeskDisplayResolution): string =>
+              resolution.width.toString() + 'x' + resolution.height.toString())
+        }.width('100%')
+      }.constraintSize({ maxHeight: 260 }).scrollBar(BarState.Off)
+    }
+    .width(260).padding(14).backgroundColor('rgba(255,255,255,0.98)').borderRadius(8)
+    .shadow({ radius: 14, color: 'rgba(0,0,0,0.22)', offsetY: 4 })
+    .position({ x: Math.max(12, this.surfaceWidth - 272), y: 70 })
+  }
+
   build() {
     Stack() {
       // XComponent 全屏渲染层 — 始终存在, 连接前被 loading 层遮住
@@ -6738,6 +7048,11 @@ struct RemoteDesktop {
         // 使 contain/letterbox viewport 计算与表面一致。必须调用。
         if (this.rendererHandle > 0 && wPx > 0 && hPx > 0) {
           this.loader.resizeRenderer(this.rendererHandle, wPx, hPx);
+          if (this.canvasTransformInitialized) {
+            this.applyCanvasTransform();
+          } else {
+            this.resetCanvasToDisplayDefault();
+          }
         }
       })
 
@@ -6812,6 +7127,13 @@ struct RemoteDesktop {
           this.handleRemoteKeyboardFocusLost('overlay');
         })
         .onTouch(this.handleConfiguredTouchInput)
+        .gesture(
+          PinchGesture({ fingers: 2, distance: 5 })
+            .onActionStart((event: GestureEvent): void => { this.startCanvasPinch(event); })
+            .onActionUpdate((event: GestureEvent): void => { this.updateCanvasPinch(event); })
+            .onActionEnd((_event: GestureEvent): void => { this.finishCanvasPinch(); })
+            .onActionCancel((): void => { this.finishCanvasPinch(); })
+        )
         .onMouse(this.handleXComponentMouse)
         .onKeyEvent(this.handleXComponentKey)
         .allowDrop([uniformTypeDescriptor.UniformDataType.FILE])
@@ -6837,7 +7159,7 @@ struct RemoteDesktop {
           audioEnabled: this.rustdeskAudioEnabled,
           clipboardEnabled: this.rustdeskClipboardEnabled,
           filePasteEnabled: this.rustdeskFilePasteEnabled,
-          viewScaleMode: this.rustdeskViewScaleMode,
+          viewScaleMode: this.remoteDisplayScaleMode,
           imageQuality: this.rustdeskImageQuality,
           codec: this.rustdeskCodec,
           showLocalCursor: this.rustdeskShowLocalCursor,
@@ -6850,6 +7172,10 @@ struct RemoteDesktop {
           capabilities: this.currentSessionCapabilities(),
           actions: this.rustDeskTopBarActions()
         })
+      }
+
+      if (this.showRustDeskDisplayResolutionMenu) {
+        this.rustDeskDisplayResolutionMenu()
       }
 
       if (shouldShowRustDeskDiagnostics(this.rustdeskShowDiagnostics, this.connected,

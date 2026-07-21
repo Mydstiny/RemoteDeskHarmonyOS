@@ -39,6 +39,11 @@ declare module 'librdpnapi.so' {
     serverName: string): Promise<RdpCertificateInfo>;
   export function getRdpRenderStats(sessionId: number): RdpRenderStats;
   export function getRustDeskDiagnostics(sessionId: number): RustDeskDiagnosticsSnapshot;
+  export function getRustDeskDisplayCapabilities(sessionId: number): RustDeskDisplayCapabilities;
+  export function changeRustDeskDisplayResolution(sessionId: number, display: number,
+    width: number, height: number): boolean;
+  export function sendRustDeskTouchScale(sessionId: number, scale: number): boolean;
+  export function sendRustDeskTouchPan(sessionId: number, phase: number, x: number, y: number): boolean;
   export function getLocalResourceStats(includePro?: boolean): LocalResourceStats;
   export function getSessionTransferStatus(sessionId: number): SessionTransferStatus;
   export function setRdpBackgroundVideoPrewarm(sessionId: number, enabled: boolean, intervalMs: number): boolean;
@@ -64,6 +69,7 @@ declare module 'librdpnapi.so' {
   export function renderFrame(handle: number, textureId: number): void;
   export function renderRawBGRA(handle: number, data: ArrayBuffer, width: number, height: number, stride: number): void;
   export function resizeRenderer(handle: number, width: number, height: number): void;
+  export function setRendererCanvasTransform(handle: number, scale: number, panX: number, panY: number): void;
   export function testRender(handle: number): void;
   export function registerNativeXComponent(): boolean;
   export function setXComponentSurfaceId(surfaceId: string, width: number, height: number): boolean;
@@ -240,6 +246,23 @@ export interface RustDeskDiagnosticsSnapshot {
   queueMax: number;
   droppedFrames: number;
   decoderBackend: string;
+}
+
+export interface RustDeskDisplayResolution {
+  width: number;
+  height: number;
+}
+
+export interface RustDeskDisplayCapabilities {
+  supported: boolean;
+  currentDisplay: number;
+  width: number;
+  height: number;
+  originalWidth: number;
+  originalHeight: number;
+  scaleMilli: number;
+  geometryEpoch: number;
+  resolutions: RustDeskDisplayResolution[];
 }
 
 export interface LocalResourceStats {

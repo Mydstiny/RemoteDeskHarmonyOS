@@ -142,6 +142,7 @@ import {
   SETTINGS_SECTION_APPEARANCE,
   SETTINGS_SECTION_CLOUD_SYNC,
   SETTINGS_SECTION_CONNECTION_LIVE,
+  SETTINGS_SECTION_DISPLAY_INTERACTION,
   SETTINGS_SECTION_NONE,
   SETTINGS_SECTION_RDP,
   SETTINGS_SECTION_RUSTDESK,
@@ -154,6 +155,17 @@ import {
   settingsRatingUriCandidates,
   settingsRatingWantAction
 } from '../services/SettingsAccordionPolicy';
+import {
+  legacyRdpPresetForResolutionId,
+  normalizeRdpResolutionId,
+  RemoteResolutionPreset,
+  rdpResolutionLabel,
+  rdpResolutionPresets
+} from '../services/RemoteResolutionPresetPolicy';
+import {
+  localViewScalePercent,
+  normalizeLocalViewScaleMode
+} from '../services/RemoteCanvasTransformPolicy';
 import {
   CLOUD_SYNC_SHEET_ACTIONS,
   CLOUD_SYNC_SHEET_DOWNLOADING,
@@ -362,6 +374,7 @@ struct HostListPage {
   @StorageLink('rustdeskShowProDiagnostics') rustdeskShowProDiagnostics: boolean = false;
   @StorageLink('rustdeskClipboardEnabled') rustdeskClipboardEnabled: boolean = true;
   @StorageLink('rustdeskFilePasteEnabled') rustdeskFilePasteEnabled: boolean = true;
+  @StorageLink('rustdeskRemoteAppTouchScaleEnabled') rustdeskRemoteAppTouchScaleEnabled: boolean = false;
   @StorageLink('rustdeskViewScaleMode') rustdeskViewScaleMode: string = 'fit';
   @StorageLink('rustdeskShowLocalCursor') rustdeskShowLocalCursor: boolean = true;
   @StorageLink('rustdeskRelativeMouseMode') rustdeskRelativeMouseMode: boolean = false;
@@ -370,6 +383,10 @@ struct HostListPage {
   @StorageLink('rustdeskTouchpadSpeed') rustdeskTouchpadSpeed: number = 1.0;
   @StorageLink('rustdeskControlMode') rustdeskControlMode: number = 0; // 0=触控板, 1=直接触控, 2=键鼠
   @StorageLink('rdpDesktopPreset') rdpDesktopPreset: number = 1; // 0=自动, 1=1080p, 2=2K, 3=4K
+  @StorageLink('rdpDesktopResolutionId') rdpDesktopResolutionId: string = '1920x1080';
+  @StorageLink('remoteDisplayScaleMode') remoteDisplayScaleMode: string = 'fit';
+  @StorageLink('remoteDisplayCustomScalePercent') remoteDisplayCustomScalePercent: number = 100;
+  @StorageLink('canvasGestureZoomEnabled') canvasGestureZoomEnabled: boolean = false;
   @StorageLink('rdpColorDepth') rdpColorDepth: number = 32;
   @StorageLink('rdpAudioEnabled') rdpAudioEnabled: boolean = true;
   @StorageLink('rdpClipboardEnabled') rdpClipboardEnabled: boolean = true;
@@ -692,6 +709,8 @@ struct HostListPage {
       const savedShowProDiagnostics: boolean = prefs.getSync('rustdeskShowProDiagnostics', false) as boolean;
       const savedRustDeskClipboardEnabled: boolean = prefs.getSync('rustdeskClipboardEnabled', true) as boolean;
       const savedRustDeskFilePasteEnabled: boolean = prefs.getSync('rustdeskFilePasteEnabled', true) as boolean;
+      const savedRustDeskRemoteAppTouchScaleEnabled: boolean =
+        prefs.getSync('rustdeskRemoteAppTouchScaleEnabled', false) as boolean;
       const savedRustDeskViewScaleMode: string = prefs.getSync('rustdeskViewScaleMode', 'fit') as string;
       const savedRustDeskShowLocalCursor: boolean = prefs.getSync('rustdeskShowLocalCursor', true) as boolean;
       const savedRustDeskRelativeMouseMode: boolean = prefs.getSync('rustdeskRelativeMouseMode', false) as boolean;
@@ -700,6 +719,14 @@ struct HostListPage {
       const savedRustDeskTouchpadSpeed: number = prefs.getSync('rustdeskTouchpadSpeed', 1.0) as number;
       const savedControlMode: number = prefs.getSync('rustdeskControlMode', 0) as number;
       const savedRdpDesktopPreset: number = prefs.getSync('rdpDesktopPreset', 1) as number;
+      const savedRdpDesktopResolutionId: string = prefs.getSync('rdpDesktopResolutionId', '') as string;
+      const savedRemoteDisplayScaleMode: string = prefs.getSync('remoteDisplayScaleMode', '') as string;
+      const savedRemoteDisplayCustomScalePercent: number =
+        prefs.getSync('remoteDisplayCustomScalePercent', 100) as number;
+      const canvasGestureZoomDefaultVersion: number =
+        prefs.getSync('canvasGestureZoomDefaultVersion', 0) as number;
+      let savedCanvasGestureZoomEnabled: boolean =
+        prefs.getSync('canvasGestureZoomEnabled', !this.isDesktopDevice) as boolean;
       const savedRdpColorDepth: number = prefs.getSync('rdpColorDepth', 32) as number;
       const savedRdpAudioEnabled: boolean = prefs.getSync('rdpAudioEnabled', true) as boolean;
       const savedRdpClipboardEnabled: boolean = prefs.getSync('rdpClipboardEnabled', true) as boolean;
@@ -736,6 +763,7 @@ struct HostListPage {
       this.rustdeskShowProDiagnostics = savedShowProDiagnostics;
       this.rustdeskClipboardEnabled = savedRustDeskClipboardEnabled;
       this.rustdeskFilePasteEnabled = savedRustDeskFilePasteEnabled;
+      this.rustdeskRemoteAppTouchScaleEnabled = savedRustDeskRemoteAppTouchScaleEnabled;
       this.rustdeskViewScaleMode =
         savedRustDeskViewScaleMode === 'original' || savedRustDeskViewScaleMode === 'custom' ?
           savedRustDeskViewScaleMode : 'fit';
@@ -747,6 +775,22 @@ struct HostListPage {
         Math.max(0.4, Math.min(2.2, savedRustDeskTouchpadSpeed > 0 ? savedRustDeskTouchpadSpeed : 1.0));
       this.rustdeskControlMode = this.clampRustDeskControlMode(savedControlMode);
       this.rdpDesktopPreset = savedRdpDesktopPreset >= 0 && savedRdpDesktopPreset <= 3 ? savedRdpDesktopPreset : 1;
+      this.rdpDesktopResolutionId = normalizeRdpResolutionId(savedRdpDesktopResolutionId, this.rdpDesktopPreset);
+      this.rdpDesktopPreset = legacyRdpPresetForResolutionId(this.rdpDesktopResolutionId);
+      this.remoteDisplayScaleMode = normalizeLocalViewScaleMode(savedRemoteDisplayScaleMode.length > 0 ?
+        savedRemoteDisplayScaleMode : savedRustDeskViewScaleMode);
+      this.remoteDisplayCustomScalePercent = Math.max(50, Math.min(300,
+        Number.isFinite(savedRemoteDisplayCustomScalePercent) ? savedRemoteDisplayCustomScalePercent : 100));
+      if (canvasGestureZoomDefaultVersion < 1) {
+        savedCanvasGestureZoomEnabled = !this.isDesktopDevice;
+        prefs.putSync('canvasGestureZoomEnabled', savedCanvasGestureZoomEnabled);
+        prefs.putSync('canvasGestureZoomDefaultVersion', 1);
+      }
+      this.canvasGestureZoomEnabled = savedCanvasGestureZoomEnabled;
+      prefs.putSync('rdpDesktopResolutionId', this.rdpDesktopResolutionId);
+      prefs.putSync('remoteDisplayScaleMode', this.remoteDisplayScaleMode);
+      prefs.putSync('remoteDisplayCustomScalePercent', this.remoteDisplayCustomScalePercent);
+      prefs.flush();
       this.rdpColorDepth = savedRdpColorDepth === 16 || savedRdpColorDepth === 24 ? savedRdpColorDepth : 32;
       this.rdpAudioEnabled = savedRdpAudioEnabled;
       this.rdpClipboardEnabled = savedRdpClipboardEnabled;
@@ -766,6 +810,7 @@ struct HostListPage {
       AppStorage.setOrCreate('rustdeskShowProDiagnostics', this.rustdeskShowProDiagnostics);
       AppStorage.setOrCreate('rustdeskClipboardEnabled', this.rustdeskClipboardEnabled);
       AppStorage.setOrCreate('rustdeskFilePasteEnabled', this.rustdeskFilePasteEnabled);
+      AppStorage.setOrCreate('rustdeskRemoteAppTouchScaleEnabled', this.rustdeskRemoteAppTouchScaleEnabled);
       AppStorage.setOrCreate('rustdeskViewScaleMode', this.rustdeskViewScaleMode);
       AppStorage.setOrCreate('rustdeskShowLocalCursor', this.rustdeskShowLocalCursor);
       AppStorage.setOrCreate('rustdeskRelativeMouseMode', this.rustdeskRelativeMouseMode);
@@ -774,6 +819,10 @@ struct HostListPage {
       AppStorage.setOrCreate('rustdeskTouchpadSpeed', this.rustdeskTouchpadSpeed);
       AppStorage.setOrCreate('rustdeskControlMode', this.rustdeskControlMode);
       AppStorage.setOrCreate('rdpDesktopPreset', this.rdpDesktopPreset);
+      AppStorage.setOrCreate('rdpDesktopResolutionId', this.rdpDesktopResolutionId);
+      AppStorage.setOrCreate('remoteDisplayScaleMode', this.remoteDisplayScaleMode);
+      AppStorage.setOrCreate('remoteDisplayCustomScalePercent', this.remoteDisplayCustomScalePercent);
+      AppStorage.setOrCreate('canvasGestureZoomEnabled', this.canvasGestureZoomEnabled);
       AppStorage.setOrCreate('rdpColorDepth', this.rdpColorDepth);
       AppStorage.setOrCreate('rdpAudioEnabled', this.rdpAudioEnabled);
       AppStorage.setOrCreate('rdpClipboardEnabled', this.rdpClipboardEnabled);
@@ -1209,11 +1258,14 @@ struct HostListPage {
     if (section === SETTINGS_SECTION_CONNECTION_LIVE) {
       return 520;
     }
+    if (section === SETTINGS_SECTION_DISPLAY_INTERACTION) {
+      return 460;
+    }
     if (section === SETTINGS_SECTION_RDP) {
-      return 720;
+      return 820;
     }
     if (section === SETTINGS_SECTION_RUSTDESK) {
-      return 900;
+      return 980;
     }
     if (section === SETTINGS_SECTION_SECURITY) {
       return 420;
@@ -3368,8 +3420,46 @@ struct HostListPage {
   }
 
   private saveRdpDesktopPreset(preset: number): void {
-    this.rdpDesktopPreset = preset >= 0 && preset <= 3 ? preset : 1;
+    this.saveRdpDesktopResolutionId(normalizeRdpResolutionId('', preset));
+  }
+
+  private saveRustDeskRemoteAppTouchScaleEnabled(on: boolean): void {
+    this.rustdeskRemoteAppTouchScaleEnabled = on;
+    this.persistPref('rustdeskRemoteAppTouchScaleEnabled', on);
+    if (on && this.canvasGestureZoomEnabled) {
+      this.canvasGestureZoomEnabled = false;
+      this.persistPref('canvasGestureZoomEnabled', false);
+    }
+  }
+
+  private saveRdpDesktopResolutionId(resolutionId: string): void {
+    this.rdpDesktopResolutionId = normalizeRdpResolutionId(resolutionId, this.rdpDesktopPreset);
+    this.rdpDesktopPreset = legacyRdpPresetForResolutionId(this.rdpDesktopResolutionId);
+    this.persistPref('rdpDesktopResolutionId', this.rdpDesktopResolutionId);
     this.persistPref('rdpDesktopPreset', this.rdpDesktopPreset);
+  }
+
+  private saveRemoteDisplayScaleMode(mode: string): void {
+    this.remoteDisplayScaleMode = normalizeLocalViewScaleMode(mode);
+    this.persistPref('remoteDisplayScaleMode', this.remoteDisplayScaleMode);
+  }
+
+  private saveRemoteDisplayCustomScalePercent(value: string): void {
+    const parsed: number = Number(value);
+    if (!Number.isFinite(parsed)) {
+      return;
+    }
+    this.remoteDisplayCustomScalePercent = Math.max(50, Math.min(300, Math.round(parsed)));
+    this.persistPref('remoteDisplayCustomScalePercent', this.remoteDisplayCustomScalePercent);
+  }
+
+  private saveCanvasGestureZoomEnabled(on: boolean): void {
+    this.canvasGestureZoomEnabled = on;
+    this.persistPref('canvasGestureZoomEnabled', on);
+    if (on && this.rustdeskRemoteAppTouchScaleEnabled) {
+      this.rustdeskRemoteAppTouchScaleEnabled = false;
+      this.persistPref('rustdeskRemoteAppTouchScaleEnabled', false);
+    }
   }
 
   private saveRdpColorDepth(depth: number): void {
@@ -5122,6 +5212,34 @@ struct HostListPage {
         .animation({ duration: SETTINGS_ACCORDION_ANIMATION_MS, curve: Curve.FastOutSlowIn })
 
         ListItem() {
+          this.settingsAccordionHeader(SETTINGS_SECTION_DISPLAY_INTERACTION, $r('sys.symbol.desktop_fill'),
+            '显示与交互', '本地缩放与双指画布缩放')
+        }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 10 })
+
+        ListItem() {
+          Column() {
+            Text('显示与交互').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text3)
+              .fontFamily(this.font()).padding({ left: 8, bottom: 8 })
+            Column() {
+              this.remoteDisplayScaleRow()
+              if (!this.isDesktopDevice) {
+                this.cardDivider()
+                this.canvasGestureZoomRow()
+              }
+            }.borderRadius(24).backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
+            .shadow({ radius: 16, color: 'rgba(0,0,0,0.04)', offsetY: 4 })
+            .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
+          }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 20 })
+        }
+        .constraintSize({ maxHeight: this.settingsSectionExpanded(SETTINGS_SECTION_DISPLAY_INTERACTION) ?
+          this.settingsSectionExpandedMaxHeight(SETTINGS_SECTION_DISPLAY_INTERACTION) : 0 })
+        .opacity(this.settingsSectionExpanded(SETTINGS_SECTION_DISPLAY_INTERACTION) ? 1 : 0)
+        .scale({ x: 1, y: this.settingsSectionExpanded(SETTINGS_SECTION_DISPLAY_INTERACTION) ? 1 : 0.98 })
+        .translate({ y: this.settingsSectionExpanded(SETTINGS_SECTION_DISPLAY_INTERACTION) ? 0 : -8 })
+        .clip(true)
+        .animation({ duration: SETTINGS_ACCORDION_ANIMATION_MS, curve: Curve.FastOutSlowIn })
+
+        ListItem() {
           this.settingsAccordionHeader(SETTINGS_SECTION_RDP, $r('sys.symbol.gearshape_fill'),
             'Windows RDP', '分辨率、色深、输入、音频和凭据')
         }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 10 })
@@ -5234,6 +5352,11 @@ struct HostListPage {
               this.rustdeskSwitchRow($r('app.media.icon_audio'), '远端音频',
                 '接收并播放远端设备声音', this.rustdeskAudioEnabled,
                 (on: boolean): void => { this.saveRustDeskAudioEnabled(on); }, true)
+              this.cardDivider()
+              this.rustdeskSwitchRow($r('app.media.icon_desktop'), '远端应用双指缩放',
+                '将双指事件发送到 RustDesk 被控端应用；启用后取代本地画布缩放',
+                this.rustdeskRemoteAppTouchScaleEnabled,
+                (on: boolean): void => { this.saveRustDeskRemoteAppTouchScaleEnabled(on); }, true)
               this.cardDivider()
               this.rustdeskSwitchRow($r('app.media.icon_desktop'), '显示连接诊断信息',
                 '连接时显示延迟、帧率、码率、分辨率和编码信息', this.rustdeskShowDiagnostics,
@@ -6651,28 +6774,26 @@ struct HostListPage {
   }
 
   private rdpDesktopPresetLabel(): string {
-    if (this.rdpDesktopPreset === 0) { return '自适应当前窗口'; }
-    if (this.rdpDesktopPreset === 2) { return '2560 × 1440'; }
-    if (this.rdpDesktopPreset === 3) { return '3840 × 2160'; }
-    return '1920 × 1080';
+    return rdpResolutionLabel(this.rdpDesktopResolutionId);
   }
 
   @Builder rdpDesktopPresetRow() {
-    if (this.breakpoint === 'md' || this.breakpoint === 'lg') {
-      Row() {
-        this.rdpDesktopPresetLabelBlock()
-        this.rdpDesktopPresetSlider()
-      }.width('100%').height(64).padding({ left: 16, right: 16 })
-    } else {
-      Column() {
-        Row() {
-          this.rdpDesktopPresetLabelBlock()
-        }.width('100%')
-        Row() {
-          this.rdpDesktopPresetSlider()
-        }.width('100%').justifyContent(FlexAlign.Center).margin({ top: 10 })
-      }.width('100%').height(92).padding({ left: 16, right: 16, top: 14, bottom: 12 })
-    }
+    Column() {
+      this.rdpDesktopPresetLabelBlock()
+      Scroll() {
+        Row({ space: 8 }) {
+          this.rdpResolutionPresetChip('自适应', 'auto')
+          ForEach(rdpResolutionPresets(), (preset: RemoteResolutionPreset): void => {
+            this.rdpResolutionPresetChip(preset.label, preset.id)
+          }, (preset: RemoteResolutionPreset): string => preset.id)
+        }.padding({ left: 16, right: 16 })
+      }
+      .scrollable(ScrollDirection.Horizontal)
+      .scrollBar(BarState.Off)
+      .width('100%')
+      .height(42)
+      .margin({ top: 4 })
+    }.width('100%').height(110).padding({ top: 10, bottom: 10 })
   }
 
   @Builder rdpDesktopPresetLabelBlock() {
@@ -6687,37 +6808,79 @@ struct HostListPage {
     }.layoutWeight(1)
   }
 
-  @Builder rdpDesktopPresetSlider() {
-    Stack({ alignContent: Alignment.Start }) {
-      Column()
-        .width(64).height(30).borderRadius(8)
-        .backgroundColor(this.accentColor)
-        .translate({ x: this.rdpDesktopPreset * 68, y: 0 })
-        .animation({ duration: 260, curve: Curve.FastOutSlowIn })
-      Row() {
-        this._rdpDesktopPresetSliderChip('自动', 0)
-        Blank().width(4)
-        this._rdpDesktopPresetSliderChip('1080p', 1)
-        Blank().width(4)
-        this._rdpDesktopPresetSliderChip('2K', 2)
-        Blank().width(4)
-        this._rdpDesktopPresetSliderChip('4K', 3)
-      }
-    }.padding(3).borderRadius(11).backgroundColor(this.pal().surface)
+  @Builder rdpResolutionPresetChip(label: string, id: string) {
+    Text(label)
+      .fontSize(11)
+      .fontColor(this.rdpDesktopResolutionId === id ? '#FFFFFF' : this.pal().text2)
+      .fontWeight(this.rdpDesktopResolutionId === id ? FontWeight.Medium : FontWeight.Normal)
+      .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+      .padding({ left: 10, right: 10, top: 7, bottom: 7 })
+      .backgroundColor(this.rdpDesktopResolutionId === id ? this.accentColor : this.pal().surface)
+      .borderRadius(6)
+      .onClick((): void => { this.saveRdpDesktopResolutionId(id); })
   }
 
-  @Builder _rdpDesktopPresetSliderChip(label: string, value: number) {
+  private remoteDisplayScaleLabel(): string {
+    const mode = normalizeLocalViewScaleMode(this.remoteDisplayScaleMode);
+    const percent: number = localViewScalePercent(mode, this.remoteDisplayCustomScalePercent);
+    return percent > 0 ? percent.toString() + '%' : '适应窗口';
+  }
+
+  @Builder remoteDisplayScaleRow() {
     Column() {
-      Text(label)
-        .fontSize(11)
-        .fontColor(this.rdpDesktopPreset === value ? '#FFFFFF' : this.pal().text2)
-        .fontWeight(this.rdpDesktopPreset === value ? FontWeight.Medium : FontWeight.Normal)
-        .textAlign(TextAlign.Center)
-        .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-        .padding({ left: 6, right: 6, top: 6, bottom: 6 })
-        .borderRadius(8)
-        .onClick((): void => { this.saveRdpDesktopPreset(value); })
-    }.width(64).justifyContent(FlexAlign.Center)
+      Row() {
+        Row() { Image($r('app.media.icon_desktop')).width(22).height(22).fillColor(this.pal().text3) }
+          .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
+        Column() {
+          Text('本地显示缩放').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
+            .fontColor(this.pal().text).fontFamily(this.font())
+          Text(this.remoteDisplayScaleLabel() + '，不改变远端分辨率')
+            .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
+        }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
+      }.width('100%').height(54).padding({ left: 16, right: 16 })
+      Scroll() {
+        Row({ space: 8 }) {
+          this.remoteDisplayScaleChip('适应', 'fit')
+          this.remoteDisplayScaleChip('100%', '100')
+          this.remoteDisplayScaleChip('125%', '125')
+          this.remoteDisplayScaleChip('150%', '150')
+          this.remoteDisplayScaleChip('175%', '175')
+          this.remoteDisplayScaleChip('200%', '200')
+          this.remoteDisplayScaleChip('自定义', 'custom')
+        }.padding({ left: 16, right: 16 })
+      }
+      .scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off)
+      .width('100%').height(42)
+      if (normalizeLocalViewScaleMode(this.remoteDisplayScaleMode) === 'custom') {
+        Row({ space: 8 }) {
+          Text('自定义比例').fontSize(12).fontColor(this.pal().text2)
+          TextInput({ text: this.remoteDisplayCustomScalePercent.toString(), placeholder: '50 - 300' })
+            .width(96).height(34).type(InputType.Number).fontSize(13)
+            .fontColor(this.pal().text).backgroundColor(this.pal().surface).borderRadius(6)
+            .onChange((value: string): void => { this.saveRemoteDisplayCustomScalePercent(value); })
+          Text('%').fontSize(12).fontColor(this.pal().text3)
+        }.width('100%').padding({ left: 16, right: 16, bottom: 10 })
+      }
+    }.width('100%')
+  }
+
+  @Builder remoteDisplayScaleChip(label: string, mode: string) {
+    Text(label).fontSize(11)
+      .fontColor(this.remoteDisplayScaleMode === mode ? '#FFFFFF' : this.pal().text2)
+      .fontWeight(this.remoteDisplayScaleMode === mode ? FontWeight.Medium : FontWeight.Normal)
+      .padding({ left: 10, right: 10, top: 7, bottom: 7 })
+      .backgroundColor(this.remoteDisplayScaleMode === mode ? this.accentColor : this.pal().surface)
+      .borderRadius(6)
+      .onClick((): void => { this.saveRemoteDisplayScaleMode(mode); })
+  }
+
+  @Builder canvasGestureZoomRow() {
+    if (!this.isDesktopDevice) {
+      this.rustdeskSwitchRow($r('app.media.icon_desktop'), '双指画布缩放',
+        '连接画面双指缩放和平移；关闭后保留原有双指右键和滚轮',
+        this.canvasGestureZoomEnabled,
+        (on: boolean): void => { this.saveCanvasGestureZoomEnabled(on); }, true)
+    }
   }
 
   @Builder rdpColorDepthRow() {

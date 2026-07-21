@@ -65,6 +65,10 @@ for ABI_TARGET in "${ABIS[@]}"; do
     )
     nm -g --defined-only "$LIB" | grep -Eq ' rustdesk_get_transfer_status$'
     nm -g --defined-only "$LIB" | grep -Eq ' rustdesk_get_clipboard$'
+    nm -g --defined-only "$LIB" | grep -Eq ' rustdesk_get_display_snapshot$'
+    nm -g --defined-only "$LIB" | grep -Eq ' rustdesk_change_display_resolution$'
+    nm -g --defined-only "$LIB" | grep -Eq ' rustdesk_send_touch_scale$'
+    nm -g --defined-only "$LIB" | grep -Eq ' rustdesk_send_touch_pan$'
 done
 
 echo "RustDesk FFI build complete for $TARGET_ARCH"

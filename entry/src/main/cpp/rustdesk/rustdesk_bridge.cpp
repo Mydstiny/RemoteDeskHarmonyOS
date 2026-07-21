@@ -17,6 +17,7 @@
 #include "common/safe_log.h"
 #include "extensions/extension_registry.h"
 #include <hilog/log.h>
+#include <algorithm>
 #include <string>
 
 // Rust FFI 函数声明 (extern "C", 来自 librustdesk_ffi.a)
@@ -35,6 +36,9 @@ extern "C" {
     void  rustdesk_send_mouse(void* handle, int x, int y, unsigned int button, bool pressed);
     void  rustdesk_send_mouse_wheel(void* handle, int x, int y, int delta);
     void  rustdesk_send_text(void* handle, const char* text);
+    bool  rustdesk_change_display_resolution(void* handle, int display, int width, int height);
+    bool  rustdesk_send_touch_scale(void* handle, int scale);
+    bool  rustdesk_send_touch_pan(void* handle, int phase, int x, int y);
     int   rustdesk_send_file(void* handle, uint64_t transfer_id, const char* remote_path,
                              const unsigned char* data, unsigned int len);
     struct RustDeskFfiTransferStatus { uint32_t state; uint64_t transferId; uint64_t transferredBytes;
@@ -63,11 +67,26 @@ extern "C" {
         int32_t connection_path;
     };
     bool  rustdesk_get_stream_stats(void* handle, RustDeskFfiStreamStats* out_stats);
+    struct RustDeskFfiDisplaySnapshot {
+        uint32_t version;
+        int32_t currentDisplay;
+        int32_t width;
+        int32_t height;
+        int32_t originalWidth;
+        int32_t originalHeight;
+        int32_t scaleMilli;
+        uint32_t geometryEpoch;
+        uint32_t resolutionCount;
+    };
+    struct RustDeskFfiResolution { int32_t width; int32_t height; };
+    bool  rustdesk_get_display_snapshot(void* handle, RustDeskFfiDisplaySnapshot* out_snapshot,
+                                        RustDeskFfiResolution* out_resolutions, size_t capacity);
     size_t rustdesk_last_error(char* buffer, size_t buffer_len);
     const char* rustdesk_version();
 }
 
 static constexpr uint32_t kRustDeskStreamStatsVersion = 1;
+static constexpr uint32_t kRustDeskDisplaySnapshotVersion = 1;
 static_assert(sizeof(RustDeskFfiStreamStats) == 96,
               "RustDeskStreamStats ABI size changed; update both sides together");
 static_assert(alignof(RustDeskFfiStreamStats) == 8,
@@ -88,6 +107,21 @@ static_assert(offsetof(RustDeskFfiStreamStats, actual_codec) == 80);
 static_assert(offsetof(RustDeskFfiStreamStats, width) == 84);
 static_assert(offsetof(RustDeskFfiStreamStats, height) == 88);
 static_assert(offsetof(RustDeskFfiStreamStats, connection_path) == 92);
+static_assert(sizeof(RustDeskFfiDisplaySnapshot) == 36,
+              "RustDeskDisplaySnapshot ABI size changed; update both sides together");
+static_assert(alignof(RustDeskFfiDisplaySnapshot) == 4,
+              "RustDeskDisplaySnapshot ABI alignment changed");
+static_assert(offsetof(RustDeskFfiDisplaySnapshot, version) == 0);
+static_assert(offsetof(RustDeskFfiDisplaySnapshot, currentDisplay) == 4);
+static_assert(offsetof(RustDeskFfiDisplaySnapshot, width) == 8);
+static_assert(offsetof(RustDeskFfiDisplaySnapshot, height) == 12);
+static_assert(offsetof(RustDeskFfiDisplaySnapshot, originalWidth) == 16);
+static_assert(offsetof(RustDeskFfiDisplaySnapshot, originalHeight) == 20);
+static_assert(offsetof(RustDeskFfiDisplaySnapshot, scaleMilli) == 24);
+static_assert(offsetof(RustDeskFfiDisplaySnapshot, geometryEpoch) == 28);
+static_assert(offsetof(RustDeskFfiDisplaySnapshot, resolutionCount) == 32);
+static_assert(sizeof(RustDeskFfiResolution) == 8,
+              "RustDeskResolution ABI size changed; update both sides together");
 #endif
 #include <sys/socket.h>
 #include <sys/un.h>
@@ -816,6 +850,84 @@ RustDeskDiagnosticsStats RustDeskBridge::getDiagnostics() const {
     }
 #endif
     return result;
+}
+
+RustDeskDisplayCapabilities RustDeskBridge::getDisplayCapabilities() const {
+    RustDeskDisplayCapabilities result;
+#ifdef RUSTDESK_USE_REAL_CORE
+    void* handle = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(impl_->mutex);
+        handle = impl_->ffiHandle;
+    }
+    if (mode_ != RustDeskMode::FFI || handle == nullptr) {
+        return result;
+    }
+    RustDeskFfiDisplaySnapshot snapshot {};
+    RustDeskFfiResolution resolutions[32] {};
+    if (!rustdesk_get_display_snapshot(handle, &snapshot, resolutions, 32) ||
+        snapshot.version != kRustDeskDisplaySnapshotVersion) {
+        return result;
+    }
+    result.supported = true;
+    result.currentDisplay = snapshot.currentDisplay;
+    result.width = snapshot.width;
+    result.height = snapshot.height;
+    result.originalWidth = snapshot.originalWidth;
+    result.originalHeight = snapshot.originalHeight;
+    result.scaleMilli = snapshot.scaleMilli;
+    result.geometryEpoch = snapshot.geometryEpoch;
+    const size_t count = std::min<size_t>(snapshot.resolutionCount, 32);
+    result.resolutions.reserve(count);
+    for (size_t index = 0; index < count; ++index) {
+        if (resolutions[index].width > 0 && resolutions[index].height > 0) {
+            result.resolutions.push_back({resolutions[index].width, resolutions[index].height});
+        }
+    }
+#endif
+    return result;
+}
+
+bool RustDeskBridge::changeDisplayResolution(int display, int width, int height) {
+#ifdef RUSTDESK_USE_REAL_CORE
+    void* handle = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(impl_->mutex);
+        handle = impl_->ffiHandle;
+    }
+    if (mode_ == RustDeskMode::FFI && handle != nullptr) {
+        return rustdesk_change_display_resolution(handle, display, width, height);
+    }
+#endif
+    return false;
+}
+
+bool RustDeskBridge::sendTouchScale(int scale) {
+#ifdef RUSTDESK_USE_REAL_CORE
+    void* handle = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(impl_->mutex);
+        handle = impl_->ffiHandle;
+    }
+    if (mode_ == RustDeskMode::FFI && handle != nullptr) {
+        return rustdesk_send_touch_scale(handle, scale);
+    }
+#endif
+    return false;
+}
+
+bool RustDeskBridge::sendTouchPan(int phase, int x, int y) {
+#ifdef RUSTDESK_USE_REAL_CORE
+    void* handle = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(impl_->mutex);
+        handle = impl_->ffiHandle;
+    }
+    if (mode_ == RustDeskMode::FFI && handle != nullptr) {
+        return rustdesk_send_touch_pan(handle, phase, x, y);
+    }
+#endif
+    return false;
 }
 
 RemoteCursorSnapshot RustDeskBridge::getRemoteCursorSnapshot(bool includePixels) {

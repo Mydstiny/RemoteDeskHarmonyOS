@@ -71,6 +71,8 @@ public:
      */
     void Resize(int width, int height);
     void SetSourceSize(int width, int height);
+    /** Apply a local canvas transform. Pan uses a top-left surface origin. */
+    void SetCanvasTransform(double scale, double panX, double panY);
 
     /** 最近一秒的实际 swap/presentation 统计；读取不会清零计数。 */
     RdpPresentationMetricsSnapshot GetPresentationStats();
@@ -139,6 +141,9 @@ private:
     int  lastVpY_;
     int  lastVpW_;
     int  lastVpH_;
+    double canvasScale_;
+    double canvasPanX_;
+    double canvasPanY_;
     // Lock-free viewport snapshot for ArkTS/NAPI coordinate mapping. The
     // render lifecycle mutex may be held across eglSwapBuffers(), so readers
     // must never wait on it from the UI thread.
@@ -165,6 +170,8 @@ private:
     GLuint CreateRawShaderProgram();
     void   CreateQuadGeometry();
     void   SetupRawTexture(int width, int height);
+    void   CalculateViewport(int sourceWidth, int sourceHeight,
+                             int& vpX, int& vpY, int& vpW, int& vpH) const;
     void   PublishViewportSnapshot(int vpX, int vpY, int vpW, int vpH);
     RdpPresentMetrics RenderRawBGRAInternal(const uint8_t* bgraData, int width, int height,
                                             int stride, bool useDirtyRect, int dirtyX,

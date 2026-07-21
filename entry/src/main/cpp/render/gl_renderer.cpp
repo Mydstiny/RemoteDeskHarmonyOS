@@ -12,6 +12,8 @@
 #include <cstdlib>
 #include <chrono>
 #include <atomic>
+#include <algorithm>
+#include <cmath>
 #include <memory>
 #include <GLES2/gl2ext.h>
 #include <ace/xcomponent/native_interface_xcomponent.h>
@@ -331,6 +333,7 @@ GLRenderer::GLRenderer()
       vbo_(0), vao_(0),
       width_(0), height_(0), sourceWidth_(0), sourceHeight_(0),
       lastVpX_(0), lastVpY_(0), lastVpW_(0), lastVpH_(0),
+      canvasScale_(1.0), canvasPanX_(0.0), canvasPanY_(0.0),
       viewportSnapshotVersion_(0), snapshotVpX_(0), snapshotVpY_(0),
       snapshotVpW_(0), snapshotVpH_(0), snapshotSourceWidth_(0),
       snapshotSourceHeight_(0), snapshotSurfaceWidth_(0), snapshotSurfaceHeight_(0),
@@ -746,21 +749,14 @@ RdpPresentMetrics GLRenderer::RenderRawBGRAInternal(
     }
     const auto uploadAt = clock::now();
 
-    // 计算 viewport (等比缩放, letterbox)
+    // Renderer snapshots use top-left coordinates so ArkTS hit testing and
+    // cursor projection share the same canvas contract as the gesture layer.
     int vpX = 0, vpY = 0, vpW = width_, vpH = height_;
-    if (width_ > 0 && height_ > 0 && width > 0 && height > 0) {
-        double scaleW = static_cast<double>(width_) / static_cast<double>(width);
-        double scaleH = static_cast<double>(height_) / static_cast<double>(height);
-        double scale = scaleW < scaleH ? scaleW : scaleH;
-        vpW = static_cast<int>(static_cast<double>(width) * scale + 0.5);
-        vpH = static_cast<int>(static_cast<double>(height) * scale + 0.5);
-        vpX = (width_ - vpW) / 2;
-        vpY = (height_ - vpH) / 2;
-    }
+    CalculateViewport(width, height, vpX, vpY, vpW, vpH);
 
     glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT);
-    glViewport(vpX, vpY, vpW, vpH);
+    glViewport(vpX, height_ - vpY - vpH, vpW, vpH);
 
     // 缓存视口信息供 ArkTS 查询坐标映射
     lastVpX_ = vpX;
@@ -846,16 +842,8 @@ void GLRenderer::RenderFrame(GLuint textureId) {
     int viewportY = 0;
     int viewportW = width_;
     int viewportH = height_;
-    if (width_ > 0 && height_ > 0 && sourceWidth_ > 0 && sourceHeight_ > 0) {
-        const double scaleW = static_cast<double>(width_) / static_cast<double>(sourceWidth_);
-        const double scaleH = static_cast<double>(height_) / static_cast<double>(sourceHeight_);
-        const double scale = scaleW < scaleH ? scaleW : scaleH;
-        viewportW = static_cast<int>(static_cast<double>(sourceWidth_) * scale + 0.5);
-        viewportH = static_cast<int>(static_cast<double>(sourceHeight_) * scale + 0.5);
-        viewportX = (width_ - viewportW) / 2;
-        viewportY = (height_ - viewportH) / 2;
-    }
-    glViewport(viewportX, viewportY, viewportW, viewportH);
+    CalculateViewport(sourceWidth_, sourceHeight_, viewportX, viewportY, viewportW, viewportH);
+    glViewport(viewportX, height_ - viewportY - viewportH, viewportW, viewportH);
 
     // 缓存视口信息供 ArkTS 查询坐标映射
     lastVpX_ = viewportX;
@@ -901,6 +889,7 @@ void GLRenderer::Resize(int width, int height) {
     std::lock_guard<std::mutex> lock(lifecycleMutex_);
     width_ = width;
     height_ = height;
+    CalculateViewport(sourceWidth_, sourceHeight_, lastVpX_, lastVpY_, lastVpW_, lastVpH_);
     PublishViewportSnapshot(lastVpX_, lastVpY_, lastVpW_, lastVpH_);
     OH_LOG_INFO(LOG_APP, "[GL] 渲染区域大小改为 %{public}dx%{public}d", width, height);
 }
@@ -915,8 +904,41 @@ void GLRenderer::SetSourceSize(int width, int height) {
     }
     sourceWidth_ = width;
     sourceHeight_ = height;
+    CalculateViewport(sourceWidth_, sourceHeight_, lastVpX_, lastVpY_, lastVpW_, lastVpH_);
     PublishViewportSnapshot(lastVpX_, lastVpY_, lastVpW_, lastVpH_);
     OH_LOG_INFO(LOG_APP, "[GL] 视频源尺寸更新为 %{public}dx%{public}d", width, height);
+}
+
+void GLRenderer::SetCanvasTransform(double scale, double panX, double panY) {
+    std::lock_guard<std::mutex> lock(lifecycleMutex_);
+    if (!std::isfinite(scale) || scale <= 0.0 || !std::isfinite(panX) || !std::isfinite(panY)) {
+        OH_LOG_WARN(LOG_APP, "[GL] ignored invalid canvas transform");
+        return;
+    }
+    canvasScale_ = std::clamp(scale, 0.05, 12.0);
+    canvasPanX_ = panX;
+    canvasPanY_ = panY;
+    CalculateViewport(sourceWidth_, sourceHeight_, lastVpX_, lastVpY_, lastVpW_, lastVpH_);
+    PublishViewportSnapshot(lastVpX_, lastVpY_, lastVpW_, lastVpH_);
+}
+
+void GLRenderer::CalculateViewport(int sourceWidth, int sourceHeight,
+                                   int& vpX, int& vpY, int& vpW, int& vpH) const {
+    vpX = 0;
+    vpY = 0;
+    vpW = width_;
+    vpH = height_;
+    if (width_ <= 0 || height_ <= 0 || sourceWidth <= 0 || sourceHeight <= 0) {
+        return;
+    }
+    const double scaleW = static_cast<double>(width_) / static_cast<double>(sourceWidth);
+    const double scaleH = static_cast<double>(height_) / static_cast<double>(sourceHeight);
+    const double contain = std::min(scaleW, scaleH);
+    const double scale = contain * canvasScale_;
+    vpW = std::max(1, static_cast<int>(std::lround(static_cast<double>(sourceWidth) * scale)));
+    vpH = std::max(1, static_cast<int>(std::lround(static_cast<double>(sourceHeight) * scale)));
+    vpX = static_cast<int>(std::lround(static_cast<double>(width_ - vpW) / 2.0 + canvasPanX_));
+    vpY = static_cast<int>(std::lround(static_cast<double>(height_ - vpH) / 2.0 + canvasPanY_));
 }
 
 void GLRenderer::GetViewportSnapshot(int& vpX, int& vpY, int& vpW, int& vpH,
@@ -1167,6 +1189,33 @@ napi_value NapiResizeRenderer(napi_env env, napi_callback_info info) {
         renderer->Resize(width, height);
     }
 
+    napi_value undefined;
+    napi_get_undefined(env, &undefined);
+    return undefined;
+}
+
+/** NAPI: setRendererCanvasTransform(handle, scale, panX, panY): void */
+napi_value NapiSetRendererCanvasTransform(napi_env env, napi_callback_info info) {
+    size_t argc = 4;
+    napi_value args[4];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    int64_t handleVal = 0;
+    double scale = 1.0;
+    double panX = 0.0;
+    double panY = 0.0;
+    if (argc > 0) napi_get_value_int64(env, args[0], &handleVal);
+    if (argc > 1) napi_get_value_double(env, args[1], &scale);
+    if (argc > 2) napi_get_value_double(env, args[2], &panX);
+    if (argc > 3) napi_get_value_double(env, args[3], &panY);
+    std::shared_ptr<GLRenderer> renderer;
+    {
+        std::lock_guard<std::mutex> lock(g_activeRendererMutex);
+        if (g_activeRendererHandle.load(std::memory_order_acquire) == handleVal) {
+            auto* ctx = reinterpret_cast<RendererContext*>(handleVal);
+            if (ctx) renderer = ctx->renderer;
+        }
+    }
+    if (renderer) renderer->SetCanvasTransform(scale, panX, panY);
     napi_value undefined;
     napi_get_undefined(env, &undefined);
     return undefined;
@@ -1688,6 +1737,10 @@ napi_value RendererNapi::Init(napi_env env, napi_value exports) {
     napi_create_function(env, "resizeRenderer", NAPI_AUTO_LENGTH,
                          NapiResizeRenderer, nullptr, &fn);
     napi_set_named_property(env, exports, "resizeRenderer", fn);
+
+    napi_create_function(env, "setRendererCanvasTransform", NAPI_AUTO_LENGTH,
+                         NapiSetRendererCanvasTransform, nullptr, &fn);
+    napi_set_named_property(env, exports, "setRendererCanvasTransform", fn);
 
     napi_create_function(env, "destroyRenderer", NAPI_AUTO_LENGTH,
                          NapiDestroyRenderer, nullptr, &fn);

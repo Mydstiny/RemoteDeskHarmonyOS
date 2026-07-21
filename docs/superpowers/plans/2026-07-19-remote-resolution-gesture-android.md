@@ -1,6 +1,6 @@
 # 远程分辨率、画布双指缩放与 RustDesk 安卓竖屏修复计划
 
-> 状态：已合并。本文是对 `docs/REMOTE_RESOLUTION_SCALE_PLAN.md` 的审查留档；审批通过后，内容已并入总计划 v2.1。后续执行以总计划为准。
+> 状态：已合并。本文是对 `docs/REMOTE_RESOLUTION_SCALE_PLAN.md` 的审查留档；审批通过后，内容已并入总计划 v2.3。后续执行以总计划为准。
 >
 > 目标：完成双指“整个画布缩放”与滚动/平移的设计审查，单独评估“远端应用内部缩放”，并定位 RustDesk 控制安卓端不能正常竖屏显示的原因与修复路径。
 
@@ -32,10 +32,19 @@
 - `entry/src/main/ets/pages/RemoteDesktop.ets:2061–2158` 的 `mapInputPoint()`/`remoteToLocalPoint()`只根据当前 `contain/letterbox` viewport 做正反映射，没有 pan/运行时 zoom。
 - `entry/src/main/cpp/render/gl_renderer.cpp:745–752`、`:839–846` 只计算等比 contain viewport；没有裁剪、滚动、聚焦点缩放或运行时变换接口。
 
+### 2.1.1 RustDesk 官方手机版双指画布缩放基线
+
+- `rustdesk_vendor/flutter/lib/common/widgets/gestures.dart:5–193` 的 `CustomTouchGestureRecognizer` 继承 Flutter `ScaleGestureRecognizer`，显式区分 one/two/three-finger 状态；双指更新携带累计 `scale`、`focalPoint` 和 `focalPointDelta`。
+- `rustdesk_vendor/flutter/lib/common/widgets/remote_input.dart:448–510` 的移动端分支先清除待定 tap，再调用 `canvasModel.updateScale(d.scale / _scale, d.focalPoint)`，随后按 `d.focalPointDelta` 调用 `panX/panY`；手势结束只重置本次手势比例，不写回设置缩放，也不发送远端 scale。官方桌面端分支才发送 `scale * 1000`，以 0 表示结束。
+- `rustdesk_vendor/flutter/lib/models/model.dart:1919–1935、2592–2637` 的 `ImageModel.maxScale/minScale` 根据图片与 viewport 计算缩放上下限，`CanvasModel.updateScale()` 用 focal-point 公式保持锚点；`panX/panY` 本身未做边界 clamp，因此本项目应保留官方手感并补充四边约束。
+- `rustdesk_vendor/flutter/lib/mobile/pages/remote_page.dart:1141–1161`、`utils/image.dart:93–127` 和 `common/widgets/toolbar.dart:430–434` 说明画布变换进入 ImagePainter 的 x/y/scale，并提供 `Reset canvas`；`mobile/widgets/gesture_help.dart:304–345` 明确显示 `Two-Finger Move → Canvas Move`、`Pinch to Zoom → Canvas Zoom`。
+
+本项目必须增加独立的 `canvasGestureZoomEnabled` 设置开关：开启时按上述本地 canvas 行为运行，关闭时恢复现有双指右键/滚轮或显式触控板语义。Phone/Pad 建议默认开启以对齐官方手机版，PC/无触摸设备建议默认关闭或不展示；该开关绝不能控制 RustDesk 远端应用 touch-scale。
+
 ### 2.2 RustDesk 远端应用缩放
 
 - 上游协议在 `rustdesk_vendor/libs/hbb_common/protos/message.proto:155–184` 定义 `TouchScaleUpdate`、`TouchPanStart/Update/End`。缩放字段是相对上一帧的增量，`scale * 1000`，`0` 表示结束。
-- 上游客户端在 `rustdesk_vendor/flutter/lib/common/widgets/remote_input.dart:460–500` 已区分平台：桌面 peer 发送远端 scale 事件，移动 peer 做本地 canvas scale。这正好证明两个需求不能共用一个状态。
+- 上游客户端在 `rustdesk_vendor/flutter/lib/common/widgets/remote_input.dart:460–500` 已区分控制端平台：桌面控制端发送远端 scale 事件，移动控制端做本地 canvas scale。这正好证明两个需求不能共用一个状态。
 - `rustdesk_vendor/src/ui_session_interface.rs:1146–1155` 和 `rustdesk_vendor/src/flutter.rs:1870–1926` 有发送 scale 的 RustDesk 内部接口，但 `rustdesk_ffi/src/lib.rs:284–310` 的 `ControlMsg`、`rustdesk_ffi/src/connector.rs:1253–1314` 的序列化、`entry/src/main/cpp/rustdesk/rustdesk_bridge.cpp:25–48` 的 C FFI 均未接入 scale。
 - RustDesk 服务端对 Android 的处理在 `rustdesk_vendor/src/server/connection.rs:2741–2765` 只转发 pan 事件；`ScaleUpdate` 落入忽略分支。`rustdesk_vendor/src/server/input_service.rs:1022–1027` 只在 Windows 下执行 `handle_scale()`。
 - 安卓端 `rustdesk_vendor/flutter/android/app/src/main/kotlin/com/carriez/flutter_hbb/InputService.kt:52–57` 虽然声明了 `TOUCH_SCALE_START/TOUCH_SCALE/TOUCH_SCALE_END`，但 `onTouchInput():215–235` 只实现了 pan。当前链路即使补齐 HarmonyOS FFI，也不能让 Android 应用真正收到 pinch。
@@ -60,7 +69,7 @@
 最终画布平移 = 会话内 panX / panY
 ```
 
-双指手势结束后是否保留当前比例应作为独立策略，推荐默认保留到当前连接结束，重新连接或点击“适应窗口”时清零；不写回设置中的自定义比例，避免一次手势污染全局偏好。
+双指手势结束后是否保留当前比例应作为独立策略，推荐默认保留到当前连接结束，重新连接或点击“适应窗口”时清零；不写回设置中的自定义比例，避免一次手势污染全局偏好。开启 `canvasGestureZoomEnabled` 时，建议按 RustDesk 手机版保留 canvas transform；关闭时必须恢复旧双指语义，而不是静默丢弃触摸。
 
 ### 3.2 场景一：远端画布溢出客户端屏幕
 
@@ -199,15 +208,16 @@ XComponent 与 overlay 只能有一个手势 owner；若 ArkTS 事件和 native 
 
 ### 阶段 2：本地画布双指缩放、滚动与输入映射
 
-- [ ] 在 `RemoteDesktop.ets` 接入 `TwoFingerCandidate → CanvasTransform` 状态机，并处理 native XComponent/ArkTS overlay 的唯一 owner。
+- [ ] 在 `RemoteDesktop.ets` 接入 `TwoFingerCandidate → CanvasTransform` 状态机，并处理 native XComponent/ArkTS overlay 的唯一 owner；开启 `canvasGestureZoomEnabled` 时对齐官方 `scale/focalPoint/focalPointDelta` 语义，关闭时回到旧双指输入语义。
 - [ ] 在 `gl_renderer.h/.cpp` 增加运行时 transform/viewport 合同：等比缩放、焦点保持、裁剪、pan clamp、surface resize 重算。
 - [ ] 将 `mapInputPoint()`、`remoteToLocalPoint()`、远端光标、光标形状、触摸指示器统一到同一个 transform。
+- [ ] 实现累计 recognizer scale 的相邻比值更新、缩放动态上下限、焦点锚定、focalPointDelta 平移、取消/第三指接管清理和 `Reset canvas`；明确本项目额外的 pan 边界 clamp。
 - [ ] 首版使用渲染器级 pan，不把 XComponent 包进会改变生命周期或事件分发的通用滚动容器；后续再评估滚动条/边缘自动平移。
 - [ ] 明确 touchpad 双指右键/滚轮的替代入口或模式开关，保留三指控制面板且不与 pinch 串扰。
 
 **预计新增测试**：`entry/src/test/RemoteCanvasTransformPolicy.test.ets`、`entry/src/test/RemoteGesturePolicy.test.ets`，以及 `entry/src/main/cpp/test/` 下的纯几何/渲染 viewport 测试。
 
-**完成标准**：在 RDP、RustDesk、VNC 等已有视频协议上，双指只改变本地画布；远端窗口尺寸和远端应用状态不变；超出 viewport 的内容可完整 pan 到四边，输入和光标无固定比例偏移。
+**完成标准**：在 RDP、RustDesk、VNC 等已有视频协议上，开启开关时双指按官方手机版只改变本地画布、保持焦点并可完整 pan 到四边；关闭开关时旧双指语义可用；远端窗口尺寸和远端应用状态不变，输入和光标无固定比例偏移。
 
 ### 阶段 3：RustDesk 远端应用缩放能力
 
@@ -278,6 +288,7 @@ XComponent 与 overlay 只能有一个手势 owner；若 ArkTS 事件和 native 
 主要风险：
 
 - 双指手势与现有右键/滚轮语义冲突；通过显式目标/控制模式解决，不让事件同时进入两个系统。
+- 官方手机版上游 `panX/panY` 没有显式 clamp；本项目必须将其作为增强约束加入，避免放大后拖出不可恢复空白或影响输入映射。
 - Android `AccessibilityService` 的多点手势能力、权限和厂商差异；没有真实设备验证前不得宣称通用支持。
 - `TouchScaleUpdate` 只有增量 scale、没有焦点/双指轨迹；必要时需要协议扩展和版本兼容。
 - frame 几何修复可能影响硬解、软解、远端光标和 RDP desktop resize；必须使用 geometry epoch 防止旧帧覆盖新方向。
@@ -292,7 +303,9 @@ XComponent 与 overlay 只能有一个手势 owner；若 ArkTS 事件和 native 
 - 总计划路径：`docs/REMOTE_RESOLUTION_SCALE_PLAN.md`。
 - 合并内容包括：双指画布 zoom/pan、远端应用 touch-scale、RustDesk Android portrait 几何修复、测试矩阵、灰度和回滚。
 - 后续补充内容包括：设置中心“显示与交互 / Windows RDP / RustDesk”信息架构、PC/Pad/Phone 响应式布局、默认值/主机偏好/会话覆盖边界和能力禁用文案。
-- 本次合并只修改计划文档，没有修改 RDP、RustDesk、renderer、ArkTS 或 vendor 功能代码。
+- 2026-07-20 代码同步补充：RustDesk FFI、Bridge、NAPI 查询、decoder 即时快照、ArkTS wrapper/type、本地设置存储、RemoteDesktop 1 秒 poll 和 HUD 已部分落地 per-connection stream stats；尚未完成设置 Row、严格生命周期/测试，也不能替代逐帧 `RemoteVideoGeometry`。
+- 2026-07-21 官方手机版代码审查补充：确认 `CustomTouchGestureRecognizer`、移动端 `CanvasModel.updateScale + focalPointDelta pan`、动态缩放上下限、Reset canvas 和 `Canvas Zoom` 手势说明；总计划新增 `canvasGestureZoomEnabled` 开关、Phone/Pad 默认建议和关闭后的旧语义回退，并明确官方桌面远端 scale 分支不属于手机版本地画布基线。
+- 2026-07-21 执行状态：总计划的控制端实现已落地，包括 RDP 18 个预设、本地缩放、双指画布缩放/平移、RustDesk 分辨率/触控控制消息和 `switch_display` 几何更新；Rust 120/120、native 114/114、ArkTS 测试编译、双 ABI、生产 HAP 与 Light 均通过。外部 Android 被控端仍未实现 touch-scale 注入，真实 Android 应用缩放仍待其单独实施和设备验收。
 
 合并后的总计划采用以下顺序：
 
@@ -310,4 +323,4 @@ XComponent 与 overlay 只能有一个手势 owner；若 ArkTS 事件和 native 
 - RustDesk Android 远端应用缩放是否接受新增协议/安卓注入链路，而不是只做本地画布缩放。
 - 控制端窗口是否继续默认横屏；无论选择何种本地窗口策略，远端 portrait 均必须由远端 geometry 正确渲染。
 
-当前执行和后续审批均以 `docs/REMOTE_RESOLUTION_SCALE_PLAN.md` v2.1 为准；本文件不再作为独立执行计划。
+当前执行和后续审批均以 `docs/REMOTE_RESOLUTION_SCALE_PLAN.md` v2.3 为准；本文件不再作为独立执行计划。

@@ -17,6 +17,7 @@
 #include "extensions/protocol_adapter.h"
 #include <cstdint>
 #include <memory>
+#include <vector>
 
 /** Non-destructive RustDesk stream diagnostics returned to the NAPI layer. */
 struct RustDeskDiagnosticsStats {
@@ -42,6 +43,23 @@ struct RustDeskDiagnosticsStats {
     int64_t renderP50Us = 0;
     int64_t renderP95Us = 0;
     int64_t renderMaxUs = 0;
+};
+
+struct RustDeskDisplayResolution {
+    int width = 0;
+    int height = 0;
+};
+
+struct RustDeskDisplayCapabilities {
+    bool supported = false;
+    int currentDisplay = 0;
+    int width = 0;
+    int height = 0;
+    int originalWidth = 0;
+    int originalHeight = 0;
+    int scaleMilli = 1000;
+    uint32_t geometryEpoch = 0;
+    std::vector<RustDeskDisplayResolution> resolutions;
 };
 
 // C 兼容连接配置 (与 rustdesk_ffi/src/lib.rs 中的 RustDeskConfig 内存布局一致)
@@ -99,6 +117,10 @@ public:
     void sendMouse(int x, int y, MouseButton button, bool pressed) override;
     void sendMouseWheel(int x, int y, int delta) override;
     void sendText(const std::string& text) override;
+    RustDeskDisplayCapabilities getDisplayCapabilities() const;
+    bool changeDisplayResolution(int display, int width, int height);
+    bool sendTouchScale(int scale);
+    bool sendTouchPan(int phase, int x, int y);
     int  sendFileData(const std::string& remotePath, const uint8_t* data, uint32_t len) override;
     SessionTransferStatus getSessionTransferStatus() override;
     void sendClipboardData(const uint8_t* data, uint32_t len);
