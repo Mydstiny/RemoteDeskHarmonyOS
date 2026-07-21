@@ -14,6 +14,7 @@ import {
   SshHostKeyInfo,
   RdpCertificateInfo,
   RdpRenderStats,
+  RendererViewport,
   RustDeskDisplayCapabilities,
   RustDeskDiagnosticsSnapshot,
   LocalResourceStats,
@@ -464,9 +465,9 @@ export class ExtensionLoader {
     }
   }
 
-  getRendererViewport(handle: number): Record<string, number> | null {
+  getRendererViewport(handle: number): RendererViewport | null {
     try {
-      return rdpnapi.getRendererViewport(handle) as Record<string, number> | null;
+      return rdpnapi.getRendererViewport(handle);
     } catch (err) {
       hilog.error(DOMAIN, TAG, '[ExtensionLoader] getRendererViewport: ' + JSON.stringify(err));
       return null;

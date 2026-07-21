@@ -2823,15 +2823,15 @@ struct RemoteDesktop {
     this.rendererViewportReadAtMs = now;
     try {
       const raw = this.loader.getRendererViewport(this.rendererHandle);
-      if (raw && raw['sourceWidth'] > 0 && raw['sourceHeight'] > 0 &&
-        raw['viewportW'] > 0 && raw['viewportH'] > 0) {
+      if (raw && raw.sourceWidth > 0 && raw.sourceHeight > 0 &&
+        raw.viewportW > 0 && raw.viewportH > 0) {
         const snapshot: RendererViewportSnapshot = {
-          sourceWidth: raw['sourceWidth'] as number,
-          sourceHeight: raw['sourceHeight'] as number,
-          viewportX: raw['viewportX'] as number,
-          viewportY: raw['viewportY'] as number,
-          viewportW: raw['viewportW'] as number,
-          viewportH: raw['viewportH'] as number
+          sourceWidth: raw.sourceWidth,
+          sourceHeight: raw.sourceHeight,
+          viewportX: raw.viewportX,
+          viewportY: raw.viewportY,
+          viewportW: raw.viewportW,
+          viewportH: raw.viewportH
         };
         this.rendererSourceWidth = snapshot.sourceWidth;
         this.rendererSourceHeight = snapshot.sourceHeight;
@@ -3529,8 +3529,8 @@ struct RemoteDesktop {
       try {
         const vp = this.loader.getRendererViewport(this.rendererHandle);
         if (vp !== null) {
-          const sourceWidth: number = vp['sourceWidth'] as number;
-          const sourceHeight: number = vp['sourceHeight'] as number;
+          const sourceWidth: number = vp.sourceWidth;
+          const sourceHeight: number = vp.sourceHeight;
           if (sourceWidth > 0 && sourceHeight > 0 &&
             (sourceWidth !== this.rendererSourceWidth || sourceHeight !== this.rendererSourceHeight)) {
             this.rendererSourceWidth = sourceWidth;
