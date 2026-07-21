@@ -50,6 +50,17 @@ import {
   CloudUserSettingValue
 } from './CloudSyncSettingsPolicy';
 import {
+  localBackupColumnsForTable,
+  localBackupLocalExtensionColumns,
+  validateLocalBackupSnapshot
+} from './LocalBackupPolicy';
+import { DataMutationResult } from './DataMutationResult';
+import { canonicalHostPassword } from './SensitiveDataMigrationPolicy';
+import {
+  sensitiveWriteRequiresUnlock,
+  shouldRedactLockedCiphertext
+} from './SensitiveDataStatePolicy';
+import {
   VIRTUAL_MOUSE_STYLE_RESTORE_VERSION_KEY,
   shouldApplyCloudVirtualMouseStyle
 } from './RemoteCursorStylePolicy';
@@ -66,6 +77,16 @@ import {
 const DB_NAME: string = 'remotedesktop';
 const TABLES: string[] = cloudSyncTableNames();
 const RDP_RESTRICTED_ADMIN_SECRET_TABLE: string = 'rdprestrictedadminsecrets';
+const LOCAL_METADATA_TABLE: string = 'localmetadata';
+const LOCAL_MUTATION_JOURNAL_TABLE: string = 'localmutationjournal';
+const CANONICAL_SECRET_STORAGE_VERSION_KEY: string = 'canonical_secret_storage_version';
+const CANONICAL_SECRET_STORAGE_VERSION: string = '2';
+const RESTORED_NOT_UPLOADED_KEY: string = 'restored_not_uploaded';
+const TABLE_MUTATION_RECORD_ID: string = '__table__';
+const LOCAL_METADATA_COLUMNS: string[] = ['key', 'value', 'updatedat'];
+const LOCAL_MUTATION_JOURNAL_COLUMNS: string[] = [
+  'id', 'tablename', 'recordid', 'operation', 'revision', 'createdat', 'updatedat'
+];
 
 export class RdpRestrictedAdminSecretResult {
   status: string = 'missing';
@@ -106,11 +127,18 @@ export class CloudStore implements CryptoCloudStore {
   private automaticPushSuppressed: boolean = false;
   private manualDownloadSnapshot: Record<string, Array<Record<string, string>>> | null = null;
   private manualDownloadExtensions: Array<Record<string, string>> | null = null;
+  private manualDownloadMetadata: Array<Record<string, string>> | null = null;
+  private manualDownloadMutationJournal: Array<Record<string, string>> | null = null;
   private localRestoreActive: boolean = false;
   private localRestorePending: boolean = false;
+  private lastMutationResult: DataMutationResult = DataMutationResult.success('');
+  private lastMutationRevision: number = 0;
   private readonly syncSelection: CloudSyncSelectionStore = CloudSyncSelectionStore.getInstance();
   // 加密状态追踪
   private lastKnownCryptoStatus: string = '';
+  // A cloud-first apply may synchronously lock/unlock DataCrypto.  Hold its
+  // state callback until the completed cloud snapshot is published once.
+  private suppressCryptoStateSnapshot: boolean = false;
 
   /** 获取同步状态快照 (用于诊断) */
   getSyncStatus(): SyncStatus {
@@ -177,7 +205,17 @@ export class CloudStore implements CryptoCloudStore {
       // 本地库必须独立可用；云服务未开通或网络策略设置失败时仍要恢复缓存数据。
       this.initialized = true;
       this.syncSelection.init(context);
-      DataCrypto.getInstance().init(this);
+      const crypto: DataCrypto = DataCrypto.getInstance();
+      crypto.init(this);
+      crypto.onStateChange((_ready: boolean, _configured: boolean): void => {
+        if (!this.initialized) { return; }
+        // Models may currently contain either decrypted values or locked-state
+        // redactions. Reload them once from RDB for the new DEK state.
+        this.lastKnownCryptoStatus = this.getCryptoStatus();
+        if (!this.suppressCryptoStateSnapshot) {
+          this.notifyDataSnapshotChanged();
+        }
+      });
       CloudSyncCoordinator.getInstance().init(
         context,
         (table: string, direction: CloudSyncDirection, label: string): Promise<boolean> =>
@@ -240,6 +278,15 @@ export class CloudStore implements CryptoCloudStore {
   /** 注册加密重置回调 (供 Service 层使用, 重置时清空内存数据) */
   onCryptoReset(callback: () => void): void {
     this.onCryptoResetCallbacks.push(callback);
+  }
+
+  private notifyDataSnapshotChanged(): void {
+    const callbacks: Array<() => void> = this.onChangeCallbacks.slice();
+    for (let i = 0; i < callbacks.length; i++) {
+      try { callbacks[i](); } catch (err) {
+        hilog.warn(0x0001, 'CloudSync', '[CloudStore] data listener failed: ' + safeError(err));
+      }
+    }
   }
 
   /** 订阅云空间数据变更事件 (系统级推送, 替代轮询) */
@@ -343,27 +390,50 @@ export class CloudStore implements CryptoCloudStore {
           this.store.beginTransaction();
           this.manualDownloadSnapshot = this.exportAllTableRows();
           this.manualDownloadExtensions = this.exportLocalExtensionRows();
+          this.manualDownloadMetadata = this.exportLocalMetadataRows();
+          this.manualDownloadMutationJournal = this.exportMutationJournalRows();
           this.store.commit();
           return true;
         } catch (_e) {
           try { this.store.rollBack(); } catch (_ignored) {}
           this.manualDownloadSnapshot = null;
           this.manualDownloadExtensions = null;
+          this.manualDownloadMetadata = null;
+          this.manualDownloadMutationJournal = null;
           return false;
         }
       },
       rollbackManualDownload: async (): Promise<boolean> => {
         const snapshot = this.manualDownloadSnapshot;
         const extensions = this.manualDownloadExtensions;
+        const metadata = this.manualDownloadMetadata;
+        const journal = this.manualDownloadMutationJournal;
+        const restored: boolean = snapshot !== null && (await this.restoreManualDownloadSnapshot(
+          snapshot, extensions || [], metadata || [], journal || []));
         this.manualDownloadSnapshot = null;
         this.manualDownloadExtensions = null;
-        return snapshot !== null && await this.replaceAllTableRows(snapshot, extensions || []);
+        this.manualDownloadMetadata = null;
+        this.manualDownloadMutationJournal = null;
+        return restored;
       },
-      completeManualDownload: (): void => {
+      completeManualDownload: (tables: string[]): boolean => {
+        // The local intent must be discarded before exposing a cloud-first
+        // success; otherwise a later automatic retry could overwrite it.
+        if (!this.discardMutationJournalForTables(tables) || !this.clearRestoredNotUploaded()) {
+          return false;
+        }
         this.manualDownloadSnapshot = null;
         this.manualDownloadExtensions = null;
+        this.manualDownloadMetadata = null;
+        this.manualDownloadMutationJournal = null;
+        return true;
       },
-      setRestorePending: (pending: boolean): void => { this.localRestorePending = pending; }
+      setRestorePending: (pending: boolean): void => { this.localRestorePending = pending; },
+      pendingMutationTableRevisions: (): Record<string, number> => this.pendingMutationTableRevisions(),
+      acknowledgeMutationJournal: (table: string, revision: number): boolean =>
+        this.acknowledgeMutationJournal(table, revision),
+      hasRestoredNotUploaded: (): boolean => this.hasRestoredNotUploaded(),
+      clearRestoredNotUploaded: (): boolean => this.clearRestoredNotUploaded()
     };
   }
 
@@ -379,10 +449,13 @@ export class CloudStore implements CryptoCloudStore {
       snapshot[table] = [];
       if (!this.store) { continue; }
       const rows = this.store.querySync(new relationalStore.RdbPredicates(table));
-      const columns: string[] = rows.getColumnNames();
+      const columns: string[] = localBackupColumnsForTable(table);
       while (rows.goToNextRow()) {
         const row: Record<string, string> = {};
-        for (let c = 0; c < columns.length; c++) { row[columns[c]] = rows.getString(c); }
+        for (let c = 0; c < columns.length; c++) {
+          const index: number = rows.getColumnIndex(columns[c]);
+          if (index >= 0) { row[columns[c]] = rows.getString(index); }
+        }
         snapshot[table].push(row);
       }
       rows.close();
@@ -411,10 +484,13 @@ export class CloudStore implements CryptoCloudStore {
     if (!this.store) { return result; }
     try {
       const rows = this.store.querySync(new relationalStore.RdbPredicates('localextensions'));
-      const columns: string[] = rows.getColumnNames();
+      const columns: string[] = localBackupLocalExtensionColumns();
       while (rows.goToNextRow()) {
         const row: Record<string, string> = {};
-        for (let i = 0; i < columns.length; i++) { row[columns[i]] = rows.getString(i); }
+        for (let i = 0; i < columns.length; i++) {
+          const index: number = rows.getColumnIndex(columns[i]);
+          if (index >= 0) { row[columns[i]] = rows.getString(index); }
+        }
         result.push(row);
       }
       rows.close();
@@ -426,12 +502,31 @@ export class CloudStore implements CryptoCloudStore {
     return result;
   }
 
-  /** 本地恢复专用：调用者已完成文件完整性校验；失败时整批回滚，且绝不自动推云。 */
+  /**
+   * Local backup restore.  A successful restore is intentionally quarantined:
+   * it cannot pull or upload automatically until the user explicitly chooses a
+   * cloud direction, so a valid backup can never be overwritten on startup.
+   */
   async replaceAllTableRows(snapshot: Record<string, Array<Record<string, string>>>,
     extensions: Array<Record<string, string>> = []): Promise<boolean> {
-    if (!this.store) { return false; }
-    for (let i = 0; i < TABLES.length; i++) {
-      if (!snapshot[TABLES[i]]) { return false; }
+    return await this.replaceAllTableRowsInternal(snapshot, extensions, null, null, true, true);
+  }
+
+  /** Manual cloud-download rollback restores every local state owner exactly. */
+  private async restoreManualDownloadSnapshot(snapshot: Record<string, Array<Record<string, string>>>,
+    extensions: Array<Record<string, string>>, metadata: Array<Record<string, string>>,
+    journal: Array<Record<string, string>>): Promise<boolean> {
+    return await this.replaceAllTableRowsInternal(snapshot, extensions, metadata, journal, false, false);
+  }
+
+  private async replaceAllTableRowsInternal(snapshot: Record<string, Array<Record<string, string>>>,
+    extensions: Array<Record<string, string>>, metadata: Array<Record<string, string>> | null,
+    journal: Array<Record<string, string>> | null, markRestoredNotUploaded: boolean,
+    publishReload: boolean): Promise<boolean> {
+    if (!this.store || !validateLocalBackupSnapshot(snapshot, extensions)) { return false; }
+    if (metadata !== null && !this.deviceLocalRowsValid(metadata, LOCAL_METADATA_COLUMNS, 'key')) { return false; }
+    if (journal !== null && !this.deviceLocalRowsValid(journal, LOCAL_MUTATION_JOURNAL_COLUMNS, 'id')) {
+      return false;
     }
     this.setAutomaticPushSuppressed(true);
     this.localRestoreActive = true;
@@ -444,33 +539,48 @@ export class CloudStore implements CryptoCloudStore {
         for (let r = 0; r < rows.length; r++) {
           const bucket: relationalStore.ValuesBucket = {};
           const keys: string[] = Object.keys(rows[r]);
-          for (let k = 0; k < keys.length; k++) { bucket[keys[k]] = rows[r][keys[k]]; }
-          if (!rdbInsertSucceeded(this.store.insertSync(table, bucket, relationalStore.ConflictResolution.ON_CONFLICT_REPLACE))) {
+          const allowed: string[] = localBackupColumnsForTable(table);
+          for (let k = 0; k < keys.length; k++) {
+            if (allowed.indexOf(keys[k]) < 0) { throw new Error('restore unknown column table=' + table); }
+            bucket[keys[k]] = rows[r][keys[k]];
+          }
+          if (!rdbInsertSucceeded(this.store.insertSync(table, bucket,
+            relationalStore.ConflictResolution.ON_CONFLICT_REPLACE))) {
             throw new Error('restore insert failed table=' + table);
           }
         }
       }
-      await this.store.executeSql('DELETE FROM localextensions');
-      for (let i = 0; i < extensions.length; i++) {
-        const bucket: relationalStore.ValuesBucket = {};
-        const keys: string[] = Object.keys(extensions[i]);
-        for (let k = 0; k < keys.length; k++) { bucket[keys[k]] = extensions[i][keys[k]]; }
-        if (!rdbInsertSucceeded(this.store.insertSync('localextensions', bucket,
-          relationalStore.ConflictResolution.ON_CONFLICT_REPLACE))) {
-          throw new Error('restore insert failed table=localextensions');
+      if (!(await this.restoreDeviceLocalRows('localextensions', localBackupLocalExtensionColumns(), extensions))) {
+        throw new Error('restore local extensions failed');
+      }
+      if (metadata !== null && !(await this.restoreDeviceLocalRows(
+        LOCAL_METADATA_TABLE, LOCAL_METADATA_COLUMNS, metadata))) {
+        throw new Error('restore local metadata failed');
+      }
+      if (journal !== null) {
+        if (!(await this.restoreDeviceLocalRows(
+          LOCAL_MUTATION_JOURNAL_TABLE, LOCAL_MUTATION_JOURNAL_COLUMNS, journal))) {
+          throw new Error('restore mutation journal failed');
         }
+      } else if (!this.clearMutationJournal()) {
+        throw new Error('clear mutation journal failed');
+      }
+      if (markRestoredNotUploaded && !this.writeLocalMetadata(RESTORED_NOT_UPLOADED_KEY, '1')) {
+        throw new Error('set restored upload marker failed');
       }
       this.store.commit();
-      // A restored cryptoparams row may belong to a different master password.
-      // Never keep the previous DEK alive across a whole-database replacement.
       this.localRestoreActive = false;
-      DataCrypto.getInstance().lock();
-      this.lastKnownCryptoStatus = '';
-      this.checkCryptoStatusChange();
-      for (let i = 0; i < this.onChangeCallbacks.length; i++) { this.onChangeCallbacks[i](); }
+      if (publishReload) {
+        // A restored crypto parameter set can belong to another password. Do
+        // not retain any previous decrypted cache, and publish one snapshot.
+        this.lastKnownCryptoStatus = this.getCryptoStatus();
+        const changedCryptoState: boolean = DataCrypto.getInstance().lock();
+        if (!changedCryptoState) { this.notifyDataSnapshotChanged(); }
+      }
       return true;
-    } catch (_e) {
+    } catch (err) {
       try { this.store.rollBack(); } catch (_ignored) {}
+      hilog.error(0x0001, 'CloudSync', '[CloudStore] atomic restore failed: ' + safeError(err));
       return false;
     } finally {
       this.localRestoreActive = false;
@@ -484,11 +594,19 @@ export class CloudStore implements CryptoCloudStore {
   }
 
   private notifyCloudDataApplied(tables: string[]): void {
-    this.checkCryptoStatusChange(tables.indexOf('cryptoparams') >= 0);
-    if (tables.indexOf('usersettings') >= 0) { this.applyCloudUserSettingsToRuntime(); }
-    for (let i = 0; i < this.onChangeCallbacks.length; i++) {
-      this.onChangeCallbacks[i]();
+    this.suppressCryptoStateSnapshot = true;
+    let resetClearPending: boolean = false;
+    try {
+      resetClearPending = this.checkCryptoStatusChange(tables.indexOf('cryptoparams') >= 0);
+      if (!resetClearPending && tables.indexOf('usersettings') >= 0) {
+        this.applyCloudUserSettingsToRuntime();
+      }
+    } finally {
+      this.suppressCryptoStateSnapshot = false;
     }
+    // A reset clears data asynchronously. Its completion publishes the first
+    // valid empty snapshot; publishing here would expose stale rows first.
+    if (!resetClearPending) { this.notifyDataSnapshotChanged(); }
   }
 
   private applyCloudUserSettingsToRuntime(): void {
@@ -846,6 +964,26 @@ export class CloudStore implements CryptoCloudStore {
         updatedat INTEGER
       )
     `);
+    // Device-local recovery state. These tables are never registered as cloud
+    // tables, so the existing Huawei schema remains unchanged.
+    await this.store.executeSql(`
+      CREATE TABLE IF NOT EXISTS localmetadata (
+        key TEXT PRIMARY KEY,
+        value TEXT,
+        updatedat INTEGER
+      )
+    `);
+    await this.store.executeSql(`
+      CREATE TABLE IF NOT EXISTS localmutationjournal (
+        id TEXT PRIMARY KEY,
+        tablename TEXT,
+        recordid TEXT,
+        operation TEXT,
+        revision INTEGER,
+        createdat INTEGER,
+        updatedat INTEGER
+      )
+    `);
   }
 
   getRdbStore(): relationalStore.RdbStore | null {
@@ -877,6 +1015,226 @@ export class CloudStore implements CryptoCloudStore {
     return table + ':' + recordId;
   }
 
+  private setLastMutation(result: DataMutationResult): boolean {
+    this.lastMutationResult = result;
+    return result.ok;
+  }
+
+  private nextMutationRevision(): number {
+    const now: number = Date.now();
+    this.lastMutationRevision = now > this.lastMutationRevision ? now : this.lastMutationRevision + 1;
+    return this.lastMutationRevision;
+  }
+
+  private sensitiveWriteAllowed(recordId: string): boolean {
+    const crypto: DataCrypto = DataCrypto.getInstance();
+    if (!sensitiveWriteRequiresUnlock(crypto.isSetupComplete(), crypto.isReady())) { return true; }
+    return this.setLastMutation(DataMutationResult.failure(recordId, 'unlock_required',
+      '加密数据已锁定，请先解锁后再保存'));
+  }
+
+  private readLocalMetadata(key: string): string {
+    if (!this.store || key === '') { return ''; }
+    try {
+      const predicates = new relationalStore.RdbPredicates(LOCAL_METADATA_TABLE);
+      predicates.equalTo('key', key);
+      const rows = this.store.querySync(predicates);
+      const value: string = rows.goToFirstRow() ? rows.getString(rows.getColumnIndex('value')) : '';
+      rows.close();
+      return value;
+    } catch (_e) { return ''; }
+  }
+
+  private writeLocalMetadata(key: string, value: string): boolean {
+    if (!this.store || key === '') { return false; }
+    try {
+      const bucket: relationalStore.ValuesBucket = { key, value, updatedat: Date.now() };
+      return rdbInsertSucceeded(this.store.insertSync(LOCAL_METADATA_TABLE, bucket,
+        relationalStore.ConflictResolution.ON_CONFLICT_REPLACE));
+    } catch (_e) { return false; }
+  }
+
+  private deleteLocalMetadata(key: string): boolean {
+    if (!this.store || key === '') { return false; }
+    try {
+      const predicates = new relationalStore.RdbPredicates(LOCAL_METADATA_TABLE);
+      predicates.equalTo('key', key);
+      this.store.deleteSync(predicates);
+      return true;
+    } catch (_e) { return false; }
+  }
+
+  private recordLocalMutation(table: string, recordId: string, operation: string): boolean {
+    if (!this.store || table === '' || recordId === '') { return false; }
+    try {
+      const now: number = Date.now();
+      const bucket: relationalStore.ValuesBucket = {
+        id: this.localExtensionId(table, recordId),
+        tablename: table,
+        recordid: recordId,
+        operation,
+        revision: this.nextMutationRevision(),
+        createdat: now,
+        updatedat: now
+      };
+      return rdbInsertSucceeded(this.store.insertSync(LOCAL_MUTATION_JOURNAL_TABLE, bucket,
+        relationalStore.ConflictResolution.ON_CONFLICT_REPLACE));
+    } catch (_e) { return false; }
+  }
+
+  /** A bulk transition still needs a durable table-level upload intention. */
+  private recordTableMutation(table: string, operation: string): boolean {
+    return this.recordLocalMutation(table, TABLE_MUTATION_RECORD_ID, operation);
+  }
+
+  /** Durable restart recovery input for CloudSyncCoordinator. */
+  pendingMutationTableRevisions(): Record<string, number> {
+    const result: Record<string, number> = {};
+    if (!this.store) { return result; }
+    try {
+      const rows = this.store.querySync(new relationalStore.RdbPredicates(LOCAL_MUTATION_JOURNAL_TABLE));
+      while (rows.goToNextRow()) {
+        const table: string = rows.getString(rows.getColumnIndex('tablename'));
+        const revision: number = rows.getLong(rows.getColumnIndex('revision'));
+        if (table !== '' && revision > (result[table] || 0)) { result[table] = revision; }
+      }
+      rows.close();
+    } catch (_e) { /* leave empty; legacy Preferences dirty state still recovers uploads */ }
+    return result;
+  }
+
+  private exportDeviceLocalRows(table: string, columns: string[]): Array<Record<string, string>> {
+    const result: Array<Record<string, string>> = [];
+    if (!this.store) { return result; }
+    try {
+      const rows = this.store.querySync(new relationalStore.RdbPredicates(table));
+      while (rows.goToNextRow()) {
+        const row: Record<string, string> = {};
+        for (let i = 0; i < columns.length; i++) {
+          const index: number = rows.getColumnIndex(columns[i]);
+          if (index >= 0) { row[columns[i]] = rows.getString(index); }
+        }
+        result.push(row);
+      }
+      rows.close();
+      result.sort((left: Record<string, string>, right: Record<string, string>): number =>
+        (left['id'] || left['key'] || '').localeCompare(right['id'] || right['key'] || ''));
+    } catch (err) {
+      hilog.warn(0x0001, 'CloudSync', '[CloudStore] export local state failed table=' + table +
+        ' err=' + safeError(err));
+    }
+    return result;
+  }
+
+  private exportLocalMetadataRows(): Array<Record<string, string>> {
+    return this.exportDeviceLocalRows(LOCAL_METADATA_TABLE, LOCAL_METADATA_COLUMNS);
+  }
+
+  private exportMutationJournalRows(): Array<Record<string, string>> {
+    return this.exportDeviceLocalRows(LOCAL_MUTATION_JOURNAL_TABLE, LOCAL_MUTATION_JOURNAL_COLUMNS);
+  }
+
+  private deviceLocalRowsValid(rows: Array<Record<string, string>>, columns: string[], idColumn: string): boolean {
+    const ids: Set<string> = new Set<string>();
+    for (let i = 0; i < rows.length; i++) {
+      const row: Record<string, string> = rows[i];
+      const id: string = row[idColumn] || '';
+      if (id === '' || ids.has(id)) { return false; }
+      const keys: string[] = Object.keys(row);
+      for (let k = 0; k < keys.length; k++) {
+        if (columns.indexOf(keys[k]) < 0 || typeof row[keys[k]] !== 'string') { return false; }
+      }
+      ids.add(id);
+    }
+    return true;
+  }
+
+  private async restoreDeviceLocalRows(table: string, columns: string[],
+    rows: Array<Record<string, string>>): Promise<boolean> {
+    if (!this.store) { return false; }
+    try {
+      await this.store.executeSql('DELETE FROM ' + table);
+      for (let i = 0; i < rows.length; i++) {
+        const bucket: relationalStore.ValuesBucket = {};
+        const keys: string[] = Object.keys(rows[i]);
+        for (let k = 0; k < keys.length; k++) {
+          if (columns.indexOf(keys[k]) < 0) { return false; }
+          bucket[keys[k]] = rows[i][keys[k]];
+        }
+        if (!rdbInsertSucceeded(this.store.insertSync(table, bucket,
+          relationalStore.ConflictResolution.ON_CONFLICT_REPLACE))) { return false; }
+      }
+      return true;
+    } catch (_e) { return false; }
+  }
+
+  /** Remove only entries known to be covered by a terminal successful upload. */
+  acknowledgeMutationJournal(table: string, coveredRevision: number): boolean {
+    if (!this.store || table === '' || coveredRevision <= 0) { return false; }
+    try {
+      const candidates: string[] = [];
+      const predicates = new relationalStore.RdbPredicates(LOCAL_MUTATION_JOURNAL_TABLE);
+      predicates.equalTo('tablename', table);
+      const rows = this.store.querySync(predicates);
+      while (rows.goToNextRow()) {
+        const revision: number = rows.getLong(rows.getColumnIndex('revision'));
+        if (revision <= coveredRevision) { candidates.push(rows.getString(rows.getColumnIndex('id'))); }
+      }
+      rows.close();
+      if (candidates.length === 0) { return true; }
+      this.store.beginTransaction();
+      for (let i = 0; i < candidates.length; i++) {
+        const one = new relationalStore.RdbPredicates(LOCAL_MUTATION_JOURNAL_TABLE);
+        one.equalTo('id', candidates[i]);
+        this.store.deleteSync(one);
+      }
+      this.store.commit();
+      return true;
+    } catch (_e) {
+      try { this.store.rollBack(); } catch (_ignored) {}
+      return false;
+    }
+  }
+
+  /** An explicit cloud-first download intentionally discards local dirty intent. */
+  discardMutationJournalForTables(tables: string[]): boolean {
+    if (!this.store) { return false; }
+    const distinctTables: string[] = [];
+    for (let i = 0; i < tables.length; i++) {
+      if (tables[i] !== '' && distinctTables.indexOf(tables[i]) < 0) { distinctTables.push(tables[i]); }
+    }
+    if (distinctTables.length === 0) { return true; }
+    try {
+      this.store.beginTransaction();
+      for (let i = 0; i < distinctTables.length; i++) {
+        const predicates = new relationalStore.RdbPredicates(LOCAL_MUTATION_JOURNAL_TABLE);
+        predicates.equalTo('tablename', distinctTables[i]);
+        this.store.deleteSync(predicates);
+      }
+      this.store.commit();
+      return true;
+    } catch (_e) {
+      try { this.store.rollBack(); } catch (_ignored) {}
+      return false;
+    }
+  }
+
+  private clearMutationJournal(): boolean {
+    if (!this.store) { return false; }
+    try {
+      this.store.deleteSync(new relationalStore.RdbPredicates(LOCAL_MUTATION_JOURNAL_TABLE));
+      return true;
+    } catch (_e) { return false; }
+  }
+
+  hasRestoredNotUploaded(): boolean {
+    return this.readLocalMetadata(RESTORED_NOT_UPLOADED_KEY) === '1';
+  }
+
+  clearRestoredNotUploaded(): boolean {
+    return this.deleteLocalMetadata(RESTORED_NOT_UPLOADED_KEY);
+  }
+
   private cloudBucket(table: string, source: relationalStore.ValuesBucket): relationalStore.ValuesBucket {
     const result: relationalStore.ValuesBucket = {};
     const columns: string[] = cloudTableColumns(table);
@@ -884,6 +1242,16 @@ export class CloudStore implements CryptoCloudStore {
       const column: string = columns[i];
       if (source[column] !== undefined) { result[column] = source[column]; }
     }
+    return result;
+  }
+
+  /** Most recent local persistence result, intentionally never contains secret material. */
+  getLastMutationResult(): DataMutationResult {
+    const result = new DataMutationResult();
+    result.ok = this.lastMutationResult.ok;
+    result.code = this.lastMutationResult.code;
+    result.recordId = this.lastMutationResult.recordId;
+    result.message = this.lastMutationResult.message;
     return result;
   }
 
@@ -920,8 +1288,8 @@ export class CloudStore implements CryptoCloudStore {
     }
   }
 
-  clearRdpRestrictedAdminHash(hostId: string): void {
-    this.deleteLocalExtension(RDP_RESTRICTED_ADMIN_SECRET_TABLE, hostId);
+  clearRdpRestrictedAdminHash(hostId: string): boolean {
+    return this.deleteLocalExtension(RDP_RESTRICTED_ADMIN_SECRET_TABLE, hostId);
   }
 
   /** Loads a locally encrypted NTLM hash and rejects stale, plaintext, or locked secrets. */
@@ -1013,21 +1381,23 @@ export class CloudStore implements CryptoCloudStore {
     return result;
   }
 
-  private deleteLocalExtension(table: string, recordId: string): void {
-    if (!this.store || recordId === '') { return; }
+  private deleteLocalExtension(table: string, recordId: string): boolean {
+    if (!this.store || recordId === '') { return false; }
     try {
       const predicates = new relationalStore.RdbPredicates('localextensions');
       predicates.equalTo('id', this.localExtensionId(table, recordId));
       this.store.deleteSync(predicates);
+      return true;
     } catch (err) {
       hilog.warn(0x0001, 'CloudSync', '[CloudStore] delete local extension failed: ' + safeError(err));
+      return false;
     }
   }
 
   private hostExtensionFromResult(rs: relationalStore.ResultSet): Record<string, string> {
     const result: Record<string, string> = {};
     const columns: string[] = [
-      'password', 'sshkeypassphrase', 'sshkeyid', 'sshhostkeyalgorithm',
+      'sshkeypassphrase', 'sshkeyid', 'sshhostkeyalgorithm',
       'sshhostkeyfingerprintsha256', 'sshhostkeyrawbase64', 'sshhostkeytrustedat',
       'sshhostkeytrustmode', 'rdpcertificatefingerprintsha256', 'rdpcertificatesubject',
       'rdpcertificateissuer', 'rdpcertificatecommonname', 'rdpcertificatetrustedat',
@@ -1050,8 +1420,13 @@ export class CloudStore implements CryptoCloudStore {
     const values: Record<string, string> = this.loadLocalExtension('remotehosts', host.id);
     const get = (key: string, fallback: string): string => values[key] !== undefined ? values[key] : fallback;
     const crypto: DataCrypto = DataCrypto.getInstance();
-    host.password = this.decryptIfReady(crypto, get('password', host.password));
     host.sshKeyPassphrase = this.decryptIfReady(crypto, get('sshkeypassphrase', host.sshKeyPassphrase));
+    return host;
+  }
+
+  /** Apply only the portable extension decoded from the cloud row. Never persist from a decoder. */
+  private applyCloudHostExtension(host: RemoteHost, values: Record<string, string>): RemoteHost {
+    const get = (key: string, fallback: string): string => values[key] !== undefined ? values[key] : fallback;
     host.sshKeyId = get('sshkeyid', host.sshKeyId);
     host.sshHostKeyAlgorithm = get('sshhostkeyalgorithm', host.sshHostKeyAlgorithm);
     host.sshHostKeyFingerprintSha256 = get('sshhostkeyfingerprintsha256', host.sshHostKeyFingerprintSha256);
@@ -1092,8 +1467,14 @@ export class CloudStore implements CryptoCloudStore {
     const crypto: DataCrypto = DataCrypto.getInstance();
     const values: Record<string, string> = {};
     host.normalizeRdpAuthentication();
-    values['password'] = this.encryptIfReady(crypto, host.password);
     values['sshkeypassphrase'] = this.encryptIfReady(crypto, host.sshKeyPassphrase);
+    return values;
+  }
+
+  /** Values that travel in displayconfig's backward-compatible cloud extension. */
+  private hostCloudExtensionValues(host: RemoteHost): Record<string, string> {
+    const values: Record<string, string> = {};
+    host.normalizeRdpAuthentication();
     values['sshkeyid'] = host.sshKeyId;
     values['sshhostkeyalgorithm'] = host.sshHostKeyAlgorithm;
     values['sshhostkeyfingerprintsha256'] = host.sshHostKeyFingerprintSha256;
@@ -1131,28 +1512,9 @@ export class CloudStore implements CryptoCloudStore {
   private saveHostExtension(host: RemoteHost): boolean {
     if (host.protocol !== 'rdp' || normalizeRdpAuthMode(host.rdpAuthMode) !== 'restricted_admin' ||
       normalizeRdpRestrictedAdminSecretSource(host.rdpRestrictedAdminSecretSource) !== 'ntlm_hash') {
-      this.clearRdpRestrictedAdminHash(host.id);
+      if (!this.clearRdpRestrictedAdminHash(host.id)) { return false; }
     }
     return this.saveLocalExtension('remotehosts', host.id, this.hostExtensionValues(host));
-  }
-
-  /**
-   * 云端扩展覆盖同名的旧本地扩展，同时保留只允许留在设备上的敏感值。
-   * 本地刚保存的行也携带相同扩展，因此读取本地行不会被旧云快照回滚。
-   */
-  private absorbCloudHostExtension(hostId: string, cloudValues: Record<string, string>): void {
-    const keys: string[] = Object.keys(cloudValues);
-    if (hostId === '' || keys.length === 0) { return; }
-    const localValues: Record<string, string> = this.loadLocalExtension('remotehosts', hostId);
-    let changed: boolean = false;
-    for (let i = 0; i < keys.length; i++) {
-      const key: string = keys[i];
-      if (localValues[key] !== cloudValues[key]) {
-        localValues[key] = cloudValues[key];
-        changed = true;
-      }
-    }
-    if (changed) { this.saveLocalExtension('remotehosts', hostId, localValues); }
   }
 
   private saveSshKeyExtension(key: SshKey): boolean {
@@ -1172,24 +1534,98 @@ export class CloudStore implements CryptoCloudStore {
 
   private async migrateLocalExtensions(): Promise<void> {
     if (!this.store) { return; }
+    if (this.readLocalMetadata(CANONICAL_SECRET_STORAGE_VERSION_KEY) === CANONICAL_SECRET_STORAGE_VERSION) { return; }
     try {
+      this.store.beginTransaction();
       const rows = this.store.querySync(new relationalStore.RdbPredicates('remotehosts'));
       const idIndex: number = rows.getColumnIndex('id');
+      const passwardIndex: number = rows.getColumnIndex('passward');
+      const passwordIndex: number = rows.getColumnIndex('password');
+      const sshKeyPassphraseIndex: number = rows.getColumnIndex('sshkeypassphrase');
+      const displayConfigIndex: number = rows.getColumnIndex('displayconfig');
       while (rows.goToNextRow()) {
         if (idIndex < 0) { continue; }
         const id: string = rows.getString(idIndex);
-        if (id !== '') { this.saveLocalExtension('remotehosts', id, this.hostExtensionFromResult(rows)); }
+        if (id === '') { continue; }
+        const localValues: Record<string, string> = this.loadLocalExtension('remotehosts', id);
+        const legacyValues: Record<string, string> = this.hostExtensionFromResult(rows);
+        const legacyKeys: string[] = Object.keys(legacyValues);
+        for (let i = 0; i < legacyKeys.length; i++) {
+          const key: string = legacyKeys[i];
+          if (localValues[key] === undefined && legacyValues[key] !== '') {
+            localValues[key] = legacyValues[key];
+          }
+        }
+        const canonical: string = passwardIndex >= 0 ? rows.getString(passwardIndex) : '';
+        const legacyMain: string = passwordIndex >= 0 ? rows.getString(passwordIndex) : '';
+        const decision = canonicalHostPassword(canonical, legacyMain, localValues['password'] || '');
+        const bucket: relationalStore.ValuesBucket = {};
+        if (decision.writeCanonical || decision.clearLegacyMain) {
+          if (decision.writeCanonical) { bucket['passward'] = decision.value; }
+          if (decision.clearLegacyMain) { bucket['password'] = ''; }
+        }
+        // ArkTS deliberately does not support `delete`. Build the migrated
+        // extension explicitly so an old local password shadow can never be
+        // re-persisted (or projected into the cloud extension).
+        const migratedValues: Record<string, string> = {};
+        const localKeys: string[] = Object.keys(localValues);
+        for (let i = 0; i < localKeys.length; i++) {
+          const key: string = localKeys[i];
+          if (key !== 'password') { migratedValues[key] = localValues[key]; }
+        }
+        const cloudExtension: Record<string, string> = projectRemoteHostCloudExtension(migratedValues);
+        if (Object.keys(cloudExtension).length > 0) {
+          const displayConfig: string = displayConfigIndex >= 0 ? rows.getString(displayConfigIndex) : '{}';
+          bucket['displayconfig'] = encodeRemoteHostDisplayPayload(displayConfig, cloudExtension);
+        }
+        // The historical column was never part of the cloud contract. Once
+        // its value has been copied into the transactional local extension,
+        // clear it so it can no longer become a second secret source.
+        if (sshKeyPassphraseIndex >= 0 && rows.getString(sshKeyPassphraseIndex) !== '') {
+          bucket['sshkeypassphrase'] = '';
+        }
+        if (Object.keys(bucket).length > 0) {
+          const predicates = new relationalStore.RdbPredicates('remotehosts');
+          predicates.equalTo('id', id);
+          if (!rdbSingleRowAffected(this.store.updateSync(bucket, predicates))) {
+            throw new Error('canonical host migration failed id=' + id);
+          }
+        }
+        const deviceLocal: Record<string, string> = {};
+        if (migratedValues['sshkeypassphrase'] !== undefined) {
+          deviceLocal['sshkeypassphrase'] = migratedValues['sshkeypassphrase'];
+        }
+        if (Object.keys(deviceLocal).length > 0) {
+          if (!this.saveLocalExtension('remotehosts', id, deviceLocal)) {
+            throw new Error('local extension migration failed id=' + id);
+          }
+        } else if (!this.deleteLocalExtension('remotehosts', id)) {
+          throw new Error('local extension cleanup failed id=' + id);
+        }
       }
       rows.close();
+      if (!this.writeLocalMetadata(CANONICAL_SECRET_STORAGE_VERSION_KEY, CANONICAL_SECRET_STORAGE_VERSION)) {
+        throw new Error('canonical password migration marker failed');
+      }
+      this.store.commit();
     } catch (err) {
+      try { this.store.rollBack(); } catch (_ignored) {}
       hilog.warn(0x0001, 'CloudSync', '[CloudStore] local extension migration skipped: ' + safeError(err));
     }
   }
 
   /** 写入一项允许跨设备使用的个性化设置，并在本地写成功后立即推送独立云表。 */
   upsertUserSetting(key: string, value: CloudUserSettingValue): boolean {
-    if (!this.localMutationAllowed() || !cloudUserSettingIsSyncable(key) || !this.store) { return false; }
+    if (!this.store) { return this.setLastMutation(DataMutationResult.failure(key, 'not_ready', '本地数据库未就绪')); }
+    if (!this.localMutationAllowed()) {
+      return this.setLastMutation(DataMutationResult.failure(key, 'restore_in_progress', '恢复进行中，暂不能保存'));
+    }
+    if (!cloudUserSettingIsSyncable(key)) {
+      return this.setLastMutation(DataMutationResult.failure(key, 'unchanged', '该设置不参与云同步'));
+    }
+    let code = 'local_write_failed';
     try {
+      this.store.beginTransaction();
       const bucket: relationalStore.ValuesBucket = {};
       bucket['id'] = 'setting:' + key;
       bucket['userid'] = '';
@@ -1205,13 +1641,20 @@ export class CloudStore implements CryptoCloudStore {
       bucket['updatedat'] = Date.now();
       if (!rdbInsertSucceeded(this.store.insertSync('usersettings', this.cloudBucket('usersettings', bucket),
         relationalStore.ConflictResolution.ON_CONFLICT_REPLACE))) {
-        return false;
+        code = 'local_write_failed'; throw new Error('usersettings upsert failed');
       }
+      if (!this.recordLocalMutation('usersettings', key, 'upsert')) {
+        code = 'journal_write_failed'; throw new Error('usersettings journal failed');
+      }
+      this.store.commit();
+      this.setLastMutation(DataMutationResult.success(key));
       this.pushTable('usersettings');
       return true;
     } catch (err) {
+      try { this.store.rollBack(); } catch (_ignored) {}
       hilog.error(0x0001, 'CloudSync', '[CloudStore] upsertUserSetting 失败: ' + safeError(err));
-      return false;
+      return this.setLastMutation(DataMutationResult.failure(key, code as 'local_write_failed' |
+        'journal_write_failed', '设置保存未完成'));
     }
   }
 
@@ -1281,6 +1724,9 @@ export class CloudStore implements CryptoCloudStore {
         !rdbInsertSucceeded(this.store.insertSync('cryptoparams', vb3, relationalStore.ConflictResolution.ON_CONFLICT_REPLACE))) {
         throw new Error('cryptoparams insert failed');
       }
+      if (!this.recordTableMutation('cryptoparams', 'configure')) {
+        throw new Error('cryptoparams journal failed');
+      }
       this.store.commit();
       this.lastKnownCryptoStatus = 'active';
       // 立即推送到云端, 其他设备无需等待 autoSync 即可获知加密已启用
@@ -1298,13 +1744,19 @@ export class CloudStore implements CryptoCloudStore {
     if (!this.localMutationAllowed() || !this.store) { return false; }
     try {
       const vb: relationalStore.ValuesBucket = { 'id': 'status', 'key': 'crypto_status', 'value': status };
+      this.store.beginTransaction();
       if (!rdbInsertSucceeded(this.store.insertSync('cryptoparams', vb, relationalStore.ConflictResolution.ON_CONFLICT_REPLACE))) {
-        return false;
+        throw new Error('cryptoparams status insert failed');
       }
+      if (!this.recordTableMutation('cryptoparams', 'status:' + status)) {
+        throw new Error('cryptoparams status journal failed');
+      }
+      this.store.commit();
       this.lastKnownCryptoStatus = status;
       hilog.info(0x0001, 'CloudSync', "[setCryptoStatus] " + status);
       return true;
     } catch (e) {
+      try { this.store.rollBack(); } catch (_ignored) {}
       hilog.error(0x0001, 'CloudSync', "[setCryptoStatus] 失败: " + DataCrypto.errDetail(e));
       return false;
     }
@@ -1340,8 +1792,16 @@ export class CloudStore implements CryptoCloudStore {
     try {
       const tables: string[] = ['remotehosts', 'rdpcredentials', 'sshkeys', 'totpentries', 'rustdeskrelays'];
       this.store.beginTransaction();
+      // Every local-only payload belongs to one of the cleared rows. Clear
+      // stale cached secrets/metadata before recording fresh delete intents.
+      await this.store.executeSql('DELETE FROM localextensions');
+      await this.store.executeSql('DELETE FROM ' + LOCAL_METADATA_TABLE);
+      await this.store.executeSql('DELETE FROM ' + LOCAL_MUTATION_JOURNAL_TABLE);
       for (let i = 0; i < tables.length; i++) {
         await this.store.executeSql("DELETE FROM " + tables[i]);
+        if (!this.recordTableMutation(tables[i], 'clear')) {
+          throw new Error('clear journal failed table=' + tables[i]);
+        }
         hilog.info(0x0001, 'CloudSync', "[clearAllTables] " + tables[i] + " 已清空");
       }
       this.store.commit();
@@ -1371,17 +1831,29 @@ export class CloudStore implements CryptoCloudStore {
     let totpEntriesChanged: boolean = false;
     try {
       this.store.beginTransaction();
-      // 1. remotehosts: 解密 password, sshkeydata
+      // 1. remotehosts: the canonical password lives in `passward`.
       const hostPredicates = new relationalStore.RdbPredicates('remotehosts');
       const hostRs = this.store.querySync(hostPredicates);
       while (hostRs.goToNextRow()) {
         const id: string = hostRs.getString(hostRs.getColumnIndex('id'));
-        const pwd: string = hostRs.getString(hostRs.getColumnIndex('password'));
+        const passwardIndex: number = hostRs.getColumnIndex('passward');
+        const legacyPasswordIndex: number = hostRs.getColumnIndex('password');
+        const canonicalPassword: string = passwardIndex >= 0 ? hostRs.getString(passwardIndex) : '';
+        const legacyPassword: string = legacyPasswordIndex >= 0 ? hostRs.getString(legacyPasswordIndex) : '';
+        const pwd: string = canonicalPassword !== '' ? canonicalPassword : legacyPassword;
         const sshData: string = hostRs.getString(hostRs.getColumnIndex('sshkeydata'));
         let changed: boolean = false;
         const vb: relationalStore.ValuesBucket = {};
         if (crypto.isEncrypted(pwd)) {
-          vb['password'] = crypto.decrypt(pwd);
+          vb['passward'] = crypto.decrypt(pwd);
+          // Never recreate the retired local password shadow while disabling
+          // encryption. If it was the only recoverable legacy value, it has
+          // now been promoted into the canonical column above.
+          if (legacyPasswordIndex >= 0) { vb['password'] = ''; }
+          changed = true;
+        } else if (legacyPassword !== '') {
+          // A plaintext legacy shadow cannot override canonical passward.
+          vb['password'] = '';
           changed = true;
         }
         if (crypto.isEncrypted(sshData)) {
@@ -1392,6 +1864,9 @@ export class CloudStore implements CryptoCloudStore {
           const predicates = new relationalStore.RdbPredicates('remotehosts');
           predicates.equalTo('id', id);
           if (rdbSingleRowAffected(this.store.updateSync(vb, predicates))) {
+            if (!this.recordLocalMutation('remotehosts', id, 'crypto_decrypt')) {
+              throw new Error('decrypt remotehosts journal failed id=' + id);
+            }
             count++;
             hostsChanged = true;
           } else {
@@ -1413,6 +1888,9 @@ export class CloudStore implements CryptoCloudStore {
           const predicates = new relationalStore.RdbPredicates('rdpcredentials');
           predicates.equalTo('id', id);
           if (rdbSingleRowAffected(this.store.updateSync(vb, predicates))) {
+            if (!this.recordLocalMutation('rdpcredentials', id, 'crypto_decrypt')) {
+              throw new Error('decrypt rdpcredentials journal failed id=' + id);
+            }
             count++;
             rdpCredentialsChanged = true;
           } else {
@@ -1434,6 +1912,9 @@ export class CloudStore implements CryptoCloudStore {
           const predicates = new relationalStore.RdbPredicates('sshkeys');
           predicates.equalTo('id', id);
           if (rdbSingleRowAffected(this.store.updateSync(vb, predicates))) {
+            if (!this.recordLocalMutation('sshkeys', id, 'crypto_decrypt')) {
+              throw new Error('decrypt sshkeys journal failed id=' + id);
+            }
             count++;
             sshKeysChanged = true;
           } else {
@@ -1455,6 +1936,9 @@ export class CloudStore implements CryptoCloudStore {
           const predicates = new relationalStore.RdbPredicates('totpentries');
           predicates.equalTo('id', id);
           if (rdbSingleRowAffected(this.store.updateSync(vb, predicates))) {
+            if (!this.recordLocalMutation('totpentries', id, 'crypto_decrypt')) {
+              throw new Error('decrypt totpentries journal failed id=' + id);
+            }
             count++;
             totpEntriesChanged = true;
           } else {
@@ -1505,6 +1989,9 @@ export class CloudStore implements CryptoCloudStore {
           const predicates = new relationalStore.RdbPredicates('rustdeskrelays');
           predicates.equalTo('id', id);
           if (rdbSingleRowAffected(this.store.updateSync(vb, predicates))) {
+            if (!this.recordLocalMutation('rustdeskrelays', id, 'crypto_decrypt')) {
+              throw new Error('decrypt rustdeskrelays journal failed id=' + id);
+            }
             count++;
             relaysChanged = true;
           } else {
@@ -1513,6 +2000,12 @@ export class CloudStore implements CryptoCloudStore {
         }
       }
       relayRs.close();
+
+      // Device-local extension secrets are not represented by a cloud column.
+      // When encryption is disabled, convert the SSH passphrase in place and
+      // wipe restricted-admin material instead of leaving inaccessible cipher
+      // text (or a plaintext NTLM hash) behind.
+      count += this.decryptSensitiveLocalExtensions(crypto);
 
       this.store.commit();
       if (pushChanges) {
@@ -1532,11 +2025,72 @@ export class CloudStore implements CryptoCloudStore {
     return count;
   }
 
+  /** Runs inside decryptAllData's active RDB transaction. */
+  private decryptSensitiveLocalExtensions(crypto: DataCrypto): number {
+    if (!this.store) { throw new Error('local extension store unavailable'); }
+    let changedCount: number = 0;
+    const rows = this.store.querySync(new relationalStore.RdbPredicates('localextensions'));
+    try {
+      while (rows.goToNextRow()) {
+        const id: string = rows.getString(rows.getColumnIndex('id'));
+        const table: string = rows.getString(rows.getColumnIndex('tablename'));
+        const recordId: string = rows.getString(rows.getColumnIndex('recordid'));
+        if (id === '' || recordId === '') { throw new Error('invalid local extension identity'); }
+        const predicates = new relationalStore.RdbPredicates('localextensions');
+        predicates.equalTo('id', id);
+        if (table === RDP_RESTRICTED_ADMIN_SECRET_TABLE) {
+          if (!rdbSingleRowAffected(this.store.deleteSync(predicates))) {
+            throw new Error('restricted admin extension wipe failed id=' + id);
+          }
+          changedCount++;
+          continue;
+        }
+        if (table !== 'remotehosts') { continue; }
+        const payload: string = rows.getString(rows.getColumnIndex('payload'));
+        const parsed: Object = JSON.parse(payload) as Object;
+        if (!parsed || Array.isArray(parsed)) { throw new Error('invalid host extension payload id=' + id); }
+        const source: Record<string, string> = parsed as Record<string, string>;
+        const next: Record<string, string> = {};
+        const keys: string[] = Object.keys(source);
+        let changed: boolean = false;
+        for (let i = 0; i < keys.length; i++) {
+          const key: string = keys[i];
+          const value: string = source[key];
+          // This retired shadow must never survive an encryption transition.
+          if (key === 'password') { changed = true; continue; }
+          if (key === 'sshkeypassphrase' && crypto.isEncrypted(value)) {
+            next[key] = crypto.decrypt(value);
+            changed = true;
+          } else {
+            next[key] = value;
+          }
+        }
+        if (!changed) { continue; }
+        if (Object.keys(next).length === 0) {
+          if (!rdbSingleRowAffected(this.store.deleteSync(predicates))) {
+            throw new Error('empty host extension cleanup failed id=' + id);
+          }
+        } else {
+          const bucket: relationalStore.ValuesBucket = {
+            payload: JSON.stringify(next), updatedat: Date.now()
+          };
+          if (!rdbSingleRowAffected(this.store.updateSync(bucket, predicates))) {
+            throw new Error('host extension decrypt failed id=' + id);
+          }
+        }
+        changedCount++;
+      }
+    } finally {
+      rows.close();
+    }
+    return changedCount;
+  }
+
   /** 检测加密状态变更并执行对应的本地联动操作 (跨设备同步) */
-  checkCryptoStatusChange(allowRemoteReset: boolean = false): void {
+  checkCryptoStatusChange(allowRemoteReset: boolean = false): boolean {
     const newStatus: string = this.getCryptoStatus();
     if (newStatus === '' || newStatus === this.lastKnownCryptoStatus) {
-      return;
+      return false;
     }
     hilog.info(0x0001, 'CloudSync',
       "[checkCryptoStatusChange] " + this.lastKnownCryptoStatus + " → " + newStatus);
@@ -1545,12 +2099,12 @@ export class CloudStore implements CryptoCloudStore {
         hilog.warn(0x0001, 'CloudSync',
           '[checkCryptoStatusChange] reset not confirmed by cloud-first; preserving local data');
         DataCrypto.getInstance().lock();
-        return;
+        return false;
       }
       this.lastKnownCryptoStatus = newStatus;
       // await clearAllTables 完成后再触发回调, 避免回调读到旧数据
       this.clearAllTables().then((cleared: boolean): void => {
-        DataCrypto.getInstance().lock();
+        const cryptoStateChanged: boolean = DataCrypto.getInstance().lock();
         for (let i = 0; i < this.onCryptoResetCallbacks.length; i++) {
           this.onCryptoResetCallbacks[i]();
         }
@@ -1559,15 +2113,18 @@ export class CloudStore implements CryptoCloudStore {
         } else {
           hilog.error(0x0001, 'CloudSync', '[checkCryptoStatusChange] reset: 本地清理失败，已锁定密钥');
         }
+        if (!cryptoStateChanged) { this.notifyDataSnapshotChanged(); }
       }).catch((e: Error): void => {
         hilog.error(0x0001, 'CloudSync',
           '[checkCryptoStatusChange] reset clearAllTables 异常: ' + e.message);
         // 即使清表失败也锁定 DEK, 防止残留明文密钥
-        DataCrypto.getInstance().lock();
+        const cryptoStateChanged: boolean = DataCrypto.getInstance().lock();
         for (let i = 0; i < this.onCryptoResetCallbacks.length; i++) {
           this.onCryptoResetCallbacks[i]();
         }
+        if (!cryptoStateChanged) { this.notifyDataSnapshotChanged(); }
       });
+      return true;
     } else {
       this.lastKnownCryptoStatus = newStatus;
     }
@@ -1582,7 +2139,7 @@ export class CloudStore implements CryptoCloudStore {
           // otherwise leave encrypted rows unreadable after a transient RDB failure.
           this.lastKnownCryptoStatus = '';
           hilog.error(0x0001, 'CloudSync', '[checkCryptoStatusChange] disabled: 本地解密失败，等待后续同步重试');
-          return;
+          return false;
         }
         hilog.info(0x0001, 'CloudSync',
           '[checkCryptoStatusChange] disabled: 接收端已解密 ' + decrypted.toString() + ' 条数据');
@@ -1593,12 +2150,9 @@ export class CloudStore implements CryptoCloudStore {
         hilog.warn(0x0001, 'CloudSync',
           '[checkCryptoStatusChange] disabled: DEK未就绪, 等待云端明文数据同步到达');
       }
-      // 通知服务层重载 (无论 DEK 状态, UI 都需要刷新)
-      for (let j = 0; j < this.onChangeCallbacks.length; j++) {
-        this.onChangeCallbacks[j]();
-      }
-      hilog.info(0x0001, 'CloudSync', '[checkCryptoStatusChange] disabled: 已通知服务层重载');
+      hilog.info(0x0001, 'CloudSync', '[checkCryptoStatusChange] disabled: 等待完成快照发布');
     }
+    return false;
   }
 
   /** 清除密码学参数 */
@@ -1607,6 +2161,9 @@ export class CloudStore implements CryptoCloudStore {
     try {
       this.store.beginTransaction();
       await this.store.executeSql("DELETE FROM cryptoparams WHERE key IN ('crypto_salt', 'crypto_verifier')");
+      if (!this.recordTableMutation('cryptoparams', 'clear_params')) {
+        throw new Error('cryptoparams clear journal failed');
+      }
       this.store.commit();
       return true;
     } catch (e) {
@@ -1617,6 +2174,30 @@ export class CloudStore implements CryptoCloudStore {
   }
 
   // ==================== Raw CRUD (不解密, 供迁移使用) ====================
+
+  /**
+   * Encryption migration changes business rows outside ordinary CRUD. Treat
+   * each successful raw write as a normal durable mutation so a process death
+   * between the local transformation and cloud upload cannot lose it.
+   */
+  private runRawMigrationMutation(table: string, recordId: string, operation: string,
+    write: () => boolean): boolean {
+    if (!this.store || !this.localMutationAllowed()) { return false; }
+    try {
+      this.store.beginTransaction();
+      if (!write()) { throw new Error('raw migration write failed'); }
+      if (!this.recordLocalMutation(table, recordId, operation)) {
+        throw new Error('raw migration journal failed');
+      }
+      this.store.commit();
+      return true;
+    } catch (err) {
+      try { this.store.rollBack(); } catch (_ignored) {}
+      hilog.warn(0x0001, 'CloudSync', '[CloudStore] raw migration mutation failed table=' +
+        table + ' err=' + safeError(err));
+      return false;
+    }
+  }
 
   loadAllHostsRaw(): RemoteHost[] {
     return this.loadAllHostsInternal(false);
@@ -1639,28 +2220,28 @@ export class CloudStore implements CryptoCloudStore {
   }
 
   updateHostRaw(host: RemoteHost): boolean {
-    if (!this.localMutationAllowed()) { return false; }
-    return this.updateHostInternal(host, false);
+    return this.runRawMigrationMutation('remotehosts', host.id, 'crypto_encrypt',
+      (): boolean => this.updateHostInternal(host, false));
   }
 
   updateRdpCredentialRaw(credential: RdpCredential): boolean {
-    if (!this.localMutationAllowed()) { return false; }
-    return this.updateRdpCredentialInternal(credential, false);
+    return this.runRawMigrationMutation('rdpcredentials', credential.id, 'crypto_encrypt',
+      (): boolean => this.updateRdpCredentialInternal(credential, false));
   }
 
   upsertRelayLocalRaw(relay: RustDeskRelayConfig): boolean {
-    if (!this.localMutationAllowed()) { return false; }
-    return this.upsertRelayLocalInternal(relay, false);
+    return this.runRawMigrationMutation('rustdeskrelays', relay.id, 'crypto_encrypt',
+      (): boolean => this.upsertRelayLocalInternal(relay, false));
   }
 
   updateSshKeyRaw(key: SshKey): boolean {
-    if (!this.localMutationAllowed()) { return false; }
-    return this.updateSshKeyInternal(key, false);
+    return this.runRawMigrationMutation('sshkeys', key.id, 'crypto_encrypt',
+      (): boolean => this.updateSshKeyInternal(key, false));
   }
 
   updateTotpEntryRaw(entry: TotpEntry): boolean {
-    if (!this.localMutationAllowed()) { return false; }
-    return this.updateTotpEntryInternal(entry, false);
+    return this.runRawMigrationMutation('totpentries', entry.id, 'crypto_encrypt',
+      (): boolean => this.updateTotpEntryInternal(entry, false));
   }
 
   // ==================== RemoteHost CRUD ====================
@@ -1670,51 +2251,82 @@ export class CloudStore implements CryptoCloudStore {
   }
 
   insertHost(host: RemoteHost): boolean {
-    if (!this.localMutationAllowed() || !this.store) { return false; }
+    if (!this.store) { return this.setLastMutation(DataMutationResult.failure(host.id, 'not_ready', '本地数据库未就绪')); }
+    if (!this.localMutationAllowed()) {
+      return this.setLastMutation(DataMutationResult.failure(host.id, 'restore_in_progress', '恢复进行中，暂不能保存'));
+    }
+    if (!this.sensitiveWriteAllowed(host.id)) { return false; }
+    let code = 'local_write_failed';
     try {
+      this.store.beginTransaction();
       const vb = this.hostToBucket(host);
       vb['createdat'] = Date.now();
       vb['updatedat'] = Date.now();
-      if (!rdbInsertSucceeded(this.store.insertSync('remotehosts', vb))) { return false; }
-      this.saveHostExtension(host);
+      if (!rdbInsertSucceeded(this.store.insertSync('remotehosts', vb))) { code = 'local_write_failed'; throw new Error('host insert failed'); }
+      if (!this.saveHostExtension(host)) { code = 'extension_write_failed'; throw new Error('host extension insert failed'); }
+      if (!this.recordLocalMutation('remotehosts', host.id, 'add')) { code = 'journal_write_failed'; throw new Error('host journal insert failed'); }
+      this.store.commit();
       hilog.info(0x0001, 'CloudSync', "insertHost: " + host.label + " (" + host.id + ")");
-      return true;
+      return this.setLastMutation(DataMutationResult.success(host.id));
     } catch (err) {
+      try { this.store.rollBack(); } catch (_ignored) {}
       hilog.error(0x0001, 'CloudSync', '[CloudStore] insertHost 失败: ' + JSON.stringify(err));
-      return false;
+      return this.setLastMutation(DataMutationResult.failure(host.id, code as 'local_write_failed' |
+        'extension_write_failed' | 'journal_write_failed', '主机保存未完成'));
     }
   }
 
   updateHost(host: RemoteHost): boolean {
-    if (!this.localMutationAllowed() || !this.store) { return false; }
+    if (!this.store) { return this.setLastMutation(DataMutationResult.failure(host.id, 'not_ready', '本地数据库未就绪')); }
+    if (!this.localMutationAllowed()) {
+      return this.setLastMutation(DataMutationResult.failure(host.id, 'restore_in_progress', '恢复进行中，暂不能保存'));
+    }
+    if (!this.sensitiveWriteAllowed(host.id)) { return false; }
+    let code = 'local_write_failed';
     try {
+      this.store.beginTransaction();
       const vb = this.hostToBucket(host);
       vb['updatedat'] = Date.now();
       const predicates = new relationalStore.RdbPredicates('remotehosts');
       predicates.equalTo('id', host.id);
-      if (!rdbSingleRowAffected(this.store.updateSync(vb, predicates))) { return false; }
-      this.saveHostExtension(host);
+      if (!rdbSingleRowAffected(this.store.updateSync(vb, predicates))) { code = 'not_found'; throw new Error('host update failed'); }
+      if (!this.saveHostExtension(host)) { code = 'extension_write_failed'; throw new Error('host extension update failed'); }
+      if (!this.recordLocalMutation('remotehosts', host.id, 'update')) { code = 'journal_write_failed'; throw new Error('host journal update failed'); }
+      this.store.commit();
       hilog.info(0x0001, 'CloudSync', "updateHost: " + host.label + " (" + host.id + ")");
-      return true;
+      return this.setLastMutation(DataMutationResult.success(host.id));
     } catch (err) {
+      try { this.store.rollBack(); } catch (_ignored) {}
       hilog.error(0x0001, 'CloudSync', '[CloudStore] updateHost 失败: ' + JSON.stringify(err));
-      return false;
+      return this.setLastMutation(DataMutationResult.failure(host.id, code as 'local_write_failed' |
+        'not_found' | 'extension_write_failed' | 'journal_write_failed', '主机更新未完成'));
     }
   }
 
   deleteHost(id: string): boolean {
-    if (!this.localMutationAllowed() || !this.store) { return false; }
+    if (!this.store) { return this.setLastMutation(DataMutationResult.failure(id, 'not_ready', '本地数据库未就绪')); }
+    if (!this.localMutationAllowed()) {
+      return this.setLastMutation(DataMutationResult.failure(id, 'restore_in_progress', '恢复进行中，暂不能删除'));
+    }
+    if (!this.sensitiveWriteAllowed(id)) { return false; }
+    let code = 'local_write_failed';
     try {
+      this.store.beginTransaction();
       const predicates = new relationalStore.RdbPredicates('remotehosts');
       predicates.equalTo('id', id);
-      if (!rdbSingleRowAffected(this.store.deleteSync(predicates))) { return false; }
-      this.deleteLocalExtension('remotehosts', id);
-      this.clearRdpRestrictedAdminHash(id);
+      if (!rdbSingleRowAffected(this.store.deleteSync(predicates))) { code = 'not_found'; throw new Error('host delete failed'); }
+      if (!this.deleteLocalExtension('remotehosts', id) || !this.clearRdpRestrictedAdminHash(id)) {
+        code = 'extension_write_failed'; throw new Error('host extension delete failed');
+      }
+      if (!this.recordLocalMutation('remotehosts', id, 'delete')) { code = 'journal_write_failed'; throw new Error('host journal delete failed'); }
+      this.store.commit();
       hilog.info(0x0001, 'CloudSync', "deleteHost: " + id);
-      return true;
+      return this.setLastMutation(DataMutationResult.success(id));
     } catch (err) {
+      try { this.store.rollBack(); } catch (_ignored) {}
       hilog.error(0x0001, 'CloudSync', '[CloudStore] deleteHost 失败: ' + JSON.stringify(err));
-      return false;
+      return this.setLastMutation(DataMutationResult.failure(id, code as 'local_write_failed' |
+        'not_found' | 'extension_write_failed' | 'journal_write_failed', '主机删除未完成'));
     }
   }
 
@@ -1744,25 +2356,64 @@ export class CloudStore implements CryptoCloudStore {
   }
 
   insertRdpCredential(credential: RdpCredential): boolean {
-    if (!this.localMutationAllowed() || !this.store) { return false; }
+    if (!this.store) { return this.setLastMutation(DataMutationResult.failure(credential.id, 'not_ready', '本地数据库未就绪')); }
+    if (!this.localMutationAllowed()) {
+      return this.setLastMutation(DataMutationResult.failure(credential.id, 'restore_in_progress', '恢复进行中，暂不能保存'));
+    }
+    if (!this.sensitiveWriteAllowed(credential.id)) { return false; }
+    let code = 'local_write_failed';
     try {
+      this.store.beginTransaction();
       const vb = this.rdpCredentialToBucket(credential);
       vb['updatedat'] = Date.now();
       if (!rdbInsertSucceeded(this.store.insertSync('rdpcredentials', vb, relationalStore.ConflictResolution.ON_CONFLICT_REPLACE))) {
-        return false;
+        code = 'local_write_failed'; throw new Error('rdp credential insert failed');
       }
-      this.saveLocalExtension('rdpcredentials', credential.id, { 'username': credential.username });
+      if (!this.saveLocalExtension('rdpcredentials', credential.id, { 'username': credential.username })) {
+        code = 'extension_write_failed'; throw new Error('rdp credential extension insert failed');
+      }
+      if (!this.recordLocalMutation('rdpcredentials', credential.id, 'add')) {
+        code = 'journal_write_failed'; throw new Error('rdp credential journal insert failed');
+      }
+      this.store.commit();
       hilog.info(0x0001, 'CloudSync', 'insertRdpCredential: idHash=' + hashForLog(credential.id));
-      return true;
+      return this.setLastMutation(DataMutationResult.success(credential.id));
     } catch (err) {
+      try { this.store.rollBack(); } catch (_ignored) {}
       hilog.error(0x0001, 'CloudSync', '[CloudStore] insertRdpCredential 失败: ' + safeError(err));
-      return false;
+      return this.setLastMutation(DataMutationResult.failure(credential.id, code as 'local_write_failed' |
+        'extension_write_failed' | 'journal_write_failed', 'Windows 凭据保存未完成'));
     }
   }
 
   updateRdpCredential(credential: RdpCredential): boolean {
-    if (!this.localMutationAllowed()) { return false; }
-    return this.updateRdpCredentialInternal(credential, true);
+    if (!this.store) { return this.setLastMutation(DataMutationResult.failure(credential.id, 'not_ready', '本地数据库未就绪')); }
+    if (!this.localMutationAllowed()) {
+      return this.setLastMutation(DataMutationResult.failure(credential.id, 'restore_in_progress', '恢复进行中，暂不能保存'));
+    }
+    if (!this.sensitiveWriteAllowed(credential.id)) { return false; }
+    let code = 'local_write_failed';
+    try {
+      this.store.beginTransaction();
+      const vb = this.rdpCredentialToBucket(credential);
+      vb['updatedat'] = Date.now();
+      const predicates = new relationalStore.RdbPredicates('rdpcredentials');
+      predicates.equalTo('id', credential.id);
+      if (!rdbSingleRowAffected(this.store.updateSync(vb, predicates))) { code = 'not_found'; throw new Error('rdp credential update failed'); }
+      if (!this.saveLocalExtension('rdpcredentials', credential.id, { 'username': credential.username })) {
+        code = 'extension_write_failed'; throw new Error('rdp credential extension update failed');
+      }
+      if (!this.recordLocalMutation('rdpcredentials', credential.id, 'update')) {
+        code = 'journal_write_failed'; throw new Error('rdp credential journal update failed');
+      }
+      this.store.commit();
+      return this.setLastMutation(DataMutationResult.success(credential.id));
+    } catch (err) {
+      try { this.store.rollBack(); } catch (_ignored) {}
+      hilog.error(0x0001, 'CloudSync', '[CloudStore] updateRdpCredential 失败: ' + safeError(err));
+      return this.setLastMutation(DataMutationResult.failure(credential.id, code as 'local_write_failed' |
+        'not_found' | 'extension_write_failed' | 'journal_write_failed', 'Windows 凭据更新未完成'));
+    }
   }
 
   private updateRdpCredentialInternal(credential: RdpCredential, encrypt: boolean): boolean {
@@ -1773,8 +2424,8 @@ export class CloudStore implements CryptoCloudStore {
       const predicates = new relationalStore.RdbPredicates('rdpcredentials');
       predicates.equalTo('id', credential.id);
       const updated: boolean = rdbSingleRowAffected(this.store.updateSync(vb, predicates));
-      if (updated) { this.saveLocalExtension('rdpcredentials', credential.id, { 'username': credential.username }); }
-      return updated;
+      if (!updated) { return false; }
+      return this.saveLocalExtension('rdpcredentials', credential.id, { 'username': credential.username });
     } catch (err) {
       hilog.error(0x0001, 'CloudSync', '[CloudStore] updateRdpCredential 失败: ' + safeError(err));
       return false;
@@ -1782,16 +2433,27 @@ export class CloudStore implements CryptoCloudStore {
   }
 
   deleteRdpCredential(id: string): boolean {
-    if (!this.localMutationAllowed() || !this.store) { return false; }
+    if (!this.store) { return this.setLastMutation(DataMutationResult.failure(id, 'not_ready', '本地数据库未就绪')); }
+    if (!this.localMutationAllowed()) {
+      return this.setLastMutation(DataMutationResult.failure(id, 'restore_in_progress', '恢复进行中，暂不能删除'));
+    }
+    if (!this.sensitiveWriteAllowed(id)) { return false; }
+    let code = 'local_write_failed';
     try {
+      this.store.beginTransaction();
       const predicates = new relationalStore.RdbPredicates('rdpcredentials');
       predicates.equalTo('id', id);
       const deleted: boolean = rdbSingleRowAffected(this.store.deleteSync(predicates));
-      if (deleted) { this.deleteLocalExtension('rdpcredentials', id); }
-      return deleted;
+      if (!deleted) { code = 'not_found'; throw new Error('rdp credential delete failed'); }
+      if (!this.deleteLocalExtension('rdpcredentials', id)) { code = 'extension_write_failed'; throw new Error('rdp credential extension delete failed'); }
+      if (!this.recordLocalMutation('rdpcredentials', id, 'delete')) { code = 'journal_write_failed'; throw new Error('rdp credential journal delete failed'); }
+      this.store.commit();
+      return this.setLastMutation(DataMutationResult.success(id));
     } catch (err) {
+      try { this.store.rollBack(); } catch (_ignored) {}
       hilog.error(0x0001, 'CloudSync', '[CloudStore] deleteRdpCredential 失败: ' + safeError(err));
-      return false;
+      return this.setLastMutation(DataMutationResult.failure(id, code as 'local_write_failed' |
+        'not_found' | 'extension_write_failed' | 'journal_write_failed', 'Windows 凭据删除未完成'));
     }
   }
 
@@ -1932,17 +2594,55 @@ export class CloudStore implements CryptoCloudStore {
   }
 
   upsertRelay(relay: RustDeskRelayConfig): boolean {
-    if (!this.localMutationAllowed()) { return false; }
-    const ok = this.upsertRelayLocal(relay);
-    if (ok) { this.syncRelaysToCloud(); }
-    return ok;
+    if (!this.store) { return this.setLastMutation(DataMutationResult.failure(relay.id, 'not_ready', '本地数据库未就绪')); }
+    if (!this.localMutationAllowed()) {
+      return this.setLastMutation(DataMutationResult.failure(relay.id, 'restore_in_progress', '恢复进行中，暂不能保存'));
+    }
+    if (!this.sensitiveWriteAllowed(relay.id)) { return false; }
+    let code = 'local_write_failed';
+    try {
+      this.store.beginTransaction();
+      if (!this.upsertRelayLocalInternal(relay, true)) { code = 'local_write_failed'; throw new Error('relay upsert failed'); }
+      if (!this.recordLocalMutation('rustdeskrelays', relay.id, 'upsert')) {
+        code = 'journal_write_failed'; throw new Error('relay journal failed');
+      }
+      this.store.commit();
+      this.setLastMutation(DataMutationResult.success(relay.id));
+      this.syncRelaysToCloud();
+      return true;
+    } catch (err) {
+      try { this.store.rollBack(); } catch (_ignored) {}
+      hilog.error(0x0001, 'CloudSync', '[CloudStore] upsertRelay transaction failed: ' + safeError(err));
+      return this.setLastMutation(DataMutationResult.failure(relay.id, code as 'local_write_failed' |
+        'journal_write_failed', 'RustDesk 中继保存未完成'));
+    }
   }
 
   deleteRelay(id: string): boolean {
-    if (!this.localMutationAllowed()) { return false; }
-    const ok = this.deleteRelayLocal(id);
-    if (ok) { this.syncRelaysToCloud(); }
-    return ok;
+    if (!this.store) { return this.setLastMutation(DataMutationResult.failure(id, 'not_ready', '本地数据库未就绪')); }
+    if (!this.localMutationAllowed()) {
+      return this.setLastMutation(DataMutationResult.failure(id, 'restore_in_progress', '恢复进行中，暂不能删除'));
+    }
+    if (!this.sensitiveWriteAllowed(id)) { return false; }
+    let code = 'local_write_failed';
+    try {
+      this.store.beginTransaction();
+      const predicates = new relationalStore.RdbPredicates('rustdeskrelays');
+      predicates.equalTo('id', id);
+      if (!rdbSingleRowAffected(this.store.deleteSync(predicates))) { code = 'not_found'; throw new Error('relay delete failed'); }
+      if (!this.recordLocalMutation('rustdeskrelays', id, 'delete')) {
+        code = 'journal_write_failed'; throw new Error('relay journal failed');
+      }
+      this.store.commit();
+      this.setLastMutation(DataMutationResult.success(id));
+      this.syncRelaysToCloud();
+      return true;
+    } catch (err) {
+      try { this.store.rollBack(); } catch (_ignored) {}
+      hilog.error(0x0001, 'CloudSync', '[CloudStore] deleteRelay transaction failed: ' + safeError(err));
+      return this.setLastMutation(DataMutationResult.failure(id, code as 'local_write_failed' |
+        'not_found' | 'journal_write_failed', 'RustDesk 中继删除未完成'));
+    }
   }
 
   loadAllRelays(): RustDeskRelayConfig[] {
@@ -2048,7 +2748,6 @@ export class CloudStore implements CryptoCloudStore {
   private hostToBucket(h: RemoteHost): relationalStore.ValuesBucket {
     h.normalizeRdpAuthentication();
     const crypto = DataCrypto.getInstance();
-    const encrypt = (v: string) => crypto.isReady() ? crypto.encrypt(v) : v;
     const vb: relationalStore.ValuesBucket = {};
     vb['id'] = h.id;
     vb['userid'] = h.userId;
@@ -2057,13 +2756,14 @@ export class CloudStore implements CryptoCloudStore {
     vb['host'] = h.host;
     vb['port'] = h.port;
     vb['username'] = h.username;
-    vb['password'] = h.password ? encrypt(h.password) : h.password;
-    vb['passward'] = vb['password'];
+    // `passward` is the immutable existing cloud contract. `password` is a
+    // retired local shadow and must never be populated again.
+    vb['passward'] = this.encryptIfReady(crypto, h.password);
     vb['customhostname'] = h.customHostname;
     vb['sshusekey'] = h.sshUseKey ? 1 : 0;
     vb['sshkeypath'] = h.sshKeyPath;
-    vb['sshkeydata'] = h.sshKeyData ? encrypt(h.sshKeyData) : h.sshKeyData;
-    vb['sshkeypassphrase'] = h.sshKeyPassphrase ? encrypt(h.sshKeyPassphrase) : h.sshKeyPassphrase;
+    vb['sshkeydata'] = this.encryptIfReady(crypto, h.sshKeyData);
+    vb['sshkeypassphrase'] = this.encryptIfReady(crypto, h.sshKeyPassphrase);
     vb['sshkeyid'] = h.sshKeyId;
     vb['sshhostkeyalgorithm'] = h.sshHostKeyAlgorithm;
     vb['sshhostkeyfingerprintsha256'] = h.sshHostKeyFingerprintSha256;
@@ -2085,7 +2785,7 @@ export class CloudStore implements CryptoCloudStore {
     vb['gatewayport'] = h.gatewayPort;
     vb['displayconfig'] = encodeRemoteHostDisplayPayload(
       JSON.stringify(h.displayConfig.toJSON()),
-      projectRemoteHostCloudExtension(this.hostExtensionValues(h))
+      projectRemoteHostCloudExtension(this.hostCloudExtensionValues(h))
     );
     vb['locked'] = h.locked ? 1 : 0;
     vb['locktype'] = h.lockType;
@@ -2117,7 +2817,6 @@ export class CloudStore implements CryptoCloudStore {
 
   private rowToHost(rs: relationalStore.ResultSet): RemoteHost {
     const crypto = DataCrypto.getInstance();
-    const decrypt = (v: string) => crypto.isReady() ? crypto.decrypt(v) : v;
     // 安全读取: 列不存在时返回空字符串, 不抛异常
     const getStr = (col: string): string => {
       const idx: number = rs.getColumnIndex(col);
@@ -2131,12 +2830,12 @@ export class CloudStore implements CryptoCloudStore {
     h.host = getStr('host');
     h.port = rs.getLong(rs.getColumnIndex('port'));
     h.username = getStr('username');
-    h.password = decrypt(getStr('passward') || getStr('password'));
+    h.password = this.decryptIfReady(crypto, getStr('passward') || getStr('password'));
     h.customHostname = getStr('customhostname');
     h.sshUseKey = rs.getLong(rs.getColumnIndex('sshusekey')) !== 0;
     h.sshKeyPath = getStr('sshkeypath');
-    h.sshKeyData = decrypt(getStr('sshkeydata'));
-    h.sshKeyPassphrase = decrypt(getStr('sshkeypassphrase'));
+    h.sshKeyData = this.decryptIfReady(crypto, getStr('sshkeydata'));
+    h.sshKeyPassphrase = this.decryptIfReady(crypto, getStr('sshkeypassphrase'));
     h.sshKeyId = getStr('sshkeyid');
     h.sshHostKeyAlgorithm = getStr('sshhostkeyalgorithm');
     h.sshHostKeyFingerprintSha256 = getStr('sshhostkeyfingerprintsha256');
@@ -2170,7 +2869,6 @@ export class CloudStore implements CryptoCloudStore {
       }
       catch (_err) { /* keep default */ }
     }
-    this.absorbCloudHostExtension(h.id, displayPayload.extension);
     h.locked = rs.getLong(rs.getColumnIndex('locked')) !== 0;
     h.lockType = rs.getLong(rs.getColumnIndex('locktype'));
     h.groupId = rs.getString(rs.getColumnIndex('groupid'));
@@ -2203,17 +2901,17 @@ export class CloudStore implements CryptoCloudStore {
     h.rustdeskProSyncError = getStr('rustdeskprosyncerror');
     h.syncVersion = rs.getLong(rs.getColumnIndex('syncversion'));
     h.createdAt = rs.getLong(rs.getColumnIndex('createdat'));
+    this.applyCloudHostExtension(h, displayPayload.extension);
     return h;
   }
 
   private rdpCredentialToBucket(credential: RdpCredential): relationalStore.ValuesBucket {
     const crypto = DataCrypto.getInstance();
-    const encrypt = (v: string) => crypto.isReady() ? crypto.encrypt(v) : v;
     const vb: relationalStore.ValuesBucket = {};
     vb['id'] = credential.id;
     vb['label'] = credential.label;
     vb['username'] = credential.username;
-    vb['password'] = credential.password ? encrypt(credential.password) : credential.password;
+    vb['password'] = this.encryptIfReady(crypto, credential.password);
     vb['createdat'] = credential.createdAt;
     return this.cloudBucket('rdpcredentials', vb);
   }
@@ -2271,11 +2969,21 @@ export class CloudStore implements CryptoCloudStore {
   private encryptIfReady(crypto: DataCrypto, value: string): string {
     if (value === '') { return value; }
     if (crypto.isEncrypted(value)) { return value; }
+    if (sensitiveWriteRequiresUnlock(crypto.isSetupComplete(), crypto.isReady())) {
+      throw new Error('unlock_required');
+    }
     return crypto.isReady() ? crypto.encrypt(value) : value;
   }
 
   private decryptIfReady(crypto: DataCrypto, value: string): string {
     if (value === '') { return value; }
+    // A locked configured store must never expose ciphertext as though it were
+    // usable plaintext. Redact both envelopes and legacy clear values until
+    // the user supplies the master password.
+    if (shouldRedactLockedCiphertext(crypto.isSetupComplete(), crypto.isReady(), crypto.isEncrypted(value)) ||
+      (crypto.isSetupComplete() && !crypto.isReady())) {
+      return '';
+    }
     return crypto.isReady() ? crypto.decrypt(value) : value;
   }
 
@@ -2291,7 +2999,6 @@ export class CloudStore implements CryptoCloudStore {
 
   private rowToRdpCredential(rs: relationalStore.ResultSet): RdpCredential {
     const crypto = DataCrypto.getInstance();
-    const decrypt = (v: string) => crypto.isReady() ? crypto.decrypt(v) : v;
     const getStr = (col: string): string => {
       const idx: number = rs.getColumnIndex(col);
       return idx >= 0 ? rs.getString(idx) : '';
@@ -2304,7 +3011,7 @@ export class CloudStore implements CryptoCloudStore {
     credential.id = getStr('id');
     credential.label = getStr('label');
     credential.username = getStr('username');
-    credential.password = decrypt(getStr('password'));
+    credential.password = this.decryptIfReady(crypto, getStr('password'));
     credential.createdAt = getLong('createdat');
     return credential;
   }
@@ -2350,50 +3057,80 @@ export class CloudStore implements CryptoCloudStore {
   }
 
   insertSshKey(key: SshKey): boolean {
-    if (!this.localMutationAllowed() || !this.store) { return false; }
+    if (!this.store) { return this.setLastMutation(DataMutationResult.failure(key.id, 'not_ready', '本地数据库未就绪')); }
+    if (!this.localMutationAllowed()) {
+      return this.setLastMutation(DataMutationResult.failure(key.id, 'restore_in_progress', '恢复进行中，暂不能保存'));
+    }
+    if (!this.sensitiveWriteAllowed(key.id)) { return false; }
+    let code = 'local_write_failed';
     try {
+      this.store.beginTransaction();
       const vb = this.sshKeyToBucket(key);
       vb['createdat'] = Date.now();
       vb['updatedat'] = Date.now();
-      if (!rdbInsertSucceeded(this.store.insertSync('sshkeys', vb))) { return false; }
-      this.saveSshKeyExtension(key);
+      if (!rdbInsertSucceeded(this.store.insertSync('sshkeys', vb))) { code = 'local_write_failed'; throw new Error('ssh key insert failed'); }
+      if (!this.saveSshKeyExtension(key)) { code = 'extension_write_failed'; throw new Error('ssh key extension insert failed'); }
+      if (!this.recordLocalMutation('sshkeys', key.id, 'add')) { code = 'journal_write_failed'; throw new Error('ssh key journal failed'); }
+      this.store.commit();
       hilog.info(0x0001, 'CloudSync', "insertSshKey: " + key.label + " (" + key.id + ")");
-      return true;
+      return this.setLastMutation(DataMutationResult.success(key.id));
     } catch (err) {
+      try { this.store.rollBack(); } catch (_ignored) {}
       hilog.error(0x0001, 'CloudSync', '[CloudStore] insertSshKey 失败: ' + JSON.stringify(err));
-      return false;
+      return this.setLastMutation(DataMutationResult.failure(key.id, code as 'local_write_failed' |
+        'extension_write_failed' | 'journal_write_failed', 'SSH 密钥保存未完成'));
     }
   }
 
   updateSshKey(key: SshKey): boolean {
-    if (!this.localMutationAllowed() || !this.store) { return false; }
+    if (!this.store) { return this.setLastMutation(DataMutationResult.failure(key.id, 'not_ready', '本地数据库未就绪')); }
+    if (!this.localMutationAllowed()) {
+      return this.setLastMutation(DataMutationResult.failure(key.id, 'restore_in_progress', '恢复进行中，暂不能保存'));
+    }
+    if (!this.sensitiveWriteAllowed(key.id)) { return false; }
+    let code = 'local_write_failed';
     try {
+      this.store.beginTransaction();
       const vb = this.sshKeyToBucket(key);
       vb['updatedat'] = Date.now();
       const predicates = new relationalStore.RdbPredicates('sshkeys');
       predicates.equalTo('id', key.id);
-      if (!rdbSingleRowAffected(this.store.updateSync(vb, predicates))) { return false; }
-      this.saveSshKeyExtension(key);
+      if (!rdbSingleRowAffected(this.store.updateSync(vb, predicates))) { code = 'not_found'; throw new Error('ssh key update failed'); }
+      if (!this.saveSshKeyExtension(key)) { code = 'extension_write_failed'; throw new Error('ssh key extension update failed'); }
+      if (!this.recordLocalMutation('sshkeys', key.id, 'update')) { code = 'journal_write_failed'; throw new Error('ssh key journal failed'); }
+      this.store.commit();
       hilog.info(0x0001, 'CloudSync', "updateSshKey: " + key.label + " (" + key.id + ")");
-      return true;
+      return this.setLastMutation(DataMutationResult.success(key.id));
     } catch (err) {
+      try { this.store.rollBack(); } catch (_ignored) {}
       hilog.error(0x0001, 'CloudSync', '[CloudStore] updateSshKey 失败: ' + JSON.stringify(err));
-      return false;
+      return this.setLastMutation(DataMutationResult.failure(key.id, code as 'local_write_failed' |
+        'not_found' | 'extension_write_failed' | 'journal_write_failed', 'SSH 密钥更新未完成'));
     }
   }
 
   deleteSshKey(id: string): boolean {
-    if (!this.localMutationAllowed() || !this.store) { return false; }
+    if (!this.store) { return this.setLastMutation(DataMutationResult.failure(id, 'not_ready', '本地数据库未就绪')); }
+    if (!this.localMutationAllowed()) {
+      return this.setLastMutation(DataMutationResult.failure(id, 'restore_in_progress', '恢复进行中，暂不能删除'));
+    }
+    if (!this.sensitiveWriteAllowed(id)) { return false; }
+    let code = 'local_write_failed';
     try {
+      this.store.beginTransaction();
       const predicates = new relationalStore.RdbPredicates('sshkeys');
       predicates.equalTo('id', id);
-      if (!rdbSingleRowAffected(this.store.deleteSync(predicates))) { return false; }
-      this.deleteLocalExtension('sshkeys', id);
+      if (!rdbSingleRowAffected(this.store.deleteSync(predicates))) { code = 'not_found'; throw new Error('ssh key delete failed'); }
+      if (!this.deleteLocalExtension('sshkeys', id)) { code = 'extension_write_failed'; throw new Error('ssh key extension delete failed'); }
+      if (!this.recordLocalMutation('sshkeys', id, 'delete')) { code = 'journal_write_failed'; throw new Error('ssh key journal failed'); }
+      this.store.commit();
       hilog.info(0x0001, 'CloudSync', "deleteSshKey: " + id);
-      return true;
+      return this.setLastMutation(DataMutationResult.success(id));
     } catch (err) {
+      try { this.store.rollBack(); } catch (_ignored) {}
       hilog.error(0x0001, 'CloudSync', '[CloudStore] deleteSshKey 失败: ' + JSON.stringify(err));
-      return false;
+      return this.setLastMutation(DataMutationResult.failure(id, code as 'local_write_failed' |
+        'not_found' | 'extension_write_failed' | 'journal_write_failed', 'SSH 密钥删除未完成'));
     }
   }
 
@@ -2404,14 +3141,13 @@ export class CloudStore implements CryptoCloudStore {
 
   private sshKeyToBucket(k: SshKey): relationalStore.ValuesBucket {
     const crypto = DataCrypto.getInstance();
-    const encrypt = (v: string) => crypto.isReady() ? crypto.encrypt(v) : v;
     const vb: relationalStore.ValuesBucket = {};
     vb['id'] = k.id;
     vb['userid'] = k.userId;
     vb['label'] = k.label;
     vb['keytype'] = k.keyType;
     vb['publickey'] = k.publicKey;
-    vb['privatekey'] = k.privateKey ? encrypt(k.privateKey) : k.privateKey;
+    vb['privatekey'] = this.encryptIfReady(crypto, k.privateKey);
     vb['fingerprint'] = k.fingerprint;
     vb['comment'] = k.comment;
     vb['locked'] = k.locked ? 1 : 0;
@@ -2425,7 +3161,6 @@ export class CloudStore implements CryptoCloudStore {
 
   private rowToSshKey(rs: relationalStore.ResultSet): SshKey {
     const crypto = DataCrypto.getInstance();
-    const decrypt = (v: string) => crypto.isReady() ? crypto.decrypt(v) : v;
     const getStr = (col: string): string => rs.getString(rs.getColumnIndex(col));
     const k = new SshKey();
     k.id = getStr('id');
@@ -2433,7 +3168,7 @@ export class CloudStore implements CryptoCloudStore {
     k.label = getStr('label');
     k.keyType = rs.getLong(rs.getColumnIndex('keytype'));
     k.publicKey = getStr('publickey');
-    k.privateKey = decrypt(getStr('privatekey'));
+    k.privateKey = this.decryptIfReady(crypto, getStr('privatekey'));
     k.fingerprint = getStr('fingerprint');
     k.comment = getStr('comment');
     k.locked = rs.getLong(rs.getColumnIndex('locked')) !== 0;
@@ -2502,7 +3237,8 @@ export class CloudStore implements CryptoCloudStore {
     h.username = rs.getString(rs.getColumnIndex('username'));
     const passwardIndex: number = rs.getColumnIndex('passward');
     const passwordIndex: number = rs.getColumnIndex('password');
-    h.password = passwardIndex >= 0 ? rs.getString(passwardIndex) :
+    const canonicalPassword: string = passwardIndex >= 0 ? rs.getString(passwardIndex) : '';
+    h.password = canonicalPassword !== '' ? canonicalPassword :
       (passwordIndex >= 0 ? rs.getString(passwordIndex) : ''); // raw
     h.customHostname = rs.getString(rs.getColumnIndex('customhostname'));
     h.sshUseKey = rs.getLong(rs.getColumnIndex('sshusekey')) !== 0;
@@ -2524,7 +3260,6 @@ export class CloudStore implements CryptoCloudStore {
       }
       catch (_err) { /* keep default */ }
     }
-    this.absorbCloudHostExtension(h.id, displayPayload.extension);
     h.locked = rs.getLong(rs.getColumnIndex('locked')) !== 0;
     h.lockType = rs.getLong(rs.getColumnIndex('locktype'));
     h.groupId = rs.getString(rs.getColumnIndex('groupid'));
@@ -2567,6 +3302,7 @@ export class CloudStore implements CryptoCloudStore {
     h.rustdeskProSyncError = rdProSyncErrorIdx >= 0 ? rs.getString(rdProSyncErrorIdx) : '';
     h.syncVersion = rs.getLong(rs.getColumnIndex('syncversion'));
     h.createdAt = rs.getLong(rs.getColumnIndex('createdat'));
+    this.applyCloudHostExtension(h, displayPayload.extension);
     return h;
   }
 
@@ -2664,8 +3400,8 @@ export class CloudStore implements CryptoCloudStore {
       const predicates = new relationalStore.RdbPredicates('remotehosts');
       predicates.equalTo('id', host.id);
       const updated: boolean = rdbSingleRowAffected(this.store.updateSync(vb, predicates));
-      if (updated) { this.saveHostExtension(host); }
-      return updated;
+      if (!updated) { return false; }
+      return this.saveHostExtension(host);
     } catch (err) {
       hilog.error(0x0006, 'CloudStore', "updateHost 失败: " + JSON.stringify(err));
       return false;
@@ -2677,7 +3413,7 @@ export class CloudStore implements CryptoCloudStore {
     const vb: relationalStore.ValuesBucket = {};
     vb['id'] = h.id; vb['userid'] = h.userId; vb['label'] = h.label;
     vb['protocol'] = h.protocol; vb['host'] = h.host; vb['port'] = h.port;
-    vb['username'] = h.username; vb['password'] = h.password; vb['passward'] = h.password;
+    vb['username'] = h.username; vb['passward'] = h.password;
     vb['customhostname'] = h.customHostname;
     vb['sshusekey'] = h.sshUseKey ? 1 : 0;
     vb['sshkeypath'] = h.sshKeyPath; vb['sshkeydata'] = h.sshKeyData;
@@ -2701,7 +3437,7 @@ export class CloudStore implements CryptoCloudStore {
     vb['gatewayhost'] = h.gatewayHost; vb['gatewayport'] = h.gatewayPort;
     vb['displayconfig'] = encodeRemoteHostDisplayPayload(
       JSON.stringify(h.displayConfig.toJSON()),
-      projectRemoteHostCloudExtension(this.hostExtensionValues(h))
+      projectRemoteHostCloudExtension(this.hostCloudExtensionValues(h))
     );
     vb['locked'] = h.locked ? 1 : 0; vb['locktype'] = h.lockType;
     vb['groupid'] = h.groupId;
@@ -2736,8 +3472,8 @@ export class CloudStore implements CryptoCloudStore {
       const predicates = new relationalStore.RdbPredicates('sshkeys');
       predicates.equalTo('id', key.id);
       const updated: boolean = rdbSingleRowAffected(this.store.updateSync(vb, predicates));
-      if (updated) { this.saveSshKeyExtension(key); }
-      return updated;
+      if (!updated) { return false; }
+      return this.saveSshKeyExtension(key);
     } catch (err) {
       hilog.error(0x0006, 'CloudStore', "updateSshKey 失败: " + JSON.stringify(err));
       return false;
@@ -2805,47 +3541,77 @@ export class CloudStore implements CryptoCloudStore {
   }
 
   insertTotpEntry(entry: TotpEntry): boolean {
-    if (!this.localMutationAllowed() || !this.store) { return false; }
+    if (!this.store) { return this.setLastMutation(DataMutationResult.failure(entry.id, 'not_ready', '本地数据库未就绪')); }
+    if (!this.localMutationAllowed()) {
+      return this.setLastMutation(DataMutationResult.failure(entry.id, 'restore_in_progress', '恢复进行中，暂不能保存'));
+    }
+    if (!this.sensitiveWriteAllowed(entry.id)) { return false; }
+    let code = 'local_write_failed';
     try {
+      this.store.beginTransaction();
       const vb = this.totpToBucket(entry);
       vb['createdat'] = Date.now();
       vb['updatedat'] = Date.now();
-      if (!rdbInsertSucceeded(this.store.insertSync('totpentries', vb))) { return false; }
+      if (!rdbInsertSucceeded(this.store.insertSync('totpentries', vb))) { code = 'local_write_failed'; throw new Error('totp insert failed'); }
+      if (!this.recordLocalMutation('totpentries', entry.id, 'add')) { code = 'journal_write_failed'; throw new Error('totp journal failed'); }
+      this.store.commit();
       hilog.info(0x0001, 'CloudSync', "insertTotpEntry: " + entry.issuer + " (" + entry.id + ")");
-      return true;
+      return this.setLastMutation(DataMutationResult.success(entry.id));
     } catch (err) {
+      try { this.store.rollBack(); } catch (_ignored) {}
       hilog.error(0x0001, 'CloudSync', '[CloudStore] insertTotpEntry 失败: ' + JSON.stringify(err));
-      return false;
+      return this.setLastMutation(DataMutationResult.failure(entry.id, code as 'local_write_failed' |
+        'journal_write_failed', '动态口令保存未完成'));
     }
   }
 
   updateTotpEntry(entry: TotpEntry): boolean {
-    if (!this.localMutationAllowed() || !this.store) { return false; }
+    if (!this.store) { return this.setLastMutation(DataMutationResult.failure(entry.id, 'not_ready', '本地数据库未就绪')); }
+    if (!this.localMutationAllowed()) {
+      return this.setLastMutation(DataMutationResult.failure(entry.id, 'restore_in_progress', '恢复进行中，暂不能保存'));
+    }
+    if (!this.sensitiveWriteAllowed(entry.id)) { return false; }
+    let code = 'local_write_failed';
     try {
+      this.store.beginTransaction();
       const vb = this.totpToBucket(entry);
       vb['updatedat'] = Date.now();
       const predicates = new relationalStore.RdbPredicates('totpentries');
       predicates.equalTo('id', entry.id);
-      if (!rdbSingleRowAffected(this.store.updateSync(vb, predicates))) { return false; }
+      if (!rdbSingleRowAffected(this.store.updateSync(vb, predicates))) { code = 'not_found'; throw new Error('totp update failed'); }
+      if (!this.recordLocalMutation('totpentries', entry.id, 'update')) { code = 'journal_write_failed'; throw new Error('totp journal failed'); }
+      this.store.commit();
       hilog.info(0x0001, 'CloudSync', "updateTotpEntry: " + entry.issuer + " (" + entry.id + ")");
-      return true;
+      return this.setLastMutation(DataMutationResult.success(entry.id));
     } catch (err) {
+      try { this.store.rollBack(); } catch (_ignored) {}
       hilog.error(0x0001, 'CloudSync', '[CloudStore] updateTotpEntry 失败: ' + JSON.stringify(err));
-      return false;
+      return this.setLastMutation(DataMutationResult.failure(entry.id, code as 'local_write_failed' |
+        'not_found' | 'journal_write_failed', '动态口令更新未完成'));
     }
   }
 
   deleteTotpEntry(id: string): boolean {
-    if (!this.localMutationAllowed() || !this.store) { return false; }
+    if (!this.store) { return this.setLastMutation(DataMutationResult.failure(id, 'not_ready', '本地数据库未就绪')); }
+    if (!this.localMutationAllowed()) {
+      return this.setLastMutation(DataMutationResult.failure(id, 'restore_in_progress', '恢复进行中，暂不能删除'));
+    }
+    if (!this.sensitiveWriteAllowed(id)) { return false; }
+    let code = 'local_write_failed';
     try {
+      this.store.beginTransaction();
       const predicates = new relationalStore.RdbPredicates('totpentries');
       predicates.equalTo('id', id);
-      if (!rdbSingleRowAffected(this.store.deleteSync(predicates))) { return false; }
+      if (!rdbSingleRowAffected(this.store.deleteSync(predicates))) { code = 'not_found'; throw new Error('totp delete failed'); }
+      if (!this.recordLocalMutation('totpentries', id, 'delete')) { code = 'journal_write_failed'; throw new Error('totp journal failed'); }
+      this.store.commit();
       hilog.info(0x0001, 'CloudSync', "deleteTotpEntry: " + id);
-      return true;
+      return this.setLastMutation(DataMutationResult.success(id));
     } catch (err) {
+      try { this.store.rollBack(); } catch (_ignored) {}
       hilog.error(0x0001, 'CloudSync', '[CloudStore] deleteTotpEntry 失败: ' + JSON.stringify(err));
-      return false;
+      return this.setLastMutation(DataMutationResult.failure(id, code as 'local_write_failed' |
+        'not_found' | 'journal_write_failed', '动态口令删除未完成'));
     }
   }
 
@@ -2856,13 +3622,12 @@ export class CloudStore implements CryptoCloudStore {
 
   private totpToBucket(e: TotpEntry): relationalStore.ValuesBucket {
     const crypto = DataCrypto.getInstance();
-    const encrypt = (v: string) => crypto.isReady() ? crypto.encrypt(v) : v;
     const vb: relationalStore.ValuesBucket = {};
     vb['id'] = e.id;
     vb['userid'] = e.userId;
     vb['issuer'] = e.issuer;
     vb['account'] = e.account;
-    vb['secret'] = e.secret ? encrypt(e.secret) : e.secret;
+    vb['secret'] = this.encryptIfReady(crypto, e.secret);
     vb['algorithm'] = e.algorithm;
     vb['digits'] = e.digits;
     vb['period'] = e.period;
@@ -2876,14 +3641,13 @@ export class CloudStore implements CryptoCloudStore {
 
   private rowToTotpEntry(rs: relationalStore.ResultSet): TotpEntry {
     const crypto = DataCrypto.getInstance();
-    const decrypt = (v: string) => crypto.isReady() ? crypto.decrypt(v) : v;
     const getStr = (col: string): string => rs.getString(rs.getColumnIndex(col));
     const e = new TotpEntry();
     e.id = getStr('id');
     e.userId = getStr('userid');
     e.issuer = getStr('issuer');
     e.account = getStr('account');
-    e.secret = decrypt(getStr('secret'));
+    e.secret = this.decryptIfReady(crypto, getStr('secret'));
     e.algorithm = rs.getLong(rs.getColumnIndex('algorithm'));
     e.digits = rs.getLong(rs.getColumnIndex('digits'));
     e.period = rs.getLong(rs.getColumnIndex('period'));

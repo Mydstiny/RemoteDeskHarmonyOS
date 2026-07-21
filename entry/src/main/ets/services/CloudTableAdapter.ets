@@ -87,7 +87,10 @@ export function projectLocalRow(table: string, local: Record<string, string>): R
   for (let i = 0; i < columns.length; i++) {
     const cloudColumn: string = columns[i];
     if (cloudColumn === 'passward') {
-      if (local['password'] !== undefined) { result['passward'] = local['password']; }
+      // `passward` is the existing cloud contract. Once a row has been
+      // migrated it must win over the retired local `password` shadow.
+      if (local['passward'] !== undefined) { result['passward'] = local['passward']; }
+      else if (local['password'] !== undefined) { result['passward'] = local['password']; }
     } else if (local[cloudColumn] !== undefined) {
       result[cloudColumn] = local[cloudColumn];
     }

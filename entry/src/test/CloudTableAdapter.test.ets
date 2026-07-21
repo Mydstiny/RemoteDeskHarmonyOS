@@ -19,6 +19,13 @@ describe('CloudTableAdapter', (): void => {
     expect(cloudTableColumns('remotehosts').indexOf('passward') >= 0).assertTrue();
   });
 
+  it('does_not_allow_a_legacy_password_shadow_to_override_passward', (): void => {
+    const row = projectLocalRow('remotehosts', {
+      id: 'h1', passward: 'canonical', password: 'legacy-shadow'
+    });
+    expect(row['passward']).assertEqual('canonical');
+  });
+
   it('normalizes the cloud typo back to the local password field', (): void => {
     const row = normalizeCloudRow('remotehosts', { id: 'h1', passward: 'secret' });
     expect(row['password']).assertEqual('secret');

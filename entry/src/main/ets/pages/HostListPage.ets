@@ -1156,16 +1156,19 @@ struct HostListPage {
 
   private async createLocalBackup(): Promise<void> {
     try {
-      const saved: boolean = await LocalBackupService.getInstance().saveBackup('1.0.7');
+      const backup: LocalBackupService = LocalBackupService.getInstance();
+      const saved: boolean = await backup.saveBackup('1.0.7');
       if (saved) { promptAction.showToast({ message: '本地备份已保存', duration: 1600 }); this.closeSettingsLeafSheet(); }
+      else { this.cloudSyncError = backup.getLastErrorMessage(); }
     } catch (_e) { this.cloudSyncError = '备份失败，请检查保存位置后重试'; }
   }
 
   private async chooseLocalRestore(): Promise<void> {
     try {
-      const document: LocalBackupDocument | null = await LocalBackupService.getInstance().selectAndValidate();
+      const backup: LocalBackupService = LocalBackupService.getInstance();
+      const document: LocalBackupDocument | null = await backup.selectAndValidate();
       if (!shouldOpenRestoreConfirmation(document !== null) || document === null) {
-        promptAction.showToast({ message: '未选择有效的本地备份文件', duration: 1800 });
+        promptAction.showToast({ message: backup.getLastErrorMessage(), duration: 2200 });
         return;
       }
       this.openSettingsLeafSheet(SETTINGS_SHEET_POPUP, (): void => {
@@ -1184,7 +1187,6 @@ struct HostListPage {
     const restored: boolean = await LocalBackupService.getInstance().restore(this.pendingLocalRestore);
     if (!restored) { this.cloudSyncError = '恢复失败，原本地数据未被修改'; return; }
     this.pendingLocalRestore = null;
-    this.load();
     promptAction.showToast({ message: '本地备份已恢复，未自动上传到云端', duration: 1800 });
     this.closeSettingsLeafSheet();
   }
@@ -1226,7 +1228,6 @@ struct HostListPage {
     const result = await cloud.downloadAllFromCloudResult();
     if (result.ok) {
       this.applyCloudUserSettings();
-      this.load();
       promptAction.showToast({ message: '已从华为云空间恢复 ' + cloud.syncableTables().length.toString() + ' 类已选数据', duration: 2000 });
       this.closeSettingsLeafSheet();
       return;

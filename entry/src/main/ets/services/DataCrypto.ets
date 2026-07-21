@@ -53,6 +53,8 @@ export interface CryptoCloudStore {
   pushTable?(table: string): void;
 }
 
+export type DataCryptoStateListener = (ready: boolean, configured: boolean) => void;
+
 // ============================================================
 // DataCrypto 单例
 // ============================================================
@@ -80,6 +82,7 @@ export class DataCrypto {
 
   // CloudStore 引用 (由 init 设置)
   private cloudStore: Object | null = null;
+  private stateListeners: Array<DataCryptoStateListener> = [];
 
   static getInstance(): DataCrypto {
     if (!DataCrypto.instance) {
@@ -117,6 +120,15 @@ export class DataCrypto {
     this.cloudStore = cloudStore;
   }
 
+  /** Services use this to discard redacted/decrypted snapshots exactly when the DEK state changes. */
+  onStateChange(listener: DataCryptoStateListener): () => void {
+    if (this.stateListeners.indexOf(listener) < 0) { this.stateListeners.push(listener); }
+    return (): void => {
+      const index: number = this.stateListeners.indexOf(listener);
+      if (index >= 0) { this.stateListeners.splice(index, 1); }
+    };
+  }
+
   /**
    * 设置主密码 (首次使用)
    * 生成随机盐, PBKDF2 派生 DEK, 计算验证器, 存储到 cloudPrefs
@@ -151,6 +163,7 @@ export class DataCrypto {
       this.dek = dek;
       this.ready = true;
       this.attemptCount = 0;
+      this.notifyStateChange();
 
       hilog.info(DOMAIN, TAG, '主密码已设置, DEK 已派生');
     } catch (err) {
@@ -197,6 +210,7 @@ export class DataCrypto {
         this.dek = candidateDek;
         this.ready = true;
         this.attemptCount = 0;
+        this.notifyStateChange();
         hilog.info(DOMAIN, TAG, 'DEK 解锁成功');
         return true;
       } else {
@@ -333,13 +347,16 @@ export class DataCrypto {
   }
 
   /** 清除内存 DEK (切后台时调用) — 保留云端盐值+验证器, 回前台后可解锁恢复 */
-  lock(): void {
+  lock(): boolean {
+    const changed: boolean = this.ready || this.dek !== null;
     if (this.dek) {
       this.dek.fill(0); // 覆写内存
     }
     this.dek = null;
     this.ready = false;
+    if (changed) { this.notifyStateChange(); }
     hilog.info(DOMAIN, TAG, 'DEK 已清除 (lock)');
+    return changed;
   }
 
   /** 清除所有加密状态 (用户主动关闭加密时调用) — 清除盐值+验证器, 数据恢复明文存储 */
@@ -436,6 +453,10 @@ export class DataCrypto {
           }
           if (h.sshKeyData && !this.isEncrypted(h.sshKeyData)) {
             h.sshKeyData = this.encrypt(h.sshKeyData);
+            changed = true;
+          }
+          if (h.sshKeyPassphrase && !this.isEncrypted(h.sshKeyPassphrase)) {
+            h.sshKeyPassphrase = this.encrypt(h.sshKeyPassphrase);
             changed = true;
           }
           if (changed) {
@@ -563,6 +584,15 @@ export class DataCrypto {
       this.lockUntil = 0;
     }
     return false;
+  }
+
+  private notifyStateChange(): void {
+    const listeners: Array<DataCryptoStateListener> = this.stateListeners.slice();
+    const ready: boolean = this.isReady();
+    const configured: boolean = this.isSetupComplete();
+    for (let i = 0; i < listeners.length; i++) {
+      try { listeners[i](ready, configured); } catch (_e) { /* listeners must not affect cryptography */ }
+    }
   }
 
   /** 获取 CloudStore RDB 实例 */

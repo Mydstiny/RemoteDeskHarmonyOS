@@ -38,8 +38,13 @@ export type CloudSyncTableExecutor = (table: string, direction: CloudSyncDirecti
 export interface CloudSyncCoordinatorHooks {
   beginManualDownload: () => boolean;
   rollbackManualDownload: () => Promise<boolean>;
-  completeManualDownload: () => void;
+  /** Return false to roll the just-applied cloud download back to its snapshot. */
+  completeManualDownload: (tables: string[]) => boolean | void;
   setRestorePending: (pending: boolean) => void;
+  pendingMutationTableRevisions?: () => Record<string, number>;
+  acknowledgeMutationJournal?: (table: string, coveredRevision: number) => boolean;
+  hasRestoredNotUploaded?: () => boolean;
+  clearRestoredNotUploaded?: () => boolean;
 }
 
 /**
@@ -98,8 +103,13 @@ export async function executeCloudSyncRequest(
   let rollbackFailed: boolean = false;
   if (request.source === 'manualDownload' && hooks) {
     try {
-      if (failedTables.length === 0) { hooks.completeManualDownload(); }
-      else { rollbackFailed = !(await hooks.rollbackManualDownload()); }
+      if (failedTables.length === 0) {
+        const completed: boolean | void = hooks.completeManualDownload(request.tables.slice());
+        if (completed === false) {
+          failedTables.push(request.tables.length > 0 ? request.tables[0] : '');
+          rollbackFailed = !(await hooks.rollbackManualDownload());
+        }
+      } else { rollbackFailed = !(await hooks.rollbackManualDownload()); }
     } catch (_e) {
       rollbackFailed = true;
     }
@@ -139,6 +149,7 @@ export class CloudSyncCoordinator {
   private automaticRetryAttempts: Record<string, number> = {};
   private automaticMutationVersions: Record<string, number> = {};
   private dirtyAutomaticTables: string[] = [];
+  private journalMutationRevisions: Record<string, number> = {};
 
   static getInstance(): CloudSyncCoordinator {
     if (!CloudSyncCoordinator.instance) {
@@ -159,9 +170,11 @@ export class CloudSyncCoordinator {
     this.hooks = hooks;
     this.restoreRetryRecord();
     this.restoreDirtyTables();
+    this.restoreMutationJournal();
   }
 
   requestStartupPull(): Promise<CloudSyncOperationResult> {
+    if (this.restoreUploadBlocked()) { return Promise.resolve(this.skippedResult('startup')); }
     const selected: string[] = this.selectedTables();
     const dirty: string[] = this.dirtyAutomaticTables.filter((table: string): boolean =>
       selected.indexOf(table) >= 0);
@@ -170,13 +183,17 @@ export class CloudSyncCoordinator {
     dirty.forEach((table: string): void => {
       versions[table] = this.automaticMutationVersions[table] || 1;
     });
+    const journalRevisions: Record<string, number> = this.captureJournalRevisions(dirty);
     const request: CloudSyncRequest = {
       source: 'automaticPush', direction: 'nativeFirst', tables: snapshotCloudSyncTables(dirty)
     };
     return this.enqueue(request).then((result: CloudSyncOperationResult): Promise<CloudSyncOperationResult> => {
       if (!result.ok) { return Promise.resolve(result); }
       dirty.forEach((table: string): void => {
-        if ((this.automaticMutationVersions[table] || versions[table]) === versions[table]) {
+        this.acknowledgeJournal(table, journalRevisions[table] || 0);
+        const currentJournalRevision: number = this.captureJournalRevisions([table])[table] || 0;
+        if ((this.automaticMutationVersions[table] || versions[table]) === versions[table] &&
+          currentJournalRevision <= 0) {
           this.clearDirtyTable(table);
         }
       });
@@ -193,16 +210,49 @@ export class CloudSyncCoordinator {
   }
 
   requestManualUpload(): Promise<CloudSyncOperationResult> {
-    return this.enqueue(this.makeRequest('manualUpload', 'nativeFirst'));
+    const request: CloudSyncRequest = this.makeRequest('manualUpload', 'nativeFirst');
+    const versions: Record<string, number> = {};
+    for (let i = 0; i < request.tables.length; i++) {
+      versions[request.tables[i]] = this.automaticMutationVersions[request.tables[i]] || 0;
+    }
+    const journalRevisions: Record<string, number> = this.captureJournalRevisions(request.tables);
+    return this.enqueue(request).then((result: CloudSyncOperationResult): CloudSyncOperationResult => {
+      if (!result.ok) { return result; }
+      for (let i = 0; i < request.tables.length; i++) {
+        const table: string = request.tables[i];
+        this.acknowledgeJournal(table, journalRevisions[table] || 0);
+        const currentJournalRevision: number = this.captureJournalRevisions([table])[table] || 0;
+        if ((this.automaticMutationVersions[table] || 0) === versions[table] && currentJournalRevision <= 0) {
+          this.clearDirtyTable(table);
+        }
+      }
+      if (this.hooks && this.hooks.hasRestoredNotUploaded && this.hooks.hasRestoredNotUploaded() &&
+        this.hooks.clearRestoredNotUploaded && !this.hooks.clearRestoredNotUploaded()) {
+        hilog.warn(DOMAIN, TAG, 'manual upload completed but restored-state marker could not be cleared');
+      }
+      return result;
+    });
   }
 
   requestManualDownload(): Promise<CloudSyncOperationResult> {
-    return this.enqueue(this.makeRequest('manualDownload', 'cloudFirst'));
+    const request: CloudSyncRequest = this.makeRequest('manualDownload', 'cloudFirst');
+    const versions: Record<string, number> = {};
+    for (let i = 0; i < request.tables.length; i++) {
+      versions[request.tables[i]] = this.automaticMutationVersions[request.tables[i]] || 0;
+    }
+    return this.enqueue(request).then((result: CloudSyncOperationResult): CloudSyncOperationResult => {
+      if (!result.ok) { return result; }
+      for (let i = 0; i < request.tables.length; i++) {
+        const table: string = request.tables[i];
+        if ((this.automaticMutationVersions[table] || 0) === versions[table]) { this.clearDirtyTable(table); }
+      }
+      return result;
+    });
   }
 
   requestAutomaticPush(table: string): Promise<CloudSyncOperationResult> {
     const selected: string[] = this.selectedTables();
-    if (selected.indexOf(table) < 0 || this.restorePending) {
+    if (selected.indexOf(table) < 0 || this.restorePending || this.restoreUploadBlocked()) {
       return Promise.resolve(this.skippedResult('automaticPush'));
     }
     const version: number = (this.automaticMutationVersions[table] || 0) + 1;
@@ -227,7 +277,9 @@ export class CloudSyncCoordinator {
     const tables: string[] = selected.filter((candidate: string): boolean =>
       candidate === 'cryptoparams' || candidate === table
     );
-    return this.enqueueAutomaticRequest({ source: 'automaticPush', direction: 'nativeFirst', tables }, table, version);
+    const journalRevision: number = this.captureJournalRevisions([table])[table] || 0;
+    return this.enqueueAutomaticRequest({ source: 'automaticPush', direction: 'nativeFirst', tables },
+      table, version, journalRevision);
   }
 
   /** Flushes mutations collected while audio/video had priority. */
@@ -242,7 +294,8 @@ export class CloudSyncCoordinator {
   }
 
   private enqueueAutomaticRequest(request: CloudSyncRequest, retryKey: string,
-    completedVersion: number = this.automaticMutationVersions[retryKey] || 1): Promise<CloudSyncOperationResult> {
+    completedVersion: number = this.automaticMutationVersions[retryKey] || 1,
+    coveredJournalRevision: number = this.captureJournalRevisions([retryKey])[retryKey] || 0): Promise<CloudSyncOperationResult> {
     for (let i = 0; i < this.pendingAutomaticTables.length; i++) {
       if (coalesceAutomaticPush(this.pendingAutomaticTables[i], retryKey)) {
         return Promise.resolve(this.skippedResult('automaticPush'));
@@ -255,15 +308,17 @@ export class CloudSyncCoordinator {
       if (result.ok) {
         this.automaticRetryAttempts[retryKey] = 0;
         this.removeAutomaticRetry(retryKey);
+        this.acknowledgeJournal(retryKey, coveredJournalRevision);
         const latestVersion: number = this.automaticMutationVersions[retryKey] || completedVersion;
         if (shouldReplayAutomaticPush(completedVersion, latestVersion)) {
           const selected: string[] = this.selectedTables();
           const tables: string[] = selected.filter((candidate: string): boolean =>
             candidate === 'cryptoparams' || candidate === retryKey);
           this.enqueueAutomaticRequest({ source: 'automaticPush', direction: 'nativeFirst', tables },
-            retryKey, latestVersion);
+            retryKey, latestVersion, this.captureJournalRevisions([retryKey])[retryKey] || 0);
         } else {
-          this.clearDirtyTable(retryKey);
+          const currentJournalRevision: number = this.captureJournalRevisions([retryKey])[retryKey] || 0;
+          if (currentJournalRevision <= 0) { this.clearDirtyTable(retryKey); }
         }
       } else {
         const attempt: number = (this.automaticRetryAttempts[retryKey] || 0) + 1;
@@ -282,7 +337,9 @@ export class CloudSyncCoordinator {
     return new Promise<boolean>((resolve: (value: boolean) => void): void => {
       this.queueTail = this.queueTail.then(async (): Promise<void> => {
         try {
-          resolve(await work());
+          const restored: boolean = await work();
+          if (restored) { this.clearAllDirtyIntents(); }
+          resolve(restored);
         } catch (_e) {
           resolve(false);
         } finally {
@@ -291,7 +348,9 @@ export class CloudSyncCoordinator {
         }
       }, async (): Promise<void> => {
         try {
-          resolve(await work());
+          const restored: boolean = await work();
+          if (restored) { this.clearAllDirtyIntents(); }
+          resolve(restored);
         } catch (_e) {
           resolve(false);
         } finally {
@@ -307,6 +366,9 @@ export class CloudSyncCoordinator {
   }
 
   private requestCloudFirst(source: CloudSyncSource): Promise<CloudSyncOperationResult> {
+    if (source !== 'manualDownload' && this.restoreUploadBlocked()) {
+      return Promise.resolve(this.skippedResult(source));
+    }
     if (this.pendingPull) { return this.pendingPull; }
     const request: CloudSyncRequest = this.makeRequest(source, 'cloudFirst');
     this.pendingPull = this.enqueue(request).then((result: CloudSyncOperationResult): CloudSyncOperationResult => {
@@ -389,6 +451,75 @@ export class CloudSyncCoordinator {
     } catch (err) {
       hilog.warn(DOMAIN, TAG, 'restore dirty tables ignored: ' + JSON.stringify(err));
     }
+  }
+
+  /** Journal rows survive a process death even if Preferences could not flush. */
+  private restoreMutationJournal(): void {
+    if (!this.hooks || !this.hooks.pendingMutationTableRevisions) { return; }
+    try {
+      const revisions: Record<string, number> = this.hooks.pendingMutationTableRevisions();
+      const tables: string[] = Object.keys(revisions);
+      for (let i = 0; i < tables.length; i++) {
+        const table: string = tables[i];
+        const revision: number = revisions[table];
+        if (!Number.isFinite(revision) || revision <= 0) { continue; }
+        this.journalMutationRevisions[table] = Math.max(this.journalMutationRevisions[table] || 0, revision);
+        if (this.dirtyAutomaticTables.indexOf(table) < 0) { this.dirtyAutomaticTables.push(table); }
+        this.automaticMutationVersions[table] = Math.max(this.automaticMutationVersions[table] || 0, 1);
+      }
+      this.writeDirtyTables();
+    } catch (err) {
+      hilog.warn(DOMAIN, TAG, 'restore mutation journal ignored: ' + JSON.stringify(err));
+    }
+  }
+
+  private captureJournalRevisions(tables: string[]): Record<string, number> {
+    const result: Record<string, number> = {};
+    if (!this.hooks || !this.hooks.pendingMutationTableRevisions) { return result; }
+    try {
+      const current: Record<string, number> = this.hooks.pendingMutationTableRevisions();
+      for (let i = 0; i < tables.length; i++) {
+        const table: string = tables[i];
+        const revision: number = current[table] || 0;
+        if (revision > 0) {
+          this.journalMutationRevisions[table] = revision;
+          result[table] = revision;
+        } else {
+          this.journalMutationRevisions[table] = 0;
+        }
+      }
+    } catch (err) {
+      hilog.warn(DOMAIN, TAG, 'read mutation journal failed: ' + JSON.stringify(err));
+    }
+    return result;
+  }
+
+  private acknowledgeJournal(table: string, revision: number): void {
+    if (revision <= 0 || !this.hooks || !this.hooks.acknowledgeMutationJournal) { return; }
+    try {
+      if (!this.hooks.acknowledgeMutationJournal(table, revision)) {
+        hilog.warn(DOMAIN, TAG, 'journal acknowledgement deferred table=' + table);
+      }
+    } catch (err) {
+      hilog.warn(DOMAIN, TAG, 'journal acknowledgement failed table=' + table + ' err=' + JSON.stringify(err));
+    }
+  }
+
+  private restoreUploadBlocked(): boolean {
+    if (!this.hooks || !this.hooks.hasRestoredNotUploaded) { return false; }
+    try { return this.hooks.hasRestoredNotUploaded(); } catch (_e) { return false; }
+  }
+
+  private clearAllDirtyIntents(): void {
+    this.dirtyAutomaticTables = [];
+    this.automaticMutationVersions = {};
+    this.journalMutationRevisions = {};
+    this.deferredAutomaticTables = [];
+    this.retryRecords = [];
+    this.automaticRetryAttempts = {};
+    this.writeDirtyTables();
+    this.writeRetryRecords();
+    this.scheduleRetryTimer();
   }
 
   private writeDirtyTables(): void {
