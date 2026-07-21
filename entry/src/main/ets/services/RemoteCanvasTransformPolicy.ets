@@ -5,7 +5,11 @@ export type LocalViewScaleMode = 'fit' | '100' | '125' | '150' | '175' | '200' |
 // user intent; older values are repaired to the previous Fit behaviour.
 export const REMOTE_DISPLAY_SCALE_PREFERENCE_VERSION_KEY: string =
   'remoteDisplayScalePreferenceVersion';
-export const REMOTE_DISPLAY_SCALE_PREFERENCE_VERSION: number = 1;
+// Version 1 was written by the first rollout before we could distinguish an
+// inherited 100% value from an explicit user choice.  Treat it as a legacy
+// derived value once more so affected installations return to the historical
+// Fit default.  Choices made by this version and later remain user intent.
+export const REMOTE_DISPLAY_SCALE_PREFERENCE_VERSION: number = 2;
 
 export interface CanvasViewport {
   surfaceWidth: number;

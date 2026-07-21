@@ -415,7 +415,8 @@ struct RemoteDesktop {
   @StorageLink('rustdeskViewScaleMode') rustdeskViewScaleMode: string = 'fit';
   @StorageLink('remoteDisplayScaleMode') remoteDisplayScaleMode: string = 'fit';
   @StorageLink('remoteDisplayCustomScalePercent') remoteDisplayCustomScalePercent: number = 100;
-  @StorageLink('canvasGestureZoomEnabled') canvasGestureZoomEnabled: boolean = false;
+  @StorageLink('canvasGestureZoomEnabled') @Watch('onCanvasGestureZoomSettingChange')
+  canvasGestureZoomEnabled: boolean = false;
   @StorageLink('rustdeskShowLocalCursor') rustdeskShowLocalCursor: boolean = true;
   @StorageLink('rustdeskBrowseMode') rustdeskBrowseMode: boolean = false;
   @StorageLink('rustdeskRelativeMouseMode') rustdeskRelativeMouseMode: boolean = false;
@@ -546,6 +547,10 @@ struct RemoteDesktop {
   private touchMaxFingers: number = 0;       // 本次手势最高手指数 (用于三指检测)
   private canvasTransform: CanvasTransform = { scale: 1, panX: 0, panY: 0 };
   private canvasTransformInitialized: boolean = false;
+  // A default display scale must be recalculated when the surface or stream
+  // geometry changes.  Only a real local canvas pinch owns a persistent
+  // transform across those geometry changes.
+  private canvasTransformGestureModified: boolean = false;
   private canvasPinchActive: boolean = false;
   private canvasPinchInputConsumed: boolean = false;
   private canvasPinchLastScale: number = 1;
@@ -1199,8 +1204,8 @@ struct RemoteDesktop {
       resolution.height === this.rustDeskDisplayCapabilities.height;
   }
 
-  private currentCanvasViewport(): CanvasViewport {
-    const viewport: RendererViewportSnapshot | null = this.readRendererViewport();
+  private currentCanvasViewport(forceRendererRead: boolean = false): CanvasViewport {
+    const viewport: RendererViewportSnapshot | null = this.readRendererViewport(forceRendererRead);
     const sourceWidth: number = viewport !== null ? viewport.sourceWidth :
       (this.rendererSourceWidth > 0 ? this.rendererSourceWidth : this.remoteWidth);
     const sourceHeight: number = viewport !== null ? viewport.sourceHeight :
@@ -1213,11 +1218,12 @@ struct RemoteDesktop {
     };
   }
 
-  private resetCanvasToDisplayDefault(): void {
+  private resetCanvasToDisplayDefault(forceRendererRead: boolean = false): void {
     const mode: LocalViewScaleMode = normalizeLocalViewScaleMode(this.remoteDisplayScaleMode);
     this.canvasTransform = baseCanvasTransform(mode, this.remoteDisplayCustomScalePercent,
-      this.currentCanvasViewport());
+      this.currentCanvasViewport(forceRendererRead));
     this.canvasTransformInitialized = true;
+    this.canvasTransformGestureModified = false;
     this.applyCanvasTransform();
   }
 
@@ -1291,7 +1297,7 @@ struct RemoteDesktop {
       return;
     }
     if (!this.canvasTransformInitialized) {
-      this.resetCanvasToDisplayDefault();
+      this.resetCanvasToDisplayDefault(true);
     }
     this.canvasPinchActive = true;
     this.canvasPinchLastScale = 1;
@@ -1334,6 +1340,7 @@ struct RemoteDesktop {
     this.canvasPinchLastScale = nextScale;
     this.canvasPinchLastCenterX = centerX;
     this.canvasPinchLastCenterY = centerY;
+    this.canvasTransformGestureModified = true;
     this.applyCanvasTransform();
   }
 
@@ -2637,6 +2644,13 @@ struct RemoteDesktop {
     }
   }
 
+  /** Disabling local canvas zoom must not leave its last enlarged transform on screen. */
+  private onCanvasGestureZoomSettingChange(): void {
+    if (!this.canvasGestureZoomEnabled && this.canvasTransformGestureModified) {
+      this.resetCanvasToDisplayDefault();
+    }
+  }
+
   onBackPress(): boolean {
     if (this.sessionId <= 0 || !shouldConsumeRemoteBack(this.connected, this.isDesktopDevice,
       this.breakpoint, this.isKeyboardMouseControlMode(), this.physicalKeyboardConnected,
@@ -2882,6 +2896,9 @@ struct RemoteDesktop {
       multiMonitor: false,
       monitorCount: 1
     });
+    if (!this.canvasTransformGestureModified) {
+      this.resetCanvasToDisplayDefault();
+    }
     hilog.info(RD_DOMAIN, RD_TAG, 'RustDesk remote logical size synchronized from peer frame: ' +
       previousWidth.toString() + 'x' + previousHeight.toString() + ' -> ' +
       viewport.sourceWidth.toString() + 'x' + viewport.sourceHeight.toString());
@@ -3554,6 +3571,9 @@ struct RemoteDesktop {
             (sourceWidth !== this.rendererSourceWidth || sourceHeight !== this.rendererSourceHeight)) {
             this.rendererSourceWidth = sourceWidth;
             this.rendererSourceHeight = sourceHeight;
+            if (!this.canvasTransformGestureModified) {
+              this.resetCanvasToDisplayDefault(true);
+            }
             hilog.info(RD_DOMAIN, RD_TAG, 'RDP desktop size synchronized from renderer: ' +
               sourceWidth.toString() + 'x' + sourceHeight.toString() +
               ' (renderer source only; remote logical size preserved=' +
@@ -3757,6 +3777,7 @@ struct RemoteDesktop {
     if (!this.connected || this.sessionId !== sessionId || sessionId <= 0) {
       return;
     }
+    this.syncRustDeskLogicalSizeFromRenderer();
     const now: number = Date.now();
     this.expireMouseMoveAcknowledgement(now);
     this.applyRemoteCursorMotionState(advanceRemoteCursorMotion(this.remoteCursorMotion, now));
@@ -3985,7 +4006,6 @@ struct RemoteDesktop {
       }
       this.rendererHandle = rHandle;
       this.nativeHandles.markSurfaceAttached(this.rendererHandle);
-      this.resetCanvasToDisplayDefault();
       if (this.renderWidthPx > 0 && this.renderHeightPx > 0 &&
         (this.renderWidthPx !== w || this.renderHeightPx !== h)) {
         this.loader.resizeRenderer(this.rendererHandle, this.renderWidthPx, this.renderHeightPx);
@@ -3993,6 +4013,7 @@ struct RemoteDesktop {
           this.renderWidthPx.toString() + 'x' + this.renderHeightPx.toString() +
           ' remote=' + w.toString() + 'x' + h.toString());
       }
+      this.resetCanvasToDisplayDefault();
 
       // 初始化解码器 (非阻塞 — 解码器未就绪不影响连接建立)
       const rdCodecVal: number = AppStorage.get<number>('rustdeskCodec') ?? 0;
@@ -4616,9 +4637,13 @@ struct RemoteDesktop {
         if (renderer <= 0) {
           throw new Error('预鉴权会话画布初始化失败 [E-RUSTDESK-PREFLIGHT-RENDERER]');
         }
-        this.rendererHandle = renderer;
-        this.nativeHandles.markSurfaceAttached(renderer);
-        this.resetCanvasToDisplayDefault();
+          this.rendererHandle = renderer;
+          this.nativeHandles.markSurfaceAttached(renderer);
+          if (this.renderWidthPx > 0 && this.renderHeightPx > 0 &&
+            (this.renderWidthPx !== desktop.width || this.renderHeightPx !== desktop.height)) {
+            this.loader.resizeRenderer(this.rendererHandle, this.renderWidthPx, this.renderHeightPx);
+          }
+          this.resetCanvasToDisplayDefault();
         const codecPref: number = AppStorage.get<number>('rustdeskCodec') ?? 0;
         let decoderCodec: number = 3;
         if (codecPref === 1) { decoderCodec = 2; }
@@ -7213,7 +7238,7 @@ struct RemoteDesktop {
         // 使 contain/letterbox viewport 计算与表面一致。必须调用。
         if (this.rendererHandle > 0 && wPx > 0 && hPx > 0) {
           this.loader.resizeRenderer(this.rendererHandle, wPx, hPx);
-          if (this.canvasTransformInitialized) {
+          if (this.canvasTransformGestureModified) {
             this.applyCanvasTransform();
           } else {
             this.resetCanvasToDisplayDefault();

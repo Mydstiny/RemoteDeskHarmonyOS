@@ -21,6 +21,8 @@ export default function remoteCanvasTransformPolicyTest() {
     it('repairs unversioned derived display scale to the previous fit default', 0, () => {
       expect(resolveInitialRemoteDisplayScaleMode('100', 0)).assertEqual('fit');
       expect(resolveInitialRemoteDisplayScaleMode('custom', 0)).assertEqual('fit');
+      expect(resolveInitialRemoteDisplayScaleMode('100', 1)).assertEqual('fit');
+      expect(resolveInitialRemoteDisplayScaleMode('custom', 1)).assertEqual('fit');
       expect(resolveInitialRemoteDisplayScaleMode('', 0)).assertEqual('fit');
       expect(resolveInitialRemoteDisplayScaleMode('100', REMOTE_DISPLAY_SCALE_PREFERENCE_VERSION))
         .assertEqual('100');
