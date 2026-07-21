@@ -66,6 +66,11 @@ const EMPTY_RESOURCES: LocalResourceStats = {
   sampledAtMs: 0
 };
 
+interface RustDeskDiagnosticMetric {
+  label: string;
+  value: string;
+}
+
 @Component
 export struct RustDeskDiagnosticsHud {
   @Prop diagnostics: RustDeskDiagnosticsSnapshot = EMPTY_DIAGNOSTICS;
@@ -118,10 +123,10 @@ export struct RustDeskDiagnosticsHud {
   }
 
   @Builder
-  private metricLine(label: string, value: string) {
+  private metricLine(metric: RustDeskDiagnosticMetric) {
     Row() {
-      Text(label).fontSize(10).fontColor('rgba(255,255,255,0.62)').layoutWeight(1)
-      Text(value).fontSize(10).fontColor('#FFFFFF').fontFamily('monospace')
+      Text(metric.label).fontSize(10).fontColor('rgba(255,255,255,0.62)').layoutWeight(1)
+      Text(metric.value).fontSize(10).fontColor('#FFFFFF').fontFamily('monospace')
     }.width('100%').height(19)
   }
 
@@ -154,43 +159,77 @@ export struct RustDeskDiagnosticsHud {
         )
       )
 
-      this.metricLine('状态', rustDeskDiagnosticsStreamState(this.diagnostics.videoSeen,
-        this.diagnostics.lastFrameAgeMs))
-      this.metricLine('延迟', this.diagnostics.protocolSnapshotAvailable ?
-        formatDiagnosticLatency(this.diagnostics.latencyMs) : '协议采样不可用')
-      this.metricLine('帧率 / 送显',
-        formatDiagnosticFrameRate(this.diagnostics.receivedFps, this.diagnostics.receivedRateAvailable,
+      // API 23 only retains reactive Builder updates for a single object-literal
+      // argument. Do not change these metric rows back to separate label/value
+      // arguments: that captures the values from the instant the dock opens.
+      this.metricLine({
+        label: '状态',
+        value: rustDeskDiagnosticsStreamState(this.diagnostics.videoSeen, this.diagnostics.lastFrameAgeMs)
+      })
+      this.metricLine({
+        label: '延迟',
+        value: this.diagnostics.protocolSnapshotAvailable ?
+          formatDiagnosticLatency(this.diagnostics.latencyMs) : '协议采样不可用'
+      })
+      this.metricLine({
+        label: '帧率 / 送显',
+        value: formatDiagnosticFrameRate(this.diagnostics.receivedFps, this.diagnostics.receivedRateAvailable,
           this.diagnostics.videoSeen, this.isStreamStale()) + ' / ' +
-        formatDiagnosticFrameRate(this.diagnostics.displayFps, this.diagnostics.presentedRateAvailable,
-          this.diagnostics.videoSeen, this.isStreamStale()) + ' FPS')
-      this.metricLine('码率', formatDiagnosticBitrate(this.diagnostics.bitrateKbps))
-      this.metricLine('画面', (this.diagnostics.width > 0 ? this.diagnostics.width.toString() : '—') + ' × ' +
-        (this.diagnostics.height > 0 ? this.diagnostics.height.toString() : '—'))
-      this.metricLine('编码 / 解码', rustDeskCodecLabel(this.diagnostics.codec) + ' / ' +
-        this.diagnostics.decoderBackend)
-      this.metricLine('路径', this.diagnostics.protocolSnapshotAvailable ?
-        this.diagnostics.connectionPath : '协议采样不可用')
+          formatDiagnosticFrameRate(this.diagnostics.displayFps, this.diagnostics.presentedRateAvailable,
+            this.diagnostics.videoSeen, this.isStreamStale()) + ' FPS'
+      })
+      this.metricLine({ label: '码率', value: formatDiagnosticBitrate(this.diagnostics.bitrateKbps) })
+      this.metricLine({
+        label: '画面',
+        value: (this.diagnostics.width > 0 ? this.diagnostics.width.toString() : '—') + ' × ' +
+          (this.diagnostics.height > 0 ? this.diagnostics.height.toString() : '—')
+      })
+      this.metricLine({
+        label: '编码 / 解码',
+        value: rustDeskCodecLabel(this.diagnostics.codec) + ' / ' + this.diagnostics.decoderBackend
+      })
+      this.metricLine({
+        label: '路径',
+        value: this.diagnostics.protocolSnapshotAvailable ? this.diagnostics.connectionPath : '协议采样不可用'
+      })
 
       if (this.proEnabled) {
         Divider().color('rgba(255,255,255,0.18)').margin({ top: 3, bottom: 3 })
-        this.metricLine('解码提交', formatDiagnosticFrameRate(this.diagnostics.decodeFps,
-          this.diagnostics.decodeRateAvailable, this.diagnostics.videoSeen, this.isStreamStale()) + ' FPS')
-        this.metricLine('队列 / 峰值', this.diagnostics.queueDepth.toString() + ' / ' +
-          this.diagnostics.queueMax.toString())
-        this.metricLine('丢帧 / 关键帧', this.diagnostics.droppedFrames.toString() + ' / ' +
-          this.diagnostics.keyframes.toString())
-        this.metricLine('解码 p50 / p95', formatDiagnosticDurationUs(this.diagnostics.decodeP50Us) + ' / ' +
-          formatDiagnosticDurationUs(this.diagnostics.decodeP95Us))
-        this.metricLine('解码 max', formatDiagnosticDurationUs(this.diagnostics.decodeMaxUs))
-        this.metricLine('渲染 p50 / p95', formatDiagnosticDurationUs(this.diagnostics.renderP50Us) + ' / ' +
-          formatDiagnosticDurationUs(this.diagnostics.renderP95Us))
-        this.metricLine('渲染 max', formatDiagnosticDurationUs(this.diagnostics.renderMaxUs))
-        this.metricLine('本机 CPU / 内存', this.localResources.cpuAvailable ?
-          this.localResources.cpuPercent.toFixed(1) + '% / ' +
-          (this.localResources.memoryAvailable ? formatDiagnosticBytes(this.localResources.memoryBytes) : '不可用') :
-          '不可用')
-        this.metricLine('本机 GPU', this.localResources.gpuAvailable ?
-          this.localResources.gpuPercent.toFixed(1) + '%' : '不可用')
+        this.metricLine({
+          label: '解码提交',
+          value: formatDiagnosticFrameRate(this.diagnostics.decodeFps, this.diagnostics.decodeRateAvailable,
+            this.diagnostics.videoSeen, this.isStreamStale()) + ' FPS'
+        })
+        this.metricLine({
+          label: '队列 / 峰值',
+          value: this.diagnostics.queueDepth.toString() + ' / ' + this.diagnostics.queueMax.toString()
+        })
+        this.metricLine({
+          label: '丢帧 / 关键帧',
+          value: this.diagnostics.droppedFrames.toString() + ' / ' + this.diagnostics.keyframes.toString()
+        })
+        this.metricLine({
+          label: '解码 p50 / p95',
+          value: formatDiagnosticDurationUs(this.diagnostics.decodeP50Us) + ' / ' +
+            formatDiagnosticDurationUs(this.diagnostics.decodeP95Us)
+        })
+        this.metricLine({ label: '解码 max', value: formatDiagnosticDurationUs(this.diagnostics.decodeMaxUs) })
+        this.metricLine({
+          label: '渲染 p50 / p95',
+          value: formatDiagnosticDurationUs(this.diagnostics.renderP50Us) + ' / ' +
+            formatDiagnosticDurationUs(this.diagnostics.renderP95Us)
+        })
+        this.metricLine({ label: '渲染 max', value: formatDiagnosticDurationUs(this.diagnostics.renderMaxUs) })
+        this.metricLine({
+          label: '本机 CPU / 内存',
+          value: this.localResources.cpuAvailable ? this.localResources.cpuPercent.toFixed(1) + '% / ' +
+            (this.localResources.memoryAvailable ? formatDiagnosticBytes(this.localResources.memoryBytes) : '不可用') :
+            '不可用'
+        })
+        this.metricLine({
+          label: '本机 GPU',
+          value: this.localResources.gpuAvailable ? this.localResources.gpuPercent.toFixed(1) + '%' : '不可用'
+        })
       }
     }
     .width(270)
