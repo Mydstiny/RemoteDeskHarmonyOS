@@ -36,6 +36,8 @@ RDP_TEST_CASE(rdp_presentation_metrics_reports_p50_p95_and_max_for_one_second_wi
 
     const RdpPresentationMetricsSnapshot snapshot = metrics.snapshot(1000001);
     RDP_ASSERT_EQ(snapshot.presentedFrames, static_cast<uint64_t>(20));
+    RDP_ASSERT_EQ(snapshot.windowDurationUs, static_cast<int64_t>(999001));
+    RDP_ASSERT(!snapshot.windowComplete);
     RDP_ASSERT_EQ(snapshot.queueWaitUs.p50, static_cast<int64_t>(100));
     RDP_ASSERT_EQ(snapshot.queueWaitUs.p95, static_cast<int64_t>(190));
     RDP_ASSERT_EQ(snapshot.queueWaitUs.max, static_cast<int64_t>(200));
@@ -70,6 +72,8 @@ RDP_TEST_CASE(rdp_presentation_metrics_completed_window_uses_interval_counts) {
     RDP_ASSERT_EQ(window.submittedFrames, static_cast<uint64_t>(1));
     RDP_ASSERT_EQ(window.presentedFrames, static_cast<uint64_t>(1));
     RDP_ASSERT_EQ(window.copiedBytes, static_cast<uint64_t>(1000));
+    RDP_ASSERT_EQ(window.windowDurationUs, static_cast<int64_t>(1000100));
+    RDP_ASSERT(window.windowComplete);
 
     const RdpPresentationMetricsSnapshot lifetime = metrics.snapshot(1000300);
     RDP_ASSERT_EQ(lifetime.submittedFrames, static_cast<uint64_t>(2));

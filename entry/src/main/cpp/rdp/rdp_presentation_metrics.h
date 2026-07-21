@@ -61,6 +61,8 @@ struct RdpPresentationMetricsSnapshot {
     uint64_t surfaceDetachedRejections = 0;
     uint64_t generationRejections = 0;
     uint64_t windowSamples = 0;
+    int64_t windowDurationUs = 0;
+    bool windowComplete = false;
     int32_t lastPresentResult = static_cast<int32_t>(RdpPresentResult::RendererNotReady);
     uint64_t lastGeneration = 0;
     RdpPresentationLatencyStats callbackUs;
@@ -149,8 +151,11 @@ public:
     RdpPresentationMetricsSnapshot snapshot(int64_t nowUs) {
         std::lock_guard<std::mutex> lock(mutex_);
         rollWindowLocked(nowUs);
-        const Window& latencyWindow = completedReady_ ? completed_ : current_;
-        return buildSnapshotLocked(latencyWindow);
+        const bool completed = completedReady_;
+        const Window& latencyWindow = completed ? completed_ : current_;
+        const int64_t durationUs = completed ? completed_.durationUs :
+            std::max<int64_t>(0, nowUs - windowStartUs_);
+        return buildSnapshotLocked(latencyWindow, durationUs, completed);
     }
 
     bool takeCompletedWindow(RdpPresentationMetricsSnapshot& snapshot) {
@@ -174,6 +179,7 @@ private:
         uint64_t presentedFrames = 0;
         uint64_t surfaceDetachedRejections = 0;
         uint64_t generationRejections = 0;
+        int64_t durationUs = 0;
         std::vector<int64_t> callbackUs;
         std::vector<int64_t> copyUs;
         std::vector<int64_t> queueWaitUs;
@@ -220,14 +226,18 @@ private:
             return;
         }
         completed_ = std::move(current_);
+        completed_.durationUs = nowUs - windowStartUs_;
         current_ = Window();
         windowStartUs_ = nowUs;
         completedReady_ = true;
     }
 
-    RdpPresentationMetricsSnapshot buildSnapshotLocked(const Window& window) const {
+    RdpPresentationMetricsSnapshot buildSnapshotLocked(const Window& window, int64_t durationUs,
+                                                        bool windowComplete) const {
         RdpPresentationMetricsSnapshot result = totals_;
         result.windowSamples = window.presentedFrames;
+        result.windowDurationUs = durationUs;
+        result.windowComplete = windowComplete;
         result.callbackUs = summarize(window.callbackUs);
         result.copyUs = summarize(window.copyUs);
         result.queueWaitUs = summarize(window.queueWaitUs);
@@ -250,6 +260,8 @@ private:
         result.surfaceDetachedRejections = window.surfaceDetachedRejections;
         result.generationRejections = window.generationRejections;
         result.windowSamples = window.presentedFrames;
+        result.windowDurationUs = window.durationUs;
+        result.windowComplete = true;
         result.lastPresentResult = totals_.lastPresentResult;
         result.lastGeneration = totals_.lastGeneration;
         result.callbackUs = summarize(window.callbackUs);

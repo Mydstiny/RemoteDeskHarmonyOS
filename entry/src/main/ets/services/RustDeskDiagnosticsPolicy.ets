@@ -14,12 +14,56 @@ export function shouldEnableRustDeskPro(showDiagnostics: boolean, proEnabled: bo
   return showDiagnostics && proEnabled;
 }
 
+export interface RustDeskDiagnosticsPreferenceState {
+  showDiagnostics: boolean;
+  showProDiagnostics: boolean;
+}
+
+/**
+ * Pro is a direct user choice, not a disabled child control. Enabling it
+ * promotes the base monitor in the same preference update; disabling it leaves
+ * the base monitor unchanged. Turning the base monitor off deliberately keeps
+ * the Pro preference for the next session.
+ */
+export function resolveRustDeskProDiagnosticsToggle(showDiagnostics: boolean,
+  _showProDiagnostics: boolean, nextProEnabled: boolean): RustDeskDiagnosticsPreferenceState {
+  return {
+    showDiagnostics: nextProEnabled ? true : showDiagnostics,
+    showProDiagnostics: nextProEnabled
+  };
+}
+
 export function isFiniteDiagnosticNumber(value: number): boolean {
   return value === value && value !== Infinity && value !== -Infinity;
 }
 
 export function formatDiagnosticRate(value: number): string {
   return isFiniteDiagnosticNumber(value) && value > 0 ? value.toFixed(1) : '—';
+}
+
+/** Keep sampling, idle, and unavailable states distinct from a measured zero. */
+export function formatDiagnosticFrameRate(value: number, rateAvailable: boolean,
+  videoSeen: boolean, stale: boolean): string {
+  if (!videoSeen) {
+    return '等待视频流';
+  }
+  if (stale) {
+    return '已停滞';
+  }
+  if (!rateAvailable) {
+    return '采样中';
+  }
+  return isFiniteDiagnosticNumber(value) && value >= 0 ? value.toFixed(1) : '—';
+}
+
+export function rustDeskDiagnosticsStreamState(videoSeen: boolean, lastFrameAgeMs: number): string {
+  if (!videoSeen) {
+    return '等待视频流';
+  }
+  if (isFiniteDiagnosticNumber(lastFrameAgeMs) && lastFrameAgeMs >= 3000) {
+    return '已停滞';
+  }
+  return '正在接收';
 }
 
 export function formatDiagnosticLatency(value: number): string {

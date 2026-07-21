@@ -3308,6 +3308,10 @@ struct HostListPage {
   }
 
   private saveRustDeskShowProDiagnostics(on: boolean): void {
+    if (on && !this.rustdeskShowDiagnostics) {
+      this.rustdeskShowDiagnostics = true;
+      this.persistLocalRustDeskBooleanPref('rustdeskShowDiagnostics', true);
+    }
     this.rustdeskShowProDiagnostics = on;
     this.persistLocalRustDeskBooleanPref('rustdeskShowProDiagnostics', on);
   }
@@ -5364,8 +5368,7 @@ struct HostListPage {
               this.cardDivider()
               this.rustdeskSwitchRow($r('app.media.icon_desktop'), '专业性能数据（Pro）',
                 '进一步显示解码、队列和本机 CPU、内存、GPU 负载', this.rustdeskShowProDiagnostics,
-                (on: boolean): void => { this.saveRustDeskShowProDiagnostics(on); }, true,
-                this.rustdeskShowDiagnostics)
+                (on: boolean): void => { this.saveRustDeskShowProDiagnostics(on); }, true)
             }.borderRadius(24).backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
             .shadow({ radius: 16, color: 'rgba(0,0,0,0.04)', offsetY: 4 })
             .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })

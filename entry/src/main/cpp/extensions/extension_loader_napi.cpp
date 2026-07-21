@@ -86,8 +86,9 @@ struct SessionDiagnosticsCounters {
     uint64_t lastRateBytes = 0;
     uint64_t lastRateDecodeOk = 0;
     double receivedFps = 0.0;
-    double displayFps = 0.0;
+    double decodedFps = 0.0;
     double bitrateKbps = 0.0;
+    bool rateSampleAvailable = false;
 
     void reset() {
         ingressFrames.store(0, std::memory_order_release);
@@ -107,8 +108,9 @@ struct SessionDiagnosticsCounters {
         lastRateBytes = 0;
         lastRateDecodeOk = 0;
         receivedFps = 0.0;
-        displayFps = 0.0;
+        decodedFps = 0.0;
         bitrateKbps = 0.0;
+        rateSampleAvailable = false;
     }
 
     void addDecodeSample(int64_t elapsedUs) {
@@ -147,8 +149,9 @@ struct SessionDiagnosticsCounters {
         if (lastRateAtMs > 0 && nowMs > lastRateAtMs) {
             const double seconds = static_cast<double>(nowMs - lastRateAtMs) / 1000.0;
             receivedFps = static_cast<double>(frames - lastRateFrames) / seconds;
-            displayFps = static_cast<double>(decoded - lastRateDecodeOk) / seconds;
+            decodedFps = static_cast<double>(decoded - lastRateDecodeOk) / seconds;
             bitrateKbps = static_cast<double>(bytes - lastRateBytes) * 8.0 / seconds / 1000.0;
+            rateSampleAvailable = true;
         }
         lastRateAtMs = nowMs;
         lastRateFrames = frames;
@@ -156,11 +159,13 @@ struct SessionDiagnosticsCounters {
         lastRateDecodeOk = decoded;
     }
 
-    void rateSnapshot(double& ingressFps, double& presentedFps, double& kbps) const {
+    void rateSnapshot(double& ingressFps, double& decodedFramesPerSecond, double& kbps,
+                      bool& sampleAvailable) const {
         std::lock_guard<std::mutex> lock(rateMutex);
         ingressFps = receivedFps;
-        presentedFps = displayFps;
+        decodedFramesPerSecond = decodedFps;
         kbps = bitrateKbps;
+        sampleAvailable = rateSampleAvailable;
     }
 };
 
@@ -612,10 +617,12 @@ napi_value NapiGetRustDeskDiagnostics(napi_env env, napi_callback_info info) {
 
     RustDeskDiagnosticsStats nativeStats;
     SessionDiagnosticsCounters* counters = nullptr;
+    bool sessionActive = false;
     auto it = g_sessions.find(sessionId);
     if (it != g_sessions.end() && it->second) {
         counters = &it->second->diagnostics;
         if (it->second->protocolName == "rustdesk" && it->second->adapter) {
+            sessionActive = true;
             auto* bridge = dynamic_cast<RustDeskBridge*>(it->second->adapter.get());
             if (bridge) {
                 nativeStats = bridge->getDiagnostics();
@@ -623,6 +630,8 @@ napi_value NapiGetRustDeskDiagnostics(napi_env env, napi_callback_info info) {
         }
     }
 
+    const uint64_t nowMs = static_cast<uint64_t>(std::chrono::duration_cast<
+        std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count());
     DecoderTelemetrySnapshot decoder = DecoderNapi::GetActiveTelemetry(
         static_cast<uint64_t>(sessionId > 0 ? sessionId : 0));
     const RdpPresentationMetricsSnapshot renderer = RendererNapi::GetActivePresentationStats();
@@ -630,29 +639,42 @@ napi_value NapiGetRustDeskDiagnostics(napi_env env, napi_callback_info info) {
     int64_t decodeP95Us = 0;
     int64_t decodeMaxUs = 0;
     if (counters) {
-        const uint64_t nowMs = static_cast<uint64_t>(std::chrono::duration_cast<
-            std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count());
         counters->updateRates(nowMs);
         counters->timingSnapshot(decodeP50Us, decodeP95Us, decodeMaxUs);
     }
     double receivedFps = 0.0;
     double displayFps = 0.0;
+    double decodedFps = 0.0;
     double bitrateKbps = 0.0;
+    bool receivedRateAvailable = false;
     if (counters) {
-        counters->rateSnapshot(receivedFps, displayFps, bitrateKbps);
+        counters->rateSnapshot(receivedFps, decodedFps, bitrateKbps, receivedRateAvailable);
     }
-    // Decode submission is not presentation. Prefer the renderer's successful
-    // swap window for display FPS; leave it unavailable until a real frame has
-    // reached the active surface.
-    if (renderer.presentedFrames > 0 || renderer.windowSamples > 0) {
-        displayFps = static_cast<double>(renderer.windowSamples);
-    } else {
-        displayFps = 0.0;
+    // Decode completion is not presentation. Only report display FPS once a
+    // completed renderer interval supplies both frame count and duration.
+    const bool presentedRateAvailable = renderer.windowComplete &&
+        renderer.windowDurationUs > 0 && renderer.presentedFrames > 0;
+    if (presentedRateAvailable) {
+        displayFps = static_cast<double>(renderer.windowSamples) * 1000000.0 /
+            static_cast<double>(renderer.windowDurationUs);
     }
+    const uint64_t observedFrames = counters ?
+        counters->ingressFrames.load(std::memory_order_acquire) : nativeStats.receivedFrames;
+    const uint64_t observedLastFrameAtMs = counters ?
+        counters->lastFrameAtMs.load(std::memory_order_acquire) : nativeStats.lastFrameAtMs;
+    const bool videoSeen = observedFrames > 0;
+    const int64_t lastFrameAgeMs = observedLastFrameAtMs > 0 && nowMs >= observedLastFrameAtMs ?
+        static_cast<int64_t>(nowMs - observedLastFrameAtMs) : -1;
 
     napi_value result;
     napi_create_object(env, &result);
     SetObjectBool(env, result, "supported", nativeStats.supported);
+    SetObjectBool(env, result, "sessionActive", sessionActive);
+    SetObjectBool(env, result, "protocolSnapshotAvailable", nativeStats.supported);
+    SetObjectBool(env, result, "videoSeen", videoSeen);
+    SetObjectBool(env, result, "receivedRateAvailable", receivedRateAvailable);
+    SetObjectBool(env, result, "presentedRateAvailable", presentedRateAvailable);
+    SetObjectBool(env, result, "decodeRateAvailable", receivedRateAvailable);
     SetObjectInt32(env, result, "sessionId", sessionId);
     SetObjectInt32(env, result, "latencyMs", nativeStats.latencyMs);
     SetObjectInt32(env, result, "targetBitrateKbps", nativeStats.targetBitrateKbps);
@@ -669,6 +691,7 @@ napi_value NapiGetRustDeskDiagnostics(napi_env env, napi_callback_info info) {
     SetObjectInt64(env, result, "testDelayCount", static_cast<int64_t>(nativeStats.testDelayCount));
     SetObjectDouble(env, result, "receivedFps", receivedFps);
     SetObjectDouble(env, result, "displayFps", displayFps);
+    SetObjectDouble(env, result, "decodeFps", decodedFps);
     SetObjectDouble(env, result, "bitrateKbps", bitrateKbps);
     SetObjectInt32(env, result, "codec", counters ?
         counters->lastCodec.load(std::memory_order_acquire) : nativeStats.codec);
@@ -680,6 +703,7 @@ napi_value NapiGetRustDeskDiagnostics(napi_env env, napi_callback_info info) {
         (nativeStats.supported ? "relay" : "unknown"));
     SetObjectInt64(env, result, "lastFrameAtMs", static_cast<int64_t>(
         counters ? counters->lastFrameAtMs.load(std::memory_order_acquire) : nativeStats.lastFrameAtMs));
+    SetObjectInt64(env, result, "lastFrameAgeMs", lastFrameAgeMs);
     SetObjectInt64(env, result, "decodeOk", static_cast<int64_t>(
         counters ? counters->decodeOk.load(std::memory_order_acquire) : 0));
     SetObjectInt64(env, result, "decodeErrors", static_cast<int64_t>(
@@ -691,6 +715,7 @@ napi_value NapiGetRustDeskDiagnostics(napi_env env, napi_callback_info info) {
                    static_cast<int64_t>(renderer.presentedFrames));
     SetObjectInt64(env, result, "presentationWindowSamples",
                    static_cast<int64_t>(renderer.windowSamples));
+    SetObjectInt64(env, result, "presentationWindowMs", renderer.windowDurationUs / 1000);
     SetObjectInt64(env, result, "renderP50Us", renderer.workerUs.p50);
     SetObjectInt64(env, result, "renderP95Us", renderer.workerUs.p95);
     SetObjectInt64(env, result, "renderMaxUs", renderer.workerUs.max);

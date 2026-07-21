@@ -213,6 +213,12 @@ export interface RdpRenderStats {
 
 export interface RustDeskDiagnosticsSnapshot {
   supported: boolean;
+  sessionActive: boolean;
+  protocolSnapshotAvailable: boolean;
+  videoSeen: boolean;
+  receivedRateAvailable: boolean;
+  presentedRateAvailable: boolean;
+  decodeRateAvailable: boolean;
   sessionId: number;
   latencyMs: number;
   targetBitrateKbps: number;
@@ -226,12 +232,14 @@ export interface RustDeskDiagnosticsSnapshot {
   testDelayCount: number;
   receivedFps: number;
   displayFps: number;
+  decodeFps: number;
   bitrateKbps: number;
   codec: number;
   width: number;
   height: number;
   connectionPath: string;
   lastFrameAtMs: number;
+  lastFrameAgeMs: number;
   decodeOk: number;
   decodeErrors: number;
   decodeP50Us: number;
@@ -239,6 +247,7 @@ export interface RustDeskDiagnosticsSnapshot {
   decodeMaxUs: number;
   presentedFrames: number;
   presentationWindowSamples: number;
+  presentationWindowMs: number;
   renderP50Us: number;
   renderP95Us: number;
   renderMaxUs: number;

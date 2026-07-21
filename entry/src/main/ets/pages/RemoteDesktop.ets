@@ -323,13 +323,16 @@ type RustDeskAuthChoice = 'password' | 'request_approval';
 type RustDeskAuthDismissReason = 'none' | 'confirm' | 'cancel';
 
 const EMPTY_RUSTDESK_DIAGNOSTICS: RustDeskDiagnosticsSnapshot = {
-  supported: false, sessionId: -1, latencyMs: -1, targetBitrateKbps: 0,
+  supported: false, sessionActive: false, protocolSnapshotAvailable: false,
+  videoSeen: false, receivedRateAvailable: false, presentedRateAvailable: false,
+  decodeRateAvailable: false, sessionId: -1, latencyMs: -1, targetBitrateKbps: 0,
   videoMessages: 0, receivedFrames: 0, keyframes: 0, receivedBytes: 0,
   audioFrames: 0, cadenceGaps: 0, maxCadenceGapMs: 0, testDelayCount: 0,
-  receivedFps: 0, displayFps: 0, bitrateKbps: 0, codec: -1, width: 0, height: 0,
-  connectionPath: 'unknown', lastFrameAtMs: 0, decodeOk: 0, decodeErrors: 0,
+  receivedFps: 0, displayFps: 0, decodeFps: 0, bitrateKbps: 0, codec: -1, width: 0, height: 0,
+  connectionPath: 'unknown', lastFrameAtMs: 0, lastFrameAgeMs: -1, decodeOk: 0, decodeErrors: 0,
   decodeP50Us: 0, decodeP95Us: 0, decodeMaxUs: 0, presentedFrames: 0,
-  presentationWindowSamples: 0, renderP50Us: 0, renderP95Us: 0, renderMaxUs: 0,
+  presentationWindowSamples: 0, presentationWindowMs: 0,
+  renderP50Us: 0, renderP95Us: 0, renderMaxUs: 0,
   queueDepth: 0, queueMax: 0,
   droppedFrames: 0, decoderBackend: 'unknown'
 };
@@ -473,6 +476,7 @@ struct RemoteDesktop {
   private remoteNavigationHidden: boolean = false;
   private backgroundAudioPollTimer: number = -1;
   private rustDeskDiagnosticsTimer: number = -1;
+  private rustDeskDiagnosticsDockInitialized: boolean = false;
   private backgroundSessionInfo: RemoteSessionBgInfo | null = null;
   private backgroundHasAudio: boolean = false;
   private backgroundHasVideo: boolean = false;
@@ -562,6 +566,9 @@ struct RemoteDesktop {
   @State handleX: number = 0;
   @State handleY: number = 300;
   @State handleSide: string = 'right';
+  @State rustDeskDiagnosticsDockExpanded: boolean = false;
+  @State rustDeskDiagnosticsDockSide: string = 'left';
+  @State rustDeskDiagnosticsDockY: number = 360;
   @State modifierPanelMounted: boolean = false;
   @State modifierPanelVisible: boolean = false;
   @State shortcutPanelVisible: boolean = false;
@@ -1537,6 +1544,117 @@ struct RemoteDesktop {
     return Math.max(8, screenW - this.modifierHandleVisibleWidth());
   }
 
+  // RustDesk diagnostics is a separate dock, but uses the same local side and
+  // vertical-ratio persistence model as the modifier-key capsule.
+  private rustDeskDiagnosticsDockWidth(): number {
+    return 270;
+  }
+
+  private rustDeskDiagnosticsDockHeight(): number {
+    return shouldEnableRustDeskPro(this.rustdeskShowDiagnostics, this.rustdeskShowProDiagnostics) ?
+      380 : 205;
+  }
+
+  private rustDeskDiagnosticsDockHandleWidth(): number {
+    return 76;
+  }
+
+  private rustDeskDiagnosticsDockVisibleWidth(): number {
+    return 28;
+  }
+
+  private rustDeskDiagnosticsDockPanelX(): number {
+    const screenW: number = this.surfaceWidth > 0 ? this.surfaceWidth : 360;
+    return this.rustDeskDiagnosticsDockSide === 'left' ? 8 :
+      Math.max(8, screenW - this.rustDeskDiagnosticsDockWidth() - 8);
+  }
+
+  private rustDeskDiagnosticsDockHandleX(): number {
+    const screenW: number = this.surfaceWidth > 0 ? this.surfaceWidth : 360;
+    if (this.rustDeskDiagnosticsDockSide === 'left') {
+      return -(this.rustDeskDiagnosticsDockHandleWidth() - this.rustDeskDiagnosticsDockVisibleWidth());
+    }
+    return Math.max(8, screenW - this.rustDeskDiagnosticsDockVisibleWidth());
+  }
+
+  private clampRustDeskDiagnosticsDockY(y: number): number {
+    const screenH: number = this.surfaceHeight > 0 ? this.surfaceHeight : 640;
+    const topMargin: number = this.dropHoverActive ? 116 : 58;
+    const bottomMargin: number = this.kbHeight > 0 ? this.kbHeight + 8 : 24;
+    const maxY: number = Math.max(topMargin, screenH - bottomMargin - this.rustDeskDiagnosticsDockHeight());
+    return Math.max(topMargin, Math.min(y, maxY));
+  }
+
+  private updateRustDeskDiagnosticsDockForKeyboard(): void {
+    if (!this.rustDeskDiagnosticsDockExpanded) {
+      return;
+    }
+    const screenH: number = this.surfaceHeight > 0 ? this.surfaceHeight : 640;
+    const topMargin: number = this.dropHoverActive ? 116 : 58;
+    const bottomMargin: number = this.kbHeight > 0 ? this.kbHeight + 8 : 24;
+    if (screenH - topMargin - bottomMargin < this.rustDeskDiagnosticsDockHeight()) {
+      this.rustDeskDiagnosticsDockExpanded = false;
+      return;
+    }
+    this.rustDeskDiagnosticsDockY = this.avoidRustDeskDiagnosticsDockCollision(
+      this.rustDeskDiagnosticsDockSide, this.rustDeskDiagnosticsDockY);
+  }
+
+  private avoidRustDeskDiagnosticsDockCollision(side: string, y: number): number {
+    let resolvedY: number = this.clampRustDeskDiagnosticsDockY(y);
+    if (side !== this.handleSide || !this.handleVisible) {
+      return resolvedY;
+    }
+    const modifierY: number = this.modifierPanelVisible ? this.modifierPanelY : this.handleY;
+    const modifierHeight: number = this.modifierPanelVisible ? (this.fnLayer ? 300 : 136) : 42;
+    const dockBottom: number = resolvedY + this.rustDeskDiagnosticsDockHeight();
+    const modifierBottom: number = modifierY + modifierHeight;
+    if (dockBottom + 12 <= modifierY || resolvedY >= modifierBottom + 12) {
+      return resolvedY;
+    }
+    const above: number = this.clampRustDeskDiagnosticsDockY(modifierY - this.rustDeskDiagnosticsDockHeight() - 12);
+    const below: number = this.clampRustDeskDiagnosticsDockY(modifierBottom + 12);
+    resolvedY = Math.abs(above - y) <= Math.abs(below - y) ? above : below;
+    return resolvedY;
+  }
+
+  private initRustDeskDiagnosticsDock(): void {
+    const screenH: number = this.surfaceHeight > 0 ? this.surfaceHeight : 640;
+    const savedSide: string = AppStorage.get<string>('rustdeskDiagnosticsDockSide') ?? '';
+    const savedYRatio: number = AppStorage.get<number>('rustdeskDiagnosticsDockYRatio') ?? -1;
+    const defaultSide: string = this.handleSide === 'left' ? 'right' : 'left';
+    const side: string = savedSide === 'left' || savedSide === 'right' ? savedSide : defaultSide;
+    const initialY: number = savedYRatio > 0 && savedYRatio < 1 ? Math.round(screenH * savedYRatio) :
+      Math.round(screenH * 0.56);
+    this.rustDeskDiagnosticsDockSide = side;
+    this.rustDeskDiagnosticsDockY = this.avoidRustDeskDiagnosticsDockCollision(side, initialY);
+    this.rustDeskDiagnosticsDockExpanded = false;
+    this.rustDeskDiagnosticsDockInitialized = true;
+  }
+
+  private snapRustDeskDiagnosticsDockToEdge(x: number, y: number, fromPanel: boolean): void {
+    const screenW: number = this.surfaceWidth > 0 ? this.surfaceWidth : 360;
+    const referenceX: number = x + (fromPanel ? this.rustDeskDiagnosticsDockWidth() / 2 :
+      this.rustDeskDiagnosticsDockHandleWidth() / 2);
+    const side: string = referenceX < screenW / 2 ? 'left' : 'right';
+    const clampedY: number = this.avoidRustDeskDiagnosticsDockCollision(side, y);
+    animateTo({ duration: 180, curve: Curve.EaseOut }, (): void => {
+      this.rustDeskDiagnosticsDockSide = side;
+      this.rustDeskDiagnosticsDockY = clampedY;
+    });
+    AppStorage.setOrCreate('rustdeskDiagnosticsDockSide', side);
+    const screenH: number = this.surfaceHeight > 0 ? this.surfaceHeight : 640;
+    AppStorage.setOrCreate('rustdeskDiagnosticsDockYRatio', clampedY / screenH);
+  }
+
+  private toggleRustDeskDiagnosticsDock(): void {
+    this.rustDeskDiagnosticsDockExpanded = !this.rustDeskDiagnosticsDockExpanded;
+    if (this.rustDeskDiagnosticsDockExpanded) {
+      this.rustDeskDiagnosticsDockY = this.avoidRustDeskDiagnosticsDockCollision(
+        this.rustDeskDiagnosticsDockSide, this.rustDeskDiagnosticsDockY);
+    }
+  }
+
   private modifierPanelWidth(): number {
     if (this.breakpoint === 'xl') {
       return 320;
@@ -1846,12 +1964,14 @@ struct RemoteDesktop {
           const keyboardArea: window.AvoidArea =
             w.getWindowAvoidArea(window.AvoidAreaType.TYPE_KEYBOARD);
           this.kbHeight = px2vp(keyboardArea.bottomRect.height);
+          this.updateRustDeskDiagnosticsDockForKeyboard();
         } catch (_e) {
           // 初始读取失败, 后续 avoidAreaChange 会更新
         }
         this.kbAvoidCb = (data: window.AvoidAreaOptions): void => {
           if (data.type === window.AvoidAreaType.TYPE_KEYBOARD) {
             this.kbHeight = px2vp(data.area.bottomRect.height);
+            this.updateRustDeskDiagnosticsDockForKeyboard();
             hilog.info(RD_DOMAIN, RD_TAG,
               'kbHeight changed: ' + Math.round(this.kbHeight).toString() + 'vp');
           }
@@ -2010,11 +2130,15 @@ struct RemoteDesktop {
   private onRustDeskDiagnosticsSettingChange(): void {
     if (shouldShowRustDeskDiagnostics(this.rustdeskShowDiagnostics, this.connected,
       this.isRustDeskSession() ? 'rustdesk' : '', this.sessionId)) {
+      if (!this.rustDeskDiagnosticsDockInitialized) {
+        this.initRustDeskDiagnosticsDock();
+      }
       if (!shouldEnableRustDeskPro(this.rustdeskShowDiagnostics, this.rustdeskShowProDiagnostics)) {
         this.localResourceStats = EMPTY_LOCAL_RESOURCE_STATS;
       }
       this.startRustDeskDiagnosticsPolling();
     } else if (!this.rustdeskShowDiagnostics) {
+      this.rustDeskDiagnosticsDockExpanded = false;
       this.stopRustDeskDiagnosticsPolling(true);
     }
   }
@@ -2068,6 +2192,7 @@ struct RemoteDesktop {
     if (reset) {
       this.rustDeskDiagnostics = EMPTY_RUSTDESK_DIAGNOSTICS;
       this.localResourceStats = EMPTY_LOCAL_RESOURCE_STATS;
+      this.rustDeskDiagnosticsDockExpanded = false;
     }
   }
 
@@ -4044,6 +4169,9 @@ struct RemoteDesktop {
       // T-171: 连接成功后显示悬浮胶囊
       this.initHandlePosition();
       this.handleVisible = true;
+      if (host.protocol === 'rustdesk' && this.rustdeskShowDiagnostics) {
+        this.initRustDeskDiagnosticsDock();
+      }
       this.promptPhysicalKeyboardLayout();
       if (host.protocol === 'rdp') {
         this.startRdpRenderWatchdog(sid, attemptId);
@@ -4229,6 +4357,7 @@ struct RemoteDesktop {
       ' sessionId=' + this.sessionId.toString());
     // T-171: 断开时隐藏胶囊和面板 + 释放所有修饰键
     this.handleVisible = false;
+    this.rustDeskDiagnosticsDockExpanded = false;
     this.modifierPanelMounted = false;
     this.modifierPanelVisible = false;
     this.shortcutPanelVisible = false;
@@ -4329,6 +4458,7 @@ struct RemoteDesktop {
 
     // 隐藏 UI 元素
     this.handleVisible = false;
+    this.rustDeskDiagnosticsDockExpanded = false;
     this.modifierPanelMounted = false;
     this.modifierPanelVisible = false;
     this.shortcutPanelVisible = false;
@@ -4489,6 +4619,7 @@ struct RemoteDesktop {
         this.connecting = false;
         if (this.rustdeskShowDiagnostics && this.isRustDeskSession()) {
           this.startRustDeskDiagnosticsPolling();
+          this.initRustDeskDiagnosticsDock();
         }
         this.startRemoteCursorPolling(this.sessionId);
         this.inputForwardReady = true;
@@ -7042,6 +7173,11 @@ struct RemoteDesktop {
             this.modifierHiddenLeftX() : this.modifierHiddenRightX(this.surfaceWidth);
           this.clampModifierPanelsIntoView();
         }
+        if (shouldShowRustDeskDiagnostics(this.rustdeskShowDiagnostics, this.connected,
+          this.isRustDeskSession() ? 'rustdesk' : '', this.sessionId)) {
+          this.rustDeskDiagnosticsDockY = this.avoidRustDeskDiagnosticsDockCollision(
+            this.rustDeskDiagnosticsDockSide, this.rustDeskDiagnosticsDockY);
+        }
         hilog.info(RD_DOMAIN, RD_TAG, 'surface area=' + Math.round(wVp).toString() + 'x' +
           Math.round(hVp).toString() + 'vp render=' + wPx.toString() + 'x' + hPx.toString() + 'px');
         // resizeRenderer 告诉 GL 渲染器实际的 EGL surface 像素尺寸,
@@ -7183,7 +7319,18 @@ struct RemoteDesktop {
         RustDeskDiagnosticsHud({
           diagnostics: this.rustDeskDiagnostics,
           localResources: this.localResourceStats,
-          proEnabled: this.rustdeskShowProDiagnostics
+          proEnabled: this.rustdeskShowProDiagnostics,
+          expanded: this.rustDeskDiagnosticsDockExpanded,
+          attachSide: this.rustDeskDiagnosticsDockSide,
+          handleX: this.rustDeskDiagnosticsDockHandleX(),
+          panelX: this.rustDeskDiagnosticsDockPanelX(),
+          panelY: this.rustDeskDiagnosticsDockY,
+          onToggle: (): void => {
+            this.toggleRustDeskDiagnosticsDock();
+          },
+          onPositionChange: (x: number, y: number, fromPanel: boolean): void => {
+            this.snapRustDeskDiagnosticsDockToEdge(x, y, fromPanel);
+          }
         })
       }
 

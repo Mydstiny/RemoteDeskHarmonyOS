@@ -3,8 +3,11 @@ import {
   formatDiagnosticBitrate,
   formatDiagnosticBytes,
   formatDiagnosticDurationUs,
+  formatDiagnosticFrameRate,
   formatDiagnosticLatency,
   formatDiagnosticRate,
+  resolveRustDeskProDiagnosticsToggle,
+  rustDeskDiagnosticsStreamState,
   rustDeskCodecLabel,
   shouldEnableRustDeskPro,
   shouldShowRustDeskDiagnostics
@@ -19,10 +22,20 @@ export default function rustDeskDiagnosticsPolicyTest(): void {
       expect(shouldShowRustDeskDiagnostics(true, true, 'rustdesk', 1)).assertEqual(true);
     });
 
-    it('pro_is_a_child_switch_of_basic_diagnostics', 0, (): void => {
+    it('pro_is_active_only_with_basic_diagnostics', 0, (): void => {
       expect(shouldEnableRustDeskPro(false, true)).assertEqual(false);
       expect(shouldEnableRustDeskPro(true, false)).assertEqual(false);
       expect(shouldEnableRustDeskPro(true, true)).assertEqual(true);
+    });
+
+    it('enabling_pro_also_enables_the_base_monitor', 0, (): void => {
+      const enabled = resolveRustDeskProDiagnosticsToggle(false, false, true);
+      expect(enabled.showDiagnostics).assertEqual(true);
+      expect(enabled.showProDiagnostics).assertEqual(true);
+
+      const disabled = resolveRustDeskProDiagnosticsToggle(true, true, false);
+      expect(disabled.showDiagnostics).assertEqual(true);
+      expect(disabled.showProDiagnostics).assertEqual(false);
     });
 
     it('formats_unavailable_and_rate_boundaries_without_nan', 0, (): void => {
@@ -34,6 +47,17 @@ export default function rustDeskDiagnosticsPolicyTest(): void {
       expect(formatDiagnosticBitrate(1000)).assertEqual('1.0 Mbps');
       expect(formatDiagnosticBytes(0)).assertEqual('—');
       expect(formatDiagnosticDurationUs(0)).assertEqual('—');
+    });
+
+    it('keeps_video_sampling_stall_and_unavailable_states_distinct', 0, (): void => {
+      expect(formatDiagnosticFrameRate(0, false, false, false)).assertEqual('等待视频流');
+      expect(formatDiagnosticFrameRate(0, false, true, false)).assertEqual('采样中');
+      expect(formatDiagnosticFrameRate(0, false, true, true)).assertEqual('已停滞');
+      expect(formatDiagnosticFrameRate(0, true, true, true)).assertEqual('已停滞');
+      expect(formatDiagnosticFrameRate(0, true, true, false)).assertEqual('0.0');
+      expect(rustDeskDiagnosticsStreamState(false, -1)).assertEqual('等待视频流');
+      expect(rustDeskDiagnosticsStreamState(true, 2999)).assertEqual('正在接收');
+      expect(rustDeskDiagnosticsStreamState(true, 3000)).assertEqual('已停滞');
     });
 
     it('uses_the_public_codec_numbering_for_hud_labels', 0, (): void => {
