@@ -295,6 +295,10 @@ export interface SessionConfig {
   monitorCount: number;
   colorDepth: number;
   rdpAuthIdentityMode?: number; // 0=MicrosoftAccount\email, 1=domain MicrosoftAccount, 2=bare email, 3=.\AzureAD\email, 4=domain AzureAD
+  rdpAuthMode?: 'password' | 'blank_password' | 'restricted_admin';
+  rdpRestrictedAdminSecretSource?: 'empty_password_hash' | 'ntlm_hash';
+  // Transient only. Never persist this value in RemoteHost or a cloud payload.
+  rdpRestrictedAdminHash?: string;
   authMethod: string;
   privateKeyPem: string;
   privateKeyPassphrase: string;

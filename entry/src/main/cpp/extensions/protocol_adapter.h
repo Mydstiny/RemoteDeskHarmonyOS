@@ -49,6 +49,19 @@ enum class ConnectionState {
     ERROR        = 4
 };
 
+/** RDP credential delegation mode. Keep this independent from SSH authMethod. */
+enum class RdpAuthenticationMode {
+    Password = 0,
+    BlankPassword = 1,
+    RestrictedAdmin = 2
+};
+
+/** Restricted Admin credential material is either a supplied NTLM hash or the empty-password hash. */
+enum class RdpRestrictedAdminSecretSource {
+    NtlmHash = 0,
+    EmptyPasswordHash = 1
+};
+
 // ============================================================
 // 数据结构
 // ============================================================
@@ -70,6 +83,9 @@ struct ConnectionConfig {
     int         monitorCount;    // 🆕 显示器数量
     int         colorDepth;      // 🆕 色深 (BPP)
     int         rdpAuthIdentityMode; // RDP: 0=MicrosoftAccount\email, 1=domain+email, 2=bare email
+    RdpAuthenticationMode rdpAuthMode; // RDP: password | blank_password | restricted_admin
+    RdpRestrictedAdminSecretSource rdpRestrictedAdminSecretSource;
+    std::string rdpRestrictedAdminHash; // RDP: transient NTLM hash, never persisted/logged
     std::string authMethod;       // 🆕 SSH 认证方式: "password" | "publickey" | "kbd-interactive"
     std::string privateKeyPem;    // 🆕 SSH 私钥 PEM (临时明文, 仅 publickey 认证)
     std::string privateKeyPassphrase; // 🆕 SSH 私钥口令 (可选)
@@ -97,7 +113,8 @@ struct ConnectionConfig {
     ConnectionConfig()
         : port(3389), width(1920), height(1080), codec(CodecType::H264),
           gatewayPort(443), multiMonitor(false), monitorCount(1),
-          colorDepth(32), rdpAuthIdentityMode(0), authMethod("password"),
+          colorDepth(32), rdpAuthIdentityMode(0), rdpAuthMode(RdpAuthenticationMode::Password),
+          rdpRestrictedAdminSecretSource(RdpRestrictedAdminSecretSource::NtlmHash), authMethod("password"),
           rdImageQuality(1), rdDirectIp(false), rdDirectPort(21118),
           rdLanDiscovery(true), rdPrivacyMode(false), rdAudioEnabled(true), rdClipboardEnabled(true),
           rdDriveName("RemoteDesktop"), rdpAllowUntrustedRoot(false), rdpAllowHostMismatch(false),

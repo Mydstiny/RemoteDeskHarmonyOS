@@ -24,6 +24,26 @@ export enum SortOrder {
 
 export interface PresetItem { label: string; width: number; height: number }
 
+export type RdpAuthMode = 'password' | 'blank_password' | 'restricted_admin';
+export type RdpRestrictedAdminSecretSource = 'empty_password_hash' | 'ntlm_hash';
+
+export function normalizeRdpAuthMode(value: string | undefined): RdpAuthMode {
+  if (value === 'blank_password' || value === 'restricted_admin') { return value; }
+  return 'password';
+}
+
+export function normalizeRdpRestrictedAdminSecretSource(
+  value: string | undefined
+): RdpRestrictedAdminSecretSource {
+  return value === 'empty_password_hash' ? 'empty_password_hash' : 'ntlm_hash';
+}
+
+/** Normalizes a pasted NTLM hash and returns an empty string for invalid input. */
+export function normalizeRdpNtlmHash(value: string): string {
+  const normalized: string = value.replace(/\s/g, '').toUpperCase();
+  return /^[0-9A-F]{32}$/.test(normalized) ? normalized : '';
+}
+
 export interface DisplayConfigJSON {
   width: number
   height: number
@@ -85,6 +105,8 @@ export interface RemoteHostJSON {
   rustdeskDirectHost: string
   rustdeskDirectPort: number
   rdpCredentialId: string
+  rdpAuthMode?: string
+  rdpRestrictedAdminSecretSource?: string
   sourceType: string
   rustdeskProAccountId: string
   rustdeskProPeerId: string
@@ -193,6 +215,9 @@ export class RemoteHost {
   rustdeskDirectHost: string = ''; // 直连 peer IP 地址
   rustdeskDirectPort: number = 21118; // 直连端口 (默认 21118; RustDesk peer TCP)
   rdpCredentialId: string = ''; // RDP 绑定的 Windows 凭据 ID
+  // Restricted Admin 的 NTLM Hash 保存在本机加密扩展中，不进入 RemoteHost/JSON。
+  rdpAuthMode: RdpAuthMode = 'password';
+  rdpRestrictedAdminSecretSource: RdpRestrictedAdminSecretSource = 'ntlm_hash';
   sourceType: string = 'manual'; // manual | rustdesk_pro
   rustdeskProAccountId: string = ''; // Pro 账号设备端绑定 ID
   rustdeskProPeerId: string = ''; // Pro 地址簿中的稳定 peer ID
@@ -228,9 +253,14 @@ export class RemoteHost {
       const hasPeerIdentity: boolean = this.rustdeskDirectEnabled || this.customHostname.trim().length > 0;
       return basic && hasPeerIdentity && hasEndpoint;
     }
-    return basic && this.host.length > 0 &&
-           (this.username.length > 0 || this.rdpCredentialId.length > 0) &&
-           this.port > 0 && this.port <= 65535;
+    if (this.protocol === 'rdp') {
+      const mode: RdpAuthMode = normalizeRdpAuthMode(this.rdpAuthMode);
+      const hasIdentity: boolean = mode === 'password' ?
+        this.username.length > 0 || this.rdpCredentialId.length > 0 : this.username.length > 0;
+      return basic && this.host.length > 0 && hasIdentity && this.port > 0 && this.port <= 65535;
+    }
+    return basic && this.host.length > 0 && this.username.length > 0 &&
+      this.port > 0 && this.port <= 65535;
   }
 
   /**
@@ -239,6 +269,20 @@ export class RemoteHost {
   getValidationErrors(): string[] {
     const errors: string[] = [];
     if (!this.label) { errors.push('主机名称不能为空'); }
+    if (this.protocol === 'rdp') {
+      const mode: RdpAuthMode = normalizeRdpAuthMode(this.rdpAuthMode);
+      if (!this.host) { errors.push('主机地址不能为空'); }
+      if (this.port <= 0 || this.port > 65535) { errors.push('端口号必须在 1-65535 之间'); }
+      if (mode === 'password') {
+        if (!this.username && !this.rdpCredentialId) { errors.push('用户名或 Windows 凭据不能为空'); }
+        if (!this.password && this.rdpCredentialId === '') { errors.push('密码不能为空 (或选择 Windows 凭据)'); }
+      } else {
+        if (!this.username) { errors.push('用户名不能为空'); }
+        if (this.rdpCredentialId !== '') { errors.push('此认证方式不能使用 Windows 凭据'); }
+        if (this.password !== '') { errors.push('此认证方式不能保存普通密码'); }
+      }
+      return errors;
+    }
     if (this.protocol === 'rustdesk') {
       if (this.rustdeskDirectEnabled) {
         if (!this.rustdeskDirectHost.trim()) { errors.push('RustDesk 直连地址不能为空'); }
@@ -255,13 +299,7 @@ export class RemoteHost {
       }
     } else {
       if (!this.host) { errors.push('主机地址不能为空'); }
-      if (!this.username && !this.rdpCredentialId) {
-        if (this.protocol === 'rdp') {
-          errors.push('用户名或 Windows 凭据不能为空');
-        } else {
-          errors.push('用户名不能为空');
-        }
-      }
+      if (!this.username) { errors.push('用户名不能为空'); }
       if (this.port <= 0 || this.port > 65535) { errors.push('端口号必须在 1-65535 之间'); }
     }
     if (this.protocol !== 'rdp' && this.protocol !== 'rustdesk' && this.protocol !== 'ssh') { errors.push('协议类型无效'); }
@@ -269,10 +307,8 @@ export class RemoteHost {
     // ID/中继批准通道，才必须在主机配置中预先填写设备密码。
     const rustDeskRelayCanPrompt: boolean = this.protocol === 'rustdesk' &&
       !this.rustdeskDirectEnabled;
-    if (!this.password && !rustDeskRelayCanPrompt && this.rdpCredentialId === '' && !(this.protocol === 'ssh' && this.sshUseKey)) {
-      if (this.protocol === 'rdp') {
-        errors.push('密码不能为空 (或选择 Windows 凭据)');
-      } else if (this.protocol === 'rustdesk') {
+    if (!this.password && !rustDeskRelayCanPrompt && !(this.protocol === 'ssh' && this.sshUseKey)) {
+      if (this.protocol === 'rustdesk') {
         errors.push(this.rustdeskDirectEnabled ? 'RustDesk 直连模式需要设备密码' :
           '密码不能为空，或选择“请求被控端批准”');
       } else {
@@ -347,6 +383,8 @@ export class RemoteHost {
       rustdeskDirectHost: this.rustdeskDirectHost,
       rustdeskDirectPort: this.rustdeskDirectPort,
       rdpCredentialId: this.rdpCredentialId,
+      rdpAuthMode: this.rdpAuthMode,
+      rdpRestrictedAdminSecretSource: this.rdpRestrictedAdminSecretSource,
       sourceType: this.sourceType,
       rustdeskProAccountId: this.rustdeskProAccountId,
       rustdeskProPeerId: this.rustdeskProPeerId,
@@ -421,6 +459,9 @@ export class RemoteHost {
     if (json.rustdeskDirectHost) { host.rustdeskDirectHost = json.rustdeskDirectHost; }
     if (json.rustdeskDirectPort) { host.rustdeskDirectPort = json.rustdeskDirectPort; }
     if (json.rdpCredentialId) { host.rdpCredentialId = json.rdpCredentialId; }
+    host.rdpAuthMode = normalizeRdpAuthMode(json.rdpAuthMode);
+    host.rdpRestrictedAdminSecretSource = normalizeRdpRestrictedAdminSecretSource(
+      json.rdpRestrictedAdminSecretSource);
     if (json.sourceType) { host.sourceType = json.sourceType; }
     if (json.rustdeskProAccountId) { host.rustdeskProAccountId = json.rustdeskProAccountId; }
     if (json.rustdeskProPeerId) { host.rustdeskProPeerId = json.rustdeskProPeerId; }
@@ -428,7 +469,18 @@ export class RemoteHost {
     if (json.rustdeskProManaged !== undefined) { host.rustdeskProManaged = json.rustdeskProManaged; }
     if (json.rustdeskProLastSeenAt !== undefined) { host.rustdeskProLastSeenAt = json.rustdeskProLastSeenAt; }
     if (json.rustdeskProSyncError) { host.rustdeskProSyncError = json.rustdeskProSyncError; }
+    host.normalizeRdpAuthentication();
     return host;
+  }
+
+  /** Enforces the mutually exclusive credential fields for the selected RDP mode. */
+  normalizeRdpAuthentication(): void {
+    this.rdpAuthMode = normalizeRdpAuthMode(this.rdpAuthMode);
+    this.rdpRestrictedAdminSecretSource = normalizeRdpRestrictedAdminSecretSource(
+      this.rdpRestrictedAdminSecretSource);
+    if (this.protocol !== 'rdp' || this.rdpAuthMode === 'password') { return; }
+    this.password = '';
+    this.rdpCredentialId = '';
   }
 
   /**

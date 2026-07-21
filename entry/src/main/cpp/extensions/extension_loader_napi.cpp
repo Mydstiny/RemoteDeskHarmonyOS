@@ -9,6 +9,7 @@
 #include "protocol_adapter.h"
 #include "session_teardown_executor.h"
 #include "rdp/freerdp_adapter.h"
+#include "rdp/rdp_auth_mode_policy.h"
 #include "ssh/ssh_adapter.h"
 #include "ssh/ssh_key_tool.h"
 #include "audio/input_handler.h"
@@ -935,7 +936,8 @@ napi_value NapiPresentRdpCachedFrame(napi_env env, napi_callback_info info) {
 /**
  * NAPI: connect(config: object): number
  *
- * config 字段: protocol, host, port, username, password, domain, width, height, codec
+ * config 字段: protocol, host, port, username, password, domain, width, height, codec,
+ * rdpAuthMode, rdpRestrictedAdminSecretSource, rdpRestrictedAdminHash
  * 返回会话 ID (>0=成功, -1=协议未找到, -2=连接失败)
  */
 napi_value NapiConnect(napi_env env, napi_callback_info info) {
@@ -1009,6 +1011,50 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
     }
     getInt("colorDepth", cfg.colorDepth);
     getInt("rdpAuthIdentityMode", cfg.rdpAuthIdentityMode);
+    std::string rdpAuthModeName;
+    std::string rdpRestrictedAdminSecretSourceName;
+    getString("rdpAuthMode", rdpAuthModeName);
+    getString("rdpRestrictedAdminSecretSource", rdpRestrictedAdminSecretSourceName);
+    if (protocolName == "rdp") {
+        std::string rawRdpRestrictedAdminHash;
+        getString("rdpRestrictedAdminHash", rawRdpRestrictedAdminHash);
+        const RdpAuthenticationPolicy rdpAuth = ParseRdpAuthenticationPolicy(
+            rdpAuthModeName, rdpRestrictedAdminSecretSourceName, rawRdpRestrictedAdminHash);
+        std::fill(rawRdpRestrictedAdminHash.begin(), rawRdpRestrictedAdminHash.end(), '\0');
+        rawRdpRestrictedAdminHash.clear();
+        if (!rdpAuth.valid) {
+            OH_LOG_ERROR(LOG_APP, "[ExtLoader] invalid RDP authentication configuration");
+            napi_value errVal;
+            napi_create_int32(env, -50, &errVal);
+            return errVal;
+        }
+        if (rdpAuth.mode == RdpAuthenticationPolicyMode::Password) {
+            cfg.rdpAuthMode = RdpAuthenticationMode::Password;
+        } else if (rdpAuth.mode == RdpAuthenticationPolicyMode::BlankPassword) {
+            cfg.rdpAuthMode = RdpAuthenticationMode::BlankPassword;
+        } else {
+            cfg.rdpAuthMode = RdpAuthenticationMode::RestrictedAdmin;
+        }
+        if (rdpAuth.restrictedAdminSecretSource ==
+            RdpRestrictedAdminSecretPolicySource::EmptyPasswordHash) {
+            cfg.rdpRestrictedAdminSecretSource = RdpRestrictedAdminSecretSource::EmptyPasswordHash;
+        } else {
+            cfg.rdpRestrictedAdminSecretSource = RdpRestrictedAdminSecretSource::NtlmHash;
+        }
+        if (cfg.rdpAuthMode == RdpAuthenticationMode::RestrictedAdmin) {
+            cfg.password.clear();
+            if (cfg.rdpRestrictedAdminSecretSource == RdpRestrictedAdminSecretSource::NtlmHash) {
+                cfg.rdpRestrictedAdminHash = rdpAuth.normalizedNtlmHash;
+            } else {
+                cfg.rdpRestrictedAdminHash.clear();
+            }
+        } else {
+            cfg.rdpRestrictedAdminHash.clear();
+            if (cfg.rdpAuthMode == RdpAuthenticationMode::BlankPassword) {
+                cfg.password.clear();
+            }
+        }
+    }
 
     // 🆕 SSH 认证字段
     getString("authMethod", cfg.authMethod);
@@ -1082,8 +1128,13 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
                     serverKeyLog.c_str());
     } else if (protocolName == "rdp") {
         const std::string drivePathLog = cfg.rdDrivePath.empty() ? "off" : SafeLog::HashForLog(cfg.rdDrivePath);
+        const char* authMode = cfg.rdpAuthMode == RdpAuthenticationMode::RestrictedAdmin ? "restricted_admin" :
+            (cfg.rdpAuthMode == RdpAuthenticationMode::BlankPassword ? "blank_password" : "password");
+        const char* restrictedSource =
+            cfg.rdpRestrictedAdminSecretSource == RdpRestrictedAdminSecretSource::EmptyPasswordHash ?
+                "empty_password_hash" : "ntlm_hash";
         OH_LOG_INFO(LOG_APP,
-            "[ExtLoader] RDP配置: desktop=%{public}dx%{public}d colorDepth=%{public}d audio=%{public}s clipboard=%{public}s driveName=%{public}s drivePathId=%{public}s authIdentityMode=%{public}d",
+            "[ExtLoader] RDP配置: desktop=%{public}dx%{public}d colorDepth=%{public}d audio=%{public}s clipboard=%{public}s driveName=%{public}s drivePathId=%{public}s authIdentityMode=%{public}d authMode=%{public}s restrictedSource=%{public}s hashLen=%{public}zu",
             cfg.width,
             cfg.height,
             cfg.colorDepth,
@@ -1091,7 +1142,10 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
             cfg.rdClipboardEnabled ? "on" : "off",
             cfg.rdDriveName.empty() ? "RemoteDesktop" : cfg.rdDriveName.c_str(),
             drivePathLog.c_str(),
-            cfg.rdpAuthIdentityMode);
+            cfg.rdpAuthIdentityMode,
+            authMode,
+            restrictedSource,
+            cfg.rdpRestrictedAdminHash.length());
     }
 
     // 查找协议适配器

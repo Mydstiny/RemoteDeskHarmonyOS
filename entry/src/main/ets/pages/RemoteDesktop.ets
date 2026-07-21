@@ -10,7 +10,14 @@ import { HostSyncService } from '../services/HostSyncService';
 import { CloudStore } from '../services/CloudStore';
 import { ExtensionLoader } from '../services/ExtensionLoader';
 import { KeyVaultService } from '../services/KeyVaultService';
-import { RemoteHost, LockType } from '../model/RemoteHost';
+import {
+  RemoteHost,
+  LockType,
+  normalizeRdpAuthMode,
+  normalizeRdpRestrictedAdminSecretSource,
+  RdpAuthMode,
+  RdpRestrictedAdminSecretSource
+} from '../model/RemoteHost';
 import { RustDeskRelayConfig } from '../model/RustDeskRelayConfig';
 import { RdpCredential } from '../model/RdpCredential';
 import { AppConfig, Palette, buildDark, buildLight } from '../common/Theme';
@@ -2939,7 +2946,8 @@ struct RemoteDesktop {
   }
 
   private hostWithResolvedCredential(host: RemoteHost): RemoteHost {
-    if (host.protocol !== 'rdp' || host.rdpCredentialId === '') {
+    if (host.protocol !== 'rdp' || normalizeRdpAuthMode(host.rdpAuthMode) !== 'password' ||
+      host.rdpCredentialId === '') {
       return host;
     }
     const credential: RdpCredential | undefined = this.srv.getRdpCredential(host.rdpCredentialId);
@@ -3538,6 +3546,24 @@ struct RemoteDesktop {
       if (!(await this.loader.waitForPendingTeardown())) {
         throw new Error('上一会话资源清理未完成 [E-TEARDOWN-PENDING]');
       }
+      const rdpAuthMode: RdpAuthMode = normalizeRdpAuthMode(host.rdpAuthMode);
+      const rdpRestrictedAdminSecretSource: RdpRestrictedAdminSecretSource =
+        normalizeRdpRestrictedAdminSecretSource(host.rdpRestrictedAdminSecretSource);
+      let rdpRestrictedAdminHash: string = '';
+      if (host.protocol === 'rdp' && rdpAuthMode === 'restricted_admin' &&
+        rdpRestrictedAdminSecretSource === 'ntlm_hash') {
+        const secret = CloudStore.getInstance().loadRdpRestrictedAdminHash(host);
+        if (secret.status !== 'ready') {
+          if (secret.status === 'crypto_locked') {
+            throw new Error('请先解锁本地凭据存储后再连接 Restricted Admin 主机 [E-RDP-AUTH-CRYPTO-LOCKED]');
+          }
+          if (secret.status === 'binding_mismatch') {
+            throw new Error('主机地址或用户名已改变，请重新输入 NTLM Hash [E-RDP-AUTH-IDENTITY-MISMATCH]');
+          }
+          throw new Error('此设备未保存该 Restricted Admin 主机的 NTLM Hash，请重新输入 [E-RDP-AUTH-SECRET-REQUIRED]');
+        }
+        rdpRestrictedAdminHash = secret.hash;
+      }
       const desktop: DesktopSize = this.desktopSize(host);
       this.updateRemoteSize(desktop);
       const credentials: RdpCredentialParts = this.rdpCredentialParts(host);
@@ -3656,7 +3682,7 @@ struct RemoteDesktop {
         host: sessionHost,
         port: sessionPort,
         username: credentials.username,
-        password: host.password,
+        password: host.protocol === 'rdp' && rdpAuthMode !== 'password' ? '' : host.password,
         width: w,
         height: h,
         customHostname: host.customHostname,
@@ -3668,6 +3694,9 @@ struct RemoteDesktop {
         monitorCount: desktop.monitorCount,
         colorDepth: desktop.colorDepth,
         rdpAuthIdentityMode: AppStorage.get<number>('rdpAuthIdentityMode') ?? 1,
+        rdpAuthMode: rdpAuthMode,
+        rdpRestrictedAdminSecretSource: rdpRestrictedAdminSecretSource,
+        rdpRestrictedAdminHash: rdpRestrictedAdminHash,
         authMethod: useKey ? 'publickey' : 'password',
         privateKeyPem: useKey ? keyData : '',
         privateKeyPassphrase: keyPassphrase,
@@ -3711,6 +3740,7 @@ struct RemoteDesktop {
         ' driveName=' + rdpDriveName +
         ' drive=' + (cfg.rdDrivePath && cfg.rdDrivePath.length > 0 ? cfg.rdDrivePath : 'off'));
       const sid: number = this.loader.connect(cfg);
+      cfg.rdpRestrictedAdminHash = '';
       hilog.info(RD_DOMAIN, RD_TAG, 'NAPI connect returned: ' + sid);
       if (sid <= 0) {
         let errMsg: string = '连接失败 [E-CONNECT-' + Math.abs(sid) + ']';

@@ -40,6 +40,9 @@ describe('CloudTableAdapter', (): void => {
       rustdeskdirecthost: '192.0.2.20',
       rustdeskdirectport: '21117',
       rustdeskproaccountid: 'account-1',
+      rdpauthmode: 'restricted_admin',
+      rdprestrictedadminsecretsource: 'ntlm_hash',
+      rdprestrictedadminhash: '0123456789ABCDEF0123456789ABCDEF',
       password: 'must-not-leak',
       sshkeypassphrase: 'must-not-leak'
     });
@@ -50,6 +53,9 @@ describe('CloudTableAdapter', (): void => {
     const decoded = decodeRemoteHostDisplayPayload(encoded);
     expect(decoded.extension['rustdeskdirectport']).assertEqual('21117');
     expect(decoded.extension['rustdeskproaccountid']).assertEqual('account-1');
+    expect(decoded.extension['rdpauthmode']).assertEqual('restricted_admin');
+    expect(decoded.extension['rdprestrictedadminsecretsource']).assertEqual('ntlm_hash');
+    expect(decoded.extension['rdprestrictedadminhash']).assertUndefined();
     expect(decoded.extension['password']).assertUndefined();
     expect(decoded.extension['sshkeypassphrase']).assertUndefined();
     expect(decoded.displayConfigJson.indexOf('"width":1920') >= 0).assertTrue();

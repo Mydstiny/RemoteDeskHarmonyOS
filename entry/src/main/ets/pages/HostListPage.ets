@@ -24,7 +24,13 @@ import { LocalBackupDocument } from '../services/LocalBackupPolicy';
 import { LocalBackupService } from '../services/LocalBackupService';
 import { LightSensingService } from '../services/LightSensingService';
 import { SshKey } from '../model/SshKey';
-import { RemoteHost, LockType } from '../model/RemoteHost';
+import {
+  RemoteHost,
+  LockType,
+  RdpAuthMode,
+  RdpRestrictedAdminSecretSource,
+  normalizeRdpNtlmHash
+} from '../model/RemoteHost';
 import { RustDeskRelayConfig } from '../model/RustDeskRelayConfig';
 import { RustDeskAccount } from '../model/RustDeskAccount';
 import { RdpCredential } from '../model/RdpCredential';
@@ -399,6 +405,11 @@ struct HostListPage {
   @State selectedRelayId: string = '';
   @State selectedAccountId: string = '';
   @State selectedRdpCredentialId: string = '';
+  @State sheetRdpAuthMode: RdpAuthMode = 'password';
+  @State sheetRdpRestrictedAdminSecretSource: RdpRestrictedAdminSecretSource = 'ntlm_hash';
+  // This field is write-only. Existing Restricted Admin hashes are never displayed in the editor.
+  @State sheetRdpRestrictedAdminHash: string = '';
+  @State sheetRdpBlankPasswordConfirmed: boolean = false;
   @StorageLink('terminalFgColor') terminalFgColor: string = '#33FF33';
   @State showTerminalFgColor: boolean = false;
   @StorageLink('terminalFontSize') terminalFontSize: number = 18;
@@ -829,12 +840,23 @@ struct HostListPage {
     }, delayMs);
   }
 
-  private saveHostFromAddFlow(host: RemoteHost, connectNow: boolean): void {
+  private saveHostFromAddFlow(host: RemoteHost, connectNow: boolean, restrictedAdminHash: string = ''): void {
     if (!shouldAcceptHostAddSave(this.addSheetClosing, this.pendingAddSheetConnectHostId)) {
       hilog.info(0x0001, 'HostList', 'ignored repeated add-host save while Sheet is closing');
       return;
     }
+    const requiresLocalRestrictedAdminHash: boolean = host.protocol === 'rdp' &&
+      host.rdpAuthMode === 'restricted_admin' &&
+      host.rdpRestrictedAdminSecretSource === 'ntlm_hash';
+    if (requiresLocalRestrictedAdminHash &&
+      !CloudStore.getInstance().saveRdpRestrictedAdminHash(host, restrictedAdminHash)) {
+      promptAction.showToast({ message: '无法加密保存 NTLM Hash，请先解锁本地凭据存储后重试', duration: 2600 });
+      return;
+    }
     if (!this.srv.addHost(host)) {
+      if (requiresLocalRestrictedAdminHash) {
+        CloudStore.getInstance().clearRdpRestrictedAdminHash(host.id);
+      }
       promptAction.showToast({ message: '保存主机失败，请稍后重试', duration: 1800 });
       return;
     }
@@ -2876,6 +2898,12 @@ struct HostListPage {
     this.selectedRelayId = latestHost.rustdeskRelayId;
     this.selectedAccountId = latestHost.rustdeskAccountId;
     this.selectedRdpCredentialId = latestHost.rdpCredentialId;
+    this.sheetRdpAuthMode = latestHost.rdpAuthMode;
+    this.sheetRdpRestrictedAdminSecretSource = latestHost.rdpRestrictedAdminSecretSource;
+    this.sheetRdpRestrictedAdminHash = '';
+    // An existing blank-password host has already passed the explicit creation confirmation.
+    this.sheetRdpBlankPasswordConfirmed = latestHost.protocol === 'rdp' &&
+      latestHost.rdpAuthMode === 'blank_password';
     this.sheetPwdMode = latestHost.rustdeskPasswordMode;
     this.sheetRustdeskAuthMode = latestHost.rustdeskDirectEnabled ? 'password' :
       (latestHost.rustdeskAuthMode === 'request_approval' ? 'request_approval' : 'password');
@@ -7108,8 +7136,8 @@ struct HostListPage {
         credentials: this.rdpCredentials,
         onBackToProtocols: (): void => { this.modernAddProtocol = ''; this.addSheetShowsModernPicker = true; },
         onAddCredential: (): void => { this.openRdpCredentialManager(); },
-        onSave: (host: RemoteHost, connectNow: boolean): void => {
-          this.saveHostFromAddFlow(host, connectNow);
+        onSave: (host: RemoteHost, connectNow: boolean, restrictedAdminHash: string): void => {
+          this.saveHostFromAddFlow(host, connectNow, restrictedAdminHash);
         }
       })
     } else if (this.modernAddProtocol === 'rustdesk') {
@@ -7241,20 +7269,27 @@ struct HostListPage {
                 }
               }.width('30%')
               Column() {
-                this.fieldRow('用户名', this.proto === 'rdp' && this.selectedRdpCredentialId !== '' ? '已使用 Windows 凭据' :
+                this.fieldRow('用户名', this.proto === 'rdp' && this.sheetRdpAuthMode === 'password' &&
+                  this.selectedRdpCredentialId !== '' ? '已使用 Windows 凭据' :
                   (this.proto === 'rdp' ? 'user 或 DOMAIN\\user' : 'root'),
                   this.username, (v: string): void => { this.username = v; },
-                  !(this.proto === 'rdp' && this.selectedRdpCredentialId !== ''))
+                  !(this.proto === 'rdp' && this.sheetRdpAuthMode === 'password' &&
+                    this.selectedRdpCredentialId !== ''))
               }.width('60%').margin({ left: 12 })
             }.width('100%')
           }
 
           if (this.proto === 'rdp') {
-            this.rdpCredentialSection()
+            this.rdpAuthenticationModeSection()
+            if (this.sheetRdpAuthMode === 'password') {
+              this.rdpCredentialSection()
+            }
           }
 
           // 密码
-          this.pwdRow(!(this.proto === 'rdp' && this.selectedRdpCredentialId !== ''))
+          if (this.proto !== 'rdp' || this.sheetRdpAuthMode === 'password') {
+            this.pwdRow(!(this.proto === 'rdp' && this.selectedRdpCredentialId !== ''))
+          }
 
           if (this.proto === 'rdp') {
             this.fieldRow('主机名(可选)', '标识', this.chn, (v: string): void => { this.chn = v; })
@@ -7538,6 +7573,89 @@ struct HostListPage {
         .opacity(enabled ? 1.0 : 0.55)
         .onChange((v: string): void => { this.sheetPwd = v; })
     }.margin({ bottom: 8 })
+  }
+
+  @Builder rdpAuthModeButton(label: string, mode: RdpAuthMode, marginLeft: number = 0) {
+    Button(label).layoutWeight(1).height(34).borderRadius(8).margin({ left: marginLeft })
+      .backgroundColor(this.sheetRdpAuthMode === mode ? this.accentColor : this.pal().surface)
+      .fontColor(this.sheetRdpAuthMode === mode ? '#FFFFFF' : this.pal().text2)
+      .fontSize(11)
+      .onClick((): void => {
+        this.sheetRdpAuthMode = mode;
+        this.sheetErr = '';
+        if (mode !== 'password') {
+          this.selectedRdpCredentialId = '';
+          this.sheetPwd = '';
+        }
+        if (mode !== 'blank_password') { this.sheetRdpBlankPasswordConfirmed = false; }
+        if (mode !== 'restricted_admin') { this.sheetRdpRestrictedAdminHash = ''; }
+      })
+  }
+
+  @Builder rdpRestrictedAdminHashRow() {
+    Column() {
+      Text('NTLM Hash').fontSize(11).fontColor(this.pal().text2).fontFamily(this.font()).margin({ bottom: 4 })
+      TextInput({ placeholder: '32 位十六进制 Hash', text: this.sheetRdpRestrictedAdminHash })
+        .type(InputType.Password).height(38).backgroundColor(this.pal().surface).borderRadius(8)
+        .fontColor(this.pal().text).placeholderColor(this.pal().text3).fontFamily(this.font())
+        .fontSize(13).padding({ left: 10, right: 10 })
+        .onChange((value: string): void => { this.sheetRdpRestrictedAdminHash = value; })
+    }.margin({ bottom: 8 })
+  }
+
+  @Builder rdpAuthenticationModeSection() {
+    Column() {
+      Text('连接认证').fontSize(11).fontColor(this.pal().text2).fontFamily(this.font()).margin({ bottom: 4 })
+      Row() {
+        this.rdpAuthModeButton('密码/凭据', 'password')
+        this.rdpAuthModeButton('空密码账户', 'blank_password', 6)
+        this.rdpAuthModeButton('Restricted Admin', 'restricted_admin', 6)
+      }.width('100%').margin({ bottom: 8 })
+
+      if (this.sheetRdpAuthMode === 'blank_password') {
+        Text('密码为空。目标 Windows 必须允许空密码本地账户通过远程桌面登录；应用不会修改目标机策略。')
+          .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font()).margin({ bottom: 6 })
+        Row({ space: 6 }) {
+          Checkbox({ name: 'confirmClassicRdpBlankPassword', group: 'classicRdpAuth' })
+            .select(this.sheetRdpBlankPasswordConfirmed).selectedColor(this.accentColor)
+            .onChange((value: boolean): void => { this.sheetRdpBlankPasswordConfirmed = value; })
+          Text('我确认目标是允许远程登录的空密码本地账户。')
+            .fontSize(11).fontColor(this.pal().text2).fontFamily(this.font()).layoutWeight(1)
+        }.width('100%').margin({ bottom: 8 })
+      } else if (this.sheetRdpAuthMode === 'restricted_admin') {
+        Text('凭据来源').fontSize(11).fontColor(this.pal().text2).fontFamily(this.font()).margin({ bottom: 4 })
+        Row() {
+          Button('空密码 Hash').layoutWeight(1).height(34).borderRadius(8)
+            .backgroundColor(this.sheetRdpRestrictedAdminSecretSource === 'empty_password_hash' ?
+              this.accentColor : this.pal().surface)
+            .fontColor(this.sheetRdpRestrictedAdminSecretSource === 'empty_password_hash' ? '#FFFFFF' : this.pal().text2)
+            .fontSize(11)
+            .onClick((): void => {
+              this.sheetRdpRestrictedAdminSecretSource = 'empty_password_hash';
+              this.sheetRdpRestrictedAdminHash = '';
+              this.sheetErr = '';
+            })
+          Button('输入 NTLM Hash').layoutWeight(1).height(34).borderRadius(8).margin({ left: 6 })
+            .backgroundColor(this.sheetRdpRestrictedAdminSecretSource === 'ntlm_hash' ?
+              this.accentColor : this.pal().surface)
+            .fontColor(this.sheetRdpRestrictedAdminSecretSource === 'ntlm_hash' ? '#FFFFFF' : this.pal().text2)
+            .fontSize(11)
+            .onClick((): void => {
+              this.sheetRdpRestrictedAdminSecretSource = 'ntlm_hash';
+              this.sheetErr = '';
+            })
+        }.width('100%').margin({ bottom: 8 })
+        if (this.sheetRdpRestrictedAdminSecretSource === 'ntlm_hash') {
+          this.rdpRestrictedAdminHashRow()
+          if (this.editingHostId !== '' && this.sheetRdpRestrictedAdminHash === '') {
+            Text('未输入新 Hash 时，仅在地址、端口、用户名和来源未改变时保留本机密文。')
+              .fontSize(10).fontColor(this.pal().text3).fontFamily(this.font()).margin({ bottom: 6 })
+          }
+        }
+        Text('目标机需开启 Restricted Admin（DisableRestrictedAdmin=0）。Hash 仅加密保存在本机，不会云同步；普通密码不能替代 Hash。')
+          .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font()).margin({ bottom: 8 })
+      }
+    }.width('100%')
   }
 
   @Builder rdpCredentialSection() {
@@ -8218,6 +8336,10 @@ struct HostListPage {
     this.sheetRustdeskDirectPort = RUSTDESK_PEER_TCP_PORT;
     this.selectedRelayId = ''; this.selectedAccountId = '';
     this.selectedRdpCredentialId = '';
+    this.sheetRdpAuthMode = 'password';
+    this.sheetRdpRestrictedAdminSecretSource = 'ntlm_hash';
+    this.sheetRdpRestrictedAdminHash = '';
+    this.sheetRdpBlankPasswordConfirmed = false;
     this.sheetUseKey = false; this.sheetKeyPath = ''; this.sheetKeyText = '';
     this.sheetKeyId = ''; this.sheetKeyPassphrase = '';
     this.sheetKeyMode = 0; this.sheetUseProxy = false;
@@ -8286,15 +8408,28 @@ struct HostListPage {
       h.port = this.proto === 'rdp' ? this.rdpPortVal : this.sshPortVal;
       this.portVal = h.port;
       h.customHostname = this.chn;
-      if (this.proto === 'rdp' && this.selectedRdpCredentialId !== '') {
-        h.rdpCredentialId = this.selectedRdpCredentialId;
-        h.username = '';
+      if (this.proto === 'rdp') {
+        h.rdpAuthMode = this.sheetRdpAuthMode;
+        h.rdpRestrictedAdminSecretSource = this.sheetRdpRestrictedAdminSecretSource;
+        if (this.sheetRdpAuthMode === 'password' && this.selectedRdpCredentialId !== '') {
+          h.rdpCredentialId = this.selectedRdpCredentialId;
+          h.username = '';
+        } else {
+          h.rdpCredentialId = '';
+          h.username = this.username.trim();
+        }
       } else {
         h.rdpCredentialId = '';
         h.username = this.username;
       }
     }
-    h.password = this.proto === 'rdp' && this.selectedRdpCredentialId !== '' ? '' : this.sheetPwd;
+    if (this.proto === 'rdp') {
+      h.password = this.sheetRdpAuthMode === 'password' && this.selectedRdpCredentialId === '' ?
+        this.sheetPwd : '';
+      h.normalizeRdpAuthentication();
+    } else {
+      h.password = this.sheetPwd;
+    }
     if (this.proto === 'ssh') {
       h.sshUseKey = this.sheetUseKey; h.sshKeyPath = this.sheetKeyPath;
       h.sshKeyData = this.sheetKeyText;
@@ -8307,6 +8442,39 @@ struct HostListPage {
     }
     const e: string[] = h.getValidationErrors();
     if (e.length > 0) { this.sheetErr = e[0]; return; }
+    if (h.protocol === 'rdp' && h.rdpAuthMode === 'blank_password' &&
+      !this.sheetRdpBlankPasswordConfirmed) {
+      this.sheetErr = '请确认目标是允许远程登录的空密码本地账户';
+      return;
+    }
+
+    let restrictedAdminHashToPersist: string = '';
+    let shouldPersistRestrictedAdminHash: boolean = false;
+    if (h.protocol === 'rdp' && h.rdpAuthMode === 'restricted_admin' &&
+      h.rdpRestrictedAdminSecretSource === 'ntlm_hash') {
+      const hashEntered: boolean = this.sheetRdpRestrictedAdminHash.trim() !== '';
+      restrictedAdminHashToPersist = normalizeRdpNtlmHash(this.sheetRdpRestrictedAdminHash);
+      if (hashEntered && restrictedAdminHashToPersist === '') {
+        this.sheetErr = 'NTLM Hash 必须是 32 位十六进制字符';
+        return;
+      }
+      const canKeepExistingHash: boolean = !hashEntered && existingHost !== undefined &&
+        existingHost.protocol === 'rdp' && existingHost.rdpAuthMode === 'restricted_admin' &&
+        existingHost.rdpRestrictedAdminSecretSource === 'ntlm_hash' &&
+        existingHost.host.trim().toLowerCase() === h.host.trim().toLowerCase() &&
+        existingHost.port === h.port &&
+        existingHost.username.trim().toLowerCase() === h.username.trim().toLowerCase();
+      if (!canKeepExistingHash && restrictedAdminHashToPersist === '') {
+        this.sheetErr = '请重新输入该 Restricted Admin 主机的 NTLM Hash';
+        return;
+      }
+      shouldPersistRestrictedAdminHash = restrictedAdminHashToPersist !== '';
+    }
+    if (shouldPersistRestrictedAdminHash &&
+      !CloudStore.getInstance().saveRdpRestrictedAdminHash(h, restrictedAdminHashToPersist)) {
+      this.sheetErr = '无法加密保存 NTLM Hash，请先解锁本地凭据存储后重试';
+      return;
+    }
     let saved: boolean = false;
     if (editingId !== '') {
       saved = this.srv.updateHost(h);
@@ -8315,6 +8483,9 @@ struct HostListPage {
       saved = this.srv.addHost(h);
     }
     if (!saved) {
+      if (shouldPersistRestrictedAdminHash && editingId === '') {
+        CloudStore.getInstance().clearRdpRestrictedAdminHash(h.id);
+      }
       this.sheetErr = '保存主机失败，请稍后重试';
       hilog.error(0x0001, 'HostList', 'save host failed protocol=' + h.protocol + ' id=' + h.id);
       return;

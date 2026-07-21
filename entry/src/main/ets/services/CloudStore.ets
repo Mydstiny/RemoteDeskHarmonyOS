@@ -14,7 +14,16 @@ import { cloudData } from '@kit.ArkData';
 import { common } from '@kit.AbilityKit';
 import { BusinessError, deviceInfo } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import { RemoteHost, DisplayConfig, DisplayConfigJSON } from '../model/RemoteHost';
+import {
+  RemoteHost,
+  DisplayConfig,
+  DisplayConfigJSON,
+  normalizeRdpAuthMode,
+  normalizeRdpNtlmHash,
+  normalizeRdpRestrictedAdminSecretSource,
+  RdpAuthMode,
+  RdpRestrictedAdminSecretSource
+} from '../model/RemoteHost';
 import { RustDeskRelayConfig, RustDeskRelayJSON } from '../model/RustDeskRelayConfig';
 import { RustDeskAccount, RustDeskAccountJSON } from '../model/RustDeskAccount';
 import { RdpCredential } from '../model/RdpCredential';
@@ -56,6 +65,12 @@ import {
 
 const DB_NAME: string = 'remotedesktop';
 const TABLES: string[] = cloudSyncTableNames();
+const RDP_RESTRICTED_ADMIN_SECRET_TABLE: string = 'rdprestrictedadminsecrets';
+
+export class RdpRestrictedAdminSecretResult {
+  status: string = 'missing';
+  hash: string = '';
+}
 
 /** 单表同步状态 */
 export class TableSyncStatus {
@@ -872,6 +887,94 @@ export class CloudStore implements CryptoCloudStore {
     return result;
   }
 
+  private rdpRestrictedAdminSecretBinding(host: RemoteHost): string {
+    return [
+      'rdp',
+      host.host.trim().toLowerCase(),
+      host.port.toString(),
+      host.username.trim().toLowerCase(),
+      normalizeRdpRestrictedAdminSecretSource(host.rdpRestrictedAdminSecretSource)
+    ].join('|');
+  }
+
+  /** Stores a user-provided NTLM hash on this device only. */
+  saveRdpRestrictedAdminHash(host: RemoteHost, rawHash: string): boolean {
+    const mode: RdpAuthMode = normalizeRdpAuthMode(host.rdpAuthMode);
+    const source: RdpRestrictedAdminSecretSource = normalizeRdpRestrictedAdminSecretSource(
+      host.rdpRestrictedAdminSecretSource);
+    const hash: string = normalizeRdpNtlmHash(rawHash);
+    if (host.id === '' || host.protocol !== 'rdp' || mode !== 'restricted_admin' ||
+      source !== 'ntlm_hash' || hash === '') {
+      return false;
+    }
+    const crypto: DataCrypto = DataCrypto.getInstance();
+    if (!crypto.isReady()) { return false; }
+    try {
+      return this.saveLocalExtension(RDP_RESTRICTED_ADMIN_SECRET_TABLE, host.id, {
+        'hash': crypto.encrypt(hash),
+        'binding': crypto.encrypt(this.rdpRestrictedAdminSecretBinding(host))
+      });
+    } catch (err) {
+      hilog.warn(0x0001, 'CloudSync', '[CloudStore] save RDP restricted admin secret failed: ' + safeError(err));
+      return false;
+    }
+  }
+
+  clearRdpRestrictedAdminHash(hostId: string): void {
+    this.deleteLocalExtension(RDP_RESTRICTED_ADMIN_SECRET_TABLE, hostId);
+  }
+
+  /** Loads a locally encrypted NTLM hash and rejects stale, plaintext, or locked secrets. */
+  loadRdpRestrictedAdminHash(host: RemoteHost): RdpRestrictedAdminSecretResult {
+    const result = new RdpRestrictedAdminSecretResult();
+    const mode: RdpAuthMode = normalizeRdpAuthMode(host.rdpAuthMode);
+    const source: RdpRestrictedAdminSecretSource = normalizeRdpRestrictedAdminSecretSource(
+      host.rdpRestrictedAdminSecretSource);
+    if (host.protocol !== 'rdp' || mode !== 'restricted_admin') {
+      result.status = 'not_applicable';
+      return result;
+    }
+    if (source === 'empty_password_hash') {
+      result.status = 'not_required';
+      return result;
+    }
+    const crypto: DataCrypto = DataCrypto.getInstance();
+    if (!crypto.isReady()) {
+      result.status = 'crypto_locked';
+      return result;
+    }
+    const values: Record<string, string> = this.loadLocalExtension(RDP_RESTRICTED_ADMIN_SECRET_TABLE, host.id);
+    const encryptedHash: string = values['hash'] || '';
+    const encryptedBinding: string = values['binding'] || '';
+    if (encryptedHash === '' || encryptedBinding === '') { return result; }
+    if (!crypto.isEncrypted(encryptedHash) || !crypto.isEncrypted(encryptedBinding)) {
+      this.clearRdpRestrictedAdminHash(host.id);
+      result.status = 'invalid';
+      return result;
+    }
+    try {
+      const binding: string = crypto.decrypt(encryptedBinding);
+      const hash: string = normalizeRdpNtlmHash(crypto.decrypt(encryptedHash));
+      if (binding !== this.rdpRestrictedAdminSecretBinding(host)) {
+        this.clearRdpRestrictedAdminHash(host.id);
+        result.status = 'binding_mismatch';
+        return result;
+      }
+      if (hash === '') {
+        this.clearRdpRestrictedAdminHash(host.id);
+        result.status = 'invalid';
+        return result;
+      }
+      result.status = 'ready';
+      result.hash = hash;
+      return result;
+    } catch (err) {
+      hilog.warn(0x0001, 'CloudSync', '[CloudStore] load RDP restricted admin secret failed: ' + safeError(err));
+      result.status = 'invalid';
+      return result;
+    }
+  }
+
   private saveLocalExtension(table: string, recordId: string, values: Record<string, string>): boolean {
     if (!this.store || recordId === '') { return false; }
     try {
@@ -931,7 +1034,8 @@ export class CloudStore implements CryptoCloudStore {
       'rdpcertificatetrustmode', 'rdpcertificateallowuntrustedroot',
       'rdpcertificateallowhostmismatch', 'rustdeskrelayid', 'rustdeskaccountid',
       'rustdeskpasswordmode', 'rustdeskauthmode', 'rustdeskdirectenabled',
-      'rustdeskdirecthost', 'rustdeskdirectport', 'rdpcredentialid', 'sourcetype',
+      'rustdeskdirecthost', 'rustdeskdirectport', 'rdpcredentialid', 'rdpauthmode',
+      'rdprestrictedadminsecretsource', 'sourcetype',
       'rustdeskproaccountid', 'rustdeskpropeerid', 'rustdeskproplatform',
       'rustdeskpromanaged', 'rustdeskprolastseenat', 'rustdeskprosyncerror'
     ];
@@ -960,6 +1064,9 @@ export class CloudStore implements CryptoCloudStore {
     host.rustdeskAccountId = get('rustdeskaccountid', host.rustdeskAccountId);
     host.rustdeskDirectHost = get('rustdeskdirecthost', host.rustdeskDirectHost);
     host.rdpCredentialId = get('rdpcredentialid', host.rdpCredentialId);
+    host.rdpAuthMode = normalizeRdpAuthMode(get('rdpauthmode', host.rdpAuthMode));
+    host.rdpRestrictedAdminSecretSource = normalizeRdpRestrictedAdminSecretSource(
+      get('rdprestrictedadminsecretsource', host.rdpRestrictedAdminSecretSource));
     host.sshHostKeyTrustedAt = Number(get('sshhostkeytrustedat', host.sshHostKeyTrustedAt.toString()));
     host.sshHostKeyTrustMode = Number(get('sshhostkeytrustmode', host.sshHostKeyTrustMode.toString()));
     host.rdpCertificateTrustedAt = Number(get('rdpcertificatetrustedat', host.rdpCertificateTrustedAt.toString()));
@@ -977,12 +1084,14 @@ export class CloudStore implements CryptoCloudStore {
     host.rustdeskProManaged = get('rustdeskpromanaged', host.rustdeskProManaged ? '1' : '0') === '1';
     host.rustdeskProLastSeenAt = Number(get('rustdeskprolastseenat', host.rustdeskProLastSeenAt.toString()));
     host.rustdeskProSyncError = get('rustdeskprosyncerror', host.rustdeskProSyncError);
+    host.normalizeRdpAuthentication();
     return host;
   }
 
   private hostExtensionValues(host: RemoteHost): Record<string, string> {
     const crypto: DataCrypto = DataCrypto.getInstance();
     const values: Record<string, string> = {};
+    host.normalizeRdpAuthentication();
     values['password'] = this.encryptIfReady(crypto, host.password);
     values['sshkeypassphrase'] = this.encryptIfReady(crypto, host.sshKeyPassphrase);
     values['sshkeyid'] = host.sshKeyId;
@@ -1007,6 +1116,8 @@ export class CloudStore implements CryptoCloudStore {
     values['rustdeskdirecthost'] = host.rustdeskDirectHost;
     values['rustdeskdirectport'] = host.rustdeskDirectPort.toString();
     values['rdpcredentialid'] = host.rdpCredentialId;
+    values['rdpauthmode'] = host.rdpAuthMode;
+    values['rdprestrictedadminsecretsource'] = host.rdpRestrictedAdminSecretSource;
     values['sourcetype'] = host.sourceType;
     values['rustdeskproaccountid'] = host.rustdeskProAccountId;
     values['rustdeskpropeerid'] = host.rustdeskProPeerId;
@@ -1018,6 +1129,10 @@ export class CloudStore implements CryptoCloudStore {
   }
 
   private saveHostExtension(host: RemoteHost): boolean {
+    if (host.protocol !== 'rdp' || normalizeRdpAuthMode(host.rdpAuthMode) !== 'restricted_admin' ||
+      normalizeRdpRestrictedAdminSecretSource(host.rdpRestrictedAdminSecretSource) !== 'ntlm_hash') {
+      this.clearRdpRestrictedAdminHash(host.id);
+    }
     return this.saveLocalExtension('remotehosts', host.id, this.hostExtensionValues(host));
   }
 
@@ -1594,6 +1709,7 @@ export class CloudStore implements CryptoCloudStore {
       predicates.equalTo('id', id);
       if (!rdbSingleRowAffected(this.store.deleteSync(predicates))) { return false; }
       this.deleteLocalExtension('remotehosts', id);
+      this.clearRdpRestrictedAdminHash(id);
       hilog.info(0x0001, 'CloudSync', "deleteHost: " + id);
       return true;
     } catch (err) {
@@ -1930,6 +2046,7 @@ export class CloudStore implements CryptoCloudStore {
   }
 
   private hostToBucket(h: RemoteHost): relationalStore.ValuesBucket {
+    h.normalizeRdpAuthentication();
     const crypto = DataCrypto.getInstance();
     const encrypt = (v: string) => crypto.isReady() ? crypto.encrypt(v) : v;
     const vb: relationalStore.ValuesBucket = {};
@@ -2556,6 +2673,7 @@ export class CloudStore implements CryptoCloudStore {
   }
 
   private hostToBucketRaw(h: RemoteHost): relationalStore.ValuesBucket {
+    h.normalizeRdpAuthentication();
     const vb: relationalStore.ValuesBucket = {};
     vb['id'] = h.id; vb['userid'] = h.userId; vb['label'] = h.label;
     vb['protocol'] = h.protocol; vb['host'] = h.host; vb['port'] = h.port;

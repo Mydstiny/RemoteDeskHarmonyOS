@@ -59,7 +59,8 @@ const REMOTE_HOST_CLOUD_EXTENSION_COLUMNS: string[] = [
   'rdpcertificateallowuntrustedroot', 'rdpcertificateallowhostmismatch',
   'rustdeskrelayid', 'rustdeskaccountid', 'rustdeskpasswordmode', 'rustdeskauthmode',
   'rustdeskdirectenabled', 'rustdeskdirecthost', 'rustdeskdirectport',
-  'rdpcredentialid', 'sourcetype', 'rustdeskproaccountid', 'rustdeskpropeerid',
+  'rdpcredentialid', 'rdpauthmode', 'rdprestrictedadminsecretsource', 'sourcetype',
+  'rustdeskproaccountid', 'rustdeskpropeerid',
   'rustdeskproplatform', 'rustdeskpromanaged', 'rustdeskprolastseenat',
   'rustdeskprosyncerror'
 ];

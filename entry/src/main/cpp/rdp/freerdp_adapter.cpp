@@ -14,6 +14,7 @@
 #include "common/safe_log.h"
 #include "rdp_audio_policy.h"
 #include "rdp_auth_identity_policy.h"
+#include "rdp_auth_mode_policy.h"
 #include "rdp_background_frame_cache.h"
 #include "rdp_certificate_policy.h"
 #include "rdp_frame_pump.h"
@@ -1946,6 +1947,8 @@ void FreeRdpAdapter::disconnectActiveInstance() {
 }
 
 void FreeRdpAdapter::cleanupInstance() {
+    std::fill(impl_->config.rdpRestrictedAdminHash.begin(), impl_->config.rdpRestrictedAdminHash.end(), '\0');
+    impl_->config.rdpRestrictedAdminHash.clear();
     impl_->presentationEnabled.store(false, std::memory_order_release);
     RendererNapi::InvalidateActivePresentation();
     impl_->framePump.invalidatePending();
@@ -2091,8 +2094,31 @@ void FreeRdpAdapter::connectThreadFunc() {
                 authIdentity.modeName.c_str());
     freerdp_settings_set_string(s, FreeRDP_ServerHostname, cfg.host.c_str());
     freerdp_settings_set_uint32(s, FreeRDP_ServerPort, static_cast<UINT32>(port));
+    const bool restrictedAdmin = cfg.rdpAuthMode == RdpAuthenticationMode::RestrictedAdmin;
+    const char* authModeName = restrictedAdmin ? "restricted_admin" :
+        (cfg.rdpAuthMode == RdpAuthenticationMode::BlankPassword ? "blank_password" : "password");
+    const char* restrictedAdminSecretSource =
+        cfg.rdpRestrictedAdminSecretSource == RdpRestrictedAdminSecretSource::EmptyPasswordHash ?
+            "empty_password_hash" : "ntlm_hash";
+    static constexpr const char EMPTY_PASSWORD_NTLM_HASH[] = "31D6CFE0D16AE931B73C59D7E0C089C0";
+    std::string restrictedAdminHash;
+    if (restrictedAdmin) {
+        restrictedAdminHash = cfg.rdpRestrictedAdminSecretSource ==
+            RdpRestrictedAdminSecretSource::EmptyPasswordHash ? EMPTY_PASSWORD_NTLM_HASH :
+            cfg.rdpRestrictedAdminHash;
+        restrictedAdminHash = NormalizeRdpNtlmPasswordHash(restrictedAdminHash);
+        if (restrictedAdminHash.empty()) {
+            impl_->setState(ConnectionState::ERROR, "Restricted Admin NTLM Hash 无效 [E-RDP-AUTH-HASH]");
+            cleanupInstance();
+            impl_->connecting = false;
+            return;
+        }
+    }
     freerdp_settings_set_string(s, FreeRDP_Username, effectiveUsername.c_str());
-    freerdp_settings_set_string(s, FreeRDP_Password, cfg.password.c_str());
+    freerdp_settings_set_string(s, FreeRDP_Password, restrictedAdmin ? "" : cfg.password.c_str());
+    if (restrictedAdmin) {
+        freerdp_settings_set_string(s, FreeRDP_PasswordHash, restrictedAdminHash.c_str());
+    }
     if (!effectiveDomain.empty()) {
         freerdp_settings_set_string(s, FreeRDP_Domain, effectiveDomain.c_str());
     }
@@ -2127,10 +2153,10 @@ void FreeRdpAdapter::connectThreadFunc() {
     freerdp_settings_set_uint32(s, FreeRDP_TcpConnectTimeout, 30000);
     // HarmonyOS 侧没有可用的 Kerberos/U2U 凭据缓存，NLA/CredSSP 只允许 NTLM，避免 Negotiate 第二轮返回 SEC_E_NO_CREDENTIALS。
     freerdp_settings_set_string(s, FreeRDP_AuthenticationPackageList, "ntlm");
-    freerdp_settings_set_bool(s, FreeRDP_ConsoleSession, FALSE);
+    freerdp_settings_set_bool(s, FreeRDP_ConsoleSession, restrictedAdmin ? TRUE : FALSE);
     freerdp_settings_set_bool(s, FreeRDP_RemoteCredentialGuard, FALSE);
-    freerdp_settings_set_bool(s, FreeRDP_RestrictedAdminModeRequired, FALSE);
-    freerdp_settings_set_bool(s, FreeRDP_RestrictedAdminModeSupported, FALSE);
+    freerdp_settings_set_bool(s, FreeRDP_RestrictedAdminModeRequired, restrictedAdmin ? TRUE : FALSE);
+    freerdp_settings_set_bool(s, FreeRDP_RestrictedAdminModeSupported, restrictedAdmin ? TRUE : FALSE);
     freerdp_settings_set_bool(s, FreeRDP_SupportErrorInfoPdu, TRUE);
     const RdpPerformancePolicy::GraphicsMode graphicsMode = applyRdpPerformanceSettings(s);
     {
@@ -2211,18 +2237,21 @@ void FreeRdpAdapter::connectThreadFunc() {
     const std::string logDomain = effectiveDomain.empty() ? "无" : SafeLog::MaskUser(effectiveDomain);
     const std::string logDrivePath = driveEnabled ? SafeLog::HashForLog(cfg.rdDrivePath) : "off";
     OH_LOG_INFO(LOG_APP, "[RDP] 连接参数: %{public}s:%{public}d %{public}dx%{public}d color=%{public}d"
-                " gateway=%{public}s targetName=%{public}s authMode=%{public}d user=%{public}s domain=%{public}s"
+                " gateway=%{public}s targetName=%{public}s authIdentityMode=%{public}d rdpAuthMode=%{public}s restrictedSource=%{public}s user=%{public}s domain=%{public}s"
                 " audio=%{public}s driveName=%{public}s drivePathId=%{public}s"
-                " passwordLen=%{public}zu encrypted=%{public}s",
+                " passwordLen=%{public}zu restrictedHashLen=%{public}zu encrypted=%{public}s",
                 logHost.c_str(), port, cfg.width, cfg.height, cfg.colorDepth,
                 logGatewayHost.c_str(),
                 logTargetName.c_str(),
                 cfg.rdpAuthIdentityMode,
+                authModeName,
+                restrictedAdminSecretSource,
                 logUser.c_str(), logDomain.c_str(),
                 cfg.rdAudioEnabled ? "on" : "off",
                 driveEnabled ? driveName.c_str() : "off",
                 logDrivePath.c_str(),
-                cfg.password.length(), cfg.password.rfind("1:", 0) == 0 ? "true" : "false");
+                cfg.password.length(), restrictedAdminHash.length(),
+                cfg.password.rfind("1:", 0) == 0 ? "true" : "false");
     const char* authPackageList = freerdp_settings_get_string(s, FreeRDP_AuthenticationPackageList);
     OH_LOG_INFO(LOG_APP, "[RDP] security: negotiate=%{public}s nla=%{public}s tls=%{public}s rdp=%{public}s"
                 " ext=%{public}s aad=%{public}s auth=%{public}s autologon=%{public}s admin=%{public}s"
