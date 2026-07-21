@@ -43,6 +43,7 @@ import rustDeskRelaySyncPolicyTest from './RustDeskRelaySyncPolicy.test';
 import hostSyncMergePolicyTest from './HostSyncMergePolicy.test';
 import sshTerminalOrientationPolicyTest from './SshTerminalOrientationPolicy.test';
 import remoteCursorStylePolicyTest from './RemoteCursorStylePolicy.test';
+import remoteCursorMotionPolicyTest from './RemoteCursorMotionPolicy.test';
 import touchpadPointerCurvePolicyTest from './TouchpadPointerCurvePolicy.test';
 import connectionAttemptPolicyTest from './ConnectionAttemptPolicy.test';
 import rustDeskRelayImportServiceTest from './RustDeskRelayImportService.test';
@@ -101,6 +102,7 @@ export default function testsuite() {
   hostSyncMergePolicyTest();
   sshTerminalOrientationPolicyTest();
   remoteCursorStylePolicyTest();
+  remoteCursorMotionPolicyTest();
   touchpadPointerCurvePolicyTest();
   connectionAttemptPolicyTest();
   rustDeskRelayImportServiceTest();

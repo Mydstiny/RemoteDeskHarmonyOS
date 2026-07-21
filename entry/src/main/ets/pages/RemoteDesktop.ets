@@ -72,6 +72,15 @@ import {
   shouldRefreshRemoteCursorBitmap
 } from '../services/RemoteCursorStylePolicy';
 import {
+  advanceRemoteCursorMotion,
+  applyLocalCursorTarget,
+  beginLocalCursorGesture,
+  createRemoteCursorMotionState,
+  endLocalCursorGesture,
+  observeRemoteCursorPosition,
+  RemoteCursorMotionState
+} from '../services/RemoteCursorMotionPolicy';
+import {
   clampTouchpadEffectiveGain,
   resetTouchpadPointerCurveState,
   TouchpadPointerCurveState,
@@ -192,9 +201,10 @@ const REMOTE_IME_SELECTION_ACK_TIMEOUT_MS = 600;
 const REMOTE_IME_COMMAND_RETRY_MS = 50;
 const INPUT_LOG_SAMPLE_MS = 1000;
 const MOUSE_MOVE_FLUSH_MS = 16;
-const MOUSE_MOVE_ACK_TIMEOUT_MS = 250;
-const MOUSE_MOVE_ACK_TOLERANCE_PX = 4;
+const MOUSE_MOVE_IN_FLIGHT_DIAGNOSTIC_TIMEOUT_MS = 250;
 const RENDERER_VIEWPORT_CACHE_MS = 250;
+const REMOTE_CURSOR_POLL_MS = 33;
+const REMOTE_CURSOR_RENDER_FRAME_MS = 16;
 const REMOTE_CURSOR_BITMAP_REFRESH_MS = 30000;
 const REMOTE_CURSOR_LOG_SAMPLE_MS = 5000;
 const TOUCHPAD_MAX_LOCAL_STEP_RATIO = 0.75;
@@ -410,8 +420,6 @@ struct RemoteDesktop {
   @StorageLink('rustdeskSwapMouseButtons') rustdeskSwapMouseButtons: boolean = false;
   @StorageLink('rustdeskTouchpadSpeed') rustdeskTouchpadSpeed: number = 1.0;
   @StorageLink('virtualMouseStyle') virtualMouseStyle: string = 'circle';
-  @StorageLink('showVirtualMouse') showVirtualMouse: boolean = false;
-  @StorageLink('showVirtualJoystick') showVirtualJoystick: boolean = false;
   @StorageLink('rdpControlMode') rdpControlMode: number = 0; // 0=touchpad, 1=direct touch, 2=keyboard/mouse
   @StorageLink('rdpDriveEnabled') rdpDriveEnabled: boolean = true;
   @StorageLink('rdpDriveName') rdpDriveName: string = 'RemoteDesktop';
@@ -497,15 +505,13 @@ struct RemoteDesktop {
   private remoteCursorY: number = 540;
   private remoteCursorPreciseX: number = 960;
   private remoteCursorPreciseY: number = 540;
-  private remoteAuthoritativeX: number = 960;
-  private remoteAuthoritativeY: number = 540;
-  private remoteAuthoritativeReady: boolean = false;
-  private remotePredictionActive: boolean = false;
+  private remoteCursorMotion: RemoteCursorMotionState = createRemoteCursorMotionState(960, 540);
   private remoteCursorReady: boolean = false;
   @State remoteCursorViewRevision: number = 0;
   @State remoteCursorPixelMap: image.PixelMap | null = null;
   private remoteCursorShapeRevision: number = -1;
   private remoteCursorPositionRevision: number = -1;
+  private remoteCursorVisibilityRevision: number = -1;
   private remoteCursorNativeVisible: boolean = false;
   private remoteCursorShapeWidth: number = 0;
   private remoteCursorShapeHeight: number = 0;
@@ -513,14 +519,8 @@ struct RemoteDesktop {
   private remoteCursorHotY: number = 0;
   private remoteCursorShapeRefreshAtMs: number = 0;
   private remoteCursorLastLogMs: number = 0;
-  @State virtualMouseX: number = 24;
-  @State virtualMouseY: number = 140;
-  private virtualMouseDragStartX: number = 0;
-  private virtualMouseDragStartY: number = 0;
-  private virtualWheelLastOffset: number = 0;
-  private virtualJoystickLastX: number = 0;
-  private virtualJoystickLastY: number = 0;
-  private virtualJoystickTimer: number = -1;
+  private remoteCursorViewCommitTimer: number = -1;
+  private remoteCursorViewCommitPending: boolean = false;
   private touchpadCurveState: TouchpadPointerCurveState = resetTouchpadPointerCurveState();
   private touchpadAnchorValid: boolean = false;
   private lastTouchpadCurveLogMs: number = 0;
@@ -1089,18 +1089,6 @@ struct RemoteDesktop {
     } catch (err) {
       hilog.warn(RD_DOMAIN, RD_TAG, 'persistSessionPref failed key=' + key + ': ' + JSON.stringify(err));
     }
-  }
-
-  private saveShowVirtualMouse(enabled: boolean): void {
-    this.showVirtualMouse = enabled;
-    this.persistSessionPref('showVirtualMouse', enabled);
-    CloudStore.getInstance().upsertUserSetting('showVirtualMouse', enabled);
-  }
-
-  private saveShowVirtualJoystick(enabled: boolean): void {
-    this.showVirtualJoystick = enabled;
-    this.persistSessionPref('showVirtualJoystick', enabled);
-    CloudStore.getInstance().upsertUserSetting('showVirtualJoystick', enabled);
   }
 
   private setRustDeskPrivacyMode(on: boolean): void {
@@ -2619,36 +2607,15 @@ struct RemoteDesktop {
   }
 
   private updateRemoteSize(desktop: DesktopSize): void {
-    const previousX: number = this.remoteCursorX;
-    const previousY: number = this.remoteCursorY;
-    const previousReady: boolean = this.remoteCursorReady;
     this.remoteWidth = Math.max(1, desktop.width);
     this.remoteHeight = Math.max(1, desktop.height);
     if (!this.remoteCursorReady) {
-      this.remoteCursorX = Math.round(this.remoteWidth / 2);
-      this.remoteCursorY = Math.round(this.remoteHeight / 2);
-      this.remoteCursorPreciseX = this.remoteCursorX;
-      this.remoteCursorPreciseY = this.remoteCursorY;
-      this.remoteAuthoritativeX = this.remoteCursorX;
-      this.remoteAuthoritativeY = this.remoteCursorY;
-      this.remoteAuthoritativeReady = false;
-      this.remotePredictionActive = false;
-      this.remoteCursorReady = true;
+      const centerX: number = Math.round(this.remoteWidth / 2);
+      const centerY: number = Math.round(this.remoteHeight / 2);
+      this.applyRemoteCursorMotionState(createRemoteCursorMotionState(centerX, centerY));
     } else {
-      if (this.remoteAuthoritativeReady) {
-        this.remoteAuthoritativeX = this.clampRemotePreciseX(this.remoteAuthoritativeX);
-        this.remoteAuthoritativeY = this.clampRemotePreciseY(this.remoteAuthoritativeY);
-      }
-      const displayX: number = this.remotePredictionActive ? this.remoteCursorPreciseX :
-        (this.remoteAuthoritativeReady ? this.remoteAuthoritativeX : this.remoteCursorPreciseX);
-      const displayY: number = this.remotePredictionActive ? this.remoteCursorPreciseY :
-        (this.remoteAuthoritativeReady ? this.remoteAuthoritativeY : this.remoteCursorPreciseY);
-      this.remoteCursorPreciseX = this.clampRemotePreciseX(displayX);
-      this.remoteCursorPreciseY = this.clampRemotePreciseY(displayY);
-      this.remoteCursorX = this.clampRemoteX(this.remoteCursorPreciseX);
-      this.remoteCursorY = this.clampRemoteY(this.remoteCursorPreciseY);
+      this.applyRemoteCursorMotionState(this.remoteCursorMotion);
     }
-    this.invalidateRemoteCursorViewIfChanged(previousX, previousY, previousReady);
   }
 
   onBackPress(): boolean {
@@ -2698,67 +2665,85 @@ struct RemoteDesktop {
     this.invalidateRemoteCursorViewIfChanged(previousX, previousY, previousReady);
   }
 
-  /** Update the local display/prediction without claiming remote confirmation. */
+  private clampRemoteCursorMotionState(state: RemoteCursorMotionState): RemoteCursorMotionState {
+    return {
+      displayX: this.clampRemotePreciseX(state.displayX),
+      displayY: this.clampRemotePreciseY(state.displayY),
+      localTargetX: this.clampRemotePreciseX(state.localTargetX),
+      localTargetY: this.clampRemotePreciseY(state.localTargetY),
+      remoteObservedX: this.clampRemotePreciseX(state.remoteObservedX),
+      remoteObservedY: this.clampRemotePreciseY(state.remoteObservedY),
+      remoteReady: state.remoteReady,
+      owner: state.owner,
+      localGestureActive: state.localGestureActive,
+      localLastInputAtMs: state.localLastInputAtMs,
+      localSettlingUntilMs: state.localSettlingUntilMs,
+      remoteObservedAtMs: state.remoteObservedAtMs
+    };
+  }
+
+  private applyRemoteCursorMotionState(state: RemoteCursorMotionState): void {
+    this.remoteCursorMotion = this.clampRemoteCursorMotionState(state);
+    this.setDisplayedRemoteCursor(this.remoteCursorMotion.displayX, this.remoteCursorMotion.displayY);
+  }
+
+  /** Update the local display without claiming a peer acknowledgement. */
   private rememberRemoteCursor(x: number, y: number): void {
-    this.setDisplayedRemoteCursor(x, y);
+    this.applyRemoteCursorMotionState(applyLocalCursorTarget(this.remoteCursorMotion,
+      this.clampRemotePreciseX(x), this.clampRemotePreciseY(y), Date.now()));
   }
 
   private setRemoteCursorPrediction(x: number, y: number): void {
-    this.remotePredictionActive = true;
-    this.setDisplayedRemoteCursor(x, y);
+    this.rememberRemoteCursor(x, y);
   }
 
   /**
-   * Apply a protocol-native cursor position. A delayed native position must
-   * not overwrite a newer local prediction while a mouse move is pending or
-   * in flight. Once the remote position acknowledges the latest move, the
-   * prediction is retired and the native value becomes authoritative.
+   * Record a protocol-native position independently from local touchpad
+   * output. The policy deliberately rejects the former unsequenced ACK
+   * heuristic: a delayed coordinate must not pull an active pointer backward.
    */
   private applyAuthoritativeRemoteCursor(x: number, y: number): void {
-    const authoritativeX: number = this.clampRemotePreciseX(x);
-    const authoritativeY: number = this.clampRemotePreciseY(y);
-    this.remoteAuthoritativeX = authoritativeX;
-    this.remoteAuthoritativeY = authoritativeY;
-    this.remoteAuthoritativeReady = true;
-
-    const protectsPrediction: boolean = this.remotePredictionActive &&
-      (this.pendingMouseMoveValid || this.localMouseMoveInFlight);
-    if (!protectsPrediction) {
-      this.remotePredictionActive = false;
-      this.localMouseMoveInFlight = false;
-      this.setDisplayedRemoteCursor(authoritativeX, authoritativeY);
-      return;
-    }
-
-    const expectedX: number = this.pendingMouseMoveValid ? this.pendingMouseMoveX :
-      this.localMouseMoveSentX;
-    const expectedY: number = this.pendingMouseMoveValid ? this.pendingMouseMoveY :
-      this.localMouseMoveSentY;
-    const closeToExpected: boolean = Math.abs(authoritativeX - expectedX) <= MOUSE_MOVE_ACK_TOLERANCE_PX &&
-      Math.abs(authoritativeY - expectedY) <= MOUSE_MOVE_ACK_TOLERANCE_PX;
-    const sentAgeMs: number = Date.now() - this.localMouseMoveSentAtMs;
-    const timedOut: boolean = this.localMouseMoveInFlight &&
-      this.localMouseMoveSentAtMs > 0 && sentAgeMs >= MOUSE_MOVE_ACK_TIMEOUT_MS &&
-      !this.pendingMouseMoveValid;
-    if (closeToExpected || timedOut) {
-      this.remotePredictionActive = false;
-      this.localMouseMoveInFlight = false;
-      this.setDisplayedRemoteCursor(authoritativeX, authoritativeY);
-      return;
-    }
-    hilog.debug(RD_DOMAIN, RD_TAG, 'remote cursor position held behind local prediction x=' +
-      authoritativeX.toString() + ',' + authoritativeY.toString() +
-      ' expected=' + expectedX.toString() + ',' + expectedY.toString() +
-      ' pending=' + (this.pendingMouseMoveValid ? '1' : '0') +
-      ' inFlight=' + (this.localMouseMoveInFlight ? '1' : '0'));
+    this.applyRemoteCursorMotionState(observeRemoteCursorPosition(this.remoteCursorMotion,
+      this.clampRemotePreciseX(x), this.clampRemotePreciseY(y), Date.now()));
   }
 
   private invalidateRemoteCursorViewIfChanged(previousX: number, previousY: number,
     previousReady: boolean): void {
     if (remoteCursorSnapshotChanged(previousX, previousY, previousReady, this.remoteCursorX,
       this.remoteCursorY, this.remoteCursorReady)) {
-      this.remoteCursorViewRevision += 1;
+      this.requestRemoteCursorViewRefresh();
     }
+  }
+
+  /**
+   * Touch events can arrive faster than ArkUI can present. Keep the latest
+   * cursor coordinates in plain fields and commit one visual revision per
+   * frame, so pointer updates cannot turn into a high-frequency page rebuild
+   * competing with the remote video XComponent.
+   */
+  private requestRemoteCursorViewRefresh(immediate: boolean = false): void {
+    if (immediate) {
+      this.clearRemoteCursorViewCommit();
+      this.remoteCursorViewRevision += 1;
+      return;
+    }
+    if (this.remoteCursorViewCommitPending) {
+      return;
+    }
+    this.remoteCursorViewCommitPending = true;
+    this.remoteCursorViewCommitTimer = setTimeout((): void => {
+      this.remoteCursorViewCommitTimer = -1;
+      this.remoteCursorViewCommitPending = false;
+      this.remoteCursorViewRevision += 1;
+    }, REMOTE_CURSOR_RENDER_FRAME_MS);
+  }
+
+  private clearRemoteCursorViewCommit(): void {
+    if (this.remoteCursorViewCommitTimer >= 0) {
+      clearTimeout(this.remoteCursorViewCommitTimer);
+      this.remoteCursorViewCommitTimer = -1;
+    }
+    this.remoteCursorViewCommitPending = false;
   }
 
   private resetTouchpadPointerCurve(): void {
@@ -2804,8 +2789,9 @@ struct RemoteDesktop {
       ' prediction=' + nextX.toFixed(2) + ',' + nextY.toFixed(2) +
       ' pending=' + (this.pendingMouseMoveValid ? '1' : '0') +
       ' inFlight=' + (this.localMouseMoveInFlight ? '1' : '0') +
-      ' authoritative=' + this.remoteAuthoritativeX.toFixed(2) + ',' +
-      this.remoteAuthoritativeY.toFixed(2) + ' remote=' + this.remoteWidth.toString() +
+      ' remoteObserved=' + this.remoteCursorMotion.remoteObservedX.toFixed(2) + ',' +
+      this.remoteCursorMotion.remoteObservedY.toFixed(2) +
+      ' owner=' + this.remoteCursorMotion.owner + ' remote=' + this.remoteWidth.toString() +
       'x' + this.remoteHeight.toString() + ' surface=' +
       Math.round(this.surfaceWidth).toString() + 'x' + Math.round(this.surfaceHeight).toString() +
       ' discontinuity=' + (discontinuity ? '1' : '0'));
@@ -3174,17 +3160,16 @@ struct RemoteDesktop {
     this.pendingMouseMoveGeneration = this.connectAttemptId;
     this.localMouseMoveInFlight = false;
     this.localMouseMoveSentAtMs = 0;
-    this.remotePredictionActive = false;
   }
 
   private expireMouseMoveAcknowledgement(now: number = Date.now()): void {
     if (!this.localMouseMoveInFlight || this.pendingMouseMoveValid ||
       this.localMouseMoveSentAtMs <= 0 ||
-      now - this.localMouseMoveSentAtMs < MOUSE_MOVE_ACK_TIMEOUT_MS) {
+      now - this.localMouseMoveSentAtMs < MOUSE_MOVE_IN_FLIGHT_DIAGNOSTIC_TIMEOUT_MS) {
       return;
     }
     this.localMouseMoveInFlight = false;
-    hilog.debug(RD_DOMAIN, RD_TAG, 'mouse move acknowledgement expired sequence=' +
+    hilog.debug(RD_DOMAIN, RD_TAG, 'mouse move remote echo not observed sequence=' +
       this.localMouseMoveSequence.toString() + ' sent=' +
       this.localMouseMoveSentX.toFixed(2) + ',' + this.localMouseMoveSentY.toFixed(2));
   }
@@ -3696,7 +3681,7 @@ struct RemoteDesktop {
 
   private clearRemoteCursorPolling(releaseVisual: boolean = true,
     reason: string = 'session-stop'): void {
-    this.stopVirtualJoystickMotion();
+    this.clearRemoteCursorViewCommit();
     if (this.remoteCursorPollTimer !== -1) {
       clearInterval(this.remoteCursorPollTimer);
       this.remoteCursorPollTimer = -1;
@@ -3708,6 +3693,7 @@ struct RemoteDesktop {
     this.remoteCursorNativeVisible = false;
     this.remoteCursorShapeRevision = -1;
     this.remoteCursorPositionRevision = -1;
+    this.remoteCursorVisibilityRevision = -1;
     this.remoteCursorShapeWidth = 0;
     this.remoteCursorShapeHeight = 0;
     this.remoteCursorHotX = 0;
@@ -3715,7 +3701,7 @@ struct RemoteDesktop {
     this.remoteCursorShapeRefreshAtMs = 0;
     this.remoteCursorLastLogMs = 0;
     this.releaseRemoteCursorPixelMap();
-    this.remoteCursorViewRevision += 1;
+    this.requestRemoteCursorViewRefresh(true);
     hilog.info(RD_DOMAIN, RD_TAG, 'remote-cursor polling stopped preserve=0 reason=' + reason);
   }
 
@@ -3739,7 +3725,7 @@ struct RemoteDesktop {
       this.remoteCursorHotX = snapshot.hotX;
       this.remoteCursorHotY = snapshot.hotY;
       this.remoteCursorShapeRefreshAtMs = Date.now();
-      this.remoteCursorViewRevision += 1;
+      this.requestRemoteCursorViewRefresh(true);
       if (previous !== null) {
         try { previous.release(); } catch (_e) { /* already released */ }
       }
@@ -3754,7 +3740,7 @@ struct RemoteDesktop {
     }
     const now: number = Date.now();
     this.expireMouseMoveAcknowledgement(now);
-    this.syncRustDeskLogicalSizeFromRenderer();
+    this.applyRemoteCursorMotionState(advanceRemoteCursorMotion(this.remoteCursorMotion, now));
     const snapshot: RemoteCursorSnapshot | null =
       this.loader.getRemoteCursorSnapshot(sessionId, false);
     if (snapshot === null || snapshot.sessionId !== sessionId) {
@@ -3781,28 +3767,42 @@ struct RemoteDesktop {
       }
     }
     const positionChanged: boolean = snapshot.positionRevision !== this.remoteCursorPositionRevision;
+    const visibilityChanged: boolean = snapshot.visibilityRevision !== this.remoteCursorVisibilityRevision;
     if (positionChanged) {
       this.remoteCursorPositionRevision = snapshot.positionRevision;
-      // RustDesk's FFI marks the cursor hidden when its stream callback ends,
-      // but the ArkTS session may still be connected/recovering and continue
-      // to accept local input. Keep the last valid bitmap visible in that
-      // state; a true disconnect is already gated by this.connected.
-      this.remoteCursorNativeVisible = snapshot.visible || this.isRustDeskSession();
-      if (snapshot.visible) {
+      // Coordinates and visibility are independent protocol dimensions. A
+      // hidden remote cursor can still report a position, which is only an
+      // observation for the ownership policy and must never hide or snap a
+      // controller-owned touchpad pointer.
+      if (snapshot.positionAvailable) {
         this.applyAuthoritativeRemoteCursor(snapshot.x, snapshot.y);
-      } else {
-        this.remoteCursorViewRevision += 1;
       }
     }
-    if (shapeChanged || positionChanged ||
+    if (visibilityChanged) {
+      this.remoteCursorVisibilityRevision = snapshot.visibilityRevision;
+      // RustDesk can temporarily report hidden while its cursor callback path
+      // is recovering even though the ArkTS session still accepts local input.
+      // Preserve the controller-side arrow until a real disconnect; RDP keeps
+      // honoring protocol visibility.
+      this.remoteCursorNativeVisible = snapshot.visible || this.isRustDeskSession();
+      this.requestRemoteCursorViewRefresh(true);
+    }
+    if (shapeChanged || positionChanged || visibilityChanged ||
       this.remoteCursorLastLogMs === 0 || now - this.remoteCursorLastLogMs >= REMOTE_CURSOR_LOG_SAMPLE_MS) {
       this.remoteCursorLastLogMs = now;
       hilog.info(RD_DOMAIN, RD_TAG, 'remote-cursor state session=' + sessionId.toString() +
         ' shapeRevision=' + snapshot.shapeRevision.toString() +
         ' positionRevision=' + snapshot.positionRevision.toString() +
+        ' visibilityRevision=' + snapshot.visibilityRevision.toString() +
         ' visible=' + (snapshot.visible ? '1' : '0') +
         ' pixelMap=' + (this.remoteCursorPixelMap !== null ? '1' : '0') +
-        ' position=' + snapshot.x.toString() + ',' + snapshot.y.toString());
+        ' positionAvailable=' + (snapshot.positionAvailable ? '1' : '0') +
+        ' position=' + snapshot.x.toString() + ',' + snapshot.y.toString() +
+        ' owner=' + this.remoteCursorMotion.owner +
+        ' local=' + this.remoteCursorMotion.localTargetX.toFixed(1) + ',' +
+        this.remoteCursorMotion.localTargetY.toFixed(1) +
+        ' observed=' + this.remoteCursorMotion.remoteObservedX.toFixed(1) + ',' +
+        this.remoteCursorMotion.remoteObservedY.toFixed(1));
     }
   }
 
@@ -3814,7 +3814,7 @@ struct RemoteDesktop {
     this.pollRemoteCursor(sessionId);
     this.remoteCursorPollTimer = setInterval((): void => {
       this.pollRemoteCursor(sessionId);
-    }, 16);
+    }, REMOTE_CURSOR_POLL_MS);
   }
 
   @Builder rustDeskAuthChoiceBuilder() {
@@ -4341,11 +4341,10 @@ struct RemoteDesktop {
     this.remoteCursorReady = false;
     this.remoteCursorPreciseX = 960;
     this.remoteCursorPreciseY = 540;
-    this.remoteAuthoritativeX = 960;
-    this.remoteAuthoritativeY = 540;
-    this.remoteAuthoritativeReady = false;
     this.remoteCursorX = 960;
     this.remoteCursorY = 540;
+    this.remoteCursorMotion = createRemoteCursorMotionState(960, 540);
+    this.touchpadPointerDown = false;
     this.invalidateRemoteCursorViewIfChanged(previousCursorX, previousCursorY,
       previousCursorReady);
     this.bgRestorePending = false; // 清除任何待恢复状态
@@ -6003,6 +6002,10 @@ struct RemoteDesktop {
     this.touchWheelRemainder = 0;
     this.lastTouchWheelMs = 0;
     this.touchpadAnchorValid = false;
+    if (this.touchpadPointerDown) {
+      this.touchpadPointerDown = false;
+      this.applyRemoteCursorMotionState(endLocalCursorGesture(this.remoteCursorMotion, Date.now()));
+    }
     this.resetTouchpadPointerCurve();
     if (wasDragging) {
       this.showRemoteCursorIndicator(-1, true);
@@ -6165,6 +6168,10 @@ struct RemoteDesktop {
       if (event.type === TouchType.Down) {
         this.resetTouchpadPointerCurve();
         this.touchpadAnchorValid = true;
+        if (!this.touchpadPointerDown) {
+          this.touchpadPointerDown = true;
+          this.applyRemoteCursorMotionState(beginLocalCursorGesture(this.remoteCursorMotion, Date.now()));
+        }
         if (this.touchFingerCount <= 0 &&
           shouldResetRemoteImeOnPointerDown(this.keyboardOpen || this.hardwareKeyboardProxyActive)) {
           this.resetRemoteImeSession('touchpad-down');
@@ -6489,6 +6496,9 @@ struct RemoteDesktop {
   }
 
   private handleConfiguredTouchInput = (event: TouchEvent): void => {
+    if (event.type === TouchType.Down) {
+      this.syncRustDeskLogicalSizeFromRenderer();
+    }
     if (event.type === TouchType.Down && this.hardwareKeyboardProxyActive) {
       // 触摸获焦同样可能抢走隐藏 TextArea；不重置 IME 会话，稍后恢复代理焦点。
       this.scheduleRemoteInputFocus('touch-down');
@@ -7458,14 +7468,6 @@ struct RemoteDesktop {
         }
       }
 
-      if (this.connected && this.isTouchpadControlMode() && this.showVirtualMouse) {
-        this.floatingVirtualMouseBuilder()
-      }
-
-      if (this.connected && this.isTouchpadControlMode() && this.showVirtualJoystick) {
-        this.floatingVirtualJoystickBuilder()
-      }
-
       // PC 模式: 拖拽文件悬停视觉反馈
       if (this.connected && this.dropHoverActive && this.isDesktopDevice && this.breakpoint === 'xl') {
         Stack() {
@@ -7790,131 +7792,6 @@ struct RemoteDesktop {
     .position({ x: '4%', y: '84%' })
   }
 
-  private pressVirtualMouseButton(button: number, pressed: boolean): void {
-    if (!this.connected || !this.isTouchpadControlMode()) { return; }
-    this.sendMouseNow(this.remoteCursorX, this.remoteCursorY, button, pressed);
-  }
-
-  private moveVirtualPointer(deltaX: number, deltaY: number): void {
-    if (!this.connected || !this.isTouchpadControlMode()) { return; }
-    const nextX: number = this.remoteCursorPreciseX + this.remoteDeltaFromLocal(deltaX, 'x');
-    const nextY: number = this.remoteCursorPreciseY + this.remoteDeltaFromLocal(deltaY, 'y');
-    this.setRemoteCursorPrediction(nextX, nextY);
-    this.queueMouseMove(nextX, nextY, false);
-  }
-
-  private stopVirtualJoystickMotion(): void {
-    if (this.virtualJoystickTimer !== -1) {
-      clearInterval(this.virtualJoystickTimer);
-      this.virtualJoystickTimer = -1;
-    }
-    this.virtualJoystickLastX = 0;
-    this.virtualJoystickLastY = 0;
-  }
-
-  private startVirtualJoystickMotion(): void {
-    this.stopVirtualJoystickMotion();
-    this.virtualJoystickTimer = setInterval((): void => {
-      if (!this.connected || !this.showVirtualJoystick || !this.isTouchpadControlMode()) {
-        this.stopVirtualJoystickMotion();
-        return;
-      }
-      this.moveVirtualPointer(this.virtualJoystickLastX / 7,
-        this.virtualJoystickLastY / 7);
-    }, 16);
-  }
-
-  @Builder floatingVirtualMouseBuilder() {
-    Column() {
-      Row() {
-        Column() { Text('左').fontSize(12).fontColor('#EAF2FF') }
-          .width(43).height(56).justifyContent(FlexAlign.Center)
-          .backgroundColor('rgba(36,39,48,0.96)').borderRadius({ topLeft: 16 })
-          .onTouch((event: TouchEvent): void => {
-            if (event.type === TouchType.Down) { this.pressVirtualMouseButton(0, true); }
-            if (event.type === TouchType.Up || event.type === TouchType.Cancel) {
-              this.pressVirtualMouseButton(0, false);
-            }
-          })
-        Column() {
-          Column().width(6).height(26).borderRadius(3).backgroundColor('#9FA7B5')
-        }
-        .width(26).height(56).justifyContent(FlexAlign.Center)
-        .backgroundColor('rgba(24,26,32,0.98)')
-        .gesture(PanGesture({ direction: PanDirection.Vertical, distance: 1 })
-          .onActionStart((_event: GestureEvent): void => { this.virtualWheelLastOffset = 0; })
-          .onActionUpdate((event: GestureEvent): void => {
-            const delta: number = event.offsetY - this.virtualWheelLastOffset;
-            this.virtualWheelLastOffset = event.offsetY;
-            if (Math.abs(delta) >= 1) { this.sendTouchPadWheel(delta); }
-          }))
-        .onClick((): void => {
-          this.pressVirtualMouseButton(1, true);
-          this.pressVirtualMouseButton(1, false);
-        })
-        Column() { Text('右').fontSize(12).fontColor('#EAF2FF') }
-          .width(43).height(56).justifyContent(FlexAlign.Center)
-          .backgroundColor('rgba(36,39,48,0.96)').borderRadius({ topRight: 16 })
-          .onTouch((event: TouchEvent): void => {
-            if (event.type === TouchType.Down) { this.pressVirtualMouseButton(2, true); }
-            if (event.type === TouchType.Up || event.type === TouchType.Cancel) {
-              this.pressVirtualMouseButton(2, false);
-            }
-          })
-      }
-      Column() {
-        Text('•••').fontSize(16).fontColor('#9FA7B5').letterSpacing(2)
-      }
-      .width(112).height(30).justifyContent(FlexAlign.Center)
-      .backgroundColor('rgba(28,30,37,0.97)')
-      .borderRadius({ bottomLeft: 16, bottomRight: 16 })
-      .gesture(PanGesture({ fingers: 1, distance: 3 })
-        .onActionStart((_event: GestureEvent): void => {
-          this.virtualMouseDragStartX = this.virtualMouseX;
-          this.virtualMouseDragStartY = this.virtualMouseY;
-        })
-        .onActionUpdate((event: GestureEvent): void => {
-          const maxX: number = Math.max(0, this.surfaceWidth - 112);
-          const maxY: number = Math.max(0, this.surfaceHeight - 86);
-          this.virtualMouseX = Math.max(0, Math.min(maxX,
-            this.virtualMouseDragStartX + event.offsetX));
-          this.virtualMouseY = Math.max(0, Math.min(maxY,
-            this.virtualMouseDragStartY + event.offsetY));
-        }))
-    }
-    .width(112).height(86)
-    .position({ x: this.virtualMouseX, y: this.virtualMouseY })
-    .shadow({ radius: 14, color: 'rgba(0,0,0,0.34)', offsetY: 5 })
-    .hitTestBehavior(HitTestMode.Default)
-  }
-
-  @Builder floatingVirtualJoystickBuilder() {
-    Stack() {
-      Stack().width(74).height(74).borderRadius(37)
-        .backgroundColor('rgba(28,30,37,0.78)')
-        .border({ width: 1, color: 'rgba(255,255,255,0.22)' })
-      Stack().width(30).height(30).borderRadius(15)
-        .backgroundColor('rgba(234,242,255,0.90)')
-    }
-    .width(82).height(82)
-    .position({ x: 24, y: Math.max(110, this.surfaceHeight - 116) })
-    .gesture(PanGesture({ fingers: 1, distance: 1 })
-      .onActionStart((_event: GestureEvent): void => {
-        this.virtualJoystickLastX = 0;
-        this.virtualJoystickLastY = 0;
-        this.startVirtualJoystickMotion();
-      })
-      .onActionUpdate((event: GestureEvent): void => {
-        const length: number = Math.sqrt(event.offsetX * event.offsetX + event.offsetY * event.offsetY);
-        const scale: number = length > 30 ? 30 / length : 1;
-        this.virtualJoystickLastX = event.offsetX * scale;
-        this.virtualJoystickLastY = event.offsetY * scale;
-      })
-      .onActionEnd((_event: GestureEvent): void => { this.stopVirtualJoystickMotion(); })
-      .onActionCancel((): void => { this.stopVirtualJoystickMotion(); }))
-    .hitTestBehavior(HitTestMode.Default)
-  }
-
   @Builder controlPanelBuilder() {
     Column() {
       Text('控制面板')
@@ -7969,30 +7846,6 @@ struct RemoteDesktop {
           this.openModifierPanel();
         }, 200);
       })
-      if (this.isTouchpadControlMode()) {
-        Row() {
-          Text('浮动鼠标').fontSize(15).fontColor(this.pal().text).layoutWeight(1)
-          Toggle({ type: ToggleType.Switch, isOn: this.showVirtualMouse })
-            .selectedColor(this.pal().primary)
-            .onChange((enabled: boolean): void => {
-              this.saveShowVirtualMouse(enabled);
-            })
-        }
-        .width('100%').height(48).padding({ left: 18, right: 18 })
-        .backgroundColor(this.pal().card).borderRadius(12)
-        .margin({ bottom: 8, left: 24, right: 24 })
-        Row() {
-          Text('浮动摇杆').fontSize(15).fontColor(this.pal().text).layoutWeight(1)
-          Toggle({ type: ToggleType.Switch, isOn: this.showVirtualJoystick })
-            .selectedColor(this.pal().primary)
-            .onChange((enabled: boolean): void => {
-              this.saveShowVirtualJoystick(enabled);
-            })
-        }
-        .width('100%').height(48).padding({ left: 18, right: 18 })
-        .backgroundColor(this.pal().card).borderRadius(12)
-        .margin({ bottom: 12, left: 24, right: 24 })
-      }
       // 文件传输按钮
       Row() {
         SymbolGlyph($r('sys.symbol.doc'))

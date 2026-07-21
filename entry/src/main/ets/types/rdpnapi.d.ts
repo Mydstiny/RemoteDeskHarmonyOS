@@ -295,9 +295,11 @@ export interface RemoteCursorSnapshot {
   height: number;
   hotX: number;
   hotY: number;
+  positionAvailable: boolean;
   visible: boolean;
   shapeRevision: number;
   positionRevision: number;
+  visibilityRevision: number;
   rgba: ArrayBuffer;
 }
 

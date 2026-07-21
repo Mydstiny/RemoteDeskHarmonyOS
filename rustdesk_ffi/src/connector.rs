@@ -802,6 +802,11 @@ impl RustDeskConnector {
         let mut last_video_starvation_refresh_at: Option<Instant> = None;
         let mut last_control_diagnostic_at = Instant::now();
         let mut last_successful_receive_at = Instant::now();
+        let mut last_cursor_position_at: Option<Instant> = None;
+        let mut sent_control_total: u64 = 0;
+        let mut sent_mouse_moves: u64 = 0;
+        let mut sent_mouse_buttons: u64 = 0;
+        let mut control_send_errors: u64 = 0;
         let mut last_msg_kind = "none";
         let mut cursor_state = CursorState::new(4);
         let mut physical_modifiers = PhysicalModifierState::default();
@@ -839,8 +844,12 @@ impl RustDeskConnector {
             let diagnostic_now = Instant::now();
             if should_emit_control_diagnostics(last_control_diagnostic_at, diagnostic_now) {
                 let snapshot = controls.snapshot();
+                let cursor_position_count = msg_stats.get("cursor_position").copied().unwrap_or(0);
+                let cursor_gap_ms = last_cursor_position_at
+                    .map(|last| diagnostic_now.duration_since(last).as_millis())
+                    .unwrap_or(0);
                 eprintln!(
-                    "[RustDesk-FFI] control diag reliable_depth={} max_reliable_depth={} coalesced_mouse={} coalesced_refresh={} coalesced_pressure={} batch_limit_hits={} receive_gap_ms={}",
+                    "[RustDesk-FFI] control diag reliable_depth={} max_reliable_depth={} coalesced_mouse={} coalesced_refresh={} coalesced_pressure={} batch_limit_hits={} receive_gap_ms={} sent_total={} sent_mouse_moves={} sent_mouse_buttons={} send_errors={} cursor_positions={} cursor_gap_ms={}",
                     snapshot.reliable_depth,
                     snapshot.max_reliable_depth,
                     snapshot.coalesced_mouse_moves,
@@ -848,6 +857,12 @@ impl RustDeskConnector {
                     snapshot.coalesced_video_pressure,
                     snapshot.batch_limit_hits,
                     diagnostic_now.duration_since(last_successful_receive_at).as_millis(),
+                    sent_control_total,
+                    sent_mouse_moves,
+                    sent_mouse_buttons,
+                    control_send_errors,
+                    cursor_position_count,
+                    cursor_gap_ms,
                 );
                 last_control_diagnostic_at = diagnostic_now;
             }
@@ -914,16 +929,20 @@ impl RustDeskConnector {
                         }
                     }
                     msg => {
-                        eprintln!(
-                            "[RustDesk-FFI] streaming: control msg kind={}",
-                            Self::control_msg_kind(&msg)
-                        );
+                        let kind = Self::control_msg_kind(&msg);
+                        sent_control_total += 1;
+                        if kind == "mouse_move" {
+                            sent_mouse_moves += 1;
+                        } else if kind == "mouse" {
+                            sent_mouse_buttons += 1;
+                        }
                         if let Err(e) = Self::send_control_message(
                             crypto,
                             msg,
                             &mut physical_modifiers,
                             remote_is_macos,
                         ) {
+                            control_send_errors += 1;
                             eprintln!("[RustDesk-FFI] streaming: control msg error: {}", e);
                         }
                     }
@@ -1163,6 +1182,7 @@ impl RustDeskConnector {
                 Some(Message_oneof_union::cursor_position(position)) => {
                     last_msg_kind = "cursor_position";
                     *msg_stats.entry("cursor_position").or_default() += 1;
+                    last_cursor_position_at = Some(Instant::now());
                     if cursor_state.apply_position(position.get_x(), position.get_y()) {
                         on_cursor(CursorStreamUpdate::Position {
                             x: position.get_x(),

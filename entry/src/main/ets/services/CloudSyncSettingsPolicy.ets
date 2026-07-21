@@ -11,8 +11,6 @@ const CLOUD_USER_SETTING_NAMES: string[] = [
   'liveViewMode',
   'hostAddMode',
   'virtualMouseStyle',
-  'showVirtualMouse',
-  'showVirtualJoystick',
   'terminalFgColor',
   'terminalFontSize',
   'useNativeTerminalCore',

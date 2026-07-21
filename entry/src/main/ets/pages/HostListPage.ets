@@ -276,8 +276,6 @@ struct HostListPage {
   // Keep the released storage/cloud key while exposing the broader FAB-style semantics in UI code.
   @StorageLink('hostAddMode') fabAddStyle: string = 'modern';
   @StorageLink('virtualMouseStyle') virtualMouseStyle: string = 'circle';
-  @StorageLink('showVirtualMouse') showVirtualMouse: boolean = false;
-  @StorageLink('showVirtualJoystick') showVirtualJoystick: boolean = false;
   @State lanScanning: boolean = false;
   @State lanScanResults: DiscoveredRustDeskPeer[] = [];
   private lanDiscovery: RustDeskLanDiscoveryService = new RustDeskLanDiscoveryService();
@@ -653,8 +651,6 @@ struct HostListPage {
       const savedLiveViewMode: number = prefs.getSync('liveViewMode', 1) as number;
       const savedHostAddMode: string = prefs.getSync('hostAddMode', 'modern') as string;
       const savedVirtualMouseStyle: string = prefs.getSync('virtualMouseStyle', 'circle') as string;
-      const savedShowVirtualMouse: boolean = prefs.getSync('showVirtualMouse', false) as boolean;
-      const savedShowVirtualJoystick: boolean = prefs.getSync('showVirtualJoystick', false) as boolean;
       const savedWallpaper: string = prefs.getSync('wallpaperColor', '') as string;
       // 终端设置
       const savedTermFg: string = prefs.getSync('terminalFgColor', '') as string;
@@ -682,10 +678,6 @@ struct HostListPage {
       AppStorage.setOrCreate('hostAddMode', this.fabAddStyle);
       this.virtualMouseStyle = normalizeRemoteCursorStyle(savedVirtualMouseStyle);
       AppStorage.setOrCreate('virtualMouseStyle', this.virtualMouseStyle);
-      this.showVirtualMouse = savedShowVirtualMouse;
-      this.showVirtualJoystick = savedShowVirtualJoystick;
-      AppStorage.setOrCreate('showVirtualMouse', this.showVirtualMouse);
-      AppStorage.setOrCreate('showVirtualJoystick', this.showVirtualJoystick);
       if (savedWallpaper !== '') { AppStorage.setOrCreate('wallpaperColor', savedWallpaper); }
       const savedWallIdx: number = prefs.getSync('wallpaperIdx', -1) as number;
       if (savedWallIdx >= 0 && savedWallIdx < this.wallpaperItems.length) {
@@ -3252,16 +3244,6 @@ struct HostListPage {
     this.persistPref('virtualMouseStyle', this.virtualMouseStyle);
   }
 
-  private saveShowVirtualMouse(enabled: boolean): void {
-    this.showVirtualMouse = enabled;
-    this.persistPref('showVirtualMouse', enabled);
-  }
-
-  private saveShowVirtualJoystick(enabled: boolean): void {
-    this.showVirtualJoystick = enabled;
-    this.persistPref('showVirtualJoystick', enabled);
-  }
-
   private saveRustDeskLanDiscovery(on: boolean): void {
     this.rustdeskLanDiscovery = on;
     this.persistRustDeskBooleanPref('rustdeskLanDiscovery', this.rustdeskLanDiscovery);
@@ -4930,24 +4912,6 @@ struct HostListPage {
                     .fontColor(this.virtualMouseStyle === 'arrow' ? Color.White : this.pal().text2)
                     .backgroundColor(this.virtualMouseStyle === 'arrow' ? this.accentColor : this.pal().surface)
                     .borderRadius(10).onClick((): void => { this.saveVirtualMouseStyle('arrow'); })
-                }.width('100%').padding({ left: 16, right: 16, bottom: 12 })
-                Row() {
-                  Column() {
-                    Text('浮动鼠标').fontSize(14).fontColor(this.pal().text)
-                    Text('显示左右键、滚轮和拖动手柄').fontSize(11).fontColor(this.pal().text3)
-                  }.alignItems(HorizontalAlign.Start).layoutWeight(1)
-                  Toggle({ type: ToggleType.Switch, isOn: this.showVirtualMouse })
-                    .selectedColor(this.accentColor)
-                    .onChange((enabled: boolean): void => { this.saveShowVirtualMouse(enabled); })
-                }.width('100%').padding({ left: 16, right: 16, bottom: 10 })
-                Row() {
-                  Column() {
-                    Text('浮动摇杆').fontSize(14).fontColor(this.pal().text)
-                    Text('通过摇杆连续移动远端指针').fontSize(11).fontColor(this.pal().text3)
-                  }.alignItems(HorizontalAlign.Start).layoutWeight(1)
-                  Toggle({ type: ToggleType.Switch, isOn: this.showVirtualJoystick })
-                    .selectedColor(this.accentColor)
-                    .onChange((enabled: boolean): void => { this.saveShowVirtualJoystick(enabled); })
                 }.width('100%').padding({ left: 16, right: 16, bottom: 12 })
               }
               this.cardDivider()

@@ -27,9 +27,11 @@ RDP_TEST_CASE(remote_cursor_shape_revision_changes_only_for_valid_shape) {
 RDP_TEST_CASE(remote_cursor_position_does_not_copy_or_rev_shape) {
     RemoteCursorStore store;
     store.reset(9, "rdp");
+    RDP_ASSERT(!store.snapshot(false).positionAvailable);
     store.setPosition(100, 200);
 
     const RemoteCursorSnapshot snapshot = store.snapshot(false);
+    RDP_ASSERT(snapshot.positionAvailable);
     RDP_ASSERT_EQ(snapshot.positionRevision, 1);
     RDP_ASSERT_EQ(snapshot.shapeRevision, 0);
     RDP_ASSERT_EQ(snapshot.x, 100);
@@ -63,9 +65,40 @@ RDP_TEST_CASE(remote_cursor_default_shape_can_bootstrap_a_visible_session) {
     RDP_ASSERT_EQ(snapshot.sessionId, 23);
     RDP_ASSERT(snapshot.visible);
     RDP_ASSERT_EQ(snapshot.shapeRevision, 1);
-    RDP_ASSERT_EQ(snapshot.positionRevision, 1);
+    RDP_ASSERT_EQ(snapshot.positionRevision, 0);
+    RDP_ASSERT_EQ(snapshot.visibilityRevision, 1);
     RDP_ASSERT_EQ(snapshot.width, 16);
     RDP_ASSERT_EQ(snapshot.height, 16);
+}
+
+RDP_TEST_CASE(remote_cursor_visibility_does_not_revise_or_replace_position) {
+    RemoteCursorStore store;
+    store.reset(24, "rustdesk");
+    store.setPosition(320, 240);
+    store.setVisible(true);
+    const RemoteCursorSnapshot first = store.snapshot(false);
+
+    store.setVisible(false);
+    const RemoteCursorSnapshot hidden = store.snapshot(false);
+    RDP_ASSERT_EQ(hidden.x, 320);
+    RDP_ASSERT_EQ(hidden.y, 240);
+    RDP_ASSERT_EQ(hidden.positionRevision, first.positionRevision);
+    RDP_ASSERT_EQ(hidden.visibilityRevision, first.visibilityRevision + 1);
+}
+
+RDP_TEST_CASE(remote_cursor_first_top_left_position_is_not_lost_to_default_storage) {
+    RemoteCursorStore store;
+    store.reset(25, "rustdesk");
+    const RemoteCursorSnapshot before = store.snapshot(false);
+    RDP_ASSERT(!before.positionAvailable);
+    RDP_ASSERT_EQ(before.positionRevision, 0);
+
+    store.setPosition(0, 0);
+    const RemoteCursorSnapshot after = store.snapshot(false);
+    RDP_ASSERT(after.positionAvailable);
+    RDP_ASSERT_EQ(after.positionRevision, 1);
+    RDP_ASSERT_EQ(after.x, 0);
+    RDP_ASSERT_EQ(after.y, 0);
 }
 
 RDP_TEST_CASE(remote_cursor_rejects_invalid_dimensions_and_hotspot) {
@@ -92,6 +125,7 @@ RDP_TEST_CASE(remote_cursor_reset_isolates_sessions_and_revisions) {
     RDP_ASSERT(snapshot.protocol == "rdp");
     RDP_ASSERT_EQ(snapshot.shapeRevision, 0);
     RDP_ASSERT_EQ(snapshot.positionRevision, 0);
+    RDP_ASSERT(!snapshot.positionAvailable);
     RDP_ASSERT(!snapshot.visible);
     RDP_ASSERT(snapshot.rgba.empty());
 }

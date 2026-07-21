@@ -102,11 +102,12 @@ bool RemoteCursorStore::setDefaultShape() {
 
 void RemoteCursorStore::setPosition(int x, int y) {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (state_.x == x && state_.y == y) {
+    if (state_.positionAvailable && state_.x == x && state_.y == y) {
         return;
     }
     state_.x = x;
     state_.y = y;
+    state_.positionAvailable = true;
     state_.positionRevision += 1;
 }
 
@@ -116,7 +117,7 @@ void RemoteCursorStore::setVisible(bool visible) {
         return;
     }
     state_.visible = visible;
-    state_.positionRevision += 1;
+    state_.visibilityRevision += 1;
 }
 
 RemoteCursorSnapshot RemoteCursorStore::snapshot(bool includePixels) const {

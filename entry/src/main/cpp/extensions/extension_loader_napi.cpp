@@ -2413,12 +2413,16 @@ napi_value NapiGetRemoteCursorSnapshot(napi_env env, napi_callback_info info) {
     setUint64("shapeId", snapshot.shapeId);
     setUint64("shapeRevision", snapshot.shapeRevision);
     setUint64("positionRevision", snapshot.positionRevision);
+    setUint64("visibilityRevision", snapshot.visibilityRevision);
     setInt32("x", snapshot.x);
     setInt32("y", snapshot.y);
     setInt32("width", snapshot.width);
     setInt32("height", snapshot.height);
     setInt32("hotX", snapshot.hotX);
     setInt32("hotY", snapshot.hotY);
+    napi_value positionAvailable;
+    napi_get_boolean(env, snapshot.positionAvailable, &positionAvailable);
+    napi_set_named_property(env, result, "positionAvailable", positionAvailable);
     napi_value visible;
     napi_get_boolean(env, snapshot.visible, &visible);
     napi_set_named_property(env, result, "visible", visible);
