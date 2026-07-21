@@ -1,9 +1,7 @@
 # RDP、RustDesk 分辨率预设、Windows 式缩放与双指交互实施计划
 
-> 版本：v2.4（已同步当前实现与自动化验证）
+> 版本：v2.5（已同步当前实现、UX 修复与自动化验证）
 > 日期：2026-07-21  方式：根据当前工作树代码和内置 RustDesk vendor Flutter 代码复核、实现并验证
-
-> **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:subagent-driven-development` or `superpowers:executing-plans` to implement this plan task-by-task after approval. The current document is a design/implementation plan, not evidence that the features are already implemented.
 
 **Goal:** 统一规划 RDP/RustDesk 远端分辨率、设置缩放、双指画布缩放/平移、远端应用内部缩放以及 RustDesk Android portrait 几何修复。
 
@@ -17,6 +15,7 @@
 - 已实现 RDP/RustDesk 共用的 Fit、100/125/150/175/200%、自定义缩放，以及独立且默认在 Phone/Pad 开启的双指本地画布缩放/平移；它不会写回设置缩放值。
 - 已实现 RustDesk 显示能力读取、远端候选分辨率请求、官方 `TouchScaleUpdate`/`TouchPan*` 控制消息与 Android 旋转后的 `Misc.switch_display` 实时帧几何更新。
 - 已完成 Rust 120/120、native 114/114、ArkTS 测试编译、OHOS 双 ABI FFI、生产 HAP、`git diff --check` 和 Light 合规门。
+- 已修复首轮交互 UX：未标记版本的派生显示缩放会一次性回归“适应窗口”；双指右键仅在 ArkUI 已识别真实 pinch 后才让画布/远端应用缩放接管。ArkTS 测试编译、生产 HAP、`git diff --check` 与 Light 合规门均已通过。
 - 未完成项只限真实设备验收，以及外部 RustDesk Android 被控端的 touch-scale 注入。当前客户端可向支持该协议的 peer 发送事件；上游 Android 被控端尚未实现应用级 pinch 注入，不能宣称所有 Android 应用已可缩放。
 
 ## Global Constraints
@@ -25,7 +24,8 @@
 - 本任务范围内不得把远端分辨率、本地设置缩放、双指画布缩放和远端应用内部缩放互相替代。
 - 双指默认目标为本地画布；远端应用目标必须能力协商、权限检查和真实设备验收通过后再开放。
 - 双指画布缩放首版按 RustDesk 官方手机版行为对齐：双指距离改变本地 canvas zoom、双指中心移动改变本地 canvas pan；它必须由独立的 `canvasGestureZoomEnabled` 设置开关控制，不得与设置中的 Custom/百分比缩放共用状态。
-- `canvasGestureZoomEnabled` 关闭时必须回到既有双指右键/滚轮或显式触控板语义；开启时双指候选一旦提交为画布变换，不得同时发送远端点击、滚轮或远端 touch-scale。
+- `canvasGestureZoomEnabled` 关闭时必须回到既有双指右键/滚轮或显式触控板语义；开启时，第二根手指落下和静态双指轻点仍必须先走触控板候选，只有达到 PinchGesture 识别距离后才提交为画布变换并阻断远端点击、滚轮或远端 touch-scale。
+- 本地显示缩放的无偏好默认值必须始终为 Fit；旧的未标记派生值不得被当作用户选择而迁移为 100%/Custom。用户在设置或会话菜单明确选择后，才记录带版本的缩放偏好。
 - 所有用户可见能力必须在设置中心的共享区或对应协议区有明确入口；远端分辨率、本地显示缩放、双指画布操作、远端应用缩放和方向策略不得共用一个含义不清的开关。
 - RustDesk 流统计快照只能作为诊断/验收观测层；在没有逐帧 geometry、rotation、stride 和 session epoch 之前，不能把统计中的初始化宽高当作 Android portrait 修复或实际视频帧尺寸。
 - RustDesk Android portrait 修复必须保留宽高比并同步 frame geometry、rotation、stride、renderer、输入和远端光标；不得靠强制横屏或隐式交换宽高掩盖问题。
@@ -47,6 +47,14 @@
 4. **远端应用内部缩放**：向远端应用发送真实的多指触控/scale 事件，使浏览器、图片、地图、文档等应用内容缩放，而远端系统窗口和视频采集尺寸保持不变。它不是本地画布缩放，也不是远端分辨率切换。
 
 建议的首版范围是：RDP 扩展连接初始化时的分辨率预设，RustDesk 在协议支持和远端权限允许时的运行中分辨率切换，RDP/RustDesk 共用的本地 Fit/百分比缩放，以及默认面向画布的双指缩放/平移。RustDesk Android 远端应用内部缩放必须在协议、服务端和 AccessibilityService 注入链路完成并通过能力协商后再开放；RDP 运行中动态改分辨率不应在没有 FreeRDP Display Control 验证前与 RustDesk 的运行中切换混为同一能力。
+
+### 0.1 2026-07-21 双指与默认缩放 UX 修复计划
+
+1. 以 `remoteDisplayScalePreferenceVersion` 区分“用户明确选择”与首轮功能自动写入的派生值；版本缺失时统一恢复 Fit，并在设置页和直接进入会话两条启动路径持久化修正结果。
+2. 设置页或会话工具栏明确选择 Fit、百分比或自定义值时，写入当前版本标记；后续启动严格保留该值，避免再次覆盖用户意图。
+3. 触控事件在第二指 Down 时继续交由虚拟触控板处理，因此静态双指轻点仍触发右键、双指移动仍遵循滚轮语义。`PinchGesture({ fingers: 2, distance: 5 })` 的 `onActionStart` 代表系统已确认距离变化，届时才取消右键候选、释放可能的左键按住，并消费本手势余下输入。
+4. 对 RustDesk 远端应用 touch-scale 使用相同仲裁：它也只能在确认 pinch 后接管，不得因开关开启而屏蔽虚拟触控板的双指右键。
+5. 自动化覆盖未标记 100%/Custom 回归 Fit、带版本偏好的保留，以及 Fit/100% 的画布基准；真机补充“开关开/关 × 触控板双指右键/滚轮/捏合 × RDP/RustDesk”的回归矩阵。
 
 ---
 

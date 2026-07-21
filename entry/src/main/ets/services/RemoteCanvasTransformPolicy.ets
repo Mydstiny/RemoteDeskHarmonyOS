@@ -1,5 +1,12 @@
 export type LocalViewScaleMode = 'fit' | '100' | '125' | '150' | '175' | '200' | 'custom';
 
+// The first shared-display implementation persisted a derived value without
+// recording whether the user had actually selected it.  Versioned values are
+// user intent; older values are repaired to the previous Fit behaviour.
+export const REMOTE_DISPLAY_SCALE_PREFERENCE_VERSION_KEY: string =
+  'remoteDisplayScalePreferenceVersion';
+export const REMOTE_DISPLAY_SCALE_PREFERENCE_VERSION: number = 1;
+
 export interface CanvasViewport {
   surfaceWidth: number;
   surfaceHeight: number;
@@ -36,6 +43,14 @@ export function normalizeLocalViewScaleMode(value: string): LocalViewScaleMode {
   // Released RustDesk values remain readable during the settings migration.
   if (value === 'original') {
     return '100';
+  }
+  return 'fit';
+}
+
+/** Resolve a stored display scale without turning an old derived value into a new default. */
+export function resolveInitialRemoteDisplayScaleMode(value: string, preferenceVersion: number): LocalViewScaleMode {
+  if (Number.isFinite(preferenceVersion) && preferenceVersion >= REMOTE_DISPLAY_SCALE_PREFERENCE_VERSION) {
+    return normalizeLocalViewScaleMode(value);
   }
   return 'fit';
 }

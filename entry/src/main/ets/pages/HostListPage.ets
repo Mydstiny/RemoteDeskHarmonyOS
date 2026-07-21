@@ -164,7 +164,10 @@ import {
 } from '../services/RemoteResolutionPresetPolicy';
 import {
   localViewScalePercent,
-  normalizeLocalViewScaleMode
+  normalizeLocalViewScaleMode,
+  REMOTE_DISPLAY_SCALE_PREFERENCE_VERSION,
+  REMOTE_DISPLAY_SCALE_PREFERENCE_VERSION_KEY,
+  resolveInitialRemoteDisplayScaleMode
 } from '../services/RemoteCanvasTransformPolicy';
 import {
   CLOUD_SYNC_SHEET_ACTIONS,
@@ -713,6 +716,8 @@ struct HostListPage {
       const savedRdpDesktopPreset: number = prefs.getSync('rdpDesktopPreset', 1) as number;
       const savedRdpDesktopResolutionId: string = prefs.getSync('rdpDesktopResolutionId', '') as string;
       const savedRemoteDisplayScaleMode: string = prefs.getSync('remoteDisplayScaleMode', '') as string;
+      const remoteDisplayScalePreferenceVersion: number =
+        prefs.getSync(REMOTE_DISPLAY_SCALE_PREFERENCE_VERSION_KEY, 0) as number;
       const savedRemoteDisplayCustomScalePercent: number =
         prefs.getSync('remoteDisplayCustomScalePercent', 100) as number;
       const canvasGestureZoomDefaultVersion: number =
@@ -769,8 +774,8 @@ struct HostListPage {
       this.rdpDesktopPreset = savedRdpDesktopPreset >= 0 && savedRdpDesktopPreset <= 3 ? savedRdpDesktopPreset : 1;
       this.rdpDesktopResolutionId = normalizeRdpResolutionId(savedRdpDesktopResolutionId, this.rdpDesktopPreset);
       this.rdpDesktopPreset = legacyRdpPresetForResolutionId(this.rdpDesktopResolutionId);
-      this.remoteDisplayScaleMode = normalizeLocalViewScaleMode(savedRemoteDisplayScaleMode.length > 0 ?
-        savedRemoteDisplayScaleMode : savedRustDeskViewScaleMode);
+      this.remoteDisplayScaleMode = resolveInitialRemoteDisplayScaleMode(savedRemoteDisplayScaleMode,
+        remoteDisplayScalePreferenceVersion);
       this.remoteDisplayCustomScalePercent = Math.max(50, Math.min(300,
         Number.isFinite(savedRemoteDisplayCustomScalePercent) ? savedRemoteDisplayCustomScalePercent : 100));
       if (canvasGestureZoomDefaultVersion < 1) {
@@ -781,6 +786,8 @@ struct HostListPage {
       this.canvasGestureZoomEnabled = savedCanvasGestureZoomEnabled;
       prefs.putSync('rdpDesktopResolutionId', this.rdpDesktopResolutionId);
       prefs.putSync('remoteDisplayScaleMode', this.remoteDisplayScaleMode);
+      prefs.putSync(REMOTE_DISPLAY_SCALE_PREFERENCE_VERSION_KEY,
+        REMOTE_DISPLAY_SCALE_PREFERENCE_VERSION);
       prefs.putSync('remoteDisplayCustomScalePercent', this.remoteDisplayCustomScalePercent);
       prefs.flush();
       this.rdpColorDepth = savedRdpColorDepth === 16 || savedRdpColorDepth === 24 ? savedRdpColorDepth : 32;
@@ -3435,6 +3442,8 @@ struct HostListPage {
   private saveRemoteDisplayScaleMode(mode: string): void {
     this.remoteDisplayScaleMode = normalizeLocalViewScaleMode(mode);
     this.persistPref('remoteDisplayScaleMode', this.remoteDisplayScaleMode);
+    this.persistPref(REMOTE_DISPLAY_SCALE_PREFERENCE_VERSION_KEY,
+      REMOTE_DISPLAY_SCALE_PREFERENCE_VERSION);
   }
 
   private saveRemoteDisplayCustomScalePercent(value: string): void {
@@ -3444,6 +3453,8 @@ struct HostListPage {
     }
     this.remoteDisplayCustomScalePercent = Math.max(50, Math.min(300, Math.round(parsed)));
     this.persistPref('remoteDisplayCustomScalePercent', this.remoteDisplayCustomScalePercent);
+    this.persistPref(REMOTE_DISPLAY_SCALE_PREFERENCE_VERSION_KEY,
+      REMOTE_DISPLAY_SCALE_PREFERENCE_VERSION);
   }
 
   private saveCanvasGestureZoomEnabled(on: boolean): void {
@@ -6852,7 +6863,7 @@ struct HostListPage {
   @Builder canvasGestureZoomRow() {
     if (!this.isDesktopDevice) {
       this.rustdeskSwitchRow($r('app.media.icon_desktop'), '双指画布缩放',
-        '连接画面双指缩放和平移；关闭后保留原有双指右键和滚轮',
+        '捏合后缩放和平移画面；双指轻点始终保留右键，关闭后保留原有双指右键和滚轮',
         this.canvasGestureZoomEnabled,
         (on: boolean): void => { this.saveCanvasGestureZoomEnabled(on); }, true)
     }

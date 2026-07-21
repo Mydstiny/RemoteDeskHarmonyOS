@@ -100,7 +100,10 @@ import {
   clampCanvasTransform,
   LocalViewScaleMode,
   normalizeLocalViewScaleMode,
-  pinchCanvasTransform
+  pinchCanvasTransform,
+  REMOTE_DISPLAY_SCALE_PREFERENCE_VERSION,
+  REMOTE_DISPLAY_SCALE_PREFERENCE_VERSION_KEY,
+  resolveInitialRemoteDisplayScaleMode
 } from '../services/RemoteCanvasTransformPolicy';
 import {
   normalizeRdpResolutionId,
@@ -1091,6 +1094,29 @@ struct RemoteDesktop {
     }
   }
 
+  /** Keep direct-to-session navigation on the same safe Fit migration as the settings page. */
+  private restoreRemoteDisplayScalePreference(): void {
+    try {
+      const prefs = preferences.getPreferencesSync(getContext(this), { name: 'RemoteDesktopAppPrefs' });
+      const storedMode: string = prefs.getSync('remoteDisplayScaleMode', '') as string;
+      const storedVersion: number =
+        prefs.getSync(REMOTE_DISPLAY_SCALE_PREFERENCE_VERSION_KEY, 0) as number;
+      this.remoteDisplayScaleMode = resolveInitialRemoteDisplayScaleMode(storedMode, storedVersion);
+      AppStorage.setOrCreate('remoteDisplayScaleMode', this.remoteDisplayScaleMode);
+      if (!Number.isFinite(storedVersion) || storedVersion < REMOTE_DISPLAY_SCALE_PREFERENCE_VERSION) {
+        prefs.putSync('remoteDisplayScaleMode', this.remoteDisplayScaleMode);
+        prefs.putSync(REMOTE_DISPLAY_SCALE_PREFERENCE_VERSION_KEY,
+          REMOTE_DISPLAY_SCALE_PREFERENCE_VERSION);
+        prefs.flushSync();
+      }
+    } catch (err) {
+      this.remoteDisplayScaleMode = 'fit';
+      AppStorage.setOrCreate('remoteDisplayScaleMode', this.remoteDisplayScaleMode);
+      hilog.warn(RD_DOMAIN, RD_TAG,
+        'restoreRemoteDisplayScalePreference fallback to fit: ' + JSON.stringify(err));
+    }
+  }
+
   private setRustDeskPrivacyMode(on: boolean): void {
     this.rustdeskPrivacyMode = on;
     this.persistSessionPref('rustdeskPrivacyMode', on);
@@ -1125,6 +1151,8 @@ struct RemoteDesktop {
     const next: LocalViewScaleMode = normalizeLocalViewScaleMode(mode);
     this.remoteDisplayScaleMode = next;
     this.persistSessionPref('remoteDisplayScaleMode', next);
+    this.persistSessionPref(REMOTE_DISPLAY_SCALE_PREFERENCE_VERSION_KEY,
+      REMOTE_DISPLAY_SCALE_PREFERENCE_VERSION);
     this.rustdeskViewScaleMode = next === '100' ? 'original' : next === 'custom' ? 'custom' : 'fit';
     this.persistSessionPref('rustdeskViewScaleMode', this.rustdeskViewScaleMode);
     this.resetCanvasToDisplayDefault();
@@ -1255,6 +1283,7 @@ struct RemoteDesktop {
 
   private startCanvasPinch(event: GestureEvent): void {
     if (this.shouldUseRustDeskRemoteAppTouchScale()) {
+      this.claimCanvasPinchInput();
       this.startRustDeskRemoteAppTouchScale(event);
       return;
     }
@@ -1265,10 +1294,18 @@ struct RemoteDesktop {
       this.resetCanvasToDisplayDefault();
     }
     this.canvasPinchActive = true;
-    this.canvasPinchInputConsumed = true;
     this.canvasPinchLastScale = 1;
     this.canvasPinchLastCenterX = this.vpToPx(event.pinchCenterX);
     this.canvasPinchLastCenterY = this.vpToPx(event.pinchCenterY);
+    this.claimCanvasPinchInput();
+  }
+
+  /** Claim input only after ArkUI has recognized a real pinch, never on second-finger down. */
+  private claimCanvasPinchInput(): void {
+    if (this.canvasPinchInputConsumed) {
+      return;
+    }
+    this.canvasPinchInputConsumed = true;
     this.clearTouchRightClickTimer();
     this.clearTouchDirectRightClickTimer();
     if (this.touchLeftDown) {
@@ -1310,20 +1347,6 @@ struct RemoteDesktop {
   }
 
   private consumeCanvasPinchTouch(event: TouchEvent): boolean {
-    if (!this.canvasGestureZoomEnabled && !this.shouldUseRustDeskRemoteAppTouchScale()) {
-      return false;
-    }
-    const currentTouches: number = event.touches.length;
-    if (!this.canvasPinchInputConsumed && event.type === TouchType.Down && currentTouches >= 2) {
-      this.canvasPinchInputConsumed = true;
-      this.clearTouchRightClickTimer();
-      this.clearTouchDirectRightClickTimer();
-      this.touchDragPending = false;
-      if (this.touchLeftDown) {
-        this.sendMouseNow(this.remoteCursorX, this.remoteCursorY, 0, false);
-        this.touchLeftDown = false;
-      }
-    }
     if (!this.canvasPinchInputConsumed) {
       return false;
     }
@@ -2057,11 +2080,7 @@ struct RemoteDesktop {
     this.physicalKeyboardLayoutConfirmed = false;
     this.physicalKeyboardLayoutPromptVisible = false;
     this.xComponentController.setListener(this);
-    if (AppStorage.get<string>('remoteDisplayScaleMode') === undefined) {
-      this.remoteDisplayScaleMode = this.rustdeskViewScaleMode === 'original' ? '100' :
-        this.rustdeskViewScaleMode === 'custom' ? 'custom' : 'fit';
-      AppStorage.setOrCreate('remoteDisplayScaleMode', this.remoteDisplayScaleMode);
-    }
+    this.restoreRemoteDisplayScalePreference();
     await this.setPreferredOrientation(window.Orientation.LANDSCAPE, 'LANDSCAPE');
     this.registerInputDeviceWatcher();
     this.registerKeyboardAvoidListener();

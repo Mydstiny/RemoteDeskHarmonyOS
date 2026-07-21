@@ -3,7 +3,9 @@ import {
   baseCanvasTransform,
   clampCanvasTransform,
   normalizeLocalViewScaleMode,
-  pinchCanvasTransform
+  pinchCanvasTransform,
+  REMOTE_DISPLAY_SCALE_PREFERENCE_VERSION,
+  resolveInitialRemoteDisplayScaleMode
 } from '../main/ets/services/RemoteCanvasTransformPolicy';
 
 export default function remoteCanvasTransformPolicyTest() {
@@ -14,6 +16,16 @@ export default function remoteCanvasTransformPolicyTest() {
       expect(normalizeLocalViewScaleMode('original')).assertEqual('100');
       expect(normalizeLocalViewScaleMode('custom')).assertEqual('custom');
       expect(normalizeLocalViewScaleMode('unknown')).assertEqual('fit');
+    });
+
+    it('repairs unversioned derived display scale to the previous fit default', 0, () => {
+      expect(resolveInitialRemoteDisplayScaleMode('100', 0)).assertEqual('fit');
+      expect(resolveInitialRemoteDisplayScaleMode('custom', 0)).assertEqual('fit');
+      expect(resolveInitialRemoteDisplayScaleMode('', 0)).assertEqual('fit');
+      expect(resolveInitialRemoteDisplayScaleMode('100', REMOTE_DISPLAY_SCALE_PREFERENCE_VERSION))
+        .assertEqual('100');
+      expect(resolveInitialRemoteDisplayScaleMode('custom', REMOTE_DISPLAY_SCALE_PREFERENCE_VERSION))
+        .assertEqual('custom');
     });
 
     it('keeps fit centered and resolves 100 percent against contain scale', 0, () => {
