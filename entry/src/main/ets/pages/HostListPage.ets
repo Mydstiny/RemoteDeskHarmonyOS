@@ -1122,13 +1122,19 @@ struct HostListPage {
     }
   }
 
-  private openCloudSyncSheet(): void {
+  /**
+   * Open every cloud sheet state atomically with the leaf Sheet transition.
+   * The transition may be delayed while a previous Sheet is dismissing, so
+   * callers must not assign cloudSyncStep after this method returns.
+   */
+  private openCloudSyncSheet(initialStep: string = ''): void {
     this.openSettingsLeafSheet(SETTINGS_SHEET_POPUP, (): void => {
       this.cloudSyncSelectedTables = CloudSyncSelectionStore.getInstance().selectedBusinessTables();
       this.cloudSyncError = '';
-      this.cloudSyncStep = !CloudStore.getInstance().requiresCloudServiceGuidance()
-        ? CLOUD_SYNC_SHEET_ACTIONS
-        : CLOUD_SYNC_SHEET_UNAVAILABLE;
+      this.cloudSyncStep = initialStep !== '' ? initialStep :
+        (!CloudStore.getInstance().requiresCloudServiceGuidance()
+          ? CLOUD_SYNC_SHEET_ACTIONS
+          : CLOUD_SYNC_SHEET_UNAVAILABLE);
       this.popupSheetMode = 3;
     });
   }
@@ -5124,7 +5130,8 @@ struct HostListPage {
                   Text('导出全部 7 类数据为明文 JSON').fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
                 }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 12 })
                 SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(16).fontColor([this.pal().text3])
-              }.width('100%').height(68).padding({ left: 14, right: 16 }).onClick((): void => { this.openCloudSyncSheet(); this.cloudSyncStep = CLOUD_SYNC_SHEET_BACKUP_CONFIRM; })
+              }.width('100%').height(68).padding({ left: 14, right: 16 })
+                .onClick((): void => { this.openCloudSyncSheet(CLOUD_SYNC_SHEET_BACKUP_CONFIRM); })
               this.cardDivider()
               Row() {
                 Row() { SymbolGlyph($r('sys.symbol.doc')).fontSize(20).fontColor([this.pal().danger]) }
