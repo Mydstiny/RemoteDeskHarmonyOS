@@ -46,6 +46,7 @@ import remoteCursorStylePolicyTest from './RemoteCursorStylePolicy.test';
 import touchpadPointerCurvePolicyTest from './TouchpadPointerCurvePolicy.test';
 import connectionAttemptPolicyTest from './ConnectionAttemptPolicy.test';
 import rustDeskRelayImportServiceTest from './RustDeskRelayImportService.test';
+import hostAddConnectionHandoffPolicyTest from './HostAddConnectionHandoffPolicy.test';
 
 export default function testsuite() {
   localUnitTest();
@@ -96,4 +97,5 @@ export default function testsuite() {
   touchpadPointerCurvePolicyTest();
   connectionAttemptPolicyTest();
   rustDeskRelayImportServiceTest();
+  hostAddConnectionHandoffPolicyTest();
 }

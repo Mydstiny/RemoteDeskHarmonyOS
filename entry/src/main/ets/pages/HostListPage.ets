@@ -188,6 +188,11 @@ import {
   shouldBeginConnectionAttempt,
   shouldApplyConnectionAttempt
 } from '../services/ConnectionAttemptPolicy';
+import {
+  pendingHostIdForHostAddSave,
+  shouldAcceptHostAddSave,
+  shouldStartHostAddConnectionAfterDisappear
+} from '../services/HostAddConnectionHandoffPolicy';
 import { motion } from '@kit.MultimodalAwarenessKit';
 import { HostDataSource } from '../datasources/DataSources';
 import { hashForLog, maskHost } from '../utils/SafeLogger';
@@ -336,6 +341,8 @@ struct HostListPage {
   private rustDeskProPreflightClosingHostId: string = '';
   private rustDeskProPreflightPendingHostId: string = '';
   private rustDeskProPreflightPendingRouteParams: Record<string, Object> | null = null;
+  // 保存并连接必须等新增主机 Sheet 的 native onDisappear 后再交给鉴权 Sheet。
+  private pendingAddSheetConnectHostId: string = '';
   private connectionAttemptGeneration: number = 0;
   private connectionAttemptHostId: string = '';
   @StorageLink('rustdeskImageQuality') rustdeskImageQuality: number = 1; // 0=fast, 1=balanced, 2=quality
@@ -798,8 +805,9 @@ struct HostListPage {
     this.ensureGripMonitorOnPageShow();
   }
 
-  private openSheetSafely(openAction: () => void): void {
-    if (this.addSheetClosing || this.rustDeskProPreflightClosing) {
+  private openSheetSafely(openAction: () => void, allowDuringConnectionAttempt: boolean = false): void {
+    if (this.addSheetClosing || this.rustDeskProPreflightClosing ||
+      (this.connectionAttemptHostId !== '' && !allowDuringConnectionAttempt)) {
       return;
     }
     if (this.pendingSheetOpenTimer !== -1) {
@@ -813,11 +821,53 @@ struct HostListPage {
     }
     this.pendingSheetOpenTimer = setTimeout((): void => {
       this.pendingSheetOpenTimer = -1;
-       if (this.addSheetClosing || this.rustDeskProPreflightClosing) {
-         return;
-       }
+      if (this.addSheetClosing || this.rustDeskProPreflightClosing ||
+        (this.connectionAttemptHostId !== '' && !allowDuringConnectionAttempt)) {
+        return;
+      }
       openAction();
     }, delayMs);
+  }
+
+  private saveHostFromAddFlow(host: RemoteHost, connectNow: boolean): void {
+    if (!shouldAcceptHostAddSave(this.addSheetClosing, this.pendingAddSheetConnectHostId)) {
+      hilog.info(0x0001, 'HostList', 'ignored repeated add-host save while Sheet is closing');
+      return;
+    }
+    if (!this.srv.addHost(host)) {
+      promptAction.showToast({ message: '保存主机失败，请稍后重试', duration: 1800 });
+      return;
+    }
+    this.pendingAddSheetConnectHostId = pendingHostIdForHostAddSave(connectNow, host.id);
+    this.requestAddSheetClose();
+  }
+
+  private handleAddSheetDisappear(): void {
+    this.noteSheetDismissed();
+    this.addSheetClosing = false;
+    this.addSheetShowsModernPicker = false;
+    this.modernAddProtocol = '';
+    const pendingHostId: string = this.pendingAddSheetConnectHostId;
+    this.pendingAddSheetConnectHostId = '';
+    this.resetForm();
+
+    if (!shouldStartHostAddConnectionAfterDisappear(
+      this.pageActive, this.addSheetClosing, pendingHostId)) {
+      if (pendingHostId !== '') {
+        this.releaseConnectionAttempt(pendingHostId);
+      }
+      return;
+    }
+    const host: RemoteHost | undefined = this.srv.getHost(pendingHostId);
+    if (!host) {
+      hilog.warn(0x0001, 'HostList', 'saved host disappeared before connect id=' + pendingHostId);
+      this.releaseConnectionAttempt(pendingHostId);
+      return;
+    }
+    // 只保存稳定 ID，交接时重新读取，确保直连地址、端口、密码和密码类型
+    // 都来自刚刚持久化的主机记录，而不是 Sheet 回调中的旧对象副本。
+    hilog.info(0x0001, 'HostList', 'add-host Sheet disappeared; starting saved connection host=' + pendingHostId);
+    this.handleHostCardClick(host);
   }
 
   private requestAddSheetClose(): void {
@@ -1345,6 +1395,15 @@ struct HostListPage {
 
   aboutToDisappear(): void {
     this.pageActive = false;
+    if (this.pendingSheetOpenTimer !== -1) {
+      clearTimeout(this.pendingSheetOpenTimer);
+      this.pendingSheetOpenTimer = -1;
+    }
+    const pendingHostId: string = this.pendingAddSheetConnectHostId;
+    this.pendingAddSheetConnectHostId = '';
+    if (pendingHostId !== '') {
+      this.releaseConnectionAttempt(pendingHostId);
+    }
     this.clearPendingSettingsLeafOpen();
     this.unregisterDataRefreshListeners();
     this.stopGripMonitor(true);
@@ -2203,7 +2262,7 @@ struct HostListPage {
           '当前设备无法解析该 RDP 地址，请检查设备 DNS、VPN 或 TUN；Windows 侧可解析不代表本设备可用。' :
           (info.errorMessage || '无法读取 RDP 主机证书');
         if (!this.showRdpCertificatePreflight) {
-          this.openSheetSafely((): void => { this.showRdpCertificatePreflight = true; });
+          this.openSheetSafely((): void => { this.showRdpCertificatePreflight = true; }, true);
         }
         return;
       }
@@ -2233,7 +2292,7 @@ struct HostListPage {
         this.doRdpCertificateRoute(host);
       } else {
         if (!this.showRdpCertificatePreflight) {
-          this.openSheetSafely((): void => { this.showRdpCertificatePreflight = true; });
+          this.openSheetSafely((): void => { this.showRdpCertificatePreflight = true; }, true);
         }
       }
     } catch (e) {
@@ -2249,7 +2308,7 @@ struct HostListPage {
         'RDP certificate probe exception host=' + maskHost(host.host) + ':' + host.port.toString() +
           ' elapsedMs=' + elapsed.toString() + ' err=' + this.rdpCertificateError);
       if (!this.showRdpCertificatePreflight) {
-        this.openSheetSafely((): void => { this.showRdpCertificatePreflight = true; });
+        this.openSheetSafely((): void => { this.showRdpCertificatePreflight = true; }, true);
       }
     }
   }
@@ -2337,7 +2396,7 @@ struct HostListPage {
     this.sshPreflightError = '';
     this.sshPreflightPassphraseInput = '';
     // 使用独立 overlay (hostContent Stack 内)
-    this.openSheetSafely((): void => { this.showSshPreflight = true; });
+    this.openSheetSafely((): void => { this.showSshPreflight = true; }, true);
     this.doSshPreflightProbe(host);
   }
 
@@ -2623,7 +2682,7 @@ struct HostListPage {
         return;
       }
       this.showRustDeskProPreflight = true;
-    });
+    }, true);
   }
 
   private isCurrentRustDeskPreflightDirect(): boolean {
@@ -3688,11 +3747,7 @@ struct HostListPage {
           blurStyle: BlurStyle.NONE,
           showClose: false,
           onDisappear: () => {
-            this.noteSheetDismissed();
-            this.addSheetClosing = false;
-            this.addSheetShowsModernPicker = false;
-            this.modernAddProtocol = '';
-            this.resetForm();
+            this.handleAddSheetDisappear();
           }
         })
       }
@@ -7054,12 +7109,7 @@ struct HostListPage {
         onBackToProtocols: (): void => { this.modernAddProtocol = ''; this.addSheetShowsModernPicker = true; },
         onAddCredential: (): void => { this.openRdpCredentialManager(); },
         onSave: (host: RemoteHost, connectNow: boolean): void => {
-          if (!this.srv.addHost(host)) {
-            promptAction.showToast({ message: '保存主机失败，请稍后重试', duration: 1800 });
-            return;
-          }
-          this.requestAddSheetClose();
-          if (connectNow) { setTimeout((): void => { this.handleHostCardClick(host); }, 260); }
+          this.saveHostFromAddFlow(host, connectNow);
         }
       })
     } else if (this.modernAddProtocol === 'rustdesk') {
@@ -7074,11 +7124,7 @@ struct HostListPage {
           return this.srv.addRelay(relay);
         },
         onSave: (host: RemoteHost, connectNow: boolean): void => {
-          if (!this.srv.addHost(host)) {
-            promptAction.showToast({ message: '保存主机失败，请稍后重试', duration: 1800 }); return;
-          }
-          this.requestAddSheetClose();
-          if (connectNow) { setTimeout((): void => { this.handleHostCardClick(host); }, 260); }
+          this.saveHostFromAddFlow(host, connectNow);
         }
       })
     } else if (this.modernAddProtocol === 'ssh') {
@@ -7086,11 +7132,7 @@ struct HostListPage {
         keys: this.keyVault.getAllSshKeys(),
         onBackToProtocols: (): void => { this.modernAddProtocol = ''; this.addSheetShowsModernPicker = true; },
         onSave: (host: RemoteHost, connectNow: boolean): void => {
-          if (!this.srv.addHost(host)) {
-            promptAction.showToast({ message: '保存主机失败，请稍后重试', duration: 1800 }); return;
-          }
-          this.requestAddSheetClose();
-          if (connectNow) { setTimeout((): void => { this.handleHostCardClick(host); }, 260); }
+          this.saveHostFromAddFlow(host, connectNow);
         }
       })
     } else {
@@ -8183,6 +8225,9 @@ struct HostListPage {
   }
 
   private doAdd(): void {
+    if (!shouldAcceptHostAddSave(this.addSheetClosing, this.pendingAddSheetConnectHostId)) {
+      return;
+    }
     const editingId: string = this.editingHostId;
     const existingHost: RemoteHost | undefined = editingId !== '' ? this.srv.getHost(editingId) : undefined;
     const h: RemoteHost = existingHost ? RemoteHost.fromJSON(existingHost.toJSON()) : new RemoteHost();
