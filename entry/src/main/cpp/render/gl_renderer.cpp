@@ -793,6 +793,9 @@ RdpPresentMetrics GLRenderer::RenderRawBGRAInternal(
     metrics.swapUs = std::chrono::duration_cast<std::chrono::microseconds>(
         swapAt - drawAt).count();
     metrics.result = swapped ? RdpPresentResult::Presented : RdpPresentResult::SwapFailed;
+    const auto nowUs = std::chrono::duration_cast<std::chrono::microseconds>(
+        swapAt.time_since_epoch()).count();
+    presentationMetrics_.recordPresent(nowUs, metrics);
     return metrics;
 }
 
@@ -822,6 +825,8 @@ void GLRenderer::CreateQuadGeometry() {
 
 void GLRenderer::RenderFrame(GLuint textureId) {
     std::lock_guard<std::mutex> lock(lifecycleMutex_);
+    using clock = std::chrono::steady_clock;
+    const auto drawBeginAt = clock::now();
     if (destroying_ || g_surfaceDetached.load(std::memory_order_acquire) || !initialized_) {
         OH_LOG_WARN(LOG_APP, "[GL] 渲染器未初始化, 跳过渲染");
         return;
@@ -871,13 +876,25 @@ void GLRenderer::RenderFrame(GLuint textureId) {
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
     glBindVertexArray(0);
 
+    const auto drawAt = clock::now();
     // 交换缓冲区
-    eglSwapBuffers(eglDisplay_, eglSurface_);
+    const bool swapped = eglSwapBuffers(eglDisplay_, eglSurface_) == EGL_TRUE;
+    const auto swapAt = clock::now();
 
     GLenum err = glGetError();
     if (err != GL_NO_ERROR) {
         OH_LOG_WARN(LOG_APP, "[GL] 渲染后 GL 错误: %{public}x", err);
     }
+
+    RdpPresentMetrics metrics;
+    metrics.result = swapped ? RdpPresentResult::Presented : RdpPresentResult::SwapFailed;
+    metrics.drawUs = std::chrono::duration_cast<std::chrono::microseconds>(
+        drawAt - drawBeginAt).count();
+    metrics.swapUs = std::chrono::duration_cast<std::chrono::microseconds>(
+        swapAt - drawAt).count();
+    const auto nowUs = std::chrono::duration_cast<std::chrono::microseconds>(
+        swapAt.time_since_epoch()).count();
+    presentationMetrics_.recordPresent(nowUs, metrics);
 }
 
 void GLRenderer::Resize(int width, int height) {
@@ -936,6 +953,13 @@ void GLRenderer::PublishViewportSnapshot(int vpX, int vpY, int vpW, int vpH) {
     snapshotSurfaceWidth_.store(width_, std::memory_order_relaxed);
     snapshotSurfaceHeight_.store(height_, std::memory_order_relaxed);
     viewportSnapshotVersion_.fetch_add(1, std::memory_order_release);
+}
+
+RdpPresentationMetricsSnapshot GLRenderer::GetPresentationStats() {
+    std::lock_guard<std::mutex> lock(lifecycleMutex_);
+    const auto nowUs = std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+    return presentationMetrics_.snapshot(nowUs);
 }
 
 void GLRenderer::Destroy() {
@@ -1361,6 +1385,23 @@ void RendererNapi::SetActiveRenderer(int64_t handle) {
     g_activeRendererHandle.store(handle, std::memory_order_release);
     OH_LOG_INFO(LOG_APP, "[GL] active renderer set handle=%{public}lld",
                 static_cast<long long>(handle));
+}
+
+RdpPresentationMetricsSnapshot RendererNapi::GetActivePresentationStats() {
+    std::shared_ptr<GLRenderer> renderer;
+    {
+        std::lock_guard<std::mutex> lock(g_activeRendererMutex);
+        const int64_t handle = g_activeRendererHandle.load(std::memory_order_acquire);
+        if (handle <= 0) {
+            return RdpPresentationMetricsSnapshot();
+        }
+        auto* ctx = reinterpret_cast<RendererContext*>(handle);
+        if (!ctx || !ctx->renderer) {
+            return RdpPresentationMetricsSnapshot();
+        }
+        renderer = ctx->renderer;
+    }
+    return renderer->GetPresentationStats();
 }
 
 void RendererNapi::InvalidateActivePresentation() {

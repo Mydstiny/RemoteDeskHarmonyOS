@@ -259,6 +259,57 @@ pub enum FfiConnectionState {
     Error = 4,
 }
 
+/// Per-connection stream telemetry exposed to the HarmonyOS bridge.
+///
+/// This is deliberately a fixed-width, copyable snapshot. The UI reads it
+/// through `rustdesk_get_stream_stats`; it never reaches into the streaming
+/// thread or consumes the counters.
+pub const RUSTDESK_STREAM_STATS_VERSION: u32 = 1;
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct RustDeskStreamStats {
+    pub version: u32,
+    pub state: u32,
+    pub last_delay_ms: u32,
+    pub target_bitrate_kbps: u32,
+    pub video_messages: u64,
+    pub video_frames: u64,
+    pub keyframes: u64,
+    pub encoded_bytes: u64,
+    pub audio_frames: u64,
+    pub cadence_gaps: u64,
+    pub max_cadence_gap_ms: u64,
+    pub test_delay_count: u64,
+    pub actual_codec: i32,
+    pub width: i32,
+    pub height: i32,
+    pub connection_path: i32, // 0=rendezvous/relay, 1=direct
+}
+
+impl Default for RustDeskStreamStats {
+    fn default() -> Self {
+        Self {
+            version: RUSTDESK_STREAM_STATS_VERSION,
+            state: 0,
+            last_delay_ms: 0,
+            target_bitrate_kbps: 0,
+            video_messages: 0,
+            video_frames: 0,
+            keyframes: 0,
+            encoded_bytes: 0,
+            audio_frames: 0,
+            cadence_gaps: 0,
+            max_cadence_gap_ms: 0,
+            test_delay_count: 0,
+            actual_codec: -1,
+            width: 0,
+            height: 0,
+            connection_path: 0,
+        }
+    }
+}
+
 // ============================================================
 // 回调类型
 // ============================================================
@@ -330,6 +381,7 @@ struct RustDeskClient {
     stream_handle: Option<std::thread::JoinHandle<io::Result<()>>>,
     transfer_status: Arc<Mutex<RustDeskTransferStatus>>,
     remote_clipboard: Arc<Mutex<Vec<u8>>>,
+    stream_stats: Arc<Mutex<RustDeskStreamStats>>,
 }
 
 #[repr(C)]
@@ -837,6 +889,14 @@ pub extern "C" fn rustdesk_connect(
             let (remote_width, remote_height) = c
                 .peer_display_size()
                 .unwrap_or((config.width.max(1), config.height.max(1)));
+            let stream_stats = Arc::new(Mutex::new(RustDeskStreamStats {
+                state: 2,
+                width: remote_width,
+                height: remote_height,
+                connection_path: if config.direct_connection { 1 } else { 0 },
+                ..RustDeskStreamStats::default()
+            }));
+            let stream_stats_for_thread = Arc::clone(&stream_stats);
             eprintln!(
                 "[RustDesk-FFI] remote display size={}x{} requested={}x{}",
                 remote_width, remote_height, config.width, config.height
@@ -852,6 +912,7 @@ pub extern "C" fn rustdesk_connect(
                     audio_enabled,
                     effective_fps,
                     stream_controls,
+                    stream_stats_for_thread,
                     |frame| {
                         dispatch_video_frame(
                             frame,
@@ -929,6 +990,7 @@ pub extern "C" fn rustdesk_connect(
                 stream_handle: Some(stream_handle),
                 transfer_status: Arc::new(Mutex::new(RustDeskTransferStatus::default())),
                 remote_clipboard,
+                stream_stats,
             });
 
             Box::into_raw(ctx) as *mut c_void
@@ -966,6 +1028,25 @@ pub extern "C" fn rustdesk_last_error(buffer: *mut c_char, buffer_len: usize) ->
         }
     }
     bytes.len()
+}
+
+/// Copy a non-destructive stream telemetry snapshot for one FFI connection.
+#[no_mangle]
+pub extern "C" fn rustdesk_get_stream_stats(
+    handle: *mut c_void,
+    out_stats: *mut RustDeskStreamStats,
+) -> bool {
+    if handle.is_null() || out_stats.is_null() {
+        return false;
+    }
+    let ctx = unsafe { &*(handle as *const RustDeskClient) };
+    let Ok(stats) = ctx.stream_stats.lock() else {
+        return false;
+    };
+    unsafe {
+        ptr::write(out_stats, *stats);
+    }
+    true
 }
 
 /// 断开 RustDesk 连接并释放资源
@@ -1331,6 +1412,25 @@ mod tests {
         assert!(!version_ptr.is_null());
         let version = unsafe { CStr::from_ptr(version_ptr) }.to_string_lossy();
         assert!(version.contains("crypto"), "版本应包含 'crypto'");
+    }
+
+    #[test]
+    fn stream_stats_has_stable_c_abi_layout() {
+        assert_eq!(std::mem::size_of::<RustDeskStreamStats>(), 96);
+        assert_eq!(std::mem::align_of::<RustDeskStreamStats>(), 8);
+        assert_eq!(std::mem::size_of::<RustDeskStreamStats>() % 8, 0);
+        assert_eq!(RustDeskStreamStats::default().version, RUSTDESK_STREAM_STATS_VERSION);
+        assert_eq!(RustDeskStreamStats::default().actual_codec, -1);
+    }
+
+    #[test]
+    fn stream_stats_default_is_an_empty_disconnected_snapshot() {
+        let stats = RustDeskStreamStats::default();
+        assert_eq!(stats.state, FfiConnectionState::Disconnected as u32);
+        assert_eq!(stats.video_messages, 0);
+        assert_eq!(stats.video_frames, 0);
+        assert_eq!(stats.encoded_bytes, 0);
+        assert_eq!(stats.connection_path, 0);
     }
 
     #[test]

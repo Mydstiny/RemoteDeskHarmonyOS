@@ -15,7 +15,34 @@
 #define RUSTDESK_BRIDGE_H
 
 #include "extensions/protocol_adapter.h"
+#include <cstdint>
 #include <memory>
+
+/** Non-destructive RustDesk stream diagnostics returned to the NAPI layer. */
+struct RustDeskDiagnosticsStats {
+    bool supported = false;
+    uint64_t sessionId = 0;
+    int latencyMs = -1;
+    int targetBitrateKbps = 0;
+    uint64_t videoMessages = 0;
+    uint64_t receivedFrames = 0;
+    uint64_t keyframes = 0;
+    uint64_t receivedBytes = 0;
+    uint64_t audioFrames = 0;
+    uint64_t cadenceGaps = 0;
+    uint64_t maxCadenceGapMs = 0;
+    uint64_t testDelayCount = 0;
+    int codec = -1;
+    int width = 0;
+    int height = 0;
+    int connectionPath = 0; // 0=rendezvous/relay, 1=direct
+    uint64_t lastFrameAtMs = 0;
+    uint64_t presentedFrames = 0;
+    uint64_t presentationWindowSamples = 0;
+    int64_t renderP50Us = 0;
+    int64_t renderP95Us = 0;
+    int64_t renderMaxUs = 0;
+};
 
 // C 兼容连接配置 (与 rustdesk_ffi/src/lib.rs 中的 RustDeskConfig 内存布局一致)
 // 必须保持与 Rust #[repr(C)] 完全对应
@@ -62,6 +89,7 @@ public:
     void            disconnect() override;
     ConnectionState getState() override;
     void            setSessionIdentity(uint64_t sessionId) override;
+    RustDeskDiagnosticsStats getDiagnostics() const;
     RemoteCursorSnapshot getRemoteCursorSnapshot(bool includePixels) override;
     void            requestFrameRefresh() override;
     void            reportVideoPressure(int level) override;

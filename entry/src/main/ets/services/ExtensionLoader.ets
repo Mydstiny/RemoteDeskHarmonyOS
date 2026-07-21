@@ -14,6 +14,8 @@ import {
   SshHostKeyInfo,
   RdpCertificateInfo,
   RdpRenderStats,
+  RustDeskDiagnosticsSnapshot,
+  LocalResourceStats,
   RemoteCursorSnapshot,
   SessionTransferStatus
 } from '../types/rdpnapi';
@@ -38,6 +40,7 @@ export class ExtensionLoader {
   private decoderHandle: number = -1;
   private audioPlayerHandle: number = -1;
   private teardownRequestId: number = 0;
+  private diagnosticsLastErrorAtMs: number = 0;
 
   static getInstance(): ExtensionLoader {
     if (!ExtensionLoader.instance) { ExtensionLoader.instance = new ExtensionLoader(); }
@@ -245,6 +248,45 @@ export class ExtensionLoader {
         inputDroppedMouseMoves: 0,
         inputNonDisposableOverflow: 0,
         graphicsMode: 'unknown'
+      };
+    }
+  }
+
+  getRustDeskDiagnostics(sessionId: number): RustDeskDiagnosticsSnapshot {
+    try {
+      return rdpnapi.getRustDeskDiagnostics(sessionId) as RustDeskDiagnosticsSnapshot;
+    } catch (err) {
+      const nowMs: number = Date.now();
+      if (nowMs - this.diagnosticsLastErrorAtMs >= 5000) {
+        this.diagnosticsLastErrorAtMs = nowMs;
+        hilog.warn(DOMAIN, TAG, '[ExtensionLoader] getRustDeskDiagnostics unavailable: ' + JSON.stringify(err));
+      }
+      return {
+        supported: false, sessionId, latencyMs: -1, targetBitrateKbps: 0,
+        videoMessages: 0, receivedFrames: 0, keyframes: 0, receivedBytes: 0,
+        audioFrames: 0, cadenceGaps: 0, maxCadenceGapMs: 0, testDelayCount: 0,
+        receivedFps: 0, displayFps: 0, bitrateKbps: 0,
+        codec: -1, width: 0, height: 0, connectionPath: 'unknown', lastFrameAtMs: 0,
+        decodeOk: 0, decodeErrors: 0, decodeP50Us: 0, decodeP95Us: 0, decodeMaxUs: 0,
+        presentedFrames: 0, presentationWindowSamples: 0,
+        renderP50Us: 0, renderP95Us: 0, renderMaxUs: 0,
+        queueDepth: 0, queueMax: 0, droppedFrames: 0, decoderBackend: 'unknown'
+      };
+    }
+  }
+
+  getLocalResourceStats(includePro: boolean = true): LocalResourceStats {
+    try {
+      return rdpnapi.getLocalResourceStats(includePro) as LocalResourceStats;
+    } catch (err) {
+      const nowMs: number = Date.now();
+      if (nowMs - this.diagnosticsLastErrorAtMs >= 5000) {
+        this.diagnosticsLastErrorAtMs = nowMs;
+        hilog.warn(DOMAIN, TAG, '[ExtensionLoader] getLocalResourceStats unavailable: ' + JSON.stringify(err));
+      }
+      return {
+        supported: false, cpuAvailable: false, cpuPercent: -1, memoryBytes: 0,
+        memoryAvailable: false, gpuAvailable: false, gpuPercent: -1, sampledAtMs: 0
       };
     }
   }

@@ -18,6 +18,7 @@
 #include "render/gl_renderer.h"
 #include "render/video_perf_counters.h"
 #include "video/video_activity_state.h"
+#include "rustdesk/rustdesk_bridge.h"
 #include <napi/native_api.h>
 #include <hilog/log.h>
 #include <map>
@@ -29,10 +30,14 @@
 #include <atomic>
 #include <chrono>
 #include <cstring>
+#include <deque>
 #include <exception>
+#include <fstream>
 #include <new>
+#include <sstream>
 #include <stdexcept>
 #include <vector>
+#include <unistd.h>
 
 #ifdef RUSTDESK_USE_REAL_CORE
 extern "C" {
@@ -62,6 +67,102 @@ namespace ExtensionLoaderNapi {
 // 当前活跃连接
 static std::shared_ptr<ProtocolAdapter> g_activeConnection = nullptr;
 
+struct SessionDiagnosticsCounters {
+    std::atomic<uint64_t> ingressFrames {0};
+    std::atomic<uint64_t> ingressBytes {0};
+    std::atomic<uint64_t> keyframes {0};
+    std::atomic<uint64_t> decodeOk {0};
+    std::atomic<uint64_t> decodeErrors {0};
+    std::atomic<int> lastCodec {-1};
+    std::atomic<int> lastWidth {0};
+    std::atomic<int> lastHeight {0};
+    std::atomic<uint64_t> lastFrameAtMs {0};
+    mutable std::mutex timingMutex;
+    std::deque<int64_t> decodeSamplesUs;
+    mutable std::mutex rateMutex;
+    uint64_t lastRateAtMs = 0;
+    uint64_t lastRateFrames = 0;
+    uint64_t lastRateBytes = 0;
+    uint64_t lastRateDecodeOk = 0;
+    double receivedFps = 0.0;
+    double displayFps = 0.0;
+    double bitrateKbps = 0.0;
+
+    void reset() {
+        ingressFrames.store(0, std::memory_order_release);
+        ingressBytes.store(0, std::memory_order_release);
+        keyframes.store(0, std::memory_order_release);
+        decodeOk.store(0, std::memory_order_release);
+        decodeErrors.store(0, std::memory_order_release);
+        lastCodec.store(-1, std::memory_order_release);
+        lastWidth.store(0, std::memory_order_release);
+        lastHeight.store(0, std::memory_order_release);
+        lastFrameAtMs.store(0, std::memory_order_release);
+        std::lock_guard<std::mutex> lock(timingMutex);
+        decodeSamplesUs.clear();
+        std::lock_guard<std::mutex> rateLock(rateMutex);
+        lastRateAtMs = 0;
+        lastRateFrames = 0;
+        lastRateBytes = 0;
+        lastRateDecodeOk = 0;
+        receivedFps = 0.0;
+        displayFps = 0.0;
+        bitrateKbps = 0.0;
+    }
+
+    void addDecodeSample(int64_t elapsedUs) {
+        std::lock_guard<std::mutex> lock(timingMutex);
+        if (decodeSamplesUs.size() >= 128) {
+            decodeSamplesUs.pop_front();
+        }
+        decodeSamplesUs.push_back(elapsedUs);
+    }
+
+    void timingSnapshot(int64_t& p50, int64_t& p95, int64_t& max) const {
+        std::vector<int64_t> values;
+        {
+            std::lock_guard<std::mutex> lock(timingMutex);
+            values.assign(decodeSamplesUs.begin(), decodeSamplesUs.end());
+        }
+        if (values.empty()) {
+            p50 = 0;
+            p95 = 0;
+            max = 0;
+            return;
+        }
+        std::sort(values.begin(), values.end());
+        const size_t p50Index = (values.size() - 1) * 50 / 100;
+        const size_t p95Index = (values.size() - 1) * 95 / 100;
+        p50 = values[p50Index];
+        p95 = values[p95Index];
+        max = values.back();
+    }
+
+    void updateRates(uint64_t nowMs) {
+        const uint64_t frames = ingressFrames.load(std::memory_order_acquire);
+        const uint64_t bytes = ingressBytes.load(std::memory_order_acquire);
+        const uint64_t decoded = decodeOk.load(std::memory_order_acquire);
+        std::lock_guard<std::mutex> lock(rateMutex);
+        if (lastRateAtMs > 0 && nowMs > lastRateAtMs) {
+            const double seconds = static_cast<double>(nowMs - lastRateAtMs) / 1000.0;
+            receivedFps = static_cast<double>(frames - lastRateFrames) / seconds;
+            displayFps = static_cast<double>(decoded - lastRateDecodeOk) / seconds;
+            bitrateKbps = static_cast<double>(bytes - lastRateBytes) * 8.0 / seconds / 1000.0;
+        }
+        lastRateAtMs = nowMs;
+        lastRateFrames = frames;
+        lastRateBytes = bytes;
+        lastRateDecodeOk = decoded;
+    }
+
+    void rateSnapshot(double& ingressFps, double& presentedFps, double& kbps) const {
+        std::lock_guard<std::mutex> lock(rateMutex);
+        ingressFps = receivedFps;
+        presentedFps = displayFps;
+        kbps = bitrateKbps;
+    }
+};
+
 // 连接会话上下文
 struct SessionContext {
     enum class Lifecycle : uint8_t {
@@ -77,6 +178,7 @@ struct SessionContext {
     std::mutex messageMutex;
     std::atomic<Lifecycle> lifecycle {Lifecycle::Active};
     std::atomic<uint64_t> teardownRequestId {0};
+    SessionDiagnosticsCounters diagnostics;
 };
 
 static std::map<int, std::shared_ptr<SessionContext>> g_sessions;
@@ -155,6 +257,12 @@ static void SetObjectInt32(napi_env env, napi_value object, const char* key, int
 static void SetObjectInt64(napi_env env, napi_value object, const char* key, int64_t value) {
     napi_value item;
     napi_create_int64(env, value, &item);
+    napi_set_named_property(env, object, key, item);
+}
+
+static void SetObjectDouble(napi_env env, napi_value object, const char* key, double value) {
+    napi_value item;
+    napi_create_double(env, value, &item);
     napi_set_named_property(env, object, key, item);
 }
 
@@ -490,6 +598,253 @@ napi_value NapiGetRdpRenderStats(napi_env env, napi_callback_info info) {
     return result;
 }
 
+/** NAPI: getRustDeskDiagnostics(sessionId: number): RustDeskDiagnosticsSnapshot */
+napi_value NapiGetRustDeskDiagnostics(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value args[1];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+
+    int32_t sessionId = 0;
+    if (argc > 0) {
+        napi_get_value_int32(env, args[0], &sessionId);
+    }
+
+    RustDeskDiagnosticsStats nativeStats;
+    SessionDiagnosticsCounters* counters = nullptr;
+    auto it = g_sessions.find(sessionId);
+    if (it != g_sessions.end() && it->second) {
+        counters = &it->second->diagnostics;
+        if (it->second->protocolName == "rustdesk" && it->second->adapter) {
+            auto* bridge = dynamic_cast<RustDeskBridge*>(it->second->adapter.get());
+            if (bridge) {
+                nativeStats = bridge->getDiagnostics();
+            }
+        }
+    }
+
+    DecoderTelemetrySnapshot decoder = DecoderNapi::GetActiveTelemetry(
+        static_cast<uint64_t>(sessionId > 0 ? sessionId : 0));
+    const RdpPresentationMetricsSnapshot renderer = RendererNapi::GetActivePresentationStats();
+    int64_t decodeP50Us = 0;
+    int64_t decodeP95Us = 0;
+    int64_t decodeMaxUs = 0;
+    if (counters) {
+        const uint64_t nowMs = static_cast<uint64_t>(std::chrono::duration_cast<
+            std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count());
+        counters->updateRates(nowMs);
+        counters->timingSnapshot(decodeP50Us, decodeP95Us, decodeMaxUs);
+    }
+    double receivedFps = 0.0;
+    double displayFps = 0.0;
+    double bitrateKbps = 0.0;
+    if (counters) {
+        counters->rateSnapshot(receivedFps, displayFps, bitrateKbps);
+    }
+    // Decode submission is not presentation. Prefer the renderer's successful
+    // swap window for display FPS; leave it unavailable until a real frame has
+    // reached the active surface.
+    if (renderer.presentedFrames > 0 || renderer.windowSamples > 0) {
+        displayFps = static_cast<double>(renderer.windowSamples);
+    } else {
+        displayFps = 0.0;
+    }
+
+    napi_value result;
+    napi_create_object(env, &result);
+    SetObjectBool(env, result, "supported", nativeStats.supported);
+    SetObjectInt32(env, result, "sessionId", sessionId);
+    SetObjectInt32(env, result, "latencyMs", nativeStats.latencyMs);
+    SetObjectInt32(env, result, "targetBitrateKbps", nativeStats.targetBitrateKbps);
+    SetObjectInt64(env, result, "videoMessages", static_cast<int64_t>(nativeStats.videoMessages));
+    SetObjectInt64(env, result, "receivedFrames", static_cast<int64_t>(
+        counters ? counters->ingressFrames.load(std::memory_order_acquire) : nativeStats.receivedFrames));
+    SetObjectInt64(env, result, "keyframes", static_cast<int64_t>(
+        counters ? counters->keyframes.load(std::memory_order_acquire) : nativeStats.keyframes));
+    SetObjectInt64(env, result, "receivedBytes", static_cast<int64_t>(
+        counters ? counters->ingressBytes.load(std::memory_order_acquire) : nativeStats.receivedBytes));
+    SetObjectInt64(env, result, "audioFrames", static_cast<int64_t>(nativeStats.audioFrames));
+    SetObjectInt64(env, result, "cadenceGaps", static_cast<int64_t>(nativeStats.cadenceGaps));
+    SetObjectInt64(env, result, "maxCadenceGapMs", static_cast<int64_t>(nativeStats.maxCadenceGapMs));
+    SetObjectInt64(env, result, "testDelayCount", static_cast<int64_t>(nativeStats.testDelayCount));
+    SetObjectDouble(env, result, "receivedFps", receivedFps);
+    SetObjectDouble(env, result, "displayFps", displayFps);
+    SetObjectDouble(env, result, "bitrateKbps", bitrateKbps);
+    SetObjectInt32(env, result, "codec", counters ?
+        counters->lastCodec.load(std::memory_order_acquire) : nativeStats.codec);
+    SetObjectInt32(env, result, "width", counters ?
+        counters->lastWidth.load(std::memory_order_acquire) : nativeStats.width);
+    SetObjectInt32(env, result, "height", counters ?
+        counters->lastHeight.load(std::memory_order_acquire) : nativeStats.height);
+    SetObjectString(env, result, "connectionPath", nativeStats.connectionPath == 1 ? "direct" :
+        (nativeStats.supported ? "relay" : "unknown"));
+    SetObjectInt64(env, result, "lastFrameAtMs", static_cast<int64_t>(
+        counters ? counters->lastFrameAtMs.load(std::memory_order_acquire) : nativeStats.lastFrameAtMs));
+    SetObjectInt64(env, result, "decodeOk", static_cast<int64_t>(
+        counters ? counters->decodeOk.load(std::memory_order_acquire) : 0));
+    SetObjectInt64(env, result, "decodeErrors", static_cast<int64_t>(
+        counters ? counters->decodeErrors.load(std::memory_order_acquire) : 0));
+    SetObjectInt64(env, result, "decodeP50Us", decodeP50Us);
+    SetObjectInt64(env, result, "decodeP95Us", decodeP95Us);
+    SetObjectInt64(env, result, "decodeMaxUs", decodeMaxUs);
+    SetObjectInt64(env, result, "presentedFrames",
+                   static_cast<int64_t>(renderer.presentedFrames));
+    SetObjectInt64(env, result, "presentationWindowSamples",
+                   static_cast<int64_t>(renderer.windowSamples));
+    SetObjectInt64(env, result, "renderP50Us", renderer.workerUs.p50);
+    SetObjectInt64(env, result, "renderP95Us", renderer.workerUs.p95);
+    SetObjectInt64(env, result, "renderMaxUs", renderer.workerUs.max);
+    SetObjectInt64(env, result, "queueDepth", static_cast<int64_t>(decoder.queueDepth));
+    SetObjectInt64(env, result, "queueMax", static_cast<int64_t>(decoder.queueMax));
+    SetObjectInt64(env, result, "droppedFrames", static_cast<int64_t>(decoder.droppedFrames));
+    SetObjectString(env, result, "decoderBackend", decoder.valid && decoder.ready ?
+        (decoder.software ? "software" : "hardware") : "unknown");
+    return result;
+}
+
+static bool ReadProcCpuTicks(uint64_t& processTicks, uint64_t& totalTicks) {
+    std::ifstream processFile("/proc/self/stat");
+    std::string processLine;
+    if (!processFile || !std::getline(processFile, processLine)) {
+        return false;
+    }
+    const size_t commEnd = processLine.rfind(')');
+    if (commEnd == std::string::npos || commEnd + 2 >= processLine.size()) {
+        return false;
+    }
+    std::istringstream processFields(processLine.substr(commEnd + 2));
+    std::string state;
+    processFields >> state;
+    std::vector<uint64_t> fields;
+    uint64_t value = 0;
+    while (processFields >> value) {
+        fields.push_back(value);
+    }
+    // fields[0] is field 4 (ppid), utime is field 14 and stime field 15.
+    if (fields.size() <= 12) {
+        return false;
+    }
+    processTicks = fields[10] + fields[11];
+
+    std::ifstream systemFile("/proc/stat");
+    std::string cpuLine;
+    if (!systemFile || !std::getline(systemFile, cpuLine)) {
+        return false;
+    }
+    std::istringstream cpuFields(cpuLine);
+    std::string cpuName;
+    cpuFields >> cpuName;
+    totalTicks = 0;
+    while (cpuFields >> value) {
+        totalTicks += value;
+    }
+    return cpuName == "cpu" && totalTicks > 0;
+}
+
+static uint64_t ReadResidentMemoryBytes() {
+    std::ifstream statusFile("/proc/self/status");
+    std::string line;
+    while (statusFile && std::getline(statusFile, line)) {
+        if (line.rfind("VmRSS:", 0) != 0) {
+            continue;
+        }
+        std::istringstream fields(line.substr(6));
+        uint64_t kilobytes = 0;
+        fields >> kilobytes;
+        return kilobytes * 1024ULL;
+    }
+    return 0;
+}
+
+struct LocalResourceSampleState {
+    bool hasBaseline = false;
+    uint64_t previousProcessTicks = 0;
+    uint64_t previousTotalTicks = 0;
+    uint64_t sampledAtMs = 0;
+    bool supported = false;
+    bool cpuAvailable = false;
+    double cpuPercent = -1.0;
+    uint64_t memoryBytes = 0;
+    bool memoryAvailable = false;
+};
+
+static napi_value MakeLocalResourceStatsValue(napi_env env,
+                                               const LocalResourceSampleState& state) {
+    napi_value result;
+    napi_create_object(env, &result);
+    SetObjectBool(env, result, "supported", state.supported);
+    SetObjectBool(env, result, "cpuAvailable", state.cpuAvailable);
+    SetObjectDouble(env, result, "cpuPercent", state.cpuAvailable ? state.cpuPercent : -1.0);
+    SetObjectInt64(env, result, "memoryBytes", static_cast<int64_t>(state.memoryBytes));
+    SetObjectBool(env, result, "memoryAvailable", state.memoryAvailable);
+    SetObjectBool(env, result, "gpuAvailable", false);
+    SetObjectDouble(env, result, "gpuPercent", -1.0);
+    SetObjectInt64(env, result, "sampledAtMs", static_cast<int64_t>(state.sampledAtMs));
+    return result;
+}
+
+/** NAPI: getLocalResourceStats(includePro): local process CPU/RSS; GPU is best-effort. */
+napi_value NapiGetLocalResourceStats(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value args[1];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+
+    bool includePro = true;
+    if (argc > 0) {
+        napi_get_value_bool(env, args[0], &includePro);
+    }
+
+    static std::mutex sampleMutex;
+    static LocalResourceSampleState state;
+    if (!includePro) {
+        std::lock_guard<std::mutex> lock(sampleMutex);
+        // Turning Pro off also discards the CPU baseline. Re-enabling Pro
+        // must start with an unavailable first sample instead of reporting a
+        // stale interval measured while the HUD was hidden.
+        state = LocalResourceSampleState();
+        return MakeLocalResourceStatsValue(env, state);
+    }
+
+    const uint64_t nowMs = static_cast<uint64_t>(std::chrono::duration_cast<
+        std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count());
+    uint64_t processTicks = 0;
+    uint64_t totalTicks = 0;
+    const bool procSupported = ReadProcCpuTicks(processTicks, totalTicks);
+
+    std::lock_guard<std::mutex> lock(sampleMutex);
+    if (state.sampledAtMs > 0 && nowMs >= state.sampledAtMs &&
+        nowMs - state.sampledAtMs < 1000) {
+        return MakeLocalResourceStatsValue(env, state);
+    }
+
+    const uint64_t memoryBytes = ReadResidentMemoryBytes();
+    const bool memoryAvailable = memoryBytes > 0;
+    if (procSupported) {
+        if (state.hasBaseline && totalTicks > state.previousTotalTicks &&
+            processTicks >= state.previousProcessTicks) {
+            const uint64_t processDelta = processTicks - state.previousProcessTicks;
+            const uint64_t totalDelta = totalTicks - state.previousTotalTicks;
+            const long cpuCount = sysconf(_SC_NPROCESSORS_ONLN);
+            state.cpuPercent = totalDelta > 0 ? static_cast<double>(processDelta) * 100.0 /
+                static_cast<double>(totalDelta) * static_cast<double>(cpuCount > 0 ? cpuCount : 1) : -1.0;
+            state.cpuAvailable = totalDelta > 0;
+        } else {
+            state.cpuPercent = -1.0;
+            state.cpuAvailable = false;
+        }
+        state.previousProcessTicks = processTicks;
+        state.previousTotalTicks = totalTicks;
+        state.hasBaseline = true;
+    } else {
+        state.cpuPercent = -1.0;
+        state.cpuAvailable = false;
+    }
+    state.memoryBytes = memoryBytes;
+    state.memoryAvailable = memoryAvailable;
+    state.supported = procSupported || memoryAvailable;
+    state.sampledAtMs = nowMs;
+    return MakeLocalResourceStatsValue(env, state);
+}
+
 napi_value NapiGetSessionTransferStatus(napi_env env, napi_callback_info info) {
     size_t argc = 1;
     napi_value args[1];
@@ -771,6 +1126,7 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
     }
     g_sessions[sessionId] = session;
     g_activeConnection = adapter;
+    DecoderNapi::SetActiveSessionId(static_cast<uint64_t>(sessionId));
 
     // R0: 连接成功后设置活跃 adapter, 输入事件通过 InputHandler 统一派发
     InputHandler::instance().setActiveAdapter(adapter);
@@ -782,7 +1138,7 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
                     session->protocolName.c_str(), static_cast<int>(state), message.c_str());
     });
 
-    adapter->setVideoCallback([](const VideoFrame& frame) {
+    adapter->setVideoCallback([session](const VideoFrame& frame) {
         static uint64_t frameCount = 0;
         static std::atomic<uint64_t> decodeRetOk {0};
         static std::atomic<uint64_t> decodeRetNotReady {0};
@@ -792,10 +1148,31 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
         if (frame.width > 0 && frame.height > 0) {
             RendererNapi::SetActiveSourceSize(frame.width, frame.height);
         }
+        session->diagnostics.ingressFrames.fetch_add(1, std::memory_order_relaxed);
+        session->diagnostics.ingressBytes.fetch_add(static_cast<uint64_t>(frame.size),
+                                                    std::memory_order_relaxed);
+        if (frame.isKeyFrame) {
+            session->diagnostics.keyframes.fetch_add(1, std::memory_order_relaxed);
+        }
+        session->diagnostics.lastCodec.store(static_cast<int>(frame.codec), std::memory_order_relaxed);
+        session->diagnostics.lastWidth.store(frame.width, std::memory_order_relaxed);
+        session->diagnostics.lastHeight.store(frame.height, std::memory_order_relaxed);
+        session->diagnostics.lastFrameAtMs.store(static_cast<uint64_t>(std::chrono::duration_cast<
+            std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count()),
+            std::memory_order_release);
         recordRemoteVideoFrame(frame.size, frame.width, frame.height);
         g_rustdeskVideoPerf.recordIngressFrame("rustdesk", frame.width, frame.height,
                                                frame.size, frame.isKeyFrame);
+        const auto decodeStartedAt = std::chrono::steady_clock::now();
         int ret = DecoderNapi::DecodeActiveNative(frame);
+        const int64_t decodeElapsedUs = std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now() - decodeStartedAt).count();
+        session->diagnostics.addDecodeSample(decodeElapsedUs);
+        if (ret == 0) {
+            session->diagnostics.decodeOk.fetch_add(1, std::memory_order_relaxed);
+        } else {
+            session->diagnostics.decodeErrors.fetch_add(1, std::memory_order_relaxed);
+        }
         g_rustdeskVideoPerf.recordDecodeResult(ret, 0, 0, 0);
         frameCount++;
         switch (ret) {
@@ -870,6 +1247,7 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
         OH_LOG_ERROR(LOG_APP, "[ExtLoader] 连接失败: ret=%{public}d host=%{public}s:%{public}d auth=%{public}s",
             ret, logHost.c_str(), cfg.port, cfg.authMethod.c_str());
         g_sessions.erase(sessionId);
+        DecoderNapi::ClearActiveSessionId(static_cast<uint64_t>(sessionId));
         if (g_activeConnection == adapter) {
             g_activeConnection = nullptr;
         }
@@ -944,6 +1322,9 @@ static uint64_t BeginSessionTeardown(
 
     auto it = g_sessions.find(sessionId);
     if (it == g_sessions.end() || !it->second) {
+        if (sessionId > 0) {
+            DecoderNapi::ClearActiveSessionId(static_cast<uint64_t>(sessionId));
+        }
         if (!HasNativeResources(resources)) {
             return 0;
         }
@@ -970,6 +1351,7 @@ static uint64_t BeginSessionTeardown(
         InputHandler::instance().setActiveAdapter(nullptr);
         g_activeConnection = nullptr;
     }
+    DecoderNapi::ClearActiveSessionId(static_cast<uint64_t>(sessionId));
     DeactivateNativeResources(resources);
     g_sessions.erase(it);
 
@@ -1113,6 +1495,7 @@ napi_value NapiDisconnectAll(napi_env env, napi_callback_info info) {
     g_activeConnection = nullptr;
     InputHandler::instance().setActiveAdapter(nullptr);
     for (const auto& item : sessions) {
+        DecoderNapi::ClearActiveSessionId(static_cast<uint64_t>(item.first));
         item.second->lifecycle.store(SessionContext::Lifecycle::Disconnecting,
                                      std::memory_order_release);
         PrepareAdapterForTeardown(item.second->adapter);
@@ -2476,6 +2859,12 @@ napi_value ExtensionLoaderNapi::Init(napi_env env, napi_value exports) {
     napi_create_function(env, "getRdpRenderStats", NAPI_AUTO_LENGTH,
                          NapiGetRdpRenderStats, nullptr, &fn);
     napi_set_named_property(env, exports, "getRdpRenderStats", fn);
+    napi_create_function(env, "getRustDeskDiagnostics", NAPI_AUTO_LENGTH,
+                         NapiGetRustDeskDiagnostics, nullptr, &fn);
+    napi_set_named_property(env, exports, "getRustDeskDiagnostics", fn);
+    napi_create_function(env, "getLocalResourceStats", NAPI_AUTO_LENGTH,
+                         NapiGetLocalResourceStats, nullptr, &fn);
+    napi_set_named_property(env, exports, "getLocalResourceStats", fn);
     napi_create_function(env, "getSessionTransferStatus", NAPI_AUTO_LENGTH,
                          NapiGetSessionTransferStatus, nullptr, &fn);
     napi_set_named_property(env, exports, "getSessionTransferStatus", fn);

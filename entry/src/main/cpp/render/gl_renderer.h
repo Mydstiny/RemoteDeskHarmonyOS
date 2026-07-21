@@ -72,6 +72,9 @@ public:
     void Resize(int width, int height);
     void SetSourceSize(int width, int height);
 
+    /** 最近一秒的实际 swap/presentation 统计；读取不会清零计数。 */
+    RdpPresentationMetricsSnapshot GetPresentationStats();
+
     /** 销毁渲染器，释放所有 GL 资源 */
     void Destroy();
 
@@ -152,6 +155,7 @@ private:
     bool initialized_;
     bool destroying_;
     std::mutex lifecycleMutex_;
+    RdpPresentationMetrics presentationMetrics_;
 
     // 内部方法
     bool InitEGL(const std::string& xcomponentId);
@@ -190,6 +194,7 @@ namespace RendererNapi {
     int RenderRawBgraRectActive(const uint8_t* data, size_t size, int width, int height, int stride,
                                 int dirtyX, int dirtyY, int dirtyWidth, int dirtyHeight);
     void SetActiveRenderer(int64_t handle);
+    RdpPresentationMetricsSnapshot GetActivePresentationStats();
     void InvalidateActivePresentation();
     bool ReenableActivePresentation();
     void DeactivateRenderer(int64_t handle);

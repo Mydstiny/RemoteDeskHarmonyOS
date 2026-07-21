@@ -18,6 +18,11 @@ import { showLockGate, lockGateErrorMessage } from '../components/LockGate';
 import { RemoteModifierHandle } from '../components/RemoteModifierHandle';
 import { RemoteModifierPanel } from '../components/RemoteModifierPanel';
 import { RemoteSessionTopBar, RemoteSessionTopBarActions } from '../components/RemoteSessionTopBar';
+import { RustDeskDiagnosticsHud } from '../components/RustDeskDiagnosticsHud';
+import {
+  shouldEnableRustDeskPro,
+  shouldShowRustDeskDiagnostics
+} from '../services/RustDeskDiagnosticsPolicy';
 // PassphraseDialog replaced with inline bindSheet (RemoteDesktop is @Entry, no bindSheet limit)
 import { RemoteKeyDispatcher } from '../services/RemoteKeyDispatcher';
 import { ClipboardBridgeService } from '../services/ClipboardBridgeService';
@@ -121,7 +126,14 @@ import {
   RemoteImeCommandQueue
 } from '../services/RemoteImeCommandQueue';
 import { hashForLog, maskHost, maskUser, safeError } from '../utils/SafeLogger';
-import { RdpRenderStats, RemoteCursorSnapshot, SessionConfig, SessionTransferStatus } from '../types/rdpnapi';
+import {
+  LocalResourceStats,
+  RdpRenderStats,
+  RemoteCursorSnapshot,
+  RustDeskDiagnosticsSnapshot,
+  SessionConfig,
+  SessionTransferStatus
+} from '../types/rdpnapi';
 import {
   normalizeRustDeskPort,
   RUSTDESK_PEER_TCP_PORT,
@@ -288,6 +300,23 @@ type ModifierLatch = 'off' | 'once' | 'locked';
 type RustDeskAuthChoice = 'password' | 'request_approval';
 type RustDeskAuthDismissReason = 'none' | 'confirm' | 'cancel';
 
+const EMPTY_RUSTDESK_DIAGNOSTICS: RustDeskDiagnosticsSnapshot = {
+  supported: false, sessionId: -1, latencyMs: -1, targetBitrateKbps: 0,
+  videoMessages: 0, receivedFrames: 0, keyframes: 0, receivedBytes: 0,
+  audioFrames: 0, cadenceGaps: 0, maxCadenceGapMs: 0, testDelayCount: 0,
+  receivedFps: 0, displayFps: 0, bitrateKbps: 0, codec: -1, width: 0, height: 0,
+  connectionPath: 'unknown', lastFrameAtMs: 0, decodeOk: 0, decodeErrors: 0,
+  decodeP50Us: 0, decodeP95Us: 0, decodeMaxUs: 0, presentedFrames: 0,
+  presentationWindowSamples: 0, renderP50Us: 0, renderP95Us: 0, renderMaxUs: 0,
+  queueDepth: 0, queueMax: 0,
+  droppedFrames: 0, decoderBackend: 'unknown'
+};
+
+const EMPTY_LOCAL_RESOURCE_STATS: LocalResourceStats = {
+  supported: false, cpuAvailable: false, cpuPercent: -1, memoryBytes: 0,
+  memoryAvailable: false, gpuAvailable: false, gpuPercent: -1, sampledAtMs: 0
+};
+
 class RemoteDesktopXComponentController extends XComponentController {
   private listener: RemoteDesktopSurfaceListener | null = null;
 
@@ -326,6 +355,10 @@ struct RemoteDesktop {
   @StorageLink('rustdeskCodec') rustdeskCodec: number = 0;
   @StorageLink('rustdeskPrivacyMode') rustdeskPrivacyMode: boolean = false;
   @StorageLink('rustdeskAudioEnabled') rustdeskAudioEnabled: boolean = true;
+  @StorageLink('rustdeskShowDiagnostics') @Watch('onRustDeskDiagnosticsSettingChange')
+  rustdeskShowDiagnostics: boolean = false;
+  @StorageLink('rustdeskShowProDiagnostics') @Watch('onRustDeskDiagnosticsSettingChange')
+  rustdeskShowProDiagnostics: boolean = false;
   @StorageLink('rustdeskClipboardEnabled') rustdeskClipboardEnabled: boolean = true;
   @StorageLink('rustdeskFilePasteEnabled') rustdeskFilePasteEnabled: boolean = true;
   @StorageLink('rustdeskViewScaleMode') rustdeskViewScaleMode: string = 'fit';
@@ -351,6 +384,8 @@ struct RemoteDesktop {
   @State rdpSessionErrorMessage: string = '';
   @State rdpSessionErrorCode: string = '';
   @State showRustDeskAuthSheet: boolean = false;
+  @State rustDeskDiagnostics: RustDeskDiagnosticsSnapshot = EMPTY_RUSTDESK_DIAGNOSTICS;
+  @State localResourceStats: LocalResourceStats = EMPTY_LOCAL_RESOURCE_STATS;
   @State rustDeskAuthChoice: RustDeskAuthChoice = 'password';
   @State rustDeskAuthPasswordInput: string = '';
   @State rustDeskAuthPasswordMode: number = 0;
@@ -397,6 +432,7 @@ struct RemoteDesktop {
   private rustDeskSessionPasswordMode: number = 0;
   private remoteNavigationHidden: boolean = false;
   private backgroundAudioPollTimer: number = -1;
+  private rustDeskDiagnosticsTimer: number = -1;
   private backgroundSessionInfo: RemoteSessionBgInfo | null = null;
   private backgroundHasAudio: boolean = false;
   private backgroundHasVideo: boolean = false;
@@ -1698,7 +1734,72 @@ struct RemoteDesktop {
     }
   }
 
+  private onRustDeskDiagnosticsSettingChange(): void {
+    if (shouldShowRustDeskDiagnostics(this.rustdeskShowDiagnostics, this.connected,
+      this.isRustDeskSession() ? 'rustdesk' : '', this.sessionId)) {
+      if (!shouldEnableRustDeskPro(this.rustdeskShowDiagnostics, this.rustdeskShowProDiagnostics)) {
+        this.localResourceStats = EMPTY_LOCAL_RESOURCE_STATS;
+      }
+      this.startRustDeskDiagnosticsPolling();
+    } else if (!this.rustdeskShowDiagnostics) {
+      this.stopRustDeskDiagnosticsPolling(true);
+    }
+  }
+
+  private refreshRustDeskDiagnostics(sessionId: number, attemptId: number): void {
+    if (!shouldShowRustDeskDiagnostics(this.rustdeskShowDiagnostics, this.connected,
+      this.isRustDeskSession() ? 'rustdesk' : '', sessionId) ||
+      this.sessionId !== sessionId || this.connectAttemptId !== attemptId) {
+      return;
+    }
+    const snapshot: RustDeskDiagnosticsSnapshot = this.loader.getRustDeskDiagnostics(sessionId);
+    // A synchronous native query must still be rejected if a reconnect
+    // replaced the session between the poll guard and the assignment.
+    if (this.sessionId !== sessionId || this.connectAttemptId !== attemptId ||
+      snapshot.sessionId !== sessionId) {
+      return;
+    }
+    this.rustDeskDiagnostics = snapshot;
+    if (shouldEnableRustDeskPro(this.rustdeskShowDiagnostics, this.rustdeskShowProDiagnostics)) {
+      this.localResourceStats = this.loader.getLocalResourceStats(true);
+    } else {
+      this.localResourceStats = EMPTY_LOCAL_RESOURCE_STATS;
+    }
+  }
+
+  private startRustDeskDiagnosticsPolling(): void {
+    if (this.rustDeskDiagnosticsTimer >= 0 ||
+      !shouldShowRustDeskDiagnostics(this.rustdeskShowDiagnostics, this.connected,
+        this.isRustDeskSession() ? 'rustdesk' : '', this.sessionId)) {
+      return;
+    }
+    const observedSessionId: number = this.sessionId;
+    const observedAttemptId: number = this.connectAttemptId;
+    this.refreshRustDeskDiagnostics(observedSessionId, observedAttemptId);
+    this.rustDeskDiagnosticsTimer = setInterval((): void => {
+      if (!shouldShowRustDeskDiagnostics(this.rustdeskShowDiagnostics, this.connected,
+        this.isRustDeskSession() ? 'rustdesk' : '', this.sessionId) ||
+        this.sessionId !== observedSessionId || this.connectAttemptId !== observedAttemptId) {
+        this.stopRustDeskDiagnosticsPolling(false);
+        return;
+      }
+      this.refreshRustDeskDiagnostics(observedSessionId, observedAttemptId);
+    }, 1000);
+  }
+
+  private stopRustDeskDiagnosticsPolling(reset: boolean): void {
+    if (this.rustDeskDiagnosticsTimer >= 0) {
+      clearInterval(this.rustDeskDiagnosticsTimer);
+      this.rustDeskDiagnosticsTimer = -1;
+    }
+    if (reset) {
+      this.rustDeskDiagnostics = EMPTY_RUSTDESK_DIAGNOSTICS;
+      this.localResourceStats = EMPTY_LOCAL_RESOURCE_STATS;
+    }
+  }
+
   aboutToDisappear(): void {
+    this.stopRustDeskDiagnosticsPolling(true);
     try {
       if (this.inputDeviceListenerRegistered) {
         inputDevice.off('change', this.inputDeviceListener);
@@ -3641,6 +3742,9 @@ struct RemoteDesktop {
       this.nativeHandles.attachConnectedSession(sid, this.remoteProtocolOf(host));
       this.connected = true;
       this.connecting = false;
+      if (host.protocol === 'rustdesk' && this.rustdeskShowDiagnostics) {
+        this.startRustDeskDiagnosticsPolling();
+      }
       this.startRemoteCursorPolling(sid);
       this.recordActiveSession(host, sid, true);
       this.persistRustDeskSessionAuth(host);
@@ -3799,6 +3903,7 @@ struct RemoteDesktop {
     if (this.cleanupStarted) {
       return;
     }
+    this.stopRustDeskDiagnosticsPolling(true);
     this.cleanupStarted = true;
     const cleanupStartedAtMs: number = Date.now();
     if (shouldRestoreRemoteNavigation(reason, false)) {
@@ -3918,6 +4023,7 @@ struct RemoteDesktop {
     if (this.cleanupStarted) {
       return;
     }
+    this.stopRustDeskDiagnosticsPolling(true);
     this.cleanupStarted = true;
     this.resetRemoteImeSession('background');
     this.clearRemoteInputFocusSchedule();
@@ -4087,6 +4193,9 @@ struct RemoteDesktop {
         this.nativeHandles.attachConnectedSession(this.sessionId, RemoteProtocol.rustdesk);
         this.connected = true;
         this.connecting = false;
+        if (this.rustdeskShowDiagnostics && this.isRustDeskSession()) {
+          this.startRustDeskDiagnosticsPolling();
+        }
         this.startRemoteCursorPolling(this.sessionId);
         this.inputForwardReady = true;
         this.scheduleRemoteInputFocus('background-preauthenticated');
@@ -6710,6 +6819,15 @@ struct RemoteDesktop {
           keyboardOpen: this.keyboardOpen,
           capabilities: this.currentSessionCapabilities(),
           actions: this.rustDeskTopBarActions()
+        })
+      }
+
+      if (shouldShowRustDeskDiagnostics(this.rustdeskShowDiagnostics, this.connected,
+        this.isRustDeskSession() ? 'rustdesk' : '', this.sessionId)) {
+        RustDeskDiagnosticsHud({
+          diagnostics: this.rustDeskDiagnostics,
+          localResources: this.localResourceStats,
+          proEnabled: this.rustdeskShowProDiagnostics
         })
       }
 

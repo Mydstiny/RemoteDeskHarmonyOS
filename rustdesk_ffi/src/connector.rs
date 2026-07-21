@@ -35,7 +35,7 @@ use protobuf::{Message as ProtoMessage, ProtobufEnum};
 use std::io;
 use std::io::ErrorKind;
 use std::net::{SocketAddr, TcpStream};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 const VIDEO_STARVATION_REFRESH_AFTER_MS: u128 = 2500;
@@ -751,6 +751,7 @@ impl RustDeskConnector {
         audio_enabled: bool,
         fps: u32,
         controls: Arc<ControlInbox>,
+        stream_stats: Arc<Mutex<crate::RustDeskStreamStats>>,
         mut on_video: VF,
         mut on_audio_format: AFF,
         mut on_audio: AF,
@@ -982,6 +983,7 @@ impl RustDeskConnector {
                     }
                     let subframe_count = Self::video_frame_subframe_count(vf);
                     encoded_subframe_total += subframe_count;
+                    let encoded_bytes = Self::video_frame_bytes(vf);
                     let now = Instant::now();
                     if let Some(prev) = last_video_at {
                         let gap_ms = now.duration_since(prev).as_millis() as u64;
@@ -1003,11 +1005,29 @@ impl RustDeskConnector {
                                     window_audio
                                 );
                             }
+                            if let Ok(mut stats) = stream_stats.lock() {
+                                stats.cadence_gaps = cadence_gap_count;
+                                stats.max_cadence_gap_ms = max_cadence_gap_ms;
+                            }
                         }
                     }
                     last_video_at = Some(now);
                     let actual_codec = Self::video_frame_codec_preference(vf);
+                    let ffi_codec = Self::video_frame_ffi_codec(vf);
                     active_video_codec = actual_codec;
+                    if let Ok(mut stats) = stream_stats.lock() {
+                        stats.video_messages = video_count;
+                        stats.video_frames = encoded_subframe_total;
+                        stats.keyframes = keyframe_count;
+                        stats.encoded_bytes = stats.encoded_bytes.saturating_add(encoded_bytes);
+                        // Keep the snapshot codec numbering identical to
+                        // FfiVideoFrame: H264=0, H265=1, VP8=2, VP9=3, AV1=4.
+                        // `actual_codec` above intentionally retains the
+                        // protocol/profile numbering used by pressure control.
+                        stats.actual_codec = ffi_codec;
+                        stats.cadence_gaps = cadence_gap_count;
+                        stats.max_cadence_gap_ms = max_cadence_gap_ms;
+                    }
                     if !stream_options_reasserted
                         && preferred_codec != 0
                         && actual_codec != 0
@@ -1066,6 +1086,9 @@ impl RustDeskConnector {
                     *msg_stats.entry("audio_frame").or_default() += 1;
                     audio_count += 1;
                     window_audio += 1;
+                    if let Ok(mut stats) = stream_stats.lock() {
+                        stats.audio_frames = audio_count;
+                    }
                     on_audio(af);
                     if audio_count == 1 {
                         eprintln!("[RustDesk-FFI] audio detected — async worker active");
@@ -1074,6 +1097,11 @@ impl RustDeskConnector {
                 Some(Message_oneof_union::test_delay(test_delay)) => {
                     last_msg_kind = "test_delay";
                     test_delay_echo_count += 1;
+                    if let Ok(mut stats) = stream_stats.lock() {
+                        stats.last_delay_ms = test_delay.get_last_delay();
+                        stats.target_bitrate_kbps = test_delay.get_target_bitrate();
+                        stats.test_delay_count = test_delay_echo_count;
+                    }
                     let count = msg_stats.entry("test_delay").or_default();
                     *count += 1;
                     if test_delay_echo_count <= 3 || test_delay_echo_count % 60 == 0 {
@@ -1331,6 +1359,9 @@ impl RustDeskConnector {
             self.state, self.stream_stats
         );
         self.state = ConnState::Disconnected;
+        if let Ok(mut stats) = stream_stats.lock() {
+            stats.state = 0;
+        }
         Ok(())
     }
 
@@ -2154,6 +2185,17 @@ impl RustDeskConnector {
         }
     }
 
+    fn video_frame_ffi_codec(frame: &VideoFrame) -> i32 {
+        match &frame.union {
+            Some(VideoFrame_oneof_union::h264s(_)) => 0,
+            Some(VideoFrame_oneof_union::h265s(_)) => 1,
+            Some(VideoFrame_oneof_union::vp8s(_)) => 2,
+            Some(VideoFrame_oneof_union::vp9s(_)) => 3,
+            Some(VideoFrame_oneof_union::av1s(_)) => 4,
+            _ => -1,
+        }
+    }
+
     fn video_frame_codec_name(frame: &VideoFrame) -> &'static str {
         match &frame.union {
             Some(VideoFrame_oneof_union::h264s(_)) => "H264",
@@ -2187,6 +2229,23 @@ impl RustDeskConnector {
             _ => None,
         };
         frames.map_or(0, |f| f.get_frames().len() as u64)
+    }
+
+    fn video_frame_bytes(frame: &VideoFrame) -> u64 {
+        let frames: Option<&EncodedVideoFrames> = match &frame.union {
+            Some(VideoFrame_oneof_union::h264s(f)) => Some(f),
+            Some(VideoFrame_oneof_union::h265s(f)) => Some(f),
+            Some(VideoFrame_oneof_union::vp8s(f)) => Some(f),
+            Some(VideoFrame_oneof_union::vp9s(f)) => Some(f),
+            Some(VideoFrame_oneof_union::av1s(f)) => Some(f),
+            _ => None,
+        };
+        frames.map_or(0, |f| {
+            f.get_frames()
+                .iter()
+                .map(|encoded| encoded.get_data().len() as u64)
+                .sum()
+        })
     }
 
     /// 发送输入事件 (通过加密通道)

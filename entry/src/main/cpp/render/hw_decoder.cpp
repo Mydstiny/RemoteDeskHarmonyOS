@@ -710,6 +710,7 @@ struct DecoderContext {
 };
 
 static std::atomic<int64_t> g_activeDecoderHandle {0};
+static std::atomic<uint64_t> g_activeDecoderSessionId {0};
 constexpr size_t kMaxSoftwareDecodeQueue = 30;
 
 void StopSoftwareWorker(DecoderContext* ctx) {
@@ -1255,7 +1256,9 @@ void DecoderNapi::DeactivateDecoder(int64_t handle) {
         return;
     }
     int64_t expected = handle;
-    g_activeDecoderHandle.compare_exchange_strong(expected, 0);
+    if (g_activeDecoderHandle.compare_exchange_strong(expected, 0)) {
+        g_activeDecoderSessionId.store(0, std::memory_order_release);
+    }
 }
 
 void DecoderNapi::DestroyDecoderHandle(int64_t handle) {
@@ -1302,6 +1305,49 @@ int DecoderNapi::ActiveVideoPressureLevel() {
         return 1;
     }
     return 0;
+}
+
+DecoderTelemetrySnapshot DecoderNapi::GetActiveTelemetry(uint64_t expectedSessionId) {
+    DecoderTelemetrySnapshot snapshot;
+    const uint64_t activeSessionId = g_activeDecoderSessionId.load(std::memory_order_acquire);
+    if (expectedSessionId != 0 && activeSessionId != expectedSessionId) {
+        return snapshot;
+    }
+    const int64_t handle = g_activeDecoderHandle.load(std::memory_order_acquire);
+    auto* ctx = reinterpret_cast<DecoderContext*>(handle);
+    if (!ctx) {
+        return snapshot;
+    }
+    snapshot.valid = true;
+    snapshot.software = ctx->useSoftware;
+    snapshot.width = ctx->width;
+    snapshot.height = ctx->height;
+    if (ctx->useSoftware) {
+        std::lock_guard<std::mutex> lk(ctx->softMutex);
+        snapshot.queueDepth = ctx->softQueue.size();
+        snapshot.queueMax = kMaxSoftwareDecodeQueue;
+        snapshot.droppedFrames = ctx->softDropped.load(std::memory_order_acquire);
+        if (ctx->softwareDecoder) {
+            snapshot.codec = static_cast<int>(ctx->softwareDecoder->GetCodecType());
+            snapshot.ready = ctx->softwareDecoder->IsInitialized();
+        }
+    } else if (ctx->decoder) {
+        snapshot.queueDepth = ctx->decoder->QueuedFrameCount();
+        snapshot.droppedFrames = ctx->decoder->DroppedFrameCount();
+        snapshot.codec = static_cast<int>(ctx->decoder->GetCodecType());
+        snapshot.ready = ctx->decoder->IsInitialized();
+    }
+    return snapshot;
+}
+
+void DecoderNapi::SetActiveSessionId(uint64_t sessionId) {
+    g_activeDecoderSessionId.store(sessionId, std::memory_order_release);
+}
+
+void DecoderNapi::ClearActiveSessionId(uint64_t sessionId) {
+    uint64_t expected = sessionId;
+    g_activeDecoderSessionId.compare_exchange_strong(expected, 0,
+                                                     std::memory_order_acq_rel);
 }
 
 bool DecoderNapi::BindVideoPipeline(int64_t decoderHandle, int64_t rendererHandle) {

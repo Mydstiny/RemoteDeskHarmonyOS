@@ -345,6 +345,8 @@ struct HostListPage {
   @StorageLink('rustdeskLanDiscovery') rustdeskLanDiscovery: boolean = true;
   @StorageLink('rustdeskPrivacyMode') rustdeskPrivacyMode: boolean = false;
   @StorageLink('rustdeskAudioEnabled') rustdeskAudioEnabled: boolean = true;
+  @StorageLink('rustdeskShowDiagnostics') rustdeskShowDiagnostics: boolean = false;
+  @StorageLink('rustdeskShowProDiagnostics') rustdeskShowProDiagnostics: boolean = false;
   @StorageLink('rustdeskClipboardEnabled') rustdeskClipboardEnabled: boolean = true;
   @StorageLink('rustdeskFilePasteEnabled') rustdeskFilePasteEnabled: boolean = true;
   @StorageLink('rustdeskViewScaleMode') rustdeskViewScaleMode: string = 'fit';
@@ -668,6 +670,8 @@ struct HostListPage {
       const savedLanDiscovery: boolean = prefs.getSync('rustdeskLanDiscovery', true) as boolean;
       const savedPrivacyMode: boolean = prefs.getSync('rustdeskPrivacyMode', false) as boolean;
       const savedAudioEnabled: boolean = prefs.getSync('rustdeskAudioEnabled', true) as boolean;
+      const savedShowDiagnostics: boolean = prefs.getSync('rustdeskShowDiagnostics', false) as boolean;
+      const savedShowProDiagnostics: boolean = prefs.getSync('rustdeskShowProDiagnostics', false) as boolean;
       const savedRustDeskClipboardEnabled: boolean = prefs.getSync('rustdeskClipboardEnabled', true) as boolean;
       const savedRustDeskFilePasteEnabled: boolean = prefs.getSync('rustdeskFilePasteEnabled', true) as boolean;
       const savedRustDeskViewScaleMode: string = prefs.getSync('rustdeskViewScaleMode', 'fit') as string;
@@ -710,6 +714,8 @@ struct HostListPage {
       this.rustdeskLanDiscovery = savedLanDiscovery;
       this.rustdeskPrivacyMode = savedPrivacyMode;
       this.rustdeskAudioEnabled = savedAudioEnabled;
+      this.rustdeskShowDiagnostics = savedShowDiagnostics;
+      this.rustdeskShowProDiagnostics = savedShowProDiagnostics;
       this.rustdeskClipboardEnabled = savedRustDeskClipboardEnabled;
       this.rustdeskFilePasteEnabled = savedRustDeskFilePasteEnabled;
       this.rustdeskViewScaleMode =
@@ -738,6 +744,8 @@ struct HostListPage {
       AppStorage.setOrCreate('rustdeskLanDiscovery', this.rustdeskLanDiscovery);
       AppStorage.setOrCreate('rustdeskPrivacyMode', this.rustdeskPrivacyMode);
       AppStorage.setOrCreate('rustdeskAudioEnabled', this.rustdeskAudioEnabled);
+      AppStorage.setOrCreate('rustdeskShowDiagnostics', this.rustdeskShowDiagnostics);
+      AppStorage.setOrCreate('rustdeskShowProDiagnostics', this.rustdeskShowProDiagnostics);
       AppStorage.setOrCreate('rustdeskClipboardEnabled', this.rustdeskClipboardEnabled);
       AppStorage.setOrCreate('rustdeskFilePasteEnabled', this.rustdeskFilePasteEnabled);
       AppStorage.setOrCreate('rustdeskViewScaleMode', this.rustdeskViewScaleMode);
@@ -2978,6 +2986,16 @@ struct HostListPage {
     CloudStore.getInstance().upsertUserSetting(key, value);
   }
 
+  /** RustDesk diagnostics are device-local UI preferences; never cloud-sync them. */
+  private persistLocalRustDeskBooleanPref(key: string, value: boolean): void {
+    AppStorage.setOrCreate(key, value);
+    try {
+      const prefs = preferences.getPreferencesSync(getContext(this), { name: 'RemoteDesktopAppPrefs' });
+      prefs.putSync(key, value);
+      prefs.flushSync();
+    } catch (_e) { /* best effort: AppStorage remains available for this process */ }
+  }
+
   /** 通用设置持久化 — 同时写 AppStorage + Preferences, 杀后台不丢失 */
   private persistPref(key: string, value: string | number | boolean): void {
     AppStorage.setOrCreate(key, value);
@@ -3143,6 +3161,16 @@ struct HostListPage {
   private saveRustDeskAudioEnabled(on: boolean): void {
     this.rustdeskAudioEnabled = on;
     this.persistRustDeskBooleanPref('rustdeskAudioEnabled', this.rustdeskAudioEnabled);
+  }
+
+  private saveRustDeskShowDiagnostics(on: boolean): void {
+    this.rustdeskShowDiagnostics = on;
+    this.persistLocalRustDeskBooleanPref('rustdeskShowDiagnostics', on);
+  }
+
+  private saveRustDeskShowProDiagnostics(on: boolean): void {
+    this.rustdeskShowProDiagnostics = on;
+    this.persistLocalRustDeskBooleanPref('rustdeskShowProDiagnostics', on);
   }
 
   private saveRustDeskClipboardEnabled(on: boolean): void {
@@ -5123,6 +5151,15 @@ struct HostListPage {
               this.rustdeskSwitchRow($r('app.media.icon_audio'), '远端音频',
                 '接收并播放远端设备声音', this.rustdeskAudioEnabled,
                 (on: boolean): void => { this.saveRustDeskAudioEnabled(on); }, true)
+              this.cardDivider()
+              this.rustdeskSwitchRow($r('app.media.icon_desktop'), '显示连接诊断信息',
+                '连接时显示延迟、帧率、码率、分辨率和编码信息', this.rustdeskShowDiagnostics,
+                (on: boolean): void => { this.saveRustDeskShowDiagnostics(on); }, true)
+              this.cardDivider()
+              this.rustdeskSwitchRow($r('app.media.icon_desktop'), '专业性能数据（Pro）',
+                '进一步显示解码、队列和本机 CPU、内存、GPU 负载', this.rustdeskShowProDiagnostics,
+                (on: boolean): void => { this.saveRustDeskShowProDiagnostics(on); }, true,
+                this.rustdeskShowDiagnostics)
             }.borderRadius(24).backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
             .shadow({ radius: 16, color: 'rgba(0,0,0,0.04)', offsetY: 4 })
             .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
@@ -6919,7 +6956,7 @@ struct HostListPage {
     }.width(72).justifyContent(FlexAlign.Center)
   }
   @Builder rustdeskSwitchRow(icon: Resource, label: string, detail: string, isOn: boolean,
-    onToggle: (on: boolean) => void, neutralIcon: boolean = false) {
+    onToggle: (on: boolean) => void, neutralIcon: boolean = false, enabled: boolean = true) {
     Row() {
       Row() { Image(icon).width(22).height(22).fillColor(neutralIcon ? this.pal().text3 : (isOn ? this.accentColor : this.pal().text3)) }
         .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
@@ -6932,6 +6969,7 @@ struct HostListPage {
       Toggle({ type: ToggleType.Switch, isOn: isOn })
         .selectedColor(this.accentColor)
         .scale({ x: 0.88, y: 0.88 })
+        .enabled(enabled)
         .onChange((on: boolean) => {
           animateTo({ duration: 250, curve: Curve.FastOutSlowIn }, () => {
             onToggle(on);

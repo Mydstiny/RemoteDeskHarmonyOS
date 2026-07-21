@@ -38,6 +38,8 @@ declare module 'librdpnapi.so' {
   export function probeRdpCertificateAsync(host: string, port: number,
     serverName: string): Promise<RdpCertificateInfo>;
   export function getRdpRenderStats(sessionId: number): RdpRenderStats;
+  export function getRustDeskDiagnostics(sessionId: number): RustDeskDiagnosticsSnapshot;
+  export function getLocalResourceStats(includePro?: boolean): LocalResourceStats;
   export function getSessionTransferStatus(sessionId: number): SessionTransferStatus;
   export function setRdpBackgroundVideoPrewarm(sessionId: number, enabled: boolean, intervalMs: number): boolean;
   export function presentRdpCachedFrame(sessionId: number): boolean;
@@ -201,6 +203,54 @@ export interface RdpRenderStats {
   inputDroppedMouseMoves: number;
   inputNonDisposableOverflow: number;
   graphicsMode: string;
+}
+
+export interface RustDeskDiagnosticsSnapshot {
+  supported: boolean;
+  sessionId: number;
+  latencyMs: number;
+  targetBitrateKbps: number;
+  videoMessages: number;
+  receivedFrames: number;
+  keyframes: number;
+  receivedBytes: number;
+  audioFrames: number;
+  cadenceGaps: number;
+  maxCadenceGapMs: number;
+  testDelayCount: number;
+  receivedFps: number;
+  displayFps: number;
+  bitrateKbps: number;
+  codec: number;
+  width: number;
+  height: number;
+  connectionPath: string;
+  lastFrameAtMs: number;
+  decodeOk: number;
+  decodeErrors: number;
+  decodeP50Us: number;
+  decodeP95Us: number;
+  decodeMaxUs: number;
+  presentedFrames: number;
+  presentationWindowSamples: number;
+  renderP50Us: number;
+  renderP95Us: number;
+  renderMaxUs: number;
+  queueDepth: number;
+  queueMax: number;
+  droppedFrames: number;
+  decoderBackend: string;
+}
+
+export interface LocalResourceStats {
+  supported: boolean;
+  cpuAvailable: boolean;
+  cpuPercent: number;
+  memoryBytes: number;
+  memoryAvailable: boolean;
+  gpuAvailable: boolean;
+  gpuPercent: number;
+  sampledAtMs: number;
 }
 
 export interface RemoteCursorSnapshot {
