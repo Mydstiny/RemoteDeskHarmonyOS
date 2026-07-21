@@ -454,7 +454,11 @@ export class CloudStore implements CryptoCloudStore {
         const row: Record<string, string> = {};
         for (let c = 0; c < columns.length; c++) {
           const index: number = rows.getColumnIndex(columns[c]);
-          if (index >= 0) { row[columns[c]] = rows.getString(index); }
+          // Old installations legitimately contain NULL in columns added by a
+          // later migration. Preserve that meaning by omitting the optional
+          // field; converting NULL to "" makes integer columns invalid and
+          // causes a freshly-created backup to fail its own verification.
+          if (index >= 0 && !rows.isColumnNull(index)) { row[columns[c]] = rows.getString(index); }
         }
         snapshot[table].push(row);
       }
@@ -489,7 +493,7 @@ export class CloudStore implements CryptoCloudStore {
         const row: Record<string, string> = {};
         for (let i = 0; i < columns.length; i++) {
           const index: number = rows.getColumnIndex(columns[i]);
-          if (index >= 0) { row[columns[i]] = rows.getString(index); }
+          if (index >= 0 && !rows.isColumnNull(index)) { row[columns[i]] = rows.getString(index); }
         }
         result.push(row);
       }
