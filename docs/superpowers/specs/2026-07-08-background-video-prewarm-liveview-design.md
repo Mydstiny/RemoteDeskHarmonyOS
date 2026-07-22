@@ -59,7 +59,7 @@ RDP does not use the RustDesk hardware decoder path for raw GDI frames. Its pari
 
 AVSession remains the preferred live-view identity when `liveViewMode === AVSESSION`. It registers the remote session as `video`, updates metadata, registers play/pause commands, and keeps `audioPlayback` paired with real remote audio or video activity.
 
-Notification live view remains fallback or explicit mode. It does not unlock full background rendering by itself; it only enables the same low-power prewarm policy.
+The notification setting is implemented as a normal `SERVICE_INFORMATION` background notification. API 23 does not allow a third-party app to directly create `SYSTEM_LIVE_VIEW` content or the `LIVE_VIEW` slot; a system proxy must create the initial live view with the same ID before a third-party app can update it. Remote sessions therefore use the supported normal notification path and do not pretend to be a file-transfer `dataTransfer` live view. This notification does not unlock full background rendering by itself; it only enables the same low-power prewarm policy.
 
 ## Safety Rules
 

@@ -6,7 +6,7 @@
  */
 import { common } from '@kit.AbilityKit';
 
-/** 实况窗模式枚举 */
+/** 后台展示模式枚举；NOTIFICATION 对第三方远程连接实际对应普通后台通知。 */
 export enum LiveViewMode {
   OFF = 0,
   AVSESSION = 1,

@@ -4,7 +4,8 @@
 import { describe, it, expect } from '@ohos/hypium';
 import {
   decideRemoteDesktopBackgroundAction,
-  RemoteDesktopBackgroundAction
+  RemoteDesktopBackgroundAction,
+  shouldDeferRemoteDesktopDisappear
 } from '../../../main/ets/services/RemoteDesktopBackgroundLifecyclePolicy';
 
 export default function remoteDesktopBackgroundLifecyclePolicyTest(): void {
@@ -27,6 +28,13 @@ export default function remoteDesktopBackgroundLifecyclePolicyTest(): void {
     it('foreground_flag_false_without_preserved_session_should_do_nothing', 0, (): void => {
       const action = decideRemoteDesktopBackgroundAction(false, false, -1, false, false);
       expect(action).assertEqual(RemoteDesktopBackgroundAction.none);
+    });
+
+    it('connected_page_should_wait_for_late_background_signal_before_disconnect', 0, (): void => {
+      expect(shouldDeferRemoteDesktopDisappear(false, true, 7, false, false)).assertTrue();
+      expect(shouldDeferRemoteDesktopDisappear(true, true, 7, false, false)).assertFalse();
+      expect(shouldDeferRemoteDesktopDisappear(false, false, 7, false, false)).assertFalse();
+      expect(shouldDeferRemoteDesktopDisappear(false, true, 7, true, true)).assertFalse();
     });
   });
 }

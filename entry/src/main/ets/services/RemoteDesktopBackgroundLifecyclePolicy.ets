@@ -31,3 +31,18 @@ export function decideRemoteDesktopBackgroundAction(
   }
   return RemoteDesktopBackgroundAction.none;
 }
+
+/**
+ * Page teardown can be observed just before UIAbility.onWillBackground().
+ * Keep a connected page alive briefly so the ability lifecycle can classify
+ * Home/background navigation before the page performs an explicit disconnect.
+ */
+export function shouldDeferRemoteDesktopDisappear(
+  isBackground: boolean,
+  connected: boolean,
+  sessionId: number,
+  restorePending: boolean,
+  cleanupStarted: boolean
+): boolean {
+  return !isBackground && connected && sessionId > 0 && !restorePending && !cleanupStarted;
+}

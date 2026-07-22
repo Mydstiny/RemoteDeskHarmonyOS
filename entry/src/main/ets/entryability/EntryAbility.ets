@@ -215,6 +215,13 @@ export default class EntryAbility extends UIAbility {
     hilog.info(DOMAIN, TAG, 'Ability onForeground');
   }
 
+  onWillBackground(): void {
+    // API 20+ 在 onBackground 前回调；先通知 RemoteDesktop，避免页面
+    // aboutToDisappear 先一步把后台保活连接误判为显式退出。
+    AppStorage.setOrCreate<boolean>(BG_FLAG_KEY, true);
+    hilog.info(DOMAIN, TAG, 'Ability onWillBackground (background flag set early)');
+  }
+
   onBackground(): void {
     // 切后台 — 标记后台标志, 不再无条件断连
     // RemoteDesktop.aboutToDisappear() 读取此标志决定是保活还是完全断连

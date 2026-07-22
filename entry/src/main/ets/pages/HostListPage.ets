@@ -420,7 +420,7 @@ struct HostListPage {
   // delay the host list until the user explicitly turns it on.
   @StorageLink('gripAlignmentEnabled') gripAlignmentEnabled: boolean = false;
   @StorageLink('liveViewEnabled') liveViewEnabled: boolean = false;
-  @StorageLink('liveViewMode') liveViewMode: number = 1; // 0=关闭, 1=AVSession, 2=通知
+  @StorageLink('liveViewMode') liveViewMode: number = 1; // 0=关闭, 1=AVSession, 2=后台通知
   @State ambientLightIntensity: number = 0.5;
   @State showHaloColor: boolean = false;
   @State selectedRelayId: string = '';
@@ -5264,7 +5264,7 @@ struct HostListPage {
             Column() {
               // 总开关
               this.rustdeskSwitchRow($r('app.media.icon_desktop'), '后台连接展示',
-                '应用退到后台时在实况窗显示远程连接状态',
+                '应用退到后台时保持远程连接，并显示系统允许的状态入口',
                 this.liveViewEnabled,
                 (on: boolean): void => {
                   this.liveViewEnabled = on;
@@ -5272,13 +5272,13 @@ struct HostListPage {
                 }, true)
               this.cardDivider()
               // 模式选择: AVSession
-              this.liveViewModeRow('AVSession 媒体胶囊',
-                '将远程音频作为媒体播放, 系统自动在实况窗展示控制胶囊',
+              this.liveViewModeRow('系统媒体胶囊',
+                '有真实音视频时使用 AVSession, 由系统展示媒体控制胶囊',
                 1)
               this.cardDivider()
-              // 模式选择: 通知实况窗
-              this.liveViewModeRow('通知实况窗',
-                '使用系统通知展示连接状态和时长 (部分设备支持胶囊)',
+              // 模式选择: 普通后台通知。第三方远程连接不能直接创建系统实况窗。
+              this.liveViewModeRow('后台通知',
+                '使用系统允许的普通通知展示连接状态和时长, 不直接伪造系统实况窗',
                 2)
             }.borderRadius(24).backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
             .shadow({ radius: 16, color: 'rgba(0,0,0,0.04)', offsetY: 4 })

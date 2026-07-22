@@ -43,7 +43,8 @@ import { ActiveRemoteSessionRegistry, ActiveRemoteSessionRecord } from '../servi
 import { NativeSessionHandles, ProductionNativeHandleAdapter } from '../services/NativeSessionHandles';
 import {
   decideRemoteDesktopBackgroundAction,
-  RemoteDesktopBackgroundAction
+  RemoteDesktopBackgroundAction,
+  shouldDeferRemoteDesktopDisappear
 } from '../services/RemoteDesktopBackgroundLifecyclePolicy';
 import {
   getRestoreFrameRefreshDelaysMs,
@@ -219,6 +220,7 @@ const REMOTE_CURSOR_RENDER_FRAME_MS = 16;
 const REMOTE_CURSOR_BITMAP_RETRY_MS = 1000;
 const REMOTE_CURSOR_LOG_SAMPLE_MS = 5000;
 const REMOTE_GEOMETRY_SYNC_MS = 500;
+const REMOTE_DESKTOP_DISAPPEAR_BACKGROUND_SIGNAL_WAIT_MS = 500;
 const TOUCHPAD_MAX_LOCAL_STEP_RATIO = 0.75;
 const TOUCHPAD_MAX_LOCAL_STEP_VP = 420;
 const TOUCH_INDICATOR_BUTTON_RIGHT = 2;
@@ -500,6 +502,8 @@ struct RemoteDesktop {
   private rustDeskSessionPasswordMode: number = 0;
   private remoteNavigationHidden: boolean = false;
   private backgroundAudioPollTimer: number = -1;
+  private pendingDisappearDecisionTimer: number = -1;
+  private disappearDecisionGeneration: number = 0;
   private rustDeskDiagnosticsTimer: number = -1;
   private rustDeskDiagnosticsDockInitialized: boolean = false;
   private backgroundSessionInfo: RemoteSessionBgInfo | null = null;
@@ -2141,9 +2145,47 @@ struct RemoteDesktop {
     this.kbHeight = 0;
   }
 
+  private cancelPendingDisappearDecision(): void {
+    if (this.pendingDisappearDecisionTimer >= 0) {
+      clearTimeout(this.pendingDisappearDecisionTimer);
+      this.pendingDisappearDecisionTimer = -1;
+    }
+    this.disappearDecisionGeneration += 1;
+  }
+
+  private deferDisappearDecision(): void {
+    this.cancelPendingDisappearDecision();
+    const generation: number = this.disappearDecisionGeneration;
+    this.pendingDisappearDecisionTimer = setTimeout((): void => {
+      this.pendingDisappearDecisionTimer = -1;
+      if (generation !== this.disappearDecisionGeneration) {
+        return;
+      }
+
+      const isBg: boolean = AppStorage.get<boolean>('remoteDesktopBgFlag') ?? false;
+      if (isBg) {
+        hilog.info(RD_DOMAIN, RD_TAG,
+          'deferred page disappear: background signal arrived, preserving session');
+        this.onRemoteDesktopBgFlagChange();
+        return;
+      }
+
+      hilog.info(RD_DOMAIN, RD_TAG,
+        'deferred page disappear: no background signal, disconnecting explicit exit');
+      this.disconnectAndCleanup('explicit-exit');
+    }, REMOTE_DESKTOP_DISAPPEAR_BACKGROUND_SIGNAL_WAIT_MS);
+    hilog.info(RD_DOMAIN, RD_TAG,
+      'page disappear: waiting for background lifecycle signal before disconnect');
+  }
+
   private onRemoteDesktopBgFlagChange(): void {
+    const isBackground: boolean = AppStorage.get<boolean>('remoteDesktopBgFlag') ??
+      this.remoteDesktopBgFlag;
+    if (isBackground) {
+      this.cancelPendingDisappearDecision();
+    }
     const action: RemoteDesktopBackgroundAction = decideRemoteDesktopBackgroundAction(
-      this.remoteDesktopBgFlag,
+      isBackground,
       this.connected,
       this.sessionId,
       this.bgRestorePending,
@@ -2206,6 +2248,7 @@ struct RemoteDesktop {
   }
 
   async aboutToAppear(): Promise<void> {
+    this.cancelPendingDisappearDecision();
     this.restoreRemoteSystemPointer('page-appear');
     this.physicalKeyboardLayout = RemoteKeyboardLayout.WINDOWS;
     this.physicalKeyboardLayoutConfirmed = false;
@@ -2345,8 +2388,9 @@ struct RemoteDesktop {
     } catch (_err) { /* ignore */ }
 
     // 路由感知策略 (T-252):
-    // - 后台标志=true (EntryAbility.onBackground 已触发) → 保活: 脱附渲染, 保留协议+音频
-    // - 后台标志=false (用户显式退出/back/swipe) → 完全断连
+    // - 后台标志=true (EntryAbility.onWillBackground/onBackground 已触发) → 保活
+    // - 页面先消失时，等待 Ability 生命周期信号再决定，避免误判成显式退出
+    // - 确认不是后台切换后 → 完全断连
     const isBg: boolean = AppStorage.get<boolean>('remoteDesktopBgFlag') ?? false;
     if (isBg) {
       const action: RemoteDesktopBackgroundAction = decideRemoteDesktopBackgroundAction(
@@ -2363,10 +2407,23 @@ struct RemoteDesktop {
       } else {
         hilog.info(RD_DOMAIN, RD_TAG, 'aboutToDisappear: background skip action=' + action.toString());
       }
+      this.cancelPendingDisappearDecision();
+      return;
+    }
+
+    if (shouldDeferRemoteDesktopDisappear(
+      isBg,
+      this.connected,
+      this.sessionId,
+      this.bgRestorePending,
+      this.cleanupStarted
+    )) {
+      this.deferDisappearDecision();
       return;
     }
 
     // 显式 back / 左右滑退出 / 断开按钮 → 完全断连
+    this.cancelPendingDisappearDecision();
     hilog.info(RD_DOMAIN, RD_TAG, 'aboutToDisappear: full disconnect reason=explicit-exit');
     this.disconnectAndCleanup('explicit-exit');
   }
@@ -2491,9 +2548,9 @@ struct RemoteDesktop {
   }
 
   /**
-   * 启动实况窗 (仅在退后台时调用)。
+   * 启动后台展示 (仅在退后台时调用)。
    * 有真实音频或视频活动时优先使用 video AVSession 策略,
-   * 系统拒绝 AVSession 时由服务降级到通知实况窗。
+   * 系统拒绝 AVSession 时由服务降级到普通后台通知。
    */
   private async startSessionLiveView(ctx: common.UIAbilityContext,
     info: RemoteSessionBgInfo): Promise<void> {

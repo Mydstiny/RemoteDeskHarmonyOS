@@ -1,18 +1,22 @@
 /**
  * RemoteSessionLiveViewService — 远程会话实况窗统一服务
  *
- * 提供两种实况窗展示策略:
- * - AVSession (audio): 系统自动生成媒体播控胶囊
- * - Notification (LIVE_VIEW): 系统代理创建实况窗通知后更新内容
+ * 提供两种后台展示策略:
+ * - AVSession: 有真实音视频时由系统生成媒体播控胶囊
+ * - Notification: 使用系统允许的普通后台通知
  *
  * 通过 AppStorage key 'liveViewEnabled' / 'liveViewMode' 在运行时切换.
- * 模式: 0=关闭, 1=AVSession, 2=通知实况窗
+ * 模式: 0=关闭, 1=AVSession, 2=后台通知
  */
 import { common } from '@kit.AbilityKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import { LiveViewMode, LiveViewConnectionInfo, LiveViewStrategy, resolveLiveViewMode } from './LiveViewTypes';
+import { LiveViewMode, LiveViewConnectionInfo, LiveViewStrategy } from './LiveViewTypes';
 import { AvSessionLiveViewStrategy } from './AvSessionLiveViewStrategy';
 import { NotificationLiveViewStrategy } from './NotificationLiveViewStrategy';
+import {
+  RemoteSessionLiveViewDelivery,
+  resolveRemoteSessionLiveViewDelivery
+} from './RemoteSessionLiveViewPolicy';
 import {
   RemoteSessionMediaKind,
   resolveRemoteSessionMediaKind,
@@ -62,12 +66,17 @@ export class RemoteSessionLiveViewService {
 
     const normalizedInfo: LiveViewConnectionInfo = this.normalizeInfo(info);
     const mode: number = AppStorage.get<number>('liveViewMode') ?? LiveViewMode.AVSESSION;
-    this.currentMode = resolveLiveViewMode(mode, normalizedInfo.hasAudio,
-      normalizedInfo.hasVideo === true);
+    const delivery: RemoteSessionLiveViewDelivery = resolveRemoteSessionLiveViewDelivery(
+      enabled,
+      mode,
+      normalizedInfo.hasAudio,
+      normalizedInfo.hasVideo === true
+    );
+    this.currentMode = this.liveViewModeForDelivery(delivery);
     this.lastInfo = normalizedInfo;
 
     try {
-      if (this.currentMode === LiveViewMode.AVSESSION) {
+      if (delivery === RemoteSessionLiveViewDelivery.AVSESSION) {
         if (this.avSessionStrategy === null) {
           this.avSessionStrategy = new AvSessionLiveViewStrategy();
         }
@@ -84,7 +93,7 @@ export class RemoteSessionLiveViewService {
           this.currentMode = LiveViewMode.NOTIFICATION;
           this.activeStrategy = this.notificationStrategy;
         }
-      } else if (this.currentMode === LiveViewMode.NOTIFICATION) {
+      } else if (delivery === RemoteSessionLiveViewDelivery.BACKGROUND_NOTIFICATION) {
         if (this.notificationStrategy === null) {
           this.notificationStrategy = new NotificationLiveViewStrategy();
         }
@@ -118,8 +127,13 @@ export class RemoteSessionLiveViewService {
 
     const normalizedInfo: LiveViewConnectionInfo = this.normalizeInfo(info);
     const preferredMode: number = AppStorage.get<number>('liveViewMode') ?? LiveViewMode.AVSESSION;
-    const nextMode: LiveViewMode = resolveLiveViewMode(preferredMode, normalizedInfo.hasAudio,
-      normalizedInfo.hasVideo === true);
+    const nextDelivery: RemoteSessionLiveViewDelivery = resolveRemoteSessionLiveViewDelivery(
+      enabled,
+      preferredMode,
+      normalizedInfo.hasAudio,
+      normalizedInfo.hasVideo === true
+    );
+    const nextMode: LiveViewMode = this.liveViewModeForDelivery(nextDelivery);
     const nextMediaKind: number = normalizedInfo.mediaKind ?? RemoteSessionMediaKind.NONE;
     const modeChanged: boolean = nextMode !== this.currentMode;
     const mediaRestartRequired: boolean = shouldRestartLiveViewForMediaChange(
@@ -219,5 +233,15 @@ export class RemoteSessionLiveViewService {
       mediaKind: mediaKind,
       connectedAtMs: info.connectedAtMs
     };
+  }
+
+  private liveViewModeForDelivery(delivery: RemoteSessionLiveViewDelivery): LiveViewMode {
+    if (delivery === RemoteSessionLiveViewDelivery.AVSESSION) {
+      return LiveViewMode.AVSESSION;
+    }
+    if (delivery === RemoteSessionLiveViewDelivery.BACKGROUND_NOTIFICATION) {
+      return LiveViewMode.NOTIFICATION;
+    }
+    return LiveViewMode.OFF;
   }
 }
