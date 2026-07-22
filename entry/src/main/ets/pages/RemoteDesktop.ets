@@ -70,6 +70,7 @@ import {
   normalizeRemoteCursorStyle,
   remoteCursorSnapshotChanged,
   RemoteCursorStyle,
+  resolveRemoteCursorRenderMode,
   resolveRemoteCursorVisualScale,
   shouldRenderRemoteCursorArrow,
   shouldRenderRemoteCursorFallbackIndicator,
@@ -1111,7 +1112,9 @@ struct RemoteDesktop {
   /** Publish cursor-only state to the isolated overlay component. */
   private publishRemoteCursorOverlay(): void {
     const cursor: RemoteCursorOverlayState = this.remoteCursorOverlayState;
-    cursor.showCircle = this.shouldShowTouchIndicator();
+    const showCircle: boolean = this.shouldShowTouchIndicator();
+    const showArrow: boolean = this.shouldShowArrowCursor();
+    cursor.showCircle = showCircle;
     cursor.circleX = this.circleCursorLocalX();
     cursor.circleY = this.circleCursorLocalY();
     cursor.circleOuterSize = this.getTouchIndicatorOuterSize();
@@ -1119,14 +1122,17 @@ struct RemoteDesktop {
     cursor.circleDotSize = this.getTouchIndicatorDotSize();
     cursor.circleColor = this.getTouchIndicatorColor();
     cursor.circleDrag = this.touchIndicatorButton === TOUCH_INDICATOR_BUTTON_DRAG;
-    cursor.showArrow = this.shouldShowArrowCursor();
-    cursor.arrowInside = cursor.showArrow ? this.arrowCursorInside() : false;
-    cursor.arrowPixelMap = cursor.showArrow ? this.remoteCursorPixelMap : null;
-    cursor.arrowWidth = cursor.showArrow ? this.remoteCursorLocalWidth() : 0;
-    cursor.arrowHeight = cursor.showArrow ? this.remoteCursorLocalHeight() : 0;
-    cursor.arrowX = cursor.showArrow ? this.remoteCursorImageX() : 0;
-    cursor.arrowY = cursor.showArrow ? this.remoteCursorImageY() : 0;
+    cursor.showArrow = showArrow;
+    cursor.arrowInside = showArrow ? this.arrowCursorInside() : false;
+    cursor.arrowPixelMap = showArrow ? this.remoteCursorPixelMap : null;
+    cursor.arrowWidth = showArrow ? this.remoteCursorLocalWidth() : 0;
+    cursor.arrowHeight = showArrow ? this.remoteCursorLocalHeight() : 0;
+    cursor.arrowX = showArrow ? this.remoteCursorImageX() : 0;
+    cursor.arrowY = showArrow ? this.remoteCursorImageY() : 0;
     cursor.viewRevision = this.remoteCursorViewRevision;
+    // Publish the branch selector last. All geometry and PixelMap fields are
+    // ready before the overlay is allowed to switch away from its old branch.
+    cursor.renderMode = resolveRemoteCursorRenderMode(showCircle, showArrow);
   }
 
   private setRemoteSurfacePointerStyle(useSystemPointer: boolean): void {

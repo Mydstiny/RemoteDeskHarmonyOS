@@ -7,6 +7,7 @@
  * session controls together.
  */
 import { image } from '@kit.ImageKit';
+import { RemoteCursorRenderMode } from '../services/RemoteCursorStylePolicy';
 
 @Observed
 export class RemoteCursorOverlayState {
@@ -19,6 +20,7 @@ export class RemoteCursorOverlayState {
   circleDotSize: number = 3;
   circleColor: string = '#00D1FF';
   circleDrag: boolean = false;
+  renderMode: RemoteCursorRenderMode = 'none';
   showArrow: boolean = false;
   arrowInside: boolean = false;
   arrowPixelMap: image.PixelMap | null = null;
@@ -37,7 +39,7 @@ export struct RemoteCursorOverlay {
       // Read the revision in the component scope. Only this component needs
       // to be invalidated for a cursor frame.
       if (this.cursor.viewRevision >= 0) {
-        if (this.cursor.showCircle) {
+        if (this.cursor.renderMode === 'circle') {
           Stack() {
               Stack()
                 .width(this.cursor.circleRingSize)
@@ -56,7 +58,11 @@ export struct RemoteCursorOverlay {
             .position({ x: this.cursor.circleX - this.cursor.circleOuterSize / 2,
               y: this.cursor.circleY - this.cursor.circleOuterSize / 2 })
         }
-        if (this.cursor.showArrow && this.cursor.arrowInside && this.cursor.arrowPixelMap !== null) {
+        // The cursor state is published as several observed fields. Use an
+        // exclusive branch here so a transition cannot draw a stale circle
+        // and the new protocol cursor in the same frame.
+        else if (this.cursor.renderMode === 'arrow' && this.cursor.arrowInside &&
+          this.cursor.arrowPixelMap !== null) {
           Image(this.cursor.arrowPixelMap)
             .width(this.cursor.arrowWidth)
             .height(this.cursor.arrowHeight)

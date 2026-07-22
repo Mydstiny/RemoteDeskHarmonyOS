@@ -1,4 +1,5 @@
 export type RemoteCursorStyle = 'circle' | 'arrow';
+export type RemoteCursorRenderMode = 'none' | 'circle' | 'arrow';
 
 export const VIRTUAL_MOUSE_STYLE_RESTORE_VERSION: number = 1;
 export const VIRTUAL_MOUSE_STYLE_RESTORE_VERSION_KEY: string = 'virtualMouseStyleRestoreVersion';
@@ -13,6 +14,15 @@ export function remoteCursorSnapshotChanged(previousX: number, previousY: number
 
 export function normalizeRemoteCursorStyle(value: string | undefined): RemoteCursorStyle {
   return value === 'arrow' ? 'arrow' : 'circle';
+}
+
+/**
+ * Resolve one render branch from observed cursor flags. Arrow is authoritative
+ * when a stale circle flag overlaps a newly published protocol cursor.
+ */
+export function resolveRemoteCursorRenderMode(showCircle: boolean,
+  showArrow: boolean): RemoteCursorRenderMode {
+  return showArrow ? 'arrow' : (showCircle ? 'circle' : 'none');
 }
 
 export function shouldApplyCloudVirtualMouseStyle(localVersion: number): boolean {

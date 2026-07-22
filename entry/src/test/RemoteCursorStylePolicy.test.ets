@@ -11,7 +11,8 @@ import {
   shouldRenderRemoteCursorArrow,
   shouldRenderRemoteCursorFallbackIndicator,
   shouldRefreshRemoteCursorBitmap,
-  shouldRenderVirtualTouchpadCursor
+  shouldRenderVirtualTouchpadCursor,
+  resolveRemoteCursorRenderMode
 } from '../main/ets/services/RemoteCursorStylePolicy';
 
 export default function remoteCursorStylePolicyTest() {
@@ -30,6 +31,12 @@ export default function remoteCursorStylePolicyTest() {
       expect(shouldRenderCircleCursor('circle', true, true, true)).assertTrue();
       expect(shouldRenderCircleCursor('circle', false, true, true)).assertFalse();
       expect(shouldRenderCircleCursor('arrow', true, true, true)).assertFalse();
+    });
+    it('prefers the authoritative arrow when observed flags overlap', 0, (): void => {
+      expect(resolveRemoteCursorRenderMode(false, false)).assertEqual('none');
+      expect(resolveRemoteCursorRenderMode(true, false)).assertEqual('circle');
+      expect(resolveRemoteCursorRenderMode(false, true)).assertEqual('arrow');
+      expect(resolveRemoteCursorRenderMode(true, true)).assertEqual('arrow');
     });
     it('uses a circle placeholder for a non-authoritative cursor shape', 0, (): void => {
       expect(shouldRenderRemoteCursorFallbackIndicator(true, true, true, true)).assertTrue();

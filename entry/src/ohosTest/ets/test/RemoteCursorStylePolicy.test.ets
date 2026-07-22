@@ -11,7 +11,8 @@ import {
   shouldRenderRemoteCursorFallbackIndicator,
   shouldRefreshRemoteCursorBitmap,
   shouldApplyCloudVirtualMouseStyle,
-  VIRTUAL_MOUSE_STYLE_RESTORE_VERSION
+  VIRTUAL_MOUSE_STYLE_RESTORE_VERSION,
+  resolveRemoteCursorRenderMode
 } from '../../../main/ets/services/RemoteCursorStylePolicy';
 
 export default function remoteCursorStylePolicyTest(): void {
@@ -32,6 +33,13 @@ export default function remoteCursorStylePolicyTest(): void {
       expect(shouldRenderArrowCursor('circle', true, true, true)).assertFalse();
       expect(shouldRenderCircleCursor('circle', true, true, true)).assertTrue();
       expect(shouldRenderCircleCursor('arrow', true, true, true)).assertFalse();
+    });
+
+    it('prefers_the_authoritative_arrow_when_observed_flags_overlap', 0, (): void => {
+      expect(resolveRemoteCursorRenderMode(false, false)).assertEqual('none');
+      expect(resolveRemoteCursorRenderMode(true, false)).assertEqual('circle');
+      expect(resolveRemoteCursorRenderMode(false, true)).assertEqual('arrow');
+      expect(resolveRemoteCursorRenderMode(true, true)).assertEqual('arrow');
     });
 
     it('hides_both_styles_outside_connected_touchpad_mode', 0, (): void => {
