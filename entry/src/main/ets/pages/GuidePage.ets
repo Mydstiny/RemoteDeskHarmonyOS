@@ -79,8 +79,11 @@ struct GuidePage {
   }
 
   private guideSheetHeight(): string | number {
-    if (this.presentGuideAsBottomSheet()) { return '72%'; }
-    return this.breakpoint === 'xl' ? 620 : 580;
+    // Keep the content below the usable window height on phones and small
+    // freeform windows. The pages are intentionally short so the Sheet never
+    // needs to grow beyond the viewport just to fit a paragraph.
+    if (this.presentGuideAsBottomSheet()) { return '76%'; }
+    return this.breakpoint === 'xl' ? 560 : 520;
   }
 
   @Builder guidePanel() {
@@ -90,14 +93,14 @@ struct GuidePage {
           Column() {
             Column() {
               Column() {
-                Image(page.symbol).width(56).height(56).fillColor(this.accentColor)
+                Image(page.symbol).width(50).height(50).fillColor(this.accentColor)
               }
-              .width(this.currentIndex === index ? 118 : 104)
-              .height(this.currentIndex === index ? 118 : 104)
-              .borderRadius(32)
+              .width(this.currentIndex === index ? 104 : 92)
+              .height(this.currentIndex === index ? 104 : 92)
+              .borderRadius(28)
               .backgroundColor(this.pal().card)
               .justifyContent(FlexAlign.Center)
-              .margin({ bottom: 30 })
+              .margin({ bottom: 20 })
               .shadow({ radius: 24, color: this.pal().fabGlow, offsetY: 8 })
               .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
               .scale({ x: this.currentIndex === index ? 1 : 0.8,
@@ -105,14 +108,14 @@ struct GuidePage {
               .animation({ duration: 250, curve: Curve.EaseOut })
 
               Text(page.title)
-                .fontSize(28).fontWeight(FontWeight.Bold)
+                .fontSize(24).fontWeight(FontWeight.Bold)
                 .fontColor(this.pal().text).textAlign(TextAlign.Center)
                 .margin({ bottom: 12 })
                 .animation({ duration: 200, curve: Curve.EaseOut })
 
               Text(page.desc)
                 .fontSize(15).fontColor(this.pal().text2).textAlign(TextAlign.Center)
-                .lineHeight(23).width('82%')
+                .lineHeight(22).width('88%')
                 .animation({ duration: 200, curve: Curve.EaseOut })
             }
             .width('100%')
@@ -165,12 +168,14 @@ struct GuidePage {
         .opacity(this.showContent ? 1 : 0)
         .animation({ duration: 200, curve: Curve.EaseOut })
       }
-      .width('100%').padding({ left: 28, right: 28, bottom: 48, top: 12 })
+      .width('100%').padding({ left: 24, right: 24, bottom: 24, top: 8 })
       }
-      // CENTER Sheet 的外框宽度由系统按窗口尺寸决定；内部再次写死 560/640vp
-      // 会在 Pad/PC 上超过实际内容区，裁掉正文和左右导航。
+      // CENTER Sheet 的外框宽度由系统按窗口尺寸决定；这里只设置上限，
+      // 不让内部内容在 Pad/PC 小窗口中反向撑大 Sheet。
       .width('100%')
       .height('100%')
+      .constraintSize({ maxWidth: 640, maxHeight: 720 })
+      .clip(true)
       .backgroundColor(this.pal().sheetBg)
       .borderRadius(this.presentGuideAsDialog() ? 24 : 0)
       .border(this.presentGuideAsDialog() ?

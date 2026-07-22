@@ -244,7 +244,7 @@ int SoftwareDecoder::renderFrame() {
 #ifndef USE_FFMPEG_SOFTWARE_DECODER
     return kErrBackendMissing;
 #else
-    if (!impl_ || !impl_->frame || !frameCallback_) {
+    if (!impl_ || !impl_->frame) {
         return 0;
     }
     AVFrame* frame = impl_->frame;
@@ -292,7 +292,8 @@ int SoftwareDecoder::renderFrame() {
 
     width_ = frame->width;
     height_ = frame->height;
-    const int renderRet = frameCallback_(bgraBuffer_.data(), bgraBuffer_.size(), outWidth, outHeight, stride);
+    const int renderRet = frameCallbackGate_.Invoke(
+        bgraBuffer_.data(), bgraBuffer_.size(), outWidth, outHeight, stride);
     const auto renderEndAt = clock::now();
     if (renderRet != 0) {
         OH_LOG_WARN(LOG_APP, "[SoftDecoder] render callback failed codec=%{public}s ret=%{public}d", CodecName(codecType_), renderRet);
@@ -315,6 +316,7 @@ int SoftwareDecoder::renderFrame() {
 }
 
 void SoftwareDecoder::Destroy() {
+    frameCallbackGate_.ClearAndWait();
 #ifdef USE_FFMPEG_SOFTWARE_DECODER
     if (impl_) {
         if (impl_->sws) {
@@ -342,7 +344,7 @@ void SoftwareDecoder::Destroy() {
 }
 
 void SoftwareDecoder::SetFrameCallback(SoftwareDecoderFrameCallback callback) {
-    frameCallback_ = callback;
+    frameCallbackGate_.Set(std::move(callback));
 }
 
 

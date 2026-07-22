@@ -7,6 +7,11 @@ import {
   RemoteSessionLiveViewDelivery,
   resolveRemoteSessionLiveViewDelivery
 } from '../../../main/ets/services/RemoteSessionLiveViewPolicy';
+import {
+  RemoteSessionMediaKind,
+  resolveRemoteSessionMediaKind
+} from '../../../main/ets/services/RemoteSessionMediaStatePolicy';
+import { shouldStartRemoteSessionPip } from '../../../main/ets/services/RemoteSessionPipPolicy';
 
 export default function remoteSessionLiveViewPolicyTest(): void {
   describe('RemoteSessionLiveViewPolicy', (): void => {
@@ -29,6 +34,21 @@ export default function remoteSessionLiveViewPolicyTest(): void {
         .assertEqual(RemoteSessionLiveViewDelivery.NONE);
       expect(resolveRemoteSessionLiveViewDelivery(true, LiveViewMode.OFF, true, true))
         .assertEqual(RemoteSessionLiveViewDelivery.NONE);
+    });
+
+    it('keeps_video_as_the_primary_media_identity_when_audio_is_also_present', 0, (): void => {
+      expect(resolveRemoteSessionMediaKind({ hasAudio: true, hasVideo: true }))
+        .assertEqual(RemoteSessionMediaKind.VIDEO);
+      expect(resolveRemoteSessionMediaKind({ hasAudio: true, hasVideo: false }))
+        .assertEqual(RemoteSessionMediaKind.AUDIO);
+    });
+
+    it('starts_pip_only_for_enabled_avsession_video', 0, (): void => {
+      expect(shouldStartRemoteSessionPip(true, LiveViewMode.AVSESSION, true, true)).assertTrue();
+      expect(shouldStartRemoteSessionPip(true, LiveViewMode.NOTIFICATION, true, true)).assertFalse();
+      expect(shouldStartRemoteSessionPip(true, LiveViewMode.AVSESSION, false, true)).assertFalse();
+      expect(shouldStartRemoteSessionPip(false, LiveViewMode.AVSESSION, true, true)).assertFalse();
+      expect(shouldStartRemoteSessionPip(true, LiveViewMode.AVSESSION, true, false)).assertFalse();
     });
   });
 }

@@ -4,6 +4,7 @@ import {
   shouldIgnoreActivityMotionForHoldingHand,
   shouldFallbackToOperatingHandOnSubscribeFailure,
   shouldMarkGripMonitorStaleAfterWatchdog,
+  shouldAutoRequestGripPermission,
   shouldRebindGripMonitorOnPageShow,
   shouldRunForegroundSensor,
   shouldRestartGripMonitor,
@@ -69,6 +70,16 @@ export default function gripMonitorLifecyclePolicyTest() {
       expect(shouldRunForegroundSensor(true, true, true)).assertFalse();
       expect(shouldRunForegroundSensor(false, false, true)).assertFalse();
       expect(shouldRunForegroundSensor(true, false, false)).assertFalse();
+    });
+
+    it('requests_grip_permission_once_after_page_is_ready', 0, (): void => {
+      expect(shouldAutoRequestGripPermission(true, false, false, true, false, false, false)).assertTrue();
+      expect(shouldAutoRequestGripPermission(false, false, false, true, false, false, false)).assertFalse();
+      expect(shouldAutoRequestGripPermission(true, true, false, true, false, false, false)).assertFalse();
+      expect(shouldAutoRequestGripPermission(true, false, true, true, false, false, false)).assertFalse();
+      expect(shouldAutoRequestGripPermission(true, false, false, true, true, false, false)).assertFalse();
+      expect(shouldAutoRequestGripPermission(true, false, false, true, false, true, false)).assertFalse();
+      expect(shouldAutoRequestGripPermission(true, false, false, true, false, false, true)).assertFalse();
     });
   });
 }

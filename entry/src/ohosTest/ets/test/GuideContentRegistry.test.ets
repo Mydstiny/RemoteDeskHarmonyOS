@@ -23,7 +23,7 @@ export default function guideContentRegistryTest(): void {
     it('keeps_both_guides_equal_except_the_final_page', 0, (): void => {
       const firstInstall: GuideContentPage[] = firstInstallGuidePages();
       const settings: GuideContentPage[] = settingsUsageGuidePages();
-      expect(firstInstall.length).assertEqual(11);
+      expect(firstInstall.length).assertEqual(9);
       expect(settings.length).assertEqual(firstInstall.length);
       for (let i = 0; i < firstInstall.length - 1; i++) {
         expect(settings[i].id).assertEqual(firstInstall[i].id);
@@ -37,15 +37,14 @@ export default function guideContentRegistryTest(): void {
     it('covers_current_features_and_the_complete_release', 0, (): void => {
       const guide: GuideContentPage[] = firstInstallGuidePages();
       const release: ReleaseNotePage[] = pagesForReleasedVersion(CURRENT_RELEASE_VERSION);
-      expect(containsGuidePage(guide, 'feedback-community')).assertTrue();
-      expect(containsGuidePage(guide, 'sync-backup')).assertTrue();
-      expect(release.length).assertEqual(9);
-      expect(containsReleasePage(release, 'rdp-render-session')).assertTrue();
-      expect(containsReleasePage(release, 'remote-input-keyboard')).assertTrue();
-      expect(containsReleasePage(release, 'rdp-file-certificate')).assertTrue();
-      expect(containsReleasePage(release, 'rustdesk-relay-domain')).assertTrue();
-      expect(containsReleasePage(release, 'rustdesk-pro-auth')).assertTrue();
-      expect(release[release.length - 1].id).assertEqual('welcome-1-0-7');
+      expect(containsGuidePage(guide, 'background-video')).assertTrue();
+      expect(containsGuidePage(guide, 'secure-sync-backup')).assertTrue();
+      expect(release.length).assertEqual(8);
+      expect(containsReleasePage(release, 'background-video-pip')).assertTrue();
+      expect(containsReleasePage(release, 'native-vp9-background-crash')).assertTrue();
+      expect(containsReleasePage(release, 'pip-frame-lifecycle')).assertTrue();
+      expect(containsReleasePage(release, 'grip-permission-startup')).assertTrue();
+      expect(release[release.length - 1].id).assertEqual('welcome-1-0-8');
     });
   });
 }

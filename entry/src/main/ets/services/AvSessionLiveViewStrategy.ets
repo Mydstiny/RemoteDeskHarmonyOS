@@ -1,12 +1,15 @@
 /**
- * AvSessionLiveViewStrategy — 使用 AVSession video 类型实现实况窗
+ * AvSessionLiveViewStrategy — 使用 AVSession video 类型提供系统媒体身份
  *
  * 原理:
- * - 创建 video 类型的 AVSession → 系统自动在实况窗生成媒体播放胶囊
+ * - 创建 video 类型的 AVSession → 系统获得媒体播放身份和播控入口
  * - 设置 AVMetadata (连接名/地址) 和 AVPlaybackState (PLAY)
  * - 注册 play/pause 控制命令, 避免播控中心因无控制命令而不展示
- * - activate() 后系统接管实况窗渲染
- * - deactivate() 移除实况窗
+ * - activate() 后系统可在支持的设备上展示媒体控制/胶囊
+ * - deactivate() 移除媒体会话
+ *
+ * AVSession 不承载远程桌面视频帧；实际画面由 RemoteSessionPipService 的
+ * PiPWindow/XComponent 输出。正式 Live View Kit 是另一套需要场景准入的能力。
  *
  * 为什么统一用 'video':
  * - 远程桌面主语义是视频画面, audio/video 切换时只更新元数据和状态
@@ -14,7 +17,7 @@
  *
  * 约束:
  * - 每个应用进程只能有 1 个 AVSession
- * - 需要后台音频持续播放才能保持实况窗可见
+ * - 是否显示系统媒体胶囊由系统版本、设备能力和用户开关决定
  */
 import { common } from '@kit.AbilityKit';
 import { avSession } from '@kit.AVSessionKit';
@@ -95,12 +98,12 @@ export class AvSessionLiveViewStrategy implements LiveViewStrategy {
       this.session.on('play', this.handlePlayCommand);
       this.session.on('pause', this.handlePauseCommand);
 
-      // 激活会话 → 系统自动在实况窗渲染媒体胶囊 + 播控中心显示
+      // 激活会话 → 系统获得媒体控制身份；实际视频画面由 PIP 输出
       await this.session.activate();
       this.active = true;
       this.muted = false;
 
-      hilog.info(DOMAIN, TAG, 'AVSession live view activated kind=' +
+      hilog.info(DOMAIN, TAG, 'AVSession media identity activated kind=' +
         mediaKind.toString() + ' protocol=' + info.protocolLabel +
         ' host=' + info.hostAddress);
     } catch (err) {
@@ -140,7 +143,7 @@ export class AvSessionLiveViewStrategy implements LiveViewStrategy {
     } catch (err) {
       const be: BusinessError = err as BusinessError;
       hilog.warn(DOMAIN, TAG, '[AVSESSION-UPDATE] failed code=' +
-        be.code.toString() + ' message=' + be.message);
+        this.errorCode(be) + ' message=' + this.errorMessage(be));
     }
   }
 
@@ -156,7 +159,7 @@ export class AvSessionLiveViewStrategy implements LiveViewStrategy {
       // 取消监听失败不影响清理
     }
     await this.destroySession();
-    hilog.info(DOMAIN, TAG, 'AVSession live view stopped');
+    hilog.info(DOMAIN, TAG, 'AVSession media identity stopped');
   }
 
   /**
@@ -213,14 +216,14 @@ export class AvSessionLiveViewStrategy implements LiveViewStrategy {
   }
 
   private resolveMediaKind(info: LiveViewConnectionInfo): number {
+    if (info.hasVideo === true) {
+      return RemoteSessionMediaKind.VIDEO;
+    }
     if (info.mediaKind !== undefined) {
       return info.mediaKind;
     }
     if (info.hasAudio) {
       return RemoteSessionMediaKind.AUDIO;
-    }
-    if (info.hasVideo === true) {
-      return RemoteSessionMediaKind.VIDEO;
     }
     return RemoteSessionMediaKind.NONE;
   }
@@ -253,8 +256,10 @@ export class AvSessionLiveViewStrategy implements LiveViewStrategy {
     } catch (err) {
       const be: BusinessError = err as BusinessError;
       hilog.warn(DOMAIN, TAG, '[AVSESSION-DESTROY] failed code=' +
-        be.code.toString() + ' message=' + be.message);
+        this.errorCode(be) + ' message=' + this.errorMessage(be));
     } finally {
+      this.active = false;
+      this.muted = false;
       this.session = null;
       this.muteCallback = null;
       if (this.logoPixelMap !== null) {
@@ -266,5 +271,13 @@ export class AvSessionLiveViewStrategy implements LiveViewStrategy {
         this.logoPixelMap = null;
       }
     }
+  }
+
+  private errorCode(error: BusinessError): string {
+    return error.code === undefined ? 'unknown' : error.code.toString();
+  }
+
+  private errorMessage(error: BusinessError): string {
+    return error.message === undefined ? JSON.stringify(error) : error.message;
   }
 }

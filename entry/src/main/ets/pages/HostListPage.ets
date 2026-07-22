@@ -109,6 +109,7 @@ import {
 } from '../services/SettingsLeafSheetLifecyclePolicy';
 import {
   holdingHandStatusFromOperatingHandStatus,
+  shouldAutoRequestGripPermission,
   shouldIgnoreActivityMotionForHoldingHand,
   shouldFallbackToOperatingHandOnSubscribeFailure,
   shouldMarkGripMonitorStaleAfterWatchdog,
@@ -193,6 +194,7 @@ import {
   resolveStoredHaloColorForTheme,
   shouldMigrateLegacyHaloColorToTheme
 } from '../services/HaloColorPolicy';
+import { CURRENT_RELEASE_VERSION } from '../services/ReleaseNotesRegistry';
 import { AboutSettingsSheet } from '../components/AboutSettingsSheet';
 import { FeedbackSettingsSheet } from '../components/FeedbackSettingsSheet';
 import { RdpCertificateInfo, SshHostKeyInfo, SshPrivateKeyInfo, SshPublicKeyInstallResult } from '../types/rdpnapi';
@@ -417,9 +419,9 @@ struct HostListPage {
   @StorageLink('totpLocked') totpPageLocked: boolean = false;
   @StorageLink('haloColor') haloColor: string = '#FFFFFF';
   @StorageLink('ambientLightEffectEnabled') ambientLightEffectEnabled: boolean = false;
-  // Optional UI enhancement.  It must never request a sensor permission or
-  // delay the host list until the user explicitly turns it on.
-  @StorageLink('gripAlignmentEnabled') gripAlignmentEnabled: boolean = false;
+  // Mobile-only enhancement. Permission is requested asynchronously after the
+  // host list has rendered; it is not a prerequisite for the home page.
+  @StorageLink('gripAlignmentEnabled') gripAlignmentEnabled: boolean = true;
   @StorageLink('liveViewEnabled') liveViewEnabled: boolean = false;
   @StorageLink('liveViewMode') liveViewMode: number = 1; // 0=关闭, 1=AVSession, 2=后台通知
   @State ambientLightIntensity: number = 0.5;
@@ -485,7 +487,8 @@ struct HostListPage {
   private gripWatchdogRetryCount: number = 0;
   private gripMonitorRegistered: boolean = false;
   private gripMonitorUsingOperatingFallback: boolean = false;
-  private gripPermissionGranted: boolean = false;
+  @State gripPermissionGranted: boolean = false;
+  private gripPermissionAttempted: boolean = false;
   private gripPermissionRequest: Promise<void> | null = null;
   private lastSheetDismissAtMs: number = 0;
   private pendingSheetOpenTimer: number = -1;
@@ -655,8 +658,6 @@ struct HostListPage {
       const savedAccent: string = prefs.getSync('accentColor', '') as string;
       const savedFollowSystem: boolean = prefs.getSync('followSystem', true) as boolean;
       const savedAmbientLightEffect: boolean = prefs.getSync('ambientLightEffectEnabled', false) as boolean;
-      const gripAlignmentPreferenceVersion: number = prefs.getSync('gripAlignmentPreferenceVersion', 0) as number;
-      let savedGripAlignmentEnabled: boolean = prefs.getSync('gripAlignmentEnabled', false) as boolean;
       const savedLiveViewEnabled: boolean = prefs.getSync('liveViewEnabled', true) as boolean;
       const savedLiveViewMode: number = prefs.getSync('liveViewMode', 1) as number;
       const savedHostAddMode: string = prefs.getSync('hostAddMode', 'modern') as string;
@@ -680,16 +681,12 @@ struct HostListPage {
       this.syncHaloColorForCurrentTheme();
       this.ambientLightEffectEnabled = savedAmbientLightEffect;
       AppStorage.setOrCreate('ambientLightEffectEnabled', this.ambientLightEffectEnabled);
-      // Earlier releases requested DETECT_GESTURE at first launch.  Migrate
-      // every existing install to an explicit off state once, so an upgrade
-      // cannot revive that prompt merely because permission was previously
-      // granted.
-      if (gripAlignmentPreferenceVersion < 1) {
-        savedGripAlignmentEnabled = false;
-        prefs.putSync('gripAlignmentEnabled', false);
-        prefs.putSync('gripAlignmentPreferenceVersion', 1);
-      }
-      this.gripAlignmentEnabled = savedGripAlignmentEnabled && !this.isDesktopDevice;
+      // 1.0.8: mobile devices always use the grip alignment enhancement. The
+      // preference key remains only as a compatibility marker for older data;
+      // it is no longer a user-facing switch and never gates first paint.
+      this.gripAlignmentEnabled = !this.isDesktopDevice;
+      prefs.putSync('gripAlignmentEnabled', this.gripAlignmentEnabled);
+      prefs.putSync('gripAlignmentPreferenceVersion', 2);
       AppStorage.setOrCreate('gripAlignmentEnabled', this.gripAlignmentEnabled);
       this.liveViewEnabled = savedLiveViewEnabled;
       AppStorage.setOrCreate('liveViewEnabled', this.liveViewEnabled);
@@ -1180,7 +1177,7 @@ struct HostListPage {
   private async createLocalBackup(): Promise<void> {
     try {
       const backup: LocalBackupService = LocalBackupService.getInstance();
-      const saved: boolean = await backup.saveBackup('1.0.7');
+      const saved: boolean = await backup.saveBackup(CURRENT_RELEASE_VERSION);
       if (saved) { promptAction.showToast({ message: '本地备份已保存', duration: 1600 }); this.closeSettingsLeafSheet(); }
       else { this.cloudSyncError = backup.getLastErrorMessage(); }
     } catch (_e) { this.cloudSyncError = '备份失败，请检查保存位置后重试'; }
@@ -1314,7 +1311,7 @@ struct HostListPage {
 
   private async openFeedbackEmail(): Promise<void> {
     const ctx: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
-    const versionName: string = '1.0.7';
+    const versionName: string = CURRENT_RELEASE_VERSION;
     const attempts: SettingsFeedbackLaunchAttempt[] =
       settingsFeedbackLaunchAttempts(versionName, this.breakpoint, this.isDesktopDevice);
     const params: Record<string, Object> =
@@ -1425,6 +1422,10 @@ struct HostListPage {
       ' permission=' + (this.gripPermissionGranted ? '1' : '0') +
       ' registered=' + (this.gripMonitorRegistered ? '1' : '0') +
       ' callbacks=' + this.gripCallbackCount.toString());
+    if (!this.gripPermissionGranted) {
+      this.scheduleGripPermissionRequest();
+      return;
+    }
     if (shouldRebindGripMonitorOnPageShow(this.pageActive, this.gripPermissionGranted, this.gripMonitorRegistered)) {
       this.forceRestartGripMonitor();
       return;
@@ -1433,8 +1434,42 @@ struct HostListPage {
       this.startGripMonitor();
       return;
     }
-    // A foreground/page-show transition may resume an already authorised
-    // feature, but it must never open the system permission dialog itself.
+    // An already-authorised monitor is rebound here. A first-time permission
+    // request is scheduled separately so it cannot block this page lifecycle.
+  }
+
+  /**
+   * Let ArkUI commit the host list before opening the optional system dialog.
+   * A permission request from aboutToAppear can otherwise leave the first
+   * window looking blank on devices that pause page composition for the dialog.
+   */
+  private scheduleGripPermissionRequest(): void {
+    if (!shouldAutoRequestGripPermission(
+      this.pageActive,
+      this.appInBackground,
+      this.isDesktopDevice,
+      this.gripAlignmentEnabled,
+      this.gripPermissionGranted,
+      this.gripPermissionAttempted,
+      this.gripPermissionRequest !== null
+    ) || this.gripRestartTimer !== -1) {
+      return;
+    }
+    this.gripRestartTimer = setTimeout((): void => {
+      this.gripRestartTimer = -1;
+      if (!shouldAutoRequestGripPermission(
+        this.pageActive,
+        this.appInBackground,
+        this.isDesktopDevice,
+        this.gripAlignmentEnabled,
+        this.gripPermissionGranted,
+        this.gripPermissionAttempted,
+        this.gripPermissionRequest !== null
+      )) {
+        return;
+      }
+      void this.requestGripPermission();
+    }, 320);
   }
 
   // 握持回调 — 直接赋值 @State, FAB 容器的 .animation() 自动处理弹簧过渡
@@ -1578,6 +1613,7 @@ struct HostListPage {
       hilog.info(0x0001, 'GripFAB', 'permission request skipped while app is background');
       return;
     }
+    this.gripPermissionAttempted = true;
     this.dbgTimestamp = new Date().toLocaleTimeString();
     let atManager: abilityAccessCtrl.AtManager;
     let ctx: common.UIAbilityContext;
@@ -1741,6 +1777,10 @@ struct HostListPage {
       this.totpCount = KeyVaultService.getInstance().getTotpCount();
       this.accountDisplayName = this.auth.isLoggedIn() ? this.auth.getDisplayName() : '';
       this.accountAvatarUrl = this.auth.isLoggedIn() ? this.auth.getAvatarUrl() : '';
+    } catch (err) {
+      // Optional storage/service failures must not reject the page lifecycle or
+      // leave a new user behind an infinite loading layer.
+      hilog.warn(0x0001, 'HostList', 'load failed; showing safe empty state: ' + JSON.stringify(err));
     } finally {
       // A storage/service exception must never leave the first-render loading
       // layer on screen indefinitely.
@@ -3568,20 +3608,6 @@ struct HostListPage {
     this.syncAmbientLightMonitor();
   }
 
-  private saveGripAlignmentEnabled(on: boolean): void {
-    this.gripAlignmentEnabled = on && !this.isDesktopDevice;
-    this.persistPref('gripAlignmentEnabled', this.gripAlignmentEnabled);
-    if (!this.gripAlignmentEnabled) {
-      this.stopGripMonitor(true);
-      this.holdingHand = motion.HoldingHandStatus.UNKNOWN_STATUS;
-      this.dbgMonitor = '用户未启用';
-      return;
-    }
-    // This is the sole user-triggered permission entry point.  It is never
-    // awaited by the settings UI or the home-page lifecycle.
-    void this.requestGripPermission();
-  }
-
   private applyFollowSystemColorMode(): void {
     try {
       const ctx: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
@@ -5111,13 +5137,15 @@ struct HostListPage {
                 Column() {
                   Text('握持手感知对齐').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
                     .fontColor(this.pal().text).fontFamily(this.font())
-                  Text(this.gripAlignmentEnabled ? '已启用；根据握持手移动添加按钮' : '关闭；开启时才会请求握姿权限')
+                  Text(this.isDesktopDevice ? 'PC 端不启用' :
+                    (this.gripPermissionGranted ? '已启用；根据握持手移动添加按钮' :
+                      '启动后自动申请权限，不影响主机列表显示'))
                     .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
                 }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
-                Toggle({ type: ToggleType.Switch, isOn: this.gripAlignmentEnabled })
-                  .selectedColor(this.accentColor).scale({ x: 0.88, y: 0.88 })
-                  .enabled(!this.isDesktopDevice)
-                  .onChange((on: boolean): void => { this.saveGripAlignmentEnabled(on); })
+                Text(this.isDesktopDevice ? '不适用' :
+                  (this.gripPermissionGranted ? '已开启' : '启动申请'))
+                  .fontSize(12).fontColor(this.isDesktopDevice ? this.pal().text3 : this.accentColor)
+                  .fontFamily(this.font()).margin({ right: 8 })
               }.width('100%').height(62).padding({ left: 16, right: 16 })
               this.cardDivider()
               // 终端字体颜色
@@ -5274,12 +5302,12 @@ struct HostListPage {
               this.cardDivider()
               // 模式选择: AVSession
               this.liveViewModeRow('系统媒体胶囊',
-                '有真实音视频时使用 AVSession, 由系统展示媒体控制胶囊',
+                '有真实视频时尝试 VIDEO_PLAY 画中画；AVSession 负责系统媒体控制胶囊',
                 1)
               this.cardDivider()
               // 模式选择: 普通后台通知。第三方远程连接不能直接创建系统实况窗。
               this.liveViewModeRow('后台通知',
-                '使用系统允许的普通通知展示连接状态和时长, 不直接伪造系统实况窗',
+                '使用系统允许的普通通知展示连接状态和时长，不显示视频画中画',
                 2)
             }.borderRadius(24).backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
             .shadow({ radius: 16, color: 'rgba(0,0,0,0.04)', offsetY: 4 })
@@ -5653,7 +5681,7 @@ struct HostListPage {
             Text('关于').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text3)
               .fontFamily(this.font()).padding({ left: 8, bottom: 8 })
             Column() {
-              this.cardItemRow($r('app.media.icon_info'), '版本', '1.0.7 · FreeRDP+RustDesk+SSH')
+              this.cardItemRow($r('app.media.icon_info'), '版本', CURRENT_RELEASE_VERSION + ' · FreeRDP+RustDesk+SSH')
               this.cardDivider()
               this.cardActionRow($r('app.media.icon_info'), '关于应用', '开源协议、作者说明和联系方式',
                 (): void => {

@@ -2,7 +2,7 @@
  * EntryAbility.ets — 应用入口 UIAbility
  *
  * HarmonyOS 6 沉浸式窗口 + 主题初始化。
- * 仅需 INTERNET 权限 (system_grant, 安装时自动授予，无需弹窗)。
+ * 网络权限由系统授予；移动端握姿权限由主机页首屏渲染后异步申请。
  */
 import { AbilityConstant, ConfigurationConstant, UIAbility, Want, Configuration } from '@kit.AbilityKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';

@@ -30,6 +30,13 @@ export default function remoteDesktopBackgroundLifecyclePolicyTest(): void {
       expect(action).assertEqual(RemoteDesktopBackgroundAction.none);
     });
 
+    it('background_without_connected_session_should_not_start_preserve_path', 0, (): void => {
+      expect(decideRemoteDesktopBackgroundAction(true, false, -1, false, false))
+        .assertEqual(RemoteDesktopBackgroundAction.none);
+      expect(decideRemoteDesktopBackgroundAction(true, false, 7, false, false))
+        .assertEqual(RemoteDesktopBackgroundAction.none);
+    });
+
     it('connected_page_should_wait_for_late_background_signal_before_disconnect', 0, (): void => {
       expect(shouldDeferRemoteDesktopDisappear(false, true, 7, false, false)).assertTrue();
       expect(shouldDeferRemoteDesktopDisappear(true, true, 7, false, false)).assertFalse();

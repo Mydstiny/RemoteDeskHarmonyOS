@@ -9,6 +9,7 @@
 #include "decoder_recovery_policy.h"
 #include "software_decoder.h"
 #include "software_decode_latency_policy.h"
+#include "decoder_pipeline_lifecycle_policy.h"
 #include "gl_renderer.h"
 #include "native_image_context_policy.h"
 #include <napi/native_api.h>
@@ -17,6 +18,9 @@
 #include <atomic>
 #include <chrono>
 #include <deque>
+#include <memory>
+#include <mutex>
+#include <unordered_map>
 #include <vector>
 #include <native_image/native_image.h>
 #include <multimedia/player_framework/native_avcodec_base.h>
@@ -692,6 +696,10 @@ struct DecoderContext {
     std::shared_ptr<HardwareDecoder> decoder;
     std::shared_ptr<SoftwareDecoder> softwareDecoder;
     bool useSoftware = false;
+    // Serializes decode/rebind/detach/destroy and keeps a context alive while
+    // a caller is using it through the registry below.
+    std::mutex pipelineMutex;
+    bool videoPipelineAttached = false;
     int64_t rendererHandle = 0;
     int width = 0;
     int height = 0;
@@ -711,27 +719,71 @@ struct DecoderContext {
 
 static std::atomic<int64_t> g_activeDecoderHandle {0};
 static std::atomic<uint64_t> g_activeDecoderSessionId {0};
+static std::mutex g_decoderContextsMutex;
+static std::unordered_map<int64_t, std::shared_ptr<DecoderContext>> g_decoderContexts;
 constexpr size_t kMaxSoftwareDecodeQueue = 30;
+
+int64_t RegisterDecoderContext(const std::shared_ptr<DecoderContext>& ctx) {
+    if (!ctx) {
+        return 0;
+    }
+    const int64_t handle = reinterpret_cast<int64_t>(ctx.get());
+    std::lock_guard<std::mutex> lock(g_decoderContextsMutex);
+    g_decoderContexts[handle] = ctx;
+    return handle;
+}
+
+std::shared_ptr<DecoderContext> FindDecoderContext(int64_t handle) {
+    if (handle <= 0) {
+        return nullptr;
+    }
+    std::lock_guard<std::mutex> lock(g_decoderContextsMutex);
+    auto it = g_decoderContexts.find(handle);
+    return it == g_decoderContexts.end() ? nullptr : it->second;
+}
+
+std::shared_ptr<DecoderContext> TakeDecoderContext(int64_t handle) {
+    if (handle <= 0) {
+        return nullptr;
+    }
+    std::lock_guard<std::mutex> lock(g_decoderContextsMutex);
+    auto it = g_decoderContexts.find(handle);
+    if (it == g_decoderContexts.end()) {
+        return nullptr;
+    }
+    auto ctx = std::move(it->second);
+    g_decoderContexts.erase(it);
+    return ctx;
+}
 
 void StopSoftwareWorker(DecoderContext* ctx) {
     if (!ctx) {
         return;
     }
+    bool shouldJoin = false;
     {
         std::lock_guard<std::mutex> lk(ctx->softMutex);
         ctx->softStop = true;
         ctx->softQueue.clear();
         ctx->softWaitingKeyframe = false;
+        shouldJoin = ctx->softThread.joinable();
     }
     ctx->softCv.notify_all();
-    if (ctx->softThread.joinable()) {
+    if (shouldJoin) {
         ctx->softThread.join();
     }
-    ctx->softStop = false;
+    {
+        std::lock_guard<std::mutex> lk(ctx->softMutex);
+        ctx->softStop = false;
+    }
 }
 
 void StartSoftwareWorkerIfNeeded(DecoderContext* ctx) {
-    if (!ctx || ctx->softThread.joinable()) {
+    if (!ctx) {
+        return;
+    }
+    std::lock_guard<std::mutex> lk(ctx->softMutex);
+    if (ctx->softThread.joinable() || !ctx->videoPipelineAttached) {
         return;
     }
     ctx->softStop = false;
@@ -801,6 +853,9 @@ int QueueSoftwareFrame(DecoderContext* ctx, const VideoFrame& frame) {
     uint64_t dropped = 0;
     {
         std::lock_guard<std::mutex> lk(ctx->softMutex);
+        if (!Render::ShouldAcceptSoftwareDecoderFrame(ctx->videoPipelineAttached, ctx->softStop)) {
+            return -1;
+        }
         if (ctx->softWaitingKeyframe && !frame.isKeyFrame) {
             dropped = ctx->softDropped.fetch_add(1) + 1;
             if (dropped <= 8 || dropped % 60 == 0) {
@@ -980,13 +1035,13 @@ napi_value NapiInitDecoder(napi_env env, napi_callback_info info) {
     auto decoder = std::shared_ptr<HardwareDecoder>(new HardwareDecoder());
     int result = decoder->Init(width, height, codec);
     if (result == 0) {
-        auto* ctx = new DecoderContext();
+        auto ctx = std::make_shared<DecoderContext>();
         ctx->decoder = decoder;
         ctx->useSoftware = false;
         ctx->width = width;
         ctx->height = height;
         napi_value handle;
-        napi_create_int64(env, reinterpret_cast<int64_t>(ctx), &handle);
+        napi_create_int64(env, RegisterDecoderContext(ctx), &handle);
         return handle;
     }
 
@@ -994,13 +1049,13 @@ napi_value NapiInitDecoder(napi_env env, napi_callback_info info) {
         auto softwareDecoder = std::shared_ptr<SoftwareDecoder>(new SoftwareDecoder());
         int softResult = softwareDecoder->Init(width, height, codec);
         if (softResult == 0) {
-            auto* ctx = new DecoderContext();
+            auto ctx = std::make_shared<DecoderContext>();
             ctx->softwareDecoder = softwareDecoder;
             ctx->useSoftware = true;
             ctx->width = width;
             ctx->height = height;
             napi_value handle;
-            napi_create_int64(env, reinterpret_cast<int64_t>(ctx), &handle);
+            napi_create_int64(env, RegisterDecoderContext(ctx), &handle);
             OH_LOG_INFO(LOG_APP, "[Decoder] NAPI initDecoder 使用软件后备 codec=%{public}s",
                         SoftwareDecoder::CodecName(codec));
             return handle;
@@ -1029,7 +1084,7 @@ napi_value NapiDecodeFrame(napi_env env, napi_callback_info info) {
 
     int64_t handleVal;
     napi_get_value_int64(env, args[0], &handleVal);
-    auto* ctx = reinterpret_cast<DecoderContext*>(handleVal);
+    auto ctx = FindDecoderContext(handleVal);
 
     void* data;
     size_t size;
@@ -1039,12 +1094,15 @@ napi_value NapiDecodeFrame(napi_env env, napi_callback_info info) {
     napi_get_value_int64(env, args[3], &timestamp);
 
     int result = -1;
-    if (ctx && ctx->useSoftware && ctx->softwareDecoder) {
-        result = ctx->softwareDecoder->Decode(static_cast<const uint8_t*>(data), size,
-                                              static_cast<uint64_t>(timestamp));
-    } else if (ctx && ctx->decoder) {
-        result = ctx->decoder->Decode(static_cast<const uint8_t*>(data), size,
-                                      static_cast<uint64_t>(timestamp));
+    if (ctx) {
+        std::lock_guard<std::mutex> lock(ctx->pipelineMutex);
+        if (ctx->useSoftware && ctx->softwareDecoder) {
+            result = ctx->softwareDecoder->Decode(static_cast<const uint8_t*>(data), size,
+                                                  static_cast<uint64_t>(timestamp));
+        } else if (ctx->decoder) {
+            result = ctx->decoder->Decode(static_cast<const uint8_t*>(data), size,
+                                          static_cast<uint64_t>(timestamp));
+        }
     }
 
     napi_value retVal;
@@ -1062,11 +1120,14 @@ napi_value NapiGetTextureId(napi_env env, napi_callback_info info) {
 
     int64_t handleVal;
     napi_get_value_int64(env, args[0], &handleVal);
-    auto* ctx = reinterpret_cast<DecoderContext*>(handleVal);
+    auto ctx = FindDecoderContext(handleVal);
 
     int32_t texId = 0;
-    if (ctx && !ctx->useSoftware && ctx->decoder) {
-        texId = static_cast<int32_t>(ctx->decoder->GetTextureId());
+    if (ctx) {
+        std::lock_guard<std::mutex> lock(ctx->pipelineMutex);
+        if (!ctx->useSoftware && ctx->decoder) {
+            texId = static_cast<int32_t>(ctx->decoder->GetTextureId());
+        }
     }
 
     napi_value retVal;
@@ -1103,9 +1164,14 @@ napi_value NapiTestDecoderH264(napi_env env, napi_callback_info info) {
 
     int64_t handleVal;
     napi_get_value_int64(env, args[0], &handleVal);
-    auto* ctx = reinterpret_cast<DecoderContext*>(handleVal);
+    auto ctx = FindDecoderContext(handleVal);
 
-    if (!ctx || ctx->useSoftware || !ctx->decoder || !ctx->decoder->IsInitialized()) {
+    if (!ctx) {
+        OH_LOG_WARN(LOG_APP, "[Decoder] testDecoderH264: decoder handle unavailable");
+        napi_value r; napi_create_int32(env, -1, &r); return r;
+    }
+    std::lock_guard<std::mutex> lock(ctx->pipelineMutex);
+    if (ctx->useSoftware || !ctx->decoder || !ctx->decoder->IsInitialized()) {
         OH_LOG_WARN(LOG_APP, "[Decoder] testDecoderH264: 解码器未就绪");
         napi_value r; napi_create_int32(env, -1, &r); return r;
     }
@@ -1172,9 +1238,14 @@ napi_value NapiRequestDecoderRecovery(napi_env env, napi_callback_info info) {
 } // anonymous namespace
 
 int DecoderNapi::DecodeNative(int64_t handle, const VideoFrame& frame) {
-    auto* ctx = reinterpret_cast<DecoderContext*>(handle);
+    auto ctx = FindDecoderContext(handle);
     if (!ctx) {
         OH_LOG_WARN(LOG_APP, "[Decoder] native decode skipped: decoder not ready");
+        return -1;
+    }
+    std::lock_guard<std::mutex> pipelineLock(ctx->pipelineMutex);
+    if (!ctx->videoPipelineAttached) {
+        OH_LOG_WARN(LOG_APP, "[Decoder] native decode skipped: video pipeline detached");
         return -1;
     }
     if (frame.codec != CodecType::H264 && frame.codec != CodecType::H265 &&
@@ -1204,13 +1275,13 @@ int DecoderNapi::DecodeNative(int64_t handle, const VideoFrame& frame) {
                     frame.width,
                     frame.height,
                     frame.size);
-        if (!RecreateDecoderForFrame(ctx, frame)) {
+        if (!RecreateDecoderForFrame(ctx.get(), frame)) {
             return -3;
         }
         ctx->recoveryRequested.store(false);
     }
 
-    const CodecType currentCodec = CurrentCodec(ctx);
+    const CodecType currentCodec = CurrentCodec(ctx.get());
     if (frame.codec != currentCodec) {
         OH_LOG_WARN(LOG_APP,
                     "[Decoder] native codec changed: decoder=%{public}d frame=%{public}d size=%{public}zu key=%{public}s frameSize=%{public}dx%{public}d",
@@ -1223,7 +1294,7 @@ int DecoderNapi::DecodeNative(int64_t handle, const VideoFrame& frame) {
         if (!frame.isKeyFrame) {
             return -3;
         }
-        if (!RecreateDecoderForFrame(ctx, frame)) {
+        if (!RecreateDecoderForFrame(ctx.get(), frame)) {
             return -3;
         }
     }
@@ -1233,7 +1304,7 @@ int DecoderNapi::DecodeNative(int64_t handle, const VideoFrame& frame) {
             OH_LOG_WARN(LOG_APP, "[Decoder] native software decode skipped: decoder not ready");
             return -1;
         }
-        return QueueSoftwareFrame(ctx, frame);
+        return QueueSoftwareFrame(ctx.get(), frame);
     }
     if (!ctx->decoder || !ctx->decoder->IsInitialized()) {
         OH_LOG_WARN(LOG_APP, "[Decoder] native decode skipped: decoder not ready");
@@ -1265,24 +1336,33 @@ void DecoderNapi::DestroyDecoderHandle(int64_t handle) {
     if (handle <= 0) {
         return;
     }
-    auto* ctx = reinterpret_cast<DecoderContext*>(handle);
+    auto ctx = TakeDecoderContext(handle);
     if (!ctx) {
         return;
     }
-    StopSoftwareWorker(ctx);
+    int64_t expected = handle;
+    if (g_activeDecoderHandle.compare_exchange_strong(expected, 0)) {
+        g_activeDecoderSessionId.store(0, std::memory_order_release);
+    }
+    std::lock_guard<std::mutex> pipelineLock(ctx->pipelineMutex);
+    ctx->videoPipelineAttached = false;
+    StopSoftwareWorker(ctx.get());
     if (ctx->decoder) {
         ctx->decoder->Destroy();
     }
     if (ctx->softwareDecoder) {
         ctx->softwareDecoder->Destroy();
     }
-    delete ctx;
 }
 
 int DecoderNapi::ActiveVideoPressureLevel() {
     int64_t handle = g_activeDecoderHandle.load();
-    auto* ctx = reinterpret_cast<DecoderContext*>(handle);
+    auto ctx = FindDecoderContext(handle);
     if (!ctx) {
+        return 0;
+    }
+    std::lock_guard<std::mutex> pipelineLock(ctx->pipelineMutex);
+    if (!ctx->videoPipelineAttached) {
         return 0;
     }
     size_t queueDepth = 0;
@@ -1314,8 +1394,12 @@ DecoderTelemetrySnapshot DecoderNapi::GetActiveTelemetry(uint64_t expectedSessio
         return snapshot;
     }
     const int64_t handle = g_activeDecoderHandle.load(std::memory_order_acquire);
-    auto* ctx = reinterpret_cast<DecoderContext*>(handle);
+    auto ctx = FindDecoderContext(handle);
     if (!ctx) {
+        return snapshot;
+    }
+    std::lock_guard<std::mutex> pipelineLock(ctx->pipelineMutex);
+    if (!ctx->videoPipelineAttached) {
         return snapshot;
     }
     snapshot.valid = true;
@@ -1351,22 +1435,36 @@ void DecoderNapi::ClearActiveSessionId(uint64_t sessionId) {
 }
 
 bool DecoderNapi::BindVideoPipeline(int64_t decoderHandle, int64_t rendererHandle) {
-    auto* ctx = reinterpret_cast<DecoderContext*>(decoderHandle);
+    auto ctx = FindDecoderContext(decoderHandle);
     if (!ctx || rendererHandle <= 0) {
         OH_LOG_WARN(LOG_APP, "[Decoder] bindVideoPipeline failed: decoder=%{public}lld renderer=%{public}lld",
                     static_cast<long long>(decoderHandle), static_cast<long long>(rendererHandle));
         return false;
     }
 
+    std::lock_guard<std::mutex> pipelineLock(ctx->pipelineMutex);
+    if (ctx->videoPipelineAttached) {
+        ctx->videoPipelineAttached = false;
+        if (ctx->useSoftware) {
+            StopSoftwareWorker(ctx.get());
+            if (ctx->softwareDecoder) {
+                ctx->softwareDecoder->SetFrameCallback(nullptr);
+            }
+        } else if (ctx->decoder) {
+            ctx->decoder->StopRenderThreadForDetach();
+        }
+    }
     ctx->rendererHandle = rendererHandle;
-    if (!ConfigurePipeline(ctx)) {
+    if (!ConfigurePipeline(ctx.get())) {
         OH_LOG_WARN(LOG_APP, "[Decoder] bindVideoPipeline failed: decoder=%{public}lld renderer=%{public}lld soft=%{public}s",
                     static_cast<long long>(decoderHandle),
                     static_cast<long long>(rendererHandle),
                     ctx->useSoftware ? "yes" : "no");
+        ctx->rendererHandle = 0;
         return false;
     }
 
+    ctx->videoPipelineAttached = true;
     g_activeDecoderHandle.store(decoderHandle);
     OH_LOG_INFO(LOG_APP, "[Decoder] bindVideoPipeline %{public}s ok decoder=%{public}lld renderer=%{public}lld",
                 ctx->useSoftware ? "software" : "hardware",
@@ -1376,14 +1474,21 @@ bool DecoderNapi::BindVideoPipeline(int64_t decoderHandle, int64_t rendererHandl
 }
 
 bool DecoderNapi::DetachVideoPipeline(int64_t decoderHandle) {
-    auto* ctx = reinterpret_cast<DecoderContext*>(decoderHandle);
+    auto ctx = FindDecoderContext(decoderHandle);
     if (!ctx) {
         OH_LOG_WARN(LOG_APP, "[Decoder] detachVideoPipeline failed: decoder=%{public}lld",
                     static_cast<long long>(decoderHandle));
         return false;
     }
 
+    std::lock_guard<std::mutex> pipelineLock(ctx->pipelineMutex);
+    ctx->videoPipelineAttached = false;
+    int64_t expected = decoderHandle;
+    if (g_activeDecoderHandle.compare_exchange_strong(expected, 0)) {
+        g_activeDecoderSessionId.store(0, std::memory_order_release);
+    }
     if (ctx->useSoftware) {
+        StopSoftwareWorker(ctx.get());
         if (ctx->softwareDecoder) {
             ctx->softwareDecoder->SetFrameCallback(nullptr);
         }
@@ -1391,9 +1496,6 @@ bool DecoderNapi::DetachVideoPipeline(int64_t decoderHandle) {
         ctx->decoder->StopRenderThreadForDetach();
     }
     ctx->rendererHandle = 0;
-    if (g_activeDecoderHandle.load() == decoderHandle) {
-        g_activeDecoderHandle.store(0);
-    }
     OH_LOG_INFO(LOG_APP, "[Decoder] detachVideoPipeline ok decoder=%{public}lld mode=%{public}s",
                 static_cast<long long>(decoderHandle),
                 ctx->useSoftware ? "software" : "hardware");
@@ -1401,13 +1503,14 @@ bool DecoderNapi::DetachVideoPipeline(int64_t decoderHandle) {
 }
 
 bool DecoderNapi::RequestDecoderRecovery(int64_t decoderHandle) {
-    auto* ctx = reinterpret_cast<DecoderContext*>(decoderHandle);
+    auto ctx = FindDecoderContext(decoderHandle);
     if (!ctx) {
         OH_LOG_WARN(LOG_APP, "[Decoder] requestDecoderRecovery failed: decoder=%{public}lld",
                     static_cast<long long>(decoderHandle));
         return false;
     }
-    if (!Render::ShouldRequestDecoderRecoveryAfterForegroundRestore(
+    std::lock_guard<std::mutex> pipelineLock(ctx->pipelineMutex);
+    if (!ctx->videoPipelineAttached || !Render::ShouldRequestDecoderRecoveryAfterForegroundRestore(
         true, decoderHandle, ctx->rendererHandle)) {
         OH_LOG_WARN(LOG_APP,
                     "[Decoder] requestDecoderRecovery skipped: decoder=%{public}lld renderer=%{public}lld",

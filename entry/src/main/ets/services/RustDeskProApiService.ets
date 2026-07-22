@@ -1,6 +1,7 @@
 import { http } from '@kit.NetworkKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { RustDeskProAccountState, RustDeskProAddressBook } from '../model/RustDeskProModels';
+import { CURRENT_RELEASE_VERSION } from './ReleaseNotesRegistry';
 import {
   buildRustDeskProLoginRequest,
   normalizeRustDeskProServerUrl,
@@ -14,7 +15,7 @@ import {
 } from './RustDeskProApiPolicy';
 
 const HTTP_TIMEOUT_MS: number = 15000;
-const APP_VERSION: string = '1.0.7';
+const APP_VERSION: string = CURRENT_RELEASE_VERSION;
 const LOG_DOMAIN: number = 0x0001;
 const LOG_TAG: string = 'RustDeskProApi';
 

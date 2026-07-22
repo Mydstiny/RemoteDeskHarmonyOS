@@ -40,6 +40,8 @@ import { clipboardSyncEnabledForProtocol } from '../services/ClipboardSyncPolicy
 import { FileTransferLiveTaskService } from '../services/FileTransferLiveTaskService';
 import { RemoteSessionBackgroundTaskService, RemoteSessionBgInfo } from '../services/RemoteSessionBackgroundTaskService';
 import { RemoteSessionLiveViewService, LiveViewConnectionInfo } from '../services/RemoteSessionLiveViewService';
+import { RemoteSessionPipService } from '../services/RemoteSessionPipService';
+import { shouldStartRemoteSessionPip } from '../services/RemoteSessionPipPolicy';
 import { ActiveRemoteSessionRegistry, ActiveRemoteSessionRecord } from '../services/ActiveRemoteSessionRegistry';
 import { NativeSessionHandles, ProductionNativeHandleAdapter } from '../services/NativeSessionHandles';
 import {
@@ -510,6 +512,8 @@ struct RemoteDesktop {
   private backgroundSessionInfo: RemoteSessionBgInfo | null = null;
   private backgroundHasAudio: boolean = false;
   private backgroundHasVideo: boolean = false;
+  private renderPreservedInPip: boolean = false;
+  private pipSurfaceTransferInProgress: boolean = false;
   private restoreFrameRefreshTimers: number[] = [];
   private xComponentController: RemoteDesktopXComponentController = new RemoteDesktopXComponentController();
   private surfaceWidth: number = 0;
@@ -2194,7 +2198,10 @@ struct RemoteDesktop {
     );
     if (action === RemoteDesktopBackgroundAction.detach) {
       hilog.info(RD_DOMAIN, RD_TAG, 'bgFlagChange: background preserve');
-      this.detachForBackground();
+      this.detachForBackground().catch((err: Error): void => {
+        hilog.warn(RD_DOMAIN, RD_TAG, 'bgFlagChange: background preserve failed: ' +
+          (err.message ? err.message : JSON.stringify(err)));
+      });
       return;
     }
     if (action === RemoteDesktopBackgroundAction.restore) {
@@ -2404,7 +2411,10 @@ struct RemoteDesktop {
       if (action === RemoteDesktopBackgroundAction.detach) {
         // Home 手势 / 系统回桌面 → 后台保活
         hilog.info(RD_DOMAIN, RD_TAG, 'aboutToDisappear: background preserve (home gesture)');
-        this.detachForBackground();
+        this.detachForBackground().catch((err: Error): void => {
+          hilog.warn(RD_DOMAIN, RD_TAG, 'aboutToDisappear: background preserve failed: ' +
+            (err.message ? err.message : JSON.stringify(err)));
+        });
       } else {
         hilog.info(RD_DOMAIN, RD_TAG, 'aboutToDisappear: background skip action=' + action.toString());
       }
@@ -2541,17 +2551,21 @@ struct RemoteDesktop {
   }
 
   private async startRemoteSessionBackgroundTask(ctx: common.UIAbilityContext,
-    info: RemoteSessionBgInfo): Promise<void> {
-    await RemoteSessionBackgroundTaskService.getInstance().startSessionTask(ctx, info);
+    info: RemoteSessionBgInfo): Promise<boolean> {
+    const started: boolean = await RemoteSessionBackgroundTaskService.getInstance().startSessionTask(ctx, info);
+    if (!started) {
+      return false;
+    }
     if (info.hasAudio || info.hasVideo) {
       await RemoteSessionBackgroundTaskService.getInstance().startAudioPlaybackTask(ctx, info);
     }
+    return true;
   }
 
   /**
-   * 启动后台展示 (仅在退后台时调用)。
-   * 有真实音频或视频活动时优先使用 video AVSession 策略,
-   * 系统拒绝 AVSession 时由服务降级到普通后台通知。
+   * 启动后台媒体身份 (仅在退后台时调用)。
+   * 有真实音频或视频活动时优先使用 AVSession；系统拒绝时由服务
+   * 降级到普通后台通知。实际视频帧由 PIP free-node surface 承载。
    */
   private async startSessionLiveView(ctx: common.UIAbilityContext,
     info: RemoteSessionBgInfo): Promise<void> {
@@ -2571,7 +2585,12 @@ struct RemoteDesktop {
       };
 
       const service: RemoteSessionLiveViewService = RemoteSessionLiveViewService.getInstance();
-      await service.reconcile(ctx, liveViewInfo);
+      const started: boolean = await service.reconcile(ctx, liveViewInfo);
+      if (!started || !service.isActive()) {
+        hilog.warn(RD_DOMAIN, RD_TAG, 'startSessionLiveView: strategy did not start; suppress success log' +
+          ' protocol=' + info.protocolLabel);
+        return;
+      }
 
       // 如果有音频, AVSession 策略启动后注入静音回调
       if (info.hasAudio) {
@@ -2580,7 +2599,7 @@ struct RemoteDesktop {
         });
       }
 
-      hilog.info(RD_DOMAIN, RD_TAG, 'startSessionLiveView: live view started protocol=' +
+      hilog.info(RD_DOMAIN, RD_TAG, 'startSessionLiveView: background media active protocol=' +
         info.protocolLabel + ' hasAudio=' + (info.hasAudio ? 'true' : 'false') +
         ' hasVideo=' + (info.hasVideo ? 'true' : 'false'));
     } catch (err) {
@@ -2608,12 +2627,13 @@ struct RemoteDesktop {
   }
 
   /**
-   * 停止实况窗 (前台恢复或断连时调用)。
+   * 停止后台媒体身份和 PIP (前台恢复或断连时调用)。
    */
   private async stopSessionLiveView(ctx: common.UIAbilityContext): Promise<void> {
     try {
       await RemoteSessionLiveViewService.getInstance().stop(ctx);
-      hilog.info(RD_DOMAIN, RD_TAG, 'stopSessionLiveView: live view stopped');
+      await RemoteSessionPipService.getInstance().stop();
+      hilog.info(RD_DOMAIN, RD_TAG, 'stopSessionLiveView: background media stopped');
     } catch (err) {
       hilog.warn(RD_DOMAIN, RD_TAG, 'stopSessionLiveView: failed: ' + JSON.stringify(err));
     }
@@ -4666,11 +4686,19 @@ struct RemoteDesktop {
 
   private disconnectAndCleanup(reason: string): void {
     this.restoreRemoteSystemPointer('disconnect-' + reason);
-    if (this.cleanupStarted) {
+    // Stop any stale PIP controller even when this cleanup call is otherwise
+    // idempotently skipped. This prevents a disconnected/empty page from
+    // briefly surfacing an old PIP window during app exit.
+    RemoteSessionPipService.getInstance().stop().catch((_e: Error): void => {
+      // PIP cleanup is best effort; native teardown below remains authoritative.
+    });
+    if (this.cleanupStarted && !this.renderPreservedInPip && !this.bgRestorePending) {
       return;
     }
     this.stopRustDeskDiagnosticsPolling(true);
     this.cleanupStarted = true;
+    this.renderPreservedInPip = false;
+    this.pipSurfaceTransferInProgress = false;
     const cleanupStartedAtMs: number = Date.now();
     if (shouldRestoreRemoteNavigation(reason, false)) {
       this.setRemoteNavigationHidden(false, reason);
@@ -4785,8 +4813,67 @@ struct RemoteDesktop {
    * 后台保活: 仅脱附渲染, 保留协议连接和音频管线。
    * 系统通过 home gesture / onBackground 触发。
    */
-  private detachForBackground(): void {
+  private async attachRendererToPipSurface(surfaceId: string): Promise<boolean> {
+    const activeSession: ActiveRemoteSessionRecord | null = this.activeSessionRegistry.getActive();
+    if (!this.cleanupStarted || !this.connected || this.sessionId <= 0 || this.pendingHost === null ||
+      this.rendererHandle <= 0 || this.decoderHandle <= 0 || activeSession === null ||
+      activeSession.sessionId !== this.sessionId || activeSession.hostId !== this.pendingHost.id ||
+      !activeSession.protocolConnected || surfaceId.length === 0) {
+      hilog.warn(RD_DOMAIN, RD_TAG, 'attachRendererToPipSurface: session is no longer attachable');
+      return false;
+    }
+
+    try {
+      // The page renderer is bound to the page XComponent.  Move the native
+      // renderer to the free-node surface before the PIP controller reports
+      // success; otherwise the PIP window only retains the last page frame.
+      if (this.nativeHandles.isRenderAttached()) {
+        this.nativeHandles.detachRenderForBackground();
+      } else {
+        this.loader.destroyRenderer();
+      }
+      this.rendererHandle = -1;
+
+      const width: number = this.renderWidthPx > 0 ? this.renderWidthPx : this.remoteWidth;
+      const height: number = this.renderHeightPx > 0 ? this.renderHeightPx : this.remoteHeight;
+      const result = this.loader.reattachRenderForForeground(surfaceId, width, height);
+      if (!result.ok || result.value === undefined || result.value <= 0) {
+        hilog.warn(RD_DOMAIN, RD_TAG, 'attachRendererToPipSurface: renderer init failed code=' +
+          result.code + ' msg=' + result.message);
+        return false;
+      }
+
+      this.rendererHandle = result.value;
+      this.nativeHandles.markSurfaceAttached(this.rendererHandle);
+      if (!this.loader.bindVideoPipeline(this.decoderHandle, this.rendererHandle)) {
+        hilog.warn(RD_DOMAIN, RD_TAG, 'attachRendererToPipSurface: decoder pipeline bind failed');
+        this.nativeHandles.detachRenderForBackground();
+        this.rendererHandle = -1;
+        return false;
+      }
+      this.activeSessionRegistry.markRenderDetached();
+      this.loader.requestDecoderRecovery();
+      this.loader.requestFrameRefresh();
+      hilog.info(RD_DOMAIN, RD_TAG, 'attachRendererToPipSurface: renderer=' +
+        this.rendererHandle.toString() + ' surface=' + surfaceId);
+      return true;
+    } catch (err) {
+      hilog.warn(RD_DOMAIN, RD_TAG, 'attachRendererToPipSurface: failed ' + JSON.stringify(err));
+      this.rendererHandle = -1;
+      return false;
+    }
+  }
+
+  private async detachForBackground(): Promise<void> {
     if (this.cleanupStarted) {
+      return;
+    }
+    const activeSession: ActiveRemoteSessionRecord | null = this.activeSessionRegistry.getActive();
+    if (!this.connected || this.sessionId <= 0 || this.pendingHost === null || activeSession === null ||
+      activeSession.sessionId !== this.sessionId || activeSession.hostId !== this.pendingHost.id ||
+      !activeSession.protocolConnected) {
+      hilog.info(RD_DOMAIN, RD_TAG, 'detachForBackground: skip without active connected session connected=' +
+        (this.connected ? 'true' : 'false') + ' sessionId=' + this.sessionId.toString());
       return;
     }
     this.restoreRemoteSystemPointer('background-detach');
@@ -4828,30 +4915,67 @@ struct RemoteDesktop {
     this.inputForwardReady = false;
 
     const backgroundMedia: RemoteSessionMediaSnapshot = this.currentRemoteMediaSnapshot();
-    this.applyBackgroundVideoPrewarm(backgroundMedia, 'detach');
+
+    // A VIDEO_PLAY PIP owns a free-node XComponent surface. The native
+    // renderer is moved there before PIP reports success. Only fall back to
+    // the old detach path if PIP is disabled, unsupported, or failed.
+    let pipPreserved: boolean = false;
+    let pipContext: common.UIAbilityContext | null = null;
+    this.pipSurfaceTransferInProgress = true;
+    try {
+      pipContext = this.getUIContext().getHostContext() as common.UIAbilityContext;
+      const liveViewEnabled: boolean = AppStorage.get<boolean>('liveViewEnabled') ?? true;
+      const liveViewMode: number = AppStorage.get<number>('liveViewMode') ?? 1;
+      if (pipContext !== null && this.pendingHost !== null &&
+        this.rendererHandle > 0 && this.decoderHandle > 0 && this.surfaceReady &&
+        shouldStartRemoteSessionPip(liveViewEnabled, liveViewMode, backgroundMedia.hasVideo,
+          this.connected && this.sessionId > 0)) {
+        const width: number = this.renderWidthPx > 0 ? this.renderWidthPx : this.remoteWidth;
+        const height: number = this.renderHeightPx > 0 ? this.renderHeightPx : this.remoteHeight;
+        pipPreserved = await RemoteSessionPipService.getInstance().start(
+          pipContext, this.getUIContext(), width, height,
+          (surfaceId: string): Promise<boolean> => this.attachRendererToPipSurface(surfaceId),
+          (reason: string): void => this.handleRemoteSessionPipStopped(reason));
+      }
+    } catch (err) {
+      hilog.warn(RD_DOMAIN, RD_TAG, 'detachForBackground: PIP start failed, falling back to detached renderer: ' +
+        JSON.stringify(err));
+      pipPreserved = false;
+    }
+    this.renderPreservedInPip = pipPreserved;
+    this.pipSurfaceTransferInProgress = false;
+    if (pipPreserved) {
+      this.disableRdpBackgroundVideoPrewarm('pip-active');
+      hilog.info(RD_DOMAIN, RD_TAG, 'detachForBackground: PIP owns free-node surface, renderer preserved');
+    } else {
+      this.applyBackgroundVideoPrewarm(backgroundMedia, 'detach');
+    }
 
     // 仅脱附渲染, 不触碰协议连接、解码器和音频.
     // 注意: 不销毁解码器 — destroyDecoder 会级联断开协议连接.
-    if (this.decoderHandle > 0) {
-      this.loader.detachVideoPipelineForBackground();
-    }
-    const rendererHandleBeforeDetach: number = this.rendererHandle;
-    if (this.rendererHandle > 0) {
-      this.nativeHandles.detachRenderForBackground();
-      this.rendererHandle = -1;
-    }
-    if (shouldInvalidateSurfaceAfterBackgroundDetach(rendererHandleBeforeDetach, this.sessionId)) {
-      this.surfaceReady = false;
-      hilog.info(RD_DOMAIN, RD_TAG, 'detachForBackground: surface invalidated after render detach');
-    }
-    if (this.pendingHost !== null && this.sessionId > 0) {
-      this.recordActiveSession(this.pendingHost, this.sessionId, false);
-      this.activeSessionRegistry.markRenderDetached();
+    if (!pipPreserved) {
+      if (this.decoderHandle > 0) {
+        this.loader.detachVideoPipelineForBackground();
+      }
+      const rendererHandleBeforeDetach: number = this.rendererHandle;
+      if (this.rendererHandle > 0) {
+        this.nativeHandles.detachRenderForBackground();
+        this.rendererHandle = -1;
+      }
+      if (shouldInvalidateSurfaceAfterBackgroundDetach(rendererHandleBeforeDetach, this.sessionId)) {
+        this.surfaceReady = false;
+        hilog.info(RD_DOMAIN, RD_TAG, 'detachForBackground: surface invalidated after render detach');
+      }
+      if (this.pendingHost !== null && this.sessionId > 0) {
+        this.recordActiveSession(this.pendingHost, this.sessionId, false);
+        this.activeSessionRegistry.markRenderDetached();
+      }
     }
 
     // 启动后台保活任务
     try {
-      const ctx: common.UIAbilityContext = this.getUIContext().getHostContext() as common.UIAbilityContext;
+      const ctx: common.UIAbilityContext = pipContext ??
+        (this.getUIContext().getHostContext() as common.UIAbilityContext);
       if (ctx && this.pendingHost !== null) {
         const info: RemoteSessionBgInfo = {
           hostId: this.pendingHost.id,
@@ -4862,16 +4986,22 @@ struct RemoteDesktop {
           hasAudio: backgroundMedia.hasAudio,
           hasVideo: backgroundMedia.hasVideo
         };
-        this.startRemoteSessionBackgroundTask(ctx, info).catch((err: Error): void => {
+        this.startRemoteSessionBackgroundTask(ctx, info).then((started: boolean): void => {
+          if (started) {
+            hilog.info(RD_DOMAIN, RD_TAG, 'detachForBackground: background task active protocol=' +
+              info.protocolLabel);
+          } else {
+            hilog.warn(RD_DOMAIN, RD_TAG, 'detachForBackground: background task was rejected protocol=' +
+              info.protocolLabel);
+          }
+        }).catch((err: Error): void => {
           hilog.warn(RD_DOMAIN, RD_TAG, 'detachForBackground: background task async failed: ' +
             (err.message ? err.message : JSON.stringify(err)));
         });
-        hilog.info(RD_DOMAIN, RD_TAG, 'detachForBackground: background task started protocol=' +
-          info.protocolLabel);
 
-        // 启动实况窗 (仅退后台时)
+        // 注册后台媒体身份；实际视频帧由上面的 PIP XComponent 承载。
         this.startSessionLiveView(ctx, info).catch((err: Error): void => {
-          hilog.warn(RD_DOMAIN, RD_TAG, 'detachForBackground: live view async failed: ' +
+          hilog.warn(RD_DOMAIN, RD_TAG, 'detachForBackground: background media async failed: ' +
             (err.message ? err.message : JSON.stringify(err)));
         });
         this.startBackgroundAudioPolling(ctx, info);
@@ -4881,11 +5011,45 @@ struct RemoteDesktop {
         JSON.stringify(err));
     }
 
-    // 标记状态: 连接协议仍存活但 UI 已脱附
-    this.connected = false;
-    this.connectStarted = false;
+    // PIP 使用独立 free-node surface。保持 connected=true，避免 ArkUI
+    // 重建页面 XComponent 后把远端会话误判成已断开。
+    // 只有旧的 detached fallback 才把页面标为未连接；PIP 停止后再执行同样的脱附。
+    if (!pipPreserved) {
+      this.connected = false;
+      this.connectStarted = false;
+    } else {
+      hilog.info(RD_DOMAIN, RD_TAG, 'detachForBackground: keep connected UI state for PIP free-node source');
+    }
     this.bgRestorePending = true;
     hilog.info(RD_DOMAIN, RD_TAG, 'detachForBackground: bgRestorePending=true, awaiting foreground');
+  }
+
+  private handleRemoteSessionPipStopped(reason: string): void {
+    if (!this.renderPreservedInPip) {
+      return;
+    }
+    this.renderPreservedInPip = false;
+    hilog.warn(RD_DOMAIN, RD_TAG, 'PIP stopped while remote session was backgrounded reason=' + reason);
+    if (!this.cleanupStarted || !this.bgRestorePending) {
+      return;
+    }
+    if (this.decoderHandle > 0) {
+      this.loader.detachVideoPipelineForBackground();
+    }
+    const rendererHandleBeforeDetach: number = this.rendererHandle;
+    if (this.rendererHandle > 0) {
+      this.nativeHandles.detachRenderForBackground();
+      this.rendererHandle = -1;
+    }
+    if (shouldInvalidateSurfaceAfterBackgroundDetach(rendererHandleBeforeDetach, this.sessionId)) {
+      this.surfaceReady = false;
+    }
+    if (this.pendingHost !== null && this.sessionId > 0) {
+      this.recordActiveSession(this.pendingHost, this.sessionId, false);
+      this.activeSessionRegistry.markRenderDetached();
+    }
+    this.connected = false;
+    this.connectStarted = false;
   }
 
   /**
@@ -4896,29 +5060,53 @@ struct RemoteDesktop {
     // bgFlag 保留到 tryStartConnect → doBackgroundRestoreRender 使用
     this.stopBackgroundAudioPolling();
     this.clearRestoreFrameRefreshPump();
+    const continueRestore = (): void => {
+      // The PIP renderer is attached to the free-node surface, not the page
+      // surface. Release that renderer before the normal foreground reattach
+      // path; otherwise the page could resume with a stale PIP surface or two
+      // native renderer handles.
+      if (this.renderPreservedInPip) {
+        this.renderPreservedInPip = false;
+        if (this.rendererHandle > 0) {
+          if (this.nativeHandles.isRenderAttached()) {
+            this.nativeHandles.detachRenderForBackground();
+          } else {
+            this.loader.destroyRenderer();
+          }
+          this.rendererHandle = -1;
+        }
+        hilog.info(RD_DOMAIN, RD_TAG, 'restoreFromBackground: released PIP renderer, reattaching page surface');
+      }
+      this.renderPreservedInPip = false;
+      if (shouldRestoreRenderImmediately(this.bgRestorePending, this.sessionId, this.surfaceReady, this.cleanupStarted)) {
+        hilog.info(RD_DOMAIN, RD_TAG, 'restoreFromBackground: surface ready, reattach now');
+        this.doBackgroundRestoreRender();
+        return;
+      }
+      if (shouldPollSurfaceAfterForegroundRestore(this.bgRestorePending, this.sessionId, this.surfaceReady,
+        this.cleanupStarted)) {
+        hilog.info(RD_DOMAIN, RD_TAG, 'restoreFromBackground: surface not ready, polling surface id');
+        this.pollSurfaceId(0);
+        return;
+      }
+      // 渲染重建由 onSurfaceCreated → tryStartConnect → doBackgroundRestoreRender 触发
+      hilog.info(RD_DOMAIN, RD_TAG, 'restoreFromBackground: waiting for surface');
+    };
     try {
       const ctx: common.UIAbilityContext = this.getUIContext().getHostContext() as common.UIAbilityContext;
       if (ctx) {
         // 移除实况窗
-        this.stopSessionLiveView(ctx).catch((_e: Error): void => {
+        this.stopSessionLiveView(ctx).then((): void => {
+          continueRestore();
+        }).catch((_e: Error): void => {
           // 停止失败不影响恢复流程
+          continueRestore();
         });
         RemoteSessionBackgroundTaskService.getInstance().stopSessionTask(ctx);
+        return;
       }
     } catch (_e) { /* ignore */ }
-    if (shouldRestoreRenderImmediately(this.bgRestorePending, this.sessionId, this.surfaceReady, this.cleanupStarted)) {
-      hilog.info(RD_DOMAIN, RD_TAG, 'restoreFromBackground: surface ready, reattach now');
-      this.doBackgroundRestoreRender();
-      return;
-    }
-    if (shouldPollSurfaceAfterForegroundRestore(this.bgRestorePending, this.sessionId, this.surfaceReady,
-      this.cleanupStarted)) {
-      hilog.info(RD_DOMAIN, RD_TAG, 'restoreFromBackground: surface not ready, polling surface id');
-      this.pollSurfaceId(0);
-      return;
-    }
-    // 渲染重建由 onSurfaceCreated → tryStartConnect → doBackgroundRestoreRender 触发
-    hilog.info(RD_DOMAIN, RD_TAG, 'restoreFromBackground: waiting for surface');
+    continueRestore();
   }
 
   /**
@@ -5098,6 +5286,15 @@ struct RemoteDesktop {
     try {
       hilog.info(RD_DOMAIN, RD_TAG, 'XComponentController.onSurfaceCreated: surfaceId=' + surfaceId);
       this.latestSurfaceId = surfaceId;
+      if (this.renderPreservedInPip || this.pipSurfaceTransferInProgress) {
+        // A page surface can be recreated while the PIP free node owns the
+        // native window. Do not switch the global native surface away from
+        // PIP; keep the page id for the foreground reattach path instead.
+        this.surfaceReady = true;
+        hilog.info(RD_DOMAIN, RD_TAG,
+          'onSurfaceCreated: PIP owns native surface, defer page surface bind');
+        return;
+      }
       const desktop: DesktopSize = this.desktopSize(this.pendingHost);
       this.updateRemoteSize(desktop);
       const ok: boolean = rdpnapi.setXComponentSurfaceId(surfaceId, desktop.width, desktop.height) as boolean;
@@ -5118,7 +5315,12 @@ struct RemoteDesktop {
     if (_surfaceId === this.latestSurfaceId) {
       this.latestSurfaceId = '';
     }
-    this.markXComponentSurfaceDetached('surfaceDestroyed');
+    if (this.renderPreservedInPip || this.pipSurfaceTransferInProgress) {
+      hilog.info(RD_DOMAIN, RD_TAG,
+        'onSurfaceDestroyed: PIP owns native surface, skip global detach source=' + _surfaceId);
+    } else {
+      this.markXComponentSurfaceDetached('surfaceDestroyed');
+    }
   }
 
   private onXComponentLoad = (): void => {
@@ -5158,7 +5360,11 @@ struct RemoteDesktop {
 
   private onXComponentDestroy = (): void => {
     this.restoreRemoteSystemPointer('xcomponent-destroy');
-    this.markXComponentSurfaceDetached('xcomponentDestroy');
+    if (this.renderPreservedInPip || this.pipSurfaceTransferInProgress) {
+      hilog.info(RD_DOMAIN, RD_TAG, 'onXComponentDestroy: PIP owns native surface, skip global detach');
+    } else {
+      this.markXComponentSurfaceDetached('xcomponentDestroy');
+    }
     this.surfaceReady = false;
   }
 
