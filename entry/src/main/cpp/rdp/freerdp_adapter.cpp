@@ -65,6 +65,34 @@ constexpr int kDefaultRdpPort = 3389;
 constexpr int kRdpCertFlagUntrustedRoot = 0x01;
 constexpr int kRdpCertFlagHostMismatch = 0x02;
 
+void secureClearString(std::string& value) {
+    if (!value.empty()) {
+        volatile char* data = value.data();
+        for (size_t index = 0; index < value.size(); ++index) {
+            data[index] = '\0';
+        }
+    }
+    value.clear();
+}
+
+#ifdef USE_REAL_FREERDP
+void secureClearFreeRdpPasswordHash(rdpSettings* settings) {
+    if (!settings || !settings->PasswordHash) {
+        return;
+    }
+    volatile char* data = settings->PasswordHash;
+    const size_t length = std::strlen(settings->PasswordHash);
+    for (size_t index = 0; index < length; ++index) {
+        data[index] = '\0';
+    }
+    // Let FreeRDP replace and release its settings-owned copy only after the
+    // buffer has been overwritten.  Keep the field empty for reconnects after
+    // the instance is being torn down; while a live session is active the hash
+    // remains available to FreeRDP's own reconnect path.
+    freerdp_settings_set_string(settings, FreeRDP_PasswordHash, "");
+}
+#endif
+
 std::string sha256FingerprintFromCert(X509* cert) {
     if (!cert) {
         return "";
@@ -1983,8 +2011,7 @@ void FreeRdpAdapter::disconnectActiveInstance() {
 }
 
 void FreeRdpAdapter::cleanupInstance() {
-    std::fill(impl_->config.rdpRestrictedAdminHash.begin(), impl_->config.rdpRestrictedAdminHash.end(), '\0');
-    impl_->config.rdpRestrictedAdminHash.clear();
+    secureClearString(impl_->config.rdpRestrictedAdminHash);
     impl_->presentationEnabled.store(false, std::memory_order_release);
     RendererNapi::InvalidateActivePresentation();
     impl_->framePump.invalidatePending();
@@ -2003,6 +2030,7 @@ void FreeRdpAdapter::cleanupInstance() {
         return;
     }
     impl_->traceShutdown("context-free", "begin");
+    secureClearFreeRdpPasswordHash(doomedInstance->settings);
     if (impl_->gdiInitialized.exchange(false, std::memory_order_acq_rel) &&
         doomedInstance->context && doomedInstance->context->gdi) {
         gdi_free(doomedInstance);
@@ -2076,6 +2104,7 @@ int FreeRdpAdapter::connect(const ConnectionConfig& cfg) {
         }, this);
     if (rc != 0) {
         impl_->connecting = false;
+        secureClearString(impl_->config.rdpRestrictedAdminHash);
         impl_->setState(ConnectionState::ERROR, "pthread_create() failed [E-RDP-THREAD]");
         return -11;
     }
@@ -2090,6 +2119,7 @@ void FreeRdpAdapter::connectThreadFunc() {
 
     freerdp* newInstance = freerdp_new();
     if (!newInstance) {
+        secureClearString(impl_->config.rdpRestrictedAdminHash);
         impl_->setState(ConnectionState::ERROR, "freerdp_new() 失败 [E-FREERDP-NEW]");
         impl_->connecting = false;
         return;
@@ -2131,30 +2161,44 @@ void FreeRdpAdapter::connectThreadFunc() {
     freerdp_settings_set_string(s, FreeRDP_ServerHostname, cfg.host.c_str());
     freerdp_settings_set_uint32(s, FreeRDP_ServerPort, static_cast<UINT32>(port));
     const bool restrictedAdmin = cfg.rdpAuthMode == RdpAuthenticationMode::RestrictedAdmin;
+    const bool blankPassword = cfg.rdpAuthMode == RdpAuthenticationMode::BlankPassword;
     const char* authModeName = restrictedAdmin ? "restricted_admin" :
-        (cfg.rdpAuthMode == RdpAuthenticationMode::BlankPassword ? "blank_password" : "password");
-    const char* restrictedAdminSecretSource =
-        cfg.rdpRestrictedAdminSecretSource == RdpRestrictedAdminSecretSource::EmptyPasswordHash ?
-            "empty_password_hash" : "ntlm_hash";
-    static constexpr const char EMPTY_PASSWORD_NTLM_HASH[] = "31D6CFE0D16AE931B73C59D7E0C089C0";
-    std::string restrictedAdminHash;
+        (blankPassword ? "blank_password" : "password");
+    const char* restrictedAdminSecretSource = "ntlm_hash";
+    RdpAuthenticationPolicy authPolicy = ParseRdpAuthenticationPolicy(
+        authModeName, restrictedAdminSecretSource, cfg.rdpRestrictedAdminHash);
+    if (!authPolicy.valid) {
+        secureClearString(cfg.rdpRestrictedAdminHash);
+        secureClearString(authPolicy.normalizedNtlmHash);
+        impl_->setState(ConnectionState::ERROR,
+                        restrictedAdmin ? "Restricted Admin NTLM Hash 无效 [E-RDP-AUTH-HASH]" :
+                            "RDP 认证配置无效 [E-RDP-AUTH-CONFIG]");
+        cleanupInstance();
+        impl_->connecting = false;
+        return;
+    }
+    std::string restrictedAdminHash = authPolicy.normalizedNtlmHash;
+    const size_t restrictedAdminHashLength = restrictedAdminHash.length();
+    secureClearString(authPolicy.normalizedNtlmHash);
+    // The adapter only needs the normalized local copy while configuring the
+    // FreeRDP instance.  Do not retain the ArkTS/NAPI copy in ConnectionConfig.
+    secureClearString(cfg.rdpRestrictedAdminHash);
+    freerdp_settings_set_string(s, FreeRDP_Username, effectiveUsername.c_str());
+    freerdp_settings_set_string(s, FreeRDP_Password,
+                                (restrictedAdmin || blankPassword) ? "" : cfg.password.c_str());
     if (restrictedAdmin) {
-        restrictedAdminHash = cfg.rdpRestrictedAdminSecretSource ==
-            RdpRestrictedAdminSecretSource::EmptyPasswordHash ? EMPTY_PASSWORD_NTLM_HASH :
-            cfg.rdpRestrictedAdminHash;
-        restrictedAdminHash = NormalizeRdpNtlmPasswordHash(restrictedAdminHash);
-        if (restrictedAdminHash.empty()) {
-            impl_->setState(ConnectionState::ERROR, "Restricted Admin NTLM Hash 无效 [E-RDP-AUTH-HASH]");
+        if (!freerdp_settings_set_string(s, FreeRDP_PasswordHash, restrictedAdminHash.c_str())) {
+            secureClearString(restrictedAdminHash);
+            impl_->setState(ConnectionState::ERROR,
+                            "RDP Restricted Admin Hash 配置失败 [E-RDP-AUTH-HASH]");
             cleanupInstance();
             impl_->connecting = false;
             return;
         }
+    } else {
+        freerdp_settings_set_string(s, FreeRDP_PasswordHash, "");
     }
-    freerdp_settings_set_string(s, FreeRDP_Username, effectiveUsername.c_str());
-    freerdp_settings_set_string(s, FreeRDP_Password, restrictedAdmin ? "" : cfg.password.c_str());
-    if (restrictedAdmin) {
-        freerdp_settings_set_string(s, FreeRDP_PasswordHash, restrictedAdminHash.c_str());
-    }
+    secureClearString(restrictedAdminHash);
     if (!effectiveDomain.empty()) {
         freerdp_settings_set_string(s, FreeRDP_Domain, effectiveDomain.c_str());
     }
@@ -2209,6 +2253,9 @@ void FreeRdpAdapter::connectThreadFunc() {
     freerdp_settings_set_uint32(s, FreeRDP_TcpConnectTimeout, 30000);
     // HarmonyOS 侧没有可用的 Kerberos/U2U 凭据缓存，NLA/CredSSP 只允许 NTLM，避免 Negotiate 第二轮返回 SEC_E_NO_CREDENTIALS。
     freerdp_settings_set_string(s, FreeRDP_AuthenticationPackageList, "ntlm");
+    // Match FreeRDP's official /restricted-admin path: it pairs the
+    // console-session request with RestrictedAdminModeRequired.  /pth uses
+    // the same combination in the upstream command-line client.
     freerdp_settings_set_bool(s, FreeRDP_ConsoleSession, restrictedAdmin ? TRUE : FALSE);
     freerdp_settings_set_bool(s, FreeRDP_RemoteCredentialGuard, FALSE);
     freerdp_settings_set_bool(s, FreeRDP_RestrictedAdminModeRequired, restrictedAdmin ? TRUE : FALSE);
@@ -2306,7 +2353,7 @@ void FreeRdpAdapter::connectThreadFunc() {
                 cfg.rdAudioEnabled ? "on" : "off",
                 driveEnabled ? driveName.c_str() : "off",
                 logDrivePath.c_str(),
-                cfg.password.length(), restrictedAdminHash.length(),
+                cfg.password.length(), restrictedAdminHashLength,
                 cfg.password.rfind("1:", 0) == 0 ? "true" : "false");
     const char* authPackageList = freerdp_settings_get_string(s, FreeRDP_AuthenticationPackageList);
     OH_LOG_INFO(LOG_APP, "[RDP] security: negotiate=%{public}s nla=%{public}s tls=%{public}s rdp=%{public}s"

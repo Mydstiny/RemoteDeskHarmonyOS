@@ -17,19 +17,29 @@ RDP_TEST_CASE(rdp_auth_mode_rejects_invalid_restricted_admin_hash) {
     RDP_ASSERT(policy.normalizedNtlmHash.empty());
 }
 
-RDP_TEST_CASE(rdp_auth_mode_uses_empty_password_hash_source_without_forwarding_user_hash) {
+RDP_TEST_CASE(rdp_auth_mode_rejects_legacy_empty_password_hash_source) {
     const RdpAuthenticationPolicy policy = ParseRdpAuthenticationPolicy(
         "restricted_admin", "empty_password_hash", "0123456789abcdef0123456789abcdef");
-    RDP_ASSERT(policy.valid);
-    RDP_ASSERT(policy.restrictedAdminSecretSource ==
-               RdpRestrictedAdminSecretPolicySource::EmptyPasswordHash);
+    RDP_ASSERT(!policy.valid);
     RDP_ASSERT(policy.normalizedNtlmHash.empty());
 }
 
-RDP_TEST_CASE(rdp_auth_mode_blank_password_drops_irrelevant_hash) {
+RDP_TEST_CASE(rdp_auth_mode_rejects_hash_in_blank_password_mode) {
     const RdpAuthenticationPolicy policy = ParseRdpAuthenticationPolicy(
         "blank_password", "ntlm_hash", "0123456789abcdef0123456789abcdef");
+    RDP_ASSERT(!policy.valid);
+}
+
+RDP_TEST_CASE(rdp_auth_mode_accepts_blank_password_without_hash) {
+    const RdpAuthenticationPolicy policy = ParseRdpAuthenticationPolicy(
+        "blank_password", "ntlm_hash", "");
     RDP_ASSERT(policy.valid);
     RDP_ASSERT(policy.mode == RdpAuthenticationPolicyMode::BlankPassword);
     RDP_ASSERT(policy.normalizedNtlmHash.empty());
+}
+
+RDP_TEST_CASE(rdp_auth_mode_rejects_hash_in_password_mode) {
+    const RdpAuthenticationPolicy policy = ParseRdpAuthenticationPolicy(
+        "password", "ntlm_hash", "0123456789abcdef0123456789abcdef");
+    RDP_ASSERT(!policy.valid);
 }

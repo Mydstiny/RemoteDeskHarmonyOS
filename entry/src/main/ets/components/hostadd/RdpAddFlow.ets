@@ -183,28 +183,11 @@ export struct RdpAddFlow {
   @Builder private restrictedAdminFields() {
     this.inputField('账号', this.username, 'DOMAIN\\user 或本地管理员账户',
       (v: string): void => { this.username = v; })
-    Text('凭据来源').fontSize(12).fontColor(this.pal().text2).width('100%').margin({ bottom: 6 })
-    Row() {
-      Button('空密码 Hash').layoutWeight(1).height(38).borderRadius(10)
-        .backgroundColor(this.restrictedAdminSource === 'empty_password_hash' ? this.accentColor : this.pal().surface)
-        .fontColor(this.restrictedAdminSource === 'empty_password_hash' ? Color.White : this.pal().text2)
-        .fontSize(12)
-        .onClick((): void => {
-          this.restrictedAdminSource = 'empty_password_hash';
-          this.restrictedAdminHash = '';
-          this.errorText = '';
-        })
-      Button('输入 NTLM Hash').layoutWeight(1).height(38).borderRadius(10).margin({ left: 8 })
-        .backgroundColor(this.restrictedAdminSource === 'ntlm_hash' ? this.accentColor : this.pal().surface)
-        .fontColor(this.restrictedAdminSource === 'ntlm_hash' ? Color.White : this.pal().text2)
-        .fontSize(12)
-        .onClick((): void => { this.restrictedAdminSource = 'ntlm_hash'; this.errorText = ''; })
-    }.width('100%').margin({ bottom: 12 })
-    if (this.restrictedAdminSource === 'ntlm_hash') {
-      this.inputField('NTLM Hash', this.restrictedAdminHash, '32 位十六进制 Hash',
-        (v: string): void => { this.restrictedAdminHash = v; }, true)
-    }
-    Text('目标机需开启 Restricted Admin（DisableRestrictedAdmin=0）。Hash 仅加密保存在本机，不会云同步；普通密码不能替代 Hash。')
+    Text('凭据来源：账户 NTLM Hash（必填）').fontSize(12).fontColor(this.pal().text2)
+      .width('100%').margin({ bottom: 6 })
+    this.inputField('NTLM Hash', this.restrictedAdminHash, '32 位十六进制 Hash',
+      (v: string): void => { this.restrictedAdminHash = v; }, true)
+    Text('目标机需开启 Restricted Admin（DisableRestrictedAdmin=0）。应用不会从“空密码”推导 Hash；Hash 仅加密保存在本机，不会云同步。')
       .fontSize(11).fontColor(this.pal().text3).width('100%').margin({ bottom: 12 })
   }
 

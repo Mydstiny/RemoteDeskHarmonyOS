@@ -61,6 +61,20 @@ namespace ExtensionLoaderNapi {
     napi_value Init(napi_env env, napi_value exports);
 }
 
+namespace {
+
+void secureClearString(std::string& value) {
+    if (!value.empty()) {
+        volatile char* data = value.data();
+        for (size_t index = 0; index < value.size(); ++index) {
+            data[index] = '\0';
+        }
+    }
+    value.clear();
+}
+
+} // namespace
+
 // ============================================================
 // 全局状态
 // ============================================================
@@ -1043,11 +1057,11 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
     if (protocolName == "rdp") {
         std::string rawRdpRestrictedAdminHash;
         getString("rdpRestrictedAdminHash", rawRdpRestrictedAdminHash);
-        const RdpAuthenticationPolicy rdpAuth = ParseRdpAuthenticationPolicy(
+        RdpAuthenticationPolicy rdpAuth = ParseRdpAuthenticationPolicy(
             rdpAuthModeName, rdpRestrictedAdminSecretSourceName, rawRdpRestrictedAdminHash);
-        std::fill(rawRdpRestrictedAdminHash.begin(), rawRdpRestrictedAdminHash.end(), '\0');
-        rawRdpRestrictedAdminHash.clear();
+        secureClearString(rawRdpRestrictedAdminHash);
         if (!rdpAuth.valid) {
+            secureClearString(rdpAuth.normalizedNtlmHash);
             OH_LOG_ERROR(LOG_APP, "[ExtLoader] invalid RDP authentication configuration");
             napi_value errVal;
             napi_create_int32(env, -50, &errVal);
@@ -1060,25 +1074,17 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
         } else {
             cfg.rdpAuthMode = RdpAuthenticationMode::RestrictedAdmin;
         }
-        if (rdpAuth.restrictedAdminSecretSource ==
-            RdpRestrictedAdminSecretPolicySource::EmptyPasswordHash) {
-            cfg.rdpRestrictedAdminSecretSource = RdpRestrictedAdminSecretSource::EmptyPasswordHash;
-        } else {
-            cfg.rdpRestrictedAdminSecretSource = RdpRestrictedAdminSecretSource::NtlmHash;
-        }
+        cfg.rdpRestrictedAdminSecretSource = RdpRestrictedAdminSecretSource::NtlmHash;
         if (cfg.rdpAuthMode == RdpAuthenticationMode::RestrictedAdmin) {
             cfg.password.clear();
-            if (cfg.rdpRestrictedAdminSecretSource == RdpRestrictedAdminSecretSource::NtlmHash) {
-                cfg.rdpRestrictedAdminHash = rdpAuth.normalizedNtlmHash;
-            } else {
-                cfg.rdpRestrictedAdminHash.clear();
-            }
+            cfg.rdpRestrictedAdminHash = rdpAuth.normalizedNtlmHash;
         } else {
             cfg.rdpRestrictedAdminHash.clear();
             if (cfg.rdpAuthMode == RdpAuthenticationMode::BlankPassword) {
                 cfg.password.clear();
             }
         }
+        secureClearString(rdpAuth.normalizedNtlmHash);
     }
 
     // 🆕 SSH 认证字段
@@ -1157,9 +1163,7 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
         const std::string drivePathLog = cfg.rdDrivePath.empty() ? "off" : SafeLog::HashForLog(cfg.rdDrivePath);
         const char* authMode = cfg.rdpAuthMode == RdpAuthenticationMode::RestrictedAdmin ? "restricted_admin" :
             (cfg.rdpAuthMode == RdpAuthenticationMode::BlankPassword ? "blank_password" : "password");
-        const char* restrictedSource =
-            cfg.rdpRestrictedAdminSecretSource == RdpRestrictedAdminSecretSource::EmptyPasswordHash ?
-                "empty_password_hash" : "ntlm_hash";
+        const char* restrictedSource = "ntlm_hash";
         OH_LOG_INFO(LOG_APP,
             "[ExtLoader] RDP配置: desktop=%{public}dx%{public}d colorDepth=%{public}d audio=%{public}s clipboard=%{public}s driveName=%{public}s drivePathId=%{public}s authIdentityMode=%{public}d authMode=%{public}s restrictedSource=%{public}s hashLen=%{public}zu",
             cfg.width,
@@ -1324,6 +1328,9 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
 
     // 建立连接 — 回调必须先注册，避免 FreeRDP 连接线程早于 rdpsnd/OHAudio 回调。
     int ret = adapter->connect(cfg);
+    // FreeRdpAdapter owns the independent session copy after connect().  The
+    // NAPI stack copy is no longer needed even when thread creation fails.
+    secureClearString(cfg.rdpRestrictedAdminHash);
     if (ret != 0) {
         OH_LOG_ERROR(LOG_APP, "[ExtLoader] 连接失败: ret=%{public}d host=%{public}s:%{public}d auth=%{public}s",
             ret, logHost.c_str(), cfg.port, cfg.authMethod.c_str());

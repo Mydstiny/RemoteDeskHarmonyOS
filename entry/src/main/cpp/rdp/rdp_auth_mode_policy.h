@@ -10,8 +10,7 @@ enum class RdpAuthenticationPolicyMode {
 };
 
 enum class RdpRestrictedAdminSecretPolicySource {
-    NtlmHash,
-    EmptyPasswordHash
+    NtlmHash
 };
 
 struct RdpAuthenticationPolicy {
@@ -25,7 +24,12 @@ struct RdpAuthenticationPolicy {
 /** Normalizes a 32-character NTLM hash, allowing only surrounding or embedded whitespace. */
 std::string NormalizeRdpNtlmPasswordHash(const std::string& value);
 
-/** Parses untrusted NAPI strings without retaining an irrelevant password hash. */
+/**
+ * Parses untrusted NAPI strings.
+ *
+ * Restricted Admin accepts only a caller-supplied 32-character NTLM hash.
+ * Password/blank-password modes must not receive a hash accidentally.
+ */
 RdpAuthenticationPolicy ParseRdpAuthenticationPolicy(const std::string& mode,
                                                       const std::string& restrictedAdminSecretSource,
                                                       const std::string& ntlmHash);

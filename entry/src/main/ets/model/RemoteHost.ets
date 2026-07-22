@@ -25,7 +25,8 @@ export enum SortOrder {
 export interface PresetItem { label: string; width: number; height: number }
 
 export type RdpAuthMode = 'password' | 'blank_password' | 'restricted_admin';
-export type RdpRestrictedAdminSecretSource = 'empty_password_hash' | 'ntlm_hash';
+/** Restricted Admin always requires the user's real NTLM password hash. */
+export type RdpRestrictedAdminSecretSource = 'ntlm_hash';
 
 export function normalizeRdpAuthMode(value: string | undefined): RdpAuthMode {
   if (value === 'blank_password' || value === 'restricted_admin') { return value; }
@@ -33,9 +34,80 @@ export function normalizeRdpAuthMode(value: string | undefined): RdpAuthMode {
 }
 
 export function normalizeRdpRestrictedAdminSecretSource(
-  value: string | undefined
+  _value: string | undefined
 ): RdpRestrictedAdminSecretSource {
-  return value === 'empty_password_hash' ? 'empty_password_hash' : 'ntlm_hash';
+  // Older builds exposed an "empty password hash" option and derived the
+  // well-known NT hash for an empty password.  That is not a generic
+  // Restricted Admin credential: it is only correct for the exact empty
+  // password account, while Restricted Admin itself requires the supplied
+  // account hash.  Normalize every legacy/unknown value to the only safe
+  // source and let the local-secret lookup require the user to enter it.
+  return 'ntlm_hash';
+}
+
+export interface RdpEffectiveIdentity {
+  username: string;
+  domain: string;
+}
+
+/**
+ * Produces the username/domain pair sent to FreeRDP.
+ *
+ * Keep this in the model layer so the local Restricted Admin secret binding
+ * uses exactly the same identity that the native adapter authenticates with.
+ */
+export function normalizeRdpCredentialParts(rawValue: string, authIdentityMode: number): RdpEffectiveIdentity {
+  const rawUsername: string = rawValue.trim();
+  const slashIndex: number = rawUsername.indexOf('\\');
+
+  if (authIdentityMode === 3 || authIdentityMode === 4) {
+    let emailUsername: string = rawUsername;
+    if (rawUsername.startsWith('.\\AzureAD\\')) {
+      emailUsername = rawUsername.substring('.\\AzureAD\\'.length);
+    } else if (rawUsername.startsWith('\\AzureAD\\')) {
+      emailUsername = rawUsername.substring('\\AzureAD\\'.length);
+    } else if (rawUsername.startsWith('AzureAD\\')) {
+      emailUsername = rawUsername.substring('AzureAD\\'.length);
+    }
+    return authIdentityMode === 3
+      ? { username: 'AzureAD\\' + emailUsername, domain: '.' }
+      : { username: emailUsername, domain: 'AzureAD' };
+  }
+
+  if (rawUsername.startsWith('.\\AzureAD\\') || rawUsername.startsWith('\\AzureAD\\') ||
+    rawUsername.startsWith('AzureAD\\')) {
+    let azureUsername: string = rawUsername;
+    if (rawUsername.startsWith('.\\AzureAD\\')) {
+      azureUsername = rawUsername.substring('.\\'.length);
+    } else if (rawUsername.startsWith('\\AzureAD\\')) {
+      azureUsername = rawUsername.substring('\\'.length);
+    }
+    return { username: azureUsername, domain: '.' };
+  }
+
+  if (slashIndex > 0 && slashIndex < rawUsername.length - 1 &&
+    !rawUsername.startsWith('MicrosoftAccount\\')) {
+    return {
+      username: rawUsername.substring(slashIndex + 1),
+      domain: rawUsername.substring(0, slashIndex)
+    };
+  }
+
+  if (rawUsername.startsWith('MicrosoftAccount\\') || rawUsername.indexOf('@') > 0) {
+    let emailUsername: string = rawUsername;
+    if (rawUsername.startsWith('MicrosoftAccount\\')) {
+      emailUsername = rawUsername.substring('MicrosoftAccount\\'.length);
+    }
+    if (authIdentityMode === 1) {
+      return { username: emailUsername, domain: 'MicrosoftAccount' };
+    }
+    if (authIdentityMode === 2) {
+      return { username: emailUsername, domain: '' };
+    }
+    return { username: 'MicrosoftAccount\\' + emailUsername, domain: '' };
+  }
+
+  return { username: rawUsername, domain: '' };
 }
 
 /** Normalizes a pasted NTLM hash and returns an empty string for invalid input. */
@@ -478,7 +550,12 @@ export class RemoteHost {
     this.rdpAuthMode = normalizeRdpAuthMode(this.rdpAuthMode);
     this.rdpRestrictedAdminSecretSource = normalizeRdpRestrictedAdminSecretSource(
       this.rdpRestrictedAdminSecretSource);
-    if (this.protocol !== 'rdp' || this.rdpAuthMode === 'password') { return; }
+    if (this.protocol !== 'rdp') {
+      this.rdpAuthMode = 'password';
+      this.rdpRestrictedAdminSecretSource = 'ntlm_hash';
+      return;
+    }
+    if (this.rdpAuthMode === 'password') { return; }
     this.password = '';
     this.rdpCredentialId = '';
   }

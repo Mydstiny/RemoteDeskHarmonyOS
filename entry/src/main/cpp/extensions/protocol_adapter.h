@@ -56,10 +56,9 @@ enum class RdpAuthenticationMode {
     RestrictedAdmin = 2
 };
 
-/** Restricted Admin credential material is either a supplied NTLM hash or the empty-password hash. */
+/** Restricted Admin credential material is always a supplied NTLM hash. */
 enum class RdpRestrictedAdminSecretSource {
-    NtlmHash = 0,
-    EmptyPasswordHash = 1
+    NtlmHash = 0
 };
 
 // ============================================================

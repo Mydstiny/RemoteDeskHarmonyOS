@@ -31,20 +31,20 @@ RdpAuthenticationPolicy ParseRdpAuthenticationPolicy(const std::string& mode,
         return result;
     }
 
-    if (restrictedAdminSecretSource.empty() || restrictedAdminSecretSource == "ntlm_hash") {
-        result.restrictedAdminSecretSource = RdpRestrictedAdminSecretPolicySource::NtlmHash;
-    } else if (restrictedAdminSecretSource == "empty_password_hash") {
-        result.restrictedAdminSecretSource = RdpRestrictedAdminSecretPolicySource::EmptyPasswordHash;
-    } else {
+    if (!restrictedAdminSecretSource.empty() && restrictedAdminSecretSource != "ntlm_hash") {
         return result;
     }
 
-    if (result.mode == RdpAuthenticationPolicyMode::RestrictedAdmin &&
-        result.restrictedAdminSecretSource == RdpRestrictedAdminSecretPolicySource::NtlmHash) {
+    result.restrictedAdminSecretSource = RdpRestrictedAdminSecretPolicySource::NtlmHash;
+    if (result.mode == RdpAuthenticationPolicyMode::RestrictedAdmin) {
         result.normalizedNtlmHash = NormalizeRdpNtlmPasswordHash(ntlmHash);
         if (result.normalizedNtlmHash.empty()) {
             return result;
         }
+    } else if (!ntlmHash.empty()) {
+        // A password or blank-password session must never silently discard a
+        // hash supplied by a stale or malicious caller.
+        return result;
     }
     result.valid = true;
     return result;

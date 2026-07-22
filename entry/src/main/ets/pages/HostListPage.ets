@@ -29,6 +29,7 @@ import {
   LockType,
   RdpAuthMode,
   RdpRestrictedAdminSecretSource,
+  normalizeRdpCredentialParts,
   normalizeRdpNtlmHash
 } from '../model/RemoteHost';
 import { RustDeskRelayConfig } from '../model/RustDeskRelayConfig';
@@ -7899,36 +7900,14 @@ struct HostListPage {
             .fontSize(11).fontColor(this.pal().text2).fontFamily(this.font()).layoutWeight(1)
         }.width('100%').margin({ bottom: 8 })
       } else if (this.sheetRdpAuthMode === 'restricted_admin') {
-        Text('凭据来源').fontSize(11).fontColor(this.pal().text2).fontFamily(this.font()).margin({ bottom: 4 })
-        Row() {
-          Button('空密码 Hash').layoutWeight(1).height(34).borderRadius(8)
-            .backgroundColor(this.sheetRdpRestrictedAdminSecretSource === 'empty_password_hash' ?
-              this.accentColor : this.pal().surface)
-            .fontColor(this.sheetRdpRestrictedAdminSecretSource === 'empty_password_hash' ? '#FFFFFF' : this.pal().text2)
-            .fontSize(11)
-            .onClick((): void => {
-              this.sheetRdpRestrictedAdminSecretSource = 'empty_password_hash';
-              this.sheetRdpRestrictedAdminHash = '';
-              this.sheetErr = '';
-            })
-          Button('输入 NTLM Hash').layoutWeight(1).height(34).borderRadius(8).margin({ left: 6 })
-            .backgroundColor(this.sheetRdpRestrictedAdminSecretSource === 'ntlm_hash' ?
-              this.accentColor : this.pal().surface)
-            .fontColor(this.sheetRdpRestrictedAdminSecretSource === 'ntlm_hash' ? '#FFFFFF' : this.pal().text2)
-            .fontSize(11)
-            .onClick((): void => {
-              this.sheetRdpRestrictedAdminSecretSource = 'ntlm_hash';
-              this.sheetErr = '';
-            })
-        }.width('100%').margin({ bottom: 8 })
-        if (this.sheetRdpRestrictedAdminSecretSource === 'ntlm_hash') {
-          this.rdpRestrictedAdminHashRow()
-          if (this.editingHostId !== '' && this.sheetRdpRestrictedAdminHash === '') {
-            Text('未输入新 Hash 时，仅在地址、端口、用户名和来源未改变时保留本机密文。')
-              .fontSize(10).fontColor(this.pal().text3).fontFamily(this.font()).margin({ bottom: 6 })
-          }
+        Text('凭据来源：账户 NTLM Hash（必填）').fontSize(11).fontColor(this.pal().text2)
+          .fontFamily(this.font()).margin({ bottom: 4 })
+        this.rdpRestrictedAdminHashRow()
+        if (this.editingHostId !== '' && this.sheetRdpRestrictedAdminHash === '') {
+          Text('未输入新 Hash 时，仅在目标地址、有效用户名/域和身份模式未改变时保留本机密文。')
+            .fontSize(10).fontColor(this.pal().text3).fontFamily(this.font()).margin({ bottom: 6 })
         }
-        Text('目标机需开启 Restricted Admin（DisableRestrictedAdmin=0）。Hash 仅加密保存在本机，不会云同步；普通密码不能替代 Hash。')
+        Text('目标机需开启 Restricted Admin（DisableRestrictedAdmin=0）。应用不会从“空密码”推导 Hash；Hash 仅加密保存在本机，不会云同步。')
           .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font()).margin({ bottom: 8 })
       }
     }.width('100%')
@@ -8734,21 +8713,44 @@ struct HostListPage {
         this.sheetErr = 'NTLM Hash 必须是 32 位十六进制字符';
         return;
       }
+      const authIdentityMode: number = AppStorage.get<number>('rdpAuthIdentityMode') ?? 1;
+      const existingIdentity = existingHost === undefined ? undefined :
+        normalizeRdpCredentialParts(existingHost.username, authIdentityMode);
+      const nextIdentity = normalizeRdpCredentialParts(h.username, authIdentityMode);
       const canKeepExistingHash: boolean = !hashEntered && existingHost !== undefined &&
         existingHost.protocol === 'rdp' && existingHost.rdpAuthMode === 'restricted_admin' &&
         existingHost.rdpRestrictedAdminSecretSource === 'ntlm_hash' &&
         existingHost.host.trim().toLowerCase() === h.host.trim().toLowerCase() &&
         existingHost.port === h.port &&
-        existingHost.username.trim().toLowerCase() === h.username.trim().toLowerCase();
+        existingHost.customHostname.trim().toLowerCase() === h.customHostname.trim().toLowerCase() &&
+        existingIdentity !== undefined &&
+        existingIdentity.username.trim().toLowerCase() === nextIdentity.username.trim().toLowerCase() &&
+        existingIdentity.domain.trim().toLowerCase() === nextIdentity.domain.trim().toLowerCase();
       if (!canKeepExistingHash && restrictedAdminHashToPersist === '') {
         this.sheetErr = '请重新输入该 Restricted Admin 主机的 NTLM Hash';
         return;
       }
       shouldPersistRestrictedAdminHash = restrictedAdminHashToPersist !== '';
     }
+    // The local Restricted Admin secret is written before the existing
+    // synchronous host-save path.  Keep a short-lived copy of a valid old
+    // secret so a failed host-row transaction can restore the old binding
+    // instead of deleting a credential that was already working.
+    let previousRestrictedAdminHash: string = '';
+    let hasPreviousRestrictedAdminHash: boolean = false;
+    if (shouldPersistRestrictedAdminHash && existingHost !== undefined &&
+      existingHost.protocol === 'rdp' && existingHost.rdpAuthMode === 'restricted_admin' &&
+      existingHost.rdpRestrictedAdminSecretSource === 'ntlm_hash') {
+      const previousSecret = CloudStore.getInstance().loadRdpRestrictedAdminHash(existingHost);
+      if (previousSecret.status === 'ready') {
+        previousRestrictedAdminHash = previousSecret.hash;
+        hasPreviousRestrictedAdminHash = true;
+      }
+    }
     if (shouldPersistRestrictedAdminHash &&
       !CloudStore.getInstance().saveRdpRestrictedAdminHash(h, restrictedAdminHashToPersist)) {
       this.sheetErr = '无法加密保存 NTLM Hash，请先解锁本地凭据存储后重试';
+      previousRestrictedAdminHash = '';
       return;
     }
     let saved: boolean = false;
@@ -8759,13 +8761,25 @@ struct HostListPage {
       saved = this.srv.addHost(h);
     }
     if (!saved) {
-      if (shouldPersistRestrictedAdminHash && editingId === '') {
+      if (shouldPersistRestrictedAdminHash) {
+        // The local secret was written before the host row so that the
+        // existing save path can remain synchronous.  If the row fails,
+        // discard the new secret. For an edit, restore the previous valid
+        // secret because the host row should still contain the old binding.
         CloudStore.getInstance().clearRdpRestrictedAdminHash(h.id);
+        if (hasPreviousRestrictedAdminHash && existingHost !== undefined &&
+          !CloudStore.getInstance().saveRdpRestrictedAdminHash(
+            existingHost, previousRestrictedAdminHash)) {
+          hilog.error(0x0001, 'HostList',
+            'failed to restore previous RDP Restricted Admin Hash after host save failure id=' + h.id);
+        }
       }
       this.sheetErr = '保存主机失败，请稍后重试';
       hilog.error(0x0001, 'HostList', 'save host failed protocol=' + h.protocol + ' id=' + h.id);
+      previousRestrictedAdminHash = '';
       return;
     }
+    previousRestrictedAdminHash = '';
     hilog.info(0x0001, 'HostList', 'save host protocol=' + h.protocol +
       ' host=' + maskHost(h.host) + ':' + h.port +
       (h.protocol === 'rustdesk' && h.rustdeskDirectEnabled

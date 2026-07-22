@@ -19,6 +19,7 @@ import {
   DisplayConfig,
   DisplayConfigJSON,
   normalizeRdpAuthMode,
+  normalizeRdpCredentialParts,
   normalizeRdpNtlmHash,
   normalizeRdpRestrictedAdminSecretSource,
   RdpAuthMode,
@@ -1261,11 +1262,16 @@ export class CloudStore implements CryptoCloudStore {
   }
 
   private rdpRestrictedAdminSecretBinding(host: RemoteHost): string {
+    const authIdentityMode: number = AppStorage.get<number>('rdpAuthIdentityMode') ?? 1;
+    const identity = normalizeRdpCredentialParts(host.username, authIdentityMode);
     return [
-      'rdp',
+      'rdp-binding-v2',
       host.host.trim().toLowerCase(),
       host.port.toString(),
-      host.username.trim().toLowerCase(),
+      host.customHostname.trim().toLowerCase(),
+      identity.username.trim().toLowerCase(),
+      identity.domain.trim().toLowerCase(),
+      authIdentityMode.toString(),
       normalizeRdpRestrictedAdminSecretSource(host.rdpRestrictedAdminSecretSource)
     ].join('|');
   }
@@ -1307,10 +1313,6 @@ export class CloudStore implements CryptoCloudStore {
       result.status = 'not_applicable';
       return result;
     }
-    if (source === 'empty_password_hash') {
-      result.status = 'not_required';
-      return result;
-    }
     const crypto: DataCrypto = DataCrypto.getInstance();
     if (!crypto.isReady()) {
       result.status = 'crypto_locked';
@@ -1319,7 +1321,14 @@ export class CloudStore implements CryptoCloudStore {
     const values: Record<string, string> = this.loadLocalExtension(RDP_RESTRICTED_ADMIN_SECRET_TABLE, host.id);
     const encryptedHash: string = values['hash'] || '';
     const encryptedBinding: string = values['binding'] || '';
-    if (encryptedHash === '' || encryptedBinding === '') { return result; }
+    if (encryptedHash === '' || encryptedBinding === '') {
+      // A partially written local extension must not remain around and be
+      // retried on every connection attempt.  Treat it as invalid and fail
+      // closed; the next explicit edit can write a complete secret again.
+      this.clearRdpRestrictedAdminHash(host.id);
+      result.status = 'invalid';
+      return result;
+    }
     if (!crypto.isEncrypted(encryptedHash) || !crypto.isEncrypted(encryptedBinding)) {
       this.clearRdpRestrictedAdminHash(host.id);
       result.status = 'invalid';
@@ -1343,6 +1352,7 @@ export class CloudStore implements CryptoCloudStore {
       return result;
     } catch (err) {
       hilog.warn(0x0001, 'CloudSync', '[CloudStore] load RDP restricted admin secret failed: ' + safeError(err));
+      this.clearRdpRestrictedAdminHash(host.id);
       result.status = 'invalid';
       return result;
     }

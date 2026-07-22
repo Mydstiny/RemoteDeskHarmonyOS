@@ -13,6 +13,7 @@ import { KeyVaultService } from '../services/KeyVaultService';
 import {
   RemoteHost,
   LockType,
+  normalizeRdpCredentialParts,
   normalizeRdpAuthMode,
   normalizeRdpRestrictedAdminSecretSource,
   RdpAuthMode,
@@ -3511,79 +3512,9 @@ struct RemoteDesktop {
     if (host.protocol !== 'rdp') {
       return { username: host.username, domain: '' };
     }
-    const authIdentityMode: number = AppStorage.get<number>('rdpAuthIdentityMode') ?? 1;
-    const rawUsername: string = host.username.trim();
-    const slashIndex: number = rawUsername.indexOf('\\');
-
-    if (authIdentityMode === 3) {
-      let emailUsername: string = rawUsername;
-      if (rawUsername.startsWith('.\\AzureAD\\')) {
-        emailUsername = rawUsername.substring('.\\AzureAD\\'.length);
-      } else if (rawUsername.startsWith('\\AzureAD\\')) {
-        emailUsername = rawUsername.substring('\\AzureAD\\'.length);
-      } else if (rawUsername.startsWith('AzureAD\\')) {
-        emailUsername = rawUsername.substring('AzureAD\\'.length);
-      }
-      hilog.info(RD_DOMAIN, RD_TAG, 'RDP credential normalized: AzureAD dot-domain format');
-      return { username: 'AzureAD\\' + emailUsername, domain: '.' };
-    }
-
-    if (authIdentityMode === 4) {
-      let emailUsername: string = rawUsername;
-      if (rawUsername.startsWith('.\\AzureAD\\')) {
-        emailUsername = rawUsername.substring('.\\AzureAD\\'.length);
-      } else if (rawUsername.startsWith('\\AzureAD\\')) {
-        emailUsername = rawUsername.substring('\\AzureAD\\'.length);
-      } else if (rawUsername.startsWith('AzureAD\\')) {
-        emailUsername = rawUsername.substring('AzureAD\\'.length);
-      }
-      hilog.info(RD_DOMAIN, RD_TAG, 'RDP credential normalized: AzureAD domain format');
-      return { username: emailUsername, domain: 'AzureAD' };
-    }
-
-    if (rawUsername.startsWith('.\\AzureAD\\') || rawUsername.startsWith('\\AzureAD\\') ||
-      rawUsername.startsWith('AzureAD\\')) {
-      let azureUsername: string = rawUsername;
-      if (rawUsername.startsWith('.\\AzureAD\\')) {
-        azureUsername = rawUsername.substring('.\\'.length);
-      } else if (rawUsername.startsWith('\\AzureAD\\')) {
-        azureUsername = rawUsername.substring('\\'.length);
-      }
-      hilog.info(RD_DOMAIN, RD_TAG, 'RDP credential normalized: explicit AzureAD dot-domain format');
-      return { username: azureUsername, domain: '.' };
-    }
-
-    if (slashIndex > 0 && slashIndex < rawUsername.length - 1 &&
-      !rawUsername.startsWith('MicrosoftAccount\\')) {
-      const domainPart: string = rawUsername.substring(0, slashIndex);
-      const userPart: string = rawUsername.substring(slashIndex + 1);
-      hilog.info(RD_DOMAIN, RD_TAG, 'RDP credential normalized: domain user domain=' + maskUser(domainPart) +
-        ' username=' + maskUser(userPart));
-      return {
-        username: userPart,
-        domain: domainPart
-      };
-    }
-
-    if ((rawUsername.startsWith('MicrosoftAccount\\') && rawUsername.indexOf('@') > 0) ||
-      rawUsername.indexOf('@') > 0) {
-      let emailUsername: string = rawUsername;
-      if (rawUsername.startsWith('MicrosoftAccount\\')) {
-        emailUsername = rawUsername.substring('MicrosoftAccount\\'.length);
-      }
-      if (authIdentityMode === 1) {
-        hilog.info(RD_DOMAIN, RD_TAG, 'RDP credential normalized: email username uses MicrosoftAccount domain');
-        return { username: emailUsername, domain: 'MicrosoftAccount' };
-      }
-      if (authIdentityMode === 2) {
-        hilog.info(RD_DOMAIN, RD_TAG, 'RDP credential normalized: email username uses bare email');
-        return { username: emailUsername, domain: '' };
-      }
-      hilog.info(RD_DOMAIN, RD_TAG, 'RDP credential normalized: Microsoft account uses full username');
-      return { username: 'MicrosoftAccount\\' + emailUsername, domain: '' };
-    }
-    hilog.info(RD_DOMAIN, RD_TAG, 'RDP credential normalized: plain username=' + maskUser(rawUsername));
-    return { username: rawUsername, domain: '' };
+    return normalizeRdpCredentialParts(
+      host.username,
+      AppStorage.get<number>('rdpAuthIdentityMode') ?? 1);
   }
 
   private hostWithResolvedCredential(host: RemoteHost): RemoteHost {
@@ -4322,6 +4253,7 @@ struct RemoteDesktop {
   // XComponent 就绪后初始化渲染管线并连接
   private async doConnect(host: RemoteHost): Promise<void> {
     const attemptId: number = ++this.connectAttemptId;
+    let rdpRestrictedAdminHash: string = '';
     try {
       if (!(await this.loader.waitForPendingTeardown())) {
         throw new Error('上一会话资源清理未完成 [E-TEARDOWN-PENDING]');
@@ -4329,7 +4261,6 @@ struct RemoteDesktop {
       const rdpAuthMode: RdpAuthMode = normalizeRdpAuthMode(host.rdpAuthMode);
       const rdpRestrictedAdminSecretSource: RdpRestrictedAdminSecretSource =
         normalizeRdpRestrictedAdminSecretSource(host.rdpRestrictedAdminSecretSource);
-      let rdpRestrictedAdminHash: string = '';
       if (host.protocol === 'rdp' && rdpAuthMode === 'restricted_admin' &&
         rdpRestrictedAdminSecretSource === 'ntlm_hash') {
         const secret = CloudStore.getInstance().loadRdpRestrictedAdminHash(host);
@@ -4526,8 +4457,15 @@ struct RemoteDesktop {
         ' clipboard=' + (cfg.rdClipboardEnabled ? 'on' : 'off') +
         ' driveName=' + rdpDriveName +
         ' drive=' + (cfg.rdDrivePath && cfg.rdDrivePath.length > 0 ? cfg.rdDrivePath : 'off'));
-      const sid: number = this.loader.connect(cfg);
-      cfg.rdpRestrictedAdminHash = '';
+      let sid: number = 0;
+      try {
+        sid = this.loader.connect(cfg);
+      } finally {
+        // The native adapter owns its own asynchronous copy after connect;
+        // never keep the local session-config reference alive on this side.
+        cfg.rdpRestrictedAdminHash = '';
+        rdpRestrictedAdminHash = '';
+      }
       hilog.info(RD_DOMAIN, RD_TAG, 'NAPI connect returned: ' + sid);
       if (sid <= 0) {
         let errMsg: string = '连接失败 [E-CONNECT-' + Math.abs(sid) + ']';
@@ -4540,6 +4478,12 @@ struct RemoteDesktop {
         }
         else if (sid === -41 && host.protocol === 'rustdesk') {
           errMsg = '请求被控端批准不能用于直连模式，请关闭直连或改用设备密码 [E-RUSTDESK-DIRECT-APPROVAL]';
+        }
+        else if (sid === -50 && host.protocol === 'rdp' && rdpAuthMode === 'restricted_admin') {
+          errMsg = 'Restricted Admin NTLM Hash 无效或无法配置，请在主机编辑中重新输入 [E-RDP-AUTH-HASH]';
+        }
+        else if (sid === -50 && host.protocol === 'rdp') {
+          errMsg = 'RDP 认证参数无效，请重新选择认证方式并保存 [E-RDP-AUTH-CONFIG]';
         }
         else if (sid === -31 && host.protocol === 'rustdesk') { errMsg = 'RustDesk 握手失败，请查看 FFI 日志 [E-CONNECT-31]'; }
         throw new Error(errMsg);
@@ -4596,6 +4540,7 @@ struct RemoteDesktop {
         clipboardSyncEnabledForProtocol(host.protocol,
           AppStorage.get<boolean>('rdpClipboardEnabled') ?? true, this.rustdeskClipboardEnabled));
     } catch (err) {
+      rdpRestrictedAdminHash = '';
       this.clearRdpRenderWatchdog();
       this.clearRdpNativeStateMonitor();
       this.clearRemoteCursorPolling(true, 'connect-error');

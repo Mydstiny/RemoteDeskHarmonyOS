@@ -52,6 +52,25 @@ export default function rdpSessionErrorPolicyTest() {
       expect(model.source).assertEqual(RdpSessionErrorSource.CONNECT_FAILURE);
     });
 
+    it('restricted_admin_secret_required_should_keep_a_specific_user_action', 0, (): void => {
+      const model = rdpSessionErrorFromNativeMessage(
+        '此设备未保存该 Restricted Admin 主机的 NTLM Hash，请重新输入 [E-RDP-AUTH-SECRET-REQUIRED]',
+        '0x10'
+      );
+      expect(model.code).assertEqual('E-RDP-AUTH-SECRET-REQUIRED');
+      expect(model.message).assertEqual('本机没有保存该主机的 NTLM Hash，请在主机编辑中重新输入。');
+      expect(model.source).assertEqual(RdpSessionErrorSource.CONNECT_FAILURE);
+    });
+
+    it('restricted_admin_identity_mismatch_should_not_be_collapsed_to_generic_failure', 0, (): void => {
+      const model = rdpSessionErrorFromNativeMessage(
+        '主机地址或用户名已改变，请重新输入 NTLM Hash [E-RDP-AUTH-IDENTITY-MISMATCH]',
+        '0x10'
+      );
+      expect(model.code).assertEqual('E-RDP-AUTH-IDENTITY-MISMATCH');
+      expect(model.message).assertEqual('主机地址、用户名或登录身份模式已改变，请重新输入该主机的 NTLM Hash。');
+    });
+
     it('normalize_should_shorten_8_digit_server_codes_for_dialog', 0, (): void => {
       expect(normalizeRdpErrorCode('0x00000011', '0x10')).assertEqual('0x11');
       expect(normalizeRdpErrorCode('0x0000112F', '0x10')).assertEqual('0x112F');

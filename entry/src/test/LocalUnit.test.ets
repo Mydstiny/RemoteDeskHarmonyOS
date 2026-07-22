@@ -8,6 +8,7 @@ import { describe, beforeAll, beforeEach, afterEach, afterAll, it, expect } from
 import {
   RemoteHost,
   LockType,
+  normalizeRdpCredentialParts,
   normalizeRdpNtlmHash
 } from '../main/ets/model/RemoteHost';
 import { UserAccount } from '../main/ets/model/UserAccount';
@@ -110,6 +111,29 @@ export default function localUnitTest() {
 
       expect(restored.rdpAuthMode).assertEqual('password');
       expect(restored.rdpRestrictedAdminSecretSource).assertEqual('ntlm_hash');
+    });
+
+    it('RDP_legacy_empty_password_hash_should_require_a_real_hash', 0, () => {
+      const host = new RemoteHost();
+      host.protocol = 'rdp';
+      host.rdpAuthMode = 'restricted_admin';
+      const json = host.toJSON();
+      json.rdpRestrictedAdminSecretSource = 'empty_password_hash';
+
+      const restored = RemoteHost.fromJSON(json);
+
+      expect(restored.rdpAuthMode).assertEqual('restricted_admin');
+      expect(restored.rdpRestrictedAdminSecretSource).assertEqual('ntlm_hash');
+    });
+
+    it('RDP_effective_identity_should_match_native_domain_normalization', 0, () => {
+      const microsoft = normalizeRdpCredentialParts('user@example.com', 1);
+      expect(microsoft.username).assertEqual('user@example.com');
+      expect(microsoft.domain).assertEqual('MicrosoftAccount');
+
+      const azure = normalizeRdpCredentialParts('.\\AzureAD\\user@example.com', 3);
+      expect(azure.username).assertEqual('AzureAD\\user@example.com');
+      expect(azure.domain).assertEqual('.');
     });
 
     it('RDP_NTLM_hash_should_normalize_only_32_hex_characters', 0, () => {
