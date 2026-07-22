@@ -31,6 +31,7 @@ export const VERSION: SessionVersionInfo;
 
   export function getConnectionState(sessionId: number): number;
   export function getRemoteCursorSnapshot(sessionId: number, includePixels?: boolean): RemoteCursorSnapshot;
+  export function getRemoteCursorSnapshotPixelsAsync(sessionId: number): Promise<RemoteCursorSnapshot>;
   export function getConnectionLastMessage(sessionId: number): string;
   export function getRustDeskLastError(): string;
   export function probeRdpCertificate(host: string, port: number, serverName: string): RdpCertificateInfo;
@@ -293,6 +294,8 @@ export interface RemoteCursorSnapshot {
   height: number;
   hotX: number;
   hotY: number;
+  /** True only for the RustDesk controller-side bootstrap arrow. */
+  fallbackShape: boolean;
   positionAvailable: boolean;
   visible: boolean;
   shapeRevision: number;

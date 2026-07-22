@@ -1,7 +1,7 @@
 # Remote cursor stutter repair plan
 
-Status: implementation checkpoint complete; real-device acceptance outstanding
-Updated: 2026-07-21 Asia/Shanghai
+Status: code implementation and automated gates complete; real-device acceptance outstanding
+Updated: 2026-07-22 Asia/Shanghai
 Primary target: Phone/Pad virtual-touchpad mode with the official/real cursor style
 Protocols in scope: RustDesk and RDP
 
@@ -38,6 +38,11 @@ claiming the long-run device outcome:
 - Cursor polling is reduced from 16 ms to 33 ms, renderer-size synchronization
   is removed from the polling cadence, and ArkUI cursor view revisions are
   frame-coalesced.
+- The metadata poll now always uses `includePixels=false`. When
+  `shapeRevision` changes, RGBA is fetched through a NAPI worker and exposed
+  as an external `ArrayBuffer`; the ArkTS completion path creates the
+  `PixelMap` asynchronously and keeps the previous map visible until the new
+  one is ready. No cursor timer copies a full bitmap on the ArkUI thread.
 - RustDesk control-message logging is aggregated into sampled diagnostics
   rather than synchronously logging every mouse message.
 - The unused floating mouse and floating joystick are removed from settings,
@@ -437,3 +442,62 @@ Stop the rollout and restore the last accepted cursor mode if any build shows:
 - inability to retain the circle cursor as a safe release fallback.
 
 The circle style remains the release-safe fallback until the official cursor passes all acceptance gates.
+
+## 15. Final implementation checkpoint (2026-07-22)
+
+The scoped implementation is now present in the active branch. The remaining
+device gate is deliberately separate from the code gate because device `38451`
+was not available for a fresh live-session run in this checkpoint.
+
+### 15.1 Implemented contracts
+
+- `RemoteCursorStore` and both NAPI declaration surfaces expose `fallbackShape`.
+  RustDesk bootstrap arrows are marked as controller-side fallback state; protocol
+  shapes and `SetDefault` clear that state and advance `shapeRevision`.
+- Cursor bitmap ownership is revision-based. A valid `PixelMap` is retained until
+  its shape revision changes; failed loads retry at a bounded one-second cadence.
+  Replaced maps are retired for two render frames before native release, avoiding
+  the invalid-handle/disappearance window seen in long sessions.
+- Shape pixels never travel through the synchronous 33 ms metadata poll. The
+  worker-side snapshot transfers the RGBA allocation with an external
+  `ArrayBuffer`; stale session/revision completions are rejected before
+  `createPixelMap`, so a cursor-shape transition cannot block the page or video
+  pipeline while copying a large bitmap.
+- The fallback arrow uses a fixed 22vp edge. Protocol cursors use one uniform
+  scale with 18–48vp bounds, preserving aspect ratio and hotspot alignment.
+  Renderer viewport snapshots are normalized from their producing surface into the
+  current ArkUI surface before cursor or input coordinate conversion.
+- Phone/Pad virtual-touchpad mode explicitly hides the HarmonyOS system pointer;
+  direct touch, keyboard/mouse mode, disconnect, background detach, surface
+  destruction, and page disappearance restore it. This policy is scoped away from
+  PC devices and is covered by pure policy tests.
+- RDP input now keeps reliable FIFO barriers plus one replaceable pending move.
+  The latest move is materialized before click/drag/wheel/text/key events, and the
+  worker no longer holds `inputQueueMutex` while entering FreeRDP. Worker generation
+  checks are atomic and repeated after acquiring the FreeRDP instance lock.
+
+### 15.2 Automated evidence
+
+- RustDesk FFI host suite: `125 passed, 0 failed` with
+  `cargo test --manifest-path rustdesk_ffi/Cargo.toml --lib --no-default-features`.
+- Native suite: `122 passed, 0 failed`; the new fallback-shape, high-rate move,
+  click-barrier, wheel/text ordering, and queue-clear cases pass.
+- `default@OhosTestCompileArkTS`: passed.
+- Non-daemon production `assembleHap`: passed, including native Ninja build,
+  ArkTS compilation, packaging, and local signing.
+- The production native build includes the asynchronous cursor-pixel NAPI
+  export and its four-argument OHOS `napi_create_arraybuffer` compatibility
+  path; no synchronous ArkTS `getRemoteCursorSnapshot(..., true)` call remains.
+- `git diff --check`: passed; Light open-source compliance: passed.
+
+### 15.3 Device acceptance still required
+
+On unlocked device `38451`, run separate RustDesk and RDP sessions in Phone/Pad
+touchpad mode and compare circle versus official cursor for fine targeting,
+fast movement, drag, shape transitions, reconnect, visibility recovery, custom
+scale/resolution, rotation, and at least a thirty-minute video soak. Confirm the
+system pointer does not duplicate the drawn cursor, RDP physical-mouse movement
+does not stutter, and the connection/video pipeline remains responsive. A real
+remote physical-mouse move must only take ownership after local touchpad input is
+idle; if the endpoint emits no position callback, local prediction must remain
+stable. Do not mark the task release-ready from automated gates alone.

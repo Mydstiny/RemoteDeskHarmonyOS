@@ -53,12 +53,13 @@ RDP_TEST_CASE(remote_cursor_default_shape_replaces_previous_shape) {
     RDP_ASSERT_EQ(snapshot.hotY, 0);
     RDP_ASSERT_EQ(snapshot.rgba.size(), static_cast<size_t>(16 * 16 * 4));
     RDP_ASSERT_EQ(snapshot.shapeRevision, 2);
+    RDP_ASSERT(!snapshot.fallbackShape);
 }
 
-RDP_TEST_CASE(remote_cursor_default_shape_can_bootstrap_a_visible_session) {
+RDP_TEST_CASE(remote_cursor_fallback_shape_can_bootstrap_a_visible_rustdesk_session) {
     RemoteCursorStore store;
     store.reset(23, "rustdesk");
-    RDP_ASSERT(store.setDefaultShape());
+    RDP_ASSERT(store.setFallbackShape());
     store.setVisible(true);
 
     const RemoteCursorSnapshot snapshot = store.snapshot(true);
@@ -69,6 +70,22 @@ RDP_TEST_CASE(remote_cursor_default_shape_can_bootstrap_a_visible_session) {
     RDP_ASSERT_EQ(snapshot.visibilityRevision, 1);
     RDP_ASSERT_EQ(snapshot.width, 16);
     RDP_ASSERT_EQ(snapshot.height, 16);
+    RDP_ASSERT(snapshot.fallbackShape);
+}
+
+RDP_TEST_CASE(remote_cursor_protocol_default_replaces_identical_fallback_shape) {
+    RemoteCursorStore store;
+    store.reset(26, "rustdesk");
+    RDP_ASSERT(store.setFallbackShape());
+    const RemoteCursorSnapshot fallback = store.snapshot(true);
+    RDP_ASSERT(fallback.fallbackShape);
+    RDP_ASSERT_EQ(fallback.shapeRevision, 1);
+
+    RDP_ASSERT(store.setDefaultShape());
+    const RemoteCursorSnapshot protocolDefault = store.snapshot(true);
+    RDP_ASSERT(!protocolDefault.fallbackShape);
+    RDP_ASSERT_EQ(protocolDefault.shapeRevision, 2);
+    RDP_ASSERT(protocolDefault.rgba == fallback.rgba);
 }
 
 RDP_TEST_CASE(remote_cursor_visibility_does_not_revise_or_replace_position) {
@@ -126,6 +143,7 @@ RDP_TEST_CASE(remote_cursor_reset_isolates_sessions_and_revisions) {
     RDP_ASSERT_EQ(snapshot.shapeRevision, 0);
     RDP_ASSERT_EQ(snapshot.positionRevision, 0);
     RDP_ASSERT(!snapshot.positionAvailable);
+    RDP_ASSERT(!snapshot.fallbackShape);
     RDP_ASSERT(!snapshot.visible);
     RDP_ASSERT(snapshot.rgba.empty());
 }

@@ -741,6 +741,16 @@ export class ExtensionLoader {
     }
   }
 
+  async getRemoteCursorSnapshotPixelsAsync(sessionId: number): Promise<RemoteCursorSnapshot | null> {
+    try {
+      return await rdpnapi.getRemoteCursorSnapshotPixelsAsync(sessionId) as RemoteCursorSnapshot;
+    } catch (err) {
+      hilog.warn(DOMAIN, TAG, '[ExtensionLoader] getRemoteCursorSnapshotPixelsAsync: ' +
+        JSON.stringify(err));
+      return null;
+    }
+  }
+
   getConnectionLastMessage(sessionId: number): string {
     try {
       const result: string = rdpnapi.getConnectionLastMessage(sessionId) as string;

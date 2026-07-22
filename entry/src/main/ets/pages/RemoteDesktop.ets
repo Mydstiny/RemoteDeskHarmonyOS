@@ -25,6 +25,7 @@ import { AppConfig, Palette, buildDark, buildLight } from '../common/Theme';
 import { showLockGate, lockGateErrorMessage } from '../components/LockGate';
 import { RemoteModifierHandle } from '../components/RemoteModifierHandle';
 import { RemoteModifierPanel } from '../components/RemoteModifierPanel';
+import { RemoteCursorOverlay, RemoteCursorOverlayState } from '../components/RemoteCursorOverlay';
 import { RemoteSessionTopBar, RemoteSessionTopBarActions } from '../components/RemoteSessionTopBar';
 import { RustDeskDiagnosticsHud } from '../components/RustDeskDiagnosticsHud';
 import {
@@ -61,6 +62,7 @@ import {
   shouldRestoreRemoteNavigation
 } from '../services/RemoteImmersivePolicy';
 import {
+  shouldHideSystemPointerForVirtualTouchpad,
   shouldRenderTouchPointerIndicator,
   shouldUseSystemMousePointer
 } from '../services/RemotePointerModePolicy';
@@ -68,6 +70,7 @@ import {
   normalizeRemoteCursorStyle,
   remoteCursorSnapshotChanged,
   RemoteCursorStyle,
+  resolveRemoteCursorVisualScale,
   shouldRenderArrowCursor,
   shouldRenderCircleCursor,
   shouldRefreshRemoteCursorBitmap
@@ -90,6 +93,7 @@ import {
 import {
   RemoteSurfaceDelta,
   RemoteSurfaceTransform,
+  normalizeRendererViewportToSurface,
   remotePointToSurface,
   surfaceDeltaToRemote,
   surfacePointToRemote
@@ -210,8 +214,9 @@ const MOUSE_MOVE_IN_FLIGHT_DIAGNOSTIC_TIMEOUT_MS = 250;
 const RENDERER_VIEWPORT_CACHE_MS = 250;
 const REMOTE_CURSOR_POLL_MS = 33;
 const REMOTE_CURSOR_RENDER_FRAME_MS = 16;
-const REMOTE_CURSOR_BITMAP_REFRESH_MS = 30000;
+const REMOTE_CURSOR_BITMAP_RETRY_MS = 1000;
 const REMOTE_CURSOR_LOG_SAMPLE_MS = 5000;
+const REMOTE_GEOMETRY_SYNC_MS = 500;
 const TOUCHPAD_MAX_LOCAL_STEP_RATIO = 0.75;
 const TOUCHPAD_MAX_LOCAL_STEP_VP = 420;
 const TOUCH_INDICATOR_BUTTON_RIGHT = 2;
@@ -327,6 +332,8 @@ interface LocalPoint {
 interface RendererViewportSnapshot {
   sourceWidth: number;
   sourceHeight: number;
+  surfaceWidth: number;
+  surfaceHeight: number;
   viewportX: number;
   viewportY: number;
   viewportW: number;
@@ -402,7 +409,8 @@ struct RemoteDesktop {
   @StorageProp('accentColor') accentColor: string = '#007DFF';
   @StorageProp('currentBreakpoint') breakpoint: string = 'sm';
   @StorageProp('isDesktopDevice') isDesktopDevice: boolean = false;
-  @StorageLink('rustdeskControlMode') rustdeskControlMode: number = 0; // 0=touchpad, 1=direct touch, 2=keyboard/mouse
+  @StorageLink('rustdeskControlMode') @Watch('onRemoteControlModeChange')
+  rustdeskControlMode: number = 0; // 0=touchpad, 1=direct touch, 2=keyboard/mouse
   @StorageLink('rustdeskImageQuality') rustdeskImageQuality: number = 1;
   @StorageLink('rustdeskCodec') rustdeskCodec: number = 0;
   @StorageLink('rustdeskPrivacyMode') rustdeskPrivacyMode: boolean = false;
@@ -426,11 +434,12 @@ struct RemoteDesktop {
   @StorageLink('rustdeskSwapMouseButtons') rustdeskSwapMouseButtons: boolean = false;
   @StorageLink('rustdeskTouchpadSpeed') rustdeskTouchpadSpeed: number = 1.0;
   @StorageLink('virtualMouseStyle') virtualMouseStyle: string = 'circle';
-  @StorageLink('rdpControlMode') rdpControlMode: number = 0; // 0=touchpad, 1=direct touch, 2=keyboard/mouse
+  @StorageLink('rdpControlMode') @Watch('onRemoteControlModeChange')
+  rdpControlMode: number = 0; // 0=touchpad, 1=direct touch, 2=keyboard/mouse
   @StorageLink('rdpDriveEnabled') rdpDriveEnabled: boolean = true;
   @StorageLink('rdpDriveName') rdpDriveName: string = 'RemoteDesktop';
   @StorageLink('remoteDesktopBgFlag') @Watch('onRemoteDesktopBgFlagChange') remoteDesktopBgFlag: boolean = false;
-  @State connected: boolean = false;
+  @State @Watch('onRemoteConnectionStateChange') connected: boolean = false;
   @State connecting: boolean = true;
   @State connectionError: string = '';
   @State connectionErrorDetail: string = '';
@@ -513,20 +522,36 @@ struct RemoteDesktop {
   private remoteCursorPreciseY: number = 540;
   private remoteCursorMotion: RemoteCursorMotionState = createRemoteCursorMotionState(960, 540);
   private remoteCursorReady: boolean = false;
-  @State remoteCursorViewRevision: number = 0;
-  @State remoteCursorPixelMap: image.PixelMap | null = null;
+  @State remoteCursorOverlayState: RemoteCursorOverlayState = new RemoteCursorOverlayState();
+  private remoteCursorViewRevision: number = 0;
+  private remoteCursorPixelMap: image.PixelMap | null = null;
   private remoteCursorShapeRevision: number = -1;
+  private remoteCursorPixelMapShapeRevision: number = -1;
   private remoteCursorPositionRevision: number = -1;
   private remoteCursorVisibilityRevision: number = -1;
   private remoteCursorNativeVisible: boolean = false;
+  private remoteCursorFallbackShape: boolean = false;
   private remoteCursorShapeWidth: number = 0;
   private remoteCursorShapeHeight: number = 0;
   private remoteCursorHotX: number = 0;
   private remoteCursorHotY: number = 0;
-  private remoteCursorShapeRefreshAtMs: number = 0;
+  private remoteCursorShapeRetryAtMs: number = 0;
   private remoteCursorLastLogMs: number = 0;
   private remoteCursorViewCommitTimer: number = -1;
   private remoteCursorViewCommitPending: boolean = false;
+  private remoteCursorShapeLoadToken: number = 0;
+  private remoteCursorShapeLoading: boolean = false;
+  private remoteCursorShapeLoadingSessionId: number = -1;
+  private remoteCursorShapeLoadingRevision: number = -1;
+  private remoteCursorPixelFetchToken: number = 0;
+  private remoteCursorPixelFetchInFlight: boolean = false;
+  private remoteCursorPixelFetchSessionId: number = -1;
+  private remoteCursorPixelFetchRevision: number = -1;
+  private remoteCursorPixelFetchStartedAtMs: number = 0;
+  private retiredRemoteCursorPixelMaps: Array<image.PixelMap> = [];
+  private remoteCursorPixelMapReleaseTimer: number = -1;
+  private remoteSystemPointerVisible: boolean | null = null;
+  private remoteSurfaceUsesSystemPointer: boolean | null = null;
   private touchpadCurveState: TouchpadPointerCurveState = resetTouchpadPointerCurveState();
   private touchpadAnchorValid: boolean = false;
   private lastTouchpadCurveLogMs: number = 0;
@@ -657,6 +682,7 @@ struct RemoteDesktop {
   private rdpRenderWatchdogTimer: number = -1;
   private rdpNativeStateMonitorTimer: number = -1;
   private remoteCursorPollTimer: number = -1;
+  private rustDeskGeometrySyncTimer: number = -1;
   private lastBrowseModeBlockedToastMs: number = 0;
 
   private inputDeviceListener: Callback<inputDevice.DeviceListener> =
@@ -1038,16 +1064,22 @@ struct RemoteDesktop {
   private arrowCursorLocalY(): number { return this.arrowCursorPoint().y; }
   private remoteCursorLocalScale(): number {
     if (this.remoteCursorShapeWidth <= 0 || this.remoteCursorShapeHeight <= 0) { return 1; }
-    const origin: LocalPoint = this.remoteToLocalPoint(this.remoteCursorX, this.remoteCursorY);
-    const edgeX: LocalPoint = this.remoteToLocalPoint(
+    if (this.remoteCursorFallbackShape) {
+      return resolveRemoteCursorVisualScale(this.remoteCursorShapeWidth,
+        this.remoteCursorShapeHeight, 1, true);
+    }
+    const transform: RemoteSurfaceTransform = this.currentRemoteSurfaceTransform();
+    const origin = remotePointToSurface(transform, this.remoteCursorX, this.remoteCursorY);
+    const edgeX = remotePointToSurface(transform,
       this.remoteCursorX + this.remoteCursorShapeWidth, this.remoteCursorY);
-    const edgeY: LocalPoint = this.remoteToLocalPoint(
+    const edgeY = remotePointToSurface(transform,
       this.remoteCursorX, this.remoteCursorY + this.remoteCursorShapeHeight);
     const scaleX: number = Math.abs(edgeX.x - origin.x) / this.remoteCursorShapeWidth;
     const scaleY: number = Math.abs(edgeY.y - origin.y) / this.remoteCursorShapeHeight;
     // A cursor bitmap is one image, so X/Y must share one scale.  Choosing
     // the smaller projection keeps the hotspot aligned without stretching.
-    return Math.max(0.1, Math.min(scaleX, scaleY));
+    return resolveRemoteCursorVisualScale(this.remoteCursorShapeWidth,
+      this.remoteCursorShapeHeight, Math.min(scaleX, scaleY), false);
   }
   private remoteCursorLocalScaleX(): number { return this.remoteCursorLocalScale(); }
   private remoteCursorLocalScaleY(): number { return this.remoteCursorLocalScale(); }
@@ -1070,7 +1102,31 @@ struct RemoteDesktop {
     return this.touchIndicatorVisible ? this.touchIndicatorY : this.arrowCursorLocalY();
   }
 
+  /** Publish cursor-only state to the isolated overlay component. */
+  private publishRemoteCursorOverlay(): void {
+    const cursor: RemoteCursorOverlayState = this.remoteCursorOverlayState;
+    cursor.showCircle = this.shouldShowTouchIndicator();
+    cursor.circleX = this.circleCursorLocalX();
+    cursor.circleY = this.circleCursorLocalY();
+    cursor.circleOuterSize = this.getTouchIndicatorOuterSize();
+    cursor.circleRingSize = this.getTouchIndicatorRingSize();
+    cursor.circleDotSize = this.getTouchIndicatorDotSize();
+    cursor.circleColor = this.getTouchIndicatorColor();
+    cursor.circleDrag = this.touchIndicatorButton === TOUCH_INDICATOR_BUTTON_DRAG;
+    cursor.showArrow = this.shouldShowArrowCursor();
+    cursor.arrowInside = cursor.showArrow ? this.arrowCursorInside() : false;
+    cursor.arrowPixelMap = cursor.showArrow ? this.remoteCursorPixelMap : null;
+    cursor.arrowWidth = cursor.showArrow ? this.remoteCursorLocalWidth() : 0;
+    cursor.arrowHeight = cursor.showArrow ? this.remoteCursorLocalHeight() : 0;
+    cursor.arrowX = cursor.showArrow ? this.remoteCursorImageX() : 0;
+    cursor.arrowY = cursor.showArrow ? this.remoteCursorImageY() : 0;
+    cursor.viewRevision = this.remoteCursorViewRevision;
+  }
+
   private setRemoteSurfacePointerStyle(useSystemPointer: boolean): void {
+    if (this.remoteSurfaceUsesSystemPointer === useSystemPointer) {
+      return;
+    }
     try {
       const cursorController = this.getUIContext().getCursorController();
       if (useSystemPointer) {
@@ -1078,13 +1134,60 @@ struct RemoteDesktop {
       } else {
         cursorController.restoreDefault();
       }
+      this.remoteSurfaceUsesSystemPointer = useSystemPointer;
     } catch (err) {
       hilog.warn(RD_DOMAIN, RD_TAG, 'remote pointer style update failed: ' + JSON.stringify(err));
     }
   }
 
+  private setRemoteSystemPointerVisible(visible: boolean, reason: string): void {
+    if (this.remoteSystemPointerVisible === visible) {
+      return;
+    }
+    try {
+      pointer.setPointerVisibleSync(visible);
+      this.remoteSystemPointerVisible = visible;
+      hilog.info(RD_DOMAIN, RD_TAG, 'system pointer visible=' + (visible ? '1' : '0') +
+        ' reason=' + reason);
+    } catch (err) {
+      hilog.warn(RD_DOMAIN, RD_TAG, 'system pointer visibility update failed reason=' + reason +
+        ' err=' + JSON.stringify(err));
+    }
+  }
+
+  private shouldHideSystemPointerForVirtualTouchpad(): boolean {
+    return shouldHideSystemPointerForVirtualTouchpad(this.connected,
+      this.isTouchpadControlMode(), this.isDesktopDevice);
+  }
+
+  private syncRemoteSystemPointer(reason: string, hovered: boolean = true): void {
+    const hideSystemPointer: boolean = this.shouldHideSystemPointerForVirtualTouchpad();
+    this.setRemoteSystemPointerVisible(!hideSystemPointer, reason);
+    this.setRemoteSurfacePointerStyle(!hideSystemPointer && hovered &&
+      shouldUseSystemMousePointer(this.isKeyboardMouseControlMode()));
+  }
+
+  private restoreRemoteSystemPointer(reason: string): void {
+    this.setRemoteSystemPointerVisible(true, reason);
+    this.setRemoteSurfacePointerStyle(false);
+  }
+
+  private onRemoteConnectionStateChange(): void {
+    if (this.connected) {
+      this.syncRemoteSystemPointer('connection-state');
+    } else {
+      this.restoreRemoteSystemPointer('connection-state');
+    }
+    this.publishRemoteCursorOverlay();
+  }
+
+  private onRemoteControlModeChange(): void {
+    this.syncRemoteSystemPointer('control-mode');
+    this.requestRemoteCursorViewRefresh(true);
+  }
+
   private handleRemoteSurfaceHover = (hovered: boolean): void => {
-    this.setRemoteSurfacePointerStyle(hovered && shouldUseSystemMousePointer(this.isKeyboardMouseControlMode()));
+    this.syncRemoteSystemPointer('surface-hover', hovered);
   }
 
   private toastUnsupportedRustDeskAction(_actionId: string, reason: string): void {
@@ -1508,6 +1611,7 @@ struct RemoteDesktop {
   private hideTouchIndicator(): void {
     this.clearTouchIndicatorTimer();
     this.touchIndicatorVisible = false;
+    this.publishRemoteCursorOverlay();
   }
 
   // ============================================================
@@ -2090,6 +2194,7 @@ struct RemoteDesktop {
   }
 
   async aboutToAppear(): Promise<void> {
+    this.restoreRemoteSystemPointer('page-appear');
     this.physicalKeyboardLayout = RemoteKeyboardLayout.WINDOWS;
     this.physicalKeyboardLayoutConfirmed = false;
     this.physicalKeyboardLayoutPromptVisible = false;
@@ -2218,6 +2323,7 @@ struct RemoteDesktop {
   }
 
   aboutToDisappear(): void {
+    this.restoreRemoteSystemPointer('page-disappear');
     this.stopRustDeskDiagnosticsPolling(true);
     try {
       if (this.inputDeviceListenerRegistered) {
@@ -2765,6 +2871,7 @@ struct RemoteDesktop {
     if (immediate) {
       this.clearRemoteCursorViewCommit();
       this.remoteCursorViewRevision += 1;
+      this.publishRemoteCursorOverlay();
       return;
     }
     if (this.remoteCursorViewCommitPending) {
@@ -2775,6 +2882,7 @@ struct RemoteDesktop {
       this.remoteCursorViewCommitTimer = -1;
       this.remoteCursorViewCommitPending = false;
       this.remoteCursorViewRevision += 1;
+      this.publishRemoteCursorOverlay();
     }, REMOTE_CURSOR_RENDER_FRAME_MS);
   }
 
@@ -2863,20 +2971,35 @@ struct RemoteDesktop {
     this.rendererViewportReadAtMs = now;
     try {
       const raw = this.loader.getRendererViewport(this.rendererHandle);
-      if (raw && raw.sourceWidth > 0 && raw.sourceHeight > 0 &&
-        raw.viewportW > 0 && raw.viewportH > 0) {
-        const snapshot: RendererViewportSnapshot = {
-          sourceWidth: raw.sourceWidth,
-          sourceHeight: raw.sourceHeight,
-          viewportX: raw.viewportX,
-          viewportY: raw.viewportY,
-          viewportW: raw.viewportW,
-          viewportH: raw.viewportH
-        };
-        this.rendererSourceWidth = snapshot.sourceWidth;
-        this.rendererSourceHeight = snapshot.sourceHeight;
-        this.rendererViewportCache = snapshot;
-        return this.rendererViewportCache;
+      if (raw && raw.sourceWidth > 0 && raw.sourceHeight > 0) {
+        // The renderer owns viewport values in its own surface-pixel space.
+        // A resize/rotation can publish that snapshot one frame before ArkUI
+        // receives the new surface size. Normalize it before combining it with
+        // this page's current vp/px conversion; otherwise a 16px fallback
+        // arrow can be magnified to a screen-sized triangle.
+        const targetSurfaceWidth: number = this.renderWidthPx > 0 ? this.renderWidthPx :
+          raw.surfaceWidth;
+        const targetSurfaceHeight: number = this.renderHeightPx > 0 ? this.renderHeightPx :
+          raw.surfaceHeight;
+        const viewport = normalizeRendererViewportToSurface(raw.viewportX, raw.viewportY,
+          raw.viewportW, raw.viewportH, raw.surfaceWidth, raw.surfaceHeight,
+          targetSurfaceWidth, targetSurfaceHeight);
+        if (viewport !== null) {
+          const snapshot: RendererViewportSnapshot = {
+            sourceWidth: raw.sourceWidth,
+            sourceHeight: raw.sourceHeight,
+            surfaceWidth: targetSurfaceWidth,
+            surfaceHeight: targetSurfaceHeight,
+            viewportX: viewport.viewportX,
+            viewportY: viewport.viewportY,
+            viewportW: viewport.viewportW,
+            viewportH: viewport.viewportH
+          };
+          this.rendererSourceWidth = snapshot.sourceWidth;
+          this.rendererSourceHeight = snapshot.sourceHeight;
+          this.rendererViewportCache = snapshot;
+          return this.rendererViewportCache;
+        }
       }
     } catch (_e) {
       // Renderer may be unavailable while a surface is being rebuilt.
@@ -2906,9 +3029,41 @@ struct RemoteDesktop {
     if (!this.canvasTransformGestureModified) {
       this.resetCanvasToDisplayDefault();
     }
+    // The cursor overlay owns its own render scope. Geometry changes do not
+    // necessarily move the logical pointer, so explicitly publish the new
+    // projection even when remoteCursorX/Y stayed unchanged.
+    this.requestRemoteCursorViewRefresh(true);
     hilog.info(RD_DOMAIN, RD_TAG, 'RustDesk remote logical size synchronized from peer frame: ' +
       previousWidth.toString() + 'x' + previousHeight.toString() + ' -> ' +
       viewport.sourceWidth.toString() + 'x' + viewport.sourceHeight.toString());
+  }
+
+  /**
+   * Renderer geometry is a low-frequency stream property, not cursor data.
+   * Keep it on its own bounded timer so cursor polling never performs a
+   * viewport/NAPI read on the hot path.
+   */
+  private stopRustDeskGeometrySync(): void {
+    if (this.rustDeskGeometrySyncTimer >= 0) {
+      clearInterval(this.rustDeskGeometrySyncTimer);
+      this.rustDeskGeometrySyncTimer = -1;
+    }
+  }
+
+  private startRustDeskGeometrySync(sessionId: number): void {
+    this.stopRustDeskGeometrySync();
+    if (!this.isRustDeskSession() || sessionId <= 0) {
+      return;
+    }
+    const sync: () => void = (): void => {
+      if (!this.connected || this.sessionId !== sessionId || !this.isRustDeskSession()) {
+        this.stopRustDeskGeometrySync();
+        return;
+      }
+      this.syncRustDeskLogicalSizeFromRenderer();
+    };
+    sync();
+    this.rustDeskGeometrySyncTimer = setInterval(sync, REMOTE_GEOMETRY_SYNC_MS);
   }
 
   private currentRemoteSurfaceTransform(): RemoteSurfaceTransform {
@@ -3715,21 +3870,58 @@ struct RemoteDesktop {
     }.padding(20)
   }
 
+  private releasePixelMap(pixelMap: image.PixelMap): void {
+    try {
+      pixelMap.release();
+    } catch (_e) {
+      // PixelMap may already have been released by the image pipeline.
+    }
+  }
+
+  private scheduleRetiredRemoteCursorPixelMapRelease(): void {
+    if (this.remoteCursorPixelMapReleaseTimer >= 0 ||
+      this.retiredRemoteCursorPixelMaps.length === 0) {
+      return;
+    }
+    // ArkUI still owns the old Image for the current commit. Retaining it for
+    // two frames avoids an invalid native image handle during shape changes.
+    this.remoteCursorPixelMapReleaseTimer = setTimeout((): void => {
+      this.remoteCursorPixelMapReleaseTimer = -1;
+      const retired: Array<image.PixelMap> = this.retiredRemoteCursorPixelMaps;
+      this.retiredRemoteCursorPixelMaps = [];
+      for (let index: number = 0; index < retired.length; index++) {
+        this.releasePixelMap(retired[index]);
+      }
+    }, REMOTE_CURSOR_RENDER_FRAME_MS * 2);
+  }
+
+  private retireRemoteCursorPixelMap(pixelMap: image.PixelMap): void {
+    this.retiredRemoteCursorPixelMaps.push(pixelMap);
+    this.scheduleRetiredRemoteCursorPixelMapRelease();
+  }
+
   private releaseRemoteCursorPixelMap(): void {
     const previous: image.PixelMap | null = this.remoteCursorPixelMap;
     this.remoteCursorPixelMap = null;
+    this.remoteCursorPixelMapShapeRevision = -1;
     if (previous !== null) {
-      try {
-        previous.release();
-      } catch (_e) {
-        // PixelMap may already have been released by the image pipeline.
-      }
+      this.retireRemoteCursorPixelMap(previous);
     }
   }
 
   private clearRemoteCursorPolling(releaseVisual: boolean = true,
     reason: string = 'session-stop'): void {
     this.clearRemoteCursorViewCommit();
+    this.stopRustDeskGeometrySync();
+    this.remoteCursorShapeLoadToken += 1;
+    this.remoteCursorShapeLoading = false;
+    this.remoteCursorShapeLoadingSessionId = -1;
+    this.remoteCursorShapeLoadingRevision = -1;
+    this.remoteCursorPixelFetchToken += 1;
+    this.remoteCursorPixelFetchInFlight = false;
+    this.remoteCursorPixelFetchSessionId = -1;
+    this.remoteCursorPixelFetchRevision = -1;
+    this.remoteCursorPixelFetchStartedAtMs = 0;
     if (this.remoteCursorPollTimer !== -1) {
       clearInterval(this.remoteCursorPollTimer);
       this.remoteCursorPollTimer = -1;
@@ -3740,17 +3932,68 @@ struct RemoteDesktop {
     }
     this.remoteCursorNativeVisible = false;
     this.remoteCursorShapeRevision = -1;
+    this.remoteCursorPixelMapShapeRevision = -1;
     this.remoteCursorPositionRevision = -1;
     this.remoteCursorVisibilityRevision = -1;
+    this.remoteCursorFallbackShape = false;
     this.remoteCursorShapeWidth = 0;
     this.remoteCursorShapeHeight = 0;
     this.remoteCursorHotX = 0;
     this.remoteCursorHotY = 0;
-    this.remoteCursorShapeRefreshAtMs = 0;
+    this.remoteCursorShapeRetryAtMs = 0;
     this.remoteCursorLastLogMs = 0;
     this.releaseRemoteCursorPixelMap();
     this.requestRemoteCursorViewRefresh(true);
     hilog.info(RD_DOMAIN, RD_TAG, 'remote-cursor polling stopped preserve=0 reason=' + reason);
+  }
+
+  /**
+   * Read only the current shape bitmap through the N-API worker pool. Cursor
+   * metadata stays on the cheap synchronous poll path; a shape transition
+   * must never synchronously copy RGBA bytes on the ArkUI thread.
+   */
+  private requestRemoteCursorShapePixels(sessionId: number, shapeRevision: number): void {
+    if (this.remoteCursorPixelFetchInFlight && this.remoteCursorPixelFetchSessionId === sessionId &&
+      this.remoteCursorPixelFetchRevision === shapeRevision) {
+      return;
+    }
+    const fetchToken: number = ++this.remoteCursorPixelFetchToken;
+    const startedAtMs: number = Date.now();
+    this.remoteCursorPixelFetchInFlight = true;
+    this.remoteCursorPixelFetchSessionId = sessionId;
+    this.remoteCursorPixelFetchRevision = shapeRevision;
+    this.remoteCursorPixelFetchStartedAtMs = startedAtMs;
+    this.loader.getRemoteCursorSnapshotPixelsAsync(sessionId).then(
+      (pixels: RemoteCursorSnapshot | null): void => {
+        const valid: boolean = fetchToken === this.remoteCursorPixelFetchToken &&
+          this.connected && this.sessionId === sessionId && pixels !== null &&
+          pixels.sessionId === sessionId && pixels.shapeRevision === shapeRevision;
+        if (valid && pixels !== null) {
+          this.applyRemoteCursorShape(pixels);
+          hilog.info(RD_DOMAIN, RD_TAG, 'remote-cursor shape pixels ready revision=' +
+            shapeRevision.toString() + ' bytes=' + pixels.rgba.byteLength.toString() +
+            ' elapsedMs=' + (Date.now() - startedAtMs).toString());
+        } else {
+          hilog.info(RD_DOMAIN, RD_TAG, 'remote-cursor shape pixels discarded revision=' +
+            shapeRevision.toString() + ' elapsedMs=' + (Date.now() - startedAtMs).toString());
+        }
+        if (fetchToken === this.remoteCursorPixelFetchToken) {
+          this.remoteCursorPixelFetchInFlight = false;
+          this.remoteCursorPixelFetchSessionId = -1;
+          this.remoteCursorPixelFetchRevision = -1;
+          this.remoteCursorPixelFetchStartedAtMs = 0;
+        }
+      }).catch((err: Object): void => {
+        if (fetchToken === this.remoteCursorPixelFetchToken) {
+          this.remoteCursorPixelFetchInFlight = false;
+          this.remoteCursorPixelFetchSessionId = -1;
+          this.remoteCursorPixelFetchRevision = -1;
+          this.remoteCursorPixelFetchStartedAtMs = 0;
+        }
+        hilog.warn(RD_DOMAIN, RD_TAG, 'remote-cursor shape pixels failed revision=' +
+          shapeRevision.toString() + ' elapsedMs=' + (Date.now() - startedAtMs).toString() +
+          ' err=' + JSON.stringify(err));
+      });
   }
 
   private applyRemoteCursorShape(snapshot: RemoteCursorSnapshot): void {
@@ -3758,35 +4001,62 @@ struct RemoteDesktop {
       snapshot.rgba.byteLength !== snapshot.width * snapshot.height * 4) {
       return;
     }
-    try {
-      const next: image.PixelMap = image.createPixelMapSync(snapshot.rgba, {
+    if (this.remoteCursorShapeLoading && this.remoteCursorShapeLoadingSessionId === snapshot.sessionId &&
+      this.remoteCursorShapeLoadingRevision === snapshot.shapeRevision) {
+      return;
+    }
+    const loadToken: number = ++this.remoteCursorShapeLoadToken;
+    this.remoteCursorShapeLoading = true;
+    this.remoteCursorShapeLoadingSessionId = snapshot.sessionId;
+    this.remoteCursorShapeLoadingRevision = snapshot.shapeRevision;
+    const options: image.InitializationOptions = {
         editable: false,
         srcPixelFormat: image.PixelMapFormat.RGBA_8888,
         pixelFormat: image.PixelMapFormat.RGBA_8888,
         alphaType: image.AlphaType.UNPREMUL,
         size: { width: snapshot.width, height: snapshot.height }
-      });
+    };
+    // API 23 provides the Promise form of createPixelMap. Keep the old image
+    // visible until the new bitmap is ready; a shape transition must never
+    // blank the cursor or block the ArkUI/UI thread.
+    image.createPixelMap(snapshot.rgba, options).then((next: image.PixelMap): void => {
+      const valid: boolean = loadToken === this.remoteCursorShapeLoadToken &&
+        this.connected && this.sessionId === snapshot.sessionId &&
+        this.remoteCursorShapeRevision === snapshot.shapeRevision;
+      if (!valid) {
+        this.releasePixelMap(next);
+        return;
+      }
+      this.remoteCursorShapeLoading = false;
+      this.remoteCursorShapeLoadingSessionId = -1;
+      this.remoteCursorShapeLoadingRevision = -1;
       const previous: image.PixelMap | null = this.remoteCursorPixelMap;
       this.remoteCursorPixelMap = next;
+      this.remoteCursorPixelMapShapeRevision = snapshot.shapeRevision;
       this.remoteCursorShapeWidth = snapshot.width;
       this.remoteCursorShapeHeight = snapshot.height;
       this.remoteCursorHotX = snapshot.hotX;
       this.remoteCursorHotY = snapshot.hotY;
-      this.remoteCursorShapeRefreshAtMs = Date.now();
+      this.remoteCursorFallbackShape = snapshot.fallbackShape;
+      this.remoteCursorShapeRetryAtMs = Date.now();
       this.requestRemoteCursorViewRefresh(true);
       if (previous !== null) {
-        try { previous.release(); } catch (_e) { /* already released */ }
+        this.retireRemoteCursorPixelMap(previous);
       }
-    } catch (err) {
+    }).catch((err: Object): void => {
+      if (loadToken === this.remoteCursorShapeLoadToken) {
+        this.remoteCursorShapeLoading = false;
+        this.remoteCursorShapeLoadingSessionId = -1;
+        this.remoteCursorShapeLoadingRevision = -1;
+      }
       hilog.warn(RD_DOMAIN, RD_TAG, 'remote cursor PixelMap rejected: ' + JSON.stringify(err));
-    }
+    });
   }
 
   private pollRemoteCursor(sessionId: number): void {
     if (!this.connected || this.sessionId !== sessionId || sessionId <= 0) {
       return;
     }
-    this.syncRustDeskLogicalSizeFromRenderer();
     const now: number = Date.now();
     this.expireMouseMoveAcknowledgement(now);
     this.applyRemoteCursorMotionState(advanceRemoteCursorMotion(this.remoteCursorMotion, now));
@@ -3796,23 +4066,25 @@ struct RemoteDesktop {
       return;
     }
     const shapeChanged: boolean = snapshot.shapeRevision !== this.remoteCursorShapeRevision;
-    const shapeRefreshDue: boolean = shouldRefreshRemoteCursorBitmap(snapshot.shapeRevision,
-      this.remoteCursorPixelMap !== null, snapshot.visible, this.remoteCursorShapeRefreshAtMs,
-      now, REMOTE_CURSOR_BITMAP_REFRESH_MS);
-    if (shapeChanged || shapeRefreshDue) {
+    const hasCurrentPixelMap: boolean = this.remoteCursorPixelMap !== null &&
+      this.remoteCursorPixelMapShapeRevision === snapshot.shapeRevision;
+    const shapeRetryDue: boolean = shouldRefreshRemoteCursorBitmap(snapshot.shapeRevision,
+      hasCurrentPixelMap, snapshot.visible, this.remoteCursorShapeRetryAtMs,
+      now, REMOTE_CURSOR_BITMAP_RETRY_MS);
+    const shapeLoadInFlight: boolean = this.remoteCursorShapeLoading &&
+      this.remoteCursorShapeLoadingSessionId === sessionId &&
+      this.remoteCursorShapeLoadingRevision === snapshot.shapeRevision;
+    const shapePixelsInFlight: boolean = this.remoteCursorPixelFetchInFlight &&
+      this.remoteCursorPixelFetchSessionId === sessionId &&
+      this.remoteCursorPixelFetchRevision === snapshot.shapeRevision;
+    if ((shapeChanged || shapeRetryDue) && !shapeLoadInFlight && !shapePixelsInFlight) {
       this.remoteCursorShapeRevision = snapshot.shapeRevision;
       if (snapshot.shapeRevision > 0) {
         // Record the attempt before crossing NAPI so a rejected/missing bitmap
-        // retries at a bounded cadence instead of spinning every 16 ms.
-        this.remoteCursorShapeRefreshAtMs = now;
-        const pixels: RemoteCursorSnapshot | null =
-          this.loader.getRemoteCursorSnapshot(sessionId, true);
-        if (pixels !== null && pixels.shapeRevision === snapshot.shapeRevision) {
-          this.applyRemoteCursorShape(pixels);
-        } else {
-          hilog.warn(RD_DOMAIN, RD_TAG, 'remote-cursor pixels unavailable shapeRevision=' +
-            snapshot.shapeRevision.toString() + ' refresh=' + (shapeRefreshDue ? '1' : '0'));
-        }
+        // retries at a bounded cadence. Existing PixelMaps are never rebuilt
+        // on a timer; only a shape revision or a failed shape load requests it.
+        this.remoteCursorShapeRetryAtMs = now;
+        this.requestRemoteCursorShapePixels(sessionId, snapshot.shapeRevision);
       }
     }
     const positionChanged: boolean = snapshot.positionRevision !== this.remoteCursorPositionRevision;
@@ -3845,6 +4117,8 @@ struct RemoteDesktop {
         ' visibilityRevision=' + snapshot.visibilityRevision.toString() +
         ' visible=' + (snapshot.visible ? '1' : '0') +
         ' pixelMap=' + (this.remoteCursorPixelMap !== null ? '1' : '0') +
+        ' fallback=' + (snapshot.fallbackShape ? '1' : '0') +
+        ' positionTransport=' + (this.isRustDeskSession() ? 'rustdesk-ffi' : 'freerdp') +
         ' positionAvailable=' + (snapshot.positionAvailable ? '1' : '0') +
         ' position=' + snapshot.x.toString() + ',' + snapshot.y.toString() +
         ' owner=' + this.remoteCursorMotion.owner +
@@ -3860,6 +4134,7 @@ struct RemoteDesktop {
     // the last valid cursor. The native snapshot may not repeat an unchanged
     // shape, so clearing here can otherwise make the arrow disappear forever.
     this.clearRemoteCursorPolling(false, 'poll-restart');
+    this.startRustDeskGeometrySync(sessionId);
     this.pollRemoteCursor(sessionId);
     this.remoteCursorPollTimer = setInterval((): void => {
       this.pollRemoteCursor(sessionId);
@@ -4376,6 +4651,7 @@ struct RemoteDesktop {
   }
 
   private disconnectAndCleanup(reason: string): void {
+    this.restoreRemoteSystemPointer('disconnect-' + reason);
     if (this.cleanupStarted) {
       return;
     }
@@ -4499,6 +4775,7 @@ struct RemoteDesktop {
     if (this.cleanupStarted) {
       return;
     }
+    this.restoreRemoteSystemPointer('background-detach');
     this.stopRustDeskDiagnosticsPolling(true);
     this.cleanupStarted = true;
     this.resetRemoteImeSession('background');
@@ -4822,6 +5099,7 @@ struct RemoteDesktop {
 
   onSurfaceDestroyed(_surfaceId: string): void {
     hilog.info(RD_DOMAIN, RD_TAG, 'XComponentController.onSurfaceDestroyed');
+    this.restoreRemoteSystemPointer('surface-destroyed');
     this.surfaceReady = false;
     if (_surfaceId === this.latestSurfaceId) {
       this.latestSurfaceId = '';
@@ -4865,6 +5143,7 @@ struct RemoteDesktop {
   }
 
   private onXComponentDestroy = (): void => {
+    this.restoreRemoteSystemPointer('xcomponent-destroy');
     this.markXComponentSurfaceDetached('xcomponentDestroy');
     this.surfaceReady = false;
   }
@@ -5984,10 +6263,12 @@ struct RemoteDesktop {
     this.touchIndicatorY = localY;
     this.touchIndicatorButton = button;
     this.touchIndicatorVisible = true;
+    this.publishRemoteCursorOverlay();
     if (autoHide) {
       this.touchIndicatorTimer = setTimeout(() => {
         this.touchIndicatorVisible = false;
         this.touchIndicatorTimer = -1;
+        this.publishRemoteCursorOverlay();
       }, this.touchIndicatorHideMs(button));
     }
   }
@@ -6555,9 +6836,8 @@ struct RemoteDesktop {
   }
 
   private handleConfiguredTouchInput = (event: TouchEvent): void => {
-    if (event.type === TouchType.Down) {
-      this.syncRustDeskLogicalSizeFromRenderer();
-    }
+    // RustDesk geometry is synchronized by its low-frequency stream timer;
+    // input events must not perform renderer/NAPI reads.
     if (event.type === TouchType.Down && this.hardwareKeyboardProxyActive) {
       // 触摸获焦同样可能抢走隐藏 TextArea；不重置 IME 会话，稍后恢复代理焦点。
       this.scheduleRemoteInputFocus('touch-down');
@@ -7537,41 +7817,7 @@ struct RemoteDesktop {
 
       // 三指控制面板改用 bindSheet — 弹到屏幕中央
 
-      if (this.connected && this.shouldShowTouchIndicator()) {
-        Stack() {
-          Stack()
-            .width(this.getTouchIndicatorRingSize())
-            .height(this.getTouchIndicatorRingSize())
-            .borderRadius(this.getTouchIndicatorRingSize() / 2)
-            .backgroundColor('rgba(0,0,0,0.08)')
-            .border({ width: this.touchIndicatorButton === TOUCH_INDICATOR_BUTTON_DRAG ? 2 : 1.5,
-              color: this.getTouchIndicatorColor() })
-          Column()
-            .width(this.getTouchIndicatorDotSize())
-            .height(this.getTouchIndicatorDotSize())
-            .borderRadius(2)
-            .backgroundColor(this.getTouchIndicatorColor())
-        }
-        .width(this.getTouchIndicatorOuterSize())
-        .height(this.getTouchIndicatorOuterSize())
-        .position({
-          x: this.circleCursorLocalX() - this.getTouchIndicatorOuterSize() / 2,
-          y: this.circleCursorLocalY() - this.getTouchIndicatorOuterSize() / 2
-        })
-        .animation({ duration: 180, curve: Curve.EaseOut })
-        .hitTestBehavior(HitTestMode.None)
-      }
-
-      if (this.connected && this.shouldShowArrowCursor()) {
-        if (this.arrowCursorInside()) {
-          Image(this.remoteCursorPixelMap)
-            .width(this.remoteCursorLocalWidth())
-            .height(this.remoteCursorLocalHeight())
-            .objectFit(ImageFit.Contain)
-            .position({ x: this.remoteCursorImageX(), y: this.remoteCursorImageY() })
-            .hitTestBehavior(HitTestMode.None)
-        }
-      }
+      RemoteCursorOverlay({ cursor: this.remoteCursorOverlayState })
 
       // PC 模式: 拖拽文件悬停视觉反馈
       if (this.connected && this.dropHoverActive && this.isDesktopDevice && this.breakpoint === 'xl') {

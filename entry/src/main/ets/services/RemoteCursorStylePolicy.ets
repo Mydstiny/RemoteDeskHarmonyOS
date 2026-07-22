@@ -2,6 +2,9 @@ export type RemoteCursorStyle = 'circle' | 'arrow';
 
 export const VIRTUAL_MOUSE_STYLE_RESTORE_VERSION: number = 1;
 export const VIRTUAL_MOUSE_STYLE_RESTORE_VERSION_KEY: string = 'virtualMouseStyleRestoreVersion';
+export const REMOTE_CURSOR_FALLBACK_EDGE_VP: number = 22;
+export const REMOTE_CURSOR_MIN_EDGE_VP: number = 18;
+export const REMOTE_CURSOR_MAX_EDGE_VP: number = 48;
 
 export function remoteCursorSnapshotChanged(previousX: number, previousY: number,
   previousReady: boolean, nextX: number, nextY: number, nextReady: boolean): boolean {
@@ -32,15 +35,33 @@ export function shouldRenderCircleCursor(style: RemoteCursorStyle, cursorReady: 
 }
 
 export function shouldRefreshRemoteCursorBitmap(shapeRevision: number, hasPixelMap: boolean,
-  visible: boolean, lastRefreshAtMs: number, nowMs: number, refreshIntervalMs: number): boolean {
-  if (shapeRevision <= 0) {
+  _visible: boolean, lastRefreshAtMs: number, nowMs: number, retryIntervalMs: number): boolean {
+  if (shapeRevision <= 0 || hasPixelMap) {
     return false;
   }
-  if (!hasPixelMap) {
-    const retryIntervalMs: number = Math.min(refreshIntervalMs, 1000);
-    return lastRefreshAtMs <= 0 || retryIntervalMs <= 0 ||
-      nowMs - lastRefreshAtMs >= retryIntervalMs;
+  const boundedRetryMs: number = Math.min(Math.max(0, retryIntervalMs), 1000);
+  return lastRefreshAtMs <= 0 || boundedRetryMs <= 0 ||
+    nowMs - lastRefreshAtMs >= boundedRetryMs;
+}
+
+/**
+ * Resolve one uniform visual scale for a protocol cursor. The bootstrap arrow
+ * is a controller-side affordance, not part of the remote desktop, so it has
+ * a fixed physical edge. Protocol shapes retain their aspect ratio while
+ * staying legible on Phone/Pad and bounded during a stale viewport handoff.
+ */
+export function resolveRemoteCursorVisualScale(width: number, height: number,
+  projectedScale: number, fallbackShape: boolean): number {
+  const edge: number = Math.max(width, height);
+  if (!Number.isFinite(edge) || edge <= 0) {
+    return 1;
   }
-  return visible && lastRefreshAtMs > 0 && refreshIntervalMs > 0 &&
-    nowMs - lastRefreshAtMs >= refreshIntervalMs;
+  if (fallbackShape) {
+    return REMOTE_CURSOR_FALLBACK_EDGE_VP / edge;
+  }
+  const safeProjectedScale: number = Number.isFinite(projectedScale) && projectedScale > 0 ?
+    projectedScale : REMOTE_CURSOR_MIN_EDGE_VP / edge;
+  const minScale: number = REMOTE_CURSOR_MIN_EDGE_VP / edge;
+  const maxScale: number = REMOTE_CURSOR_MAX_EDGE_VP / edge;
+  return Math.max(minScale, Math.min(maxScale, safeProjectedScale));
 }

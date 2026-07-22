@@ -10,6 +10,7 @@
 
 #include <cstdint>
 #include <deque>
+#include <optional>
 #include <string>
 #include <utility>
 
@@ -106,39 +107,48 @@ public:
             return enqueueMouseMove(std::move(event));
         }
 
-        purgeMouseMoves();
-        if (events_.size() >= kSoftMaxEvents) {
+        // Every non-move event is an ordering barrier. Materialize the latest
+        // pointer target before it so clicks, drags, wheels, text and keys
+        // retain their protocol order without retaining a full move backlog.
+        flushPendingMouseMove();
+        if (depth() >= kSoftMaxEvents) {
             ++nonDisposableOverflow_;
         }
         textUnitDepth_ += event.text.size();
-        events_.push_back(std::move(event));
+        reliableEvents_.push_back(std::move(event));
         updateMaxDepth();
         return RdpInputEnqueueResult::Enqueued;
     }
 
     bool pop(RdpQueuedInputEvent& event) {
-        if (events_.empty()) {
+        if (!reliableEvents_.empty()) {
+            event = std::move(reliableEvents_.front());
+            reliableEvents_.pop_front();
+            textUnitDepth_ -= event.text.size();
+            return true;
+        }
+        if (!pendingMouseMove_.has_value()) {
             return false;
         }
-        event = std::move(events_.front());
-        events_.pop_front();
-        textUnitDepth_ -= event.text.size();
+        event = std::move(*pendingMouseMove_);
+        pendingMouseMove_.reset();
         return true;
     }
 
     void clear() {
-        events_.clear();
+        reliableEvents_.clear();
+        pendingMouseMove_.reset();
         textUnitDepth_ = 0;
     }
 
     void resetMetrics() {
-        maxDepth_ = events_.size();
+        maxDepth_ = depth();
         droppedMouseMoves_ = 0;
         droppedNonDisposable_ = 0;
         nonDisposableOverflow_ = 0;
     }
 
-    size_t depth() const { return events_.size(); }
+    size_t depth() const { return reliableEvents_.size() + (pendingMouseMove_.has_value() ? 1U : 0U); }
     size_t maxDepth() const { return maxDepth_; }
     size_t textUnitDepth() const { return textUnitDepth_; }
     size_t droppedMouseMoves() const { return droppedMouseMoves_; }
@@ -147,38 +157,32 @@ public:
 
 private:
     RdpInputEnqueueResult enqueueMouseMove(RdpQueuedInputEvent event) {
-        if (!events_.empty() && events_.back().isMouseMove) {
-            events_.back() = std::move(event);
+        if (pendingMouseMove_.has_value()) {
+            *pendingMouseMove_ = std::move(event);
             ++droppedMouseMoves_;
             return RdpInputEnqueueResult::ReplacedMouseMove;
         }
-        if (events_.size() >= kSoftMaxEvents) {
-            ++droppedMouseMoves_;
-            return RdpInputEnqueueResult::DroppedMouseMove;
-        }
-        events_.push_back(std::move(event));
+        pendingMouseMove_ = std::move(event);
         updateMaxDepth();
         return RdpInputEnqueueResult::Enqueued;
     }
 
-    void purgeMouseMoves() {
-        for (auto it = events_.begin(); it != events_.end();) {
-            if (it->isMouseMove) {
-                it = events_.erase(it);
-                ++droppedMouseMoves_;
-            } else {
-                ++it;
-            }
+    void flushPendingMouseMove() {
+        if (!pendingMouseMove_.has_value()) {
+            return;
         }
+        reliableEvents_.push_back(std::move(*pendingMouseMove_));
+        pendingMouseMove_.reset();
     }
 
     void updateMaxDepth() {
-        if (events_.size() > maxDepth_) {
-            maxDepth_ = events_.size();
+        if (depth() > maxDepth_) {
+            maxDepth_ = depth();
         }
     }
 
-    std::deque<RdpQueuedInputEvent> events_;
+    std::deque<RdpQueuedInputEvent> reliableEvents_;
+    std::optional<RdpQueuedInputEvent> pendingMouseMove_;
     size_t textUnitDepth_ = 0;
     size_t maxDepth_ = 0;
     size_t droppedMouseMoves_ = 0;

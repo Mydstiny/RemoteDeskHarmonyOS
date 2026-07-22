@@ -2375,6 +2375,86 @@ napi_value NapiGetConnectionState(napi_env env, napi_callback_info info) {
     return result;
 }
 
+static void FinalizeRemoteCursorPixels(napi_env /*env*/, void* /*data*/, void* hint) {
+    delete static_cast<std::vector<uint8_t>*>(hint);
+}
+
+/**
+ * Build the JS cursor object in one place. Async shape reads can transfer the
+ * worker-owned RGBA vector as an external ArrayBuffer, so the JS completion
+ * callback does not copy a 384x384 bitmap on the UI thread.
+ */
+static napi_value CreateRemoteCursorSnapshotValue(
+    napi_env env, const RemoteCursorSnapshot& snapshot,
+    std::vector<uint8_t>* transferredPixels = nullptr) {
+    napi_value result;
+    napi_create_object(env, &result);
+    const auto setInt32 = [env, result](const char* name, int32_t value) {
+        napi_value field;
+        napi_create_int32(env, value, &field);
+        napi_set_named_property(env, result, name, field);
+    };
+    const auto setUint64 = [env, result](const char* name, uint64_t value) {
+        napi_value field;
+        napi_create_double(env, static_cast<double>(value), &field);
+        napi_set_named_property(env, result, name, field);
+    };
+    setUint64("sessionId", snapshot.sessionId);
+    setUint64("shapeId", snapshot.shapeId);
+    setUint64("shapeRevision", snapshot.shapeRevision);
+    setUint64("positionRevision", snapshot.positionRevision);
+    setUint64("visibilityRevision", snapshot.visibilityRevision);
+    setInt32("x", snapshot.x);
+    setInt32("y", snapshot.y);
+    setInt32("width", snapshot.width);
+    setInt32("height", snapshot.height);
+    setInt32("hotX", snapshot.hotX);
+    setInt32("hotY", snapshot.hotY);
+    napi_value fallbackShape;
+    napi_get_boolean(env, snapshot.fallbackShape, &fallbackShape);
+    napi_set_named_property(env, result, "fallbackShape", fallbackShape);
+    napi_value positionAvailable;
+    napi_get_boolean(env, snapshot.positionAvailable, &positionAvailable);
+    napi_set_named_property(env, result, "positionAvailable", positionAvailable);
+    napi_value visible;
+    napi_get_boolean(env, snapshot.visible, &visible);
+    napi_set_named_property(env, result, "visible", visible);
+    napi_value protocol;
+    napi_create_string_utf8(env, snapshot.protocol.c_str(), snapshot.protocol.size(), &protocol);
+    napi_set_named_property(env, result, "protocol", protocol);
+
+    napi_value pixels = nullptr;
+    if (transferredPixels != nullptr && !transferredPixels->empty()) {
+        if (napi_create_external_arraybuffer(env, transferredPixels->data(),
+                transferredPixels->size(), FinalizeRemoteCursorPixels, transferredPixels,
+                &pixels) != napi_ok) {
+            // Fall back to a normal ArrayBuffer if the platform rejects an
+            // external buffer. The worker still removed the native snapshot
+            // copy from the UI path; this is only a compatibility fallback.
+            void* pixelsData = nullptr;
+            napi_create_arraybuffer(env, transferredPixels->size(), &pixelsData, &pixels);
+            if (pixelsData) {
+                std::memcpy(pixelsData, transferredPixels->data(), transferredPixels->size());
+            }
+            delete transferredPixels;
+        }
+    } else {
+        const std::vector<uint8_t>* source = transferredPixels != nullptr
+            ? transferredPixels : &snapshot.rgba;
+        void* pixelsData = nullptr;
+        napi_create_arraybuffer(env, source->size(), &pixelsData, &pixels);
+        if (pixels != nullptr && napi_get_arraybuffer_info(env, pixels, &pixelsData, nullptr) == napi_ok &&
+            pixelsData && !source->empty()) {
+            std::memcpy(pixelsData, source->data(), source->size());
+        }
+        if (transferredPixels != nullptr) {
+            delete transferredPixels;
+        }
+    }
+    napi_set_named_property(env, result, "rgba", pixels);
+    return result;
+}
+
 /**
  * NAPI: getRemoteCursorSnapshot(sessionId: number, includePixels?: boolean): object
  * Positions and shapes use independent revisions so ArkUI can poll without copying pixels.
@@ -2399,47 +2479,133 @@ napi_value NapiGetRemoteCursorSnapshot(napi_env env, napi_callback_info info) {
         snapshot = it->second->adapter->getRemoteCursorSnapshot(includePixels);
     }
 
-    napi_value result;
-    napi_create_object(env, &result);
-    const auto setInt32 = [env, result](const char* name, int32_t value) {
-        napi_value field;
-        napi_create_int32(env, value, &field);
-        napi_set_named_property(env, result, name, field);
-    };
-    const auto setUint64 = [env, result](const char* name, uint64_t value) {
-        napi_value field;
-        napi_create_double(env, static_cast<double>(value), &field);
-        napi_set_named_property(env, result, name, field);
-    };
-    setUint64("sessionId", snapshot.sessionId);
-    setUint64("shapeId", snapshot.shapeId);
-    setUint64("shapeRevision", snapshot.shapeRevision);
-    setUint64("positionRevision", snapshot.positionRevision);
-    setUint64("visibilityRevision", snapshot.visibilityRevision);
-    setInt32("x", snapshot.x);
-    setInt32("y", snapshot.y);
-    setInt32("width", snapshot.width);
-    setInt32("height", snapshot.height);
-    setInt32("hotX", snapshot.hotX);
-    setInt32("hotY", snapshot.hotY);
-    napi_value positionAvailable;
-    napi_get_boolean(env, snapshot.positionAvailable, &positionAvailable);
-    napi_set_named_property(env, result, "positionAvailable", positionAvailable);
-    napi_value visible;
-    napi_get_boolean(env, snapshot.visible, &visible);
-    napi_set_named_property(env, result, "visible", visible);
-    napi_value protocol;
-    napi_create_string_utf8(env, snapshot.protocol.c_str(), snapshot.protocol.size(), &protocol);
-    napi_set_named_property(env, result, "protocol", protocol);
+    return CreateRemoteCursorSnapshotValue(env, snapshot);
+}
 
-    napi_value pixels;
-    void* pixelsData = nullptr;
-    napi_create_arraybuffer(env, snapshot.rgba.size(), &pixelsData, &pixels);
-    if (pixelsData && !snapshot.rgba.empty()) {
-        std::memcpy(pixelsData, snapshot.rgba.data(), snapshot.rgba.size());
+struct RemoteCursorSnapshotAsyncData {
+    int32_t sessionId = 0;
+    std::shared_ptr<ProtocolAdapter> adapter;
+    RemoteCursorSnapshot snapshot;
+    std::string errorMessage;
+    napi_deferred deferred = nullptr;
+    napi_async_work work = nullptr;
+    bool workerFailed = false;
+};
+
+static void ExecuteRemoteCursorSnapshotAsync(napi_env /*env*/, void* rawData) {
+    auto* data = static_cast<RemoteCursorSnapshotAsyncData*>(rawData);
+    if (data == nullptr || !data->adapter) {
+        if (data != nullptr) {
+            data->workerFailed = true;
+            data->errorMessage = "remote cursor session is unavailable";
+        }
+        return;
     }
-    napi_set_named_property(env, result, "rgba", pixels);
-    return result;
+
+    try {
+        // The cursor store owns its mutex and returns a self-contained copy.
+        // This is deliberately executed on the N-API worker thread, never in
+        // the 33 ms ArkTS cursor timer.
+        data->snapshot = data->adapter->getRemoteCursorSnapshot(true);
+    } catch (const std::exception& ex) {
+        data->workerFailed = true;
+        data->errorMessage = std::string("remote cursor snapshot failed: ") + ex.what();
+    } catch (...) {
+        data->workerFailed = true;
+        data->errorMessage = "remote cursor snapshot failed: unknown native exception";
+    }
+}
+
+static void CompleteRemoteCursorSnapshotAsync(napi_env env, napi_status status, void* rawData) {
+    auto* data = static_cast<RemoteCursorSnapshotAsyncData*>(rawData);
+    if (data == nullptr) {
+        return;
+    }
+
+    if (status != napi_ok || data->workerFailed) {
+        napi_value error;
+        const std::string message = data->errorMessage.empty()
+            ? "remote cursor snapshot async work failed" : data->errorMessage;
+        napi_create_string_utf8(env, message.c_str(), NAPI_AUTO_LENGTH, &error);
+        napi_reject_deferred(env, data->deferred, error);
+    } else {
+        std::vector<uint8_t>* transferredPixels = nullptr;
+        if (!data->snapshot.rgba.empty()) {
+            transferredPixels = new (std::nothrow) std::vector<uint8_t>(
+                std::move(data->snapshot.rgba));
+            if (transferredPixels == nullptr) {
+                napi_value error;
+                napi_create_string_utf8(env, "remote cursor pixel buffer allocation failed",
+                    NAPI_AUTO_LENGTH, &error);
+                napi_reject_deferred(env, data->deferred, error);
+                napi_delete_async_work(env, data->work);
+                delete data;
+                return;
+            }
+        }
+        napi_value result = CreateRemoteCursorSnapshotValue(env, data->snapshot,
+            transferredPixels);
+        napi_resolve_deferred(env, data->deferred, result);
+    }
+
+    napi_delete_async_work(env, data->work);
+    delete data;
+}
+
+/**
+ * NAPI: getRemoteCursorSnapshotPixelsAsync(sessionId: number): Promise<object>
+ * Only the shape bitmap crosses the worker boundary. Metadata remains on the
+ * cheap synchronous snapshot path used by cursor motion polling.
+ */
+napi_value NapiGetRemoteCursorSnapshotPixelsAsync(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value args[1];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+
+    auto* data = new (std::nothrow) RemoteCursorSnapshotAsyncData();
+    if (data == nullptr) {
+        napi_throw_error(env, nullptr, "remote cursor async allocation failed");
+        return nullptr;
+    }
+    if (argc > 0) {
+        napi_get_value_int32(env, args[0], &data->sessionId);
+    }
+    auto it = g_sessions.find(data->sessionId);
+    if (it != g_sessions.end() && it->second) {
+        data->adapter = it->second->adapter;
+    }
+
+    napi_value promise;
+    napi_status status = napi_create_promise(env, &data->deferred, &promise);
+    if (status != napi_ok) {
+        delete data;
+        napi_throw_error(env, nullptr, "remote cursor async promise creation failed");
+        return nullptr;
+    }
+
+    napi_value resourceName;
+    status = napi_create_string_utf8(env, "RemoteCursorSnapshotPixelsAsync", NAPI_AUTO_LENGTH,
+        &resourceName);
+    if (status != napi_ok) {
+        delete data;
+        napi_throw_error(env, nullptr, "remote cursor async resource creation failed");
+        return nullptr;
+    }
+    status = napi_create_async_work(env, resourceName, resourceName,
+        ExecuteRemoteCursorSnapshotAsync, CompleteRemoteCursorSnapshotAsync, data, &data->work);
+    if (status != napi_ok) {
+        delete data;
+        napi_throw_error(env, nullptr, "remote cursor async work creation failed");
+        return nullptr;
+    }
+    status = napi_queue_async_work(env, data->work);
+    if (status != napi_ok) {
+        napi_delete_async_work(env, data->work);
+        delete data;
+        napi_throw_error(env, nullptr, "remote cursor async work queue failed");
+        return nullptr;
+    }
+    return promise;
 }
 
 /**
@@ -3182,6 +3348,9 @@ napi_value ExtensionLoaderNapi::Init(napi_env env, napi_value exports) {
     napi_create_function(env, "getRemoteCursorSnapshot", NAPI_AUTO_LENGTH,
                          NapiGetRemoteCursorSnapshot, nullptr, &fn);
     napi_set_named_property(env, exports, "getRemoteCursorSnapshot", fn);
+    napi_create_function(env, "getRemoteCursorSnapshotPixelsAsync", NAPI_AUTO_LENGTH,
+                         NapiGetRemoteCursorSnapshotPixelsAsync, nullptr, &fn);
+    napi_set_named_property(env, exports, "getRemoteCursorSnapshotPixelsAsync", fn);
 
     napi_create_function(env, "getConnectionLastMessage", NAPI_AUTO_LENGTH,
                          NapiGetConnectionLastMessage, nullptr, &fn);

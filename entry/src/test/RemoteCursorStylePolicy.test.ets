@@ -1,7 +1,11 @@
 import { describe, it, expect } from '@ohos/hypium';
 import {
   normalizeRemoteCursorStyle,
+  REMOTE_CURSOR_FALLBACK_EDGE_VP,
+  REMOTE_CURSOR_MAX_EDGE_VP,
+  REMOTE_CURSOR_MIN_EDGE_VP,
   remoteCursorSnapshotChanged,
+  resolveRemoteCursorVisualScale,
   shouldRenderArrowCursor,
   shouldRenderCircleCursor,
   shouldRefreshRemoteCursorBitmap,
@@ -30,14 +34,24 @@ export default function remoteCursorStylePolicyTest() {
       expect(remoteCursorSnapshotChanged(100, 200, false, 100, 200, true)).assertTrue();
       expect(remoteCursorSnapshotChanged(100, 200, true, 100, 200, true)).assertFalse();
     });
-    it('refreshes missing or stale cursor bitmaps without refreshing hidden cursors', 0, (): void => {
+    it('retries only missing cursor bitmaps and never replaces a current map on a timer', 0, (): void => {
       expect(shouldRefreshRemoteCursorBitmap(1, false, true, 0, 1000, 30000)).assertTrue();
       expect(shouldRefreshRemoteCursorBitmap(1, false, true, 1000, 1500, 30000)).assertFalse();
       expect(shouldRefreshRemoteCursorBitmap(1, false, true, 1000, 2000, 30000)).assertTrue();
-      expect(shouldRefreshRemoteCursorBitmap(1, true, true, 1000, 31000, 30000)).assertTrue();
+      expect(shouldRefreshRemoteCursorBitmap(1, true, true, 1000, 31000, 30000)).assertFalse();
       expect(shouldRefreshRemoteCursorBitmap(1, true, true, 1000, 30999, 30000)).assertFalse();
       expect(shouldRefreshRemoteCursorBitmap(1, true, false, 1000, 60000, 30000)).assertFalse();
       expect(shouldRefreshRemoteCursorBitmap(0, false, true, 0, 60000, 30000)).assertFalse();
+    });
+    it('keeps fallback and protocol cursor sizes bounded without changing aspect ratio', 0, (): void => {
+      expect(resolveRemoteCursorVisualScale(16, 16, 100, true)).assertEqual(
+        REMOTE_CURSOR_FALLBACK_EDGE_VP / 16);
+      expect(resolveRemoteCursorVisualScale(16, 16, 0.1, false)).assertEqual(
+        REMOTE_CURSOR_MIN_EDGE_VP / 16);
+      expect(resolveRemoteCursorVisualScale(16, 16, 100, false)).assertEqual(
+        REMOTE_CURSOR_MAX_EDGE_VP / 16);
+      expect(resolveRemoteCursorVisualScale(384, 16, 1, false)).assertEqual(
+        REMOTE_CURSOR_MAX_EDGE_VP / 384);
     });
   });
 }

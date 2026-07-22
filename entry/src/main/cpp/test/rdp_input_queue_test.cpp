@@ -45,20 +45,78 @@ RDP_TEST_CASE(rdp_input_queue_never_evicts_priority_input) {
     RDP_ASSERT_EQ(queue.nonDisposableOverflow(), 44U);
 }
 
-RDP_TEST_CASE(rdp_input_queue_coalesces_and_drops_only_mouse_moves) {
+RDP_TEST_CASE(rdp_input_queue_coalesces_high_rate_mouse_moves_without_a_backlog) {
+    RdpInputQueue queue;
+    for (int i = 0; i < 1000; ++i) {
+        const RdpInputEnqueueResult result = queue.enqueue(
+            RdpQueuedInputEvent::Mouse(0, 0, i, i + 1, true));
+        RDP_ASSERT(result == (i == 0 ? RdpInputEnqueueResult::Enqueued :
+                                     RdpInputEnqueueResult::ReplacedMouseMove));
+    }
+    RDP_ASSERT_EQ(queue.depth(), 1U);
+    RDP_ASSERT_EQ(queue.droppedMouseMoves(), 999U);
+    RdpQueuedInputEvent event;
+    RDP_ASSERT(queue.pop(event));
+    RDP_ASSERT(event.isMouseMove);
+    RDP_ASSERT_EQ(event.x, 999);
+    RDP_ASSERT_EQ(event.y, 1000);
+}
+
+RDP_TEST_CASE(rdp_input_queue_flushes_latest_target_before_click_barrier) {
     RdpInputQueue queue;
     RDP_ASSERT(queue.enqueue(RdpQueuedInputEvent::Mouse(0, 0, 10, 20, true)) ==
                RdpInputEnqueueResult::Enqueued);
     RDP_ASSERT(queue.enqueue(RdpQueuedInputEvent::Mouse(0, 0, 30, 40, true)) ==
                RdpInputEnqueueResult::ReplacedMouseMove);
-    RDP_ASSERT_EQ(queue.depth(), 1U);
-    for (int i = 0; i < 256; ++i) {
-        RDP_ASSERT(queue.enqueue(RdpQueuedInputEvent::Key(0, static_cast<uint16_t>(i))) ==
-                   RdpInputEnqueueResult::Enqueued);
-    }
-    RDP_ASSERT(queue.enqueue(RdpQueuedInputEvent::Mouse(0, 0, 50, 60, true)) ==
-               RdpInputEnqueueResult::DroppedMouseMove);
-    RDP_ASSERT_EQ(queue.droppedMouseMoves(), 3U);
+    RDP_ASSERT(queue.enqueue(RdpQueuedInputEvent::Mouse(0x9000, 0, 30, 40, false)) ==
+               RdpInputEnqueueResult::Enqueued);
+
+    RdpQueuedInputEvent event;
+    RDP_ASSERT(queue.pop(event));
+    RDP_ASSERT(event.isMouseMove);
+    RDP_ASSERT_EQ(event.x, 30);
+    RDP_ASSERT_EQ(event.y, 40);
+    RDP_ASSERT(queue.pop(event));
+    RDP_ASSERT(!event.isMouseMove);
+    RDP_ASSERT_EQ(event.flags, 0x9000U);
+}
+
+RDP_TEST_CASE(rdp_input_queue_preserves_wheel_text_and_move_order) {
+    RdpInputQueue queue;
+    RDP_ASSERT(queue.enqueue(RdpQueuedInputEvent::Mouse(0, 0, 11, 12, true)) ==
+               RdpInputEnqueueResult::Enqueued);
+    RDP_ASSERT(queue.enqueue(RdpQueuedInputEvent::Text(u"first")) ==
+               RdpInputEnqueueResult::Enqueued);
+    RDP_ASSERT(queue.enqueue(RdpQueuedInputEvent::Mouse(0, 0, 21, 22, true)) ==
+               RdpInputEnqueueResult::Enqueued);
+    RDP_ASSERT(queue.enqueue(RdpQueuedInputEvent::MouseWheel(0x0200, 0, 21, 22)) ==
+               RdpInputEnqueueResult::Enqueued);
+    RDP_ASSERT(queue.enqueue(RdpQueuedInputEvent::Text(u"second")) ==
+               RdpInputEnqueueResult::Enqueued);
+
+    RdpQueuedInputEvent event;
+    RDP_ASSERT(queue.pop(event));
+    RDP_ASSERT(event.isMouseMove);
+    RDP_ASSERT_EQ(event.x, 11);
+    RDP_ASSERT(queue.pop(event));
+    RDP_ASSERT_EQ(event.type, RdpInputEventType::TextBatch);
+    RDP_ASSERT(queue.pop(event));
+    RDP_ASSERT(event.isMouseMove);
+    RDP_ASSERT_EQ(event.x, 21);
+    RDP_ASSERT(queue.pop(event));
+    RDP_ASSERT_EQ(event.type, RdpInputEventType::MouseWheel);
+    RDP_ASSERT(queue.pop(event));
+    RDP_ASSERT_EQ(event.type, RdpInputEventType::TextBatch);
+    RDP_ASSERT_EQ(event.text.size(), 6U);
+}
+
+RDP_TEST_CASE(rdp_input_queue_clear_drops_pending_move_with_the_generation) {
+    RdpInputQueue queue;
+    RDP_ASSERT(queue.enqueue(RdpQueuedInputEvent::Mouse(0, 0, 55, 66, true)) ==
+               RdpInputEnqueueResult::Enqueued);
+    queue.clear();
+    RdpQueuedInputEvent event;
+    RDP_ASSERT(!queue.pop(event));
 }
 
 RDP_TEST_CASE(rdp_text_dispatch_keeps_down_release_pairs) {

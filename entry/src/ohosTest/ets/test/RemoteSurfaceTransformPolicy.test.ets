@@ -1,5 +1,6 @@
 import { describe, it, expect } from '@ohos/hypium';
 import {
+  normalizeRendererViewportToSurface,
   remotePointToSurface,
   surfaceDeltaToRemote,
   surfacePointToRemote,
@@ -47,6 +48,20 @@ export default function remoteSurfaceTransformPolicyTest(): void {
       const delta = surfaceDeltaToRemote(TRANSFORM, Infinity, 1);
       expect(Number.isFinite(delta.x)).assertTrue();
       expect(Number.isFinite(delta.y)).assertTrue();
+    });
+
+    it('normalizes_a_stale_renderer_surface_before_using_current_arkui_geometry', 0, (): void => {
+      const viewport = normalizeRendererViewportToSurface(96, 54, 1728, 972,
+        1920, 1080, 960, 540);
+      expect(viewport !== null).assertTrue();
+      if (viewport !== null) {
+        expect(viewport.viewportX).assertEqual(48);
+        expect(viewport.viewportY).assertEqual(27);
+        expect(viewport.viewportW).assertEqual(864);
+        expect(viewport.viewportH).assertEqual(486);
+      }
+      expect(normalizeRendererViewportToSurface(0, 0, 0, 100,
+        1920, 1080, 960, 540) === null).assertTrue();
     });
   });
 }

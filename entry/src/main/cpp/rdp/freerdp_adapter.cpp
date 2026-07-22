@@ -577,9 +577,9 @@ struct FreeRdpAdapter::Impl {
     std::condition_variable inputQueueCv;
     std::thread             inputQueueThread;
     RdpInputQueue           inputQueue;
-    uint64_t                inputQueueGeneration = 0;
-    bool                    inputQueueRunning = false;
-    bool                    inputQueueStop = false;
+    std::atomic<uint64_t>   inputQueueGeneration {0};
+    std::atomic<bool>       inputQueueRunning {false};
+    std::atomic<bool>       inputQueueStop {false};
     std::atomic<bool>       connecting {false};
     std::atomic<bool>       connectThreadStarted {false};
     std::atomic<bool>       driveThreadStarted {false};
@@ -616,14 +616,24 @@ struct FreeRdpAdapter::Impl {
             static_cast<unsigned long long>(threadId));
     }
 
+    bool isInputQueueWorkerCurrent(uint64_t workerGeneration) const {
+        return inputQueueRunning.load(std::memory_order_acquire) &&
+            !inputQueueStop.load(std::memory_order_acquire) &&
+            workerGeneration == inputQueueGeneration.load(std::memory_order_acquire);
+    }
+
     void sendQueuedInputEvent(FreeRdpAdapter* owner, const RdpQueuedInputEvent& event,
                               uint64_t workerGeneration) {
-        std::lock_guard<std::mutex> queueLock(inputQueueMutex);
-        if (!inputQueueRunning || inputQueueStop || workerGeneration != inputQueueGeneration) {
+        if (!isInputQueueWorkerCurrent(workerGeneration)) {
             return;
         }
         std::lock_guard<std::mutex> lock(instanceMutex);
-        if (!owner || !owner->instance_ || !owner->instance_->input) {
+        // Do not hold inputQueueMutex while FreeRDP can block on transport I/O.
+        // stopInputQueueWorker invalidates this generation before joining, so
+        // this second check prevents a stale worker from dispatching after it
+        // has waited for instanceMutex.
+        if (!isInputQueueWorkerCurrent(workerGeneration) || !owner || !owner->instance_ ||
+            !owner->instance_->input) {
             return;
         }
         switch (event.type) {
@@ -654,9 +664,9 @@ struct FreeRdpAdapter::Impl {
             {
                 std::unique_lock<std::mutex> lock(inputQueueMutex);
                 inputQueueCv.wait(lock, [this]() {
-                    return inputQueueStop || inputQueue.depth() > 0;
+                    return inputQueueStop.load(std::memory_order_acquire) || inputQueue.depth() > 0;
                 });
-                if (inputQueueStop || workerGeneration != inputQueueGeneration) {
+                if (!isInputQueueWorkerCurrent(workerGeneration)) {
                     break;
                 }
                 if (!inputQueue.pop(event)) {
@@ -669,24 +679,24 @@ struct FreeRdpAdapter::Impl {
 
     void startInputQueueWorker(FreeRdpAdapter* owner) {
         std::lock_guard<std::mutex> lock(inputQueueMutex);
-        if (inputQueueRunning) {
+        if (inputQueueRunning.load(std::memory_order_acquire)) {
             return;
         }
-        inputQueueStop = false;
+        inputQueueStop.store(false, std::memory_order_release);
         inputQueue.clear();
         inputQueue.resetMetrics();
-        ++inputQueueGeneration;
-        const uint64_t workerGeneration = inputQueueGeneration;
-        inputQueueRunning = true;
+        const uint64_t workerGeneration =
+            inputQueueGeneration.fetch_add(1, std::memory_order_acq_rel) + 1;
+        inputQueueRunning.store(true, std::memory_order_release);
         try {
             inputQueueThread = std::thread([this, owner, workerGeneration]() {
                 inputQueueWorkerLoop(owner, workerGeneration);
             });
         } catch (const std::exception& e) {
-            inputQueueRunning = false;
+            inputQueueRunning.store(false, std::memory_order_release);
             OH_LOG_WARN(LOG_APP, "[RDP] input queue worker start failed: %{public}s", e.what());
         } catch (...) {
-            inputQueueRunning = false;
+            inputQueueRunning.store(false, std::memory_order_release);
             OH_LOG_WARN(LOG_APP, "[RDP] input queue worker start failed: unknown");
         }
     }
@@ -694,11 +704,11 @@ struct FreeRdpAdapter::Impl {
     void stopInputQueueWorker() {
         {
             std::lock_guard<std::mutex> lock(inputQueueMutex);
-            if (!inputQueueRunning) {
+            if (!inputQueueRunning.load(std::memory_order_acquire)) {
                 return;
             }
-            inputQueueStop = true;
-            ++inputQueueGeneration;
+            inputQueueStop.store(true, std::memory_order_release);
+            inputQueueGeneration.fetch_add(1, std::memory_order_acq_rel);
             inputQueue.clear();
         }
         inputQueueCv.notify_all();
@@ -707,8 +717,8 @@ struct FreeRdpAdapter::Impl {
         }
         {
             std::lock_guard<std::mutex> lock(inputQueueMutex);
-            inputQueueRunning = false;
-            inputQueueStop = false;
+            inputQueueRunning.store(false, std::memory_order_release);
+            inputQueueStop.store(false, std::memory_order_release);
             inputQueue.clear();
         }
     }
@@ -716,7 +726,8 @@ struct FreeRdpAdapter::Impl {
     void enqueueInputEvent(RdpQueuedInputEvent event) {
         {
             std::lock_guard<std::mutex> lock(inputQueueMutex);
-            if (!inputQueueRunning || inputQueueStop) {
+            if (!inputQueueRunning.load(std::memory_order_acquire) ||
+                inputQueueStop.load(std::memory_order_acquire)) {
                 return;
             }
             inputQueue.enqueue(std::move(event));
@@ -727,12 +738,13 @@ struct FreeRdpAdapter::Impl {
     void enqueueMouseButtonWithMove(UINT16 moveFlags, UINT16 buttonFlags, UINT16 x, UINT16 y) {
         {
             std::lock_guard<std::mutex> lock(inputQueueMutex);
-            if (!inputQueueRunning || inputQueueStop) {
+            if (!inputQueueRunning.load(std::memory_order_acquire) ||
+                inputQueueStop.load(std::memory_order_acquire)) {
                 return;
             }
-            // The paired move is non-disposable so a following button event
-            // cannot purge it before the worker dispatches the click target.
-            inputQueue.enqueue(RdpQueuedInputEvent::Mouse(moveFlags, 0, x, y, false));
+            // The queue materializes this latest move before the button event,
+            // preserving click/drag targets while coalescing prior movement.
+            inputQueue.enqueue(RdpQueuedInputEvent::Mouse(moveFlags, 0, x, y, true));
             inputQueue.enqueue(RdpQueuedInputEvent::Mouse(buttonFlags, 0, x, y, false));
         }
         inputQueueCv.notify_one();
