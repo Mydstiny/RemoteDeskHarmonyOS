@@ -210,6 +210,16 @@ struct AwaitingFileDone {
     file_name: String,
 }
 
+/// Keep the wire keyboard mode tied to the negotiated peer capabilities instead
+/// of inferring it again for every key.  Map mode is required for physical
+/// keyboard input to reach Windows/macOS IMEs as real keys.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RemoteKeyboardTransport {
+    Legacy,
+    MacosMap,
+    WindowsMap,
+}
+
 impl RustDeskConnector {
     pub fn new() -> Self {
         Self {
@@ -811,11 +821,17 @@ impl RustDeskConnector {
         CF: FnMut(&[u8]),
         CU: FnMut(CursorStreamUpdate),
     {
-        let remote_is_macos = self
+        let remote_keyboard_transport = self
             .session
             .peer_info()
-            .map(|info| info.get_platform().to_ascii_lowercase().contains("mac"))
-            .unwrap_or(false);
+            .map(|info| {
+                Self::keyboard_transport_for_peer(info.get_platform(), info.get_version())
+            })
+            .unwrap_or(RemoteKeyboardTransport::Legacy);
+        eprintln!(
+            "[RustDesk-FFI] keyboard transport={:?}",
+            remote_keyboard_transport
+        );
         let remote_upload_dir = self.default_remote_upload_dir();
         let crypto = self
             .crypto_channel
@@ -983,7 +999,7 @@ impl RustDeskConnector {
                             crypto,
                             msg,
                             &mut physical_modifiers,
-                            remote_is_macos,
+                            remote_keyboard_transport,
                         ) {
                             control_send_errors += 1;
                             eprintln!("[RustDesk-FFI] streaming: control msg error: {}", e);
@@ -1496,7 +1512,7 @@ impl RustDeskConnector {
         crypto: &mut CryptoChannel,
         control: crate::ControlMsg,
         physical_modifiers: &mut PhysicalModifierState,
-        remote_is_macos: bool,
+        remote_keyboard_transport: RemoteKeyboardTransport,
     ) -> io::Result<()> {
         match control {
             crate::ControlMsg::Shutdown => Ok(()),
@@ -1511,7 +1527,7 @@ impl RustDeskConnector {
                     scancode,
                     pressed,
                     physical_modifiers,
-                    remote_is_macos,
+                    remote_keyboard_transport,
                 )
             }
             crate::ControlMsg::MouseEvent {
@@ -2073,13 +2089,10 @@ impl RustDeskConnector {
         Some(msg)
     }
 
-    const MACOS_CAPS_LOCK_RAW_SCANCODE: u32 = 0x10039;
-
-    /// RustDesk's official client defaults to Map mode for supported desktop peers.
-    /// macOS must receive physical virtual-key events for its active input source to
-    /// compose text. Legacy `chr` events are handled by the server with
-    /// `Enigo::key_sequence`, which inserts characters directly and bypasses the IME.
-    fn build_macos_map_message(keycode: u32, pressed: bool) -> Message {
+    /// RustDesk Map mode carries a platform-native physical keycode in `chr`.
+    /// It deliberately has no legacy modifier list: the remote receives the
+    /// matching modifier key down/up events as it would from a local keyboard.
+    fn build_map_key_message(keycode: u32, pressed: bool) -> Message {
         let mut key = KeyEvent::new();
         key.set_mode(KeyboardMode::Map);
         key.set_down(pressed);
@@ -2087,6 +2100,23 @@ impl RustDeskConnector {
         let mut msg = Message::new();
         msg.union = Some(Message_oneof_union::key_event(key));
         msg
+    }
+
+    const MACOS_CAPS_LOCK_RAW_SCANCODE: u32 = 0x10039;
+
+    /// RustDesk's official client defaults to Map mode for supported desktop peers.
+    /// macOS must receive physical virtual-key events for its active input source to
+    /// compose text. Legacy `chr` events are handled by the server with
+    /// `Enigo::key_sequence`, which inserts characters directly and bypasses the IME.
+    fn build_macos_map_message(keycode: u32, pressed: bool) -> Message {
+        Self::build_map_key_message(keycode, pressed)
+    }
+
+    /// Windows peers interpret Map-mode `chr` as a Windows Set-1 scan code.
+    /// That path reaches the remote keyboard layout and IME instead of Windows'
+    /// Unicode text injection path used by Legacy mode.
+    fn build_windows_map_message(scancode: u32, pressed: bool) -> Message {
+        Self::build_map_key_message(scancode, pressed)
     }
 
     /// HarmonyOS keyCode -> macOS ANSI virtual keycode (Carbon `kVK_*`).
@@ -2122,9 +2152,142 @@ impl RustDeskConnector {
         })
     }
 
-    fn should_use_macos_caps_lock_map(scancode: u32, remote_is_macos: bool) -> bool {
+    /// HarmonyOS keyCode -> Windows Set-1 scan code, including the E0 prefix for
+    /// extended keys. This is position based; shifted characters reuse the
+    /// underlying physical key and let the remote Windows layout/IME decide text.
+    fn harmony_keycode_to_windows_scancode(scancode: u32) -> Option<u32> {
+        const NUMBER_ROW: [u32; 10] = [0x0B, 0x02, 0x03, 0x04, 0x05,
+            0x06, 0x07, 0x08, 0x09, 0x0A];
+        const LETTERS_A_TO_Z: [u32; 26] = [0x1E, 0x30, 0x2E, 0x20, 0x12, 0x21,
+            0x22, 0x23, 0x17, 0x24, 0x25, 0x26, 0x32, 0x31, 0x18, 0x19,
+            0x10, 0x13, 0x1F, 0x14, 0x16, 0x2F, 0x11, 0x2D, 0x15, 0x2C];
+        const F1_TO_F12: [u32; 12] = [0x3B, 0x3C, 0x3D, 0x3E, 0x3F, 0x40,
+            0x41, 0x42, 0x43, 0x44, 0x57, 0x58];
+
+        if (2000..=2009).contains(&scancode) {
+            return Some(NUMBER_ROW[(scancode - 2000) as usize]);
+        }
+        if (2017..=2042).contains(&scancode) {
+            return Some(LETTERS_A_TO_Z[(scancode - 2017) as usize]);
+        }
+        if (2090..=2101).contains(&scancode) {
+            return Some(F1_TO_F12[(scancode - 2090) as usize]);
+        }
+        // HarmonyOS reports F13-F24 in a separate continuous range.
+        if (2816..=2827).contains(&scancode) {
+            return Some(0x64 + scancode - 2816);
+        }
+
+        Some(match scancode {
+            // Compatibility with desktop-style ASCII key events.
+            48..=57 => NUMBER_ROW[(scancode - 48) as usize],
+            65..=90 => LETTERS_A_TO_Z[(scancode - 65) as usize],
+
+            42 | 2055 => 0x0E,       // Backspace
+            2012 => 0xE048,          // Up
+            2013 => 0xE050,          // Down
+            2014 => 0xE04B,          // Left
+            2015 => 0xE04D,          // Right
+            2045 => 0x38,            // Left Alt
+            2046 => 0xE038,          // Right Alt / AltGr
+            2047 => 0x2A,            // Left Shift
+            2048 => 0x36,            // Right Shift
+            2049 => 0x0F,            // Tab
+            2050 => 0x39,            // Space
+            2054 => 0x1C,            // Enter
+            2067 => 0xE05D,          // Apps/Menu
+            2068 => 0xE049,          // Page Up
+            2069 => 0xE051,          // Page Down
+            2070 => 0x01,            // Escape
+            2071 => 0xE053,          // Delete
+            2072 => 0x1D,            // Left Ctrl
+            2073 => 0xE01D,          // Right Ctrl
+            2074 => 0x3A,            // Caps Lock
+            2075 => 0x46,            // Scroll Lock
+            2076 => 0xE05B,          // Left Win
+            2077 => 0xE05C,          // Right Win
+            2079 => 0xE037,          // Print Screen / SysRq
+            // Pause/Break is not a normal scan-code down/up sequence on Windows.
+            // It intentionally falls back to RustDesk's ControlKey::Pause path.
+            2081 => 0xE047,          // Home
+            2082 => 0xE04F,          // End
+            2083 => 0xE052,          // Insert
+            2102 => 0x45,            // Num Lock
+            2103 => 0x52,            // Numpad 0
+            2104 => 0x4F,            // Numpad 1
+            2105 => 0x50,            // Numpad 2
+            2106 => 0x51,            // Numpad 3
+            2107 => 0x4B,            // Numpad 4
+            2108 => 0x4C,            // Numpad 5
+            2109 => 0x4D,            // Numpad 6
+            2110 => 0x47,            // Numpad 7
+            2111 => 0x48,            // Numpad 8
+            2112 => 0x49,            // Numpad 9
+            2113 => 0xE035,          // Numpad divide
+            2114 => 0x37,            // Numpad multiply
+            2115 => 0x4A,            // Numpad subtract
+            2116 => 0x4E,            // Numpad add
+            2117 => 0x53,            // Numpad decimal
+            2119 => 0xE01C,          // Numpad enter
+            2120 => 0x0D,            // Numpad equals
+
+            2043 | 188 => 0x33,      // Comma
+            2044 | 190 => 0x34,      // Period
+            2056 | 192 => 0x29,      // Backtick
+            2057 | 189 => 0x0C,      // Minus
+            2058 | 187 => 0x0D,      // Equals
+            2059 | 219 => 0x1A,      // Left bracket
+            2060 | 221 => 0x1B,      // Right bracket
+            2061 | 220 => 0x2B,      // Backslash
+            2062 | 186 => 0x27,      // Semicolon
+            2063 | 222 => 0x28,      // Apostrophe
+            2064 | 191 => 0x35,      // Slash
+            2065 => 0x03,            // @ shares the physical 2 key
+            2066 => 0x0D,            // + shares the physical equals key
+            _ => return None,
+        })
+    }
+
+    fn parse_version_component(component: Option<&str>) -> u32 {
+        component
+            .unwrap_or_default()
+            .chars()
+            .take_while(|ch| ch.is_ascii_digit())
+            .collect::<String>()
+            .parse::<u32>()
+            .unwrap_or(0)
+    }
+
+    fn peer_supports_map_mode(version: &str) -> bool {
+        let normalized = version.trim_start_matches(|ch: char| ch == 'v' || ch == 'V');
+        let mut components = normalized.split('.');
+        let actual = (
+            Self::parse_version_component(components.next()),
+            Self::parse_version_component(components.next()),
+            Self::parse_version_component(components.next()),
+        );
+        actual >= (1, 2, 0)
+    }
+
+    fn keyboard_transport_for_peer(platform: &str, version: &str) -> RemoteKeyboardTransport {
+        let platform = platform.to_ascii_lowercase();
+        if platform.contains("mac") {
+            // Preserve the verified macOS physical-key/IME path. Existing macOS
+            // connections already use Map mode and need no compatibility downgrade.
+            return RemoteKeyboardTransport::MacosMap;
+        }
+        if platform.contains("windows") && Self::peer_supports_map_mode(version) {
+            return RemoteKeyboardTransport::WindowsMap;
+        }
+        RemoteKeyboardTransport::Legacy
+    }
+
+    fn should_use_macos_caps_lock_map(
+        scancode: u32,
+        remote_keyboard_transport: RemoteKeyboardTransport,
+    ) -> bool {
         scancode == Self::MACOS_CAPS_LOCK_RAW_SCANCODE ||
-            (remote_is_macos && scancode == 2074)
+            (remote_keyboard_transport == RemoteKeyboardTransport::MacosMap && scancode == 2074)
     }
 
     pub(crate) fn next_control_batch(controls: &ControlInbox) -> Vec<crate::ControlMsg> {
@@ -2163,9 +2326,9 @@ impl RustDeskConnector {
         scancode: u32,
         pressed: bool,
         physical_modifiers: &mut PhysicalModifierState,
-        remote_is_macos: bool,
+        remote_keyboard_transport: RemoteKeyboardTransport,
     ) -> io::Result<()> {
-        if Self::should_use_macos_caps_lock_map(scancode, remote_is_macos) {
+        if Self::should_use_macos_caps_lock_map(scancode, remote_keyboard_transport) {
             let msg = Self::build_macos_map_message(0x39, pressed);
             let status = format!(
                 "send macos caps lock pressed={} mode=map keycode=0x39",
@@ -2175,7 +2338,37 @@ impl RustDeskConnector {
             eprintln!("[RustDesk-FFI] {}", status);
             return Self::send_message_encrypted(crypto, &msg);
         }
-        if remote_is_macos {
+        if remote_keyboard_transport == RemoteKeyboardTransport::WindowsMap {
+            // Physical modifiers are still tracked so a later unsupported-key
+            // Legacy fallback cannot lose an already-held Ctrl/Alt/Shift/Win.
+            physical_modifiers.update(scancode, pressed);
+            if scancode == 2080 {
+                // Windows Pause/Break is an E1 sequence, not the NumLock scan
+                // code. RustDesk's control-key implementation emits its native
+                // Pause key, so retain that one exceptional non-text event.
+                let Some(msg) = Self::build_key_message(scancode, pressed, physical_modifiers)
+                else {
+                    return Ok(());
+                };
+                Self::log_key_message(scancode, pressed, physical_modifiers);
+                return Self::send_message_encrypted(crypto, &msg);
+            }
+            if let Some(keycode) = Self::harmony_keycode_to_windows_scancode(scancode) {
+                let msg = Self::build_windows_map_message(keycode, pressed);
+                let status = format!(
+                    "send windows physical scancode={} pressed={} mode=map keycode=0x{:X}",
+                    scancode, pressed, keycode,
+                );
+                crate::set_last_error(status.clone());
+                eprintln!("[RustDesk-FFI] {}", status);
+                return Self::send_message_encrypted(crypto, &msg);
+            }
+            eprintln!(
+                "[RustDesk-FFI] windows map missing scancode={}, falling back to legacy",
+                scancode
+            );
+        }
+        if remote_keyboard_transport == RemoteKeyboardTransport::MacosMap {
             if let Some(keycode) = Self::harmony_keycode_to_macos_keycode(scancode) {
                 physical_modifiers.update(scancode, pressed);
                 let msg = Self::build_macos_map_message(keycode, pressed);
@@ -2556,7 +2749,7 @@ mod tests {
     use super::{
         pressure_target_fps, should_refresh_for_video_starvation, ControlKey,
         KeyEvent_oneof_union, Message_oneof_union, RustDeskConnector,
-        PhysicalModifierState, RendezvousCredentials,
+        PhysicalModifierState, RemoteKeyboardTransport, RendezvousCredentials,
     };
     use crate::protocol::message_proto::{
         Hash, LoginResponse, Message, Misc_oneof_union, PointerDeviceEvent_oneof_union,
@@ -2790,6 +2983,84 @@ mod tests {
     }
 
     #[test]
+    fn supported_windows_peers_use_map_transport_for_physical_keys() {
+        assert_eq!(
+            RustDeskConnector::keyboard_transport_for_peer("Windows", "1.2.0"),
+            RemoteKeyboardTransport::WindowsMap
+        );
+        assert_eq!(
+            RustDeskConnector::keyboard_transport_for_peer("windows", "1.10.0"),
+            RemoteKeyboardTransport::WindowsMap
+        );
+        assert_eq!(
+            RustDeskConnector::keyboard_transport_for_peer("Windows", "1.1.9"),
+            RemoteKeyboardTransport::Legacy
+        );
+        assert_eq!(
+            RustDeskConnector::keyboard_transport_for_peer("Windows", "unknown"),
+            RemoteKeyboardTransport::Legacy
+        );
+        assert_eq!(
+            RustDeskConnector::keyboard_transport_for_peer("Mac OS", "1.1.0"),
+            RemoteKeyboardTransport::MacosMap
+        );
+    }
+
+    #[test]
+    fn windows_map_uses_physical_scan_codes_instead_of_unicode_characters() {
+        for (harmony_keycode, expected_scancode) in [
+            (2017, 0x1E), // A
+            (2038, 0x2F), // V
+            (2001, 0x02), // 1
+            (2057, 0x0C), // minus
+            (2072, 0x1D), // left Ctrl
+            (2073, 0xE01D), // right Ctrl
+            (2076, 0xE05B), // left Win
+            (2119, 0xE01C), // numpad Enter
+        ] {
+            assert_eq!(
+                RustDeskConnector::harmony_keycode_to_windows_scancode(harmony_keycode),
+                Some(expected_scancode),
+                "Harmony keycode {}",
+                harmony_keycode
+            );
+        }
+
+        for pressed in [true, false] {
+            let message = RustDeskConnector::build_windows_map_message(0x1E, pressed);
+            match message.union {
+                Some(Message_oneof_union::key_event(key)) => {
+                    assert_eq!(key.mode, KeyboardMode::Map);
+                    assert_eq!(key.down, pressed);
+                    assert!(matches!(key.union, Some(KeyEvent_oneof_union::chr(0x1E))));
+                    assert!(key.modifiers.is_empty());
+                }
+                _ => panic!("Windows physical key must be a Map key event"),
+            }
+        }
+    }
+
+    #[test]
+    fn windows_map_covers_extended_function_keys_and_keeps_pause_special() {
+        assert_eq!(
+            RustDeskConnector::harmony_keycode_to_windows_scancode(2816),
+            Some(0x64)
+        );
+        assert_eq!(
+            RustDeskConnector::harmony_keycode_to_windows_scancode(2827),
+            Some(0x6F)
+        );
+        assert_eq!(
+            RustDeskConnector::harmony_keycode_to_windows_scancode(2079),
+            Some(0xE037)
+        );
+        assert_eq!(
+            RustDeskConnector::harmony_keycode_to_windows_scancode(2080),
+            None
+        );
+    }
+
+    #[test]
     fn caps_lock_preserves_physical_hold_duration() {
         let mut modifiers = PhysicalModifierState::default();
         let down = RustDeskConnector::build_key_message(2074, true, &mut modifiers).unwrap();
@@ -2814,10 +3085,16 @@ mod tests {
     fn macos_caps_lock_uses_raw_map_keycode() {
         assert!(RustDeskConnector::should_use_macos_caps_lock_map(
             RustDeskConnector::MACOS_CAPS_LOCK_RAW_SCANCODE,
-            false,
+            RemoteKeyboardTransport::Legacy,
         ));
-        assert!(RustDeskConnector::should_use_macos_caps_lock_map(2074, true));
-        assert!(!RustDeskConnector::should_use_macos_caps_lock_map(2074, false));
+        assert!(RustDeskConnector::should_use_macos_caps_lock_map(
+            2074,
+            RemoteKeyboardTransport::MacosMap,
+        ));
+        assert!(!RustDeskConnector::should_use_macos_caps_lock_map(
+            2074,
+            RemoteKeyboardTransport::WindowsMap,
+        ));
         for pressed in [true, false] {
             let message = RustDeskConnector::build_macos_map_message(0x39, pressed);
             match message.union {

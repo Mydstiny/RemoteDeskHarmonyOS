@@ -353,7 +353,9 @@ RdpCertificateInfo probeRdpCertificateOverTls(const std::string& host, int port,
 #include <freerdp/gdi/gdi.h>
 #include <freerdp/event.h>
 #include <freerdp/input.h>
+#include <freerdp/locale/locale.h>
 #include <freerdp/settings_types.h>
+#include <winpr/input.h>
 #include <winpr/wtypes.h>
 #include <winpr/thread.h>
 #include <pthread.h>
@@ -376,6 +378,25 @@ extern "C" UINT freerdp_ohos_rdpdr_register_drive(rdpContext* context, const cha
 
 static const char* safeFreeRdpString(const char* value, const char* fallback) {
     return value ? value : fallback;
+}
+
+static UINT32 resolveRdpKeyboardLayoutFromSystemLocale() {
+    // Match FreeRDP's desktop clients: use the controller's current locale as
+    // the advertised Windows layout, then use US only as a deterministic last
+    // resort. Leaving this as zero makes the server guess and can desynchronize
+    // physical scan codes from the active remote IME.
+    DWORD layout = 0;
+    const int detectResult = freerdp_detect_keyboard_layout_from_system_locale(&layout);
+    if (detectResult != 0 || layout == 0) {
+        static constexpr UINT32 kEnglishUnitedStatesLayout = 0x00000409;
+        OH_LOG_WARN(LOG_APP,
+                    "[RDP] keyboard layout detection failed result=%{public}d; using US fallback=0x%{public}08x",
+                    detectResult, kEnglishUnitedStatesLayout);
+        return kEnglishUnitedStatesLayout;
+    }
+    OH_LOG_INFO(LOG_APP, "[RDP] keyboard layout detected from system locale=0x%{public}08x",
+                static_cast<UINT32>(layout));
+    return static_cast<UINT32>(layout);
 }
 
 static std::string sanitizeRdpDriveName(const std::string& name) {
@@ -608,6 +629,9 @@ struct FreeRdpAdapter::Impl {
         switch (event.type) {
             case RdpInputEventType::Key:
                 freerdp_input_send_keyboard_event(owner->instance_->input, event.flags, event.code);
+                break;
+            case RdpInputEventType::Pause:
+                freerdp_input_send_keyboard_pause_event(owner->instance_->input);
                 break;
             case RdpInputEventType::TextBatch:
                 DispatchTextBatch(event.text, KBD_FLAGS_RELEASE,
@@ -2134,6 +2158,26 @@ void FreeRdpAdapter::connectThreadFunc() {
     // overlay consumes the callback; it does not change the system pointer.
     freerdp_settings_set_bool(s, FreeRDP_GrabMouse, TRUE);
 
+    // Input capability set: advertise an enhanced keyboard and a concrete
+    // layout before the RDP handshake. Scan-code input then follows the same
+    // controller layout used by the remote Windows IME instead of server-side
+    // guessing from an all-zero KeyboardLayout.
+    const UINT32 keyboardLayout = resolveRdpKeyboardLayoutFromSystemLocale();
+    if (!freerdp_settings_set_uint32(s, FreeRDP_KeyboardType,
+                                     WINPR_KBD_TYPE_IBM_ENHANCED) ||
+        !freerdp_settings_set_uint32(s, FreeRDP_KeyboardSubType, 0) ||
+        !freerdp_settings_set_uint32(s, FreeRDP_KeyboardFunctionKey, 24) ||
+        !freerdp_settings_set_uint32(s, FreeRDP_KeyboardLayout, keyboardLayout)) {
+        impl_->setState(ConnectionState::ERROR,
+                        "RDP keyboard capability configuration failed [E-RDP-KBD-CAPS]");
+        cleanupInstance();
+        impl_->connecting = false;
+        return;
+    }
+    OH_LOG_INFO(LOG_APP,
+                "[RDP] keyboard capabilities type=%{public}u subtype=0 functionKeys=24 layout=0x%{public}08x",
+                static_cast<UINT32>(WINPR_KBD_TYPE_IBM_ENHANCED), keyboardLayout);
+
     // 色深 — 使用 cfg 值, 不再硬编码 32
     freerdp_settings_set_uint32(s, FreeRDP_ColorDepth,
                                 static_cast<UINT32>(cfg.colorDepth > 0 ? cfg.colorDepth : 32));
@@ -2596,6 +2640,15 @@ bool FreeRdpAdapter::presentCachedBackgroundFrame() {
 // ---- 输入事件 ----
 void FreeRdpAdapter::sendKey(uint32_t scancode, bool pressed) {
     if (!impl_) {
+        return;
+    }
+    if (isHarmonyPauseKeyCode(scancode)) {
+        // FreeRDP emits the required atomic Ctrl+NumLock-compatible Pause
+        // sequence. There is intentionally no corresponding key-up event.
+        if (pressed) {
+            impl_->enqueueInputEvent(RdpQueuedInputEvent::Pause());
+            OH_LOG_DEBUG(LOG_APP, "[RDP] queued special Pause/Break event");
+        }
         return;
     }
     // 将 HarmonyOS keyCode 映射到 Windows RDP scancode

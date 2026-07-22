@@ -11,6 +11,12 @@
 
 #include <cstdint>
 
+// Pause/Break is encoded by RDP as a special Ctrl+NumLock sequence. It must not
+// share the ordinary 0x45 key path with NumLock.
+inline bool isHarmonyPauseKeyCode(uint32_t keyCode) {
+    return keyCode == 2080;
+}
+
 inline uint32_t mapHarmonyKeyCodeToRdpScancode(uint32_t keyCode) {
     switch (keyCode) {
         // ASCII letters (backwards-compat, keep but prefer Harmony codes below).
@@ -118,7 +124,6 @@ inline uint32_t mapHarmonyKeyCodeToRdpScancode(uint32_t keyCode) {
         case 2076: return 0xE05B; // Left Meta
         case 2077: return 0xE05C; // Right Meta
         case 2079: return 0xE037; // Print Screen / SysRq
-        case 2080: return 0x45;   // Pause / Break
         case 2081: return 0xE047; // Home
         case 2082: return 0xE04F; // End
         case 2083: return 0xE052; // Insert
@@ -136,6 +141,19 @@ inline uint32_t mapHarmonyKeyCodeToRdpScancode(uint32_t keyCode) {
         case 2099: return 0x44; // F10
         case 2100: return 0x57; // F11
         case 2101: return 0x58; // F12
+        // HarmonyOS reports F13-F24 as a second continuous key-code range.
+        case 2816: return 0x64; // F13
+        case 2817: return 0x65; // F14
+        case 2818: return 0x66; // F15
+        case 2819: return 0x67; // F16
+        case 2820: return 0x68; // F17
+        case 2821: return 0x69; // F18
+        case 2822: return 0x6A; // F19
+        case 2823: return 0x6B; // F20
+        case 2824: return 0x6C; // F21
+        case 2825: return 0x6D; // F22
+        case 2826: return 0x6E; // F23
+        case 2827: return 0x6F; // F24
         case 2102: return 0x45; // Num Lock
 
         // Numpad keys from rustdesk_ffi/src/connector.rs.

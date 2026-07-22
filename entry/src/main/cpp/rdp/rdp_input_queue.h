@@ -15,6 +15,7 @@
 
 enum class RdpInputEventType {
     Key,
+    Pause,
     TextBatch,
     Mouse,
     MouseWheel,
@@ -34,6 +35,15 @@ struct RdpQueuedInputEvent {
         event.type = RdpInputEventType::Key;
         event.flags = flags;
         event.code = code;
+        return event;
+    }
+
+    // Pause/Break is an atomic RDP input sequence, not a normal key down/up
+    // pair. Keep it on the input worker so it cannot race FreeRDP's connection
+    // thread or be confused with NumLock (scan code 0x45).
+    static RdpQueuedInputEvent Pause() {
+        RdpQueuedInputEvent event;
+        event.type = RdpInputEventType::Pause;
         return event;
     }
 
