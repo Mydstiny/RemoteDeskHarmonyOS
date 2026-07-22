@@ -7,6 +7,8 @@ import {
   resolveRemoteCursorVisualScale,
   shouldRenderArrowCursor,
   shouldRenderCircleCursor,
+  shouldRenderRemoteCursorArrow,
+  shouldRenderRemoteCursorFallbackIndicator,
   shouldRefreshRemoteCursorBitmap,
   shouldApplyCloudVirtualMouseStyle,
   VIRTUAL_MOUSE_STYLE_RESTORE_VERSION
@@ -36,6 +38,20 @@ export default function remoteCursorStylePolicyTest(): void {
       expect(shouldRenderArrowCursor('arrow', false, true, true)).assertFalse();
       expect(shouldRenderArrowCursor('arrow', true, false, true)).assertFalse();
       expect(shouldRenderCircleCursor('circle', true, true, false)).assertFalse();
+    });
+
+    it('uses_a_circle_placeholder_for_a_non_authoritative_cursor_shape', 0, (): void => {
+      expect(shouldRenderRemoteCursorFallbackIndicator(true, true, true, true)).assertTrue();
+      expect(shouldRenderRemoteCursorFallbackIndicator(false, true, true, true)).assertFalse();
+      expect(shouldRenderRemoteCursorFallbackIndicator(true, false, true, true)).assertFalse();
+      expect(shouldRenderRemoteCursorFallbackIndicator(true, true, false, true)).assertFalse();
+      expect(shouldRenderRemoteCursorFallbackIndicator(true, true, true, false)).assertFalse();
+    });
+
+    it('never_renders_the_fallback_bitmap_as_an_authoritative_arrow', 0, (): void => {
+      expect(shouldRenderRemoteCursorArrow('arrow', true, true, true, true, true, false)).assertTrue();
+      expect(shouldRenderRemoteCursorArrow('arrow', true, true, true, true, true, true)).assertFalse();
+      expect(shouldRenderRemoteCursorArrow('circle', true, true, true, true, true, false)).assertFalse();
     });
 
     it('gates_cloud_style_until_local_restore_is_complete', 0, (): void => {

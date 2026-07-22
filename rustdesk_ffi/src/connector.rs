@@ -1252,11 +1252,34 @@ impl RustDeskConnector {
                 Some(Message_oneof_union::cursor_data(data)) => {
                     last_msg_kind = "cursor_data";
                     *msg_stats.entry("cursor_data").or_default() += 1;
+                    let cursor_id = data.get_id();
+                    let cursor_width = data.get_width();
+                    let cursor_height = data.get_height();
+                    let cursor_hot_x = data.get_hotx();
+                    let cursor_hot_y = data.get_hoty();
                     if cursor_state.apply_data(data) {
                         if let Some(shape) = cursor_state.current_shape().cloned() {
                             on_cursor(CursorStreamUpdate::Shape(shape));
                             on_cursor(CursorStreamUpdate::Visibility(true));
+                        } else {
+                            eprintln!(
+                                "[RustDesk-FFI] cursor data cached id={} size={}x{} hot={},{} waiting_for_cursor_id",
+                                cursor_id,
+                                cursor_width,
+                                cursor_height,
+                                cursor_hot_x,
+                                cursor_hot_y,
+                            );
                         }
+                    } else {
+                        eprintln!(
+                            "[RustDesk-FFI] cursor data rejected id={} size={}x{} hot={},{}",
+                            cursor_id,
+                            cursor_width,
+                            cursor_height,
+                            cursor_hot_x,
+                            cursor_hot_y,
+                        );
                     }
                 }
                 Some(Message_oneof_union::cursor_id(id)) => {
@@ -1267,6 +1290,11 @@ impl RustDeskConnector {
                             on_cursor(CursorStreamUpdate::Shape(shape));
                             on_cursor(CursorStreamUpdate::Visibility(true));
                         }
+                    } else {
+                        eprintln!(
+                            "[RustDesk-FFI] cursor id pending id={} cache_miss=true",
+                            id,
+                        );
                     }
                 }
                 Some(Message_oneof_union::peer_info(_)) => {

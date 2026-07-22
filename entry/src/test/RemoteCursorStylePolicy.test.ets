@@ -8,6 +8,8 @@ import {
   resolveRemoteCursorVisualScale,
   shouldRenderArrowCursor,
   shouldRenderCircleCursor,
+  shouldRenderRemoteCursorArrow,
+  shouldRenderRemoteCursorFallbackIndicator,
   shouldRefreshRemoteCursorBitmap,
   shouldRenderVirtualTouchpadCursor
 } from '../main/ets/services/RemoteCursorStylePolicy';
@@ -28,6 +30,18 @@ export default function remoteCursorStylePolicyTest() {
       expect(shouldRenderCircleCursor('circle', true, true, true)).assertTrue();
       expect(shouldRenderCircleCursor('circle', false, true, true)).assertFalse();
       expect(shouldRenderCircleCursor('arrow', true, true, true)).assertFalse();
+    });
+    it('uses a circle placeholder for a non-authoritative cursor shape', 0, (): void => {
+      expect(shouldRenderRemoteCursorFallbackIndicator(true, true, true, true)).assertTrue();
+      expect(shouldRenderRemoteCursorFallbackIndicator(false, true, true, true)).assertFalse();
+      expect(shouldRenderRemoteCursorFallbackIndicator(true, false, true, true)).assertFalse();
+      expect(shouldRenderRemoteCursorFallbackIndicator(true, true, false, true)).assertFalse();
+      expect(shouldRenderRemoteCursorFallbackIndicator(true, true, true, false)).assertFalse();
+    });
+    it('never renders the fallback bitmap as an authoritative arrow', 0, (): void => {
+      expect(shouldRenderRemoteCursorArrow('arrow', true, true, true, true, true, false)).assertTrue();
+      expect(shouldRenderRemoteCursorArrow('arrow', true, true, true, true, true, true)).assertFalse();
+      expect(shouldRenderRemoteCursorArrow('circle', true, true, true, true, true, false)).assertFalse();
     });
     it('invalidates the cursor view only when its rendered snapshot changes', 0, (): void => {
       expect(remoteCursorSnapshotChanged(100, 200, true, 101, 200, true)).assertTrue();

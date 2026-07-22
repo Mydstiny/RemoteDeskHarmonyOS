@@ -803,9 +803,9 @@ void RustDeskBridge::setSessionIdentity(uint64_t sessionId) {
     impl_->lastFrameAtMs.store(0, std::memory_order_release);
     impl_->cursorStore.reset(sessionId, "rustdesk");
     // RustDesk does not guarantee that an unchanged cursor shape is repeated
-    // after every UI/surface handoff. This local bootstrap arrow is explicitly
-    // marked non-authoritative so ArkUI renders it at a stable mobile size
-    // rather than applying remote-desktop geometry to it.
+    // after every UI/surface handoff. This local bootstrap shape is explicitly
+    // marked non-authoritative so ArkUI can keep a stable circle affordance
+    // until the protocol supplies the real cursor bitmap.
     impl_->cursorStore.setFallbackShape();
     impl_->cursorStore.setVisible(true);
 }

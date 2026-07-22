@@ -25,8 +25,8 @@ struct RemoteCursorSnapshot {
     int height = 0;
     int hotX = 0;
     int hotY = 0;
-    /** True only for the RustDesk controller-side bootstrap arrow. It is not
-     * a protocol cursor and must not inherit remote-desktop scale. */
+    /** True only for the RustDesk controller-side bootstrap shape. It is not a
+     * protocol cursor and must not be rendered as an authoritative arrow. */
     bool fallbackShape = false;
     bool visible = false;
     /** False until a protocol callback has supplied a coordinate. The default

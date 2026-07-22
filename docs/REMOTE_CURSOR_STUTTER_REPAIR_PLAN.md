@@ -452,7 +452,7 @@ was not available for a fresh live-session run in this checkpoint.
 ### 15.1 Implemented contracts
 
 - `RemoteCursorStore` and both NAPI declaration surfaces expose `fallbackShape`.
-  RustDesk bootstrap arrows are marked as controller-side fallback state; protocol
+  RustDesk bootstrap shapes are marked as controller-side fallback state; protocol
   shapes and `SetDefault` clear that state and advance `shapeRevision`.
 - Cursor bitmap ownership is revision-based. A valid `PixelMap` is retained until
   its shape revision changes; failed loads retry at a bounded one-second cadence.
@@ -463,8 +463,15 @@ was not available for a fresh live-session run in this checkpoint.
   `ArrayBuffer`; stale session/revision completions are rejected before
   `createPixelMap`, so a cursor-shape transition cannot block the page or video
   pipeline while copying a large bitmap.
-- The fallback arrow uses a fixed 22vp edge. Protocol cursors use one uniform
-  scale with 18–48vp bounds, preserving aspect ratio and hotspot alignment.
+- The fallback bitmap retains a fixed 22vp metadata scale, but it is never
+  rendered as the official arrow. During the cold-start gap the existing circle
+  touch indicator is used as a stable placeholder; protocol cursors use one
+  uniform scale with 18–48vp bounds, preserving aspect ratio and hotspot
+  alignment.
+- RustDesk `cursor_data`/`cursor_id` ordering now emits bounded diagnostics for
+  cached data, rejected data, and cursor-id cache misses. This distinguishes a
+  delayed protocol shape from an ArkUI/NAPI rendering failure without changing
+  the receive-loop behavior.
   Renderer viewport snapshots are normalized from their producing surface into the
   current ArkUI surface before cursor or input coordinate conversion.
 - Phone/Pad virtual-touchpad mode explicitly hides the HarmonyOS system pointer;

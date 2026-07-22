@@ -71,7 +71,8 @@ import {
   remoteCursorSnapshotChanged,
   RemoteCursorStyle,
   resolveRemoteCursorVisualScale,
-  shouldRenderArrowCursor,
+  shouldRenderRemoteCursorArrow,
+  shouldRenderRemoteCursorFallbackIndicator,
   shouldRenderCircleCursor,
   shouldRefreshRemoteCursorBitmap
 } from '../services/RemoteCursorStylePolicy';
@@ -1043,16 +1044,21 @@ struct RemoteDesktop {
 
   private shouldShowTouchIndicator(): boolean {
     const cursorViewRevision: number = this.remoteCursorViewRevision;
-    return shouldRenderCircleCursor(this.remoteCursorDisplayStyle(), this.remoteCursorReady,
-      this.connected, this.isTouchpadControlMode()) && shouldRenderTouchPointerIndicator(true,
+    const style: RemoteCursorStyle = this.remoteCursorDisplayStyle();
+    const configuredCircle: boolean = shouldRenderCircleCursor(style, this.remoteCursorReady,
+      this.connected, this.isTouchpadControlMode());
+    const fallbackCircle: boolean = shouldRenderRemoteCursorFallbackIndicator(
+      this.remoteCursorFallbackShape, this.connected, this.isTouchpadControlMode(),
+      this.remoteCursorReady);
+    return (configuredCircle || fallbackCircle) && shouldRenderTouchPointerIndicator(true,
       shouldUseSystemMousePointer(this.isKeyboardMouseControlMode())) && cursorViewRevision >= 0;
   }
 
   private shouldShowArrowCursor(): boolean {
     const cursorViewRevision: number = this.remoteCursorViewRevision;
-    return shouldRenderArrowCursor(this.remoteCursorDisplayStyle(), this.connected,
-      this.isTouchpadControlMode(), this.remoteCursorReady) && this.remoteCursorNativeVisible &&
-      this.remoteCursorPixelMap !== null && cursorViewRevision >= 0;
+    return shouldRenderRemoteCursorArrow(this.remoteCursorDisplayStyle(), this.connected,
+      this.isTouchpadControlMode(), this.remoteCursorReady, this.remoteCursorNativeVisible,
+      this.remoteCursorPixelMap !== null, this.remoteCursorFallbackShape) && cursorViewRevision >= 0;
   }
 
   private arrowCursorPoint(): LocalPoint {

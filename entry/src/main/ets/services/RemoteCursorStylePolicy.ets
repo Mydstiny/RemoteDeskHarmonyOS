@@ -29,6 +29,27 @@ export function shouldRenderArrowCursor(style: RemoteCursorStyle, connected: boo
   return style === 'arrow' && shouldRenderVirtualTouchpadCursor(connected, touchpadMode, cursorReady);
 }
 
+/**
+ * The controller-side bootstrap bitmap is not a remote cursor shape. Keep it
+ * out of the official arrow path so a delayed RustDesk shape cannot present a
+ * misleading triangle for the lifetime of the connection.
+ */
+export function shouldRenderRemoteCursorArrow(style: RemoteCursorStyle, connected: boolean,
+  touchpadMode: boolean, cursorReady: boolean, nativeVisible: boolean,
+  hasPixelMap: boolean, fallbackShape: boolean): boolean {
+  return shouldRenderArrowCursor(style, connected, touchpadMode, cursorReady) &&
+    nativeVisible && hasPixelMap && !fallbackShape;
+}
+
+/**
+ * While RustDesk has not replayed a real shape, retain a visible and stable
+ * touchpad affordance without drawing the non-authoritative bootstrap bitmap.
+ */
+export function shouldRenderRemoteCursorFallbackIndicator(fallbackShape: boolean,
+  connected: boolean, touchpadMode: boolean, cursorReady: boolean): boolean {
+  return fallbackShape && shouldRenderVirtualTouchpadCursor(connected, touchpadMode, cursorReady);
+}
+
 export function shouldRenderCircleCursor(style: RemoteCursorStyle, cursorReady: boolean,
   connected: boolean, touchpadMode: boolean): boolean {
   return style === 'circle' && shouldRenderVirtualTouchpadCursor(connected, touchpadMode, cursorReady);
@@ -45,10 +66,11 @@ export function shouldRefreshRemoteCursorBitmap(shapeRevision: number, hasPixelM
 }
 
 /**
- * Resolve one uniform visual scale for a protocol cursor. The bootstrap arrow
- * is a controller-side affordance, not part of the remote desktop, so it has
- * a fixed physical edge. Protocol shapes retain their aspect ratio while
- * staying legible on Phone/Pad and bounded during a stale viewport handoff.
+ * Resolve one uniform visual scale for a protocol cursor. The bootstrap shape
+ * is controller-side metadata, not part of the remote desktop; if it is kept
+ * during a transition, it has a fixed physical edge. Protocol shapes retain
+ * their aspect ratio while staying legible on Phone/Pad and bounded during a
+ * stale viewport handoff.
  */
 export function resolveRemoteCursorVisualScale(width: number, height: number,
   projectedScale: number, fallbackShape: boolean): number {
