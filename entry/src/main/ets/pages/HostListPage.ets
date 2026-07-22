@@ -87,6 +87,7 @@ import {
   RUSTDESK_PEER_TCP_PORT,
   RustDeskHostEndpoint
 } from '../services/RustDeskHostConfigPolicy';
+import { rustDeskRelayKeyModeForFfi } from '../services/RustDeskRelayKeyPolicy';
 import { sheetOpenDelayMsAfterDismiss } from '../services/SheetTransitionPolicy';
 import { shouldPreserveManagedRustDeskRoute } from '../services/RustDeskProSyncPolicy';
 import { resolveFabAddStyle } from '../services/FabAddStylePolicy';
@@ -111,7 +112,6 @@ import {
   shouldFallbackToOperatingHandOnSubscribeFailure,
   shouldMarkGripMonitorStaleAfterWatchdog,
   shouldRebindGripMonitorOnPageShow,
-  shouldRequestGripPermission,
   shouldRunForegroundSensor,
   shouldRestartGripMonitor,
   shouldUseGripFabAlignment,
@@ -416,6 +416,9 @@ struct HostListPage {
   @StorageLink('totpLocked') totpPageLocked: boolean = false;
   @StorageLink('haloColor') haloColor: string = '#FFFFFF';
   @StorageLink('ambientLightEffectEnabled') ambientLightEffectEnabled: boolean = false;
+  // Optional UI enhancement.  It must never request a sensor permission or
+  // delay the host list until the user explicitly turns it on.
+  @StorageLink('gripAlignmentEnabled') gripAlignmentEnabled: boolean = false;
   @StorageLink('liveViewEnabled') liveViewEnabled: boolean = false;
   @StorageLink('liveViewMode') liveViewMode: number = 1; // 0=关闭, 1=AVSession, 2=通知
   @State ambientLightIntensity: number = 0.5;
@@ -482,6 +485,7 @@ struct HostListPage {
   private gripMonitorRegistered: boolean = false;
   private gripMonitorUsingOperatingFallback: boolean = false;
   private gripPermissionGranted: boolean = false;
+  private gripPermissionRequest: Promise<void> | null = null;
   private lastSheetDismissAtMs: number = 0;
   private pendingSheetOpenTimer: number = -1;
   // 添加主机 Sheet 关闭动画期间禁止重入，避免现代/经典 builder 竞态切换。
@@ -650,6 +654,8 @@ struct HostListPage {
       const savedAccent: string = prefs.getSync('accentColor', '') as string;
       const savedFollowSystem: boolean = prefs.getSync('followSystem', true) as boolean;
       const savedAmbientLightEffect: boolean = prefs.getSync('ambientLightEffectEnabled', false) as boolean;
+      const gripAlignmentPreferenceVersion: number = prefs.getSync('gripAlignmentPreferenceVersion', 0) as number;
+      let savedGripAlignmentEnabled: boolean = prefs.getSync('gripAlignmentEnabled', false) as boolean;
       const savedLiveViewEnabled: boolean = prefs.getSync('liveViewEnabled', true) as boolean;
       const savedLiveViewMode: number = prefs.getSync('liveViewMode', 1) as number;
       const savedHostAddMode: string = prefs.getSync('hostAddMode', 'modern') as string;
@@ -673,6 +679,17 @@ struct HostListPage {
       this.syncHaloColorForCurrentTheme();
       this.ambientLightEffectEnabled = savedAmbientLightEffect;
       AppStorage.setOrCreate('ambientLightEffectEnabled', this.ambientLightEffectEnabled);
+      // Earlier releases requested DETECT_GESTURE at first launch.  Migrate
+      // every existing install to an explicit off state once, so an upgrade
+      // cannot revive that prompt merely because permission was previously
+      // granted.
+      if (gripAlignmentPreferenceVersion < 1) {
+        savedGripAlignmentEnabled = false;
+        prefs.putSync('gripAlignmentEnabled', false);
+        prefs.putSync('gripAlignmentPreferenceVersion', 1);
+      }
+      this.gripAlignmentEnabled = savedGripAlignmentEnabled && !this.isDesktopDevice;
+      AppStorage.setOrCreate('gripAlignmentEnabled', this.gripAlignmentEnabled);
       this.liveViewEnabled = savedLiveViewEnabled;
       AppStorage.setOrCreate('liveViewEnabled', this.liveViewEnabled);
       this.liveViewMode = savedLiveViewMode >= 0 && savedLiveViewMode <= 2 ? savedLiveViewMode : 1;
@@ -830,9 +847,8 @@ struct HostListPage {
       AppStorage.setOrCreate('rdpControlMode', this.rdpControlMode);
       AppStorage.setOrCreate('rdpAuthIdentityMode', this.rdpAuthIdentityMode);
     } catch (_err) { /* ignore */ }
-    if (shouldRunForegroundSensor(this.pageActive, this.appInBackground, shouldUseGripMonitor(this.isDesktopDevice))) {
-      await this.requestGripPermission();
-    }
+    // The home page is a core path.  Loading it must not await an optional
+    // permission dialog or sensor service.
     await this.load();
     this.migrateVirtualMouseStyleCloudSetting();
     this.loadAfterServiceReady();
@@ -840,6 +856,7 @@ struct HostListPage {
     this.applyDesktopRustDeskInputMode();
     this.registerInputDeviceWatcher();
     this.syncAmbientLightMonitor();
+    this.ensureGripMonitorOnPageShow();
   }
 
   onPageShow(): void {
@@ -1395,6 +1412,14 @@ struct HostListPage {
       hilog.info(0x0001, 'GripFAB', 'skip monitor on PC device');
       return;
     }
+    if (!this.gripAlignmentEnabled) {
+      if (this.gripMonitorRegistered) {
+        this.stopGripMonitor(true);
+      }
+      this.holdingHand = motion.HoldingHandStatus.UNKNOWN_STATUS;
+      this.dbgMonitor = '用户未启用';
+      return;
+    }
     hilog.info(0x0001, 'GripFAB', 'ensure pageActive=' + (this.pageActive ? '1' : '0') +
       ' permission=' + (this.gripPermissionGranted ? '1' : '0') +
       ' registered=' + (this.gripMonitorRegistered ? '1' : '0') +
@@ -1407,9 +1432,8 @@ struct HostListPage {
       this.startGripMonitor();
       return;
     }
-    if (shouldRequestGripPermission(this.pageActive, this.gripMonitorRegistered, this.gripPermissionGranted)) {
-      this.requestGripPermission();
-    }
+    // A foreground/page-show transition may resume an already authorised
+    // feature, but it must never open the system permission dialog itself.
   }
 
   // 握持回调 — 直接赋值 @State, FAB 容器的 .animation() 自动处理弹簧过渡
@@ -1525,8 +1549,29 @@ struct HostListPage {
     this.startGripMonitor();
   }
 
+  // All explicit enable attempts share one in-flight permission request. This
+  // prevents aboutToAppear/onPageShow/background timing from creating two
+  // system dialogs or leaving the UI waiting for the wrong Promise.
+  private requestGripPermission(): Promise<void> {
+    if (this.gripPermissionRequest !== null) {
+      return this.gripPermissionRequest;
+    }
+    const request: Promise<void> = this.requestGripPermissionInternal();
+    this.gripPermissionRequest = request;
+    request.then((): void => {
+      if (this.gripPermissionRequest === request) { this.gripPermissionRequest = null; }
+    }, (): void => {
+      if (this.gripPermissionRequest === request) { this.gripPermissionRequest = null; }
+    });
+    return request;
+  }
+
   // 智感握姿运行时权限请求: holdingHandChanged 官方只要求 DETECT_GESTURE。
-  private async requestGripPermission(): Promise<void> {
+  private async requestGripPermissionInternal(): Promise<void> {
+    if (!this.gripAlignmentEnabled) {
+      this.dbgMonitor = '用户未启用';
+      return;
+    }
     if (this.appInBackground) {
       this.dbgMonitor = '后台暂停';
       hilog.info(0x0001, 'GripFAB', 'permission request skipped while app is background');
@@ -1598,6 +1643,10 @@ struct HostListPage {
 
   // 智感握姿监听 — 使用保存的回调引用
   private startGripMonitor(): void {
+    if (!this.pageActive || !this.gripAlignmentEnabled) {
+      this.dbgMonitor = !this.gripAlignmentEnabled ? '用户未启用' : '页面未激活';
+      return;
+    }
     if (this.appInBackground) {
       this.dbgMonitor = '后台暂停';
       hilog.info(0x0001, 'GripFAB', 'start skipped while app is background');
@@ -1643,6 +1692,10 @@ struct HostListPage {
   }
 
   private startOperatingHandFallbackMonitor(reason: string): void {
+    if (!this.pageActive || !this.gripAlignmentEnabled) {
+      this.dbgMonitor = !this.gripAlignmentEnabled ? '用户未启用' : '页面未激活';
+      return;
+    }
     if (this.appInBackground) {
       this.dbgMonitor = '后台暂停';
       hilog.info(0x0001, 'GripFAB', 'operating fallback skipped while app is background');
@@ -1674,19 +1727,24 @@ struct HostListPage {
 
   async load(): Promise<void> {
     this.isLoading = true;
-    this.refreshCryptoStatus();
-    this.refreshHostListView();
-    this.rdpCredentials = this.srv.getAllRdpCredentials();
-    this.hostCount = this.srv.getHostCount();
-    this.lockedCount = this.srv.getLockedHostCount();
-    this.rdpCount = this.srv.getRdpCount();
-    this.rustdeskCount = this.srv.getRustdeskCount();
-    this.sshCount = this.srv.getSshCount();
-    this.keyCount = KeyVaultService.getInstance().getSshKeyCount();
-    this.totpCount = KeyVaultService.getInstance().getTotpCount();
-    this.accountDisplayName = this.auth.isLoggedIn() ? this.auth.getDisplayName() : '';
-    this.accountAvatarUrl = this.auth.isLoggedIn() ? this.auth.getAvatarUrl() : '';
-    this.isLoading = false;
+    try {
+      this.refreshCryptoStatus();
+      this.refreshHostListView();
+      this.rdpCredentials = this.srv.getAllRdpCredentials();
+      this.hostCount = this.srv.getHostCount();
+      this.lockedCount = this.srv.getLockedHostCount();
+      this.rdpCount = this.srv.getRdpCount();
+      this.rustdeskCount = this.srv.getRustdeskCount();
+      this.sshCount = this.srv.getSshCount();
+      this.keyCount = KeyVaultService.getInstance().getSshKeyCount();
+      this.totpCount = KeyVaultService.getInstance().getTotpCount();
+      this.accountDisplayName = this.auth.isLoggedIn() ? this.auth.getDisplayName() : '';
+      this.accountAvatarUrl = this.auth.isLoggedIn() ? this.auth.getAvatarUrl() : '';
+    } finally {
+      // A storage/service exception must never leave the first-render loading
+      // layer on screen indefinitely.
+      this.isLoading = false;
+    }
   }
 
   private loadAfterServiceReady(): void {
@@ -2119,6 +2177,7 @@ struct HostListPage {
         relayHost: relay ? relay.idServer : '',
         relayPort: relay ? relay.idServerPort : 0,
         relayKey: relay ? relay.key : '',
+        relayKeyMode: relay ? relay.keyMode : 'auto',
         proManaged: host.rustdeskProManaged && host.sourceType === 'rustdesk_pro'
       });
       if (rustDeskError !== '') {
@@ -2853,7 +2912,8 @@ struct HostListPage {
       rdPasswordMode: host.rustdeskPasswordMode,
       rdAuthMode: rustDeskAuthModeForConnection(direct, host.rustdeskAuthMode) === 'request_approval' ? 1 : 0,
       rdRelayId: host.rustdeskRelayId, rdAccountId: host.rustdeskAccountId,
-      rdServerKey: relay ? relay.key : ''
+      rdServerKey: relay ? relay.key : '',
+      rdServerKeyMode: relay ? rustDeskRelayKeyModeForFfi(relay.key, relay.keyMode) : 1
     };
   }
 
@@ -3499,6 +3559,20 @@ struct HostListPage {
     this.ambientLightEffectEnabled = on;
     this.persistPref('ambientLightEffectEnabled', on);
     this.syncAmbientLightMonitor();
+  }
+
+  private saveGripAlignmentEnabled(on: boolean): void {
+    this.gripAlignmentEnabled = on && !this.isDesktopDevice;
+    this.persistPref('gripAlignmentEnabled', this.gripAlignmentEnabled);
+    if (!this.gripAlignmentEnabled) {
+      this.stopGripMonitor(true);
+      this.holdingHand = motion.HoldingHandStatus.UNKNOWN_STATUS;
+      this.dbgMonitor = '用户未启用';
+      return;
+    }
+    // This is the sole user-triggered permission entry point.  It is never
+    // awaited by the settings UI or the home-page lifecycle.
+    void this.requestGripPermission();
   }
 
   private applyFollowSystemColorMode(): void {
@@ -5022,6 +5096,21 @@ struct HostListPage {
                   .selectedColor(this.accentColor)
                   .scale({ x: 0.88, y: 0.88 })
                   .onChange((on: boolean): void => { this.saveAmbientLightEffectEnabled(on); })
+              }.width('100%').height(62).padding({ left: 16, right: 16 })
+              this.cardDivider()
+              Row() {
+                Row() { SymbolGlyph($r('sys.symbol.person_2_fill')).fontSize(22).fontColor([this.pal().text]) }
+                  .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
+                Column() {
+                  Text('握持手感知对齐').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
+                    .fontColor(this.pal().text).fontFamily(this.font())
+                  Text(this.gripAlignmentEnabled ? '已启用；根据握持手移动添加按钮' : '关闭；开启时才会请求握姿权限')
+                    .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
+                }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
+                Toggle({ type: ToggleType.Switch, isOn: this.gripAlignmentEnabled })
+                  .selectedColor(this.accentColor).scale({ x: 0.88, y: 0.88 })
+                  .enabled(!this.isDesktopDevice)
+                  .onChange((on: boolean): void => { this.saveGripAlignmentEnabled(on); })
               }.width('100%').height(62).padding({ left: 16, right: 16 })
               this.cardDivider()
               // 终端字体颜色

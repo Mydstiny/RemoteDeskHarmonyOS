@@ -6,6 +6,7 @@
  */
 import { cryptoFramework } from '@kit.CryptoArchitectureKit';
 import { RustDeskAccount, RustDeskAccountJSON } from './RustDeskAccount';
+import { RustDeskRelayKeyMode, rustDeskRelayKeyFromStorage } from '../services/RustDeskRelayKeyPolicy';
 
 export interface RustDeskRelayJSON {
   id: string
@@ -18,6 +19,7 @@ export interface RustDeskRelayJSON {
   apiUsername: string
   apiPassword: string
   key: string
+  keyMode?: RustDeskRelayKeyMode
   healthStatus: string
   healthLatency: number
   healthCheckedAt: number
@@ -38,7 +40,8 @@ export class RustDeskRelayConfig {
   apiServer: string = '';     // API 服务器 (可选)
   apiUsername: string = '';   // Legacy field retained for cloud compatibility
   apiPassword: string = '';   // Never used by Server Pro login
-  key: string = '';           // 加密密钥 (可选)
+  key: string = '';           // 协议值：公钥或 hbbs/hbbr 共享准入 Key
+  keyMode: RustDeskRelayKeyMode = 'auto';
   healthStatus: string = 'unknown';  // unknown|online|offline|error
   healthLatency: number = 0;         // 上次检测延迟(ms)
   healthCheckedAt: number = 0;       // 上次检测时间戳
@@ -71,6 +74,7 @@ export class RustDeskRelayConfig {
       apiUsername: this.apiUsername,
       apiPassword: this.apiPassword,
       key: this.key,
+      keyMode: this.keyMode,
       healthStatus: this.healthStatus,
       healthLatency: this.healthLatency,
       healthCheckedAt: this.healthCheckedAt,
@@ -93,7 +97,11 @@ export class RustDeskRelayConfig {
     if (json.apiServer) { cfg.apiServer = json.apiServer; }
     if (json.apiUsername) { cfg.apiUsername = json.apiUsername; }
     if (json.apiPassword) { cfg.apiPassword = json.apiPassword; }
-    if (json.key) { cfg.key = json.key; }
+    if (json.key !== undefined) {
+      const stored = rustDeskRelayKeyFromStorage(json.key, json.keyMode ?? 'auto');
+      cfg.key = stored.key;
+      cfg.keyMode = stored.mode;
+    } else if (json.keyMode !== undefined) { cfg.keyMode = json.keyMode; }
     if (json.healthStatus) { cfg.healthStatus = json.healthStatus; }
     if (json.healthLatency) { cfg.healthLatency = json.healthLatency; }
     if (json.healthCheckedAt) { cfg.healthCheckedAt = json.healthCheckedAt; }

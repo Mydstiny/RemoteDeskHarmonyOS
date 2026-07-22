@@ -354,7 +354,8 @@ export interface SessionConfig {
   rdPasswordLength?: number; // 临时密码长度 (6/8/10)
   rdRelayId?: string;        // 中继配置ID
   rdAccountId?: string;      // API账户ID
-  rdServerKey?: string;      // Rendezvous 服务器公钥
+  rdServerKey?: string;      // Rendezvous 公钥或共享准入 Key
+  rdServerKeyMode?: number;  // 0=legacy/auto, 1=server public key, 2=shared access key
 }
 
 export interface SftpFileEntry {

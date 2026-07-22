@@ -11,6 +11,11 @@ import {
   rustDeskCardEndpoint,
   shouldAdoptRustDeskDirectPort
 } from '../../../main/ets/services/RustDeskHostConfigPolicy';
+import {
+  resolveRustDeskRelayKey,
+  rustDeskRelayKeyForStorage,
+  rustDeskRelayKeyFromStorage
+} from '../../../main/ets/services/RustDeskRelayKeyPolicy';
 
 function makeRelay(): RustDeskRelayConfig {
   const relay = new RustDeskRelayConfig();
@@ -64,8 +69,53 @@ export default function rustDeskHostConfigPolicyTest(): void {
       expect(rustDeskServerKeyError('1:encrypted-value', false)).assertContain('未解锁');
     });
 
-    it('server_key_should_reject_wrong_format', 0, (): void => {
-      expect(rustDeskServerKeyError('not-a-public-key', false)).assertContain('格式无效');
+    it('explicit_public_key_mode_should_reject_wrong_format', 0, (): void => {
+      expect(rustDeskServerKeyError('not-a-public-key', false, 'server_public_key')).assertContain('格式无效');
+    });
+
+    it('shared_access_key_should_preserve_every_protocol_character', 0, (): void => {
+      const raw: string = ' =tenant-key:42/abc=\n';
+      const result = resolveRustDeskRelayKey(raw, 'shared_access_key', false);
+      expect(result.ok).assertTrue();
+      expect(result.mode).assertEqual('shared_access_key');
+      expect(result.value).assertEqual(raw);
+      expect(result.requiresInsecureConnectionWarning).assertTrue();
+    });
+
+    it('auto_key_should_identify_non_public_legacy_value_as_shared_access_key', 0, (): void => {
+      const result = resolveRustDeskRelayKey('1:custom-access-key', 'auto', false);
+      // An imported raw `1:` value is valid; only persisted connection data
+      // has enough context to be treated as locked storage.
+      expect(result.ok).assertTrue();
+      expect(result.mode).assertEqual('shared_access_key');
+      expect(result.value).assertEqual('1:custom-access-key');
+      const stored = rustDeskRelayKeyForStorage('1:custom-access-key', 'shared_access_key');
+      const restored = rustDeskRelayKeyFromStorage(stored);
+      expect(restored.mode).assertEqual('shared_access_key');
+      expect(restored.key).assertEqual('1:custom-access-key');
+      expect(rustDeskServerKeyError('not-a-public-key', false)).assertEqual('');
+    });
+
+    it('shared_access_key_should_reject_nul_without_trimming_other_text', 0, (): void => {
+      const invalid = resolveRustDeskRelayKey('safe\0unsafe', 'shared_access_key', false);
+      expect(invalid.ok).assertFalse();
+      expect(invalid.error).assertContain('NUL');
+      expect(rustDeskServerKeyError(' =custom= ', false, 'shared_access_key')).assertEqual('');
+    });
+
+    it('connection_preflight_should_not_reinterpret_explicit_shared_1_prefix', 0, (): void => {
+      expect(rustDeskConnectionError({
+        directEnabled: false,
+        directHost: '',
+        directPort: 21118,
+        relayId: 'relay-1',
+        relayExists: true,
+        relayHost: 'id.example.com',
+        relayPort: 21117,
+        relayKey: '1:tenant-key',
+        relayKeyMode: 'shared_access_key',
+        proManaged: false
+      })).assertEqual('');
     });
 
     it('pro_relay_should_require_a_server_key', 0, (): void => {

@@ -19,6 +19,7 @@ import {
   RdpRestrictedAdminSecretSource
 } from '../model/RemoteHost';
 import { RustDeskRelayConfig } from '../model/RustDeskRelayConfig';
+import { rustDeskRelayKeyModeForFfi } from '../services/RustDeskRelayKeyPolicy';
 import { RdpCredential } from '../model/RdpCredential';
 import { AppConfig, Palette, buildDark, buildLight } from '../common/Theme';
 import { showLockGate, lockGateErrorMessage } from '../components/LockGate';
@@ -4075,11 +4076,15 @@ struct RemoteDesktop {
       const rdpDrivePath: string = host.protocol === 'rdp' && this.rdpDriveEnabled && RDP_DRIVE_REDIRECTION_ENABLED ?
         this.ensureRdpTransferDir() : '';
       let rdServerKey: string = '';
+      let rdServerKeyMode: number = 1;
       let rustDeskRelay: RustDeskRelayConfig | undefined;
       if (host.protocol === 'rustdesk' && host.rustdeskRelayId.length > 0) {
         rustDeskRelay = this.srv.getAllRelays()
           .find((r: RustDeskRelayConfig): boolean => r.id === host.rustdeskRelayId);
-        if (rustDeskRelay) { rdServerKey = rustDeskRelay.key; }
+        if (rustDeskRelay) {
+          rdServerKey = rustDeskRelay.key;
+          rdServerKeyMode = rustDeskRelayKeyModeForFfi(rustDeskRelay.key, rustDeskRelay.keyMode);
+        }
       }
       const rustDeskDirect: boolean = host.protocol === 'rustdesk' && host.rustdeskDirectEnabled;
       const directHost: string = host.rustdeskDirectHost.trim();
@@ -4099,6 +4104,7 @@ struct RemoteDesktop {
           relayHost: rustDeskRelay ? rustDeskRelay.idServer : '',
           relayPort: rustDeskRelay ? rustDeskRelay.idServerPort : 0,
           relayKey: rustDeskRelay ? rustDeskRelay.key : '',
+          relayKeyMode: rustDeskRelay ? rustDeskRelay.keyMode : 'auto',
           proManaged: host.rustdeskProManaged && host.sourceType === 'rustdesk_pro'
         });
         if (rustDeskError !== '') { throw new Error(rustDeskError + ' [E-RUSTDESK-CONFIG]'); }
@@ -4150,7 +4156,8 @@ struct RemoteDesktop {
           'request_approval' ? 1 : 0,
         rdRelayId: host.rustdeskRelayId,
         rdAccountId: host.rustdeskAccountId,
-        rdServerKey: rdServerKey
+        rdServerKey: rdServerKey,
+        rdServerKeyMode: rdServerKeyMode
       };
       // 编码偏好单独处理 (0=auto → 不强制)
       if (rdCodecVal > 0) {

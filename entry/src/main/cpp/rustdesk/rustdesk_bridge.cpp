@@ -1124,10 +1124,10 @@ int RustDeskBridge::connect(const ConnectionConfig& cfg) {
             ? cfg.host
             : (cfg.customHostname.empty() ? cfg.username : cfg.customHostname);
         const std::string logPeer = SafeLog::MaskUser(ffiPeerId);
-        const std::string serverKeyId = cfg.rdServerKey.empty() ? "default" : SafeLog::HashForLog(cfg.rdServerKey);
-        OH_LOG_INFO(LOG_APP, "[RustDesk-FFI] Request peer=%{public}s keyId=%{public}s key=%{public}s",
-                    logPeer.c_str(), serverKeyId.c_str(),
-                    SafeLog::MaskSecretLenOnly(cfg.rdServerKey).c_str());
+        const char* serverKeyMode = cfg.rdServerKeyMode == 2 ? "shared" :
+            (cfg.rdServerKeyMode == 1 ? "public" : "auto");
+        OH_LOG_INFO(LOG_APP, "[RustDesk-FFI] Request peer=%{public}s serverKeyMode=%{public}s",
+                    logPeer.c_str(), serverKeyMode);
 
         RustDeskBridge::Impl* impl = impl_.get();
         std::thread connectThread([impl, cfg, ffiPeerId, logHost, serial]() {
@@ -1148,6 +1148,7 @@ int RustDeskBridge::connect(const ConnectionConfig& cfg) {
             ffiCfg.profile  = 1; // Balanced
             ffiCfg.fps      = 0; // From profile
             ffiCfg.auth_mode = (cfg.rdAuthMode == 1) ? 1 : 0;
+            ffiCfg.key_mode = cfg.rdServerKeyMode;
             // T-209: 直连模式映射
             ffiCfg.direct_connection = false;
             if (cfg.rdDirectIp && !cfg.host.empty()) {

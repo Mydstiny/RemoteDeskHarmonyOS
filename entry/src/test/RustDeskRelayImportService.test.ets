@@ -1,5 +1,6 @@
 import { describe, it, expect } from '@ohos/hypium';
 import { RustDeskRelayImportService, RustDeskRelayImportResult } from '../main/ets/services/RustDeskRelayImportService';
+import { resolveRustDeskRelayKey } from '../main/ets/services/RustDeskRelayKeyPolicy';
 
 const OFFICIAL_REVERSED_BASE64 =
   '9JSeltWL0NXZ0JiOikXZrJCLi02bj5SZsBXbhhXZukGch9yL6MHc0RHaiojIpBXYiwiI3ETMxIjOt92YuUGbw1WY4VmL5FGblJnI6ISehxWZyJCLiYTMxEjM602bj5SZsBXbhhXZuQWaiojI0N3boJye';
@@ -27,6 +28,18 @@ export default function rustDeskRelayImportServiceTest(): void {
       expect(result.idServerPort).assertEqual(21120);
       expect(result.relayServer).assertEqual('10.0.0.8');
       expect(result.relayPort).assertEqual(21117);
+    });
+
+    it('preserves_json_shared_key_without_trimming', 0, (): void => {
+      const rawKey: string = ' =tenant-key:42/abc=\n';
+      const result: RustDeskRelayImportResult = service.parse('shared',
+        '{"host":"id.example.com:21116","relay":"","key":" =tenant-key:42/abc=\\n"}');
+      expect(result.ok).assertTrue();
+      expect(result.key).assertEqual(rawKey);
+      const resolved = resolveRustDeskRelayKey(result.key, 'auto', false);
+      expect(resolved.ok).assertTrue();
+      expect(resolved.mode).assertEqual('shared_access_key');
+      expect(resolved.value).assertEqual(rawKey);
     });
 
     it('parses_bracketed_ipv6_endpoints', 0, (): void => {

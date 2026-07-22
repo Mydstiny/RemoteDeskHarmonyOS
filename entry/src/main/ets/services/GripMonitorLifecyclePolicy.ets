@@ -14,14 +14,6 @@ export function shouldRebindGripMonitorOnPageShow(
   return pageActive && permissionGranted && monitorRegistered;
 }
 
-export function shouldRequestGripPermission(
-  pageActive: boolean,
-  monitorRegistered: boolean,
-  permissionGranted: boolean
-): boolean {
-  return pageActive && !permissionGranted && !monitorRegistered;
-}
-
 export function shouldIgnoreActivityMotionForHoldingHand(
   detectGestureGranted: boolean,
   _activityMotionGranted: boolean

@@ -133,7 +133,10 @@ export class RustDeskRelayImportService {
     return {
       ok: true, fileName, idServer: id.host, idServerPort: id.port,
       relayServer: relay.host, relayPort: relay.port,
-      apiServer: (object.api ?? object.apiServer ?? '').trim(), key: (object.key ?? '').trim(), error: ''
+      // `key` can be hbbs/hbbr's arbitrary shared access text.  Trim only
+      // endpoint fields; changing even one leading '=' or whitespace byte in
+      // the key makes the server reject its licence_key comparison.
+      apiServer: (object.api ?? object.apiServer ?? '').trim(), key: (object.key ?? ''), error: ''
     };
   }
 

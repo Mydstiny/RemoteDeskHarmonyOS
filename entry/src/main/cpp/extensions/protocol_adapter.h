@@ -108,7 +108,8 @@ struct ConnectionConfig {
     int         rdPasswordLength;  // RustDesk: 临时密码长度
     std::string rdRelayId;         // RustDesk: 绑定中继 ID
     std::string rdAccountId;       // RustDesk: 绑定 API 账户 ID
-    std::string rdServerKey;       // RustDesk: Rendezvous 服务器公钥
+    std::string rdServerKey;       // RustDesk: Rendezvous 公钥或共享准入 Key
+    int         rdServerKeyMode;   // 0=legacy/auto, 1=server public key, 2=shared access key
 
     ConnectionConfig()
         : port(3389), width(1920), height(1080), codec(CodecType::H264),
@@ -118,7 +119,7 @@ struct ConnectionConfig {
           rdImageQuality(1), rdDirectIp(false), rdDirectPort(21118),
           rdLanDiscovery(true), rdPrivacyMode(false), rdAudioEnabled(true), rdClipboardEnabled(true),
           rdDriveName("RemoteDesktop"), rdpAllowUntrustedRoot(false), rdpAllowHostMismatch(false),
-          rdPasswordMode(0), rdAuthMode(0), rdPasswordLength(6) {}
+          rdPasswordMode(0), rdAuthMode(0), rdPasswordLength(6), rdServerKeyMode(0) {}
 };
 
 /** 视频帧数据 — 从协议后端传递到渲染管线 */

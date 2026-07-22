@@ -135,7 +135,7 @@ impl ProfileParams {
 pub struct RustDeskConfig {
     pub host: *const c_char,     // 远程主机 IP 或域名
     pub port: c_int,             // 端口号 (默认 21116)
-    pub key: *const c_char,      // Rendezvous 服务器公钥 (可选, 空字符串使用默认公钥)
+    pub key: *const c_char,      // Rendezvous 公钥或共享准入 Key (可选)
     pub username: *const c_char, // 用户名 (可选)
     pub password: *const c_char, // 密码 (可选)
     pub width: c_int,            // 期望宽度 (0=auto from profile)
@@ -149,6 +149,9 @@ pub struct RustDeskConfig {
     /// 直连模式: false=走 rendezvous 服务器 (默认), true=TCP 直连 peer (跳过 rendezvous)
     pub direct_connection: bool,
     pub auth_mode: c_int, // 0=设备密码, 1=请求被控端点击批准
+    /// 0=legacy/auto, 1=Ed25519 server public key, 2=shared hbbs/hbbr -k text.
+    /// Appended to preserve the established C ABI field order.
+    pub key_mode: c_int,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -446,6 +449,7 @@ struct RustDeskClient {
     host: String,
     port: u16,
     server_key: String,
+    shared_access_key: bool,
     password: String,
     request_approval: bool,
     controls: Arc<ControlInbox>,
@@ -868,6 +872,7 @@ pub extern "C" fn rustdesk_connect(
         ffi_string(config.username)
     };
     let server_key = ffi_string(config.key);
+    let shared_access_key = config.key_mode == 2;
     let password = ffi_string(config.password);
     let request_approval = config.auth_mode == 1 && !config.direct_connection;
     let privacy_mode = config.privacy_mode;
@@ -901,12 +906,13 @@ pub extern "C" fn rustdesk_connect(
         return std::ptr::null_mut();
     }
 
-    // Keep the protocol input invariant identical on every ABI.  The hbbs
-    // PunchHoleRequest licence_key is the rendezvous public key, not an
-    // encrypted local-storage value or an arbitrary Pro credential token.
-    // Direct IP sessions do not use rendezvous and therefore do not need this
-    // field at all.
+    // Public-key mode retains strict identity verification.  Shared-access
+    // mode is RustDesk's official hbbs/hbbr `-k` compatibility path: the text
+    // is forwarded unchanged as licence_key and the connector explicitly
+    // falls back to an unverified/plain peer negotiation when no signing key
+    // is available.  Direct IP sessions do not use rendezvous at all.
     if !config.direct_connection
+        && !shared_access_key
         && crypto::normalized_server_public_key(&server_key).is_none()
     {
         let message = if server_key.trim_start().starts_with("1:") {
@@ -950,6 +956,7 @@ pub extern "C" fn rustdesk_connect(
             audio_enabled,
             effective_fps,
             request_approval,
+            shared_access_key,
         )
     };
 
@@ -1077,6 +1084,7 @@ pub extern "C" fn rustdesk_connect(
                 host,
                 port,
                 server_key,
+                shared_access_key,
                 password,
                 request_approval,
                 controls,
@@ -1378,6 +1386,7 @@ pub extern "C" fn rustdesk_send_file(
     let host = ctx.host.clone();
     let port = ctx.port;
     let server_key = ctx.server_key.clone();
+    let shared_access_key = ctx.shared_access_key;
     let peer_id = ctx.peer_id.clone();
     let password = ctx.password.clone();
     let request_approval = ctx.request_approval;
@@ -1390,7 +1399,7 @@ pub extern "C" fn rustdesk_send_file(
             let mut connector = connector::RustDeskConnector::new();
             connector
                 .connect_file_transfer(&host, port, &server_key, &peer_id, &password, &remote_dir,
-                    request_approval)
+                    request_approval, shared_access_key)
                 .and_then(|_| {
                     connector.upload_file_once(
                         &remote_path_owned,
@@ -1480,6 +1489,7 @@ mod tests {
             host: String::new(),
             port: 0,
             server_key: String::new(),
+            shared_access_key: false,
             password: String::new(),
             request_approval: false,
             controls: Arc::new(ControlInbox::default()),
@@ -1596,6 +1606,7 @@ mod tests {
             fps: 0,
             direct_connection: false,
             auth_mode: 0,
+            key_mode: 1,
         };
 
         extern "C" fn dummy_frame(_frame: *const FfiVideoFrame, _data: *mut c_void) {}
@@ -1641,6 +1652,7 @@ mod tests {
             fps: 0,
             direct_connection: false,
             auth_mode: 0,
+            key_mode: 1,
         };
 
         extern "C" fn dummy_frame(_frame: *const FfiVideoFrame, _data: *mut c_void) {}
@@ -1715,6 +1727,7 @@ mod tests {
             fps: 0,
             direct_connection: false,
             auth_mode: 0,
+            key_mode: 1,
         };
 
         let params = resolve_stream_params_for_config(&cfg);
@@ -1744,6 +1757,7 @@ mod tests {
             fps: 0,
             direct_connection: false,
             auth_mode: 0,
+            key_mode: 1,
         };
 
         assert_eq!(resolve_stream_params_for_config(&cfg).effective_fps, 60);

@@ -67,7 +67,7 @@ struct RustDeskDisplayCapabilities {
 struct RustDeskFfiConfig {
     const char* host;       // 远程主机 IP 或域名
     int         port;       // 端口号 (默认 21116)
-    const char* key;        // Rendezvous 服务器公钥 (可选)
+    const char* key;        // Rendezvous 公钥或共享准入 Key (可选)
     const char* username;   // 用户名 / peer ID
     const char* password;   // 密码
     int         width;      // 期望宽度 (0=auto from profile)
@@ -81,6 +81,7 @@ struct RustDeskFfiConfig {
     int         fps;        // 期望 FPS (0=from profile)
     bool        direct_connection; // 直连模式: false=rendezvous (默认), true=TCP直连peer
     int         auth_mode;  // 0=设备密码, 1=请求被控端点击批准
+    int         key_mode;   // 0=legacy/auto, 1=server public key, 2=shared access key
 };
 
 enum class RustDeskMode {

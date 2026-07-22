@@ -51,7 +51,7 @@ export struct RustDeskRelayConfigPasteSheet {
         Column() {
           Text('粘贴 RustDesk 加密配置').fontSize(20).fontWeight(FontWeight.Bold)
             .fontColor(this.pal().text).fontFamily(this.font())
-          Text('手动粘贴后解析并保存中继服务器').fontSize(12).fontColor(this.pal().text3)
+          Text('手动粘贴后解析，确认服务器 Key 类型后再保存').fontSize(12).fontColor(this.pal().text3)
             .fontFamily(this.font()).margin({ top: 3 })
         }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 12 })
         Button() {
@@ -78,7 +78,7 @@ export struct RustDeskRelayConfigPasteSheet {
       Row() {
         Button('取消').layoutWeight(1).height(42).borderRadius(10).backgroundColor(this.pal().surface)
           .fontColor(this.pal().text2).onClick((): void => { this.onCancel(); })
-        Button('解析并导入').layoutWeight(1).height(42).borderRadius(10).backgroundColor(this.accentColor)
+        Button('解析并填写').layoutWeight(1).height(42).borderRadius(10).backgroundColor(this.accentColor)
           .fontColor(Color.White).margin({ left: 10 }).onClick((): void => { this.parseAndImport(); })
       }.width('100%').margin({ top: 14 })
     }

@@ -168,6 +168,23 @@ pub enum ConnState {
     Error(String),
 }
 
+/// RustDesk `-k` is an access credential, not necessarily the server signing
+/// public key.  Keeping both values separate lets an administrator use an
+/// arbitrary shared value without pretending that it verifies identities.
+struct RendezvousCredentials<'a> {
+    access_key: &'a str,
+    server_public_key: Option<&'a str>,
+}
+
+impl<'a> RendezvousCredentials<'a> {
+    fn new(access_key: &'a str, shared_access_key: bool) -> Self {
+        Self {
+            access_key,
+            server_public_key: if shared_access_key { None } else { Some(access_key) },
+        }
+    }
+}
+
 /// 完整连接上下文
 pub struct RustDeskConnector {
     state: ConnState,
@@ -224,7 +241,9 @@ impl RustDeskConnector {
         audio_enabled: bool,
         fps: u32,
         request_approval: bool,
+        shared_access_key: bool,
     ) -> io::Result<()> {
+        let credentials = RendezvousCredentials::new(server_key, shared_access_key);
         // === Phase 1: Rendezvous 握手 ===
         self.state = ConnState::RendezvousConnecting;
         let mut rd = RendezvousClient::new();
@@ -234,7 +253,7 @@ impl RustDeskConnector {
         rd.connect(rendezvous_host, rendezvous_port, server_key, false)?;
 
         self.state = ConnState::RequestingRelay;
-        let punch = rd.request_punch_hole(peer_id, server_key)?;
+        let punch = rd.request_punch_hole(peer_id, credentials.access_key)?;
 
         // === Phase 2: Peer TCP + 加密通道 ===
         eprintln!(
@@ -251,7 +270,7 @@ impl RustDeskConnector {
                 "[RustDesk-FFI] using relay uuid from rendezvous uuid={} relay_server={}",
                 relay_uuid, punch.relay_server
             );
-            rd.create_relay(peer_id, &relay_uuid, &punch.relay_server, server_key)?
+            rd.create_relay(peer_id, &relay_uuid, &punch.relay_server, credentials.access_key)?
         } else if !punch.relay_server.trim().is_empty() {
             self.state = ConnState::RequestingRelay;
             let mut relay_rd = RendezvousClient::new();
@@ -266,7 +285,7 @@ impl RustDeskConnector {
                 "[RustDesk-FFI] relay approved uuid={} relay_server={}",
                 relay_uuid, punch.relay_server
             );
-            relay_rd.create_relay(peer_id, &relay_uuid, &punch.relay_server, server_key)?
+            relay_rd.create_relay(peer_id, &relay_uuid, &punch.relay_server, credentials.access_key)?
         } else if let Some(peer_addr) = punch.peer_addr {
             self.state = ConnState::ConnectingToPeer;
             self.peer_addr = Some(peer_addr);
@@ -284,11 +303,22 @@ impl RustDeskConnector {
 
         // KeyExchange: 发送自己的公钥，接收对端公钥
         self.state = ConnState::KeyExchanging;
-        let channel_key =
-            self.secure_peer_connection(&mut peer_stream, peer_id, &punch.signed_pk, server_key)?;
+        let channel_key = self.secure_peer_connection(
+            &mut peer_stream,
+            peer_id,
+            &punch.signed_pk,
+            credentials.server_public_key,
+        )?;
 
-        // 建立加密通道
-        let crypto = CryptoChannel::new(peer_stream, &channel_key, &channel_key);
+        // An arbitrary hbbs/hbbr -k value authenticates only access.  This is
+        // the official client compatibility fallback when no signing public
+        // key is available: send the empty setup message then keep the peer
+        // channel plain instead of fabricating a successful verification.
+        let crypto = if let Some(key) = channel_key {
+            CryptoChannel::new(peer_stream, &key, &key)
+        } else {
+            CryptoChannel::new_plain(peer_stream)
+        };
         self.crypto_channel = Some(crypto);
 
         // === Phase 3: Login ===
@@ -388,7 +418,9 @@ impl RustDeskConnector {
         password: &str,
         remote_dir: &str,
         request_approval: bool,
+        shared_access_key: bool,
     ) -> io::Result<()> {
+        let credentials = RendezvousCredentials::new(server_key, shared_access_key);
         crate::set_last_error(format!(
             "file-transfer connecting rendezvous host={} port={} peer={} dir={}",
             rendezvous_host, rendezvous_port, peer_id, remote_dir
@@ -402,7 +434,7 @@ impl RustDeskConnector {
             peer_id, remote_dir
         ));
         self.state = ConnState::RequestingRelay;
-        let punch = rd.request_punch_hole(peer_id, server_key)?;
+        let punch = rd.request_punch_hole(peer_id, credentials.access_key)?;
         crate::set_last_error(format!(
             "file-transfer punch peer_addr={:?} relay_server={} relay_uuid={:?} signed_pk_len={}",
             punch.peer_addr,
@@ -424,7 +456,7 @@ impl RustDeskConnector {
                 punch.relay_server, relay_uuid
             ));
             self.state = ConnState::ConnectingToPeer;
-            rd.create_relay(peer_id, &relay_uuid, &punch.relay_server, server_key)?
+            rd.create_relay(peer_id, &relay_uuid, &punch.relay_server, credentials.access_key)?
         } else if !punch.relay_server.trim().is_empty() {
             self.state = ConnState::RequestingRelay;
             let mut relay_rd = RendezvousClient::new();
@@ -443,7 +475,7 @@ impl RustDeskConnector {
                 punch.relay_server, relay_uuid
             ));
             self.state = ConnState::ConnectingToPeer;
-            relay_rd.create_relay(peer_id, &relay_uuid, &punch.relay_server, server_key)?
+            relay_rd.create_relay(peer_id, &relay_uuid, &punch.relay_server, credentials.access_key)?
         } else if let Some(peer_addr) = punch.peer_addr {
             crate::set_last_error(format!("file-transfer connecting peer addr={}", peer_addr));
             self.state = ConnState::ConnectingToPeer;
@@ -458,9 +490,17 @@ impl RustDeskConnector {
 
         crate::set_last_error("file-transfer key exchanging".to_string());
         self.state = ConnState::KeyExchanging;
-        let channel_key =
-            self.secure_peer_connection(&mut peer_stream, peer_id, &punch.signed_pk, server_key)?;
-        let crypto = CryptoChannel::new(peer_stream, &channel_key, &channel_key);
+        let channel_key = self.secure_peer_connection(
+            &mut peer_stream,
+            peer_id,
+            &punch.signed_pk,
+            credentials.server_public_key,
+        )?;
+        let crypto = if let Some(key) = channel_key {
+            CryptoChannel::new(peer_stream, &key, &key)
+        } else {
+            CryptoChannel::new_plain(peer_stream)
+        };
         self.crypto_channel = Some(crypto);
 
         crate::set_last_error(format!("file-transfer logging in dir={}", remote_dir));
@@ -600,9 +640,12 @@ impl RustDeskConnector {
         stream: &mut TcpStream,
         peer_id: &str,
         signed_id_pk: &[u8],
-        server_key: &str,
-    ) -> io::Result<[u8; 32]> {
-        let sign_pk = self.decode_signed_peer_pk(peer_id, signed_id_pk, server_key)?;
+        server_public_key: Option<&str>,
+    ) -> io::Result<Option<[u8; 32]>> {
+        let Some(sign_pk) = self.decode_signed_peer_pk(peer_id, signed_id_pk, server_public_key)? else {
+            self.send_empty_message(stream)?;
+            return Ok(None);
+        };
         let payload = wire::read_frame(stream)?;
         let msg: Message = protobuf::parse_from_bytes(&payload)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
@@ -659,20 +702,20 @@ impl RustDeskConnector {
         wire::write_frame(stream, &bytes)?;
 
         self.peer_pk = Some(their_pk);
-        Ok(key)
+        Ok(Some(key))
     }
 
     fn decode_signed_peer_pk(
         &self,
         peer_id: &str,
         signed_id_pk: &[u8],
-        server_key: &str,
-    ) -> io::Result<[u8; 32]> {
+        server_public_key: Option<&str>,
+    ) -> io::Result<Option<[u8; 32]>> {
+        let Some(server_key) = server_public_key else {
+            return Ok(None);
+        };
         if signed_id_pk.is_empty() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "rendezvous response missing signed peer public key",
-            ));
+            return Ok(None);
         }
         let supplied_key = crypto::normalized_server_public_key(server_key).ok_or_else(|| {
             io::Error::new(
@@ -713,7 +756,7 @@ impl RustDeskConnector {
         }
         let mut pk = [0u8; 32];
         pk.copy_from_slice(id_pk.get_pk());
-        Ok(pk)
+        Ok(Some(pk))
     }
 
     fn send_empty_message(&self, stream: &mut TcpStream) -> io::Result<()> {
@@ -2513,7 +2556,7 @@ mod tests {
     use super::{
         pressure_target_fps, should_refresh_for_video_starvation, ControlKey,
         KeyEvent_oneof_union, Message_oneof_union, RustDeskConnector,
-        PhysicalModifierState,
+        PhysicalModifierState, RendezvousCredentials,
     };
     use crate::protocol::message_proto::{
         Hash, LoginResponse, Message, Misc_oneof_union, PointerDeviceEvent_oneof_union,
@@ -2531,6 +2574,20 @@ mod tests {
         value.set_width(width);
         value.set_height(height);
         value
+    }
+
+    #[test]
+    fn shared_access_credentials_keep_text_and_select_unverified_fallback() {
+        let raw = " =tenant-key:42/abc=\n";
+        let credentials = RendezvousCredentials::new(raw, true);
+        assert_eq!(credentials.access_key, raw);
+        assert!(credentials.server_public_key.is_none());
+
+        let connector = RustDeskConnector::new();
+        let result = connector
+            .decode_signed_peer_pk("peer-123", &[1, 2, 3], credentials.server_public_key)
+            .expect("shared compatibility path must not try to verify a server key");
+        assert!(result.is_none());
     }
 
     #[test]

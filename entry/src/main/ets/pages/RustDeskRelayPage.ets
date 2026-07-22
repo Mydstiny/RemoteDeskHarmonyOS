@@ -27,7 +27,7 @@ import { ResourceFabPicker } from '../components/resourceadd/ResourceFabPicker';
 import { VncRelayConfigService } from '../services/VncRelayConfigService';
 import { ModernRelayAddFlow } from '../components/resourceadd/modern/ModernRelayAddFlow';
 import { RustDeskRelayImportService, RustDeskRelayImportResult } from '../services/RustDeskRelayImportService';
-import { rustDeskServerKeyError } from '../services/RustDeskHostConfigPolicy';
+import { RustDeskRelayKeyMode, resolveRustDeskRelayKey } from '../services/RustDeskRelayKeyPolicy';
 import { RustDeskRelayConfigPasteSheet } from '../components/resourceadd/modern/RustDeskRelayConfigPasteSheet';
 
 class TcpTestResult {
@@ -64,6 +64,7 @@ export struct RustDeskRelayPage {
   @State formRelayPort: number = 21117;
   @State formApiServer: string = '';
   @State formKey: string = '';
+  @State formKeyMode: RustDeskRelayKeyMode = 'server_public_key';
   @State formTestResult: string = '';
   @State importingRelayConfig: boolean = false;
   // UltraVNC Repeater form (device-local until VNC sessions are enabled)
@@ -304,6 +305,7 @@ export struct RustDeskRelayPage {
     this.formRelayPort = relay.relayPort;
     this.formApiServer = relay.apiServer;
     this.formKey = relay.key;
+    this.formKeyMode = resolveRustDeskRelayKey(relay.key, relay.keyMode, false).mode;
     this.formTestResult = '';
     this.sheetContent = 1;
     this.showSheet = true;
@@ -378,12 +380,12 @@ export struct RustDeskRelayPage {
   private resetRelayForm(): void {
     this.editingRelayId = ''; this.formIdServer = ''; this.formIdPort = 21116;
     this.formRelayServer = ''; this.formRelayPort = 21117;
-    this.formApiServer = ''; this.formKey = ''; this.formTestResult = '';
+    this.formApiServer = ''; this.formKey = ''; this.formKeyMode = 'server_public_key'; this.formTestResult = '';
   }
 
   private doSaveRelay(): string {
-    if (this.formIdServer.trim() === '' || this.formRelayServer.trim() === '') {
-      const error = 'ID服务器和中继服务器地址不能为空';
+    if (this.formIdServer.trim() === '') {
+      const error = 'ID服务器地址不能为空';
       promptAction.showToast({ message: error, duration: 2000 }); return error;
     }
     if (this.formIdPort <= 0 || this.formIdPort > 65535 ||
@@ -395,16 +397,17 @@ export struct RustDeskRelayPage {
       const error = 'Server Pro 必须填写 API 地址';
       promptAction.showToast({ message: error, duration: 2000 }); return error;
     }
-    const keyError: string = rustDeskServerKeyError(this.formKey, false);
-    if (keyError !== '') {
-      promptAction.showToast({ message: keyError, duration: 2600 }); return keyError;
+    const key = resolveRustDeskRelayKey(this.formKey, this.formKeyMode, false);
+    if (!key.ok) {
+      promptAction.showToast({ message: key.error, duration: 2600 }); return key.error;
     }
     const isNew: boolean = this.editingRelayId === '';
     const r = new RustDeskRelayConfig();
     r.id = isNew ? RustDeskRelayConfig.generateId() : this.editingRelayId;
     r.idServer = this.formIdServer.trim(); r.idServerPort = this.formIdPort;
-    r.relayServer = this.formRelayServer.trim(); r.relayPort = this.formRelayPort;
-    r.apiServer = this.formApiServer.trim(); r.key = this.formKey.trim();
+    r.relayServer = this.formRelayServer.trim() === '' ? r.idServer : this.formRelayServer.trim();
+    r.relayPort = this.formRelayPort;
+    r.apiServer = this.formApiServer.trim(); r.key = key.value; r.keyMode = key.mode;
     let saved: boolean;
     if (!isNew) {
       const existing = this.relays.find((x: RustDeskRelayConfig) => x.id === this.editingRelayId);
@@ -430,11 +433,13 @@ export struct RustDeskRelayPage {
     this.formIdServer = result.idServer; this.formIdPort = result.idServerPort;
     this.formRelayServer = result.relayServer; this.formRelayPort = result.relayPort;
     this.formApiServer = result.apiServer; this.formKey = result.key;
+    this.formKeyMode = resolveRustDeskRelayKey(result.key, 'auto', false).mode;
   }
 
   private importAndSavePastedRelay(result: RustDeskRelayImportResult): string {
     this.applyRelayImport(result);
-    return this.doSaveRelay();
+    this.sheetContent = 1;
+    return '';
   }
 
   private async importRelayConfig(): Promise<void> {
@@ -1511,7 +1516,24 @@ export struct RustDeskRelayPage {
           this._f('中继服务器地址', 'relay.example.com', this.formRelayServer, (v: string) => { this.formRelayServer = v; })
           this._f('中继端口', '21117', this.formRelayPort.toString(), (v: string) => { const n = parseInt(v); this.formRelayPort = isNaN(n) ? 21117 : n; })
           this._f('通用 API服务器(可选)', '', this.formApiServer, (v: string) => { this.formApiServer = v; })
-          this._f('密钥(可选)', '', this.formKey, (v: string) => { this.formKey = v; })
+          Text('服务器 Key（可选）').fontSize(11).fontColor(this.pal().text2).fontFamily(this.font()).margin({ bottom: 4 })
+          Row() {
+            Button('服务器公钥').layoutWeight(1).height(32).fontSize(12).borderRadius(8)
+              .backgroundColor(this.formKeyMode === 'server_public_key' ? this.accentColor : this.pal().surface)
+              .fontColor(this.formKeyMode === 'server_public_key' ? Color.White : this.pal().text2)
+              .onClick((): void => { this.formKeyMode = 'server_public_key'; })
+            Button('自定义共享 Key').layoutWeight(1).height(32).fontSize(12).borderRadius(8).margin({ left: 8 })
+              .backgroundColor(this.formKeyMode === 'shared_access_key' ? this.accentColor : this.pal().surface)
+              .fontColor(this.formKeyMode === 'shared_access_key' ? Color.White : this.pal().text2)
+              .onClick((): void => { this.formKeyMode = 'shared_access_key'; })
+          }.width('100%').margin({ bottom: 6 })
+          this._f(this.formKeyMode === 'shared_access_key' ? '共享 Key（原样发送）' : '服务器公钥',
+            this.formKeyMode === 'shared_access_key' ? '与 hbbs/hbbr -k 完全一致' : 'Base64 32 字节 Ed25519 公钥',
+            this.formKey, (v: string) => { this.formKey = v; }, this.formKeyMode === 'shared_access_key')
+          Text(this.formKeyMode === 'shared_access_key' ?
+            '不会删除空格或 =；此模式不能验证服务器身份。' :
+            '留空将使用 RustDesk 默认公钥。')
+            .fontSize(10).fontColor(this.pal().text3).fontFamily(this.font()).width('100%').margin({ top: -5, bottom: 8 })
           if (this.formTestResult !== '') {
             Text(this.formTestResult).fontSize(12).fontColor(this.formTestResult.startsWith('✓') ? this.accentColor : this.pal().danger).margin({ top: 4 })
           }
@@ -1675,12 +1697,12 @@ export struct RustDeskRelayPage {
     }
   }
 
-  @Builder _f(l: string, h: string, v: string, cb: (v: string) => void) {
+  @Builder _f(l: string, h: string, v: string, cb: (v: string) => void, password: boolean = false) {
     Column() {
       Text(l).fontSize(11).fontColor(this.pal().text2).margin({ bottom: 4 }).fontFamily(this.font())
       TextInput({ placeholder: h, text: v }).height(38).backgroundColor(this.pal().surface).borderRadius(8)
         .fontColor(this.pal().text).placeholderColor(this.pal().text3).fontFamily(this.font()).fontSize(13)
-        .padding({ left: 10, right: 10 }).onChange(cb)
+        .type(password ? InputType.Password : InputType.Normal).padding({ left: 10, right: 10 }).onChange(cb)
     }.width('100%').margin({ bottom: 10 })
   }
 }

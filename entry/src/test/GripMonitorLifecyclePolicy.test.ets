@@ -5,7 +5,6 @@ import {
   shouldFallbackToOperatingHandOnSubscribeFailure,
   shouldMarkGripMonitorStaleAfterWatchdog,
   shouldRebindGripMonitorOnPageShow,
-  shouldRequestGripPermission,
   shouldRunForegroundSensor,
   shouldRestartGripMonitor,
   shouldUseGripFabAlignment,
@@ -27,10 +26,6 @@ export default function gripMonitorLifecyclePolicyTest() {
       expect(shouldRebindGripMonitorOnPageShow(false, true, true)).assertFalse();
       expect(shouldRebindGripMonitorOnPageShow(true, false, true)).assertFalse();
       expect(shouldRebindGripMonitorOnPageShow(true, true, false)).assertFalse();
-    });
-
-    it('requests_permission_when_page_returns_without_permission', 0, (): void => {
-      expect(shouldRequestGripPermission(true, false, false)).assertTrue();
     });
 
     it('does_not_block_holding_hand_monitor_when_activity_motion_is_denied', 0, (): void => {

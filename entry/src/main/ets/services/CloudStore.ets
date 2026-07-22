@@ -56,6 +56,7 @@ import {
 } from './LocalBackupPolicy';
 import { DataMutationResult } from './DataMutationResult';
 import { canonicalHostPassword } from './SensitiveDataMigrationPolicy';
+import { rustDeskRelayKeyForStorage, rustDeskRelayKeyFromStorage } from './RustDeskRelayKeyPolicy';
 import {
   sensitiveWriteRequiresUnlock,
   shouldRedactLockedCiphertext
@@ -2560,7 +2561,7 @@ export class CloudStore implements CryptoCloudStore {
     vb['apiserver'] = relay.apiServer;
     vb['apiusername'] = relay.apiUsername;
     vb['apipassword'] = this.encryptIfReady(crypto, relay.apiPassword);
-    vb['key'] = this.encryptIfReady(crypto, relay.key);
+    vb['key'] = this.encryptIfReady(crypto, rustDeskRelayKeyForStorage(relay.key, relay.keyMode));
     vb['healthstatus'] = relay.healthStatus;
     vb['healthlatency'] = relay.healthLatency;
     vb['healthcheckedat'] = relay.healthCheckedAt;
@@ -2721,7 +2722,15 @@ export class CloudStore implements CryptoCloudStore {
         const apiPassword: string = rs.getString(rs.getColumnIndex('apipassword'));
         const key: string = rs.getString(rs.getColumnIndex('key'));
         relay.apiPassword = decrypt ? this.decryptIfReady(crypto, apiPassword) : apiPassword;
-        relay.key = decrypt ? this.decryptIfReady(crypto, key) : key;
+        if (decrypt) {
+          const storedKey = rustDeskRelayKeyFromStorage(this.decryptIfReady(crypto, key));
+          relay.key = storedKey.key;
+          relay.keyMode = storedKey.mode;
+        } else {
+          // Raw reads are used by DataCrypto migration. Keep the exact
+          // database representation so a raw write cannot double-wrap it.
+          relay.key = key;
+        }
         relay.healthStatus = rs.getString(rs.getColumnIndex('healthstatus'));
         relay.healthLatency = rs.getLong(rs.getColumnIndex('healthlatency'));
         relay.healthCheckedAt = rs.getLong(rs.getColumnIndex('healthcheckedat'));
@@ -2924,7 +2933,7 @@ export class CloudStore implements CryptoCloudStore {
     const crypto = DataCrypto.getInstance();
     const json: RustDeskRelayJSON = relay.toJSON();
     json.apiPassword = this.encryptIfReady(crypto, json.apiPassword);
-    json.key = this.encryptIfReady(crypto, json.key);
+    json.key = this.encryptIfReady(crypto, rustDeskRelayKeyForStorage(json.key, relay.keyMode));
     for (let i = 0; i < json.accounts.length; i++) {
       json.accounts[i].password = this.encryptIfReady(crypto, json.accounts[i].password);
     }
@@ -2944,6 +2953,7 @@ export class CloudStore implements CryptoCloudStore {
       apiUsername: json.apiUsername,
       apiPassword: this.decryptIfReady(crypto, json.apiPassword),
       key: this.decryptIfReady(crypto, json.key),
+      keyMode: json.keyMode,
       healthStatus: json.healthStatus,
       healthLatency: json.healthLatency,
       healthCheckedAt: json.healthCheckedAt,
