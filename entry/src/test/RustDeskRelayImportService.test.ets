@@ -5,6 +5,12 @@ import { resolveRustDeskRelayKey } from '../main/ets/services/RustDeskRelayKeyPo
 const OFFICIAL_REVERSED_BASE64 =
   '9JSeltWL0NXZ0JiOikXZrJCLi02bj5SZsBXbhhXZukGch9yL6MHc0RHaiojIpBXYiwiI3ETMxIjOt92YuUGbw1WY4VmL5FGblJnI6ISehxWZyJCLiYTMxEjM602bj5SZsBXbhhXZuQWaiojI0N3boJye';
 
+// Synthetic export whose reversed Base64URL starts with `==`.  This is the
+// normal result of reversing a JSON payload whose Base64 encoding ends with
+// padding; the leading equals signs must not be stripped before decoding.
+const PADDED_REVERSED_BASE64 =
+  '==QfiETeltWL0NXZ0JiOikXZrJCLi02bj5SZsBXbhhXZukGch9yL6MHc0RHaiojIpBXYiwiI3ETMxIjOt92YuUGbw1WY4VmL5FGblJnI6ISehxWZyJCLiYTMxEjM602bj5SZsBXbhhXZuQWaiojI0N3boJye';
+
 export default function rustDeskRelayImportServiceTest(): void {
   describe('RustDeskRelayImportService', (): void => {
     const service = new RustDeskRelayImportService();
@@ -18,6 +24,14 @@ export default function rustDeskRelayImportServiceTest(): void {
       expect(result.relayPort).assertEqual(21117);
       expect(result.apiServer).assertEqual('https://api.example.com');
       expect(result.key).assertEqual('test-key');
+    });
+
+    it('parses_reversed_config_with_leading_padding', 0, (): void => {
+      const result: RustDeskRelayImportResult = service.parse('padded', PADDED_REVERSED_BASE64);
+      expect(result.ok).assertTrue();
+      expect(result.idServer).assertEqual('id.example.com');
+      expect(result.relayServer).assertEqual('relay.example.com');
+      expect(result.key).assertEqual('test-key1');
     });
 
     it('parses_direct_json_and_derives_empty_relay', 0, (): void => {
