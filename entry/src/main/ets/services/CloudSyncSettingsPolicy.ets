@@ -22,6 +22,7 @@ const CLOUD_USER_SETTING_NAMES: string[] = [
   'rdpDriveName',
   'rdpControlMode',
   'rdpAuthIdentityMode',
+  'rustdeskReverseWheel',
   'rustdeskImageQuality',
   'rustdeskCodec',
   'rustdeskDirectIp',

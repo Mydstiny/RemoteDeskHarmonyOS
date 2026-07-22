@@ -318,7 +318,7 @@ export struct RemoteSessionTopBar {
       this.menuItem('相对鼠标模式', 'keyboardMouseSettings', (): void => {
         this.actions.onToggleRelativeMouse(!this.relativeMouseMode);
       }, this.relativeMouseMode)
-      this.menuItem('鼠标滚轮反向', 'keyboardMouseSettings', (): void => {
+      this.menuItem('远程滚轮反向', 'keyboardMouseSettings', (): void => {
         this.actions.onToggleReverseWheel(!this.reverseWheel);
       }, this.reverseWheel)
       this.menuItem('交换鼠标左右键', 'keyboardMouseSettings', (): void => {

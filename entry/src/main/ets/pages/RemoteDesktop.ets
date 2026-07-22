@@ -182,6 +182,7 @@ import {
   RemoteKeyboardLayout,
   remoteKeyboardLayoutDescription,
   shouldChoosePhysicalKeyboardLayout,
+  physicalKeyboardLayoutForProtocol,
   shouldConsumeRemoteBack
 } from '../services/RemotePhysicalKeyboardPolicy';
 import { hilog } from '@kit.PerformanceAnalysisKit';
@@ -646,6 +647,7 @@ struct RemoteDesktop {
   private localMouseMoveGeneration: number = 0;
   private mouseMoveTimer: number = -1;
   private physicalMouseDownButton: number = -1;
+  private physicalWheelRemainder: number = 0;
   private inputDeviceListenerRegistered: boolean = false;
   private inputDevicePromptVisible: boolean = false;
   private externalInputPromptedThisSession: boolean = false;
@@ -1409,7 +1411,8 @@ struct RemoteDesktop {
     this.persistSessionPref('rustdeskRelativeMouseMode', on);
   }
 
-  private setRustDeskReverseWheel(on: boolean): void {
+  /** Retains the legacy key while applying wheel direction to every remote protocol. */
+  private setRemoteReverseWheel(on: boolean): void {
     this.rustdeskReverseWheel = on;
     this.persistSessionPref('rustdeskReverseWheel', on);
   }
@@ -1488,7 +1491,7 @@ struct RemoteDesktop {
         this.setRustDeskRelativeMouseMode(on);
       },
       onToggleReverseWheel: (on: boolean): void => {
-        this.setRustDeskReverseWheel(on);
+        this.setRemoteReverseWheel(on);
       },
       onToggleSwapMouseButtons: (on: boolean): void => {
         this.setRustDeskSwapMouseButtons(on);
@@ -1945,8 +1948,8 @@ struct RemoteDesktop {
       (mod: string, down: boolean): void => { this.setRemoteModDown(mod, down); });
   }
 
-  /** 释放所有可能按下的修饰键 + 鼠标键 → RemoteKeyDispatcher */
-  private releaseAllHeldKeys(): void {
+  /** Release remote keys and, for lifecycle teardown, any held mouse buttons. */
+  private releaseAllHeldKeys(releaseMouseButtons: boolean = true): void {
     this.releasePendingMacCapsLock();
     if (this.sessionId <= 0) {
       this.physicalRemoteKeyCodesDown = [];
@@ -1967,7 +1970,10 @@ struct RemoteDesktop {
     this.physicalRemoteKeyCodesDown = [];
     this.keyDispatcher.releaseAllHeldKeys(this.loader, this.sessionId,
       (x: number, y: number): Record<string, number> => this.toSourceSpace(x, y),
-      this.remoteCursorX, this.remoteCursorY);
+      this.remoteCursorX, this.remoteCursorY, releaseMouseButtons);
+    if (releaseMouseButtons) {
+      this.physicalMouseDownButton = -1;
+    }
     this.resetPhysicalModifiers();
   }
 
@@ -3057,7 +3063,7 @@ struct RemoteDesktop {
       shouldChoosePhysicalKeyboardLayout(host.protocol, this.isDesktopDevice, this.breakpoint);
   }
 
-  /** 每个新远控会话都要求确认远端键盘类型，不把上次选择静默带入下一台设备。 */
+  /** Each RustDesk session confirms its cross-platform remote keyboard type. */
   private promptPhysicalKeyboardLayout(): void {
     if (!this.shouldRequirePhysicalKeyboardLayout() || this.physicalKeyboardLayoutConfirmed ||
       this.physicalKeyboardLayoutPromptVisible || !this.connected) {
@@ -3093,7 +3099,9 @@ struct RemoteDesktop {
   }
 
   private mapPhysicalKeyCode(keyCode: number): number {
-    return mapPhysicalKeyForRemoteLayout(this.physicalKeyboardLayout, keyCode);
+    const protocol: string = this.pendingHost === null ? '' : this.pendingHost.protocol;
+    return mapPhysicalKeyForRemoteLayout(
+      physicalKeyboardLayoutForProtocol(protocol, this.physicalKeyboardLayout), keyCode);
   }
 
   private clearRemoteInputFocusSchedule(): void {
@@ -6158,7 +6166,7 @@ struct RemoteDesktop {
     this.touchWheelRemainder -= delta;
     this.lastTouchWheelMs = now;
     const src = this.toSourceSpace(this.remoteCursorX, this.remoteCursorY);
-    const sendDelta: number = this.isRustDeskSession() && this.rustdeskReverseWheel ? -delta : delta;
+    const sendDelta: number = this.rustdeskReverseWheel ? -delta : delta;
     this.loader.sendMouseWheel(this.sessionId, src['x'], src['y'], sendDelta);
     hilog.info(RD_DOMAIN, RD_TAG,
       'touchpad-scroll delta=' + sendDelta.toString() + ' stepDy=' + stepDy.toString() +
@@ -6768,8 +6776,13 @@ struct RemoteDesktop {
     if (!this.connected || this.sessionId <= 0) {
       return;
     }
+    if (this.physicalMouseDownButton >= 0) {
+      hilog.info(RD_DOMAIN, RD_TAG, 'remote-keyboard-focus-lost preserve-drag source=' + source +
+        ' button=' + this.physicalMouseDownButton.toString());
+      return;
+    }
     hilog.info(RD_DOMAIN, RD_TAG, 'remote-keyboard-focus-lost source=' + source);
-    this.releaseAllHeldKeys();
+    this.releaseAllHeldKeys(false);
   }
 
   /**
@@ -7090,6 +7103,48 @@ struct RemoteDesktop {
     if (button === MouseButton.Right || button === 2) { return 2; }
     return -1;
   }
+
+  private handleXComponentAxis = (event?: AxisEvent): void => {
+    if (!event || !this.canForwardInput('mouseWheel')) { return; }
+    try {
+      const localX: number = event.x;
+      const localY: number = event.y;
+      const mapped: MappedPoint = this.mapInputPoint(localX, localY);
+      if (!mapped.inside) { return; }
+      const rawVertical: number = event.getVerticalAxisValue();
+      if (!Number.isFinite(rawVertical) || rawVertical === 0) { return; }
+
+      // Mouse wheels report discrete steps. Touchpads emit a continuous axis,
+      // so accumulate its small vp deltas before creating protocol wheel ticks.
+      let delta: number = 0;
+      if (event.sourceTool === SourceTool.MOUSE) {
+        delta = rawVertical > 0 ? 1 : -1;
+      } else {
+        this.physicalWheelRemainder += rawVertical * TOUCHPAD_SCROLL_GAIN;
+        delta = this.physicalWheelRemainder > 0 ? Math.floor(this.physicalWheelRemainder) :
+          Math.ceil(this.physicalWheelRemainder);
+        if (delta === 0) { return; }
+        if (delta > TOUCHPAD_SCROLL_MAX_DELTA) {
+          delta = TOUCHPAD_SCROLL_MAX_DELTA;
+        } else if (delta < -TOUCHPAD_SCROLL_MAX_DELTA) {
+          delta = -TOUCHPAD_SCROLL_MAX_DELTA;
+        }
+        this.physicalWheelRemainder -= delta;
+      }
+
+      this.queueMouseMove(mapped.x, mapped.y);
+      this.flushMouseMove();
+      const src: Record<string, number> = this.toSourceSpace(mapped.x, mapped.y);
+      const sendDelta: number = this.rustdeskReverseWheel ? -delta : delta;
+      this.loader.sendMouseWheel(this.sessionId, src['x'], src['y'], sendDelta);
+      hilog.info(RD_DOMAIN, RD_TAG, 'physical-wheel raw=' + rawVertical.toString() +
+        ' delta=' + sendDelta.toString() + ' sourceTool=' + event.sourceTool.toString() +
+        ' remote=' + mapped.x.toString() + ',' + mapped.y.toString());
+    } catch (err) {
+      hilog.error(RD_DOMAIN, RD_TAG, 'physical-wheel forward failed: ' + JSON.stringify(err));
+    }
+  }
+
   private handleXComponentMouse = (event: MouseEvent): void => {
     if (!this.canForwardInput('mouse')) { return; }
     try {
@@ -7117,11 +7172,6 @@ struct RemoteDesktop {
         if (shouldResetRemoteImeOnPointerDown(this.keyboardOpen || this.hardwareKeyboardProxyActive)) {
           this.resetRemoteImeSession('mouse-press');
         }
-        if (this.hardwareKeyboardProxyActive) {
-          // focusOnTouch 可能把焦点从隐藏编辑器转移到鼠标覆盖层，
-          // 点击结束后重新把实体键盘交还给桌面输入代理。
-          this.scheduleRemoteInputFocus('mouse-press');
-        }
         if (sendButton >= 0) {
           this.physicalMouseDownButton = sendButton;
           this.sendMouseNow(mapped.x, mapped.y, sendButton, true);
@@ -7131,11 +7181,14 @@ struct RemoteDesktop {
           this.sendMouseNow(mapped.x, mapped.y, sendButton, false);
         }
         this.physicalMouseDownButton = -1;
+        if (this.hardwareKeyboardProxyActive) {
+          this.scheduleRemoteInputFocus('mouse-release');
+        }
       } else if (event.action === MouseAction.Move || event.action === MouseAction.Hover) {
         this.queueMouseMove(mapped.x, mapped.y);
       }
-      // MouseAction: Press=1, Release=2, Move=3, Hover=4, HoverExit=5
-      // 滚轮事件通过 action==Move + button 判断
+      // MouseAction only covers button and pointer motion. ArkUI dispatches
+      // mouse wheels and touchpad two-finger scrolling via onAxisEvent.
     } catch (err) {
       hilog.error(RD_DOMAIN, RD_TAG, 'mouse forward failed: ' + JSON.stringify(err));
     }
@@ -7332,6 +7385,7 @@ struct RemoteDesktop {
             .onActionCancel((): void => { this.finishCanvasPinch(); })
         )
         .onMouse(this.handleXComponentMouse)
+        .onAxisEvent(this.handleXComponentAxis)
         .onKeyEvent(this.handleXComponentKey)
         .allowDrop([uniformTypeDescriptor.UniformDataType.FILE])
         .onDragEnter((event: DragEvent): void => {
@@ -7592,8 +7646,8 @@ struct RemoteDesktop {
         .hitTestBehavior(HitTestMode.None)
       }
 
-      // PC/键鼠模式不再显示底部工具栏, 避免覆盖或扰动远端画面。
-      if (this.connected && this.isDesktopDevice && this.breakpoint === 'xl' &&
+      // PC/键鼠模式不再显示底部工具栏, 固定左上角断开按钮必须覆盖所有 PC 窗口宽度。
+      if (this.connected && this.isDesktopDevice &&
         (!this.pendingHost || this.pendingHost.protocol !== 'rustdesk')) {
         Button($r('app.string.btn_disconnect'))
           .height(28)

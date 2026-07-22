@@ -3382,6 +3382,12 @@ struct HostListPage {
     this.persistPref('rustdeskFilePasteEnabled', this.rustdeskFilePasteEnabled);
   }
 
+  /** Retain the legacy RustDesk key so existing wheel preferences migrate without data loss. */
+  private saveRemoteReverseWheel(on: boolean): void {
+    this.rustdeskReverseWheel = on;
+    this.persistPref('rustdeskReverseWheel', on);
+  }
+
   private saveRustDeskControlMode(mode: number): void {
     this.rustdeskControlMode = this.clampRustDeskControlMode(mode);
     this.persistRustDeskNumberPref('rustdeskControlMode', this.rustdeskControlMode);
@@ -5289,7 +5295,7 @@ struct HostListPage {
 
         ListItem() {
           this.settingsAccordionHeader(SETTINGS_SECTION_DISPLAY_INTERACTION, $r('sys.symbol.desktop_fill'),
-            '显示与交互', '本地缩放与双指画布缩放')
+            '显示与交互', '本地缩放、滚轮方向与双指画布缩放')
         }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 10 })
 
         ListItem() {
@@ -5298,6 +5304,8 @@ struct HostListPage {
               .fontFamily(this.font()).padding({ left: 8, bottom: 8 })
             Column() {
               this.remoteDisplayScaleRow()
+              this.cardDivider()
+              this.remoteWheelDirectionRow()
               if (!this.isDesktopDevice) {
                 this.cardDivider()
                 this.canvasGestureZoomRow()
@@ -6947,6 +6955,36 @@ struct HostListPage {
       .backgroundColor(this.remoteDisplayScaleMode === mode ? this.accentColor : this.pal().surface)
       .borderRadius(6)
       .onClick((): void => { this.saveRemoteDisplayScaleMode(mode); })
+  }
+
+  @Builder remoteWheelDirectionRow() {
+    Column() {
+      Row() {
+        Row() { Image($r('app.media.icon_desktop')).width(22).height(22).fillColor(this.pal().text3) }
+          .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
+        Column() {
+          Text('远程滚轮方向').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
+            .fontColor(this.pal().text).fontFamily(this.font())
+          Text('适用于 RDP、RustDesk、实体鼠标和触控板')
+            .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
+            .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+        }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
+      }.width('100%').height(54).padding({ left: 16, right: 16 })
+      Row({ space: 8 }) {
+        this.remoteWheelDirectionChip('正常', false)
+        this.remoteWheelDirectionChip('反向', true)
+      }.width('100%').height(42).justifyContent(FlexAlign.Center)
+    }.width('100%')
+  }
+
+  @Builder remoteWheelDirectionChip(label: string, reverse: boolean) {
+    Text(label).fontSize(11).fontWeight(this.rustdeskReverseWheel === reverse ? FontWeight.Medium : FontWeight.Normal)
+      .fontColor(this.rustdeskReverseWheel === reverse ? '#FFFFFF' : this.pal().text2)
+      .textAlign(TextAlign.Center).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+      .width(88).padding({ top: 7, bottom: 7 })
+      .backgroundColor(this.rustdeskReverseWheel === reverse ? this.accentColor : this.pal().surface)
+      .borderRadius(6)
+      .onClick((): void => { this.saveRemoteReverseWheel(reverse); })
   }
 
   @Builder canvasGestureZoomRow() {
