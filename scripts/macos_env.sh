@@ -52,6 +52,13 @@ fi
 prepend_path "$deveco_root/tools/node/bin"
 prepend_path "$deveco_root/tools/hvigor/bin"
 prepend_path "$deveco_root/tools/ohpm/bin"
+# DevEco's hdc is shipped in the SDK toolchains directory, not in the
+# application-level tools directory. Prefer the full HarmonyOS SDK hdc used by
+# DevEco, while keeping the standalone API 23 toolchain available as a fallback.
+harmonyos_toolchains="$harmonyos_sdk_root/default/openharmony/toolchains"
+ohos_toolchains="$ohos_sdk_root/toolchains"
+prepend_path "$ohos_toolchains"
+prepend_path "$harmonyos_toolchains"
 prepend_path "$ohos_native/llvm/bin"
 prepend_path "$ohos_native/build-tools/cmake/bin"
 export CC_aarch64_unknown_linux_ohos="$ohos_native/llvm/bin/clang"
@@ -92,6 +99,8 @@ printf 'Mac toolchain environment: node=%s hvigorw=%s ohpm=%s\n' \
     "$(command -v node 2>/dev/null || printf '%s' unavailable)" \
     "$(command -v hvigorw 2>/dev/null || printf '%s' unavailable)" \
     "$(command -v ohpm 2>/dev/null || printf '%s' unavailable)"
+printf 'Mac toolchain environment: hdc=%s\n' \
+    "$(command -v hdc 2>/dev/null || printf '%s' unavailable)"
 printf 'Mac toolchain environment: java=%s JAVA_HOME=%s\n' \
     "$(command -v java 2>/dev/null || printf '%s' unavailable)" \
     "${JAVA_HOME:-unset}"

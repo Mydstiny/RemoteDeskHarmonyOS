@@ -34,3 +34,21 @@ Large static archives must not be validated with `nm | grep -q` or an equivalent
 early-closing consumer under `set -o pipefail`. Use a full-stream grep redirected
 to `/dev/null`, or a temporary symbol list, so a successful match cannot be
 reported as `nm` exit 141.
+
+## D-008 - macOS `hdc` comes from SDK `toolchains`
+
+DevEco's `hdc` executable is shipped under the SDK `toolchains` directory, not
+the application-level `tools` directory. `scripts/macos_env.sh` puts the full
+HarmonyOS SDK toolchain first and the standalone API 23 toolchain second. A Mac
+CLI session must source the script before using `hdc`:
+
+```sh
+source scripts/macos_env.sh
+hdc --version
+hdc start
+hdc list targets
+```
+
+If the command resolves and the server starts but the target list is `[Empty]`,
+the toolchain is working and no HarmonyOS device or emulator is connected and
+authorized yet.
