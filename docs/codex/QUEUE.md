@@ -4,12 +4,14 @@ Updated: 2026-07-23 Asia/Shanghai
 
 ## Now
 
-- No active migration task. The Mac `hdc` PATH fix is verified and merged through
-  PR #32; the next device starts from synchronized `main`.
+- No active migration task. The Mac `hdc` PATH fix and sanitized Windows
+  development handoff are merged through the normal PR flow; the next device
+  starts from synchronized `main`.
 
 ## Next
 
-- On a clean Windows clone, run the same shared-state, submodule and history gates.
+- On Windows, install/confirm PowerShell 7 as `pwsh`, then run the shared-state,
+  submodule and history gates from a clean clone.
 - Configure private signing and optional AGConnect files only on the machine that
   needs signed or cloud-enabled builds.
 - Complete real-device acceptance for RDP, RustDesk, SSH/SFTP, VNC, PIP/live-view

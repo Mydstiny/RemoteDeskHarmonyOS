@@ -52,3 +52,74 @@ hdc list targets
 If the command resolves and the server starts but the target list is `[Empty]`,
 the toolchain is working and no HarmonyOS device or emulator is connected and
 authorized yet.
+
+## D-009 - API 23 is the compatibility ceiling
+
+The project targets HarmonyOS API 23. Before adding an API or UI import, consult
+the local API 23 reference; API 26-only facilities such as `@kit.uiMaterial` are
+not valid substitutes. ArkTS strict mode requires declared interfaces and types,
+rejects the affected `any`/`unknown` patterns, and uses bracket indexing for
+dynamic object keys.
+
+## D-010 - Toolchains are machine-local and ABI-explicit
+
+Windows and macOS configure their own DevEco SDK, native SDK, LLVM/CMake/Ninja,
+Node/Hvigor/ohpm, Rust targets, linkers, sysroots and private signing inputs.
+Never copy caches or absolute paths across operating systems. OHOS Rust builds
+must select `aarch64-unknown-linux-ohos` or `x86_64-unknown-linux-ohos` with the
+matching Clang target and sysroot.
+
+## D-011 - Verification task names are part of the contract
+
+Use `default@OhosTestCompileArkTS` and the matching
+`ohosTest@OhosTestCompileArkTS` task. The legacy
+`default@OhosTestBuildArkTS` task is not the acceptance gate for this SDK.
+Select native/Rust tests, both ABI builds, `assembleHap`, `git diff --check` and
+the Light compliance gate according to the changed surface; a Light pass does
+not claim real-device or release readiness.
+
+## D-012 - Native dependency provenance follows the change
+
+FreeRDP remains a public gitlink with recursive submodule initialization. Any
+FreeRDP, RustDesk protocol input, FFmpeg, Opus, OpenSSL, libssh2 or other native
+dependency change requires matching provenance, license, SBOM, notice and hash
+updates. Do not replace a public gitlink with a dirty copied build directory.
+
+## D-013 - Hooks are mandatory publication gates
+
+The `.githooks` path and pre-push history/compliance checks are part of the
+publication contract. Do not use `--no-verify`, push `main`, force-push, or work
+around a hook failure by pushing another ref. Windows development still needs
+PowerShell 7 (`pwsh`) for the mandated workflow even when local scripts happen
+to run under Windows PowerShell 5.1.
+
+## D-014 - Evidence must distinguish code, environment and device state
+
+A build or unit test proves only its own layer. SDK discovery, missing private
+credentials, locked devices, WMS/PIP behavior, endpoint availability and cloud
+account state must be recorded as separate environment or device blockers. Do
+not promote an old log or historical checkpoint into current acceptance
+evidence.
+
+## D-015 - Stream correctness is proven after the queue
+
+For RustDesk control, input and file-transfer work, enqueue success does not
+prove that the live streaming loop consumed the message. Encrypted TCP readers
+must preserve partial BytesCodec headers and payloads across timeout retries;
+`read_exact` retries must not discard bytes already read from a frame.
+
+## D-016 - OHOS native APIs need platform-specific substitutes
+
+Do not assume Linux C++ facilities are available in the OHOS NDK. Known fragile
+assumptions include `std::random_device`, `std::filesystem` and some threading
+helpers. Prefer OHOS Crypto or pthread/POSIX alternatives where required;
+`Crypto_DataBlob.len` is measured in bytes, random instances are per-use, and
+OHOS Crypto builds link the matching `libohcrypto.so`.
+
+## D-017 - UI lifecycle depends on ownership and mounting
+
+`bindSheet` failures are commonly host mounting-timing issues rather than a
+global sheet-count limit. Use a mounted entry host or deliberate overlay. For
+PIP and renderer work, treat transitional callbacks as transitional, wait for
+terminal states, and make surface generation, renderer ownership and decoder
+teardown explicit before reattachment.

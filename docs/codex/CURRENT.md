@@ -6,9 +6,9 @@ Updated: 2026-07-23 Asia/Shanghai
 
 - Repository: `Mydstiny/RemoteDeskHarmonyOS`
 - Public branch: `main`
-- Current public `main`: `e9ea4f541` (PR #33, merged with a merge commit)
 - Last workflow change: `dc715d230` (PR #32, merged with a merge commit)
-- Active task: none; the completed Mac `hdc` toolchain fix is already merged.
+- Active task: none; the sanitized Windows development handoff is now included
+  alongside the completed Mac migration state.
 - Shared state is synchronized with public `main`; the next device must sync before
   starting an independent task.
 
@@ -25,6 +25,9 @@ Updated: 2026-07-23 Asia/Shanghai
 - Both the full DevEco SDK and standalone API 23 SDK contain executable arm64
   `hdc` binaries. `scripts/macos_env.sh` now adds the full HarmonyOS SDK
   `toolchains` first and the standalone API 23 `toolchains` as a fallback.
+- Windows-derived durable constraints are recorded in `DECISIONS.md` and
+  `HANDOFF.md`; raw Codex memory, session transcripts and device evidence remain
+  excluded.
 
 ## Completed verification
 
@@ -55,6 +58,10 @@ Updated: 2026-07-23 Asia/Shanghai
 - After `source scripts/macos_env.sh`, `hdc --version` resolves to DevEco hdc
   `3.2.0d`. `hdc start` succeeds; `hdc list targets` reports `[Empty]` because no
   HarmonyOS device or emulator is currently connected and authorized.
+- The Windows handoff snapshot reports DevEco Studio `6.1.1.280`, bundled Node
+  `18.20.1`, Hvigor `6.24.2`, ohpm `6.1.2.268`, OHOS LLVM `15.0.4`, Rust/Cargo
+  `1.96.0`, and both OHOS Rust targets. These are Windows facts, not Mac path
+  assumptions.
 
 ## Blockers
 
@@ -66,6 +73,8 @@ Updated: 2026-07-23 Asia/Shanghai
   channel only if cloud features or cloud-device validation are needed.
 - Device validation remains pending until a HarmonyOS device or emulator is
   connected and authorized for `hdc`.
+- The Windows snapshot has Windows PowerShell `5.1` but no `pwsh`; install
+  PowerShell 7 before using the mandated Windows publication workflow.
 - The repository-local PowerShell 7 fallback (`7.7.0-preview.3`) passes the
   compliance gate; a stable system PowerShell 7 install is still recommended but
   is not blocking this workspace.
