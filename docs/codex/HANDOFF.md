@@ -4,16 +4,15 @@ Updated: 2026-07-23 Asia/Shanghai
 
 ## Source
 
-- Base: `main` at `4dbd5d928`, restored from the migration package and merged
-  through PR #29
-- Active task branch: `codex/mac-final-verification`
+- Migration baseline: `main` at `e7dfb3a85`, with PR #30 merged using a merge commit
+- Active task branch: none
 - FreeRDP submodule: `dae8276ac7361b8d14f7b87d41163fe03dbb944e`
 
 ## Completed
 
 - Complete public source and Git history were restored from the migration bundle;
-  the recursive FreeRDP submodule is initialized, and the bootstrap changes are
-  merged to public `main`.
+  the recursive FreeRDP submodule is initialized, and the bootstrap plus final
+  verification state are merged to public `main`.
 - DevEco Studio 6.1.1 opens the repository root. API 23 remains the project
   baseline, with the full HarmonyOS SDK and standalone API 23 native SDK kept in
   separate local properties.
@@ -28,8 +27,9 @@ Updated: 2026-07-23 Asia/Shanghai
 
 ## Verification
 
-- The post-merge `sync_workspace.sh sync` and task-start gate passed. The final
-  verification run is active on `codex/mac-final-verification`.
+- The post-merge `sync_workspace.sh sync`, task-start gate and final
+  `sync_workspace.sh status`/`doctor` checks passed. `main` is synchronized at
+  `e7dfb3a85`, and no task branch remains.
 - `hvigorw tasks` and `hvigorw init` passed.
 - Opus and RustDesk FFI builds passed for `arm64-v8a` and `x86_64`.
 - `default@OhosTestCompileArkTS` passed. `assembleHap --no-daemon` passed through
@@ -51,9 +51,6 @@ Updated: 2026-07-23 Asia/Shanghai
 
 ## Next owner action
 
-1. Run the final API 23 checks and inspect the clean working tree.
-2. Push only `codex/mac-final-verification` and create a PR.
-3. Wait for `open-source-compliance`, merge without squash, then run `main` sync and
-   delete the merged branch.
-4. Report the final Mac commit/branch, `main` equality, submodule, hook, PowerShell,
-   sync-script, clean-worktree and private-input status.
+1. Start the next independent task only from `main` after `sync_workspace.sh sync`.
+2. Configure AGConnect locally only if cloud features are required.
+3. Complete the remaining real-device protocol and cloud-sync acceptance matrix.

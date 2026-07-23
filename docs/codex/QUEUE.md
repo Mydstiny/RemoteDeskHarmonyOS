@@ -4,15 +4,11 @@ Updated: 2026-07-23 Asia/Shanghai
 
 ## Now
 
-- Finish `codex/mac-final-verification`: API 23 checks and Light compliance are
-  complete; commit the scoped shared-state update, push the branch and create its
-  PR.
-- Wait for `open-source-compliance`; merge with a merge commit, then synchronize
-  local `main` and remove the merged task branch.
+- No active migration task. The macOS workspace is synchronized and ready for the
+  next independent task.
 
 ## Next
 
-- On a networked Mac, verify fetch, push and PR operations against GitHub.
 - On a clean Windows clone, run the same shared-state, submodule and history gates.
 - Configure private signing and optional AGConnect files only on the machine that
   needs signed or cloud-enabled builds.
