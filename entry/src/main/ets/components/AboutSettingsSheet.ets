@@ -28,6 +28,13 @@ export struct AboutSettingsSheet {
     return AppConfig.fontFamily;
   }
 
+  private usageGuideHeight(): number {
+    // The settings Sheet is FIT_CONTENT. Keep the Swiper bounded so a short
+    // phone or a small freeform window never grows the popup beyond the
+    // usable viewport.
+    return this.breakpoint === 'sm' ? 300 : 340;
+  }
+
   private openUrl(url: string): void {
     try {
       const ctx: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
@@ -68,13 +75,13 @@ export struct AboutSettingsSheet {
         ForEach(this.usageGuideItems, (item: GuideContentPage, index: number) => {
           Column() {
             Column() {
-              Image(item.symbol).width(52).height(52).fillColor(this.accentColor)
+              Image(item.symbol).width(48).height(48).fillColor(this.accentColor)
             }
-            .width(108).height(108).borderRadius(30)
+            .width(96).height(96).borderRadius(26)
             .justifyContent(FlexAlign.Center)
             .backgroundColor(this.pal().surface)
             .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
-            .margin({ bottom: 26 })
+            .margin({ bottom: 18 })
             .scale({
               x: this.usageGuideIndex === index ? 1 : 0.86,
               y: this.usageGuideIndex === index ? 1 : 0.86
@@ -82,12 +89,12 @@ export struct AboutSettingsSheet {
             .animation({ duration: 240, curve: Curve.EaseOut })
 
             Text(item.title)
-              .fontSize(24).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
-              .textAlign(TextAlign.Center).fontFamily(this.font()).margin({ bottom: 12 })
+              .fontSize(22).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
+              .textAlign(TextAlign.Center).fontFamily(this.font()).margin({ bottom: 10 })
 
             Text(item.desc)
               .fontSize(14).fontColor(this.pal().text2).textAlign(TextAlign.Center)
-              .lineHeight(22).width('82%').fontFamily(this.font())
+              .lineHeight(21).width('88%').fontFamily(this.font())
           }
           .width('100%').justifyContent(FlexAlign.Center)
           .padding({ bottom: 40 })
@@ -95,7 +102,7 @@ export struct AboutSettingsSheet {
       }
       .loop(false).indicator(false).duration(250).curve(Curve.EaseOut)
       .onChange((i: number): void => { this.usageGuideIndex = i; })
-      .height(this.breakpoint === 'sm' ? 380 : 420)
+      .height(this.usageGuideHeight())
 
       Row() {
         Text(this.usageGuideIndex > 0 ? '上一步' : '关闭')
@@ -130,7 +137,8 @@ export struct AboutSettingsSheet {
       }.width('100%').padding({ left: 28, right: 28, bottom: 28, top: 8 })
     }
     .width('100%')
-    .constraintSize({ maxWidth: 620 })
+    .constraintSize({ maxWidth: 620, maxHeight: this.breakpoint === 'sm' ? 500 : 560 })
+    .clip(true)
     .backgroundColor(this.pal().bg)
     .backgroundBlurStyle(BlurStyle.Regular)
     .borderRadius(this.breakpoint === 'sm' ?

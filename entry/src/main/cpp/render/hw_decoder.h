@@ -11,6 +11,7 @@
 #ifndef HW_DECODER_H
 #define HW_DECODER_H
 
+#include "decoder_callback_gate.h"
 #include "extensions/protocol_adapter.h"
 #include "video_backpressure_controller.h"
 #include <GLES3/gl3.h>
@@ -30,6 +31,18 @@ struct OH_AVFormat;
 struct OH_AVBuffer;
 struct OH_NativeImage;
 // OHNativeWindow: 使用 void* 存储避免与 SDK typedef 冲突
+
+struct DecoderTelemetrySnapshot {
+    bool valid = false;
+    bool ready = false;
+    bool software = false;
+    int codec = 0;
+    int width = 0;
+    int height = 0;
+    size_t queueDepth = 0;
+    size_t queueMax = 0;
+    uint64_t droppedFrames = 0;
+};
 
 /**
  * 解码器错误码
@@ -158,10 +171,10 @@ private:
     CodecType       codecType_ = CodecType::H264;
     bool            initialized_ = false;
 
-    DecoderFrameCallback  frameCallback_;
-    DecoderMakeCurrentCallback makeCurrentCallback_;
-    DecoderReleaseCurrentCallback releaseCurrentCallback_;
-    DecoderErrorCallback  errorCallback_;
+    DecoderCallbackGate<DecoderFrameCallback> frameCallbackGate_;
+    DecoderCallbackGate<DecoderMakeCurrentCallback> makeCurrentCallbackGate_;
+    DecoderCallbackGate<DecoderReleaseCurrentCallback> releaseCurrentCallbackGate_;
+    DecoderCallbackGate<DecoderErrorCallback> errorCallbackGate_;
 
     // 输入队列 + 线程安全
     mutable std::mutex      mutex_;
@@ -219,6 +232,9 @@ namespace DecoderNapi {
     int DecodeNative(int64_t handle, const VideoFrame& frame);
     int DecodeActiveNative(const VideoFrame& frame);
     int ActiveVideoPressureLevel();
+    DecoderTelemetrySnapshot GetActiveTelemetry(uint64_t expectedSessionId = 0);
+    void SetActiveSessionId(uint64_t sessionId);
+    void ClearActiveSessionId(uint64_t sessionId);
     bool BindVideoPipeline(int64_t decoderHandle, int64_t rendererHandle);
     bool DetachVideoPipeline(int64_t decoderHandle);
     bool RequestDecoderRecovery(int64_t decoderHandle);

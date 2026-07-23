@@ -11,19 +11,18 @@ function containsPage(pages: ReleaseNotePage[], id: string): boolean {
 
 export default function releaseNotesRegistryTest(): void {
   describe('ReleaseNotesRegistry', (): void => {
-    it('describes_the_complete_1_0_7_update', 0, (): void => {
+    it('describes_the_complete_1_0_8_update', 0, (): void => {
       const pages: ReleaseNotePage[] = pagesForReleasedVersion(CURRENT_RELEASE_VERSION);
-      expect(pages.length).assertEqual(9);
-      expect(containsPage(pages, 'rdp-render-session')).assertTrue();
-      expect(containsPage(pages, 'remote-input-keyboard')).assertTrue();
-      expect(containsPage(pages, 'rdp-file-certificate')).assertTrue();
-      expect(containsPage(pages, 'rustdesk-relay-domain')).assertTrue();
-      expect(containsPage(pages, 'rustdesk-pro-auth')).assertTrue();
-      expect(containsPage(pages, 'modern-add-security')).assertTrue();
-      expect(containsPage(pages, 'sync-backup-feedback')).assertTrue();
-      expect(containsPage(pages, 'responsive-onboarding')).assertTrue();
-      expect(pages[pages.length - 1].id).assertEqual('welcome-1-0-7');
-      expect(pages[pages.length - 1].title).assertEqual('欢迎使用 1.0.7');
+      expect(pages.length).assertEqual(8);
+      expect(containsPage(pages, 'background-video-pip')).assertTrue();
+      expect(containsPage(pages, 'avsession-media-identity')).assertTrue();
+      expect(containsPage(pages, 'native-vp9-background-crash')).assertTrue();
+      expect(containsPage(pages, 'pip-frame-lifecycle')).assertTrue();
+      expect(containsPage(pages, 'grip-permission-startup')).assertTrue();
+      expect(containsPage(pages, 'onboarding-rewrite')).assertTrue();
+      expect(containsPage(pages, 'responsive-guide-sheets')).assertTrue();
+      expect(pages[pages.length - 1].id).assertEqual('welcome-1-0-8');
+      expect(pages[pages.length - 1].title).assertEqual('欢迎使用 1.0.8');
     });
 
     it('does_not_advertise_removed_host_features', 0, (): void => {
@@ -37,7 +36,7 @@ export default function releaseNotesRegistryTest(): void {
     });
 
     it('returns_no_pages_for_unreleased_versions', 0, (): void => {
-      expect(pagesForReleasedVersion('1.0.8').length).assertEqual(0);
+      expect(pagesForReleasedVersion('1.0.9').length).assertEqual(0);
     });
   });
 }

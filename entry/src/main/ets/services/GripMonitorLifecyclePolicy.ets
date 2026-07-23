@@ -14,14 +14,6 @@ export function shouldRebindGripMonitorOnPageShow(
   return pageActive && permissionGranted && monitorRegistered;
 }
 
-export function shouldRequestGripPermission(
-  pageActive: boolean,
-  monitorRegistered: boolean,
-  permissionGranted: boolean
-): boolean {
-  return pageActive && !permissionGranted && !monitorRegistered;
-}
-
 export function shouldIgnoreActivityMotionForHoldingHand(
   detectGestureGranted: boolean,
   _activityMotionGranted: boolean
@@ -68,4 +60,23 @@ export function shouldRunForegroundSensor(
   featureEnabled: boolean
 ): boolean {
   return pageActive && !appInBackground && featureEnabled;
+}
+
+/**
+ * The holding-hand permission is an optional enhancement, not a prerequisite
+ * for rendering the host list. Request it once after the first frame is
+ * allowed to render, and never schedule a duplicate dialog while a request is
+ * already running.
+ */
+export function shouldAutoRequestGripPermission(
+  pageActive: boolean,
+  appInBackground: boolean,
+  isDesktopDevice: boolean,
+  featureEnabled: boolean,
+  permissionGranted: boolean,
+  requestAttempted: boolean,
+  requestInFlight: boolean
+): boolean {
+  return pageActive && !appInBackground && !isDesktopDevice && featureEnabled &&
+    !permissionGranted && !requestAttempted && !requestInFlight;
 }

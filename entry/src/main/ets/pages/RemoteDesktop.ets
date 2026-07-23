@@ -7,16 +7,32 @@ import { abilityAccessCtrl, common } from '@kit.AbilityKit';
 import { pasteboard } from '@kit.BasicServicesKit';
 import { image } from '@kit.ImageKit';
 import { HostSyncService } from '../services/HostSyncService';
+import { CloudStore } from '../services/CloudStore';
 import { ExtensionLoader } from '../services/ExtensionLoader';
 import { KeyVaultService } from '../services/KeyVaultService';
-import { RemoteHost, LockType } from '../model/RemoteHost';
+import {
+  RemoteHost,
+  LockType,
+  normalizeRdpCredentialParts,
+  normalizeRdpAuthMode,
+  normalizeRdpRestrictedAdminSecretSource,
+  RdpAuthMode,
+  RdpRestrictedAdminSecretSource
+} from '../model/RemoteHost';
 import { RustDeskRelayConfig } from '../model/RustDeskRelayConfig';
+import { rustDeskRelayKeyModeForFfi } from '../services/RustDeskRelayKeyPolicy';
 import { RdpCredential } from '../model/RdpCredential';
 import { AppConfig, Palette, buildDark, buildLight } from '../common/Theme';
 import { showLockGate, lockGateErrorMessage } from '../components/LockGate';
 import { RemoteModifierHandle } from '../components/RemoteModifierHandle';
 import { RemoteModifierPanel } from '../components/RemoteModifierPanel';
+import { RemoteCursorOverlay, RemoteCursorOverlayState } from '../components/RemoteCursorOverlay';
 import { RemoteSessionTopBar, RemoteSessionTopBarActions } from '../components/RemoteSessionTopBar';
+import { RustDeskDiagnosticsHud } from '../components/RustDeskDiagnosticsHud';
+import {
+  shouldEnableRustDeskPro,
+  shouldShowRustDeskDiagnostics
+} from '../services/RustDeskDiagnosticsPolicy';
 // PassphraseDialog replaced with inline bindSheet (RemoteDesktop is @Entry, no bindSheet limit)
 import { RemoteKeyDispatcher } from '../services/RemoteKeyDispatcher';
 import { ClipboardBridgeService } from '../services/ClipboardBridgeService';
@@ -24,11 +40,27 @@ import { clipboardSyncEnabledForProtocol } from '../services/ClipboardSyncPolicy
 import { FileTransferLiveTaskService } from '../services/FileTransferLiveTaskService';
 import { RemoteSessionBackgroundTaskService, RemoteSessionBgInfo } from '../services/RemoteSessionBackgroundTaskService';
 import { RemoteSessionLiveViewService, LiveViewConnectionInfo } from '../services/RemoteSessionLiveViewService';
+import { LiveViewMode } from '../services/LiveViewTypes';
+import {
+  RemoteSessionPipService,
+  RemoteSessionPipSurface
+} from '../services/RemoteSessionPipService';
+import {
+  RemoteSessionPipLifecycleAction,
+  RemoteSessionPipContentSize,
+  hasRemoteSessionPipVideo,
+  hasRdpRemoteSessionPipFrame,
+  shouldPrepareRemoteSessionPip,
+  shouldCreatePreauthenticatedRustDeskPipeline,
+  resolveRemoteSessionPipContentSize,
+  resolveRemoteSessionPipLifecycle
+} from '../services/RemoteSessionPipLifecyclePolicy';
 import { ActiveRemoteSessionRegistry, ActiveRemoteSessionRecord } from '../services/ActiveRemoteSessionRegistry';
 import { NativeSessionHandles, ProductionNativeHandleAdapter } from '../services/NativeSessionHandles';
 import {
   decideRemoteDesktopBackgroundAction,
-  RemoteDesktopBackgroundAction
+  RemoteDesktopBackgroundAction,
+  shouldDeferRemoteDesktopDisappear
 } from '../services/RemoteDesktopBackgroundLifecyclePolicy';
 import {
   getRestoreFrameRefreshDelaysMs,
@@ -47,6 +79,7 @@ import {
   shouldRestoreRemoteNavigation
 } from '../services/RemoteImmersivePolicy';
 import {
+  shouldHideSystemPointerForVirtualTouchpad,
   shouldRenderTouchPointerIndicator,
   shouldUseSystemMousePointer
 } from '../services/RemotePointerModePolicy';
@@ -54,9 +87,22 @@ import {
   normalizeRemoteCursorStyle,
   remoteCursorSnapshotChanged,
   RemoteCursorStyle,
-  shouldRenderArrowCursor,
-  shouldRenderCircleCursor
+  resolveRemoteCursorRenderMode,
+  resolveRemoteCursorVisualScale,
+  shouldRenderRemoteCursorArrow,
+  shouldRenderRemoteCursorFallbackIndicator,
+  shouldRenderCircleCursor,
+  shouldRefreshRemoteCursorBitmap
 } from '../services/RemoteCursorStylePolicy';
+import {
+  advanceRemoteCursorMotion,
+  applyLocalCursorTarget,
+  beginLocalCursorGesture,
+  createRemoteCursorMotionState,
+  endLocalCursorGesture,
+  observeRemoteCursorPosition,
+  RemoteCursorMotionState
+} from '../services/RemoteCursorMotionPolicy';
 import {
   clampTouchpadEffectiveGain,
   resetTouchpadPointerCurveState,
@@ -66,10 +112,27 @@ import {
 import {
   RemoteSurfaceDelta,
   RemoteSurfaceTransform,
+  normalizeRendererViewportToSurface,
   remotePointToSurface,
   surfaceDeltaToRemote,
   surfacePointToRemote
 } from '../services/RemoteSurfaceTransformPolicy';
+import {
+  baseCanvasTransform,
+  CanvasTransform,
+  CanvasViewport,
+  clampCanvasTransform,
+  LocalViewScaleMode,
+  normalizeLocalViewScaleMode,
+  pinchCanvasTransform,
+  REMOTE_DISPLAY_SCALE_PREFERENCE_VERSION,
+  REMOTE_DISPLAY_SCALE_PREFERENCE_VERSION_KEY,
+  resolveInitialRemoteDisplayScaleMode
+} from '../services/RemoteCanvasTransformPolicy';
+import {
+  normalizeRdpResolutionId,
+  rdpResolutionPresetForId
+} from '../services/RemoteResolutionPresetPolicy';
 import {
   remoteInputBlockedReason,
   shouldBlockRemoteInputForBrowseMode
@@ -119,7 +182,16 @@ import {
   RemoteImeCommandQueue
 } from '../services/RemoteImeCommandQueue';
 import { hashForLog, maskHost, maskUser, safeError } from '../utils/SafeLogger';
-import { RdpRenderStats, RemoteCursorSnapshot, SessionConfig, SessionTransferStatus } from '../types/rdpnapi';
+import {
+  LocalResourceStats,
+  RdpRenderStats,
+  RemoteCursorSnapshot,
+  RustDeskDisplayCapabilities,
+  RustDeskDisplayResolution,
+  RustDeskDiagnosticsSnapshot,
+  SessionConfig,
+  SessionTransferStatus
+} from '../types/rdpnapi';
 import {
   normalizeRustDeskPort,
   RUSTDESK_PEER_TCP_PORT,
@@ -133,6 +205,7 @@ import {
   RemoteKeyboardLayout,
   remoteKeyboardLayoutDescription,
   shouldChoosePhysicalKeyboardLayout,
+  physicalKeyboardLayoutForProtocol,
   shouldConsumeRemoteBack
 } from '../services/RemotePhysicalKeyboardPolicy';
 import { hilog } from '@kit.PerformanceAnalysisKit';
@@ -156,8 +229,14 @@ const REMOTE_IME_SELECTION_ACK_TIMEOUT_MS = 600;
 const REMOTE_IME_COMMAND_RETRY_MS = 50;
 const INPUT_LOG_SAMPLE_MS = 1000;
 const MOUSE_MOVE_FLUSH_MS = 16;
-const MOUSE_MOVE_ACK_TIMEOUT_MS = 250;
-const MOUSE_MOVE_ACK_TOLERANCE_PX = 4;
+const MOUSE_MOVE_IN_FLIGHT_DIAGNOSTIC_TIMEOUT_MS = 250;
+const RENDERER_VIEWPORT_CACHE_MS = 250;
+const REMOTE_CURSOR_POLL_MS = 33;
+const REMOTE_CURSOR_RENDER_FRAME_MS = 16;
+const REMOTE_CURSOR_BITMAP_RETRY_MS = 1000;
+const REMOTE_CURSOR_LOG_SAMPLE_MS = 5000;
+const REMOTE_GEOMETRY_SYNC_MS = 500;
+const REMOTE_DESKTOP_DISAPPEAR_BACKGROUND_SIGNAL_WAIT_MS = 500;
 const TOUCHPAD_MAX_LOCAL_STEP_RATIO = 0.75;
 const TOUCHPAD_MAX_LOCAL_STEP_VP = 420;
 const TOUCH_INDICATOR_BUTTON_RIGHT = 2;
@@ -273,6 +352,8 @@ interface LocalPoint {
 interface RendererViewportSnapshot {
   sourceWidth: number;
   sourceHeight: number;
+  surfaceWidth: number;
+  surfaceHeight: number;
   viewportX: number;
   viewportY: number;
   viewportW: number;
@@ -282,6 +363,38 @@ interface RendererViewportSnapshot {
 type ModifierLatch = 'off' | 'once' | 'locked';
 type RustDeskAuthChoice = 'password' | 'request_approval';
 type RustDeskAuthDismissReason = 'none' | 'confirm' | 'cancel';
+
+const EMPTY_RUSTDESK_DIAGNOSTICS: RustDeskDiagnosticsSnapshot = {
+  supported: false, sessionActive: false, protocolSnapshotAvailable: false,
+  videoSeen: false, receivedRateAvailable: false, presentedRateAvailable: false,
+  decodeRateAvailable: false, sessionId: -1, latencyMs: -1, targetBitrateKbps: 0,
+  videoMessages: 0, receivedFrames: 0, keyframes: 0, receivedBytes: 0,
+  audioFrames: 0, cadenceGaps: 0, maxCadenceGapMs: 0, testDelayCount: 0,
+  receivedFps: 0, displayFps: 0, decodeFps: 0, bitrateKbps: 0, codec: -1, width: 0, height: 0,
+  connectionPath: 'unknown', lastFrameAtMs: 0, lastFrameAgeMs: -1, decodeOk: 0, decodeErrors: 0,
+  decodeP50Us: 0, decodeP95Us: 0, decodeMaxUs: 0, presentedFrames: 0,
+  presentationWindowSamples: 0, presentationWindowMs: 0,
+  renderP50Us: 0, renderP95Us: 0, renderMaxUs: 0,
+  queueDepth: 0, queueMax: 0,
+  droppedFrames: 0, decoderBackend: 'unknown'
+};
+
+const EMPTY_RUSTDESK_DISPLAY_CAPABILITIES: RustDeskDisplayCapabilities = {
+  supported: false,
+  currentDisplay: 0,
+  width: 0,
+  height: 0,
+  originalWidth: 0,
+  originalHeight: 0,
+  scaleMilli: 1000,
+  geometryEpoch: 0,
+  resolutions: []
+};
+
+const EMPTY_LOCAL_RESOURCE_STATS: LocalResourceStats = {
+  supported: false, cpuAvailable: false, cpuPercent: -1, memoryBytes: 0,
+  memoryAvailable: false, gpuAvailable: false, gpuPercent: -1, sampledAtMs: 0
+};
 
 class RemoteDesktopXComponentController extends XComponentController {
   private listener: RemoteDesktopSurfaceListener | null = null;
@@ -316,14 +429,24 @@ struct RemoteDesktop {
   @StorageProp('accentColor') accentColor: string = '#007DFF';
   @StorageProp('currentBreakpoint') breakpoint: string = 'sm';
   @StorageProp('isDesktopDevice') isDesktopDevice: boolean = false;
-  @StorageLink('rustdeskControlMode') rustdeskControlMode: number = 0; // 0=touchpad, 1=direct touch, 2=keyboard/mouse
+  @StorageLink('rustdeskControlMode') @Watch('onRemoteControlModeChange')
+  rustdeskControlMode: number = 0; // 0=touchpad, 1=direct touch, 2=keyboard/mouse
   @StorageLink('rustdeskImageQuality') rustdeskImageQuality: number = 1;
   @StorageLink('rustdeskCodec') rustdeskCodec: number = 0;
   @StorageLink('rustdeskPrivacyMode') rustdeskPrivacyMode: boolean = false;
   @StorageLink('rustdeskAudioEnabled') rustdeskAudioEnabled: boolean = true;
+  @StorageLink('rustdeskShowDiagnostics') @Watch('onRustDeskDiagnosticsSettingChange')
+  rustdeskShowDiagnostics: boolean = false;
+  @StorageLink('rustdeskShowProDiagnostics') @Watch('onRustDeskDiagnosticsSettingChange')
+  rustdeskShowProDiagnostics: boolean = false;
   @StorageLink('rustdeskClipboardEnabled') rustdeskClipboardEnabled: boolean = true;
   @StorageLink('rustdeskFilePasteEnabled') rustdeskFilePasteEnabled: boolean = true;
+  @StorageLink('rustdeskRemoteAppTouchScaleEnabled') rustdeskRemoteAppTouchScaleEnabled: boolean = false;
   @StorageLink('rustdeskViewScaleMode') rustdeskViewScaleMode: string = 'fit';
+  @StorageLink('remoteDisplayScaleMode') remoteDisplayScaleMode: string = 'fit';
+  @StorageLink('remoteDisplayCustomScalePercent') remoteDisplayCustomScalePercent: number = 100;
+  @StorageLink('canvasGestureZoomEnabled') @Watch('onCanvasGestureZoomSettingChange')
+  canvasGestureZoomEnabled: boolean = false;
   @StorageLink('rustdeskShowLocalCursor') rustdeskShowLocalCursor: boolean = true;
   @StorageLink('rustdeskBrowseMode') rustdeskBrowseMode: boolean = false;
   @StorageLink('rustdeskRelativeMouseMode') rustdeskRelativeMouseMode: boolean = false;
@@ -331,13 +454,12 @@ struct RemoteDesktop {
   @StorageLink('rustdeskSwapMouseButtons') rustdeskSwapMouseButtons: boolean = false;
   @StorageLink('rustdeskTouchpadSpeed') rustdeskTouchpadSpeed: number = 1.0;
   @StorageLink('virtualMouseStyle') virtualMouseStyle: string = 'circle';
-  @StorageLink('showVirtualMouse') showVirtualMouse: boolean = false;
-  @StorageLink('showVirtualJoystick') showVirtualJoystick: boolean = false;
-  @StorageLink('rdpControlMode') rdpControlMode: number = 0; // 0=touchpad, 1=direct touch, 2=keyboard/mouse
+  @StorageLink('rdpControlMode') @Watch('onRemoteControlModeChange')
+  rdpControlMode: number = 0; // 0=touchpad, 1=direct touch, 2=keyboard/mouse
   @StorageLink('rdpDriveEnabled') rdpDriveEnabled: boolean = true;
   @StorageLink('rdpDriveName') rdpDriveName: string = 'RemoteDesktop';
   @StorageLink('remoteDesktopBgFlag') @Watch('onRemoteDesktopBgFlagChange') remoteDesktopBgFlag: boolean = false;
-  @State connected: boolean = false;
+  @State @Watch('onRemoteConnectionStateChange') connected: boolean = false;
   @State connecting: boolean = true;
   @State connectionError: string = '';
   @State connectionErrorDetail: string = '';
@@ -346,6 +468,10 @@ struct RemoteDesktop {
   @State rdpSessionErrorMessage: string = '';
   @State rdpSessionErrorCode: string = '';
   @State showRustDeskAuthSheet: boolean = false;
+  @State rustDeskDiagnostics: RustDeskDiagnosticsSnapshot = EMPTY_RUSTDESK_DIAGNOSTICS;
+  @State rustDeskDisplayCapabilities: RustDeskDisplayCapabilities = EMPTY_RUSTDESK_DISPLAY_CAPABILITIES;
+  @State showRustDeskDisplayResolutionMenu: boolean = false;
+  @State localResourceStats: LocalResourceStats = EMPTY_LOCAL_RESOURCE_STATS;
   @State rustDeskAuthChoice: RustDeskAuthChoice = 'password';
   @State rustDeskAuthPasswordInput: string = '';
   @State rustDeskAuthPasswordMode: number = 0;
@@ -384,18 +510,47 @@ struct RemoteDesktop {
   private orientationApplied: boolean = false;
   private connectAttemptId: number = 0;
   private pendingHost: RemoteHost | null = null;
+  // Set only by the RustDesk Pro preflight handoff. It is consumed after the
+  // first renderer/decoder pair is installed and is never inferred from a
+  // renderer handle, because normal PIP restore intentionally releases that
+  // handle before reattaching the same decoder.
+  private preAuthenticatedSessionPending: boolean = false;
   private rustDeskAuthDismissReason: RustDeskAuthDismissReason = 'none';
   private rustDeskAuthBackPending: boolean = false;
+  private rustDeskAuthPendingStart: boolean = false;
+  private rustDeskAuthSheetClosing: boolean = false;
+  private rustDeskAuthQueuedMessage: string | null = null;
   private rustDeskSessionAuthChoice: RustDeskAuthChoice = 'password';
   private rustDeskSessionPassword: string = '';
   private rustDeskSessionRememberPassword: boolean = false;
   private rustDeskSessionPasswordMode: number = 0;
   private remoteNavigationHidden: boolean = false;
   private backgroundAudioPollTimer: number = -1;
+  private pendingDisappearDecisionTimer: number = -1;
+  private disappearDecisionGeneration: number = 0;
+  private rustDeskDiagnosticsTimer: number = -1;
+  private rustDeskDiagnosticsDockInitialized: boolean = false;
   private backgroundSessionInfo: RemoteSessionBgInfo | null = null;
   private backgroundHasAudio: boolean = false;
   private backgroundHasVideo: boolean = false;
+  private renderPreservedInPip: boolean = false;
+  // The current renderer handle can change during a failed/stale transfer.
+  // Keep the PIP owner separately so foreground recovery can release exactly
+  // the free-node renderer before installing the page renderer.
+  private pipRendererHandle: number = -1;
+  private pipSurfaceTransferInProgress: boolean = false;
   private restoreFrameRefreshTimers: number[] = [];
+  // Foreground restore is a teardown barrier: no surface callback or connect
+  // retry may rebuild a renderer until PIP and the decoder render thread are
+  // fully stopped.
+  private restoreInProgress: boolean = false;
+  private restoreOperationId: number = 0;
+  private pipRestoreRetryTimer: number = -1;
+  private nativeDisconnectPending: boolean = false;
+  private nativeDisconnectRetryTimer: number = -1;
+  private pipContentSizeRefreshTimers: number[] = [];
+  private pipLastContentWidth: number = 0;
+  private pipLastContentHeight: number = 0;
   private xComponentController: RemoteDesktopXComponentController = new RemoteDesktopXComponentController();
   private surfaceWidth: number = 0;
   private surfaceHeight: number = 0;
@@ -403,34 +558,47 @@ struct RemoteDesktop {
   private renderHeightPx: number = 0;
   private rendererSourceWidth: number = 0;
   private rendererSourceHeight: number = 0;
+  private rendererViewportCache: RendererViewportSnapshot | null = null;
+  private rendererViewportCacheHandle: number = -1;
+  private rendererViewportReadAtMs: number = 0;
   private remoteWidth: number = 1920;
   private remoteHeight: number = 1080;
   private remoteCursorX: number = 960;
   private remoteCursorY: number = 540;
   private remoteCursorPreciseX: number = 960;
   private remoteCursorPreciseY: number = 540;
-  private remoteAuthoritativeX: number = 960;
-  private remoteAuthoritativeY: number = 540;
-  private remoteAuthoritativeReady: boolean = false;
-  private remotePredictionActive: boolean = false;
+  private remoteCursorMotion: RemoteCursorMotionState = createRemoteCursorMotionState(960, 540);
   private remoteCursorReady: boolean = false;
-  @State remoteCursorViewRevision: number = 0;
-  @State remoteCursorPixelMap: image.PixelMap | null = null;
+  @State remoteCursorOverlayState: RemoteCursorOverlayState = new RemoteCursorOverlayState();
+  private remoteCursorViewRevision: number = 0;
+  private remoteCursorPixelMap: image.PixelMap | null = null;
   private remoteCursorShapeRevision: number = -1;
+  private remoteCursorPixelMapShapeRevision: number = -1;
   private remoteCursorPositionRevision: number = -1;
+  private remoteCursorVisibilityRevision: number = -1;
   private remoteCursorNativeVisible: boolean = false;
+  private remoteCursorFallbackShape: boolean = false;
   private remoteCursorShapeWidth: number = 0;
   private remoteCursorShapeHeight: number = 0;
   private remoteCursorHotX: number = 0;
   private remoteCursorHotY: number = 0;
-  @State virtualMouseX: number = 24;
-  @State virtualMouseY: number = 140;
-  private virtualMouseDragStartX: number = 0;
-  private virtualMouseDragStartY: number = 0;
-  private virtualWheelLastOffset: number = 0;
-  private virtualJoystickLastX: number = 0;
-  private virtualJoystickLastY: number = 0;
-  private virtualJoystickTimer: number = -1;
+  private remoteCursorShapeRetryAtMs: number = 0;
+  private remoteCursorLastLogMs: number = 0;
+  private remoteCursorViewCommitTimer: number = -1;
+  private remoteCursorViewCommitPending: boolean = false;
+  private remoteCursorShapeLoadToken: number = 0;
+  private remoteCursorShapeLoading: boolean = false;
+  private remoteCursorShapeLoadingSessionId: number = -1;
+  private remoteCursorShapeLoadingRevision: number = -1;
+  private remoteCursorPixelFetchToken: number = 0;
+  private remoteCursorPixelFetchInFlight: boolean = false;
+  private remoteCursorPixelFetchSessionId: number = -1;
+  private remoteCursorPixelFetchRevision: number = -1;
+  private remoteCursorPixelFetchStartedAtMs: number = 0;
+  private retiredRemoteCursorPixelMaps: Array<image.PixelMap> = [];
+  private remoteCursorPixelMapReleaseTimer: number = -1;
+  private remoteSystemPointerVisible: boolean | null = null;
+  private remoteSurfaceUsesSystemPointer: boolean | null = null;
   private touchpadCurveState: TouchpadPointerCurveState = resetTouchpadPointerCurveState();
   private touchpadAnchorValid: boolean = false;
   private lastTouchpadCurveLogMs: number = 0;
@@ -451,6 +619,21 @@ struct RemoteDesktop {
   private touchLeftDown: boolean = false; // 直接模式用: 左键是否按下
   private touchGestureDone: boolean = false; // 双指手势已完成, 抑制剩余手指的多余点击
   private touchMaxFingers: number = 0;       // 本次手势最高手指数 (用于三指检测)
+  private canvasTransform: CanvasTransform = { scale: 1, panX: 0, panY: 0 };
+  private canvasTransformInitialized: boolean = false;
+  // A default display scale must be recalculated when the surface or stream
+  // geometry changes.  Only a real local canvas pinch owns a persistent
+  // transform across those geometry changes.
+  private canvasTransformGestureModified: boolean = false;
+  private canvasPinchActive: boolean = false;
+  private canvasPinchInputConsumed: boolean = false;
+  private canvasPinchLastScale: number = 1;
+  private canvasPinchLastCenterX: number = 0;
+  private canvasPinchLastCenterY: number = 0;
+  private rustDeskTouchPinchActive: boolean = false;
+  private rustDeskTouchPinchLastScale: number = 1;
+  private rustDeskTouchPinchLastRemoteX: number = 0;
+  private rustDeskTouchPinchLastRemoteY: number = 0;
   private keepKeyboardAfterSheetClose: boolean = false;
   // 三指控制面板
   @State showControlPanel: boolean = false;
@@ -465,6 +648,9 @@ struct RemoteDesktop {
   @State handleX: number = 0;
   @State handleY: number = 300;
   @State handleSide: string = 'right';
+  @State rustDeskDiagnosticsDockExpanded: boolean = false;
+  @State rustDeskDiagnosticsDockSide: string = 'left';
+  @State rustDeskDiagnosticsDockY: number = 360;
   @State modifierPanelMounted: boolean = false;
   @State modifierPanelVisible: boolean = false;
   @State shortcutPanelVisible: boolean = false;
@@ -533,6 +719,7 @@ struct RemoteDesktop {
   private localMouseMoveGeneration: number = 0;
   private mouseMoveTimer: number = -1;
   private physicalMouseDownButton: number = -1;
+  private physicalWheelRemainder: number = 0;
   private inputDeviceListenerRegistered: boolean = false;
   private inputDevicePromptVisible: boolean = false;
   private externalInputPromptedThisSession: boolean = false;
@@ -542,6 +729,7 @@ struct RemoteDesktop {
   private rdpRenderWatchdogTimer: number = -1;
   private rdpNativeStateMonitorTimer: number = -1;
   private remoteCursorPollTimer: number = -1;
+  private rustDeskGeometrySyncTimer: number = -1;
   private lastBrowseModeBlockedToastMs: number = 0;
 
   private inputDeviceListener: Callback<inputDevice.DeviceListener> =
@@ -737,6 +925,10 @@ struct RemoteDesktop {
    * 因为恢复的是已有 RustDesk 会话而不是重新认证。
    */
   private openRustDeskAuthSheet(message: string = ''): void {
+    if (this.rustDeskAuthSheetClosing) {
+      this.rustDeskAuthQueuedMessage = message;
+      return;
+    }
     const host: RemoteHost | null = this.pendingHost;
     if (host === null || host.protocol !== 'rustdesk' || host.sourceType !== 'rustdesk_pro' ||
       !host.rustdeskProManaged) {
@@ -752,14 +944,15 @@ struct RemoteDesktop {
     this.rustDeskAuthError = message;
     this.rustDeskAuthDismissReason = 'none';
     this.rustDeskAuthBackPending = false;
+    this.rustDeskAuthPendingStart = false;
     this.showRustDeskAuthSheet = true;
     setTimeout((): void => { this.focusRustDeskAuthPassword(); }, 120);
   }
 
-  private cancelRustDeskAuthChoice(): void {
+  private requestRustDeskAuthCancellation(): void {
     this.rustDeskAuthDismissReason = 'cancel';
     this.rustDeskAuthBackPending = true;
-    this.showRustDeskAuthSheet = false;
+    this.rustDeskAuthPendingStart = false;
     this.rustDeskAuthError = '';
     this.connectStarted = false;
     this.connecting = false;
@@ -767,13 +960,20 @@ struct RemoteDesktop {
     this.connectionErrorDetail = '未建立 RustDesk 会话';
   }
 
+  private cancelRustDeskAuthChoice(): void {
+    this.rustDeskAuthSheetClosing = true;
+    this.requestRustDeskAuthCancellation();
+    this.showRustDeskAuthSheet = false;
+  }
+
   private confirmRustDeskAuthChoice(): void {
     const host: RemoteHost | null = this.pendingHost;
     if (host === null || host.protocol !== 'rustdesk' || host.sourceType !== 'rustdesk_pro' ||
       !host.rustdeskProManaged) {
       this.rustDeskAuthDismissReason = 'confirm';
+      this.rustDeskAuthPendingStart = true;
+      this.rustDeskAuthSheetClosing = true;
       this.showRustDeskAuthSheet = false;
-      this.tryStartConnect();
       return;
     }
     if (this.rustDeskAuthChoice === 'request_approval' && host.rustdeskDirectEnabled) {
@@ -802,13 +1002,14 @@ struct RemoteDesktop {
     this.rustDeskSessionAuthChoice = this.rustDeskAuthChoice;
     this.pendingHost = selected;
     this.rustDeskAuthDismissReason = 'confirm';
+    this.rustDeskAuthPendingStart = true;
+    this.rustDeskAuthSheetClosing = true;
     this.showRustDeskAuthSheet = false;
     this.rustDeskAuthError = '';
     this.connectionError = '';
     this.connectionErrorDetail = '';
     this.connectStarted = false;
     this.connecting = true;
-    this.tryStartConnect();
   }
 
   private focusRustDeskAuthPassword(): void {
@@ -827,22 +1028,38 @@ struct RemoteDesktop {
       action.dismiss();
       return;
     }
-    this.cancelRustDeskAuthChoice();
+    this.rustDeskAuthSheetClosing = true;
+    this.requestRustDeskAuthCancellation();
     action.dismiss();
   }
 
   private handleRustDeskAuthSheetDisappear(): void {
     const reason: RustDeskAuthDismissReason = this.rustDeskAuthDismissReason;
+    const shouldStart: boolean = reason === 'confirm' && this.rustDeskAuthPendingStart;
+    const queuedMessage: string | null = this.rustDeskAuthQueuedMessage;
     this.rustDeskAuthDismissReason = 'none';
+    this.rustDeskAuthPendingStart = false;
+    this.rustDeskAuthSheetClosing = false;
+    this.rustDeskAuthQueuedMessage = null;
     // 系统下滑/返回键关闭时必须视为取消，不能让连接绕过授权选择。
     if (reason === 'none') {
-      this.cancelRustDeskAuthChoice();
+      this.requestRustDeskAuthCancellation();
+    } else if (reason === 'cancel') {
+      this.requestRustDeskAuthCancellation();
     }
     if (this.rustDeskAuthBackPending) {
       this.rustDeskAuthBackPending = false;
       // 等 bindSheet 的 native 退出回调完成后再销毁页面，避免下一个
       // RemoteDesktop 页面复用到仍在退出的授权 Sheet 宿主。
       setTimeout((): void => { this.goBack(); }, 0);
+      return;
+    }
+    if (shouldStart) {
+      setTimeout((): void => { this.tryStartConnect(); }, 0);
+      return;
+    }
+    if (queuedMessage !== null) {
+      setTimeout((): void => { this.openRustDeskAuthSheet(queuedMessage); }, 0);
     }
   }
 
@@ -902,21 +1119,25 @@ struct RemoteDesktop {
 
   private shouldShowTouchIndicator(): boolean {
     const cursorViewRevision: number = this.remoteCursorViewRevision;
-    return shouldRenderCircleCursor(this.remoteCursorDisplayStyle(), this.remoteCursorReady,
-      this.connected, this.isTouchpadControlMode()) && shouldRenderTouchPointerIndicator(true,
+    const style: RemoteCursorStyle = this.remoteCursorDisplayStyle();
+    const configuredCircle: boolean = shouldRenderCircleCursor(style, this.remoteCursorReady,
+      this.connected, this.isTouchpadControlMode());
+    const fallbackCircle: boolean = shouldRenderRemoteCursorFallbackIndicator(
+      this.remoteCursorFallbackShape, this.connected, this.isTouchpadControlMode(),
+      this.remoteCursorReady);
+    return (configuredCircle || fallbackCircle) && shouldRenderTouchPointerIndicator(true,
       shouldUseSystemMousePointer(this.isKeyboardMouseControlMode())) && cursorViewRevision >= 0;
   }
 
   private shouldShowArrowCursor(): boolean {
     const cursorViewRevision: number = this.remoteCursorViewRevision;
-    return shouldRenderArrowCursor(this.remoteCursorDisplayStyle(), this.connected,
-      this.isTouchpadControlMode(), this.remoteCursorReady) && this.remoteCursorNativeVisible &&
-      this.remoteCursorPixelMap !== null && cursorViewRevision >= 0;
+    return shouldRenderRemoteCursorArrow(this.remoteCursorDisplayStyle(), this.connected,
+      this.isTouchpadControlMode(), this.remoteCursorReady, this.remoteCursorNativeVisible,
+      this.remoteCursorPixelMap !== null, this.remoteCursorFallbackShape) && cursorViewRevision >= 0;
   }
 
   private arrowCursorPoint(): LocalPoint {
-    const reactiveX: number = this.remoteCursorX + this.remoteCursorViewRevision * 0;
-    return this.remoteToLocalPoint(reactiveX, this.remoteCursorY);
+    return this.remoteToLocalPoint(this.remoteCursorX, this.remoteCursorY);
   }
 
   private arrowCursorInside(): boolean { return this.arrowCursorPoint().inside; }
@@ -924,16 +1145,22 @@ struct RemoteDesktop {
   private arrowCursorLocalY(): number { return this.arrowCursorPoint().y; }
   private remoteCursorLocalScale(): number {
     if (this.remoteCursorShapeWidth <= 0 || this.remoteCursorShapeHeight <= 0) { return 1; }
-    const origin: LocalPoint = this.remoteToLocalPoint(this.remoteCursorX, this.remoteCursorY);
-    const edgeX: LocalPoint = this.remoteToLocalPoint(
+    if (this.remoteCursorFallbackShape) {
+      return resolveRemoteCursorVisualScale(this.remoteCursorShapeWidth,
+        this.remoteCursorShapeHeight, 1, true);
+    }
+    const transform: RemoteSurfaceTransform = this.currentRemoteSurfaceTransform();
+    const origin = remotePointToSurface(transform, this.remoteCursorX, this.remoteCursorY);
+    const edgeX = remotePointToSurface(transform,
       this.remoteCursorX + this.remoteCursorShapeWidth, this.remoteCursorY);
-    const edgeY: LocalPoint = this.remoteToLocalPoint(
+    const edgeY = remotePointToSurface(transform,
       this.remoteCursorX, this.remoteCursorY + this.remoteCursorShapeHeight);
     const scaleX: number = Math.abs(edgeX.x - origin.x) / this.remoteCursorShapeWidth;
     const scaleY: number = Math.abs(edgeY.y - origin.y) / this.remoteCursorShapeHeight;
     // A cursor bitmap is one image, so X/Y must share one scale.  Choosing
     // the smaller projection keeps the hotspot aligned without stretching.
-    return Math.max(0.1, Math.min(scaleX, scaleY));
+    return resolveRemoteCursorVisualScale(this.remoteCursorShapeWidth,
+      this.remoteCursorShapeHeight, Math.min(scaleX, scaleY), false);
   }
   private remoteCursorLocalScaleX(): number { return this.remoteCursorLocalScale(); }
   private remoteCursorLocalScaleY(): number { return this.remoteCursorLocalScale(); }
@@ -956,7 +1183,36 @@ struct RemoteDesktop {
     return this.touchIndicatorVisible ? this.touchIndicatorY : this.arrowCursorLocalY();
   }
 
+  /** Publish cursor-only state to the isolated overlay component. */
+  private publishRemoteCursorOverlay(): void {
+    const cursor: RemoteCursorOverlayState = this.remoteCursorOverlayState;
+    const showCircle: boolean = this.shouldShowTouchIndicator();
+    const showArrow: boolean = this.shouldShowArrowCursor();
+    cursor.showCircle = showCircle;
+    cursor.circleX = this.circleCursorLocalX();
+    cursor.circleY = this.circleCursorLocalY();
+    cursor.circleOuterSize = this.getTouchIndicatorOuterSize();
+    cursor.circleRingSize = this.getTouchIndicatorRingSize();
+    cursor.circleDotSize = this.getTouchIndicatorDotSize();
+    cursor.circleColor = this.getTouchIndicatorColor();
+    cursor.circleDrag = this.touchIndicatorButton === TOUCH_INDICATOR_BUTTON_DRAG;
+    cursor.showArrow = showArrow;
+    cursor.arrowInside = showArrow ? this.arrowCursorInside() : false;
+    cursor.arrowPixelMap = showArrow ? this.remoteCursorPixelMap : null;
+    cursor.arrowWidth = showArrow ? this.remoteCursorLocalWidth() : 0;
+    cursor.arrowHeight = showArrow ? this.remoteCursorLocalHeight() : 0;
+    cursor.arrowX = showArrow ? this.remoteCursorImageX() : 0;
+    cursor.arrowY = showArrow ? this.remoteCursorImageY() : 0;
+    cursor.viewRevision = this.remoteCursorViewRevision;
+    // Publish the branch selector last. All geometry and PixelMap fields are
+    // ready before the overlay is allowed to switch away from its old branch.
+    cursor.renderMode = resolveRemoteCursorRenderMode(showCircle, showArrow);
+  }
+
   private setRemoteSurfacePointerStyle(useSystemPointer: boolean): void {
+    if (this.remoteSurfaceUsesSystemPointer === useSystemPointer) {
+      return;
+    }
     try {
       const cursorController = this.getUIContext().getCursorController();
       if (useSystemPointer) {
@@ -964,13 +1220,60 @@ struct RemoteDesktop {
       } else {
         cursorController.restoreDefault();
       }
+      this.remoteSurfaceUsesSystemPointer = useSystemPointer;
     } catch (err) {
       hilog.warn(RD_DOMAIN, RD_TAG, 'remote pointer style update failed: ' + JSON.stringify(err));
     }
   }
 
+  private setRemoteSystemPointerVisible(visible: boolean, reason: string): void {
+    if (this.remoteSystemPointerVisible === visible) {
+      return;
+    }
+    try {
+      pointer.setPointerVisibleSync(visible);
+      this.remoteSystemPointerVisible = visible;
+      hilog.info(RD_DOMAIN, RD_TAG, 'system pointer visible=' + (visible ? '1' : '0') +
+        ' reason=' + reason);
+    } catch (err) {
+      hilog.warn(RD_DOMAIN, RD_TAG, 'system pointer visibility update failed reason=' + reason +
+        ' err=' + JSON.stringify(err));
+    }
+  }
+
+  private shouldHideSystemPointerForVirtualTouchpad(): boolean {
+    return shouldHideSystemPointerForVirtualTouchpad(this.connected,
+      this.isTouchpadControlMode(), this.isDesktopDevice);
+  }
+
+  private syncRemoteSystemPointer(reason: string, hovered: boolean = true): void {
+    const hideSystemPointer: boolean = this.shouldHideSystemPointerForVirtualTouchpad();
+    this.setRemoteSystemPointerVisible(!hideSystemPointer, reason);
+    this.setRemoteSurfacePointerStyle(!hideSystemPointer && hovered &&
+      shouldUseSystemMousePointer(this.isKeyboardMouseControlMode()));
+  }
+
+  private restoreRemoteSystemPointer(reason: string): void {
+    this.setRemoteSystemPointerVisible(true, reason);
+    this.setRemoteSurfacePointerStyle(false);
+  }
+
+  private onRemoteConnectionStateChange(): void {
+    if (this.connected) {
+      this.syncRemoteSystemPointer('connection-state');
+    } else {
+      this.restoreRemoteSystemPointer('connection-state');
+    }
+    this.publishRemoteCursorOverlay();
+  }
+
+  private onRemoteControlModeChange(): void {
+    this.syncRemoteSystemPointer('control-mode');
+    this.requestRemoteCursorViewRefresh(true);
+  }
+
   private handleRemoteSurfaceHover = (hovered: boolean): void => {
-    this.setRemoteSurfacePointerStyle(hovered && shouldUseSystemMousePointer(this.isKeyboardMouseControlMode()));
+    this.syncRemoteSystemPointer('surface-hover', hovered);
   }
 
   private toastUnsupportedRustDeskAction(_actionId: string, reason: string): void {
@@ -985,6 +1288,29 @@ struct RemoteDesktop {
       prefs.flushSync();
     } catch (err) {
       hilog.warn(RD_DOMAIN, RD_TAG, 'persistSessionPref failed key=' + key + ': ' + JSON.stringify(err));
+    }
+  }
+
+  /** Keep direct-to-session navigation on the same safe Fit migration as the settings page. */
+  private restoreRemoteDisplayScalePreference(): void {
+    try {
+      const prefs = preferences.getPreferencesSync(getContext(this), { name: 'RemoteDesktopAppPrefs' });
+      const storedMode: string = prefs.getSync('remoteDisplayScaleMode', '') as string;
+      const storedVersion: number =
+        prefs.getSync(REMOTE_DISPLAY_SCALE_PREFERENCE_VERSION_KEY, 0) as number;
+      this.remoteDisplayScaleMode = resolveInitialRemoteDisplayScaleMode(storedMode, storedVersion);
+      AppStorage.setOrCreate('remoteDisplayScaleMode', this.remoteDisplayScaleMode);
+      if (!Number.isFinite(storedVersion) || storedVersion < REMOTE_DISPLAY_SCALE_PREFERENCE_VERSION) {
+        prefs.putSync('remoteDisplayScaleMode', this.remoteDisplayScaleMode);
+        prefs.putSync(REMOTE_DISPLAY_SCALE_PREFERENCE_VERSION_KEY,
+          REMOTE_DISPLAY_SCALE_PREFERENCE_VERSION);
+        prefs.flushSync();
+      }
+    } catch (err) {
+      this.remoteDisplayScaleMode = 'fit';
+      AppStorage.setOrCreate('remoteDisplayScaleMode', this.remoteDisplayScaleMode);
+      hilog.warn(RD_DOMAIN, RD_TAG,
+        'restoreRemoteDisplayScalePreference fallback to fit: ' + JSON.stringify(err));
     }
   }
 
@@ -1018,11 +1344,221 @@ struct RemoteDesktop {
     promptAction.showToast({ message: on ? 'RustDesk 文件粘贴已允许' : 'RustDesk 文件粘贴已禁用', duration: 1600 });
   }
 
-  private setRustDeskViewScaleMode(mode: string): void {
-    const next: string = mode === 'original' || mode === 'custom' ? mode : 'fit';
-    this.rustdeskViewScaleMode = next;
-    this.persistSessionPref('rustdeskViewScaleMode', next);
-    promptAction.showToast({ message: '显示缩放已切换为 ' + this.rustDeskViewScaleLabel(next), duration: 1400 });
+  private setRemoteDisplayScaleMode(mode: string): void {
+    const next: LocalViewScaleMode = normalizeLocalViewScaleMode(mode);
+    this.remoteDisplayScaleMode = next;
+    this.persistSessionPref('remoteDisplayScaleMode', next);
+    this.persistSessionPref(REMOTE_DISPLAY_SCALE_PREFERENCE_VERSION_KEY,
+      REMOTE_DISPLAY_SCALE_PREFERENCE_VERSION);
+    this.rustdeskViewScaleMode = next === '100' ? 'original' : next === 'custom' ? 'custom' : 'fit';
+    this.persistSessionPref('rustdeskViewScaleMode', this.rustdeskViewScaleMode);
+    this.resetCanvasToDisplayDefault();
+    promptAction.showToast({ message: '显示缩放已切换为 ' +
+      (next === 'fit' ? '适应窗口' : (next === 'custom' ? '自定义' : next + '%')), duration: 1400 });
+  }
+
+  private resetCanvasTransformFromMenu(): void {
+    this.resetCanvasToDisplayDefault();
+    promptAction.showToast({ message: '画面已重新居中', duration: 1200 });
+  }
+
+  private openRustDeskDisplayResolutionMenu(): void {
+    if (!this.isRustDeskSession() || this.sessionId <= 0) {
+      return;
+    }
+    const capabilities: RustDeskDisplayCapabilities =
+      this.loader.getRustDeskDisplayCapabilities(this.sessionId);
+    if (!capabilities.supported) {
+      promptAction.showToast({ message: '远端尚未提供显示分辨率能力', duration: 1800 });
+      return;
+    }
+    if (capabilities.resolutions.length === 0) {
+      promptAction.showToast({ message: '此远端显示器不支持切换分辨率', duration: 1800 });
+      return;
+    }
+    this.rustDeskDisplayCapabilities = capabilities;
+    this.showRustDeskDisplayResolutionMenu = true;
+  }
+
+  private changeRustDeskDisplayResolution(width: number, height: number): void {
+    const capabilities: RustDeskDisplayCapabilities = this.rustDeskDisplayCapabilities;
+    if (!this.loader.changeRustDeskDisplayResolution(this.sessionId, capabilities.currentDisplay,
+      width, height)) {
+      promptAction.showToast({ message: '分辨率请求未被远端会话接受', duration: 1800 });
+      return;
+    }
+    this.showRustDeskDisplayResolutionMenu = false;
+    promptAction.showToast({ message: '已请求远端切换为 ' + width.toString() + ' × ' + height.toString(), duration: 1800 });
+  }
+
+  private isRustDeskDisplayResolutionSelected(resolution: RustDeskDisplayResolution): boolean {
+    return resolution.width === this.rustDeskDisplayCapabilities.width &&
+      resolution.height === this.rustDeskDisplayCapabilities.height;
+  }
+
+  private currentCanvasViewport(forceRendererRead: boolean = false): CanvasViewport {
+    const viewport: RendererViewportSnapshot | null = this.readRendererViewport(forceRendererRead);
+    const sourceWidth: number = viewport !== null ? viewport.sourceWidth :
+      (this.rendererSourceWidth > 0 ? this.rendererSourceWidth : this.remoteWidth);
+    const sourceHeight: number = viewport !== null ? viewport.sourceHeight :
+      (this.rendererSourceHeight > 0 ? this.rendererSourceHeight : this.remoteHeight);
+    return {
+      surfaceWidth: this.renderWidthPx > 0 ? this.renderWidthPx : this.vpToPx(this.surfaceWidth),
+      surfaceHeight: this.renderHeightPx > 0 ? this.renderHeightPx : this.vpToPx(this.surfaceHeight),
+      sourceWidth: Math.max(1, sourceWidth),
+      sourceHeight: Math.max(1, sourceHeight)
+    };
+  }
+
+  private resetCanvasToDisplayDefault(forceRendererRead: boolean = false): void {
+    const mode: LocalViewScaleMode = normalizeLocalViewScaleMode(this.remoteDisplayScaleMode);
+    this.canvasTransform = baseCanvasTransform(mode, this.remoteDisplayCustomScalePercent,
+      this.currentCanvasViewport(forceRendererRead));
+    this.canvasTransformInitialized = true;
+    this.canvasTransformGestureModified = false;
+    this.applyCanvasTransform();
+  }
+
+  private applyCanvasTransform(): void {
+    if (this.rendererHandle <= 0) {
+      return;
+    }
+    const viewport: CanvasViewport = this.currentCanvasViewport();
+    this.canvasTransform = clampCanvasTransform(this.canvasTransform, viewport);
+    this.loader.setRendererCanvasTransform(this.rendererHandle, this.canvasTransform.scale,
+      this.canvasTransform.panX, this.canvasTransform.panY);
+    this.invalidateRendererViewportCache();
+  }
+
+  private shouldUseRustDeskRemoteAppTouchScale(): boolean {
+    return this.rustdeskRemoteAppTouchScaleEnabled && this.isRustDeskSession() &&
+      this.connected && this.sessionId > 0;
+  }
+
+  private startRustDeskRemoteAppTouchScale(event: GestureEvent): void {
+    if (!this.shouldUseRustDeskRemoteAppTouchScale() || !this.canForwardInput('rustdesk-touch-scale')) {
+      return;
+    }
+    const mapped: MappedPoint = this.mapInputPoint(event.pinchCenterX, event.pinchCenterY);
+    this.rustDeskTouchPinchActive = true;
+    this.rustDeskTouchPinchLastScale = 1;
+    this.rustDeskTouchPinchLastRemoteX = mapped.x;
+    this.rustDeskTouchPinchLastRemoteY = mapped.y;
+    this.loader.sendRustDeskTouchPan(this.sessionId, 0, mapped.x, mapped.y);
+  }
+
+  private updateRustDeskRemoteAppTouchScale(event: GestureEvent): void {
+    if (!this.rustDeskTouchPinchActive || !this.shouldUseRustDeskRemoteAppTouchScale()) {
+      return;
+    }
+    const nextScale: number = Number.isFinite(event.scale) && event.scale > 0 ?
+      event.scale : this.rustDeskTouchPinchLastScale;
+    const relative: number = Math.max(0.5, Math.min(2.0, nextScale / this.rustDeskTouchPinchLastScale));
+    this.loader.sendRustDeskTouchScale(this.sessionId, Math.round(relative * 1000));
+    const mapped: MappedPoint = this.mapInputPoint(event.pinchCenterX, event.pinchCenterY);
+    const deltaX: number = mapped.x - this.rustDeskTouchPinchLastRemoteX;
+    const deltaY: number = mapped.y - this.rustDeskTouchPinchLastRemoteY;
+    if (deltaX !== 0 || deltaY !== 0) {
+      this.loader.sendRustDeskTouchPan(this.sessionId, 1, deltaX, deltaY);
+      this.rustDeskTouchPinchLastRemoteX = mapped.x;
+      this.rustDeskTouchPinchLastRemoteY = mapped.y;
+    }
+    this.rustDeskTouchPinchLastScale = nextScale;
+  }
+
+  private finishRustDeskRemoteAppTouchScale(): void {
+    if (!this.rustDeskTouchPinchActive) {
+      return;
+    }
+    if (this.sessionId > 0 && this.isRustDeskSession()) {
+      this.loader.sendRustDeskTouchScale(this.sessionId, 0);
+      this.loader.sendRustDeskTouchPan(this.sessionId, 2,
+        this.rustDeskTouchPinchLastRemoteX, this.rustDeskTouchPinchLastRemoteY);
+    }
+    this.rustDeskTouchPinchActive = false;
+    this.rustDeskTouchPinchLastScale = 1;
+  }
+
+  private startCanvasPinch(event: GestureEvent): void {
+    if (this.shouldUseRustDeskRemoteAppTouchScale()) {
+      this.claimCanvasPinchInput();
+      this.startRustDeskRemoteAppTouchScale(event);
+      return;
+    }
+    if (!this.canvasGestureZoomEnabled) {
+      return;
+    }
+    if (!this.canvasTransformInitialized) {
+      this.resetCanvasToDisplayDefault(true);
+    }
+    this.canvasPinchActive = true;
+    this.canvasPinchLastScale = 1;
+    this.canvasPinchLastCenterX = this.vpToPx(event.pinchCenterX);
+    this.canvasPinchLastCenterY = this.vpToPx(event.pinchCenterY);
+    this.claimCanvasPinchInput();
+  }
+
+  /** Claim input only after ArkUI has recognized a real pinch, never on second-finger down. */
+  private claimCanvasPinchInput(): void {
+    if (this.canvasPinchInputConsumed) {
+      return;
+    }
+    this.canvasPinchInputConsumed = true;
+    this.clearTouchRightClickTimer();
+    this.clearTouchDirectRightClickTimer();
+    if (this.touchLeftDown) {
+      this.sendMouseNow(this.remoteCursorX, this.remoteCursorY, 0, false);
+      this.touchLeftDown = false;
+    }
+    this.touchDragActive = false;
+    this.touchDragPending = false;
+    this.touchGestureDone = true;
+  }
+
+  private updateCanvasPinch(event: GestureEvent): void {
+    if (this.rustDeskTouchPinchActive) {
+      this.updateRustDeskRemoteAppTouchScale(event);
+      return;
+    }
+    if (!this.canvasPinchActive || !this.canvasGestureZoomEnabled) {
+      return;
+    }
+    const nextScale: number = Number.isFinite(event.scale) && event.scale > 0 ? event.scale : this.canvasPinchLastScale;
+    const centerX: number = this.vpToPx(event.pinchCenterX);
+    const centerY: number = this.vpToPx(event.pinchCenterY);
+    this.canvasTransform = pinchCanvasTransform(this.canvasTransform, this.currentCanvasViewport(),
+      centerX, centerY, nextScale / this.canvasPinchLastScale,
+      centerX - this.canvasPinchLastCenterX, centerY - this.canvasPinchLastCenterY);
+    this.canvasPinchLastScale = nextScale;
+    this.canvasPinchLastCenterX = centerX;
+    this.canvasPinchLastCenterY = centerY;
+    this.canvasTransformGestureModified = true;
+    this.applyCanvasTransform();
+  }
+
+  private finishCanvasPinch(): void {
+    if (this.rustDeskTouchPinchActive) {
+      this.finishRustDeskRemoteAppTouchScale();
+      return;
+    }
+    this.canvasPinchActive = false;
+    this.canvasPinchLastScale = 1;
+  }
+
+  private consumeCanvasPinchTouch(event: TouchEvent): boolean {
+    if (!this.canvasPinchInputConsumed) {
+      return false;
+    }
+    if (event.type === TouchType.Up || event.type === TouchType.Cancel) {
+      const remaining: number = this.remainingTouchCountAfterLift(event);
+      if (remaining <= 0) {
+        this.canvasPinchInputConsumed = false;
+        this.finishCanvasPinch();
+        this.resetTouchGesture();
+      }
+    }
+    event.stopPropagation();
+    return true;
   }
 
   private rustDeskViewScaleLabel(mode: string): string {
@@ -1064,7 +1600,8 @@ struct RemoteDesktop {
     this.persistSessionPref('rustdeskRelativeMouseMode', on);
   }
 
-  private setRustDeskReverseWheel(on: boolean): void {
+  /** Retains the legacy key while applying wheel direction to every remote protocol. */
+  private setRemoteReverseWheel(on: boolean): void {
     this.rustdeskReverseWheel = on;
     this.persistSessionPref('rustdeskReverseWheel', on);
   }
@@ -1119,7 +1656,13 @@ struct RemoteDesktop {
         this.setRustDeskFilePasteEnabled(on);
       },
       onSetViewScaleMode: (mode: string): void => {
-        this.setRustDeskViewScaleMode(mode);
+        this.setRemoteDisplayScaleMode(mode);
+      },
+      onResetCanvasTransform: (): void => {
+        this.resetCanvasTransformFromMenu();
+      },
+      onOpenRustDeskResolution: (): void => {
+        this.openRustDeskDisplayResolutionMenu();
       },
       onSetRustDeskImageQuality: (quality: number): void => {
         this.setRustDeskImageQualityPref(quality);
@@ -1137,7 +1680,7 @@ struct RemoteDesktop {
         this.setRustDeskRelativeMouseMode(on);
       },
       onToggleReverseWheel: (on: boolean): void => {
-        this.setRustDeskReverseWheel(on);
+        this.setRemoteReverseWheel(on);
       },
       onToggleSwapMouseButtons: (on: boolean): void => {
         this.setRustDeskSwapMouseButtons(on);
@@ -1154,6 +1697,7 @@ struct RemoteDesktop {
   private hideTouchIndicator(): void {
     this.clearTouchIndicatorTimer();
     this.touchIndicatorVisible = false;
+    this.publishRemoteCursorOverlay();
   }
 
   // ============================================================
@@ -1210,6 +1754,117 @@ struct RemoteDesktop {
 
   private modifierHiddenRightX(screenW: number): number {
     return Math.max(8, screenW - this.modifierHandleVisibleWidth());
+  }
+
+  // RustDesk diagnostics is a separate dock, but uses the same local side and
+  // vertical-ratio persistence model as the modifier-key capsule.
+  private rustDeskDiagnosticsDockWidth(): number {
+    return 270;
+  }
+
+  private rustDeskDiagnosticsDockHeight(): number {
+    return shouldEnableRustDeskPro(this.rustdeskShowDiagnostics, this.rustdeskShowProDiagnostics) ?
+      380 : 205;
+  }
+
+  private rustDeskDiagnosticsDockHandleWidth(): number {
+    return 76;
+  }
+
+  private rustDeskDiagnosticsDockVisibleWidth(): number {
+    return 28;
+  }
+
+  private rustDeskDiagnosticsDockPanelX(): number {
+    const screenW: number = this.surfaceWidth > 0 ? this.surfaceWidth : 360;
+    return this.rustDeskDiagnosticsDockSide === 'left' ? 8 :
+      Math.max(8, screenW - this.rustDeskDiagnosticsDockWidth() - 8);
+  }
+
+  private rustDeskDiagnosticsDockHandleX(): number {
+    const screenW: number = this.surfaceWidth > 0 ? this.surfaceWidth : 360;
+    if (this.rustDeskDiagnosticsDockSide === 'left') {
+      return -(this.rustDeskDiagnosticsDockHandleWidth() - this.rustDeskDiagnosticsDockVisibleWidth());
+    }
+    return Math.max(8, screenW - this.rustDeskDiagnosticsDockVisibleWidth());
+  }
+
+  private clampRustDeskDiagnosticsDockY(y: number): number {
+    const screenH: number = this.surfaceHeight > 0 ? this.surfaceHeight : 640;
+    const topMargin: number = this.dropHoverActive ? 116 : 58;
+    const bottomMargin: number = this.kbHeight > 0 ? this.kbHeight + 8 : 24;
+    const maxY: number = Math.max(topMargin, screenH - bottomMargin - this.rustDeskDiagnosticsDockHeight());
+    return Math.max(topMargin, Math.min(y, maxY));
+  }
+
+  private updateRustDeskDiagnosticsDockForKeyboard(): void {
+    if (!this.rustDeskDiagnosticsDockExpanded) {
+      return;
+    }
+    const screenH: number = this.surfaceHeight > 0 ? this.surfaceHeight : 640;
+    const topMargin: number = this.dropHoverActive ? 116 : 58;
+    const bottomMargin: number = this.kbHeight > 0 ? this.kbHeight + 8 : 24;
+    if (screenH - topMargin - bottomMargin < this.rustDeskDiagnosticsDockHeight()) {
+      this.rustDeskDiagnosticsDockExpanded = false;
+      return;
+    }
+    this.rustDeskDiagnosticsDockY = this.avoidRustDeskDiagnosticsDockCollision(
+      this.rustDeskDiagnosticsDockSide, this.rustDeskDiagnosticsDockY);
+  }
+
+  private avoidRustDeskDiagnosticsDockCollision(side: string, y: number): number {
+    let resolvedY: number = this.clampRustDeskDiagnosticsDockY(y);
+    if (side !== this.handleSide || !this.handleVisible) {
+      return resolvedY;
+    }
+    const modifierY: number = this.modifierPanelVisible ? this.modifierPanelY : this.handleY;
+    const modifierHeight: number = this.modifierPanelVisible ? (this.fnLayer ? 300 : 136) : 42;
+    const dockBottom: number = resolvedY + this.rustDeskDiagnosticsDockHeight();
+    const modifierBottom: number = modifierY + modifierHeight;
+    if (dockBottom + 12 <= modifierY || resolvedY >= modifierBottom + 12) {
+      return resolvedY;
+    }
+    const above: number = this.clampRustDeskDiagnosticsDockY(modifierY - this.rustDeskDiagnosticsDockHeight() - 12);
+    const below: number = this.clampRustDeskDiagnosticsDockY(modifierBottom + 12);
+    resolvedY = Math.abs(above - y) <= Math.abs(below - y) ? above : below;
+    return resolvedY;
+  }
+
+  private initRustDeskDiagnosticsDock(): void {
+    const screenH: number = this.surfaceHeight > 0 ? this.surfaceHeight : 640;
+    const savedSide: string = AppStorage.get<string>('rustdeskDiagnosticsDockSide') ?? '';
+    const savedYRatio: number = AppStorage.get<number>('rustdeskDiagnosticsDockYRatio') ?? -1;
+    const defaultSide: string = this.handleSide === 'left' ? 'right' : 'left';
+    const side: string = savedSide === 'left' || savedSide === 'right' ? savedSide : defaultSide;
+    const initialY: number = savedYRatio > 0 && savedYRatio < 1 ? Math.round(screenH * savedYRatio) :
+      Math.round(screenH * 0.56);
+    this.rustDeskDiagnosticsDockSide = side;
+    this.rustDeskDiagnosticsDockY = this.avoidRustDeskDiagnosticsDockCollision(side, initialY);
+    this.rustDeskDiagnosticsDockExpanded = false;
+    this.rustDeskDiagnosticsDockInitialized = true;
+  }
+
+  private snapRustDeskDiagnosticsDockToEdge(x: number, y: number, fromPanel: boolean): void {
+    const screenW: number = this.surfaceWidth > 0 ? this.surfaceWidth : 360;
+    const referenceX: number = x + (fromPanel ? this.rustDeskDiagnosticsDockWidth() / 2 :
+      this.rustDeskDiagnosticsDockHandleWidth() / 2);
+    const side: string = referenceX < screenW / 2 ? 'left' : 'right';
+    const clampedY: number = this.avoidRustDeskDiagnosticsDockCollision(side, y);
+    animateTo({ duration: 180, curve: Curve.EaseOut }, (): void => {
+      this.rustDeskDiagnosticsDockSide = side;
+      this.rustDeskDiagnosticsDockY = clampedY;
+    });
+    AppStorage.setOrCreate('rustdeskDiagnosticsDockSide', side);
+    const screenH: number = this.surfaceHeight > 0 ? this.surfaceHeight : 640;
+    AppStorage.setOrCreate('rustdeskDiagnosticsDockYRatio', clampedY / screenH);
+  }
+
+  private toggleRustDeskDiagnosticsDock(): void {
+    this.rustDeskDiagnosticsDockExpanded = !this.rustDeskDiagnosticsDockExpanded;
+    if (this.rustDeskDiagnosticsDockExpanded) {
+      this.rustDeskDiagnosticsDockY = this.avoidRustDeskDiagnosticsDockCollision(
+        this.rustDeskDiagnosticsDockSide, this.rustDeskDiagnosticsDockY);
+    }
   }
 
   private modifierPanelWidth(): number {
@@ -1483,8 +2138,8 @@ struct RemoteDesktop {
       (mod: string, down: boolean): void => { this.setRemoteModDown(mod, down); });
   }
 
-  /** 释放所有可能按下的修饰键 + 鼠标键 → RemoteKeyDispatcher */
-  private releaseAllHeldKeys(): void {
+  /** Release remote keys and, for lifecycle teardown, any held mouse buttons. */
+  private releaseAllHeldKeys(releaseMouseButtons: boolean = true): void {
     this.releasePendingMacCapsLock();
     if (this.sessionId <= 0) {
       this.physicalRemoteKeyCodesDown = [];
@@ -1505,7 +2160,10 @@ struct RemoteDesktop {
     this.physicalRemoteKeyCodesDown = [];
     this.keyDispatcher.releaseAllHeldKeys(this.loader, this.sessionId,
       (x: number, y: number): Record<string, number> => this.toSourceSpace(x, y),
-      this.remoteCursorX, this.remoteCursorY);
+      this.remoteCursorX, this.remoteCursorY, releaseMouseButtons);
+    if (releaseMouseButtons) {
+      this.physicalMouseDownButton = -1;
+    }
     this.resetPhysicalModifiers();
   }
 
@@ -1521,12 +2179,14 @@ struct RemoteDesktop {
           const keyboardArea: window.AvoidArea =
             w.getWindowAvoidArea(window.AvoidAreaType.TYPE_KEYBOARD);
           this.kbHeight = px2vp(keyboardArea.bottomRect.height);
+          this.updateRustDeskDiagnosticsDockForKeyboard();
         } catch (_e) {
           // 初始读取失败, 后续 avoidAreaChange 会更新
         }
         this.kbAvoidCb = (data: window.AvoidAreaOptions): void => {
           if (data.type === window.AvoidAreaType.TYPE_KEYBOARD) {
             this.kbHeight = px2vp(data.area.bottomRect.height);
+            this.updateRustDeskDiagnosticsDockForKeyboard();
             hilog.info(RD_DOMAIN, RD_TAG,
               'kbHeight changed: ' + Math.round(this.kbHeight).toString() + 'vp');
           }
@@ -1555,9 +2215,47 @@ struct RemoteDesktop {
     this.kbHeight = 0;
   }
 
+  private cancelPendingDisappearDecision(): void {
+    if (this.pendingDisappearDecisionTimer >= 0) {
+      clearTimeout(this.pendingDisappearDecisionTimer);
+      this.pendingDisappearDecisionTimer = -1;
+    }
+    this.disappearDecisionGeneration += 1;
+  }
+
+  private deferDisappearDecision(): void {
+    this.cancelPendingDisappearDecision();
+    const generation: number = this.disappearDecisionGeneration;
+    this.pendingDisappearDecisionTimer = setTimeout((): void => {
+      this.pendingDisappearDecisionTimer = -1;
+      if (generation !== this.disappearDecisionGeneration) {
+        return;
+      }
+
+      const isBg: boolean = AppStorage.get<boolean>('remoteDesktopBgFlag') ?? false;
+      if (isBg) {
+        hilog.info(RD_DOMAIN, RD_TAG,
+          'deferred page disappear: background signal arrived, preserving session');
+        this.onRemoteDesktopBgFlagChange();
+        return;
+      }
+
+      hilog.info(RD_DOMAIN, RD_TAG,
+        'deferred page disappear: no background signal, disconnecting explicit exit');
+      this.disconnectAndCleanup('explicit-exit');
+    }, REMOTE_DESKTOP_DISAPPEAR_BACKGROUND_SIGNAL_WAIT_MS);
+    hilog.info(RD_DOMAIN, RD_TAG,
+      'page disappear: waiting for background lifecycle signal before disconnect');
+  }
+
   private onRemoteDesktopBgFlagChange(): void {
+    const isBackground: boolean = AppStorage.get<boolean>('remoteDesktopBgFlag') ??
+      this.remoteDesktopBgFlag;
+    if (isBackground) {
+      this.cancelPendingDisappearDecision();
+    }
     const action: RemoteDesktopBackgroundAction = decideRemoteDesktopBackgroundAction(
-      this.remoteDesktopBgFlag,
+      isBackground,
       this.connected,
       this.sessionId,
       this.bgRestorePending,
@@ -1565,13 +2263,15 @@ struct RemoteDesktop {
     );
     if (action === RemoteDesktopBackgroundAction.detach) {
       hilog.info(RD_DOMAIN, RD_TAG, 'bgFlagChange: background preserve');
-      this.detachForBackground();
+      this.detachForBackground().catch((err: Error): void => {
+        hilog.warn(RD_DOMAIN, RD_TAG, 'bgFlagChange: background preserve failed: ' +
+          (err.message ? err.message : JSON.stringify(err)));
+      });
       return;
     }
     if (action === RemoteDesktopBackgroundAction.restore) {
       hilog.info(RD_DOMAIN, RD_TAG, 'bgFlagChange: foreground restore');
       this.restoreFromBackground();
-      this.tryStartConnect();
       return;
     }
     if (action === RemoteDesktopBackgroundAction.alreadyPreserved) {
@@ -1608,6 +2308,15 @@ struct RemoteDesktop {
     if (widthPx <= 0 || heightPx <= 0) {
       return null;
     }
+    // A cold-start surface can report the physical portrait geometry before
+    // the requested landscape orientation has been applied. RustDesk's
+    // adaptive desktop request is for a computer screen, so keep that request
+    // landscape and let the first real frame refine the exact ratio.
+    if (widthPx < heightPx) {
+      const portraitWidth: number = widthPx;
+      widthPx = heightPx;
+      heightPx = portraitWidth;
+    }
     const longEdge: number = Math.max(widthPx, heightPx);
     const scale: number = longEdge > maxEdgePx ? maxEdgePx / longEdge : 1;
     return {
@@ -1619,11 +2328,133 @@ struct RemoteDesktop {
     };
   }
 
+  /**
+   * Return the page XComponent's physical surface size. This is intentionally
+   * separate from desktopSize(), which describes the remote video stream.
+   */
+  private currentPageSurfaceSize(fallbackWidth: number, fallbackHeight: number): RemoteSessionPipContentSize {
+    let width: number = this.renderWidthPx;
+    let height: number = this.renderHeightPx;
+    if (width <= 0 || height <= 0) {
+      try {
+        const d: display.Display = display.getDefaultDisplaySync();
+        width = d.width;
+        height = d.height;
+      } catch (_e) {
+        width = fallbackWidth;
+        height = fallbackHeight;
+      }
+    }
+    return {
+      width: Math.max(1, Math.round(width > 0 ? width : fallbackWidth)),
+      height: Math.max(1, Math.round(height > 0 ? height : fallbackHeight))
+    };
+  }
+
+  /** PIP content ratio follows the remote frame, never the local page surface. */
+  private currentPipContentSize(): RemoteSessionPipContentSize {
+    let sourceWidth: number = 0;
+    let sourceHeight: number = 0;
+    const isRustDesk: boolean = this.pendingHost?.protocol === 'rustdesk';
+
+    // The first RustDesk request can be an adaptive display size (for example
+    // 742x1600) while the peer's first real frame is 2560x1600. Prefer the
+    // observed media dimensions so PIP does not lock onto the request ratio.
+    if (isRustDesk && this.sessionId > 0) {
+      try {
+        const diagnostics: RustDeskDiagnosticsSnapshot = this.loader.getRustDeskDiagnostics(this.sessionId);
+        if (diagnostics.videoSeen && diagnostics.width > 0 && diagnostics.height > 0) {
+          sourceWidth = diagnostics.width;
+          sourceHeight = diagnostics.height;
+        }
+      } catch (_e) {
+        // The stream may be between sessions while PIP is being prepared.
+      }
+    } else if (this.pendingHost?.protocol === 'rdp' && this.sessionId > 0) {
+      try {
+        const stats: RdpRenderStats = this.loader.getRdpRenderStats(this.sessionId);
+        if (stats.desktopWidth > 0 && stats.desktopHeight > 0) {
+          sourceWidth = stats.desktopWidth;
+          sourceHeight = stats.desktopHeight;
+        }
+      } catch (_e) {
+        // Renderer statistics are unavailable during early connection setup.
+      }
+    }
+
+    // RDP's GDI path can have an owned frame before graphics lifecycle
+    // dimensions are published. Prefer the requested remote ratio to the
+    // local (possibly portrait) page surface during that interval.
+    if ((sourceWidth <= 0 || sourceHeight <= 0) && this.pendingHost?.protocol === 'rdp') {
+      sourceWidth = this.remoteWidth;
+      sourceHeight = this.remoteHeight;
+    }
+    // Before the first RustDesk frame, the renderer's source is initialized
+    // from the local XComponent surface. That surface may still be portrait
+    // during cold start, so never use it as the PIP media ratio. The logical
+    // adaptive request below is the safe pre-frame fallback.
+    if ((sourceWidth <= 0 || sourceHeight <= 0) && !isRustDesk && this.rendererHandle > 0) {
+      const viewport: RendererViewportSnapshot | null = this.readRendererViewport(true);
+      if (viewport !== null && viewport.sourceWidth > 0 && viewport.sourceHeight > 0) {
+        sourceWidth = viewport.sourceWidth;
+        sourceHeight = viewport.sourceHeight;
+      }
+    }
+    if ((sourceWidth <= 0 || sourceHeight <= 0) && !isRustDesk) {
+      sourceWidth = this.rendererSourceWidth;
+      sourceHeight = this.rendererSourceHeight;
+    }
+    return resolveRemoteSessionPipContentSize(
+      sourceWidth, sourceHeight,
+      this.remoteWidth, this.remoteHeight);
+  }
+
+  private clearPipContentSizeRefresh(): void {
+    for (const timer of this.pipContentSizeRefreshTimers) {
+      clearTimeout(timer);
+    }
+    this.pipContentSizeRefreshTimers = [];
+    this.pipLastContentWidth = 0;
+    this.pipLastContentHeight = 0;
+  }
+
+  private refreshActivePipContentSize(): void {
+    if (!this.renderPreservedInPip || this.restoreInProgress) {
+      return;
+    }
+    const size: RemoteSessionPipContentSize = this.currentPipContentSize();
+    if (size.width === this.pipLastContentWidth && size.height === this.pipLastContentHeight) {
+      return;
+    }
+    this.pipLastContentWidth = size.width;
+    this.pipLastContentHeight = size.height;
+    RemoteSessionPipService.getInstance().updateContentSize(size.width, size.height);
+    hilog.info(RD_DOMAIN, RD_TAG, 'refreshActivePipContentSize: remote=' +
+      size.width.toString() + 'x' + size.height.toString());
+  }
+
+  private schedulePipContentSizeRefresh(): void {
+    this.clearPipContentSizeRefresh();
+    // PIP preparation can precede the first decoded frame. Re-read native
+    // diagnostics after attachment so the controller ratio follows the first
+    // actual peer frame instead of the adaptive request dimensions.
+    const delays: number[] = [0, 120, 300, 700, 1400, 2600];
+    for (const delayMs of delays) {
+      const timer: number = setTimeout((): void => {
+        this.refreshActivePipContentSize();
+      }, delayMs);
+      this.pipContentSizeRefreshTimers.push(timer);
+    }
+  }
+
   async aboutToAppear(): Promise<void> {
+    this.cancelPendingDisappearDecision();
+    this.restoreRemoteSystemPointer('page-appear');
     this.physicalKeyboardLayout = RemoteKeyboardLayout.WINDOWS;
     this.physicalKeyboardLayoutConfirmed = false;
     this.physicalKeyboardLayoutPromptVisible = false;
     this.xComponentController.setListener(this);
+    this.restoreRemoteDisplayScalePreference();
     await this.setPreferredOrientation(window.Orientation.LANDSCAPE, 'LANDSCAPE');
     this.registerInputDeviceWatcher();
     this.registerKeyboardAvoidListener();
@@ -1633,6 +2464,7 @@ struct RemoteDesktop {
       const id: string = p['hostId'] as string;
       if (id) {
         this.hostId = id;
+        this.preAuthenticatedSessionPending = (p['rustdeskPreauthenticated'] as boolean) === true;
         const host: RemoteHost | undefined = this.srv.getHost(this.hostId);
         if (host) {
           this.hostLabel = host.label;
@@ -1656,7 +2488,6 @@ struct RemoteDesktop {
           const restoring: boolean = this.prepareRegistryRestore(host);
           if (restoring) {
             this.restoreFromBackground();
-            this.tryStartConnect();
           } else if (this.isProRustDeskHost(this.pendingHost)) {
             this.openRustDeskAuthSheet();
           } else {
@@ -1677,7 +2508,96 @@ struct RemoteDesktop {
     }
   }
 
+  private onRustDeskDiagnosticsSettingChange(): void {
+    if (shouldShowRustDeskDiagnostics(this.rustdeskShowDiagnostics, this.connected,
+      this.isRustDeskSession() ? 'rustdesk' : '', this.sessionId)) {
+      if (!this.rustDeskDiagnosticsDockInitialized) {
+        this.initRustDeskDiagnosticsDock();
+      }
+      if (!shouldEnableRustDeskPro(this.rustdeskShowDiagnostics, this.rustdeskShowProDiagnostics)) {
+        this.localResourceStats = EMPTY_LOCAL_RESOURCE_STATS;
+      }
+      this.startRustDeskDiagnosticsPolling();
+    } else if (!this.rustdeskShowDiagnostics) {
+      this.rustDeskDiagnosticsDockExpanded = false;
+      this.stopRustDeskDiagnosticsPolling(true);
+    }
+  }
+
+  /**
+   * 页面从后台恢复后 aboutToDisappear 已清空了诊断状态；恢复渲染器后
+   * 必须重新建立本次 session 的轮询，否则基础面板和 Pro 本机采样都会停在空值。
+   */
+  private resumeRustDeskDiagnosticsAfterForeground(): void {
+    if (!shouldShowRustDeskDiagnostics(this.rustdeskShowDiagnostics, this.connected,
+      this.isRustDeskSession() ? 'rustdesk' : '', this.sessionId)) {
+      return;
+    }
+    if (!this.rustDeskDiagnosticsDockInitialized) {
+      this.initRustDeskDiagnosticsDock();
+    }
+    this.startRustDeskDiagnosticsPolling();
+    hilog.info(RD_DOMAIN, RD_TAG, 'resumeRustDeskDiagnosticsAfterForeground: polling resumed sessionId=' +
+      this.sessionId.toString() + ' attemptId=' + this.connectAttemptId.toString() +
+      ' pro=' + (this.rustdeskShowProDiagnostics ? 'true' : 'false'));
+  }
+
+  private refreshRustDeskDiagnostics(sessionId: number, attemptId: number): void {
+    if (!shouldShowRustDeskDiagnostics(this.rustdeskShowDiagnostics, this.connected,
+      this.isRustDeskSession() ? 'rustdesk' : '', sessionId) ||
+      this.sessionId !== sessionId || this.connectAttemptId !== attemptId) {
+      return;
+    }
+    const snapshot: RustDeskDiagnosticsSnapshot = this.loader.getRustDeskDiagnostics(sessionId);
+    // A synchronous native query must still be rejected if a reconnect
+    // replaced the session between the poll guard and the assignment.
+    if (this.sessionId !== sessionId || this.connectAttemptId !== attemptId ||
+      snapshot.sessionId !== sessionId) {
+      return;
+    }
+    this.rustDeskDiagnostics = snapshot;
+    if (shouldEnableRustDeskPro(this.rustdeskShowDiagnostics, this.rustdeskShowProDiagnostics)) {
+      this.localResourceStats = this.loader.getLocalResourceStats(true);
+    } else {
+      this.localResourceStats = EMPTY_LOCAL_RESOURCE_STATS;
+    }
+  }
+
+  private startRustDeskDiagnosticsPolling(): void {
+    if (this.rustDeskDiagnosticsTimer >= 0 ||
+      !shouldShowRustDeskDiagnostics(this.rustdeskShowDiagnostics, this.connected,
+        this.isRustDeskSession() ? 'rustdesk' : '', this.sessionId)) {
+      return;
+    }
+    const observedSessionId: number = this.sessionId;
+    const observedAttemptId: number = this.connectAttemptId;
+    this.refreshRustDeskDiagnostics(observedSessionId, observedAttemptId);
+    this.rustDeskDiagnosticsTimer = setInterval((): void => {
+      if (!shouldShowRustDeskDiagnostics(this.rustdeskShowDiagnostics, this.connected,
+        this.isRustDeskSession() ? 'rustdesk' : '', this.sessionId) ||
+        this.sessionId !== observedSessionId || this.connectAttemptId !== observedAttemptId) {
+        this.stopRustDeskDiagnosticsPolling(false);
+        return;
+      }
+      this.refreshRustDeskDiagnostics(observedSessionId, observedAttemptId);
+    }, 1000);
+  }
+
+  private stopRustDeskDiagnosticsPolling(reset: boolean): void {
+    if (this.rustDeskDiagnosticsTimer >= 0) {
+      clearInterval(this.rustDeskDiagnosticsTimer);
+      this.rustDeskDiagnosticsTimer = -1;
+    }
+    if (reset) {
+      this.rustDeskDiagnostics = EMPTY_RUSTDESK_DIAGNOSTICS;
+      this.localResourceStats = EMPTY_LOCAL_RESOURCE_STATS;
+      this.rustDeskDiagnosticsDockExpanded = false;
+    }
+  }
+
   aboutToDisappear(): void {
+    this.restoreRemoteSystemPointer('page-disappear');
+    this.stopRustDeskDiagnosticsPolling(true);
     try {
       if (this.inputDeviceListenerRegistered) {
         inputDevice.off('change', this.inputDeviceListener);
@@ -1686,8 +2606,9 @@ struct RemoteDesktop {
     } catch (_err) { /* ignore */ }
 
     // 路由感知策略 (T-252):
-    // - 后台标志=true (EntryAbility.onBackground 已触发) → 保活: 脱附渲染, 保留协议+音频
-    // - 后台标志=false (用户显式退出/back/swipe) → 完全断连
+    // - 后台标志=true (EntryAbility.onWillBackground/onBackground 已触发) → 保活
+    // - 页面先消失时，等待 Ability 生命周期信号再决定，避免误判成显式退出
+    // - 确认不是后台切换后 → 完全断连
     const isBg: boolean = AppStorage.get<boolean>('remoteDesktopBgFlag') ?? false;
     if (isBg) {
       const action: RemoteDesktopBackgroundAction = decideRemoteDesktopBackgroundAction(
@@ -1700,19 +2621,39 @@ struct RemoteDesktop {
       if (action === RemoteDesktopBackgroundAction.detach) {
         // Home 手势 / 系统回桌面 → 后台保活
         hilog.info(RD_DOMAIN, RD_TAG, 'aboutToDisappear: background preserve (home gesture)');
-        this.detachForBackground();
+        this.detachForBackground().catch((err: Error): void => {
+          hilog.warn(RD_DOMAIN, RD_TAG, 'aboutToDisappear: background preserve failed: ' +
+            (err.message ? err.message : JSON.stringify(err)));
+        });
       } else {
         hilog.info(RD_DOMAIN, RD_TAG, 'aboutToDisappear: background skip action=' + action.toString());
       }
+      this.cancelPendingDisappearDecision();
+      return;
+    }
+
+    if (shouldDeferRemoteDesktopDisappear(
+      isBg,
+      this.connected,
+      this.sessionId,
+      this.bgRestorePending,
+      this.cleanupStarted
+    )) {
+      this.deferDisappearDecision();
       return;
     }
 
     // 显式 back / 左右滑退出 / 断开按钮 → 完全断连
+    this.cancelPendingDisappearDecision();
     hilog.info(RD_DOMAIN, RD_TAG, 'aboutToDisappear: full disconnect reason=explicit-exit');
     this.disconnectAndCleanup('explicit-exit');
   }
 
   private tryStartConnect(): void {
+    if (this.restoreInProgress) {
+      hilog.info(RD_DOMAIN, RD_TAG, 'tryStartConnect: waiting for foreground restore teardown');
+      return;
+    }
     // 后台恢复路径: 协议连接仍存在, 只需重建渲染
     // 使用 bgRestorePending 实例变量, 不受 AppStorage/onForeground 时序影响
     if (this.bgRestorePending && this.sessionId > 0 && this.surfaceReady && !this.cleanupStarted) {
@@ -1752,10 +2693,12 @@ struct RemoteDesktop {
       }
     }
     if (host.protocol === 'rdp') {
-      const preset: number = AppStorage.get<number>('rdpDesktopPreset') ?? 1;
+      const legacyPreset: number = AppStorage.get<number>('rdpDesktopPreset') ?? 1;
+      const resolutionId: string = normalizeRdpResolutionId(
+        AppStorage.get<string>('rdpDesktopResolutionId') ?? '', legacyPreset);
       const colorDepthPref: number = AppStorage.get<number>('rdpColorDepth') ?? 32;
       const colorDepth: number = colorDepthPref === 16 || colorDepthPref === 24 ? colorDepthPref : 32;
-      if (preset === 0) {
+      if (resolutionId === 'auto') {
         const adaptiveRdp: DesktopSize | null = this.adaptiveSurfaceSize(3840);
         if (adaptiveRdp) {
           adaptiveRdp.colorDepth = colorDepth;
@@ -1764,15 +2707,9 @@ struct RemoteDesktop {
           return adaptiveRdp;
         }
       }
-      let width: number = 1920;
-      let height: number = 1080;
-      if (preset === 2) {
-        width = 2560;
-        height = 1440;
-      } else if (preset === 3) {
-        width = 3840;
-        height = 2160;
-      }
+      const preset = rdpResolutionPresetForId(resolutionId);
+      const width: number = preset !== null ? preset.width : 1920;
+      const height: number = preset !== null ? preset.height : 1080;
       hilog.info(RD_DOMAIN, RD_TAG, 'RDP preset size=' + width.toString() + 'x' +
         height.toString() + ' colorDepth=' + colorDepth.toString());
       if (display.multiMonitor) {
@@ -1827,18 +2764,61 @@ struct RemoteDesktop {
     this.activeSessionRegistry.setActive(record);
   }
 
-  private async startRemoteSessionBackgroundTask(ctx: common.UIAbilityContext,
-    info: RemoteSessionBgInfo): Promise<void> {
-    await RemoteSessionBackgroundTaskService.getInstance().startSessionTask(ctx, info);
-    if (info.hasAudio || info.hasVideo) {
-      await RemoteSessionBackgroundTaskService.getInstance().startAudioPlaybackTask(ctx, info);
+  /**
+   * Register PIP while the foreground page is still visible. The background
+   * lifecycle only waits for HarmonyOS to auto-start the prepared controller.
+   */
+  private async prepareRemoteSessionPipForForeground(host: RemoteHost,
+    sessionId: number): Promise<void> {
+    const liveViewEnabled: boolean = AppStorage.get<boolean>('liveViewEnabled') ?? true;
+    const liveViewMode: number = AppStorage.get<number>('liveViewMode') ?? 1;
+    const activeSession: ActiveRemoteSessionRecord | null = this.activeSessionRegistry.getActive();
+    const sessionActive: boolean = this.connected && this.sessionId === sessionId &&
+      activeSession !== null && activeSession.sessionId === sessionId &&
+      activeSession.hostId === host.id && activeSession.protocolConnected;
+    const canPrepare: boolean = shouldPrepareRemoteSessionPip(
+      liveViewEnabled, liveViewMode, sessionActive,
+      this.rendererHandle > 0, this.surfaceReady);
+    if (!canPrepare) {
+      // A transient frame gap during connection must not revoke a controller
+      // that the next background transition still needs.
+      if (!sessionActive || !liveViewEnabled || liveViewMode !== LiveViewMode.AVSESSION) {
+        await RemoteSessionPipService.getInstance().stop();
+      }
+      return;
+    }
+    try {
+      const uiContext = this.getUIContext();
+      const context: common.UIAbilityContext = uiContext.getHostContext() as common.UIAbilityContext;
+      const pipSize: RemoteSessionPipContentSize = this.currentPipContentSize();
+      const prepared: boolean = await RemoteSessionPipService.getInstance().prepare(
+        context, uiContext, pipSize.width, pipSize.height,
+        (reason: string): void => this.handleRemoteSessionPipStopped(reason),
+        (surface: RemoteSessionPipSurface): void => this.handlePipSurfaceChanged(surface));
+      hilog.info(RD_DOMAIN, RD_TAG, 'prepareRemoteSessionPipForForeground: prepared=' +
+        prepared.toString() + ' sessionId=' + sessionId.toString());
+    } catch (err) {
+      hilog.warn(RD_DOMAIN, RD_TAG, 'prepareRemoteSessionPipForForeground: failed ' +
+        JSON.stringify(err));
     }
   }
 
+  private async startRemoteSessionBackgroundTask(ctx: common.UIAbilityContext,
+    info: RemoteSessionBgInfo): Promise<boolean> {
+    const started: boolean = await RemoteSessionBackgroundTaskService.getInstance().startSessionTask(ctx, info);
+    if (!started) {
+      return false;
+    }
+    if (info.hasAudio || info.hasVideo) {
+      await RemoteSessionBackgroundTaskService.getInstance().startAudioPlaybackTask(ctx, info);
+    }
+    return true;
+  }
+
   /**
-   * 启动实况窗 (仅在退后台时调用)。
-   * 有真实音频或视频活动时优先使用 video AVSession 策略,
-   * 系统拒绝 AVSession 时由服务降级到通知实况窗。
+   * 启动后台媒体身份 (仅在退后台时调用)。
+   * 有真实音频或视频活动时优先使用 AVSession；系统拒绝时由服务
+   * 降级到普通后台通知。实际视频帧由 PIP free-node surface 承载。
    */
   private async startSessionLiveView(ctx: common.UIAbilityContext,
     info: RemoteSessionBgInfo): Promise<void> {
@@ -1858,7 +2838,12 @@ struct RemoteDesktop {
       };
 
       const service: RemoteSessionLiveViewService = RemoteSessionLiveViewService.getInstance();
-      await service.reconcile(ctx, liveViewInfo);
+      const started: boolean = await service.reconcile(ctx, liveViewInfo);
+      if (!started || !service.isActive()) {
+        hilog.warn(RD_DOMAIN, RD_TAG, 'startSessionLiveView: strategy did not start; suppress success log' +
+          ' protocol=' + info.protocolLabel);
+        return;
+      }
 
       // 如果有音频, AVSession 策略启动后注入静音回调
       if (info.hasAudio) {
@@ -1867,7 +2852,7 @@ struct RemoteDesktop {
         });
       }
 
-      hilog.info(RD_DOMAIN, RD_TAG, 'startSessionLiveView: live view started protocol=' +
+      hilog.info(RD_DOMAIN, RD_TAG, 'startSessionLiveView: background media active protocol=' +
         info.protocolLabel + ' hasAudio=' + (info.hasAudio ? 'true' : 'false') +
         ' hasVideo=' + (info.hasVideo ? 'true' : 'false'));
     } catch (err) {
@@ -1895,14 +2880,25 @@ struct RemoteDesktop {
   }
 
   /**
-   * 停止实况窗 (前台恢复或断连时调用)。
+   * 停止后台媒体身份和 PIP (前台恢复或断连时调用)。
    */
   private async stopSessionLiveView(ctx: common.UIAbilityContext): Promise<void> {
     try {
       await RemoteSessionLiveViewService.getInstance().stop(ctx);
-      hilog.info(RD_DOMAIN, RD_TAG, 'stopSessionLiveView: live view stopped');
+      hilog.info(RD_DOMAIN, RD_TAG, 'stopSessionLiveView: background media stopped');
     } catch (err) {
       hilog.warn(RD_DOMAIN, RD_TAG, 'stopSessionLiveView: failed: ' + JSON.stringify(err));
+    }
+    // Keep PIP teardown independent from AVSession cleanup. A failed media
+    // identity stop must not leave an auto-start controller armed.
+    try {
+      const stopped: boolean = await RemoteSessionPipService.getInstance().stop();
+      if (!stopped) {
+        throw new Error('PIP controller did not reach terminal state');
+      }
+    } catch (err) {
+      hilog.warn(RD_DOMAIN, RD_TAG, 'stopSessionLiveView: PIP stop failed: ' + JSON.stringify(err));
+      throw new Error('PIP controller stop failed [E-PIP-STOP]');
     }
   }
 
@@ -1926,10 +2922,82 @@ struct RemoteDesktop {
     this.backgroundHasVideo = false;
   }
 
+  private isRdpRemoteSession(): boolean {
+    return this.pendingHost !== null && this.pendingHost.protocol === 'rdp';
+  }
+
+  /**
+   * RDP has no decoder handle. A staged GDI frame is the source of truth for
+   * whether its frame pump can populate a newly attached PIP surface.
+   */
+  private isRdpVideoFrameReady(): boolean {
+    if (!this.isRdpRemoteSession() || this.sessionId <= 0) {
+      return false;
+    }
+    try {
+      const stats: RdpRenderStats = this.loader.getRdpRenderStats(this.sessionId);
+      // Legacy GDI sessions can present valid frames before the graphics
+      // lifecycle has published desktop dimensions. The owned frame counters
+      // are the readiness signal; requiring graphics metadata here blocks RDP
+      // PIP while the frame pump is already usable.
+      return hasRdpRemoteSessionPipFrame(stats.paintCount, stats.lastRenderBytes);
+    } catch (_e) {
+      return false;
+    }
+  }
+
+  private isCurrentVideoReadyForPip(): boolean {
+    const protocol: string = this.pendingHost !== null ? this.pendingHost.protocol : '';
+    return hasRemoteSessionPipVideo(
+      protocol,
+      this.rendererHandle > 0,
+      this.surfaceReady,
+      this.decoderHandle > 0,
+      this.isRdpVideoFrameReady());
+  }
+
+  /** A PIP transfer must not detach the foreground renderer before a real
+   * remote frame has reached the protocol-specific frame store. */
+  private isPipFrameReady(): boolean {
+    if (this.isRdpRemoteSession()) {
+      return this.isRdpVideoFrameReady();
+    }
+    if (this.pendingHost === null || this.pendingHost.protocol !== 'rustdesk' || this.sessionId <= 0) {
+      return false;
+    }
+    try {
+      const diagnostics: RustDeskDiagnosticsSnapshot = this.loader.getRustDeskDiagnostics(this.sessionId);
+      return diagnostics.videoSeen && diagnostics.receivedFrames > 0 &&
+        diagnostics.width > 0 && diagnostics.height > 0;
+    } catch (_e) {
+      return false;
+    }
+  }
+
+  private async waitForPipFrameReady(operationGeneration: number,
+    timeoutMs: number = 5000): Promise<boolean> {
+    const startedAtMs: number = Date.now();
+    const pipService: RemoteSessionPipService = RemoteSessionPipService.getInstance();
+    while (Date.now() - startedAtMs < timeoutMs) {
+      if (this.restoreInProgress || !this.cleanupStarted ||
+        !pipService.isOperationCurrent(operationGeneration)) {
+        return false;
+      }
+      if (this.isPipFrameReady()) {
+        return true;
+      }
+      await new Promise<void>((resolve: () => void): void => {
+        setTimeout(resolve, 50);
+      });
+    }
+    return !this.restoreInProgress && this.cleanupStarted &&
+      pipService.isOperationCurrent(operationGeneration) && this.isPipFrameReady();
+  }
+
   private currentRemoteMediaSnapshot(): RemoteSessionMediaSnapshot {
     return {
       hasAudio: this.loader.isAudioActive(),
-      hasVideo: this.loader.isVideoActive()
+      hasVideo: this.isRdpRemoteSession() ? this.isRdpVideoFrameReady() : this.loader.isVideoActive()
     };
   }
 
@@ -2004,15 +3072,12 @@ struct RemoteDesktop {
     const action: RestoreRefreshAction = restoreRefreshActionForDelay(delayMs);
     if (shouldRebindSurfaceForRestore(action, this.rendererHandle)) {
       const desktop: DesktopSize = this.desktopSize(this.pendingHost);
+      const pageSurface: RemoteSessionPipContentSize = this.currentPageSurfaceSize(desktop.width, desktop.height);
       const surfaceId: string = this.latestSurfaceId.length > 0 ? this.latestSurfaceId : this.xcId;
-      const result = this.loader.reattachRenderForForeground(surfaceId, desktop.width, desktop.height);
+      const result = this.loader.reattachRenderForForeground(surfaceId, pageSurface.width, pageSurface.height);
       if (result.ok && result.value !== undefined && result.value > 0) {
         this.rendererHandle = result.value;
         this.nativeHandles.markSurfaceAttached(this.rendererHandle);
-        if (this.renderWidthPx > 0 && this.renderHeightPx > 0 &&
-          (this.renderWidthPx !== desktop.width || this.renderHeightPx !== desktop.height)) {
-          this.loader.resizeRenderer(this.rendererHandle, this.renderWidthPx, this.renderHeightPx);
-        }
         if (this.decoderHandle > 0) {
           this.loader.bindVideoPipeline(this.decoderHandle, this.rendererHandle);
           const recoveryArmed: boolean = this.loader.requestDecoderRecovery();
@@ -2103,36 +3168,22 @@ struct RemoteDesktop {
   }
 
   private updateRemoteSize(desktop: DesktopSize): void {
-    const previousX: number = this.remoteCursorX;
-    const previousY: number = this.remoteCursorY;
-    const previousReady: boolean = this.remoteCursorReady;
     this.remoteWidth = Math.max(1, desktop.width);
     this.remoteHeight = Math.max(1, desktop.height);
     if (!this.remoteCursorReady) {
-      this.remoteCursorX = Math.round(this.remoteWidth / 2);
-      this.remoteCursorY = Math.round(this.remoteHeight / 2);
-      this.remoteCursorPreciseX = this.remoteCursorX;
-      this.remoteCursorPreciseY = this.remoteCursorY;
-      this.remoteAuthoritativeX = this.remoteCursorX;
-      this.remoteAuthoritativeY = this.remoteCursorY;
-      this.remoteAuthoritativeReady = false;
-      this.remotePredictionActive = false;
-      this.remoteCursorReady = true;
+      const centerX: number = Math.round(this.remoteWidth / 2);
+      const centerY: number = Math.round(this.remoteHeight / 2);
+      this.applyRemoteCursorMotionState(createRemoteCursorMotionState(centerX, centerY));
     } else {
-      if (this.remoteAuthoritativeReady) {
-        this.remoteAuthoritativeX = this.clampRemotePreciseX(this.remoteAuthoritativeX);
-        this.remoteAuthoritativeY = this.clampRemotePreciseY(this.remoteAuthoritativeY);
-      }
-      const displayX: number = this.remotePredictionActive ? this.remoteCursorPreciseX :
-        (this.remoteAuthoritativeReady ? this.remoteAuthoritativeX : this.remoteCursorPreciseX);
-      const displayY: number = this.remotePredictionActive ? this.remoteCursorPreciseY :
-        (this.remoteAuthoritativeReady ? this.remoteAuthoritativeY : this.remoteCursorPreciseY);
-      this.remoteCursorPreciseX = this.clampRemotePreciseX(displayX);
-      this.remoteCursorPreciseY = this.clampRemotePreciseY(displayY);
-      this.remoteCursorX = this.clampRemoteX(this.remoteCursorPreciseX);
-      this.remoteCursorY = this.clampRemoteY(this.remoteCursorPreciseY);
+      this.applyRemoteCursorMotionState(this.remoteCursorMotion);
     }
-    this.invalidateRemoteCursorViewIfChanged(previousX, previousY, previousReady);
+  }
+
+  /** Disabling local canvas zoom must not leave its last enlarged transform on screen. */
+  private onCanvasGestureZoomSettingChange(): void {
+    if (!this.canvasGestureZoomEnabled && this.canvasTransformGestureModified) {
+      this.resetCanvasToDisplayDefault();
+    }
   }
 
   onBackPress(): boolean {
@@ -2182,67 +3233,87 @@ struct RemoteDesktop {
     this.invalidateRemoteCursorViewIfChanged(previousX, previousY, previousReady);
   }
 
-  /** Update the local display/prediction without claiming remote confirmation. */
+  private clampRemoteCursorMotionState(state: RemoteCursorMotionState): RemoteCursorMotionState {
+    return {
+      displayX: this.clampRemotePreciseX(state.displayX),
+      displayY: this.clampRemotePreciseY(state.displayY),
+      localTargetX: this.clampRemotePreciseX(state.localTargetX),
+      localTargetY: this.clampRemotePreciseY(state.localTargetY),
+      remoteObservedX: this.clampRemotePreciseX(state.remoteObservedX),
+      remoteObservedY: this.clampRemotePreciseY(state.remoteObservedY),
+      remoteReady: state.remoteReady,
+      owner: state.owner,
+      localGestureActive: state.localGestureActive,
+      localLastInputAtMs: state.localLastInputAtMs,
+      localSettlingUntilMs: state.localSettlingUntilMs,
+      remoteObservedAtMs: state.remoteObservedAtMs
+    };
+  }
+
+  private applyRemoteCursorMotionState(state: RemoteCursorMotionState): void {
+    this.remoteCursorMotion = this.clampRemoteCursorMotionState(state);
+    this.setDisplayedRemoteCursor(this.remoteCursorMotion.displayX, this.remoteCursorMotion.displayY);
+  }
+
+  /** Update the local display without claiming a peer acknowledgement. */
   private rememberRemoteCursor(x: number, y: number): void {
-    this.setDisplayedRemoteCursor(x, y);
+    this.applyRemoteCursorMotionState(applyLocalCursorTarget(this.remoteCursorMotion,
+      this.clampRemotePreciseX(x), this.clampRemotePreciseY(y), Date.now()));
   }
 
   private setRemoteCursorPrediction(x: number, y: number): void {
-    this.remotePredictionActive = true;
-    this.setDisplayedRemoteCursor(x, y);
+    this.rememberRemoteCursor(x, y);
   }
 
   /**
-   * Apply a protocol-native cursor position. A delayed native position must
-   * not overwrite a newer local prediction while a mouse move is pending or
-   * in flight. Once the remote position acknowledges the latest move, the
-   * prediction is retired and the native value becomes authoritative.
+   * Record a protocol-native position independently from local touchpad
+   * output. The policy deliberately rejects the former unsequenced ACK
+   * heuristic: a delayed coordinate must not pull an active pointer backward.
    */
   private applyAuthoritativeRemoteCursor(x: number, y: number): void {
-    const authoritativeX: number = this.clampRemotePreciseX(x);
-    const authoritativeY: number = this.clampRemotePreciseY(y);
-    this.remoteAuthoritativeX = authoritativeX;
-    this.remoteAuthoritativeY = authoritativeY;
-    this.remoteAuthoritativeReady = true;
-
-    const protectsPrediction: boolean = this.remotePredictionActive &&
-      (this.pendingMouseMoveValid || this.localMouseMoveInFlight);
-    if (!protectsPrediction) {
-      this.remotePredictionActive = false;
-      this.localMouseMoveInFlight = false;
-      this.setDisplayedRemoteCursor(authoritativeX, authoritativeY);
-      return;
-    }
-
-    const expectedX: number = this.pendingMouseMoveValid ? this.pendingMouseMoveX :
-      this.localMouseMoveSentX;
-    const expectedY: number = this.pendingMouseMoveValid ? this.pendingMouseMoveY :
-      this.localMouseMoveSentY;
-    const closeToExpected: boolean = Math.abs(authoritativeX - expectedX) <= MOUSE_MOVE_ACK_TOLERANCE_PX &&
-      Math.abs(authoritativeY - expectedY) <= MOUSE_MOVE_ACK_TOLERANCE_PX;
-    const sentAgeMs: number = Date.now() - this.localMouseMoveSentAtMs;
-    const timedOut: boolean = this.localMouseMoveInFlight &&
-      this.localMouseMoveSentAtMs > 0 && sentAgeMs >= MOUSE_MOVE_ACK_TIMEOUT_MS &&
-      !this.pendingMouseMoveValid;
-    if (closeToExpected || timedOut) {
-      this.remotePredictionActive = false;
-      this.localMouseMoveInFlight = false;
-      this.setDisplayedRemoteCursor(authoritativeX, authoritativeY);
-      return;
-    }
-    hilog.debug(RD_DOMAIN, RD_TAG, 'remote cursor position held behind local prediction x=' +
-      authoritativeX.toString() + ',' + authoritativeY.toString() +
-      ' expected=' + expectedX.toString() + ',' + expectedY.toString() +
-      ' pending=' + (this.pendingMouseMoveValid ? '1' : '0') +
-      ' inFlight=' + (this.localMouseMoveInFlight ? '1' : '0'));
+    this.applyRemoteCursorMotionState(observeRemoteCursorPosition(this.remoteCursorMotion,
+      this.clampRemotePreciseX(x), this.clampRemotePreciseY(y), Date.now()));
   }
 
   private invalidateRemoteCursorViewIfChanged(previousX: number, previousY: number,
     previousReady: boolean): void {
     if (remoteCursorSnapshotChanged(previousX, previousY, previousReady, this.remoteCursorX,
       this.remoteCursorY, this.remoteCursorReady)) {
-      this.remoteCursorViewRevision += 1;
+      this.requestRemoteCursorViewRefresh();
     }
+  }
+
+  /**
+   * Touch events can arrive faster than ArkUI can present. Keep the latest
+   * cursor coordinates in plain fields and commit one visual revision per
+   * frame, so pointer updates cannot turn into a high-frequency page rebuild
+   * competing with the remote video XComponent.
+   */
+  private requestRemoteCursorViewRefresh(immediate: boolean = false): void {
+    if (immediate) {
+      this.clearRemoteCursorViewCommit();
+      this.remoteCursorViewRevision += 1;
+      this.publishRemoteCursorOverlay();
+      return;
+    }
+    if (this.remoteCursorViewCommitPending) {
+      return;
+    }
+    this.remoteCursorViewCommitPending = true;
+    this.remoteCursorViewCommitTimer = setTimeout((): void => {
+      this.remoteCursorViewCommitTimer = -1;
+      this.remoteCursorViewCommitPending = false;
+      this.remoteCursorViewRevision += 1;
+      this.publishRemoteCursorOverlay();
+    }, REMOTE_CURSOR_RENDER_FRAME_MS);
+  }
+
+  private clearRemoteCursorViewCommit(): void {
+    if (this.remoteCursorViewCommitTimer >= 0) {
+      clearTimeout(this.remoteCursorViewCommitTimer);
+      this.remoteCursorViewCommitTimer = -1;
+    }
+    this.remoteCursorViewCommitPending = false;
   }
 
   private resetTouchpadPointerCurve(): void {
@@ -2288,34 +3359,74 @@ struct RemoteDesktop {
       ' prediction=' + nextX.toFixed(2) + ',' + nextY.toFixed(2) +
       ' pending=' + (this.pendingMouseMoveValid ? '1' : '0') +
       ' inFlight=' + (this.localMouseMoveInFlight ? '1' : '0') +
-      ' authoritative=' + this.remoteAuthoritativeX.toFixed(2) + ',' +
-      this.remoteAuthoritativeY.toFixed(2) + ' remote=' + this.remoteWidth.toString() +
+      ' remoteObserved=' + this.remoteCursorMotion.remoteObservedX.toFixed(2) + ',' +
+      this.remoteCursorMotion.remoteObservedY.toFixed(2) +
+      ' owner=' + this.remoteCursorMotion.owner + ' remote=' + this.remoteWidth.toString() +
       'x' + this.remoteHeight.toString() + ' surface=' +
       Math.round(this.surfaceWidth).toString() + 'x' + Math.round(this.surfaceHeight).toString() +
       ' discontinuity=' + (discontinuity ? '1' : '0'));
   }
 
-  private readRendererViewport(): RendererViewportSnapshot | null {
+  private invalidateRendererViewportCache(): void {
+    this.rendererViewportCache = null;
+    this.rendererViewportCacheHandle = this.rendererHandle;
+    this.rendererViewportReadAtMs = 0;
+  }
+
+  private readRendererViewport(forceRefresh: boolean = false): RendererViewportSnapshot | null {
+    const now: number = Date.now();
+    if (this.rendererViewportCacheHandle !== this.rendererHandle) {
+      this.rendererViewportCache = null;
+      this.rendererViewportCacheHandle = this.rendererHandle;
+      this.rendererViewportReadAtMs = 0;
+    }
+    if (!forceRefresh && this.rendererViewportCache !== null &&
+      now - this.rendererViewportReadAtMs < RENDERER_VIEWPORT_CACHE_MS) {
+      return this.rendererViewportCache;
+    }
+    // Throttle failed reads as well. A detached/rebuilding surface must not
+    // turn every touch Move and every cursor Builder evaluation into NAPI work.
+    if (!forceRefresh && this.rendererViewportReadAtMs > 0 &&
+      now - this.rendererViewportReadAtMs < RENDERER_VIEWPORT_CACHE_MS) {
+      return this.rendererViewportCache;
+    }
+    this.rendererViewportReadAtMs = now;
     try {
       const raw = this.loader.getRendererViewport(this.rendererHandle);
-      if (raw && raw['sourceWidth'] > 0 && raw['sourceHeight'] > 0 &&
-        raw['viewportW'] > 0 && raw['viewportH'] > 0) {
-        const snapshot: RendererViewportSnapshot = {
-          sourceWidth: raw['sourceWidth'] as number,
-          sourceHeight: raw['sourceHeight'] as number,
-          viewportX: raw['viewportX'] as number,
-          viewportY: raw['viewportY'] as number,
-          viewportW: raw['viewportW'] as number,
-          viewportH: raw['viewportH'] as number
-        };
-        this.rendererSourceWidth = snapshot.sourceWidth;
-        this.rendererSourceHeight = snapshot.sourceHeight;
-        return snapshot;
+      if (raw && raw.sourceWidth > 0 && raw.sourceHeight > 0) {
+        // The renderer owns viewport values in its own surface-pixel space.
+        // A resize/rotation can publish that snapshot one frame before ArkUI
+        // receives the new surface size. Normalize it before combining it with
+        // this page's current vp/px conversion; otherwise a 16px fallback
+        // arrow can be magnified to a screen-sized triangle.
+        const targetSurfaceWidth: number = this.renderWidthPx > 0 ? this.renderWidthPx :
+          raw.surfaceWidth;
+        const targetSurfaceHeight: number = this.renderHeightPx > 0 ? this.renderHeightPx :
+          raw.surfaceHeight;
+        const viewport = normalizeRendererViewportToSurface(raw.viewportX, raw.viewportY,
+          raw.viewportW, raw.viewportH, raw.surfaceWidth, raw.surfaceHeight,
+          targetSurfaceWidth, targetSurfaceHeight);
+        if (viewport !== null) {
+          const snapshot: RendererViewportSnapshot = {
+            sourceWidth: raw.sourceWidth,
+            sourceHeight: raw.sourceHeight,
+            surfaceWidth: targetSurfaceWidth,
+            surfaceHeight: targetSurfaceHeight,
+            viewportX: viewport.viewportX,
+            viewportY: viewport.viewportY,
+            viewportW: viewport.viewportW,
+            viewportH: viewport.viewportH
+          };
+          this.rendererSourceWidth = snapshot.sourceWidth;
+          this.rendererSourceHeight = snapshot.sourceHeight;
+          this.rendererViewportCache = snapshot;
+          return this.rendererViewportCache;
+        }
       }
     } catch (_e) {
       // Renderer may be unavailable while a surface is being rebuilt.
     }
-    return null;
+    return this.rendererViewportCache;
   }
 
   /** RustDesk frame dimensions are the peer display dimensions in this FFI. */
@@ -2330,6 +3441,8 @@ struct RemoteDesktop {
     }
     const previousWidth: number = this.remoteWidth;
     const previousHeight: number = this.remoteHeight;
+    RemoteSessionPipService.getInstance().updateContentSize(
+      viewport.sourceWidth, viewport.sourceHeight);
     this.updateRemoteSize({
       width: viewport.sourceWidth,
       height: viewport.sourceHeight,
@@ -2337,9 +3450,44 @@ struct RemoteDesktop {
       multiMonitor: false,
       monitorCount: 1
     });
+    if (!this.canvasTransformGestureModified) {
+      this.resetCanvasToDisplayDefault();
+    }
+    // The cursor overlay owns its own render scope. Geometry changes do not
+    // necessarily move the logical pointer, so explicitly publish the new
+    // projection even when remoteCursorX/Y stayed unchanged.
+    this.requestRemoteCursorViewRefresh(true);
     hilog.info(RD_DOMAIN, RD_TAG, 'RustDesk remote logical size synchronized from peer frame: ' +
       previousWidth.toString() + 'x' + previousHeight.toString() + ' -> ' +
       viewport.sourceWidth.toString() + 'x' + viewport.sourceHeight.toString());
+  }
+
+  /**
+   * Renderer geometry is a low-frequency stream property, not cursor data.
+   * Keep it on its own bounded timer so cursor polling never performs a
+   * viewport/NAPI read on the hot path.
+   */
+  private stopRustDeskGeometrySync(): void {
+    if (this.rustDeskGeometrySyncTimer >= 0) {
+      clearInterval(this.rustDeskGeometrySyncTimer);
+      this.rustDeskGeometrySyncTimer = -1;
+    }
+  }
+
+  private startRustDeskGeometrySync(sessionId: number): void {
+    this.stopRustDeskGeometrySync();
+    if (!this.isRustDeskSession() || sessionId <= 0) {
+      return;
+    }
+    const sync: () => void = (): void => {
+      if (!this.connected || this.sessionId !== sessionId || !this.isRustDeskSession()) {
+        this.stopRustDeskGeometrySync();
+        return;
+      }
+      this.syncRustDeskLogicalSizeFromRenderer();
+    };
+    sync();
+    this.rustDeskGeometrySyncTimer = setInterval(sync, REMOTE_GEOMETRY_SYNC_MS);
   }
 
   private currentRemoteSurfaceTransform(): RemoteSurfaceTransform {
@@ -2494,7 +3642,7 @@ struct RemoteDesktop {
       shouldChoosePhysicalKeyboardLayout(host.protocol, this.isDesktopDevice, this.breakpoint);
   }
 
-  /** 每个新远控会话都要求确认远端键盘类型，不把上次选择静默带入下一台设备。 */
+  /** Each RustDesk session confirms its cross-platform remote keyboard type. */
   private promptPhysicalKeyboardLayout(): void {
     if (!this.shouldRequirePhysicalKeyboardLayout() || this.physicalKeyboardLayoutConfirmed ||
       this.physicalKeyboardLayoutPromptVisible || !this.connected) {
@@ -2530,7 +3678,9 @@ struct RemoteDesktop {
   }
 
   private mapPhysicalKeyCode(keyCode: number): number {
-    return mapPhysicalKeyForRemoteLayout(this.physicalKeyboardLayout, keyCode);
+    const protocol: string = this.pendingHost === null ? '' : this.pendingHost.protocol;
+    return mapPhysicalKeyForRemoteLayout(
+      physicalKeyboardLayoutForProtocol(protocol, this.physicalKeyboardLayout), keyCode);
   }
 
   private clearRemoteInputFocusSchedule(): void {
@@ -2634,7 +3784,18 @@ struct RemoteDesktop {
     this.pendingMouseMoveGeneration = this.connectAttemptId;
     this.localMouseMoveInFlight = false;
     this.localMouseMoveSentAtMs = 0;
-    this.remotePredictionActive = false;
+  }
+
+  private expireMouseMoveAcknowledgement(now: number = Date.now()): void {
+    if (!this.localMouseMoveInFlight || this.pendingMouseMoveValid ||
+      this.localMouseMoveSentAtMs <= 0 ||
+      now - this.localMouseMoveSentAtMs < MOUSE_MOVE_IN_FLIGHT_DIAGNOSTIC_TIMEOUT_MS) {
+      return;
+    }
+    this.localMouseMoveInFlight = false;
+    hilog.debug(RD_DOMAIN, RD_TAG, 'mouse move remote echo not observed sequence=' +
+      this.localMouseMoveSequence.toString() + ' sent=' +
+      this.localMouseMoveSentX.toFixed(2) + ',' + this.localMouseMoveSentY.toFixed(2));
   }
 
   private flushMouseMove(): void {
@@ -2705,83 +3866,14 @@ struct RemoteDesktop {
     if (host.protocol !== 'rdp') {
       return { username: host.username, domain: '' };
     }
-    const authIdentityMode: number = AppStorage.get<number>('rdpAuthIdentityMode') ?? 1;
-    const rawUsername: string = host.username.trim();
-    const slashIndex: number = rawUsername.indexOf('\\');
-
-    if (authIdentityMode === 3) {
-      let emailUsername: string = rawUsername;
-      if (rawUsername.startsWith('.\\AzureAD\\')) {
-        emailUsername = rawUsername.substring('.\\AzureAD\\'.length);
-      } else if (rawUsername.startsWith('\\AzureAD\\')) {
-        emailUsername = rawUsername.substring('\\AzureAD\\'.length);
-      } else if (rawUsername.startsWith('AzureAD\\')) {
-        emailUsername = rawUsername.substring('AzureAD\\'.length);
-      }
-      hilog.info(RD_DOMAIN, RD_TAG, 'RDP credential normalized: AzureAD dot-domain format');
-      return { username: 'AzureAD\\' + emailUsername, domain: '.' };
-    }
-
-    if (authIdentityMode === 4) {
-      let emailUsername: string = rawUsername;
-      if (rawUsername.startsWith('.\\AzureAD\\')) {
-        emailUsername = rawUsername.substring('.\\AzureAD\\'.length);
-      } else if (rawUsername.startsWith('\\AzureAD\\')) {
-        emailUsername = rawUsername.substring('\\AzureAD\\'.length);
-      } else if (rawUsername.startsWith('AzureAD\\')) {
-        emailUsername = rawUsername.substring('AzureAD\\'.length);
-      }
-      hilog.info(RD_DOMAIN, RD_TAG, 'RDP credential normalized: AzureAD domain format');
-      return { username: emailUsername, domain: 'AzureAD' };
-    }
-
-    if (rawUsername.startsWith('.\\AzureAD\\') || rawUsername.startsWith('\\AzureAD\\') ||
-      rawUsername.startsWith('AzureAD\\')) {
-      let azureUsername: string = rawUsername;
-      if (rawUsername.startsWith('.\\AzureAD\\')) {
-        azureUsername = rawUsername.substring('.\\'.length);
-      } else if (rawUsername.startsWith('\\AzureAD\\')) {
-        azureUsername = rawUsername.substring('\\'.length);
-      }
-      hilog.info(RD_DOMAIN, RD_TAG, 'RDP credential normalized: explicit AzureAD dot-domain format');
-      return { username: azureUsername, domain: '.' };
-    }
-
-    if (slashIndex > 0 && slashIndex < rawUsername.length - 1 &&
-      !rawUsername.startsWith('MicrosoftAccount\\')) {
-      const domainPart: string = rawUsername.substring(0, slashIndex);
-      const userPart: string = rawUsername.substring(slashIndex + 1);
-      hilog.info(RD_DOMAIN, RD_TAG, 'RDP credential normalized: domain user domain=' + maskUser(domainPart) +
-        ' username=' + maskUser(userPart));
-      return {
-        username: userPart,
-        domain: domainPart
-      };
-    }
-
-    if ((rawUsername.startsWith('MicrosoftAccount\\') && rawUsername.indexOf('@') > 0) ||
-      rawUsername.indexOf('@') > 0) {
-      let emailUsername: string = rawUsername;
-      if (rawUsername.startsWith('MicrosoftAccount\\')) {
-        emailUsername = rawUsername.substring('MicrosoftAccount\\'.length);
-      }
-      if (authIdentityMode === 1) {
-        hilog.info(RD_DOMAIN, RD_TAG, 'RDP credential normalized: email username uses MicrosoftAccount domain');
-        return { username: emailUsername, domain: 'MicrosoftAccount' };
-      }
-      if (authIdentityMode === 2) {
-        hilog.info(RD_DOMAIN, RD_TAG, 'RDP credential normalized: email username uses bare email');
-        return { username: emailUsername, domain: '' };
-      }
-      hilog.info(RD_DOMAIN, RD_TAG, 'RDP credential normalized: Microsoft account uses full username');
-      return { username: 'MicrosoftAccount\\' + emailUsername, domain: '' };
-    }
-    hilog.info(RD_DOMAIN, RD_TAG, 'RDP credential normalized: plain username=' + maskUser(rawUsername));
-    return { username: rawUsername, domain: '' };
+    return normalizeRdpCredentialParts(
+      host.username,
+      AppStorage.get<number>('rdpAuthIdentityMode') ?? 1);
   }
 
   private hostWithResolvedCredential(host: RemoteHost): RemoteHost {
-    if (host.protocol !== 'rdp' || host.rdpCredentialId === '') {
+    if (host.protocol !== 'rdp' || normalizeRdpAuthMode(host.rdpAuthMode) !== 'password' ||
+      host.rdpCredentialId === '') {
       return host;
     }
     const credential: RdpCredential | undefined = this.srv.getRdpCredential(host.rdpCredentialId);
@@ -2991,12 +4083,15 @@ struct RemoteDesktop {
       try {
         const vp = this.loader.getRendererViewport(this.rendererHandle);
         if (vp !== null) {
-          const sourceWidth: number = vp['sourceWidth'] as number;
-          const sourceHeight: number = vp['sourceHeight'] as number;
+          const sourceWidth: number = vp.sourceWidth;
+          const sourceHeight: number = vp.sourceHeight;
           if (sourceWidth > 0 && sourceHeight > 0 &&
             (sourceWidth !== this.rendererSourceWidth || sourceHeight !== this.rendererSourceHeight)) {
             this.rendererSourceWidth = sourceWidth;
             this.rendererSourceHeight = sourceHeight;
+            if (!this.canvasTransformGestureModified) {
+              this.resetCanvasToDisplayDefault(true);
+            }
             hilog.info(RD_DOMAIN, RD_TAG, 'RDP desktop size synchronized from renderer: ' +
               sourceWidth.toString() + 'x' + sourceHeight.toString() +
               ' (renderer source only; remote logical size preserved=' +
@@ -3129,33 +4224,130 @@ struct RemoteDesktop {
     }.padding(20)
   }
 
-  private releaseRemoteCursorPixelMap(): void {
-    const previous: image.PixelMap | null = this.remoteCursorPixelMap;
-    this.remoteCursorPixelMap = null;
-    if (previous !== null) {
-      try {
-        previous.release();
-      } catch (_e) {
-        // PixelMap may already have been released by the image pipeline.
-      }
+  private releasePixelMap(pixelMap: image.PixelMap): void {
+    try {
+      pixelMap.release();
+    } catch (_e) {
+      // PixelMap may already have been released by the image pipeline.
     }
   }
 
-  private clearRemoteCursorPolling(): void {
-    this.stopVirtualJoystickMotion();
+  private scheduleRetiredRemoteCursorPixelMapRelease(): void {
+    if (this.remoteCursorPixelMapReleaseTimer >= 0 ||
+      this.retiredRemoteCursorPixelMaps.length === 0) {
+      return;
+    }
+    // ArkUI still owns the old Image for the current commit. Retaining it for
+    // two frames avoids an invalid native image handle during shape changes.
+    this.remoteCursorPixelMapReleaseTimer = setTimeout((): void => {
+      this.remoteCursorPixelMapReleaseTimer = -1;
+      const retired: Array<image.PixelMap> = this.retiredRemoteCursorPixelMaps;
+      this.retiredRemoteCursorPixelMaps = [];
+      for (let index: number = 0; index < retired.length; index++) {
+        this.releasePixelMap(retired[index]);
+      }
+    }, REMOTE_CURSOR_RENDER_FRAME_MS * 2);
+  }
+
+  private retireRemoteCursorPixelMap(pixelMap: image.PixelMap): void {
+    this.retiredRemoteCursorPixelMaps.push(pixelMap);
+    this.scheduleRetiredRemoteCursorPixelMapRelease();
+  }
+
+  private releaseRemoteCursorPixelMap(): void {
+    const previous: image.PixelMap | null = this.remoteCursorPixelMap;
+    this.remoteCursorPixelMap = null;
+    this.remoteCursorPixelMapShapeRevision = -1;
+    if (previous !== null) {
+      this.retireRemoteCursorPixelMap(previous);
+    }
+  }
+
+  private clearRemoteCursorPolling(releaseVisual: boolean = true,
+    reason: string = 'session-stop'): void {
+    this.clearRemoteCursorViewCommit();
+    this.stopRustDeskGeometrySync();
+    this.remoteCursorShapeLoadToken += 1;
+    this.remoteCursorShapeLoading = false;
+    this.remoteCursorShapeLoadingSessionId = -1;
+    this.remoteCursorShapeLoadingRevision = -1;
+    this.remoteCursorPixelFetchToken += 1;
+    this.remoteCursorPixelFetchInFlight = false;
+    this.remoteCursorPixelFetchSessionId = -1;
+    this.remoteCursorPixelFetchRevision = -1;
+    this.remoteCursorPixelFetchStartedAtMs = 0;
     if (this.remoteCursorPollTimer !== -1) {
       clearInterval(this.remoteCursorPollTimer);
       this.remoteCursorPollTimer = -1;
     }
+    if (!releaseVisual) {
+      hilog.info(RD_DOMAIN, RD_TAG, 'remote-cursor polling stopped preserve=1 reason=' + reason);
+      return;
+    }
     this.remoteCursorNativeVisible = false;
     this.remoteCursorShapeRevision = -1;
+    this.remoteCursorPixelMapShapeRevision = -1;
     this.remoteCursorPositionRevision = -1;
+    this.remoteCursorVisibilityRevision = -1;
+    this.remoteCursorFallbackShape = false;
     this.remoteCursorShapeWidth = 0;
     this.remoteCursorShapeHeight = 0;
     this.remoteCursorHotX = 0;
     this.remoteCursorHotY = 0;
+    this.remoteCursorShapeRetryAtMs = 0;
+    this.remoteCursorLastLogMs = 0;
     this.releaseRemoteCursorPixelMap();
-    this.remoteCursorViewRevision += 1;
+    this.requestRemoteCursorViewRefresh(true);
+    hilog.info(RD_DOMAIN, RD_TAG, 'remote-cursor polling stopped preserve=0 reason=' + reason);
+  }
+
+  /**
+   * Read only the current shape bitmap through the N-API worker pool. Cursor
+   * metadata stays on the cheap synchronous poll path; a shape transition
+   * must never synchronously copy RGBA bytes on the ArkUI thread.
+   */
+  private requestRemoteCursorShapePixels(sessionId: number, shapeRevision: number): void {
+    if (this.remoteCursorPixelFetchInFlight && this.remoteCursorPixelFetchSessionId === sessionId &&
+      this.remoteCursorPixelFetchRevision === shapeRevision) {
+      return;
+    }
+    const fetchToken: number = ++this.remoteCursorPixelFetchToken;
+    const startedAtMs: number = Date.now();
+    this.remoteCursorPixelFetchInFlight = true;
+    this.remoteCursorPixelFetchSessionId = sessionId;
+    this.remoteCursorPixelFetchRevision = shapeRevision;
+    this.remoteCursorPixelFetchStartedAtMs = startedAtMs;
+    this.loader.getRemoteCursorSnapshotPixelsAsync(sessionId).then(
+      (pixels: RemoteCursorSnapshot | null): void => {
+        const valid: boolean = fetchToken === this.remoteCursorPixelFetchToken &&
+          this.connected && this.sessionId === sessionId && pixels !== null &&
+          pixels.sessionId === sessionId && pixels.shapeRevision === shapeRevision;
+        if (valid && pixels !== null) {
+          this.applyRemoteCursorShape(pixels);
+          hilog.info(RD_DOMAIN, RD_TAG, 'remote-cursor shape pixels ready revision=' +
+            shapeRevision.toString() + ' bytes=' + pixels.rgba.byteLength.toString() +
+            ' elapsedMs=' + (Date.now() - startedAtMs).toString());
+        } else {
+          hilog.info(RD_DOMAIN, RD_TAG, 'remote-cursor shape pixels discarded revision=' +
+            shapeRevision.toString() + ' elapsedMs=' + (Date.now() - startedAtMs).toString());
+        }
+        if (fetchToken === this.remoteCursorPixelFetchToken) {
+          this.remoteCursorPixelFetchInFlight = false;
+          this.remoteCursorPixelFetchSessionId = -1;
+          this.remoteCursorPixelFetchRevision = -1;
+          this.remoteCursorPixelFetchStartedAtMs = 0;
+        }
+      }).catch((err: Object): void => {
+        if (fetchToken === this.remoteCursorPixelFetchToken) {
+          this.remoteCursorPixelFetchInFlight = false;
+          this.remoteCursorPixelFetchSessionId = -1;
+          this.remoteCursorPixelFetchRevision = -1;
+          this.remoteCursorPixelFetchStartedAtMs = 0;
+        }
+        hilog.warn(RD_DOMAIN, RD_TAG, 'remote-cursor shape pixels failed revision=' +
+          shapeRevision.toString() + ' elapsedMs=' + (Date.now() - startedAtMs).toString() +
+          ' err=' + JSON.stringify(err));
+      });
   }
 
   private applyRemoteCursorShape(snapshot: RemoteCursorSnapshot): void {
@@ -3163,66 +4355,144 @@ struct RemoteDesktop {
       snapshot.rgba.byteLength !== snapshot.width * snapshot.height * 4) {
       return;
     }
-    try {
-      const next: image.PixelMap = image.createPixelMapSync(snapshot.rgba, {
+    if (this.remoteCursorShapeLoading && this.remoteCursorShapeLoadingSessionId === snapshot.sessionId &&
+      this.remoteCursorShapeLoadingRevision === snapshot.shapeRevision) {
+      return;
+    }
+    const loadToken: number = ++this.remoteCursorShapeLoadToken;
+    this.remoteCursorShapeLoading = true;
+    this.remoteCursorShapeLoadingSessionId = snapshot.sessionId;
+    this.remoteCursorShapeLoadingRevision = snapshot.shapeRevision;
+    const options: image.InitializationOptions = {
         editable: false,
         srcPixelFormat: image.PixelMapFormat.RGBA_8888,
         pixelFormat: image.PixelMapFormat.RGBA_8888,
         alphaType: image.AlphaType.UNPREMUL,
         size: { width: snapshot.width, height: snapshot.height }
-      });
+    };
+    // API 23 provides the Promise form of createPixelMap. Keep the old image
+    // visible until the new bitmap is ready; a shape transition must never
+    // blank the cursor or block the ArkUI/UI thread.
+    image.createPixelMap(snapshot.rgba, options).then((next: image.PixelMap): void => {
+      const valid: boolean = loadToken === this.remoteCursorShapeLoadToken &&
+        this.connected && this.sessionId === snapshot.sessionId &&
+        this.remoteCursorShapeRevision === snapshot.shapeRevision;
+      if (!valid) {
+        this.releasePixelMap(next);
+        return;
+      }
+      this.remoteCursorShapeLoading = false;
+      this.remoteCursorShapeLoadingSessionId = -1;
+      this.remoteCursorShapeLoadingRevision = -1;
       const previous: image.PixelMap | null = this.remoteCursorPixelMap;
       this.remoteCursorPixelMap = next;
+      this.remoteCursorPixelMapShapeRevision = snapshot.shapeRevision;
       this.remoteCursorShapeWidth = snapshot.width;
       this.remoteCursorShapeHeight = snapshot.height;
       this.remoteCursorHotX = snapshot.hotX;
       this.remoteCursorHotY = snapshot.hotY;
-      this.remoteCursorViewRevision += 1;
+      this.remoteCursorFallbackShape = snapshot.fallbackShape;
+      this.remoteCursorShapeRetryAtMs = Date.now();
+      this.requestRemoteCursorViewRefresh(true);
       if (previous !== null) {
-        try { previous.release(); } catch (_e) { /* already released */ }
+        this.retireRemoteCursorPixelMap(previous);
       }
-    } catch (err) {
+    }).catch((err: Object): void => {
+      if (loadToken === this.remoteCursorShapeLoadToken) {
+        this.remoteCursorShapeLoading = false;
+        this.remoteCursorShapeLoadingSessionId = -1;
+        this.remoteCursorShapeLoadingRevision = -1;
+      }
       hilog.warn(RD_DOMAIN, RD_TAG, 'remote cursor PixelMap rejected: ' + JSON.stringify(err));
-    }
+    });
   }
 
   private pollRemoteCursor(sessionId: number): void {
     if (!this.connected || this.sessionId !== sessionId || sessionId <= 0) {
       return;
     }
-    this.syncRustDeskLogicalSizeFromRenderer();
+    const now: number = Date.now();
+    this.expireMouseMoveAcknowledgement(now);
+    this.applyRemoteCursorMotionState(advanceRemoteCursorMotion(this.remoteCursorMotion, now));
     const snapshot: RemoteCursorSnapshot | null =
       this.loader.getRemoteCursorSnapshot(sessionId, false);
     if (snapshot === null || snapshot.sessionId !== sessionId) {
       return;
     }
-    if (snapshot.shapeRevision !== this.remoteCursorShapeRevision) {
+    const shapeChanged: boolean = snapshot.shapeRevision !== this.remoteCursorShapeRevision;
+    const hasCurrentPixelMap: boolean = this.remoteCursorPixelMap !== null &&
+      this.remoteCursorPixelMapShapeRevision === snapshot.shapeRevision;
+    const shapeRetryDue: boolean = shouldRefreshRemoteCursorBitmap(snapshot.shapeRevision,
+      hasCurrentPixelMap, snapshot.visible, this.remoteCursorShapeRetryAtMs,
+      now, REMOTE_CURSOR_BITMAP_RETRY_MS);
+    const shapeLoadInFlight: boolean = this.remoteCursorShapeLoading &&
+      this.remoteCursorShapeLoadingSessionId === sessionId &&
+      this.remoteCursorShapeLoadingRevision === snapshot.shapeRevision;
+    const shapePixelsInFlight: boolean = this.remoteCursorPixelFetchInFlight &&
+      this.remoteCursorPixelFetchSessionId === sessionId &&
+      this.remoteCursorPixelFetchRevision === snapshot.shapeRevision;
+    if ((shapeChanged || shapeRetryDue) && !shapeLoadInFlight && !shapePixelsInFlight) {
       this.remoteCursorShapeRevision = snapshot.shapeRevision;
       if (snapshot.shapeRevision > 0) {
-        const pixels: RemoteCursorSnapshot | null =
-          this.loader.getRemoteCursorSnapshot(sessionId, true);
-        if (pixels !== null && pixels.shapeRevision === snapshot.shapeRevision) {
-          this.applyRemoteCursorShape(pixels);
-        }
+        // Record the attempt before crossing NAPI so a rejected/missing bitmap
+        // retries at a bounded cadence. Existing PixelMaps are never rebuilt
+        // on a timer; only a shape revision or a failed shape load requests it.
+        this.remoteCursorShapeRetryAtMs = now;
+        this.requestRemoteCursorShapePixels(sessionId, snapshot.shapeRevision);
       }
     }
-    if (snapshot.positionRevision !== this.remoteCursorPositionRevision) {
+    const positionChanged: boolean = snapshot.positionRevision !== this.remoteCursorPositionRevision;
+    const visibilityChanged: boolean = snapshot.visibilityRevision !== this.remoteCursorVisibilityRevision;
+    if (positionChanged) {
       this.remoteCursorPositionRevision = snapshot.positionRevision;
-      this.remoteCursorNativeVisible = snapshot.visible;
-      if (snapshot.visible) {
+      // Coordinates and visibility are independent protocol dimensions. A
+      // hidden remote cursor can still report a position, which is only an
+      // observation for the ownership policy and must never hide or snap a
+      // controller-owned touchpad pointer.
+      if (snapshot.positionAvailable) {
         this.applyAuthoritativeRemoteCursor(snapshot.x, snapshot.y);
-      } else {
-        this.remoteCursorViewRevision += 1;
       }
+    }
+    if (visibilityChanged) {
+      this.remoteCursorVisibilityRevision = snapshot.visibilityRevision;
+      // RustDesk can temporarily report hidden while its cursor callback path
+      // is recovering even though the ArkTS session still accepts local input.
+      // Preserve the controller-side arrow until a real disconnect; RDP keeps
+      // honoring protocol visibility.
+      this.remoteCursorNativeVisible = snapshot.visible || this.isRustDeskSession();
+      this.requestRemoteCursorViewRefresh(true);
+    }
+    if (shapeChanged || positionChanged || visibilityChanged ||
+      this.remoteCursorLastLogMs === 0 || now - this.remoteCursorLastLogMs >= REMOTE_CURSOR_LOG_SAMPLE_MS) {
+      this.remoteCursorLastLogMs = now;
+      hilog.info(RD_DOMAIN, RD_TAG, 'remote-cursor state session=' + sessionId.toString() +
+        ' shapeRevision=' + snapshot.shapeRevision.toString() +
+        ' positionRevision=' + snapshot.positionRevision.toString() +
+        ' visibilityRevision=' + snapshot.visibilityRevision.toString() +
+        ' visible=' + (snapshot.visible ? '1' : '0') +
+        ' pixelMap=' + (this.remoteCursorPixelMap !== null ? '1' : '0') +
+        ' fallback=' + (snapshot.fallbackShape ? '1' : '0') +
+        ' positionTransport=' + (this.isRustDeskSession() ? 'rustdesk-ffi' : 'freerdp') +
+        ' positionAvailable=' + (snapshot.positionAvailable ? '1' : '0') +
+        ' position=' + snapshot.x.toString() + ',' + snapshot.y.toString() +
+        ' owner=' + this.remoteCursorMotion.owner +
+        ' local=' + this.remoteCursorMotion.localTargetX.toFixed(1) + ',' +
+        this.remoteCursorMotion.localTargetY.toFixed(1) +
+        ' observed=' + this.remoteCursorMotion.remoteObservedX.toFixed(1) + ',' +
+        this.remoteCursorMotion.remoteObservedY.toFixed(1));
     }
   }
 
   private startRemoteCursorPolling(sessionId: number): void {
-    this.clearRemoteCursorPolling();
+    // Restarting a timer (connect handoff / foreground restore) must not erase
+    // the last valid cursor. The native snapshot may not repeat an unchanged
+    // shape, so clearing here can otherwise make the arrow disappear forever.
+    this.clearRemoteCursorPolling(false, 'poll-restart');
+    this.startRustDeskGeometrySync(sessionId);
     this.pollRemoteCursor(sessionId);
     this.remoteCursorPollTimer = setInterval((): void => {
       this.pollRemoteCursor(sessionId);
-    }, 16);
+    }, REMOTE_CURSOR_POLL_MS);
   }
 
   @Builder rustDeskAuthChoiceBuilder() {
@@ -3337,32 +4607,49 @@ struct RemoteDesktop {
   // XComponent 就绪后初始化渲染管线并连接
   private async doConnect(host: RemoteHost): Promise<void> {
     const attemptId: number = ++this.connectAttemptId;
+    let rdpRestrictedAdminHash: string = '';
     try {
       if (!(await this.loader.waitForPendingTeardown())) {
         throw new Error('上一会话资源清理未完成 [E-TEARDOWN-PENDING]');
+      }
+      this.rendererSourceWidth = 0;
+      this.rendererSourceHeight = 0;
+      this.invalidateRendererViewportCache();
+      const rdpAuthMode: RdpAuthMode = normalizeRdpAuthMode(host.rdpAuthMode);
+      const rdpRestrictedAdminSecretSource: RdpRestrictedAdminSecretSource =
+        normalizeRdpRestrictedAdminSecretSource(host.rdpRestrictedAdminSecretSource);
+      if (host.protocol === 'rdp' && rdpAuthMode === 'restricted_admin' &&
+        rdpRestrictedAdminSecretSource === 'ntlm_hash') {
+        const secret = CloudStore.getInstance().loadRdpRestrictedAdminHash(host);
+        if (secret.status !== 'ready') {
+          if (secret.status === 'crypto_locked') {
+            throw new Error('请先解锁本地凭据存储后再连接 Restricted Admin 主机 [E-RDP-AUTH-CRYPTO-LOCKED]');
+          }
+          if (secret.status === 'binding_mismatch') {
+            throw new Error('主机地址或用户名已改变，请重新输入 NTLM Hash [E-RDP-AUTH-IDENTITY-MISMATCH]');
+          }
+          throw new Error('此设备未保存该 Restricted Admin 主机的 NTLM Hash，请重新输入 [E-RDP-AUTH-SECRET-REQUIRED]');
+        }
+        rdpRestrictedAdminHash = secret.hash;
       }
       const desktop: DesktopSize = this.desktopSize(host);
       this.updateRemoteSize(desktop);
       const credentials: RdpCredentialParts = this.rdpCredentialParts(host);
       const w: number = desktop.width;
       const h: number = desktop.height;
+      const pageSurface: RemoteSessionPipContentSize = this.currentPageSurfaceSize(w, h);
 
       // 初始化渲染器 (XComponent surface 已就绪)
-      console.info('[RD-DIAG] initRenderer: xcId=' + this.xcId + ' w=' + w + ' h=' + h);
-      const rHandle: number = this.loader.initRenderer(this.xcId, w, h);
+      console.info('[RD-DIAG] initRenderer: xcId=' + this.xcId + ' w=' + pageSurface.width +
+        ' h=' + pageSurface.height + ' remote=' + w + 'x' + h);
+      const rHandle: number = this.loader.initRenderer(this.xcId, pageSurface.width, pageSurface.height);
       console.info('[RD-DIAG] initRenderer returned: ' + rHandle);
       if (rHandle <= 0) {
         throw new Error('渲染器初始化失败 [E-RENDERER-INIT] rc=' + rHandle);
       }
       this.rendererHandle = rHandle;
       this.nativeHandles.markSurfaceAttached(this.rendererHandle);
-      if (this.renderWidthPx > 0 && this.renderHeightPx > 0 &&
-        (this.renderWidthPx !== w || this.renderHeightPx !== h)) {
-        this.loader.resizeRenderer(this.rendererHandle, this.renderWidthPx, this.renderHeightPx);
-        hilog.info(RD_DOMAIN, RD_TAG, 'renderer resized after init: surface=' +
-          this.renderWidthPx.toString() + 'x' + this.renderHeightPx.toString() +
-          ' remote=' + w.toString() + 'x' + h.toString());
-      }
+      this.resetCanvasToDisplayDefault();
 
       // 初始化解码器 (非阻塞 — 解码器未就绪不影响连接建立)
       const rdCodecVal: number = AppStorage.get<number>('rustdeskCodec') ?? 0;
@@ -3424,11 +4711,15 @@ struct RemoteDesktop {
       const rdpDrivePath: string = host.protocol === 'rdp' && this.rdpDriveEnabled && RDP_DRIVE_REDIRECTION_ENABLED ?
         this.ensureRdpTransferDir() : '';
       let rdServerKey: string = '';
+      let rdServerKeyMode: number = 1;
       let rustDeskRelay: RustDeskRelayConfig | undefined;
       if (host.protocol === 'rustdesk' && host.rustdeskRelayId.length > 0) {
         rustDeskRelay = this.srv.getAllRelays()
           .find((r: RustDeskRelayConfig): boolean => r.id === host.rustdeskRelayId);
-        if (rustDeskRelay) { rdServerKey = rustDeskRelay.key; }
+        if (rustDeskRelay) {
+          rdServerKey = rustDeskRelay.key;
+          rdServerKeyMode = rustDeskRelayKeyModeForFfi(rustDeskRelay.key, rustDeskRelay.keyMode);
+        }
       }
       const rustDeskDirect: boolean = host.protocol === 'rustdesk' && host.rustdeskDirectEnabled;
       const directHost: string = host.rustdeskDirectHost.trim();
@@ -3448,6 +4739,7 @@ struct RemoteDesktop {
           relayHost: rustDeskRelay ? rustDeskRelay.idServer : '',
           relayPort: rustDeskRelay ? rustDeskRelay.idServerPort : 0,
           relayKey: rustDeskRelay ? rustDeskRelay.key : '',
+          relayKeyMode: rustDeskRelay ? rustDeskRelay.keyMode : 'auto',
           proManaged: host.rustdeskProManaged && host.sourceType === 'rustdesk_pro'
         });
         if (rustDeskError !== '') { throw new Error(rustDeskError + ' [E-RUSTDESK-CONFIG]'); }
@@ -3459,7 +4751,7 @@ struct RemoteDesktop {
         host: sessionHost,
         port: sessionPort,
         username: credentials.username,
-        password: host.password,
+        password: host.protocol === 'rdp' && rdpAuthMode !== 'password' ? '' : host.password,
         width: w,
         height: h,
         customHostname: host.customHostname,
@@ -3471,6 +4763,9 @@ struct RemoteDesktop {
         monitorCount: desktop.monitorCount,
         colorDepth: desktop.colorDepth,
         rdpAuthIdentityMode: AppStorage.get<number>('rdpAuthIdentityMode') ?? 1,
+        rdpAuthMode: rdpAuthMode,
+        rdpRestrictedAdminSecretSource: rdpRestrictedAdminSecretSource,
+        rdpRestrictedAdminHash: rdpRestrictedAdminHash,
         authMethod: useKey ? 'publickey' : 'password',
         privateKeyPem: useKey ? keyData : '',
         privateKeyPassphrase: keyPassphrase,
@@ -3496,7 +4791,8 @@ struct RemoteDesktop {
           'request_approval' ? 1 : 0,
         rdRelayId: host.rustdeskRelayId,
         rdAccountId: host.rustdeskAccountId,
-        rdServerKey: rdServerKey
+        rdServerKey: rdServerKey,
+        rdServerKeyMode: rdServerKeyMode
       };
       // 编码偏好单独处理 (0=auto → 不强制)
       if (rdCodecVal > 0) {
@@ -3513,7 +4809,15 @@ struct RemoteDesktop {
         ' clipboard=' + (cfg.rdClipboardEnabled ? 'on' : 'off') +
         ' driveName=' + rdpDriveName +
         ' drive=' + (cfg.rdDrivePath && cfg.rdDrivePath.length > 0 ? cfg.rdDrivePath : 'off'));
-      const sid: number = this.loader.connect(cfg);
+      let sid: number = 0;
+      try {
+        sid = this.loader.connect(cfg);
+      } finally {
+        // The native adapter owns its own asynchronous copy after connect;
+        // never keep the local session-config reference alive on this side.
+        cfg.rdpRestrictedAdminHash = '';
+        rdpRestrictedAdminHash = '';
+      }
       hilog.info(RD_DOMAIN, RD_TAG, 'NAPI connect returned: ' + sid);
       if (sid <= 0) {
         let errMsg: string = '连接失败 [E-CONNECT-' + Math.abs(sid) + ']';
@@ -3526,6 +4830,12 @@ struct RemoteDesktop {
         }
         else if (sid === -41 && host.protocol === 'rustdesk') {
           errMsg = '请求被控端批准不能用于直连模式，请关闭直连或改用设备密码 [E-RUSTDESK-DIRECT-APPROVAL]';
+        }
+        else if (sid === -50 && host.protocol === 'rdp' && rdpAuthMode === 'restricted_admin') {
+          errMsg = 'Restricted Admin NTLM Hash 无效或无法配置，请在主机编辑中重新输入 [E-RDP-AUTH-HASH]';
+        }
+        else if (sid === -50 && host.protocol === 'rdp') {
+          errMsg = 'RDP 认证参数无效，请重新选择认证方式并保存 [E-RDP-AUTH-CONFIG]';
         }
         else if (sid === -31 && host.protocol === 'rustdesk') { errMsg = 'RustDesk 握手失败，请查看 FFI 日志 [E-CONNECT-31]'; }
         throw new Error(errMsg);
@@ -3545,12 +4855,19 @@ struct RemoteDesktop {
       this.nativeHandles.attachConnectedSession(sid, this.remoteProtocolOf(host));
       this.connected = true;
       this.connecting = false;
+      if (host.protocol === 'rustdesk' && this.rustdeskShowDiagnostics) {
+        this.startRustDeskDiagnosticsPolling();
+      }
       this.startRemoteCursorPolling(sid);
       this.recordActiveSession(host, sid, true);
+      await this.prepareRemoteSessionPipForForeground(host, sid);
       this.persistRustDeskSessionAuth(host);
       // T-171: 连接成功后显示悬浮胶囊
       this.initHandlePosition();
       this.handleVisible = true;
+      if (host.protocol === 'rustdesk' && this.rustdeskShowDiagnostics) {
+        this.initRustDeskDiagnosticsDock();
+      }
       this.promptPhysicalKeyboardLayout();
       if (host.protocol === 'rdp') {
         this.startRdpRenderWatchdog(sid, attemptId);
@@ -3576,9 +4893,10 @@ struct RemoteDesktop {
         clipboardSyncEnabledForProtocol(host.protocol,
           AppStorage.get<boolean>('rdpClipboardEnabled') ?? true, this.rustdeskClipboardEnabled));
     } catch (err) {
+      rdpRestrictedAdminHash = '';
       this.clearRdpRenderWatchdog();
       this.clearRdpNativeStateMonitor();
-      this.clearRemoteCursorPolling();
+      this.clearRemoteCursorPolling(true, 'connect-error');
       // 停止剪贴板桥
       if (this.clipboardBridge !== null) {
         this.clipboardBridge.stopMonitoring();
@@ -3700,10 +5018,21 @@ struct RemoteDesktop {
   }
 
   private disconnectAndCleanup(reason: string): void {
-    if (this.cleanupStarted) {
+    this.restoreRemoteSystemPointer('disconnect-' + reason);
+    // Cancel a pending restore continuation before starting explicit teardown.
+    // Otherwise a late PIP stop promise could recreate a page renderer after
+    // the user has already disconnected or left the app.
+    this.restoreInProgress = false;
+    this.clearPipRestoreRetry();
+    this.restoreOperationId += 1;
+    this.clearPipContentSizeRefresh();
+    if (this.cleanupStarted && !this.renderPreservedInPip && !this.bgRestorePending) {
       return;
     }
+    this.stopRustDeskDiagnosticsPolling(true);
     this.cleanupStarted = true;
+    this.renderPreservedInPip = false;
+    this.pipSurfaceTransferInProgress = false;
     const cleanupStartedAtMs: number = Date.now();
     if (shouldRestoreRemoteNavigation(reason, false)) {
       this.setRemoteNavigationHidden(false, reason);
@@ -3719,22 +5048,23 @@ struct RemoteDesktop {
     this.remoteCursorReady = false;
     this.remoteCursorPreciseX = 960;
     this.remoteCursorPreciseY = 540;
-    this.remoteAuthoritativeX = 960;
-    this.remoteAuthoritativeY = 540;
-    this.remoteAuthoritativeReady = false;
     this.remoteCursorX = 960;
     this.remoteCursorY = 540;
+    this.remoteCursorMotion = createRemoteCursorMotionState(960, 540);
+    this.touchpadPointerDown = false;
     this.invalidateRemoteCursorViewIfChanged(previousCursorX, previousCursorY,
       previousCursorReady);
     this.bgRestorePending = false; // 清除任何待恢复状态
     this.activeSessionRegistry.clear(reason);
+    this.preAuthenticatedSessionPending = false;
     this.clearRdpRenderWatchdog();
     this.clearRdpNativeStateMonitor();
-    this.clearRemoteCursorPolling();
+    this.clearRemoteCursorPolling(true, reason);
     hilog.info(RD_DOMAIN, RD_TAG, '[RDP-SHUTDOWN] phase=arkts-entry reason=' + reason +
       ' sessionId=' + this.sessionId.toString());
     // T-171: 断开时隐藏胶囊和面板 + 释放所有修饰键
     this.handleVisible = false;
+    this.rustDeskDiagnosticsDockExpanded = false;
     this.modifierPanelMounted = false;
     this.modifierPanelVisible = false;
     this.shortcutPanelVisible = false;
@@ -3753,11 +5083,67 @@ struct RemoteDesktop {
       this.connectAttemptId++;
       this.inputForwardReady = false;
       const shouldRestoreOrientation: boolean = this.orientationApplied;
+      this.scheduleNativeDisconnectAfterPip(reason, shouldRestoreOrientation, cleanupStartedAtMs);
+    } catch (err) {
+      hilog.error(RD_DOMAIN, RD_TAG, '[RDP-SHUTDOWN] phase=arkts-error elapsedMs=' +
+        (Date.now() - cleanupStartedAtMs).toString() + ' err=' + JSON.stringify(err));
+    }
+  }
+
+  /**
+   * PIP owns a native renderer and a free-node surface. Do not hand the
+   * decoder/renderer to asynchronous protocol teardown until WMS has reported
+   * STOPPED or ERROR; otherwise a late PIP callback can render into freed GL
+   * state or surface an exit animation after an explicit disconnect.
+   */
+  private scheduleNativeDisconnectAfterPip(reason: string,
+    shouldRestoreOrientation: boolean, cleanupStartedAtMs: number): void {
+    if (this.nativeDisconnectPending) {
+      return;
+    }
+    this.nativeDisconnectPending = true;
+    const attempt: () => void = (): void => {
+      if (!this.cleanupStarted) {
+        this.nativeDisconnectPending = false;
+        return;
+      }
+      RemoteSessionPipService.getInstance().stop().then((stopped: boolean): void => {
+        if (!stopped) {
+          hilog.warn(RD_DOMAIN, RD_TAG,
+            'disconnectAndCleanup: PIP terminal barrier pending, native teardown deferred');
+          this.nativeDisconnectRetryTimer = setTimeout((): void => {
+            this.nativeDisconnectRetryTimer = -1;
+            attempt();
+          }, 250);
+          return;
+        }
+        this.nativeDisconnectPending = false;
+        this.finishNativeDisconnect(reason, shouldRestoreOrientation, cleanupStartedAtMs);
+      }).catch((err: Error): void => {
+        hilog.warn(RD_DOMAIN, RD_TAG, 'disconnectAndCleanup: PIP stop retry: ' +
+          (err.message ? err.message : JSON.stringify(err)));
+        this.nativeDisconnectRetryTimer = setTimeout((): void => {
+          this.nativeDisconnectRetryTimer = -1;
+          attempt();
+        }, 250);
+      });
+    };
+    attempt();
+  }
+
+  private finishNativeDisconnect(reason: string,
+    shouldRestoreOrientation: boolean, cleanupStartedAtMs: number): void {
+    try {
       if (this.sessionId > 0 || this.rendererHandle > 0 || this.decoderHandle > 0) {
         if (this.sessionId > 0) {
           this.disableRdpBackgroundVideoPrewarm('disconnect-cleanup');
         }
         this.discardPendingMouseMove();
+        if (this.decoderHandle > 0) {
+          const detached: boolean = this.loader.detachVideoPipelineForBackground();
+          hilog.info(RD_DOMAIN, RD_TAG, 'disconnectAndCleanup: decoder pipeline detached=' +
+            (detached ? 'true' : 'false'));
+        }
         if (this.rendererHandle > 0) {
           this.markXComponentSurfaceDetached('disconnectAndCleanup');
         }
@@ -3771,6 +5157,7 @@ struct RemoteDesktop {
         this.sessionId = -1;
         this.rendererHandle = -1;
         this.decoderHandle = -1;
+        this.pipRendererHandle = -1;
         this.nativeHandles.markAsyncTeardownTransferred();
       }
       this.clearFileTransferAutoHide();
@@ -3783,16 +5170,14 @@ struct RemoteDesktop {
       this.stopBackgroundAudioPolling();
       this.clearRestoreFrameRefreshPump();
       this.setRemoteKeepScreenOn(false);
-      // 停止实况窗
       try {
         const ctx: common.UIAbilityContext = this.getUIContext().getHostContext() as common.UIAbilityContext;
         if (ctx) {
           this.stopSessionLiveView(ctx).catch((_e: Error): void => {
-            // 停止失败不影响清理流程
+            // Media cleanup is best effort after the PIP barrier is complete.
           });
         }
       } catch (_e) { /* ignore */ }
-      // 停止后台保活任务
       try {
         const ctx: common.UIAbilityContext = this.getUIContext().getHostContext() as common.UIAbilityContext;
         if (ctx) {
@@ -3807,7 +5192,7 @@ struct RemoteDesktop {
       this.connected = false;
       this.connectStarted = false;
       hilog.info(RD_DOMAIN, RD_TAG, '[RDP-SHUTDOWN] phase=arkts-return elapsedMs=' +
-        (Date.now() - cleanupStartedAtMs).toString());
+        (Date.now() - cleanupStartedAtMs).toString() + ' reason=' + reason);
     } catch (err) {
       hilog.error(RD_DOMAIN, RD_TAG, '[RDP-SHUTDOWN] phase=arkts-error elapsedMs=' +
         (Date.now() - cleanupStartedAtMs).toString() + ' err=' + JSON.stringify(err));
@@ -3818,10 +5203,171 @@ struct RemoteDesktop {
    * 后台保活: 仅脱附渲染, 保留协议连接和音频管线。
    * 系统通过 home gesture / onBackground 触发。
    */
-  private detachForBackground(): void {
+  private releasePipRenderer(reason: string): void {
+    const ownedHandle: number = this.pipRendererHandle > 0
+      ? this.pipRendererHandle : this.rendererHandle;
+    const currentHandle: number = this.rendererHandle;
+    if (!this.isRdpRemoteSession() && this.decoderHandle > 0 &&
+      (this.renderPreservedInPip || ownedHandle === currentHandle)) {
+      const detached: boolean = this.loader.detachVideoPipelineForBackground();
+      hilog.info(RD_DOMAIN, RD_TAG, 'releasePipRenderer: decoder detached=' +
+        detached.toString() + ' reason=' + reason);
+    }
+    if (ownedHandle > 0) {
+      if (ownedHandle === currentHandle && this.nativeHandles.isRenderAttached()) {
+        this.nativeHandles.detachRenderForBackground();
+      } else {
+        this.loader.destroyRendererHandle(ownedHandle);
+      }
+    }
+    if (this.rendererHandle === ownedHandle) {
+      this.rendererHandle = -1;
+    }
+    this.pipRendererHandle = -1;
+    this.renderPreservedInPip = false;
+    hilog.info(RD_DOMAIN, RD_TAG, 'releasePipRenderer: handle=' +
+      ownedHandle.toString() + ' reason=' + reason);
+  }
+
+  private async attachRendererToPipSurface(surface: RemoteSessionPipSurface,
+    operationGeneration: number): Promise<boolean> {
+    const activeSession: ActiveRemoteSessionRecord | null = this.activeSessionRegistry.getActive();
+    const isRdp: boolean = this.isRdpRemoteSession();
+    const pipService: RemoteSessionPipService = RemoteSessionPipService.getInstance();
+    if (!this.cleanupStarted || !this.connected || this.sessionId <= 0 || this.pendingHost === null ||
+      this.restoreInProgress || !pipService.isOperationCurrent(operationGeneration) ||
+      this.rendererHandle <= 0 || (!isRdp && this.decoderHandle <= 0) ||
+      activeSession === null ||
+      activeSession.sessionId !== this.sessionId || activeSession.hostId !== this.pendingHost.id ||
+      !activeSession.protocolConnected || surface.surfaceId.length === 0 ||
+      surface.surfaceWidth <= 0 || surface.surfaceHeight <= 0) {
+      hilog.warn(RD_DOMAIN, RD_TAG, 'attachRendererToPipSurface: session is no longer attachable');
+      return false;
+    }
+
+    try {
+      if (!(await this.waitForPipFrameReady(operationGeneration))) {
+        hilog.warn(RD_DOMAIN, RD_TAG, 'attachRendererToPipSurface: no real remote frame before timeout');
+        return false;
+      }
+      const currentSession: ActiveRemoteSessionRecord | null = this.activeSessionRegistry.getActive();
+      if (this.restoreInProgress || !this.cleanupStarted ||
+        !pipService.isOperationCurrent(operationGeneration) || !this.connected ||
+        this.sessionId <= 0 || currentSession === null ||
+        currentSession.sessionId !== this.sessionId || currentSession.hostId !== this.pendingHost.id ||
+        !currentSession.protocolConnected) {
+        hilog.warn(RD_DOMAIN, RD_TAG,
+          'attachRendererToPipSurface: operation/session changed while waiting for frame');
+        return false;
+      }
+      // Capture the remote media ratio while the page renderer is still alive.
+      // After destroyRenderer() the native viewport is intentionally no longer
+      // readable, and falling back to the rotated page surface would crop PIP.
+      const pipSize: RemoteSessionPipContentSize = this.currentPipContentSize();
+      // The page renderer is bound to the page XComponent.  Move the native
+      // renderer to the free-node surface before the PIP controller reports
+      // success; otherwise the PIP window only retains the last page frame.
+      if (!isRdp && this.decoderHandle > 0) {
+        const detached: boolean = this.loader.detachVideoPipelineForBackground();
+        hilog.info(RD_DOMAIN, RD_TAG, 'attachRendererToPipSurface: decoder pipeline detached=' +
+          (detached ? 'true' : 'false'));
+      }
+      if (this.nativeHandles.isRenderAttached()) {
+        this.nativeHandles.detachRenderForBackground();
+      } else {
+        this.loader.destroyRenderer();
+      }
+      this.rendererHandle = -1;
+
+      const result = this.loader.reattachRenderForForeground(
+        surface.surfaceId, surface.surfaceWidth, surface.surfaceHeight);
+      if (!result.ok || result.value === undefined || result.value <= 0) {
+        hilog.warn(RD_DOMAIN, RD_TAG, 'attachRendererToPipSurface: renderer init failed code=' +
+          result.code + ' msg=' + result.message);
+        return false;
+      }
+
+      this.rendererHandle = result.value;
+      this.pipRendererHandle = result.value;
+      this.nativeHandles.markSurfaceAttached(this.rendererHandle);
+      if (isRdp) {
+        const cachedPresented: boolean = this.loader.presentRdpCachedFrame(this.sessionId);
+        const refresh = this.loader.requestFrameRefresh();
+        hilog.info(RD_DOMAIN, RD_TAG, 'attachRendererToPipSurface: RDP cached=' +
+          cachedPresented.toString() + ' refresh=' + refresh.ok.toString());
+        if (!cachedPresented && !refresh.ok) {
+          this.releasePipRenderer('rdp-pip-present-failed');
+          return false;
+        }
+      } else {
+        if (!this.loader.bindVideoPipeline(this.decoderHandle, this.rendererHandle)) {
+          hilog.warn(RD_DOMAIN, RD_TAG, 'attachRendererToPipSurface: decoder pipeline bind failed');
+          this.releasePipRenderer('rustdesk-pip-bind-failed');
+          return false;
+        }
+        this.loader.requestDecoderRecovery();
+        this.loader.requestFrameRefresh();
+      }
+      if (this.restoreInProgress || !this.cleanupStarted ||
+        !pipService.isOperationCurrent(operationGeneration)) {
+        this.releasePipRenderer('pip-attach-operation-cancelled');
+        return false;
+      }
+      this.activeSessionRegistry.markRenderDetached();
+      hilog.info(RD_DOMAIN, RD_TAG, 'attachRendererToPipSurface: renderer=' +
+        this.rendererHandle.toString() + ' media=' + pipSize.width.toString() + 'x' +
+        pipSize.height.toString() + ' surface=' + surface.surfaceId + ' ' +
+        surface.surfaceWidth.toString() + 'x' + surface.surfaceHeight.toString());
+      return true;
+    } catch (err) {
+      hilog.warn(RD_DOMAIN, RD_TAG, 'attachRendererToPipSurface: failed ' + JSON.stringify(err));
+      if (this.pipRendererHandle > 0 || this.rendererHandle > 0) {
+        this.releasePipRenderer('attach-exception');
+      }
+      return false;
+    }
+  }
+
+  private handlePipSurfaceChanged(surface: RemoteSessionPipSurface): void {
+    if ((!this.renderPreservedInPip && this.pipRendererHandle <= 0) ||
+      this.restoreInProgress || this.rendererHandle <= 0 ||
+      surface.surfaceId.length === 0 || surface.surfaceWidth <= 0 || surface.surfaceHeight <= 0) {
+      return;
+    }
+    try {
+      const rebound: boolean = rdpnapi.setXComponentSurfaceId(
+        surface.surfaceId, surface.surfaceWidth, surface.surfaceHeight) as boolean;
+      if (!rebound) {
+        hilog.warn(RD_DOMAIN, RD_TAG, 'handlePipSurfaceChanged: native surface update failed id=' +
+          surface.surfaceId);
+        return;
+      }
+      const renderer: number = this.pipRendererHandle > 0
+        ? this.pipRendererHandle : this.rendererHandle;
+      this.loader.resizeRenderer(renderer, surface.surfaceWidth, surface.surfaceHeight);
+      this.invalidateRendererViewportCache();
+      hilog.info(RD_DOMAIN, RD_TAG, 'handlePipSurfaceChanged: renderer=' +
+        this.rendererHandle.toString() + ' surface=' + surface.surfaceWidth.toString() + 'x' +
+        surface.surfaceHeight.toString());
+    } catch (err) {
+      hilog.warn(RD_DOMAIN, RD_TAG, 'handlePipSurfaceChanged failed: ' + JSON.stringify(err));
+    }
+  }
+
+  private async detachForBackground(): Promise<void> {
     if (this.cleanupStarted) {
       return;
     }
+    const activeSession: ActiveRemoteSessionRecord | null = this.activeSessionRegistry.getActive();
+    if (!this.connected || this.sessionId <= 0 || this.pendingHost === null || activeSession === null ||
+      activeSession.sessionId !== this.sessionId || activeSession.hostId !== this.pendingHost.id ||
+      !activeSession.protocolConnected) {
+      hilog.info(RD_DOMAIN, RD_TAG, 'detachForBackground: skip without active connected session connected=' +
+        (this.connected ? 'true' : 'false') + ' sessionId=' + this.sessionId.toString());
+      return;
+    }
+    this.restoreRemoteSystemPointer('background-detach');
+    this.stopRustDeskDiagnosticsPolling(true);
     this.cleanupStarted = true;
     this.resetRemoteImeSession('background');
     this.clearRemoteInputFocusSchedule();
@@ -3830,10 +5376,11 @@ struct RemoteDesktop {
     this.clearRestoreFrameRefreshPump();
     this.clearRdpRenderWatchdog();
     this.clearRdpNativeStateMonitor();
-    this.clearRemoteCursorPolling();
+    this.clearRemoteCursorPolling(false, 'background-detach');
 
     // 隐藏 UI 元素
     this.handleVisible = false;
+    this.rustDeskDiagnosticsDockExpanded = false;
     this.modifierPanelMounted = false;
     this.modifierPanelVisible = false;
     this.shortcutPanelVisible = false;
@@ -3858,30 +5405,92 @@ struct RemoteDesktop {
     this.inputForwardReady = false;
 
     const backgroundMedia: RemoteSessionMediaSnapshot = this.currentRemoteMediaSnapshot();
-    this.applyBackgroundVideoPrewarm(backgroundMedia, 'detach');
+
+    // A VIDEO_PLAY PIP owns a free-node XComponent surface. The native
+    // renderer is moved there before PIP reports success. Only fall back to
+    // the old detach path if PIP is disabled, unsupported, or failed.
+    let pipPreserved: boolean = false;
+    let pipContext: common.UIAbilityContext | null = null;
+    const pipService: RemoteSessionPipService = RemoteSessionPipService.getInstance();
+    this.pipSurfaceTransferInProgress = true;
+    try {
+      pipContext = this.getUIContext().getHostContext() as common.UIAbilityContext;
+      const liveViewEnabled: boolean = AppStorage.get<boolean>('liveViewEnabled') ?? true;
+      const liveViewMode: number = AppStorage.get<number>('liveViewMode') ?? 1;
+      const pipLifecycleAction: RemoteSessionPipLifecycleAction = resolveRemoteSessionPipLifecycle(
+        liveViewEnabled, liveViewMode, true,
+        this.connected && this.sessionId > 0, true, false);
+      if (pipContext !== null && this.pendingHost !== null &&
+        pipService.isPrepared() &&
+        pipLifecycleAction === RemoteSessionPipLifecycleAction.WAIT_FOR_AUTO_START) {
+        const pipSize: RemoteSessionPipContentSize = this.currentPipContentSize();
+        pipPreserved = await pipService.start(
+          pipContext, this.getUIContext(), pipSize.width, pipSize.height,
+          (surface: RemoteSessionPipSurface, operationGeneration: number): Promise<boolean> =>
+            this.attachRendererToPipSurface(surface, operationGeneration),
+          (reason: string): void => this.handleRemoteSessionPipStopped(reason),
+          (surface: RemoteSessionPipSurface): void => this.handlePipSurfaceChanged(surface));
+      } else {
+        // A disabled/notification-only/unprepared session must revoke any
+        // foreground controller before the app leaves the window.
+        const stopped: boolean = await pipService.stop();
+        if (!stopped) {
+          throw new Error('PIP controller did not reach terminal state before background fallback');
+        }
+      }
+    } catch (err) {
+      hilog.warn(RD_DOMAIN, RD_TAG, 'detachForBackground: PIP start failed, falling back to detached renderer: ' +
+        JSON.stringify(err));
+      pipPreserved = false;
+    }
+    if (!pipPreserved) {
+      // start() may have failed while WMS was still in ABOUT_TO_START or
+      // ABOUT_TO_STOP. Never fall back to a detached native renderer until
+      // that controller has reached a terminal state, otherwise the pending
+      // PIP callback can still target the old renderer/surface.
+      const stopped: boolean = await pipService.stop();
+      if (!stopped) {
+        this.pipSurfaceTransferInProgress = false;
+        throw new Error('PIP controller did not reach terminal state before renderer fallback');
+      }
+    }
+    this.renderPreservedInPip = pipPreserved;
+    this.pipSurfaceTransferInProgress = false;
+    if (pipPreserved) {
+      this.schedulePipContentSizeRefresh();
+      this.disableRdpBackgroundVideoPrewarm('pip-active');
+      hilog.info(RD_DOMAIN, RD_TAG, 'detachForBackground: PIP owns free-node surface, renderer preserved');
+    } else {
+      this.clearPipContentSizeRefresh();
+      this.applyBackgroundVideoPrewarm(backgroundMedia, 'detach');
+    }
 
     // 仅脱附渲染, 不触碰协议连接、解码器和音频.
     // 注意: 不销毁解码器 — destroyDecoder 会级联断开协议连接.
-    if (this.decoderHandle > 0) {
-      this.loader.detachVideoPipelineForBackground();
-    }
-    const rendererHandleBeforeDetach: number = this.rendererHandle;
-    if (this.rendererHandle > 0) {
-      this.nativeHandles.detachRenderForBackground();
-      this.rendererHandle = -1;
-    }
-    if (shouldInvalidateSurfaceAfterBackgroundDetach(rendererHandleBeforeDetach, this.sessionId)) {
-      this.surfaceReady = false;
-      hilog.info(RD_DOMAIN, RD_TAG, 'detachForBackground: surface invalidated after render detach');
-    }
-    if (this.pendingHost !== null && this.sessionId > 0) {
-      this.recordActiveSession(this.pendingHost, this.sessionId, false);
-      this.activeSessionRegistry.markRenderDetached();
+    if (!pipPreserved) {
+      if (this.decoderHandle > 0 && !this.isRdpRemoteSession()) {
+        this.loader.detachVideoPipelineForBackground();
+      }
+      const rendererHandleBeforeDetach: number = this.rendererHandle;
+      if (this.rendererHandle > 0) {
+        this.nativeHandles.detachRenderForBackground();
+        this.rendererHandle = -1;
+      }
+      this.pipRendererHandle = -1;
+      if (shouldInvalidateSurfaceAfterBackgroundDetach(rendererHandleBeforeDetach, this.sessionId)) {
+        this.surfaceReady = false;
+        hilog.info(RD_DOMAIN, RD_TAG, 'detachForBackground: surface invalidated after render detach');
+      }
+      if (this.pendingHost !== null && this.sessionId > 0) {
+        this.recordActiveSession(this.pendingHost, this.sessionId, false);
+        this.activeSessionRegistry.markRenderDetached();
+      }
     }
 
     // 启动后台保活任务
     try {
-      const ctx: common.UIAbilityContext = this.getUIContext().getHostContext() as common.UIAbilityContext;
+      const ctx: common.UIAbilityContext = pipContext ??
+        (this.getUIContext().getHostContext() as common.UIAbilityContext);
       if (ctx && this.pendingHost !== null) {
         const info: RemoteSessionBgInfo = {
           hostId: this.pendingHost.id,
@@ -3892,16 +5501,22 @@ struct RemoteDesktop {
           hasAudio: backgroundMedia.hasAudio,
           hasVideo: backgroundMedia.hasVideo
         };
-        this.startRemoteSessionBackgroundTask(ctx, info).catch((err: Error): void => {
+        this.startRemoteSessionBackgroundTask(ctx, info).then((started: boolean): void => {
+          if (started) {
+            hilog.info(RD_DOMAIN, RD_TAG, 'detachForBackground: background task active protocol=' +
+              info.protocolLabel);
+          } else {
+            hilog.warn(RD_DOMAIN, RD_TAG, 'detachForBackground: background task was rejected protocol=' +
+              info.protocolLabel);
+          }
+        }).catch((err: Error): void => {
           hilog.warn(RD_DOMAIN, RD_TAG, 'detachForBackground: background task async failed: ' +
             (err.message ? err.message : JSON.stringify(err)));
         });
-        hilog.info(RD_DOMAIN, RD_TAG, 'detachForBackground: background task started protocol=' +
-          info.protocolLabel);
 
-        // 启动实况窗 (仅退后台时)
+        // 注册后台媒体身份；实际视频帧由上面的 PIP XComponent 承载。
         this.startSessionLiveView(ctx, info).catch((err: Error): void => {
-          hilog.warn(RD_DOMAIN, RD_TAG, 'detachForBackground: live view async failed: ' +
+          hilog.warn(RD_DOMAIN, RD_TAG, 'detachForBackground: background media async failed: ' +
             (err.message ? err.message : JSON.stringify(err)));
         });
         this.startBackgroundAudioPolling(ctx, info);
@@ -3911,50 +5526,163 @@ struct RemoteDesktop {
         JSON.stringify(err));
     }
 
-    // 标记状态: 连接协议仍存活但 UI 已脱附
-    this.connected = false;
-    this.connectStarted = false;
+    // PIP 使用独立 free-node surface。保持 connected=true，避免 ArkUI
+    // 重建页面 XComponent 后把远端会话误判成已断开。
+    // 只有旧的 detached fallback 才把页面标为未连接；PIP 停止后再执行同样的脱附。
+    if (!pipPreserved) {
+      this.connected = false;
+      this.connectStarted = false;
+    } else {
+      hilog.info(RD_DOMAIN, RD_TAG, 'detachForBackground: keep connected UI state for PIP free-node source');
+    }
     this.bgRestorePending = true;
     hilog.info(RD_DOMAIN, RD_TAG, 'detachForBackground: bgRestorePending=true, awaiting foreground');
+  }
+
+  private handleRemoteSessionPipStopped(reason: string): void {
+    const ownsPipRenderer: boolean = this.renderPreservedInPip || this.pipRendererHandle > 0;
+    if (!ownsPipRenderer) {
+      return;
+    }
+    // Foreground restore owns the renderer teardown. A terminal PIP callback
+    // may arrive before stop() resumes the restore continuation; consuming
+    // the ownership flag here would make that continuation skip the release.
+    if (this.restoreInProgress && this.bgRestorePending) {
+      hilog.info(RD_DOMAIN, RD_TAG, 'PIP stopped during foreground restore; keeping renderer ownership reason=' +
+        reason);
+      return;
+    }
+    if (this.bgRestorePending) {
+      // The system may finish a PIP close before the page lifecycle callback
+      // reaches aboutToAppear. Keep the decoder and PIP renderer ownership
+      // until restoreFromBackground consumes them in one ordered operation.
+      hilog.info(RD_DOMAIN, RD_TAG, 'PIP stopped before foreground restore; deferring renderer release reason=' +
+        reason);
+      return;
+    }
+    hilog.warn(RD_DOMAIN, RD_TAG, 'PIP stopped while remote session was backgrounded reason=' + reason);
+    if (!this.cleanupStarted) {
+      this.releasePipRenderer('pip-stopped-' + reason);
+      return;
+    }
+    const rendererHandleBeforeDetach: number = this.pipRendererHandle > 0
+      ? this.pipRendererHandle : this.rendererHandle;
+    this.releasePipRenderer('pip-stopped-background');
+    if (shouldInvalidateSurfaceAfterBackgroundDetach(rendererHandleBeforeDetach, this.sessionId)) {
+      this.surfaceReady = false;
+    }
+    if (this.pendingHost !== null && this.sessionId > 0) {
+      this.recordActiveSession(this.pendingHost, this.sessionId, false);
+      this.activeSessionRegistry.markRenderDetached();
+    }
+    this.connected = false;
+    this.connectStarted = false;
   }
 
   /**
    * 从后台恢复: 清除保活标志, 停止后台任务, 等待 XComponent 重建渲染。
    */
+  private clearPipRestoreRetry(): void {
+    if (this.pipRestoreRetryTimer >= 0) {
+      clearTimeout(this.pipRestoreRetryTimer);
+      this.pipRestoreRetryTimer = -1;
+    }
+  }
+
+  private schedulePipRestoreRetry(operationId: number): void {
+    if (this.pipRestoreRetryTimer >= 0) {
+      return;
+    }
+    this.pipRestoreRetryTimer = setTimeout((): void => {
+      this.pipRestoreRetryTimer = -1;
+      if (operationId !== this.restoreOperationId || this.cleanupStarted ||
+        !this.bgRestorePending || this.sessionId <= 0) {
+        return;
+      }
+      this.restoreInProgress = false;
+      this.restoreFromBackground();
+    }, 250);
+  }
+
   private restoreFromBackground(): void {
+    if (this.restoreInProgress) {
+      hilog.info(RD_DOMAIN, RD_TAG, 'restoreFromBackground: restore already in progress');
+      return;
+    }
+    this.clearPipRestoreRetry();
+    this.restoreInProgress = true;
+    const operationId: number = ++this.restoreOperationId;
     this.cleanupStarted = false; // 允许重新 attach
-    // bgFlag 保留到 tryStartConnect → doBackgroundRestoreRender 使用
+    // The free-node PIP surface replaced the page surface while the app was
+    // backgrounded. Always reacquire the current page SurfaceId after the
+    // terminal PIP state; reusing the old ID can leave RDP's frame pump alive
+    // against a surface that is no longer displayed.
+    this.surfaceReady = false;
+    this.latestSurfaceId = '';
+    // bgFlag 保留到清理完成后 → doBackgroundRestoreRender 使用
     this.stopBackgroundAudioPolling();
     this.clearRestoreFrameRefreshPump();
+    this.clearPipContentSizeRefresh();
+    const continueRestore = (): void => {
+      if (operationId !== this.restoreOperationId || !this.restoreInProgress ||
+        this.cleanupStarted || !this.bgRestorePending || this.sessionId <= 0) {
+        hilog.info(RD_DOMAIN, RD_TAG, 'restoreFromBackground: continuation cancelled id=' +
+          operationId.toString());
+        return;
+      }
+      // The PIP renderer is attached to the free-node surface, not the page
+      // surface. Release that renderer before the normal foreground reattach
+      // path; otherwise the page could resume with a stale PIP surface or two
+      // native renderer handles.
+      if (this.renderPreservedInPip || this.pipRendererHandle > 0) {
+        this.releasePipRenderer('foreground-restore');
+        hilog.info(RD_DOMAIN, RD_TAG, 'restoreFromBackground: released PIP renderer, reattaching page surface');
+      }
+      this.renderPreservedInPip = false;
+      // PIP stop has completed and detachVideoPipelineForBackground has
+      // joined the decoder thread. Only now may foreground rendering resume.
+      this.restoreInProgress = false;
+      if (shouldRestoreRenderImmediately(this.bgRestorePending, this.sessionId, this.surfaceReady, this.cleanupStarted)) {
+        hilog.info(RD_DOMAIN, RD_TAG, 'restoreFromBackground: surface ready, reattach now');
+        this.doBackgroundRestoreRender();
+        return;
+      }
+      if (shouldPollSurfaceAfterForegroundRestore(this.bgRestorePending, this.sessionId, this.surfaceReady,
+        this.cleanupStarted)) {
+        hilog.info(RD_DOMAIN, RD_TAG, 'restoreFromBackground: surface not ready, polling surface id');
+        this.pollSurfaceId(0);
+        return;
+      }
+      // 渲染重建由 onSurfaceCreated → tryStartConnect → doBackgroundRestoreRender 触发
+      hilog.info(RD_DOMAIN, RD_TAG, 'restoreFromBackground: waiting for surface');
+    };
     try {
       const ctx: common.UIAbilityContext = this.getUIContext().getHostContext() as common.UIAbilityContext;
       if (ctx) {
         // 移除实况窗
-        this.stopSessionLiveView(ctx).catch((_e: Error): void => {
-          // 停止失败不影响恢复流程
+        this.stopSessionLiveView(ctx).then((): void => {
+          continueRestore();
+        }).catch((err: Error): void => {
+          hilog.error(RD_DOMAIN, RD_TAG, 'restoreFromBackground: PIP terminal barrier pending; retrying: ' +
+            (err.message ? err.message : JSON.stringify(err)));
+          this.restoreInProgress = false;
+          this.schedulePipRestoreRetry(operationId);
         });
         RemoteSessionBackgroundTaskService.getInstance().stopSessionTask(ctx);
+        return;
       }
     } catch (_e) { /* ignore */ }
-    if (shouldRestoreRenderImmediately(this.bgRestorePending, this.sessionId, this.surfaceReady, this.cleanupStarted)) {
-      hilog.info(RD_DOMAIN, RD_TAG, 'restoreFromBackground: surface ready, reattach now');
-      this.doBackgroundRestoreRender();
-      return;
-    }
-    if (shouldPollSurfaceAfterForegroundRestore(this.bgRestorePending, this.sessionId, this.surfaceReady,
-      this.cleanupStarted)) {
-      hilog.info(RD_DOMAIN, RD_TAG, 'restoreFromBackground: surface not ready, polling surface id');
-      this.pollSurfaceId(0);
-      return;
-    }
-    // 渲染重建由 onSurfaceCreated → tryStartConnect → doBackgroundRestoreRender 触发
-    hilog.info(RD_DOMAIN, RD_TAG, 'restoreFromBackground: waiting for surface');
+    continueRestore();
   }
 
   /**
    * 后台恢复 — 仅重建渲染器, 不新建协议连接。
    */
   private doBackgroundRestoreRender(): void {
+    if (this.restoreInProgress) {
+      hilog.warn(RD_DOMAIN, RD_TAG, 'doBackgroundRestoreRender: restore teardown is still in progress');
+      return;
+    }
     // cleanupStarted 已在 restoreFromBackground 中重置为 false
     if (this.cleanupStarted) {
       hilog.warn(RD_DOMAIN, RD_TAG, 'doBackgroundRestoreRender: cleanupStarted=true, aborting');
@@ -3964,17 +5692,30 @@ struct RemoteDesktop {
     this.connectStarted = true;
     try {
       const desktop: DesktopSize = this.desktopSize(this.pendingHost);
+      const pageSurface: RemoteSessionPipContentSize = this.currentPageSurfaceSize(desktop.width, desktop.height);
       const surfaceId: string = this.latestSurfaceId.length > 0 ? this.latestSurfaceId : this.xcId;
       // Pro 主机从列表页完成真实鉴权后交接的是“无画布会话”。此时不能走
       // reattach 路径，必须在远程页首次创建 renderer/decoder，再绑定到同一 session。
-      if (this.loader.getRendererHandle() <= 0 && this.pendingHost !== null &&
-        this.pendingHost.protocol === 'rustdesk') {
-        const renderer: number = this.loader.initRenderer(surfaceId, desktop.width, desktop.height);
+      const nativeDecoderReady: boolean = this.decoderHandle > 0 || this.loader.getDecoderHandle() > 0;
+      const nativeRendererReady: boolean = this.rendererHandle > 0 || this.loader.getRendererHandle() > 0;
+      const preAuthenticatedAttach: boolean = shouldCreatePreauthenticatedRustDeskPipeline(
+        this.preAuthenticatedSessionPending,
+        this.pendingHost === null ? '' : this.pendingHost.protocol,
+        nativeDecoderReady,
+        nativeRendererReady);
+      if (this.preAuthenticatedSessionPending && !preAuthenticatedAttach) {
+        hilog.info(RD_DOMAIN, RD_TAG, 'doBackgroundRestoreRender: preauthenticated marker consumed by existing native pipeline' +
+          ' decoder=' + (nativeDecoderReady ? '1' : '0') + ' renderer=' + (nativeRendererReady ? '1' : '0'));
+        this.preAuthenticatedSessionPending = false;
+      }
+      if (preAuthenticatedAttach) {
+        const renderer: number = this.loader.initRenderer(surfaceId, pageSurface.width, pageSurface.height);
         if (renderer <= 0) {
           throw new Error('预鉴权会话画布初始化失败 [E-RUSTDESK-PREFLIGHT-RENDERER]');
         }
         this.rendererHandle = renderer;
         this.nativeHandles.markSurfaceAttached(renderer);
+        this.resetCanvasToDisplayDefault();
         const codecPref: number = AppStorage.get<number>('rustdeskCodec') ?? 0;
         let decoderCodec: number = 3;
         if (codecPref === 1) { decoderCodec = 2; }
@@ -3991,6 +5732,7 @@ struct RemoteDesktop {
         this.nativeHandles.attachConnectedSession(this.sessionId, RemoteProtocol.rustdesk);
         this.connected = true;
         this.connecting = false;
+        this.resumeRustDeskDiagnosticsAfterForeground();
         this.startRemoteCursorPolling(this.sessionId);
         this.inputForwardReady = true;
         this.scheduleRemoteInputFocus('background-preauthenticated');
@@ -3998,6 +5740,13 @@ struct RemoteDesktop {
         this.setRemoteKeepScreenOn(true);
         this.setRemoteNavigationHidden(true, 'preauthenticated-session-handoff');
         this.loader.requestFrameRefresh();
+        if (this.pendingHost !== null) {
+          this.prepareRemoteSessionPipForForeground(this.pendingHost, this.sessionId).catch((err: Error): void => {
+            hilog.warn(RD_DOMAIN, RD_TAG, 'doBackgroundRestoreRender: PIP prepare failed ' +
+              (err.message ? err.message : JSON.stringify(err)));
+          });
+        }
+        this.preAuthenticatedSessionPending = false;
         // This is a first renderer attachment for an already-authenticated stream,
         // not a foreground restore. The decoder recovery armed above waits for the
         // first keyframe; scheduling the restore watchdog here would recreate a
@@ -4008,19 +5757,13 @@ struct RemoteDesktop {
         return;
       }
       const result = this.loader.reattachRenderForForeground(
-        surfaceId, desktop.width, desktop.height);
+        surfaceId, pageSurface.width, pageSurface.height);
       if (result.ok && result.value !== undefined && result.value > 0) {
         this.rendererHandle = result.value;
         this.nativeHandles.markSurfaceAttached(this.rendererHandle);
+        this.applyCanvasTransform();
         hilog.info(RD_DOMAIN, RD_TAG, 'doBackgroundRestoreRender: renderer reattached handle=' +
           this.rendererHandle.toString());
-        if (this.renderWidthPx > 0 && this.renderHeightPx > 0 &&
-          (this.renderWidthPx !== desktop.width || this.renderHeightPx !== desktop.height)) {
-          this.loader.resizeRenderer(this.rendererHandle, this.renderWidthPx, this.renderHeightPx);
-          hilog.info(RD_DOMAIN, RD_TAG, 'doBackgroundRestoreRender: renderer resized surface=' +
-            this.renderWidthPx.toString() + 'x' + this.renderHeightPx.toString() +
-            ' remote=' + desktop.width.toString() + 'x' + desktop.height.toString());
-        }
 
         if (this.pendingHost !== null && this.pendingHost.protocol === 'rdp' && this.sessionId > 0) {
           const presented: boolean = this.loader.presentRdpCachedFrame(this.sessionId);
@@ -4039,6 +5782,7 @@ struct RemoteDesktop {
 
         // 恢复状态
         this.connected = true;
+        this.resumeRustDeskDiagnosticsAfterForeground();
         this.inputForwardReady = true;
         this.startRemoteCursorPolling(this.sessionId);
         this.scheduleRemoteInputFocus('background-restore');
@@ -4054,6 +5798,12 @@ struct RemoteDesktop {
           this.startClipboardBridgeBestEffort(this.sessionId, this.connectAttemptId, clipboardEnabled);
         }
         this.scheduleRestoreFrameRefreshPump();
+        if (this.pendingHost !== null) {
+          this.prepareRemoteSessionPipForForeground(this.pendingHost, this.sessionId).catch((err: Error): void => {
+            hilog.warn(RD_DOMAIN, RD_TAG, 'doBackgroundRestoreRender: PIP prepare failed ' +
+              (err.message ? err.message : JSON.stringify(err)));
+          });
+        }
         hilog.info(RD_DOMAIN, RD_TAG, 'doBackgroundRestoreRender: complete, session resumed');
       } else {
         hilog.error(RD_DOMAIN, RD_TAG, 'doBackgroundRestoreRender: reattachRenderForForeground failed code=' +
@@ -4118,11 +5868,32 @@ struct RemoteDesktop {
     try {
       hilog.info(RD_DOMAIN, RD_TAG, 'XComponentController.onSurfaceCreated: surfaceId=' + surfaceId);
       this.latestSurfaceId = surfaceId;
+      if (this.restoreInProgress) {
+        // Keep the page surface ID for the post-teardown reattach, but do not
+        // touch the global native surface while the PIP renderer is stopping.
+        this.surfaceReady = true;
+        hilog.info(RD_DOMAIN, RD_TAG,
+          'onSurfaceCreated: foreground restore teardown active, defer native bind');
+        return;
+      }
+      if (this.renderPreservedInPip || this.pipSurfaceTransferInProgress) {
+        // A page surface can be recreated while the PIP free node owns the
+        // native window. Do not switch the global native surface away from
+        // PIP; keep the page id for the foreground reattach path instead.
+        this.surfaceReady = true;
+        hilog.info(RD_DOMAIN, RD_TAG,
+          'onSurfaceCreated: PIP owns native surface, defer page surface bind');
+        return;
+      }
       const desktop: DesktopSize = this.desktopSize(this.pendingHost);
       this.updateRemoteSize(desktop);
-      const ok: boolean = rdpnapi.setXComponentSurfaceId(surfaceId, desktop.width, desktop.height) as boolean;
+      const pageSurface: RemoteSessionPipContentSize = this.currentPageSurfaceSize(desktop.width, desktop.height);
+      const ok: boolean = rdpnapi.setXComponentSurfaceId(
+        surfaceId, pageSurface.width, pageSurface.height) as boolean;
       hilog.info(RD_DOMAIN, RD_TAG, 'setXComponentSurfaceId: surfaceId=' + surfaceId +
-        ' size=' + desktop.width + 'x' + desktop.height + ' ok=' + (ok ? 'true' : 'false'));
+        ' page=' + pageSurface.width + 'x' + pageSurface.height +
+        ' remote=' + desktop.width + 'x' + desktop.height +
+        ' ok=' + (ok ? 'true' : 'false'));
       this.surfaceReady = ok;
       this.tryStartConnect();
     } catch (_e) {
@@ -4133,11 +5904,17 @@ struct RemoteDesktop {
 
   onSurfaceDestroyed(_surfaceId: string): void {
     hilog.info(RD_DOMAIN, RD_TAG, 'XComponentController.onSurfaceDestroyed');
+    this.restoreRemoteSystemPointer('surface-destroyed');
     this.surfaceReady = false;
     if (_surfaceId === this.latestSurfaceId) {
       this.latestSurfaceId = '';
     }
-    this.markXComponentSurfaceDetached('surfaceDestroyed');
+    if (this.restoreInProgress || this.renderPreservedInPip || this.pipSurfaceTransferInProgress) {
+      hilog.info(RD_DOMAIN, RD_TAG,
+        'onSurfaceDestroyed: PIP owns native surface, skip global detach source=' + _surfaceId);
+    } else {
+      this.markXComponentSurfaceDetached('surfaceDestroyed');
+    }
   }
 
   private onXComponentLoad = (): void => {
@@ -4176,7 +5953,12 @@ struct RemoteDesktop {
   }
 
   private onXComponentDestroy = (): void => {
-    this.markXComponentSurfaceDetached('xcomponentDestroy');
+    this.restoreRemoteSystemPointer('xcomponent-destroy');
+    if (this.renderPreservedInPip || this.pipSurfaceTransferInProgress) {
+      hilog.info(RD_DOMAIN, RD_TAG, 'onXComponentDestroy: PIP owns native surface, skip global detach');
+    } else {
+      this.markXComponentSurfaceDetached('xcomponentDestroy');
+    }
     this.surfaceReady = false;
   }
 
@@ -5295,10 +7077,12 @@ struct RemoteDesktop {
     this.touchIndicatorY = localY;
     this.touchIndicatorButton = button;
     this.touchIndicatorVisible = true;
+    this.publishRemoteCursorOverlay();
     if (autoHide) {
       this.touchIndicatorTimer = setTimeout(() => {
         this.touchIndicatorVisible = false;
         this.touchIndicatorTimer = -1;
+        this.publishRemoteCursorOverlay();
       }, this.touchIndicatorHideMs(button));
     }
   }
@@ -5343,6 +7127,12 @@ struct RemoteDesktop {
       this.hideTouchIndicator();
       return;
     }
+    if (this.remoteCursorDisplayStyle() === 'arrow') {
+      if (this.touchIndicatorVisible) {
+        this.hideTouchIndicator();
+      }
+      return;
+    }
     const local: LocalPoint = this.remoteToLocalPoint(this.remoteCursorX, this.remoteCursorY);
     if (!local.inside) { return; }
     const actualButton: number = this.touchDragActive && button < 0 ? TOUCH_INDICATOR_BUTTON_DRAG : button;
@@ -5366,6 +7156,10 @@ struct RemoteDesktop {
     this.touchWheelRemainder = 0;
     this.lastTouchWheelMs = 0;
     this.touchpadAnchorValid = false;
+    if (this.touchpadPointerDown) {
+      this.touchpadPointerDown = false;
+      this.applyRemoteCursorMotionState(endLocalCursorGesture(this.remoteCursorMotion, Date.now()));
+    }
     this.resetTouchpadPointerCurve();
     if (wasDragging) {
       this.showRemoteCursorIndicator(-1, true);
@@ -5467,7 +7261,7 @@ struct RemoteDesktop {
     this.touchWheelRemainder -= delta;
     this.lastTouchWheelMs = now;
     const src = this.toSourceSpace(this.remoteCursorX, this.remoteCursorY);
-    const sendDelta: number = this.isRustDeskSession() && this.rustdeskReverseWheel ? -delta : delta;
+    const sendDelta: number = this.rustdeskReverseWheel ? -delta : delta;
     this.loader.sendMouseWheel(this.sessionId, src['x'], src['y'], sendDelta);
     hilog.info(RD_DOMAIN, RD_TAG,
       'touchpad-scroll delta=' + sendDelta.toString() + ' stepDy=' + stepDy.toString() +
@@ -5528,6 +7322,10 @@ struct RemoteDesktop {
       if (event.type === TouchType.Down) {
         this.resetTouchpadPointerCurve();
         this.touchpadAnchorValid = true;
+        if (!this.touchpadPointerDown) {
+          this.touchpadPointerDown = true;
+          this.applyRemoteCursorMotionState(beginLocalCursorGesture(this.remoteCursorMotion, Date.now()));
+        }
         if (this.touchFingerCount <= 0 &&
           shouldResetRemoteImeOnPointerDown(this.keyboardOpen || this.hardwareKeyboardProxyActive)) {
           this.resetRemoteImeSession('touchpad-down');
@@ -5852,12 +7650,17 @@ struct RemoteDesktop {
   }
 
   private handleConfiguredTouchInput = (event: TouchEvent): void => {
+    // RustDesk geometry is synchronized by its low-frequency stream timer;
+    // input events must not perform renderer/NAPI reads.
     if (event.type === TouchType.Down && this.hardwareKeyboardProxyActive) {
       // 触摸获焦同样可能抢走隐藏 TextArea；不重置 IME 会话，稍后恢复代理焦点。
       this.scheduleRemoteInputFocus('touch-down');
     }
     const host: RemoteHost | null = this.pendingHost;
     const controlMode: number = host && host.protocol === 'rdp' ? this.rdpControlMode : this.rustdeskControlMode;
+    if (this.consumeCanvasPinchTouch(event)) {
+      return;
+    }
     if (controlMode === 2) {
       this.hideTouchIndicator();
       if (event.touches.length >= 3 || this.touchMaxFingers >= 3) {
@@ -6067,8 +7870,13 @@ struct RemoteDesktop {
     if (!this.connected || this.sessionId <= 0) {
       return;
     }
+    if (this.physicalMouseDownButton >= 0) {
+      hilog.info(RD_DOMAIN, RD_TAG, 'remote-keyboard-focus-lost preserve-drag source=' + source +
+        ' button=' + this.physicalMouseDownButton.toString());
+      return;
+    }
     hilog.info(RD_DOMAIN, RD_TAG, 'remote-keyboard-focus-lost source=' + source);
-    this.releaseAllHeldKeys();
+    this.releaseAllHeldKeys(false);
   }
 
   /**
@@ -6389,6 +8197,48 @@ struct RemoteDesktop {
     if (button === MouseButton.Right || button === 2) { return 2; }
     return -1;
   }
+
+  private handleXComponentAxis = (event?: AxisEvent): void => {
+    if (!event || !this.canForwardInput('mouseWheel')) { return; }
+    try {
+      const localX: number = event.x;
+      const localY: number = event.y;
+      const mapped: MappedPoint = this.mapInputPoint(localX, localY);
+      if (!mapped.inside) { return; }
+      const rawVertical: number = event.getVerticalAxisValue();
+      if (!Number.isFinite(rawVertical) || rawVertical === 0) { return; }
+
+      // Mouse wheels report discrete steps. Touchpads emit a continuous axis,
+      // so accumulate its small vp deltas before creating protocol wheel ticks.
+      let delta: number = 0;
+      if (event.sourceTool === SourceTool.MOUSE) {
+        delta = rawVertical > 0 ? 1 : -1;
+      } else {
+        this.physicalWheelRemainder += rawVertical * TOUCHPAD_SCROLL_GAIN;
+        delta = this.physicalWheelRemainder > 0 ? Math.floor(this.physicalWheelRemainder) :
+          Math.ceil(this.physicalWheelRemainder);
+        if (delta === 0) { return; }
+        if (delta > TOUCHPAD_SCROLL_MAX_DELTA) {
+          delta = TOUCHPAD_SCROLL_MAX_DELTA;
+        } else if (delta < -TOUCHPAD_SCROLL_MAX_DELTA) {
+          delta = -TOUCHPAD_SCROLL_MAX_DELTA;
+        }
+        this.physicalWheelRemainder -= delta;
+      }
+
+      this.queueMouseMove(mapped.x, mapped.y);
+      this.flushMouseMove();
+      const src: Record<string, number> = this.toSourceSpace(mapped.x, mapped.y);
+      const sendDelta: number = this.rustdeskReverseWheel ? -delta : delta;
+      this.loader.sendMouseWheel(this.sessionId, src['x'], src['y'], sendDelta);
+      hilog.info(RD_DOMAIN, RD_TAG, 'physical-wheel raw=' + rawVertical.toString() +
+        ' delta=' + sendDelta.toString() + ' sourceTool=' + event.sourceTool.toString() +
+        ' remote=' + mapped.x.toString() + ',' + mapped.y.toString());
+    } catch (err) {
+      hilog.error(RD_DOMAIN, RD_TAG, 'physical-wheel forward failed: ' + JSON.stringify(err));
+    }
+  }
+
   private handleXComponentMouse = (event: MouseEvent): void => {
     if (!this.canForwardInput('mouse')) { return; }
     try {
@@ -6416,11 +8266,6 @@ struct RemoteDesktop {
         if (shouldResetRemoteImeOnPointerDown(this.keyboardOpen || this.hardwareKeyboardProxyActive)) {
           this.resetRemoteImeSession('mouse-press');
         }
-        if (this.hardwareKeyboardProxyActive) {
-          // focusOnTouch 可能把焦点从隐藏编辑器转移到鼠标覆盖层，
-          // 点击结束后重新把实体键盘交还给桌面输入代理。
-          this.scheduleRemoteInputFocus('mouse-press');
-        }
         if (sendButton >= 0) {
           this.physicalMouseDownButton = sendButton;
           this.sendMouseNow(mapped.x, mapped.y, sendButton, true);
@@ -6430,11 +8275,14 @@ struct RemoteDesktop {
           this.sendMouseNow(mapped.x, mapped.y, sendButton, false);
         }
         this.physicalMouseDownButton = -1;
+        if (this.hardwareKeyboardProxyActive) {
+          this.scheduleRemoteInputFocus('mouse-release');
+        }
       } else if (event.action === MouseAction.Move || event.action === MouseAction.Hover) {
         this.queueMouseMove(mapped.x, mapped.y);
       }
-      // MouseAction: Press=1, Release=2, Move=3, Hover=4, HoverExit=5
-      // 滚轮事件通过 action==Move + button 判断
+      // MouseAction only covers button and pointer motion. ArkUI dispatches
+      // mouse wheels and touchpad two-finger scrolling via onAxisEvent.
     } catch (err) {
       hilog.error(RD_DOMAIN, RD_TAG, 'mouse forward failed: ' + JSON.stringify(err));
     }
@@ -6446,6 +8294,48 @@ struct RemoteDesktop {
 
   private remoteImeAnchorY(): number {
     return Math.max(0, (this.surfaceHeight - 1) / 2);
+  }
+
+  @Builder
+  private rustDeskDisplayResolutionMenu() {
+    Column({ space: 8 }) {
+      Row() {
+        Column() {
+          Text('远端显示分辨率').fontSize(15).fontWeight(FontWeight.Medium).fontColor('#1B1B1B')
+          Text(this.rustDeskDisplayCapabilities.width.toString() + ' × ' +
+            this.rustDeskDisplayCapabilities.height.toString())
+            .fontSize(11).fontColor('#6B7280').margin({ top: 2 })
+        }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+        Button() {
+          SymbolGlyph($r('sys.symbol.xmark')).fontSize(16).fontColor(['#4B5563'])
+        }
+        .width(32).height(32).backgroundColor(Color.Transparent)
+        .onClick((): void => { this.showRustDeskDisplayResolutionMenu = false; })
+      }.width('100%')
+      Scroll() {
+        Column({ space: 6 }) {
+          ForEach(this.rustDeskDisplayCapabilities.resolutions,
+            (resolution: RustDeskDisplayResolution): void => {
+              Row() {
+                Text(resolution.width.toString() + ' × ' + resolution.height.toString())
+                  .fontSize(13).fontColor(this.isRustDeskDisplayResolutionSelected(resolution) ? '#FFFFFF' : '#374151')
+                  .layoutWeight(1)
+                if (this.isRustDeskDisplayResolutionSelected(resolution)) {
+                  SymbolGlyph($r('sys.symbol.checkmark')).fontSize(15).fontColor(['#FFFFFF'])
+                }
+              }
+              .width('100%').height(40).padding({ left: 12, right: 12 })
+              .backgroundColor(this.isRustDeskDisplayResolutionSelected(resolution) ? this.accentColor : '#F3F4F6')
+              .borderRadius(6)
+              .onClick((): void => { this.changeRustDeskDisplayResolution(resolution.width, resolution.height); })
+            }, (resolution: RustDeskDisplayResolution): string =>
+              resolution.width.toString() + 'x' + resolution.height.toString())
+        }.width('100%')
+      }.constraintSize({ maxHeight: 260 }).scrollBar(BarState.Off)
+    }
+    .width(260).padding(14).backgroundColor('rgba(255,255,255,0.98)').borderRadius(8)
+    .shadow({ radius: 14, color: 'rgba(0,0,0,0.22)', offsetY: 4 })
+    .position({ x: Math.max(12, this.surfaceWidth - 272), y: 70 })
   }
 
   build() {
@@ -6480,6 +8370,7 @@ struct RemoteDesktop {
         this.surfaceHeight = hVp;
         this.renderWidthPx = wPx;
         this.renderHeightPx = hPx;
+        this.invalidateRendererViewportCache();
         // A resize/orientation change can move the local TouchEvent origin
         // while a finger is still down.  Consume the first post-resize move
         // as a new anchor so the old coordinate space cannot create a jump.
@@ -6490,12 +8381,23 @@ struct RemoteDesktop {
             this.modifierHiddenLeftX() : this.modifierHiddenRightX(this.surfaceWidth);
           this.clampModifierPanelsIntoView();
         }
+        if (shouldShowRustDeskDiagnostics(this.rustdeskShowDiagnostics, this.connected,
+          this.isRustDeskSession() ? 'rustdesk' : '', this.sessionId)) {
+          this.rustDeskDiagnosticsDockY = this.avoidRustDeskDiagnosticsDockCollision(
+            this.rustDeskDiagnosticsDockSide, this.rustDeskDiagnosticsDockY);
+        }
         hilog.info(RD_DOMAIN, RD_TAG, 'surface area=' + Math.round(wVp).toString() + 'x' +
           Math.round(hVp).toString() + 'vp render=' + wPx.toString() + 'x' + hPx.toString() + 'px');
         // resizeRenderer 告诉 GL 渲染器实际的 EGL surface 像素尺寸,
         // 使 contain/letterbox viewport 计算与表面一致。必须调用。
-        if (this.rendererHandle > 0 && wPx > 0 && hPx > 0) {
+        if (this.rendererHandle > 0 && wPx > 0 && hPx > 0 &&
+          !this.renderPreservedInPip && !this.pipSurfaceTransferInProgress) {
           this.loader.resizeRenderer(this.rendererHandle, wPx, hPx);
+          if (this.canvasTransformGestureModified) {
+            this.applyCanvasTransform();
+          } else {
+            this.resetCanvasToDisplayDefault();
+          }
         }
       })
 
@@ -6570,7 +8472,15 @@ struct RemoteDesktop {
           this.handleRemoteKeyboardFocusLost('overlay');
         })
         .onTouch(this.handleConfiguredTouchInput)
+        .gesture(
+          PinchGesture({ fingers: 2, distance: 5 })
+            .onActionStart((event: GestureEvent): void => { this.startCanvasPinch(event); })
+            .onActionUpdate((event: GestureEvent): void => { this.updateCanvasPinch(event); })
+            .onActionEnd((_event: GestureEvent): void => { this.finishCanvasPinch(); })
+            .onActionCancel((): void => { this.finishCanvasPinch(); })
+        )
         .onMouse(this.handleXComponentMouse)
+        .onAxisEvent(this.handleXComponentAxis)
         .onKeyEvent(this.handleXComponentKey)
         .allowDrop([uniformTypeDescriptor.UniformDataType.FILE])
         .onDragEnter((event: DragEvent): void => {
@@ -6595,7 +8505,7 @@ struct RemoteDesktop {
           audioEnabled: this.rustdeskAudioEnabled,
           clipboardEnabled: this.rustdeskClipboardEnabled,
           filePasteEnabled: this.rustdeskFilePasteEnabled,
-          viewScaleMode: this.rustdeskViewScaleMode,
+          viewScaleMode: this.remoteDisplayScaleMode,
           imageQuality: this.rustdeskImageQuality,
           codec: this.rustdeskCodec,
           showLocalCursor: this.rustdeskShowLocalCursor,
@@ -6607,6 +8517,30 @@ struct RemoteDesktop {
           keyboardOpen: this.keyboardOpen,
           capabilities: this.currentSessionCapabilities(),
           actions: this.rustDeskTopBarActions()
+        })
+      }
+
+      if (this.showRustDeskDisplayResolutionMenu) {
+        this.rustDeskDisplayResolutionMenu()
+      }
+
+      if (shouldShowRustDeskDiagnostics(this.rustdeskShowDiagnostics, this.connected,
+        this.isRustDeskSession() ? 'rustdesk' : '', this.sessionId)) {
+        RustDeskDiagnosticsHud({
+          diagnostics: this.rustDeskDiagnostics,
+          localResources: this.localResourceStats,
+          proEnabled: this.rustdeskShowProDiagnostics,
+          expanded: this.rustDeskDiagnosticsDockExpanded,
+          attachSide: this.rustDeskDiagnosticsDockSide,
+          handleX: this.rustDeskDiagnosticsDockHandleX(),
+          panelX: this.rustDeskDiagnosticsDockPanelX(),
+          panelY: this.rustDeskDiagnosticsDockY,
+          onToggle: (): void => {
+            this.toggleRustDeskDiagnosticsDock();
+          },
+          onPositionChange: (x: number, y: number, fromPanel: boolean): void => {
+            this.snapRustDeskDiagnosticsDockToEdge(x, y, fromPanel);
+          }
         })
       }
 
@@ -6698,49 +8632,7 @@ struct RemoteDesktop {
 
       // 三指控制面板改用 bindSheet — 弹到屏幕中央
 
-      if (this.connected && this.shouldShowTouchIndicator()) {
-        Stack() {
-          Stack()
-            .width(this.getTouchIndicatorRingSize())
-            .height(this.getTouchIndicatorRingSize())
-            .borderRadius(this.getTouchIndicatorRingSize() / 2)
-            .backgroundColor('rgba(0,0,0,0.08)')
-            .border({ width: this.touchIndicatorButton === TOUCH_INDICATOR_BUTTON_DRAG ? 2 : 1.5,
-              color: this.getTouchIndicatorColor() })
-          Column()
-            .width(this.getTouchIndicatorDotSize())
-            .height(this.getTouchIndicatorDotSize())
-            .borderRadius(2)
-            .backgroundColor(this.getTouchIndicatorColor())
-        }
-        .width(this.getTouchIndicatorOuterSize())
-        .height(this.getTouchIndicatorOuterSize())
-        .position({
-          x: this.circleCursorLocalX() - this.getTouchIndicatorOuterSize() / 2,
-          y: this.circleCursorLocalY() - this.getTouchIndicatorOuterSize() / 2
-        })
-        .animation({ duration: 180, curve: Curve.EaseOut })
-        .hitTestBehavior(HitTestMode.None)
-      }
-
-      if (this.connected && this.shouldShowArrowCursor()) {
-        if (this.arrowCursorInside()) {
-          Image(this.remoteCursorPixelMap)
-            .width(this.remoteCursorLocalWidth())
-            .height(this.remoteCursorLocalHeight())
-            .objectFit(ImageFit.Contain)
-            .position({ x: this.remoteCursorImageX(), y: this.remoteCursorImageY() })
-            .hitTestBehavior(HitTestMode.None)
-        }
-      }
-
-      if (this.connected && this.isTouchpadControlMode() && this.showVirtualMouse) {
-        this.floatingVirtualMouseBuilder()
-      }
-
-      if (this.connected && this.isTouchpadControlMode() && this.showVirtualJoystick) {
-        this.floatingVirtualJoystickBuilder()
-      }
+      RemoteCursorOverlay({ cursor: this.remoteCursorOverlayState })
 
       // PC 模式: 拖拽文件悬停视觉反馈
       if (this.connected && this.dropHoverActive && this.isDesktopDevice && this.breakpoint === 'xl') {
@@ -6815,8 +8707,8 @@ struct RemoteDesktop {
         .hitTestBehavior(HitTestMode.None)
       }
 
-      // PC/键鼠模式不再显示底部工具栏, 避免覆盖或扰动远端画面。
-      if (this.connected && this.isDesktopDevice && this.breakpoint === 'xl' &&
+      // PC/键鼠模式不再显示底部工具栏, 固定左上角断开按钮必须覆盖所有 PC 窗口宽度。
+      if (this.connected && this.isDesktopDevice &&
         (!this.pendingHost || this.pendingHost.protocol !== 'rustdesk')) {
         Button($r('app.string.btn_disconnect'))
           .height(28)
@@ -6843,6 +8735,10 @@ struct RemoteDesktop {
           blurStyle: BlurStyle.NONE,
           showClose: false,
           maskColor: 'rgba(0,0,0,0.48)',
+          onWillDismiss: (action: DismissSheetAction): void => {
+            this.rdpSessionErrorBackPending = true;
+            action.dismiss();
+          },
           onDisappear: (): void => { this.handleRdpSessionErrorSheetDisappear(); }
         })
 
@@ -7066,131 +8962,6 @@ struct RemoteDesktop {
     .position({ x: '4%', y: '84%' })
   }
 
-  private pressVirtualMouseButton(button: number, pressed: boolean): void {
-    if (!this.connected || !this.isTouchpadControlMode()) { return; }
-    this.sendMouseNow(this.remoteCursorX, this.remoteCursorY, button, pressed);
-  }
-
-  private moveVirtualPointer(deltaX: number, deltaY: number): void {
-    if (!this.connected || !this.isTouchpadControlMode()) { return; }
-    const nextX: number = this.remoteCursorPreciseX + this.remoteDeltaFromLocal(deltaX, 'x');
-    const nextY: number = this.remoteCursorPreciseY + this.remoteDeltaFromLocal(deltaY, 'y');
-    this.setRemoteCursorPrediction(nextX, nextY);
-    this.queueMouseMove(nextX, nextY, false);
-  }
-
-  private stopVirtualJoystickMotion(): void {
-    if (this.virtualJoystickTimer !== -1) {
-      clearInterval(this.virtualJoystickTimer);
-      this.virtualJoystickTimer = -1;
-    }
-    this.virtualJoystickLastX = 0;
-    this.virtualJoystickLastY = 0;
-  }
-
-  private startVirtualJoystickMotion(): void {
-    this.stopVirtualJoystickMotion();
-    this.virtualJoystickTimer = setInterval((): void => {
-      if (!this.connected || !this.showVirtualJoystick || !this.isTouchpadControlMode()) {
-        this.stopVirtualJoystickMotion();
-        return;
-      }
-      this.moveVirtualPointer(this.virtualJoystickLastX / 7,
-        this.virtualJoystickLastY / 7);
-    }, 16);
-  }
-
-  @Builder floatingVirtualMouseBuilder() {
-    Column() {
-      Row() {
-        Column() { Text('左').fontSize(12).fontColor('#EAF2FF') }
-          .width(43).height(56).justifyContent(FlexAlign.Center)
-          .backgroundColor('rgba(36,39,48,0.96)').borderRadius({ topLeft: 16 })
-          .onTouch((event: TouchEvent): void => {
-            if (event.type === TouchType.Down) { this.pressVirtualMouseButton(0, true); }
-            if (event.type === TouchType.Up || event.type === TouchType.Cancel) {
-              this.pressVirtualMouseButton(0, false);
-            }
-          })
-        Column() {
-          Column().width(6).height(26).borderRadius(3).backgroundColor('#9FA7B5')
-        }
-        .width(26).height(56).justifyContent(FlexAlign.Center)
-        .backgroundColor('rgba(24,26,32,0.98)')
-        .gesture(PanGesture({ direction: PanDirection.Vertical, distance: 1 })
-          .onActionStart((_event: GestureEvent): void => { this.virtualWheelLastOffset = 0; })
-          .onActionUpdate((event: GestureEvent): void => {
-            const delta: number = event.offsetY - this.virtualWheelLastOffset;
-            this.virtualWheelLastOffset = event.offsetY;
-            if (Math.abs(delta) >= 1) { this.sendTouchPadWheel(delta); }
-          }))
-        .onClick((): void => {
-          this.pressVirtualMouseButton(1, true);
-          this.pressVirtualMouseButton(1, false);
-        })
-        Column() { Text('右').fontSize(12).fontColor('#EAF2FF') }
-          .width(43).height(56).justifyContent(FlexAlign.Center)
-          .backgroundColor('rgba(36,39,48,0.96)').borderRadius({ topRight: 16 })
-          .onTouch((event: TouchEvent): void => {
-            if (event.type === TouchType.Down) { this.pressVirtualMouseButton(2, true); }
-            if (event.type === TouchType.Up || event.type === TouchType.Cancel) {
-              this.pressVirtualMouseButton(2, false);
-            }
-          })
-      }
-      Column() {
-        Text('•••').fontSize(16).fontColor('#9FA7B5').letterSpacing(2)
-      }
-      .width(112).height(30).justifyContent(FlexAlign.Center)
-      .backgroundColor('rgba(28,30,37,0.97)')
-      .borderRadius({ bottomLeft: 16, bottomRight: 16 })
-      .gesture(PanGesture({ fingers: 1, distance: 3 })
-        .onActionStart((_event: GestureEvent): void => {
-          this.virtualMouseDragStartX = this.virtualMouseX;
-          this.virtualMouseDragStartY = this.virtualMouseY;
-        })
-        .onActionUpdate((event: GestureEvent): void => {
-          const maxX: number = Math.max(0, this.surfaceWidth - 112);
-          const maxY: number = Math.max(0, this.surfaceHeight - 86);
-          this.virtualMouseX = Math.max(0, Math.min(maxX,
-            this.virtualMouseDragStartX + event.offsetX));
-          this.virtualMouseY = Math.max(0, Math.min(maxY,
-            this.virtualMouseDragStartY + event.offsetY));
-        }))
-    }
-    .width(112).height(86)
-    .position({ x: this.virtualMouseX, y: this.virtualMouseY })
-    .shadow({ radius: 14, color: 'rgba(0,0,0,0.34)', offsetY: 5 })
-    .hitTestBehavior(HitTestMode.Default)
-  }
-
-  @Builder floatingVirtualJoystickBuilder() {
-    Stack() {
-      Stack().width(74).height(74).borderRadius(37)
-        .backgroundColor('rgba(28,30,37,0.78)')
-        .border({ width: 1, color: 'rgba(255,255,255,0.22)' })
-      Stack().width(30).height(30).borderRadius(15)
-        .backgroundColor('rgba(234,242,255,0.90)')
-    }
-    .width(82).height(82)
-    .position({ x: 24, y: Math.max(110, this.surfaceHeight - 116) })
-    .gesture(PanGesture({ fingers: 1, distance: 1 })
-      .onActionStart((_event: GestureEvent): void => {
-        this.virtualJoystickLastX = 0;
-        this.virtualJoystickLastY = 0;
-        this.startVirtualJoystickMotion();
-      })
-      .onActionUpdate((event: GestureEvent): void => {
-        const length: number = Math.sqrt(event.offsetX * event.offsetX + event.offsetY * event.offsetY);
-        const scale: number = length > 30 ? 30 / length : 1;
-        this.virtualJoystickLastX = event.offsetX * scale;
-        this.virtualJoystickLastY = event.offsetY * scale;
-      })
-      .onActionEnd((_event: GestureEvent): void => { this.stopVirtualJoystickMotion(); })
-      .onActionCancel((): void => { this.stopVirtualJoystickMotion(); }))
-    .hitTestBehavior(HitTestMode.Default)
-  }
-
   @Builder controlPanelBuilder() {
     Column() {
       Text('控制面板')
@@ -7245,32 +9016,6 @@ struct RemoteDesktop {
           this.openModifierPanel();
         }, 200);
       })
-      if (this.isTouchpadControlMode()) {
-        Row() {
-          Text('浮动鼠标').fontSize(15).fontColor(this.pal().text).layoutWeight(1)
-          Toggle({ type: ToggleType.Switch, isOn: this.showVirtualMouse })
-            .selectedColor(this.pal().primary)
-            .onChange((enabled: boolean): void => {
-              this.showVirtualMouse = enabled;
-              AppStorage.setOrCreate('showVirtualMouse', enabled);
-            })
-        }
-        .width('100%').height(48).padding({ left: 18, right: 18 })
-        .backgroundColor(this.pal().card).borderRadius(12)
-        .margin({ bottom: 8, left: 24, right: 24 })
-        Row() {
-          Text('浮动摇杆').fontSize(15).fontColor(this.pal().text).layoutWeight(1)
-          Toggle({ type: ToggleType.Switch, isOn: this.showVirtualJoystick })
-            .selectedColor(this.pal().primary)
-            .onChange((enabled: boolean): void => {
-              this.showVirtualJoystick = enabled;
-              AppStorage.setOrCreate('showVirtualJoystick', enabled);
-            })
-        }
-        .width('100%').height(48).padding({ left: 18, right: 18 })
-        .backgroundColor(this.pal().card).borderRadius(12)
-        .margin({ bottom: 12, left: 24, right: 24 })
-      }
       // 文件传输按钮
       Row() {
         SymbolGlyph($r('sys.symbol.doc'))

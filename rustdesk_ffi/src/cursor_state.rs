@@ -89,6 +89,10 @@ impl CursorState {
                 }
             }
         }
+        // RustDesk sends CursorData the first time a shape is seen and does
+        // not have to follow it with CursorId.  The newly decoded shape is
+        // therefore the active shape for this stream.
+        self.selected_id = Some(id);
         true
     }
 
@@ -179,5 +183,17 @@ mod tests {
         assert!(state.current_shape().is_none());
         assert!(state.apply_data(cursor_data(42, 1, 1, 2, 2, vec![9; 16])));
         assert_eq!(state.current_shape().map(|shape| shape.id), Some(42));
+    }
+
+    #[test]
+    fn cursor_data_selects_new_shape_without_followup_id() {
+        let mut state = CursorState::new(4);
+        assert!(state.apply_data(cursor_data(1, 0, 0, 1, 1, vec![1; 4])));
+        assert_eq!(state.current_shape().map(|shape| shape.id), Some(1));
+
+        // The official RustDesk server sends CursorData the first time a new
+        // shape is seen and may not follow it with a separate CursorId.
+        assert!(state.apply_data(cursor_data(2, 0, 0, 1, 1, vec![2; 4])));
+        assert_eq!(state.current_shape().map(|shape| shape.id), Some(2));
     }
 }

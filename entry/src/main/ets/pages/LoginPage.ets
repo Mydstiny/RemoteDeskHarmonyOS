@@ -10,6 +10,11 @@ import { AppConfig, Palette, buildDark, buildLight } from '../common/Theme';
 import { AuthService } from '../services/AuthService';
 import { AccountKitService } from '../services/AccountKitService';
 import { hilog } from '@kit.PerformanceAnalysisKit';
+import {
+  SILENT_LOGIN_TIMEOUT_MS,
+  shouldShowLoginAfterSilentAttempt,
+  silentLoginFallbackMessage
+} from '../services/LoginStartupPolicy';
 
 const PREFS_NAME: string = 'RemoteDesktopAppPrefs';
 const KEY_LOGIN_MODE: string = 'loginMode';
@@ -80,6 +85,7 @@ struct LoginPage {
 
   /** 静默恢复登录 (杀后台后保留登录态, 不弹窗) */
   private async trySilentLogin(): Promise<void> {
+    let restored: boolean = false;
     try {
       // 使用 Authorization 流程 (与 doHuaweiLogin 同一类型),
       // forceAuthorization=false 实现静默恢复
@@ -91,17 +97,35 @@ struct LoginPage {
       request.state = util.generateRandomUUID();
       const controller: authentication.AuthenticationController =
         new authentication.AuthenticationController(getContext(this));
-      const response: authentication.AuthorizationWithHuaweiIDResponse =
-        await controller.executeRequest(request);
-      if (response.data) {
+      const response: authentication.AuthorizationWithHuaweiIDResponse | null = await Promise.race([
+        controller.executeRequest(request),
+        new Promise<null>((resolve: (value: null) => void): void => {
+          setTimeout((): void => { resolve(null); }, SILENT_LOGIN_TIMEOUT_MS);
+        })
+      ]);
+      if (response !== null && response.data) {
         this.onLoginSuccess(response.data, false);
+        restored = true;
         hilog.info(0x0001, 'LoginDebug', '静默登录恢复成功');
+      } else if (response === null) {
+        this.loginError = silentLoginFallbackMessage(0, true);
+        hilog.warn(0x0001, 'LoginDebug', '静默登录超时，显示登录页');
+      } else {
+        hilog.warn(0x0001, 'LoginDebug', '静默登录返回空凭据，显示登录页');
       }
     } catch (err) {
       const be: BusinessError = err as BusinessError;
+      const code: number = be && typeof be.code === 'number' ? be.code : 0;
+      const message: string = be && typeof be.message === 'string' ? be.message : '';
       hilog.info(0x0001, 'LoginDebug',
-        '静默登录失败 code=' + be.code + ', 显示登录页');
-      this.checkingLogin = false;
+        '静默登录失败 code=' + code.toString() + ' msg=' + message + ', 显示登录页');
+      if (code !== 0 && code !== 1001502002) {
+        this.loginError = silentLoginFallbackMessage(code, false);
+      }
+    } finally {
+      // Empty responses and provider errors are normal recovery paths. Never
+      // leave a fresh install behind an infinite full-screen spinner.
+      if (shouldShowLoginAfterSilentAttempt(restored)) { this.checkingLogin = false; }
     }
   }
 

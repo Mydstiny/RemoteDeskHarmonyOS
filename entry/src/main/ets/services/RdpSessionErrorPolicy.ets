@@ -47,6 +47,45 @@ export function normalizeRdpErrorCode(raw: string, fallback: string): string {
 }
 
 function modelForCode(code: string, source: RdpSessionErrorSource): RdpSessionErrorDialogModel {
+  switch (code) {
+    case 'E-RDP-AUTH-CRYPTO-LOCKED':
+      return {
+        title: '无法读取本机凭据',
+        message: '本机凭据存储已锁定，请先解锁后再连接 Restricted Admin 主机。',
+        code,
+        source
+      };
+    case 'E-RDP-AUTH-IDENTITY-MISMATCH':
+      return {
+        title: '需要重新输入 Hash',
+        message: '主机地址、用户名或登录身份模式已改变，请重新输入该主机的 NTLM Hash。',
+        code,
+        source
+      };
+    case 'E-RDP-AUTH-SECRET-REQUIRED':
+      return {
+        title: '缺少 Restricted Admin Hash',
+        message: '本机没有保存该主机的 NTLM Hash，请在主机编辑中重新输入。',
+        code,
+        source
+      };
+    case 'E-RDP-AUTH-HASH':
+      return {
+        title: 'Restricted Admin Hash 无效',
+        message: 'NTLM Hash 无效或无法配置，请确认输入的是该 Windows 账户的 32 位 NTLM Hash。',
+        code,
+        source
+      };
+    case 'E-RDP-AUTH-CONFIG':
+      return {
+        title: 'RDP 认证配置无效',
+        message: 'RDP 认证参数不完整或已过期，请重新选择认证方式后保存。',
+        code,
+        source
+      };
+    default:
+      break;
+  }
   if (source === RdpSessionErrorSource.CONNECT_FAILURE) {
     return {
       title: '你的会话已断开',
@@ -97,8 +136,25 @@ function modelForCode(code: string, source: RdpSessionErrorSource): RdpSessionEr
   }
 }
 
+function extractRdpAuthErrorCode(text: string): string {
+  const codes: string[] = [
+    'E-RDP-AUTH-CRYPTO-LOCKED',
+    'E-RDP-AUTH-IDENTITY-MISMATCH',
+    'E-RDP-AUTH-SECRET-REQUIRED',
+    'E-RDP-AUTH-HASH',
+    'E-RDP-AUTH-CONFIG'
+  ];
+  for (let i = 0; i < codes.length; i++) {
+    if (text.indexOf(codes[i]) >= 0) {
+      return codes[i];
+    }
+  }
+  return '';
+}
+
 export function rdpSessionErrorFromNativeMessage(message: string, fallbackCode: string): RdpSessionErrorDialogModel {
-  const code: string = normalizeRdpErrorCode(extractFirstHexCode(message), fallbackCode);
+  const authCode: string = extractRdpAuthErrorCode(message);
+  const code: string = authCode !== '' ? authCode : normalizeRdpErrorCode(extractFirstHexCode(message), fallbackCode);
   const source: RdpSessionErrorSource = message.indexOf('E-RDP-ERRINFO-0x') >= 0
     ? RdpSessionErrorSource.SERVER_ERROR_INFO
     : RdpSessionErrorSource.CONNECT_FAILURE;

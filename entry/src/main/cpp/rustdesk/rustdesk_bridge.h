@@ -15,14 +15,59 @@
 #define RUSTDESK_BRIDGE_H
 
 #include "extensions/protocol_adapter.h"
+#include <cstdint>
 #include <memory>
+#include <vector>
+
+/** Non-destructive RustDesk stream diagnostics returned to the NAPI layer. */
+struct RustDeskDiagnosticsStats {
+    bool supported = false;
+    uint64_t sessionId = 0;
+    int latencyMs = -1;
+    int targetBitrateKbps = 0;
+    uint64_t videoMessages = 0;
+    uint64_t receivedFrames = 0;
+    uint64_t keyframes = 0;
+    uint64_t receivedBytes = 0;
+    uint64_t audioFrames = 0;
+    uint64_t cadenceGaps = 0;
+    uint64_t maxCadenceGapMs = 0;
+    uint64_t testDelayCount = 0;
+    int codec = -1;
+    int width = 0;
+    int height = 0;
+    int connectionPath = 0; // 0=rendezvous/relay, 1=direct
+    uint64_t lastFrameAtMs = 0;
+    uint64_t presentedFrames = 0;
+    uint64_t presentationWindowSamples = 0;
+    int64_t renderP50Us = 0;
+    int64_t renderP95Us = 0;
+    int64_t renderMaxUs = 0;
+};
+
+struct RustDeskDisplayResolution {
+    int width = 0;
+    int height = 0;
+};
+
+struct RustDeskDisplayCapabilities {
+    bool supported = false;
+    int currentDisplay = 0;
+    int width = 0;
+    int height = 0;
+    int originalWidth = 0;
+    int originalHeight = 0;
+    int scaleMilli = 1000;
+    uint32_t geometryEpoch = 0;
+    std::vector<RustDeskDisplayResolution> resolutions;
+};
 
 // C 兼容连接配置 (与 rustdesk_ffi/src/lib.rs 中的 RustDeskConfig 内存布局一致)
 // 必须保持与 Rust #[repr(C)] 完全对应
 struct RustDeskFfiConfig {
     const char* host;       // 远程主机 IP 或域名
     int         port;       // 端口号 (默认 21116)
-    const char* key;        // Rendezvous 服务器公钥 (可选)
+    const char* key;        // Rendezvous 公钥或共享准入 Key (可选)
     const char* username;   // 用户名 / peer ID
     const char* password;   // 密码
     int         width;      // 期望宽度 (0=auto from profile)
@@ -36,6 +81,7 @@ struct RustDeskFfiConfig {
     int         fps;        // 期望 FPS (0=from profile)
     bool        direct_connection; // 直连模式: false=rendezvous (默认), true=TCP直连peer
     int         auth_mode;  // 0=设备密码, 1=请求被控端点击批准
+    int         key_mode;   // 0=legacy/auto, 1=server public key, 2=shared access key
 };
 
 enum class RustDeskMode {
@@ -62,6 +108,7 @@ public:
     void            disconnect() override;
     ConnectionState getState() override;
     void            setSessionIdentity(uint64_t sessionId) override;
+    RustDeskDiagnosticsStats getDiagnostics() const;
     RemoteCursorSnapshot getRemoteCursorSnapshot(bool includePixels) override;
     void            requestFrameRefresh() override;
     void            reportVideoPressure(int level) override;
@@ -71,6 +118,10 @@ public:
     void sendMouse(int x, int y, MouseButton button, bool pressed) override;
     void sendMouseWheel(int x, int y, int delta) override;
     void sendText(const std::string& text) override;
+    RustDeskDisplayCapabilities getDisplayCapabilities() const;
+    bool changeDisplayResolution(int display, int width, int height);
+    bool sendTouchScale(int scale);
+    bool sendTouchPan(int phase, int x, int y);
     int  sendFileData(const std::string& remotePath, const uint8_t* data, uint32_t len) override;
     SessionTransferStatus getSessionTransferStatus() override;
     void sendClipboardData(const uint8_t* data, uint32_t len);

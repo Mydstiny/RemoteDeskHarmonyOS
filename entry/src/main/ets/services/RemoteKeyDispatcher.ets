@@ -140,9 +140,16 @@ export class RemoteKeyDispatcher {
     }).catch((_err: Error): void => { /* 取消 */ });
   }
 
-  /** 释放所有可能按下的修饰键 + 鼠标键 */
+  /**
+   * Release remote keys, and optionally mouse buttons.
+   *
+   * Keyboard focus transitions are not pointer cancellations: a physical
+   * mouse drag may legitimately move focus away from the hidden keyboard
+   * proxy while its primary button remains held.
+   */
   releaseAllHeldKeys(loader: ExtensionLoader, sessionId: number,
-    toSource: SourceSpaceFn, cursorX: number, cursorY: number): void {
+    toSource: SourceSpaceFn, cursorX: number, cursorY: number,
+    releaseMouseButtons: boolean = true): void {
     try {
       loader.sendKey(sessionId, KEYCODE_CTRL_LEFT, false);
       loader.sendKey(sessionId, KEYCODE_CTRL_RIGHT, false);
@@ -152,11 +159,14 @@ export class RemoteKeyDispatcher {
       loader.sendKey(sessionId, KEYCODE_SHIFT_RIGHT, false);
       loader.sendKey(sessionId, KEYCODE_META_LEFT, false);
       loader.sendKey(sessionId, KEYCODE_META_RIGHT, false);
-      const src: Record<string, number> = toSource(cursorX, cursorY);
-      loader.sendMouse(sessionId, src['x'], src['y'], 0, false);
-      loader.sendMouse(sessionId, src['x'], src['y'], 1, false);
-      loader.sendMouse(sessionId, src['x'], src['y'], 2, false);
-      hilog.info(DOMAIN, TAG, 'release-all-held-keys done');
+      if (releaseMouseButtons) {
+        const src: Record<string, number> = toSource(cursorX, cursorY);
+        loader.sendMouse(sessionId, src['x'], src['y'], 0, false);
+        loader.sendMouse(sessionId, src['x'], src['y'], 1, false);
+        loader.sendMouse(sessionId, src['x'], src['y'], 2, false);
+      }
+      hilog.info(DOMAIN, TAG, 'release-all-held-keys done mouse=' +
+        (releaseMouseButtons ? 'yes' : 'no'));
     } catch (err) {
       hilog.error(DOMAIN, TAG, 'release-all-held-keys failed: ' + JSON.stringify(err));
     }

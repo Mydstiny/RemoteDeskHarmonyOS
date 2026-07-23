@@ -43,9 +43,19 @@ import rustDeskRelaySyncPolicyTest from './RustDeskRelaySyncPolicy.test';
 import hostSyncMergePolicyTest from './HostSyncMergePolicy.test';
 import sshTerminalOrientationPolicyTest from './SshTerminalOrientationPolicy.test';
 import remoteCursorStylePolicyTest from './RemoteCursorStylePolicy.test';
+import remoteCursorMotionPolicyTest from './RemoteCursorMotionPolicy.test';
 import touchpadPointerCurvePolicyTest from './TouchpadPointerCurvePolicy.test';
 import connectionAttemptPolicyTest from './ConnectionAttemptPolicy.test';
 import rustDeskRelayImportServiceTest from './RustDeskRelayImportService.test';
+import hostAddConnectionHandoffPolicyTest from './HostAddConnectionHandoffPolicy.test';
+import remoteCanvasTransformPolicyTest from './RemoteCanvasTransformPolicy.test';
+import remoteResolutionPresetPolicyTest from './RemoteResolutionPresetPolicy.test';
+import dataSnapshotRevisionPolicyTest from './DataSnapshotRevisionPolicy.test';
+import boundedDocumentIoTest from './BoundedDocumentIo.test';
+import sensitiveDataStatePolicyTest from './SensitiveDataStatePolicy.test';
+import sensitiveDataMigrationPolicyTest from './SensitiveDataMigrationPolicy.test';
+import cloudTableAdapterTest from './CloudTableAdapter.test';
+import loginStartupPolicyTest from './LoginStartupPolicy.test';
 
 export default function testsuite() {
   localUnitTest();
@@ -93,7 +103,17 @@ export default function testsuite() {
   hostSyncMergePolicyTest();
   sshTerminalOrientationPolicyTest();
   remoteCursorStylePolicyTest();
+  remoteCursorMotionPolicyTest();
   touchpadPointerCurvePolicyTest();
   connectionAttemptPolicyTest();
   rustDeskRelayImportServiceTest();
+  hostAddConnectionHandoffPolicyTest();
+  remoteCanvasTransformPolicyTest();
+  remoteResolutionPresetPolicyTest();
+  dataSnapshotRevisionPolicyTest();
+  boundedDocumentIoTest();
+  sensitiveDataStatePolicyTest();
+  sensitiveDataMigrationPolicyTest();
+  cloudTableAdapterTest();
+  loginStartupPolicyTest();
 }

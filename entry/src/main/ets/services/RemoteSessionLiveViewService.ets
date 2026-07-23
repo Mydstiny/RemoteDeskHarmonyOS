@@ -1,18 +1,25 @@
 /**
- * RemoteSessionLiveViewService — 远程会话实况窗统一服务
+ * RemoteSessionLiveViewService — 远程会话后台展示统一服务
  *
- * 提供两种实况窗展示策略:
- * - AVSession (audio): 系统自动生成媒体播控胶囊
- * - Notification (LIVE_VIEW): 系统代理创建实况窗通知后更新内容
+ * 提供两种后台展示策略:
+ * - AVSession: 有真实音视频时注册系统媒体身份/播控胶囊
+ * - Notification: 使用系统允许的普通后台通知
+ *
+ * 实际视频帧由 RemoteSessionPipService 承载；AVSession 和正式 Live View
+ * Kit 都不会把远程桌面帧自动绘制到系统胶囊中。
  *
  * 通过 AppStorage key 'liveViewEnabled' / 'liveViewMode' 在运行时切换.
- * 模式: 0=关闭, 1=AVSession, 2=通知实况窗
+ * 模式: 0=关闭, 1=AVSession, 2=后台通知
  */
 import { common } from '@kit.AbilityKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import { LiveViewMode, LiveViewConnectionInfo, LiveViewStrategy, resolveLiveViewMode } from './LiveViewTypes';
+import { LiveViewMode, LiveViewConnectionInfo, LiveViewStrategy } from './LiveViewTypes';
 import { AvSessionLiveViewStrategy } from './AvSessionLiveViewStrategy';
 import { NotificationLiveViewStrategy } from './NotificationLiveViewStrategy';
+import {
+  RemoteSessionLiveViewDelivery,
+  resolveRemoteSessionLiveViewDelivery
+} from './RemoteSessionLiveViewPolicy';
 import {
   RemoteSessionMediaKind,
   resolveRemoteSessionMediaKind,
@@ -46,13 +53,14 @@ export class RemoteSessionLiveViewService {
   /**
    * 连接建立或切后台时调用 — 启实况窗。
    * 根据当前设置的模式自动选择策略。
+   * @returns true only after a strategy has actually started.
    */
   async start(context: common.UIAbilityContext,
-    info: LiveViewConnectionInfo): Promise<void> {
+    info: LiveViewConnectionInfo): Promise<boolean> {
     const enabled: boolean = AppStorage.get<boolean>('liveViewEnabled') ?? true;
     if (!enabled) {
       hilog.info(DOMAIN, TAG, 'liveView disabled, skip start');
-      return;
+      return false;
     }
 
     // 如果已有活跃策略, 先停掉
@@ -62,12 +70,17 @@ export class RemoteSessionLiveViewService {
 
     const normalizedInfo: LiveViewConnectionInfo = this.normalizeInfo(info);
     const mode: number = AppStorage.get<number>('liveViewMode') ?? LiveViewMode.AVSESSION;
-    this.currentMode = resolveLiveViewMode(mode, normalizedInfo.hasAudio,
-      normalizedInfo.hasVideo === true);
+    const delivery: RemoteSessionLiveViewDelivery = resolveRemoteSessionLiveViewDelivery(
+      enabled,
+      mode,
+      normalizedInfo.hasAudio,
+      normalizedInfo.hasVideo === true
+    );
+    this.currentMode = this.liveViewModeForDelivery(delivery);
     this.lastInfo = normalizedInfo;
 
     try {
-      if (this.currentMode === LiveViewMode.AVSESSION) {
+      if (delivery === RemoteSessionLiveViewDelivery.AVSESSION) {
         if (this.avSessionStrategy === null) {
           this.avSessionStrategy = new AvSessionLiveViewStrategy();
         }
@@ -84,7 +97,7 @@ export class RemoteSessionLiveViewService {
           this.currentMode = LiveViewMode.NOTIFICATION;
           this.activeStrategy = this.notificationStrategy;
         }
-      } else if (this.currentMode === LiveViewMode.NOTIFICATION) {
+      } else if (delivery === RemoteSessionLiveViewDelivery.BACKGROUND_NOTIFICATION) {
         if (this.notificationStrategy === null) {
           this.notificationStrategy = new NotificationLiveViewStrategy();
         }
@@ -92,7 +105,8 @@ export class RemoteSessionLiveViewService {
         this.activeStrategy = this.notificationStrategy;
       } else {
         hilog.info(DOMAIN, TAG, 'liveView mode is OFF, skip');
-        return;
+        this.resetState();
+        return false;
       }
 
       this.currentMediaKind = normalizedInfo.mediaKind ?? RemoteSessionMediaKind.NONE;
@@ -101,25 +115,32 @@ export class RemoteSessionLiveViewService {
       hilog.info(DOMAIN, TAG, 'liveView started mode=' + this.currentMode.toString() +
         ' kind=' + this.currentMediaKind.toString() +
         ' protocol=' + normalizedInfo.protocolLabel);
+      return true;
     } catch (err) {
       hilog.warn(DOMAIN, TAG, '[LIVE-VIEW-START] failed mode=' + this.currentMode.toString() +
         ' code=' + JSON.stringify(err));
-      this.activeStrategy = null;
+      this.resetState();
+      return false;
     }
   }
 
   async reconcile(context: common.UIAbilityContext,
-    info: LiveViewConnectionInfo): Promise<void> {
+    info: LiveViewConnectionInfo): Promise<boolean> {
     const enabled: boolean = AppStorage.get<boolean>('liveViewEnabled') ?? true;
     if (!enabled) {
       await this.stop(context);
-      return;
+      return false;
     }
 
     const normalizedInfo: LiveViewConnectionInfo = this.normalizeInfo(info);
     const preferredMode: number = AppStorage.get<number>('liveViewMode') ?? LiveViewMode.AVSESSION;
-    const nextMode: LiveViewMode = resolveLiveViewMode(preferredMode, normalizedInfo.hasAudio,
-      normalizedInfo.hasVideo === true);
+    const nextDelivery: RemoteSessionLiveViewDelivery = resolveRemoteSessionLiveViewDelivery(
+      enabled,
+      preferredMode,
+      normalizedInfo.hasAudio,
+      normalizedInfo.hasVideo === true
+    );
+    const nextMode: LiveViewMode = this.liveViewModeForDelivery(nextDelivery);
     const nextMediaKind: number = normalizedInfo.mediaKind ?? RemoteSessionMediaKind.NONE;
     const modeChanged: boolean = nextMode !== this.currentMode;
     const mediaRestartRequired: boolean = shouldRestartLiveViewForMediaChange(
@@ -132,8 +153,7 @@ export class RemoteSessionLiveViewService {
     const videoChanged: boolean = (normalizedInfo.hasVideo === true) !== this.currentHasVideo;
 
     if (this.activeStrategy === null || modeChanged || mediaRestartRequired) {
-      await this.start(context, normalizedInfo);
-      return;
+      return await this.start(context, normalizedInfo);
     }
 
     if (audioChanged || videoChanged || nextMediaKind !== this.currentMediaKind) {
@@ -142,6 +162,7 @@ export class RemoteSessionLiveViewService {
       this.currentHasVideo = normalizedInfo.hasVideo === true;
     }
     await this.update(normalizedInfo);
+    return this.activeStrategy !== null;
   }
 
   /**
@@ -196,7 +217,7 @@ export class RemoteSessionLiveViewService {
    */
   setMuteCommandCallback(callback: (mute: boolean) => void): void {
     if (this.currentMode === LiveViewMode.AVSESSION &&
-      this.currentMediaKind === RemoteSessionMediaKind.AUDIO &&
+      this.currentHasAudio &&
       this.avSessionStrategy !== null) {
       this.avSessionStrategy.setMuteCommandHandler(callback);
       hilog.info(DOMAIN, TAG, 'mute command callback registered for AVSession strategy');
@@ -205,10 +226,11 @@ export class RemoteSessionLiveViewService {
 
   private normalizeInfo(info: LiveViewConnectionInfo): LiveViewConnectionInfo {
     const hasVideo: boolean = info.hasVideo === true;
-    const mediaKind: number = info.mediaKind ?? resolveRemoteSessionMediaKind({
-      hasAudio: info.hasAudio,
-      hasVideo: hasVideo
-    });
+    const mediaKind: number = hasVideo ? RemoteSessionMediaKind.VIDEO :
+      (info.mediaKind ?? resolveRemoteSessionMediaKind({
+        hasAudio: info.hasAudio,
+        hasVideo: hasVideo
+      }));
     return {
       hostId: info.hostId,
       sessionId: info.sessionId,
@@ -219,5 +241,24 @@ export class RemoteSessionLiveViewService {
       mediaKind: mediaKind,
       connectedAtMs: info.connectedAtMs
     };
+  }
+
+  private liveViewModeForDelivery(delivery: RemoteSessionLiveViewDelivery): LiveViewMode {
+    if (delivery === RemoteSessionLiveViewDelivery.AVSESSION) {
+      return LiveViewMode.AVSESSION;
+    }
+    if (delivery === RemoteSessionLiveViewDelivery.BACKGROUND_NOTIFICATION) {
+      return LiveViewMode.NOTIFICATION;
+    }
+    return LiveViewMode.OFF;
+  }
+
+  private resetState(): void {
+    this.activeStrategy = null;
+    this.lastInfo = null;
+    this.currentMode = LiveViewMode.OFF;
+    this.currentMediaKind = RemoteSessionMediaKind.NONE;
+    this.currentHasAudio = false;
+    this.currentHasVideo = false;
   }
 }

@@ -21,6 +21,66 @@ export interface CloudSyncRetryRecord {
   nextRetryAt: number;
 }
 
+export type CloudSyncFailureKind =
+  'none' | 'version_conflict' | 'empty_snapshot' | 'tombstone_cleanup' |
+  'cloud_service' | 'network' | 'unknown';
+
+/** Classify native/RDB messages before they reach retry and UI policy. */
+export function classifyCloudSyncFailure(message: string): CloudSyncFailureKind {
+  const normalized: string = (message || '').toUpperCase();
+  if (normalized.indexOf('VERSION_CONFLICT') >= 0 ||
+    normalized.indexOf('VERSION CONFLICT') >= 0) {
+    return 'version_conflict';
+  }
+  if (normalized.indexOf('EMPTY_CLOUD_SNAPSHOT') >= 0) { return 'empty_snapshot'; }
+  if (normalized.indexOf('TOMBSTONE_CLEANUP') >= 0 ||
+    normalized.indexOf('CLEAN_DIRTY_DATA') >= 0) {
+    return 'tombstone_cleanup';
+  }
+  if (normalized.indexOf('NETWORK') >= 0 || normalized.indexOf('TIMEOUT') >= 0 ||
+    normalized.indexOf('OFFLINE') >= 0) {
+    return 'network';
+  }
+  if (normalized.indexOf('CLOUD') >= 0 || normalized.indexOf('SERVICE') >= 0 ||
+    normalized.indexOf('148000') >= 0 || normalized.indexOf('801') >= 0) {
+    return 'cloud_service';
+  }
+  return 'unknown';
+}
+
+/** A suspicious empty result must never replace existing local startup data. */
+export function shouldRejectAutomaticEmptyCloudSnapshot(
+  source: string, direction: CloudSyncDirection, beforeVisibleRows: number, afterVisibleRows: number
+): boolean {
+  return direction === 'cloudFirst' &&
+    (source === 'startup' || source === 'foreground' || source === 'cloudEvent') &&
+    beforeVisibleRows > 0 && afterVisibleRows === 0;
+}
+
+/** These failures must stop native-first retries until the user resolves them. */
+export function shouldBlockAutomaticRetry(kind: CloudSyncFailureKind): boolean {
+  return kind === 'version_conflict' || kind === 'empty_snapshot' || kind === 'tombstone_cleanup';
+}
+
+export function cloudSyncFailureMessage(kind: CloudSyncFailureKind): string {
+  if (kind === 'version_conflict') {
+    return '云端版本冲突，已停止自动重试，未继续覆盖本地数据。请先下载并确认云端数据，再重新上传。';
+  }
+  if (kind === 'empty_snapshot') {
+    return '检测到云端返回空快照，已保留本地数据，本次同步未应用。请确认华为账号和云空间后重试。';
+  }
+  if (kind === 'tombstone_cleanup') {
+    return '云端删除记录清理未完成，已暂停自动同步。请检查网络后重试。';
+  }
+  if (kind === 'cloud_service') {
+    return '华为云空间当前不可用，请确认账号、云空间服务和系统云同步开关。';
+  }
+  if (kind === 'network') {
+    return '云同步未完成，请检查网络后重试。';
+  }
+  return '云同步未完成，数据未确认全部同步，请稍后重试。';
+}
+
 /** The originating business table identifies one automatic retry stream. */
 export function automaticRetryKey(record: CloudSyncRetryRecord): string {
   for (let i = record.tables.length - 1; i >= 0; i--) {

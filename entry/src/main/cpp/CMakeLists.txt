@@ -33,6 +33,7 @@ set(PROTOCOL_SOURCES
     rdp/freerdp_adapter.cpp
     rdp/rdp_audio_policy.cpp
     rdp/rdp_auth_identity_policy.cpp
+    rdp/rdp_auth_mode_policy.cpp
     rdp/rdp_background_frame_cache.cpp
     rdp/rdp_damage_accumulator.cpp
     rdp/rdp_frame_scheduler.cpp
@@ -153,6 +154,7 @@ if(RDP_BUILD_TESTS)
         test/rdp_graphics_lifecycle_test.cpp
         test/rdp_certificate_policy_test.cpp
         test/rdp_auth_identity_policy_test.cpp
+        test/rdp_auth_mode_policy_test.cpp
         test/rdp_performance_policy_test.cpp
         test/transfer_runtime_status_test.cpp
         test/rdp_input_queue_test.cpp
@@ -160,11 +162,15 @@ if(RDP_BUILD_TESTS)
         test/gl_surface_lifecycle_policy_test.cpp
         test/native_image_context_policy_test.cpp
         test/decoder_recovery_policy_test.cpp
+        test/software_decoder_callback_gate_test.cpp
+        test/decoder_callback_gate_test.cpp
+        test/decoder_pipeline_lifecycle_policy_test.cpp
         test/safe_log_test.cpp
         common/safe_log.cpp
         input/remote_cursor_snapshot.cpp
         rdp/rdp_audio_policy.cpp
         rdp/rdp_auth_identity_policy.cpp
+        rdp/rdp_auth_mode_policy.cpp
         rdp/rdp_background_frame_cache.cpp
         rdp/rdp_damage_accumulator.cpp
         rdp/rdp_frame_scheduler.cpp

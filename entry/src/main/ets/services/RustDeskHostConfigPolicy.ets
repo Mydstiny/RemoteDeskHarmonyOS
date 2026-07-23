@@ -2,6 +2,7 @@
  * RustDeskHostConfigPolicy — RustDesk host add/edit pure rules
  */
 import { RustDeskRelayConfig } from '../model/RustDeskRelayConfig';
+import { RustDeskRelayKeyMode, resolveRustDeskRelayKey } from './RustDeskRelayKeyPolicy';
 
 export interface RustDeskHostEndpoint {
   host: string;
@@ -17,32 +18,28 @@ export interface RustDeskConnectionCheckInput {
   relayHost: string;
   relayPort: number;
   relayKey: string;
+  relayKeyMode?: RustDeskRelayKeyMode;
   proManaged: boolean;
 }
 
 export const RUSTDESK_ID_SERVER_PORT: number = 21116;
 export const RUSTDESK_PEER_TCP_PORT: number = 21118;
 
-const RUSTDESK_SERVER_KEY_PATTERN: RegExp = /^[A-Za-z0-9+/]{43}=$/;
-
 /**
- * Validate the same wire invariant as the Rust FFI: a configured rendezvous
- * key is the standard Base64 encoding of one 32-byte public key. Empty is
- * valid for ordinary OSS/default-key connections. A `1:` value is a local
- * DataCrypto ciphertext and must never be passed to hbbs as licence_key.
+ * Validate a configured rendezvous credential.  Standard Ed25519 public
+ * keys retain their strict 32-byte Base64 invariant; explicit/legacy shared
+ * access keys are sent to hbbs/hbbr as the exact `licence_key` text.
  */
-export function rustDeskServerKeyError(value: string, required: boolean = false): string {
-  const key: string = value.trim();
-  if (key.length === 0) {
-    return required ? 'Server Pro 中继缺少服务器密钥' : '';
-  }
-  if (key.startsWith('1:')) {
+export function rustDeskServerKeyError(value: string, required: boolean = false,
+  mode: RustDeskRelayKeyMode = 'auto'): string {
+  // This compatibility wrapper is used on persisted connection records. A
+  // legacy auto `1:` value can therefore still mean locked DataCrypto state.
+  // Import/manual-entry flows call resolveRustDeskRelayKey directly, allowing
+  // an administrator's literal shared `1:` Key.
+  if (mode !== 'shared_access_key' && value.trimStart().startsWith('1:')) {
     return 'RustDesk 中继服务器密钥已加密且当前未解锁，请先解锁数据';
   }
-  if (!RUSTDESK_SERVER_KEY_PATTERN.test(key)) {
-    return 'RustDesk 中继服务器密钥格式无效，应为 32 字节 Base64 公钥';
-  }
-  return '';
+  return resolveRustDeskRelayKey(value, mode, required).error;
 }
 
 /**
@@ -72,7 +69,8 @@ export function rustDeskConnectionError(input: RustDeskConnectionCheckInput): st
   if (input.relayPort <= 0 || input.relayPort > 65535) {
     return 'RustDesk 中继 ID 服务器端口无效';
   }
-  const serverKeyError: string = rustDeskServerKeyError(input.relayKey, input.proManaged);
+  const serverKeyError: string = rustDeskServerKeyError(input.relayKey, input.proManaged,
+    input.relayKeyMode ?? 'auto');
   if (serverKeyError !== '') {
     return serverKeyError;
   }

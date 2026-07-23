@@ -5,7 +5,12 @@
  */
 
 import { describe, beforeAll, beforeEach, afterEach, afterAll, it, expect } from '@ohos/hypium';
-import { RemoteHost, LockType } from '../main/ets/model/RemoteHost';
+import {
+  RemoteHost,
+  LockType,
+  normalizeRdpCredentialParts,
+  normalizeRdpNtlmHash
+} from '../main/ets/model/RemoteHost';
 import { UserAccount } from '../main/ets/model/UserAccount';
 
 export default function localUnitTest() {
@@ -68,6 +73,73 @@ export default function localUnitTest() {
 
     it('RDP_default_port_should_be_3389', 0, () => {
       expect(RemoteHost.getDefaultPort('rdp')).assertEqual(3389);
+    });
+
+    it('RDP_blank_password_should_allow_an_explicit_empty_password', 0, () => {
+      const host = new RemoteHost();
+      host.label = 'BlankPasswordPc';
+      host.protocol = 'rdp';
+      host.host = '192.0.2.10';
+      host.username = '.\\localuser';
+      host.rdpAuthMode = 'blank_password';
+
+      expect(host.getValidationErrors().length).assertEqual(0);
+      expect(host.isValid()).assertTrue();
+    });
+
+    it('RDP_restricted_admin_should_clear_ordinary_credentials', 0, () => {
+      const host = new RemoteHost();
+      host.protocol = 'rdp';
+      host.rdpAuthMode = 'restricted_admin';
+      host.password = 'must-not-survive';
+      host.rdpCredentialId = 'credential-1';
+
+      host.normalizeRdpAuthentication();
+
+      expect(host.password).assertEqual('');
+      expect(host.rdpCredentialId).assertEqual('');
+    });
+
+    it('RDP_legacy_json_should_default_to_password_mode', 0, () => {
+      const host = new RemoteHost();
+      host.protocol = 'rdp';
+      const json = host.toJSON();
+      json.rdpAuthMode = undefined;
+      json.rdpRestrictedAdminSecretSource = undefined;
+
+      const restored = RemoteHost.fromJSON(json);
+
+      expect(restored.rdpAuthMode).assertEqual('password');
+      expect(restored.rdpRestrictedAdminSecretSource).assertEqual('ntlm_hash');
+    });
+
+    it('RDP_legacy_empty_password_hash_should_require_a_real_hash', 0, () => {
+      const host = new RemoteHost();
+      host.protocol = 'rdp';
+      host.rdpAuthMode = 'restricted_admin';
+      const json = host.toJSON();
+      json.rdpRestrictedAdminSecretSource = 'empty_password_hash';
+
+      const restored = RemoteHost.fromJSON(json);
+
+      expect(restored.rdpAuthMode).assertEqual('restricted_admin');
+      expect(restored.rdpRestrictedAdminSecretSource).assertEqual('ntlm_hash');
+    });
+
+    it('RDP_effective_identity_should_match_native_domain_normalization', 0, () => {
+      const microsoft = normalizeRdpCredentialParts('user@example.com', 1);
+      expect(microsoft.username).assertEqual('user@example.com');
+      expect(microsoft.domain).assertEqual('MicrosoftAccount');
+
+      const azure = normalizeRdpCredentialParts('.\\AzureAD\\user@example.com', 3);
+      expect(azure.username).assertEqual('AzureAD\\user@example.com');
+      expect(azure.domain).assertEqual('.');
+    });
+
+    it('RDP_NTLM_hash_should_normalize_only_32_hex_characters', 0, () => {
+      expect(normalizeRdpNtlmHash(' 0123456789abcdef0123456789abcdef '))
+        .assertEqual('0123456789ABCDEF0123456789ABCDEF');
+      expect(normalizeRdpNtlmHash('not-a-hash')).assertEqual('');
     });
 
     it('RustDesk_default_port_should_be_21116', 0, () => {

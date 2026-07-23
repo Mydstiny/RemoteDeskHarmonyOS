@@ -14,6 +14,10 @@ import {
   SshHostKeyInfo,
   RdpCertificateInfo,
   RdpRenderStats,
+  RendererViewport,
+  RustDeskDisplayCapabilities,
+  RustDeskDiagnosticsSnapshot,
+  LocalResourceStats,
   RemoteCursorSnapshot,
   SessionTransferStatus
 } from '../types/rdpnapi';
@@ -38,6 +42,7 @@ export class ExtensionLoader {
   private decoderHandle: number = -1;
   private audioPlayerHandle: number = -1;
   private teardownRequestId: number = 0;
+  private diagnosticsLastErrorAtMs: number = 0;
 
   static getInstance(): ExtensionLoader {
     if (!ExtensionLoader.instance) { ExtensionLoader.instance = new ExtensionLoader(); }
@@ -249,6 +254,48 @@ export class ExtensionLoader {
     }
   }
 
+  getRustDeskDiagnostics(sessionId: number): RustDeskDiagnosticsSnapshot {
+    try {
+      return rdpnapi.getRustDeskDiagnostics(sessionId) as RustDeskDiagnosticsSnapshot;
+    } catch (err) {
+      const nowMs: number = Date.now();
+      if (nowMs - this.diagnosticsLastErrorAtMs >= 5000) {
+        this.diagnosticsLastErrorAtMs = nowMs;
+        hilog.warn(DOMAIN, TAG, '[ExtensionLoader] getRustDeskDiagnostics unavailable: ' + JSON.stringify(err));
+      }
+      return {
+        supported: false, sessionActive: false, protocolSnapshotAvailable: false,
+        videoSeen: false, receivedRateAvailable: false, presentedRateAvailable: false,
+        decodeRateAvailable: false, sessionId, latencyMs: -1, targetBitrateKbps: 0,
+        videoMessages: 0, receivedFrames: 0, keyframes: 0, receivedBytes: 0,
+        audioFrames: 0, cadenceGaps: 0, maxCadenceGapMs: 0, testDelayCount: 0,
+        receivedFps: 0, displayFps: 0, decodeFps: 0, bitrateKbps: 0,
+        codec: -1, width: 0, height: 0, connectionPath: 'unknown', lastFrameAtMs: 0,
+        lastFrameAgeMs: -1,
+        decodeOk: 0, decodeErrors: 0, decodeP50Us: 0, decodeP95Us: 0, decodeMaxUs: 0,
+        presentedFrames: 0, presentationWindowSamples: 0, presentationWindowMs: 0,
+        renderP50Us: 0, renderP95Us: 0, renderMaxUs: 0,
+        queueDepth: 0, queueMax: 0, droppedFrames: 0, decoderBackend: 'unknown'
+      };
+    }
+  }
+
+  getLocalResourceStats(includePro: boolean = true): LocalResourceStats {
+    try {
+      return rdpnapi.getLocalResourceStats(includePro) as LocalResourceStats;
+    } catch (err) {
+      const nowMs: number = Date.now();
+      if (nowMs - this.diagnosticsLastErrorAtMs >= 5000) {
+        this.diagnosticsLastErrorAtMs = nowMs;
+        hilog.warn(DOMAIN, TAG, '[ExtensionLoader] getLocalResourceStats unavailable: ' + JSON.stringify(err));
+      }
+      return {
+        supported: false, cpuAvailable: false, cpuPercent: -1, memoryBytes: 0,
+        memoryAvailable: false, gpuAvailable: false, gpuPercent: -1, sampledAtMs: 0
+      };
+    }
+  }
+
   // ====== 渲染管线 ======
 
   initRenderer(xcId: string, w: number, h: number): number {
@@ -266,6 +313,25 @@ export class ExtensionLoader {
       hilog.error(DOMAIN, TAG, '[ExtensionLoader] destroyRenderer: ' + JSON.stringify(err));
     }
     this.rendererHandle = -1;
+  }
+
+  /**
+   * Destroy a renderer owned by an older surface transfer without changing
+   * the current loader handle. This is required when a stale PIP callback
+   * arrives after a foreground renderer has already been installed.
+   */
+  destroyRendererHandle(handle: number): void {
+    if (handle <= 0) {
+      return;
+    }
+    try {
+      rdpnapi.destroyRenderer(handle);
+      if (this.rendererHandle === handle) {
+        this.rendererHandle = -1;
+      }
+    } catch (err) {
+      hilog.error(DOMAIN, TAG, '[ExtensionLoader] destroyRendererHandle: ' + JSON.stringify(err));
+    }
   }
 
   initDecoder(w: number, h: number, c: number): number {
@@ -361,9 +427,66 @@ export class ExtensionLoader {
     }
   }
 
-  getRendererViewport(handle: number): Record<string, number> | null {
+  getRustDeskDisplayCapabilities(sessionId: number): RustDeskDisplayCapabilities {
     try {
-      return rdpnapi.getRendererViewport(handle) as Record<string, number> | null;
+      return rdpnapi.getRustDeskDisplayCapabilities(sessionId) as RustDeskDisplayCapabilities;
+    } catch (err) {
+      hilog.warn(DOMAIN, TAG,
+        '[ExtensionLoader] getRustDeskDisplayCapabilities unavailable: ' + JSON.stringify(err));
+      return {
+        supported: false,
+        currentDisplay: 0,
+        width: 0,
+        height: 0,
+        originalWidth: 0,
+        originalHeight: 0,
+        scaleMilli: 1000,
+        geometryEpoch: 0,
+        resolutions: []
+      };
+    }
+  }
+
+  changeRustDeskDisplayResolution(sessionId: number, display: number, width: number,
+    height: number): boolean {
+    try {
+      return rdpnapi.changeRustDeskDisplayResolution(sessionId, display, width, height) as boolean;
+    } catch (err) {
+      hilog.warn(DOMAIN, TAG,
+        '[ExtensionLoader] changeRustDeskDisplayResolution unavailable: ' + JSON.stringify(err));
+      return false;
+    }
+  }
+
+  sendRustDeskTouchScale(sessionId: number, scale: number): boolean {
+    try {
+      return rdpnapi.sendRustDeskTouchScale(sessionId, scale) as boolean;
+    } catch (err) {
+      hilog.warn(DOMAIN, TAG, '[ExtensionLoader] sendRustDeskTouchScale unavailable: ' + JSON.stringify(err));
+      return false;
+    }
+  }
+
+  sendRustDeskTouchPan(sessionId: number, phase: number, x: number, y: number): boolean {
+    try {
+      return rdpnapi.sendRustDeskTouchPan(sessionId, phase, x, y) as boolean;
+    } catch (err) {
+      hilog.warn(DOMAIN, TAG, '[ExtensionLoader] sendRustDeskTouchPan unavailable: ' + JSON.stringify(err));
+      return false;
+    }
+  }
+
+  setRendererCanvasTransform(handle: number, scale: number, panX: number, panY: number): void {
+    try {
+      rdpnapi.setRendererCanvasTransform(handle, scale, panX, panY);
+    } catch (err) {
+      hilog.error(DOMAIN, TAG, '[ExtensionLoader] setRendererCanvasTransform: ' + JSON.stringify(err));
+    }
+  }
+
+  getRendererViewport(handle: number): RendererViewport | null {
+    try {
+      return rdpnapi.getRendererViewport(handle);
     } catch (err) {
       hilog.error(DOMAIN, TAG, '[ExtensionLoader] getRendererViewport: ' + JSON.stringify(err));
       return null;
@@ -633,6 +756,16 @@ export class ExtensionLoader {
       return rdpnapi.getRemoteCursorSnapshot(sessionId, includePixels) as RemoteCursorSnapshot;
     } catch (err) {
       hilog.error(DOMAIN, TAG, '[ExtensionLoader] getRemoteCursorSnapshot: ' + JSON.stringify(err));
+      return null;
+    }
+  }
+
+  async getRemoteCursorSnapshotPixelsAsync(sessionId: number): Promise<RemoteCursorSnapshot | null> {
+    try {
+      return await rdpnapi.getRemoteCursorSnapshotPixelsAsync(sessionId) as RemoteCursorSnapshot;
+    } catch (err) {
+      hilog.warn(DOMAIN, TAG, '[ExtensionLoader] getRemoteCursorSnapshotPixelsAsync: ' +
+        JSON.stringify(err));
       return null;
     }
   }

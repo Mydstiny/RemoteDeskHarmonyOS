@@ -7,11 +7,15 @@ import {
   cloudDistributedTableAutoSync,
   cloudSyncProgressFinished,
   cloudSyncProgressSucceeded,
+  classifyCloudSyncFailure,
+  cloudSyncFailureMessage,
   coalesceAutomaticPush,
   nextCloudSyncRetryDelayMs,
   retryTablesStillSelected,
   snapshotCloudSyncTables,
   shouldReplayAutomaticPush,
+  shouldBlockAutomaticRetry,
+  shouldRejectAutomaticEmptyCloudSnapshot,
   upsertAutomaticRetryRecord
 } from '../main/ets/services/CloudSyncCoordinatorPolicy';
 import { executeCloudSyncRequest } from '../main/ets/services/CloudSyncCoordinator';
@@ -49,6 +53,20 @@ export default function cloudSyncCoordinatorPolicyTest(): void {
       expect(cloudSyncProgressSucceeded(2, 0)).assertTrue();
       expect(cloudSyncProgressSucceeded(1, 0)).assertFalse();
       expect(cloudSyncProgressSucceeded(2, 2)).assertFalse();
+    });
+
+    it('rejects_a_suspicious_empty_startup_snapshot_without_blocking_explicit_download', 0, (): void => {
+      expect(shouldRejectAutomaticEmptyCloudSnapshot('startup', 'cloudFirst', 11, 0)).assertTrue();
+      expect(shouldRejectAutomaticEmptyCloudSnapshot('foreground', 'cloudFirst', 1, 0)).assertTrue();
+      expect(shouldRejectAutomaticEmptyCloudSnapshot('manualDownload', 'cloudFirst', 11, 0)).assertFalse();
+      expect(shouldRejectAutomaticEmptyCloudSnapshot('startup', 'cloudFirst', 0, 0)).assertFalse();
+    });
+
+    it('classifies_version_conflict_and_pauses_automatic_retries', 0, (): void => {
+      expect(classifyCloudSyncFailure('code=0 msg=VERSION_CONFLICT')).assertEqual('version_conflict');
+      expect(shouldBlockAutomaticRetry('version_conflict')).assertTrue();
+      expect(shouldBlockAutomaticRetry('network')).assertFalse();
+      expect(cloudSyncFailureMessage('version_conflict')).assertContain('版本冲突');
     });
 
     it('uses_bounded_retry_delays', 0, (): void => {
@@ -107,6 +125,22 @@ export default function cloudSyncCoordinatorPolicyTest(): void {
       expect(result.ok).assertFalse();
       expect(result.failedTables[0]).assertEqual('sshkeys');
       expect(rolledBack).assertTrue();
+    });
+
+    it('propagates_the_executor_failure_kind_to_retry_policy', 0, async (): Promise<void> => {
+      const result = await executeCloudSyncRequest(
+        { source: 'automaticPush', direction: 'nativeFirst', tables: ['remotehosts'] },
+        async (): Promise<boolean> => false,
+        {
+          beginManualDownload: (): boolean => true,
+          rollbackManualDownload: async (): Promise<boolean> => true,
+          completeManualDownload: (): void => {},
+          setRestorePending: (_pending: boolean): void => {},
+          failureKindForTable: (_table: string): 'version_conflict' => 'version_conflict'
+        },
+        (_tables: string[]): void => {}
+      );
+      expect(result.failureKind).assertEqual('version_conflict');
     });
 
     it('retains_the_business_table_when_crypto_precondition_fails', 0, async (): Promise<void> => {

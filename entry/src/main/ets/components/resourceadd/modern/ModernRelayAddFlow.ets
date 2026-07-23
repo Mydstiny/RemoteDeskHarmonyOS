@@ -8,7 +8,7 @@ import { VncRelayConfigService } from '../../../services/VncRelayConfigService';
 import { Palette, buildDark, buildLight, AppTheme } from '../../../common/Theme';
 import { ResourceFabPicker } from '../ResourceFabPicker';
 import { RustDeskRelayImportService, RustDeskRelayImportResult } from '../../../services/RustDeskRelayImportService';
-import { rustDeskServerKeyError } from '../../../services/RustDeskHostConfigPolicy';
+import { RustDeskRelayKeyMode, resolveRustDeskRelayKey } from '../../../services/RustDeskRelayKeyPolicy';
 import { RustDeskRelayConfigPasteSheet } from './RustDeskRelayConfigPasteSheet';
 
 @Component
@@ -27,6 +27,7 @@ export struct ModernRelayAddFlow {
   @State relayPort: number = 21117;
   @State apiServer: string = '';
   @State serverKey: string = '';
+  @State serverKeyMode: RustDeskRelayKeyMode = 'server_public_key';
   @State proServer: string = '';
   @State proUser: string = '';
   @State proPassword: string = '';
@@ -54,7 +55,8 @@ export struct ModernRelayAddFlow {
   private reset(): void {
     this.step = 'protocol'; this.errorText = ''; this.savedRelayId = '';
     this.idServer = ''; this.idPort = 21116; this.relayServer = ''; this.relayPort = 21117;
-    this.apiServer = ''; this.serverKey = ''; this.proServer = ''; this.proUser = ''; this.proPassword = '';
+    this.apiServer = ''; this.serverKey = ''; this.serverKeyMode = 'server_public_key';
+    this.proServer = ''; this.proUser = ''; this.proPassword = '';
     this.proBusy = false; this.vncName = ''; this.vncHost = ''; this.vncPort = 5901; this.vncTargetId = '';
     this.importedFileName = ''; this.importBusy = false;
   }
@@ -74,18 +76,21 @@ export struct ModernRelayAddFlow {
   }
 
   private saveRustDesk(): string {
-    if (this.idServer.trim().length === 0 || this.relayServer.trim().length === 0) {
-      this.errorText = 'ID 服务器和 Relay 服务器不能为空'; return this.errorText;
+    if (this.idServer.trim().length === 0) {
+      this.errorText = 'ID 服务器不能为空'; return this.errorText;
     }
     if (!this.validPort(this.idPort) || !this.validPort(this.relayPort)) {
       this.errorText = '服务器端口必须在 1–65535 之间'; return this.errorText;
     }
-    const keyError: string = rustDeskServerKeyError(this.serverKey, false);
-    if (keyError !== '') { this.errorText = keyError; return this.errorText; }
+    const key = resolveRustDeskRelayKey(this.serverKey, this.serverKeyMode, false);
+    if (!key.ok) { this.errorText = key.error; return this.errorText; }
     const relay = new RustDeskRelayConfig(); relay.id = RustDeskRelayConfig.generateId();
     relay.idServer = this.idServer.trim(); relay.idServerPort = this.idPort;
-    relay.relayServer = this.relayServer.trim(); relay.relayPort = this.relayPort;
-    relay.apiServer = this.apiServer.trim(); relay.key = this.serverKey.trim();
+    // RustDesk permits the relay endpoint to be omitted; use the ID endpoint
+    // locally so the rest of the model never needs a fake duplicate entry.
+    relay.relayServer = this.relayServer.trim() === '' ? relay.idServer : this.relayServer.trim();
+    relay.relayPort = this.relayPort;
+    relay.apiServer = this.apiServer.trim(); relay.key = key.value; relay.keyMode = key.mode;
     if (!this.hosts.addRelay(relay)) { this.errorText = '中继服务器保存失败'; return this.errorText; }
     this.savedRelayId = relay.id; this.proServer = relay.apiServer; this.step = 'saved'; this.errorText = '';
     this.onSaved(relay.id);
@@ -96,12 +101,14 @@ export struct ModernRelayAddFlow {
     this.idServer = result.idServer; this.idPort = result.idServerPort;
     this.relayServer = result.relayServer; this.relayPort = result.relayPort;
     this.apiServer = result.apiServer; this.serverKey = result.key;
+    this.serverKeyMode = resolveRustDeskRelayKey(result.key, 'auto', false).mode;
     this.importedFileName = result.fileName;
   }
 
   private importAndSavePastedRustDesk(result: RustDeskRelayImportResult): string {
     this.applyRustDeskImport(result);
-    return this.saveRustDesk();
+    this.step = 'rustdesk';
+    return '';
   }
 
   private async importRustDeskConfig(): Promise<void> {
@@ -211,8 +218,25 @@ export struct ModernRelayAddFlow {
           (value: string): void => { this.relayPort = this.port(value, 21117); })
         this.field('Server Pro API 地址（可选）', 'http://pro.example.com:21114', this.apiServer,
           (value: string): void => { this.apiServer = value; })
-        this.field('服务器 Key（可选）', '公钥或 Key', this.serverKey,
-          (value: string): void => { this.serverKey = value; })
+        Text('服务器 Key（可选）').fontSize(12).fontColor(this.pal().text2).fontFamily(this.font()).margin({ bottom: 5 })
+        Row() {
+          Button('服务器公钥').layoutWeight(1).height(32).borderRadius(8)
+            .backgroundColor(this.serverKeyMode === 'server_public_key' ? this.accentColor : this.pal().surface)
+            .fontColor(this.serverKeyMode === 'server_public_key' ? Color.White : this.pal().text2)
+            .onClick((): void => { this.serverKeyMode = 'server_public_key'; })
+          Button('自定义共享 Key').layoutWeight(1).height(32).borderRadius(8).margin({ left: 8 })
+            .backgroundColor(this.serverKeyMode === 'shared_access_key' ? this.accentColor : this.pal().surface)
+            .fontColor(this.serverKeyMode === 'shared_access_key' ? Color.White : this.pal().text2)
+            .onClick((): void => { this.serverKeyMode = 'shared_access_key'; })
+        }.width('100%').margin({ bottom: 7 })
+        this.field(this.serverKeyMode === 'shared_access_key' ? '共享 Key（原样发送）' : '服务器公钥',
+          this.serverKeyMode === 'shared_access_key' ? '与 hbbs/hbbr -k 完全一致' : 'Base64 32 字节 Ed25519 公钥',
+          this.serverKey, (value: string): void => { this.serverKey = value; },
+          this.serverKeyMode === 'shared_access_key')
+        Text(this.serverKeyMode === 'shared_access_key' ?
+          '不会删除空格或 =；此模式只验证同一共享值，不能验证服务器身份。' :
+          '留空将使用 RustDesk 默认公钥；公钥复制残留空白会自动规范化。')
+          .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font()).width('100%').margin({ bottom: 11 })
         this.error()
         Button('保存').width('100%').height(42).borderRadius(10).backgroundColor(this.accentColor)
           .fontColor(Color.White).onClick((): void => { this.saveRustDesk(); })

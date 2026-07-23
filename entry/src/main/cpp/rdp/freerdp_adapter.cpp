@@ -14,6 +14,7 @@
 #include "common/safe_log.h"
 #include "rdp_audio_policy.h"
 #include "rdp_auth_identity_policy.h"
+#include "rdp_auth_mode_policy.h"
 #include "rdp_background_frame_cache.h"
 #include "rdp_certificate_policy.h"
 #include "rdp_frame_pump.h"
@@ -63,6 +64,34 @@ namespace {
 constexpr int kDefaultRdpPort = 3389;
 constexpr int kRdpCertFlagUntrustedRoot = 0x01;
 constexpr int kRdpCertFlagHostMismatch = 0x02;
+
+void secureClearString(std::string& value) {
+    if (!value.empty()) {
+        volatile char* data = value.data();
+        for (size_t index = 0; index < value.size(); ++index) {
+            data[index] = '\0';
+        }
+    }
+    value.clear();
+}
+
+#ifdef USE_REAL_FREERDP
+void secureClearFreeRdpPasswordHash(rdpSettings* settings) {
+    if (!settings || !settings->PasswordHash) {
+        return;
+    }
+    volatile char* data = settings->PasswordHash;
+    const size_t length = std::strlen(settings->PasswordHash);
+    for (size_t index = 0; index < length; ++index) {
+        data[index] = '\0';
+    }
+    // Let FreeRDP replace and release its settings-owned copy only after the
+    // buffer has been overwritten.  Keep the field empty for reconnects after
+    // the instance is being torn down; while a live session is active the hash
+    // remains available to FreeRDP's own reconnect path.
+    freerdp_settings_set_string(settings, FreeRDP_PasswordHash, "");
+}
+#endif
 
 std::string sha256FingerprintFromCert(X509* cert) {
     if (!cert) {
@@ -352,7 +381,9 @@ RdpCertificateInfo probeRdpCertificateOverTls(const std::string& host, int port,
 #include <freerdp/gdi/gdi.h>
 #include <freerdp/event.h>
 #include <freerdp/input.h>
+#include <freerdp/locale/locale.h>
 #include <freerdp/settings_types.h>
+#include <winpr/input.h>
 #include <winpr/wtypes.h>
 #include <winpr/thread.h>
 #include <pthread.h>
@@ -375,6 +406,25 @@ extern "C" UINT freerdp_ohos_rdpdr_register_drive(rdpContext* context, const cha
 
 static const char* safeFreeRdpString(const char* value, const char* fallback) {
     return value ? value : fallback;
+}
+
+static UINT32 resolveRdpKeyboardLayoutFromSystemLocale() {
+    // Match FreeRDP's desktop clients: use the controller's current locale as
+    // the advertised Windows layout, then use US only as a deterministic last
+    // resort. Leaving this as zero makes the server guess and can desynchronize
+    // physical scan codes from the active remote IME.
+    DWORD layout = 0;
+    const int detectResult = freerdp_detect_keyboard_layout_from_system_locale(&layout);
+    if (detectResult != 0 || layout == 0) {
+        static constexpr UINT32 kEnglishUnitedStatesLayout = 0x00000409;
+        OH_LOG_WARN(LOG_APP,
+                    "[RDP] keyboard layout detection failed result=%{public}d; using US fallback=0x%{public}08x",
+                    detectResult, kEnglishUnitedStatesLayout);
+        return kEnglishUnitedStatesLayout;
+    }
+    OH_LOG_INFO(LOG_APP, "[RDP] keyboard layout detected from system locale=0x%{public}08x",
+                static_cast<UINT32>(layout));
+    return static_cast<UINT32>(layout);
 }
 
 static std::string sanitizeRdpDriveName(const std::string& name) {
@@ -555,9 +605,9 @@ struct FreeRdpAdapter::Impl {
     std::condition_variable inputQueueCv;
     std::thread             inputQueueThread;
     RdpInputQueue           inputQueue;
-    uint64_t                inputQueueGeneration = 0;
-    bool                    inputQueueRunning = false;
-    bool                    inputQueueStop = false;
+    std::atomic<uint64_t>   inputQueueGeneration {0};
+    std::atomic<bool>       inputQueueRunning {false};
+    std::atomic<bool>       inputQueueStop {false};
     std::atomic<bool>       connecting {false};
     std::atomic<bool>       connectThreadStarted {false};
     std::atomic<bool>       driveThreadStarted {false};
@@ -594,19 +644,32 @@ struct FreeRdpAdapter::Impl {
             static_cast<unsigned long long>(threadId));
     }
 
+    bool isInputQueueWorkerCurrent(uint64_t workerGeneration) const {
+        return inputQueueRunning.load(std::memory_order_acquire) &&
+            !inputQueueStop.load(std::memory_order_acquire) &&
+            workerGeneration == inputQueueGeneration.load(std::memory_order_acquire);
+    }
+
     void sendQueuedInputEvent(FreeRdpAdapter* owner, const RdpQueuedInputEvent& event,
                               uint64_t workerGeneration) {
-        std::lock_guard<std::mutex> queueLock(inputQueueMutex);
-        if (!inputQueueRunning || inputQueueStop || workerGeneration != inputQueueGeneration) {
+        if (!isInputQueueWorkerCurrent(workerGeneration)) {
             return;
         }
         std::lock_guard<std::mutex> lock(instanceMutex);
-        if (!owner || !owner->instance_ || !owner->instance_->input) {
+        // Do not hold inputQueueMutex while FreeRDP can block on transport I/O.
+        // stopInputQueueWorker invalidates this generation before joining, so
+        // this second check prevents a stale worker from dispatching after it
+        // has waited for instanceMutex.
+        if (!isInputQueueWorkerCurrent(workerGeneration) || !owner || !owner->instance_ ||
+            !owner->instance_->input) {
             return;
         }
         switch (event.type) {
             case RdpInputEventType::Key:
                 freerdp_input_send_keyboard_event(owner->instance_->input, event.flags, event.code);
+                break;
+            case RdpInputEventType::Pause:
+                freerdp_input_send_keyboard_pause_event(owner->instance_->input);
                 break;
             case RdpInputEventType::TextBatch:
                 DispatchTextBatch(event.text, KBD_FLAGS_RELEASE,
@@ -629,9 +692,9 @@ struct FreeRdpAdapter::Impl {
             {
                 std::unique_lock<std::mutex> lock(inputQueueMutex);
                 inputQueueCv.wait(lock, [this]() {
-                    return inputQueueStop || inputQueue.depth() > 0;
+                    return inputQueueStop.load(std::memory_order_acquire) || inputQueue.depth() > 0;
                 });
-                if (inputQueueStop || workerGeneration != inputQueueGeneration) {
+                if (!isInputQueueWorkerCurrent(workerGeneration)) {
                     break;
                 }
                 if (!inputQueue.pop(event)) {
@@ -644,24 +707,24 @@ struct FreeRdpAdapter::Impl {
 
     void startInputQueueWorker(FreeRdpAdapter* owner) {
         std::lock_guard<std::mutex> lock(inputQueueMutex);
-        if (inputQueueRunning) {
+        if (inputQueueRunning.load(std::memory_order_acquire)) {
             return;
         }
-        inputQueueStop = false;
+        inputQueueStop.store(false, std::memory_order_release);
         inputQueue.clear();
         inputQueue.resetMetrics();
-        ++inputQueueGeneration;
-        const uint64_t workerGeneration = inputQueueGeneration;
-        inputQueueRunning = true;
+        const uint64_t workerGeneration =
+            inputQueueGeneration.fetch_add(1, std::memory_order_acq_rel) + 1;
+        inputQueueRunning.store(true, std::memory_order_release);
         try {
             inputQueueThread = std::thread([this, owner, workerGeneration]() {
                 inputQueueWorkerLoop(owner, workerGeneration);
             });
         } catch (const std::exception& e) {
-            inputQueueRunning = false;
+            inputQueueRunning.store(false, std::memory_order_release);
             OH_LOG_WARN(LOG_APP, "[RDP] input queue worker start failed: %{public}s", e.what());
         } catch (...) {
-            inputQueueRunning = false;
+            inputQueueRunning.store(false, std::memory_order_release);
             OH_LOG_WARN(LOG_APP, "[RDP] input queue worker start failed: unknown");
         }
     }
@@ -669,11 +732,11 @@ struct FreeRdpAdapter::Impl {
     void stopInputQueueWorker() {
         {
             std::lock_guard<std::mutex> lock(inputQueueMutex);
-            if (!inputQueueRunning) {
+            if (!inputQueueRunning.load(std::memory_order_acquire)) {
                 return;
             }
-            inputQueueStop = true;
-            ++inputQueueGeneration;
+            inputQueueStop.store(true, std::memory_order_release);
+            inputQueueGeneration.fetch_add(1, std::memory_order_acq_rel);
             inputQueue.clear();
         }
         inputQueueCv.notify_all();
@@ -682,8 +745,8 @@ struct FreeRdpAdapter::Impl {
         }
         {
             std::lock_guard<std::mutex> lock(inputQueueMutex);
-            inputQueueRunning = false;
-            inputQueueStop = false;
+            inputQueueRunning.store(false, std::memory_order_release);
+            inputQueueStop.store(false, std::memory_order_release);
             inputQueue.clear();
         }
     }
@@ -691,7 +754,8 @@ struct FreeRdpAdapter::Impl {
     void enqueueInputEvent(RdpQueuedInputEvent event) {
         {
             std::lock_guard<std::mutex> lock(inputQueueMutex);
-            if (!inputQueueRunning || inputQueueStop) {
+            if (!inputQueueRunning.load(std::memory_order_acquire) ||
+                inputQueueStop.load(std::memory_order_acquire)) {
                 return;
             }
             inputQueue.enqueue(std::move(event));
@@ -702,12 +766,13 @@ struct FreeRdpAdapter::Impl {
     void enqueueMouseButtonWithMove(UINT16 moveFlags, UINT16 buttonFlags, UINT16 x, UINT16 y) {
         {
             std::lock_guard<std::mutex> lock(inputQueueMutex);
-            if (!inputQueueRunning || inputQueueStop) {
+            if (!inputQueueRunning.load(std::memory_order_acquire) ||
+                inputQueueStop.load(std::memory_order_acquire)) {
                 return;
             }
-            // The paired move is non-disposable so a following button event
-            // cannot purge it before the worker dispatches the click target.
-            inputQueue.enqueue(RdpQueuedInputEvent::Mouse(moveFlags, 0, x, y, false));
+            // The queue materializes this latest move before the button event,
+            // preserving click/drag targets while coalescing prior movement.
+            inputQueue.enqueue(RdpQueuedInputEvent::Mouse(moveFlags, 0, x, y, true));
             inputQueue.enqueue(RdpQueuedInputEvent::Mouse(buttonFlags, 0, x, y, false));
         }
         inputQueueCv.notify_one();
@@ -1416,8 +1481,11 @@ BOOL FreeRdpAdapter::cbPointerSetDefault(rdpContext* context) {
     if (!ctx || !ctx->adapter) {
         return FALSE;
     }
-    ctx->adapter->impl_->cursorStore.setVisible(true);
-    return TRUE;
+    const bool accepted = ctx->adapter->impl_->cursorStore.setDefaultShape();
+    if (accepted) {
+        ctx->adapter->impl_->cursorStore.setVisible(true);
+    }
+    return accepted ? TRUE : FALSE;
 }
 
 // ---- GDI BeginPaint/EndPaint — 首帧上屏 (BGRA raw → GLRenderer) ----
@@ -1943,6 +2011,7 @@ void FreeRdpAdapter::disconnectActiveInstance() {
 }
 
 void FreeRdpAdapter::cleanupInstance() {
+    secureClearString(impl_->config.rdpRestrictedAdminHash);
     impl_->presentationEnabled.store(false, std::memory_order_release);
     RendererNapi::InvalidateActivePresentation();
     impl_->framePump.invalidatePending();
@@ -1961,6 +2030,7 @@ void FreeRdpAdapter::cleanupInstance() {
         return;
     }
     impl_->traceShutdown("context-free", "begin");
+    secureClearFreeRdpPasswordHash(doomedInstance->settings);
     if (impl_->gdiInitialized.exchange(false, std::memory_order_acq_rel) &&
         doomedInstance->context && doomedInstance->context->gdi) {
         gdi_free(doomedInstance);
@@ -1980,6 +2050,8 @@ FreeRdpAdapter::FreeRdpAdapter() : impl_(std::make_unique<Impl>()) {
 
 void FreeRdpAdapter::setSessionIdentity(uint64_t sessionId) {
     impl_->cursorStore.reset(sessionId, "rdp");
+    impl_->cursorStore.setDefaultShape();
+    impl_->cursorStore.setVisible(true);
 }
 
 RemoteCursorSnapshot FreeRdpAdapter::getRemoteCursorSnapshot(bool includePixels) {
@@ -2032,6 +2104,7 @@ int FreeRdpAdapter::connect(const ConnectionConfig& cfg) {
         }, this);
     if (rc != 0) {
         impl_->connecting = false;
+        secureClearString(impl_->config.rdpRestrictedAdminHash);
         impl_->setState(ConnectionState::ERROR, "pthread_create() failed [E-RDP-THREAD]");
         return -11;
     }
@@ -2046,6 +2119,7 @@ void FreeRdpAdapter::connectThreadFunc() {
 
     freerdp* newInstance = freerdp_new();
     if (!newInstance) {
+        secureClearString(impl_->config.rdpRestrictedAdminHash);
         impl_->setState(ConnectionState::ERROR, "freerdp_new() 失败 [E-FREERDP-NEW]");
         impl_->connecting = false;
         return;
@@ -2086,8 +2160,45 @@ void FreeRdpAdapter::connectThreadFunc() {
                 authIdentity.modeName.c_str());
     freerdp_settings_set_string(s, FreeRDP_ServerHostname, cfg.host.c_str());
     freerdp_settings_set_uint32(s, FreeRDP_ServerPort, static_cast<UINT32>(port));
+    const bool restrictedAdmin = cfg.rdpAuthMode == RdpAuthenticationMode::RestrictedAdmin;
+    const bool blankPassword = cfg.rdpAuthMode == RdpAuthenticationMode::BlankPassword;
+    const char* authModeName = restrictedAdmin ? "restricted_admin" :
+        (blankPassword ? "blank_password" : "password");
+    const char* restrictedAdminSecretSource = "ntlm_hash";
+    RdpAuthenticationPolicy authPolicy = ParseRdpAuthenticationPolicy(
+        authModeName, restrictedAdminSecretSource, cfg.rdpRestrictedAdminHash);
+    if (!authPolicy.valid) {
+        secureClearString(cfg.rdpRestrictedAdminHash);
+        secureClearString(authPolicy.normalizedNtlmHash);
+        impl_->setState(ConnectionState::ERROR,
+                        restrictedAdmin ? "Restricted Admin NTLM Hash 无效 [E-RDP-AUTH-HASH]" :
+                            "RDP 认证配置无效 [E-RDP-AUTH-CONFIG]");
+        cleanupInstance();
+        impl_->connecting = false;
+        return;
+    }
+    std::string restrictedAdminHash = authPolicy.normalizedNtlmHash;
+    const size_t restrictedAdminHashLength = restrictedAdminHash.length();
+    secureClearString(authPolicy.normalizedNtlmHash);
+    // The adapter only needs the normalized local copy while configuring the
+    // FreeRDP instance.  Do not retain the ArkTS/NAPI copy in ConnectionConfig.
+    secureClearString(cfg.rdpRestrictedAdminHash);
     freerdp_settings_set_string(s, FreeRDP_Username, effectiveUsername.c_str());
-    freerdp_settings_set_string(s, FreeRDP_Password, cfg.password.c_str());
+    freerdp_settings_set_string(s, FreeRDP_Password,
+                                (restrictedAdmin || blankPassword) ? "" : cfg.password.c_str());
+    if (restrictedAdmin) {
+        if (!freerdp_settings_set_string(s, FreeRDP_PasswordHash, restrictedAdminHash.c_str())) {
+            secureClearString(restrictedAdminHash);
+            impl_->setState(ConnectionState::ERROR,
+                            "RDP Restricted Admin Hash 配置失败 [E-RDP-AUTH-HASH]");
+            cleanupInstance();
+            impl_->connecting = false;
+            return;
+        }
+    } else {
+        freerdp_settings_set_string(s, FreeRDP_PasswordHash, "");
+    }
+    secureClearString(restrictedAdminHash);
     if (!effectiveDomain.empty()) {
         freerdp_settings_set_string(s, FreeRDP_Domain, effectiveDomain.c_str());
     }
@@ -2102,6 +2213,26 @@ void FreeRdpAdapter::connectThreadFunc() {
     // pointer.SetPosition when mouse grabbing is enabled.  The ArkTS cursor
     // overlay consumes the callback; it does not change the system pointer.
     freerdp_settings_set_bool(s, FreeRDP_GrabMouse, TRUE);
+
+    // Input capability set: advertise an enhanced keyboard and a concrete
+    // layout before the RDP handshake. Scan-code input then follows the same
+    // controller layout used by the remote Windows IME instead of server-side
+    // guessing from an all-zero KeyboardLayout.
+    const UINT32 keyboardLayout = resolveRdpKeyboardLayoutFromSystemLocale();
+    if (!freerdp_settings_set_uint32(s, FreeRDP_KeyboardType,
+                                     WINPR_KBD_TYPE_IBM_ENHANCED) ||
+        !freerdp_settings_set_uint32(s, FreeRDP_KeyboardSubType, 0) ||
+        !freerdp_settings_set_uint32(s, FreeRDP_KeyboardFunctionKey, 24) ||
+        !freerdp_settings_set_uint32(s, FreeRDP_KeyboardLayout, keyboardLayout)) {
+        impl_->setState(ConnectionState::ERROR,
+                        "RDP keyboard capability configuration failed [E-RDP-KBD-CAPS]");
+        cleanupInstance();
+        impl_->connecting = false;
+        return;
+    }
+    OH_LOG_INFO(LOG_APP,
+                "[RDP] keyboard capabilities type=%{public}u subtype=0 functionKeys=24 layout=0x%{public}08x",
+                static_cast<UINT32>(WINPR_KBD_TYPE_IBM_ENHANCED), keyboardLayout);
 
     // 色深 — 使用 cfg 值, 不再硬编码 32
     freerdp_settings_set_uint32(s, FreeRDP_ColorDepth,
@@ -2122,10 +2253,13 @@ void FreeRdpAdapter::connectThreadFunc() {
     freerdp_settings_set_uint32(s, FreeRDP_TcpConnectTimeout, 30000);
     // HarmonyOS 侧没有可用的 Kerberos/U2U 凭据缓存，NLA/CredSSP 只允许 NTLM，避免 Negotiate 第二轮返回 SEC_E_NO_CREDENTIALS。
     freerdp_settings_set_string(s, FreeRDP_AuthenticationPackageList, "ntlm");
-    freerdp_settings_set_bool(s, FreeRDP_ConsoleSession, FALSE);
+    // Match FreeRDP's official /restricted-admin path: it pairs the
+    // console-session request with RestrictedAdminModeRequired.  /pth uses
+    // the same combination in the upstream command-line client.
+    freerdp_settings_set_bool(s, FreeRDP_ConsoleSession, restrictedAdmin ? TRUE : FALSE);
     freerdp_settings_set_bool(s, FreeRDP_RemoteCredentialGuard, FALSE);
-    freerdp_settings_set_bool(s, FreeRDP_RestrictedAdminModeRequired, FALSE);
-    freerdp_settings_set_bool(s, FreeRDP_RestrictedAdminModeSupported, FALSE);
+    freerdp_settings_set_bool(s, FreeRDP_RestrictedAdminModeRequired, restrictedAdmin ? TRUE : FALSE);
+    freerdp_settings_set_bool(s, FreeRDP_RestrictedAdminModeSupported, restrictedAdmin ? TRUE : FALSE);
     freerdp_settings_set_bool(s, FreeRDP_SupportErrorInfoPdu, TRUE);
     const RdpPerformancePolicy::GraphicsMode graphicsMode = applyRdpPerformanceSettings(s);
     {
@@ -2206,18 +2340,21 @@ void FreeRdpAdapter::connectThreadFunc() {
     const std::string logDomain = effectiveDomain.empty() ? "无" : SafeLog::MaskUser(effectiveDomain);
     const std::string logDrivePath = driveEnabled ? SafeLog::HashForLog(cfg.rdDrivePath) : "off";
     OH_LOG_INFO(LOG_APP, "[RDP] 连接参数: %{public}s:%{public}d %{public}dx%{public}d color=%{public}d"
-                " gateway=%{public}s targetName=%{public}s authMode=%{public}d user=%{public}s domain=%{public}s"
+                " gateway=%{public}s targetName=%{public}s authIdentityMode=%{public}d rdpAuthMode=%{public}s restrictedSource=%{public}s user=%{public}s domain=%{public}s"
                 " audio=%{public}s driveName=%{public}s drivePathId=%{public}s"
-                " passwordLen=%{public}zu encrypted=%{public}s",
+                " passwordLen=%{public}zu restrictedHashLen=%{public}zu encrypted=%{public}s",
                 logHost.c_str(), port, cfg.width, cfg.height, cfg.colorDepth,
                 logGatewayHost.c_str(),
                 logTargetName.c_str(),
                 cfg.rdpAuthIdentityMode,
+                authModeName,
+                restrictedAdminSecretSource,
                 logUser.c_str(), logDomain.c_str(),
                 cfg.rdAudioEnabled ? "on" : "off",
                 driveEnabled ? driveName.c_str() : "off",
                 logDrivePath.c_str(),
-                cfg.password.length(), cfg.password.rfind("1:", 0) == 0 ? "true" : "false");
+                cfg.password.length(), restrictedAdminHashLength,
+                cfg.password.rfind("1:", 0) == 0 ? "true" : "false");
     const char* authPackageList = freerdp_settings_get_string(s, FreeRDP_AuthenticationPackageList);
     OH_LOG_INFO(LOG_APP, "[RDP] security: negotiate=%{public}s nla=%{public}s tls=%{public}s rdp=%{public}s"
                 " ext=%{public}s aad=%{public}s auth=%{public}s autologon=%{public}s admin=%{public}s"
@@ -2564,6 +2701,15 @@ void FreeRdpAdapter::sendKey(uint32_t scancode, bool pressed) {
     if (!impl_) {
         return;
     }
+    if (isHarmonyPauseKeyCode(scancode)) {
+        // FreeRDP emits the required atomic Ctrl+NumLock-compatible Pause
+        // sequence. There is intentionally no corresponding key-up event.
+        if (pressed) {
+            impl_->enqueueInputEvent(RdpQueuedInputEvent::Pause());
+            OH_LOG_DEBUG(LOG_APP, "[RDP] queued special Pause/Break event");
+        }
+        return;
+    }
     // 将 HarmonyOS keyCode 映射到 Windows RDP scancode
     uint32_t rdpScancode = mapHarmonyKeyCodeToRdpScancode(scancode);
     if (rdpScancode == 0) {
@@ -2881,6 +3027,8 @@ FreeRdpAdapter::FreeRdpAdapter() : impl_(std::make_unique<Impl>()) {
 
 void FreeRdpAdapter::setSessionIdentity(uint64_t sessionId) {
     impl_->cursorStore.reset(sessionId, "rdp");
+    impl_->cursorStore.setDefaultShape();
+    impl_->cursorStore.setVisible(true);
 }
 
 RemoteCursorSnapshot FreeRdpAdapter::getRemoteCursorSnapshot(bool includePixels) {

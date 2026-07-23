@@ -2,7 +2,7 @@ import { Palette, buildDark, buildLight } from '../../common/Theme';
 import { RemoteHost } from '../../model/RemoteHost';
 import { RustDeskRelayConfig } from '../../model/RustDeskRelayConfig';
 import { DiscoveredRustDeskPeer } from '../../services/RustDeskLanDiscoveryService';
-import { rustDeskServerKeyError } from '../../services/RustDeskHostConfigPolicy';
+import { RustDeskRelayKeyMode, resolveRustDeskRelayKey } from '../../services/RustDeskRelayKeyPolicy';
 
 @Component
 export struct RustDeskAddFlow {
@@ -36,6 +36,7 @@ export struct RustDeskAddFlow {
   @State relayServerPortText: string = '21117';
   @State relayApiServer: string = '';
   @State relayKey: string = '';
+  @State relayKeyMode: RustDeskRelayKeyMode = 'server_public_key';
 
   aboutToAppear(): void { this.directPortText = this.defaultDirectPort.toString(); }
   private pal(): Palette { return this.theme === 'light' ? buildLight(this.accentColor) : buildDark(this.accentColor); }
@@ -69,8 +70,8 @@ export struct RustDeskAddFlow {
   }
 
   private saveRelay(): void {
-    if (this.relayIdServer.trim() === '' || this.relayServer.trim() === '') {
-      this.errorText = 'ID 服务器和中继服务器不能为空'; return;
+    if (this.relayIdServer.trim() === '') {
+      this.errorText = 'ID 服务器不能为空'; return;
     }
     const idServerPort: number = parseInt(this.relayIdServerPortText);
     const relayPort: number = parseInt(this.relayServerPortText);
@@ -78,16 +79,17 @@ export struct RustDeskAddFlow {
       isNaN(relayPort) || relayPort <= 0 || relayPort > 65535) {
       this.errorText = '服务器端口必须在 1-65535 之间'; return;
     }
-    const keyError: string = rustDeskServerKeyError(this.relayKey, false);
-    if (keyError !== '') { this.errorText = keyError; return; }
+    const key = resolveRustDeskRelayKey(this.relayKey, this.relayKeyMode, false);
+    if (!key.ok) { this.errorText = key.error; return; }
     const relay = new RustDeskRelayConfig();
     relay.id = RustDeskRelayConfig.generateId();
     relay.idServer = this.relayIdServer.trim();
     relay.idServerPort = idServerPort;
-    relay.relayServer = this.relayServer.trim();
+    relay.relayServer = this.relayServer.trim() === '' ? relay.idServer : this.relayServer.trim();
     relay.relayPort = relayPort;
     relay.apiServer = this.relayApiServer.trim();
-    relay.key = this.relayKey.trim();
+    relay.key = key.value;
+    relay.keyMode = key.mode;
     relay.updatedAt = Date.now();
     if (!this.onAddRelay(relay)) { this.errorText = '保存中继服务器失败'; return; }
     this.relayId = relay.id;
@@ -151,8 +153,23 @@ export struct RustDeskAddFlow {
               (v: string): void => { this.relayServerPortText = v; })
             this.field('API 地址（可选）', this.relayApiServer, 'https://api.example.com',
               (v: string): void => { this.relayApiServer = v; })
-            this.field('服务器密钥（Pro 必填）', this.relayKey, '可选，粘贴 hbbs 公钥',
-              (v: string): void => { this.relayKey = v; })
+            Text('服务器 Key（可选）').fontSize(12).fontColor(this.pal().text2).margin({ bottom: 5 })
+            Row() {
+              Button('服务器公钥').layoutWeight(1).height(32).borderRadius(8)
+                .backgroundColor(this.relayKeyMode === 'server_public_key' ? this.accentColor : this.pal().surface)
+                .fontColor(this.relayKeyMode === 'server_public_key' ? Color.White : this.pal().text2)
+                .onClick((): void => { this.relayKeyMode = 'server_public_key'; })
+              Button('自定义共享 Key').layoutWeight(1).height(32).borderRadius(8).margin({ left: 8 })
+                .backgroundColor(this.relayKeyMode === 'shared_access_key' ? this.accentColor : this.pal().surface)
+                .fontColor(this.relayKeyMode === 'shared_access_key' ? Color.White : this.pal().text2)
+                .onClick((): void => { this.relayKeyMode = 'shared_access_key'; })
+            }.width('100%').margin({ bottom: 7 })
+            this.field(this.relayKeyMode === 'shared_access_key' ? '共享 Key（原样发送）' : '服务器公钥', this.relayKey,
+              this.relayKeyMode === 'shared_access_key' ? '与 hbbs/hbbr -k 完全一致' : 'Base64 32 字节 Ed25519 公钥',
+              (v: string): void => { this.relayKey = v; }, this.relayKeyMode === 'shared_access_key')
+            Text(this.relayKeyMode === 'shared_access_key' ?
+              '不会删除空格或 =；此模式不能验证服务器身份。' : '留空将使用 RustDesk 默认公钥。')
+              .fontSize(10).fontColor(this.pal().text3).width('100%').margin({ top: -5, bottom: 10 })
             Row() {
               Button('取消').layoutWeight(1).height(38).borderRadius(10).backgroundColor(this.pal().surface)
                 .fontColor(this.pal().text2).onClick((): void => { this.addingRelay = false; })

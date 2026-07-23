@@ -1,17 +1,12 @@
 /**
- * NotificationLiveViewStrategy — 使用系统实况窗通知实现灵动岛
+ * NotificationLiveViewStrategy — 远程会话普通后台通知策略
  *
- * 原理:
- * - 复用 FileTransferLiveTaskService 的模式: SlotType.LIVE_VIEW + SYSTEM_LIVE_VIEW 内容
- * - 尝试直接发布系统实况窗通知 (无需额外后台任务, 复用已有的 multiDeviceConnection 保活)
- * - 如果实况窗发布失败 (三方应用无系统代理), 自动降级为增强型普通通知
- *
- * 注意:
- * - 发布实况窗需要系统代理创建初始通知. 如果直接 publish 失败, 降级到普通通知.
- * - 不使用 dataTransfer 后台任务, 避免与 RemoteSessionBackgroundTaskService 冲突.
- * - 使用独立的 notification ID (605100 基值), 与文件传输 (604200) 和会话保活 (605000) 隔离.
+ * API 23 不允许第三方应用直接创建 SYSTEM_LIVE_VIEW/LIVE_VIEW 通知；
+ * 系统代理必须先创建同 ID 的实况窗，第三方应用只能更新它。远程连接
+ * 没有系统代理，因此这里直接使用系统允许的 SERVICE_INFORMATION 普通通知。
+ * 不使用 dataTransfer 后台任务伪造实况窗，远程连接仍由 multiDeviceConnection 保活。
  */
-import { common, wantAgent, WantAgent } from '@kit.AbilityKit';
+import { common } from '@kit.AbilityKit';
 import { notificationManager } from '@kit.NotificationKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
@@ -23,8 +18,7 @@ const NOTIFY_BASE_ID = 605100;
 
 export class NotificationLiveViewStrategy implements LiveViewStrategy {
   private notificationId: number = 0;
-  private liveViewActive: boolean = false;
-  private fallbackActive: boolean = false;
+  private notificationActive: boolean = false;
   private connectedAtMs: number = 0;
   private updateTimer: number = -1;
   private lastInfo: LiveViewConnectionInfo | null = null;
@@ -35,12 +29,7 @@ export class NotificationLiveViewStrategy implements LiveViewStrategy {
     this.connectedAtMs = info.connectedAtMs;
     this.notificationId = NOTIFY_BASE_ID + (info.sessionId % 100);
 
-    // 尝试发布实况窗通知
-    const liveOk: boolean = await this.tryPublishLiveView(info);
-    if (!liveOk) {
-      // 降级: 发布增强型普通通知 (无灵动岛但通知栏可见)
-      await this.tryPublishFallback(info);
-    }
+    await this.publishNotification(info);
 
     // 启动定时更新 (每 60 秒更新连接时长)
     this.startPeriodicUpdate();
@@ -48,10 +37,8 @@ export class NotificationLiveViewStrategy implements LiveViewStrategy {
 
   async update(info: LiveViewConnectionInfo): Promise<void> {
     this.lastInfo = info;
-    if (this.liveViewActive) {
-      await this.tryPublishLiveView(info);
-    } else if (this.fallbackActive) {
-      await this.tryPublishFallback(info);
+    if (this.notificationActive) {
+      await this.publishNotification(info);
     }
   }
 
@@ -65,8 +52,7 @@ export class NotificationLiveViewStrategy implements LiveViewStrategy {
         // 取消失败不影响
       }
     }
-    this.liveViewActive = false;
-    this.fallbackActive = false;
+    this.notificationActive = false;
     this.notificationId = 0;
     this.lastInfo = null;
   }
@@ -90,64 +76,8 @@ export class NotificationLiveViewStrategy implements LiveViewStrategy {
     return secs.toString() + 's';
   }
 
-  /**
-   * 尝试发布系统实况窗通知 (灵动岛胶囊)。
-   * 如果系统代理未创建初始通知, 此调用会失败, 返回 false。
-   */
-  private async tryPublishLiveView(info: LiveViewConnectionInfo): Promise<boolean> {
-    if (this.notificationId <= 0) {
-      return false;
-    }
-
-    try {
-      const title: string = info.protocolLabel + ' 远程连接';
-      const durationText: string = this.getDurationText();
-      const text: string = info.hostAddress +
-        (durationText.length > 0 ? ' · ' + durationText : '') +
-        (info.hasAudio ? ' · 含音频' : '');
-
-      const request: notificationManager.NotificationRequest = {
-        content: {
-          notificationContentType:
-            notificationManager.ContentType.NOTIFICATION_CONTENT_SYSTEM_LIVE_VIEW,
-          systemLiveView: {
-            typeCode: 9, // 自定义业务类型码: 远程连接
-            title: title,
-            text: text,
-            // 计时: 正计时显示连接时长
-            time: {
-              initialTime: this.connectedAtMs,
-              isCountDown: false,
-              isPaused: false,
-              isInTitle: false
-            }
-          }
-        },
-        id: this.notificationId,
-        notificationSlotType: notificationManager.SlotType.LIVE_VIEW,
-        tapDismissed: false,
-        isAlertOnce: true
-      };
-
-      await notificationManager.publish(request);
-      this.liveViewActive = true;
-      this.fallbackActive = false;
-      hilog.info(DOMAIN, TAG, 'live view notification published id=' +
-        this.notificationId.toString());
-      return true;
-    } catch (err) {
-      const be: BusinessError = err as BusinessError;
-      hilog.warn(DOMAIN, TAG, '[LIVE-VIEW-PUBLISH] live view rejected code=' +
-        be.code.toString() + ' message=' + be.message +
-        ' — 可能缺少系统代理, 降级到普通通知');
-      return false;
-    }
-  }
-
-  /**
-   * 降级: 发布增强型普通通知 (通知栏可见但无灵动岛胶囊)。
-   */
-  private async tryPublishFallback(info: LiveViewConnectionInfo): Promise<void> {
+  /** 发布系统允许第三方直接创建的普通后台通知。 */
+  private async publishNotification(info: LiveViewConnectionInfo): Promise<void> {
     if (this.notificationId <= 0) {
       return;
     }
@@ -161,8 +91,7 @@ export class NotificationLiveViewStrategy implements LiveViewStrategy {
 
       const request: notificationManager.NotificationRequest = {
         content: {
-          notificationContentType:
-            notificationManager.ContentType.NOTIFICATION_CONTENT_BASIC_TEXT,
+          notificationContentType: notificationManager.ContentType.NOTIFICATION_CONTENT_BASIC_TEXT,
           normal: {
             title: title,
             text: text,
@@ -176,14 +105,16 @@ export class NotificationLiveViewStrategy implements LiveViewStrategy {
       };
 
       await notificationManager.publish(request);
-      this.liveViewActive = false;
-      this.fallbackActive = true;
-      hilog.info(DOMAIN, TAG, 'fallback notification published id=' +
+      this.notificationActive = true;
+      hilog.info(DOMAIN, TAG, 'background notification published id=' +
         this.notificationId.toString());
     } catch (err) {
       const be: BusinessError = err as BusinessError;
-      hilog.warn(DOMAIN, TAG, '[FALLBACK-PUBLISH] failed code=' +
-        be.code.toString() + ' message=' + be.message);
+      const code: string = be.code === undefined ? 'unknown' : be.code.toString();
+      const message: string = be.message === undefined ? JSON.stringify(err) : be.message;
+      hilog.warn(DOMAIN, TAG, '[BACKGROUND-NOTIFICATION-PUBLISH] failed code=' +
+        code + ' message=' + message);
+      throw new Error(message);
     }
   }
 
@@ -191,12 +122,11 @@ export class NotificationLiveViewStrategy implements LiveViewStrategy {
     this.stopPeriodicUpdate();
     // 每 60 秒更新一次通知内容 (更新连接时长文本)
     this.updateTimer = setInterval((): void => {
-      if ((this.liveViewActive || this.fallbackActive) && this.lastInfo !== null) {
-        if (this.liveViewActive) {
-          this.tryPublishLiveView(this.lastInfo);
-        } else {
-          this.tryPublishFallback(this.lastInfo);
-        }
+      if (this.notificationActive && this.lastInfo !== null) {
+        this.publishNotification(this.lastInfo).catch((err: Error): void => {
+          hilog.warn(DOMAIN, TAG, '[BACKGROUND-NOTIFICATION-UPDATE] failed: ' +
+            (err.message ? err.message : JSON.stringify(err)));
+        });
       }
     }, 60000);
   }

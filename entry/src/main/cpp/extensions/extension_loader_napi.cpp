@@ -9,6 +9,7 @@
 #include "protocol_adapter.h"
 #include "session_teardown_executor.h"
 #include "rdp/freerdp_adapter.h"
+#include "rdp/rdp_auth_mode_policy.h"
 #include "ssh/ssh_adapter.h"
 #include "ssh/ssh_key_tool.h"
 #include "audio/input_handler.h"
@@ -18,6 +19,7 @@
 #include "render/gl_renderer.h"
 #include "render/video_perf_counters.h"
 #include "video/video_activity_state.h"
+#include "rustdesk/rustdesk_bridge.h"
 #include <napi/native_api.h>
 #include <hilog/log.h>
 #include <map>
@@ -29,10 +31,14 @@
 #include <atomic>
 #include <chrono>
 #include <cstring>
+#include <deque>
 #include <exception>
+#include <fstream>
 #include <new>
+#include <sstream>
 #include <stdexcept>
 #include <vector>
+#include <unistd.h>
 
 #ifdef RUSTDESK_USE_REAL_CORE
 extern "C" {
@@ -55,12 +61,127 @@ namespace ExtensionLoaderNapi {
     napi_value Init(napi_env env, napi_value exports);
 }
 
+namespace {
+
+void secureClearString(std::string& value) {
+    if (!value.empty()) {
+        volatile char* data = value.data();
+        for (size_t index = 0; index < value.size(); ++index) {
+            data[index] = '\0';
+        }
+    }
+    value.clear();
+}
+
+} // namespace
+
 // ============================================================
 // 全局状态
 // ============================================================
 
 // 当前活跃连接
 static std::shared_ptr<ProtocolAdapter> g_activeConnection = nullptr;
+
+struct SessionDiagnosticsCounters {
+    std::atomic<uint64_t> ingressFrames {0};
+    std::atomic<uint64_t> ingressBytes {0};
+    std::atomic<uint64_t> keyframes {0};
+    std::atomic<uint64_t> decodeOk {0};
+    std::atomic<uint64_t> decodeErrors {0};
+    std::atomic<int> lastCodec {-1};
+    std::atomic<int> lastWidth {0};
+    std::atomic<int> lastHeight {0};
+    std::atomic<uint64_t> lastFrameAtMs {0};
+    mutable std::mutex timingMutex;
+    std::deque<int64_t> decodeSamplesUs;
+    mutable std::mutex rateMutex;
+    uint64_t lastRateAtMs = 0;
+    uint64_t lastRateFrames = 0;
+    uint64_t lastRateBytes = 0;
+    uint64_t lastRateDecodeOk = 0;
+    double receivedFps = 0.0;
+    double decodedFps = 0.0;
+    double bitrateKbps = 0.0;
+    bool rateSampleAvailable = false;
+
+    void reset() {
+        ingressFrames.store(0, std::memory_order_release);
+        ingressBytes.store(0, std::memory_order_release);
+        keyframes.store(0, std::memory_order_release);
+        decodeOk.store(0, std::memory_order_release);
+        decodeErrors.store(0, std::memory_order_release);
+        lastCodec.store(-1, std::memory_order_release);
+        lastWidth.store(0, std::memory_order_release);
+        lastHeight.store(0, std::memory_order_release);
+        lastFrameAtMs.store(0, std::memory_order_release);
+        std::lock_guard<std::mutex> lock(timingMutex);
+        decodeSamplesUs.clear();
+        std::lock_guard<std::mutex> rateLock(rateMutex);
+        lastRateAtMs = 0;
+        lastRateFrames = 0;
+        lastRateBytes = 0;
+        lastRateDecodeOk = 0;
+        receivedFps = 0.0;
+        decodedFps = 0.0;
+        bitrateKbps = 0.0;
+        rateSampleAvailable = false;
+    }
+
+    void addDecodeSample(int64_t elapsedUs) {
+        std::lock_guard<std::mutex> lock(timingMutex);
+        if (decodeSamplesUs.size() >= 128) {
+            decodeSamplesUs.pop_front();
+        }
+        decodeSamplesUs.push_back(elapsedUs);
+    }
+
+    void timingSnapshot(int64_t& p50, int64_t& p95, int64_t& max) const {
+        std::vector<int64_t> values;
+        {
+            std::lock_guard<std::mutex> lock(timingMutex);
+            values.assign(decodeSamplesUs.begin(), decodeSamplesUs.end());
+        }
+        if (values.empty()) {
+            p50 = 0;
+            p95 = 0;
+            max = 0;
+            return;
+        }
+        std::sort(values.begin(), values.end());
+        const size_t p50Index = (values.size() - 1) * 50 / 100;
+        const size_t p95Index = (values.size() - 1) * 95 / 100;
+        p50 = values[p50Index];
+        p95 = values[p95Index];
+        max = values.back();
+    }
+
+    void updateRates(uint64_t nowMs) {
+        const uint64_t frames = ingressFrames.load(std::memory_order_acquire);
+        const uint64_t bytes = ingressBytes.load(std::memory_order_acquire);
+        const uint64_t decoded = decodeOk.load(std::memory_order_acquire);
+        std::lock_guard<std::mutex> lock(rateMutex);
+        if (lastRateAtMs > 0 && nowMs > lastRateAtMs) {
+            const double seconds = static_cast<double>(nowMs - lastRateAtMs) / 1000.0;
+            receivedFps = static_cast<double>(frames - lastRateFrames) / seconds;
+            decodedFps = static_cast<double>(decoded - lastRateDecodeOk) / seconds;
+            bitrateKbps = static_cast<double>(bytes - lastRateBytes) * 8.0 / seconds / 1000.0;
+            rateSampleAvailable = true;
+        }
+        lastRateAtMs = nowMs;
+        lastRateFrames = frames;
+        lastRateBytes = bytes;
+        lastRateDecodeOk = decoded;
+    }
+
+    void rateSnapshot(double& ingressFps, double& decodedFramesPerSecond, double& kbps,
+                      bool& sampleAvailable) const {
+        std::lock_guard<std::mutex> lock(rateMutex);
+        ingressFps = receivedFps;
+        decodedFramesPerSecond = decodedFps;
+        kbps = bitrateKbps;
+        sampleAvailable = rateSampleAvailable;
+    }
+};
 
 // 连接会话上下文
 struct SessionContext {
@@ -77,6 +198,7 @@ struct SessionContext {
     std::mutex messageMutex;
     std::atomic<Lifecycle> lifecycle {Lifecycle::Active};
     std::atomic<uint64_t> teardownRequestId {0};
+    SessionDiagnosticsCounters diagnostics;
 };
 
 static std::map<int, std::shared_ptr<SessionContext>> g_sessions;
@@ -155,6 +277,12 @@ static void SetObjectInt32(napi_env env, napi_value object, const char* key, int
 static void SetObjectInt64(napi_env env, napi_value object, const char* key, int64_t value) {
     napi_value item;
     napi_create_int64(env, value, &item);
+    napi_set_named_property(env, object, key, item);
+}
+
+static void SetObjectDouble(napi_env env, napi_value object, const char* key, double value) {
+    napi_value item;
+    napi_create_double(env, value, &item);
     napi_set_named_property(env, object, key, item);
 }
 
@@ -490,6 +618,273 @@ napi_value NapiGetRdpRenderStats(napi_env env, napi_callback_info info) {
     return result;
 }
 
+/** NAPI: getRustDeskDiagnostics(sessionId: number): RustDeskDiagnosticsSnapshot */
+napi_value NapiGetRustDeskDiagnostics(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value args[1];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+
+    int32_t sessionId = 0;
+    if (argc > 0) {
+        napi_get_value_int32(env, args[0], &sessionId);
+    }
+
+    RustDeskDiagnosticsStats nativeStats;
+    SessionDiagnosticsCounters* counters = nullptr;
+    bool sessionActive = false;
+    auto it = g_sessions.find(sessionId);
+    if (it != g_sessions.end() && it->second) {
+        counters = &it->second->diagnostics;
+        if (it->second->protocolName == "rustdesk" && it->second->adapter) {
+            sessionActive = true;
+            auto* bridge = dynamic_cast<RustDeskBridge*>(it->second->adapter.get());
+            if (bridge) {
+                nativeStats = bridge->getDiagnostics();
+            }
+        }
+    }
+
+    const uint64_t nowMs = static_cast<uint64_t>(std::chrono::duration_cast<
+        std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count());
+    DecoderTelemetrySnapshot decoder = DecoderNapi::GetActiveTelemetry(
+        static_cast<uint64_t>(sessionId > 0 ? sessionId : 0));
+    const RdpPresentationMetricsSnapshot renderer = RendererNapi::GetActivePresentationStats();
+    int64_t decodeP50Us = 0;
+    int64_t decodeP95Us = 0;
+    int64_t decodeMaxUs = 0;
+    if (counters) {
+        counters->updateRates(nowMs);
+        counters->timingSnapshot(decodeP50Us, decodeP95Us, decodeMaxUs);
+    }
+    double receivedFps = 0.0;
+    double displayFps = 0.0;
+    double decodedFps = 0.0;
+    double bitrateKbps = 0.0;
+    bool receivedRateAvailable = false;
+    if (counters) {
+        counters->rateSnapshot(receivedFps, decodedFps, bitrateKbps, receivedRateAvailable);
+    }
+    // Decode completion is not presentation. Only report display FPS once a
+    // completed renderer interval supplies both frame count and duration.
+    const bool presentedRateAvailable = renderer.windowComplete &&
+        renderer.windowDurationUs > 0 && renderer.presentedFrames > 0;
+    if (presentedRateAvailable) {
+        displayFps = static_cast<double>(renderer.windowSamples) * 1000000.0 /
+            static_cast<double>(renderer.windowDurationUs);
+    }
+    const uint64_t observedFrames = counters ?
+        counters->ingressFrames.load(std::memory_order_acquire) : nativeStats.receivedFrames;
+    const uint64_t observedLastFrameAtMs = counters ?
+        counters->lastFrameAtMs.load(std::memory_order_acquire) : nativeStats.lastFrameAtMs;
+    const bool videoSeen = observedFrames > 0;
+    const int64_t lastFrameAgeMs = observedLastFrameAtMs > 0 && nowMs >= observedLastFrameAtMs ?
+        static_cast<int64_t>(nowMs - observedLastFrameAtMs) : -1;
+
+    napi_value result;
+    napi_create_object(env, &result);
+    SetObjectBool(env, result, "supported", nativeStats.supported);
+    SetObjectBool(env, result, "sessionActive", sessionActive);
+    SetObjectBool(env, result, "protocolSnapshotAvailable", nativeStats.supported);
+    SetObjectBool(env, result, "videoSeen", videoSeen);
+    SetObjectBool(env, result, "receivedRateAvailable", receivedRateAvailable);
+    SetObjectBool(env, result, "presentedRateAvailable", presentedRateAvailable);
+    SetObjectBool(env, result, "decodeRateAvailable", receivedRateAvailable);
+    SetObjectInt32(env, result, "sessionId", sessionId);
+    SetObjectInt32(env, result, "latencyMs", nativeStats.latencyMs);
+    SetObjectInt32(env, result, "targetBitrateKbps", nativeStats.targetBitrateKbps);
+    SetObjectInt64(env, result, "videoMessages", static_cast<int64_t>(nativeStats.videoMessages));
+    SetObjectInt64(env, result, "receivedFrames", static_cast<int64_t>(
+        counters ? counters->ingressFrames.load(std::memory_order_acquire) : nativeStats.receivedFrames));
+    SetObjectInt64(env, result, "keyframes", static_cast<int64_t>(
+        counters ? counters->keyframes.load(std::memory_order_acquire) : nativeStats.keyframes));
+    SetObjectInt64(env, result, "receivedBytes", static_cast<int64_t>(
+        counters ? counters->ingressBytes.load(std::memory_order_acquire) : nativeStats.receivedBytes));
+    SetObjectInt64(env, result, "audioFrames", static_cast<int64_t>(nativeStats.audioFrames));
+    SetObjectInt64(env, result, "cadenceGaps", static_cast<int64_t>(nativeStats.cadenceGaps));
+    SetObjectInt64(env, result, "maxCadenceGapMs", static_cast<int64_t>(nativeStats.maxCadenceGapMs));
+    SetObjectInt64(env, result, "testDelayCount", static_cast<int64_t>(nativeStats.testDelayCount));
+    SetObjectDouble(env, result, "receivedFps", receivedFps);
+    SetObjectDouble(env, result, "displayFps", displayFps);
+    SetObjectDouble(env, result, "decodeFps", decodedFps);
+    SetObjectDouble(env, result, "bitrateKbps", bitrateKbps);
+    SetObjectInt32(env, result, "codec", counters ?
+        counters->lastCodec.load(std::memory_order_acquire) : nativeStats.codec);
+    SetObjectInt32(env, result, "width", counters ?
+        counters->lastWidth.load(std::memory_order_acquire) : nativeStats.width);
+    SetObjectInt32(env, result, "height", counters ?
+        counters->lastHeight.load(std::memory_order_acquire) : nativeStats.height);
+    SetObjectString(env, result, "connectionPath", nativeStats.connectionPath == 1 ? "direct" :
+        (nativeStats.supported ? "relay" : "unknown"));
+    SetObjectInt64(env, result, "lastFrameAtMs", static_cast<int64_t>(
+        counters ? counters->lastFrameAtMs.load(std::memory_order_acquire) : nativeStats.lastFrameAtMs));
+    SetObjectInt64(env, result, "lastFrameAgeMs", lastFrameAgeMs);
+    SetObjectInt64(env, result, "decodeOk", static_cast<int64_t>(
+        counters ? counters->decodeOk.load(std::memory_order_acquire) : 0));
+    SetObjectInt64(env, result, "decodeErrors", static_cast<int64_t>(
+        counters ? counters->decodeErrors.load(std::memory_order_acquire) : 0));
+    SetObjectInt64(env, result, "decodeP50Us", decodeP50Us);
+    SetObjectInt64(env, result, "decodeP95Us", decodeP95Us);
+    SetObjectInt64(env, result, "decodeMaxUs", decodeMaxUs);
+    SetObjectInt64(env, result, "presentedFrames",
+                   static_cast<int64_t>(renderer.presentedFrames));
+    SetObjectInt64(env, result, "presentationWindowSamples",
+                   static_cast<int64_t>(renderer.windowSamples));
+    SetObjectInt64(env, result, "presentationWindowMs", renderer.windowDurationUs / 1000);
+    SetObjectInt64(env, result, "renderP50Us", renderer.workerUs.p50);
+    SetObjectInt64(env, result, "renderP95Us", renderer.workerUs.p95);
+    SetObjectInt64(env, result, "renderMaxUs", renderer.workerUs.max);
+    SetObjectInt64(env, result, "queueDepth", static_cast<int64_t>(decoder.queueDepth));
+    SetObjectInt64(env, result, "queueMax", static_cast<int64_t>(decoder.queueMax));
+    SetObjectInt64(env, result, "droppedFrames", static_cast<int64_t>(decoder.droppedFrames));
+    SetObjectString(env, result, "decoderBackend", decoder.valid && decoder.ready ?
+        (decoder.software ? "software" : "hardware") : "unknown");
+    return result;
+}
+
+static bool ReadProcCpuTicks(uint64_t& processTicks, uint64_t& totalTicks) {
+    std::ifstream processFile("/proc/self/stat");
+    std::string processLine;
+    if (!processFile || !std::getline(processFile, processLine)) {
+        return false;
+    }
+    const size_t commEnd = processLine.rfind(')');
+    if (commEnd == std::string::npos || commEnd + 2 >= processLine.size()) {
+        return false;
+    }
+    std::istringstream processFields(processLine.substr(commEnd + 2));
+    std::string state;
+    processFields >> state;
+    std::vector<uint64_t> fields;
+    uint64_t value = 0;
+    while (processFields >> value) {
+        fields.push_back(value);
+    }
+    // fields[0] is field 4 (ppid), utime is field 14 and stime field 15.
+    if (fields.size() <= 12) {
+        return false;
+    }
+    processTicks = fields[10] + fields[11];
+
+    std::ifstream systemFile("/proc/stat");
+    std::string cpuLine;
+    if (!systemFile || !std::getline(systemFile, cpuLine)) {
+        return false;
+    }
+    std::istringstream cpuFields(cpuLine);
+    std::string cpuName;
+    cpuFields >> cpuName;
+    totalTicks = 0;
+    while (cpuFields >> value) {
+        totalTicks += value;
+    }
+    return cpuName == "cpu" && totalTicks > 0;
+}
+
+static uint64_t ReadResidentMemoryBytes() {
+    std::ifstream statusFile("/proc/self/status");
+    std::string line;
+    while (statusFile && std::getline(statusFile, line)) {
+        if (line.rfind("VmRSS:", 0) != 0) {
+            continue;
+        }
+        std::istringstream fields(line.substr(6));
+        uint64_t kilobytes = 0;
+        fields >> kilobytes;
+        return kilobytes * 1024ULL;
+    }
+    return 0;
+}
+
+struct LocalResourceSampleState {
+    bool hasBaseline = false;
+    uint64_t previousProcessTicks = 0;
+    uint64_t previousTotalTicks = 0;
+    uint64_t sampledAtMs = 0;
+    bool supported = false;
+    bool cpuAvailable = false;
+    double cpuPercent = -1.0;
+    uint64_t memoryBytes = 0;
+    bool memoryAvailable = false;
+};
+
+static napi_value MakeLocalResourceStatsValue(napi_env env,
+                                               const LocalResourceSampleState& state) {
+    napi_value result;
+    napi_create_object(env, &result);
+    SetObjectBool(env, result, "supported", state.supported);
+    SetObjectBool(env, result, "cpuAvailable", state.cpuAvailable);
+    SetObjectDouble(env, result, "cpuPercent", state.cpuAvailable ? state.cpuPercent : -1.0);
+    SetObjectInt64(env, result, "memoryBytes", static_cast<int64_t>(state.memoryBytes));
+    SetObjectBool(env, result, "memoryAvailable", state.memoryAvailable);
+    SetObjectBool(env, result, "gpuAvailable", false);
+    SetObjectDouble(env, result, "gpuPercent", -1.0);
+    SetObjectInt64(env, result, "sampledAtMs", static_cast<int64_t>(state.sampledAtMs));
+    return result;
+}
+
+/** NAPI: getLocalResourceStats(includePro): local process CPU/RSS; GPU is best-effort. */
+napi_value NapiGetLocalResourceStats(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value args[1];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+
+    bool includePro = true;
+    if (argc > 0) {
+        napi_get_value_bool(env, args[0], &includePro);
+    }
+
+    static std::mutex sampleMutex;
+    static LocalResourceSampleState state;
+    if (!includePro) {
+        std::lock_guard<std::mutex> lock(sampleMutex);
+        // Turning Pro off also discards the CPU baseline. Re-enabling Pro
+        // must start with an unavailable first sample instead of reporting a
+        // stale interval measured while the HUD was hidden.
+        state = LocalResourceSampleState();
+        return MakeLocalResourceStatsValue(env, state);
+    }
+
+    const uint64_t nowMs = static_cast<uint64_t>(std::chrono::duration_cast<
+        std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count());
+    uint64_t processTicks = 0;
+    uint64_t totalTicks = 0;
+    const bool procSupported = ReadProcCpuTicks(processTicks, totalTicks);
+
+    std::lock_guard<std::mutex> lock(sampleMutex);
+    if (state.sampledAtMs > 0 && nowMs >= state.sampledAtMs &&
+        nowMs - state.sampledAtMs < 1000) {
+        return MakeLocalResourceStatsValue(env, state);
+    }
+
+    const uint64_t memoryBytes = ReadResidentMemoryBytes();
+    const bool memoryAvailable = memoryBytes > 0;
+    if (procSupported) {
+        if (state.hasBaseline && totalTicks > state.previousTotalTicks &&
+            processTicks >= state.previousProcessTicks) {
+            const uint64_t processDelta = processTicks - state.previousProcessTicks;
+            const uint64_t totalDelta = totalTicks - state.previousTotalTicks;
+            const long cpuCount = sysconf(_SC_NPROCESSORS_ONLN);
+            state.cpuPercent = totalDelta > 0 ? static_cast<double>(processDelta) * 100.0 /
+                static_cast<double>(totalDelta) * static_cast<double>(cpuCount > 0 ? cpuCount : 1) : -1.0;
+            state.cpuAvailable = totalDelta > 0;
+        } else {
+            state.cpuPercent = -1.0;
+            state.cpuAvailable = false;
+        }
+        state.previousProcessTicks = processTicks;
+        state.previousTotalTicks = totalTicks;
+        state.hasBaseline = true;
+    } else {
+        state.cpuPercent = -1.0;
+        state.cpuAvailable = false;
+    }
+    state.memoryBytes = memoryBytes;
+    state.memoryAvailable = memoryAvailable;
+    state.supported = procSupported || memoryAvailable;
+    state.sampledAtMs = nowMs;
+    return MakeLocalResourceStatsValue(env, state);
+}
+
 napi_value NapiGetSessionTransferStatus(napi_env env, napi_callback_info info) {
     size_t argc = 1;
     napi_value args[1];
@@ -580,7 +975,8 @@ napi_value NapiPresentRdpCachedFrame(napi_env env, napi_callback_info info) {
 /**
  * NAPI: connect(config: object): number
  *
- * config 字段: protocol, host, port, username, password, domain, width, height, codec
+ * config 字段: protocol, host, port, username, password, domain, width, height, codec,
+ * rdpAuthMode, rdpRestrictedAdminSecretSource, rdpRestrictedAdminHash
  * 返回会话 ID (>0=成功, -1=协议未找到, -2=连接失败)
  */
 napi_value NapiConnect(napi_env env, napi_callback_info info) {
@@ -654,6 +1050,42 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
     }
     getInt("colorDepth", cfg.colorDepth);
     getInt("rdpAuthIdentityMode", cfg.rdpAuthIdentityMode);
+    std::string rdpAuthModeName;
+    std::string rdpRestrictedAdminSecretSourceName;
+    getString("rdpAuthMode", rdpAuthModeName);
+    getString("rdpRestrictedAdminSecretSource", rdpRestrictedAdminSecretSourceName);
+    if (protocolName == "rdp") {
+        std::string rawRdpRestrictedAdminHash;
+        getString("rdpRestrictedAdminHash", rawRdpRestrictedAdminHash);
+        RdpAuthenticationPolicy rdpAuth = ParseRdpAuthenticationPolicy(
+            rdpAuthModeName, rdpRestrictedAdminSecretSourceName, rawRdpRestrictedAdminHash);
+        secureClearString(rawRdpRestrictedAdminHash);
+        if (!rdpAuth.valid) {
+            secureClearString(rdpAuth.normalizedNtlmHash);
+            OH_LOG_ERROR(LOG_APP, "[ExtLoader] invalid RDP authentication configuration");
+            napi_value errVal;
+            napi_create_int32(env, -50, &errVal);
+            return errVal;
+        }
+        if (rdpAuth.mode == RdpAuthenticationPolicyMode::Password) {
+            cfg.rdpAuthMode = RdpAuthenticationMode::Password;
+        } else if (rdpAuth.mode == RdpAuthenticationPolicyMode::BlankPassword) {
+            cfg.rdpAuthMode = RdpAuthenticationMode::BlankPassword;
+        } else {
+            cfg.rdpAuthMode = RdpAuthenticationMode::RestrictedAdmin;
+        }
+        cfg.rdpRestrictedAdminSecretSource = RdpRestrictedAdminSecretSource::NtlmHash;
+        if (cfg.rdpAuthMode == RdpAuthenticationMode::RestrictedAdmin) {
+            cfg.password.clear();
+            cfg.rdpRestrictedAdminHash = rdpAuth.normalizedNtlmHash;
+        } else {
+            cfg.rdpRestrictedAdminHash.clear();
+            if (cfg.rdpAuthMode == RdpAuthenticationMode::BlankPassword) {
+                cfg.password.clear();
+            }
+        }
+        secureClearString(rdpAuth.normalizedNtlmHash);
+    }
 
     // 🆕 SSH 认证字段
     getString("authMethod", cfg.authMethod);
@@ -682,6 +1114,7 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
     getString("rdRelayId", cfg.rdRelayId);
     getString("rdAccountId", cfg.rdAccountId);
     getString("rdServerKey", cfg.rdServerKey);
+    getInt("rdServerKeyMode", cfg.rdServerKeyMode);
 
     if (cfg.rdDirectPort <= 0) cfg.rdDirectPort = 21118;
     if (cfg.port == 0) {
@@ -701,6 +1134,7 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
     if (cfg.rdPasswordMode != 1) cfg.rdPasswordMode = 0;
     if (cfg.rdAuthMode != 1) cfg.rdAuthMode = 0;
     if (cfg.rdPasswordLength != 8 && cfg.rdPasswordLength != 10) cfg.rdPasswordLength = 6;
+    if (cfg.rdServerKeyMode != 1 && cfg.rdServerKeyMode != 2) cfg.rdServerKeyMode = 0;
 
     const std::string logHost = SafeLog::MaskHost(cfg.host);
     const std::string logGatewayHost = cfg.gatewayHost.empty() ? "无" : SafeLog::MaskHost(cfg.gatewayHost);
@@ -717,18 +1151,21 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
     if (protocolName == "rustdesk") {
         const std::string relayLog = cfg.rdRelayId.empty() ? "未设置" : SafeLog::HashForLog(cfg.rdRelayId);
         const std::string accountLog = cfg.rdAccountId.empty() ? "未设置" : SafeLog::MaskUser(cfg.rdAccountId);
-        const std::string serverKeyLog = cfg.rdServerKey.empty() ? "default" : SafeLog::HashForLog(cfg.rdServerKey);
-        OH_LOG_INFO(LOG_APP, "[ExtLoader] RustDesk配置: quality=%{public}d direct=%{public}s:%{public}d lan=%{public}s privacy=%{public}s audio=%{public}s pwdMode=%{public}d authMode=%{public}d pwdLen=%{public}d relayId=%{public}s account=%{public}s serverKeyId=%{public}s",
+        const char* serverKeyMode = cfg.rdServerKeyMode == 2 ? "shared" :
+            (cfg.rdServerKeyMode == 1 ? "public" : "auto");
+        OH_LOG_INFO(LOG_APP, "[ExtLoader] RustDesk配置: quality=%{public}d direct=%{public}s:%{public}d lan=%{public}s privacy=%{public}s audio=%{public}s pwdMode=%{public}d authMode=%{public}d pwdLen=%{public}d relayId=%{public}s account=%{public}s serverKeyMode=%{public}s",
                     cfg.rdImageQuality, cfg.rdDirectIp ? "on" : "off", cfg.rdDirectPort,
                     cfg.rdLanDiscovery ? "on" : "off", cfg.rdPrivacyMode ? "on" : "off",
                     cfg.rdAudioEnabled ? "on" : "off",
                     cfg.rdPasswordMode, cfg.rdAuthMode, cfg.rdPasswordLength,
-                    relayLog.c_str(), accountLog.c_str(),
-                    serverKeyLog.c_str());
+                    relayLog.c_str(), accountLog.c_str(), serverKeyMode);
     } else if (protocolName == "rdp") {
         const std::string drivePathLog = cfg.rdDrivePath.empty() ? "off" : SafeLog::HashForLog(cfg.rdDrivePath);
+        const char* authMode = cfg.rdpAuthMode == RdpAuthenticationMode::RestrictedAdmin ? "restricted_admin" :
+            (cfg.rdpAuthMode == RdpAuthenticationMode::BlankPassword ? "blank_password" : "password");
+        const char* restrictedSource = "ntlm_hash";
         OH_LOG_INFO(LOG_APP,
-            "[ExtLoader] RDP配置: desktop=%{public}dx%{public}d colorDepth=%{public}d audio=%{public}s clipboard=%{public}s driveName=%{public}s drivePathId=%{public}s authIdentityMode=%{public}d",
+            "[ExtLoader] RDP配置: desktop=%{public}dx%{public}d colorDepth=%{public}d audio=%{public}s clipboard=%{public}s driveName=%{public}s drivePathId=%{public}s authIdentityMode=%{public}d authMode=%{public}s restrictedSource=%{public}s hashLen=%{public}zu",
             cfg.width,
             cfg.height,
             cfg.colorDepth,
@@ -736,7 +1173,10 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
             cfg.rdClipboardEnabled ? "on" : "off",
             cfg.rdDriveName.empty() ? "RemoteDesktop" : cfg.rdDriveName.c_str(),
             drivePathLog.c_str(),
-            cfg.rdpAuthIdentityMode);
+            cfg.rdpAuthIdentityMode,
+            authMode,
+            restrictedSource,
+            cfg.rdpRestrictedAdminHash.length());
     }
 
     // 查找协议适配器
@@ -771,6 +1211,7 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
     }
     g_sessions[sessionId] = session;
     g_activeConnection = adapter;
+    DecoderNapi::SetActiveSessionId(static_cast<uint64_t>(sessionId));
 
     // R0: 连接成功后设置活跃 adapter, 输入事件通过 InputHandler 统一派发
     InputHandler::instance().setActiveAdapter(adapter);
@@ -782,7 +1223,7 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
                     session->protocolName.c_str(), static_cast<int>(state), message.c_str());
     });
 
-    adapter->setVideoCallback([](const VideoFrame& frame) {
+    adapter->setVideoCallback([session](const VideoFrame& frame) {
         static uint64_t frameCount = 0;
         static std::atomic<uint64_t> decodeRetOk {0};
         static std::atomic<uint64_t> decodeRetNotReady {0};
@@ -792,10 +1233,31 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
         if (frame.width > 0 && frame.height > 0) {
             RendererNapi::SetActiveSourceSize(frame.width, frame.height);
         }
+        session->diagnostics.ingressFrames.fetch_add(1, std::memory_order_relaxed);
+        session->diagnostics.ingressBytes.fetch_add(static_cast<uint64_t>(frame.size),
+                                                    std::memory_order_relaxed);
+        if (frame.isKeyFrame) {
+            session->diagnostics.keyframes.fetch_add(1, std::memory_order_relaxed);
+        }
+        session->diagnostics.lastCodec.store(static_cast<int>(frame.codec), std::memory_order_relaxed);
+        session->diagnostics.lastWidth.store(frame.width, std::memory_order_relaxed);
+        session->diagnostics.lastHeight.store(frame.height, std::memory_order_relaxed);
+        session->diagnostics.lastFrameAtMs.store(static_cast<uint64_t>(std::chrono::duration_cast<
+            std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count()),
+            std::memory_order_release);
         recordRemoteVideoFrame(frame.size, frame.width, frame.height);
         g_rustdeskVideoPerf.recordIngressFrame("rustdesk", frame.width, frame.height,
                                                frame.size, frame.isKeyFrame);
+        const auto decodeStartedAt = std::chrono::steady_clock::now();
         int ret = DecoderNapi::DecodeActiveNative(frame);
+        const int64_t decodeElapsedUs = std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now() - decodeStartedAt).count();
+        session->diagnostics.addDecodeSample(decodeElapsedUs);
+        if (ret == 0) {
+            session->diagnostics.decodeOk.fetch_add(1, std::memory_order_relaxed);
+        } else {
+            session->diagnostics.decodeErrors.fetch_add(1, std::memory_order_relaxed);
+        }
         g_rustdeskVideoPerf.recordDecodeResult(ret, 0, 0, 0);
         frameCount++;
         switch (ret) {
@@ -866,10 +1328,14 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
 
     // 建立连接 — 回调必须先注册，避免 FreeRDP 连接线程早于 rdpsnd/OHAudio 回调。
     int ret = adapter->connect(cfg);
+    // FreeRdpAdapter owns the independent session copy after connect().  The
+    // NAPI stack copy is no longer needed even when thread creation fails.
+    secureClearString(cfg.rdpRestrictedAdminHash);
     if (ret != 0) {
         OH_LOG_ERROR(LOG_APP, "[ExtLoader] 连接失败: ret=%{public}d host=%{public}s:%{public}d auth=%{public}s",
             ret, logHost.c_str(), cfg.port, cfg.authMethod.c_str());
         g_sessions.erase(sessionId);
+        DecoderNapi::ClearActiveSessionId(static_cast<uint64_t>(sessionId));
         if (g_activeConnection == adapter) {
             g_activeConnection = nullptr;
         }
@@ -944,6 +1410,9 @@ static uint64_t BeginSessionTeardown(
 
     auto it = g_sessions.find(sessionId);
     if (it == g_sessions.end() || !it->second) {
+        if (sessionId > 0) {
+            DecoderNapi::ClearActiveSessionId(static_cast<uint64_t>(sessionId));
+        }
         if (!HasNativeResources(resources)) {
             return 0;
         }
@@ -970,6 +1439,7 @@ static uint64_t BeginSessionTeardown(
         InputHandler::instance().setActiveAdapter(nullptr);
         g_activeConnection = nullptr;
     }
+    DecoderNapi::ClearActiveSessionId(static_cast<uint64_t>(sessionId));
     DeactivateNativeResources(resources);
     g_sessions.erase(it);
 
@@ -1113,6 +1583,7 @@ napi_value NapiDisconnectAll(napi_env env, napi_callback_info info) {
     g_activeConnection = nullptr;
     InputHandler::instance().setActiveAdapter(nullptr);
     for (const auto& item : sessions) {
+        DecoderNapi::ClearActiveSessionId(static_cast<uint64_t>(item.first));
         item.second->lifecycle.store(SessionContext::Lifecycle::Disconnecting,
                                      std::memory_order_release);
         PrepareAdapterForTeardown(item.second->adapter);
@@ -1295,6 +1766,122 @@ napi_value NapiSendMouseWheel(napi_env env, napi_callback_info info) {
     napi_value undefined;
     napi_get_undefined(env, &undefined);
     return undefined;
+}
+
+/** NAPI: getRustDeskDisplayCapabilities(sessionId): object */
+napi_value NapiGetRustDeskDisplayCapabilities(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value args[1];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    int32_t sessionId = 0;
+    if (argc > 0) napi_get_value_int32(env, args[0], &sessionId);
+
+    RustDeskDisplayCapabilities capabilities;
+    auto it = g_sessions.find(sessionId);
+    if (it != g_sessions.end() && it->second && it->second->protocolName == "rustdesk" &&
+        it->second->adapter) {
+        auto* bridge = dynamic_cast<RustDeskBridge*>(it->second->adapter.get());
+        if (bridge) capabilities = bridge->getDisplayCapabilities();
+    }
+
+    napi_value result;
+    napi_create_object(env, &result);
+    SetObjectBool(env, result, "supported", capabilities.supported);
+    SetObjectInt32(env, result, "currentDisplay", capabilities.currentDisplay);
+    SetObjectInt32(env, result, "width", capabilities.width);
+    SetObjectInt32(env, result, "height", capabilities.height);
+    SetObjectInt32(env, result, "originalWidth", capabilities.originalWidth);
+    SetObjectInt32(env, result, "originalHeight", capabilities.originalHeight);
+    SetObjectInt32(env, result, "scaleMilli", capabilities.scaleMilli);
+    SetObjectInt32(env, result, "geometryEpoch", static_cast<int32_t>(capabilities.geometryEpoch));
+    napi_value resolutions;
+    napi_create_array_with_length(env, capabilities.resolutions.size(), &resolutions);
+    for (size_t index = 0; index < capabilities.resolutions.size(); ++index) {
+        napi_value item;
+        napi_create_object(env, &item);
+        SetObjectInt32(env, item, "width", capabilities.resolutions[index].width);
+        SetObjectInt32(env, item, "height", capabilities.resolutions[index].height);
+        napi_set_element(env, resolutions, static_cast<uint32_t>(index), item);
+    }
+    napi_set_named_property(env, result, "resolutions", resolutions);
+    return result;
+}
+
+/** NAPI: changeRustDeskDisplayResolution(sessionId, display, width, height): boolean */
+napi_value NapiChangeRustDeskDisplayResolution(napi_env env, napi_callback_info info) {
+    size_t argc = 4;
+    napi_value args[4];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    int32_t sessionId = 0;
+    int32_t display = 0;
+    int32_t width = 0;
+    int32_t height = 0;
+    if (argc >= 4) {
+        napi_get_value_int32(env, args[0], &sessionId);
+        napi_get_value_int32(env, args[1], &display);
+        napi_get_value_int32(env, args[2], &width);
+        napi_get_value_int32(env, args[3], &height);
+    }
+    bool accepted = false;
+    auto it = g_sessions.find(sessionId);
+    if (it != g_sessions.end() && it->second && it->second->protocolName == "rustdesk" &&
+        it->second->adapter) {
+        auto* bridge = dynamic_cast<RustDeskBridge*>(it->second->adapter.get());
+        if (bridge) accepted = bridge->changeDisplayResolution(display, width, height);
+    }
+    napi_value result;
+    napi_get_boolean(env, accepted, &result);
+    return result;
+}
+
+/** NAPI: sendRustDeskTouchScale(sessionId, scale): boolean */
+napi_value NapiSendRustDeskTouchScale(napi_env env, napi_callback_info info) {
+    size_t argc = 2;
+    napi_value args[2];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    int32_t sessionId = 0;
+    int32_t scale = 0;
+    if (argc >= 2) {
+        napi_get_value_int32(env, args[0], &sessionId);
+        napi_get_value_int32(env, args[1], &scale);
+    }
+    bool accepted = false;
+    auto it = g_sessions.find(sessionId);
+    if (it != g_sessions.end() && it->second && it->second->protocolName == "rustdesk" &&
+        it->second->adapter) {
+        auto* bridge = dynamic_cast<RustDeskBridge*>(it->second->adapter.get());
+        if (bridge) accepted = bridge->sendTouchScale(scale);
+    }
+    napi_value result;
+    napi_get_boolean(env, accepted, &result);
+    return result;
+}
+
+/** NAPI: sendRustDeskTouchPan(sessionId, phase, x, y): boolean */
+napi_value NapiSendRustDeskTouchPan(napi_env env, napi_callback_info info) {
+    size_t argc = 4;
+    napi_value args[4];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    int32_t sessionId = 0;
+    int32_t phase = -1;
+    int32_t x = 0;
+    int32_t y = 0;
+    if (argc >= 4) {
+        napi_get_value_int32(env, args[0], &sessionId);
+        napi_get_value_int32(env, args[1], &phase);
+        napi_get_value_int32(env, args[2], &x);
+        napi_get_value_int32(env, args[3], &y);
+    }
+    bool accepted = false;
+    auto it = g_sessions.find(sessionId);
+    if (it != g_sessions.end() && it->second && it->second->protocolName == "rustdesk" &&
+        it->second->adapter) {
+        auto* bridge = dynamic_cast<RustDeskBridge*>(it->second->adapter.get());
+        if (bridge) accepted = bridge->sendTouchPan(phase, x, y);
+    }
+    napi_value result;
+    napi_get_boolean(env, accepted, &result);
+    return result;
 }
 
 /**
@@ -1795,6 +2382,86 @@ napi_value NapiGetConnectionState(napi_env env, napi_callback_info info) {
     return result;
 }
 
+static void FinalizeRemoteCursorPixels(napi_env /*env*/, void* /*data*/, void* hint) {
+    delete static_cast<std::vector<uint8_t>*>(hint);
+}
+
+/**
+ * Build the JS cursor object in one place. Async shape reads can transfer the
+ * worker-owned RGBA vector as an external ArrayBuffer, so the JS completion
+ * callback does not copy a 384x384 bitmap on the UI thread.
+ */
+static napi_value CreateRemoteCursorSnapshotValue(
+    napi_env env, const RemoteCursorSnapshot& snapshot,
+    std::vector<uint8_t>* transferredPixels = nullptr) {
+    napi_value result;
+    napi_create_object(env, &result);
+    const auto setInt32 = [env, result](const char* name, int32_t value) {
+        napi_value field;
+        napi_create_int32(env, value, &field);
+        napi_set_named_property(env, result, name, field);
+    };
+    const auto setUint64 = [env, result](const char* name, uint64_t value) {
+        napi_value field;
+        napi_create_double(env, static_cast<double>(value), &field);
+        napi_set_named_property(env, result, name, field);
+    };
+    setUint64("sessionId", snapshot.sessionId);
+    setUint64("shapeId", snapshot.shapeId);
+    setUint64("shapeRevision", snapshot.shapeRevision);
+    setUint64("positionRevision", snapshot.positionRevision);
+    setUint64("visibilityRevision", snapshot.visibilityRevision);
+    setInt32("x", snapshot.x);
+    setInt32("y", snapshot.y);
+    setInt32("width", snapshot.width);
+    setInt32("height", snapshot.height);
+    setInt32("hotX", snapshot.hotX);
+    setInt32("hotY", snapshot.hotY);
+    napi_value fallbackShape;
+    napi_get_boolean(env, snapshot.fallbackShape, &fallbackShape);
+    napi_set_named_property(env, result, "fallbackShape", fallbackShape);
+    napi_value positionAvailable;
+    napi_get_boolean(env, snapshot.positionAvailable, &positionAvailable);
+    napi_set_named_property(env, result, "positionAvailable", positionAvailable);
+    napi_value visible;
+    napi_get_boolean(env, snapshot.visible, &visible);
+    napi_set_named_property(env, result, "visible", visible);
+    napi_value protocol;
+    napi_create_string_utf8(env, snapshot.protocol.c_str(), snapshot.protocol.size(), &protocol);
+    napi_set_named_property(env, result, "protocol", protocol);
+
+    napi_value pixels = nullptr;
+    if (transferredPixels != nullptr && !transferredPixels->empty()) {
+        if (napi_create_external_arraybuffer(env, transferredPixels->data(),
+                transferredPixels->size(), FinalizeRemoteCursorPixels, transferredPixels,
+                &pixels) != napi_ok) {
+            // Fall back to a normal ArrayBuffer if the platform rejects an
+            // external buffer. The worker still removed the native snapshot
+            // copy from the UI path; this is only a compatibility fallback.
+            void* pixelsData = nullptr;
+            napi_create_arraybuffer(env, transferredPixels->size(), &pixelsData, &pixels);
+            if (pixelsData) {
+                std::memcpy(pixelsData, transferredPixels->data(), transferredPixels->size());
+            }
+            delete transferredPixels;
+        }
+    } else {
+        const std::vector<uint8_t>* source = transferredPixels != nullptr
+            ? transferredPixels : &snapshot.rgba;
+        void* pixelsData = nullptr;
+        napi_create_arraybuffer(env, source->size(), &pixelsData, &pixels);
+        if (pixels != nullptr && napi_get_arraybuffer_info(env, pixels, &pixelsData, nullptr) == napi_ok &&
+            pixelsData && !source->empty()) {
+            std::memcpy(pixelsData, source->data(), source->size());
+        }
+        if (transferredPixels != nullptr) {
+            delete transferredPixels;
+        }
+    }
+    napi_set_named_property(env, result, "rgba", pixels);
+    return result;
+}
+
 /**
  * NAPI: getRemoteCursorSnapshot(sessionId: number, includePixels?: boolean): object
  * Positions and shapes use independent revisions so ArkUI can poll without copying pixels.
@@ -1819,43 +2486,133 @@ napi_value NapiGetRemoteCursorSnapshot(napi_env env, napi_callback_info info) {
         snapshot = it->second->adapter->getRemoteCursorSnapshot(includePixels);
     }
 
-    napi_value result;
-    napi_create_object(env, &result);
-    const auto setInt32 = [env, result](const char* name, int32_t value) {
-        napi_value field;
-        napi_create_int32(env, value, &field);
-        napi_set_named_property(env, result, name, field);
-    };
-    const auto setUint64 = [env, result](const char* name, uint64_t value) {
-        napi_value field;
-        napi_create_double(env, static_cast<double>(value), &field);
-        napi_set_named_property(env, result, name, field);
-    };
-    setUint64("sessionId", snapshot.sessionId);
-    setUint64("shapeId", snapshot.shapeId);
-    setUint64("shapeRevision", snapshot.shapeRevision);
-    setUint64("positionRevision", snapshot.positionRevision);
-    setInt32("x", snapshot.x);
-    setInt32("y", snapshot.y);
-    setInt32("width", snapshot.width);
-    setInt32("height", snapshot.height);
-    setInt32("hotX", snapshot.hotX);
-    setInt32("hotY", snapshot.hotY);
-    napi_value visible;
-    napi_get_boolean(env, snapshot.visible, &visible);
-    napi_set_named_property(env, result, "visible", visible);
-    napi_value protocol;
-    napi_create_string_utf8(env, snapshot.protocol.c_str(), snapshot.protocol.size(), &protocol);
-    napi_set_named_property(env, result, "protocol", protocol);
+    return CreateRemoteCursorSnapshotValue(env, snapshot);
+}
 
-    napi_value pixels;
-    void* pixelsData = nullptr;
-    napi_create_arraybuffer(env, snapshot.rgba.size(), &pixelsData, &pixels);
-    if (pixelsData && !snapshot.rgba.empty()) {
-        std::memcpy(pixelsData, snapshot.rgba.data(), snapshot.rgba.size());
+struct RemoteCursorSnapshotAsyncData {
+    int32_t sessionId = 0;
+    std::shared_ptr<ProtocolAdapter> adapter;
+    RemoteCursorSnapshot snapshot;
+    std::string errorMessage;
+    napi_deferred deferred = nullptr;
+    napi_async_work work = nullptr;
+    bool workerFailed = false;
+};
+
+static void ExecuteRemoteCursorSnapshotAsync(napi_env /*env*/, void* rawData) {
+    auto* data = static_cast<RemoteCursorSnapshotAsyncData*>(rawData);
+    if (data == nullptr || !data->adapter) {
+        if (data != nullptr) {
+            data->workerFailed = true;
+            data->errorMessage = "remote cursor session is unavailable";
+        }
+        return;
     }
-    napi_set_named_property(env, result, "rgba", pixels);
-    return result;
+
+    try {
+        // The cursor store owns its mutex and returns a self-contained copy.
+        // This is deliberately executed on the N-API worker thread, never in
+        // the 33 ms ArkTS cursor timer.
+        data->snapshot = data->adapter->getRemoteCursorSnapshot(true);
+    } catch (const std::exception& ex) {
+        data->workerFailed = true;
+        data->errorMessage = std::string("remote cursor snapshot failed: ") + ex.what();
+    } catch (...) {
+        data->workerFailed = true;
+        data->errorMessage = "remote cursor snapshot failed: unknown native exception";
+    }
+}
+
+static void CompleteRemoteCursorSnapshotAsync(napi_env env, napi_status status, void* rawData) {
+    auto* data = static_cast<RemoteCursorSnapshotAsyncData*>(rawData);
+    if (data == nullptr) {
+        return;
+    }
+
+    if (status != napi_ok || data->workerFailed) {
+        napi_value error;
+        const std::string message = data->errorMessage.empty()
+            ? "remote cursor snapshot async work failed" : data->errorMessage;
+        napi_create_string_utf8(env, message.c_str(), NAPI_AUTO_LENGTH, &error);
+        napi_reject_deferred(env, data->deferred, error);
+    } else {
+        std::vector<uint8_t>* transferredPixels = nullptr;
+        if (!data->snapshot.rgba.empty()) {
+            transferredPixels = new (std::nothrow) std::vector<uint8_t>(
+                std::move(data->snapshot.rgba));
+            if (transferredPixels == nullptr) {
+                napi_value error;
+                napi_create_string_utf8(env, "remote cursor pixel buffer allocation failed",
+                    NAPI_AUTO_LENGTH, &error);
+                napi_reject_deferred(env, data->deferred, error);
+                napi_delete_async_work(env, data->work);
+                delete data;
+                return;
+            }
+        }
+        napi_value result = CreateRemoteCursorSnapshotValue(env, data->snapshot,
+            transferredPixels);
+        napi_resolve_deferred(env, data->deferred, result);
+    }
+
+    napi_delete_async_work(env, data->work);
+    delete data;
+}
+
+/**
+ * NAPI: getRemoteCursorSnapshotPixelsAsync(sessionId: number): Promise<object>
+ * Only the shape bitmap crosses the worker boundary. Metadata remains on the
+ * cheap synchronous snapshot path used by cursor motion polling.
+ */
+napi_value NapiGetRemoteCursorSnapshotPixelsAsync(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value args[1];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+
+    auto* data = new (std::nothrow) RemoteCursorSnapshotAsyncData();
+    if (data == nullptr) {
+        napi_throw_error(env, nullptr, "remote cursor async allocation failed");
+        return nullptr;
+    }
+    if (argc > 0) {
+        napi_get_value_int32(env, args[0], &data->sessionId);
+    }
+    auto it = g_sessions.find(data->sessionId);
+    if (it != g_sessions.end() && it->second) {
+        data->adapter = it->second->adapter;
+    }
+
+    napi_value promise;
+    napi_status status = napi_create_promise(env, &data->deferred, &promise);
+    if (status != napi_ok) {
+        delete data;
+        napi_throw_error(env, nullptr, "remote cursor async promise creation failed");
+        return nullptr;
+    }
+
+    napi_value resourceName;
+    status = napi_create_string_utf8(env, "RemoteCursorSnapshotPixelsAsync", NAPI_AUTO_LENGTH,
+        &resourceName);
+    if (status != napi_ok) {
+        delete data;
+        napi_throw_error(env, nullptr, "remote cursor async resource creation failed");
+        return nullptr;
+    }
+    status = napi_create_async_work(env, resourceName, resourceName,
+        ExecuteRemoteCursorSnapshotAsync, CompleteRemoteCursorSnapshotAsync, data, &data->work);
+    if (status != napi_ok) {
+        delete data;
+        napi_throw_error(env, nullptr, "remote cursor async work creation failed");
+        return nullptr;
+    }
+    status = napi_queue_async_work(env, data->work);
+    if (status != napi_ok) {
+        napi_delete_async_work(env, data->work);
+        delete data;
+        napi_throw_error(env, nullptr, "remote cursor async work queue failed");
+        return nullptr;
+    }
+    return promise;
 }
 
 /**
@@ -2476,6 +3233,12 @@ napi_value ExtensionLoaderNapi::Init(napi_env env, napi_value exports) {
     napi_create_function(env, "getRdpRenderStats", NAPI_AUTO_LENGTH,
                          NapiGetRdpRenderStats, nullptr, &fn);
     napi_set_named_property(env, exports, "getRdpRenderStats", fn);
+    napi_create_function(env, "getRustDeskDiagnostics", NAPI_AUTO_LENGTH,
+                         NapiGetRustDeskDiagnostics, nullptr, &fn);
+    napi_set_named_property(env, exports, "getRustDeskDiagnostics", fn);
+    napi_create_function(env, "getLocalResourceStats", NAPI_AUTO_LENGTH,
+                         NapiGetLocalResourceStats, nullptr, &fn);
+    napi_set_named_property(env, exports, "getLocalResourceStats", fn);
     napi_create_function(env, "getSessionTransferStatus", NAPI_AUTO_LENGTH,
                          NapiGetSessionTransferStatus, nullptr, &fn);
     napi_set_named_property(env, exports, "getSessionTransferStatus", fn);
@@ -2515,6 +3278,22 @@ napi_value ExtensionLoaderNapi::Init(napi_env env, napi_value exports) {
     napi_create_function(env, "sendMouseWheel", NAPI_AUTO_LENGTH,
                          NapiSendMouseWheel, nullptr, &fn);
     napi_set_named_property(env, exports, "sendMouseWheel", fn);
+
+    napi_create_function(env, "getRustDeskDisplayCapabilities", NAPI_AUTO_LENGTH,
+                         NapiGetRustDeskDisplayCapabilities, nullptr, &fn);
+    napi_set_named_property(env, exports, "getRustDeskDisplayCapabilities", fn);
+
+    napi_create_function(env, "changeRustDeskDisplayResolution", NAPI_AUTO_LENGTH,
+                         NapiChangeRustDeskDisplayResolution, nullptr, &fn);
+    napi_set_named_property(env, exports, "changeRustDeskDisplayResolution", fn);
+
+    napi_create_function(env, "sendRustDeskTouchScale", NAPI_AUTO_LENGTH,
+                         NapiSendRustDeskTouchScale, nullptr, &fn);
+    napi_set_named_property(env, exports, "sendRustDeskTouchScale", fn);
+
+    napi_create_function(env, "sendRustDeskTouchPan", NAPI_AUTO_LENGTH,
+                         NapiSendRustDeskTouchPan, nullptr, &fn);
+    napi_set_named_property(env, exports, "sendRustDeskTouchPan", fn);
 
     napi_create_function(env, "sendText", NAPI_AUTO_LENGTH,
                          NapiSendText, nullptr, &fn);
@@ -2576,6 +3355,9 @@ napi_value ExtensionLoaderNapi::Init(napi_env env, napi_value exports) {
     napi_create_function(env, "getRemoteCursorSnapshot", NAPI_AUTO_LENGTH,
                          NapiGetRemoteCursorSnapshot, nullptr, &fn);
     napi_set_named_property(env, exports, "getRemoteCursorSnapshot", fn);
+    napi_create_function(env, "getRemoteCursorSnapshotPixelsAsync", NAPI_AUTO_LENGTH,
+                         NapiGetRemoteCursorSnapshotPixelsAsync, nullptr, &fn);
+    napi_set_named_property(env, exports, "getRemoteCursorSnapshotPixelsAsync", fn);
 
     napi_create_function(env, "getConnectionLastMessage", NAPI_AUTO_LENGTH,
                          NapiGetConnectionLastMessage, nullptr, &fn);

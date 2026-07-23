@@ -12,11 +12,11 @@ export interface RemoteSessionMediaSnapshot {
 }
 
 export function resolveRemoteSessionMediaKind(snapshot: RemoteSessionMediaSnapshot): RemoteSessionMediaKind {
-  if (snapshot.hasAudio) {
-    return RemoteSessionMediaKind.AUDIO;
-  }
   if (snapshot.hasVideo) {
     return RemoteSessionMediaKind.VIDEO;
+  }
+  if (snapshot.hasAudio) {
+    return RemoteSessionMediaKind.AUDIO;
   }
   return RemoteSessionMediaKind.NONE;
 }

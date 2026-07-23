@@ -30,6 +30,7 @@ enum BgTaskState {
 }
 
 interface ActiveBgTask {
+  sessionId: number;
   continuousTaskId: number;
   notificationId: number;
   state: BgTaskState;
@@ -65,10 +66,13 @@ export class RemoteSessionBackgroundTaskService {
    * @param info 会话摘要 (用于通知显示)
    */
   async startSessionTask(context: common.UIAbilityContext,
-    info: RemoteSessionBgInfo): Promise<void> {
+    info: RemoteSessionBgInfo): Promise<boolean> {
     if (this.task !== null && this.task.state === BgTaskState.running) {
-      hilog.info(DOMAIN, TAG, '[SESSION-BG] task already running, skip start');
-      return;
+      if (this.task.sessionId === info.sessionId) {
+        hilog.info(DOMAIN, TAG, '[SESSION-BG] task already running, skip start');
+        return true;
+      }
+      await this.stopSessionTask(context);
     }
 
     const notificationId: number = SESSION_NOTIFY_BASE_ID;
@@ -95,6 +99,7 @@ export class RemoteSessionBackgroundTaskService {
 
       const taskId: number = res.continuousTaskId === undefined ? -1 : res.continuousTaskId;
       this.task = {
+        sessionId: info.sessionId,
         continuousTaskId: taskId,
         notificationId: res.notificationId,
         state: BgTaskState.running,
@@ -107,9 +112,11 @@ export class RemoteSessionBackgroundTaskService {
 
       hilog.info(DOMAIN, TAG, '[SESSION-BG] multiDeviceConnection task started id=' +
         taskId.toString() + ' notification=' + res.notificationId.toString());
+      return true;
     } catch (err) {
       const be: BusinessError = err as BusinessError;
       this.task = {
+        sessionId: info.sessionId,
         continuousTaskId: -1,
         notificationId: notificationId,
         state: BgTaskState.rejected,
@@ -117,8 +124,9 @@ export class RemoteSessionBackgroundTaskService {
         modes: []
       };
       hilog.warn(DOMAIN, TAG, '[SESSION-BG-START] multiDeviceConnection rejected code=' +
-        be.code.toString() + ' message=' + be.message);
+        this.errorCode(be) + ' message=' + this.errorMessage(be));
       // 被拒绝时不静默伪装 — 记录错误码，不 fallback 到 dataTransfer
+      return false;
     }
   }
 
@@ -163,7 +171,7 @@ export class RemoteSessionBackgroundTaskService {
     } catch (err) {
       const be: BusinessError = err as BusinessError;
       hilog.warn(DOMAIN, TAG, '[SESSION-BG-AUDIO-UPDATE] audioPlayback update rejected code=' +
-        be.code.toString() + ' message=' + be.message);
+        this.errorCode(be) + ' message=' + this.errorMessage(be));
       // audioPlayback 更新失败不阻断主保活任务
     }
   }
@@ -184,7 +192,7 @@ export class RemoteSessionBackgroundTaskService {
       } catch (err) {
         const be: BusinessError = err as BusinessError;
         hilog.warn(DOMAIN, TAG, '[SESSION-BG-STOP] stop failed code=' +
-          be.code.toString() + ' message=' + be.message);
+          this.errorCode(be) + ' message=' + this.errorMessage(be));
       }
     }
 
@@ -257,5 +265,13 @@ export class RemoteSessionBackgroundTaskService {
       }
     }
     return true;
+  }
+
+  private errorCode(error: BusinessError): string {
+    return error.code === undefined ? 'unknown' : error.code.toString();
+  }
+
+  private errorMessage(error: BusinessError): string {
+    return error.message === undefined ? JSON.stringify(error) : error.message;
   }
 }

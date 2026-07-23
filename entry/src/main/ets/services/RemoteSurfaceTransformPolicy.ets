@@ -29,6 +29,13 @@ export interface RemoteSurfaceDelta {
   y: number;
 }
 
+export interface NormalizedRendererViewport {
+  viewportX: number;
+  viewportY: number;
+  viewportW: number;
+  viewportH: number;
+}
+
 function positive(value: number, fallback: number): number {
   return Number.isFinite(value) && value > 0 ? value : fallback;
 }
@@ -39,6 +46,32 @@ function finite(value: number, fallback: number): number {
 
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
+}
+
+/**
+ * Renderer viewport coordinates are relative to the EGL surface that produced
+ * them. Normalize them before combining them with a newer ArkUI surface size.
+ */
+export function normalizeRendererViewportToSurface(viewportX: number, viewportY: number,
+  viewportW: number, viewportH: number, rendererSurfaceWidth: number,
+  rendererSurfaceHeight: number, targetSurfaceWidth: number,
+  targetSurfaceHeight: number): NormalizedRendererViewport | null {
+  if (!Number.isFinite(viewportX) || !Number.isFinite(viewportY) ||
+    !Number.isFinite(viewportW) || !Number.isFinite(viewportH) ||
+    !Number.isFinite(rendererSurfaceWidth) || !Number.isFinite(rendererSurfaceHeight) ||
+    !Number.isFinite(targetSurfaceWidth) || !Number.isFinite(targetSurfaceHeight) ||
+    viewportW <= 0 || viewportH <= 0 || rendererSurfaceWidth <= 0 ||
+    rendererSurfaceHeight <= 0 || targetSurfaceWidth <= 0 || targetSurfaceHeight <= 0) {
+    return null;
+  }
+  const scaleX: number = targetSurfaceWidth / rendererSurfaceWidth;
+  const scaleY: number = targetSurfaceHeight / rendererSurfaceHeight;
+  return {
+    viewportX: viewportX * scaleX,
+    viewportY: viewportY * scaleY,
+    viewportW: viewportW * scaleX,
+    viewportH: viewportH * scaleY
+  };
 }
 
 /** Project a remote logical point to the ArkUI surface (vp). */

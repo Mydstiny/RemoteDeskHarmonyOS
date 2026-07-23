@@ -121,9 +121,9 @@ pub fn decode_base64_key(encoded: &str) -> Option<[u8; 32]> {
 /// An empty value is intentional: it selects the built-in public-server key
 /// for peer-signature verification and sends an empty licence_key to hbbs.
 /// Any non-empty value must be the standard Base64 encoding of one Ed25519
-/// public key (32 bytes).  Keeping this check at the FFI boundary prevents an
-/// encrypted DataCrypto value or an arbitrary Pro token from being sent as a
-/// protocol licence_key.
+/// public key (32 bytes). This helper is used only by the public-key mode;
+/// shared `hbbs`/`hbbr -k` access text intentionally takes a separate path
+/// and is never normalized here.
 pub fn normalized_server_public_key(encoded: &str) -> Option<&str> {
     let trimmed = encoded.trim();
     if trimmed.is_empty() || decode_base64_key(trimmed).is_some() {

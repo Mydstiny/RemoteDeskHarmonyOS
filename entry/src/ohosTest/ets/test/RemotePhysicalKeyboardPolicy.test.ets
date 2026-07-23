@@ -6,6 +6,7 @@ import {
   HARMONY_KEYCODE_META_RIGHT,
   isMacCapsLockLongPress,
   mapPhysicalKeyForRemoteLayout,
+  physicalKeyboardLayoutForProtocol,
   RemoteKeyboardLayout,
   remoteKeyboardLayoutDescription,
   shouldChoosePhysicalKeyboardLayout,
@@ -39,15 +40,22 @@ export default function remotePhysicalKeyboardPolicyTest(): void {
         HARMONY_KEYCODE_META_RIGHT)).assertEqual(HARMONY_KEYCODE_CTRL_RIGHT);
     });
 
-    it('supports_remote_keyboard_layout_on_every_device_class', 0, (): void => {
-      expect(shouldChoosePhysicalKeyboardLayout('rdp', true, 'xl')).assertTrue();
+    it('asks_for_layout_only_for_cross_platform_rustdesk_sessions', 0, (): void => {
+      expect(shouldChoosePhysicalKeyboardLayout('rdp', true, 'xl')).assertFalse();
       expect(shouldChoosePhysicalKeyboardLayout('rustdesk', true, 'xl')).assertTrue();
-      expect(shouldChoosePhysicalKeyboardLayout('rdp', true, 'lg')).assertTrue();
+      expect(shouldChoosePhysicalKeyboardLayout('rdp', true, 'lg')).assertFalse();
       expect(shouldChoosePhysicalKeyboardLayout('rustdesk', false, 'md')).assertTrue();
-      expect(shouldChoosePhysicalKeyboardLayout('rdp', false, 'sm')).assertTrue();
+      expect(shouldChoosePhysicalKeyboardLayout('rdp', false, 'sm')).assertFalse();
       expect(shouldChoosePhysicalKeyboardLayout('ssh', true, 'xl')).assertFalse();
       expect(remoteKeyboardLayoutDescription(RemoteKeyboardLayout.MACOS).indexOf('Command') >= 0)
         .assertTrue();
+    });
+
+    it('always_uses_windows_layout_for_rdp', 0, (): void => {
+      expect(physicalKeyboardLayoutForProtocol('rdp', RemoteKeyboardLayout.MACOS))
+        .assertEqual(RemoteKeyboardLayout.WINDOWS);
+      expect(physicalKeyboardLayoutForProtocol('rustdesk', RemoteKeyboardLayout.MACOS))
+        .assertEqual(RemoteKeyboardLayout.MACOS);
     });
 
     it('never_consumes_phone_or_pad_system_back_gestures', 0, (): void => {

@@ -4,8 +4,8 @@ import {
   shouldIgnoreActivityMotionForHoldingHand,
   shouldFallbackToOperatingHandOnSubscribeFailure,
   shouldMarkGripMonitorStaleAfterWatchdog,
+  shouldAutoRequestGripPermission,
   shouldRebindGripMonitorOnPageShow,
-  shouldRequestGripPermission,
   shouldRunForegroundSensor,
   shouldRestartGripMonitor,
   shouldUseGripFabAlignment,
@@ -27,10 +27,6 @@ export default function gripMonitorLifecyclePolicyTest() {
       expect(shouldRebindGripMonitorOnPageShow(false, true, true)).assertFalse();
       expect(shouldRebindGripMonitorOnPageShow(true, false, true)).assertFalse();
       expect(shouldRebindGripMonitorOnPageShow(true, true, false)).assertFalse();
-    });
-
-    it('requests_permission_when_page_returns_without_permission', 0, (): void => {
-      expect(shouldRequestGripPermission(true, false, false)).assertTrue();
     });
 
     it('does_not_block_holding_hand_monitor_when_activity_motion_is_denied', 0, (): void => {
@@ -74,6 +70,16 @@ export default function gripMonitorLifecyclePolicyTest() {
       expect(shouldRunForegroundSensor(true, true, true)).assertFalse();
       expect(shouldRunForegroundSensor(false, false, true)).assertFalse();
       expect(shouldRunForegroundSensor(true, false, false)).assertFalse();
+    });
+
+    it('requests_grip_permission_once_after_page_is_ready', 0, (): void => {
+      expect(shouldAutoRequestGripPermission(true, false, false, true, false, false, false)).assertTrue();
+      expect(shouldAutoRequestGripPermission(false, false, false, true, false, false, false)).assertFalse();
+      expect(shouldAutoRequestGripPermission(true, true, false, true, false, false, false)).assertFalse();
+      expect(shouldAutoRequestGripPermission(true, false, true, true, false, false, false)).assertFalse();
+      expect(shouldAutoRequestGripPermission(true, false, false, true, true, false, false)).assertFalse();
+      expect(shouldAutoRequestGripPermission(true, false, false, true, false, true, false)).assertFalse();
+      expect(shouldAutoRequestGripPermission(true, false, false, true, false, false, true)).assertFalse();
     });
   });
 }

@@ -17,6 +17,8 @@ export interface RemoteSessionTopBarActions {
   onToggleClipboard: (on: boolean) => void;
   onToggleFilePaste: (on: boolean) => void;
   onSetViewScaleMode: (mode: string) => void;
+  onResetCanvasTransform: () => void;
+  onOpenRustDeskResolution: () => void;
   onSetRustDeskImageQuality: (quality: number) => void;
   onSetRustDeskCodec: (codec: number) => void;
   onToggleShowLocalCursor: (on: boolean) => void;
@@ -78,6 +80,8 @@ export struct RemoteSessionTopBar {
     onToggleClipboard: (_on: boolean): void => {},
     onToggleFilePaste: (_on: boolean): void => {},
     onSetViewScaleMode: (_mode: string): void => {},
+    onResetCanvasTransform: (): void => {},
+    onOpenRustDeskResolution: (): void => {},
     onSetRustDeskImageQuality: (_quality: number): void => {},
     onSetRustDeskCodec: (_codec: number): void => {},
     onToggleShowLocalCursor: (_on: boolean): void => {},
@@ -245,15 +249,30 @@ export struct RemoteSessionTopBar {
   @Builder
   private displayMenu() {
     Column() {
-      this.menuItem('原始尺寸', 'displaySettings', (): void => {
-        this.actions.onSetViewScaleMode('original');
-      }, this.viewScaleMode === 'original')
       this.menuItem('适应窗口', 'displaySettings', (): void => {
         this.actions.onSetViewScaleMode('fit');
       }, this.viewScaleMode === 'fit')
+      this.menuItem('100%', 'displaySettings', (): void => {
+        this.actions.onSetViewScaleMode('100');
+      }, this.viewScaleMode === '100')
+      this.menuItem('125%', 'displaySettings', (): void => {
+        this.actions.onSetViewScaleMode('125');
+      }, this.viewScaleMode === '125')
+      this.menuItem('150%', 'displaySettings', (): void => {
+        this.actions.onSetViewScaleMode('150');
+      }, this.viewScaleMode === '150')
+      this.menuItem('175%', 'displaySettings', (): void => {
+        this.actions.onSetViewScaleMode('175');
+      }, this.viewScaleMode === '175')
+      this.menuItem('200%', 'displaySettings', (): void => {
+        this.actions.onSetViewScaleMode('200');
+      }, this.viewScaleMode === '200')
       this.menuItem('自定义缩放', 'displaySettings', (): void => {
         this.actions.onSetViewScaleMode('custom');
       }, this.viewScaleMode === 'custom')
+      this.menuItem('重新居中画面', 'displaySettings', (): void => {
+        this.actions.onResetCanvasTransform();
+      })
       this.menuItem('画质: ' + this.qualityLabel(this.imageQuality), 'displaySettings', (): void => {
         const next: number = this.imageQuality >= 2 ? 0 : this.imageQuality + 1;
         this.actions.onSetRustDeskImageQuality(next);
@@ -262,7 +281,9 @@ export struct RemoteSessionTopBar {
         const next: number = this.codec >= 5 ? 0 : this.codec + 1;
         this.actions.onSetRustDeskCodec(next);
       })
-      this.menuItem('分辨率', 'resolutionSettings', (): void => {})
+      this.menuItem('分辨率', 'resolutionSettings', (): void => {
+        this.actions.onOpenRustDeskResolution();
+      })
       this.menuItem('虚拟显示器', 'virtualDisplay', (): void => {})
       this.menuItem('隐私模式', 'togglePrivacyMode', (): void => {
         this.actions.onTogglePrivacy(!this.privacyMode);
@@ -297,7 +318,7 @@ export struct RemoteSessionTopBar {
       this.menuItem('相对鼠标模式', 'keyboardMouseSettings', (): void => {
         this.actions.onToggleRelativeMouse(!this.relativeMouseMode);
       }, this.relativeMouseMode)
-      this.menuItem('鼠标滚轮反向', 'keyboardMouseSettings', (): void => {
+      this.menuItem('远程滚轮反向', 'keyboardMouseSettings', (): void => {
         this.actions.onToggleReverseWheel(!this.reverseWheel);
       }, this.reverseWheel)
       this.menuItem('交换鼠标左右键', 'keyboardMouseSettings', (): void => {

@@ -8,12 +8,10 @@
 #define SOFTWARE_DECODER_H
 
 #include "extensions/protocol_adapter.h"
+#include "frame_callback_gate.h"
 #include <cstddef>
 #include <cstdint>
-#include <functional>
 #include <vector>
-
-using SoftwareDecoderFrameCallback = std::function<int(const uint8_t* data, size_t size, int width, int height, int stride)>;
 
 struct SoftwareDecoderImpl;
 
@@ -48,7 +46,7 @@ private:
     uint64_t renderedFrames_ = 0;
     CodecType codecType_ = CodecType::VP9;
     bool initialized_ = false;
-    SoftwareDecoderFrameCallback frameCallback_;
+    SoftwareDecoderFrameCallbackGate frameCallbackGate_;
     SoftwareDecoderImpl* impl_ = nullptr;
     std::vector<uint8_t> bgraBuffer_;
 };

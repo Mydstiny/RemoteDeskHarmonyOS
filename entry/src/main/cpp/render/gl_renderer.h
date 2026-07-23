@@ -13,6 +13,7 @@
 
 #include "rdp/rdp_presentation_metrics.h"
 
+#include <atomic>
 #include <cstdint>
 #include <mutex>
 #include <string>
@@ -70,31 +71,41 @@ public:
      */
     void Resize(int width, int height);
     void SetSourceSize(int width, int height);
+    /** Apply a local canvas transform. Pan uses a top-left surface origin. */
+    void SetCanvasTransform(double scale, double panX, double panY);
+
+    /** 最近一秒的实际 swap/presentation 统计；读取不会清零计数。 */
+    RdpPresentationMetricsSnapshot GetPresentationStats();
 
     /** 销毁渲染器，释放所有 GL 资源 */
     void Destroy();
+
+    /** Bind the opaque registry handle used to protect shared surface state. */
+    void SetRendererHandle(int64_t handle);
 
     /** 是否已初始化 */
     bool IsInitialized() const { return initialized_; }
     bool IsPresentationReady();
 
     /** 获取当前宽度 */
-    int GetWidth() const { return width_; }
+    int GetWidth() const { return snapshotSurfaceWidth_.load(std::memory_order_acquire); }
 
     /** 获取当前高度 */
-    int GetHeight() const { return height_; }
+    int GetHeight() const { return snapshotSurfaceHeight_.load(std::memory_order_acquire); }
 
     /** 获取视频源宽高 */
-    int GetSourceWidth() const { return sourceWidth_; }
-    int GetSourceHeight() const { return sourceHeight_; }
+    int GetSourceWidth() const { return snapshotSourceWidth_.load(std::memory_order_acquire); }
+    int GetSourceHeight() const { return snapshotSourceHeight_.load(std::memory_order_acquire); }
 
     /** 获取上次渲染的视口 */
     void GetLastViewport(int& vpX, int& vpY, int& vpW, int& vpH) const {
-        vpX = lastVpX_; vpY = lastVpY_; vpW = lastVpW_; vpH = lastVpH_;
+        int sourceWidth = 0, sourceHeight = 0, surfaceWidth = 0, surfaceHeight = 0;
+        GetViewportSnapshot(vpX, vpY, vpW, vpH,
+            sourceWidth, sourceHeight, surfaceWidth, surfaceHeight);
     }
     void GetViewportSnapshot(int& vpX, int& vpY, int& vpW, int& vpH,
                              int& sourceWidth, int& sourceHeight,
-                             int& surfaceWidth, int& surfaceHeight);
+                             int& surfaceWidth, int& surfaceHeight) const;
 
     // R1: NapiTestRender 使用的 accessor
     bool MakeCurrent();
@@ -133,10 +144,27 @@ private:
     int  lastVpY_;
     int  lastVpW_;
     int  lastVpH_;
+    double canvasScale_;
+    double canvasPanX_;
+    double canvasPanY_;
+    // Lock-free viewport snapshot for ArkTS/NAPI coordinate mapping. The
+    // render lifecycle mutex may be held across eglSwapBuffers(), so readers
+    // must never wait on it from the UI thread.
+    std::atomic<uint64_t> viewportSnapshotVersion_;
+    std::atomic<int> snapshotVpX_;
+    std::atomic<int> snapshotVpY_;
+    std::atomic<int> snapshotVpW_;
+    std::atomic<int> snapshotVpH_;
+    std::atomic<int> snapshotSourceWidth_;
+    std::atomic<int> snapshotSourceHeight_;
+    std::atomic<int> snapshotSurfaceWidth_;
+    std::atomic<int> snapshotSurfaceHeight_;
     int  rawFrameCount_;
+    int64_t rendererHandle_;
     bool initialized_;
     bool destroying_;
     std::mutex lifecycleMutex_;
+    RdpPresentationMetrics presentationMetrics_;
 
     // 内部方法
     bool InitEGL(const std::string& xcomponentId);
@@ -146,6 +174,9 @@ private:
     GLuint CreateRawShaderProgram();
     void   CreateQuadGeometry();
     void   SetupRawTexture(int width, int height);
+    void   CalculateViewport(int sourceWidth, int sourceHeight,
+                             int& vpX, int& vpY, int& vpW, int& vpH) const;
+    void   PublishViewportSnapshot(int vpX, int vpY, int vpW, int vpH);
     RdpPresentMetrics RenderRawBGRAInternal(const uint8_t* bgraData, int width, int height,
                                             int stride, bool useDirtyRect, int dirtyX,
                                             int dirtyY, int dirtyWidth, int dirtyHeight,
@@ -160,6 +191,7 @@ namespace RendererNapi {
     napi_value Init(napi_env env, napi_value exports);
     void MakeCurrent(int64_t handle);
     void ReleaseCurrent(int64_t handle);
+    void SetRendererSourceSize(int64_t handle, int width, int height);
     void RenderNative(int64_t handle, GLuint textureId);
     void SetActiveSourceSize(int width, int height);
     RdpPresentationTarget GetActivePresentationTarget();
@@ -174,6 +206,7 @@ namespace RendererNapi {
     int RenderRawBgraRectActive(const uint8_t* data, size_t size, int width, int height, int stride,
                                 int dirtyX, int dirtyY, int dirtyWidth, int dirtyHeight);
     void SetActiveRenderer(int64_t handle);
+    RdpPresentationMetricsSnapshot GetActivePresentationStats();
     void InvalidateActivePresentation();
     bool ReenableActivePresentation();
     void DeactivateRenderer(int64_t handle);

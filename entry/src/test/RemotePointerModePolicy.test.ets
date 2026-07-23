@@ -1,5 +1,6 @@
 import { describe, it, expect } from '@ohos/hypium';
 import {
+  shouldHideSystemPointerForVirtualTouchpad,
   shouldRenderTouchPointerIndicator,
   shouldUseSystemMousePointer
 } from '../main/ets/services/RemotePointerModePolicy';
@@ -18,6 +19,13 @@ export default function remotePointerModePolicyTest() {
     it('uses_system_mouse_pointer_only_in_keyboard_mouse_mode', 0, (): void => {
       expect(shouldUseSystemMousePointer(true)).assertTrue();
       expect(shouldUseSystemMousePointer(false)).assertFalse();
+    });
+
+    it('hides_the_system_pointer_only_for_phone_pad_virtual_touchpads', 0, (): void => {
+      expect(shouldHideSystemPointerForVirtualTouchpad(true, true, false)).assertTrue();
+      expect(shouldHideSystemPointerForVirtualTouchpad(false, true, false)).assertFalse();
+      expect(shouldHideSystemPointerForVirtualTouchpad(true, false, false)).assertFalse();
+      expect(shouldHideSystemPointerForVirtualTouchpad(true, true, true)).assertFalse();
     });
   });
 }

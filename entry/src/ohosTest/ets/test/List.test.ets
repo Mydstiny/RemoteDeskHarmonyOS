@@ -7,6 +7,8 @@ import remoteSessionStateTest from './RemoteSessionState.test';
 import nativeSessionHandlesTest from './NativeSessionHandles.test';
 import activeRemoteSessionRegistryTest from './ActiveRemoteSessionRegistry.test';
 import remoteDesktopBackgroundLifecyclePolicyTest from './RemoteDesktopBackgroundLifecyclePolicy.test';
+import remoteSessionLiveViewPolicyTest from './RemoteSessionLiveViewPolicy.test';
+import remoteSessionPipLifecyclePolicyTest from './RemoteSessionPipLifecyclePolicy.test';
 import hostListFilterServiceTest from './HostListFilterService.test';
 import hostSyncServiceTest from './HostSyncService.test';
 import remoteRestoreFrameRefreshPolicyTest from './RemoteRestoreFrameRefreshPolicy.test';
@@ -27,9 +29,12 @@ import hostAddModePolicyTest from './HostAddModePolicy.test';
 import legacyRustDeskAccountCloudAdapterTest from './LegacyRustDeskAccountCloudAdapter.test';
 import hostAddDraftTest from './HostAddDraft.test';
 import rustDeskCardBadgePolicyTest from './RustDeskCardBadgePolicy.test';
+import rustDeskDiagnosticsPolicyTest from './RustDeskDiagnosticsPolicy.test';
 import remotePhysicalKeyboardPolicyTest from './RemotePhysicalKeyboardPolicy.test';
 import touchpadPointerCurvePolicyTest from './TouchpadPointerCurvePolicy.test';
 import remoteSurfaceTransformPolicyTest from './RemoteSurfaceTransformPolicy.test';
+import remoteCursorStylePolicyTest from './RemoteCursorStylePolicy.test';
+import remoteHostSheetLifecyclePolicyTest from './RemoteHostSheetLifecyclePolicy.test';
 
 export default function testsuite() {
   abilityTest();
@@ -41,6 +46,8 @@ export default function testsuite() {
   nativeSessionHandlesTest();
   activeRemoteSessionRegistryTest();
   remoteDesktopBackgroundLifecyclePolicyTest();
+  remoteSessionLiveViewPolicyTest();
+  remoteSessionPipLifecyclePolicyTest();
   remoteRestoreFrameRefreshPolicyTest();
   hostListFilterServiceTest();
   hostSyncServiceTest();
@@ -61,7 +68,10 @@ export default function testsuite() {
   legacyRustDeskAccountCloudAdapterTest();
   hostAddDraftTest();
   rustDeskCardBadgePolicyTest();
+  rustDeskDiagnosticsPolicyTest();
   remotePhysicalKeyboardPolicyTest();
   touchpadPointerCurvePolicyTest();
   remoteSurfaceTransformPolicyTest();
+  remoteCursorStylePolicyTest();
+  remoteHostSheetLifecyclePolicyTest();
 }

@@ -2,7 +2,7 @@
  * EntryAbility.ets — 应用入口 UIAbility
  *
  * HarmonyOS 6 沉浸式窗口 + 主题初始化。
- * 仅需 INTERNET 权限 (system_grant, 安装时自动授予，无需弹窗)。
+ * 网络权限由系统授予；移动端握姿权限由主机页首屏渲染后异步申请。
  */
 import { AbilityConstant, ConfigurationConstant, UIAbility, Want, Configuration } from '@kit.AbilityKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
@@ -16,6 +16,7 @@ import { CloudSyncCoordinator } from '../services/CloudSyncCoordinator';
 import { BreakpointUtil } from '../utils/BreakpointUtil';
 import { ExtensionLoader } from '../services/ExtensionLoader';
 import { RemoteSessionBackgroundTaskService } from '../services/RemoteSessionBackgroundTaskService';
+import { RemoteSessionPipService } from '../services/RemoteSessionPipService';
 import {
   DEFAULT_DARK_HALO_COLOR,
   DEFAULT_LIGHT_HALO_COLOR,
@@ -38,6 +39,7 @@ const ENV_COLOR_MODE_DARK = 1;
 export default class EntryAbility extends UIAbility {
   private windowStage: window.WindowStage | null = null;
   private avoidAreaCallback: ((data: window.AvoidAreaOptions) => void) | null = null;
+  private shutdownPromise: Promise<void> | null = null;
 
   private disconnectRemoteSessions(source: string): void {
     try {
@@ -47,6 +49,48 @@ export default class EntryAbility extends UIAbility {
       hilog.error(DOMAIN, TAG, 'disconnectRemoteSessions failed: %{public}s',
         JSON.stringify(err));
     }
+  }
+
+  /**
+   * PIP owns the current native renderer while the app is backgrounded. Both
+   * Ability destruction callbacks can arrive, and neither may disconnect the
+   * protocol until the PIP controller has reached STOPPED/ERROR. Sharing one
+   * promise also prevents onDestroy and onWindowStageDestroy from submitting
+   * two native teardown requests for the same renderer.
+   */
+  private requestShutdown(source: string): void {
+    AppStorage.setOrCreate<boolean>(BG_FLAG_KEY, false);
+    if (this.shutdownPromise !== null) {
+      hilog.info(DOMAIN, TAG, 'shutdown already in progress source=%{public}s', source);
+      return;
+    }
+    this.shutdownPromise = (async (): Promise<void> => {
+      let stopped: boolean = false;
+      for (let attempt: number = 0; attempt < 2 && !stopped; attempt++) {
+        try {
+          stopped = await RemoteSessionPipService.getInstance().stop();
+        } catch (err) {
+          hilog.error(DOMAIN, TAG,
+            'PIP shutdown barrier failed attempt=%{public}d source=%{public}s err=%{public}s',
+            attempt + 1, source, JSON.stringify(err));
+        }
+        if (!stopped && attempt === 0) {
+          await new Promise<void>((resolve: () => void): void => {
+            setTimeout(resolve, 250);
+          });
+        }
+      }
+      if (!stopped) {
+        // Do not race a still-transitioning PIP window with disconnectAll.
+        // Process teardown will reclaim the native resources if WMS never
+        // produces a terminal callback.
+        hilog.error(DOMAIN, TAG,
+          'PIP shutdown barrier did not reach terminal state; native disconnect deferred source=%{public}s',
+          source);
+        return;
+      }
+      this.disconnectRemoteSessions(source);
+    })();
   }
 
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
@@ -165,8 +209,7 @@ export default class EntryAbility extends UIAbility {
 
   onDestroy(): void {
     // 最终销毁 — 必须完全断连所有远程会话 + 移除灵动岛
-    AppStorage.setOrCreate<boolean>(BG_FLAG_KEY, false);
-    this.disconnectRemoteSessions('ability-destroy');
+    this.requestShutdown('ability-destroy');
     hilog.info(DOMAIN, TAG, 'Ability onDestroy');
   }
 
@@ -190,8 +233,7 @@ export default class EntryAbility extends UIAbility {
 
   onWindowStageDestroy(): void {
     // WindowStage 销毁 — 完全断连 + 移除灵动岛
-    AppStorage.setOrCreate<boolean>(BG_FLAG_KEY, false);
-    this.disconnectRemoteSessions('window-stage-destroy');
+    this.requestShutdown('window-stage-destroy');
     try {
       const win = this.windowStage?.getMainWindowSync();
       if (win && this.avoidAreaCallback) {
@@ -213,6 +255,13 @@ export default class EntryAbility extends UIAbility {
       hilog.warn(DOMAIN, TAG, 'stopSessionTask on foreground failed: %{public}s', JSON.stringify(err));
     }
     hilog.info(DOMAIN, TAG, 'Ability onForeground');
+  }
+
+  onWillBackground(): void {
+    // API 20+ 在 onBackground 前回调；先通知 RemoteDesktop，避免页面
+    // aboutToDisappear 先一步把后台保活连接误判为显式退出。
+    AppStorage.setOrCreate<boolean>(BG_FLAG_KEY, true);
+    hilog.info(DOMAIN, TAG, 'Ability onWillBackground (background flag set early)');
   }
 
   onBackground(): void {

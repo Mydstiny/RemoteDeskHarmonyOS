@@ -1,0 +1,7 @@
+{
+  "name": "librdpnapi.so",
+  "version": "1.0.0",
+  "description": "RemoteDesktop native N-API module declarations",
+  "types": "./index.d.ts",
+  "main": "./index.d.ts"
+}

@@ -135,7 +135,7 @@ impl ProfileParams {
 pub struct RustDeskConfig {
     pub host: *const c_char,     // 远程主机 IP 或域名
     pub port: c_int,             // 端口号 (默认 21116)
-    pub key: *const c_char,      // Rendezvous 服务器公钥 (可选, 空字符串使用默认公钥)
+    pub key: *const c_char,      // Rendezvous 公钥或共享准入 Key (可选)
     pub username: *const c_char, // 用户名 (可选)
     pub password: *const c_char, // 密码 (可选)
     pub width: c_int,            // 期望宽度 (0=auto from profile)
@@ -149,6 +149,9 @@ pub struct RustDeskConfig {
     /// 直连模式: false=走 rendezvous 服务器 (默认), true=TCP 直连 peer (跳过 rendezvous)
     pub direct_connection: bool,
     pub auth_mode: c_int, // 0=设备密码, 1=请求被控端点击批准
+    /// 0=legacy/auto, 1=Ed25519 server public key, 2=shared hbbs/hbbr -k text.
+    /// Appended to preserve the established C ABI field order.
+    pub key_mode: c_int,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -259,6 +262,109 @@ pub enum FfiConnectionState {
     Error = 4,
 }
 
+/// Per-connection stream telemetry exposed to the HarmonyOS bridge.
+///
+/// This is deliberately a fixed-width, copyable snapshot. The UI reads it
+/// through `rustdesk_get_stream_stats`; it never reaches into the streaming
+/// thread or consumes the counters.
+pub const RUSTDESK_STREAM_STATS_VERSION: u32 = 1;
+pub const RUSTDESK_DISPLAY_SNAPSHOT_VERSION: u32 = 1;
+pub const RUSTDESK_MAX_DISPLAY_RESOLUTIONS: usize = 32;
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct RustDeskStreamStats {
+    pub version: u32,
+    pub state: u32,
+    pub last_delay_ms: u32,
+    pub target_bitrate_kbps: u32,
+    pub video_messages: u64,
+    pub video_frames: u64,
+    pub keyframes: u64,
+    pub encoded_bytes: u64,
+    pub audio_frames: u64,
+    pub cadence_gaps: u64,
+    pub max_cadence_gap_ms: u64,
+    pub test_delay_count: u64,
+    pub actual_codec: i32,
+    pub width: i32,
+    pub height: i32,
+    pub connection_path: i32, // 0=rendezvous/relay, 1=direct
+}
+
+impl Default for RustDeskStreamStats {
+    fn default() -> Self {
+        Self {
+            version: RUSTDESK_STREAM_STATS_VERSION,
+            state: 0,
+            last_delay_ms: 0,
+            target_bitrate_kbps: 0,
+            video_messages: 0,
+            video_frames: 0,
+            keyframes: 0,
+            encoded_bytes: 0,
+            audio_frames: 0,
+            cadence_gaps: 0,
+            max_cadence_gap_ms: 0,
+            test_delay_count: 0,
+            actual_codec: -1,
+            width: 0,
+            height: 0,
+            connection_path: 0,
+        }
+    }
+}
+
+/// Mutable display geometry shared by the streaming worker and the FFI caller.
+/// RustDesk sends this through `Misc.switch_display`, including Android rotations.
+#[derive(Debug, Clone)]
+pub(crate) struct RustDeskDisplayState {
+    pub current_display: i32,
+    pub width: i32,
+    pub height: i32,
+    pub original_width: i32,
+    pub original_height: i32,
+    pub scale_milli: i32,
+    pub geometry_epoch: u32,
+    pub resolutions: Vec<(i32, i32)>,
+}
+
+impl Default for RustDeskDisplayState {
+    fn default() -> Self {
+        Self {
+            current_display: 0,
+            width: 0,
+            height: 0,
+            original_width: 0,
+            original_height: 0,
+            scale_milli: 1000,
+            geometry_epoch: 0,
+            resolutions: Vec::new(),
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RustDeskDisplaySnapshot {
+    pub version: u32,
+    pub current_display: i32,
+    pub width: i32,
+    pub height: i32,
+    pub original_width: i32,
+    pub original_height: i32,
+    pub scale_milli: i32,
+    pub geometry_epoch: u32,
+    pub resolution_count: u32,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RustDeskResolution {
+    pub width: i32,
+    pub height: i32,
+}
+
 // ============================================================
 // 回调类型
 // ============================================================
@@ -314,6 +420,26 @@ pub(crate) enum ControlMsg {
     Clipboard {
         content: Vec<u8>,
     },
+    ChangeDisplayResolution {
+        display: i32,
+        width: i32,
+        height: i32,
+    },
+    TouchScale {
+        scale: i32,
+    },
+    TouchPanStart {
+        x: i32,
+        y: i32,
+    },
+    TouchPanUpdate {
+        x: i32,
+        y: i32,
+    },
+    TouchPanEnd {
+        x: i32,
+        y: i32,
+    },
 }
 
 /// 客户端上下文 — 通过 FFI 不透明指针传递
@@ -323,6 +449,7 @@ struct RustDeskClient {
     host: String,
     port: u16,
     server_key: String,
+    shared_access_key: bool,
     password: String,
     request_approval: bool,
     controls: Arc<ControlInbox>,
@@ -330,6 +457,8 @@ struct RustDeskClient {
     stream_handle: Option<std::thread::JoinHandle<io::Result<()>>>,
     transfer_status: Arc<Mutex<RustDeskTransferStatus>>,
     remote_clipboard: Arc<Mutex<Vec<u8>>>,
+    stream_stats: Arc<Mutex<RustDeskStreamStats>>,
+    display_state: Arc<Mutex<RustDeskDisplayState>>,
 }
 
 #[repr(C)]
@@ -400,14 +529,17 @@ fn dispatch_encoded_frames(
 
 fn dispatch_video_frame(
     frame: &VideoFrame,
-    width: c_int,
-    height: c_int,
+    display_state: &Arc<Mutex<RustDeskDisplayState>>,
     on_frame: Option<FrameCallback>,
     user_data: *mut c_void,
 ) {
     let Some(on_frame) = on_frame else {
         return;
     };
+    let (width, height) = display_state
+        .lock()
+        .map(|state| (state.width.max(1), state.height.max(1)))
+        .unwrap_or((1, 1));
 
     match frame.union {
         Some(VideoFrame_oneof_union::h264s(ref frames)) => {
@@ -740,6 +872,7 @@ pub extern "C" fn rustdesk_connect(
         ffi_string(config.username)
     };
     let server_key = ffi_string(config.key);
+    let shared_access_key = config.key_mode == 2;
     let password = ffi_string(config.password);
     let request_approval = config.auth_mode == 1 && !config.direct_connection;
     let privacy_mode = config.privacy_mode;
@@ -773,12 +906,13 @@ pub extern "C" fn rustdesk_connect(
         return std::ptr::null_mut();
     }
 
-    // Keep the protocol input invariant identical on every ABI.  The hbbs
-    // PunchHoleRequest licence_key is the rendezvous public key, not an
-    // encrypted local-storage value or an arbitrary Pro credential token.
-    // Direct IP sessions do not use rendezvous and therefore do not need this
-    // field at all.
+    // Public-key mode retains strict identity verification.  Shared-access
+    // mode is RustDesk's official hbbs/hbbr `-k` compatibility path: the text
+    // is forwarded unchanged as licence_key and the connector explicitly
+    // falls back to an unverified/plain peer negotiation when no signing key
+    // is available.  Direct IP sessions do not use rendezvous at all.
     if !config.direct_connection
+        && !shared_access_key
         && crypto::normalized_server_public_key(&server_key).is_none()
     {
         let message = if server_key.trim_start().starts_with("1:") {
@@ -822,6 +956,7 @@ pub extern "C" fn rustdesk_connect(
             audio_enabled,
             effective_fps,
             request_approval,
+            shared_access_key,
         )
     };
 
@@ -834,9 +969,35 @@ pub extern "C" fn rustdesk_connect(
             let callback_user_data = user_data as usize;
             let remote_clipboard = Arc::new(Mutex::new(Vec::<u8>::new()));
             let stream_remote_clipboard = Arc::clone(&remote_clipboard);
-            let (remote_width, remote_height) = c
-                .peer_display_size()
+            let display_state = Arc::new(Mutex::new(c.peer_display_state()));
+            let (mut remote_width, mut remote_height) = display_state
+                .lock()
+                .map(|state| (state.width.max(1), state.height.max(1)))
                 .unwrap_or((config.width.max(1), config.height.max(1)));
+            if remote_width <= 1 || remote_height <= 1 {
+                if let Ok(mut state) = display_state.lock() {
+                    let fallback = c
+                        .peer_display_size()
+                        .unwrap_or((config.width.max(1), config.height.max(1)));
+                    state.width = fallback.0.max(1);
+                    state.height = fallback.1.max(1);
+                    state.original_width = state.width;
+                    state.original_height = state.height;
+                    state.geometry_epoch = state.geometry_epoch.wrapping_add(1);
+                    remote_width = state.width;
+                    remote_height = state.height;
+                }
+            }
+            let stream_stats = Arc::new(Mutex::new(RustDeskStreamStats {
+                state: 2,
+                width: remote_width,
+                height: remote_height,
+                connection_path: if config.direct_connection { 1 } else { 0 },
+                ..RustDeskStreamStats::default()
+            }));
+            let stream_stats_for_thread = Arc::clone(&stream_stats);
+            let stream_display_state = Arc::clone(&display_state);
+            let frame_display_state = Arc::clone(&display_state);
             eprintln!(
                 "[RustDesk-FFI] remote display size={}x{} requested={}x{}",
                 remote_width, remote_height, config.width, config.height
@@ -852,11 +1013,12 @@ pub extern "C" fn rustdesk_connect(
                     audio_enabled,
                     effective_fps,
                     stream_controls,
+                    stream_stats_for_thread,
+                    stream_display_state,
                     |frame| {
                         dispatch_video_frame(
                             frame,
-                            remote_width,
-                            remote_height,
+                            &frame_display_state,
                             on_frame,
                             callback_user_data,
                         )
@@ -922,6 +1084,7 @@ pub extern "C" fn rustdesk_connect(
                 host,
                 port,
                 server_key,
+                shared_access_key,
                 password,
                 request_approval,
                 controls,
@@ -929,6 +1092,8 @@ pub extern "C" fn rustdesk_connect(
                 stream_handle: Some(stream_handle),
                 transfer_status: Arc::new(Mutex::new(RustDeskTransferStatus::default())),
                 remote_clipboard,
+                stream_stats,
+                display_state,
             });
 
             Box::into_raw(ctx) as *mut c_void
@@ -966,6 +1131,119 @@ pub extern "C" fn rustdesk_last_error(buffer: *mut c_char, buffer_len: usize) ->
         }
     }
     bytes.len()
+}
+
+/// Copy a non-destructive stream telemetry snapshot for one FFI connection.
+#[no_mangle]
+pub extern "C" fn rustdesk_get_stream_stats(
+    handle: *mut c_void,
+    out_stats: *mut RustDeskStreamStats,
+) -> bool {
+    if handle.is_null() || out_stats.is_null() {
+        return false;
+    }
+    let ctx = unsafe { &*(handle as *const RustDeskClient) };
+    let Ok(stats) = ctx.stream_stats.lock() else {
+        return false;
+    };
+    unsafe {
+        ptr::write(out_stats, *stats);
+    }
+    true
+}
+
+/// Copy current remote-display geometry and as many supported resolutions as fit.
+#[no_mangle]
+pub extern "C" fn rustdesk_get_display_snapshot(
+    handle: *mut c_void,
+    out_snapshot: *mut RustDeskDisplaySnapshot,
+    out_resolutions: *mut RustDeskResolution,
+    resolution_capacity: usize,
+) -> bool {
+    if handle.is_null() || out_snapshot.is_null() {
+        return false;
+    }
+    let ctx = unsafe { &*(handle as *const RustDeskClient) };
+    let Ok(state) = ctx.display_state.lock() else {
+        return false;
+    };
+    let snapshot = RustDeskDisplaySnapshot {
+        version: RUSTDESK_DISPLAY_SNAPSHOT_VERSION,
+        current_display: state.current_display,
+        width: state.width,
+        height: state.height,
+        original_width: state.original_width,
+        original_height: state.original_height,
+        scale_milli: state.scale_milli,
+        geometry_epoch: state.geometry_epoch,
+        resolution_count: state.resolutions.len().min(RUSTDESK_MAX_DISPLAY_RESOLUTIONS) as u32,
+    };
+    unsafe {
+        ptr::write(out_snapshot, snapshot);
+    }
+    if !out_resolutions.is_null() && resolution_capacity > 0 {
+        for (index, (width, height)) in state
+            .resolutions
+            .iter()
+            .take(resolution_capacity.min(RUSTDESK_MAX_DISPLAY_RESOLUTIONS))
+            .enumerate()
+        {
+            unsafe {
+                ptr::write(out_resolutions.add(index), RustDeskResolution {
+                    width: *width,
+                    height: *height,
+                });
+            }
+        }
+    }
+    true
+}
+
+#[no_mangle]
+pub extern "C" fn rustdesk_change_display_resolution(
+    handle: *mut c_void,
+    display: c_int,
+    width: c_int,
+    height: c_int,
+) -> bool {
+    if handle.is_null() || width <= 0 || height <= 0 {
+        set_last_error("rustdesk_change_display_resolution invalid arguments");
+        return false;
+    }
+    let ctx = unsafe { &*(handle as *const RustDeskClient) };
+    ctx.controls.enqueue(ControlMsg::ChangeDisplayResolution { display, width, height });
+    true
+}
+
+#[no_mangle]
+pub extern "C" fn rustdesk_send_touch_scale(handle: *mut c_void, scale: c_int) -> bool {
+    if handle.is_null() {
+        return false;
+    }
+    let ctx = unsafe { &*(handle as *const RustDeskClient) };
+    ctx.controls.enqueue(ControlMsg::TouchScale { scale });
+    true
+}
+
+#[no_mangle]
+pub extern "C" fn rustdesk_send_touch_pan(
+    handle: *mut c_void,
+    phase: c_int,
+    x: c_int,
+    y: c_int,
+) -> bool {
+    if handle.is_null() {
+        return false;
+    }
+    let message = match phase {
+        0 => ControlMsg::TouchPanStart { x, y },
+        1 => ControlMsg::TouchPanUpdate { x, y },
+        2 => ControlMsg::TouchPanEnd { x, y },
+        _ => return false,
+    };
+    let ctx = unsafe { &*(handle as *const RustDeskClient) };
+    ctx.controls.enqueue(message);
+    true
 }
 
 /// 断开 RustDesk 连接并释放资源
@@ -1108,6 +1386,7 @@ pub extern "C" fn rustdesk_send_file(
     let host = ctx.host.clone();
     let port = ctx.port;
     let server_key = ctx.server_key.clone();
+    let shared_access_key = ctx.shared_access_key;
     let peer_id = ctx.peer_id.clone();
     let password = ctx.password.clone();
     let request_approval = ctx.request_approval;
@@ -1120,7 +1399,7 @@ pub extern "C" fn rustdesk_send_file(
             let mut connector = connector::RustDeskConnector::new();
             connector
                 .connect_file_transfer(&host, port, &server_key, &peer_id, &password, &remote_dir,
-                    request_approval)
+                    request_approval, shared_access_key)
                 .and_then(|_| {
                     connector.upload_file_once(
                         &remote_path_owned,
@@ -1204,6 +1483,82 @@ mod tests {
     use super::*;
     use std::ffi::CString;
 
+    fn test_client_with_display_state(display_state: RustDeskDisplayState) -> RustDeskClient {
+        RustDeskClient {
+            peer_id: String::new(),
+            host: String::new(),
+            port: 0,
+            server_key: String::new(),
+            shared_access_key: false,
+            password: String::new(),
+            request_approval: false,
+            controls: Arc::new(ControlInbox::default()),
+            shutdown_stream: None,
+            stream_handle: None,
+            transfer_status: Arc::new(Mutex::new(RustDeskTransferStatus::default())),
+            remote_clipboard: Arc::new(Mutex::new(Vec::new())),
+            stream_stats: Arc::new(Mutex::new(RustDeskStreamStats::default())),
+            display_state: Arc::new(Mutex::new(display_state)),
+        }
+    }
+
+    #[test]
+    fn display_snapshot_copies_geometry_and_clamps_the_output_buffer() {
+        let mut client = test_client_with_display_state(RustDeskDisplayState {
+            current_display: 2,
+            width: 1080,
+            height: 1920,
+            original_width: 1440,
+            original_height: 2560,
+            scale_milli: 1250,
+            geometry_epoch: 7,
+            resolutions: vec![(1080, 1920), (720, 1280), (540, 960)],
+        });
+        let handle = &mut client as *mut RustDeskClient as *mut c_void;
+        let mut snapshot = RustDeskDisplaySnapshot::default();
+        let mut resolutions = [RustDeskResolution::default(); 2];
+
+        assert!(rustdesk_get_display_snapshot(
+            handle,
+            &mut snapshot,
+            resolutions.as_mut_ptr(),
+            resolutions.len(),
+        ));
+        assert_eq!(snapshot.version, RUSTDESK_DISPLAY_SNAPSHOT_VERSION);
+        assert_eq!(snapshot.current_display, 2);
+        assert_eq!((snapshot.width, snapshot.height), (1080, 1920));
+        assert_eq!((snapshot.original_width, snapshot.original_height), (1440, 2560));
+        assert_eq!(snapshot.scale_milli, 1250);
+        assert_eq!(snapshot.geometry_epoch, 7);
+        assert_eq!(snapshot.resolution_count, 3);
+        assert_eq!((resolutions[0].width, resolutions[0].height), (1080, 1920));
+        assert_eq!((resolutions[1].width, resolutions[1].height), (720, 1280));
+    }
+
+    #[test]
+    fn display_and_touch_ffi_controls_enqueue_the_official_messages() {
+        let mut client = test_client_with_display_state(RustDeskDisplayState::default());
+        let handle = &mut client as *mut RustDeskClient as *mut c_void;
+
+        assert!(!rustdesk_change_display_resolution(handle, 0, 0, 1080));
+        assert!(!rustdesk_change_display_resolution(handle, 0, 1920, 0));
+        assert!(rustdesk_change_display_resolution(handle, 1, 1080, 1920));
+        assert!(rustdesk_send_touch_scale(handle, 1250));
+        assert!(rustdesk_send_touch_pan(handle, 0, 100, 200));
+        assert!(rustdesk_send_touch_pan(handle, 1, -10, 12));
+        assert!(rustdesk_send_touch_pan(handle, 2, 90, 212));
+        assert!(!rustdesk_send_touch_pan(handle, 3, 0, 0));
+
+        let controls = client.controls.take_batch(8);
+        assert!(matches!(controls.as_slice(), [
+            ControlMsg::ChangeDisplayResolution { display: 1, width: 1080, height: 1920 },
+            ControlMsg::TouchScale { scale: 1250 },
+            ControlMsg::TouchPanStart { x: 100, y: 200 },
+            ControlMsg::TouchPanUpdate { x: -10, y: 12 },
+            ControlMsg::TouchPanEnd { x: 90, y: 212 },
+        ]));
+    }
+
     /// 测试空配置返回 null
     #[test]
     fn test_rustdesk_connect_null_config() {
@@ -1251,6 +1606,7 @@ mod tests {
             fps: 0,
             direct_connection: false,
             auth_mode: 0,
+            key_mode: 1,
         };
 
         extern "C" fn dummy_frame(_frame: *const FfiVideoFrame, _data: *mut c_void) {}
@@ -1296,6 +1652,7 @@ mod tests {
             fps: 0,
             direct_connection: false,
             auth_mode: 0,
+            key_mode: 1,
         };
 
         extern "C" fn dummy_frame(_frame: *const FfiVideoFrame, _data: *mut c_void) {}
@@ -1334,6 +1691,25 @@ mod tests {
     }
 
     #[test]
+    fn stream_stats_has_stable_c_abi_layout() {
+        assert_eq!(std::mem::size_of::<RustDeskStreamStats>(), 96);
+        assert_eq!(std::mem::align_of::<RustDeskStreamStats>(), 8);
+        assert_eq!(std::mem::size_of::<RustDeskStreamStats>() % 8, 0);
+        assert_eq!(RustDeskStreamStats::default().version, RUSTDESK_STREAM_STATS_VERSION);
+        assert_eq!(RustDeskStreamStats::default().actual_codec, -1);
+    }
+
+    #[test]
+    fn stream_stats_default_is_an_empty_disconnected_snapshot() {
+        let stats = RustDeskStreamStats::default();
+        assert_eq!(stats.state, FfiConnectionState::Disconnected as u32);
+        assert_eq!(stats.video_messages, 0);
+        assert_eq!(stats.video_frames, 0);
+        assert_eq!(stats.encoded_bytes, 0);
+        assert_eq!(stats.connection_path, 0);
+    }
+
+    #[test]
     fn balanced_profile_keeps_60fps_and_clamps_best_quality() {
         let cfg = RustDeskConfig {
             host: std::ptr::null(),
@@ -1351,6 +1727,7 @@ mod tests {
             fps: 0,
             direct_connection: false,
             auth_mode: 0,
+            key_mode: 1,
         };
 
         let params = resolve_stream_params_for_config(&cfg);
@@ -1380,6 +1757,7 @@ mod tests {
             fps: 0,
             direct_connection: false,
             auth_mode: 0,
+            key_mode: 1,
         };
 
         assert_eq!(resolve_stream_params_for_config(&cfg).effective_fps, 60);

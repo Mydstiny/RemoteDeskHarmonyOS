@@ -6,6 +6,7 @@
   "author": "Li Jiong and contributors",
   "license": "AGPL-3.0-or-later",
   "dependencies": {
+    "librdpnapi.so": "file:./src/main/cpp/types/librdpnapi",
     "@hw-agconnect/auth": "^1.0.2"
   }
 }

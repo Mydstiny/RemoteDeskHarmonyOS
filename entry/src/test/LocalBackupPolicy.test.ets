@@ -45,6 +45,14 @@ export default function localBackupPolicyTest(): void {
       expect(validateLocalBackupDocument(signedText(document)) !== null).assertTrue();
     });
 
+    it('accepts_legacy_distributed_delete_flag_but_strips_it_before_restore', 0, (): void => {
+      const document = createLocalBackupDocument(emptyTables(), 100, '1.0.5');
+      document.tables['remotehosts'].push({ id: 'host-1', port: '3389', '#_deleted_flag': '0' });
+      const parsed = validateLocalBackupDocument(signedText(document));
+      expect(parsed !== null).assertTrue();
+      expect(parsed?.tables['remotehosts'][0]['#_deleted_flag'] === undefined).assertTrue();
+    });
+
     it('round_trips_local_extension_rows_in_v2', 0, (): void => {
       const document = createLocalBackupDocument(emptyTables(), 100, '1.0.7', [{
         id: 'remotehosts:h1', tablename: 'remotehosts', recordid: 'h1',
@@ -53,6 +61,30 @@ export default function localBackupPolicyTest(): void {
       const parsed = validateLocalBackupDocument(JSON.stringify(document));
       expect(parsed !== null).assertTrue();
       expect(parsed?.extensions?.length).assertEqual(1);
+    });
+
+    it('rejects_duplicate_primary_keys', 0, (): void => {
+      const document = createLocalBackupDocument(emptyTables(), 100, '1.0.7');
+      document.tables['remotehosts'].push({ id: 'host-1' }, { id: 'host-1' });
+      expect(validateLocalBackupDocument(signedText(document)) === null).assertTrue();
+    });
+
+    it('rejects_orphan_extension_rows', 0, (): void => {
+      const document = createLocalBackupDocument(emptyTables(), 100, '1.0.7', [{
+        id: 'remotehosts:missing', tablename: 'remotehosts', recordid: 'missing',
+        payload: '{"rustdeskdirectport":"21117"}', updatedat: '100'
+      }]);
+      expect(validateLocalBackupDocument(JSON.stringify(document)) === null).assertTrue();
+    });
+
+    it('rejects_unknown_extension_payload_fields', 0, (): void => {
+      const tables = emptyTables();
+      tables['remotehosts'].push({ id: 'host-1' });
+      const document = createLocalBackupDocument(tables, 100, '1.0.7', [{
+        id: 'remotehosts:host-1', tablename: 'remotehosts', recordid: 'host-1',
+        payload: '{"unknownsecret":"value"}', updatedat: '100'
+      }]);
+      expect(validateLocalBackupDocument(JSON.stringify(document)) === null).assertTrue();
     });
   });
 }

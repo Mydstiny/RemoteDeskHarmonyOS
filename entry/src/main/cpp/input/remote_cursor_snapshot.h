@@ -25,9 +25,18 @@ struct RemoteCursorSnapshot {
     int height = 0;
     int hotX = 0;
     int hotY = 0;
+    /** True only for the RustDesk controller-side bootstrap shape. It is not a
+     * protocol cursor and must not be rendered as an authoritative arrow. */
+    bool fallbackShape = false;
     bool visible = false;
+    /** False until a protocol callback has supplied a coordinate. The default
+     * 0,0 storage value is not itself a remote cursor position. */
+    bool positionAvailable = false;
     uint64_t shapeRevision = 0;
     uint64_t positionRevision = 0;
+    /** Visibility is independent from coordinates so hide/show cannot look
+     * like a position event to the ArkTS ownership policy. */
+    uint64_t visibilityRevision = 0;
     std::vector<uint8_t> rgba;
 };
 
@@ -38,11 +47,20 @@ public:
     bool setShape(uint64_t shapeId, int width, int height, int hotX, int hotY,
                   const std::vector<uint8_t>& rgba);
 
+    /** Restore a stable local arrow for protocol SetDefault callbacks. */
+    bool setDefaultShape();
+
+    /** Keep a temporary arrow visible until RustDesk supplies cursor data. */
+    bool setFallbackShape();
+
     void setPosition(int x, int y);
     void setVisible(bool visible);
     RemoteCursorSnapshot snapshot(bool includePixels) const;
 
 private:
+    bool setShapeInternal(uint64_t shapeId, int width, int height, int hotX, int hotY,
+                          const std::vector<uint8_t>& rgba, bool fallbackShape);
+
     mutable std::mutex mutex_;
     RemoteCursorSnapshot state_;
 };

@@ -1,10 +1,9 @@
 /**
- * Physical-keyboard policy shared by RDP and RustDesk remote sessions.
+ * Physical-keyboard policy for RDP and RustDesk remote sessions.
  *
- * The selected layout describes the remote desktop.  RustDesk's official
- * cross-platform behaviour swaps Control and Command when the two platforms
- * differ; applying the same rule before the protocol boundary also keeps RDP
- * scancode handling deterministic.
+ * RDP is a Windows-only remote desktop protocol in this app, so it always
+ * uses the Windows layout. RustDesk can target macOS or Windows and therefore
+ * requires an explicit per-session choice.
  */
 export enum RemoteKeyboardLayout {
   WINDOWS = 'windows',
@@ -37,8 +36,14 @@ export function mapPhysicalKeyForRemoteLayout(layout: RemoteKeyboardLayout, keyC
 export function shouldChoosePhysicalKeyboardLayout(protocol: string, _isDesktopDevice: boolean,
   _breakpoint: string): boolean {
   // 键盘布局描述的是远端系统，不取决于控制端是 PC、Pad 还是 Phone。
-  // 是否真正启用实体键盘代理由页面的“键鼠模式 + 实体键盘在线”共同决定。
-  return protocol === 'rdp' || protocol === 'rustdesk';
+  // RDP 目标固定为 Windows；只有 RustDesk 需要询问跨平台远端布局。
+  return protocol === 'rustdesk';
+}
+
+/** RDP always targets Windows, including when a session surface is reused. */
+export function physicalKeyboardLayoutForProtocol(protocol: string,
+  selectedLayout: RemoteKeyboardLayout): RemoteKeyboardLayout {
+  return protocol === 'rdp' ? RemoteKeyboardLayout.WINDOWS : selectedLayout;
 }
 
 export function shouldConsumeRemoteBack(connected: boolean, isDesktopDevice: boolean,

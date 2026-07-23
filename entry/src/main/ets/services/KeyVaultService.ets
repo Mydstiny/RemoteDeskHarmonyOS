@@ -6,6 +6,7 @@ import { hilog } from '@kit.PerformanceAnalysisKit';
 import { SshKey } from '../model/SshKey';
 import { TotpEntry } from '../model/TotpEntry';
 import { CloudStore } from './CloudStore';
+import { shouldPublishSnapshot } from './DataSnapshotRevisionPolicy';
 
 export interface TotpBatchAddResult {
   savedIds: string[]
@@ -25,6 +26,8 @@ export class KeyVaultService {
   private deletedSshKeyAt: Map<string, number> = new Map();
   private deletedTotpAt: Map<string, number> = new Map();
   private lastCloudSnapshotLoadedAt: number = 0;
+  private lastPublishedSnapshotSignature: string = '';
+  private hasPublishedSnapshot: boolean = false;
 
   static getInstance(): KeyVaultService {
     if (!KeyVaultService.instance) {
@@ -158,7 +161,25 @@ export class KeyVaultService {
     };
   }
 
-  private emitDataChange(): void {
+  private visibleDataSignature(): string {
+    const keys: string[] = [];
+    const entries: string[] = [];
+    this.sshKeys.forEach((key: SshKey): void => { keys.push(JSON.stringify(key.toJSON())); });
+    this.totpEntries.forEach((entry: TotpEntry): void => { entries.push(JSON.stringify(entry.toJSON())); });
+    keys.sort();
+    entries.sort();
+    return keys.join('\n') + '\n--totp--\n' + entries.join('\n');
+  }
+
+  private emitDataChange(force: boolean = false): void {
+    const nextSignature: string = this.visibleDataSignature();
+    if (!force && !shouldPublishSnapshot(
+      this.hasPublishedSnapshot, this.lastPublishedSnapshotSignature, nextSignature)) {
+      hilog.info(0x0001, 'CloudSync', 'KeyVaultService: visible snapshot unchanged');
+      return;
+    }
+    this.lastPublishedSnapshotSignature = nextSignature;
+    this.hasPublishedSnapshot = true;
     const listeners: Array<() => void> = this.dataChangeListeners.slice();
     for (let i = 0; i < listeners.length; i++) {
       try {

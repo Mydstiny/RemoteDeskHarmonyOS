@@ -13,8 +13,10 @@ export default function cloudSyncSettingsPolicyTest() {
       expect(names.indexOf('rdpColorDepth') >= 0).assertTrue();
       expect(names.indexOf('rustdeskImageQuality') >= 0).assertTrue();
       expect(names.indexOf('virtualMouseStyle') >= 0).assertTrue();
-      expect(names.indexOf('showVirtualMouse') >= 0).assertTrue();
-      expect(names.indexOf('showVirtualJoystick') >= 0).assertTrue();
+      expect(names.indexOf('showVirtualMouse') >= 0).assertFalse();
+      expect(names.indexOf('showVirtualJoystick') >= 0).assertFalse();
+      expect(cloudUserSettingIsSyncable('showVirtualMouse')).assertFalse();
+      expect(cloudUserSettingIsSyncable('showVirtualJoystick')).assertFalse();
       expect(cloudUserSettingIsSyncable('loginMode')).assertFalse();
       expect(cloudUserSettingIsSyncable('totpLocked')).assertFalse();
       expect(cloudUserSettingIsSyncable('remoteDesktopBgFlag')).assertFalse();

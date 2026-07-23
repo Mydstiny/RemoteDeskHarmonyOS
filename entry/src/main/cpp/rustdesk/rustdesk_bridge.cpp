@@ -17,6 +17,7 @@
 #include "common/safe_log.h"
 #include "extensions/extension_registry.h"
 #include <hilog/log.h>
+#include <algorithm>
 #include <string>
 
 // Rust FFI 函数声明 (extern "C", 来自 librustdesk_ffi.a)
@@ -35,6 +36,9 @@ extern "C" {
     void  rustdesk_send_mouse(void* handle, int x, int y, unsigned int button, bool pressed);
     void  rustdesk_send_mouse_wheel(void* handle, int x, int y, int delta);
     void  rustdesk_send_text(void* handle, const char* text);
+    bool  rustdesk_change_display_resolution(void* handle, int display, int width, int height);
+    bool  rustdesk_send_touch_scale(void* handle, int scale);
+    bool  rustdesk_send_touch_pan(void* handle, int phase, int x, int y);
     int   rustdesk_send_file(void* handle, uint64_t transfer_id, const char* remote_path,
                              const unsigned char* data, unsigned int len);
     struct RustDeskFfiTransferStatus { uint32_t state; uint64_t transferId; uint64_t transferredBytes;
@@ -44,9 +48,80 @@ extern "C" {
     size_t rustdesk_get_clipboard(void* handle, unsigned char* buffer, size_t buffer_len);
     bool  rustdesk_request_frame_refresh(void* handle);
     bool  rustdesk_report_video_pressure(void* handle, int level);
+    struct RustDeskFfiStreamStats {
+        uint32_t version;
+        uint32_t state;
+        uint32_t last_delay_ms;
+        uint32_t target_bitrate_kbps;
+        uint64_t video_messages;
+        uint64_t video_frames;
+        uint64_t keyframes;
+        uint64_t encoded_bytes;
+        uint64_t audio_frames;
+        uint64_t cadence_gaps;
+        uint64_t max_cadence_gap_ms;
+        uint64_t test_delay_count;
+        int32_t actual_codec;
+        int32_t width;
+        int32_t height;
+        int32_t connection_path;
+    };
+    bool  rustdesk_get_stream_stats(void* handle, RustDeskFfiStreamStats* out_stats);
+    struct RustDeskFfiDisplaySnapshot {
+        uint32_t version;
+        int32_t currentDisplay;
+        int32_t width;
+        int32_t height;
+        int32_t originalWidth;
+        int32_t originalHeight;
+        int32_t scaleMilli;
+        uint32_t geometryEpoch;
+        uint32_t resolutionCount;
+    };
+    struct RustDeskFfiResolution { int32_t width; int32_t height; };
+    bool  rustdesk_get_display_snapshot(void* handle, RustDeskFfiDisplaySnapshot* out_snapshot,
+                                        RustDeskFfiResolution* out_resolutions, size_t capacity);
     size_t rustdesk_last_error(char* buffer, size_t buffer_len);
     const char* rustdesk_version();
 }
+
+static constexpr uint32_t kRustDeskStreamStatsVersion = 1;
+static constexpr uint32_t kRustDeskDisplaySnapshotVersion = 1;
+static_assert(sizeof(RustDeskFfiStreamStats) == 96,
+              "RustDeskStreamStats ABI size changed; update both sides together");
+static_assert(alignof(RustDeskFfiStreamStats) == 8,
+              "RustDeskStreamStats ABI alignment changed");
+static_assert(offsetof(RustDeskFfiStreamStats, version) == 0);
+static_assert(offsetof(RustDeskFfiStreamStats, state) == 4);
+static_assert(offsetof(RustDeskFfiStreamStats, last_delay_ms) == 8);
+static_assert(offsetof(RustDeskFfiStreamStats, target_bitrate_kbps) == 12);
+static_assert(offsetof(RustDeskFfiStreamStats, video_messages) == 16);
+static_assert(offsetof(RustDeskFfiStreamStats, video_frames) == 24);
+static_assert(offsetof(RustDeskFfiStreamStats, keyframes) == 32);
+static_assert(offsetof(RustDeskFfiStreamStats, encoded_bytes) == 40);
+static_assert(offsetof(RustDeskFfiStreamStats, audio_frames) == 48);
+static_assert(offsetof(RustDeskFfiStreamStats, cadence_gaps) == 56);
+static_assert(offsetof(RustDeskFfiStreamStats, max_cadence_gap_ms) == 64);
+static_assert(offsetof(RustDeskFfiStreamStats, test_delay_count) == 72);
+static_assert(offsetof(RustDeskFfiStreamStats, actual_codec) == 80);
+static_assert(offsetof(RustDeskFfiStreamStats, width) == 84);
+static_assert(offsetof(RustDeskFfiStreamStats, height) == 88);
+static_assert(offsetof(RustDeskFfiStreamStats, connection_path) == 92);
+static_assert(sizeof(RustDeskFfiDisplaySnapshot) == 36,
+              "RustDeskDisplaySnapshot ABI size changed; update both sides together");
+static_assert(alignof(RustDeskFfiDisplaySnapshot) == 4,
+              "RustDeskDisplaySnapshot ABI alignment changed");
+static_assert(offsetof(RustDeskFfiDisplaySnapshot, version) == 0);
+static_assert(offsetof(RustDeskFfiDisplaySnapshot, currentDisplay) == 4);
+static_assert(offsetof(RustDeskFfiDisplaySnapshot, width) == 8);
+static_assert(offsetof(RustDeskFfiDisplaySnapshot, height) == 12);
+static_assert(offsetof(RustDeskFfiDisplaySnapshot, originalWidth) == 16);
+static_assert(offsetof(RustDeskFfiDisplaySnapshot, originalHeight) == 20);
+static_assert(offsetof(RustDeskFfiDisplaySnapshot, scaleMilli) == 24);
+static_assert(offsetof(RustDeskFfiDisplaySnapshot, geometryEpoch) == 28);
+static_assert(offsetof(RustDeskFfiDisplaySnapshot, resolutionCount) == 32);
+static_assert(sizeof(RustDeskFfiResolution) == 8,
+              "RustDeskResolution ABI size changed; update both sides together");
 #endif
 #include <sys/socket.h>
 #include <sys/un.h>
@@ -59,6 +134,7 @@ extern "C" {
 #include <cstring>
 #include <cerrno>
 #include <cstdlib>
+#include <cstddef>
 #include <vector>
 #include <thread>
 #include <atomic>
@@ -325,6 +401,14 @@ struct RustDeskBridge::Impl {
     std::atomic<uint64_t>   connectSerial {0};
     std::atomic<bool>       disconnectRequested {false};
     std::atomic<bool>       ffiStreamEnded {false};
+    std::atomic<uint64_t>   sessionId {0};
+    std::atomic<uint64_t>   callbackVideoFrames {0};
+    std::atomic<uint64_t>   callbackVideoBytes {0};
+    std::atomic<uint64_t>   callbackKeyframes {0};
+    std::atomic<int>        callbackCodec {-1};
+    std::atomic<int>        callbackWidth {0};
+    std::atomic<int>        callbackHeight {0};
+    std::atomic<uint64_t>   lastFrameAtMs {0};
     RemoteCursorStore       cursorStore;
     int                     ipcFd = -1;   // IPC socket fd (IPC 模式)
     int                     sockFd = -1;  // TCP socket fd (实验模式)
@@ -348,6 +432,12 @@ struct RustDeskBridge::Impl {
         if (cb) { cb(s, msg); }
     }
 };
+
+static uint64_t rdSteadyNowMs() {
+    using Clock = std::chrono::steady_clock;
+    return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+        Clock::now().time_since_epoch()).count());
+}
 
 #ifdef RUSTDESK_USE_REAL_CORE
 struct RustDeskFfiVideoFrame {
@@ -389,6 +479,9 @@ static std::atomic<uint64_t> g_ffiKeySendCount {0};
 static std::atomic<uint64_t> g_ffiWheelSendCount {0};
 static std::atomic<uint64_t> g_ffiTextSendCount {0};
 static std::atomic<uint64_t> g_ffiFileSendCount {0};
+static std::atomic<uint64_t> g_ffiCursorShapeCount {0};
+static std::atomic<uint64_t> g_ffiCursorPositionCount {0};
+static std::atomic<uint64_t> g_ffiCursorVisibilityCount {0};
 
 static const char* rdCodecName(int codec) {
     switch (codec) {
@@ -435,6 +528,15 @@ void RustDeskBridge::onFfiFrame(const void* framePtr, void* userData) {
     }
 
     uint64_t index = ++g_ffiVideoFrameCount;
+    impl->callbackVideoFrames.fetch_add(1, std::memory_order_relaxed);
+    impl->callbackVideoBytes.fetch_add(static_cast<uint64_t>(ffiFrame->size), std::memory_order_relaxed);
+    if (ffiFrame->isKeyFrame) {
+        impl->callbackKeyframes.fetch_add(1, std::memory_order_relaxed);
+    }
+    impl->callbackCodec.store(ffiFrame->codec, std::memory_order_relaxed);
+    impl->callbackWidth.store(ffiFrame->width, std::memory_order_relaxed);
+    impl->callbackHeight.store(ffiFrame->height, std::memory_order_relaxed);
+    impl->lastFrameAtMs.store(rdSteadyNowMs(), std::memory_order_release);
     {
         using Clock = std::chrono::steady_clock;
         static std::mutex cadenceMutex;
@@ -578,19 +680,40 @@ void RustDeskBridge::onFfiCursor(const void* cursorPtr, void* userData) {
     switch (cursor->kind) {
         case 0: {
             if (!cursor->rgba || cursor->rgbaLen == 0 || cursor->rgbaLen > kRemoteCursorMaxBytes) {
+                OH_LOG_WARN(LOG_APP,
+                    "[RustDesk-FFI] cursor shape rejected id=%{public}llu bytes=%{public}zu",
+                    static_cast<unsigned long long>(cursor->shapeId), cursor->rgbaLen);
                 return;
             }
             std::vector<uint8_t> rgba(cursor->rgba, cursor->rgba + cursor->rgbaLen);
-            impl->cursorStore.setShape(cursor->shapeId, cursor->width, cursor->height,
-                                       cursor->hotX, cursor->hotY, rgba);
+            const bool accepted = impl->cursorStore.setShape(cursor->shapeId, cursor->width,
+                cursor->height, cursor->hotX, cursor->hotY, rgba);
+            const uint64_t index = ++g_ffiCursorShapeCount;
+            OH_LOG_INFO(LOG_APP,
+                "[RustDesk-FFI] cursor shape #%{public}llu id=%{public}llu size=%{public}dx%{public}d hot=%{public}d,%{public}d accepted=%{public}s",
+                static_cast<unsigned long long>(index),
+                static_cast<unsigned long long>(cursor->shapeId), cursor->width, cursor->height,
+                cursor->hotX, cursor->hotY, accepted ? "yes" : "no");
             break;
         }
-        case 1:
+        case 1: {
             impl->cursorStore.setPosition(cursor->x, cursor->y);
+            const uint64_t index = ++g_ffiCursorPositionCount;
+            if (index <= 10 || index % 300 == 0) {
+                OH_LOG_INFO(LOG_APP,
+                    "[RustDesk-FFI] cursor position #%{public}llu x=%{public}d y=%{public}d",
+                    static_cast<unsigned long long>(index), cursor->x, cursor->y);
+            }
             break;
-        case 2:
+        }
+        case 2: {
             impl->cursorStore.setVisible(cursor->visible);
+            const uint64_t index = ++g_ffiCursorVisibilityCount;
+            OH_LOG_INFO(LOG_APP,
+                "[RustDesk-FFI] cursor visibility #%{public}llu visible=%{public}s",
+                static_cast<unsigned long long>(index), cursor->visible ? "yes" : "no");
             break;
+        }
         default:
             break;
     }
@@ -670,7 +793,142 @@ RustDeskBridge::RustDeskBridge(RustDeskMode mode)
 }
 
 void RustDeskBridge::setSessionIdentity(uint64_t sessionId) {
+    impl_->sessionId.store(sessionId, std::memory_order_release);
+    impl_->callbackVideoFrames.store(0, std::memory_order_release);
+    impl_->callbackVideoBytes.store(0, std::memory_order_release);
+    impl_->callbackKeyframes.store(0, std::memory_order_release);
+    impl_->callbackCodec.store(-1, std::memory_order_release);
+    impl_->callbackWidth.store(0, std::memory_order_release);
+    impl_->callbackHeight.store(0, std::memory_order_release);
+    impl_->lastFrameAtMs.store(0, std::memory_order_release);
     impl_->cursorStore.reset(sessionId, "rustdesk");
+    // RustDesk does not guarantee that an unchanged cursor shape is repeated
+    // after every UI/surface handoff. This local bootstrap shape is explicitly
+    // marked non-authoritative so ArkUI can keep a stable circle affordance
+    // until the protocol supplies the real cursor bitmap.
+    impl_->cursorStore.setFallbackShape();
+    impl_->cursorStore.setVisible(true);
+}
+
+RustDeskDiagnosticsStats RustDeskBridge::getDiagnostics() const {
+    RustDeskDiagnosticsStats result;
+    result.sessionId = impl_->sessionId.load(std::memory_order_acquire);
+    result.receivedFrames = impl_->callbackVideoFrames.load(std::memory_order_acquire);
+    result.receivedBytes = impl_->callbackVideoBytes.load(std::memory_order_acquire);
+    result.keyframes = impl_->callbackKeyframes.load(std::memory_order_acquire);
+    result.lastFrameAtMs = impl_->lastFrameAtMs.load(std::memory_order_acquire);
+    result.codec = impl_->callbackCodec.load(std::memory_order_acquire);
+    result.width = impl_->callbackWidth.load(std::memory_order_acquire);
+    result.height = impl_->callbackHeight.load(std::memory_order_acquire);
+#ifdef RUSTDESK_USE_REAL_CORE
+    void* handle = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(impl_->mutex);
+        handle = impl_->ffiHandle;
+    }
+    if (mode_ == RustDeskMode::FFI && handle != nullptr) {
+        RustDeskFfiStreamStats ffiStats {};
+        const bool snapshotRead = rustdesk_get_stream_stats(handle, &ffiStats);
+        if (snapshotRead && ffiStats.version == kRustDeskStreamStatsVersion) {
+            result.supported = true;
+            result.latencyMs = ffiStats.test_delay_count > 0 ?
+                static_cast<int>(ffiStats.last_delay_ms) : -1;
+            result.targetBitrateKbps = static_cast<int>(ffiStats.target_bitrate_kbps);
+            result.videoMessages = ffiStats.video_messages;
+            result.audioFrames = ffiStats.audio_frames;
+            result.cadenceGaps = ffiStats.cadence_gaps;
+            result.maxCadenceGapMs = ffiStats.max_cadence_gap_ms;
+            result.testDelayCount = ffiStats.test_delay_count;
+            if (result.codec < 0) result.codec = ffiStats.actual_codec;
+            if (result.width <= 0) result.width = ffiStats.width;
+            if (result.height <= 0) result.height = ffiStats.height;
+            result.connectionPath = ffiStats.connection_path;
+        } else if (snapshotRead) {
+            OH_LOG_WARN(LOG_APP,
+                "[RustDesk-FFI] stream diagnostics snapshot rejected: unsupported ABI version=%{public}u",
+                ffiStats.version);
+        }
+    }
+#endif
+    return result;
+}
+
+RustDeskDisplayCapabilities RustDeskBridge::getDisplayCapabilities() const {
+    RustDeskDisplayCapabilities result;
+#ifdef RUSTDESK_USE_REAL_CORE
+    void* handle = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(impl_->mutex);
+        handle = impl_->ffiHandle;
+    }
+    if (mode_ != RustDeskMode::FFI || handle == nullptr) {
+        return result;
+    }
+    RustDeskFfiDisplaySnapshot snapshot {};
+    RustDeskFfiResolution resolutions[32] {};
+    if (!rustdesk_get_display_snapshot(handle, &snapshot, resolutions, 32) ||
+        snapshot.version != kRustDeskDisplaySnapshotVersion) {
+        return result;
+    }
+    result.supported = true;
+    result.currentDisplay = snapshot.currentDisplay;
+    result.width = snapshot.width;
+    result.height = snapshot.height;
+    result.originalWidth = snapshot.originalWidth;
+    result.originalHeight = snapshot.originalHeight;
+    result.scaleMilli = snapshot.scaleMilli;
+    result.geometryEpoch = snapshot.geometryEpoch;
+    const size_t count = std::min<size_t>(snapshot.resolutionCount, 32);
+    result.resolutions.reserve(count);
+    for (size_t index = 0; index < count; ++index) {
+        if (resolutions[index].width > 0 && resolutions[index].height > 0) {
+            result.resolutions.push_back({resolutions[index].width, resolutions[index].height});
+        }
+    }
+#endif
+    return result;
+}
+
+bool RustDeskBridge::changeDisplayResolution(int display, int width, int height) {
+#ifdef RUSTDESK_USE_REAL_CORE
+    void* handle = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(impl_->mutex);
+        handle = impl_->ffiHandle;
+    }
+    if (mode_ == RustDeskMode::FFI && handle != nullptr) {
+        return rustdesk_change_display_resolution(handle, display, width, height);
+    }
+#endif
+    return false;
+}
+
+bool RustDeskBridge::sendTouchScale(int scale) {
+#ifdef RUSTDESK_USE_REAL_CORE
+    void* handle = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(impl_->mutex);
+        handle = impl_->ffiHandle;
+    }
+    if (mode_ == RustDeskMode::FFI && handle != nullptr) {
+        return rustdesk_send_touch_scale(handle, scale);
+    }
+#endif
+    return false;
+}
+
+bool RustDeskBridge::sendTouchPan(int phase, int x, int y) {
+#ifdef RUSTDESK_USE_REAL_CORE
+    void* handle = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(impl_->mutex);
+        handle = impl_->ffiHandle;
+    }
+    if (mode_ == RustDeskMode::FFI && handle != nullptr) {
+        return rustdesk_send_touch_pan(handle, phase, x, y);
+    }
+#endif
+    return false;
 }
 
 RemoteCursorSnapshot RustDeskBridge::getRemoteCursorSnapshot(bool includePixels) {
@@ -867,10 +1125,10 @@ int RustDeskBridge::connect(const ConnectionConfig& cfg) {
             ? cfg.host
             : (cfg.customHostname.empty() ? cfg.username : cfg.customHostname);
         const std::string logPeer = SafeLog::MaskUser(ffiPeerId);
-        const std::string serverKeyId = cfg.rdServerKey.empty() ? "default" : SafeLog::HashForLog(cfg.rdServerKey);
-        OH_LOG_INFO(LOG_APP, "[RustDesk-FFI] Request peer=%{public}s keyId=%{public}s key=%{public}s",
-                    logPeer.c_str(), serverKeyId.c_str(),
-                    SafeLog::MaskSecretLenOnly(cfg.rdServerKey).c_str());
+        const char* serverKeyMode = cfg.rdServerKeyMode == 2 ? "shared" :
+            (cfg.rdServerKeyMode == 1 ? "public" : "auto");
+        OH_LOG_INFO(LOG_APP, "[RustDesk-FFI] Request peer=%{public}s serverKeyMode=%{public}s",
+                    logPeer.c_str(), serverKeyMode);
 
         RustDeskBridge::Impl* impl = impl_.get();
         std::thread connectThread([impl, cfg, ffiPeerId, logHost, serial]() {
@@ -891,6 +1149,7 @@ int RustDeskBridge::connect(const ConnectionConfig& cfg) {
             ffiCfg.profile  = 1; // Balanced
             ffiCfg.fps      = 0; // From profile
             ffiCfg.auth_mode = (cfg.rdAuthMode == 1) ? 1 : 0;
+            ffiCfg.key_mode = cfg.rdServerKeyMode;
             // T-209: 直连模式映射
             ffiCfg.direct_connection = false;
             if (cfg.rdDirectIp && !cfg.host.empty()) {
