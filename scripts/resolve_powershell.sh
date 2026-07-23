@@ -6,6 +6,10 @@ resolve_powershell_command() {
     local user_home="${HOME:-}"
     local candidate
 
+    if [ -n "${POWERSHELL_COMMAND:-}" ] && [ -x "$POWERSHELL_COMMAND" ]; then
+        printf '%s\n' "$POWERSHELL_COMMAND"
+        return 0
+    fi
     if command -v pwsh >/dev/null 2>&1; then
         command -v pwsh
         return 0
@@ -14,11 +18,6 @@ resolve_powershell_command() {
         command -v powershell.exe
         return 0
     fi
-    if [ -n "${POWERSHELL_COMMAND:-}" ] && [ -x "$POWERSHELL_COMMAND" ]; then
-        printf '%s\n' "$POWERSHELL_COMMAND"
-        return 0
-    fi
-
     for candidate in \
         ".tools/pwsh/pwsh" \
         "/opt/homebrew/bin/pwsh" \
