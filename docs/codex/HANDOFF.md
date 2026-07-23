@@ -4,7 +4,8 @@ Updated: 2026-07-23 Asia/Shanghai
 
 ## Source
 
-- Migration baseline: `main` at `dc715d230`, with PR #32 merged using a merge commit
+- Current public `main`: `e9ea4f541`, with PR #33 merged using a merge commit
+- Mac hdc workflow fix: `dc715d230`, with PR #32 merged using a merge commit
 - Active task branch: none
 - FreeRDP submodule: `dae8276ac7361b8d14f7b87d41163fe03dbb944e`
 

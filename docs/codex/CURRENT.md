@@ -6,7 +6,8 @@ Updated: 2026-07-23 Asia/Shanghai
 
 - Repository: `Mydstiny/RemoteDeskHarmonyOS`
 - Public branch: `main`
-- Last migration merge commit: `dc715d230` (PR #32, merged with a merge commit)
+- Current public `main`: `e9ea4f541` (PR #33, merged with a merge commit)
+- Last workflow change: `dc715d230` (PR #32, merged with a merge commit)
 - Active task: none; the completed Mac `hdc` toolchain fix is already merged.
 - Shared state is synchronized with public `main`; the next device must sync before
   starting an independent task.
