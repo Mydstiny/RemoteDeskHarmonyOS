@@ -55,6 +55,7 @@ import boundedDocumentIoTest from './BoundedDocumentIo.test';
 import sensitiveDataStatePolicyTest from './SensitiveDataStatePolicy.test';
 import sensitiveDataMigrationPolicyTest from './SensitiveDataMigrationPolicy.test';
 import cloudTableAdapterTest from './CloudTableAdapter.test';
+import loginStartupPolicyTest from './LoginStartupPolicy.test';
 
 export default function testsuite() {
   localUnitTest();
@@ -114,4 +115,5 @@ export default function testsuite() {
   sensitiveDataStatePolicyTest();
   sensitiveDataMigrationPolicyTest();
   cloudTableAdapterTest();
+  loginStartupPolicyTest();
 }

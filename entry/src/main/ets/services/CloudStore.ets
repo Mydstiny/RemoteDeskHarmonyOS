@@ -37,8 +37,12 @@ import { CloudSyncCoordinator, CloudSyncCoordinatorHooks, CloudSyncOperationResu
 import {
   cloudDistributedTableAutoSync,
   cloudLocalMutationAllowed,
+  cloudSyncFailureMessage,
+  CloudSyncFailureKind,
+  classifyCloudSyncFailure,
   cloudSyncProgressFinished,
-  cloudSyncProgressSucceeded
+  cloudSyncProgressSucceeded,
+  shouldRejectAutomaticEmptyCloudSnapshot
 } from './CloudSyncCoordinatorPolicy';
 import { CloudSyncSelectionStore } from './CloudSyncSelectionStore';
 import {
@@ -125,6 +129,7 @@ export class CloudStore implements CryptoCloudStore {
   private syncSuccessCount: number = 0;
   private syncFailCount: number = 0;
   private lastError: string = '';
+  private lastSyncFailureKind: CloudSyncFailureKind = 'none';
   private tableStatus: Record<string, TableSyncStatus> = {}
   private automaticPushSuppressed: boolean = false;
   private manualDownloadSnapshot: Record<string, Array<Record<string, string>>> | null = null;
@@ -434,9 +439,19 @@ export class CloudStore implements CryptoCloudStore {
       pendingMutationTableRevisions: (): Record<string, number> => this.pendingMutationTableRevisions(),
       acknowledgeMutationJournal: (table: string, revision: number): boolean =>
         this.acknowledgeMutationJournal(table, revision),
+      failureKindForTable: (_table: string): CloudSyncFailureKind => this.lastSyncFailureKind,
       hasRestoredNotUploaded: (): boolean => this.hasRestoredNotUploaded(),
       clearRestoredNotUploaded: (): boolean => this.clearRestoredNotUploaded()
     };
+  }
+
+  getLastSyncFailureKind(): CloudSyncFailureKind {
+    return this.lastSyncFailureKind;
+  }
+
+  getLastSyncErrorMessage(): string {
+    if (this.lastSyncFailureKind === 'none') { return ''; }
+    return cloudSyncFailureMessage(this.lastSyncFailureKind);
   }
 
   pendingSyncTableCount(): number {
@@ -447,28 +462,113 @@ export class CloudStore implements CryptoCloudStore {
   exportAllTableRows(): Record<string, Array<Record<string, string>>> {
     const snapshot: Record<string, Array<Record<string, string>>> = {};
     for (let i = 0; i < TABLES.length; i++) {
-      const table: string = TABLES[i];
-      snapshot[table] = [];
-      if (!this.store) { continue; }
+      snapshot[TABLES[i]] = this.exportTableRows(TABLES[i]);
+    }
+    return snapshot;
+  }
+
+  private exportTableRows(table: string): Array<Record<string, string>> {
+    const result: Array<Record<string, string>> = [];
+    if (!this.store) { return result; }
+    try {
       const rows = this.store.querySync(new relationalStore.RdbPredicates(table));
       const columns: string[] = localBackupColumnsForTable(table);
       while (rows.goToNextRow()) {
         const row: Record<string, string> = {};
         for (let c = 0; c < columns.length; c++) {
           const index: number = rows.getColumnIndex(columns[c]);
-          // Old installations legitimately contain NULL in columns added by a
-          // later migration. Preserve that meaning by omitting the optional
-          // field; converting NULL to "" makes integer columns invalid and
-          // causes a freshly-created backup to fail its own verification.
+          // Keep nullable migration columns absent instead of converting NULL
+          // into an invalid typed value during a safety restore.
           if (index >= 0 && !rows.isColumnNull(index)) { row[columns[c]] = rows.getString(index); }
         }
-        snapshot[table].push(row);
+        result.push(row);
       }
       rows.close();
-      snapshot[table].sort((a: Record<string, string>, b: Record<string, string>): number =>
+      result.sort((a: Record<string, string>, b: Record<string, string>): number =>
         (a['id'] || '').localeCompare(b['id'] || ''));
+    } catch (err) {
+      hilog.warn(0x0001, 'CloudSync', '[CloudStore] export table failed table=' + table +
+        ' err=' + safeError(err));
     }
-    return snapshot;
+    return result;
+  }
+
+  private countVisibleTableRows(table: string): number {
+    if (!this.store) { return 0; }
+    let count: number = 0;
+    try {
+      const rows = this.store.querySync(new relationalStore.RdbPredicates(table));
+      const deletedIndex: number = rows.getColumnIndex(relationalStore.Field.DELETED_FLAG_FIELD);
+      while (rows.goToNextRow()) {
+        if (deletedIndex < 0 || rows.getLong(deletedIndex) === 0) { count++; }
+      }
+      rows.close();
+    } catch (err) {
+      hilog.warn(0x0001, 'CloudSync', '[CloudStore] count visible rows failed table=' + table +
+        ' err=' + safeError(err));
+    }
+    return count;
+  }
+
+  private countCloudDeletedRows(table: string): number {
+    if (!this.store) { return 0; }
+    let count: number = 0;
+    try {
+      const rows = this.store.querySync(new relationalStore.RdbPredicates(table));
+      const deletedIndex: number = rows.getColumnIndex(relationalStore.Field.DELETED_FLAG_FIELD);
+      while (rows.goToNextRow()) {
+        if (deletedIndex >= 0 && rows.getLong(deletedIndex) !== 0) { count++; }
+      }
+      rows.close();
+    } catch (_e) { return 0; }
+    return count;
+  }
+
+  private async restoreProtectedTableRows(table: string,
+    rows: Array<Record<string, string>>): Promise<boolean> {
+    if (!this.store) { return false; }
+    this.setAutomaticPushSuppressed(true);
+    this.localRestoreActive = true;
+    try {
+      const columns: string[] = localBackupColumnsForTable(table);
+      this.store.beginTransaction();
+      await this.store.executeSql('DELETE FROM ' + table);
+      for (let i = 0; i < rows.length; i++) {
+        const bucket: relationalStore.ValuesBucket = {};
+        const keys: string[] = Object.keys(rows[i]);
+        for (let k = 0; k < keys.length; k++) {
+          if (columns.indexOf(keys[k]) < 0) { throw new Error('restore unknown column'); }
+          bucket[keys[k]] = rows[i][keys[k]];
+        }
+        if (!rdbInsertSucceeded(this.store.insertSync(table, bucket,
+          relationalStore.ConflictResolution.ON_CONFLICT_REPLACE))) {
+          throw new Error('restore insert failed');
+        }
+      }
+      this.store.commit();
+      return true;
+    } catch (err) {
+      try { this.store.rollBack(); } catch (_ignored) {}
+      hilog.error(0x0001, 'CloudSync', '[CloudStore] protected snapshot restore failed table=' +
+        table + ' err=' + safeError(err));
+      return false;
+    } finally {
+      this.localRestoreActive = false;
+      this.setAutomaticPushSuppressed(false);
+    }
+  }
+
+  private async cleanCloudDeletedRows(table: string): Promise<boolean> {
+    if (!this.store) { return false; }
+    try {
+      await this.store.cleanDirtyData(table);
+      hilog.info(0x0001, 'CloudSync', '[CloudStore] cleaned cloud-deleted rows table=' + table);
+      return true;
+    } catch (err) {
+      hilog.warn(0x0001, 'CloudSync', '[CloudStore] clean dirty data failed table=' + table +
+        ' err=' + safeError(err));
+      return false;
+    }
   }
 
   private hasAnyBusinessRows(): boolean {
@@ -640,26 +740,59 @@ export class CloudStore implements CryptoCloudStore {
 
   private syncTableAsync(table: string, direction: CloudSyncDirection, label: string): Promise<boolean> {
     return new Promise<boolean>((resolve) => {
-      if (!this.store || !this.cloudAvailable) { resolve(false); return; }
+      if (!this.store || !this.cloudAvailable) {
+        this.lastSyncFailureKind = 'cloud_service';
+        resolve(false);
+        return;
+      }
       const mode: relationalStore.SyncMode = direction === 'cloudFirst'
         ? relationalStore.SyncMode.SYNC_MODE_CLOUD_FIRST
         : relationalStore.SyncMode.SYNC_MODE_NATIVE_FIRST;
+      this.lastSyncFailureKind = 'none';
+      const protectsEmptySnapshot: boolean = direction === 'cloudFirst' &&
+        (label === 'startup' || label === 'foreground' || label === 'cloudEvent');
+      const beforeVisibleRows: number = protectsEmptySnapshot ? this.countVisibleTableRows(table) : 0;
+      const protectedRows: Array<Record<string, string>> = protectsEmptySnapshot
+        ? this.exportTableRows(table) : [];
+      if (protectsEmptySnapshot && beforeVisibleRows > 0 && protectedRows.length === 0) {
+        this.lastSyncFailureKind = 'empty_snapshot';
+        this.lastError = label + ' ' + table + ': EMPTY_CLOUD_SNAPSHOT safety snapshot unavailable';
+        resolve(false);
+        return;
+      }
       let settled: boolean = false;
-      const recordFailure = (message: string): void => {
+      let conflictRecoveryStarted: boolean = false;
+      const finishFailure = (message: string, kind: CloudSyncFailureKind): void => {
         if (settled) { return; }
         settled = true;
         this.lastSyncTime = Date.now();
         this.syncFailCount++;
+        this.lastSyncFailureKind = kind;
         this.lastError = label + ' ' + table + ': ' + message;
         if (this.tableStatus[table]) { this.tableStatus[table].fail++; }
         hilog.error(0x0001, 'CloudSync', this.lastError);
         resolve(false);
+      };
+      const recordFailure = (message: string, forcedKind?: CloudSyncFailureKind): void => {
+        if (settled) { return; }
+        const kind: CloudSyncFailureKind = forcedKind || classifyCloudSyncFailure(message);
+        if (kind === 'version_conflict' && !conflictRecoveryStarted) {
+          conflictRecoveryStarted = true;
+          this.cleanCloudDeletedRows(table).then((cleaned: boolean): void => {
+            finishFailure(message + ' tombstoneCleanup=' + cleaned.toString(), kind);
+          }, (): void => {
+            finishFailure(message + ' tombstoneCleanup=false', kind);
+          });
+          return;
+        }
+        finishFailure(message, kind);
       };
       const recordSuccess = (): void => {
         if (settled) { return; }
         settled = true;
         this.lastSyncTime = Date.now();
         this.syncSuccessCount++;
+        this.lastSyncFailureKind = 'none';
         this.cloudServiceGuidanceNeeded = false;
         if (this.tableStatus[table]) {
           this.tableStatus[table].ok++;
@@ -668,30 +801,63 @@ export class CloudStore implements CryptoCloudStore {
         hilog.info(0x0001, 'CloudSync', label + ' transfer complete table=' + table);
         resolve(true);
       };
-      this.store.cloudSync(mode, [table],
-        (progress: relationalStore.ProgressDetails): void => {
-          const schedule: number = progress.schedule as number;
-          const code: number = progress.code as number;
-          hilog.info(0x0001, 'CloudSync', label + ' progress table=' + table +
-            ' schedule=' + schedule.toString() + ' code=' + code.toString());
-          if (!cloudSyncProgressFinished(schedule)) { return; }
-          if (cloudSyncProgressSucceeded(schedule, code)) {
-            recordSuccess();
-          } else {
-            recordFailure('progressCode=' + code.toString());
-          }
-        },
-        (err: BusinessError | undefined): void => {
-          if (err) {
-            this.cloudServiceGuidanceNeeded = this.cloudServiceGuidanceNeeded || this.errorRequiresCloudServiceGuidance(err);
-            recordFailure('code=' + err.code.toString() + ' msg=' + err.message);
-            return;
-          }
-          // On this device the completion callback confirms that the task was
-          // accepted, while Progress.SYNC_FINISH arrives after the real transfer.
-          hilog.info(0x0001, 'CloudSync', label + ' accepted table=' + table);
+      const finishCloudFirstSuccess = (): void => {
+        const afterVisibleRows: number = this.countVisibleTableRows(table);
+        if (shouldRejectAutomaticEmptyCloudSnapshot(label, direction,
+          beforeVisibleRows, afterVisibleRows)) {
+          this.restoreProtectedTableRows(table, protectedRows).then((restored: boolean): void => {
+            recordFailure('EMPTY_CLOUD_SNAPSHOT before=' + beforeVisibleRows.toString() +
+              ' after=' + afterVisibleRows.toString() + ' restored=' + restored.toString(), 'empty_snapshot');
+          }, (): void => {
+            recordFailure('EMPTY_CLOUD_SNAPSHOT before=' + beforeVisibleRows.toString() +
+              ' after=' + afterVisibleRows.toString() + ' restored=false', 'empty_snapshot');
+          });
+          return;
         }
-      );
+        const dirtyRows: number = this.countCloudDeletedRows(table);
+        if (dirtyRows > 0) {
+          this.cleanCloudDeletedRows(table).then((cleaned: boolean): void => {
+            if (!cleaned) {
+              recordFailure('TOMBSTONE_CLEANUP dirtyRows=' + dirtyRows.toString(), 'tombstone_cleanup');
+              return;
+            }
+            recordSuccess();
+          }, (): void => {
+            recordFailure('TOMBSTONE_CLEANUP dirtyRows=' + dirtyRows.toString(), 'tombstone_cleanup');
+          });
+          return;
+        }
+        recordSuccess();
+      };
+      try {
+        this.store.cloudSync(mode, [table],
+          (progress: relationalStore.ProgressDetails): void => {
+            const schedule: number = progress.schedule as number;
+            const code: number = progress.code as number;
+            hilog.info(0x0001, 'CloudSync', label + ' progress table=' + table +
+              ' schedule=' + schedule.toString() + ' code=' + code.toString());
+            if (!cloudSyncProgressFinished(schedule)) { return; }
+            if (cloudSyncProgressSucceeded(schedule, code)) {
+              if (direction === 'cloudFirst') { finishCloudFirstSuccess(); }
+              else { recordSuccess(); }
+            } else {
+              recordFailure('progressCode=' + code.toString());
+            }
+          },
+          (err: BusinessError | undefined): void => {
+            if (err) {
+              this.cloudServiceGuidanceNeeded = this.cloudServiceGuidanceNeeded || this.errorRequiresCloudServiceGuidance(err);
+              recordFailure('code=' + err.code.toString() + ' msg=' + err.message);
+              return;
+            }
+            // On this device the completion callback confirms that the task was
+            // accepted, while Progress.SYNC_FINISH arrives after the real transfer.
+            hilog.info(0x0001, 'CloudSync', label + ' accepted table=' + table);
+          }
+        );
+      } catch (err) {
+        recordFailure('exception=' + safeError(err));
+      }
     });
   }
 

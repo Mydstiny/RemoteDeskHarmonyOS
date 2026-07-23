@@ -1233,7 +1233,9 @@ struct HostListPage {
       this.cloudSyncStep = CLOUD_SYNC_SHEET_UNAVAILABLE;
       return;
     }
-    this.cloudSyncError = '上传部分数据可能已完成，请检查网络后重试以完成其余数据。';
+    const uploadError: string = cloud.getLastSyncErrorMessage();
+    this.cloudSyncError = uploadError !== '' ? uploadError :
+      '上传未确认全部完成，请检查网络后重试。';
     this.cloudSyncStep = CLOUD_SYNC_SHEET_UPLOAD_CONFIRM;
   }
 
@@ -1256,9 +1258,10 @@ struct HostListPage {
       this.cloudSyncStep = CLOUD_SYNC_SHEET_UNAVAILABLE;
       return;
     }
+    const downloadError: string = cloud.getLastSyncErrorMessage();
     this.cloudSyncError = result.rollbackFailed
       ? '下载失败且本地恢复未完成。请勿继续修改数据，检查网络后重试或从本地备份恢复。'
-      : '下载失败，已自动恢复操作前的本地数据。请检查网络后重试。';
+      : (downloadError !== '' ? downloadError : '下载失败，已自动恢复操作前的本地数据。请检查网络后重试。');
     this.cloudSyncStep = CLOUD_SYNC_SHEET_DOWNLOAD_CONFIRM;
   }
 

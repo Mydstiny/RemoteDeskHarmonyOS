@@ -9,8 +9,10 @@ import {
   CloudSyncRequest,
   CloudSyncRetryRecord,
   CloudSyncSource,
+  CloudSyncFailureKind,
   automaticRetryKey,
   coalesceAutomaticPush,
+  shouldBlockAutomaticRetry,
   isAutomaticRetryRecord,
   nextCloudSyncRetryDelayMs,
   retryTablesStillSelected,
@@ -24,6 +26,7 @@ const TAG = 'CloudSyncCoordinator';
 const PREFS_NAME = 'RemoteDesktopAppPrefs';
 const RETRY_PREFERENCE_KEY = 'cloudSyncRetryRecord';
 const DIRTY_PREFERENCE_KEY = 'cloudSyncDirtyTables';
+const CONFLICT_PREFERENCE_KEY = 'cloudSyncConflictTables';
 
 export interface CloudSyncOperationResult {
   ok: boolean;
@@ -31,6 +34,7 @@ export interface CloudSyncOperationResult {
   tables: string[];
   failedTables: string[];
   rollbackFailed: boolean;
+  failureKind: CloudSyncFailureKind;
 }
 
 export type CloudSyncTableExecutor = (table: string, direction: CloudSyncDirection, label: string) => Promise<boolean>;
@@ -43,6 +47,7 @@ export interface CloudSyncCoordinatorHooks {
   setRestorePending: (pending: boolean) => void;
   pendingMutationTableRevisions?: () => Record<string, number>;
   acknowledgeMutationJournal?: (table: string, coveredRevision: number) => boolean;
+  failureKindForTable?: (table: string) => CloudSyncFailureKind;
   hasRestoredNotUploaded?: () => boolean;
   clearRestoredNotUploaded?: () => boolean;
 }
@@ -59,10 +64,12 @@ export async function executeCloudSyncRequest(
   onCloudFirstApplied: (tables: string[]) => void
 ): Promise<CloudSyncOperationResult> {
   const failedTables: string[] = [];
+  let failureKind: CloudSyncFailureKind = 'none';
   if (!executor || request.tables.length === 0) {
     return {
       ok: request.tables.length === 0, source: request.source, tables: request.tables.slice(),
-      failedTables: request.tables.slice(), rollbackFailed: false
+      failedTables: request.tables.slice(), rollbackFailed: false,
+      failureKind: request.tables.length === 0 ? 'none' : 'unknown'
     };
   }
   if (request.source === 'manualDownload') {
@@ -70,13 +77,13 @@ export async function executeCloudSyncRequest(
       if (!hooks || !hooks.beginManualDownload()) {
         return {
           ok: false, source: request.source, tables: request.tables.slice(),
-          failedTables: request.tables.slice(), rollbackFailed: false
+          failedTables: request.tables.slice(), rollbackFailed: false, failureKind: 'unknown'
         };
       }
     } catch (_e) {
       return {
         ok: false, source: request.source, tables: request.tables.slice(),
-        failedTables: request.tables.slice(), rollbackFailed: false
+        failedTables: request.tables.slice(), rollbackFailed: false, failureKind: 'unknown'
       };
     }
   }
@@ -87,6 +94,7 @@ export async function executeCloudSyncRequest(
       ok = await executor(table, request.direction, request.source);
     } catch (_e) {
       failedTables.push(table);
+      failureKind = hooks && hooks.failureKindForTable ? hooks.failureKindForTable(table) : 'unknown';
       if (table === 'cryptoparams') {
         for (let j = i + 1; j < request.tables.length; j++) { failedTables.push(request.tables[j]); }
       }
@@ -94,6 +102,7 @@ export async function executeCloudSyncRequest(
     }
     if (!ok) {
       failedTables.push(table);
+      failureKind = hooks && hooks.failureKindForTable ? hooks.failureKindForTable(table) : 'unknown';
       if (table === 'cryptoparams') {
         for (let j = i + 1; j < request.tables.length; j++) { failedTables.push(request.tables[j]); }
         break;
@@ -107,6 +116,7 @@ export async function executeCloudSyncRequest(
         const completed: boolean | void = hooks.completeManualDownload(request.tables.slice());
         if (completed === false) {
           failedTables.push(request.tables.length > 0 ? request.tables[0] : '');
+          if (failureKind === 'none') { failureKind = 'unknown'; }
           rollbackFailed = !(await hooks.rollbackManualDownload());
         }
       } else { rollbackFailed = !(await hooks.rollbackManualDownload()); }
@@ -119,7 +129,8 @@ export async function executeCloudSyncRequest(
     source: request.source,
     tables: request.tables.slice(),
     failedTables,
-    rollbackFailed
+    rollbackFailed,
+    failureKind
   };
   if (result.ok && request.direction === 'cloudFirst') {
     try { onCloudFirstApplied(request.tables.slice()); } catch (_e) { /* listener failures do not stall sync */ }
@@ -149,6 +160,7 @@ export class CloudSyncCoordinator {
   private automaticRetryAttempts: Record<string, number> = {};
   private automaticMutationVersions: Record<string, number> = {};
   private dirtyAutomaticTables: string[] = [];
+  private blockedAutomaticTables: string[] = [];
   private journalMutationRevisions: Record<string, number> = {};
 
   static getInstance(): CloudSyncCoordinator {
@@ -170,6 +182,7 @@ export class CloudSyncCoordinator {
     this.hooks = hooks;
     this.restoreRetryRecord();
     this.restoreDirtyTables();
+    this.restoreConflictTables();
     this.restoreMutationJournal();
   }
 
@@ -178,18 +191,19 @@ export class CloudSyncCoordinator {
     const selected: string[] = this.selectedTables();
     const dirty: string[] = this.dirtyAutomaticTables.filter((table: string): boolean =>
       selected.indexOf(table) >= 0);
-    if (dirty.length === 0) { return this.requestCloudFirst('startup'); }
+    const pushable: string[] = dirty.filter((table: string): boolean => !this.isAutomaticSyncBlocked(table));
+    if (pushable.length === 0) { return this.requestCloudFirst('startup'); }
     const versions: Record<string, number> = {};
-    dirty.forEach((table: string): void => {
+    pushable.forEach((table: string): void => {
       versions[table] = this.automaticMutationVersions[table] || 1;
     });
-    const journalRevisions: Record<string, number> = this.captureJournalRevisions(dirty);
+    const journalRevisions: Record<string, number> = this.captureJournalRevisions(pushable);
     const request: CloudSyncRequest = {
-      source: 'automaticPush', direction: 'nativeFirst', tables: snapshotCloudSyncTables(dirty)
+      source: 'automaticPush', direction: 'nativeFirst', tables: snapshotCloudSyncTables(pushable)
     };
     return this.enqueue(request).then((result: CloudSyncOperationResult): Promise<CloudSyncOperationResult> => {
       if (!result.ok) { return Promise.resolve(result); }
-      dirty.forEach((table: string): void => {
+      pushable.forEach((table: string): void => {
         this.acknowledgeJournal(table, journalRevisions[table] || 0);
         const currentJournalRevision: number = this.captureJournalRevisions([table])[table] || 0;
         if ((this.automaticMutationVersions[table] || versions[table]) === versions[table] &&
@@ -220,6 +234,7 @@ export class CloudSyncCoordinator {
       if (!result.ok) { return result; }
       for (let i = 0; i < request.tables.length; i++) {
         const table: string = request.tables[i];
+        this.clearAutomaticSyncBlock(table);
         this.acknowledgeJournal(table, journalRevisions[table] || 0);
         const currentJournalRevision: number = this.captureJournalRevisions([table])[table] || 0;
         if ((this.automaticMutationVersions[table] || 0) === versions[table] && currentJournalRevision <= 0) {
@@ -244,6 +259,7 @@ export class CloudSyncCoordinator {
       if (!result.ok) { return result; }
       for (let i = 0; i < request.tables.length; i++) {
         const table: string = request.tables[i];
+        this.clearAutomaticSyncBlock(table);
         if ((this.automaticMutationVersions[table] || 0) === versions[table]) { this.clearDirtyTable(table); }
       }
       return result;
@@ -258,6 +274,10 @@ export class CloudSyncCoordinator {
     const version: number = (this.automaticMutationVersions[table] || 0) + 1;
     this.automaticMutationVersions[table] = version;
     this.markDirtyTable(table);
+    if (this.isAutomaticSyncBlocked(table)) {
+      hilog.warn(DOMAIN, TAG, 'automatic push blocked after cloud conflict table=' + table);
+      return Promise.resolve(this.skippedResult('automaticPush'));
+    }
     const activeSession = ActiveRemoteSessionRegistry.getInstance().getActive();
     if (activeSession !== null && activeSession.protocolConnected) {
       if (this.deferredAutomaticTables.indexOf(table) < 0) {
@@ -321,9 +341,16 @@ export class CloudSyncCoordinator {
           if (currentJournalRevision <= 0) { this.clearDirtyTable(retryKey); }
         }
       } else {
-        const attempt: number = (this.automaticRetryAttempts[retryKey] || 0) + 1;
-        this.automaticRetryAttempts[retryKey] = attempt;
-        this.persistAutomaticRetry(request, result.failedTables, attempt);
+        if (shouldBlockAutomaticRetry(result.failureKind)) {
+          this.blockAutomaticSyncTable(retryKey);
+          this.removeAutomaticRetry(retryKey);
+          hilog.warn(DOMAIN, TAG, 'automatic retry blocked table=' + retryKey +
+            ' failure=' + result.failureKind);
+        } else {
+          const attempt: number = (this.automaticRetryAttempts[retryKey] || 0) + 1;
+          this.automaticRetryAttempts[retryKey] = attempt;
+          this.persistAutomaticRetry(request, result.failedTables, attempt);
+        }
       }
       return result;
     });
@@ -376,13 +403,23 @@ export class CloudSyncCoordinator {
       return result;
     }, (): CloudSyncOperationResult => {
       this.pendingPull = null;
-      return { ok: false, source, tables: request.tables, failedTables: request.tables.slice(), rollbackFailed: false };
+      return {
+        ok: false, source, tables: request.tables, failedTables: request.tables.slice(),
+        rollbackFailed: false, failureKind: 'unknown'
+      };
     });
     return this.pendingPull;
   }
 
   private makeRequest(source: CloudSyncSource, direction: CloudSyncDirection): CloudSyncRequest {
-    return { source, direction, tables: this.selectedTables() };
+    let tables: string[] = this.selectedTables();
+    // A conflict-blocked table must not be pulled automatically either.  An
+    // explicit manual upload/download is the only operation allowed to
+    // resolve that table and clear its durable block.
+    if (direction === 'cloudFirst' && source !== 'manualDownload') {
+      tables = tables.filter((table: string): boolean => !this.isAutomaticSyncBlocked(table));
+    }
+    return { source, direction, tables };
   }
 
   private selectedTables(): string[] {
@@ -390,7 +427,7 @@ export class CloudSyncCoordinator {
   }
 
   private skippedResult(source: CloudSyncSource): CloudSyncOperationResult {
-    return { ok: true, source, tables: [], failedTables: [], rollbackFailed: false };
+    return { ok: true, source, tables: [], failedTables: [], rollbackFailed: false, failureKind: 'none' };
   }
 
   private enqueue(request: CloudSyncRequest): Promise<CloudSyncOperationResult> {
@@ -451,6 +488,56 @@ export class CloudSyncCoordinator {
     } catch (err) {
       hilog.warn(DOMAIN, TAG, 'restore dirty tables ignored: ' + JSON.stringify(err));
     }
+  }
+
+  private restoreConflictTables(): void {
+    if (!this.context) { return; }
+    try {
+      const prefs = preferences.getPreferencesSync(this.context, { name: PREFS_NAME });
+      const raw: string = prefs.getSync(CONFLICT_PREFERENCE_KEY, '[]') as string;
+      const parsed = JSON.parse(raw) as Object;
+      if (!Array.isArray(parsed)) { return; }
+      const values = parsed as string[];
+      for (let i = 0; i < values.length; i++) {
+        if (values[i] !== '' && this.blockedAutomaticTables.indexOf(values[i]) < 0) {
+          this.blockedAutomaticTables.push(values[i]);
+        }
+      }
+    } catch (err) {
+      hilog.warn(DOMAIN, TAG, 'restore conflict tables ignored: ' + JSON.stringify(err));
+    }
+  }
+
+  private writeConflictTables(): void {
+    if (!this.context) { return; }
+    try {
+      const prefs = preferences.getPreferencesSync(this.context, { name: PREFS_NAME });
+      if (this.blockedAutomaticTables.length === 0) {
+        prefs.deleteSync(CONFLICT_PREFERENCE_KEY);
+      } else {
+        prefs.putSync(CONFLICT_PREFERENCE_KEY, JSON.stringify(this.blockedAutomaticTables));
+      }
+      prefs.flushSync();
+    } catch (err) {
+      hilog.warn(DOMAIN, TAG, 'write conflict tables failed: ' + JSON.stringify(err));
+    }
+  }
+
+  private isAutomaticSyncBlocked(table: string): boolean {
+    return this.blockedAutomaticTables.indexOf(table) >= 0;
+  }
+
+  private blockAutomaticSyncTable(table: string): void {
+    if (table === '' || this.isAutomaticSyncBlocked(table)) { return; }
+    this.blockedAutomaticTables.push(table);
+    this.writeConflictTables();
+  }
+
+  private clearAutomaticSyncBlock(table: string): void {
+    const index: number = this.blockedAutomaticTables.indexOf(table);
+    if (index < 0) { return; }
+    this.blockedAutomaticTables.splice(index, 1);
+    this.writeConflictTables();
   }
 
   /** Journal rows survive a process death even if Preferences could not flush. */
@@ -514,10 +601,12 @@ export class CloudSyncCoordinator {
     this.dirtyAutomaticTables = [];
     this.automaticMutationVersions = {};
     this.journalMutationRevisions = {};
+    this.blockedAutomaticTables = [];
     this.deferredAutomaticTables = [];
     this.retryRecords = [];
     this.automaticRetryAttempts = {};
     this.writeDirtyTables();
+    this.writeConflictTables();
     this.writeRetryRecords();
     this.scheduleRetryTimer();
   }
@@ -618,14 +707,19 @@ export class CloudSyncCoordinator {
       this.scheduleRetryTimer();
       for (let i = 0; i < due.length; i++) {
         const retry: CloudSyncRetryRecord = due[i];
+        const retryKey: string = automaticRetryKey(retry);
+        if (this.isAutomaticSyncBlocked(retryKey)) {
+          this.automaticRetryAttempts[retryKey] = 0;
+          continue;
+        }
         const tables: string[] = retryTablesStillSelected(retry.tables, this.selectedTables());
         if (tables.length === 0) {
-          this.automaticRetryAttempts[automaticRetryKey(retry)] = 0;
+          this.automaticRetryAttempts[retryKey] = 0;
           continue;
         }
         this.enqueueAutomaticRequest(
           { source: 'automaticPush', direction: retry.direction, tables },
-          automaticRetryKey(retry)
+          retryKey
         );
       }
     }, delay) as number;
