@@ -4,8 +4,8 @@ Updated: 2026-07-23 Asia/Shanghai
 
 ## Source
 
-- Migration baseline: `main` at `e7dfb3a85`, with PR #30 merged using a merge commit
-- Active task branch: none
+- Migration baseline: `main` at `b71639512`, with PR #31 merged using a merge commit
+- Active task branch: none; the completed Mac `hdc` PATH fix is ready for PR publication
 - FreeRDP submodule: `dae8276ac7361b8d14f7b87d41163fe03dbb944e`
 
 ## Completed
@@ -20,16 +20,21 @@ Updated: 2026-07-23 Asia/Shanghai
   configure OHOS clang/Cargo linkers and build both RustDesk FFI ABIs.
 - The FFI migration script's `nm | grep -Eq` SIGPIPE false failure was fixed;
   both architecture symbol checks now pass.
-- `assembleHap` reaches packaging and creates an unsigned HAP. Signing is the only
-  remaining build-stage requirement and is intentionally local-only.
+- `assembleHap --no-daemon` passed through packaging, signing and debug symbol
+  collection with the Mac-local private signing profile. Signing files remain
+  local-only.
+- `scripts/macos_env.sh` now exposes the DevEco/native SDK `hdc` toolchain. After
+  sourcing it, `hdc --version` reports `3.2.0d`; `hdc start` succeeds and
+  `hdc list targets` reports `[Empty]` only because no device is connected or
+  authorized.
 - `AGENTS.md` now directs both platforms to the sanitized `docs/codex/` state and
   explicitly forbids sharing raw Codex memory directories.
 
 ## Verification
 
 - The post-merge `sync_workspace.sh sync`, task-start gate and final
-  `sync_workspace.sh status`/`doctor` checks passed. `main` is synchronized at
-  `e7dfb3a85`, and no task branch remains.
+  `sync_workspace.sh status`/`doctor` checks passed. The hdc PATH fix was
+  verified on macOS.
 - `hvigorw tasks` and `hvigorw init` passed.
 - Opus and RustDesk FFI builds passed for `arm64-v8a` and `x86_64`.
 - `default@OhosTestCompileArkTS` passed. `assembleHap --no-daemon` passed through
@@ -51,6 +56,7 @@ Updated: 2026-07-23 Asia/Shanghai
 
 ## Next owner action
 
-1. Start the next independent task only from `main` after `sync_workspace.sh sync`.
-2. Configure AGConnect locally only if cloud features are required.
-3. Complete the remaining real-device protocol and cloud-sync acceptance matrix.
+1. After the hdc PR is merged, start Windows from synchronized `main` and run the
+   shared-state, submodule and history gates.
+2. Configure AGConnect locally only if cloud features are required, then complete
+   the remaining real-device protocol and cloud-sync acceptance matrix.

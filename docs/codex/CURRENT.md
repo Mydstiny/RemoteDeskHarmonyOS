@@ -6,10 +6,11 @@ Updated: 2026-07-23 Asia/Shanghai
 
 - Repository: `Mydstiny/RemoteDeskHarmonyOS`
 - Public branch: `main`
-- Last migration merge commit: `e7dfb3a85` (`Merge pull request #30 from Mydstiny/codex/mac-final-verification`)
-- Active task: none; the macOS migration and final verification are complete.
-- Local `main` equals local `origin/main`; the closeout branch only publishes this
-  final shared-state update.
+- Last migration merge commit: `b71639512` (`Merge pull request #31 from Mydstiny/codex/close-migration-handoff`)
+- Active task: none; the completed Mac `hdc` toolchain fix is included in this
+  handoff and must be published through the normal PR merge flow.
+- Local `main` equals local `origin/main`; the scoped publication branch is based
+  directly on that public commit.
 
 ## Current phase
 
@@ -21,6 +22,9 @@ Updated: 2026-07-23 Asia/Shanghai
   `6.1.0(23)`.
 - Cross-device memory is the sanitized content under `docs/codex/`; no Windows or
   Mac Codex raw memory directory is copied or used as shared state.
+- Both the full DevEco SDK and standalone API 23 SDK contain executable arm64
+  `hdc` binaries. `scripts/macos_env.sh` now adds the full HarmonyOS SDK
+  `toolchains` first and the standalone API 23 `toolchains` as a fallback.
 
 ## Completed verification
 
@@ -34,7 +38,7 @@ Updated: 2026-07-23 Asia/Shanghai
   - Standalone OpenHarmony API 23 native SDK:
     `/Users/mydestiny/Library/OpenHarmony/Sdk/23`
 - `scripts/macos_env.sh` detects DevEco Node/Hvigor/ohpm, the bundled JBR/Java,
-  OHOS LLVM/CMake/Ninja, Rust/Cargo and the local PowerShell fallback.
+  OHOS LLVM/CMake/Ninja, Rust/Cargo, `hdc` and the local PowerShell fallback.
 - API 23 Rust targets are installed:
   `aarch64-unknown-linux-ohos` and `x86_64-unknown-linux-ohos`.
 - Opus and RustDesk FFI dependencies build successfully for both `arm64-v8a` and
@@ -48,6 +52,9 @@ Updated: 2026-07-23 Asia/Shanghai
   tracked or uploaded.
 - `core.hooksPath=.githooks`, the sync workflow, history guard, FreeRDP provenance
   checks and Light compliance checks were validated on the restored workspace.
+- After `source scripts/macos_env.sh`, `hdc --version` resolves to DevEco hdc
+  `3.2.0d`. `hdc start` succeeds; `hdc list targets` reports `[Empty]` because no
+  HarmonyOS device or emulator is currently connected and authorized.
 
 ## Blockers
 
@@ -57,6 +64,8 @@ Updated: 2026-07-23 Asia/Shanghai
 - AGConnect is optional for import/build and is not currently configured; provide
   `entry/src/main/resources/rawfile/agconnect-services.json` through a secure
   channel only if cloud features or cloud-device validation are needed.
+- Device validation remains pending until a HarmonyOS device or emulator is
+  connected and authorized for `hdc`.
 - The repository-local PowerShell 7 fallback (`7.7.0-preview.3`) passes the
   compliance gate; a stable system PowerShell 7 install is still recommended but
   is not blocking this workspace.

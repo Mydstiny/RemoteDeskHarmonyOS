@@ -4,8 +4,8 @@ Updated: 2026-07-23 Asia/Shanghai
 
 ## Now
 
-- No active migration task. The macOS workspace is synchronized and ready for the
-  next independent task.
+- No active migration task. The Mac `hdc` PATH fix is verified and ready for the
+  normal PR and merge flow; the next device starts from the merged `main`.
 
 ## Next
 
