@@ -5,7 +5,7 @@ Updated: 2026-07-23 Asia/Shanghai
 ## Now
 
 - Finish `codex/mac-migration-bootstrap`: publish its PR and wait for `open-source-compliance` before merge.
-- Install/validate Mac PowerShell 7, Rust/Cargo, DevEco Studio and the HarmonyOS API 23 SDK.
+- Install/validate the API 23 SDK and OHOS Rust/native cross-build inputs; stable system PowerShell is optional while the local fallback is available.
 - Verify the cross-device synchronization gate on a clean Windows clone and a clean macOS clone.
 - Complete real-device acceptance for the published PIP/live-view/cloud-sync/first-install checkpoints.
 
