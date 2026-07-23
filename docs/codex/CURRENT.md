@@ -5,84 +5,65 @@ Updated: 2026-07-23 Asia/Shanghai
 ## Repository
 
 - Repository: `Mydstiny/RemoteDeskHarmonyOS`
-- Public branch: `main`
-- Last workflow change: `dc715d230` (PR #32, merged with a merge commit)
-- Active task: none; the sanitized Windows development handoff is now included
-  alongside the completed Mac migration state.
-- Shared state is synchronized with public `main`; the next device must sync before
-  starting an independent task.
+- Public `origin/main` at merge time: `7e6e65401` (`Merge pull request #36: integrate Windows development handoff`)
+- Previous Windows audit base: `c502221e3`
+- Current audit branch: `codex/windows-memory-sanitize`, now merging the latest public `main`
+- Audit commits: `27e185f42`, `a24568990`
+- Audit PR: `#35` (`https://github.com/Mydstiny/RemoteDeskHarmonyOS/pull/35`)
+- No runtime, ArkTS, C/C++, Rust, FreeRDP or dependency source was changed by this audit branch.
+- User-owned test edits, logs, screenshots, XML and native build evidence remain local and are not part of this task.
 
 ## Current phase
 
-- The migration package restored the complete public source, Git history and
-  recursive `freerdp` submodule on macOS; the bootstrap and final verification
-  records are merged to public `main` through PRs #29 and #30.
-- DevEco Studio 6.1.1 opens the repository root successfully. The project remains
-  `runtimeOS: HarmonyOS` with `targetSdkVersion` and `compatibleSdkVersion`
-  `6.1.0(23)`.
-- Cross-device memory is the sanitized content under `docs/codex/`; no Windows or
-  Mac Codex raw memory directory is copied or used as shared state.
-- Both the full DevEco SDK and standalone API 23 SDK contain executable arm64
-  `hdc` binaries. `scripts/macos_env.sh` now adds the full HarmonyOS SDK
-  `toolchains` first and the standalone API 23 `toolchains` as a fallback.
-- Windows-derived durable constraints are recorded in `DECISIONS.md` and
-  `HANDOFF.md`; raw Codex memory, session transcripts and device evidence remain
-  excluded.
+- Windows Codex memory sanitization and cross-device development handoff audit.
+- Public `main` already includes the Mac migration/`hdc` workflow and a prior Windows handoff integration. This branch adds the detailed, structured audit record and merges the latest `main` before PR completion.
+- The normal task start gate was intentionally not used because the workspace contained user-owned changes. The branch was created from synchronized public history without stashing, resetting or deleting those files.
 
-## Completed verification
+## Windows evidence collected in this audit
 
-- `freerdp` is initialized at `dae8276ac7361b8d14f7b87d41163fe03dbb944e`.
-- The local ignored `build-profile.json5` and `local.properties` are generated;
-  `local.properties` intentionally separates the full DevEco SDK from the
-  standalone API 23 native SDK.
-- Mac SDKs detected:
-  - Full HarmonyOS SDK for Hvigor:
-    `/Applications/DevEco-Studio.app/Contents/sdk`
-  - Standalone OpenHarmony API 23 native SDK:
-    `/Users/mydestiny/Library/OpenHarmony/Sdk/23`
-- `scripts/macos_env.sh` detects DevEco Node/Hvigor/ohpm, the bundled JBR/Java,
-  OHOS LLVM/CMake/Ninja, Rust/Cargo, `hdc` and the local PowerShell fallback.
-- API 23 Rust targets are installed:
-  `aarch64-unknown-linux-ohos` and `x86_64-unknown-linux-ohos`.
-- Opus and RustDesk FFI dependencies build successfully for both `arm64-v8a` and
-  `x86_64`; the FFI symbol checks pass after fixing the `pipefail`/SIGPIPE false
-  failure in the migration script.
-- `default@OhosTestCompileArkTS` passes. The non-daemon `assembleHap` build passes
-  through native Ninja, ArkTS, `PackageHap`, `PackingCheck`, `SignHap` and debug
-  symbol collection with the Mac-local private signing profile.
-- `hvigorw tasks`, `hvigorw init`, native CMake/Ninja and ArkTS compilation pass.
-  The local build produces both unsigned and signed HAP artifacts; neither is
-  tracked or uploaded.
-- `core.hooksPath=.githooks`, the sync workflow, history guard, FreeRDP provenance
-  checks and Light compliance checks were validated on the restored workspace.
-- After `source scripts/macos_env.sh`, `hdc --version` resolves to DevEco hdc
-  `3.2.0d`. `hdc start` succeeds; `hdc list targets` reports `[Empty]` because no
-  HarmonyOS device or emulator is currently connected and authorized.
-- The Windows handoff snapshot reports DevEco Studio `6.1.1.280`, bundled Node
-  `18.20.1`, Hvigor `6.24.2`, ohpm `6.1.2.268`, OHOS LLVM `15.0.4`, Rust/Cargo
-  `1.96.0`, and both OHOS Rust targets. These are Windows facts, not Mac path
-  assumptions.
+| Item | Result | Scope |
+| --- | --- | --- |
+| DevEco Studio | `6.1.1.280` installation metadata | Windows verified |
+| HarmonyOS target | API 23, `targetSdkVersion`/`compatibleSdkVersion` `6.1.0(23)` | Repository configuration verified |
+| Runtime and module | `runtimeOS: HarmonyOS`, product `default`, module `entry` | Repository configuration verified |
+| DevEco bundled Node | `18.20.1` | Windows verified |
+| Hvigor CLI | `6.24.2` | Windows verified |
+| ohpm | `6.1.2.268` | Windows verified |
+| CMake / Ninja | `3.29.2` / `1.12.0` | Windows verified |
+| OHOS LLVM/Clang | `15.0.4` | Windows verified |
+| Rust / Cargo | `1.96.0` / `1.96.0` | Windows verified |
+| Rust OHOS targets | `aarch64-unknown-linux-ohos`, `x86_64-unknown-linux-ohos` | Windows verified |
+| Windows PowerShell | `5.1.26100.8875`; `pwsh` is not installed | Windows verified |
+| API 23 reference docs | Local copy is present | Windows verified; contents stay local |
 
-## Blockers
+The old baseline's Node 24 and approximate DevEco 26.0 entries are historical and are not current Windows facts. Mac versions and machine paths are not inferred from them.
 
-- No SDK or signing input remains required for the current local build: DevEco,
-  API 23 native tooling, Rust targets and the private signing profile are present
-  on this Mac. Signing files and passwords remain local-only.
-- AGConnect is optional for import/build and is not currently configured; provide
-  `entry/src/main/resources/rawfile/agconnect-services.json` through a secure
-  channel only if cloud features or cloud-device validation are needed.
-- Device validation remains pending until a HarmonyOS device or emulator is
-  connected and authorized for `hdc`.
-- The Windows snapshot has Windows PowerShell `5.1` but no `pwsh`; install
-  PowerShell 7 before using the mandated Windows publication workflow.
-- The repository-local PowerShell 7 fallback (`7.7.0-preview.3`) passes the
-  compliance gate; a stable system PowerShell 7 install is still recommended but
-  is not blocking this workspace.
+## Cross-device state inherited from public main
+
+- `scripts/macos_env.sh`, `scripts/resolve_ohos_sdk.sh` and `scripts/resolve_powershell.sh` are now present on public `main`; the initial Windows audit observed them before the concurrent main update.
+- The Mac helper keeps the full DevEco/HarmonyOS SDK role separate from the standalone API 23 native SDK role, resolves bundled Node/Hvigor/ohpm/Java/LLVM/CMake/Rust tools, configures both OHOS Rust ABIs and exposes the SDK `hdc` toolchain.
+- Public Mac handoff records report successful source/submodule restoration, both-ABI Opus/RustDesk FFI builds, `default@OhosTestCompileArkTS`, non-daemon `assembleHap`, hook checks and Light compliance. These are inherited public evidence, not new Windows device acceptance.
+- Mac `hdc` availability was verified in public history; an empty target list means no authorized device is connected, not that the toolchain is missing.
+
+## Audit result
+
+- Shared docs that previously pointed at `c5347f141` are corrected to the current public history.
+- The Windows memory conclusions about API 23, ArkTS strict mode, bindSheet mounting, OHOS C++/Crypto APIs, RustDesk stream framing/control consumption, PIP ownership and Git safety are distilled into `DECISIONS.md` and `HANDOFF.md`.
+- Raw Codex memory, chat/session transcripts, device evidence and private inputs were not copied.
+
+## Verification status
+
+- Windows direct checks confirmed the tool versions and API 23 reference availability listed above.
+- `git diff --check`, Light compliance, workflow policy tests, Opus artifact-location tests and the pre-push public-history guard passed before the merge.
+- PR #35 initially became dirty because public `main` advanced concurrently; the latest `origin/main` is being merged normally, without rebase or force-push.
+- Real-device, cloud-account and Mac clean-clone acceptance remain separate from this document audit.
 
 ## Next
 
-- On a clean Windows clone, run the shared-state, submodule and history gates.
-- Configure AGConnect locally only if cloud features or cloud-device validation are
-  needed; keep device data and raw evidence local-only.
-- Complete real-device acceptance for RDP, RustDesk, SSH/SFTP, VNC, PIP/live-view
-  and cloud-sync checkpoints.
+- Resolve and publish the merge update on PR #35, wait for `open-source-compliance`, merge with a merge commit and return the workspace to synchronized `main`.
+- On the next device, read these four files, sync the merged `main`, configure machine-local SDK/toolchains/private inputs and run the platform-specific workflow.
+- Complete real-device acceptance for PIP/live-view, RDP/RustDesk background restore, cloud sync and first-install behavior.
+
+## Local-only boundary
+
+SDKs, signing profiles, AGConnect configuration, `local.properties`, real `build-profile.json5`, build caches, device data, raw logs, screenshots, private device addresses and Codex's original machine memory are intentionally not represented here.
