@@ -6,16 +6,16 @@ Updated: 2026-07-23 Asia/Shanghai
 
 - Repository: `Mydstiny/RemoteDeskHarmonyOS`
 - Public branch: `main`
-- Public main commit: `4dbd5d928` (`Merge pull request #29 from Mydstiny/codex/mac-migration-bootstrap`)
-- Active task: `codex/mac-final-verification`.
-- Local `main` equals local `origin/main`; the active task branch is based directly
-  on that public commit.
+- Last migration merge commit: `e7dfb3a85` (`Merge pull request #30 from Mydstiny/codex/mac-final-verification`)
+- Active task: none; the macOS migration and final verification are complete.
+- Local `main` equals local `origin/main`; the closeout branch only publishes this
+  final shared-state update.
 
 ## Current phase
 
 - The migration package restored the complete public source, Git history and
-  recursive `freerdp` submodule on macOS; the bootstrap changes are now merged to
-  public `main`.
+  recursive `freerdp` submodule on macOS; the bootstrap and final verification
+  records are merged to public `main` through PRs #29 and #30.
 - DevEco Studio 6.1.1 opens the repository root successfully. The project remains
   `runtimeOS: HarmonyOS` with `targetSdkVersion` and `compatibleSdkVersion`
   `6.1.0(23)`.
@@ -51,8 +51,6 @@ Updated: 2026-07-23 Asia/Shanghai
 
 ## Blockers
 
-- GitHub fetch/push/PR operations require network access outside the local sandbox;
-  the post-merge sync has now succeeded.
 - No SDK or signing input remains required for the current local build: DevEco,
   API 23 native tooling, Rust targets and the private signing profile are present
   on this Mac. Signing files and passwords remain local-only.
@@ -65,9 +63,8 @@ Updated: 2026-07-23 Asia/Shanghai
 
 ## Next
 
-- Run the full API 23 post-merge verification and record exact results.
-- Update the shared handoff, push `codex/mac-final-verification`, and create its PR.
-- Wait for `open-source-compliance`, merge with a merge commit, then fast-forward
-  local `main` and delete the merged task branch.
-- Configure private signing/AGConnect values locally if signed or cloud-enabled
-  device validation is required; keep device data and raw evidence local-only.
+- On a clean Windows clone, run the shared-state, submodule and history gates.
+- Configure AGConnect locally only if cloud features or cloud-device validation are
+  needed; keep device data and raw evidence local-only.
+- Complete real-device acceptance for RDP, RustDesk, SSH/SFTP, VNC, PIP/live-view
+  and cloud-sync checkpoints.
