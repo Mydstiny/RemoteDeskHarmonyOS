@@ -4,12 +4,11 @@ Updated: 2026-07-23 Asia/Shanghai
 
 ## Now
 
-- Finish resolving the public `main` merge on `codex/windows-memory-sanitize`.
-- Re-run document diff, Light compliance, workflow tests and the pre-push guard without staging user-owned files.
-- Update PR #35 against the current `main`, wait for `open-source-compliance`, merge with a merge commit, then return to synchronized `main`.
+- No active migration task. Windows memory sanitization and the Mac migration handoff are merged in `main` through normal merge commits.
 
 ## Next
 
+- On the next task, sync `main` first and confirm a clean working tree.
 - On Windows, confirm PowerShell 7 availability and run the shared-state, submodule and history gates from a clean clone.
 - On macOS, source `scripts/macos_env.sh`, verify the full DevEco SDK/native API 23 SDK role split, Rust targets, `hdc` and the PowerShell resolver.
 - Run the clean-clone smoke checks and record only sanitized pass/fail summaries.

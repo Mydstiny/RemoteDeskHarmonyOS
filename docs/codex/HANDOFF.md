@@ -5,11 +5,12 @@ Updated: 2026-07-23 Asia/Shanghai
 ## Source and scope
 
 - Repository: `Mydstiny/RemoteDeskHarmonyOS`
-- Public base now reviewed: `origin/main` at `7e6e65401`
+- Public `main` after PR merge: `a60d0e743`
 - Previous Windows audit base: `c502221e3`
 - Audit branch: `codex/windows-memory-sanitize`
 - Audit commits: `27e185f42` and `a24568990`
 - Pull request: `https://github.com/Mydstiny/RemoteDeskHarmonyOS/pull/35`
+- Merge result: PR #35 merged with a merge commit after `open-source-compliance` passed (run `30023107202`).
 - Scope: sanitize Windows Codex development knowledge into public, platform-neutral documentation and merge it with the latest Mac handoff state.
 - Runtime source, tests, dependencies, signing data and user evidence were not changed by this audit branch.
 
@@ -262,14 +263,14 @@ On macOS, `scripts/sync_workspace.sh` sources `resolve_powershell.sh` for `finis
 - Windows audit checks: `git diff --check`, `verify_open_source_release.ps1 -Mode Light`, workflow policy tests, Opus artifact-location test and pre-push public-history guard all passed.
 - Public runtime evidence: native `rdp_native_tests` `129 passed, 0 failed`; `default@OhosTestCompileArkTS` passed; production `assembleHap` passed. These do not replace Mac or real-device checks.
 - The first direct workflow status run was blocked by a local Git global-ignore permission warning and by missing `pwsh`; no repository files were changed to hide that environment issue.
-- The current PR became dirty only because `origin/main` advanced concurrently; the resolution uses a normal merge and must be revalidated before merge.
+- The PR became dirty only because `origin/main` advanced concurrently; it was resolved with a normal merge before the required check and final merge.
 
 ## Next owner action
 
-1. Stage only the four resolved `docs/codex` files, commit the merge resolution with DCO sign-off, and push the existing PR branch without force.
-2. Confirm `open-source-compliance` passes for the current PR head, then merge PR #35 with a merge commit.
-3. Return the workspace to synchronized `main`; leave user-owned tests, logs, screenshots and native evidence untouched.
-4. On Mac, source the helper script, run sync/doctor/clean-clone checks, configure private inputs locally and record only sanitized evidence.
+1. On the next device, sync public `main` and read the four shared state files before selecting a new task.
+2. Source the Mac helper script or configure the Windows toolchain locally; do not copy caches, credentials or raw evidence.
+3. Run sync/doctor/clean-clone checks and record only sanitized evidence.
+4. Complete the remaining real-device RDP, RustDesk, SSH/SFTP, VNC, PIP/live-view and cloud-sync acceptance matrix.
 
 ## Explicit exclusion confirmation
 

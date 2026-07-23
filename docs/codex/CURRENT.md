@@ -5,9 +5,9 @@ Updated: 2026-07-23 Asia/Shanghai
 ## Repository
 
 - Repository: `Mydstiny/RemoteDeskHarmonyOS`
-- Public `origin/main` at merge time: `7e6e65401` (`Merge pull request #36: integrate Windows development handoff`)
+- Public `main` after merge: `a60d0e743` (`Merge pull request #35 from Mydstiny/codex/windows-memory-sanitize`)
 - Previous Windows audit base: `c502221e3`
-- Current audit branch: `codex/windows-memory-sanitize`, now merging the latest public `main`
+- Active task: none; the Windows audit is merged into public `main`
 - Audit commits: `27e185f42`, `a24568990`
 - Audit PR: `#35` (`https://github.com/Mydstiny/RemoteDeskHarmonyOS/pull/35`)
 - No runtime, ArkTS, C/C++, Rust, FreeRDP or dependency source was changed by this audit branch.
@@ -16,7 +16,7 @@ Updated: 2026-07-23 Asia/Shanghai
 ## Current phase
 
 - Windows Codex memory sanitization and cross-device development handoff audit.
-- Public `main` already includes the Mac migration/`hdc` workflow and a prior Windows handoff integration. This branch adds the detailed, structured audit record and merges the latest `main` before PR completion.
+- Public `main` includes the Mac migration/`hdc` workflow, the prior Windows handoff integration and this detailed structured audit record.
 - The normal task start gate was intentionally not used because the workspace contained user-owned changes. The branch was created from synchronized public history without stashing, resetting or deleting those files.
 
 ## Windows evidence collected in this audit
@@ -55,13 +55,13 @@ The old baseline's Node 24 and approximate DevEco 26.0 entries are historical an
 
 - Windows direct checks confirmed the tool versions and API 23 reference availability listed above.
 - `git diff --check`, Light compliance, workflow policy tests, Opus artifact-location tests and the pre-push public-history guard passed before the merge.
-- PR #35 initially became dirty because public `main` advanced concurrently; the latest `origin/main` is being merged normally, without rebase or force-push.
+- PR #35 was merged with a normal merge commit after its `open-source-compliance` check passed.
 - Real-device, cloud-account and Mac clean-clone acceptance remain separate from this document audit.
 
 ## Next
 
-- Resolve and publish the merge update on PR #35, wait for `open-source-compliance`, merge with a merge commit and return the workspace to synchronized `main`.
-- On the next device, read these four files, sync the merged `main`, configure machine-local SDK/toolchains/private inputs and run the platform-specific workflow.
+- On the next device, read these four files, sync `main`, configure machine-local SDK/toolchains/private inputs and run the platform-specific workflow.
+- Keep one task branch active at a time and do not start new work until the next task has been explicitly selected.
 - Complete real-device acceptance for PIP/live-view, RDP/RustDesk background restore, cloud sync and first-install behavior.
 
 ## Local-only boundary
