@@ -47,8 +47,8 @@ constexpr size_t kMaxQueuedFrames = 12;  // was 4 — too small for 45+fps w/ sa
 void HardwareDecoder::OnError(OH_AVCodec* /*codec*/, int32_t errorCode, void* userData) {
     auto* cb = static_cast<CallbackUserData*>(userData);
     OH_LOG_ERROR(LOG_APP, "[Decoder] 解码器错误: code=%{public}d", errorCode);
-    if (cb && cb->self && cb->self->errorCallback_) {
-        cb->self->errorCallback_(DecoderError::OUTPUT_FAILED,
+    if (cb && cb->self) {
+        cb->self->errorCallbackGate_.Invoke(DecoderError::OUTPUT_FAILED,
             "OH_AVCodec error " + std::to_string(errorCode));
     }
 }
@@ -484,9 +484,7 @@ void HardwareDecoder::handleOutputBuffer(uint32_t /*index*/) {
         return;
     }
 
-    if (makeCurrentCallback_) {
-        makeCurrentCallback_();
-    }
+    makeCurrentCallbackGate_.Invoke();
 
     if (!nativeImageContextAttached_) {
         int32_t attachRet = OH_NativeImage_AttachContext(nativeImage_, textureId_);
@@ -518,9 +516,7 @@ void HardwareDecoder::handleOutputBuffer(uint32_t /*index*/) {
     }
 
     // 通知渲染器: 纹理就绪
-    if (frameCallback_) {
-        frameCallback_(textureId_, width_, height_);
-    }
+    frameCallbackGate_.Invoke(textureId_, width_, height_);
     uint64_t count = ++outputFrameCount_;
     if (count <= 3 || count % 300 == 0) {
         OH_LOG_INFO(LOG_APP,
@@ -564,9 +560,7 @@ void HardwareDecoder::renderLoop() {
                     detachRet,
                     textureId_);
     }
-    if (releaseCurrentCallback_) {
-        releaseCurrentCallback_();
-    }
+    releaseCurrentCallbackGate_.Invoke();
     nativeImageContextAttached_ = false;
     OH_LOG_INFO(LOG_APP, "[Decoder] render thread stopped");
 }
@@ -576,6 +570,7 @@ void HardwareDecoder::StopRenderThreadForDetach() {
     SetFrameCallback(nullptr);
     SetMakeCurrentCallback(nullptr);
     SetReleaseCurrentCallback(nullptr);
+    errorCallbackGate_.ClearAndWait();
     nativeImageContextAttached_ = false;
 }
 
@@ -617,14 +612,10 @@ void HardwareDecoder::Destroy() {
             nativeImage_ = nullptr;
         }
         if (textureId_ != 0) {
-            if (makeCurrentCallback_) {
-                makeCurrentCallback_();
-            }
+            makeCurrentCallbackGate_.Invoke();
             glDeleteTextures(1, &textureId_);
             textureId_ = 0;
-            if (releaseCurrentCallback_) {
-                releaseCurrentCallback_();
-            }
+            releaseCurrentCallbackGate_.Invoke();
         }
         nativeWindow_ = nullptr;
         initialized_ = false;
@@ -635,22 +626,30 @@ void HardwareDecoder::Destroy() {
         pendingInputBuffers_.clear();
         backpressure_.reset();
     }
+
+    // The render thread is joined above. Keep make/release callbacks alive
+    // long enough to delete the decoder-owned GL texture, then make every
+    // callback inert before this decoder can be reused or destroyed.
+    frameCallbackGate_.ClearAndWait();
+    makeCurrentCallbackGate_.ClearAndWait();
+    releaseCurrentCallbackGate_.ClearAndWait();
+    errorCallbackGate_.ClearAndWait();
 }
 
 void HardwareDecoder::SetFrameCallback(DecoderFrameCallback callback) {
-    frameCallback_ = std::move(callback);
+    frameCallbackGate_.Set(std::move(callback));
 }
 
 void HardwareDecoder::SetMakeCurrentCallback(DecoderMakeCurrentCallback callback) {
-    makeCurrentCallback_ = std::move(callback);
+    makeCurrentCallbackGate_.Set(std::move(callback));
 }
 
 void HardwareDecoder::SetReleaseCurrentCallback(DecoderReleaseCurrentCallback callback) {
-    releaseCurrentCallback_ = std::move(callback);
+    releaseCurrentCallbackGate_.Set(std::move(callback));
 }
 
 void HardwareDecoder::SetErrorCallback(DecoderErrorCallback callback) {
-    errorCallback_ = std::move(callback);
+    errorCallbackGate_.Set(std::move(callback));
 }
 
 // ============================================================
@@ -703,6 +702,9 @@ struct DecoderContext {
     int64_t rendererHandle = 0;
     int width = 0;
     int height = 0;
+    // The requested decoder size may be an adaptive page size. Once a real
+    // frame arrives, retain its dimensions for PIP and foreground rebinds.
+    bool observedFrameSize = false;
 
     std::mutex softMutex;
     std::condition_variable softCv;
@@ -921,7 +923,9 @@ bool ConfigurePipeline(DecoderContext* ctx) {
             return false;
         }
         RendererNapi::SetActiveRenderer(rendererHandle);
-        RendererNapi::SetActiveSourceSize(ctx->softwareDecoder->GetWidth(), ctx->softwareDecoder->GetHeight());
+        if (ctx->observedFrameSize) {
+            RendererNapi::SetActiveSourceSize(ctx->width, ctx->height);
+        }
         ctx->softwareDecoder->SetFrameCallback([](const uint8_t* data, size_t size, int width, int height, int stride) {
             return RendererNapi::RenderRawBgraActive(data, size, width, height, stride);
         });
@@ -930,6 +934,13 @@ bool ConfigurePipeline(DecoderContext* ctx) {
 
     if (!ctx->decoder || !ctx->decoder->IsInitialized()) {
         return false;
+    }
+    // Hardware output uses the same renderer viewport path as software output.
+    // Publish the remote frame dimensions explicitly so a rotated page surface
+    // cannot become the PIP content ratio before the first frame is presented.
+    RendererNapi::SetActiveRenderer(rendererHandle);
+    if (ctx->observedFrameSize) {
+        RendererNapi::SetActiveSourceSize(ctx->width, ctx->height);
     }
     ctx->decoder->SetMakeCurrentCallback([rendererHandle]() {
         RendererNapi::MakeCurrent(rendererHandle);
@@ -940,6 +951,7 @@ bool ConfigurePipeline(DecoderContext* ctx) {
     ctx->decoder->SetFrameCallback([rendererHandle](GLuint textureId, int width, int height) {
         OH_LOG_DEBUG(LOG_APP, "[Decoder] output texture=%{public}u size=%{public}dx%{public}d",
                      textureId, width, height);
+        RendererNapi::SetRendererSourceSize(rendererHandle, width, height);
         RendererNapi::RenderNative(rendererHandle, textureId);
     });
     RendererNapi::ReleaseCurrent(rendererHandle);
@@ -975,6 +987,7 @@ bool RecreateDecoderForFrame(DecoderContext* ctx, const VideoFrame& frame) {
         ctx->decoder = decoder;
         ctx->width = frame.width;
         ctx->height = frame.height;
+        ctx->observedFrameSize = true;
         if (!ConfigurePipeline(ctx)) {
             ctx->decoder->Destroy();
             ctx->decoder.reset();
@@ -994,6 +1007,7 @@ bool RecreateDecoderForFrame(DecoderContext* ctx, const VideoFrame& frame) {
             ctx->useSoftware = true;
             ctx->width = frame.width;
             ctx->height = frame.height;
+            ctx->observedFrameSize = true;
             if (!ConfigurePipeline(ctx)) {
                 ctx->softwareDecoder->Destroy();
                 ctx->softwareDecoder.reset();
@@ -1254,6 +1268,11 @@ int DecoderNapi::DecodeNative(int64_t handle, const VideoFrame& frame) {
         OH_LOG_WARN(LOG_APP, "[Decoder] native decode skipped: unsupported codec=%{public}d size=%{public}zu",
                     static_cast<int>(frame.codec), frame.size);
         return -2;
+    }
+    if (frame.width > 0 && frame.height > 0) {
+        ctx->width = frame.width;
+        ctx->height = frame.height;
+        ctx->observedFrameSize = true;
     }
     if (Render::ShouldDropFrameWhileWaitingRecoveryKeyframe(
         ctx->recoveryRequested.load(), frame.isKeyFrame)) {

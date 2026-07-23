@@ -40,8 +40,16 @@ import { clipboardSyncEnabledForProtocol } from '../services/ClipboardSyncPolicy
 import { FileTransferLiveTaskService } from '../services/FileTransferLiveTaskService';
 import { RemoteSessionBackgroundTaskService, RemoteSessionBgInfo } from '../services/RemoteSessionBackgroundTaskService';
 import { RemoteSessionLiveViewService, LiveViewConnectionInfo } from '../services/RemoteSessionLiveViewService';
-import { RemoteSessionPipService } from '../services/RemoteSessionPipService';
-import { shouldStartRemoteSessionPip } from '../services/RemoteSessionPipPolicy';
+import {
+  RemoteSessionPipService,
+  RemoteSessionPipSurface
+} from '../services/RemoteSessionPipService';
+import {
+  RemoteSessionPipLifecycleAction,
+  RemoteSessionPipContentSize,
+  resolveRemoteSessionPipContentSize,
+  resolveRemoteSessionPipLifecycle
+} from '../services/RemoteSessionPipLifecyclePolicy';
 import { ActiveRemoteSessionRegistry, ActiveRemoteSessionRecord } from '../services/ActiveRemoteSessionRegistry';
 import { NativeSessionHandles, ProductionNativeHandleAdapter } from '../services/NativeSessionHandles';
 import {
@@ -515,6 +523,14 @@ struct RemoteDesktop {
   private renderPreservedInPip: boolean = false;
   private pipSurfaceTransferInProgress: boolean = false;
   private restoreFrameRefreshTimers: number[] = [];
+  // Foreground restore is a teardown barrier: no surface callback or connect
+  // retry may rebuild a renderer until PIP and the decoder render thread are
+  // fully stopped.
+  private restoreInProgress: boolean = false;
+  private restoreOperationId: number = 0;
+  private pipContentSizeRefreshTimers: number[] = [];
+  private pipLastContentWidth: number = 0;
+  private pipLastContentHeight: number = 0;
   private xComponentController: RemoteDesktopXComponentController = new RemoteDesktopXComponentController();
   private surfaceWidth: number = 0;
   private surfaceHeight: number = 0;
@@ -2207,7 +2223,6 @@ struct RemoteDesktop {
     if (action === RemoteDesktopBackgroundAction.restore) {
       hilog.info(RD_DOMAIN, RD_TAG, 'bgFlagChange: foreground restore');
       this.restoreFromBackground();
-      this.tryStartConnect();
       return;
     }
     if (action === RemoteDesktopBackgroundAction.alreadyPreserved) {
@@ -2244,6 +2259,15 @@ struct RemoteDesktop {
     if (widthPx <= 0 || heightPx <= 0) {
       return null;
     }
+    // A cold-start surface can report the physical portrait geometry before
+    // the requested landscape orientation has been applied. RustDesk's
+    // adaptive desktop request is for a computer screen, so keep that request
+    // landscape and let the first real frame refine the exact ratio.
+    if (widthPx < heightPx) {
+      const portraitWidth: number = widthPx;
+      widthPx = heightPx;
+      heightPx = portraitWidth;
+    }
     const longEdge: number = Math.max(widthPx, heightPx);
     const scale: number = longEdge > maxEdgePx ? maxEdgePx / longEdge : 1;
     return {
@@ -2253,6 +2277,118 @@ struct RemoteDesktop {
       multiMonitor: false,
       monitorCount: 1
     };
+  }
+
+  /**
+   * Return the page XComponent's physical surface size. This is intentionally
+   * separate from desktopSize(), which describes the remote video stream.
+   */
+  private currentPageSurfaceSize(fallbackWidth: number, fallbackHeight: number): RemoteSessionPipContentSize {
+    let width: number = this.renderWidthPx;
+    let height: number = this.renderHeightPx;
+    if (width <= 0 || height <= 0) {
+      try {
+        const d: display.Display = display.getDefaultDisplaySync();
+        width = d.width;
+        height = d.height;
+      } catch (_e) {
+        width = fallbackWidth;
+        height = fallbackHeight;
+      }
+    }
+    return {
+      width: Math.max(1, Math.round(width > 0 ? width : fallbackWidth)),
+      height: Math.max(1, Math.round(height > 0 ? height : fallbackHeight))
+    };
+  }
+
+  /** PIP content ratio follows the remote frame, never the local page surface. */
+  private currentPipContentSize(): RemoteSessionPipContentSize {
+    let sourceWidth: number = 0;
+    let sourceHeight: number = 0;
+    const isRustDesk: boolean = this.pendingHost?.protocol === 'rustdesk';
+
+    // The first RustDesk request can be an adaptive display size (for example
+    // 742x1600) while the peer's first real frame is 2560x1600. Prefer the
+    // observed media dimensions so PIP does not lock onto the request ratio.
+    if (isRustDesk && this.sessionId > 0) {
+      try {
+        const diagnostics: RustDeskDiagnosticsSnapshot = this.loader.getRustDeskDiagnostics(this.sessionId);
+        if (diagnostics.videoSeen && diagnostics.width > 0 && diagnostics.height > 0) {
+          sourceWidth = diagnostics.width;
+          sourceHeight = diagnostics.height;
+        }
+      } catch (_e) {
+        // The stream may be between sessions while PIP is being prepared.
+      }
+    } else if (this.pendingHost?.protocol === 'rdp' && this.sessionId > 0) {
+      try {
+        const stats: RdpRenderStats = this.loader.getRdpRenderStats(this.sessionId);
+        if (stats.desktopWidth > 0 && stats.desktopHeight > 0) {
+          sourceWidth = stats.desktopWidth;
+          sourceHeight = stats.desktopHeight;
+        }
+      } catch (_e) {
+        // Renderer statistics are unavailable during early connection setup.
+      }
+    }
+
+    // Before the first RustDesk frame, the renderer's source is initialized
+    // from the local XComponent surface. That surface may still be portrait
+    // during cold start, so never use it as the PIP media ratio. The logical
+    // adaptive request below is the safe pre-frame fallback.
+    if ((sourceWidth <= 0 || sourceHeight <= 0) && !isRustDesk && this.rendererHandle > 0) {
+      const viewport: RendererViewportSnapshot | null = this.readRendererViewport(true);
+      if (viewport !== null && viewport.sourceWidth > 0 && viewport.sourceHeight > 0) {
+        sourceWidth = viewport.sourceWidth;
+        sourceHeight = viewport.sourceHeight;
+      }
+    }
+    if ((sourceWidth <= 0 || sourceHeight <= 0) && !isRustDesk) {
+      sourceWidth = this.rendererSourceWidth;
+      sourceHeight = this.rendererSourceHeight;
+    }
+    return resolveRemoteSessionPipContentSize(
+      sourceWidth, sourceHeight,
+      this.remoteWidth, this.remoteHeight);
+  }
+
+  private clearPipContentSizeRefresh(): void {
+    for (const timer of this.pipContentSizeRefreshTimers) {
+      clearTimeout(timer);
+    }
+    this.pipContentSizeRefreshTimers = [];
+    this.pipLastContentWidth = 0;
+    this.pipLastContentHeight = 0;
+  }
+
+  private refreshActivePipContentSize(): void {
+    if (!this.renderPreservedInPip || this.restoreInProgress) {
+      return;
+    }
+    const size: RemoteSessionPipContentSize = this.currentPipContentSize();
+    if (size.width === this.pipLastContentWidth && size.height === this.pipLastContentHeight) {
+      return;
+    }
+    this.pipLastContentWidth = size.width;
+    this.pipLastContentHeight = size.height;
+    RemoteSessionPipService.getInstance().updateContentSize(size.width, size.height);
+    hilog.info(RD_DOMAIN, RD_TAG, 'refreshActivePipContentSize: remote=' +
+      size.width.toString() + 'x' + size.height.toString());
+  }
+
+  private schedulePipContentSizeRefresh(): void {
+    this.clearPipContentSizeRefresh();
+    // PIP preparation can precede the first decoded frame. Re-read native
+    // diagnostics after attachment so the controller ratio follows the first
+    // actual peer frame instead of the adaptive request dimensions.
+    const delays: number[] = [0, 120, 300, 700, 1400, 2600];
+    for (const delayMs of delays) {
+      const timer: number = setTimeout((): void => {
+        this.refreshActivePipContentSize();
+      }, delayMs);
+      this.pipContentSizeRefreshTimers.push(timer);
+    }
   }
 
   async aboutToAppear(): Promise<void> {
@@ -2295,7 +2431,6 @@ struct RemoteDesktop {
           const restoring: boolean = this.prepareRegistryRestore(host);
           if (restoring) {
             this.restoreFromBackground();
-            this.tryStartConnect();
           } else if (this.isProRustDeskHost(this.pendingHost)) {
             this.openRustDeskAuthSheet();
           } else {
@@ -2440,6 +2575,10 @@ struct RemoteDesktop {
   }
 
   private tryStartConnect(): void {
+    if (this.restoreInProgress) {
+      hilog.info(RD_DOMAIN, RD_TAG, 'tryStartConnect: waiting for foreground restore teardown');
+      return;
+    }
     // 后台恢复路径: 协议连接仍存在, 只需重建渲染
     // 使用 bgRestorePending 实例变量, 不受 AppStorage/onForeground 时序影响
     if (this.bgRestorePending && this.sessionId > 0 && this.surfaceReady && !this.cleanupStarted) {
@@ -2550,6 +2689,44 @@ struct RemoteDesktop {
     this.activeSessionRegistry.setActive(record);
   }
 
+  /**
+   * Register PIP while the foreground page is still visible. The background
+   * lifecycle only waits for HarmonyOS to auto-start the prepared controller.
+   */
+  private async prepareRemoteSessionPipForForeground(host: RemoteHost,
+    sessionId: number): Promise<void> {
+    const liveViewEnabled: boolean = AppStorage.get<boolean>('liveViewEnabled') ?? true;
+    const liveViewMode: number = AppStorage.get<number>('liveViewMode') ?? 1;
+    const activeSession: ActiveRemoteSessionRecord | null = this.activeSessionRegistry.getActive();
+    const sessionActive: boolean = this.connected && this.sessionId === sessionId &&
+      activeSession !== null && activeSession.sessionId === sessionId &&
+      activeSession.hostId === host.id && activeSession.protocolConnected;
+    const hasVideo: boolean = this.rendererHandle > 0 && this.decoderHandle > 0 && this.surfaceReady;
+    const action: RemoteSessionPipLifecycleAction = resolveRemoteSessionPipLifecycle(
+      liveViewEnabled, liveViewMode, hasVideo, sessionActive, false, true);
+    if (action === RemoteSessionPipLifecycleAction.DISABLE) {
+      await RemoteSessionPipService.getInstance().stop();
+      return;
+    }
+    if (action !== RemoteSessionPipLifecycleAction.PREPARE) {
+      return;
+    }
+    try {
+      const uiContext = this.getUIContext();
+      const context: common.UIAbilityContext = uiContext.getHostContext() as common.UIAbilityContext;
+      const pipSize: RemoteSessionPipContentSize = this.currentPipContentSize();
+      const prepared: boolean = await RemoteSessionPipService.getInstance().prepare(
+        context, uiContext, pipSize.width, pipSize.height,
+        (reason: string): void => this.handleRemoteSessionPipStopped(reason),
+        (surface: RemoteSessionPipSurface): void => this.handlePipSurfaceChanged(surface));
+      hilog.info(RD_DOMAIN, RD_TAG, 'prepareRemoteSessionPipForForeground: prepared=' +
+        prepared.toString() + ' sessionId=' + sessionId.toString());
+    } catch (err) {
+      hilog.warn(RD_DOMAIN, RD_TAG, 'prepareRemoteSessionPipForForeground: failed ' +
+        JSON.stringify(err));
+    }
+  }
+
   private async startRemoteSessionBackgroundTask(ctx: common.UIAbilityContext,
     info: RemoteSessionBgInfo): Promise<boolean> {
     const started: boolean = await RemoteSessionBackgroundTaskService.getInstance().startSessionTask(ctx, info);
@@ -2632,10 +2809,16 @@ struct RemoteDesktop {
   private async stopSessionLiveView(ctx: common.UIAbilityContext): Promise<void> {
     try {
       await RemoteSessionLiveViewService.getInstance().stop(ctx);
-      await RemoteSessionPipService.getInstance().stop();
       hilog.info(RD_DOMAIN, RD_TAG, 'stopSessionLiveView: background media stopped');
     } catch (err) {
       hilog.warn(RD_DOMAIN, RD_TAG, 'stopSessionLiveView: failed: ' + JSON.stringify(err));
+    }
+    // Keep PIP teardown independent from AVSession cleanup. A failed media
+    // identity stop must not leave an auto-start controller armed.
+    try {
+      await RemoteSessionPipService.getInstance().stop();
+    } catch (err) {
+      hilog.warn(RD_DOMAIN, RD_TAG, 'stopSessionLiveView: PIP stop failed: ' + JSON.stringify(err));
     }
   }
 
@@ -2737,15 +2920,12 @@ struct RemoteDesktop {
     const action: RestoreRefreshAction = restoreRefreshActionForDelay(delayMs);
     if (shouldRebindSurfaceForRestore(action, this.rendererHandle)) {
       const desktop: DesktopSize = this.desktopSize(this.pendingHost);
+      const pageSurface: RemoteSessionPipContentSize = this.currentPageSurfaceSize(desktop.width, desktop.height);
       const surfaceId: string = this.latestSurfaceId.length > 0 ? this.latestSurfaceId : this.xcId;
-      const result = this.loader.reattachRenderForForeground(surfaceId, desktop.width, desktop.height);
+      const result = this.loader.reattachRenderForForeground(surfaceId, pageSurface.width, pageSurface.height);
       if (result.ok && result.value !== undefined && result.value > 0) {
         this.rendererHandle = result.value;
         this.nativeHandles.markSurfaceAttached(this.rendererHandle);
-        if (this.renderWidthPx > 0 && this.renderHeightPx > 0 &&
-          (this.renderWidthPx !== desktop.width || this.renderHeightPx !== desktop.height)) {
-          this.loader.resizeRenderer(this.rendererHandle, this.renderWidthPx, this.renderHeightPx);
-        }
         if (this.decoderHandle > 0) {
           this.loader.bindVideoPipeline(this.decoderHandle, this.rendererHandle);
           const recoveryArmed: boolean = this.loader.requestDecoderRecovery();
@@ -3109,6 +3289,8 @@ struct RemoteDesktop {
     }
     const previousWidth: number = this.remoteWidth;
     const previousHeight: number = this.remoteHeight;
+    RemoteSessionPipService.getInstance().updateContentSize(
+      viewport.sourceWidth, viewport.sourceHeight);
     this.updateRemoteSize({
       width: viewport.sourceWidth,
       height: viewport.sourceHeight,
@@ -4278,6 +4460,9 @@ struct RemoteDesktop {
       if (!(await this.loader.waitForPendingTeardown())) {
         throw new Error('上一会话资源清理未完成 [E-TEARDOWN-PENDING]');
       }
+      this.rendererSourceWidth = 0;
+      this.rendererSourceHeight = 0;
+      this.invalidateRendererViewportCache();
       const rdpAuthMode: RdpAuthMode = normalizeRdpAuthMode(host.rdpAuthMode);
       const rdpRestrictedAdminSecretSource: RdpRestrictedAdminSecretSource =
         normalizeRdpRestrictedAdminSecretSource(host.rdpRestrictedAdminSecretSource);
@@ -4300,23 +4485,18 @@ struct RemoteDesktop {
       const credentials: RdpCredentialParts = this.rdpCredentialParts(host);
       const w: number = desktop.width;
       const h: number = desktop.height;
+      const pageSurface: RemoteSessionPipContentSize = this.currentPageSurfaceSize(w, h);
 
       // 初始化渲染器 (XComponent surface 已就绪)
-      console.info('[RD-DIAG] initRenderer: xcId=' + this.xcId + ' w=' + w + ' h=' + h);
-      const rHandle: number = this.loader.initRenderer(this.xcId, w, h);
+      console.info('[RD-DIAG] initRenderer: xcId=' + this.xcId + ' w=' + pageSurface.width +
+        ' h=' + pageSurface.height + ' remote=' + w + 'x' + h);
+      const rHandle: number = this.loader.initRenderer(this.xcId, pageSurface.width, pageSurface.height);
       console.info('[RD-DIAG] initRenderer returned: ' + rHandle);
       if (rHandle <= 0) {
         throw new Error('渲染器初始化失败 [E-RENDERER-INIT] rc=' + rHandle);
       }
       this.rendererHandle = rHandle;
       this.nativeHandles.markSurfaceAttached(this.rendererHandle);
-      if (this.renderWidthPx > 0 && this.renderHeightPx > 0 &&
-        (this.renderWidthPx !== w || this.renderHeightPx !== h)) {
-        this.loader.resizeRenderer(this.rendererHandle, this.renderWidthPx, this.renderHeightPx);
-        hilog.info(RD_DOMAIN, RD_TAG, 'renderer resized after init: surface=' +
-          this.renderWidthPx.toString() + 'x' + this.renderHeightPx.toString() +
-          ' remote=' + w.toString() + 'x' + h.toString());
-      }
       this.resetCanvasToDisplayDefault();
 
       // 初始化解码器 (非阻塞 — 解码器未就绪不影响连接建立)
@@ -4528,6 +4708,7 @@ struct RemoteDesktop {
       }
       this.startRemoteCursorPolling(sid);
       this.recordActiveSession(host, sid, true);
+      await this.prepareRemoteSessionPipForForeground(host, sid);
       this.persistRustDeskSessionAuth(host);
       // T-171: 连接成功后显示悬浮胶囊
       this.initHandlePosition();
@@ -4686,6 +4867,12 @@ struct RemoteDesktop {
 
   private disconnectAndCleanup(reason: string): void {
     this.restoreRemoteSystemPointer('disconnect-' + reason);
+    // Cancel a pending restore continuation before starting explicit teardown.
+    // Otherwise a late PIP stop promise could recreate a page renderer after
+    // the user has already disconnected or left the app.
+    this.restoreInProgress = false;
+    this.restoreOperationId += 1;
+    this.clearPipContentSizeRefresh();
     // Stop any stale PIP controller even when this cleanup call is otherwise
     // idempotently skipped. This prevents a disconnected/empty page from
     // briefly surfacing an old PIP window during app exit.
@@ -4753,6 +4940,11 @@ struct RemoteDesktop {
           this.disableRdpBackgroundVideoPrewarm('disconnect-cleanup');
         }
         this.discardPendingMouseMove();
+        if (this.decoderHandle > 0) {
+          const detached: boolean = this.loader.detachVideoPipelineForBackground();
+          hilog.info(RD_DOMAIN, RD_TAG, 'disconnectAndCleanup: decoder pipeline detached=' +
+            (detached ? 'true' : 'false'));
+        }
         if (this.rendererHandle > 0) {
           this.markXComponentSurfaceDetached('disconnectAndCleanup');
         }
@@ -4813,20 +5005,30 @@ struct RemoteDesktop {
    * 后台保活: 仅脱附渲染, 保留协议连接和音频管线。
    * 系统通过 home gesture / onBackground 触发。
    */
-  private async attachRendererToPipSurface(surfaceId: string): Promise<boolean> {
+  private async attachRendererToPipSurface(surface: RemoteSessionPipSurface): Promise<boolean> {
     const activeSession: ActiveRemoteSessionRecord | null = this.activeSessionRegistry.getActive();
     if (!this.cleanupStarted || !this.connected || this.sessionId <= 0 || this.pendingHost === null ||
       this.rendererHandle <= 0 || this.decoderHandle <= 0 || activeSession === null ||
       activeSession.sessionId !== this.sessionId || activeSession.hostId !== this.pendingHost.id ||
-      !activeSession.protocolConnected || surfaceId.length === 0) {
+      !activeSession.protocolConnected || surface.surfaceId.length === 0 ||
+      surface.surfaceWidth <= 0 || surface.surfaceHeight <= 0) {
       hilog.warn(RD_DOMAIN, RD_TAG, 'attachRendererToPipSurface: session is no longer attachable');
       return false;
     }
 
     try {
+      // Capture the remote media ratio while the page renderer is still alive.
+      // After destroyRenderer() the native viewport is intentionally no longer
+      // readable, and falling back to the rotated page surface would crop PIP.
+      const pipSize: RemoteSessionPipContentSize = this.currentPipContentSize();
       // The page renderer is bound to the page XComponent.  Move the native
       // renderer to the free-node surface before the PIP controller reports
       // success; otherwise the PIP window only retains the last page frame.
+      if (this.decoderHandle > 0) {
+        const detached: boolean = this.loader.detachVideoPipelineForBackground();
+        hilog.info(RD_DOMAIN, RD_TAG, 'attachRendererToPipSurface: decoder pipeline detached=' +
+          (detached ? 'true' : 'false'));
+      }
       if (this.nativeHandles.isRenderAttached()) {
         this.nativeHandles.detachRenderForBackground();
       } else {
@@ -4834,9 +5036,8 @@ struct RemoteDesktop {
       }
       this.rendererHandle = -1;
 
-      const width: number = this.renderWidthPx > 0 ? this.renderWidthPx : this.remoteWidth;
-      const height: number = this.renderHeightPx > 0 ? this.renderHeightPx : this.remoteHeight;
-      const result = this.loader.reattachRenderForForeground(surfaceId, width, height);
+      const result = this.loader.reattachRenderForForeground(
+        surface.surfaceId, surface.surfaceWidth, surface.surfaceHeight);
       if (!result.ok || result.value === undefined || result.value <= 0) {
         hilog.warn(RD_DOMAIN, RD_TAG, 'attachRendererToPipSurface: renderer init failed code=' +
           result.code + ' msg=' + result.message);
@@ -4855,12 +5056,37 @@ struct RemoteDesktop {
       this.loader.requestDecoderRecovery();
       this.loader.requestFrameRefresh();
       hilog.info(RD_DOMAIN, RD_TAG, 'attachRendererToPipSurface: renderer=' +
-        this.rendererHandle.toString() + ' surface=' + surfaceId);
+        this.rendererHandle.toString() + ' media=' + pipSize.width.toString() + 'x' +
+        pipSize.height.toString() + ' surface=' + surface.surfaceId + ' ' +
+        surface.surfaceWidth.toString() + 'x' + surface.surfaceHeight.toString());
       return true;
     } catch (err) {
       hilog.warn(RD_DOMAIN, RD_TAG, 'attachRendererToPipSurface: failed ' + JSON.stringify(err));
       this.rendererHandle = -1;
       return false;
+    }
+  }
+
+  private handlePipSurfaceChanged(surface: RemoteSessionPipSurface): void {
+    if (!this.renderPreservedInPip || this.restoreInProgress || this.rendererHandle <= 0 ||
+      surface.surfaceId.length === 0 || surface.surfaceWidth <= 0 || surface.surfaceHeight <= 0) {
+      return;
+    }
+    try {
+      const rebound: boolean = rdpnapi.setXComponentSurfaceId(
+        surface.surfaceId, surface.surfaceWidth, surface.surfaceHeight) as boolean;
+      if (!rebound) {
+        hilog.warn(RD_DOMAIN, RD_TAG, 'handlePipSurfaceChanged: native surface update failed id=' +
+          surface.surfaceId);
+        return;
+      }
+      this.loader.resizeRenderer(this.rendererHandle, surface.surfaceWidth, surface.surfaceHeight);
+      this.invalidateRendererViewportCache();
+      hilog.info(RD_DOMAIN, RD_TAG, 'handlePipSurfaceChanged: renderer=' +
+        this.rendererHandle.toString() + ' surface=' + surface.surfaceWidth.toString() + 'x' +
+        surface.surfaceHeight.toString());
+    } catch (err) {
+      hilog.warn(RD_DOMAIN, RD_TAG, 'handlePipSurfaceChanged failed: ' + JSON.stringify(err));
     }
   }
 
@@ -4926,16 +5152,22 @@ struct RemoteDesktop {
       pipContext = this.getUIContext().getHostContext() as common.UIAbilityContext;
       const liveViewEnabled: boolean = AppStorage.get<boolean>('liveViewEnabled') ?? true;
       const liveViewMode: number = AppStorage.get<number>('liveViewMode') ?? 1;
+      const pipLifecycleAction: RemoteSessionPipLifecycleAction = resolveRemoteSessionPipLifecycle(
+        liveViewEnabled, liveViewMode, backgroundMedia.hasVideo,
+        this.connected && this.sessionId > 0, true, false);
       if (pipContext !== null && this.pendingHost !== null &&
         this.rendererHandle > 0 && this.decoderHandle > 0 && this.surfaceReady &&
-        shouldStartRemoteSessionPip(liveViewEnabled, liveViewMode, backgroundMedia.hasVideo,
-          this.connected && this.sessionId > 0)) {
-        const width: number = this.renderWidthPx > 0 ? this.renderWidthPx : this.remoteWidth;
-        const height: number = this.renderHeightPx > 0 ? this.renderHeightPx : this.remoteHeight;
+        pipLifecycleAction === RemoteSessionPipLifecycleAction.WAIT_FOR_AUTO_START) {
+        const pipSize: RemoteSessionPipContentSize = this.currentPipContentSize();
         pipPreserved = await RemoteSessionPipService.getInstance().start(
-          pipContext, this.getUIContext(), width, height,
-          (surfaceId: string): Promise<boolean> => this.attachRendererToPipSurface(surfaceId),
-          (reason: string): void => this.handleRemoteSessionPipStopped(reason));
+          pipContext, this.getUIContext(), pipSize.width, pipSize.height,
+          (surface: RemoteSessionPipSurface): Promise<boolean> => this.attachRendererToPipSurface(surface),
+          (reason: string): void => this.handleRemoteSessionPipStopped(reason),
+          (surface: RemoteSessionPipSurface): void => this.handlePipSurfaceChanged(surface));
+      } else {
+        // A disabled/notification-only/no-video session must revoke any
+        // foreground-prepared controller before the app leaves the window.
+        await RemoteSessionPipService.getInstance().stop();
       }
     } catch (err) {
       hilog.warn(RD_DOMAIN, RD_TAG, 'detachForBackground: PIP start failed, falling back to detached renderer: ' +
@@ -4945,9 +5177,11 @@ struct RemoteDesktop {
     this.renderPreservedInPip = pipPreserved;
     this.pipSurfaceTransferInProgress = false;
     if (pipPreserved) {
+      this.schedulePipContentSizeRefresh();
       this.disableRdpBackgroundVideoPrewarm('pip-active');
       hilog.info(RD_DOMAIN, RD_TAG, 'detachForBackground: PIP owns free-node surface, renderer preserved');
     } else {
+      this.clearPipContentSizeRefresh();
       this.applyBackgroundVideoPrewarm(backgroundMedia, 'detach');
     }
 
@@ -5056,17 +5290,35 @@ struct RemoteDesktop {
    * 从后台恢复: 清除保活标志, 停止后台任务, 等待 XComponent 重建渲染。
    */
   private restoreFromBackground(): void {
+    if (this.restoreInProgress) {
+      hilog.info(RD_DOMAIN, RD_TAG, 'restoreFromBackground: restore already in progress');
+      return;
+    }
+    this.restoreInProgress = true;
+    const operationId: number = ++this.restoreOperationId;
     this.cleanupStarted = false; // 允许重新 attach
-    // bgFlag 保留到 tryStartConnect → doBackgroundRestoreRender 使用
+    // bgFlag 保留到清理完成后 → doBackgroundRestoreRender 使用
     this.stopBackgroundAudioPolling();
     this.clearRestoreFrameRefreshPump();
+    this.clearPipContentSizeRefresh();
     const continueRestore = (): void => {
+      if (operationId !== this.restoreOperationId || !this.restoreInProgress ||
+        this.cleanupStarted || !this.bgRestorePending || this.sessionId <= 0) {
+        hilog.info(RD_DOMAIN, RD_TAG, 'restoreFromBackground: continuation cancelled id=' +
+          operationId.toString());
+        return;
+      }
       // The PIP renderer is attached to the free-node surface, not the page
       // surface. Release that renderer before the normal foreground reattach
       // path; otherwise the page could resume with a stale PIP surface or two
       // native renderer handles.
       if (this.renderPreservedInPip) {
         this.renderPreservedInPip = false;
+        if (this.decoderHandle > 0) {
+          const detached: boolean = this.loader.detachVideoPipelineForBackground();
+          hilog.info(RD_DOMAIN, RD_TAG, 'restoreFromBackground: decoder pipeline detached=' +
+            (detached ? 'true' : 'false'));
+        }
         if (this.rendererHandle > 0) {
           if (this.nativeHandles.isRenderAttached()) {
             this.nativeHandles.detachRenderForBackground();
@@ -5078,6 +5330,9 @@ struct RemoteDesktop {
         hilog.info(RD_DOMAIN, RD_TAG, 'restoreFromBackground: released PIP renderer, reattaching page surface');
       }
       this.renderPreservedInPip = false;
+      // PIP stop has completed and detachVideoPipelineForBackground has
+      // joined the decoder thread. Only now may foreground rendering resume.
+      this.restoreInProgress = false;
       if (shouldRestoreRenderImmediately(this.bgRestorePending, this.sessionId, this.surfaceReady, this.cleanupStarted)) {
         hilog.info(RD_DOMAIN, RD_TAG, 'restoreFromBackground: surface ready, reattach now');
         this.doBackgroundRestoreRender();
@@ -5113,6 +5368,10 @@ struct RemoteDesktop {
    * 后台恢复 — 仅重建渲染器, 不新建协议连接。
    */
   private doBackgroundRestoreRender(): void {
+    if (this.restoreInProgress) {
+      hilog.warn(RD_DOMAIN, RD_TAG, 'doBackgroundRestoreRender: restore teardown is still in progress');
+      return;
+    }
     // cleanupStarted 已在 restoreFromBackground 中重置为 false
     if (this.cleanupStarted) {
       hilog.warn(RD_DOMAIN, RD_TAG, 'doBackgroundRestoreRender: cleanupStarted=true, aborting');
@@ -5122,22 +5381,19 @@ struct RemoteDesktop {
     this.connectStarted = true;
     try {
       const desktop: DesktopSize = this.desktopSize(this.pendingHost);
+      const pageSurface: RemoteSessionPipContentSize = this.currentPageSurfaceSize(desktop.width, desktop.height);
       const surfaceId: string = this.latestSurfaceId.length > 0 ? this.latestSurfaceId : this.xcId;
       // Pro 主机从列表页完成真实鉴权后交接的是“无画布会话”。此时不能走
       // reattach 路径，必须在远程页首次创建 renderer/decoder，再绑定到同一 session。
       if (this.loader.getRendererHandle() <= 0 && this.pendingHost !== null &&
         this.pendingHost.protocol === 'rustdesk') {
-        const renderer: number = this.loader.initRenderer(surfaceId, desktop.width, desktop.height);
+        const renderer: number = this.loader.initRenderer(surfaceId, pageSurface.width, pageSurface.height);
         if (renderer <= 0) {
           throw new Error('预鉴权会话画布初始化失败 [E-RUSTDESK-PREFLIGHT-RENDERER]');
         }
-          this.rendererHandle = renderer;
-          this.nativeHandles.markSurfaceAttached(renderer);
-          if (this.renderWidthPx > 0 && this.renderHeightPx > 0 &&
-            (this.renderWidthPx !== desktop.width || this.renderHeightPx !== desktop.height)) {
-            this.loader.resizeRenderer(this.rendererHandle, this.renderWidthPx, this.renderHeightPx);
-          }
-          this.resetCanvasToDisplayDefault();
+        this.rendererHandle = renderer;
+        this.nativeHandles.markSurfaceAttached(renderer);
+        this.resetCanvasToDisplayDefault();
         const codecPref: number = AppStorage.get<number>('rustdeskCodec') ?? 0;
         let decoderCodec: number = 3;
         if (codecPref === 1) { decoderCodec = 2; }
@@ -5165,6 +5421,12 @@ struct RemoteDesktop {
         this.setRemoteKeepScreenOn(true);
         this.setRemoteNavigationHidden(true, 'preauthenticated-session-handoff');
         this.loader.requestFrameRefresh();
+        if (this.pendingHost !== null) {
+          this.prepareRemoteSessionPipForForeground(this.pendingHost, this.sessionId).catch((err: Error): void => {
+            hilog.warn(RD_DOMAIN, RD_TAG, 'doBackgroundRestoreRender: PIP prepare failed ' +
+              (err.message ? err.message : JSON.stringify(err)));
+          });
+        }
         // This is a first renderer attachment for an already-authenticated stream,
         // not a foreground restore. The decoder recovery armed above waits for the
         // first keyframe; scheduling the restore watchdog here would recreate a
@@ -5175,20 +5437,13 @@ struct RemoteDesktop {
         return;
       }
       const result = this.loader.reattachRenderForForeground(
-        surfaceId, desktop.width, desktop.height);
+        surfaceId, pageSurface.width, pageSurface.height);
       if (result.ok && result.value !== undefined && result.value > 0) {
         this.rendererHandle = result.value;
         this.nativeHandles.markSurfaceAttached(this.rendererHandle);
         this.applyCanvasTransform();
         hilog.info(RD_DOMAIN, RD_TAG, 'doBackgroundRestoreRender: renderer reattached handle=' +
           this.rendererHandle.toString());
-        if (this.renderWidthPx > 0 && this.renderHeightPx > 0 &&
-          (this.renderWidthPx !== desktop.width || this.renderHeightPx !== desktop.height)) {
-          this.loader.resizeRenderer(this.rendererHandle, this.renderWidthPx, this.renderHeightPx);
-          hilog.info(RD_DOMAIN, RD_TAG, 'doBackgroundRestoreRender: renderer resized surface=' +
-            this.renderWidthPx.toString() + 'x' + this.renderHeightPx.toString() +
-            ' remote=' + desktop.width.toString() + 'x' + desktop.height.toString());
-        }
 
         if (this.pendingHost !== null && this.pendingHost.protocol === 'rdp' && this.sessionId > 0) {
           const presented: boolean = this.loader.presentRdpCachedFrame(this.sessionId);
@@ -5222,6 +5477,12 @@ struct RemoteDesktop {
           this.startClipboardBridgeBestEffort(this.sessionId, this.connectAttemptId, clipboardEnabled);
         }
         this.scheduleRestoreFrameRefreshPump();
+        if (this.pendingHost !== null) {
+          this.prepareRemoteSessionPipForForeground(this.pendingHost, this.sessionId).catch((err: Error): void => {
+            hilog.warn(RD_DOMAIN, RD_TAG, 'doBackgroundRestoreRender: PIP prepare failed ' +
+              (err.message ? err.message : JSON.stringify(err)));
+          });
+        }
         hilog.info(RD_DOMAIN, RD_TAG, 'doBackgroundRestoreRender: complete, session resumed');
       } else {
         hilog.error(RD_DOMAIN, RD_TAG, 'doBackgroundRestoreRender: reattachRenderForForeground failed code=' +
@@ -5286,6 +5547,14 @@ struct RemoteDesktop {
     try {
       hilog.info(RD_DOMAIN, RD_TAG, 'XComponentController.onSurfaceCreated: surfaceId=' + surfaceId);
       this.latestSurfaceId = surfaceId;
+      if (this.restoreInProgress) {
+        // Keep the page surface ID for the post-teardown reattach, but do not
+        // touch the global native surface while the PIP renderer is stopping.
+        this.surfaceReady = true;
+        hilog.info(RD_DOMAIN, RD_TAG,
+          'onSurfaceCreated: foreground restore teardown active, defer native bind');
+        return;
+      }
       if (this.renderPreservedInPip || this.pipSurfaceTransferInProgress) {
         // A page surface can be recreated while the PIP free node owns the
         // native window. Do not switch the global native surface away from
@@ -5297,9 +5566,13 @@ struct RemoteDesktop {
       }
       const desktop: DesktopSize = this.desktopSize(this.pendingHost);
       this.updateRemoteSize(desktop);
-      const ok: boolean = rdpnapi.setXComponentSurfaceId(surfaceId, desktop.width, desktop.height) as boolean;
+      const pageSurface: RemoteSessionPipContentSize = this.currentPageSurfaceSize(desktop.width, desktop.height);
+      const ok: boolean = rdpnapi.setXComponentSurfaceId(
+        surfaceId, pageSurface.width, pageSurface.height) as boolean;
       hilog.info(RD_DOMAIN, RD_TAG, 'setXComponentSurfaceId: surfaceId=' + surfaceId +
-        ' size=' + desktop.width + 'x' + desktop.height + ' ok=' + (ok ? 'true' : 'false'));
+        ' page=' + pageSurface.width + 'x' + pageSurface.height +
+        ' remote=' + desktop.width + 'x' + desktop.height +
+        ' ok=' + (ok ? 'true' : 'false'));
       this.surfaceReady = ok;
       this.tryStartConnect();
     } catch (_e) {
@@ -5315,7 +5588,7 @@ struct RemoteDesktop {
     if (_surfaceId === this.latestSurfaceId) {
       this.latestSurfaceId = '';
     }
-    if (this.renderPreservedInPip || this.pipSurfaceTransferInProgress) {
+    if (this.restoreInProgress || this.renderPreservedInPip || this.pipSurfaceTransferInProgress) {
       hilog.info(RD_DOMAIN, RD_TAG,
         'onSurfaceDestroyed: PIP owns native surface, skip global detach source=' + _surfaceId);
     } else {
@@ -7796,7 +8069,8 @@ struct RemoteDesktop {
           Math.round(hVp).toString() + 'vp render=' + wPx.toString() + 'x' + hPx.toString() + 'px');
         // resizeRenderer 告诉 GL 渲染器实际的 EGL surface 像素尺寸,
         // 使 contain/letterbox viewport 计算与表面一致。必须调用。
-        if (this.rendererHandle > 0 && wPx > 0 && hPx > 0) {
+        if (this.rendererHandle > 0 && wPx > 0 && hPx > 0 &&
+          !this.renderPreservedInPip && !this.pipSurfaceTransferInProgress) {
           this.loader.resizeRenderer(this.rendererHandle, wPx, hPx);
           if (this.canvasTransformGestureModified) {
             this.applyCanvasTransform();

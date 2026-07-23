@@ -163,6 +163,7 @@ if(RDP_BUILD_TESTS)
         test/native_image_context_policy_test.cpp
         test/decoder_recovery_policy_test.cpp
         test/software_decoder_callback_gate_test.cpp
+        test/decoder_callback_gate_test.cpp
         test/decoder_pipeline_lifecycle_policy_test.cpp
         test/safe_log_test.cpp
         common/safe_log.cpp

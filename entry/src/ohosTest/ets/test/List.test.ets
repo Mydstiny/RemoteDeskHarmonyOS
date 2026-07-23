@@ -8,6 +8,7 @@ import nativeSessionHandlesTest from './NativeSessionHandles.test';
 import activeRemoteSessionRegistryTest from './ActiveRemoteSessionRegistry.test';
 import remoteDesktopBackgroundLifecyclePolicyTest from './RemoteDesktopBackgroundLifecyclePolicy.test';
 import remoteSessionLiveViewPolicyTest from './RemoteSessionLiveViewPolicy.test';
+import remoteSessionPipLifecyclePolicyTest from './RemoteSessionPipLifecyclePolicy.test';
 import hostListFilterServiceTest from './HostListFilterService.test';
 import hostSyncServiceTest from './HostSyncService.test';
 import remoteRestoreFrameRefreshPolicyTest from './RemoteRestoreFrameRefreshPolicy.test';
@@ -45,6 +46,7 @@ export default function testsuite() {
   activeRemoteSessionRegistryTest();
   remoteDesktopBackgroundLifecyclePolicyTest();
   remoteSessionLiveViewPolicyTest();
+  remoteSessionPipLifecyclePolicyTest();
   remoteRestoreFrameRefreshPolicyTest();
   hostListFilterServiceTest();
   hostSyncServiceTest();

@@ -11,6 +11,7 @@
 #ifndef HW_DECODER_H
 #define HW_DECODER_H
 
+#include "decoder_callback_gate.h"
 #include "extensions/protocol_adapter.h"
 #include "video_backpressure_controller.h"
 #include <GLES3/gl3.h>
@@ -170,10 +171,10 @@ private:
     CodecType       codecType_ = CodecType::H264;
     bool            initialized_ = false;
 
-    DecoderFrameCallback  frameCallback_;
-    DecoderMakeCurrentCallback makeCurrentCallback_;
-    DecoderReleaseCurrentCallback releaseCurrentCallback_;
-    DecoderErrorCallback  errorCallback_;
+    DecoderCallbackGate<DecoderFrameCallback> frameCallbackGate_;
+    DecoderCallbackGate<DecoderMakeCurrentCallback> makeCurrentCallbackGate_;
+    DecoderCallbackGate<DecoderReleaseCurrentCallback> releaseCurrentCallbackGate_;
+    DecoderCallbackGate<DecoderErrorCallback> errorCallbackGate_;
 
     // 输入队列 + 线程安全
     mutable std::mutex      mutex_;

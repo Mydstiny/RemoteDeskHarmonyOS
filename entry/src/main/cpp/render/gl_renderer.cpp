@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <cmath>
 #include <memory>
+#include <unordered_map>
 #include <GLES2/gl2ext.h>
 #include <ace/xcomponent/native_interface_xcomponent.h>
 #include <native_window/external_window.h>
@@ -1092,6 +1093,25 @@ struct RendererContext {
 // 活跃渲染器句柄 — 供 RenderRawBgraActive 零参数调用
 static std::atomic<int64_t> g_activeRendererHandle {0};
 static std::mutex g_activeRendererMutex;
+// Decoder callbacks can outlive the UI-side numeric handle. Handles must not
+// be raw addresses: a destroyed context can be allocated at the same address
+// during a fast PIP surface transfer, making an old callback target a new
+// renderer. Keep monotonically increasing opaque IDs in the same registry
+// mutex so stale callbacks are rejected before any context is dereferenced.
+static std::atomic<int64_t> g_nextRendererHandle {1};
+static std::unordered_map<int64_t, std::unique_ptr<RendererContext>> g_rendererContexts;
+
+static RendererContext* FindRendererContextLocked(int64_t handle) {
+    if (handle <= 0) {
+        return nullptr;
+    }
+    const auto it = g_rendererContexts.find(handle);
+    return it == g_rendererContexts.end() ? nullptr : it->second.get();
+}
+
+static bool IsActiveRendererHandleLocked(int64_t handle) {
+    return handle > 0 && g_activeRendererHandle.load(std::memory_order_acquire) == handle;
+}
 
 /**
  * NAPI: initRenderer(xcomponentId: string, width: number, height: number): number
@@ -1121,9 +1141,21 @@ napi_value NapiInitRenderer(napi_env env, napi_callback_info info) {
         return errVal;
     }
 
-    // 将渲染器指针作为外部数据返回
-    auto* ctx = new RendererContext{renderer};
-    int64_t handleVal = reinterpret_cast<int64_t>(ctx);
+    // Return a process-local opaque ID instead of exposing a context address.
+    // The decoder can retain this value while the UI tears down and rebuilds
+    // the renderer during a PIP transfer.
+    auto ctx = std::make_unique<RendererContext>();
+    ctx->renderer = renderer;
+    int64_t handleVal = g_nextRendererHandle.fetch_add(1, std::memory_order_relaxed);
+    if (handleVal <= 0) {
+        // Extremely defensive overflow handling; zero and negative values are
+        // reserved for "no renderer" throughout the NAPI/decoder boundary.
+        handleVal = g_nextRendererHandle.fetch_add(1, std::memory_order_relaxed);
+    }
+    {
+        std::lock_guard<std::mutex> lock(g_activeRendererMutex);
+        g_rendererContexts.emplace(handleVal, std::move(ctx));
+    }
     napi_value handle;
     napi_create_int64(env, handleVal, &handle);
 
@@ -1145,12 +1177,12 @@ napi_value NapiRenderFrame(napi_env env, napi_callback_info info) {
 
     int64_t handleVal;
     napi_get_value_int64(env, args[0], &handleVal);
-    auto* ctx = reinterpret_cast<RendererContext*>(handleVal);
-
     int32_t textureId;
     napi_get_value_int32(env, args[1], &textureId);
 
-    if (ctx && ctx->renderer) {
+    std::lock_guard<std::mutex> lock(g_activeRendererMutex);
+    auto* ctx = FindRendererContextLocked(handleVal);
+    if (IsActiveRendererHandleLocked(handleVal) && ctx && ctx->renderer) {
         ctx->renderer->RenderFrame(static_cast<GLuint>(textureId));
     }
 
@@ -1174,19 +1206,11 @@ napi_value NapiResizeRenderer(napi_env env, napi_callback_info info) {
     napi_get_value_int32(env, args[1], &width);
     napi_get_value_int32(env, args[2], &height);
 
-    std::shared_ptr<GLRenderer> renderer;
-    {
-        std::lock_guard<std::mutex> lock(g_activeRendererMutex);
-        if (g_activeRendererHandle.load(std::memory_order_acquire) == handleVal) {
-            auto* ctx = reinterpret_cast<RendererContext*>(handleVal);
-            if (ctx && ctx->renderer) {
-                ctx->generation = AdvanceRendererGeneration();
-                renderer = ctx->renderer;
-            }
-        }
-    }
-    if (renderer) {
-        renderer->Resize(width, height);
+    std::lock_guard<std::mutex> lock(g_activeRendererMutex);
+    auto* ctx = FindRendererContextLocked(handleVal);
+    if (IsActiveRendererHandleLocked(handleVal) && ctx && ctx->renderer) {
+        ctx->generation = AdvanceRendererGeneration();
+        ctx->renderer->Resize(width, height);
     }
 
     napi_value undefined;
@@ -1207,15 +1231,11 @@ napi_value NapiSetRendererCanvasTransform(napi_env env, napi_callback_info info)
     if (argc > 1) napi_get_value_double(env, args[1], &scale);
     if (argc > 2) napi_get_value_double(env, args[2], &panX);
     if (argc > 3) napi_get_value_double(env, args[3], &panY);
-    std::shared_ptr<GLRenderer> renderer;
-    {
-        std::lock_guard<std::mutex> lock(g_activeRendererMutex);
-        if (g_activeRendererHandle.load(std::memory_order_acquire) == handleVal) {
-            auto* ctx = reinterpret_cast<RendererContext*>(handleVal);
-            if (ctx) renderer = ctx->renderer;
-        }
+    std::lock_guard<std::mutex> lock(g_activeRendererMutex);
+    auto* ctx = FindRendererContextLocked(handleVal);
+    if (IsActiveRendererHandleLocked(handleVal) && ctx && ctx->renderer) {
+        ctx->renderer->SetCanvasTransform(scale, panX, panY);
     }
-    if (renderer) renderer->SetCanvasTransform(scale, panX, panY);
     napi_value undefined;
     napi_get_undefined(env, &undefined);
     return undefined;
@@ -1250,7 +1270,6 @@ napi_value NapiRenderRawBGRA(napi_env env, napi_callback_info info) {
 
     int64_t handleVal;
     napi_get_value_int64(env, args[0], &handleVal);
-    auto* ctx = reinterpret_cast<RendererContext*>(handleVal);
 
     void* data = nullptr;
     size_t size = 0;
@@ -1261,7 +1280,9 @@ napi_value NapiRenderRawBGRA(napi_env env, napi_callback_info info) {
     napi_get_value_int32(env, args[3], &height);
     if (argc > 4) napi_get_value_int32(env, args[4], &stride);
 
-    if (ctx && ctx->renderer && ctx->renderer->IsInitialized()) {
+    std::lock_guard<std::mutex> lock(g_activeRendererMutex);
+    auto* ctx = FindRendererContextLocked(handleVal);
+    if (IsActiveRendererHandleLocked(handleVal) && ctx && ctx->renderer) {
         ctx->renderer->RenderRawBGRA(static_cast<const uint8_t*>(data), width, height, stride);
     }
 
@@ -1281,16 +1302,19 @@ napi_value NapiTestRender(napi_env env, napi_callback_info info) {
 
     int64_t handleVal;
     napi_get_value_int64(env, args[0], &handleVal);
-    auto* ctx = reinterpret_cast<RendererContext*>(handleVal);
 
-    if (ctx && ctx->renderer && ctx->renderer->IsInitialized()) {
+    std::lock_guard<std::mutex> lock(g_activeRendererMutex);
+    auto* ctx = FindRendererContextLocked(handleVal);
+    if (IsActiveRendererHandleLocked(handleVal) && ctx && ctx->renderer) {
         // 直接清屏蓝色并 swap — 不依赖解码器纹理
         GLRenderer* r = ctx->renderer.get();
-        r->MakeCurrent();
-        glClearColor(0.0f, 0.2f, 0.8f, 1.0f); // 华为蓝 #0033CC
-        glClear(GL_COLOR_BUFFER_BIT);
-        eglSwapBuffers(r->GetDisplay(), r->GetSurface());
-        OH_LOG_INFO(LOG_APP, "[GL] testRender: 蓝色清屏已上屏");
+        if (r->MakeCurrent()) {
+            glClearColor(0.0f, 0.2f, 0.8f, 1.0f); // 华为蓝 #0033CC
+            glClear(GL_COLOR_BUFFER_BIT);
+            eglSwapBuffers(r->GetDisplay(), r->GetSurface());
+            r->ReleaseCurrent();
+            OH_LOG_INFO(LOG_APP, "[GL] testRender: 蓝色清屏已上屏");
+        }
     } else {
         OH_LOG_WARN(LOG_APP, "[GL] testRender: 渲染器未就绪");
     }
@@ -1377,17 +1401,9 @@ napi_value NapiGetRendererViewport(napi_env env, napi_callback_info info) {
         napi_get_value_int64(env, args[0], &handle);
     }
 
-    std::shared_ptr<GLRenderer> renderer;
-    {
-        std::lock_guard<std::mutex> lock(g_activeRendererMutex);
-        if (handle == g_activeRendererHandle.load(std::memory_order_acquire)) {
-            auto* ctx = reinterpret_cast<RendererContext*>(handle);
-            if (ctx) {
-                renderer = ctx->renderer;
-            }
-        }
-    }
-    if (!renderer) {
+    std::lock_guard<std::mutex> lock(g_activeRendererMutex);
+    auto* ctx = FindRendererContextLocked(handle);
+    if (!IsActiveRendererHandleLocked(handle) || !ctx || !ctx->renderer) {
         napi_value nullVal;
         napi_get_null(env, &nullVal);
         return nullVal;
@@ -1395,8 +1411,8 @@ napi_value NapiGetRendererViewport(napi_env env, napi_callback_info info) {
 
     int vpX = 0, vpY = 0, vpW = 0, vpH = 0;
     int srcW = 0, srcH = 0, surfW = 0, surfH = 0;
-    renderer->GetViewportSnapshot(vpX, vpY, vpW, vpH,
-                                  srcW, srcH, surfW, surfH);
+    ctx->renderer->GetViewportSnapshot(vpX, vpY, vpW, vpH,
+                                       srcW, srcH, surfW, surfH);
 
     napi_value result;
     napi_create_object(env, &result);
@@ -1426,31 +1442,27 @@ napi_value NapiGetRendererViewport(napi_env env, napi_callback_info info) {
 
 void RendererNapi::SetActiveRenderer(int64_t handle) {
     std::lock_guard<std::mutex> lock(g_activeRendererMutex);
-    const uint64_t generation = AdvanceRendererGeneration();
-    auto* ctx = reinterpret_cast<RendererContext*>(handle);
-    if (ctx) {
-        ctx->generation = generation;
+    auto* ctx = FindRendererContextLocked(handle);
+    if (!ctx || !ctx->renderer) {
+        OH_LOG_WARN(LOG_APP, "[GL] active renderer rejected stale handle=%{public}lld",
+                    static_cast<long long>(handle));
+        return;
     }
+    const uint64_t generation = AdvanceRendererGeneration();
+    ctx->generation = generation;
     g_activeRendererHandle.store(handle, std::memory_order_release);
     OH_LOG_INFO(LOG_APP, "[GL] active renderer set handle=%{public}lld",
                 static_cast<long long>(handle));
 }
 
 RdpPresentationMetricsSnapshot RendererNapi::GetActivePresentationStats() {
-    std::shared_ptr<GLRenderer> renderer;
-    {
-        std::lock_guard<std::mutex> lock(g_activeRendererMutex);
-        const int64_t handle = g_activeRendererHandle.load(std::memory_order_acquire);
-        if (handle <= 0) {
-            return RdpPresentationMetricsSnapshot();
-        }
-        auto* ctx = reinterpret_cast<RendererContext*>(handle);
-        if (!ctx || !ctx->renderer) {
-            return RdpPresentationMetricsSnapshot();
-        }
-        renderer = ctx->renderer;
+    std::lock_guard<std::mutex> lock(g_activeRendererMutex);
+    const int64_t handle = g_activeRendererHandle.load(std::memory_order_acquire);
+    auto* ctx = FindRendererContextLocked(handle);
+    if (!ctx || !ctx->renderer) {
+        return RdpPresentationMetricsSnapshot();
     }
-    return renderer->GetPresentationStats();
+    return ctx->renderer->GetPresentationStats();
 }
 
 void RendererNapi::InvalidateActivePresentation() {
@@ -1467,7 +1479,7 @@ bool RendererNapi::ReenableActivePresentation() {
         !g_surfaceReady.load(std::memory_order_acquire)) {
         return false;
     }
-    auto* ctx = reinterpret_cast<RendererContext*>(handle);
+    auto* ctx = FindRendererContextLocked(handle);
     if (!ctx || !ctx->renderer) {
         return false;
     }
@@ -1490,65 +1502,52 @@ void RendererNapi::DestroyRendererHandle(int64_t handle) {
     if (handle <= 0) {
         return;
     }
-    auto* ctx = reinterpret_cast<RendererContext*>(handle);
+    std::lock_guard<std::mutex> lock(g_activeRendererMutex);
+    auto* ctx = FindRendererContextLocked(handle);
     if (!ctx) {
         return;
     }
-    std::shared_ptr<GLRenderer> renderer;
-    {
-        std::lock_guard<std::mutex> lock(g_activeRendererMutex);
-        if (g_activeRendererHandle.load(std::memory_order_acquire) == handle) {
-            g_activeRendererHandle.store(0, std::memory_order_release);
-            AdvanceRendererGeneration();
-        }
-        renderer = std::move(ctx->renderer);
+    if (g_activeRendererHandle.load(std::memory_order_acquire) == handle) {
+        g_activeRendererHandle.store(0, std::memory_order_release);
+        AdvanceRendererGeneration();
     }
+    std::shared_ptr<GLRenderer> renderer = std::move(ctx->renderer);
+    // Keep the registry mutex held through renderer destruction. Any decoder
+    // callback that was already queued either finishes before this point or
+    // observes the cleared active handle and returns without touching ctx.
     if (renderer) {
         renderer->Destroy();
     }
-    delete ctx;
+    g_rendererContexts.erase(handle);
 }
 
 RdpPresentationTarget RendererNapi::GetActivePresentationTarget() {
     RdpPresentationTarget target;
-    std::shared_ptr<GLRenderer> renderer;
-    int64_t handle = 0;
-    {
-        std::lock_guard<std::mutex> lock(g_activeRendererMutex);
-        target.generation = g_rendererGeneration.load(std::memory_order_acquire);
-        if (g_surfaceDetached.load(std::memory_order_acquire) ||
-            !g_surfaceReady.load(std::memory_order_acquire)) {
-            target.rejection = RdpPresentResult::SurfaceDetached;
-            return target;
-        }
-        handle = g_activeRendererHandle.load(std::memory_order_acquire);
-        if (handle <= 0) {
-            target.rejection = RdpPresentResult::NoActiveRenderer;
-            return target;
-        }
-        auto* ctx = reinterpret_cast<RendererContext*>(handle);
-        if (!ctx || !ctx->renderer) {
-            target.rejection = RdpPresentResult::RendererNotReady;
-            return target;
-        }
-        if (ctx->generation != target.generation) {
-            target.rejection = RdpPresentResult::GenerationMismatch;
-            return target;
-        }
-        renderer = ctx->renderer;
+    std::lock_guard<std::mutex> lock(g_activeRendererMutex);
+    target.generation = g_rendererGeneration.load(std::memory_order_acquire);
+    if (g_surfaceDetached.load(std::memory_order_acquire) ||
+        !g_surfaceReady.load(std::memory_order_acquire)) {
+        target.rejection = RdpPresentResult::SurfaceDetached;
+        return target;
     }
-    if (!renderer->IsPresentationReady()) {
+    const int64_t handle = g_activeRendererHandle.load(std::memory_order_acquire);
+    if (handle <= 0) {
+        target.rejection = RdpPresentResult::NoActiveRenderer;
+        return target;
+    }
+    auto* ctx = FindRendererContextLocked(handle);
+    if (!ctx || !ctx->renderer) {
+        target.rejection = RdpPresentResult::RendererNotReady;
+        return target;
+    }
+    if (ctx->generation != target.generation) {
+        target.rejection = RdpPresentResult::GenerationMismatch;
+        return target;
+    }
+    if (!ctx->renderer->IsPresentationReady()) {
         target.rejection = g_surfaceDetached.load(std::memory_order_acquire) ?
             RdpPresentResult::SurfaceDetached : RdpPresentResult::RendererNotReady;
         return target;
-    }
-    {
-        std::lock_guard<std::mutex> lock(g_activeRendererMutex);
-        if (handle != g_activeRendererHandle.load(std::memory_order_acquire) ||
-            target.generation != g_rendererGeneration.load(std::memory_order_acquire)) {
-            target.rejection = RdpPresentResult::GenerationMismatch;
-            return target;
-        }
     }
     target.rejection = RdpPresentResult::Presented;
     return target;
@@ -1571,36 +1570,32 @@ RdpPresentMetrics RendererNapi::PresentRawBgraActive(
         metrics.result = RdpPresentResult::InvalidFrame;
         return metrics;
     }
-    std::shared_ptr<GLRenderer> renderer;
-    {
-        std::lock_guard<std::mutex> lock(g_activeRendererMutex);
-        if (generation == 0 ||
-            generation != g_rendererGeneration.load(std::memory_order_acquire)) {
-            metrics.result = RdpPresentResult::GenerationMismatch;
-            return metrics;
-        }
-        if (g_surfaceDetached.load(std::memory_order_acquire) ||
-            !g_surfaceReady.load(std::memory_order_acquire)) {
-            metrics.result = RdpPresentResult::SurfaceDetached;
-            return metrics;
-        }
-        const int64_t handle = g_activeRendererHandle.load(std::memory_order_acquire);
-        if (handle <= 0) {
-            metrics.result = RdpPresentResult::NoActiveRenderer;
-            return metrics;
-        }
-        auto* ctx = reinterpret_cast<RendererContext*>(handle);
-        if (!ctx || !ctx->renderer) {
-            metrics.result = RdpPresentResult::RendererNotReady;
-            return metrics;
-        }
-        if (ctx->generation != generation) {
-            metrics.result = RdpPresentResult::GenerationMismatch;
-            return metrics;
-        }
-        renderer = ctx->renderer;
+    std::lock_guard<std::mutex> lock(g_activeRendererMutex);
+    if (generation == 0 ||
+        generation != g_rendererGeneration.load(std::memory_order_acquire)) {
+        metrics.result = RdpPresentResult::GenerationMismatch;
+        return metrics;
     }
-    return renderer->PresentRawBGRA(data, width, height, stride, generation);
+    if (g_surfaceDetached.load(std::memory_order_acquire) ||
+        !g_surfaceReady.load(std::memory_order_acquire)) {
+        metrics.result = RdpPresentResult::SurfaceDetached;
+        return metrics;
+    }
+    const int64_t handle = g_activeRendererHandle.load(std::memory_order_acquire);
+    auto* ctx = FindRendererContextLocked(handle);
+    if (handle <= 0) {
+        metrics.result = RdpPresentResult::NoActiveRenderer;
+        return metrics;
+    }
+    if (!ctx || !ctx->renderer) {
+        metrics.result = RdpPresentResult::RendererNotReady;
+        return metrics;
+    }
+    if (ctx->generation != generation) {
+        metrics.result = RdpPresentResult::GenerationMismatch;
+        return metrics;
+    }
+    return ctx->renderer->PresentRawBGRA(data, width, height, stride, generation);
 }
 
 RdpPresentMetrics RendererNapi::PresentRawBgraRectActive(
@@ -1613,37 +1608,33 @@ RdpPresentMetrics RendererNapi::PresentRawBgraRectActive(
         metrics.result = RdpPresentResult::InvalidFrame;
         return metrics;
     }
-    std::shared_ptr<GLRenderer> renderer;
-    {
-        std::lock_guard<std::mutex> lock(g_activeRendererMutex);
-        if (generation == 0 ||
-            generation != g_rendererGeneration.load(std::memory_order_acquire)) {
-            metrics.result = RdpPresentResult::GenerationMismatch;
-            return metrics;
-        }
-        if (g_surfaceDetached.load(std::memory_order_acquire) ||
-            !g_surfaceReady.load(std::memory_order_acquire)) {
-            metrics.result = RdpPresentResult::SurfaceDetached;
-            return metrics;
-        }
-        const int64_t handle = g_activeRendererHandle.load(std::memory_order_acquire);
-        if (handle <= 0) {
-            metrics.result = RdpPresentResult::NoActiveRenderer;
-            return metrics;
-        }
-        auto* ctx = reinterpret_cast<RendererContext*>(handle);
-        if (!ctx || !ctx->renderer) {
-            metrics.result = RdpPresentResult::RendererNotReady;
-            return metrics;
-        }
-        if (ctx->generation != generation) {
-            metrics.result = RdpPresentResult::GenerationMismatch;
-            return metrics;
-        }
-        renderer = ctx->renderer;
+    std::lock_guard<std::mutex> lock(g_activeRendererMutex);
+    if (generation == 0 ||
+        generation != g_rendererGeneration.load(std::memory_order_acquire)) {
+        metrics.result = RdpPresentResult::GenerationMismatch;
+        return metrics;
     }
-    return renderer->PresentRawBGRARect(data, width, height, stride,
-                                        dirtyX, dirtyY, dirtyWidth, dirtyHeight, generation);
+    if (g_surfaceDetached.load(std::memory_order_acquire) ||
+        !g_surfaceReady.load(std::memory_order_acquire)) {
+        metrics.result = RdpPresentResult::SurfaceDetached;
+        return metrics;
+    }
+    const int64_t handle = g_activeRendererHandle.load(std::memory_order_acquire);
+    auto* ctx = FindRendererContextLocked(handle);
+    if (handle <= 0) {
+        metrics.result = RdpPresentResult::NoActiveRenderer;
+        return metrics;
+    }
+    if (!ctx || !ctx->renderer) {
+        metrics.result = RdpPresentResult::RendererNotReady;
+        return metrics;
+    }
+    if (ctx->generation != generation) {
+        metrics.result = RdpPresentResult::GenerationMismatch;
+        return metrics;
+    }
+    return ctx->renderer->PresentRawBGRARect(data, width, height, stride,
+                                             dirtyX, dirtyY, dirtyWidth, dirtyHeight, generation);
 }
 
 int RendererNapi::RenderRawBgraActive(
@@ -1669,41 +1660,43 @@ int RendererNapi::RenderRawBgraRectActive(
 }
 
 void RendererNapi::MakeCurrent(int64_t handle) {
-    auto* ctx = reinterpret_cast<RendererContext*>(handle);
-    if (ctx && ctx->renderer && ctx->renderer->IsInitialized()) {
+    std::lock_guard<std::mutex> lock(g_activeRendererMutex);
+    auto* ctx = FindRendererContextLocked(handle);
+    if (IsActiveRendererHandleLocked(handle) && ctx && ctx->renderer) {
         ctx->renderer->MakeCurrent();
     }
 }
 
 void RendererNapi::ReleaseCurrent(int64_t handle) {
-    auto* ctx = reinterpret_cast<RendererContext*>(handle);
-    if (ctx && ctx->renderer && ctx->renderer->IsInitialized()) {
+    std::lock_guard<std::mutex> lock(g_activeRendererMutex);
+    auto* ctx = FindRendererContextLocked(handle);
+    if (IsActiveRendererHandleLocked(handle) && ctx && ctx->renderer) {
         ctx->renderer->ReleaseCurrent();
     }
 }
 
+void RendererNapi::SetRendererSourceSize(int64_t handle, int width, int height) {
+    std::lock_guard<std::mutex> lock(g_activeRendererMutex);
+    auto* ctx = FindRendererContextLocked(handle);
+    if (IsActiveRendererHandleLocked(handle) && ctx && ctx->renderer) {
+        ctx->renderer->SetSourceSize(width, height);
+    }
+}
+
 void RendererNapi::RenderNative(int64_t handle, GLuint textureId) {
-    auto* ctx = reinterpret_cast<RendererContext*>(handle);
-    if (ctx && ctx->renderer && ctx->renderer->IsInitialized()) {
+    std::lock_guard<std::mutex> lock(g_activeRendererMutex);
+    auto* ctx = FindRendererContextLocked(handle);
+    if (IsActiveRendererHandleLocked(handle) && ctx && ctx->renderer) {
         ctx->renderer->RenderFrame(textureId);
     }
 }
 
 void RendererNapi::SetActiveSourceSize(int width, int height) {
-    std::shared_ptr<GLRenderer> renderer;
-    {
-        std::lock_guard<std::mutex> lock(g_activeRendererMutex);
-        const int64_t handle = g_activeRendererHandle.load(std::memory_order_acquire);
-        if (handle <= 0) {
-            return;
-        }
-        auto* ctx = reinterpret_cast<RendererContext*>(handle);
-        if (ctx) {
-            renderer = ctx->renderer;
-        }
-    }
-    if (renderer) {
-        renderer->SetSourceSize(width, height);
+    std::lock_guard<std::mutex> lock(g_activeRendererMutex);
+    const int64_t handle = g_activeRendererHandle.load(std::memory_order_acquire);
+    auto* ctx = FindRendererContextLocked(handle);
+    if (ctx && ctx->renderer) {
+        ctx->renderer->SetSourceSize(width, height);
     }
 }
 

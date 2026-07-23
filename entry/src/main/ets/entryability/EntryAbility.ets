@@ -16,6 +16,7 @@ import { CloudSyncCoordinator } from '../services/CloudSyncCoordinator';
 import { BreakpointUtil } from '../utils/BreakpointUtil';
 import { ExtensionLoader } from '../services/ExtensionLoader';
 import { RemoteSessionBackgroundTaskService } from '../services/RemoteSessionBackgroundTaskService';
+import { RemoteSessionPipService } from '../services/RemoteSessionPipService';
 import {
   DEFAULT_DARK_HALO_COLOR,
   DEFAULT_LIGHT_HALO_COLOR,
@@ -166,6 +167,9 @@ export default class EntryAbility extends UIAbility {
   onDestroy(): void {
     // 最终销毁 — 必须完全断连所有远程会话 + 移除灵动岛
     AppStorage.setOrCreate<boolean>(BG_FLAG_KEY, false);
+    RemoteSessionPipService.getInstance().stop().catch((_e: Error): void => {
+      // stop() revokes auto-start synchronously; async controller cleanup is best effort.
+    });
     this.disconnectRemoteSessions('ability-destroy');
     hilog.info(DOMAIN, TAG, 'Ability onDestroy');
   }
@@ -191,6 +195,9 @@ export default class EntryAbility extends UIAbility {
   onWindowStageDestroy(): void {
     // WindowStage 销毁 — 完全断连 + 移除灵动岛
     AppStorage.setOrCreate<boolean>(BG_FLAG_KEY, false);
+    RemoteSessionPipService.getInstance().stop().catch((_e: Error): void => {
+      // stop() revokes auto-start synchronously; async controller cleanup is best effort.
+    });
     this.disconnectRemoteSessions('window-stage-destroy');
     try {
       const win = this.windowStage?.getMainWindowSync();
