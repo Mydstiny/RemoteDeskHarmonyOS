@@ -3,23 +3,23 @@
 ## 项目与唯一工作区
 
 - 项目：HarmonyOS NEXT PC 四协议远程桌面客户端（RDP、RustDesk、SSH/SFTP、VNC）。
-- 唯一开发、构建、提交和发布工作区：
-  `C:\Users\14288\DevEcoStudioProjects\RemoteDesktop`。
+- 每台设备使用自己的本地 checkout；Windows 的默认路径是
+  `C:\Users\14288\DevEcoStudioProjects\RemoteDesktop`，macOS 使用当前本地工作区。
 - 禁止创建或使用持久 Git worktree。合规 hook 创建并立即销毁的临时校验目录不属于开发工作区。
 - 不依赖第三方 skills、Superpowers 或 Claude 中转流程；使用 Codex 原生能力、Git、项目脚本和本地 API 23 文档。
 
 ## 每个 session 的启动流程
 
-1. 读取 Codex-only 当前状态：
-   `C:\Users\14288\.codex\projects\C--Users-14288\memory\CURRENT.md`。
-2. 读取精简任务队列：
-   `C:\Users\14288\.codex\projects\C--Users-14288\memory\QUEUE.md`。
-3. 仅在涉及架构/历史约束时读取：
-   `C:\Users\14288\.codex\projects\C--Users-14288\memory\DECISIONS.md`。
-4. 运行 `powershell -File scripts/dev_workflow.ps1 status`，核对实际 Git 状态。
+1. 读取脱敏共享状态：`docs/codex/CURRENT.md`。
+2. 读取精简任务队列：`docs/codex/QUEUE.md`。
+3. 仅在涉及架构/历史约束时读取：`docs/codex/DECISIONS.md` 和
+   `docs/codex/HANDOFF.md`。
+4. 根据平台运行 `scripts/dev_workflow.ps1 status` 或
+   `scripts/sync_workspace.sh status`，核对实际 Git 状态。
 5. 向用户报告：当前阶段、活动任务、当前分支/commit、相对 `main` 状态、最近验证和下一步。
 
-不要在每次启动时读取历史 HANDOFF/TASKS/CODEWALK 全文。旧 Claude/Codex 中转站仅为只读归档。
+不要复制或读取 Windows/Mac 的 Codex 原始记忆目录；需要共享的内容只能整理进
+`docs/codex/`。旧 Claude/Codex 中转站仅为各设备本地只读归档。
 
 ## 一个任务一个分支，而不是一个 session 一个分支
 
@@ -73,5 +73,5 @@
 ## 本地参考
 
 - API 23：`C:\Users\14288\harmonyos_support\openharmony-docs-api23\zh-cn\application-dev\reference\`
-- Codex-only 中转站：`C:\Users\14288\.codex\projects\C--Users-14288\memory\`
+- 跨设备共享状态：`docs/codex/`
 - 历史 bundle：`C:\Users\14288\DevEcoStudioProjects\RemoteDesktopHistory\`

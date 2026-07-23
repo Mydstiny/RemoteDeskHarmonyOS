@@ -2,7 +2,7 @@
 # =============================================================================
 # build_freerdp_ohos.sh — FreeRDP 3.x OHOS 交叉编译脚本
 #
-# 在 Windows (Git Bash) 或 Linux 上运行。
+# 在 Windows (Git Bash)、macOS 或 Linux 上运行。
 # 需要 OHOS SDK (DevEco Studio) 和 CMake + Ninja。
 #
 # 输出:
@@ -12,7 +12,7 @@
 #   libs/freerdp-ohos/<arch>/ 同步一份给 DevEco/IDE clean 后继续使用
 #
 # 用法:
-#   export DEVECO_SDK_HOME="C:/Program Files/Huawei/DevEco Studio/sdk"
+#   export DEVECO_SDK_HOME="/Applications/DevEco-Studio.app/Contents/sdk"
 #   ./scripts/build_freerdp_ohos.sh [arm64|x86_64|all]
 # =============================================================================
 
@@ -23,6 +23,7 @@ PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 FREERDP_SRC="$PROJECT_DIR/freerdp"
 BUILD_DIR="$PROJECT_DIR/build/freerdp-ohos"
 PREBUILT_DIR="$PROJECT_DIR/libs/freerdp-ohos"
+. "$SCRIPT_DIR/resolve_ohos_sdk.sh"
 
 # ---- 前置检查 ----
 if [ ! -d "$FREERDP_SRC" ]; then
@@ -32,11 +33,11 @@ if [ ! -d "$FREERDP_SRC" ]; then
 fi
 
 # OHOS SDK
-OHOS_SDK="${DEVECO_SDK_HOME:-C:/Program Files/Huawei/DevEco Studio/sdk}"
-OHOS_NATIVE="$OHOS_SDK/default/openharmony/native"
+OHOS_SDK="$(resolve_ohos_sdk)"
+OHOS_NATIVE="$(ohos_native_root "$OHOS_SDK")"
 OHOS_TOOLCHAIN="$OHOS_NATIVE/build/cmake/ohos.toolchain.cmake"
 OHOS_LLVM="$OHOS_NATIVE/llvm"
-OHOS_AR="$OHOS_LLVM/bin/llvm-ar"
+OHOS_AR="$(find_ohos_tool "$OHOS_LLVM/bin" llvm-ar || true)"
 
 if [ ! -f "$OHOS_TOOLCHAIN" ]; then
     echo "ERROR: OHOS toolchain not found at $OHOS_TOOLCHAIN"
@@ -44,7 +45,7 @@ if [ ! -f "$OHOS_TOOLCHAIN" ]; then
     exit 1
 fi
 
-if [ ! -x "$OHOS_AR" ]; then
+if [ -z "$OHOS_AR" ]; then
     echo "ERROR: llvm-ar not found at $OHOS_AR"
     exit 1
 fi
@@ -227,7 +228,7 @@ build_arch() {
         rdpei-client \
         ainput-client \
         rdpgfx-client \
-        -- -j"$(nproc 2>/dev/null || echo 4)"
+        -- -j"$(jobs_count)"
 
     # 收集产物
     mkdir -p "$BUILD_DIR/libs/$ARCH"

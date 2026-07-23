@@ -2,7 +2,14 @@ $ErrorActionPreference = 'Stop'
 
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 $hook = Join-Path $repo '.githooks\pre-push'
-$bash = 'C:\Program Files\Git\bin\bash.exe'
+if ($IsWindows) {
+  $bash = 'C:\Program Files\Git\bin\bash.exe'
+} else {
+  $bash = (Get-Command bash -ErrorAction Stop).Source
+}
+if (-not (Test-Path -LiteralPath $bash)) {
+  throw "Bash executable not found: $bash"
+}
 $zero = '0' * 40
 
 Push-Location $repo

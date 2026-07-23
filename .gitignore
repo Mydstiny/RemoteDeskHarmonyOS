@@ -64,3 +64,5 @@ ssh_log.txt
 # Versioned cross-device coordination state
 !docs/codex/
 !docs/codex/*.md
+# Optional user-local tools (for example an unpacked PowerShell runtime).
+.tools/

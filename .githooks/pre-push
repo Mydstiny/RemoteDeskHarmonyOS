@@ -1,6 +1,8 @@
 #!/usr/bin/env sh
 set -eu
 repo_root="$(git rev-parse --show-toplevel)"
+. "$repo_root/scripts/resolve_powershell.sh"
+# The resolver covers command -v pwsh and powershell.exe plus user-local paths.
 remote_name="${1:-origin}"
 zero_sha="0000000000000000000000000000000000000000"
 base_ref="refs/remotes/$remote_name/main"
@@ -65,11 +67,7 @@ done
 
 [ -n "$verify_sha" ] || exit 0
 
-if command -v pwsh >/dev/null 2>&1; then
-  powershell_cmd="pwsh"
-elif command -v powershell.exe >/dev/null 2>&1; then
-  powershell_cmd="powershell.exe"
-else
+if ! powershell_cmd="$(resolve_powershell_command 2>/dev/null)"; then
   echo "Open-source compliance: PowerShell 7 (pwsh) is required to verify a push. Install it and retry." >&2
   exit 1
 fi
