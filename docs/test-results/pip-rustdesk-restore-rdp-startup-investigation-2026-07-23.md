@@ -275,3 +275,31 @@ API 23 官方文档为：
 设备 `192.168.3.235:38451` 在本轮仍锁屏，以上自动化结果不能替代下列验收：冷启动首次连接后退后台、首次 PIP 尺寸和连续帧、PIP 返回全屏、连续进出后台、RDP PIP、实况窗/媒体胶囊注册，以及无连接退出不出现 PIP 动画。验收时重点确认日志出现 `PIP XComponent final surface reconciliation`，并确认同一 `sessionId` 没有因普通恢复再次出现首个 decoder 初始化。
 
 设备解锁后直接按上述矩阵验证并把 hilog 证据追加到本文件；不需要重新建立问题描述或回滚本轮 native/ArkTS 修复。
+
+## 崩溃跟进：PIP 首次布局回调异常（2026-07-23 18:53）
+
+### 崩溃结论
+
+`C:\Users\14288\Desktop\crash_log.txt` 的进程信息为 `com.example.remotedesktop`、版本 `1.0.8`，退出原因是 ArkTS `TypeError`，不是 VP9 native abort：
+
+- `Error message: undefined is not callable`；
+- 栈顶为 `onSurfaceChanged entry (entry/src/main/ets/services/RemoteSessionPipService.ets:65:10)`；
+- 18:53:32.734 收到 PIP XComponent 创建，18:53:32.748 WMS 把窗口从 `2560x1600` 调整为 `1239x774`；
+- 随后 `onSurfaceChanged` 抛出未捕获异常，ArkCompiler 进入 `HandleUncaughtException`，AppKit 记录 `about to exit due to RuntimeError`。
+
+因此本次“退到后台直接闪退”是上一增量为处理尺寸回调新增的 `this.publishSurfaceInfo()` 调用触发的 ArkUI XComponent 回调代理兼容性问题。API 23 的系统回调可能带有控制器字段但不具备子类的私有 helper 方法；异常发生在 PIP 首次最终布局到达时，时间上与后台切换一致。
+
+### 修复
+
+- `onSurfaceChanged` 恢复为自包含回调：只更新 SurfaceId/尺寸、记录日志，并以内联对象向 handler 发布，避免从系统回调代理调用子类 helper；
+- 系统回调和真实 controller reconciliation 两条路径都使用 `typeof handler === 'function'` 检查，`null`、`undefined` 或失效代理都不会抛出调用异常；
+- `waitForSurface()` / `notifyCurrentSurface()` 仍在真实 `RemoteSessionPipXComponentController` 实例上执行 `getXComponentSurfaceRect()`，所以不会回退到旧的“四分之一画面”行为；最终 `1239x774` 仍会在 renderer attach 后同步到 renderer。
+
+### 本次增量验证
+
+- `default@OhosTestCompileArkTS`：通过；
+- 非 daemon 生产 `assembleHap`：通过，`CompileArkTS`、Native、`PackageHap`、`PackingCheck`、`SignHap` 和符号收集均完成；
+- 既有 native `rdp_native_tests`：`129 passed, 0 failed`；
+- `git diff --check`：通过（仅有 Windows Git ignore/换行提示）；Light 合规门：通过。
+
+设备重装包含本修复的 HAP 后，仍需复测首次 RustDesk 连接退后台、PIP 从 `2560x1600` 到 `1239x774` 的布局变化、连续前后台恢复及 RDP PIP；未完成这组实机复测前，不宣称设备端崩溃已最终验收通过。

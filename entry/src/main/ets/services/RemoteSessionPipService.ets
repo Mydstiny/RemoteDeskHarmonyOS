@@ -62,7 +62,25 @@ class RemoteSessionPipXComponentController extends XComponentController {
       ? Math.round(rect.surfaceHeight) : 0;
     this.currentSurfaceWidth = width;
     this.currentSurfaceHeight = height;
-    this.publishSurfaceInfo();
+    // API 23 may invoke this override through an XComponent callback proxy
+    // that carries the fields but not subclass helper methods. Keep the
+    // framework callback self-contained; the real controller instance does
+    // the full reconciliation after the renderer is attached.
+    if (width > 0 && height > 0 &&
+      (this.currentSurfaceId !== this.publishedSurfaceId ||
+       width !== this.publishedSurfaceWidth || height !== this.publishedSurfaceHeight)) {
+      this.publishedSurfaceId = this.currentSurfaceId;
+      this.publishedSurfaceWidth = width;
+      this.publishedSurfaceHeight = height;
+      const handler: PipSurfaceChangedHandler | null = this.surfaceChangedHandler;
+      if (handler !== null && typeof handler === 'function') {
+        handler({
+          surfaceId: this.currentSurfaceId,
+          surfaceWidth: width,
+          surfaceHeight: height
+        });
+      }
+    }
     hilog.info(DOMAIN, TAG, 'PIP XComponent surface changed id=' + surfaceId +
       ' surface=' + this.currentSurfaceWidth.toString() + 'x' +
       this.currentSurfaceHeight.toString());
@@ -151,7 +169,7 @@ class RemoteSessionPipXComponentController extends XComponentController {
     this.publishedSurfaceWidth = this.currentSurfaceWidth;
     this.publishedSurfaceHeight = this.currentSurfaceHeight;
     const handler: PipSurfaceChangedHandler | null = this.surfaceChangedHandler;
-    if (handler !== null) {
+    if (handler !== null && typeof handler === 'function') {
       handler(this.surfaceInfo());
     }
   }
@@ -171,7 +189,7 @@ class RemoteSessionPipXComponentController extends XComponentController {
     this.publishedSurfaceWidth = this.currentSurfaceWidth;
     this.publishedSurfaceHeight = this.currentSurfaceHeight;
     const handler: PipSurfaceChangedHandler | null = this.surfaceChangedHandler;
-    if (handler !== null) {
+    if (handler !== null && typeof handler === 'function') {
       handler(this.surfaceInfo());
     }
     hilog.info(DOMAIN, TAG, 'PIP XComponent final surface reconciliation id=' +
