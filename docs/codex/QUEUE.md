@@ -4,8 +4,8 @@ Updated: 2026-07-23 Asia/Shanghai
 
 ## Now
 
-- No active migration task. The Mac `hdc` PATH fix is verified and ready for the
-  normal PR and merge flow; the next device starts from the merged `main`.
+- No active migration task. The Mac `hdc` PATH fix is verified and merged through
+  PR #32; the next device starts from synchronized `main`.
 
 ## Next
 
