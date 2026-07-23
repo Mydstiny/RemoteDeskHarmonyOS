@@ -89,8 +89,14 @@ Mac 首次 clone 后执行：
 ```sh
 git config core.hooksPath .githooks
 chmod +x scripts/sync_workspace.sh .githooks/pre-push
+source scripts/macos_env.sh
 ./scripts/sync_workspace.sh status
 ```
+
+`scripts/macos_env.sh` 会自动发现 DevEco Studio SDK、内置 Node/Hvigor/ohpm、
+OHOS LLVM/CMake/Ninja 和 rustup 管理的 cargo/rustc。它只设置当前 shell，
+不会写入私有配置；PowerShell 7 仍需单独安装，或通过 `POWERSHELL_COMMAND`
+指定用户级 `pwsh` 路径。
 
 每次开始任务必须从干净的 `main` 同步远端并创建任务分支。Windows 使用：
 
@@ -104,7 +110,7 @@ macOS/Linux 使用：
 ./scripts/sync_workspace.sh start <lowercase-kebab-task>
 ```
 
-两个入口都会执行 `fetch --prune`、`pull --ff-only origin main`、递归子模块同步、工作区脏检查和活动分支检查；不会自动覆盖或 stash 未提交修改。Mac 端需要安装 PowerShell 7，以便 pre-push hook 运行同一套开源合规门禁。
+两个入口都会执行 `fetch --prune`、`pull --ff-only origin main`、递归子模块同步、工作区脏检查和活动分支检查；不会自动覆盖或 stash 未提交修改。Mac 端需要 PowerShell 7，以便 pre-push hook 运行同一套开源合规门禁；hook 也会发现用户级 `pwsh` 安装。
 
 没有网络时，可在已有副本运行 `scripts/create_migration_bundle.ps1` 生成包含公开 `main` Git bundle、源码归档、FreeRDP 子模块归档和迁移清单的脱敏包；它不包含私钥、SDK、日志、构建产物或私有 Codex 记忆。
 
@@ -133,6 +139,10 @@ bash scripts/build_opus_ohos.sh all
 bash scripts/build_rustdesk_ffi_ohos.sh all
 ```
 
+macOS 可先执行 `source scripts/macos_env.sh`；原生依赖脚本会自动使用
+`/Applications/DevEco-Studio.app/Contents/sdk`（或 `DEVECO_SDK_HOME`）
+并兼容 macOS 的 `shasum` 和 CPU 并行数。
+
 FreeRDP、FFmpeg 或其他原生依赖变化时，使用 `scripts/` 下对应的 OHOS 构建
 脚本，并同步更新来源、许可证、SBOM 和产物哈希。
 
@@ -146,6 +156,14 @@ $env:OHOS_SDK_HOME = $env:DEVECO_SDK_HOME
 & 'C:\Program Files\Huawei\DevEco Studio\tools\node\node.exe' `
   'C:\Program Files\Huawei\DevEco Studio\tools\hvigor\bin\hvigorw.js' `
   --mode module -p module=entry -p product=default assembleHap `
+  --analyze=normal --parallel --incremental --daemon
+```
+
+在 macOS shell 中：
+
+```sh
+source scripts/macos_env.sh
+hvigorw --mode module -p module=entry -p product=default assembleHap \
   --analyze=normal --parallel --incremental --daemon
 ```
 

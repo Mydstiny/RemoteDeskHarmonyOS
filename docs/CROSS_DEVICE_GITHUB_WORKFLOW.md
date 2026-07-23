@@ -18,8 +18,14 @@ git clone --recurse-submodules https://github.com/Mydstiny/RemoteDeskHarmonyOS.g
 cd RemoteDeskHarmonyOS
 git config core.hooksPath .githooks
 chmod +x scripts/sync_workspace.sh .githooks/pre-push
+source scripts/macos_env.sh
 ./scripts/sync_workspace.sh status
 ```
+
+`scripts/macos_env.sh` 只初始化当前 shell，会自动发现 Mac 上的 DevEco
+Studio SDK、内置 Node/Hvigor/ohpm、OHOS LLVM/CMake/Ninja 和 rustup 的
+cargo/rustc。它不会生成或复制签名、AGConnect、local.properties 或其他
+私有配置。
 
 如果普通 clone 没有拉取子模块：
 

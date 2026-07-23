@@ -4,10 +4,23 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+. "$SCRIPT_DIR/resolve_ohos_sdk.sh"
 TARGET_ARCH="${1:-all}"
-OHOS_SDK="${DEVECO_SDK_HOME:-C:/Program Files/Huawei/DevEco Studio/sdk}"
+OHOS_SDK="$(resolve_ohos_sdk)"
 OHOS_LLVM="$OHOS_SDK/default/openharmony/native/llvm/bin"
 OHOS_SYSROOT="$OHOS_SDK/default/openharmony/native/sysroot"
+
+CARGO_BIN="${CARGO:-}"
+if [ -z "$CARGO_BIN" ]; then
+    CARGO_BIN="$(command -v cargo 2>/dev/null || true)"
+fi
+if [ -z "$CARGO_BIN" ] && command -v rustup >/dev/null 2>&1; then
+    CARGO_BIN="$(rustup which cargo 2>/dev/null || true)"
+fi
+if [ -z "$CARGO_BIN" ]; then
+    echo "ERROR: cargo is not available. Install Rust or source scripts/macos_env.sh."
+    exit 1
+fi
 
 case "$TARGET_ARCH" in
     arm64|arm64-v8a)
@@ -36,9 +49,9 @@ for ABI_TARGET in "${ABIS[@]}"; do
     OPUS_LIB_DIR="$PROJECT_DIR/libs/opus-ohos/$ABI"
     LIB="$PROJECT_DIR/rustdesk_ffi/target/$TARGET/release/librustdesk_ffi.a"
     TARGET_ENV="${TARGET//-/_}"
-    TARGET_CC="$OHOS_LLVM/clang.exe"
-    TARGET_CXX="$OHOS_LLVM/clang++.exe"
-    TARGET_AR="$OHOS_LLVM/llvm-ar.exe"
+    TARGET_CC="$(find_ohos_tool "$OHOS_LLVM" clang || true)"
+    TARGET_CXX="$(find_ohos_tool "$OHOS_LLVM" clang++ || true)"
+    TARGET_AR="$(find_ohos_tool "$OHOS_LLVM" llvm-ar || true)"
     if [ "$ABI" = "arm64-v8a" ]; then
         CLANG_TARGET="aarch64-linux-ohos"
     else
@@ -61,7 +74,7 @@ for ABI_TARGET in "${ABIS[@]}"; do
             "CXXFLAGS_${TARGET_ENV}=$TARGET_CFLAGS" \
             CC_SHELL_ESCAPED_FLAGS=1 \
             OPUS_LIB_DIR="$OPUS_LIB_DIR" \
-            cargo build --release --target "$TARGET"
+            "$CARGO_BIN" build --release --target "$TARGET"
     )
     nm -g --defined-only "$LIB" | grep -Eq ' rustdesk_get_transfer_status$'
     nm -g --defined-only "$LIB" | grep -Eq ' rustdesk_get_clipboard$'

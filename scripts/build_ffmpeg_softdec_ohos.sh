@@ -1,8 +1,8 @@
 # =============================================================================
 # build_ffmpeg_softdec_ohos.sh — FFmpeg VP8/VP9/AV1 软件解码库 OHOS 交叉编译
 #
-# 用法 (Git Bash):
-#   export DEVECO_SDK_HOME="C:/Program Files/Huawei/DevEco Studio/sdk"
+# 用法 (Git Bash/macOS):
+#   export DEVECO_SDK_HOME="/Applications/DevEco-Studio.app/Contents/sdk"
 #   ./scripts/build_ffmpeg_softdec_ohos.sh [arm64|x86_64|all]
 #
 # 输出:
@@ -20,8 +20,9 @@ SRC_ROOT="$PROJECT_DIR/build/ffmpeg-src"
 FFMPEG_SRC="$SRC_ROOT/ffmpeg-${FFMPEG_VER}"
 OUT_ROOT="$PROJECT_DIR/libs/ffmpeg-ohos"
 BUILD_ROOT="$PROJECT_DIR/build/ffmpeg-ohos"
+. "$SCRIPT_DIR/resolve_ohos_sdk.sh"
 
-OHOS_SDK="${DEVECO_SDK_HOME:-C:/Program Files/Huawei/DevEco Studio/sdk}"
+OHOS_SDK="$(resolve_ohos_sdk)"
 # Environment variables supplied by PowerShell commonly use backslashes.
 # Normalize before comparing or passing paths into FFmpeg's shell configure.
 OHOS_SDK="${OHOS_SDK//\\//}"
@@ -71,7 +72,7 @@ prepare_source() {
         curl -L -o "$tarball" "https://ffmpeg.org/releases/ffmpeg-${FFMPEG_VER}.tar.xz"
     fi
     local actual_sha256
-    actual_sha256="$(sha256sum "$tarball" | awk '{print $1}')"
+    actual_sha256="$(sha256_file "$tarball")"
     if [ "$actual_sha256" != "$FFMPEG_SHA256" ]; then
         echo "ERROR: unexpected FFmpeg archive checksum: $actual_sha256"
         echo "Expected: $FFMPEG_SHA256"
@@ -79,14 +80,6 @@ prepare_source() {
     fi
     echo "=== Extracting FFmpeg ${FFMPEG_VER} ==="
     tar xf "$tarball" -C "$SRC_ROOT"
-}
-
-jobs_count() {
-    if command -v nproc >/dev/null 2>&1; then
-        nproc
-    else
-        echo 8
-    fi
 }
 
 build_ffmpeg() {
