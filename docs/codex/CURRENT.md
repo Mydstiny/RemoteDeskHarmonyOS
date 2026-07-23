@@ -6,12 +6,12 @@ Updated: 2026-07-23 Asia/Shanghai
 
 - Repository: `Mydstiny/RemoteDeskHarmonyOS`
 - Public branch: `main`
-- Public main commit at last sync: `a3f1ad3d8` (`fix: stabilize remote sessions and 1.0.8 runtime`)
+- Public main commit at last sync: `c5347f141` (`Merge PR #27: restore complete diagnostics history and collaboration workflow`)
 - Canonical development model: one local workspace, one active `codex/<task>` branch, protected PR merge.
 
 ## Current phase
 
-- Cross-device collaboration bootstrap is active on `codex/cross-device-workflow` so Windows and macOS can share source, sanitized task state and the same start-of-task synchronization gate.
+- Cross-device collaboration bootstrap is merged and available on `main`; Windows and macOS share source, sanitized task state and the same start-of-task synchronization gate.
 - The 1.0.8 runtime, cloud-sync protection, onboarding and PIP/RDP lifecycle changes are in public history; device acceptance remains a separate validation item.
 
 ## Completed verification recorded in public history
@@ -21,7 +21,7 @@ Updated: 2026-07-23 Asia/Shanghai
 
 ## Next
 
-- Land and verify the cross-device workflow files.
+- Verify the cross-device synchronization gate on a clean Windows clone and a clean macOS clone.
 - On an unlocked HarmonyOS target, complete the remaining PIP, live-view, cloud-sync and first-install acceptance matrix.
 - Keep all raw device evidence and private build inputs local-only.
 
