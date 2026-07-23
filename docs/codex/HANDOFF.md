@@ -7,6 +7,8 @@ Updated: 2026-07-23 Asia/Shanghai
 - Repository: `Mydstiny/RemoteDeskHarmonyOS`
 - Public base: `main` at `c502221e3`
 - Audit branch: `codex/windows-memory-sanitize`
+- Handoff commit: `27e185f42` (`docs(codex): record Windows development handoff`)
+- Pull request: `https://github.com/Mydstiny/RemoteDeskHarmonyOS/pull/35`
 - Scope: sanitize Windows Codex development knowledge into public, platform-neutral documentation.
 - Runtime source, tests, dependencies, signing data and user evidence were not changed.
 

@@ -8,6 +8,7 @@ Updated: 2026-07-23 Asia/Shanghai
 - Public branch: `main`
 - Public main commit at audit start: `c502221e3` (`Merge PR #28: refresh shared handoff state`)
 - Audit branch: `codex/windows-memory-sanitize`, based on synchronized `main`
+- Published handoff PR: `#35` (`https://github.com/Mydstiny/RemoteDeskHarmonyOS/pull/35`)
 - No unfinished local `codex/...` branch existed before this audit.
 - The workspace contains user-owned test edits, logs, screenshots, XML and native build evidence. They remain local and are not part of this task.
 
