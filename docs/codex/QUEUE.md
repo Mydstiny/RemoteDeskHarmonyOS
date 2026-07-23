@@ -4,15 +4,19 @@ Updated: 2026-07-23 Asia/Shanghai
 
 ## Now
 
-- Finish `codex/mac-migration-bootstrap`: publish its PR and wait for `open-source-compliance` before merge.
-- Install/validate the API 23 SDK and OHOS Rust/native cross-build inputs; stable system PowerShell is optional while the local fallback is available.
-- Verify the cross-device synchronization gate on a clean Windows clone and a clean macOS clone.
-- Complete real-device acceptance for the published PIP/live-view/cloud-sync/first-install checkpoints.
+- Finish `codex/mac-migration-bootstrap`: run the final checks, commit the scoped
+  migration fixes, push the task branch and create its PR.
+- Wait for `open-source-compliance`; merge with a merge commit, then synchronize
+  local `main` and remove the merged task branch.
 
 ## Next
 
-- Run the remaining RDP authentication, input, clipboard and RustDesk endpoint matrices.
-- Keep release readiness blocked until credential rotation, device coverage and private signing requirements are evidenced.
+- On a networked Mac, verify fetch, push and PR operations against GitHub.
+- On a clean Windows clone, run the same shared-state, submodule and history gates.
+- Configure private signing and optional AGConnect files only on the machine that
+  needs signed or cloud-enabled builds.
+- Complete real-device acceptance for RDP, RustDesk, SSH/SFTP, VNC, PIP/live-view
+  and cloud-sync checkpoints.
 
 ## Later
 
@@ -22,4 +26,5 @@ Updated: 2026-07-23 Asia/Shanghai
 
 - Only one task may be active in `Now` on the shared branch state.
 - A new device must sync and read this queue before creating a branch.
-- Finished items are removed or summarized in `CURRENT.md`; do not append an unbounded session transcript.
+- Finished items are removed or summarized in `CURRENT.md`; do not append an
+  unbounded session transcript.

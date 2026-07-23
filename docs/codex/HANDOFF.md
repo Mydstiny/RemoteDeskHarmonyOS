@@ -4,30 +4,54 @@ Updated: 2026-07-23 Asia/Shanghai
 
 ## Source
 
-- Base: `main` at `c502221e3` restored from the migration bundle
-- Active task branch: `codex/mac-migration-bootstrap` at `aca6c1e`
-- Last published runtime checkpoint: 1.0.8 stabilization
+- Base: `main` at `c502221e3`, restored from the migration package
+- Active task branch: `codex/mac-migration-bootstrap`
+- Migration adapter commit: `ffbd1f5`
+- FreeRDP submodule: `dae8276ac7361b8d14f7b87d41163fe03dbb944e`
 
 ## Completed
 
-- Public source and submodule history are available from GitHub.
-- The shared state files, cross-platform sync entry points and migration package generator are merged on `main`.
-- This Mac workspace restored the root history from `RemoteDeskHarmonyOS-main.bundle` and freerdp history/source at `dae8276ac` from the migration package.
-- Git hooks are configured through `.githooks`; the sync script and pre-push hook retain executable mode in the active task commit.
-- Mac build helpers now auto-discover the DevEco SDK and native tools; `source scripts/macos_env.sh` also exposes rustup cargo/rustc and the ignored local `pwsh` fallback.
+- Complete public source and Git history were restored from the migration bundle;
+  the recursive FreeRDP submodule is initialized.
+- DevEco Studio 6.1.1 opens the repository root. API 23 remains the project
+  baseline, with the full HarmonyOS SDK and standalone API 23 native SDK kept in
+  separate local properties.
+- Mac build helpers resolve the platform SDK layout, use the bundled DevEco JBR,
+  configure OHOS clang/Cargo linkers and build both RustDesk FFI ABIs.
+- The FFI migration script's `nm | grep -Eq` SIGPIPE false failure was fixed;
+  both architecture symbol checks now pass.
+- `assembleHap` reaches packaging and creates an unsigned HAP. Signing is the only
+  remaining build-stage requirement and is intentionally local-only.
+- `AGENTS.md` now directs both platforms to the sanitized `docs/codex/` state and
+  explicitly forbids sharing raw Codex memory directories.
 
 ## Verification
 
-- Runtime checkpoint gates are recorded in the relevant `docs/test-results/` files and public PR history.
-- `sync_workspace.sh status` and `doctor` passed on the restored main checkout.
-- Mac workflow policy, pre-push history, FreeRDP provenance and Light compliance tests pass.
-- GitHub fetch/push/PR checks are pending because this environment cannot establish a connection to `github.com`.
-- The detected SDK is API 24 rather than the project's API 23 baseline; stable system PowerShell and OHOS cross targets remain local setup items.
+- `sync_workspace.sh status` and `doctor` passed on the restored clean `main`
+  checkout before the task branch was created.
+- `hvigorw tasks` and `hvigorw init` passed.
+- Opus and RustDesk FFI builds passed for `arm64-v8a` and `x86_64`.
+- `assembleHap --no-daemon` passed through ArkTS, CMake/Ninja, native strip,
+  `PackageHap` and `PackingCheck`; `SignHap` stops on the placeholder certificate
+  path in the ignored local profile.
+- Shell syntax, workflow policy, pre-push history protection, FreeRDP provenance,
+  and Light compliance checks pass on macOS, including the repository-local
+  PowerShell wrapper when no shell setup is sourced first.
+
+## Private inputs still local
+
+- Signed builds: `.p12`, `.p7b`, `.cer`, certificate alias and passwords, configured
+  only in the ignored `build-profile.json5`.
+- Cloud features: local
+  `entry/src/main/resources/rawfile/agconnect-services.json` with its secret fields.
+- Real-device authorization, logs, screenshots and user data stay on the device or
+  local machine and are not part of the migration handoff.
 
 ## Next owner action
 
-1. On a networked Mac, push `codex/mac-migration-bootstrap`, create its PR, and wait for `open-source-compliance`.
-2. Merge with a merge commit, then fast-forward local `main` and remove the merged branch.
-3. Install/configure API 23 and OHOS cross-build SDK inputs plus private files through secure channels; do not copy Windows Codex memory.
-4. Run the platform-specific `sync` and `start` commands in `docs/CROSS_DEVICE_GITHUB_WORKFLOW.md`.
-5. Update this handoff with the resulting merge commit, verification and remaining device blockers.
+1. Run the final post-commit checks and inspect the clean working tree.
+2. Push only `codex/mac-migration-bootstrap` and create a PR.
+3. Wait for `open-source-compliance`, merge without squash, then run `main` sync and
+   delete the merged branch.
+4. Report the final Mac commit/branch, `main` equality, submodule, hook, PowerShell,
+   sync-script, clean-worktree and private-input status.

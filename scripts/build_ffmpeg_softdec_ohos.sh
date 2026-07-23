@@ -31,8 +31,9 @@ OHOS_SDK="${OHOS_SDK//\\//}"
 if [[ "$OHOS_SDK" == "C:/Program Files/Huawei/DevEco Studio/sdk" ]]; then
     OHOS_SDK="C:/PROGRA~1/Huawei/DEVECO~1/sdk"
 fi
-OHOS_LLVM="$OHOS_SDK/default/openharmony/native/llvm/bin"
-OHOS_SYSROOT="$OHOS_SDK/default/openharmony/native/sysroot"
+OHOS_NATIVE="$(ohos_native_root "$OHOS_SDK")"
+OHOS_LLVM="$OHOS_NATIVE/llvm/bin"
+OHOS_SYSROOT="$OHOS_NATIVE/sysroot"
 
 find_tool() {
     local name="$1"

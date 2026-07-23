@@ -26,8 +26,9 @@ OPUS_SHA256="65c1d2f78b9f2fb20082c38cbe47c951ad5839345876e46941612ee87f9a7ce1"
 
 # OHOS SDK
 OHOS_SDK="$(resolve_ohos_sdk)"
-OHOS_LLVM="$OHOS_SDK/default/openharmony/native/llvm/bin"
-OHOS_SYSROOT="$OHOS_SDK/default/openharmony/native/sysroot"
+OHOS_NATIVE="$(ohos_native_root "$OHOS_SDK")"
+OHOS_LLVM="$OHOS_NATIVE/llvm/bin"
+OHOS_SYSROOT="$OHOS_NATIVE/sysroot"
 
 if ! find_ohos_tool "$OHOS_LLVM" clang >/dev/null 2>&1; then
     echo "ERROR: OHOS LLVM not found at $OHOS_LLVM"

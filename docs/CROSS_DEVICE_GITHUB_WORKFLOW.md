@@ -23,8 +23,10 @@ source scripts/macos_env.sh
 ```
 
 `scripts/macos_env.sh` 只初始化当前 shell，会自动发现 Mac 上的 DevEco
-Studio SDK、内置 Node/Hvigor/ohpm、OHOS LLVM/CMake/Ninja 和 rustup 的
-cargo/rustc。它不会生成或复制签名、AGConnect、local.properties 或其他
+Studio SDK、内置 JBR/Java、Node/Hvigor/ohpm、OHOS LLVM/CMake/Ninja 和
+rustup 的 cargo/rustc。项目的完整 HarmonyOS SDK 用于 Hvigor，独立 API 23
+native SDK 用于 CMake/Rust；脚本通过 `DEVECO_SDK_HOME` 与 `OHOS_SDK_HOME`
+分别解析两者。它不会生成或复制签名、AGConnect、local.properties 或其他
 私有配置。
 
 如果普通 clone 没有拉取子模块：

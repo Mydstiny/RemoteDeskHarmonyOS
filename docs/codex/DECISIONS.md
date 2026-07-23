@@ -19,3 +19,18 @@ Signing files, AGConnect secrets, API keys, SDKs, build caches, user data, raw l
 ## D-005 - PR is the handoff boundary
 
 The PR description and `docs/codex/HANDOFF.md` record completed work, verification, blockers and next steps. Merge only after the required open-source compliance check passes.
+
+## D-006 - Keep HarmonyOS and OpenHarmony SDK roles separate on macOS
+
+The full DevEco/HarmonyOS SDK is used by Hvigor for a project whose `runtimeOS` is
+HarmonyOS. The standalone API 23 OpenHarmony SDK is used by the OHOS native
+clang/CMake/Rust toolchain. `local.properties` and `scripts/macos_env.sh` must keep
+these roots separate; silently selecting one for both roles produces misleading
+SDK or native-link failures.
+
+## D-007 - Do not combine `pipefail` with early-closing symbol checks
+
+Large static archives must not be validated with `nm | grep -q` or an equivalent
+early-closing consumer under `set -o pipefail`. Use a full-stream grep redirected
+to `/dev/null`, or a temporary symbol list, so a successful match cannot be
+reported as `nm` exit 141.

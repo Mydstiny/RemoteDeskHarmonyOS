@@ -93,10 +93,10 @@ source scripts/macos_env.sh
 ./scripts/sync_workspace.sh status
 ```
 
-`scripts/macos_env.sh` 会自动发现 DevEco Studio SDK、内置 Node/Hvigor/ohpm、
-OHOS LLVM/CMake/Ninja 和 rustup 管理的 cargo/rustc。它只设置当前 shell，
-不会写入私有配置；PowerShell 7 仍需单独安装，或通过 `POWERSHELL_COMMAND`
-指定用户级 `pwsh` 路径。
+`scripts/macos_env.sh` 会自动发现 DevEco Studio SDK、内置 JBR/Java、
+Node/Hvigor/ohpm、OHOS LLVM/CMake/Ninja 和 rustup 管理的 cargo/rustc。它只
+设置当前 shell，不会写入私有配置；PowerShell 7 仍需单独安装，或通过
+`POWERSHELL_COMMAND` 指定用户级 `pwsh` 路径。
 
 每次开始任务必须从干净的 `main` 同步远端并创建任务分支。Windows 使用：
 
@@ -140,8 +140,10 @@ bash scripts/build_rustdesk_ffi_ohos.sh all
 ```
 
 macOS 可先执行 `source scripts/macos_env.sh`；原生依赖脚本会自动使用
-`/Applications/DevEco-Studio.app/Contents/sdk`（或 `DEVECO_SDK_HOME`）
-并兼容 macOS 的 `shasum` 和 CPU 并行数。
+`/Applications/DevEco-Studio.app/Contents/sdk`（或 `DEVECO_SDK_HOME`）以及
+独立的 API 23 native SDK（或 `OHOS_SDK_HOME`），并兼容 macOS 的 `shasum`
+和 CPU 并行数。Hvigor 使用完整 HarmonyOS SDK，CMake/Rust native 使用 API 23
+native SDK，两者不要互换。
 
 FreeRDP、FFmpeg 或其他原生依赖变化时，使用 `scripts/` 下对应的 OHOS 构建
 脚本，并同步更新来源、许可证、SBOM 和产物哈希。

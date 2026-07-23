@@ -34,7 +34,7 @@ fi
 
 # OHOS SDK
 OHOS_SDK="$(resolve_ohos_sdk)"
-OHOS_NATIVE="$OHOS_SDK/default/openharmony/native"
+OHOS_NATIVE="$(ohos_native_root "$OHOS_SDK")"
 OHOS_TOOLCHAIN="$OHOS_NATIVE/build/cmake/ohos.toolchain.cmake"
 OHOS_LLVM="$OHOS_NATIVE/llvm"
 OHOS_AR="$(find_ohos_tool "$OHOS_LLVM/bin" llvm-ar || true)"

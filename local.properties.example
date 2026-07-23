@@ -1,4 +1,6 @@
 # Copy to local.properties and configure your local DevEco/HarmonyOS SDK.
-# macOS default: /Applications/DevEco-Studio.app/Contents/sdk
+# macOS DevEco SDK default: /Applications/DevEco-Studio.app/Contents/sdk
+# macOS standalone API 23 SDK: $HOME/Library/OpenHarmony/Sdk/23
 # Windows example: C:/Program Files/Huawei/DevEco Studio/sdk
 sdk.dir=/path/to/DevEco-Studio/sdk
+hw.sdk.dir=/path/to/DevEco-Studio/sdk

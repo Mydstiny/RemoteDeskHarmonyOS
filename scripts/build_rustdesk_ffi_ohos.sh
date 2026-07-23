@@ -7,8 +7,9 @@ PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 . "$SCRIPT_DIR/resolve_ohos_sdk.sh"
 TARGET_ARCH="${1:-all}"
 OHOS_SDK="$(resolve_ohos_sdk)"
-OHOS_LLVM="$OHOS_SDK/default/openharmony/native/llvm/bin"
-OHOS_SYSROOT="$OHOS_SDK/default/openharmony/native/sysroot"
+OHOS_NATIVE="$(ohos_native_root "$OHOS_SDK")"
+OHOS_LLVM="$OHOS_NATIVE/llvm/bin"
+OHOS_SYSROOT="$OHOS_NATIVE/sysroot"
 
 CARGO_BIN="${CARGO:-}"
 if [ -z "$CARGO_BIN" ]; then
@@ -49,6 +50,7 @@ for ABI_TARGET in "${ABIS[@]}"; do
     OPUS_LIB_DIR="$PROJECT_DIR/libs/opus-ohos/$ABI"
     LIB="$PROJECT_DIR/rustdesk_ffi/target/$TARGET/release/librustdesk_ffi.a"
     TARGET_ENV="${TARGET//-/_}"
+    TARGET_ENV_UPPER="$(printf '%s' "$TARGET_ENV" | tr '[:lower:]' '[:upper:]')"
     TARGET_CC="$(find_ohos_tool "$OHOS_LLVM" clang || true)"
     TARGET_CXX="$(find_ohos_tool "$OHOS_LLVM" clang++ || true)"
     TARGET_AR="$(find_ohos_tool "$OHOS_LLVM" llvm-ar || true)"
@@ -73,15 +75,26 @@ for ABI_TARGET in "${ABIS[@]}"; do
             "CFLAGS_${TARGET_ENV}=$TARGET_CFLAGS" \
             "CXXFLAGS_${TARGET_ENV}=$TARGET_CFLAGS" \
             CC_SHELL_ESCAPED_FLAGS=1 \
+            "CARGO_TARGET_${TARGET_ENV_UPPER}_LINKER=$TARGET_CXX" \
+            "CARGO_TARGET_${TARGET_ENV_UPPER}_RUSTFLAGS=-C link-arg=--target=$CLANG_TARGET -C link-arg=--sysroot=$OHOS_SYSROOT" \
             OPUS_LIB_DIR="$OPUS_LIB_DIR" \
             "$CARGO_BIN" build --release --target "$TARGET"
     )
-    nm -g --defined-only "$LIB" | grep -Eq ' rustdesk_get_transfer_status$'
-    nm -g --defined-only "$LIB" | grep -Eq ' rustdesk_get_clipboard$'
-    nm -g --defined-only "$LIB" | grep -Eq ' rustdesk_get_display_snapshot$'
-    nm -g --defined-only "$LIB" | grep -Eq ' rustdesk_change_display_resolution$'
-    nm -g --defined-only "$LIB" | grep -Eq ' rustdesk_send_touch_scale$'
-    nm -g --defined-only "$LIB" | grep -Eq ' rustdesk_send_touch_pan$'
+    # Do not use grep -q here: with pipefail, grep can close the pipe after
+    # the first match and make nm exit with SIGPIPE (141) on large archives.
+    require_symbol() {
+        symbol="$1"
+        if ! nm -g --defined-only "$LIB" | grep -E " $symbol\$" >/dev/null; then
+            echo "ERROR: required symbol missing from $LIB: $symbol" >&2
+            exit 1
+        fi
+    }
+    require_symbol rustdesk_get_transfer_status
+    require_symbol rustdesk_get_clipboard
+    require_symbol rustdesk_get_display_snapshot
+    require_symbol rustdesk_change_display_resolution
+    require_symbol rustdesk_send_touch_scale
+    require_symbol rustdesk_send_touch_pan
 done
 
 echo "RustDesk FFI build complete for $TARGET_ARCH"

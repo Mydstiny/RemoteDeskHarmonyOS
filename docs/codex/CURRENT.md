@@ -6,38 +6,64 @@ Updated: 2026-07-23 Asia/Shanghai
 
 - Repository: `Mydstiny/RemoteDeskHarmonyOS`
 - Public branch: `main`
-- Public main commit restored from the migration bundle: `c502221e3` (`Merge PR #28: refresh shared handoff state`)
-- Canonical development model: one local workspace, one active `codex/<task>` branch, protected PR merge.
+- Public main commit: `c502221e3` (`Merge PR #28: refresh shared handoff state`)
+- Active task: `codex/mac-migration-bootstrap`; the migration adapter commit is
+  `ffbd1f5`.
+- Local `main` equals local `origin/main`; the task branch is based directly on that
+  public commit.
 
 ## Current phase
 
-- Cross-device collaboration bootstrap is merged and available on `main`; this Mac workspace restored the public source and Git history from the migration bundle, including freerdp at `dae8276ac`.
-- The active migration task is `codex/mac-migration-bootstrap` at `aca6c1e`; it preserves executable mode bits and adapts the shared workflow/build helpers to macOS.
-- The 1.0.8 runtime, cloud-sync protection, onboarding and PIP/RDP lifecycle changes are in public history; device acceptance remains a separate validation item.
+- The migration package restored the complete public source, Git history and
+  recursive `freerdp` submodule on macOS.
+- DevEco Studio 6.1.1 opens the repository root successfully. The project remains
+  `runtimeOS: HarmonyOS` with `targetSdkVersion` and `compatibleSdkVersion`
+  `6.1.0(23)`.
+- Cross-device memory is the sanitized content under `docs/codex/`; no Windows or
+  Mac Codex raw memory directory is copied or used as shared state.
 
-## Completed verification recorded in public history
+## Completed verification
 
-- Native and RustDesk FFI test suites passed for the published runtime checkpoints.
-- `default@OhosTestCompileArkTS`, production HAP build, `git diff --check` and Light open-source compliance passed for the published runtime checkpoints.
-- The restored workspace has `core.hooksPath=.githooks`; `sync_workspace.sh status` and `doctor` passed before the migration task branch was created.
-- The freerdp submodule is initialized at `dae8276ac7361b8d14f7b87d41163fe03dbb944e`.
-- Bash/zsh syntax checks, workflow policy tests, FreeRDP provenance, pre-push history protection and Light open-source compliance pass on macOS.
-- `source scripts/macos_env.sh` exposes DevEco's Node/Hvigor/ohpm, OHOS LLVM/CMake/Ninja and rustup cargo/rustc; the local ignored PowerShell fallback reports `7.7.0-preview.3`.
+- `freerdp` is initialized at `dae8276ac7361b8d14f7b87d41163fe03dbb944e`.
+- The local ignored `build-profile.json5` and `local.properties` are generated;
+  `local.properties` intentionally separates the full DevEco SDK from the
+  standalone API 23 native SDK.
+- Mac SDKs detected:
+  - Full HarmonyOS SDK for Hvigor:
+    `/Applications/DevEco-Studio.app/Contents/sdk`
+  - Standalone OpenHarmony API 23 native SDK:
+    `/Users/mydestiny/Library/OpenHarmony/Sdk/23`
+- `scripts/macos_env.sh` detects DevEco Node/Hvigor/ohpm, the bundled JBR/Java,
+  OHOS LLVM/CMake/Ninja, Rust/Cargo and the local PowerShell fallback.
+- API 23 Rust targets are installed:
+  `aarch64-unknown-linux-ohos` and `x86_64-unknown-linux-ohos`.
+- Opus and RustDesk FFI dependencies build successfully for both `arm64-v8a` and
+  `x86_64`; the FFI symbol checks pass after fixing the `pipefail`/SIGPIPE false
+  failure in the migration script.
+- `hvigorw tasks`, `hvigorw init`, native CMake/Ninja and ArkTS compilation pass.
+  `assembleHap` reaches `PackageHap` and `PackingCheck`, producing the local
+  unsigned artifact at `entry/build/default/outputs/default/entry-default-unsigned.hap`.
+- `core.hooksPath=.githooks`, the sync workflow, history guard, FreeRDP provenance
+  checks and Light compliance checks were validated on the restored workspace.
+
+## Blockers
+
+- GitHub fetch/push/PR operations need a networked run; the current environment has
+  intermittent DNS/SSL failures for `github.com`.
+- A signed HAP requires private local signing material and matching values in the
+  ignored `build-profile.json5`: `.p12`, `.p7b`, `.cer`, store/key passwords and
+  alias. These must be transferred through a secure channel and never committed.
+- AGConnect is optional for import/build but cloud features require the local
+  ignored `entry/src/main/resources/rawfile/agconnect-services.json`; never place
+  its secrets in shared docs or Git.
+- The local PowerShell fallback works for repository checks, but a stable system
+  PowerShell 7 install remains preferable. API 23 native SDK and Rust targets are
+  already present on this Mac.
 
 ## Next
 
-- Publish and review the Mac migration workflow fix, then run the required open-source compliance check before merging.
-- Install stable PowerShell 7 if a system `pwsh` is preferred, install the project's API 23 SDK, and add the OHOS Rust targets/native inputs required for builds.
-- Verify the cross-device synchronization gate on a clean Windows clone and a clean macOS clone.
-- On an unlocked HarmonyOS target, complete the remaining PIP, live-view, cloud-sync and first-install acceptance matrix.
-- Keep all raw device evidence and private build inputs local-only.
-
-## Migration blocker
-
-- GitHub fetch/push and PR operations are not currently available from this environment because connections to `github.com` fail at DNS/SSL. The bundle refs are restored locally, but remote equality still needs a networked run.
-- The installed DevEco SDK is API 24 (`6.1.1`), while the project baseline is API 23 (`6.1.0(23)`); API 23 remains a manual SDK Manager requirement.
-- Stable system PowerShell installation remains manual because the Homebrew cask requires interactive sudo; the ignored user-level preview fallback is available after sourcing `scripts/macos_env.sh`.
-
-## Local-only state
-
-SDKs, signing profiles, AGConnect configuration, local properties, build caches, logs, screenshots, device databases and Codex's private machine memory are intentionally not represented here.
+- Run the final post-commit checks and push `codex/mac-migration-bootstrap`.
+- Create the PR, wait for `open-source-compliance`, merge with a merge commit, then
+  fast-forward local `main` and delete the merged task branch.
+- Configure private signing/AGConnect values locally if signed or cloud-enabled
+  device validation is required; keep device data and raw evidence local-only.
