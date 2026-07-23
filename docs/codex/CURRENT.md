@@ -6,11 +6,10 @@ Updated: 2026-07-23 Asia/Shanghai
 
 - Repository: `Mydstiny/RemoteDeskHarmonyOS`
 - Public branch: `main`
-- Last migration merge commit: `b71639512` (`Merge pull request #31 from Mydstiny/codex/close-migration-handoff`)
-- Active task: none; the completed Mac `hdc` toolchain fix is included in this
-  handoff and must be published through the normal PR merge flow.
-- Local `main` equals local `origin/main`; the scoped publication branch is based
-  directly on that public commit.
+- Last migration merge commit: `dc715d230` (PR #32, merged with a merge commit)
+- Active task: none; the completed Mac `hdc` toolchain fix is already merged.
+- Shared state is synchronized with public `main`; the next device must sync before
+  starting an independent task.
 
 ## Current phase
 

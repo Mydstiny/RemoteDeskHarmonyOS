@@ -4,8 +4,8 @@ Updated: 2026-07-23 Asia/Shanghai
 
 ## Source
 
-- Migration baseline: `main` at `b71639512`, with PR #31 merged using a merge commit
-- Active task branch: none; the completed Mac `hdc` PATH fix is ready for PR publication
+- Migration baseline: `main` at `dc715d230`, with PR #32 merged using a merge commit
+- Active task branch: none
 - FreeRDP submodule: `dae8276ac7361b8d14f7b87d41163fe03dbb944e`
 
 ## Completed
@@ -56,7 +56,7 @@ Updated: 2026-07-23 Asia/Shanghai
 
 ## Next owner action
 
-1. After the hdc PR is merged, start Windows from synchronized `main` and run the
-   shared-state, submodule and history gates.
+1. Start Windows from synchronized `main` and run the shared-state, submodule and
+   history gates.
 2. Configure AGConnect locally only if cloud features are required, then complete
    the remaining real-device protocol and cloud-sync acceptance matrix.
