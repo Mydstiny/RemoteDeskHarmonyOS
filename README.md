@@ -78,6 +78,36 @@ Set-Location RemoteDeskHarmonyOS
 OHOS 修改历史位于同一 GitHub 仓库的 `freerdp-ohos` 分支；主分支通过
 gitlink 固定到可复现修订。
 
+## Windows/macOS 双端协作
+
+源码、Git 历史和子模块可以通过 GitHub 在 Windows 与 MacBook 间迁移；跨设备共享的脱敏任务状态位于
+`docs/codex/`。本机 Codex 原始记忆、DevEco SDK、签名材料、AGConnect secret、构建缓存、日志和真实用户数据不进入仓库。
+完整流程见 [`docs/CROSS_DEVICE_GITHUB_WORKFLOW.md`](docs/CROSS_DEVICE_GITHUB_WORKFLOW.md)。
+
+Mac 首次 clone 后执行：
+
+```sh
+git config core.hooksPath .githooks
+chmod +x scripts/sync_workspace.sh .githooks/pre-push
+./scripts/sync_workspace.sh status
+```
+
+每次开始任务必须从干净的 `main` 同步远端并创建任务分支。Windows 使用：
+
+```powershell
+pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/dev_workflow.ps1 start -Task <lowercase-kebab-task>
+```
+
+macOS/Linux 使用：
+
+```sh
+./scripts/sync_workspace.sh start <lowercase-kebab-task>
+```
+
+两个入口都会执行 `fetch --prune`、`pull --ff-only origin main`、递归子模块同步、工作区脏检查和活动分支检查；不会自动覆盖或 stash 未提交修改。Mac 端需要安装 PowerShell 7，以便 pre-push hook 运行同一套开源合规门禁。
+
+没有网络时，可在已有副本运行 `scripts/create_migration_bundle.ps1` 生成包含公开 `main` Git bundle、源码归档、FreeRDP 子模块归档和迁移清单的脱敏包；它不包含私钥、SDK、日志、构建产物或私有 Codex 记忆。
+
 ## 本地私有配置
 
 仓库不会跟踪签名证书、口令、AGConnect secret、API key、本机 SDK 路径

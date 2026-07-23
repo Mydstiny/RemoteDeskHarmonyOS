@@ -60,3 +60,7 @@ findings.md
 progress.md
 task_plan.md
 ssh_log.txt
+
+# Versioned cross-device coordination state
+!docs/codex/
+!docs/codex/*.md
