@@ -17,6 +17,56 @@ export interface RemoteSessionPipContentSize {
 }
 
 /**
+ * A controller can be prepared before the first decoded frame exists. This
+ * is what lets the system perform the home-gesture auto-start on a cold
+ * connection; the actual surface transfer still waits for a real frame.
+ */
+export function shouldPrepareRemoteSessionPip(
+  liveViewEnabled: boolean,
+  liveViewMode: number,
+  sessionActive: boolean,
+  rendererReady: boolean,
+  surfaceReady: boolean
+): boolean {
+  return sessionActive && liveViewEnabled &&
+    liveViewMode === LiveViewMode.AVSESSION && rendererReady && surfaceReady;
+}
+
+/**
+ * Video readiness is protocol-specific. RustDesk owns a decoder pipeline,
+ * while RDP presents its FreeRDP GDI frame pump directly into the renderer.
+ * Keeping this decision pure prevents the lifecycle page from using a
+ * decoder-only shortcut for both protocols.
+ */
+export function hasRemoteSessionPipVideo(
+  protocol: string,
+  rendererReady: boolean,
+  surfaceReady: boolean,
+  decoderReady: boolean,
+  rdpFrameReady: boolean
+): boolean {
+  if (!rendererReady || !surfaceReady) {
+    return false;
+  }
+  if (protocol === 'rdp') {
+    return rdpFrameReady;
+  }
+  return decoderReady;
+}
+
+/**
+ * GDI readiness is based on an owned pixel buffer, not graphics metadata.
+ * Some RDP fallback sessions publish desktop dimensions after the first
+ * paint, even though the frame pump can already resubmit that frame to PIP.
+ */
+export function hasRdpRemoteSessionPipFrame(
+  paintCount: number,
+  lastRenderBytes: number
+): boolean {
+  return paintCount > 0 && lastRenderBytes > 0;
+}
+
+/**
  * PIP content dimensions describe the remote video, not the local XComponent
  * surface. The latter can be a rotated physical display size on phones.
  */

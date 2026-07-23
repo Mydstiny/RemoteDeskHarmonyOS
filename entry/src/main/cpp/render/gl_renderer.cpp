@@ -37,6 +37,14 @@ static uint64_t g_surfaceWidth = 1920;
 static uint64_t g_surfaceHeight = 1080;
 static napi_ref g_exportsRef = nullptr;  // exports 持久引用, 用于延迟 XComponent 查询
 static bool g_surfaceIdWindowOwned = false;
+// SurfaceId/native-window state is process-wide while renderer instances are
+// per-session. Serialize compound replacement/ownership operations so a late
+// renderer destructor cannot observe half of a new PIP surface binding.
+static std::mutex g_surfaceStateMutex;
+// A renderer context can outlive the active renderer during a fast PIP
+// transfer. Only the context that currently owns this token may clear the
+// process-wide SurfaceId window when it is destroyed.
+static std::atomic<int64_t> g_surfaceOwnerHandle {0};
 static std::atomic<bool> g_surfaceDetached {false};
 static std::atomic<uint64_t> g_rendererGeneration {1};
 
@@ -110,6 +118,7 @@ static bool SetNativeWindowFromSurfaceId(const char* surfaceId, int width, int h
         OH_LOG_WARN(LOG_APP, "[GL] setXComponentSurfaceId: surfaceId 为空");
         return false;
     }
+    std::lock_guard<std::mutex> surfaceLock(g_surfaceStateMutex);
     uint64_t id = strtoull(surfaceId, nullptr, 10);
     const bool hasNativeWindow = g_nativeWindow != 0;
     const bool replaceWindow = Render::ShouldReplaceSurfaceWindow(
@@ -139,6 +148,9 @@ static bool SetNativeWindowFromSurfaceId(const char* surfaceId, int width, int h
         g_nativeWindow = 0;
         g_surfaceReady.store(false, std::memory_order_release);
         g_surfaceIdWindowOwned = false;
+        g_surfaceOwnerHandle.store(0, std::memory_order_release);
+        g_surfaceDetached.store(true, std::memory_order_release);
+        AdvanceRendererGeneration();
     }
 
     OHNativeWindow* window = nullptr;
@@ -153,6 +165,7 @@ static bool SetNativeWindowFromSurfaceId(const char* surfaceId, int width, int h
     g_surfaceId = id;
     g_surfaceReady.store(true, std::memory_order_release);
     g_surfaceIdWindowOwned = true;
+    g_surfaceOwnerHandle.store(0, std::memory_order_release);
     g_surfaceDetached.store(false, std::memory_order_release);
     AdvanceRendererGeneration();
     if (width > 0) { g_surfaceWidth = static_cast<uint64_t>(width); }
@@ -164,6 +177,7 @@ static bool SetNativeWindowFromSurfaceId(const char* surfaceId, int width, int h
 
 static void OnSurfaceCreatedCB(OH_NativeXComponent* component, void* window) {
     (void)component;
+    std::lock_guard<std::mutex> surfaceLock(g_surfaceStateMutex);
     if (g_surfaceIdWindowOwned && g_nativeWindow != 0) {
         OH_LOG_INFO(LOG_APP, "[GL] XComponent SurfaceCreated: 保留 SurfaceId window=%{public}p callbackWin=%{public}p size=%{public}llux%{public}llu",
                     reinterpret_cast<void*>(g_nativeWindow), window, g_surfaceWidth, g_surfaceHeight);
@@ -189,6 +203,7 @@ static void OnSurfaceCreatedCB(OH_NativeXComponent* component, void* window) {
 
 static void OnSurfaceChangedCB(OH_NativeXComponent* component, void* window) {
     (void)component;
+    std::lock_guard<std::mutex> surfaceLock(g_surfaceStateMutex);
     OH_LOG_INFO(LOG_APP, "[GL] XComponent SurfaceChanged: win=%{public}p size deferred %{public}llux%{public}llu",
                 window, g_surfaceWidth, g_surfaceHeight);
 }
@@ -202,23 +217,27 @@ static void DispatchTouchEventStub(OH_NativeXComponent* component, void* window)
 static void OnSurfaceDestroyedCB(OH_NativeXComponent* component, void* window) {
     (void)component;
     (void)window;
+    std::lock_guard<std::mutex> surfaceLock(g_surfaceStateMutex);
     // 仅重置 flag — 不调用任何框架 API 避免触发框架内部崩溃路径
     OH_LOG_INFO(LOG_APP, "[GL] XComponent SurfaceDestroyed (win=%{public}p owned=%{public}d)",
                 window, g_surfaceIdWindowOwned ? 1 : 0);
     g_surfaceReady.store(false, std::memory_order_release);
     g_surfaceDetached.store(true, std::memory_order_release);
+    g_surfaceOwnerHandle.store(0, std::memory_order_release);
     AdvanceRendererGeneration();
     // 注意: 不在这里销毁 NativeWindow — 框架会在 detach 后自行清理。
     // 如果 SurfaceId 创建的 window 需要销毁, 由 ArkTS 侧 onSurfaceDestroyed 触发。
 }
 
 static void MarkXComponentSurfaceDestroyed(const char* source) {
+    std::lock_guard<std::mutex> surfaceLock(g_surfaceStateMutex);
     OH_LOG_INFO(LOG_APP, "[GL] %{public}s: mark surface destroyed win=%{public}p owned=%{public}d",
                 source,
                 reinterpret_cast<void*>(g_nativeWindow),
                 g_surfaceIdWindowOwned ? 1 : 0);
     g_surfaceReady.store(false, std::memory_order_release);
     g_surfaceDetached.store(true, std::memory_order_release);
+    g_surfaceOwnerHandle.store(0, std::memory_order_release);
     AdvanceRendererGeneration();
     // API 23 上 SurfaceId/native window 由 ArkUI XComponent 生命周期托管。
     // detach 后继续持有这个裸指针容易在 egl/native window 释放路径触发 vendor double free。
@@ -338,10 +357,15 @@ GLRenderer::GLRenderer()
       viewportSnapshotVersion_(0), snapshotVpX_(0), snapshotVpY_(0),
       snapshotVpW_(0), snapshotVpH_(0), snapshotSourceWidth_(0),
       snapshotSourceHeight_(0), snapshotSurfaceWidth_(0), snapshotSurfaceHeight_(0),
-      rawFrameCount_(0), initialized_(false), destroying_(false) {}
+      rawFrameCount_(0), rendererHandle_(0), initialized_(false), destroying_(false) {}
 
 GLRenderer::~GLRenderer() {
     Destroy();
+}
+
+void GLRenderer::SetRendererHandle(int64_t handle) {
+    std::lock_guard<std::mutex> lock(lifecycleMutex_);
+    rendererHandle_ = handle > 0 ? handle : 0;
 }
 
 bool GLRenderer::MakeCurrent() {
@@ -443,25 +467,36 @@ bool GLRenderer::InitEGL(const std::string& xcomponentId) {
     }
 
     // R1: 优先使用 XComponent 窗口表面, 不可用时回退 Pbuffer
-    OH_LOG_INFO(LOG_APP, "[GL-DIAG] InitEGL: g_surfaceReady=%{public}d g_nativeWindow=%{public}p",
-                g_surfaceReady.load(std::memory_order_acquire) ? 1 : 0,
-                reinterpret_cast<void*>(g_nativeWindow));
+    bool surfaceReady = false;
+    EGLNativeWindowType nativeWindow = 0;
+    uint64_t surfaceWidth = 0;
+    uint64_t surfaceHeight = 0;
+    {
+        std::lock_guard<std::mutex> surfaceLock(g_surfaceStateMutex);
+        surfaceReady = g_surfaceReady.load(std::memory_order_acquire);
+        nativeWindow = g_nativeWindow;
+        surfaceWidth = g_surfaceWidth;
+        surfaceHeight = g_surfaceHeight;
+        OH_LOG_INFO(LOG_APP, "[GL-DIAG] InitEGL: g_surfaceReady=%{public}d g_nativeWindow=%{public}p",
+                    surfaceReady ? 1 : 0,
+                    reinterpret_cast<void*>(nativeWindow));
+    }
     bool windowSurfaceCreated = false;
-    if (g_surfaceReady.load(std::memory_order_acquire) && g_nativeWindow != 0) {
-        eglSurface_ = eglCreateWindowSurface(eglDisplay_, eglConfig_, g_nativeWindow, nullptr);
+    if (surfaceReady && nativeWindow != 0) {
+        eglSurface_ = eglCreateWindowSurface(eglDisplay_, eglConfig_, nativeWindow, nullptr);
         if (eglSurface_ == EGL_NO_SURFACE) {
             OH_LOG_WARN(LOG_APP, "[GL] eglCreateWindowSurface 失败(%{public}x), 回退 Pbuffer", eglGetError());
         } else {
             windowSurfaceCreated = true;
             OH_LOG_INFO(LOG_APP, "[GL] ✓ XComponent window surface, %{public}llux%{public}llu",
-                        g_surfaceWidth, g_surfaceHeight);
-            width_ = static_cast<int>(g_surfaceWidth);
-            height_ = static_cast<int>(g_surfaceHeight);
+                        surfaceWidth, surfaceHeight);
+            width_ = static_cast<int>(surfaceWidth);
+            height_ = static_cast<int>(surfaceHeight);
         }
     } else {
         OH_LOG_WARN(LOG_APP, "[GL] XComponent surface 未就绪 (ready=%{public}d win=%{public}p), 回退 Pbuffer",
-                    g_surfaceReady.load(std::memory_order_acquire) ? 1 : 0,
-                    reinterpret_cast<void*>(g_nativeWindow));
+                    surfaceReady ? 1 : 0,
+                    reinterpret_cast<void*>(nativeWindow));
     }
     if (eglSurface_ == EGL_NO_SURFACE) {
         // 回退: Pbuffer 离屏 (无 XComponent 或窗口创建失败时使用)
@@ -994,6 +1029,13 @@ void GLRenderer::Destroy() {
     destroying_ = true;
     const bool detachedWindowSurface =
         g_surfaceDetached.load(std::memory_order_acquire) && eglSurface_ != EGL_NO_SURFACE;
+    EGLNativeWindowType surfaceWindow = 0;
+    bool surfaceWindowOwned = false;
+    {
+        std::lock_guard<std::mutex> surfaceLock(g_surfaceStateMutex);
+        surfaceWindow = g_nativeWindow;
+        surfaceWindowOwned = g_surfaceIdWindowOwned;
+    }
     OH_LOG_INFO(LOG_APP,
                 "[GL] Destroy begin init=%{public}d display=%{public}p surface=%{public}p context=%{public}p detached=%{public}d win=%{public}p owned=%{public}d",
                 initialized_ ? 1 : 0,
@@ -1001,8 +1043,8 @@ void GLRenderer::Destroy() {
                 reinterpret_cast<void*>(eglSurface_),
                 reinterpret_cast<void*>(eglContext_),
                 detachedWindowSurface ? 1 : 0,
-                reinterpret_cast<void*>(g_nativeWindow),
-                g_surfaceIdWindowOwned ? 1 : 0);
+                reinterpret_cast<void*>(surfaceWindow),
+                surfaceWindowOwned ? 1 : 0);
     bool hasCurrent = false;
     if (initialized_ && !detachedWindowSurface) {
         hasCurrent = MakeCurrent();
@@ -1065,13 +1107,20 @@ void GLRenderer::Destroy() {
             eglDisplay_ = EGL_NO_DISPLAY;
         }
     }
-    if (g_surfaceIdWindowOwned && g_nativeWindow != 0) {
-        OH_LOG_INFO(LOG_APP, "[GL] Destroy: keep XComponent NativeWindow for ArkUI lifecycle win=%{public}p",
-                    reinterpret_cast<void*>(g_nativeWindow));
-        g_nativeWindow = 0;
-        g_surfaceId = 0;
-        g_surfaceReady.store(false, std::memory_order_release);
-        g_surfaceIdWindowOwned = false;
+    {
+        std::lock_guard<std::mutex> surfaceLock(g_surfaceStateMutex);
+        const bool ownsSurfaceWindow = g_surfaceIdWindowOwned && g_nativeWindow != 0 &&
+            rendererHandle_ > 0 &&
+            g_surfaceOwnerHandle.load(std::memory_order_acquire) == rendererHandle_;
+        if (ownsSurfaceWindow) {
+            OH_LOG_INFO(LOG_APP, "[GL] Destroy: clear renderer-owned XComponent NativeWindow state win=%{public}p",
+                        reinterpret_cast<void*>(g_nativeWindow));
+            g_nativeWindow = 0;
+            g_surfaceId = 0;
+            g_surfaceReady.store(false, std::memory_order_release);
+            g_surfaceIdWindowOwned = false;
+            g_surfaceOwnerHandle.store(0, std::memory_order_release);
+        }
     }
     initialized_ = false;
     destroying_ = false;
@@ -1156,6 +1205,7 @@ napi_value NapiInitRenderer(napi_env env, napi_callback_info info) {
         std::lock_guard<std::mutex> lock(g_activeRendererMutex);
         g_rendererContexts.emplace(handleVal, std::move(ctx));
     }
+    renderer->SetRendererHandle(handleVal);
     napi_value handle;
     napi_create_int64(env, handleVal, &handle);
 
@@ -1451,6 +1501,10 @@ void RendererNapi::SetActiveRenderer(int64_t handle) {
     const uint64_t generation = AdvanceRendererGeneration();
     ctx->generation = generation;
     g_activeRendererHandle.store(handle, std::memory_order_release);
+    {
+        std::lock_guard<std::mutex> surfaceLock(g_surfaceStateMutex);
+        g_surfaceOwnerHandle.store(handle, std::memory_order_release);
+    }
     OH_LOG_INFO(LOG_APP, "[GL] active renderer set handle=%{public}lld",
                 static_cast<long long>(handle));
 }

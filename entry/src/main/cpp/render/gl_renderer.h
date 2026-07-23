@@ -80,6 +80,9 @@ public:
     /** 销毁渲染器，释放所有 GL 资源 */
     void Destroy();
 
+    /** Bind the opaque registry handle used to protect shared surface state. */
+    void SetRendererHandle(int64_t handle);
+
     /** 是否已初始化 */
     bool IsInitialized() const { return initialized_; }
     bool IsPresentationReady();
@@ -157,6 +160,7 @@ private:
     std::atomic<int> snapshotSurfaceWidth_;
     std::atomic<int> snapshotSurfaceHeight_;
     int  rawFrameCount_;
+    int64_t rendererHandle_;
     bool initialized_;
     bool destroying_;
     std::mutex lifecycleMutex_;

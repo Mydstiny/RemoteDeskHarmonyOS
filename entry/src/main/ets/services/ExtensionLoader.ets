@@ -315,6 +315,25 @@ export class ExtensionLoader {
     this.rendererHandle = -1;
   }
 
+  /**
+   * Destroy a renderer owned by an older surface transfer without changing
+   * the current loader handle. This is required when a stale PIP callback
+   * arrives after a foreground renderer has already been installed.
+   */
+  destroyRendererHandle(handle: number): void {
+    if (handle <= 0) {
+      return;
+    }
+    try {
+      rdpnapi.destroyRenderer(handle);
+      if (this.rendererHandle === handle) {
+        this.rendererHandle = -1;
+      }
+    } catch (err) {
+      hilog.error(DOMAIN, TAG, '[ExtensionLoader] destroyRendererHandle: ' + JSON.stringify(err));
+    }
+  }
+
   initDecoder(w: number, h: number, c: number): number {
     try {
       this.decoderHandle = rdpnapi.initDecoder(w, h, c) as number;

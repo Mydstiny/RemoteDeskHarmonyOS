@@ -13,6 +13,8 @@ import { hilog } from '@kit.PerformanceAnalysisKit';
 
 const TAG = 'RemoteSessionPip';
 const DOMAIN = 0x0015;
+const PIP_TERMINAL_STATE_TIMEOUT_MS = 5000;
+const PIP_SURFACE_WAIT_TIMEOUT_MS = 6000;
 
 export interface RemoteSessionPipSurface {
   surfaceId: string;
@@ -20,7 +22,8 @@ export interface RemoteSessionPipSurface {
   surfaceHeight: number;
 }
 
-type PipSurfaceReadyHandler = (surface: RemoteSessionPipSurface) => Promise<boolean>;
+type PipSurfaceReadyHandler = (surface: RemoteSessionPipSurface,
+  operationGeneration: number) => Promise<boolean>;
 type PipSurfaceChangedHandler = (surface: RemoteSessionPipSurface) => void;
 type PipStateHandler = (state: PiPWindow.PiPState, reason: string) => void;
 
@@ -178,7 +181,7 @@ export class RemoteSessionPipService {
   private stoppedHandler: ((reason: string) => void) | null = null;
   private surfaceChangedHandler: PipSurfaceChangedHandler | null = null;
   private stateCallback: PipStateHandler | null = null;
-  private stopInFlight: Promise<void> | null = null;
+  private stopInFlight: Promise<boolean> | null = null;
 
   static getInstance(): RemoteSessionPipService {
     if (RemoteSessionPipService.instance === null) {
@@ -210,7 +213,11 @@ export class RemoteSessionPipService {
       return true;
     }
     if (this.controller !== null) {
-      await this.stop();
+      const stopped: boolean = await this.stop();
+      if (!stopped) {
+        hilog.warn(DOMAIN, TAG, '[PIP-PREPARE] previous controller did not reach terminal state');
+        return false;
+      }
       this.stoppedHandler = onStopped;
     }
 
@@ -248,6 +255,10 @@ export class RemoteSessionPipService {
       this.controller = created;
       this.contentNode = createdNode;
       this.pipComponentController = pipController;
+      this.prepared = true;
+      this.active = false;
+      this.windowStarted = false;
+      this.lastState = null;
       callback = (state: PiPWindow.PiPState, reason: string): void => {
         this.handleStateChange(created as PiPWindow.PiPController, state, reason);
       };
@@ -257,13 +268,14 @@ export class RemoteSessionPipService {
       // create the PIP window on the next Home/background transition.
       created.setAutoStartEnabled(true);
       if (generation !== this.operationGeneration) {
-        await this.stop();
+        if (this.controller === created) {
+          await this.stop();
+        }
         return false;
       }
-      this.prepared = true;
-      this.active = false;
-      this.windowStarted = false;
-      this.lastState = null;
+      if (this.controller !== created || !this.prepared) {
+        return false;
+      }
       hilog.info(DOMAIN, TAG, 'PIP VIDEO_PLAY prepared for system autoStart size=' +
         width.toString() + 'x' + height.toString());
       return true;
@@ -271,7 +283,9 @@ export class RemoteSessionPipService {
       const be: BusinessError = err as BusinessError;
       hilog.warn(DOMAIN, TAG, '[PIP-PREPARE] failed code=' + this.errorCode(be) +
         ' message=' + this.errorMessage(be));
-      if (created !== null) {
+      if (created !== null && this.controller === created) {
+        await this.stop();
+      } else if (created !== null) {
         await this.disposeCreatedController(created, createdNode, callback);
       } else if (createdNode !== null) {
         try {
@@ -320,7 +334,8 @@ export class RemoteSessionPipService {
 
     try {
       hilog.info(DOMAIN, TAG, 'PIP waiting for system autoStart after background transition');
-      const surface: RemoteSessionPipSurface | null = await pipController.waitForSurface(4000);
+      const surface: RemoteSessionPipSurface | null = await pipController.waitForSurface(
+        PIP_SURFACE_WAIT_TIMEOUT_MS);
       if (generation !== this.operationGeneration || this.controller !== owner || !this.prepared) {
         return false;
       }
@@ -328,7 +343,7 @@ export class RemoteSessionPipService {
         surface.surfaceWidth <= 0 || surface.surfaceHeight <= 0) {
         throw new Error('PIP XComponent surface was not created by system autoStart');
       }
-      if (onSurfaceReady !== null && !(await onSurfaceReady(surface))) {
+      if (onSurfaceReady !== null && !(await onSurfaceReady(surface, generation))) {
         throw new Error('native renderer could not attach to PIP surface');
       }
       if (generation !== this.operationGeneration || this.controller !== owner || !this.prepared) {
@@ -346,20 +361,29 @@ export class RemoteSessionPipService {
       const be: BusinessError = err as BusinessError;
       hilog.warn(DOMAIN, TAG, '[PIP-AUTOSTART] failed code=' + this.errorCode(be) +
         ' message=' + this.errorMessage(be));
-      await this.stop();
+      const stopped: boolean = await this.stop();
+      if (!stopped) {
+        hilog.warn(DOMAIN, TAG, '[PIP-AUTOSTART] controller teardown is still pending');
+      }
       return false;
     }
   }
 
-  async stop(): Promise<void> {
+  /**
+   * Stop the controller without destroying its node while WMS is still in a
+   * transitional state. The caller may release the native renderer only after
+   * this promise returns true; false means the controller is still owned by
+   * the system and its state callback remains responsible for final cleanup.
+   */
+  async stop(): Promise<boolean> {
     if (this.stopInFlight !== null) {
       await this.stopInFlight;
-      return;
+      return this.controller === null;
     }
-    const operation: Promise<void> = this.stopInternal();
+    const operation: Promise<boolean> = this.stopInternal();
     this.stopInFlight = operation;
     try {
-      await operation;
+      return await operation;
     } finally {
       if (this.stopInFlight === operation) {
         this.stopInFlight = null;
@@ -384,6 +408,21 @@ export class RemoteSessionPipService {
 
   isActive(): boolean {
     return this.active && this.controller !== null;
+  }
+
+  /** True while a foreground-prepared controller is armed for auto-start. */
+  isPrepared(): boolean {
+    return this.prepared && this.controller !== null;
+  }
+
+  /**
+   * A surface attach can await a decoded frame while stop/restore is already
+   * revoking the controller. Page code must reject the stale callback before
+   * it moves a native renderer to the free-node surface.
+   */
+  isOperationCurrent(operationGeneration: number): boolean {
+    return operationGeneration === this.operationGeneration &&
+      this.prepared && this.controller !== null;
   }
 
   private handleStateChange(owner: PiPWindow.PiPController,
@@ -412,12 +451,12 @@ export class RemoteSessionPipService {
     }
   }
 
-  private async stopInternal(): Promise<void> {
+  private async stopInternal(): Promise<boolean> {
     this.operationGeneration++;
     const current: PiPWindow.PiPController | null = this.controller;
     if (current === null) {
       this.clearState();
-      return;
+      return true;
     }
 
     // Explicit teardown owns cleanup. A system state callback for this stop
@@ -432,27 +471,50 @@ export class RemoteSessionPipService {
     }
 
     const state: PiPWindow.PiPState | null = this.lastState;
-    // A controller which has not reached STARTED has no visible PIP window.
-    // Calling stopPiP() in this state can produce a late exit animation during
-    // app shutdown or while an auto-start transition is being cancelled.
-    if (!this.windowStarted) {
+    // A controller which has not emitted a lifecycle transition has no visible
+    // PIP window. Dispose it directly so a no-session app exit cannot animate
+    // an empty PIP window. ABOUT_TO_START is different: WMS already owns the
+    // transition, so disposing the node here races the system and can leave a
+    // late window/renderer callback behind.
+    if (state === null && !this.windowStarted) {
       this.cleanupController(current, 'requestDelete', false);
-      return;
+      return true;
     }
-    if (state === PiPWindow.PiPState.STOPPED || state === PiPWindow.PiPState.ERROR) {
+    if (this.isTerminalState(state)) {
       this.cleanupController(current, 'requestDelete', false);
-      return;
+      return true;
     }
 
-    // ABOUT_TO_STOP and ABOUT_TO_RESTORE mean WMS already owns the transition.
-    // Calling stopPiP again is explicitly documented as a repeated operation.
-    if (state === PiPWindow.PiPState.ABOUT_TO_STOP ||
-      state === PiPWindow.PiPState.ABOUT_TO_RESTORE) {
-      await this.waitForTerminalState(current, 1200);
+    // Every ABOUT_TO_* state means WMS already owns the transition. Wait for a
+    // terminal callback before disposing the node or allowing native teardown.
+    // ABOUT_TO_START is allowed to settle to STARTED first; the helper then
+    // sends the single stopPiP request. The stop/restore transitions are only
+    // observed until WMS emits their terminal callback.
+    if (state === PiPWindow.PiPState.ABOUT_TO_START) {
+      const terminal: boolean = await this.finishAutoStartTransition(
+        current, PIP_TERMINAL_STATE_TIMEOUT_MS);
+      if (!terminal) {
+        hilog.error(DOMAIN, TAG, '[PIP-STOP] autoStart transition did not reach terminal state');
+        return false;
+      }
       if (this.controller === current) {
         this.cleanupController(current, 'requestDelete', false);
       }
-      return;
+      return true;
+    }
+    if (state === PiPWindow.PiPState.ABOUT_TO_STOP ||
+      state === PiPWindow.PiPState.ABOUT_TO_RESTORE) {
+      const terminal: boolean = await this.waitForTerminalState(
+        current, PIP_TERMINAL_STATE_TIMEOUT_MS);
+      if (!terminal) {
+        hilog.error(DOMAIN, TAG, '[PIP-STOP] terminal state timeout state=' +
+          (this.lastState === null ? 'null' : this.lastState.toString()));
+        return false;
+      }
+      if (this.controller === current) {
+        this.cleanupController(current, 'requestDelete', false);
+      }
+      return true;
     }
 
     try {
@@ -462,19 +524,26 @@ export class RemoteSessionPipService {
       const be: BusinessError = err as BusinessError;
       hilog.warn(DOMAIN, TAG, '[PIP-STOP] failed code=' + this.errorCode(be) +
         ' message=' + this.errorMessage(be));
+      return false;
     }
-    if (this.controller === current &&
-      (this.lastState === PiPWindow.PiPState.ABOUT_TO_STOP ||
-       this.lastState === PiPWindow.PiPState.ABOUT_TO_RESTORE)) {
-      await this.waitForTerminalState(current, 1200);
+    if (this.controller !== current) {
+      return true;
+    }
+    const terminal: boolean = await this.waitForTerminalState(
+      current, PIP_TERMINAL_STATE_TIMEOUT_MS);
+    if (!terminal) {
+      hilog.error(DOMAIN, TAG, '[PIP-STOP] terminal state timeout after stopPiP state=' +
+        (this.lastState === null ? 'null' : this.lastState.toString()));
+      return false;
     }
     if (this.controller === current) {
       this.cleanupController(current, 'requestDelete', false);
     }
+    return true;
   }
 
   private async waitForTerminalState(owner: PiPWindow.PiPController,
-    timeoutMs: number): Promise<void> {
+    timeoutMs: number): Promise<boolean> {
     const startedAtMs: number = Date.now();
     while (this.controller === owner &&
       this.lastState !== PiPWindow.PiPState.STOPPED &&
@@ -484,6 +553,49 @@ export class RemoteSessionPipService {
         setTimeout(resolve, 40);
       });
     }
+    return this.controller !== owner || this.isTerminalState(this.lastState);
+  }
+
+  /**
+   * ABOUT_TO_START normally becomes STARTED, not STOPPED. If teardown arrives
+   * during that transition, wait for STARTED and then issue the one legal
+   * stopPiP request; waiting for a terminal state without that request would
+   * leave auto-start armed until the timeout.
+   */
+  private async finishAutoStartTransition(owner: PiPWindow.PiPController,
+    timeoutMs: number): Promise<boolean> {
+    const startedAtMs: number = Date.now();
+    while (this.controller === owner &&
+      this.lastState === PiPWindow.PiPState.ABOUT_TO_START &&
+      Date.now() - startedAtMs < timeoutMs) {
+      await new Promise<void>((resolve: () => void): void => {
+        setTimeout(resolve, 40);
+      });
+    }
+    if (this.controller !== owner || this.isTerminalState(this.lastState)) {
+      return true;
+    }
+    if (this.lastState !== PiPWindow.PiPState.STARTED) {
+      return false;
+    }
+    try {
+      await owner.stopPiP();
+      hilog.info(DOMAIN, TAG, 'PIP stopped after autoStart transition');
+    } catch (err) {
+      const be: BusinessError = err as BusinessError;
+      hilog.warn(DOMAIN, TAG, '[PIP-STOP] autoStart transition stop failed code=' +
+        this.errorCode(be) + ' message=' + this.errorMessage(be));
+      return false;
+    }
+    if (this.controller !== owner) {
+      return true;
+    }
+    const remainingMs: number = Math.max(1, timeoutMs - (Date.now() - startedAtMs));
+    return this.waitForTerminalState(owner, remainingMs);
+  }
+
+  private isTerminalState(state: PiPWindow.PiPState | null): boolean {
+    return state === PiPWindow.PiPState.STOPPED || state === PiPWindow.PiPState.ERROR;
   }
 
   private cleanupController(owner: PiPWindow.PiPController,

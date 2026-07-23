@@ -40,6 +40,7 @@ import { clipboardSyncEnabledForProtocol } from '../services/ClipboardSyncPolicy
 import { FileTransferLiveTaskService } from '../services/FileTransferLiveTaskService';
 import { RemoteSessionBackgroundTaskService, RemoteSessionBgInfo } from '../services/RemoteSessionBackgroundTaskService';
 import { RemoteSessionLiveViewService, LiveViewConnectionInfo } from '../services/RemoteSessionLiveViewService';
+import { LiveViewMode } from '../services/LiveViewTypes';
 import {
   RemoteSessionPipService,
   RemoteSessionPipSurface
@@ -47,6 +48,9 @@ import {
 import {
   RemoteSessionPipLifecycleAction,
   RemoteSessionPipContentSize,
+  hasRemoteSessionPipVideo,
+  hasRdpRemoteSessionPipFrame,
+  shouldPrepareRemoteSessionPip,
   resolveRemoteSessionPipContentSize,
   resolveRemoteSessionPipLifecycle
 } from '../services/RemoteSessionPipLifecyclePolicy';
@@ -524,6 +528,10 @@ struct RemoteDesktop {
   private backgroundHasAudio: boolean = false;
   private backgroundHasVideo: boolean = false;
   private renderPreservedInPip: boolean = false;
+  // The current renderer handle can change during a failed/stale transfer.
+  // Keep the PIP owner separately so foreground recovery can release exactly
+  // the free-node renderer before installing the page renderer.
+  private pipRendererHandle: number = -1;
   private pipSurfaceTransferInProgress: boolean = false;
   private restoreFrameRefreshTimers: number[] = [];
   // Foreground restore is a teardown barrier: no surface callback or connect
@@ -531,6 +539,9 @@ struct RemoteDesktop {
   // fully stopped.
   private restoreInProgress: boolean = false;
   private restoreOperationId: number = 0;
+  private pipRestoreRetryTimer: number = -1;
+  private nativeDisconnectPending: boolean = false;
+  private nativeDisconnectRetryTimer: number = -1;
   private pipContentSizeRefreshTimers: number[] = [];
   private pipLastContentWidth: number = 0;
   private pipLastContentHeight: number = 0;
@@ -2365,6 +2376,13 @@ struct RemoteDesktop {
       }
     }
 
+    // RDP's GDI path can have an owned frame before graphics lifecycle
+    // dimensions are published. Prefer the requested remote ratio to the
+    // local (possibly portrait) page surface during that interval.
+    if ((sourceWidth <= 0 || sourceHeight <= 0) && this.pendingHost?.protocol === 'rdp') {
+      sourceWidth = this.remoteWidth;
+      sourceHeight = this.remoteHeight;
+    }
     // Before the first RustDesk frame, the renderer's source is initialized
     // from the local XComponent surface. That surface may still be portrait
     // during cold start, so never use it as the PIP media ratio. The logical
@@ -2733,14 +2751,15 @@ struct RemoteDesktop {
     const sessionActive: boolean = this.connected && this.sessionId === sessionId &&
       activeSession !== null && activeSession.sessionId === sessionId &&
       activeSession.hostId === host.id && activeSession.protocolConnected;
-    const hasVideo: boolean = this.rendererHandle > 0 && this.decoderHandle > 0 && this.surfaceReady;
-    const action: RemoteSessionPipLifecycleAction = resolveRemoteSessionPipLifecycle(
-      liveViewEnabled, liveViewMode, hasVideo, sessionActive, false, true);
-    if (action === RemoteSessionPipLifecycleAction.DISABLE) {
-      await RemoteSessionPipService.getInstance().stop();
-      return;
-    }
-    if (action !== RemoteSessionPipLifecycleAction.PREPARE) {
+    const canPrepare: boolean = shouldPrepareRemoteSessionPip(
+      liveViewEnabled, liveViewMode, sessionActive,
+      this.rendererHandle > 0, this.surfaceReady);
+    if (!canPrepare) {
+      // A transient frame gap during connection must not revoke a controller
+      // that the next background transition still needs.
+      if (!sessionActive || !liveViewEnabled || liveViewMode !== LiveViewMode.AVSESSION) {
+        await RemoteSessionPipService.getInstance().stop();
+      }
       return;
     }
     try {
@@ -2848,9 +2867,13 @@ struct RemoteDesktop {
     // Keep PIP teardown independent from AVSession cleanup. A failed media
     // identity stop must not leave an auto-start controller armed.
     try {
-      await RemoteSessionPipService.getInstance().stop();
+      const stopped: boolean = await RemoteSessionPipService.getInstance().stop();
+      if (!stopped) {
+        throw new Error('PIP controller did not reach terminal state');
+      }
     } catch (err) {
       hilog.warn(RD_DOMAIN, RD_TAG, 'stopSessionLiveView: PIP stop failed: ' + JSON.stringify(err));
+      throw new Error('PIP controller stop failed [E-PIP-STOP]');
     }
   }
 
@@ -2874,10 +2897,82 @@ struct RemoteDesktop {
     this.backgroundHasVideo = false;
   }
 
+  private isRdpRemoteSession(): boolean {
+    return this.pendingHost !== null && this.pendingHost.protocol === 'rdp';
+  }
+
+  /**
+   * RDP has no decoder handle. A staged GDI frame is the source of truth for
+   * whether its frame pump can populate a newly attached PIP surface.
+   */
+  private isRdpVideoFrameReady(): boolean {
+    if (!this.isRdpRemoteSession() || this.sessionId <= 0) {
+      return false;
+    }
+    try {
+      const stats: RdpRenderStats = this.loader.getRdpRenderStats(this.sessionId);
+      // Legacy GDI sessions can present valid frames before the graphics
+      // lifecycle has published desktop dimensions. The owned frame counters
+      // are the readiness signal; requiring graphics metadata here blocks RDP
+      // PIP while the frame pump is already usable.
+      return hasRdpRemoteSessionPipFrame(stats.paintCount, stats.lastRenderBytes);
+    } catch (_e) {
+      return false;
+    }
+  }
+
+  private isCurrentVideoReadyForPip(): boolean {
+    const protocol: string = this.pendingHost !== null ? this.pendingHost.protocol : '';
+    return hasRemoteSessionPipVideo(
+      protocol,
+      this.rendererHandle > 0,
+      this.surfaceReady,
+      this.decoderHandle > 0,
+      this.isRdpVideoFrameReady());
+  }
+
+  /** A PIP transfer must not detach the foreground renderer before a real
+   * remote frame has reached the protocol-specific frame store. */
+  private isPipFrameReady(): boolean {
+    if (this.isRdpRemoteSession()) {
+      return this.isRdpVideoFrameReady();
+    }
+    if (this.pendingHost === null || this.pendingHost.protocol !== 'rustdesk' || this.sessionId <= 0) {
+      return false;
+    }
+    try {
+      const diagnostics: RustDeskDiagnosticsSnapshot = this.loader.getRustDeskDiagnostics(this.sessionId);
+      return diagnostics.videoSeen && diagnostics.receivedFrames > 0 &&
+        diagnostics.width > 0 && diagnostics.height > 0;
+    } catch (_e) {
+      return false;
+    }
+  }
+
+  private async waitForPipFrameReady(operationGeneration: number,
+    timeoutMs: number = 5000): Promise<boolean> {
+    const startedAtMs: number = Date.now();
+    const pipService: RemoteSessionPipService = RemoteSessionPipService.getInstance();
+    while (Date.now() - startedAtMs < timeoutMs) {
+      if (this.restoreInProgress || !this.cleanupStarted ||
+        !pipService.isOperationCurrent(operationGeneration)) {
+        return false;
+      }
+      if (this.isPipFrameReady()) {
+        return true;
+      }
+      await new Promise<void>((resolve: () => void): void => {
+        setTimeout(resolve, 50);
+      });
+    }
+    return !this.restoreInProgress && this.cleanupStarted &&
+      pipService.isOperationCurrent(operationGeneration) && this.isPipFrameReady();
+  }
+
   private currentRemoteMediaSnapshot(): RemoteSessionMediaSnapshot {
     return {
       hasAudio: this.loader.isAudioActive(),
-      hasVideo: this.loader.isVideoActive()
+      hasVideo: this.isRdpRemoteSession() ? this.isRdpVideoFrameReady() : this.loader.isVideoActive()
     };
   }
 
@@ -4903,14 +4998,9 @@ struct RemoteDesktop {
     // Otherwise a late PIP stop promise could recreate a page renderer after
     // the user has already disconnected or left the app.
     this.restoreInProgress = false;
+    this.clearPipRestoreRetry();
     this.restoreOperationId += 1;
     this.clearPipContentSizeRefresh();
-    // Stop any stale PIP controller even when this cleanup call is otherwise
-    // idempotently skipped. This prevents a disconnected/empty page from
-    // briefly surfacing an old PIP window during app exit.
-    RemoteSessionPipService.getInstance().stop().catch((_e: Error): void => {
-      // PIP cleanup is best effort; native teardown below remains authoritative.
-    });
     if (this.cleanupStarted && !this.renderPreservedInPip && !this.bgRestorePending) {
       return;
     }
@@ -4967,6 +5057,57 @@ struct RemoteDesktop {
       this.connectAttemptId++;
       this.inputForwardReady = false;
       const shouldRestoreOrientation: boolean = this.orientationApplied;
+      this.scheduleNativeDisconnectAfterPip(reason, shouldRestoreOrientation, cleanupStartedAtMs);
+    } catch (err) {
+      hilog.error(RD_DOMAIN, RD_TAG, '[RDP-SHUTDOWN] phase=arkts-error elapsedMs=' +
+        (Date.now() - cleanupStartedAtMs).toString() + ' err=' + JSON.stringify(err));
+    }
+  }
+
+  /**
+   * PIP owns a native renderer and a free-node surface. Do not hand the
+   * decoder/renderer to asynchronous protocol teardown until WMS has reported
+   * STOPPED or ERROR; otherwise a late PIP callback can render into freed GL
+   * state or surface an exit animation after an explicit disconnect.
+   */
+  private scheduleNativeDisconnectAfterPip(reason: string,
+    shouldRestoreOrientation: boolean, cleanupStartedAtMs: number): void {
+    if (this.nativeDisconnectPending) {
+      return;
+    }
+    this.nativeDisconnectPending = true;
+    const attempt: () => void = (): void => {
+      if (!this.cleanupStarted) {
+        this.nativeDisconnectPending = false;
+        return;
+      }
+      RemoteSessionPipService.getInstance().stop().then((stopped: boolean): void => {
+        if (!stopped) {
+          hilog.warn(RD_DOMAIN, RD_TAG,
+            'disconnectAndCleanup: PIP terminal barrier pending, native teardown deferred');
+          this.nativeDisconnectRetryTimer = setTimeout((): void => {
+            this.nativeDisconnectRetryTimer = -1;
+            attempt();
+          }, 250);
+          return;
+        }
+        this.nativeDisconnectPending = false;
+        this.finishNativeDisconnect(reason, shouldRestoreOrientation, cleanupStartedAtMs);
+      }).catch((err: Error): void => {
+        hilog.warn(RD_DOMAIN, RD_TAG, 'disconnectAndCleanup: PIP stop retry: ' +
+          (err.message ? err.message : JSON.stringify(err)));
+        this.nativeDisconnectRetryTimer = setTimeout((): void => {
+          this.nativeDisconnectRetryTimer = -1;
+          attempt();
+        }, 250);
+      });
+    };
+    attempt();
+  }
+
+  private finishNativeDisconnect(reason: string,
+    shouldRestoreOrientation: boolean, cleanupStartedAtMs: number): void {
+    try {
       if (this.sessionId > 0 || this.rendererHandle > 0 || this.decoderHandle > 0) {
         if (this.sessionId > 0) {
           this.disableRdpBackgroundVideoPrewarm('disconnect-cleanup');
@@ -4990,6 +5131,7 @@ struct RemoteDesktop {
         this.sessionId = -1;
         this.rendererHandle = -1;
         this.decoderHandle = -1;
+        this.pipRendererHandle = -1;
         this.nativeHandles.markAsyncTeardownTransferred();
       }
       this.clearFileTransferAutoHide();
@@ -5002,16 +5144,14 @@ struct RemoteDesktop {
       this.stopBackgroundAudioPolling();
       this.clearRestoreFrameRefreshPump();
       this.setRemoteKeepScreenOn(false);
-      // 停止实况窗
       try {
         const ctx: common.UIAbilityContext = this.getUIContext().getHostContext() as common.UIAbilityContext;
         if (ctx) {
           this.stopSessionLiveView(ctx).catch((_e: Error): void => {
-            // 停止失败不影响清理流程
+            // Media cleanup is best effort after the PIP barrier is complete.
           });
         }
       } catch (_e) { /* ignore */ }
-      // 停止后台保活任务
       try {
         const ctx: common.UIAbilityContext = this.getUIContext().getHostContext() as common.UIAbilityContext;
         if (ctx) {
@@ -5026,7 +5166,7 @@ struct RemoteDesktop {
       this.connected = false;
       this.connectStarted = false;
       hilog.info(RD_DOMAIN, RD_TAG, '[RDP-SHUTDOWN] phase=arkts-return elapsedMs=' +
-        (Date.now() - cleanupStartedAtMs).toString());
+        (Date.now() - cleanupStartedAtMs).toString() + ' reason=' + reason);
     } catch (err) {
       hilog.error(RD_DOMAIN, RD_TAG, '[RDP-SHUTDOWN] phase=arkts-error elapsedMs=' +
         (Date.now() - cleanupStartedAtMs).toString() + ' err=' + JSON.stringify(err));
@@ -5037,10 +5177,41 @@ struct RemoteDesktop {
    * 后台保活: 仅脱附渲染, 保留协议连接和音频管线。
    * 系统通过 home gesture / onBackground 触发。
    */
-  private async attachRendererToPipSurface(surface: RemoteSessionPipSurface): Promise<boolean> {
+  private releasePipRenderer(reason: string): void {
+    const ownedHandle: number = this.pipRendererHandle > 0
+      ? this.pipRendererHandle : this.rendererHandle;
+    const currentHandle: number = this.rendererHandle;
+    if (!this.isRdpRemoteSession() && this.decoderHandle > 0 &&
+      (this.renderPreservedInPip || ownedHandle === currentHandle)) {
+      const detached: boolean = this.loader.detachVideoPipelineForBackground();
+      hilog.info(RD_DOMAIN, RD_TAG, 'releasePipRenderer: decoder detached=' +
+        detached.toString() + ' reason=' + reason);
+    }
+    if (ownedHandle > 0) {
+      if (ownedHandle === currentHandle && this.nativeHandles.isRenderAttached()) {
+        this.nativeHandles.detachRenderForBackground();
+      } else {
+        this.loader.destroyRendererHandle(ownedHandle);
+      }
+    }
+    if (this.rendererHandle === ownedHandle) {
+      this.rendererHandle = -1;
+    }
+    this.pipRendererHandle = -1;
+    this.renderPreservedInPip = false;
+    hilog.info(RD_DOMAIN, RD_TAG, 'releasePipRenderer: handle=' +
+      ownedHandle.toString() + ' reason=' + reason);
+  }
+
+  private async attachRendererToPipSurface(surface: RemoteSessionPipSurface,
+    operationGeneration: number): Promise<boolean> {
     const activeSession: ActiveRemoteSessionRecord | null = this.activeSessionRegistry.getActive();
+    const isRdp: boolean = this.isRdpRemoteSession();
+    const pipService: RemoteSessionPipService = RemoteSessionPipService.getInstance();
     if (!this.cleanupStarted || !this.connected || this.sessionId <= 0 || this.pendingHost === null ||
-      this.rendererHandle <= 0 || this.decoderHandle <= 0 || activeSession === null ||
+      this.restoreInProgress || !pipService.isOperationCurrent(operationGeneration) ||
+      this.rendererHandle <= 0 || (!isRdp && this.decoderHandle <= 0) ||
+      activeSession === null ||
       activeSession.sessionId !== this.sessionId || activeSession.hostId !== this.pendingHost.id ||
       !activeSession.protocolConnected || surface.surfaceId.length === 0 ||
       surface.surfaceWidth <= 0 || surface.surfaceHeight <= 0) {
@@ -5049,6 +5220,20 @@ struct RemoteDesktop {
     }
 
     try {
+      if (!(await this.waitForPipFrameReady(operationGeneration))) {
+        hilog.warn(RD_DOMAIN, RD_TAG, 'attachRendererToPipSurface: no real remote frame before timeout');
+        return false;
+      }
+      const currentSession: ActiveRemoteSessionRecord | null = this.activeSessionRegistry.getActive();
+      if (this.restoreInProgress || !this.cleanupStarted ||
+        !pipService.isOperationCurrent(operationGeneration) || !this.connected ||
+        this.sessionId <= 0 || currentSession === null ||
+        currentSession.sessionId !== this.sessionId || currentSession.hostId !== this.pendingHost.id ||
+        !currentSession.protocolConnected) {
+        hilog.warn(RD_DOMAIN, RD_TAG,
+          'attachRendererToPipSurface: operation/session changed while waiting for frame');
+        return false;
+      }
       // Capture the remote media ratio while the page renderer is still alive.
       // After destroyRenderer() the native viewport is intentionally no longer
       // readable, and falling back to the rotated page surface would crop PIP.
@@ -5056,7 +5241,7 @@ struct RemoteDesktop {
       // The page renderer is bound to the page XComponent.  Move the native
       // renderer to the free-node surface before the PIP controller reports
       // success; otherwise the PIP window only retains the last page frame.
-      if (this.decoderHandle > 0) {
+      if (!isRdp && this.decoderHandle > 0) {
         const detached: boolean = this.loader.detachVideoPipelineForBackground();
         hilog.info(RD_DOMAIN, RD_TAG, 'attachRendererToPipSurface: decoder pipeline detached=' +
           (detached ? 'true' : 'false'));
@@ -5077,16 +5262,32 @@ struct RemoteDesktop {
       }
 
       this.rendererHandle = result.value;
+      this.pipRendererHandle = result.value;
       this.nativeHandles.markSurfaceAttached(this.rendererHandle);
-      if (!this.loader.bindVideoPipeline(this.decoderHandle, this.rendererHandle)) {
-        hilog.warn(RD_DOMAIN, RD_TAG, 'attachRendererToPipSurface: decoder pipeline bind failed');
-        this.nativeHandles.detachRenderForBackground();
-        this.rendererHandle = -1;
+      if (isRdp) {
+        const cachedPresented: boolean = this.loader.presentRdpCachedFrame(this.sessionId);
+        const refresh = this.loader.requestFrameRefresh();
+        hilog.info(RD_DOMAIN, RD_TAG, 'attachRendererToPipSurface: RDP cached=' +
+          cachedPresented.toString() + ' refresh=' + refresh.ok.toString());
+        if (!cachedPresented && !refresh.ok) {
+          this.releasePipRenderer('rdp-pip-present-failed');
+          return false;
+        }
+      } else {
+        if (!this.loader.bindVideoPipeline(this.decoderHandle, this.rendererHandle)) {
+          hilog.warn(RD_DOMAIN, RD_TAG, 'attachRendererToPipSurface: decoder pipeline bind failed');
+          this.releasePipRenderer('rustdesk-pip-bind-failed');
+          return false;
+        }
+        this.loader.requestDecoderRecovery();
+        this.loader.requestFrameRefresh();
+      }
+      if (this.restoreInProgress || !this.cleanupStarted ||
+        !pipService.isOperationCurrent(operationGeneration)) {
+        this.releasePipRenderer('pip-attach-operation-cancelled');
         return false;
       }
       this.activeSessionRegistry.markRenderDetached();
-      this.loader.requestDecoderRecovery();
-      this.loader.requestFrameRefresh();
       hilog.info(RD_DOMAIN, RD_TAG, 'attachRendererToPipSurface: renderer=' +
         this.rendererHandle.toString() + ' media=' + pipSize.width.toString() + 'x' +
         pipSize.height.toString() + ' surface=' + surface.surfaceId + ' ' +
@@ -5094,13 +5295,16 @@ struct RemoteDesktop {
       return true;
     } catch (err) {
       hilog.warn(RD_DOMAIN, RD_TAG, 'attachRendererToPipSurface: failed ' + JSON.stringify(err));
-      this.rendererHandle = -1;
+      if (this.pipRendererHandle > 0 || this.rendererHandle > 0) {
+        this.releasePipRenderer('attach-exception');
+      }
       return false;
     }
   }
 
   private handlePipSurfaceChanged(surface: RemoteSessionPipSurface): void {
-    if (!this.renderPreservedInPip || this.restoreInProgress || this.rendererHandle <= 0 ||
+    if ((!this.renderPreservedInPip && this.pipRendererHandle <= 0) ||
+      this.restoreInProgress || this.rendererHandle <= 0 ||
       surface.surfaceId.length === 0 || surface.surfaceWidth <= 0 || surface.surfaceHeight <= 0) {
       return;
     }
@@ -5112,7 +5316,9 @@ struct RemoteDesktop {
           surface.surfaceId);
         return;
       }
-      this.loader.resizeRenderer(this.rendererHandle, surface.surfaceWidth, surface.surfaceHeight);
+      const renderer: number = this.pipRendererHandle > 0
+        ? this.pipRendererHandle : this.rendererHandle;
+      this.loader.resizeRenderer(renderer, surface.surfaceWidth, surface.surfaceHeight);
       this.invalidateRendererViewportCache();
       hilog.info(RD_DOMAIN, RD_TAG, 'handlePipSurfaceChanged: renderer=' +
         this.rendererHandle.toString() + ' surface=' + surface.surfaceWidth.toString() + 'x' +
@@ -5179,32 +5385,48 @@ struct RemoteDesktop {
     // the old detach path if PIP is disabled, unsupported, or failed.
     let pipPreserved: boolean = false;
     let pipContext: common.UIAbilityContext | null = null;
+    const pipService: RemoteSessionPipService = RemoteSessionPipService.getInstance();
     this.pipSurfaceTransferInProgress = true;
     try {
       pipContext = this.getUIContext().getHostContext() as common.UIAbilityContext;
       const liveViewEnabled: boolean = AppStorage.get<boolean>('liveViewEnabled') ?? true;
       const liveViewMode: number = AppStorage.get<number>('liveViewMode') ?? 1;
       const pipLifecycleAction: RemoteSessionPipLifecycleAction = resolveRemoteSessionPipLifecycle(
-        liveViewEnabled, liveViewMode, backgroundMedia.hasVideo,
+        liveViewEnabled, liveViewMode, true,
         this.connected && this.sessionId > 0, true, false);
       if (pipContext !== null && this.pendingHost !== null &&
-        this.rendererHandle > 0 && this.decoderHandle > 0 && this.surfaceReady &&
+        pipService.isPrepared() &&
         pipLifecycleAction === RemoteSessionPipLifecycleAction.WAIT_FOR_AUTO_START) {
         const pipSize: RemoteSessionPipContentSize = this.currentPipContentSize();
-        pipPreserved = await RemoteSessionPipService.getInstance().start(
+        pipPreserved = await pipService.start(
           pipContext, this.getUIContext(), pipSize.width, pipSize.height,
-          (surface: RemoteSessionPipSurface): Promise<boolean> => this.attachRendererToPipSurface(surface),
+          (surface: RemoteSessionPipSurface, operationGeneration: number): Promise<boolean> =>
+            this.attachRendererToPipSurface(surface, operationGeneration),
           (reason: string): void => this.handleRemoteSessionPipStopped(reason),
           (surface: RemoteSessionPipSurface): void => this.handlePipSurfaceChanged(surface));
       } else {
-        // A disabled/notification-only/no-video session must revoke any
-        // foreground-prepared controller before the app leaves the window.
-        await RemoteSessionPipService.getInstance().stop();
+        // A disabled/notification-only/unprepared session must revoke any
+        // foreground controller before the app leaves the window.
+        const stopped: boolean = await pipService.stop();
+        if (!stopped) {
+          throw new Error('PIP controller did not reach terminal state before background fallback');
+        }
       }
     } catch (err) {
       hilog.warn(RD_DOMAIN, RD_TAG, 'detachForBackground: PIP start failed, falling back to detached renderer: ' +
         JSON.stringify(err));
       pipPreserved = false;
+    }
+    if (!pipPreserved) {
+      // start() may have failed while WMS was still in ABOUT_TO_START or
+      // ABOUT_TO_STOP. Never fall back to a detached native renderer until
+      // that controller has reached a terminal state, otherwise the pending
+      // PIP callback can still target the old renderer/surface.
+      const stopped: boolean = await pipService.stop();
+      if (!stopped) {
+        this.pipSurfaceTransferInProgress = false;
+        throw new Error('PIP controller did not reach terminal state before renderer fallback');
+      }
     }
     this.renderPreservedInPip = pipPreserved;
     this.pipSurfaceTransferInProgress = false;
@@ -5220,7 +5442,7 @@ struct RemoteDesktop {
     // 仅脱附渲染, 不触碰协议连接、解码器和音频.
     // 注意: 不销毁解码器 — destroyDecoder 会级联断开协议连接.
     if (!pipPreserved) {
-      if (this.decoderHandle > 0) {
+      if (this.decoderHandle > 0 && !this.isRdpRemoteSession()) {
         this.loader.detachVideoPipelineForBackground();
       }
       const rendererHandleBeforeDetach: number = this.rendererHandle;
@@ -5228,6 +5450,7 @@ struct RemoteDesktop {
         this.nativeHandles.detachRenderForBackground();
         this.rendererHandle = -1;
       }
+      this.pipRendererHandle = -1;
       if (shouldInvalidateSurfaceAfterBackgroundDetach(rendererHandleBeforeDetach, this.sessionId)) {
         this.surfaceReady = false;
         hilog.info(RD_DOMAIN, RD_TAG, 'detachForBackground: surface invalidated after render detach');
@@ -5291,22 +5514,34 @@ struct RemoteDesktop {
   }
 
   private handleRemoteSessionPipStopped(reason: string): void {
-    if (!this.renderPreservedInPip) {
+    const ownsPipRenderer: boolean = this.renderPreservedInPip || this.pipRendererHandle > 0;
+    if (!ownsPipRenderer) {
       return;
     }
-    this.renderPreservedInPip = false;
+    // Foreground restore owns the renderer teardown. A terminal PIP callback
+    // may arrive before stop() resumes the restore continuation; consuming
+    // the ownership flag here would make that continuation skip the release.
+    if (this.restoreInProgress && this.bgRestorePending) {
+      hilog.info(RD_DOMAIN, RD_TAG, 'PIP stopped during foreground restore; keeping renderer ownership reason=' +
+        reason);
+      return;
+    }
+    if (this.bgRestorePending) {
+      // The system may finish a PIP close before the page lifecycle callback
+      // reaches aboutToAppear. Keep the decoder and PIP renderer ownership
+      // until restoreFromBackground consumes them in one ordered operation.
+      hilog.info(RD_DOMAIN, RD_TAG, 'PIP stopped before foreground restore; deferring renderer release reason=' +
+        reason);
+      return;
+    }
     hilog.warn(RD_DOMAIN, RD_TAG, 'PIP stopped while remote session was backgrounded reason=' + reason);
-    if (!this.cleanupStarted || !this.bgRestorePending) {
+    if (!this.cleanupStarted) {
+      this.releasePipRenderer('pip-stopped-' + reason);
       return;
     }
-    if (this.decoderHandle > 0) {
-      this.loader.detachVideoPipelineForBackground();
-    }
-    const rendererHandleBeforeDetach: number = this.rendererHandle;
-    if (this.rendererHandle > 0) {
-      this.nativeHandles.detachRenderForBackground();
-      this.rendererHandle = -1;
-    }
+    const rendererHandleBeforeDetach: number = this.pipRendererHandle > 0
+      ? this.pipRendererHandle : this.rendererHandle;
+    this.releasePipRenderer('pip-stopped-background');
     if (shouldInvalidateSurfaceAfterBackgroundDetach(rendererHandleBeforeDetach, this.sessionId)) {
       this.surfaceReady = false;
     }
@@ -5321,14 +5556,43 @@ struct RemoteDesktop {
   /**
    * 从后台恢复: 清除保活标志, 停止后台任务, 等待 XComponent 重建渲染。
    */
+  private clearPipRestoreRetry(): void {
+    if (this.pipRestoreRetryTimer >= 0) {
+      clearTimeout(this.pipRestoreRetryTimer);
+      this.pipRestoreRetryTimer = -1;
+    }
+  }
+
+  private schedulePipRestoreRetry(operationId: number): void {
+    if (this.pipRestoreRetryTimer >= 0) {
+      return;
+    }
+    this.pipRestoreRetryTimer = setTimeout((): void => {
+      this.pipRestoreRetryTimer = -1;
+      if (operationId !== this.restoreOperationId || this.cleanupStarted ||
+        !this.bgRestorePending || this.sessionId <= 0) {
+        return;
+      }
+      this.restoreInProgress = false;
+      this.restoreFromBackground();
+    }, 250);
+  }
+
   private restoreFromBackground(): void {
     if (this.restoreInProgress) {
       hilog.info(RD_DOMAIN, RD_TAG, 'restoreFromBackground: restore already in progress');
       return;
     }
+    this.clearPipRestoreRetry();
     this.restoreInProgress = true;
     const operationId: number = ++this.restoreOperationId;
     this.cleanupStarted = false; // 允许重新 attach
+    // The free-node PIP surface replaced the page surface while the app was
+    // backgrounded. Always reacquire the current page SurfaceId after the
+    // terminal PIP state; reusing the old ID can leave RDP's frame pump alive
+    // against a surface that is no longer displayed.
+    this.surfaceReady = false;
+    this.latestSurfaceId = '';
     // bgFlag 保留到清理完成后 → doBackgroundRestoreRender 使用
     this.stopBackgroundAudioPolling();
     this.clearRestoreFrameRefreshPump();
@@ -5344,21 +5608,8 @@ struct RemoteDesktop {
       // surface. Release that renderer before the normal foreground reattach
       // path; otherwise the page could resume with a stale PIP surface or two
       // native renderer handles.
-      if (this.renderPreservedInPip) {
-        this.renderPreservedInPip = false;
-        if (this.decoderHandle > 0) {
-          const detached: boolean = this.loader.detachVideoPipelineForBackground();
-          hilog.info(RD_DOMAIN, RD_TAG, 'restoreFromBackground: decoder pipeline detached=' +
-            (detached ? 'true' : 'false'));
-        }
-        if (this.rendererHandle > 0) {
-          if (this.nativeHandles.isRenderAttached()) {
-            this.nativeHandles.detachRenderForBackground();
-          } else {
-            this.loader.destroyRenderer();
-          }
-          this.rendererHandle = -1;
-        }
+      if (this.renderPreservedInPip || this.pipRendererHandle > 0) {
+        this.releasePipRenderer('foreground-restore');
         hilog.info(RD_DOMAIN, RD_TAG, 'restoreFromBackground: released PIP renderer, reattaching page surface');
       }
       this.renderPreservedInPip = false;
@@ -5385,9 +5636,11 @@ struct RemoteDesktop {
         // 移除实况窗
         this.stopSessionLiveView(ctx).then((): void => {
           continueRestore();
-        }).catch((_e: Error): void => {
-          // 停止失败不影响恢复流程
-          continueRestore();
+        }).catch((err: Error): void => {
+          hilog.error(RD_DOMAIN, RD_TAG, 'restoreFromBackground: PIP terminal barrier pending; retrying: ' +
+            (err.message ? err.message : JSON.stringify(err)));
+          this.restoreInProgress = false;
+          this.schedulePipRestoreRetry(operationId);
         });
         RemoteSessionBackgroundTaskService.getInstance().stopSessionTask(ctx);
         return;
