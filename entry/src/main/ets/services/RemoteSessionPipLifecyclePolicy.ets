@@ -67,6 +67,21 @@ export function hasRdpRemoteSessionPipFrame(
 }
 
 /**
+ * A RustDesk Pro preflight hands the authenticated protocol session to the
+ * remote page before that page owns a renderer or decoder. This special path
+ * is one-shot; a normal foreground restore must never satisfy it merely
+ * because the PIP renderer was released.
+ */
+export function shouldCreatePreauthenticatedRustDeskPipeline(
+  preAuthenticated: boolean,
+  protocol: string,
+  decoderReady: boolean,
+  rendererReady: boolean
+): boolean {
+  return preAuthenticated && protocol === 'rustdesk' && !decoderReady && !rendererReady;
+}
+
+/**
  * PIP content dimensions describe the remote video, not the local XComponent
  * surface. The latter can be a rotated physical display size on phones.
  */

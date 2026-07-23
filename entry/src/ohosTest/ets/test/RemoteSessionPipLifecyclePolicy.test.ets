@@ -8,6 +8,7 @@ import {
   hasRemoteSessionPipVideo,
   hasRdpRemoteSessionPipFrame,
   shouldPrepareRemoteSessionPip,
+  shouldCreatePreauthenticatedRustDeskPipeline,
   resolveRemoteSessionPipLifecycle,
   resolveRemoteSessionPipContentSize
 } from '../../../main/ets/services/RemoteSessionPipLifecyclePolicy';
@@ -52,6 +53,14 @@ export default function remoteSessionPipLifecyclePolicyTest(): void {
     it('keeps_decoder_requirement_for_rustdesk', 0, (): void => {
       expect(hasRemoteSessionPipVideo('rustdesk', true, true, true, false)).assertTrue();
       expect(hasRemoteSessionPipVideo('rustdesk', true, true, false, true)).assertFalse();
+    });
+
+    it('creates_the_pre_authenticated_pipeline_only_once', 0, (): void => {
+      expect(shouldCreatePreauthenticatedRustDeskPipeline(true, 'rustdesk', false, false)).assertTrue();
+      expect(shouldCreatePreauthenticatedRustDeskPipeline(true, 'rustdesk', true, false)).assertFalse();
+      expect(shouldCreatePreauthenticatedRustDeskPipeline(true, 'rustdesk', false, true)).assertFalse();
+      expect(shouldCreatePreauthenticatedRustDeskPipeline(false, 'rustdesk', false, false)).assertFalse();
+      expect(shouldCreatePreauthenticatedRustDeskPipeline(true, 'rdp', false, false)).assertFalse();
     });
 
     it('uses_remote_video_dimensions_for_content_ratio', 0, (): void => {

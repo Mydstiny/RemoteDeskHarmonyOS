@@ -51,6 +51,7 @@ import {
   hasRemoteSessionPipVideo,
   hasRdpRemoteSessionPipFrame,
   shouldPrepareRemoteSessionPip,
+  shouldCreatePreauthenticatedRustDeskPipeline,
   resolveRemoteSessionPipContentSize,
   resolveRemoteSessionPipLifecycle
 } from '../services/RemoteSessionPipLifecyclePolicy';
@@ -509,6 +510,11 @@ struct RemoteDesktop {
   private orientationApplied: boolean = false;
   private connectAttemptId: number = 0;
   private pendingHost: RemoteHost | null = null;
+  // Set only by the RustDesk Pro preflight handoff. It is consumed after the
+  // first renderer/decoder pair is installed and is never inferred from a
+  // renderer handle, because normal PIP restore intentionally releases that
+  // handle before reattaching the same decoder.
+  private preAuthenticatedSessionPending: boolean = false;
   private rustDeskAuthDismissReason: RustDeskAuthDismissReason = 'none';
   private rustDeskAuthBackPending: boolean = false;
   private rustDeskAuthPendingStart: boolean = false;
@@ -2458,6 +2464,7 @@ struct RemoteDesktop {
       const id: string = p['hostId'] as string;
       if (id) {
         this.hostId = id;
+        this.preAuthenticatedSessionPending = (p['rustdeskPreauthenticated'] as boolean) === true;
         const host: RemoteHost | undefined = this.srv.getHost(this.hostId);
         if (host) {
           this.hostLabel = host.label;
@@ -5031,6 +5038,7 @@ struct RemoteDesktop {
       previousCursorReady);
     this.bgRestorePending = false; // 清除任何待恢复状态
     this.activeSessionRegistry.clear(reason);
+    this.preAuthenticatedSessionPending = false;
     this.clearRdpRenderWatchdog();
     this.clearRdpNativeStateMonitor();
     this.clearRemoteCursorPolling(true, reason);
@@ -5670,8 +5678,19 @@ struct RemoteDesktop {
       const surfaceId: string = this.latestSurfaceId.length > 0 ? this.latestSurfaceId : this.xcId;
       // Pro 主机从列表页完成真实鉴权后交接的是“无画布会话”。此时不能走
       // reattach 路径，必须在远程页首次创建 renderer/decoder，再绑定到同一 session。
-      if (this.loader.getRendererHandle() <= 0 && this.pendingHost !== null &&
-        this.pendingHost.protocol === 'rustdesk') {
+      const nativeDecoderReady: boolean = this.decoderHandle > 0 || this.loader.getDecoderHandle() > 0;
+      const nativeRendererReady: boolean = this.rendererHandle > 0 || this.loader.getRendererHandle() > 0;
+      const preAuthenticatedAttach: boolean = shouldCreatePreauthenticatedRustDeskPipeline(
+        this.preAuthenticatedSessionPending,
+        this.pendingHost === null ? '' : this.pendingHost.protocol,
+        nativeDecoderReady,
+        nativeRendererReady);
+      if (this.preAuthenticatedSessionPending && !preAuthenticatedAttach) {
+        hilog.info(RD_DOMAIN, RD_TAG, 'doBackgroundRestoreRender: preauthenticated marker consumed by existing native pipeline' +
+          ' decoder=' + (nativeDecoderReady ? '1' : '0') + ' renderer=' + (nativeRendererReady ? '1' : '0'));
+        this.preAuthenticatedSessionPending = false;
+      }
+      if (preAuthenticatedAttach) {
         const renderer: number = this.loader.initRenderer(surfaceId, pageSurface.width, pageSurface.height);
         if (renderer <= 0) {
           throw new Error('预鉴权会话画布初始化失败 [E-RUSTDESK-PREFLIGHT-RENDERER]');
@@ -5712,6 +5731,7 @@ struct RemoteDesktop {
               (err.message ? err.message : JSON.stringify(err)));
           });
         }
+        this.preAuthenticatedSessionPending = false;
         // This is a first renderer attachment for an already-authenticated stream,
         // not a foreground restore. The decoder recovery armed above waits for the
         // first keyframe; scheduling the restore watchdog here would recreate a

@@ -62,17 +62,7 @@ class RemoteSessionPipXComponentController extends XComponentController {
       ? Math.round(rect.surfaceHeight) : 0;
     this.currentSurfaceWidth = width;
     this.currentSurfaceHeight = height;
-    if (width > 0 && height > 0 &&
-      (this.currentSurfaceId !== this.publishedSurfaceId ||
-       width !== this.publishedSurfaceWidth || height !== this.publishedSurfaceHeight)) {
-      this.publishedSurfaceId = this.currentSurfaceId;
-      this.publishedSurfaceWidth = width;
-      this.publishedSurfaceHeight = height;
-      const handler: PipSurfaceChangedHandler | null = this.surfaceChangedHandler;
-      if (handler !== null && typeof handler === 'function') {
-        handler({ surfaceId: this.currentSurfaceId, surfaceWidth: width, surfaceHeight: height });
-      }
-    }
+    this.publishSurfaceInfo();
     hilog.info(DOMAIN, TAG, 'PIP XComponent surface changed id=' + surfaceId +
       ' surface=' + this.currentSurfaceWidth.toString() + 'x' +
       this.currentSurfaceHeight.toString());
@@ -96,6 +86,7 @@ class RemoteSessionPipXComponentController extends XComponentController {
       if (this.currentSurfaceId.length > 0) {
         this.refreshSurfaceRect();
         if (this.hasSurfaceRect()) {
+          this.publishSurfaceInfo();
           return this.surfaceInfo();
         }
       }
@@ -105,6 +96,7 @@ class RemoteSessionPipXComponentController extends XComponentController {
           this.currentSurfaceId = surfaceId;
           this.refreshSurfaceRect();
           if (this.hasSurfaceRect()) {
+            this.publishSurfaceInfo();
             return this.surfaceInfo();
           }
         }
@@ -162,6 +154,29 @@ class RemoteSessionPipXComponentController extends XComponentController {
     if (handler !== null) {
       handler(this.surfaceInfo());
     }
+  }
+
+  /**
+   * Reconcile the dimensions after the native renderer has moved to this
+   * surface. WMS may publish a placeholder physical size before the final
+   * PIP window layout; that callback can otherwise be consumed while the page
+   * renderer is still the owner and never reach the PIP renderer.
+   */
+  notifyCurrentSurface(): void {
+    this.refreshSurfaceRect();
+    if (!this.hasSurfaceRect() || this.currentSurfaceId.length === 0) {
+      return;
+    }
+    this.publishedSurfaceId = this.currentSurfaceId;
+    this.publishedSurfaceWidth = this.currentSurfaceWidth;
+    this.publishedSurfaceHeight = this.currentSurfaceHeight;
+    const handler: PipSurfaceChangedHandler | null = this.surfaceChangedHandler;
+    if (handler !== null) {
+      handler(this.surfaceInfo());
+    }
+    hilog.info(DOMAIN, TAG, 'PIP XComponent final surface reconciliation id=' +
+      this.currentSurfaceId + ' surface=' + this.currentSurfaceWidth.toString() + 'x' +
+      this.currentSurfaceHeight.toString());
   }
 }
 
@@ -349,6 +364,10 @@ export class RemoteSessionPipService {
       if (generation !== this.operationGeneration || this.controller !== owner || !this.prepared) {
         return false;
       }
+      // The first SurfaceRect can be the full-display placeholder. Re-read
+      // after renderer attach so a real 1239x774-style window size cannot be
+      // lost in the handoff race.
+      pipController.notifyCurrentSurface();
       this.active = true;
       this.windowStarted = true;
       hilog.info(DOMAIN, TAG, 'PIP VIDEO_PLAY autoStart attached size=' +

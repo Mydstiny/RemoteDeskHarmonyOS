@@ -240,4 +240,38 @@ API 23 官方文档为：
 - 无连接直接退出应用不出现 PIP 动画，断开连接后再退出也不出现延迟 PIP 动画；
 - 日志必须能看到同一 `sessionId/protocol/rendererHandle/surfaceId/generation` 的切换，且旧 generation 的 present 只被拒绝、不触碰新 renderer。
 
+## 本次增量修复：首次 PIP 尺寸与 RustDesk 预鉴权恢复（2026-07-23）
+
+### 设备日志证据
+
+`device-logs-38451-pip-cycle-20260723-current.txt` 记录了同一次 PIP 自动启动中的尺寸变化：
+
+- WMS 初始布局为 `2560x1600`（占位的物理显示尺寸）；
+- 随后 WMS 把 PIP 窗口调整为 `1239x774`；
+- 应用侧同时收到 `PIP XComponent surface changed` 的两次回调。
+
+这说明首个 `SurfaceRect` 不能被视为最终窗口尺寸。若页面 renderer 在首个回调期间仍是 surface owner，后续真实尺寸可能只更新在控制器缓存中，无法触发已完成 attach 的 PIP renderer resize，表现就是首次 PIP 只显示约四分之一；返回前台后重新 attach 才“看起来正常”。
+
+日志还显示 RustDesk 预鉴权交接会在远程页第一次拥有画布时执行 `doBackgroundRestoreRender: preauthenticated session attached`。这条路径与普通前后台恢复不同：普通恢复会暂时释放 PIP renderer，但 decoder/session 仍然存在，不能因为 `getRendererHandle() <= 0` 就再次创建 decoder。重复创建会累积旧 surface/BufferQueue，最终触发旧 EGL target 或整个传输停止。
+
+### 代码修复
+
+- `RemoteSessionPipXComponentController` 新增 `notifyCurrentSurface()`：PIP renderer attach 成功后重新读取当前 `SurfaceRect`，无论尺寸是否与已发布值相同都向页面层发出最终尺寸，确保执行 `setXComponentSurfaceId()` 与 `resizeRenderer()`；首个占位尺寸不会成为永久 renderer 尺寸。
+- `RemoteSessionPipService` 在 `VIDEO_PLAY` 自动启动完成后调用上述 reconciliation，保留系统回调中的后续尺寸更新，并继续以远端视频尺寸作为 PIP 内容比例，而不是把本地 XComponent 尺寸当成视频源尺寸。
+- `RemoteDesktop` 增加显式的一次性 `rustdeskPreauthenticated` 标记。只有列表页预鉴权交接且 decoder、renderer 都尚未存在时才创建首个 RustDesk pipeline；普通 PIP 恢复通过现有 decoder/renderer reattach 路径，不再用 renderer handle 是否暂时释放来推断预鉴权。
+- 显式断开和清理会消费该标记，避免离开会话后迟到的 surface 回调再次创建远程管线。
+- `RemoteSessionPipLifecyclePolicy` 增加一次性预鉴权策略测试，覆盖 RustDesk、RDP、已有 decoder/renderer 和标记缺失场景。
+
+### 自动化验证
+
+- `rdp_native_tests`：`129 passed, 0 failed`；
+- `default@OhosTestCompileArkTS`：通过；
+- 生产 `assembleHap`（含 Native、ArkTS、PackageHap、PackingCheck、SignHap 和符号收集）：通过；
+- `git diff --check`：通过；
+- `verify_open_source_release.ps1 -Mode Light`：通过。
+
+### 仍需设备验收
+
+设备 `192.168.3.235:38451` 在本轮仍锁屏，以上自动化结果不能替代下列验收：冷启动首次连接后退后台、首次 PIP 尺寸和连续帧、PIP 返回全屏、连续进出后台、RDP PIP、实况窗/媒体胶囊注册，以及无连接退出不出现 PIP 动画。验收时重点确认日志出现 `PIP XComponent final surface reconciliation`，并确认同一 `sessionId` 没有因普通恢复再次出现首个 decoder 初始化。
+
 设备解锁后直接按上述矩阵验证并把 hilog 证据追加到本文件；不需要重新建立问题描述或回滚本轮 native/ArkTS 修复。
