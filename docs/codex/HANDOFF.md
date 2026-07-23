@@ -4,14 +4,14 @@ Updated: 2026-07-23 Asia/Shanghai
 
 ## Source
 
-- Base: `main` at `a3f1ad3d8`
-- Active task branch: `codex/cross-device-workflow`
+- Base: `main` at `c5347f141`
+- Active task branch: none
 - Last published runtime checkpoint: 1.0.8 stabilization
 
 ## Completed
 
 - Public source and submodule history are available from GitHub.
-- The shared state files, cross-platform sync entry points and migration package generator are being standardized.
+- The shared state files, cross-platform sync entry points and migration package generator are merged on `main`.
 
 ## Verification
 
