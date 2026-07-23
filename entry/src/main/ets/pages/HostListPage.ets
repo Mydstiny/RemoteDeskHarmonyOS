@@ -90,6 +90,10 @@ import {
 } from '../services/RustDeskHostConfigPolicy';
 import { rustDeskRelayKeyModeForFfi } from '../services/RustDeskRelayKeyPolicy';
 import { sheetOpenDelayMsAfterDismiss } from '../services/SheetTransitionPolicy';
+import {
+  nextRemoteHostSheetGeneration,
+  shouldAcceptRemoteHostSheetDismiss
+} from '../services/RemoteHostSheetLifecyclePolicy';
 import { shouldPreserveManagedRustDeskRoute } from '../services/RustDeskProSyncPolicy';
 import { resolveFabAddStyle } from '../services/FabAddStylePolicy';
 import { resolveRustDeskBadges } from '../services/RustDeskCardBadgePolicy';
@@ -238,6 +242,12 @@ const SETTINGS_ACCORDION_ANIMATION_MS = 280;
 const APPEARANCE_EXPANDED_MIN_HEIGHT = 900;
 const POPUP_SHEET_RDP_CERTIFICATES = 4;
 const POPUP_SHEET_RUSTDESK_AUTH_TRUST = 5;
+const REMOTE_HOST_SHEET_NONE = 0;
+const REMOTE_HOST_SHEET_SSH_PREFLIGHT = 1;
+const REMOTE_HOST_SHEET_RDP_CERTIFICATE = 2;
+const REMOTE_HOST_SHEET_RUSTDESK_PREFLIGHT = 3;
+const REMOTE_HOST_SHEET_PASSPHRASE = 4;
+const REMOTE_HOST_SHEET_PUBLIC_KEY = 5;
 
 @Entry
 @Component
@@ -321,8 +331,15 @@ struct HostListPage {
   @State sheetKeyMode: number = 0; // 0=文件 1=粘贴
   // SSH 前置校验 (T-210) — @State 驱动 UI, 避免普通 class 不触发响应式更新
   @State showSshPreflight: boolean = false;
+  @State showRemoteHostSheet: boolean = false;
+  @State remoteHostSheetMode: number = REMOTE_HOST_SHEET_NONE;
   @State sshPreflightState: number = 0;
   private sshPreflightOpenedAt: number = 0;
+  private sshPreflightGeneration: number = 0;
+  private sshPreflightPendingRouteParams: Record<string, Object> | null = null;
+  private sshPreflightClosing: boolean = false;
+  private sshPreflightClosingHostId: string = '';
+  private sshPreflightPendingHostId: string = '';
   @State sshPreflightHostId: string = '';
   @State sshPreflightHostLabel: string = '';
   @State sshPreflightSavedAlgorithm: string = '';
@@ -363,6 +380,8 @@ struct HostListPage {
   private rustDeskProPreflightClosingHostId: string = '';
   private rustDeskProPreflightPendingHostId: string = '';
   private rustDeskProPreflightPendingRouteParams: Record<string, Object> | null = null;
+  private remoteHostSheetClosing: boolean = false;
+  private remoteHostSheetClosingMode: number = REMOTE_HOST_SHEET_NONE;
   // 保存并连接必须等新增主机 Sheet 的 native onDisappear 后再交给鉴权 Sheet。
   private pendingAddSheetConnectHostId: string = '';
   private connectionAttemptGeneration: number = 0;
@@ -519,11 +538,29 @@ struct HostListPage {
   @State sshPublicKeyInstallBusy: boolean = false;
   @State sshPublicKeyInstallError: string = '';
 
+  private finishHostPassphrasePrompt(value: string): void {
+    if (this.hlPassphraseResolve) {
+      this.hlPassphraseResolve(value);
+      this.hlPassphraseResolve = null;
+    }
+  }
+
+  private closeHostPassphraseSheet(value: string): void {
+    this.beginRemoteHostSheetClose(REMOTE_HOST_SHEET_PASSPHRASE);
+    this.showPassphraseSheet = false;
+    this.showRemoteHostSheet = false;
+    this.finishHostPassphrasePrompt(value);
+  }
+
   private promptKeyPassphrase(): Promise<string> {
     return new Promise<string>((resolve: (v: string) => void) => {
       this.hlPassphraseResolve = resolve;
       this.hlPassphraseInput = '';
-      this.openSheetSafely((): void => { this.showPassphraseSheet = true; });
+      this.openSheetSafely((): void => {
+        this.openRemoteHostSheet(REMOTE_HOST_SHEET_PASSPHRASE, (): void => {
+          this.showPassphraseSheet = true;
+        });
+      });
     });
   }
 
@@ -548,20 +585,12 @@ struct HostListPage {
         Button('跳过').fontSize(14).height(38).layoutWeight(1)
           .backgroundColor(this.pal().surface).fontColor(this.pal().text2).borderRadius(8)
           .onClick(() => {
-            this.showPassphraseSheet = false;
-            if (this.hlPassphraseResolve) {
-              this.hlPassphraseResolve('');
-              this.hlPassphraseResolve = null;
-            }
+            this.closeHostPassphraseSheet('');
           })
         Button('确定').fontSize(14).height(38).layoutWeight(1)
           .backgroundColor(this.accentColor).fontColor('#FFFFFF').borderRadius(8).margin({ left: 12 })
           .onClick(() => {
-            this.showPassphraseSheet = false;
-            if (this.hlPassphraseResolve) {
-              this.hlPassphraseResolve(this.hlPassphraseInput);
-              this.hlPassphraseResolve = null;
-            }
+            this.closeHostPassphraseSheet(this.hlPassphraseInput);
           })
       }.width('100%')
     }.padding(20)
@@ -880,7 +909,7 @@ struct HostListPage {
   }
 
   private openSheetSafely(openAction: () => void, allowDuringConnectionAttempt: boolean = false): void {
-    if (this.addSheetClosing || this.rustDeskProPreflightClosing ||
+    if (this.addSheetClosing || this.remoteHostSheetClosing || this.showRemoteHostSheet ||
       (this.connectionAttemptHostId !== '' && !allowDuringConnectionAttempt)) {
       return;
     }
@@ -895,12 +924,34 @@ struct HostListPage {
     }
     this.pendingSheetOpenTimer = setTimeout((): void => {
       this.pendingSheetOpenTimer = -1;
-      if (this.addSheetClosing || this.rustDeskProPreflightClosing ||
+      if (this.addSheetClosing || this.remoteHostSheetClosing || this.showRemoteHostSheet ||
         (this.connectionAttemptHostId !== '' && !allowDuringConnectionAttempt)) {
         return;
       }
       openAction();
     }, delayMs);
+  }
+
+  private beginRemoteHostSheetClose(mode: number): void {
+    if (!this.remoteHostSheetClosing) {
+      this.remoteHostSheetClosing = true;
+      this.remoteHostSheetClosingMode = mode;
+    }
+    this.lastSheetDismissAtMs = Date.now();
+  }
+
+  private openRemoteHostSheet(mode: number, makeVisible: () => void): void {
+    if (this.remoteHostSheetClosing || this.showRemoteHostSheet) {
+      return;
+    }
+    this.remoteHostSheetMode = mode;
+    makeVisible();
+    this.showRemoteHostSheet = true;
+  }
+
+  private isCurrentSshPreflight(host: RemoteHost, generation: number): boolean {
+    return !this.sshPreflightClosing && this.sshPreflightGeneration === generation &&
+      this.sshPreflightHostId === host.id;
   }
 
   private saveHostFromAddFlow(host: RemoteHost, connectNow: boolean, restrictedAdminHash: string = ''): void {
@@ -2245,7 +2296,8 @@ struct HostListPage {
   }
 
   private openRdpCertificatePreflight(host: RemoteHost): void {
-    if (this.rdpCertificateClosing || this.showRdpCertificatePreflight) {
+    if (this.rdpCertificateClosing || this.showRdpCertificatePreflight ||
+      this.remoteHostSheetClosing || this.showRemoteHostSheet) {
       // connectToHost 已经为该主机占住了连接尝试；等旧 Sheet 的 onDisappear
       // 完成后再打开，避免旧退出动画和新 builder 同时存在。
       this.rdpCertificatePendingHostId = host.id;
@@ -2269,6 +2321,11 @@ struct HostListPage {
       host.rdpCertificateTrustMode,
       host.rdpCertificateFingerprintSha256
     );
+    if (this.showRdpCertificatePreflight) {
+      this.openSheetSafely((): void => {
+        this.openRemoteHostSheet(REMOTE_HOST_SHEET_RDP_CERTIFICATE, (): void => { });
+      }, true);
+    }
     this.doRdpCertificateProbe(host, generation);
   }
 
@@ -2281,18 +2338,22 @@ struct HostListPage {
   }
 
   private handleRdpCertificateSheetDismiss(action: DismissSheetAction): void {
-    if (this.rdpCertificateClosing || this.rdpCertificatePendingRouteParams !== null) {
+    if (!shouldAcceptRemoteHostSheetDismiss({
+      busy: this.isRdpCertificateBusy(),
+      closing: this.rdpCertificateClosing,
+      pendingRoute: this.rdpCertificatePendingRouteParams !== null
+    })) {
       return;
     }
     const elapsed: number = Date.now() - this.rdpCertificateOpenedAt;
-    if (elapsed < 500 || this.isRdpCertificateBusy()) {
+    if (elapsed < 500) {
       return;
     }
-    this.doRdpCertificateCancel();
+    this.doRdpCertificateCancel(false);
     action.dismiss();
   }
 
-  private doRdpCertificateCancel(): void {
+  private doRdpCertificateCancel(closeSheet: boolean = true): void {
     if (this.rdpCertificateClosing) {
       return;
     }
@@ -2304,8 +2365,12 @@ struct HostListPage {
     this.rdpCertificateClosingHostId = hostId;
     this.rdpCertificateClosingAttemptGeneration = this.rdpCertificateAttemptGeneration;
     this.rdpCertificateClosing = true;
+    this.beginRemoteHostSheetClose(REMOTE_HOST_SHEET_RDP_CERTIFICATE);
     this.lastSheetDismissAtMs = Date.now();
-    this.showRdpCertificatePreflight = false;
+    if (closeSheet) {
+      this.showRdpCertificatePreflight = false;
+      this.showRemoteHostSheet = false;
+    }
     // 允许下一次连接请求排队，但保留 builder 状态直到 onDisappear，避免退出动画期间闪烁。
     this.releaseConnectionAttemptIfCurrent(hostId, this.rdpCertificateAttemptGeneration);
   }
@@ -2323,6 +2388,7 @@ struct HostListPage {
     this.rdpCertificateClosingHostId = '';
     this.rdpCertificateClosingAttemptGeneration = 0;
     this.rdpCertificateClosing = false;
+    this.showRdpCertificatePreflight = false;
     this.rdpCertificateHostId = '';
     this.rdpCertificateHostLabel = '';
     this.rdpCertificateInfo = null;
@@ -2445,7 +2511,11 @@ struct HostListPage {
           '当前设备无法解析该 RDP 地址，请检查设备 DNS、VPN 或 TUN；Windows 侧可解析不代表本设备可用。' :
           (info.errorMessage || '无法读取 RDP 主机证书');
         if (!this.showRdpCertificatePreflight) {
-          this.openSheetSafely((): void => { this.showRdpCertificatePreflight = true; }, true);
+          this.openSheetSafely((): void => {
+            this.openRemoteHostSheet(REMOTE_HOST_SHEET_RDP_CERTIFICATE, (): void => {
+              this.showRdpCertificatePreflight = true;
+            });
+          }, true);
         }
         return;
       }
@@ -2475,7 +2545,11 @@ struct HostListPage {
         this.doRdpCertificateRoute(host);
       } else {
         if (!this.showRdpCertificatePreflight) {
-          this.openSheetSafely((): void => { this.showRdpCertificatePreflight = true; }, true);
+          this.openSheetSafely((): void => {
+            this.openRemoteHostSheet(REMOTE_HOST_SHEET_RDP_CERTIFICATE, (): void => {
+              this.showRdpCertificatePreflight = true;
+            });
+          }, true);
         }
       }
     } catch (e) {
@@ -2491,7 +2565,11 @@ struct HostListPage {
         'RDP certificate probe exception host=' + maskHost(host.host) + ':' + host.port.toString() +
           ' elapsedMs=' + elapsed.toString() + ' err=' + this.rdpCertificateError);
       if (!this.showRdpCertificatePreflight) {
-        this.openSheetSafely((): void => { this.showRdpCertificatePreflight = true; }, true);
+        this.openSheetSafely((): void => {
+          this.openRemoteHostSheet(REMOTE_HOST_SHEET_RDP_CERTIFICATE, (): void => {
+            this.showRdpCertificatePreflight = true;
+          });
+        }, true);
       }
     }
   }
@@ -2557,8 +2635,10 @@ struct HostListPage {
       this.rdpCertificateClosingHostId = host.id;
       this.rdpCertificateClosingAttemptGeneration = this.rdpCertificateAttemptGeneration;
       this.rdpCertificateClosing = true;
+      this.beginRemoteHostSheetClose(REMOTE_HOST_SHEET_RDP_CERTIFICATE);
       this.lastSheetDismissAtMs = Date.now();
       this.showRdpCertificatePreflight = false;
+      this.showRemoteHostSheet = false;
       return;
     }
     this.rdpCertificateHostId = '';
@@ -2570,6 +2650,14 @@ struct HostListPage {
 
   /** T-210: 打开 SSH 前置校验 Sheet (通过统一 bindSheet) */
   private openSshPreflight(host: RemoteHost): void {
+    if (this.sshPreflightClosing || this.showSshPreflight ||
+      this.remoteHostSheetClosing || this.showRemoteHostSheet) {
+      this.sshPreflightPendingHostId = host.id;
+      hilog.info(0x0001, 'HostList', 'SSH preflight queued until previous Sheet disappears host=' + host.id);
+      return;
+    }
+    const generation: number = nextRemoteHostSheetGeneration(this.sshPreflightGeneration);
+    this.sshPreflightGeneration = generation;
     this.sshPreflightOpenedAt = Date.now();
     this.sshPreflightHostId = host.id;
     this.sshPreflightHostLabel = host.username + '@' + host.host + ':' + host.port.toString();
@@ -2578,15 +2666,26 @@ struct HostListPage {
     this.sshPreflightHostKeyInfo = null;
     this.sshPreflightError = '';
     this.sshPreflightPassphraseInput = '';
-    // 使用独立 overlay (hostContent Stack 内)
-    this.openSheetSafely((): void => { this.showSshPreflight = true; }, true);
-    this.doSshPreflightProbe(host);
+    this.sshPreflightPendingRouteParams = null;
+    this.openSheetSafely((): void => {
+      this.openRemoteHostSheet(REMOTE_HOST_SHEET_SSH_PREFLIGHT, (): void => {
+        this.showSshPreflight = true;
+      });
+    }, true);
+    this.doSshPreflightProbe(host, generation);
   }
 
   /** T-210: 关闭 preflight */
-  private doSshPreflightCancel(): void {
-    this.showSshPreflight = false;
-    this.sshPreflightHostId = '';
+  private doSshPreflightCancel(closeSheet: boolean = true): void {
+    const hostId: string = this.sshPreflightHostId;
+    this.sshPreflightGeneration = nextRemoteHostSheetGeneration(this.sshPreflightGeneration);
+    this.sshPreflightClosingHostId = hostId;
+    this.sshPreflightClosing = true;
+    this.beginRemoteHostSheetClose(REMOTE_HOST_SHEET_SSH_PREFLIGHT);
+    if (closeSheet) {
+      this.showSshPreflight = false;
+      this.showRemoteHostSheet = false;
+    }
   }
 
   private sshPreflightSheetHeight(): SheetSize | number {
@@ -2600,11 +2699,44 @@ struct HostListPage {
 
   private handleSshPreflightSheetDismiss(action: DismissSheetAction): void {
     const elapsed: number = Date.now() - this.sshPreflightOpenedAt;
-    if (elapsed < 500 || this.isSshPreflightBusy()) {
+    if (elapsed < 500 || !shouldAcceptRemoteHostSheetDismiss({
+      busy: this.isSshPreflightBusy(),
+      closing: this.sshPreflightClosing,
+      pendingRoute: this.sshPreflightPendingRouteParams !== null
+    })) {
       return;
     }
-    this.doSshPreflightCancel();
+    this.doSshPreflightCancel(false);
     action.dismiss();
+  }
+
+  private handleSshPreflightSheetDisappear(): void {
+    this.noteSheetDismissed();
+    const routeParams: Record<string, Object> | null = this.sshPreflightPendingRouteParams;
+    const nextHostId: string = this.sshPreflightPendingHostId;
+    this.sshPreflightPendingRouteParams = null;
+    this.sshPreflightPendingHostId = '';
+    this.sshPreflightClosing = false;
+    this.sshPreflightClosingHostId = '';
+    this.showSshPreflight = false;
+    this.sshPreflightHostId = '';
+    this.sshPreflightHostLabel = '';
+    this.sshPreflightHostKeyInfo = null;
+    this.sshPreflightError = '';
+    if (routeParams !== null) {
+      setTimeout((): void => {
+        router.pushUrl({ url: 'pages/SshTerminal', params: routeParams });
+      }, 0);
+      return;
+    }
+    if (nextHostId === '') {
+      return;
+    }
+    const nextHost: RemoteHost | undefined = this.srv.getHost(nextHostId);
+    if (nextHost) {
+      const delayMs: number = sheetOpenDelayMsAfterDismiss(Date.now(), this.lastSheetDismissAtMs);
+      setTimeout((): void => { this.openSshPreflight(nextHost); }, delayMs);
+    }
   }
 
   /** 获取当前 preflight host (从 CloudStore) */
@@ -2629,34 +2761,39 @@ struct HostListPage {
 
   private doSshPreflightRetryWrap(): void {
     const host = this.getSshPreflightHost();
-    if (host) { this.sshPreflightState = SshPreflightState.PROBING; this.doSshPreflightProbe(host); }
+    if (host) {
+      this.sshPreflightState = SshPreflightState.PROBING;
+      this.doSshPreflightProbe(host, this.sshPreflightGeneration);
+    }
   }
 
   private doSshPreflightTrustFirstWrap(): void {
     const host = this.getSshPreflightHost();
-    if (host) { this.doSshPreflightTrustFirst(host); }
+    if (host) { this.doSshPreflightTrustFirst(host, this.sshPreflightGeneration); }
   }
 
   private doSshPreflightContinueWrap(): void {
     const host = this.getSshPreflightHost();
-    if (host) { this.doSshPreflightCheckPassphrase(host); }
+    if (host) { this.doSshPreflightCheckPassphrase(host, this.sshPreflightGeneration); }
   }
 
   private doSshPreflightUpdateWrap(): void {
     const host = this.getSshPreflightHost();
-    if (host) { this.doSshPreflightUpdateTrust(host); }
+    if (host) { this.doSshPreflightUpdateTrust(host, this.sshPreflightGeneration); }
   }
 
   private doSshPreflightVerifyWrap(): void {
     const host = this.getSshPreflightHost();
-    if (host) { this.doSshPreflightVerifyPassphrase(host); }
+    if (host) { this.doSshPreflightVerifyPassphrase(host, this.sshPreflightGeneration); }
   }
 
   /** T-210: 探测主机指纹 (async, 完成后更新 @State) */
-  private async doSshPreflightProbe(host: RemoteHost): Promise<void> {
+  private async doSshPreflightProbe(host: RemoteHost, generation: number): Promise<void> {
     try {
       await new Promise<void>((r) => setTimeout(r, 80));
+      if (!this.isCurrentSshPreflight(host, generation)) { return; }
       const info = this.loader.probeSshHostKey(host.host, host.port);
+      if (!this.isCurrentSshPreflight(host, generation)) { return; }
       if (!info.ok) {
         this.sshPreflightState = SshPreflightState.ERROR;
         this.sshPreflightError = info.errorMessage || '无法读取 SSH 主机指纹';
@@ -2673,14 +2810,15 @@ struct HostListPage {
         this.sshPreflightState = SshPreflightState.TRUST_FIRST_TIME;
       }
     } catch (e) {
+      if (!this.isCurrentSshPreflight(host, generation)) { return; }
       this.sshPreflightState = SshPreflightState.ERROR;
       this.sshPreflightError = '探测主机指纹异常: ' + (e instanceof Error ? e.message : JSON.stringify(e));
     }
   }
 
   /** T-210: 用户确认信任 (首次) */
-  private doSshPreflightTrustFirst(host: RemoteHost): void {
-    if (!this.sshPreflightHostKeyInfo) { return; }
+  private doSshPreflightTrustFirst(host: RemoteHost, generation: number): void {
+    if (!this.isCurrentSshPreflight(host, generation) || !this.sshPreflightHostKeyInfo) { return; }
     const info = this.sshPreflightHostKeyInfo;
     const updated: RemoteHost = RemoteHost.fromJSON(host.toJSON());
     updated.sshHostKeyAlgorithm = info.algorithm;
@@ -2689,12 +2827,12 @@ struct HostListPage {
     updated.sshHostKeyTrustedAt = Date.now();
     updated.sshHostKeyTrustMode = 1;
     this.srv.updateHost(updated);
-    this.doSshPreflightCheckPassphrase(updated);
+    this.doSshPreflightCheckPassphrase(updated, generation);
   }
 
   /** T-210: 指纹变更 → 更新信任 */
-  private doSshPreflightUpdateTrust(host: RemoteHost): void {
-    if (!this.sshPreflightHostKeyInfo) { return; }
+  private doSshPreflightUpdateTrust(host: RemoteHost, generation: number): void {
+    if (!this.isCurrentSshPreflight(host, generation) || !this.sshPreflightHostKeyInfo) { return; }
     const info = this.sshPreflightHostKeyInfo;
     const updated: RemoteHost = RemoteHost.fromJSON(host.toJSON());
     updated.sshHostKeyAlgorithm = info.algorithm;
@@ -2703,19 +2841,20 @@ struct HostListPage {
     updated.sshHostKeyTrustedAt = Date.now();
     updated.sshHostKeyTrustMode = 1;
     this.srv.updateHost(updated);
-    this.doSshPreflightCheckPassphrase(updated);
+    this.doSshPreflightCheckPassphrase(updated, generation);
   }
 
   /** T-210: 检查私钥密码 */
-  private doSshPreflightCheckPassphrase(host: RemoteHost): void {
-    if (!host.sshUseKey) { this.doSshPreflightReady(host); return; }
+  private doSshPreflightCheckPassphrase(host: RemoteHost, generation: number): void {
+    if (!this.isCurrentSshPreflight(host, generation)) { return; }
+    if (!host.sshUseKey) { this.doSshPreflightReady(host, generation); return; }
     const material = this.resolveSshKeyMaterial(host);
     const keyData = material.privateKey;
-    if (keyData.length === 0) { this.doSshPreflightReady(host); return; }
+    if (keyData.length === 0) { this.doSshPreflightReady(host, generation); return; }
 
     const keyInfo: SshPrivateKeyInfo = this.loader.inspectSshPrivateKey(keyData, host.sshKeyPassphrase);
     if (keyInfo.ok && !keyInfo.encrypted) {
-      this.doSshPreflightVerifyKeyAuth(host, '', false);
+      this.doSshPreflightVerifyKeyAuth(host, '', false, generation);
       return;
     }
     if (host.sshKeyPassphrase === '' && (material.encryptedHint || keyInfo.encrypted)) {
@@ -2723,7 +2862,7 @@ struct HostListPage {
     } else if (host.sshKeyPassphrase !== '' && !keyInfo.ok && keyInfo.encrypted) {
       this.showSshPreflightPassphrase('已保存的私钥密码不可用，请重新输入', true);
     } else {
-      this.doSshPreflightVerifyKeyAuth(host, host.sshKeyPassphrase, false);
+      this.doSshPreflightVerifyKeyAuth(host, host.sshKeyPassphrase, false, generation);
     }
   }
 
@@ -2734,14 +2873,18 @@ struct HostListPage {
     this.sshPreflightError = error;
   }
 
-  private async doSshPreflightVerifyKeyAuth(host: RemoteHost, passphrase: string, allowPassphraseRetry: boolean): Promise<void> {
+  private async doSshPreflightVerifyKeyAuth(host: RemoteHost, passphrase: string,
+    allowPassphraseRetry: boolean, generation: number): Promise<void> {
+    if (!this.isCurrentSshPreflight(host, generation)) { return; }
     this.sshPreflightState = SshPreflightState.VERIFYING_PASSPHRASE;
     try {
       await new Promise<void>((r) => setTimeout(r, 60));
+      if (!this.isCurrentSshPreflight(host, generation)) { return; }
       const keyData = this.resolveSshKeyMaterial(host).privateKey;
       const result = this.loader.testSshKeyAuth(host.host, host.port, host.username, keyData, passphrase);
+      if (!this.isCurrentSshPreflight(host, generation)) { return; }
       if (result.ok) {
-        this.doSshPreflightReady(host);
+        this.doSshPreflightReady(host, generation);
         return;
       }
       if (allowPassphraseRetry || passphrase !== '') {
@@ -2753,6 +2896,7 @@ struct HostListPage {
         this.sshPreflightError = '密钥认证失败: ' + (result.message || '请确认公钥已安装到服务器 authorized_keys');
       }
     } catch (e) {
+      if (!this.isCurrentSshPreflight(host, generation)) { return; }
       this.sshPreflightState = SshPreflightState.ERROR;
       this.sshPreflightError = '密钥认证验证异常: ' + (e instanceof Error ? e.message : JSON.stringify(e));
     }
@@ -2764,10 +2908,12 @@ struct HostListPage {
   }
 
   /** T-210: 验证私钥密码 */
-  private async doSshPreflightVerifyPassphrase(host: RemoteHost): Promise<void> {
+  private async doSshPreflightVerifyPassphrase(host: RemoteHost, generation: number): Promise<void> {
+    if (!this.isCurrentSshPreflight(host, generation)) { return; }
     this.sshPreflightState = SshPreflightState.VERIFYING_PASSPHRASE;
     try {
       await new Promise<void>((r) => setTimeout(r, 60));
+      if (!this.isCurrentSshPreflight(host, generation)) { return; }
       const keyData = this.resolveSshKeyMaterial(host).privateKey;
       const keyInfo: SshPrivateKeyInfo = this.loader.inspectSshPrivateKey(keyData, this.sshPreflightPassphraseInput);
       if (keyInfo.ok && !keyInfo.encrypted) {
@@ -2777,22 +2923,25 @@ struct HostListPage {
       const result = this.loader.testSshKeyAuth(
         host.host, host.port, host.username, keyData, this.sshPreflightPassphraseInput
       );
+      if (!this.isCurrentSshPreflight(host, generation)) { return; }
       if (result.ok) {
         if (this.sshPreflightPassphraseSaveToHost) {
           host.sshKeyPassphrase = this.sshPreflightPassphraseInput;
           this.srv.updateHost(host);
         }
-        this.doSshPreflightReady(host);
+        this.doSshPreflightReady(host, generation);
       } else {
         this.showSshPreflightPassphrase('私钥密码错误或密钥不可用');
       }
     } catch (e) {
+      if (!this.isCurrentSshPreflight(host, generation)) { return; }
       this.showSshPreflightPassphrase('验证异常');
     }
   }
 
   /** T-210: 一切就绪 — 创建 token 并路由 */
-  private doSshPreflightReady(host: RemoteHost): void {
+  private doSshPreflightReady(host: RemoteHost, generation: number): void {
+    if (!this.isCurrentSshPreflight(host, generation)) { return; }
     const svc = SshPreflightService.getInstance();
     const passphrase = this.sshPreflightPassphraseInput || host.sshKeyPassphrase;
     const rawBase64 = this.sshPreflightHostKeyInfo?.rawBase64 || host.sshHostKeyRawBase64;
@@ -2803,12 +2952,14 @@ struct HostListPage {
       expectedHostKeyFingerprintSha256: fp,
       privateKeyPassphrase: passphrase
     });
-    this.showSshPreflight = false;
-    this.sshPreflightHostId = '';
     const params: Record<string, Object> = {};
     params['hostId'] = host.id;
     params['sshPreflightToken'] = tokenId;
-    router.pushUrl({ url: 'pages/SshTerminal', params: params });
+    this.sshPreflightPendingRouteParams = params;
+    this.sshPreflightClosingHostId = host.id;
+    this.sshPreflightClosing = true;
+    this.beginRemoteHostSheetClose(REMOTE_HOST_SHEET_SSH_PREFLIGHT);
+    this.showRemoteHostSheet = false;
   }
 
   private handleHostCardClick(host: RemoteHost): void {
@@ -2851,7 +3002,8 @@ struct HostListPage {
   }
 
   private openRustDeskProPreflight(host: RemoteHost): void {
-    if (this.rustDeskProPreflightClosing || this.showRustDeskProPreflight) {
+    if (this.rustDeskProPreflightClosing || this.showRustDeskProPreflight ||
+      this.remoteHostSheetClosing || this.showRemoteHostSheet) {
       // connectToHost 已经为该主机占住了连接尝试；等旧 Sheet 的 onDisappear
       // 完成后再把同一个请求打开，避免旧动画和新 builder 同时存在。
       this.rustDeskProPreflightPendingHostId = host.id;
@@ -2864,7 +3016,9 @@ struct HostListPage {
       if (generation !== this.rustDeskProPreflightGeneration || this.rustDeskProPreflightClosing) {
         return;
       }
-      this.showRustDeskProPreflight = true;
+      this.openRemoteHostSheet(REMOTE_HOST_SHEET_RUSTDESK_PREFLIGHT, (): void => {
+        this.showRustDeskProPreflight = true;
+      });
     }, true);
   }
 
@@ -2873,7 +3027,7 @@ struct HostListPage {
     return host !== undefined && host.rustdeskDirectEnabled;
   }
 
-  private cancelRustDeskProPreflight(): void {
+  private cancelRustDeskProPreflight(closeSheet: boolean = true): void {
     const hostId: string = this.rustDeskProPreflightHostId;
     this.rustDeskProPreflightGeneration += 1;
     if (this.rustDeskProPreflightState === RustDeskProPreflightState.CONNECTING) {
@@ -2882,8 +3036,12 @@ struct HostListPage {
     this.rustDeskProPreflightPendingRouteParams = null;
     this.rustDeskProPreflightClosingHostId = hostId;
     this.rustDeskProPreflightClosing = true;
+    this.beginRemoteHostSheetClose(REMOTE_HOST_SHEET_RUSTDESK_PREFLIGHT);
     this.lastSheetDismissAtMs = Date.now();
-    this.showRustDeskProPreflight = false;
+    if (closeSheet) {
+      this.showRustDeskProPreflight = false;
+      this.showRemoteHostSheet = false;
+    }
     // 保留 hostId 到 onDisappear，避免退出动画期间清空 builder 状态并误伤下一次请求。
     this.releaseConnectionAttempt(hostId);
   }
@@ -2898,6 +3056,7 @@ struct HostListPage {
     this.rustDeskProPreflightPendingHostId = '';
     this.rustDeskProPreflightClosingHostId = '';
     this.rustDeskProPreflightClosing = false;
+    this.showRustDeskProPreflight = false;
     this.rustDeskProPreflightHostId = '';
     this.rustDeskProPreflightState = RustDeskProPreflightState.IDLE;
     this.rustDeskProPreflightError = '';
@@ -3012,8 +3171,10 @@ struct HostListPage {
           this.rustDeskProPreflightPendingRouteParams = params;
           this.rustDeskProPreflightClosingHostId = host.id;
           this.rustDeskProPreflightClosing = true;
+          this.beginRemoteHostSheetClose(REMOTE_HOST_SHEET_RUSTDESK_PREFLIGHT);
           this.lastSheetDismissAtMs = Date.now();
           this.showRustDeskProPreflight = false;
+          this.showRemoteHostSheet = false;
           return;
         }
         if (state === 4 || state === 0) {
@@ -3746,37 +3907,137 @@ struct HostListPage {
     } catch (err) { promptAction.showToast({ message: '未选择照片', duration: 1500 }); }
   }
 
+  @Builder
+  remoteHostSheetBuilder() {
+    if (this.remoteHostSheetMode === REMOTE_HOST_SHEET_SSH_PREFLIGHT) {
+      this.sshPreflightPanel();
+    } else if (this.remoteHostSheetMode === REMOTE_HOST_SHEET_RDP_CERTIFICATE) {
+      this.rdpCertificatePanel();
+    } else if (this.remoteHostSheetMode === REMOTE_HOST_SHEET_RUSTDESK_PREFLIGHT) {
+      this.rustDeskProPreflightPanel();
+    } else if (this.remoteHostSheetMode === REMOTE_HOST_SHEET_PASSPHRASE) {
+      this.hlPassphraseBuilder();
+    } else if (this.remoteHostSheetMode === REMOTE_HOST_SHEET_PUBLIC_KEY) {
+      this.sshPublicKeyInstallPanel();
+    }
+  }
+
+  private handleRemoteHostSheetDismiss(action: DismissSheetAction): void {
+    switch (this.remoteHostSheetMode) {
+      case REMOTE_HOST_SHEET_SSH_PREFLIGHT:
+        this.handleSshPreflightSheetDismiss(action);
+        return;
+      case REMOTE_HOST_SHEET_RDP_CERTIFICATE:
+        this.handleRdpCertificateSheetDismiss(action);
+        return;
+      case REMOTE_HOST_SHEET_RUSTDESK_PREFLIGHT:
+        if (!shouldAcceptRemoteHostSheetDismiss({
+          busy: this.rustDeskProPreflightState === RustDeskProPreflightState.CONNECTING,
+          closing: this.rustDeskProPreflightClosing,
+          pendingRoute: this.rustDeskProPreflightPendingRouteParams !== null
+        })) {
+          return;
+        }
+        this.cancelRustDeskProPreflight(false);
+        action.dismiss();
+        return;
+      case REMOTE_HOST_SHEET_PASSPHRASE:
+        this.beginRemoteHostSheetClose(REMOTE_HOST_SHEET_PASSPHRASE);
+        action.dismiss();
+        return;
+      case REMOTE_HOST_SHEET_PUBLIC_KEY:
+        if (!shouldAcceptRemoteHostSheetDismiss({
+          busy: this.sshPublicKeyInstallBusy,
+          closing: this.remoteHostSheetClosing,
+          pendingRoute: false
+        })) {
+          return;
+        }
+        this.beginRemoteHostSheetClose(REMOTE_HOST_SHEET_PUBLIC_KEY);
+        action.dismiss();
+        return;
+      default:
+        return;
+    }
+  }
+
+  private handleRemoteHostSheetDisappear(): void {
+    const mode: number = this.remoteHostSheetClosingMode !== REMOTE_HOST_SHEET_NONE
+      ? this.remoteHostSheetClosingMode : this.remoteHostSheetMode;
+    switch (mode) {
+      case REMOTE_HOST_SHEET_SSH_PREFLIGHT:
+        this.handleSshPreflightSheetDisappear();
+        break;
+      case REMOTE_HOST_SHEET_RDP_CERTIFICATE:
+        this.handleRdpCertificateSheetDisappear();
+        break;
+      case REMOTE_HOST_SHEET_RUSTDESK_PREFLIGHT:
+        this.handleRustDeskProPreflightDisappear();
+        break;
+      case REMOTE_HOST_SHEET_PASSPHRASE:
+        this.finishHostPassphrasePrompt('');
+        this.showPassphraseSheet = false;
+        this.noteSheetDismissed();
+        break;
+      case REMOTE_HOST_SHEET_PUBLIC_KEY:
+        this.resetSshPublicKeyInstallSheetState();
+        this.noteSheetDismissed();
+        break;
+      default:
+        break;
+    }
+    this.drainRemoteHostSheetQueue(mode);
+    this.showRemoteHostSheet = false;
+    this.remoteHostSheetMode = REMOTE_HOST_SHEET_NONE;
+    this.remoteHostSheetClosing = false;
+    this.remoteHostSheetClosingMode = REMOTE_HOST_SHEET_NONE;
+  }
+
+  private drainRemoteHostSheetQueue(dismissedMode: number): void {
+    let nextMode: number = REMOTE_HOST_SHEET_NONE;
+    let nextHostId: string = '';
+    if (dismissedMode !== REMOTE_HOST_SHEET_SSH_PREFLIGHT && this.sshPreflightPendingHostId !== '') {
+      nextMode = REMOTE_HOST_SHEET_SSH_PREFLIGHT;
+      nextHostId = this.sshPreflightPendingHostId;
+      this.sshPreflightPendingHostId = '';
+    } else if (dismissedMode !== REMOTE_HOST_SHEET_RDP_CERTIFICATE &&
+      this.rdpCertificatePendingHostId !== '') {
+      nextMode = REMOTE_HOST_SHEET_RDP_CERTIFICATE;
+      nextHostId = this.rdpCertificatePendingHostId;
+      this.rdpCertificatePendingHostId = '';
+    } else if (dismissedMode !== REMOTE_HOST_SHEET_RUSTDESK_PREFLIGHT &&
+      this.rustDeskProPreflightPendingHostId !== '') {
+      nextMode = REMOTE_HOST_SHEET_RUSTDESK_PREFLIGHT;
+      nextHostId = this.rustDeskProPreflightPendingHostId;
+      this.rustDeskProPreflightPendingHostId = '';
+    }
+    if (nextMode === REMOTE_HOST_SHEET_NONE || nextHostId === '') {
+      return;
+    }
+    const nextHost: RemoteHost | undefined = this.srv.getHost(nextHostId);
+    if (!nextHost) {
+      this.releaseConnectionAttempt(nextHostId);
+      return;
+    }
+    const openNext: () => void = (): void => {
+      if (nextMode === REMOTE_HOST_SHEET_SSH_PREFLIGHT) {
+        this.openSshPreflight(nextHost);
+      } else if (nextMode === REMOTE_HOST_SHEET_RDP_CERTIFICATE) {
+        this.openRdpCertificatePreflight(nextHost);
+      } else {
+        this.openRustDeskProPreflight(nextHost);
+      }
+    };
+    const delayMs: number = sheetOpenDelayMsAfterDismiss(Date.now(), this.lastSheetDismissAtMs);
+    setTimeout(openNext, delayMs);
+  }
+
   build() {
     Stack() {
       Column().width('100%').height('100%').backgroundColor(this.pal().bg)
-      // SSH 前置校验 bindSheet 挂到独立空宿主, 避免主内容重建导致半模态消失。
-      .bindSheet($$this.showSshPreflight, this.sshPreflightPanel(), {
-        height: this.sshPreflightSheetHeight(),
-        preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
-        dragBar: this.breakpoint === 'sm',
-        backgroundColor: this.pal().sheetBg,
-        blurStyle: BlurStyle.NONE,
-        showClose: false,
-        maskColor: 'rgba(0,0,0,0.4)',
-        onWillDismiss: (action: DismissSheetAction): void => { this.handleSshPreflightSheetDismiss(action); },
-        onDisappear: (): void => { this.noteSheetDismissed(); }
-      })
-
-      Column().width('100%').height('100%').hitTestBehavior(HitTestMode.None)
-      .bindSheet($$this.showRdpCertificatePreflight, this.rdpCertificatePanel(), {
-        height: SheetSize.FIT_CONTENT,
-        preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
-        dragBar: this.breakpoint === 'sm',
-        backgroundColor: this.pal().sheetBg,
-        blurStyle: BlurStyle.NONE,
-        showClose: false,
-        maskColor: 'rgba(0,0,0,0.4)',
-        onWillDismiss: (action: DismissSheetAction): void => { this.handleRdpCertificateSheetDismiss(action); },
-        onDisappear: (): void => { this.handleRdpCertificateSheetDisappear(); }
-      })
-
-      Column().width('100%').height('100%').hitTestBehavior(HitTestMode.None)
-      .bindSheet($$this.showRustDeskProPreflight, this.rustDeskProPreflightPanel(), {
+      // 所有连接/安全弹窗共用一个 bindSheet 宿主。面板内容由 mode 路由，
+      // 关闭和路由统一在宿主 onDisappear 后完成，避免多个 native Sheet 同时退场。
+      .bindSheet($$this.showRemoteHostSheet, this.remoteHostSheetBuilder(), {
         height: SheetSize.FIT_CONTENT,
         preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
         dragBar: this.breakpoint === 'sm',
@@ -3785,53 +4046,13 @@ struct HostListPage {
         showClose: false,
         maskColor: 'rgba(0,0,0,0.4)',
         onWillDismiss: (action: DismissSheetAction): void => {
-          if (this.rustDeskProPreflightClosing || this.rustDeskProPreflightPendingRouteParams !== null) {
-            return;
-          }
-          if (this.rustDeskProPreflightState !== RustDeskProPreflightState.CONNECTING) {
-            this.cancelRustDeskProPreflight();
-            action.dismiss();
-          }
-        },
-        onDisappear: (): void => { this.handleRustDeskProPreflightDisappear(); }
-      })
-
-      Column().width('100%').height('100%').hitTestBehavior(HitTestMode.None)
-      // 旧路径私钥密码 Sheet 使用独立宿主, 不与 SSH preflight 共用 bindSheet 链。
-      .bindSheet($$this.showPassphraseSheet, this.hlPassphraseBuilder(), {
-        height: SheetSize.FIT_CONTENT,
-        preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
-        dragBar: this.breakpoint === 'sm',
-        backgroundColor: this.pal().sheetBg,
-        blurStyle: BlurStyle.NONE,
-        showClose: false,
-        maskColor: 'rgba(0,0,0,0.4)',
-        onWillDismiss: (action: DismissSheetAction): void => {
-          if (this.hlPassphraseResolve) {
-            this.hlPassphraseResolve('');
-            this.hlPassphraseResolve = null;
-          }
-          action.dismiss();
-        },
-        onDisappear: (): void => { this.noteSheetDismissed(); }
-      })
-      Column().width('100%').height('100%').hitTestBehavior(HitTestMode.None)
-      .bindSheet($$this.showSshPublicKeyInstallSheet, this.sshPublicKeyInstallPanel(), {
-        height: SheetSize.FIT_CONTENT,
-        preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
-        dragBar: this.breakpoint === 'sm',
-        backgroundColor: this.pal().sheetBg,
-        blurStyle: BlurStyle.NONE,
-        showClose: false,
-        maskColor: 'rgba(0,0,0,0.4)',
-        onWillDismiss: (action: DismissSheetAction): void => {
-          if (!this.sshPublicKeyInstallBusy) { this.closeSshPublicKeyInstallSheet(); action.dismiss(); }
+          this.handleRemoteHostSheetDismiss(action);
         },
         onDisappear: (): void => {
-          this.resetSshPublicKeyInstallSheetState();
-          this.noteSheetDismissed();
+          this.handleRemoteHostSheetDisappear();
         }
       })
+
       Column().width('100%').height('100%').hitTestBehavior(HitTestMode.None)
       .bindSheet($$this.showSettingsLeafSheet, this.settingsLeafSheet(), {
         height: SheetSize.FIT_CONTENT,
@@ -4535,11 +4756,17 @@ struct HostListPage {
     this.sshPublicKeyInstallPassphrase = latest.sshUseKey ? latest.sshKeyPassphrase : '';
     this.sshPublicKeyInstallError = '';
     this.sshPublicKeyInstallBusy = false;
-    this.openSheetSafely((): void => { this.showSshPublicKeyInstallSheet = true; });
+    this.openSheetSafely((): void => {
+      this.openRemoteHostSheet(REMOTE_HOST_SHEET_PUBLIC_KEY, (): void => {
+        this.showSshPublicKeyInstallSheet = true;
+      });
+    });
   }
 
   private closeSshPublicKeyInstallSheet(): void {
+    this.beginRemoteHostSheetClose(REMOTE_HOST_SHEET_PUBLIC_KEY);
     this.showSshPublicKeyInstallSheet = false;
+    this.showRemoteHostSheet = false;
   }
 
   private resetSshPublicKeyInstallSheetState(): void {

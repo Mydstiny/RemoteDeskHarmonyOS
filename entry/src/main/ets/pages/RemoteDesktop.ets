@@ -507,6 +507,9 @@ struct RemoteDesktop {
   private pendingHost: RemoteHost | null = null;
   private rustDeskAuthDismissReason: RustDeskAuthDismissReason = 'none';
   private rustDeskAuthBackPending: boolean = false;
+  private rustDeskAuthPendingStart: boolean = false;
+  private rustDeskAuthSheetClosing: boolean = false;
+  private rustDeskAuthQueuedMessage: string | null = null;
   private rustDeskSessionAuthChoice: RustDeskAuthChoice = 'password';
   private rustDeskSessionPassword: string = '';
   private rustDeskSessionRememberPassword: boolean = false;
@@ -905,6 +908,10 @@ struct RemoteDesktop {
    * 因为恢复的是已有 RustDesk 会话而不是重新认证。
    */
   private openRustDeskAuthSheet(message: string = ''): void {
+    if (this.rustDeskAuthSheetClosing) {
+      this.rustDeskAuthQueuedMessage = message;
+      return;
+    }
     const host: RemoteHost | null = this.pendingHost;
     if (host === null || host.protocol !== 'rustdesk' || host.sourceType !== 'rustdesk_pro' ||
       !host.rustdeskProManaged) {
@@ -920,14 +927,15 @@ struct RemoteDesktop {
     this.rustDeskAuthError = message;
     this.rustDeskAuthDismissReason = 'none';
     this.rustDeskAuthBackPending = false;
+    this.rustDeskAuthPendingStart = false;
     this.showRustDeskAuthSheet = true;
     setTimeout((): void => { this.focusRustDeskAuthPassword(); }, 120);
   }
 
-  private cancelRustDeskAuthChoice(): void {
+  private requestRustDeskAuthCancellation(): void {
     this.rustDeskAuthDismissReason = 'cancel';
     this.rustDeskAuthBackPending = true;
-    this.showRustDeskAuthSheet = false;
+    this.rustDeskAuthPendingStart = false;
     this.rustDeskAuthError = '';
     this.connectStarted = false;
     this.connecting = false;
@@ -935,13 +943,20 @@ struct RemoteDesktop {
     this.connectionErrorDetail = '未建立 RustDesk 会话';
   }
 
+  private cancelRustDeskAuthChoice(): void {
+    this.rustDeskAuthSheetClosing = true;
+    this.requestRustDeskAuthCancellation();
+    this.showRustDeskAuthSheet = false;
+  }
+
   private confirmRustDeskAuthChoice(): void {
     const host: RemoteHost | null = this.pendingHost;
     if (host === null || host.protocol !== 'rustdesk' || host.sourceType !== 'rustdesk_pro' ||
       !host.rustdeskProManaged) {
       this.rustDeskAuthDismissReason = 'confirm';
+      this.rustDeskAuthPendingStart = true;
+      this.rustDeskAuthSheetClosing = true;
       this.showRustDeskAuthSheet = false;
-      this.tryStartConnect();
       return;
     }
     if (this.rustDeskAuthChoice === 'request_approval' && host.rustdeskDirectEnabled) {
@@ -970,13 +985,14 @@ struct RemoteDesktop {
     this.rustDeskSessionAuthChoice = this.rustDeskAuthChoice;
     this.pendingHost = selected;
     this.rustDeskAuthDismissReason = 'confirm';
+    this.rustDeskAuthPendingStart = true;
+    this.rustDeskAuthSheetClosing = true;
     this.showRustDeskAuthSheet = false;
     this.rustDeskAuthError = '';
     this.connectionError = '';
     this.connectionErrorDetail = '';
     this.connectStarted = false;
     this.connecting = true;
-    this.tryStartConnect();
   }
 
   private focusRustDeskAuthPassword(): void {
@@ -995,22 +1011,38 @@ struct RemoteDesktop {
       action.dismiss();
       return;
     }
-    this.cancelRustDeskAuthChoice();
+    this.rustDeskAuthSheetClosing = true;
+    this.requestRustDeskAuthCancellation();
     action.dismiss();
   }
 
   private handleRustDeskAuthSheetDisappear(): void {
     const reason: RustDeskAuthDismissReason = this.rustDeskAuthDismissReason;
+    const shouldStart: boolean = reason === 'confirm' && this.rustDeskAuthPendingStart;
+    const queuedMessage: string | null = this.rustDeskAuthQueuedMessage;
     this.rustDeskAuthDismissReason = 'none';
+    this.rustDeskAuthPendingStart = false;
+    this.rustDeskAuthSheetClosing = false;
+    this.rustDeskAuthQueuedMessage = null;
     // 系统下滑/返回键关闭时必须视为取消，不能让连接绕过授权选择。
     if (reason === 'none') {
-      this.cancelRustDeskAuthChoice();
+      this.requestRustDeskAuthCancellation();
+    } else if (reason === 'cancel') {
+      this.requestRustDeskAuthCancellation();
     }
     if (this.rustDeskAuthBackPending) {
       this.rustDeskAuthBackPending = false;
       // 等 bindSheet 的 native 退出回调完成后再销毁页面，避免下一个
       // RemoteDesktop 页面复用到仍在退出的授权 Sheet 宿主。
       setTimeout((): void => { this.goBack(); }, 0);
+      return;
+    }
+    if (shouldStart) {
+      setTimeout((): void => { this.tryStartConnect(); }, 0);
+      return;
+    }
+    if (queuedMessage !== null) {
+      setTimeout((): void => { this.openRustDeskAuthSheet(queuedMessage); }, 0);
     }
   }
 
@@ -8414,6 +8446,10 @@ struct RemoteDesktop {
           blurStyle: BlurStyle.NONE,
           showClose: false,
           maskColor: 'rgba(0,0,0,0.48)',
+          onWillDismiss: (action: DismissSheetAction): void => {
+            this.rdpSessionErrorBackPending = true;
+            action.dismiss();
+          },
           onDisappear: (): void => { this.handleRdpSessionErrorSheetDisappear(); }
         })
 

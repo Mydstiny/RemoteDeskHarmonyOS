@@ -34,6 +34,7 @@ import remotePhysicalKeyboardPolicyTest from './RemotePhysicalKeyboardPolicy.tes
 import touchpadPointerCurvePolicyTest from './TouchpadPointerCurvePolicy.test';
 import remoteSurfaceTransformPolicyTest from './RemoteSurfaceTransformPolicy.test';
 import remoteCursorStylePolicyTest from './RemoteCursorStylePolicy.test';
+import remoteHostSheetLifecyclePolicyTest from './RemoteHostSheetLifecyclePolicy.test';
 
 export default function testsuite() {
   abilityTest();
@@ -72,4 +73,5 @@ export default function testsuite() {
   touchpadPointerCurvePolicyTest();
   remoteSurfaceTransformPolicyTest();
   remoteCursorStylePolicyTest();
+  remoteHostSheetLifecyclePolicyTest();
 }
