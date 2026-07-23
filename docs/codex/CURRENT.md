@@ -5,18 +5,19 @@ Updated: 2026-07-23 Asia/Shanghai
 ## Repository
 
 - Repository: `Mydstiny/RemoteDeskHarmonyOS`
-- Public branch: `main`
-- Public main commit at audit start: `c502221e3` (`Merge PR #28: refresh shared handoff state`)
-- Audit branch: `codex/windows-memory-sanitize`, based on synchronized `main`
-- Published handoff PR: `#35` (`https://github.com/Mydstiny/RemoteDeskHarmonyOS/pull/35`)
-- No unfinished local `codex/...` branch existed before this audit.
-- The workspace contains user-owned test edits, logs, screenshots, XML and native build evidence. They remain local and are not part of this task.
+- Public `origin/main` at merge time: `7e6e65401` (`Merge pull request #36: integrate Windows development handoff`)
+- Previous Windows audit base: `c502221e3`
+- Current audit branch: `codex/windows-memory-sanitize`, now merging the latest public `main`
+- Audit commits: `27e185f42`, `a24568990`
+- Audit PR: `#35` (`https://github.com/Mydstiny/RemoteDeskHarmonyOS/pull/35`)
+- No runtime, ArkTS, C/C++, Rust, FreeRDP or dependency source was changed by this audit branch.
+- User-owned test edits, logs, screenshots, XML and native build evidence remain local and are not part of this task.
 
 ## Current phase
 
 - Windows Codex memory sanitization and cross-device development handoff audit.
-- No runtime, ArkTS, C/C++, Rust, FreeRDP, dependency or signing configuration was changed.
-- The normal `start` command could not be used because the working tree is intentionally dirty with user evidence. The branch was created directly from synchronized `main`; only the four `docs/codex` files are in scope.
+- Public `main` already includes the Mac migration/`hdc` workflow and a prior Windows handoff integration. This branch adds the detailed, structured audit record and merges the latest `main` before PR completion.
+- The normal task start gate was intentionally not used because the workspace contained user-owned changes. The branch was created from synchronized public history without stashing, resetting or deleting those files.
 
 ## Windows evidence collected in this audit
 
@@ -33,29 +34,34 @@ Updated: 2026-07-23 Asia/Shanghai
 | Rust / Cargo | `1.96.0` / `1.96.0` | Windows verified |
 | Rust OHOS targets | `aarch64-unknown-linux-ohos`, `x86_64-unknown-linux-ohos` | Windows verified |
 | Windows PowerShell | `5.1.26100.8875`; `pwsh` is not installed | Windows verified |
-| API 23 reference docs | Local copy is present | Windows verified; content stays local |
+| API 23 reference docs | Local copy is present | Windows verified; contents stay local |
 
-The old baseline's Node 24 and approximate DevEco 26.0 entries are historical and are not current Windows facts. Mac tool versions and SDK installation remain unverified.
+The old baseline's Node 24 and approximate DevEco 26.0 entries are historical and are not current Windows facts. Mac versions and machine paths are not inferred from them.
+
+## Cross-device state inherited from public main
+
+- `scripts/macos_env.sh`, `scripts/resolve_ohos_sdk.sh` and `scripts/resolve_powershell.sh` are now present on public `main`; the initial Windows audit observed them before the concurrent main update.
+- The Mac helper keeps the full DevEco/HarmonyOS SDK role separate from the standalone API 23 native SDK role, resolves bundled Node/Hvigor/ohpm/Java/LLVM/CMake/Rust tools, configures both OHOS Rust ABIs and exposes the SDK `hdc` toolchain.
+- Public Mac handoff records report successful source/submodule restoration, both-ABI Opus/RustDesk FFI builds, `default@OhosTestCompileArkTS`, non-daemon `assembleHap`, hook checks and Light compliance. These are inherited public evidence, not new Windows device acceptance.
+- Mac `hdc` availability was verified in public history; an empty target list means no authorized device is connected, not that the toolchain is missing.
 
 ## Audit result
 
-- Shared docs previously pointed at `c5347f141`; the actual synchronized `main` and `origin/main` are `c502221e3`.
-- `scripts/macos_env.sh`, `scripts/resolve_ohos_sdk.sh` and `scripts/resolve_powershell.sh` are not present. They are migration documentation gaps, not permission to invent or add runtime scripts in this task.
-- The repository already contains the cross-device workflow, migration bundle generator, public Git history, submodule pointer and sanitized state files.
-- Windows Codex memory contains useful technical conclusions about API 23, ArkTS strict mode, bindSheet mounting, OHOS C++/Crypto APIs, RustDesk stream framing/control consumption and Git safety. These conclusions are summarized in `DECISIONS.md` and `HANDOFF.md`; raw memory is not copied.
+- Shared docs that previously pointed at `c5347f141` are corrected to the current public history.
+- The Windows memory conclusions about API 23, ArkTS strict mode, bindSheet mounting, OHOS C++/Crypto APIs, RustDesk stream framing/control consumption, PIP ownership and Git safety are distilled into `DECISIONS.md` and `HANDOFF.md`.
+- Raw Codex memory, chat/session transcripts, device evidence and private inputs were not copied.
 
 ## Verification status
 
-- `git status --short --branch`: confirmed `main` was synchronized before branch creation and showed only user-owned local material outside this task.
-- `git log`: confirmed `c502221e3` is the current public merge tip.
-- Direct tool checks confirmed the Windows versions listed above.
-- The recorded public runtime checkpoints include native/RustDesk tests, `default@OhosTestCompileArkTS`, production `assembleHap`, `git diff --check` and Light compliance. Those records are not a substitute for new Mac or real-device verification.
-- This audit branch still requires the final document diff check, Light gate, DCO commit, push, PR check and merge workflow.
+- Windows direct checks confirmed the tool versions and API 23 reference availability listed above.
+- `git diff --check`, Light compliance, workflow policy tests, Opus artifact-location tests and the pre-push public-history guard passed before the merge.
+- PR #35 initially became dirty because public `main` advanced concurrently; the latest `origin/main` is being merged normally, without rebase or force-push.
+- Real-device, cloud-account and Mac clean-clone acceptance remain separate from this document audit.
 
 ## Next
 
-- Finish and publish the four sanitized handoff documents from `codex/windows-memory-sanitize`.
-- After PR merge, have macOS sync the merged `main`, configure machine-local SDK/toolchains/private files, and run the clean-clone workflow.
+- Resolve and publish the merge update on PR #35, wait for `open-source-compliance`, merge with a merge commit and return the workspace to synchronized `main`.
+- On the next device, read these four files, sync the merged `main`, configure machine-local SDK/toolchains/private inputs and run the platform-specific workflow.
 - Complete real-device acceptance for PIP/live-view, RDP/RustDesk background restore, cloud sync and first-install behavior.
 
 ## Local-only boundary

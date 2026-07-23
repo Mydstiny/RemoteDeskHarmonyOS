@@ -3,6 +3,7 @@ set -eu
 
 root="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 action="${1:-status}"
+. "$root/scripts/resolve_powershell.sh"
 
 git_at() {
   git -C "$root" "$@"
@@ -43,10 +44,8 @@ active_branches() {
 }
 
 require_pwsh() {
-  if command -v pwsh >/dev/null 2>&1; then
-    printf '%s\n' 'pwsh'
-  elif command -v powershell.exe >/dev/null 2>&1; then
-    printf '%s\n' 'powershell.exe'
+  if powershell_cmd="$(resolve_powershell_command 2>/dev/null)"; then
+    printf '%s\n' "$powershell_cmd"
   else
     fail 'PowerShell 7 (pwsh) is required for the open-source compliance gate; install it before finish-check or push'
   fi

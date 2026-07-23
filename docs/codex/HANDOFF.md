@@ -5,12 +5,13 @@ Updated: 2026-07-23 Asia/Shanghai
 ## Source and scope
 
 - Repository: `Mydstiny/RemoteDeskHarmonyOS`
-- Public base: `main` at `c502221e3`
+- Public base now reviewed: `origin/main` at `7e6e65401`
+- Previous Windows audit base: `c502221e3`
 - Audit branch: `codex/windows-memory-sanitize`
-- Handoff commit: `27e185f42` (`docs(codex): record Windows development handoff`)
+- Audit commits: `27e185f42` and `a24568990`
 - Pull request: `https://github.com/Mydstiny/RemoteDeskHarmonyOS/pull/35`
-- Scope: sanitize Windows Codex development knowledge into public, platform-neutral documentation.
-- Runtime source, tests, dependencies, signing data and user evidence were not changed.
+- Scope: sanitize Windows Codex development knowledge into public, platform-neutral documentation and merge it with the latest Mac handoff state.
+- Runtime source, tests, dependencies, signing data and user evidence were not changed by this audit branch.
 
 ## What was read
 
@@ -18,6 +19,7 @@ Updated: 2026-07-23 Asia/Shanghai
 - The four shared `docs/codex` state files and the workflow, build, dependency, compliance and hook scripts.
 - Build/test, FreeRDP provenance, RustDesk FFI reproducible-build, Opus, signing and IDE-related project documents.
 - Selected Windows Codex memory covering API 23, ArkTS strict mode, bindSheet mounting, OHOS Crypto/C++ limitations, RustDesk frame boundaries/control consumption, PIP lifecycle and public Git workflow.
+- The public Mac helper scripts added to `main`: `macos_env.sh`, `resolve_ohos_sdk.sh` and `resolve_powershell.sh`.
 
 Raw memory directories, chat/session transcripts, device logs, screenshots, crash reports and private paths were not copied or committed.
 
@@ -25,31 +27,32 @@ Raw memory directories, chat/session transcripts, device logs, screenshots, cras
 
 | Component | Windows result | Mac status |
 | --- | --- | --- |
-| DevEco Studio | `6.1.1.280` installation metadata | Not verified |
-| HarmonyOS/API | Repository targets `6.1.0(23)` / API 23; SDK and native SDK layout present | Install and verify locally |
+| DevEco Studio | `6.1.1.280` installation metadata | Public handoff records `6.1.1`; verify locally |
+| HarmonyOS/API | Repository targets `6.1.0(23)` / API 23; SDK and native SDK layout present | Full DevEco SDK and standalone API 23 native SDK have separate roles |
 | Runtime/project | `runtimeOS: HarmonyOS`, product `default`, module `entry` | Same project settings expected |
-| Bundled Node | `18.20.1` | Not verified |
-| Hvigor | CLI `6.24.2` | Not verified |
-| ohpm | `6.1.2.268` | Not verified |
-| CMake / Ninja | `3.29.2` / `1.12.0` | Not verified |
-| LLVM/Clang | `15.0.4` | Not verified |
-| Rust / Cargo | `1.96.0` / `1.96.0` | Not verified |
-| Rust targets | `aarch64-unknown-linux-ohos`, `x86_64-unknown-linux-ohos` installed | Install and verify both |
-| PowerShell | Windows PowerShell `5.1.26100.8875`; `pwsh` absent | Install PowerShell 7 for hook/compliance |
-| FreeRDP | Repository baseline `3.26.1-dev0`; public gitlink; default `USE_REAL_FREERDP=OFF` | Initialize recursive submodule |
+| Bundled Node | `18.20.1` | Public Mac helper resolves bundled Node; verify locally |
+| Hvigor | CLI `6.24.2` | Public Mac handoff build passed; verify locally |
+| ohpm | `6.1.2.268` | Public Mac helper resolves it; verify locally |
+| CMake / Ninja | `3.29.2` / `1.12.0` | Public Mac native build passed; verify locally |
+| LLVM/Clang | `15.0.4` | Public Mac helper configures native LLVM; verify locally |
+| Rust / Cargo | `1.96.0` / `1.96.0` | Public Mac handoff built both ABIs; verify locally |
+| Rust targets | `aarch64-unknown-linux-ohos`, `x86_64-unknown-linux-ohos` installed | Both targets required |
+| PowerShell | Windows PowerShell `5.1.26100.8875`; `pwsh` absent | `resolve_powershell.sh` supports system or repository-local fallback; stable PowerShell 7 recommended |
+| FreeRDP | Public gitlink; baseline `3.26.1-dev0`; default `USE_REAL_FREERDP=OFF` | Initialize recursively |
 | Opus | Build script pins `1.5.2` | Build locally when RustDesk input changes |
 | OpenSSL/libssh2 | Historical project baseline only; not revalidated in this audit | Configure local artifacts |
 
-The repository's example product configuration is the safe source for `entry`, `default`, API 23 and `runtimeOS`. Real signing fields, AGConnect values and local properties were intentionally not read.
+The safe product example is the source for `entry`, `default`, API 23 and `runtimeOS`. Real signing fields, AGConnect values and local properties were intentionally not read.
 
 ## IDE continuation procedure
 
 1. Open the repository root in DevEco Studio, not only the `entry` directory.
 2. Let the IDE index the project and import the `entry` module and `default` target. Confirm product `default`, `runtimeOS: HarmonyOS`, device types and API 23 SDK selection.
-3. Configure each machine's SDK, native SDK, Node, Hvigor, ohpm, Rust target, linker and sysroot. Do not copy build caches or signing material from Windows to Mac.
-4. Use the IDE task search or Hvigor wrapper for `default@OhosTestCompileArkTS`; use `ohosTest@OhosTestCompileArkTS` for the test module. Do not use the obsolete `default@OhosTestBuildArkTS` gate.
-5. Build `assembleHap` for product `default`. Expected stages include ArkTS, native compilation/link, package/packing checks and signing when the local profile is configured. A signed HAP is local output, not migration content.
-6. Attach a permitted HarmonyOS device through the local `hdc` configuration and inspect build/deploy logs in DevEco. Device addresses, identifiers and logs remain local.
+3. Configure each machine's full DevEco SDK, standalone native SDK, Node, Hvigor, ohpm, Rust targets, linker and sysroot. Do not copy build caches or signing material from Windows to Mac.
+4. On macOS, source `scripts/macos_env.sh` before CLI work. It resolves the two SDK roles, bundled tools, both Rust linkers/sysroots, `hdc` and the PowerShell resolver without requiring a machine-specific repository path.
+5. Use the IDE task search or Hvigor wrapper for `default@OhosTestCompileArkTS`; use `ohosTest@OhosTestCompileArkTS` for the test module. Do not use the obsolete `default@OhosTestBuildArkTS` gate.
+6. Build `assembleHap` for product `default`. Expected stages include ArkTS, native compilation/link, package/packing checks and signing when the local profile is configured. A signed HAP is local output, not migration content.
+7. Attach a permitted HarmonyOS device through the local `hdc` configuration and inspect build/deploy logs in DevEco. Device addresses, identifiers and logs remain local.
 
 ## Standard commands
 
@@ -69,9 +72,13 @@ macOS/Linux:
 ```sh
 ./scripts/sync_workspace.sh sync
 ./scripts/sync_workspace.sh start <lowercase-kebab-task>
+source scripts/macos_env.sh
+hdc --version
+hdc start
+hdc list targets
 ```
 
-Expected result: clean `main`, `origin/main` fast-forward synchronized, recursive submodule update, no other unfinished task branch, then one new `codex/<task>` branch. A dirty tree must stop the workflow and preserve the local files.
+Expected result: clean `main`, `origin/main` fast-forward synchronized, recursive submodule update, no other unfinished task branch, then one new `codex/<task>` branch. A dirty tree must stop the workflow and preserve the local files. `hdc list targets` may be empty when no device is authorized.
 
 ### ArkTS, native, Rust and HAP validation
 
@@ -86,7 +93,7 @@ bash scripts/build_freerdp_ohos.sh all       # only when real FreeRDP is enabled
 assembleHap --mode module --module entry --product default
 ```
 
-The RustDesk build script maps `arm64-v8a` to `aarch64-unknown-linux-ohos` and `x86_64` to `x86_64-unknown-linux-ohos`, sets the matching Clang/sysroot variables, builds Opus first and checks exported FFI symbols. `nm` pipelines must not use `grep -q` under `pipefail`; use a non-early-exit match such as `grep -Eq` or capture output first.
+The RustDesk build script maps `arm64-v8a` to `aarch64-unknown-linux-ohos` and `x86_64` to `x86_64-unknown-linux-ohos`, sets the matching Clang/sysroot variables, builds Opus first and checks exported FFI symbols.
 
 Native tests are generated as `rdp_native_tests` by the project CMake configuration. Run the selected test binary or its DevEco/CTest target on the matching ABI. The public 2026-07-23 checkpoint recorded `129 passed, 0 failed`; real device behavior remains separate.
 
@@ -101,7 +108,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/tests/test_opus_
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/dev_workflow.ps1 finish-check
 ```
 
-`finish-check` requires a non-main branch, a clean tree, `main` as an ancestor and an upstream branch, then reruns the Light gate. The pre-push hook verifies the pushed commit in a temporary detached worktree, refuses archive/private history and runs Light for ordinary branches. Do not bypass it or push `main` directly.
+On macOS, `scripts/sync_workspace.sh` sources `resolve_powershell.sh` for `finish-check`; it accepts a system `pwsh`, `powershell.exe` where available, or the repository-local ignored fallback. `finish-check` still requires a clean feature branch, an upstream branch and `main` as an ancestor. The pre-push hook verifies the pushed commit in a temporary detached worktree, refuses archive/private history and runs Light for ordinary branches.
 
 ## Sanitized pitfalls
 
@@ -126,7 +133,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/dev_workflow.ps1
 - 正确修复: Configure the matching OHOS Rust target, Clang/C++/AR variables and native sysroot for each ABI; build both ABIs when the release contract requires it.
 - 错误做法: Reuse a Linux/macOS linker or copy a Windows absolute SDK path to Mac.
 - 验证命令: `rustup target list --installed`; `bash scripts/build_rustdesk_ffi_ohos.sh all`; `assembleHap`.
-- 当前状态: 已修复/待 Mac 验证; scripts encode the target mapping, but Mac setup is not verified.
+- 当前状态: 已修复/待 Mac 验证; public Mac records pass, but each new machine must be checked.
 - 是否适合写入长期规则: 是
 
 ### P-003
@@ -135,10 +142,10 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/dev_workflow.ps1
 - 平台: Both
 - 现象: Bash dependency scripts cannot find the SDK after variables were set in PowerShell, or PowerShell commands fail on Mac.
 - 根因: Environment assignment syntax and path separators differ between shells; Windows backslashes can also reach Bash unchanged.
-- 正确修复: Set `DEVECO_SDK_HOME`/`OHOS_SDK_HOME` in the shell that invokes the script, normalize paths in Bash and use `powershell.exe`/`pwsh` only for PowerShell scripts.
+- 正确修复: Set `DEVECO_SDK_HOME`/`OHOS_SDK_HOME` in the shell that invokes the script, source `scripts/macos_env.sh` on Mac, normalize paths in Bash and use the platform-specific PowerShell command.
 - 错误做法: Paste `$env:NAME=...` into Bash or `export NAME=...` into PowerShell.
-- 验证命令: `scripts/check_native_deps.ps1`; `bash scripts/build_opus_ohos.sh all`.
-- 当前状态: 已知限制; scripts contain platform-specific entry points, but three requested resolver scripts are absent.
+- 验证命令: `scripts/check_native_deps.ps1`; `bash scripts/build_opus_ohos.sh all`; `source scripts/macos_env.sh`.
+- 当前状态: 已修复; resolver helpers are on public `main`, with Mac clean-clone verification still required for a new machine.
 - 是否适合写入长期规则: 是
 
 ### P-004
@@ -169,12 +176,12 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/dev_workflow.ps1
 
 - ID: `P-006`
 - 平台: Windows / macOS
-- 现象: DevEco imports but Hvigor, Node or ohpm is not found; on this Windows shell `pwsh` is missing.
-- 根因: IDE-bundled tools are not guaranteed to be on PATH, and PowerShell 7 is not part of every Windows installation.
-- 正确修复: Configure explicit machine-local tool paths; use Windows PowerShell when the repository script supports it, and install PowerShell 7 on Mac for the hook/compliance gate.
-- 错误做法: Assume the IDE automatically exports all tool paths, or silently skip the hook when `pwsh` is missing.
-- 验证命令: `node --version`; `ohpm --version`; `powershell.exe -File scripts/dev_workflow.ps1 status`; `git config --get core.hooksPath`.
-- 当前状态: 已知限制; Windows versions were measured, Mac discovery is pending.
+- 现象: DevEco imports but Hvigor, Node or ohpm is not found; on the audited Windows shell `pwsh` is missing.
+- 根因: IDE-bundled tools are not guaranteed to be on PATH, and PowerShell 7 is not part of every installation.
+- 正确修复: Configure explicit machine-local tool paths; source `scripts/macos_env.sh` on Mac; use the repository PowerShell resolver for the compliance gate; do not silently skip the hook.
+- 错误做法: Assume the IDE automatically exports all tool paths, or bypass the hook when `pwsh` is missing.
+- 验证命令: `node --version`; `ohpm --version`; `source scripts/macos_env.sh`; `git config --get core.hooksPath`.
+- 当前状态: 已修复/待新机验证; public helpers exist, Windows PowerShell 7 and Mac local discovery still need confirmation per machine.
 - 是否适合写入长期规则: 是
 
 ### P-007
@@ -186,7 +193,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/dev_workflow.ps1
 - 正确修复: Clone with `--recurse-submodules` or run `git submodule update --init --recursive`; preserve the public gitlink and provenance.
 - 错误做法: Copy a dirty build directory or switch to an untracked mirror without updating provenance.
 - 验证命令: `git submodule status --recursive`; `powershell.exe -File scripts/check_native_deps.ps1`.
-- 当前状态: 已修复/待 Mac 验证; public source is recorded, clean-clone verification remains queued.
+- 当前状态: 已修复/待新机验证; public source is recorded, clean-clone verification remains queued.
 - 是否适合写入长期规则: 是
 
 ### P-008
@@ -198,7 +205,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/dev_workflow.ps1
 - 正确修复: Install the repository hook, confirm `.githooks`, and let the hook verify the exact pushed tip in a temporary worktree.
 - 错误做法: Use `--no-verify`, push `main`, push archive refs, or force-push to work around a failure.
 - 验证命令: `powershell.exe -File scripts/install_git_hooks.ps1`; `git config --get core.hooksPath`; `scripts/tests/test_pre_push_history_guard.ps1`.
-- 当前状态: 已修复/待本分支验证; hook logic and tests are tracked.
+- 当前状态: 已修复; hook logic and tests are tracked and passed for this branch.
 - 是否适合写入长期规则: 是
 
 ### P-009
@@ -210,7 +217,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/dev_workflow.ps1
 - 正确修复: Use `main -> sync -> codex/<task> -> commit -> push -> PR -> required check -> merge commit -> main -> sync`; allow one active task branch only.
 - 错误做法: Continue from an old branch, push directly to `main`, squash away the handoff boundary, or use `git add -A`.
 - 验证命令: `scripts/sync_workspace.sh status` or `powershell.exe -File scripts/dev_workflow.ps1 status`; `finish-check`.
-- 当前状态: 已修复; shared workflow is public, and this audit updates stale commit state.
+- 当前状态: 已修复; the shared workflow is public. PR #35 required a normal main merge after a concurrent main update.
 - 是否适合写入长期规则: 是
 
 ### P-010
@@ -222,7 +229,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/dev_workflow.ps1
 - 正确修复: Create them from safe examples or private AGC/DevEco channels on each machine; verify only presence and configuration shape.
 - 错误做法: Commit `.p12`, `.p7b`, `.cer`, secret-bearing AGConnect content, real build profile or local properties.
 - 验证命令: `git ls-files build-profile.json5 local.properties entry/src/main/resources/rawfile/agconnect-services.json`; Light compliance gate.
-- 当前状态: 已修复; private files are present only as local configuration and are not tracked by the public tree.
+- 当前状态: 已修复; private files are local configuration and are not part of the public audit commit.
 - 是否适合写入长期规则: 是
 
 ### P-011
@@ -251,17 +258,18 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/dev_workflow.ps1
 
 ## Verification evidence summary
 
-- Public history: current `main` is `c502221e3`; previous handoff docs were stale at `c5347f141` and are corrected here.
-- Repository checks recorded in public test results: native `rdp_native_tests` `129 passed, 0 failed`; `default@OhosTestCompileArkTS` passed; production `assembleHap` passed; Light compliance passed.
-- This audit verified Windows tool versions, API 23 documentation presence, product/module configuration, missing Mac resolver scripts and the clean public base. It did not claim Mac or real-device acceptance.
+- Public history now includes the Mac migration and helper-script checks through merge commits; the Windows snapshot reports DevEco `6.1.1.280`, Node `18.20.1`, Hvigor `6.24.2`, ohpm `6.1.2.268`, LLVM `15.0.4`, Rust/Cargo `1.96.0` and both OHOS Rust targets.
+- Windows audit checks: `git diff --check`, `verify_open_source_release.ps1 -Mode Light`, workflow policy tests, Opus artifact-location test and pre-push public-history guard all passed.
+- Public runtime evidence: native `rdp_native_tests` `129 passed, 0 failed`; `default@OhosTestCompileArkTS` passed; production `assembleHap` passed. These do not replace Mac or real-device checks.
 - The first direct workflow status run was blocked by a local Git global-ignore permission warning and by missing `pwsh`; no repository files were changed to hide that environment issue.
+- The current PR became dirty only because `origin/main` advanced concurrently; the resolution uses a normal merge and must be revalidated before merge.
 
 ## Next owner action
 
-1. Finish the four-file document validation and commit them with DCO sign-off on `codex/windows-memory-sanitize`.
-2. Push only that branch, create a PR targeting `main`, and wait for `open-source-compliance`.
-3. Merge with a merge commit, return to synchronized `main`, and send the PR/commit reference to the Mac operator.
-4. On Mac, configure private inputs locally, run the sync/doctor/clean-clone checks, and update this handoff only with sanitized evidence.
+1. Stage only the four resolved `docs/codex` files, commit the merge resolution with DCO sign-off, and push the existing PR branch without force.
+2. Confirm `open-source-compliance` passes for the current PR head, then merge PR #35 with a merge commit.
+3. Return the workspace to synchronized `main`; leave user-owned tests, logs, screenshots and native evidence untouched.
+4. On Mac, source the helper script, run sync/doctor/clean-clone checks, configure private inputs locally and record only sanitized evidence.
 
 ## Explicit exclusion confirmation
 

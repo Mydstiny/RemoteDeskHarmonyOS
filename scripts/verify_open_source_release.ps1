@@ -104,7 +104,7 @@ $privateKeyAllow = @(
 foreach ($relative in $tracked) {
   $path = Join-Path $root $relative
   if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { continue }
-  if ((Get-Item -LiteralPath $path).Length -gt 2MB) { continue }
+  if ((Get-Item -Force -LiteralPath $path).Length -gt 2MB) { continue }
   if ($textExtensions -notcontains ([IO.Path]::GetExtension($relative))) { continue }
   $content = Get-Content -Raw -LiteralPath $path -ErrorAction SilentlyContinue
   if ($null -eq $content) { continue }

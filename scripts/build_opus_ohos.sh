@@ -3,7 +3,7 @@
 # build_opus_ohos.sh — libopus 1.5.2 OHOS 交叉编译 (直接 clang, 无 autotools)
 #
 # 用法:
-#   export DEVECO_SDK_HOME="C:/Program Files/Huawei/DevEco Studio/sdk"
+#   export DEVECO_SDK_HOME="/Applications/DevEco-Studio.app/Contents/sdk"
 #   ./scripts/build_opus_ohos.sh [arm64|x86_64|all]
 #
 # 输出:
@@ -15,6 +15,7 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+. "$SCRIPT_DIR/resolve_ohos_sdk.sh"
 OPUS_VER="1.5.2"
 OPUS_SRC="$PROJECT_DIR/build/opus-src/opus-${OPUS_VER}"
 BUILD_DIR="$PROJECT_DIR/build/opus-ohos"
@@ -24,11 +25,12 @@ OPUS_ARCHIVE="$(dirname "$OPUS_SRC")/$OPUS_TARBALL"
 OPUS_SHA256="65c1d2f78b9f2fb20082c38cbe47c951ad5839345876e46941612ee87f9a7ce1"
 
 # OHOS SDK
-OHOS_SDK="${DEVECO_SDK_HOME:-C:/Program Files/Huawei/DevEco Studio/sdk}"
-OHOS_LLVM="$OHOS_SDK/default/openharmony/native/llvm/bin"
-OHOS_SYSROOT="$OHOS_SDK/default/openharmony/native/sysroot"
+OHOS_SDK="$(resolve_ohos_sdk)"
+OHOS_NATIVE="$(ohos_native_root "$OHOS_SDK")"
+OHOS_LLVM="$OHOS_NATIVE/llvm/bin"
+OHOS_SYSROOT="$OHOS_NATIVE/sysroot"
 
-if [ ! -f "$OHOS_LLVM/clang.exe" ] && [ ! -f "$OHOS_LLVM/clang" ]; then
+if ! find_ohos_tool "$OHOS_LLVM" clang >/dev/null 2>&1; then
     echo "ERROR: OHOS LLVM not found at $OHOS_LLVM"
     echo "Set DEVECO_SDK_HOME to your DevEco Studio SDK path."
     exit 1
@@ -42,7 +44,7 @@ if [ ! -d "$OPUS_SRC" ]; then
         OPUS_URL="https://downloads.xiph.org/releases/opus/${OPUS_TARBALL}"
         curl --fail --location --output "$OPUS_ARCHIVE" "$OPUS_URL"
     fi
-    ACTUAL_SHA256="$(sha256sum "$OPUS_ARCHIVE" | awk '{print $1}')"
+    ACTUAL_SHA256="$(sha256_file "$OPUS_ARCHIVE")"
     if [ "$ACTUAL_SHA256" != "$OPUS_SHA256" ]; then
         echo "ERROR: unexpected libopus archive checksum: $ACTUAL_SHA256"
         echo "Expected: $OPUS_SHA256"
@@ -67,14 +69,8 @@ build_opus_clang() {
     mkdir -p "$WORKDIR" "$OUTDIR/include"
 
     # Find clang (with or without .exe)
-    local CLANG="$OHOS_LLVM/clang.exe"
-    if [ ! -f "$CLANG" ]; then
-        CLANG="$OHOS_LLVM/clang"
-    fi
-    local AR="$OHOS_LLVM/llvm-ar"
-    if [ -f "$OHOS_LLVM/llvm-ar.exe" ]; then
-        AR="$OHOS_LLVM/llvm-ar.exe"
-    fi
+    local CLANG="$(find_ohos_tool "$OHOS_LLVM" clang)"
+    local AR="$(find_ohos_tool "$OHOS_LLVM" llvm-ar)"
 
     # Common compile flags for OHOS
     local CFLAGS="--target=${TARGET} -fPIC -O2 -D__MUSL__ -DHAVE_CONFIG_H -DFIXED_POINT=1"

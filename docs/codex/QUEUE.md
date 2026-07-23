@@ -4,21 +4,21 @@ Updated: 2026-07-23 Asia/Shanghai
 
 ## Now
 
-- Complete the Windows memory sanitization audit on `codex/windows-memory-sanitize`.
-- Run `git diff --check`, the Light open-source gate, the workflow parser tests and the repository finish check without staging user-owned files.
-- Push the branch, open a PR to `main`, wait for `open-source-compliance`, then merge with a merge commit.
+- Finish resolving the public `main` merge on `codex/windows-memory-sanitize`.
+- Re-run document diff, Light compliance, workflow tests and the pre-push guard without staging user-owned files.
+- Update PR #35 against the current `main`, wait for `open-source-compliance`, merge with a merge commit, then return to synchronized `main`.
 
 ## Next
 
-- On macOS, sync the merged `main` with `./scripts/sync_workspace.sh sync` and verify recursive FreeRDP submodules.
-- Configure Mac-local DevEco/API 23 SDK, native toolchain, Rust targets, PowerShell 7, signing profile and AGConnect file through private channels.
+- On Windows, confirm PowerShell 7 availability and run the shared-state, submodule and history gates from a clean clone.
+- On macOS, source `scripts/macos_env.sh`, verify the full DevEco SDK/native API 23 SDK role split, Rust targets, `hdc` and the PowerShell resolver.
 - Run the clean-clone smoke checks and record only sanitized pass/fail summaries.
 
 ## Later
 
 - Complete real-device acceptance for RustDesk and RDP PIP/live-view registration, repeated foreground/background cycles and no-session exit behavior.
 - Complete cloud-sync protection, first-install white-screen and full four-protocol release matrices on an unlocked target.
-- Keep VNC, deferred file-transfer coverage and remaining release evidence separate from the migration handoff.
+- Extend remote file-transfer coverage and complete the deferred release matrix.
 
 ## Queue rules
 

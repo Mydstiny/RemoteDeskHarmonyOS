@@ -1,17 +1,14 @@
-# OHOS 交叉编译 linker 配置
-# Windows 上 aarch64-unknown-linux-ohos-clang++ 是 shell 脚本不可执行，
-# 改用 clang++.exe 直接传 --target 和 --sysroot。
+# OHOS 交叉编译基础配置。
+# 使用 scripts/macos_env.sh 或平台构建脚本注入当前 SDK 的 linker/sysroot。
 
 [target.aarch64-unknown-linux-ohos]
-linker = "C:\\Program Files\\Huawei\\DevEco Studio\\sdk\\default\\openharmony\\native\\llvm\\bin\\clang++.exe"
+linker = "clang++"
 rustflags = [
-    "-C", "link-arg=--target=aarch64-unknown-linux-ohos",
-    "-C", "link-arg=--sysroot=C:\\Program Files\\Huawei\\DevEco Studio\\sdk\\default\\openharmony\\native\\sysroot",
+    "-C", "link-arg=--target=aarch64-linux-ohos",
 ]
 
 [target.x86_64-unknown-linux-ohos]
-linker = "C:\\Program Files\\Huawei\\DevEco Studio\\sdk\\default\\openharmony\\native\\llvm\\bin\\clang++.exe"
+linker = "clang++"
 rustflags = [
-    "-C", "link-arg=--target=x86_64-unknown-linux-ohos",
-    "-C", "link-arg=--sysroot=C:\\Program Files\\Huawei\\DevEco Studio\\sdk\\default\\openharmony\\native\\sysroot",
+    "-C", "link-arg=--target=x86_64-linux-ohos",
 ]
