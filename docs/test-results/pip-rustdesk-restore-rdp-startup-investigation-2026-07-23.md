@@ -303,3 +303,35 @@ API 23 官方文档为：
 - `git diff --check`：通过（仅有 Windows Git ignore/换行提示）；Light 合规门：通过。
 
 设备重装包含本修复的 HAP 后，仍需复测首次 RustDesk 连接退后台、PIP 从 `2560x1600` 到 `1239x774` 的布局变化、连续前后台恢复及 RDP PIP；未完成这组实机复测前，不宣称设备端崩溃已最终验收通过。
+
+## 前台恢复后性能诊断轮询修复（2026-07-23）
+
+### 根因
+
+进入后台时 `aboutToDisappear()` 和 `detachForBackground()` 都会调用
+`stopRustDeskDiagnosticsPolling(true)`，这会同时清除基础诊断快照、本机资源快照和
+轮询 timer。RustDesk 预鉴权交接路径会重新启动轮询，但普通
+`doBackgroundRestoreRender()` 在 renderer reattach 成功后只恢复视频、输入和剪贴板，
+没有重新启动诊断轮询。因此普通前后台恢复后，基础性能面板停止刷新，Pro 面板的
+CPU/内存/GPU 采样也停在空值或旧值。
+
+### 修复
+
+- `RemoteDesktop.ets` 新增 `resumeRustDeskDiagnosticsAfterForeground()`，只在当前仍是
+  已连接 RustDesk session、基础诊断开关开启时恢复 dock 和轮询；Pro 开关沿用同一次
+  refresh 的 `getLocalResourceStats(true)` 采样。
+- 普通 renderer reattach 和 RustDesk 预鉴权首次挂载都调用该恢复函数；轮询仍捕获当前
+  `sessionId` 与 `connectAttemptId`，旧会话不能向新会话写入数据。
+- RustDesk “远端应用双指缩放”现有默认值保持关闭：新 Preferences 缺省值和两个页面的
+  初始状态均为 `false`。该设置不走云同步，用户明确打开后的本地选择不会被升级强制覆盖。
+
+### 本次自动化验证
+
+- `default@OhosTestCompileArkTS`：通过；
+- 非 daemon 生产 `assembleHap`：通过；
+- `git diff --check`：通过；
+- `verify_open_source_release.ps1 -Mode Light`：通过。
+
+设备解锁后需在 RustDesk 诊断基础开关和 Pro 开关均开启的情况下执行：连接、退后台、
+恢复前台，确认日志出现 `resumeRustDeskDiagnosticsAfterForeground`，基础 FPS/码率和
+Pro CPU/内存采样在恢复后继续变化。

@@ -2524,6 +2524,24 @@ struct RemoteDesktop {
     }
   }
 
+  /**
+   * 页面从后台恢复后 aboutToDisappear 已清空了诊断状态；恢复渲染器后
+   * 必须重新建立本次 session 的轮询，否则基础面板和 Pro 本机采样都会停在空值。
+   */
+  private resumeRustDeskDiagnosticsAfterForeground(): void {
+    if (!shouldShowRustDeskDiagnostics(this.rustdeskShowDiagnostics, this.connected,
+      this.isRustDeskSession() ? 'rustdesk' : '', this.sessionId)) {
+      return;
+    }
+    if (!this.rustDeskDiagnosticsDockInitialized) {
+      this.initRustDeskDiagnosticsDock();
+    }
+    this.startRustDeskDiagnosticsPolling();
+    hilog.info(RD_DOMAIN, RD_TAG, 'resumeRustDeskDiagnosticsAfterForeground: polling resumed sessionId=' +
+      this.sessionId.toString() + ' attemptId=' + this.connectAttemptId.toString() +
+      ' pro=' + (this.rustdeskShowProDiagnostics ? 'true' : 'false'));
+  }
+
   private refreshRustDeskDiagnostics(sessionId: number, attemptId: number): void {
     if (!shouldShowRustDeskDiagnostics(this.rustdeskShowDiagnostics, this.connected,
       this.isRustDeskSession() ? 'rustdesk' : '', sessionId) ||
@@ -5714,10 +5732,7 @@ struct RemoteDesktop {
         this.nativeHandles.attachConnectedSession(this.sessionId, RemoteProtocol.rustdesk);
         this.connected = true;
         this.connecting = false;
-        if (this.rustdeskShowDiagnostics && this.isRustDeskSession()) {
-          this.startRustDeskDiagnosticsPolling();
-          this.initRustDeskDiagnosticsDock();
-        }
+        this.resumeRustDeskDiagnosticsAfterForeground();
         this.startRemoteCursorPolling(this.sessionId);
         this.inputForwardReady = true;
         this.scheduleRemoteInputFocus('background-preauthenticated');
@@ -5767,6 +5782,7 @@ struct RemoteDesktop {
 
         // 恢复状态
         this.connected = true;
+        this.resumeRustDeskDiagnosticsAfterForeground();
         this.inputForwardReady = true;
         this.startRemoteCursorPolling(this.sessionId);
         this.scheduleRemoteInputFocus('background-restore');
