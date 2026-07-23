@@ -39,17 +39,37 @@ class RemoteSessionPipXComponentController extends XComponentController {
   }
 
   onSurfaceCreated(surfaceId: string): void {
+    // PiP typeNode callbacks can be dispatched through a system wrapper on
+    // API 23. Keep this callback self-contained: the creation callback only
+    // guarantees the ID; the first dimensions arrive via onSurfaceChanged.
     this.currentSurfaceId = surfaceId;
-    this.refreshSurfaceRect();
-    this.publishSurfaceInfo();
+    this.currentSurfaceWidth = 0;
+    this.currentSurfaceHeight = 0;
+    this.publishedSurfaceId = '';
+    this.publishedSurfaceWidth = 0;
+    this.publishedSurfaceHeight = 0;
     hilog.info(DOMAIN, TAG, 'PIP XComponent surface created id=' + surfaceId);
   }
 
   onSurfaceChanged(surfaceId: string, rect: SurfaceRect): void {
     this.currentSurfaceId = surfaceId;
-    this.currentSurfaceWidth = this.validSurfaceDimension(rect.surfaceWidth);
-    this.currentSurfaceHeight = this.validSurfaceDimension(rect.surfaceHeight);
-    this.publishSurfaceInfo();
+    const width: number = Number.isFinite(rect.surfaceWidth) && rect.surfaceWidth > 0
+      ? Math.round(rect.surfaceWidth) : 0;
+    const height: number = Number.isFinite(rect.surfaceHeight) && rect.surfaceHeight > 0
+      ? Math.round(rect.surfaceHeight) : 0;
+    this.currentSurfaceWidth = width;
+    this.currentSurfaceHeight = height;
+    if (width > 0 && height > 0 &&
+      (this.currentSurfaceId !== this.publishedSurfaceId ||
+       width !== this.publishedSurfaceWidth || height !== this.publishedSurfaceHeight)) {
+      this.publishedSurfaceId = this.currentSurfaceId;
+      this.publishedSurfaceWidth = width;
+      this.publishedSurfaceHeight = height;
+      const handler: PipSurfaceChangedHandler | null = this.surfaceChangedHandler;
+      if (handler !== null && typeof handler === 'function') {
+        handler({ surfaceId: this.currentSurfaceId, surfaceWidth: width, surfaceHeight: height });
+      }
+    }
     hilog.info(DOMAIN, TAG, 'PIP XComponent surface changed id=' + surfaceId +
       ' surface=' + this.currentSurfaceWidth.toString() + 'x' +
       this.currentSurfaceHeight.toString());
