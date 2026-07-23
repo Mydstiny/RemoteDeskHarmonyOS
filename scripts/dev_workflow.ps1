@@ -1,5 +1,5 @@
 param(
-  [ValidateSet('status', 'start', 'doctor', 'finish-check')]
+  [ValidateSet('status', 'sync', 'start', 'doctor', 'finish-check')]
   [string]$Action = 'status',
   [string]$Task = ''
 )
@@ -33,6 +33,31 @@ function Get-BranchesAheadOfMain {
   return $result
 }
 
+function Sync-PublicMain {
+  $currentBranch = Get-GitValue -GitArgs @('branch', '--show-current')
+  $currentChanges = @(Invoke-GitText -GitArgs @('status', '--porcelain'))
+  if ($currentBranch -ne 'main') {
+    throw "Sync must start from main; current branch is '$currentBranch'. Finish or hand off the active task first."
+  }
+  if ($currentChanges.Count -gt 0) {
+    throw 'Sync refuses to overwrite local changes. Commit them on the task branch or move them aside intentionally before syncing.'
+  }
+
+  Invoke-GitText -GitArgs @('fetch', '--prune', 'origin') | ForEach-Object { Write-Host $_ }
+  $localMain = Get-GitValue -GitArgs @('rev-parse', 'main')
+  $remoteMain = Get-GitValue -GitArgs @('rev-parse', 'origin/main')
+  if ($localMain -ne $remoteMain) {
+    Invoke-GitText -GitArgs @('pull', '--ff-only', 'origin', 'main') | ForEach-Object { Write-Host $_ }
+  }
+  Invoke-GitText -GitArgs @('submodule', 'update', '--init', '--recursive') | ForEach-Object { Write-Host $_ }
+  $syncedMain = Get-GitValue -GitArgs @('rev-parse', '--short=9', 'main')
+  Write-Host "Synchronized main with origin/main at $syncedMain."
+  if (Test-Path (Join-Path $root 'docs\codex\CURRENT.md')) {
+    Write-Host 'Shared state: docs/codex/CURRENT.md'
+    Write-Host 'Shared queue: docs/codex/QUEUE.md'
+  }
+}
+
 $branch = Get-GitValue -GitArgs @('branch', '--show-current')
 $head = Get-GitValue -GitArgs @('rev-parse', '--short=9', 'HEAD')
 $main = Get-GitValue -GitArgs @('rev-parse', '--short=9', 'main')
@@ -60,10 +85,20 @@ switch ($Action) {
     if ($changes.Count -gt 0) { $changes | ForEach-Object { Write-Host "change=$_" } }
   }
 
+  'sync' {
+    Sync-PublicMain
+  }
+
   'start' {
     if ($Task -notmatch '^[a-z0-9][a-z0-9-]{2,60}$') {
       throw 'Task must be a lowercase kebab-case name between 3 and 61 characters.'
     }
+    Sync-PublicMain
+    $branch = Get-GitValue -GitArgs @('branch', '--show-current')
+    $changes = @(Invoke-GitText -GitArgs @('status', '--porcelain'))
+    $main = Get-GitValue -GitArgs @('rev-parse', 'main')
+    $originMain = Get-GitValue -GitArgs @('rev-parse', 'origin/main')
+    $activeBranches = @(Get-BranchesAheadOfMain)
     if ($branch -ne 'main') { throw "Cannot start a task while branch '$branch' is active." }
     if ($changes.Count -gt 0) { throw 'Cannot start a task with an uncommitted working tree.' }
     if ($main -ne $originMain) { throw 'Local main must exactly match origin/main before starting a task.' }

@@ -65,10 +65,19 @@ done
 
 [ -n "$verify_sha" ] || exit 0
 
+if command -v pwsh >/dev/null 2>&1; then
+  powershell_cmd="pwsh"
+elif command -v powershell.exe >/dev/null 2>&1; then
+  powershell_cmd="powershell.exe"
+else
+  echo "Open-source compliance: PowerShell 7 (pwsh) is required to verify a push. Install it and retry." >&2
+  exit 1
+fi
+
 temp_worktree="$repo_root/.worktrees/pre-push-$$"
 cleanup() {
   git -C "$repo_root" worktree remove --force "$temp_worktree" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT INT TERM
 git -C "$repo_root" worktree add --detach --quiet "$temp_worktree" "$verify_sha"
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$temp_worktree/scripts/verify_open_source_release.ps1" -Mode "$mode" -RepositoryRoot "$temp_worktree"
+"$powershell_cmd" -NoProfile -ExecutionPolicy Bypass -File "$temp_worktree/scripts/verify_open_source_release.ps1" -Mode "$mode" -RepositoryRoot "$temp_worktree"
