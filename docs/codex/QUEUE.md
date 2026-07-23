@@ -4,8 +4,9 @@ Updated: 2026-07-23 Asia/Shanghai
 
 ## Now
 
-- Finish `codex/mac-migration-bootstrap`: run the final checks, commit the scoped
-  migration fixes, push the task branch and create its PR.
+- Finish `codex/mac-final-verification`: API 23 checks and Light compliance are
+  complete; commit the scoped shared-state update, push the branch and create its
+  PR.
 - Wait for `open-source-compliance`; merge with a merge commit, then synchronize
   local `main` and remove the merged task branch.
 

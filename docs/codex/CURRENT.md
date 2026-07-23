@@ -6,16 +6,16 @@ Updated: 2026-07-23 Asia/Shanghai
 
 - Repository: `Mydstiny/RemoteDeskHarmonyOS`
 - Public branch: `main`
-- Public main commit: `c502221e3` (`Merge PR #28: refresh shared handoff state`)
-- Active task: `codex/mac-migration-bootstrap`; the migration adapter commit is
-  `ffbd1f5`.
-- Local `main` equals local `origin/main`; the task branch is based directly on that
-  public commit.
+- Public main commit: `4dbd5d928` (`Merge pull request #29 from Mydstiny/codex/mac-migration-bootstrap`)
+- Active task: `codex/mac-final-verification`.
+- Local `main` equals local `origin/main`; the active task branch is based directly
+  on that public commit.
 
 ## Current phase
 
 - The migration package restored the complete public source, Git history and
-  recursive `freerdp` submodule on macOS.
+  recursive `freerdp` submodule on macOS; the bootstrap changes are now merged to
+  public `main`.
 - DevEco Studio 6.1.1 opens the repository root successfully. The project remains
   `runtimeOS: HarmonyOS` with `targetSdkVersion` and `compatibleSdkVersion`
   `6.1.0(23)`.
@@ -40,30 +40,34 @@ Updated: 2026-07-23 Asia/Shanghai
 - Opus and RustDesk FFI dependencies build successfully for both `arm64-v8a` and
   `x86_64`; the FFI symbol checks pass after fixing the `pipefail`/SIGPIPE false
   failure in the migration script.
+- `default@OhosTestCompileArkTS` passes. The non-daemon `assembleHap` build passes
+  through native Ninja, ArkTS, `PackageHap`, `PackingCheck`, `SignHap` and debug
+  symbol collection with the Mac-local private signing profile.
 - `hvigorw tasks`, `hvigorw init`, native CMake/Ninja and ArkTS compilation pass.
-  `assembleHap` reaches `PackageHap` and `PackingCheck`, producing the local
-  unsigned artifact at `entry/build/default/outputs/default/entry-default-unsigned.hap`.
+  The local build produces both unsigned and signed HAP artifacts; neither is
+  tracked or uploaded.
 - `core.hooksPath=.githooks`, the sync workflow, history guard, FreeRDP provenance
   checks and Light compliance checks were validated on the restored workspace.
 
 ## Blockers
 
-- GitHub fetch/push/PR operations need a networked run; the current environment has
-  intermittent DNS/SSL failures for `github.com`.
-- A signed HAP requires private local signing material and matching values in the
-  ignored `build-profile.json5`: `.p12`, `.p7b`, `.cer`, store/key passwords and
-  alias. These must be transferred through a secure channel and never committed.
-- AGConnect is optional for import/build but cloud features require the local
-  ignored `entry/src/main/resources/rawfile/agconnect-services.json`; never place
-  its secrets in shared docs or Git.
-- The local PowerShell fallback works for repository checks, but a stable system
-  PowerShell 7 install remains preferable. API 23 native SDK and Rust targets are
-  already present on this Mac.
+- GitHub fetch/push/PR operations require network access outside the local sandbox;
+  the post-merge sync has now succeeded.
+- No SDK or signing input remains required for the current local build: DevEco,
+  API 23 native tooling, Rust targets and the private signing profile are present
+  on this Mac. Signing files and passwords remain local-only.
+- AGConnect is optional for import/build and is not currently configured; provide
+  `entry/src/main/resources/rawfile/agconnect-services.json` through a secure
+  channel only if cloud features or cloud-device validation are needed.
+- The repository-local PowerShell 7 fallback (`7.7.0-preview.3`) passes the
+  compliance gate; a stable system PowerShell 7 install is still recommended but
+  is not blocking this workspace.
 
 ## Next
 
-- Run the final post-commit checks and push `codex/mac-migration-bootstrap`.
-- Create the PR, wait for `open-source-compliance`, merge with a merge commit, then
-  fast-forward local `main` and delete the merged task branch.
+- Run the full API 23 post-merge verification and record exact results.
+- Update the shared handoff, push `codex/mac-final-verification`, and create its PR.
+- Wait for `open-source-compliance`, merge with a merge commit, then fast-forward
+  local `main` and delete the merged task branch.
 - Configure private signing/AGConnect values locally if signed or cloud-enabled
   device validation is required; keep device data and raw evidence local-only.

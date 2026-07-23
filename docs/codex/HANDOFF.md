@@ -4,15 +4,16 @@ Updated: 2026-07-23 Asia/Shanghai
 
 ## Source
 
-- Base: `main` at `c502221e3`, restored from the migration package
-- Active task branch: `codex/mac-migration-bootstrap`
-- Migration adapter commit: `ffbd1f5`
+- Base: `main` at `4dbd5d928`, restored from the migration package and merged
+  through PR #29
+- Active task branch: `codex/mac-final-verification`
 - FreeRDP submodule: `dae8276ac7361b8d14f7b87d41163fe03dbb944e`
 
 ## Completed
 
 - Complete public source and Git history were restored from the migration bundle;
-  the recursive FreeRDP submodule is initialized.
+  the recursive FreeRDP submodule is initialized, and the bootstrap changes are
+  merged to public `main`.
 - DevEco Studio 6.1.1 opens the repository root. API 23 remains the project
   baseline, with the full HarmonyOS SDK and standalone API 23 native SDK kept in
   separate local properties.
@@ -27,30 +28,31 @@ Updated: 2026-07-23 Asia/Shanghai
 
 ## Verification
 
-- `sync_workspace.sh status` and `doctor` passed on the restored clean `main`
-  checkout before the task branch was created.
+- The post-merge `sync_workspace.sh sync` and task-start gate passed. The final
+  verification run is active on `codex/mac-final-verification`.
 - `hvigorw tasks` and `hvigorw init` passed.
 - Opus and RustDesk FFI builds passed for `arm64-v8a` and `x86_64`.
-- `assembleHap --no-daemon` passed through ArkTS, CMake/Ninja, native strip,
-  `PackageHap` and `PackingCheck`; `SignHap` stops on the placeholder certificate
-  path in the ignored local profile.
+- `default@OhosTestCompileArkTS` passed. `assembleHap --no-daemon` passed through
+  ArkTS, CMake/Ninja, native strip, `PackageHap`, `PackingCheck`, `SignHap` and
+  debug symbol collection using the Mac-local private signing profile.
 - Shell syntax, workflow policy, pre-push history protection, FreeRDP provenance,
   and Light compliance checks pass on macOS, including the repository-local
   PowerShell wrapper when no shell setup is sourced first.
 
-## Private inputs still local
+## Private input status
 
-- Signed builds: `.p12`, `.p7b`, `.cer`, certificate alias and passwords, configured
-  only in the ignored `build-profile.json5`.
-- Cloud features: local
-  `entry/src/main/resources/rawfile/agconnect-services.json` with its secret fields.
+- Signed builds: the private profile is already configured locally and `SignHap`
+  passed. The `.p12`, `.p7b`, `.cer`, alias and passwords remain outside Git and
+  shared memory.
+- Cloud features: `entry/src/main/resources/rawfile/agconnect-services.json` is
+  not present on this Mac; provide it securely only when cloud features are needed.
 - Real-device authorization, logs, screenshots and user data stay on the device or
   local machine and are not part of the migration handoff.
 
 ## Next owner action
 
-1. Run the final post-commit checks and inspect the clean working tree.
-2. Push only `codex/mac-migration-bootstrap` and create a PR.
+1. Run the final API 23 checks and inspect the clean working tree.
+2. Push only `codex/mac-final-verification` and create a PR.
 3. Wait for `open-source-compliance`, merge without squash, then run `main` sync and
    delete the merged branch.
 4. Report the final Mac commit/branch, `main` equality, submodule, hook, PowerShell,
