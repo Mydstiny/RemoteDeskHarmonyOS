@@ -20,18 +20,20 @@ export default function releaseNotesPolicyTest(): void {
     it('rejects_invalid_release_versions', 0, (): void => {
       expect(resolveStartupMode(true, 'bad', '1.0.8', true)).assertEqual(StartupMode.LOGIN);
     });
-    it('uses_bottom_sheet_for_phone_guides', 0, (): void => {
-      expect(shouldPresentGuideAsBottomSheet(StartupMode.FIRST_INSTALL_GUIDE, 'sm')).assertTrue();
+    it('keeps_first_install_guide_in_page_content', 0, (): void => {
+      expect(shouldPresentGuideAsBottomSheet(StartupMode.FIRST_INSTALL_GUIDE, 'sm')).assertFalse();
+      expect(shouldPresentGuideAsDialog(StartupMode.FIRST_INSTALL_GUIDE, 'md')).assertFalse();
+      expect(shouldPresentGuideAsDialog(StartupMode.FIRST_INSTALL_GUIDE, 'xl')).assertFalse();
+    });
+    it('uses_bottom_sheet_for_phone_release_notes', 0, (): void => {
       expect(shouldPresentGuideAsBottomSheet(StartupMode.RELEASE_NOTES, 'sm')).assertTrue();
       expect(shouldPresentGuideAsBottomSheet(StartupMode.RELEASE_NOTES, 'md')).assertFalse();
       expect(shouldPresentGuideAsBottomSheet(StartupMode.LOGIN, 'sm')).assertFalse();
     });
-    it('uses_center_sheet_for_all_non_phone_guides', 0, (): void => {
+    it('uses_center_sheet_for_non_phone_release_notes', 0, (): void => {
       expect(shouldPresentGuideAsDialog(StartupMode.RELEASE_NOTES, 'sm')).assertFalse();
       expect(shouldPresentGuideAsDialog(StartupMode.RELEASE_NOTES, 'md')).assertTrue();
       expect(shouldPresentGuideAsDialog(StartupMode.RELEASE_NOTES, 'xl')).assertTrue();
-      expect(shouldPresentGuideAsDialog(StartupMode.FIRST_INSTALL_GUIDE, 'md')).assertTrue();
-      expect(shouldPresentGuideAsDialog(StartupMode.FIRST_INSTALL_GUIDE, 'xl')).assertTrue();
       expect(shouldPresentGuideAsDialog(StartupMode.LOGIN, 'xl')).assertFalse();
     });
   });
