@@ -1482,13 +1482,14 @@ void DecoderNapi::ClearActiveSessionId(uint64_t sessionId) {
                                                      std::memory_order_acq_rel);
 }
 
-void DecoderNapi::SetActiveDisplay(int display) {
+bool DecoderNapi::SetActiveDisplay(int display) {
     if (display < 0) {
-        g_activeDisplay.store(-1, std::memory_order_release);
-        return;
+        const int previous = g_activeDisplay.exchange(-1, std::memory_order_acq_rel);
+        return previous != -1;
     }
-    g_activeDisplay.store(display, std::memory_order_release);
+    const int previous = g_activeDisplay.exchange(display, std::memory_order_acq_rel);
     OH_LOG_INFO(LOG_APP, "[Decoder] active RustDesk display=%{public}d", display);
+    return previous != display;
 }
 
 bool DecoderNapi::BindVideoPipeline(int64_t decoderHandle, int64_t rendererHandle) {

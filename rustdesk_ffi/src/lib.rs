@@ -1169,6 +1169,7 @@ fn rustdesk_connect_impl(
             let stream_stats_for_thread = Arc::clone(&stream_stats);
             let stream_display_state = Arc::clone(&display_state);
             let frame_display_state = Arc::clone(&display_state);
+            let display_callback_state = Arc::clone(&display_state);
             eprintln!(
                 "[RustDesk-FFI] remote display size={}x{} requested={}x{}",
                 remote_width, remote_height, config.width, config.height
@@ -1222,6 +1223,13 @@ fn rustdesk_connect_impl(
                     },
                     |cursor| {
                         dispatch_cursor_update(cursor, on_cursor, callback_user_data);
+                    },
+                    || {
+                        dispatch_display_snapshot(
+                            &display_callback_state,
+                            on_display,
+                            callback_user_data,
+                        );
                     },
                 );
 

@@ -1234,7 +1234,9 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
             // RustDesk invokes this before its stream thread starts. The
             // decoder therefore knows the peer's current display before any
             // interleaved display frame can arrive.
-            DecoderNapi::SetActiveDisplay(display);
+            if (DecoderNapi::SetActiveDisplay(display)) {
+                DecoderNapi::RequestActiveDecoderRecovery();
+            }
         });
     }
 
@@ -1890,8 +1892,6 @@ napi_value NapiSwitchRustDeskDisplay(napi_env env, napi_callback_info info) {
         if (bridge) {
             accepted = bridge->switchDisplay(display);
             if (accepted) {
-                DecoderNapi::SetActiveDisplay(display);
-                DecoderNapi::RequestActiveDecoderRecovery();
                 OH_LOG_INFO(LOG_APP,
                             "[ExtLoader] RustDesk display switch accepted session=%{public}d display=%{public}d",
                             sessionId, display);

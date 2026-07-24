@@ -798,7 +798,7 @@ impl RustDeskConnector {
     /// 运行 streaming 循环 (阻塞)
     ///
     /// 持续接收加密消息，分发到回调。
-    pub fn run_streaming<VF, AFF, AF, CF, CU>(
+    pub fn run_streaming<VF, AFF, AF, CF, CU, DS>(
         &mut self,
         preferred_codec: i32,
         image_quality: i32,
@@ -813,6 +813,7 @@ impl RustDeskConnector {
         mut on_audio: AF,
         mut on_clipboard: CF,
         mut on_cursor: CU,
+        mut on_display_state: DS,
     ) -> io::Result<()>
     where
         VF: FnMut(&VideoFrame),
@@ -820,6 +821,7 @@ impl RustDeskConnector {
         AF: FnMut(&AudioFrame),
         CF: FnMut(&[u8]),
         CU: FnMut(CursorStreamUpdate),
+        DS: FnMut(),
     {
         let remote_keyboard_transport = self
             .session
@@ -1224,6 +1226,7 @@ impl RustDeskConnector {
                     }
                     if let Some(Misc_oneof_union::switch_display(ref display)) = misc.union {
                         Self::apply_switch_display_geometry(&display_state, display, &stream_stats);
+                        on_display_state();
                     }
                     if let Some(Misc_oneof_union::follow_current_display(display)) = misc.union {
                         Self::apply_follow_current_display(
@@ -1231,6 +1234,7 @@ impl RustDeskConnector {
                             display,
                             &stream_stats,
                         );
+                        on_display_state();
                     }
                 }
                 Some(Message_oneof_union::login_response(ref resp)) => {
@@ -1316,6 +1320,7 @@ impl RustDeskConnector {
                     *msg_stats.entry("peer_info").or_default() += 1;
                     self.session.update_peer_info(info.clone());
                     Self::apply_peer_info_geometry(&display_state, info, &stream_stats);
+                    on_display_state();
                 }
                 Some(Message_oneof_union::file_response(ref resp)) => {
                     last_msg_kind = Self::file_response_kind(resp);
