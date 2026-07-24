@@ -144,6 +144,7 @@ if(RDP_BUILD_TESTS)
         test/audio_queue_policy_test.cpp
         test/audio_activity_state_test.cpp
         test/rdp_frame_pump_contract_test.cpp
+        test/rdp_redraw_notifier_test.cpp
         test/rdp_presentation_metrics_test.cpp
         test/rdp_shutdown_state_test.cpp
         test/session_teardown_executor_test.cpp
@@ -473,4 +474,3 @@ set_target_properties(rustdesk_ffi PROPERTIES
     IMPORTED_LOCATION ${RUSTDESK_FFI_LIB}
 )
 target_link_libraries(rdpnapi PUBLIC rustdesk_ffi)
-

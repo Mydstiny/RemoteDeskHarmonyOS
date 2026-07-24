@@ -377,14 +377,24 @@ void GLRenderer::SetRedrawCallback(std::function<void()> callback) {
     redrawCallback_ = std::move(callback);
 }
 
+void GLRenderer::SetSessionRedrawCallback(std::function<void()> callback) {
+    std::lock_guard<std::mutex> lock(redrawCallbackMutex_);
+    sessionRedrawCallback_ = std::move(callback);
+}
+
 void GLRenderer::RequestRedraw() {
-    std::function<void()> callback;
+    std::function<void()> decoderCallback;
+    std::function<void()> sessionCallback;
     {
         std::lock_guard<std::mutex> lock(redrawCallbackMutex_);
-        callback = redrawCallback_;
+        decoderCallback = redrawCallback_;
+        sessionCallback = sessionRedrawCallback_;
     }
-    if (callback) {
-        callback();
+    if (decoderCallback) {
+        decoderCallback();
+    }
+    if (sessionCallback) {
+        sessionCallback();
     }
 }
 
@@ -1138,6 +1148,7 @@ void GLRenderer::Destroy() {
     {
         std::lock_guard<std::mutex> callbackLock(redrawCallbackMutex_);
         redrawCallback_ = nullptr;
+        sessionRedrawCallback_ = nullptr;
     }
     const bool detachedWindowSurface =
         g_surfaceDetached.load(std::memory_order_acquire) && eglSurface_ != EGL_NO_SURFACE;
@@ -1262,6 +1273,8 @@ static std::mutex g_activeRendererMutex;
 static std::atomic<int64_t> g_nextRendererHandle {1};
 static std::unordered_map<int64_t, std::unique_ptr<RendererContext>> g_rendererContexts;
 static std::function<void()> g_activeRedrawCallback;
+static uint64_t g_nextRedrawCallbackToken = 1;
+static uint64_t g_activeRedrawCallbackToken = 0;
 
 static RendererContext* FindRendererContextLocked(int64_t handle) {
     if (handle <= 0) {
@@ -1638,7 +1651,6 @@ napi_value NapiGetRendererViewport(napi_env env, napi_callback_info info) {
 
 void RendererNapi::SetActiveRenderer(int64_t handle) {
     std::shared_ptr<GLRenderer> renderer;
-    std::function<void()> redrawCallback;
     {
         std::lock_guard<std::mutex> lock(g_activeRendererMutex);
         auto* ctx = FindRendererContextLocked(handle);
@@ -1646,6 +1658,11 @@ void RendererNapi::SetActiveRenderer(int64_t handle) {
             OH_LOG_WARN(LOG_APP, "[GL] active renderer rejected stale handle=%{public}lld",
                         static_cast<long long>(handle));
             return;
+        }
+        const int64_t previousHandle = g_activeRendererHandle.load(std::memory_order_acquire);
+        std::shared_ptr<GLRenderer> previousRenderer;
+        if (previousHandle != handle) {
+            previousRenderer = AcquireRendererLocked(previousHandle, false);
         }
         const uint64_t generation = AdvanceRendererGeneration();
         ctx->generation = generation;
@@ -1655,11 +1672,16 @@ void RendererNapi::SetActiveRenderer(int64_t handle) {
             g_surfaceOwnerHandle.store(handle, std::memory_order_release);
         }
         renderer = ctx->renderer;
-        redrawCallback = g_activeRedrawCallback;
+        // Callback setters only touch the renderer callback mutex; keeping
+        // them in the registry critical section serializes active renderer
+        // switches with session callback registration/unregistration.
+        if (previousRenderer && previousRenderer != renderer) {
+            previousRenderer->SetSessionRedrawCallback(nullptr);
+        }
+        renderer->SetSessionRedrawCallback(g_activeRedrawCallback);
     }
     OH_LOG_INFO(LOG_APP, "[GL] active renderer set handle=%{public}lld",
                 static_cast<long long>(handle));
-    renderer->SetRedrawCallback(std::move(redrawCallback));
 }
 
 RdpPresentationMetricsSnapshot RendererNapi::GetActivePresentationStats() {
@@ -1703,6 +1725,10 @@ void RendererNapi::DeactivateRenderer(int64_t handle) {
     }
     std::lock_guard<std::mutex> lock(g_activeRendererMutex);
     if (g_activeRendererHandle.load(std::memory_order_acquire) == handle) {
+        auto renderer = AcquireRendererLocked(handle, true);
+        if (renderer) {
+            renderer->SetSessionRedrawCallback(nullptr);
+        }
         g_activeRendererHandle.store(0, std::memory_order_release);
         AdvanceRendererGeneration();
     }
@@ -1720,6 +1746,9 @@ void RendererNapi::DestroyRendererHandle(int64_t handle) {
             return;
         }
         if (g_activeRendererHandle.load(std::memory_order_acquire) == handle) {
+            if (ctx->renderer) {
+                ctx->renderer->SetSessionRedrawCallback(nullptr);
+            }
             g_activeRendererHandle.store(0, std::memory_order_release);
             AdvanceRendererGeneration();
         }
@@ -1938,16 +1967,40 @@ void RendererNapi::SetRendererRedrawCallback(int64_t handle, std::function<void(
     }
 }
 
-void RendererNapi::SetActiveRedrawCallback(std::function<void()> callback) {
+uint64_t RendererNapi::RegisterActiveRedrawCallback(std::function<void()> callback) {
     std::shared_ptr<GLRenderer> renderer;
+    uint64_t token = 0;
     {
         std::lock_guard<std::mutex> lock(g_activeRendererMutex);
-        g_activeRedrawCallback = callback;
+        token = g_nextRedrawCallbackToken++;
+        if (token == 0) {
+            token = g_nextRedrawCallbackToken++;
+        }
+        g_activeRedrawCallback = std::move(callback);
+        g_activeRedrawCallbackToken = token;
         const int64_t handle = g_activeRendererHandle.load(std::memory_order_acquire);
         renderer = AcquireRendererLocked(handle, true);
+        if (renderer) {
+            renderer->SetSessionRedrawCallback(g_activeRedrawCallback);
+        }
     }
+    return token;
+}
+
+void RendererNapi::UnregisterActiveRedrawCallback(uint64_t token) {
+    if (token == 0) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(g_activeRendererMutex);
+    if (token != g_activeRedrawCallbackToken) {
+        return;
+    }
+    g_activeRedrawCallbackToken = 0;
+    g_activeRedrawCallback = nullptr;
+    const int64_t handle = g_activeRendererHandle.load(std::memory_order_acquire);
+    auto renderer = AcquireRendererLocked(handle, true);
     if (renderer) {
-        renderer->SetRedrawCallback(std::move(callback));
+        renderer->SetSessionRedrawCallback(nullptr);
     }
 }
 

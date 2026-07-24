@@ -22,6 +22,7 @@
 #include "rdp_graphics_lifecycle.h"
 #include "rdp_keymap.h"
 #include "rdp_performance_policy.h"
+#include "rdp_redraw_notifier.h"
 #include "rdp_input_queue.h"
 #include "rdp_shutdown_state.h"
 #ifdef USE_REAL_FREERDP
@@ -614,6 +615,8 @@ struct FreeRdpAdapter::Impl {
     std::atomic<bool>       stopRequested {false};
     std::atomic<bool>       gdiInitialized {false};
     std::atomic<bool>       presentationEnabled {false};
+    std::shared_ptr<RdpRedrawNotifier> redrawNotifier;
+    uint64_t                redrawCallbackToken = 0;
     uint32_t                driveDeviceId = 0;
     std::atomic<int>        paintCount {0};
     std::atomic<int64_t>    firstPaintUs {0};
@@ -789,14 +792,25 @@ struct FreeRdpAdapter::Impl {
         }
         // Canvas transforms only wake the pump. The pump owns the retained
         // frame snapshot and the renderer owner performs the actual GL work.
-        RendererNapi::SetActiveRedrawCallback([this]() {
+        auto notifier = std::make_shared<RdpRedrawNotifier>();
+        notifier->bind([this]() {
             framePump.requestRefresh();
+        });
+        redrawNotifier = notifier;
+        redrawCallbackToken = RendererNapi::RegisterActiveRedrawCallback([notifier]() {
+            notifier->notify();
         });
     }
 
     void stopSessionWorkers() {
         std::lock_guard<std::mutex> lifecycleLock(workerLifecycleMutex);
-        RendererNapi::SetActiveRedrawCallback(nullptr);
+        const uint64_t callbackToken = redrawCallbackToken;
+        redrawCallbackToken = 0;
+        auto notifier = std::move(redrawNotifier);
+        RendererNapi::UnregisterActiveRedrawCallback(callbackToken);
+        if (notifier) {
+            notifier->disableAndWait();
+        }
         traceShutdown("input-stop", "begin");
         stopInputQueueWorker();
         traceShutdown("input-stop", "complete");
@@ -3044,6 +3058,10 @@ RemoteCursorSnapshot FreeRdpAdapter::getRemoteCursorSnapshot(bool includePixels)
 
 FreeRdpAdapter::~FreeRdpAdapter() {
     if (impl_->state == ConnectionState::CONNECTED) { disconnect(); }
+    else if (impl_->redrawCallbackToken != 0 || impl_->inputQueueRunning.load() ||
+             impl_->framePump.isRunning()) {
+        impl_->stopSessionWorkers();
+    }
 }
 
 // ---- 协议元信息 ----

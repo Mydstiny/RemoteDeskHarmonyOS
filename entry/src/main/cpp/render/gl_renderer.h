@@ -74,8 +74,10 @@ public:
     void SetSourceSize(int width, int height);
     /** Apply a local canvas transform. Pan uses a top-left surface origin. */
     void SetCanvasTransform(double scale, double panX, double panY);
-    /** Register a lightweight wake callback; the callback must not touch EGL/GL. */
+    /** Register the decoder-owner wake callback; it must not touch EGL/GL. */
     void SetRedrawCallback(std::function<void()> callback);
+    /** Register the active RDP session wake callback independently of decoder ownership. */
+    void SetSessionRedrawCallback(std::function<void()> callback);
     /** Redraw the retained raw frame on the caller's renderer-owner thread. */
     void RenderRetainedFrame(uint64_t expectedGeneration = 0);
 
@@ -177,6 +179,7 @@ private:
     std::mutex lifecycleMutex_;
     std::mutex redrawCallbackMutex_;
     std::function<void()> redrawCallback_;
+    std::function<void()> sessionRedrawCallback_;
     RdpPresentationMetrics presentationMetrics_;
 
     // 内部方法
@@ -223,7 +226,8 @@ namespace RendererNapi {
                                 int dirtyX, int dirtyY, int dirtyWidth, int dirtyHeight);
     void SetActiveRenderer(int64_t handle);
     void SetRendererRedrawCallback(int64_t handle, std::function<void()> callback);
-    void SetActiveRedrawCallback(std::function<void()> callback);
+    uint64_t RegisterActiveRedrawCallback(std::function<void()> callback);
+    void UnregisterActiveRedrawCallback(uint64_t token);
     void RenderRetained(int64_t handle);
     RdpPresentationMetricsSnapshot GetActivePresentationStats();
     void InvalidateActivePresentation();
