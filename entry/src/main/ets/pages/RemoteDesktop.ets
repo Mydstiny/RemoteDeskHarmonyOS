@@ -1568,11 +1568,14 @@ struct RemoteDesktop {
       return false;
     }
     const mapped: MappedPoint = this.mapInputPoint(event.pinchCenterX, event.pinchCenterY);
+    if (!this.loader.sendRustDeskTouchPan(this.sessionId, 0, mapped.x, mapped.y)) {
+      hilog.warn(RD_DOMAIN, RD_TAG, 'rustdesk-touch-scale start rejected by native bridge');
+      return false;
+    }
     this.rustDeskTouchPinchActive = true;
     this.rustDeskTouchPinchLastScale = 1;
     this.rustDeskTouchPinchLastRemoteX = mapped.x;
     this.rustDeskTouchPinchLastRemoteY = mapped.y;
-    this.loader.sendRustDeskTouchPan(this.sessionId, 0, mapped.x, mapped.y);
     return true;
   }
 
@@ -1583,12 +1586,18 @@ struct RemoteDesktop {
     const nextScale: number = Number.isFinite(event.scale) && event.scale > 0 ?
       event.scale : this.rustDeskTouchPinchLastScale;
     const relative: number = Math.max(0.5, Math.min(2.0, nextScale / this.rustDeskTouchPinchLastScale));
-    this.loader.sendRustDeskTouchScale(this.sessionId, Math.round(relative * 1000));
+    if (!this.loader.sendRustDeskTouchScale(this.sessionId, Math.round(relative * 1000))) {
+      this.releaseCanvasPinchInput('rustdesk-touch-scale-rejected');
+      return;
+    }
     const mapped: MappedPoint = this.mapInputPoint(event.pinchCenterX, event.pinchCenterY);
     const deltaX: number = mapped.x - this.rustDeskTouchPinchLastRemoteX;
     const deltaY: number = mapped.y - this.rustDeskTouchPinchLastRemoteY;
     if (deltaX !== 0 || deltaY !== 0) {
-      this.loader.sendRustDeskTouchPan(this.sessionId, 1, deltaX, deltaY);
+      if (!this.loader.sendRustDeskTouchPan(this.sessionId, 1, deltaX, deltaY)) {
+        this.releaseCanvasPinchInput('rustdesk-touch-pan-rejected');
+        return;
+      }
       this.rustDeskTouchPinchLastRemoteX = mapped.x;
       this.rustDeskTouchPinchLastRemoteY = mapped.y;
     }
@@ -8712,7 +8721,7 @@ struct RemoteDesktop {
           PinchGesture({ fingers: 2, distance: 5 })
             .onActionStart((event: GestureEvent): void => { this.startCanvasPinch(event); })
             .onActionUpdate((event: GestureEvent): void => { this.updateCanvasPinch(event); })
-            .onActionEnd((_event: GestureEvent): void => { this.finishCanvasPinch(); })
+            .onActionEnd((_event: GestureEvent): void => { this.releaseCanvasPinchInput('gesture-end'); })
             .onActionCancel((): void => { this.releaseCanvasPinchInput('gesture-cancel'); })
         )
         .onMouse(this.handleXComponentMouse)
