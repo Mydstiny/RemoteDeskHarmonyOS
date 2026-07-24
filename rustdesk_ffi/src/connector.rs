@@ -910,12 +910,17 @@ impl RustDeskConnector {
                     .map(|last| diagnostic_now.duration_since(last).as_millis())
                     .unwrap_or(0);
                 eprintln!(
-                    "[RustDesk-FFI] control diag reliable_depth={} max_reliable_depth={} coalesced_mouse={} coalesced_refresh={} coalesced_pressure={} batch_limit_hits={} receive_gap_ms={} sent_total={} sent_mouse_moves={} sent_mouse_buttons={} send_errors={} cursor_positions={} cursor_gap_ms={}",
+                    "[RustDesk-FFI] control diag reliable_depth={} max_reliable_depth={} coalesced_mouse={} coalesced_refresh={} coalesced_pressure={} coalesced_touch_scale={} coalesced_touch_pan={} touch_active={} touch_update_pending={} touch_barrier_wait={} batch_limit_hits={} receive_gap_ms={} sent_total={} sent_mouse_moves={} sent_mouse_buttons={} send_errors={} cursor_positions={} cursor_gap_ms={}",
                     snapshot.reliable_depth,
                     snapshot.max_reliable_depth,
                     snapshot.coalesced_mouse_moves,
                     snapshot.coalesced_refreshes,
                     snapshot.coalesced_video_pressure,
+                    snapshot.coalesced_touch_scales,
+                    snapshot.coalesced_touch_pan_updates,
+                    snapshot.touch_active,
+                    snapshot.touch_update_pending,
+                    snapshot.touch_barrier_wait,
                     snapshot.batch_limit_hits,
                     diagnostic_now.duration_since(last_successful_receive_at).as_millis(),
                     sent_control_total,

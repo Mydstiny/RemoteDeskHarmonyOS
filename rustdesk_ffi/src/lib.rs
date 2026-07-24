@@ -1609,8 +1609,7 @@ pub extern "C" fn rustdesk_send_touch_scale(handle: *mut c_void, scale: c_int) -
         return false;
     }
     let ctx = unsafe { &*(handle as *const RustDeskClient) };
-    ctx.controls.enqueue(ControlMsg::TouchScale { scale });
-    true
+    ctx.controls.enqueue(ControlMsg::TouchScale { scale })
 }
 
 #[no_mangle]
@@ -1630,8 +1629,7 @@ pub extern "C" fn rustdesk_send_touch_pan(
         _ => return false,
     };
     let ctx = unsafe { &*(handle as *const RustDeskClient) };
-    ctx.controls.enqueue(message);
-    true
+    ctx.controls.enqueue(message)
 }
 
 /// 断开 RustDesk 连接并释放资源
@@ -2110,8 +2108,8 @@ mod tests {
         assert!(!rustdesk_change_display_resolution(handle, 0, 0, 1080));
         assert!(!rustdesk_change_display_resolution(handle, 0, 1920, 0));
         assert!(rustdesk_change_display_resolution(handle, 1, 1080, 1920));
-        assert!(rustdesk_send_touch_scale(handle, 1250));
         assert!(rustdesk_send_touch_pan(handle, 0, 100, 200));
+        assert!(rustdesk_send_touch_scale(handle, 1250));
         assert!(rustdesk_send_touch_pan(handle, 1, -10, 12));
         assert!(rustdesk_send_touch_pan(handle, 2, 90, 212));
         assert!(!rustdesk_send_touch_pan(handle, 3, 0, 0));
@@ -2119,8 +2117,8 @@ mod tests {
         let controls = client.controls.take_batch(8);
         assert!(matches!(controls.as_slice(), [
             ControlMsg::ChangeDisplayResolution { display: 1, width: 1080, height: 1920 },
-            ControlMsg::TouchScale { scale: 1250 },
             ControlMsg::TouchPanStart { x: 100, y: 200 },
+            ControlMsg::TouchScale { scale: 1250 },
             ControlMsg::TouchPanUpdate { x: -10, y: 12 },
             ControlMsg::TouchPanEnd { x: 90, y: 212 },
         ]));
