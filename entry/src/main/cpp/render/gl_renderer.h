@@ -15,6 +15,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <functional>
 #include <mutex>
 #include <string>
 
@@ -73,6 +74,10 @@ public:
     void SetSourceSize(int width, int height);
     /** Apply a local canvas transform. Pan uses a top-left surface origin. */
     void SetCanvasTransform(double scale, double panX, double panY);
+    /** Register a lightweight wake callback; the callback must not touch EGL/GL. */
+    void SetRedrawCallback(std::function<void()> callback);
+    /** Redraw the retained raw frame on the caller's renderer-owner thread. */
+    void RenderRetainedFrame(uint64_t expectedGeneration = 0);
 
     /** 最近一秒的实际 swap/presentation 统计；读取不会清零计数。 */
     RdpPresentationMetricsSnapshot GetPresentationStats();
@@ -147,6 +152,12 @@ private:
     double canvasScale_;
     double canvasPanX_;
     double canvasPanY_;
+    std::mutex transformPublishMutex_;
+    std::atomic<uint64_t> canvasTransformVersion_;
+    std::atomic<double> pendingCanvasScale_;
+    std::atomic<double> pendingCanvasPanX_;
+    std::atomic<double> pendingCanvasPanY_;
+    uint64_t appliedCanvasTransformVersion_;
     // Lock-free viewport snapshot for ArkTS/NAPI coordinate mapping. The
     // render lifecycle mutex may be held across eglSwapBuffers(), so readers
     // must never wait on it from the UI thread.
@@ -164,6 +175,8 @@ private:
     bool initialized_;
     bool destroying_;
     std::mutex lifecycleMutex_;
+    std::mutex redrawCallbackMutex_;
+    std::function<void()> redrawCallback_;
     RdpPresentationMetrics presentationMetrics_;
 
     // 内部方法
@@ -174,6 +187,8 @@ private:
     GLuint CreateRawShaderProgram();
     void   CreateQuadGeometry();
     void   SetupRawTexture(int width, int height);
+    void   ApplyPendingCanvasTransformLocked();
+    void   RequestRedraw();
     void   CalculateViewport(int sourceWidth, int sourceHeight,
                              int& vpX, int& vpY, int& vpW, int& vpH) const;
     void   PublishViewportSnapshot(int vpX, int vpY, int vpW, int vpH);
@@ -181,6 +196,7 @@ private:
                                             int stride, bool useDirtyRect, int dirtyX,
                                             int dirtyY, int dirtyWidth, int dirtyHeight,
                                             uint64_t generation);
+    void RenderRetainedFrameLocked(uint64_t expectedGeneration);
 };
 
 // ============================================================
@@ -206,6 +222,9 @@ namespace RendererNapi {
     int RenderRawBgraRectActive(const uint8_t* data, size_t size, int width, int height, int stride,
                                 int dirtyX, int dirtyY, int dirtyWidth, int dirtyHeight);
     void SetActiveRenderer(int64_t handle);
+    void SetRendererRedrawCallback(int64_t handle, std::function<void()> callback);
+    void SetActiveRedrawCallback(std::function<void()> callback);
+    void RenderRetained(int64_t handle);
     RdpPresentationMetricsSnapshot GetActivePresentationStats();
     void InvalidateActivePresentation();
     bool ReenableActivePresentation();

@@ -33,6 +33,9 @@ public:
     bool start();
     void stop();
     bool submitLatest(RdpFrameSubmission&& submission);
+    /** Request a retained-frame presentation; caller only wakes this worker. */
+    void requestRefresh();
+    void setRefreshSource(std::shared_ptr<RdpDamageAccumulator> source);
     void invalidatePending();
     bool isRunning() const;
 
@@ -59,8 +62,10 @@ private:
     std::thread worker_;
     bool running_ = false;
     bool hasFrame_ = false;
+    bool refreshRequested_ = false;
     uint64_t pumpGeneration_ = 0;
     RdpFrameSubmission frame_;
+    std::shared_ptr<RdpDamageAccumulator> refreshSource_;
     RdpPresentationMetrics metrics_;
     RdpFrameScheduler scheduler_;
     RdpGlUploadGate glUploadGate_;

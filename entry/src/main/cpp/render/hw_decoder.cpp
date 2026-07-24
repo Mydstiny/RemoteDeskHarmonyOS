@@ -465,22 +465,39 @@ void HardwareDecoder::noteFrameAvailable() {
     frameAvailableCv_.notify_one();
 }
 
-bool HardwareDecoder::waitForFrameAvailable() {
+bool HardwareDecoder::waitForRenderRequest(bool& hasNewFrame) {
     std::unique_lock<std::mutex> lk(mutex_);
     bool ok = frameAvailableCv_.wait_for(lk, std::chrono::milliseconds(50), [this]() {
-        return renderThreadStop_.load() || !initialized_ || frameAvailableCount_ > frameConsumeCount_;
+        return renderThreadStop_.load() || !initialized_ ||
+            frameAvailableCount_ > frameConsumeCount_ ||
+            redrawRequested_;
     });
-    if (ok && !renderThreadStop_.load() && initialized_ && frameAvailableCount_ > frameConsumeCount_) {
-        ++frameConsumeCount_;
-        return true;
+    if (!ok || renderThreadStop_.load() || !initialized_) {
+        return false;
     }
-    return false;
+    hasNewFrame = frameAvailableCount_ > frameConsumeCount_;
+    if (hasNewFrame) {
+        ++frameConsumeCount_;
+        // A decoded frame is presented through the same callback and consumes
+        // the newest transform, so an older retained redraw hint is redundant.
+        redrawRequested_ = false;
+    } else if (redrawRequested_) {
+        redrawRequested_ = false;
+    }
+    return true;
 }
 
 void HardwareDecoder::handleOutputBuffer(uint32_t /*index*/) {
     if (!nativeImage_) { return; }
 
-    if (!waitForFrameAvailable()) {
+    bool hasNewFrame = false;
+    if (!waitForRenderRequest(hasNewFrame)) {
+        return;
+    }
+
+    // A transform wake may arrive before the first decoded frame. There is no
+    // retained image to present yet, so wait for the first NativeImage update.
+    if (!hasNewFrame && outputFrameCount_.load(std::memory_order_acquire) == 0) {
         return;
     }
 
@@ -507,12 +524,14 @@ void HardwareDecoder::handleOutputBuffer(uint32_t /*index*/) {
         }
     }
 
-    // 更新 NativeImage — 解码帧已写入 surface, 刷新 GL 纹理
-    int32_t ret = OH_NativeImage_UpdateSurfaceImage(nativeImage_);
-    if (ret != 0) {
-        ++updateSurfaceFailureCount_;
-        OH_LOG_WARN(LOG_APP, "[Decoder] UpdateSurfaceImage 失败: %{public}d", ret);
-        return;
+    if (hasNewFrame) {
+        // 更新 NativeImage — 解码帧已写入 surface, 刷新 GL 纹理
+        int32_t ret = OH_NativeImage_UpdateSurfaceImage(nativeImage_);
+        if (ret != 0) {
+            ++updateSurfaceFailureCount_;
+            OH_LOG_WARN(LOG_APP, "[Decoder] UpdateSurfaceImage 失败: %{public}d", ret);
+            return;
+        }
     }
 
     // 通知渲染器: 纹理就绪
@@ -576,6 +595,17 @@ void HardwareDecoder::StopRenderThreadForDetach() {
 
 GLuint HardwareDecoder::GetTextureId() const {
     return textureId_;
+}
+
+void HardwareDecoder::RequestRedraw() {
+    {
+        std::lock_guard<std::mutex> lk(mutex_);
+        if (!initialized_ || renderThreadStop_.load(std::memory_order_acquire)) {
+            return;
+        }
+        redrawRequested_ = true;
+    }
+    frameAvailableCv_.notify_one();
 }
 
 void HardwareDecoder::Flush() {
@@ -711,6 +741,8 @@ struct DecoderContext {
     std::thread softThread;
     std::deque<SoftQueuedFrame> softQueue;
     bool softStop = false;
+    bool softRedrawRequested = false;
+    std::atomic<int64_t> softRendererHandle {0};
     bool softWaitingKeyframe = false;
     std::atomic<uint64_t> softQueued {0};
     std::atomic<uint64_t> softDecoded {0};
@@ -771,6 +803,7 @@ void StopSoftwareWorker(DecoderContext* ctx) {
         std::lock_guard<std::mutex> lk(ctx->softMutex);
         ctx->softStop = true;
         ctx->softQueue.clear();
+        ctx->softRedrawRequested = false;
         ctx->softWaitingKeyframe = false;
         shouldJoin = ctx->softThread.joinable();
     }
@@ -781,7 +814,22 @@ void StopSoftwareWorker(DecoderContext* ctx) {
     {
         std::lock_guard<std::mutex> lk(ctx->softMutex);
         ctx->softStop = false;
+        ctx->softRedrawRequested = false;
     }
+}
+
+void RequestSoftwareRedraw(DecoderContext* ctx) {
+    if (!ctx) {
+        return;
+    }
+    {
+        std::lock_guard<std::mutex> lk(ctx->softMutex);
+        if (ctx->softStop) {
+            return;
+        }
+        ctx->softRedrawRequested = true;
+    }
+    ctx->softCv.notify_one();
 }
 
 void StartSoftwareWorkerIfNeeded(DecoderContext* ctx) {
@@ -798,17 +846,32 @@ void StartSoftwareWorkerIfNeeded(DecoderContext* ctx) {
         while (true) {
             SoftQueuedFrame item;
             size_t queueLeft = 0;
+            bool redrawOnly = false;
             {
                 std::unique_lock<std::mutex> lk(ctx->softMutex);
                 ctx->softCv.wait(lk, [ctx]() {
-                    return ctx->softStop || !ctx->softQueue.empty();
+                    return ctx->softStop || ctx->softRedrawRequested || !ctx->softQueue.empty();
                 });
                 if (ctx->softStop) {
                     break;
                 }
-                item = std::move(ctx->softQueue.front());
-                ctx->softQueue.pop_front();
-                queueLeft = ctx->softQueue.size();
+                if (ctx->softRedrawRequested) {
+                    ctx->softRedrawRequested = false;
+                    redrawOnly = true;
+                } else {
+                    item = std::move(ctx->softQueue.front());
+                    ctx->softQueue.pop_front();
+                    queueLeft = ctx->softQueue.size();
+                }
+            }
+
+            if (redrawOnly) {
+                const int64_t rendererHandle =
+                    ctx->softRendererHandle.load(std::memory_order_acquire);
+                if (rendererHandle > 0) {
+                    RendererNapi::RenderRetained(rendererHandle);
+                }
+                continue;
             }
 
             if (!ctx->softwareDecoder || !ctx->softwareDecoder->IsInitialized() || item.data.empty()) {
@@ -916,7 +979,7 @@ CodecType CurrentCodec(const DecoderContext* ctx) {
     return CodecType::H264;
 }
 
-bool ConfigurePipeline(DecoderContext* ctx) {
+bool ConfigurePipeline(const std::shared_ptr<DecoderContext>& ctx) {
     if (!ctx || ctx->rendererHandle <= 0) {
         return false;
     }
@@ -930,8 +993,15 @@ bool ConfigurePipeline(DecoderContext* ctx) {
         if (ctx->observedFrameSize) {
             RendererNapi::SetActiveSourceSize(ctx->width, ctx->height);
         }
+        ctx->softRendererHandle.store(rendererHandle, std::memory_order_release);
         ctx->softwareDecoder->SetFrameCallback([](const uint8_t* data, size_t size, int width, int height, int stride) {
             return RendererNapi::RenderRawBgraActive(data, size, width, height, stride);
+        });
+        const std::weak_ptr<DecoderContext> weakContext = ctx;
+        RendererNapi::SetRendererRedrawCallback(rendererHandle, [weakContext]() {
+            if (const auto context = weakContext.lock()) {
+                RequestSoftwareRedraw(context.get());
+            }
         });
         return true;
     }
@@ -939,6 +1009,7 @@ bool ConfigurePipeline(DecoderContext* ctx) {
     if (!ctx->decoder || !ctx->decoder->IsInitialized()) {
         return false;
     }
+    ctx->softRendererHandle.store(0, std::memory_order_release);
     // Hardware output uses the same renderer viewport path as software output.
     // Publish the remote frame dimensions explicitly so a rotated page surface
     // cannot become the PIP content ratio before the first frame is presented.
@@ -958,17 +1029,27 @@ bool ConfigurePipeline(DecoderContext* ctx) {
         RendererNapi::SetRendererSourceSize(rendererHandle, width, height);
         RendererNapi::RenderNative(rendererHandle, textureId);
     });
+    const std::weak_ptr<HardwareDecoder> weakDecoder = ctx->decoder;
+    RendererNapi::SetRendererRedrawCallback(rendererHandle, [weakDecoder]() {
+        if (const auto decoder = weakDecoder.lock()) {
+            decoder->RequestRedraw();
+        }
+    });
     RendererNapi::ReleaseCurrent(rendererHandle);
     ctx->decoder->StartRenderThread();
     return true;
 }
 
-bool RecreateDecoderForFrame(DecoderContext* ctx, const VideoFrame& frame) {
+bool RecreateDecoderForFrame(const std::shared_ptr<DecoderContext>& ctx, const VideoFrame& frame) {
     if (!ctx || frame.width <= 0 || frame.height <= 0) {
         return false;
     }
 
-    StopSoftwareWorker(ctx);
+    if (ctx->rendererHandle > 0) {
+        RendererNapi::SetRendererRedrawCallback(ctx->rendererHandle, nullptr);
+    }
+    ctx->softRendererHandle.store(0, std::memory_order_release);
+    StopSoftwareWorker(ctx.get());
     if (ctx->decoder) {
         ctx->decoder->Destroy();
         ctx->decoder.reset();
@@ -1298,7 +1379,7 @@ int DecoderNapi::DecodeNative(int64_t handle, const VideoFrame& frame) {
                     frame.width,
                     frame.height,
                     frame.size);
-        if (!RecreateDecoderForFrame(ctx.get(), frame)) {
+        if (!RecreateDecoderForFrame(ctx, frame)) {
             return -3;
         }
         ctx->recoveryRequested.store(false);
@@ -1317,7 +1398,7 @@ int DecoderNapi::DecodeNative(int64_t handle, const VideoFrame& frame) {
         if (!frame.isKeyFrame) {
             return -3;
         }
-        if (!RecreateDecoderForFrame(ctx.get(), frame)) {
+        if (!RecreateDecoderForFrame(ctx, frame)) {
             return -3;
         }
     }
@@ -1393,6 +1474,10 @@ void DecoderNapi::DestroyDecoderHandle(int64_t handle) {
     }
     std::lock_guard<std::mutex> pipelineLock(ctx->pipelineMutex);
     ctx->videoPipelineAttached = false;
+    ctx->softRendererHandle.store(0, std::memory_order_release);
+    if (ctx->rendererHandle > 0) {
+        RendererNapi::SetRendererRedrawCallback(ctx->rendererHandle, nullptr);
+    }
     StopSoftwareWorker(ctx.get());
     if (ctx->decoder) {
         ctx->decoder->Destroy();
@@ -1503,6 +1588,10 @@ bool DecoderNapi::BindVideoPipeline(int64_t decoderHandle, int64_t rendererHandl
     std::lock_guard<std::mutex> pipelineLock(ctx->pipelineMutex);
     if (ctx->videoPipelineAttached) {
         ctx->videoPipelineAttached = false;
+        ctx->softRendererHandle.store(0, std::memory_order_release);
+        if (ctx->rendererHandle > 0) {
+            RendererNapi::SetRendererRedrawCallback(ctx->rendererHandle, nullptr);
+        }
         if (ctx->useSoftware) {
             StopSoftwareWorker(ctx.get());
             if (ctx->softwareDecoder) {
@@ -1513,12 +1602,13 @@ bool DecoderNapi::BindVideoPipeline(int64_t decoderHandle, int64_t rendererHandl
         }
     }
     ctx->rendererHandle = rendererHandle;
-    if (!ConfigurePipeline(ctx.get())) {
+    if (!ConfigurePipeline(ctx)) {
         OH_LOG_WARN(LOG_APP, "[Decoder] bindVideoPipeline failed: decoder=%{public}lld renderer=%{public}lld soft=%{public}s",
                     static_cast<long long>(decoderHandle),
                     static_cast<long long>(rendererHandle),
                     ctx->useSoftware ? "yes" : "no");
         ctx->rendererHandle = 0;
+        ctx->softRendererHandle.store(0, std::memory_order_release);
         return false;
     }
 
@@ -1541,16 +1631,23 @@ bool DecoderNapi::DetachVideoPipeline(int64_t decoderHandle) {
 
     std::lock_guard<std::mutex> pipelineLock(ctx->pipelineMutex);
     ctx->videoPipelineAttached = false;
+    ctx->softRendererHandle.store(0, std::memory_order_release);
     int64_t expected = decoderHandle;
     if (g_activeDecoderHandle.compare_exchange_strong(expected, 0)) {
         g_activeDecoderSessionId.store(0, std::memory_order_release);
     }
     if (ctx->useSoftware) {
+        if (ctx->rendererHandle > 0) {
+            RendererNapi::SetRendererRedrawCallback(ctx->rendererHandle, nullptr);
+        }
         StopSoftwareWorker(ctx.get());
         if (ctx->softwareDecoder) {
             ctx->softwareDecoder->SetFrameCallback(nullptr);
         }
     } else if (ctx->decoder) {
+        if (ctx->rendererHandle > 0) {
+            RendererNapi::SetRendererRedrawCallback(ctx->rendererHandle, nullptr);
+        }
         ctx->decoder->StopRenderThreadForDetach();
     }
     ctx->rendererHandle = 0;

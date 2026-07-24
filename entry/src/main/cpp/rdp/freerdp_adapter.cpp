@@ -781,15 +781,22 @@ struct FreeRdpAdapter::Impl {
     void startSessionWorkers(FreeRdpAdapter* owner) {
         std::lock_guard<std::mutex> lifecycleLock(workerLifecycleMutex);
         startInputQueueWorker(owner);
+        framePump.setRefreshSource(damageAccumulator);
         if (!framePump.start()) {
             presentationEnabled.store(false, std::memory_order_release);
             OH_LOG_ERROR(LOG_APP, "[RDP] frame pump unavailable; presentation remains disabled");
             return;
         }
+        // Canvas transforms only wake the pump. The pump owns the retained
+        // frame snapshot and the renderer owner performs the actual GL work.
+        RendererNapi::SetActiveRedrawCallback([this]() {
+            framePump.requestRefresh();
+        });
     }
 
     void stopSessionWorkers() {
         std::lock_guard<std::mutex> lifecycleLock(workerLifecycleMutex);
+        RendererNapi::SetActiveRedrawCallback(nullptr);
         traceShutdown("input-stop", "begin");
         stopInputQueueWorker();
         traceShutdown("input-stop", "complete");
