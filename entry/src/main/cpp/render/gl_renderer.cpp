@@ -16,6 +16,7 @@
 #include <cmath>
 #include <memory>
 #include <unordered_map>
+#include <utility>
 #include <GLES2/gl2ext.h>
 #include <ace/xcomponent/native_interface_xcomponent.h>
 #include <native_window/external_window.h>
@@ -354,6 +355,9 @@ GLRenderer::GLRenderer()
       width_(0), height_(0), sourceWidth_(0), sourceHeight_(0),
       lastVpX_(0), lastVpY_(0), lastVpW_(0), lastVpH_(0),
       canvasScale_(1.0), canvasPanX_(0.0), canvasPanY_(0.0),
+      canvasTransformVersion_(0), pendingCanvasScale_(1.0),
+      pendingCanvasPanX_(0.0), pendingCanvasPanY_(0.0),
+      appliedCanvasTransformVersion_(0),
       viewportSnapshotVersion_(0), snapshotVpX_(0), snapshotVpY_(0),
       snapshotVpW_(0), snapshotVpH_(0), snapshotSourceWidth_(0),
       snapshotSourceHeight_(0), snapshotSurfaceWidth_(0), snapshotSurfaceHeight_(0),
@@ -366,6 +370,43 @@ GLRenderer::~GLRenderer() {
 void GLRenderer::SetRendererHandle(int64_t handle) {
     std::lock_guard<std::mutex> lock(lifecycleMutex_);
     rendererHandle_ = handle > 0 ? handle : 0;
+}
+
+void GLRenderer::SetRedrawCallback(std::function<void()> callback) {
+    std::lock_guard<std::mutex> lock(redrawCallbackMutex_);
+    redrawCallback_ = std::move(callback);
+}
+
+void GLRenderer::RequestRedraw() {
+    std::function<void()> callback;
+    {
+        std::lock_guard<std::mutex> lock(redrawCallbackMutex_);
+        callback = redrawCallback_;
+    }
+    if (callback) {
+        callback();
+    }
+}
+
+void GLRenderer::ApplyPendingCanvasTransformLocked() {
+    for (;;) {
+        const uint64_t before = canvasTransformVersion_.load(std::memory_order_acquire);
+        if ((before & 1U) != 0U || before == appliedCanvasTransformVersion_) {
+            return;
+        }
+        const double scale = pendingCanvasScale_.load(std::memory_order_relaxed);
+        const double panX = pendingCanvasPanX_.load(std::memory_order_relaxed);
+        const double panY = pendingCanvasPanY_.load(std::memory_order_relaxed);
+        const uint64_t after = canvasTransformVersion_.load(std::memory_order_acquire);
+        if (before != after || (after & 1U) != 0U) {
+            continue;
+        }
+        canvasScale_ = scale;
+        canvasPanX_ = panX;
+        canvasPanY_ = panY;
+        appliedCanvasTransformVersion_ = after;
+        return;
+    }
 }
 
 bool GLRenderer::MakeCurrent() {
@@ -739,6 +780,7 @@ RdpPresentMetrics GLRenderer::RenderRawBGRAInternal(
         metrics.result = RdpPresentResult::MakeCurrentFailed;
         return metrics;
     }
+    ApplyPendingCanvasTransformLocked();
 
     const auto uploadBeginAt = clock::now();
     int rowStride = stride > 0 ? stride : width * 4;
@@ -869,6 +911,7 @@ void GLRenderer::RenderFrame(GLuint textureId) {
     if (!MakeCurrent()) {
         return;
     }
+    ApplyPendingCanvasTransformLocked();
 
     glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT);
@@ -923,6 +966,7 @@ void GLRenderer::RenderFrame(GLuint textureId) {
 
 void GLRenderer::Resize(int width, int height) {
     std::lock_guard<std::mutex> lock(lifecycleMutex_);
+    ApplyPendingCanvasTransformLocked();
     width_ = width;
     height_ = height;
     CalculateViewport(sourceWidth_, sourceHeight_, lastVpX_, lastVpY_, lastVpW_, lastVpH_);
@@ -932,6 +976,7 @@ void GLRenderer::Resize(int width, int height) {
 
 void GLRenderer::SetSourceSize(int width, int height) {
     std::lock_guard<std::mutex> lock(lifecycleMutex_);
+    ApplyPendingCanvasTransformLocked();
     if (width <= 0 || height <= 0) {
         return;
     }
@@ -946,16 +991,79 @@ void GLRenderer::SetSourceSize(int width, int height) {
 }
 
 void GLRenderer::SetCanvasTransform(double scale, double panX, double panY) {
-    std::lock_guard<std::mutex> lock(lifecycleMutex_);
     if (!std::isfinite(scale) || scale <= 0.0 || !std::isfinite(panX) || !std::isfinite(panY)) {
         OH_LOG_WARN(LOG_APP, "[GL] ignored invalid canvas transform");
         return;
     }
-    canvasScale_ = std::clamp(scale, 0.05, 12.0);
-    canvasPanX_ = panX;
-    canvasPanY_ = panY;
-    CalculateViewport(sourceWidth_, sourceHeight_, lastVpX_, lastVpY_, lastVpW_, lastVpH_);
-    PublishViewportSnapshot(lastVpX_, lastVpY_, lastVpW_, lastVpH_);
+    const double clampedScale = std::clamp(scale, 0.05, 12.0);
+    // Publish a complete transform with a tiny seqlock. The UI thread never
+    // waits for the EGL owner; the owner consumes the newest stable tuple.
+    {
+        std::lock_guard<std::mutex> publishLock(transformPublishMutex_);
+        canvasTransformVersion_.fetch_add(1, std::memory_order_acq_rel);
+        pendingCanvasScale_.store(clampedScale, std::memory_order_relaxed);
+        pendingCanvasPanX_.store(panX, std::memory_order_relaxed);
+        pendingCanvasPanY_.store(panY, std::memory_order_relaxed);
+        canvasTransformVersion_.fetch_add(1, std::memory_order_release);
+    }
+    RequestRedraw();
+}
+
+void GLRenderer::RenderRetainedFrame(uint64_t expectedGeneration) {
+    std::lock_guard<std::mutex> lock(lifecycleMutex_);
+    RenderRetainedFrameLocked(expectedGeneration);
+}
+
+void GLRenderer::RenderRetainedFrameLocked(uint64_t expectedGeneration) {
+    using clock = std::chrono::steady_clock;
+    if ((expectedGeneration != 0 && expectedGeneration !=
+            g_rendererGeneration.load(std::memory_order_acquire)) ||
+        destroying_ || !initialized_ || rawShaderProgram_ == 0 || rawTexture_ == 0 ||
+        rawTextureWidth_ <= 0 || rawTextureHeight_ <= 0 ||
+        g_surfaceDetached.load(std::memory_order_acquire) ||
+        !g_surfaceReady.load(std::memory_order_acquire)) {
+        return;
+    }
+    if (!MakeCurrent()) {
+        return;
+    }
+    if (expectedGeneration != 0 && expectedGeneration !=
+            g_rendererGeneration.load(std::memory_order_acquire)) {
+        ReleaseCurrent();
+        return;
+    }
+    ApplyPendingCanvasTransformLocked();
+    const auto drawBeginAt = clock::now();
+    int vpX = 0, vpY = 0, vpW = width_, vpH = height_;
+    CalculateViewport(rawTextureWidth_, rawTextureHeight_, vpX, vpY, vpW, vpH);
+    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glViewport(vpX, height_ - vpY - vpH, vpW, vpH);
+    lastVpX_ = vpX;
+    lastVpY_ = vpY;
+    lastVpW_ = vpW;
+    lastVpH_ = vpH;
+    PublishViewportSnapshot(vpX, vpY, vpW, vpH);
+    glUseProgram(rawShaderProgram_);
+    glUniform1i(rawSamplerLocation_, 0);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, rawTexture_);
+    glBindVertexArray(vao_);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    glBindVertexArray(0);
+    const auto drawAt = clock::now();
+    const bool swapped = eglSwapBuffers(eglDisplay_, eglSurface_) == EGL_TRUE;
+    const auto swapAt = clock::now();
+    ReleaseCurrent();
+    RdpPresentMetrics metrics;
+    metrics.result = swapped ? RdpPresentResult::Presented : RdpPresentResult::SwapFailed;
+    metrics.drawUs = std::chrono::duration_cast<std::chrono::microseconds>(
+        drawAt - drawBeginAt).count();
+    metrics.swapUs = std::chrono::duration_cast<std::chrono::microseconds>(
+        swapAt - drawAt).count();
+    const auto nowUs = std::chrono::duration_cast<std::chrono::microseconds>(
+        swapAt.time_since_epoch()).count();
+    presentationMetrics_.recordPresent(nowUs, metrics);
 }
 
 void GLRenderer::CalculateViewport(int sourceWidth, int sourceHeight,
@@ -1027,6 +1135,10 @@ void GLRenderer::Destroy() {
         return;
     }
     destroying_ = true;
+    {
+        std::lock_guard<std::mutex> callbackLock(redrawCallbackMutex_);
+        redrawCallback_ = nullptr;
+    }
     const bool detachedWindowSurface =
         g_surfaceDetached.load(std::memory_order_acquire) && eglSurface_ != EGL_NO_SURFACE;
     EGLNativeWindowType surfaceWindow = 0;
@@ -1149,6 +1261,7 @@ static std::mutex g_activeRendererMutex;
 // mutex so stale callbacks are rejected before any context is dereferenced.
 static std::atomic<int64_t> g_nextRendererHandle {1};
 static std::unordered_map<int64_t, std::unique_ptr<RendererContext>> g_rendererContexts;
+static std::function<void()> g_activeRedrawCallback;
 
 static RendererContext* FindRendererContextLocked(int64_t handle) {
     if (handle <= 0) {
@@ -1160,6 +1273,19 @@ static RendererContext* FindRendererContextLocked(int64_t handle) {
 
 static bool IsActiveRendererHandleLocked(int64_t handle) {
     return handle > 0 && g_activeRendererHandle.load(std::memory_order_acquire) == handle;
+}
+
+static std::shared_ptr<GLRenderer> AcquireRendererLocked(int64_t handle,
+                                                          bool requireActive,
+                                                          uint64_t* generation = nullptr) {
+    auto* ctx = FindRendererContextLocked(handle);
+    if (!ctx || !ctx->renderer || (requireActive && !IsActiveRendererHandleLocked(handle))) {
+        return nullptr;
+    }
+    if (generation) {
+        *generation = ctx->generation;
+    }
+    return ctx->renderer;
 }
 
 /**
@@ -1230,10 +1356,13 @@ napi_value NapiRenderFrame(napi_env env, napi_callback_info info) {
     int32_t textureId;
     napi_get_value_int32(env, args[1], &textureId);
 
-    std::lock_guard<std::mutex> lock(g_activeRendererMutex);
-    auto* ctx = FindRendererContextLocked(handleVal);
-    if (IsActiveRendererHandleLocked(handleVal) && ctx && ctx->renderer) {
-        ctx->renderer->RenderFrame(static_cast<GLuint>(textureId));
+    std::shared_ptr<GLRenderer> renderer;
+    {
+        std::lock_guard<std::mutex> lock(g_activeRendererMutex);
+        renderer = AcquireRendererLocked(handleVal, true);
+    }
+    if (renderer) {
+        renderer->RenderFrame(static_cast<GLuint>(textureId));
     }
 
     napi_value undefined;
@@ -1256,11 +1385,17 @@ napi_value NapiResizeRenderer(napi_env env, napi_callback_info info) {
     napi_get_value_int32(env, args[1], &width);
     napi_get_value_int32(env, args[2], &height);
 
-    std::lock_guard<std::mutex> lock(g_activeRendererMutex);
-    auto* ctx = FindRendererContextLocked(handleVal);
-    if (IsActiveRendererHandleLocked(handleVal) && ctx && ctx->renderer) {
-        ctx->generation = AdvanceRendererGeneration();
-        ctx->renderer->Resize(width, height);
+    std::shared_ptr<GLRenderer> renderer;
+    {
+        std::lock_guard<std::mutex> lock(g_activeRendererMutex);
+        auto* ctx = FindRendererContextLocked(handleVal);
+        if (IsActiveRendererHandleLocked(handleVal) && ctx && ctx->renderer) {
+            ctx->generation = AdvanceRendererGeneration();
+            renderer = ctx->renderer;
+        }
+    }
+    if (renderer) {
+        renderer->Resize(width, height);
     }
 
     napi_value undefined;
@@ -1281,10 +1416,13 @@ napi_value NapiSetRendererCanvasTransform(napi_env env, napi_callback_info info)
     if (argc > 1) napi_get_value_double(env, args[1], &scale);
     if (argc > 2) napi_get_value_double(env, args[2], &panX);
     if (argc > 3) napi_get_value_double(env, args[3], &panY);
-    std::lock_guard<std::mutex> lock(g_activeRendererMutex);
-    auto* ctx = FindRendererContextLocked(handleVal);
-    if (IsActiveRendererHandleLocked(handleVal) && ctx && ctx->renderer) {
-        ctx->renderer->SetCanvasTransform(scale, panX, panY);
+    std::shared_ptr<GLRenderer> renderer;
+    {
+        std::lock_guard<std::mutex> lock(g_activeRendererMutex);
+        renderer = AcquireRendererLocked(handleVal, true);
+    }
+    if (renderer) {
+        renderer->SetCanvasTransform(scale, panX, panY);
     }
     napi_value undefined;
     napi_get_undefined(env, &undefined);
@@ -1330,10 +1468,13 @@ napi_value NapiRenderRawBGRA(napi_env env, napi_callback_info info) {
     napi_get_value_int32(env, args[3], &height);
     if (argc > 4) napi_get_value_int32(env, args[4], &stride);
 
-    std::lock_guard<std::mutex> lock(g_activeRendererMutex);
-    auto* ctx = FindRendererContextLocked(handleVal);
-    if (IsActiveRendererHandleLocked(handleVal) && ctx && ctx->renderer) {
-        ctx->renderer->RenderRawBGRA(static_cast<const uint8_t*>(data), width, height, stride);
+    std::shared_ptr<GLRenderer> renderer;
+    {
+        std::lock_guard<std::mutex> lock(g_activeRendererMutex);
+        renderer = AcquireRendererLocked(handleVal, true);
+    }
+    if (renderer) {
+        renderer->RenderRawBGRA(static_cast<const uint8_t*>(data), width, height, stride);
     }
 
     napi_value undefined;
@@ -1353,11 +1494,14 @@ napi_value NapiTestRender(napi_env env, napi_callback_info info) {
     int64_t handleVal;
     napi_get_value_int64(env, args[0], &handleVal);
 
-    std::lock_guard<std::mutex> lock(g_activeRendererMutex);
-    auto* ctx = FindRendererContextLocked(handleVal);
-    if (IsActiveRendererHandleLocked(handleVal) && ctx && ctx->renderer) {
+    std::shared_ptr<GLRenderer> renderer;
+    {
+        std::lock_guard<std::mutex> lock(g_activeRendererMutex);
+        renderer = AcquireRendererLocked(handleVal, true);
+    }
+    if (renderer) {
         // 直接清屏蓝色并 swap — 不依赖解码器纹理
-        GLRenderer* r = ctx->renderer.get();
+        GLRenderer* r = renderer.get();
         if (r->MakeCurrent()) {
             glClearColor(0.0f, 0.2f, 0.8f, 1.0f); // 华为蓝 #0033CC
             glClear(GL_COLOR_BUFFER_BIT);
@@ -1451,9 +1595,12 @@ napi_value NapiGetRendererViewport(napi_env env, napi_callback_info info) {
         napi_get_value_int64(env, args[0], &handle);
     }
 
-    std::lock_guard<std::mutex> lock(g_activeRendererMutex);
-    auto* ctx = FindRendererContextLocked(handle);
-    if (!IsActiveRendererHandleLocked(handle) || !ctx || !ctx->renderer) {
+    std::shared_ptr<GLRenderer> renderer;
+    {
+        std::lock_guard<std::mutex> lock(g_activeRendererMutex);
+        renderer = AcquireRendererLocked(handle, true);
+    }
+    if (!renderer) {
         napi_value nullVal;
         napi_get_null(env, &nullVal);
         return nullVal;
@@ -1461,8 +1608,7 @@ napi_value NapiGetRendererViewport(napi_env env, napi_callback_info info) {
 
     int vpX = 0, vpY = 0, vpW = 0, vpH = 0;
     int srcW = 0, srcH = 0, surfW = 0, surfH = 0;
-    ctx->renderer->GetViewportSnapshot(vpX, vpY, vpW, vpH,
-                                       srcW, srcH, surfW, surfH);
+    renderer->GetViewportSnapshot(vpX, vpY, vpW, vpH, srcW, srcH, surfW, surfH);
 
     napi_value result;
     napi_create_object(env, &result);
@@ -1491,32 +1637,42 @@ napi_value NapiGetRendererViewport(napi_env env, napi_callback_info info) {
 } // anonymous namespace
 
 void RendererNapi::SetActiveRenderer(int64_t handle) {
-    std::lock_guard<std::mutex> lock(g_activeRendererMutex);
-    auto* ctx = FindRendererContextLocked(handle);
-    if (!ctx || !ctx->renderer) {
-        OH_LOG_WARN(LOG_APP, "[GL] active renderer rejected stale handle=%{public}lld",
-                    static_cast<long long>(handle));
-        return;
-    }
-    const uint64_t generation = AdvanceRendererGeneration();
-    ctx->generation = generation;
-    g_activeRendererHandle.store(handle, std::memory_order_release);
+    std::shared_ptr<GLRenderer> renderer;
+    std::function<void()> redrawCallback;
     {
-        std::lock_guard<std::mutex> surfaceLock(g_surfaceStateMutex);
-        g_surfaceOwnerHandle.store(handle, std::memory_order_release);
+        std::lock_guard<std::mutex> lock(g_activeRendererMutex);
+        auto* ctx = FindRendererContextLocked(handle);
+        if (!ctx || !ctx->renderer) {
+            OH_LOG_WARN(LOG_APP, "[GL] active renderer rejected stale handle=%{public}lld",
+                        static_cast<long long>(handle));
+            return;
+        }
+        const uint64_t generation = AdvanceRendererGeneration();
+        ctx->generation = generation;
+        g_activeRendererHandle.store(handle, std::memory_order_release);
+        {
+            std::lock_guard<std::mutex> surfaceLock(g_surfaceStateMutex);
+            g_surfaceOwnerHandle.store(handle, std::memory_order_release);
+        }
+        renderer = ctx->renderer;
+        redrawCallback = g_activeRedrawCallback;
     }
     OH_LOG_INFO(LOG_APP, "[GL] active renderer set handle=%{public}lld",
                 static_cast<long long>(handle));
+    renderer->SetRedrawCallback(std::move(redrawCallback));
 }
 
 RdpPresentationMetricsSnapshot RendererNapi::GetActivePresentationStats() {
-    std::lock_guard<std::mutex> lock(g_activeRendererMutex);
-    const int64_t handle = g_activeRendererHandle.load(std::memory_order_acquire);
-    auto* ctx = FindRendererContextLocked(handle);
-    if (!ctx || !ctx->renderer) {
+    std::shared_ptr<GLRenderer> renderer;
+    {
+        std::lock_guard<std::mutex> lock(g_activeRendererMutex);
+        const int64_t handle = g_activeRendererHandle.load(std::memory_order_acquire);
+        renderer = AcquireRendererLocked(handle, true);
+    }
+    if (!renderer) {
         return RdpPresentationMetricsSnapshot();
     }
-    return ctx->renderer->GetPresentationStats();
+    return renderer->GetPresentationStats();
 }
 
 void RendererNapi::InvalidateActivePresentation() {
@@ -1556,49 +1712,49 @@ void RendererNapi::DestroyRendererHandle(int64_t handle) {
     if (handle <= 0) {
         return;
     }
-    std::lock_guard<std::mutex> lock(g_activeRendererMutex);
-    auto* ctx = FindRendererContextLocked(handle);
-    if (!ctx) {
-        return;
+    std::shared_ptr<GLRenderer> renderer;
+    {
+        std::lock_guard<std::mutex> lock(g_activeRendererMutex);
+        auto* ctx = FindRendererContextLocked(handle);
+        if (!ctx) {
+            return;
+        }
+        if (g_activeRendererHandle.load(std::memory_order_acquire) == handle) {
+            g_activeRendererHandle.store(0, std::memory_order_release);
+            AdvanceRendererGeneration();
+        }
+        renderer = std::move(ctx->renderer);
+        g_rendererContexts.erase(handle);
     }
-    if (g_activeRendererHandle.load(std::memory_order_acquire) == handle) {
-        g_activeRendererHandle.store(0, std::memory_order_release);
-        AdvanceRendererGeneration();
-    }
-    std::shared_ptr<GLRenderer> renderer = std::move(ctx->renderer);
-    // Keep the registry mutex held through renderer destruction. Any decoder
-    // callback that was already queued either finishes before this point or
-    // observes the cleared active handle and returns without touching ctx.
     if (renderer) {
         renderer->Destroy();
     }
-    g_rendererContexts.erase(handle);
 }
 
 RdpPresentationTarget RendererNapi::GetActivePresentationTarget() {
     RdpPresentationTarget target;
-    std::lock_guard<std::mutex> lock(g_activeRendererMutex);
-    target.generation = g_rendererGeneration.load(std::memory_order_acquire);
+    std::shared_ptr<GLRenderer> renderer;
+    uint64_t contextGeneration = 0;
+    {
+        std::lock_guard<std::mutex> lock(g_activeRendererMutex);
+        target.generation = g_rendererGeneration.load(std::memory_order_acquire);
+        const int64_t handle = g_activeRendererHandle.load(std::memory_order_acquire);
+        renderer = AcquireRendererLocked(handle, true, &contextGeneration);
+    }
     if (g_surfaceDetached.load(std::memory_order_acquire) ||
         !g_surfaceReady.load(std::memory_order_acquire)) {
         target.rejection = RdpPresentResult::SurfaceDetached;
         return target;
     }
-    const int64_t handle = g_activeRendererHandle.load(std::memory_order_acquire);
-    if (handle <= 0) {
+    if (!renderer) {
         target.rejection = RdpPresentResult::NoActiveRenderer;
         return target;
     }
-    auto* ctx = FindRendererContextLocked(handle);
-    if (!ctx || !ctx->renderer) {
-        target.rejection = RdpPresentResult::RendererNotReady;
-        return target;
-    }
-    if (ctx->generation != target.generation) {
+    if (contextGeneration != target.generation) {
         target.rejection = RdpPresentResult::GenerationMismatch;
         return target;
     }
-    if (!ctx->renderer->IsPresentationReady()) {
+    if (!renderer->IsPresentationReady()) {
         target.rejection = g_surfaceDetached.load(std::memory_order_acquire) ?
             RdpPresentResult::SurfaceDetached : RdpPresentResult::RendererNotReady;
         return target;
@@ -1624,9 +1780,19 @@ RdpPresentMetrics RendererNapi::PresentRawBgraActive(
         metrics.result = RdpPresentResult::InvalidFrame;
         return metrics;
     }
-    std::lock_guard<std::mutex> lock(g_activeRendererMutex);
-    if (generation == 0 ||
-        generation != g_rendererGeneration.load(std::memory_order_acquire)) {
+    std::shared_ptr<GLRenderer> renderer;
+    uint64_t contextGeneration = 0;
+    {
+        std::lock_guard<std::mutex> lock(g_activeRendererMutex);
+        if (generation == 0 ||
+            generation != g_rendererGeneration.load(std::memory_order_acquire)) {
+            metrics.result = RdpPresentResult::GenerationMismatch;
+            return metrics;
+        }
+        const int64_t handle = g_activeRendererHandle.load(std::memory_order_acquire);
+        renderer = AcquireRendererLocked(handle, true, &contextGeneration);
+    }
+    if (generation == 0 || contextGeneration != generation) {
         metrics.result = RdpPresentResult::GenerationMismatch;
         return metrics;
     }
@@ -1635,21 +1801,11 @@ RdpPresentMetrics RendererNapi::PresentRawBgraActive(
         metrics.result = RdpPresentResult::SurfaceDetached;
         return metrics;
     }
-    const int64_t handle = g_activeRendererHandle.load(std::memory_order_acquire);
-    auto* ctx = FindRendererContextLocked(handle);
-    if (handle <= 0) {
+    if (!renderer) {
         metrics.result = RdpPresentResult::NoActiveRenderer;
         return metrics;
     }
-    if (!ctx || !ctx->renderer) {
-        metrics.result = RdpPresentResult::RendererNotReady;
-        return metrics;
-    }
-    if (ctx->generation != generation) {
-        metrics.result = RdpPresentResult::GenerationMismatch;
-        return metrics;
-    }
-    return ctx->renderer->PresentRawBGRA(data, width, height, stride, generation);
+    return renderer->PresentRawBGRA(data, width, height, stride, generation);
 }
 
 RdpPresentMetrics RendererNapi::PresentRawBgraRectActive(
@@ -1662,9 +1818,19 @@ RdpPresentMetrics RendererNapi::PresentRawBgraRectActive(
         metrics.result = RdpPresentResult::InvalidFrame;
         return metrics;
     }
-    std::lock_guard<std::mutex> lock(g_activeRendererMutex);
-    if (generation == 0 ||
-        generation != g_rendererGeneration.load(std::memory_order_acquire)) {
+    std::shared_ptr<GLRenderer> renderer;
+    uint64_t contextGeneration = 0;
+    {
+        std::lock_guard<std::mutex> lock(g_activeRendererMutex);
+        if (generation == 0 ||
+            generation != g_rendererGeneration.load(std::memory_order_acquire)) {
+            metrics.result = RdpPresentResult::GenerationMismatch;
+            return metrics;
+        }
+        const int64_t handle = g_activeRendererHandle.load(std::memory_order_acquire);
+        renderer = AcquireRendererLocked(handle, true, &contextGeneration);
+    }
+    if (generation == 0 || contextGeneration != generation) {
         metrics.result = RdpPresentResult::GenerationMismatch;
         return metrics;
     }
@@ -1673,22 +1839,12 @@ RdpPresentMetrics RendererNapi::PresentRawBgraRectActive(
         metrics.result = RdpPresentResult::SurfaceDetached;
         return metrics;
     }
-    const int64_t handle = g_activeRendererHandle.load(std::memory_order_acquire);
-    auto* ctx = FindRendererContextLocked(handle);
-    if (handle <= 0) {
+    if (!renderer) {
         metrics.result = RdpPresentResult::NoActiveRenderer;
         return metrics;
     }
-    if (!ctx || !ctx->renderer) {
-        metrics.result = RdpPresentResult::RendererNotReady;
-        return metrics;
-    }
-    if (ctx->generation != generation) {
-        metrics.result = RdpPresentResult::GenerationMismatch;
-        return metrics;
-    }
-    return ctx->renderer->PresentRawBGRARect(data, width, height, stride,
-                                             dirtyX, dirtyY, dirtyWidth, dirtyHeight, generation);
+    return renderer->PresentRawBGRARect(data, width, height, stride,
+                                        dirtyX, dirtyY, dirtyWidth, dirtyHeight, generation);
 }
 
 int RendererNapi::RenderRawBgraActive(
@@ -1714,43 +1870,96 @@ int RendererNapi::RenderRawBgraRectActive(
 }
 
 void RendererNapi::MakeCurrent(int64_t handle) {
-    std::lock_guard<std::mutex> lock(g_activeRendererMutex);
-    auto* ctx = FindRendererContextLocked(handle);
-    if (IsActiveRendererHandleLocked(handle) && ctx && ctx->renderer) {
-        ctx->renderer->MakeCurrent();
+    std::shared_ptr<GLRenderer> renderer;
+    {
+        std::lock_guard<std::mutex> lock(g_activeRendererMutex);
+        renderer = AcquireRendererLocked(handle, true);
+    }
+    if (renderer) {
+        renderer->MakeCurrent();
     }
 }
 
 void RendererNapi::ReleaseCurrent(int64_t handle) {
-    std::lock_guard<std::mutex> lock(g_activeRendererMutex);
-    auto* ctx = FindRendererContextLocked(handle);
-    if (IsActiveRendererHandleLocked(handle) && ctx && ctx->renderer) {
-        ctx->renderer->ReleaseCurrent();
+    std::shared_ptr<GLRenderer> renderer;
+    {
+        std::lock_guard<std::mutex> lock(g_activeRendererMutex);
+        renderer = AcquireRendererLocked(handle, true);
+    }
+    if (renderer) {
+        renderer->ReleaseCurrent();
     }
 }
 
 void RendererNapi::SetRendererSourceSize(int64_t handle, int width, int height) {
-    std::lock_guard<std::mutex> lock(g_activeRendererMutex);
-    auto* ctx = FindRendererContextLocked(handle);
-    if (IsActiveRendererHandleLocked(handle) && ctx && ctx->renderer) {
-        ctx->renderer->SetSourceSize(width, height);
+    std::shared_ptr<GLRenderer> renderer;
+    {
+        std::lock_guard<std::mutex> lock(g_activeRendererMutex);
+        renderer = AcquireRendererLocked(handle, true);
+    }
+    if (renderer) {
+        renderer->SetSourceSize(width, height);
     }
 }
 
 void RendererNapi::RenderNative(int64_t handle, GLuint textureId) {
-    std::lock_guard<std::mutex> lock(g_activeRendererMutex);
-    auto* ctx = FindRendererContextLocked(handle);
-    if (IsActiveRendererHandleLocked(handle) && ctx && ctx->renderer) {
-        ctx->renderer->RenderFrame(textureId);
+    std::shared_ptr<GLRenderer> renderer;
+    {
+        std::lock_guard<std::mutex> lock(g_activeRendererMutex);
+        renderer = AcquireRendererLocked(handle, true);
+    }
+    if (renderer) {
+        renderer->RenderFrame(textureId);
     }
 }
 
 void RendererNapi::SetActiveSourceSize(int width, int height) {
-    std::lock_guard<std::mutex> lock(g_activeRendererMutex);
-    const int64_t handle = g_activeRendererHandle.load(std::memory_order_acquire);
-    auto* ctx = FindRendererContextLocked(handle);
-    if (ctx && ctx->renderer) {
-        ctx->renderer->SetSourceSize(width, height);
+    std::shared_ptr<GLRenderer> renderer;
+    {
+        std::lock_guard<std::mutex> lock(g_activeRendererMutex);
+        const int64_t handle = g_activeRendererHandle.load(std::memory_order_acquire);
+        renderer = AcquireRendererLocked(handle, true);
+    }
+    if (renderer) {
+        renderer->SetSourceSize(width, height);
+    }
+}
+
+void RendererNapi::SetRendererRedrawCallback(int64_t handle, std::function<void()> callback) {
+    std::shared_ptr<GLRenderer> renderer;
+    {
+        std::lock_guard<std::mutex> lock(g_activeRendererMutex);
+        // Detach/rebind must also be able to clear a callback on the previous
+        // renderer after it is no longer the active presentation target.
+        renderer = AcquireRendererLocked(handle, false);
+    }
+    if (renderer) {
+        renderer->SetRedrawCallback(std::move(callback));
+    }
+}
+
+void RendererNapi::SetActiveRedrawCallback(std::function<void()> callback) {
+    std::shared_ptr<GLRenderer> renderer;
+    {
+        std::lock_guard<std::mutex> lock(g_activeRendererMutex);
+        g_activeRedrawCallback = callback;
+        const int64_t handle = g_activeRendererHandle.load(std::memory_order_acquire);
+        renderer = AcquireRendererLocked(handle, true);
+    }
+    if (renderer) {
+        renderer->SetRedrawCallback(std::move(callback));
+    }
+}
+
+void RendererNapi::RenderRetained(int64_t handle) {
+    std::shared_ptr<GLRenderer> renderer;
+    uint64_t generation = 0;
+    {
+        std::lock_guard<std::mutex> lock(g_activeRendererMutex);
+        renderer = AcquireRendererLocked(handle, true, &generation);
+    }
+    if (renderer && generation != 0 && generation == g_rendererGeneration.load(std::memory_order_acquire)) {
+        renderer->RenderRetainedFrame(generation);
     }
 }
 

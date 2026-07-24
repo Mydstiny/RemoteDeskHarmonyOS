@@ -5,6 +5,7 @@
 #include "rdp_frame_pump.h"
 #include "render/gl_renderer.h"
 
+#include <algorithm>
 #include <chrono>
 #include <exception>
 #include <hilog/log.h>
@@ -38,6 +39,7 @@ bool RdpFramePump::start() {
     ++pumpGeneration_;
     running_ = true;
     hasFrame_ = false;
+    refreshRequested_ = false;
     frame_ = RdpFrameSubmission();
     fullResyncRequired_.store(true, std::memory_order_release);
     metrics_.reset(SteadyNowUs());
@@ -71,7 +73,9 @@ void RdpFramePump::stop() {
         running_ = false;
         ++pumpGeneration_;
         hasFrame_ = false;
+        refreshRequested_ = false;
         frame_ = RdpFrameSubmission();
+        refreshSource_.reset();
     }
     cv_.notify_all();
     if (worker_.joinable()) {
@@ -108,6 +112,22 @@ bool RdpFramePump::submitLatest(RdpFrameSubmission&& submission) {
     return true;
 }
 
+void RdpFramePump::requestRefresh() {
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!running_ || !refreshSource_) {
+            return;
+        }
+        refreshRequested_ = true;
+    }
+    cv_.notify_one();
+}
+
+void RdpFramePump::setRefreshSource(std::shared_ptr<RdpDamageAccumulator> source) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    refreshSource_ = std::move(source);
+}
+
 void RdpFramePump::invalidatePending() {
     bool rejectedPending = false;
     uint64_t rendererGeneration = 0;
@@ -116,6 +136,7 @@ void RdpFramePump::invalidatePending() {
         ++pumpGeneration_;
         rejectedPending = hasFrame_;
         hasFrame_ = false;
+        refreshRequested_ = false;
         frame_ = RdpFrameSubmission();
         fullResyncRequired_.store(true, std::memory_order_release);
     }
@@ -134,32 +155,68 @@ void RdpFramePump::loop() {
     int64_t nextPresentAtUs = 0;
     while (true) {
         RdpFrameSubmission frame;
+        std::shared_ptr<RdpDamageAccumulator> refreshSource;
+        bool refreshRequested = false;
+        uint64_t refreshPumpGeneration = 0;
         {
             std::unique_lock<std::mutex> lock(mutex_);
             while (running_) {
-                cv_.wait(lock, [this]() { return !running_ || hasFrame_; });
-                if (!running_) {
+                const int64_t nowUs = SteadyNowUs();
+                if (refreshRequested_) {
+                    // A transform refresh is an explicit visual deadline. It
+                    // must wake even while normal frame pacing is waiting.
+                    refreshRequested = true;
+                    refreshRequested_ = false;
+                    refreshSource = refreshSource_;
+                    refreshPumpGeneration = pumpGeneration_;
+                    // The retained source contains the newest pixels, so a
+                    // queued submission is superseded by this full snapshot.
+                    frame_ = RdpFrameSubmission();
+                    hasFrame_ = false;
                     break;
                 }
-                const int64_t nowUs = SteadyNowUs();
-                if (!RdpFrameScheduler::IsDue(nowUs, nextPresentAtUs)) {
-                    cv_.wait_for(lock, std::chrono::microseconds(nextPresentAtUs - nowUs));
+
+                if (hasFrame_ && RdpFrameScheduler::IsDue(nowUs, nextPresentAtUs)) {
+                    frame = std::move(frame_);
+                    frame_ = RdpFrameSubmission();
+                    hasFrame_ = false;
+                    if (frame.pumpGeneration == pumpGeneration_) {
+                        break;
+                    }
+                    frame = RdpFrameSubmission();
                     continue;
                 }
-                frame = std::move(frame_);
-                frame_ = RdpFrameSubmission();
-                hasFrame_ = false;
-                if (frame.pumpGeneration == pumpGeneration_) {
-                    break;
+
+                if (!hasFrame_) {
+                    cv_.wait(lock, [this]() {
+                        return !running_ || hasFrame_ || refreshRequested_;
+                    });
+                    continue;
                 }
-                frame = RdpFrameSubmission();
+
+                // A frame is queued but normal pacing has not reached its
+                // deadline. Refresh requests are allowed to interrupt this
+                // wait; ordinary frame submissions remain latest-value-wins.
+                const int64_t waitUs = std::max<int64_t>(1, nextPresentAtUs - nowUs);
+                cv_.wait_for(lock, std::chrono::microseconds(waitUs), [this]() {
+                    return !running_ || refreshRequested_;
+                });
             }
             if (!running_) {
                 break;
             }
-            if (!frame.damageSource) {
-                continue;
+        }
+
+        if (!frame.damageSource && refreshRequested && refreshSource) {
+            const RdpPresentationTarget target = RendererNapi::GetActivePresentationTarget();
+            if (target.ready() && refreshSource->requestFullSnapshot(target.generation)) {
+                frame.damageSource = std::move(refreshSource);
+                frame.pumpGeneration = refreshPumpGeneration;
+                frame.enqueuedAtUs = SteadyNowUs();
             }
+        }
+        if (!frame.damageSource) {
+            continue;
         }
 
         const int64_t queueWaitUs =
