@@ -1,69 +1,49 @@
 # Shared Current State
 
-Updated: 2026-07-23 Asia/Shanghai
+Updated: 2026-07-24 Asia/Shanghai
 
 ## Repository
 
-- Repository: `Mydstiny/RemoteDeskHarmonyOS`
-- Public `main` after merge: `a60d0e743` (`Merge pull request #35 from Mydstiny/codex/windows-memory-sanitize`)
-- Previous Windows audit base: `c502221e3`
-- Active task: none; the Windows audit is merged into public `main`
-- Audit commits: `27e185f42`, `a24568990`
-- Audit PR: `#35` (`https://github.com/Mydstiny/RemoteDeskHarmonyOS/pull/35`)
-- No runtime, ArkTS, C/C++, Rust, FreeRDP or dependency source was changed by this audit branch.
-- User-owned test edits, logs, screenshots, XML and native build evidence remain local and are not part of this task.
+- Repository: Mydstiny/RemoteDeskHarmonyOS
+- Repair branch: codex/rustdesk-pinch-zoom-fix
+- Task: RustDesk/RDP canvas pinch zoom and input-stall repair
+- Base: main at 28c3ff43 before this repair
+- Final integration: the validated repair commits are to be merged back to main and the repair branch removed
 
-## Current phase
+## Result
 
-- Windows Codex memory sanitization and cross-device development handoff audit.
-- Public `main` includes the Mac migration/`hdc` workflow, the prior Windows handoff integration and this detailed structured audit record.
-- The normal task start gate was intentionally not used because the workspace contained user-owned changes. The branch was created from synchronized public history without stashing, resetting or deleting those files.
+- Non-blocking latest-value-wins canvas transform submission is implemented.
+- Renderer registry/lifecycle lock scope is separated from upload, draw and eglSwapBuffers.
+- Retained-frame redraw is wired for hardware decode, software decode and RDP; retained redraw wakes are coalesced.
+- ArkTS pinch geometry and input ownership stay local and are released idempotently on end, cancel, surface loss, PIP, background, control-mode changes, disconnect and rejected native input.
+- RustDesk touch scale/pan updates are bounded and coalesced while start/end barriers and reliable keyboard, mouse-button and text ordering remain intact.
+- RDP input worker remains independent of renderer lifecycle work.
 
-## Windows evidence collected in this audit
+## Repair commits
 
-| Item | Result | Scope |
-| --- | --- | --- |
-| DevEco Studio | `6.1.1.280` installation metadata | Windows verified |
-| HarmonyOS target | API 23, `targetSdkVersion`/`compatibleSdkVersion` `6.1.0(23)` | Repository configuration verified |
-| Runtime and module | `runtimeOS: HarmonyOS`, product `default`, module `entry` | Repository configuration verified |
-| DevEco bundled Node | `18.20.1` | Windows verified |
-| Hvigor CLI | `6.24.2` | Windows verified |
-| ohpm | `6.1.2.268` | Windows verified |
-| CMake / Ninja | `3.29.2` / `1.12.0` | Windows verified |
-| OHOS LLVM/Clang | `15.0.4` | Windows verified |
-| Rust / Cargo | `1.96.0` / `1.96.0` | Windows verified |
-| Rust OHOS targets | `aarch64-unknown-linux-ohos`, `x86_64-unknown-linux-ohos` | Windows verified |
-| Windows PowerShell | `5.1.26100.8875`; `pwsh` is not installed | Windows verified |
-| API 23 reference docs | Local copy is present | Windows verified; contents stay local |
+- 80974c440: native non-blocking canvas redraw and renderer ownership changes.
+- fb7355072, 44d2a51de, 5bc7a4be3: ArkTS pinch geometry and input lifecycle hardening.
+- f43a8101b, 620544b14: RustDesk touch queue coalescing and reliable-order boundary flush.
+- 6d16eb366: retained decoder redraw wake coalescing.
+- e8112a1c1 and the final documentation update: repair plan and implementation record.
 
-The old baseline's Node 24 and approximate DevEco 26.0 entries are historical and are not current Windows facts. Mac versions and machine paths are not inferred from them.
+## Verification
 
-## Cross-device state inherited from public main
+- ArkTS default@OhosTestCompileArkTS: passed; existing repository/dependency warnings remain.
+- Native RDP tests: 129 passed, 0 failed.
+- RustDesk FFI lib tests: 140 passed, 0 failed, including local socket protocol tests in the permitted environment.
+- Production assembleHap: BUILD SUCCESSFUL.
+- git diff --check: required before final merge.
 
-- `scripts/macos_env.sh`, `scripts/resolve_ohos_sdk.sh` and `scripts/resolve_powershell.sh` are now present on public `main`; the initial Windows audit observed them before the concurrent main update.
-- The Mac helper keeps the full DevEco/HarmonyOS SDK role separate from the standalone API 23 native SDK role, resolves bundled Node/Hvigor/ohpm/Java/LLVM/CMake/Rust tools, configures both OHOS Rust ABIs and exposes the SDK `hdc` toolchain.
-- Public Mac handoff records report successful source/submodule restoration, both-ABI Opus/RustDesk FFI builds, `default@OhosTestCompileArkTS`, non-daemon `assembleHap`, hook checks and Light compliance. These are inherited public evidence, not new Windows device acceptance.
-- Mac `hdc` availability was verified in public history; an empty target list means no authorized device is connected, not that the toolchain is missing.
+## Device acceptance still required
 
-## Audit result
-
-- Shared docs that previously pointed at `c5347f141` are corrected to the current public history.
-- The Windows memory conclusions about API 23, ArkTS strict mode, bindSheet mounting, OHOS C++/Crypto APIs, RustDesk stream framing/control consumption, PIP ownership and Git safety are distilled into `DECISIONS.md` and `HANDOFF.md`.
-- Raw Codex memory, chat/session transcripts, device evidence and private inputs were not copied.
-
-## Verification status
-
-- Windows direct checks confirmed the tool versions and API 23 reference availability listed above.
-- `git diff --check`, Light compliance, workflow policy tests, Opus artifact-location tests and the pre-push public-history guard passed before the merge.
-- PR #35 was merged with a normal merge commit after its `open-source-compliance` check passed.
-- Real-device, cloud-account and Mac clean-clone acceptance remain separate from this document audit.
-
-## Next
-
-- On the next device, read these four files, sync `main`, configure machine-local SDK/toolchains/private inputs and run the platform-specific workflow.
-- Keep one task branch active at a time and do not start new work until the next task has been explicitly selected.
-- Complete real-device acceptance for PIP/live-view, RDP/RustDesk background restore, cloud sync and first-install behavior.
+- RustDesk remote Windows: continuous pinch with active video, mouse click and keyboard down/up.
+- RustDesk remote macOS: static desktop must redraw locally during pinch without a new remote frame.
+- RDP Windows: retained BGRA redraw, frame-pump progress and keyboard/mouse delivery during pinch.
+- Optional RustDesk remote-app TouchScale: bounded queue and start/update/end protocol order.
+- API 23 lifecycle matrix: cancel, surface destroy/recreate, PIP, background/foreground, rotation and reconnect.
 
 ## Local-only boundary
 
-SDKs, signing profiles, AGConnect configuration, `local.properties`, real `build-profile.json5`, build caches, device data, raw logs, screenshots, private device addresses and Codex's original machine memory are intentionally not represented here.
+- The user-owned untracked docs docs/SSH_MODULE_UPGRADE_PLAN.md and docs/superpowers/plans/2026-07-24-vnc-isolated-settings-cloud-upgrade.md are preserved and are not part of this repair.
+- SDKs, signing profiles, device data, private addresses, credentials, raw logs and screenshots remain outside the shared records.

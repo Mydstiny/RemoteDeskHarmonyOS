@@ -1,12 +1,42 @@
 # RustDesk / RDP 双指缩放画布修复计划
 
-状态：调查完成，待按阶段实施
+状态：已实施并通过构建/自动化回归；真实设备会话矩阵待验收
 
 日期：2026-07-24
 
 适用仓库：`Mydstiny/RemoteDeskHarmonyOS`
 
-调查基线：当前工作分支 `codex/rustdesk-multimonitor`，工作区已有 RustDesk 相关未提交修改和 `docs/SSH_MODULE_UPGRADE_PLAN.md`。本计划只描述修复方案，不覆盖或回退已有修改。
+调查基线：2026-07-24 的修复前代码。实施从 `main` 创建独立修复分支，保留工作区中与本任务无关的用户文档，不覆盖或回退已有修改。
+
+## 实施结果（2026-07-24）
+
+本计划已按阶段落地。实际修复分为以下提交，并保持每个步骤独立提交：
+
+- 80974c440：将 canvas transform 改为非阻塞 latest-value-wins 提交，拆开 renderer registry 与 EGL/lifecycle 长临界区，并接入 retained-frame redraw。
+- fb7355072、44d2a51de、5bc7a4be3：ArkTS 使用本地 pinch geometry 快照，只有 native start 接受后才占用输入，并覆盖 rejected input、stream resize、surface/PIP/后台/断连等幂等释放路径。
+- f43a8101b、620544b14：RustDesk touch scale/pan update 合并为有界 latest-value-wins 队列，保留 start/end barrier，并在可靠键鼠/文本消息边界 flush touch update，避免输入重排。
+- 6d16eb366：合并 retained decoder redraw wake，避免快速 pinch 堆积重绘请求。
+
+已落地的关键行为：
+
+1. UI pinch update 只发布最新 transform，不等待 EGL、GL 或网络，不在每个 update 读取 native viewport。
+2. 硬解、软件解码和 RDP 都能从 render owner 消费最新 transform，并对 retained frame 触发合并重绘；RDP frame pump 保留 generation 检查和最新帧语义。
+3. RDP 输入 worker 与 renderer lifecycle 独立；RustDesk 键盘、鼠标按钮和文本消息不会被 touch update 无限队列或跨越顺序边界。
+4. Pinch end/cancel、Touch Up/Cancel、surface destroy、PIP、后台、control mode、缩放设置变化和断连均进入幂等释放路径。
+5. RustDesk diagnostics 记录 touch active、pending、barrier 和 coalescing 状态，便于真机验收区分 UI、渲染、输入和协议队列问题。
+
+本次没有新增灰度开关；修复直接采用已验证的非阻塞提交和 retained redraw 语义，避免把输入正确性依赖在多开关组合上。原有第 12 节的开关设计保留为后续需要快速回滚时的可选演进方案。
+
+自动化验证结果：
+
+| 验证项 | 结果 |
+| --- | --- |
+| ArkTS default@OhosTestCompileArkTS | 通过；仅有仓库/依赖已有 ArkTS 告警 |
+| native rdp_native_tests | 129 passed, 0 failed |
+| RustDesk FFI 全量 lib tests | 140 passed, 0 failed；网络监听测试在允许本地回环端口的环境执行 |
+| assembleHap | BUILD SUCCESSFUL，约 55 秒 |
+| 真实设备 | 尚未连接目标设备；Windows RustDesk、macOS 静止桌面、RDP 键鼠和 remote-app TouchScale 矩阵待执行 |
+
 
 ## 1. 结论摘要
 
@@ -442,7 +472,7 @@ take_batch(): select smallest pending seq
 
 ## 8. 分阶段实施计划
 
-### Phase 0: 基线和测试夹具
+### Phase 0: 基线和测试夹具（已完成）
 
 修改范围：测试与诊断优先，不改变渲染语义。
 
@@ -465,7 +495,7 @@ take_batch(): select smallest pending seq
 
 退出条件：测试可以在不连接真实设备的情况下稳定复现“transform state changed but no redraw”的逻辑缺口和 touch FIFO 无界增长。
 
-### Phase 1: 非阻塞 transform bridge
+### Phase 1: 非阻塞 transform bridge（已完成）
 
 文件：
 
@@ -484,7 +514,7 @@ take_batch(): select smallest pending seq
 
 退出条件：在人工注入高频 transform 的测试中，submit p99 小于 2 ms，且不会因为 `eglSwapBuffers()` 延迟而抖动；旧 frame 仍能正常渲染。
 
-### Phase 2: retained-frame redraw 和硬解 owner wake
+### Phase 2: retained-frame redraw 和硬解 owner wake（已完成）
 
 文件：
 
@@ -502,7 +532,7 @@ take_batch(): select smallest pending seq
 
 退出条件：远程 macOS 静止桌面连续 pinch 时，transform redraw 计数持续增加且画面跟手；RDP 无新 EndPaint 时仍能显示最新缩放；未发生跨线程 EGL 调用。
 
-### Phase 3: RDP 输入隔离和 pinch 清理
+### Phase 3: RDP 输入隔离和 pinch 清理（已完成）
 
 文件：
 
@@ -520,7 +550,7 @@ take_batch(): select smallest pending seq
 
 退出条件：5 秒连续 pinch 期间发送至少一组鼠标点击和键盘 down/up，事件无丢失；结束或取消后 `canvasPinchInputConsumed=false`、`touchLeftDown=false`、无重复 remote touch end。
 
-### Phase 4: RustDesk touch control coalescing
+### Phase 4: RustDesk touch control coalescing（已完成）
 
 文件：
 
@@ -538,7 +568,7 @@ take_batch(): select smallest pending seq
 
 退出条件：开启远端应用触控缩放连续 10 秒，可靠队列不无限增长；pinch 结束后队列在一个或数个 control loop 周期内回到基线；远端触控语义不出现 start-after-end 或 end-before-update。
 
-### Phase 5: 设备矩阵、灰度和收尾
+### Phase 5: 设备矩阵、灰度和收尾（构建已完成，设备验收待执行）
 
 交付：
 

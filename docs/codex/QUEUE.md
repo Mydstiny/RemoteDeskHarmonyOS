@@ -1,27 +1,28 @@
 # Shared Queue
 
-Updated: 2026-07-23 Asia/Shanghai
+Updated: 2026-07-24 Asia/Shanghai
 
 ## Now
 
-- No active migration task. Windows memory sanitization and the Mac migration handoff are merged in `main` through normal merge commits.
+- Code implementation and automated verification for RustDesk/RDP pinch zoom are complete.
+- Finish final diff review, merge codex/rustdesk-pinch-zoom-fix into main, verify the merged worktree and remove the repair branch.
+- Keep the two user-owned untracked planning documents outside commits.
 
 ## Next
 
-- On the next task, sync `main` first and confirm a clean working tree.
-- On Windows, confirm PowerShell 7 availability and run the shared-state, submodule and history gates from a clean clone.
-- On macOS, source `scripts/macos_env.sh`, verify the full DevEco SDK/native API 23 SDK role split, Rust targets, `hdc` and the PowerShell resolver.
-- Run the clean-clone smoke checks and record only sanitized pass/fail summaries.
+- Execute the API 23 real-device matrix: RustDesk Windows, RustDesk macOS static desktop, RDP Windows and optional RustDesk remote-app TouchScale.
+- During each session collect only sanitized counters for transform submit latency, retained redraw, frame-pump progress, input delivery and touch queue depth.
+- Confirm cancel, surface destroy/recreate, PIP, background/foreground, rotation and reconnect return pinch/input state to idle.
 
 ## Later
 
-- Complete real-device acceptance for RustDesk and RDP PIP/live-view registration, repeated foreground/background cycles and no-session exit behavior.
-- Complete cloud-sync protection, first-install white-screen and full four-protocol release matrices on an unlocked target.
-- Extend remote file-transfer coverage and complete the deferred release matrix.
+- Tune thresholds against target-device refresh rate and high-resolution retained-frame copy cost.
+- Decide whether the optional feature-flag rollback scheme is needed after device evidence; do not add flags solely to mask an unverified lifecycle issue.
+- Complete the wider release matrix after pinch acceptance.
 
 ## Queue rules
 
-- Only one daily `codex/<task>` branch may be active in the shared workspace.
-- A new device must sync merged `main`, read `CURRENT.md`, `QUEUE.md`, `DECISIONS.md` and `HANDOFF.md`, and confirm a clean working tree before creating a task branch.
+- Only one daily codex/<task> branch may be active in the shared workspace.
+- A new device must sync merged main, read CURRENT.md, QUEUE.md, DECISIONS.md and HANDOFF.md, and confirm a clean working tree before creating a task branch.
 - User-owned changes are never auto-stashed, deleted, reset or mixed into a documentation commit.
-- Completed items are removed or summarized in `CURRENT.md`; this file is not a session transcript.
+- Completed implementation items are summarized in CURRENT.md; this file is not a session transcript.
