@@ -214,7 +214,10 @@ fn resolve_stream_params_for_config(config: &RustDeskConfig) -> ResolvedStreamPa
     }
 }
 
-/// 视频帧数据
+/// Versioned encoded video frame passed across the Rust/C++ boundary.
+///
+/// The callback only borrows `data` for the duration of the callback. Consumers
+/// must copy the bytes before returning when they need asynchronous processing.
 #[repr(C)]
 pub struct FfiVideoFrame {
     pub data: *const u8,
@@ -224,6 +227,9 @@ pub struct FfiVideoFrame {
     pub codec: c_int, // 0=H264, 1=H265, 2=VP8, 3=VP9
     pub timestamp: u64,
     pub is_key_frame: bool,
+    pub display: c_int,
+    pub abi_version: u32,
+    pub struct_size: u32,
 }
 
 /// 音频数据
@@ -269,7 +275,11 @@ pub enum FfiConnectionState {
 /// thread or consumes the counters.
 pub const RUSTDESK_STREAM_STATS_VERSION: u32 = 1;
 pub const RUSTDESK_DISPLAY_SNAPSHOT_VERSION: u32 = 1;
+pub const RUSTDESK_DISPLAY_LIST_VERSION: u32 = 1;
+pub const RUSTDESK_VIDEO_FRAME_ABI_VERSION: u32 = 2;
 pub const RUSTDESK_MAX_DISPLAY_RESOLUTIONS: usize = 32;
+pub const RUSTDESK_MAX_DISPLAYS: usize = 16;
+pub const RUSTDESK_DISPLAY_NAME_BYTES: usize = 128;
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -315,8 +325,28 @@ impl Default for RustDeskStreamStats {
     }
 }
 
-/// Mutable display geometry shared by the streaming worker and the FFI caller.
-/// RustDesk sends this through `Misc.switch_display`, including Android rotations.
+/// One remote display as received from RustDesk `PeerInfo`/`SwitchDisplay`.
+///
+/// This is intentionally an owned Rust-side representation. The FFI list API
+/// copies it into fixed-width snapshots so no Rust allocation is exposed to C++.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct RustDeskDisplayInfoState {
+    pub display: i32,
+    pub x: i32,
+    pub y: i32,
+    pub width: i32,
+    pub height: i32,
+    pub name: String,
+    pub online: bool,
+    pub cursor_embedded: bool,
+    pub original_width: i32,
+    pub original_height: i32,
+    pub scale_milli: i32,
+    pub resolutions: Vec<(i32, i32)>,
+}
+
+/// Mutable display catalog shared by the streaming worker and FFI callers.
+/// RustDesk sends display geometry through `PeerInfo` and `Misc.switch_display`.
 #[derive(Debug, Clone)]
 pub(crate) struct RustDeskDisplayState {
     pub current_display: i32,
@@ -327,6 +357,7 @@ pub(crate) struct RustDeskDisplayState {
     pub scale_milli: i32,
     pub geometry_epoch: u32,
     pub resolutions: Vec<(i32, i32)>,
+    pub displays: Vec<RustDeskDisplayInfoState>,
 }
 
 impl Default for RustDeskDisplayState {
@@ -340,6 +371,7 @@ impl Default for RustDeskDisplayState {
             scale_milli: 1000,
             geometry_epoch: 0,
             resolutions: Vec::new(),
+            displays: Vec::new(),
         }
     }
 }
@@ -363,6 +395,48 @@ pub struct RustDeskDisplaySnapshot {
 pub struct RustDeskResolution {
     pub width: i32,
     pub height: i32,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct RustDeskDisplayInfoSnapshot {
+    pub display: i32,
+    pub x: i32,
+    pub y: i32,
+    pub width: i32,
+    pub height: i32,
+    pub original_width: i32,
+    pub original_height: i32,
+    pub scale_milli: i32,
+    pub online: u8,
+    pub cursor_embedded: u8,
+    pub reserved: [u8; 2],
+    pub name_len: u32,
+    pub name: [u8; RUSTDESK_DISPLAY_NAME_BYTES],
+    pub resolution_offset: u32,
+    pub resolution_count: u32,
+}
+
+impl Default for RustDeskDisplayInfoSnapshot {
+    fn default() -> Self {
+        Self {
+            display: 0,
+            x: 0,
+            y: 0,
+            width: 0,
+            height: 0,
+            original_width: 0,
+            original_height: 0,
+            scale_milli: 1000,
+            online: 0,
+            cursor_embedded: 0,
+            reserved: [0; 2],
+            name_len: 0,
+            name: [0; RUSTDESK_DISPLAY_NAME_BYTES],
+            resolution_offset: 0,
+            resolution_count: 0,
+        }
+    }
 }
 
 // ============================================================
@@ -424,6 +498,17 @@ pub(crate) enum ControlMsg {
         display: i32,
         width: i32,
         height: i32,
+    },
+    SwitchDisplay {
+        display: i32,
+    },
+    CaptureDisplays {
+        add: Vec<i32>,
+        sub: Vec<i32>,
+        set: Vec<i32>,
+    },
+    RefreshVideoDisplay {
+        display: i32,
     },
     TouchScale {
         scale: i32,
@@ -501,6 +586,7 @@ fn dispatch_encoded_frames(
     codec: c_int,
     width: c_int,
     height: c_int,
+    display: c_int,
     on_frame: FrameCallback,
     user_data: *mut c_void,
 ) {
@@ -519,6 +605,9 @@ fn dispatch_encoded_frames(
             codec,
             timestamp: frame.get_pts().max(0) as u64,
             is_key_frame: frame.get_key(),
+            display,
+            abi_version: RUSTDESK_VIDEO_FRAME_ABI_VERSION,
+            struct_size: std::mem::size_of::<FfiVideoFrame>() as u32,
         };
         on_frame(&ffi_frame, user_data);
         // Fast-path counters only (no format/IO in hot path)
@@ -536,26 +625,34 @@ fn dispatch_video_frame(
     let Some(on_frame) = on_frame else {
         return;
     };
+    let display = frame.get_display();
     let (width, height) = display_state
         .lock()
-        .map(|state| (state.width.max(1), state.height.max(1)))
+        .map(|state| {
+            state
+                .displays
+                .iter()
+                .find(|info| info.display == display)
+                .map(|info| (info.width.max(1), info.height.max(1)))
+                .unwrap_or((state.width.max(1), state.height.max(1)))
+        })
         .unwrap_or((1, 1));
 
     match frame.union {
         Some(VideoFrame_oneof_union::h264s(ref frames)) => {
-            dispatch_encoded_frames(frames, 0, width, height, on_frame, user_data);
+            dispatch_encoded_frames(frames, 0, width, height, display, on_frame, user_data);
         }
         Some(VideoFrame_oneof_union::h265s(ref frames)) => {
-            dispatch_encoded_frames(frames, 1, width, height, on_frame, user_data);
+            dispatch_encoded_frames(frames, 1, width, height, display, on_frame, user_data);
         }
         Some(VideoFrame_oneof_union::vp8s(ref frames)) => {
-            dispatch_encoded_frames(frames, 2, width, height, on_frame, user_data);
+            dispatch_encoded_frames(frames, 2, width, height, display, on_frame, user_data);
         }
         Some(VideoFrame_oneof_union::vp9s(ref frames)) => {
-            dispatch_encoded_frames(frames, 3, width, height, on_frame, user_data);
+            dispatch_encoded_frames(frames, 3, width, height, display, on_frame, user_data);
         }
         Some(VideoFrame_oneof_union::av1s(ref frames)) => {
-            dispatch_encoded_frames(frames, 4, width, height, on_frame, user_data);
+            dispatch_encoded_frames(frames, 4, width, height, display, on_frame, user_data);
         }
         Some(VideoFrame_oneof_union::rgb(_)) | Some(VideoFrame_oneof_union::yuv(_)) | None => {}
     }
@@ -1199,6 +1296,163 @@ pub extern "C" fn rustdesk_get_display_snapshot(
     true
 }
 
+fn copy_display_name(name: &str, target: &mut [u8; RUSTDESK_DISPLAY_NAME_BYTES]) -> u32 {
+    let mut length = name.len().min(target.len());
+    while length > 0 && !name.is_char_boundary(length) {
+        length -= 1;
+    }
+    target[..length].copy_from_slice(&name.as_bytes()[..length]);
+    length as u32
+}
+
+/// Copy the complete remote display catalog into fixed-width C snapshots.
+///
+/// The resolution array is flattened. Each display reports its offset and
+/// count, so the caller can use one bounded allocation for all displays.
+#[no_mangle]
+pub extern "C" fn rustdesk_get_display_list(
+    handle: *mut c_void,
+    out_displays: *mut RustDeskDisplayInfoSnapshot,
+    display_capacity: usize,
+    out_resolutions: *mut RustDeskResolution,
+    resolution_capacity: usize,
+    out_display_count: *mut usize,
+    out_resolution_count: *mut usize,
+) -> bool {
+    if handle.is_null() || out_display_count.is_null() || out_resolution_count.is_null() {
+        return false;
+    }
+    let ctx = unsafe { &*(handle as *const RustDeskClient) };
+    let Ok(state) = ctx.display_state.lock() else {
+        return false;
+    };
+
+    let fallback;
+    let displays = if state.displays.is_empty() {
+        fallback = vec![RustDeskDisplayInfoState {
+            display: state.current_display,
+            width: state.width,
+            height: state.height,
+            original_width: state.original_width,
+            original_height: state.original_height,
+            scale_milli: state.scale_milli,
+            resolutions: state.resolutions.clone(),
+            ..RustDeskDisplayInfoState::default()
+        }];
+        fallback.as_slice()
+    } else {
+        state.displays.as_slice()
+    };
+    let displays = &displays[..displays.len().min(RUSTDESK_MAX_DISPLAYS)];
+    let total_resolution_count: usize = displays
+        .iter()
+        .map(|display| display.resolutions.len().min(RUSTDESK_MAX_DISPLAY_RESOLUTIONS))
+        .sum();
+
+    unsafe {
+        *out_display_count = displays.len();
+        *out_resolution_count = total_resolution_count;
+    }
+
+    let mut resolution_offset = 0usize;
+    for (index, display) in displays.iter().enumerate() {
+        let resolutions = &display.resolutions[..display
+            .resolutions
+            .len()
+            .min(RUSTDESK_MAX_DISPLAY_RESOLUTIONS)];
+        if !out_displays.is_null() && index < display_capacity {
+            let mut snapshot = RustDeskDisplayInfoSnapshot {
+                display: display.display,
+                x: display.x,
+                y: display.y,
+                width: display.width,
+                height: display.height,
+                original_width: display.original_width,
+                original_height: display.original_height,
+                scale_milli: display.scale_milli,
+                online: display.online as u8,
+                cursor_embedded: display.cursor_embedded as u8,
+                resolution_offset: resolution_offset as u32,
+                resolution_count: resolutions.len() as u32,
+                ..RustDeskDisplayInfoSnapshot::default()
+            };
+            snapshot.name_len = copy_display_name(&display.name, &mut snapshot.name);
+            unsafe {
+                ptr::write(out_displays.add(index), snapshot);
+            }
+        }
+        for (resolution_index, (width, height)) in resolutions.iter().enumerate() {
+            let output_index = resolution_offset + resolution_index;
+            if !out_resolutions.is_null() && output_index < resolution_capacity {
+                unsafe {
+                    ptr::write(
+                        out_resolutions.add(output_index),
+                        RustDeskResolution {
+                            width: *width,
+                            height: *height,
+                        },
+                    );
+                }
+            }
+        }
+        resolution_offset += resolutions.len();
+    }
+    true
+}
+
+#[no_mangle]
+pub extern "C" fn rustdesk_switch_display(handle: *mut c_void, display: c_int) -> bool {
+    if handle.is_null() || display < 0 || display as usize >= RUSTDESK_MAX_DISPLAYS {
+        set_last_error("rustdesk_switch_display invalid display");
+        return false;
+    }
+    let ctx = unsafe { &*(handle as *const RustDeskClient) };
+    ctx.controls.enqueue(ControlMsg::SwitchDisplay { display });
+    true
+}
+
+#[no_mangle]
+pub extern "C" fn rustdesk_capture_displays(
+    handle: *mut c_void,
+    set_displays: *const c_int,
+    set_count: usize,
+) -> bool {
+    if handle.is_null() || set_count > RUSTDESK_MAX_DISPLAYS {
+        return false;
+    }
+    if set_count > 0 && set_displays.is_null() {
+        return false;
+    }
+    let set = if set_count == 0 {
+        Vec::new()
+    } else {
+        unsafe { std::slice::from_raw_parts(set_displays, set_count) }.to_vec()
+    };
+    if set
+        .iter()
+        .any(|display| *display < 0 || *display as usize >= RUSTDESK_MAX_DISPLAYS)
+    {
+        return false;
+    }
+    let ctx = unsafe { &*(handle as *const RustDeskClient) };
+    ctx.controls.enqueue(ControlMsg::CaptureDisplays {
+        add: Vec::new(),
+        sub: Vec::new(),
+        set,
+    });
+    true
+}
+
+#[no_mangle]
+pub extern "C" fn rustdesk_refresh_video_display(handle: *mut c_void, display: c_int) -> bool {
+    if handle.is_null() || display < 0 || display as usize >= RUSTDESK_MAX_DISPLAYS {
+        return false;
+    }
+    let ctx = unsafe { &*(handle as *const RustDeskClient) };
+    ctx.controls.enqueue(ControlMsg::RefreshVideoDisplay { display });
+    true
+}
+
 #[no_mangle]
 pub extern "C" fn rustdesk_change_display_resolution(
     handle: *mut c_void,
@@ -1481,6 +1735,7 @@ pub extern "C" fn rustdesk_version() -> *const c_char {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::protocol::message_proto::{EncodedVideoFrame, VideoFrame_oneof_union};
     use std::ffi::CString;
 
     fn test_client_with_display_state(display_state: RustDeskDisplayState) -> RustDeskClient {
@@ -1513,6 +1768,7 @@ mod tests {
             scale_milli: 1250,
             geometry_epoch: 7,
             resolutions: vec![(1080, 1920), (720, 1280), (540, 960)],
+            displays: Vec::new(),
         });
         let handle = &mut client as *mut RustDeskClient as *mut c_void;
         let mut snapshot = RustDeskDisplaySnapshot::default();
@@ -1533,6 +1789,130 @@ mod tests {
         assert_eq!(snapshot.resolution_count, 3);
         assert_eq!((resolutions[0].width, resolutions[0].height), (1080, 1920));
         assert_eq!((resolutions[1].width, resolutions[1].height), (720, 1280));
+    }
+
+    #[test]
+    fn display_list_copies_catalog_names_and_flattened_resolutions() {
+        let mut client = test_client_with_display_state(RustDeskDisplayState {
+            current_display: 1,
+            displays: vec![
+                RustDeskDisplayInfoState {
+                    display: 0,
+                    x: 0,
+                    width: 1920,
+                    height: 1080,
+                    name: "Primary".to_string(),
+                    online: true,
+                    resolutions: vec![(1920, 1080)],
+                    ..RustDeskDisplayInfoState::default()
+                },
+                RustDeskDisplayInfoState {
+                    display: 1,
+                    x: 1920,
+                    width: 2560,
+                    height: 1440,
+                    name: "Secondary".to_string(),
+                    online: true,
+                    resolutions: vec![(2560, 1440), (1920, 1080)],
+                    ..RustDeskDisplayInfoState::default()
+                },
+            ],
+            ..RustDeskDisplayState::default()
+        });
+        let handle = &mut client as *mut RustDeskClient as *mut c_void;
+        let mut displays = [RustDeskDisplayInfoSnapshot::default(); 1];
+        let mut resolutions = [RustDeskResolution::default(); 3];
+        let mut display_count = 0usize;
+        let mut resolution_count = 0usize;
+
+        assert!(rustdesk_get_display_list(
+            handle,
+            displays.as_mut_ptr(),
+            displays.len(),
+            resolutions.as_mut_ptr(),
+            resolutions.len(),
+            &mut display_count,
+            &mut resolution_count,
+        ));
+        assert_eq!(display_count, 2);
+        assert_eq!(resolution_count, 3);
+        assert_eq!(displays[0].display, 0);
+        assert_eq!(displays[0].name_len as usize, "Primary".len());
+        assert_eq!(&displays[0].name[..7], b"Primary");
+        assert_eq!(displays[0].resolution_offset, 0);
+        assert_eq!(displays[0].resolution_count, 1);
+        assert_eq!((resolutions[1].width, resolutions[1].height), (2560, 1440));
+        assert_eq!((resolutions[2].width, resolutions[2].height), (1920, 1080));
+    }
+
+    extern "C" fn collect_display_frame(frame: *const FfiVideoFrame, user_data: *mut c_void) {
+        unsafe {
+            let frames = &mut *(user_data as *mut Vec<(i32, i32, i32, u32)>);
+            let frame = &*frame;
+            frames.push((frame.display, frame.width, frame.height, frame.abi_version));
+        }
+    }
+
+    #[test]
+    fn encoded_frames_preserve_display_and_use_matching_geometry() {
+        let display_state = Arc::new(Mutex::new(RustDeskDisplayState {
+            width: 1920,
+            height: 1080,
+            displays: vec![
+                RustDeskDisplayInfoState {
+                    display: 0,
+                    width: 1920,
+                    height: 1080,
+                    ..RustDeskDisplayInfoState::default()
+                },
+                RustDeskDisplayInfoState {
+                    display: 1,
+                    width: 2560,
+                    height: 1440,
+                    ..RustDeskDisplayInfoState::default()
+                },
+            ],
+            ..RustDeskDisplayState::default()
+        }));
+        let mut frame = VideoFrame::new();
+        frame.set_display(1);
+        let mut encoded = EncodedVideoFrames::new();
+        let mut encoded_frame = EncodedVideoFrame::new();
+        encoded_frame.set_data(vec![0x01, 0x02]);
+        encoded_frame.set_key(true);
+        encoded.mut_frames().push(encoded_frame);
+        frame.union = Some(VideoFrame_oneof_union::h264s(encoded));
+        let mut received = Vec::new();
+
+        dispatch_video_frame(
+            &frame,
+            &display_state,
+            Some(collect_display_frame),
+            &mut received as *mut Vec<(i32, i32, i32, u32)> as *mut c_void,
+        );
+
+        assert_eq!(received, vec![(1, 2560, 1440, RUSTDESK_VIDEO_FRAME_ABI_VERSION)]);
+    }
+
+    #[test]
+    fn display_control_ffi_enqueues_switch_capture_and_refresh() {
+        let mut client = test_client_with_display_state(RustDeskDisplayState::default());
+        let handle = &mut client as *mut RustDeskClient as *mut c_void;
+        let selected = [1 as c_int, 2 as c_int];
+
+        assert!(rustdesk_switch_display(handle, 1));
+        assert!(rustdesk_capture_displays(handle, selected.as_ptr(), selected.len()));
+        assert!(rustdesk_refresh_video_display(handle, 1));
+
+        let controls = client.controls.take_batch(3);
+        assert!(matches!(
+            controls.as_slice(),
+            [
+                ControlMsg::SwitchDisplay { display: 1 },
+                ControlMsg::CaptureDisplays { add, sub, set },
+                ControlMsg::RefreshVideoDisplay { display: 1 },
+            ] if add.is_empty() && sub.is_empty() && set == &vec![1, 2]
+        ));
     }
 
     #[test]

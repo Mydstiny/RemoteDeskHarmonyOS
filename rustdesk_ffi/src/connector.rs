@@ -20,14 +20,14 @@ use crate::control_inbox::{CONTROL_BATCH_LIMIT, ControlInbox};
 use crate::cursor_state::{CursorState, CursorStreamUpdate};
 use crate::net;
 use crate::protocol::message_proto::{
-    AudioFormat, AudioFrame, Clipboard, ClipboardFormat, ControlKey, EncodedVideoFrames,
-    FileAction, FileAction_oneof_union, FileEntry, FileResponse, FileResponse_oneof_union,
-    FileTransferBlock, FileTransferDone, FileTransferReceiveRequest,
-    DisplayResolution, FileTransferSendConfirmRequest, FileType, IdPk, KeyEvent,
+    AudioFormat, AudioFrame, CaptureDisplays, Clipboard, ClipboardFormat, ControlKey, DisplayInfo,
+    DisplayResolution, EncodedVideoFrames, FileAction, FileAction_oneof_union, FileEntry,
+    FileResponse, FileResponse_oneof_union, FileTransferBlock, FileTransferDone,
+    FileTransferReceiveRequest, FileTransferSendConfirmRequest, FileType, IdPk, KeyEvent,
     KeyEvent_oneof_union, KeyboardMode, Message, Message_oneof_union, Misc, Misc_oneof_union,
-    MouseEvent, PointerDeviceEvent, PublicKey, Resolution, SwitchDisplay, TouchEvent,
-    TouchPanEnd, TouchPanStart, TouchPanUpdate, TouchScaleUpdate, VideoFrame,
-    VideoFrame_oneof_union,
+    MouseEvent, PeerInfo, PointerDeviceEvent, PublicKey, Resolution, SupportedResolutions,
+    SwitchDisplay, TouchEvent, TouchPanEnd, TouchPanStart, TouchPanUpdate, TouchScaleUpdate,
+    VideoFrame, VideoFrame_oneof_union,
 };
 use crate::protocol::rendezvous::RendezvousClient;
 use crate::protocol::session::Session;
@@ -1208,6 +1208,13 @@ impl RustDeskConnector {
                         Some(Misc_oneof_union::refresh_video(_)) => "misc/refresh_video",
                         Some(Misc_oneof_union::video_received(_)) => "misc/video_received",
                         Some(Misc_oneof_union::switch_display(_)) => "misc/switch_display",
+                        Some(Misc_oneof_union::capture_displays(_)) => "misc/capture_displays",
+                        Some(Misc_oneof_union::refresh_video_display(_)) => {
+                            "misc/refresh_video_display"
+                        }
+                        Some(Misc_oneof_union::follow_current_display(_)) => {
+                            "misc/follow_current_display"
+                        }
                         _ => "misc/other",
                     };
                     last_msg_kind = misc_key;
@@ -1217,6 +1224,13 @@ impl RustDeskConnector {
                     }
                     if let Some(Misc_oneof_union::switch_display(ref display)) = misc.union {
                         Self::apply_switch_display_geometry(&display_state, display, &stream_stats);
+                    }
+                    if let Some(Misc_oneof_union::follow_current_display(display)) = misc.union {
+                        Self::apply_follow_current_display(
+                            &display_state,
+                            display,
+                            &stream_stats,
+                        );
                     }
                 }
                 Some(Message_oneof_union::login_response(ref resp)) => {
@@ -1297,9 +1311,11 @@ impl RustDeskConnector {
                         );
                     }
                 }
-                Some(Message_oneof_union::peer_info(_)) => {
+                Some(Message_oneof_union::peer_info(ref info)) => {
                     last_msg_kind = "peer_info";
                     *msg_stats.entry("peer_info").or_default() += 1;
+                    self.session.update_peer_info(info.clone());
+                    Self::apply_peer_info_geometry(&display_state, info, &stream_stats);
                 }
                 Some(Message_oneof_union::file_response(ref resp)) => {
                     last_msg_kind = Self::file_response_kind(resp);
@@ -1493,6 +1509,36 @@ impl RustDeskConnector {
         message
     }
 
+    fn build_switch_display_message(display: i32) -> Message {
+        let mut switch_display = SwitchDisplay::new();
+        switch_display.set_display(display);
+        let mut misc = Misc::new();
+        misc.union = Some(Misc_oneof_union::switch_display(switch_display));
+        let mut message = Message::new();
+        message.union = Some(Message_oneof_union::misc(misc));
+        message
+    }
+
+    fn build_capture_displays_message(add: Vec<i32>, sub: Vec<i32>, set: Vec<i32>) -> Message {
+        let mut capture = CaptureDisplays::new();
+        capture.set_add(add);
+        capture.set_sub(sub);
+        capture.set_set(set);
+        let mut misc = Misc::new();
+        misc.union = Some(Misc_oneof_union::capture_displays(capture));
+        let mut message = Message::new();
+        message.union = Some(Message_oneof_union::misc(misc));
+        message
+    }
+
+    fn build_refresh_video_display_message(display: i32) -> Message {
+        let mut misc = Misc::new();
+        misc.set_refresh_video_display(display);
+        let mut message = Message::new();
+        message.union = Some(Message_oneof_union::misc(misc));
+        message
+    }
+
     fn build_touch_scale_message(scale: i32) -> Message {
         let mut update = TouchScaleUpdate::new();
         update.set_scale(scale);
@@ -1547,6 +1593,18 @@ impl RustDeskConnector {
             crate::ControlMsg::RefreshVideo => {
                 crate::set_last_error("send refresh video");
                 Session::send_refresh_video(crypto)
+            }
+            crate::ControlMsg::SwitchDisplay { display } => {
+                let message = Self::build_switch_display_message(display);
+                Self::send_message_encrypted(crypto, &message)
+            }
+            crate::ControlMsg::CaptureDisplays { add, sub, set } => {
+                let message = Self::build_capture_displays_message(add, sub, set);
+                Self::send_message_encrypted(crypto, &message)
+            }
+            crate::ControlMsg::RefreshVideoDisplay { display } => {
+                let message = Self::build_refresh_video_display_message(display);
+                Self::send_message_encrypted(crypto, &message)
             }
             crate::ControlMsg::VideoPressure { .. } => Ok(()),
             crate::ControlMsg::KeyEvent { scancode, pressed } => {
@@ -1617,6 +1675,9 @@ impl RustDeskConnector {
         match control {
             crate::ControlMsg::Shutdown => "shutdown",
             crate::ControlMsg::RefreshVideo => "refresh_video",
+            crate::ControlMsg::SwitchDisplay { .. } => "switch_display",
+            crate::ControlMsg::CaptureDisplays { .. } => "capture_displays",
+            crate::ControlMsg::RefreshVideoDisplay { .. } => "refresh_video_display",
             crate::ControlMsg::VideoPressure { .. } => "video_pressure",
             crate::ControlMsg::KeyEvent { .. } => "key",
             crate::ControlMsg::MouseEvent { .. } => "mouse",
@@ -2676,36 +2737,8 @@ impl RustDeskConnector {
         }
     }
 
-    pub fn peer_display_state(&self) -> crate::RustDeskDisplayState {
-        let mut state = crate::RustDeskDisplayState::default();
-        let Some(info) = self.session.peer_info() else {
-            return state;
-        };
-        let displays = info.get_displays();
-        let current = info.get_current_display();
-        state.current_display = if current >= 0 { current } else { 0 };
-        let display = if current >= 0 {
-            displays.get(current as usize)
-        } else {
-            None
-        }
-        .or_else(|| displays.iter().find(|display| display.get_online()))
-        .or_else(|| displays.first());
-        let Some(display) = display else {
-            return state;
-        };
-        state.width = display.get_width().max(0);
-        state.height = display.get_height().max(0);
-        state.original_width = display.get_original_resolution().get_width().max(0);
-        state.original_height = display.get_original_resolution().get_height().max(0);
-        let scale = display.get_scale();
-        state.scale_milli = if scale.is_finite() && scale > 0.0 {
-            (scale * 1000.0).round() as i32
-        } else {
-            1000
-        };
-        state.resolutions = info
-            .get_resolutions()
+    fn collect_resolutions(supported: &SupportedResolutions) -> Vec<(i32, i32)> {
+        supported
             .get_resolutions()
             .iter()
             .filter_map(|resolution| {
@@ -2714,9 +2747,170 @@ impl RustDeskConnector {
                 if width > 0 && height > 0 { Some((width, height)) } else { None }
             })
             .take(crate::RUSTDESK_MAX_DISPLAY_RESOLUTIONS)
+            .collect()
+    }
+
+    fn display_info_state(index: usize, display: &DisplayInfo) -> crate::RustDeskDisplayInfoState {
+        let original = display.get_original_resolution();
+        let scale = display.get_scale();
+        crate::RustDeskDisplayInfoState {
+            display: index as i32,
+            x: display.get_x(),
+            y: display.get_y(),
+            width: display.get_width().max(0),
+            height: display.get_height().max(0),
+            name: display.get_name().to_string(),
+            online: display.get_online(),
+            cursor_embedded: display.get_cursor_embedded(),
+            original_width: original.get_width().max(0),
+            original_height: original.get_height().max(0),
+            scale_milli: if scale.is_finite() && scale > 0.0 {
+                (scale * 1000.0).round() as i32
+            } else {
+                1000
+            },
+            resolutions: Vec::new(),
+        }
+    }
+
+    fn populate_display_state(
+        state: &mut crate::RustDeskDisplayState,
+        info: &PeerInfo,
+    ) -> bool {
+        let previous_displays = state.displays.clone();
+        let previous_geometry = (
+            state.current_display,
+            state.width,
+            state.height,
+            state.original_width,
+            state.original_height,
+            state.scale_milli,
+            state.resolutions.clone(),
+        );
+        let mut displays: Vec<crate::RustDeskDisplayInfoState> = info
+            .get_displays()
+            .iter()
+            .take(crate::RUSTDESK_MAX_DISPLAYS)
+            .enumerate()
+            .map(|(index, display)| Self::display_info_state(index, display))
             .collect();
-        state.geometry_epoch = 1;
+
+        // PeerInfo exposes one resolution list for the current display. Keep
+        // lists learned from SwitchDisplay for the other entries.
+        for display in &mut displays {
+            if let Some(previous) = previous_displays
+                .iter()
+                .find(|previous| previous.display == display.display)
+            {
+                display.resolutions = previous.resolutions.clone();
+            }
+        }
+
+        let current = info.get_current_display();
+        let current_index = if current >= 0
+            && displays.iter().any(|display| display.display == current)
+        {
+            current
+        } else {
+            displays.first().map(|display| display.display).unwrap_or(0)
+        };
+        let current_resolutions = Self::collect_resolutions(info.get_resolutions());
+        if let Some(display) = displays
+            .iter_mut()
+            .find(|display| display.display == current_index)
+        {
+            if !current_resolutions.is_empty() {
+                display.resolutions = current_resolutions;
+            }
+        }
+
+        state.current_display = current_index;
+        state.displays = displays;
+        if let Some(display) = state
+            .displays
+            .iter()
+            .find(|display| display.display == current_index)
+        {
+            state.width = display.width;
+            state.height = display.height;
+            state.original_width = display.original_width;
+            state.original_height = display.original_height;
+            state.scale_milli = display.scale_milli;
+            state.resolutions = display.resolutions.clone();
+        }
+
+        previous_geometry
+            != (
+                state.current_display,
+                state.width,
+                state.height,
+                state.original_width,
+                state.original_height,
+                state.scale_milli,
+                state.resolutions.clone(),
+            )
+            || previous_displays != state.displays
+    }
+
+    fn apply_peer_info_geometry(
+        display_state: &Arc<Mutex<crate::RustDeskDisplayState>>,
+        info: &PeerInfo,
+        stream_stats: &Arc<Mutex<crate::RustDeskStreamStats>>,
+    ) {
+        let Ok(mut state) = display_state.lock() else {
+            return;
+        };
+        let changed = Self::populate_display_state(&mut state, info);
+        if changed || state.geometry_epoch == 0 {
+            state.geometry_epoch = state.geometry_epoch.wrapping_add(1).max(1);
+        }
+        if let Ok(mut stats) = stream_stats.lock() {
+            stats.width = state.width;
+            stats.height = state.height;
+        }
+        eprintln!(
+            "[RustDesk-FFI] peer display catalog displays={} current={} size={}x{} epoch={}",
+            state.displays.len(),
+            state.current_display,
+            state.width,
+            state.height,
+            state.geometry_epoch
+        );
+    }
+
+    pub fn peer_display_state(&self) -> crate::RustDeskDisplayState {
+        let mut state = crate::RustDeskDisplayState::default();
+        if let Some(info) = self.session.peer_info() {
+            Self::populate_display_state(&mut state, info);
+            state.geometry_epoch = 1;
+        }
         state
+    }
+
+    fn sync_active_display(state: &mut crate::RustDeskDisplayState, display: i32) -> bool {
+        let Some(info) = state
+            .displays
+            .iter()
+            .find(|info| info.display == display)
+            .cloned()
+        else {
+            return false;
+        };
+        let changed = state.current_display != display
+            || state.width != info.width
+            || state.height != info.height
+            || state.original_width != info.original_width
+            || state.original_height != info.original_height
+            || state.scale_milli != info.scale_milli
+            || state.resolutions != info.resolutions;
+        state.current_display = display;
+        state.width = info.width;
+        state.height = info.height;
+        state.original_width = info.original_width;
+        state.original_height = info.original_height;
+        state.scale_milli = info.scale_milli;
+        state.resolutions = info.resolutions;
+        changed
     }
 
     fn apply_switch_display_geometry(
@@ -2724,46 +2918,89 @@ impl RustDeskConnector {
         display: &SwitchDisplay,
         stream_stats: &Arc<Mutex<crate::RustDeskStreamStats>>,
     ) {
+        let display_index = display.get_display();
+        if display_index < 0 || display_index as usize >= crate::RUSTDESK_MAX_DISPLAYS {
+            return;
+        }
         let Ok(mut state) = display_state.lock() else {
             return;
         };
-        let width = display.get_width().max(0);
-        let height = display.get_height().max(0);
-        let original_width = display.get_original_resolution().get_width().max(0);
-        let original_height = display.get_original_resolution().get_height().max(0);
-        let resolutions: Vec<(i32, i32)> = display
-            .get_resolutions()
-            .get_resolutions()
-            .iter()
-            .filter_map(|resolution| {
-                let width = resolution.get_width();
-                let height = resolution.get_height();
-                if width > 0 && height > 0 { Some((width, height)) } else { None }
-            })
-            .take(crate::RUSTDESK_MAX_DISPLAY_RESOLUTIONS)
-            .collect();
-        let changed = state.current_display != display.get_display()
-            || state.width != width
-            || state.height != height
-            || state.original_width != original_width
-            || state.original_height != original_height
-            || state.resolutions != resolutions;
-        state.current_display = display.get_display();
-        if width > 0 { state.width = width; }
-        if height > 0 { state.height = height; }
-        if original_width > 0 { state.original_width = original_width; }
-        if original_height > 0 { state.original_height = original_height; }
-        state.resolutions = resolutions;
+        let resolutions = Self::collect_resolutions(display.get_resolutions());
+        let legacy_scale_milli = state.scale_milli;
+        let legacy_current_display = state.current_display;
+        if let Some(target) = state
+            .displays
+            .iter_mut()
+            .find(|info| info.display == display_index)
+        {
+            target.x = display.get_x();
+            target.y = display.get_y();
+            if display.get_width() > 0 {
+                target.width = display.get_width();
+            }
+            if display.get_height() > 0 {
+                target.height = display.get_height();
+            }
+            target.cursor_embedded = display.get_cursor_embedded();
+            target.online = true;
+            if display.has_original_resolution() {
+                target.original_width = display.get_original_resolution().get_width().max(0);
+                target.original_height = display.get_original_resolution().get_height().max(0);
+            }
+            if !resolutions.is_empty() {
+                target.resolutions = resolutions;
+            }
+        } else {
+            state.displays.push(crate::RustDeskDisplayInfoState {
+                display: display_index,
+                x: display.get_x(),
+                y: display.get_y(),
+                width: display.get_width().max(0),
+                height: display.get_height().max(0),
+                online: true,
+                cursor_embedded: display.get_cursor_embedded(),
+                original_width: display.get_original_resolution().get_width().max(0),
+                original_height: display.get_original_resolution().get_height().max(0),
+                scale_milli: if display_index == legacy_current_display {
+                    legacy_scale_milli
+                } else {
+                    1000
+                },
+                resolutions,
+                ..crate::RustDeskDisplayInfoState::default()
+            });
+        }
+        let changed = Self::sync_active_display(&mut state, display_index);
         if changed {
+            state.geometry_epoch = state.geometry_epoch.wrapping_add(1).max(1);
+        }
+        if let Ok(mut stats) = stream_stats.lock() {
+            stats.width = state.width;
+            stats.height = state.height;
+        }
+        eprintln!(
+            "[RustDesk-FFI] display geometry epoch={} display={} size={}x{}",
+            state.geometry_epoch, state.current_display, state.width, state.height
+        );
+    }
+
+    fn apply_follow_current_display(
+        display_state: &Arc<Mutex<crate::RustDeskDisplayState>>,
+        display: i32,
+        stream_stats: &Arc<Mutex<crate::RustDeskStreamStats>>,
+    ) {
+        let Ok(mut state) = display_state.lock() else {
+            return;
+        };
+        if display < 0 || display as usize >= crate::RUSTDESK_MAX_DISPLAYS {
+            return;
+        }
+        if Self::sync_active_display(&mut state, display) {
             state.geometry_epoch = state.geometry_epoch.wrapping_add(1).max(1);
             if let Ok(mut stats) = stream_stats.lock() {
                 stats.width = state.width;
                 stats.height = state.height;
             }
-            eprintln!(
-                "[RustDesk-FFI] display geometry epoch={} display={} size={}x{}",
-                state.geometry_epoch, state.current_display, state.width, state.height
-            );
         }
     }
 
@@ -2780,9 +3017,11 @@ mod tests {
         PhysicalModifierState, RemoteKeyboardTransport, RendezvousCredentials,
     };
     use crate::protocol::message_proto::{
-        Hash, LoginResponse, Message, Misc_oneof_union, PointerDeviceEvent_oneof_union,
-        Resolution, SupportedResolutions, SwitchDisplay, TouchEvent_oneof_union,
+        DisplayInfo, Hash, LoginResponse, Message, Misc_oneof_union, PeerInfo,
+        PointerDeviceEvent_oneof_union, Resolution, SupportedResolutions, SwitchDisplay,
+        TouchEvent_oneof_union,
     };
+    use crate::{RustDeskDisplayInfoState, RustDeskDisplayState};
     use crate::protocol::message_proto::KeyboardMode;
     use crate::protocol::wire;
     use protobuf::Message as ProtoMessage;
@@ -2861,6 +3100,135 @@ mod tests {
                 _ => panic!("touch pan must use a pointer device event"),
             }
         }
+
+        let switch_message = RustDeskConnector::build_switch_display_message(1);
+        match switch_message.union {
+            Some(Message_oneof_union::misc(misc)) => match misc.union {
+                Some(Misc_oneof_union::switch_display(switch_display)) => {
+                    assert_eq!(switch_display.get_display(), 1);
+                }
+                _ => panic!("display switch must use Misc.switch_display"),
+            },
+            _ => panic!("display switch must use a Misc message"),
+        }
+
+        let capture_message = RustDeskConnector::build_capture_displays_message(
+            vec![2],
+            vec![0],
+            vec![1, 2],
+        );
+        match capture_message.union {
+            Some(Message_oneof_union::misc(misc)) => match misc.union {
+                Some(Misc_oneof_union::capture_displays(capture)) => {
+                    assert_eq!(capture.get_add(), &[2]);
+                    assert_eq!(capture.get_sub(), &[0]);
+                    assert_eq!(capture.get_set(), &[1, 2]);
+                }
+                _ => panic!("display capture must use Misc.capture_displays"),
+            },
+            _ => panic!("display capture must use a Misc message"),
+        }
+
+        let refresh_message = RustDeskConnector::build_refresh_video_display_message(2);
+        match refresh_message.union {
+            Some(Message_oneof_union::misc(misc)) => match misc.union {
+                Some(Misc_oneof_union::refresh_video_display(display)) => {
+                    assert_eq!(display, 2);
+                }
+                _ => panic!("display refresh must use Misc.refresh_video_display"),
+            },
+            _ => panic!("display refresh must use a Misc message"),
+        }
+    }
+
+    #[test]
+    fn peer_info_builds_a_bounded_multimonitor_catalog() {
+        let mut peer = PeerInfo::new();
+        peer.set_current_display(1);
+
+        let mut primary = DisplayInfo::new();
+        primary.set_x(0);
+        primary.set_y(0);
+        primary.set_width(1920);
+        primary.set_height(1080);
+        primary.set_name("Primary".to_string());
+        primary.set_online(true);
+        primary.set_scale(1.0);
+
+        let mut secondary = DisplayInfo::new();
+        secondary.set_x(1920);
+        secondary.set_y(0);
+        secondary.set_width(2560);
+        secondary.set_height(1440);
+        secondary.set_name("Secondary".to_string());
+        secondary.set_online(true);
+        secondary.set_scale(1.25);
+
+        peer.mut_displays().push(primary);
+        peer.mut_displays().push(secondary);
+        peer.mut_resolutions()
+            .mut_resolutions()
+            .push(resolution(2560, 1440));
+
+        let mut state = RustDeskDisplayState::default();
+        assert!(RustDeskConnector::populate_display_state(&mut state, &peer));
+        assert_eq!(state.displays.len(), 2);
+        assert_eq!(state.current_display, 1);
+        assert_eq!(state.displays[0].name, "Primary");
+        assert_eq!((state.displays[1].x, state.displays[1].y), (1920, 0));
+        assert_eq!((state.width, state.height), (2560, 1440));
+        assert_eq!(state.scale_milli, 1250);
+        assert_eq!(state.resolutions, vec![(2560, 1440)]);
+    }
+
+    #[test]
+    fn switch_display_updates_only_the_selected_catalog_entry() {
+        let display_state = Arc::new(Mutex::new(RustDeskDisplayState {
+            current_display: 0,
+            width: 1920,
+            height: 1080,
+            original_width: 1920,
+            original_height: 1080,
+            scale_milli: 1000,
+            geometry_epoch: 1,
+            resolutions: vec![(1920, 1080)],
+            displays: vec![
+                RustDeskDisplayInfoState {
+                    display: 0,
+                    width: 1920,
+                    height: 1080,
+                    name: "Primary".to_string(),
+                    resolutions: vec![(1920, 1080)],
+                    ..RustDeskDisplayInfoState::default()
+                },
+                RustDeskDisplayInfoState {
+                    display: 1,
+                    width: 2560,
+                    height: 1440,
+                    name: "Secondary".to_string(),
+                    resolutions: vec![(2560, 1440)],
+                    ..RustDeskDisplayInfoState::default()
+                },
+            ],
+        }));
+        let stream_stats = Arc::new(Mutex::new(crate::RustDeskStreamStats::default()));
+        let mut supported = SupportedResolutions::new();
+        supported.mut_resolutions().push(resolution(1920, 1200));
+        let mut switch = SwitchDisplay::new();
+        switch.set_display(1);
+        switch.set_x(1920);
+        switch.set_y(0);
+        switch.set_width(1920);
+        switch.set_height(1200);
+        switch.set_resolutions(supported);
+
+        RustDeskConnector::apply_switch_display_geometry(&display_state, &switch, &stream_stats);
+
+        let state = display_state.lock().expect("display state lock");
+        assert_eq!((state.current_display, state.width, state.height), (1, 1920, 1200));
+        assert_eq!((state.displays[0].width, state.displays[0].height), (1920, 1080));
+        assert_eq!(state.displays[1].resolutions, vec![(1920, 1200)]);
+        assert_eq!(state.displays[1].name, "Secondary");
     }
 
     #[test]
@@ -2874,6 +3242,7 @@ mod tests {
             scale_milli: 1250,
             geometry_epoch: 4,
             resolutions: vec![(1920, 1080)],
+            displays: Vec::new(),
         }));
         let stream_stats = Arc::new(Mutex::new(crate::RustDeskStreamStats::default()));
         let mut supported = SupportedResolutions::new();
