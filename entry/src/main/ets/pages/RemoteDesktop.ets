@@ -4283,6 +4283,11 @@ struct RemoteDesktop {
             (sourceWidth !== this.rendererSourceWidth || sourceHeight !== this.rendererSourceHeight)) {
             this.rendererSourceWidth = sourceWidth;
             this.rendererSourceHeight = sourceHeight;
+            // This monitor reads the native snapshot directly, so invalidate
+            // the local geometry cache before preserving a user transform.
+            // Otherwise a resize while zoomed keeps the old source dimensions
+            // in the next pinch calculation and input projection.
+            this.invalidateRendererViewportCache();
             if (!this.canvasTransformGestureModified) {
               this.resetCanvasToDisplayDefault(true);
             }
