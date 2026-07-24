@@ -388,7 +388,8 @@ const EMPTY_RUSTDESK_DISPLAY_CAPABILITIES: RustDeskDisplayCapabilities = {
   originalHeight: 0,
   scaleMilli: 1000,
   geometryEpoch: 0,
-  resolutions: []
+  resolutions: [],
+  displays: []
 };
 
 const EMPTY_LOCAL_RESOURCE_STATS: LocalResourceStats = {

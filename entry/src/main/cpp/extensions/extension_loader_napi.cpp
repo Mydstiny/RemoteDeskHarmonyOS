@@ -1804,6 +1804,71 @@ napi_value NapiGetRustDeskDisplayCapabilities(napi_env env, napi_callback_info i
         napi_set_element(env, resolutions, static_cast<uint32_t>(index), item);
     }
     napi_set_named_property(env, result, "resolutions", resolutions);
+
+    napi_value displays;
+    napi_create_array_with_length(env, capabilities.displays.size(), &displays);
+    for (size_t index = 0; index < capabilities.displays.size(); ++index) {
+        const RustDeskDisplayInfo& display = capabilities.displays[index];
+        napi_value item;
+        napi_create_object(env, &item);
+        SetObjectInt32(env, item, "display", display.display);
+        SetObjectInt32(env, item, "x", display.x);
+        SetObjectInt32(env, item, "y", display.y);
+        SetObjectInt32(env, item, "width", display.width);
+        SetObjectInt32(env, item, "height", display.height);
+        SetObjectInt32(env, item, "originalWidth", display.originalWidth);
+        SetObjectInt32(env, item, "originalHeight", display.originalHeight);
+        SetObjectInt32(env, item, "scaleMilli", display.scaleMilli);
+        SetObjectBool(env, item, "online", display.online);
+        SetObjectBool(env, item, "cursorEmbedded", display.cursorEmbedded);
+        SetObjectString(env, item, "name", display.name);
+        napi_value displayResolutions;
+        napi_create_array_with_length(env, display.resolutions.size(), &displayResolutions);
+        for (size_t resolutionIndex = 0; resolutionIndex < display.resolutions.size(); ++resolutionIndex) {
+            napi_value resolution;
+            napi_create_object(env, &resolution);
+            SetObjectInt32(env, resolution, "width", display.resolutions[resolutionIndex].width);
+            SetObjectInt32(env, resolution, "height", display.resolutions[resolutionIndex].height);
+            napi_set_element(env, displayResolutions, static_cast<uint32_t>(resolutionIndex), resolution);
+        }
+        napi_set_named_property(env, item, "resolutions", displayResolutions);
+        napi_set_element(env, displays, static_cast<uint32_t>(index), item);
+    }
+    napi_set_named_property(env, result, "displays", displays);
+    return result;
+}
+
+/** NAPI: switchRustDeskDisplay(sessionId, display): boolean */
+napi_value NapiSwitchRustDeskDisplay(napi_env env, napi_callback_info info) {
+    size_t argc = 2;
+    napi_value args[2];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    int32_t sessionId = 0;
+    int32_t display = -1;
+    if (argc >= 2) {
+        napi_get_value_int32(env, args[0], &sessionId);
+        napi_get_value_int32(env, args[1], &display);
+    }
+
+    bool accepted = false;
+    auto it = g_sessions.find(sessionId);
+    if (display >= 0 && it != g_sessions.end() && it->second &&
+        it->second->protocolName == "rustdesk" && it->second->adapter) {
+        auto* bridge = dynamic_cast<RustDeskBridge*>(it->second->adapter.get());
+        if (bridge) {
+            accepted = bridge->switchDisplay(display);
+            if (accepted) {
+                DecoderNapi::SetActiveDisplay(display);
+                DecoderNapi::RequestActiveDecoderRecovery();
+                OH_LOG_INFO(LOG_APP,
+                            "[ExtLoader] RustDesk display switch accepted session=%{public}d display=%{public}d",
+                            sessionId, display);
+            }
+        }
+    }
+
+    napi_value result;
+    napi_get_boolean(env, accepted, &result);
     return result;
 }
 
@@ -3282,6 +3347,10 @@ napi_value ExtensionLoaderNapi::Init(napi_env env, napi_value exports) {
     napi_create_function(env, "getRustDeskDisplayCapabilities", NAPI_AUTO_LENGTH,
                          NapiGetRustDeskDisplayCapabilities, nullptr, &fn);
     napi_set_named_property(env, exports, "getRustDeskDisplayCapabilities", fn);
+
+    napi_create_function(env, "switchRustDeskDisplay", NAPI_AUTO_LENGTH,
+                         NapiSwitchRustDeskDisplay, nullptr, &fn);
+    napi_set_named_property(env, exports, "switchRustDeskDisplay", fn);
 
     napi_create_function(env, "changeRustDeskDisplayResolution", NAPI_AUTO_LENGTH,
                          NapiChangeRustDeskDisplayResolution, nullptr, &fn);

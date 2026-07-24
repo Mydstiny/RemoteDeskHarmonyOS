@@ -1015,7 +1015,16 @@ bool RustDeskBridge::switchDisplay(int display) {
         handle = impl_->ffiHandle;
     }
     if (mode_ == RustDeskMode::FFI && handle != nullptr) {
-        return rustdesk_switch_display(handle, display);
+        if (!rustdesk_switch_display(handle, display)) {
+            return false;
+        }
+        // The HarmonyOS client renders one canvas. Match the official
+        // RustDesk single-canvas sequence so a switch cannot leave the old
+        // capture set active on the controlled endpoint.
+        const int selectedDisplay = display;
+        const bool captureAccepted = rustdesk_capture_displays(handle, &selectedDisplay, 1);
+        const bool refreshAccepted = rustdesk_refresh_video_display(handle, display);
+        return captureAccepted && refreshAccepted;
     }
 #else
     (void)display;

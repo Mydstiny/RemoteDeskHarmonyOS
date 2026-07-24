@@ -442,8 +442,19 @@ export class ExtensionLoader {
         originalHeight: 0,
         scaleMilli: 1000,
         geometryEpoch: 0,
-        resolutions: []
+        resolutions: [],
+        displays: []
       };
+    }
+  }
+
+  switchRustDeskDisplay(sessionId: number, display: number): boolean {
+    try {
+      return rdpnapi.switchRustDeskDisplay(sessionId, display) as boolean;
+    } catch (err) {
+      hilog.warn(DOMAIN, TAG,
+        '[ExtensionLoader] switchRustDeskDisplay unavailable: ' + JSON.stringify(err));
+      return false;
     }
   }
 

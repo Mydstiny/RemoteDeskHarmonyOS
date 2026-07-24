@@ -1578,6 +1578,11 @@ bool DecoderNapi::RequestDecoderRecovery(int64_t decoderHandle) {
     return true;
 }
 
+bool DecoderNapi::RequestActiveDecoderRecovery() {
+    const int64_t handle = g_activeDecoderHandle.load(std::memory_order_acquire);
+    return RequestDecoderRecovery(handle);
+}
+
 // ============================================================
 // DecoderNapi::Init
 // ============================================================
