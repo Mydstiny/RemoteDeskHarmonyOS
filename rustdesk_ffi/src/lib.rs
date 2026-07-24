@@ -1581,7 +1581,12 @@ pub extern "C" fn rustdesk_change_display_resolution(
     width: c_int,
     height: c_int,
 ) -> bool {
-    if handle.is_null() || width <= 0 || height <= 0 {
+    if handle.is_null()
+        || display < 0
+        || display as usize >= RUSTDESK_MAX_DISPLAYS
+        || width <= 0
+        || height <= 0
+    {
         set_last_error("rustdesk_change_display_resolution invalid arguments");
         return false;
     }
@@ -2087,6 +2092,13 @@ mod tests {
         let mut client = test_client_with_display_state(RustDeskDisplayState::default());
         let handle = &mut client as *mut RustDeskClient as *mut c_void;
 
+        assert!(!rustdesk_change_display_resolution(handle, -1, 1920, 1080));
+        assert!(!rustdesk_change_display_resolution(
+            handle,
+            RUSTDESK_MAX_DISPLAYS as c_int,
+            1920,
+            1080
+        ));
         assert!(!rustdesk_change_display_resolution(handle, 0, 0, 1080));
         assert!(!rustdesk_change_display_resolution(handle, 0, 1920, 0));
         assert!(rustdesk_change_display_resolution(handle, 1, 1080, 1920));

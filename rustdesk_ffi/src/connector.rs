@@ -2837,6 +2837,16 @@ impl RustDeskConnector {
             state.original_height = display.original_height;
             state.scale_milli = display.scale_milli;
             state.resolutions = display.resolutions.clone();
+        } else {
+            // A peer-info refresh without display entries must not leave the
+            // previous monitor's geometry or resolution list visible.
+            state.current_display = 0;
+            state.width = 0;
+            state.height = 0;
+            state.original_width = 0;
+            state.original_height = 0;
+            state.scale_milli = 1000;
+            state.resolutions.clear();
         }
 
         previous_geometry
@@ -2993,6 +3003,20 @@ impl RustDeskConnector {
             return;
         };
         if display < 0 || display as usize >= crate::RUSTDESK_MAX_DISPLAYS {
+            return;
+        }
+        if state.displays.is_empty() {
+            // Legacy peers can report a current-display change without a
+            // catalog. Preserve the last known geometry while following the
+            // new display index.
+            if state.current_display != display {
+                state.current_display = display;
+                state.geometry_epoch = state.geometry_epoch.wrapping_add(1).max(1);
+            }
+            if let Ok(mut stats) = stream_stats.lock() {
+                stats.width = state.width;
+                stats.height = state.height;
+            }
             return;
         }
         if Self::sync_active_display(&mut state, display) {
@@ -3179,6 +3203,56 @@ mod tests {
         assert_eq!((state.width, state.height), (2560, 1440));
         assert_eq!(state.scale_milli, 1250);
         assert_eq!(state.resolutions, vec![(2560, 1440)]);
+    }
+
+    #[test]
+    fn empty_peer_info_clears_stale_display_geometry() {
+        let mut state = RustDeskDisplayState {
+            current_display: 1,
+            width: 2560,
+            height: 1440,
+            original_width: 2560,
+            original_height: 1440,
+            scale_milli: 1250,
+            resolutions: vec![(2560, 1440)],
+            displays: vec![RustDeskDisplayInfoState {
+                display: 1,
+                width: 2560,
+                height: 1440,
+                ..RustDeskDisplayInfoState::default()
+            }],
+            ..RustDeskDisplayState::default()
+        };
+
+        assert!(RustDeskConnector::populate_display_state(&mut state, &PeerInfo::new()));
+        assert_eq!(state.current_display, 0);
+        assert_eq!((state.width, state.height), (0, 0));
+        assert_eq!((state.original_width, state.original_height), (0, 0));
+        assert_eq!(state.scale_milli, 1000);
+        assert!(state.resolutions.is_empty());
+        assert!(state.displays.is_empty());
+    }
+
+    #[test]
+    fn legacy_follow_display_preserves_geometry_without_a_catalog() {
+        let display_state = Arc::new(Mutex::new(RustDeskDisplayState {
+            current_display: 0,
+            width: 1920,
+            height: 1080,
+            geometry_epoch: 3,
+            displays: Vec::new(),
+            ..RustDeskDisplayState::default()
+        }));
+        let stream_stats = Arc::new(Mutex::new(crate::RustDeskStreamStats::default()));
+
+        RustDeskConnector::apply_follow_current_display(&display_state, 2, &stream_stats);
+
+        let state = display_state.lock().expect("display state lock");
+        assert_eq!(state.current_display, 2);
+        assert_eq!((state.width, state.height), (1920, 1080));
+        assert_eq!(state.geometry_epoch, 4);
+        let stats = stream_stats.lock().expect("stream stats lock");
+        assert_eq!((stats.width, stats.height), (1920, 1080));
     }
 
     #[test]

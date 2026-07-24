@@ -63,6 +63,12 @@ namespace ExtensionLoaderNapi {
 
 namespace {
 
+constexpr int kRustDeskMaxDisplays = 16;
+
+bool IsValidRustDeskDisplay(int display) {
+    return display >= 0 && display < kRustDeskMaxDisplays;
+}
+
 void secureClearString(std::string& value) {
     if (!value.empty()) {
         volatile char* data = value.data();
@@ -1878,7 +1884,7 @@ napi_value NapiSwitchRustDeskDisplay(napi_env env, napi_callback_info info) {
 
     bool accepted = false;
     auto it = g_sessions.find(sessionId);
-    if (display >= 0 && it != g_sessions.end() && it->second &&
+    if (IsValidRustDeskDisplay(display) && it != g_sessions.end() && it->second &&
         it->second->protocolName == "rustdesk" && it->second->adapter) {
         auto* bridge = dynamic_cast<RustDeskBridge*>(it->second->adapter.get());
         if (bridge) {
@@ -1915,7 +1921,8 @@ napi_value NapiChangeRustDeskDisplayResolution(napi_env env, napi_callback_info 
     }
     bool accepted = false;
     auto it = g_sessions.find(sessionId);
-    if (it != g_sessions.end() && it->second && it->second->protocolName == "rustdesk" &&
+    if (IsValidRustDeskDisplay(display) && it != g_sessions.end() && it->second &&
+        it->second->protocolName == "rustdesk" &&
         it->second->adapter) {
         auto* bridge = dynamic_cast<RustDeskBridge*>(it->second->adapter.get());
         if (bridge) accepted = bridge->changeDisplayResolution(display, width, height);
