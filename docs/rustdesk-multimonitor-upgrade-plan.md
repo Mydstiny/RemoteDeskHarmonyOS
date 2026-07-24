@@ -1,10 +1,38 @@
 # RustDesk 多屏幕切换升级计划
 
-状态：调研完成，待实施
+状态：一期单画布多屏切换已实现，真机验收待执行；二期多画布与 IPC parity 未实施
 
 日期：2026-07-24
 
 适用项目：`RemoteDeskHarmonyOS`
+
+## 执行状态（2026-07-24）
+
+本计划已按任务分支 `codex/rustdesk-multimonitor` 执行。当前交付目标是“一期单画布切换”：一次只显示一个远端屏幕，但可以枚举 online 屏幕、按屏幕切换视频、同步几何和输入坐标，并在切换后等待目标屏关键帧。项目仍使用真实 RustDesk FFI 核心；`rustdesk_helper` IPC skeleton 和二期多画布同时显示不在本次交付范围内。
+
+已落地的主要内容：
+
+- Rust 保存完整 `PeerInfo.displays` 目录、每屏几何与 resolutions；实现官方 `switch_display` -> `capture_displays(set)` -> `refresh_video_display` 控制顺序，并保留旧端单屏 fallback。
+- FFI 帧携带 `display`、`abi_version` 和 `struct_size`；C++ `VideoFrame`、显示器目录 bridge、active display 过滤、decoder recovery 和目标屏关键帧等待已接通，ARM64/x86_64 均完成 native 链路编译。
+- NAPI/ArkTS 暴露 `displays[]` 与 `switchRustDeskDisplay`；远程页增加显示器选择、当前屏分辨率菜单、切换确认轮询、画面几何/缩放/输入映射更新。
+
+明确未完成的内容：
+
+- 尚未实现多个 XComponent/NativeImage/NativeWindow/decoder 同时显示；本次只有一个 active canvas 和一个 active decoder。
+- 尚未实现 IPC V2 parity、helper 接入真实 RustDesk core、运行时多屏模式开关、fake peer fixture 和性能基线采集。
+- 尚未完成真实双屏/三屏被控端、不同 DPI/旋转、relay/direct、PIP/前后台恢复及真机 Surface 压力验收；在这些通过前不把 `single_switch` 宣布为默认发布能力。
+
+验证记录：
+
+| 验证项 | 结果 |
+| --- | --- |
+| ArkTS `default@OhosTestCompileArkTS` | 通过，退出码 0 |
+| ARM64 `ninja ... rdpnapi` | 通过，退出码 0 |
+| x86_64 `ninja ... rdpnapi` | 通过，退出码 0 |
+| `cargo test --lib --no-default-features` | 131 passed, 0 failed |
+| `assembleHap` | 通过，退出码 0 |
+
+阶段性提交为：`6966a32b6`（计划）、`fc38539ad`（Rust FFI）、`170747af5`（C++ bridge/decoder）、`cee5874`（NAPI/ArkTS 类型）、`930591a0b`（页面 UI）。
 
 ## 1. 结论摘要
 
