@@ -32,8 +32,9 @@ struct SequencedControl {
 }
 
 struct PendingTouchUpdate {
-    // The slot sequence advances with every update. This lets a reliable
-    // message that arrived between two coalesced updates retain its order.
+    // The slot sequence advances with every update. A later reliable message
+    // flushes this slot first, so the merged value never crosses that order
+    // boundary.
     sequence: u64,
     scale: Option<i32>,
     pan: Option<(i32, i32)>,
@@ -162,8 +163,9 @@ impl ControlInbox {
                 if !state.touch_active || state.touch_scale_end_pending {
                     return false;
                 }
-                // The update slot keeps its sequence, so this reliable end
-                // marker is necessarily sent after the accumulated deltas.
+                Self::flush_touch_update_before_reliable(&mut state);
+                // The accumulated update was flushed above, so this reliable
+                // end marker is necessarily sent after the latest deltas.
                 state.touch_scale_end_pending = true;
                 state.touch_active = false;
                 state.pending_touch_scale_end_markers += 1;
@@ -183,16 +185,18 @@ impl ControlInbox {
                 {
                     return false;
                 }
+                Self::flush_touch_update_before_reliable(&mut state);
                 state.touch_active = false;
                 state.touch_scale_end_pending = true;
                 state.touch_pan_end_enqueued = true;
                 state.pending_touch_pan_ends += 1;
-                // As with scale end, the update slot remains pending and its
-                // earlier sequence forces it ahead of this barrier.
+                // The accumulated update was flushed above before this
+                // reliable barrier was appended.
                 Self::enqueue_reliable(&mut state, sequence, ControlMsg::TouchPanEnd { x, y });
                 true
             }
             reliable => {
+                Self::flush_touch_update_before_reliable(&mut state);
                 Self::enqueue_reliable(&mut state, sequence, reliable);
                 true
             }
@@ -290,6 +294,19 @@ impl ControlInbox {
             .reliable
             .push_back(SequencedControl { sequence, message });
         state.max_reliable_depth = state.max_reliable_depth.max(state.reliable.len());
+    }
+
+    fn flush_touch_update_before_reliable(state: &mut ControlInboxState) {
+        let Some(mut pending) = state.touch_update.take() else {
+            return;
+        };
+        let sequence = pending.sequence;
+        if let Some(scale) = pending.scale.take() {
+            Self::enqueue_reliable(state, sequence, ControlMsg::TouchScale { scale });
+        }
+        if let Some((x, y)) = pending.pan.take() {
+            Self::enqueue_reliable(state, sequence, ControlMsg::TouchPanUpdate { x, y });
+        }
     }
 
     fn merge_touch_scale(state: &mut ControlInboxState, sequence: u64, scale: i32) {
@@ -588,7 +605,34 @@ fn touch_updates_do_not_create_reliable_backlog_behind_input_buttons() {
     assert!(matches!(batch[5], ControlMsg::TouchScale { scale: 0 }));
     assert!(matches!(batch[6], ControlMsg::TouchPanEnd { .. }));
     let snapshot = inbox.snapshot();
-    assert_eq!(snapshot.max_reliable_depth, 5);
+    assert_eq!(snapshot.max_reliable_depth, 7);
     assert_eq!(snapshot.coalesced_touch_scales, 99);
     assert_eq!(snapshot.coalesced_touch_pan_updates, 99);
+}
+
+#[test]
+fn reliable_input_flushes_touch_updates_at_the_order_boundary() {
+    let inbox = ControlInbox::default();
+    inbox.enqueue(ControlMsg::TouchPanStart { x: 0, y: 0 });
+    inbox.enqueue(ControlMsg::TouchScale { scale: 1100 });
+    inbox.enqueue(ControlMsg::TouchPanUpdate { x: 1, y: 2 });
+    inbox.enqueue(ControlMsg::KeyEvent {
+        scancode: 2014,
+        pressed: true,
+    });
+    inbox.enqueue(ControlMsg::TouchScale { scale: 1200 });
+    inbox.enqueue(ControlMsg::TouchPanUpdate { x: 3, y: 4 });
+
+    let batch = inbox.take_batch(CONTROL_BATCH_LIMIT);
+    assert!(matches!(
+        batch.as_slice(),
+        [
+            ControlMsg::TouchPanStart { .. },
+            ControlMsg::TouchScale { scale: 1100 },
+            ControlMsg::TouchPanUpdate { x: 1, y: 2 },
+            ControlMsg::KeyEvent { pressed: true, .. },
+            ControlMsg::TouchScale { scale: 1200 },
+            ControlMsg::TouchPanUpdate { x: 3, y: 4 },
+        ]
+    ));
 }
