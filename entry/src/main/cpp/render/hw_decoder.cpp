@@ -470,7 +470,7 @@ bool HardwareDecoder::waitForRenderRequest(bool& hasNewFrame) {
     bool ok = frameAvailableCv_.wait_for(lk, std::chrono::milliseconds(50), [this]() {
         return renderThreadStop_.load() || !initialized_ ||
             frameAvailableCount_ > frameConsumeCount_ ||
-            redrawRequestCount_ > redrawConsumeCount_;
+            redrawRequested_;
     });
     if (!ok || renderThreadStop_.load() || !initialized_) {
         return false;
@@ -478,8 +478,11 @@ bool HardwareDecoder::waitForRenderRequest(bool& hasNewFrame) {
     hasNewFrame = frameAvailableCount_ > frameConsumeCount_;
     if (hasNewFrame) {
         ++frameConsumeCount_;
-    } else if (redrawRequestCount_ > redrawConsumeCount_) {
-        ++redrawConsumeCount_;
+        // A decoded frame is presented through the same callback and consumes
+        // the newest transform, so an older retained redraw hint is redundant.
+        redrawRequested_ = false;
+    } else if (redrawRequested_) {
+        redrawRequested_ = false;
     }
     return true;
 }
@@ -600,7 +603,7 @@ void HardwareDecoder::RequestRedraw() {
         if (!initialized_ || renderThreadStop_.load(std::memory_order_acquire)) {
             return;
         }
-        ++redrawRequestCount_;
+        redrawRequested_ = true;
     }
     frameAvailableCv_.notify_one();
 }

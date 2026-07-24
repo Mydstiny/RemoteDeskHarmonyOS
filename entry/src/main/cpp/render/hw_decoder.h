@@ -194,8 +194,10 @@ private:
     std::condition_variable frameAvailableCv_;
     uint64_t frameAvailableCount_ = 0;
     uint64_t frameConsumeCount_ = 0;
-    uint64_t redrawRequestCount_ = 0;
-    uint64_t redrawConsumeCount_ = 0;
+    // A transform wake is a latest-value hint, not one render obligation per
+    // pinch event. Keep at most one retained redraw pending behind the render
+    // owner so a fast UI gesture cannot build a decoder-side backlog.
+    bool redrawRequested_ = false;
     Render::VideoBackpressureController backpressure_;
     bool nativeImageContextAttached_ = false;
     std::thread renderThread_;
