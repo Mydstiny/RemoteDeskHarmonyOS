@@ -5,10 +5,10 @@ Updated: 2026-07-24 Asia/Shanghai
 ## Repository
 
 - Repository: Mydstiny/RemoteDeskHarmonyOS
-- Repair branch: codex/rustdesk-pinch-zoom-fix
+- Integrated main commit: 408902c22 (Merge RustDesk/RDP pinch zoom repair)
 - Task: RustDesk/RDP canvas pinch zoom and input-stall repair
 - Base: main at 28c3ff43 before this repair
-- Final integration: the validated repair commits are to be merged back to main and the repair branch removed
+- Repair branch codex/rustdesk-pinch-zoom-fix: deleted after merge
 
 ## Result
 
@@ -25,7 +25,7 @@ Updated: 2026-07-24 Asia/Shanghai
 - fb7355072, 44d2a51de, 5bc7a4be3: ArkTS pinch geometry and input lifecycle hardening.
 - f43a8101b, 620544b14: RustDesk touch queue coalescing and reliable-order boundary flush.
 - 6d16eb366: retained decoder redraw wake coalescing.
-- e8112a1c1 and the final documentation update: repair plan and implementation record.
+- e8112a1c1: repair plan; 83a9ba1c0: implementation record.
 
 ## Verification
 

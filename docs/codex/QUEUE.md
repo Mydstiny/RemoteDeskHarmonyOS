@@ -5,7 +5,7 @@ Updated: 2026-07-24 Asia/Shanghai
 ## Now
 
 - Code implementation and automated verification for RustDesk/RDP pinch zoom are complete.
-- Finish final diff review, merge codex/rustdesk-pinch-zoom-fix into main, verify the merged worktree and remove the repair branch.
+- Final diff review, merge into main, merged-worktree verification and repair-branch deletion completed in 408902c22.
 - Keep the two user-owned untracked planning documents outside commits.
 
 ## Next
