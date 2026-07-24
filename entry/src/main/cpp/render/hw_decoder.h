@@ -235,6 +235,8 @@ namespace DecoderNapi {
     DecoderTelemetrySnapshot GetActiveTelemetry(uint64_t expectedSessionId = 0);
     void SetActiveSessionId(uint64_t sessionId);
     void ClearActiveSessionId(uint64_t sessionId);
+    void SetActiveDisplay(int display);
+    bool RequestActiveDecoderRecovery();
     bool BindVideoPipeline(int64_t decoderHandle, int64_t rendererHandle);
     bool DetachVideoPipeline(int64_t decoderHandle);
     bool RequestDecoderRecovery(int64_t decoderHandle);

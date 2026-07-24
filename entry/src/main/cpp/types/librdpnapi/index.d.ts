@@ -40,6 +40,7 @@ export const VERSION: SessionVersionInfo;
   export function getRdpRenderStats(sessionId: number): RdpRenderStats;
   export function getRustDeskDiagnostics(sessionId: number): RustDeskDiagnosticsSnapshot;
   export function getRustDeskDisplayCapabilities(sessionId: number): RustDeskDisplayCapabilities;
+  export function switchRustDeskDisplay(sessionId: number, display: number): boolean;
   export function changeRustDeskDisplayResolution(sessionId: number, display: number,
     width: number, height: number): boolean;
   export function sendRustDeskTouchScale(sessionId: number, scale: number): boolean;
@@ -261,6 +262,21 @@ export interface RustDeskDisplayResolution {
   height: number;
 }
 
+export interface RustDeskDisplayInfo {
+  display: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  originalWidth: number;
+  originalHeight: number;
+  scaleMilli: number;
+  online: boolean;
+  cursorEmbedded: boolean;
+  name: string;
+  resolutions: RustDeskDisplayResolution[];
+}
+
 export interface RustDeskDisplayCapabilities {
   supported: boolean;
   currentDisplay: number;
@@ -271,6 +287,7 @@ export interface RustDeskDisplayCapabilities {
   scaleMilli: number;
   geometryEpoch: number;
   resolutions: RustDeskDisplayResolution[];
+  displays: RustDeskDisplayInfo[];
 }
 
 export interface LocalResourceStats {

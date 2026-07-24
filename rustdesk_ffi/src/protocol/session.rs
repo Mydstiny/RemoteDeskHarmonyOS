@@ -815,6 +815,11 @@ impl Session {
     pub fn peer_info(&self) -> Option<&PeerInfo> {
         self.peer_info.as_ref()
     }
+
+    /// Keep the latest peer catalog available to the streaming layer.
+    pub fn update_peer_info(&mut self, peer_info: PeerInfo) {
+        self.peer_info = Some(peer_info);
+    }
 }
 
 #[cfg(test)]

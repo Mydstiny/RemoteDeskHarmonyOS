@@ -130,10 +130,11 @@ struct VideoFrame {
     CodecType      codec;       // 编码类型
     uint64_t       timestamp;   // 时间戳 (ms)
     bool           isKeyFrame;  // 是否为关键帧
+    int            display;     // RustDesk 远端显示器编号; legacy/other protocols use 0
 
     VideoFrame()
         : data(nullptr), size(0), width(0), height(0),
-          codec(CodecType::H264), timestamp(0), isKeyFrame(false) {}
+          codec(CodecType::H264), timestamp(0), isKeyFrame(false), display(0) {}
 };
 
 /** 音频数据块 — 从协议后端传递到音频管线 */

@@ -721,6 +721,10 @@ struct DecoderContext {
 
 static std::atomic<int64_t> g_activeDecoderHandle {0};
 static std::atomic<uint64_t> g_activeDecoderSessionId {0};
+// -1 means that the first frame establishes the legacy/current display. Once
+// a RustDesk display is selected, frames from every other display are dropped
+// before entering either decoder implementation.
+static std::atomic<int> g_activeDisplay {-1};
 static std::mutex g_decoderContextsMutex;
 static std::unordered_map<int64_t, std::shared_ptr<DecoderContext>> g_decoderContexts;
 constexpr size_t kMaxSoftwareDecodeQueue = 30;
@@ -1333,6 +1337,25 @@ int DecoderNapi::DecodeNative(int64_t handle, const VideoFrame& frame) {
 }
 
 int DecoderNapi::DecodeActiveNative(const VideoFrame& frame) {
+    int activeDisplay = g_activeDisplay.load(std::memory_order_acquire);
+    if (activeDisplay < 0) {
+        int expected = -1;
+        g_activeDisplay.compare_exchange_strong(expected, frame.display,
+                                                std::memory_order_acq_rel);
+        activeDisplay = g_activeDisplay.load(std::memory_order_acquire);
+    }
+    if (activeDisplay >= 0 && frame.display != activeDisplay) {
+        static std::atomic<uint64_t> displayDropCount {0};
+        const uint64_t dropped = displayDropCount.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (dropped <= 8 || dropped % 300 == 0) {
+            OH_LOG_INFO(LOG_APP,
+                        "[Decoder] drop inactive RustDesk display frame=%{public}d active=%{public}d total=%{public}llu",
+                        frame.display,
+                        activeDisplay,
+                        static_cast<unsigned long long>(dropped));
+        }
+        return 0;
+    }
     int64_t handle = g_activeDecoderHandle.load();
     if (handle <= 0) {
         OH_LOG_WARN(LOG_APP, "[Decoder] native decode skipped: no active video pipeline");
@@ -1445,12 +1468,22 @@ DecoderTelemetrySnapshot DecoderNapi::GetActiveTelemetry(uint64_t expectedSessio
 
 void DecoderNapi::SetActiveSessionId(uint64_t sessionId) {
     g_activeDecoderSessionId.store(sessionId, std::memory_order_release);
+    g_activeDisplay.store(-1, std::memory_order_release);
 }
 
 void DecoderNapi::ClearActiveSessionId(uint64_t sessionId) {
     uint64_t expected = sessionId;
     g_activeDecoderSessionId.compare_exchange_strong(expected, 0,
                                                      std::memory_order_acq_rel);
+}
+
+void DecoderNapi::SetActiveDisplay(int display) {
+    if (display < 0) {
+        g_activeDisplay.store(-1, std::memory_order_release);
+        return;
+    }
+    g_activeDisplay.store(display, std::memory_order_release);
+    OH_LOG_INFO(LOG_APP, "[Decoder] active RustDesk display=%{public}d", display);
 }
 
 bool DecoderNapi::BindVideoPipeline(int64_t decoderHandle, int64_t rendererHandle) {
@@ -1543,6 +1576,11 @@ bool DecoderNapi::RequestDecoderRecovery(int64_t decoderHandle) {
                 static_cast<long long>(decoderHandle),
                 static_cast<long long>(ctx->rendererHandle));
     return true;
+}
+
+bool DecoderNapi::RequestActiveDecoderRecovery() {
+    const int64_t handle = g_activeDecoderHandle.load(std::memory_order_acquire);
+    return RequestDecoderRecovery(handle);
 }
 
 // ============================================================
