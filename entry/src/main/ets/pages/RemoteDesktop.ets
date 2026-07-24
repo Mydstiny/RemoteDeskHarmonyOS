@@ -137,6 +137,7 @@ import {
   remoteInputBlockedReason,
   shouldBlockRemoteInputForBrowseMode
 } from '../services/RemoteInputGuardPolicy';
+import { shouldConsumeCanvasPinchTouch } from '../services/RemoteCanvasPinchInputPolicy';
 import { RemoteProtocol } from '../services/RemoteSessionState';
 import { createTransferSnapshot, TransferProtocol, TransferState } from '../services/FileTransferProgressModel';
 import { isRemoteCompletionConfirmed } from '../services/TransferSessionPolicy';
@@ -636,10 +637,14 @@ struct RemoteDesktop {
   private canvasPinchLastScale: number = 1;
   private canvasPinchLastCenterX: number = 0;
   private canvasPinchLastCenterY: number = 0;
+  // A gesture owns one geometry snapshot for its whole lifetime. Surface and
+  // stream changes release the gesture before a new snapshot can be captured.
+  private canvasPinchViewportSnapshot: CanvasViewport | null = null;
   private rustDeskTouchPinchActive: boolean = false;
   private rustDeskTouchPinchLastScale: number = 1;
   private rustDeskTouchPinchLastRemoteX: number = 0;
   private rustDeskTouchPinchLastRemoteY: number = 0;
+  private rustDeskTouchPinchTransformSnapshot: RemoteSurfaceTransform | null = null;
   private keepKeyboardAfterSheetClose: boolean = false;
   // 三指控制面板
   @State showControlPanel: boolean = false;
@@ -1567,7 +1572,9 @@ struct RemoteDesktop {
     if (!this.shouldUseRustDeskRemoteAppTouchScale() || !this.canForwardInput('rustdesk-touch-scale')) {
       return false;
     }
-    const mapped: MappedPoint = this.mapInputPoint(event.pinchCenterX, event.pinchCenterY);
+    const transform: RemoteSurfaceTransform = this.currentRemoteSurfaceTransform();
+    const mapped: MappedPoint = this.mapInputPointWithTransform(
+      event.pinchCenterX, event.pinchCenterY, transform);
     if (!this.loader.sendRustDeskTouchPan(this.sessionId, 0, mapped.x, mapped.y)) {
       hilog.warn(RD_DOMAIN, RD_TAG, 'rustdesk-touch-scale start rejected by native bridge');
       return false;
@@ -1576,6 +1583,7 @@ struct RemoteDesktop {
     this.rustDeskTouchPinchLastScale = 1;
     this.rustDeskTouchPinchLastRemoteX = mapped.x;
     this.rustDeskTouchPinchLastRemoteY = mapped.y;
+    this.rustDeskTouchPinchTransformSnapshot = transform;
     return true;
   }
 
@@ -1585,12 +1593,18 @@ struct RemoteDesktop {
     }
     const nextScale: number = Number.isFinite(event.scale) && event.scale > 0 ?
       event.scale : this.rustDeskTouchPinchLastScale;
+    const transform: RemoteSurfaceTransform | null = this.rustDeskTouchPinchTransformSnapshot;
+    if (transform === null) {
+      this.releaseCanvasPinchInput('rustdesk-touch-scale-missing-transform');
+      return;
+    }
     const relative: number = Math.max(0.5, Math.min(2.0, nextScale / this.rustDeskTouchPinchLastScale));
     if (!this.loader.sendRustDeskTouchScale(this.sessionId, Math.round(relative * 1000))) {
       this.releaseCanvasPinchInput('rustdesk-touch-scale-rejected');
       return;
     }
-    const mapped: MappedPoint = this.mapInputPoint(event.pinchCenterX, event.pinchCenterY);
+    const mapped: MappedPoint = this.mapInputPointWithTransform(
+      event.pinchCenterX, event.pinchCenterY, transform);
     const deltaX: number = mapped.x - this.rustDeskTouchPinchLastRemoteX;
     const deltaY: number = mapped.y - this.rustDeskTouchPinchLastRemoteY;
     if (deltaX !== 0 || deltaY !== 0) {
@@ -1615,6 +1629,7 @@ struct RemoteDesktop {
     }
     this.rustDeskTouchPinchActive = false;
     this.rustDeskTouchPinchLastScale = 1;
+    this.rustDeskTouchPinchTransformSnapshot = null;
   }
 
   private startCanvasPinch(event: GestureEvent): void {
@@ -1630,6 +1645,7 @@ struct RemoteDesktop {
     if (!this.canvasTransformInitialized) {
       this.resetCanvasToDisplayDefault();
     }
+    this.canvasPinchViewportSnapshot = this.currentCanvasViewport();
     this.canvasPinchActive = true;
     this.canvasPinchLastScale = 1;
     this.canvasPinchLastCenterX = this.vpToPx(event.pinchCenterX);
@@ -1662,10 +1678,15 @@ struct RemoteDesktop {
     if (!this.canvasPinchActive || !this.canvasGestureZoomEnabled) {
       return;
     }
+    const viewport: CanvasViewport | null = this.canvasPinchViewportSnapshot;
+    if (viewport === null) {
+      this.releaseCanvasPinchInput('canvas-pinch-missing-viewport');
+      return;
+    }
     const nextScale: number = Number.isFinite(event.scale) && event.scale > 0 ? event.scale : this.canvasPinchLastScale;
     const centerX: number = this.vpToPx(event.pinchCenterX);
     const centerY: number = this.vpToPx(event.pinchCenterY);
-    this.canvasTransform = pinchCanvasTransform(this.canvasTransform, this.currentCanvasViewport(),
+    this.canvasTransform = pinchCanvasTransform(this.canvasTransform, viewport,
       centerX, centerY, nextScale / this.canvasPinchLastScale,
       centerX - this.canvasPinchLastCenterX, centerY - this.canvasPinchLastCenterY);
     this.canvasPinchLastScale = nextScale;
@@ -1681,6 +1702,8 @@ struct RemoteDesktop {
     }
     this.canvasPinchActive = false;
     this.canvasPinchLastScale = 1;
+    this.canvasPinchViewportSnapshot = null;
+    this.rustDeskTouchPinchTransformSnapshot = null;
   }
 
   /** Release gesture ownership from every terminal path; safe to call repeatedly. */
@@ -1698,7 +1721,8 @@ struct RemoteDesktop {
   }
 
   private consumeCanvasPinchTouch(event: TouchEvent): boolean {
-    if (!this.canvasPinchInputConsumed) {
+    if (!shouldConsumeCanvasPinchTouch(this.canvasPinchInputConsumed,
+      event.sourceTool === SourceTool.FINGER)) {
       return false;
     }
     if (event.type === TouchType.Up || event.type === TouchType.Cancel) {
@@ -3770,18 +3794,24 @@ struct RemoteDesktop {
     return { x: point.x, y: point.y, inside: point.inside };
   }
 
-  private mapInputPoint(localX: number, localY: number): MappedPoint {
-    const transform: RemoteSurfaceTransform = this.currentRemoteSurfaceTransform();
-    const localVpX: number = this.surfaceWidth > 0 && localX <= this.surfaceWidth + 1 ? localX :
-      (this.renderWidthPx > 0 && this.surfaceWidth > 0 ? localX * this.surfaceWidth / this.renderWidthPx : localX);
-    const localVpY: number = this.surfaceHeight > 0 && localY <= this.surfaceHeight + 1 ? localY :
-      (this.renderHeightPx > 0 && this.surfaceHeight > 0 ? localY * this.surfaceHeight / this.renderHeightPx : localY);
+  private mapInputPointWithTransform(localX: number, localY: number,
+    transform: RemoteSurfaceTransform): MappedPoint {
+    const localVpX: number = transform.surfaceWidthVp > 0 && localX <= transform.surfaceWidthVp + 1 ? localX :
+      (transform.surfaceWidthPx > 0 && transform.surfaceWidthVp > 0 ?
+        localX * transform.surfaceWidthVp / transform.surfaceWidthPx : localX);
+    const localVpY: number = transform.surfaceHeightVp > 0 && localY <= transform.surfaceHeightVp + 1 ? localY :
+      (transform.surfaceHeightPx > 0 && transform.surfaceHeightVp > 0 ?
+        localY * transform.surfaceHeightVp / transform.surfaceHeightPx : localY);
     const point = surfacePointToRemote(transform, localVpX, localVpY);
     return {
       x: Math.round(point.x),
       y: Math.round(point.y),
       inside: point.inside
     };
+  }
+
+  private mapInputPoint(localX: number, localY: number): MappedPoint {
+    return this.mapInputPointWithTransform(localX, localY, this.currentRemoteSurfaceTransform());
   }
 
   private logMappedInput(source: string, localX: number, localY: number, mapped: MappedPoint): void {
@@ -8620,6 +8650,7 @@ struct RemoteDesktop {
         this.surfaceHeight = hVp;
         this.renderWidthPx = wPx;
         this.renderHeightPx = hPx;
+        this.releaseCanvasPinchInput('surface-resize');
         this.invalidateRendererViewportCache();
         // A resize/orientation change can move the local TouchEvent origin
         // while a finger is still down.  Consume the first post-resize move
@@ -8724,6 +8755,7 @@ struct RemoteDesktop {
         .onTouch(this.handleConfiguredTouchInput)
         .gesture(
           PinchGesture({ fingers: 2, distance: 5 })
+            .allowedTypes([SourceTool.FINGER])
             .onActionStart((event: GestureEvent): void => { this.startCanvasPinch(event); })
             .onActionUpdate((event: GestureEvent): void => { this.updateCanvasPinch(event); })
             .onActionEnd((_event: GestureEvent): void => { this.releaseCanvasPinchInput('gesture-end'); })
