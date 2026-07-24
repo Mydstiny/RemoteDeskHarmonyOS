@@ -1223,6 +1223,15 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
                     session->protocolName.c_str(), static_cast<int>(state), message.c_str());
     });
 
+    if (auto* rustdesk = dynamic_cast<RustDeskBridge*>(adapter.get())) {
+        rustdesk->setDisplayStateCallback([](int display) {
+            // RustDesk invokes this before its stream thread starts. The
+            // decoder therefore knows the peer's current display before any
+            // interleaved display frame can arrive.
+            DecoderNapi::SetActiveDisplay(display);
+        });
+    }
+
     adapter->setVideoCallback([session](const VideoFrame& frame) {
         static uint64_t frameCount = 0;
         static std::atomic<uint64_t> decodeRetOk {0};
@@ -1392,6 +1401,9 @@ static void PrepareAdapterForTeardown(const std::shared_ptr<ProtocolAdapter>& ad
     }
     adapter->setVideoCallback(nullptr);
     adapter->setAudioCallback(nullptr);
+    if (auto* rustdesk = dynamic_cast<RustDeskBridge*>(adapter.get())) {
+        rustdesk->setDisplayStateCallback(nullptr);
+    }
 }
 
 static bool HasNativeResources(const TeardownNativeResources& resources) {

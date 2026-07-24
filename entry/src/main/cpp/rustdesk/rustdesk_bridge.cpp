@@ -30,6 +30,14 @@ extern "C" {
         void (*on_cursor)(const void*, void*),
         void (*on_disconnect)(int, const char*, void*),
         void* user_data);
+    void* rustdesk_connect_v2(
+        const void* cfg,
+        void (*on_frame)(const void*, void*),
+        void (*on_audio)(const void*, void*),
+        void (*on_cursor)(const void*, void*),
+        void (*on_disconnect)(int, const char*, void*),
+        void (*on_display)(const void*, void*),
+        void* user_data);
     void  rustdesk_disconnect(void* handle);
     void  rustdesk_cancel_pending_connect();
     void  rustdesk_send_key(void* handle, unsigned int scancode, bool pressed);
@@ -440,6 +448,7 @@ struct RustDeskBridge::Impl {
     VideoFrameCallback      videoCallback;
     AudioDataCallback       audioCallback;
     ConnectionStateCallback stateCallback;
+    RustDeskDisplayStateCallback displayStateCallback;
     std::mutex              mutex;
     std::atomic<uint64_t>   connectSerial {0};
     std::atomic<bool>       disconnectRequested {false};
@@ -483,7 +492,17 @@ static uint64_t rdSteadyNowMs() {
 }
 
 #ifdef RUSTDESK_USE_REAL_CORE
-struct RustDeskFfiVideoFrame {
+struct RustDeskFfiVideoFrameV1 {
+    const uint8_t* data;
+    size_t         size;
+    int            width;
+    int            height;
+    int            codec;
+    uint64_t       timestamp;
+    bool           isKeyFrame;
+};
+
+struct RustDeskFfiVideoFrameV2 {
     const uint8_t* data;
     size_t         size;
     int            width;
@@ -496,20 +515,31 @@ struct RustDeskFfiVideoFrame {
     uint32_t       structSize;
 };
 
-static_assert(sizeof(RustDeskFfiVideoFrame) == 56,
-              "RustDeskVideoFrame ABI size changed; update both sides together");
-static_assert(alignof(RustDeskFfiVideoFrame) == 8,
-              "RustDeskVideoFrame ABI alignment changed");
-static_assert(offsetof(RustDeskFfiVideoFrame, data) == 0);
-static_assert(offsetof(RustDeskFfiVideoFrame, size) == 8);
-static_assert(offsetof(RustDeskFfiVideoFrame, width) == 16);
-static_assert(offsetof(RustDeskFfiVideoFrame, height) == 20);
-static_assert(offsetof(RustDeskFfiVideoFrame, codec) == 24);
-static_assert(offsetof(RustDeskFfiVideoFrame, timestamp) == 32);
-static_assert(offsetof(RustDeskFfiVideoFrame, isKeyFrame) == 40);
-static_assert(offsetof(RustDeskFfiVideoFrame, display) == 44);
-static_assert(offsetof(RustDeskFfiVideoFrame, abiVersion) == 48);
-static_assert(offsetof(RustDeskFfiVideoFrame, structSize) == 52);
+static_assert(sizeof(RustDeskFfiVideoFrameV1) == 48,
+              "RustDesk V1 video frame ABI size changed; update both sides together");
+static_assert(alignof(RustDeskFfiVideoFrameV1) == 8,
+              "RustDesk V1 video frame ABI alignment changed");
+static_assert(offsetof(RustDeskFfiVideoFrameV1, data) == 0);
+static_assert(offsetof(RustDeskFfiVideoFrameV1, size) == 8);
+static_assert(offsetof(RustDeskFfiVideoFrameV1, width) == 16);
+static_assert(offsetof(RustDeskFfiVideoFrameV1, height) == 20);
+static_assert(offsetof(RustDeskFfiVideoFrameV1, codec) == 24);
+static_assert(offsetof(RustDeskFfiVideoFrameV1, timestamp) == 32);
+static_assert(offsetof(RustDeskFfiVideoFrameV1, isKeyFrame) == 40);
+static_assert(sizeof(RustDeskFfiVideoFrameV2) == 56,
+              "RustDesk V2 video frame ABI size changed; update both sides together");
+static_assert(alignof(RustDeskFfiVideoFrameV2) == 8,
+              "RustDesk V2 video frame ABI alignment changed");
+static_assert(offsetof(RustDeskFfiVideoFrameV2, data) == 0);
+static_assert(offsetof(RustDeskFfiVideoFrameV2, size) == 8);
+static_assert(offsetof(RustDeskFfiVideoFrameV2, width) == 16);
+static_assert(offsetof(RustDeskFfiVideoFrameV2, height) == 20);
+static_assert(offsetof(RustDeskFfiVideoFrameV2, codec) == 24);
+static_assert(offsetof(RustDeskFfiVideoFrameV2, timestamp) == 32);
+static_assert(offsetof(RustDeskFfiVideoFrameV2, isKeyFrame) == 40);
+static_assert(offsetof(RustDeskFfiVideoFrameV2, display) == 44);
+static_assert(offsetof(RustDeskFfiVideoFrameV2, abiVersion) == 48);
+static_assert(offsetof(RustDeskFfiVideoFrameV2, structSize) == 52);
 
 struct RustDeskFfiAudioData {
     const uint8_t* data;
@@ -583,8 +613,16 @@ static int rdFfiCodecPreference(CodecType codec) {
 
 void RustDeskBridge::onFfiFrame(const void* framePtr, void* userData) {
     auto* impl = static_cast<RustDeskBridge::Impl*>(userData);
-    auto* ffiFrame = static_cast<const RustDeskFfiVideoFrame*>(framePtr);
+    auto* ffiFrame = static_cast<const RustDeskFfiVideoFrameV2*>(framePtr);
     if (!impl || !ffiFrame || !ffiFrame->data || ffiFrame->size == 0) {
+        return;
+    }
+    if (ffiFrame->abiVersion < kRustDeskVideoFrameAbiVersion ||
+        ffiFrame->structSize < sizeof(RustDeskFfiVideoFrameV2)) {
+        OH_LOG_WARN(LOG_APP,
+            "[RustDesk-FFI] reject unsupported V2 frame abi=%{public}u size=%{public}u",
+            ffiFrame->abiVersion,
+            ffiFrame->structSize);
         return;
     }
 
@@ -678,11 +716,7 @@ void RustDeskBridge::onFfiFrame(const void* framePtr, void* userData) {
         frame.codec = rdCodecType(ffiFrame->codec);
         frame.timestamp = ffiFrame->timestamp;
         frame.isKeyFrame = ffiFrame->isKeyFrame;
-        // Keep callbacks compatible with a legacy Rust library that predates
-        // display routing. The versioned struct tells us whether the tail is
-        // safe to read.
-        frame.display = ffiFrame->abiVersion >= kRustDeskVideoFrameAbiVersion &&
-            ffiFrame->structSize >= sizeof(RustDeskFfiVideoFrame) ? ffiFrame->display : 0;
+        frame.display = ffiFrame->display;
         cb(frame);
     }
 }
@@ -782,6 +816,24 @@ void RustDeskBridge::onFfiCursor(const void* cursorPtr, void* userData) {
         }
         default:
             break;
+    }
+}
+
+void RustDeskBridge::onFfiDisplay(const void* snapshotPtr, void* userData) {
+    auto* impl = static_cast<RustDeskBridge::Impl*>(userData);
+    auto* snapshot = static_cast<const RustDeskFfiDisplaySnapshot*>(snapshotPtr);
+    if (!impl || !snapshot || snapshot->version != kRustDeskDisplaySnapshotVersion ||
+        snapshot->currentDisplay < 0) {
+        return;
+    }
+
+    RustDeskDisplayStateCallback callback;
+    {
+        std::lock_guard<std::mutex> lock(impl->mutex);
+        callback = impl->displayStateCallback;
+    }
+    if (callback) {
+        callback(snapshot->currentDisplay);
     }
 }
 
@@ -988,9 +1040,8 @@ RustDeskDisplayCapabilities RustDeskBridge::getDisplayCapabilities() const {
             result.displays.push_back(std::move(display));
         }
     }
-    // The list API is intentionally additive. Older Rust libraries still
-    // provide the current-display snapshot, so synthesize a one-entry catalog
-    // when no display list was returned.
+    // A peer may expose only current-display geometry. Synthesize a one-entry
+    // catalog when the complete list is unavailable.
     if (result.displays.empty()) {
         RustDeskDisplayInfo display;
         display.display = result.currentDisplay;
@@ -1348,8 +1399,9 @@ int RustDeskBridge::connect(const ConnectionConfig& cfg) {
                 ffiCfg.profile,
                 ffiCfg.fps);
 
-            void* ffiHandle = rustdesk_connect(
-                &ffiCfg, onFfiFrame, onFfiAudio, onFfiCursor, onFfiDisconnect, impl);
+            void* ffiHandle = rustdesk_connect_v2(
+                &ffiCfg, onFfiFrame, onFfiAudio, onFfiCursor, onFfiDisconnect,
+                onFfiDisplay, impl);
             bool discardHandle = serial != impl->connectSerial.load() ||
                 impl->disconnectRequested.load() || impl->ffiStreamEnded.load();
             if (!discardHandle) {
@@ -1762,6 +1814,10 @@ void RustDeskBridge::setAudioCallback(AudioDataCallback cb) {
 void RustDeskBridge::setConnectionStateCallback(ConnectionStateCallback cb) {
     std::lock_guard<std::mutex> lock(impl_->mutex);
     impl_->stateCallback = std::move(cb);
+}
+void RustDeskBridge::setDisplayStateCallback(RustDeskDisplayStateCallback callback) {
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    impl_->displayStateCallback = std::move(callback);
 }
 bool RustDeskBridge::supportsNatTraversal() { return mode_ == RustDeskMode::FFI || mode_ == RustDeskMode::EXPERIMENTAL; }
 bool RustDeskBridge::supportsFileTransfer() { return true; }
