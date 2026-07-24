@@ -63,6 +63,12 @@ namespace ExtensionLoaderNapi {
 
 namespace {
 
+constexpr int kRustDeskMaxDisplays = 16;
+
+bool IsValidRustDeskDisplay(int display) {
+    return display >= 0 && display < kRustDeskMaxDisplays;
+}
+
 void secureClearString(std::string& value) {
     if (!value.empty()) {
         volatile char* data = value.data();
@@ -1223,6 +1229,17 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
                     session->protocolName.c_str(), static_cast<int>(state), message.c_str());
     });
 
+    if (auto* rustdesk = dynamic_cast<RustDeskBridge*>(adapter.get())) {
+        rustdesk->setDisplayStateCallback([](int display) {
+            // RustDesk invokes this before its stream thread starts. The
+            // decoder therefore knows the peer's current display before any
+            // interleaved display frame can arrive.
+            if (DecoderNapi::SetActiveDisplay(display)) {
+                DecoderNapi::RequestActiveDecoderRecovery();
+            }
+        });
+    }
+
     adapter->setVideoCallback([session](const VideoFrame& frame) {
         static uint64_t frameCount = 0;
         static std::atomic<uint64_t> decodeRetOk {0};
@@ -1230,6 +1247,17 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
         static std::atomic<uint64_t> decodeRetBadCodec {0};
         static std::atomic<uint64_t> decodeRetMismatch {0};
         static std::atomic<uint64_t> decodeRetOther {0};
+        static std::atomic<uint64_t> inactiveDisplayFrames {0};
+        if (!DecoderNapi::IsActiveDisplayFrame(frame)) {
+            const uint64_t dropped = inactiveDisplayFrames.fetch_add(1, std::memory_order_relaxed) + 1;
+            if (dropped <= 8 || dropped % 300 == 0) {
+                OH_LOG_INFO(LOG_APP,
+                    "[ExtLoader] drop inactive RustDesk display before render display=%{public}d total=%{public}llu",
+                    frame.display,
+                    static_cast<unsigned long long>(dropped));
+            }
+            return;
+        }
         if (frame.width > 0 && frame.height > 0) {
             RendererNapi::SetActiveSourceSize(frame.width, frame.height);
         }
@@ -1252,6 +1280,9 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
         int ret = DecoderNapi::DecodeActiveNative(frame);
         const int64_t decodeElapsedUs = std::chrono::duration_cast<std::chrono::microseconds>(
             std::chrono::steady_clock::now() - decodeStartedAt).count();
+        if (ret == DecoderNapi::kDecodeInactiveDisplay) {
+            return;
+        }
         session->diagnostics.addDecodeSample(decodeElapsedUs);
         if (ret == 0) {
             session->diagnostics.decodeOk.fetch_add(1, std::memory_order_relaxed);
@@ -1392,6 +1423,9 @@ static void PrepareAdapterForTeardown(const std::shared_ptr<ProtocolAdapter>& ad
     }
     adapter->setVideoCallback(nullptr);
     adapter->setAudioCallback(nullptr);
+    if (auto* rustdesk = dynamic_cast<RustDeskBridge*>(adapter.get())) {
+        rustdesk->setDisplayStateCallback(nullptr);
+    }
 }
 
 static bool HasNativeResources(const TeardownNativeResources& resources) {
@@ -1852,14 +1886,12 @@ napi_value NapiSwitchRustDeskDisplay(napi_env env, napi_callback_info info) {
 
     bool accepted = false;
     auto it = g_sessions.find(sessionId);
-    if (display >= 0 && it != g_sessions.end() && it->second &&
+    if (IsValidRustDeskDisplay(display) && it != g_sessions.end() && it->second &&
         it->second->protocolName == "rustdesk" && it->second->adapter) {
         auto* bridge = dynamic_cast<RustDeskBridge*>(it->second->adapter.get());
         if (bridge) {
             accepted = bridge->switchDisplay(display);
             if (accepted) {
-                DecoderNapi::SetActiveDisplay(display);
-                DecoderNapi::RequestActiveDecoderRecovery();
                 OH_LOG_INFO(LOG_APP,
                             "[ExtLoader] RustDesk display switch accepted session=%{public}d display=%{public}d",
                             sessionId, display);
@@ -1889,7 +1921,8 @@ napi_value NapiChangeRustDeskDisplayResolution(napi_env env, napi_callback_info 
     }
     bool accepted = false;
     auto it = g_sessions.find(sessionId);
-    if (it != g_sessions.end() && it->second && it->second->protocolName == "rustdesk" &&
+    if (IsValidRustDeskDisplay(display) && it != g_sessions.end() && it->second &&
+        it->second->protocolName == "rustdesk" &&
         it->second->adapter) {
         auto* bridge = dynamic_cast<RustDeskBridge*>(it->second->adapter.get());
         if (bridge) accepted = bridge->changeDisplayResolution(display, width, height);

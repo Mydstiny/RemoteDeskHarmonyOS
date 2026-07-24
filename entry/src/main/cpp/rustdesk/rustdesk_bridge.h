@@ -16,6 +16,7 @@
 
 #include "extensions/protocol_adapter.h"
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <vector>
 
@@ -78,6 +79,8 @@ struct RustDeskDisplayCapabilities {
     std::vector<RustDeskDisplayInfo> displays;
 };
 
+using RustDeskDisplayStateCallback = std::function<void(int display)>;
+
 // C 兼容连接配置 (与 rustdesk_ffi/src/lib.rs 中的 RustDeskConfig 内存布局一致)
 // 必须保持与 Rust #[repr(C)] 完全对应
 struct RustDeskFfiConfig {
@@ -134,6 +137,7 @@ public:
     void sendMouse(int x, int y, MouseButton button, bool pressed) override;
     void sendMouseWheel(int x, int y, int delta) override;
     void sendText(const std::string& text) override;
+    void setDisplayStateCallback(RustDeskDisplayStateCallback callback);
     RustDeskDisplayCapabilities getDisplayCapabilities() const;
     bool switchDisplay(int display);
     bool captureDisplays(const std::vector<int>& displays);
@@ -169,6 +173,7 @@ private:
     static void onFfiFrame(const void* frame, void* userData);
     static void onFfiAudio(const void* audio, void* userData);
     static void onFfiCursor(const void* cursor, void* userData);
+    static void onFfiDisplay(const void* snapshot, void* userData);
     static void onFfiDisconnect(int state, const char* message, void* userData);
 #endif
 

@@ -214,12 +214,29 @@ fn resolve_stream_params_for_config(config: &RustDeskConfig) -> ResolvedStreamPa
     }
 }
 
-/// Versioned encoded video frame passed across the Rust/C++ boundary.
+/// Legacy encoded video frame passed across the Rust/C++ boundary.
 ///
-/// The callback only borrows `data` for the duration of the callback. Consumers
-/// must copy the bytes before returning when they need asynchronous processing.
+/// This layout is kept stable for callers of `rustdesk_connect`. The callback
+/// only borrows `data` for the duration of the callback. Consumers must copy
+/// the bytes before returning when they need asynchronous processing.
 #[repr(C)]
 pub struct FfiVideoFrame {
+    pub data: *const u8,
+    pub size: usize,
+    pub width: c_int,
+    pub height: c_int,
+    pub codec: c_int, // 0=H264, 1=H265, 2=VP8, 3=VP9
+    pub timestamp: u64,
+    pub is_key_frame: bool,
+}
+
+/// Versioned encoded video frame with RustDesk display routing metadata.
+///
+/// This is intentionally a separate C ABI type instead of an appended tail on
+/// `FfiVideoFrame`: a V1 caller must never cause the producer or consumer to
+/// read beyond the memory guaranteed by the V1 contract.
+#[repr(C)]
+pub struct FfiVideoFrameV2 {
     pub data: *const u8,
     pub size: usize,
     pub width: c_int,
@@ -446,15 +463,29 @@ impl Default for RustDeskDisplayInfoSnapshot {
 /// 视频帧回调
 pub type FrameCallback = extern "C" fn(frame: *const FfiVideoFrame, user_data: *mut c_void);
 
+/// V2 video frame callback with explicit display routing metadata.
+pub type FrameCallbackV2 =
+    extern "C" fn(frame: *const FfiVideoFrameV2, user_data: *mut c_void);
+
 /// 音频数据回调
 pub type AudioCallback = extern "C" fn(audio: *const FfiAudioData, user_data: *mut c_void);
 
 /// Remote cursor callback.
 pub type CursorCallback = extern "C" fn(cursor: *const FfiCursorUpdate, user_data: *mut c_void);
 
+/// Initial remote display snapshot delivered before the V2 stream starts.
+pub type DisplayCallback =
+    extern "C" fn(snapshot: *const RustDeskDisplaySnapshot, user_data: *mut c_void);
+
 /// 断开连接回调
 pub type DisconnectCallback =
     extern "C" fn(state: FfiConnectionState, message: *const c_char, user_data: *mut c_void);
+
+#[derive(Clone, Copy)]
+enum FrameCallbackKind {
+    V1(FrameCallback),
+    V2(FrameCallbackV2),
+}
 
 // ============================================================
 // 内部类型: RustDesk 客户端句柄
@@ -587,7 +618,7 @@ fn dispatch_encoded_frames(
     width: c_int,
     height: c_int,
     display: c_int,
-    on_frame: FrameCallback,
+    on_frame: FrameCallbackKind,
     user_data: *mut c_void,
 ) {
     static FFI_FRAME_CB_COUNT: AtomicU64 = AtomicU64::new(0);
@@ -597,19 +628,37 @@ fn dispatch_encoded_frames(
         if data.is_empty() {
             continue;
         }
-        let ffi_frame = FfiVideoFrame {
-            data: data.as_ptr(),
-            size: data.len(),
-            width,
-            height,
-            codec,
-            timestamp: frame.get_pts().max(0) as u64,
-            is_key_frame: frame.get_key(),
-            display,
-            abi_version: RUSTDESK_VIDEO_FRAME_ABI_VERSION,
-            struct_size: std::mem::size_of::<FfiVideoFrame>() as u32,
-        };
-        on_frame(&ffi_frame, user_data);
+        let timestamp = frame.get_pts().max(0) as u64;
+        let is_key_frame = frame.get_key();
+        match on_frame {
+            FrameCallbackKind::V1(callback) => {
+                let ffi_frame = FfiVideoFrame {
+                    data: data.as_ptr(),
+                    size: data.len(),
+                    width,
+                    height,
+                    codec,
+                    timestamp,
+                    is_key_frame,
+                };
+                callback(&ffi_frame, user_data);
+            }
+            FrameCallbackKind::V2(callback) => {
+                let ffi_frame = FfiVideoFrameV2 {
+                    data: data.as_ptr(),
+                    size: data.len(),
+                    width,
+                    height,
+                    codec,
+                    timestamp,
+                    is_key_frame,
+                    display,
+                    abi_version: RUSTDESK_VIDEO_FRAME_ABI_VERSION,
+                    struct_size: std::mem::size_of::<FfiVideoFrameV2>() as u32,
+                };
+                callback(&ffi_frame, user_data);
+            }
+        }
         // Fast-path counters only (no format/IO in hot path)
         FFI_FRAME_CB_COUNT.fetch_add(1, Ordering::Relaxed);
         FFI_SUBFRAME_TOTAL.fetch_add(1, Ordering::Relaxed);
@@ -619,7 +668,7 @@ fn dispatch_encoded_frames(
 fn dispatch_video_frame(
     frame: &VideoFrame,
     display_state: &Arc<Mutex<RustDeskDisplayState>>,
-    on_frame: Option<FrameCallback>,
+    on_frame: Option<FrameCallbackKind>,
     user_data: *mut c_void,
 ) {
     let Some(on_frame) = on_frame else {
@@ -656,6 +705,31 @@ fn dispatch_video_frame(
         }
         Some(VideoFrame_oneof_union::rgb(_)) | Some(VideoFrame_oneof_union::yuv(_)) | None => {}
     }
+}
+
+fn dispatch_display_snapshot(
+    display_state: &Arc<Mutex<RustDeskDisplayState>>,
+    on_display: Option<DisplayCallback>,
+    user_data: *mut c_void,
+) {
+    let Some(on_display) = on_display else {
+        return;
+    };
+    let Ok(state) = display_state.lock() else {
+        return;
+    };
+    let snapshot = RustDeskDisplaySnapshot {
+        version: RUSTDESK_DISPLAY_SNAPSHOT_VERSION,
+        current_display: state.current_display,
+        width: state.width,
+        height: state.height,
+        original_width: state.original_width,
+        original_height: state.original_height,
+        scale_milli: state.scale_milli,
+        geometry_epoch: state.geometry_epoch,
+        resolution_count: state.resolutions.len().min(RUSTDESK_MAX_DISPLAY_RESOLUTIONS) as u32,
+    };
+    on_display(&snapshot, user_data);
 }
 
 /// Async audio worker — runs Opus decode + PCM callback on dedicated thread.
@@ -933,13 +1007,13 @@ fn dispatch_cursor_update(
 /// 此函数阻塞直到登录完成 (通常 5-15s)。
 /// 应在独立线程中调用。
 /// 成功返回不透明句柄，失败返回 null。
-#[no_mangle]
-pub extern "C" fn rustdesk_connect(
+fn rustdesk_connect_impl(
     cfg: *const RustDeskConfig,
-    on_frame: Option<FrameCallback>,
+    on_frame: Option<FrameCallbackKind>,
     on_audio: Option<AudioCallback>,
     on_cursor: Option<CursorCallback>,
     on_disconnect: Option<DisconnectCallback>,
+    on_display: Option<DisplayCallback>,
     user_data: *mut c_void,
 ) -> *mut c_void {
     clear_last_error();
@@ -1095,10 +1169,15 @@ pub extern "C" fn rustdesk_connect(
             let stream_stats_for_thread = Arc::clone(&stream_stats);
             let stream_display_state = Arc::clone(&display_state);
             let frame_display_state = Arc::clone(&display_state);
+            let display_callback_state = Arc::clone(&display_state);
             eprintln!(
                 "[RustDesk-FFI] remote display size={}x{} requested={}x{}",
                 remote_width, remote_height, config.width, config.height
             );
+            // The display callback runs before the streaming thread is
+            // spawned, so the consumer can select the peer's current display
+            // before the first interleaved video frame arrives.
+            dispatch_display_snapshot(&display_state, on_display, callback_user_data as *mut c_void);
 
             let stream_handle = std::thread::spawn(move || {
                 let callback_user_data = callback_user_data as *mut c_void;
@@ -1144,6 +1223,13 @@ pub extern "C" fn rustdesk_connect(
                     },
                     |cursor| {
                         dispatch_cursor_update(cursor, on_cursor, callback_user_data);
+                    },
+                    || {
+                        dispatch_display_snapshot(
+                            &display_callback_state,
+                            on_display,
+                            callback_user_data,
+                        );
                     },
                 );
 
@@ -1204,6 +1290,49 @@ pub extern "C" fn rustdesk_connect(
             std::ptr::null_mut()
         }
     }
+}
+
+/// Create a RustDesk connection using the stable legacy V1 frame callback.
+#[no_mangle]
+pub extern "C" fn rustdesk_connect(
+    cfg: *const RustDeskConfig,
+    on_frame: Option<FrameCallback>,
+    on_audio: Option<AudioCallback>,
+    on_cursor: Option<CursorCallback>,
+    on_disconnect: Option<DisconnectCallback>,
+    user_data: *mut c_void,
+) -> *mut c_void {
+    rustdesk_connect_impl(
+        cfg,
+        on_frame.map(FrameCallbackKind::V1),
+        on_audio,
+        on_cursor,
+        on_disconnect,
+        None,
+        user_data,
+    )
+}
+
+/// Create a RustDesk connection using the V2 frame/display callbacks.
+#[no_mangle]
+pub extern "C" fn rustdesk_connect_v2(
+    cfg: *const RustDeskConfig,
+    on_frame: Option<FrameCallbackV2>,
+    on_audio: Option<AudioCallback>,
+    on_cursor: Option<CursorCallback>,
+    on_disconnect: Option<DisconnectCallback>,
+    on_display: Option<DisplayCallback>,
+    user_data: *mut c_void,
+) -> *mut c_void {
+    rustdesk_connect_impl(
+        cfg,
+        on_frame.map(FrameCallbackKind::V2),
+        on_audio,
+        on_cursor,
+        on_disconnect,
+        on_display,
+        user_data,
+    )
 }
 
 /// 取消尚未返回会话句柄的连接尝试（尤其是等待被控端批准的连接）。
@@ -1460,7 +1589,12 @@ pub extern "C" fn rustdesk_change_display_resolution(
     width: c_int,
     height: c_int,
 ) -> bool {
-    if handle.is_null() || width <= 0 || height <= 0 {
+    if handle.is_null()
+        || display < 0
+        || display as usize >= RUSTDESK_MAX_DISPLAYS
+        || width <= 0
+        || height <= 0
+    {
         set_last_error("rustdesk_change_display_resolution invalid arguments");
         return false;
     }
@@ -1845,12 +1979,58 @@ mod tests {
         assert_eq!((resolutions[2].width, resolutions[2].height), (1920, 1080));
     }
 
-    extern "C" fn collect_display_frame(frame: *const FfiVideoFrame, user_data: *mut c_void) {
+    extern "C" fn collect_display_frame(frame: *const FfiVideoFrameV2, user_data: *mut c_void) {
         unsafe {
             let frames = &mut *(user_data as *mut Vec<(i32, i32, i32, u32)>);
             let frame = &*frame;
             frames.push((frame.display, frame.width, frame.height, frame.abi_version));
         }
+    }
+
+    extern "C" fn collect_legacy_frame(frame: *const FfiVideoFrame, user_data: *mut c_void) {
+        unsafe {
+            let frames = &mut *(user_data as *mut Vec<(i32, i32)>);
+            let frame = &*frame;
+            frames.push((frame.width, frame.height));
+        }
+    }
+
+    #[test]
+    fn video_frame_abis_keep_separate_stable_layouts() {
+        assert_eq!(std::mem::size_of::<FfiVideoFrame>(), 48);
+        assert_eq!(std::mem::size_of::<FfiVideoFrameV2>(), 56);
+    }
+
+    #[test]
+    fn legacy_frame_callback_receives_only_the_v1_layout() {
+        let display_state = Arc::new(Mutex::new(RustDeskDisplayState {
+            width: 1920,
+            height: 1080,
+            displays: vec![RustDeskDisplayInfoState {
+                display: 1,
+                width: 2560,
+                height: 1440,
+                ..RustDeskDisplayInfoState::default()
+            }],
+            ..RustDeskDisplayState::default()
+        }));
+        let mut frame = VideoFrame::new();
+        frame.set_display(1);
+        let mut encoded = EncodedVideoFrames::new();
+        let mut encoded_frame = EncodedVideoFrame::new();
+        encoded_frame.set_data(vec![0x01]);
+        encoded.mut_frames().push(encoded_frame);
+        frame.union = Some(VideoFrame_oneof_union::h264s(encoded));
+        let mut received = Vec::new();
+
+        dispatch_video_frame(
+            &frame,
+            &display_state,
+            Some(FrameCallbackKind::V1(collect_legacy_frame)),
+            &mut received as *mut Vec<(i32, i32)> as *mut c_void,
+        );
+
+        assert_eq!(received, vec![(2560, 1440)]);
     }
 
     #[test]
@@ -1887,7 +2067,7 @@ mod tests {
         dispatch_video_frame(
             &frame,
             &display_state,
-            Some(collect_display_frame),
+            Some(FrameCallbackKind::V2(collect_display_frame)),
             &mut received as *mut Vec<(i32, i32, i32, u32)> as *mut c_void,
         );
 
@@ -1920,6 +2100,13 @@ mod tests {
         let mut client = test_client_with_display_state(RustDeskDisplayState::default());
         let handle = &mut client as *mut RustDeskClient as *mut c_void;
 
+        assert!(!rustdesk_change_display_resolution(handle, -1, 1920, 1080));
+        assert!(!rustdesk_change_display_resolution(
+            handle,
+            RUSTDESK_MAX_DISPLAYS as c_int,
+            1920,
+            1080
+        ));
         assert!(!rustdesk_change_display_resolution(handle, 0, 0, 1080));
         assert!(!rustdesk_change_display_resolution(handle, 0, 1920, 0));
         assert!(rustdesk_change_display_resolution(handle, 1, 1080, 1920));
