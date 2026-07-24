@@ -79,14 +79,39 @@ extern "C" {
         uint32_t resolutionCount;
     };
     struct RustDeskFfiResolution { int32_t width; int32_t height; };
+    struct RustDeskFfiDisplayInfoSnapshot {
+        int32_t display;
+        int32_t x;
+        int32_t y;
+        int32_t width;
+        int32_t height;
+        int32_t originalWidth;
+        int32_t originalHeight;
+        int32_t scaleMilli;
+        uint8_t online;
+        uint8_t cursorEmbedded;
+        uint8_t reserved[2];
+        uint32_t nameLen;
+        uint8_t name[128];
+        uint32_t resolutionOffset;
+        uint32_t resolutionCount;
+    };
     bool  rustdesk_get_display_snapshot(void* handle, RustDeskFfiDisplaySnapshot* out_snapshot,
                                         RustDeskFfiResolution* out_resolutions, size_t capacity);
+    bool  rustdesk_get_display_list(void* handle, RustDeskFfiDisplayInfoSnapshot* out_displays,
+                                    size_t display_capacity, RustDeskFfiResolution* out_resolutions,
+                                    size_t resolution_capacity, size_t* out_display_count,
+                                    size_t* out_resolution_count);
+    bool  rustdesk_switch_display(void* handle, int display);
+    bool  rustdesk_capture_displays(void* handle, const int* displays, size_t count);
+    bool  rustdesk_refresh_video_display(void* handle, int display);
     size_t rustdesk_last_error(char* buffer, size_t buffer_len);
     const char* rustdesk_version();
 }
 
 static constexpr uint32_t kRustDeskStreamStatsVersion = 1;
 static constexpr uint32_t kRustDeskDisplaySnapshotVersion = 1;
+static constexpr uint32_t kRustDeskVideoFrameAbiVersion = 2;
 static_assert(sizeof(RustDeskFfiStreamStats) == 96,
               "RustDeskStreamStats ABI size changed; update both sides together");
 static_assert(alignof(RustDeskFfiStreamStats) == 8,
@@ -122,6 +147,24 @@ static_assert(offsetof(RustDeskFfiDisplaySnapshot, geometryEpoch) == 28);
 static_assert(offsetof(RustDeskFfiDisplaySnapshot, resolutionCount) == 32);
 static_assert(sizeof(RustDeskFfiResolution) == 8,
               "RustDeskResolution ABI size changed; update both sides together");
+static_assert(sizeof(RustDeskFfiDisplayInfoSnapshot) == 176,
+              "RustDeskDisplayInfoSnapshot ABI size changed; update both sides together");
+static_assert(alignof(RustDeskFfiDisplayInfoSnapshot) == 4,
+              "RustDeskDisplayInfoSnapshot ABI alignment changed");
+static_assert(offsetof(RustDeskFfiDisplayInfoSnapshot, display) == 0);
+static_assert(offsetof(RustDeskFfiDisplayInfoSnapshot, x) == 4);
+static_assert(offsetof(RustDeskFfiDisplayInfoSnapshot, y) == 8);
+static_assert(offsetof(RustDeskFfiDisplayInfoSnapshot, width) == 12);
+static_assert(offsetof(RustDeskFfiDisplayInfoSnapshot, height) == 16);
+static_assert(offsetof(RustDeskFfiDisplayInfoSnapshot, originalWidth) == 20);
+static_assert(offsetof(RustDeskFfiDisplayInfoSnapshot, originalHeight) == 24);
+static_assert(offsetof(RustDeskFfiDisplayInfoSnapshot, scaleMilli) == 28);
+static_assert(offsetof(RustDeskFfiDisplayInfoSnapshot, online) == 32);
+static_assert(offsetof(RustDeskFfiDisplayInfoSnapshot, cursorEmbedded) == 33);
+static_assert(offsetof(RustDeskFfiDisplayInfoSnapshot, nameLen) == 36);
+static_assert(offsetof(RustDeskFfiDisplayInfoSnapshot, name) == 40);
+static_assert(offsetof(RustDeskFfiDisplayInfoSnapshot, resolutionOffset) == 168);
+static_assert(offsetof(RustDeskFfiDisplayInfoSnapshot, resolutionCount) == 172);
 #endif
 #include <sys/socket.h>
 #include <sys/un.h>
@@ -448,7 +491,25 @@ struct RustDeskFfiVideoFrame {
     int            codec;
     uint64_t       timestamp;
     bool           isKeyFrame;
+    int            display;
+    uint32_t       abiVersion;
+    uint32_t       structSize;
 };
+
+static_assert(sizeof(RustDeskFfiVideoFrame) == 56,
+              "RustDeskVideoFrame ABI size changed; update both sides together");
+static_assert(alignof(RustDeskFfiVideoFrame) == 8,
+              "RustDeskVideoFrame ABI alignment changed");
+static_assert(offsetof(RustDeskFfiVideoFrame, data) == 0);
+static_assert(offsetof(RustDeskFfiVideoFrame, size) == 8);
+static_assert(offsetof(RustDeskFfiVideoFrame, width) == 16);
+static_assert(offsetof(RustDeskFfiVideoFrame, height) == 20);
+static_assert(offsetof(RustDeskFfiVideoFrame, codec) == 24);
+static_assert(offsetof(RustDeskFfiVideoFrame, timestamp) == 32);
+static_assert(offsetof(RustDeskFfiVideoFrame, isKeyFrame) == 40);
+static_assert(offsetof(RustDeskFfiVideoFrame, display) == 44);
+static_assert(offsetof(RustDeskFfiVideoFrame, abiVersion) == 48);
+static_assert(offsetof(RustDeskFfiVideoFrame, structSize) == 52);
 
 struct RustDeskFfiAudioData {
     const uint8_t* data;
@@ -617,6 +678,11 @@ void RustDeskBridge::onFfiFrame(const void* framePtr, void* userData) {
         frame.codec = rdCodecType(ffiFrame->codec);
         frame.timestamp = ffiFrame->timestamp;
         frame.isKeyFrame = ffiFrame->isKeyFrame;
+        // Keep callbacks compatible with a legacy Rust library that predates
+        // display routing. The versioned struct tells us whether the tail is
+        // safe to read.
+        frame.display = ffiFrame->abiVersion >= kRustDeskVideoFrameAbiVersion &&
+            ffiFrame->structSize >= sizeof(RustDeskFfiVideoFrame) ? ffiFrame->display : 0;
         cb(frame);
     }
 }
@@ -885,8 +951,109 @@ RustDeskDisplayCapabilities RustDeskBridge::getDisplayCapabilities() const {
             result.resolutions.push_back({resolutions[index].width, resolutions[index].height});
         }
     }
+    RustDeskFfiDisplayInfoSnapshot ffiDisplays[16] {};
+    RustDeskFfiResolution allResolutions[16 * 32] {};
+    size_t displayCount = 0;
+    size_t resolutionCount = 0;
+    if (rustdesk_get_display_list(handle, ffiDisplays, 16, allResolutions,
+                                  16 * 32, &displayCount, &resolutionCount)) {
+        const size_t safeDisplayCount = std::min<size_t>(displayCount, 16);
+        const size_t safeResolutionCount = std::min<size_t>(resolutionCount, 16 * 32);
+        result.displays.reserve(safeDisplayCount);
+        for (size_t index = 0; index < safeDisplayCount; ++index) {
+            const auto& ffiDisplay = ffiDisplays[index];
+            RustDeskDisplayInfo display;
+            display.display = ffiDisplay.display;
+            display.x = ffiDisplay.x;
+            display.y = ffiDisplay.y;
+            display.width = ffiDisplay.width;
+            display.height = ffiDisplay.height;
+            display.originalWidth = ffiDisplay.originalWidth;
+            display.originalHeight = ffiDisplay.originalHeight;
+            display.scaleMilli = ffiDisplay.scaleMilli;
+            display.online = ffiDisplay.online != 0;
+            display.cursorEmbedded = ffiDisplay.cursorEmbedded != 0;
+            const size_t nameLength = std::min<size_t>(ffiDisplay.nameLen, sizeof(ffiDisplay.name));
+            display.name.assign(reinterpret_cast<const char*>(ffiDisplay.name), nameLength);
+            const size_t offset = std::min<size_t>(ffiDisplay.resolutionOffset, safeResolutionCount);
+            const size_t countForDisplay = std::min<size_t>(ffiDisplay.resolutionCount,
+                safeResolutionCount - offset);
+            display.resolutions.reserve(countForDisplay);
+            for (size_t resolutionIndex = 0; resolutionIndex < countForDisplay; ++resolutionIndex) {
+                const auto& resolution = allResolutions[offset + resolutionIndex];
+                if (resolution.width > 0 && resolution.height > 0) {
+                    display.resolutions.push_back({resolution.width, resolution.height});
+                }
+            }
+            result.displays.push_back(std::move(display));
+        }
+    }
+    // The list API is intentionally additive. Older Rust libraries still
+    // provide the current-display snapshot, so synthesize a one-entry catalog
+    // when no display list was returned.
+    if (result.displays.empty()) {
+        RustDeskDisplayInfo display;
+        display.display = result.currentDisplay;
+        display.width = result.width;
+        display.height = result.height;
+        display.originalWidth = result.originalWidth;
+        display.originalHeight = result.originalHeight;
+        display.scaleMilli = result.scaleMilli;
+        display.online = true;
+        display.resolutions = result.resolutions;
+        result.displays.push_back(std::move(display));
+    }
 #endif
     return result;
+}
+
+bool RustDeskBridge::switchDisplay(int display) {
+#ifdef RUSTDESK_USE_REAL_CORE
+    void* handle = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(impl_->mutex);
+        handle = impl_->ffiHandle;
+    }
+    if (mode_ == RustDeskMode::FFI && handle != nullptr) {
+        return rustdesk_switch_display(handle, display);
+    }
+#else
+    (void)display;
+#endif
+    return false;
+}
+
+bool RustDeskBridge::captureDisplays(const std::vector<int>& displays) {
+#ifdef RUSTDESK_USE_REAL_CORE
+    void* handle = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(impl_->mutex);
+        handle = impl_->ffiHandle;
+    }
+    if (mode_ == RustDeskMode::FFI && handle != nullptr) {
+        return rustdesk_capture_displays(handle, displays.empty() ? nullptr : displays.data(),
+                                         displays.size());
+    }
+#else
+    (void)displays;
+#endif
+    return false;
+}
+
+bool RustDeskBridge::refreshVideoDisplay(int display) {
+#ifdef RUSTDESK_USE_REAL_CORE
+    void* handle = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(impl_->mutex);
+        handle = impl_->ffiHandle;
+    }
+    if (mode_ == RustDeskMode::FFI && handle != nullptr) {
+        return rustdesk_refresh_video_display(handle, display);
+    }
+#else
+    (void)display;
+#endif
+    return false;
 }
 
 bool RustDeskBridge::changeDisplayResolution(int display, int width, int height) {

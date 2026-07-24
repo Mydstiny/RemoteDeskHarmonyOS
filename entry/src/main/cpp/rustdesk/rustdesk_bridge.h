@@ -50,6 +50,21 @@ struct RustDeskDisplayResolution {
     int height = 0;
 };
 
+struct RustDeskDisplayInfo {
+    int display = 0;
+    int x = 0;
+    int y = 0;
+    int width = 0;
+    int height = 0;
+    int originalWidth = 0;
+    int originalHeight = 0;
+    int scaleMilli = 1000;
+    bool online = false;
+    bool cursorEmbedded = false;
+    std::string name;
+    std::vector<RustDeskDisplayResolution> resolutions;
+};
+
 struct RustDeskDisplayCapabilities {
     bool supported = false;
     int currentDisplay = 0;
@@ -60,6 +75,7 @@ struct RustDeskDisplayCapabilities {
     int scaleMilli = 1000;
     uint32_t geometryEpoch = 0;
     std::vector<RustDeskDisplayResolution> resolutions;
+    std::vector<RustDeskDisplayInfo> displays;
 };
 
 // C 兼容连接配置 (与 rustdesk_ffi/src/lib.rs 中的 RustDeskConfig 内存布局一致)
@@ -119,6 +135,9 @@ public:
     void sendMouseWheel(int x, int y, int delta) override;
     void sendText(const std::string& text) override;
     RustDeskDisplayCapabilities getDisplayCapabilities() const;
+    bool switchDisplay(int display);
+    bool captureDisplays(const std::vector<int>& displays);
+    bool refreshVideoDisplay(int display);
     bool changeDisplayResolution(int display, int width, int height);
     bool sendTouchScale(int scale);
     bool sendTouchPan(int phase, int x, int y);
