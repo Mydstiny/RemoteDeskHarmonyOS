@@ -1336,7 +1336,7 @@ int DecoderNapi::DecodeNative(int64_t handle, const VideoFrame& frame) {
     return ctx->decoder->Decode(frame.data, frame.size, frame.timestamp, frame.isKeyFrame);
 }
 
-int DecoderNapi::DecodeActiveNative(const VideoFrame& frame) {
+bool DecoderNapi::IsActiveDisplayFrame(const VideoFrame& frame) {
     int activeDisplay = g_activeDisplay.load(std::memory_order_acquire);
     if (activeDisplay < 0) {
         int expected = -1;
@@ -1344,7 +1344,12 @@ int DecoderNapi::DecodeActiveNative(const VideoFrame& frame) {
                                                 std::memory_order_acq_rel);
         activeDisplay = g_activeDisplay.load(std::memory_order_acquire);
     }
-    if (activeDisplay >= 0 && frame.display != activeDisplay) {
+    return activeDisplay >= 0 && frame.display == activeDisplay;
+}
+
+int DecoderNapi::DecodeActiveNative(const VideoFrame& frame) {
+    if (!IsActiveDisplayFrame(frame)) {
+        const int activeDisplay = g_activeDisplay.load(std::memory_order_acquire);
         static std::atomic<uint64_t> displayDropCount {0};
         const uint64_t dropped = displayDropCount.fetch_add(1, std::memory_order_relaxed) + 1;
         if (dropped <= 8 || dropped % 300 == 0) {
@@ -1354,7 +1359,7 @@ int DecoderNapi::DecodeActiveNative(const VideoFrame& frame) {
                         activeDisplay,
                         static_cast<unsigned long long>(dropped));
         }
-        return 0;
+        return kDecodeInactiveDisplay;
     }
     int64_t handle = g_activeDecoderHandle.load();
     if (handle <= 0) {

@@ -228,9 +228,11 @@ private:
 // ============================================================
 
 namespace DecoderNapi {
+    constexpr int kDecodeInactiveDisplay = 1;
     napi_value Init(napi_env env, napi_value exports);
     int DecodeNative(int64_t handle, const VideoFrame& frame);
     int DecodeActiveNative(const VideoFrame& frame);
+    bool IsActiveDisplayFrame(const VideoFrame& frame);
     int ActiveVideoPressureLevel();
     DecoderTelemetrySnapshot GetActiveTelemetry(uint64_t expectedSessionId = 0);
     void SetActiveSessionId(uint64_t sessionId);
