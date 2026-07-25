@@ -75,3 +75,7 @@ Bash and PowerShell use different environment assignment and path syntax. Set `D
 ## D-019 - Avoid early-closing symbol checks under `pipefail`
 
 Large static archives must not be validated with `nm | grep -q` or an equivalent early-closing consumer under `set -o pipefail`. Use a full-stream match such as `grep -Eq` or capture the symbol list first, so a successful match cannot be reported as `nm` exit 141.
+
+## D-020 - Planned implementation requires independent review before merge
+
+For every task that changes source code, begin from synchronized `main` and create or continue exactly one documented `codex/<task>` branch. Record a concrete plan, implement it step by step, run the validation required for the changed surface and make task-scoped commits. After implementation, the main agent must spawn a sub-agent to independently compare the plan, the reported user problem, the diff and the verification evidence. Any review finding is a blocker until it is fixed, revalidated and committed. Merge the task branch back to `main` only after the sub-agent explicitly passes the review and the repository's required checks pass; then synchronize `main` and clean up the merged local/remote branch. Never merge with unresolved review findings, and never mix unrelated user changes into these commits.

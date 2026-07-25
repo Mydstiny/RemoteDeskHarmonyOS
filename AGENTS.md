@@ -28,8 +28,10 @@
   `powershell -File scripts/dev_workflow.ps1 start -Task <task-name>`。
 - 同一时间只允许一个日常活动 `codex/...` 分支。新任务必须等待当前任务已合并或明确归档。
 - 标准闭环：
-  `main` → `pull --ff-only` → `codex/...` → 修改/验证/commit → push → PR →
+  `main` → `pull --ff-only` → `codex/...` → 按计划逐步修改/验证/commit →
+  子 agent 独立复核 → 修复复核问题并重新验证/commit → push → PR →
   required `open-source-compliance` → merge → `main` → `pull --ff-only` → 删除已合并分支。
+  只有子 agent 明确复核通过后才能合并；复核发现问题时必须留在任务分支修复，不能带着未解决的问题合并。
 - session 中断时允许在同一活动分支做清晰 checkpoint commit，并在 `CURRENT.md` 写明下一步；不另开分支。
 
 ## 修改与提交规则
