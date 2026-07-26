@@ -379,6 +379,7 @@ interface LocalPoint {
 }
 
 interface RendererViewportSnapshot {
+  transformVersion: number;
   sourceWidth: number;
   sourceHeight: number;
   surfaceWidth: number;
@@ -596,6 +597,10 @@ struct RemoteDesktop {
   private rendererViewportCache: RendererViewportSnapshot | null = null;
   private rendererViewportCacheHandle: number = -1;
   private rendererViewportReadAtMs: number = 0;
+  // Native viewport snapshots are published by the renderer thread. Keep the
+  // newest transform generation submitted by ArkTS so an older frame cannot
+  // overwrite the gesture-time geometry cache.
+  private rendererCanvasTransformPendingVersion: number = 0;
   // Pinch math uses a local geometry snapshot. Native viewport reads are kept
   // on low-frequency resize/stream-geometry paths instead of the gesture loop.
   private canvasViewportSnapshot: CanvasViewport | null = null;
@@ -1681,8 +1686,12 @@ struct RemoteDesktop {
     }
     const viewport: CanvasViewport = this.currentCanvasViewport();
     this.canvasTransform = clampCanvasTransform(this.canvasTransform, viewport);
-    this.loader.setRendererCanvasTransform(this.rendererHandle, this.canvasTransform.scale,
+    const submittedVersion: number = this.loader.setRendererCanvasTransform(this.rendererHandle,
+      this.canvasTransform.scale,
       this.canvasTransform.panX, this.canvasTransform.panY);
+    if (Number.isFinite(submittedVersion) && submittedVersion > 0) {
+      this.rendererCanvasTransformPendingVersion = submittedVersion;
+    }
     // Keep coordinate mapping responsive while native redraw catches up. The
     // calculation mirrors GLRenderer::CalculateViewport and avoids a NAPI
     // read on every pinch update.
@@ -3920,6 +3929,7 @@ struct RemoteDesktop {
     const viewportW: number = Math.max(1, Math.round(sourceWidth * physicalScale));
     const viewportH: number = Math.max(1, Math.round(sourceHeight * physicalScale));
     this.rendererViewportCache = {
+      transformVersion: this.rendererCanvasTransformPendingVersion,
       sourceWidth,
       sourceHeight,
       surfaceWidth,
@@ -3937,6 +3947,7 @@ struct RemoteDesktop {
     this.rendererViewportCache = null;
     this.rendererViewportCacheHandle = this.rendererHandle;
     this.rendererViewportReadAtMs = 0;
+    this.rendererCanvasTransformPendingVersion = 0;
     this.canvasViewportSnapshot = null;
     this.canvasViewportSnapshotHandle = this.rendererHandle;
   }
@@ -3947,6 +3958,7 @@ struct RemoteDesktop {
       this.rendererViewportCache = null;
       this.rendererViewportCacheHandle = this.rendererHandle;
       this.rendererViewportReadAtMs = 0;
+      this.rendererCanvasTransformPendingVersion = 0;
     }
     if (!forceRefresh && this.rendererViewportCache !== null &&
       now - this.rendererViewportReadAtMs < RENDERER_VIEWPORT_CACHE_MS) {
@@ -3962,6 +3974,14 @@ struct RemoteDesktop {
     try {
       const raw = this.loader.getRendererViewport(this.rendererHandle);
       if (raw && raw.sourceWidth > 0 && raw.sourceHeight > 0) {
+        const nativeTransformVersion: number = Number.isFinite(raw.transformVersion) ?
+          raw.transformVersion : 0;
+        if (nativeTransformVersion < this.rendererCanvasTransformPendingVersion) {
+          // The render owner has not applied the newest transform yet. Keep
+          // the locally mirrored viewport; accepting this snapshot would make
+          // cursor/input mapping jump back during pinch or canvas pan.
+          return this.rendererViewportCache;
+        }
         // The renderer owns viewport values in its own surface-pixel space.
         // A resize/rotation can publish that snapshot one frame before ArkUI
         // receives the new surface size. Normalize it before combining it with
@@ -3976,6 +3996,7 @@ struct RemoteDesktop {
           targetSurfaceWidth, targetSurfaceHeight);
         if (viewport !== null) {
           const snapshot: RendererViewportSnapshot = {
+            transformVersion: nativeTransformVersion,
             sourceWidth: raw.sourceWidth,
             sourceHeight: raw.sourceHeight,
             surfaceWidth: targetSurfaceWidth,
@@ -3988,6 +4009,7 @@ struct RemoteDesktop {
           this.rendererSourceWidth = snapshot.sourceWidth;
           this.rendererSourceHeight = snapshot.sourceHeight;
           this.rendererViewportCache = snapshot;
+          this.rendererCanvasTransformPendingVersion = nativeTransformVersion;
           this.canvasViewportSnapshot = {
             surfaceWidth: snapshot.surfaceWidth,
             surfaceHeight: snapshot.surfaceHeight,

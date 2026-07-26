@@ -361,6 +361,7 @@ GLRenderer::GLRenderer()
       viewportSnapshotVersion_(0), snapshotVpX_(0), snapshotVpY_(0),
       snapshotVpW_(0), snapshotVpH_(0), snapshotSourceWidth_(0),
       snapshotSourceHeight_(0), snapshotSurfaceWidth_(0), snapshotSurfaceHeight_(0),
+      snapshotTransformVersion_(0),
       rawFrameCount_(0), rendererHandle_(0), initialized_(false), destroying_(false) {}
 
 GLRenderer::~GLRenderer() {
@@ -1000,12 +1001,13 @@ void GLRenderer::SetSourceSize(int width, int height) {
     OH_LOG_INFO(LOG_APP, "[GL] 视频源尺寸更新为 %{public}dx%{public}d", width, height);
 }
 
-void GLRenderer::SetCanvasTransform(double scale, double panX, double panY) {
+uint64_t GLRenderer::SetCanvasTransform(double scale, double panX, double panY) {
     if (!std::isfinite(scale) || scale <= 0.0 || !std::isfinite(panX) || !std::isfinite(panY)) {
         OH_LOG_WARN(LOG_APP, "[GL] ignored invalid canvas transform");
-        return;
+        return 0;
     }
     const double clampedScale = std::clamp(scale, 0.05, 12.0);
+    uint64_t publishedVersion = 0;
     // Publish a complete transform with a tiny seqlock. The UI thread never
     // waits for the EGL owner; the owner consumes the newest stable tuple.
     {
@@ -1014,9 +1016,10 @@ void GLRenderer::SetCanvasTransform(double scale, double panX, double panY) {
         pendingCanvasScale_.store(clampedScale, std::memory_order_relaxed);
         pendingCanvasPanX_.store(panX, std::memory_order_relaxed);
         pendingCanvasPanY_.store(panY, std::memory_order_relaxed);
-        canvasTransformVersion_.fetch_add(1, std::memory_order_release);
+        publishedVersion = canvasTransformVersion_.fetch_add(1, std::memory_order_release) + 1;
     }
     RequestRedraw();
+    return publishedVersion;
 }
 
 void GLRenderer::RenderRetainedFrame(uint64_t expectedGeneration) {
@@ -1097,7 +1100,8 @@ void GLRenderer::CalculateViewport(int sourceWidth, int sourceHeight,
 
 void GLRenderer::GetViewportSnapshot(int& vpX, int& vpY, int& vpW, int& vpH,
                                      int& sourceWidth, int& sourceHeight,
-                                     int& surfaceWidth, int& surfaceHeight) const {
+                                     int& surfaceWidth, int& surfaceHeight,
+                                     uint64_t& transformVersion) const {
     for (;;) {
         const uint64_t before = viewportSnapshotVersion_.load(std::memory_order_acquire);
         if ((before & 1U) != 0U) {
@@ -1111,6 +1115,7 @@ void GLRenderer::GetViewportSnapshot(int& vpX, int& vpY, int& vpW, int& vpH,
         sourceHeight = snapshotSourceHeight_.load(std::memory_order_relaxed);
         surfaceWidth = snapshotSurfaceWidth_.load(std::memory_order_relaxed);
         surfaceHeight = snapshotSurfaceHeight_.load(std::memory_order_relaxed);
+        transformVersion = snapshotTransformVersion_.load(std::memory_order_relaxed);
         const uint64_t after = viewportSnapshotVersion_.load(std::memory_order_acquire);
         if (before == after) {
             return;
@@ -1128,6 +1133,7 @@ void GLRenderer::PublishViewportSnapshot(int vpX, int vpY, int vpW, int vpH) {
     snapshotSourceHeight_.store(sourceHeight_, std::memory_order_relaxed);
     snapshotSurfaceWidth_.store(width_, std::memory_order_relaxed);
     snapshotSurfaceHeight_.store(height_, std::memory_order_relaxed);
+    snapshotTransformVersion_.store(appliedCanvasTransformVersion_, std::memory_order_relaxed);
     viewportSnapshotVersion_.fetch_add(1, std::memory_order_release);
 }
 
@@ -1416,7 +1422,7 @@ napi_value NapiResizeRenderer(napi_env env, napi_callback_info info) {
     return undefined;
 }
 
-/** NAPI: setRendererCanvasTransform(handle, scale, panX, panY): void */
+/** NAPI: setRendererCanvasTransform(handle, scale, panX, panY): number */
 napi_value NapiSetRendererCanvasTransform(napi_env env, napi_callback_info info) {
     size_t argc = 4;
     napi_value args[4];
@@ -1434,12 +1440,13 @@ napi_value NapiSetRendererCanvasTransform(napi_env env, napi_callback_info info)
         std::lock_guard<std::mutex> lock(g_activeRendererMutex);
         renderer = AcquireRendererLocked(handleVal, true);
     }
+    uint64_t version = 0;
     if (renderer) {
-        renderer->SetCanvasTransform(scale, panX, panY);
+        version = renderer->SetCanvasTransform(scale, panX, panY);
     }
-    napi_value undefined;
-    napi_get_undefined(env, &undefined);
-    return undefined;
+    napi_value result;
+    napi_create_double(env, static_cast<double>(version), &result);
+    return result;
 }
 
 /**
@@ -1621,7 +1628,9 @@ napi_value NapiGetRendererViewport(napi_env env, napi_callback_info info) {
 
     int vpX = 0, vpY = 0, vpW = 0, vpH = 0;
     int srcW = 0, srcH = 0, surfW = 0, surfH = 0;
-    renderer->GetViewportSnapshot(vpX, vpY, vpW, vpH, srcW, srcH, surfW, surfH);
+    uint64_t transformVersion = 0;
+    renderer->GetViewportSnapshot(vpX, vpY, vpW, vpH, srcW, srcH, surfW, surfH,
+                                  transformVersion);
 
     napi_value result;
     napi_create_object(env, &result);
@@ -1643,6 +1652,8 @@ napi_value NapiGetRendererViewport(napi_env env, napi_callback_info info) {
     napi_set_named_property(env, result, "viewportW", val);
     napi_create_int32(env, vpH, &val);
     napi_set_named_property(env, result, "viewportH", val);
+    napi_create_double(env, static_cast<double>(transformVersion), &val);
+    napi_set_named_property(env, result, "transformVersion", val);
 
     return result;
 }

@@ -72,8 +72,9 @@ public:
      */
     void Resize(int width, int height);
     void SetSourceSize(int width, int height);
-    /** Apply a local canvas transform. Pan uses a top-left surface origin. */
-    void SetCanvasTransform(double scale, double panX, double panY);
+    /** Apply a local canvas transform. Pan uses a top-left surface origin.
+     *  Returns the published transform version, or zero for invalid input. */
+    uint64_t SetCanvasTransform(double scale, double panX, double panY);
     /** Register the decoder-owner wake callback; it must not touch EGL/GL. */
     void SetRedrawCallback(std::function<void()> callback);
     /** Register the active RDP session wake callback independently of decoder ownership. */
@@ -107,12 +108,14 @@ public:
     /** 获取上次渲染的视口 */
     void GetLastViewport(int& vpX, int& vpY, int& vpW, int& vpH) const {
         int sourceWidth = 0, sourceHeight = 0, surfaceWidth = 0, surfaceHeight = 0;
+        uint64_t transformVersion = 0;
         GetViewportSnapshot(vpX, vpY, vpW, vpH,
-            sourceWidth, sourceHeight, surfaceWidth, surfaceHeight);
+            sourceWidth, sourceHeight, surfaceWidth, surfaceHeight, transformVersion);
     }
     void GetViewportSnapshot(int& vpX, int& vpY, int& vpW, int& vpH,
                              int& sourceWidth, int& sourceHeight,
-                             int& surfaceWidth, int& surfaceHeight) const;
+                             int& surfaceWidth, int& surfaceHeight,
+                             uint64_t& transformVersion) const;
 
     // R1: NapiTestRender 使用的 accessor
     bool MakeCurrent();
@@ -172,6 +175,7 @@ private:
     std::atomic<int> snapshotSourceHeight_;
     std::atomic<int> snapshotSurfaceWidth_;
     std::atomic<int> snapshotSurfaceHeight_;
+    std::atomic<uint64_t> snapshotTransformVersion_;
     int  rawFrameCount_;
     int64_t rendererHandle_;
     bool initialized_;
