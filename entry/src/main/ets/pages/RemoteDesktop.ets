@@ -151,6 +151,7 @@ import {
   CanvasPinchTouchEvent,
   claimCanvasPinchTouchState,
   drainCanvasPinchTouchState,
+  rustDeskTouchScaleDelta,
   shouldConsumeCanvasPinchTouch,
   shouldStartNewCanvasPinchTouchSequence
 } from '../services/RemoteCanvasPinchInputPolicy';
@@ -1792,8 +1793,10 @@ struct RemoteDesktop {
       this.releaseCanvasPinchInput('rustdesk-touch-scale-missing-transform');
       return;
     }
-    const relative: number = Math.max(0.5, Math.min(2.0, nextScale / this.rustDeskTouchPinchLastScale));
-    if (!this.loader.sendRustDeskTouchScale(this.sessionId, Math.round(relative * 1000))) {
+    const scaleDelta: number = rustDeskTouchScaleDelta(
+      this.rustDeskTouchPinchLastScale, nextScale);
+    if (scaleDelta !== 0 &&
+      !this.loader.sendRustDeskTouchScale(this.sessionId, scaleDelta)) {
       this.releaseCanvasPinchInput('rustdesk-touch-scale-rejected');
       return;
     }

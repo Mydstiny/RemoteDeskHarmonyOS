@@ -7,6 +7,13 @@ export interface CanvasPinchTouchState {
   fingerCount: number;
 }
 
+/** RustDesk TouchScale carries the relative scale delta in thousandths. */
+export function rustDeskTouchScaleDelta(previousScale: number, currentScale: number): number {
+  const previous: number = Number.isFinite(previousScale) && previousScale > 0 ? previousScale : 1;
+  const current: number = Number.isFinite(currentScale) && currentScale > 0 ? currentScale : previous;
+  return Math.round((current - previous) * 1000);
+}
+
 function nonNegative(value: number): number {
   return Number.isFinite(value) && value > 0 ? Math.floor(value) : 0;
 }

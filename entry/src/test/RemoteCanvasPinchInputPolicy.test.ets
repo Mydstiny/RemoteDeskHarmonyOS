@@ -3,6 +3,7 @@ import {
   advanceCanvasPinchTouchState,
   claimCanvasPinchTouchState,
   drainCanvasPinchTouchState,
+  rustDeskTouchScaleDelta,
   shouldConsumeCanvasPinchTouch,
   shouldStartNewCanvasPinchTouchSequence
 } from '../main/ets/services/RemoteCanvasPinchInputPolicy';
@@ -52,6 +53,13 @@ export default function remoteCanvasPinchInputPolicyTest(): void {
       expect(shouldStartNewCanvasPinchTouchSequence('draining', 'down', 1, 1)).assertTrue();
       expect(shouldStartNewCanvasPinchTouchSequence('draining', 'down', 3, 1)).assertFalse();
       expect(shouldStartNewCanvasPinchTouchSequence('gesture', 'down', 1, 1)).assertFalse();
+    });
+
+    it('encodes RustDesk scale as a relative thousandth delta', 0, (): void => {
+      expect(rustDeskTouchScaleDelta(1, 1.05)).assertEqual(50);
+      expect(rustDeskTouchScaleDelta(1.05, 1.1)).assertEqual(50);
+      expect(rustDeskTouchScaleDelta(1, 0.95)).assertEqual(-50);
+      expect(rustDeskTouchScaleDelta(1, 1)).assertEqual(0);
     });
   });
 }
