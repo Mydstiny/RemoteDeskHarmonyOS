@@ -120,13 +120,17 @@ impl CursorState {
         }
 
         let expected_len = width as usize * height as usize * 4;
-        let compressed_colors = data.get_colors().to_vec();
-        if compressed_colors.is_empty() || compressed_colors.len() > MAX_CURSOR_CACHE_BYTES {
+        let compressed_source = data.get_colors();
+        if compressed_source.is_empty() || compressed_source.len() > MAX_CURSOR_CACHE_BYTES {
             return false;
         }
-        let Some(rgba) = Self::decode_colors(&compressed_colors, expected_len) else {
+        // Decode directly from the protocol-owned bytes first. Copy the
+        // validated compressed payload only after decoding so a new shape
+        // does not temporarily retain two independent compressed buffers.
+        let Some(rgba) = Self::decode_colors(compressed_source, expected_len) else {
             return false;
         };
+        let compressed_colors = compressed_source.to_vec();
 
         let id = data.get_id();
         if let Some(previous) = self.shapes.remove(&id) {

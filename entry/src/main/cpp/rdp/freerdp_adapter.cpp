@@ -588,6 +588,10 @@ struct FreeRdpAdapter::Impl {
     std::mutex              stateMutex;
     std::mutex              instanceMutex;
     std::mutex              shutdownMutex;
+    // Serializes cursor callbacks with session identity/reset and the
+    // post-disconnect cursor teardown. The store also performs a generation
+    // check under its own mutex for callbacks that cannot take this lock.
+    std::mutex              cursorLifecycleMutex;
     std::mutex              workerLifecycleMutex;
     std::mutex              renderMutex;
     RdpShutdown::State      shutdownState;
@@ -1469,6 +1473,8 @@ BOOL FreeRdpAdapter::cbPointerSet(rdpContext* context, rdpPointer* pointer) {
     if (!ctx || !ctx->adapter || !cursor || !cursor->rgba || cursor->rgbaLen == 0) {
         return FALSE;
     }
+    std::vector<uint8_t> rgba(cursor->rgba, cursor->rgba + cursor->rgbaLen);
+    std::lock_guard<std::mutex> cursorLock(ctx->adapter->impl_->cursorLifecycleMutex);
     const uint64_t currentGeneration =
         ctx->adapter->impl_->sessionGeneration.load(std::memory_order_acquire);
     if (ctx->generation == 0 || ctx->generation != currentGeneration) {
@@ -1478,12 +1484,13 @@ BOOL FreeRdpAdapter::cbPointerSet(rdpContext* context, rdpPointer* pointer) {
             static_cast<unsigned long long>(currentGeneration));
         return FALSE;
     }
-    std::vector<uint8_t> rgba(cursor->rgba, cursor->rgba + cursor->rgbaLen);
-    const bool accepted = ctx->adapter->impl_->cursorStore.setShape(
-        cursor->shapeId, static_cast<int>(pointer->width), static_cast<int>(pointer->height),
-        static_cast<int>(pointer->xPos), static_cast<int>(pointer->yPos), rgba);
-    if (accepted) {
-        ctx->adapter->impl_->cursorStore.setVisible(true);
+    const bool accepted = ctx->adapter->impl_->cursorStore.setShapeIfGeneration(
+        ctx->generation, cursor->shapeId, static_cast<int>(pointer->width),
+        static_cast<int>(pointer->height), static_cast<int>(pointer->xPos),
+        static_cast<int>(pointer->yPos), rgba);
+    if (accepted && !ctx->adapter->impl_->cursorStore.setVisibleIfGeneration(
+            ctx->generation, true)) {
+        return FALSE;
     }
     return accepted ? TRUE : FALSE;
 }
@@ -1493,13 +1500,14 @@ BOOL FreeRdpAdapter::cbPointerSetPosition(rdpContext* context, UINT32 x, UINT32 
     if (!ctx || !ctx->adapter) {
         return FALSE;
     }
+    std::lock_guard<std::mutex> cursorLock(ctx->adapter->impl_->cursorLifecycleMutex);
     const uint64_t currentGeneration =
         ctx->adapter->impl_->sessionGeneration.load(std::memory_order_acquire);
     if (ctx->generation == 0 || ctx->generation != currentGeneration) {
         return FALSE;
     }
-    ctx->adapter->impl_->cursorStore.setPosition(static_cast<int>(x), static_cast<int>(y));
-    return TRUE;
+    return ctx->adapter->impl_->cursorStore.setPositionIfGeneration(
+        ctx->generation, static_cast<int>(x), static_cast<int>(y)) ? TRUE : FALSE;
 }
 
 BOOL FreeRdpAdapter::cbPointerSetNull(rdpContext* context) {
@@ -1507,13 +1515,14 @@ BOOL FreeRdpAdapter::cbPointerSetNull(rdpContext* context) {
     if (!ctx || !ctx->adapter) {
         return FALSE;
     }
+    std::lock_guard<std::mutex> cursorLock(ctx->adapter->impl_->cursorLifecycleMutex);
     const uint64_t currentGeneration =
         ctx->adapter->impl_->sessionGeneration.load(std::memory_order_acquire);
     if (ctx->generation == 0 || ctx->generation != currentGeneration) {
         return FALSE;
     }
-    ctx->adapter->impl_->cursorStore.setVisible(false);
-    return TRUE;
+    return ctx->adapter->impl_->cursorStore.setVisibleIfGeneration(ctx->generation, false)
+        ? TRUE : FALSE;
 }
 
 BOOL FreeRdpAdapter::cbPointerSetDefault(rdpContext* context) {
@@ -1521,14 +1530,17 @@ BOOL FreeRdpAdapter::cbPointerSetDefault(rdpContext* context) {
     if (!ctx || !ctx->adapter) {
         return FALSE;
     }
+    std::lock_guard<std::mutex> cursorLock(ctx->adapter->impl_->cursorLifecycleMutex);
     const uint64_t currentGeneration =
         ctx->adapter->impl_->sessionGeneration.load(std::memory_order_acquire);
     if (ctx->generation == 0 || ctx->generation != currentGeneration) {
         return FALSE;
     }
-    const bool accepted = ctx->adapter->impl_->cursorStore.setDefaultShape();
-    if (accepted) {
-        ctx->adapter->impl_->cursorStore.setVisible(true);
+    const bool accepted = ctx->adapter->impl_->cursorStore.setDefaultShapeIfGeneration(
+        ctx->generation);
+    if (accepted && !ctx->adapter->impl_->cursorStore.setVisibleIfGeneration(
+            ctx->generation, true)) {
+        return FALSE;
     }
     return accepted ? TRUE : FALSE;
 }
@@ -1586,15 +1598,16 @@ void FreeRdpAdapter::cbPostDisconnect(freerdp* instance) {
     auto* self = ctx ? ctx->adapter : nullptr;
     if (!self) return;
 
+    std::lock_guard<std::mutex> cursorLock(self->impl_->cursorLifecycleMutex);
     const uint64_t currentGeneration =
         self->impl_->sessionGeneration.load(std::memory_order_acquire);
-    if (ctx->generation == currentGeneration) {
-        self->impl_->cursorStore.setVisible(false);
-    } else {
+    if (ctx->generation == 0 || ctx->generation != currentGeneration ||
+        !self->impl_->cursorStore.setVisibleIfGeneration(ctx->generation, false)) {
         OH_LOG_INFO(LOG_APP,
             "[RDP-CURSOR] stale post-disconnect generation=%{public}llu current=%{public}llu ignored",
             static_cast<unsigned long long>(ctx->generation),
             static_cast<unsigned long long>(currentGeneration));
+        return;
     }
     self->impl_->traceShutdown("post-disconnect", "begin");
     self->impl_->presentationEnabled.store(false, std::memory_order_release);
@@ -2103,7 +2116,12 @@ FreeRdpAdapter::FreeRdpAdapter() : impl_(std::make_unique<Impl>()) {
 }
 
 void FreeRdpAdapter::setSessionIdentity(uint64_t sessionId) {
-    impl_->cursorStore.reset(sessionId, "rdp");
+    const uint64_t generation =
+        g_nextRdpSessionGeneration.fetch_add(1, std::memory_order_relaxed);
+    std::lock_guard<std::mutex> shutdownLock(impl_->shutdownMutex);
+    std::lock_guard<std::mutex> cursorLock(impl_->cursorLifecycleMutex);
+    impl_->sessionGeneration.store(generation, std::memory_order_release);
+    impl_->cursorStore.reset(sessionId, "rdp", generation);
     impl_->cursorStore.setDefaultShape();
     impl_->cursorStore.setVisible(true);
 }
@@ -2127,6 +2145,7 @@ int FreeRdpAdapter::connect(const ConnectionConfig& cfg) {
     if (impl_->state == ConnectionState::CONNECTED || impl_->connecting) { disconnect(); }
     {
         std::lock_guard<std::mutex> shutdownLock(impl_->shutdownMutex);
+        std::lock_guard<std::mutex> cursorLock(impl_->cursorLifecycleMutex);
         impl_->shutdownState.reset();
         const uint64_t generation =
             g_nextRdpSessionGeneration.fetch_add(1, std::memory_order_relaxed);
@@ -2533,7 +2552,12 @@ void FreeRdpAdapter::disconnect() {
     }
     impl_->beginShutdownTrace();
     impl_->stopRequested.store(true, std::memory_order_release);
-    impl_->cursorStore.setVisible(false);
+    const uint64_t disconnectGeneration =
+        impl_->sessionGeneration.load(std::memory_order_acquire);
+    {
+        std::lock_guard<std::mutex> cursorLock(impl_->cursorLifecycleMutex);
+        impl_->cursorStore.setVisibleIfGeneration(disconnectGeneration, false);
+    }
     impl_->presentationEnabled.store(false, std::memory_order_release);
     RendererNapi::InvalidateActivePresentation();
     impl_->framePump.invalidatePending();

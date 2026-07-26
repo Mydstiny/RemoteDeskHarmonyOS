@@ -54,20 +54,32 @@ public:
     bool setShape(uint64_t shapeId, int width, int height, int hotX, int hotY,
                   const std::vector<uint8_t>& rgba);
 
+    /**
+     * Apply a protocol callback only while the supplied connection generation
+     * is still the store generation. The check and mutation share the store
+     * mutex so a session reset cannot happen between them.
+     */
+    bool setShapeIfGeneration(uint64_t generation, uint64_t shapeId, int width, int height,
+                              int hotX, int hotY, const std::vector<uint8_t>& rgba);
+
     /** Restore a stable local arrow for protocol SetDefault callbacks. */
     bool setDefaultShape();
+    bool setDefaultShapeIfGeneration(uint64_t generation);
 
     /** Keep a temporary arrow visible until RustDesk supplies cursor data. */
     bool setFallbackShape();
 
     void setPosition(int x, int y);
+    bool setPositionIfGeneration(uint64_t generation, int x, int y);
     void setVisible(bool visible);
+    bool setVisibleIfGeneration(uint64_t generation, bool visible);
     RemoteCursorSnapshot snapshot(bool includePixels) const;
 
 private:
     bool setShapeInternal(uint64_t shapeId, int width, int height, int hotX, int hotY,
                           const std::vector<uint8_t>& rgba, bool fallbackShape,
-                          bool protocolShapeAvailable, const char* shapeSource);
+                          bool protocolShapeAvailable, const char* shapeSource,
+                          uint64_t expectedGeneration = 0);
 
     mutable std::mutex mutex_;
     RemoteCursorSnapshot state_;

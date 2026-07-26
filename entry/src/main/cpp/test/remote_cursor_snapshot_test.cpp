@@ -172,6 +172,32 @@ RDP_TEST_CASE(remote_cursor_generation_invalidates_late_reconnect_results) {
     RDP_ASSERT(after.shapeSource == "default");
 }
 
+RDP_TEST_CASE(remote_cursor_generation_guard_covers_shape_position_and_visibility_mutations) {
+    RemoteCursorStore store;
+    const std::vector<uint8_t> firstPixels(4 * 4 * 4, 0x11);
+    const std::vector<uint8_t> stalePixels(4 * 4 * 4, 0x22);
+    store.reset(41, "rdp", 801);
+    RDP_ASSERT(store.setShapeIfGeneration(801, 7, 4, 4, 1, 2, firstPixels));
+    RDP_ASSERT(store.setPositionIfGeneration(801, 100, 200));
+    RDP_ASSERT(store.setVisibleIfGeneration(801, true));
+
+    // A reset can happen after a callback's fast-path check. The conditional
+    // store APIs must reject the old callback while leaving the new session
+    // untouched.
+    store.reset(42, "rdp", 802);
+    RDP_ASSERT(!store.setShapeIfGeneration(801, 8, 4, 4, 0, 0, stalePixels));
+    RDP_ASSERT(!store.setPositionIfGeneration(801, 1, 2));
+    RDP_ASSERT(!store.setVisibleIfGeneration(801, false));
+
+    const RemoteCursorSnapshot snapshot = store.snapshot(true);
+    RDP_ASSERT_EQ(snapshot.sessionId, 42);
+    RDP_ASSERT_EQ(snapshot.generation, 802);
+    RDP_ASSERT_EQ(snapshot.shapeRevision, 0);
+    RDP_ASSERT_EQ(snapshot.positionRevision, 0);
+    RDP_ASSERT_EQ(snapshot.visibilityRevision, 0);
+    RDP_ASSERT(snapshot.rgba.empty());
+}
+
 RDP_TEST_CASE(remote_cursor_protocol_shape_is_authoritative_over_local_default) {
     RemoteCursorStore store;
     store.reset(32, "rdp");

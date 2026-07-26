@@ -79,10 +79,20 @@ bool RemoteCursorStore::setShape(uint64_t shapeId, int width, int height, int ho
     return setShapeInternal(shapeId, width, height, hotX, hotY, rgba, false, true, "protocol");
 }
 
+bool RemoteCursorStore::setShapeIfGeneration(uint64_t generation, uint64_t shapeId, int width,
+                                             int height, int hotX, int hotY,
+                                             const std::vector<uint8_t>& rgba) {
+    if (generation == 0) {
+        return false;
+    }
+    return setShapeInternal(shapeId, width, height, hotX, hotY, rgba, false, true, "protocol",
+                            generation);
+}
+
 bool RemoteCursorStore::setShapeInternal(uint64_t shapeId, int width, int height, int hotX,
                                          int hotY, const std::vector<uint8_t>& rgba,
                                          bool fallbackShape, bool protocolShapeAvailable,
-                                         const char* shapeSource) {
+                                         const char* shapeSource, uint64_t expectedGeneration) {
     if (width <= 0 || height <= 0 || width > kRemoteCursorMaxDimension ||
         height > kRemoteCursorMaxDimension || hotX < 0 || hotY < 0 || hotX >= width ||
         hotY >= height) {
@@ -95,6 +105,9 @@ bool RemoteCursorStore::setShapeInternal(uint64_t shapeId, int width, int height
     }
 
     std::lock_guard<std::mutex> lock(mutex_);
+    if (expectedGeneration != 0 && state_.generation != expectedGeneration) {
+        return false;
+    }
     if (state_.shapeId == shapeId && state_.width == width && state_.height == height &&
         state_.hotX == hotX && state_.hotY == hotY &&
         state_.fallbackShape == fallbackShape &&
@@ -121,6 +134,14 @@ bool RemoteCursorStore::setDefaultShape() {
                             0, defaultCursorRgba(), false, false, "default");
 }
 
+bool RemoteCursorStore::setDefaultShapeIfGeneration(uint64_t generation) {
+    if (generation == 0) {
+        return false;
+    }
+    return setShapeInternal(kDefaultCursorShapeId, kDefaultCursorSize, kDefaultCursorSize, 0,
+                            0, defaultCursorRgba(), false, false, "default", generation);
+}
+
 bool RemoteCursorStore::setFallbackShape() {
     return setShapeInternal(kDefaultCursorShapeId, kDefaultCursorSize, kDefaultCursorSize, 0,
                             0, defaultCursorRgba(), true, false, "fallback");
@@ -137,6 +158,24 @@ void RemoteCursorStore::setPosition(int x, int y) {
     state_.positionRevision += 1;
 }
 
+bool RemoteCursorStore::setPositionIfGeneration(uint64_t generation, int x, int y) {
+    if (generation == 0) {
+        return false;
+    }
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (state_.generation != generation) {
+        return false;
+    }
+    if (state_.positionAvailable && state_.x == x && state_.y == y) {
+        return true;
+    }
+    state_.x = x;
+    state_.y = y;
+    state_.positionAvailable = true;
+    state_.positionRevision += 1;
+    return true;
+}
+
 void RemoteCursorStore::setVisible(bool visible) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (state_.visible == visible) {
@@ -144,6 +183,22 @@ void RemoteCursorStore::setVisible(bool visible) {
     }
     state_.visible = visible;
     state_.visibilityRevision += 1;
+}
+
+bool RemoteCursorStore::setVisibleIfGeneration(uint64_t generation, bool visible) {
+    if (generation == 0) {
+        return false;
+    }
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (state_.generation != generation) {
+        return false;
+    }
+    if (state_.visible == visible) {
+        return true;
+    }
+    state_.visible = visible;
+    state_.visibilityRevision += 1;
+    return true;
 }
 
 RemoteCursorSnapshot RemoteCursorStore::snapshot(bool includePixels) const {

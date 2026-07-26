@@ -10,10 +10,11 @@
 
 本轮已按本计划落地 RustDesk 与真实 FreeRDP 共用的远端光标形态链路修复：
 
-- RustDesk：按 cursor ID 的长期缓存、压缩协议数据预算、cache miss 保留最后合法形态、预算淘汰诊断、重连 generation 隔离，以及 FFI 回调/断开时的可见性保护。
+- RustDesk：按 cursor ID 的长期缓存、压缩协议数据预算、cache miss 保留最后合法形态、预算淘汰诊断、重连 generation 隔离，以及携带代际上下文的 FFI 回调/断开保护。
 - RDP：真实 FreeRDP `Set`、`SetPosition`、`SetNull`、`SetDefault` 回调和 connection generation 隔离；真实构建 profile 保持 `USE_REAL_FREERDP=ON`。
-- 共用 native/N-API/ArkTS：形态/位置/可见性独立 revision，`sessionId + generation + revision + requestToken` 校验，PixelMap 异步 watchdog、原子替换、延迟释放和窗口/布局/hover 恢复。
-- 已完成本地门禁：RustDesk Rust 全量单测 141/141、native focused suite 143/143、真实 FreeRDP/RustDesk/N-API 交叉语法检查、`default@OhosTestCompileArkTS`、双 ABI RustDesk FFI 和 `assembleHap`。
+- 共用 native/N-API/ArkTS：形态/位置/可见性独立 revision，`sessionId + generation + revision + requestToken` 校验，PixelMap 异步 watchdog、原子替换、带 view-revision fence 的延迟释放、有界 retired 队列和窗口/布局/hover 恢复。
+- 本轮补强：旧 PixelMap 只有在 grace 时间、Overlay view revision 和当前引用检查同时满足时才释放；retired 主队列固定 8 项，另有最多 2 个固定 handoff 槽位，admission 按总 pending 数量阻止继续换入，并记录 high-water/release 诊断；RustDesk 形态先从协议 buffer 解码，再复制已校验压缩数据，避免解码阶段重复持有压缩 buffer；协议回调通过 generation-gated store setter 和生命周期互斥锁把“代际检查→状态写入”收敛为同一保护路径，RustDesk 断开回调的可见性和句柄转移也在同一代际保护内完成。
+- 已完成本地门禁：RustDesk Rust 全量单测 141/141、native focused suite 144/144、真实 FreeRDP/RustDesk/N-API 交叉语法检查、`default@OhosTestCompileArkTS`、双 ABI RustDesk FFI，以及代际并发修正后的最终非 daemon `assembleHap`（`BUILD SUCCESSFUL`）。`ohosTest@OhosTestCompileArkTS` 当前工程未注册该 task（Hvigor `00306054`）。
 - 尚待真实设备执行第 6 节的 RustDesk/RDP 30 分钟和 2 小时矩阵；`ohosTest@OhosTestCompileArkTS` 当前工程未注册该 task（Hvigor `00306054`），不将其误报为通过。
 
 RustDesk 当前的 32 MiB 预算按压缩协议 `colors` 计费，非当前形态只保留压缩数据，当前形态保留一次解压副本。预算淘汰会产生 `BudgetEvicted` 诊断，但由于现有 wire/API 没有光标专用 resync 请求，当前恢复语义是保持上一张合法形态并等待后续 `CursorData`；这不是已经完成的主动 recovery。
@@ -362,16 +363,17 @@ stateDiagram-v2
 - [x] 每次 33ms poll 读取一份 metadata snapshot，先校验 session/generation，再按 shape、position、visibility 三个 revision 原子应用；不能让旧 shape snapshot 覆盖新 position。
 - [x] 形态 loader 状态改为 `idle → fetchingPixels → creatingPixelMap → ready/failed/timeout`；请求 token 失效时不触碰当前 PixelMap。
 - [x] N-API fetch 和 `createPixelMap` 都有 watchdog、重试退避和上限；超时后释放 bookkeeping 状态，并允许最新 revision 继续尝试。原 Promise 晚到时只能被 token 丢弃，不能覆盖新形态。
+- [x] RustDesk FFI 与真实 FreeRDP pointer 回调在 store mutation 前重新校验 generation；generation 条件与 shape/position/visibility 写入共用 store mutex，RDP session reset/post-disconnect 与 RustDesk FFI disconnect 的 cursor 生命周期也不会被旧回调跨代污染。
 - [ ] 当前 PixelMap 在新 PixelMap ready 前保持显示，但必须带 `displayedShapeRevision`；超过最大 stale age 后显示中性 fallback/系统默认，不得无限期显示旧形态。
 - [ ] `createPixelMap` 明确使用 `RGBA_8888`、alpha type 和尺寸；形态尺寸超出 Harmony `setCustomCursor` 的 256×256 限制时，Overlay 仍可按能力显示，系统 custom cursor 路径必须等比缩放或回退默认箭头。
 
 #### 5.2 PixelMap 释放
 
 - [x] 新 PixelMap ready 后执行一次原子替换，再将旧 PixelMap 放入 `retired` 队列。
-- [ ] 释放条件同时满足：旧 map 不再是 `RemoteCursorOverlayState` 当前引用、对应的 create/fetch async 已结束或已被 token 放弃、UI 提交保护窗口已完成。
-- [ ] 保留“两帧延迟”只能作为 API 23 的安全下限；增加有界队列、释放计数和队列水位告警，队列不能长期增长。
+- [ ] 释放条件同时满足：旧 map 不再是 `RemoteCursorOverlayState` 当前引用、对应的 create/fetch async 已结束或已被 token 放弃、UI 提交保护窗口已完成；当前实现已落地引用检查、view-revision fence 和 grace window，异步 lease 的独立证明仍待补齐。
+- [x] 保留“两帧延迟”只能作为 API 23 的安全下限；增加 8 项主队列 + 2 个固定 handoff 槽位的总有界 admission、释放计数和队列水位告警，队列不能在持续形态切换中无界增长。
 - [x] disconnect、surface destroy、PIP 转移、页面离开时先失效 generation/token，再停止新请求，最后释放所有可释放 PixelMap；迟到 Promise 不得重新显示旧 session 的 map。
-- [ ] 不在 PixelMap 仍被 `@ObjectLink`/Image 使用时直接 `release()`；遇到 release 异常只记录 sanitized diagnostic，不把已释放对象重新放回状态。
+- [x] 不在 PixelMap 仍被 `@ObjectLink`/Image 使用时直接 `release()`；当前通过 Overlay 引用比较、view-revision fence 和 grace window 延后释放，遇到 release 异常只记录 sanitized diagnostic，不把已释放对象重新放回状态。
 
 #### 5.3 两种 pointer owner
 

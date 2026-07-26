@@ -264,6 +264,9 @@ const REMOTE_CURSOR_BITMAP_RETRY_MS = 1000;
 const REMOTE_CURSOR_LOG_SAMPLE_MS = 5000;
 const REMOTE_CURSOR_ASYNC_WATCHDOG_MS = 2000;
 const REMOTE_CURSOR_MAX_ASYNC_OUTSTANDING = 2;
+const REMOTE_CURSOR_PIXELMAP_RETIRE_GRACE_MS = REMOTE_CURSOR_RENDER_FRAME_MS * 2;
+const REMOTE_CURSOR_PIXELMAP_RETIRE_RETRY_MS = REMOTE_CURSOR_RENDER_FRAME_MS;
+const REMOTE_CURSOR_MAX_RETIRED_PIXELMAPS = 8;
 const REMOTE_GEOMETRY_SYNC_MS = 500;
 const REMOTE_DESKTOP_DISAPPEAR_BACKGROUND_SIGNAL_WAIT_MS = 500;
 const TOUCHPAD_MAX_LOCAL_STEP_RATIO = 0.75;
@@ -399,6 +402,12 @@ interface RendererViewportSnapshot {
   viewportY: number;
   viewportW: number;
   viewportH: number;
+}
+
+interface RetiredRemoteCursorPixelMap {
+  pixelMap: image.PixelMap;
+  notBeforeMs: number;
+  requiredViewRevision: number;
 }
 
 type ModifierLatch = 'off' | 'once' | 'locked';
@@ -657,7 +666,12 @@ struct RemoteDesktop {
   private remoteCursorPixelFetchStartedAtMs: number = 0;
   private remoteCursorPixelFetchWatchdogTimer: number = -1;
   private remoteCursorPixelFetchOutstandingTokens: Array<number> = [];
-  private retiredRemoteCursorPixelMaps: Array<image.PixelMap> = [];
+  private retiredRemoteCursorPixelMaps: Array<RetiredRemoteCursorPixelMap> = [];
+  private deferredRemoteCursorPixelMap: RetiredRemoteCursorPixelMap | null = null;
+  // Defensive teardown/replacement handoff. Normal shape adoption stops
+  // before the bounded retired queue is full, so this slot cannot grow with
+  // cursor transitions.
+  private overflowRemoteCursorPixelMap: RetiredRemoteCursorPixelMap | null = null;
   private remoteCursorPixelMapReleaseTimer: number = -1;
   private remoteSystemPointerVisible: boolean | null = null;
   private remoteSurfaceUsesSystemPointer: boolean | null = null;
@@ -4871,29 +4885,148 @@ struct RemoteDesktop {
     try {
       pixelMap.release();
     } catch (_e) {
-      // PixelMap may already have been released by the image pipeline.
+      // PixelMap may already have been released by the image pipeline. Do not
+      // put it back into state or expose the exception to the UI promise.
+      hilog.warn(RD_DOMAIN, RD_TAG, 'remote-cursor PixelMap release failed');
+    }
+  }
+
+  private retiredRemoteCursorPixelMapCount(): number {
+    return this.retiredRemoteCursorPixelMaps.length +
+      (this.deferredRemoteCursorPixelMap !== null ? 1 : 0) +
+      (this.overflowRemoteCursorPixelMap !== null ? 1 : 0);
+  }
+
+  private releaseRetiredRemoteCursorPixelMaps(): void {
+    if (this.retiredRemoteCursorPixelMaps.length === 0 &&
+      this.deferredRemoteCursorPixelMap === null && this.overflowRemoteCursorPixelMap === null) {
+      return;
+    }
+    const nowMs: number = Date.now();
+    const overlayPixelMap: image.PixelMap | null = this.remoteCursorOverlayState.arrowPixelMap;
+    if (this.deferredRemoteCursorPixelMap !== null &&
+      this.retiredRemoteCursorPixelMaps.length < REMOTE_CURSOR_MAX_RETIRED_PIXELMAPS) {
+      this.retiredRemoteCursorPixelMaps.push(this.deferredRemoteCursorPixelMap);
+      this.deferredRemoteCursorPixelMap = null;
+    }
+    if (this.overflowRemoteCursorPixelMap !== null &&
+      this.retiredRemoteCursorPixelMaps.length < REMOTE_CURSOR_MAX_RETIRED_PIXELMAPS) {
+      this.retiredRemoteCursorPixelMaps.push(this.overflowRemoteCursorPixelMap);
+      this.overflowRemoteCursorPixelMap = null;
+    }
+    const pending: Array<RetiredRemoteCursorPixelMap> = [];
+    let releasedCount: number = 0;
+    for (let index: number = 0; index < this.retiredRemoteCursorPixelMaps.length; index++) {
+      const retired: RetiredRemoteCursorPixelMap = this.retiredRemoteCursorPixelMaps[index];
+      const safeToRelease: boolean = nowMs >= retired.notBeforeMs &&
+        this.remoteCursorOverlayState.viewRevision >= retired.requiredViewRevision &&
+        retired.pixelMap !== this.remoteCursorPixelMap && retired.pixelMap !== overlayPixelMap;
+      if (safeToRelease) {
+        this.releasePixelMap(retired.pixelMap);
+        releasedCount += 1;
+      } else {
+        pending.push(retired);
+      }
+    }
+    this.retiredRemoteCursorPixelMaps = pending;
+    if (this.deferredRemoteCursorPixelMap !== null &&
+      nowMs >= this.deferredRemoteCursorPixelMap.notBeforeMs &&
+      this.remoteCursorOverlayState.viewRevision >= this.deferredRemoteCursorPixelMap.requiredViewRevision &&
+      this.deferredRemoteCursorPixelMap.pixelMap !== this.remoteCursorPixelMap &&
+      this.deferredRemoteCursorPixelMap.pixelMap !== overlayPixelMap) {
+      this.releasePixelMap(this.deferredRemoteCursorPixelMap.pixelMap);
+      this.deferredRemoteCursorPixelMap = null;
+      releasedCount += 1;
+    }
+    if (this.overflowRemoteCursorPixelMap !== null &&
+      nowMs >= this.overflowRemoteCursorPixelMap.notBeforeMs &&
+      this.remoteCursorOverlayState.viewRevision >= this.overflowRemoteCursorPixelMap.requiredViewRevision &&
+      this.overflowRemoteCursorPixelMap.pixelMap !== this.remoteCursorPixelMap &&
+      this.overflowRemoteCursorPixelMap.pixelMap !== overlayPixelMap) {
+      this.releasePixelMap(this.overflowRemoteCursorPixelMap.pixelMap);
+      this.overflowRemoteCursorPixelMap = null;
+      releasedCount += 1;
+    }
+    const pendingCount: number = this.retiredRemoteCursorPixelMapCount();
+    if (pendingCount >= REMOTE_CURSOR_MAX_RETIRED_PIXELMAPS) {
+      hilog.warn(RD_DOMAIN, RD_TAG, 'remote-cursor retired PixelMap queue high-water=' +
+        pendingCount.toString());
+    }
+    if (releasedCount > 0) {
+      hilog.debug(RD_DOMAIN, RD_TAG, 'remote-cursor retired PixelMap released=' +
+        releasedCount.toString() + ' pending=' + pendingCount.toString());
+    }
+    if (pendingCount > 0) {
+      this.scheduleRetiredRemoteCursorPixelMapRelease();
     }
   }
 
   private scheduleRetiredRemoteCursorPixelMapRelease(): void {
     if (this.remoteCursorPixelMapReleaseTimer >= 0 ||
-      this.retiredRemoteCursorPixelMaps.length === 0) {
+      this.retiredRemoteCursorPixelMaps.length === 0 &&
+      this.deferredRemoteCursorPixelMap === null && this.overflowRemoteCursorPixelMap === null) {
       return;
     }
-    // ArkUI still owns the old Image for the current commit. Retaining it for
-    // two frames avoids an invalid native image handle during shape changes.
+    const nowMs: number = Date.now();
+    let nextDueMs: number = nowMs + REMOTE_CURSOR_PIXELMAP_RETIRE_RETRY_MS;
+    for (let index: number = 0; index < this.retiredRemoteCursorPixelMaps.length; index++) {
+      nextDueMs = Math.min(nextDueMs, this.retiredRemoteCursorPixelMaps[index].notBeforeMs);
+    }
+    if (this.deferredRemoteCursorPixelMap !== null) {
+      nextDueMs = Math.min(nextDueMs, this.deferredRemoteCursorPixelMap.notBeforeMs);
+    }
+    if (this.overflowRemoteCursorPixelMap !== null) {
+      nextDueMs = Math.min(nextDueMs, this.overflowRemoteCursorPixelMap.notBeforeMs);
+    }
+    const delayMs: number = Math.max(REMOTE_CURSOR_PIXELMAP_RETIRE_RETRY_MS, nextDueMs - nowMs);
     this.remoteCursorPixelMapReleaseTimer = setTimeout((): void => {
       this.remoteCursorPixelMapReleaseTimer = -1;
-      const retired: Array<image.PixelMap> = this.retiredRemoteCursorPixelMaps;
-      this.retiredRemoteCursorPixelMaps = [];
-      for (let index: number = 0; index < retired.length; index++) {
-        this.releasePixelMap(retired[index]);
-      }
-    }, REMOTE_CURSOR_RENDER_FRAME_MS * 2);
+      this.releaseRetiredRemoteCursorPixelMaps();
+    }, delayMs);
   }
 
-  private retireRemoteCursorPixelMap(pixelMap: image.PixelMap): void {
-    this.retiredRemoteCursorPixelMaps.push(pixelMap);
+  private retireRemoteCursorPixelMap(pixelMap: image.PixelMap,
+    requiredViewRevision: number = this.remoteCursorViewRevision + 1,
+    forceRetire: boolean = false): void {
+    if (!forceRetire && (pixelMap === this.remoteCursorPixelMap ||
+      pixelMap === this.remoteCursorOverlayState.arrowPixelMap)) {
+      return;
+    }
+    for (let index: number = 0; index < this.retiredRemoteCursorPixelMaps.length; index++) {
+      if (this.retiredRemoteCursorPixelMaps[index].pixelMap === pixelMap) {
+        return;
+      }
+    }
+    if (this.deferredRemoteCursorPixelMap !== null &&
+      this.deferredRemoteCursorPixelMap.pixelMap === pixelMap) {
+      return;
+    }
+    if (this.overflowRemoteCursorPixelMap !== null &&
+      this.overflowRemoteCursorPixelMap.pixelMap === pixelMap) {
+      return;
+    }
+    const retired: RetiredRemoteCursorPixelMap = {
+      pixelMap,
+      notBeforeMs: Date.now() + REMOTE_CURSOR_PIXELMAP_RETIRE_GRACE_MS,
+      requiredViewRevision
+    };
+    this.releaseRetiredRemoteCursorPixelMaps();
+    if (this.retiredRemoteCursorPixelMaps.length >= REMOTE_CURSOR_MAX_RETIRED_PIXELMAPS) {
+      if (this.deferredRemoteCursorPixelMap === null) {
+        this.deferredRemoteCursorPixelMap = retired;
+      } else if (this.overflowRemoteCursorPixelMap === null) {
+        this.overflowRemoteCursorPixelMap = retired;
+      } else {
+        // The normal adoption guard accounts for all bounded stores, so this
+        // means teardown callbacks raced each other. Never push past the
+        // queue cap or release a possibly UI-owned map in this branch.
+        hilog.error(RD_DOMAIN, RD_TAG,
+          'remote-cursor retired PixelMap capacity invariant violated');
+        return;
+      }
+    } else {
+      this.retiredRemoteCursorPixelMaps.push(retired);
+    }
     this.scheduleRetiredRemoteCursorPixelMapRelease();
   }
 
@@ -4902,7 +5035,10 @@ struct RemoteDesktop {
     this.remoteCursorPixelMap = null;
     this.remoteCursorPixelMapShapeRevision = -1;
     if (previous !== null) {
-      this.retireRemoteCursorPixelMap(previous);
+      // The Overlay still points at the old map until the following publish.
+      // Force admission instead of dropping it on the reference guard; the
+      // view-revision fence delays its release until that publish is visible.
+      this.retireRemoteCursorPixelMap(previous, this.remoteCursorViewRevision + 1, true);
     }
   }
 
@@ -5175,6 +5311,25 @@ struct RemoteDesktop {
         this.releasePixelMap(next);
         return;
       }
+      // Do not let a rapid sequence of shape transitions grow the retired
+      // list. The new map has not entered the UI tree yet, so it is safe to
+      // release this candidate and keep the last committed map while the
+      // retired queue drains.
+      this.releaseRetiredRemoteCursorPixelMaps();
+      if (this.retiredRemoteCursorPixelMapCount() >= REMOTE_CURSOR_MAX_RETIRED_PIXELMAPS) {
+        this.clearRemoteCursorShapeLoadWatchdog();
+        this.remoteCursorShapeLoading = false;
+        this.remoteCursorShapeLoadingSessionId = -1;
+        this.remoteCursorShapeLoadingGeneration = -1;
+        this.remoteCursorShapeLoadingRevision = -1;
+        this.remoteCursorShapeRetryAtMs = Date.now();
+        this.releasePixelMap(next);
+        this.scheduleRetiredRemoteCursorPixelMapRelease();
+        hilog.warn(RD_DOMAIN, RD_TAG, 'remote-cursor PixelMap adoption deferred retired_queue=' +
+          this.retiredRemoteCursorPixelMapCount().toString() + ' revision=' +
+          snapshot.shapeRevision.toString());
+        return;
+      }
       this.clearRemoteCursorShapeLoadWatchdog();
       this.remoteCursorShapeLoading = false;
       this.remoteCursorShapeLoadingSessionId = -1;
@@ -5191,7 +5346,7 @@ struct RemoteDesktop {
       this.remoteCursorShapeRetryAtMs = Date.now();
       this.requestRemoteCursorViewRefresh(true);
       if (previous !== null) {
-        this.retireRemoteCursorPixelMap(previous);
+        this.retireRemoteCursorPixelMap(previous, this.remoteCursorOverlayState.viewRevision);
       }
     }).catch((err: Object): void => {
       this.removeRemoteCursorAsyncToken(this.remoteCursorShapeLoadOutstandingTokens, loadToken);
