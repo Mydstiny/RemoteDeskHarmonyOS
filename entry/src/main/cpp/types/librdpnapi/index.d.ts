@@ -70,7 +70,7 @@ export const VERSION: SessionVersionInfo;
   export function renderFrame(handle: number, textureId: number): void;
   export function renderRawBGRA(handle: number, data: ArrayBuffer, width: number, height: number, stride: number): void;
   export function resizeRenderer(handle: number, width: number, height: number): void;
-  export function setRendererCanvasTransform(handle: number, scale: number, panX: number, panY: number): void;
+  export function setRendererCanvasTransform(handle: number, scale: number, panX: number, panY: number): number;
   export function testRender(handle: number): void;
   export function registerNativeXComponent(): boolean;
   export function setXComponentSurfaceId(surfaceId: string, width: number, height: number): boolean;
@@ -125,6 +125,7 @@ interface ProtocolInfo {
 }
 
 export interface RendererViewport {
+  transformVersion: number;
   sourceWidth: number;
   sourceHeight: number;
   surfaceWidth: number;

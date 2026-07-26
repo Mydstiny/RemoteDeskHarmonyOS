@@ -1,5 +1,8 @@
 export type LocalViewScaleMode = 'fit' | '100' | '125' | '150' | '175' | '200' | 'custom';
 
+// Keep the ArkTS geometry mirror aligned with GLRenderer::SetCanvasTransform.
+export const CANVAS_TRANSFORM_MAX_SCALE: number = 12;
+
 // The first shared-display implementation persisted a derived value without
 // recording whether the user had actually selected it.  Versioned values are
 // user intent; older values are repaired to the previous Fit behaviour.
@@ -89,7 +92,8 @@ function scaleLimits(viewport: CanvasViewport): CanvasScaleLimits {
     // Keep the official mobile lower-bound behaviour, while permitting the
     // product's 200% preset on small high-density displays.
     min: Math.max(0.05, fit / 1.5),
-    max: Math.max(3, surfaceWidth / sourceWidth, surfaceHeight / sourceHeight)
+    max: Math.min(CANVAS_TRANSFORM_MAX_SCALE * fit,
+      Math.max(3, surfaceWidth / sourceWidth, surfaceHeight / sourceHeight))
   };
 }
 
@@ -111,6 +115,31 @@ export function clampCanvasTransform(transform: CanvasTransform, viewport: Canva
     panX: clamp(Number.isFinite(transform.panX) ? transform.panX : 0, -maxPanX, maxPanX),
     panY: clamp(Number.isFinite(transform.panY) ? transform.panY : 0, -maxPanY, maxPanY)
   };
+}
+
+/** Whether the current canvas has content outside the surface that can be panned. */
+export function canvasTransformCanPan(transform: CanvasTransform, viewport: CanvasViewport): boolean {
+  const clamped: CanvasTransform = clampCanvasTransform(transform, viewport);
+  const physicalScale: number = absoluteScale(clamped, viewport);
+  const sourceWidth: number = positive(viewport.sourceWidth, 1);
+  const sourceHeight: number = positive(viewport.sourceHeight, 1);
+  const surfaceWidth: number = positive(viewport.surfaceWidth, 1);
+  const surfaceHeight: number = positive(viewport.surfaceHeight, 1);
+  return sourceWidth * physicalScale > surfaceWidth + 0.5 ||
+    sourceHeight * physicalScale > surfaceHeight + 0.5;
+}
+
+/** Apply a local two-finger canvas pan in surface pixels and keep it bounded. */
+export function panCanvasTransform(current: CanvasTransform, viewport: CanvasViewport,
+  panDeltaX: number, panDeltaY: number): CanvasTransform {
+  const old: CanvasTransform = clampCanvasTransform(current, viewport);
+  const deltaX: number = Number.isFinite(panDeltaX) ? panDeltaX : 0;
+  const deltaY: number = Number.isFinite(panDeltaY) ? panDeltaY : 0;
+  return clampCanvasTransform({
+    scale: old.scale,
+    panX: old.panX + deltaX,
+    panY: old.panY + deltaY
+  }, viewport);
 }
 
 export function baseCanvasTransform(mode: LocalViewScaleMode, customPercent: number,

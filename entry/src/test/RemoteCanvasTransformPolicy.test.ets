@@ -1,8 +1,11 @@
 import { describe, it, expect } from '@ohos/hypium';
 import {
   baseCanvasTransform,
+  canvasTransformCanPan,
   clampCanvasTransform,
+  CANVAS_TRANSFORM_MAX_SCALE,
   normalizeLocalViewScaleMode,
+  panCanvasTransform,
   pinchCanvasTransform,
   REMOTE_DISPLAY_SCALE_PREFERENCE_VERSION,
   resolveInitialRemoteDisplayScaleMode
@@ -50,6 +53,35 @@ export default function remoteCanvasTransformPolicyTest() {
       const result = clampCanvasTransform({ scale: 2, panX: 9999, panY: -9999 }, viewport);
       expect(Math.round(result.panX)).assertEqual(500);
       expect(Math.round(result.panY)).assertEqual(-200);
+    });
+
+    it('only makes an overflowing canvas pannable', 0, () => {
+      expect(canvasTransformCanPan(baseCanvasTransform('fit', 100, viewport), viewport))
+        .assertFalse();
+      expect(canvasTransformCanPan(baseCanvasTransform('100', 100, viewport), viewport))
+        .assertTrue();
+    });
+
+    it('moves an overflowing canvas and clamps both directions', 0, () => {
+      const zoomed = baseCanvasTransform('100', 100, viewport);
+      const moved = panCanvasTransform(zoomed, viewport, 120, -80);
+      expect(Math.round(moved.panX)).assertEqual(120);
+      expect(Math.round(moved.panY)).assertEqual(-80);
+      const bounded = panCanvasTransform(moved, viewport, 9999, -9999);
+      expect(Math.round(bounded.panX)).assertEqual(500);
+      expect(Math.round(bounded.panY)).assertEqual(-200);
+    });
+
+    it('keeps the multiplier within the native renderer limit', 0, (): void => {
+      const smallViewport: CanvasViewport = {
+        surfaceWidth: 100,
+        surfaceHeight: 100,
+        sourceWidth: 1000,
+        sourceHeight: 1000
+      };
+      const maxed = baseCanvasTransform('custom', 300, smallViewport);
+      expect(Math.round(maxed.scale * 100) / 100).assertEqual(CANVAS_TRANSFORM_MAX_SCALE);
+      expect(maxed.scale <= CANVAS_TRANSFORM_MAX_SCALE).assertTrue();
     });
   });
 }
