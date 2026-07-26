@@ -113,6 +113,31 @@ export function clampCanvasTransform(transform: CanvasTransform, viewport: Canva
   };
 }
 
+/** Whether the current canvas has content outside the surface that can be panned. */
+export function canvasTransformCanPan(transform: CanvasTransform, viewport: CanvasViewport): boolean {
+  const clamped: CanvasTransform = clampCanvasTransform(transform, viewport);
+  const physicalScale: number = absoluteScale(clamped, viewport);
+  const sourceWidth: number = positive(viewport.sourceWidth, 1);
+  const sourceHeight: number = positive(viewport.sourceHeight, 1);
+  const surfaceWidth: number = positive(viewport.surfaceWidth, 1);
+  const surfaceHeight: number = positive(viewport.surfaceHeight, 1);
+  return sourceWidth * physicalScale > surfaceWidth + 0.5 ||
+    sourceHeight * physicalScale > surfaceHeight + 0.5;
+}
+
+/** Apply a local two-finger canvas pan in surface pixels and keep it bounded. */
+export function panCanvasTransform(current: CanvasTransform, viewport: CanvasViewport,
+  panDeltaX: number, panDeltaY: number): CanvasTransform {
+  const old: CanvasTransform = clampCanvasTransform(current, viewport);
+  const deltaX: number = Number.isFinite(panDeltaX) ? panDeltaX : 0;
+  const deltaY: number = Number.isFinite(panDeltaY) ? panDeltaY : 0;
+  return clampCanvasTransform({
+    scale: old.scale,
+    panX: old.panX + deltaX,
+    panY: old.panY + deltaY
+  }, viewport);
+}
+
 export function baseCanvasTransform(mode: LocalViewScaleMode, customPercent: number,
   viewport: CanvasViewport): CanvasTransform {
   const fit: number = containScale(viewport);
