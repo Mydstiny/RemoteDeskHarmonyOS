@@ -1833,7 +1833,7 @@ struct RemoteDesktop {
 
   private consumeCanvasPinchTouch(event: TouchEvent): boolean {
     if (!shouldConsumeCanvasPinchTouch(this.canvasPinchInputConsumed,
-      event.sourceTool === SourceTool.FINGER)) {
+      event.sourceTool === SourceTool.Finger)) {
       return false;
     }
     if (event.type === TouchType.Up || event.type === TouchType.Cancel) {
@@ -8989,7 +8989,7 @@ struct RemoteDesktop {
         .onTouch(this.handleConfiguredTouchInput)
         .gesture(
           PinchGesture({ fingers: 2, distance: 5 })
-            .allowedTypes([SourceTool.FINGER])
+            .allowedTypes([SourceTool.Finger])
             .onActionStart((event: GestureEvent): void => { this.startCanvasPinch(event); })
             .onActionUpdate((event: GestureEvent): void => { this.updateCanvasPinch(event); })
             .onActionEnd((_event: GestureEvent): void => { this.releaseCanvasPinchInput('gesture-end'); })

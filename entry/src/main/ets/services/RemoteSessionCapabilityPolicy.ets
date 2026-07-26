@@ -7,6 +7,9 @@ export interface SessionCapabilityState {
   rustDeskVerifiedPeer: boolean;
   rustDeskInboundClipboard: boolean;
   rustDeskTransferConfirmed: boolean;
+  vncClipboardEnabled: boolean;
+  vncClipboardReady: boolean;
+  vncViewOnly: boolean;
 }
 
 export interface CapabilityAvailability {
@@ -41,14 +44,25 @@ function unsupported(protocol: string): CapabilityAvailability {
 
 export function resolveSessionCapabilities(state: SessionCapabilityState): RemoteSessionCapabilities {
   if (state.protocol === 'vnc') {
-    const vncUnavailable = unavailable('当前版本尚未提供 VNC 连接支持');
+    const vncSend = !state.connected
+      ? disconnected()
+      : state.vncViewOnly
+        ? unavailable('VNC 当前会话为只读连接')
+        : state.vncClipboardEnabled
+          ? available() : unavailable('VNC 文本剪贴板未在 VNC 设置中开启');
+    const vncReceive = !state.connected
+      ? disconnected()
+      : !state.vncClipboardEnabled
+        ? unavailable('VNC 文本剪贴板未在 VNC 设置中开启')
+        : state.vncClipboardReady
+          ? available() : unavailable('VNC 尚未收到远端 ServerCutText');
     return {
-      connect: vncUnavailable,
-      clipboardSend: vncUnavailable,
-      clipboardReceive: vncUnavailable,
-      fileUpload: vncUnavailable,
-      fileDownload: vncUnavailable,
-      multiDisplay: vncUnavailable
+      connect: available(),
+      clipboardSend: vncSend,
+      clipboardReceive: vncReceive,
+      fileUpload: unavailable('VNC RFB 不提供文件传输能力'),
+      fileDownload: unavailable('VNC RFB 不提供文件传输能力'),
+      multiDisplay: unavailable('当前 VNC 会话仅支持单帧缓冲区')
     };
   }
 

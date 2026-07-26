@@ -1,10 +1,8 @@
 import { promptAction } from '@kit.ArkUI';
 import { common } from '@kit.AbilityKit';
 import { RustDeskRelayConfig } from '../../../model/RustDeskRelayConfig';
-import { VncRelayConfig } from '../../../model/VncRelayConfig';
 import { HostSyncService } from '../../../services/HostSyncService';
 import { RustDeskProSyncService } from '../../../services/RustDeskProSyncService';
-import { VncRelayConfigService } from '../../../services/VncRelayConfigService';
 import { Palette, buildDark, buildLight, AppTheme } from '../../../common/Theme';
 import { ResourceFabPicker } from '../ResourceFabPicker';
 import { RustDeskRelayImportService, RustDeskRelayImportResult } from '../../../services/RustDeskRelayImportService';
@@ -32,16 +30,11 @@ export struct ModernRelayAddFlow {
   @State proUser: string = '';
   @State proPassword: string = '';
   @State proBusy: boolean = false;
-  @State vncName: string = '';
-  @State vncHost: string = '';
-  @State vncPort: number = 5901;
-  @State vncTargetId: string = '';
   @State importedFileName: string = '';
   @State importBusy: boolean = false;
 
   private hosts = HostSyncService.getInstance();
   private pro = RustDeskProSyncService.getInstance();
-  private vnc = VncRelayConfigService.getInstance();
   private relayImporter = new RustDeskRelayImportService();
 
   private pal(): Palette { return this.theme === 'light' ? buildLight(this.accentColor) : buildDark(this.accentColor); }
@@ -49,7 +42,7 @@ export struct ModernRelayAddFlow {
 
   aboutToAppear(): void {
     const context = getContext(this) as common.Context;
-    this.pro.init(context); this.vnc.init(context); this.reset();
+    this.pro.init(context); this.reset();
   }
 
   private reset(): void {
@@ -57,7 +50,7 @@ export struct ModernRelayAddFlow {
     this.idServer = ''; this.idPort = 21116; this.relayServer = ''; this.relayPort = 21117;
     this.apiServer = ''; this.serverKey = ''; this.serverKeyMode = 'server_public_key';
     this.proServer = ''; this.proUser = ''; this.proPassword = '';
-    this.proBusy = false; this.vncName = ''; this.vncHost = ''; this.vncPort = 5901; this.vncTargetId = '';
+    this.proBusy = false;
     this.importedFileName = ''; this.importBusy = false;
   }
 
@@ -72,7 +65,7 @@ export struct ModernRelayAddFlow {
 
   private selectProtocol(option: string): void {
     this.errorText = '';
-    this.step = option === 'rustdesk' ? 'rustdesk' : 'vnc';
+    if (option === 'rustdesk') { this.step = 'rustdesk'; }
   }
 
   private saveRustDesk(): string {
@@ -145,15 +138,6 @@ export struct ModernRelayAddFlow {
     } catch (err) {
       this.errorText = err instanceof Error ? err.message : 'Pro 登录失败';
     } finally { this.proBusy = false; }
-  }
-
-  private saveVnc(): void {
-    if (this.vncHost.trim().length === 0) { this.errorText = 'Repeater 地址不能为空'; return; }
-    if (!this.validPort(this.vncPort)) { this.errorText = '端口必须在 1–65535 之间'; return; }
-    const relay = new VncRelayConfig(); relay.id = VncRelayConfig.generateId(); relay.name = this.vncName.trim();
-    relay.host = this.vncHost.trim(); relay.port = this.vncPort; relay.targetId = this.vncTargetId.trim();
-    relay.createdAt = Date.now(); relay.updatedAt = Date.now(); this.vnc.save(relay); this.onSaved(relay.id);
-    promptAction.showToast({ message: 'VNC 中继配置已保存', duration: 1600 }); this.close();
   }
 
   private validPort(port: number): boolean { return port > 0 && port <= 65535; }
@@ -273,24 +257,6 @@ export struct ModernRelayAddFlow {
       .enabled(!this.proBusy).onClick((): void => { void this.loginPro(); })
   }
 
-  @Builder private vncForm() {
-    this.header('添加 VNC 中继', '配置 UltraVNC Repeater')
-    this.field('配置名称（可选）', '办公室 VNC 中继', this.vncName,
-      (value: string): void => { this.vncName = value; })
-    this.field('Repeater 地址', 'vnc.example.com', this.vncHost,
-      (value: string): void => { this.vncHost = value; })
-    this.field('Viewer 端口', '5901', this.vncPort.toString(),
-      (value: string): void => { this.vncPort = this.port(value, 5901); })
-    this.field('默认目标 ID（可选）', '123456', this.vncTargetId,
-      (value: string): void => { this.vncTargetId = value; })
-    Text('当前保存 Repeater 配置；待 VNC 连接引擎启用后用于建立会话。')
-      .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font()).lineHeight(18)
-      .width('100%').margin({ bottom: 12 })
-    this.error()
-    Button('保存 VNC 中继').width('100%').height(42).borderRadius(10).backgroundColor(this.accentColor)
-      .fontColor(Color.White).onClick((): void => { this.saveVnc(); })
-  }
-
   build() {
     Column() {
       if (this.step === 'protocol') {
@@ -307,7 +273,6 @@ export struct ModernRelayAddFlow {
           }
           else if (this.step === 'saved') { this.savedResult() }
           else if (this.step === 'pro') { this.proForm() }
-          else if (this.step === 'vnc') { this.vncForm() }
         }.width('100%').padding({ left: 20, right: 20, top: 20, bottom: 28 })
       }
     }.width('100%').constraintSize({ maxWidth: 760 }).backgroundColor(this.pal().sheetBg)

@@ -6,11 +6,13 @@ export interface ClipboardForwardInput {
   receiveEnabled: boolean;
 }
 export interface ClipboardValidation { ok: boolean; diagnosticCode: string; }
-export type ClipboardProtocol = 'rdp' | 'rustdesk' | string;
+export type ClipboardProtocol = 'rdp' | 'rustdesk' | 'vnc' | string;
 
 export function clipboardSyncEnabledForProtocol(protocol: ClipboardProtocol, rdpEnabled: boolean,
-  rustDeskEnabled: boolean): boolean {
-  return protocol === 'rustdesk' ? rustDeskEnabled : protocol === 'rdp' && rdpEnabled;
+  rustDeskEnabled: boolean, vncEnabled: boolean = false): boolean {
+  if (protocol === 'rustdesk') { return rustDeskEnabled; }
+  if (protocol === 'rdp') { return rdpEnabled; }
+  return protocol === 'vnc' && vncEnabled;
 }
 
 export function shouldForwardClipboard(input: ClipboardForwardInput): boolean {

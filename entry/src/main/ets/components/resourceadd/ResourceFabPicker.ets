@@ -61,7 +61,6 @@ export struct ResourceFabPicker {
         this.option('manual', '手动输入', '填写发行方、账户和 Secret')
       } else if (this.kind === 'gateway') {
         this.option('rustdesk', 'RustDesk 中继', '配置 RustDesk ID、Relay 与 Server Pro')
-        this.option('vnc', 'VNC 中继', '配置 UltraVNC Repeater 服务器')
       } else {
         this.option('oss', 'RustDesk OSS', '自建开源 ID 与 Relay 服务')
         this.option('pro', 'RustDesk Server Pro', 'API 登录与地址簿设备同步')

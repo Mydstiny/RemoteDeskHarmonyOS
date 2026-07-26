@@ -6,7 +6,7 @@
 export type DataMutationCode =
   'ok' | 'not_ready' | 'not_found' | 'unchanged' | 'unlock_required' |
   'local_write_failed' | 'extension_write_failed' | 'journal_write_failed' |
-  'restore_in_progress' | 'sync_deferred';
+  'restore_in_progress' | 'sync_deferred' | 'invalid_data';
 
 export class DataMutationResult {
   ok: boolean = false;
