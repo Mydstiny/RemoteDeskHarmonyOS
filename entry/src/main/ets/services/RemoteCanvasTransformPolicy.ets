@@ -1,5 +1,8 @@
 export type LocalViewScaleMode = 'fit' | '100' | '125' | '150' | '175' | '200' | 'custom';
 
+// Keep the ArkTS geometry mirror aligned with GLRenderer::SetCanvasTransform.
+export const CANVAS_TRANSFORM_MAX_SCALE: number = 12;
+
 // The first shared-display implementation persisted a derived value without
 // recording whether the user had actually selected it.  Versioned values are
 // user intent; older values are repaired to the previous Fit behaviour.
@@ -89,7 +92,8 @@ function scaleLimits(viewport: CanvasViewport): CanvasScaleLimits {
     // Keep the official mobile lower-bound behaviour, while permitting the
     // product's 200% preset on small high-density displays.
     min: Math.max(0.05, fit / 1.5),
-    max: Math.max(3, surfaceWidth / sourceWidth, surfaceHeight / sourceHeight)
+    max: Math.min(CANVAS_TRANSFORM_MAX_SCALE * fit,
+      Math.max(3, surfaceWidth / sourceWidth, surfaceHeight / sourceHeight))
   };
 }
 

@@ -3,6 +3,7 @@ import {
   baseCanvasTransform,
   canvasTransformCanPan,
   clampCanvasTransform,
+  CANVAS_TRANSFORM_MAX_SCALE,
   normalizeLocalViewScaleMode,
   panCanvasTransform,
   pinchCanvasTransform,
@@ -69,6 +70,18 @@ export default function remoteCanvasTransformPolicyTest() {
       const bounded = panCanvasTransform(moved, viewport, 9999, -9999);
       expect(Math.round(bounded.panX)).assertEqual(500);
       expect(Math.round(bounded.panY)).assertEqual(-200);
+    });
+
+    it('keeps the multiplier within the native renderer limit', 0, (): void => {
+      const smallViewport: CanvasViewport = {
+        surfaceWidth: 100,
+        surfaceHeight: 100,
+        sourceWidth: 1000,
+        sourceHeight: 1000
+      };
+      const maxed = baseCanvasTransform('custom', 300, smallViewport);
+      expect(Math.round(maxed.scale * 100) / 100).assertEqual(CANVAS_TRANSFORM_MAX_SCALE);
+      expect(maxed.scale <= CANVAS_TRANSFORM_MAX_SCALE).assertTrue();
     });
   });
 }

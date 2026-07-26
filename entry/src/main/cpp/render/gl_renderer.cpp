@@ -48,6 +48,7 @@ static std::mutex g_surfaceStateMutex;
 static std::atomic<int64_t> g_surfaceOwnerHandle {0};
 static std::atomic<bool> g_surfaceDetached {false};
 static std::atomic<uint64_t> g_rendererGeneration {1};
+static constexpr double kMaxCanvasScale = 12.0;
 
 static uint64_t AdvanceRendererGeneration() {
     return g_rendererGeneration.fetch_add(1, std::memory_order_acq_rel) + 1;
@@ -1006,7 +1007,7 @@ uint64_t GLRenderer::SetCanvasTransform(double scale, double panX, double panY) 
         OH_LOG_WARN(LOG_APP, "[GL] ignored invalid canvas transform");
         return 0;
     }
-    const double clampedScale = std::clamp(scale, 0.05, 12.0);
+    const double clampedScale = std::clamp(scale, 0.05, kMaxCanvasScale);
     uint64_t publishedVersion = 0;
     // Publish a complete transform with a tiny seqlock. The UI thread never
     // waits for the EGL owner; the owner consumes the newest stable tuple.

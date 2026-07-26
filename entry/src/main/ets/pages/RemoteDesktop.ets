@@ -128,6 +128,7 @@ import {
   canvasTransformCanPan,
   CanvasTransform,
   CanvasViewport,
+  CANVAS_TRANSFORM_MAX_SCALE,
   clampCanvasTransform,
   LocalViewScaleMode,
   normalizeLocalViewScaleMode,
@@ -3919,7 +3920,8 @@ struct RemoteDesktop {
     const surfaceWidth: number = Math.max(1, viewport.surfaceWidth);
     const surfaceHeight: number = Math.max(1, viewport.surfaceHeight);
     const contain: number = Math.min(surfaceWidth / sourceWidth, surfaceHeight / sourceHeight);
-    const physicalScale: number = contain * Math.max(0.01, this.canvasTransform.scale);
+    const physicalScale: number = contain * Math.max(0.01,
+      Math.min(CANVAS_TRANSFORM_MAX_SCALE, this.canvasTransform.scale));
     const viewportW: number = Math.max(1, Math.round(sourceWidth * physicalScale));
     const viewportH: number = Math.max(1, Math.round(sourceHeight * physicalScale));
     this.rendererViewportCache = {
