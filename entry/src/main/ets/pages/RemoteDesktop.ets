@@ -125,6 +125,11 @@ import {
 } from '../services/RemoteSurfaceTransformPolicy';
 import { shouldAcceptRendererViewportSnapshot } from '../services/RemoteRendererViewportPolicy';
 import {
+  endCanvasPanOwnership,
+  endCanvasPinchOwnership,
+  shouldReleaseCanvasGestureOwnership
+} from '../services/RemoteCanvasGesturePolicy';
+import {
   baseCanvasTransform,
   canvasTransformCanPan,
   CanvasTransform,
@@ -1947,17 +1952,24 @@ struct RemoteDesktop {
   private endCanvasPinchGesture(reason: string): void {
     // With a parallel two-finger recognizer, one recognizer can finish before
     // the other. Keep the shared ownership and viewport until both are done.
-    if (this.canvasPanActive) {
-      this.canvasPinchActive = false;
-      this.canvasPinchLastScale = 1;
-      return;
+    const next = endCanvasPinchOwnership({
+      pinchActive: this.canvasPinchActive,
+      panActive: this.canvasPanActive
+    });
+    this.canvasPinchActive = next.pinchActive;
+    this.canvasPinchLastScale = 1;
+    if (shouldReleaseCanvasGestureOwnership(next)) {
+      this.releaseCanvasPinchInput(reason);
     }
-    this.releaseCanvasPinchInput(reason);
   }
 
   private endCanvasPanGesture(reason: string): void {
+    const next = endCanvasPanOwnership({
+      pinchActive: this.canvasPinchActive,
+      panActive: this.canvasPanActive
+    });
     this.finishCanvasPan();
-    if (!this.canvasPinchActive) {
+    if (shouldReleaseCanvasGestureOwnership(next)) {
       this.releaseCanvasPinchInput(reason);
     }
   }
