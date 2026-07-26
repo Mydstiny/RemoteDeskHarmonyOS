@@ -1115,6 +1115,7 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
     getString("rdAccountId", cfg.rdAccountId);
     getString("rdServerKey", cfg.rdServerKey);
     getInt("rdServerKeyMode", cfg.rdServerKeyMode);
+    getString("rdProAccessToken", cfg.rdProAccessToken);
 
     if (cfg.rdDirectPort <= 0) cfg.rdDirectPort = 21118;
     if (cfg.port == 0) {
@@ -1153,12 +1154,14 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
         const std::string accountLog = cfg.rdAccountId.empty() ? "未设置" : SafeLog::MaskUser(cfg.rdAccountId);
         const char* serverKeyMode = cfg.rdServerKeyMode == 2 ? "shared" :
             (cfg.rdServerKeyMode == 1 ? "public" : "auto");
-        OH_LOG_INFO(LOG_APP, "[ExtLoader] RustDesk配置: quality=%{public}d direct=%{public}s:%{public}d lan=%{public}s privacy=%{public}s audio=%{public}s pwdMode=%{public}d authMode=%{public}d pwdLen=%{public}d relayId=%{public}s account=%{public}s serverKeyMode=%{public}s",
+        // proToken 只报告存在性 — 账号会话 token 绝不进入日志。
+        OH_LOG_INFO(LOG_APP, "[ExtLoader] RustDesk配置: quality=%{public}d direct=%{public}s:%{public}d lan=%{public}s privacy=%{public}s audio=%{public}s pwdMode=%{public}d authMode=%{public}d pwdLen=%{public}d relayId=%{public}s account=%{public}s serverKeyMode=%{public}s proToken=%{public}s",
                     cfg.rdImageQuality, cfg.rdDirectIp ? "on" : "off", cfg.rdDirectPort,
                     cfg.rdLanDiscovery ? "on" : "off", cfg.rdPrivacyMode ? "on" : "off",
                     cfg.rdAudioEnabled ? "on" : "off",
                     cfg.rdPasswordMode, cfg.rdAuthMode, cfg.rdPasswordLength,
-                    relayLog.c_str(), accountLog.c_str(), serverKeyMode);
+                    relayLog.c_str(), accountLog.c_str(), serverKeyMode,
+                    cfg.rdProAccessToken.empty() ? "absent" : "present");
     } else if (protocolName == "rdp") {
         const std::string drivePathLog = cfg.rdDrivePath.empty() ? "off" : SafeLog::HashForLog(cfg.rdDrivePath);
         const char* authMode = cfg.rdpAuthMode == RdpAuthenticationMode::RestrictedAdmin ? "restricted_admin" :

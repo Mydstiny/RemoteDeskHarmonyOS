@@ -53,7 +53,7 @@ fn validated_server_key(server_key: &str) -> io::Result<&str> {
     })
 }
 
-fn punch_hole_request_message(peer_id: &str, licence_key: &str) -> RendezvousMessage {
+fn punch_hole_request_message(peer_id: &str, licence_key: &str, token: &str) -> RendezvousMessage {
     let mut req = PunchHoleRequest::new();
     req.set_id(peer_id.to_string());
     req.set_nat_type(NatType::SYMMETRIC);
@@ -61,18 +61,30 @@ fn punch_hole_request_message(peer_id: &str, licence_key: &str) -> RendezvousMes
     req.set_conn_type(ConnType::DEFAULT_CONN);
     req.set_version("harmonyos-rustdesk-ffi".to_string());
     req.set_force_relay(true);
+    // Server Pro enforces account access control on this field.  An empty
+    // token keeps the OSS behaviour; a Pro session token is what turns
+    // "you have not logged in" into an approved punch hole.
+    req.set_token(token.to_string());
 
     let mut msg = RendezvousMessage::new();
     msg.union = Some(RendezvousMessage_oneof_union::punch_hole_request(req));
     msg
 }
 
-fn request_relay_message(id: &str, uuid: &str, licence_key: &str) -> RendezvousMessage {
+fn request_relay_message(
+    id: &str,
+    uuid: &str,
+    licence_key: &str,
+    token: &str,
+) -> RendezvousMessage {
     let mut req = RequestRelay::new();
     req.set_id(id.to_string());
     req.set_uuid(uuid.to_string());
     req.set_licence_key(licence_key.to_string());
     req.set_conn_type(ConnType::DEFAULT_CONN);
+    // hbbr applies the same account check as hbbs, so the relay handshake
+    // must carry the session token too.
+    req.set_token(token.to_string());
 
     let mut msg = RendezvousMessage::new();
     msg.union = Some(RendezvousMessage_oneof_union::request_relay(req));
@@ -116,18 +128,21 @@ impl RendezvousClient {
         &mut self,
         peer_id: &str,
         server_key: &str,
+        token: &str,
     ) -> io::Result<PunchHoleInfo> {
         self.ensure_connected()?;
         let req_debug = format!(
-            "peer_id={}, nat=SYMMETRIC, conn=DEFAULT_CONN, force_relay=true, version=harmonyos-rustdesk-ffi",
-            peer_id
+            "peer_id={}, nat=SYMMETRIC, conn=DEFAULT_CONN, force_relay=true, version=harmonyos-rustdesk-ffi, token={}, secure={}",
+            peer_id,
+            if token.is_empty() { "absent" } else { "present" },
+            self.secure_key.is_some()
         );
 
         // hbbs `-k` compares this protobuf string verbatim.  It may be a
         // normal signing public key or an arbitrary administrator supplied
         // shared access value; verification is handled separately by the
         // connector when a public key is actually available.
-        let msg = punch_hole_request_message(peer_id, server_key);
+        let msg = punch_hole_request_message(peer_id, server_key, token);
         self.send_message(&msg)?;
 
         let response = self.read_next_non_keyexchange()?;
@@ -243,6 +258,8 @@ impl RendezvousClient {
         id: &str,
         uuid: &str,
         relay_server: &str,
+        server_key: &str,
+        token: &str,
     ) -> io::Result<SocketAddr> {
         self.ensure_connected()?;
 
@@ -251,6 +268,8 @@ impl RendezvousClient {
         req.set_uuid(uuid.to_string());
         req.set_relay_server(relay_server.to_string());
         req.set_secure(true);
+        req.set_licence_key(server_key.to_string());
+        req.set_token(token.to_string());
 
         let mut msg = RendezvousMessage::new();
         msg.union = Some(RendezvousMessage_oneof_union::request_relay(req));
@@ -297,13 +316,19 @@ impl RendezvousClient {
         id: &str,
         relay_server: &str,
         secure: bool,
+        server_key: &str,
+        token: &str,
     ) -> io::Result<String> {
         self.ensure_connected()?;
 
         let uuid = new_relay_uuid();
         eprintln!(
-            "[RustDesk-FFI] request relay id={} uuid={} relay_server={} secure={}",
-            id, uuid, relay_server, secure
+            "[RustDesk-FFI] request relay id={} uuid={} relay_server={} secure={} token={}",
+            id,
+            uuid,
+            relay_server,
+            secure,
+            if token.is_empty() { "absent" } else { "present" }
         );
 
         let mut req = RequestRelay::new();
@@ -311,6 +336,11 @@ impl RendezvousClient {
         req.set_uuid(uuid.clone());
         req.set_relay_server(relay_server.to_string());
         req.set_secure(secure);
+        // hbbs applies the same `-k` and account checks to RequestRelay as it
+        // does to PunchHoleRequest; omitting either credential makes this the
+        // next step to be refused once the punch hole is approved.
+        req.set_licence_key(server_key.to_string());
+        req.set_token(token.to_string());
 
         let mut msg = RendezvousMessage::new();
         msg.union = Some(RendezvousMessage_oneof_union::request_relay(req));
@@ -354,6 +384,7 @@ impl RendezvousClient {
         uuid: &str,
         relay_server: &str,
         server_key: &str,
+        token: &str,
     ) -> io::Result<TcpStream> {
         let mut stream = net::connect_tcp_endpoint(
             relay_server,
@@ -365,7 +396,7 @@ impl RendezvousClient {
         stream.set_write_timeout(Some(Duration::from_secs(10)))?;
 
         // hbbr uses the same exact shared `-k` comparison as hbbs.
-        let msg = request_relay_message(id, uuid, server_key);
+        let msg = request_relay_message(id, uuid, server_key, token);
         let payload = msg
             .write_to_bytes()
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
@@ -664,7 +695,7 @@ mod tests {
     #[test]
     fn arbitrary_shared_access_key_is_preserved_in_punch_and_relay_messages() {
         let key = " =tenant-key:42/abc=\n";
-        let punch = punch_hole_request_message("peer-123", key);
+        let punch = punch_hole_request_message("peer-123", key, "");
         let punch_bytes = punch.write_to_bytes().expect("serialize punch request");
         let parsed_punch: RendezvousMessage = protobuf::parse_from_bytes(&punch_bytes)
             .expect("parse punch request");
@@ -675,7 +706,7 @@ mod tests {
             other => panic!("expected PunchHoleRequest, got: {:?}", other),
         }
 
-        let relay = request_relay_message("peer-123", "uuid-123", key);
+        let relay = request_relay_message("peer-123", "uuid-123", key, "");
         let relay_bytes = relay.write_to_bytes().expect("serialize relay request");
         let parsed_relay: RendezvousMessage = protobuf::parse_from_bytes(&relay_bytes)
             .expect("parse relay request");
@@ -684,6 +715,53 @@ mod tests {
                 assert_eq!(req.get_licence_key(), key);
             }
             other => panic!("expected RequestRelay, got: {:?}", other),
+        }
+    }
+
+    /// Server Pro refuses an unauthenticated punch hole with
+    /// "You have not logged in or your login session has expired", so the
+    /// account token has to survive serialization on both handshake messages.
+    #[test]
+    fn pro_session_token_is_carried_by_punch_and_relay_messages() {
+        let token = "pro-session-token-abc123";
+        let key = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGH=";
+
+        let punch = punch_hole_request_message("peer-123", key, token);
+        let punch_bytes = punch.write_to_bytes().expect("serialize punch request");
+        let parsed_punch: RendezvousMessage =
+            protobuf::parse_from_bytes(&punch_bytes).expect("parse punch request");
+        match parsed_punch.union {
+            Some(RendezvousMessage_oneof_union::punch_hole_request(req)) => {
+                assert_eq!(req.get_token(), token);
+                assert_eq!(req.get_licence_key(), key);
+                assert!(req.get_force_relay());
+            }
+            other => panic!("expected PunchHoleRequest, got: {:?}", other),
+        }
+
+        let relay = request_relay_message("peer-123", "uuid-123", key, token);
+        let relay_bytes = relay.write_to_bytes().expect("serialize relay request");
+        let parsed_relay: RendezvousMessage =
+            protobuf::parse_from_bytes(&relay_bytes).expect("parse relay request");
+        match parsed_relay.union {
+            Some(RendezvousMessage_oneof_union::request_relay(req)) => {
+                assert_eq!(req.get_token(), token);
+                assert_eq!(req.get_licence_key(), key);
+            }
+            other => panic!("expected RequestRelay, got: {:?}", other),
+        }
+    }
+
+    /// An OSS deployment has no account token; the field must stay empty
+    /// rather than being filled with a placeholder.
+    #[test]
+    fn empty_token_stays_empty_for_oss_deployments() {
+        let punch = punch_hole_request_message("peer-123", "", "");
+        match punch.union {
+            Some(RendezvousMessage_oneof_union::punch_hole_request(req)) => {
+                assert!(req.get_token().is_empty());
+            }
+            other => panic!("expected PunchHoleRequest, got: {:?}", other),
         }
     }
 
@@ -769,7 +847,7 @@ mod tests {
         let client = RendezvousClient::new();
         let relay_endpoint = format!("localhost:{}", port);
         let stream = client
-            .create_relay("peer", "uuid", &relay_endpoint, "")
+            .create_relay("peer", "uuid", &relay_endpoint, "", "")
             .expect("relay hostname should resolve and connect");
         drop(stream);
         accept_thread.join().expect("accept thread panicked");

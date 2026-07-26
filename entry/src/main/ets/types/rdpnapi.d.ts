@@ -360,6 +360,10 @@ export interface SessionConfig {
   rdAccountId?: string;      // API账户ID
   rdServerKey?: string;      // Rendezvous 公钥或共享准入 Key
   rdServerKeyMode?: number;  // 0=legacy/auto, 1=server public key, 2=shared access key
+  // RustDesk Server Pro 账号会话 token → PunchHoleRequest.token / RequestRelay.token。
+  // 开启账号访问控制的 hbbs 用它鉴权；空 = OSS 部署。
+  // Transient only. Never persist this value in RemoteHost or a cloud payload.
+  rdProAccessToken?: string;
 }
 
 export interface SftpFileEntry {

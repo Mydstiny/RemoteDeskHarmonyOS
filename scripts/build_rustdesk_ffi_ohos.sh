@@ -76,6 +76,11 @@ for ABI_TARGET in "${ABIS[@]}"; do
             "CXXFLAGS_${TARGET_ENV}=$TARGET_CFLAGS" \
             CC_SHELL_ESCAPED_FLAGS=1 \
             "CARGO_TARGET_${TARGET_ENV_UPPER}_LINKER=$TARGET_CXX" \
+            `# Cargo splits this variable on spaces and never strips quotes, so a` \
+            `# quoted path reaches clang as a literal ''--sysroot=...'' and fails.` \
+            `# CFLAGS above is different: CC_SHELL_ESCAPED_FLAGS=1 makes the cc` \
+            `# crate honour the quoting there. An SDK path containing a space` \
+            `# still needs OHOS_SDK_HOME pointed at a space-free copy.` \
             "CARGO_TARGET_${TARGET_ENV_UPPER}_RUSTFLAGS=-C link-arg=--target=$CLANG_TARGET -C link-arg=--sysroot=$OHOS_SYSROOT" \
             OPUS_LIB_DIR="$OPUS_LIB_DIR" \
             "$CARGO_BIN" build --release --target "$TARGET"

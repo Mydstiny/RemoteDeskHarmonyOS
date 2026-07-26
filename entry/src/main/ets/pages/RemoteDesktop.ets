@@ -199,6 +199,13 @@ import {
   rustDeskConnectionError
 } from '../services/RustDeskHostConfigPolicy';
 import {
+  resolveRustDeskProSession,
+  rustDeskProLoginHint,
+  RustDeskProSessionResolution,
+  RustDeskProSessionState
+} from '../services/RustDeskProConnectionPreflightPolicy';
+import { RustDeskProCredentialStore } from '../services/RustDeskProCredentialStore';
+import {
   mapPhysicalKeyForRemoteLayout,
   isMacCapsLockLongPress,
   MACOS_CAPS_LOCK_LONG_PRESS_MS,
@@ -521,6 +528,9 @@ struct RemoteDesktop {
   private rustDeskAuthSheetClosing: boolean = false;
   private rustDeskAuthQueuedMessage: string | null = null;
   private rustDeskSessionAuthChoice: RustDeskAuthChoice = 'password';
+  // Whether this attempt carried a Server Pro token, so an account-control
+  // rejection can be reported as "log in again" instead of a raw server string.
+  private rustDeskProSessionState: RustDeskProSessionState = 'not_configured';
   private rustDeskSessionPassword: string = '';
   private rustDeskSessionRememberPassword: boolean = false;
   private rustDeskSessionPasswordMode: number = 0;
@@ -3947,6 +3957,10 @@ struct RemoteDesktop {
           if (ffiError.indexOf('connection cancelled') >= 0) {
             throw new Error('连接请求已取消' + detail + ' [E-RUSTDESK-CANCELLED]');
           }
+          const proHint: string = rustDeskProLoginHint(ffiError, this.rustDeskProSessionState);
+          if (proHint.length > 0) {
+            throw new Error(proHint + detail + ' [E-RUSTDESK-PRO-LOGIN]');
+          }
           throw new Error('RustDesk 握手失败或连接已断开' + detail +
             ' [E-RUSTDESK-STATE-' + state.toString() + ']');
         }
@@ -4722,6 +4736,24 @@ struct RemoteDesktop {
         }
       }
       const rustDeskDirect: boolean = host.protocol === 'rustdesk' && host.rustdeskDirectEnabled;
+      // Server Pro 开启账号访问控制时，hbbs 会拒绝没有会话 token 的 PunchHoleRequest
+      // ("You have not logged in or your login session has expired")。token 只在
+      // 本次连接的内存中传递，不写入 RemoteHost、云表或日志。
+      let rdProAccessToken: string = '';
+      this.rustDeskProSessionState = 'not_configured';
+      if (host.protocol === 'rustdesk' && !rustDeskDirect) {
+        const proStore = RustDeskProCredentialStore.getInstance();
+        proStore.init(getContext(this) as common.Context);
+        const proSession: RustDeskProSessionResolution = resolveRustDeskProSession(
+          proStore.getAll(), host.rustdeskProAccountId, host.rustdeskAccountId,
+          host.rustdeskRelayId, false);
+        rdProAccessToken = proSession.token;
+        this.rustDeskProSessionState = proSession.state;
+        hilog.info(RD_DOMAIN, RD_TAG, 'RustDesk Pro session state=' + proSession.state +
+          ' token=' + (rdProAccessToken.length > 0 ? 'present' : 'absent') +
+          ' accounts=' + proStore.getAll().length.toString() +
+          ' relayBound=' + (host.rustdeskRelayId.length > 0 ? 'yes' : 'no'));
+      }
       const directHost: string = host.rustdeskDirectHost.trim();
       if (rustDeskDirect && directHost.length === 0) {
         throw new Error('RustDesk 直连地址为空，请在主机编辑中填写局域网地址 [E-RUSTDESK-DIRECT-HOST]');
@@ -4792,7 +4824,8 @@ struct RemoteDesktop {
         rdRelayId: host.rustdeskRelayId,
         rdAccountId: host.rustdeskAccountId,
         rdServerKey: rdServerKey,
-        rdServerKeyMode: rdServerKeyMode
+        rdServerKeyMode: rdServerKeyMode,
+        rdProAccessToken: rdProAccessToken
       };
       // 编码偏好单独处理 (0=auto → 不强制)
       if (rdCodecVal > 0) {
@@ -4817,6 +4850,8 @@ struct RemoteDesktop {
         // never keep the local session-config reference alive on this side.
         cfg.rdpRestrictedAdminHash = '';
         rdpRestrictedAdminHash = '';
+        cfg.rdProAccessToken = '';
+        rdProAccessToken = '';
       }
       hilog.info(RD_DOMAIN, RD_TAG, 'NAPI connect returned: ' + sid);
       if (sid <= 0) {

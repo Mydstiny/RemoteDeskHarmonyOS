@@ -152,6 +152,10 @@ pub struct RustDeskConfig {
     /// 0=legacy/auto, 1=Ed25519 server public key, 2=shared hbbs/hbbr -k text.
     /// Appended to preserve the established C ABI field order.
     pub key_mode: c_int,
+    /// RustDesk Server Pro 账号会话 token (`PunchHoleRequest.token` /
+    /// `RequestRelay.token`). 空 = OSS 部署，不做账号鉴权。
+    /// Appended to preserve the established C ABI field order.
+    pub token: *const c_char,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -452,6 +456,7 @@ struct RustDeskClient {
     shared_access_key: bool,
     password: String,
     request_approval: bool,
+    token: String,
     controls: Arc<ControlInbox>,
     shutdown_stream: Option<TcpStream>,
     stream_handle: Option<std::thread::JoinHandle<io::Result<()>>>,
@@ -874,6 +879,13 @@ pub extern "C" fn rustdesk_connect(
     let server_key = ffi_string(config.key);
     let shared_access_key = config.key_mode == 2;
     let password = ffi_string(config.password);
+    // Direct peer sessions never reach a rendezvous server, so an account
+    // token has no meaning there and must not be retained.
+    let token = if config.direct_connection {
+        String::new()
+    } else {
+        ffi_string(config.token)
+    };
     let request_approval = config.auth_mode == 1 && !config.direct_connection;
     let privacy_mode = config.privacy_mode;
     let audio_enabled = config.audio_enabled;
@@ -885,7 +897,7 @@ pub extern "C" fn rustdesk_connect(
     let req_width = stream_params.req_width;
     let req_height = stream_params.req_height;
     eprintln!(
-        "[RustDesk-FFI] config profile={:?} codec={} raw_quality={} quality={} raw_fps={} fps={} audio={} res={}x{}",
+        "[RustDesk-FFI] config profile={:?} codec={} raw_quality={} quality={} raw_fps={} fps={} audio={} res={}x{} pro_token={}",
         config.profile,
         preferred_codec,
         config.image_quality,
@@ -894,7 +906,9 @@ pub extern "C" fn rustdesk_connect(
         effective_fps,
         if audio_enabled { "on" } else { "off" },
         req_width,
-        req_height
+        req_height,
+        // Never log the token itself — only whether one was supplied.
+        if token.is_empty() { "absent" } else { "present" }
     );
 
     if host.is_empty() {
@@ -957,6 +971,7 @@ pub extern "C" fn rustdesk_connect(
             effective_fps,
             request_approval,
             shared_access_key,
+            &token,
         )
     };
 
@@ -1087,6 +1102,7 @@ pub extern "C" fn rustdesk_connect(
                 shared_access_key,
                 password,
                 request_approval,
+                token,
                 controls,
                 shutdown_stream,
                 stream_handle: Some(stream_handle),
@@ -1390,6 +1406,7 @@ pub extern "C" fn rustdesk_send_file(
     let peer_id = ctx.peer_id.clone();
     let password = ctx.password.clone();
     let request_approval = ctx.request_approval;
+    let token = ctx.token.clone();
     let remote_path_owned = path.clone();
     let remote_dir = split_remote_file_path(&path).0.to_string();
     let transfer_status = Arc::clone(&ctx.transfer_status);
@@ -1399,7 +1416,7 @@ pub extern "C" fn rustdesk_send_file(
             let mut connector = connector::RustDeskConnector::new();
             connector
                 .connect_file_transfer(&host, port, &server_key, &peer_id, &password, &remote_dir,
-                    request_approval, shared_access_key)
+                    request_approval, shared_access_key, &token)
                 .and_then(|_| {
                     connector.upload_file_once(
                         &remote_path_owned,
@@ -1492,6 +1509,7 @@ mod tests {
             shared_access_key: false,
             password: String::new(),
             request_approval: false,
+            token: String::new(),
             controls: Arc::new(ControlInbox::default()),
             shutdown_stream: None,
             stream_handle: None,
@@ -1589,6 +1607,7 @@ mod tests {
         let key = CString::new("").unwrap();
         let username = CString::new("test").unwrap();
         let password = CString::new("").unwrap();
+        let token = CString::new("").unwrap();
 
         let cfg = RustDeskConfig {
             host: host.as_ptr(),
@@ -1607,6 +1626,7 @@ mod tests {
             direct_connection: false,
             auth_mode: 0,
             key_mode: 1,
+            token: token.as_ptr(),
         };
 
         extern "C" fn dummy_frame(_frame: *const FfiVideoFrame, _data: *mut c_void) {}
@@ -1636,6 +1656,7 @@ mod tests {
         let key = CString::new("1:encrypted-value").unwrap();
         let username = CString::new("test").unwrap();
         let password = CString::new("").unwrap();
+        let token = CString::new("").unwrap();
         let cfg = RustDeskConfig {
             host: host.as_ptr(),
             port: 21116,
@@ -1653,6 +1674,7 @@ mod tests {
             direct_connection: false,
             auth_mode: 0,
             key_mode: 1,
+            token: token.as_ptr(),
         };
 
         extern "C" fn dummy_frame(_frame: *const FfiVideoFrame, _data: *mut c_void) {}
@@ -1728,6 +1750,7 @@ mod tests {
             direct_connection: false,
             auth_mode: 0,
             key_mode: 1,
+            token: std::ptr::null(),
         };
 
         let params = resolve_stream_params_for_config(&cfg);
@@ -1758,6 +1781,7 @@ mod tests {
             direct_connection: false,
             auth_mode: 0,
             key_mode: 1,
+            token: std::ptr::null(),
         };
 
         assert_eq!(resolve_stream_params_for_config(&cfg).effective_fps, 60);

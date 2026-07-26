@@ -183,6 +183,19 @@ impl<'a> RendezvousCredentials<'a> {
             server_public_key: if shared_access_key { None } else { Some(access_key) },
         }
     }
+
+    /// Upstream only negotiates a secure rendezvous channel when it has both a
+    /// key and a token — the encryption exists to protect the token, which is
+    /// an account credential and must never cross the wire in clear text.
+    ///
+    /// A shared `-k` access value cannot verify the server's signed ephemeral
+    /// key, so the handshake is impossible in that mode; the caller keeps the
+    /// plain channel instead of pretending the peer was authenticated.
+    fn should_secure_rendezvous(&self, token: &str) -> bool {
+        !token.is_empty()
+            && !self.access_key.trim().is_empty()
+            && self.server_public_key.is_some()
+    }
 }
 
 /// 完整连接上下文
@@ -252,18 +265,33 @@ impl RustDeskConnector {
         fps: u32,
         request_approval: bool,
         shared_access_key: bool,
+        token: &str,
     ) -> io::Result<()> {
         let credentials = RendezvousCredentials::new(server_key, shared_access_key);
+        let secure_rendezvous = credentials.should_secure_rendezvous(token);
         // === Phase 1: Rendezvous 握手 ===
         self.state = ConnState::RendezvousConnecting;
         let mut rd = RendezvousClient::new();
         // 客户端连接远端 ID 时不要 RegisterPeer；RegisterPeer 是被控端注册自己的 ID。
-        // 普通密码连接没有 token，按 upstream 行为跳过 ID server secure_tcp，仅跳过服务端
-        // 主动发来的 KeyExchange 后读取 PunchHoleResponse。
-        rd.connect(rendezvous_host, rendezvous_port, server_key, false)?;
+        // 没有 token 时按 upstream 行为跳过 ID server secure_tcp，仅跳过服务端主动
+        // 发来的 KeyExchange 后读取 PunchHoleResponse；带 Server Pro 会话 token 时
+        // 必须先完成 secure_tcp，否则 token 会以明文发送。
+        eprintln!(
+            "[RustDesk-FFI] rendezvous connect host={} port={} secure={} token={}",
+            rendezvous_host,
+            rendezvous_port,
+            secure_rendezvous,
+            if token.is_empty() { "absent" } else { "present" }
+        );
+        rd.connect(
+            rendezvous_host,
+            rendezvous_port,
+            server_key,
+            secure_rendezvous,
+        )?;
 
         self.state = ConnState::RequestingRelay;
-        let punch = rd.request_punch_hole(peer_id, credentials.access_key)?;
+        let punch = rd.request_punch_hole(peer_id, credentials.access_key, token)?;
 
         // === Phase 2: Peer TCP + 加密通道 ===
         eprintln!(
@@ -280,22 +308,41 @@ impl RustDeskConnector {
                 "[RustDesk-FFI] using relay uuid from rendezvous uuid={} relay_server={}",
                 relay_uuid, punch.relay_server
             );
-            rd.create_relay(peer_id, &relay_uuid, &punch.relay_server, credentials.access_key)?
+            rd.create_relay(
+                peer_id,
+                &relay_uuid,
+                &punch.relay_server,
+                credentials.access_key,
+                token,
+            )?
         } else if !punch.relay_server.trim().is_empty() {
             self.state = ConnState::RequestingRelay;
             let mut relay_rd = RendezvousClient::new();
-            relay_rd.connect(rendezvous_host, rendezvous_port, server_key, false)?;
+            relay_rd.connect(
+                rendezvous_host,
+                rendezvous_port,
+                server_key,
+                secure_rendezvous,
+            )?;
             let relay_uuid = relay_rd.request_relay_uuid(
                 peer_id,
                 &punch.relay_server,
                 !punch.signed_pk.is_empty(),
+                credentials.access_key,
+                token,
             )?;
             self.state = ConnState::ConnectingToPeer;
             eprintln!(
                 "[RustDesk-FFI] relay approved uuid={} relay_server={}",
                 relay_uuid, punch.relay_server
             );
-            relay_rd.create_relay(peer_id, &relay_uuid, &punch.relay_server, credentials.access_key)?
+            relay_rd.create_relay(
+                peer_id,
+                &relay_uuid,
+                &punch.relay_server,
+                credentials.access_key,
+                token,
+            )?
         } else if let Some(peer_addr) = punch.peer_addr {
             self.state = ConnState::ConnectingToPeer;
             self.peer_addr = Some(peer_addr);
@@ -429,22 +476,29 @@ impl RustDeskConnector {
         remote_dir: &str,
         request_approval: bool,
         shared_access_key: bool,
+        token: &str,
     ) -> io::Result<()> {
         let credentials = RendezvousCredentials::new(server_key, shared_access_key);
+        let secure_rendezvous = credentials.should_secure_rendezvous(token);
         crate::set_last_error(format!(
             "file-transfer connecting rendezvous host={} port={} peer={} dir={}",
             rendezvous_host, rendezvous_port, peer_id, remote_dir
         ));
         self.state = ConnState::RendezvousConnecting;
         let mut rd = RendezvousClient::new();
-        rd.connect(rendezvous_host, rendezvous_port, server_key, false)?;
+        rd.connect(
+            rendezvous_host,
+            rendezvous_port,
+            server_key,
+            secure_rendezvous,
+        )?;
 
         crate::set_last_error(format!(
             "file-transfer requesting punch peer={} dir={}",
             peer_id, remote_dir
         ));
         self.state = ConnState::RequestingRelay;
-        let punch = rd.request_punch_hole(peer_id, credentials.access_key)?;
+        let punch = rd.request_punch_hole(peer_id, credentials.access_key, token)?;
         crate::set_last_error(format!(
             "file-transfer punch peer_addr={:?} relay_server={} relay_uuid={:?} signed_pk_len={}",
             punch.peer_addr,
@@ -466,7 +520,13 @@ impl RustDeskConnector {
                 punch.relay_server, relay_uuid
             ));
             self.state = ConnState::ConnectingToPeer;
-            rd.create_relay(peer_id, &relay_uuid, &punch.relay_server, credentials.access_key)?
+            rd.create_relay(
+                peer_id,
+                &relay_uuid,
+                &punch.relay_server,
+                credentials.access_key,
+                token,
+            )?
         } else if !punch.relay_server.trim().is_empty() {
             self.state = ConnState::RequestingRelay;
             let mut relay_rd = RendezvousClient::new();
@@ -474,18 +534,31 @@ impl RustDeskConnector {
                 "file-transfer requesting relay uuid server={}",
                 punch.relay_server
             ));
-            relay_rd.connect(rendezvous_host, rendezvous_port, server_key, false)?;
+            relay_rd.connect(
+                rendezvous_host,
+                rendezvous_port,
+                server_key,
+                secure_rendezvous,
+            )?;
             let relay_uuid = relay_rd.request_relay_uuid(
                 peer_id,
                 &punch.relay_server,
                 !punch.signed_pk.is_empty(),
+                credentials.access_key,
+                token,
             )?;
             crate::set_last_error(format!(
                 "file-transfer connecting relay server={} uuid={}",
                 punch.relay_server, relay_uuid
             ));
             self.state = ConnState::ConnectingToPeer;
-            relay_rd.create_relay(peer_id, &relay_uuid, &punch.relay_server, credentials.access_key)?
+            relay_rd.create_relay(
+                peer_id,
+                &relay_uuid,
+                &punch.relay_server,
+                credentials.access_key,
+                token,
+            )?
         } else if let Some(peer_addr) = punch.peer_addr {
             crate::set_last_error(format!("file-transfer connecting peer addr={}", peer_addr));
             self.state = ConnState::ConnectingToPeer;
@@ -2795,6 +2868,27 @@ mod tests {
         value.set_width(width);
         value.set_height(height);
         value
+    }
+
+    /// The rendezvous channel is encrypted only to protect an account token.
+    /// Without a token there is nothing to hide, and a shared `-k` value cannot
+    /// verify the server signature the handshake depends on.
+    #[test]
+    fn rendezvous_is_secured_only_when_a_token_needs_protecting() {
+        let public_key = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGH=";
+
+        // Public-key mode with a token: encrypt before sending the token.
+        assert!(RendezvousCredentials::new(public_key, false).should_secure_rendezvous("tok"));
+
+        // No token: upstream keeps the plain channel.
+        assert!(!RendezvousCredentials::new(public_key, false).should_secure_rendezvous(""));
+
+        // Shared access key cannot verify the server's signed ephemeral key.
+        assert!(!RendezvousCredentials::new("tenant-key", true).should_secure_rendezvous("tok"));
+
+        // An empty/whitespace key gives the handshake nothing to verify against.
+        assert!(!RendezvousCredentials::new("", false).should_secure_rendezvous("tok"));
+        assert!(!RendezvousCredentials::new("   ", false).should_secure_rendezvous("tok"));
     }
 
     #[test]

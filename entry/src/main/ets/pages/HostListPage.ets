@@ -208,8 +208,13 @@ import { RemoteProtocol } from '../services/RemoteSessionState';
 import {
   RustDeskProPreflightState,
   rustDeskProPeerIdForConnection,
-  shouldOpenRustDeskProPreflight
+  shouldOpenRustDeskProPreflight,
+  resolveRustDeskProSession,
+  rustDeskProLoginHint,
+  RustDeskProSessionResolution,
+  RustDeskProSessionState
 } from '../services/RustDeskProConnectionPreflightPolicy';
+import { RustDeskProCredentialStore } from '../services/RustDeskProCredentialStore';
 import { shouldFallbackToNativeRdpConnectionAfterResolverFailure } from '../services/RdpCertificatePreflightPolicy';
 import {
   nextConnectionAttemptGeneration,
@@ -375,6 +380,9 @@ struct HostListPage {
   @State rustDeskProRememberPassword: boolean = true;
   @State rustDeskProPreflightError: string = '';
   private rustDeskProPreflightGeneration: number = 0;
+  // Whether this attempt carried a Server Pro token, so an account-control
+  // rejection can be reported as "log in again" instead of a raw server string.
+  private rustDeskProSessionState: RustDeskProSessionState = 'not_configured';
   // RustDesk preflight Sheet 退出动画完成前，不允许复用同一 bindSheet 宿主。
   private rustDeskProPreflightClosing: boolean = false;
   private rustDeskProPreflightClosingHostId: string = '';
@@ -3099,6 +3107,19 @@ struct HostListPage {
       host.rustdeskDirectHost,
       host.rustdeskDirectPort
     );
+    // 这个 Sheet 才是真正发起 RustDesk 连接的地方（成功后才路由到 RemoteDesktop），
+    // 所以 Server Pro 会话 token 必须在这里就带上，否则开启账号访问控制的 hbbs 会以
+    // "You have not logged in or your login session has expired" 拒绝 PunchHoleRequest。
+    const proStore = RustDeskProCredentialStore.getInstance();
+    proStore.init(getContext(this) as common.Context);
+    const proSession: RustDeskProSessionResolution = resolveRustDeskProSession(
+      proStore.getAll(), host.rustdeskProAccountId, host.rustdeskAccountId,
+      host.rustdeskRelayId, direct);
+    this.rustDeskProSessionState = proSession.state;
+    hilog.info(0x0001, 'HostList', 'RustDesk Pro session state=' + proSession.state +
+      ' token=' + (proSession.token.length > 0 ? 'present' : 'absent') +
+      ' accounts=' + proStore.getAll().length.toString() +
+      ' relayBound=' + (host.rustdeskRelayId.length > 0 ? 'yes' : 'no'));
     return {
       protocol: 'rustdesk',
       host: endpoint.host,
@@ -3116,7 +3137,8 @@ struct HostListPage {
       rdAuthMode: rustDeskAuthModeForConnection(direct, host.rustdeskAuthMode) === 'request_approval' ? 1 : 0,
       rdRelayId: host.rustdeskRelayId, rdAccountId: host.rustdeskAccountId,
       rdServerKey: relay ? relay.key : '',
-      rdServerKeyMode: relay ? rustDeskRelayKeyModeForFfi(relay.key, relay.keyMode) : 1
+      rdServerKeyMode: relay ? rustDeskRelayKeyModeForFfi(relay.key, relay.keyMode) : 1,
+      rdProAccessToken: proSession.token
     };
   }
 
@@ -3179,6 +3201,8 @@ struct HostListPage {
         }
         if (state === 4 || state === 0) {
           const detail: string = this.loader.getRustDeskLastError() || this.loader.getConnectionLastMessage(sid);
+          const proHint: string = rustDeskProLoginHint(detail, this.rustDeskProSessionState);
+          if (proHint.length > 0) { throw new Error(proHint); }
           throw new Error(detail || '远端鉴权失败，请检查密码后重试。');
         }
         await new Promise<void>((resolve: () => void): void => { setTimeout(resolve, 100); });

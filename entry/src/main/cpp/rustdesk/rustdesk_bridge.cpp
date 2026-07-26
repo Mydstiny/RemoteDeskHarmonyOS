@@ -1127,8 +1127,11 @@ int RustDeskBridge::connect(const ConnectionConfig& cfg) {
         const std::string logPeer = SafeLog::MaskUser(ffiPeerId);
         const char* serverKeyMode = cfg.rdServerKeyMode == 2 ? "shared" :
             (cfg.rdServerKeyMode == 1 ? "public" : "auto");
-        OH_LOG_INFO(LOG_APP, "[RustDesk-FFI] Request peer=%{public}s serverKeyMode=%{public}s",
-                    logPeer.c_str(), serverKeyMode);
+        // 只记录 token 是否存在，绝不记录其内容。
+        OH_LOG_INFO(LOG_APP,
+                    "[RustDesk-FFI] Request peer=%{public}s serverKeyMode=%{public}s proToken=%{public}s",
+                    logPeer.c_str(), serverKeyMode,
+                    cfg.rdProAccessToken.empty() ? "absent" : "present");
 
         RustDeskBridge::Impl* impl = impl_.get();
         std::thread connectThread([impl, cfg, ffiPeerId, logHost, serial]() {
@@ -1150,6 +1153,9 @@ int RustDeskBridge::connect(const ConnectionConfig& cfg) {
             ffiCfg.fps      = 0; // From profile
             ffiCfg.auth_mode = (cfg.rdAuthMode == 1) ? 1 : 0;
             ffiCfg.key_mode = cfg.rdServerKeyMode;
+            // Server Pro 拒绝未登录的 punch hole；会话 token 必须随握手发送。
+            // cfg 按值捕获，c_str() 在 rustdesk_connect 返回前保持有效。
+            ffiCfg.token    = cfg.rdProAccessToken.c_str();
             // T-209: 直连模式映射
             ffiCfg.direct_connection = false;
             if (cfg.rdDirectIp && !cfg.host.empty()) {
