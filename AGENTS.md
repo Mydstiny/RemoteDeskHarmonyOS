@@ -8,15 +8,19 @@
 - 禁止创建或使用持久 Git worktree。合规 hook 创建并立即销毁的临时校验目录不属于开发工作区。
 - 不依赖第三方 skills、Superpowers 或 Claude 中转流程；使用 Codex 原生能力、Git、项目脚本和本地 API 23 文档。
 
-## 每个 session 的启动流程
+## 每个 session 的启动流程（强制门禁）
 
-1. 读取脱敏共享状态：`docs/codex/CURRENT.md`。
-2. 读取精简任务队列：`docs/codex/QUEUE.md`。
-3. 仅在涉及架构/历史约束时读取：`docs/codex/DECISIONS.md` 和
+1. 无论 session 从哪个父目录启动，先定位并进入本项目根目录；读取本文件以及
+   工作区根目录的 `AGENTS.md`（存在时）。
+2. 读取脱敏共享状态：`docs/codex/CURRENT.md`。
+3. 读取精简任务队列：`docs/codex/QUEUE.md`。
+4. 仅在涉及架构/历史约束时读取：`docs/codex/DECISIONS.md` 和
    `docs/codex/HANDOFF.md`。
-4. 根据平台运行 `scripts/dev_workflow.ps1 status` 或
+5. 根据平台运行 `scripts/dev_workflow.ps1 status` 或
    `scripts/sync_workspace.sh status`，核对实际 Git 状态。
-5. 向用户报告：当前阶段、活动任务、当前分支/commit、相对 `main` 状态、最近验证和下一步。
+6. 向用户报告：当前阶段、活动任务、当前分支/commit、相对 `main` 状态、最近验证、下一步和 blocker。
+
+若没有完成上述启动门禁，不得开始新的代码修改或声称已经完成任务。
 
 不要复制或读取 Windows/Mac 的 Codex 原始记忆目录；需要共享的内容只能整理进
 `docs/codex/`。旧 Claude/Codex 中转站仅为各设备本地只读归档。
@@ -42,16 +46,28 @@
 - 修改 HarmonyOS API 前先查本地 API 23 文档；依赖/proto/license/gitlink 变化必须同步更新 SBOM、NOTICE、provenance 和哈希。
 - 仓库功能变更必须 commit；纯调查且没有文件修改时不制造空 commit。
 
+## 每次改动完成后的强制 DevEco 验证
+
+任何代码、ArkTS、native、Rust、测试、配置或流程文件改动，在提交、复核、合并或交付前都必须执行以下两项 Hvigor 门禁；它们是所有风险级别的共同最低要求，不能用旧日志或上一 session 的结果代替：
+
+```sh
+source scripts/macos_env.sh
+hvigorw --mode module -p module=entry -p product=default default@OhosTestCompileArkTS --analyze=normal --parallel --incremental --daemon
+hvigorw --mode module -p module=entry -p product=default assembleHap --analyze=normal --parallel --incremental --daemon
+```
+
+Windows 使用 DevEco 自带的 `hvigorw.js`/`hvigorw.bat` 执行相同的 `module=entry`、`product=default` 和任务名。两项都必须返回成功；否则任务保持未完成，失败原因必须记录在 `docs/codex/CURRENT.md` 的 blocker 中。`default@OhosTestBuildArkTS` 是旧门，不得作为替代验收项。对 ArkTS 测试模块有影响时，另加 `ohosTest@OhosTestCompileArkTS`。
+
 ## 按风险分级验证
 
 | 变更范围 | 最低验证 |
 |---|---|
-| 文档、流程、纯元数据 | `git diff --check` + Light 合规门 |
+| 文档、流程、纯元数据 | 强制 Hvigor 两项 + `git diff --check` + Light 合规门 |
 | ArkTS/UI/策略 | 定向测试或测试编译 + `default@OhosTestCompileArkTS` + `assembleHap` + Light |
 | C/C++/Rust/FFI | 定向 native/Rust 测试 + 受影响 ABI + `assembleHap` + Light |
 | 发布/tag/依赖升级 | clean clone、全测试/设备矩阵、双 ABI、Release gate |
 
-构建命令和当前阻塞记录在 `CURRENT.md`；不要用旧的 `default@OhosTestBuildArkTS` 作为验收门。
+构建命令、准确的成功/失败输出和当前阻塞记录在 `CURRENT.md`；不要用旧的 `default@OhosTestBuildArkTS` 作为验收门。
 
 ## 本地统一历史库
 
@@ -64,7 +80,7 @@
 
 ## session 结束流程
 
-1. 运行与变更范围匹配的验证，并记录准确结果。
+1. 运行强制的 Hvigor `default@OhosTestCompileArkTS` 和生产 `assembleHap`，再运行与变更范围匹配的附加验证，并记录准确结果。
 2. 更新 `CURRENT.md`：活动分支、commit、已完成、验证、下一步、blocker。
 3. 更新 `QUEUE.md`：完成项移除或归档，只保留 Now / Next / Later。
 4. 只有出现长期有效的架构规则或通用坑位时才更新 `DECISIONS.md`。
