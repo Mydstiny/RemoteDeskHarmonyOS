@@ -4163,13 +4163,11 @@ struct RemoteDesktop {
 
   private mapInputPointWithTransform(localX: number, localY: number,
     transform: RemoteSurfaceTransform): MappedPoint {
-    const localVpX: number = transform.surfaceWidthVp > 0 && localX <= transform.surfaceWidthVp + 1 ? localX :
-      (transform.surfaceWidthPx > 0 && transform.surfaceWidthVp > 0 ?
-        localX * transform.surfaceWidthVp / transform.surfaceWidthPx : localX);
-    const localVpY: number = transform.surfaceHeightVp > 0 && localY <= transform.surfaceHeightVp + 1 ? localY :
-      (transform.surfaceHeightPx > 0 && transform.surfaceHeightVp > 0 ?
-        localY * transform.surfaceHeightVp / transform.surfaceHeightPx : localY);
-    const point = surfacePointToRemote(transform, localVpX, localVpY);
+    // HarmonyOS TouchEvent/MouseEvent/GestureEvent coordinates are local vp.
+    // Keep the unit conversion in the geometry policy; guessing from the
+    // numeric range turns out-of-bounds vp coordinates into valid points on
+    // high-density surfaces and makes the virtual pointer drift.
+    const point = surfacePointToRemote(transform, localX, localY);
     return {
       x: Math.round(point.x),
       y: Math.round(point.y),
