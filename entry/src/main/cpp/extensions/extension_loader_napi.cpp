@@ -2568,8 +2568,17 @@ static napi_value CreateRemoteCursorSnapshotValue(
         napi_create_double(env, static_cast<double>(value), &field);
         napi_set_named_property(env, result, name, field);
     };
+    const auto setUint64String = [env, result](const char* name, uint64_t value) {
+        const std::string text = std::to_string(value);
+        napi_value field;
+        napi_create_string_utf8(env, text.c_str(), text.size(), &field);
+        napi_set_named_property(env, result, name, field);
+    };
     setUint64("sessionId", snapshot.sessionId);
-    setUint64("shapeId", snapshot.shapeId);
+    setUint64("generation", snapshot.generation);
+    // Cursor ids are protocol u64 values.  They are opaque to ArkTS and must
+    // not pass through a JS Number, whose integer precision stops at 2^53.
+    setUint64String("shapeId", snapshot.shapeId);
     setUint64("shapeRevision", snapshot.shapeRevision);
     setUint64("positionRevision", snapshot.positionRevision);
     setUint64("visibilityRevision", snapshot.visibilityRevision);
@@ -2591,6 +2600,13 @@ static napi_value CreateRemoteCursorSnapshotValue(
     napi_value protocol;
     napi_create_string_utf8(env, snapshot.protocol.c_str(), snapshot.protocol.size(), &protocol);
     napi_set_named_property(env, result, "protocol", protocol);
+    napi_value shapeSource;
+    napi_create_string_utf8(env, snapshot.shapeSource.c_str(), snapshot.shapeSource.size(),
+                            &shapeSource);
+    napi_set_named_property(env, result, "shapeSource", shapeSource);
+    napi_value protocolShapeAvailable;
+    napi_get_boolean(env, snapshot.protocolShapeAvailable, &protocolShapeAvailable);
+    napi_set_named_property(env, result, "protocolShapeAvailable", protocolShapeAvailable);
 
     napi_value pixels = nullptr;
     if (transferredPixels != nullptr && !transferredPixels->empty()) {

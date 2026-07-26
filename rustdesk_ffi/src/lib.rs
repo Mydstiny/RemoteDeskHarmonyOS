@@ -262,7 +262,7 @@ pub struct FfiAudioData {
 /// Remote cursor update. Pixel bytes are valid only for the callback duration.
 #[repr(C)]
 pub struct FfiCursorUpdate {
-    pub kind: c_int, // 0=shape, 1=position, 2=visibility
+    pub kind: c_int, // 0=shape, 1=position, 2=visibility, 3=cache miss
     pub shape_id: u64,
     pub x: c_int,
     pub y: c_int,
@@ -993,6 +993,14 @@ fn dispatch_cursor_update(
         CursorStreamUpdate::Visibility(visible) => {
             ffi.kind = 2;
             ffi.visible = visible;
+            on_cursor(&ffi, user_data);
+        }
+        CursorStreamUpdate::CacheMiss { id } => {
+            ffi.kind = 3;
+            ffi.shape_id = id;
+            // The cache miss is diagnostic-only.  The native store must keep
+            // its last valid shape and visibility unchanged.
+            ffi.visible = true;
             on_cursor(&ffi, user_data);
         }
     }

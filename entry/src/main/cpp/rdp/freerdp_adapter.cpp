@@ -1469,6 +1469,15 @@ BOOL FreeRdpAdapter::cbPointerSet(rdpContext* context, rdpPointer* pointer) {
     if (!ctx || !ctx->adapter || !cursor || !cursor->rgba || cursor->rgbaLen == 0) {
         return FALSE;
     }
+    const uint64_t currentGeneration =
+        ctx->adapter->impl_->sessionGeneration.load(std::memory_order_acquire);
+    if (ctx->generation == 0 || ctx->generation != currentGeneration) {
+        OH_LOG_WARN(LOG_APP,
+            "[RDP-CURSOR] stale Set generation=%{public}llu current=%{public}llu ignored",
+            static_cast<unsigned long long>(ctx->generation),
+            static_cast<unsigned long long>(currentGeneration));
+        return FALSE;
+    }
     std::vector<uint8_t> rgba(cursor->rgba, cursor->rgba + cursor->rgbaLen);
     const bool accepted = ctx->adapter->impl_->cursorStore.setShape(
         cursor->shapeId, static_cast<int>(pointer->width), static_cast<int>(pointer->height),
@@ -1484,6 +1493,11 @@ BOOL FreeRdpAdapter::cbPointerSetPosition(rdpContext* context, UINT32 x, UINT32 
     if (!ctx || !ctx->adapter) {
         return FALSE;
     }
+    const uint64_t currentGeneration =
+        ctx->adapter->impl_->sessionGeneration.load(std::memory_order_acquire);
+    if (ctx->generation == 0 || ctx->generation != currentGeneration) {
+        return FALSE;
+    }
     ctx->adapter->impl_->cursorStore.setPosition(static_cast<int>(x), static_cast<int>(y));
     return TRUE;
 }
@@ -1493,6 +1507,11 @@ BOOL FreeRdpAdapter::cbPointerSetNull(rdpContext* context) {
     if (!ctx || !ctx->adapter) {
         return FALSE;
     }
+    const uint64_t currentGeneration =
+        ctx->adapter->impl_->sessionGeneration.load(std::memory_order_acquire);
+    if (ctx->generation == 0 || ctx->generation != currentGeneration) {
+        return FALSE;
+    }
     ctx->adapter->impl_->cursorStore.setVisible(false);
     return TRUE;
 }
@@ -1500,6 +1519,11 @@ BOOL FreeRdpAdapter::cbPointerSetNull(rdpContext* context) {
 BOOL FreeRdpAdapter::cbPointerSetDefault(rdpContext* context) {
     auto* ctx = reinterpret_cast<FreeRdpContext*>(context);
     if (!ctx || !ctx->adapter) {
+        return FALSE;
+    }
+    const uint64_t currentGeneration =
+        ctx->adapter->impl_->sessionGeneration.load(std::memory_order_acquire);
+    if (ctx->generation == 0 || ctx->generation != currentGeneration) {
         return FALSE;
     }
     const bool accepted = ctx->adapter->impl_->cursorStore.setDefaultShape();
@@ -1562,7 +1586,16 @@ void FreeRdpAdapter::cbPostDisconnect(freerdp* instance) {
     auto* self = ctx ? ctx->adapter : nullptr;
     if (!self) return;
 
-    self->impl_->cursorStore.setVisible(false);
+    const uint64_t currentGeneration =
+        self->impl_->sessionGeneration.load(std::memory_order_acquire);
+    if (ctx->generation == currentGeneration) {
+        self->impl_->cursorStore.setVisible(false);
+    } else {
+        OH_LOG_INFO(LOG_APP,
+            "[RDP-CURSOR] stale post-disconnect generation=%{public}llu current=%{public}llu ignored",
+            static_cast<unsigned long long>(ctx->generation),
+            static_cast<unsigned long long>(currentGeneration));
+    }
     self->impl_->traceShutdown("post-disconnect", "begin");
     self->impl_->presentationEnabled.store(false, std::memory_order_release);
     RendererNapi::InvalidateActivePresentation();
@@ -2095,9 +2128,13 @@ int FreeRdpAdapter::connect(const ConnectionConfig& cfg) {
     {
         std::lock_guard<std::mutex> shutdownLock(impl_->shutdownMutex);
         impl_->shutdownState.reset();
-        impl_->sessionGeneration.store(
-            g_nextRdpSessionGeneration.fetch_add(1, std::memory_order_relaxed),
-            std::memory_order_release);
+        const uint64_t generation =
+            g_nextRdpSessionGeneration.fetch_add(1, std::memory_order_relaxed);
+        impl_->sessionGeneration.store(generation, std::memory_order_release);
+        // The cursor store and the frame/input workers share the same
+        // connection generation. A late FreeRDP pointer callback must not be
+        // presented as if it belonged to a newer ArkUI surface attachment.
+        impl_->cursorStore.setGeneration(generation);
         impl_->shutdownStartedUs.store(0, std::memory_order_release);
     }
     impl_->config = cfg;
@@ -2160,6 +2197,7 @@ void FreeRdpAdapter::connectThreadFunc() {
     }
     auto* ctx = reinterpret_cast<FreeRdpContext*>(instance_->context);
     ctx->adapter = this;
+    ctx->generation = impl_->sessionGeneration.load(std::memory_order_acquire);
     if (impl_->stopRequested.load(std::memory_order_acquire)) {
         impl_->traceShutdown("connect-cancel", "after-context");
         cleanupInstance();

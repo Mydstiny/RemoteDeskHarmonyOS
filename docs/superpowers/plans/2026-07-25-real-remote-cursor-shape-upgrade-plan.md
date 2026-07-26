@@ -1,10 +1,20 @@
 # RDP + RustDesk 真实远端鼠标形态长期运行升级计划
 
 - 日期：2026-07-25
-- 状态：排查完成，待按阶段实施；本文件本轮不修改功能代码
+- 状态：代码阶段已落地，本地验证通过；真实设备 30 分钟/2 小时耐久验收待执行
 - 范围：Phone/Pad 触控板模式的协议真实光标、PC/物理鼠标模式的系统/原生自定义光标，以及两者共用的形态生命周期
 - 协议：RustDesk 真实 FFI 核心、RDP 真实 FreeRDP 3.x
 - 目标：长时间运行、频繁形态切换、后台/前台恢复、窗口变化后，光标形态仍与远端协议当前形态一致，不被旧形态、永不结束的异步任务或系统指针回退污染
+
+## 0. 当前落地状态（2026-07-26）
+
+本轮已按本计划落地 RustDesk 与真实 FreeRDP 共用的远端光标形态链路修复：
+
+- RustDesk：按 cursor ID 的长期缓存、cache miss 保留最后合法形态、重连 generation 隔离，以及 FFI 回调/断开时的可见性保护。
+- RDP：真实 FreeRDP `Set`、`SetPosition`、`SetNull`、`SetDefault` 回调和 connection generation 隔离；真实构建 profile 保持 `USE_REAL_FREERDP=ON`。
+- 共用 native/N-API/ArkTS：形态/位置/可见性独立 revision，`sessionId + generation + revision + requestToken` 校验，PixelMap 异步 watchdog、原子替换、延迟释放和窗口/布局/hover 恢复。
+- 已完成本地门禁：RustDesk Rust 全量单测 140/140、native focused suite 143/143、真实 FreeRDP/RustDesk/N-API 交叉语法检查、`default@OhosTestCompileArkTS`、双 ABI RustDesk FFI 和 `assembleHap`。
+- 尚待真实设备执行第 6 节的 RustDesk/RDP 30 分钟和 2 小时矩阵；`ohosTest@OhosTestCompileArkTS` 当前工程未注册该 task（Hvigor `00306054`），不将其误报为通过。
 
 > 本计划明确同时覆盖 RustDesk 和 RDP。两种协议的“形态来源”不同，但最终都必须归一化为同一个 `RemoteCursorSnapshot`，再由唯一的光标所有者渲染。
 

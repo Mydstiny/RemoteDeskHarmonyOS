@@ -206,6 +206,11 @@ static_assert(offsetof(RustDeskFfiDisplayInfoSnapshot, resolutionCount) == 172);
 static std::string g_socketPath = RD_IPC_SOCKET_PATH_DEFAULT;
 const char* g_rustdeskHelperSocketPath = RD_IPC_SOCKET_PATH_DEFAULT;
 
+// A RustDesk adapter is shared by the extension registry. Keep cursor
+// generations process-wide so reconnecting the same numeric session id cannot
+// make a late N-API result look current.
+static std::atomic<uint64_t> g_nextRustDeskCursorGeneration {1};
+
 // ============================================================
 // RustDesk 真实 TCP 连接 (在独立线程中运行)
 // ============================================================
@@ -454,6 +459,7 @@ struct RustDeskBridge::Impl {
     std::atomic<bool>       disconnectRequested {false};
     std::atomic<bool>       ffiStreamEnded {false};
     std::atomic<uint64_t>   sessionId {0};
+    std::atomic<uint64_t>   cursorGeneration {0};
     std::atomic<uint64_t>   callbackVideoFrames {0};
     std::atomic<uint64_t>   callbackVideoBytes {0};
     std::atomic<uint64_t>   callbackKeyframes {0};
@@ -568,6 +574,7 @@ static std::atomic<uint64_t> g_ffiAudioFrameCount {0};
 static std::atomic<uint64_t> g_ffiMouseSendCount {0};
 static std::atomic<uint64_t> g_ffiKeySendCount {0};
 static std::atomic<uint64_t> g_ffiWheelSendCount {0};
+static std::atomic<uint64_t> g_ffiCursorCacheMissCount {0};
 static std::atomic<uint64_t> g_ffiTextSendCount {0};
 static std::atomic<uint64_t> g_ffiFileSendCount {0};
 static std::atomic<uint64_t> g_ffiCursorShapeCount {0};
@@ -814,6 +821,18 @@ void RustDeskBridge::onFfiCursor(const void* cursorPtr, void* userData) {
                 static_cast<unsigned long long>(index), cursor->visible ? "yes" : "no");
             break;
         }
+        case 3: {
+            const uint64_t index = ++g_ffiCursorCacheMissCount;
+            if (index <= 10 || index % 100 == 0) {
+                OH_LOG_WARN(LOG_APP,
+                    "[RustDesk-FFI] cursor cache miss #%{public}llu id=%{public}llu preserve_previous=true",
+                    static_cast<unsigned long long>(index),
+                    static_cast<unsigned long long>(cursor->shapeId));
+            }
+            // Diagnostic-only update. Do not mutate the cursor store: its
+            // last valid protocol shape remains the authoritative display.
+            break;
+        }
         default:
             break;
     }
@@ -843,11 +862,16 @@ void RustDeskBridge::onFfiDisconnect(int state, const char* message, void* userD
     bool requested = false;
     std::shared_ptr<std::promise<void>> cleanupGate;
     if (impl) {
-        impl->cursorStore.setVisible(false);
         impl->ffiStreamEnded.store(true);
         std::lock_guard<std::mutex> lock(impl->mutex);
         wasConnected = impl->state == ConnectionState::CONNECTED;
         requested = impl->disconnectRequested.load();
+        // disconnect() already applies the visibility transition for the
+        // requested teardown. Do not repeat it after setSessionIdentity() has
+        // prepared the next session's fallback shape.
+        if (!requested) {
+            impl->cursorStore.setVisible(false);
+        }
     }
     void* endedHandle = nullptr;
     if (impl && !requested) {
@@ -911,7 +935,10 @@ RustDeskBridge::RustDeskBridge(RustDeskMode mode)
 }
 
 void RustDeskBridge::setSessionIdentity(uint64_t sessionId) {
+    const uint64_t generation =
+        g_nextRustDeskCursorGeneration.fetch_add(1, std::memory_order_relaxed);
     impl_->sessionId.store(sessionId, std::memory_order_release);
+    impl_->cursorGeneration.store(generation, std::memory_order_release);
     impl_->callbackVideoFrames.store(0, std::memory_order_release);
     impl_->callbackVideoBytes.store(0, std::memory_order_release);
     impl_->callbackKeyframes.store(0, std::memory_order_release);
@@ -919,7 +946,7 @@ void RustDeskBridge::setSessionIdentity(uint64_t sessionId) {
     impl_->callbackWidth.store(0, std::memory_order_release);
     impl_->callbackHeight.store(0, std::memory_order_release);
     impl_->lastFrameAtMs.store(0, std::memory_order_release);
-    impl_->cursorStore.reset(sessionId, "rustdesk");
+    impl_->cursorStore.reset(sessionId, "rustdesk", generation);
     // RustDesk does not guarantee that an unchanged cursor shape is repeated
     // after every UI/surface handoff. This local bootstrap shape is explicitly
     // marked non-authoritative so ArkUI can keep a stable circle affordance
@@ -1323,6 +1350,16 @@ int RustDeskBridge::connect(const ConnectionConfig& cfg) {
     if (getState() != ConnectionState::DISCONNECTED || hasFfiHandle ||
         hasFfiConnectThread || hasFfiCleanupThreads) {
         disconnect();
+    }
+    // setSessionIdentity() can run before connect() tears down a previous FFI
+    // stream. Re-seed the store after that teardown so the old disconnect
+    // callback cannot leave the new session hidden or carry old revisions.
+    const uint64_t sessionId = impl_->sessionId.load(std::memory_order_acquire);
+    const uint64_t generation = impl_->cursorGeneration.load(std::memory_order_acquire);
+    if (sessionId != 0 && generation != 0) {
+        impl_->cursorStore.reset(sessionId, "rustdesk", generation);
+        impl_->cursorStore.setFallbackShape();
+        impl_->cursorStore.setVisible(true);
     }
     impl_->config = cfg;
     impl_->disconnectRequested.store(false);

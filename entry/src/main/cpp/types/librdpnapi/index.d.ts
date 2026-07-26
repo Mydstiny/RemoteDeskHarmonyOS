@@ -305,7 +305,9 @@ export interface LocalResourceStats {
 export interface RemoteCursorSnapshot {
   sessionId: number;
   protocol: string;
-  shapeId: number;
+  generation: number;
+  shapeId: string;
+  shapeSource: string;
   x: number;
   y: number;
   width: number;
@@ -314,6 +316,7 @@ export interface RemoteCursorSnapshot {
   hotY: number;
   /** True only for the RustDesk controller-side bootstrap arrow. */
   fallbackShape: boolean;
+  protocolShapeAvailable: boolean;
   positionAvailable: boolean;
   visible: boolean;
   shapeRevision: number;

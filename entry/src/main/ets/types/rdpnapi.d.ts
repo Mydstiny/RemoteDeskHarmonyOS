@@ -307,7 +307,9 @@ export interface LocalResourceStats {
 export interface RemoteCursorSnapshot {
   sessionId: number;
   protocol: string;
-  shapeId: number;
+  generation: number;
+  shapeId: string;
+  shapeSource: string;
   x: number;
   y: number;
   width: number;
@@ -315,6 +317,7 @@ export interface RemoteCursorSnapshot {
   hotX: number;
   hotY: number;
   fallbackShape: boolean;
+  protocolShapeAvailable: boolean;
   positionAvailable: boolean;
   visible: boolean;
   shapeRevision: number;
