@@ -52,11 +52,11 @@
 
 ```sh
 source scripts/macos_env.sh
-hvigorw --mode module -p module=entry -p product=default default@OhosTestCompileArkTS --analyze=normal --parallel --incremental --daemon
-hvigorw --mode module -p module=entry -p product=default assembleHap --analyze=normal --parallel --incremental --daemon
+hvigorw --mode module -p module=entry -p product=default default@OhosTestCompileArkTS --analyze=normal --parallel --incremental --no-daemon
+hvigorw --mode module -p module=entry -p product=default assembleHap --analyze=normal --parallel --incremental --no-daemon
 ```
 
-Windows 使用 DevEco 自带的 `hvigorw.js`/`hvigorw.bat` 执行相同的 `module=entry`、`product=default` 和任务名。两项都必须返回成功；否则任务保持未完成，失败原因必须记录在 `docs/codex/CURRENT.md` 的 blocker 中。`default@OhosTestBuildArkTS` 是旧门，不得作为替代验收项。对 ArkTS 测试模块有影响时，另加 `ohosTest@OhosTestCompileArkTS`。
+Windows 使用 DevEco 自带的 `hvigorw.js`/`hvigorw.bat` 执行相同的 `module=entry`、`product=default` 和任务名，并使用非 daemon 方式完成可判定的退出。两项都必须返回成功；否则任务保持未完成，失败原因必须记录在 `docs/codex/CURRENT.md` 的 blocker 中。`default@OhosTestBuildArkTS` 是旧门，不得作为替代验收项。对 ArkTS 测试模块有影响时，另加 `ohosTest@OhosTestCompileArkTS`。
 
 ## 按风险分级验证
 
