@@ -123,6 +123,7 @@ import {
   surfaceDeltaToRemote,
   surfacePointToRemote
 } from '../services/RemoteSurfaceTransformPolicy';
+import { shouldAcceptRendererViewportSnapshot } from '../services/RemoteRendererViewportPolicy';
 import {
   baseCanvasTransform,
   canvasTransformCanPan,
@@ -3972,7 +3973,8 @@ struct RemoteDesktop {
       if (raw && raw.sourceWidth > 0 && raw.sourceHeight > 0) {
         const nativeTransformVersion: number = Number.isFinite(raw.transformVersion) ?
           raw.transformVersion : 0;
-        if (nativeTransformVersion < this.rendererCanvasTransformPendingVersion) {
+        if (!shouldAcceptRendererViewportSnapshot(this.rendererCanvasTransformPendingVersion,
+          nativeTransformVersion)) {
           // The render owner has not applied the newest transform yet. Keep
           // the locally mirrored viewport; accepting this snapshot would make
           // cursor/input mapping jump back during pinch or canvas pan.

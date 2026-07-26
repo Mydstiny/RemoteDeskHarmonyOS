@@ -50,6 +50,7 @@ import rustDeskRelayImportServiceTest from './RustDeskRelayImportService.test';
 import hostAddConnectionHandoffPolicyTest from './HostAddConnectionHandoffPolicy.test';
 import remoteCanvasTransformPolicyTest from './RemoteCanvasTransformPolicy.test';
 import remoteSurfaceTransformPolicyTest from './RemoteSurfaceTransformPolicy.test';
+import remoteRendererViewportPolicyTest from './RemoteRendererViewportPolicy.test';
 import remoteResolutionPresetPolicyTest from './RemoteResolutionPresetPolicy.test';
 import dataSnapshotRevisionPolicyTest from './DataSnapshotRevisionPolicy.test';
 import boundedDocumentIoTest from './BoundedDocumentIo.test';
@@ -111,6 +112,7 @@ export default function testsuite() {
   hostAddConnectionHandoffPolicyTest();
   remoteCanvasTransformPolicyTest();
   remoteSurfaceTransformPolicyTest();
+  remoteRendererViewportPolicyTest();
   remoteResolutionPresetPolicyTest();
   dataSnapshotRevisionPolicyTest();
   boundedDocumentIoTest();
