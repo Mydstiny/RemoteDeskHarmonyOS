@@ -17,7 +17,9 @@
 use crate::crypto::{self, KeyPair};
 use crate::crypto_channel::CryptoChannel;
 use crate::control_inbox::{CONTROL_BATCH_LIMIT, ControlInbox};
-use crate::cursor_state::{CursorIdResult, CursorState, CursorStreamUpdate};
+use crate::cursor_state::{
+    CursorCacheMissReason, CursorIdResult, CursorState, CursorStreamUpdate,
+};
 use crate::net;
 use crate::protocol::message_proto::{
     AudioFormat, AudioFrame, CaptureDisplays, Clipboard, ClipboardFormat, ControlKey, DisplayInfo,
@@ -1313,15 +1315,22 @@ impl RustDeskConnector {
                             on_cursor(CursorStreamUpdate::Shape(shape));
                             on_cursor(CursorStreamUpdate::Visibility(true));
                         }
-                        CursorIdResult::CacheMiss { id } => {
+                        CursorIdResult::CacheMiss { id, reason } => {
                             eprintln!(
-                                "[RustDesk-FFI] cursor id pending id={} cache_miss=true preserve_previous=true",
+                                "[RustDesk-FFI] cursor id pending id={} cache_miss=true reason={:?} preserve_previous=true",
                                 id,
+                                reason,
                             );
+                            if reason == CursorCacheMissReason::BudgetEvicted {
+                                eprintln!(
+                                    "[RustDesk-FFI] cursor cache exhausted id={} recovery=protocol_data_required",
+                                    id,
+                                );
+                            }
                             // Keep the current shape and visibility.  The
                             // next CursorData for this id will select and
                             // publish the real bitmap.
-                            on_cursor(CursorStreamUpdate::CacheMiss { id });
+                            on_cursor(CursorStreamUpdate::CacheMiss { id, reason });
                         }
                     }
                 }

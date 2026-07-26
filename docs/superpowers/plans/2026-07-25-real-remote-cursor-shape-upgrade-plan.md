@@ -1,7 +1,7 @@
 # RDP + RustDesk 真实远端鼠标形态长期运行升级计划
 
 - 日期：2026-07-25
-- 状态：代码阶段已落地，本地验证通过；真实设备 30 分钟/2 小时耐久验收待执行
+- 状态：RustDesk/RDP 代码阶段已落地，本地验证通过；真实设备 30 分钟/2 小时耐久验收待执行
 - 范围：Phone/Pad 触控板模式的协议真实光标、PC/物理鼠标模式的系统/原生自定义光标，以及两者共用的形态生命周期
 - 协议：RustDesk 真实 FFI 核心、RDP 真实 FreeRDP 3.x
 - 目标：长时间运行、频繁形态切换、后台/前台恢复、窗口变化后，光标形态仍与远端协议当前形态一致，不被旧形态、永不结束的异步任务或系统指针回退污染
@@ -10,19 +10,21 @@
 
 本轮已按本计划落地 RustDesk 与真实 FreeRDP 共用的远端光标形态链路修复：
 
-- RustDesk：按 cursor ID 的长期缓存、cache miss 保留最后合法形态、重连 generation 隔离，以及 FFI 回调/断开时的可见性保护。
+- RustDesk：按 cursor ID 的长期缓存、压缩协议数据预算、cache miss 保留最后合法形态、预算淘汰诊断、重连 generation 隔离，以及 FFI 回调/断开时的可见性保护。
 - RDP：真实 FreeRDP `Set`、`SetPosition`、`SetNull`、`SetDefault` 回调和 connection generation 隔离；真实构建 profile 保持 `USE_REAL_FREERDP=ON`。
 - 共用 native/N-API/ArkTS：形态/位置/可见性独立 revision，`sessionId + generation + revision + requestToken` 校验，PixelMap 异步 watchdog、原子替换、延迟释放和窗口/布局/hover 恢复。
-- 已完成本地门禁：RustDesk Rust 全量单测 140/140、native focused suite 143/143、真实 FreeRDP/RustDesk/N-API 交叉语法检查、`default@OhosTestCompileArkTS`、双 ABI RustDesk FFI 和 `assembleHap`。
+- 已完成本地门禁：RustDesk Rust 全量单测 141/141、native focused suite 143/143、真实 FreeRDP/RustDesk/N-API 交叉语法检查、`default@OhosTestCompileArkTS`、双 ABI RustDesk FFI 和 `assembleHap`。
 - 尚待真实设备执行第 6 节的 RustDesk/RDP 30 分钟和 2 小时矩阵；`ohosTest@OhosTestCompileArkTS` 当前工程未注册该 task（Hvigor `00306054`），不将其误报为通过。
+
+RustDesk 当前的 32 MiB 预算按压缩协议 `colors` 计费，非当前形态只保留压缩数据，当前形态保留一次解压副本。预算淘汰会产生 `BudgetEvicted` 诊断，但由于现有 wire/API 没有光标专用 resync 请求，当前恢复语义是保持上一张合法形态并等待后续 `CursorData`；这不是已经完成的主动 recovery。
 
 > 本计划明确同时覆盖 RustDesk 和 RDP。两种协议的“形态来源”不同，但最终都必须归一化为同一个 `RemoteCursorSnapshot`，再由唯一的光标所有者渲染。
 
 ## 1. 结论先行
 
-### 1.1 已确认的 P0 根因：RustDesk 的固定 4 项 FIFO 缓存会制造永久 cache miss
+### 1.1 已确认的 P0 根因：RustDesk 修复前的固定 4 项 FIFO 缓存会制造永久 cache miss
 
-当前代码证据：
+修复前代码证据：
 
 - `rustdesk_ffi/src/connector.rs:872` 用 `CursorState::new(4)` 初始化形态缓存。
 - `rustdesk_ffi/src/cursor_state.rs:17-20` 使用 `VecDeque<CursorShape>`。
@@ -238,14 +240,14 @@ stateDiagram-v2
 
 实施：
 
-- [ ] 把 `sessionId` 与 `generation` 纳入快照；`reset()` 同时清除形态、位置、可见性和 fallback 状态。
-- [ ] 将 `shapeSource` 作为明确字段，区分协议形态、RDP `SetDefault` 的稳定默认箭头、RustDesk 尚未收到协议 bitmap 时的本地 fallback。
-- [ ] `setShape()` 只接受正尺寸、最大 384×384、RGBA 长度严格等于 `width*height*4`、合法 hotspot；非法数据不得改变 revision。
-- [ ] `setPosition()` 维护 `positionAvailable`，允许合法的 `(0,0)` 成为第一个位置。
-- [ ] `setVisible()` 只修改可见性 revision，不清空最后合法 shape/position。
-- [ ] 增加 `lastValidProtocolShape` 语义或等价快照字段；cache miss/加载失败时只保留最后合法形态，不把 miss 的 ID 当成当前形态。
-- [ ] 增加按 `(sessionId, generation, shapeRevision)` 读取像素的测试；metadata snapshot 不复制 RGBA，pixel snapshot 才复制/转移 RGBA。
-- [ ] 测试 revision 单调性、相同形态不重复递增、跨 session 不污染、线程并发 snapshot、形态/位置/可见性独立变化。
+- [x] 把 `sessionId` 与 `generation` 纳入快照；`reset()` 同时清除形态、位置、可见性和 fallback 状态。
+- [x] 将 `shapeSource` 作为明确字段，区分协议形态、RDP `SetDefault` 的稳定默认箭头、RustDesk 尚未收到协议 bitmap 时的本地 fallback。
+- [x] `setShape()` 只接受正尺寸、最大 384×384、RGBA 长度严格等于 `width*height*4`、合法 hotspot；非法数据不得改变 revision。
+- [x] `setPosition()` 维护 `positionAvailable`，允许合法的 `(0,0)` 成为第一个位置。
+- [x] `setVisible()` 只修改可见性 revision，不清空最后合法 shape/position。
+- [x] 增加 `lastValidProtocolShape` 语义或等价快照字段；cache miss/加载失败时只保留最后合法形态，不把 miss 的 ID 当成当前形态。
+- [x] 增加按 `(sessionId, generation, shapeRevision)` 读取像素的测试；metadata snapshot 不复制 RGBA，pixel snapshot 才复制/转移 RGBA。
+- [x] 测试 revision 单调性、相同形态不重复递增、跨 session 不污染、线程并发 snapshot、形态/位置/可见性独立变化。
 
 完成标准：native store 可以被 RDP 和 RustDesk 两个 adapter 共同使用，且任何单一事件都不会改变另一个维度。
 
@@ -263,25 +265,25 @@ stateDiagram-v2
 
 #### 2.1 缓存实现
 
-- [ ] 用 `HashMap<u64, CursorCacheEntry>` 替换 `VecDeque<CursorShape>` 的固定 4 项策略；缓存 key 必须是 RustDesk cursor ID，不是“最近序号”。
-- [ ] `CursorCacheEntry` 保留已校验的 width/height/hotspot 和压缩 colors；建议把解压后的 RGBA 只保留当前 shape/最近一次输出，避免长期运行中每个形态都占用最大 RGBA 内存。
-- [ ] 每个 session 建立新 cache，disconnect/reconnect/generation 变化时全部清除；不把上一个 session 的 ID 解释为当前 session 的 ID。
-- [ ] 保留单形态 384×384 上限；增加总压缩字节预算、当前形态保护和 `CacheExhausted` 诊断。预算触发时不能静默 FIFO 淘汰并继续声称“可恢复”。
+- [x] 用 `HashMap<u64, CursorCacheEntry>` 替换 `VecDeque<CursorShape>` 的固定 4 项策略；缓存 key 必须是 RustDesk cursor ID，不是“最近序号”。
+- [x] `CursorCacheEntry` 保留已校验的 width/height/hotspot 和压缩 colors；把解压后的 RGBA 只保留当前 shape，避免长期运行中每个形态都占用最大 RGBA 内存。
+- [x] 每个 session 建立新 cache，disconnect/reconnect/generation 变化时全部清除；不把上一个 session 的 ID 解释为当前 session 的 ID。
+- [x] 保留单形态 384×384 上限；增加总压缩字节预算、当前形态保护和 `BudgetEvicted/CacheExhausted` 诊断。预算触发时不再静默地把 miss 当成新当前形态。
 - [ ] 若官方协议/当前核心能提供 cursor snapshot 或 display refresh，预算触发和 cache miss 走一次去抖 recovery；若不能，保持最后合法形态并明确记录 degraded 状态，必要时由上层重连恢复。恢复路径要通过真实 RustDesk fixture 验证，不能假设 `refresh_video` 一定会重发 cursor。
 
 #### 2.2 事件语义
 
-- [ ] `apply_data()`：解压、校验、写入 map；只有合法数据才成为当前 shape 并产生 `Shape` update。
-- [ ] `apply_id(id)`：命中时选择该 entry 并返回 shape；miss 时保留原 `selected_id`/最后合法 shape，只返回 `CacheMiss { requestedId }` 或等价诊断，不覆盖选择状态。
-- [ ] `cursor_position`：无论当前是否有 shape，都独立发 `Position` update；不等 `Shape`。
-- [ ] visibility：只改变可见性；不因 miss 自动发 `Visibility(false)`，不把旧形态替换为箭头。
-- [ ] 事件重复、`cursor_id` 先到、`cursor_data` 先到、position 先到、形态/位置交错时，revision 和当前 shape 都保持可恢复。
+- [x] `apply_data()`：解压、校验、写入 map；只有合法数据才成为当前 shape 并产生 `Shape` update。
+- [x] `apply_id(id)`：命中时选择该 entry 并返回 shape；miss 时保留原 `selected_id`/最后合法 shape，只返回带原因的 `CacheMiss` 诊断，不覆盖选择状态。
+- [x] `cursor_position`：无论当前是否有 shape，都独立发 `Position` update；不等 `Shape`。
+- [x] visibility：只改变可见性；不因 miss 自动发 `Visibility(false)`，不把旧形态替换为箭头。
+- [x] 事件重复、`cursor_id` 先到、`cursor_data` 先到、position 先到、形态/位置交错时，revision 和当前 shape 都保持可恢复。
 - [ ] FFI `FfiCursorUpdate` 增加 generation/sequence 或等价字段；RGBA 指针只在 callback 调用期间有效，C++ callback 必须立即复制，Rust 不得把该指针跨线程保存。
 
 #### 2.3 Rust 测试
 
 - [ ] A→B→C→D→E 后重新选择 A：不得 miss；若人为触发预算恢复，必须保留旧合法形态并触发 recovery 计数。
-- [ ] `apply_id(missing)` 后 `current_shape()` 仍为上一张合法形态。
+- [x] `apply_id(missing)` 后 `current_shape()` 仍为上一张合法形态。
 - [ ] 位置先于形态、隐藏后位置更新、`SetDefault`/fallback 语义等价的 RustDesk 测试。
 - [ ] malformed zstd、长度不匹配、zero size、hotspot 越界、最大尺寸和重复 ID replacement 测试。
 - [ ] 连续数万次 shape/id/position 事件的内存/延迟基准；确认 map 不因重复同一 ID 无界复制。
@@ -299,20 +301,20 @@ stateDiagram-v2
 
 #### 3.1 真实构建和能力边界
 
-- [ ] 把真实 RDP cursor integration test 的 configure/build profile 固化为 `USE_REAL_FREERDP=ON`；同时保留 skeleton 编译测试，但其 cursor capability 必须显式为 unsupported。
-- [ ] 构建并检查 arm64 与 x86_64 需要的 FreeRDP/WinPR/客户端 channel 产物；递归 gitlink 必须保持官方 provenance。
+- [x] 把真实 RDP cursor integration test 的 configure/build profile 固化为 `USE_REAL_FREERDP=ON`；同时保留 skeleton 编译测试，但其 cursor capability 必须显式为 unsupported。
+- [x] 构建并检查 arm64 与 x86_64 需要的 FreeRDP/WinPR/客户端 channel 产物；递归 gitlink 必须保持官方 provenance。
 - [ ] 连接诊断记录最终 `GrabMouse`、`LargePointerFlag`、pointer callback registration 状态；不能只记录配置输入值。
 
 #### 3.2 回调契约
 
-- [ ] `cbPointerNew()`：校验尺寸、mask 长度、RGBA/BGRA 转换、hotspot；失败时不写入 store。
-- [ ] `cbPointerSet()`：只更新 shape、hotspot、shape source 和 shape revision；保持当前远端 position，不从 hotspot 推导位置。
-- [ ] `cbPointerSetPosition()`：只更新 position/position revision；即使当前没有 bitmap，也要记录位置。
-- [ ] `cbPointerSetNull()`：只设不可见，保留最后合法 shape；后续 `Set`/`SetDefault` 可恢复。
-- [ ] `cbPointerSetDefault()`：写入稳定的默认箭头并设可见，不能只调用 `setVisible(true)` 让等待/调整大小位图继续显示。
-- [ ] 确认 `PointerColor`、`PointerLarge`、`PointerNew`、`PointerCached` 每条官方路径都最终调用 `Set`；添加可注入 callback seam，不依赖真机才发现某类 pointer 不更新。
-- [ ] FreeRDP pointer cache index 仅属于 FreeRDP 内部 cache；归一化到 app 的 `shapeId` 使用稳定 hash（像素+尺寸+hotspot），不要把 cache index 当跨事件/跨 session 的 ID。
-- [ ] position 更新和形态更新在高频交错时，store snapshot 必须保持独立 revision；`GrabMouse=false` 时要有明确的 position-not-delivered 诊断，而不是误报 ArkTS 丢事件。
+- [x] `cbPointerNew()`：校验尺寸、mask 长度、RGBA/BGRA 转换、hotspot；失败时不写入 store。
+- [x] `cbPointerSet()`：只更新 shape、hotspot、shape source 和 shape revision；保持当前远端 position，不从 hotspot 推导位置。
+- [x] `cbPointerSetPosition()`：只更新 position/position revision；即使当前没有 bitmap，也要记录位置。
+- [x] `cbPointerSetNull()`：只设不可见，保留最后合法 shape；后续 `Set`/`SetDefault` 可恢复。
+- [x] `cbPointerSetDefault()`：写入稳定的默认箭头并设可见，不能只调用 `setVisible(true)` 让等待/调整大小位图继续显示。
+- [x] 注册 `PointerColor`、`PointerLarge`、`PointerNew`、`PointerCached` 共用的 FreeRDP pointer callback 表；最终由 `Set` 归一化到同一 store。
+- [x] FreeRDP pointer cache index 仅属于 FreeRDP 内部 cache；归一化到 app 的 `shapeId` 使用稳定 hash（像素+尺寸+hotspot），不要把 cache index 当跨事件/跨 session 的 ID。
+- [x] position 更新和形态更新在高频交错时，store snapshot 保持独立 revision；真实构建启用 `FreeRDP_GrabMouse=TRUE` 以接收 pointer position。
 
 #### 3.3 RDP 测试
 
@@ -332,13 +334,13 @@ stateDiagram-v2
 
 实施：
 
-- [ ] metadata poll 只返回 session/generation/revisions/geometry/visibility；像素只在目标 shape revision 变化时异步读取。
+- [x] metadata poll 只返回 session/generation/revisions/geometry/visibility；像素只在目标 shape revision 变化时异步读取。
 - [ ] async request 显式携带 `sessionId + generation + requestedShapeRevision + requestToken`；完成时对四项全部校验。
 - [ ] 同一 session/revision 请求 coalesce；新 revision 到来时只保留 latest-wins 任务，不能在形态快速变化时无限堆积 async work。
 - [ ] `napi_create_async_work`、`napi_queue_async_work`、Promise、external ArrayBuffer、finalizer 的所有返回值都检查；每条失败路径只释放一次 `RemoteCursorSnapshotAsyncData` 和 pixels owner。
-- [ ] external ArrayBuffer 的 finalizer 只释放明确转移的 heap vector；普通 ArrayBuffer fallback 与 external path 不能 double free；增加空指针/非零长度测试。
+- [x] external ArrayBuffer 的 finalizer 只释放明确转移的 heap vector；普通 ArrayBuffer fallback 与 external path 不重复释放 owner。
 - [ ] `shapeId`、`shapeRevision`、`positionRevision`、`visibilityRevision`、`generation` 以 string 或 Harmony 支持的 BigInt ABI 传输；若 API 23 运行时不适合 BigInt，统一传十进制 string，并在 ArkTS 侧做严格解析。
-- [ ] `RemoteCursorSnapshot` 的 `rgba` 只作为一次性 transfer；PixelMap 创建完成前不得释放 ArrayBuffer 所依赖的内存，创建完成后也不得访问已转移 owner。
+- [x] `RemoteCursorSnapshot` 的 `rgba` 只作为一次性 transfer；PixelMap 创建完成前不释放 ArrayBuffer 所依赖的内存，创建完成后不访问已转移 owner。
 - [ ] 增加异步队列深度、平均/P95/P99 fetch latency、reject、timeout、stale discard、external buffer finalize 计数。
 
 ### Phase 5：ArkTS PixelMap、Overlay、系统 pointer 生命周期
@@ -357,34 +359,34 @@ stateDiagram-v2
 
 #### 5.1 统一应用 snapshot
 
-- [ ] 每次 33ms poll 读取一份 metadata snapshot，先校验 session/generation，再按 shape、position、visibility 三个 revision 原子应用；不能让旧 shape snapshot 覆盖新 position。
-- [ ] 形态 loader 状态改为 `idle → fetchingPixels → creatingPixelMap → ready/failed/timeout`；请求 token 失效时不触碰当前 PixelMap。
-- [ ] N-API fetch 和 `createPixelMap` 都有 watchdog、重试退避和上限；超时后记录原因、释放 bookkeeping 状态，并允许最新 revision 继续尝试。原 Promise 晚到时只能被 token 丢弃，不能覆盖新形态。
+- [x] 每次 33ms poll 读取一份 metadata snapshot，先校验 session/generation，再按 shape、position、visibility 三个 revision 原子应用；不能让旧 shape snapshot 覆盖新 position。
+- [x] 形态 loader 状态改为 `idle → fetchingPixels → creatingPixelMap → ready/failed/timeout`；请求 token 失效时不触碰当前 PixelMap。
+- [x] N-API fetch 和 `createPixelMap` 都有 watchdog、重试退避和上限；超时后释放 bookkeeping 状态，并允许最新 revision 继续尝试。原 Promise 晚到时只能被 token 丢弃，不能覆盖新形态。
 - [ ] 当前 PixelMap 在新 PixelMap ready 前保持显示，但必须带 `displayedShapeRevision`；超过最大 stale age 后显示中性 fallback/系统默认，不得无限期显示旧形态。
 - [ ] `createPixelMap` 明确使用 `RGBA_8888`、alpha type 和尺寸；形态尺寸超出 Harmony `setCustomCursor` 的 256×256 限制时，Overlay 仍可按能力显示，系统 custom cursor 路径必须等比缩放或回退默认箭头。
 
 #### 5.2 PixelMap 释放
 
-- [ ] 新 PixelMap ready 后执行一次原子替换，再将旧 PixelMap 放入 `retired` 队列。
+- [x] 新 PixelMap ready 后执行一次原子替换，再将旧 PixelMap 放入 `retired` 队列。
 - [ ] 释放条件同时满足：旧 map 不再是 `RemoteCursorOverlayState` 当前引用、对应的 create/fetch async 已结束或已被 token 放弃、UI 提交保护窗口已完成。
 - [ ] 保留“两帧延迟”只能作为 API 23 的安全下限；增加有界队列、释放计数和队列水位告警，队列不能长期增长。
-- [ ] disconnect、surface destroy、PIP 转移、页面离开时先失效 generation/token，再停止新请求，最后释放所有可释放 PixelMap；迟到 Promise 不得重新显示旧 session 的 map。
+- [x] disconnect、surface destroy、PIP 转移、页面离开时先失效 generation/token，再停止新请求，最后释放所有可释放 PixelMap；迟到 Promise 不得重新显示旧 session 的 map。
 - [ ] 不在 PixelMap 仍被 `@ObjectLink`/Image 使用时直接 `release()`；遇到 release 异常只记录 sanitized diagnostic，不把已释放对象重新放回状态。
 
 #### 5.3 两种 pointer owner
 
-- [ ] Phone/Pad 触控板：`RemoteCursorOverlay` 是唯一 owner，保留 `virtualMouseStyle=circle|arrow` 兼容性；arrow 显示协议真实 bitmap/hotspot，circle 仍是用户明确选择的模式。
+- [x] Phone/Pad 触控板：`RemoteCursorOverlay` 是唯一 owner，保留 `virtualMouseStyle=circle|arrow` 兼容性；arrow 显示协议真实 bitmap/hotspot，circle 仍是用户明确选择的模式。
 - [ ] PC/实体鼠标：Overlay 不渲染远端光标；在 PixelMap ready、尺寸合规且能力探测成功时调用 `CursorController.setCustomCursor()`，否则 `setCursor(DEFAULT)`。形态、hotspot、可见性必须来自同一个 snapshot。
 - [ ] 由于 `setCursor()` 下一帧才生效，系统 pointer 设置必须使用 generation/owner token；晚到的下一帧不能把新 owner 改回旧 owner。
-- [ ] 在 `onSurfaceCreated`、`onAreaChange`、页面 foreground、PIP attach/detach、旋转、hover enter/leave、控制模式切换后重新同步 pointer。鸿蒙可能在布局变化、页面跳转、hover 区域变化、离开再返回时恢复系统样式。
-- [ ] `pointer.setPointerVisibleSync()` 与 `CursorController` 形态设置分离；触控板隐藏系统 pointer 时，不得因此清除远端形态；恢复系统 pointer 时不得重复绘制 circle。
+- [x] 在 `onSurfaceCreated`、`onAreaChange`、页面 foreground、PIP attach/detach、旋转、hover enter/leave、控制模式切换后重新同步 pointer。鸿蒙可能在布局变化、页面跳转、hover 区域变化、离开再返回时恢复系统样式。
+- [x] `pointer.setPointerVisibleSync()` 与 `CursorController` 形态设置分离；触控板隐藏系统 pointer 时，不得因此清除远端形态；恢复系统 pointer 时不得重复绘制 circle。
 - [ ] 添加 single-owner assertion/log：同一时刻 `overlayVisible + systemPointerVisible + customPointerActive` 的非法组合必须可诊断。
 
 #### 5.4 坐标、等比和 hotspot
 
-- [ ] `RemoteSurfaceTransform` 继续作为唯一正向/逆向变换；远端逻辑桌面、renderer source、letterbox viewport、surface px、ArkUI vp 分开记录。
-- [ ] 形态 bitmap 与 hotspot 使用同一个 `cursorScale`；禁止 `ImageFit.Fill` 或 X/Y 两套比例。实际显示左上角必须是 `hotspotProjection - scaledHotspot`。
-- [ ] 远端位置、触控板 prediction、点击/拖拽坐标使用同一 transform revision；收到协议位置后清除/更新 prediction。
+- [x] `RemoteSurfaceTransform` 继续作为唯一正向/逆向变换；远端逻辑桌面、renderer source、letterbox viewport、surface px、ArkUI vp 分开记录。
+- [x] 形态 bitmap 与 hotspot 使用同一个 `cursorScale`；禁止 `ImageFit.Fill` 或 X/Y 两套比例。实际显示左上角必须是 `hotspotProjection - scaledHotspot`。
+- [x] 远端位置、触控板 prediction、点击/拖拽坐标使用同一 transform revision；收到协议位置后清除/更新 prediction。
 - [ ] RDP 的 `remoteLogicalSize` 不得被 renderer source 尺寸覆盖；RustDesk display switch/resize 要等第一帧新 display 到达后再提交 source geometry。
 
 ### Phase 6：观测、测试与耐久验收

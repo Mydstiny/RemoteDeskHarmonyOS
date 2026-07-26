@@ -995,7 +995,7 @@ fn dispatch_cursor_update(
             ffi.visible = visible;
             on_cursor(&ffi, user_data);
         }
-        CursorStreamUpdate::CacheMiss { id } => {
+        CursorStreamUpdate::CacheMiss { id, reason: _ } => {
             ffi.kind = 3;
             ffi.shape_id = id;
             // The cache miss is diagnostic-only.  The native store must keep
