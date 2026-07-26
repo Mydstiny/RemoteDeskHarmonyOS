@@ -5,7 +5,8 @@ export const CLOUD_SYNC_TABLES: string[] = [
   'rdpcredentials',
   'rustdeskrelays',
   'sshkeys',
-  'totpentries'
+  'totpentries',
+  'vncrecords'
 ];
 
 export type CloudSyncOperation = 'upload' | 'download' | 'refresh';

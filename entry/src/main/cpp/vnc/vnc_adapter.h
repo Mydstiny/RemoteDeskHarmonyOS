@@ -1,19 +1,21 @@
 /**
  * vnc_adapter.h — VNC 协议适配器
  *
- * 基于 LibVNCServer/LibVNCClient 的 VNC 扩展协议适配器。
- * VNC 是最古老的远程桌面协议之一，广泛用于树莓派、嵌入式设备。
+ * VNC/RFB 适配器。RFB 引擎、transport 和 raw framebuffer 均属于 VNC
+ * namespace，不进入 RDP/RustDesk 的 decoder 或 settings。
  *
- * 特性限制:
- *   - 不支持 HDR、触控笔压感、游戏手柄
- *   - 基础剪贴板同步
- *   - Tight/ZRLE/Raw 编码
+ * 当前支持：RFB 3.3/3.7/3.8、None/VNC password、Raw、CopyRect、
+ * DesktopSize、UltraVNC pairing、TLS transport、键鼠和文本剪贴板。
+ * WebSocket/generic relay code remains contract-gated and is not enabled by
+ * the native entry point until a versioned server protocol is deployed.
  */
 
 #ifndef VNC_ADAPTER_H
 #define VNC_ADAPTER_H
 
 #include "extensions/protocol_adapter.h"
+#include "vnc_rfb_engine.h"
+#include <mutex>
 #include <memory>
 
 class VncAdapter : public ProtocolAdapter {
@@ -36,12 +38,22 @@ public:
     void        setVideoCallback(VideoFrameCallback callback) override;
     void        setAudioCallback(AudioDataCallback callback) override;
     void        setConnectionStateCallback(ConnectionStateCallback callback) override;
+    void        sendClipboardData(const uint8_t* data, uint32_t len) override;
+    void        requestFrameRefresh() override;
+    std::string getClipboardText() override;
+    bool        isClipboardReceiveReady() override;
     bool        supportsNatTraversal() override;
     bool        supportsFileTransfer() override;
 
 private:
+    void disconnectLocked();
+
     struct Impl;
     std::unique_ptr<Impl> impl_;
+    // Serializes replacement/destruction of the engine with start().  The
+    // engine is stored before start() so a concurrent disconnect can never
+    // miss a just-created worker.
+    std::mutex lifecycleMutex_;
 };
 
 void registerVncAdapter();

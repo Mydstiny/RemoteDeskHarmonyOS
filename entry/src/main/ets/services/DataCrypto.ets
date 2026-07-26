@@ -24,6 +24,7 @@ import { RdpCredential } from '../model/RdpCredential';
 import { RustDeskRelayConfig } from '../model/RustDeskRelayConfig';
 import { SshKey } from '../model/SshKey';
 import { TotpEntry } from '../model/TotpEntry';
+import { VncRecord } from '../model/VncRecord';
 
 const TAG = 'DataCrypto';
 const DOMAIN = 0x0011;
@@ -38,19 +39,35 @@ export interface CryptoCloudStore {
   loadAllRelaysRaw?(): RustDeskRelayConfig[];
   loadAllSshKeysRaw(): SshKey[];
   loadAllTotpEntriesRaw(): TotpEntry[];
+  loadAllVncRecordsRaw?(): VncRecord[];
   updateHostRaw(host: RemoteHost): boolean;
   updateRdpCredentialRaw?(credential: RdpCredential): boolean;
   upsertRelayLocalRaw?(relay: RustDeskRelayConfig): boolean;
   syncRelaysToCloud?(): void;
   pushTable?(table: string): void;
+  /** Explicit crypto reset may clear VNC cloud data even when VNC scopes are off. */
+  pushVncResetTable?(): void;
   updateSshKeyRaw(key: SshKey): boolean;
   updateTotpEntryRaw(entry: TotpEntry): boolean;
+  updateVncRecordRaw?(record: VncRecord): boolean;
   getStore(): relationalStore.RdbStore | null;
   setCryptoParams(saltB64: string, verifierB64: string): boolean;
   setCryptoStatus?(status: string): boolean;
+  notifyCryptoReset?(): void;
   clearAllTables?(pushChanges?: boolean): Promise<boolean>;
   clearCryptoParams?(): Promise<boolean>;
   pushTable?(table: string): void;
+}
+
+export interface VncFieldEnvelopeHeader {
+  scope: string;
+  table: string;
+  recordId: string;
+  fieldName: string;
+  schemaVersion: number;
+  cryptoVersion: number;
+  keyVersion: number;
+  aadVersion: number;
 }
 
 export type DataCryptoStateListener = (ready: boolean, configured: boolean) => void;
@@ -73,6 +90,10 @@ export class DataCrypto {
   readonly VERIFY_CONTEXT: string = 'remotedesktop-verify-v1';
   readonly MAX_ATTEMPTS: number = 5;
   readonly LOCK_DURATION_MS: number = 30000;
+  readonly VNC_CRYPTO_VERSION: number = 2;
+  readonly VNC_ENVELOPE_VERSION: number = 2;
+  readonly VNC_KEY_VERSION: number = 1;
+  readonly VNC_AAD_VERSION: number = 1;
 
   // 状态
   private dek: Uint8Array | null = null; // 内存中的 DEK
@@ -346,6 +367,77 @@ export class DataCrypto {
     return data.length > 0 && data.startsWith(this.ENCRYPTED_PREFIX);
   }
 
+  /**
+   * Encrypt one VNC secret with an authenticated, context-bound envelope.
+   * The header is public metadata; the value is never stored in a VNC payload.
+   */
+  encryptField(scope: string, table: string, recordId: string, fieldName: string, plaintext: string,
+    schemaVersion: number = 1, keyVersion: number = this.VNC_KEY_VERSION,
+    aadVersion: number = this.VNC_AAD_VERSION): string {
+    if (!this.ready || !this.dek) {
+      throw new Error('[DataCrypto] encryptField: DEK 未就绪，请先解锁');
+    }
+    if (scope.trim() === '' || table.trim() === '' || recordId.trim() === '' || fieldName.trim() === '') {
+      throw new Error('[DataCrypto] encryptField: 加密上下文不能为空');
+    }
+    if (schemaVersion < 1 || keyVersion < 1 || aadVersion < 1) {
+      throw new Error('[DataCrypto] encryptField: 加密版本无效');
+    }
+    try {
+      const header: VncFieldEnvelopeHeader = {
+        scope, table, recordId, fieldName, schemaVersion,
+        cryptoVersion: this.VNC_CRYPTO_VERSION, keyVersion, aadVersion
+      };
+      const headerJson: string = this.canonicalVncHeader(header);
+      const aad: Uint8Array = this.stringToUint8Array(this.vncAad(header, headerJson));
+      const iv: Uint8Array = this.generateRandomSync(this.IV_LENGTH);
+      const cipher = cryptoFramework.createCipher('AES256|GCM|PKCS7');
+      const symKey = this.importDekAsSymKey();
+      const gcmParams: cryptoFramework.GcmParamsSpec = {
+        iv: { data: iv },
+        aad: { data: aad },
+        authTag: { data: new Uint8Array(this.TAG_LENGTH) },
+        algName: 'GcmParamsSpec'
+      };
+      cipher.initSync(cryptoFramework.CryptoMode.ENCRYPT_MODE, symKey, gcmParams);
+      const encrypted = cipher.doFinalSync({ data: this.stringToUint8Array(plaintext) });
+      return this.VNC_ENVELOPE_VERSION.toString() + ':' + this.base64Encode(this.stringToUint8Array(headerJson)) + ':' +
+        this.base64Encode(iv) + ':' + this.base64Encode(new Uint8Array(encrypted.data));
+    } catch (err) {
+      throw new Error('[DataCrypto] encryptField: 加密失败 — ' + DataCrypto.errDetail(err));
+    }
+  }
+
+  /** Decrypt a VNC secret only when the complete context matches its envelope header. */
+  decryptField(scope: string, table: string, recordId: string, fieldName: string, envelope: string): string {
+    if (!this.ready || !this.dek) {
+      throw new Error('[DataCrypto] decryptField: DEK 未就绪，请先解锁');
+    }
+    try {
+      const parts: string[] = envelope.split(':');
+      if (parts.length !== 4 || parts[0] !== this.VNC_ENVELOPE_VERSION.toString()) {
+        throw new Error('VNC 密文版本或格式错误');
+      }
+      const headerJson: string = this.uint8ArrayToString(this.base64Decode(parts[1]));
+      const header: VncFieldEnvelopeHeader = this.parseVncHeader(headerJson);
+      if (header.scope !== scope || header.table !== table || header.recordId !== recordId ||
+        header.fieldName !== fieldName || header.cryptoVersion !== this.VNC_CRYPTO_VERSION ||
+        header.keyVersion < 1 || header.aadVersion < 1 || header.schemaVersion < 1) {
+        throw new Error('VNC 密文上下文不匹配');
+      }
+      const iv: Uint8Array = this.base64Decode(parts[2]);
+      const ctWithTag: Uint8Array = this.base64Decode(parts[3]);
+      if (iv.length !== this.IV_LENGTH || ctWithTag.length < this.TAG_LENGTH) {
+        throw new Error('VNC 密文长度错误');
+      }
+      const aad: Uint8Array = this.stringToUint8Array(this.vncAad(header, headerJson));
+      const decrypted = this.decryptGcmPayload(iv, ctWithTag, aad);
+      return this.uint8ArrayToString(decrypted.data);
+    } catch (err) {
+      throw new Error('[DataCrypto] decryptField: 解密失败 (上下文不匹配或数据损坏) — ' + DataCrypto.errDetail(err));
+    }
+  }
+
   /** 清除内存 DEK (切后台时调用) — 保留云端盐值+验证器, 回前台后可解锁恢复 */
   lock(): boolean {
     const changed: boolean = this.ready || this.dek !== null;
@@ -403,6 +495,11 @@ export class DataCrypto {
         throw new Error('[DataCrypto] 密码学参数未完整清除');
       }
 
+      // The initiating device does not pass through CloudStore's remote-reset
+      // observer. Notify VNC owners locally so trust confirmations and other
+      // in-memory VNC state cannot survive a local encryption reset.
+      if (cloud.notifyCryptoReset) { cloud.notifyCryptoReset(); }
+
       // 4. 推送 cryptoparams 变更到云端
       if (cloud.pushTable) {
         cloud.pushTable('cryptoparams');
@@ -411,6 +508,8 @@ export class DataCrypto {
         cloud.pushTable('rustdeskrelays');
         cloud.pushTable('sshkeys');
         cloud.pushTable('totpentries');
+        if (cloud.pushVncResetTable) { cloud.pushVncResetTable(); }
+        else { cloud.pushTable('vncrecords'); }
       }
 
       hilog.info(DOMAIN, TAG, '重置加密完成');
@@ -437,8 +536,9 @@ export class DataCrypto {
     let hostsChanged: boolean = false;
     let rdpCredentialsChanged: boolean = false;
     let relayChanged: boolean = false;
-    let sshKeysChanged: boolean = false;
-    let totpEntriesChanged: boolean = false;
+      let sshKeysChanged: boolean = false;
+      let totpEntriesChanged: boolean = false;
+      let vncRecordsChanged: boolean = false;
     hilog.info(DOMAIN, TAG, '开始自动迁移...');
 
     try {
@@ -551,12 +651,43 @@ export class DataCrypto {
           hilog.warn(DOMAIN, TAG, "迁移 totp " + e.id + " 失败: " + DataCrypto.errDetail(err));
         }
       }
+
+      // 6. Migrate VNC secrets into the context-bound v2 envelope. VNC never
+      // stores a secret in payload, even while migrating an older installation.
+      if (cloud.loadAllVncRecordsRaw && cloud.updateVncRecordRaw) {
+        const vncRecords: VncRecord[] = cloud.loadAllVncRecordsRaw();
+        for (let i = 0; i < vncRecords.length; i++) {
+          const record: VncRecord = vncRecords[i];
+          if (record.recordType !== 'secret' || record.ciphertext === '' || record.ciphertext.startsWith('2:')) {
+            continue;
+          }
+          try {
+            const plaintext: string = this.decrypt(record.ciphertext);
+            record.ciphertext = this.encryptField('remotedesktop|vnc', 'vncrecords', record.id,
+              'ciphertext', plaintext, record.schemaVersion > 0 ? record.schemaVersion : 1,
+              this.VNC_KEY_VERSION, this.VNC_AAD_VERSION);
+            record.envelopeVersion = this.VNC_ENVELOPE_VERSION;
+            record.cryptoVersion = this.VNC_CRYPTO_VERSION;
+            record.keyVersion = this.VNC_KEY_VERSION;
+            record.aadVersion = this.VNC_AAD_VERSION;
+            record.updatedAt = Date.now();
+            record.payloadHashSha256 = this.payloadHash(record.payload);
+            if (cloud.updateVncRecordRaw(record)) {
+              vncRecordsChanged = true;
+              count++;
+            }
+          } catch (err) {
+            hilog.warn(DOMAIN, TAG, '迁移 VNC secret ' + record.id + ' 失败: ' + DataCrypto.errDetail(err));
+          }
+        }
+      }
       if (cloud.pushTable) {
         if (hostsChanged) { cloud.pushTable('remotehosts'); }
         if (rdpCredentialsChanged) { cloud.pushTable('rdpcredentials'); }
         if (relayChanged) { cloud.pushTable('rustdeskrelays'); }
         if (sshKeysChanged) { cloud.pushTable('sshkeys'); }
         if (totpEntriesChanged) { cloud.pushTable('totpentries'); }
+        if (vncRecordsChanged) { cloud.pushTable('vncrecords'); }
       } else if (relayChanged && cloud.syncRelaysToCloud) {
         // 保持旧的最小兼容接口；CloudStore 正常实现始终走上方的统一入口。
         cloud.syncRelaysToCloud();
@@ -683,7 +814,8 @@ export class DataCrypto {
     return this.rawToSymKey(this.dek!, 'AES256');
   }
 
-  private decryptGcmPayload(iv: Uint8Array, ctWithTag: Uint8Array): cryptoFramework.DataBlob {
+  private decryptGcmPayload(iv: Uint8Array, ctWithTag: Uint8Array,
+    aad: Uint8Array = new Uint8Array(0)): cryptoFramework.DataBlob {
     if (ctWithTag.length < this.TAG_LENGTH) {
       throw new Error("[DataCrypto] decrypt: 密文太短 len=" + ctWithTag.length.toString() + " min=" + this.TAG_LENGTH.toString());
     }
@@ -697,12 +829,62 @@ export class DataCrypto {
     const symKey = this.importDekAsSymKey();
     const gcmParams: cryptoFramework.GcmParamsSpec = {
       iv: { data: iv },
-      aad: { data: new Uint8Array(0) },
+      aad: { data: aad },
       authTag: { data: tag },
       algName: 'GcmParamsSpec'
     };
     cipher.initSync(cryptoFramework.CryptoMode.DECRYPT_MODE, symKey, gcmParams);
     return cipher.doFinalSync({ data: ct });
+  }
+
+  private canonicalVncHeader(header: VncFieldEnvelopeHeader): string {
+    return '{"aadVersion":' + header.aadVersion.toString() +
+      ',"cryptoVersion":' + header.cryptoVersion.toString() +
+      ',"fieldName":' + JSON.stringify(header.fieldName) +
+      ',"keyVersion":' + header.keyVersion.toString() +
+      ',"recordId":' + JSON.stringify(header.recordId) +
+      ',"schemaVersion":' + header.schemaVersion.toString() +
+      ',"scope":' + JSON.stringify(header.scope) +
+      ',"table":' + JSON.stringify(header.table) + '}';
+  }
+
+  private parseVncHeader(value: string): VncFieldEnvelopeHeader {
+    const parsed: Object = JSON.parse(value) as Object;
+    const source: Record<string, Object> = parsed as Record<string, Object>;
+    const scope: string = source['scope'] as string;
+    const table: string = source['table'] as string;
+    const recordId: string = source['recordId'] as string;
+    const fieldName: string = source['fieldName'] as string;
+    const schemaVersion: number = source['schemaVersion'] as number;
+    const cryptoVersion: number = source['cryptoVersion'] as number;
+    const keyVersion: number = source['keyVersion'] as number;
+    const aadVersion: number = source['aadVersion'] as number;
+    if (typeof scope !== 'string' || typeof table !== 'string' || typeof recordId !== 'string' ||
+      typeof fieldName !== 'string' || typeof schemaVersion !== 'number' ||
+      typeof cryptoVersion !== 'number' || typeof keyVersion !== 'number' || typeof aadVersion !== 'number') {
+      throw new Error('VNC 密文头字段错误');
+    }
+    const header: VncFieldEnvelopeHeader = {
+      scope, table, recordId, fieldName, schemaVersion, cryptoVersion, keyVersion, aadVersion
+    };
+    if (this.canonicalVncHeader(header) !== value) {
+      throw new Error('VNC 密文头不是 canonical JSON');
+    }
+    return header;
+  }
+
+  private vncAad(header: VncFieldEnvelopeHeader, headerJson: string): string {
+    return header.scope + '|' + header.table + '|' + header.recordId + '|' + header.fieldName + '|' +
+      header.schemaVersion.toString() + '|' + headerJson;
+  }
+
+  private payloadHash(payload: string): string {
+    const md = cryptoFramework.createMd('SHA256');
+    md.updateSync({ data: this.stringToUint8Array(payload) });
+    const digest: Uint8Array = new Uint8Array(md.digestSync().data);
+    let result: string = '';
+    for (let i = 0; i < digest.length; i++) { result += digest[i].toString(16).padStart(2, '0'); }
+    return result;
   }
 
   /** 将原始字节转换为 SymKey */

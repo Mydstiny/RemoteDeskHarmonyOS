@@ -17,6 +17,7 @@ import { KeyVaultService } from '../services/KeyVaultService';
 import { AccountKitService } from '../services/AccountKitService';
 import { DataCrypto } from '../services/DataCrypto';
 import { CloudStore } from '../services/CloudStore';
+import { VncTrustService } from '../services/VncTrustService';
 import { CloudSyncCoordinator } from '../services/CloudSyncCoordinator';
 import { CloudSyncSelectionStore } from '../services/CloudSyncSelectionStore';
 import { cloudSyncSelectableTables, effectiveCloudSyncTables } from '../services/CloudSyncSelectionPolicy';
@@ -5435,6 +5436,19 @@ struct HostListPage {
               .fontFamily(this.font()).padding({ left: 8, bottom: 8 })
             Column() {
               Row() {
+                Row() { SymbolGlyph($r('sys.symbol.display')).fontSize(21).fontColor([this.accentColor]) }
+                  .width(40).height(40).borderRadius(20).backgroundColor(this.pal().card).justifyContent(FlexAlign.Center)
+                Column() {
+                  Text('VNC 专属设置').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
+                    .fontColor(this.pal().text).fontFamily(this.font())
+                  Text('独立主机、Repeater、WebSocket、加密与同步范围')
+                    .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
+                }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 12 })
+                SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(16).fontColor([this.pal().text3])
+              }.width('100%').height(68).padding({ left: 14, right: 16 })
+                .onClick((): void => { router.pushUrl({ url: 'pages/VncSettingsPage' }); })
+              this.cardDivider()
+              Row() {
                 Row() { SymbolGlyph($r('sys.symbol.cloud_fill')).fontSize(21).fontColor([this.accentColor]) }
                   .width(40).height(40).borderRadius(20).backgroundColor(this.pal().card).justifyContent(FlexAlign.Center)
                 Column() { Text('管理云同步').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font());
@@ -6937,6 +6951,8 @@ struct HostListPage {
     cloud.pushTable('rustdeskrelays');
     cloud.pushTable('sshkeys');
     cloud.pushTable('totpentries');
+    cloud.pushVncResetTable();
+    VncTrustService.getInstance().clearLocalConfirmationState(getContext(this) as common.Context);
     this.closeSettingsLeafSheet();
     this.cryptoPwd = '';
     this.cryptoResetCountdown = 0;

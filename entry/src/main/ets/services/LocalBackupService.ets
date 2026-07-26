@@ -33,7 +33,8 @@ export class LocalBackupService {
   async saveBackup(appVersion: string): Promise<boolean> {
     const now: number = Date.now();
     const document: LocalBackupDocument = createLocalBackupDocument(
-      this.cloud.exportAllTableRows(), now, appVersion, this.cloud.exportLocalExtensionRows());
+      this.cloud.exportAllTableRows(), now, appVersion, this.cloud.exportLocalExtensionRows(),
+      this.cloud.exportAllLocalTableRows());
     const options: picker.DocumentSaveOptions = { newFileNames: ['RemoteDesktop-backup-' + now.toString() + '.json'] };
     const uris: string[] = await new picker.DocumentViewPicker().save(options);
     if (uris.length === 0) { this.lastErrorCode = 'cancelled'; return false; }
@@ -91,7 +92,8 @@ export class LocalBackupService {
 
   async restore(document: LocalBackupDocument): Promise<boolean> {
     return await CloudSyncCoordinator.getInstance().runExclusiveRestore(
-      (): Promise<boolean> => this.cloud.replaceAllTableRows(document.tables, document.extensions || [])
+      (): Promise<boolean> => this.cloud.replaceAllTableRows(document.tables, document.extensions || [],
+        document.localTables)
     );
   }
 }

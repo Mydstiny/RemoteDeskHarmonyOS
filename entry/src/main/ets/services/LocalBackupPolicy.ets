@@ -9,6 +9,7 @@ const DISTRIBUTED_SYSTEM_COLUMNS: string[] = ['#_deleted_flag'];
 const LOCAL_EXTENSION_TABLES: string[] = [
   'remotehosts', 'rdpcredentials', 'sshkeys', 'rdprestrictedadminsecrets'
 ];
+const LOCAL_BACKUP_LOCAL_TABLES: string[] = ['vnclocalrecords'];
 const REMOTE_HOST_EXTENSION_PAYLOAD_COLUMNS: string[] = [
   // `password` is a legacy shadow that migration may still need to recover.
   'password', 'sshkeypassphrase', 'sshkeyid', 'sshhostkeyalgorithm',
@@ -31,6 +32,7 @@ export interface LocalBackupDocument {
   appVersion: string;
   tables: Record<string, Array<Record<string, string>>>;
   extensions?: Array<Record<string, string>>;
+  localTables?: Record<string, Array<Record<string, string>>>;
   sha256: string;
 }
 
@@ -44,11 +46,27 @@ export function localBackupColumnsForTable(table: string): string[] {
   if (table === 'rustdeskrelays') { return ['id', 'userid', 'idserver', 'idserverport', 'relayserver', 'relayport', 'apiserver', 'apiusername', 'apipassword', 'key', 'healthstatus', 'healthlatency', 'healthcheckedat', 'apiloginstatus', 'accountsjson', 'syncversion', 'createdat', 'updatedat']; }
   if (table === 'sshkeys') { return ['id', 'userid', 'label', 'keytype', 'publickey', 'privatekey', 'fingerprint', 'comment', 'locked', 'locktype', 'syncversion', 'createdat', 'updatedat', 'formatversion', 'privatekeyencrypted']; }
   if (table === 'totpentries') { return ['id', 'userid', 'issuer', 'account', 'secret', 'algorithm', 'digits', 'period', 'iconurl', 'locked', 'locktype', 'syncversion', 'createdat', 'updatedat']; }
+  if (table === 'vncrecords') {
+    return ['id', 'userid', 'recordtype', 'ownerid', 'ownertype', 'secretkind', 'payload', 'ciphertext', 'envelopeversion', 'cryptoversion', 'keyversion', 'aadversion', 'payloadhashsha256', 'syncversion', 'schemaversion', 'resetepoch', 'createdat', 'updatedat', 'deletedat'];
+  }
   return [];
 }
 
 export function localBackupLocalExtensionColumns(): string[] {
   return ['id', 'tablename', 'recordid', 'payload', 'updatedat'];
+}
+
+export function localBackupLocalTableNames(): string[] {
+  return LOCAL_BACKUP_LOCAL_TABLES.slice();
+}
+
+export function localBackupLocalTableColumns(table: string): string[] {
+  if (table === 'vnclocalrecords') {
+    return ['id', 'userid', 'recordtype', 'ownerid', 'ownertype', 'secretkind', 'payload', 'ciphertext',
+      'envelopeversion', 'cryptoversion', 'keyversion', 'aadversion', 'payloadhashsha256',
+      'syncversion', 'schemaversion', 'resetepoch', 'createdat', 'updatedat', 'deletedat', 'localonly'];
+  }
+  return [];
 }
 
 function localBackupIntegerColumns(table: string): string[] {
@@ -58,6 +76,15 @@ function localBackupIntegerColumns(table: string): string[] {
   if (table === 'rustdeskrelays') { return ['idserverport', 'relayport', 'healthlatency', 'healthcheckedat', 'syncversion', 'createdat', 'updatedat']; }
   if (table === 'sshkeys') { return ['keytype', 'locked', 'locktype', 'syncversion', 'createdat', 'updatedat', 'formatversion', 'privatekeyencrypted']; }
   if (table === 'totpentries') { return ['algorithm', 'digits', 'period', 'locked', 'locktype', 'syncversion', 'createdat', 'updatedat']; }
+  if (table === 'vncrecords') { return ['envelopeversion', 'cryptoversion', 'keyversion', 'aadversion', 'syncversion', 'schemaversion', 'resetepoch', 'createdat', 'updatedat', 'deletedat']; }
+  return [];
+}
+
+function localBackupLocalTableIntegerColumns(table: string): string[] {
+  if (table === 'vnclocalrecords') {
+    return ['envelopeversion', 'cryptoversion', 'keyversion', 'aadversion', 'syncversion',
+      'schemaversion', 'resetepoch', 'createdat', 'updatedat', 'deletedat', 'localonly'];
+  }
   return [];
 }
 
@@ -104,7 +131,8 @@ function legacyLocalBackupColumns(table: string): string[] {
 
 export function localBackupCanonicalPayload(
   createdAt: number, appVersion: string, tables: Record<string, Array<Record<string, string>>>,
-  extensions?: Array<Record<string, string>>, version: number = LOCAL_BACKUP_VERSION
+  extensions?: Array<Record<string, string>>, version: number = LOCAL_BACKUP_VERSION,
+  localTables?: Record<string, Array<Record<string, string>>>
 ): string {
   const ordered: Record<string, Array<Record<string, string>>> = {};
   for (let i = 0; i < CLOUD_SYNC_TABLES.length; i++) {
@@ -118,6 +146,14 @@ export function localBackupCanonicalPayload(
   base['appVersion'] = appVersion;
   base['tables'] = ordered;
   if (version >= 2) { base['extensions'] = extensions || []; }
+  if (localTables !== undefined) {
+    const orderedLocal: Record<string, Array<Record<string, string>>> = {};
+    for (let i = 0; i < LOCAL_BACKUP_LOCAL_TABLES.length; i++) {
+      const table: string = LOCAL_BACKUP_LOCAL_TABLES[i];
+      orderedLocal[table] = localTables[table] || [];
+    }
+    base['localTables'] = orderedLocal;
+  }
   return JSON.stringify(base);
 }
 
@@ -132,9 +168,11 @@ export function localBackupSha256(text: string): string {
 
 export function createLocalBackupDocument(
   tables: Record<string, Array<Record<string, string>>>, createdAt: number, appVersion: string,
-  extensions: Array<Record<string, string>> = []
+  extensions: Array<Record<string, string>> = [],
+  localTables?: Record<string, Array<Record<string, string>>>
 ): LocalBackupDocument {
-  const payload: string = localBackupCanonicalPayload(createdAt, appVersion, tables, extensions);
+  const payload: string = localBackupCanonicalPayload(createdAt, appVersion, tables, extensions,
+    LOCAL_BACKUP_VERSION, localTables);
   const parsed = JSON.parse(payload) as Record<string, Object>;
   return {
     format: LOCAL_BACKUP_FORMAT,
@@ -143,6 +181,8 @@ export function createLocalBackupDocument(
     appVersion,
     tables: parsed['tables'] as Record<string, Array<Record<string, string>>>,
     extensions,
+    localTables: localTables === undefined ? undefined :
+      parsed['localTables'] as Record<string, Array<Record<string, string>>>,
     sha256: localBackupSha256(payload)
   };
 }
@@ -163,7 +203,7 @@ export function validateLocalBackupDocument(text: string): LocalBackupDocument |
         !backupRowsContainOnlyKnownColumns(table, rows)) { return null; }
     }
     const canonical: string = localBackupCanonicalPayload(document.createdAt, document.appVersion,
-      document.tables, document.extensions, document.version);
+      document.tables, document.extensions, document.version, document.localTables);
     // Hash the source shape before dropping ResultSet system columns. Existing
     // backups created by older builds legitimately include #_deleted_flag.
     if (localBackupSha256(canonical) !== document.sha256) { return null; }
@@ -175,6 +215,7 @@ export function validateLocalBackupDocument(text: string): LocalBackupDocument |
     }
     if (document.version === 1 && document.extensions !== undefined) { return null; }
     if (document.version >= 2 && !validateLocalExtensions(document.extensions || [], normalizedTables)) { return null; }
+    if (document.localTables !== undefined && !validateLocalTables(document.localTables)) { return null; }
     document.tables = normalizedTables;
     return document;
   } catch (_e) { return null; }
@@ -183,7 +224,8 @@ export function validateLocalBackupDocument(text: string): LocalBackupDocument |
 /** Validates a pre-parsed snapshot before an RDB transaction begins. */
 export function validateLocalBackupSnapshot(
   tables: Record<string, Array<Record<string, string>>>,
-  extensions: Array<Record<string, string>> = []
+  extensions: Array<Record<string, string>> = [],
+  localTables?: Record<string, Array<Record<string, string>>>
 ): boolean {
   const names: string[] = Object.keys(tables);
   if (names.length !== CLOUD_SYNC_TABLES.length) { return false; }
@@ -195,7 +237,34 @@ export function validateLocalBackupSnapshot(
       return false;
     }
   }
-  return validateLocalExtensions(extensions, tables);
+  return validateLocalExtensions(extensions, tables) &&
+    (localTables === undefined || validateLocalTables(localTables));
+}
+
+function validateLocalTables(localTables: Record<string, Array<Record<string, string>>>): boolean {
+  const names: string[] = Object.keys(localTables);
+  if (names.length !== LOCAL_BACKUP_LOCAL_TABLES.length) { return false; }
+  for (let i = 0; i < LOCAL_BACKUP_LOCAL_TABLES.length; i++) {
+    const table: string = LOCAL_BACKUP_LOCAL_TABLES[i];
+    const rows: Array<Record<string, string>> = localTables[table];
+    if (!Array.isArray(rows) || names.indexOf(table) < 0) { return false; }
+    const allowed: string[] = localBackupLocalTableColumns(table);
+    const integerColumns: string[] = localBackupLocalTableIntegerColumns(table);
+    const ids: Set<string> = new Set<string>();
+    for (let r = 0; r < rows.length; r++) {
+      const row: Record<string, string> = rows[r];
+      if (!row || typeof row !== 'object' || typeof row['id'] !== 'string' ||
+        row['id'] === '' || ids.has(row['id'])) { return false; }
+      const keys: string[] = Object.keys(row);
+      for (let k = 0; k < keys.length; k++) {
+        const key: string = keys[k];
+        if (allowed.indexOf(key) < 0 || typeof row[key] !== 'string') { return false; }
+        if (integerColumns.indexOf(key) >= 0 && !isStrictIntegerText(row[key])) { return false; }
+      }
+      ids.add(row['id']);
+    }
+  }
+  return true;
 }
 
 function validateLocalExtensions(rows: Array<Record<string, string>>,
@@ -248,6 +317,11 @@ function localExtensionPayloadColumns(table: string): string[] {
   if (table === 'rdpcredentials') { return ['username']; }
   if (table === 'sshkeys') { return ['formatversion', 'privatekeyencrypted']; }
   if (table === 'rdprestrictedadminsecrets') { return ['hash', 'binding']; }
+  if (table === 'vnclocalrecords') {
+    return ['userid', 'recordtype', 'ownerid', 'ownertype', 'secretkind', 'payload', 'ciphertext',
+      'envelopeversion', 'cryptoversion', 'keyversion', 'aadversion', 'payloadhashsha256',
+      'syncversion', 'schemaversion', 'resetepoch', 'createdat', 'updatedat', 'deletedat'];
+  }
   return [];
 }
 

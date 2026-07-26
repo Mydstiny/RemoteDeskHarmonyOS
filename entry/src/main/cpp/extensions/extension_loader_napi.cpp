@@ -1122,12 +1122,31 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
     getString("rdServerKey", cfg.rdServerKey);
     getInt("rdServerKeyMode", cfg.rdServerKeyMode);
 
+    // VNC-only connection contract. These values are assembled from the
+    // isolated VNC data domain and are ignored by the other adapters.
+    getString("vncTransport", cfg.vncTransport);
+    getString("vncGatewayHost", cfg.vncGatewayHost);
+    getInt("vncGatewayPort", cfg.vncGatewayPort);
+    getString("vncGatewayPath", cfg.vncGatewayPath);
+    getString("vncRepeaterMode", cfg.vncRepeaterMode);
+    getString("vncRepeaterTarget", cfg.vncRepeaterTarget);
+    getBool("vncTls", cfg.vncTls);
+    getBool("vncViewOnly", cfg.vncViewOnly);
+    getBool("vncClipboardEnabled", cfg.vncClipboardEnabled);
+    getString("vncSecurityPolicy", cfg.vncSecurityPolicy);
+    getInt("vncConnectTimeoutMs", cfg.vncConnectTimeoutMs);
+    getInt("vncAuthTimeoutMs", cfg.vncAuthTimeoutMs);
+    getInt("vncFirstFrameTimeoutMs", cfg.vncFirstFrameTimeoutMs);
+    getString("vncExpectedCertificateFingerprintSha256", cfg.vncExpectedCertificateFingerprintSha256);
+
     if (cfg.rdDirectPort <= 0) cfg.rdDirectPort = 21118;
     if (cfg.port == 0) {
         // RustDesk 的通用端口字段在直连模式代表 peer TCP 端口；
         // 非直连模式才代表 ID/rendezvous 端口，不能落回 RDP 3389。
         if (protocolName == "rustdesk") {
             cfg.port = cfg.rdDirectIp ? cfg.rdDirectPort : 21116;
+        } else if (protocolName == "vnc") {
+            cfg.port = 5900;
         } else {
             cfg.port = 3389;
         }
@@ -1141,6 +1160,18 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
     if (cfg.rdAuthMode != 1) cfg.rdAuthMode = 0;
     if (cfg.rdPasswordLength != 8 && cfg.rdPasswordLength != 10) cfg.rdPasswordLength = 6;
     if (cfg.rdServerKeyMode != 1 && cfg.rdServerKeyMode != 2) cfg.rdServerKeyMode = 0;
+    if (cfg.vncTransport.empty()) cfg.vncTransport = "direct_tcp";
+    if (cfg.vncGatewayPath.empty()) cfg.vncGatewayPath = "/vnc";
+    // An omitted mode gets the only viewer mode we currently support. An
+    // explicitly unknown mode is preserved so policy/Native reject it
+    // instead of silently changing the requested repeater role.
+    if (cfg.vncRepeaterMode.empty()) cfg.vncRepeaterMode = "mode12";
+    if (cfg.vncGatewayPort <= 0 || cfg.vncGatewayPort > 65535) cfg.vncGatewayPort = 5901;
+    if (cfg.vncConnectTimeoutMs <= 0 || cfg.vncConnectTimeoutMs > 120000) cfg.vncConnectTimeoutMs = 10000;
+    if (cfg.vncAuthTimeoutMs <= 0 || cfg.vncAuthTimeoutMs > 120000) cfg.vncAuthTimeoutMs = 15000;
+    if (cfg.vncFirstFrameTimeoutMs <= 0 || cfg.vncFirstFrameTimeoutMs > 120000) cfg.vncFirstFrameTimeoutMs = 15000;
+    if (cfg.vncSecurityPolicy != "secure_only" && cfg.vncSecurityPolicy != "trusted_network" &&
+        cfg.vncSecurityPolicy != "allow_plaintext") cfg.vncSecurityPolicy = "secure_only";
 
     const std::string logHost = SafeLog::MaskHost(cfg.host);
     const std::string logGatewayHost = cfg.gatewayHost.empty() ? "无" : SafeLog::MaskHost(cfg.gatewayHost);
@@ -1241,6 +1272,39 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
     }
 
     adapter->setVideoCallback([session](const VideoFrame& frame) {
+        // VNC produces a complete raw BGRA framebuffer. It is deliberately
+        // presented through the generation-safe raw renderer and never enters
+        // the shared H.264/VPx decoder pipeline.
+        if (session->protocolName == "vnc" && frame.codec == CodecType::RAW_BGRA) {
+            const size_t required = frame.stride > 0 && frame.height > 0 ?
+                static_cast<size_t>(frame.stride) * static_cast<size_t>(frame.height) : 0;
+            if (frame.width <= 0 || frame.height <= 0 || frame.stride <= 0 || frame.size < required) {
+                OH_LOG_WARN(LOG_APP, "[ExtLoader] reject invalid VNC raw frame");
+                return;
+            }
+            RendererNapi::SetActiveSourceSize(frame.width, frame.height);
+            const RdpPresentationTarget target = RendererNapi::GetActivePresentationTarget();
+            if (!target.ready()) return;
+            if (frame.dirtyX >= 0 && frame.dirtyY >= 0 && frame.dirtyWidth > 0 && frame.dirtyHeight > 0) {
+                RendererNapi::PresentRawBgraRectActive(frame.data, frame.size, frame.width, frame.height,
+                                                       frame.stride, frame.dirtyX, frame.dirtyY,
+                                                       frame.dirtyWidth, frame.dirtyHeight, target.generation);
+            } else {
+                RendererNapi::PresentRawBgraActive(frame.data, frame.size, frame.width, frame.height,
+                                                   frame.stride, target.generation);
+            }
+            session->diagnostics.ingressFrames.fetch_add(1, std::memory_order_relaxed);
+            session->diagnostics.ingressBytes.fetch_add(static_cast<uint64_t>(frame.size),
+                                                        std::memory_order_relaxed);
+            session->diagnostics.lastCodec.store(static_cast<int>(frame.codec), std::memory_order_relaxed);
+            session->diagnostics.lastWidth.store(frame.width, std::memory_order_relaxed);
+            session->diagnostics.lastHeight.store(frame.height, std::memory_order_relaxed);
+            session->diagnostics.lastFrameAtMs.store(static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now().time_since_epoch()).count()),
+                std::memory_order_release);
+            return;
+        }
         static uint64_t frameCount = 0;
         static std::atomic<uint64_t> decodeRetOk {0};
         static std::atomic<uint64_t> decodeRetNotReady {0};

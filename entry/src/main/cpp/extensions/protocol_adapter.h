@@ -30,7 +30,9 @@ enum class CodecType {
     H265 = 1,
     VP8  = 2,
     VP9  = 3,
-    AV1  = 4
+    AV1  = 4,
+    /** VNC delivers a complete BGRA framebuffer, never an encoded video frame. */
+    RAW_BGRA = 5
 };
 
 /** 鼠标按钮 */
@@ -110,6 +112,23 @@ struct ConnectionConfig {
     std::string rdServerKey;       // RustDesk: Rendezvous 公钥或共享准入 Key
     int         rdServerKeyMode;   // 0=legacy/auto, 1=server public key, 2=shared access key
 
+    // VNC-only transient connection fields. These values are assembled from
+    // the isolated VNC data domain and are never persisted in RemoteHost.
+    std::string vncTransport;       // direct_tcp | ultravnc_repeater | websocket_gateway | public_relay | ssh_tunnel
+    std::string vncGatewayHost;
+    int         vncGatewayPort;
+    std::string vncGatewayPath;
+    std::string vncRepeaterMode;    // mode2 | mode12
+    std::string vncRepeaterTarget;
+    bool        vncTls;
+    bool        vncViewOnly;
+    bool        vncClipboardEnabled;
+    std::string vncSecurityPolicy;  // secure_only | trusted_network | allow_plaintext
+    int         vncConnectTimeoutMs;
+    int         vncAuthTimeoutMs;
+    int         vncFirstFrameTimeoutMs;
+    std::string vncExpectedCertificateFingerprintSha256;
+
     ConnectionConfig()
         : port(3389), width(1920), height(1080), codec(CodecType::H264),
           gatewayPort(443), multiMonitor(false), monitorCount(1),
@@ -118,7 +137,12 @@ struct ConnectionConfig {
           rdImageQuality(1), rdDirectIp(false), rdDirectPort(21118),
           rdLanDiscovery(true), rdPrivacyMode(false), rdAudioEnabled(true), rdClipboardEnabled(true),
           rdDriveName("RemoteDesktop"), rdpAllowUntrustedRoot(false), rdpAllowHostMismatch(false),
-          rdPasswordMode(0), rdAuthMode(0), rdPasswordLength(6), rdServerKeyMode(0) {}
+          rdPasswordMode(0), rdAuthMode(0), rdPasswordLength(6), rdServerKeyMode(0),
+          vncTransport("direct_tcp"), vncGatewayPort(5901), vncGatewayPath("/vnc"),
+          vncRepeaterMode("mode12"), vncTls(false), vncViewOnly(true),
+          vncClipboardEnabled(false), vncSecurityPolicy("secure_only"),
+          vncConnectTimeoutMs(10000), vncAuthTimeoutMs(15000),
+          vncFirstFrameTimeoutMs(15000) {}
 };
 
 /** 视频帧数据 — 从协议后端传递到渲染管线 */
@@ -131,10 +155,16 @@ struct VideoFrame {
     uint64_t       timestamp;   // 时间戳 (ms)
     bool           isKeyFrame;  // 是否为关键帧
     int            display;     // RustDesk 远端显示器编号; legacy/other protocols use 0
+    int            stride;      // RAW_BGRA row stride; encoded frames use 0
+    int            dirtyX;      // RAW_BGRA dirty rectangle; negative means full frame
+    int            dirtyY;
+    int            dirtyWidth;
+    int            dirtyHeight;
 
     VideoFrame()
         : data(nullptr), size(0), width(0), height(0),
-          codec(CodecType::H264), timestamp(0), isKeyFrame(false), display(0) {}
+          codec(CodecType::H264), timestamp(0), isKeyFrame(false), display(0), stride(0),
+          dirtyX(-1), dirtyY(-1), dirtyWidth(0), dirtyHeight(0) {}
 };
 
 /** 音频数据块 — 从协议后端传递到音频管线 */

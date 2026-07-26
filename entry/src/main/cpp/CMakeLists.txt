@@ -74,6 +74,10 @@ set(SSH_SOURCES
 # -- VNC 适配器 --
 set(VNC_SOURCES
     vnc/vnc_adapter.cpp
+    vnc/vnc_des.cpp
+    vnc/vnc_rfb_protocol.cpp
+    vnc/vnc_transport.cpp
+    vnc/vnc_rfb_engine.cpp
 )
 
 # -- 终端核心 (Rust terminal_core NAPI bridge) --
@@ -131,6 +135,11 @@ include_directories(
 option(RDP_BUILD_TESTS "Build lightweight native unit tests" OFF)
 option(RDP_TESTS_ONLY "Configure only lightweight native unit tests" OFF)
 if(RDP_BUILD_TESTS)
+    # Compile the actual VNC transport and RFB engine into the host test
+    # target as a link/ABI gate. Wire-level decisions are additionally
+    # exercised through the pure protocol helpers, but this prevents the
+    # production VNC sources from silently drifting out of the test build.
+    find_package(OpenSSL REQUIRED)
     add_executable(rdp_native_tests
         test/test_main.cpp
         ../../test/cpp/extension_registry_test.cpp
@@ -167,6 +176,8 @@ if(RDP_BUILD_TESTS)
         test/decoder_callback_gate_test.cpp
         test/decoder_pipeline_lifecycle_policy_test.cpp
         test/safe_log_test.cpp
+        test/vnc_des_test.cpp
+        test/vnc_transport_policy_test.cpp
         common/safe_log.cpp
         input/remote_cursor_snapshot.cpp
         rdp/rdp_audio_policy.cpp
@@ -184,10 +195,21 @@ if(RDP_BUILD_TESTS)
         render/video_backpressure_controller.cpp
         render/video_perf_counters.cpp
         extensions/session_teardown_executor.cpp
+        vnc/vnc_des.cpp
+        vnc/vnc_rfb_protocol.cpp
+        vnc/vnc_transport.cpp
+        vnc/vnc_rfb_engine.cpp
+        test/vnc_rfb_protocol_test.cpp
     )
     target_include_directories(rdp_native_tests PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}
     )
+    # RDP_TESTS_ONLY returns before the production-wide C++ standard block
+    # below. Keep the standalone host test target explicit so headers using
+    # std::optional and other C++17 facilities compile consistently.
+    target_compile_features(rdp_native_tests PRIVATE cxx_std_17)
+    target_include_directories(rdp_native_tests PRIVATE ${OPENSSL_INCLUDE_DIR})
+    target_link_libraries(rdp_native_tests PRIVATE OpenSSL::SSL OpenSSL::Crypto)
 endif()
 
 if(RDP_TESTS_ONLY)

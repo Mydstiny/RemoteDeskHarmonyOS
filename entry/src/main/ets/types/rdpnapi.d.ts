@@ -377,6 +377,20 @@ export interface SessionConfig {
   rdAccountId?: string;      // API账户ID
   rdServerKey?: string;      // Rendezvous 公钥或共享准入 Key
   rdServerKeyMode?: number;  // 0=legacy/auto, 1=server public key, 2=shared access key
+  vncTransport?: string;
+  vncGatewayHost?: string;
+  vncGatewayPort?: number;
+  vncGatewayPath?: string;
+  vncRepeaterMode?: string;
+  vncRepeaterTarget?: string;
+  vncTls?: boolean;
+  vncViewOnly?: boolean;
+  vncClipboardEnabled?: boolean;
+  vncSecurityPolicy?: string;
+  vncConnectTimeoutMs?: number;
+  vncAuthTimeoutMs?: number;
+  vncFirstFrameTimeoutMs?: number;
+  vncExpectedCertificateFingerprintSha256?: string;
 }
 
 export interface SftpFileEntry {

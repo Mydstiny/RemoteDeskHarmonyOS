@@ -128,6 +128,18 @@ export function retryTablesStillSelected(retryTables: string[], selectedBusiness
 }
 
 /**
+ * VNC uses one physical business table but its selection is kept in a
+ * separate logical namespace.  The ordinary selector must never be able to
+ * retain or resurrect a VNC retry by accident.
+ */
+export function retryVncTablesStillSelected(retryTables: string[], selectedVncTables: string[]): string[] {
+  const selected: string[] = selectedVncTables.slice();
+  const hasVncBusinessTable: boolean = retryTables.indexOf('vncrecords') >= 0;
+  if (hasVncBusinessTable && selected.indexOf('vncrecords') < 0) { return []; }
+  return retryTables.filter((table: string): boolean => selected.indexOf(table) >= 0);
+}
+
+/**
  * System auto-sync would synchronize every registered distributed table and
  * bypass the application's local table-selection policy. The app therefore
  * explicitly invokes cloudSync through CloudSyncCoordinator.

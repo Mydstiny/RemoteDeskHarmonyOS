@@ -28,7 +28,14 @@ const CLOUD_COLUMNS: Record<string, string[]> = {
     'id', 'userid', 'issuer', 'account', 'secret', 'algorithm', 'digits', 'period', 'iconurl',
     'locked', 'locktype', 'syncversion', 'createdat', 'updatedat'
   ],
-  'usersettings': ['id', 'userid', 'payload', 'schemaversion', 'updatedat']
+  'usersettings': ['id', 'userid', 'payload', 'schemaversion', 'updatedat'],
+  // VNC owns one cloud table. Logical record types are separated by
+  // `recordtype`; no VNC column is added to an existing protocol table.
+  'vncrecords': [
+    'id', 'userid', 'recordtype', 'ownerid', 'ownertype', 'secretkind', 'payload', 'ciphertext',
+    'envelopeversion', 'cryptoversion', 'keyversion', 'aadversion', 'payloadhashsha256',
+    'syncversion', 'schemaversion', 'resetepoch', 'createdat', 'updatedat', 'deletedat'
+  ]
 };
 
 const LOCAL_ONLY_COLUMNS: Record<string, string[]> = {

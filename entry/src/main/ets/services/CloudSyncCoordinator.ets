@@ -4,6 +4,9 @@ import { hilog } from '@kit.PerformanceAnalysisKit';
 import { CloudSyncSelectionStore } from './CloudSyncSelectionStore';
 import { CloudSyncDirection } from './CloudSyncPolicy';
 import { ActiveRemoteSessionRegistry } from './ActiveRemoteSessionRegistry';
+import { VncRecordType } from '../model/VncRecord';
+import { VncCloudSyncSelectionStore } from './VncCloudSyncSelectionStore';
+import { VNC_CLOUD_TABLE } from './VncRecordPolicy';
 import {
   CLOUD_SYNC_MAX_RETRY_ATTEMPTS,
   CloudSyncRequest,
@@ -16,6 +19,7 @@ import {
   isAutomaticRetryRecord,
   nextCloudSyncRetryDelayMs,
   retryTablesStillSelected,
+  retryVncTablesStillSelected,
   shouldReplayAutomaticPush,
   snapshotCloudSyncTables,
   upsertAutomaticRetryRecord
@@ -148,6 +152,8 @@ export class CloudSyncCoordinator {
   private context: common.Context | null = null;
   private executor: CloudSyncTableExecutor | null = null;
   private readonly selection: CloudSyncSelectionStore = CloudSyncSelectionStore.getInstance();
+  private readonly vncSelection: VncCloudSyncSelectionStore =
+    VncCloudSyncSelectionStore.getInstance();
   private queueTail: Promise<void> = Promise.resolve();
   private pendingAutomaticTables: string[] = [];
   private deferredAutomaticTables: string[] = [];
@@ -180,6 +186,7 @@ export class CloudSyncCoordinator {
     this.executor = executor;
     this.onCloudFirstApplied = onCloudFirstApplied;
     this.hooks = hooks;
+    this.vncSelection.init(context);
     this.restoreRetryRecord();
     this.restoreDirtyTables();
     this.restoreConflictTables();
@@ -189,38 +196,59 @@ export class CloudSyncCoordinator {
   requestStartupPull(): Promise<CloudSyncOperationResult> {
     if (this.restoreUploadBlocked()) { return Promise.resolve(this.skippedResult('startup')); }
     const selected: string[] = this.selectedTables();
+    // VNC has no row-level cloud selector. A scope transition therefore never
+    // invents a cloud deletion; when no VNC scope is selected there is no VNC
+    // transfer to schedule.
     const dirty: string[] = this.dirtyAutomaticTables.filter((table: string): boolean =>
-      selected.indexOf(table) >= 0);
+      selected.indexOf(table) >= 0 || table === VNC_CLOUD_TABLE);
     const pushable: string[] = dirty.filter((table: string): boolean => !this.isAutomaticSyncBlocked(table));
-    if (pushable.length === 0) { return this.requestCloudFirst('startup'); }
+    const ordinaryPushable: string[] = pushable.filter((table: string): boolean => table !== VNC_CLOUD_TABLE);
+    const vncPushable: boolean = pushable.indexOf(VNC_CLOUD_TABLE) >= 0 &&
+      this.vncUploadTables().length > 0;
+    if (ordinaryPushable.length === 0 && !vncPushable) {
+      return this.requestCloudFirst('startup').then((result: CloudSyncOperationResult): Promise<CloudSyncOperationResult> =>
+        this.requestVncCloudFirst('startup', result));
+    }
     const versions: Record<string, number> = {};
-    pushable.forEach((table: string): void => {
+    ordinaryPushable.forEach((table: string): void => {
       versions[table] = this.automaticMutationVersions[table] || 1;
     });
-    const journalRevisions: Record<string, number> = this.captureJournalRevisions(pushable);
-    const request: CloudSyncRequest = {
-      source: 'automaticPush', direction: 'nativeFirst', tables: snapshotCloudSyncTables(pushable)
+    const ordinaryRequest: CloudSyncRequest | null = ordinaryPushable.length === 0 ? null : {
+      source: 'automaticPush', direction: 'nativeFirst', tables: snapshotCloudSyncTables(ordinaryPushable)
     };
-    return this.enqueue(request).then((result: CloudSyncOperationResult): Promise<CloudSyncOperationResult> => {
-      if (!result.ok) { return Promise.resolve(result); }
-      pushable.forEach((table: string): void => {
-        this.acknowledgeJournal(table, journalRevisions[table] || 0);
-        const currentJournalRevision: number = this.captureJournalRevisions([table])[table] || 0;
-        if ((this.automaticMutationVersions[table] || versions[table]) === versions[table] &&
-          currentJournalRevision <= 0) {
-          this.clearDirtyTable(table);
-        }
+    const ordinaryJournalRevisions: Record<string, number> =
+      this.captureJournalRevisions(ordinaryPushable);
+    const pushOrdinary = ordinaryRequest === null
+      ? Promise.resolve(this.skippedResult('startup'))
+      : this.enqueue(ordinaryRequest).then((result: CloudSyncOperationResult): CloudSyncOperationResult => {
+        if (!result.ok) { return result; }
+        ordinaryPushable.forEach((table: string): void => {
+          this.acknowledgeJournal(table, ordinaryJournalRevisions[table] || 0);
+          const currentJournalRevision: number = this.captureJournalRevisions([table])[table] || 0;
+          if ((this.automaticMutationVersions[table] || versions[table]) === versions[table] &&
+            currentJournalRevision <= 0) { this.clearDirtyTable(table); }
+        });
+        return result;
       });
-      return this.requestCloudFirst('startup');
+    return pushOrdinary.then((ordinaryResult: CloudSyncOperationResult): Promise<CloudSyncOperationResult> => {
+      if (!ordinaryResult.ok) { return Promise.resolve(ordinaryResult); }
+      const pushVnc = vncPushable ? this.requestVncStartupPush() : Promise.resolve(this.skippedResult('startup'));
+      return pushVnc.then((vncResult: CloudSyncOperationResult): Promise<CloudSyncOperationResult> => {
+        if (!vncResult.ok) { return Promise.resolve(vncResult); }
+        return this.requestCloudFirst('startup').then((pullResult: CloudSyncOperationResult): Promise<CloudSyncOperationResult> =>
+          this.requestVncCloudFirst('startup', pullResult));
+      });
     });
   }
 
   requestForegroundPull(): Promise<CloudSyncOperationResult> {
-    return this.requestCloudFirst('foreground');
+    return this.requestCloudFirst('foreground').then((result: CloudSyncOperationResult): Promise<CloudSyncOperationResult> =>
+      this.requestVncCloudFirst('foreground', result));
   }
 
   requestCloudEventPull(): Promise<CloudSyncOperationResult> {
-    return this.requestCloudFirst('cloudEvent');
+    return this.requestCloudFirst('cloudEvent').then((result: CloudSyncOperationResult): Promise<CloudSyncOperationResult> =>
+      this.requestVncCloudFirst('cloudEvent', result));
   }
 
   requestManualUpload(): Promise<CloudSyncOperationResult> {
@@ -266,7 +294,88 @@ export class CloudSyncCoordinator {
     });
   }
 
+  /** VNC manual operations use the same serialized transfer queue but never
+   * inherit the ordinary RDP/RustDesk/SSH selection. */
+  requestVncManualUpload(): Promise<CloudSyncOperationResult> {
+    const tables: string[] = this.vncUploadTables();
+    if (tables.length === 0) { return Promise.resolve(this.skippedResult('manualUpload')); }
+    const request: CloudSyncRequest = {
+      source: 'manualUpload', direction: 'nativeFirst', tables
+    };
+    const journalRevisions: Record<string, number> = this.captureJournalRevisions(tables);
+    return this.enqueue(request).then((result: CloudSyncOperationResult): CloudSyncOperationResult => {
+      if (!result.ok) { return result; }
+      for (let i = 0; i < tables.length; i++) {
+        this.clearAutomaticSyncBlock(tables[i]);
+        this.acknowledgeJournal(tables[i], journalRevisions[tables[i]] || 0);
+        this.clearDirtyTable(tables[i]);
+      }
+      return result;
+    });
+  }
+
+  requestVncManualDownload(): Promise<CloudSyncOperationResult> {
+    const tables: string[] = this.vncSyncTables();
+    if (tables.length === 0) { return Promise.resolve(this.skippedResult('manualDownload')); }
+    const request: CloudSyncRequest = {
+      source: 'manualDownload', direction: 'cloudFirst', tables
+    };
+    return this.enqueue(request);
+  }
+
+  requestVncAutomaticPush(recordType: VncRecordType): Promise<CloudSyncOperationResult> {
+    if (this.restorePending || this.restoreUploadBlocked()) {
+      return Promise.resolve(this.skippedResult('automaticPush'));
+    }
+    const tables: string[] = this.vncUploadTables();
+    if (tables.length === 0) { return Promise.resolve(this.skippedResult('automaticPush')); }
+    const version: number = (this.automaticMutationVersions[VNC_CLOUD_TABLE] || 0) + 1;
+    this.automaticMutationVersions[VNC_CLOUD_TABLE] = version;
+    this.markDirtyTable(VNC_CLOUD_TABLE);
+    if (this.isAutomaticSyncBlocked(VNC_CLOUD_TABLE)) {
+      return Promise.resolve(this.skippedResult('automaticPush'));
+    }
+    const journalRevision: number =
+      this.captureJournalRevisions([VNC_CLOUD_TABLE])[VNC_CLOUD_TABLE] || 0;
+    return this.enqueueAutomaticRequest({
+      source: 'automaticPush', direction: 'nativeFirst', tables
+    }, VNC_CLOUD_TABLE, version, journalRevision);
+  }
+
+  requestVncTableAutomaticPush(forcePhysical: boolean = false): Promise<CloudSyncOperationResult> {
+    if (this.restorePending || this.restoreUploadBlocked()) {
+      return Promise.resolve(this.skippedResult('automaticPush'));
+    }
+    const tables: string[] = forcePhysical ? [VNC_CLOUD_TABLE] : this.vncUploadTables();
+    if (tables.length === 0) { return Promise.resolve(this.skippedResult('automaticPush')); }
+    const version: number = (this.automaticMutationVersions[VNC_CLOUD_TABLE] || 0) + 1;
+    this.automaticMutationVersions[VNC_CLOUD_TABLE] = version;
+    this.markDirtyTable(VNC_CLOUD_TABLE);
+    const journalRevision: number =
+      this.captureJournalRevisions([VNC_CLOUD_TABLE])[VNC_CLOUD_TABLE] || 0;
+    return this.enqueueAutomaticRequest({
+      source: 'automaticPush', direction: 'nativeFirst', tables
+    }, VNC_CLOUD_TABLE, version, journalRevision);
+  }
+
+  /** Reconcile local VNC projection without fabricating a cloud tombstone. */
+  requestVncSelectionReconcile(): Promise<CloudSyncOperationResult> {
+    if (this.restorePending || this.restoreUploadBlocked()) {
+      return Promise.resolve(this.skippedResult('automaticPush'));
+    }
+    const tables: string[] = this.vncUploadTables();
+    if (tables.length === 0) { return Promise.resolve(this.skippedResult('automaticPush')); }
+    const version: number = (this.automaticMutationVersions[VNC_CLOUD_TABLE] || 0) + 1;
+    this.automaticMutationVersions[VNC_CLOUD_TABLE] = version;
+    this.markDirtyTable(VNC_CLOUD_TABLE);
+    const journalRevision: number =
+      this.captureJournalRevisions([VNC_CLOUD_TABLE])[VNC_CLOUD_TABLE] || 0;
+    return this.enqueueAutomaticRequest({ source: 'automaticPush', direction: 'nativeFirst',
+      tables }, VNC_CLOUD_TABLE, version, journalRevision);
+  }
+
   requestAutomaticPush(table: string): Promise<CloudSyncOperationResult> {
+    if (table === VNC_CLOUD_TABLE) { return this.requestVncTableAutomaticPush(); }
     const selected: string[] = this.selectedTables();
     if (selected.indexOf(table) < 0 || this.restorePending || this.restoreUploadBlocked()) {
       return Promise.resolve(this.skippedResult('automaticPush'));
@@ -331,9 +440,7 @@ export class CloudSyncCoordinator {
         this.acknowledgeJournal(retryKey, coveredJournalRevision);
         const latestVersion: number = this.automaticMutationVersions[retryKey] || completedVersion;
         if (shouldReplayAutomaticPush(completedVersion, latestVersion)) {
-          const selected: string[] = this.selectedTables();
-          const tables: string[] = selected.filter((candidate: string): boolean =>
-            candidate === 'cryptoparams' || candidate === retryKey);
+          const tables: string[] = this.tablesForAutomaticRetry(retryKey);
           this.enqueueAutomaticRequest({ source: 'automaticPush', direction: 'nativeFirst', tables },
             retryKey, latestVersion, this.captureJournalRevisions([retryKey])[retryKey] || 0);
         } else {
@@ -424,6 +531,51 @@ export class CloudSyncCoordinator {
 
   private selectedTables(): string[] {
     return snapshotCloudSyncTables(this.selection.selectedBusinessTables());
+  }
+
+  private vncSyncTables(): string[] {
+    if (!this.vncSelection.hasSelection()) { return []; }
+    const result: string[] = [];
+    if (this.vncSelection.needsCrypto()) { result.push('cryptoparams'); }
+    result.push(VNC_CLOUD_TABLE);
+    return result;
+  }
+
+  /**
+   * The regular VNC selection controls visible data. With no selected scope,
+   * no VNC cloud transfer is scheduled. Secrets remain encrypted in the
+   * single physical table and are never projected while unselected/locked.
+   */
+  private vncUploadTables(): string[] {
+    return this.vncSyncTables();
+  }
+
+  private tablesForAutomaticRetry(retryKey: string): string[] {
+    if (retryKey === VNC_CLOUD_TABLE) { return this.vncUploadTables(); }
+    const selected: string[] = this.selectedTables();
+    return selected.filter((candidate: string): boolean =>
+      candidate === 'cryptoparams' || candidate === retryKey);
+  }
+
+  private requestVncStartupPush(): Promise<CloudSyncOperationResult> {
+    if (this.restoreUploadBlocked() || this.isAutomaticSyncBlocked(VNC_CLOUD_TABLE)) {
+      return Promise.resolve(this.skippedResult('startup'));
+    }
+    const tables: string[] = this.vncUploadTables();
+    if (tables.length === 0) { return Promise.resolve(this.skippedResult('startup')); }
+    const version: number = this.automaticMutationVersions[VNC_CLOUD_TABLE] || 1;
+    const journalRevision: number =
+      this.captureJournalRevisions([VNC_CLOUD_TABLE])[VNC_CLOUD_TABLE] || 0;
+    return this.enqueueAutomaticRequest({ source: 'automaticPush', direction: 'nativeFirst',
+      tables }, VNC_CLOUD_TABLE, version, journalRevision);
+  }
+
+  private requestVncCloudFirst(source: 'startup' | 'foreground' | 'cloudEvent',
+    previous: CloudSyncOperationResult): Promise<CloudSyncOperationResult> {
+    if (!previous.ok) { return Promise.resolve(previous); }
+    const tables: string[] = this.vncSyncTables();
+    if (tables.length === 0) { return Promise.resolve(previous); }
+    return this.enqueue({ source, direction: 'cloudFirst', tables });
   }
 
   private skippedResult(source: CloudSyncSource): CloudSyncOperationResult {
@@ -712,7 +864,9 @@ export class CloudSyncCoordinator {
           this.automaticRetryAttempts[retryKey] = 0;
           continue;
         }
-        const tables: string[] = retryTablesStillSelected(retry.tables, this.selectedTables());
+        const tables: string[] = retryKey === VNC_CLOUD_TABLE
+          ? retryVncTablesStillSelected(retry.tables, this.vncUploadTables())
+          : retryTablesStillSelected(retry.tables, this.selectedTables());
         if (tables.length === 0) {
           this.automaticRetryAttempts[retryKey] = 0;
           continue;

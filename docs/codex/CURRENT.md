@@ -1,47 +1,39 @@
 # Shared Current State
 
-Updated: 2026-07-24 Asia/Shanghai
+Updated: 2026-07-26 Asia/Shanghai
 
 ## Repository
 
 - Repository: Mydstiny/RemoteDeskHarmonyOS
-- Integrated main commit: 408902c22 (Merge RustDesk/RDP pinch zoom repair)
-- Task: RustDesk/RDP canvas pinch zoom and input-stall repair
-- Base: main at 28c3ff43 before this repair
-- Repair branch codex/rustdesk-pinch-zoom-fix: deleted after merge
+- Task branch: `codex/vnc-isolated-settings-cloud`
+- Scope: isolated VNC settings, RFB/UltraVNC transport, one-table cloud sync and VNC crypto/reset hardening.
+- The worktree also contains user-owned RustDesk/RDP pinch, remote-cursor and SSH changes; they remain untouched.
 
 ## Result
 
-- Non-blocking latest-value-wins canvas transform submission is implemented.
-- Renderer registry/lifecycle lock scope is separated from upload, draw and eglSwapBuffers.
-- Retained-frame redraw is wired for hardware decode, software decode and RDP; retained redraw wakes are coalesced.
-- ArkTS pinch geometry and input ownership stay local and are released idempotently on end, cancel, surface loss, PIP, background, control-mode changes, disconnect and rejected native input.
-- RustDesk touch scale/pan updates are bounded and coalesced while start/end barriers and reliable keyboard, mouse-button and text ordering remain intact.
-- RDP input worker remains independent of renderer lifecycle work.
-
-## Repair commits
-
-- 80974c440: native non-blocking canvas redraw and renderer ownership changes.
-- fb7355072, 44d2a51de, 5bc7a4be3: ArkTS pinch geometry and input lifecycle hardening.
-- f43a8101b, 620544b14: RustDesk touch queue coalescing and reliable-order boundary flush.
-- 6d16eb366: retained decoder redraw wake coalescing.
-- e8112a1c1: repair plan; 83a9ba1c0: implementation record.
+- VNC now has its own settings page, model, host/gateway/secret/trust services and connection projection. It does not use RDP, RustDesk or SSH/SFTP data owners.
+- The only new cloud table is `vncrecords`; `recordtype` carries `settings`, `host`, `gateway`, `secret` and `trust`. `vnclocalrecords` is device-local only.
+- VNC secrets use the context-bound AES-GCM v2 envelope. Secrets are opt-in for sync and require an unlocked crypto state plus explicit VNC selection.
+- `cryptoparams.vnc_reset_epoch` increments on crypto reset. New VNC rows bind to the current epoch; old rows, stale backups and stale rewrites fail closed.
+- Native VNC supports RFB 3.3/3.7/3.8, VNC DES password, Raw/CopyRect/DesktopSize, BGRA, keyboard/mouse/clipboard and UltraVNC Repeater viewer mode12. The mode12 path validates `RFB 000.000\n` and sends the official fixed 250-byte `ID:<target>` field; mode2 remains a server-side repeater listener contract and is rejected by this viewer client.
+- Cloud reads validate every VNC row, including the typed JSON payload, before projection; preserve unknown wire values for rejection; bind runtime merges to `userId + id`; and hide unselected or crypto-locked cloud secrets. Scope deselection never writes a reverse cloud tombstone; user deletion still uses an ordinary tombstone. Raw crypto migration follows the same selected projection.
+- WebSocket gateway, public relay, SSH tunnel and reverse/listen remain explicitly unavailable until their server contracts are deployed and verified.
 
 ## Verification
 
-- ArkTS default@OhosTestCompileArkTS: passed; existing repository/dependency warnings remain.
-- Native RDP tests: 129 passed, 0 failed.
-- RustDesk FFI lib tests: 140 passed, 0 failed, including local socket protocol tests in the permitted environment.
-- Production assembleHap: BUILD SUCCESSFUL.
-- git diff --check: required before final merge.
+- `default@OhosTestCompileArkTS`: passed after the VNC protocol/cloud changes; existing repository/dependency warnings remain.
+- Production `assembleHap`: `BUILD SUCCESSFUL` after compiling the VNC protocol helper into the native product.
+- Native test target: `141 passed, 0 failed`; the target compiles the actual VNC transport and RFB engine plus tests ClientInit, RFB dialect/security-result rules, Repeater fixed-width/banner/short-read/invalid-target and role-boundary checks.
+- `git diff --check`: passed after the implementation and shared-state updates.
+- Light open-source compliance gate: passed.
+- `ohosTest@OhosTestCompileArkTS`: not runnable in this environment because the task is not registered (`00306054`); this is an environment/task-graph limitation, not a source compile failure.
 
-## Device acceptance still required
+## External acceptance still required
 
-- RustDesk remote Windows: continuous pinch with active video, mouse click and keyboard down/up.
-- RustDesk remote macOS: static desktop must redraw locally during pinch without a new remote frame.
-- RDP Windows: retained BGRA redraw, frame-pump progress and keyboard/mouse delivery during pinch.
-- Optional RustDesk remote-app TouchScale: bounded queue and start/update/end protocol order.
-- API 23 lifecycle matrix: cancel, surface destroy/recreate, PIP, background/foreground, rotation and reconnect.
+- User creates exactly one Huawei cloud table `vncrecords` with the 19 fields in the entity plan.
+- Two API 23 devices using one Huawei account validate scope selection, secret opt-in, trust re-confirmation, user-deletion tombstones, reset epoch and offline recovery. Scope deselection must leave the shared row unchanged.
+- Real VNC server validates direct TCP; a real UltraVNC Repeater validates viewer mode12 pairing, input, disconnect and reconnect. Mode2 requires a separate VNC server-side listener component and is not an enabled HarmonyOS viewer path.
+- WebSocket/public relay/SSH tunnel remain gated until endpoint, authentication, trust and lifecycle contracts exist.
 
 ## Local-only boundary
 

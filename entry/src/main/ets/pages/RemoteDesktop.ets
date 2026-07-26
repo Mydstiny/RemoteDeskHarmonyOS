@@ -19,6 +19,12 @@ import {
   RdpAuthMode,
   RdpRestrictedAdminSecretSource
 } from '../model/RemoteHost';
+import { VncHostService, VncHostView } from '../services/VncHostService';
+import { VncGatewayService, VncGatewayView } from '../services/VncGatewayService';
+import { VncSettingsService } from '../services/VncSettingsService';
+import { VncTrustService } from '../services/VncTrustService';
+import { VncSettingsValues } from '../services/VncModelPolicy';
+import { vncGatewayAvailability } from '../services/VncGatewayProtocolPolicy';
 import { RustDeskRelayConfig } from '../model/RustDeskRelayConfig';
 import { rustDeskRelayKeyModeForFfi } from '../services/RustDeskRelayKeyPolicy';
 import { RdpCredential } from '../model/RdpCredential';
@@ -331,6 +337,17 @@ interface RdpCredentialParts {
   domain: string;
 }
 
+/**
+ * VNC uses this transient projection only because the existing desktop page
+ * owns renderer/input lifecycle. It is never serialized or passed to
+ * HostSyncService; all connection values are reassembled from VNC owners.
+ */
+interface VncSessionOwner {
+  host: VncHostView;
+  settings: VncSettingsValues;
+  gateway: VncGatewayView | null;
+}
+
 interface DesktopSize {
   width: number;
   height: number;
@@ -492,6 +509,10 @@ struct RemoteDesktop {
   @State isLandscape: boolean = true;  // 横竖屏切换状态
   private srv: HostSyncService = HostSyncService.getInstance();
   private loader: ExtensionLoader = ExtensionLoader.getInstance();
+  private readonly vncSettings: VncSettingsService = VncSettingsService.getInstance();
+  private readonly vncHosts: VncHostService = VncHostService.getInstance();
+  private readonly vncGateways: VncGatewayService = VncGatewayService.getInstance();
+  private readonly vncTrust: VncTrustService = VncTrustService.getInstance();
   private nativeHandles: NativeSessionHandles =
     new NativeSessionHandles(new ProductionNativeHandleAdapter((): ExtensionLoader => this.loader));
   private clipboardBridge: ClipboardBridgeService | null = null;
@@ -513,6 +534,7 @@ struct RemoteDesktop {
   private orientationApplied: boolean = false;
   private connectAttemptId: number = 0;
   private pendingHost: RemoteHost | null = null;
+  private pendingVncHost: VncHostView | null = null;
   // Set only by the RustDesk Pro preflight handoff. It is consumed after the
   // first renderer/decoder pair is installed and is never inferred from a
   // renderer handle, because normal PIP restore intentionally releases that
@@ -859,6 +881,9 @@ struct RemoteDesktop {
     if (!host) { return false; }
     if (host.protocol === 'rdp') { return this.rdpControlMode === 2; }
     if (host.protocol === 'rustdesk') { return this.rustdeskControlMode === 2; }
+    if (host.protocol === 'vnc') {
+      return this.pendingVncHost !== null && !this.pendingVncHost.viewOnly;
+    }
     return false;
   }
 
@@ -1115,6 +1140,88 @@ struct RemoteDesktop {
     return host === null ? '' : host.protocol;
   }
 
+  private isVncSession(): boolean {
+    return this.pendingHost !== null && this.pendingHost.protocol === 'vnc' &&
+      this.pendingVncHost !== null;
+  }
+
+  private transientRemoteHostForVnc(host: VncHostView): RemoteHost {
+    const transient: RemoteHost = new RemoteHost();
+    transient.id = 'vnc:' + host.id;
+    transient.userId = host.userId;
+    transient.label = host.label;
+    transient.protocol = 'vnc';
+    transient.host = host.host;
+    transient.port = host.port;
+    transient.username = host.username;
+    transient.password = '';
+    transient.sourceType = 'vnc';
+    transient.locked = false;
+    return transient;
+  }
+
+  private vncOwnerForConnection(host: VncHostView): VncSessionOwner {
+    let gateway: VncGatewayView | null = null;
+    if (host.gatewayId.trim() !== '') {
+      gateway = this.vncGateways.find(host.gatewayId);
+    }
+    return { host, settings: this.vncSettings.get(), gateway };
+  }
+
+  /**
+   * VNC clipboard policy is resolved only from the VNC owner.  Keeping this
+   * branch separate is important: the shared RemoteDesktop component still
+   * owns the bridge lifecycle, but VNC must never read the RDP/RustDesk
+   * AppStorage preferences as a fallback.
+   */
+  private clipboardBridgeEnabledForSession(): boolean {
+    const protocol: string = this.currentProtocolName();
+    if (protocol === 'vnc') {
+      return this.isVncSession() && this.vncSettings.get().clipboardEnabled;
+    }
+    return clipboardSyncEnabledForProtocol(protocol,
+      AppStorage.get<boolean>('rdpClipboardEnabled') ?? true,
+      AppStorage.get<boolean>('rustdeskClipboardEnabled') ?? this.rustdeskClipboardEnabled);
+  }
+
+  private handleVncTrustRequired(host: VncHostView, detail: string): void {
+    const marker: string = 'VNC_TRUST_REQUIRED:';
+    const markerIndex: number = detail.indexOf(marker);
+    if (markerIndex < 0) { return; }
+    const fingerprint: string = detail.substring(markerIndex + marker.length).trim().toLowerCase();
+    if (fingerprint.length < 32 || fingerprint.length > 128) { return; }
+    promptAction.showDialog({
+      title: '确认 VNC TLS 指纹',
+      message: host.label + '\n\nSHA-256:\n' + fingerprint +
+        '\n\n仅保存到 VNC trust；确认后将重新连接。',
+      buttons: [
+        { text: '取消', color: this.pal().text2 },
+        { text: '确认并重连', color: this.accentColor }
+      ]
+    }).then((result: Object): void => {
+      const values: Record<string, number> = result as Record<string, number>;
+      if (values['index'] !== 1) {
+        this.connectionError = 'VNC TLS trust 未确认';
+        this.connectionErrorDetail = '未保存服务器证书指纹';
+        return;
+      }
+      const saved = this.vncTrust.save(host.id, fingerprint);
+      if (!saved.ok) {
+        this.connectionError = 'VNC TLS trust 保存失败';
+        this.connectionErrorDetail = saved.message;
+        return;
+      }
+      this.connectionError = '';
+      this.connectionErrorDetail = '';
+      this.connectStarted = false;
+      this.connecting = true;
+      this.tryStartConnect();
+    }).catch((_err: Error): void => {
+      this.connectionError = 'VNC TLS trust 未确认';
+      this.connectionErrorDetail = '证书指纹确认对话框未完成';
+    });
+  }
+
   private currentSessionCapabilities(): RemoteSessionCapabilities {
     const clipboardReady: boolean = this.sessionId > 0 && this.connected &&
       this.loader.isSessionClipboardReady(this.sessionId);
@@ -1126,7 +1233,11 @@ struct RemoteDesktop {
       sftpConnected: false,
       rustDeskVerifiedPeer: this.connected && this.currentProtocolName() === 'rustdesk',
       rustDeskInboundClipboard: clipboardReady && this.currentProtocolName() === 'rustdesk',
-      rustDeskTransferConfirmed: this.connected && this.currentProtocolName() === 'rustdesk'
+      rustDeskTransferConfirmed: this.connected && this.currentProtocolName() === 'rustdesk',
+      vncClipboardEnabled: this.isVncSession() &&
+        (this.vncSettings.get().clipboardEnabled),
+      vncClipboardReady: this.isVncSession() && clipboardReady,
+      vncViewOnly: this.pendingVncHost === null || this.pendingVncHost.viewOnly
     });
   }
 
@@ -2635,6 +2746,28 @@ struct RemoteDesktop {
     const params: Object = router.getParams();
     if (params) {
       const p: Record<string, Object> = params as Record<string, Object>;
+      const vncHostId: string = (p['vncHostId'] as string) || '';
+      if (vncHostId !== '') {
+        const context: common.Context = getContext(this) as common.Context;
+        this.vncSettings.init(context);
+        this.vncHosts.init(context);
+        this.vncGateways.init(context);
+        this.vncTrust.init(context);
+        const vncHost: VncHostView | null = this.vncHosts.find(vncHostId);
+        if (vncHost === null) {
+          this.connecting = false;
+          this.connectionError = 'VNC 主机不存在 [E-VNC-HOST-404]';
+          return;
+        }
+        this.hostId = 'vnc:' + vncHost.id;
+        this.pendingVncHost = vncHost;
+        this.pendingHost = this.transientRemoteHostForVnc(vncHost);
+        this.hostLabel = vncHost.label;
+        this.preAuthenticatedSessionPending = false;
+        this.applyDesktopKeyboardMouseMode();
+        this.tryStartConnect();
+        return;
+      }
       const id: string = p['hostId'] as string;
       if (id) {
         this.hostId = id;
@@ -2923,6 +3056,11 @@ struct RemoteDesktop {
   }
 
   private recordActiveSession(host: RemoteHost, sessionId: number, renderAttached: boolean): void {
+    if (host.protocol === 'vnc') {
+      // VNC deliberately does not enter the shared PIP/background registry;
+      // its raw framebuffer has no decoder-safe background migration path.
+      return;
+    }
     const now: number = Date.now();
     const record: ActiveRemoteSessionRecord = {
       sessionId: sessionId,
@@ -2945,6 +3083,9 @@ struct RemoteDesktop {
    */
   private async prepareRemoteSessionPipForForeground(host: RemoteHost,
     sessionId: number): Promise<void> {
+    if (host.protocol === 'vnc') {
+      return;
+    }
     const liveViewEnabled: boolean = AppStorage.get<boolean>('liveViewEnabled') ?? true;
     const liveViewMode: number = AppStorage.get<number>('liveViewMode') ?? 1;
     const activeSession: ActiveRemoteSessionRecord | null = this.activeSessionRegistry.getActive();
@@ -3123,6 +3264,9 @@ struct RemoteDesktop {
 
   private isCurrentVideoReadyForPip(): boolean {
     const protocol: string = this.pendingHost !== null ? this.pendingHost.protocol : '';
+    if (protocol === 'vnc') {
+      return false;
+    }
     return hasRemoteSessionPipVideo(
       protocol,
       this.rendererHandle > 0,
@@ -4836,6 +4980,8 @@ struct RemoteDesktop {
   // XComponent 就绪后初始化渲染管线并连接
   private async doConnect(host: RemoteHost): Promise<void> {
     const attemptId: number = ++this.connectAttemptId;
+    const vncHost: VncHostView | null = this.pendingVncHost;
+    const isVnc: boolean = host.protocol === 'vnc' && vncHost !== null;
     let rdpRestrictedAdminHash: string = '';
     try {
       if (!(await this.loader.waitForPendingTeardown())) {
@@ -4865,7 +5011,9 @@ struct RemoteDesktop {
       }
       const desktop: DesktopSize = this.desktopSize(host);
       this.updateRemoteSize(desktop);
-      const credentials: RdpCredentialParts = this.rdpCredentialParts(host);
+      const credentials: RdpCredentialParts = isVnc && vncHost !== null
+        ? { username: vncHost.username, domain: '' }
+        : this.rdpCredentialParts(host);
       const w: number = desktop.width;
       const h: number = desktop.height;
       const pageSurface: RemoteSessionPipContentSize = this.currentPageSurfaceSize(w, h);
@@ -4882,32 +5030,39 @@ struct RemoteDesktop {
       this.nativeHandles.markSurfaceAttached(this.rendererHandle);
       this.resetCanvasToDisplayDefault();
 
-      // 初始化解码器 (非阻塞 — 解码器未就绪不影响连接建立)
-      const rdCodecVal: number = AppStorage.get<number>('rustdeskCodec') ?? 0;
-      // RustDesk 自动模式不强制 H264；本地解码器按 RustDesk 常见 VP9 起步。
+      // VNC delivers raw BGRA frames directly to the generation-safe renderer;
+      // it must never create or bind the shared encoded-video decoder.
+      const rdCodecVal: number = isVnc ? 0 : (AppStorage.get<number>('rustdeskCodec') ?? 0);
       let decoderCodec: number = host.protocol === 'rustdesk' ? 3 : 0;
-      if (rdCodecVal === 1) {
-        decoderCodec = 2;
-      } else if (rdCodecVal === 2) {
-        decoderCodec = 3;
-      } else if (rdCodecVal === 3) {
-        decoderCodec = 4;
-      } else if (rdCodecVal === 4) {
-        decoderCodec = 0;
-      } else if (rdCodecVal === 5) {
-        decoderCodec = 1;
-      }
-      let dHandle: number = this.loader.initDecoder(w, h, decoderCodec);
-      hilog.info(RD_DOMAIN, RD_TAG, 'initDecoder returned: ' + dHandle);
-      if (dHandle > 0) {
-        this.decoderHandle = dHandle;
-        const bindOk: boolean = this.loader.bindVideoPipeline(this.decoderHandle, this.rendererHandle);
-        hilog.info(RD_DOMAIN, RD_TAG, 'bindVideoPipeline returned: ' + bindOk);
+      if (!isVnc) {
+        if (rdCodecVal === 1) {
+          decoderCodec = 2;
+        } else if (rdCodecVal === 2) {
+          decoderCodec = 3;
+        } else if (rdCodecVal === 3) {
+          decoderCodec = 4;
+        } else if (rdCodecVal === 4) {
+          decoderCodec = 0;
+        } else if (rdCodecVal === 5) {
+          decoderCodec = 1;
+        }
+        const dHandle: number = this.loader.initDecoder(w, h, decoderCodec);
+        hilog.info(RD_DOMAIN, RD_TAG, 'initDecoder returned: ' + dHandle);
+        if (dHandle > 0) {
+          this.decoderHandle = dHandle;
+          const bindOk: boolean = this.loader.bindVideoPipeline(this.decoderHandle, this.rendererHandle);
+          hilog.info(RD_DOMAIN, RD_TAG, 'bindVideoPipeline returned: ' + bindOk);
+        } else {
+          hilog.warn(RD_DOMAIN, RD_TAG, '解码器未就绪 (rc=' + dHandle + '), 连接将继续, 待后续初始化');
+        }
       } else {
-        hilog.warn(RD_DOMAIN, RD_TAG, '解码器未就绪 (rc=' + dHandle + '), 连接将继续, 待后续初始化');
+        this.decoderHandle = -1;
+        hilog.info(RD_DOMAIN, RD_TAG, 'VNC raw framebuffer path: decoder/audio shared handles skipped');
       }
 
-      if (host.protocol === 'rustdesk') {
+      if (isVnc) {
+        hilog.info(RD_DOMAIN, RD_TAG, 'VNC audio path disabled; VNC owns only raw framebuffer input');
+      } else if (host.protocol === 'rustdesk') {
         hilog.info(RD_DOMAIN, RD_TAG, 'RustDesk audio player lazy init enabled; native starts on first PCM frame');
       } else if (host.protocol === 'rdp' && !(AppStorage.get<boolean>('rdpAudioEnabled') ?? true)) {
         hilog.info(RD_DOMAIN, RD_TAG, 'RDP audio disabled by user preference');
@@ -4919,20 +5074,28 @@ struct RemoteDesktop {
         }
       }
 
-      // 密钥解析: sshKeyId 优先 (引用 KeyVault), 回退 sshKeyData (旧副本)
-      let keyData: string = host.sshKeyData;
-      if (host.sshKeyId !== '') {
-        const kvs = KeyVaultService.getInstance();
-        const ref = kvs.getSshKey(host.sshKeyId);
-        if (ref) { keyData = ref.privateKey; }
-      }
-      const useKey: boolean = host.sshUseKey && keyData.length > 0;
-      // 检测私钥是否需要密码
-      let keyPassphrase: string = host.sshKeyPassphrase || '';
-      if (useKey) {
-        const keyInfo = this.loader.inspectSshPrivateKey(keyData, keyPassphrase);
-        if (keyInfo['encrypted'] && keyPassphrase === '') {
-          keyPassphrase = await this.promptSshPassphrase();
+      // SSH key material is not part of a VNC owner. Keep this branch wholly
+      // outside VNC so an in-memory transient RemoteHost cannot accidentally
+      // become an SSH credential source.
+      let keyData: string = '';
+      let keyPassphrase: string = '';
+      let useKey: boolean = false;
+      if (!isVnc) {
+        // 密钥解析: sshKeyId 优先 (引用 KeyVault), 回退 sshKeyData (旧副本)
+        keyData = host.sshKeyData;
+        if (host.sshKeyId !== '') {
+          const kvs = KeyVaultService.getInstance();
+          const ref = kvs.getSshKey(host.sshKeyId);
+          if (ref) { keyData = ref.privateKey; }
+        }
+        useKey = host.sshUseKey && keyData.length > 0;
+        // 检测私钥是否需要密码
+        keyPassphrase = host.sshKeyPassphrase || '';
+        if (useKey) {
+          const keyInfo = this.loader.inspectSshPrivateKey(keyData, keyPassphrase);
+          if (keyInfo['encrypted'] && keyPassphrase === '') {
+            keyPassphrase = await this.promptSshPassphrase();
+          }
         }
       }
       const rdpDriveName: string = this.sanitizedRdpDriveName();
@@ -4950,6 +5113,49 @@ struct RemoteDesktop {
         if (rustDeskRelay) {
           rdServerKey = rustDeskRelay.key;
           rdServerKeyMode = rustDeskRelayKeyModeForFfi(rustDeskRelay.key, rustDeskRelay.keyMode);
+        }
+      }
+      let vncOwner: VncSessionOwner | null = null;
+      let vncPassword: string = '';
+      let vncGatewayHost: string = '';
+      let vncGatewayPort: number = 0;
+      let vncGatewayPath: string = '/vnc';
+      let vncRepeaterMode: string = 'mode12';
+      let vncRepeaterTarget: string = '';
+      let vncTls: boolean = false;
+      let vncExpectedFingerprint: string = '';
+      if (isVnc && vncHost !== null) {
+        vncOwner = this.vncOwnerForConnection(vncHost);
+        if (vncHost.gatewayId.trim() !== '' && vncOwner.gateway === null) {
+          throw new Error('VNC 网关不存在或已被删除 [E-VNC-GATEWAY-404]');
+        }
+        if (vncOwner.gateway !== null && !vncOwner.gateway.enabled) {
+          throw new Error('VNC 网关已停用 [E-VNC-GATEWAY-DISABLED]');
+        }
+        if (vncHost.transport === 'ultravnc_repeater' && vncOwner.gateway === null) {
+          throw new Error('VNC Repeater 未绑定网关 [E-VNC-PAIRING-CONFIG]');
+        }
+        if (vncHost.transport === 'websocket_gateway' && vncOwner.gateway === null) {
+          throw new Error('VNC WebSocket 未绑定网关 [E-VNC-WS-CONFIG]');
+        }
+        vncPassword = this.vncHosts.passwordFor(vncHost.id);
+        vncGatewayHost = vncOwner.gateway === null ? '' : vncOwner.gateway.host;
+        vncGatewayPort = vncOwner.gateway === null ? 0 : vncOwner.gateway.port;
+        vncGatewayPath = vncOwner.gateway === null ? '/vnc' : vncOwner.gateway.path;
+        vncRepeaterMode = vncOwner.gateway === null ? vncHost.repeaterMode : vncOwner.gateway.repeaterMode;
+        vncRepeaterTarget = vncOwner.gateway === null ? '' : vncOwner.gateway.targetId;
+        vncTls = vncHost.tls || (vncOwner.gateway !== null && vncOwner.gateway.tls);
+        vncExpectedFingerprint = vncTls ? this.vncTrust.trustedFingerprint(vncHost.id) : '';
+        const gatewayAvailability = vncGatewayAvailability(vncHost.transport, vncTls,
+          vncOwner.gateway !== null && vncOwner.gateway.tokenConfigured, vncRepeaterMode);
+        if (!gatewayAvailability.enabled) {
+          throw new Error(gatewayAvailability.message + ' [' + gatewayAvailability.code + ']');
+        }
+        if (vncHost.securityPolicy === 'secure_only' && !vncTls) {
+          throw new Error('VNC 当前安全策略要求 TLS，请在 VNC 主机或网关中开启 TLS [E-VNC-TLS-REQUIRED]');
+        }
+        if (vncHost.transport === 'ultravnc_repeater' && vncRepeaterTarget.trim() === '') {
+          throw new Error('VNC Repeater 目标 ID 为空 [E-VNC-PAIRING-TARGET]');
         }
       }
       const rustDeskDirect: boolean = host.protocol === 'rustdesk' && host.rustdeskDirectEnabled;
@@ -4982,7 +5188,8 @@ struct RemoteDesktop {
         host: sessionHost,
         port: sessionPort,
         username: credentials.username,
-        password: host.protocol === 'rdp' && rdpAuthMode !== 'password' ? '' : host.password,
+        password: isVnc ? vncPassword :
+          (host.protocol === 'rdp' && rdpAuthMode !== 'password' ? '' : host.password),
         width: w,
         height: h,
         customHostname: host.customHostname,
@@ -4993,26 +5200,27 @@ struct RemoteDesktop {
         multiMonitor: desktop.multiMonitor,
         monitorCount: desktop.monitorCount,
         colorDepth: desktop.colorDepth,
-        rdpAuthIdentityMode: AppStorage.get<number>('rdpAuthIdentityMode') ?? 1,
+        rdpAuthIdentityMode: host.protocol === 'rdp' ? (AppStorage.get<number>('rdpAuthIdentityMode') ?? 1) : 0,
         rdpAuthMode: rdpAuthMode,
         rdpRestrictedAdminSecretSource: rdpRestrictedAdminSecretSource,
         rdpRestrictedAdminHash: rdpRestrictedAdminHash,
-        authMethod: useKey ? 'publickey' : 'password',
+        authMethod: isVnc ? 'password' : (useKey ? 'publickey' : 'password'),
         privateKeyPem: useKey ? keyData : '',
         privateKeyPassphrase: keyPassphrase,
-        // RustDesk 设置 — 从 AppStorage 全局偏好 + 主机绑定中继/账户
-        rdImageQuality: AppStorage.get<number>('rustdeskImageQuality') ?? 1,
+        // RustDesk fields are deliberately neutral for VNC.  VNC settings do
+        // not read or inherit RustDesk/RDP preferences.
+        rdImageQuality: host.protocol === 'rustdesk' ? (AppStorage.get<number>('rustdeskImageQuality') ?? 1) : 1,
         rdDirectIp: rustDeskDirect,
         rdDirectPort: sessionPort,
-        rdLanDiscovery: AppStorage.get<boolean>('rustdeskLanDiscovery') ?? true,
-        rdPrivacyMode: AppStorage.get<boolean>('rustdeskPrivacyMode') ?? false,
+        rdLanDiscovery: host.protocol === 'rustdesk' ? (AppStorage.get<boolean>('rustdeskLanDiscovery') ?? true) : false,
+        rdPrivacyMode: host.protocol === 'rustdesk' ? (AppStorage.get<boolean>('rustdeskPrivacyMode') ?? false) : false,
         rdAudioEnabled: host.protocol === 'rdp' ?
           (AppStorage.get<boolean>('rdpAudioEnabled') ?? true) :
-          (AppStorage.get<boolean>('rustdeskAudioEnabled') ?? true),
+          (host.protocol === 'rustdesk' ? (AppStorage.get<boolean>('rustdeskAudioEnabled') ?? true) : false),
         rdClipboardEnabled: host.protocol === 'rustdesk' ?
           (AppStorage.get<boolean>('rustdeskClipboardEnabled') ?? true) :
-          (AppStorage.get<boolean>('rdpClipboardEnabled') ?? true),
-        rdDriveName: rdpDriveName,
+          (host.protocol === 'rdp' ? (AppStorage.get<boolean>('rdpClipboardEnabled') ?? true) : false),
+        rdDriveName: host.protocol === 'rdp' ? rdpDriveName : '',
         rdDrivePath: rdpDrivePath,
         expectedRdpCertificateFingerprintSha256: host.rdpCertificateFingerprintSha256,
         rdpAllowUntrustedRoot: host.rdpCertificateAllowUntrustedRoot,
@@ -5023,7 +5231,21 @@ struct RemoteDesktop {
         rdRelayId: host.rustdeskRelayId,
         rdAccountId: host.rustdeskAccountId,
         rdServerKey: rdServerKey,
-        rdServerKeyMode: rdServerKeyMode
+        rdServerKeyMode: rdServerKeyMode,
+        vncTransport: isVnc && vncOwner !== null ? vncOwner.host.transport : 'direct_tcp',
+        vncGatewayHost: isVnc ? vncGatewayHost : '',
+        vncGatewayPort: isVnc ? vncGatewayPort : 0,
+        vncGatewayPath: isVnc ? vncGatewayPath : '/vnc',
+        vncRepeaterMode: isVnc ? vncRepeaterMode : 'mode12',
+        vncRepeaterTarget: isVnc ? vncRepeaterTarget : '',
+        vncTls: isVnc && vncOwner !== null ? vncTls : false,
+        vncViewOnly: isVnc && vncOwner !== null ? vncOwner.host.viewOnly : true,
+        vncClipboardEnabled: isVnc && vncOwner !== null ? vncOwner.settings.clipboardEnabled : false,
+        vncSecurityPolicy: isVnc && vncOwner !== null ? vncOwner.host.securityPolicy : 'secure_only',
+        vncConnectTimeoutMs: isVnc && vncOwner !== null ? vncOwner.settings.connectTimeoutMs : 10000,
+        vncAuthTimeoutMs: isVnc && vncOwner !== null ? vncOwner.settings.authTimeoutMs : 15000,
+        vncFirstFrameTimeoutMs: isVnc && vncOwner !== null ? vncOwner.settings.firstFrameTimeoutMs : 15000,
+        vncExpectedCertificateFingerprintSha256: isVnc ? vncExpectedFingerprint : ''
       };
       // 编码偏好单独处理 (0=auto → 不强制)
       if (rdCodecVal > 0) {
@@ -5117,12 +5339,13 @@ struct RemoteDesktop {
       await this.setPreferredOrientation(window.Orientation.LANDSCAPE, 'LANDSCAPE');
       await this.setRemoteKeepScreenOn(true);
       await this.setRemoteNavigationHidden(true, 'connect-success');
-      // 所有协议统一记录成功连接时间；健康字段由实际探测结果另行更新。
-      // RDP 之前为了诊断临时跳过该写入，导致卡片和详情长期显示旧状态。
-      await this.srv.updateLastConnected(host.id);
+      // VNC 使用独立的 vncrecords owner，不得把 transient `vnc:<id>` 投影
+      // 回混合 remotehosts；RDP/RustDesk 保持原有最近连接时间行为。
+      if (host.protocol !== 'vnc') {
+        await this.srv.updateLastConnected(host.id);
+      }
       this.startClipboardBridgeBestEffort(sid, attemptId,
-        clipboardSyncEnabledForProtocol(host.protocol,
-          AppStorage.get<boolean>('rdpClipboardEnabled') ?? true, this.rustdeskClipboardEnabled));
+        this.clipboardBridgeEnabledForSession());
     } catch (err) {
       rdpRestrictedAdminHash = '';
       this.clearRdpRenderWatchdog();
@@ -5149,11 +5372,17 @@ struct RemoteDesktop {
       this.connectStarted = false;
       this.connecting = false;
       const errObj: Error = err as Error;
-      // 连接失败也要立即刷新本机健康状态；云写入由服务按节流策略处理，
-      // 页面监听器仍会立刻收到 UNKNOWN，避免缩略卡片继续显示上次成功结果。
-      await this.srv.updateConnectionHealth(host.id, -1, false);
       this.connectionError = '无法建立远程连接';
       this.connectionErrorDetail = errObj.message ? errObj.message : '未知连接错误 [E-CONNECT-UNKNOWN]';
+      // VNC 没有 remotehosts 健康字段；它的 TLS 首次信任必须在 native
+      // 清理完成后进入独立 trust 确认流程，确认后由该 owner 重新连接。
+      if (host.protocol === 'vnc' && vncHost !== null) {
+        this.handleVncTrustRequired(vncHost, this.connectionErrorDetail);
+      } else {
+        // 连接失败也要立即刷新普通主机的本机健康状态；云写入由服务按
+        // 节流策略处理，页面监听器仍会立刻收到 UNKNOWN。
+        await this.srv.updateConnectionHealth(host.id, -1, false);
+      }
       if (this.isProRustDeskHost(host) && this.shouldOfferRustDeskAuthRetry(this.connectionErrorDetail)) {
         const fresh: RemoteHost | undefined = this.srv.getHost(host.id);
         if (fresh) { this.pendingHost = RemoteHost.fromJSON(fresh.toJSON()); }
@@ -5595,6 +5824,13 @@ struct RemoteDesktop {
 
   private async detachForBackground(): Promise<void> {
     this.releaseCanvasPinchInput('background-detach');
+    if (this.isVncSession()) {
+      // VNC has no audio/decoder/PIP migration contract. Disconnecting on
+      // background keeps the raw renderer and RFB worker out of RustDesk's
+      // shared lifecycle path; the user can reconnect from the VNC owner page.
+      this.disconnectAndCleanup('vnc-background-no-pip');
+      return;
+    }
     if (this.cleanupStarted) {
       return;
     }
@@ -6033,9 +6269,7 @@ struct RemoteDesktop {
           this.setRemoteNavigationHidden(true, 'foreground-restore');
         }
         if (this.clipboardBridge === null) {
-          const clipboardEnabled: boolean = clipboardSyncEnabledForProtocol(this.currentProtocolName(),
-            AppStorage.get<boolean>('rdpClipboardEnabled') ?? true,
-            AppStorage.get<boolean>('rustdeskClipboardEnabled') ?? true);
+          const clipboardEnabled: boolean = this.clipboardBridgeEnabledForSession();
           this.startClipboardBridgeBestEffort(this.sessionId, this.connectAttemptId, clipboardEnabled);
         }
         this.scheduleRestoreFrameRefreshPump();
