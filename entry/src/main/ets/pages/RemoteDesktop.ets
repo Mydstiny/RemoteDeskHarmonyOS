@@ -143,7 +143,15 @@ import {
   remoteInputBlockedReason,
   shouldBlockRemoteInputForBrowseMode
 } from '../services/RemoteInputGuardPolicy';
-import { shouldConsumeCanvasPinchTouch } from '../services/RemoteCanvasPinchInputPolicy';
+import {
+  advanceCanvasPinchTouchState,
+  CanvasPinchInputPhase,
+  CanvasPinchTouchEvent,
+  claimCanvasPinchTouchState,
+  drainCanvasPinchTouchState,
+  shouldConsumeCanvasPinchTouch,
+  shouldStartNewCanvasPinchTouchSequence
+} from '../services/RemoteCanvasPinchInputPolicy';
 import { RemoteProtocol } from '../services/RemoteSessionState';
 import { createTransferSnapshot, TransferProtocol, TransferState } from '../services/FileTransferProgressModel';
 import { isRemoteCompletionConfirmed } from '../services/TransferSessionPolicy';
@@ -655,7 +663,8 @@ struct RemoteDesktop {
   // transform across those geometry changes.
   private canvasTransformGestureModified: boolean = false;
   private canvasPinchActive: boolean = false;
-  private canvasPinchInputConsumed: boolean = false;
+  private canvasPinchInputPhase: CanvasPinchInputPhase = 'idle';
+  private canvasPinchTouchCount: number = 0;
   private canvasPinchLastScale: number = 1;
   private canvasPinchLastCenterX: number = 0;
   private canvasPinchLastCenterY: number = 0;
@@ -1766,10 +1775,12 @@ struct RemoteDesktop {
 
   /** Claim input only after ArkUI has recognized a real pinch, never on second-finger down. */
   private claimCanvasPinchInput(): void {
-    if (this.canvasPinchInputConsumed) {
+    if (this.canvasPinchInputPhase !== 'idle') {
       return;
     }
-    this.canvasPinchInputConsumed = true;
+    const state = claimCanvasPinchTouchState(this.touchFingerCount);
+    this.canvasPinchInputPhase = state.phase;
+    this.canvasPinchTouchCount = state.fingerCount;
     this.clearTouchRightClickTimer();
     this.clearTouchDirectRightClickTimer();
     if (this.touchLeftDown) {
@@ -1820,27 +1831,64 @@ struct RemoteDesktop {
   /** Release gesture ownership from every terminal path; safe to call repeatedly. */
   private releaseCanvasPinchInput(reason: string): void {
     const wasActive: boolean = this.canvasPinchActive || this.rustDeskTouchPinchActive;
-    const wasConsumed: boolean = this.canvasPinchInputConsumed;
+    const wasConsumed: boolean = this.canvasPinchInputPhase !== 'idle';
     this.finishCanvasPinch();
-    this.canvasPinchInputConsumed = false;
     if (wasConsumed) {
       this.resetTouchGesture();
+      if (this.shouldDrainCanvasPinchTouchSequence(reason)) {
+        const state = drainCanvasPinchTouchState({
+          phase: this.canvasPinchInputPhase,
+          fingerCount: this.canvasPinchTouchCount
+        });
+        this.canvasPinchInputPhase = state.phase;
+        this.canvasPinchTouchCount = state.fingerCount;
+      } else {
+        this.canvasPinchInputPhase = 'idle';
+        this.canvasPinchTouchCount = 0;
+      }
     }
     if (wasActive || wasConsumed) {
       hilog.info(RD_DOMAIN, RD_TAG, 'canvas-pinch-release reason=' + reason);
     }
   }
 
+  private shouldDrainCanvasPinchTouchSequence(reason: string): boolean {
+    return reason !== 'control-mode-change' && reason !== 'zoom-setting-change' &&
+      reason !== 'page-disappear' && reason !== 'pip-surface-transfer' &&
+      reason !== 'background-detach' && reason !== 'background-restore' &&
+      reason !== 'surface-destroyed' && reason !== 'xcomponent-destroy' &&
+      reason.indexOf('disconnect-') !== 0 &&
+      reason.indexOf('pip-renderer-release-') !== 0 &&
+      reason.indexOf('pip-surface-changed') !== 0;
+  }
+
   private consumeCanvasPinchTouch(event: TouchEvent): boolean {
-    if (!shouldConsumeCanvasPinchTouch(this.canvasPinchInputConsumed,
+    if (!shouldConsumeCanvasPinchTouch(this.canvasPinchInputPhase !== 'idle',
       event.sourceTool === SourceTool.Finger)) {
       return false;
     }
-    if (event.type === TouchType.Up || event.type === TouchType.Cancel) {
-      const remaining: number = this.remainingTouchCountAfterLift(event);
-      if (event.type === TouchType.Cancel || remaining <= 0) {
-        this.releaseCanvasPinchInput(event.type === TouchType.Cancel ? 'touch-cancel' : 'touch-up');
-      }
+
+    const eventType: CanvasPinchTouchEvent = event.type === TouchType.Down ? 'down' :
+      event.type === TouchType.Up ? 'up' :
+        event.type === TouchType.Cancel ? 'cancel' : 'move';
+    if (shouldStartNewCanvasPinchTouchSequence(this.canvasPinchInputPhase, eventType,
+      event.touches.length, event.changedTouches.length)) {
+      this.finishCanvasPinch();
+      this.canvasPinchInputPhase = 'idle';
+      this.canvasPinchTouchCount = 0;
+      this.resetTouchGesture();
+      return false;
+    }
+
+    const next = advanceCanvasPinchTouchState({
+      phase: this.canvasPinchInputPhase,
+      fingerCount: this.canvasPinchTouchCount
+    }, eventType, event.touches.length, event.changedTouches.length);
+    this.canvasPinchInputPhase = next.phase;
+    this.canvasPinchTouchCount = next.fingerCount;
+    if (next.phase === 'idle') {
+      this.finishCanvasPinch();
+      this.resetTouchGesture();
     }
     event.stopPropagation();
     return true;
