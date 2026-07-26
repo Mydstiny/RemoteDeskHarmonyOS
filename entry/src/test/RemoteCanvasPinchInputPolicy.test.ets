@@ -5,6 +5,7 @@ import {
   drainCanvasPinchTouchState,
   rustDeskTouchScaleDelta,
   shouldConsumeCanvasPinchTouch,
+  shouldDrainCanvasPinchTouchSequence,
   shouldStartNewCanvasPinchTouchSequence
 } from '../main/ets/services/RemoteCanvasPinchInputPolicy';
 
@@ -60,6 +61,14 @@ export default function remoteCanvasPinchInputPolicyTest(): void {
       expect(rustDeskTouchScaleDelta(1.05, 1.1)).assertEqual(50);
       expect(rustDeskTouchScaleDelta(1, 0.95)).assertEqual(-50);
       expect(rustDeskTouchScaleDelta(1, 1)).assertEqual(0);
+    });
+
+    it('drains old fingers across mode changes but not lifecycle teardown', 0, (): void => {
+      expect(shouldDrainCanvasPinchTouchSequence('control-mode-change')).assertTrue();
+      expect(shouldDrainCanvasPinchTouchSequence('zoom-setting-change')).assertTrue();
+      expect(shouldDrainCanvasPinchTouchSequence('surface-resize')).assertTrue();
+      expect(shouldDrainCanvasPinchTouchSequence('page-disappear')).assertFalse();
+      expect(shouldDrainCanvasPinchTouchSequence('disconnect-user')).assertFalse();
     });
   });
 }

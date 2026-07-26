@@ -106,3 +106,13 @@ export function shouldStartNewCanvasPinchTouchSequence(phase: CanvasPinchInputPh
   return phase === 'draining' && event === 'down' &&
     nonNegative(activeTouchCount) <= 1 && nonNegative(changedTouchCount) <= 1;
 }
+
+/** Lifecycle teardown can terminate ownership immediately; mode changes cannot. */
+export function shouldDrainCanvasPinchTouchSequence(reason: string): boolean {
+  return reason !== 'page-disappear' && reason !== 'pip-surface-transfer' &&
+    reason !== 'background-detach' && reason !== 'background-restore' &&
+    reason !== 'surface-destroyed' && reason !== 'xcomponent-destroy' &&
+    reason.indexOf('disconnect-') !== 0 &&
+    reason.indexOf('pip-renderer-release-') !== 0 &&
+    reason.indexOf('pip-surface-changed') !== 0;
+}

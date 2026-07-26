@@ -153,6 +153,7 @@ import {
   drainCanvasPinchTouchState,
   rustDeskTouchScaleDelta,
   shouldConsumeCanvasPinchTouch,
+  shouldDrainCanvasPinchTouchSequence,
   shouldStartNewCanvasPinchTouchSequence
 } from '../services/RemoteCanvasPinchInputPolicy';
 import { RemoteProtocol } from '../services/RemoteSessionState';
@@ -2022,7 +2023,7 @@ struct RemoteDesktop {
     this.finishCanvasPinch();
     if (wasConsumed) {
       this.resetTouchGesture();
-      if (this.shouldDrainCanvasPinchTouchSequence(reason)) {
+      if (shouldDrainCanvasPinchTouchSequence(reason)) {
         const state = drainCanvasPinchTouchState({
           phase: this.canvasPinchInputPhase,
           fingerCount: this.canvasPinchTouchCount
@@ -2037,16 +2038,6 @@ struct RemoteDesktop {
     if (wasActive || wasConsumed) {
       hilog.info(RD_DOMAIN, RD_TAG, 'canvas-pinch-release reason=' + reason);
     }
-  }
-
-  private shouldDrainCanvasPinchTouchSequence(reason: string): boolean {
-    return reason !== 'control-mode-change' && reason !== 'zoom-setting-change' &&
-      reason !== 'page-disappear' && reason !== 'pip-surface-transfer' &&
-      reason !== 'background-detach' && reason !== 'background-restore' &&
-      reason !== 'surface-destroyed' && reason !== 'xcomponent-destroy' &&
-      reason.indexOf('disconnect-') !== 0 &&
-      reason.indexOf('pip-renderer-release-') !== 0 &&
-      reason.indexOf('pip-surface-changed') !== 0;
   }
 
   private consumeCanvasPinchTouch(event: TouchEvent): boolean {
