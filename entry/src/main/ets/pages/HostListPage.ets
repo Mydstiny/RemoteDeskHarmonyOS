@@ -202,7 +202,13 @@ import {
 import { CURRENT_RELEASE_VERSION } from '../services/ReleaseNotesRegistry';
 import { AboutSettingsSheet } from '../components/AboutSettingsSheet';
 import { FeedbackSettingsSheet } from '../components/FeedbackSettingsSheet';
-import { RdpCertificateInfo, SshHostKeyInfo, SshPrivateKeyInfo, SshPublicKeyInstallResult } from '../types/rdpnapi';
+import {
+  RdpCertificateInfo,
+  SshHostKeyInfo,
+  SshPrivateKeyInfo,
+  SshPublicKeyInstallResult,
+  SshProxyConfig
+} from '../types/rdpnapi';
 import { SessionConfig } from '../types/rdpnapi';
 import { ActiveRemoteSessionRegistry, ActiveRemoteSessionRecord } from '../services/ActiveRemoteSessionRegistry';
 import { RemoteProtocol } from '../services/RemoteSessionState';
@@ -427,6 +433,7 @@ struct HostListPage {
   @State sheetProxyHost: string = '';
   @State sheetProxyPort: number = 22;
   @State sheetProxyUser: string = '';
+  @State sheetProxyType: string = 'http_connect';
   @StorageLink('currentBreakpoint') @Watch('onBreakpointChange') breakpoint: string = 'sm';
   @StorageProp('isDesktopDevice') isDesktopDevice: boolean = false;
   @StorageProp('topRectHeight') topRectHeight: number = 0;
@@ -2745,6 +2752,21 @@ struct HostListPage {
     return this.srv.getHost(this.sshPreflightHostId);
   }
 
+  /**
+   * 主机指纹/密钥预检必须使用与最终 SSH 会话相同的传输路径。
+   * 代理密码不在 RemoteHost 中持久化，因此此处只传递已保存的非敏感
+   * 端点和用户名；若代理要求密码，native 会返回明确的代理认证错误。
+   */
+  private sshPreflightProxy(host: RemoteHost): SshProxyConfig {
+    return {
+      type: host.proxyHost.length > 0 ? host.sshProxyType : 'direct',
+      host: host.proxyHost,
+      port: host.proxyPort,
+      username: host.proxyUsername,
+      password: ''
+    };
+  }
+
   private resolveSshKeyMaterial(host: RemoteHost): SshKeyMaterial {
     let keyData = host.sshKeyData;
     let encryptedHint = false;
@@ -2793,7 +2815,7 @@ struct HostListPage {
     try {
       await new Promise<void>((r) => setTimeout(r, 80));
       if (!this.isCurrentSshPreflight(host, generation)) { return; }
-      const info = this.loader.probeSshHostKey(host.host, host.port);
+      const info = this.loader.probeSshHostKey(host.host, host.port, this.sshPreflightProxy(host));
       if (!this.isCurrentSshPreflight(host, generation)) { return; }
       if (!info.ok) {
         this.sshPreflightState = SshPreflightState.ERROR;
@@ -2882,7 +2904,10 @@ struct HostListPage {
       await new Promise<void>((r) => setTimeout(r, 60));
       if (!this.isCurrentSshPreflight(host, generation)) { return; }
       const keyData = this.resolveSshKeyMaterial(host).privateKey;
-      const result = this.loader.testSshKeyAuth(host.host, host.port, host.username, keyData, passphrase);
+      const result = this.loader.testSshKeyAuth(
+        host.host, host.port, host.username, keyData, passphrase,
+        this.sshPreflightProxy(host)
+      );
       if (!this.isCurrentSshPreflight(host, generation)) { return; }
       if (result.ok) {
         this.doSshPreflightReady(host, generation);
@@ -2922,7 +2947,8 @@ struct HostListPage {
         return;
       }
       const result = this.loader.testSshKeyAuth(
-        host.host, host.port, host.username, keyData, this.sshPreflightPassphraseInput
+        host.host, host.port, host.username, keyData, this.sshPreflightPassphraseInput,
+        this.sshPreflightProxy(host)
       );
       if (!this.isCurrentSshPreflight(host, generation)) { return; }
       if (result.ok) {
@@ -3243,6 +3269,8 @@ struct HostListPage {
     this.sheetProxyHost = latestHost.proxyHost;
     this.sheetProxyPort = latestHost.proxyPort;
     this.sheetProxyUser = latestHost.proxyUsername;
+    this.sheetProxyType = latestHost.proxyHost === '' ? 'http_connect' :
+      (latestHost.sshProxyType === 'direct' ? 'legacy_gateway' : latestHost.sshProxyType);
     this.sheetUseProxy = (latestHost.proxyHost !== '');
     this.openSheetSafely((): void => { this.showAddSheet = true; });
   }
@@ -8446,6 +8474,13 @@ struct HostListPage {
       if (this.sheetUseProxy) {
         this.fieldRow('代理地址', 'gateway.example.com', this.sheetProxyHost, (v: string): void => { this.sheetProxyHost = v; })
         Row() {
+          Text('代理类型').fontSize(13).fontColor(this.pal().text).fontFamily(this.font())
+          Blank()
+          Button(this.sshProxyTypeLabel()).fontSize(12).fontColor(this.accentColor)
+            .backgroundColor(this.pal().surface).borderRadius(8)
+            .onClick((): void => { this.cycleSshProxyType(); })
+        }.width('100%').height(36)
+        Row() {
           Column() {
             this.fieldRow('代理端口', '22', this.sheetProxyPort.toString(), (v: string): void => {
               const n: number = parseInt(v); this.sheetProxyPort = isNaN(n) ? 22 : n;
@@ -8466,6 +8501,16 @@ struct HostListPage {
     this.sheetKeyPassphrase = '';
     this.sheetKeyPath = '';
     this.sheetKeyText = '';
+  }
+
+  private sshProxyTypeLabel(): string {
+    if (this.sheetProxyType === 'socks5') { return 'SOCKS5'; }
+    if (this.sheetProxyType === 'legacy_gateway') { return '旧跳板机（需改）'; }
+    return 'HTTP CONNECT';
+  }
+
+  private cycleSshProxyType(): void {
+    this.sheetProxyType = this.sheetProxyType === 'http_connect' ? 'socks5' : 'http_connect';
   }
 
   @Builder rustDeskProPreflightPanel() {
@@ -8873,6 +8918,7 @@ struct HostListPage {
     this.sheetKeyId = ''; this.sheetKeyPassphrase = '';
     this.sheetKeyMode = 0; this.sheetUseProxy = false;
     this.sheetProxyHost = ''; this.sheetProxyPort = 22; this.sheetProxyUser = '';
+    this.sheetProxyType = 'http_connect';
   }
 
   private doAdd(): void {
@@ -8964,9 +9010,20 @@ struct HostListPage {
       h.sshKeyData = this.sheetKeyText;
       h.sshKeyId = this.sheetKeyId;
       h.sshKeyPassphrase = this.sheetKeyPassphrase;
+      h.sshProxyType = 'direct';
+      h.proxyHost = ''; h.proxyPort = 0; h.proxyUsername = '';
       if (this.sheetUseProxy) {
+        if (this.sheetProxyHost.trim() === '' || this.sheetProxyPort <= 0 || this.sheetProxyPort > 65535) {
+          this.sheetErr = '代理地址或端口无效';
+          return;
+        }
+        if (this.sheetProxyType !== 'http_connect' && this.sheetProxyType !== 'socks5') {
+          this.sheetErr = '旧版跳板机字段不再直连，请选择 HTTP CONNECT 或 SOCKS5';
+          return;
+        }
         h.proxyHost = this.sheetProxyHost; h.proxyPort = this.sheetProxyPort;
         h.proxyUsername = this.sheetProxyUser;
+        h.sshProxyType = this.sheetProxyType === 'socks5' ? 'socks5' : 'http_connect';
       }
     }
     const e: string[] = h.getValidationErrors();
@@ -9265,7 +9322,8 @@ struct HostListPage {
     }
     this.sshHostKeyBusyId = host.id;
     try {
-      const info: SshHostKeyInfo = this.loader.probeSshHostKey(host.host, host.port);
+      const info: SshHostKeyInfo = this.loader.probeSshHostKey(
+        host.host, host.port, this.sshPreflightProxy(host));
       if (!info.ok) {
         promptAction.showToast({
           message: '重新获取失败: ' + (info.errorMessage || '无法读取 SSH 主机指纹'),

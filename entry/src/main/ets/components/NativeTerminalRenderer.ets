@@ -13,7 +13,12 @@
  *   4. 脏行附加: 强制包含光标所在行 (光标移动后旧行也要重绘)
  */
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import { TerminalCoreBridge, TerminalCoreSnapshot, TerminalCoreCell } from '../napi/TerminalCoreBridge';
+import {
+  TerminalCoreBridge,
+  TerminalCoreMode,
+  TerminalCoreSnapshot,
+  TerminalCoreCell
+} from '../napi/TerminalCoreBridge';
 import {
   shouldAutoScrollToBottomAfterViewportChange,
   shouldHonorAutoScrollToBottom,
@@ -40,7 +45,8 @@ export struct NativeTerminalRenderer {
   @Prop @Watch('onCellSizeChange') cellWvp: number = 9;
   @Prop @Watch('onCellSizeChange') cellHvp: number = 20;
   @Prop @Watch('onFontChange') fontSize: number = 18;
-  @Prop @Watch('onInputChange') inputData: string = '';
+  @Prop inputData: ArrayBuffer = new ArrayBuffer(0);
+  @Prop @Watch('onInputSequenceChange') inputSequence: number = 0;
   @StorageProp('terminalFgColor') @Watch('onFgColorChange') terminalFgColor: string = '#33FF33';
   @Prop selectMode: boolean = false;
   @Prop bottomAlignSparseContent: boolean = false;
@@ -51,6 +57,7 @@ export struct NativeTerminalRenderer {
   @Link @Watch('onCopyRequest') copyRequest: number;
   @Link copiedText: string;
   onData?: (data: string) => void;
+  onTerminalModeChange?: (mode: TerminalCoreMode) => void;
 
   /** 终端核心句柄 (Rust heap 分配) */
   private handle: number = 0;
@@ -62,6 +69,7 @@ export struct NativeTerminalRenderer {
 
   /** 最新完整快照缓存 — 用于全屏复制 (getContent) 和 drawCellAt */
   private lastSnapshot: TerminalCoreSnapshot | null = null;
+  private lastModeSignature: string = '';
   /** 脏行集合 (从 Rust dirtySnapshot 获取) */
   private dirtyRows: Set<number> = new Set();
   /** 光标闪烁 */
@@ -70,8 +78,6 @@ export struct NativeTerminalRenderer {
   /** 上一次绘制时光标的位置 — 用于擦除旧光标 */
   private lastCursorX: number = 0;
   private lastCursorY: number = 0;
-  /** 输入增量追踪 */
-  private lastInputLen: number = 0;
   /** 上一次 rows (用于检测 resize) */
   private lastRows: number = 24;
   /** 用户/键盘把视图带到底部后, 后续 resize 和输出持续跟随底部, 直到用户主动上滑 */
@@ -113,12 +119,33 @@ export struct NativeTerminalRenderer {
     this.cursorVisible = true;
     this.lastCursorX = 0;
     this.lastCursorY = 0;
-    this.lastInputLen = 0;
     this.followBottom = true;
     this.frameCount = 0;
     this.lastGridTop = 0;
     this.lastViewportHeight = 0;
     this.lastCanvasArea = '';
+    this.lastModeSignature = '';
+  }
+
+  private notifyTerminalMode(snapshot: TerminalCoreSnapshot): void {
+    const mode: TerminalCoreMode = {
+      bracketedPaste: snapshot.bracketedPaste,
+      mouseTracking: snapshot.mouseTracking,
+      sgrMouse: snapshot.sgrMouse,
+      applicationCursorKeys: snapshot.applicationCursorKeys,
+      applicationKeypad: snapshot.applicationKeypad,
+      autoWrap: snapshot.autoWrap
+    };
+    const signature: string = [
+      mode.bracketedPaste ? '1' : '0', mode.mouseTracking.toString(),
+      mode.sgrMouse ? '1' : '0', mode.applicationCursorKeys ? '1' : '0',
+      mode.applicationKeypad ? '1' : '0', mode.autoWrap ? '1' : '0'
+    ].join(':');
+    if (signature === this.lastModeSignature) { return; }
+    this.lastModeSignature = signature;
+    if (this.onTerminalModeChange) {
+      this.onTerminalModeChange(mode);
+    }
   }
 
   // ============================================================
@@ -204,31 +231,16 @@ export struct NativeTerminalRenderer {
   // 数据输入 — SSH 数据推送到 Rust terminal_core
   // ============================================================
 
-  private onInputChange(): void {
+  private onInputSequenceChange(): void {
     if (this.handle <= 0) { return; }
-    const curLen: number = this.inputData.length;
-    if (curLen > this.lastInputLen) {
-      // 增量数据
-      const added: string = this.inputData.substring(this.lastInputLen);
-      this.bridge.write(this.handle, added);
-      if (this.followBottom) {
-        this.bridge.scrollToBottom(this.handle);
-      }
-      this.applyDirtySnapshot();
-    } else if (curLen < this.lastInputLen) {
-      // 截断 (父级限制 50KB): 重建终端, 全量重放
-      this.bridge.destroy(this.handle);
-      this.handle = this.bridge.create(this.cols, this.rows);
-      if (this.inputData.length > 0) {
-        this.bridge.write(this.handle, this.inputData);
-      }
-      if (this.followBottom) {
-        this.bridge.scrollToBottom(this.handle);
-      }
-      this.lastSnapshot = this.bridge.snapshot(this.handle);
-      this.renderFull();
+    if (this.inputData.byteLength === 0) { return; }
+    // inputData is one ordered SSH byte chunk. The Rust core owns bounded
+    // scrollback and parses UTF-8/VT sequences without a lossy JS conversion.
+    this.bridge.writeBytes(this.handle, this.inputData);
+    if (this.followBottom) {
+      this.bridge.scrollToBottom(this.handle);
     }
-    this.lastInputLen = curLen;
+    this.applyDirtySnapshot();
   }
 
   /** 获取脏快照并增量渲染 */
@@ -237,6 +249,7 @@ export struct NativeTerminalRenderer {
     this.frameCount++;
     const snap: TerminalCoreSnapshot = this.bridge.dirtySnapshot(this.handle);
     this.lastSnapshot = snap;
+    this.notifyTerminalMode(snap);
     // 构建脏行集合
     this.dirtyRows.clear();
     for (let i = 0; i < snap.dirtyRows.length; i++) {
@@ -306,8 +319,8 @@ export struct NativeTerminalRenderer {
     this.ctx.font = `${this.fontSize}vp monospace`;
   }
 
-  private canvasFont(bold: boolean): string {
-    return `${bold ? 'bold ' : ''}${this.fontSize}vp monospace`;
+  private canvasFont(bold: boolean, italic: boolean = false): string {
+    return `${italic ? 'italic ' : ''}${bold ? 'bold ' : ''}${this.fontSize}vp monospace`;
   }
 
   private gridTop(): number {
@@ -459,18 +472,33 @@ export struct NativeTerminalRenderer {
       if (idx >= snap.cells.length) { continue; }
       const cell: TerminalCoreCell = snap.cells[idx];
       const x: number = c * this.cellW;
+      let fg: number = cell.fg;
+      let bg: number = cell.bg;
+      if (cell.inverse) {
+        const swapped: number = fg;
+        fg = bg;
+        bg = swapped;
+      }
       // 背景 (非默认色)
-      if (cell.bg !== DEFAULT_BG && cell.ch !== ' ') {
-        ctx.fillStyle = NativeTerminalRenderer.rgbaToCss(cell.bg);
+      if (bg !== DEFAULT_BG) {
+        ctx.fillStyle = NativeTerminalRenderer.rgbaToCss(bg);
         ctx.fillRect(x, y, this.cellW, this.cellH);
       }
       // 前景字符
       if (cell.ch === ' ' || cell.ch === '\x00') { continue; }
       // 默认前景色用用户设置的 terminalFgColor 替代 Rust 硬编码灰色
-      ctx.fillStyle = (cell.fg === DEFAULT_FG) ? this.terminalFgColor : NativeTerminalRenderer.rgbaToCss(cell.fg);
-      ctx.font = this.canvasFont(cell.bold);
+      ctx.fillStyle = (fg === DEFAULT_FG) ? this.terminalFgColor : NativeTerminalRenderer.rgbaToCss(fg);
+      ctx.font = this.canvasFont(cell.bold, cell.italic);
       ctx.textBaseline = 'middle';
       ctx.fillText(cell.ch, x, y + this.cellH * 0.50);
+      if (cell.underline) {
+        ctx.strokeStyle = ctx.fillStyle;
+        ctx.lineWidth = Math.max(1, this.cellH * 0.06);
+        ctx.beginPath();
+        ctx.moveTo(x, y + this.cellH - Math.max(1, this.cellH * 0.12));
+        ctx.lineTo(x + this.cellW, y + this.cellH - Math.max(1, this.cellH * 0.12));
+        ctx.stroke();
+      }
     }
   }
 
@@ -488,15 +516,30 @@ export struct NativeTerminalRenderer {
     const idx: number = r * snap.cols + c;
     if (idx < snap.cells.length) {
       const cell: TerminalCoreCell = snap.cells[idx];
+      let fg: number = cell.fg;
+      let bg: number = cell.bg;
+      if (cell.inverse) {
+        const swapped: number = fg;
+        fg = bg;
+        bg = swapped;
+      }
+      if (bg !== DEFAULT_BG) {
+        ctx.fillStyle = NativeTerminalRenderer.rgbaToCss(bg);
+        ctx.fillRect(x, y, this.cellW, this.cellH);
+      }
       if (cell.ch !== ' ' && cell.ch !== '\x00') {
-        if (cell.bg !== DEFAULT_BG) {
-          ctx.fillStyle = NativeTerminalRenderer.rgbaToCss(cell.bg);
-          ctx.fillRect(x, y, this.cellW, this.cellH);
-        }
-        ctx.fillStyle = (cell.fg === DEFAULT_FG) ? this.terminalFgColor : NativeTerminalRenderer.rgbaToCss(cell.fg);
-        ctx.font = this.canvasFont(cell.bold);
+        ctx.fillStyle = (fg === DEFAULT_FG) ? this.terminalFgColor : NativeTerminalRenderer.rgbaToCss(fg);
+        ctx.font = this.canvasFont(cell.bold, cell.italic);
         ctx.textBaseline = 'middle';
         ctx.fillText(cell.ch, x, y + this.cellH * 0.50);
+        if (cell.underline) {
+          ctx.strokeStyle = ctx.fillStyle;
+          ctx.lineWidth = Math.max(1, this.cellH * 0.06);
+          ctx.beginPath();
+          ctx.moveTo(x, y + this.cellH - Math.max(1, this.cellH * 0.12));
+          ctx.lineTo(x + this.cellW, y + this.cellH - Math.max(1, this.cellH * 0.12));
+          ctx.stroke();
+        }
       }
     }
   }
@@ -544,6 +587,7 @@ export struct NativeTerminalRenderer {
         this.calcCellSize();
         if (this.handle > 0) {
           this.lastSnapshot = this.bridge.snapshot(this.handle);
+          this.notifyTerminalMode(this.lastSnapshot);
         }
         this.renderFull();
       })

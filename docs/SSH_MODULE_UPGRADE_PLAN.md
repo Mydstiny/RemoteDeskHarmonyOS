@@ -5,7 +5,13 @@
 > 代码基线：main，commit bfae6ef30  
 > 目标平台：HarmonyOS，API 23  
 > 适用仓库：RemoteDeskHarmonyOS  
-> 本文性质：实施计划与验收基线。本次只新增本文档，不修改业务代码。
+> 本文性质：实施计划、执行记录与验收基线。2026-07-27 起按用户授权在当前分支落地 P0/P1 的可安全交付子集；未实现项继续按本文“剩余差距”执行。
+
+### 实施状态（2026-07-27）
+
+已落地并通过当前 API 23 构建门禁的 SSH 专属能力包括：每连接独立 adapter、域名/IPv4/IPv6 连接、HTTP CONNECT/SOCKS5 传输、代理感知预检、OpenSSH wire-format SHA256 指纹、有限二进制输出队列、Shell/exec/subsystem 的独立 channel、stderr/退出状态/信号/EOF、异步 SSH 连接/延迟/SFTP 接口、常用 VT 模式与原始字节终端管线、Canvas 样式增量绘制、粘贴保护以及手动重试和连接状态探测；同步兼容入口也已改为 SSH 连接成功后再提交 active context，并为 active adapter/input handler 增加并发保护。
+
+仍未达到“完全实现”定义的能力包括：交互式 MFA prompt UI、完整 known_hosts（主机模式/哈希主机名/多 key 轮换）、递归与元数据完整的 SFTP/可靠取消和校验续传、自动及后台恢复、ProxyJump/Bastion、端口转发、agent/证书/FIDO2/PKCS#11/GSSAPI、可配置算法/compression/rekey、完整 OSC/DCS/终端图形、全量选择/搜索和 HUKS 迁移。本文中的 P2 及上述 P1 剩余项不得在交付说明中表述为已完成。
 
 ## 1. 结论先行
 
@@ -721,4 +727,3 @@ P1 完成门槛：Shell/exec/SFTP 的核心路径和常见终端程序稳定；�
 - 不引入 API 23 不支持的接口或依赖。
 - 更新事件 schema、配置迁移、兼容说明和回滚方式。
 - 通过 native/Rust/ArkTS 对应测试，并在需要时附 OpenSSH 互操作结果。
-

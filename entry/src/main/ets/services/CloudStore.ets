@@ -1744,6 +1744,11 @@ export class CloudStore implements CryptoCloudStore {
   private applyCloudHostExtension(host: RemoteHost, values: Record<string, string>): RemoteHost {
     const get = (key: string, fallback: string): string => values[key] !== undefined ? values[key] : fallback;
     host.sshKeyId = get('sshkeyid', host.sshKeyId);
+    const sshProxyType: string = get('sshproxytype', host.sshProxyType);
+    if (sshProxyType === 'http_connect' || sshProxyType === 'socks5' ||
+      sshProxyType === 'legacy_gateway' || sshProxyType === 'direct') {
+      host.sshProxyType = sshProxyType;
+    }
     host.sshHostKeyAlgorithm = get('sshhostkeyalgorithm', host.sshHostKeyAlgorithm);
     host.sshHostKeyFingerprintSha256 = get('sshhostkeyfingerprintsha256', host.sshHostKeyFingerprintSha256);
     host.sshHostKeyRawBase64 = get('sshhostkeyrawbase64', host.sshHostKeyRawBase64);
@@ -1792,6 +1797,7 @@ export class CloudStore implements CryptoCloudStore {
     const values: Record<string, string> = {};
     host.normalizeRdpAuthentication();
     values['sshkeyid'] = host.sshKeyId;
+    values['sshproxytype'] = host.sshProxyType;
     values['sshhostkeyalgorithm'] = host.sshHostKeyAlgorithm;
     values['sshhostkeyfingerprintsha256'] = host.sshHostKeyFingerprintSha256;
     values['sshhostkeyrawbase64'] = host.sshHostKeyRawBase64;

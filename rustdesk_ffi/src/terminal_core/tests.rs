@@ -217,6 +217,62 @@ fn cursor_visibility_private_mode_updates_snapshot() {
 }
 
 #[test]
+fn terminal_modes_update_snapshot_and_reset() {
+    let mut term = Terminal::new(8, 2);
+    term.write(b"\x1b[?1;7;66;1002;1006;2004h");
+    let enabled = term.snapshot();
+    assert!(enabled.application_cursor_keys);
+    assert!(enabled.application_keypad);
+    assert!(enabled.auto_wrap);
+    assert_eq!(enabled.mouse_tracking, 1002);
+    assert!(enabled.sgr_mouse);
+    assert!(enabled.bracketed_paste);
+
+    term.write(b"\x1b[2J");
+    let cleared = term.snapshot();
+    assert!(cleared.application_cursor_keys);
+    assert!(cleared.application_keypad);
+    assert!(cleared.auto_wrap);
+    assert_eq!(cleared.mouse_tracking, 1002);
+    assert!(cleared.sgr_mouse);
+    assert!(cleared.bracketed_paste);
+
+    term.write(b"\x1b[?1;7;66;1002;1006;2004l");
+    let disabled = term.snapshot();
+    assert!(!disabled.application_cursor_keys);
+    assert!(!disabled.application_keypad);
+    assert!(!disabled.auto_wrap);
+    assert_eq!(disabled.mouse_tracking, 0);
+    assert!(!disabled.sgr_mouse);
+    assert!(!disabled.bracketed_paste);
+
+    term.write(b"\x1b[?1;7;66;1002;1006;2004h");
+    term.write(b"\x1bc");
+    let reset = term.snapshot();
+    assert!(!reset.application_cursor_keys);
+    assert!(!reset.application_keypad);
+    assert!(reset.auto_wrap);
+    assert_eq!(reset.mouse_tracking, 0);
+    assert!(!reset.sgr_mouse);
+    assert!(!reset.bracketed_paste);
+}
+
+#[test]
+fn auto_wrap_mode_controls_writing_at_last_column() {
+    let mut wrapped = Terminal::new(3, 2);
+    wrapped.write(b"ABCX");
+    let wrapped_rows = screen_text(&wrapped);
+    assert_eq!(&wrapped_rows[0], "ABC");
+    assert_eq!(&wrapped_rows[1][..1], "X");
+
+    let mut fixed = Terminal::new(3, 2);
+    fixed.write(b"\x1b[?7lABCX");
+    let fixed_rows = screen_text(&fixed);
+    assert_eq!(&fixed_rows[0], "ABX");
+    assert_eq!(fixed.snapshot().cursor_y, 0);
+}
+
+#[test]
 fn writing_past_bottom_scrolls_active_screen() {
     let mut term = Terminal::new(4, 2);
     term.write(b"1\r\n2\r\n3");

@@ -46,6 +46,7 @@ describe('CloudTableAdapter', (): void => {
       rustdeskdirectenabled: '1',
       rustdeskdirecthost: '192.0.2.20',
       rustdeskdirectport: '21117',
+      sshproxytype: 'socks5',
       rustdeskproaccountid: 'account-1',
       rdpauthmode: 'restricted_admin',
       rdprestrictedadminsecretsource: 'ntlm_hash',
@@ -59,6 +60,7 @@ describe('CloudTableAdapter', (): void => {
     );
     const decoded = decodeRemoteHostDisplayPayload(encoded);
     expect(decoded.extension['rustdeskdirectport']).assertEqual('21117');
+    expect(decoded.extension['sshproxytype']).assertEqual('socks5');
     expect(decoded.extension['rustdeskproaccountid']).assertEqual('account-1');
     expect(decoded.extension['rdpauthmode']).assertEqual('restricted_admin');
     expect(decoded.extension['rdprestrictedadminsecretsource']).assertEqual('ntlm_hash');

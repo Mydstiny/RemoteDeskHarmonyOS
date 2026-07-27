@@ -14,6 +14,8 @@ export interface TerminalModifierState {
 export interface SshPhysicalKeyInput extends TerminalModifierState {
   keyCode: number;
   unicode?: number;
+  applicationCursorKeys?: boolean;
+  applicationKeypad?: boolean;
 }
 
 export interface SshEncodedKey {
@@ -173,19 +175,33 @@ export function encodeSoftDelete(deleteValue: string): string {
   return sequence;
 }
 
-export function encodeSpecialKey(keyCode: number, modifiers: TerminalModifierState): string {
-  if (keyCode === KeyCode.KEYCODE_DPAD_UP) { return csiFinal('A', modifiers); }
-  if (keyCode === KeyCode.KEYCODE_DPAD_DOWN) { return csiFinal('B', modifiers); }
-  if (keyCode === KeyCode.KEYCODE_DPAD_RIGHT) { return csiFinal('C', modifiers); }
-  if (keyCode === KeyCode.KEYCODE_DPAD_LEFT) { return csiFinal('D', modifiers); }
-  if (keyCode === KeyCode.KEYCODE_MOVE_HOME) { return csiFinal('H', modifiers); }
-  if (keyCode === KeyCode.KEYCODE_MOVE_END) { return csiFinal('F', modifiers); }
+export function encodeSpecialKey(
+  keyCode: number,
+  modifiers: TerminalModifierState,
+  applicationCursorKeys: boolean = false,
+  applicationKeypad: boolean = false
+): string {
+  const cursorFinal = (finalChar: string): string => {
+    if (applicationCursorKeys && modifierParameter(modifiers) === 1) {
+      return ESC + 'O' + finalChar;
+    }
+    return csiFinal(finalChar, modifiers);
+  };
+  if (keyCode === KeyCode.KEYCODE_DPAD_UP) { return cursorFinal('A'); }
+  if (keyCode === KeyCode.KEYCODE_DPAD_DOWN) { return cursorFinal('B'); }
+  if (keyCode === KeyCode.KEYCODE_DPAD_RIGHT) { return cursorFinal('C'); }
+  if (keyCode === KeyCode.KEYCODE_DPAD_LEFT) { return cursorFinal('D'); }
+  if (keyCode === KeyCode.KEYCODE_MOVE_HOME) { return cursorFinal('H'); }
+  if (keyCode === KeyCode.KEYCODE_MOVE_END) { return cursorFinal('F'); }
   if (keyCode === KeyCode.KEYCODE_PAGE_UP) { return csiTilde(5, modifiers); }
   if (keyCode === KeyCode.KEYCODE_PAGE_DOWN) { return csiTilde(6, modifiers); }
   if (keyCode === KeyCode.KEYCODE_INSERT) { return csiTilde(2, modifiers); }
   if (keyCode === KeyCode.KEYCODE_FORWARD_DEL) { return csiTilde(3, modifiers); }
   if (keyCode === KeyCode.KEYCODE_TAB) { return modifiers.shift ? ESC + '[Z' : '\t'; }
-  if (keyCode === KeyCode.KEYCODE_ENTER || keyCode === KeyCode.KEYCODE_NUMPAD_ENTER) { return '\r'; }
+  if (keyCode === KeyCode.KEYCODE_ENTER) { return '\r'; }
+  if (keyCode === KeyCode.KEYCODE_NUMPAD_ENTER) {
+    return applicationKeypad ? ESC + 'OM' : '\r';
+  }
   if (keyCode === KeyCode.KEYCODE_ESCAPE) { return ESC; }
   if (keyCode === KeyCode.KEYCODE_F1) { return csiFunctionFinal('P', modifiers); }
   if (keyCode === KeyCode.KEYCODE_F2) { return csiFunctionFinal('Q', modifiers); }
@@ -200,18 +216,21 @@ export function encodeSpecialKey(keyCode: number, modifiers: TerminalModifierSta
   if (keyCode === KeyCode.KEYCODE_F11) { return csiTilde(23, modifiers); }
   if (keyCode === KeyCode.KEYCODE_F12) { return csiTilde(24, modifiers); }
   if (keyCode >= KeyCode.KEYCODE_NUMPAD_0 && keyCode <= KeyCode.KEYCODE_NUMPAD_9) {
-    return String.fromCharCode(48 + keyCode - KeyCode.KEYCODE_NUMPAD_0);
+    if (!applicationKeypad) {
+      return String.fromCharCode(48 + keyCode - KeyCode.KEYCODE_NUMPAD_0);
+    }
+    return ESC + 'O' + String.fromCharCode('p'.charCodeAt(0) + keyCode - KeyCode.KEYCODE_NUMPAD_0);
   }
   switch (keyCode) {
-    case KeyCode.KEYCODE_NUMPAD_DIVIDE: return '/';
-    case KeyCode.KEYCODE_NUMPAD_MULTIPLY: return '*';
-    case KeyCode.KEYCODE_NUMPAD_SUBTRACT: return '-';
-    case KeyCode.KEYCODE_NUMPAD_ADD: return '+';
-    case KeyCode.KEYCODE_NUMPAD_DOT: return '.';
-    case KeyCode.KEYCODE_NUMPAD_COMMA: return ',';
-    case KeyCode.KEYCODE_NUMPAD_EQUALS: return '=';
-    case KeyCode.KEYCODE_NUMPAD_LEFT_PAREN: return '(';
-    case KeyCode.KEYCODE_NUMPAD_RIGHT_PAREN: return ')';
+    case KeyCode.KEYCODE_NUMPAD_DIVIDE: return applicationKeypad ? ESC + 'Oo' : '/';
+    case KeyCode.KEYCODE_NUMPAD_MULTIPLY: return applicationKeypad ? ESC + 'Oj' : '*';
+    case KeyCode.KEYCODE_NUMPAD_SUBTRACT: return applicationKeypad ? ESC + 'Om' : '-';
+    case KeyCode.KEYCODE_NUMPAD_ADD: return applicationKeypad ? ESC + 'Ok' : '+';
+    case KeyCode.KEYCODE_NUMPAD_DOT: return applicationKeypad ? ESC + 'On' : '.';
+    case KeyCode.KEYCODE_NUMPAD_COMMA: return applicationKeypad ? ESC + 'Ol' : ',';
+    case KeyCode.KEYCODE_NUMPAD_EQUALS: return applicationKeypad ? ESC + 'OX' : '=';
+    case KeyCode.KEYCODE_NUMPAD_LEFT_PAREN: return applicationKeypad ? ESC + 'Oq' : '(';
+    case KeyCode.KEYCODE_NUMPAD_RIGHT_PAREN: return applicationKeypad ? ESC + 'Or' : ')';
     default: return '';
   }
 }
@@ -224,7 +243,12 @@ export function encodePhysicalKey(input: SshPhysicalKeyInput): SshEncodedKey {
   if (input.keyCode === KeyCode.KEYCODE_SPACE) {
     return specialResult(encodeTextInput(' ', modifiers));
   }
-  const special: string = encodeSpecialKey(input.keyCode, modifiers);
+  const special: string = encodeSpecialKey(
+    input.keyCode,
+    modifiers,
+    input.applicationCursorKeys === true,
+    input.applicationKeypad === true
+  );
   if (special.length > 0) {
     return specialResult(special, input.keyCode === KeyCode.KEYCODE_TAB);
   }

@@ -66,50 +66,40 @@ impl<'a> TerminalPerformer<'a> {
 
     /// 处理 DEC 私有模式设置 (DECSET, CSI ?...h)
     fn handle_private_set(&mut self, params: &Params) {
-        let mode = param_or(params, 0, 0);
-        match mode {
-            25 => self.terminal.set_cursor_visible(true),
-            1049 => {
-                // enter_alt_screen stores the complete primary-screen cursor
-                // state. Keep DECSC/SCOSC's independent saved cursor intact.
-                self.terminal.enter_alt_screen(true);
-                eprintln!("[terminal_core] alternate screen ENTER (?1049h)");
-            }
-            47 => {
-                self.terminal.enter_alt_screen(false);
-                eprintln!("[terminal_core] alternate screen ENTER (?47h)");
-            }
-            1047 => {
-                self.terminal.enter_alt_screen(true);
-                eprintln!("[terminal_core] alternate screen ENTER (?1047h)");
-            }
-            1048 => {
-                self.terminal.save_cursor_full();
-            }
-            2004 => {
-                // Bracketed paste — 安全记录, 不处理
-                eprintln!("[terminal_core] bracketed paste mode ON (?2004h) — ignored");
-            }
-            7 => {
-                // Autowrap — 安全记录
-                eprintln!("[terminal_core] auto-wrap ON (?7h) — ignored");
-            }
-            1000 | 1002 | 1006 => {
-                // 鼠标追踪 — 安全忽略
-                eprintln!(
-                    "[terminal_core] mouse tracking mode ON (?{}h) — ignored",
-                    mode
-                );
-            }
-            12 => {
-                // 光标闪烁 — 安全忽略
-            }
-            _ => {
-                if Self::should_log(&mut self.unknown_priv_mode_count) {
-                    eprintln!(
-                        "[terminal_core] unknown DECSET ?{}h #{}",
-                        mode, self.unknown_priv_mode_count
-                    );
+        for mode in collect_params(params) {
+            match mode {
+                1 => self.terminal.set_application_cursor_keys(true),
+                7 => self.terminal.set_auto_wrap(true),
+                25 => self.terminal.set_cursor_visible(true),
+                47 => {
+                    self.terminal.enter_alt_screen(false);
+                    eprintln!("[terminal_core] alternate screen ENTER (?47h)");
+                }
+                66 => self.terminal.set_application_keypad(true),
+                1000 | 1002 | 1003 => self.terminal.set_mouse_tracking(mode),
+                1006 => self.terminal.set_sgr_mouse(true),
+                1047 => {
+                    self.terminal.enter_alt_screen(true);
+                    eprintln!("[terminal_core] alternate screen ENTER (?1047h)");
+                }
+                1048 => self.terminal.save_cursor_full(),
+                1049 => {
+                    // enter_alt_screen stores the complete primary-screen cursor
+                    // state. Keep DECSC/SCOSC's independent saved cursor intact.
+                    self.terminal.enter_alt_screen(true);
+                    eprintln!("[terminal_core] alternate screen ENTER (?1049h)");
+                }
+                2004 => self.terminal.set_bracketed_paste(true),
+                12 => {
+                    // 光标闪烁由 ArkUI 定时器绘制；状态本身无需额外保存。
+                }
+                _ => {
+                    if Self::should_log(&mut self.unknown_priv_mode_count) {
+                        eprintln!(
+                            "[terminal_core] unknown DECSET ?{}h #{}",
+                            mode, self.unknown_priv_mode_count
+                        );
+                    }
                 }
             }
         }
@@ -117,42 +107,38 @@ impl<'a> TerminalPerformer<'a> {
 
     /// 处理 DEC 私有模式重置 (DECRST, CSI ?...l)
     fn handle_private_reset(&mut self, params: &Params) {
-        let mode = param_or(params, 0, 0);
-        match mode {
-            25 => self.terminal.set_cursor_visible(false),
-            1049 => {
-                self.terminal.leave_alt_screen(true);
-                eprintln!("[terminal_core] alternate screen LEAVE (?1049l)");
-            }
-            47 => {
-                self.terminal.leave_alt_screen(false);
-                eprintln!("[terminal_core] alternate screen LEAVE (?47l)");
-            }
-            1047 => {
-                self.terminal.leave_alt_screen(false);
-                eprintln!("[terminal_core] alternate screen LEAVE (?1047l)");
-            }
-            1048 => {
-                self.terminal.restore_cursor_full();
-            }
-            2004 => {
-                eprintln!("[terminal_core] bracketed paste mode OFF (?2004l)");
-            }
-            7 => {
-                eprintln!("[terminal_core] auto-wrap OFF (?7l)");
-            }
-            1000 | 1002 | 1006 => {
-                eprintln!("[terminal_core] mouse tracking mode OFF (?{}l)", mode);
-            }
-            12 => {
-                // 光标闪烁 — 安全忽略
-            }
-            _ => {
-                if Self::should_log(&mut self.unknown_priv_mode_count) {
-                    eprintln!(
-                        "[terminal_core] unknown DECRST ?{}l #{}",
-                        mode, self.unknown_priv_mode_count
-                    );
+        for mode in collect_params(params) {
+            match mode {
+                1 => self.terminal.set_application_cursor_keys(false),
+                7 => self.terminal.set_auto_wrap(false),
+                25 => self.terminal.set_cursor_visible(false),
+                47 => {
+                    self.terminal.leave_alt_screen(false);
+                    eprintln!("[terminal_core] alternate screen LEAVE (?47l)");
+                }
+                66 => self.terminal.set_application_keypad(false),
+                1000 | 1002 | 1003 => self.terminal.set_mouse_tracking(0),
+                1006 => self.terminal.set_sgr_mouse(false),
+                1047 => {
+                    self.terminal.leave_alt_screen(false);
+                    eprintln!("[terminal_core] alternate screen LEAVE (?1047l)");
+                }
+                1048 => self.terminal.restore_cursor_full(),
+                1049 => {
+                    self.terminal.leave_alt_screen(true);
+                    eprintln!("[terminal_core] alternate screen LEAVE (?1049l)");
+                }
+                2004 => self.terminal.set_bracketed_paste(false),
+                12 => {
+                    // 光标闪烁由 ArkUI 定时器绘制。
+                }
+                _ => {
+                    if Self::should_log(&mut self.unknown_priv_mode_count) {
+                        eprintln!(
+                            "[terminal_core] unknown DECRST ?{}l #{}",
+                            mode, self.unknown_priv_mode_count
+                        );
+                    }
                 }
             }
         }
@@ -260,6 +246,18 @@ impl Perform for TerminalPerformer<'_> {
                 let row = param_or(params, 0, 1) as usize;
                 self.terminal.cursor_absolute_row(row);
             }
+            'g' => {
+                // TBC — Tabulation clear: 0=current column, 3=all columns.
+                self.terminal.clear_tab_stop(param_or(params, 0, 0));
+            }
+            'I' => {
+                // CHT — Cursor Horizontal Tabulation.
+                self.terminal.tab_forward(param_or(params, 0, 1) as usize);
+            }
+            'Z' => {
+                // CBT — Cursor Backward Tabulation.
+                self.terminal.tab_backward(param_or(params, 0, 1) as usize);
+            }
             'h' => {
                 if is_private {
                     self.handle_private_set(params);
@@ -330,7 +328,7 @@ impl Perform for TerminalPerformer<'_> {
         match byte {
             b'c' => {
                 // RIS — 完全复位
-                self.terminal.clear_screen();
+                self.terminal.reset_terminal();
             }
             b'7' => {
                 // DECSC — 保存光标 (位置 + 属性)
@@ -347,14 +345,11 @@ impl Perform for TerminalPerformer<'_> {
             b'(' | b')' => {
                 // 字符集指定 G0/G1 — 安全忽略
             }
-            b'>' => {
-                // 正常小键盘模式 — 安全忽略
-            }
-            b'=' => {
-                // 应用小键盘模式 — 安全忽略
-            }
+            b'>' => self.terminal.set_application_keypad(false),
+            b'=' => self.terminal.set_application_keypad(true),
             b'H' => {
-                // 水平制表位设置 — 安全忽略
+                // HTS — 设置当前列的制表位。
+                self.terminal.set_tab_stop();
             }
             _ => {
                 self.log_unknown_esc(byte);

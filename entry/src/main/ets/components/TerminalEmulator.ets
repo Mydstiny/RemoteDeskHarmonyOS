@@ -72,7 +72,8 @@ export struct TerminalEmulator {
   @Prop @Watch('onViewportHeightChange') viewportHeight: number = 0;
   @Prop @Watch('onViewportHeightChange') visibleViewportHeight: number = 0;
   @Prop @Watch('onFontChange') fontSize: number = 18;
-  @Prop @Watch('onInputChange') inputData: string = '';
+  @Prop inputData: string = '';
+  @Prop @Watch('onInputSequenceChange') inputSequence: number = 0;
   @StorageProp('terminalFgColor') @Watch('onFgColorChange') terminalFgColor: string = '#33FF33';
   /** 选区模式 — 由父级长按菜单"选择"开启; 开启时 touch 拖选而非滚动 */
   @Prop @Watch('onSelectModeChange') selectMode: boolean = false;
@@ -87,7 +88,6 @@ export struct TerminalEmulator {
   /** 复制结果回传给父级 (父级再写系统剪贴板) */
   @Link copiedText: string;
   onData?: (data: string) => void;
-  private lastInputLen: number = 0;
 
   /** 选区锚点/终点 (绝对行号 + 列), -1 表示无选区 */
   private selStartAbsR: number = -1;
@@ -96,17 +96,11 @@ export struct TerminalEmulator {
   private selEndC: number = -1;
 
   /** inputData 增量处理 */
-  private onInputChange(): void {
-    const curLen: number = this.inputData.length;
-    if (curLen > this.lastInputLen) {
-      const added: string = this.inputData.substring(this.lastInputLen);
-      this.write(added);
-    } else if (curLen < this.lastInputLen) {
-      // 截断 → 清空旧 buffer 后全量重写, 避免把裁剪后的内容重复追加到屏幕上
-      this.resetTerminalState();
-      this.write(this.inputData);
-    }
-    this.lastInputLen = curLen;
+  private onInputSequenceChange(): void {
+    if (this.inputData.length === 0) { return; }
+    // Consume one ordered chunk. History is bounded by this component's
+    // scrollback and is never reconstructed from a truncated page string.
+    this.write(this.inputData);
   }
 
   /** 字号变化 → 重测 cellW/cellH + 全量重绘 */
@@ -284,7 +278,6 @@ export struct TerminalEmulator {
 
   /** ArkUI 复用组件时清除上一 SSH 会话的增量、滚动和选择状态。 */
   private resetLifecycleState(): void {
-    this.lastInputLen = 0;
     this.followBottom = true;
     this.lastGridTop = 0;
     this.lastViewportHeight = 0;
