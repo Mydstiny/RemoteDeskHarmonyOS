@@ -3478,13 +3478,6 @@ struct HostListPage {
     return host.protocol.toUpperCase();
   }
 
-  private hostProtocolIcon(protocol: string): Resource {
-    if (protocol === 'rdp') { return protocolIcon('rdp'); }
-    if (protocol === 'rustdesk') { return protocolIcon('rustdesk'); }
-    if (protocol === 'ssh') { return protocolIcon('ssh'); }
-    return protocolIcon('vnc');
-  }
-
   // 直接删除主机 (滑动触发)
   private deleteHost(host: RemoteHost): void {
     this.srv.removeHost(host.id);
@@ -4743,9 +4736,10 @@ struct HostListPage {
                 }
                 // 协议图标 (sm: 42 circle, md+: 46 rounded)
                 Column() {
-                  SymbolGlyph(this.hostProtocolIcon(host.protocol))
+                  Image(host.protocol === 'ssh' ? $r('app.media.icon_terminal') :
+                    (host.protocol === 'rdp' ? $r('app.media.icon_desktop') : $r('app.media.icon_laptop')))
                     .width(this.breakpoint === 'sm' ? 24 : 26)
-                    .height(this.breakpoint === 'sm' ? 24 : 26).fontColor([Color.White])
+                    .height(this.breakpoint === 'sm' ? 24 : 26).fillColor(Color.White)
                 }
                 .width(this.breakpoint === 'sm' ? 42 : 46)
                 .height(this.breakpoint === 'sm' ? 42 : 46)
