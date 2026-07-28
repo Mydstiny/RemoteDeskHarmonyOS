@@ -72,8 +72,13 @@ repeat the completed review below unless the listed files change again.
   mode2/unavailable messaging, and stable-ID handoff after `onDisappear`.
 - `VncGatewayAddFlow.ets`, `RustDeskRelayPage.ets` and
   `RelayDirectoryPolicy.ets`: the third page is a read-only aggregate with
-  全部/RustDesk/VNC filtering; VNC add/edit/delete/test dispatches only to
-  `VncGatewayService`; RustDesk continues to use its own service and table.
+  RustDesk and VNC entries co-listed in one directory; each card identifies
+  its owner with a host-card-style type badge instead of a protocol filter or
+  switch. VNC add/edit/delete/test dispatches only to `VncGatewayService`;
+  RustDesk continues to use its own service and table. The released RustDesk
+  add route remains independent: the relay FAB still selects the existing
+  modern/classic RustDesk flow, while VNC Gateway is opened from the VNC
+  route and never enters the RustDesk picker.
   Unsupported WebSocket/public relay/SSH tunnel/mode2 paths remain
   fail-closed. No token is rendered in cards, logs or review summaries.
 - `ProtocolIconPolicy.ets` and the touched protocol surfaces: protocol and
@@ -106,3 +111,23 @@ repeat the completed review below unless the listed files change again.
    API 23 device UI smoke, single/multi-device cloud matrix and real VNC/
    Repeater endpoint testing. Do not push, open a PR or merge remote `main` in
    this local-only task.
+
+## Relay/VNC add UX correction ledger (2026-07-28)
+
+- `d54c025 fix(ui): restore relay add flows and fit VNC sheets` restores the
+  released RustDesk relay FAB contract: `hostAddMode` continues to choose the
+  modern or original RustDesk form, and the gateway picker is RustDesk-only.
+  The VNC Gateway flow remains owner-isolated and is opened through the VNC
+  Gateway route.
+- `RustDeskRelayPage.ets` no longer presents 全部/RustDesk/VNC filter controls.
+  RustDesk and VNC Gateway cards are always co-listed, with `RustDesk 中继` or
+  `VNC Gateway` badges matching the home host-card Pro badge geometry.
+- `VncAddFlow.ets` uses a textual `1/4` step header and natural content height;
+  `VncGatewayAddFlow.ets` uses `1/3`. Neither flow has the circle progress
+  strip, a fixed `height('100%')` root or an inner user scroll. Their parent
+  `SheetSize.FIT_CONTENT` owns the adaptive sheet height, matching the other
+  add flows and preventing the prior blank/collapsed Gateway sheet.
+- Verification for this correction: `default@OhosTestCompileArkTS`,
+  `assembleHap`, Light compliance and `git diff --check` passed. The
+  `ohosTest` task remains unavailable because the environment reports
+  `00306054` (task not registered).
