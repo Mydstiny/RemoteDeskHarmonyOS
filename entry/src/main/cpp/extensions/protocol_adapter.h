@@ -90,6 +90,12 @@ struct ConnectionConfig {
     std::string authMethod;       // 🆕 SSH 认证方式: "password" | "publickey" | "kbd-interactive"
     std::string privateKeyPem;    // 🆕 SSH 私钥 PEM (临时明文, 仅 publickey 认证)
     std::string privateKeyPassphrase; // 🆕 SSH 私钥口令 (可选)
+    std::vector<std::string> sshKeyboardInteractiveResponses; // SSH keyboard-interactive/MFA responses
+    std::string sshProxyType;          // direct | http_connect | socks5
+    std::string sshProxyHost;          // SSH transport proxy endpoint
+    int         sshProxyPort;
+    std::string sshProxyUsername;      // optional proxy username
+    std::string sshProxyPassword;      // transient proxy password
     std::string expectedHostKeyRawBase64;       // 🆕 SSH 预期主机密钥 raw blob base64 (二次校验)
     std::string expectedHostKeyFingerprintSha256; // 🆕 SSH 预期主机指纹 SHA256
     int         rdImageQuality;    // RustDesk: 0=速度, 1=平衡, 2=画质
@@ -134,6 +140,7 @@ struct ConnectionConfig {
           gatewayPort(443), multiMonitor(false), monitorCount(1),
           colorDepth(32), rdpAuthIdentityMode(0), rdpAuthMode(RdpAuthenticationMode::Password),
           rdpRestrictedAdminSecretSource(RdpRestrictedAdminSecretSource::NtlmHash), authMethod("password"),
+          sshProxyPort(0),
           rdImageQuality(1), rdDirectIp(false), rdDirectPort(21118),
           rdLanDiscovery(true), rdPrivacyMode(false), rdAudioEnabled(true), rdClipboardEnabled(true),
           rdDriveName("RemoteDesktop"), rdpAllowUntrustedRoot(false), rdpAllowHostMismatch(false),

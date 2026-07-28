@@ -11,7 +11,7 @@ const RELAYS_KEY: string = 'relays';
  * Compatibility facade for the pre-v2 VNC repeater Preferences store.
  *
  * The old store is migration input only. New VNC code must use
- * VncGatewayService and the single vncrecords table; this class intentionally
+ * VncGatewayService and the single vncrecord table; this class intentionally
  * exposes no mutable relay collection after migration.
  */
 export class VncRelayConfigService {

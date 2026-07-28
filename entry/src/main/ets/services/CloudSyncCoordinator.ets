@@ -20,9 +20,12 @@ import {
   nextCloudSyncRetryDelayMs,
   retryTablesStillSelected,
   retryVncTablesStillSelected,
+  shouldDeferAutomaticPushDuringBootstrap,
+  shouldUseCloudFirstForInitialBootstrap,
   shouldReplayAutomaticPush,
   snapshotCloudSyncTables,
-  upsertAutomaticRetryRecord
+  upsertAutomaticRetryRecord,
+  CloudSyncBootstrapState
 } from './CloudSyncCoordinatorPolicy';
 
 const DOMAIN = 0x0001;
@@ -54,6 +57,10 @@ export interface CloudSyncCoordinatorHooks {
   failureKindForTable?: (table: string) => CloudSyncFailureKind;
   hasRestoredNotUploaded?: () => boolean;
   clearRestoredNotUploaded?: () => boolean;
+  setStartupSyncPending?: (pending: boolean) => void;
+  hasCloudBootstrapCompleted?: () => boolean;
+  markCloudBootstrapCompleted?: () => boolean;
+  discardMutationJournalForTables?: (tables: string[]) => boolean;
 }
 
 /**
@@ -168,6 +175,9 @@ export class CloudSyncCoordinator {
   private dirtyAutomaticTables: string[] = [];
   private blockedAutomaticTables: string[] = [];
   private journalMutationRevisions: Record<string, number> = {};
+  private startupPull: Promise<CloudSyncOperationResult> | null = null;
+  private startupState: CloudSyncBootstrapState = 'pending';
+  private bootstrapCompleted: boolean = false;
 
   static getInstance(): CloudSyncCoordinator {
     if (!CloudSyncCoordinator.instance) {
@@ -187,6 +197,11 @@ export class CloudSyncCoordinator {
     this.onCloudFirstApplied = onCloudFirstApplied;
     this.hooks = hooks;
     this.vncSelection.init(context);
+    this.startupState = 'pending';
+    this.bootstrapCompleted = true;
+    if (hooks.hasCloudBootstrapCompleted) {
+      try { this.bootstrapCompleted = hooks.hasCloudBootstrapCompleted(); } catch (_e) { this.bootstrapCompleted = false; }
+    }
     this.restoreRetryRecord();
     this.restoreDirtyTables();
     this.restoreConflictTables();
@@ -194,20 +209,57 @@ export class CloudSyncCoordinator {
   }
 
   requestStartupPull(): Promise<CloudSyncOperationResult> {
-    if (this.restoreUploadBlocked()) { return Promise.resolve(this.skippedResult('startup')); }
+    if (this.startupPull) { return this.startupPull; }
+    const restoreBlocked: boolean = this.restoreUploadBlocked();
+    const initialDirty: string[] = this.dirtyAutomaticTables.slice();
+    const initialBootstrap: boolean = shouldUseCloudFirstForInitialBootstrap(this.bootstrapCompleted);
+    this.startupState = 'pending';
+    if (this.hooks && this.hooks.setStartupSyncPending) {
+      try { this.hooks.setStartupSyncPending(true); } catch (_e) { /* best effort */ }
+    }
+    const operation: Promise<CloudSyncOperationResult> = restoreBlocked
+      ? Promise.resolve(this.skippedResult('startup'))
+      : initialBootstrap
+        ? this.requestStartupCloudFirst()
+        : this.requestEstablishedStartupPull(initialDirty);
+    const completed: Promise<CloudSyncOperationResult> = operation.then((result: CloudSyncOperationResult): CloudSyncOperationResult => {
+      return this.finishStartupPull(result, initialBootstrap, initialDirty, restoreBlocked);
+    }, (_e: Error): CloudSyncOperationResult => {
+      const failed: CloudSyncOperationResult = {
+        ok: false, source: 'startup', tables: [], failedTables: [], rollbackFailed: false,
+        failureKind: 'unknown'
+      };
+      return this.finishStartupPull(failed, initialBootstrap, initialDirty, restoreBlocked);
+    });
+    this.startupPull = completed.then((result: CloudSyncOperationResult): CloudSyncOperationResult => {
+      this.startupPull = null;
+      return result;
+    });
+    return this.startupPull;
+  }
+
+  private requestStartupCloudFirst(): Promise<CloudSyncOperationResult> {
+    return this.requestCloudFirst('startup').then((result: CloudSyncOperationResult): Promise<CloudSyncOperationResult> =>
+      this.requestVncCloudFirst('startup', result));
+  }
+
+  /**
+   * Established devices may have intentional offline mutations from the
+   * previous session. Preserve the historical native-first recovery for those
+   * devices, but only after the startup queue has been claimed by this method.
+   * A device without the durable bootstrap marker never enters this branch.
+   */
+  private requestEstablishedStartupPull(dirty: string[]): Promise<CloudSyncOperationResult> {
     const selected: string[] = this.selectedTables();
-    // VNC has no row-level cloud selector. A scope transition therefore never
-    // invents a cloud deletion; when no VNC scope is selected there is no VNC
-    // transfer to schedule.
-    const dirty: string[] = this.dirtyAutomaticTables.filter((table: string): boolean =>
-      selected.indexOf(table) >= 0 || table === VNC_CLOUD_TABLE);
-    const pushable: string[] = dirty.filter((table: string): boolean => !this.isAutomaticSyncBlocked(table));
+    const pushable: string[] = dirty.filter((table: string): boolean =>
+      (selected.indexOf(table) >= 0 ||
+        (table === VNC_CLOUD_TABLE && this.vncPhysicalTableSelected())) &&
+      !this.isAutomaticSyncBlocked(table));
     const ordinaryPushable: string[] = pushable.filter((table: string): boolean => table !== VNC_CLOUD_TABLE);
     const vncPushable: boolean = pushable.indexOf(VNC_CLOUD_TABLE) >= 0 &&
       this.vncUploadTables().length > 0;
     if (ordinaryPushable.length === 0 && !vncPushable) {
-      return this.requestCloudFirst('startup').then((result: CloudSyncOperationResult): Promise<CloudSyncOperationResult> =>
-        this.requestVncCloudFirst('startup', result));
+      return this.requestStartupCloudFirst();
     }
     const versions: Record<string, number> = {};
     ordinaryPushable.forEach((table: string): void => {
@@ -235,31 +287,97 @@ export class CloudSyncCoordinator {
       const pushVnc = vncPushable ? this.requestVncStartupPush() : Promise.resolve(this.skippedResult('startup'));
       return pushVnc.then((vncResult: CloudSyncOperationResult): Promise<CloudSyncOperationResult> => {
         if (!vncResult.ok) { return Promise.resolve(vncResult); }
-        return this.requestCloudFirst('startup').then((pullResult: CloudSyncOperationResult): Promise<CloudSyncOperationResult> =>
-          this.requestVncCloudFirst('startup', pullResult));
+        return this.requestStartupCloudFirst();
       });
     });
   }
 
+  private finishStartupPull(result: CloudSyncOperationResult, initialBootstrap: boolean,
+    initialDirty: string[], restoreBlocked: boolean): CloudSyncOperationResult {
+    let finalResult: CloudSyncOperationResult = result;
+    if (result.ok && initialBootstrap && !restoreBlocked) {
+      // A pre-bootstrap journal is not evidence of user intent on a new
+      // device. Clear every recorded table intent after the authoritative pull,
+      // including currently deselected tables, so a later selector change
+      // cannot resurrect an unsafe native-first upload.
+      const discardTables: string[] = initialDirty.slice();
+      if (this.hooks && this.hooks.discardMutationJournalForTables &&
+        !this.hooks.discardMutationJournalForTables(discardTables)) {
+        finalResult = {
+          ok: false, source: result.source, tables: result.tables.slice(),
+          failedTables: discardTables.slice(), rollbackFailed: false, failureKind: 'unknown'
+        };
+      } else {
+        for (let i = 0; i < discardTables.length; i++) {
+          this.clearAutomaticIntent(discardTables[i]);
+        }
+        if (this.hooks && this.hooks.markCloudBootstrapCompleted &&
+          !this.hooks.markCloudBootstrapCompleted()) {
+          finalResult = {
+            ok: false, source: result.source, tables: result.tables.slice(),
+            failedTables: result.tables.slice(), rollbackFailed: false, failureKind: 'unknown'
+          };
+        } else {
+          this.bootstrapCompleted = true;
+        }
+      }
+    }
+    if (finalResult.ok) {
+      this.startupState = 'ready';
+      this.bootstrapCompleted = this.bootstrapCompleted || initialBootstrap;
+    } else {
+      this.startupState = 'pending';
+    }
+    if (this.hooks && this.hooks.setStartupSyncPending) {
+      try { this.hooks.setStartupSyncPending(false); } catch (_e) { /* best effort */ }
+    }
+    if (finalResult.ok) { this.flushDeferredAutomaticPushes(); }
+    return finalResult;
+  }
+
+  private completeExplicitBootstrap(result: CloudSyncOperationResult): CloudSyncOperationResult {
+    if (!result.ok) { return result; }
+    if (!this.bootstrapCompleted && this.hooks && this.hooks.markCloudBootstrapCompleted &&
+      !this.hooks.markCloudBootstrapCompleted()) {
+      this.startupState = 'pending';
+      return {
+        ok: false, source: result.source, tables: result.tables.slice(),
+        failedTables: result.tables.slice(), rollbackFailed: false, failureKind: 'unknown'
+      };
+    }
+    this.bootstrapCompleted = true;
+    this.startupState = 'ready';
+    if (this.hooks && this.hooks.setStartupSyncPending) {
+      try { this.hooks.setStartupSyncPending(false); } catch (_e) { /* best effort */ }
+    }
+    this.flushDeferredAutomaticPushes();
+    return result;
+  }
+
   requestForegroundPull(): Promise<CloudSyncOperationResult> {
+    if (this.startupPull) { return this.startupPull; }
+    if (this.startupState !== 'ready') { return this.requestStartupPull(); }
     return this.requestCloudFirst('foreground').then((result: CloudSyncOperationResult): Promise<CloudSyncOperationResult> =>
       this.requestVncCloudFirst('foreground', result));
   }
 
   requestCloudEventPull(): Promise<CloudSyncOperationResult> {
+    if (this.startupPull) { return this.startupPull; }
+    if (this.startupState !== 'ready') { return this.requestStartupPull(); }
     return this.requestCloudFirst('cloudEvent').then((result: CloudSyncOperationResult): Promise<CloudSyncOperationResult> =>
       this.requestVncCloudFirst('cloudEvent', result));
   }
 
   requestManualUpload(): Promise<CloudSyncOperationResult> {
     const request: CloudSyncRequest = this.makeRequest('manualUpload', 'nativeFirst');
+    const includeVnc: boolean = this.vncPhysicalTableSelected();
     const versions: Record<string, number> = {};
     for (let i = 0; i < request.tables.length; i++) {
       versions[request.tables[i]] = this.automaticMutationVersions[request.tables[i]] || 0;
     }
     const journalRevisions: Record<string, number> = this.captureJournalRevisions(request.tables);
-    return this.enqueue(request).then((result: CloudSyncOperationResult): CloudSyncOperationResult => {
-      if (!result.ok) { return result; }
+    return this.enqueue(request).then((result: CloudSyncOperationResult): Promise<CloudSyncOperationResult> => {
+      if (!result.ok) { return Promise.resolve(result); }
       for (let i = 0; i < request.tables.length; i++) {
         const table: string = request.tables[i];
         this.clearAutomaticSyncBlock(table);
@@ -273,24 +391,39 @@ export class CloudSyncCoordinator {
         this.hooks.clearRestoredNotUploaded && !this.hooks.clearRestoredNotUploaded()) {
         hilog.warn(DOMAIN, TAG, 'manual upload completed but restored-state marker could not be cleared');
       }
-      return result;
+      // The ordinary selector may opt the physical VNC table in, but the
+      // VNC request still has to pass through its independent logical scopes.
+      // Run it after the ordinary queue item so this explicit operation stays
+      // serialized without ever uploading the whole physical table blindly.
+      if (includeVnc) {
+        return this.requestVncManualUpload().then((vncResult: CloudSyncOperationResult): CloudSyncOperationResult => {
+          return vncResult.ok ? this.completeExplicitBootstrap(result) : vncResult;
+        });
+      }
+      return Promise.resolve(this.completeExplicitBootstrap(result));
     });
   }
 
   requestManualDownload(): Promise<CloudSyncOperationResult> {
     const request: CloudSyncRequest = this.makeRequest('manualDownload', 'cloudFirst');
+    const includeVnc: boolean = this.vncPhysicalTableSelected();
     const versions: Record<string, number> = {};
     for (let i = 0; i < request.tables.length; i++) {
       versions[request.tables[i]] = this.automaticMutationVersions[request.tables[i]] || 0;
     }
-    return this.enqueue(request).then((result: CloudSyncOperationResult): CloudSyncOperationResult => {
-      if (!result.ok) { return result; }
+    return this.enqueue(request).then((result: CloudSyncOperationResult): Promise<CloudSyncOperationResult> => {
+      if (!result.ok) { return Promise.resolve(result); }
       for (let i = 0; i < request.tables.length; i++) {
         const table: string = request.tables[i];
         this.clearAutomaticSyncBlock(table);
         if ((this.automaticMutationVersions[table] || 0) === versions[table]) { this.clearDirtyTable(table); }
       }
-      return result;
+      if (includeVnc) {
+        return this.requestVncManualDownload().then((vncResult: CloudSyncOperationResult): CloudSyncOperationResult => {
+          return vncResult.ok ? this.completeExplicitBootstrap(result) : vncResult;
+        });
+      }
+      return Promise.resolve(this.completeExplicitBootstrap(result));
     });
   }
 
@@ -310,7 +443,7 @@ export class CloudSyncCoordinator {
         this.acknowledgeJournal(tables[i], journalRevisions[tables[i]] || 0);
         this.clearDirtyTable(tables[i]);
       }
-      return result;
+      return this.completeExplicitBootstrap(result);
     });
   }
 
@@ -320,7 +453,8 @@ export class CloudSyncCoordinator {
     const request: CloudSyncRequest = {
       source: 'manualDownload', direction: 'cloudFirst', tables
     };
-    return this.enqueue(request);
+    return this.enqueue(request).then((result: CloudSyncOperationResult): CloudSyncOperationResult =>
+      this.completeExplicitBootstrap(result));
   }
 
   requestVncAutomaticPush(recordType: VncRecordType): Promise<CloudSyncOperationResult> {
@@ -332,6 +466,12 @@ export class CloudSyncCoordinator {
     const version: number = (this.automaticMutationVersions[VNC_CLOUD_TABLE] || 0) + 1;
     this.automaticMutationVersions[VNC_CLOUD_TABLE] = version;
     this.markDirtyTable(VNC_CLOUD_TABLE);
+    if (shouldDeferAutomaticPushDuringBootstrap(this.startupState)) {
+      if (this.deferredAutomaticTables.indexOf(VNC_CLOUD_TABLE) < 0) {
+        this.deferredAutomaticTables.push(VNC_CLOUD_TABLE);
+      }
+      return Promise.resolve(this.skippedResult('automaticPush'));
+    }
     if (this.isAutomaticSyncBlocked(VNC_CLOUD_TABLE)) {
       return Promise.resolve(this.skippedResult('automaticPush'));
     }
@@ -346,11 +486,24 @@ export class CloudSyncCoordinator {
     if (this.restorePending || this.restoreUploadBlocked()) {
       return Promise.resolve(this.skippedResult('automaticPush'));
     }
+    // A crypto reset may intentionally bypass the logical record-type
+    // selection so the reset generation can invalidate every VNC row, but it
+    // still must honor the ordinary physical-table selector. The selector is
+    // the user's final opt-out from any `vncrecord` transfer.
+    if (forcePhysical && !this.vncPhysicalTableSelected()) {
+      return Promise.resolve(this.skippedResult('automaticPush'));
+    }
     const tables: string[] = forcePhysical ? [VNC_CLOUD_TABLE] : this.vncUploadTables();
     if (tables.length === 0) { return Promise.resolve(this.skippedResult('automaticPush')); }
     const version: number = (this.automaticMutationVersions[VNC_CLOUD_TABLE] || 0) + 1;
     this.automaticMutationVersions[VNC_CLOUD_TABLE] = version;
     this.markDirtyTable(VNC_CLOUD_TABLE);
+    if (shouldDeferAutomaticPushDuringBootstrap(this.startupState)) {
+      if (this.deferredAutomaticTables.indexOf(VNC_CLOUD_TABLE) < 0) {
+        this.deferredAutomaticTables.push(VNC_CLOUD_TABLE);
+      }
+      return Promise.resolve(this.skippedResult('automaticPush'));
+    }
     const journalRevision: number =
       this.captureJournalRevisions([VNC_CLOUD_TABLE])[VNC_CLOUD_TABLE] || 0;
     return this.enqueueAutomaticRequest({
@@ -368,6 +521,12 @@ export class CloudSyncCoordinator {
     const version: number = (this.automaticMutationVersions[VNC_CLOUD_TABLE] || 0) + 1;
     this.automaticMutationVersions[VNC_CLOUD_TABLE] = version;
     this.markDirtyTable(VNC_CLOUD_TABLE);
+    if (shouldDeferAutomaticPushDuringBootstrap(this.startupState)) {
+      if (this.deferredAutomaticTables.indexOf(VNC_CLOUD_TABLE) < 0) {
+        this.deferredAutomaticTables.push(VNC_CLOUD_TABLE);
+      }
+      return Promise.resolve(this.skippedResult('automaticPush'));
+    }
     const journalRevision: number =
       this.captureJournalRevisions([VNC_CLOUD_TABLE])[VNC_CLOUD_TABLE] || 0;
     return this.enqueueAutomaticRequest({ source: 'automaticPush', direction: 'nativeFirst',
@@ -383,6 +542,12 @@ export class CloudSyncCoordinator {
     const version: number = (this.automaticMutationVersions[table] || 0) + 1;
     this.automaticMutationVersions[table] = version;
     this.markDirtyTable(table);
+    if (shouldDeferAutomaticPushDuringBootstrap(this.startupState)) {
+      if (this.deferredAutomaticTables.indexOf(table) < 0) {
+        this.deferredAutomaticTables.push(table);
+      }
+      return Promise.resolve(this.skippedResult('automaticPush'));
+    }
     if (this.isAutomaticSyncBlocked(table)) {
       hilog.warn(DOMAIN, TAG, 'automatic push blocked after cloud conflict table=' + table);
       return Promise.resolve(this.skippedResult('automaticPush'));
@@ -413,6 +578,7 @@ export class CloudSyncCoordinator {
 
   /** Flushes mutations collected while audio/video had priority. */
   flushDeferredAutomaticPushes(): void {
+    if (this.startupState !== 'ready') { return; }
     const activeSession = ActiveRemoteSessionRegistry.getInstance().getActive();
     if (activeSession !== null && activeSession.protocolConnected) { return; }
     const tables: string[] = this.deferredAutomaticTables.slice();
@@ -530,11 +696,19 @@ export class CloudSyncCoordinator {
   }
 
   private selectedTables(): string[] {
-    return snapshotCloudSyncTables(this.selection.selectedBusinessTables());
+    // `vncrecord` is visible in the ordinary selector so users can opt the
+    // physical table out globally. It must never be returned here because
+    // this path has no VNC record-type/secret projection context.
+    return snapshotCloudSyncTables(this.selection.selectedBusinessTables())
+      .filter((table: string): boolean => table !== VNC_CLOUD_TABLE);
+  }
+
+  private vncPhysicalTableSelected(): boolean {
+    return this.selection.selectedBusinessTables().indexOf(VNC_CLOUD_TABLE) >= 0;
   }
 
   private vncSyncTables(): string[] {
-    if (!this.vncSelection.hasSelection()) { return []; }
+    if (!this.vncPhysicalTableSelected() || !this.vncSelection.hasSelection()) { return []; }
     const result: string[] = [];
     if (this.vncSelection.needsCrypto()) { result.push('cryptoparams'); }
     result.push(VNC_CLOUD_TABLE);
@@ -791,6 +965,22 @@ export class CloudSyncCoordinator {
       this.dirtyAutomaticTables.splice(index, 1);
       this.writeDirtyTables();
     }
+  }
+
+  /** Drop a pre-bootstrap automatic intent after the authoritative pull won. */
+  private clearAutomaticIntent(table: string): void {
+    this.clearDirtyTable(table);
+    this.automaticMutationVersions[table] = 0;
+    this.journalMutationRevisions[table] = 0;
+    this.automaticRetryAttempts[table] = 0;
+    const remaining: CloudSyncRetryRecord[] = [];
+    for (let i = 0; i < this.retryRecords.length; i++) {
+      if (automaticRetryKey(this.retryRecords[i]) !== table) { remaining.push(this.retryRecords[i]); }
+    }
+    this.retryRecords = remaining;
+    this.writeRetryRecords();
+    const deferredIndex: number = this.deferredAutomaticTables.indexOf(table);
+    if (deferredIndex >= 0) { this.deferredAutomaticTables.splice(deferredIndex, 1); }
   }
 
   private persistAutomaticRetry(request: CloudSyncRequest, failedTables: string[], attempt: number): void {

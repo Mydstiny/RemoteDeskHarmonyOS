@@ -59,21 +59,40 @@ std::vector<uint8_t> defaultCursorRgba() {
 
 } // namespace
 
-void RemoteCursorStore::reset(uint64_t sessionId, const std::string& protocol) {
+void RemoteCursorStore::reset(uint64_t sessionId, const std::string& protocol,
+                              uint64_t generation) {
     std::lock_guard<std::mutex> lock(mutex_);
     state_ = RemoteCursorSnapshot{};
     state_.sessionId = sessionId;
+    state_.generation = generation == 0 ? sessionId : generation;
     state_.protocol = protocol;
+    state_.shapeSource = "none";
+}
+
+void RemoteCursorStore::setGeneration(uint64_t generation) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    state_.generation = generation;
 }
 
 bool RemoteCursorStore::setShape(uint64_t shapeId, int width, int height, int hotX, int hotY,
                                  const std::vector<uint8_t>& rgba) {
-    return setShapeInternal(shapeId, width, height, hotX, hotY, rgba, false);
+    return setShapeInternal(shapeId, width, height, hotX, hotY, rgba, false, true, "protocol");
+}
+
+bool RemoteCursorStore::setShapeIfGeneration(uint64_t generation, uint64_t shapeId, int width,
+                                             int height, int hotX, int hotY,
+                                             const std::vector<uint8_t>& rgba) {
+    if (generation == 0) {
+        return false;
+    }
+    return setShapeInternal(shapeId, width, height, hotX, hotY, rgba, false, true, "protocol",
+                            generation);
 }
 
 bool RemoteCursorStore::setShapeInternal(uint64_t shapeId, int width, int height, int hotX,
                                          int hotY, const std::vector<uint8_t>& rgba,
-                                         bool fallbackShape) {
+                                         bool fallbackShape, bool protocolShapeAvailable,
+                                         const char* shapeSource, uint64_t expectedGeneration) {
     if (width <= 0 || height <= 0 || width > kRemoteCursorMaxDimension ||
         height > kRemoteCursorMaxDimension || hotX < 0 || hotY < 0 || hotX >= width ||
         hotY >= height) {
@@ -86,9 +105,14 @@ bool RemoteCursorStore::setShapeInternal(uint64_t shapeId, int width, int height
     }
 
     std::lock_guard<std::mutex> lock(mutex_);
+    if (expectedGeneration != 0 && state_.generation != expectedGeneration) {
+        return false;
+    }
     if (state_.shapeId == shapeId && state_.width == width && state_.height == height &&
         state_.hotX == hotX && state_.hotY == hotY &&
-        state_.fallbackShape == fallbackShape && state_.rgba == rgba) {
+        state_.fallbackShape == fallbackShape &&
+        state_.protocolShapeAvailable == protocolShapeAvailable &&
+        state_.shapeSource == (shapeSource ? shapeSource : "none") && state_.rgba == rgba) {
         return true;
     }
 
@@ -98,6 +122,8 @@ bool RemoteCursorStore::setShapeInternal(uint64_t shapeId, int width, int height
     state_.hotX = hotX;
     state_.hotY = hotY;
     state_.fallbackShape = fallbackShape;
+    state_.protocolShapeAvailable = protocolShapeAvailable;
+    state_.shapeSource = shapeSource ? shapeSource : "none";
     state_.rgba = rgba;
     state_.shapeRevision += 1;
     return true;
@@ -105,12 +131,20 @@ bool RemoteCursorStore::setShapeInternal(uint64_t shapeId, int width, int height
 
 bool RemoteCursorStore::setDefaultShape() {
     return setShapeInternal(kDefaultCursorShapeId, kDefaultCursorSize, kDefaultCursorSize, 0,
-                            0, defaultCursorRgba(), false);
+                            0, defaultCursorRgba(), false, false, "default");
+}
+
+bool RemoteCursorStore::setDefaultShapeIfGeneration(uint64_t generation) {
+    if (generation == 0) {
+        return false;
+    }
+    return setShapeInternal(kDefaultCursorShapeId, kDefaultCursorSize, kDefaultCursorSize, 0,
+                            0, defaultCursorRgba(), false, false, "default", generation);
 }
 
 bool RemoteCursorStore::setFallbackShape() {
     return setShapeInternal(kDefaultCursorShapeId, kDefaultCursorSize, kDefaultCursorSize, 0,
-                            0, defaultCursorRgba(), true);
+                            0, defaultCursorRgba(), true, false, "fallback");
 }
 
 void RemoteCursorStore::setPosition(int x, int y) {
@@ -124,6 +158,24 @@ void RemoteCursorStore::setPosition(int x, int y) {
     state_.positionRevision += 1;
 }
 
+bool RemoteCursorStore::setPositionIfGeneration(uint64_t generation, int x, int y) {
+    if (generation == 0) {
+        return false;
+    }
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (state_.generation != generation) {
+        return false;
+    }
+    if (state_.positionAvailable && state_.x == x && state_.y == y) {
+        return true;
+    }
+    state_.x = x;
+    state_.y = y;
+    state_.positionAvailable = true;
+    state_.positionRevision += 1;
+    return true;
+}
+
 void RemoteCursorStore::setVisible(bool visible) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (state_.visible == visible) {
@@ -133,6 +185,22 @@ void RemoteCursorStore::setVisible(bool visible) {
     state_.visibilityRevision += 1;
 }
 
+bool RemoteCursorStore::setVisibleIfGeneration(uint64_t generation, bool visible) {
+    if (generation == 0) {
+        return false;
+    }
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (state_.generation != generation) {
+        return false;
+    }
+    if (state_.visible == visible) {
+        return true;
+    }
+    state_.visible = visible;
+    state_.visibilityRevision += 1;
+    return true;
+}
+
 RemoteCursorSnapshot RemoteCursorStore::snapshot(bool includePixels) const {
     std::lock_guard<std::mutex> lock(mutex_);
     // The ArkTS polling path asks for metadata on every tick and requests
@@ -140,8 +208,10 @@ RemoteCursorSnapshot RemoteCursorStore::snapshot(bool includePixels) const {
     // 384x384 RGBA buffer for metadata-only snapshots.
     RemoteCursorSnapshot result;
     result.sessionId = state_.sessionId;
+    result.generation = state_.generation;
     result.protocol = state_.protocol;
     result.shapeId = state_.shapeId;
+    result.shapeSource = state_.shapeSource;
     result.x = state_.x;
     result.y = state_.y;
     result.width = state_.width;
@@ -149,6 +219,7 @@ RemoteCursorSnapshot RemoteCursorStore::snapshot(bool includePixels) const {
     result.hotX = state_.hotX;
     result.hotY = state_.hotY;
     result.fallbackShape = state_.fallbackShape;
+    result.protocolShapeAvailable = state_.protocolShapeAvailable;
     result.visible = state_.visible;
     result.positionAvailable = state_.positionAvailable;
     result.shapeRevision = state_.shapeRevision;

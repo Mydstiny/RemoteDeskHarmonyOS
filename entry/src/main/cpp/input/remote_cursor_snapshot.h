@@ -17,8 +17,12 @@ constexpr size_t kRemoteCursorMaxBytes =
 
 struct RemoteCursorSnapshot {
     uint64_t sessionId = 0;
+    /** Monotonic native generation used to reject late async UI results. */
+    uint64_t generation = 0;
     std::string protocol;
     uint64_t shapeId = 0;
+    /** protocol | default | fallback | none */
+    std::string shapeSource;
     int x = 0;
     int y = 0;
     int width = 0;
@@ -28,6 +32,8 @@ struct RemoteCursorSnapshot {
     /** True only for the RustDesk controller-side bootstrap shape. It is not a
      * protocol cursor and must not be rendered as an authoritative arrow. */
     bool fallbackShape = false;
+    /** True only after the protocol has supplied an authoritative bitmap. */
+    bool protocolShapeAvailable = false;
     bool visible = false;
     /** False until a protocol callback has supplied a coordinate. The default
      * 0,0 storage value is not itself a remote cursor position. */
@@ -42,24 +48,38 @@ struct RemoteCursorSnapshot {
 
 class RemoteCursorStore {
 public:
-    void reset(uint64_t sessionId, const std::string& protocol);
+    void reset(uint64_t sessionId, const std::string& protocol, uint64_t generation = 0);
+    void setGeneration(uint64_t generation);
 
     bool setShape(uint64_t shapeId, int width, int height, int hotX, int hotY,
                   const std::vector<uint8_t>& rgba);
 
+    /**
+     * Apply a protocol callback only while the supplied connection generation
+     * is still the store generation. The check and mutation share the store
+     * mutex so a session reset cannot happen between them.
+     */
+    bool setShapeIfGeneration(uint64_t generation, uint64_t shapeId, int width, int height,
+                              int hotX, int hotY, const std::vector<uint8_t>& rgba);
+
     /** Restore a stable local arrow for protocol SetDefault callbacks. */
     bool setDefaultShape();
+    bool setDefaultShapeIfGeneration(uint64_t generation);
 
     /** Keep a temporary arrow visible until RustDesk supplies cursor data. */
     bool setFallbackShape();
 
     void setPosition(int x, int y);
+    bool setPositionIfGeneration(uint64_t generation, int x, int y);
     void setVisible(bool visible);
+    bool setVisibleIfGeneration(uint64_t generation, bool visible);
     RemoteCursorSnapshot snapshot(bool includePixels) const;
 
 private:
     bool setShapeInternal(uint64_t shapeId, int width, int height, int hotX, int hotY,
-                          const std::vector<uint8_t>& rgba, bool fallbackShape);
+                          const std::vector<uint8_t>& rgba, bool fallbackShape,
+                          bool protocolShapeAvailable, const char* shapeSource,
+                          uint64_t expectedGeneration = 0);
 
     mutable std::mutex mutex_;
     RemoteCursorSnapshot state_;

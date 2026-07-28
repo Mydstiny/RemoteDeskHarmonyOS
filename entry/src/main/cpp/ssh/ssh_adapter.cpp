@@ -13,12 +13,15 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <netdb.h>
 #include <unistd.h>
 #include <fcntl.h>
 #include <cstring>
 #include <cerrno>
+#include <climits>
 #include <mutex>
 #include <chrono>
+#include <cstdlib>
 #include <vector>
 
 #undef LOG_DOMAIN
@@ -64,6 +67,16 @@ namespace {
             }
         });
     }
+
+    void secureClearString(std::string& value) {
+        if (!value.empty()) {
+            volatile char* data = value.data();
+            for (size_t index = 0; index < value.size(); ++index) {
+                data[index] = '\0';
+            }
+        }
+        value.clear();
+    }
 }
 
 // ============================================================
@@ -105,24 +118,59 @@ std::string SshAdapter::protocolVersion() {
 // 内部辅助方法
 // ============================================================
 
-void SshAdapter::setState(ConnectionState s) {
-    state_ = s;
-    if (stateCallback_) {
-        stateCallback_(s, "");
+void SshAdapter::setState(ConnectionState s, const std::string& message) {
+    ConnectionStateCallback callback;
+    {
+        std::lock_guard<std::mutex> lock(stateCallbackMutex_);
+        state_.store(s, std::memory_order_release);
+        callback = stateCallback_;
+    }
+    if (callback) {
+        callback(s, message);
     }
 }
 
 int SshAdapter::waitSocket(int direction, int timeoutSec) {
-    fd_set rfds, wfds;
-    FD_ZERO(&rfds);
-    FD_ZERO(&wfds);
-    if (direction == 0 || direction == 2) { FD_SET(sockFd_, &rfds); }
-    if (direction == 1 || direction == 2) { FD_SET(sockFd_, &wfds); }
-    struct timeval tv = {timeoutSec, 0};
-    int ret = select(sockFd_ + 1, &rfds, &wfds, nullptr, &tv);
-    if (ret < 0) { return -1; }
-    if (ret == 0) { return -2; } // timeout
-    return 0;
+    if (sockFd_ < 0) {
+        return -1;
+    }
+    if (connectCancelRequested_.load(std::memory_order_acquire)) {
+        return -3;
+    }
+
+    const int timeoutMilliseconds = std::max(0, timeoutSec) * 1000;
+    const auto deadline = std::chrono::steady_clock::now() +
+        std::chrono::milliseconds(timeoutMilliseconds);
+    while (true) {
+        if (connectCancelRequested_.load(std::memory_order_acquire)) {
+            return -3;
+        }
+        const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+            deadline - std::chrono::steady_clock::now()).count();
+        if (remaining <= 0) {
+            return -2;
+        }
+
+        const int sliceMilliseconds = static_cast<int>(std::min<int64_t>(remaining, 100));
+        int ret;
+        while (true) {
+            // select() mutates both fd_set and timeval, including when it
+            // returns EINTR. Rebuild them for every retry.
+            fd_set rfds, wfds;
+            FD_ZERO(&rfds);
+            FD_ZERO(&wfds);
+            if (direction == 0 || direction == 2) { FD_SET(sockFd_, &rfds); }
+            if (direction == 1 || direction == 2) { FD_SET(sockFd_, &wfds); }
+            struct timeval tv = {
+                sliceMilliseconds / 1000,
+                (sliceMilliseconds % 1000) * 1000
+            };
+            ret = select(sockFd_ + 1, &rfds, &wfds, nullptr, &tv);
+            if (ret >= 0 || errno != EINTR) { break; }
+        }
+        if (ret < 0) { return -1; }
+        if (ret > 0) { return 0; }
+    }
 }
 
 // ============================================================
@@ -131,52 +179,317 @@ int SshAdapter::waitSocket(int direction, int timeoutSec) {
 
 int SshAdapter::tcpConnect(const std::string& host, int port) {
     const std::string logHost = SafeLog::MaskHost(host);
-    sockFd_ = socket(AF_INET, SOCK_STREAM, 0);
-    if (sockFd_ < 0) {
-        OH_LOG_ERROR(LOG_APP, "[SSH] socket() 失败: %{public}s (%{public}d)",
-                     strerror(errno), errno);
-        return ERR_SSH_SOCKET_CREATE;
-    }
-
-    // 设置非阻塞
-    int flags = fcntl(sockFd_, F_GETFL, 0);
-    fcntl(sockFd_, F_SETFL, flags | O_NONBLOCK);
-
-    struct sockaddr_in addr;
-    memset(&addr, 0, sizeof(addr));
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons(static_cast<uint16_t>(port));
-
-    if (inet_pton(AF_INET, host.c_str(), &addr.sin_addr) <= 0) {
-        OH_LOG_ERROR(LOG_APP, "[SSH] inet_pton 失败: %{public}s", logHost.c_str());
-        close(sockFd_);
-        sockFd_ = -1;
+    if (host.empty() || port <= 0 || port > 65535) {
+        OH_LOG_ERROR(LOG_APP, "[SSH] 地址参数无效: host=%{public}s port=%{public}d",
+                     logHost.c_str(), port);
         return ERR_SSH_DNS_RESOLVE;
     }
 
-    OH_LOG_INFO(LOG_APP, "[SSH] 正在连接 %{public}s:%{public}d ...", logHost.c_str(), port);
+    struct addrinfo hints {};
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_protocol = IPPROTO_TCP;
 
-    int ret = ::connect(sockFd_, reinterpret_cast<struct sockaddr*>(&addr), sizeof(addr));
-    if (ret < 0 && errno != EINPROGRESS) {
-        OH_LOG_ERROR(LOG_APP, "[SSH] connect() 失败: %{public}s (%{public}d)",
-                     strerror(errno), errno);
-        close(sockFd_);
-        sockFd_ = -1;
-        return ERR_SSH_SOCKET_CONNECT;
+    char portString[16] = {0};
+    snprintf(portString, sizeof(portString), "%d", port);
+    struct addrinfo* addresses = nullptr;
+    const int resolveResult = getaddrinfo(host.c_str(), portString, &hints, &addresses);
+    if (resolveResult != 0 || addresses == nullptr) {
+        OH_LOG_ERROR(LOG_APP, "[SSH] DNS 解析失败: host=%{public}s code=%{public}d",
+                     logHost.c_str(), resolveResult);
+        return ERR_SSH_DNS_RESOLVE;
     }
 
-    // 等待连接完成 (非阻塞)
-    if (ret < 0) {
-        int w = waitSocket(1, 10); // 10s timeout
-        if (w != 0) {
-            OH_LOG_ERROR(LOG_APP, "[SSH] 连接超时: %{public}s:%{public}d", logHost.c_str(), port);
+    OH_LOG_INFO(LOG_APP, "[SSH] 正在连接 %{public}s:%{public}d (AF_UNSPEC) ...",
+                logHost.c_str(), port);
+
+    bool sawSocketError = false;
+    bool sawTimeout = false;
+    for (struct addrinfo* address = addresses; address != nullptr; address = address->ai_next) {
+        sockFd_ = static_cast<int>(socket(address->ai_family, address->ai_socktype,
+                                          address->ai_protocol));
+        if (sockFd_ < 0) {
+            sawSocketError = true;
+            continue;
+        }
+
+        const int flags = fcntl(sockFd_, F_GETFL, 0);
+        if (flags < 0 || fcntl(sockFd_, F_SETFL, flags | O_NONBLOCK) < 0) {
+            sawSocketError = true;
             close(sockFd_);
             sockFd_ = -1;
-            return ERR_SSH_CONNECT_TIMEOUT;
+            continue;
         }
+
+        int ret = ::connect(sockFd_, address->ai_addr, address->ai_addrlen);
+        if (ret < 0 && errno == EINPROGRESS) {
+            const int waitResult = waitSocket(1, 10);
+            if (waitResult == -2) {
+                sawTimeout = true;
+                close(sockFd_);
+                sockFd_ = -1;
+                continue;
+            }
+            if (waitResult != 0) {
+                sawSocketError = true;
+                close(sockFd_);
+                sockFd_ = -1;
+                continue;
+            }
+
+            int socketError = 0;
+            socklen_t socketErrorLength = sizeof(socketError);
+            if (getsockopt(sockFd_, SOL_SOCKET, SO_ERROR, &socketError,
+                           &socketErrorLength) != 0 || socketError != 0) {
+                sawSocketError = true;
+                close(sockFd_);
+                sockFd_ = -1;
+                continue;
+            }
+        } else if (ret < 0) {
+            sawSocketError = true;
+            close(sockFd_);
+            sockFd_ = -1;
+            continue;
+        }
+
+        const int family = address->ai_family;
+        freeaddrinfo(addresses);
+        OH_LOG_INFO(LOG_APP, "[SSH] TCP 连接建立成功, family=%{public}d fd=%{public}d",
+                    family, sockFd_);
+        return 0;
     }
 
-    OH_LOG_INFO(LOG_APP, "[SSH] TCP 连接建立成功, fd=%{public}d", sockFd_);
+    freeaddrinfo(addresses);
+    sockFd_ = -1;
+    if (sawTimeout) {
+        OH_LOG_ERROR(LOG_APP, "[SSH] 连接超时: %{public}s:%{public}d", logHost.c_str(), port);
+        return ERR_SSH_CONNECT_TIMEOUT;
+    }
+    OH_LOG_ERROR(LOG_APP, "[SSH] 所有地址连接失败: host=%{public}s socketError=%{public}s",
+                 logHost.c_str(), sawSocketError ? "yes" : "no");
+    return ERR_SSH_SOCKET_CONNECT;
+}
+
+int SshAdapter::sendSocketBytes(const uint8_t* data, size_t len, int timeoutSec) {
+    if (sockFd_ < 0 || (data == nullptr && len > 0)) {
+        return ERR_SSH_PROXY_FAILED;
+    }
+    size_t total = 0;
+    while (total < len) {
+        const ssize_t sent = ::send(sockFd_, data + total, len - total, 0);
+        if (sent > 0) {
+            total += static_cast<size_t>(sent);
+            continue;
+        }
+        if (sent < 0 && (errno == EINTR)) { continue; }
+        if (sent < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            if (waitSocket(1, timeoutSec) != 0) { return ERR_SSH_CONNECT_TIMEOUT; }
+            continue;
+        }
+        return ERR_SSH_PROXY_FAILED;
+    }
+    return 0;
+}
+
+int SshAdapter::receiveSocketBytes(uint8_t* data, size_t len, int timeoutSec) {
+    if (sockFd_ < 0 || (data == nullptr && len > 0)) {
+        return ERR_SSH_PROXY_FAILED;
+    }
+    size_t total = 0;
+    while (total < len) {
+        const ssize_t received = ::recv(sockFd_, data + total, len - total, 0);
+        if (received > 0) {
+            total += static_cast<size_t>(received);
+            continue;
+        }
+        if (received == 0) { return ERR_SSH_PROXY_FAILED; }
+        if (errno == EINTR) { continue; }
+        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            if (waitSocket(0, timeoutSec) != 0) { return ERR_SSH_CONNECT_TIMEOUT; }
+            continue;
+        }
+        return ERR_SSH_PROXY_FAILED;
+    }
+    return 0;
+}
+
+int SshAdapter::receiveProxyHeaders(std::string& headers, size_t maxLen, int timeoutSec) {
+    headers.clear();
+    // Read one byte at a time until the header terminator. A proxy may send
+    // the first SSH banner in the same TCP packet as the 200 response; a
+    // larger recv() buffer would consume and discard those bytes before
+    // libssh2_session_handshake() gets the socket.
+    char byte = 0;
+    while (headers.find("\r\n\r\n") == std::string::npos) {
+        const ssize_t received = ::recv(sockFd_, &byte, 1, 0);
+        if (received > 0) {
+            headers.push_back(byte);
+            if (headers.size() > maxLen) { return ERR_SSH_PROXY_FAILED; }
+            continue;
+        }
+        if (received == 0) { return ERR_SSH_PROXY_FAILED; }
+        if (errno == EINTR) { continue; }
+        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            if (waitSocket(0, timeoutSec) != 0) { return ERR_SSH_CONNECT_TIMEOUT; }
+            continue;
+        }
+        return ERR_SSH_PROXY_FAILED;
+    }
+    return 0;
+}
+
+int SshAdapter::connectThroughProxy(const ConnectionConfig& cfg) {
+    const std::string type = cfg.sshProxyType.empty() ? "direct" : cfg.sshProxyType;
+    if (type == "direct") {
+        return tcpConnect(cfg.host, cfg.port > 0 ? cfg.port : 22);
+    }
+    if (type != "http_connect" && type != "socks5") {
+        OH_LOG_ERROR(LOG_APP, "[SSH] 不支持的代理类型: %{public}s", type.c_str());
+        return ERR_SSH_PROXY_INVALID;
+    }
+    if (cfg.sshProxyHost.empty() || cfg.sshProxyPort <= 0 || cfg.sshProxyPort > 65535) {
+        OH_LOG_ERROR(LOG_APP, "[SSH] 代理地址参数无效: type=%{public}s host=%{public}s port=%{public}d",
+                     type.c_str(), SafeLog::MaskHost(cfg.sshProxyHost).c_str(), cfg.sshProxyPort);
+        return ERR_SSH_PROXY_INVALID;
+    }
+    if (cfg.host.find('\r') != std::string::npos || cfg.host.find('\n') != std::string::npos) {
+        return ERR_SSH_PROXY_INVALID;
+    }
+
+    int ret = tcpConnect(cfg.sshProxyHost, cfg.sshProxyPort);
+    if (ret != 0) { return ret; }
+
+    std::string targetHost = cfg.host;
+    if (targetHost.size() >= 2 && targetHost.front() == '[' && targetHost.back() == ']') {
+        targetHost = targetHost.substr(1, targetHost.size() - 2);
+    }
+    const int targetPort = cfg.port > 0 ? cfg.port : 22;
+    if (targetHost.empty() || targetHost.size() > 255) {
+        return ERR_SSH_PROXY_INVALID;
+    }
+
+    if (type == "http_connect") {
+        std::string hostHeader = targetHost;
+        in6_addr ipv6 {};
+        if (inet_pton(AF_INET6, targetHost.c_str(), &ipv6) == 1) {
+            hostHeader = "[" + targetHost + "]";
+        }
+        hostHeader += ":" + std::to_string(targetPort);
+        std::string request = "CONNECT " + hostHeader + " HTTP/1.1\r\n";
+        request += "Host: " + hostHeader + "\r\n";
+        request += "Proxy-Connection: Keep-Alive\r\n";
+        if (!cfg.sshProxyUsername.empty() || !cfg.sshProxyPassword.empty()) {
+            if (cfg.sshProxyUsername.find_first_of("\r\n") != std::string::npos ||
+                cfg.sshProxyPassword.find_first_of("\r\n") != std::string::npos) {
+                return ERR_SSH_PROXY_INVALID;
+            }
+            const std::string credentials = cfg.sshProxyUsername + ":" + cfg.sshProxyPassword;
+            const std::string encoded = encodeBase64(
+                reinterpret_cast<const unsigned char*>(credentials.data()), credentials.size());
+            request += "Proxy-Authorization: Basic " + encoded + "\r\n";
+        }
+        request += "\r\n";
+        ret = sendSocketBytes(reinterpret_cast<const uint8_t*>(request.data()), request.size(), 10);
+        if (ret != 0) { return ret; }
+
+        std::string response;
+        ret = receiveProxyHeaders(response, 16 * 1024, 10);
+        if (ret != 0) { return ret; }
+        const size_t lineEnd = response.find("\r\n");
+        const std::string statusLine = response.substr(0, lineEnd);
+        const size_t statusStart = statusLine.find(' ');
+        if (statusStart == std::string::npos || statusStart + 4 > statusLine.size()) {
+            return ERR_SSH_PROXY_FAILED;
+        }
+        const int status = std::atoi(statusLine.c_str() + statusStart + 1);
+        if (status == 407) { return ERR_SSH_PROXY_AUTH; }
+        if (status < 200 || status >= 300) { return ERR_SSH_PROXY_FAILED; }
+        OH_LOG_INFO(LOG_APP, "[SSH] HTTP CONNECT 代理握手成功 target=%{public}s:%{public}d",
+                    SafeLog::MaskHost(targetHost).c_str(), targetPort);
+        return 0;
+    }
+
+    std::vector<uint8_t> greeting {0x05, 0x01, 0x00};
+    const bool hasProxyCredentials =
+        !cfg.sshProxyUsername.empty() || !cfg.sshProxyPassword.empty();
+    if (hasProxyCredentials) {
+        greeting[1] = 0x02;
+        greeting.push_back(0x02);
+    }
+    ret = sendSocketBytes(greeting.data(), greeting.size(), 10);
+    if (ret != 0) { return ret; }
+
+    uint8_t methodReply[2] = {0};
+    ret = receiveSocketBytes(methodReply, sizeof(methodReply), 10);
+    if (ret != 0 || methodReply[0] != 0x05) { return ERR_SSH_PROXY_FAILED; }
+    if (methodReply[1] == 0xFF) { return ERR_SSH_PROXY_AUTH; }
+    if (methodReply[1] == 0x02) {
+        if (!hasProxyCredentials || cfg.sshProxyUsername.size() > 255 ||
+            cfg.sshProxyPassword.size() > 255) {
+            return ERR_SSH_PROXY_AUTH;
+        }
+        std::vector<uint8_t> auth;
+        auth.reserve(3 + cfg.sshProxyUsername.size() + cfg.sshProxyPassword.size());
+        auth.push_back(0x01);
+        auth.push_back(static_cast<uint8_t>(cfg.sshProxyUsername.size()));
+        auth.insert(auth.end(), cfg.sshProxyUsername.begin(), cfg.sshProxyUsername.end());
+        auth.push_back(static_cast<uint8_t>(cfg.sshProxyPassword.size()));
+        auth.insert(auth.end(), cfg.sshProxyPassword.begin(), cfg.sshProxyPassword.end());
+        ret = sendSocketBytes(auth.data(), auth.size(), 10);
+        if (ret != 0) { return ret; }
+        uint8_t authReply[2] = {0};
+        ret = receiveSocketBytes(authReply, sizeof(authReply), 10);
+        if (ret != 0 || authReply[0] != 0x01 || authReply[1] != 0x00) {
+            return ERR_SSH_PROXY_AUTH;
+        }
+    } else if (methodReply[1] != 0x00) {
+        return ERR_SSH_PROXY_AUTH;
+    }
+
+    std::vector<uint8_t> request {0x05, 0x01, 0x00};
+    in_addr ipv4 {};
+    in6_addr ipv6 {};
+    if (inet_pton(AF_INET, targetHost.c_str(), &ipv4) == 1) {
+        request.push_back(0x01);
+        const uint8_t* raw = reinterpret_cast<const uint8_t*>(&ipv4);
+        request.insert(request.end(), raw, raw + sizeof(ipv4));
+    } else if (inet_pton(AF_INET6, targetHost.c_str(), &ipv6) == 1) {
+        request.push_back(0x04);
+        const uint8_t* raw = reinterpret_cast<const uint8_t*>(&ipv6);
+        request.insert(request.end(), raw, raw + sizeof(ipv6));
+    } else {
+        request.push_back(0x03);
+        request.push_back(static_cast<uint8_t>(targetHost.size()));
+        request.insert(request.end(), targetHost.begin(), targetHost.end());
+    }
+    request.push_back(static_cast<uint8_t>((targetPort >> 8) & 0xFF));
+    request.push_back(static_cast<uint8_t>(targetPort & 0xFF));
+    ret = sendSocketBytes(request.data(), request.size(), 10);
+    if (ret != 0) { return ret; }
+
+    uint8_t replyHead[4] = {0};
+    ret = receiveSocketBytes(replyHead, sizeof(replyHead), 10);
+    if (ret != 0 || replyHead[0] != 0x05) { return ERR_SSH_PROXY_FAILED; }
+    if (replyHead[1] != 0x00) {
+        return replyHead[1] == 0x02 ? ERR_SSH_PROXY_AUTH : ERR_SSH_PROXY_FAILED;
+    }
+    size_t addressLength = 0;
+    if (replyHead[3] == 0x01) { addressLength = 4; }
+    else if (replyHead[3] == 0x04) { addressLength = 16; }
+    else if (replyHead[3] == 0x03) {
+        uint8_t domainLength = 0;
+        ret = receiveSocketBytes(&domainLength, 1, 10);
+        if (ret != 0) { return ret; }
+        addressLength = domainLength;
+    } else {
+        return ERR_SSH_PROXY_FAILED;
+    }
+    std::vector<uint8_t> discard(addressLength + 2);
+    ret = receiveSocketBytes(discard.data(), discard.size(), 10);
+    if (ret != 0) { return ret; }
+    OH_LOG_INFO(LOG_APP, "[SSH] SOCKS5 代理握手成功 target=%{public}s:%{public}d",
+                SafeLog::MaskHost(targetHost).c_str(), targetPort);
     return 0;
 }
 
@@ -265,7 +578,13 @@ int SshAdapter::sshHandshake() {
             return ERR_SSH_HOSTKEY_MISMATCH;
         }
         OH_LOG_INFO(LOG_APP, "[SSH] 主机密钥 raw 二次校验通过");
-    } else if (!savedCfg_.expectedHostKeyFingerprintSha256.empty() && fingerprint) {
+    } else if (!savedCfg_.expectedHostKeyFingerprintSha256.empty()) {
+        if (!fingerprint) {
+            OH_LOG_ERROR(LOG_APP, "[SSH] 主机密钥二次校验失败: 无法计算 SHA256 指纹");
+            libssh2_session_free(session_);
+            session_ = nullptr;
+            return ERR_SSH_HOSTKEY_MISMATCH;
+        }
         std::string currentFpB64 = encodeBase64(reinterpret_cast<const unsigned char*>(fingerprint), 32);
         // 去尾部 '=' (OpenSSH 风格)
         while (!currentFpB64.empty() && currentFpB64.back() == '=') {
@@ -291,8 +610,15 @@ int SshAdapter::authenticatePassword() {
     if (!session_) { return ERR_SSH_AUTH_FAILED; }
 
     // 查询服务器支持的认证方法
-    char* userList = libssh2_userauth_list(session_,
-        savedCfg_.username.c_str(), savedCfg_.username.length());
+    char* userList = nullptr;
+    while ((userList = libssh2_userauth_list(session_,
+               savedCfg_.username.c_str(), savedCfg_.username.length())) == nullptr &&
+           libssh2_session_last_errno(session_) == LIBSSH2_ERROR_EAGAIN) {
+        if (waitSocket(2, 30) != 0) {
+            OH_LOG_ERROR(LOG_APP, "[SSH] 查询密码认证方法超时");
+            return ERR_SSH_AUTH_TIMEOUT;
+        }
+    }
     OH_LOG_INFO(LOG_APP, "[SSH] 服务器认证方法: %{public}s",
                 userList ? userList : "(none)");
 
@@ -323,6 +649,97 @@ int SshAdapter::authenticatePassword() {
 
     authenticated_ = true;
     OH_LOG_INFO(LOG_APP, "[SSH] 密码认证成功");
+    return 0;
+}
+
+void SshAdapter::keyboardInteractiveCallback(
+    const char* name, int nameLen, const char* instruction, int instructionLen,
+    int numPrompts, const LIBSSH2_USERAUTH_KBDINT_PROMPT* prompts,
+    LIBSSH2_USERAUTH_KBDINT_RESPONSE* responses, void** abstract) {
+    (void)name;
+    (void)nameLen;
+    (void)instruction;
+    (void)instructionLen;
+    (void)prompts;
+    if (numPrompts <= 0 || responses == nullptr || abstract == nullptr ||
+        *abstract == nullptr) {
+        return;
+    }
+
+    auto* adapter = static_cast<SshAdapter*>(*abstract);
+    for (int index = 0; index < numPrompts; ++index) {
+        std::string response;
+        if (index >= 0 &&
+            static_cast<size_t>(index) < adapter->savedCfg_.sshKeyboardInteractiveResponses.size()) {
+            response = adapter->savedCfg_.sshKeyboardInteractiveResponses[static_cast<size_t>(index)];
+        } else {
+            // Password is a useful compatibility fallback for servers that
+            // expose a password prompt through keyboard-interactive.
+            response = adapter->savedCfg_.password;
+        }
+        if (response.empty()) {
+            responses[index].text = nullptr;
+            responses[index].length = 0;
+            continue;
+        }
+        char* allocated = static_cast<char*>(std::malloc(response.size()));
+        if (allocated == nullptr) {
+            responses[index].text = nullptr;
+            responses[index].length = 0;
+            continue;
+        }
+        std::memcpy(allocated, response.data(), response.size());
+        responses[index].text = allocated;
+        responses[index].length = static_cast<unsigned int>(
+            std::min<size_t>(response.size(), UINT_MAX));
+    }
+}
+
+int SshAdapter::authenticateKeyboardInteractive() {
+    if (!session_) { return ERR_SSH_AUTH_FAILED; }
+
+    char* userList = nullptr;
+    while ((userList = libssh2_userauth_list(
+                session_, savedCfg_.username.c_str(),
+                static_cast<unsigned int>(savedCfg_.username.size()))) == nullptr &&
+           libssh2_session_last_errno(session_) == LIBSSH2_ERROR_EAGAIN) {
+        if (waitSocket(2, 30) != 0) {
+            OH_LOG_ERROR(LOG_APP, "[SSH] 查询 keyboard-interactive 方法超时");
+            return ERR_SSH_AUTH_TIMEOUT;
+        }
+    }
+    if (userList == nullptr || std::strstr(userList, "keyboard-interactive") == nullptr) {
+        OH_LOG_ERROR(LOG_APP, "[SSH] 服务器不支持 keyboard-interactive 认证");
+        return ERR_SSH_AUTH_METHODS;
+    }
+
+    void** abstract = libssh2_session_abstract(session_);
+    if (abstract != nullptr) {
+        *abstract = this;
+    }
+
+    int rc;
+    while ((rc = libssh2_userauth_keyboard_interactive(
+                session_, savedCfg_.username.c_str(),
+                &SshAdapter::keyboardInteractiveCallback)) == LIBSSH2_ERROR_EAGAIN) {
+        int w = waitSocket(2, 30);
+        if (w != 0) {
+            OH_LOG_ERROR(LOG_APP, "[SSH] keyboard-interactive 认证超时");
+            return ERR_SSH_AUTH_TIMEOUT;
+        }
+    }
+    if (rc != 0) {
+        char* detail = nullptr;
+        libssh2_session_last_error(session_, &detail, nullptr, 0);
+        OH_LOG_ERROR(LOG_APP, "[SSH] keyboard-interactive 认证失败: rc=%{public}d detail=%{public}s",
+                     rc, detail ? detail : "");
+        return rc == LIBSSH2_ERROR_AUTHENTICATION_FAILED ?
+            ERR_SSH_AUTH_PARTIAL : ERR_SSH_AUTH_FAILED;
+    }
+
+    authenticated_ = true;
+    OH_LOG_INFO(LOG_APP, "[SSH] keyboard-interactive 认证成功, prompts=%{public}zu",
+                savedCfg_.sshKeyboardInteractiveResponses.size());
     return 0;
 }
 
@@ -400,8 +817,20 @@ int SshAdapter::requestPty(int cols, int rows) {
         return ERR_SSH_PTY_FAILED;
     }
 
-    // 设置初始窗口大小
-    libssh2_channel_request_pty_size(channel_, cols, rows);
+    // 设置初始窗口大小；该请求同样可能返回 EAGAIN，不能把失败
+    // 静默当成成功，否则远端会以默认尺寸启动并破坏终端布局。
+    while ((rc = libssh2_channel_request_pty_size(channel_, cols, rows)) ==
+           LIBSSH2_ERROR_EAGAIN) {
+        int w = waitSocket(2, 15);
+        if (w != 0) {
+            OH_LOG_ERROR(LOG_APP, "[SSH] PTY 尺寸请求超时");
+            return ERR_SSH_PTY_FAILED;
+        }
+    }
+    if (rc != 0) {
+        OH_LOG_ERROR(LOG_APP, "[SSH] PTY 尺寸请求失败: rc=%{public}d", rc);
+        return ERR_SSH_PTY_FAILED;
+    }
     OH_LOG_INFO(LOG_APP, "[SSH] PTY 已分配 %{public}dx%{public}d (term=xterm-256color)", cols, rows);
     return 0;
 }
@@ -430,20 +859,37 @@ int SshAdapter::startShell() {
 // ============================================================
 
 int SshAdapter::connect(const ConnectionConfig& cfg) {
-    if (state_ == ConnectionState::CONNECTED) {
+    std::lock_guard<std::recursive_mutex> lifecycleLock(lifecycleMutex_);
+    const bool hadPreviousState =
+        state_.load(std::memory_order_acquire) != ConnectionState::DISCONNECTED;
+    if (hadPreviousState) {
         OH_LOG_WARN(LOG_APP, "[SSH] 已连接, 先断开");
         disconnect();
+        // A deliberate reconnect after a completed session is allowed. A
+        // disconnect that happened before the first async worker acquired
+        // this lock leaves the cancellation flag set and must not be erased.
+        connectCancelRequested_.store(false, std::memory_order_release);
+    }
+    if (connectCancelRequested_.load(std::memory_order_acquire)) {
+        OH_LOG_INFO(LOG_APP, "[SSH] 连接在开始前已取消");
+        setState(ConnectionState::ERROR, "SSH connect cancelled");
+        return ERR_SSH_SESSION_CLOSED;
     }
 
     // 保存配置 (用于后续认证和重连)
     savedCfg_ = cfg;
 
-    setState(ConnectionState::CONNECTING);
+    setState(ConnectionState::CONNECTING, "SSH connecting");
 
     // Step 1: TCP 连接
-    int ret = tcpConnect(cfg.host, cfg.port > 0 ? cfg.port : 22);
+    int ret = connectThroughProxy(cfg);
     if (ret < 0) {
-        setState(ConnectionState::ERROR);
+        // Proxy validation/handshake may fail after a TCP socket has already
+        // been opened. Always tear down the partial transport before exposing
+        // the error to the caller.
+        disconnect();
+        setState(ConnectionState::ERROR,
+                 "SSH transport connection failed [" + std::to_string(ret) + "]");
         return ret;
     }
 
@@ -451,13 +897,15 @@ int SshAdapter::connect(const ConnectionConfig& cfg) {
     ret = sshHandshake();
     if (ret < 0) {
         disconnect();
-        setState(ConnectionState::ERROR);
+        setState(ConnectionState::ERROR, "SSH handshake failed [" + std::to_string(ret) + "]");
         return ret;
     }
 
     // Step 4: 用户认证 (公钥优先, 失败时回退密码)
     OH_LOG_INFO(LOG_APP, "[SSH] 认证方式=%{public}s", cfg.authMethod.c_str());
-    if (cfg.authMethod == "publickey" && !cfg.privateKeyPem.empty()) {
+    if (cfg.authMethod == "kbd-interactive" || cfg.authMethod == "keyboard-interactive") {
+        ret = authenticateKeyboardInteractive();
+    } else if (cfg.authMethod == "publickey" && !cfg.privateKeyPem.empty()) {
         ret = authenticatePublicKey(cfg.username, cfg.privateKeyPem, cfg.privateKeyPassphrase);
         if (ret < 0 && !cfg.password.empty()) {
             OH_LOG_WARN(LOG_APP, "[SSH] 公钥认证失败, 回退到密码认证");
@@ -468,7 +916,7 @@ int SshAdapter::connect(const ConnectionConfig& cfg) {
     }
     if (ret < 0) {
         disconnect();
-        setState(ConnectionState::ERROR);
+        setState(ConnectionState::ERROR, "SSH authentication failed [" + std::to_string(ret) + "]");
         return ret;
     }
 
@@ -476,7 +924,7 @@ int SshAdapter::connect(const ConnectionConfig& cfg) {
     ret = openChannel();
     if (ret < 0) {
         disconnect();
-        setState(ConnectionState::ERROR);
+        setState(ConnectionState::ERROR, "SSH channel open failed [" + std::to_string(ret) + "]");
         return ret;
     }
 
@@ -486,7 +934,7 @@ int SshAdapter::connect(const ConnectionConfig& cfg) {
     ret = requestPty(ptyCols, ptyRows);
     if (ret < 0) {
         disconnect();
-        setState(ConnectionState::ERROR);
+        setState(ConnectionState::ERROR, "SSH PTY request failed [" + std::to_string(ret) + "]");
         return ret;
     }
 
@@ -494,57 +942,75 @@ int SshAdapter::connect(const ConnectionConfig& cfg) {
     ret = startShell();
     if (ret < 0) {
         disconnect();
-        setState(ConnectionState::ERROR);
+        setState(ConnectionState::ERROR, "SSH shell start failed [" + std::to_string(ret) + "]");
         return ret;
     }
 
-    setState(ConnectionState::CONNECTED);
+    setState(ConnectionState::CONNECTED, "SSH connected");
     const std::string logHost = SafeLog::MaskHost(cfg.host);
     OH_LOG_INFO(LOG_APP, "[SSH] SSH 连接建立完成 (libssh2 完整握手, %{public}s:%{public}d)",
                 logHost.c_str(), cfg.port);
-
-    // Step 8: 启动后台 reader 线程 (推送式数据回调; 替代 ArkTS 50ms 轮询)
-    startReader();
 
     return 0;
 }
 
 void SshAdapter::disconnect() {
+    // Set the flag before taking lifecycleMutex_: an async connect worker may
+    // currently be blocked in DNS/proxy/KEX waitSocket(). The worker observes
+    // cancellation in <=100 ms, while this method then serializes all handle
+    // destruction behind the same lifecycle lock.
+    requestConnectCancel();
+    std::lock_guard<std::recursive_mutex> lifecycleLock(lifecycleMutex_);
     // 先停 reader 线程, 避免后续 channel/session free 时的竞态
     stopReader();
 
     {
         std::lock_guard<std::mutex> callbackLock(callbackMutex_);
         onDataCallback_ = nullptr;
-        pendingData_.clear();
     }
 
-    std::lock_guard<std::mutex> sessionLock(sessionMutex_);
-    if (sftp_) {
-        libssh2_sftp_shutdown(sftp_);
-        sftp_ = nullptr;
+    {
+        std::lock_guard<std::mutex> sessionLock(sessionMutex_);
+        if (sftp_) {
+            libssh2_sftp_shutdown(sftp_);
+            sftp_ = nullptr;
+        }
+        if (channel_) {
+            libssh2_channel_free(channel_);
+            channel_ = nullptr;
+        }
+        if (session_) {
+            libssh2_session_disconnect(session_, "Client disconnecting");
+            libssh2_session_free(session_);
+            session_ = nullptr;
+        }
+        if (sockFd_ >= 0) {
+            shutdown(sockFd_, SHUT_RDWR);
+            close(sockFd_);
+            sockFd_ = -1;
+            OH_LOG_INFO(LOG_APP, "[SSH] TCP 连接已断开");
+        }
+        authenticated_ = false;
+        secureClearString(savedCfg_.password);
+        secureClearString(savedCfg_.privateKeyPem);
+        secureClearString(savedCfg_.privateKeyPassphrase);
+        secureClearString(savedCfg_.sshProxyPassword);
+        for (std::string& response : savedCfg_.sshKeyboardInteractiveResponses) {
+            secureClearString(response);
+        }
+        savedCfg_.sshKeyboardInteractiveResponses.clear();
     }
-    if (channel_) {
-        libssh2_channel_free(channel_);
-        channel_ = nullptr;
-    }
-    if (session_) {
-        libssh2_session_disconnect(session_, "Client disconnecting");
-        libssh2_session_free(session_);
-        session_ = nullptr;
-    }
-    if (sockFd_ >= 0) {
-        shutdown(sockFd_, SHUT_RDWR);
-        close(sockFd_);
-        sockFd_ = -1;
-        OH_LOG_INFO(LOG_APP, "[SSH] TCP 连接已断开");
-    }
-    authenticated_ = false;
-    setState(ConnectionState::DISCONNECTED);
+    // Do not invoke user code while sessionMutex_ is held. A state callback
+    // can synchronously update the page and call back into disconnect/send.
+    setState(ConnectionState::DISCONNECTED, "SSH disconnected");
 }
 
 ConnectionState SshAdapter::getState() {
-    return state_;
+    return state_.load(std::memory_order_acquire);
+}
+
+void SshAdapter::requestConnectCancel() {
+    connectCancelRequested_.store(true, std::memory_order_release);
 }
 
 // ============================================================
@@ -586,7 +1052,7 @@ std::vector<CodecType> SshAdapter::supportedCodecs() {
 // ============================================================
 
 int SshAdapter::ensureSftpLocked() {
-    if (!session_ || state_ != ConnectionState::CONNECTED) {
+    if (!session_ || state_.load(std::memory_order_acquire) != ConnectionState::CONNECTED) {
         return ERR_SSH_SESSION_CLOSED;
     }
     if (sftp_) { return 0; }
@@ -650,7 +1116,7 @@ int SshAdapter::sendFileData(const std::string& remotePath, const uint8_t* data,
             }
             continue;
         }
-        if (written < 0) {
+        if (written <= 0) {
             OH_LOG_ERROR(LOG_APP, "[SFTP] 写入失败: pathId=%{public}s ret=%{public}zd",
                          pathId.c_str(), written);
             libssh2_sftp_close(handle);
@@ -660,7 +1126,10 @@ int SshAdapter::sendFileData(const std::string& remotePath, const uint8_t* data,
     }
 
     while ((rc = libssh2_sftp_close(handle)) == LIBSSH2_ERROR_EAGAIN) {
-        waitSocket(2, 5);
+        if (waitSocket(2, 5) != 0) {
+            libssh2_sftp_close(handle);
+            return ERR_SSH_WRITE_FAILED;
+        }
     }
     OH_LOG_INFO(LOG_APP, "[SFTP] 上传完成: pathId=%{public}s bytes=%{public}u rc=%{public}d",
                 pathId.c_str(), len, rc);
@@ -708,7 +1177,7 @@ int SshAdapter::writeRemoteFileChunk(const std::string& remotePath, const uint8_
             }
             continue;
         }
-        if (written < 0) {
+        if (written <= 0) {
             OH_LOG_ERROR(LOG_APP, "[SFTP] 分块写入失败: pathId=%{public}s offset=%{public}llu ret=%{public}zd",
                          pathId.c_str(),
                          static_cast<unsigned long long>(offset + total),
@@ -720,7 +1189,10 @@ int SshAdapter::writeRemoteFileChunk(const std::string& remotePath, const uint8_
     }
 
     while ((rc = libssh2_sftp_close(handle)) == LIBSSH2_ERROR_EAGAIN) {
-        waitSocket(2, 5);
+        if (waitSocket(2, 5) != 0) {
+            libssh2_sftp_close(handle);
+            return ERR_SSH_WRITE_FAILED;
+        }
     }
     return rc == 0 ? static_cast<int>(total) : ERR_SSH_WRITE_FAILED;
 }
@@ -746,6 +1218,7 @@ int SshAdapter::listRemoteDir(const std::string& remotePath, std::vector<SftpFil
         return ERR_SSH_READ_FAILED;
     }
 
+    bool readFailed = false;
     while (true) {
         char nameBuf[4096] = {0};
         char longEntryBuf[4096] = {0};
@@ -754,12 +1227,16 @@ int SshAdapter::listRemoteDir(const std::string& remotePath, std::vector<SftpFil
         int n = libssh2_sftp_readdir_ex(handle, nameBuf, sizeof(nameBuf) - 1,
             longEntryBuf, sizeof(longEntryBuf) - 1, &attrs);
         if (n == LIBSSH2_ERROR_EAGAIN) {
-            waitSocket(2, 5);
+            if (waitSocket(2, 5) != 0) {
+                libssh2_sftp_closedir(handle);
+                return ERR_SSH_READ_FAILED;
+            }
             continue;
         }
         if (n < 0) {
             OH_LOG_WARN(LOG_APP, "[SFTP] 读取目录中断: pathId=%{public}s ret=%{public}d",
                         pathId.c_str(), n);
+            readFailed = true;
             break;
         }
         if (n == 0) { break; }
@@ -781,8 +1258,11 @@ int SshAdapter::listRemoteDir(const std::string& remotePath, std::vector<SftpFil
     }
 
     while ((rc = libssh2_sftp_closedir(handle)) == LIBSSH2_ERROR_EAGAIN) {
-        waitSocket(2, 5);
+        if (waitSocket(2, 5) != 0) {
+            return ERR_SSH_READ_FAILED;
+        }
     }
+    if (rc != 0 || readFailed) { return ERR_SSH_READ_FAILED; }
     OH_LOG_INFO(LOG_APP, "[SFTP] 目录读取完成: pathId=%{public}s count=%{public}zu",
                 pathId.c_str(), entries.size());
     return static_cast<int>(entries.size());
@@ -837,7 +1317,10 @@ int SshAdapter::readRemoteFile(const std::string& remotePath, std::vector<uint8_
     }
 
     while ((rc = libssh2_sftp_close(handle)) == LIBSSH2_ERROR_EAGAIN) {
-        waitSocket(2, 5);
+        if (waitSocket(2, 5) != 0) {
+            out.clear();
+            return ERR_SSH_READ_FAILED;
+        }
     }
     OH_LOG_INFO(LOG_APP, "[SFTP] 下载完成: pathId=%{public}s bytes=%{public}zu rc=%{public}d",
                 pathId.c_str(), out.size(), rc);
@@ -847,7 +1330,7 @@ int SshAdapter::readRemoteFile(const std::string& remotePath, std::vector<uint8_
 int SshAdapter::readRemoteFileChunk(const std::string& remotePath, uint64_t offset,
                                     uint32_t maxLen, std::vector<uint8_t>& out) {
     out.clear();
-    if (remotePath.empty() || maxLen == 0 || maxLen > 1024 * 1024) { return -1; }
+    if (remotePath.empty() || maxLen == 0 || maxLen > 8 * 1024 * 1024) { return -1; }
     const std::string pathId = SafeLog::HashForLog(remotePath);
     std::lock_guard<std::mutex> sessionLock(sessionMutex_);
     int rc = ensureSftpLocked();
@@ -893,12 +1376,16 @@ int SshAdapter::readRemoteFileChunk(const std::string& remotePath, uint64_t offs
     }
 
     while ((rc = libssh2_sftp_close(handle)) == LIBSSH2_ERROR_EAGAIN) {
-        waitSocket(2, 5);
+        if (waitSocket(2, 5) != 0) {
+            out.clear();
+            return ERR_SSH_READ_FAILED;
+        }
     }
     return rc == 0 ? static_cast<int>(out.size()) : ERR_SSH_READ_FAILED;
 }
 
 int SshAdapter::removeRemoteFile(const std::string& remotePath) {
+    if (remotePath.empty()) { return ERR_SSH_WRITE_FAILED; }
     const std::string pathId = SafeLog::HashForLog(remotePath);
     std::lock_guard<std::mutex> sessionLock(sessionMutex_);
     int rc = ensureSftpLocked();
@@ -912,6 +1399,7 @@ int SshAdapter::removeRemoteFile(const std::string& remotePath) {
 }
 
 int SshAdapter::removeRemoteDir(const std::string& remotePath) {
+    if (remotePath.empty()) { return ERR_SSH_WRITE_FAILED; }
     const std::string pathId = SafeLog::HashForLog(remotePath);
     std::lock_guard<std::mutex> sessionLock(sessionMutex_);
     int rc = ensureSftpLocked();
@@ -925,6 +1413,7 @@ int SshAdapter::removeRemoteDir(const std::string& remotePath) {
 }
 
 int SshAdapter::makeRemoteDir(const std::string& remotePath) {
+    if (remotePath.empty()) { return ERR_SSH_WRITE_FAILED; }
     const std::string pathId = SafeLog::HashForLog(remotePath);
     std::lock_guard<std::mutex> sessionLock(sessionMutex_);
     int rc = ensureSftpLocked();
@@ -940,6 +1429,7 @@ int SshAdapter::makeRemoteDir(const std::string& remotePath) {
 }
 
 int SshAdapter::renameRemotePath(const std::string& oldPath, const std::string& newPath) {
+    if (oldPath.empty() || newPath.empty()) { return ERR_SSH_WRITE_FAILED; }
     const std::string oldPathId = SafeLog::HashForLog(oldPath);
     const std::string newPathId = SafeLog::HashForLog(newPath);
     std::lock_guard<std::mutex> sessionLock(sessionMutex_);
@@ -967,7 +1457,8 @@ void SshAdapter::setAudioCallback(AudioDataCallback callback) {
 }
 
 void SshAdapter::setConnectionStateCallback(ConnectionStateCallback callback) {
-    stateCallback_ = callback;
+    std::lock_guard<std::mutex> lock(stateCallbackMutex_);
+    stateCallback_ = std::move(callback);
 }
 
 // ============================================================
@@ -975,16 +1466,20 @@ void SshAdapter::setConnectionStateCallback(ConnectionStateCallback callback) {
 // ============================================================
 
 int SshAdapter::sendData(const uint8_t* data, size_t len) {
-    if (!channel_ || state_ != ConnectionState::CONNECTED) {
-        return -1;
-    }
+    if (data == nullptr && len > 0) { return ERR_SSH_WRITE_FAILED; }
     std::lock_guard<std::mutex> sessionLock(sessionMutex_);
+    if (!channel_ || sockFd_ < 0 ||
+        state_.load(std::memory_order_acquire) != ConnectionState::CONNECTED) {
+        return ERR_SSH_SESSION_CLOSED;
+    }
     ssize_t total = 0;
     while (total < static_cast<ssize_t>(len)) {
         ssize_t rc = libssh2_channel_write(channel_,
             reinterpret_cast<const char*>(data) + total, len - total);
         if (rc == LIBSSH2_ERROR_EAGAIN) {
-            waitSocket(1, 1); // 100ms implicit via 1s timeout
+            if (waitSocket(1, 1) != 0) {
+                return ERR_SSH_WRITE_FAILED;
+            }
             continue;
         }
         if (rc < 0) {
@@ -996,42 +1491,244 @@ int SshAdapter::sendData(const uint8_t* data, size_t len) {
     return static_cast<int>(total);
 }
 
-int SshAdapter::readData(uint8_t* buf, size_t bufSize) {
-    if (!channel_ || state_ != ConnectionState::CONNECTED) {
-        return -1;
-    }
+int SshAdapter::executeCommand(const std::string& command, SshCommandResult& result,
+                               int timeoutMs) {
+    return executeChannelRequest(command, false, result, timeoutMs);
+}
 
-    // 非阻塞快速轮询 (50ms)
-    fd_set rfds;
-    FD_ZERO(&rfds);
-    FD_SET(sockFd_, &rfds);
-    struct timeval tv = {0, 50000};
-    int ret = select(sockFd_ + 1, &rfds, nullptr, nullptr, &tv);
-    if (ret <= 0) { return 0; }
+int SshAdapter::executeSubsystem(const std::string& subsystem, SshCommandResult& result,
+                                 int timeoutMs) {
+    return executeChannelRequest(subsystem, true, result, timeoutMs);
+}
 
-    // 从加密通道读取 (可能解密后返回 EAGAIN 即使 socket 可读)
+int SshAdapter::executeChannelRequest(const std::string& request, bool subsystem,
+                                      SshCommandResult& result, int timeoutMs) {
+    result = SshCommandResult {};
+    if (request.empty()) { return ERR_SSH_SUBSYSTEM_FAILED; }
+    if (timeoutMs <= 0) { timeoutMs = 30000; }
+    const auto deadline = std::chrono::steady_clock::now() +
+        std::chrono::milliseconds(timeoutMs);
+
     std::lock_guard<std::mutex> sessionLock(sessionMutex_);
-    ssize_t n = libssh2_channel_read(channel_, reinterpret_cast<char*>(buf), bufSize);
-    if (n == LIBSSH2_ERROR_EAGAIN) {
-        return 0;
-    }
-    if (n < 0) {
-        OH_LOG_ERROR(LOG_APP, "[SSH] libssh2_channel_read 失败: %{public}zd", n);
-        return ERR_SSH_READ_FAILED;
-    }
-    if (n == 0) {
-        // 通道 EOF
-        OH_LOG_INFO(LOG_APP, "[SSH] 远程关闭通道 (EOF)");
-        setState(ConnectionState::DISCONNECTED);
+    if (!session_ || state_.load(std::memory_order_acquire) != ConnectionState::CONNECTED) {
         return ERR_SSH_SESSION_CLOSED;
     }
-    return static_cast<int>(n);
+    auto waitForRequest = [&]() -> bool {
+        const auto remainingMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+            deadline - std::chrono::steady_clock::now()).count();
+        if (remainingMs <= 0) { return false; }
+        const int waitSeconds = static_cast<int>((remainingMs + 999) / 1000);
+        return waitSocket(2, std::min(waitSeconds, 15)) == 0;
+    };
+
+    LIBSSH2_CHANNEL* commandChannel = nullptr;
+    while ((commandChannel = libssh2_channel_open_session(session_)) == nullptr) {
+        if (libssh2_session_last_errno(session_) != LIBSSH2_ERROR_EAGAIN) {
+            return ERR_SSH_CHANNEL_OPEN;
+        }
+        if (!waitForRequest()) {
+            return ERR_SSH_COMMAND_TIMEOUT;
+        }
+    }
+
+    auto closeChannel = [&]() {
+        if (commandChannel == nullptr) { return; }
+        int closeResult = LIBSSH2_ERROR_EAGAIN;
+        while (closeResult == LIBSSH2_ERROR_EAGAIN) {
+            closeResult = libssh2_channel_close(commandChannel);
+            if (closeResult == LIBSSH2_ERROR_EAGAIN) {
+                if (waitSocket(2, 1) != 0) { break; }
+            }
+        }
+        libssh2_channel_free(commandChannel);
+        commandChannel = nullptr;
+    };
+
+    int startupResult = LIBSSH2_ERROR_EAGAIN;
+    while ((startupResult = subsystem
+                ? libssh2_channel_subsystem(commandChannel, request.c_str())
+                : libssh2_channel_exec(commandChannel, request.c_str())) == LIBSSH2_ERROR_EAGAIN) {
+        if (!waitForRequest()) {
+            closeChannel();
+            return ERR_SSH_COMMAND_TIMEOUT;
+        }
+    }
+    if (startupResult != 0) {
+        closeChannel();
+        return ERR_SSH_SUBSYSTEM_FAILED;
+    }
+
+    constexpr size_t kMaxCommandOutputBytes = 64 * 1024 * 1024;
+    std::vector<uint8_t> buffer(32768);
+    bool stdoutDone = false;
+    bool stderrDone = false;
+    auto appendOutput = [&](std::vector<uint8_t>& destination,
+                            const uint8_t* source, size_t length) -> bool {
+        const size_t currentSize = result.stdoutBytes.size() + result.stderrBytes.size();
+        if (currentSize > kMaxCommandOutputBytes ||
+            length > kMaxCommandOutputBytes - currentSize) {
+            return false;
+        }
+        destination.insert(destination.end(), source, source + length);
+        return true;
+    };
+    while (!(stdoutDone && stderrDone)) {
+        bool progressed = false;
+        if (!stdoutDone) {
+            ssize_t readResult = libssh2_channel_read(
+                commandChannel, reinterpret_cast<char*>(buffer.data()), buffer.size());
+            if (readResult == LIBSSH2_ERROR_EAGAIN) {
+                // Wait below; stderr may still have pending bytes.
+            } else if (readResult < 0) {
+                closeChannel();
+                return ERR_SSH_READ_FAILED;
+            } else if (readResult == 0) {
+                stdoutDone = libssh2_channel_eof(commandChannel) != 0;
+            } else {
+                if (!appendOutput(result.stdoutBytes, buffer.data(),
+                                   static_cast<size_t>(readResult))) {
+                    OH_LOG_WARN(LOG_APP, "[SSH] exec stdout 超过安全上限");
+                    closeChannel();
+                    return ERR_SSH_OUTPUT_LIMIT;
+                }
+                progressed = true;
+            }
+        }
+        if (!stderrDone) {
+            ssize_t readResult = libssh2_channel_read_stderr(
+                commandChannel, reinterpret_cast<char*>(buffer.data()), buffer.size());
+            if (readResult == LIBSSH2_ERROR_EAGAIN) {
+                // Wait below.
+            } else if (readResult < 0) {
+                closeChannel();
+                return ERR_SSH_READ_FAILED;
+            } else if (readResult == 0) {
+                stderrDone = libssh2_channel_eof(commandChannel) != 0;
+            } else {
+                if (!appendOutput(result.stderrBytes, buffer.data(),
+                                   static_cast<size_t>(readResult))) {
+                    OH_LOG_WARN(LOG_APP, "[SSH] exec stderr 超过安全上限");
+                    closeChannel();
+                    return ERR_SSH_OUTPUT_LIMIT;
+                }
+                progressed = true;
+            }
+        }
+
+        if (stdoutDone && stderrDone) { break; }
+        if (std::chrono::steady_clock::now() >= deadline) {
+            closeChannel();
+            return ERR_SSH_COMMAND_TIMEOUT;
+        }
+        if (!progressed) {
+            const auto remainingMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                deadline - std::chrono::steady_clock::now()).count();
+            const int waitSeconds = remainingMs <= 1000 ? 1 :
+                static_cast<int>((remainingMs + 999) / 1000);
+            const int waitResult = waitSocket(2, std::min(waitSeconds, 2));
+            if (waitResult == -3 ||
+                (waitResult < 0 && std::chrono::steady_clock::now() >= deadline)) {
+                closeChannel();
+                return ERR_SSH_COMMAND_TIMEOUT;
+            }
+        }
+    }
+
+    result.exitCode = libssh2_channel_get_exit_status(commandChannel);
+    char* exitSignal = nullptr;
+    size_t exitSignalLength = 0;
+    if (libssh2_channel_get_exit_signal(commandChannel, &exitSignal, &exitSignalLength,
+                                        nullptr, nullptr, nullptr, nullptr) == 0 &&
+        exitSignal != nullptr && exitSignalLength > 0) {
+        result.signaled = true;
+        result.signal.assign(exitSignal, exitSignalLength);
+    }
+    closeChannel();
+    return 0;
+}
+
+int SshAdapter::sendChannelSignal(const std::string& signal) {
+    if (signal.empty()) { return ERR_SSH_SUBSYSTEM_FAILED; }
+    std::lock_guard<std::mutex> sessionLock(sessionMutex_);
+    if (!channel_ || state_.load(std::memory_order_acquire) != ConnectionState::CONNECTED) {
+        return ERR_SSH_SESSION_CLOSED;
+    }
+    int rc;
+    while ((rc = libssh2_channel_signal(channel_, signal.c_str())) == LIBSSH2_ERROR_EAGAIN) {
+        if (waitSocket(2, 5) != 0) { return ERR_SSH_COMMAND_TIMEOUT; }
+    }
+    return rc == 0 ? 0 : ERR_SSH_SUBSYSTEM_FAILED;
+}
+
+int SshAdapter::sendChannelEof() {
+    std::lock_guard<std::mutex> sessionLock(sessionMutex_);
+    if (!channel_ || state_.load(std::memory_order_acquire) != ConnectionState::CONNECTED) {
+        return ERR_SSH_SESSION_CLOSED;
+    }
+    int rc;
+    while ((rc = libssh2_channel_send_eof(channel_)) == LIBSSH2_ERROR_EAGAIN) {
+        if (waitSocket(2, 5) != 0) { return ERR_SSH_COMMAND_TIMEOUT; }
+    }
+    return rc == 0 ? 0 : ERR_SSH_SUBSYSTEM_FAILED;
+}
+
+int SshAdapter::readData(uint8_t* buf, size_t bufSize) {
+    if (buf == nullptr && bufSize > 0) { return ERR_SSH_READ_FAILED; }
+    bool eof = false;
+    int result = 0;
+    {
+        std::lock_guard<std::mutex> sessionLock(sessionMutex_);
+        if (!channel_ || sockFd_ < 0 ||
+            state_.load(std::memory_order_acquire) != ConnectionState::CONNECTED) {
+            return ERR_SSH_SESSION_CLOSED;
+        }
+
+        // 非阻塞快速轮询 (50ms)
+        fd_set rfds;
+        FD_ZERO(&rfds);
+        FD_SET(sockFd_, &rfds);
+        struct timeval tv = {0, 50000};
+        int ret = select(sockFd_ + 1, &rfds, nullptr, nullptr, &tv);
+        if (ret <= 0) { return 0; }
+
+        // 从加密通道读取 (可能解密后返回 EAGAIN 即使 socket 可读)
+        ssize_t n = libssh2_channel_read(channel_, reinterpret_cast<char*>(buf), bufSize);
+        if (n == LIBSSH2_ERROR_EAGAIN) {
+            return 0;
+        }
+        if (n < 0) {
+            OH_LOG_ERROR(LOG_APP, "[SSH] libssh2_channel_read 失败: %{public}zd", n);
+            return ERR_SSH_READ_FAILED;
+        }
+        if (n == 0) {
+            // libssh2 may report a zero-byte read while no decrypted payload
+            // is currently available. Only the channel EOF flag means the
+            // remote side actually closed the stream.
+            if (libssh2_channel_eof(channel_) != 0) {
+                eof = true;
+                result = ERR_SSH_SESSION_CLOSED;
+            }
+        } else {
+            result = static_cast<int>(n);
+        }
+    }
+    if (eof) {
+        OH_LOG_INFO(LOG_APP, "[SSH] 远程关闭通道 (EOF)");
+        setState(ConnectionState::DISCONNECTED, "SSH remote channel closed");
+    }
+    return result;
 }
 
 void SshAdapter::resizePty(int cols, int rows) {
-    if (channel_) {
-        std::lock_guard<std::mutex> sessionLock(sessionMutex_);
-        int rc = libssh2_channel_request_pty_size(channel_, cols, rows);
+    std::lock_guard<std::mutex> sessionLock(sessionMutex_);
+    if (channel_ && state_.load(std::memory_order_acquire) == ConnectionState::CONNECTED) {
+        int rc = LIBSSH2_ERROR_EAGAIN;
+        while (rc == LIBSSH2_ERROR_EAGAIN) {
+            rc = libssh2_channel_request_pty_size(channel_, cols, rows);
+            if (rc == LIBSSH2_ERROR_EAGAIN && waitSocket(2, 5) != 0) {
+                break;
+            }
+        }
         if (rc == 0) {
             OH_LOG_INFO(LOG_APP, "[SSH] PTY 尺寸已调整: %{public}dx%{public}d", cols, rows);
         } else {
@@ -1043,14 +1740,16 @@ void SshAdapter::resizePty(int cols, int rows) {
 }
 
 int SshAdapter::getSocketFd() const {
+    std::lock_guard<std::mutex> sessionLock(sessionMutex_);
     return sockFd_;
 }
 
 int SshAdapter::measureLatencyMs() {
-    if (!session_ || state_ != ConnectionState::CONNECTED) {
+    std::lock_guard<std::mutex> sessionLock(sessionMutex_);
+    if (!session_ || sockFd_ < 0 ||
+        state_.load(std::memory_order_acquire) != ConnectionState::CONNECTED) {
         return -1;
     }
-    std::lock_guard<std::mutex> sessionLock(sessionMutex_);
     auto start = std::chrono::steady_clock::now();
     int secondsToNext = 0;
     int rc = LIBSSH2_ERROR_EAGAIN;
@@ -1075,18 +1774,30 @@ int SshAdapter::measureLatencyMs() {
 // ============================================================
 
 void SshAdapter::setOnDataCallback(DataCallback cb) {
-    std::lock_guard<std::mutex> lk(callbackMutex_);
-    onDataCallback_ = std::move(cb);
-    if (!onDataCallback_) {
-        pendingData_.clear();
+    bool hasCallback = false;
+    if (!cb) {
+        // Stop before clearing the callback so an in-flight reader can
+        // deliver bytes it has already consumed instead of dropping them.
+        stopReader();
+        std::lock_guard<std::mutex> lk(callbackMutex_);
+        onDataCallback_ = nullptr;
+    } else {
+        {
+            std::lock_guard<std::mutex> lk(callbackMutex_);
+            onDataCallback_ = std::move(cb);
+            hasCallback = true;
+        }
+        // The connect call no longer starts the reader before ArkTS has a
+        // callback. This removes the pre-registration output-loss window.
+        startReader();
     }
     OH_LOG_INFO(LOG_APP, "[SSH] onDataCallback %{public}s",
-                onDataCallback_ ? "已注册" : "已清除");
+                hasCallback ? "已注册" : "已清除");
 }
 
 void SshAdapter::startReader() {
-    if (readerRunning_.load()) { return; }
-    readerRunning_.store(true);
+    bool expected = false;
+    if (!readerRunning_.compare_exchange_strong(expected, true)) { return; }
     readerThread_ = std::thread(&SshAdapter::readerLoop, this);
     OH_LOG_INFO(LOG_APP, "[SSH] reader 线程已启动");
 }
@@ -1105,33 +1816,29 @@ void SshAdapter::stopReader() {
 
 void SshAdapter::readerLoop() {
     constexpr size_t kBufSize = SSH_BUFFER_SIZE;
-    constexpr size_t kMaxPendingData = SSH_BUFFER_SIZE * 4;
     std::vector<uint8_t> buf(kBufSize);
 
     while (readerRunning_.load()) {
-        // 拷贝必要句柄, 避免在 select 期间 disconnect 修改它们
+        {
+            std::lock_guard<std::mutex> callbackLock(callbackMutex_);
+            if (!onDataCallback_) {
+                readerRunning_.store(false, std::memory_order_release);
+                break;
+            }
+        }
+        // Keep the session lock across select/read. The previous snapshot-only
+        // approach could leave a stale channel pointer between select() and
+        // libssh2_channel_read() while disconnect freed the channel.
+        std::unique_lock<std::mutex> sessionLock(sessionMutex_);
         int fd = sockFd_;
         LIBSSH2_CHANNEL* ch = channel_;
-        if (fd < 0 || ch == nullptr || state_ != ConnectionState::CONNECTED) {
+        if (fd < 0 || ch == nullptr ||
+            state_.load(std::memory_order_acquire) != ConnectionState::CONNECTED) {
+            sessionLock.unlock();
             // 句柄无效, 短暂休眠后再判断 (避免 busy-loop)
             struct timeval tv = {0, 100 * 1000};  // 100ms
             select(0, nullptr, nullptr, nullptr, &tv);
             continue;
-        }
-
-        // connect() 会先启动 reader, ArkTS 只能在 connect() 返回后注册回调。
-        // 把这段空窗期收到的登录 banner 延迟到回调就绪后再发送，避免首次连接丢首屏。
-        DataCallback pendingCb;
-        std::string pending;
-        {
-            std::lock_guard<std::mutex> lk(callbackMutex_);
-            if (onDataCallback_ && !pendingData_.empty()) {
-                pendingCb = onDataCallback_;
-                pending.swap(pendingData_);
-            }
-        }
-        if (pendingCb && !pending.empty()) {
-            try { pendingCb(pending); } catch (...) { /* 静默, 不中断 reader */ }
         }
 
         // 100ms select 等待 socket 可读
@@ -1141,18 +1848,31 @@ void SshAdapter::readerLoop() {
         struct timeval tv = {0, 100 * 1000};  // 100ms
         int sret = select(fd + 1, &rfds, nullptr, nullptr, &tv);
         if (sret < 0) {
+            sessionLock.unlock();
             if (errno == EINTR) { continue; }
             OH_LOG_WARN(LOG_APP, "[SSH] reader select 错误: errno=%{public}d", errno);
             break;
         }
-        if (sret == 0) { continue; }  // 超时, 继续循环
+        if (sret == 0) {
+            sessionLock.unlock();
+            continue;
+        }  // 超时, 继续循环
+
+        {
+            std::lock_guard<std::mutex> callbackLock(callbackMutex_);
+            if (!onDataCallback_) {
+                readerRunning_.store(false, std::memory_order_release);
+                sessionLock.unlock();
+                break;
+            }
+        }
 
         // 反复读直到 EAGAIN, 减少 select 次数 (大输出场景)
         bool gotData = false;
-        std::string accumulated;
+        bool eofDetected = false;
+        std::vector<uint8_t> accumulated;
         accumulated.reserve(kBufSize * 2);
         while (readerRunning_.load()) {
-            std::lock_guard<std::mutex> sessionLock(sessionMutex_);
             ssize_t n = libssh2_channel_read(ch, reinterpret_cast<char*>(buf.data()), kBufSize);
             if (n == LIBSSH2_ERROR_EAGAIN) { break; }
             if (n < 0) {
@@ -1161,41 +1881,42 @@ void SshAdapter::readerLoop() {
                 break;
             }
             if (n == 0) {
-                // EOF: 远程关闭
-                OH_LOG_INFO(LOG_APP, "[SSH] reader 检测到 EOF, 通道关闭");
-                setState(ConnectionState::DISCONNECTED);
-                readerRunning_.store(false);
+                // A zero-byte read is not itself EOF; libssh2 can return it
+                // when no decrypted payload is ready yet. Re-enter select()
+                // unless the channel explicitly reports EOF.
+                if (libssh2_channel_eof(ch) != 0) {
+                    OH_LOG_INFO(LOG_APP, "[SSH] reader 检测到 EOF, 通道关闭");
+                    eofDetected = true;
+                    readerRunning_.store(false);
+                }
                 break;
             }
-            accumulated.append(reinterpret_cast<const char*>(buf.data()),
-                              static_cast<size_t>(n));
+            accumulated.insert(accumulated.end(), buf.begin(), buf.begin() + n);
             gotData = true;
             // 单批最多 256KB, 防止极端场景占用过多内存
             if (accumulated.size() >= kBufSize * 4) { break; }
         }
+        sessionLock.unlock();
+
+        if (eofDetected) {
+            setState(ConnectionState::DISCONNECTED, "SSH remote channel closed");
+        }
 
         if (gotData && !accumulated.empty()) {
             DataCallback cb;
-            std::string dataToDeliver;
             {
                 std::lock_guard<std::mutex> lk(callbackMutex_);
                 if (onDataCallback_) {
                     cb = onDataCallback_;
-                    dataToDeliver.swap(pendingData_);
-                    dataToDeliver.append(accumulated);
-                } else {
-                    pendingData_.append(accumulated);
-                    if (pendingData_.size() > kMaxPendingData) {
-                        pendingData_.erase(0, pendingData_.size() - kMaxPendingData);
-                    }
                 }
             }
             if (cb) {
-                try { cb(dataToDeliver); } catch (...) { /* 静默, 不中断 reader */ }
+                try { cb(accumulated); } catch (...) { /* 静默, 不中断 reader */ }
             }
         }
     }
 
+    readerRunning_.store(false, std::memory_order_release);
     OH_LOG_INFO(LOG_APP, "[SSH] readerLoop 结束");
 }
 

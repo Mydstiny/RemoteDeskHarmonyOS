@@ -16,6 +16,7 @@ import {
 } from './VncModelPolicy';
 import { VncCloudSyncService } from './VncCloudSyncService';
 import { VncCloudSyncScope } from './VncCloudSyncSelectionPolicy';
+import { VNC_CLOUD_TABLE } from './VncRecordPolicy';
 
 export interface VncSettingsSaveResult {
   ok: boolean;
@@ -112,12 +113,30 @@ export class VncSettingsService {
     record.updatedAt = now;
     record.syncVersion = current === null ? 1 : current.syncVersion + 1;
     finalizeVncRecord(record);
+
+    // The logical scope is a write boundary, not a UI-only preference. Apply
+    // it before writing the settings row so disabling settings sync cannot
+    // briefly upload the very row that turns the scope off. The cloud row is
+    // never retracted by this transition; the owner remains local-only until
+    // the scope is explicitly enabled again.
+    const previousScopes: VncCloudSyncScope[] = this.sync.selectedScopes();
+    const nextScopes: string[] = this.scopesFor(normalized);
+    const selectionChanged: boolean = !this.sameScopes(previousScopes, nextScopes);
+    if (!this.updateSyncSelection(normalized, false)) {
+      result.message = 'VNC 同步选择保存失败，请检查本地数据状态后重试';
+      return result;
+    }
     if (!this.cloud.upsertVncRecord(record)) {
+      this.restoreSyncSelection(previousScopes);
       result.message = this.cloud.getLastMutationResult().message || 'VNC 设置保存失败';
       return result;
     }
     this.values = normalized;
-    this.updateSyncSelection(normalized);
+    if (selectionChanged) {
+      // Reconcile other VNC record types after the settings row is durable;
+      // this keeps a re-enabled scope from uploading a pre-save snapshot.
+      void this.sync.requestSelectionReconcile();
+    }
     result.ok = true;
     this.emitChange();
     return result;
@@ -129,6 +148,9 @@ export class VncSettingsService {
 
   cloudSyncStatus(): string {
     if (!this.cloud.isCloudAvailable()) { return '华为云空间不可用，VNC 数据仍保存在本机'; }
+    if (this.cloud.syncableTables().indexOf(VNC_CLOUD_TABLE) < 0) {
+      return '普通云同步未勾选 vncrecord；VNC 数据仍保存在本机';
+    }
     const scopes: VncCloudSyncScope[] = this.sync.selectedScopes();
     return scopes.length === 0 ? 'VNC 云同步已关闭' : '已选择 ' + scopes.length.toString() + ' 类 VNC 数据同步';
   }
@@ -151,19 +173,39 @@ export class VncSettingsService {
     return null;
   }
 
-  private updateSyncSelection(values: VncSettingsValues): void {
+  private updateSyncSelection(values: VncSettingsValues, requestReconcile: boolean = true): boolean {
+    const scopes: string[] = this.scopesFor(values);
+    if (!this.sync.replaceSelectedScopes(scopes)) { return false; }
+    if (!this.cloud.reconcileVncSyncSelection()) { return false; }
+    // A scope can be turned off after its mirror was already uploaded. The
+    // reconciliation keeps the local owner and leaves the shared cloud row
+    // untouched; only an explicitly selected scope is uploaded.
+    if (requestReconcile) { void this.sync.requestSelectionReconcile(); }
+    return true;
+  }
+
+  private restoreSyncSelection(scopes: VncCloudSyncScope[]): void {
+    if (!this.sync.replaceSelectedScopes(scopes)) { return; }
+    if (!this.cloud.reconcileVncSyncSelection()) { return; }
+    void this.sync.requestSelectionReconcile();
+  }
+
+  private scopesFor(values: VncSettingsValues): string[] {
     const scopes: string[] = [];
     if (values.syncPreferences) { scopes.push('settings'); }
     if (values.syncHosts) { scopes.push('hosts'); }
     if (values.syncGateways) { scopes.push('gateways'); }
     if (values.syncSecrets) { scopes.push('secrets'); }
     if (values.syncTrust) { scopes.push('trust'); }
-    if (!this.sync.replaceSelectedScopes(scopes)) { return; }
-    if (!this.cloud.reconcileVncSyncSelection()) { return; }
-    // A scope can be turned off after its mirror was already uploaded. The
-    // reconciliation keeps the local owner and leaves the shared cloud row
-    // untouched; only an explicitly selected scope is uploaded.
-    void this.sync.requestSelectionReconcile();
+    return scopes;
+  }
+
+  private sameScopes(left: VncCloudSyncScope[], right: string[]): boolean {
+    if (left.length !== right.length) { return false; }
+    for (let i = 0; i < left.length; i++) {
+      if (left[i] !== right[i]) { return false; }
+    }
+    return true;
   }
 
   private normalize(values: VncSettingsValues): VncSettingsValues {

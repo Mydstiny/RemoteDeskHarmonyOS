@@ -25,6 +25,7 @@ import { RustDeskRelayConfig } from '../model/RustDeskRelayConfig';
 import { SshKey } from '../model/SshKey';
 import { TotpEntry } from '../model/TotpEntry';
 import { VncRecord } from '../model/VncRecord';
+import { VNC_CLOUD_TABLE } from './VncRecordPolicy';
 
 const TAG = 'DataCrypto';
 const DOMAIN = 0x0011;
@@ -509,7 +510,7 @@ export class DataCrypto {
         cloud.pushTable('sshkeys');
         cloud.pushTable('totpentries');
         if (cloud.pushVncResetTable) { cloud.pushVncResetTable(); }
-        else { cloud.pushTable('vncrecords'); }
+        else { cloud.pushTable(VNC_CLOUD_TABLE); }
       }
 
       hilog.info(DOMAIN, TAG, '重置加密完成');
@@ -663,7 +664,7 @@ export class DataCrypto {
           }
           try {
             const plaintext: string = this.decrypt(record.ciphertext);
-            record.ciphertext = this.encryptField('remotedesktop|vnc', 'vncrecords', record.id,
+            record.ciphertext = this.encryptField('remotedesktop|vnc', VNC_CLOUD_TABLE, record.id,
               'ciphertext', plaintext, record.schemaVersion > 0 ? record.schemaVersion : 1,
               this.VNC_KEY_VERSION, this.VNC_AAD_VERSION);
             record.envelopeVersion = this.VNC_ENVELOPE_VERSION;
@@ -687,7 +688,7 @@ export class DataCrypto {
         if (relayChanged) { cloud.pushTable('rustdeskrelays'); }
         if (sshKeysChanged) { cloud.pushTable('sshkeys'); }
         if (totpEntriesChanged) { cloud.pushTable('totpentries'); }
-        if (vncRecordsChanged) { cloud.pushTable('vncrecords'); }
+        if (vncRecordsChanged) { cloud.pushTable(VNC_CLOUD_TABLE); }
       } else if (relayChanged && cloud.syncRelaysToCloud) {
         // 保持旧的最小兼容接口；CloudStore 正常实现始终走上方的统一入口。
         cloud.syncRelaysToCloud();

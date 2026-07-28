@@ -98,6 +98,12 @@ static napi_value buildJsSnapshot(napi_env env, FfiTerminalSnapshot* snap) {
     setIntProp(env, obj, "cursorX", static_cast<int64_t>(snap->cursor_x));
     setIntProp(env, obj, "cursorY", static_cast<int64_t>(snap->cursor_y));
     setBoolProp(env, obj, "cursorVisible", snap->cursor_visible);
+    setBoolProp(env, obj, "bracketedPaste", snap->bracketed_paste);
+    setIntProp(env, obj, "mouseTracking", static_cast<int64_t>(snap->mouse_tracking));
+    setBoolProp(env, obj, "sgrMouse", snap->sgr_mouse);
+    setBoolProp(env, obj, "applicationCursorKeys", snap->application_cursor_keys);
+    setBoolProp(env, obj, "applicationKeypad", snap->application_keypad);
+    setBoolProp(env, obj, "autoWrap", snap->auto_wrap);
     setIntProp(env, obj, "viewTop", static_cast<int64_t>(snap->view_top));
     setIntProp(env, obj, "screenTop", static_cast<int64_t>(snap->screen_top));
     setBoolProp(env, obj, "isAtBottom", snap->is_at_bottom);
@@ -247,6 +253,44 @@ static napi_value NapiTerminalCoreWrite(napi_env env, napi_callback_info info) {
     napi_get_value_string_utf8(env, args[1], reinterpret_cast<char*>(buf.data()), bufSize + 1, &copied);
 
     terminal_core_write(handle, buf.data(), copied);
+
+    napi_value undefined;
+    napi_get_undefined(env, &undefined);
+    return undefined;
+}
+
+/**
+ * terminalCoreWriteBytes(handle: number, data: ArrayBuffer): void
+ *
+ * 保留 SSH 输出的原始字节，避免 N-API 字符串转换破坏跨 chunk UTF-8
+ * 或 ANSI 控制序列。只由 SSH 终端核心调用，不改变其他协议的数据流。
+ */
+static napi_value NapiTerminalCoreWriteBytes(napi_env env, napi_callback_info info) {
+    size_t argc = 2;
+    napi_value args[2];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+
+    NAPI_ASSERT_ARGC(env, argc, 2);
+    NAPI_ASSERT_TYPE(env, args[0], napi_number, "handle");
+    bool isArrayBuffer = false;
+    napi_is_arraybuffer(env, args[1], &isArrayBuffer);
+    if (!isArrayBuffer) {
+        napi_throw_type_error(env, nullptr, "data must be an ArrayBuffer");
+        return nullptr;
+    }
+
+    void* handle = getHandle(env, args[0]);
+    void* data = nullptr;
+    size_t dataLen = 0;
+    if (!handle || napi_get_arraybuffer_info(env, args[1], &data, &dataLen) != napi_ok ||
+        (data == nullptr && dataLen > 0)) {
+        napi_value undefined;
+        napi_get_undefined(env, &undefined);
+        return undefined;
+    }
+    if (dataLen > 0) {
+        terminal_core_write(handle, static_cast<const uint8_t*>(data), dataLen);
+    }
 
     napi_value undefined;
     napi_get_undefined(env, &undefined);
@@ -414,6 +458,10 @@ napi_value TerminalCoreNapi::Init(napi_env env, napi_value exports) {
                          NapiTerminalCoreWrite, nullptr, &fn);
     napi_set_named_property(env, exports, "terminalCoreWrite", fn);
 
+    napi_create_function(env, "terminalCoreWriteBytes", NAPI_AUTO_LENGTH,
+                         NapiTerminalCoreWriteBytes, nullptr, &fn);
+    napi_set_named_property(env, exports, "terminalCoreWriteBytes", fn);
+
     napi_create_function(env, "terminalCoreResize", NAPI_AUTO_LENGTH,
                          NapiTerminalCoreResize, nullptr, &fn);
     napi_set_named_property(env, exports, "terminalCoreResize", fn);
@@ -434,6 +482,6 @@ napi_value TerminalCoreNapi::Init(napi_env env, napi_value exports) {
                          NapiTerminalCoreDirtySnapshot, nullptr, &fn);
     napi_set_named_property(env, exports, "terminalCoreDirtySnapshot", fn);
 
-    OH_LOG_INFO(LOG_APP, "[TerminalCore] NAPI 方法已注册: 8 个 terminalCore* 函数");
+    OH_LOG_INFO(LOG_APP, "[TerminalCore] NAPI 方法已注册: 9 个 terminalCore* 函数");
     return exports;
 }

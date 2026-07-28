@@ -17,20 +17,31 @@ InputHandler& InputHandler::instance() {
 }
 
 void InputHandler::setActiveAdapter(std::shared_ptr<ProtocolAdapter> adapter) {
+    std::lock_guard<std::mutex> lock(activeAdapterMutex_);
     activeAdapter_ = std::move(adapter);
 }
 
 void InputHandler::handleKeyEvent(uint32_t scancode, bool pressed, uint32_t keyCode, uint32_t modifiers) {
     OH_LOG_DEBUG(LOG_APP, "[Input] 键盘: scan=%{public}u, code=%{public}u, pressed=%{public}s",
                  scancode, keyCode, pressed ? "down" : "up");
-    if (activeAdapter_) activeAdapter_->sendKey(scancode, pressed);
+    std::shared_ptr<ProtocolAdapter> adapter;
+    {
+        std::lock_guard<std::mutex> lock(activeAdapterMutex_);
+        adapter = activeAdapter_;
+    }
+    if (adapter) adapter->sendKey(scancode, pressed);
 }
 
 void InputHandler::handleMouseEvent(int x, int y, int button, bool pressed, int wheelDelta) {
+    std::shared_ptr<ProtocolAdapter> adapter;
+    {
+        std::lock_guard<std::mutex> lock(activeAdapterMutex_);
+        adapter = activeAdapter_;
+    }
     if (wheelDelta != 0) {
-        if (activeAdapter_) activeAdapter_->sendMouseWheel(x, y, wheelDelta);
+        if (adapter) adapter->sendMouseWheel(x, y, wheelDelta);
     } else {
-        if (activeAdapter_) activeAdapter_->sendMouse(x, y, static_cast<MouseButton>(button), pressed);
+        if (adapter) adapter->sendMouse(x, y, static_cast<MouseButton>(button), pressed);
     }
 }
 

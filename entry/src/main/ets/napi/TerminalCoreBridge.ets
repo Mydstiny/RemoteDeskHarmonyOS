@@ -6,12 +6,13 @@
  */
 import rdpnapi from 'librdpnapi.so';
 import { TerminalCoreSnapshot } from '../types/rdpnapi';
-export { TerminalCoreCell, TerminalCoreSnapshot } from '../types/rdpnapi';
+export { TerminalCoreCell, TerminalCoreMode, TerminalCoreSnapshot } from '../types/rdpnapi';
 
 interface TerminalCoreNativeModule {
   terminalCoreCreate?: (cols: number, rows: number) => number;
   terminalCoreDestroy?: (handle: number) => void;
   terminalCoreWrite?: (handle: number, data: string) => void;
+  terminalCoreWriteBytes?: (handle: number, data: ArrayBuffer) => void;
   terminalCoreResize?: (handle: number, cols: number, rows: number) => void;
   terminalCoreScrollView?: (handle: number, deltaLines: number) => void;
   terminalCoreScrollToBottom?: (handle: number) => void;
@@ -25,7 +26,7 @@ export class TerminalCoreBridge {
   isAvailable(): boolean {
     return this.native.terminalCoreCreate !== undefined &&
       this.native.terminalCoreDestroy !== undefined &&
-      this.native.terminalCoreWrite !== undefined &&
+      this.native.terminalCoreWriteBytes !== undefined &&
       this.native.terminalCoreSnapshot !== undefined;
   }
 
@@ -44,6 +45,12 @@ export class TerminalCoreBridge {
   write(handle: number, data: string): void {
     const fn = this.native.terminalCoreWrite;
     if (fn === undefined) { throw new Error('terminalCoreWrite is not registered'); }
+    fn(handle, data);
+  }
+
+  writeBytes(handle: number, data: ArrayBuffer): void {
+    const fn = this.native.terminalCoreWriteBytes;
+    if (fn === undefined) { throw new Error('terminalCoreWriteBytes is not registered'); }
     fn(handle, data);
   }
 

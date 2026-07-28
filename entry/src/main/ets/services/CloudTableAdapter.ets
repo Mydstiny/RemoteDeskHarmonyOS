@@ -31,7 +31,7 @@ const CLOUD_COLUMNS: Record<string, string[]> = {
   'usersettings': ['id', 'userid', 'payload', 'schemaversion', 'updatedat'],
   // VNC owns one cloud table. Logical record types are separated by
   // `recordtype`; no VNC column is added to an existing protocol table.
-  'vncrecords': [
+  'vncrecord': [
     'id', 'userid', 'recordtype', 'ownerid', 'ownertype', 'secretkind', 'payload', 'ciphertext',
     'envelopeversion', 'cryptoversion', 'keyversion', 'aadversion', 'payloadhashsha256',
     'syncversion', 'schemaversion', 'resetepoch', 'createdat', 'updatedat', 'deletedat'
@@ -65,7 +65,7 @@ const REMOTE_HOST_CLOUD_EXTENSION_COLUMNS: string[] = [
   'rdpcertificatecommonname', 'rdpcertificatetrustedat', 'rdpcertificatetrustmode',
   'rdpcertificateallowuntrustedroot', 'rdpcertificateallowhostmismatch',
   'rustdeskrelayid', 'rustdeskaccountid', 'rustdeskpasswordmode', 'rustdeskauthmode',
-  'rustdeskdirectenabled', 'rustdeskdirecthost', 'rustdeskdirectport',
+  'rustdeskdirectenabled', 'rustdeskdirecthost', 'rustdeskdirectport', 'sshproxytype',
   'rdpcredentialid', 'rdpauthmode', 'rdprestrictedadminsecretsource', 'sourcetype',
   'rustdeskproaccountid', 'rustdeskpropeerid',
   'rustdeskproplatform', 'rustdeskpromanaged', 'rustdeskprolastseenat',

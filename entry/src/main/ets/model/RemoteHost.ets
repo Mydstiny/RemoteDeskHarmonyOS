@@ -27,6 +27,7 @@ export interface PresetItem { label: string; width: number; height: number }
 export type RdpAuthMode = 'password' | 'blank_password' | 'restricted_admin';
 /** Restricted Admin always requires the user's real NTLM password hash. */
 export type RdpRestrictedAdminSecretSource = 'ntlm_hash';
+export type SshProxyType = 'direct' | 'http_connect' | 'socks5' | 'legacy_gateway';
 
 export function normalizeRdpAuthMode(value: string | undefined): RdpAuthMode {
   if (value === 'blank_password' || value === 'restricted_admin') { return value; }
@@ -169,6 +170,7 @@ export interface RemoteHostJSON {
   proxyHost: string
   proxyPort: number
   proxyUsername: string
+  sshProxyType?: string
   rustdeskRelayId: string
   rustdeskAccountId: string
   rustdeskPasswordMode: number
@@ -278,6 +280,7 @@ export class RemoteHost {
   proxyHost: string = '';       // SSH 代理/跳板机地址
   proxyPort: number = 22;       // SSH 代理端口
   proxyUsername: string = '';   // SSH 代理用户名
+  sshProxyType: SshProxyType = 'direct'; // SSH 传输代理协议
   rustdeskRelayId: string = ''; // RustDesk 中继服务器配置 ID
   rustdeskAccountId: string = ''; // RustDesk Server Pro account ID
   rustdeskPasswordMode: number = 0; // RustDesk 密码模式: 0=一次性, 1=永久
@@ -447,6 +450,7 @@ export class RemoteHost {
       proxyHost: this.proxyHost,
       proxyPort: this.proxyPort,
       proxyUsername: this.proxyUsername,
+      sshProxyType: this.sshProxyType,
       rustdeskRelayId: this.rustdeskRelayId,
       rustdeskAccountId: this.rustdeskAccountId,
       rustdeskPasswordMode: this.rustdeskPasswordMode,
@@ -523,6 +527,10 @@ export class RemoteHost {
     if (json.proxyHost) { host.proxyHost = json.proxyHost; }
     if (json.proxyPort) { host.proxyPort = json.proxyPort; }
     if (json.proxyUsername) { host.proxyUsername = json.proxyUsername; }
+    if (json.sshProxyType === 'http_connect' || json.sshProxyType === 'socks5' ||
+      json.sshProxyType === 'legacy_gateway' || json.sshProxyType === 'direct') {
+      host.sshProxyType = json.sshProxyType;
+    }
     if (json.rustdeskRelayId) { host.rustdeskRelayId = json.rustdeskRelayId; }
     if (json.rustdeskAccountId) { host.rustdeskAccountId = json.rustdeskAccountId; }
     if (json.rustdeskPasswordMode !== undefined) { host.rustdeskPasswordMode = json.rustdeskPasswordMode; }

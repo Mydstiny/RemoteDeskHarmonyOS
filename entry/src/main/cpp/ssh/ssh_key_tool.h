@@ -53,6 +53,19 @@ struct SshAuthTestResult {
     std::string message;
 };
 
+/**
+ * SSH 预检使用的传输代理配置。
+ * type=direct 时忽略其余字段；password 只允许作为一次性调用参数传入，
+ * 不应写入 RemoteHost 或普通日志。
+ */
+struct SshProxyOptions {
+    std::string type = "direct";
+    std::string host;
+    int port = 0;
+    std::string username;
+    std::string password;
+};
+
 struct SshHostKeyInfo {
     bool        ok;
     std::string host;
@@ -158,7 +171,8 @@ SshAuthTestResult testSshKeyAuth(
     int port,
     const std::string& username,
     const std::string& privateKeyPem,
-    const std::string& passphrase
+    const std::string& passphrase,
+    const SshProxyOptions& proxy = SshProxyOptions()
 );
 
 /**
@@ -173,7 +187,8 @@ SshAuthTestResult testSshKeyAuth(
  */
 SshHostKeyInfo probeSshHostKey(
     const std::string& host,
-    int port
+    int port,
+    const SshProxyOptions& proxy = SshProxyOptions()
 );
 
 #endif // SSH_KEY_TOOL_H

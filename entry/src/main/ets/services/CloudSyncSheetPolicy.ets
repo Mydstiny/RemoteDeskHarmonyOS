@@ -35,12 +35,12 @@ export function cloudSyncSheetSpec(step: string): CloudSyncSheetSpec {
     return { title: '导出本地明文备份？', message: '备份包含 SSH 私钥、动态口令和登录凭据等敏感信息。请仅保存到可信位置。', primaryLabel: '选择位置并备份', secondaryLabel: '返回', primaryDestructive: true, secondaryDestructive: false, canDismiss: true };
   }
   if (step === CLOUD_SYNC_SHEET_RESTORE_CONFIRM) {
-    return { title: '覆盖本地数据？', message: '已验证备份文件。恢复会替换本机全部 7 类数据，且不会自动上传到云端。', primaryLabel: '覆盖并恢复', secondaryLabel: '返回', primaryDestructive: true, secondaryDestructive: false, canDismiss: true };
+    return { title: '覆盖本地数据？', message: '已验证备份文件。恢复会替换本机全部云表数据（包含 VNC 的 vncrecord），且不会自动上传到云端。', primaryLabel: '覆盖并恢复', secondaryLabel: '返回', primaryDestructive: true, secondaryDestructive: false, canDismiss: true };
   }
   if (step === CLOUD_SYNC_SHEET_UPLOAD_CONFIRM) {
     return {
       title: '覆盖云端存档？',
-      message: '将以当前设备的 7 类数据替换云端现有存档。此操作完成前可返回，不会立即执行。',
+      message: '将以当前设备的已选数据替换云端现有存档；VNC 仅按独立 scope 写入 vncrecord。此操作完成前可返回，不会立即执行。',
       primaryLabel: '覆盖并上传',
       secondaryLabel: '返回',
       primaryDestructive: true,
@@ -51,7 +51,7 @@ export function cloudSyncSheetSpec(step: string): CloudSyncSheetSpec {
   if (step === CLOUD_SYNC_SHEET_DOWNLOAD_CONFIRM) {
     return {
       title: '覆盖本地数据？',
-      message: '将用云端的 7 类数据替换当前设备上的数据。请确认云端存档是你需要恢复的版本。',
+      message: '将用云端的已选数据替换当前设备上的数据；VNC 仅按独立 scope 恢复 vncrecord。请确认云端存档是你需要恢复的版本。',
       primaryLabel: '覆盖并下载',
       secondaryLabel: '返回',
       primaryDestructive: true,
@@ -84,7 +84,7 @@ export function cloudSyncSheetSpec(step: string): CloudSyncSheetSpec {
   if (step === CLOUD_SYNC_SHEET_DOWNLOADING) {
     return {
       title: '正在下载云端数据',
-      message: '正在恢复主机、密钥和 2FA 等数据，请勿关闭此页面。',
+      message: '正在恢复主机、密钥、2FA 和 VNC vncrecord 等数据，请勿关闭此页面。',
       primaryLabel: '',
       secondaryLabel: '',
       primaryDestructive: false,

@@ -37,6 +37,12 @@ typedef struct {
     size_t cursor_x;
     size_t cursor_y;
     bool cursor_visible;
+    bool bracketed_paste;
+    uint16_t mouse_tracking;
+    bool sgr_mouse;
+    bool application_cursor_keys;
+    bool application_keypad;
+    bool auto_wrap;
     size_t view_top;
     size_t screen_top;
     bool is_at_bottom;

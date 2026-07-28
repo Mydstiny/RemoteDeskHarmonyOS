@@ -22,10 +22,10 @@
  *   终端显示完全来自 SSH echo, 本地输入不参与显示
  */
 import { KeyboardAvoidMode, promptAction, router, window } from '@kit.ArkUI';
+import { util } from '@kit.ArkTS';
 import { pasteboard, BusinessError } from '@kit.BasicServicesKit';
 import { picker, fileIo } from '@kit.CoreFileKit';
 import { KeyCode } from '@kit.InputKit';
-import { socket } from '@kit.NetworkKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { HostSyncService } from '../services/HostSyncService';
 import { ExtensionLoader } from '../services/ExtensionLoader';
@@ -35,7 +35,7 @@ import { Palette, buildDark, buildLight } from '../common/Theme';
 import { showLockGate, lockGateErrorMessage } from '../components/LockGate';
 import { TerminalEmulator } from '../components/TerminalEmulator';
 import { NativeTerminalRenderer } from '../components/NativeTerminalRenderer';
-import { SessionConfig, SftpFileEntry, SshPrivateKeyInfo } from '../types/rdpnapi';
+import { SessionConfig, SftpFileEntry, SshPrivateKeyInfo, TerminalCoreMode } from '../types/rdpnapi';
 import { SshPreflightService } from '../services/SshPreflightService';
 import {
   terminalLogicalViewportHeight,
@@ -72,6 +72,9 @@ import {
 const SFTP_MAX_TRANSFER_BYTES: number = 512 * 1024 * 1024;
 const SFTP_UPLOAD_CHUNK_BYTES: number = 64 * 1024;
 const SFTP_DOWNLOAD_CHUNK_BYTES: number = 64 * 1024;
+const SSH_STATE_CONNECTING: number = 1;
+const SSH_STATE_CONNECTED: number = 2;
+const SSH_STATE_RECONNECTING: number = 3;
 
 @Entry
 @Component
@@ -83,7 +86,18 @@ struct SshTerminal {
   @State connectionError: string = '';
   @State hostLabel: string = '';
   @State userAtHost: string = '';
+  /** 当前 SSH 输出 chunk；终端核心拥有 scrollback，不在页面累计完整历史。 */
   @State termOutput: string = '';
+  /** 原始 SSH 输出 chunk；Native terminal core 直接消费字节，避免 UTF-8/VT 损坏。 */
+  @State termOutputBytes: ArrayBuffer = new ArrayBuffer(0);
+  /** 即使连续两个 chunk 文本相同，也用序号触发终端核心消费。 */
+  @State termOutputSequence: number = 0;
+  /** 由 Rust terminal_core 的 DECSET/DECRST 状态驱动粘贴与输入保护。 */
+  @State bracketedPasteEnabled: boolean = false;
+  @State terminalMouseTracking: number = 0;
+  @State terminalSgrMouse: boolean = false;
+  @State terminalApplicationCursorKeys: boolean = false;
+  @State terminalApplicationKeypad: boolean = false;
   @StorageLink('currentBreakpoint') @Watch('onFontSizeChange') breakpoint: string = 'sm';
   @StorageProp('isDesktopDevice') isDesktopDevice: boolean = false;
   @StorageLink('terminalFontSize') @Watch('onFontSizeChange') fontSize: number = 18;
@@ -168,12 +182,72 @@ struct SshTerminal {
   private terminalClosing: boolean = false;
   private terminalPanStartOffsetY: number = 0;
   private terminalPanLastLines: number = 0;
+  private terminalMouseDownButton: number = -1;
   private oldKeyboardAvoidMode: KeyboardAvoidMode = KeyboardAvoidMode.OFFSET;
   private keyboardAvoidModeChanged: boolean = false;
   private sshHost: string = '';
   private sshPort: number = 22;
   /** 进入 SSH 终端前的系统状态栏文字颜色, 用于离开时恢复 */
   private savedStatusBarColor: string = '#E6E6E6';
+  private terminalDecoder: util.TextDecoder = new util.TextDecoder('utf-8');
+  private terminalDecodeRemainder: Uint8Array = new Uint8Array(0);
+  private terminalOutputQueue: ArrayBuffer[] = [];
+  private terminalOutputQueueBytes: number = 0;
+  private terminalOutputFlushTimer: number = -1;
+
+  private clearTerminalOutputQueue(): void {
+    if (this.terminalOutputFlushTimer !== -1) {
+      clearTimeout(this.terminalOutputFlushTimer);
+      this.terminalOutputFlushTimer = -1;
+    }
+    this.terminalOutputQueue = [];
+    this.terminalOutputQueueBytes = 0;
+  }
+
+  private scheduleTerminalOutputFlush(): void {
+    if (this.terminalOutputFlushTimer !== -1) { return; }
+    this.terminalOutputFlushTimer = setTimeout((): void => {
+      this.terminalOutputFlushTimer = -1;
+      this.flushTerminalOutput();
+    }, 0);
+  }
+
+  private enqueueTerminalOutput(data: ArrayBuffer): void {
+    if (this.terminalClosing || data.byteLength === 0) { return; }
+    this.terminalOutputQueue.push(data);
+    this.terminalOutputQueueBytes += data.byteLength;
+    this.scheduleTerminalOutputFlush();
+  }
+
+  private flushTerminalOutput(): void {
+    if (this.terminalClosing || this.terminalOutputQueue.length === 0) { return; }
+    // Keep each ArkTS state update small enough for Canvas and the fallback
+    // renderer while preserving every queued chunk's order.
+    const maxBatchBytes: number = 512 * 1024;
+    let batchBytes: number = 0;
+    let batchCount: number = 0;
+    while (batchCount < this.terminalOutputQueue.length &&
+      (batchBytes === 0 || batchBytes + this.terminalOutputQueue[batchCount].byteLength <= maxBatchBytes)) {
+      batchBytes += this.terminalOutputQueue[batchCount].byteLength;
+      batchCount++;
+    }
+    const merged: ArrayBuffer = new ArrayBuffer(batchBytes);
+    const mergedView: Uint8Array = new Uint8Array(merged);
+    let offset: number = 0;
+    for (let index: number = 0; index < batchCount; index++) {
+      const chunk: Uint8Array = new Uint8Array(this.terminalOutputQueue[index]);
+      mergedView.set(chunk, offset);
+      offset += chunk.length;
+    }
+    this.terminalOutputQueue.splice(0, batchCount);
+    this.terminalOutputQueueBytes -= batchBytes;
+    this.termOutputBytes = merged;
+    this.termOutput = this.decodeTerminalChunk(merged);
+    this.termOutputSequence++;
+    if (this.terminalOutputQueue.length > 0) {
+      this.scheduleTerminalOutputFlush();
+    }
+  }
 
   private updateCellSize(): void {
     const normalized: number = Math.max(12, Math.min(32, this.fontSize));
@@ -327,6 +401,84 @@ struct SshTerminal {
     }
   }
 
+  private terminalMouseButton(rawButton: number): number {
+    if (rawButton === 1 || rawButton === 0) { return 0; }
+    if (rawButton === 4) { return 1; }
+    if (rawButton === 2) { return 2; }
+    return -1;
+  }
+
+  private terminalMouseModifiers(event: MouseEvent | AxisEvent): number {
+    let modifiers: number = 0;
+    if (event.getModifierKeyState && event.getModifierKeyState(['Shift'])) { modifiers += 4; }
+    if (event.getModifierKeyState && event.getModifierKeyState(['Alt'])) { modifiers += 8; }
+    if (event.getModifierKeyState && event.getModifierKeyState(['Ctrl'])) { modifiers += 16; }
+    return modifiers;
+  }
+
+  private terminalMousePosition(x: number, y: number): number[] {
+    const col: number = Math.max(0, Math.min(this.termCols - 1, Math.floor(x / Math.max(1, this.cellWvp))));
+    const row: number = Math.max(0, Math.min(this.termRows - 1, Math.floor(y / Math.max(1, this.cellHvp))));
+    return [col + 1, row + 1];
+  }
+
+  private encodeTerminalMouse(button: number, col: number, row: number,
+    modifiers: number, release: boolean, motion: boolean): string {
+    const code: number = button + modifiers + (motion ? 32 : 0);
+    if (this.terminalSgrMouse) {
+      return '\u001b[<' + code.toString() + ';' + col.toString() + ';' + row.toString() +
+        (release ? 'm' : 'M');
+    }
+    // X10 mouse release uses button 3 while preserving modifier bits.
+    const legacyReleaseCode: number = 3 + modifiers;
+    const legacyCode: number = Math.max(0, Math.min(223,
+      32 + (release ? legacyReleaseCode : code)));
+    const legacyCol: number = Math.max(33, Math.min(255, 32 + col));
+    const legacyRow: number = Math.max(33, Math.min(255, 32 + row));
+    return '\u001b[M' + String.fromCharCode(legacyCode, legacyCol, legacyRow);
+  }
+
+  private handleTerminalMouse = (event: MouseEvent): void => {
+    if (this.selectMode || this.terminalMouseTracking === 0) { return; }
+    const position: number[] = this.terminalMousePosition(event.x as number, event.y as number);
+    const col: number = position[0];
+    const row: number = position[1];
+    const modifiers: number = this.terminalMouseModifiers(event);
+    const action: MouseAction = event.action;
+    const rawButton: number = event.button as number;
+    const button: number = this.terminalMouseButton(rawButton);
+
+    if (action === MouseAction.Press) {
+      if (button < 0) { return; }
+      this.terminalMouseDownButton = button;
+      this.sendTerminalBytes(this.encodeTerminalMouse(button, col, row, modifiers, false, false));
+    } else if (action === MouseAction.Release) {
+      const releasedButton: number = button >= 0 ? button : this.terminalMouseDownButton;
+      if (releasedButton >= 0) {
+        this.sendTerminalBytes(this.encodeTerminalMouse(releasedButton, col, row, modifiers, true, false));
+      }
+      this.terminalMouseDownButton = -1;
+    } else if (action === MouseAction.Move || action === MouseAction.Hover) {
+      const reportMotion: boolean = this.terminalMouseTracking >= 1003 ||
+        (this.terminalMouseTracking >= 1002 && this.terminalMouseDownButton >= 0);
+      if (reportMotion) {
+        const motionButton: number = this.terminalMouseDownButton >= 0 ? this.terminalMouseDownButton : 0;
+        this.sendTerminalBytes(this.encodeTerminalMouse(
+          motionButton, col, row, modifiers, false, true));
+      }
+    }
+  };
+
+  private handleTerminalAxis = (event: AxisEvent): void => {
+    if (this.selectMode || this.terminalMouseTracking === 0) { return; }
+    const raw: number = event.getVerticalAxisValue();
+    if (!Number.isFinite(raw) || raw === 0) { return; }
+    const position: number[] = this.terminalMousePosition(event.x as number, event.y as number);
+    const wheelButton: number = raw < 0 ? 64 : 65;
+    this.sendTerminalBytes(this.encodeTerminalMouse(
+      wheelButton, position[0], position[1], this.terminalMouseModifiers(event), false, false));
+  };
+
   private handleTerminalPanEnd(): void {
     this.terminalPanLastLines = 0;
   }
@@ -362,6 +514,15 @@ struct SshTerminal {
     this.orientationApplied = false;
     // ArkUI 可能复用页面实例；每次进入都必须从全新的会话输出开始。
     this.termOutput = '';
+    this.termOutputBytes = new ArrayBuffer(0);
+    this.clearTerminalOutputQueue();
+    this.terminalDecodeRemainder = new Uint8Array(0);
+    this.bracketedPasteEnabled = false;
+    this.terminalMouseTracking = 0;
+    this.terminalSgrMouse = false;
+    this.terminalApplicationCursorKeys = false;
+    this.terminalApplicationKeypad = false;
+    this.termOutputSequence++;
     this.connected = false;
     this.connecting = true;
     this.connectionError = '';
@@ -455,6 +616,10 @@ struct SshTerminal {
     this.sessionId = -1;
     this.connected = false;
     this.termOutput = '';
+    this.termOutputBytes = new ArrayBuffer(0);
+    this.clearTerminalOutputQueue();
+    this.terminalDecodeRemainder = new Uint8Array(0);
+    this.termOutputSequence++;
     if (this.orientationApplied) {
       setTimeout((): void => {
         this.setPreferredOrientation(window.Orientation.UNSPECIFIED, 'SSH-UNSPECIFIED');
@@ -702,10 +867,27 @@ struct SshTerminal {
     return '断开';
   }
 
+  private syncNativeConnectionState(): boolean {
+    if (this.sessionId <= 0) { return false; }
+    const state: number = this.loader.getConnectionState(this.sessionId);
+    if (state === SSH_STATE_CONNECTED) { return true; }
+    if (state === SSH_STATE_CONNECTING || state === SSH_STATE_RECONNECTING) {
+      this.connected = false;
+      this.connecting = true;
+      return false;
+    }
+    this.connected = false;
+    this.connecting = false;
+    const message: string = this.loader.getConnectionLastMessage(this.sessionId);
+    this.connectionError = message.length > 0 ? message : 'SSH 会话已断开';
+    return false;
+  }
+
   private probeLatencyOnce(): void {
     if (!this.connected || this.sessionId <= 0 || this.latencyProbeRunning) { return; }
+    if (!this.syncNativeConnectionState()) { return; }
     this.latencyProbeRunning = true;
-    this.tcpLatencyTest(this.sshHost, this.sshPort).then((latency: number): void => {
+    this.loader.measureSshLatencyAsync(this.sessionId).then((latency: number): void => {
       this.latencyMs = latency;
       this.latencyProbeRunning = false;
       this.srv.updateConnectionHealth(this.hostId, latency, false);
@@ -715,22 +897,6 @@ struct SshTerminal {
       this.srv.updateConnectionHealth(this.hostId, -1, false);
       hilog.warn(0x0001, 'SshTerminal', '[latency] TCP 检测失败: ' + err.message);
     });
-  }
-
-  private async tcpLatencyTest(host: string, port: number): Promise<number> {
-    if (host.trim().length === 0 || port <= 0) { return -1; }
-    const start: number = Date.now();
-    let tcp: socket.TCPSocket | null = null;
-    try {
-      tcp = socket.constructTCPSocketInstance();
-      const addr: socket.NetAddress = { address: host, port: port, family: 1 };
-      await tcp.connect({ address: addr, timeout: 5000 });
-      return Math.max(1, Date.now() - start);
-    } catch (_e) {
-      return -1;
-    } finally {
-      try { tcp?.close(); } catch (_e2) { /* ignore */ }
-    }
   }
 
   private startLatencyProbe(): void {
@@ -793,6 +959,8 @@ struct SshTerminal {
               this.passphraseResolve = null;
             }
           })
+          .onMouse(this.handleTerminalMouse)
+          .onAxisEvent(this.handleTerminalAxis)
         Button('确定').fontSize(14).height(38).layoutWeight(1)
           .backgroundColor(this.accentColor).fontColor('#FFFFFF').borderRadius(8).margin({ left: 12 })
           .onClick(() => {
@@ -846,8 +1014,15 @@ struct SshTerminal {
         width: this.termCols,
         height: this.termRows,
         customHostname: host.customHostname,
-        gatewayHost: host.proxyHost,
-        gatewayPort: host.proxyPort,
+        // SSH proxy is an explicit HTTP CONNECT/SOCKS5 transport choice. A
+        // legacy jump-host record remains rejected until the user selects a
+        // supported proxy type; it is never silently bypassed.
+        gatewayHost: '',
+        gatewayPort: 0,
+        sshProxyType: host.proxyHost.length > 0 ? host.sshProxyType : 'direct',
+        sshProxyHost: host.proxyHost,
+        sshProxyPort: host.proxyPort,
+        sshProxyUsername: host.proxyUsername,
         domain: '',
         codec: '',
         multiMonitor: false,
@@ -859,11 +1034,16 @@ struct SshTerminal {
         expectedHostKeyRawBase64: this.preflightExpectedHostKeyRaw || host.sshHostKeyRawBase64,
         expectedHostKeyFingerprintSha256: this.preflightExpectedHostKeyFp || host.sshHostKeyFingerprintSha256
       };
-      this.sessionId = this.loader.connect(cfg);
+      this.sessionId = await this.loader.connectSshAsync(cfg);
       hilog.info(0x0001, 'SshTerminal',
         '[connect] sessionId=' + this.sessionId.toString() + ' auth=' + cfg.authMethod);
       if (this.sessionId <= 0) {
         throw new Error('连接失败 (code=' + this.sessionId.toString() + ')');
+      }
+      if (this.terminalClosing) {
+        this.loader.disconnect();
+        this.sessionId = -1;
+        return;
       }
       this.connected = true;
       this.connecting = false;
@@ -872,18 +1052,19 @@ struct SshTerminal {
 
       // 推送式数据接收: C++ reader 线程读到数据 → TSFN → 这里
       let dataChunkCount: number = 0;
-      this.loader.setOnDataCallback(this.sessionId, (data: string): void => {
-        if (!data || data.length === 0) { return; }
+      this.loader.setOnDataCallback(this.sessionId, (data: ArrayBuffer): void => {
+        if (!data || data.byteLength === 0) { return; }
         dataChunkCount++;
         // 稀疏日志: 前 5 次 + 每 100 次
         if (dataChunkCount <= 5 || dataChunkCount % 100 === 0) {
           hilog.info(0x0000, 'SshTerminal',
-            `SSH data #${dataChunkCount} len=${data.length} totalOut=${this.termOutput.length}`);
+            'SSH data #' + dataChunkCount.toString() + ' len=' + data.byteLength.toString() +
+            ' seq=' + (this.termOutputSequence + 1).toString());
         }
-        // 拼接 + 限制 50KB 防止内存膨胀
-        let next: string = this.termOutput + data;
-        if (next.length > 50000) { next = next.substring(next.length - 50000); }
-        this.termOutput = next;
+        // ArkUI may coalesce multiple state assignments into one frame. Keep
+        // the native chunks ordered and let the renderer consume short
+        // batches, so coalescing never drops an intermediate SSH chunk.
+        this.enqueueTerminalOutput(data);
       });
 
       // PC/2in1 默认获焦
@@ -899,6 +1080,61 @@ struct SshTerminal {
     }
   }
 
+  private async retryConnection(): Promise<void> {
+    if (this.terminalClosing || this.connecting || this.hostId.length === 0) { return; }
+    const host: RemoteHost | undefined = this.srv.getHost(this.hostId);
+    if (!host) {
+      this.connectionError = '主机记录不存在';
+      return;
+    }
+    this.connecting = true;
+    this.connectionError = '';
+    if (this.sessionId > 0) {
+      this.loader.disconnect();
+      await this.loader.waitForPendingTeardown();
+    }
+    this.sessionId = -1;
+    this.connected = false;
+    await this.connect(host);
+  }
+
+  /**
+   * 将当前 chunk 解码给旧 ArkTS fallback renderer，同时保留跨 chunk 的
+   * UTF-8 尾部。Native renderer 不使用该字符串，而是直接消费 bytes。
+   */
+  private decodeTerminalChunk(data: ArrayBuffer): string {
+    const incoming: Uint8Array = new Uint8Array(data);
+    const merged: Uint8Array = new Uint8Array(
+      this.terminalDecodeRemainder.length + incoming.length);
+    merged.set(this.terminalDecodeRemainder, 0);
+    merged.set(incoming, this.terminalDecodeRemainder.length);
+
+    let continuationCount: number = 0;
+    let leadIndex: number = merged.length;
+    while (leadIndex > 0 && continuationCount < 3 &&
+      (merged[leadIndex - 1] & 0xC0) === 0x80) {
+      leadIndex--;
+      continuationCount++;
+    }
+    let expectedLength: number = 0;
+    if (leadIndex < merged.length) {
+      const lead: number = merged[leadIndex];
+      if ((lead & 0xE0) === 0xC0) { expectedLength = 2; }
+      else if ((lead & 0xF0) === 0xE0) { expectedLength = 3; }
+      else if ((lead & 0xF8) === 0xF0) { expectedLength = 4; }
+    }
+    // A trailing continuation byte is not necessarily an incomplete code
+    // point: when the lead byte plus all continuations are already present,
+    // decode the sequence in this chunk. Only retain a genuinely incomplete
+    // suffix for the next push event.
+    const incompleteSuffix: boolean = leadIndex < merged.length && expectedLength > 0 &&
+      continuationCount + 1 < expectedLength;
+    const prefixLength: number = incompleteSuffix ? leadIndex : merged.length;
+    this.terminalDecodeRemainder = merged.slice(prefixLength);
+    if (prefixLength === 0) { return ''; }
+    return this.terminalDecoder.decodeToString(merged.slice(0, prefixLength));
+  }
+
   private virtualModifiers(): TerminalModifierState {
     return { ctrl: this.ctrlActive, alt: this.altActive, shift: this.shiftActive };
   }
@@ -906,6 +1142,14 @@ struct SshTerminal {
   private sendTerminalBytes(data: string): void {
     if (this.sessionId <= 0 || data.length === 0) { return; }
     this.loader.sendData(this.sessionId, data);
+  }
+
+  private onTerminalModeChange(mode: TerminalCoreMode): void {
+    this.bracketedPasteEnabled = mode.bracketedPaste;
+    this.terminalMouseTracking = mode.mouseTracking;
+    this.terminalSgrMouse = mode.sgrMouse;
+    this.terminalApplicationCursorKeys = mode.applicationCursorKeys;
+    this.terminalApplicationKeypad = mode.applicationKeypad;
   }
 
   /** 发送文本到 SSH 服务端; 修饰键 active 时由统一策略编码组合。 */
@@ -990,14 +1234,21 @@ struct SshTerminal {
     });
   }
 
-  private refreshSftp(path?: string): void {
+  private async refreshSftp(path?: string): Promise<void> {
     if (this.terminalClosing || this.sessionId <= 0 || this.sftpBusy) { return; }
     this.clearSftpRefreshTimer();
     const target: string = this.normalizeRemoteDir(path || this.sftpPath);
+    const requestSessionId: number = this.sessionId;
     this.sftpBusy = true;
     this.sftpStatus = '正在读取远端目录...';
     try {
-      const entries: SftpFileEntry[] = this.loader.listRemoteDir(this.sessionId, target);
+      const result = await this.loader.listRemoteDirAsync(requestSessionId, target);
+      if (result.errorCode < 0) {
+        this.sftpStatus = '[SFTP-LIST] 读取目录失败 ret=' + result.errorCode.toString();
+        return;
+      }
+      if (this.terminalClosing || this.sessionId !== requestSessionId) { return; }
+      const entries: SftpFileEntry[] = result.entries;
       this.sftpEntries = this.sortSftpEntries(entries);
       this.sftpPath = target;
       this.sftpPathInput = target;
@@ -1009,8 +1260,9 @@ struct SshTerminal {
       this.sftpStatus = '已加载 ' + entries.length.toString() + ' 项';
     } catch (err) {
       this.sftpStatus = '[SFTP-LIST] 读取目录失败: ' + JSON.stringify(err);
+    } finally {
+      this.sftpBusy = false;
     }
-    this.sftpBusy = false;
   }
 
   private openSftpPanel(): void {
@@ -1226,12 +1478,13 @@ struct SshTerminal {
           this.stopSftpTransfer(session, 'upload-connection-unavailable');
           return;
         }
-        const ret: number = this.loader.writeRemoteFileChunk(
+        const writeResult = await this.loader.writeRemoteFileChunkAsync(
           this.sessionId,
           remotePath,
           payload,
           uploaded,
           uploaded === 0);
+        const ret: number = writeResult.errorCode === 0 ? writeResult.bytesWritten : writeResult.errorCode;
         const confirmedOffset: number = recordConfirmedUploadWrite(uploaded, ret, payload.byteLength);
         if (confirmedOffset !== uploaded) {
           uploaded = confirmedOffset;
@@ -1331,11 +1584,19 @@ struct SshTerminal {
           return;
         }
         const chunkSize: number = Math.min(SFTP_DOWNLOAD_CHUNK_BYTES, totalSize - downloaded);
-        const data: ArrayBuffer = this.loader.readRemoteFileChunk(
+        const dataResult = await this.loader.readRemoteFileChunkAsync(
           this.sessionId,
           remotePath,
           downloaded,
           chunkSize);
+        if (dataResult.errorCode < 0) {
+          fileIo.closeSync(targetFile);
+          outFile = null;
+          this.sftpStatus = '[SFTP-DOWNLOAD] 远端读取失败 ret=' + dataResult.errorCode.toString();
+          this.stopSftpTransfer(session, 'download-remote-read-failed');
+          return;
+        }
+        const data: ArrayBuffer = dataResult.data;
         if (data.byteLength <= 0) {
           fileIo.closeSync(targetFile);
           outFile = null;
@@ -1399,32 +1660,47 @@ struct SshTerminal {
   private deleteSftpSelected(): void {
     if (this.sessionId <= 0 || this.sftpBusy || this.sftpSelectedPath.length === 0) { return; }
     const targetIsDir: boolean = this.sftpSelectedIsDir;
+    const requestSessionId: number = this.sessionId;
+    const targetPath: string = this.sftpSelectedPath;
+    const targetName: string = this.sftpSelectedName;
     promptAction.showDialog({
       title: targetIsDir ? '删除远端目录' : '删除远端文件',
-      message: '确定删除 ' + this.sftpSelectedName + ' 吗？' + (targetIsDir ? ' 目录必须为空。' : ''),
+      message: '确定删除 ' + targetName + ' 吗？' + (targetIsDir ? ' 目录必须为空。' : ''),
       buttons: [
         { text: '取消', color: this.pal().text2 },
         { text: '删除', color: this.pal().danger }
       ]
     }).then((res): void => {
       if (res.index !== 1) { return; }
-      this.sftpBusy = true;
-      const ret: number = targetIsDir ?
-        this.loader.removeRemoteDir(this.sessionId, this.sftpSelectedPath) :
-        this.loader.removeRemoteFile(this.sessionId, this.sftpSelectedPath);
-      this.sftpBusy = false;
-      if (ret === 0) {
-        this.sftpStatus = '已删除 ' + this.sftpSelectedName;
-        this.refreshSftp(this.sftpPath);
-      } else {
-        this.sftpStatus = '[SFTP-DELETE] 删除失败 ret=' + ret.toString();
-      }
+      this.deleteSftpPath(requestSessionId, targetPath, targetName, targetIsDir);
     }).catch((err: BusinessError): void => {
       this.sftpStatus = '[SFTP-DELETE] 对话框失败: ' + err.message;
     });
   }
 
-  private makeSftpDir(): void {
+  private async deleteSftpPath(sessionId: number, remotePath: string,
+    name: string, targetIsDir: boolean): Promise<void> {
+    this.sftpBusy = true;
+    let errorCode: number = -1;
+    try {
+      const result = targetIsDir ?
+        await this.loader.removeRemoteDirAsync(sessionId, remotePath) :
+        await this.loader.removeRemoteFileAsync(sessionId, remotePath);
+      errorCode = result.errorCode;
+    } catch (_err) {
+      errorCode = -1;
+    } finally {
+      this.sftpBusy = false;
+    }
+    if (errorCode === 0) {
+      this.sftpStatus = '已删除 ' + name;
+      this.refreshSftp(this.sftpPath);
+    } else {
+      this.sftpStatus = '[SFTP-DELETE] 删除失败 ret=' + errorCode.toString();
+    }
+  }
+
+  private async makeSftpDir(): Promise<void> {
     if (this.sessionId <= 0 || this.sftpBusy) { return; }
     const candidate: string = this.sftpNameInput.trim();
     if (candidate.length > 0 && !this.isValidRemoteName(candidate)) {
@@ -1433,18 +1709,26 @@ struct SshTerminal {
     }
     const dirName: string = candidate.length > 0 ? candidate : 'NewFolder-' + Date.now().toString();
     const remotePath: string = this.joinRemotePath(this.sftpPath, dirName);
+    const requestSessionId: number = this.sessionId;
     this.sftpBusy = true;
-    const ret: number = this.loader.makeRemoteDir(this.sessionId, remotePath);
-    this.sftpBusy = false;
-    if (ret === 0) {
+    let errorCode: number = -1;
+    try {
+      const result = await this.loader.makeRemoteDirAsync(requestSessionId, remotePath);
+      errorCode = result.errorCode;
+    } catch (_err) {
+      errorCode = -1;
+    } finally {
+      this.sftpBusy = false;
+    }
+    if (errorCode === 0) {
       this.sftpStatus = '已创建目录 ' + dirName;
       this.refreshSftp(this.sftpPath);
     } else {
-      this.sftpStatus = '[SFTP-MKDIR] 创建失败 ret=' + ret.toString();
+      this.sftpStatus = '[SFTP-MKDIR] 创建失败 ret=' + errorCode.toString();
     }
   }
 
-  private renameSftpSelected(): void {
+  private async renameSftpSelected(): Promise<void> {
     if (this.sessionId <= 0 || this.sftpBusy || this.sftpSelectedPath.length === 0) { return; }
     const trimmed: string = this.sftpNameInput.trim();
     if (!this.isValidRemoteName(trimmed)) {
@@ -1452,14 +1736,23 @@ struct SshTerminal {
       return;
     }
     const newPath: string = this.joinRemotePath(this.parentRemotePath(this.sftpSelectedPath), trimmed);
+    const requestSessionId: number = this.sessionId;
+    const oldPath: string = this.sftpSelectedPath;
     this.sftpBusy = true;
-    const ret: number = this.loader.renameRemotePath(this.sessionId, this.sftpSelectedPath, newPath);
-    this.sftpBusy = false;
-    if (ret === 0) {
+    let errorCode: number = -1;
+    try {
+      const result = await this.loader.renameRemotePathAsync(requestSessionId, oldPath, newPath);
+      errorCode = result.errorCode;
+    } catch (_err) {
+      errorCode = -1;
+    } finally {
+      this.sftpBusy = false;
+    }
+    if (errorCode === 0) {
       this.sftpStatus = '已重命名为 ' + trimmed;
       this.refreshSftp(this.sftpPath);
     } else {
-      this.sftpStatus = '[SFTP-RENAME] 重命名失败 ret=' + ret.toString();
+      this.sftpStatus = '[SFTP-RENAME] 重命名失败 ret=' + errorCode.toString();
     }
   }
 
@@ -1478,8 +1771,43 @@ struct SshTerminal {
   /** PC 端 Ctrl+V 粘贴 — 仅桌面设备处理。 */
   private handlePaste(content: string): void {
     if (!this.isDesktopDevice) { return; }
-    if (content.length > 0) { this.onTerminalData(content); }
+    if (content.length === 0) { this.resetKeyboardBuffer(); return; }
+    const maxPasteLength: number = 256 * 1024;
+    if (content.length > maxPasteLength) {
+      promptAction.showToast({ message: '粘贴内容过大，已拒绝（上限 256 KB）', duration: 1800 });
+      this.resetKeyboardBuffer();
+      return;
+    }
+
+    const hasNewline: boolean = content.indexOf('\n') >= 0 || content.indexOf('\r') >= 0;
+    if (hasNewline) {
+      const lineCount: number = content.split(/\r\n|\r|\n/).length;
+      const preview: string = content.replace(/[\r\n]+/g, ' ').substring(0, 96);
+      promptAction.showDialog({
+        title: '确认多行粘贴',
+        message: '将发送 ' + lineCount.toString() + ' 行到远端终端。\n预览：' + preview,
+        buttons: [
+          { text: '取消', color: this.pal().text2 },
+          { text: '发送', color: this.accentColor }
+        ]
+      }).then((result): void => {
+        if (result.index !== 1 || this.terminalClosing || this.sessionId <= 0) { return; }
+        this.sendPastedText(content);
+      }).catch((_err: BusinessError): void => {
+        // 用户关闭系统对话框等同于取消，不发送剪贴板内容。
+      });
+    } else {
+      this.sendPastedText(content);
+    }
     this.resetKeyboardBuffer();
+  }
+
+  private sendPastedText(content: string): void {
+    if (this.bracketedPasteEnabled) {
+      this.sendTerminalBytes('\u001b[200~' + content + '\u001b[201~');
+    } else {
+      this.sendTerminalBytes(content);
+    }
   }
 
   /** 清空隐藏输入框缓存。onWillInsert/onWillDelete/onSubmit 每次都调用。 */
@@ -1781,6 +2109,8 @@ struct SshTerminal {
             Text('Connecting...').fontSize(13).fontColor('#888').margin({ top: 10 })
           } else {
             Text(this.connectionError).fontSize(14).fontColor('#FF6B6B')
+            Button('重试').margin({ top: 16 }).backgroundColor(this.accentColor).fontColor('#FFFFFF').borderRadius(8)
+              .onClick((): void => { this.retryConnection(); })
             Button('返回').margin({ top: 16 }).backgroundColor(this.accentColor).fontColor('#FFFFFF').borderRadius(8)
               .onClick(() => { router.back(); })
           }
@@ -1799,7 +2129,8 @@ struct SshTerminal {
                 fontSize: this.renderFontVp,
                 viewportHeight: this.terminalPaneHeight(),
                 visibleViewportHeight: this.terminalRowsViewportHeight(),
-                inputData: this.termOutput,
+                inputData: this.termOutputBytes,
+                inputSequence: this.termOutputSequence,
                 selectMode: this.selectMode,
                 bottomAlignSparseContent: !this.isDesktopDevice,
                 copyRequest: this.copyRequest,
@@ -1808,7 +2139,10 @@ struct SshTerminal {
                 forceScrollToBottomRequest: this.forceScrollToBottomRequest,
                 externalScrollLines: this.terminalExternalScrollLines,
                 externalScrollRequest: this.terminalExternalScrollRequest,
-                onData: (data: string): void => { this.onTerminalData(data); }
+                onData: (data: string): void => { this.onTerminalData(data); },
+                onTerminalModeChange: (mode: TerminalCoreMode): void => {
+                  this.onTerminalModeChange(mode);
+                }
               })
             } else {
               TerminalEmulator({
@@ -1821,6 +2155,7 @@ struct SshTerminal {
                 viewportHeight: this.terminalPaneHeight(),
                 visibleViewportHeight: this.terminalRowsViewportHeight(),
                 inputData: this.termOutput,
+                inputSequence: this.termOutputSequence,
                 selectMode: this.selectMode,
                 bottomAlignSparseContent: !this.isDesktopDevice,
                 copyRequest: this.copyRequest,
@@ -1893,7 +2228,9 @@ struct SshTerminal {
                   unicode: event.unicode,
                   ctrl: ctrl || this.ctrlActive,
                   alt: alt || this.altActive,
-                  shift: shift || this.shiftActive
+                  shift: shift || this.shiftActive,
+                  applicationCursorKeys: this.terminalApplicationCursorKeys,
+                  applicationKeypad: this.terminalApplicationKeypad
                 });
                 if (encoded.consume) {
                   this.sendTerminalBytes(encoded.sequence);
@@ -1954,6 +2291,8 @@ struct SshTerminal {
             .backgroundColor('rgba(0,0,0,0.01)')
             .zIndex(10)
             .hitTestBehavior(HitTestMode.Block)
+            .onMouse(this.handleTerminalMouse)
+            .onAxisEvent(this.handleTerminalAxis)
             .gesture(
               GestureGroup(GestureMode.Exclusive,
                 TapGesture({ count: 1 })

@@ -2,7 +2,7 @@
  * VncSettingsPage — VNC 专属设置、主机和网关管理。
  *
  * 该页面不读取 HostSyncService、RemoteHost、RustDesk relay 或普通
- * usersettings。它只通过 VNC 自己的 service 访问 vncrecords overlay。
+ * usersettings。它只通过 VNC 自己的 service 访问 vncrecord overlay。
  */
 import { router, promptAction } from '@kit.ArkUI';
 import { common } from '@kit.AbilityKit';
@@ -227,7 +227,7 @@ export struct VncSettingsPage {
       promptAction.showDialog({
         title: '确认 VNC 敏感数据同步',
         message: needsSecretConfirmation
-          ? 'VNC 密码和网关令牌会以绑定上下文的 AES-GCM 密文进入 vncrecords。新设备仍需重新确认 trust。'
+          ? 'VNC 密码和网关令牌会以绑定上下文的 AES-GCM 密文进入 vncrecord。新设备仍需重新确认 trust。'
           : 'trust 指纹只同步记录，不会自动信任新设备；每台新设备仍须人工确认。',
         buttons: [{ text: '取消', color: this.pal().text2 }, { text: '确认开启', color: this.accentColor }]
       }).then((result: Object): void => {
@@ -516,7 +516,7 @@ export struct VncSettingsPage {
 
   @Builder private syncCard() {
     Column() {
-      this.cardTitle('VNC 云同步', '唯一云表：vncrecords；本地覆盖表：vnclocalrecords')
+      this.cardTitle('VNC 云同步', '唯一云表：vncrecord；本地覆盖表：vnclocalrecords')
       Text(this.cloudStatus).fontSize(12).fontColor(this.pal().text3).fontFamily(this.font()).margin({ bottom: 10 })
       ForEach(vncCloudSyncScopes(), (scope: VncCloudSyncScope) => {
         Row() {

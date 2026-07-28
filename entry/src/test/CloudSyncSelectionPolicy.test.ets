@@ -10,10 +10,11 @@ import {
 export default function cloudSyncSelectionPolicyTest(): void {
   describe('CloudSyncSelectionPolicy', (): void => {
     it('defaults_to_every_user_selectable_table', 0, (): void => {
-      expect(CLOUD_SYNC_SELECTION_DEFAULT.length).assertEqual(6);
+      expect(CLOUD_SYNC_SELECTION_DEFAULT.length).assertEqual(7);
       expect(cloudSyncSelectableTables().indexOf('cryptoparams')).assertEqual(-1);
       expect(cloudSyncSelectableTables().indexOf('remotehosts') >= 0).assertTrue();
       expect(cloudSyncSelectableTables().indexOf('usersettings') >= 0).assertTrue();
+      expect(cloudSyncSelectableTables().indexOf('vncrecord') >= 0).assertTrue();
     });
 
     it('normalizes_unknown_and_duplicate_table_names', 0, (): void => {
@@ -36,6 +37,12 @@ export default function cloudSyncSelectionPolicyTest(): void {
       expect(effectiveCloudSyncTables(['usersettings'])[0]).assertEqual('usersettings');
       expect(hasCloudSyncBusinessSelection([])).assertFalse();
       expect(hasCloudSyncBusinessSelection(['usersettings'])).assertTrue();
+    });
+
+    it('keeps_vnc_physical_selection_outside_the_crypto_auto_pair', 0, (): void => {
+      const tables: string[] = effectiveCloudSyncTables(['vncrecord']);
+      expect(tables.length).assertEqual(1);
+      expect(tables[0]).assertEqual('vncrecord');
     });
   });
 }

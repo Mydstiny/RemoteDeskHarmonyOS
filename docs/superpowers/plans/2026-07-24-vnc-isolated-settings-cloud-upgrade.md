@@ -7,9 +7,9 @@
 
 ## 0.1 用户约束修订：云端只增加一张表
 
-本节是 2026-07-24 后续确认的最新约束，优先级高于本文后续仍保留的“五张 VNC 云表”历史草案。实际实施只能向华为云端增加一张表：`vncrecords`。代码已经按此约束实现；后续云端部署和验收均以本节为准；历史五表内容仅作为已否决的拆分方案留档，不能照抄部署。
+本节是 2026-07-24 后续确认的最新约束，优先级高于本文后续仍保留的“五张 VNC 云表”历史草案。实际实施只能向华为云端增加一张表：`vncrecord`。代码已经按此约束实现；后续云端部署和验收均以本节为准；历史五表内容仅作为已否决的拆分方案留档，不能照抄部署。
 
-### 唯一云表：`vncrecords`
+### 唯一云表：`vncrecord`
 
 一张表通过 `recordtype` 区分设置、主机、网关、密钥和 trust 记录，通过 `ownerid` 建立逻辑关系。所有 VNC 记录仍使用独立 namespace，不进入 `remotehosts`、`usersettings` 或 `rustdeskrelays`。
 
@@ -35,9 +35,9 @@
 | `updatedat` | Integer | 最后修改时间 |
 | `deletedat` | Integer | tombstone 时间，0 表示未删除 |
 
-云表部署时只创建 `vncrecords` 这 19 个字段和 `id` 端侧去重主键。`payload` 是非敏感记录的唯一业务载荷；`ciphertext` 是 secret 记录的唯一敏感载荷。`recordtype=secret` 时，`payload` 只能包含 `secretkind`、owner 引用和展示元数据，不能包含密码、token、私钥或其 base64 明文。
+云表部署时只创建 `vncrecord` 这 19 个字段和 `id` 端侧去重主键。`payload` 是非敏感记录的唯一业务载荷；`ciphertext` 是 secret 记录的唯一敏感载荷。`recordtype=secret` 时，`payload` 只能包含 `secretkind`、owner 引用和展示元数据，不能包含密码、token、私钥或其 base64 明文。
 
-为了保证 secrets 默认不同步，本地 RDB 额外使用不注册到云端的 `vnclocalrecords` 表保存完整 VNC 本地状态。只有用户显式开启 VNC secret sync 且 crypto ready 时，`VncCloudSyncService` 才把加密 secret 镜像到 `vncrecords`；关闭后保留本地密文并从云镜像写 tombstone。这样一张云表仍能保持 secret opt-in，不依赖云端按行过滤能力。
+为了保证 secrets 默认不同步，本地 RDB 额外使用不注册到云端的 `vnclocalrecords` 表保存完整 VNC 本地状态。只有用户显式开启 VNC secret sync 且 crypto ready 时，`VncCloudSyncService` 才把加密 secret 镜像到 `vncrecord`；关闭后保留本地密文并停止本机对云镜像的投影，不写反向云 tombstone。只有用户明确删除记录时才写普通删除 tombstone，避免某台未选择或未解锁的设备撤回其他设备仍在使用的共享云行。这样一张云表仍能保持 secret opt-in，不依赖云端按行过滤能力。
 
 ### 关系和同步规则
 
@@ -47,19 +47,19 @@
 - `recordtype=secret`：`ownerid` 指向 host 或 gateway，`secretkind` 指定 VNC password、Repeater target token、gateway access token 或证书引用，密文进入 ciphertext。
 - `recordtype=trust`：证书指纹和用户确认状态进入 payload；新设备不能因云恢复自动信任。
 - `deletedat` 和 `resetepoch` 对所有 recordtype 生效，旧设备不得复活已删除或旧 epoch 的记录。
-- CloudStore 只把 `vncrecords` 注册为新的 distributed cloud table；`vnclocalrecords`、VNC retry/journal 和诊断表永远是本地表。
+- CloudStore 只把 `vncrecord` 注册为新的 distributed cloud table；`vnclocalrecords`、VNC retry/journal 和诊断表永远是本地表。
 
-本文后续凡出现 `vnchosts`、`vncgateways`、`vncsecrets`、`vncsettings` 或 `vnctrusts` 作为云表名称，均应转换为 `vncrecords` 中对应的 `recordtype`；实现代码不得注册这五个名称。
+本文后续凡出现 `vnchosts`、`vncgateways`、`vncsecrets`、`vncsettings` 或 `vnctrusts` 作为云表名称，均应转换为 `vncrecord` 中对应的 `recordtype`；实现代码不得注册这五个名称。
 
 ### 0.2 本轮代码实施记录（2026-07-25）
 
 - [x] `VncSettingsPage`、`VncSettingsService`、`VncHostService`、`VncGatewayService`、`VncSecretService` 和 `VncTrustService` 已形成独立 VNC owner 链路；RDP、RustDesk、SSH/SFTP 仍使用各自 owner。
-- [x] 云端只新增 `vncrecords`；`recordtype` 为 `settings`、`host`、`gateway`、`secret`、`trust`，本地覆盖表为 `vnclocalrecords`，不注册分布式云表。
+- [x] 云端只新增 `vncrecord`；`recordtype` 为 `settings`、`host`、`gateway`、`secret`、`trust`，本地覆盖表为 `vnclocalrecords`，不注册分布式云表。
 - [x] VNC secret 使用 `DataCrypto.encryptField()` 的 AES-GCM v2 envelope，AAD 绑定 scope/table/record/field/schema；secret 默认不上传，只有 VNC 选择器、crypto 解锁和用户确认同时满足才镜像到云表。
 - [x] `cryptoparams.vnc_reset_epoch` 已成为非敏感 reset marker：加密重置时递增，VNC 新行自动绑定当前 epoch，读取/改写旧 epoch 时 fail closed；本地备份恢复也不能降低 epoch。
-- [x] Native 已接入 RFB 3.3/3.7/3.8、VNC DES password、Raw/CopyRect/DesktopSize、BGRA、键鼠/剪贴板以及 UltraVNC Repeater mode 2/mode 12；WebSocket、公网 relay、SSH tunnel/reverse listen 仍由运行时 gate 关闭。
-- [x] 自动化验证：`default@OhosTestCompileArkTS`、`assembleHap`、Native `133 passed, 0 failed`、`git diff --check`。
-- [ ] 待用户在华为云端创建唯一 `vncrecords` 表，并用两台 API 23 设备完成云同步、真实 VNC server/Repeater 和 reset 验收；这些外部步骤不由本地代码自动完成。
+- [x] Native 已接入 RFB 3.3/3.7/3.8、VNC DES password、Raw/CopyRect/DesktopSize、BGRA、键鼠/剪贴板以及 UltraVNC Repeater viewer mode12；mode2 已按官方 server-side listener 的固定字段契约完成边界和 fixture 校验，但 HarmonyOS viewer 不冒充 server 端、不开放 mode2 viewer 连接；WebSocket、公网 relay、SSH tunnel/reverse listen 仍由运行时 gate 关闭。
+- [x] 自动化验证：`default@OhosTestCompileArkTS`、`assembleHap`、Native `144 passed, 0 failed`、`git diff --check`。
+- [ ] 待用户在华为云端创建唯一 `vncrecord` 表，并用两台 API 23 设备完成云同步、真实 VNC server/Repeater 和 reset 验收；这些外部步骤不由本地代码自动完成。
 
 ## 0. 执行边界
 
@@ -73,7 +73,7 @@
 - [x] VNC feature gate 和 transport allowlist fail-closed；依赖、契约或安全状态不完整时不可连接，不影响其他协议。
 - [x] 关键任务已补测试并完成自动化验证；真实设备/云端门禁仍保留在后文。
 - [x] 不使用 git reset --hard、git checkout -- 或覆盖用户已有变更。
-- [x] 云端 schema 只增加 `vncrecords`；不向 remotehosts、rustdeskrelays、usersettings 追加 VNC 业务字段。
+- [x] 云端 schema 只增加 `vncrecord`；不向 remotehosts、rustdeskrelays、usersettings 追加 VNC 业务字段。
 - [x] 任何 VNC 密码、Repeater target token、gateway token、客户端私钥或私钥引用都不得进入日志、Toast、普通备份或其他协议表的明文字段。
 
 ## 1. 目标与完成定义
@@ -85,7 +85,7 @@
 “完整 VNC 中继功能”在本计划中的定义不是把一个地址字段显示出来，而是包含以下可验证的链路：
 
 1. 直连 TCP：VNC viewer 直接连接 VNC server，默认端口 5900。
-2. UltraVNC Repeater：支持经上游源码验证的 mode 12 和 mode 2 配对流程；配对成功后将连接作为字节流交给 RFB engine。
+2. UltraVNC Repeater：HarmonyOS viewer 支持经上游源码验证的 mode 12 配对流程；mode 2 只定义 server-side listener 的固定字段契约，不能在 viewer 端伪装成同一流程。配对成功后将连接作为字节流交给 RFB engine。
 3. WebSocket gateway：支持明确的 binary WebSocket gateway 协议，处理连接、认证、二进制帧、心跳、背压、关闭和重连。
 4. 公网 relay：只有在项目拥有版本化 gateway endpoint 和认证契约时才启用；没有服务端契约时保持 feature gate 关闭，不把普通 TCP Repeater 冒充为公网 relay。
 5. SSH tunnel：作为后续 transport，通过独立 SSH 凭据和隧道服务接入；不复用 VNC password 或 RustDesk relay credential。
@@ -106,9 +106,9 @@
 
 | 里程碑 | 内容 | 默认状态 |
 | --- | --- | --- |
-| M0 | namespace、`vncrecords` 单表、VNC v2 加密 envelope、独立 settings contract | 代码完成；待云端建表 |
+| M0 | namespace、`vncrecord` 单表、VNC v2 加密 envelope、独立 settings contract | 代码完成；待云端建表 |
 | M1 | 直连 RFB 3.3/3.7/3.8、VNC password、Raw/CopyRect、BGRA、键鼠、view-only | 代码/自动化完成；待 API 23 实机 |
-| M2 | UltraVNC Repeater mode 12/mode 2、target 配对、字节中继 | 代码/fixture 完成；待真实 Repeater 双端 |
+| M2 | UltraVNC Repeater viewer mode12、mode2 server-side 字段契约、target 配对、字节中继 | viewer 代码/fixture 完成；mode2 server-side 组件和真实 Repeater 双端仍待部署验收 |
 | M3 | WebSocket gateway、TLS/pinning、文本剪贴板 | 契约草案/运行时 gate；未部署，不宣称可用 |
 | M4 | 公网 relay/SSH tunnel/reverse listen 的版本化 transport | 后端契约和实机环境缺失，保持 unavailable |
 
@@ -122,10 +122,10 @@
 | VNC 已注册到 extension system，ArkTS 能识别 RemoteProtocol.vnc，但 capability policy 仍明确不可用 | entry/src/main/ets/services/RemoteSessionCapabilityPolicy.ets、RemoteDesktop.ets | 保留诚实的 unavailable 状态，按 session capability 逐项开放 |
 | 当前 RemoteHost 包含 RDP、RustDesk、SSH 和通用字段，remotehosts 是混合云表 | entry/src/main/ets/model/RemoteHost.ets、CloudStore.ets | 不能继续在 RemoteHost 或 remotehosts 增加 VNC 专属字段 |
 | CloudTableAdapter 对 remotehosts 有大量协议扩展和 displayconfig 兼容逻辑 | entry/src/main/ets/services/CloudTableAdapter.ets | VNC 必须增加独立白名单，不能复用 displayconfig extension |
-| VncRelayConfig/VncRelayConfigService 已经有本地 VNC Repeater 配置，但仍使用 Preferences | entry/src/main/ets/model/VncRelayConfig.ets、VncRelayConfigService.ets | 一次性安全迁移为 `vncrecords(recordtype=gateway/secret)`，旧 service 最终只能是兼容 facade |
+| VncRelayConfig/VncRelayConfigService 已经有本地 VNC Repeater 配置，但仍使用 Preferences | entry/src/main/ets/model/VncRelayConfig.ets、VncRelayConfigService.ets | 一次性安全迁移为 `vncrecord(recordtype=gateway/secret)`，旧 service 最终只能是兼容 facade |
 | VNC Repeater 表单嵌在 RustDeskRelayPage，Modern FAB 也从中继资源流程进入 | entry/src/main/ets/pages/RustDeskRelayPage.ets、components/resourceadd/modern/ModernRelayAddFlow.ets | UI 视觉和状态边界不够；必须迁移到独立 VNC settings/gateway flow |
 | 当前正式云链路是 CloudStore + CloudSyncCoordinator + HarmonyOS distributed cloud table；CloudSyncService.ets 是另一个自定义 REST API 实现 | entry/src/main/ets/services/CloudStore.ets、CloudSyncCoordinator.ets、CloudSyncService.ets | VNC 只能接入正式 CloudStore 链路，不允许无意中双写 REST 和 HarmonyOS cloud |
-| 现有同步表为 cryptoparams、usersettings、remotehosts、rdpcredentials、rustdeskrelays、sshkeys、totpentries | CloudSyncPolicy.ets、CloudStore.ets | 新增一个 `vncrecords` 物理表；用 `recordtype` 和独立选择器区分五类 VNC 逻辑记录 |
+| 现有同步表为 cryptoparams、usersettings、remotehosts、rdpcredentials、rustdeskrelays、sshkeys、totpentries | CloudSyncPolicy.ets、CloudStore.ets | 新增一个 `vncrecord` 物理表；用 `recordtype` 和独立选择器区分五类 VNC 逻辑记录 |
 | 当前 DataCrypto 为 PBKDF2-SHA256 100,000 次、AES-256-GCM、空 AAD 的 v1 envelope | entry/src/main/ets/services/DataCrypto.ets | VNC 只能使用绑定 table/record/field 的 v2 envelope；现有 v1 继续兼容，不能全局硬切 |
 | 当前 settings 主要由 HostListPage 的 accordion/leaf sheet 管理，路由登记在 main_pages.json | entry/src/main/ets/pages/HostListPage.ets、SettingsAccordionPolicy.ets、SettingsSheetRoutePolicy.ets、resources/base/profile/main_pages.json | VNC 采用新建的独立 page 和 route，不把 VNC 设置塞进 RDP/RustDesk sheet |
 
@@ -191,7 +191,7 @@ flowchart TD
 | VncSettingsService | VNC 默认连接和安全偏好 | VncSettings、VNC policy、VNC cloud | RDP/RustDesk setting key、通用 usersettings |
 | VncGatewayService | Repeater/gateway 配置和 capability 状态 | VncGateway、VncSecretService | RustDeskRelayConfig、rustdeskrelays |
 | VncSecretService | VNC password/token/cert reference | DataCrypto v2、VNC secret table | 明文 Preferences、普通备份、日志 |
-| VncTrustService | TLS/VeNCrypt fingerprint/pinning | `vncrecords(recordtype=trust)`、用户确认 policy | 自动信任云下发 fingerprint |
+| VncTrustService | TLS/VeNCrypt fingerprint/pinning | `vncrecord(recordtype=trust)`、用户确认 policy | 自动信任云下发 fingerprint |
 | VncCloudSyncService | 一个 VNC 物理表内五类逻辑记录的同步、冲突、墓碑、恢复 | CloudStore generic executor、Coordinator scoped API | CloudSyncService REST、HostSyncService |
 | VncSession | 单次连接生命周期、RFB capability、输入和帧 | VNC native bridge/transport/renderer | RDP/RustDesk session state |
 | VncGatewayTransport | 连接、配对、二进制 relay、取消和超时 | HarmonyOS socket/WebSocket/SSH primitives | 解析 RDP、RustDesk 或 SSH 业务 payload |
@@ -213,9 +213,9 @@ envelopeVersion: 2
 共享 API 需要增加 scope 参数或等价的 typed wrapper；当前实现对应的调用形态是：
 
 ~~~text
-CloudStore.pushTable('vncrecords')
+CloudStore.pushTable('vncrecord')
 CloudSyncCoordinator.requestVncTableAutomaticPush()
-DataCrypto.encryptField('remotedesktop|vnc', 'vncrecords', recordId, 'ciphertext', value, schemaVersion, keyVersion, aadVersion)
+DataCrypto.encryptField('remotedesktop|vnc', 'vncrecord', recordId, 'ciphertext', value, schemaVersion, keyVersion, aadVersion)
 ~~~
 
 没有 scope 的旧兼容入口只能继续服务既有 RDP/RustDesk/SSH 路径；VNC 新代码不得调用它。
@@ -255,8 +255,8 @@ HostListPage 只增加一个“VNC 设置”入口，使用现有 router 进入 
 | 安全 | allow plaintext | 默认 false；开启时还必须满足 trusted LAN/VPN policy |
 | 安全 | require TLS/VeNCrypt | 默认按 server capability 和用户策略拒绝不安全回退 |
 | 安全 | trust/pinning | 默认首次连接询问，云同步 pin 不能自动信任 |
-| 中继 | 默认 gateway | 仅引用 `vncrecords(recordtype=gateway).id`，不复制 token |
-| 中继 | Repeater mode | mode12 或 mode2，必须选择目标配对策略 |
+| 中继 | 默认 gateway | 仅引用 `vncrecord(recordtype=gateway).id`，不复制 token |
+| 中继 | Repeater mode | viewer 使用 mode12；mode2 仅适用于独立 server-side listener，必须选择对应角色和目标配对策略 |
 | 同步 | sync VNC preferences | 默认 true，可单独关闭 |
 | 同步 | sync VNC secrets | 默认 false，开启前要求 master crypto ready 和二次确认 |
 | 同步 | sync trust/pinning | 默认 false；开启后仍要求新设备确认 |
@@ -285,7 +285,7 @@ usersettings.payload
 ~~~
 
 AppStorage 如继续使用，只能作为短期 UI mirror；真实保存必须由 VncSettingsService 写入
-`vncrecords(recordtype=settings)`。页面销毁、进后台或切换 tab 不能把内存镜像反写为其他协议设置。
+`vncrecord(recordtype=settings)`。页面销毁、进后台或切换 tab 不能把内存镜像反写为其他协议设置。
 
 ### 5.4 现有 VNC relay UI 迁移
 
@@ -369,18 +369,18 @@ DirectTcpTransport 是 M1 唯一 transport：
 
 ### 7.3 UltraVNC Repeater mode 12 / mode 2
 
-两种 mode 必须实现为两个独立的 parser/fixture，不允许 if (mode) 分支里拼接未经验证的字符串：
+两种 mode 必须实现为两个独立的 parser/fixture，并明确 viewer/server-side 角色，不允许 if (mode) 分支里拼接未经验证的字符串：
 
 - UltravncMode12Pairer：依据固定 commit 的 mode12_listener.cpp 行为实现 viewer/server 端 target pairing。
 - UltravncMode2Pairer：依据固定 commit 的 mode2_listener_server.cpp 行为实现对应 server-side pairing。
 - 每个 pairer 都要有明确角色、target ID/token、preamble 长度、字符编码、终止条件、服务端响应和错误码。
 - preamble 使用 pinned upstream test vector；长度必须由解析器常量和测试向量共同验证，不使用“读到换行”替代固定长度读取。
 - pairing 成功后，transport 只保留 opaque byte stream；RFB version greeting 必须从 pairing parser 输出之后开始。
-- target ID 如果只是公开路由提示可在 gateway payload 的非敏感 label；如果具有访问能力、可猜测或短期有效，必须放到 `vncrecords(recordtype=secret, secretkind=repeater_token)`。
+- target ID 如果只是公开路由提示可在 gateway payload 的非敏感 label；如果具有访问能力、可猜测或短期有效，必须放到 `vncrecord(recordtype=secret, secretkind=repeater_token)`。
 - Repeater 本身不提供端到端加密保证。若 RFB 层没有 TLS/VeNCrypt，页面必须显示“中继只转发、链路仍可能是明文”的安全状态。
 - pairing timeout、target not found、target busy、gateway refused、server EOF、重连和用户取消必须分别统计。
 
-mode 12/mode 2 的验收不能只用“两个设备最终能看到画面”：必须先用 scripted byte fixture 验证每一个字节和边界，再用真实 UltraVNC Repeater 双端连接验证 RFB 透明转发。
+mode 12/mode 2 的协议验收不能只用“两个设备最终能看到画面”：必须先用 scripted byte fixture 验证每一个字节和边界；当前 HarmonyOS viewer 只做 mode12 的真实透明转发，mode2 需要单独部署 server-side listener 后再验收。
 
 ### 7.4 WebSocket gateway
 
@@ -416,7 +416,7 @@ reverse/listen mode 只有在有明确 server-side protocol、端口暴露策略
 
 ## 8. 五类逻辑记录的完整设计
 
-本节 8.2-8.6 保留了最初拆表方案的业务字段清单，作为逻辑记录设计和字段审计参考；它们不是云端表名，也不能按五张表部署。实际部署只有第 0.1 节列出的 `vncrecords` 19 列，代码通过 `recordtype` 映射 settings/host/gateway/secret/trust。若本节历史清单与第 0.1 节冲突，以第 0.1 节和 `VncRecordPolicy.ets` 为准。
+本节 8.2-8.6 保留了最初拆表方案的业务字段清单，作为逻辑记录设计和字段审计参考；它们不是云端表名，也不能按五张表部署。实际部署只有第 0.1 节列出的 `vncrecord` 19 列，代码通过 `recordtype` 映射 settings/host/gateway/secret/trust。若本节历史清单与第 0.1 节冲突，以第 0.1 节和 `VncRecordPolicy.ets` 为准。
 
 ### 8.1 统一字段规则
 
@@ -428,7 +428,7 @@ reverse/listen mode 只有在有明确 server-side protocol、端口暴露策略
 - 云端不保存健康、延迟、最后连接、帧缓存、剪贴板历史或 active session。
 - 所有写入先经过表字段白名单；未知列、错误 scope、错误 envelope 或错误 owner 都 fail closed。
 
-### 8.2 `vncrecords(recordtype=host)`：VNC 主机非敏感描述
+### 8.2 `vncrecord(recordtype=host)`：VNC 主机非敏感描述
 
 用途：保存可跨设备恢复的 VNC 主机描述和显示偏好，不保存 VNC password、target token 或私钥。
 
@@ -458,7 +458,7 @@ reverse/listen mode 只有在有明确 server-side protocol、端口暴露策略
 
 禁止加入：username、password、passward、rdpcredentialid、rustdeskrelayid、sshkeyid、gatewayhost、RDP certificate 字段、SSH host key 字段和健康字段。
 
-### 8.3 `vncrecords(recordtype=gateway)`：Repeater/gateway 非敏感配置
+### 8.3 `vncrecord(recordtype=gateway)`：Repeater/gateway 非敏感配置
 
 | 字段 | 类型 | 必填/默认 | 说明 |
 | --- | --- | --- | --- |
@@ -481,7 +481,7 @@ reverse/listen mode 只有在有明确 server-side protocol、端口暴露策略
 
 targetId 若只是公开路由提示可在 gateway payload 作为非敏感 label；任何拥有访问能力、短期有效或可猜测后直接接入目标的值都必须进入 `recordtype=secret`。
 
-### 8.4 `vncrecords(recordtype=secret)`：VNC 敏感值
+### 8.4 `vncrecord(recordtype=secret)`：VNC 敏感值
 
 这类记录不允许任何明文 secret 列。ciphertext 必须是 VNC envelope v2；在 crypto locked、账号 scope 不匹配或 AAD 不匹配时不能解密使用。
 
@@ -505,7 +505,7 @@ targetId 若只是公开路由提示可在 gateway payload 作为非敏感 label
 
 禁止：password、token、secret、privatekey 等 plaintext 字段；禁止把密码塞进 ownerid、targetlabel、usersettings.payload 或 remotehosts.passward。
 
-### 8.5 `vncrecords(recordtype=settings)`：VNC 独立全局设置
+### 8.5 `vncrecord(recordtype=settings)`：VNC 独立全局设置
 
 | 字段 | 类型 | 必填/默认 | 说明 |
 | --- | --- | --- | --- |
@@ -531,7 +531,7 @@ targetId 若只是公开路由提示可在 gateway payload 作为非敏感 label
 
 `recordtype=settings` 只保存偏好，不保存密码、token、account password、TLS private key、运行时 session 状态或健康状态。
 
-### 8.6 `vncrecords(recordtype=trust)`：TLS/VeNCrypt/pinning 信任记录
+### 8.6 `vncrecord(recordtype=trust)`：TLS/VeNCrypt/pinning 信任记录
 
 | 字段 | 类型 | 必填/默认 | 说明 |
 | --- | --- | --- | --- |
@@ -576,8 +576,8 @@ vncnetwork_probe_cache
 
 | 组件 | 升级内容 | 兼容要求 |
 | --- | --- | --- |
-| CloudTableAdapter.ets | 保持旧表白名单；VNC 使用 `vncrecords` 的 recordtype/字段白名单、project/normalize、未知字段拒绝 | VNC 字段不得进入 remotehosts；旧协议投影结果不变 |
-| CloudStore.ets | 建一个 `vncrecords` 表和本地 `vnclocalrecords` 镜像、迁移、注册 distributed table、VNC CRUD、scope 回调、VNC reset marker | 旧七张表的 SQL、同步顺序和 callback 语义不回归 |
+| CloudTableAdapter.ets | 保持旧表白名单；VNC 使用 `vncrecord` 的 recordtype/字段白名单、project/normalize、未知字段拒绝 | VNC 字段不得进入 remotehosts；旧协议投影结果不变 |
+| CloudStore.ets | 建一个 `vncrecord` 表和本地 `vnclocalrecords` 镜像、迁移、注册 distributed table、VNC CRUD、scope 回调、VNC reset marker | 旧七张表的 SQL、同步顺序和 callback 语义不回归 |
 | CloudSyncPolicy.ets | 增加 scope-aware table order 和 VNC selection expansion | 既有全量同步不自动包含 VNC secrets |
 | VncCloudSyncSelectionPolicy.ets / VncCloudSyncSelectionStore.ets | 增加 VNC 专属 selection group 和 crypto dependency | 没有选择 `recordtype=secret` 时不拉取/上传 secret 行 |
 | CloudSyncSelectionStore.ets | 新增 vncCloudSyncSelectedTables，与旧 cloudSyncSelectedTables 分开 | 旧选择器的值不能控制 VNC |
@@ -596,7 +596,7 @@ vncnetwork_probe_cache
 
 ~~~text
 cryptoparams (仅 secrets/trust policy 需要时)
-  -> vncrecords(recordtype=settings/host/gateway/secret/trust)
+  -> vncrecord(recordtype=settings/host/gateway/secret/trust)
 ~~~
 
 与既有协议同时同步时，执行器先按每个 scope 冻结 selection snapshot，再按全局依赖顺序逐表执行。不能用时间戳决定 cloud-first/native-first 方向：
@@ -613,7 +613,7 @@ cryptoparams (仅 secrets/trust policy 需要时)
 vncCloudSyncSelectedTables
 ~~~
 
-可选逻辑范围：settings、hosts、gateways、secrets、trust；物理上传/下载始终通过 `vncrecords`，不能把逻辑范围误报成五张云表。建议 UI 提供三个预设：
+可选逻辑范围：settings、hosts、gateways、secrets、trust；物理上传/下载始终通过 `vncrecord`，不能把逻辑范围误报成五张云表。建议 UI 提供三个预设：
 
 - 仅设置：只同步 `recordtype=settings`。
 - 配置：同步 settings、hosts、gateways，不同步 secrets/trust。
@@ -633,7 +633,7 @@ entry/src/main/ets/services/VncCloudSyncSelectionStore.ets
 
 服务负责：
 
-- `vncrecords` 内 settings、host、gateway、secret、trust 五类记录的 CRUD。
+- `vncrecord` 内 settings、host、gateway、secret、trust 五类记录的 CRUD。
 - 启动 cloud-first restore 和本地缓存恢复。
 - 手动 native-first upload、cloud-first download。
 - VNC-specific table selection、request ID、retry/journal 和 per-table progress。
@@ -687,7 +687,7 @@ header 至少包含：
 
 ~~~text
 scope=remotedesktop|vnc
-table=vncrecords
+table=vncrecord
 recordId=<record id>
 field=ciphertext
 algorithm=AES-256-GCM
@@ -776,7 +776,7 @@ docs/VNC_GATEWAY_PROTOCOL.md
 - [x] 已定义 protocol=vnc、scope、schema/envelope version、错误码和 capability 枚举。
 - [x] feature gate 默认 fail closed；gate 失败原因可诊断但不显示为“连接成功”。
 - [x] VNC service、VNC cloud projection 与其他协议 owner 的静态边界已落实；跨模块隔离仍需在真实设备回归中复核。
-- [x] VNC cloud projection 只允许 `vncrecords` 字段，secret payload 禁止敏感明文。
+- [x] VNC cloud projection 只允许 `vncrecord` 字段，secret payload 禁止敏感明文。
 - [x] gateway protocol draft 版本和未部署时的 unavailable 行为已固定。
 
 完成标准：没有新的模型或页面可以在缺少 VNC scope 的情况下访问其他协议的状态。
@@ -813,10 +813,10 @@ entry/src/test/VncRecordPolicy.test.ets
 docs/superpowers/plans/2026-07-24-vnc-isolated-settings-cloud-upgrade.md
 ~~~
 
-- [ ] 在 AGC 开发/测试容器创建唯一 `vncrecords` 表，勾选端侧去重主键 `id`，逐列核对第 0.1 节 schema。
+- [ ] 在 AGC 开发/测试容器创建唯一 `vncrecord` 表，勾选端侧去重主键 `id`，逐列核对第 0.1 节 schema。
 - [x] createTables() 使用幂等 CREATE TABLE IF NOT EXISTS；当前 schema 在本地初始化时可重试。
-- [x] setDistributedTables 注册 `vncrecords`，保持 autoSync=false，由 coordinator 显式协调。
-- [x] CloudStore/VncRecordPolicy 为 `vncrecords` 建立完整 cloud/local columns 和 type conversion。
+- [x] setDistributedTables 注册 `vncrecord`，保持 autoSync=false，由 coordinator 显式协调。
+- [x] CloudStore/VncRecordPolicy 为 `vncrecord` 建立完整 cloud/local columns 和 type conversion。
 - [x] VNC 表 unknown column、wrong owner、wrong scope 和 wrong envelope 行在 VNC policy/CloudStore 边界被拒绝。
 - [x] LocalBackupPolicy 加入 VNC 表和本地镜像，但默认不导出 plaintext VNC secrets。
 - [ ] schema migration 失败时只关闭 VNC scope，不让旧七张表不可用。
@@ -880,7 +880,7 @@ entry/src/main/ets/services/VncRelayConfigService.ets
 entry/src/test/VncRecordPolicy.test.ets
 ~~~
 
-- [x] 所有 CRUD 带 userid scope 和 `vncrecords` owner boundary。
+- [x] 所有 CRUD 带 userid scope 和 `vncrecord` owner boundary。
 - [x] 启动先保留本地缓存，再进行 cloud-first；云服务不可用不能把列表置空。
 - [x] 云 apply 后只通知 VNC service，不触发 HostSyncService.loadFromCloud()。
 - [ ] host/gateway 采用确定性 merge；secret 冲突保留两份候选并要求用户选择；trust 冲突要求重新 pin。
@@ -912,6 +912,9 @@ entry/src/test/VncGatewayProtocolPolicy.test.ets
 - [x] 旧 VNC Preferences 只走 migration facade；新保存不再写 VncRelayConfigs。
 - [x] 页面显示 plaintext/TLS/pinning/secret sync 风险状态，不显示虚假的“在线”。
 - [x] 页面不持有可跨页面复用的 plaintext secret；secret service 只在加密解锁时 materialize。
+- [x] 主设置页以独立顶层 VNC accordion 提供入口；入口只导航到完整 VNC page，不初始化云同步或其他协议的新增流程。
+- [x] 全局关闭加密在发现活动 VNC v2 密文时 fail closed；不会清除 DEK 后留下不可恢复的 VNC 密码/令牌。
+- [x] VNC 设置保存先提交 logical scope 边界再写 `recordtype=settings`；保存失败会恢复旧 scope，避免关闭同步时先把新设置推到云端。
 
 完成标准：RDP/RustDesk/SSH settings snapshot 在打开、编辑、保存 VNC settings 前后完全相同；RustDesk page 不再包含 VNC owner。
 
@@ -948,10 +951,10 @@ entry/src/main/cpp/test/vnc_transport_policy_test.cpp
 docs/VNC_GATEWAY_PROTOCOL.md
 ~~~
 
-- [x] 固定 mode2/mode12 的字节配对规则和 `docs/VNC_GATEWAY_PROTOCOL.md` 中的版本/边界记录。
+- [x] 固定 mode12 viewer 以及 mode2 server-side 的字节/角色边界，并在 `docs/VNC_GATEWAY_PROTOCOL.md` 中记录版本和字段契约。
 - [x] pairing 成功前不调用 RFB engine；成功后只交付 transport byte stream。
 - [x] target secret 从 VncSecretService 获取，日志和诊断只显示 redacted target reference。
-- [ ] 实机用 UltraVNC Repeater viewer/server 双端验证配对、桌面显示、键鼠、断连和重连。
+- [ ] 实机用 UltraVNC Repeater viewer/server 双端验证 mode12 配对、桌面显示、键鼠、断连和重连；mode2 需另行部署并验收 server-side listener，不能由当前 HarmonyOS viewer 代替。
 - [x] Repeater 明文/TLS 状态映射到 VNC security policy；拒绝不安全回退时返回明确错误。
 
 完成标准：mode12 和 mode2 不能互相误解析；重复连接、目标不在线和中继重启都不会卡住 UI 或残留旧 session。
@@ -1007,7 +1010,7 @@ docs/VNC_RELEASE_CHECKLIST.md
 entry/src/test/*Vnc*.test.ets
 ~~~
 
-- [ ] AGC 测试容器逐列核对唯一 `vncrecords` 表、去重主键、String/Integer 类型和发布状态。
+- [ ] AGC 测试容器逐列核对唯一 `vncrecord` 表、去重主键、String/Integer 类型和发布状态。
 - [ ] 两台 HarmonyOS API 23 设备使用同一华为账号，分别验证 settings/hosts/gateways/secrets/trust 的选择矩阵。
 - [ ] 验证 cloud-first 空库恢复不会反向覆盖云端，native-first 上传需要确认且不隐式上传 secrets。
 - [ ] 验证 master password lock/unlock/reset、错误密码、旧设备、账号切换、断网重试和 tombstone retention。
@@ -1048,7 +1051,7 @@ entry/src/test/*Vnc*.test.ets
 ### 13.4 Relay/RFB 测试
 
 - [ ] Direct TCP RFB 3.3/3.7/3.8 handshake、VNC password、Raw/CopyRect、首帧和 incremental update。
-- [ ] Repeater mode12/mode2 byte-exact pairing、target mismatch、短读/短写、timeout、cancel、server EOF。
+- [x] Repeater mode12 viewer / mode2 server-side byte-exact pairing、target mismatch、短读/短写、timeout、cancel、server EOF 的本地 fixture；真实 mode12 仍待端点验收，mode2 仍待 server-side 组件验收。
 - [ ] WebSocket binary-only、ping/pong、oversize、text frame、token failure、TLS pin change、backpressure。
 - [ ] RFB password authentication 与 gateway token authentication 分开，错误原因不混淆。
 - [ ] view-only 不发送 pointer/key；断开时清理 pressed-state 和 clipboard event。
@@ -1067,7 +1070,7 @@ entry/src/test/*Vnc*.test.ets
 
 ### 14.1 发布顺序
 
-1. 在 AGC 测试容器创建唯一 `vncrecords` 表并验证 schema，不发布功能开关。
+1. 在 AGC 测试容器创建唯一 `vncrecord` 表并验证 schema，不发布功能开关。
 2. 发布只包含模型、schema、crypto v2 和 disabled services 的内部构建；验证旧七表不变。
 3. 发布独立 VNC settings page，但默认连接 gate 关闭；验证 Preferences 迁移和页面隔离。
 4. 开启 VNC cloud settings/hosts/gateways 同步，不开启 secrets。
@@ -1091,9 +1094,9 @@ entry/src/test/*Vnc*.test.ets
 
 - [ ] VNC 有独立 page、model、service、cloud selection、secret service、trust store 和 session；没有以 RDP/RustDesk/SSH service 作为 owner。
 - [ ] remotehosts、rustdeskrelays、usersettings 没有新增 VNC 业务字段，新建 VNC 数据不写这些表。
-- [ ] 唯一 `vncrecords` 云表已经在 AGC 逐列创建、注册、同步和双设备验证；secret recordtype 不在普通全量同步中。
+- [ ] 唯一 `vncrecord` 云表已经在 AGC 逐列创建、注册、同步和双设备验证；secret recordtype 不在普通全量同步中。
 - [ ] VNC secret 全部使用 v2 AAD envelope；locked、wrong AAD、reset、账号切换和云恢复行为均 fail closed。
-- [ ] 直连 RFB 和至少 UltraVNC mode12/mode2 通过真实环境；WebSocket/public relay/SSH tunnel 只有在其协议契约和环境通过后才宣称可用。
+- [ ] 直连 RFB 和 UltraVNC mode12 viewer 通过真实环境；mode2 需独立 server-side listener 环境；WebSocket/public relay/SSH tunnel 只有在其协议契约和环境通过后才宣称可用。
 - [ ] Relay pairing 与 RFB handshake 分层，短读/短写/超时/取消/重连/后台恢复均通过测试。
 - [ ] raw BGRA renderer、surface lifecycle、input mapper 和 capability policy 通过 VNC 专属测试，现有视频 decoder 和其他协议回归通过。
 - [ ] API 23、双 ABI、HAP、双设备云同步、加密、迁移、备份、reset、回滚和开源合规门全部通过。
@@ -1101,6 +1104,6 @@ entry/src/test/*Vnc*.test.ets
 
 ## 16. 本轮结论
 
-当前实现已经建立 VNC namespace、独立 settings/service、`vncrecords` 单表和 `vnclocalrecords` 本地镜像，完成 VNC v2 AAD、直连 RFB、UltraVNC mode 2/mode 12、隔离策略和自动化验证。RDP、RustDesk、SSH/SFTP 仍保留各自 owner 和同步表。
+当前实现已经建立 VNC namespace、独立 settings/service、`vncrecord` 单表和 `vnclocalrecords` 本地镜像，完成 VNC v2 AAD、直连 RFB、UltraVNC mode12 viewer 以及 mode2 server-side 角色边界/fixture、隔离策略和自动化验证。RDP、RustDesk、SSH/SFTP 仍保留各自 owner 和同步表。
 
-当前必须如实区分：代码已具备直连 TCP 和 UltraVNC Repeater 的实现，但尚未用真实 UltraVNC 双端和 API 23 设备验收；WebSocket gateway、公网 relay、SSH tunnel、reverse/listen 因服务端协议/后端部署未提供而显式关闭，不能宣称“公网完整中继已上线”。华为云端只需部署第 0.1 节的 `vncrecords` 一张表，部署和双设备验证由后续执行。
+当前必须如实区分：代码已具备直连 TCP 和 UltraVNC Repeater viewer mode12 的实现，mode2 仅完成官方 server-side listener 契约校验，尚未用真实 UltraVNC 双端和 API 23 设备验收；WebSocket gateway、公网 relay、SSH tunnel、reverse/listen 因服务端协议/后端部署未提供而显式关闭，不能宣称“公网完整中继已上线”。华为云端只需部署第 0.1 节的 `vncrecord` 一张表，部署和双设备验证由后续执行。
