@@ -74,7 +74,7 @@ export struct TerminalEmulator {
   @Prop @Watch('onFontChange') fontSize: number = 18;
   @Prop inputData: string = '';
   @Prop @Watch('onInputSequenceChange') inputSequence: number = 0;
-  @StorageProp('terminalFgColor') @Watch('onFgColorChange') terminalFgColor: string = '#33FF33';
+  @StorageProp('sshTerminalForegroundColor') @Watch('onFgColorChange') terminalFgColor: string = '#33FF33';
   /** 选区模式 — 由父级长按菜单"选择"开启; 开启时 touch 拖选而非滚动 */
   @Prop @Watch('onSelectModeChange') selectMode: boolean = false;
   @Prop bottomAlignSparseContent: boolean = false;

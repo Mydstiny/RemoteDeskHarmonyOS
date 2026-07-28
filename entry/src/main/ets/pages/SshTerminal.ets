@@ -100,7 +100,7 @@ struct SshTerminal {
   @State terminalApplicationKeypad: boolean = false;
   @StorageLink('currentBreakpoint') @Watch('onFontSizeChange') breakpoint: string = 'sm';
   @StorageProp('isDesktopDevice') isDesktopDevice: boolean = false;
-  @StorageLink('terminalFontSize') @Watch('onFontSizeChange') fontSize: number = 18;
+  @StorageLink('sshTerminalFontSize') @Watch('onFontSizeChange') fontSize: number = 18;
   @State termRows: number = 24;
   @State termCols: number = 80;
   @State kbInput: string = '';

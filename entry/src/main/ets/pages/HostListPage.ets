@@ -67,6 +67,7 @@ import {
 } from '../services/RdpCertificatePreflightPolicy';
 import { ExtensionLoader } from '../services/ExtensionLoader';
 import { SshKeyImportService, SshKeyImportResult } from '../services/SshKeyImportService';
+import { SshSettingsService } from '../services/SshSettingsService';
 import {
   nextRdpCertificateProbeGeneration,
   shouldApplyRdpCertificateProbeResult
@@ -157,6 +158,7 @@ import {
   SETTINGS_SECTION_NONE,
   SETTINGS_SECTION_RDP,
   SETTINGS_SECTION_RUSTDESK,
+  SETTINGS_SECTION_SSH,
   SETTINGS_SECTION_VNC,
   SETTINGS_SECTION_SECURITY,
   SETTINGS_SECTION_TUTORIAL,
@@ -468,9 +470,9 @@ struct HostListPage {
   // This field is write-only. Existing Restricted Admin hashes are never displayed in the editor.
   @State sheetRdpRestrictedAdminHash: string = '';
   @State sheetRdpBlankPasswordConfirmed: boolean = false;
-  @StorageLink('terminalFgColor') terminalFgColor: string = '#33FF33';
+  @StorageLink('sshTerminalForegroundColor') terminalFgColor: string = '#33FF33';
   @State showTerminalFgColor: boolean = false;
-  @StorageLink('terminalFontSize') terminalFontSize: number = 18;
+  @StorageLink('sshTerminalFontSize') terminalFontSize: number = 18;
   @State showTerminalFontSize: boolean = false;
   @State showRdpCredentialSheet: boolean = false;
   @State showRdpCredentialEditorSheet: boolean = false;
@@ -542,6 +544,7 @@ struct HostListPage {
   private readonly vncGateways: VncGatewayService = VncGatewayService.getInstance();
   private loader: ExtensionLoader = ExtensionLoader.getInstance();
   private sshKeyImporter: SshKeyImportService = new SshKeyImportService();
+  private readonly sshSettings: SshSettingsService = SshSettingsService.getInstance();
   private lightSensing: LightSensingService = LightSensingService.getInstance();
   @State showPassphraseSheet: boolean = false;
   private hlPassphraseResolve: ((v: string) => void) | null = null;
@@ -696,6 +699,7 @@ struct HostListPage {
     this.syncWallpaperColor();
     this.updateWindowMetrics();
     this.refreshHaloPresets();
+    this.sshSettings.init(getContext(this) as common.Context);
     // 恢复 TOTP 隐私保护状态 (Preferences 持久化)
     try {
       const prefs = preferences.getPreferencesSync(getContext(this), { name: 'RemoteDesktopAppPrefs' });
@@ -709,9 +713,6 @@ struct HostListPage {
       const savedHostAddMode: string = prefs.getSync('hostAddMode', 'modern') as string;
       const savedVirtualMouseStyle: string = prefs.getSync('virtualMouseStyle', 'circle') as string;
       const savedWallpaper: string = prefs.getSync('wallpaperColor', '') as string;
-      // 终端设置
-      const savedTermFg: string = prefs.getSync('terminalFgColor', '') as string;
-      const savedTermFontSize: number = prefs.getSync('terminalFontSize', 0) as number;
       const savedUseNativeCore: boolean = prefs.getSync('useNativeTerminalCore', true) as boolean;
       if (!savedFollowSystem && savedTheme !== '') {
         AppStorage.setOrCreate('currentTheme', savedTheme);
@@ -746,10 +747,6 @@ struct HostListPage {
       const savedWallIdx: number = prefs.getSync('wallpaperIdx', -1) as number;
       if (savedWallIdx >= 0 && savedWallIdx < this.wallpaperItems.length) {
         this.wallpaperIdx = savedWallIdx;
-      }
-      if (savedTermFg !== '') { AppStorage.setOrCreate('terminalFgColor', savedTermFg); }
-      if (savedTermFontSize >= 12 && savedTermFontSize <= 32) {
-        AppStorage.setOrCreate('terminalFontSize', savedTermFontSize);
       }
       AppStorage.setOrCreate('useNativeTerminalCore', savedUseNativeCore);
       // RustDesk / RDP 设置
@@ -1395,6 +1392,38 @@ struct HostListPage {
     });
   }
 
+  private openSshHostListFromSettings(): void {
+    this.showSettingsPanel = false;
+    if (this.isDesktopDevice && this.breakpoint === 'xl') {
+      this.curTab = 2;
+      this.activeFilterProto = 'ssh';
+      this.hostPageTitle = 'SSH 终端';
+      this.updateHostFilter();
+      return;
+    }
+    this.curTab = 0;
+    this.activeFilterProto = '';
+    this.tabsCtrl.changeIndex(0);
+    this.updateHostFilter();
+  }
+
+  private openSshKeyVaultFromSettings(): void {
+    this.showSettingsPanel = false;
+    if (this.isDesktopDevice && this.breakpoint === 'xl') {
+      this.curTab = 3;
+      this.keyVaultInnerTab = 0;
+      return;
+    }
+    this.curTab = 1;
+    this.tabsCtrl.changeIndex(1);
+  }
+
+  private resetSshTerminalAppearance(): void {
+    this.terminalFgColor = this.sshSettings.saveForegroundColor('#33FF33');
+    this.terminalFontSize = this.sshSettings.saveFontSize(18);
+    promptAction.showToast({ message: 'SSH 终端显示已恢复默认', duration: 1500 });
+  }
+
   private settingsSectionExpanded(section: string): boolean {
     return this.expandedSettingsSection === section;
   }
@@ -1414,6 +1443,9 @@ struct HostListPage {
     }
     if (section === SETTINGS_SECTION_RUSTDESK) {
       return 980;
+    }
+    if (section === SETTINGS_SECTION_SSH) {
+      return 540;
     }
     if (section === SETTINGS_SECTION_VNC) {
       return 280;
@@ -3543,8 +3575,11 @@ struct HostListPage {
       const prefs = preferences.getPreferencesSync(getContext(this), { name: 'RemoteDesktopAppPrefs' });
       const restoreVersion: number = prefs.getSync(VIRTUAL_MOUSE_STYLE_RESTORE_VERSION_KEY, 0) as number;
       applyVirtualMouseStyle = shouldApplyCloudVirtualMouseStyle(restoreVersion);
+      this.sshSettings.applyCloudSettings(settings);
       for (let i = 0; i < keys.length; i++) {
         const key: string = keys[i];
+        if (key === 'sshTerminalForegroundColor' || key === 'sshTerminalFontSize' ||
+          key === 'terminalFgColor' || key === 'terminalFontSize') { continue; }
         if (key === 'virtualMouseStyle' && !applyVirtualMouseStyle) { continue; }
         const value = settings[key];
         prefs.putSync(key, value);
@@ -5305,7 +5340,7 @@ struct HostListPage {
 
         ListItem() {
           this.settingsAccordionHeader(SETTINGS_SECTION_APPEARANCE, $r('sys.symbol.paintpalette_fill'),
-            '个性化', '添加方式、主题色、壁纸、光晕和终端显示')
+            '个性化', '添加方式、主题色、壁纸与光晕')
         }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 10 })
 
         // --- 个性化卡片 ---
@@ -5475,28 +5510,6 @@ struct HostListPage {
                   .fontSize(12).fontColor(this.isDesktopDevice ? this.pal().text3 : this.accentColor)
                   .fontFamily(this.font()).margin({ right: 8 })
               }.width('100%').height(62).padding({ left: 16, right: 16 })
-              this.cardDivider()
-              // 终端字体颜色
-              Row() {
-                Row() { Text('Aa').fontSize(16).fontColor(this.pal().text).fontWeight(FontWeight.Bold) }
-                  .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
-                Text('终端字体颜色').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
-                  .fontColor(this.pal().text).fontFamily(this.font()).layoutWeight(1).margin({ left: 4 })
-                Column().width(24).height(24).borderRadius(12).backgroundColor(this.terminalFgColor)
-                Text(' >').fontSize(14).fontColor(this.pal().text3).margin({ left: 6 })
-              }.width('100%').height(60).padding({ left: 16, right: 16 })
-              .onClick(() => { this.openSettingsLeafSheet(SETTINGS_SHEET_TERMINAL_FG_COLOR); })
-              this.cardDivider()
-              // 终端字体大小
-              Row() {
-                Row() { Text('T').fontSize(14).fontColor(this.pal().text).fontWeight(FontWeight.Bold) }
-                  .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
-                Text('终端字体大小').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
-                  .fontColor(this.pal().text).fontFamily(this.font()).layoutWeight(1).margin({ left: 4 })
-                Text(this.terminalFontSize + 'vp').fontSize(13).fontColor(this.pal().text2)
-                Text(' >').fontSize(14).fontColor(this.pal().text3).margin({ left: 6 })
-              }.width('100%').height(60).padding({ left: 16, right: 16 })
-              .onClick(() => { this.openSettingsLeafSheet(SETTINGS_SHEET_TERMINAL_FONT_SIZE); })
             }.borderRadius(24).backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
             .shadow({ radius: 16, color: 'rgba(0,0,0,0.04)', offsetY: 4 })
             .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
@@ -5853,6 +5866,87 @@ struct HostListPage {
         .opacity(this.settingsSectionExpanded(SETTINGS_SECTION_RUSTDESK) ? 1 : 0)
         .scale({ x: 1, y: this.settingsSectionExpanded(SETTINGS_SECTION_RUSTDESK) ? 1 : 0.98 })
         .translate({ y: this.settingsSectionExpanded(SETTINGS_SECTION_RUSTDESK) ? 0 : -8 })
+        .clip(true)
+        .animation({ duration: SETTINGS_ACCORDION_ANIMATION_MS, curve: Curve.FastOutSlowIn })
+
+        ListItem() {
+          this.settingsAccordionHeader(SETTINGS_SECTION_SSH, $r('sys.symbol.desktop_fill'),
+            'SSH 终端', '终端显示、SSH 主机与密钥')
+        }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 10 })
+
+        // --- SSH 终端卡片 ---
+        ListItem() {
+          Column() {
+            Text('SSH 终端').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text3)
+              .fontFamily(this.font()).padding({ left: 8, bottom: 8 })
+            Column() {
+              Row() {
+                Row() { Text('Aa').fontSize(16).fontColor(this.pal().text).fontWeight(FontWeight.Bold) }
+                  .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
+                Text('终端字体颜色').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
+                  .fontColor(this.pal().text).fontFamily(this.font()).layoutWeight(1).margin({ left: 4 })
+                Column().width(24).height(24).borderRadius(12).backgroundColor(this.terminalFgColor)
+                Text(' >').fontSize(14).fontColor(this.pal().text3).margin({ left: 6 })
+              }.width('100%').height(60).padding({ left: 16, right: 16 })
+                .onClick(() => { this.openSettingsLeafSheet(SETTINGS_SHEET_TERMINAL_FG_COLOR); })
+              this.cardDivider()
+              Row() {
+                Row() { Text('T').fontSize(14).fontColor(this.pal().text).fontWeight(FontWeight.Bold) }
+                  .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
+                Text('终端字体大小').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
+                  .fontColor(this.pal().text).fontFamily(this.font()).layoutWeight(1).margin({ left: 4 })
+                Text(this.terminalFontSize + 'vp').fontSize(13).fontColor(this.pal().text2)
+                Text(' >').fontSize(14).fontColor(this.pal().text3).margin({ left: 6 })
+              }.width('100%').height(60).padding({ left: 16, right: 16 })
+                .onClick(() => { this.openSettingsLeafSheet(SETTINGS_SHEET_TERMINAL_FONT_SIZE); })
+              this.cardDivider()
+              Row() {
+                Column() {
+                  Text('终端预览').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
+                    .fontColor(this.pal().text).fontFamily(this.font())
+                  Text('显示当前颜色和字号，不影响已建立会话的 PTY 尺寸')
+                    .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
+                    .maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
+                }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 16 })
+                Column() {
+                  Text('user@host:~$ ls -la').fontSize(Math.max(12, Math.min(18, this.terminalFontSize)))
+                    .fontColor(this.terminalFgColor).fontFamily('monospace')
+                  Text('drwxr-xr-x  4 user  staff').fontSize(10)
+                    .fontColor(this.terminalFgColor).fontFamily('monospace').margin({ top: 4 })
+                }.width(188).alignItems(HorizontalAlign.Start).padding({ left: 10, right: 10, top: 8, bottom: 8 })
+                  .backgroundColor('#0D0D0D').borderRadius(8)
+              }.width('100%').height(88).padding({ left: 0, right: 16 })
+              this.cardDivider()
+              this.cardActionRow($r('app.media.icon_terminal'), '管理 SSH 主机',
+                this.sshCount.toString() + ' 台主机 · 地址、认证和代理仍按主机配置',
+                (): void => { this.openSshHostListFromSettings(); })
+              this.cardDivider()
+              this.cardActionRow($r('app.media.icon_lock'), 'SSH 密钥保险库',
+                this.keyCount.toString() + ' 个密钥 · 私钥和 passphrase 不进入通用设置',
+                (): void => { this.openSshKeyVaultFromSettings(); })
+              this.cardDivider()
+              Row() {
+                Column() {
+                  Text('主机指纹').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
+                    .fontColor(this.pal().text).fontFamily(this.font())
+                  Text('继续在“数据安全”中管理，暂不迁移 trust 入口')
+                    .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
+                    .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+                }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 16 })
+                Button('恢复默认').height(32).fontSize(12).backgroundColor(this.pal().surface)
+                  .fontColor(this.pal().text2).borderRadius(8)
+                  .onClick((): void => { this.resetSshTerminalAppearance(); })
+              }.width('100%').height(62).padding({ left: 0, right: 16 })
+            }.borderRadius(24).backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
+              .shadow({ radius: 16, color: 'rgba(0,0,0,0.04)', offsetY: 4 })
+              .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
+          }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 20 })
+        }
+        .constraintSize({ maxHeight: this.settingsSectionExpanded(SETTINGS_SECTION_SSH) ?
+          this.settingsSectionExpandedMaxHeight(SETTINGS_SECTION_SSH) : 0 })
+        .opacity(this.settingsSectionExpanded(SETTINGS_SECTION_SSH) ? 1 : 0)
+        .scale({ x: 1, y: this.settingsSectionExpanded(SETTINGS_SECTION_SSH) ? 1 : 0.98 })
+        .translate({ y: this.settingsSectionExpanded(SETTINGS_SECTION_SSH) ? 0 : -8 })
         .clip(true)
         .animation({ duration: SETTINGS_ACCORDION_ANIMATION_MS, curve: Curve.FastOutSlowIn })
 
@@ -8898,10 +8992,8 @@ struct HostListPage {
             Column().width(48).height(48).borderRadius(14)
               .backgroundColor(hex)
               .border({ width: this.terminalFgColor === hex ? 3 : 0, color: this.pal().text })
-              .onClick(() => {
-                this.terminalFgColor = hex;
-                AppStorage.setOrCreate('terminalFgColor', hex);
-                this.persistPref('terminalFgColor', hex);
+            .onClick(() => {
+                this.terminalFgColor = this.sshSettings.saveForegroundColor(hex);
               })
           }
         })
@@ -8936,9 +9028,7 @@ struct HostListPage {
             .backgroundColor(this.terminalFontSize === sz ? this.accentColor : this.pal().card)
             .border({ width: this.terminalFontSize === sz ? 0 : 1, color: this.pal().cardBorder })
             .onClick(() => {
-              this.terminalFontSize = sz;
-              AppStorage.setOrCreate('terminalFontSize', sz);
-              this.persistPref('terminalFontSize', sz);
+              this.terminalFontSize = this.sshSettings.saveFontSize(sz);
             })
           }
         })

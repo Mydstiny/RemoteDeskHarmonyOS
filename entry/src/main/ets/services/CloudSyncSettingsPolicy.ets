@@ -11,6 +11,8 @@ const CLOUD_USER_SETTING_NAMES: string[] = [
   'liveViewMode',
   'hostAddMode',
   'virtualMouseStyle',
+  'sshTerminalForegroundColor',
+  'sshTerminalFontSize',
   'terminalFgColor',
   'terminalFontSize',
   'useNativeTerminalCore',

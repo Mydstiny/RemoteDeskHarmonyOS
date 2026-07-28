@@ -5,12 +5,15 @@ Updated: 2026-07-28 Asia/Shanghai
 ## Repository
 
 - Repository: Mydstiny/RemoteDeskHarmonyOS
-- Task branch: `codex/real-remote-cursor-shape`
-- Scope: isolated VNC settings, real host-add flow, RFB/UltraVNC transport, one-table cloud sync and VNC crypto/reset hardening.
-- The worktree also contains user-owned RustDesk/RDP pinch, remote-cursor and SSH changes; they remain untouched.
+- Task branch: `main` (current-branch SSH implementation explicitly authorized by the user)
+- Scope: SSH independent settings accordion and terminal appearance migration; the checkout also contains the previously completed isolated VNC implementation.
+- The worktree also contains user-owned RustDesk/RDP pinch, remote-cursor and TouchpadPointerCurve test changes; they remain untouched.
 
 ## Result
 
+- SSH settings now has one dedicated accordion immediately after Windows RDP and RustDesk, and before 数据安全. Terminal foreground color and font size were removed from 个性化 and are now owned by `SshSettingsService` through namespaced keys with legacy aliases.
+- SSH settings exposes terminal appearance, preview/default reset, SSH host and key-vault shortcuts. SSH host fingerprint management was deliberately not migrated: 数据安全 and the existing per-host preflight remain the only trust-management path.
+- SSH settings continue to use existing `usersettings`, `RemoteHost`, `SshKey` and `KeyVaultService` owners; no SSH cloud table or sensitive global setting was added. RDP, RustDesk and VNC owners were not changed.
 - VNC now has its own settings page, model, host/gateway/secret/trust services and connection projection. It does not use RDP, RustDesk or SSH/SFTP data owners.
 - The only new cloud table is `vncrecord`; `recordtype` carries `settings`, `host`, `gateway`, `secret` and `trust`. `vnclocalrecords` is device-local only.
 - VNC secrets use the context-bound AES-GCM v2 envelope. Secrets are opt-in for sync and require an unlocked crypto state plus explicit VNC selection.
@@ -26,12 +29,13 @@ Updated: 2026-07-28 Asia/Shanghai
 
 ## Verification
 
-- `default@OhosTestCompileArkTS`: passed after the VNC protocol/cloud changes; existing repository/dependency warnings remain.
-- Production `assembleHap`: `BUILD SUCCESSFUL` after compiling the VNC protocol helper into the native product.
+- `default@OhosTestCompileArkTS`: passed after the Preferences type-guard patch; existing repository/dependency warnings remain.
+- Production `assembleHap`: `BUILD SUCCESSFUL` after the Preferences type-guard patch.
 - Native test target: `144 passed, 0 failed`; the target compiles the actual VNC transport and RFB engine plus tests ClientInit, RFB dialect/security-result rules, Repeater fixed-width/banner/short-read/invalid-target and role-boundary checks.
-- `git diff --check`: passed after the implementation and shared-state updates.
-- Light open-source compliance gate: passed.
+- `git diff --check` and `git diff --cached --check`: passed after the implementation and shared-state updates.
+- Light open-source compliance gate: passed via the repository-local `.tools/bin/pwsh` runtime.
 - `ohosTest@OhosTestCompileArkTS`: not runnable in this environment because the task is not registered (`00306054`); this is an environment/task-graph limitation, not a source compile failure.
+- Read-only SSH review: passed with no P0/P1/P2 findings; the reviewer confirmed the accordion order, the data-security-only fingerprint entry and no cross-module cycle.
 
 ## External acceptance still required
 
@@ -39,8 +43,9 @@ Updated: 2026-07-28 Asia/Shanghai
 - Two API 23 devices using one Huawei account validate scope selection, secret opt-in, trust re-confirmation, user-deletion tombstones, reset epoch and offline recovery. Scope deselection must leave the shared row unchanged.
 - Real VNC server validates direct TCP; a real UltraVNC Repeater validates viewer mode12 pairing, input, disconnect and reconnect. Mode2 requires a separate VNC server-side listener component and is not an enabled HarmonyOS viewer path.
 - WebSocket/public relay/SSH tunnel remain gated until endpoint, authentication, trust and lifecycle contracts exist.
+- SSH settings still require API 23 PC/phone/tablet UI smoke validation, including accordion order, appearance persistence and trust-entry location; no real host fingerprint is auto-trusted by this change.
 
 ## Local-only boundary
 
-- User-owned untracked plans remain preserved and are not part of this repair. The tracked VNC entity plan is kept aligned with the deployed physical table name `vncrecord`.
+- User-owned TouchpadPointerCurve test changes and the other untracked plans remain preserved and are not part of the SSH implementation commit. The SSH plan records the fixed RDP -> RustDesk -> SSH -> 数据安全 order and the no-fingerprint-migration boundary.
 - SDKs, signing profiles, device data, private addresses, credentials, raw logs and screenshots remain outside the shared records.

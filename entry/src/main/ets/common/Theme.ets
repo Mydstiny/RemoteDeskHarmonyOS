@@ -7,6 +7,14 @@ import {
   HALO_COLOR_LIGHT_KEY,
   resolveStoredHaloColorForTheme
 } from '../services/HaloColorPolicy';
+import {
+  SSH_DEFAULT_TERMINAL_FONT_SIZE,
+  SSH_DEFAULT_TERMINAL_FOREGROUND_COLOR,
+  SSH_LEGACY_FONT_SIZE_KEY,
+  SSH_LEGACY_FOREGROUND_COLOR_KEY,
+  SSH_TERMINAL_FONT_SIZE_KEY,
+  SSH_TERMINAL_FOREGROUND_COLOR_KEY
+} from '../services/SshSettingsPolicy';
 
 // ==================== 主题色预设 ====================
 export interface ColorPreset {
@@ -102,10 +110,12 @@ export function getAccentColor(): string {
   return AppStorage.get<string>('accentColor') ?? '#007DFF';
 }
 export function getTerminalFgColor(): string {
-  return AppStorage.get<string>('terminalFgColor') ?? '#33FF33';
+  return AppStorage.get<string>(SSH_TERMINAL_FOREGROUND_COLOR_KEY) ??
+    AppStorage.get<string>(SSH_LEGACY_FOREGROUND_COLOR_KEY) ?? SSH_DEFAULT_TERMINAL_FOREGROUND_COLOR;
 }
 export function getTerminalFontSize(): number {
-  return AppStorage.get<number>('terminalFontSize') ?? 14;
+  return AppStorage.get<number>(SSH_TERMINAL_FONT_SIZE_KEY) ??
+    AppStorage.get<number>(SSH_LEGACY_FONT_SIZE_KEY) ?? SSH_DEFAULT_TERMINAL_FONT_SIZE;
 }
 export function getAccentAlpha(alpha: number): string {
   const hex: string = getAccentColor();

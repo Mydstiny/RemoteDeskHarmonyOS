@@ -5,6 +5,7 @@ export const SETTINGS_SECTION_CONNECTION_LIVE: string = 'connectionLive';
 export const SETTINGS_SECTION_DISPLAY_INTERACTION: string = 'displayInteraction';
 export const SETTINGS_SECTION_RDP: string = 'windowsRdp';
 export const SETTINGS_SECTION_RUSTDESK: string = 'rustdesk';
+export const SETTINGS_SECTION_SSH: string = 'ssh';
 export const SETTINGS_SECTION_VNC: string = 'vnc';
 export const SETTINGS_SECTION_SECURITY: string = 'security';
 export const SETTINGS_SECTION_TUTORIAL: string = 'tutorial';

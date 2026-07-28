@@ -47,7 +47,7 @@ export struct NativeTerminalRenderer {
   @Prop @Watch('onFontChange') fontSize: number = 18;
   @Prop inputData: ArrayBuffer = new ArrayBuffer(0);
   @Prop @Watch('onInputSequenceChange') inputSequence: number = 0;
-  @StorageProp('terminalFgColor') @Watch('onFgColorChange') terminalFgColor: string = '#33FF33';
+  @StorageProp('sshTerminalForegroundColor') @Watch('onFgColorChange') terminalFgColor: string = '#33FF33';
   @Prop selectMode: boolean = false;
   @Prop bottomAlignSparseContent: boolean = false;
   @Prop @Watch('onScrollToBottomRequest') scrollToBottomRequest: number = 0;
@@ -486,7 +486,7 @@ export struct NativeTerminalRenderer {
       }
       // 前景字符
       if (cell.ch === ' ' || cell.ch === '\x00') { continue; }
-      // 默认前景色用用户设置的 terminalFgColor 替代 Rust 硬编码灰色
+      // 默认前景色用 SSH 终端设置替代 Rust 硬编码灰色
       ctx.fillStyle = (fg === DEFAULT_FG) ? this.terminalFgColor : NativeTerminalRenderer.rgbaToCss(fg);
       ctx.font = this.canvasFont(cell.bold, cell.italic);
       ctx.textBaseline = 'middle';

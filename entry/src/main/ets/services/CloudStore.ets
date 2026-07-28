@@ -74,6 +74,19 @@ import {
   shouldApplyCloudVirtualMouseStyle
 } from './RemoteCursorStylePolicy';
 import {
+  SSH_LEGACY_FONT_SIZE_KEY,
+  SSH_LEGACY_FOREGROUND_COLOR_KEY,
+  SSH_SETTINGS_SCHEMA_VERSION,
+  SSH_SETTINGS_SCHEMA_VERSION_KEY,
+  SSH_TERMINAL_FONT_SIZE_KEY,
+  SSH_TERMINAL_FOREGROUND_COLOR_KEY,
+  SshTerminalAppearance,
+  hasSshTerminalAppearanceCloudSettings,
+  isSshTerminalAppearanceKey,
+  resolveSshTerminalAppearance,
+  resolveSshTerminalAppearanceFromCloudSettings
+} from './SshSettingsPolicy';
+import {
   cloudTableColumns,
   encodeUserSettingsPayload,
   decodeUserSettingsPayload,
@@ -902,12 +915,38 @@ export class CloudStore implements CryptoCloudStore {
       const prefs = preferences.getPreferencesSync(this.appContext, { name: 'RemoteDesktopAppPrefs' });
       const restoreVersion: number = prefs.getSync(VIRTUAL_MOUSE_STYLE_RESTORE_VERSION_KEY, 0) as number;
       applyVirtualMouseStyle = shouldApplyCloudVirtualMouseStyle(restoreVersion);
+      const storedSshColor: Object = prefs.getSync(SSH_TERMINAL_FOREGROUND_COLOR_KEY, '') as Object;
+      const storedLegacySshColor: Object = prefs.getSync(SSH_LEGACY_FOREGROUND_COLOR_KEY, '') as Object;
+      const storedSshFontSize: Object = prefs.getSync(SSH_TERMINAL_FONT_SIZE_KEY, 0) as Object;
+      const storedLegacySshFontSize: Object = prefs.getSync(SSH_LEGACY_FONT_SIZE_KEY, 0) as Object;
+      const currentSshAppearance: SshTerminalAppearance = resolveSshTerminalAppearance(
+        typeof storedSshColor === 'string' ? storedSshColor as string : '',
+        typeof storedLegacySshColor === 'string' ? storedLegacySshColor as string : '',
+        typeof storedSshFontSize === 'number' ? storedSshFontSize as number : 0,
+        typeof storedLegacySshFontSize === 'number' ? storedLegacySshFontSize as number : 0
+      );
+      const hasSshSettings: boolean = hasSshTerminalAppearanceCloudSettings(settings);
+      const nextSshAppearance: SshTerminalAppearance = hasSshSettings
+        ? resolveSshTerminalAppearanceFromCloudSettings(settings, currentSshAppearance)
+        : currentSshAppearance;
       for (let i = 0; i < keys.length; i++) {
         const key: string = keys[i];
         if (!cloudUserSettingIsSyncable(key)) { continue; }
+        if (isSshTerminalAppearanceKey(key)) { continue; }
         if (key === 'virtualMouseStyle' && !applyVirtualMouseStyle) { continue; }
         prefs.putSync(key, settings[key]);
         AppStorage.setOrCreate(key, settings[key]);
+      }
+      if (hasSshSettings) {
+        prefs.putSync(SSH_TERMINAL_FOREGROUND_COLOR_KEY, nextSshAppearance.foregroundColor);
+        prefs.putSync(SSH_TERMINAL_FONT_SIZE_KEY, nextSshAppearance.fontSize);
+        prefs.putSync(SSH_LEGACY_FOREGROUND_COLOR_KEY, nextSshAppearance.foregroundColor);
+        prefs.putSync(SSH_LEGACY_FONT_SIZE_KEY, nextSshAppearance.fontSize);
+        prefs.putSync(SSH_SETTINGS_SCHEMA_VERSION_KEY, SSH_SETTINGS_SCHEMA_VERSION);
+        AppStorage.setOrCreate(SSH_TERMINAL_FOREGROUND_COLOR_KEY, nextSshAppearance.foregroundColor);
+        AppStorage.setOrCreate(SSH_TERMINAL_FONT_SIZE_KEY, nextSshAppearance.fontSize);
+        AppStorage.setOrCreate(SSH_LEGACY_FOREGROUND_COLOR_KEY, nextSshAppearance.foregroundColor);
+        AppStorage.setOrCreate(SSH_LEGACY_FONT_SIZE_KEY, nextSshAppearance.fontSize);
       }
       prefs.flushSync();
     } catch (err) {
