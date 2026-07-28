@@ -21,8 +21,7 @@ import { HostSyncService } from '../services/HostSyncService';
 import { RustDeskProSyncService } from '../services/RustDeskProSyncService';
 import { snapshotSelectedRelay } from '../services/RustDeskRelayHealthPolicy';
 import { Palette, buildDark, buildLight, AppTheme } from '../common/Theme';
-import { resolveFabAddStyle } from '../services/FabAddStylePolicy';
-import { ModernRelayAddFlow } from '../components/resourceadd/modern/ModernRelayAddFlow';
+import { ResourceFabPicker } from '../components/resourceadd/ResourceFabPicker';
 import { RustDeskRelayImportService, RustDeskRelayImportResult } from '../services/RustDeskRelayImportService';
 import { RustDeskRelayKeyMode, resolveRustDeskRelayKey } from '../services/RustDeskRelayKeyPolicy';
 import { RustDeskRelayConfigPasteSheet } from '../components/resourceadd/modern/RustDeskRelayConfigPasteSheet';
@@ -47,12 +46,11 @@ export struct RustDeskRelayPage {
   @StorageProp('currentBreakpoint') breakpoint: string = 'sm';
   @StorageProp('isDesktopDevice') isDesktopDevice: boolean = false;
   @StorageProp('topRectHeight') topRectHeight: number = 0;
-  @StorageProp('hostAddMode') fabAddStyle: string = 'modern';
   @State relays: RustDeskRelayConfig[] = [];
   @State vncGateways: VncGatewayView[] = [];
   @State expandedRelayIds: string[] = [];
   @State showSheet: boolean = false;
-  @State sheetContent: number = 1;  // 1/3/4=RustDesk, 8=modern RustDesk, 10=VNC Gateway
+  @State sheetContent: number = 1;  // 1/3/4=RustDesk, 5/6=add pickers, 10=VNC Gateway
   @State savedRelayId: string = '';
   @State relayKind: string = 'oss';
   @State editingRelayId: string = '';
@@ -327,9 +325,9 @@ export struct RustDeskRelayPage {
     if (this.relaySheetClosing) { return; }
     this.resetRelayForm();
     this.relayKind = 'oss';
-    // Keep the released RustDesk entry contract: the selected FAB style
-    // decides between the modern wizard and the original compact form.
-    this.sheetContent = resolveFabAddStyle(this.fabAddStyle, this.isDesktopDevice) === 'modern' ? 8 : 1;
+    // Keep the released RustDesk entry contract while exposing VNC as a
+    // separate add action. The directory itself has no protocol filter.
+    this.sheetContent = 5;
     this.showSheet = true;
   }
 
@@ -1483,6 +1481,25 @@ export struct RustDeskRelayPage {
       .borderRadius(6).backgroundColor(this.pal().surface).margin({ right: 6 })
   }
 
+  @Builder relayProtocolChoiceSheet() {
+    ResourceFabPicker({
+      kind: 'gateway',
+      onSelect: (option: string): void => {
+        if (option === 'rustdesk') { this.sheetContent = 6; }
+        if (option === 'vnc') { this.openVncGatewaySheet(); }
+      },
+      onClose: (): void => { this.closeSheet(); }
+    })
+  }
+
+  @Builder relayTypeChoiceSheet() {
+    ResourceFabPicker({
+      kind: 'relay',
+      onSelect: (option: string): void => { this.relayKind = option; this.sheetContent = 1; },
+      onClose: (): void => { this.closeSheet(); }
+    })
+  }
+
   @Builder relayCardContent(relay: RustDeskRelayConfig, enableTap: boolean) {
     Column() {
       // Card header.  Keep the health action and overflow menu outside the
@@ -1867,11 +1884,10 @@ export struct RustDeskRelayPage {
       this.proAccountEditSheet()
     } else if (this.sheetContent === 4) {
       this.relaySavedSheet()
-    } else if (this.sheetContent === 8) {
-      ModernRelayAddFlow({
-        onClose: (): void => { this.closeSheet(); },
-        onSaved: (_resourceId: string): void => { this.load(); }
-      })
+    } else if (this.sheetContent === 5) {
+      this.relayProtocolChoiceSheet()
+    } else if (this.sheetContent === 6) {
+      this.relayTypeChoiceSheet()
     } else if (this.sheetContent === 10) {
       VncGatewayAddFlow({
         initialGateway: this.editingVncGateway,

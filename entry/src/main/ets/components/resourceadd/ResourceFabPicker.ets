@@ -40,10 +40,8 @@ export struct ResourceFabPicker {
 
   @Builder private option(id: string, title: string, subtitle: string) {
     Row() {
-      if (this.kind !== 'gateway') {
-        SymbolGlyph(protocolIcon(this.iconKey(id))).fontSize(24)
-          .fontColor([this.accentColor]).margin({ right: 14 })
-      }
+      SymbolGlyph(protocolIcon(this.iconKey(id))).fontSize(24)
+        .fontColor([this.accentColor]).margin({ right: 14 })
       Column() {
         Text(title).fontSize(16).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
         Text(subtitle).fontSize(12).fontColor(this.pal().text3).margin({ top: 3 })
@@ -76,6 +74,7 @@ export struct ResourceFabPicker {
         this.option('manual', '手动输入', '填写发行方、账户和 Secret')
       } else if (this.kind === 'gateway') {
         this.option('rustdesk', 'RustDesk 中继', '配置 RustDesk ID、Relay 与 Server Pro')
+        this.option('vnc', 'VNC Gateway', '配置 VNC Repeater 或版本化 Gateway')
       } else {
         this.option('oss', 'RustDesk OSS', '自建开源 ID 与 Relay 服务')
         this.option('pro', 'RustDesk Server Pro', 'API 登录与地址簿设备同步')
