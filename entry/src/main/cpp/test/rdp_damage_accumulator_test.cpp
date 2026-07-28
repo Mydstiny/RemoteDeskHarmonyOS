@@ -195,6 +195,52 @@ RDP_TEST_CASE(rdp_damage_accumulator_fences_one_row_burst_and_tail_updates) {
     RDP_ASSERT(TakeCommittedSnapshot(accumulator).fullFrame);
 }
 
+RDP_TEST_CASE(rdp_damage_accumulator_fences_narrow_continuation_band_but_not_cursor) {
+    RdpDamageAccumulator accumulator;
+    std::vector<uint8_t> frame = MakeFrame(100, 100, 400, 1);
+    accumulator.update(frame.data(), frame.size(), 100, 100, 400,
+                       0, 0, 100, 100, 1, false);
+    RDP_ASSERT(TakeCommittedSnapshot(accumulator).fullFrame);
+
+    // A later page-repaint strip can be narrower than the first broad band;
+    // it must remain behind the continuation fence.
+    accumulator.update(frame.data(), frame.size(), 100, 100, 400,
+                       8, 20, 8, 2, 1, false);
+    const RdpDamageSnapshot initialNarrow = accumulator.takeSnapshot();
+    RDP_ASSERT(initialNarrow.valid);
+    RDP_ASSERT(!initialNarrow.fullFrame);
+
+    // A broad repaint establishes the burst. Narrow strips that follow that
+    // signal belong behind the visual commit fence.
+    accumulator.update(frame.data(), frame.size(), 100, 100, 400,
+                       0, 0, 80, 2, 1, false);
+    RDP_ASSERT(accumulator.takeSnapshot().deferred);
+    RDP_ASSERT(TakeCommittedSnapshot(accumulator).fullFrame);
+
+    // A later page-repaint strip can be narrower than the broad band; it must
+    // remain behind the continuation fence. This also exercises the exact
+    // 8%-length and 2px-thickness lower bounds.
+    accumulator.update(frame.data(), frame.size(), 100, 100, 400,
+                       8, 20, 8, 2, 1, false);
+    RDP_ASSERT(accumulator.takeSnapshot().deferred);
+    RDP_ASSERT(TakeCommittedSnapshot(accumulator).fullFrame);
+
+    // A square whose thickness exceeds 12% in both directions is not a
+    // continuation strip and remains dirty-only.
+    accumulator.update(frame.data(), frame.size(), 100, 100, 400,
+                       8, 20, 13, 13, 1, false);
+    const RdpDamageSnapshot thickStrip = accumulator.takeSnapshot();
+    RDP_ASSERT(thickStrip.valid);
+    RDP_ASSERT(!thickStrip.fullFrame);
+
+    // A single-pixel cursor update must not reopen the full-frame fence.
+    accumulator.update(frame.data(), frame.size(), 100, 100, 400,
+                       40, 40, 1, 1, 1, false);
+    const RdpDamageSnapshot cursor = accumulator.takeSnapshot();
+    RDP_ASSERT(cursor.valid);
+    RDP_ASSERT(!cursor.fullFrame);
+}
+
 RDP_TEST_CASE(rdp_damage_accumulator_snapshot_failure_keeps_pending_damage) {
     RdpDamageAccumulator accumulator;
     std::vector<uint8_t> frame = MakeFrame(4, 4, 16, 1);

@@ -60,6 +60,8 @@ private:
                                     int frameWidth, int frameHeight);
     static bool LooksLikeBroadRefresh(const RdpDamageRect& rect,
                                       int frameWidth, int frameHeight);
+    static bool LooksLikeRefreshContinuation(const RdpDamageRect& rect,
+                                             int frameWidth, int frameHeight);
 
     mutable std::mutex mutex_;
     std::vector<uint8_t> staging_;

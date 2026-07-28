@@ -91,6 +91,30 @@ bool RdpDamageAccumulator::LooksLikeBroadRefresh(const RdpDamageRect& rect,
     return horizontalBand || verticalBand || largeArea;
 }
 
+bool RdpDamageAccumulator::LooksLikeRefreshContinuation(const RdpDamageRect& rect,
+                                                        int frameWidth, int frameHeight) {
+    if (!rect.valid || frameWidth <= 0 || frameHeight <= 0) {
+        return false;
+    }
+
+    // Once a visual refresh fence is already active, the remaining RDP GDI
+    // updates can be narrower than the first band. Treat a meaningful strip
+    // as part of that same episode, but leave tiny cursor/toolbar updates on
+    // the low-latency dirty path. The absolute minimums keep the rule useful
+    // on small test frames without classifying a 1x1 cursor as a repaint.
+    const int64_t minimumHorizontalLength = std::max<int64_t>(8, frameWidth * 8LL / 100LL);
+    const int64_t minimumVerticalLength = std::max<int64_t>(8, frameHeight * 8LL / 100LL);
+    const int64_t minimumHorizontalThickness = 2;
+    const int64_t minimumVerticalThickness = 2;
+    const bool horizontalStrip = static_cast<int64_t>(rect.width) >= minimumHorizontalLength &&
+        static_cast<int64_t>(rect.height) >= minimumHorizontalThickness &&
+        static_cast<int64_t>(rect.height) * 100 <= static_cast<int64_t>(frameHeight) * 12;
+    const bool verticalStrip = static_cast<int64_t>(rect.height) >= minimumVerticalLength &&
+        static_cast<int64_t>(rect.width) >= minimumVerticalThickness &&
+        static_cast<int64_t>(rect.width) * 100 <= static_cast<int64_t>(frameWidth) * 12;
+    return horizontalStrip || verticalStrip;
+}
+
 RdpDamageUpdateResult RdpDamageAccumulator::update(
     const uint8_t* data, size_t size, int width, int height, int sourceStride,
     int dirtyX, int dirtyY, int dirtyWidth, int dirtyHeight,
@@ -138,7 +162,12 @@ RdpDamageUpdateResult RdpDamageAccumulator::update(
             pendingDamage_ = {0, 0, width, height, true};
             pendingFullFrame_ = true;
             visualCommitActive_ = true;
-            visualCommitBurstDetected_ = true;
+            // A full resync establishes the first visible canvas, but it is
+            // not evidence that a page repaint is continuing. Only a later
+            // broad refresh (or a real burst already in progress) may open
+            // the narrow-strip continuation path. This keeps a normal
+            // post-connect toolbar/cursor update on the dirty path.
+            visualCommitBurstDetected_ = false;
             visualCommitContinuation_ = visualCommitContinuation_ ||
                 RdpVisualCommitPolicy::InBurstContinuation(nowUs, visualCommitLastCommitUs_);
             visualCommitStartedUs_ = nowUs;
@@ -148,7 +177,11 @@ RdpDamageUpdateResult RdpDamageAccumulator::update(
         } else {
             const bool continuation = RdpVisualCommitPolicy::InBurstContinuation(
                 nowUs, visualCommitLastCommitUs_);
-            const bool refreshSignal = LooksLikeBroadRefresh(clipped, width_, height_);
+            const bool broadRefresh = LooksLikeBroadRefresh(clipped, width_, height_);
+            const bool narrowContinuation = LooksLikeRefreshContinuation(
+                clipped, width_, height_) &&
+                ((visualCommitActive_ && visualCommitBurstDetected_) || continuation);
+            const bool refreshSignal = broadRefresh || narrowContinuation;
             if (!visualCommitActive_ && refreshSignal) {
                 pendingFullFrame_ = true;
                 visualCommitActive_ = true;
