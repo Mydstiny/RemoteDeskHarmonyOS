@@ -158,6 +158,24 @@ RDP_TEST_CASE(rdp_damage_accumulator_fences_broad_refresh_bands) {
     RDP_ASSERT(TakeCommittedSnapshot(accumulator).fullFrame);
 }
 
+RDP_TEST_CASE(rdp_damage_accumulator_fences_one_row_burst_and_tail_updates) {
+    RdpDamageAccumulator accumulator;
+    std::vector<uint8_t> frame = MakeFrame(10, 10, 40, 1);
+    accumulator.update(frame.data(), frame.size(), 10, 10, 40, 0, 0, 10, 10, 1, false);
+    RDP_ASSERT(TakeCommittedSnapshot(accumulator).fullFrame);
+
+    // FreeRDP may report a page repaint as one full-width row at a time.
+    accumulator.update(frame.data(), frame.size(), 10, 10, 40, 0, 3, 10, 1, 1, false);
+    RDP_ASSERT(accumulator.takeSnapshot().deferred);
+    RDP_ASSERT(TakeCommittedSnapshot(accumulator).fullFrame);
+
+    // A strip arriving immediately after the max/quiet commit belongs to the
+    // same visual burst and must not leak through as a dirty-rect present.
+    accumulator.update(frame.data(), frame.size(), 10, 10, 40, 2, 4, 3, 1, 1, false);
+    RDP_ASSERT(accumulator.takeSnapshot().deferred);
+    RDP_ASSERT(TakeCommittedSnapshot(accumulator).fullFrame);
+}
+
 RDP_TEST_CASE(rdp_damage_accumulator_snapshot_failure_keeps_pending_damage) {
     RdpDamageAccumulator accumulator;
     std::vector<uint8_t> frame = MakeFrame(4, 4, 16, 1);
@@ -186,4 +204,7 @@ RDP_TEST_CASE(rdp_visual_commit_policy_waits_for_quiet_period_but_has_a_deadline
     const RdpVisualCommitDecision deadline = RdpVisualCommitPolicy::Evaluate(
         260000, 100000, 250000);
     RDP_ASSERT(!deadline.defer);
+
+    RDP_ASSERT(RdpVisualCommitPolicy::InBurstContinuation(300000, 200000));
+    RDP_ASSERT(!RdpVisualCommitPolicy::InBurstContinuation(320000, 200000));
 }

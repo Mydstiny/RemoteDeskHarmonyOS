@@ -70,8 +70,10 @@ private:
     RdpDamageRect pendingDamage_;
     bool pendingFullFrame_ = false;
     bool visualCommitActive_ = false;
+    bool visualCommitBurstDetected_ = false;
     int64_t visualCommitStartedUs_ = 0;
     int64_t visualCommitLastUpdateUs_ = 0;
+    int64_t visualCommitLastCommitUs_ = 0;
     size_t snapshotAllocationLimit_ = std::numeric_limits<size_t>::max();
 };
 

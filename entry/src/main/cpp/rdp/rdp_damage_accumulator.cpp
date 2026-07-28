@@ -71,7 +71,7 @@ bool RdpDamageAccumulator::LooksLikeBroadRefresh(const RdpDamageRect& rect,
     // Treat those as a visual burst even before the union reaches the legacy
     // 70% threshold. A narrow cursor/window update remains dirty-only.
     const bool broadWidth = static_cast<int64_t>(rect.width) * 100 >=
-        static_cast<int64_t>(frameWidth) * 75 && rect.height >= 2;
+        static_cast<int64_t>(frameWidth) * 75 && rect.height >= 1;
     const bool broadHeight = static_cast<int64_t>(rect.height) * 100 >=
         static_cast<int64_t>(frameHeight) * 75 && rect.width >= 2;
     return broadWidth || broadHeight;
@@ -124,16 +124,27 @@ RdpDamageUpdateResult RdpDamageAccumulator::update(
             pendingDamage_ = {0, 0, width, height, true};
             pendingFullFrame_ = true;
             visualCommitActive_ = true;
+            visualCommitBurstDetected_ = visualCommitBurstDetected_ ||
+                RdpVisualCommitPolicy::InBurstContinuation(nowUs, visualCommitLastCommitUs_);
             visualCommitStartedUs_ = nowUs;
             visualCommitLastUpdateUs_ = nowUs;
             result.copiedBytes = static_cast<uint64_t>(tightStride) *
                 static_cast<uint64_t>(height);
         } else {
-            if (!visualCommitActive_ && LooksLikeBroadRefresh(clipped, width_, height_)) {
+            const bool continuation = RdpVisualCommitPolicy::InBurstContinuation(
+                nowUs, visualCommitLastCommitUs_);
+            const bool broadRefresh = LooksLikeBroadRefresh(clipped, width_, height_);
+            if (!visualCommitActive_ && (continuation || broadRefresh)) {
                 pendingFullFrame_ = true;
                 visualCommitActive_ = true;
+                visualCommitBurstDetected_ = true;
                 visualCommitStartedUs_ = nowUs;
                 visualCommitLastUpdateUs_ = nowUs;
+            } else if (visualCommitActive_ && broadRefresh) {
+                // The first full resync may already have opened the fence;
+                // remember that the following broad updates are a real burst
+                // so the committed frame gets a continuation tail as well.
+                visualCommitBurstDetected_ = true;
             }
             const size_t rowBytes = static_cast<size_t>(clipped.width) * 4U;
             for (int row = 0; row < clipped.height; ++row) {
@@ -156,6 +167,7 @@ RdpDamageUpdateResult RdpDamageAccumulator::update(
                 pendingFullFrame_ = true;
                 if (!visualCommitActive_) {
                     visualCommitActive_ = true;
+                    visualCommitBurstDetected_ = true;
                     visualCommitStartedUs_ = nowUs;
                 }
                 visualCommitLastUpdateUs_ = nowUs;
@@ -183,8 +195,10 @@ bool RdpDamageAccumulator::requestFullSnapshot(uint64_t rendererGeneration) {
     pendingDamage_ = {0, 0, width_, height_, true};
     pendingFullFrame_ = true;
     visualCommitActive_ = false;
+    visualCommitBurstDetected_ = false;
     visualCommitStartedUs_ = 0;
     visualCommitLastUpdateUs_ = 0;
+    visualCommitLastCommitUs_ = 0;
     return true;
 }
 
@@ -196,6 +210,8 @@ RdpDamageSnapshot RdpDamageAccumulator::takeSnapshot() {
     }
 
     const bool fullFrame = pendingFullFrame_;
+    bool committedVisualBurst = false;
+    int64_t visualCommitAtUs = 0;
     if (fullFrame && visualCommitActive_) {
         const int64_t nowUs = std::chrono::duration_cast<std::chrono::microseconds>(
             std::chrono::steady_clock::now().time_since_epoch()).count();
@@ -206,9 +222,8 @@ RdpDamageSnapshot RdpDamageAccumulator::takeSnapshot() {
             snapshot.retryAtUs = decision.retryAtUs;
             return snapshot;
         }
-        visualCommitActive_ = false;
-        visualCommitStartedUs_ = 0;
-        visualCommitLastUpdateUs_ = 0;
+        committedVisualBurst = visualCommitBurstDetected_;
+        visualCommitAtUs = nowUs;
     }
     const RdpDamageRect damage = fullFrame ?
         RdpDamageRect{0, 0, width_, height_, true} : pendingDamage_;
@@ -244,6 +259,13 @@ RdpDamageSnapshot RdpDamageAccumulator::takeSnapshot() {
     snapshot.snapshotCopiedBytes = snapshotBytes;
     pendingDamage_ = RdpDamageRect();
     pendingFullFrame_ = false;
+    if (fullFrame && visualCommitActive_) {
+        visualCommitActive_ = false;
+        visualCommitBurstDetected_ = false;
+        visualCommitStartedUs_ = 0;
+        visualCommitLastUpdateUs_ = 0;
+        visualCommitLastCommitUs_ = committedVisualBurst ? visualCommitAtUs : 0;
+    }
     return snapshot;
 }
 
@@ -257,8 +279,10 @@ void RdpDamageAccumulator::clear() {
     pendingDamage_ = RdpDamageRect();
     pendingFullFrame_ = false;
     visualCommitActive_ = false;
+    visualCommitBurstDetected_ = false;
     visualCommitStartedUs_ = 0;
     visualCommitLastUpdateUs_ = 0;
+    visualCommitLastCommitUs_ = 0;
 }
 
 bool RdpDamageAccumulator::hasPending() const {

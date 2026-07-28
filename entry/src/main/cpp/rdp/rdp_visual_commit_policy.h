@@ -21,6 +21,15 @@ class RdpVisualCommitPolicy {
 public:
     static constexpr int64_t kQuietPeriodUs = 40000;
     static constexpr int64_t kMaximumWindowUs = 160000;
+    // A large refresh can continue immediately after the max-window commit.
+    // Keep a short tail so the next strip reopens a full-frame burst instead
+    // of leaking back into the steady-state dirty-rect path.
+    static constexpr int64_t kBurstContinuationUs = 120000;
+
+    static bool InBurstContinuation(int64_t nowUs, int64_t lastCommitUs) {
+        return nowUs >= lastCommitUs &&
+            nowUs - lastCommitUs < kBurstContinuationUs;
+    }
 
     static RdpVisualCommitDecision Evaluate(int64_t nowUs, int64_t startedUs,
                                             int64_t lastUpdateUs) {
