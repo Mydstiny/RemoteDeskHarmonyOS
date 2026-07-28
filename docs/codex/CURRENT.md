@@ -33,7 +33,7 @@ Updated: 2026-07-28 Asia/Shanghai
 ## Verification
 
 - Rust `cargo check` and `cargo check --tests`: passed for `rustdesk_ffi`.
-- Focused native `rdp_native_tests`: `149 passed, 0 failed`.
+- Focused native `rdp_native_tests`: `150 passed, 0 failed`.
 - `default@OhosTestCompileArkTS`: passed after the RustDesk Pro/RDP implementation; existing repository/dependency warnings remain.
 - Production `assembleHap`: `BUILD SUCCESSFUL` after the RustDesk Pro/RDP implementation.
 - Native test target compiles the actual VNC transport and RFB engine plus the RDP damage/visual-commit tests and the VNC transport tests.
@@ -87,9 +87,19 @@ Updated: 2026-07-28 Asia/Shanghai
 ## RDP official frame-commit repair plan (2026-07-28)
 
 - Entity plan: `docs/superpowers/plans/2026-07-28-rdp-official-frame-commit-safe-repair-plan.md`.
-- This turn only added the plan and shared-state notes; no RDP, ArkTS, Rust, dependency or configuration source was changed. The plan treats the existing GDI visual-commit commits as the baseline, keeps RDPGFX/H264 as a separately gated experiment, and defines an RDP-native allowlist plus explicit non-touch boundaries for RustDesk, SSH/SFTP, VNC, cloud sync and the other RDP channels.
-- Implementation is blocked until P0 installs the exact current HAP and collects current wired-device evidence. If the existing GDI fence still leaks scan bands, P1/P2 may change only the RDP damage/queue/renderer path; P3 RDPGFX remains off by default until decoder and Surface lifecycle acceptance passes.
-- The current Hvigor compile and `assembleHap` gates were attempted on this checkout and failed on the user's in-progress VNC ArkTS changes (`rememberPassword` missing in `VncAddFlow.ets` and `VncSettingsPage.ets`); these files were not modified by this plan and remain outside its scope. Light open-source compliance passed.
+- P1 quick fix is implemented in `46e996e36 fix(rdp): fence narrow refresh continuations safely`. The plan's allowlist and non-touch boundaries remain in force; only the RDP damage accumulator and its native tests changed.
+- The initial full resync no longer starts a narrow-strip continuation tail by itself. Narrow strips are promoted only after a detected broad/medium refresh burst or an already committed burst continuation, while ordinary first-frame cursor/toolbar updates remain dirty-only.
+- Current verification for this checkpoint: native `150 passed, 0 failed`; `default@OhosTestCompileArkTS` passed; production `assembleHap` passed; Light open-source compliance passed; `git diff --check` passed. Signed HAP: `entry/build/default/outputs/default/entry-default-signed.hap`.
+- Independent read-only review completed with no P0 or isolation violation. Its P1 false-positive/test-coverage findings were addressed before commit.
+- P0 real-device acceptance remains open because `hdc` currently returns `Connect server failed`; no claim is made that the scan is eliminated until this exact HAP is installed and the first-entry/browser/file-manager refresh scenarios are repeated.
+- P2 renderer alignment and P3 RDPGFX/H264 remain unstarted and off by default. RustDesk Pro, SSH/SFTP, VNC, RDP connection/authentication, input, audio and other RDP channels were not changed by this checkpoint.
+
+## RDP narrow continuation quick-fix ledger (2026-07-28)
+
+- `rdp_damage_accumulator.cpp` now keeps the existing broad/medium refresh fence and recognizes meaningful horizontal/vertical continuation strips only when a real visual burst is active or was just committed. The first full resync does not create that continuation state.
+- Continuation thresholds are 8% minimum length, 2px minimum thickness and 12% maximum thickness in the corresponding direction; 1px cursor updates and square/ordinary local updates stay on the dirty path. The test also verifies the initial-full-frame dirty-only boundary.
+- No renderer, frame-pump, FreeRDP feature negotiation, GFX/H264, connection/authentication, RustDesk, SSH/SFTP or VNC file changed.
+- The signed artifact was rebuilt at `entry/build/default/outputs/default/entry-default-signed.hap`. Device installation and visual acceptance are pending the `hdc` connection service.
 
 ## VNC UX implementation review ledger (2026-07-28)
 

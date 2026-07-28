@@ -1,9 +1,9 @@
 # RDP 官方帧边界对齐与刷新稳定性修复计划
 
 > 日期：2026-07-28（Asia/Shanghai）
-> 代码基线：本地 `main` / `f418570e1`
-> 计划状态：已落盘，尚未实施
-> 本轮约束：只新增本计划文档，不修改代码、配置、依赖、测试实现或设备状态
+> 代码基线（实施前）：本地 `main` / `98180b927`
+> 计划状态：P1 快速修复已实施；P0 真机验收待执行；P2/P3 未启动
+> 本轮实施约束：只修改 RDP native damage accumulator 及对应 native 测试；不修改渲染器、连接、认证、其他通道或其他协议
 
 ## 0. 目标与完成定义
 
@@ -186,6 +186,18 @@ flowchart LR
 
 **P1 禁止项：** 不修改 `freerdp_connect` 参数、不改认证/证书、不改输入和通道、不打开 GFX/H264、不增加 ArkTS 开关。
 
+### P1 快速修复实施记录（2026-07-28）
+
+- 已在本地 `main` 提交 `46e996e36 fix(rdp): fence narrow refresh continuations safely`。
+- 实际修改仅限：`entry/src/main/cpp/rdp/rdp_damage_accumulator.h/.cpp` 和 `entry/src/main/cpp/test/rdp_damage_accumulator_test.cpp`。
+- 窄条延续判定使用当前帧尺寸的 8% 长度、至少 2px 厚度和不超过 12% 厚度；只有已有真实 broad/medium refresh burst 或已提交的 burst continuation 才能触发，首次全量同步本身不会开启延续尾窗。
+- 初始全帧后的普通窄条保持 dirty-only；新增测试覆盖 8%/2px 下界、两轴均超过 12% 的负例、刷新 burst 后的横向窄条、游标和首次全帧后的低延迟路径。
+- 本次验证：native `150 passed, 0 failed`；`default@OhosTestCompileArkTS` 通过；`assembleHap` 通过；Light open-source compliance 通过；`git diff --check` 通过。
+- 当前签名产物：`entry/build/default/outputs/default/entry-default-signed.hap`。
+- 独立只读复核已完成：未发现 P0 或跨模块越界；复核提出的窄条误判风险和测试覆盖缺口已在本记录对应提交中处理。
+- 真机验收仍未完成：当前 `hdc` 返回 `Connect server failed`，无法安装此 HAP 或采集新一轮首帧/大刷新日志；不能以本地构建结果代替真机结论。
+- 未启用 RDPGFX/H264，未修改 renderer、frame pump、FreeRDP 连接参数、认证、输入、音频、RustDesk、SSH/SFTP、VNC 或共享同步。
+
 ### 阶段 P2：对齐官方 SDL3 的持久化渲染模式
 
 **触发条件：** P1 后仍有扫描，或日志证明主要损耗来自重复全帧复制/上传，而不是 burst 分类。
@@ -339,4 +351,4 @@ hvigorw --mode module -p module=entry -p product=default assembleHap --analyze=n
 
 ## 最终约束
 
-本文件是实施计划，不代表 P1/P2/P3 已经完成，也不代表 RDPGFX/H264 已经可以在生产环境打开。实施时必须先验证当前 GDI 基线，再按阶段推进；任何阶段都不得以牺牲 RDP 其他功能或其他协议稳定性换取画面效果。
+本文件仍是分阶段实施计划：P1 GDI 快速修复已完成并有当前提交的本地验证证据，P0 真机验收仍待 `hdc` 恢复后执行；P2 renderer 对齐和 P3 RDPGFX/H264 试验尚未启动，也不能在生产环境打开。任何后续阶段都不得以牺牲 RDP 其他功能或其他协议稳定性换取画面效果。
