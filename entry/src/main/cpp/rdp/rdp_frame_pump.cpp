@@ -225,6 +225,7 @@ void RdpFramePump::loop() {
         RdpDamageSnapshot snapshot = frame.damageSource->takeSnapshot();
         const int64_t snapshotCopyUs = SteadyNowUs() - snapshotBeginUs;
         if (snapshot.deferred) {
+            metrics_.recordDeferred(SteadyNowUs());
             if (snapshot.retryAtUs > nextPresentAtUs) {
                 nextPresentAtUs = snapshot.retryAtUs;
             }
@@ -243,6 +244,7 @@ void RdpFramePump::loop() {
 
         RdpPresentMetrics present;
         present.generation = snapshot.rendererGeneration;
+        present.fullFrame = snapshot.fullFrame;
         try {
             if (!snapshot.valid || snapshot.pixels.empty()) {
                 present.result = RdpPresentResult::InvalidFrame;
@@ -288,6 +290,7 @@ void RdpFramePump::loop() {
             OH_LOG_INFO(LOG_APP,
                 "[RDP-PRESENT] submitted=%{public}llu presented=%{public}llu replaced=%{public}llu"
                 " rejected=%{public}llu detached=%{public}llu copied=%{public}llu"
+                " full=%{public}llu dirty=%{public}llu deferred=%{public}llu"
                 " callbackP95=%{public}lldus queueP95=%{public}lldus uploadP95=%{public}lldus"
                 " drawP95=%{public}lldus swapP95=%{public}lldus workerP95=%{public}lldus"
                 " targetFps=%{public}d schedulerP95=%{public}lldus adaptations=%{public}llu"
@@ -299,6 +302,9 @@ void RdpFramePump::loop() {
                 static_cast<unsigned long long>(window.rejectedFrames),
                 static_cast<unsigned long long>(window.surfaceDetachedRejections),
                 static_cast<unsigned long long>(window.copiedBytes),
+                static_cast<unsigned long long>(window.fullFramePresents),
+                static_cast<unsigned long long>(window.dirtyRectPresents),
+                static_cast<unsigned long long>(window.deferredSnapshots),
                 static_cast<long long>(window.callbackUs.p95),
                 static_cast<long long>(window.queueWaitUs.p95),
                 static_cast<long long>(window.uploadUs.p95),

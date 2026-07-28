@@ -21,10 +21,12 @@ class RdpVisualCommitPolicy {
 public:
     static constexpr int64_t kQuietPeriodUs = 40000;
     static constexpr int64_t kMaximumWindowUs = 160000;
-    // A large refresh can continue immediately after the max-window commit.
-    // Keep a short tail so the next strip reopens a full-frame burst instead
-    // of leaking back into the steady-state dirty-rect path.
-    static constexpr int64_t kBurstContinuationUs = 120000;
+    // A large refresh can continue well after the first max-window commit.
+    // Keep a longer episode tail so medium-width strips do not fall back to
+    // dirty-rect presentation between two parts of the same page repaint.
+    static constexpr int64_t kBurstContinuationUs = 750000;
+    static constexpr int64_t kBurstContinuationQuietPeriodUs = 200000;
+    static constexpr int64_t kBurstContinuationMaximumWindowUs = 600000;
 
     static bool InBurstContinuation(int64_t nowUs, int64_t lastCommitUs) {
         return nowUs >= lastCommitUs &&
@@ -32,15 +34,17 @@ public:
     }
 
     static RdpVisualCommitDecision Evaluate(int64_t nowUs, int64_t startedUs,
-                                            int64_t lastUpdateUs) {
+                                            int64_t lastUpdateUs,
+                                            int64_t quietPeriodUs = kQuietPeriodUs,
+                                            int64_t maximumWindowUs = kMaximumWindowUs) {
         if (nowUs < 0 || startedUs <= 0 || lastUpdateUs <= 0) {
             return {};
         }
-        if (nowUs - startedUs >= kMaximumWindowUs ||
-            nowUs - lastUpdateUs >= kQuietPeriodUs) {
+        if (nowUs - startedUs >= maximumWindowUs ||
+            nowUs - lastUpdateUs >= quietPeriodUs) {
             return {};
         }
-        return {true, lastUpdateUs + kQuietPeriodUs};
+        return {true, lastUpdateUs + quietPeriodUs};
     }
 };
 

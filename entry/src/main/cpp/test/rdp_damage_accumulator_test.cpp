@@ -158,6 +158,25 @@ RDP_TEST_CASE(rdp_damage_accumulator_fences_broad_refresh_bands) {
     RDP_ASSERT(TakeCommittedSnapshot(accumulator).fullFrame);
 }
 
+RDP_TEST_CASE(rdp_damage_accumulator_fences_medium_refresh_bands_but_not_cursor_updates) {
+    RdpDamageAccumulator accumulator;
+    std::vector<uint8_t> frame = MakeFrame(10, 10, 40, 1);
+    accumulator.update(frame.data(), frame.size(), 10, 10, 40, 0, 0, 10, 10, 1, false);
+    RDP_ASSERT(TakeCommittedSnapshot(accumulator).fullFrame);
+
+    // The device trace contains bands that cover 20% to 70% of the width.
+    accumulator.update(frame.data(), frame.size(), 10, 10, 40, 0, 2, 5, 2, 1, false);
+    RDP_ASSERT(accumulator.takeSnapshot().deferred);
+    RDP_ASSERT(TakeCommittedSnapshot(accumulator).fullFrame);
+
+    // A small cursor/toolbar update inside the continuation tail stays
+    // dirty-only and does not reopen a costly full-frame fence.
+    accumulator.update(frame.data(), frame.size(), 10, 10, 40, 1, 8, 1, 1, 1, false);
+    const RdpDamageSnapshot cursor = accumulator.takeSnapshot();
+    RDP_ASSERT(cursor.valid);
+    RDP_ASSERT(!cursor.fullFrame);
+}
+
 RDP_TEST_CASE(rdp_damage_accumulator_fences_one_row_burst_and_tail_updates) {
     RdpDamageAccumulator accumulator;
     std::vector<uint8_t> frame = MakeFrame(10, 10, 40, 1);
@@ -171,7 +190,7 @@ RDP_TEST_CASE(rdp_damage_accumulator_fences_one_row_burst_and_tail_updates) {
 
     // A strip arriving immediately after the max/quiet commit belongs to the
     // same visual burst and must not leak through as a dirty-rect present.
-    accumulator.update(frame.data(), frame.size(), 10, 10, 40, 2, 4, 3, 1, 1, false);
+    accumulator.update(frame.data(), frame.size(), 10, 10, 40, 2, 4, 5, 2, 1, false);
     RDP_ASSERT(accumulator.takeSnapshot().deferred);
     RDP_ASSERT(TakeCommittedSnapshot(accumulator).fullFrame);
 }
@@ -206,5 +225,18 @@ RDP_TEST_CASE(rdp_visual_commit_policy_waits_for_quiet_period_but_has_a_deadline
     RDP_ASSERT(!deadline.defer);
 
     RDP_ASSERT(RdpVisualCommitPolicy::InBurstContinuation(300000, 200000));
-    RDP_ASSERT(!RdpVisualCommitPolicy::InBurstContinuation(320000, 200000));
+    RDP_ASSERT(!RdpVisualCommitPolicy::InBurstContinuation(950000, 200000));
+
+    const RdpVisualCommitDecision continuation = RdpVisualCommitPolicy::Evaluate(
+        350000, 100000, 300000,
+        RdpVisualCommitPolicy::kBurstContinuationQuietPeriodUs,
+        RdpVisualCommitPolicy::kBurstContinuationMaximumWindowUs);
+    RDP_ASSERT(continuation.defer);
+    RDP_ASSERT_EQ(continuation.retryAtUs, 500000);
+
+    const RdpVisualCommitDecision continuationQuiet = RdpVisualCommitPolicy::Evaluate(
+        520000, 100000, 300000,
+        RdpVisualCommitPolicy::kBurstContinuationQuietPeriodUs,
+        RdpVisualCommitPolicy::kBurstContinuationMaximumWindowUs);
+    RDP_ASSERT(!continuationQuiet.defer);
 }

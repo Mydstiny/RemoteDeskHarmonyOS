@@ -71,6 +71,7 @@ private:
     bool pendingFullFrame_ = false;
     bool visualCommitActive_ = false;
     bool visualCommitBurstDetected_ = false;
+    bool visualCommitContinuation_ = false;
     int64_t visualCommitStartedUs_ = 0;
     int64_t visualCommitLastUpdateUs_ = 0;
     int64_t visualCommitLastCommitUs_ = 0;
