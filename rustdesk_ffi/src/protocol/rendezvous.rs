@@ -53,11 +53,14 @@ fn validated_server_key(server_key: &str) -> io::Result<&str> {
     })
 }
 
-fn punch_hole_request_message(peer_id: &str, licence_key: &str) -> RendezvousMessage {
+fn punch_hole_request_message(peer_id: &str, licence_key: &str, token: &str) -> RendezvousMessage {
     let mut req = PunchHoleRequest::new();
     req.set_id(peer_id.to_string());
     req.set_nat_type(NatType::SYMMETRIC);
     req.set_licence_key(licence_key.to_string());
+    if !token.is_empty() {
+        req.set_token(token.to_string());
+    }
     req.set_conn_type(ConnType::DEFAULT_CONN);
     req.set_version("harmonyos-rustdesk-ffi".to_string());
     req.set_force_relay(true);
@@ -115,7 +118,8 @@ impl RendezvousClient {
     pub fn request_punch_hole(
         &mut self,
         peer_id: &str,
-        server_key: &str,
+        licence_key: &str,
+        token: &str,
     ) -> io::Result<PunchHoleInfo> {
         self.ensure_connected()?;
         let req_debug = format!(
@@ -127,7 +131,7 @@ impl RendezvousClient {
         // normal signing public key or an arbitrary administrator supplied
         // shared access value; verification is handled separately by the
         // connector when a public key is actually available.
-        let msg = punch_hole_request_message(peer_id, server_key);
+        let msg = punch_hole_request_message(peer_id, licence_key, token);
         self.send_message(&msg)?;
 
         let response = self.read_next_non_keyexchange()?;
@@ -243,6 +247,7 @@ impl RendezvousClient {
         id: &str,
         uuid: &str,
         relay_server: &str,
+        token: &str,
     ) -> io::Result<SocketAddr> {
         self.ensure_connected()?;
 
@@ -251,6 +256,9 @@ impl RendezvousClient {
         req.set_uuid(uuid.to_string());
         req.set_relay_server(relay_server.to_string());
         req.set_secure(true);
+        if !token.is_empty() {
+            req.set_token(token.to_string());
+        }
 
         let mut msg = RendezvousMessage::new();
         msg.union = Some(RendezvousMessage_oneof_union::request_relay(req));
@@ -297,6 +305,7 @@ impl RendezvousClient {
         id: &str,
         relay_server: &str,
         secure: bool,
+        token: &str,
     ) -> io::Result<String> {
         self.ensure_connected()?;
 
@@ -311,6 +320,9 @@ impl RendezvousClient {
         req.set_uuid(uuid.clone());
         req.set_relay_server(relay_server.to_string());
         req.set_secure(secure);
+        if !token.is_empty() {
+            req.set_token(token.to_string());
+        }
 
         let mut msg = RendezvousMessage::new();
         msg.union = Some(RendezvousMessage_oneof_union::request_relay(req));
@@ -664,13 +676,15 @@ mod tests {
     #[test]
     fn arbitrary_shared_access_key_is_preserved_in_punch_and_relay_messages() {
         let key = " =tenant-key:42/abc=\n";
-        let punch = punch_hole_request_message("peer-123", key);
+        let token = "pro-session-token";
+        let punch = punch_hole_request_message("peer-123", key, token);
         let punch_bytes = punch.write_to_bytes().expect("serialize punch request");
         let parsed_punch: RendezvousMessage = protobuf::parse_from_bytes(&punch_bytes)
             .expect("parse punch request");
         match parsed_punch.union {
             Some(RendezvousMessage_oneof_union::punch_hole_request(req)) => {
                 assert_eq!(req.get_licence_key(), key);
+                assert_eq!(req.get_token(), token);
             }
             other => panic!("expected PunchHoleRequest, got: {:?}", other),
         }

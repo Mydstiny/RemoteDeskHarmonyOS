@@ -821,6 +821,9 @@ RdpPresentMetrics GLRenderer::RenderRawBGRAInternal(
     const bool partialUpload = dirtyInBounds &&
         (dirtyX != 0 || dirtyY != 0 || dirtyWidth != width || dirtyHeight != height);
     const int uploadX = partialUpload ? dirtyX : 0;
+    // QUAD_VERTICES deliberately maps v=0 to the visual top, so the texture
+    // row index uses the same top-left contract as FreeRDP/GDI dirty rects.
+    // Do not invert dirtyY here unless the vertex contract changes as well.
     const int uploadY = partialUpload ? dirtyY : 0;
     const int uploadW = partialUpload ? dirtyWidth : width;
     const int uploadH = partialUpload ? dirtyHeight : height;

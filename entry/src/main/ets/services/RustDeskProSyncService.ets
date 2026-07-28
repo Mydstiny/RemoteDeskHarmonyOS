@@ -44,6 +44,12 @@ export class RustDeskProSyncService {
     return this.credentials.getAll();
   }
 
+  getAccount(accountId: string): RustDeskProAccountState | undefined {
+    const id: string = accountId.trim();
+    if (id.length === 0) { return undefined; }
+    return this.credentials.get(id);
+  }
+
   onDataChange(callback: () => void): () => void {
     return this.credentials.onDataChange(callback);
   }
@@ -178,6 +184,16 @@ export class RustDeskProSyncService {
       this.credentials.save(account);
       throw err instanceof Error ? err : new Error('Pro 同步失败');
     }
+  }
+
+  markConnectionSessionExpired(accountId: string, reason: string = 'connection_token_expired'): void {
+    const account = this.credentials.get(accountId);
+    if (!account) { return; }
+    account.accessToken = '';
+    account.loginStatus = 'expired';
+    account.lastSyncError = reason;
+    this.credentials.save(account);
+    this.persistCloudAccountMetadata(account);
   }
 
   async logout(accountId: string): Promise<void> {

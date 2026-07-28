@@ -1,6 +1,8 @@
 #include "rdp_damage_accumulator.h"
+#include "rdp_visual_commit_policy.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstring>
 #include <new>
 
@@ -60,6 +62,21 @@ bool RdpDamageAccumulator::CoversFullThreshold(const RdpDamageRect& rect,
     return damagePixels * 100U >= framePixels * kFullFrameThresholdPercent;
 }
 
+bool RdpDamageAccumulator::LooksLikeBroadRefresh(const RdpDamageRect& rect,
+                                                 int frameWidth, int frameHeight) {
+    if (!rect.valid || frameWidth <= 0 || frameHeight <= 0) {
+        return false;
+    }
+    // Browser/document refreshes often arrive as full-width horizontal bands.
+    // Treat those as a visual burst even before the union reaches the legacy
+    // 70% threshold. A narrow cursor/window update remains dirty-only.
+    const bool broadWidth = static_cast<int64_t>(rect.width) * 100 >=
+        static_cast<int64_t>(frameWidth) * 75 && rect.height >= 2;
+    const bool broadHeight = static_cast<int64_t>(rect.height) * 100 >=
+        static_cast<int64_t>(frameHeight) * 75 && rect.width >= 2;
+    return broadWidth || broadHeight;
+}
+
 RdpDamageUpdateResult RdpDamageAccumulator::update(
     const uint8_t* data, size_t size, int width, int height, int sourceStride,
     int dirtyX, int dirtyY, int dirtyWidth, int dirtyHeight,
@@ -79,6 +96,8 @@ RdpDamageUpdateResult RdpDamageAccumulator::update(
     const RdpDamageRect clipped = ClipRect(
         width, height, dirtyX, dirtyY, dirtyWidth, dirtyHeight);
     std::lock_guard<std::mutex> lock(mutex_);
+    const int64_t nowUs = std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
     const bool geometryChanged = width_ != width || height_ != height ||
         stride_ != width * 4 || staging_.size() !=
             static_cast<size_t>(width) * static_cast<size_t>(height) * 4U;
@@ -104,9 +123,18 @@ RdpDamageUpdateResult RdpDamageAccumulator::update(
             rendererGeneration_ = rendererGeneration;
             pendingDamage_ = {0, 0, width, height, true};
             pendingFullFrame_ = true;
+            visualCommitActive_ = true;
+            visualCommitStartedUs_ = nowUs;
+            visualCommitLastUpdateUs_ = nowUs;
             result.copiedBytes = static_cast<uint64_t>(tightStride) *
                 static_cast<uint64_t>(height);
         } else {
+            if (!visualCommitActive_ && LooksLikeBroadRefresh(clipped, width_, height_)) {
+                pendingFullFrame_ = true;
+                visualCommitActive_ = true;
+                visualCommitStartedUs_ = nowUs;
+                visualCommitLastUpdateUs_ = nowUs;
+            }
             const size_t rowBytes = static_cast<size_t>(clipped.width) * 4U;
             for (int row = 0; row < clipped.height; ++row) {
                 const size_t sourceOffset =
@@ -118,11 +146,19 @@ RdpDamageUpdateResult RdpDamageAccumulator::update(
                 std::memcpy(staging_.data() + destinationOffset, data + sourceOffset, rowBytes);
             }
             pendingDamage_ = UnionRect(pendingDamage_, clipped);
+            if (pendingFullFrame_ && visualCommitActive_) {
+                visualCommitLastUpdateUs_ = nowUs;
+            }
             result.copiedBytes = static_cast<uint64_t>(rowBytes) *
                 static_cast<uint64_t>(clipped.height);
             if (CoversFullThreshold(pendingDamage_, width_, height_)) {
                 pendingDamage_ = {0, 0, width_, height_, true};
                 pendingFullFrame_ = true;
+                if (!visualCommitActive_) {
+                    visualCommitActive_ = true;
+                    visualCommitStartedUs_ = nowUs;
+                }
+                visualCommitLastUpdateUs_ = nowUs;
             }
         }
     } catch (const std::bad_alloc&) {
@@ -146,6 +182,9 @@ bool RdpDamageAccumulator::requestFullSnapshot(uint64_t rendererGeneration) {
     rendererGeneration_ = rendererGeneration;
     pendingDamage_ = {0, 0, width_, height_, true};
     pendingFullFrame_ = true;
+    visualCommitActive_ = false;
+    visualCommitStartedUs_ = 0;
+    visualCommitLastUpdateUs_ = 0;
     return true;
 }
 
@@ -157,6 +196,20 @@ RdpDamageSnapshot RdpDamageAccumulator::takeSnapshot() {
     }
 
     const bool fullFrame = pendingFullFrame_;
+    if (fullFrame && visualCommitActive_) {
+        const int64_t nowUs = std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count();
+        const RdpVisualCommitDecision decision = RdpVisualCommitPolicy::Evaluate(
+            nowUs, visualCommitStartedUs_, visualCommitLastUpdateUs_);
+        if (decision.defer) {
+            snapshot.deferred = true;
+            snapshot.retryAtUs = decision.retryAtUs;
+            return snapshot;
+        }
+        visualCommitActive_ = false;
+        visualCommitStartedUs_ = 0;
+        visualCommitLastUpdateUs_ = 0;
+    }
     const RdpDamageRect damage = fullFrame ?
         RdpDamageRect{0, 0, width_, height_, true} : pendingDamage_;
     const int snapshotStride = damage.width * 4;
@@ -203,6 +256,9 @@ void RdpDamageAccumulator::clear() {
     rendererGeneration_ = 0;
     pendingDamage_ = RdpDamageRect();
     pendingFullFrame_ = false;
+    visualCommitActive_ = false;
+    visualCommitStartedUs_ = 0;
+    visualCommitLastUpdateUs_ = 0;
 }
 
 bool RdpDamageAccumulator::hasPending() const {

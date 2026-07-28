@@ -25,6 +25,8 @@ struct RdpDamageUpdateResult {
 struct RdpDamageSnapshot {
     bool valid = false;
     bool fullFrame = false;
+    bool deferred = false;
+    int64_t retryAtUs = 0;
     std::vector<uint8_t> pixels;
     int width = 0;
     int height = 0;
@@ -56,6 +58,8 @@ private:
                                    const RdpDamageRect& right);
     static bool CoversFullThreshold(const RdpDamageRect& rect,
                                     int frameWidth, int frameHeight);
+    static bool LooksLikeBroadRefresh(const RdpDamageRect& rect,
+                                      int frameWidth, int frameHeight);
 
     mutable std::mutex mutex_;
     std::vector<uint8_t> staging_;
@@ -65,6 +69,9 @@ private:
     uint64_t rendererGeneration_ = 0;
     RdpDamageRect pendingDamage_;
     bool pendingFullFrame_ = false;
+    bool visualCommitActive_ = false;
+    int64_t visualCommitStartedUs_ = 0;
+    int64_t visualCommitLastUpdateUs_ = 0;
     size_t snapshotAllocationLimit_ = std::numeric_limits<size_t>::max();
 };
 

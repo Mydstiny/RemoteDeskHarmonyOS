@@ -224,6 +224,17 @@ void RdpFramePump::loop() {
         const int64_t snapshotBeginUs = SteadyNowUs();
         RdpDamageSnapshot snapshot = frame.damageSource->takeSnapshot();
         const int64_t snapshotCopyUs = SteadyNowUs() - snapshotBeginUs;
+        if (snapshot.deferred) {
+            if (snapshot.retryAtUs > nextPresentAtUs) {
+                nextPresentAtUs = snapshot.retryAtUs;
+            }
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (running_ && !hasFrame_ && frame.pumpGeneration == pumpGeneration_) {
+                frame_ = std::move(frame);
+                hasFrame_ = true;
+            }
+            continue;
+        }
         if (snapshot.valid) {
             metrics_.recordCopy(SteadyNowUs(), snapshot.snapshotCopiedBytes, snapshotCopyUs);
         } else if (!frame.damageSource->hasPending()) {

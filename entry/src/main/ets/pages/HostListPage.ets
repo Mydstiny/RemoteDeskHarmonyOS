@@ -40,6 +40,8 @@ import { RustDeskRelayConfig } from '../model/RustDeskRelayConfig';
 import { RustDeskAccount } from '../model/RustDeskAccount';
 import { RdpCredential } from '../model/RdpCredential';
 import { RustDeskRelayPage } from './RustDeskRelayPage';
+import { RustDeskProSyncService } from '../services/RustDeskProSyncService';
+import { RustDeskProAccountState } from '../model/RustDeskProModels';
 import { AppConfig, AppTheme, Palette, buildDark, buildLight } from '../common/Theme';
 import { showLockGate, lockGateErrorMessage } from '../components/LockGate';
 import { ColorPickerSheet } from '../components/ColorPickerSheet';
@@ -233,7 +235,11 @@ import { RemoteProtocol } from '../services/RemoteSessionState';
 import {
   RustDeskProPreflightState,
   rustDeskProPeerIdForConnection,
-  shouldOpenRustDeskProPreflight
+  shouldOpenRustDeskProPreflight,
+  classifyRustDeskProNativeError,
+  rustDeskProAccountIdForConnection,
+  rustDeskProNativeErrorMessage,
+  RustDeskProNativeErrorKind
 } from '../services/RustDeskProConnectionPreflightPolicy';
 import { shouldFallbackToNativeRdpConnectionAfterResolverFailure } from '../services/RdpCertificatePreflightPolicy';
 import {
@@ -552,6 +558,7 @@ struct HostListPage {
   private settingsLeafSheetClosingPopupMode: number = 0;
   // ============================
   private srv: HostSyncService = HostSyncService.getInstance();
+  private readonly proSync: RustDeskProSyncService = RustDeskProSyncService.getInstance();
   private auth: AuthService = AuthService.getInstance();
   private keyVault: KeyVaultService = KeyVaultService.getInstance();
   private readonly vncHosts: VncHostService = VncHostService.getInstance();
@@ -714,6 +721,7 @@ struct HostListPage {
     this.updateWindowMetrics();
     this.refreshHaloPresets();
     this.sshSettings.init(getContext(this) as common.Context);
+    this.proSync.init(getContext(this) as common.Context);
     // 恢复 TOTP 隐私保护状态 (Preferences 持久化)
     try {
       const prefs = preferences.getPreferencesSync(getContext(this), { name: 'RemoteDesktopAppPrefs' });
@@ -3305,10 +3313,46 @@ struct HostListPage {
     this.openRustDeskProPreflight(nextHost);
   }
 
+  private rustDeskProAccountForHost(host: RemoteHost): RustDeskProAccountState | undefined {
+    const accountId: string = rustDeskProAccountIdForConnection(
+      host.rustdeskProAccountId, host.rustdeskAccountId);
+    return this.proSync.getAccount(accountId);
+  }
+
+  private rustDeskProBindingError(host: RemoteHost): string {
+    if (!host.rustdeskProManaged || host.sourceType !== 'rustdesk_pro' || host.rustdeskDirectEnabled) {
+      return '';
+    }
+    const accountId: string = rustDeskProAccountIdForConnection(
+      host.rustdeskProAccountId, host.rustdeskAccountId);
+    if (accountId.length === 0) {
+      return '地址簿主机未绑定 RustDesk Pro 账号，请重新同步地址簿。';
+    }
+    const account: RustDeskProAccountState | undefined = this.proSync.getAccount(accountId);
+    if (account === undefined) {
+      return 'RustDesk Pro 账号信息不存在，请重新登录并同步地址簿。';
+    }
+    if (account.loginStatus !== 'logged_in' || account.accessToken.trim().length === 0) {
+      return 'RustDesk Server Pro 登录会话已失效，请重新登录后重试。';
+    }
+    if (account.relayId !== host.rustdeskRelayId) {
+      return '地址簿主机与当前 RustDesk Pro 中继绑定不一致，请重新同步地址簿。';
+    }
+    const relay: RustDeskRelayConfig | undefined = this.srv.getAllRelays()
+      .find((item: RustDeskRelayConfig): boolean => item.id === host.rustdeskRelayId);
+    if (relay === undefined) {
+      return 'RustDesk Pro 中继配置不存在，请检查中继服务器设置。';
+    }
+    return '';
+  }
+
   private rustDeskProConfig(host: RemoteHost): SessionConfig {
     const relay: RustDeskRelayConfig | undefined = this.srv.getAllRelays()
       .find((item: RustDeskRelayConfig): boolean => item.id === host.rustdeskRelayId);
     const direct: boolean = host.rustdeskDirectEnabled;
+    const accountId: string = rustDeskProAccountIdForConnection(
+      host.rustdeskProAccountId, host.rustdeskAccountId);
+    const account: RustDeskProAccountState | undefined = this.rustDeskProAccountForHost(host);
     const endpoint: RustDeskHostEndpoint = resolveRustDeskHostEndpoint(
       relay ?? null,
       host.host,
@@ -3331,15 +3375,23 @@ struct HostListPage {
       rdAudioEnabled: this.rustdeskAudioEnabled, rdClipboardEnabled: this.rustdeskClipboardEnabled,
       rdPasswordMode: host.rustdeskPasswordMode,
       rdAuthMode: rustDeskAuthModeForConnection(direct, host.rustdeskAuthMode) === 'request_approval' ? 1 : 0,
-      rdRelayId: host.rustdeskRelayId, rdAccountId: host.rustdeskAccountId,
+      rdRelayId: host.rustdeskRelayId, rdAccountId: accountId,
       rdServerKey: relay ? relay.key : '',
-      rdServerKeyMode: relay ? rustDeskRelayKeyModeForFfi(relay.key, relay.keyMode) : 1
+      rdServerKeyMode: relay ? rustDeskRelayKeyModeForFfi(relay.key, relay.keyMode) : 1,
+      rdAccessToken: host.rustdeskProManaged && host.sourceType === 'rustdesk_pro' && !direct && account !== undefined
+        ? account.accessToken : ''
     };
   }
 
   private async confirmRustDeskProPreflight(): Promise<void> {
     const stored: RemoteHost | undefined = this.srv.getHost(this.rustDeskProPreflightHostId);
     if (!stored || this.rustDeskProPreflightState === RustDeskProPreflightState.CONNECTING) { return; }
+    const bindingError: string = this.rustDeskProBindingError(stored);
+    if (bindingError !== '') {
+      this.rustDeskProPreflightError = bindingError;
+      this.rustDeskProPreflightState = RustDeskProPreflightState.ERROR;
+      return;
+    }
     if (this.rustDeskProAuthMode === 'password' && this.rustDeskProPassword.trim().length === 0) {
       this.rustDeskProPreflightError = '请输入远程 RustDesk 设备密码。';
       return;
@@ -3405,7 +3457,20 @@ struct HostListPage {
       if (generation !== this.rustDeskProPreflightGeneration) { return; }
       this.loader.disconnect();
       this.rustDeskProPreflightState = RustDeskProPreflightState.ERROR;
-      this.rustDeskProPreflightError = err instanceof Error ? err.message : JSON.stringify(err);
+      const detail: string = err instanceof Error ? err.message : JSON.stringify(err);
+      let kind: RustDeskProNativeErrorKind = classifyRustDeskProNativeError(detail);
+      if (kind === 'unknown' && host.rustdeskAuthMode === 'request_approval' &&
+        detail.indexOf('等待远端批准超时') >= 0) {
+        kind = 'approval_timeout';
+      }
+      if (kind === 'pro_session_expired') {
+        const accountId: string = rustDeskProAccountIdForConnection(
+          host.rustdeskProAccountId, host.rustdeskAccountId);
+        this.proSync.markConnectionSessionExpired(accountId);
+      }
+      this.rustDeskProPreflightError = kind === 'unknown'
+        ? detail
+        : rustDeskProNativeErrorMessage(kind, host.rustdeskAuthMode);
     }
   }
 

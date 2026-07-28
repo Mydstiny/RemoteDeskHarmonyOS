@@ -245,6 +245,7 @@ impl RustDeskConnector {
         rendezvous_host: &str,
         rendezvous_port: u16,
         server_key: &str,
+        api_token: &str,
         peer_id: &str,
         password: &str,
         preferred_codec: i32,
@@ -256,16 +257,18 @@ impl RustDeskConnector {
         shared_access_key: bool,
     ) -> io::Result<()> {
         let credentials = RendezvousCredentials::new(server_key, shared_access_key);
+        let rendezvous_secure = !shared_access_key && !server_key.trim().is_empty() &&
+            !api_token.trim().is_empty();
         // === Phase 1: Rendezvous 握手 ===
         self.state = ConnState::RendezvousConnecting;
         let mut rd = RendezvousClient::new();
         // 客户端连接远端 ID 时不要 RegisterPeer；RegisterPeer 是被控端注册自己的 ID。
-        // 普通密码连接没有 token，按 upstream 行为跳过 ID server secure_tcp，仅跳过服务端
-        // 主动发来的 KeyExchange 后读取 PunchHoleResponse。
-        rd.connect(rendezvous_host, rendezvous_port, server_key, false)?;
+        // Server Pro 的控制端会话 token 必须进入 PunchHoleRequest/RequestRelay。
+        // 只有同时拥有真实公钥和 token 时才启用 upstream 的 rendezvous secure_tcp。
+        rd.connect(rendezvous_host, rendezvous_port, server_key, rendezvous_secure)?;
 
         self.state = ConnState::RequestingRelay;
-        let punch = rd.request_punch_hole(peer_id, credentials.access_key)?;
+        let punch = rd.request_punch_hole(peer_id, credentials.access_key, api_token)?;
 
         // === Phase 2: Peer TCP + 加密通道 ===
         eprintln!(
@@ -286,11 +289,12 @@ impl RustDeskConnector {
         } else if !punch.relay_server.trim().is_empty() {
             self.state = ConnState::RequestingRelay;
             let mut relay_rd = RendezvousClient::new();
-            relay_rd.connect(rendezvous_host, rendezvous_port, server_key, false)?;
+            relay_rd.connect(rendezvous_host, rendezvous_port, server_key, rendezvous_secure)?;
             let relay_uuid = relay_rd.request_relay_uuid(
                 peer_id,
                 &punch.relay_server,
                 !punch.signed_pk.is_empty(),
+                api_token,
             )?;
             self.state = ConnState::ConnectingToPeer;
             eprintln!(
@@ -426,6 +430,7 @@ impl RustDeskConnector {
         rendezvous_host: &str,
         rendezvous_port: u16,
         server_key: &str,
+        api_token: &str,
         peer_id: &str,
         password: &str,
         remote_dir: &str,
@@ -433,20 +438,22 @@ impl RustDeskConnector {
         shared_access_key: bool,
     ) -> io::Result<()> {
         let credentials = RendezvousCredentials::new(server_key, shared_access_key);
+        let rendezvous_secure = !shared_access_key && !server_key.trim().is_empty() &&
+            !api_token.trim().is_empty();
         crate::set_last_error(format!(
             "file-transfer connecting rendezvous host={} port={} peer={} dir={}",
             rendezvous_host, rendezvous_port, peer_id, remote_dir
         ));
         self.state = ConnState::RendezvousConnecting;
         let mut rd = RendezvousClient::new();
-        rd.connect(rendezvous_host, rendezvous_port, server_key, false)?;
+        rd.connect(rendezvous_host, rendezvous_port, server_key, rendezvous_secure)?;
 
         crate::set_last_error(format!(
             "file-transfer requesting punch peer={} dir={}",
             peer_id, remote_dir
         ));
         self.state = ConnState::RequestingRelay;
-        let punch = rd.request_punch_hole(peer_id, credentials.access_key)?;
+        let punch = rd.request_punch_hole(peer_id, credentials.access_key, api_token)?;
         crate::set_last_error(format!(
             "file-transfer punch peer_addr={:?} relay_server={} relay_uuid={:?} signed_pk_len={}",
             punch.peer_addr,
@@ -476,11 +483,12 @@ impl RustDeskConnector {
                 "file-transfer requesting relay uuid server={}",
                 punch.relay_server
             ));
-            relay_rd.connect(rendezvous_host, rendezvous_port, server_key, false)?;
+            relay_rd.connect(rendezvous_host, rendezvous_port, server_key, rendezvous_secure)?;
             let relay_uuid = relay_rd.request_relay_uuid(
                 peer_id,
                 &punch.relay_server,
                 !punch.signed_pk.is_empty(),
+                api_token,
             )?;
             crate::set_last_error(format!(
                 "file-transfer connecting relay server={} uuid={}",

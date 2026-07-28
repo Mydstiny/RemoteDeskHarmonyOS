@@ -101,6 +101,7 @@ struct RustDeskFfiConfig {
     bool        direct_connection; // 直连模式: false=rendezvous (默认), true=TCP直连peer
     int         auth_mode;  // 0=设备密码, 1=请求被控端点击批准
     int         key_mode;   // 0=legacy/auto, 1=server public key, 2=shared access key
+    const char* token;      // transient Server Pro control-plane session token
 };
 
 enum class RustDeskMode {

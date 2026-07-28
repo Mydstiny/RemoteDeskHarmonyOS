@@ -152,6 +152,9 @@ pub struct RustDeskConfig {
     /// 0=legacy/auto, 1=Ed25519 server public key, 2=shared hbbs/hbbr -k text.
     /// Appended to preserve the established C ABI field order.
     pub key_mode: c_int,
+    /// Server Pro control-plane session token. Transient only; never persist.
+    /// Appended to preserve the established C ABI field order.
+    pub token: *const c_char,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -566,6 +569,7 @@ struct RustDeskClient {
     port: u16,
     server_key: String,
     shared_access_key: bool,
+    api_token: String,
     password: String,
     request_approval: bool,
     controls: Arc<ControlInbox>,
@@ -1052,6 +1056,11 @@ fn rustdesk_connect_impl(
     };
     let server_key = ffi_string(config.key);
     let shared_access_key = config.key_mode == 2;
+    let api_token = if config.direct_connection {
+        String::new()
+    } else {
+        ffi_string(config.token)
+    };
     let password = ffi_string(config.password);
     let request_approval = config.auth_mode == 1 && !config.direct_connection;
     let privacy_mode = config.privacy_mode;
@@ -1127,6 +1136,7 @@ fn rustdesk_connect_impl(
             &host,
             port,
             &server_key,
+            &api_token,
             &peer_id,
             &password,
             preferred_codec,
@@ -1276,6 +1286,7 @@ fn rustdesk_connect_impl(
                 port,
                 server_key,
                 shared_access_key,
+                api_token,
                 password,
                 request_approval,
                 controls,
@@ -1781,6 +1792,7 @@ pub extern "C" fn rustdesk_send_file(
     let port = ctx.port;
     let server_key = ctx.server_key.clone();
     let shared_access_key = ctx.shared_access_key;
+    let api_token = ctx.api_token.clone();
     let peer_id = ctx.peer_id.clone();
     let password = ctx.password.clone();
     let request_approval = ctx.request_approval;
@@ -1792,7 +1804,7 @@ pub extern "C" fn rustdesk_send_file(
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let mut connector = connector::RustDeskConnector::new();
             connector
-                .connect_file_transfer(&host, port, &server_key, &peer_id, &password, &remote_dir,
+                .connect_file_transfer(&host, port, &server_key, &api_token, &peer_id, &password, &remote_dir,
                     request_approval, shared_access_key)
                 .and_then(|_| {
                     connector.upload_file_once(
@@ -1885,6 +1897,7 @@ mod tests {
             port: 0,
             server_key: String::new(),
             shared_access_key: false,
+            api_token: String::new(),
             password: String::new(),
             request_approval: false,
             controls: Arc::new(ControlInbox::default()),
@@ -2180,6 +2193,7 @@ mod tests {
             direct_connection: false,
             auth_mode: 0,
             key_mode: 1,
+            token: std::ptr::null(),
         };
 
         extern "C" fn dummy_frame(_frame: *const FfiVideoFrame, _data: *mut c_void) {}
@@ -2226,6 +2240,7 @@ mod tests {
             direct_connection: false,
             auth_mode: 0,
             key_mode: 1,
+            token: std::ptr::null(),
         };
 
         extern "C" fn dummy_frame(_frame: *const FfiVideoFrame, _data: *mut c_void) {}
@@ -2301,6 +2316,7 @@ mod tests {
             direct_connection: false,
             auth_mode: 0,
             key_mode: 1,
+            token: std::ptr::null(),
         };
 
         let params = resolve_stream_params_for_config(&cfg);
@@ -2331,6 +2347,7 @@ mod tests {
             direct_connection: false,
             auth_mode: 0,
             key_mode: 1,
+            token: std::ptr::null(),
         };
 
         assert_eq!(resolve_stream_params_for_config(&cfg).effective_fps, 60);

@@ -117,6 +117,8 @@ struct ConnectionConfig {
     std::string rdAccountId;       // RustDesk: 绑定 API 账户 ID
     std::string rdServerKey;       // RustDesk: Rendezvous 公钥或共享准入 Key
     int         rdServerKeyMode;   // 0=legacy/auto, 1=server public key, 2=shared access key
+    // Transient Server Pro control-plane session token. Never persist or log.
+    std::string rdAccessToken;
 
     // VNC-only transient connection fields. These values are assembled from
     // the isolated VNC data domain and are never persisted in RemoteHost.

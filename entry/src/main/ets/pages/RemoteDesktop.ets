@@ -9,6 +9,7 @@ import { image } from '@kit.ImageKit';
 import { HostSyncService } from '../services/HostSyncService';
 import { CloudStore } from '../services/CloudStore';
 import { ExtensionLoader } from '../services/ExtensionLoader';
+import { RustDeskProSyncService } from '../services/RustDeskProSyncService';
 import { KeyVaultService } from '../services/KeyVaultService';
 import {
   RemoteHost,
@@ -28,6 +29,13 @@ import { vncGatewayAvailability } from '../services/VncGatewayProtocolPolicy';
 import { RustDeskRelayConfig } from '../model/RustDeskRelayConfig';
 import { rustDeskRelayKeyModeForFfi } from '../services/RustDeskRelayKeyPolicy';
 import { RdpCredential } from '../model/RdpCredential';
+import { RustDeskProAccountState } from '../model/RustDeskProModels';
+import {
+  classifyRustDeskProNativeError,
+  rustDeskProAccountIdForConnection,
+  rustDeskProNativeErrorMessage,
+  RustDeskProNativeErrorKind
+} from '../services/RustDeskProConnectionPreflightPolicy';
 import { AppConfig, Palette, buildDark, buildLight } from '../common/Theme';
 import { showLockGate, lockGateErrorMessage } from '../components/LockGate';
 import { RemoteModifierHandle } from '../components/RemoteModifierHandle';
@@ -540,6 +548,7 @@ struct RemoteDesktop {
   @State isLandscape: boolean = true;  // 横竖屏切换状态
   private srv: HostSyncService = HostSyncService.getInstance();
   private loader: ExtensionLoader = ExtensionLoader.getInstance();
+  private readonly proSync: RustDeskProSyncService = RustDeskProSyncService.getInstance();
   private readonly vncSettings: VncSettingsService = VncSettingsService.getInstance();
   private readonly vncHosts: VncHostService = VncHostService.getInstance();
   private readonly vncGateways: VncGatewayService = VncGatewayService.getInstance();
@@ -1181,7 +1190,9 @@ struct RemoteDesktop {
 
   private shouldOfferRustDeskAuthRetry(detail: string): boolean {
     const value: string = detail.toLowerCase();
-    return value.indexOf('wrong password') >= 0 ||
+    const kind: RustDeskProNativeErrorKind = classifyRustDeskProNativeError(detail);
+    return kind === 'device_password' || kind === 'approval_timeout' ||
+      value.indexOf('wrong password') >= 0 ||
       value.indexOf('empty password') >= 0 ||
       value.indexOf('no password access') >= 0 ||
       value.indexOf('remote approval timed out') >= 0 ||
@@ -3006,6 +3017,7 @@ struct RemoteDesktop {
   async aboutToAppear(): Promise<void> {
     this.cancelPendingDisappearDecision();
     this.restoreRemoteSystemPointer('page-appear');
+    this.proSync.init(getContext(this) as common.Context);
     this.physicalKeyboardLayout = RemoteKeyboardLayout.WINDOWS;
     this.physicalKeyboardLayoutConfirmed = false;
     this.physicalKeyboardLayoutPromptVisible = false;
@@ -5693,6 +5705,8 @@ struct RemoteDesktop {
         this.ensureRdpTransferDir() : '';
       let rdServerKey: string = '';
       let rdServerKeyMode: number = 1;
+      let rdAccountId: string = host.rustdeskAccountId;
+      let rdAccessToken: string = '';
       let rustDeskRelay: RustDeskRelayConfig | undefined;
       if (host.protocol === 'rustdesk' && host.rustdeskRelayId.length > 0) {
         rustDeskRelay = this.srv.getAllRelays()
@@ -5700,6 +5714,14 @@ struct RemoteDesktop {
         if (rustDeskRelay) {
           rdServerKey = rustDeskRelay.key;
           rdServerKeyMode = rustDeskRelayKeyModeForFfi(rustDeskRelay.key, rustDeskRelay.keyMode);
+        }
+      }
+      if (host.protocol === 'rustdesk') {
+        rdAccountId = rustDeskProAccountIdForConnection(
+          host.rustdeskProAccountId, host.rustdeskAccountId);
+        if (host.rustdeskProManaged && host.sourceType === 'rustdesk_pro' && !host.rustdeskDirectEnabled) {
+          const account: RustDeskProAccountState | undefined = this.proSync.getAccount(rdAccountId);
+          if (account !== undefined) { rdAccessToken = account.accessToken; }
         }
       }
       let vncOwner: VncSessionOwner | null = null;
@@ -5820,9 +5842,10 @@ struct RemoteDesktop {
         rdAuthMode: rustDeskAuthModeForConnection(rustDeskDirect, host.rustdeskAuthMode) ===
           'request_approval' ? 1 : 0,
         rdRelayId: host.rustdeskRelayId,
-        rdAccountId: host.rustdeskAccountId,
+        rdAccountId: rdAccountId,
         rdServerKey: rdServerKey,
         rdServerKeyMode: rdServerKeyMode,
+        rdAccessToken: rdAccessToken,
         vncTransport: isVnc && vncOwner !== null ? vncOwner.host.transport : 'direct_tcp',
         vncGatewayHost: isVnc ? vncGatewayHost : '',
         vncGatewayPort: isVnc ? vncGatewayPort : 0,
@@ -5964,7 +5987,22 @@ struct RemoteDesktop {
       this.connecting = false;
       const errObj: Error = err as Error;
       this.connectionError = '无法建立远程连接';
-      this.connectionErrorDetail = errObj.message ? errObj.message : '未知连接错误 [E-CONNECT-UNKNOWN]';
+      const rawConnectionDetail: string = errObj.message ? errObj.message : '未知连接错误 [E-CONNECT-UNKNOWN]';
+      let rustDeskErrorKind: RustDeskProNativeErrorKind = classifyRustDeskProNativeError(rawConnectionDetail);
+      if (rustDeskErrorKind === 'unknown' && host.protocol === 'rustdesk' &&
+        host.rustdeskAuthMode === 'request_approval' && rawConnectionDetail.indexOf('等待远端批准超时') >= 0) {
+        rustDeskErrorKind = 'approval_timeout';
+      }
+      this.connectionErrorDetail = rawConnectionDetail;
+      if (this.isProRustDeskHost(host) && rustDeskErrorKind !== 'unknown') {
+        if (rustDeskErrorKind === 'pro_session_expired') {
+          const accountId: string = rustDeskProAccountIdForConnection(
+            host.rustdeskProAccountId, host.rustdeskAccountId);
+          this.proSync.markConnectionSessionExpired(accountId);
+        }
+        this.connectionErrorDetail = rustDeskProNativeErrorMessage(
+          rustDeskErrorKind, host.rustdeskAuthMode);
+      }
       // VNC 没有 remotehosts 健康字段；它的 TLS 首次信任必须在 native
       // 清理完成后进入独立 trust 确认流程，确认后由该 owner 重新连接。
       if (host.protocol === 'vnc' && vncHost !== null) {

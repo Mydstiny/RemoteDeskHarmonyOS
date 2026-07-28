@@ -419,6 +419,8 @@ export interface SessionConfig {
   rdAccountId?: string;      // API账户ID
   rdServerKey?: string;      // Rendezvous 公钥或共享准入 Key
   rdServerKeyMode?: number;  // 0=legacy/auto, 1=server public key, 2=shared access key
+  // Server Pro control-plane token; transient only, never persist in RemoteHost/cloud.
+  rdAccessToken?: string;
 }
 
 export interface SftpFileEntry {
