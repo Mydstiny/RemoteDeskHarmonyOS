@@ -29,6 +29,8 @@ import { VncTrustService } from '../services/VncTrustService';
 import { VncSessionCredentialHandoff } from '../services/VncSessionCredentialHandoff';
 import { VncSettingsValues } from '../services/VncModelPolicy';
 import { vncGatewayAvailability } from '../services/VncGatewayProtocolPolicy';
+import { shouldTreatVncConnectionStateAsTerminal } from '../services/VncConnectionStatePolicy';
+import { diagnoseVncConnectionError } from '../services/VncConnectionErrorPolicy';
 import { RustDeskRelayConfig } from '../model/RustDeskRelayConfig';
 import { rustDeskRelayKeyModeForFfi } from '../services/RustDeskRelayKeyPolicy';
 import { RdpCredential } from '../model/RdpCredential';
@@ -4777,6 +4779,7 @@ struct RemoteDesktop {
     const startedAt: number = Date.now();
     let lastState: number = -1;
     let lastLogMs: number = 0;
+    let observedConnecting: boolean = false;
     while (Date.now() - startedAt < timeoutMs) {
       if (attemptId !== this.connectAttemptId || this.sessionId !== sessionId) {
         hilog.info(RD_DOMAIN, RD_TAG, 'Native connection wait canceled');
@@ -4785,10 +4788,14 @@ struct RemoteDesktop {
       const state: number = this.loader.getConnectionState(sessionId);
       const transferStatus: SessionTransferStatus = this.loader.getSessionTransferStatus(sessionId);
       this.rdpDriveMounted = transferStatus.rdpDriveMounted;
+      if (state === 1) { observedConnecting = true; }
       if (state === 2) {
         return true;
       }
-      if (state === 4 || state === 0) {
+      const terminal: boolean = protocol === 'vnc' ?
+        shouldTreatVncConnectionStateAsTerminal(state, observedConnecting, Date.now() - startedAt) :
+        state === 4 || state === 0;
+      if (terminal) {
         if (attemptId !== this.connectAttemptId || this.sessionId !== sessionId) {
           hilog.info(RD_DOMAIN, RD_TAG, 'Native connection state ignored after cancel: ' + state.toString());
           return false;
@@ -4812,6 +4819,10 @@ struct RemoteDesktop {
           const detail: string = nativeMessage.length > 0 ? '：' + nativeMessage : '';
           throw new Error('RDP 连接失败或被服务器拒绝' + detail +
             ' [E-RDP-STATE-' + state.toString() + ']');
+        }
+        if (protocol === 'vnc') {
+          const diagnosis = diagnoseVncConnectionError(nativeMessage);
+          throw new Error(diagnosis.title + '：' + diagnosis.detail + ' [' + diagnosis.code + ']');
         }
         const detail: string = nativeMessage.length > 0 ? '：' + nativeMessage : '';
         throw new Error('远程连接失败或已断开' + detail +

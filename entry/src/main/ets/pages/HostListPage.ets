@@ -368,6 +368,7 @@ struct HostListPage {
   @State vncHostTransport: VncTransport = 'direct_tcp';
   @State vncHostRepeaterMode: VncRepeaterMode = 'mode12';
   @State vncHostGatewayId: string = '';
+  @State vncHostPasswordConfigured: boolean = false;
   @State vncHostRememberPassword: boolean = false;
   @State vncHostViewOnly: boolean = true;
   @State vncHostScalingMode: VncScalingMode = 'fit';
@@ -3642,6 +3643,7 @@ struct HostListPage {
     this.vncHostTransport = host === null ? 'direct_tcp' : host.transport;
     this.vncHostRepeaterMode = host === null ? 'mode12' : host.repeaterMode;
     this.vncHostGatewayId = host === null ? '' : host.gatewayId;
+    this.vncHostPasswordConfigured = host === null ? false : host.passwordConfigured;
     this.vncHostRememberPassword = host === null ? false : host.rememberPassword;
     this.vncHostViewOnly = host === null ? true : host.viewOnly;
     this.vncHostScalingMode = host === null ? 'fit' : host.scalingMode;
@@ -8461,6 +8463,11 @@ struct HostListPage {
       }
 
       this.pwdRow()
+      if (this.vncHostPasswordConfigured && this.sheetPwd === '') {
+        Text('已保存密码不会在编辑页回显；留空保存会保留现有密码，输入新密码才会替换。')
+          .fontSize(10).fontColor(this.pal().text3).fontFamily(this.font()).lineHeight(16)
+          .margin({ top: -4, bottom: 8 })
+      }
       Row() {
         Text('记住密码').fontSize(13).fontColor(this.pal().text).fontFamily(this.font()).layoutWeight(1)
         Toggle({ type: ToggleType.Switch, isOn: this.vncHostRememberPassword })
@@ -8825,10 +8832,12 @@ struct HostListPage {
           if (this.sheetErr !== '') {
             Text(this.sheetErr).fontSize(12).fontColor(this.pal().danger).width('100%').margin({ top: 8 })
           }
-
-          Button(this.editingHostId === '' ? '添加' : '保存').width('100%').height(40).fontSize(14).fontWeight(FontWeight.Medium)
-            .backgroundColor(this.accentColor).fontColor('#FFFFFF').borderRadius(10).margin({ top: 16 })
-            .onClick(() => { this.doAdd(); })
+          if (this.proto !== 'vnc') {
+            Button(this.editingHostId === '' ? '添加' : '保存').width('100%').height(40).fontSize(14)
+              .fontWeight(FontWeight.Medium).backgroundColor(this.accentColor).fontColor('#FFFFFF')
+              .borderRadius(10).margin({ top: 16 })
+              .onClick((): void => { this.doAdd(); })
+          }
         }.width('100%')
       }
       // The existing RDP/RustDesk/SSH editor keeps its compact 420vp budget.
@@ -8838,8 +8847,15 @@ struct HostListPage {
       .scrollBar(BarState.Auto)
       .edgeEffect(EdgeEffect.Spring)
       .width('100%')
+      if (this.proto === 'vnc') {
+        Button(this.editingHostId === '' ? '添加' : '保存').width('100%').height(40).fontSize(14)
+          .fontWeight(FontWeight.Medium).backgroundColor(this.accentColor).fontColor('#FFFFFF')
+          .borderRadius(10).margin({ top: 12 })
+          .onClick((): void => { this.doAdd(); })
+      }
     }
-    .padding({ left: 24, right: 24, top: 24, bottom: 40 })
+    .padding({ left: 24, right: 24, top: 24, bottom: 24 })
+    .safeAreaPadding({ bottom: 20 })
     .borderRadius(this.breakpoint === 'sm' ? 0 : 20)
     .backgroundColor(this.pal().bg)
     .backgroundBlurStyle(BlurStyle.Regular)
@@ -8884,7 +8900,9 @@ struct HostListPage {
   @Builder pwdRow(enabled: boolean = true) {
     Column() {
       Text('密码').fontSize(11).fontColor(this.pal().text2).fontFamily(this.font()).margin({ bottom: 4 })
-      TextInput({ placeholder: enabled ? '输入密码' : '已使用 Windows 凭据', text: this.sheetPwd })
+      TextInput({ placeholder: enabled ?
+        (this.proto === 'vnc' && this.vncHostPasswordConfigured
+          ? '已保存密码（不回显；留空保留）' : '输入密码') : '已使用 Windows 凭据', text: this.sheetPwd })
         .type(InputType.Password).height(38).backgroundColor(this.pal().surface).borderRadius(8)
         .fontColor(this.pal().text).placeholderColor(this.pal().text3).fontFamily(this.font())
         .fontSize(13).padding({ left: 10, right: 10 }).enabled(enabled)
@@ -9656,7 +9674,8 @@ struct HostListPage {
     this.sheetProxyHost = ''; this.sheetProxyPort = 22; this.sheetProxyUser = '';
     this.sheetProxyType = 'http_connect';
     this.vncHostTransport = 'direct_tcp'; this.vncHostRepeaterMode = 'mode12';
-    this.vncHostGatewayId = ''; this.vncHostRememberPassword = false;
+    this.vncHostGatewayId = ''; this.vncHostPasswordConfigured = false;
+    this.vncHostRememberPassword = false;
     this.vncHostViewOnly = true; this.vncHostScalingMode = 'fit';
     this.vncHostClipboardEnabled = false; this.vncHostSecurityPolicy = 'secure_only';
     this.vncHostTls = true;

@@ -194,7 +194,11 @@ export class VncHostService {
       createdAt: record.createdAt,
       updatedAt: record.updatedAt,
       syncVersion: record.syncVersion,
-      passwordConfigured: this.secrets.load(record.userId, record.id, 'vnc_password').length > 0
+      // Presence is deliberately independent from decryption readiness.  An
+      // encrypted secret can be present while the app key is locked; the
+      // editor must still report that the host has a saved password instead
+      // of presenting it as missing and tempting the user to overwrite it.
+      passwordConfigured: this.secrets.has(record.userId, record.id, 'vnc_password')
     };
     return view;
   }

@@ -86,6 +86,11 @@ VncRfbEngine::~VncRfbEngine() {
 int VncRfbEngine::start() {
     if (worker_.joinable()) return -16;
     stopRequested_.store(false, std::memory_order_release);
+    // Publish CONNECTING before creating the worker.  The ArkTS session
+    // waiter polls getConnectionState immediately after NAPI connect returns;
+    // exposing the default DISCONNECTED state during this scheduling window
+    // makes it tear down a healthy VNC attempt before TCP can begin.
+    state_.store(ConnectionState::CONNECTING, std::memory_order_release);
     try {
         worker_ = std::thread(&VncRfbEngine::run, this);
     } catch (const std::exception&) {

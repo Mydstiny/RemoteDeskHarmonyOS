@@ -45,6 +45,7 @@ export struct VncAddFlow {
   @State repeaterTargetId: string = '';
   @State portText: string = '5900';
   @State password: string = '';
+  @State passwordConfigured: boolean = false;
   @State rememberPassword: boolean = false;
   @State gatewayId: string = '';
   @State tls: boolean = true;
@@ -67,6 +68,7 @@ export struct VncAddFlow {
     this.clipboardEnabled = defaults.clipboardEnabled;
     this.securityPolicy = defaults.securityPolicy;
     this.tls = defaults.securityPolicy === 'secure_only';
+    this.passwordConfigured = false;
     const host: VncHostView | null = this.initialHost;
     if (host !== null) {
       this.label = host.label;
@@ -75,6 +77,7 @@ export struct VncAddFlow {
       else { this.repeaterTargetId = host.host; }
       this.portText = host.port.toString();
       this.rememberPassword = host.rememberPassword;
+      this.passwordConfigured = host.passwordConfigured;
       this.gatewayId = host.gatewayId;
       this.repeaterMode = host.repeaterMode;
       this.viewOnly = host.viewOnly;
@@ -276,6 +279,11 @@ export struct VncAddFlow {
   }
 
   private securityStorageHint(): string {
+    if (this.password.length === 0 && this.passwordConfigured) {
+      return this.rememberPassword
+        ? '当前已有已保存密码（不回显）；留空会继续保留，输入新密码才会替换'
+        : '当前已有已保存密码；关闭“记住密码”并保存会删除它';
+    }
     if (this.password.length === 0) { return '未填写密码；连接时可按需输入'; }
     return this.rememberPassword ? '密码将按上方选项保存；不会出现在确认摘要' :
       '密码仅用于本次保存并连接；关闭后不会保留';
@@ -387,8 +395,13 @@ export struct VncAddFlow {
 
   @Builder private securityStep() {
     Column() {
-      this.field('VNC 密码（可选）', this.password, '留空表示连接时输入',
+      this.field('VNC 密码（可选）', this.password,
+        this.passwordConfigured ? '已保存密码（不回显；留空保留）' : '留空表示连接时输入',
         (value: string): void => { this.password = value; }, true)
+      if (this.passwordConfigured && this.password.length === 0) {
+        Text('已保存密码不会在编辑页回显。留空保存可保留现有密码；输入新密码会替换现有密码。')
+          .fontSize(11).fontColor(this.pal().text3).lineHeight(17).width('100%').margin({ top: -5, bottom: 8 })
+      }
       Row() {
         Column() {
           Text('记住密码').fontSize(14).fontColor(this.pal().text)
@@ -534,6 +547,7 @@ export struct VncAddFlow {
       }.width('100%')
       this.actionBar()
     }.width('100%').padding({ left: 20, right: 20, top: 18, bottom: 20 })
+      .safeAreaPadding({ bottom: 18 })
       .backgroundColor(this.pal().card)
   }
 }

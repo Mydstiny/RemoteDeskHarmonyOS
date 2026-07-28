@@ -690,7 +690,7 @@ export struct VncSettingsPage {
           Text(host.label).fontSize(15).fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font())
           Text(host.host + ':' + host.port.toString() + ' · ' + host.transport).fontSize(11).fontColor(this.pal().text3).margin({ top: 3 })
         }.alignItems(HorizontalAlign.Start).layoutWeight(1)
-        Text(host.passwordConfigured ? '密码已加密' : '未设置密码').fontSize(11)
+        Text(host.passwordConfigured ? '密码已保存' : '未设置密码').fontSize(11)
           .fontColor(host.passwordConfigured ? this.pal().success : this.pal().text3)
         Button('连接').height(30).fontSize(11).borderRadius(7).backgroundColor(this.accentColor).fontColor(Color.White)
           .onClick((): void => { this.connectHost(host); })

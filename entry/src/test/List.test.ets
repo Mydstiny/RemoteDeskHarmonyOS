@@ -64,6 +64,8 @@ import sensitiveDataMigrationPolicyTest from './SensitiveDataMigrationPolicy.tes
 import cloudTableAdapterTest from './CloudTableAdapter.test';
 import loginStartupPolicyTest from './LoginStartupPolicy.test';
 import vncHostListProjectionPolicyTest from './VncHostListProjectionPolicy.test';
+import vncConnectionStatePolicyTest from './VncConnectionStatePolicy.test';
+import vncConnectionErrorPolicyTest from './VncConnectionErrorPolicy.test';
 
 export default function testsuite() {
   localUnitTest();
@@ -132,4 +134,6 @@ export default function testsuite() {
   cloudTableAdapterTest();
   loginStartupPolicyTest();
   vncHostListProjectionPolicyTest();
+  vncConnectionStatePolicyTest();
+  vncConnectionErrorPolicyTest();
 }
