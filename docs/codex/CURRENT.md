@@ -114,11 +114,14 @@ repeat the completed review below unless the listed files change again.
 
 ## Relay/VNC add UX correction ledger (2026-07-28)
 
-- `d54c025 fix(ui): restore relay add flows and fit VNC sheets` restores the
-  released RustDesk relay FAB contract: `hostAddMode` continues to choose the
-  modern or original RustDesk form, and the gateway picker is RustDesk-only.
-  The VNC Gateway flow remains owner-isolated and is opened through the VNC
-  Gateway route.
+- `d54c025 fix(ui): restore relay add flows and fit VNC sheets` removed the
+  accidental relay-directory filter and restored the VNC sheet sizing. Its
+  temporary RustDesk-only gateway picker was superseded by `108d0f0`.
+- `108d0f0 fix(ui): restore VNC relay add entry` restores the complete relay
+  add entry: the page FAB opens the existing gateway action sheet; selecting
+  RustDesk continues through the released RustDesk type picker and legacy
+  form, while selecting VNC opens the owner-isolated `VncGatewayAddFlow`.
+  This is an add-action chooser, not a directory filter or protocol switch.
 - `RustDeskRelayPage.ets` no longer presents 全部/RustDesk/VNC filter controls.
   RustDesk and VNC Gateway cards are always co-listed, with `RustDesk 中继` or
   `VNC Gateway` badges matching the home host-card Pro badge geometry.
