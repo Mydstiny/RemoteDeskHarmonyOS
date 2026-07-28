@@ -208,6 +208,7 @@ repeat the completed review below unless the listed files change again.
 
 ## VNC host-card integration ledger (2026-07-28)
 
+- Implementation commit: `6385e8d fix(vnc): expose hosts in classic host cards`.
 - VNC hosts now appear in the existing `HostListPage` classic host-card list through a transient `vnc:<recordId>` display projection. The projection is never persisted to `remotehosts`; VNC CRUD remains owned by `VncHostService` and `vncrecord`.
 - The existing classic card surface is intentionally unchanged: the previous protocol image/card geometry is retained, including mobile swipe edit/lock/delete, desktop ellipsis actions, selection mode and connection entry. VNC actions dispatch to the VNC owner; the unsupported remote-host workgroup mutation is not shown for VNC.
 - VNC lock state is stored as optional `locked`/`lockType` fields in the VNC host payload, with legacy payloads defaulting to unlocked. Editing through either the classic card editor or VNC settings preserves the lock state; lock updates preserve any remembered secret without materializing the password into UI state.
