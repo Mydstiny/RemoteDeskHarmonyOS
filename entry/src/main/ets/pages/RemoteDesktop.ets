@@ -519,7 +519,8 @@ struct RemoteDesktop {
   rustdeskShowProDiagnostics: boolean = false;
   @StorageLink('rustdeskClipboardEnabled') rustdeskClipboardEnabled: boolean = true;
   @StorageLink('rustdeskFilePasteEnabled') rustdeskFilePasteEnabled: boolean = true;
-  @StorageLink('rustdeskRemoteAppTouchScaleEnabled') rustdeskRemoteAppTouchScaleEnabled: boolean = false;
+  @StorageLink('rustdeskRemoteAppTouchScaleEnabled') @Watch('onRemoteAppTouchScaleSettingChange')
+  rustdeskRemoteAppTouchScaleEnabled: boolean = false;
   @StorageLink('rustdeskViewScaleMode') rustdeskViewScaleMode: string = 'fit';
   @StorageLink('remoteDisplayScaleMode') remoteDisplayScaleMode: string = 'fit';
   @StorageLink('remoteDisplayCustomScalePercent') remoteDisplayCustomScalePercent: number = 100;
@@ -1668,6 +1669,10 @@ struct RemoteDesktop {
     this.requestRemoteCursorViewRefresh(true);
   }
 
+  private onRemoteAppTouchScaleSettingChange(): void {
+    this.releaseCanvasPinchInput('remote-app-touch-scale-setting-change');
+  }
+
   private handleRemoteSurfaceHover = (hovered: boolean): void => {
     const changed: boolean = this.remoteSurfaceHovered !== hovered;
     this.remoteSurfaceHovered = hovered;
@@ -1885,9 +1890,11 @@ struct RemoteDesktop {
       this.rustDeskDisplaySwitchPending = -1;
     }
     const previous: RustDeskDisplayCapabilities = this.rustDeskDisplayCapabilities;
+    const epochChanged: boolean = this.rustDeskGeometryEpoch > 0 && capabilities.geometryEpoch > 0 &&
+      this.rustDeskGeometryEpoch !== capabilities.geometryEpoch;
     const currentChanged: boolean = previous.currentDisplay !== capabilities.currentDisplay ||
       previous.width !== capabilities.width || previous.height !== capabilities.height ||
-      previous.geometryEpoch !== capabilities.geometryEpoch;
+      previous.geometryEpoch !== capabilities.geometryEpoch || epochChanged;
     if (currentChanged && previous.width > 0 && previous.height > 0) {
       this.resetRustDeskInputAfterGeometryChange('rustdesk-geometry-epoch');
     }
@@ -2185,8 +2192,10 @@ struct RemoteDesktop {
     if (event.sourceTool !== SourceTool.Finger) {
       return;
     }
-    const activeCount: number = event.touches.length > 0 ? event.touches.length :
-      Math.max(1, event.changedTouches.length);
+    const changedCount: number = event.changedTouches.length > 0 ? event.changedTouches.length : 1;
+    const activeCount: number = event.type === TouchType.Down ?
+      Math.max(event.touches.length, this.touchFingerCount + changedCount) :
+      (event.touches.length > 0 ? event.touches.length : this.touchFingerCount);
     if (event.type === TouchType.Down && activeCount >= 2 && this.touchFingerCount < 2) {
       const point: LocalPoint | null = this.averageTouchPoint(event) || this.primaryTouchPoint(event);
       if (point !== null) {
@@ -2287,7 +2296,8 @@ struct RemoteDesktop {
     const claimed = claimCanvasTwoFingerPinch(this.canvasTwoFingerState, remoteAppTarget);
     if (claimed.owner === this.canvasTwoFingerState.owner &&
       (claimed.owner === 'touchpad-scroll' || claimed.owner === 'touchpad-right-click' ||
-        claimed.owner === 'canvas-pan' || claimed.owner === 'remote-touch-pan')) {
+        claimed.owner === 'canvas-pan' || claimed.owner === 'remote-touch-pan' ||
+        claimed.owner === 'canvas-pinch' || claimed.owner === 'remote-touch-scale')) {
       return;
     }
     this.canvasTwoFingerState = claimed;
@@ -8954,8 +8964,9 @@ struct RemoteDesktop {
           this.resetRemoteImeSession('touchpad-down');
         }
         const oldMaxFingers: number = this.touchMaxFingers;
-        const currentTouches: number = event.touches.length > 0 ? event.touches.length :
-          Math.max(1, event.changedTouches.length);
+        const changedCount: number = event.changedTouches.length > 0 ? event.changedTouches.length : 1;
+        const currentTouches: number = Math.max(event.touches.length,
+          this.touchFingerCount + changedCount);
         this.touchFingerCount = currentTouches;
         if (this.touchFingerCount > this.touchMaxFingers) {
           this.touchMaxFingers = this.touchFingerCount;
