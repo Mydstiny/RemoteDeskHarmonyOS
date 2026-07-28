@@ -21,7 +21,7 @@ import { HostSyncService } from '../services/HostSyncService';
 import { RustDeskProSyncService } from '../services/RustDeskProSyncService';
 import { snapshotSelectedRelay } from '../services/RustDeskRelayHealthPolicy';
 import { Palette, buildDark, buildLight, AppTheme } from '../common/Theme';
-import { ResourceFabPicker } from '../components/resourceadd/ResourceFabPicker';
+import { resolveFabAddStyle } from '../services/FabAddStylePolicy';
 import { ModernRelayAddFlow } from '../components/resourceadd/modern/ModernRelayAddFlow';
 import { RustDeskRelayImportService, RustDeskRelayImportResult } from '../services/RustDeskRelayImportService';
 import { RustDeskRelayKeyMode, resolveRustDeskRelayKey } from '../services/RustDeskRelayKeyPolicy';
@@ -31,7 +31,6 @@ import { VncGatewayService, VncGatewayView } from '../services/VncGatewayService
 import { VncGatewayValues } from '../services/VncModelPolicy';
 import { vncGatewayAvailability } from '../services/VncGatewayProtocolPolicy';
 import { protocolIcon } from '../services/ProtocolIconPolicy';
-import { RelayDirectoryFilter, relayDirectoryMatchesFilter } from '../services/RelayDirectoryPolicy';
 
 class TcpTestResult {
   ok: boolean = false;
@@ -48,12 +47,12 @@ export struct RustDeskRelayPage {
   @StorageProp('currentBreakpoint') breakpoint: string = 'sm';
   @StorageProp('isDesktopDevice') isDesktopDevice: boolean = false;
   @StorageProp('topRectHeight') topRectHeight: number = 0;
+  @StorageProp('hostAddMode') fabAddStyle: string = 'modern';
   @State relays: RustDeskRelayConfig[] = [];
   @State vncGateways: VncGatewayView[] = [];
-  @State relayFilter: RelayDirectoryFilter = 'all';
   @State expandedRelayIds: string[] = [];
   @State showSheet: boolean = false;
-  @State sheetContent: number = 1;  // 1/3/4=RustDesk, 5/6=pickers, 10=VNC Gateway
+  @State sheetContent: number = 1;  // 1/3/4=RustDesk, 8=modern RustDesk, 10=VNC Gateway
   @State savedRelayId: string = '';
   @State relayKind: string = 'oss';
   @State editingRelayId: string = '';
@@ -216,15 +215,8 @@ export struct RustDeskRelayPage {
     this.relays.forEach((r: RustDeskRelayConfig) => { c += this.hostCountForRelay(r.id); });
     return c;
   }
-  private showRustDeskEntries(): boolean {
-    return relayDirectoryMatchesFilter('rustdesk', this.relayFilter);
-  }
-  private showVncEntries(): boolean {
-    return relayDirectoryMatchesFilter('vnc', this.relayFilter);
-  }
   private totalRelayCount(): number {
-    return (this.showRustDeskEntries() ? this.relays.length : 0) +
-      (this.showVncEntries() ? this.vncGateways.length : 0);
+    return this.relays.length + this.vncGateways.length;
   }
 
   // ==================== Expand / Collapse ====================
@@ -335,10 +327,9 @@ export struct RustDeskRelayPage {
     if (this.relaySheetClosing) { return; }
     this.resetRelayForm();
     this.relayKind = 'oss';
-    // Both FAB styles enter the same protocol picker. RustDesk's existing
-    // type flow remains unchanged after selection, while VNC gets its own
-    // owner-specific Gateway wizard instead of entering the RustDesk form.
-    this.sheetContent = 5;
+    // Keep the released RustDesk entry contract: the selected FAB style
+    // decides between the modern wizard and the original compact form.
+    this.sheetContent = resolveFabAddStyle(this.fabAddStyle, this.isDesktopDevice) === 'modern' ? 8 : 1;
     this.showSheet = true;
   }
 
@@ -799,9 +790,6 @@ export struct RustDeskRelayPage {
         // PC: fixed-height layout — left list + right detail each scroll independently
         Column() {
           Column().height(this.contentTopSpacer())
-          if (this.relays.length + this.vncGateways.length > 0) {
-            this.directoryFilter()
-          }
           if (this.totalRelayCount() > 0) {
             this.statsBar()
           }
@@ -821,9 +809,6 @@ export struct RustDeskRelayPage {
         Scroll() {
           Column() {
             Column().height(this.contentTopSpacer())
-            if (this.relays.length + this.vncGateways.length > 0) {
-              this.directoryFilter()
-            }
             if (this.totalRelayCount() > 0) {
               this.statsBar()
             }
@@ -857,27 +842,6 @@ export struct RustDeskRelayPage {
     })
   }
 
-  @Builder directoryFilter() {
-    Row() {
-      this.directoryFilterButton('全部', 'all')
-      this.directoryFilterButton('RustDesk', 'rustdesk')
-      this.directoryFilterButton('VNC', 'vnc')
-    }.width('100%').margin({ bottom: 10 })
-  }
-
-  @Builder directoryFilterButton(label: string, value: RelayDirectoryFilter) {
-    Button(label).layoutWeight(1).height(34).borderRadius(10)
-      .fontSize(12)
-      .backgroundColor(this.relayFilter === value ? this.accentColor : this.pal().surface)
-      .fontColor(this.relayFilter === value ? Color.White : this.pal().text2)
-      .margin({ right: value === 'vnc' ? 0 : 6 })
-      .onClick((): void => {
-        this.relayFilter = value;
-        if (value === 'vnc') { this.selectedPcRelay = null; }
-        if (value === 'rustdesk') { this.selectedPcVncGateway = null; }
-      })
-  }
-
   // ==================== Stats Bar ====================
 
   @Builder statsBar() {
@@ -909,11 +873,10 @@ export struct RustDeskRelayPage {
 
   @Builder emptyState() {
     Column() {
-      SymbolGlyph(protocolIcon(this.relayFilter === 'vnc' ? 'vnc_gateway' : 'rustdesk_relay'))
+      SymbolGlyph(protocolIcon('rustdesk_relay'))
         .fontSize(48)
         .fontColor([this.pal().text3])
-      Text(this.relayFilter === 'vnc' ? '还没有 VNC Gateway' :
-        (this.relayFilter === 'rustdesk' ? '还没有 RustDesk 中继' : '还没有中继服务器'))
+      Text('还没有中继服务器')
         .fontSize(17).fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font())
         .margin({ top: 16 })
       Text('点击底部 + 添加中继服务器')
@@ -929,47 +892,43 @@ export struct RustDeskRelayPage {
 
   @Builder mobileList() {
     List() {
-      if (this.showRustDeskEntries()) {
-        ForEach(this.relays, (relay: RustDeskRelayConfig) => {
-          ListItem() {
-            this.relayCardContent(relay, false)
-          }
-          .swipeAction({
-            start: {
-              builder: () => { this.rightSwipeActions(relay) },
-              actionAreaDistance: 100
-            },
-            end: {
-              builder: () => { this.leftSwipeActions(relay) },
-              actionAreaDistance: 112
-            },
-            edgeEffect: SwipeEdgeEffect.Spring
-          })
-          .transition(
-            TransitionEffect.asymmetric(
-              TransitionEffect.translate({ y: 18 }).combine(TransitionEffect.OPACITY),
-              TransitionEffect.translate({ x: -160, y: -8 })
-                .combine(TransitionEffect.scale({ x: 0.82, y: 0.82 }))
-                .combine(TransitionEffect.OPACITY)
-            )
+      ForEach(this.relays, (relay: RustDeskRelayConfig) => {
+        ListItem() {
+          this.relayCardContent(relay, false)
+        }
+        .swipeAction({
+          start: {
+            builder: () => { this.rightSwipeActions(relay) },
+            actionAreaDistance: 100
+          },
+          end: {
+            builder: () => { this.leftSwipeActions(relay) },
+            actionAreaDistance: 112
+          },
+          edgeEffect: SwipeEdgeEffect.Spring
+        })
+        .transition(
+          TransitionEffect.asymmetric(
+            TransitionEffect.translate({ y: 18 }).combine(TransitionEffect.OPACITY),
+            TransitionEffect.translate({ x: -160, y: -8 })
+              .combine(TransitionEffect.scale({ x: 0.82, y: 0.82 }))
+              .combine(TransitionEffect.OPACITY)
           )
-        }, (relay: RustDeskRelayConfig): string => relay.id + ':' + this.relayViewRevision.toString())
-      }
-      if (this.showVncEntries()) {
-        ForEach(this.vncGateways, (gateway: VncGatewayView) => {
-          ListItem() {
-            this.vncGatewayCardContent(gateway)
-          }
-          .transition(
-            TransitionEffect.asymmetric(
-              TransitionEffect.translate({ y: 18 }).combine(TransitionEffect.OPACITY),
-              TransitionEffect.translate({ x: -160, y: -8 })
-                .combine(TransitionEffect.scale({ x: 0.82, y: 0.82 }))
-                .combine(TransitionEffect.OPACITY)
-            )
+        )
+      }, (relay: RustDeskRelayConfig): string => relay.id + ':' + this.relayViewRevision.toString())
+      ForEach(this.vncGateways, (gateway: VncGatewayView) => {
+        ListItem() {
+          this.vncGatewayCardContent(gateway)
+        }
+        .transition(
+          TransitionEffect.asymmetric(
+            TransitionEffect.translate({ y: 18 }).combine(TransitionEffect.OPACITY),
+            TransitionEffect.translate({ x: -160, y: -8 })
+              .combine(TransitionEffect.scale({ x: 0.82, y: 0.82 }))
+              .combine(TransitionEffect.OPACITY)
           )
-        }, (gateway: VncGatewayView): string => gateway.id + ':' + this.vncViewRevision.toString())
-      }
+        )
+      }, (gateway: VncGatewayView): string => gateway.id + ':' + this.vncViewRevision.toString())
     }
     .width('100%')
     .listDirection(Axis.Vertical)
@@ -1045,36 +1004,32 @@ export struct RustDeskRelayPage {
 
   @Builder tabletGrid() {
     Grid() {
-      if (this.showRustDeskEntries()) {
-        ForEach(this.relays, (relay: RustDeskRelayConfig) => {
-          GridItem() {
-            this.relayCardContent(relay, true)
-          }
-          .transition(
-            TransitionEffect.asymmetric(
-              TransitionEffect.translate({ y: 18 }).combine(TransitionEffect.OPACITY),
-              TransitionEffect.translate({ x: -160, y: -8 })
-                .combine(TransitionEffect.scale({ x: 0.82, y: 0.82 }))
-                .combine(TransitionEffect.OPACITY)
-            )
+      ForEach(this.relays, (relay: RustDeskRelayConfig) => {
+        GridItem() {
+          this.relayCardContent(relay, true)
+        }
+        .transition(
+          TransitionEffect.asymmetric(
+            TransitionEffect.translate({ y: 18 }).combine(TransitionEffect.OPACITY),
+            TransitionEffect.translate({ x: -160, y: -8 })
+              .combine(TransitionEffect.scale({ x: 0.82, y: 0.82 }))
+              .combine(TransitionEffect.OPACITY)
           )
-        }, (relay: RustDeskRelayConfig): string => relay.id + ':' + this.relayViewRevision.toString())
-      }
-      if (this.showVncEntries()) {
-        ForEach(this.vncGateways, (gateway: VncGatewayView) => {
-          GridItem() {
-            this.vncGatewayCardContent(gateway)
-          }
-          .transition(
-            TransitionEffect.asymmetric(
-              TransitionEffect.translate({ y: 18 }).combine(TransitionEffect.OPACITY),
-              TransitionEffect.translate({ x: -160, y: -8 })
-                .combine(TransitionEffect.scale({ x: 0.82, y: 0.82 }))
-                .combine(TransitionEffect.OPACITY)
-            )
+        )
+      }, (relay: RustDeskRelayConfig): string => relay.id + ':' + this.relayViewRevision.toString())
+      ForEach(this.vncGateways, (gateway: VncGatewayView) => {
+        GridItem() {
+          this.vncGatewayCardContent(gateway)
+        }
+        .transition(
+          TransitionEffect.asymmetric(
+            TransitionEffect.translate({ y: 18 }).combine(TransitionEffect.OPACITY),
+            TransitionEffect.translate({ x: -160, y: -8 })
+              .combine(TransitionEffect.scale({ x: 0.82, y: 0.82 }))
+              .combine(TransitionEffect.OPACITY)
           )
-        }, (gateway: VncGatewayView): string => gateway.id + ':' + this.vncViewRevision.toString())
-      }
+        )
+      }, (gateway: VncGatewayView): string => gateway.id + ':' + this.vncViewRevision.toString())
     }
     .columnsTemplate(this.gridColumnsTemplate())
     .columnsGap(this.cardGap())
@@ -1090,20 +1045,16 @@ export struct RustDeskRelayPage {
       // Left: relay list
       Column() {
         List() {
-          if (this.showRustDeskEntries()) {
-            ForEach(this.relays, (relay: RustDeskRelayConfig) => {
-              ListItem() {
-                this.pcListItem(relay)
-              }
-            }, (relay: RustDeskRelayConfig): string => relay.id + ':' + this.relayViewRevision.toString())
-          }
-          if (this.showVncEntries()) {
-            ForEach(this.vncGateways, (gateway: VncGatewayView) => {
-              ListItem() {
-                this.pcVncGatewayListItem(gateway)
-              }
-            }, (gateway: VncGatewayView): string => gateway.id + ':' + this.vncViewRevision.toString())
-          }
+          ForEach(this.relays, (relay: RustDeskRelayConfig) => {
+            ListItem() {
+              this.pcListItem(relay)
+            }
+          }, (relay: RustDeskRelayConfig): string => relay.id + ':' + this.relayViewRevision.toString())
+          ForEach(this.vncGateways, (gateway: VncGatewayView) => {
+            ListItem() {
+              this.pcVncGatewayListItem(gateway)
+            }
+          }, (gateway: VncGatewayView): string => gateway.id + ':' + this.vncViewRevision.toString())
         }
         .width('100%').layoutWeight(1)
         .scrollBar(BarState.Off).edgeEffect(EdgeEffect.Spring)
@@ -1140,7 +1091,7 @@ export struct RustDeskRelayPage {
           }, (id: string): string => id)
         } else {
           Column() {
-            SymbolGlyph(protocolIcon(this.relayFilter === 'vnc' ? 'vnc_gateway' : 'rustdesk_relay'))
+            SymbolGlyph(protocolIcon('rustdesk_relay'))
               .fontSize(36).fontColor([this.pal().text3])
             Text('选择一个服务器').fontSize(14).fontColor(this.pal().text2).fontFamily(this.font()).margin({ top: 8 })
             Text('查看详细信息').fontSize(12).fontColor(this.pal().text3).fontFamily(this.font()).margin({ top: 2 })
@@ -1158,7 +1109,7 @@ export struct RustDeskRelayPage {
         .margin({ right: 10 })
       Column() {
         Row() {
-          Text('RustDesk 中继').fontSize(10).fontColor(this.accentColor).fontFamily(this.font())
+          this.relayTypeBadge('RustDesk 中继')
           Text(relay.displayName()).fontSize(15).fontWeight(FontWeight.Medium)
             .fontColor(this.pal().text).fontFamily(this.font()).margin({ left: 6 })
             .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
@@ -1207,7 +1158,7 @@ export struct RustDeskRelayPage {
         .fontSize(22).fontColor([this.vncGatewayStatusColor(gateway)]).margin({ right: 10 })
       Column() {
         Row() {
-          Text('VNC Gateway').fontSize(10).fontColor(this.accentColor).fontFamily(this.font())
+          this.relayTypeBadge('VNC Gateway')
           Text(gateway.label).fontSize(15).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
             .fontFamily(this.font()).margin({ left: 6 }).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
         }
@@ -1476,7 +1427,7 @@ export struct RustDeskRelayPage {
           .fontColor([this.vncGatewayStatusColor(gateway)])
         Column() {
           Row() {
-            Text('VNC Gateway').fontSize(10).fontColor(this.accentColor).fontFamily(this.font())
+            this.relayTypeBadge('VNC Gateway')
             Text(gateway.label).fontSize(this.breakpoint === 'sm' ? 15 : 17)
               .fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font())
               .margin({ left: 7 }).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
@@ -1526,6 +1477,12 @@ export struct RustDeskRelayPage {
 
   // ==================== Relay Card Content (shared by mobile & tablet) ====================
 
+  @Builder relayTypeBadge(label: string) {
+    Text(label).fontSize(10).fontColor(this.accentColor).fontFamily(this.font())
+      .padding({ left: 6, right: 6, top: 2, bottom: 2 })
+      .borderRadius(6).backgroundColor(this.pal().surface).margin({ right: 6 })
+  }
+
   @Builder relayCardContent(relay: RustDeskRelayConfig, enableTap: boolean) {
     Column() {
       // Card header.  Keep the health action and overflow menu outside the
@@ -1541,7 +1498,7 @@ export struct RustDeskRelayPage {
         Row() {
           Column() {
             Row() {
-              Text('RustDesk 中继').fontSize(10).fontColor(this.accentColor).fontFamily(this.font())
+              this.relayTypeBadge('RustDesk 中继')
               Text(relay.displayName())
                 .fontSize(this.breakpoint === 'sm' ? 15 : 17).fontWeight(FontWeight.Medium)
                 .fontColor(this.pal().text).fontFamily(this.font()).margin({ left: 7 })
@@ -1841,25 +1798,6 @@ export struct RustDeskRelayPage {
       : { width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
   }
 
-  @Builder relayProtocolChoiceSheet() {
-    ResourceFabPicker({
-      kind: 'gateway',
-      onSelect: (option: string): void => {
-        if (option === 'rustdesk') { this.sheetContent = 6; }
-        if (option === 'vnc') { this.openVncGatewaySheet(); }
-      },
-      onClose: (): void => { this.closeSheet(); }
-    })
-  }
-
-  @Builder relayTypeChoiceSheet() {
-    ResourceFabPicker({
-      kind: 'relay',
-      onSelect: (option: string): void => { this.relayKind = option; this.sheetContent = 1; },
-      onClose: (): void => { this.closeSheet(); }
-    })
-  }
-
   @Builder relaySavedSheet() {
     Column() {
       SymbolGlyph($r('sys.symbol.checkmark_circle_fill')).fontSize(42).fontColor([this.pal().success])
@@ -1929,10 +1867,6 @@ export struct RustDeskRelayPage {
       this.proAccountEditSheet()
     } else if (this.sheetContent === 4) {
       this.relaySavedSheet()
-    } else if (this.sheetContent === 5) {
-      this.relayProtocolChoiceSheet()
-    } else if (this.sheetContent === 6) {
-      this.relayTypeChoiceSheet()
     } else if (this.sheetContent === 8) {
       ModernRelayAddFlow({
         onClose: (): void => { this.closeSheet(); },

@@ -168,21 +168,6 @@ export struct VncGatewayAddFlow {
       .margin({ bottom: 8 }).onClick((): void => { this.selectTransport(value); })
   }
 
-  @Builder private progress() {
-    Row() {
-      ForEach(['端点', '安全', '确认'], (title: string, index: number) => {
-        Column() {
-          Text((index + 1).toString()).fontSize(11).fontWeight(FontWeight.Bold)
-            .fontColor(index <= this.step ? Color.White : this.pal().text3)
-            .width(24).height(24).borderRadius(12).textAlign(TextAlign.Center)
-            .padding({ top: 4 }).backgroundColor(index <= this.step ? this.accentColor : this.pal().surface)
-          Text(title).fontSize(10).fontColor(index <= this.step ? this.accentColor : this.pal().text3)
-            .margin({ top: 4 })
-        }.alignItems(HorizontalAlign.Center).layoutWeight(1)
-      }, (title: string): string => title)
-    }.width('100%').margin({ bottom: 16 })
-  }
-
   @Builder private endpointStep() {
     Column() {
       Text('VNC Gateway 类型').fontSize(12).fontColor(this.pal().text2).margin({ bottom: 7 })
@@ -278,27 +263,25 @@ export struct VncGatewayAddFlow {
         Column() {
           Text(this.isEditing() ? '编辑 VNC Gateway' : '添加 VNC Gateway')
             .fontSize(20).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
-          Text(this.stepTitle()).fontSize(12).fontColor(this.pal().text3).margin({ top: 3 })
+          Text((this.step + 1).toString() + '/3  ' + this.stepTitle())
+            .fontSize(12).fontColor(this.pal().text3).margin({ top: 3 })
         }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 10 })
         Button() { SymbolGlyph($r('sys.symbol.xmark')).fontSize(18).fontColor([this.pal().text2]) }
           .width(36).height(36).borderRadius(18).padding(0).backgroundColor(this.pal().surface)
           .onClick((): void => { this.onClose(); })
       }.width('100%').margin({ bottom: 5 })
       Text(this.stepDetail()).fontSize(11).fontColor(this.pal().text3).width('100%').margin({ bottom: 12 })
-      this.progress()
-      Scroll() {
-        Column() {
-          if (this.step === 0) { this.endpointStep() }
-          else if (this.step === 1) { this.securityStep() }
-          else { this.reviewStep() }
-          if (this.errorText !== '') {
-            Text(this.errorText).fontSize(12).fontColor(this.pal().danger).lineHeight(18)
-              .width('100%').margin({ top: 12 })
-          }
-        }.width('100%')
-      }.scrollBar(BarState.Auto).edgeEffect(EdgeEffect.Spring).layoutWeight(1)
+      Column() {
+        if (this.step === 0) { this.endpointStep() }
+        else if (this.step === 1) { this.securityStep() }
+        else { this.reviewStep() }
+        if (this.errorText !== '') {
+          Text(this.errorText).fontSize(12).fontColor(this.pal().danger).lineHeight(18)
+            .width('100%').margin({ top: 12 })
+        }
+      }.width('100%')
       this.actionBar()
-    }.width('100%').height('100%').padding({ left: 20, right: 20, top: 18, bottom: 20 })
+    }.width('100%').padding({ left: 20, right: 20, top: 18, bottom: 20 })
       .backgroundColor(this.pal().card)
   }
 }

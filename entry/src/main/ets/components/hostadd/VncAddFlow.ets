@@ -298,21 +298,6 @@ export struct VncAddFlow {
     }
   }
 
-  @Builder private progress() {
-    Row() {
-      ForEach(['连接', '安全', '显示', '确认'], (title: string, index: number) => {
-        Column() {
-          Text((index + 1).toString()).fontSize(11).fontWeight(FontWeight.Bold)
-            .fontColor(index <= this.step ? Color.White : this.pal().text3)
-            .width(24).height(24).borderRadius(12).textAlign(TextAlign.Center)
-            .padding({ top: 4 }).backgroundColor(index <= this.step ? this.accentColor : this.pal().surface)
-          Text(title).fontSize(10).fontColor(index <= this.step ? this.accentColor : this.pal().text3)
-            .margin({ top: 4 })
-        }.alignItems(HorizontalAlign.Center).layoutWeight(1)
-      }, (title: string): string => title)
-    }.width('100%').margin({ bottom: 18 })
-  }
-
   @Builder private endpointStep() {
     Column() {
       Row() {
@@ -469,30 +454,28 @@ export struct VncAddFlow {
         Column() {
           Text(this.editingId.trim() === '' ? '添加 VNC 主机' : '编辑 VNC 主机')
             .fontSize(20).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
-          Text(this.stepTitle()).fontSize(12).fontColor(this.pal().text3).margin({ top: 3 })
+          Text((this.step + 1).toString() + '/4  ' + this.stepTitle())
+            .fontSize(12).fontColor(this.pal().text3).margin({ top: 3 })
         }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 12 })
       }.width('100%').margin({ bottom: 4 })
       Text(this.stepDetail()).fontSize(11).fontColor(this.pal().text3).width('100%').margin({ bottom: 14 })
-      this.progress()
-      Scroll() {
-        Column() {
-          if (this.step === 0) {
-            this.endpointStep()
-          } else if (this.step === 1) {
-            this.securityStep()
-          } else if (this.step === 2) {
-            this.displayStep()
-          } else {
-            this.reviewStep()
-          }
-          if (this.errorText !== '') {
-            Text(this.errorText).fontSize(12).fontColor(this.pal().danger).lineHeight(18)
-              .width('100%').margin({ top: 12 })
-          }
-        }.width('100%')
-      }.scrollBar(BarState.Auto).edgeEffect(EdgeEffect.Spring).layoutWeight(1)
+      Column() {
+        if (this.step === 0) {
+          this.endpointStep()
+        } else if (this.step === 1) {
+          this.securityStep()
+        } else if (this.step === 2) {
+          this.displayStep()
+        } else {
+          this.reviewStep()
+        }
+        if (this.errorText !== '') {
+          Text(this.errorText).fontSize(12).fontColor(this.pal().danger).lineHeight(18)
+            .width('100%').margin({ top: 12 })
+        }
+      }.width('100%')
       this.actionBar()
-    }.width('100%').height('100%').padding({ left: 20, right: 20, top: 18, bottom: 20 })
+    }.width('100%').padding({ left: 20, right: 20, top: 18, bottom: 20 })
       .backgroundColor(this.pal().card)
   }
 }
