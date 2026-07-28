@@ -56,6 +56,8 @@ import sensitiveDataStatePolicyTest from './SensitiveDataStatePolicy.test';
 import sensitiveDataMigrationPolicyTest from './SensitiveDataMigrationPolicy.test';
 import cloudTableAdapterTest from './CloudTableAdapter.test';
 import loginStartupPolicyTest from './LoginStartupPolicy.test';
+import rustDeskProSyncPolicyTest from './RustDeskProSyncPolicy.test';
+import remoteKeyboardAvoidPolicyTest from './RemoteKeyboardAvoidPolicy.test';
 
 export default function testsuite() {
   localUnitTest();
@@ -116,4 +118,6 @@ export default function testsuite() {
   sensitiveDataMigrationPolicyTest();
   cloudTableAdapterTest();
   loginStartupPolicyTest();
+  rustDeskProSyncPolicyTest();
+  remoteKeyboardAvoidPolicyTest();
 }

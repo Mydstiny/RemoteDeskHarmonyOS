@@ -3322,8 +3322,10 @@ struct HostListPage {
       prefs.putSync('loginMode', '');
       prefs.flushSync();
     } catch (_e) { /* ignore */ }
-    // 3. 清空磁盘凭据
-    AccountKitService.getInstance().clearCredential();
+    // 3. 清空磁盘凭据 (未初始化时 clearCredential 只会清内存, 磁盘残留会让下次冷启动"自动登录"回来)
+    const accountKit: AccountKitService = AccountKitService.getInstance();
+    accountKit.initSync(getContext(this) as common.Context);
+    accountKit.clearCredential();
     // 4. 清除 HMS Core 系统级授权 session
     try {
       const cancelReq: authentication.CancelAuthorizationRequest =
@@ -3364,12 +3366,15 @@ struct HostListPage {
         credential.openID ?? ''
       );
       // 持久化 (参照 LoginPage.onLoginSuccess)
-      AccountKitService.getInstance().saveCredential({
+      const accountKit: AccountKitService = AccountKitService.getInstance();
+      accountKit.initSync(getContext(this) as common.Context);
+      accountKit.saveCredential({
         unionID: credential.unionID ?? '',
         openID: credential.openID ?? '',
         authorizationCode: credential.authorizationCode ?? '',
         idToken: '',
-        displayName: nickName || '华为用户'
+        displayName: nickName || '华为用户',
+        avatarUri: avatarUri
       });
       this.saveLoginModeToPrefs('account');
       // 刷新 UI 状态

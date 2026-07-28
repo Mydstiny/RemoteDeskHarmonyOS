@@ -11,9 +11,22 @@ import { hilog } from '@kit.PerformanceAnalysisKit';
 
 const TAG = 'ModifierHandle';
 const DOMAIN = 0x0014;
-const HANDLE_WIDTH = 58;
-const VISIBLE_TAB_WIDTH = 24;
+/**
+ * 修饰键胶囊与键盘按钮的尺寸。
+ *
+ * 键盘是高频操作、修饰键是低频，所以键盘按钮做得比胶囊大。两者宽度都不超过
+ * VISIBLE_TAB_WIDTH，保证贴边时完整露在屏幕内（胶囊本体有一大截是故意藏在
+ * 屏幕外的）。KEY_BUTTON_BLOCK 必须小于父组件 snapHandleToEdge 的 topMargin，
+ * 否则贴到顶部时键盘按钮会被切掉。
+ */
+const HANDLE_WIDTH = 48;
+const VISIBLE_TAB_WIDTH = 34;
 const HIDDEN_LABEL_WIDTH = HANDLE_WIDTH - VISIBLE_TAB_WIDTH;
+const CAPSULE_HEIGHT = 30;
+const KEY_BUTTON_WIDTH = VISIBLE_TAB_WIDTH;
+const KEY_BUTTON_HEIGHT = 44;
+const KEY_BUTTON_GAP = 6;
+const KEY_BUTTON_BLOCK = KEY_BUTTON_HEIGHT + KEY_BUTTON_GAP;
 
 @Component
 export struct RemoteModifierHandle {
@@ -31,8 +44,12 @@ export struct RemoteModifierHandle {
   @Prop shiftLocked: boolean = false;
   @Prop winLocked: boolean = false;
   @Prop fnLayer: boolean = false;
+  /** 软键盘是否已打开 (决定快捷按钮的激活态) */
+  @Prop keyboardOpen: boolean = false;
   @StorageProp('accentColor') accentColor: string = '#007DFF';
 
+  /** 单击键盘快捷按钮 → 直接开关软键盘, 不用先展开面板 */
+  onToggleKeyboard: () => void = (): void => {};
   /** 单击胶囊 → 展开/收起面板 */
   onTogglePanel: () => void = (): void => {};
   /** 长按胶囊 → 打开快捷键面板 */
@@ -130,8 +147,38 @@ export struct RemoteModifierHandle {
   // 构建
   // ============================================================
 
+  /** 露出的工具柄在胶囊本地坐标里的 x，键盘按钮跟它同列才不会被挤到屏幕外。 */
+  private visibleTabLocalX(): number {
+    return this.handleSide === 'left' ? HIDDEN_LABEL_WIDTH : 0;
+  }
+
   build() {
     Stack() {
+      // 键盘快捷按钮 — 一下直达软键盘。用和修饰键面板里同一个系统图标，
+      // 和胶囊工具柄上的 '⌨' 文字字形区分开。
+      Row() {
+        SymbolGlyph($r('sys.symbol.keyboard'))
+          .fontSize(20)
+          .fontColor([this.keyboardOpen ? '#DFFFE6' : '#E6E6E6'])
+      }
+      .justifyContent(FlexAlign.Center)
+      .width(KEY_BUTTON_WIDTH)
+      .height(KEY_BUTTON_HEIGHT)
+      .borderRadius(12)
+      .backgroundColor(this.keyboardOpen ? 'rgba(30,60,44,0.88)' : 'rgba(14,18,28,0.72)')
+      .border({
+        width: this.keyboardOpen ? 1.5 : 1,
+        color: this.keyboardOpen ? 'rgba(102,221,122,0.55)' : 'rgba(255,255,255,0.14)'
+      })
+      .shadow({ radius: 8, color: 'rgba(0,0,0,0.30)', offsetY: 2 })
+      .alignItems(VerticalAlign.Center)
+      .position({ x: this.visibleTabLocalX(), y: 0 })
+      .gesture(TapGesture({ count: 1 })
+        .onAction((): void => {
+          hilog.info(DOMAIN, TAG, 'handle keyboard button → toggle keyboard');
+          this.onToggleKeyboard();
+        }))
+
       // 胶囊本体 — 半透明深色工具柄
       Row() {
         if (this.handleSide === 'left') {
@@ -166,7 +213,7 @@ export struct RemoteModifierHandle {
             .textOverflow({ overflow: TextOverflow.Ellipsis })
         }
       }
-      .height(42)
+      .height(CAPSULE_HEIGHT)
       .width(HANDLE_WIDTH)
       .borderRadius(14)
       .backgroundColor(this.capsuleBg())
@@ -177,6 +224,7 @@ export struct RemoteModifierHandle {
         offsetY: 2
       })
       .alignItems(VerticalAlign.Center)
+      .position({ x: 0, y: KEY_BUTTON_BLOCK })
       .gesture(
         GestureGroup(GestureMode.Exclusive,
           TapGesture({ count: 1 })
@@ -212,8 +260,12 @@ export struct RemoteModifierHandle {
         )
       )
     }
-    .position({ x: this.effectiveX(), y: this.effectiveY() })
+    .width(HANDLE_WIDTH)
+    .height(KEY_BUTTON_BLOCK + CAPSULE_HEIGHT)
+    // 整块上移 KEY_BUTTON_BLOCK，让胶囊本体仍然精确落在父组件给的 handleY 上，
+    // 父组件的吸边与夹取算法不用感知键盘按钮的存在。
+    .position({ x: this.effectiveX(), y: this.effectiveY() - KEY_BUTTON_BLOCK })
     .hitTestBehavior(HitTestMode.Default)
-    // 不铺全屏 — 仅胶囊自身区域响应触摸
+    // 不铺全屏 — 仅胶囊与键盘按钮自身区域响应触摸
   }
 }

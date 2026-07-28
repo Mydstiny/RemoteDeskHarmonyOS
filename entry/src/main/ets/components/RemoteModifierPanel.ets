@@ -22,6 +22,7 @@ export struct RemoteModifierPanel {
   @Prop shiftLatch: string = 'off';
   @Prop winLatch: string = 'off';
   @Prop fnLayer: boolean = false;
+  @Prop keyboardOpen: boolean = false;
   @Prop panelX: number = 8;
   @Prop panelY: number = 70;
   @Prop shortcutX: number = 8;
@@ -34,6 +35,14 @@ export struct RemoteModifierPanel {
   onToggleModifier: (mod: string) => void = (_mod: string): void => {};
   onLockModifier: (mod: string) => void = (_mod: string): void => {};
   onToggleFnLayer: () => void = (): void => {};
+  /**
+   * 打开/收起系统虚拟键盘。
+   *
+   * 悬浮胶囊是连接成功后唯一常驻可见的入口；RustDesk 顶栏只在桌面设备或
+   * 键鼠模式下显示，控制面板又只能三指轻点唤出，平板触控模式下用户找不到
+   * 任何打字入口。
+   */
+  onToggleKeyboard: () => void = (): void => {};
   /** 功能键点击回调 (Esc/Tab/Del/Enter/F1-F12 等) */
   onKeyTap: (keyCode: number, label: string) => void = (_kc: number, _lb: string): void => {};
   /** 快捷键点击回调 — keyCodes: [modifier, ..., key] → 全部 down → 逆序 up */
@@ -270,6 +279,38 @@ export struct RemoteModifierPanel {
     )
   }
 
+  /** 虚拟键盘开关 — 面板标题栏常驻入口 */
+  @Builder
+  KeyboardToggle() {
+    Row() {
+      SymbolGlyph($r('sys.symbol.keyboard'))
+        .fontSize(15)
+        .fontColor([this.keyboardOpen ? '#DFFFE6' : 'rgba(242,244,247,0.82)'])
+      Text(this.keyboardOpen ? '收起' : '键盘')
+        .fontSize(11)
+        .fontColor(this.keyboardOpen ? '#DFFFE6' : 'rgba(242,244,247,0.82)')
+        .margin({ left: 4 })
+    }
+    .height(26)
+    .padding({ left: 8, right: 8 })
+    .borderRadius(9)
+    .backgroundColor(this.keyBgFor('kbd-toggle', this.keyboardOpen ? this.fnActiveBg() : this.keyBg()))
+    .border({
+      width: this.keyboardOpen ? 1 : 0.5,
+      color: this.keyBorderFor('kbd-toggle', this.keyboardOpen ? this.fnActiveBorder() : this.keyBorder())
+    })
+    .scale({ x: this.isPressed('kbd-toggle') ? 0.96 : 1, y: this.isPressed('kbd-toggle') ? 0.96 : 1 })
+    .animation({ duration: 80, curve: Curve.EaseOut })
+    .onTouch((event: TouchEvent): void => {
+      this.updatePressedKey('kbd-toggle', event);
+    })
+    .gesture(TapGesture({ count: 1 })
+      .onAction((): void => {
+        hilog.info(DOMAIN, TAG, 'keyboard toggle open=' + (this.keyboardOpen ? '1' : '0'));
+        this.onToggleKeyboard();
+      }))
+  }
+
   /** Fn 层切换按钮 */
   @Builder
   FnKey() {
@@ -496,6 +537,7 @@ export struct RemoteModifierPanel {
         // 标题栏
         Row() {
           this.PanelDragArea('修饰键', false)
+          this.KeyboardToggle()
           Text('✕')
             .fontSize(13)
             .fontColor('rgba(255,255,255,0.4)')

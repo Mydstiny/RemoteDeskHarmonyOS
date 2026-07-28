@@ -181,6 +181,11 @@ import {
   RemoteImeCommandKind,
   RemoteImeCommandQueue
 } from '../services/RemoteImeCommandQueue';
+import {
+  KEYBOARD_CARET_MARGIN_VP,
+  keyboardCanvasLiftDeltaPx,
+  maxKeyboardCanvasLiftPx
+} from '../services/RemoteKeyboardAvoidPolicy';
 import { hashForLog, maskHost, maskUser, safeError } from '../utils/SafeLogger';
 import {
   LocalResourceStats,
@@ -232,6 +237,30 @@ const TOUCHPAD_SCROLL_GAIN = 0.08;
 const TOUCHPAD_SCROLL_FLUSH_MS = 24;
 const TOUCHPAD_SCROLL_MAX_DELTA = 2;
 const TOUCH_DIRECT_RIGHT_CLICK_MS = 650;
+/**
+ * 触控模式下从"移动光标"到"按下左键"之间的间隔。
+ *
+ * 远端 Windows 的任务栏、菜单这类控件要先收到 mouse-enter/hover 才会响应
+ * 点击。光标瞬移过去的同一毫秒就按下，控件还没处理完悬停，点击会被吞掉，
+ * 用户看到的就是"鼠标只是挪了一下"。真实鼠标总有移动轨迹，不存在这个问题。
+ */
+const DIRECT_TOUCH_PRESS_DELAY_MS = 40;
+/**
+ * 画布让位方向。
+ *
+ * gl_renderer.cpp:977 是 `vpY = (height_ - vpH)/2 + canvasPanY_`，按 glViewport
+ * 的 y 从底边算起推导应该取正值；但实测画面是往下掉的，说明纹理采样这一路有
+ * 翻转，实际需要负值才能把画面推向上方。以实测为准。
+ */
+const KEYBOARD_LIFT_SIGN = -1;
+/**
+ * 悬浮胶囊几何 — 必须和 RemoteModifierHandle.ets 里的同名常量保持一致。
+ * 吸边/夹取算法在这边，实际绘制在那边，两处对不上胶囊就会被切掉或错位。
+ */
+const MODIFIER_HANDLE_WIDTH = 48;
+const MODIFIER_HANDLE_VISIBLE_WIDTH = 34;
+const MODIFIER_HANDLE_HEIGHT = 30;
+const MODIFIER_HANDLE_KEY_BUTTON_BLOCK = 50;
 const REMOTE_IME_SELECTION_ACK_TIMEOUT_MS = 600;
 const REMOTE_IME_COMMAND_RETRY_MS = 50;
 const INPUT_LOG_SAMPLE_MS = 1000;
@@ -695,12 +724,24 @@ struct RemoteDesktop {
   private keyboardProgrammaticSelection: boolean = false;
   private keyboardSelectionAckTimer: number = -1;
   private keyboardCommandQueue: RemoteImeCommandQueue = new RemoteImeCommandQueue();
+  /** 影子 TextArea 当前是否持有焦点；只有真的被抢走时才补发 requestFocus。 */
+  private keyboardProxyFocused: boolean = false;
   private keyboardCommandPumpTimer: number = -1;
   private touchIndicatorTimer: number = -1;
   private kbWin: window.Window | null = null;
   private kbAvoidCb: ((data: window.AvoidAreaOptions) => void) | null = null;
   private touchHoldDragTimer: number = -1;
   private touchDirectRightClickTimer: number = -1;
+  // 触控模式的延迟按下（见 DIRECT_TOUCH_PRESS_DELAY_MS）
+  private directTouchPressTimer: number = -1;
+  private directTouchPressPending: boolean = false;
+  private directTouchPressX: number = 0;
+  private directTouchPressY: number = 0;
+  private directTouchPressScheduledAtMs: number = 0;
+  /** touchStartLocalX/Y 这个重心锚点是按几根手指算的；数量变了必须重锚。 */
+  private touchAnchorFingerCount: number = 0;
+  // 为了让输入光标避开软键盘而额外施加的画布上移量 (px)
+  private keyboardCanvasLiftPx: number = 0;
   private lastTouchMs: number = 0;
   private inputLogCount: number = 0;
   private lastInputLogMs: number = 0;
@@ -1435,8 +1476,11 @@ struct RemoteDesktop {
     }
     const viewport: CanvasViewport = this.currentCanvasViewport();
     this.canvasTransform = clampCanvasTransform(this.canvasTransform, viewport);
+    // 软键盘让位量叠加在 clamp 之后：贴合缩放时 maxPanY 为 0，写进
+    // canvasTransform 会被夹掉，只能在提交给渲染器的这一步补上。
     this.loader.setRendererCanvasTransform(this.rendererHandle, this.canvasTransform.scale,
-      this.canvasTransform.panX, this.canvasTransform.panY);
+      this.canvasTransform.panX,
+      this.canvasTransform.panY + KEYBOARD_LIFT_SIGN * this.keyboardCanvasLiftPx);
     this.invalidateRendererViewportCache();
   }
 
@@ -1721,9 +1765,12 @@ struct RemoteDesktop {
     const midX: number = screenW / 2;
     const newSide: string = x + capsuleHalfW < midX ? 'left' : 'right';
     const snapX: number = newSide === 'left' ? this.modifierHiddenLeftX() : this.modifierHiddenRightX(screenW);
-    const topMargin: number = 48;
+    // 胶囊正上方还挂着键盘快捷按钮 (44 高 + 6 间隔)，顶部余量必须留得下它，
+    // 否则贴到顶边时按钮会被切掉。
+    const topMargin: number = MODIFIER_HANDLE_KEY_BUTTON_BLOCK + 6;
     const bottomMargin: number = this.kbHeight > 0 ? this.kbHeight + 8 : 48;
-    const clampedY: number = Math.max(topMargin, Math.min(y, screenH - bottomMargin - 42));
+    const clampedY: number = Math.max(topMargin,
+      Math.min(y, screenH - bottomMargin - MODIFIER_HANDLE_HEIGHT));
     this.handleX = x;
     this.handleY = clampedY;
     animateTo({ duration: 180, curve: Curve.EaseOut }, (): void => {
@@ -1746,16 +1793,21 @@ struct RemoteDesktop {
     const yRatio: number = (savedYR > 0 && savedYR < 1) ? savedYR : 0.35;
     this.handleSide = side;
     this.handleX = side === 'left' ? this.modifierHiddenLeftX() : this.modifierHiddenRightX(screenW);
-    this.handleY = Math.round(screenH * yRatio);
+    // 恢复位置也要夹一次：旧版本存下来的比例可能贴得太靠上，会把胶囊上方的
+    // 键盘按钮切掉。
+    const topMargin: number = MODIFIER_HANDLE_KEY_BUTTON_BLOCK + 6;
+    const bottomMargin: number = this.kbHeight > 0 ? this.kbHeight + 8 : 48;
+    this.handleY = Math.max(topMargin,
+      Math.min(Math.round(screenH * yRatio), screenH - bottomMargin - MODIFIER_HANDLE_HEIGHT));
     this.ensureModifierPanelPositions();
   }
 
   private modifierHandleWidth(): number {
-    return 58;
+    return MODIFIER_HANDLE_WIDTH;
   }
 
   private modifierHandleVisibleWidth(): number {
-    return 24;
+    return MODIFIER_HANDLE_VISIBLE_WIDTH;
   }
 
   private modifierHiddenLeftX(): number {
@@ -1828,7 +1880,8 @@ struct RemoteDesktop {
       return resolvedY;
     }
     const modifierY: number = this.modifierPanelVisible ? this.modifierPanelY : this.handleY;
-    const modifierHeight: number = this.modifierPanelVisible ? (this.fnLayer ? 300 : 136) : 42;
+    const modifierHeight: number = this.modifierPanelVisible ? (this.fnLayer ? 300 : 136) :
+      MODIFIER_HANDLE_HEIGHT;
     const dockBottom: number = resolvedY + this.rustDeskDiagnosticsDockHeight();
     const modifierBottom: number = modifierY + modifierHeight;
     if (dockBottom + 12 <= modifierY || resolvedY >= modifierBottom + 12) {
@@ -1934,6 +1987,26 @@ struct RemoteDesktop {
   private moveShortcutPanel(x: number, y: number): void {
     this.shortcutPanelX = this.clampModifierPanelX(x);
     this.shortcutPanelY = this.clampModifierPanelY(y, 238);
+  }
+
+  /**
+   * 会话进入可交互状态后必须出现的界面入口。
+   *
+   * 悬浮胶囊是平板触控模式下**唯一常驻可见**的键盘/修饰键入口：RustDesk 顶栏
+   * 只在桌面设备或键鼠模式下显示 (shouldShowRustDeskTopBar)，控制面板又只能
+   * 三指轻点唤出。预鉴权交接路径 (doBackgroundRestoreRender) 以前漏了这一步，
+   * 结果远端画面正常出图、却没有任何可见的输入入口。两条连接路径必须共用这个
+   * 方法，不能再各写一份。
+   */
+  private showConnectedSessionControls(protocol: string): void {
+    this.initHandlePosition();
+    this.handleVisible = true;
+    if (protocol === 'rustdesk' && this.rustdeskShowDiagnostics) {
+      this.initRustDeskDiagnosticsDock();
+    }
+    this.promptPhysicalKeyboardLayout();
+    hilog.info(RD_DOMAIN, RD_TAG, 'session-controls shown protocol=' + protocol +
+      ' handle=1 topBar=' + (this.shouldShowRustDeskSessionTopBar() ? '1' : '0'));
   }
 
   private openModifierPanel(): void {
@@ -2197,6 +2270,9 @@ struct RemoteDesktop {
           if (data.type === window.AvoidAreaType.TYPE_KEYBOARD) {
             this.kbHeight = px2vp(data.area.bottomRect.height);
             this.updateRustDeskDiagnosticsDockForKeyboard();
+            // 软键盘升起/收起都要重新算画布让位量；收起时 kbHeight 归零，
+            // updateKeyboardCanvasLift 会把偏移清掉并还原画面。
+            this.updateKeyboardCanvasLift('keyboard-avoid-area');
             hilog.info(RD_DOMAIN, RD_TAG,
               'kbHeight changed: ' + Math.round(this.kbHeight).toString() + 'vp');
           }
@@ -3856,6 +3932,13 @@ struct RemoteDesktop {
     if (x !== this.remoteCursorX || y !== this.remoteCursorY) {
       this.rememberRemoteCursor(x, y);
     }
+    // 位置守卫：远端只在 MOUSE_TYPE_MOVE 时移动光标，DOWN/UP 分支完全忽略
+    // 事件里的 x/y (上游 server/input_service.rs 的 handle_mouse_)，按键落在
+    // 光标当前所在位置。所以每个按键事件前都必须先把光标挪到目标坐标，
+    // 否则第一次轻点会点在上一次的位置上 —— 表现就是"第一下只把光标挪过去、
+    // 第二下才真的点中"。queueMouseMove 的定时器 flush 赶不上同一次轻点的
+    // DOWN/UP，必须在这里同步补发。
+    this.queueMouseMove(x, y, false);
     this.flushMouseMove();
     if (!this.canForwardInput('mouseButton')) {
       return;
@@ -4476,6 +4559,10 @@ struct RemoteDesktop {
       this.remoteCursorNativeVisible = snapshot.visible || this.isRustDeskSession();
       this.requestRemoteCursorViewRefresh(true);
     }
+    if (positionChanged && this.kbHeight > 0) {
+      // 光标在远端移动 (例如换了个输入框) 后重新算让位量。
+      this.updateKeyboardCanvasLift('cursor-move');
+    }
     if (shapeChanged || positionChanged || visibilityChanged ||
       this.remoteCursorLastLogMs === 0 || now - this.remoteCursorLastLogMs >= REMOTE_CURSOR_LOG_SAMPLE_MS) {
       this.remoteCursorLastLogMs = now;
@@ -4495,6 +4582,49 @@ struct RemoteDesktop {
         ' observed=' + this.remoteCursorMotion.remoteObservedX.toFixed(1) + ',' +
         this.remoteCursorMotion.remoteObservedY.toFixed(1));
     }
+  }
+
+  /**
+   * 让远端输入光标露出在软键盘上方。
+   *
+   * 直接把偏移叠加在 setRendererCanvasTransform 的 panY 上，而不是写进
+   * canvasTransform：贴合缩放 (scale=1) 时 clampCanvasTransform 的 maxPanY 是 0，
+   * 存进去会立刻被夹掉。输入映射走 readRendererViewport 读真实视口，所以画面
+   * 上移后触摸坐标会自动跟着走，不需要另外补偿。
+   */
+  private updateKeyboardCanvasLift(reason: string): void {
+    if (this.rendererHandle <= 0) {
+      return;
+    }
+    const keyboardHeightPx: number = this.vpToPx(this.kbHeight);
+    if (!this.connected || keyboardHeightPx <= 0) {
+      if (this.keyboardCanvasLiftPx !== 0) {
+        this.keyboardCanvasLiftPx = 0;
+        this.applyCanvasTransform();
+        hilog.info(RD_DOMAIN, RD_TAG, 'keyboard-lift reset reason=' + reason);
+      }
+      return;
+    }
+    const caret: LocalPoint = this.remoteToLocalPoint(this.remoteCursorX, this.remoteCursorY);
+    const surfaceHeightPx: number = this.renderHeightPx > 0 ? this.renderHeightPx :
+      this.vpToPx(this.surfaceHeight);
+    const deltaPx: number = keyboardCanvasLiftDeltaPx(this.vpToPx(caret.y), surfaceHeightPx,
+      keyboardHeightPx, this.vpToPx(KEYBOARD_CARET_MARGIN_VP));
+    if (deltaPx <= 0) {
+      return;
+    }
+    const nextLift: number = Math.min(this.keyboardCanvasLiftPx + deltaPx,
+      maxKeyboardCanvasLiftPx(surfaceHeightPx, keyboardHeightPx));
+    if (Math.abs(nextLift - this.keyboardCanvasLiftPx) < 1) {
+      return;
+    }
+    this.keyboardCanvasLiftPx = nextLift;
+    this.applyCanvasTransform();
+    hilog.info(RD_DOMAIN, RD_TAG, 'keyboard-lift reason=' + reason +
+      ' caretY=' + Math.round(this.vpToPx(caret.y)).toString() +
+      ' kb=' + Math.round(keyboardHeightPx).toString() +
+      ' lift=' + Math.round(this.keyboardCanvasLiftPx).toString() +
+      ' sign=' + KEYBOARD_LIFT_SIGN.toString());
   }
 
   private startRemoteCursorPolling(sessionId: number): void {
@@ -4898,12 +5028,7 @@ struct RemoteDesktop {
       await this.prepareRemoteSessionPipForForeground(host, sid);
       this.persistRustDeskSessionAuth(host);
       // T-171: 连接成功后显示悬浮胶囊
-      this.initHandlePosition();
-      this.handleVisible = true;
-      if (host.protocol === 'rustdesk' && this.rustdeskShowDiagnostics) {
-        this.initRustDeskDiagnosticsDock();
-      }
-      this.promptPhysicalKeyboardLayout();
+      this.showConnectedSessionControls(host.protocol);
       if (host.protocol === 'rdp') {
         this.startRdpRenderWatchdog(sid, attemptId);
         this.startRdpNativeStateMonitor(sid, attemptId);
@@ -5772,6 +5897,24 @@ struct RemoteDesktop {
         this.inputForwardReady = true;
         this.scheduleRemoteInputFocus('background-preauthenticated');
         this.activeSessionRegistry.markRenderAttached(surfaceId);
+        // Pro 主机在列表页完成鉴权后走的是这条交接路径，不是 connect-success。
+        // 少了这一句，画面出来了但悬浮胶囊不显示，平板触控模式下就完全没有
+        // 打开虚拟键盘的入口。
+        this.showConnectedSessionControls('rustdesk');
+        // connect-success 里做、这条交接路径漏掉的两件事。其余收尾动作
+        // (认证方式落盘 / 活动会话登记) 由 HostListPage 的预检完成，横屏由
+        // aboutToAppear 设置，都不要在这里重复。
+        if (this.pendingHost !== null) {
+          this.srv.updateLastConnected(this.pendingHost.id).catch((err: Error): void => {
+            hilog.warn(RD_DOMAIN, RD_TAG, 'preauthenticated: updateLastConnected failed ' +
+              (err.message ? err.message : JSON.stringify(err)));
+          });
+        }
+        if (this.clipboardBridge === null) {
+          this.startClipboardBridgeBestEffort(this.sessionId, this.connectAttemptId,
+            clipboardSyncEnabledForProtocol('rustdesk',
+              AppStorage.get<boolean>('rdpClipboardEnabled') ?? true, this.rustdeskClipboardEnabled));
+        }
         this.setRemoteKeepScreenOn(true);
         this.setRemoteNavigationHidden(true, 'preauthenticated-session-handoff');
         this.loader.requestFrameRefresh();
@@ -6101,6 +6244,49 @@ struct RemoteDesktop {
       hilog.info(RD_DOMAIN, RD_TAG, 'one-finger hold drag start remote=' +
       this.remoteCursorX.toString() + ',' + this.remoteCursorY.toString());
     }, TOUCH_DRAG_HOLD_MS);
+  }
+
+  /**
+   * 触控模式：光标已经移到目标点，延迟一小段时间再按下左键。
+   *
+   * 见 DIRECT_TOUCH_PRESS_DELAY_MS —— 让远端控件有机会先处理 hover。
+   * touchLeftDown 只有在 DOWN 真正发出去之后才置位，否则手势中途升级成
+   * 多指时会留下一个没有配对 DOWN 的 UP。
+   */
+  private scheduleDirectTouchPress(x: number, y: number): void {
+    this.cancelDirectTouchPress();
+    this.directTouchPressX = x;
+    this.directTouchPressY = y;
+    this.directTouchPressPending = true;
+    this.directTouchPressScheduledAtMs = Date.now();
+    this.directTouchPressTimer = setTimeout((): void => {
+      this.directTouchPressTimer = -1;
+      this.flushDirectTouchPress();
+    }, DIRECT_TOUCH_PRESS_DELAY_MS);
+  }
+
+  /** 抬手或开始拖动前必须调用：保证 DOWN 一定早于 UP 和后续移动。 */
+  private flushDirectTouchPress(): void {
+    if (!this.directTouchPressPending) {
+      return;
+    }
+    const hoverMs: number = Date.now() - this.directTouchPressScheduledAtMs;
+    this.cancelDirectTouchPress();
+    this.touchLeftDown = true;
+    this.sendMouseNow(this.directTouchPressX, this.directTouchPressY, 0, true);
+    // 这条不走 logMappedInput 的采样限流，用于核对 MOVE→DOWN 的真实间隔。
+    hilog.info(RD_DOMAIN, RD_TAG, 'direct-touch press remote=' +
+      this.directTouchPressX.toString() + ',' + this.directTouchPressY.toString() +
+      ' hoverMs=' + hoverMs.toString());
+  }
+
+  /** 丢弃还没发出去的按下（手势升级为多指、或触摸被系统取消）。 */
+  private cancelDirectTouchPress(): void {
+    this.directTouchPressPending = false;
+    if (this.directTouchPressTimer >= 0) {
+      clearTimeout(this.directTouchPressTimer);
+      this.directTouchPressTimer = -1;
+    }
   }
 
   private startDirectTouchRightClickTimer(): void {
@@ -6789,18 +6975,67 @@ struct RemoteDesktop {
     this.keyboardOpen = true;
     this.startRemoteImeSession();
     hilog.info(RD_DOMAIN, RD_TAG, 'kbd-open');
-    try {
-      const focused: boolean = focusControl.requestFocus('RemoteDesktopKeyboard');
-      hilog.info(RD_DOMAIN, RD_TAG, 'kbd-open-focus editor=' + (focused ? '1' : '0'));
-    } catch (err) {
-      hilog.error(RD_DOMAIN, RD_TAG,
-        'openKeyboard focus failed: ' + JSON.stringify(err));
+    // 影子 TextArea 的 enableKeyboardOnFocus 绑定 keyboardOpen，而属性更新要等
+    // 到本次事件回调结束后的重绘才生效。同步请求焦点会在属性仍是 false 时命中，
+    // 编辑器拿到焦点但系统输入法不会弹出。必须等一帧再请求。
+    setTimeout((): void => {
+      if (!this.keyboardOpen) {
+        return;
+      }
+      try {
+        const focused: boolean = focusControl.requestFocus('RemoteDesktopKeyboard');
+        hilog.info(RD_DOMAIN, RD_TAG, 'kbd-open-focus editor=' + (focused ? '1' : '0'));
+      } catch (err) {
+        hilog.error(RD_DOMAIN, RD_TAG,
+          'openKeyboard focus failed: ' + JSON.stringify(err));
+      }
+    }, 50);
+  }
+
+  /**
+   * 把系统输入法焦点交还给隐藏的影子 TextArea。
+   *
+   * 远端画布层 (remoteInputSurface / XComponent) 是可获焦节点，任何一次画布
+   * 点击都可能把焦点从影子 TextArea 抢走；TextArea 一旦退出编辑态，
+   * onEditChange(false) 就会走 markKeyboardClosed，软键盘立刻收起 —— 用户
+   * 就永远无法"点开远端输入框再打字"。
+   */
+  private restoreVirtualKeyboardFocus(source: string): void {
+    if (!this.keyboardOpen) {
+      return;
     }
+    setTimeout((): void => {
+      if (!this.keyboardOpen || this.keyboardProxyFocused) {
+        return;
+      }
+      try {
+        const focused: boolean = focusControl.requestFocus('RemoteDesktopKeyboard');
+        hilog.info(RD_DOMAIN, RD_TAG,
+          'kbd-refocus source=' + source + ' editor=' + (focused ? '1' : '0'));
+      } catch (err) {
+        hilog.warn(RD_DOMAIN, RD_TAG,
+          'kbd-refocus failed source=' + source + ' ' + JSON.stringify(err));
+      }
+    }, 0);
   }
 
   private markKeyboardClosed(source: string): void {
     this.keyboardOpen = false;
     this.hardwareKeyboardProxyActive = false;
+    // 必须显式结束编辑态。只把焦点移走是不可靠的：requestFocus 对画布层会
+    // 失败 (日志里出现过 overlay=0 xcomponent=0)，那时焦点仍留在影子 TextArea
+    // 上、系统键盘不收，而 keyboardOpen 已经翻成 false，下一次点击就又去开键盘，
+    // 表现为"键盘按钮只能开、不能关"。
+    try {
+      this.keyboardController.stopEditing();
+    } catch (_err) {
+      // TextArea 尚未挂载或本来就不在编辑态时无需处理。
+    }
+    // 兜底还原画布：avoidAreaChange 不一定在每种收起路径上都回调。
+    if (this.keyboardCanvasLiftPx !== 0) {
+      this.keyboardCanvasLiftPx = 0;
+      this.applyCanvasTransform();
+    }
     this.resetRemoteImeSession('closed-' + source);
     this.keyboardSubmitRefocusPending = false;
     hilog.info(RD_DOMAIN, RD_TAG, 'kbd-close source=' + source);
@@ -6813,8 +7048,9 @@ struct RemoteDesktop {
     if (!this.keyboardOpen) {
       return;
     }
+    // 键盘本身由 markKeyboardClosed 里的 stopEditing 收起；这里只是把焦点交回
+    // 远程输入层，失败也不影响键盘已经收起。
     this.markKeyboardClosed('control-panel');
-    // 将焦点移到 XComponent 以收起键盘
     this.scheduleRemoteInputFocus('keyboard-dismiss');
   }
 
@@ -7177,12 +7413,14 @@ struct RemoteDesktop {
   private resetTouchGesture(): void {
     this.clearTouchRightClickTimer();
     this.clearTouchDirectRightClickTimer();
+    this.cancelDirectTouchPress();
     const wasDragging: boolean = this.touchDragActive;
     if (this.touchDragActive) {
       // 拖拽结束 — 释放左键
       this.sendMouseNow(this.remoteCursorX, this.remoteCursorY, 0, false);
     }
     this.touchFingerCount = 0;
+    this.touchAnchorFingerCount = 0;
     this.touchDragActive = false;
     this.touchDragPending = false;
     this.touchMoved = false;
@@ -7589,14 +7827,18 @@ struct RemoteDesktop {
           if (oldMaxFingers < 2) {
             this.touchDragCursorX = this.remoteCursorX;
             this.touchDragCursorY = this.remoteCursorY;
-            const avg: LocalPoint | null = this.averageTouchPoint(event);
-            if (avg) {
-              this.touchStartLocalX = avg.x;
-              this.touchStartLocalY = avg.y;
-              this.touchLastLocalX = avg.x;
-              this.touchLastLocalY = avg.y;
-            }
           }
+          // 每加一根手指都重新锚定重心：加手指同样会让重心跳变。
+          const avg: LocalPoint | null = this.averageTouchPoint(event);
+          if (avg) {
+            this.touchAnchorFingerCount = this.touchFingerCount;
+            this.touchStartLocalX = avg.x;
+            this.touchStartLocalY = avg.y;
+            this.touchLastLocalX = avg.x;
+            this.touchLastLocalY = avg.y;
+          }
+          // 升级成多指手势：还没发出去的按下直接丢弃，已经按下的才需要释放。
+          this.cancelDirectTouchPress();
           if (this.touchLeftDown) {
             this.sendMouseNow(this.remoteCursorX, this.remoteCursorY, 0, false);
             this.touchLeftDown = false;
@@ -7611,20 +7853,31 @@ struct RemoteDesktop {
         this.touchStartLocalY = point.y;
         this.touchLastLocalX = point.x;
         this.touchLastLocalY = point.y;
-        this.touchLeftDown = true;
         this.lastTouchMs = Date.now();
-        this.sendMouseNow(mapped.x, mapped.y, 0, true);
+        // 先把光标移到目标点并立刻发出去，按下推迟到远端有机会处理 hover 之后。
+        this.queueMouseMove(mapped.x, mapped.y);
+        this.flushMouseMove();
+        this.scheduleDirectTouchPress(mapped.x, mapped.y);
         this.startDirectTouchRightClickTimer();
       } else if (event.type === TouchType.Move) {
         this.touchFingerCount = event.touches.length;
         if (this.touchMaxFingers >= 2) {
           const avg: LocalPoint | null = this.averageTouchPoint(event);
           if (avg) {
-            const dx: number = avg.x - this.touchStartLocalX;
-            const dy: number = avg.y - this.touchStartLocalY;
-            if (Math.sqrt(dx * dx + dy * dy) > TOUCH_CLICK_SLOP_PX) {
-              this.touchMoved = true;
-              this.touchDragPending = false;
+            if (this.touchAnchorFingerCount !== event.touches.length) {
+              // 触点数量变了，重心必然跳变（三指→两指→一指），这不是"手指移动了"。
+              // 重新锚定，否则一次干净的三指轻点会因为手指先后抬起被误判成滑动，
+              // finishThreeFingerPanel 的 !touchMoved 条件就永远不成立。
+              this.touchAnchorFingerCount = event.touches.length;
+              this.touchStartLocalX = avg.x;
+              this.touchStartLocalY = avg.y;
+            } else {
+              const dx: number = avg.x - this.touchStartLocalX;
+              const dy: number = avg.y - this.touchStartLocalY;
+              if (Math.sqrt(dx * dx + dy * dy) > TOUCH_CLICK_SLOP_PX) {
+                this.touchMoved = true;
+                this.touchDragPending = false;
+              }
             }
           }
           return;
@@ -7632,12 +7885,14 @@ struct RemoteDesktop {
         const mapped: MappedPoint = this.mapInputPoint(point.x, point.y);
         this.logMappedInput('touch', point.x, point.y, mapped);
         if (!mapped.inside) { return; }
-        if (this.touchLeftDown) {
+        if (this.touchLeftDown || this.directTouchPressPending) {
           const dx: number = point.x - this.touchStartLocalX;
           const dy: number = point.y - this.touchStartLocalY;
           if (Math.sqrt(dx * dx + dy * dy) > TOUCH_CLICK_SLOP_PX) {
             this.touchMoved = true;
             this.clearTouchDirectRightClickTimer();
+            // 变成拖动了：立刻补发按下，让 DOWN 落在起点而不是跟在移动后面。
+            this.flushDirectTouchPress();
           }
         }
         this.queueMouseMove(mapped.x, mapped.y);
@@ -7673,6 +7928,13 @@ struct RemoteDesktop {
         }
         const mapped: MappedPoint = this.mapInputPoint(point.x, point.y);
         this.logMappedInput('touch', point.x, point.y, mapped);
+        if (event.type === TouchType.Cancel) {
+          // 触摸被系统取消：这一下不算点击，丢弃尚未发出的按下。
+          this.cancelDirectTouchPress();
+        } else {
+          // 快于延迟阈值的轻点在这里补发按下，保证 DOWN 一定早于 UP。
+          this.flushDirectTouchPress();
+        }
         if (this.touchLeftDown) {
           this.sendMouseNow(mapped.x, mapped.y, 0, false);
         }
@@ -7690,6 +7952,11 @@ struct RemoteDesktop {
     if (event.type === TouchType.Down && this.hardwareKeyboardProxyActive) {
       // 触摸获焦同样可能抢走隐藏 TextArea；不重置 IME 会话，稍后恢复代理焦点。
       this.scheduleRemoteInputFocus('touch-down');
+    }
+    if (this.keyboardOpen && (event.type === TouchType.Up || event.type === TouchType.Cancel)) {
+      // 虚拟键盘打开时点画布是"把远端光标放进远端输入框"，不是结束输入。
+      // 画布层的 focusOnTouch 已经关掉，这里再补一次请求作为兜底。
+      this.restoreVirtualKeyboardFocus('canvas-touch');
     }
     const host: RemoteHost | null = this.pendingHost;
     const controlMode: number = host && host.protocol === 'rdp' ? this.rdpControlMode : this.rustdeskControlMode;
@@ -8385,7 +8652,9 @@ struct RemoteDesktop {
       .width('100%').height('100%')
       .backgroundColor('#000000')
       .focusable(true)
-      .focusOnTouch(true)
+      // 虚拟键盘打开时不得因为画布点击而获焦，否则会抢走影子 TextArea 的
+      // 输入法焦点并立刻收起软键盘。
+      .focusOnTouch(!this.keyboardOpen)
       .onHover(this.handleRemoteSurfaceHover)
       .onLoad(this.onXComponentLoad)
       .onDestroy(this.onXComponentDestroy)
@@ -8497,7 +8766,8 @@ struct RemoteDesktop {
         .backgroundColor('rgba(0,0,0,0.01)')
         .hitTestBehavior(HitTestMode.Block)
         .focusable(true)
-        .focusOnTouch(true)
+        // 同 XComponent：虚拟键盘打开期间画布点击只定位远端光标，不抢焦点。
+        .focusOnTouch(!this.keyboardOpen)
         .defaultFocus(true)
         .onFocus((): void => {
           hilog.info(RD_DOMAIN, RD_TAG, 'remote-input-focus target=overlay');
@@ -8591,6 +8861,15 @@ struct RemoteDesktop {
           shiftLocked: this.isModifierLatched('shift'),
           winLocked: this.isModifierLatched('win'),
           fnLayer: this.fnLayer,
+          keyboardOpen: this.keyboardOpen,
+          onToggleKeyboard: (): void => {
+            if (this.keyboardOpen) {
+              this.keepKeyboardAfterSheetClose = false;
+              this.dismissKeyboard();
+            } else {
+              this.openKeyboard();
+            }
+          },
           onTogglePanel: (): void => {
             this.toggleModifierPanel();
             hilog.info(RD_DOMAIN, RD_TAG,
@@ -8618,12 +8897,21 @@ struct RemoteDesktop {
           shiftLatch: this.shiftLatch,
           winLatch: this.winLatch,
           fnLayer: this.fnLayer,
+          keyboardOpen: this.keyboardOpen,
           panelX: this.modifierPanelX,
           panelY: this.modifierPanelY,
           shortcutX: this.shortcutPanelX,
           shortcutY: this.shortcutPanelY,
           onClose: (): void => {
             this.closeModifierPanel();
+          },
+          onToggleKeyboard: (): void => {
+            if (this.keyboardOpen) {
+              this.keepKeyboardAfterSheetClose = false;
+              this.dismissKeyboard();
+            } else {
+              this.openKeyboard();
+            }
           },
           onCloseShortcut: (): void => {
             this.closeShortcutPanel();
@@ -8821,9 +9109,11 @@ struct RemoteDesktop {
         // 输入法未消费的字符事件仍通过现有后置回调兜底；功能键已在 onKeyPreIme 拦截。
         .onKeyEvent(this.handleXComponentKey)
         .onFocus((): void => {
+          this.keyboardProxyFocused = true;
           hilog.info(RD_DOMAIN, RD_TAG, 'remote-input-focus target=keyboard-proxy');
         })
         .onBlur((): void => {
+          this.keyboardProxyFocused = false;
           this.handleRemoteKeyboardFocusLost('keyboard-proxy');
         })
         .onWillInsert((info: InsertValue): boolean => {

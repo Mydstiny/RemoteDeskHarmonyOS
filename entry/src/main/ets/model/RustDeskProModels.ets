@@ -1,5 +1,3 @@
-import { buffer, util } from '@kit.ArkTS';
-
 /**
  * RustDesk Server Pro 账号与地址簿模型。
  *
@@ -27,10 +25,16 @@ export class RustDeskProPeer {
   note: string = '';
 
   /**
-   * RustDesk personal address books return the remembered password as a
-   * base64-encoded `hash` field. Shared address books may return `password`.
-   * Keep the decoded value in memory only; RemoteHost/CloudStore encrypt it
-   * when it is persisted locally.
+   * 只接受服务器明确返回的明文 `password` 字段。
+   *
+   * 地址簿里的 `hash` **不是密码**，是 `SHA256(password + salt)` 的 32 字节
+   * 二进制摘要（base64 编码）。以前这里把它解码后按 UTF-8 转成字符串当密码用，
+   * 结果有两个问题：
+   *   1. 随机二进制按 UTF-8 解码得到的是乱码，而且是有损转换；
+   *   2. 就算原样保留字节也没用 —— FFI 的认证只接受明文口令，
+   *      protocol/session.rs 会无条件做 SHA256(password+salt) 再
+   *      SHA256(..+challenge) 两轮，喂哈希进去必然认证失败。
+   * 所以 hash 一律忽略，让主机回落到点击批准或用户自己保存的密码。
    */
   password: string = '';
 
@@ -44,14 +48,6 @@ export class RustDeskProPeer {
     peer.note = typeof json['note'] === 'string' ? json['note'] as string : '';
     if (typeof json['password'] === 'string') {
       peer.password = json['password'] as string;
-    }
-    if (peer.password.length === 0 && typeof json['hash'] === 'string') {
-      try {
-        const bytes: Uint8Array = new util.Base64Helper().decodeSync(json['hash'] as string);
-        peer.password = buffer.from(bytes).toString('utf-8');
-      } catch (_err) {
-        // A malformed/unsupported hash must not make the whole address book fail.
-      }
     }
     const rawTags: Object | undefined = json['tags'];
     if (Array.isArray(rawTags)) {

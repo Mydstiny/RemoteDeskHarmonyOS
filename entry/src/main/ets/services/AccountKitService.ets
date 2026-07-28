@@ -40,6 +40,7 @@ interface StoredCredential {
   tokenExpiresAt: number;
   displayName: string;
   loginTime: number;
+  avatarUri?: string;
 }
 
 /** 登录凭据参数 */
@@ -49,6 +50,7 @@ interface CredentialParams {
   authorizationCode: string;
   idToken: string;
   displayName: string;
+  avatarUri?: string;
 }
 
 export class AccountKitService {
@@ -65,16 +67,27 @@ export class AccountKitService {
 
   /** 初始化持久化存储, 从磁盘恢复 */
   async init(context: common.Context): Promise<void> {
+    this.initSync(context);
+  }
+
+  /**
+   * 同步初始化，重复调用安全。
+   *
+   * saveCredential/getXxx 在 dataPreferences 为空时会静默失败，所以每个写入
+   * 或读取凭据的入口都必须先走这里，不能假设别处已经初始化过。
+   */
+  initSync(context: common.Context): void {
+    if (this.dataPreferences !== null) { return; }
     try {
       this.dataPreferences = preferences.getPreferencesSync(context, { name: STORE_NAME });
-      await this.loadFromDisk();
+      this.loadFromDisk();
     } catch (err) {
       hilog.error(0x0015, 'AccountKit', 'AccountKitService 初始化失败: ' + JSON.stringify(err));
     }
   }
 
   /** 从 Preferences 加载凭据 */
-  private async loadFromDisk(): Promise<void> {
+  private loadFromDisk(): void {
     if (!this.dataPreferences) { return; }
     try {
       const raw: string = this.dataPreferences.getSync(KEY_CREDENTIAL, '') as string;
@@ -87,16 +100,24 @@ export class AccountKitService {
     }
   }
 
-  /** 持久化到 Preferences */
-  private async saveToDisk(): Promise<void> {
-    if (!this.dataPreferences) { return; }
+  /**
+   * 持久化到 Preferences。
+   *
+   * 用 flushSync 而不是 flush：这份凭据存在的意义就是熬过系统杀后台，
+   * 异步落盘可能赶不上进程被回收。
+   */
+  private saveToDisk(): void {
+    if (!this.dataPreferences) {
+      hilog.warn(0x0015, 'AccountKit', 'AccountKitService 未初始化, 凭据未落盘');
+      return;
+    }
     try {
       if (this.credential) {
         this.dataPreferences.putSync(KEY_CREDENTIAL, JSON.stringify(this.credential));
       } else {
         this.dataPreferences.deleteSync(KEY_CREDENTIAL);
       }
-      this.dataPreferences.flush();
+      this.dataPreferences.flushSync();
     } catch (err) {
       hilog.error(0x0015, 'AccountKit', 'AccountKitService 保存凭据失败: ' + JSON.stringify(err));
     }
@@ -115,15 +136,16 @@ export class AccountKitService {
       refreshToken: '',
       tokenExpiresAt: 0,
       displayName: cred.displayName || '',
-      loginTime: Date.now()
+      loginTime: Date.now(),
+      avatarUri: cred.avatarUri || ''
     };
-    this.saveToDisk().catch((_: Error) => { /* ignore */ });
+    this.saveToDisk();
   }
 
   /** 清除凭据 (退出登录) */
   clearCredential(): void {
     this.credential = null;
-    this.saveToDisk().catch((_: Error) => { /* ignore */ });
+    this.saveToDisk();
   }
 
   /** 是否有有效凭据 */
@@ -154,6 +176,11 @@ export class AccountKitService {
   /** 获取显示名称 */
   getDisplayName(): string {
     return this.credential?.displayName || '';
+  }
+
+  /** 获取头像地址 (旧版本写入的凭据没有该字段, 返回空串) */
+  getAvatarUri(): string {
+    return this.credential?.avatarUri || '';
   }
 
   /** 登录时间戳 */
@@ -227,7 +254,7 @@ export class AccountKitService {
           this.credential.accessToken = accessToken;
           this.credential.refreshToken = refreshToken;
           this.credential.tokenExpiresAt = Date.now() + (expiresIn || 3600) * 1000;
-          await this.saveToDisk();
+          this.saveToDisk();
         }
 
         hilog.info(DOMAIN, TAG, "[exchangeAuthCode] Access Token 换取成功, expires_in=" + expiresIn.toString());

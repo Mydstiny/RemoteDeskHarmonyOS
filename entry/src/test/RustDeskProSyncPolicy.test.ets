@@ -2,6 +2,7 @@ import { describe, it, expect } from '@ohos/hypium';
 import { RemoteHost } from '../main/ets/model/RemoteHost';
 import { RustDeskProPeer } from '../main/ets/model/RustDeskProModels';
 import {
+  isCorruptedAddressBookPassword,
   reconcileRustDeskProHosts,
   rustDeskProHostId,
   shouldPreserveManagedRustDeskRoute
@@ -70,6 +71,44 @@ export default function rustDeskProSyncPolicyTest() {
       expect(second.hosts.length).assertEqual(1);
       expect(second.missingIds.length).assertEqual(1);
       expect(second.hosts[0].rustdeskProSyncError).assertEqual('not_seen');
+    });
+
+    it('never_overwrites_a_saved_password_on_resync', 0, () => {
+      const first = reconcileRustDeskProHosts([], 'relay-1', 'acct-1', [peer('123', 'Office')], 100);
+      // 用户自己填的、能用的设备密码。
+      first.hosts[0].password = 'my-real-password';
+      first.hosts[0].rustdeskAuthMode = 'password';
+      const fromServer = peer('123', 'Office');
+      fromServer.password = 'address-book-value';
+      const second = reconcileRustDeskProHosts(first.hosts, 'relay-1', 'acct-1', [fromServer], 200);
+      expect(second.hosts[0].password).assertEqual('my-real-password');
+      expect(second.hosts[0].rustdeskAuthMode).assertEqual('password');
+    });
+
+    it('fills_an_empty_password_from_the_address_book', 0, () => {
+      const fromServer = peer('123', 'Office');
+      fromServer.password = 'address-book-value';
+      const result = reconcileRustDeskProHosts([], 'relay-1', 'acct-1', [fromServer], 100);
+      expect(result.hosts[0].password).assertEqual('address-book-value');
+      expect(result.hosts[0].rustdeskAuthMode).assertEqual('password');
+    });
+
+    it('clears_the_hash_derived_garbage_password_written_by_older_builds', 0, () => {
+      const first = reconcileRustDeskProHosts([], 'relay-1', 'acct-1', [peer('123', 'Office')], 100);
+      // 旧版本把地址簿 hash 摘要按 UTF-8 解码后存下来的结果。
+      first.hosts[0].password = '��7��';
+      first.hosts[0].rustdeskAuthMode = 'password';
+      const second = reconcileRustDeskProHosts(first.hosts, 'relay-1', 'acct-1', [peer('123', 'Office')], 200);
+      expect(second.hosts[0].password).assertEqual('');
+      // 没有可用凭据时回落到官方的点击批准闭环。
+      expect(second.hosts[0].rustdeskAuthMode).assertEqual('request_approval');
+    });
+
+    it('recognizes_only_replacement_char_passwords_as_corrupted', 0, () => {
+      expect(isCorruptedAddressBookPassword('��')).assertTrue();
+      expect(isCorruptedAddressBookPassword('P@ssw0rd!')).assertFalse();
+      expect(isCorruptedAddressBookPassword('')).assertFalse();
+      expect(isCorruptedAddressBookPassword('密码123')).assertFalse();
     });
 
     it('allows_a_managed_direct_host_to_edit_its_local_lan_endpoint', 0, () => {

@@ -17,6 +17,17 @@ export function shouldPreserveManagedRustDeskRoute(managed: boolean, directEnabl
   return managed && !directEnabled;
 }
 
+/**
+ * 识别历史版本把地址簿 `hash` 摘要按 UTF-8 解码后写进来的坏密码。
+ *
+ * 32 字节随机摘要几乎不可能是合法 UTF-8，解码结果里必定含有替换字符
+ * U+FFFD；真实设备密码不会包含它。这类值对 FFI 永远认证不过，留着只会让
+ * 用户以为"密码记住了"，所以同步时直接清掉，让主机回落到点击批准。
+ */
+export function isCorruptedAddressBookPassword(value: string): boolean {
+  return value.indexOf('�') >= 0;
+}
+
 function peerLabel(peer: RustDeskProPeer): string {
   if (peer.alias.length > 0) { return peer.alias; }
   if (peer.hostname.length > 0) { return peer.hostname; }
@@ -87,7 +98,11 @@ export function reconcileRustDeskProHosts(existing: RemoteHost[], relayId: strin
     host.rustdeskProPlatform = peer.platform;
     host.rustdeskProLastSeenAt = syncedAt;
     host.rustdeskProSyncError = '';
-    if (peer.password.length > 0) { host.password = peer.password; }
+    // 清掉历史版本用地址簿 hash 摘要写进来的坏密码（对 FFI 永远认证不过）。
+    if (isCorruptedAddressBookPassword(host.password)) { host.password = ''; }
+    // 地址簿密码只用来补空位，绝不覆盖用户手动保存的、已经能用的密码 ——
+    // 以前这里是无条件赋值，每次同步都会把正确密码冲掉。
+    if (peer.password.length > 0 && host.password.length === 0) { host.password = peer.password; }
     if (peer.password.length === 0 && host.password.length === 0) {
       // 空密码没有可用的设备凭据；只要用户没有保存密码，就使用官方点击批准闭环。
       host.rustdeskAuthMode = 'request_approval';

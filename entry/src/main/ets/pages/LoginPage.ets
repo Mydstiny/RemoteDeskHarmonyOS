@@ -55,12 +55,48 @@ struct LoginPage {
       setTimeout(() => { this.enterMainPage(); }, 50);
       return;
     }
-    // 已登录账号 → 静默恢复会话 (不弹窗)
+    // 已登录账号 → 优先用本机持久化凭据恢复会话。
+    // 系统杀掉后台后进程是冷启动，AuthService 是纯内存态，只靠 HMS 静默授权
+    // 恢复会不稳定 (8 秒超时 / 返回空凭据都会把用户打回登录页)。凭据本来就
+    // 已经写在 AccountKitCreds 里，只是从来没有人读回来。
     if (!forceShow && savedMode === 'account') {
+      const restored: boolean = this.restoreLocalSession();
+      if (restored) {
+        this.enterMainPage();
+        return;
+      }
       this.trySilentLogin();  // 异步 - 成功跳转, 失败设置 checkingLogin=false 显示登录UI
       return;                 // checkingLogin 保持 true, 避免登录页闪现
     }
     this.checkingLogin = false;
+  }
+
+  /**
+   * 用本机持久化的华为账号凭据恢复内存会话。
+   *
+   * 这里只恢复 App 自己的登录态；HMS 侧的授权码/令牌刷新仍由需要它的调用方
+   * (云同步 / 设置页) 各自触发，登录页不再为此阻塞冷启动。
+   */
+  private restoreLocalSession(): boolean {
+    try {
+      const accountKit: AccountKitService = AccountKitService.getInstance();
+      accountKit.initSync(getContext(this));
+      if (!accountKit.isAuthorized()) {
+        hilog.info(0x0001, 'LoginDebug', '本机无持久化凭据，回退 HMS 静默登录');
+        return false;
+      }
+      this.auth.setLoginResult(
+        accountKit.getUnionID(),
+        accountKit.getDisplayName() || '华为用户',
+        accountKit.getAvatarUri(),
+        accountKit.getOpenID()
+      );
+      hilog.info(0x0001, 'LoginDebug', '本机凭据恢复登录态成功');
+      return true;
+    } catch (err) {
+      hilog.warn(0x0001, 'LoginDebug', '本机凭据恢复失败: ' + JSON.stringify(err));
+      return false;
+    }
   }
 
   /** 检测是否首次启动 (含卸载重装), 是则清除残留登录态 */
@@ -212,9 +248,12 @@ struct LoginPage {
       '[ACCOUNT-DEBUG] AGC_Auth_unionID=' + unionId + '  openID=' + openId);
 
     this.auth.setLoginResult(unionId, displayName, avatarUri, openId);
-    AccountKitService.getInstance().saveCredential({
+    const accountKit: AccountKitService = AccountKitService.getInstance();
+    // 未初始化时 saveCredential 会静默丢弃，冷启动就再也恢复不出登录态。
+    accountKit.initSync(getContext(this));
+    accountKit.saveCredential({
       unionID: unionId, openID: openId, authorizationCode: authCode,
-      idToken: '', displayName: displayName
+      idToken: '', displayName: displayName, avatarUri: avatarUri
     });
     this.saveLoginMode('account');
     if (showToast) {
