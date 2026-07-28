@@ -134,6 +134,10 @@ function isOptionalBooleanValue(values: Record<string, Object>, key: string): bo
   return typeof values[key] === 'undefined' || isBooleanValue(values, key);
 }
 
+function isOptionalLockTypeValue(values: Record<string, Object>): boolean {
+  return typeof values['lockType'] === 'undefined' || isIntegerInRange(values['lockType'], 0, 3);
+}
+
 function isIntegerInRange(value: Object, minimum: number, maximum: number): boolean {
   if (typeof value !== 'number') { return false; }
   const numeric: number = value as number;
@@ -193,7 +197,8 @@ export function vncRecordPayloadSemanticallyValid(record: VncRecord): boolean {
       isBooleanValue(values, 'viewOnly') && isOneOfString(values, 'scalingMode', VNC_SCALING_MODES) &&
       isOptionalBooleanValue(values, 'clipboardEnabled') &&
       isOneOfString(values, 'securityPolicy', VNC_SECURITY_POLICIES) &&
-      isBooleanValue(values, 'tls') && gatewayBindingValid;
+      isBooleanValue(values, 'tls') && isOptionalBooleanValue(values, 'locked') &&
+      isOptionalLockTypeValue(values) && gatewayBindingValid;
   }
   if (record.recordType === 'gateway') {
     const transport: string = typeof values['transport'] === 'string' ? values['transport'] as string : '';

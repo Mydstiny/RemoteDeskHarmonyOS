@@ -14,7 +14,7 @@ export function filterHostsByProtocol(hosts: RemoteHost[], protocol: string): Re
 }
 
 export function hostListProtocolForTab(tabIndex: number): string {
-  const protocols: string[] = ['rdp', 'rustdesk', 'ssh'];
+  const protocols: string[] = ['rdp', 'rustdesk', 'ssh', 'vnc'];
   return protocols[tabIndex] ?? '';
 }
 

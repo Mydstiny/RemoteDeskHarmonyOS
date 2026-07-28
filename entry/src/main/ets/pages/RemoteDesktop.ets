@@ -1401,7 +1401,8 @@ struct RemoteDesktop {
     transient.username = host.username;
     transient.password = '';
     transient.sourceType = 'vnc';
-    transient.locked = false;
+    transient.locked = host.locked;
+    transient.lockType = host.lockType;
     return transient;
   }
 

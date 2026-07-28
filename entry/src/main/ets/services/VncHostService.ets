@@ -189,6 +189,8 @@ export class VncHostService {
       clipboardEnabled: values.clipboardEnabled,
       securityPolicy: values.securityPolicy,
       tls: values.tls,
+      locked: values.locked,
+      lockType: values.lockType,
       createdAt: record.createdAt,
       updatedAt: record.updatedAt,
       syncVersion: record.syncVersion,
@@ -205,7 +207,8 @@ export class VncHostService {
       rememberPassword: false,
       viewOnly: defaults.viewOnly, scalingMode: defaults.scalingMode,
       clipboardEnabled: defaults.clipboardEnabled,
-      securityPolicy: defaults.securityPolicy, tls: false
+      securityPolicy: defaults.securityPolicy, tls: false,
+      locked: false, lockType: 0
     };
     try {
       const parsed: Object = JSON.parse(payload) as Object;
@@ -225,8 +228,28 @@ export class VncHostService {
       if (typeof values['clipboardEnabled'] === 'boolean') { result.clipboardEnabled = values['clipboardEnabled'] as boolean; }
       if (typeof values['securityPolicy'] === 'string') { result.securityPolicy = values['securityPolicy'] as VncSecurityPolicy; }
       if (typeof values['tls'] === 'boolean') { result.tls = values['tls'] as boolean; }
+      if (typeof values['locked'] === 'boolean') { result.locked = values['locked'] as boolean; }
+      if (typeof values['lockType'] === 'number' && Number.isInteger(values['lockType'] as number) &&
+        (values['lockType'] as number) >= 0 && (values['lockType'] as number) <= 3) {
+        result.lockType = values['lockType'] as number;
+      }
     } catch (_e) {}
     return result;
+  }
+
+  /** Persist the host-card lock without crossing into HostSyncService. */
+  updateLock(id: string, locked: boolean, lockType: number = locked ? 1 : 0): boolean {
+    const current: VncHostView | null = this.find(id);
+    if (current === null) { return false; }
+    const values: VncHostValues = {
+      label: current.label, host: current.host, port: current.port, username: current.username,
+      gatewayId: current.gatewayId, transport: current.transport, repeaterMode: current.repeaterMode,
+      rememberPassword: current.rememberPassword, viewOnly: current.viewOnly,
+      scalingMode: current.scalingMode, clipboardEnabled: current.clipboardEnabled,
+      securityPolicy: current.securityPolicy, tls: current.tls,
+      locked, lockType: locked ? lockType : 0
+    };
+    return this.save(values, id, '', false).ok;
   }
 
   private findActiveRecord(id: string): VncRecord | null {

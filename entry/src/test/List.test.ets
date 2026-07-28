@@ -63,6 +63,7 @@ import sensitiveDataStatePolicyTest from './SensitiveDataStatePolicy.test';
 import sensitiveDataMigrationPolicyTest from './SensitiveDataMigrationPolicy.test';
 import cloudTableAdapterTest from './CloudTableAdapter.test';
 import loginStartupPolicyTest from './LoginStartupPolicy.test';
+import vncHostListProjectionPolicyTest from './VncHostListProjectionPolicy.test';
 
 export default function testsuite() {
   localUnitTest();
@@ -130,4 +131,5 @@ export default function testsuite() {
   sensitiveDataMigrationPolicyTest();
   cloudTableAdapterTest();
   loginStartupPolicyTest();
+  vncHostListProjectionPolicyTest();
 }

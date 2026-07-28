@@ -399,6 +399,7 @@ export class RemoteHost {
   static getDefaultPort(protocol: string): number {
     if (protocol === 'rustdesk') { return 21116; }
     if (protocol === 'ssh') { return 22; }
+    if (protocol === 'vnc') { return 5900; }
     return 3389;
   }
 

@@ -39,6 +39,9 @@ export interface VncHostValues {
   clipboardEnabled: boolean;
   securityPolicy: VncSecurityPolicy;
   tls: boolean;
+  /** UI lock metadata stays in the VNC host payload, never remotehosts. */
+  locked: boolean;
+  lockType: number;
 }
 
 export interface VncGatewayValues {
@@ -131,6 +134,8 @@ export function vncHostPayload(values: VncHostValues): string {
   payload['clipboardEnabled'] = values.clipboardEnabled;
   payload['securityPolicy'] = values.securityPolicy;
   payload['tls'] = values.tls;
+  payload['locked'] = values.locked;
+  payload['lockType'] = values.lockType;
   return vncCanonicalJson(payload);
 }
 

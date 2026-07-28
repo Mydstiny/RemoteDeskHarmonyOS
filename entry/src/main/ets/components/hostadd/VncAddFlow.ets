@@ -185,6 +185,7 @@ export struct VncAddFlow {
   }
 
   private buildValues(): VncHostValues | null {
+    const initialHost: VncHostView | null = this.initialHost;
     const values: VncHostValues = {
       label: this.label.trim(),
       host: this.endpointAddress().trim(),
@@ -198,7 +199,9 @@ export struct VncAddFlow {
       scalingMode: this.scalingMode,
       clipboardEnabled: this.clipboardEnabled,
       securityPolicy: this.securityPolicy,
-      tls: this.tls
+      tls: this.tls,
+      locked: initialHost === null ? false : initialHost.locked,
+      lockType: initialHost === null ? 0 : initialHost.lockType
     };
     const errors: string[] = validateVncHost(values);
     if (errors.length > 0) { this.errorText = errors[0]; return null; }

@@ -18,9 +18,15 @@ import { AccountKitService } from '../services/AccountKitService';
 import { DataCrypto } from '../services/DataCrypto';
 import { CloudStore } from '../services/CloudStore';
 import { VncTrustService } from '../services/VncTrustService';
-import { VncHostService } from '../services/VncHostService';
+import { VncHostService, VncHostView } from '../services/VncHostService';
 import { VncGatewayService } from '../services/VncGatewayService';
-import { VncHostValues } from '../services/VncModelPolicy';
+import { VncGatewayView } from '../services/VncGatewayService';
+import {
+  VncHostValues, VncTransport, VncRepeaterMode, VncScalingMode, VncSecurityPolicy, validateVncHost
+} from '../services/VncModelPolicy';
+import {
+  isVncHostProjection, projectVncHost, vncHostRecordIdFromUiId, vncHostUiId
+} from '../services/VncHostListProjectionPolicy';
 import { CloudSyncCoordinator } from '../services/CloudSyncCoordinator';
 import { CloudSyncSelectionStore } from '../services/CloudSyncSelectionStore';
 import { cloudSyncSelectableTables, effectiveCloudSyncTables } from '../services/CloudSyncSelectionPolicy';
@@ -290,6 +296,7 @@ struct HostListPage {
   private hostDataSource: HostDataSource = new HostDataSource();
   private hostDataSignature: string = '';
   private hostDataUnsubscribe: (() => void) | null = null;
+  private vncHostDataUnsubscribe: (() => void) | null = null;
   private skipInitialPageShowLoad: boolean = true;
   private keyVaultDataUnsubscribe: (() => void) | null = null;
   private pageActive: boolean = false;
@@ -304,6 +311,7 @@ struct HostListPage {
   @State rdpCount: number = 0;
   @State rustdeskCount: number = 0;
   @State sshCount: number = 0;
+  @State vncCount: number = 0;
   @State keyCount: number = 0;
   @State totpCount: number = 0;
   @State hostViewRevision: number = 0;
@@ -357,6 +365,15 @@ struct HostListPage {
   @State appearanceContentHeight: number = 0;
   private pendingLocalRestore: LocalBackupDocument | null = null;
   @State sheetPwd: string = '';
+  @State vncHostTransport: VncTransport = 'direct_tcp';
+  @State vncHostRepeaterMode: VncRepeaterMode = 'mode12';
+  @State vncHostGatewayId: string = '';
+  @State vncHostRememberPassword: boolean = false;
+  @State vncHostViewOnly: boolean = true;
+  @State vncHostScalingMode: VncScalingMode = 'fit';
+  @State vncHostClipboardEnabled: boolean = false;
+  @State vncHostSecurityPolicy: VncSecurityPolicy = 'secure_only';
+  @State vncHostTls: boolean = true;
   @State sheetUseKey: boolean = false;
   @State sheetKeyPath: string = '';
   @State sheetKeyText: string = '';
@@ -702,7 +719,7 @@ struct HostListPage {
       this.updateHostFilter(); // 非xl显示全部主机
     } else {
       // 非xl→xl: 标题跟随当前 tab
-      const titles: string[] = ['RDP 远程主机', 'RustDesk 远程主机', 'SSH 终端', '', '', '中继服务器'];
+      const titles: string[] = ['RDP 远程主机', 'RustDesk 远程主机', 'SSH 终端', 'VNC 主机', '', '', '中继服务器'];
       this.hostPageTitle = titles[this.curTab] || '';
       this.updateHostFilter();
     }
@@ -710,6 +727,9 @@ struct HostListPage {
 
   async aboutToAppear(): Promise<void> {
     this.pageActive = true;
+    // Keep VNC storage isolated while preparing its display projection before
+    // the first host-list snapshot is built.
+    this.prepareVncAddFlow();
     this.registerDataRefreshListeners();
     this.ensureEnvironmentColorMode();
     const items: WallpaperItem[] = [];
@@ -1466,7 +1486,7 @@ struct HostListPage {
   private openSshKeyVaultFromSettings(): void {
     this.showSettingsPanel = false;
     if (this.isDesktopDevice && this.breakpoint === 'xl') {
-      this.curTab = 3;
+      this.curTab = 4;
       this.keyVaultInnerTab = 0;
       return;
     }
@@ -1489,7 +1509,7 @@ struct HostListPage {
       setTimeout((): void => {
         if (!this.pageActive) { return; }
         if (this.isDesktopDevice && this.breakpoint === 'xl') {
-          this.curTab = 5;
+          this.curTab = 6;
           this.hostPageTitle = '中继服务器';
         } else {
           this.curTab = 2;
@@ -1510,7 +1530,7 @@ struct HostListPage {
     if (!openGateway || requestId === '' || requestId === this.lastVncRelayRouteRequestId) { return; }
     this.lastVncRelayRouteRequestId = requestId;
     if (this.isDesktopDevice && this.breakpoint === 'xl') {
-      this.curTab = 5;
+      this.curTab = 6;
       this.hostPageTitle = '中继服务器';
     } else {
       this.curTab = 2;
@@ -2033,11 +2053,10 @@ struct HostListPage {
       this.refreshCryptoStatus();
       this.refreshHostListView();
       this.rdpCredentials = this.srv.getAllRdpCredentials();
-      this.hostCount = this.srv.getHostCount();
-      this.lockedCount = this.srv.getLockedHostCount();
       this.rdpCount = this.srv.getRdpCount();
       this.rustdeskCount = this.srv.getRustdeskCount();
       this.sshCount = this.srv.getSshCount();
+      this.vncCount = this.vncHosts.list().length;
       this.keyCount = KeyVaultService.getInstance().getSshKeyCount();
       this.totpCount = KeyVaultService.getInstance().getTotpCount();
       this.accountDisplayName = this.auth.isLoggedIn() ? this.auth.getDisplayName() : '';
@@ -2080,6 +2099,11 @@ struct HostListPage {
         this.load();
       });
     }
+    if (!this.vncHostDataUnsubscribe) {
+      this.vncHostDataUnsubscribe = this.vncHosts.onChange((): void => {
+        this.load();
+      });
+    }
   }
 
   private unregisterDataRefreshListeners(): void {
@@ -2091,6 +2115,10 @@ struct HostListPage {
       this.keyVaultDataUnsubscribe();
       this.keyVaultDataUnsubscribe = null;
     }
+    if (this.vncHostDataUnsubscribe) {
+      this.vncHostDataUnsubscribe();
+      this.vncHostDataUnsubscribe = null;
+    }
   }
 
   private refreshHostListView(): void {
@@ -2098,11 +2126,19 @@ struct HostListPage {
     // 引用时，LazyForEach/卡片内部只收到 reload 却继续显示旧字段。
     const nextHosts: RemoteHost[] = this.srv.getAllHosts().map((host: RemoteHost): RemoteHost =>
       RemoteHost.fromJSON(host.toJSON()));
-    this.hostCount = this.srv.getHostCount();
-    this.lockedCount = this.srv.getLockedHostCount();
+    const vncViews: VncHostView[] = this.vncHosts.list();
+    for (let i = 0; i < vncViews.length; i++) {
+      nextHosts.push(projectVncHost(vncViews[i]));
+    }
+    this.hostCount = nextHosts.length;
+    this.lockedCount = 0;
+    for (let i = 0; i < nextHosts.length; i++) {
+      if (nextHosts[i].locked) { this.lockedCount += 1; }
+    }
     this.rdpCount = this.srv.getRdpCount();
     this.rustdeskCount = this.srv.getRustdeskCount();
     this.sshCount = this.srv.getSshCount();
+    this.vncCount = vncViews.length;
     const nextSignature: string = JSON.stringify(
       nextHosts.map((host: RemoteHost): Object => host.toJSON()));
     if (nextSignature === this.hostDataSignature) { return; }
@@ -2390,9 +2426,20 @@ struct HostListPage {
     }).then((result: Object): void => {
       const r: Record<string, number> = result as Record<string, number>;
       if (r['index'] === 1) {
-        const ids: string[] = [];
-        this.hostSelectedIds.forEach((id: string): void => { ids.push(id); });
-        this.srv.removeHosts(ids);
+        const remoteIds: string[] = [];
+        const vncIds: string[] = [];
+        this.hostSelectedIds.forEach((id: string): void => {
+          // Do not classify by the display prefix alone: a legacy remotehosts
+          // row may legally contain an arbitrary ID beginning with "vnc:".
+          // Resolve the selected snapshot first so deletion stays with the
+          // actual owner service.
+          const selectedHost: RemoteHost | undefined = this.hosts.find(
+            (host: RemoteHost): boolean => host.id === id);
+          const vncId: string = selectedHost === undefined ? '' : this.vncRecordIdForHost(selectedHost);
+          if (vncId !== '') { vncIds.push(vncId); } else { remoteIds.push(id); }
+        });
+        if (remoteIds.length > 0) { this.srv.removeHosts(remoteIds); }
+        for (let i = 0; i < vncIds.length; i++) { this.vncHosts.remove(vncIds[i]); }
         this.hostSelectionMode = false;
         this.hostSelectedIds = new Set<string>();
       }
@@ -2499,6 +2546,15 @@ struct HostListPage {
         router.pushUrl({ url: 'pages/RemoteDesktop', params: params });
         this.releaseConnectionAttempt(host.id);
       }
+    } else if (host.protocol === 'vnc') {
+      const vncHostId: string = this.vncRecordIdForHost(host);
+      if (vncHostId === '') {
+        promptAction.showToast({ message: 'VNC 主机记录无效，请重新添加', duration: 2200 });
+        return;
+      }
+      const params: Record<string, Object> = {};
+      params['vncHostId'] = vncHostId;
+      router.pushUrl({ url: 'pages/RemoteDesktop', params: params });
     } else {
       const params: Record<string, Object> = {};
       params['hostId'] = host.id;
@@ -3200,11 +3256,26 @@ struct HostListPage {
     this.connectToHost(host);
   }
 
+  private vncRecordIdForHost(host: RemoteHost): string {
+    return isVncHostProjection(host) ? vncHostRecordIdFromUiId(host.id) : '';
+  }
+
   private async toggleLock(host: RemoteHost): Promise<void> {
     const r = await showLockGate(host.label, 'biometric');
     if (!r.ok) {
       const msg: string = lockGateErrorMessage(r);
       if (msg !== '') { promptAction.showToast({ message: msg, duration: 2000 }); }
+      return;
+    }
+    const vncHostId: string = this.vncRecordIdForHost(host);
+    if (vncHostId !== '') {
+      const nextLocked: boolean = !host.locked;
+      if (!this.vncHosts.updateLock(vncHostId, nextLocked,
+        nextLocked ? LockType.BIOMETRIC : LockType.NONE)) {
+        promptAction.showToast({ message: '保存 VNC 主机状态失败', duration: 2000 });
+        return;
+      }
+      promptAction.showToast({ message: nextLocked ? '已锁定' : '已解锁', duration: 1500 });
       return;
     }
     host.locked = !host.locked;
@@ -3481,6 +3552,28 @@ struct HostListPage {
 
   // 编辑主机 (锁定状态需先鉴权)
   private async editHost(host: RemoteHost): Promise<void> {
+    const vncHostId: string = this.vncRecordIdForHost(host);
+    if (vncHostId !== '') {
+      const latestVnc: VncHostView | null = this.vncHosts.find(vncHostId);
+      if (latestVnc === null) {
+        promptAction.showToast({ message: 'VNC 主机记录不存在或已删除', duration: 2000 });
+        return;
+      }
+      if (latestVnc.locked) {
+        const gate = await showLockGate(latestVnc.label, 'biometric');
+        if (!gate.ok) {
+          const msg: string = lockGateErrorMessage(gate);
+          if (msg !== '') { promptAction.showToast({ message: msg, duration: 2000 }); }
+          return;
+        }
+      }
+      this.prepareClassicVncEditor(latestVnc);
+      this.addSheetShowsModernPicker = false;
+      this.modernAddProtocol = '';
+      this.vncAddFromModernPicker = false;
+      this.openSheetSafely((): void => { this.showAddSheet = true; });
+      return;
+    }
     const latestHost: RemoteHost = this.srv.getHost(host.id) ?? host;
     if (latestHost.locked) {
       const r = await showLockGate(latestHost.label, 'biometric');
@@ -3535,6 +3628,28 @@ struct HostListPage {
     this.openSheetSafely((): void => { this.showAddSheet = true; });
   }
 
+  private prepareClassicVncEditor(host: VncHostView | null): void {
+    this.editingHostId = host === null ? '' : vncHostUiId(host.id);
+    this.label = host === null ? '' : host.label;
+    this.proto = 'vnc';
+    this.hostAddr = host === null ? '' : host.host;
+    this.portVal = host === null ? 5900 : host.port;
+    this.username = '';
+    // Never materialize a VNC password into the classic editor.
+    this.sheetPwd = '';
+    this.chn = '';
+    this.sheetErr = '';
+    this.vncHostTransport = host === null ? 'direct_tcp' : host.transport;
+    this.vncHostRepeaterMode = host === null ? 'mode12' : host.repeaterMode;
+    this.vncHostGatewayId = host === null ? '' : host.gatewayId;
+    this.vncHostRememberPassword = host === null ? false : host.rememberPassword;
+    this.vncHostViewOnly = host === null ? true : host.viewOnly;
+    this.vncHostScalingMode = host === null ? 'fit' : host.scalingMode;
+    this.vncHostClipboardEnabled = host === null ? false : host.clipboardEnabled;
+    this.vncHostSecurityPolicy = host === null ? 'secure_only' : host.securityPolicy;
+    this.vncHostTls = host === null ? true : host.tls;
+  }
+
   private isEditingProHost(): boolean {
     if (this.editingHostId === '') { return false; }
     const host = this.srv.getHost(this.editingHostId);
@@ -3550,6 +3665,11 @@ struct HostListPage {
 
   // 直接删除主机 (滑动触发)
   private deleteHost(host: RemoteHost): void {
+    const vncHostId: string = this.vncRecordIdForHost(host);
+    if (vncHostId !== '') {
+      this.vncHosts.remove(vncHostId);
+      return;
+    }
     this.srv.removeHost(host.id);
   }
 
@@ -3573,7 +3693,9 @@ struct HostListPage {
     }).then((result: Object): void => {
       const r: Record<string, number> = result as Record<string, number>;
       if (r['index'] === 1) {
-        this.srv.removeHost(host.id);
+        const vncHostId: string = this.vncRecordIdForHost(host);
+        if (vncHostId !== '') { this.vncHosts.remove(vncHostId); }
+        else { this.srv.removeHost(host.id); }
       }
     });
   }
@@ -4382,9 +4504,10 @@ struct HostListPage {
                 this.sidebarTab('RDP 远程桌面', protocolIcon('rdp'), 0)
                 this.sidebarTab('RustDesk', protocolIcon('rustdesk'), 1)
                 this.sidebarTab('SSH 终端', protocolIcon('ssh'), 2)
-                this.sidebarTab('密钥保险库', protocolIcon('key_vault'), 3)
-                this.sidebarTab('2FA 验证器', protocolIcon('totp'), 4)
-                this.sidebarRelayTab('中继服务器', 5)
+                this.sidebarTab('VNC 主机', protocolIcon('vnc'), 3)
+                this.sidebarTab('密钥保险库', protocolIcon('key_vault'), 4)
+                this.sidebarTab('2FA 验证器', protocolIcon('totp'), 5)
+                this.sidebarRelayTab('中继服务器', 6)
               }.layoutWeight(1).padding({ top: 24 })
               // 设置
               this.sidebarSettingsBtn()
@@ -4395,8 +4518,8 @@ struct HostListPage {
 
             // 主内容区 (hostContent 使用 updateHostFilter 预过滤的数据源)
             Column() {
-              if (this.curTab <= 2) { this.hostContent() }
-              else if (this.curTab === 5) { this.relayContent() }
+              if (this.curTab <= 3) { this.hostContent() }
+              else if (this.curTab === 6) { this.relayContent() }
               else { this.keyVaultContent() }
             }.layoutWeight(1).height('100%')
           }
@@ -4463,7 +4586,7 @@ struct HostListPage {
         .onClick(() => {
           if (this.isDesktopDevice && this.breakpoint === 'xl') {
             // PC 全屏侧边栏: RDP/RustDesk/SSH/密钥/2FA/中继
-            if (this.curTab <= 2) {
+            if (this.curTab <= 3) {
               this.resetForm();
               const nextProto: string = this.activeFilterProto !== '' ? this.activeFilterProto : 'rdp';
               this.switchHostProtocol(nextProto, RemoteHost.getDefaultPort(nextProto));
@@ -4471,12 +4594,12 @@ struct HostListPage {
                 resolveFabAddStyle(this.fabAddStyle, this.isDesktopDevice) === 'modern';
               this.modernAddProtocol = '';
               this.openSheetSafely((): void => { this.showAddSheet = true; });
-            } else if (this.curTab === 3) {
-              this.kvAddTrigger++;
             } else if (this.curTab === 4) {
-              this.keyVaultInnerTab = 1;
               this.kvAddTrigger++;
             } else if (this.curTab === 5) {
+              this.keyVaultInnerTab = 1;
+              this.kvAddTrigger++;
+            } else if (this.curTab === 6) {
               this.relayAddTrigger++;
             }
           } else {
@@ -4591,10 +4714,10 @@ struct HostListPage {
     .onClick(() => {
       this.curTab = index;
       if (this.isDesktopDevice) {
-        const titles: string[] = ['RDP 远程主机', 'RustDesk 远程主机', 'SSH 终端', '', '', '中继服务器'];
+        const titles: string[] = ['RDP 远程主机', 'RustDesk 远程主机', 'SSH 终端', 'VNC 主机', '', '', '中继服务器'];
         this.hostPageTitle = titles[index] || '';
-        if (index === 3) { this.keyVaultInnerTab = 0; }
-        if (index === 4) { this.keyVaultInnerTab = 1; }
+        if (index === 4) { this.keyVaultInnerTab = 0; }
+        if (index === 5) { this.keyVaultInnerTab = 1; }
       }
       this.updateHostFilter();
     })
@@ -4616,7 +4739,7 @@ struct HostListPage {
     .onClick(() => {
       this.curTab = index;
       if (this.isDesktopDevice) {
-        const titles: string[] = ['RDP 远程主机', 'RustDesk 远程主机', 'SSH 终端', '', '', '中继服务器'];
+        const titles: string[] = ['RDP 远程主机', 'RustDesk 远程主机', 'SSH 终端', 'VNC 主机', '', '', '中继服务器'];
         this.hostPageTitle = titles[index] || '';
       }
       this.updateHostFilter();
@@ -5237,22 +5360,24 @@ struct HostListPage {
 
       Divider().strokeWidth(0.5).color(this.pal().cardBorder).width('100%')
 
-      Row() {
-        SymbolGlyph($r('sys.symbol.folder_badge_plus'))
-          .fontSize(16).fontColor([this.pal().text])
-        Text(host.groupId === 'ops' ? '移出工作组' : '加入 ops 工作组')
-          .fontSize(13).fontColor(this.pal().text).fontFamily(this.font()).margin({ left: 8 })
-      }
-      .width('100%').padding({ left: 12, right: 12, top: 8, bottom: 8 })
-      .onClick(() => {
-        const nextGroup = host.groupId === 'ops' ? '' : 'ops';
-        if (!this.srv.setGroup(host.id, nextGroup)) {
-          promptAction.showToast({ message: '工作组保存失败 [E-HOST-WS-2]', duration: 1800 });
+      if (!isVncHostProjection(host)) {
+        Row() {
+          SymbolGlyph($r('sys.symbol.folder_badge_plus'))
+            .fontSize(16).fontColor([this.pal().text])
+          Text(host.groupId === 'ops' ? '移出工作组' : '加入 ops 工作组')
+            .fontSize(13).fontColor(this.pal().text).fontFamily(this.font()).margin({ left: 8 })
         }
-        animateTo({ duration: 150 }, () => { this.hostActionPopupId = ''; });
-      })
+        .width('100%').padding({ left: 12, right: 12, top: 8, bottom: 8 })
+        .onClick(() => {
+          const nextGroup = host.groupId === 'ops' ? '' : 'ops';
+          if (!this.srv.setGroup(host.id, nextGroup)) {
+            promptAction.showToast({ message: '工作组保存失败 [E-HOST-WS-2]', duration: 1800 });
+          }
+          animateTo({ duration: 150 }, () => { this.hostActionPopupId = ''; });
+        })
 
-      Divider().strokeWidth(0.5).color(this.pal().cardBorder).width('100%')
+        Divider().strokeWidth(0.5).color(this.pal().cardBorder).width('100%')
+      }
 
       Row() {
         SymbolGlyph($r('sys.symbol.ohos_trash'))
@@ -8159,7 +8284,7 @@ struct HostListPage {
           setTimeout((): void => {
             if (!this.pageActive) { return; }
             if (this.isDesktopDevice && this.breakpoint === 'xl') {
-              this.curTab = 5;
+              this.curTab = 6;
               this.hostPageTitle = '中继服务器';
             } else {
               this.curTab = 2;
@@ -8237,11 +8362,182 @@ struct HostListPage {
     .borderRadius(this.breakpoint === 'sm' ? { topLeft: 20, topRight: 20, bottomLeft: 0, bottomRight: 0 } : 20)
   }
 
+  private vncClassicGateways(): VncGatewayView[] {
+    return this.vncGateways.list().filter((gateway: VncGatewayView): boolean =>
+      gateway.enabled && gateway.transport === 'ultravnc_repeater' && gateway.repeaterMode === 'mode12');
+  }
+
+  private selectClassicVncTransport(transport: VncTransport): void {
+    this.vncHostTransport = transport;
+    this.sheetErr = '';
+    if (transport === 'direct_tcp') {
+      this.vncHostGatewayId = '';
+      if (this.portVal <= 0) { this.portVal = 5900; }
+      return;
+    }
+    const gateways: VncGatewayView[] = this.vncClassicGateways();
+    if (this.vncHostGatewayId === '' && gateways.length > 0) {
+      this.vncHostGatewayId = gateways[0].id;
+    }
+    const selected: VncGatewayView | undefined = gateways.find(
+      (gateway: VncGatewayView): boolean => gateway.id === this.vncHostGatewayId);
+    if (selected !== undefined) {
+      this.portVal = selected.port;
+      if (this.hostAddr.trim() === '' && selected.targetId.trim() !== '') {
+        this.hostAddr = selected.targetId;
+      }
+    }
+  }
+
+  private selectClassicVncGateway(gateway: VncGatewayView): void {
+    this.vncHostGatewayId = gateway.id;
+    this.portVal = gateway.port;
+    if (this.hostAddr.trim() === '' && gateway.targetId.trim() !== '') {
+      this.hostAddr = gateway.targetId;
+    }
+    this.sheetErr = '';
+  }
+
+  @Builder vncClassicEditorFields() {
+    Column() {
+      Row() {
+        Text('连接方式').fontSize(11).fontColor(this.pal().text2).fontFamily(this.font())
+        Blank()
+        Text('VNC Viewer').fontSize(10).fontColor(this.pal().text3).fontFamily(this.font())
+      }.width('100%').margin({ bottom: 4 })
+      Row() {
+        Button('TCP 直连').layoutWeight(1).height(34).fontSize(11).borderRadius(8)
+          .backgroundColor(this.vncHostTransport === 'direct_tcp' ? this.accentColor : this.pal().surface)
+          .fontColor(this.vncHostTransport === 'direct_tcp' ? Color.White : this.pal().text2)
+          .onClick((): void => { this.selectClassicVncTransport('direct_tcp'); })
+        Button('UltraVNC Repeater').layoutWeight(1).height(34).fontSize(11).borderRadius(8)
+          .margin({ left: 6 })
+          .backgroundColor(this.vncHostTransport === 'ultravnc_repeater' ? this.accentColor : this.pal().surface)
+          .fontColor(this.vncHostTransport === 'ultravnc_repeater' ? Color.White : this.pal().text2)
+          .onClick((): void => { this.selectClassicVncTransport('ultravnc_repeater'); })
+      }.width('100%').margin({ bottom: 8 })
+
+      if (this.vncHostTransport === 'direct_tcp') {
+        this.fieldRow('地址', '192.168.1.100 或 mac.local', this.hostAddr,
+          (v: string): void => { this.hostAddr = v; })
+        this.fieldRow('端口', '5900', this.portVal.toString(), (v: string): void => {
+          const value: number = parseInt(v);
+          this.portVal = isNaN(value) ? 5900 : value;
+        })
+      } else {
+        this.fieldRow('Repeater Target ID', '目标 ID', this.hostAddr,
+          (v: string): void => { this.hostAddr = v; })
+        Text('仅支持 Viewer mode12；mode2 是服务端监听角色，不能从此处连接。')
+          .fontSize(10).fontColor(this.pal().text3).fontFamily(this.font()).margin({ bottom: 8 })
+        Text('选择 VNC Gateway').fontSize(11).fontColor(this.pal().text2).fontFamily(this.font())
+          .margin({ bottom: 4 })
+        if (this.vncClassicGateways().length === 0) {
+          Text('暂无可用的 VNC Gateway，请先到中继服务器添加。')
+            .fontSize(11).fontColor(this.pal().danger).width('100%').padding(10)
+            .backgroundColor(this.pal().surface).borderRadius(8).margin({ bottom: 8 })
+        } else {
+          Column() {
+            ForEach(this.vncClassicGateways(), (gateway: VncGatewayView) => {
+              Row() {
+                Column() {
+                  Text(gateway.label).fontSize(12).fontColor(this.pal().text).fontFamily(this.font())
+                  Text(gateway.host + ':' + gateway.port.toString() + ' · mode12')
+                    .fontSize(10).fontColor(this.pal().text3).fontFamily(this.font()).margin({ top: 2 })
+                }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+                if (this.vncHostGatewayId === gateway.id) {
+                  SymbolGlyph($r('sys.symbol.checkmark')).fontSize(17).fontColor([this.accentColor])
+                }
+              }.width('100%').padding({ left: 10, right: 10, top: 8, bottom: 8 })
+                .borderRadius(8)
+                .backgroundColor(this.vncHostGatewayId === gateway.id ? this.pal().surface : Color.Transparent)
+                .onClick((): void => { this.selectClassicVncGateway(gateway); })
+            }, (gateway: VncGatewayView): string => gateway.id + ':' + this.hostViewRevision.toString())
+          }.width('100%').backgroundColor(this.pal().surface).borderRadius(8).padding(4).margin({ bottom: 8 })
+        }
+        this.fieldRow('端口', 'Gateway 端口', this.portVal.toString(), (v: string): void => {
+          const value: number = parseInt(v);
+          this.portVal = isNaN(value) ? 5901 : value;
+        })
+      }
+
+      this.pwdRow()
+      Row() {
+        Text('记住密码').fontSize(13).fontColor(this.pal().text).fontFamily(this.font()).layoutWeight(1)
+        Toggle({ type: ToggleType.Switch, isOn: this.vncHostRememberPassword })
+          .selectedColor(this.accentColor).scale({ x: 0.82, y: 0.82 })
+          .onChange((on: boolean): void => { this.vncHostRememberPassword = on; })
+      }.width('100%').margin({ bottom: 8 })
+      Text(this.vncHostRememberPassword
+        ? '密码只会写入 VNC secret；编辑时不会回显已保存密码。'
+        : '关闭后不保存密码，连接时可临时输入。')
+        .fontSize(10).fontColor(this.pal().text3).fontFamily(this.font()).margin({ bottom: 8 })
+
+      Row() {
+        Text('只读模式').fontSize(13).fontColor(this.pal().text).fontFamily(this.font()).layoutWeight(1)
+        Toggle({ type: ToggleType.Switch, isOn: this.vncHostViewOnly })
+          .selectedColor(this.accentColor).scale({ x: 0.82, y: 0.82 })
+          .onChange((on: boolean): void => { this.vncHostViewOnly = on; })
+      }.width('100%').margin({ bottom: 8 })
+      Row() {
+        Text('剪贴板文本').fontSize(13).fontColor(this.pal().text).fontFamily(this.font()).layoutWeight(1)
+        Toggle({ type: ToggleType.Switch, isOn: this.vncHostClipboardEnabled })
+          .selectedColor(this.accentColor).scale({ x: 0.82, y: 0.82 })
+          .onChange((on: boolean): void => { this.vncHostClipboardEnabled = on; })
+      }.width('100%').margin({ bottom: 8 })
+
+      Text('缩放').fontSize(11).fontColor(this.pal().text2).fontFamily(this.font()).margin({ bottom: 4 })
+      Row() {
+        Button('自适应').layoutWeight(1).height(32).fontSize(10).borderRadius(8)
+          .backgroundColor(this.vncHostScalingMode === 'fit' ? this.accentColor : this.pal().surface)
+          .fontColor(this.vncHostScalingMode === 'fit' ? Color.White : this.pal().text2)
+          .onClick((): void => { this.vncHostScalingMode = 'fit'; })
+        Button('整数').layoutWeight(1).height(32).fontSize(10).borderRadius(8).margin({ left: 5 })
+          .backgroundColor(this.vncHostScalingMode === 'integer' ? this.accentColor : this.pal().surface)
+          .fontColor(this.vncHostScalingMode === 'integer' ? Color.White : this.pal().text2)
+          .onClick((): void => { this.vncHostScalingMode = 'integer'; })
+        Button('1:1').layoutWeight(1).height(32).fontSize(10).borderRadius(8).margin({ left: 5 })
+          .backgroundColor(this.vncHostScalingMode === 'one_to_one' ? this.accentColor : this.pal().surface)
+          .fontColor(this.vncHostScalingMode === 'one_to_one' ? Color.White : this.pal().text2)
+          .onClick((): void => { this.vncHostScalingMode = 'one_to_one'; })
+        Button('平移').layoutWeight(1).height(32).fontSize(10).borderRadius(8).margin({ left: 5 })
+          .backgroundColor(this.vncHostScalingMode === 'pan' ? this.accentColor : this.pal().surface)
+          .fontColor(this.vncHostScalingMode === 'pan' ? Color.White : this.pal().text2)
+          .onClick((): void => { this.vncHostScalingMode = 'pan'; })
+      }.width('100%').margin({ bottom: 8 })
+
+      Text('安全策略').fontSize(11).fontColor(this.pal().text2).fontFamily(this.font()).margin({ bottom: 4 })
+      Row() {
+        Button('仅 TLS').layoutWeight(1).height(32).fontSize(10).borderRadius(8)
+          .backgroundColor(this.vncHostSecurityPolicy === 'secure_only' ? this.accentColor : this.pal().surface)
+          .fontColor(this.vncHostSecurityPolicy === 'secure_only' ? Color.White : this.pal().text2)
+          .onClick((): void => { this.vncHostSecurityPolicy = 'secure_only'; this.vncHostTls = true; })
+        Button('可信网络').layoutWeight(1).height(32).fontSize(10).borderRadius(8).margin({ left: 5 })
+          .backgroundColor(this.vncHostSecurityPolicy === 'trusted_network' ? this.accentColor : this.pal().surface)
+          .fontColor(this.vncHostSecurityPolicy === 'trusted_network' ? Color.White : this.pal().text2)
+          .onClick((): void => { this.vncHostSecurityPolicy = 'trusted_network'; })
+        Button('允许明文').layoutWeight(1).height(32).fontSize(10).borderRadius(8).margin({ left: 5 })
+          .backgroundColor(this.vncHostSecurityPolicy === 'allow_plaintext' ? this.pal().danger : this.pal().surface)
+          .fontColor(this.vncHostSecurityPolicy === 'allow_plaintext' ? Color.White : this.pal().text2)
+          .onClick((): void => { this.vncHostSecurityPolicy = 'allow_plaintext'; })
+      }.width('100%').margin({ bottom: 8 })
+      Row() {
+        Text('TLS').fontSize(13).fontColor(this.pal().text).fontFamily(this.font()).layoutWeight(1)
+        Toggle({ type: ToggleType.Switch, isOn: this.vncHostTls })
+          .selectedColor(this.accentColor).scale({ x: 0.82, y: 0.82 })
+          .onChange((on: boolean): void => { this.vncHostTls = on; })
+      }.width('100%').margin({ bottom: 4 })
+      Text('VNC 当前不使用用户名；高级超时和 trust 仍在 VNC 设置页管理。')
+        .fontSize(10).fontColor(this.pal().text3).fontFamily(this.font())
+    }.width('100%')
+  }
+
   @Builder sheetBuilder() {
     Column() {
       // 标题
       Text(this.editingHostId !== '' ? '编辑主机' :
-        (this.proto === 'ssh' ? '添加 SSH 终端' : (this.proto === 'rustdesk' ? '添加 RustDesk 主机' : '添加 RDP 主机')))
+        (this.proto === 'ssh' ? '添加 SSH 终端' :
+          (this.proto === 'rustdesk' ? '添加 RustDesk 主机' :
+            (this.proto === 'vnc' ? '添加 VNC 主机' : '添加 RDP 主机'))))
         .fontSize(16).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
         .width('100%').margin({ bottom: 12 }).fontFamily(this.font())
 
@@ -8260,35 +8556,39 @@ struct HostListPage {
 
           // RustDesk: 无需地址/端口/用户名, 走远程ID + 中继
           if (this.proto !== 'rustdesk') {
-            // 地址
-            this.fieldRow('地址', this.proto === 'ssh' ? '192.168.1.10' : '192.168.1.100', this.hostAddr, (v: string): void => { this.hostAddr = v; })
+            if (this.proto === 'vnc') {
+              this.vncClassicEditorFields()
+            } else {
+              // 地址
+              this.fieldRow('地址', this.proto === 'ssh' ? '192.168.1.10' : '192.168.1.100', this.hostAddr, (v: string): void => { this.hostAddr = v; })
 
-            // 端口 + 用户名
-            Row() {
-              Column() {
-                if (this.proto === 'ssh') {
-                  this.fieldRow('端口', '22', this.sshPortVal.toString(), (v: string): void => {
-                    const n: number = parseInt(v);
-                    this.sshPortVal = isNaN(n) ? RemoteHost.getDefaultPort('ssh') : n;
-                    this.portVal = this.sshPortVal;
-                  })
-                } else {
-                  this.fieldRow('端口', '3389', this.rdpPortVal.toString(), (v: string): void => {
-                    const n: number = parseInt(v);
-                    this.rdpPortVal = isNaN(n) ? RemoteHost.getDefaultPort('rdp') : n;
-                    this.portVal = this.rdpPortVal;
-                  })
-                }
-              }.width('30%')
-              Column() {
-                this.fieldRow('用户名', this.proto === 'rdp' && this.sheetRdpAuthMode === 'password' &&
-                  this.selectedRdpCredentialId !== '' ? '已使用 Windows 凭据' :
-                  (this.proto === 'rdp' ? 'user 或 DOMAIN\\user' : 'root'),
-                  this.username, (v: string): void => { this.username = v; },
-                  !(this.proto === 'rdp' && this.sheetRdpAuthMode === 'password' &&
-                    this.selectedRdpCredentialId !== ''))
-              }.width('60%').margin({ left: 12 })
-            }.width('100%')
+              // 端口 + 用户名
+              Row() {
+                Column() {
+                  if (this.proto === 'ssh') {
+                    this.fieldRow('端口', '22', this.sshPortVal.toString(), (v: string): void => {
+                      const n: number = parseInt(v);
+                      this.sshPortVal = isNaN(n) ? RemoteHost.getDefaultPort('ssh') : n;
+                      this.portVal = this.sshPortVal;
+                    })
+                  } else {
+                    this.fieldRow('端口', '3389', this.rdpPortVal.toString(), (v: string): void => {
+                      const n: number = parseInt(v);
+                      this.rdpPortVal = isNaN(n) ? RemoteHost.getDefaultPort('rdp') : n;
+                      this.portVal = this.rdpPortVal;
+                    })
+                  }
+                }.width('30%')
+                Column() {
+                  this.fieldRow('用户名', this.proto === 'rdp' && this.sheetRdpAuthMode === 'password' &&
+                    this.selectedRdpCredentialId !== '' ? '已使用 Windows 凭据' :
+                    (this.proto === 'rdp' ? 'user 或 DOMAIN\\user' : 'root'),
+                    this.username, (v: string): void => { this.username = v; },
+                    !(this.proto === 'rdp' && this.sheetRdpAuthMode === 'password' &&
+                      this.selectedRdpCredentialId !== ''))
+                }.width('60%').margin({ left: 12 })
+              }.width('100%')
+            }
           }
 
           if (this.proto === 'rdp') {
@@ -8299,7 +8599,7 @@ struct HostListPage {
           }
 
           // 密码
-          if (this.proto !== 'rdp' || this.sheetRdpAuthMode === 'password') {
+          if ((this.proto !== 'rdp' && this.proto !== 'vnc') || this.sheetRdpAuthMode === 'password') {
             this.pwdRow(!(this.proto === 'rdp' && this.selectedRdpCredentialId !== ''))
           }
 
@@ -8384,7 +8684,7 @@ struct HostListPage {
                     this.requestAddSheetClose();
                     // PC侧边栏 relay=5, 移动 Tabs relay=2
                     if (this.isDesktopDevice && this.breakpoint === 'xl') {
-                      this.curTab = 5;
+                      this.curTab = 6;
                     } else {
                       this.curTab = 2;
                     }
@@ -8466,7 +8766,7 @@ struct HostListPage {
                       .onClick(() => {
                         this.requestAddSheetClose();
                         if (this.isDesktopDevice && this.breakpoint === 'xl') {
-                          this.curTab = 5;
+                          this.curTab = 6;
                         } else {
                           this.curTab = 2;
                         }
@@ -8531,7 +8831,10 @@ struct HostListPage {
             .onClick(() => { this.doAdd(); })
         }.width('100%')
       }
-      .constraintSize({ maxHeight: 420 })
+      // The existing RDP/RustDesk/SSH editor keeps its compact 420vp budget.
+      // VNC has a few extra, protocol-specific controls; FIT_CONTENT should
+      // expand it before a user ever needs to scroll the classic editor.
+      .constraintSize({ maxHeight: this.proto === 'vnc' ? 760 : 420 })
       .scrollBar(BarState.Auto)
       .edgeEffect(EdgeEffect.Spring)
       .width('100%')
@@ -8559,13 +8862,10 @@ struct HostListPage {
       .opacity(this.editingHostId === '' || this.proto === protoVal ? 1.0 : 0.4)
       .onClick(() => {
         if (this.editingHostId !== '') { return; }
-        if (protoVal === 'vnc') {
-          this.vncAddFromModernPicker = false;
-          this.prepareVncAddFlow();
-          this.modernAddProtocol = 'vnc';
-          return;
-        }
         this.switchHostProtocol(protoVal, defaultPort);
+        if (protoVal === 'vnc') {
+          this.prepareClassicVncEditor(null);
+        }
         if (protoVal === 'rustdesk') { this.sheetPwdMode = 0; }
       })
   }
@@ -9355,10 +9655,103 @@ struct HostListPage {
     this.sheetKeyMode = 0; this.sheetUseProxy = false;
     this.sheetProxyHost = ''; this.sheetProxyPort = 22; this.sheetProxyUser = '';
     this.sheetProxyType = 'http_connect';
+    this.vncHostTransport = 'direct_tcp'; this.vncHostRepeaterMode = 'mode12';
+    this.vncHostGatewayId = ''; this.vncHostRememberPassword = false;
+    this.vncHostViewOnly = true; this.vncHostScalingMode = 'fit';
+    this.vncHostClipboardEnabled = false; this.vncHostSecurityPolicy = 'secure_only';
+    this.vncHostTls = true;
+  }
+
+  private commitClassicVncSave(values: VncHostValues, recordId: string, password: string,
+    allowPlaintext: boolean, securityConfirmed: boolean = false): void {
+    if (values.securityPolicy === 'allow_plaintext' && !securityConfirmed) {
+      promptAction.showDialog({
+        title: '确认允许 VNC 明文连接',
+        message: '该策略会允许不加密的 VNC 连接。请确认当前网络可信，并了解密码和屏幕内容可能被窃听。',
+        buttons: [{ text: '取消', color: this.pal().text2 }, { text: '确认保存', color: this.pal().danger }]
+      }).then((result: Object): void => {
+        const dialogResult: Record<string, number> = result as Record<string, number>;
+        if (dialogResult['index'] === 1) {
+          this.commitClassicVncSave(values, recordId, password, allowPlaintext, true);
+        }
+      });
+      return;
+    }
+    if (!this.vncHosts.isReady()) {
+      this.sheetErr = 'VNC 服务尚未完成云同步初始化，请稍后重试';
+      return;
+    }
+    const result = this.vncHosts.save(values, recordId, password, allowPlaintext);
+    if (!result.ok) {
+      this.sheetErr = result.message || '保存 VNC 主机失败';
+      return;
+    }
+    promptAction.showToast({ message: recordId === '' ? 'VNC 主机已保存' : 'VNC 主机已更新', duration: 1800 });
+    this.requestAddSheetClose();
+  }
+
+  private saveVncHostFromClassicForm(): void {
+    const recordId: string = vncHostRecordIdFromUiId(this.editingHostId);
+    const existing: VncHostView | null = recordId === '' ? null : this.vncHosts.find(recordId);
+    const values: VncHostValues = {
+      label: this.label.trim(),
+      host: this.hostAddr.trim(),
+      port: this.portVal,
+      username: '',
+      gatewayId: this.vncHostTransport === 'direct_tcp' ? '' : this.vncHostGatewayId.trim(),
+      transport: this.vncHostTransport,
+      repeaterMode: this.vncHostRepeaterMode,
+      rememberPassword: this.vncHostRememberPassword,
+      viewOnly: this.vncHostViewOnly,
+      scalingMode: this.vncHostScalingMode,
+      clipboardEnabled: this.vncHostClipboardEnabled,
+      securityPolicy: this.vncHostSecurityPolicy,
+      tls: this.vncHostTls,
+      locked: existing === null ? false : existing.locked,
+      lockType: existing === null ? 0 : existing.lockType
+    };
+    const errors: string[] = validateVncHost(values);
+    if (errors.length > 0) { this.sheetErr = errors[0]; return; }
+    if (values.securityPolicy === 'secure_only' && !values.tls) {
+      this.sheetErr = '当前安全策略要求 TLS，请打开 TLS 或选择可信网络/允许明文';
+      return;
+    }
+    if (values.transport === 'ultravnc_repeater' &&
+      this.vncClassicGateways().find((gateway: VncGatewayView): boolean => gateway.id === values.gatewayId) === undefined) {
+      this.sheetErr = '请选择已启用且支持 mode12 的 VNC Gateway';
+      return;
+    }
+    const password: string = this.sheetPwd;
+    if (password.length > 0 && values.rememberPassword) {
+      const crypto: DataCrypto = DataCrypto.getInstance();
+      if (crypto.isSetupComplete() && !crypto.isReady()) {
+        this.sheetErr = '应用加密已锁定；请先解锁，或关闭“记住密码”后保存';
+        return;
+      }
+      if (!crypto.isSetupComplete()) {
+        promptAction.showDialog({
+          title: '确认保存未加密密码',
+          message: '应用加密未启用。打开“记住密码”会把 VNC 密码以未加密形式保存；关闭此选项即可仅临时使用。',
+          buttons: [{ text: '关闭记住密码', color: this.pal().text2 },
+            { text: '确认保存', color: this.pal().danger }]
+        }).then((result: Object): void => {
+          const dialogResult: Record<string, number> = result as Record<string, number>;
+          if (dialogResult['index'] === 1) {
+            this.commitClassicVncSave(values, recordId, password, true);
+          }
+        });
+        return;
+      }
+    }
+    this.commitClassicVncSave(values, recordId, password, false);
   }
 
   private doAdd(): void {
     if (!shouldAcceptHostAddSave(this.addSheetClosing, this.pendingAddSheetConnectHostId)) {
+      return;
+    }
+    if (this.proto === 'vnc') {
+      this.saveVncHostFromClassicForm();
       return;
     }
     const editingId: string = this.editingHostId;

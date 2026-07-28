@@ -268,6 +268,8 @@ export struct VncSettingsPage {
   }
 
   private hostValues(): VncHostValues {
+    const existing: VncHostView | undefined = this.editingHostId === '' ? undefined :
+      this.hosts.find((host: VncHostView): boolean => host.id === this.editingHostId);
     return {
       label: this.hostLabel,
       host: this.hostAddress,
@@ -281,7 +283,9 @@ export struct VncSettingsPage {
       scalingMode: this.hostScalingMode,
       clipboardEnabled: this.hostClipboardEnabled,
       securityPolicy: this.hostSecurityPolicy,
-      tls: this.hostTls
+      tls: this.hostTls,
+      locked: existing === undefined ? false : existing.locked,
+      lockType: existing === undefined ? 0 : existing.lockType
     };
   }
 
