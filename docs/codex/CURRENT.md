@@ -13,7 +13,7 @@ Updated: 2026-07-28 Asia/Shanghai
 
 - RustDesk Pro API login tokens now travel only through the transient connection path into the RustDesk rendezvous `PunchHoleRequest` and `RequestRelay` messages; the existing relay/shared key remains a separate credential and the token is not persisted in host records, uploaded to cloud metadata or written to logs.
 - Pro host connections now validate account, server/relay and address-book binding before prompting for remote-device password or approval. Native connection errors are classified as Pro-session, device-password, approval, relay, peer or network failures so a real device-authentication failure is not reported as account expiry.
-- RDP keeps latest-value-wins dirty-rectangle presentation for small steady-state updates, while initial/full geometry and broad refresh bands enter a visual commit fence: a 40 ms quiet period or 160 ms deadline commits the accumulated frame as one presentation, and a 120 ms continuation tail catches strips arriving immediately after that commit, preventing visible strip-by-strip scans without blocking the protocol thread.
+- RDP keeps latest-value-wins dirty-rectangle presentation for small steady-state updates, while initial/full geometry and medium-to-broad refresh bands enter a visual commit fence: a 40 ms quiet period or 160 ms deadline commits the accumulated frame as one presentation, and a 750 ms continuation episode uses a 200 ms quiet period with a 600 ms deadline so sustained page refreshes do not fall back to strip-by-strip presentation. Small cursor/toolbar updates remain dirty-only.
 - SSH settings now has one dedicated accordion immediately after Windows RDP and RustDesk, and before 数据安全. Terminal foreground color and font size were removed from 个性化 and are now owned by `SshSettingsService` through namespaced keys with legacy aliases.
 - SSH settings exposes terminal appearance, preview/default reset, SSH host and key-vault shortcuts. SSH host fingerprint management was deliberately not migrated: 数据安全 and the existing per-host preflight remain the only trust-management path.
 - SSH settings continue to use existing `usersettings`, `RemoteHost`, `SshKey` and `KeyVaultService` owners; no SSH cloud table or sensitive global setting was added. RDP, RustDesk and VNC owners were not changed.
@@ -33,7 +33,7 @@ Updated: 2026-07-28 Asia/Shanghai
 ## Verification
 
 - Rust `cargo check` and `cargo check --tests`: passed for `rustdesk_ffi`.
-- Focused native `rdp_native_tests`: `147 passed, 0 failed`.
+- Focused native `rdp_native_tests`: `149 passed, 0 failed`.
 - `default@OhosTestCompileArkTS`: passed after the RustDesk Pro/RDP implementation; existing repository/dependency warnings remain.
 - Production `assembleHap`: `BUILD SUCCESSFUL` after the RustDesk Pro/RDP implementation.
 - Native test target compiles the actual VNC transport and RFB engine plus the RDP damage/visual-commit tests and the VNC transport tests.
@@ -74,6 +74,15 @@ Updated: 2026-07-28 Asia/Shanghai
 - The snapshot state is cleared only after a successful full-frame copy, so an allocation failure does not lose the pending visual fence. No RDP frame-pump, renderer, RustDesk or other protocol module was changed by this follow-up.
 - Follow-up verification: focused native tests `147 passed, 0 failed`; `default@OhosTestCompileArkTS` passed; `assembleHap` returned `BUILD SUCCESSFUL`; Light open-source compliance passed; `git diff --check` passed.
 - The newly built HAP was not installed automatically. Real-device acceptance with this HAP remains required for first desktop entry, browser/file-manager large refresh, scrolling and video scenarios.
+
+## RDP sustained-refresh repair ledger (2026-07-28)
+
+- The second wired `hdc` capture was from app version `1.0.8`. It showed medium refresh bands such as `832x64`, `1024x128`, `1408x128` and `1088x192` on a `1920x1080` desktop, so the prior 75%-width/full-width classifier did not consistently recognize one page repaint as a visual burst.
+- The same windows repeatedly copied full-frame-sized buffers (`copied` grew by multiples of `1920*1080*4`) and replaced most queued snapshots, for example `submitted=61 presented=10 replaced=50` and `submitted=31 presented=8 replaced=23`. EGL/GL presented successfully with no surface rejection or detach; this is a presentation-boundary problem, not a wired `hdc` or GL-surface failure.
+- `9fc3d8fcb fix(rdp): coalesce sustained refresh bursts` expands the burst classifier to medium horizontal/vertical bands and 25%-area updates, keeps the visual fence across a 750 ms continuation episode, waits up to 200 ms for quiet during that episode with a 600 ms cap, and leaves small cursor/toolbar updates on the dirty path instead of prolonging the fence.
+- The frame-pump metrics now distinguish `full`, `dirty` and `deferred` presentations in `RDP-PRESENT` logs. This is intended to verify that a reproduced page refresh is held as deferred/full-frame work rather than leaking repeated dirty-strip presents.
+- Verification for this repair: `149 passed, 0 failed`; `default@OhosTestCompileArkTS` passed; `assembleHap` returned `BUILD SUCCESSFUL`; Light open-source compliance passed; `git diff --check` passed. The signed artifact is `entry/build/default/outputs/default/entry-default-signed.hap`.
+- The new HAP was not installed automatically. Real-device acceptance with this exact artifact remains required; only after installation can we confirm whether the visible scan is gone and whether steady-state latency/frame rate remain unchanged.
 
 ## VNC UX implementation review ledger (2026-07-28)
 
