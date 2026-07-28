@@ -93,13 +93,16 @@ repeat the completed review below unless the listed files change again.
   (task not registered); no test success is claimed.
 - `git diff --check`: passed before the remaining documentation/commit pass.
 
-### Only remaining work for this checkpoint
+### Checkpoint result and remaining work
 
-1. Update the VNC plan and this shared state with the implementation status,
-   exact cloud-table contract and remaining external acceptance gates.
-2. Run the final diff/build/checkpoint gates after those documentation edits.
-3. Stage only the VNC implementation files and shared VNC checkpoint/plan;
-   leave the user-owned RustDesk Android plan and unrelated untracked plans
-   unstaged.
-4. Perform the final self-review of only the post-checkpoint diff, then make a
-   local `main` commit. Do not push, open a PR or merge remote `main`.
+1. The scoped local-main implementation commit is
+   `e6e6fe04c feat(vnc): complete settings relay and host flow`.
+2. The final code/documentation gates for that commit passed: both Hvigor
+   production gates, Light compliance and diff checks. The ohosTest task remains
+   unavailable because of `00306054`.
+3. The working tree intentionally keeps the user-owned RustDesk Android plan
+   and the two unrelated untracked plans outside the commit.
+4. Remaining work is external acceptance only: AGC deployment of `vncrecord`,
+   API 23 device UI smoke, single/multi-device cloud matrix and real VNC/
+   Repeater endpoint testing. Do not push, open a PR or merge remote `main` in
+   this local-only task.
