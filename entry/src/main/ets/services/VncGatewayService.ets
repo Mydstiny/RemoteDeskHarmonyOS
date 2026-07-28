@@ -9,6 +9,7 @@ import {
 import { VncCloudSyncService } from './VncCloudSyncService';
 import { DataCrypto } from './DataCrypto';
 import { VncSecretService } from './VncSecretService';
+import { vncGatewayAvailability } from './VncGatewayProtocolPolicy';
 
 export interface VncGatewayView extends VncGatewayValues {
   id: string;
@@ -102,7 +103,17 @@ export class VncGatewayService {
     record.ownerId = record.userId;
     record.ownerType = 'account';
     record.secretKind = '';
-    record.payload = vncGatewayPayload(values);
+    // Unsupported transports and repeater roles may remain as visible
+    // configuration for future migration, but they can never be persisted as
+    // an enabled/connectable gateway before their native contract is shipped.
+    const availability = vncGatewayAvailability(values.transport, values.tls, accessToken.length > 0,
+      values.repeaterMode);
+    const persistedValues: VncGatewayValues = {
+      label: values.label, transport: values.transport, host: values.host, port: values.port,
+      path: values.path, repeaterMode: values.repeaterMode, targetId: values.targetId, tls: values.tls,
+      enabled: values.enabled && availability.enabled
+    };
+    record.payload = vncGatewayPayload(persistedValues);
     record.createdAt = current === null ? now : current.createdAt;
     record.updatedAt = now;
     record.syncVersion = current === null ? 1 : current.syncVersion + 1;

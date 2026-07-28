@@ -35,6 +35,7 @@ export interface VncHostValues {
   repeaterMode: VncRepeaterMode;
   viewOnly: boolean;
   scalingMode: VncScalingMode;
+  clipboardEnabled: boolean;
   securityPolicy: VncSecurityPolicy;
   tls: boolean;
 }
@@ -125,6 +126,7 @@ export function vncHostPayload(values: VncHostValues): string {
   payload['repeaterMode'] = values.repeaterMode;
   payload['viewOnly'] = values.viewOnly;
   payload['scalingMode'] = values.scalingMode;
+  payload['clipboardEnabled'] = values.clipboardEnabled;
   payload['securityPolicy'] = values.securityPolicy;
   payload['tls'] = values.tls;
   return vncCanonicalJson(payload);

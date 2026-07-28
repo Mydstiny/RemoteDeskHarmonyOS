@@ -1,5 +1,6 @@
 /** Four-protocol entry for the modern add-host wizard. */
 import { AppTheme, Palette, buildDark, buildLight } from '../../common/Theme';
+import { ProtocolIconKey, protocolIcon } from '../../services/ProtocolIconPolicy';
 
 @Component
 export struct HostProtocolPicker {
@@ -14,6 +15,8 @@ export struct HostProtocolPicker {
 
   @Builder private protocolOption(protocol: string, title: string, subtitle: string, enabled: boolean) {
     Row() {
+      SymbolGlyph(protocolIcon(protocol as ProtocolIconKey)).fontSize(24)
+        .fontColor([enabled ? this.accentColor : this.pal().text3]).margin({ right: 14 })
       Column() {
         Text(title).fontSize(16).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
         Text(subtitle).fontSize(12).fontColor(this.pal().text3).margin({ top: 3 })

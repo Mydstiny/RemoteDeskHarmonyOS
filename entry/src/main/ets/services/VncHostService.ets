@@ -157,6 +157,7 @@ export class VncHostService {
       repeaterMode: values.repeaterMode,
       viewOnly: values.viewOnly,
       scalingMode: values.scalingMode,
+      clipboardEnabled: values.clipboardEnabled,
       securityPolicy: values.securityPolicy,
       tls: values.tls,
       createdAt: record.createdAt,
@@ -173,6 +174,7 @@ export class VncHostService {
       label: '', host: '', port: defaults.defaultPort, username: '', gatewayId: '',
       transport: defaults.defaultTransport, repeaterMode: defaults.repeaterMode,
       viewOnly: defaults.viewOnly, scalingMode: defaults.scalingMode,
+      clipboardEnabled: defaults.clipboardEnabled,
       securityPolicy: defaults.securityPolicy, tls: false
     };
     try {
@@ -187,6 +189,7 @@ export class VncHostService {
       if (typeof values['repeaterMode'] === 'string') { result.repeaterMode = values['repeaterMode'] as VncRepeaterMode; }
       if (typeof values['viewOnly'] === 'boolean') { result.viewOnly = values['viewOnly'] as boolean; }
       if (typeof values['scalingMode'] === 'string') { result.scalingMode = values['scalingMode'] as VncScalingMode; }
+      if (typeof values['clipboardEnabled'] === 'boolean') { result.clipboardEnabled = values['clipboardEnabled'] as boolean; }
       if (typeof values['securityPolicy'] === 'string') { result.securityPolicy = values['securityPolicy'] as VncSecurityPolicy; }
       if (typeof values['tls'] === 'boolean') { result.tls = values['tls'] as boolean; }
     } catch (_e) {}

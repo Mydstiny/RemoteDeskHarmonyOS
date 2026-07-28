@@ -121,6 +121,13 @@ function isBooleanValue(values: Record<string, Object>, key: string): boolean {
   return typeof values[key] === 'boolean';
 }
 
+function isOptionalBooleanValue(values: Record<string, Object>, key: string): boolean {
+  // clipboardEnabled was added to VNC host payloads after the first schema
+  // shipped. Missing legacy data is safe to interpret as the default (off),
+  // while an explicitly present value must still be a real boolean.
+  return typeof values[key] === 'undefined' || isBooleanValue(values, key);
+}
+
 function isIntegerInRange(value: Object, minimum: number, maximum: number): boolean {
   if (typeof value !== 'number') { return false; }
   const numeric: number = value as number;
@@ -177,6 +184,7 @@ export function vncRecordPayloadSemanticallyValid(record: VncRecord): boolean {
       isStringValue(values, 'gatewayId') && isOneOfString(values, 'transport', VNC_TRANSPORTS) &&
       isOneOfString(values, 'repeaterMode', VNC_REPEATER_MODES) &&
       isBooleanValue(values, 'viewOnly') && isOneOfString(values, 'scalingMode', VNC_SCALING_MODES) &&
+      isOptionalBooleanValue(values, 'clipboardEnabled') &&
       isOneOfString(values, 'securityPolicy', VNC_SECURITY_POLICIES) &&
       isBooleanValue(values, 'tls') && gatewayBindingValid;
   }

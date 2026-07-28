@@ -49,3 +49,57 @@ Updated: 2026-07-28 Asia/Shanghai
 
 - User-owned TouchpadPointerCurve test changes and the other untracked plans remain preserved and are not part of the SSH implementation commit. The SSH plan records the fixed RDP -> RustDesk -> SSH -> 数据安全 order and the no-fingerprint-migration boundary.
 - SDKs, signing profiles, device data, private addresses, credentials, raw logs and screenshots remain outside the shared records.
+
+## VNC UX implementation review ledger (2026-07-28)
+
+This is a durable checkpoint for context compaction and later sessions. Do not
+repeat the completed review below unless the listed files change again.
+
+### Reviewed and accepted in the current working tree
+
+- `HostListPage.ets`: VNC is a separate protocol accordion after SSH; its leaf
+  routes use the existing single settings-sheet host, dirty-dismiss guard and
+  `onDisappear` cleanup. VNC host save-and-connect and Gateway navigation wait
+  for sheet dismissal. Modern/classic FAB and protocol picker share the VNC
+  flow. RustDesk/RDP/SSH sheet and owner paths were left separate.
+- `VncSettingsSheet.ets` and `VncSettingsPage.ets`: connection, timeout,
+  display, security, trust, cloud scope, host and Gateway concerns are split;
+  host editing reuses the four-step flow; Gateway management routes to the
+  third-page directory; fingerprints and connection targets are redacted in
+  summaries.
+- `VncAddFlow.ets`: endpoint/security/display/review steps, direct TCP versus
+  Repeater mode12 field separation, no username capability claim, explicit
+  mode2/unavailable messaging, and stable-ID handoff after `onDisappear`.
+- `VncGatewayAddFlow.ets`, `RustDeskRelayPage.ets` and
+  `RelayDirectoryPolicy.ets`: the third page is a read-only aggregate with
+  全部/RustDesk/VNC filtering; VNC add/edit/delete/test dispatches only to
+  `VncGatewayService`; RustDesk continues to use its own service and table.
+  Unsupported WebSocket/public relay/SSH tunnel/mode2 paths remain
+  fail-closed. No token is rendered in cards, logs or review summaries.
+- `ProtocolIconPolicy.ets` and the touched protocol surfaces: protocol and
+  relay identity icons come from the API 23 `SymbolGlyph` registry; no new
+  protocol identity SVG was introduced.
+- `VncModelPolicy.ets`, `VncHostService.ets`, `VncGatewayService.ets`,
+  `VncRecordPolicy.ets` and `RemoteDesktop.ets`: VNC host/Gateway data stays
+  in the isolated VNC owner; per-host clipboard and Repeater target handoff
+  reach the native session; legacy host payloads without `clipboardEnabled`
+  remain readable; unsupported Gateway configs cannot be persisted as enabled.
+
+### Evidence already obtained for this exact working tree
+
+- `default@OhosTestCompileArkTS`: passed.
+- `assembleHap`: passed (`BUILD SUCCESSFUL`).
+- `ohosTest@OhosTestCompileArkTS`: current environment blocker `00306054`
+  (task not registered); no test success is claimed.
+- `git diff --check`: passed before the remaining documentation/commit pass.
+
+### Only remaining work for this checkpoint
+
+1. Update the VNC plan and this shared state with the implementation status,
+   exact cloud-table contract and remaining external acceptance gates.
+2. Run the final diff/build/checkpoint gates after those documentation edits.
+3. Stage only the VNC implementation files and shared VNC checkpoint/plan;
+   leave the user-owned RustDesk Android plan and unrelated untracked plans
+   unstaged.
+4. Perform the final self-review of only the post-checkpoint diff, then make a
+   local `main` commit. Do not push, open a PR or merge remote `main`.

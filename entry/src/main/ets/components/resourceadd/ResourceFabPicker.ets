@@ -1,4 +1,5 @@
 import { Palette, buildDark, buildLight } from '../../common/Theme';
+import { ProtocolIconKey, protocolIcon } from '../../services/ProtocolIconPolicy';
 
 /** Shared first-step picker matching HostProtocolPicker exactly. */
 @Component
@@ -27,8 +28,20 @@ export struct ResourceFabPicker {
     return '选择密钥添加方式';
   }
 
+  private iconKey(id: string): ProtocolIconKey {
+    if (id === 'rustdesk' || id === 'oss' || id === 'pro' || id === 'advanced') {
+      return id === 'rustdesk' ? 'rustdesk_relay' : 'rustdesk';
+    }
+    if (id === 'vnc') { return 'vnc_gateway'; }
+    if (this.kind === 'ssh_key') { return 'key_vault'; }
+    if (this.kind === 'totp') { return 'totp'; }
+    return 'settings';
+  }
+
   @Builder private option(id: string, title: string, subtitle: string) {
     Row() {
+      SymbolGlyph(protocolIcon(this.iconKey(id))).fontSize(24)
+        .fontColor([this.accentColor]).margin({ right: 14 })
       Column() {
         Text(title).fontSize(16).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
         Text(subtitle).fontSize(12).fontColor(this.pal().text3).margin({ top: 3 })
@@ -61,6 +74,7 @@ export struct ResourceFabPicker {
         this.option('manual', '手动输入', '填写发行方、账户和 Secret')
       } else if (this.kind === 'gateway') {
         this.option('rustdesk', 'RustDesk 中继', '配置 RustDesk ID、Relay 与 Server Pro')
+        this.option('vnc', 'VNC Gateway', '配置 VNC Repeater 或版本化 Gateway')
       } else {
         this.option('oss', 'RustDesk OSS', '自建开源 ID 与 Relay 服务')
         this.option('pro', 'RustDesk Server Pro', 'API 登录与地址簿设备同步')

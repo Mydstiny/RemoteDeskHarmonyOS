@@ -48,6 +48,7 @@ import { RdpAddFlow } from '../components/hostadd/RdpAddFlow';
 import { RustDeskAddFlow } from '../components/hostadd/RustDeskAddFlow';
 import { SshAddFlow } from '../components/hostadd/SshAddFlow';
 import { VncAddFlow } from '../components/hostadd/VncAddFlow';
+import { VncSettingsSheet } from '../components/VncSettingsSheet';
 // Passphrase uses bindSheet (HostListPage is @Entry, no bindSheet limit)
 import { KeyVaultPage } from './KeyVaultPage';
 import { SshPreflightState } from '../components/SshPreflightSheet';
@@ -141,10 +142,20 @@ import {
   SETTINGS_SHEET_RDP_CREDENTIALS,
   SETTINGS_SHEET_TERMINAL_FG_COLOR,
   SETTINGS_SHEET_TERMINAL_FONT_SIZE,
+  SETTINGS_SHEET_VNC_CLOUD_SYNC,
+  SETTINGS_SHEET_VNC_CONNECTION,
+  SETTINGS_SHEET_VNC_DISPLAY,
+  SETTINGS_SHEET_VNC_GATEWAY,
+  SETTINGS_SHEET_VNC_HOSTS,
+  SETTINGS_SHEET_VNC_SECURITY,
+  SETTINGS_SHEET_VNC_TIMEOUT,
+  SETTINGS_SHEET_VNC_TRUST,
   SETTINGS_SHEET_WALLPAPER,
+  SETTINGS_PANEL_DISMISS_TO_LEAF_OPEN_MS,
   settingsLeafSheetUsesSystemCloseButton,
   settingsLeafOpenDelayMs
 } from '../services/SettingsSheetRoutePolicy';
+import { protocolIcon } from '../services/ProtocolIconPolicy';
 import {
   SETTINGS_APP_BUNDLE_NAME,
   SETTINGS_BROWSER_VIEW_ACTION,
@@ -327,6 +338,7 @@ struct HostListPage {
   @State showSettingsPanel: boolean = false;
   @State showSettingsLeafSheet: boolean = false;
   @State settingsLeafSheetMode: number = SETTINGS_SHEET_NONE;
+  @State vncSettingsLeafDirty: boolean = false;
   @State expandedSettingsSection: string = SETTINGS_SECTION_NONE;
   @State aboutSheetMode: number = 0; // 0=使用教程 1=关于应用 2=隐私政策 3=前置操作
   // 合并 Sheet: 单 bindSheet + mode 切换 (避免 $$ 多 bindSheet 错位)
@@ -483,6 +495,8 @@ struct HostListPage {
   @State rdpCredPassword: string = '';
   private rdpCredentialEditorReturnToManager: boolean = false;
   @State relayAddTrigger: number = 0;
+  @State relayVncAddTrigger: number = 0;
+  private lastVncRelayRouteRequestId: string = '';
   private terminalFontSizes: number[] = [12, 13, 14, 15, 16, 17, 18, 20, 22, 24, 26, 28, 30, 32];
   private terminalColorPresets: string[] = [
     '#33FF33','#F0F0F0','#FFB000','#00FFFF',
@@ -898,6 +912,7 @@ struct HostListPage {
     this.registerInputDeviceWatcher();
     this.syncAmbientLightMonitor();
     this.ensureGripMonitorOnPageShow();
+    this.handleVncRelayRouteRequest();
   }
 
   onPageShow(): void {
@@ -920,6 +935,7 @@ struct HostListPage {
     this.applyDesktopRustDeskInputMode();
     this.syncAmbientLightMonitor();
     this.ensureGripMonitorOnPageShow();
+    this.handleVncRelayRouteRequest();
   }
 
   private openSheetSafely(openAction: () => void, allowDuringConnectionAttempt: boolean = false): void {
@@ -1204,6 +1220,32 @@ struct HostListPage {
     this.resetSettingsLeafSheetAfterDismiss();
   }
 
+  private dismissVncSettingsIfNeeded(continueAction: () => void): void {
+    if (!this.vncSettingsLeafDirty) {
+      continueAction();
+      return;
+    }
+    promptAction.showDialog({
+      title: '放弃未保存的 VNC 设置？',
+      message: '当前叶子设置还有未保存修改。放弃后这些修改不会写入本地或云端。',
+      buttons: [{ text: '继续编辑', color: this.pal().text2 }, { text: '放弃修改', color: this.pal().danger }]
+    }).then((result: Object): void => {
+      const dialogResult: Record<string, number> = result as Record<string, number>;
+      if (dialogResult['index'] === 1) {
+        this.vncSettingsLeafDirty = false;
+        continueAction();
+      }
+    });
+  }
+
+  private handleVncSettingsLeafWillDismiss(action: DismissSheetAction): void {
+    if (!this.vncSettingsLeafDirty) {
+      action.dismiss();
+      return;
+    }
+    this.dismissVncSettingsIfNeeded((): void => { action.dismiss(); });
+  }
+
   private resetSettingsLeafSheetAfterDismiss(): void {
     const next = settingsLeafSheetClosedState();
     if (next.cancelPendingOpen && this.pendingSheetOpenTimer !== -1) {
@@ -1231,6 +1273,7 @@ struct HostListPage {
     // Sheet transition has completed so the outgoing builder remains visible.
     this.closeLegacySettingsSheetFlags();
     this.resetSettingsLeafSheetAfterDismiss();
+    this.vncSettingsLeafDirty = false;
     if (this.pendingSettingsLeafSheetMode !== SETTINGS_SHEET_NONE) {
       this.scheduleSettingsLeafSheetOpen(this.pendingSettingsLeafSheetMode,
         this.pendingSettingsLeafPrepare,
@@ -1418,6 +1461,52 @@ struct HostListPage {
     this.tabsCtrl.changeIndex(1);
   }
 
+  private openVncHostManagerFromSettings(): void {
+    this.dismissVncSettingsIfNeeded((): void => {
+      this.closeSettingsLeafSheet();
+      setTimeout((): void => {
+        if (this.pageActive) { router.pushUrl({ url: 'pages/VncSettingsPage' }); }
+      }, SETTINGS_PANEL_DISMISS_TO_LEAF_OPEN_MS);
+    });
+  }
+
+  private openVncGatewayManagerFromSettings(): void {
+    this.dismissVncSettingsIfNeeded((): void => {
+      this.closeSettingsLeafSheet();
+      setTimeout((): void => {
+        if (!this.pageActive) { return; }
+        if (this.isDesktopDevice && this.breakpoint === 'xl') {
+          this.curTab = 5;
+          this.hostPageTitle = '中继服务器';
+        } else {
+          this.curTab = 2;
+          this.tabsCtrl.changeIndex(2);
+        }
+        this.updateHostFilter();
+      }, SETTINGS_PANEL_DISMISS_TO_LEAF_OPEN_MS);
+    });
+  }
+
+  private handleVncRelayRouteRequest(): void {
+    const params: Object = router.getParams();
+    if (params === null || params === undefined) { return; }
+    const values: Record<string, Object> = params as Record<string, Object>;
+    const requestId: string = typeof values['vncRelayRequestId'] === 'string'
+      ? values['vncRelayRequestId'] as string : '';
+    const openGateway: boolean = values['openVncGateway'] === true || values['openVncGateway'] === 'true';
+    if (!openGateway || requestId === '' || requestId === this.lastVncRelayRouteRequestId) { return; }
+    this.lastVncRelayRouteRequestId = requestId;
+    if (this.isDesktopDevice && this.breakpoint === 'xl') {
+      this.curTab = 5;
+      this.hostPageTitle = '中继服务器';
+    } else {
+      this.curTab = 2;
+      this.tabsCtrl.changeIndex(2);
+    }
+    this.updateHostFilter();
+    this.relayVncAddTrigger++;
+  }
+
   private resetSshTerminalAppearance(): void {
     this.terminalFgColor = this.sshSettings.saveForegroundColor('#33FF33');
     this.terminalFontSize = this.sshSettings.saveFontSize(18);
@@ -1448,7 +1537,7 @@ struct HostListPage {
       return 540;
     }
     if (section === SETTINGS_SECTION_VNC) {
-      return 280;
+      return 620;
     }
     if (section === SETTINGS_SECTION_SECURITY) {
       return 420;
@@ -3389,6 +3478,13 @@ struct HostListPage {
     return host.protocol.toUpperCase();
   }
 
+  private hostProtocolIcon(protocol: string): Resource {
+    if (protocol === 'rdp') { return protocolIcon('rdp'); }
+    if (protocol === 'rustdesk') { return protocolIcon('rustdesk'); }
+    if (protocol === 'ssh') { return protocolIcon('ssh'); }
+    return protocolIcon('vnc');
+  }
+
   // 直接删除主机 (滑动触发)
   private deleteHost(host: RemoteHost): void {
     this.srv.removeHost(host.id);
@@ -4197,6 +4293,14 @@ struct HostListPage {
         maskColor: 'rgba(0,0,0,0.4)',
         onDisappear: (): void => {
           this.handleSettingsLeafSheetDisappear();
+        },
+        onWillDismiss: (action: DismissSheetAction): void => {
+          if (this.settingsLeafSheetMode >= SETTINGS_SHEET_VNC_CONNECTION &&
+            this.settingsLeafSheetMode <= SETTINGS_SHEET_VNC_GATEWAY) {
+            this.handleVncSettingsLeafWillDismiss(action);
+          } else {
+            action.dismiss();
+          }
         }
       })
       Column() {
@@ -4212,11 +4316,11 @@ struct HostListPage {
             Column() {
               Row().width('100%').height(44)
               Column() {
-                this.sidebarTab('RDP 远程桌面', $rawfile('icons/computer-desktop.svg'), 0)
-                this.sidebarTab('RustDesk', $rawfile('icons/globe-alt.svg'), 1)
-                this.sidebarTab('SSH 终端', $rawfile('icons/command-line.svg'), 2)
-                this.sidebarTab('密钥保险库', $rawfile('icons/key.svg'), 3)
-                this.sidebarTab('2FA 验证器', $rawfile('icons/shield-check.svg'), 4)
+                this.sidebarTab('RDP 远程桌面', protocolIcon('rdp'), 0)
+                this.sidebarTab('RustDesk', protocolIcon('rustdesk'), 1)
+                this.sidebarTab('SSH 终端', protocolIcon('ssh'), 2)
+                this.sidebarTab('密钥保险库', protocolIcon('key_vault'), 3)
+                this.sidebarTab('2FA 验证器', protocolIcon('totp'), 4)
                 this.sidebarRelayTab('中继服务器', 5)
               }.layoutWeight(1).padding({ top: 24 })
               // 设置
@@ -4409,10 +4513,10 @@ struct HostListPage {
 
   // ==================== 主机列表 ====================
   // PC 侧边栏 Tab 按钮
-  @Builder sidebarTab(label: string, icon: ResourceStr, index: number) {
+  @Builder sidebarTab(label: string, icon: Resource, index: number) {
     Row() {
-      Image(icon).width(28).height(28)
-        .fillColor(this.curTab === index ? this.accentColor : this.pal().text3)
+      SymbolGlyph(icon).fontSize(28)
+        .fontColor([this.curTab === index ? this.accentColor : this.pal().text3])
       Text(label)
         .fontSize(16).fontWeight(FontWeight.Medium)
         .fontColor(this.curTab === index ? this.accentColor : this.pal().text3)
@@ -4458,8 +4562,7 @@ struct HostListPage {
 
   @Builder sidebarSettingsBtn() {
     Row() {
-      Image($rawfile('icons/cog-6-tooth.svg')).width(28).height(28)
-        .fillColor(this.pal().text3)
+      SymbolGlyph(protocolIcon('settings')).fontSize(28).fontColor([this.pal().text3])
       Text('设置')
         .fontSize(16).fontWeight(FontWeight.Medium)
         .fontColor(this.pal().text3)
@@ -4640,10 +4743,9 @@ struct HostListPage {
                 }
                 // 协议图标 (sm: 42 circle, md+: 46 rounded)
                 Column() {
-                  Image(host.protocol === 'ssh' ? $r('app.media.icon_terminal') :
-                    (host.protocol === 'rdp' ? $r('app.media.icon_desktop') : $r('app.media.icon_laptop')))
+                  SymbolGlyph(this.hostProtocolIcon(host.protocol))
                     .width(this.breakpoint === 'sm' ? 24 : 26)
-                    .height(this.breakpoint === 'sm' ? 24 : 26).fillColor(Color.White)
+                    .height(this.breakpoint === 'sm' ? 24 : 26).fontColor([Color.White])
                 }
                 .width(this.breakpoint === 'sm' ? 42 : 46)
                 .height(this.breakpoint === 'sm' ? 42 : 46)
@@ -5190,6 +5292,18 @@ struct HostListPage {
         onClose: (): void => { this.closeSettingsLeafSheet(); },
         onOpenMail: (): void => { this.openFeedbackEmail(); }
       })
+    } else if (this.settingsLeafSheetMode >= SETTINGS_SHEET_VNC_CONNECTION &&
+      this.settingsLeafSheetMode <= SETTINGS_SHEET_VNC_GATEWAY) {
+      VncSettingsSheet({
+        mode: this.settingsLeafSheetMode,
+        onClose: (): void => {
+          this.dismissVncSettingsIfNeeded((): void => { this.closeSettingsLeafSheet(); });
+        },
+        onOpenHostManager: (): void => { this.openVncHostManagerFromSettings(); },
+        onOpenGatewayManager: (): void => { this.openVncGatewayManagerFromSettings(); },
+        onSaved: (): void => { this.refreshCryptoStatus(); },
+        onDirtyChanged: (dirty: boolean): void => { this.vncSettingsLeafDirty = dirty; }
+      })
     } else {
       Column().width('100%').height(1)
     }
@@ -5594,43 +5708,6 @@ struct HostListPage {
         .animation({ duration: SETTINGS_ACCORDION_ANIMATION_MS, curve: Curve.FastOutSlowIn })
 
         ListItem() {
-          this.settingsAccordionHeader(SETTINGS_SECTION_VNC, $r('sys.symbol.display'),
-            'VNC', '独立主机、Repeater、TLS、加密和 VNC 云同步')
-        }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 10 })
-
-        // --- VNC 独立设置卡片 ---
-        ListItem() {
-          Column() {
-            Text('VNC 设置').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text3)
-              .fontFamily(this.font()).padding({ left: 8, bottom: 8 })
-            Column() {
-              this.cardActionRow($r('sys.symbol.display'), 'VNC 主机、Repeater 与 TLS',
-                '只使用 VNC 自己的主机、网关、trust 和密钥 owner', (): void => {
-                  router.pushUrl({ url: 'pages/VncSettingsPage' });
-                })
-              this.cardDivider()
-              this.cardActionRow($r('sys.symbol.cloud_fill'), 'VNC 独立同步范围',
-                'settings、hosts、gateways、secrets、trust 仍由 VNC 页面单独选择', (): void => {
-                  router.pushUrl({ url: 'pages/VncSettingsPage' });
-                })
-              this.cardDivider()
-              Text('普通云同步中的 vncrecord 只控制物理表是否参与；不会绕过 VNC scope，也不会把密码和 token 自动同步。')
-                .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font()).lineHeight(17)
-                .width('100%').padding({ left: 16, right: 16, top: 10, bottom: 12 })
-            }.borderRadius(24).backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
-              .shadow({ radius: 16, color: 'rgba(0,0,0,0.04)', offsetY: 4 })
-              .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
-          }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 20 })
-        }
-        .constraintSize({ maxHeight: this.settingsSectionExpanded(SETTINGS_SECTION_VNC) ?
-          this.settingsSectionExpandedMaxHeight(SETTINGS_SECTION_VNC) : 0 })
-        .opacity(this.settingsSectionExpanded(SETTINGS_SECTION_VNC) ? 1 : 0)
-        .scale({ x: 1, y: this.settingsSectionExpanded(SETTINGS_SECTION_VNC) ? 1 : 0.98 })
-        .translate({ y: this.settingsSectionExpanded(SETTINGS_SECTION_VNC) ? 0 : -8 })
-        .clip(true)
-        .animation({ duration: SETTINGS_ACCORDION_ANIMATION_MS, curve: Curve.FastOutSlowIn })
-
-        ListItem() {
           this.settingsAccordionHeader(SETTINGS_SECTION_CONNECTION_LIVE, $r('sys.symbol.gearshape_fill'),
             '连接实况窗', '主机统计、后台展示和系统实况窗')
         }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 10 })
@@ -5641,13 +5718,13 @@ struct HostListPage {
             Text('连接').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text3)
               .fontFamily(this.font()).padding({ left: 8, bottom: 8 })
             Column() {
-              this.cardItemRow($r('app.media.icon_desktop'), '远程主机', this.hostCount + ' 台')
+              this.cardItemRow(protocolIcon('rdp'), '远程主机', this.hostCount + ' 台')
               this.cardDivider()
-              this.cardItemRow($r('app.media.icon_desktop'), 'RDP 协议', this.rdpCount + ' 台')
+              this.cardItemRow(protocolIcon('rdp'), 'RDP 协议', this.rdpCount + ' 台')
               this.cardDivider()
-              this.cardItemRow($r('app.media.icon_laptop'), 'RustDesk 协议', this.rustdeskCount + ' 台')
+              this.cardItemRow(protocolIcon('rustdesk'), 'RustDesk 协议', this.rustdeskCount + ' 台')
               this.cardDivider()
-              this.cardItemRow($r('app.media.icon_terminal'), 'SSH 终端', this.sshCount + ' 台')
+              this.cardItemRow(protocolIcon('ssh'), 'SSH 终端', this.sshCount + ' 台')
               this.cardDivider()
               this.cardItemRow($r('app.media.icon_lock'), '已锁定', this.lockedCount + ' 台')
             }.borderRadius(24).backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
@@ -5731,7 +5808,7 @@ struct HostListPage {
         .animation({ duration: SETTINGS_ACCORDION_ANIMATION_MS, curve: Curve.FastOutSlowIn })
 
         ListItem() {
-          this.settingsAccordionHeader(SETTINGS_SECTION_RDP, $r('sys.symbol.gearshape_fill'),
+          this.settingsAccordionHeader(SETTINGS_SECTION_RDP, protocolIcon('rdp'),
             'Windows RDP', '分辨率、色深、输入、音频和凭据')
         }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 10 })
 
@@ -5779,7 +5856,7 @@ struct HostListPage {
         .animation({ duration: SETTINGS_ACCORDION_ANIMATION_MS, curve: Curve.FastOutSlowIn })
 
         ListItem() {
-          this.settingsAccordionHeader(SETTINGS_SECTION_RUSTDESK, $r('sys.symbol.gearshape_fill'),
+          this.settingsAccordionHeader(SETTINGS_SECTION_RUSTDESK, protocolIcon('rustdesk'),
             'RustDesk', '画质、编码、LAN 发现、隐私和音频')
         }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 10 })
 
@@ -5870,7 +5947,7 @@ struct HostListPage {
         .animation({ duration: SETTINGS_ACCORDION_ANIMATION_MS, curve: Curve.FastOutSlowIn })
 
         ListItem() {
-          this.settingsAccordionHeader(SETTINGS_SECTION_SSH, $r('sys.symbol.desktop_fill'),
+          this.settingsAccordionHeader(SETTINGS_SECTION_SSH, protocolIcon('ssh'),
             'SSH 终端', '终端显示、SSH 主机与密钥')
         }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 10 })
 
@@ -5947,6 +6024,61 @@ struct HostListPage {
         .opacity(this.settingsSectionExpanded(SETTINGS_SECTION_SSH) ? 1 : 0)
         .scale({ x: 1, y: this.settingsSectionExpanded(SETTINGS_SECTION_SSH) ? 1 : 0.98 })
         .translate({ y: this.settingsSectionExpanded(SETTINGS_SECTION_SSH) ? 0 : -8 })
+        .clip(true)
+        .animation({ duration: SETTINGS_ACCORDION_ANIMATION_MS, curve: Curve.FastOutSlowIn })
+
+        ListItem() {
+          this.settingsAccordionHeader(SETTINGS_SECTION_VNC, protocolIcon('vnc'),
+            'VNC', '连接、显示、安全、trust、云同步和独立主机')
+        }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 10 })
+
+        // --- VNC protocol settings: leaf bindSheets, not a cloud-data card ---
+        ListItem() {
+          Column() {
+            Text('VNC').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text3)
+              .fontFamily(this.font()).padding({ left: 8, bottom: 8 })
+            Column() {
+              this.protocolActionRow(protocolIcon('vnc'), '连接方式与默认端口',
+                'TCP 直连、UltraVNC Repeater mode12 和默认端口',
+                (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_VNC_CONNECTION); })
+              this.cardDivider()
+              this.protocolActionRow(protocolIcon('vnc'), '超时与连接行为',
+                '连接、认证和首帧超时只属于 VNC',
+                (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_VNC_TIMEOUT); })
+              this.cardDivider()
+              this.protocolActionRow(protocolIcon('vnc'), '显示与交互',
+                '只读、缩放和文本剪贴板',
+                (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_VNC_DISPLAY); })
+              this.cardDivider()
+              this.protocolActionRow(protocolIcon('vnc'), '安全策略与 TLS',
+                'secure_only、可信网络和明文风险',
+                (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_VNC_SECURITY); })
+              this.cardDivider()
+              this.protocolActionRow(protocolIcon('vnc'), 'Trust / 证书管理',
+                '独立于 RDP 证书和 SSH 主机指纹',
+                (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_VNC_TRUST); })
+              this.cardDivider()
+              this.protocolActionRow(protocolIcon('vnc'), 'VNC 云同步范围',
+                '唯一物理表 vncrecord，五类逻辑 scope',
+                (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_VNC_CLOUD_SYNC); })
+              this.cardDivider()
+              this.protocolActionRow(protocolIcon('vnc'), '管理 VNC 主机',
+                this.vncHosts.list().length.toString() + ' 台 · 不写入 remotehosts',
+                (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_VNC_HOSTS); })
+              this.cardDivider()
+              this.protocolActionRow(protocolIcon('vnc_gateway'), '管理 VNC Gateway',
+                this.vncGateways.list().length.toString() + ' 个 · 在第三页中继目录管理',
+                (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_VNC_GATEWAY); })
+            }.borderRadius(24).backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
+              .shadow({ radius: 16, color: 'rgba(0,0,0,0.04)', offsetY: 4 })
+              .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
+          }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 20 })
+        }
+        .constraintSize({ maxHeight: this.settingsSectionExpanded(SETTINGS_SECTION_VNC) ?
+          this.settingsSectionExpandedMaxHeight(SETTINGS_SECTION_VNC) : 0 })
+        .opacity(this.settingsSectionExpanded(SETTINGS_SECTION_VNC) ? 1 : 0)
+        .scale({ x: 1, y: this.settingsSectionExpanded(SETTINGS_SECTION_VNC) ? 1 : 0.98 })
+        .translate({ y: this.settingsSectionExpanded(SETTINGS_SECTION_VNC) ? 0 : -8 })
         .clip(true)
         .animation({ duration: SETTINGS_ACCORDION_ANIMATION_MS, curve: Curve.FastOutSlowIn })
 
@@ -7233,6 +7365,21 @@ struct HostListPage {
     .onClick(action)
   }
 
+  @Builder protocolActionRow(icon: Resource, label: string, value: string, action: () => void) {
+    Row() {
+      SymbolGlyph(icon).fontSize(22).fontColor([this.pal().text3])
+        .width(22).height(22).margin({ left: 9, right: 9 })
+      Column() {
+        Text(label).fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
+          .fontColor(this.pal().text).fontFamily(this.font())
+        Text(value).fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
+          .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).margin({ top: 2 })
+      }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
+      SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(18).fontColor([this.pal().text3])
+        .margin({ right: 14 })
+    }.width('100%').height(62).padding({ left: 16, right: 16 }).onClick(action)
+  }
+
   @Builder cardDivider() {
     // 对称缩进, 与卡内行 padding 保持一致
     Row() {
@@ -7955,8 +8102,17 @@ struct HostListPage {
         onOpenSettings: (): void => {
           this.requestAddSheetClose();
           setTimeout((): void => {
-            if (this.pageActive) { router.pushUrl({ url: 'pages/VncSettingsPage' }); }
-          }, 280);
+            if (!this.pageActive) { return; }
+            if (this.isDesktopDevice && this.breakpoint === 'xl') {
+              this.curTab = 5;
+              this.hostPageTitle = '中继服务器';
+            } else {
+              this.curTab = 2;
+              this.tabsCtrl.changeIndex(2);
+            }
+            this.updateHostFilter();
+            this.relayVncAddTrigger++;
+          }, SETTINGS_PANEL_DISMISS_TO_LEAF_OPEN_MS);
         },
         onSave: (values: VncHostValues, password: string, connectNow: boolean): void => {
           this.saveVncHostFromAddFlow(values, password, connectNow);
@@ -8863,7 +9019,8 @@ struct HostListPage {
   }
 
   @Builder relayContent() {
-    RustDeskRelayPage({ addTrigger: this.relayAddTrigger, hideTabBar: this.isDesktopDevice && this.breakpoint === 'xl' })
+    RustDeskRelayPage({ addTrigger: this.relayAddTrigger, vncAddTrigger: this.relayVncAddTrigger,
+      hideTabBar: this.isDesktopDevice && this.breakpoint === 'xl' })
   }
 
   @Builder keyVaultSheet() {

@@ -16,7 +16,7 @@ function validHostRecord(): VncRecord {
   record.updatedAt = 2;
   record.payload = vncHostPayload({
     label: 'Test host', host: '192.0.2.10', port: 5900, username: '', gatewayId: '',
-    transport: 'direct_tcp', repeaterMode: 'mode12', viewOnly: true, scalingMode: 'fit',
+    transport: 'direct_tcp', repeaterMode: 'mode12', viewOnly: true, scalingMode: 'fit', clipboardEnabled: false,
     securityPolicy: 'secure_only', tls: true
   });
   record.payloadHashSha256 = vncPayloadHashSha256(record.payload);
@@ -30,6 +30,15 @@ export default function vncRecordPolicyTest(): void {
     });
     it('accepts_non_secret_host_rows_in_the_vnc_owner_domain', 0, (): void => {
       expect(vncRecordIsValid(validHostRecord())).assertTrue();
+    });
+
+    it('accepts_legacy_host_rows_without_clipboard_field', 0, (): void => {
+      const record = validHostRecord();
+      record.payload = '{"gatewayId":"","host":"192.0.2.10","label":"Test host","port":5900,' +
+        '"repeaterMode":"mode12","scalingMode":"fit","securityPolicy":"secure_only",' +
+        '"tls":true,"transport":"direct_tcp","username":"","viewOnly":true}';
+      record.payloadHashSha256 = vncPayloadHashSha256(record.payload);
+      expect(vncRecordIsValid(record)).assertTrue();
     });
 
     it('rejects_secret_owner_kind_substitution', 0, (): void => {

@@ -22,6 +22,8 @@ import {
 } from '../services/VncModelPolicy';
 import { VncCloudSyncScope, vncCloudSyncScopes } from '../services/VncCloudSyncSelectionPolicy';
 import { Palette, buildDark, buildLight, AppTheme } from '../common/Theme';
+import { VncAddFlow } from '../components/hostadd/VncAddFlow';
+import { SETTINGS_PANEL_DISMISS_TO_LEAF_OPEN_MS } from '../services/SettingsSheetRoutePolicy';
 
 @Entry
 @Component
@@ -29,6 +31,7 @@ export struct VncSettingsPage {
   @StorageLink('currentTheme') theme: string = 'light';
   @StorageLink('accentColor') accentColor: string = '#007DFF';
   @StorageProp('topRectHeight') topRectHeight: number = 0;
+  @StorageProp('currentBreakpoint') breakpoint: string = 'sm';
 
   @State defaultTransport: VncTransport = 'direct_tcp';
   @State defaultPortText: string = '5900';
@@ -51,6 +54,11 @@ export struct VncSettingsPage {
   @State gateways: VncGatewayView[] = [];
   @State trusts: VncTrustView[] = [];
   @State hostFormVisible: boolean = false;
+  @State hostFlowVisible: boolean = false;
+  @State hostFlowEditingId: string = '';
+  @State hostFlowHost: VncHostView | null = null;
+  @State pendingHostFlowConnectId: string = '';
+  @State pendingHostFlowGatewayDirectory: boolean = false;
   @State gatewayFormVisible: boolean = false;
   @State hostLabel: string = '';
   @State hostAddress: string = '';
@@ -60,6 +68,10 @@ export struct VncSettingsPage {
   @State hostGatewayId: string = '';
   @State hostTransport: VncTransport = 'direct_tcp';
   @State hostRepeaterMode: VncRepeaterMode = 'mode12';
+  @State hostViewOnly: boolean = true;
+  @State hostScalingMode: VncScalingMode = 'fit';
+  @State hostClipboardEnabled: boolean = false;
+  @State hostSecurityPolicy: VncSecurityPolicy = 'secure_only';
   @State hostTls: boolean = false;
   @State editingHostId: string = '';
   @State gatewayLabel: string = '';
@@ -94,6 +106,12 @@ export struct VncSettingsPage {
   }
 
   private font(): string { return AppTheme.fontFamily; }
+
+  private redactedFingerprint(value: string): string {
+    const normalized: string = value.trim().toLowerCase();
+    if (normalized.length <= 12) { return normalized === '' ? '未知指纹' : '•••'; }
+    return normalized.substring(0, 8) + '…' + normalized.substring(normalized.length - 8);
+  }
 
   private topSafeHeightVp(): number {
     return this.topRectHeight > 0 ? px2vp(this.topRectHeight) : AppTheme.layout.statusBarH;
@@ -257,9 +275,10 @@ export struct VncSettingsPage {
       gatewayId: this.hostGatewayId,
       transport: this.hostTransport,
       repeaterMode: this.hostRepeaterMode,
-      viewOnly: this.viewOnly,
-      scalingMode: this.scalingMode,
-      securityPolicy: this.securityPolicy,
+      viewOnly: this.hostViewOnly,
+      scalingMode: this.hostScalingMode,
+      clipboardEnabled: this.hostClipboardEnabled,
+      securityPolicy: this.hostSecurityPolicy,
       tls: this.hostTls
     };
   }
@@ -339,7 +358,10 @@ export struct VncSettingsPage {
     this.editingHostId = '';
     this.hostLabel = ''; this.hostAddress = ''; this.hostPortText = this.defaultPortText;
     this.hostUsername = ''; this.hostPassword = ''; this.hostGatewayId = this.defaultGatewayId;
-    this.hostTransport = this.defaultTransport; this.hostRepeaterMode = this.repeaterMode; this.hostTls = false;
+    this.hostTransport = this.defaultTransport; this.hostRepeaterMode = this.repeaterMode;
+    this.hostViewOnly = this.viewOnly; this.hostScalingMode = this.scalingMode;
+    this.hostClipboardEnabled = this.clipboardEnabled; this.hostSecurityPolicy = this.securityPolicy;
+    this.hostTls = this.securityPolicy === 'secure_only' ? true : false;
   }
 
   private editHost(host: VncHostView): void {
@@ -348,16 +370,95 @@ export struct VncSettingsPage {
     this.hostLabel = host.label;
     this.hostAddress = host.host;
     this.hostPortText = host.port.toString();
-    this.hostUsername = host.username;
+    // VNC V1 has no username authentication path; keep the legacy field
+    // write-only and never re-save it from this editor.
+    this.hostUsername = '';
     this.hostPassword = '';
     this.hostGatewayId = host.gatewayId;
     this.hostTransport = host.transport;
     this.hostRepeaterMode = host.repeaterMode;
+    this.hostViewOnly = host.viewOnly;
+    this.hostScalingMode = host.scalingMode;
+    this.hostClipboardEnabled = host.clipboardEnabled;
+    this.hostSecurityPolicy = host.securityPolicy;
     this.hostTls = host.tls;
   }
 
   private connectHost(host: VncHostView): void {
     router.pushUrl({ url: 'pages/RemoteDesktop', params: { vncHostId: host.id } });
+  }
+
+  private openHostFlow(host: VncHostView | null = null): void {
+    this.hostFlowHost = host;
+    this.hostFlowEditingId = host === null ? '' : host.id;
+    this.pendingHostFlowConnectId = '';
+    this.pendingHostFlowGatewayDirectory = false;
+    this.hostFlowVisible = true;
+  }
+
+  private saveHostFromFlow(values: VncHostValues, password: string, connectNow: boolean): void {
+    if (!this.hostService.isReady()) {
+      promptAction.showToast({ message: 'VNC 服务尚未完成云同步初始化，请稍后重试', duration: 2200 });
+      return;
+    }
+    const result = this.hostService.save(values, this.hostFlowEditingId, password);
+    if (!result.ok) {
+      promptAction.showToast({ message: result.message || 'VNC 主机保存失败', duration: 2200 });
+      return;
+    }
+    this.pendingHostFlowConnectId = connectNow ? result.id : '';
+    promptAction.showToast({
+      message: connectNow ? 'VNC 主机已保存，正在准备连接' :
+        (this.hostFlowEditingId === '' ? 'VNC 主机已保存' : 'VNC 主机已更新'),
+      duration: 1800
+    });
+    this.hostFlowVisible = false;
+  }
+
+  private finishHostFlowDismiss(): void {
+    const pendingId: string = this.pendingHostFlowConnectId;
+    const openGatewayDirectory: boolean = this.pendingHostFlowGatewayDirectory;
+    this.pendingHostFlowConnectId = '';
+    this.pendingHostFlowGatewayDirectory = false;
+    this.hostFlowVisible = false;
+    this.hostFlowEditingId = '';
+    this.hostFlowHost = null;
+    this.loadHosts();
+    if (pendingId !== '') { this.connectHostById(pendingId); }
+    if (openGatewayDirectory) {
+      setTimeout((): void => {
+        if (this.pageActive) { this.openGatewayDirectory(); }
+      }, SETTINGS_PANEL_DISMISS_TO_LEAF_OPEN_MS);
+    }
+  }
+
+  private connectHostById(id: string): void {
+    if (this.hostService.find(id) !== null) {
+      router.pushUrl({ url: 'pages/RemoteDesktop', params: { vncHostId: id } });
+    }
+  }
+
+  private openGatewayDirectory(): void {
+    router.replaceUrl({
+      url: 'pages/HostListPage',
+      params: { openVncGateway: true, vncRelayRequestId: Date.now().toString() }
+    });
+  }
+
+  @Builder private hostFlowContent() {
+    VncAddFlow({
+      gateways: this.gatewayService.list(),
+      initialHost: this.hostFlowHost,
+      editingId: this.hostFlowEditingId,
+      onBackToProtocols: (): void => { this.hostFlowVisible = false; },
+      onOpenSettings: (): void => {
+        this.hostFlowVisible = false;
+        this.pendingHostFlowGatewayDirectory = true;
+      },
+      onSave: (values: VncHostValues, password: string, connectNow: boolean): void => {
+        this.saveHostFromFlow(values, password, connectNow);
+      }
+    })
   }
 
   private resetGatewayForm(): void {
@@ -411,7 +512,7 @@ export struct VncSettingsPage {
     Row() {
       SymbolGlyph($r('sys.symbol.chevron_left')).fontSize(22).fontColor([this.pal().text])
         .width(42).height(42).onClick((): void => { router.back(); })
-      Text('VNC 设置').fontSize(24).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
+      Text('VNC 数据管理').fontSize(24).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
         .fontFamily(this.font()).layoutWeight(1)
     }.width('100%').padding({ top: this.topSafeHeightVp() + 8, left: 18, right: 18, bottom: 10 })
   }
@@ -553,7 +654,8 @@ export struct VncSettingsPage {
         Button('连接').height(30).fontSize(11).borderRadius(7).backgroundColor(this.accentColor).fontColor(Color.White)
           .onClick((): void => { this.connectHost(host); })
         Button('编辑').height(30).fontSize(11).margin({ left: 6 }).borderRadius(7)
-          .backgroundColor(this.pal().surface).fontColor(this.pal().text2).onClick((): void => { this.editHost(host); })
+          .backgroundColor(this.pal().surface).fontColor(this.pal().text2)
+          .onClick((): void => { this.openHostFlow(host); })
         Button('删除').height(30).fontSize(11).margin({ left: 6 }).borderRadius(7)
           .backgroundColor(this.pal().surface).fontColor(this.pal().danger).onClick((): void => { this.deleteHost(host); })
       }.width('100%')
@@ -564,23 +666,12 @@ export struct VncSettingsPage {
     Column() {
       Row() {
         Text('VNC 主机').fontSize(17).fontWeight(FontWeight.Bold).fontColor(this.pal().text).layoutWeight(1)
-        Button(this.hostFormVisible ? '收起' : '添加').height(32).fontSize(12).borderRadius(8)
+        Button('添加').height(32).fontSize(12).borderRadius(8)
           .backgroundColor(this.accentColor).fontColor(Color.White)
-          .onClick((): void => { this.hostFormVisible = !this.hostFormVisible; })
+          .onClick((): void => { this.openHostFlow(); })
       }.width('100%').margin({ bottom: 12 })
-      if (this.hostFormVisible) {
-        this.input('名称', '办公室 Mac', this.hostLabel, (value: string): void => { this.hostLabel = value; })
-        this.input('地址', '192.168.1.20', this.hostAddress, (value: string): void => { this.hostAddress = value; })
-        this.input('端口', '5900', this.hostPortText, (value: string): void => { this.hostPortText = value; })
-        this.input('用户名', '可选', this.hostUsername, (value: string): void => { this.hostUsername = value; })
-        this.input('VNC 密码', '加密保存', this.hostPassword, (value: string): void => { this.hostPassword = value; }, true)
-        this.input('网关 ID', '直连可留空', this.hostGatewayId, (value: string): void => { this.hostGatewayId = value; })
-        this.transportChoices(this.hostTransport, (value: VncTransport): void => { this.hostTransport = value; })
-        this.settingToggle('TLS', '直接连接或网关连接使用 TLS；首次连接需确认指纹', this.hostTls,
-          (value: boolean): void => { this.hostTls = value; })
-        Button(this.editingHostId === '' ? '保存主机' : '更新主机').width('100%').height(40).borderRadius(9).backgroundColor(this.accentColor).fontColor(Color.White)
-          .onClick((): void => { this.saveHost(); }).margin({ bottom: 10 })
-      }
+      Text('添加和编辑统一使用四步 VNC 流程；密码、显示偏好和连接方式不会与其他协议共用。')
+        .fontSize(12).fontColor(this.pal().text3).lineHeight(18).width('100%').margin({ bottom: 10 })
       if (this.hosts.length === 0) {
         Text('暂无独立 VNC 主机。添加后不会写入 remotehosts。').fontSize(12).fontColor(this.pal().text3)
           .width('100%').padding({ top: 8, bottom: 4 })
@@ -643,6 +734,19 @@ export struct VncSettingsPage {
       .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
   }
 
+  @Builder private gatewayDirectorySection() {
+    Column() {
+      this.cardTitle('VNC Gateway', 'Gateway 资源统一在第三页“中继服务器”管理')
+      Text(this.gateways.length === 0 ? '暂无 VNC Gateway' :
+        '当前有 ' + this.gateways.length.toString() + ' 个 VNC Gateway；RustDesk 中继与 VNC Gateway 分属不同 owner。')
+        .fontSize(12).fontColor(this.pal().text3).lineHeight(19).width('100%').margin({ bottom: 12 })
+      Button('打开第三页中继服务器').width('100%').height(42).borderRadius(10)
+        .backgroundColor(this.accentColor).fontColor(Color.White)
+        .onClick((): void => { this.openGatewayDirectory(); })
+    }.width('100%').padding(16).borderRadius(18).backgroundColor(this.pal().card)
+      .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
+  }
+
   @Builder private trustCardSection() {
     Column() {
       this.cardTitle('VNC trust', '仅显示已由用户确认的指纹；云恢复不会自动信任')
@@ -654,8 +758,11 @@ export struct VncSettingsPage {
           Row() {
             Column() {
               Text(trust.ownerId).fontSize(13).fontColor(this.pal().text)
-              Text(trust.fingerprintSha256).fontSize(10).fontColor(this.pal().text3).fontFamily('monospace')
+              Text(this.redactedFingerprint(trust.fingerprintSha256)).fontSize(10).fontColor(this.pal().text3).fontFamily('monospace')
                 .maxLines(2).margin({ top: 3 })
+              Text(trust.confirmed ? '本设备已确认' : '待本设备重新确认')
+                .fontSize(10).fontColor(trust.confirmed ? this.pal().success : this.pal().danger)
+                .margin({ top: 3 })
             }.alignItems(HorizontalAlign.Start).layoutWeight(1)
             Button('忘记').height(30).fontSize(11).borderRadius(7).backgroundColor(this.pal().surface)
               .fontColor(this.pal().danger).onClick((): void => { this.trustService.remove(trust.id); })
@@ -675,10 +782,11 @@ export struct VncSettingsPage {
             Text(this.errorMessage).fontSize(12).fontColor(this.pal().danger).fontFamily(this.font())
               .width('100%').padding(12).borderRadius(12).backgroundColor(this.pal().surface)
           }
-          this.settingsCard()
-          this.syncCard()
+          Text('主机、Gateway 与 trust 由 VNC owner 独立管理；默认设置和云同步范围请从主设置页的 VNC 分组进入。')
+            .fontSize(12).fontColor(this.pal().text3).lineHeight(19).width('100%')
+            .padding(12).borderRadius(12).backgroundColor(this.pal().surface)
           this.hostCardSection()
-          this.gatewayCardSection()
+          this.gatewayDirectorySection()
           this.trustCardSection()
           Text('VNC trust：首次 TLS/VeNCrypt 指纹必须由用户确认；云端恢复的 trust 记录不会自动变成信任。')
             .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font()).width('100%').padding({ left: 4, right: 4, bottom: 20 })
@@ -686,5 +794,15 @@ export struct VncSettingsPage {
       }.layoutWeight(1).scrollBar(BarState.Auto).edgeEffect(EdgeEffect.Spring)
     }.width('100%').height('100%').backgroundColor(this.pal().bg)
       .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.BOTTOM])
+      .bindSheet($$this.hostFlowVisible, this.hostFlowContent(), {
+        height: SheetSize.FIT_CONTENT,
+        preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
+        dragBar: this.breakpoint === 'sm',
+        backgroundColor: this.pal().sheetBg,
+        blurStyle: BlurStyle.NONE,
+        showClose: false,
+        maskColor: 'rgba(0,0,0,0.4)',
+        onDisappear: (): void => { this.finishHostFlowDismiss(); }
+      })
   }
 }

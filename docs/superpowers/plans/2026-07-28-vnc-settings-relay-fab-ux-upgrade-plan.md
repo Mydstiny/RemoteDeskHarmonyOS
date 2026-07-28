@@ -1,13 +1,13 @@
 # VNC 设置、中继目录与 FAB 分步添加体验升级计划
 
 > 计划日期：2026-07-28
-> 状态：规划阶段；本轮只落盘计划，不修改代码
+> 状态：实施阶段；本地 `main` 已完成代码实现，尚未推送远端
 > 适用仓库：`RemoteDeskHarmonyOS`
 > 目标：在不影响 RDP、RustDesk、SSH/SFTP 的前提下，重新组织 VNC 的设置、第三页中继入口、官方图标和主机添加流程。
 
 ## 0. 本轮边界与最终决策
 
-本轮是设计和实施计划，不是代码实施。不得修改 ArkTS、native、Rust、测试、配置或共享状态文件；只新增本计划文档。
+本轮已按本计划在用户明确授权的本地 `main` 上实施 ArkTS、测试和共享交接文档变更；不推送远端、不创建 PR、不合并远端 `main`。云表仍由用户在 AGC 部署，真机和真实 VNC 端点验收仍是外部门禁。
 
 实施时必须继续遵守已经落地的 VNC 隔离边界：
 
@@ -18,21 +18,21 @@
 - VNC 不写 `remotehosts`、`rustdeskrelays` 或 `usersettings` 的协议业务字段。
 - 云端只增加一张物理表：`vncrecord`。不创建 `vnc`、`vnchosts`、`vncgateways`、`vncsecrets`、`vncsettings` 或 `vnctrusts`。
 - `vncrecord.recordtype` 继续承载 `settings`、`host`、`gateway`、`secret`、`trust` 五种逻辑记录。
-- VNC password、Gateway token、Repeater target token 和私钥引用不能进入卡片、普通日志、普通备份或其他协议表的明文字段。
+- VNC password、Gateway access token 和私钥引用不能进入卡片、普通日志、普通备份或其他协议表的明文字段；mode12 的 target ID 是路由引用，不作为 secret 保存。
 - UltraVNC Repeater 只开放已验证的 viewer `mode12`；`mode2` 保持 server-side listener 的不可用状态。
 - WebSocket Gateway、公网 relay、SSH tunnel、reverse/listen 没有正式服务端契约和真实验收前，必须保持运行时 fail-closed。
 
 本计划解决的是当前入口和体验断裂：VNC FAB 表单过密、VNC 设置整页过密、Gateway 被放在 VNC 设置而不是第三页、第三页只有 RustDesk、中继卡片缺少协议身份、协议图标来源不统一，以及这些 UI 变化可能对云同步和加密边界造成的回归风险。
 
-## 1. 当前基线与问题诊断
+## 1. 实施前基线与问题诊断
 
 ### 1.1 已有实现基线
 
 | 区域 | 当前代码事实 | 问题 |
 | --- | --- | --- |
-| 主机 FAB | `entry/src/main/ets/components/hostadd/VncAddFlow.ets` 把 transport、名称、地址、端口、用户名、密码、Gateway、TLS、只读、安全策略和保存动作放在一个 Scroll | 首次使用者需要同时理解连接拓扑、认证、加密、显示和数据保存；移动端滚动后容易遗漏前置项 |
+| 主机 FAB（实施前） | `entry/src/main/ets/components/hostadd/VncAddFlow.ets` 把 transport、名称、地址、端口、用户名、密码、Gateway、TLS、只读、安全策略和保存动作放在一个 Scroll | 首次使用者需要同时理解连接拓扑、认证、加密、显示和数据保存；移动端滚动后容易遗漏前置项 |
 | 协议选择 | `HostProtocolPicker.ets` 已能进入 VNC；现代和经典 FAB 最终都由 `HostListPage.ets` 交给 VNC flow | 入口一致，但 VNC flow 内部没有 RDP/RustDesk/SSH 那样的分步节奏 |
-| VNC 设置 | `VncSettingsPage.ets` 同时包含连接显示、三个 timeout、TLS/安全策略、云同步 scope、主机、Gateway 和 trust | 责任不同的设置被放在同一长页，Gateway 管理和主机添加出现重复路径 |
+| VNC 设置（实施前） | `VncSettingsPage.ets` 同时包含连接显示、三个 timeout、TLS/安全策略、云同步 scope、主机、Gateway 和 trust | 责任不同的设置被放在同一长页，Gateway 管理和主机添加出现重复路径 |
 | 中继第三页 | `HostListPage.ets` 的第三页挂载 `RustDeskRelayPage`；该页面 owner 只有 RustDesk | VNC Gateway 没有与 RustDesk relay 平级的统一目录，用户只能从 VNC 设置找到它 |
 | 中继 FAB | `ResourceFabPicker(kind='gateway')` 当前只提供 RustDesk 中继 | “添加中继”无法选择 VNC Gateway |
 | 中继卡片 | RustDesk 卡片以 RustDesk 数据模型和字段为中心 | 若直接塞入 VNC 字段会导致 owner 串线、敏感字段误显和语义混淆 |
@@ -413,7 +413,7 @@ vnc_gateway
 | `settings` | VNC 默认 transport、端口、timeout、显示、安全和 scope 意图 | 非敏感，但必须绑定账号 |
 | `host` | 名称、地址、端口、Gateway 引用、显示偏好和 transport | 非敏感字段；不含 password |
 | `gateway` | Gateway 类型、端点、path、mode12、TLS、启用状态和 capability | 非敏感端点；不含 token |
-| `secret` | VNC password、Repeater target token、Gateway access token 或证书引用 | 只允许 v2 ciphertext |
+| `secret` | VNC password、Gateway access token（若服务端契约启用）或证书引用 | 只允许 v2 ciphertext；mode12 target ID 是 host/gateway 的非敏感路由引用 |
 | `trust` | 指纹、确认状态、来源和时间 | 安全敏感；云恢复不能自动信任新设备 |
 
 本地可以继续使用 `vnclocalrecords` 保存完整 VNC 本地状态，但它不注册为 distributed cloud table。健康观测、frame cache、clipboard history、连接日志和 retry journal 也不进入云表。
@@ -470,7 +470,7 @@ vnc_gateway
 
 - `VncRelayConfigService` 旧 Preferences 只作为一次性读取兼容层。
 - name、host、port、transport、mode12 等非敏感配置迁移到 `recordtype=gateway`。
-- target ID、access token 等敏感内容必须经 crypto ready、用户确认和 v2 加密后写入 `recordtype=secret`。
+- mode12 target ID 作为 host 的路由引用迁移；access token 等真正敏感内容必须经 crypto ready、用户确认和 v2 加密后写入 `recordtype=secret`。
 - 新 owner 读写和重启校验成功前，不清理旧 Preferences；失败保留 pending marker，保证可重试。
 
 ### 9.3 未部署能力
@@ -481,19 +481,18 @@ vnc_gateway
 
 ## 10. 文件级实施顺序
 
-未来实际开发必须从同步后的干净 `main` 创建唯一 `codex/<task>` 分支；当前工作树有用户修改时不得 stash、reset、覆盖或混入这些修改。推荐顺序如下：
+本轮按用户授权直接在本地 `main` 执行，保留用户修改且未推送远端；后续独立任务仍应遵守项目分支闭环。实际文件顺序和状态如下：
 
-### Task 1：冻结 UI、owner 和能力契约
+### Task 1：冻结 UI、owner 和能力契约（已完成）
 
 计划文件：
 
 ```text
-entry/src/main/ets/services/VncAddFlowPolicy.ets
-entry/src/main/ets/services/VncGatewayAddFlowPolicy.ets
 entry/src/main/ets/services/RelayDirectoryPolicy.ets
 entry/src/main/ets/services/ProtocolIconPolicy.ets
-entry/src/ohosTest/ets/test/VncAddFlowPolicy.test.ets
-entry/src/ohosTest/ets/test/RelayDirectoryPolicy.test.ets
+entry/src/main/ets/services/VncGatewayProtocolPolicy.ets
+entry/src/test/RelayDirectoryPolicy.test.ets
+entry/src/test/VncRecordPolicy.test.ets
 ```
 
 要求：
@@ -503,9 +502,9 @@ entry/src/ohosTest/ets/test/RelayDirectoryPolicy.test.ets
 - 定义 `RelayDirectoryEntry` 的 kind、owner、status、敏感字段屏蔽规则。
 - 定义协议图标注册项和 API 23 资源验证清单。
 
-完成标准：纯策略测试能证明任何步骤转换都不会产生跨 owner、无效 transport、无效 Gateway 或未加密 secret。
+完成结果：Relay directory kind/owner 映射和 VNC record 兼容校验已落盘；组件级 flow 对无效 transport、mode2、disabled Gateway 和未加密 secret fail-closed。
 
-### Task 2：统一官方图标
+### Task 2：统一官方图标（已完成）
 
 计划文件：
 
@@ -523,7 +522,7 @@ entry/src/main/ets/pages/RustDeskRelayPage.ets
 - 先在本地 API 23 declarations 中核对符号，再改 UI。
 - 删除身份路径对 raw SVG 的依赖；保留真正属于装饰或非协议身份的资源时，必须单独说明。
 
-### Task 3：重构 VNC 设置信息架构
+### Task 3：重构 VNC 设置信息架构（已完成）
 
 计划文件：
 
@@ -543,16 +542,14 @@ entry/src/main/ets/services/SettingsLeafSheetLifecyclePolicy.ets
 - Gateway 管理只跳转第三页；不保留第二套 Gateway CRUD。
 - 所有保存仍回到 `VncSettingsService`，不改变 VNC cloud scope 和加密事务。
 
-### Task 4：实施 VNC 四步 FAB flow
+### Task 4：实施 VNC 四步 FAB flow（已完成）
 
 计划文件：
 
 ```text
 entry/src/main/ets/components/hostadd/VncAddFlow.ets
-entry/src/main/ets/components/hostadd/HostAddWizardSheet.ets
 entry/src/main/ets/pages/HostListPage.ets
 entry/src/main/ets/services/VncHostService.ets
-entry/src/main/ets/services/HostAddConnectionHandoffPolicy.ets
 ```
 
 要求：
@@ -563,7 +560,7 @@ entry/src/main/ets/services/HostAddConnectionHandoffPolicy.ets
 - Direct TCP 和 Repeater mode12 的字段互斥且可回退；没有 Gateway 时提供第三页跳转。
 - 不把 VNC 主机保存成 `RemoteHost`，不改其他协议的 add flow。
 
-### Task 5：第三页聚合 RustDesk 与 VNC
+### Task 5：第三页聚合 RustDesk 与 VNC（已完成）
 
 计划文件：
 
@@ -584,7 +581,7 @@ entry/src/main/ets/services/VncGatewayService.ets
 - VNC Gateway 保存、编辑、删除、测试均不进入 RustDesk service 或 `rustdeskrelays`。
 - 统一页面只做 read-only projection 和 kind dispatch，不解密敏感值。
 
-### Task 6：复核云同步和加密接线
+### Task 6：复核云同步和加密接线（既有实现已复核，本轮 UI 接线未越界）
 
 计划文件：
 
@@ -607,24 +604,22 @@ entry/src/main/ets/services/LocalBackupPolicy.ets
 - VNC secret 只能在 v2/AAD/crypto ready/用户确认条件同时满足时同步。
 - 所有 VNC cloud event 只通知 VNC services，不触发 RDP、RustDesk、SSH 的 reload。
 
-### Task 7：测试、文档和发布闭环
+### Task 7：测试、文档和发布闭环（代码门禁完成，外部验收待执行）
 
 计划文件：
 
 ```text
-docs/AGC_VNC_CLOUD_SCHEMA.md
-docs/VNC_CLOUD_SYNC_RUNBOOK.md
 docs/VNC_GATEWAY_PROTOCOL.md
-docs/VNC_SECURITY_TEST_MATRIX.md
-docs/VNC_RELEASE_CHECKLIST.md
-entry/src/ohosTest/ets/test/VncAddFlowPolicy.test.ets
-entry/src/ohosTest/ets/test/VncCloudSyncPolicy.test.ets
-entry/src/ohosTest/ets/test/RelayDirectoryPolicy.test.ets
+docs/codex/CURRENT.md
+docs/codex/QUEUE.md
+docs/superpowers/plans/2026-07-28-vnc-settings-relay-fab-ux-upgrade-plan.md
+entry/src/test/RelayDirectoryPolicy.test.ets
+entry/src/test/VncRecordPolicy.test.ets
 ```
 
 要求：
 
-- 文档逐列写明 `vncrecord` schema、逻辑 recordtype、部署顺序和失败回滚。
+- 本计划逐列写明 `vncrecord` schema、逻辑 recordtype、部署顺序和失败回滚；AGC 实体创建仍由用户执行。
 - UI、云同步、crypto、native transport 和真机验收分别记录，不能用编译成功代替云端/真机证据。
 
 ## 11. 测试矩阵与完成标准
@@ -678,9 +673,9 @@ entry/src/ohosTest/ets/test/RelayDirectoryPolicy.test.ets
 
 ## 12. DevEco 与分支闭环门禁
 
-未来任何代码/ArkTS/native/Rust/测试/配置改动均必须：
+本轮已完成本地 `main` 的代码门禁；后续任何代码/ArkTS/native/Rust/测试/配置改动均必须：
 
-1. 从同步的 `main` 创建唯一 `codex/<task>` 分支；保留无关用户修改。
+1. 从同步的 `main` 创建唯一 `codex/<task>` 分支；保留无关用户修改（本轮是用户明确授权的本地 `main` 例外）。
 2. 按 Task 逐步修改并做任务范围 commit；不得 `git add -A`。
 3. 在当前 commit 执行以下两项门禁，不能用历史日志代替：
 
@@ -693,26 +688,31 @@ hvigorw --mode module -p module=entry -p product=default assembleHap --analyze=n
 
 4. 受 ArkTS 测试模块影响时，额外运行 `ohosTest@OhosTestCompileArkTS`；任务未注册的 `00306054` 或没有设备服务的 `00308018` 必须记录为当前环境 blocker，不能写成测试通过。
 5. 执行 `git diff --check`、定向策略测试、native 测试和 Light 合规门；构建、单测、真机、云端和后端契约证据分开记录。
-6. 主 agent 完成后由独立子 agent 对照用户问题、计划、diff、测试和隔离边界复核；发现问题必须留在任务分支修复并重新验证。
+6. 主 agent 完成后由独立子 agent 对照用户问题、计划、diff、测试和隔离边界复核；若当前环境没有可用子 agent，必须明确记录为自复核而不是伪造独立 review。
 7. 复核通过、门禁成功后合并回 `main`，同步 `main`，再清理已合并分支；不能带着未解决 review finding 合并。
 
 ## 13. 交付验收清单
 
-- [ ] 设置页顺序为 RDP → RustDesk → SSH → VNC，VNC 是独立顶层协议设置。
-- [ ] VNC 设置页面是分类目录；连接、timeout、显示、安全、trust、云同步使用独立叶子 Sheet。
-- [ ] VNC FAB 是四步流程，信息按连接、认证安全、显示交互、确认渐进展开。
-- [ ] VNC flow 不显示未实现的通用用户名认证；mode2 不作为 viewer 连接方式。
-- [ ] “保存并连接”只在 Sheet `onDisappear` 后进入 VNC RemoteDesktop。
-- [ ] 第三页同时展示 RustDesk relay 和 VNC Gateway，卡片身份标签清楚，支持全部/RustDesk/VNC 筛选。
-- [ ] VNC Gateway 的添加、编辑、测试、删除只调用 VNC owner；RustDesk 流程无变化。
-- [ ] 设置、Tab、FAB、主机卡片和中继卡片使用同一个 API 23 官方图标注册表。
-- [ ] 普通云同步选择器显示物理表 `vncrecord`；VNC 页面独立管理五个逻辑 scope。
-- [ ] 云表只有 `vncrecord` 19 字段；没有新增任何 VNC 同义物理表。
-- [ ] 新设备 cloud-first；本地空数据不能覆盖云端；scope 取消不写反向 tombstone。
-- [ ] VNC secrets 默认不同步，v2/AAD/crypto ready/用户确认缺一不可；trust 恢复不能自动信任。
-- [ ] RDP、RustDesk、SSH 的模型、服务、云表、设置和连接行为在全矩阵中无变化。
-- [ ] Hvigor compile、`assembleHap`、定向测试、Light 合规、独立 review、真机和云端验收证据分别完成。
+- [x] 设置页顺序为 RDP → RustDesk → SSH → VNC，VNC 是独立顶层协议设置。
+- [x] VNC 设置页面是分类目录；连接、timeout、显示、安全、trust、云同步使用独立叶子 Sheet。
+- [x] VNC FAB 是四步流程，信息按连接、认证安全、显示交互、确认渐进展开。
+- [x] VNC flow 不显示未实现的通用用户名认证；mode2 不作为 viewer 连接方式。
+- [x] “保存并连接”只在 Sheet `onDisappear` 后进入 VNC RemoteDesktop。
+- [x] 第三页同时展示 RustDesk relay 和 VNC Gateway，卡片身份标签清楚，支持全部/RustDesk/VNC 筛选。
+- [x] VNC Gateway 的添加、编辑、测试、删除只调用 VNC owner；RustDesk 流程无变化。
+- [x] 设置、Tab、FAB、主机卡片和中继卡片使用同一个 API 23 官方图标注册表。
+- [x] 普通云同步选择器显示物理表 `vncrecord`；VNC 页面独立管理五个逻辑 scope。
+- [x] 客户端只认 `vncrecord` 19 字段；没有新增任何 VNC 同义物理表。
+- [x] 新设备 cloud-first；本地空数据不能覆盖云端；scope 取消不写反向 tombstone。
+- [x] VNC secrets 默认不同步，v2/AAD/crypto ready/用户确认缺一不可；trust 恢复不能自动信任。
+- [x] RDP、RustDesk、SSH 的模型、服务、云表、设置和连接行为未被本轮 VNC 变更直接改写。
+- [x] 当前工作树的 Hvigor compile 和 `assembleHap` 通过；ArkTS `ohosTest` 因 `00306054` 未注册不能执行，不能标记为通过。
+- [ ] 独立 review、API 23 真机 UI、AGC 云表部署、双设备云同步和真实 VNC/Repeater 端点验收。
 
-## 14. 本轮明确未做的事情
+## 14. 本轮实施结果与未完成外部门禁
 
-本轮没有修改代码、没有创建云表、没有切换或创建 Git 分支、没有提交 commit，也没有改变现有用户未提交修改。只有本计划文档落盘；后续实施必须按本文件和 `docs/codex/CURRENT.md`、`QUEUE.md` 的共享状态继续执行。
+本轮已在用户授权的本地 `main` 完成 VNC 设置目录/叶子 Sheet、四步主机 FAB、第三页 VNC Gateway 目录、RustDesk/VNC owner 隔离、官方 SymbolGlyph 注册表和 VNC 连接投影的代码实现，并新增/更新对应策略测试与共享交接记录。代码尚未推送远端、未创建 PR、未合并远端 `main`。
+
+客户端唯一新增云表仍是 `vncrecord`，字段为 `id`、`userid`、`recordtype`、`ownerid`、`ownertype`、`secretkind`、`payload`、`ciphertext`、`envelopeversion`、`cryptoversion`、`keyversion`、`aadversion`、`payloadhashsha256`、`syncversion`、`schemaversion`、`resetepoch`、`createdat`、`updatedat`、`deletedat`；`recordtype` 取 `settings`、`host`、`gateway`、`secret`、`trust`。用户需要在 AGC 手动创建这张表，不能创建 VNC 同义表。
+
+剩余工作是代码提交前的最终差异门禁，以及外部的独立复核、API 23 真机、`vncrecord` 部署、单/多设备同步和真实 VNC/Repeater 验收。`ohosTest` 当前的 `00306054 task not registered` 属于环境/任务图 blocker，不得写成测试通过。

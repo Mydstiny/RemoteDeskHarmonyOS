@@ -1230,7 +1230,7 @@ struct RemoteDesktop {
   private clipboardBridgeEnabledForSession(): boolean {
     const protocol: string = this.currentProtocolName();
     if (protocol === 'vnc') {
-      return this.isVncSession() && this.vncSettings.get().clipboardEnabled;
+      return this.isVncSession() && this.pendingVncHost !== null && this.pendingVncHost.clipboardEnabled;
     }
     return clipboardSyncEnabledForProtocol(protocol,
       AppStorage.get<boolean>('rdpClipboardEnabled') ?? true,
@@ -1288,7 +1288,7 @@ struct RemoteDesktop {
       rustDeskInboundClipboard: clipboardReady && this.currentProtocolName() === 'rustdesk',
       rustDeskTransferConfirmed: this.connected && this.currentProtocolName() === 'rustdesk',
       vncClipboardEnabled: this.isVncSession() &&
-        (this.vncSettings.get().clipboardEnabled),
+        this.pendingVncHost !== null && this.pendingVncHost.clipboardEnabled,
       vncClipboardReady: this.isVncSession() && clipboardReady,
       vncViewOnly: this.pendingVncHost === null || this.pendingVncHost.viewOnly
     });
@@ -5730,7 +5730,11 @@ struct RemoteDesktop {
         vncGatewayPort = vncOwner.gateway === null ? 0 : vncOwner.gateway.port;
         vncGatewayPath = vncOwner.gateway === null ? '/vnc' : vncOwner.gateway.path;
         vncRepeaterMode = vncOwner.gateway === null ? vncHost.repeaterMode : vncOwner.gateway.repeaterMode;
-        vncRepeaterTarget = vncOwner.gateway === null ? '' : vncOwner.gateway.targetId;
+        // mode12 pairs the viewer with the target VNC server.  A host record
+        // owns that target ID; the gateway target is only a legacy fallback
+        // for records created by the pre-v2 relay form.
+        vncRepeaterTarget = vncHost.host.trim() !== '' ? vncHost.host.trim() :
+          (vncOwner.gateway === null ? '' : vncOwner.gateway.targetId);
         vncTls = vncHost.tls || (vncOwner.gateway !== null && vncOwner.gateway.tls);
         vncExpectedFingerprint = vncTls ? this.vncTrust.trustedFingerprint(vncHost.id) : '';
         const gatewayAvailability = vncGatewayAvailability(vncHost.transport, vncTls,
@@ -5827,7 +5831,7 @@ struct RemoteDesktop {
         vncRepeaterTarget: isVnc ? vncRepeaterTarget : '',
         vncTls: isVnc && vncOwner !== null ? vncTls : false,
         vncViewOnly: isVnc && vncOwner !== null ? vncOwner.host.viewOnly : true,
-        vncClipboardEnabled: isVnc && vncOwner !== null ? vncOwner.settings.clipboardEnabled : false,
+        vncClipboardEnabled: isVnc && vncOwner !== null ? vncOwner.host.clipboardEnabled : false,
         vncSecurityPolicy: isVnc && vncOwner !== null ? vncOwner.host.securityPolicy : 'secure_only',
         vncConnectTimeoutMs: isVnc && vncOwner !== null ? vncOwner.settings.connectTimeoutMs : 10000,
         vncAuthTimeoutMs: isVnc && vncOwner !== null ? vncOwner.settings.authTimeoutMs : 15000,
