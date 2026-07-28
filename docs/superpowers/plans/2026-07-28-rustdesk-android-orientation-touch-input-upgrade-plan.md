@@ -10,9 +10,11 @@
 >
 > 本计划不包含主机列表、RDP、VNC、SSH 功能迁移。它只处理 RustDesk 会话的窗口方向、远端显示几何、画布变换、虚拟鼠标/触控板和触控手势归属。
 
+本轮增补：双指画布缩放改为默认关闭；开启后，双指捏合负责缩放，双指保持静止约 0.4 秒再拖动才取得画布平移 ownership；未完成长按且未识别为 pinch 的双指移动继续保留触控板滚轮语义。该规则用于消除画布平移和双指滚轮的竞争，后续与方向、几何和输入 ownership 一起实施。
+
 ## 0. 执行边界
 
-本文件是后续实施的实体计划，不代表功能已经修复。本次只新增本文件，不修改 ArkTS、Rust、C/C++、协议、测试、构建配置或现有 session 文件。
+本文件是后续实施的实体计划，不代表功能已经修复。本轮只补充本计划文件，不修改 ArkTS、Rust、C/C++、协议、测试、构建配置或现有 session 文件。
 
 后续执行必须遵守以下规则：
 
@@ -35,6 +37,8 @@
 5. 当前“直接触控”并非原始多点触摸透传，不能据此承诺 Android 原生多指手势或系统旋转。
 6. 双指 pinch、双指滚轮、双指右键、三指控制面板和虚拟鼠标在同一个触摸表面上竞争事件。
 7. 方向变化、Surface 重建、PIP 转移、断线和设置动态切换时，必须释放或重锚定所有临时输入状态。
+8. 当前移动端首次加载及旧默认迁移会把 `canvasGestureZoomEnabled` 设为开启；这与“用户明确开启后才改变双指语义”的产品要求相反。
+9. 当前双指平移没有长按门槛：并行 `PanGesture` 达到距离阈值即调用 `startCanvasPan`，而触控板 handler 仍可对同一触摸序列发送滚轮，造成画布移动、滚轮、右键候选和输入消费互相抢占。
 
 ### 1.2 非目标
 
@@ -91,9 +95,11 @@
 - touchpad handler 在 8374 附近处理相对鼠标、点击、长按拖拽、双指右键、双指滚轮和三指控制面板。
 - direct touch handler 在 8589 附近处理 TouchEvent，但注释仍明确为占位的多点透传；单指 Down 会先建立鼠标左键语义。
 - configured touch handler 在 8716 附近先调用 consumeCanvasPinchTouch，再按 controlMode 分派。
-- 透明 overlay 在 9571 使用 HitTestMode.Block，在 9584 使用并行 PinchGesture 和 PanGesture，同时保留 onTouch 兼容路径。
+- 透明 overlay 在 9571 使用 HitTestMode.Block，在 9584 使用并行 PinchGesture 和 PanGesture，同时保留 onTouch 兼容路径。当前 `PanGesture({ fingers: 2, distance: 5 })` 一旦达到阈值便启动画布平移，没有双指静止长按阶段。
 - Pinch/ Pan 获得 ownership 后会 stopPropagation，但当前架构仍有 XComponent、overlay 和 gesture recognizer 多入口。
 - 方向或 Surface area 变化时已有释放 pinch、重置触控板 anchor、刷新 renderer 和重同步指针的逻辑；后续应复用并统一入口，不重复造清理路径。
+
+当前冲突链路已经可以从代码直接确认：`startCanvasPan` 会在本地缩放开启且内容可平移时立即设置 `canvasPanActive` 并调用 `claimCanvasPinchInput`；与此同时，`handleTouchPadInput` 在双指 Move 中只要 `stepDy` 达到 0.5 就调用 `sendTouchPadWheel`。因此不能靠调整单个阈值解决，必须让一个序列先经过统一候选态，再由唯一 owner 决定是 CanvasPan 还是 TouchpadScroll。
 
 ### 2.4 设置现状
 
@@ -101,11 +107,12 @@
 
 - rustdeskControlMode 在 421 附近定义为全局 0=触控板、1=直接触控、2=键鼠；RDP 另有 rdpControlMode。
 - rustdeskRemoteAppTouchScaleEnabled 在 414/495 附近定义，默认关闭。
-- canvasGestureZoomEnabled 在 426/499 附近定义，移动端默认开启。
+- canvasGestureZoomEnabled 在 426/499 附近定义；RemoteDesktop 的 StorageLink 默认值虽为 false，但 HostListPage 的 Preferences 初始化在 `canvasGestureZoomDefaultVersion < 1` 时按 `!isDesktopDevice` 写入，因此移动端首次加载及旧默认迁移实际为开启。
 - saveRustDeskRemoteAppTouchScaleEnabled 在 3795 附近打开远端缩放时关闭本地画布缩放。
 - saveCanvasGestureZoomEnabled 在 3829 附近打开本地缩放时关闭远端缩放。
 - 设置是全局 Preferences/AppStorage 语义，不按 RustDesk 主机、远端平台或能力缓存。
-- “远端应用双指缩放”文案说明它发送 TouchScale/TouchPan；它不是系统方向控制。
+- 当前“ 双指画布缩放”文案只说明捏合后缩放和平移，没有说明平移与双指滚轮的 ownership 规则；升级后必须明确“双指长按约 0.4 秒，再拖动移动已放大的画布”。
+- “远端应用双指缩放”文案说明它发送 TouchScale/TouchPan；它不是系统方向控制。该开关与本地 Canvas 开关仍需保持互斥，不能让远端 TouchPan 旁路新的本地触控板 ownership。
 
 ### 2.5 当前仓库边界
 
@@ -143,7 +150,7 @@ https://github.com/rustdesk/rustdesk/tree/dabdbf73bb80f1718879fe879619d83c721030
 关键对照：
 
 - [官方移动 remote_page.dart](https://github.com/rustdesk/rustdesk/blob/dabdbf73bb80f1718879fe879619d83c72103041/flutter/lib/mobile/pages/remote_page.dart)：移动页面使用 OrientationBuilder 观察本地方向变化，在方向变化后刷新移动 action overlay 和 canvas view style；它不是远端 Android 系统旋转命令。
-- [官方 remote_input.dart](https://github.com/rustdesk/rustdesk/blob/dabdbf73bb80f1718879fe879619d83c72103041/flutter/lib/common/widgets/remote_input.dart)：官方把 touch mode 与 mouse mode 分开；touch mode 的单指 pan 产生左键按下/移动/释放，mouse mode 的双指点击为右键、hold-drag 为左键拖动；移动端两指 scale 默认改变本地 CanvasModel 的 scale/pan，桌面端才把 scale 作为 PointerDeviceEvent 发给远端。
+- [官方 remote_input.dart](https://github.com/rustdesk/rustdesk/blob/dabdbf73bb80f1718879fe879619d83c72103041/flutter/lib/common/widgets/remote_input.dart)：官方把 touch mode 与 mouse mode 分开；touch mode 的单指 pan 产生左键按下/移动/释放，mouse mode 的双指点击为右键、hold-drag 为左键拖动；移动端两指 scale 默认改变本地 CanvasModel 的 scale/pan，桌面端才把 scale 作为 PointerDeviceEvent 发给远端。官方实现中也存在通过 hold-drag 标记覆盖普通 scale/pan 的分支，说明“同一双指序列必须先明确意图，再决定缩放/平移/滚轮”是可复用原则；本项目将其实现为可测试的长按候选状态，而不是让并行 `PanGesture` 直接抢占。
 - [官方 model.dart](https://github.com/rustdesk/rustdesk/blob/dabdbf73bb80f1718879fe879619d83c72103041/flutter/lib/models/model.dart)：官方在识别到 peer 为 Android 时默认启用 touch mode，并把本地 touch mode 与 peer option 分开处理。
 - [官方 ui_session_interface.rs](https://github.com/rustdesk/rustdesk/blob/dabdbf73bb80f1718879fe879619d83c72103041/src/ui_session_interface.rs)：switch_display 构造的是 display/width/height；send_touch_scale 和 send_touch_pan_event 构造的是 TouchEvent；change_resolution 构造的是 Resolution/DisplayResolution。
 - [官方 io_loop.rs](https://github.com/rustdesk/rustdesk/blob/dabdbf73bb80f1718879fe879619d83c72103041/src/client/io_loop.rs)：收到 SwitchDisplay 后重置视频线程并更新 display 几何，没有改变本地 Window orientation。
@@ -210,11 +217,37 @@ https://github.com/rustdesk/rustdesk/tree/dabdbf73bb80f1718879fe879619d83c721030
 
 | 目标 | 作用 | 默认 |
 | --- | --- | --- |
-| Canvas | 本地画布缩放/平移，不改变远端应用 | 移动端默认 |
+| Canvas | 本地画布缩放/平移，不改变远端应用 | 关闭，用户显式开启后可用 |
 | RemoteApplication | 发送 RustDesk TouchScale/TouchPan | 关闭，能力确认后可选 |
 | Touchpad | 双指滚轮/右键 | 触控板模式 |
 
-设置互斥只能防止两个开关同时为 true，不能替代运行时 ownership。运行中关闭远端缩放时，必须主动结束当前远端 TouchEvent 序列。
+本地 Canvas 的双指语义固定为以下状态机，常量初版为 `HOLD_MS = 400`、`HOLD_SLOP = 12dp`，最终以 API 23 真机手感和测试结果校准：
+
+~~~text
+TwoFingerCandidate
+  -> scale/两指距离先超过 pinch threshold
+       -> CanvasPinch（或已选择 RemoteApplication 时的 RemoteTouchScale）
+  -> 在 HOLD_SLOP 内保持 HOLD_MS
+       -> CanvasPanArmed（仅当当前画布确实存在可平移溢出）
+  -> 未达到长按就发生明显位移且未达到 pinch
+       -> TouchpadScroll（保持现有双指滚轮）
+  -> 未移动即抬起
+       -> TouchpadRightClick
+  -> CanvasPanArmed 后发生质心位移
+       -> CanvasPan；取消滚轮/右键候选
+  -> Up / Cancel / 几何 epoch 变化 / 设置关闭
+       -> 统一 cleanup
+~~~
+
+具体产品语义：
+
+- `canvasGestureZoomEnabled = false` 时，Canvas 不得取得任何双指 ownership；双指滚轮和双指轻点右键保持原有触控板行为。
+- 开关为 true 时，捏合仍可立即进入 CanvasPinch；两指未捏合而快速移动时仍判为 TouchpadScroll，不能自动变成画布平移。
+- 只有两指在长按时限内保持在 slop 内，且缩放后的画布存在可移动边界，之后的拖动才进入 CanvasPan。长按后不移动再抬起，仍保留双指右键，不因计时器到期吞掉点击。
+- 画布没有溢出、处于不可平移边界或长按被取消时，不能为了“看起来响应”而抢走触控板滚轮。
+- RemoteApplication 是独立目标；默认仍关闭。若后续能力门允许远端 TouchPan，必须复用同一个候选/唯一 owner 机制，不能让远端 TouchPan 与本地 TouchpadScroll 并行发送；本轮 UI 文案的“拖动画布”特指本地 Canvas。
+
+设置互斥只能防止两个开关同时为 true，不能替代运行时 ownership。运行中关闭本地或远端缩放时，必须取消长按 timer、结束当前本地 CanvasPan/Pinch 或远端 TouchEvent 序列，并恢复触控板的下一序列语义。
 
 ### 4.4 触控模式语义
 
@@ -321,6 +354,11 @@ Idle
 - Touchpad 双指没有达到 pinch 条件时，才可以进入滚轮或右键。
 - DirectTouch 在 click/drag/long-press 语义确定前不发送不可逆的鼠标 Down；若兼容 endpoint 必须提前 Down，则必须有幂等补偿和取消路径。
 - 只有一个 finger touch owner；物理 mouse、keyboard、axis 保持独立通道。
+- 双指候选必须有显式阶段和唯一 owner：`Candidate`、`CanvasPinch`、`CanvasPanArmed`、`CanvasPan`、`TouchpadScroll`、`TouchpadRightClick`、`RemoteTouchScale`，同一序列不得跨 owner 泄漏事件。
+- 本地 CanvasPan 不得在第二指移动达到普通 Pan 阈值时立即启动。优先由 pinch 阈值和 `HOLD_MS`/`HOLD_SLOP` 判定；在长按前的明显位移应取消 pan timer，并交给 TouchpadScroll。
+- 长按 timer 只能在一次双指序列创建一个，携带 `gestureId`、`sessionId` 和 `geometryEpoch`；Up、Cancel、Pinch winner、Surface/方向变化、设置变化、断线和控制模式变化都必须取消它。不得在每个 Move 中创建 timer。
+- 当 CanvasPan owner 已建立时，`handleTouchPadInput` 不得再调用 `sendTouchPadWheel`；当 TouchpadScroll owner 已建立时，CanvasPan 不得调用 `claimCanvasPinchInput` 或修改画布变换。
+- timer 到期只将候选置为 `CanvasPanArmed`，不立即消费触摸；只有其后的有效质心位移才真正 claim CanvasPan。这样可以保留“长按后不移动仍是双指右键”。
 - Up、Cancel、Surface 销毁、方向 epoch 变化、断线和设置关闭都调用同一幂等 cleanup。
 - 每个序列携带 gestureId、geometryEpoch、sessionId，旧事件被拒绝。
 
@@ -358,9 +396,11 @@ Idle
 1. 保存当前 main、HEAD、工作树和其他 session 文件清单。
 2. 查本地 API 23 Window、Orientation、windowSizeChange、TouchEvent、PanGesture、PinchGesture、GestureGroup、HitTestMode、XComponent 文档。
 3. 固定产品方向策略和三个双指目标。
-4. 记录真实 RustDesk Android 被控端版本、Android API、厂商、权限状态、是否有源码和日志。
-5. 建立 capability matrix，分开记录 geometry、rotation reporting/control、touch injection、touch scale。
-6. 定义 endpoint、FFI/bridge、decoder/renderer、ArkTS 四层日志事件名。
+4. 固定双指画布交互：Canvas 开关默认关闭；开启后捏合缩放，双指在 `HOLD_SLOP` 内保持约 0.4 秒后再拖动平移；未长按的双指移动仍是触控板滚轮，静止抬起仍是右键。
+5. 记录真实 RustDesk Android 被控端版本、Android API、厂商、权限状态、是否有源码和日志。
+6. 建立 capability matrix，分开记录 geometry、rotation reporting/control、touch injection、touch scale。
+7. 定义 endpoint、FFI/bridge、decoder/renderer、ArkTS 四层日志事件名。
+8. 查 API 23 下 `setTimeout`/LongPressGesture 与 PinchGesture、PanGesture 并行回调的可用性；优先采用“纯策略 + 单次 timer + 统一 TouchEvent 归一化”，不把未验证的高阶手势 API 当成唯一实现基础。
 
 交付：
 
@@ -489,10 +529,20 @@ Idle
 2. 由 coordinator 选择唯一 owner；handler 不再自行决定是否 stopPropagation。
 3. 改造 DirectTouch，避免在双指候选期已经产生不可逆的左键 Down；兼容旧 endpoint 时提供幂等补偿。
 4. 明确双指阈值、候选超时、右键/滚轮判定和 pinch 取得 ownership 的优先级。
-5. 三指控制面板只能在没有其他 owner 或显式取消后触发。
-6. 所有 cleanup 统一释放 left/right button、touchpad drag、TouchPan、TouchScale 和 virtual pointer lock。
-7. keyboard/mouse 模式不应被普通 finger gesture 意外切换为远端鼠标操作。
-8. gestureId/sessionId/geometryEpoch 过期事件直接丢弃并记录原因。
+5. 实现双指候选状态机和一次性长按 timer：第二指 Down 只进入候选；pinch threshold 先到则取消 timer 并进入缩放；长按到期只进入 `CanvasPanArmed`；之后质心位移才进入 `CanvasPan`；长按前位移则锁定 `TouchpadScroll`。
+6. 将现有并行 `PanGesture` 改为只报告候选/位移，不得在 `onActionStart` 直接调用 `startCanvasPan`；在 API 23 兼容路径中保证 overlay 与 XComponent `onTouch` 最终只向 coordinator 提交一次事件。
+7. 当 owner 为 CanvasPan 时屏蔽 `sendTouchPadWheel`，当 owner 为 TouchpadScroll 时禁止画布变换；右键候选只有在整个序列没有 pinch、没有有效滚动、没有 CanvasPan 位移时才提交。
+8. 三指控制面板只能在没有其他 owner 或显式取消后触发。
+9. 所有 cleanup 统一释放 left/right button、touchpad drag、TouchPan、TouchScale、virtual pointer lock，并取消长按 timer。
+10. keyboard/mouse 模式不应被普通 finger gesture 意外切换为远端鼠标操作。
+11. gestureId/sessionId/geometryEpoch 过期事件直接丢弃并记录原因。
+
+长按实现约束：
+
+- 计时起点是第二指被确认加入同一触摸序列的时刻；两指质心离开 `HOLD_SLOP`、pinch 识别、任一手指 Up/Cancel、Surface/方向变化、设置关闭或模式切换时立即取消。
+- timer 到期不得发送鼠标、滚轮、TouchScale 或 TouchPan；它只改变纯策略状态。真正的 CanvasPan/RemoteTouchPan 必须在下一次有效位移时 claim。
+- 触控板滚轮的累计量、右键 pending、直接触控的左键状态必须由 coordinator 读取/提交，不能让旧 handler 在 owner 已确定后继续发事件。
+- 画布平移沿用当前 `canvasTransformCanPan` 和 viewport 边界约束；长按不应把缩放比例强行改回默认，也不应改变远端坐标映射。
 
 退出条件：
 
@@ -519,17 +569,21 @@ Idle
 
 1. 将 RustDesk 控制模式、画布缩放、远端应用缩放和方向策略定义为 RustDesk 专属设置；不能与 RDP 复用。
 2. 评估从全局设置迁移为按 RustDesk 主机或远端 capability profile 保存；迁移必须保留旧用户值并可回滚。
-3. 重写文案，明确“直接触控”为当前 endpoint 支持范围，避免暗示原始多点透传。
-4. 远端应用 TouchScale 默认关闭；只有能力确认后才显示或启用。
-5. 没有 remote_touch_scale 时自动降级到 Canvas 或 Touchpad，并显示可诊断原因。
-6. 开关在会话中变化时主动调用统一 cleanup；不能等下一次 Up 才结束旧流。
-7. 设置变化必须记录 effective target、mode、capability 和 fallback，不把入队成功写成 peer accepted。
-8. 如果未来增加远端旋转入口，必须只在 remote_rotation_control 能力存在时出现，并将请求结果与 geometry epoch 关联。
+3. 将 `canvasGestureZoomEnabled` 的默认回退值改为 false，并将 `canvasGestureZoomDefaultVersion` 升级到下一迁移版本；新安装、无 key 和旧自动默认值都必须最终关闭。
+4. 对当前版本无法区分“旧移动端自动开启”和“用户明确开启”的历史记录，本计划采用一次性明确迁移：`canvasGestureZoomDefaultVersion < 2` 时统一关闭并写入版本 2；这会让历史用户需要重新显式开启一次，但不会凭当前 boolean 伪造其历史意图。新增 `canvasGestureZoomUserConfigured`（或同等字段），从本次迁移后记录用户显式操作，后续默认策略升级不得再覆盖已配置用户。
+5. 重写文案，明确“直接触控”为当前 endpoint 支持范围，避免暗示原始多点透传；“双指画布缩放”说明为：`捏合缩放画面；缩放后双指长按约 0.4 秒，再拖动可移动画布。关闭后恢复双指右键和滚轮。`。
+6. 远端应用 TouchScale 默认关闭；只有能力确认后才显示或启用。
+7. 没有 remote_touch_scale 时自动降级到 Canvas 或 Touchpad，并显示可诊断原因。
+8. 开关在会话中变化时主动调用统一 cleanup；不能等下一次 Up 才结束旧流。关闭 Canvas 时还必须取消长按 timer、清理 `CanvasPanArmed`/`CanvasPan`，并恢复默认画布变换。
+9. 设置变化必须记录 effective target、mode、capability 和 fallback，不把入队成功写成 peer accepted。
+10. 如果未来增加远端旋转入口，必须只在 remote_rotation_control 能力存在时出现，并将请求结果与 geometry epoch 关联。
 
 退出条件：
 
 - 设置切换不会影响 RDP、VNC、SSH；
 - 重启和切换主机后设置范围正确；
+- 新安装、旧版本自动默认迁移和显式用户切换的 `canvasGestureZoomEnabled` 结果可预测，默认状态为关闭；
+- 设置页明确写出“双指长按约 0.4 秒后拖动画布”，用户不需要从滚轮冲突中猜测操作方式；
 - 远端 touch-scale 不支持时可用功能不被禁用；
 - 设置测试覆盖默认值、迁移、关闭、会话中切换和失败回退。
 
@@ -545,9 +599,10 @@ Idle
 2. 验证连接前 portrait、连接前 landscape、连接后旋转、反向竖屏、快速连续旋转。
 3. 观察被控端是否真的产生新 display geometry、实际 frame geometry 和 input capability；没有事件时记录为 endpoint 限制。
 4. 验证本地画布缩放、画布平移、远端应用缩放、触控板滚轮/右键、虚拟鼠标和键盘同时工作。
-5. 验证横屏/竖屏窗口、PIP、分屏、后台/前台、Surface 重建、断线/重连。
-6. 测量 pinch/geometry/input 事件频率、队列深度、丢弃旧 epoch 次数和帧率；不能以增加轮询频率掩盖 ownership 错误。
-7. 由独立复核 session 检查 diff、协议边界、RDP/VNC/SSH 隔离和回滚开关。
+5. 验证双指关闭、开启后的捏合缩放、长按后画布平移、未长按双指滚轮、双指右键和长按后无移动仍右键。
+6. 验证横屏/竖屏窗口、PIP、分屏、后台/前台、Surface 重建、断线/重连。
+7. 测量 pinch/geometry/input 事件频率、队列深度、丢弃旧 epoch 次数和帧率；不能以增加轮询频率掩盖 ownership 错误。
+8. 由独立复核 session 检查 diff、协议边界、RDP/VNC/SSH 隔离和回滚开关。
 
 退出条件：自动化、API 23、HAP、控制端真机和真实 Android endpoint 证据全部齐全；缺少 endpoint 证据时保持实验/灰度状态。
 
@@ -601,11 +656,18 @@ Idle
 | 直接触控单指点击/拖动 | 不提前误按，Up/Cancel 必须释放 |
 | 直接触控第二指落下 | 进入候选态，不产生重复左键或隐式右键 |
 | 本地 Canvas pinch/pan | 只改变本地画布，缩放后仍可移动 |
+| Canvas 开关默认值 | 新安装和默认迁移后为关闭；未显式开启时双指不改变画布 |
+| Canvas 开启后快速双指移动 | 不进入 CanvasPan；保持触控板滚轮语义 |
+| Canvas 开启后双指捏合 | 先到 pinch threshold 时独占缩放，取消 pan timer，不发滚轮 |
+| Canvas 开启后双指长按再拖动 | 约 0.4 秒且在 slop 内后，才移动已缩放画布，不发滚轮 |
+| Canvas 开启后长按但不拖动 | 不吞掉双指右键；抬起仍只产生右键 |
+| Canvas 开启但画布不可平移 | 长按不取得 CanvasPan，触控板滚轮/右键继续可用 |
 | RemoteApplication pinch | 只有能力确认时发送，peer 真实内容变化 |
 | 键鼠模式手指操作 | 不意外发送普通远端鼠标操作 |
 | 三指控制面板 | 不被 Pinch owner 抢回或重复打开 |
 | 方向 epoch 变化 | 当前触摸统一取消/重锚定，下一次手势正常 |
 | 设置中途关闭 remote touch-scale | 当前远端序列立即结束，下一序列降级 |
+| 设置中途关闭 Canvas zoom | 取消长按 timer、结束本地 CanvasPan/Pinch、恢复默认画布并让下一序列回到触控板 |
 | 高频 pinch + 键盘/鼠标 | 不饿死键盘鼠标，不丢 start/end，不积压旧更新 |
 
 ### 8.3 远端能力
@@ -684,6 +746,10 @@ hvigorw --mode module -p module=entry -p product=default assembleHap --analyze=n
 | adaptiveSurfaceSize 交换宽高 | 高 | 阶段 1 删除隐式语义并以几何合同替代 |
 | ArkUI overlay 与 XComponent 重复收触摸 | 高 | 单一 GestureOwnershipCoordinator 和 gestureId |
 | DirectTouch 先发鼠标 Down | 高 | 双指候选期延迟或幂等补偿，增加取消测试 |
+| CanvasPan 与 TouchpadScroll 再次并行发送 | 高 | coordinator 单 owner；长按前位移锁定滚轮，长按后有效位移锁定画布；增加事件序列断言 |
+| 长按 timer 吞掉双指右键 | 中高 | timer 到期只 arm，不 claim；无位移 Up 仍提交右键 |
+| 默认值迁移覆盖用户明确开启 | 中 | 版本化迁移并记录一次性迁移策略；新版本以后保存显式用户选择，必要时给用户一次性提示 |
+| 长按延迟导致用户认为双指拖动失效 | 中 | 设置文案明确约 0.4 秒；提供可观测日志和真机调参，不降低 ownership 规则为并行发送 |
 | TouchScale 入队但 peer 不消费 | 高 | capability gate 和 enqueue/sent/peer accepted 分层诊断 |
 | PIP/分屏禁止方向请求 | 中高 | keep-local + contain fallback，不阻塞视频和输入 |
 | API 23 与最新网页 API 不一致 | 高 | 本地 API 23 文档、编译和真机先行 |
