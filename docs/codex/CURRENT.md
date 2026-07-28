@@ -6,11 +6,14 @@ Updated: 2026-07-28 Asia/Shanghai
 
 - Repository: Mydstiny/RemoteDeskHarmonyOS
 - Task branch: `main` (current-branch SSH implementation explicitly authorized by the user)
-- Scope: SSH independent settings accordion and terminal appearance migration; the checkout also contains the previously completed isolated VNC implementation.
-- The worktree also contains user-owned RustDesk/RDP pinch, remote-cursor and TouchpadPointerCurve test changes; they remain untouched.
+- Scope: RustDesk Pro session handoff/error classification and RDP first-frame/large-refresh visual commit optimization are the current implementation. The checkout also contains the previously completed isolated SSH/VNC work.
+- The user explicitly authorized this implementation on local `main`; no remote push, PR or merge is in scope.
 
 ## Result
 
+- RustDesk Pro API login tokens now travel only through the transient connection path into the RustDesk rendezvous `PunchHoleRequest` and `RequestRelay` messages; the existing relay/shared key remains a separate credential and the token is not persisted in host records, uploaded to cloud metadata or written to logs.
+- Pro host connections now validate account, server/relay and address-book binding before prompting for remote-device password or approval. Native connection errors are classified as Pro-session, device-password, approval, relay, peer or network failures so a real device-authentication failure is not reported as account expiry.
+- RDP keeps latest-value-wins dirty-rectangle presentation for small steady-state updates, while initial/full geometry and broad refresh bands enter a visual commit fence: a 40 ms quiet period or 160 ms deadline commits the accumulated frame as one presentation, preventing visible strip-by-strip scans without blocking the protocol thread.
 - SSH settings now has one dedicated accordion immediately after Windows RDP and RustDesk, and before 数据安全. Terminal foreground color and font size were removed from 个性化 and are now owned by `SshSettingsService` through namespaced keys with legacy aliases.
 - SSH settings exposes terminal appearance, preview/default reset, SSH host and key-vault shortcuts. SSH host fingerprint management was deliberately not migrated: 数据安全 and the existing per-host preflight remain the only trust-management path.
 - SSH settings continue to use existing `usersettings`, `RemoteHost`, `SshKey` and `KeyVaultService` owners; no SSH cloud table or sensitive global setting was added. RDP, RustDesk and VNC owners were not changed.
@@ -29,16 +32,21 @@ Updated: 2026-07-28 Asia/Shanghai
 
 ## Verification
 
-- `default@OhosTestCompileArkTS`: passed after the Preferences type-guard patch; existing repository/dependency warnings remain.
-- Production `assembleHap`: `BUILD SUCCESSFUL` after the Preferences type-guard patch.
-- Native test target: `144 passed, 0 failed`; the target compiles the actual VNC transport and RFB engine plus tests ClientInit, RFB dialect/security-result rules, Repeater fixed-width/banner/short-read/invalid-target and role-boundary checks.
+- Rust `cargo check` and `cargo check --tests`: passed for `rustdesk_ffi`.
+- Focused native `rdp_native_tests`: `146 passed, 0 failed`.
+- `default@OhosTestCompileArkTS`: passed after the RustDesk Pro/RDP implementation; existing repository/dependency warnings remain.
+- Production `assembleHap`: `BUILD SUCCESSFUL` after the RustDesk Pro/RDP implementation.
+- Native test target compiles the actual VNC transport and RFB engine plus the RDP damage/visual-commit tests and the VNC transport tests.
 - `git diff --check` and `git diff --cached --check`: passed after the implementation and shared-state updates.
 - Light open-source compliance gate: passed via the repository-local `.tools/bin/pwsh` runtime.
+- Full Rust `cargo test` remains host-blocked at link time because the local host does not provide `libopus`; this is not reported as a passing test.
 - `ohosTest@OhosTestCompileArkTS`: not runnable in this environment because the task is not registered (`00306054`); this is an environment/task-graph limitation, not a source compile failure.
 - Read-only SSH review: passed with no P0/P1/P2 findings; the reviewer confirmed the accordion order, the data-security-only fingerprint entry and no cross-module cycle.
 
 ## External acceptance still required
 
+- RustDesk Pro: test against the real compatible Server Pro versions, including password and request-approval connections through relay, application restart, expired-token re-login, mismatched account/server/relay records, and 401/403/404/500 responses. Confirm the user-visible message is tied to the actual failing layer.
+- RDP: test first desktop entry, Windows login desktop loading, browser/file-manager full refresh, window dragging, video, scrolling and 1080p/2K/4K devices. Confirm no visible scan bands, while steady-state input latency and frame rate do not regress.
 - User creates exactly one Huawei cloud table `vncrecord` with the 19 fields in the entity plan.
 - Two API 23 devices using one Huawei account validate scope selection, secret opt-in, trust re-confirmation, user-deletion tombstones, reset epoch and offline recovery. Scope deselection must leave the shared row unchanged.
 - Real VNC server validates direct TCP; a real UltraVNC Repeater validates viewer mode12 pairing, input, disconnect and reconnect. Mode2 requires a separate VNC server-side listener component and is not an enabled HarmonyOS viewer path.
@@ -47,8 +55,17 @@ Updated: 2026-07-28 Asia/Shanghai
 
 ## Local-only boundary
 
-- User-owned TouchpadPointerCurve test changes and the other untracked plans remain preserved and are not part of the SSH implementation commit. The SSH plan records the fixed RDP -> RustDesk -> SSH -> 数据安全 order and the no-fingerprint-migration boundary.
+- User-owned or unrelated VNC/SSH plan changes remain preserved and are not part of the RustDesk Pro/RDP implementation commit. The SSH plan records the fixed RDP -> RustDesk -> SSH -> 数据安全 order and the no-fingerprint-migration boundary.
 - SDKs, signing profiles, device data, private addresses, credentials, raw logs and screenshots remain outside the shared records.
+
+## RustDesk Pro + RDP visual commit ledger (2026-07-28)
+
+- RustDesk Pro root fix: the API `accessToken` was previously sufficient for address-book HTTP calls but was absent from the RustDesk rendezvous control messages. The implementation now preserves the existing FFI ABI by appending a transient token field, carries it through ArkTS -> NAPI -> C++ -> Rust, and sends it only in the rendezvous secure/punch/relay control requests. Direct connections do not require this token.
+- Implementation commit: `97f3b0085 fix(remote): restore Pro session handoff and RDP frame commits`.
+- RustDesk Pro safety boundaries: connection preflight verifies the Pro account and relay binding; only a classified Pro-session failure clears the local session. Password, approval, relay, peer and network failures retain their own user-facing diagnosis. Token values and device passwords are excluded from logs.
+- RDP visual boundary: broad full-width/full-height refresh bands start the accumulator fence before the old union-area threshold; `rdp_visual_commit_policy.h` applies a deterministic 40 ms quiet period with a 160 ms maximum wait. Deferred snapshots are requeued without `SwapBuffers`; explicit full snapshots and steady-state small dirty updates retain their prior behavior.
+- Coordinate contract: the GL upload path retains the existing top-left `dirtyY` mapping because the current quad maps texture `v=0` to the visual top; the contract is documented and covered by the focused native build rather than changing coordinates speculatively.
+- Code-level implementation is complete and ready for real endpoint acceptance. No credentials, server data or remote operations were used during local validation.
 
 ## VNC UX implementation review ledger (2026-07-28)
 
