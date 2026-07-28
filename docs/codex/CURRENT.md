@@ -84,6 +84,13 @@ Updated: 2026-07-28 Asia/Shanghai
 - Verification for this repair: `149 passed, 0 failed`; `default@OhosTestCompileArkTS` passed; `assembleHap` returned `BUILD SUCCESSFUL`; Light open-source compliance passed; `git diff --check` passed. The signed artifact is `entry/build/default/outputs/default/entry-default-signed.hap`.
 - The new HAP was not installed automatically. Real-device acceptance with this exact artifact remains required; only after installation can we confirm whether the visible scan is gone and whether steady-state latency/frame rate remain unchanged.
 
+## RDP official frame-commit repair plan (2026-07-28)
+
+- Entity plan: `docs/superpowers/plans/2026-07-28-rdp-official-frame-commit-safe-repair-plan.md`.
+- This turn only added the plan and shared-state notes; no RDP, ArkTS, Rust, dependency or configuration source was changed. The plan treats the existing GDI visual-commit commits as the baseline, keeps RDPGFX/H264 as a separately gated experiment, and defines an RDP-native allowlist plus explicit non-touch boundaries for RustDesk, SSH/SFTP, VNC, cloud sync and the other RDP channels.
+- Implementation is blocked until P0 installs the exact current HAP and collects current wired-device evidence. If the existing GDI fence still leaks scan bands, P1/P2 may change only the RDP damage/queue/renderer path; P3 RDPGFX remains off by default until decoder and Surface lifecycle acceptance passes.
+- The current Hvigor compile and `assembleHap` gates were attempted on this checkout and failed on the user's in-progress VNC ArkTS changes (`rememberPassword` missing in `VncAddFlow.ets` and `VncSettingsPage.ets`); these files were not modified by this plan and remain outside its scope. Light open-source compliance passed.
+
 ## VNC UX implementation review ledger (2026-07-28)
 
 This is a durable checkpoint for context compaction and later sessions. Do not
