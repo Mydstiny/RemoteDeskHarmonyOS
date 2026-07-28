@@ -134,3 +134,21 @@ repeat the completed review below unless the listed files change again.
   `assembleHap`, Light compliance and `git diff --check` passed. The
   `ohosTest` task remains unavailable because the environment reports
   `00306054` (task not registered).
+
+## VNC transport Phase 2 plan checkpoint (2026-07-28)
+
+- Entity plan: `docs/superpowers/plans/2026-07-28-vnc-phase2-websocket-ssh-tunnel-complete-upgrade-plan.md`.
+- Scope: complete WebSocket Gateway v1 and SSH local `direct-tcpip` tunnel,
+  while keeping public relay, reverse/listen, and Repeater mode2 fail-closed.
+- The plan defines the server contract, native byte-stream boundary,
+  `vncrecord` schema v2 projection, AES-GCM/AAD and multi-device cloud
+  dependency rules, API 23 UI flow, security, tests, rollout and rollback.
+- This checkpoint changed no source code. The current checkout also contains
+  unrelated uncommitted RDP/RustDesk/HostList/native changes; they were not
+  staged or modified.
+- Current checkout verification: `default@OhosTestCompileArkTS` passed;
+  Light open-source compliance passed. `assembleHap` reached package
+  creation but failed at local `SignHap` with `00308018` and
+  `Cannot read properties of undefined (reading 'content')`; this is a
+  signing/toolchain blocker. The `ohosTest` task remains the known
+  `00306054` environment blocker.

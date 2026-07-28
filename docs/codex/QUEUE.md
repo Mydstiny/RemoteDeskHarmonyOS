@@ -12,6 +12,11 @@ Updated: 2026-07-28 Asia/Shanghai
 
 ## Later
 
+- Execute the entity VNC Phase 2 plan for WebSocket Gateway and SSH
+  direct-tcpip only after the v1 server contract, endpoint, authentication,
+  trust, fixture and real VNC interoperability evidence exist. Keep the
+  mobile client gates fail-closed until then; use the single `vncrecord`
+  table and do not mix the work into RustDesk or SSH terminal owners.
 - Define and deploy versioned WebSocket gateway, public relay and SSH tunnel contracts before enabling their existing fail-closed gates.
 - Extend SSH settings only when the corresponding input, connection, SFTP or advanced native behavior is implemented and tested; do not expose placeholder controls or migrate host fingerprint ownership.
 - Add real-device lifecycle evidence for surface recreation, background/foreground, network interruption, repeated connect/disconnect and stale callback generations.
