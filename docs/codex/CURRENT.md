@@ -58,6 +58,22 @@ Updated: 2026-07-28 Asia/Shanghai
 - User-owned or unrelated VNC/SSH plan changes remain preserved and are not part of the RustDesk Pro/RDP implementation commit. The SSH plan records the fixed RDP -> RustDesk -> SSH -> 数据安全 order and the no-fingerprint-migration boundary.
 - SDKs, signing profiles, device data, private addresses, credentials, raw logs and screenshots remain outside the shared records.
 
+## RustDesk Android orientation and touch ledger (2026-07-28)
+
+- The user-authorized RustDesk control-side implementation is complete on local `main`; no task branch, remote push, PR or merge was used. Commits are `73943e6d7`, `f15d5f8a7`, `bbc570169`, `4657e5c92`, `a4ae8d3e0` and review hardening `de441ac`.
+- Mobile foreground RustDesk sessions now request `AUTO_ROTATION`; desktop-class layouts, PIP and non-RustDesk sessions keep their existing window behavior. The repository has no remote Android system-rotation command or controlled-side source, so the change does not claim to rotate the remote phone itself.
+- RustDesk portrait geometry is no longer converted to a landscape request by the local adaptive-size path. Existing peer/display geometry and `geometryEpoch` changes reset pinch/touch ownership, touchpad anchors and renderer viewport mapping so cursor, virtual mouse and input do not continue in the old coordinate space.
+- Two-finger input has one owner per sequence. Canvas zoom is off by default and legacy defaults migrate off once; when enabled, pinch zooms, a two-finger hold of about 0.4 seconds followed by movement pans an overflowing canvas, early movement remains touchpad scroll, and a stationary release remains right-click. The settings description documents this interaction.
+- The remote-app TouchScale toggle remains explicit opt-in. Native enqueue is not treated as peer acceptance because this checkout has no controlled Android endpoint capability acknowledgement. Direct Touch remains mouse-compatible emulation rather than raw multi-touch injection.
+
+### RustDesk verification and acceptance boundary
+
+- `default@OhosTestCompileArkTS`: passed after the implementation and review hardening.
+- `assembleHap`: passed with `BUILD SUCCESSFUL` after the implementation and review hardening.
+- `git diff --check`: passed.
+- `ohosTest@OhosTestCompileArkTS`: unavailable because the project task is not registered (`00306054`); no test success is claimed.
+- Real API 23 device and RustDesk Android endpoint acceptance remains open for portrait/landscape rotation, Surface recreation, virtual mouse/keyboard, touchpad scroll/right-click, Canvas pinch/long-press-pan and remote TouchScale consumption. RDP/VNC/SSH regression smoke is also required before release.
+
 ## RustDesk Pro + RDP visual commit ledger (2026-07-28)
 
 - RustDesk Pro root fix: the API `accessToken` was previously sufficient for address-book HTTP calls but was absent from the RustDesk rendezvous control messages. The implementation now preserves the existing FFI ABI by appending a transient token field, carries it through ArkTS -> NAPI -> C++ -> Rust, and sends it only in the rendezvous secure/punch/relay control requests. Direct connections do not require this token.

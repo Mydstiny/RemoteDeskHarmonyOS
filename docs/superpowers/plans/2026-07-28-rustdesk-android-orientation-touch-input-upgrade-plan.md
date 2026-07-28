@@ -723,7 +723,7 @@ hvigorw --mode module -p module=entry -p product=default assembleHap --analyze=n
 - 运行定向测试、API 23 编译、assembleHap 和 diff check；
 - 将命令、退出码和 blocker 写入共享状态；
 - 不提交其他 session 的修改；
-- 不在 main 上直接提交代码。
+- 默认不在 main 上直接提交代码；本轮因用户明确授权当前 `main`，按例外流程执行并保留独立提交与复审。
 
 所有阶段完成后：
 
@@ -734,7 +734,7 @@ hvigorw --mode module -p module=entry -p product=default assembleHap --analyze=n
 5. 确认 main 构建和工作树状态；
 6. 删除已合并任务分支。
 
-本次只是计划落盘，不执行上述代码提交和合并流程。
+本计划已按当前代码现状进入执行。本轮用户明确授权直接在当前 `main` 修改，因此本轮不创建或合并任务分支；仍保留“每阶段独立提交、门禁、复审、外部验收”的约束。
 
 ## 10. 风险、阻塞和回滚
 
@@ -775,3 +775,31 @@ hvigorw --mode module -p module=entry -p product=default assembleHap --analyze=n
 - 真机验收矩阵；
 - provenance、SBOM、NOTICE、AGPL 合规更新（仅在依赖/协议实际变化时）；
 - 独立复核结论、合并记录和分支清理记录。
+
+## 12. 本轮执行状态（2026-07-28）
+
+本轮已在用户授权的本地 `main` 上完成控制端可验证范围内的实现，提交顺序如下：
+
+1. `73943e6d7 test(rustdesk): add two-finger gesture ownership policy`
+2. `f15d5f8a7 fix(rustdesk): default canvas zoom to off`
+3. `bbc570169 fix(rustdesk): arbitrate two-finger canvas input`
+4. `4657e5c92 test(rustdesk): define mobile orientation policy`
+5. `a4ae8d3e0 fix(rustdesk): follow mobile orientation and peer geometry`
+6. `de441ac fix(rustdesk): harden gesture and geometry lifecycle`
+
+实现边界已根据现有代码和官方协议能力收敛为：
+
+- RustDesk 手机控制端前台会话使用 `AUTO_ROTATION`，桌面设备、PIP 和非 RustDesk 会话保持原有窗口策略；本轮不新增“锁定横屏/锁定竖屏”设置，因为当前设置 owner 没有该能力，协议快照也没有远端系统旋转控制字段。
+- RustDesk 初始尺寸不再通过 `adaptiveSurfaceSize` 隐式交换宽高；现有 FFI 的 `PeerInfo`/`SwitchDisplay` 几何和 `geometryEpoch` 继续作为来源，renderer、画布、光标、虚拟鼠标和输入在几何变化时统一复位/重锚定。没有修改 RustDesk proto 或 Android 被控端。
+- 双指 ownership 由纯 ArkTS 策略和 RemoteDesktop 统一消费：Canvas 缩放默认关闭；开启后捏合优先缩放，双指在约 400ms、12vp slop 内保持后才进入画布平移；长按前明显移动保持触控板滚轮，无移动抬起保留双指右键。CanvasPan、RemoteTouchPan、TouchpadScroll、TouchpadRightClick 不会在同一序列并行发送。
+- 设置文案已经说明“缩放后双指长按约 0.4 秒，再拖动可移动画布”；旧版本默认值按版本 2 一次性关闭，之后保存显式用户选择。远端应用 TouchScale 仍是显式关闭的独立开关，当前仓库没有 peer accepted 能力回执，因此不把 native enqueue 成功宣称为远端已执行。
+- 直接触控仍是兼容鼠标的单指模拟，不宣称 Android 原生多点触摸或系统旋转；该 endpoint 能力不在本仓库中，后续若要提供原生多点或远端旋转，必须另有被控端源码、协议和真实设备证据。
+
+本轮验证：
+
+- `default@OhosTestCompileArkTS`：通过。
+- `assembleHap`：通过，`BUILD SUCCESSFUL`。
+- `git diff --check`：通过。
+- `ohosTest@OhosTestCompileArkTS`：当前工程任务图未注册，返回 `00306054 task not found`，不记为测试通过。
+
+仍需外部验收：API 23 手机/平板的横竖屏、分屏/PIP、Surface 重建；真实 RustDesk Android 被控端的 portrait/landscape 几何上报、输入控制权限、虚拟鼠标、键盘、触控板、Canvas pinch/pan 和 TouchScale 消费；以及 RDP、VNC、SSH 回归烟测。缺少被控端证据时，本计划保持“控制端几何/输入修复已完成、远端系统旋转未承诺”的状态。
