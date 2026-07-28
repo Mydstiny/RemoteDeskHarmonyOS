@@ -189,6 +189,7 @@ import {
   shouldStartNewCanvasPinchTouchSequence
 } from '../services/RemoteCanvasPinchInputPolicy';
 import { RemoteProtocol } from '../services/RemoteSessionState';
+import { rustDeskOrientationPolicy } from '../services/RemoteOrientationPolicy';
 import { createTransferSnapshot, TransferProtocol, TransferState } from '../services/FileTransferProgressModel';
 import { isRemoteCompletionConfirmed } from '../services/TransferSessionPolicy';
 import {
@@ -665,6 +666,7 @@ struct RemoteDesktop {
   private canvasViewportSnapshotHandle: number = -1;
   private remoteWidth: number = 1920;
   private remoteHeight: number = 1080;
+  private rustDeskGeometryEpoch: number = 0;
   private remoteCursorX: number = 960;
   private remoteCursorY: number = 540;
   private remoteCursorPreciseX: number = 960;
@@ -1801,6 +1803,13 @@ struct RemoteDesktop {
     return null;
   }
 
+  private resetRustDeskInputAfterGeometryChange(reason: string): void {
+    this.releaseCanvasPinchInput(reason);
+    this.touchpadAnchorValid = false;
+    this.resetTouchpadPointerCurve();
+    this.invalidateRendererViewportCache();
+  }
+
   private applyRustDeskDisplayGeometry(display: RustDeskDisplayInfo): void {
     const width: number = display.width > 0 ? display.width : display.originalWidth;
     const height: number = display.height > 0 ? display.height : display.originalHeight;
@@ -1815,7 +1824,6 @@ struct RemoteDesktop {
       monitorCount: 1
     });
     RemoteSessionPipService.getInstance().updateContentSize(width, height);
-    this.invalidateRendererViewportCache();
     if (!this.canvasTransformGestureModified) {
       this.resetCanvasToDisplayDefault(true);
     }
@@ -1829,6 +1837,7 @@ struct RemoteDesktop {
     if (display.display === this.rustDeskDisplayCapabilities.currentDisplay) {
       return;
     }
+    this.resetRustDeskInputAfterGeometryChange('rustdesk-display-switch');
     if (!this.loader.switchRustDeskDisplay(this.sessionId, display.display)) {
       promptAction.showToast({ message: '远端显示器切换请求未被接受', duration: 1800 });
       return;
@@ -1879,7 +1888,11 @@ struct RemoteDesktop {
     const currentChanged: boolean = previous.currentDisplay !== capabilities.currentDisplay ||
       previous.width !== capabilities.width || previous.height !== capabilities.height ||
       previous.geometryEpoch !== capabilities.geometryEpoch;
+    if (currentChanged && previous.width > 0 && previous.height > 0) {
+      this.resetRustDeskInputAfterGeometryChange('rustdesk-geometry-epoch');
+    }
     this.rustDeskDisplayCapabilities = capabilities;
+    this.rustDeskGeometryEpoch = capabilities.geometryEpoch;
     if (currentChanged) {
       const current = this.rustDeskDisplayById(capabilities.currentDisplay, capabilities.displays);
       if (current !== null) {
@@ -3249,7 +3262,8 @@ struct RemoteDesktop {
     return rounded % 2 === 0 ? rounded : rounded - 1;
   }
 
-  private adaptiveSurfaceSize(maxEdgePx: number = RUSTDESK_ADAPTIVE_MAX_EDGE_PX): DesktopSize | null {
+  private adaptiveSurfaceSize(maxEdgePx: number = RUSTDESK_ADAPTIVE_MAX_EDGE_PX,
+    keepComputerLandscape: boolean = true): DesktopSize | null {
     let widthPx: number = this.renderWidthPx;
     let heightPx: number = this.renderHeightPx;
     if (widthPx <= 0 || heightPx <= 0) {
@@ -3264,11 +3278,10 @@ struct RemoteDesktop {
     if (widthPx <= 0 || heightPx <= 0) {
       return null;
     }
-    // A cold-start surface can report the physical portrait geometry before
-    // the requested landscape orientation has been applied. RustDesk's
-    // adaptive desktop request is for a computer screen, so keep that request
-    // landscape and let the first real frame refine the exact ratio.
-    if (widthPx < heightPx) {
+    // RDP keeps its historical computer-screen request. RustDesk mobile must
+    // preserve a portrait peer ratio so the first frame can represent an
+    // Android display without an implicit 90-degree rotation.
+    if (keepComputerLandscape && widthPx < heightPx) {
       const portraitWidth: number = widthPx;
       widthPx = heightPx;
       heightPx = portraitWidth;
@@ -3412,7 +3425,6 @@ struct RemoteDesktop {
     this.physicalKeyboardLayoutPromptVisible = false;
     this.xComponentController.setListener(this);
     this.restoreRemoteDisplayScalePreference();
-    await this.setPreferredOrientation(window.Orientation.LANDSCAPE, 'LANDSCAPE');
     this.registerInputDeviceWatcher();
     this.registerKeyboardAvoidListener();
     const params: Object = router.getParams();
@@ -3675,7 +3687,8 @@ struct RemoteDesktop {
     }
     const display = host.displayConfig;
     if (host.protocol === 'rustdesk') {
-      const adaptive: DesktopSize | null = this.adaptiveSurfaceSize();
+      const adaptive: DesktopSize | null = this.adaptiveSurfaceSize(
+        RUSTDESK_ADAPTIVE_MAX_EDGE_PX, false);
       if (adaptive) {
         adaptive.colorDepth = display.colorDepth > 0 ? display.colorDepth : 32;
         hilog.info(RD_DOMAIN, RD_TAG, 'RustDesk adaptive size=' + adaptive.width.toString() + 'x' +
@@ -4501,6 +4514,7 @@ struct RemoteDesktop {
     }
     const previousWidth: number = this.remoteWidth;
     const previousHeight: number = this.remoteHeight;
+    this.resetRustDeskInputAfterGeometryChange('rustdesk-renderer-geometry');
     RemoteSessionPipService.getInstance().updateContentSize(
       viewport.sourceWidth, viewport.sourceHeight);
     this.updateRemoteSize({
@@ -5537,6 +5551,7 @@ struct RemoteDesktop {
     reason: string = 'session-stop'): void {
     this.clearRemoteCursorViewCommit();
     this.stopRustDeskGeometrySync();
+    this.rustDeskGeometryEpoch = 0;
     this.remoteCursorShapeLoadToken += 1;
     this.clearRemoteCursorShapeLoadWatchdog();
     this.remoteCursorShapeLoading = false;
@@ -6423,7 +6438,11 @@ struct RemoteDesktop {
         this.inputForwardReady = true;
         this.scheduleRemoteInputFocus('connect-success');
       }
-      await this.setPreferredOrientation(window.Orientation.LANDSCAPE, 'LANDSCAPE');
+      if (host.protocol === 'rustdesk') {
+        await this.applyRustDeskOrientationPolicy('connect-success');
+      } else {
+        await this.setPreferredOrientation(window.Orientation.LANDSCAPE, 'LANDSCAPE');
+      }
       await this.setRemoteKeepScreenOn(true);
       await this.setRemoteNavigationHidden(true, 'connect-success');
       // VNC 使用独立的 vncrecord owner，不得把 transient `vnc:<id>` 投影
@@ -6521,6 +6540,17 @@ struct RemoteDesktop {
       hilog.warn(RD_DOMAIN, RD_TAG, 'setWindowKeepScreenOn(' + (enabled ? 'true' : 'false') +
         ') failed: ' + (errObj.message ? errObj.message : JSON.stringify(err)));
     }
+  }
+
+  private async applyRustDeskOrientationPolicy(reason: string): Promise<void> {
+    const protocol: string = this.pendingHost === null ? '' : this.pendingHost.protocol;
+    const policy = rustDeskOrientationPolicy(protocol, this.isDesktopDevice,
+      this.connected, this.renderPreservedInPip);
+    if (policy !== 'auto-rotate') {
+      return;
+    }
+    await this.setPreferredOrientation(window.Orientation.AUTO_ROTATION,
+      'RUSTDESK-AUTO-ROTATION-' + reason);
   }
 
   private async setPreferredOrientation(orientation: window.Orientation, label: string): Promise<void> {
@@ -7316,6 +7346,10 @@ struct RemoteDesktop {
         this.nativeHandles.attachConnectedSession(this.sessionId, RemoteProtocol.rustdesk);
         this.connected = true;
         this.connecting = false;
+        this.applyRustDeskOrientationPolicy('background-preauthenticated').catch((err: Error): void => {
+          hilog.warn(RD_DOMAIN, RD_TAG, 'background-preauthenticated orientation failed: ' +
+            (err.message ? err.message : JSON.stringify(err)));
+        });
         this.resumeRustDeskDiagnosticsAfterForeground();
         this.startRemoteCursorPolling(this.sessionId);
         this.inputForwardReady = true;
@@ -7366,6 +7400,10 @@ struct RemoteDesktop {
 
         // 恢复状态
         this.connected = true;
+        this.applyRustDeskOrientationPolicy('background-restore').catch((err: Error): void => {
+          hilog.warn(RD_DOMAIN, RD_TAG, 'background-restore orientation failed: ' +
+            (err.message ? err.message : JSON.stringify(err)));
+        });
         this.resumeRustDeskDiagnosticsAfterForeground();
         this.inputForwardReady = true;
         this.startRemoteCursorPolling(this.sessionId);
