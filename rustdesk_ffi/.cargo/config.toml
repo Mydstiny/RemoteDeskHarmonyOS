@@ -1,15 +1,16 @@
-# OHOS 交叉编译基础配置。
-# scripts/build_rustdesk_ffi_ohos.sh 注入当前平台的 linker 和 sysroot；
-# macOS 的 scripts/macos_env.sh 也提供同样的目标环境变量。
+# OHOS 交叉编译配置。
+# RustDesk FFI 编译时 CC_*/CXX_*/AR_* 和 OPUS_LIB_DIR 由环境变量注入。
 
 [target.aarch64-unknown-linux-ohos]
-linker = "clang++"
+linker = "C:/ohos_sdk/default/openharmony/native/llvm/bin/clang++.exe"
 rustflags = [
     "-C", "link-arg=--target=aarch64-linux-ohos",
+    "-C", "link-arg=--sysroot=C:/ohos_sdk/default/openharmony/native/sysroot",
 ]
 
 [target.x86_64-unknown-linux-ohos]
-linker = "clang++"
+linker = "C:/ohos_sdk/default/openharmony/native/llvm/bin/clang++.exe"
 rustflags = [
     "-C", "link-arg=--target=x86_64-linux-ohos",
+    "-C", "link-arg=--sysroot=C:/ohos_sdk/default/openharmony/native/sysroot",
 ]

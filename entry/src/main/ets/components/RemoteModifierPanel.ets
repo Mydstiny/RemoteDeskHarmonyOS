@@ -524,6 +524,10 @@ export struct RemoteModifierPanel {
   private static readonly KEY_SYSRQ = 2079;
   private static readonly KEY_BREAK = 2080;
   private static readonly KEY_INSERT = 2083;
+  private static readonly KEY_DPAD_UP = 2012;
+  private static readonly KEY_DPAD_DOWN = 2013;
+  private static readonly KEY_DPAD_LEFT = 2014;
+  private static readonly KEY_DPAD_RIGHT = 2015;
 
   // ============================================================
   // 构建 — 主面板 (紧凑)
@@ -570,6 +574,20 @@ export struct RemoteModifierPanel {
           this.ActionKey('Tab', RemoteModifierPanel.KEY_TAB)
           this.ActionKey('Del', RemoteModifierPanel.KEY_DEL)
           this.EnterKey()
+        }
+        .width('100%')
+        .justifyContent(FlexAlign.SpaceEvenly)
+
+        Row().height(6)
+
+        // 方向键行: ← ↑ ↓ →
+        // 走和其他动作键同一条 onKeyTap 通路，所以修饰键锁定时会自动组合，
+        // Shift+方向 选择文本、Ctrl+方向 按词跳转都能用。
+        Row() {
+          this.ActionKey('←', RemoteModifierPanel.KEY_DPAD_LEFT)
+          this.ActionKey('↑', RemoteModifierPanel.KEY_DPAD_UP)
+          this.ActionKey('↓', RemoteModifierPanel.KEY_DPAD_DOWN)
+          this.ActionKey('→', RemoteModifierPanel.KEY_DPAD_RIGHT)
         }
         .width('100%')
         .justifyContent(FlexAlign.SpaceEvenly)

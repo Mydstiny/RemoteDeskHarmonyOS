@@ -1,6 +1,6 @@
 {
   "app": {
-    "bundleName": "com.example.remotedesktop",
+    "bundleName": "com.open.rundesk",
     "vendor": "example",
     "versionCode": 1000008,
     "versionName": "1.0.8",

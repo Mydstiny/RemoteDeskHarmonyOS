@@ -1880,7 +1880,7 @@ struct RemoteDesktop {
       return resolvedY;
     }
     const modifierY: number = this.modifierPanelVisible ? this.modifierPanelY : this.handleY;
-    const modifierHeight: number = this.modifierPanelVisible ? (this.fnLayer ? 300 : 136) :
+    const modifierHeight: number = this.modifierPanelVisible ? this.modifierPanelHeight() :
       MODIFIER_HANDLE_HEIGHT;
     const dockBottom: number = resolvedY + this.rustDeskDiagnosticsDockHeight();
     const modifierBottom: number = modifierY + modifierHeight;
@@ -1949,6 +1949,17 @@ struct RemoteDesktop {
     return Math.max(8, Math.min(x, maxX));
   }
 
+  /**
+   * 修饰键面板的估算高度，用于夹取和与诊断浮窗的避让。
+   *
+   * 必须跟着 RemoteModifierPanel 的行数走：标题栏 + 修饰键行 + 动作键行 +
+   * 方向键行，展开 Fn 层再加五行。原来四处写死 `fnLayer ? 300 : 136`，加一行
+   * 就得改四个地方，很容易漏。
+   */
+  private modifierPanelHeight(): number {
+    return this.fnLayer ? 340 : 176;
+  }
+
   private clampModifierPanelY(y: number, estimatedHeight: number): number {
     const screenH: number = this.surfaceHeight > 0 ? this.surfaceHeight : 640;
     const bottomMargin: number = this.kbHeight > 0 ? this.kbHeight + 8 : 24;
@@ -1964,7 +1975,7 @@ struct RemoteDesktop {
     const screenW: number = this.surfaceWidth > 0 ? this.surfaceWidth : 360;
     const panelW: number = this.modifierPanelWidth();
     const defaultX: number = this.handleSide === 'right' ? Math.max(8, screenW - panelW - 8) : 8;
-    const defaultY: number = this.clampModifierPanelY(this.handleY - 20, this.fnLayer ? 300 : 136);
+    const defaultY: number = this.clampModifierPanelY(this.handleY - 20, this.modifierPanelHeight());
     this.modifierPanelX = this.clampModifierPanelX(defaultX);
     this.modifierPanelY = defaultY;
     this.shortcutPanelX = this.modifierPanelX;
@@ -1974,14 +1985,14 @@ struct RemoteDesktop {
 
   private clampModifierPanelsIntoView(): void {
     this.modifierPanelX = this.clampModifierPanelX(this.modifierPanelX);
-    this.modifierPanelY = this.clampModifierPanelY(this.modifierPanelY, this.fnLayer ? 300 : 136);
+    this.modifierPanelY = this.clampModifierPanelY(this.modifierPanelY, this.modifierPanelHeight());
     this.shortcutPanelX = this.clampModifierPanelX(this.shortcutPanelX);
     this.shortcutPanelY = this.clampModifierPanelY(this.shortcutPanelY, 238);
   }
 
   private moveModifierPanel(x: number, y: number): void {
     this.modifierPanelX = this.clampModifierPanelX(x);
-    this.modifierPanelY = this.clampModifierPanelY(y, this.fnLayer ? 300 : 136);
+    this.modifierPanelY = this.clampModifierPanelY(y, this.modifierPanelHeight());
   }
 
   private moveShortcutPanel(x: number, y: number): void {
