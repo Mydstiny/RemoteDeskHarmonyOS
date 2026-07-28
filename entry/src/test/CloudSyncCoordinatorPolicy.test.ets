@@ -12,10 +12,13 @@ import {
   coalesceAutomaticPush,
   nextCloudSyncRetryDelayMs,
   retryTablesStillSelected,
+  retryVncTablesStillSelected,
   snapshotCloudSyncTables,
   shouldReplayAutomaticPush,
   shouldBlockAutomaticRetry,
   shouldRejectAutomaticEmptyCloudSnapshot,
+  shouldDeferAutomaticPushDuringBootstrap,
+  shouldUseCloudFirstForInitialBootstrap,
   upsertAutomaticRetryRecord
 } from '../main/ets/services/CloudSyncCoordinatorPolicy';
 import { executeCloudSyncRequest } from '../main/ets/services/CloudSyncCoordinator';
@@ -81,6 +84,21 @@ export default function cloudSyncCoordinatorPolicyTest(): void {
       expect(cloudLocalMutationAllowed(false, false)).assertTrue();
       expect(cloudLocalMutationAllowed(true, false)).assertFalse();
       expect(cloudLocalMutationAllowed(false, true)).assertFalse();
+      expect(cloudLocalMutationAllowed(false, false, true, false)).assertFalse();
+      expect(cloudLocalMutationAllowed(false, false, true, true)).assertTrue();
+    });
+
+    it('forces_first_bootstrap_to_cloud_first_and_defers_automatic_uploads', 0, (): void => {
+      expect(shouldUseCloudFirstForInitialBootstrap(false)).assertTrue();
+      expect(shouldUseCloudFirstForInitialBootstrap(true)).assertFalse();
+      expect(shouldDeferAutomaticPushDuringBootstrap('pending')).assertTrue();
+      expect(shouldDeferAutomaticPushDuringBootstrap('ready')).assertFalse();
+    });
+
+    it('does_not_treat_the_vnc_physical_table_as_an_ordinary_secret_table', 0, (): void => {
+      const ordinary: string[] = snapshotCloudSyncTables(['vncrecord']);
+      expect(ordinary.length).assertEqual(1);
+      expect(ordinary[0]).assertEqual('vncrecord');
     });
 
     it('keeps_retry_intent_for_each_distinct_automatic_table', 0, (): void => {
@@ -104,6 +122,15 @@ export default function cloudSyncCoordinatorPolicyTest(): void {
       const retained: string[] = retryTablesStillSelected(['cryptoparams', 'sshkeys'], ['sshkeys']);
       expect(retained.length).assertEqual(2);
       expect(retained[1]).assertEqual('sshkeys');
+    });
+
+    it('uses_the_single_vncrecord_cloud_table_for_vnc_retries', 0, (): void => {
+      const retained: string[] = retryVncTablesStillSelected(
+        ['cryptoparams', 'vncrecord'], ['cryptoparams', 'vncrecord']);
+      expect(retained.length).assertEqual(2);
+      const dropped: string[] = retryVncTablesStillSelected(
+        ['vncrecord'], []);
+      expect(dropped.length).assertEqual(0);
     });
 
     it('converts_executor_rejection_into_a_failed_download_and_rolls_back', 0, async (): Promise<void> => {

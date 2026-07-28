@@ -8,7 +8,11 @@ const CLOUD_SYNC_SELECTABLE_TABLES: string[] = [
   'rdpcredentials',
   'rustdeskrelays',
   'sshkeys',
-  'totpentries'
+  'totpentries',
+  // The ordinary selector controls whether the single VNC physical table
+  // participates at all. VNC record-type/sensitive selection remains in the
+  // VNC settings owner and is enforced by CloudSyncCoordinator.
+  'vncrecord'
 ];
 
 const CLOUD_SYNC_ENCRYPTED_TABLES: string[] = [

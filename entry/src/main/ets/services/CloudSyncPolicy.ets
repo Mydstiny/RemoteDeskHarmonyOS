@@ -6,7 +6,7 @@ export const CLOUD_SYNC_TABLES: string[] = [
   'rustdeskrelays',
   'sshkeys',
   'totpentries',
-  'vncrecords'
+  'vncrecord'
 ];
 
 export type CloudSyncOperation = 'upload' | 'download' | 'refresh';

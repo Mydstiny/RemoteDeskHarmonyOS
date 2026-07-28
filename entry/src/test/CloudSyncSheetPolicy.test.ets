@@ -22,6 +22,7 @@ export default function cloudSyncSheetPolicyTest() {
     it('makes_cloud_replacement_a_danger_action_with_a_safe_back_path', 0, (): void => {
       const spec = cloudSyncSheetSpec(CLOUD_SYNC_SHEET_UPLOAD_CONFIRM);
       expect(spec.title).assertEqual('覆盖云端存档？');
+      expect(spec.message.indexOf('VNC') >= 0).assertTrue();
       expect(spec.primaryLabel).assertEqual('覆盖并上传');
       expect(spec.primaryDestructive).assertTrue();
       expect(spec.secondaryLabel).assertEqual('返回');
@@ -31,6 +32,7 @@ export default function cloudSyncSheetPolicyTest() {
     it('makes_local_replacement_a_danger_action_with_a_safe_back_path', 0, (): void => {
       const spec = cloudSyncSheetSpec(CLOUD_SYNC_SHEET_DOWNLOAD_CONFIRM);
       expect(spec.title).assertEqual('覆盖本地数据？');
+      expect(spec.message.indexOf('VNC') >= 0).assertTrue();
       expect(spec.primaryLabel).assertEqual('覆盖并下载');
       expect(spec.primaryDestructive).assertTrue();
       expect(spec.secondaryLabel).assertEqual('返回');

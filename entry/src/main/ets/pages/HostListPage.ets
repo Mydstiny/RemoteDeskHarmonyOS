@@ -18,6 +18,9 @@ import { AccountKitService } from '../services/AccountKitService';
 import { DataCrypto } from '../services/DataCrypto';
 import { CloudStore } from '../services/CloudStore';
 import { VncTrustService } from '../services/VncTrustService';
+import { VncHostService } from '../services/VncHostService';
+import { VncGatewayService } from '../services/VncGatewayService';
+import { VncHostValues } from '../services/VncModelPolicy';
 import { CloudSyncCoordinator } from '../services/CloudSyncCoordinator';
 import { CloudSyncSelectionStore } from '../services/CloudSyncSelectionStore';
 import { cloudSyncSelectableTables, effectiveCloudSyncTables } from '../services/CloudSyncSelectionPolicy';
@@ -44,6 +47,7 @@ import { HostAddWizardSheet } from '../components/hostadd/HostAddWizardSheet';
 import { RdpAddFlow } from '../components/hostadd/RdpAddFlow';
 import { RustDeskAddFlow } from '../components/hostadd/RustDeskAddFlow';
 import { SshAddFlow } from '../components/hostadd/SshAddFlow';
+import { VncAddFlow } from '../components/hostadd/VncAddFlow';
 // Passphrase uses bindSheet (HostListPage is @Entry, no bindSheet limit)
 import { KeyVaultPage } from './KeyVaultPage';
 import { SshPreflightState } from '../components/SshPreflightSheet';
@@ -153,6 +157,7 @@ import {
   SETTINGS_SECTION_NONE,
   SETTINGS_SECTION_RDP,
   SETTINGS_SECTION_RUSTDESK,
+  SETTINGS_SECTION_VNC,
   SETTINGS_SECTION_SECURITY,
   SETTINGS_SECTION_TUTORIAL,
   SettingsFeedbackLaunchAttempt,
@@ -295,6 +300,7 @@ struct HostListPage {
   @State showAddSheet: boolean = false;
   @State addSheetShowsModernPicker: boolean = false;
   @State modernAddProtocol: string = '';
+  @State vncAddFromModernPicker: boolean = false;
   @State addSheetClosing: boolean = false;
   // Keep the released storage/cloud key while exposing the broader FAB-style semantics in UI code.
   @StorageLink('hostAddMode') fabAddStyle: string = 'modern';
@@ -391,6 +397,7 @@ struct HostListPage {
   private remoteHostSheetClosingMode: number = REMOTE_HOST_SHEET_NONE;
   // 保存并连接必须等新增主机 Sheet 的 native onDisappear 后再交给鉴权 Sheet。
   private pendingAddSheetConnectHostId: string = '';
+  private pendingVncConnectHostId: string = '';
   private connectionAttemptGeneration: number = 0;
   private connectionAttemptHostId: string = '';
   @StorageLink('rustdeskImageQuality') rustdeskImageQuality: number = 1; // 0=fast, 1=balanced, 2=quality
@@ -531,6 +538,8 @@ struct HostListPage {
   private srv: HostSyncService = HostSyncService.getInstance();
   private auth: AuthService = AuthService.getInstance();
   private keyVault: KeyVaultService = KeyVaultService.getInstance();
+  private readonly vncHosts: VncHostService = VncHostService.getInstance();
+  private readonly vncGateways: VncGatewayService = VncGatewayService.getInstance();
   private loader: ExtensionLoader = ExtensionLoader.getInstance();
   private sshKeyImporter: SshKeyImportService = new SshKeyImportService();
   private lightSensing: LightSensingService = LightSensingService.getInstance();
@@ -986,14 +995,54 @@ struct HostListPage {
     this.requestAddSheetClose();
   }
 
+  private prepareVncAddFlow(): void {
+    const context: common.Context = getContext(this) as common.Context;
+    this.vncHosts.init(context);
+    this.vncGateways.init(context);
+  }
+
+  private saveVncHostFromAddFlow(values: VncHostValues, password: string, connectNow: boolean): void {
+    if (this.addSheetClosing || this.pendingAddSheetConnectHostId !== '' ||
+      this.pendingVncConnectHostId !== '') {
+      hilog.info(0x0001, 'HostList', 'ignored repeated VNC add-host save while Sheet is closing');
+      return;
+    }
+    if (!this.vncHosts.isReady()) {
+      promptAction.showToast({ message: 'VNC 服务尚未完成云同步初始化，请稍后重试', duration: 2200 });
+      return;
+    }
+    const result = this.vncHosts.save(values, '', password);
+    if (!result.ok) {
+      promptAction.showToast({ message: result.message || '保存 VNC 主机失败', duration: 2200 });
+      return;
+    }
+    this.pendingVncConnectHostId = connectNow ? result.id : '';
+    promptAction.showToast({
+      message: connectNow ? 'VNC 主机已保存，正在准备连接' : 'VNC 主机已保存',
+      duration: 1800
+    });
+    this.requestAddSheetClose();
+  }
+
   private handleAddSheetDisappear(): void {
     this.noteSheetDismissed();
     this.addSheetClosing = false;
     this.addSheetShowsModernPicker = false;
     this.modernAddProtocol = '';
+    this.vncAddFromModernPicker = false;
+    const pendingVncHostId: string = this.pendingVncConnectHostId;
+    this.pendingVncConnectHostId = '';
     const pendingHostId: string = this.pendingAddSheetConnectHostId;
     this.pendingAddSheetConnectHostId = '';
     this.resetForm();
+
+    if (pendingVncHostId !== '') {
+      if (!this.pageActive) { return; }
+      hilog.info(0x0001, 'HostList', 'VNC add-host Sheet disappeared; starting saved connection host=' +
+        pendingVncHostId);
+      router.pushUrl({ url: 'pages/RemoteDesktop', params: { vncHostId: pendingVncHostId } });
+      return;
+    }
 
     if (!shouldStartHostAddConnectionAfterDisappear(
       this.pageActive, this.addSheetClosing, pendingHostId)) {
@@ -1231,6 +1280,22 @@ struct HostListPage {
     if (index >= 0) { next.splice(index, 1); } else { next.push(table); }
     CloudSyncSelectionStore.getInstance().replaceSelectedBusinessTables(getContext(this), next);
     this.cloudSyncSelectedTables = CloudSyncSelectionStore.getInstance().selectedBusinessTables();
+    // Re-enabling the physical VNC table must pull its existing cloud mirror
+    // before this device starts projecting local VNC rows. Disabling it only
+    // changes this device's projection and must not upload a local snapshot or
+    // retract a row shared with another device.
+    if (table === 'vncrecord' && index < 0) {
+      CloudSyncCoordinator.getInstance().requestForegroundPull().then((result): void => {
+        if (!result.ok) {
+          hilog.warn(0x0001, 'CloudSync', '[HostListPage] VNC table re-enable pull failed');
+          this.cloudSyncError = 'VNC 云表重新启用失败：本地未覆盖，请检查云空间后重试';
+          promptAction.showToast({
+            message: 'VNC 云表重新启用失败，本地数据未覆盖',
+            duration: 2600
+          });
+        }
+      });
+    }
   }
 
   private async createLocalBackup(): Promise<void> {
@@ -1349,6 +1414,9 @@ struct HostListPage {
     }
     if (section === SETTINGS_SECTION_RUSTDESK) {
       return 980;
+    }
+    if (section === SETTINGS_SECTION_VNC) {
+      return 280;
     }
     if (section === SETTINGS_SECTION_SECURITY) {
       return 420;
@@ -1603,6 +1671,7 @@ struct HostListPage {
     }
     const pendingHostId: string = this.pendingAddSheetConnectHostId;
     this.pendingAddSheetConnectHostId = '';
+    this.pendingVncConnectHostId = '';
     if (pendingHostId !== '') {
       this.releaseConnectionAttempt(pendingHostId);
     }
@@ -5464,19 +5533,6 @@ struct HostListPage {
               .fontFamily(this.font()).padding({ left: 8, bottom: 8 })
             Column() {
               Row() {
-                Row() { SymbolGlyph($r('sys.symbol.display')).fontSize(21).fontColor([this.accentColor]) }
-                  .width(40).height(40).borderRadius(20).backgroundColor(this.pal().card).justifyContent(FlexAlign.Center)
-                Column() {
-                  Text('VNC 专属设置').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
-                    .fontColor(this.pal().text).fontFamily(this.font())
-                  Text('独立主机、Repeater、WebSocket、加密与同步范围')
-                    .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
-                }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 12 })
-                SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(16).fontColor([this.pal().text3])
-              }.width('100%').height(68).padding({ left: 14, right: 16 })
-                .onClick((): void => { router.pushUrl({ url: 'pages/VncSettingsPage' }); })
-              this.cardDivider()
-              Row() {
                 Row() { SymbolGlyph($r('sys.symbol.cloud_fill')).fontSize(21).fontColor([this.accentColor]) }
                   .width(40).height(40).borderRadius(20).backgroundColor(this.pal().card).justifyContent(FlexAlign.Center)
                 Column() { Text('管理云同步').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font());
@@ -5498,7 +5554,7 @@ struct HostListPage {
                 Row() { SymbolGlyph($r('sys.symbol.doc_plaintext')).fontSize(20).fontColor([this.accentColor]) }
                   .width(40).height(40).borderRadius(20).backgroundColor(this.pal().card).justifyContent(FlexAlign.Center)
                 Column() { Text('本地备份').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font());
-                  Text('导出全部 7 类数据为明文 JSON').fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
+                  Text('导出全部云表数据为明文 JSON（包含 vncrecord）').fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
                 }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 12 })
                 SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(16).fontColor([this.pal().text3])
               }.width('100%').height(68).padding({ left: 14, right: 16 })
@@ -5521,6 +5577,43 @@ struct HostListPage {
         .opacity(this.settingsSectionExpanded(SETTINGS_SECTION_CLOUD_SYNC) ? 1 : 0)
         .scale({ x: 1, y: this.settingsSectionExpanded(SETTINGS_SECTION_CLOUD_SYNC) ? 1 : 0.98 })
         .translate({ y: this.settingsSectionExpanded(SETTINGS_SECTION_CLOUD_SYNC) ? 0 : -8 })
+        .clip(true)
+        .animation({ duration: SETTINGS_ACCORDION_ANIMATION_MS, curve: Curve.FastOutSlowIn })
+
+        ListItem() {
+          this.settingsAccordionHeader(SETTINGS_SECTION_VNC, $r('sys.symbol.display'),
+            'VNC', '独立主机、Repeater、TLS、加密和 VNC 云同步')
+        }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 10 })
+
+        // --- VNC 独立设置卡片 ---
+        ListItem() {
+          Column() {
+            Text('VNC 设置').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text3)
+              .fontFamily(this.font()).padding({ left: 8, bottom: 8 })
+            Column() {
+              this.cardActionRow($r('sys.symbol.display'), 'VNC 主机、Repeater 与 TLS',
+                '只使用 VNC 自己的主机、网关、trust 和密钥 owner', (): void => {
+                  router.pushUrl({ url: 'pages/VncSettingsPage' });
+                })
+              this.cardDivider()
+              this.cardActionRow($r('sys.symbol.cloud_fill'), 'VNC 独立同步范围',
+                'settings、hosts、gateways、secrets、trust 仍由 VNC 页面单独选择', (): void => {
+                  router.pushUrl({ url: 'pages/VncSettingsPage' });
+                })
+              this.cardDivider()
+              Text('普通云同步中的 vncrecord 只控制物理表是否参与；不会绕过 VNC scope，也不会把密码和 token 自动同步。')
+                .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font()).lineHeight(17)
+                .width('100%').padding({ left: 16, right: 16, top: 10, bottom: 12 })
+            }.borderRadius(24).backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
+              .shadow({ radius: 16, color: 'rgba(0,0,0,0.04)', offsetY: 4 })
+              .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
+          }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 20 })
+        }
+        .constraintSize({ maxHeight: this.settingsSectionExpanded(SETTINGS_SECTION_VNC) ?
+          this.settingsSectionExpandedMaxHeight(SETTINGS_SECTION_VNC) : 0 })
+        .opacity(this.settingsSectionExpanded(SETTINGS_SECTION_VNC) ? 1 : 0)
+        .scale({ x: 1, y: this.settingsSectionExpanded(SETTINGS_SECTION_VNC) ? 1 : 0.98 })
+        .translate({ y: this.settingsSectionExpanded(SETTINGS_SECTION_VNC) ? 0 : -8 })
         .clip(true)
         .animation({ duration: SETTINGS_ACCORDION_ANIMATION_MS, curve: Curve.FastOutSlowIn })
 
@@ -6403,7 +6496,7 @@ struct HostListPage {
               .width(46).height(46).borderRadius(23).backgroundColor(this.pal().surface).justifyContent(FlexAlign.Center)
             Column() {
               Text('华为云空间').fontSize(16).fontWeight(FontWeight.Bold).fontColor(this.pal().text).fontFamily(this.font())
-              Text('主机、RDP 凭据、SSH 密钥、2FA 与个性化设置共 7 类数据')
+              Text('主机、RDP 凭据、SSH 密钥、2FA、VNC 与个性化设置共 7 类业务数据')
                 .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font()).maxLines(2).margin({ top: 3 })
             }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 12 })
           }.width('100%').alignItems(VerticalAlign.Center)
@@ -6463,9 +6556,9 @@ struct HostListPage {
               Checkbox().select(this.cloudSyncSelectedTables.indexOf(table) >= 0).selectedColor(this.accentColor)
                 .onChange((): void => { this.toggleCloudSyncTable(table); })
               Column() {
-                Text(table === 'usersettings' ? '个性化与协议设置' : table === 'remotehosts' ? '远程主机' : table === 'rdpcredentials' ? 'Windows 登录凭据' : table === 'rustdeskrelays' ? 'RustDesk 中继配置' : table === 'sshkeys' ? 'SSH 密钥' : '双重验证动态口令')
+                Text(table === 'usersettings' ? '个性化与协议设置' : table === 'remotehosts' ? '远程主机' : table === 'rdpcredentials' ? 'Windows 登录凭据' : table === 'rustdeskrelays' ? 'RustDesk 中继配置' : table === 'sshkeys' ? 'SSH 密钥' : table === 'totpentries' ? '双重验证动态口令' : 'VNC 记录（vncrecord）')
                   .fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font())
-                Text(table === 'usersettings' ? '主题、外观和协议偏好' : '包含敏感数据，启用时自动同步加密参数')
+                Text(table === 'usersettings' ? '主题、外观和协议偏好' : table === 'vncrecord' ? '物理表开关；逻辑范围和 secrets 仍在 VNC 设置中选择' : '包含敏感数据，启用时自动同步加密参数')
                   .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font()).margin({ top: 3 })
               }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 10 })
             }.width('100%').padding(14).borderRadius(14).backgroundColor(this.pal().surface).margin({ bottom: 8 })
@@ -6919,6 +7012,17 @@ struct HostListPage {
     const ok = await crypto.unlock(this.cryptoPwd);
     if (!ok) {
       promptAction.showToast({ message: '密码错误, 无法关闭加密', duration: 2000 });
+      return;
+    }
+    // VNC secrets intentionally remain in the context-bound AES-GCM v2
+    // envelope. The legacy global disable path only knows how to turn the
+    // older protocol fields into plaintext, so refuse the operation instead
+    // of leaving VNC passwords/tokens unreadable after the DEK is cleared.
+    if (cloud.hasEncryptedVncSecrets()) {
+      promptAction.showToast({
+        message: '无法关闭加密：请先删除 VNC 密码/令牌；VNC 密钥不会降级为明文',
+        duration: 3000
+      });
       return;
     }
     // 2. 先完成本地解密，再发布关闭信令；任一步写入失败都不能向云端发布半成品状态。
@@ -7704,6 +7808,10 @@ struct HostListPage {
         onSelectProtocol: (protocol: string): void => {
           this.modernAddProtocol = protocol;
           this.addSheetShowsModernPicker = false;
+          if (protocol === 'vnc') {
+            this.prepareVncAddFlow();
+            this.vncAddFromModernPicker = true;
+          }
           if (protocol !== 'rdp') {
             this.switchHostProtocol(protocol, RemoteHost.getDefaultPort(protocol));
           }
@@ -7740,6 +7848,24 @@ struct HostListPage {
         onBackToProtocols: (): void => { this.modernAddProtocol = ''; this.addSheetShowsModernPicker = true; },
         onSave: (host: RemoteHost, connectNow: boolean): void => {
           this.saveHostFromAddFlow(host, connectNow);
+        }
+      })
+    } else if (this.modernAddProtocol === 'vnc') {
+      VncAddFlow({
+        gateways: this.vncGateways.list(),
+        onBackToProtocols: (): void => {
+          this.modernAddProtocol = '';
+          this.addSheetShowsModernPicker = this.vncAddFromModernPicker;
+          this.vncAddFromModernPicker = false;
+        },
+        onOpenSettings: (): void => {
+          this.requestAddSheetClose();
+          setTimeout((): void => {
+            if (this.pageActive) { router.pushUrl({ url: 'pages/VncSettingsPage' }); }
+          }, 280);
+        },
+        onSave: (values: VncHostValues, password: string, connectNow: boolean): void => {
+          this.saveVncHostFromAddFlow(values, password, connectNow);
         }
       })
     } else {
@@ -7819,6 +7945,7 @@ struct HostListPage {
           Row() {
             this.protoBtn('RDP', 'rdp', 3389)
             this.protoBtn('RustDesk', 'rustdesk', 21116)
+            this.protoBtn('VNC', 'vnc', 5900)
             this.protoBtn('SSH', 'ssh', 22)
           }.width('100%').margin({ bottom: 12 })
 
@@ -8126,6 +8253,12 @@ struct HostListPage {
       .opacity(this.editingHostId === '' || this.proto === protoVal ? 1.0 : 0.4)
       .onClick(() => {
         if (this.editingHostId !== '') { return; }
+        if (protoVal === 'vnc') {
+          this.vncAddFromModernPicker = false;
+          this.prepareVncAddFlow();
+          this.modernAddProtocol = 'vnc';
+          return;
+        }
         this.switchHostProtocol(protoVal, defaultPort);
         if (protoVal === 'rustdesk') { this.sheetPwdMode = 0; }
       })

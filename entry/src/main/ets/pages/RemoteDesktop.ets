@@ -5926,7 +5926,7 @@ struct RemoteDesktop {
       await this.setPreferredOrientation(window.Orientation.LANDSCAPE, 'LANDSCAPE');
       await this.setRemoteKeepScreenOn(true);
       await this.setRemoteNavigationHidden(true, 'connect-success');
-      // VNC 使用独立的 vncrecords owner，不得把 transient `vnc:<id>` 投影
+      // VNC 使用独立的 vncrecord owner，不得把 transient `vnc:<id>` 投影
       // 回混合 remotehosts；RDP/RustDesk 保持原有最近连接时间行为。
       if (host.protocol !== 'vnc') {
         await this.srv.updateLastConnected(host.id);

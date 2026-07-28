@@ -2,7 +2,7 @@ import { cryptoFramework } from '@kit.CryptoArchitectureKit';
 import { util } from '@kit.ArkTS';
 import { VncRecord, VncRecordType, VncOwnerType, VncSecretKind } from '../model/VncRecord';
 
-export const VNC_CLOUD_TABLE: string = 'vncrecords';
+export const VNC_CLOUD_TABLE: string = 'vncrecord';
 export const VNC_LOCAL_TABLE: string = 'vnclocalrecords';
 export const VNC_SCHEMA_VERSION: number = 1;
 export const VNC_CRYPTO_VERSION: number = 2;
@@ -319,4 +319,15 @@ export function vncRecordNeedsSecretMirror(syncSecrets: boolean, cryptoReady: bo
   record: VncRecord): boolean {
   return syncSecrets && cryptoReady && record.recordType === 'secret' && record.ciphertext !== '' &&
     record.envelopeVersion === VNC_SECRET_ENVELOPE_VERSION;
+}
+
+/**
+ * A live secret ciphertext must survive while the global DEK is available.
+ * This deliberately does not validate the full row: a malformed active secret
+ * is still a reason to refuse a crypto-disable operation instead of silently
+ * treating it as disposable plaintext data.
+ */
+export function vncRecordHasActiveCiphertext(record: VncRecord): boolean {
+  return record.recordType === 'secret' && record.ciphertext.trim() !== '' &&
+    (!Number.isFinite(record.deletedAt) || record.deletedAt <= 0);
 }

@@ -1,7 +1,8 @@
 import { describe, it, expect } from '@ohos/hypium';
 import { VncRecord } from '../main/ets/model/VncRecord';
 import { vncPayloadHashSha256, vncRecordIsScopeTombstone, vncRecordIsValid,
-  vncRecordFromCloudRow, vncSecretPayloadIsMetadataOnly, VNC_SCOPE_TOMBSTONE_PAYLOAD } from
+  vncRecordFromCloudRow, vncSecretPayloadIsMetadataOnly, VNC_SCOPE_TOMBSTONE_PAYLOAD,
+  VNC_CLOUD_TABLE, vncRecordHasActiveCiphertext } from
   '../main/ets/services/VncRecordPolicy';
 import { vncHostPayload } from '../main/ets/services/VncModelPolicy';
 
@@ -24,6 +25,9 @@ function validHostRecord(): VncRecord {
 
 export default function vncRecordPolicyTest(): void {
   describe('VncRecordPolicy', (): void => {
+    it('uses_the_single_vncrecord_cloud_table', 0, (): void => {
+      expect(VNC_CLOUD_TABLE).assertEqual('vncrecord');
+    });
     it('accepts_non_secret_host_rows_in_the_vnc_owner_domain', 0, (): void => {
       expect(vncRecordIsValid(validHostRecord())).assertTrue();
     });
@@ -108,6 +112,23 @@ export default function vncRecordPolicyTest(): void {
       expect(vncRecordIsScopeTombstone(record)).assertTrue();
       record.deletedAt = 0;
       expect(vncRecordIsScopeTombstone(record)).assertFalse();
+    });
+
+    it('blocks_global_crypto_disable_for_any_live_vnc_ciphertext', 0, (): void => {
+      const record = validHostRecord();
+      record.recordType = 'secret';
+      record.ownerId = 'host-1';
+      record.ownerType = 'host';
+      record.secretKind = 'vnc_password';
+      record.ciphertext = '2:header:nonce:tag';
+      expect(vncRecordHasActiveCiphertext(record)).assertTrue();
+      record.deletedAt = 3;
+      expect(vncRecordHasActiveCiphertext(record)).assertFalse();
+      record.deletedAt = Number.NaN;
+      expect(vncRecordHasActiveCiphertext(record)).assertTrue();
+      record.recordType = 'host';
+      record.deletedAt = 0;
+      expect(vncRecordHasActiveCiphertext(record)).assertFalse();
     });
   });
 }

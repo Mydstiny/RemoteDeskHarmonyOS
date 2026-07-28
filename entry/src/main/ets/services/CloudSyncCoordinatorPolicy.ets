@@ -25,6 +25,26 @@ export type CloudSyncFailureKind =
   'none' | 'version_conflict' | 'empty_snapshot' | 'tombstone_cleanup' |
   'cloud_service' | 'network' | 'unknown';
 
+/**
+ * The first successful cloud-first snapshot is a durable device bootstrap
+ * boundary. Automatic native-first uploads are not allowed to cross that
+ * boundary, otherwise a newly installed device can publish its local default
+ * rows before it has ever observed the shared cloud state.
+ */
+export type CloudSyncBootstrapState = 'pending' | 'ready';
+
+export function shouldDeferAutomaticPushDuringBootstrap(
+  bootstrapState: CloudSyncBootstrapState
+): boolean {
+  return bootstrapState === 'pending';
+}
+
+export function shouldUseCloudFirstForInitialBootstrap(
+  bootstrapCompleted: boolean
+): boolean {
+  return !bootstrapCompleted;
+}
+
 /** Classify native/RDB messages before they reach retry and UI policy. */
 export function classifyCloudSyncFailure(message: string): CloudSyncFailureKind {
   const normalized: string = (message || '').toUpperCase();
@@ -134,8 +154,8 @@ export function retryTablesStillSelected(retryTables: string[], selectedBusiness
  */
 export function retryVncTablesStillSelected(retryTables: string[], selectedVncTables: string[]): string[] {
   const selected: string[] = selectedVncTables.slice();
-  const hasVncBusinessTable: boolean = retryTables.indexOf('vncrecords') >= 0;
-  if (hasVncBusinessTable && selected.indexOf('vncrecords') < 0) { return []; }
+  const hasVncBusinessTable: boolean = retryTables.indexOf('vncrecord') >= 0;
+  if (hasVncBusinessTable && selected.indexOf('vncrecord') < 0) { return []; }
   return retryTables.filter((table: string): boolean => selected.indexOf(table) >= 0);
 }
 
@@ -149,8 +169,10 @@ export function cloudDistributedTableAutoSync(): boolean {
 }
 
 /** A destructive pull or local restore owns the local RDB until it settles. */
-export function cloudLocalMutationAllowed(manualDownloadActive: boolean, localRestoreActive: boolean): boolean {
-  return !manualDownloadActive && !localRestoreActive;
+export function cloudLocalMutationAllowed(manualDownloadActive: boolean, localRestoreActive: boolean,
+  startupSyncPending: boolean = false, bootstrapCompleted: boolean = true): boolean {
+  return !manualDownloadActive && !localRestoreActive &&
+    (!startupSyncPending || bootstrapCompleted);
 }
 
 /** Freeze a user's selection in canonical pull/encryption order for one operation. */
