@@ -19,10 +19,11 @@ export default function vncCloudSyncSelectionPolicyTest(): void {
       expect(isVncRecordTypeSelected('gateway', selected)).assertFalse();
     });
 
-    it('requires_explicit_secret_selection_and_ready_crypto', 0, (): void => {
+    it('allows_explicit_secret_selection_without_crypto_readiness', 0, (): void => {
       const selected: string[] = ['settings', 'secrets'];
       expect(vncSyncNeedsCrypto(selected)).assertTrue();
-      expect(vncSecretSyncAllowed(selected, false)).assertFalse();
+      expect(vncSyncNeedsCrypto(selected, false)).assertFalse();
+      expect(vncSecretSyncAllowed(selected, false)).assertTrue();
       expect(vncSecretSyncAllowed(selected, true)).assertTrue();
       expect(vncSecretSyncAllowed(['settings'], true)).assertFalse();
     });

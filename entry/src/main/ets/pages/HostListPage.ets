@@ -50,6 +50,7 @@ import { RdpAddFlow } from '../components/hostadd/RdpAddFlow';
 import { RustDeskAddFlow } from '../components/hostadd/RustDeskAddFlow';
 import { SshAddFlow } from '../components/hostadd/SshAddFlow';
 import { VncAddFlow } from '../components/hostadd/VncAddFlow';
+import { VncSessionCredentialHandoff } from '../services/VncSessionCredentialHandoff';
 import { VncSettingsSheet } from '../components/VncSettingsSheet';
 // Passphrase uses bindSheet (HostListPage is @Entry, no bindSheet limit)
 import { KeyVaultPage } from './KeyVaultPage';
@@ -1022,7 +1023,8 @@ struct HostListPage {
     this.vncGateways.init(context);
   }
 
-  private saveVncHostFromAddFlow(values: VncHostValues, password: string, connectNow: boolean): void {
+  private saveVncHostFromAddFlow(values: VncHostValues, password: string, connectNow: boolean,
+    plainStorageConfirmed: boolean = false): void {
     if (this.addSheetClosing || this.pendingAddSheetConnectHostId !== '' ||
       this.pendingVncConnectHostId !== '') {
       hilog.info(0x0001, 'HostList', 'ignored repeated VNC add-host save while Sheet is closing');
@@ -1032,12 +1034,15 @@ struct HostListPage {
       promptAction.showToast({ message: 'VNC 服务尚未完成云同步初始化，请稍后重试', duration: 2200 });
       return;
     }
-    const result = this.vncHosts.save(values, '', password);
+    const result = this.vncHosts.save(values, '', password, plainStorageConfirmed);
     if (!result.ok) {
       promptAction.showToast({ message: result.message || '保存 VNC 主机失败', duration: 2200 });
       return;
     }
     this.pendingVncConnectHostId = connectNow ? result.id : '';
+    if (connectNow && !values.rememberPassword && password.length > 0) {
+      VncSessionCredentialHandoff.getInstance().put(this.vncHosts.currentUserId(), result.id, password);
+    }
     promptAction.showToast({
       message: connectNow ? 'VNC 主机已保存，正在准备连接' : 'VNC 主机已保存',
       duration: 1800
@@ -7299,18 +7304,8 @@ struct HostListPage {
       promptAction.showToast({ message: '密码错误, 无法关闭加密', duration: 2000 });
       return;
     }
-    // VNC secrets intentionally remain in the context-bound AES-GCM v2
-    // envelope. The legacy global disable path only knows how to turn the
-    // older protocol fields into plaintext, so refuse the operation instead
-    // of leaving VNC passwords/tokens unreadable after the DEK is cleared.
-    if (cloud.hasEncryptedVncSecrets()) {
-      promptAction.showToast({
-        message: '无法关闭加密：请先删除 VNC 密码/令牌；VNC 密钥不会降级为明文',
-        duration: 3000
-      });
-      return;
-    }
-    // 2. 先完成本地解密，再发布关闭信令；任一步写入失败都不能向云端发布半成品状态。
+    // 2. 先在同一事务中把所有 VNC encrypted_v2 secret 转换为明确确认的
+    // plain-v1，再发布关闭信令；任一步写入失败都不能发布半成品状态。
     const count = cloud.decryptAllData(crypto, false);
     hilog.info(0x0001, 'CloudSync', 'doCloseEncryption: 已解密 ' + count + ' 条数据');
     if (count < 0) {
@@ -7333,6 +7328,7 @@ struct HostListPage {
     cloud.pushTable('rustdeskrelays');
     cloud.pushTable('sshkeys');
     cloud.pushTable('totpentries');
+    cloud.pushTable('vncrecord');
     // 4. 清除内存 DEK。
     crypto.resetSetup();
     this.closeSettingsLeafSheet();
@@ -8173,8 +8169,9 @@ struct HostListPage {
             this.relayVncAddTrigger++;
           }, SETTINGS_PANEL_DISMISS_TO_LEAF_OPEN_MS);
         },
-        onSave: (values: VncHostValues, password: string, connectNow: boolean): void => {
-          this.saveVncHostFromAddFlow(values, password, connectNow);
+        onSave: (values: VncHostValues, password: string, connectNow: boolean,
+          plainStorageConfirmed: boolean): void => {
+          this.saveVncHostFromAddFlow(values, password, connectNow, plainStorageConfirmed);
         }
       })
     } else {

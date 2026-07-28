@@ -33,6 +33,7 @@ export interface VncHostValues {
   gatewayId: string;
   transport: VncTransport;
   repeaterMode: VncRepeaterMode;
+  rememberPassword: boolean;
   viewOnly: boolean;
   scalingMode: VncScalingMode;
   clipboardEnabled: boolean;
@@ -124,6 +125,7 @@ export function vncHostPayload(values: VncHostValues): string {
   payload['gatewayId'] = values.gatewayId.trim();
   payload['transport'] = values.transport;
   payload['repeaterMode'] = values.repeaterMode;
+  payload['rememberPassword'] = values.rememberPassword;
   payload['viewOnly'] = values.viewOnly;
   payload['scalingMode'] = values.scalingMode;
   payload['clipboardEnabled'] = values.clipboardEnabled;
@@ -154,10 +156,12 @@ export function vncTrustPayload(fingerprintSha256: string, confirmed: boolean, c
   return vncCanonicalJson(payload);
 }
 
-export function vncSecretMetadataPayload(secretKind: string, label: string): string {
+export function vncSecretMetadataPayload(secretKind: string, label: string,
+  storageMode: string = 'encrypted_v2'): string {
   const payload: Record<string, Object> = {};
   payload['kind'] = secretKind;
   payload['label'] = label.trim();
+  payload['storageMode'] = storageMode;
   return vncCanonicalJson(payload);
 }
 

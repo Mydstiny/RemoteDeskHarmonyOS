@@ -30,8 +30,16 @@ export class VncCloudSyncService {
    */
   replaceSelectedScopes(scopes: string[]): boolean {
     if (this.context === null) { return false; }
-    this.selection.replaceSelectedScopes(this.context, scopes);
-    return true;
+    return this.selection.replaceSelectedScopes(this.context, scopes);
+  }
+
+  stageSelectedScopes(scopes: string[]): void {
+    this.selection.stageSelectedScopes(scopes);
+  }
+
+  persistSelectedScopes(): boolean {
+    if (this.context === null) { return false; }
+    return this.selection.persistSelectedScopes(this.context);
   }
 
   selectedScopes(): VncCloudSyncScope[] { return this.selection.selectedScopes(); }
@@ -40,7 +48,7 @@ export class VncCloudSyncService {
     return this.selection.isRecordTypeSelected(recordType);
   }
 
-  secretsAllowed(cryptoReady: boolean): boolean {
+  secretsAllowed(cryptoReady: boolean = false): boolean {
     return this.selection.secretsAllowed(cryptoReady);
   }
 

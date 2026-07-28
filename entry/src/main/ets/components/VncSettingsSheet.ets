@@ -167,14 +167,15 @@ export struct VncSettingsSheet {
     const needsTrustConfirmation: boolean = this.syncTrust && !current.syncTrust;
     const needsPlaintextConfirmation: boolean = this.securityPolicy === 'allow_plaintext' &&
       current.securityPolicy !== 'allow_plaintext';
-    if ((needsSecretConfirmation || needsTrustConfirmation) && !this.cryptoReady) {
-      this.errorText = 'VNC 密码、令牌和 trust 同步需要先解锁应用加密';
-      return;
-    }
     if (needsSecretConfirmation || needsTrustConfirmation || needsPlaintextConfirmation) {
       let message: string = '';
       if (needsSecretConfirmation) {
-        message += 'VNC 密码和网关令牌会以绑定上下文的 AES-GCM 密文进入 vncrecord。';
+        const crypto: DataCrypto = DataCrypto.getInstance();
+        message += crypto.isReady()
+          ? 'VNC 密码和网关令牌会以绑定上下文的 AES-GCM 密文进入 vncrecord。'
+          : crypto.isSetupComplete()
+            ? '应用加密已锁定。现有 AES-GCM 密文会保留；新凭据可关闭“记住密码”后临时使用。'
+            : '应用加密未启用。明确选择记住密码的 VNC 凭据可能以未加密形式进入 vncrecord，请确认风险。';
       }
       if (needsTrustConfirmation) {
         message += (message === '' ? '' : '\n') + 'trust 指纹只同步记录，不会自动信任新设备。';
@@ -221,10 +222,6 @@ export struct VncSettingsSheet {
   }
 
   private setScope(scope: VncCloudSyncScope, selected: boolean): void {
-    if ((scope === 'secrets' || scope === 'trust') && selected && !this.cryptoReady) {
-      this.errorText = '请先解锁应用加密，再开启 VNC 敏感数据同步';
-      return;
-    }
     if (scope === 'settings') { this.syncPreferences = selected; }
     if (scope === 'hosts') { this.syncHosts = selected; }
     if (scope === 'gateways') { this.syncGateways = selected; }
@@ -246,7 +243,7 @@ export struct VncSettingsSheet {
     if (scope === 'settings') { return '连接、显示和安全默认值'; }
     if (scope === 'hosts') { return '主机地址和非敏感连接配置'; }
     if (scope === 'gateways') { return 'Repeater/Gateway 地址和能力'; }
-    if (scope === 'secrets') { return '仅在加密解锁且明确选择时同步'; }
+    if (scope === 'secrets') { return '默认关闭；按“记住密码”策略保存，明文需再次确认'; }
     return '云恢复后仍需在本设备重新确认';
   }
 
@@ -440,8 +437,14 @@ export struct VncSettingsSheet {
           }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 9 })
         }.width('100%').padding(10).borderRadius(10).backgroundColor(this.pal().surface).margin({ bottom: 7 })
       }, (scope: VncCloudSyncScope): string => scope)
-      Text(this.cryptoReady ? '加密已解锁，可按选择保存 VNC 密文' : '加密未解锁，密码/令牌/trust 同步不可开启')
-        .fontSize(11).fontColor(this.cryptoReady ? this.pal().success : this.pal().danger).margin({ top: 4, bottom: 12 })
+      Text(DataCrypto.getInstance().isReady()
+        ? '加密已解锁，可按选择保存 VNC 密文'
+        : (DataCrypto.getInstance().isSetupComplete()
+          ? '应用加密已锁定：现有密文保持 opaque；新凭据可关闭记住密码后临时使用'
+          : '应用加密未启用：VNC 元数据可同步；明文凭据只有在明确确认风险后才会保存/同步'))
+        .fontSize(11)
+        .fontColor(DataCrypto.getInstance().isReady() ? this.pal().success : this.pal().text3)
+        .margin({ top: 4, bottom: 12 })
       Button('保存同步范围').width('100%').height(42).borderRadius(10).backgroundColor(this.accentColor)
         .fontColor(Color.White).onClick((): void => { this.save(); })
     }.width('100%')

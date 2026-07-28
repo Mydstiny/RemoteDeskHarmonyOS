@@ -7,6 +7,7 @@ import { ActiveRemoteSessionRegistry } from './ActiveRemoteSessionRegistry';
 import { VncRecordType } from '../model/VncRecord';
 import { VncCloudSyncSelectionStore } from './VncCloudSyncSelectionStore';
 import { VNC_CLOUD_TABLE } from './VncRecordPolicy';
+import { DataCrypto } from './DataCrypto';
 import {
   CLOUD_SYNC_MAX_RETRY_ATTEMPTS,
   CloudSyncRequest,
@@ -51,6 +52,8 @@ export interface CloudSyncCoordinatorHooks {
   rollbackManualDownload: () => Promise<boolean>;
   /** Return false to roll the just-applied cloud download back to its snapshot. */
   completeManualDownload: (tables: string[]) => boolean | void;
+  /** Complete only successful tables without clearing unrelated restore quarantine. */
+  completeManualDownloadPartial?: (tables: string[]) => boolean | void;
   setRestorePending: (pending: boolean) => void;
   pendingMutationTableRevisions?: () => Record<string, number>;
   acknowledgeMutationJournal?: (table: string, coveredRevision: number) => boolean;
@@ -76,6 +79,14 @@ export async function executeCloudSyncRequest(
 ): Promise<CloudSyncOperationResult> {
   const failedTables: string[] = [];
   let failureKind: CloudSyncFailureKind = 'none';
+  // A VNC-only request may carry cryptoparams only as an optional dependency
+  // for encrypted VNC secrets. Its failure must not prevent the independent
+  // vncrecord transfer from preserving metadata or opaque ciphertext. A
+  // mixed manual request must retain the ordinary fail-closed behavior so a
+  // crypto failure cannot accidentally affect RDP, RustDesk, SSH, or TOTP.
+  const vncOnlyRequest: boolean = request.tables.indexOf(VNC_CLOUD_TABLE) >= 0 &&
+    request.tables.every((table: string): boolean =>
+      table === VNC_CLOUD_TABLE || table === 'cryptoparams');
   if (!executor || request.tables.length === 0) {
     return {
       ok: request.tables.length === 0, source: request.source, tables: request.tables.slice(),
@@ -107,6 +118,7 @@ export async function executeCloudSyncRequest(
       failedTables.push(table);
       failureKind = hooks && hooks.failureKindForTable ? hooks.failureKindForTable(table) : 'unknown';
       if (table === 'cryptoparams') {
+        if (vncOnlyRequest) { continue; }
         for (let j = i + 1; j < request.tables.length; j++) { failedTables.push(request.tables[j]); }
       }
       break;
@@ -115,6 +127,7 @@ export async function executeCloudSyncRequest(
       failedTables.push(table);
       failureKind = hooks && hooks.failureKindForTable ? hooks.failureKindForTable(table) : 'unknown';
       if (table === 'cryptoparams') {
+        if (vncOnlyRequest) { continue; }
         for (let j = i + 1; j < request.tables.length; j++) { failedTables.push(request.tables[j]); }
         break;
       }
@@ -130,6 +143,19 @@ export async function executeCloudSyncRequest(
           if (failureKind === 'none') { failureKind = 'unknown'; }
           rollbackFailed = !(await hooks.rollbackManualDownload());
         }
+      } else if (vncOnlyRequest && failedTables.length === 1 &&
+        failedTables[0] === 'cryptoparams') {
+        // `cryptoparams` is optional for a VNC transfer: metadata and opaque
+        // encrypted rows may still be pulled safely. Commit the successful
+        // VNC table and retain the crypto failure for the caller; rolling the
+        // whole snapshot back would turn an independent VNC sync failure into
+        // the very data loss this boundary is meant to prevent.
+        const completedTables: string[] = request.tables.filter(
+          (table: string): boolean => table !== 'cryptoparams');
+        const completed: boolean | void = hooks.completeManualDownloadPartial
+          ? hooks.completeManualDownloadPartial(completedTables)
+          : hooks.completeManualDownload(completedTables);
+        if (completed === false) { rollbackFailed = !(await hooks.rollbackManualDownload()); }
       } else { rollbackFailed = !(await hooks.rollbackManualDownload()); }
     } catch (_e) {
       rollbackFailed = true;
@@ -710,15 +736,17 @@ export class CloudSyncCoordinator {
   private vncSyncTables(): string[] {
     if (!this.vncPhysicalTableSelected() || !this.vncSelection.hasSelection()) { return []; }
     const result: string[] = [];
-    if (this.vncSelection.needsCrypto()) { result.push('cryptoparams'); }
+    if (this.vncSelection.needsCrypto(DataCrypto.getInstance().isSetupComplete())) {
+      result.push('cryptoparams');
+    }
     result.push(VNC_CLOUD_TABLE);
     return result;
   }
 
   /**
    * The regular VNC selection controls visible data. With no selected scope,
-   * no VNC cloud transfer is scheduled. Secrets remain encrypted in the
-   * single physical table and are never projected while unselected/locked.
+   * no VNC cloud transfer is scheduled. A locked device keeps encrypted
+   * secret rows opaque; it never replaces them with an empty local projection.
    */
   private vncUploadTables(): string[] {
     return this.vncSyncTables();

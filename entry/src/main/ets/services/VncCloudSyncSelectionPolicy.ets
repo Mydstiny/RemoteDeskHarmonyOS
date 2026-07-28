@@ -45,11 +45,11 @@ export function isVncRecordTypeSelected(recordType: VncRecordType, selected: str
   return normalizeVncCloudSyncSelection(selected).indexOf(vncRecordTypeToSyncScope(recordType)) >= 0;
 }
 
-/** Secrets require both explicit opt-in and an unlocked local crypto key. */
-export function vncSecretSyncAllowed(selected: string[], cryptoReady: boolean): boolean {
-  return cryptoReady && normalizeVncCloudSyncSelection(selected).indexOf('secrets') >= 0;
+/** Secret visibility is an explicit VNC scope decision, not a crypto lock. */
+export function vncSecretSyncAllowed(selected: string[], _cryptoReady: boolean = false): boolean {
+  return normalizeVncCloudSyncSelection(selected).indexOf('secrets') >= 0;
 }
 
-export function vncSyncNeedsCrypto(selected: string[]): boolean {
-  return normalizeVncCloudSyncSelection(selected).indexOf('secrets') >= 0;
+export function vncSyncNeedsCrypto(selected: string[], cryptoConfigured: boolean = true): boolean {
+  return cryptoConfigured && normalizeVncCloudSyncSelection(selected).indexOf('secrets') >= 0;
 }

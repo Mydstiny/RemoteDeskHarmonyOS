@@ -25,7 +25,8 @@ import { RustDeskRelayConfig } from '../model/RustDeskRelayConfig';
 import { SshKey } from '../model/SshKey';
 import { TotpEntry } from '../model/TotpEntry';
 import { VncRecord } from '../model/VncRecord';
-import { VNC_CLOUD_TABLE } from './VncRecordPolicy';
+import { VNC_CLOUD_TABLE, vncCanonicalJson, vncPayloadObject } from './VncRecordPolicy';
+import { decodePlainVncSecret, vncSecretStorageModeFromPayload } from './VncSecretStoragePolicy';
 
 const TAG = 'DataCrypto';
 const DOMAIN = 0x0011;
@@ -653,8 +654,9 @@ export class DataCrypto {
         }
       }
 
-      // 6. Migrate VNC secrets into the context-bound v2 envelope. VNC never
-      // stores a secret in payload, even while migrating an older installation.
+      // 6. Migrate VNC secrets into the context-bound v2 envelope. Explicitly
+      // confirmed plain-v1 rows are re-encrypted when the user enables app
+      // encryption; opaque v2 rows are already current and are left untouched.
       if (cloud.loadAllVncRecordsRaw && cloud.updateVncRecordRaw) {
         const vncRecords: VncRecord[] = cloud.loadAllVncRecordsRaw();
         for (let i = 0; i < vncRecords.length; i++) {
@@ -663,7 +665,15 @@ export class DataCrypto {
             continue;
           }
           try {
-            const plaintext: string = this.decrypt(record.ciphertext);
+            const storageMode: string = vncSecretStorageModeFromPayload(record.payload);
+            const plaintext: string = storageMode === 'plain_explicit_v1'
+              ? (decodePlainVncSecret(record.ciphertext) || '')
+              : this.decrypt(record.ciphertext);
+            if (plaintext === '') { throw new Error('VNC secret plaintext is empty or invalid'); }
+            const metadata = vncPayloadObject(record.payload);
+            if (metadata === null) { throw new Error('VNC secret metadata is invalid'); }
+            metadata['storageMode'] = 'encrypted_v2';
+            record.payload = vncCanonicalJson(metadata);
             record.ciphertext = this.encryptField('remotedesktop|vnc', VNC_CLOUD_TABLE, record.id,
               'ciphertext', plaintext, record.schemaVersion > 0 ? record.schemaVersion : 1,
               this.VNC_KEY_VERSION, this.VNC_AAD_VERSION);

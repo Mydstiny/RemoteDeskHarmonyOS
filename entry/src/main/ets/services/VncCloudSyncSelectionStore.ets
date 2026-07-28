@@ -48,20 +48,41 @@ export class VncCloudSyncSelectionStore {
     return isVncRecordTypeSelected(recordType, this.selected);
   }
 
-  secretsAllowed(cryptoReady: boolean): boolean {
+  secretsAllowed(cryptoReady: boolean = false): boolean {
     return vncSecretSyncAllowed(this.selected, cryptoReady);
   }
 
-  needsCrypto(): boolean { return vncSyncNeedsCrypto(this.selected); }
+  needsCrypto(cryptoConfigured: boolean = true): boolean {
+    return vncSyncNeedsCrypto(this.selected, cryptoConfigured);
+  }
 
-  replaceSelectedScopes(context: common.Context, scopes: string[]): void {
+  /** Stage a scope change in memory without touching durable Preferences. */
+  stageSelectedScopes(scopes: string[]): void {
     this.selected = normalizeVncCloudSyncSelection(scopes);
+  }
+
+  /** Persist the already-staged scope after its RDB projection succeeds. */
+  persistSelectedScopes(context: common.Context): boolean {
     try {
       const prefs = preferences.getPreferencesSync(context, { name: PREFS_NAME });
       prefs.putSync(VNC_CLOUD_SYNC_SELECTION_KEY, JSON.stringify(this.selected));
       prefs.flushSync();
+      return true;
     } catch (_e) {
-      // Keep the in-memory selection usable until the next app start.
+      return false;
     }
+  }
+
+  replaceSelectedScopes(context: common.Context, scopes: string[]): boolean {
+    const previous: VncCloudSyncScope[] = this.selected.slice();
+    const next: VncCloudSyncScope[] = normalizeVncCloudSyncSelection(scopes);
+    this.selected = next;
+    if (this.persistSelectedScopes(context)) { return true; }
+    // Keep both durable and in-memory selection on the previous value when
+    // persistence fails; a failed scope change must not split the UI from
+    // the VNC record projection.
+    this.selected = previous;
+    this.persistSelectedScopes(context);
+    return false;
   }
 }

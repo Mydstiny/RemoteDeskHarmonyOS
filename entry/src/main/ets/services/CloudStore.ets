@@ -106,11 +106,15 @@ import {
   vncRecordToCloudRow,
   vncRecordWins,
   vncPayloadHashSha256,
+  vncCanonicalJson,
+  vncPayloadObject,
   VNC_SECRET_ENVELOPE_VERSION,
-  vncRecordHasActiveCiphertext
+  VNC_PLAIN_SECRET_ENVELOPE_VERSION,
+  vncRecordHasActiveEncryptedCiphertext
 } from './VncRecordPolicy';
 import { VncCloudSyncSelectionStore } from './VncCloudSyncSelectionStore';
 import { VncCloudSyncService } from './VncCloudSyncService';
+import { decodePlainVncSecret, encodePlainVncSecret, vncSecretStorageModeFromPayload } from './VncSecretStoragePolicy';
 
 const DB_NAME: string = 'remotedesktop';
 const TABLES: string[] = cloudSyncTableNames();
@@ -539,11 +543,16 @@ export class CloudStore implements CryptoCloudStore {
         if (!this.discardMutationJournalForTables(tables) || !this.clearRestoredNotUploaded()) {
           return false;
         }
-        this.manualDownloadSnapshot = null;
-        this.manualDownloadExtensions = null;
-        this.manualDownloadMetadata = null;
-        this.manualDownloadMutationJournal = null;
-        this.manualDownloadLocalTables = null;
+        this.clearManualDownloadSnapshot();
+        return true;
+      },
+      completeManualDownloadPartial: (tables: string[]): boolean => {
+        // A VNC request may finish its independent vncrecord transfer while
+        // cryptoparams is unavailable. Discard only the successful table's
+        // journal and release the temporary snapshot; keep the global restore
+        // quarantine intact until every required table has completed.
+        if (!this.discardMutationJournalForTables(tables)) { return false; }
+        this.clearManualDownloadSnapshot();
         return true;
       },
       setRestorePending: (pending: boolean): void => { this.localRestorePending = pending; },
@@ -559,6 +568,14 @@ export class CloudStore implements CryptoCloudStore {
       hasRestoredNotUploaded: (): boolean => this.hasRestoredNotUploaded(),
       clearRestoredNotUploaded: (): boolean => this.clearRestoredNotUploaded()
     };
+  }
+
+  private clearManualDownloadSnapshot(): void {
+    this.manualDownloadSnapshot = null;
+    this.manualDownloadExtensions = null;
+    this.manualDownloadMetadata = null;
+    this.manualDownloadMutationJournal = null;
+    this.manualDownloadLocalTables = null;
   }
 
   getLastSyncFailureKind(): CloudSyncFailureKind {
@@ -703,15 +720,11 @@ export class CloudStore implements CryptoCloudStore {
   }
 
   /**
-   * Global encryption cannot be disabled while any VNC secret ciphertext is
-   * still stored. VNC secrets use the context-bound v2 envelope and must never
-   * be converted to plaintext merely to satisfy the legacy global disable
-   * flow. Scan both the device-local overlay and the distributed mirror
-   * without applying the current VNC selection projection: a deselected or
-   * locked device must not strand a secret that another device still owns.
-   *
-   * A current-table read failure is fail-closed. The old renamed table is
-   * compatibility-only and may legitimately be absent on a clean install.
+   * Return true only for active VNC secrets that are still encrypted with the
+   * context-bound v2 envelope. Explicitly confirmed plain-v1 secrets are
+   * already compatible with the global disabled state and must not block it.
+   * Scan every owner table without applying the VNC selection projection so a
+   * deselected or locked device cannot strand a secret owned by another device.
    */
   hasEncryptedVncSecrets(): boolean {
     if (!this.store) { return false; }
@@ -724,7 +737,7 @@ export class CloudStore implements CryptoCloudStore {
         while (rows.goToNextRow()) {
           if (deletedFlagIndex >= 0 && rows.getLong(deletedFlagIndex) === 1) { continue; }
           const record: VncRecord = this.vncRecordFromResult(rows);
-          if (vncRecordHasActiveCiphertext(record)) {
+          if (vncRecordHasActiveEncryptedCiphertext(record)) {
             rows.close();
             return true;
           }
@@ -2415,17 +2428,13 @@ export class CloudStore implements CryptoCloudStore {
    */
   decryptAllData(crypto: DataCrypto, pushChanges: boolean = true): number {
     if (!this.localMutationAllowed() || !this.store) { return -1; }
-    if (this.hasEncryptedVncSecrets()) {
-      hilog.warn(0x0001, 'CloudSync',
-        '[decryptAllData] VNC secret ciphertext requires the v2 envelope; global encryption remains enabled');
-      return -1;
-    }
     let count: number = 0;
     let hostsChanged: boolean = false;
     let rdpCredentialsChanged: boolean = false;
     let relaysChanged: boolean = false;
     let sshKeysChanged: boolean = false;
     let totpEntriesChanged: boolean = false;
+    let vncRecordsChanged: boolean = false;
     try {
       this.store.beginTransaction();
       // 1. remotehosts: the canonical password lives in `passward`.
@@ -2598,6 +2607,14 @@ export class CloudStore implements CryptoCloudStore {
       }
       relayRs.close();
 
+      // 6. VNC secret owner: convert encrypted_v2 to the explicitly confirmed
+      // plain-v1 envelope before the global DEK is removed. This is a
+      // transactional migration; a single undecryptable row aborts the whole
+      // status transition instead of leaving an unreadable half-migrated set.
+      const vncDecrypted: number = this.decryptVncSecretsForDisable(crypto);
+      count += vncDecrypted;
+      vncRecordsChanged = vncDecrypted > 0;
+
       // Device-local extension secrets are not represented by a cloud column.
       // When encryption is disabled, convert the SSH passphrase in place and
       // wipe restricted-admin material instead of leaving inaccessible cipher
@@ -2611,6 +2628,7 @@ export class CloudStore implements CryptoCloudStore {
         if (relaysChanged) { this.pushTable('rustdeskrelays'); }
         if (sshKeysChanged) { this.pushTable('sshkeys'); }
         if (totpEntriesChanged) { this.pushTable('totpentries'); }
+        if (vncRecordsChanged) { this.pushTable(VNC_CLOUD_TABLE); }
       }
 
       hilog.info(0x0001, 'CloudSync', "[decryptAllData] 已解密 " + count.toString() + " 条记录");
@@ -2620,6 +2638,84 @@ export class CloudStore implements CryptoCloudStore {
       return -1;
     }
     return count;
+  }
+
+  /**
+   * Convert every active VNC encrypted_v2 row in the local, cloud and legacy
+   * compatibility tables while decryptAllData owns the active transaction.
+   */
+  private decryptVncSecretsForDisable(crypto: DataCrypto): number {
+    if (!this.store) { throw new Error('VNC store unavailable'); }
+    const tables: string[] = [VNC_LOCAL_TABLE, VNC_CLOUD_TABLE, LEGACY_VNC_CLOUD_TABLE];
+    let changedCount: number = 0;
+    for (let tableIndex = 0; tableIndex < tables.length; tableIndex++) {
+      const table: string = tables[tableIndex];
+      let rows: relationalStore.ResultSet | null = null;
+      try {
+        rows = this.store.querySync(new relationalStore.RdbPredicates(table));
+      } catch (_e) {
+        if (table === LEGACY_VNC_CLOUD_TABLE) { continue; }
+        throw new Error('VNC table read failed: ' + table);
+      }
+      try {
+        while (rows.goToNextRow()) {
+          const deletedFlagIndex: number = rows.getColumnIndex(relationalStore.Field.DELETED_FLAG_FIELD);
+          if (deletedFlagIndex >= 0 && rows.getLong(deletedFlagIndex) === 1) { continue; }
+          const record: VncRecord = this.vncRecordFromResult(rows);
+          if (!vncRecordHasActiveEncryptedCiphertext(record)) { continue; }
+          if (!vncRecordIsValid(record)) { throw new Error('invalid VNC secret row: ' + record.id); }
+          const metadata = vncPayloadObject(record.payload);
+          if (metadata === null) { throw new Error('invalid VNC secret metadata: ' + record.id); }
+          const plaintext: string = crypto.decryptField('remotedesktop|vnc', VNC_CLOUD_TABLE,
+            record.id, 'ciphertext', record.ciphertext);
+          const encoded: string = encodePlainVncSecret(plaintext);
+          if (encoded === '') { throw new Error('VNC secret cannot be represented as plain-v1: ' + record.id); }
+          metadata['storageMode'] = 'plain_explicit_v1';
+          record.payload = vncCanonicalJson(metadata);
+          record.ciphertext = encoded;
+          record.envelopeVersion = VNC_PLAIN_SECRET_ENVELOPE_VERSION;
+          record.cryptoVersion = 0;
+          record.keyVersion = 0;
+          record.aadVersion = 0;
+          record.syncVersion = Math.max(0, record.syncVersion) + 1;
+          record.updatedAt = Date.now();
+          record.payloadHashSha256 = vncPayloadHashSha256(record.payload);
+          const source: Record<string, string> = vncRecordToCloudRow(record);
+          const bucket: relationalStore.ValuesBucket = {};
+          for (let i = 0; i < VNC_RECORD_COLUMNS.length; i++) {
+            const column: string = VNC_RECORD_COLUMNS[i];
+            const value: string = source[column];
+            if (['envelopeversion', 'cryptoversion', 'keyversion', 'aadversion', 'syncversion',
+              'schemaversion', 'resetepoch', 'createdat', 'updatedat', 'deletedat'].indexOf(column) >= 0) {
+              bucket[column] = Number(value);
+            } else {
+              bucket[column] = value;
+            }
+          }
+          if (table === VNC_LOCAL_TABLE || table === LEGACY_VNC_CLOUD_TABLE) { bucket['localonly'] = 1; }
+          else {
+            const cloudBucket: relationalStore.ValuesBucket = this.cloudBucket(VNC_CLOUD_TABLE, bucket);
+            for (let i = 0; i < VNC_RECORD_COLUMNS.length; i++) {
+              const column: string = VNC_RECORD_COLUMNS[i];
+              bucket[column] = cloudBucket[column];
+            }
+          }
+          const predicates = new relationalStore.RdbPredicates(table);
+          predicates.equalTo('id', record.id);
+          predicates.equalTo('userid', record.userId);
+          if (!rdbSingleRowAffected(this.store.updateSync(bucket, predicates))) {
+            throw new Error('VNC secret update failed: ' + table + '/' + record.id);
+          }
+          if (!this.recordLocalMutation(table, record.id, 'crypto_decrypt')) {
+            throw new Error('VNC secret journal failed: ' + table + '/' + record.id);
+          }
+          changedCount++;
+        }
+      } finally {
+        rows.close();
+      }
+    }
+    return changedCount;
   }
 
   /** Runs inside decryptAllData's active RDB transaction. */
@@ -4264,11 +4360,9 @@ export class CloudStore implements CryptoCloudStore {
   // ==================== Isolated VNC record domain ====================
 
   loadAllVncRecordsRaw(includeDeleted: boolean = false): VncRecord[] {
-    // This is consumed by DataCrypto migration. It intentionally uses the
-    // same selected-cloud projection as runtime reads; a disabled scope must
-    // never be copied into the local VNC owner merely because the physical
-    // cloud table contains it.
-    return this.mergeVncRecords(includeDeleted);
+    // DataCrypto migration must inspect both selected and deselected logical
+    // scopes. This is a raw owner read, not a runtime projection.
+    return this.mergeVncRecords(includeDeleted, '', false);
   }
 
   loadAllVncLocalRecordsRaw(includeDeleted: boolean = false): VncRecord[] {
@@ -4287,7 +4381,7 @@ export class CloudStore implements CryptoCloudStore {
     return this.loadVncRecordsFromTable(VNC_LOCAL_TABLE, includeDeleted, normalizedUserId);
   }
 
-  upsertVncRecord(record: VncRecord, localOnly: boolean = false): boolean {
+  upsertVncRecord(record: VncRecord, localOnly: boolean = false, forceCloud: boolean = false): boolean {
     if (!this.store) { return this.setLastMutation(DataMutationResult.failure(record.id, 'not_ready', '本地数据库未就绪')); }
     if (!this.localMutationAllowed()) {
       return this.setLastMutation(DataMutationResult.failure(record.id, 'restore_in_progress', '恢复进行中，暂不能保存'));
@@ -4299,19 +4393,19 @@ export class CloudStore implements CryptoCloudStore {
     if (!vncRecordIsValid(record)) {
       return this.setLastMutation(DataMutationResult.failure(record.id, 'invalid_data', 'VNC 数据格式无效'));
     }
-    if (record.recordType === 'secret' && !this.sensitiveWriteAllowed(record.id)) { return false; }
+    if (record.recordType === 'secret' && record.deletedAt <= 0 &&
+      !this.sensitiveWriteAllowed(record.id)) { return false; }
     // A VNC row may enter the single cloud table only when its independent
-    // logical scope is selected. Secrets additionally require an unlocked
-    // crypto key. This guard prevents a normal-protocol selector or a caller
-    // mistake from widening VNC's cloud boundary.
-    const cryptoReady: boolean = DataCrypto.getInstance().isReady();
+    // logical scope is selected. Crypto readiness controls whether a secret
+    // can be materialized or replaced, not whether an opaque row can be
+    // mirrored or preserved.
     const physicalTableSelected: boolean =
       this.syncSelection.selectedBusinessTables().indexOf(VNC_CLOUD_TABLE) >= 0;
     const scopeSelected: boolean = this.vncSyncSelection.isRecordTypeSelected(record.recordType);
     const secretAllowed: boolean = record.recordType !== 'secret' ||
-      this.vncSyncSelection.secretsAllowed(cryptoReady);
-    const effectiveLocalOnly: boolean = localOnly || !physicalTableSelected ||
-      !scopeSelected || !secretAllowed;
+      this.vncSyncSelection.secretsAllowed();
+    const effectiveLocalOnly: boolean = localOnly || (!forceCloud && (!physicalTableSelected ||
+      !scopeSelected || !secretAllowed));
     let code = 'local_write_failed';
     try {
       this.store.beginTransaction();
@@ -4358,7 +4452,13 @@ export class CloudStore implements CryptoCloudStore {
     if (!this.localMutationAllowed()) {
       return this.setLastMutation(DataMutationResult.failure(id, 'restore_in_progress', '恢复进行中，暂不能删除'));
     }
-    const merged: VncRecord[] = this.loadVncRecords(userId, true);
+    let merged: VncRecord[] = this.loadVncRecords(userId, true);
+    // Explicit secret deletion is an owner operation, not a scope projection.
+    // If the current scope hides the row, recover it from the raw VNC owner
+    // view so a user can still forget a locked or deselected credential.
+    if (merged.every((record: VncRecord): boolean => record.id !== id)) {
+      merged = this.mergeVncRecords(true, userId, false);
+    }
     let current: VncRecord | null = null;
     for (let i = 0; i < merged.length; i++) {
       if (merged[i].id === id) { current = merged[i]; break; }
@@ -4366,7 +4466,9 @@ export class CloudStore implements CryptoCloudStore {
     if (current === null) {
       return this.setLastMutation(DataMutationResult.failure(id, 'not_found', 'VNC 数据不存在'));
     }
-    if (current.recordType === 'secret' && !this.sensitiveWriteAllowed(id)) { return false; }
+    // Deletion only writes a metadata tombstone and clears the opaque
+    // envelope; it never needs to decrypt the secret, so crypto lock must not
+    // make an existing VNC credential impossible to forget.
     const now: number = Date.now();
     current.deletedAt = now;
     current.updatedAt = now;
@@ -4377,7 +4479,48 @@ export class CloudStore implements CryptoCloudStore {
       current.payload = '{}';
       current.payloadHashSha256 = vncPayloadHashSha256(current.payload);
     }
-    return this.upsertVncRecord(current, localOnly);
+    const physicalTableSelected: boolean =
+      this.syncSelection.selectedBusinessTables().indexOf(VNC_CLOUD_TABLE) >= 0;
+    const cloudSecretExists: boolean = current.recordType === 'secret' && physicalTableSelected &&
+      this.findVncRecord(VNC_CLOUD_TABLE, userId, id) !== null;
+    return this.upsertVncRecord(current, localOnly, cloudSecretExists);
+  }
+
+  /**
+   * Roll back a newly-created VNC owner row without manufacturing a user
+   * deletion tombstone. This is used only when the host/gateway payload was
+   * written first and its companion secret could not be stored. Existing
+   * records always use the normal restore path and are never physically
+   * removed here.
+   */
+  discardVncRecordAfterFailedCreate(userId: string, id: string): boolean {
+    if (!this.store || userId.trim() === '' || id.trim() === '') { return false; }
+    let cloudDeleted: boolean = false;
+    try {
+      this.store.beginTransaction();
+      const tables: string[] = [VNC_LOCAL_TABLE, VNC_CLOUD_TABLE];
+      for (let i = 0; i < tables.length; i++) {
+        const table: string = tables[i];
+        const predicates = new relationalStore.RdbPredicates(table);
+        predicates.equalTo('id', id);
+        predicates.equalTo('userid', userId);
+        const affected: number = this.store.deleteSync(predicates);
+        if (table === VNC_CLOUD_TABLE && affected > 0) { cloudDeleted = true; }
+        const journal = new relationalStore.RdbPredicates(LOCAL_MUTATION_JOURNAL_TABLE);
+        journal.equalTo('id', this.localExtensionId(table, id));
+        this.store.deleteSync(journal);
+      }
+      if (cloudDeleted && !this.recordLocalMutation(VNC_CLOUD_TABLE, id, 'rollback_delete')) {
+        throw new Error('VNC rollback journal failed');
+      }
+      this.store.commit();
+      if (cloudDeleted) { CloudSyncCoordinator.getInstance().requestVncTableAutomaticPush(); }
+      return true;
+    } catch (err) {
+      try { this.store.rollBack(); } catch (_ignored) {}
+      hilog.warn(0x0001, 'CloudSync', '[CloudStore] discard VNC create failed: ' + safeError(err));
+      return false;
+    }
   }
 
   /** Raw migration entry point used only by DataCrypto; it never decrypts a row. */
@@ -4386,7 +4529,7 @@ export class CloudStore implements CryptoCloudStore {
       this.syncSelection.selectedBusinessTables().indexOf(VNC_CLOUD_TABLE) >= 0;
     const selected: boolean = this.vncSyncSelection.isRecordTypeSelected(record.recordType);
     const secretAllowed: boolean = record.recordType !== 'secret' ||
-      this.vncSyncSelection.secretsAllowed(DataCrypto.getInstance().isReady());
+      this.vncSyncSelection.secretsAllowed();
     const localOnly: boolean = !physicalTableSelected || !selected || !secretAllowed;
     return this.runRawMigrationMutation(localOnly ? VNC_LOCAL_TABLE : VNC_CLOUD_TABLE, record.id,
       'crypto_encrypt', (): boolean => {
@@ -4421,7 +4564,7 @@ export class CloudStore implements CryptoCloudStore {
         const record: VncRecord = records[i];
         const selected: boolean = this.vncSyncSelection.isRecordTypeSelected(record.recordType);
         const secretAllowed: boolean = record.recordType !== 'secret' ||
-          this.vncSyncSelection.secretsAllowed(DataCrypto.getInstance().isReady());
+          this.vncSyncSelection.secretsAllowed();
         if (physicalTableSelected && selected && secretAllowed) {
           if (!this.upsertVncRecordInternal(record, false)) { throw new Error('VNC promote failed'); }
           if (!this.upsertVncRecordInternal(record, true)) { throw new Error('VNC local mirror failed'); }
@@ -4448,7 +4591,7 @@ export class CloudStore implements CryptoCloudStore {
   }
 
   private loadVncRecordsFromTable(table: string, includeDeleted: boolean,
-    userId: string = ''): VncRecord[] {
+    userId: string = '', applySelection: boolean = true): VncRecord[] {
     const result: VncRecord[] = [];
     if (!this.store) { return result; }
     const currentResetEpoch: number = this.readVncResetEpoch();
@@ -4470,13 +4613,13 @@ export class CloudStore implements CryptoCloudStore {
         // records even when they happen to use a valid physical-table shape.
         if (!vncRecordIsValid(record)) { continue; }
         if (record.id === '' || (!includeDeleted && record.deletedAt > 0)) { continue; }
-        if (table === VNC_CLOUD_TABLE) {
+        if (table === VNC_CLOUD_TABLE && applySelection) {
           const physicalTableSelected: boolean =
             this.syncSelection.selectedBusinessTables().indexOf(VNC_CLOUD_TABLE) >= 0;
           if (!physicalTableSelected) { continue; }
           const selected: boolean = this.vncSyncSelection.isRecordTypeSelected(record.recordType);
           const secretAllowed: boolean = record.recordType !== 'secret' ||
-            this.vncSyncSelection.secretsAllowed(DataCrypto.getInstance().isReady());
+            this.vncSyncSelection.secretsAllowed();
           if (!selected || !secretAllowed) { continue; }
         }
         result.push(record);
@@ -4491,14 +4634,13 @@ export class CloudStore implements CryptoCloudStore {
   /** Merge cloud mirrors with the device-local VNC overlay without exposing
    * a second distributed table. Local-only scopes intentionally win over a
    * stale cloud mirror; selected scopes use the durable version ordering. */
-  private mergeVncRecords(includeDeleted: boolean, userId: string = ''): VncRecord[] {
-    const cloudRows: VncRecord[] = this.loadVncRecordsFromTable(VNC_CLOUD_TABLE, true, userId);
-    const localRows: VncRecord[] = this.loadVncRecordsFromTable(VNC_LOCAL_TABLE, true, userId);
+  private mergeVncRecords(includeDeleted: boolean, userId: string = '', applySelection: boolean = true): VncRecord[] {
+    const cloudRows: VncRecord[] = this.loadVncRecordsFromTable(VNC_CLOUD_TABLE, true, userId, applySelection);
+    const localRows: VncRecord[] = this.loadVncRecordsFromTable(VNC_LOCAL_TABLE, true, userId, applySelection);
     const merged: Map<string, VncRecord> = new Map<string, VncRecord>();
     for (let i = 0; i < cloudRows.length; i++) {
       merged.set(vncRecordIdentity(cloudRows[i].userId, cloudRows[i].id), cloudRows[i]);
     }
-    const cryptoReady: boolean = DataCrypto.getInstance().isReady();
     for (let i = 0; i < localRows.length; i++) {
       const local: VncRecord = localRows[i];
       const identity: string = vncRecordIdentity(local.userId, local.id);
@@ -4523,8 +4665,8 @@ export class CloudStore implements CryptoCloudStore {
         merged.set(identity, local);
         continue;
       }
-      const localOnlyScope: boolean = !this.vncSyncSelection.isRecordTypeSelected(local.recordType) ||
-        (local.recordType === 'secret' && !this.vncSyncSelection.secretsAllowed(cryptoReady));
+      const localOnlyScope: boolean = applySelection &&
+        !this.vncSyncSelection.isRecordTypeSelected(local.recordType);
       if (localOnlyScope || vncRecordWins(local, cloud)) { merged.set(identity, local); }
     }
     const result: VncRecord[] = [];

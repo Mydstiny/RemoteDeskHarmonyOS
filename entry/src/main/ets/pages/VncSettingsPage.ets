@@ -65,6 +65,7 @@ export struct VncSettingsPage {
   @State hostPortText: string = '5900';
   @State hostUsername: string = '';
   @State hostPassword: string = '';
+  @State hostRememberPassword: boolean = false;
   @State hostGatewayId: string = '';
   @State hostTransport: VncTransport = 'direct_tcp';
   @State hostRepeaterMode: VncRepeaterMode = 'mode12';
@@ -237,15 +238,15 @@ export struct VncSettingsPage {
     const current: VncSettingsValues = this.settings.get();
     const needsSecretConfirmation: boolean = this.syncSecrets && !current.syncSecrets;
     const needsTrustConfirmation: boolean = this.syncTrust && !current.syncTrust;
-    if ((needsSecretConfirmation || needsTrustConfirmation) && !this.cryptoReady) {
-      this.errorMessage = '启用 VNC 密钥或 trust 同步前，请先在主设置中解锁应用加密';
-      return;
-    }
     if (needsSecretConfirmation || needsTrustConfirmation) {
       promptAction.showDialog({
         title: '确认 VNC 敏感数据同步',
         message: needsSecretConfirmation
-          ? 'VNC 密码和网关令牌会以绑定上下文的 AES-GCM 密文进入 vncrecord。新设备仍需重新确认 trust。'
+          ? (DataCrypto.getInstance().isReady()
+            ? 'VNC 密码和网关令牌会以绑定上下文的 AES-GCM 密文进入 vncrecord。新设备仍需重新确认 trust。'
+            : DataCrypto.getInstance().isSetupComplete()
+              ? '应用加密已锁定。现有 AES-GCM 密文会保留并等待解锁；未解锁时不会覆盖云端。新密码可关闭“记住密码”后临时使用。'
+              : '应用加密未启用。明确选择记住密码的 VNC 凭据可能以未加密形式进入 vncrecord；请确认风险。')
           : 'trust 指纹只同步记录，不会自动信任新设备；每台新设备仍须人工确认。',
         buttons: [{ text: '取消', color: this.pal().text2 }, { text: '确认开启', color: this.accentColor }]
       }).then((result: Object): void => {
@@ -275,6 +276,7 @@ export struct VncSettingsPage {
       gatewayId: this.hostGatewayId,
       transport: this.hostTransport,
       repeaterMode: this.hostRepeaterMode,
+      rememberPassword: this.hostRememberPassword,
       viewOnly: this.hostViewOnly,
       scalingMode: this.hostScalingMode,
       clipboardEnabled: this.hostClipboardEnabled,
@@ -284,22 +286,35 @@ export struct VncSettingsPage {
   }
 
   private saveHost(): void {
-    if (this.hostPassword.length > 0 && !this.cryptoReady) {
-      this.errorMessage = 'VNC 密码只允许在应用加密已解锁时保存';
+    const saveWithPlaintextConsent = (allowPlaintext: boolean): void => {
+      const result = this.hostService.save(this.hostValues(), this.editingHostId, this.hostPassword,
+        allowPlaintext);
+      if (!result.ok) { this.errorMessage = result.message; return; }
+      this.errorMessage = '';
+      this.resetHostForm();
+      promptAction.showToast({ message: 'VNC 主机已保存', duration: 1600 });
+    };
+    const crypto: DataCrypto = DataCrypto.getInstance();
+    if (this.hostPassword.length > 0 && this.hostRememberPassword && !crypto.isSetupComplete()) {
+      promptAction.showDialog({
+        title: '确认保存未加密密码',
+        message: '应用加密未启用。打开“记住密码”会把 VNC 密码以未加密形式保存；关闭此选项即可仅临时连接。',
+        buttons: [{ text: '取消', color: this.pal().text2 }, { text: '确认保存', color: this.pal().danger }]
+      }).then((dialog: Object): void => {
+        const values: Record<string, number> = dialog as Record<string, number>;
+        if (values['index'] === 1) { saveWithPlaintextConsent(true); }
+      });
       return;
     }
-    const result = this.hostService.save(this.hostValues(), this.editingHostId, this.hostPassword);
-    if (!result.ok) { this.errorMessage = result.message; return; }
-    this.errorMessage = '';
-    this.resetHostForm();
-    promptAction.showToast({ message: 'VNC 主机已保存', duration: 1600 });
+    if (this.hostPassword.length > 0 && this.hostRememberPassword &&
+      crypto.isSetupComplete() && !crypto.isReady()) {
+      this.errorMessage = '应用加密已锁定；请先解锁，或关闭“记住密码”后保存';
+      return;
+    }
+    saveWithPlaintextConsent(false);
   }
 
   private saveGateway(): void {
-    if (this.gatewayToken.length > 0 && !this.cryptoReady) {
-      this.errorMessage = 'VNC 网关令牌只允许在应用加密已解锁时保存';
-      return;
-    }
     const values: VncGatewayValues = {
       label: this.gatewayLabel,
       transport: this.gatewayTransport,
@@ -311,11 +326,31 @@ export struct VncSettingsPage {
       tls: this.gatewayTls,
       enabled: this.gatewayEnabled
     };
-    const result = this.gatewayService.save(values, this.editingGatewayId, this.gatewayToken);
-    if (!result.ok) { this.errorMessage = result.message; return; }
-    this.errorMessage = '';
-    this.resetGatewayForm();
-    promptAction.showToast({ message: 'VNC 网关已保存', duration: 1600 });
+    const saveWithPlaintextConsent = (allowPlaintext: boolean): void => {
+      const result = this.gatewayService.save(values, this.editingGatewayId, this.gatewayToken,
+        allowPlaintext);
+      if (!result.ok) { this.errorMessage = result.message; return; }
+      this.errorMessage = '';
+      this.resetGatewayForm();
+      promptAction.showToast({ message: 'VNC 网关已保存', duration: 1600 });
+    };
+    const crypto: DataCrypto = DataCrypto.getInstance();
+    if (this.gatewayToken.length > 0 && !crypto.isSetupComplete()) {
+      promptAction.showDialog({
+        title: '确认保存未加密令牌',
+        message: '应用加密未启用。Gateway 令牌将以未加密形式保存；也可以留空，仅保存端点。',
+        buttons: [{ text: '取消', color: this.pal().text2 }, { text: '确认保存', color: this.pal().danger }]
+      }).then((dialog: Object): void => {
+        const values: Record<string, number> = dialog as Record<string, number>;
+        if (values['index'] === 1) { saveWithPlaintextConsent(true); }
+      });
+      return;
+    }
+    if (this.gatewayToken.length > 0 && crypto.isSetupComplete() && !crypto.isReady()) {
+      this.errorMessage = '应用加密已锁定；请先解锁后保存 Gateway 令牌，或留空保留现有令牌';
+      return;
+    }
+    saveWithPlaintextConsent(false);
   }
 
   private deleteHost(host: VncHostView): void {
@@ -359,6 +394,7 @@ export struct VncSettingsPage {
     this.hostLabel = ''; this.hostAddress = ''; this.hostPortText = this.defaultPortText;
     this.hostUsername = ''; this.hostPassword = ''; this.hostGatewayId = this.defaultGatewayId;
     this.hostTransport = this.defaultTransport; this.hostRepeaterMode = this.repeaterMode;
+    this.hostRememberPassword = false;
     this.hostViewOnly = this.viewOnly; this.hostScalingMode = this.scalingMode;
     this.hostClipboardEnabled = this.clipboardEnabled; this.hostSecurityPolicy = this.securityPolicy;
     this.hostTls = this.securityPolicy === 'secure_only' ? true : false;
@@ -374,6 +410,7 @@ export struct VncSettingsPage {
     // write-only and never re-save it from this editor.
     this.hostUsername = '';
     this.hostPassword = '';
+    this.hostRememberPassword = host.rememberPassword;
     this.hostGatewayId = host.gatewayId;
     this.hostTransport = host.transport;
     this.hostRepeaterMode = host.repeaterMode;
@@ -396,12 +433,13 @@ export struct VncSettingsPage {
     this.hostFlowVisible = true;
   }
 
-  private saveHostFromFlow(values: VncHostValues, password: string, connectNow: boolean): void {
+  private saveHostFromFlow(values: VncHostValues, password: string, connectNow: boolean,
+    plainStorageConfirmed: boolean = false): void {
     if (!this.hostService.isReady()) {
       promptAction.showToast({ message: 'VNC 服务尚未完成云同步初始化，请稍后重试', duration: 2200 });
       return;
     }
-    const result = this.hostService.save(values, this.hostFlowEditingId, password);
+    const result = this.hostService.save(values, this.hostFlowEditingId, password, plainStorageConfirmed);
     if (!result.ok) {
       promptAction.showToast({ message: result.message || 'VNC 主机保存失败', duration: 2200 });
       return;
@@ -455,8 +493,9 @@ export struct VncSettingsPage {
         this.hostFlowVisible = false;
         this.pendingHostFlowGatewayDirectory = true;
       },
-      onSave: (values: VncHostValues, password: string, connectNow: boolean): void => {
-        this.saveHostFromFlow(values, password, connectNow);
+      onSave: (values: VncHostValues, password: string, connectNow: boolean,
+        plainStorageConfirmed: boolean): void => {
+        this.saveHostFromFlow(values, password, connectNow, plainStorageConfirmed);
       }
     })
   }
@@ -487,15 +526,11 @@ export struct VncSettingsPage {
     if (scope === 'settings') { return '连接、显示和安全默认值'; }
     if (scope === 'hosts') { return '不包含明文密码'; }
     if (scope === 'gateways') { return '端点和配对能力，不包含令牌'; }
-    if (scope === 'secrets') { return '仅 AES-GCM 密文，默认关闭'; }
+    if (scope === 'secrets') { return '默认关闭；按“记住密码”策略保存，明文需再次确认'; }
     return '只同步指纹记录，新设备不自动信任';
   }
 
   private toggleScope(scope: VncCloudSyncScope): void {
-    if (scope === 'secrets' && !this.cryptoReady) {
-      this.errorMessage = '请先解锁应用加密，再开启 VNC 密钥同步';
-      return;
-    }
     const selected: VncCloudSyncScope[] = this.settings.selectedScopes();
     const next: VncCloudSyncScope[] = selected.indexOf(scope) >= 0
       ? selected.filter((item: VncCloudSyncScope): boolean => item !== scope)
@@ -633,8 +668,10 @@ export struct VncSettingsPage {
         (value: boolean): void => { this.syncPreferences = value; })
       Row() {
         Text('加密状态').fontSize(13).fontColor(this.pal().text2).layoutWeight(1)
-        Text(this.cryptoReady ? '已解锁，可保存 VNC 密文' : '未解锁，密码/令牌不可保存')
-          .fontSize(11).fontColor(this.cryptoReady ? this.pal().success : this.pal().danger)
+        Text(DataCrypto.getInstance().isReady() ? '已解锁：记住的凭据使用 AES-GCM 保存' :
+          (DataCrypto.getInstance().isSetupComplete() ? '已锁定：可临时连接，保存密文需解锁' :
+            '未启用：记住的凭据保存前需明确确认风险'))
+          .fontSize(11).fontColor(DataCrypto.getInstance().isReady() ? this.pal().success : this.pal().text3)
       }.width('100%').margin({ top: 8 })
       Button('保存同步选择').width('100%').height(40).margin({ top: 12 }).borderRadius(10)
         .backgroundColor(this.accentColor).fontColor(Color.White).onClick((): void => { this.saveSettings(); })

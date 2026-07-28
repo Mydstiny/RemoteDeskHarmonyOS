@@ -2,13 +2,12 @@ import { common } from '@kit.AbilityKit';
 import { AuthService } from './AuthService';
 import { CloudStore } from './CloudStore';
 import { VncRecord } from '../model/VncRecord';
-import { DataCrypto } from './DataCrypto';
 import {
   VncHostValues, VncTransport, VncRepeaterMode, VncScalingMode, VncSecurityPolicy,
   defaultVncSettings, validateVncHost, vncHostPayload, finalizeVncRecord
 } from './VncModelPolicy';
 import { VncCloudSyncService } from './VncCloudSyncService';
-import { VncSecretService } from './VncSecretService';
+import { VncSecretLoadResult, VncSecretSaveResult, VncSecretService } from './VncSecretService';
 
 export interface VncHostView extends VncHostValues {
   id: string;
@@ -43,6 +42,7 @@ export class VncHostService {
   init(context: common.Context): void {
     this.userId = this.currentUserId();
     VncCloudSyncService.getInstance().init(context);
+    this.secrets.init(context);
     if (!this.listenerBound) {
       this.listenerBound = true;
       this.cloud.onCloudChange((): void => { this.emitChange(); });
@@ -84,14 +84,11 @@ export class VncHostService {
     return null;
   }
 
-  save(values: VncHostValues, id: string = '', password: string = ''): VncHostSaveResult {
+  save(values: VncHostValues, id: string = '', password: string = '',
+    allowPlaintext: boolean = false): VncHostSaveResult {
     const result: VncHostSaveResult = { ok: false, message: '', id };
     const errors: string[] = validateVncHost(values);
     if (errors.length > 0) { result.message = errors[0]; return result; }
-    if (password.length > 0 && !DataCrypto.getInstance().isReady()) {
-      result.message = '请先解锁应用加密，再保存 VNC 密码';
-      return result;
-    }
     const currentRecord: VncRecord | null = id === '' ? null : this.findActiveRecord(id);
     const current: VncHostView | null = currentRecord === null ? null : this.toView(currentRecord);
     const record: VncRecord = new VncRecord();
@@ -112,16 +109,27 @@ export class VncHostService {
       return result;
     }
     result.id = record.id;
-    if (password.length > 0) {
+    const existingSecret: boolean = currentRecord !== null &&
+      this.secrets.has(record.userId, record.id, 'vnc_password');
+    if (password.length > 0 && values.rememberPassword) {
       const secretResult = this.secrets.save(record.userId, record.id, 'host', 'vnc_password', password,
-        values.label);
+        values.label, allowPlaintext);
       if (!secretResult.ok) {
         const rolledBack: boolean = currentRecord === null
-          ? this.cloud.deleteVncRecord(record.userId, record.id)
+          ? this.cloud.discardVncRecordAfterFailedCreate(record.userId, record.id)
           : this.cloud.upsertVncRecord(currentRecord);
         result.message = rolledBack
           ? secretResult.message + '；主机配置已回滚'
           : secretResult.message + '；主机配置回滚失败，请检查 VNC 数据状态';
+        return result;
+      }
+    } else if (!values.rememberPassword && existingSecret) {
+      if (!this.secrets.remove(record.userId, record.id, 'vnc_password')) {
+        const rolledBack: boolean = currentRecord === null
+          ? this.cloud.deleteVncRecord(record.userId, record.id)
+          : this.cloud.upsertVncRecord(currentRecord);
+        result.message = rolledBack ? 'VNC 密码删除失败，主机配置已回滚' :
+          'VNC 密码删除失败且主机配置回滚失败，请检查 VNC 数据状态';
         return result;
       }
     }
@@ -143,6 +151,26 @@ export class VncHostService {
     return this.secrets.load(this.getUserId(), id, 'vnc_password');
   }
 
+  passwordStateFor(id: string): VncSecretLoadResult {
+    return this.secrets.loadResult(this.getUserId(), id, 'vnc_password');
+  }
+
+  savePassword(id: string, password: string, remember: boolean,
+    allowPlaintext: boolean = false): VncSecretSaveResult {
+    if (!remember) {
+      const removed: boolean = this.secrets.remove(this.getUserId(), id, 'vnc_password');
+      return {
+        ok: removed, recordId: 'vncsecret_vnc_password_' + id, code: removed ? 'none' : 'remove_failed',
+        message: removed ? '' : (this.cloud.getLastMutationResult().message || 'VNC 密码删除失败')
+      };
+    }
+    return this.secrets.save(this.getUserId(), id, 'host', 'vnc_password', password, '', allowPlaintext);
+  }
+
+  grantPlaintextPasswordConsent(id: string): boolean {
+    return this.secrets.grantPlaintextConsent(this.getUserId(), id, 'vnc_password');
+  }
+
   private toView(record: VncRecord): VncHostView {
     const values: VncHostValues = this.parsePayload(record.payload);
     const view: VncHostView = {
@@ -155,6 +183,7 @@ export class VncHostService {
       gatewayId: values.gatewayId,
       transport: values.transport,
       repeaterMode: values.repeaterMode,
+      rememberPassword: values.rememberPassword || this.secrets.has(record.userId, record.id, 'vnc_password'),
       viewOnly: values.viewOnly,
       scalingMode: values.scalingMode,
       clipboardEnabled: values.clipboardEnabled,
@@ -173,6 +202,7 @@ export class VncHostService {
     const result: VncHostValues = {
       label: '', host: '', port: defaults.defaultPort, username: '', gatewayId: '',
       transport: defaults.defaultTransport, repeaterMode: defaults.repeaterMode,
+      rememberPassword: false,
       viewOnly: defaults.viewOnly, scalingMode: defaults.scalingMode,
       clipboardEnabled: defaults.clipboardEnabled,
       securityPolicy: defaults.securityPolicy, tls: false
@@ -187,6 +217,9 @@ export class VncHostService {
       if (typeof values['gatewayId'] === 'string') { result.gatewayId = values['gatewayId'] as string; }
       if (typeof values['transport'] === 'string') { result.transport = values['transport'] as VncTransport; }
       if (typeof values['repeaterMode'] === 'string') { result.repeaterMode = values['repeaterMode'] as VncRepeaterMode; }
+      if (typeof values['rememberPassword'] === 'boolean') {
+        result.rememberPassword = values['rememberPassword'] as boolean;
+      }
       if (typeof values['viewOnly'] === 'boolean') { result.viewOnly = values['viewOnly'] as boolean; }
       if (typeof values['scalingMode'] === 'string') { result.scalingMode = values['scalingMode'] as VncScalingMode; }
       if (typeof values['clipboardEnabled'] === 'boolean') { result.clipboardEnabled = values['clipboardEnabled'] as boolean; }

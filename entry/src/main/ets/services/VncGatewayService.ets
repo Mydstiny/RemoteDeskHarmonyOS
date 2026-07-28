@@ -7,7 +7,6 @@ import {
   validateVncGateway, vncGatewayPayload, finalizeVncRecord
 } from './VncModelPolicy';
 import { VncCloudSyncService } from './VncCloudSyncService';
-import { DataCrypto } from './DataCrypto';
 import { VncSecretService } from './VncSecretService';
 import { vncGatewayAvailability } from './VncGatewayProtocolPolicy';
 
@@ -44,6 +43,7 @@ export class VncGatewayService {
   init(context: common.Context): void {
     this.userId = this.currentUserId();
     VncCloudSyncService.getInstance().init(context);
+    this.secrets.init(context);
     if (!this.listenerBound) {
       this.listenerBound = true;
       this.cloud.onCloudChange((): void => { this.emitChange(); });
@@ -85,14 +85,11 @@ export class VncGatewayService {
     return null;
   }
 
-  save(values: VncGatewayValues, id: string = '', accessToken: string = ''): VncGatewaySaveResult {
+  save(values: VncGatewayValues, id: string = '', accessToken: string = '',
+    allowPlaintext: boolean = false): VncGatewaySaveResult {
     const result: VncGatewaySaveResult = { ok: false, message: '', id };
     const errors: string[] = validateVncGateway(values);
     if (errors.length > 0) { result.message = errors[0]; return result; }
-    if (accessToken.length > 0 && !DataCrypto.getInstance().isReady()) {
-      result.message = '请先解锁应用加密，再保存 VNC 网关令牌';
-      return result;
-    }
     const currentRecord: VncRecord | null = id === '' ? null : this.findActiveRecord(id);
     const current: VncGatewayView | null = currentRecord === null ? null : this.toView(currentRecord);
     const record: VncRecord = new VncRecord();
@@ -125,14 +122,14 @@ export class VncGatewayService {
     result.id = record.id;
     if (accessToken.length > 0) {
       const secretResult = this.secrets.save(record.userId, record.id, 'gateway', 'gateway_token',
-        accessToken, values.label);
+        accessToken, values.label, allowPlaintext);
       if (!secretResult.ok) {
         // The gateway row and its token are one logical mutation even though
         // they occupy two rows in the single VNC table. Restore the previous
         // row, or tombstone a newly-created row, if encryption/secret storage
         // fails after the gateway payload was written.
         const rolledBack: boolean = currentRecord === null
-          ? this.cloud.deleteVncRecord(record.userId, record.id)
+          ? this.cloud.discardVncRecordAfterFailedCreate(record.userId, record.id)
           : this.cloud.upsertVncRecord(currentRecord);
         result.message = rolledBack
           ? secretResult.message + '；网关配置已回滚'

@@ -174,9 +174,25 @@ export class VncSettingsService {
   }
 
   private updateSyncSelection(values: VncSettingsValues, requestReconcile: boolean = true): boolean {
+    const previousScopes: VncCloudSyncScope[] = this.sync.selectedScopes();
     const scopes: string[] = this.scopesFor(values);
-    if (!this.sync.replaceSelectedScopes(scopes)) { return false; }
-    if (!this.cloud.reconcileVncSyncSelection()) { return false; }
+    // Stage first. The selector is not durable until the RDB projection has
+    // completed, so a failed reconcile cannot leave a restart-time scope that
+    // was never actually applied.
+    this.sync.stageSelectedScopes(scopes);
+    if (!this.cloud.reconcileVncSyncSelection()) {
+      this.sync.stageSelectedScopes(previousScopes);
+      return false;
+    }
+    if (!this.sync.persistSelectedScopes()) {
+      // Persistence failed after the new projection committed. Restore both
+      // the previous in-memory projection and its durable scope before
+      // returning an error to the caller.
+      this.sync.stageSelectedScopes(previousScopes);
+      this.cloud.reconcileVncSyncSelection();
+      this.sync.persistSelectedScopes();
+      return false;
+    }
     // A scope can be turned off after its mirror was already uploaded. The
     // reconciliation keeps the local owner and leaves the shared cloud row
     // untouched; only an explicitly selected scope is uploaded.
@@ -185,8 +201,12 @@ export class VncSettingsService {
   }
 
   private restoreSyncSelection(scopes: VncCloudSyncScope[]): void {
-    if (!this.sync.replaceSelectedScopes(scopes)) { return; }
-    if (!this.cloud.reconcileVncSyncSelection()) { return; }
+    this.sync.stageSelectedScopes(scopes);
+    if (!this.cloud.reconcileVncSyncSelection()) {
+      this.sync.persistSelectedScopes();
+      return;
+    }
+    if (!this.sync.persistSelectedScopes()) { return; }
     void this.sync.requestSelectionReconcile();
   }
 

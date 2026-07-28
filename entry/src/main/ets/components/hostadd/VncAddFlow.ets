@@ -8,6 +8,7 @@
  */
 import { promptAction } from '@kit.ArkUI';
 import { Palette, buildDark, buildLight } from '../../common/Theme';
+import { DataCrypto } from '../../services/DataCrypto';
 import {
   VncHostValues,
   VncTransport,
@@ -31,8 +32,10 @@ export struct VncAddFlow {
   @Prop editingId: string = '';
   onBackToProtocols: () => void = (): void => {};
   onOpenSettings: () => void = (): void => {};
-  onSave: (values: VncHostValues, password: string, connectNow: boolean) => void =
-    (_values: VncHostValues, _password: string, _connectNow: boolean): void => {};
+  onSave: (values: VncHostValues, password: string, connectNow: boolean,
+    plainStorageConfirmed: boolean) => void =
+    (_values: VncHostValues, _password: string, _connectNow: boolean,
+      _plainStorageConfirmed: boolean): void => {};
 
   @State step: number = 0;
   @State transport: VncTransport = 'direct_tcp';
@@ -42,6 +45,7 @@ export struct VncAddFlow {
   @State repeaterTargetId: string = '';
   @State portText: string = '5900';
   @State password: string = '';
+  @State rememberPassword: boolean = false;
   @State gatewayId: string = '';
   @State tls: boolean = true;
   @State viewOnly: boolean = true;
@@ -70,6 +74,7 @@ export struct VncAddFlow {
       if (host.transport === 'direct_tcp') { this.directAddress = host.host; }
       else { this.repeaterTargetId = host.host; }
       this.portText = host.port.toString();
+      this.rememberPassword = host.rememberPassword;
       this.gatewayId = host.gatewayId;
       this.repeaterMode = host.repeaterMode;
       this.viewOnly = host.viewOnly;
@@ -188,6 +193,7 @@ export struct VncAddFlow {
       gatewayId: this.transport === 'direct_tcp' ? '' : this.gatewayId.trim(),
       transport: this.transport,
       repeaterMode: this.repeaterMode,
+      rememberPassword: this.rememberPassword,
       viewOnly: this.viewOnly,
       scalingMode: this.scalingMode,
       clipboardEnabled: this.clipboardEnabled,
@@ -214,9 +220,7 @@ export struct VncAddFlow {
     if (this.step > 0) { this.step -= 1; } else { this.onBackToProtocols(); }
   }
 
-  private save(connectNow: boolean): void {
-    const values: VncHostValues | null = this.buildValues();
-    if (values === null) { return; }
+  private dispatchSave(values: VncHostValues, connectNow: boolean, plainStorageConfirmed: boolean): void {
     if (this.securityPolicy === 'allow_plaintext') {
       promptAction.showDialog({
         title: '确认允许 VNC 明文连接',
@@ -224,11 +228,54 @@ export struct VncAddFlow {
         buttons: [{ text: '取消', color: this.pal().text2 }, { text: '确认保存', color: this.pal().danger }]
       }).then((result: Object): void => {
         const dialogResult: Record<string, number> = result as Record<string, number>;
-        if (dialogResult['index'] === 1) { this.onSave(values, this.password, connectNow); }
+        if (dialogResult['index'] === 1) {
+          this.onSave(values, this.password, connectNow, plainStorageConfirmed);
+        }
       });
       return;
     }
-    this.onSave(values, this.password, connectNow);
+    this.onSave(values, this.password, connectNow, plainStorageConfirmed);
+  }
+
+  private save(connectNow: boolean): void {
+    const values: VncHostValues | null = this.buildValues();
+    if (values === null) { return; }
+    if (this.password.length > 0 && this.rememberPassword) {
+      const crypto: DataCrypto = DataCrypto.getInstance();
+      if (crypto.isSetupComplete() && !crypto.isReady()) {
+        this.errorText = '应用加密已锁定；请先解锁，或关闭“记住密码”后保存';
+        return;
+      }
+      if (!crypto.isSetupComplete()) {
+        promptAction.showDialog({
+          title: '确认保存未加密密码',
+          message: '应用加密未启用。打开“记住密码”会把 VNC 密码以未加密形式保存到 VNC 数据中；也可以关闭此选项，仅在连接时临时输入。',
+          buttons: [{ text: '关闭记住密码', color: this.pal().text2 },
+            { text: '确认保存', color: this.pal().danger }]
+        }).then((result: Object): void => {
+          const dialogResult: Record<string, number> = result as Record<string, number>;
+          if (dialogResult['index'] === 1) {
+            this.dispatchSave(values, connectNow, true);
+          }
+        });
+        return;
+      }
+    }
+    this.dispatchSave(values, connectNow, false);
+  }
+
+  private rememberPasswordDetail(): string {
+    if (!this.rememberPassword) { return '关闭后不保存密码；连接时可以临时输入'; }
+    const crypto: DataCrypto = DataCrypto.getInstance();
+    if (crypto.isReady()) { return '使用应用加密保存到独立 VNC secret'; }
+    if (crypto.isSetupComplete()) { return '应用加密已锁定，解锁后才能保存；仍可临时连接'; }
+    return '应用加密未启用，保存前会单独确认未加密风险';
+  }
+
+  private securityStorageHint(): string {
+    if (this.password.length === 0) { return '未填写密码；连接时可按需输入'; }
+    return this.rememberPassword ? '密码将按上方选项保存；不会出现在确认摘要' :
+      '密码仅用于本次保存并连接；关闭后不会保留';
   }
 
   @Builder private field(title: string, value: string, hint: string,
@@ -337,8 +384,17 @@ export struct VncAddFlow {
 
   @Builder private securityStep() {
     Column() {
-      this.field('VNC 密码（可选）', this.password, '需要先解锁应用加密',
+      this.field('VNC 密码（可选）', this.password, '留空表示连接时输入',
         (value: string): void => { this.password = value; }, true)
+      Row() {
+        Column() {
+          Text('记住密码').fontSize(14).fontColor(this.pal().text)
+          Text(this.rememberPasswordDetail()).fontSize(11).fontColor(this.pal().text3)
+            .lineHeight(16).margin({ top: 3 })
+        }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+        Toggle({ type: ToggleType.Switch, isOn: this.rememberPassword }).selectedColor(this.accentColor)
+          .onChange((value: boolean): void => { this.rememberPassword = value; })
+      }.width('100%').padding({ top: 2, bottom: 12 })
       Row() {
         Text('TLS').fontSize(14).fontColor(this.pal().text).layoutWeight(1)
         Toggle({ type: ToggleType.Switch, isOn: this.tls }).selectedColor(this.accentColor)
@@ -422,8 +478,7 @@ export struct VncAddFlow {
         this.reviewRow('交互', (this.viewOnly ? '只读' : '可控制') + ' · ' + this.scalingMode +
           (this.clipboardEnabled ? ' · 剪贴板' : ' · 无剪贴板'))
       }.width('100%').padding(12).borderRadius(12).backgroundColor(this.pal().surface)
-      Text(this.password.length > 0 ? '密码已填写，将进入加密 VNC secret；不会显示在确认摘要。' :
-        '未填写密码；连接时可能由 VNC 服务器要求重新认证。')
+      Text(this.securityStorageHint())
         .fontSize(11).fontColor(this.pal().text3).lineHeight(17).width('100%').margin({ top: 12 })
     }.width('100%')
   }

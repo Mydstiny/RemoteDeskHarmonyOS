@@ -186,6 +186,72 @@ export default function cloudSyncCoordinatorPolicyTest(): void {
       expect(result.failedTables[1]).assertEqual('sshkeys');
     });
 
+    it('does_not_block_vncrecord_when_optional_crypto_sync_fails', 0, async (): Promise<void> => {
+      const trace: string[] = [];
+      const result = await executeCloudSyncRequest(
+        { source: 'automaticPush', direction: 'nativeFirst', tables: ['cryptoparams', 'vncrecord'] },
+        async (table: string): Promise<boolean> => {
+          trace.push(table);
+          return table !== 'cryptoparams';
+        },
+        null,
+        (_tables: string[]): void => {}
+      );
+      expect(trace.length).assertEqual(2);
+      expect(trace[0]).assertEqual('cryptoparams');
+      expect(trace[1]).assertEqual('vncrecord');
+      expect(result.ok).assertFalse();
+      expect(result.failedTables.length).assertEqual(1);
+      expect(result.failedTables[0]).assertEqual('cryptoparams');
+    });
+
+    it('keeps_crypto_fail_closed_for_mixed_protocol_downloads', 0, async (): Promise<void> => {
+      const trace: string[] = [];
+      const result = await executeCloudSyncRequest(
+        { source: 'automaticPush', direction: 'nativeFirst', tables: ['cryptoparams', 'vncrecord', 'remotehosts'] },
+        async (table: string): Promise<boolean> => {
+          trace.push(table);
+          return table !== 'cryptoparams';
+        },
+        null,
+        (_tables: string[]): void => {}
+      );
+      expect(trace.length).assertEqual(1);
+      expect(trace[0]).assertEqual('cryptoparams');
+      expect(result.failedTables.length).assertEqual(3);
+      expect(result.failedTables[1]).assertEqual('vncrecord');
+      expect(result.failedTables[2]).assertEqual('remotehosts');
+    });
+
+    it('keeps_successful_vnc_manual_download_when_optional_crypto_sync_fails', 0,
+      async (): Promise<void> => {
+        let rolledBack: boolean = false;
+        const completedTables: string[] = [];
+        const result = await executeCloudSyncRequest(
+          { source: 'manualDownload', direction: 'cloudFirst', tables: ['cryptoparams', 'vncrecord'] },
+          async (table: string): Promise<boolean> => { return table !== 'cryptoparams'; },
+          {
+            beginManualDownload: (): boolean => true,
+            rollbackManualDownload: async (): Promise<boolean> => { rolledBack = true; return true; },
+            completeManualDownload: (tables: string[]): boolean => {
+              return false;
+            },
+            completeManualDownloadPartial: (tables: string[]): boolean => {
+              tables.forEach((table: string): void => { completedTables.push(table); });
+              return true;
+            },
+            setRestorePending: (_pending: boolean): void => {}
+          },
+          (_tables: string[]): void => {}
+        );
+        expect(result.ok).assertFalse();
+        expect(result.failedTables.length).assertEqual(1);
+        expect(result.failedTables[0]).assertEqual('cryptoparams');
+        expect(rolledBack).assertFalse();
+        expect(completedTables.length).assertEqual(1);
+        expect(completedTables[0]).assertEqual('vncrecord');
+      });
+
     it('reports_when_a_failed_download_cannot_restore_its_snapshot', 0, async (): Promise<void> => {
       const request: CloudSyncRequest = {
         source: 'manualDownload', direction: 'cloudFirst', tables: ['sshkeys']

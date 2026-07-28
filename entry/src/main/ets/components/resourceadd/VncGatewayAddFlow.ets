@@ -6,6 +6,8 @@
  * a typed VNC gateway payload and an optional write-only token.
  */
 import { Palette, buildDark, buildLight } from '../../common/Theme';
+import { promptAction } from '@kit.ArkUI';
+import { DataCrypto } from '../../services/DataCrypto';
 import {
   VncGatewayValues, VncTransport, VncRepeaterMode
 } from '../../services/VncModelPolicy';
@@ -20,8 +22,10 @@ export struct VncGatewayAddFlow {
   @Prop initialGateway: VncGatewayView | null = null;
   @Prop editingId: string = '';
   onClose: () => void = (): void => {};
-  onSave: (values: VncGatewayValues, id: string, accessToken: string) => void =
-    (_values: VncGatewayValues, _id: string, _accessToken: string): void => {};
+  onSave: (values: VncGatewayValues, id: string, accessToken: string,
+    plainStorageConfirmed: boolean) => void =
+    (_values: VncGatewayValues, _id: string, _accessToken: string,
+      _plainStorageConfirmed: boolean): void => {};
 
   @State step: number = 0;
   @State label: string = '';
@@ -138,7 +142,23 @@ export struct VncGatewayAddFlow {
 
   private save(): void {
     if (!this.endpointValid()) { this.step = 0; return; }
-    this.onSave(this.values(), this.editingId, this.accessToken);
+    const crypto: DataCrypto = DataCrypto.getInstance();
+    if (this.accessToken.length > 0 && crypto.isSetupComplete() && !crypto.isReady()) {
+      this.errorText = '应用加密已锁定；请先解锁后保存 Gateway 令牌，或留空保留现有令牌';
+      return;
+    }
+    if (this.accessToken.length > 0 && !crypto.isSetupComplete()) {
+      promptAction.showDialog({
+        title: '确认保存未加密令牌',
+        message: '应用加密未启用。Gateway 令牌将以未加密形式保存到 VNC 数据中；也可以留空，仅保存端点。',
+        buttons: [{ text: '取消', color: this.pal().text2 }, { text: '确认保存', color: this.pal().danger }]
+      }).then((dialog: Object): void => {
+        const values: Record<string, number> = dialog as Record<string, number>;
+        if (values['index'] === 1) { this.onSave(this.values(), this.editingId, this.accessToken, true); }
+      });
+      return;
+    }
+    this.onSave(this.values(), this.editingId, this.accessToken, false);
   }
 
   @Builder private field(title: string, value: string, hint: string,
@@ -191,7 +211,7 @@ export struct VncGatewayAddFlow {
   @Builder private securityStep() {
     Column() {
       this.field('Gateway 令牌（可选）', this.accessToken,
-        this.existingTokenConfigured ? '留空保留现有令牌；输入新令牌将替换' : '先解锁应用加密后保存',
+        this.existingTokenConfigured ? '留空保留现有令牌；输入新令牌将替换' : '留空表示不保存令牌',
         (value: string): void => { this.accessToken = value; }, true)
       Row() {
         Text('TLS').fontSize(14).fontColor(this.pal().text).layoutWeight(1)

@@ -626,12 +626,13 @@ export struct RustDeskRelayPage {
 
   // ==================== VNC Gateway owner ====================
 
-  private saveVncGateway(values: VncGatewayValues, id: string, accessToken: string): void {
+  private saveVncGateway(values: VncGatewayValues, id: string, accessToken: string,
+    plainStorageConfirmed: boolean = false): void {
     if (!this.vncGatewayService.isReady()) {
       promptAction.showToast({ message: 'VNC 服务尚未完成云同步初始化，请稍后重试', duration: 2200 });
       return;
     }
-    const result = this.vncGatewayService.save(values, id, accessToken);
+    const result = this.vncGatewayService.save(values, id, accessToken, plainStorageConfirmed);
     if (!result.ok) {
       promptAction.showToast({ message: result.message || 'VNC Gateway 保存失败', duration: 2400 });
       return;
@@ -1893,8 +1894,9 @@ export struct RustDeskRelayPage {
         initialGateway: this.editingVncGateway,
         editingId: this.editingVncGateway === null ? '' : this.editingVncGateway.id,
         onClose: (): void => { this.closeSheet(); },
-        onSave: (values: VncGatewayValues, id: string, accessToken: string): void => {
-          this.saveVncGateway(values, id, accessToken);
+        onSave: (values: VncGatewayValues, id: string, accessToken: string,
+          plainStorageConfirmed: boolean): void => {
+          this.saveVncGateway(values, id, accessToken, plainStorageConfirmed);
         }
       })
     } else if (this.sheetContent === 9) {

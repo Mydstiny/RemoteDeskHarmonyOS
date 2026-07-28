@@ -2,9 +2,10 @@ import { describe, it, expect } from '@ohos/hypium';
 import { VncRecord } from '../main/ets/model/VncRecord';
 import { vncPayloadHashSha256, vncRecordIsScopeTombstone, vncRecordIsValid,
   vncRecordFromCloudRow, vncSecretPayloadIsMetadataOnly, VNC_SCOPE_TOMBSTONE_PAYLOAD,
-  VNC_CLOUD_TABLE, vncRecordHasActiveCiphertext } from
+  VNC_CLOUD_TABLE, vncRecordHasActiveCiphertext, vncRecordHasActiveEncryptedCiphertext } from
   '../main/ets/services/VncRecordPolicy';
 import { vncHostPayload } from '../main/ets/services/VncModelPolicy';
+import { encodePlainVncSecret } from '../main/ets/services/VncSecretStoragePolicy';
 
 function validHostRecord(): VncRecord {
   const record = new VncRecord();
@@ -16,7 +17,7 @@ function validHostRecord(): VncRecord {
   record.updatedAt = 2;
   record.payload = vncHostPayload({
     label: 'Test host', host: '192.0.2.10', port: 5900, username: '', gatewayId: '',
-    transport: 'direct_tcp', repeaterMode: 'mode12', viewOnly: true, scalingMode: 'fit', clipboardEnabled: false,
+    transport: 'direct_tcp', repeaterMode: 'mode12', rememberPassword: false, viewOnly: true, scalingMode: 'fit', clipboardEnabled: false,
     securityPolicy: 'secure_only', tls: true
   });
   record.payloadHashSha256 = vncPayloadHashSha256(record.payload);
@@ -103,6 +104,39 @@ export default function vncRecordPolicyTest(): void {
       record.cryptoVersion = 2;
       record.keyVersion = 1;
       record.aadVersion = 1;
+      record.payloadHashSha256 = vncPayloadHashSha256(record.payload);
+      expect(vncRecordIsValid(record)).assertFalse();
+    });
+
+    it('accepts_explicit_plain_v1_secret_rows_without_marking_them_encrypted', 0, (): void => {
+      const record = validHostRecord();
+      record.recordType = 'secret';
+      record.ownerId = 'host-1';
+      record.ownerType = 'host';
+      record.secretKind = 'vnc_password';
+      record.payload = '{"kind":"vnc_password","label":"host","storageMode":"plain_explicit_v1"}';
+      record.ciphertext = encodePlainVncSecret('测试-password');
+      record.envelopeVersion = 1;
+      record.cryptoVersion = 0;
+      record.keyVersion = 0;
+      record.aadVersion = 0;
+      record.payloadHashSha256 = vncPayloadHashSha256(record.payload);
+      expect(vncRecordIsValid(record)).assertTrue();
+      expect(vncRecordHasActiveEncryptedCiphertext(record)).assertFalse();
+    });
+
+    it('rejects_malformed_plain_v1_secret_rows', 0, (): void => {
+      const record = validHostRecord();
+      record.recordType = 'secret';
+      record.ownerId = 'host-1';
+      record.ownerType = 'host';
+      record.secretKind = 'vnc_password';
+      record.payload = '{"kind":"vnc_password","label":"host","storageMode":"plain_explicit_v1"}';
+      record.ciphertext = 'plain-v1:not-base64';
+      record.envelopeVersion = 1;
+      record.cryptoVersion = 0;
+      record.keyVersion = 0;
+      record.aadVersion = 0;
       record.payloadHashSha256 = vncPayloadHashSha256(record.payload);
       expect(vncRecordIsValid(record)).assertFalse();
     });

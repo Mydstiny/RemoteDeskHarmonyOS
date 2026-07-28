@@ -19,7 +19,7 @@ Updated: 2026-07-28 Asia/Shanghai
 - SSH settings continue to use existing `usersettings`, `RemoteHost`, `SshKey` and `KeyVaultService` owners; no SSH cloud table or sensitive global setting was added. RDP, RustDesk and VNC owners were not changed.
 - VNC now has its own settings page, model, host/gateway/secret/trust services and connection projection. It does not use RDP, RustDesk or SSH/SFTP data owners.
 - The only new cloud table is `vncrecord`; `recordtype` carries `settings`, `host`, `gateway`, `secret` and `trust`. `vnclocalrecords` is device-local only.
-- VNC secrets use the context-bound AES-GCM v2 envelope. Secrets are opt-in for sync and require an unlocked crypto state plus explicit VNC selection.
+- VNC remembered secrets use the context-bound AES-GCM v2 envelope when app encryption is unlocked. When app encryption is disabled, an explicit user confirmation may store a bounded `plain-v1` envelope; one-time credentials are never persisted. Secret sync remains opt-in and isolated to VNC's logical scope.
 - `cryptoparams.vnc_reset_epoch` increments on crypto reset. New VNC rows bind to the current epoch; old rows, stale backups and stale rewrites fail closed.
 - Native VNC supports RFB 3.3/3.7/3.8, VNC DES password, Raw/CopyRect/DesktopSize, BGRA, keyboard/mouse/clipboard and UltraVNC Repeater viewer mode12. The mode12 path validates `RFB 000.000\n` and sends the official fixed 250-byte `ID:<target>` field; mode2 remains a server-side repeater listener contract and is rejected by this viewer client.
 - Cloud reads validate every VNC row, including the typed JSON payload, before projection; preserve unknown wire values for rejection; bind runtime merges to `userId + id`; and hide unselected or crypto-locked cloud secrets. Scope deselection never writes a reverse cloud tombstone; user deletion still uses an ordinary tombstone. Raw crypto migration follows the same selected projection.
@@ -27,7 +27,7 @@ Updated: 2026-07-28 Asia/Shanghai
 - Startup uses a durable cloud-bootstrap marker and a serialized cloud-first barrier. A new device cannot publish local defaults before its first authoritative pull; startup mutations are deferred and cloud events/foreground pulls share the same queue.
 - The ordinary cloud-sync selector exposes the physical `vncrecord` table, while VNC logical scopes remain enforced by `VncCloudSyncSelectionStore`; manual ordinary upload/download cannot bypass that boundary.
 - Host-list settings now has an independent top-level VNC accordion and the FAB exposes the same isolated VNC add flow in both modern and classic modes. Saving can persist a VNC owner and optionally route to `RemoteDesktop` for connection.
-- The global “关闭加密” path now fails closed while any live VNC ciphertext exists in the local, current cloud, or legacy compatibility mirror; VNC passwords/tokens are never downgraded to plaintext or stranded by clearing the DEK.
+- The global “关闭加密” path now transactionally converts active VNC `encrypted_v2` rows in the local/current/legacy mirrors to explicitly confirmed `plain-v1` envelopes before clearing the DEK; a failed decrypt aborts the transition. VNC passwords/tokens are never silently downgraded or stranded.
 - WebSocket gateway, public relay, SSH tunnel and reverse/listen remain explicitly unavailable until their server contracts are deployed and verified.
 
 ## Verification
@@ -193,3 +193,15 @@ repeat the completed review below unless the listed files change again.
   `Cannot read properties of undefined (reading 'content')`; this is a
   signing/toolchain blocker. The `ohosTest` task remains the known
   `00306054` environment blocker.
+
+## VNC remember-password and optional-encryption quick-fix ledger (2026-07-28)
+
+- Entity plan: `docs/superpowers/plans/2026-07-28-vnc-remember-password-optional-encryption-quick-fix-plan.md`.
+- Local implementation is complete on the user-authorized `main` checkout. `VncAddFlow`, `VncSettingsPage` and the VNC connection authentication Sheet now expose an explicit remember-password choice. With remember disabled, host metadata is saved but the password stays in process memory for the current connection only; the add-and-connect path uses a one-shot user/host handoff and never writes a secret row.
+- With remember enabled, unlocked app encryption writes the existing bound `encrypted_v2` envelope. Disabled app encryption allows a separately confirmed bounded `plain-v1` envelope; a configured-but-locked key still requires unlock for persistence, while one-time input remains available. Selecting “not remember” in the connection Sheet no longer deletes an existing saved credential.
+- `VncSecretService` now reads/removes VNC secret owner rows through a raw, selection-independent view, so a deselected or locked secret can still be forgotten. Deletion writes a cloud tombstone only when an existing shared `vncrecord` row is present; scope changes never write reverse tombstones.
+- Post-review consistency fixes now roll back a failed VNC logical-scope reconciliation to the previous durable selection; a VNC-only request continues its `vncrecord` transfer when optional `cryptoparams` sync fails; mixed-protocol requests remain crypto fail-closed; and a newly-created host/Gateway payload is physically discarded on companion-secret failure instead of leaving a user deletion tombstone.
+- Global encryption disable converts active VNC `encrypted_v2` rows transactionally to the explicit plain envelope before removing the DEK; enabling encryption migrates plain envelopes back to AES-GCM v2. Plain consent remains device-local and is not treated as cloud authorization.
+- The physical cloud contract is unchanged: one `vncrecord` table with the existing 19 fields; no VNC table or field was added. RDP, RustDesk and SSH/SFTP owners were not changed.
+- Verification for the current implementation: `default@OhosTestCompileArkTS` passed, production `assembleHap` passed, `git diff --check` passed and the Light open-source compliance gate passed. `ohosTest` remains unavailable because the environment reports task-not-registered `00306054` and no device connection service `00308018`.
+- External acceptance remains required: direct VNC against a Mac, UltraVNC Repeater mode12, and the single-device/new-device/two-device `vncrecord` cloud-first matrix. No remote push, PR or remote-main merge is part of this local task.
