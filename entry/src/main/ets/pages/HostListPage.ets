@@ -204,6 +204,9 @@ import {
   resolveInitialRemoteDisplayScaleMode
 } from '../services/RemoteCanvasTransformPolicy';
 import {
+  resolveCanvasGestureZoomPreference
+} from '../services/RemoteCanvasZoomPreferencePolicy';
+import {
   CLOUD_SYNC_SHEET_ACTIONS,
   CLOUD_SYNC_SHEET_DOWNLOADING,
   CLOUD_SYNC_SHEET_DOWNLOAD_CONFIRM,
@@ -824,8 +827,11 @@ struct HostListPage {
         prefs.getSync('remoteDisplayCustomScalePercent', 100) as number;
       const canvasGestureZoomDefaultVersion: number =
         prefs.getSync('canvasGestureZoomDefaultVersion', 0) as number;
-      let savedCanvasGestureZoomEnabled: boolean =
-        prefs.getSync('canvasGestureZoomEnabled', !this.isDesktopDevice) as boolean;
+      const canvasZoomPreference = resolveCanvasGestureZoomPreference(
+        prefs.getSync('canvasGestureZoomEnabled', false) as boolean,
+        canvasGestureZoomDefaultVersion,
+        prefs.getSync('canvasGestureZoomUserConfigured', false) as boolean);
+      const savedCanvasGestureZoomEnabled: boolean = canvasZoomPreference.enabled;
       const savedRdpColorDepth: number = prefs.getSync('rdpColorDepth', 32) as number;
       const savedRdpAudioEnabled: boolean = prefs.getSync('rdpAudioEnabled', true) as boolean;
       const savedRdpClipboardEnabled: boolean = prefs.getSync('rdpClipboardEnabled', true) as boolean;
@@ -880,17 +886,14 @@ struct HostListPage {
         remoteDisplayScalePreferenceVersion);
       this.remoteDisplayCustomScalePercent = Math.max(50, Math.min(300,
         Number.isFinite(savedRemoteDisplayCustomScalePercent) ? savedRemoteDisplayCustomScalePercent : 100));
-      if (canvasGestureZoomDefaultVersion < 1) {
-        savedCanvasGestureZoomEnabled = !this.isDesktopDevice;
-        prefs.putSync('canvasGestureZoomEnabled', savedCanvasGestureZoomEnabled);
-        prefs.putSync('canvasGestureZoomDefaultVersion', 1);
-      }
       this.canvasGestureZoomEnabled = savedCanvasGestureZoomEnabled;
       prefs.putSync('rdpDesktopResolutionId', this.rdpDesktopResolutionId);
       prefs.putSync('remoteDisplayScaleMode', this.remoteDisplayScaleMode);
       prefs.putSync(REMOTE_DISPLAY_SCALE_PREFERENCE_VERSION_KEY,
         REMOTE_DISPLAY_SCALE_PREFERENCE_VERSION);
       prefs.putSync('remoteDisplayCustomScalePercent', this.remoteDisplayCustomScalePercent);
+      prefs.putSync('canvasGestureZoomDefaultVersion', canvasZoomPreference.version);
+      prefs.putSync('canvasGestureZoomUserConfigured', canvasZoomPreference.userConfigured);
       prefs.flush();
       this.rdpColorDepth = savedRdpColorDepth === 16 || savedRdpColorDepth === 24 ? savedRdpColorDepth : 32;
       this.rdpAudioEnabled = savedRdpAudioEnabled;
@@ -4147,6 +4150,7 @@ struct HostListPage {
   private saveCanvasGestureZoomEnabled(on: boolean): void {
     this.canvasGestureZoomEnabled = on;
     this.persistPref('canvasGestureZoomEnabled', on);
+    this.persistPref('canvasGestureZoomUserConfigured', true);
     if (on && this.rustdeskRemoteAppTouchScaleEnabled) {
       this.rustdeskRemoteAppTouchScaleEnabled = false;
       this.persistPref('rustdeskRemoteAppTouchScaleEnabled', false);
@@ -7820,7 +7824,7 @@ struct HostListPage {
   @Builder canvasGestureZoomRow() {
     if (!this.isDesktopDevice) {
       this.rustdeskSwitchRow($r('app.media.icon_desktop'), '双指画布缩放',
-        '捏合后缩放和平移画面；双指轻点始终保留右键，关闭后保留原有双指右键和滚轮',
+        '捏合缩放画面；缩放后双指长按约 0.4 秒，再拖动可移动画布。关闭后恢复双指右键和滚轮',
         this.canvasGestureZoomEnabled,
         (on: boolean): void => { this.saveCanvasGestureZoomEnabled(on); }, true)
     }

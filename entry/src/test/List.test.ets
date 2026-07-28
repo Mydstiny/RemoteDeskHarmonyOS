@@ -56,6 +56,7 @@ import remoteCanvasTransformPolicyTest from './RemoteCanvasTransformPolicy.test'
 import remoteSurfaceTransformPolicyTest from './RemoteSurfaceTransformPolicy.test';
 import remoteRendererViewportPolicyTest from './RemoteRendererViewportPolicy.test';
 import remoteCanvasGesturePolicyTest from './RemoteCanvasGesturePolicy.test';
+import remoteCanvasZoomPreferencePolicyTest from './RemoteCanvasZoomPreferencePolicy.test';
 import remoteResolutionPresetPolicyTest from './RemoteResolutionPresetPolicy.test';
 import dataSnapshotRevisionPolicyTest from './DataSnapshotRevisionPolicy.test';
 import boundedDocumentIoTest from './BoundedDocumentIo.test';
@@ -126,6 +127,7 @@ export default function testsuite() {
   remoteSurfaceTransformPolicyTest();
   remoteRendererViewportPolicyTest();
   remoteCanvasGesturePolicyTest();
+  remoteCanvasZoomPreferencePolicyTest();
   remoteResolutionPresetPolicyTest();
   dataSnapshotRevisionPolicyTest();
   boundedDocumentIoTest();
