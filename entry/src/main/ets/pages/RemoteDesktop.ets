@@ -6739,11 +6739,13 @@ struct RemoteDesktop {
         host.rustdeskProPlatform);
     const policy = rustDeskOrientationPolicy(protocol, this.isDesktopDevice,
       this.connected, this.renderPreservedInPip, adaptiveOrientationEnabled);
-    if (policy !== 'auto-rotate') {
-      return;
+    if (policy === 'auto-rotate') {
+      await this.setPreferredOrientation(window.Orientation.AUTO_ROTATION,
+        'RUSTDESK-AUTO-ROTATION-' + reason);
+    } else if (policy === 'landscape') {
+      await this.setPreferredOrientation(window.Orientation.LANDSCAPE,
+        'RUSTDESK-LANDSCAPE-' + reason);
     }
-    await this.setPreferredOrientation(window.Orientation.AUTO_ROTATION,
-      'RUSTDESK-AUTO-ROTATION-' + reason);
   }
 
   private async setPreferredOrientation(orientation: window.Orientation, label: string): Promise<void> {

@@ -6,9 +6,9 @@ import {
 
 export default function remoteOrientationPolicyTest(): void {
   describe('RemoteOrientationPolicy', (): void => {
-    it('keeps orientation unchanged until the host explicitly enables it', 0, (): void => {
+    it('defaults mobile RustDesk sessions to landscape until adaptive rotation is enabled', 0, (): void => {
       expect(rustDeskOrientationPolicy('rustdesk', false, true, false, false))
-        .assertEqual('preserve-window');
+        .assertEqual('landscape');
       expect(rustDeskOrientationPolicy('rustdesk', false, true, false, true))
         .assertEqual('auto-rotate');
     });

@@ -1,4 +1,4 @@
-export type RemoteOrientationPolicy = 'auto-rotate' | 'preserve-window';
+export type RemoteOrientationPolicy = 'auto-rotate' | 'landscape' | 'preserve-window';
 
 export type RustDeskTargetDevice = 'computer' | 'phone';
 
@@ -42,9 +42,8 @@ export function canUseRustDeskAdaptiveOrientation(protocol: string, targetDevice
 export function rustDeskOrientationPolicy(protocol: string, isDesktopDevice: boolean,
   connected: boolean, renderPreservedInPip: boolean,
   adaptiveOrientationEnabled: boolean = false): RemoteOrientationPolicy {
-  if (protocol === 'rustdesk' && !isDesktopDevice && connected && !renderPreservedInPip &&
-    adaptiveOrientationEnabled) {
-    return 'auto-rotate';
+  if (protocol === 'rustdesk' && !isDesktopDevice && connected && !renderPreservedInPip) {
+    return adaptiveOrientationEnabled ? 'auto-rotate' : 'landscape';
   }
   return 'preserve-window';
 }
