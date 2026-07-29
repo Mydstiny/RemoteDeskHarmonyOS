@@ -1,4 +1,4 @@
-export const CURRENT_RELEASE_VERSION: string = '1.0.8';
+export const CURRENT_RELEASE_VERSION: string = '1.0.9';
 
 export interface ReleaseNotePage {
   id: string;
@@ -11,52 +11,28 @@ export function pagesForReleasedVersion(version: string): ReleaseNotePage[] {
   if (version !== CURRENT_RELEASE_VERSION) { return []; }
   return [
     {
-      id: 'background-video-pip',
-      symbol: $rawfile('icons/computer-desktop.svg'),
-      title: '新增远程视频后台播放',
-      desc: '有真实视频的远程会话进入后台后继续保持连接，并尝试进入 VIDEO_PLAY 画中画，画面承载真实远程帧。'
-    },
-    {
-      id: 'avsession-media-identity',
-      symbol: $rawfile('icons/computer-desktop.svg'),
-      title: '新增系统媒体播控身份',
-      desc: '远程视频会以 AVSession video 身份出现在系统媒体控制入口；标题、协议和播放/暂停状态会随会话同步。'
-    },
-    {
-      id: 'native-vp9-background-crash',
+      id: 'account-data-isolation',
       symbol: $rawfile('icons/shield-check.svg'),
-      title: '修复切后台 VP9 崩溃',
-      desc: '修复软件解码线程与渲染回调并发关闭导致的 bad_function_call、SIGABRT 以及 renderer 已销毁后仍回调的问题。'
+      title: '账号数据完全隔离',
+      desc: '离线模式和每个已验证的华为账号使用独立本地数据空间；登录、登出或切换账号时会停止旧账号同步并清理敏感缓存。'
     },
     {
-      id: 'pip-frame-lifecycle',
-      symbol: $rawfile('icons/cog-6-tooth.svg'),
-      title: '修复画中画静帧和误启动',
-      desc: 'PIP 改用官方 XComponent free-node 视频承载并保留有效视频源；无连接、旧会话或退出应用时不会短暂弹出空画中画。'
-    },
-    {
-      id: 'grip-permission-startup',
-      symbol: $rawfile('icons/shield-check.svg'),
-      title: '智感握姿启动即准备',
-      desc: '移动设备启动后自动申请握姿权限，设置页改为显示当前状态，不再提供容易误触的开关；权限弹窗不会阻塞主机列表首屏。'
-    },
-    {
-      id: 'onboarding-rewrite',
+      id: 'fail-closed-cloud-sync',
       symbol: $rawfile('icons/globe-alt.svg'),
-      title: '重写新用户引导与教程',
-      desc: '将首次介绍和“简单使用教程”统一为添加主机、首次安全确认、远程操作、文件传输、后台视频和数据保护的上手步骤。'
+      title: '云同步故障安全升级',
+      desc: '首次拉取、重新启用同步、超时和迟到回调进入统一持久化队列；账号或数据形态无法验证时会停止同步，避免覆盖本地或云端数据。'
     },
     {
-      id: 'responsive-guide-sheets',
-      symbol: $rawfile('icons/computer-desktop.svg'),
-      title: '修复引导弹窗在小屏溢出',
-      desc: '收紧不同断点的 Sheet 高度、内容宽度和分页间距，手机、折叠屏、平板与 PC 使用各自合适的弹窗布局。'
-    },
-    {
-      id: 'welcome-1-0-8',
+      id: 'portable-backup-v3',
       symbol: $rawfile('icons/shield-check.svg'),
-      title: '欢迎使用 1.0.8',
-      desc: '这一版把远程连接的后台连续性、视频窗口生命周期和首次使用引导收敛到同一条可验证的产品路径。'
+      title: '本地备份与恢复 v3',
+      desc: '备份新增账号绑定和完整性清单，并支持旧版备份按兼容表部分恢复；登录令牌、密码、私钥、2FA 密钥和设备信任默认不会导出。'
+    },
+    {
+      id: 'welcome-1-0-9',
+      symbol: $rawfile('icons/cog-6-tooth.svg'),
+      title: '欢迎使用 1.0.9',
+      desc: '这一版重建了账号、云同步、加密和本地备份的生命周期边界；涉及跨设备云数据的最终结果仍以设置页的同步状态为准。'
     }
   ];
 }

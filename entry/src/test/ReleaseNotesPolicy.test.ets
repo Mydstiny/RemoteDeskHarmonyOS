@@ -9,16 +9,16 @@ import {
 export default function releaseNotesPolicyTest(): void {
   describe('ReleaseNotesPolicy', (): void => {
     it('selects_first_install_guide', 0, (): void => {
-      expect(resolveStartupMode(false, '', '1.0.8', true)).assertEqual(StartupMode.FIRST_INSTALL_GUIDE);
+      expect(resolveStartupMode(false, '', '1.0.9', true)).assertEqual(StartupMode.FIRST_INSTALL_GUIDE);
     });
     it('selects_release_notes_once_after_upgrade', 0, (): void => {
-      expect(resolveStartupMode(true, '', '1.0.8', true)).assertEqual(StartupMode.RELEASE_NOTES);
-      expect(resolveStartupMode(true, '1.0.7', '1.0.8', true)).assertEqual(StartupMode.RELEASE_NOTES);
-      expect(resolveStartupMode(true, '1.0.8', '1.0.8', true)).assertEqual(StartupMode.LOGIN);
-      expect(resolveStartupMode(true, '1.0.8', '1.0.7', true)).assertEqual(StartupMode.LOGIN);
+      expect(resolveStartupMode(true, '', '1.0.9', true)).assertEqual(StartupMode.RELEASE_NOTES);
+      expect(resolveStartupMode(true, '1.0.8', '1.0.9', true)).assertEqual(StartupMode.RELEASE_NOTES);
+      expect(resolveStartupMode(true, '1.0.9', '1.0.9', true)).assertEqual(StartupMode.LOGIN);
+      expect(resolveStartupMode(true, '1.0.9', '1.0.8', true)).assertEqual(StartupMode.LOGIN);
     });
     it('rejects_invalid_release_versions', 0, (): void => {
-      expect(resolveStartupMode(true, 'bad', '1.0.8', true)).assertEqual(StartupMode.LOGIN);
+      expect(resolveStartupMode(true, 'bad', '1.0.9', true)).assertEqual(StartupMode.LOGIN);
     });
     it('keeps_first_install_guide_in_page_content', 0, (): void => {
       expect(shouldPresentGuideAsBottomSheet(StartupMode.FIRST_INSTALL_GUIDE, 'sm')).assertFalse();
