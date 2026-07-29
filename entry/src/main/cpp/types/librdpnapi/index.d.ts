@@ -45,6 +45,7 @@ export const VERSION: SessionVersionInfo;
   export function getRemoteCursorSnapshot(sessionId: number, includePixels?: boolean): RemoteCursorSnapshot;
   export function getRemoteCursorSnapshotPixelsAsync(sessionId: number): Promise<RemoteCursorSnapshot>;
   export function getConnectionLastMessage(sessionId: number): string;
+  export function submitRustDesk2FA(sessionId: number, code: string): boolean;
   export function getRustDeskLastError(): string;
   export function probeRdpCertificate(host: string, port: number, serverName: string): RdpCertificateInfo;
   export function probeRdpCertificateAsync(host: string, port: number,

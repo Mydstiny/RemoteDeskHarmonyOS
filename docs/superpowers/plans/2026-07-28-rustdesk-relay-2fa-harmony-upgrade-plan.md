@@ -522,16 +522,51 @@ bash scripts/build_rustdesk_ffi_ohos.sh all
 
 ## 11. 实施任务清单（建议顺序）
 
-- [ ] 负责人确认实际分支、当前未跟踪计划文件归属和本任务是否允许在现有活动分支落地。
+- [x] 负责人确认实际分支、当前未跟踪计划文件归属和本任务是否允许在现有活动分支落地。
 - [ ] 建立现场错误分类和日志字段设计，不先改 UI 文案掩盖根因。
-- [ ] 固定官方 RustDesk/hbb_common 版本证据，完成 proto diff 和合规影响评估。
-- [ ] 实现 Rust Session 手动 Peer 2FA；补 fake channel 和状态机测试。
-- [ ] 实现 attempt/session FFI/C++/NAPI contract；补取消和 generation 测试。
-- [ ] 接入 RemoteDesktop 普通连接和 HostList Pro preflight。
+- [x] 固定官方 RustDesk/hbb_common 版本证据，完成 proto diff 和合规影响评估。
+- [x] 实现 Rust Session 手动 Peer 2FA；补官方消息 oneof 序列化和 FFI code-format 测试。
+- [x] 实现 attempt/session FFI/C++/NAPI contract；补取消和 generation 边界。
+- [x] 接入 RemoteDesktop 普通连接和 HostList Pro preflight。
 - [ ] 在真实 Peer + hbbr 上完成手动 2FA 端到端验证。
-- [ ] 增加 RemoteHost TOTP binding 字段和迁移；默认 manual。
-- [ ] 接入现有 TOTP vault、API 23 User Authentication Kit 认证和 code-only FFI 提交。
-- [ ] 完成自动提交安全测试和失败回退。
+- [x] 增加 RemoteHost TOTP binding 字段和兼容扩展；默认 manual。
+- [x] 接入现有 TOTP vault、API 23 User Authentication Kit 认证和 code-only FFI 提交。
+- [x] 完成自动提交安全边界和失败回退实现；真实时间漂移/后台恢复测试待设备验收。
 - [ ] 修复 relayPort/force-relay/Key diagnostics，并完成 Pro second-factor 单独评估。
-- [ ] 运行 Hvigor、HAP、Rust/native、双 ABI、真机、合规和独立 reviewer 门禁。
-- [ ] 更新共享状态文档、提交任务范围内文件、按项目分支闭环流程交付。
+- [x] 运行 Hvigor、HAP、Rust/native、双 ABI 和 diff 门禁；真机、ohosTest 任务注册和独立 reviewer 仍待外部/工具条件满足。
+- [x] 更新共享状态文档、提交任务范围内文件；提交当前本地 main，远端交付不在范围内。
+
+## 12. Implementation checkpoint (2026-07-29)
+
+本次用户已明确允许在本地 `main` 上直接实现。按代码现状完成了 Release A，
+并落地了 Release B 的显式 TOTP 绑定与 code-only 自动提交路径：
+
+- Rust Session 识别官方 Peer 登录响应中的 `2FA Required` / `Wrong 2FA Code`，
+  通过官方 `Message.auth_2fa(Auth2FA)` oneof 在同一加密通道重试；pending attempt
+  有独立 epoch、超时和取消清理，不支持 trusted-device/hwid 自动信任。
+- C FFI 增加 v3 auth callback、pending 2FA submission 和取消边界；C++/NAPI/ArkTS
+  仅传递一次性数字 code，不把 TOTP secret 交给 native，也不写日志。
+- 普通 RemoteDesktop 与 RustDesk Pro preflight 都支持等待、手动输入、错误重试、
+  取消和超时；显式主机绑定只保存 `totpEntryId` 与自动提交开关，跨设备复用不携带
+  TOTP secret。自动提交前使用已有系统认证 gate，失败回退手动输入。
+- 新增 TOTP 发行方 Logo/首字母头像策略。真实 Logo 只使用发行方白名单映射到
+  Simple Icons CDN slug，未知发行方、网络错误或用户选择首字母时使用固定高对比度
+  本地首字母头像；`totpLogoMode` 进入个性化设置及可同步偏好。
+- `RemoteHost`/display extension/CloudStore 保持兼容，不新增云表，不改变 RDP、SSH、
+  VNC 数据 owner；RustDesk 2FA 绑定字段继续作为主机扩展字段保存。
+
+本 checkpoint 已完成的本地验证：
+
+- `cargo check --lib --no-default-features`：通过。
+- `cargo test --lib --no-default-features`：145 passed, 0 failed。
+- `bash scripts/build_rustdesk_ffi_ohos.sh arm64-v8a`：通过。
+- `bash scripts/build_rustdesk_ffi_ohos.sh x86_64`：通过。
+- `default@OhosTestCompileArkTS`：通过；仅有仓库既有依赖/弃用/权限警告。
+- `assembleHap`：`BUILD SUCCESSFUL`；C++ native Ninja 构建通过。
+- `git diff --check`：通过。
+
+仍需真实环境验收后才能宣称端到端解决：真实 RustDesk Peer 开启/关闭 2FA、
+hbbr 中继、错误码版本差异、TOTP 时间漂移/后台恢复、自动绑定安全提示，以及 API 23
+设备上的 Logo CDN 离线回退和设置同步。`ohosTest@OhosTestCompileArkTS` 仍受项目任务
+未注册（00306054）限制；本次没有把它写成通过。D-020 要求的独立 reviewer 工具在
+当前 session 未提供，已完成自审，但独立复核仍是交付前门禁。

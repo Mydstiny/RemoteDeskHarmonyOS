@@ -4,6 +4,10 @@ Updated: 2026-07-28 Asia/Shanghai
 
 ## Now
 
+- RustDesk Peer 2FA 和 TOTP 绑定实现已在本地 `main` 完成；真实 Peer/hbbr/API 23
+  设备验收仍待执行。Logo 模式已加入个性化设置，真实 Logo 仅在白名单 issuer 上
+  请求 Simple Icons CDN，离线自动回退首字母；不把 TOTP secret/account 放入 URL。
+
 - RustDesk Android orientation/geometry/touch ownership implementation is complete on the user-authorized local `main` (`de441ac` review hardening). Validate on API 23 devices and a real RustDesk Android peer: mobile auto-rotation, portrait geometry, Surface recreation, virtual mouse/keyboard, touchpad scroll/right-click, default-off Canvas zoom, 0.4 s long-press canvas pan and remote TouchScale behavior. Keep the remote-phone system-rotation claim gated because this repository has no controlled Android endpoint or rotation-control acknowledgement.
 - VNC hosts are now projected into the existing classic remote-host cards. Validate card visibility, classic edit/lock/delete/batch-delete, direct Mac VNC connection and regression smoke for RDP/RustDesk/SSH on an API 23 device. Keep VNC CRUD in `VncHostService`/`vncrecord`; never migrate the projection into `remotehosts`.
 - VNC remember-password/optional-encryption quick fix is implemented on the user-authorized local `main` checkout. Keep the sole `vncrecord` table and its 19-field schema unchanged. Verify direct Mac VNC, Repeater mode12 and the single/new/two-device cloud-first matrix before release; do not push, open a PR or merge remote `main` in this task.

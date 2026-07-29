@@ -21,6 +21,7 @@ import {
   RdpAuthMode,
   RdpRestrictedAdminSecretSource
 } from '../model/RemoteHost';
+import { TotpEntry } from '../model/TotpEntry';
 import { VncHostService, VncHostView } from '../services/VncHostService';
 import { VncSecretLoadState } from '../services/VncSecretService';
 import { VncGatewayService, VncGatewayView } from '../services/VncGatewayService';
@@ -43,6 +44,7 @@ import {
 } from '../services/RustDeskProConnectionPreflightPolicy';
 import { AppConfig, Palette, buildDark, buildLight } from '../common/Theme';
 import { showLockGate, lockGateErrorMessage } from '../components/LockGate';
+import { TotpEngine } from '../services/TotpEngine';
 import { RemoteModifierHandle } from '../components/RemoteModifierHandle';
 import { RemoteModifierPanel } from '../components/RemoteModifierPanel';
 import { RemoteCursorOverlay, RemoteCursorOverlayState } from '../components/RemoteCursorOverlay';
@@ -547,6 +549,7 @@ struct RemoteDesktop {
   @State rdpSessionErrorMessage: string = '';
   @State rdpSessionErrorCode: string = '';
   @State showRustDeskAuthSheet: boolean = false;
+  @State showRustDeskTwoFactorSheet: boolean = false;
   @State showVncPasswordSheet: boolean = false;
   @State rustDeskDiagnostics: RustDeskDiagnosticsSnapshot = EMPTY_RUSTDESK_DIAGNOSTICS;
   @State rustDeskDisplayCapabilities: RustDeskDisplayCapabilities = EMPTY_RUSTDESK_DISPLAY_CAPABILITIES;
@@ -558,6 +561,9 @@ struct RemoteDesktop {
   @State rustDeskAuthPasswordShow: boolean = false;
   @State rustDeskAuthRememberPassword: boolean = true;
   @State rustDeskAuthError: string = '';
+  @State rustDeskTwoFactorInput: string = '';
+  @State rustDeskTwoFactorError: string = '';
+  @State rustDeskTwoFactorSubmitting: boolean = false;
   @State vncPasswordInput: string = '';
   @State vncRememberPassword: boolean = false;
   @State vncPasswordError: string = '';
@@ -573,6 +579,7 @@ struct RemoteDesktop {
   @State isLandscape: boolean = true;  // 横竖屏切换状态
   private srv: HostSyncService = HostSyncService.getInstance();
   private loader: ExtensionLoader = ExtensionLoader.getInstance();
+  private keyVault: KeyVaultService = KeyVaultService.getInstance();
   private readonly proSync: RustDeskProSyncService = RustDeskProSyncService.getInstance();
   private readonly vncSettings: VncSettingsService = VncSettingsService.getInstance();
   private readonly vncHosts: VncHostService = VncHostService.getInstance();
@@ -586,6 +593,8 @@ struct RemoteDesktop {
   private xcId: string = 'rdpSurface';
   // R0: session/renderer/decoder handle 追踪
   private sessionId: number = -1;
+  private rustDeskTwoFactorSessionId: number = -1;
+  private rustDeskTwoFactorAutoAttemptSessionId: number = -1;
   private rendererHandle: number = -1;
   private decoderHandle: number = -1;
   private surfaceReady: boolean = false;
@@ -1197,6 +1206,150 @@ struct RemoteDesktop {
     if (queuedMessage !== null) {
       setTimeout((): void => { this.openRustDeskAuthSheet(queuedMessage); }, 0);
     }
+  }
+
+  /**
+   * RustDesk Peer 2FA is a second step of the existing encrypted login.  Keep
+   * the native session alive while the user enters the code; opening a new
+   * connection here would lose the challenge and can create a second relay.
+   */
+  private openRustDeskTwoFactorPrompt(sessionId: number, message: string = ''): void {
+    if (this.rustDeskTwoFactorSessionId !== sessionId) {
+      this.rustDeskTwoFactorInput = '';
+      this.rustDeskTwoFactorError = '';
+      this.rustDeskTwoFactorSubmitting = false;
+    }
+    this.rustDeskTwoFactorSessionId = sessionId;
+    if (message.indexOf('Wrong 2FA Code') >= 0) {
+      this.rustDeskTwoFactorError = '验证码错误，请输入远端设备当前显示的 2FA 验证码。';
+      this.rustDeskTwoFactorSubmitting = false;
+    } else if (message.length > 0 && message !== '2FA Required' &&
+      message !== '2FA code submitted') {
+      this.rustDeskTwoFactorError = message;
+    }
+    this.showRustDeskTwoFactorSheet = true;
+  }
+
+  private async tryAutoSubmitRustDeskTwoFactor(sessionId: number, host: RemoteHost): Promise<void> {
+    if (!host.rustdeskTotpAutoSubmit || host.rustdeskTotpEntryId === '' ||
+      this.rustDeskTwoFactorAutoAttemptSessionId === sessionId) {
+      return;
+    }
+    this.rustDeskTwoFactorAutoAttemptSessionId = sessionId;
+    // The secret is released only after the system authentication gate.  The
+    // native side receives the short-lived code only; it never receives the
+    // TOTP secret or the vault entry.
+    const gate = await showLockGate('RustDesk 2FA 自动填写', 'biometric');
+    if (this.sessionId !== sessionId || this.connectAttemptId <= 0) {
+      return;
+    }
+    if (!gate.ok) {
+      this.openRustDeskTwoFactorPrompt(sessionId, lockGateErrorMessage(gate) ||
+        '未通过系统身份认证，请手动输入验证码。');
+      return;
+    }
+    const entry: TotpEntry | undefined = this.keyVault.getTotpEntry(host.rustdeskTotpEntryId);
+    if (entry === undefined || entry.secret.length === 0) {
+      this.openRustDeskTwoFactorPrompt(sessionId, '已绑定的 2FA 条目不可用，请手动输入验证码。');
+      return;
+    }
+    const code: string = TotpEngine.generateCode(entry).code;
+    if (!this.loader.submitRustDesk2FA(sessionId, code)) {
+      this.openRustDeskTwoFactorPrompt(sessionId, this.loader.getRustDeskLastError() ||
+        '自动提交验证码失败，请手动输入。');
+      return;
+    }
+    this.rustDeskTwoFactorSubmitting = true;
+    this.openRustDeskTwoFactorPrompt(sessionId, '2FA code submitted');
+    this.rustDeskTwoFactorSubmitting = true;
+  }
+
+  private cancelRustDeskTwoFactor(): void {
+    this.loader.disconnect();
+    this.connectAttemptId += 1;
+    this.showRustDeskTwoFactorSheet = false;
+    this.rustDeskTwoFactorSessionId = -1;
+    this.rustDeskTwoFactorAutoAttemptSessionId = -1;
+    this.rustDeskTwoFactorInput = '';
+    this.rustDeskTwoFactorSubmitting = false;
+    this.connectStarted = false;
+    this.connecting = false;
+    this.connectionError = '连接已取消';
+    this.connectionErrorDetail = '未建立 RustDesk 会话';
+    this.sessionId = -1;
+  }
+
+  private submitRustDeskTwoFactor(): void {
+    const code: string = this.rustDeskTwoFactorInput.trim();
+    if (!/^[0-9]{4,8}$/.test(code)) {
+      this.rustDeskTwoFactorError = '请输入 4-8 位数字验证码。';
+      return;
+    }
+    if (this.rustDeskTwoFactorSessionId <= 0) {
+      this.rustDeskTwoFactorError = '2FA 会话已失效，请重新连接。';
+      return;
+    }
+    if (!this.loader.submitRustDesk2FA(this.rustDeskTwoFactorSessionId, code)) {
+      this.rustDeskTwoFactorError = this.loader.getRustDeskLastError() ||
+        '验证码提交失败，请重新连接。';
+      this.rustDeskTwoFactorSubmitting = false;
+      return;
+    }
+    this.rustDeskTwoFactorError = '';
+    this.rustDeskTwoFactorSubmitting = true;
+    this.rustDeskTwoFactorInput = '';
+  }
+
+  private handleRustDeskTwoFactorSheetDismiss(action: DismissSheetAction): void {
+    action.dismiss();
+    if (this.showRustDeskTwoFactorSheet) {
+      this.cancelRustDeskTwoFactor();
+    }
+  }
+
+  @Builder rustDeskTwoFactorSheetBuilder() {
+    Column({ space: 12 }) {
+      Row() {
+        Column({ space: 4 }) {
+          Text('需要 2FA 验证').fontSize(19).fontWeight(FontWeight.Bold)
+            .fontColor(this.pal().text)
+          Text('远端 RustDesk 设备要求输入动态验证码，当前连接会保持等待。')
+            .fontSize(12).fontColor(this.pal().text2)
+        }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+        Text('取消').fontSize(13).fontColor(this.pal().text2)
+          .onClick((): void => { this.cancelRustDeskTwoFactor(); })
+      }.width('100%')
+
+      TextInput({ placeholder: '输入 2FA 验证码', text: this.rustDeskTwoFactorInput })
+        .type(InputType.Normal)
+        .height(46).width('100%').backgroundColor(this.pal().surface).borderRadius(10)
+        .fontColor(this.pal().text).placeholderColor(this.pal().text3)
+        .fontSize(16).maxLength(8)
+        .onChange((value: string): void => {
+          this.rustDeskTwoFactorInput = value.replace(/[^0-9]/g, '');
+          this.rustDeskTwoFactorError = '';
+          this.rustDeskTwoFactorSubmitting = false;
+        })
+
+      Text(this.rustDeskTwoFactorSubmitting ? '验证码已提交，等待远端确认…' :
+        '验证码不会保存，也不会发送到应用外部。')
+        .fontSize(11).fontColor(this.pal().text3).width('100%')
+      if (this.rustDeskTwoFactorError.length > 0) {
+        Text(this.rustDeskTwoFactorError).fontSize(12).fontColor(this.pal().danger).width('100%')
+      }
+      Row({ space: 10 }) {
+        Button('取消').layoutWeight(1).height(42).fontSize(13)
+          .backgroundColor(this.pal().surface).fontColor(this.pal().text2).borderRadius(10)
+          .onClick((): void => { this.cancelRustDeskTwoFactor(); })
+        Button(this.rustDeskTwoFactorSubmitting ? '等待中' : '验证')
+          .layoutWeight(1).height(42).fontSize(13).fontWeight(FontWeight.Medium)
+          .backgroundColor(this.accentColor).fontColor(Color.White).borderRadius(10)
+          .enabled(!this.rustDeskTwoFactorSubmitting)
+          .onClick((): void => { this.submitRustDeskTwoFactor(); })
+      }.width('100%')
+    }
+    .width('100%').padding({ left: 24, right: 24, top: 22, bottom: 28 })
+    .backgroundColor(this.pal().sheetBg)
   }
 
   private prepareVncAuthentication(): void {
@@ -5003,7 +5156,8 @@ struct RemoteDesktop {
     sessionId: number,
     timeoutMs: number,
     attemptId: number,
-    protocol: string
+    protocol: string,
+    host: RemoteHost | null = null
   ): Promise<boolean> {
     const startedAt: number = Date.now();
     let lastState: number = -1;
@@ -5019,7 +5173,22 @@ struct RemoteDesktop {
       this.rdpDriveMounted = transferStatus.rdpDriveMounted;
       if (state === 1) { observedConnecting = true; }
       if (state === 2) {
+        if (protocol === 'rustdesk' && this.showRustDeskTwoFactorSheet) {
+          this.showRustDeskTwoFactorSheet = false;
+          this.rustDeskTwoFactorSessionId = -1;
+          this.rustDeskTwoFactorInput = '';
+          this.rustDeskTwoFactorError = '';
+          this.rustDeskTwoFactorSubmitting = false;
+          this.rustDeskTwoFactorAutoAttemptSessionId = -1;
+        }
         return true;
+      }
+      if (protocol === 'rustdesk' && state === 5) {
+        const authMessage: string = this.loader.getConnectionLastMessage(sessionId);
+        if (host !== null) {
+          await this.tryAutoSubmitRustDeskTwoFactor(sessionId, host);
+        }
+        this.openRustDeskTwoFactorPrompt(sessionId, authMessage);
       }
       const terminal: boolean = protocol === 'vnc' ?
         shouldTreatVncConnectionStateAsTerminal(state, observedConnecting, Date.now() - startedAt) :
@@ -5076,7 +5245,7 @@ struct RemoteDesktop {
       return false;
     }
     if (protocol === 'rustdesk') {
-      throw new Error('RustDesk 握手超时 [E-RUSTDESK-TIMEOUT]');
+      throw new Error('RustDesk 握手或 2FA 验证超时 [E-RUSTDESK-TIMEOUT]');
     }
     if (protocol === 'rdp') {
       throw new Error('RDP 连接超时，请确认 Windows 远程桌面服务和账号权限 [E-RDP-TIMEOUT]');
@@ -6411,8 +6580,8 @@ struct RemoteDesktop {
         rustDeskAuthModeForConnection(host.rustdeskDirectEnabled, host.rustdeskAuthMode) ===
         'request_approval';
       const nativeReady: boolean = await this.waitForNativeConnected(
-        sid, host.protocol === 'rustdesk' ? (rustDeskApprovalWait ? 100000 : 25000) : 45000,
-        attemptId, host.protocol);
+        sid, host.protocol === 'rustdesk' ? (rustDeskApprovalWait ? 120000 : 120000) : 45000,
+        attemptId, host.protocol, host);
       if (!nativeReady) {
         return;
       }
@@ -6480,6 +6649,12 @@ struct RemoteDesktop {
         this.rustDeskDisplaySwitchPending = -1;
         this.rustDeskDisplaySwitchStartedAtMs = 0;
       }
+      this.showRustDeskTwoFactorSheet = false;
+      this.rustDeskTwoFactorSessionId = -1;
+      this.rustDeskTwoFactorAutoAttemptSessionId = -1;
+      this.rustDeskTwoFactorInput = '';
+      this.rustDeskTwoFactorError = '';
+      this.rustDeskTwoFactorSubmitting = false;
       this.nativeHandles.markProtocolDisconnected();
       this.activeSessionRegistry.clear('connect-failed');
       this.clearRemoteInputFocusSchedule();
@@ -10487,6 +10662,20 @@ struct RemoteDesktop {
             this.handleRustDeskAuthSheetDismiss(action);
           },
           onDisappear: (): void => { this.handleRustDeskAuthSheetDisappear(); }
+        })
+
+      Column().width('100%').height('100%').hitTestBehavior(HitTestMode.None)
+        .bindSheet($$this.showRustDeskTwoFactorSheet, this.rustDeskTwoFactorSheetBuilder(), {
+          height: SheetSize.FIT_CONTENT,
+          preferType: SheetType.BOTTOM,
+          dragBar: true,
+          backgroundColor: this.pal().sheetBg,
+          blurStyle: BlurStyle.NONE,
+          showClose: false,
+          maskColor: 'rgba(0,0,0,0.58)',
+          onWillDismiss: (action: DismissSheetAction): void => {
+            this.handleRustDeskTwoFactorSheetDismiss(action);
+          }
         })
 
       Column().width('100%').height('100%').hitTestBehavior(HitTestMode.None)

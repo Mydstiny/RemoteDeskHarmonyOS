@@ -1986,6 +1986,8 @@ export class CloudStore implements CryptoCloudStore {
     host.rustdeskAuthMode = get('rustdeskauthmode', host.rustdeskAuthMode) === 'request_approval' ? 'request_approval' : 'password';
     host.rustdeskDirectEnabled = get('rustdeskdirectenabled', host.rustdeskDirectEnabled ? '1' : '0') === '1';
     host.rustdeskDirectPort = Number(get('rustdeskdirectport', host.rustdeskDirectPort.toString()));
+    host.rustdeskTotpEntryId = get('rustdesktotpentryid', host.rustdeskTotpEntryId);
+    host.rustdeskTotpAutoSubmit = get('rustdesktotpautosubmit', host.rustdeskTotpAutoSubmit ? '1' : '0') === '1';
     host.sourceType = get('sourcetype', host.sourceType);
     host.rustdeskProAccountId = get('rustdeskproaccountid', host.rustdeskProAccountId);
     host.rustdeskProPeerId = get('rustdeskpropeerid', host.rustdeskProPeerId);
@@ -2031,6 +2033,8 @@ export class CloudStore implements CryptoCloudStore {
     values['rustdeskdirectenabled'] = host.rustdeskDirectEnabled ? '1' : '0';
     values['rustdeskdirecthost'] = host.rustdeskDirectHost;
     values['rustdeskdirectport'] = host.rustdeskDirectPort.toString();
+    values['rustdesktotpentryid'] = host.rustdeskTotpEntryId;
+    values['rustdesktotpautosubmit'] = host.rustdeskTotpAutoSubmit ? '1' : '0';
     values['rdpcredentialid'] = host.rdpCredentialId;
     values['rdpauthmode'] = host.rdpAuthMode;
     values['rdprestrictedadminsecretsource'] = host.rdpRestrictedAdminSecretSource;

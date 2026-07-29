@@ -3341,6 +3341,36 @@ napi_value NapiGetConnectionState(napi_env env, napi_callback_info info) {
     return result;
 }
 
+/**
+ * NAPI: submitRustDesk2FA(sessionId: number, code: string): boolean
+ * Submit only a transient Peer TOTP code; the secret never crosses this API.
+ */
+napi_value NapiSubmitRustDesk2FA(napi_env env, napi_callback_info info) {
+    size_t argc = 2;
+    napi_value args[2];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+
+    int32_t sessionId = 0;
+    if (argc < 2 || napi_get_value_int32(env, args[0], &sessionId) != napi_ok) {
+        napi_value result;
+        napi_get_boolean(env, false, &result);
+        return result;
+    }
+    std::string code = GetNapiString(env, args[1]);
+    bool accepted = false;
+    auto it = g_sessions.find(sessionId);
+    if (it != g_sessions.end() && it->second->protocolName == "rustdesk" && it->second->adapter) {
+        auto rustdesk = std::dynamic_pointer_cast<RustDeskBridge>(it->second->adapter);
+        if (rustdesk) {
+            accepted = rustdesk->submitTwoFactorCode(code);
+        }
+    }
+    secureClearString(code);
+    napi_value result;
+    napi_get_boolean(env, accepted, &result);
+    return result;
+}
+
 static void FinalizeRemoteCursorPixels(napi_env /*env*/, void* /*data*/, void* hint) {
     delete static_cast<std::vector<uint8_t>*>(hint);
 }
@@ -4880,6 +4910,10 @@ napi_value ExtensionLoaderNapi::Init(napi_env env, napi_value exports) {
     napi_create_function(env, "getConnectionState", NAPI_AUTO_LENGTH,
                          NapiGetConnectionState, nullptr, &fn);
     napi_set_named_property(env, exports, "getConnectionState", fn);
+
+    napi_create_function(env, "submitRustDesk2FA", NAPI_AUTO_LENGTH,
+                         NapiSubmitRustDesk2FA, nullptr, &fn);
+    napi_set_named_property(env, exports, "submitRustDesk2FA", fn);
 
     napi_create_function(env, "getRemoteCursorSnapshot", NAPI_AUTO_LENGTH,
                          NapiGetRemoteCursorSnapshot, nullptr, &fn);

@@ -48,7 +48,8 @@ enum class ConnectionState {
     CONNECTING   = 1,
     CONNECTED    = 2,
     RECONNECTING = 3,
-    ERROR        = 4
+    ERROR        = 4,
+    AUTHENTICATING = 5
 };
 
 /** RDP credential delegation mode. Keep this independent from SSH authMethod. */

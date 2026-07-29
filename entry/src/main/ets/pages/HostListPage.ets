@@ -44,10 +44,12 @@ import {
 } from '../model/RemoteHost';
 import { RustDeskRelayConfig } from '../model/RustDeskRelayConfig';
 import { RustDeskAccount } from '../model/RustDeskAccount';
+import { TotpEntry } from '../model/TotpEntry';
 import { RdpCredential } from '../model/RdpCredential';
 import { RustDeskRelayPage } from './RustDeskRelayPage';
 import { RustDeskProSyncService } from '../services/RustDeskProSyncService';
 import { RustDeskProAccountState } from '../model/RustDeskProModels';
+import { TotpEngine } from '../services/TotpEngine';
 import { AppConfig, AppTheme, Palette, buildDark, buildLight } from '../common/Theme';
 import { showLockGate, lockGateErrorMessage } from '../components/LockGate';
 import { ColorPickerSheet } from '../components/ColorPickerSheet';
@@ -336,6 +338,7 @@ struct HostListPage {
   // Keep the released storage/cloud key while exposing the broader FAB-style semantics in UI code.
   @StorageLink('hostAddMode') fabAddStyle: string = 'modern';
   @StorageLink('virtualMouseStyle') virtualMouseStyle: string = 'circle';
+  @StorageLink('totpLogoMode') totpLogoMode: string = 'logo';
   @State lanScanning: boolean = false;
   @State lanScanResults: DiscoveredRustDeskPeer[] = [];
   private lanDiscovery: RustDeskLanDiscoveryService = new RustDeskLanDiscoveryService();
@@ -429,6 +432,12 @@ struct HostListPage {
   @State rustDeskProPasswordVisible: boolean = false;
   @State rustDeskProRememberPassword: boolean = true;
   @State rustDeskProPreflightError: string = '';
+  @State rustDeskProTwoFactorActive: boolean = false;
+  @State rustDeskProTwoFactorInput: string = '';
+  @State rustDeskProTwoFactorError: string = '';
+  @State rustDeskProTwoFactorSubmitting: boolean = false;
+  private rustDeskProTwoFactorSessionId: number = -1;
+  private rustDeskProTwoFactorAutoAttemptSessionId: number = -1;
   private rustDeskProPreflightGeneration: number = 0;
   // RustDesk preflight Sheet 退出动画完成前，不允许复用同一 bindSheet 宿主。
   private rustDeskProPreflightClosing: boolean = false;
@@ -479,6 +488,8 @@ struct HostListPage {
   @State sheetRustdeskDirectEnabled: boolean = false; // per-host 直连开关
   @State sheetRustdeskDirectHost: string = '';
   @State sheetRustdeskDirectPort: number = RUSTDESK_PEER_TCP_PORT;
+  @State sheetRustdeskTotpEntryId: string = '';
+  @State sheetRustdeskTotpAutoSubmit: boolean = false;
   @State sheetProxyHost: string = '';
   @State sheetProxyPort: number = 22;
   @State sheetProxyUser: string = '';
@@ -759,6 +770,7 @@ struct HostListPage {
       const savedLiveViewMode: number = prefs.getSync('liveViewMode', 1) as number;
       const savedHostAddMode: string = prefs.getSync('hostAddMode', 'modern') as string;
       const savedVirtualMouseStyle: string = prefs.getSync('virtualMouseStyle', 'circle') as string;
+      const savedTotpLogoMode: string = prefs.getSync('totpLogoMode', 'logo') as string;
       const savedWallpaper: string = prefs.getSync('wallpaperColor', '') as string;
       const savedUseNativeCore: boolean = prefs.getSync('useNativeTerminalCore', true) as boolean;
       if (!savedFollowSystem && savedTheme !== '') {
@@ -790,6 +802,8 @@ struct HostListPage {
       AppStorage.setOrCreate('hostAddMode', this.fabAddStyle);
       this.virtualMouseStyle = normalizeRemoteCursorStyle(savedVirtualMouseStyle);
       AppStorage.setOrCreate('virtualMouseStyle', this.virtualMouseStyle);
+      this.totpLogoMode = savedTotpLogoMode === 'initials' ? 'initials' : 'logo';
+      AppStorage.setOrCreate('totpLogoMode', this.totpLogoMode);
       if (savedWallpaper !== '') { AppStorage.setOrCreate('wallpaperColor', savedWallpaper); }
       const savedWallIdx: number = prefs.getSync('wallpaperIdx', -1) as number;
       if (savedWallIdx >= 0 && savedWallIdx < this.wallpaperItems.length) {
@@ -3463,6 +3477,80 @@ struct HostListPage {
     };
   }
 
+  private openRustDeskProTwoFactorPrompt(sessionId: number, message: string): void {
+    if (this.rustDeskProTwoFactorSessionId !== sessionId) {
+      this.rustDeskProTwoFactorInput = '';
+      this.rustDeskProTwoFactorError = '';
+      this.rustDeskProTwoFactorSubmitting = false;
+    }
+    this.rustDeskProTwoFactorSessionId = sessionId;
+    this.rustDeskProTwoFactorActive = true;
+    if (message.indexOf('Wrong 2FA Code') >= 0) {
+      this.rustDeskProTwoFactorError = '验证码错误，请输入远端设备当前显示的 2FA 验证码。';
+      this.rustDeskProTwoFactorSubmitting = false;
+    }
+  }
+
+  private async tryAutoSubmitRustDeskProTwoFactor(sessionId: number, host: RemoteHost): Promise<void> {
+    if (!host.rustdeskTotpAutoSubmit || host.rustdeskTotpEntryId === '' ||
+      this.rustDeskProTwoFactorAutoAttemptSessionId === sessionId) {
+      return;
+    }
+    this.rustDeskProTwoFactorAutoAttemptSessionId = sessionId;
+    const gate = await showLockGate('RustDesk 2FA 自动填写', 'biometric');
+    if (this.rustDeskProPreflightState !== RustDeskProPreflightState.CONNECTING) {
+      return;
+    }
+    if (!gate.ok) {
+      this.openRustDeskProTwoFactorPrompt(sessionId, lockGateErrorMessage(gate) ||
+        '未通过系统身份认证，请手动输入验证码。');
+      return;
+    }
+    const entry: TotpEntry | undefined = this.keyVault.getTotpEntry(host.rustdeskTotpEntryId);
+    if (entry === undefined || entry.secret.length === 0) {
+      this.openRustDeskProTwoFactorPrompt(sessionId, '已绑定的 2FA 条目不可用，请手动输入验证码。');
+      return;
+    }
+    const code: string = TotpEngine.generateCode(entry).code;
+    if (!this.loader.submitRustDesk2FA(sessionId, code)) {
+      this.openRustDeskProTwoFactorPrompt(sessionId, this.loader.getRustDeskLastError() ||
+        '自动提交验证码失败，请手动输入。');
+      return;
+    }
+    this.openRustDeskProTwoFactorPrompt(sessionId, '2FA code submitted');
+    this.rustDeskProTwoFactorSubmitting = true;
+  }
+
+  private cancelRustDeskProTwoFactor(): void {
+    this.rustDeskProPreflightGeneration += 1;
+    this.loader.disconnect();
+    this.rustDeskProTwoFactorActive = false;
+    this.rustDeskProTwoFactorSessionId = -1;
+    this.rustDeskProTwoFactorAutoAttemptSessionId = -1;
+    this.rustDeskProTwoFactorInput = '';
+    this.rustDeskProTwoFactorSubmitting = false;
+    this.rustDeskProPreflightState = RustDeskProPreflightState.ERROR;
+    this.rustDeskProPreflightError = '连接已取消。';
+  }
+
+  private submitRustDeskProTwoFactor(): void {
+    const code: string = this.rustDeskProTwoFactorInput.trim();
+    if (!/^[0-9]{4,8}$/.test(code)) {
+      this.rustDeskProTwoFactorError = '请输入 4-8 位数字验证码。';
+      return;
+    }
+    if (this.rustDeskProTwoFactorSessionId <= 0 ||
+      !this.loader.submitRustDesk2FA(this.rustDeskProTwoFactorSessionId, code)) {
+      this.rustDeskProTwoFactorError = this.loader.getRustDeskLastError() ||
+        '验证码提交失败，请重新连接。';
+      this.rustDeskProTwoFactorSubmitting = false;
+      return;
+    }
+    this.rustDeskProTwoFactorInput = '';
+    this.rustDeskProTwoFactorError = '';
+    this.rustDeskProTwoFactorSubmitting = true;
+  }
+
   private async confirmRustDeskProPreflight(): Promise<void> {
     const stored: RemoteHost | undefined = this.srv.getHost(this.rustDeskProPreflightHostId);
     if (!stored || this.rustDeskProPreflightState === RustDeskProPreflightState.CONNECTING) { return; }
@@ -3486,6 +3574,12 @@ struct HostListPage {
     host.rustdeskPasswordMode = this.rustDeskProPasswordMode === 1 ? 1 : 0;
     if (host.rustdeskAuthMode === 'password') { host.password = this.rustDeskProPassword; }
     this.rustDeskProPreflightError = '';
+    this.rustDeskProTwoFactorActive = false;
+    this.rustDeskProTwoFactorSessionId = -1;
+    this.rustDeskProTwoFactorAutoAttemptSessionId = -1;
+    this.rustDeskProTwoFactorInput = '';
+    this.rustDeskProTwoFactorError = '';
+    this.rustDeskProTwoFactorSubmitting = false;
     this.rustDeskProPreflightState = RustDeskProPreflightState.CONNECTING;
     try {
       if (!await this.loader.waitForPendingTeardown(5000)) {
@@ -3493,12 +3587,15 @@ struct HostListPage {
       }
       const sid: number = this.loader.connect(this.rustDeskProConfig(host));
       if (sid <= 0) { throw new Error('无法启动 RustDesk 连接 [E-RUSTDESK-PREFLIGHT-' + Math.abs(sid).toString() + ']'); }
-      const timeoutMs: number = host.rustdeskAuthMode === 'request_approval' ? 100000 : 25000;
+      const timeoutMs: number = 120000;
       const startedAt: number = Date.now();
       while (Date.now() - startedAt < timeoutMs) {
         if (generation !== this.rustDeskProPreflightGeneration) { return; }
         const state: number = this.loader.getConnectionState(sid);
         if (state === 2) {
+          this.rustDeskProTwoFactorActive = false;
+          this.rustDeskProTwoFactorSessionId = -1;
+          this.rustDeskProTwoFactorAutoAttemptSessionId = -1;
           this.rustDeskProPreflightState = RustDeskProPreflightState.AUTHENTICATED;
           const saved: RemoteHost = RemoteHost.fromJSON(stored.toJSON());
           saved.rustdeskAuthMode = host.rustdeskAuthMode;
@@ -3526,6 +3623,10 @@ struct HostListPage {
           this.showRemoteHostSheet = false;
           return;
         }
+        if (state === 5) {
+          await this.tryAutoSubmitRustDeskProTwoFactor(sid, host);
+          this.openRustDeskProTwoFactorPrompt(sid, this.loader.getConnectionLastMessage(sid));
+        }
         if (state === 4 || state === 0) {
           const detail: string = this.loader.getRustDeskLastError() || this.loader.getConnectionLastMessage(sid);
           throw new Error(detail || '远端鉴权失败，请检查密码后重试。');
@@ -3536,6 +3637,11 @@ struct HostListPage {
     } catch (err) {
       if (generation !== this.rustDeskProPreflightGeneration) { return; }
       this.loader.disconnect();
+      this.rustDeskProTwoFactorActive = false;
+      this.rustDeskProTwoFactorSessionId = -1;
+      this.rustDeskProTwoFactorAutoAttemptSessionId = -1;
+      this.rustDeskProTwoFactorInput = '';
+      this.rustDeskProTwoFactorSubmitting = false;
       this.rustDeskProPreflightState = RustDeskProPreflightState.ERROR;
       const detail: string = err instanceof Error ? err.message : JSON.stringify(err);
       let kind: RustDeskProNativeErrorKind = classifyRustDeskProNativeError(detail);
@@ -3617,6 +3723,8 @@ struct HostListPage {
     this.sheetRustdeskDirectEnabled = latestHost.rustdeskDirectEnabled;
     this.sheetRustdeskDirectHost = latestHost.rustdeskDirectHost;
     this.sheetRustdeskDirectPort = latestHost.rustdeskDirectPort > 0 ? latestHost.rustdeskDirectPort : RUSTDESK_PEER_TCP_PORT;
+    this.sheetRustdeskTotpEntryId = latestHost.rustdeskTotpEntryId;
+    this.sheetRustdeskTotpAutoSubmit = latestHost.rustdeskTotpAutoSubmit;
     this.sheetUseKey = latestHost.sshUseKey;
     this.sheetKeyPath = latestHost.sshKeyPath;
     this.sheetKeyText = latestHost.sshKeyData;
@@ -3933,6 +4041,11 @@ struct HostListPage {
   private saveVirtualMouseStyle(style: string): void {
     this.virtualMouseStyle = style === 'arrow' ? 'arrow' : 'circle';
     this.persistPref('virtualMouseStyle', this.virtualMouseStyle);
+  }
+
+  private saveTotpLogoMode(mode: string): void {
+    this.totpLogoMode = mode === 'initials' ? 'initials' : 'logo';
+    this.persistPref('totpLogoMode', this.totpLogoMode);
   }
 
   private saveRustDeskLanDiscovery(on: boolean): void {
@@ -5702,6 +5815,29 @@ struct HostListPage {
                     .fontColor(this.virtualMouseStyle === 'arrow' ? Color.White : this.pal().text2)
                     .backgroundColor(this.virtualMouseStyle === 'arrow' ? this.accentColor : this.pal().surface)
                     .borderRadius(10).onClick((): void => { this.saveVirtualMouseStyle('arrow'); })
+                }.width('100%').padding({ left: 16, right: 16, bottom: 12 })
+              }
+              this.cardDivider()
+              Column() {
+                Row() {
+                  Row() { Text('◎').fontSize(22).fontColor(this.pal().text) }
+                    .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
+                  Column() {
+                    Text('2FA 验证器头像').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
+                      .fontColor(this.pal().text).fontFamily(this.font())
+                    Text('切换真实品牌 Logo 或高对比度首字母')
+                      .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
+                  }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
+                }.width('100%').padding({ left: 16, right: 16, top: 12, bottom: 8 })
+                Row() {
+                  Button('真实 Logo').layoutWeight(1).height(36).fontSize(13)
+                    .fontColor(this.totpLogoMode === 'logo' ? Color.White : this.pal().text2)
+                    .backgroundColor(this.totpLogoMode === 'logo' ? this.accentColor : this.pal().surface)
+                    .borderRadius(10).onClick((): void => { this.saveTotpLogoMode('logo'); })
+                  Button('首字母').layoutWeight(1).height(36).fontSize(13).margin({ left: 8 })
+                    .fontColor(this.totpLogoMode === 'initials' ? Color.White : this.pal().text2)
+                    .backgroundColor(this.totpLogoMode === 'initials' ? this.accentColor : this.pal().surface)
+                    .borderRadius(10).onClick((): void => { this.saveTotpLogoMode('initials'); })
                 }.width('100%').padding({ left: 16, right: 16, bottom: 12 })
               }
               this.cardDivider()
@@ -8677,6 +8813,8 @@ struct HostListPage {
                 .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font()).margin({ left: 4 })
             }.width('100%').margin({ bottom: 8 })
 
+            this.rustDeskTotpBindingSection()
+
             // 中继服务器选择
             Row() {
               Text('中继配置').fontSize(11).fontColor(this.pal().text2).margin({ bottom: 4 }).fontFamily(this.font())
@@ -9274,6 +9412,58 @@ struct HostListPage {
     this.sheetProxyType = this.sheetProxyType === 'http_connect' ? 'socks5' : 'http_connect';
   }
 
+  @Builder rustDeskTotpBindingSection() {
+    Column({ space: 6 }) {
+      Text('RustDesk 2FA 验证器（可选）').fontSize(11).fontColor(this.pal().text2)
+        .fontFamily(this.font()).width('100%')
+      Text('仅保存本机验证器条目 ID；启用自动提交前，每次连接仍需系统身份认证。')
+        .fontSize(10).fontColor(this.pal().text3).fontFamily(this.font()).width('100%')
+      if (this.keyVault.getAllTotpEntries().length === 0) {
+        Text('验证器为空，请先在“2FA 验证器”中添加条目。')
+          .fontSize(11).fontColor(this.pal().text3).width('100%')
+      } else {
+        ForEach(this.keyVault.getAllTotpEntries(), (entry: TotpEntry) => {
+          Row() {
+            Column() {
+              Text(entry.displayLabel()).fontSize(12).fontColor(this.pal().text)
+                .fontFamily(this.font()).maxLines(1)
+              Text(TotpEntry.algoLabel(entry.algorithm) + ' · ' + entry.digits.toString() + ' 位')
+                .fontSize(10).fontColor(this.pal().text3).fontFamily(this.font())
+            }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+            Button(this.sheetRustdeskTotpEntryId === entry.id ? '已绑定' : '绑定')
+              .height(30).fontSize(11).borderRadius(8)
+              .backgroundColor(this.sheetRustdeskTotpEntryId === entry.id ? this.accentColor : this.pal().surface)
+              .fontColor(this.sheetRustdeskTotpEntryId === entry.id ? Color.White : this.accentColor)
+              .onClick(async (): Promise<void> => {
+                if (this.sheetRustdeskTotpEntryId === entry.id) {
+                  this.sheetRustdeskTotpEntryId = '';
+                  this.sheetRustdeskTotpAutoSubmit = false;
+                  return;
+                }
+                const gate = await showLockGate('绑定 RustDesk 2FA', 'biometric');
+                if (!gate.ok) {
+                  const msg: string = lockGateErrorMessage(gate);
+                  if (msg !== '') { promptAction.showToast({ message: msg, duration: 2000 }); }
+                  return;
+                }
+                this.sheetRustdeskTotpEntryId = entry.id;
+                this.sheetRustdeskTotpAutoSubmit = false;
+              })
+          }.width('100%').padding({ top: 4, bottom: 4 })
+        }, (entry: TotpEntry): string => entry.id)
+        if (this.sheetRustdeskTotpEntryId !== '') {
+          Row() {
+            Text('连接时自动生成并填写').fontSize(12).fontColor(this.pal().text)
+              .fontFamily(this.font()).layoutWeight(1)
+            Toggle({ type: ToggleType.Switch, isOn: this.sheetRustdeskTotpAutoSubmit })
+              .selectedColor(this.accentColor).scale({ x: 0.82, y: 0.82 })
+              .onChange((on: boolean): void => { this.sheetRustdeskTotpAutoSubmit = on; })
+          }.width('100%').margin({ top: 4 })
+        }
+      }
+    }.width('100%').padding({ top: 6, bottom: 8 })
+  }
+
   @Builder rustDeskProPreflightPanel() {
     Column({ space: 14 }) {
       Row() {
@@ -9282,10 +9472,45 @@ struct HostListPage {
           Text('鉴权成功后才会进入远程画面').fontSize(13).fontColor(this.pal().text2)
         }.alignItems(HorizontalAlign.Start).layoutWeight(1)
         Button('取消').fontSize(14).backgroundColor(Color.Transparent).fontColor(this.accentColor)
-          .enabled(this.rustDeskProPreflightState !== RustDeskProPreflightState.CONNECTING)
-          .onClick((): void => { this.cancelRustDeskProPreflight(); })
+          .enabled(this.rustDeskProPreflightState !== RustDeskProPreflightState.CONNECTING ||
+            this.rustDeskProTwoFactorActive)
+          .onClick((): void => {
+            if (this.rustDeskProTwoFactorActive) {
+              this.cancelRustDeskProTwoFactor();
+            } else {
+              this.cancelRustDeskProPreflight();
+            }
+          })
       }.width('100%')
 
+      if (this.rustDeskProTwoFactorActive) {
+        Text('远端设备要求 2FA 验证，请输入当前动态验证码。')
+          .fontSize(14).fontColor(this.pal().text2).width('100%')
+        TextInput({ text: this.rustDeskProTwoFactorInput, placeholder: '输入 2FA 验证码' })
+          .type(InputType.Normal).height(48).width('100%')
+          .backgroundColor(this.pal().surface).borderRadius(10).maxLength(8)
+          .onChange((value: string): void => {
+            this.rustDeskProTwoFactorInput = value.replace(/[^0-9]/g, '');
+            this.rustDeskProTwoFactorError = '';
+            this.rustDeskProTwoFactorSubmitting = false;
+          })
+        Text(this.rustDeskProTwoFactorSubmitting ? '验证码已提交，等待远端确认…' :
+          '验证码只用于当前连接，不会写入主机配置。')
+          .fontSize(11).fontColor(this.pal().text3).width('100%')
+        if (this.rustDeskProTwoFactorError.length > 0) {
+          Text(this.rustDeskProTwoFactorError).fontSize(13).fontColor('#D92D20').width('100%')
+        }
+        Row({ space: 10 }) {
+          Button('取消').layoutWeight(1).height(42).fontSize(13)
+            .backgroundColor(this.pal().surface).fontColor(this.pal().text2).borderRadius(10)
+            .onClick((): void => { this.cancelRustDeskProTwoFactor(); })
+          Button(this.rustDeskProTwoFactorSubmitting ? '等待中' : '验证')
+            .layoutWeight(1).height(42).fontSize(13).fontWeight(FontWeight.Medium)
+            .backgroundColor(this.accentColor).fontColor(Color.White).borderRadius(10)
+            .enabled(!this.rustDeskProTwoFactorSubmitting)
+            .onClick((): void => { this.submitRustDeskProTwoFactor(); })
+        }.width('100%')
+      } else {
       Row({ space: 8 }) {
         Button('设备密码')
           .backgroundColor(this.rustDeskProAuthMode === 'password' ? this.accentColor : this.pal().surface)
@@ -9336,6 +9561,7 @@ struct HostListPage {
         Text('连接请求会发送到远端设备，请在对方设备上点击批准。')
           .fontSize(14).fontColor(this.pal().text2).width('100%')
       }
+      }
 
       if (this.rustDeskProPreflightError.length > 0) {
         Text(this.rustDeskProPreflightError).fontSize(13).fontColor('#D92D20').width('100%')
@@ -9343,7 +9569,8 @@ struct HostListPage {
       if (this.rustDeskProPreflightState === RustDeskProPreflightState.CONNECTING) {
         Row({ space: 10 }) {
           LoadingProgress().width(20).height(20).color(this.accentColor)
-          Text(this.rustDeskProAuthMode === 'request_approval' ? '等待远端批准…' : '正在后台验证密码…')
+          Text(this.rustDeskProTwoFactorActive ? '等待远端确认 2FA…' :
+            (this.rustDeskProAuthMode === 'request_approval' ? '等待远端批准…' : '正在后台验证密码…'))
             .fontSize(14).fontColor(this.pal().text2)
         }.width('100%')
       }
@@ -9666,6 +9893,8 @@ struct HostListPage {
     this.sheetRustdeskDirectEnabled = false;
     this.sheetRustdeskDirectHost = '';
     this.sheetRustdeskDirectPort = RUSTDESK_PEER_TCP_PORT;
+    this.sheetRustdeskTotpEntryId = '';
+    this.sheetRustdeskTotpAutoSubmit = false;
     this.selectedRelayId = ''; this.selectedAccountId = '';
     this.selectedRdpCredentialId = '';
     this.sheetRdpAuthMode = 'password';
@@ -9806,6 +10035,8 @@ struct HostListPage {
       h.rustdeskDirectEnabled = this.sheetRustdeskDirectEnabled;
       h.rustdeskDirectHost = this.sheetRustdeskDirectHost;
       h.rustdeskDirectPort = this.sheetRustdeskDirectPort > 0 ? this.sheetRustdeskDirectPort : RUSTDESK_PEER_TCP_PORT;
+      h.rustdeskTotpEntryId = this.sheetRustdeskTotpEntryId;
+      h.rustdeskTotpAutoSubmit = this.sheetRustdeskTotpAutoSubmit && this.sheetRustdeskTotpEntryId !== '';
       h.rdpCredentialId = '';
       // Server Pro 管理主机的连接身份由地址簿控制；本地编辑只允许修改显示/凭据等字段。
       if (existingHost && existingHost.rustdeskProManaged && existingHost.sourceType === 'rustdesk_pro') {

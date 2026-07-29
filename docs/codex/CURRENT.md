@@ -58,6 +58,23 @@ Updated: 2026-07-28 Asia/Shanghai
 - User-owned or unrelated VNC/SSH plan changes remain preserved and are not part of the RustDesk Pro/RDP implementation commit. The SSH plan records the fixed RDP -> RustDesk -> SSH -> 数据安全 order and the no-fingerprint-migration boundary.
 - SDKs, signing profiles, device data, private addresses, credentials, raw logs and screenshots remain outside the shared records.
 
+## RustDesk Peer 2FA implementation checkpoint (2026-07-29)
+
+- 在用户授权的本地 `main` 上完成 RustDesk Peer `2FA Required` / `Wrong 2FA Code`
+  状态、官方 `Auth2FA` 消息重试、取消/epoch 清理及 v3 FFI auth callback；中继本身
+  不执行 TOTP，认证发生在 Peer 登录阶段。
+- 普通连接和 RustDesk Pro preflight 均支持 pending、手动 code、重试、超时和取消。
+  显式主机绑定只保存 `rustdeskTotpEntryId` 和自动提交开关；自动提交前走已有系统
+  生物认证，native 只收到一次性数字 code，不收到 secret。
+- TOTP 卡片新增发行方 Logo/首字母模式切换。真实 Logo 由白名单 issuer slug 映射到
+  Simple Icons CDN；unknown/offline 自动使用高对比度本地首字母；偏好键为
+  `totpLogoMode`，纳入现有 `usersettings` 白名单，不增加云表。
+- 本地验证：Rust 145/145、arm64-v8a 与 x86_64 FFI release 构建、ArkTS 编译、
+  `assembleHap` 均通过；`ohosTest` 仍因任务未注册 `00306054` 不可运行，真实 Peer/
+  hbbr/API 23 设备验收保持开放。
+- 本次没有使用独立 reviewer agent；已完成自审，按 D-020 的独立复核要求仍需在
+  交付前补齐。没有 push、PR 或远端 main 合并。
+
 ## RustDesk Android orientation and touch ledger (2026-07-28)
 
 - The user-authorized RustDesk control-side implementation is complete on local `main`; no task branch, remote push, PR or merge was used. Commits are `73943e6d7`, `f15d5f8a7`, `bbc570169`, `4657e5c92`, `a4ae8d3e0` and review hardening `de441ac`.

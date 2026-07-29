@@ -6,112 +6,16 @@ import { TotpEngine } from '../services/TotpEngine';
 import { Palette, buildDark, buildLight, AppTheme } from '../common/Theme';
 import { promptAction } from '@kit.ArkUI';
 import { pasteboard } from '@kit.BasicServicesKit';
-
-/** 已知公司品牌色映射 */
-const BRAND_COLORS: Record<string, string> = {
-  'Google': '#4285F4',
-  'GitHub': '#24292F',
-  'Microsoft': '#00A4EF',
-  'Azure': '#0089D6',
-  'AWS': '#FF9900',
-  'Amazon': '#FF9900',
-  'GitLab': '#FC6D26',
-  'Twitter': '#1DA1F2',
-  'X': '#000000',
-  'Facebook': '#1877F2',
-  'Meta': '#0467DF',
-  'Apple': '#555555',
-  'LinkedIn': '#0A66C2',
-  'Dropbox': '#0061FF',
-  'Slack': '#4A154B',
-  'Discord': '#5865F2',
-  'Spotify': '#1ED760',
-  'Netflix': '#E50914',
-  'PayPal': '#003087',
-  'Epic Games': '#313131',
-  'Steam': '#171A21',
-  'Cloudflare': '#F38020',
-  'DigitalOcean': '#0080FF',
-  'Heroku': '#430098',
-  'Atlassian': '#0052CC',
-  'Jira': '#0052CC',
-  'Notion': '#000000',
-  'Figma': '#F24E1E',
-  'Adobe': '#FF0000',
-  'Shopify': '#7AB55C',
-  'Stripe': '#635BFF',
-  'Square': '#3D4B5C',
-  'Twilio': '#F22F46',
-  'SendGrid': '#00A9E0',
-  'Namecheap': '#DE3723',
-  'GoDaddy': '#00838F',
-  'WordPress': '#21759B',
-  'Tumblr': '#36465D',
-  'Reddit': '#FF4500',
-  'Pinterest': '#E60023',
-  'Snapchat': '#FFFC00',
-  'TikTok': '#000000',
-  'Zoom': '#2D8CFF',
-  'Binance': '#F3BA2F',
-  'Coinbase': '#0052FF',
-  'Huawei': '#CF0A2C',
-  'hw-cloud': '#CF0A2C',
-};
-
-/** 从名称生成一致的颜色 */
-function brandColorFor(issuer: string, account: string): string {
-  const key: string = issuer.trim();
-  // 精确匹配
-  if (BRAND_COLORS[key]) { return BRAND_COLORS[key]; }
-  // 大小写不敏感匹配
-  const lower: string = key.toLowerCase();
-  for (let i = 0; i < Object.keys(BRAND_COLORS).length; i++) {
-    const k = Object.keys(BRAND_COLORS)[i];
-    if (k.toLowerCase() === lower) { return BRAND_COLORS[k]; }
-  }
-  // 包含匹配 (e.g. "Google Cloud" → Google)
-  for (let j = 0; j < Object.keys(BRAND_COLORS).length; j++) {
-    const k = Object.keys(BRAND_COLORS)[j];
-    if (lower.includes(k.toLowerCase()) || k.toLowerCase().includes(lower)) {
-      return BRAND_COLORS[k];
-    }
-  }
-  // 从 account domain 猜 (e.g. "user@github.com" → github)
-  if (account.includes('@')) {
-    const domain: string = account.split('@')[1] || '';
-    const domainLower: string = domain.split('.')[0] || '';
-    for (let d = 0; d < Object.keys(BRAND_COLORS).length; d++) {
-      const k = Object.keys(BRAND_COLORS)[d];
-      if (k.toLowerCase().includes(domainLower) || domainLower.includes(k.toLowerCase())) {
-        return BRAND_COLORS[k];
-      }
-    }
-  }
-  // 根据名称 hash 生成颜色
-  let hash: number = 0;
-  for (let c = 0; c < key.length; c++) {
-    hash = key.charCodeAt(c) + ((hash << 5) - hash);
-  }
-  const hue: number = Math.abs(hash) % 360;
-  return `hsl(${hue}, 55%, 42%)`;
-}
-
-/** 提取首字母 (支持中英文) */
-function initialOf(name: string): string {
-  const t: string = name.trim();
-  if (t.length === 0) { return '?'; }
-  // 英文字母开头
-  const first: string = t.charAt(0);
-  if (/[A-Za-z]/.test(first)) { return first.toUpperCase(); }
-  // 中文取第一个字
-  return first;
-}
+import {
+  TotpBrandVisual, totpBrandLogoUrl, totpBrandVisual, totpInitialOf
+} from '../services/TotpBrandService';
 
 @Component
 export struct TotpCodeCard {
   @Prop entry: TotpEntry;
   @StorageLink('currentTheme') theme: string = 'light';
   @StorageProp('accentColor') accentColor: string = '#007DFF';
+  @StorageProp('totpLogoMode') totpLogoMode: string = 'logo';
   @StorageProp('currentBreakpoint') breakpoint: string = 'sm';
   @Prop pageLocked: boolean = false;
   @Prop showCheckbox: boolean = false;
@@ -119,6 +23,7 @@ export struct TotpCodeCard {
   onCheckChange?: (checked: boolean) => void;
   @State codeStr: string = '------';
   @State remaining: number = 30;
+  @State logoFailed: boolean = false;
   private timer: number = -1;
 
   private pal(): Palette {
@@ -126,6 +31,7 @@ export struct TotpCodeCard {
   }
 
   aboutToAppear(): void {
+    this.logoFailed = false;
     if (!this.pageLocked && !this.entry.locked) {
       this.refresh();
       this.timer = setInterval(() => { this.refresh(); }, 1000);
@@ -153,6 +59,10 @@ export struct TotpCodeCard {
     }
   }
 
+  private avatarVisual(): TotpBrandVisual {
+    return totpBrandVisual(this.entry.issuer, this.entry.account);
+  }
+
   build() {
     Row() {
       if (this.showCheckbox) {
@@ -162,19 +72,30 @@ export struct TotpCodeCard {
           .margin({ right: 8 })
           .onChange((v: boolean) => { if (this.onCheckChange) { this.onCheckChange(v); } })
       }
-      // 公司 logo 圆形头像 — Stack 确保中英文字符双向居中
-      Stack({ alignContent: Alignment.Center }) {
-        Text(initialOf(this.entry.issuer))
-          .fontSize(18).fontWeight(FontWeight.Bold)
-          .fontColor('#FFFFFF')
-          .fontFamily(AppTheme.fontFamily)
-          .textAlign(TextAlign.Center)
-          .maxLines(1)
+      // Logo 模式只请求经过 issuer 白名单映射的 Simple Icons URL；失败时
+      // 自动回退到本地首字母，不会因为网络或主题色导致卡片不可读。
+      if (this.totpLogoMode === 'logo' && !this.logoFailed &&
+        totpBrandLogoUrl(this.entry.issuer, this.entry.account) !== '') {
+        Image(totpBrandLogoUrl(this.entry.issuer, this.entry.account))
+          .width(42).height(42).padding(9).borderRadius(21)
+          .backgroundColor(this.pal().surface)
+          .objectFit(ImageFit.Contain)
+          .onError(() => { this.logoFailed = true; })
+          .margin({ right: 10 })
+      } else {
+        Stack({ alignContent: Alignment.Center }) {
+          Text(totpInitialOf(this.entry.issuer))
+            .fontSize(18).fontWeight(FontWeight.Bold)
+            .fontColor(this.avatarVisual().foreground)
+            .fontFamily(AppTheme.fontFamily)
+            .textAlign(TextAlign.Center)
+            .maxLines(1)
+        }
+        .width(42).height(42)
+        .borderRadius(21)
+        .backgroundColor(this.avatarVisual().background)
+        .margin({ right: 10 })
       }
-      .width(42).height(42)
-      .borderRadius(21)
-      .backgroundColor(brandColorFor(this.entry.issuer, this.entry.account))
-      .margin({ right: 10 })
 
       Column() {
         Row() {

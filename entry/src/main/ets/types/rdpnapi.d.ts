@@ -43,6 +43,7 @@ declare module 'librdpnapi.so' {
   export function isSessionClipboardReady(sessionId: number): boolean;
 
   export function getConnectionState(sessionId: number): number;
+  export function submitRustDesk2FA(sessionId: number, code: string): boolean;
   export function getRemoteCursorSnapshot(sessionId: number, includePixels?: boolean): RemoteCursorSnapshot;
   export function getRemoteCursorSnapshotPixelsAsync(sessionId: number): Promise<RemoteCursorSnapshot>;
   export function getConnectionLastMessage(sessionId: number): string;
@@ -471,7 +472,8 @@ export enum ConnectionState {
   CONNECTING = 1,
   CONNECTED = 2,
   RECONNECTING = 3,
-  ERROR = 4
+  ERROR = 4,
+  AUTHENTICATING = 5
 }
 
 export enum MouseButton {

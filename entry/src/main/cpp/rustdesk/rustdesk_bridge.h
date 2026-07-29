@@ -128,6 +128,7 @@ public:
     void            disconnect() override;
     ConnectionState getState() override;
     void            setSessionIdentity(uint64_t sessionId) override;
+    bool            submitTwoFactorCode(const std::string& code);
     RustDeskDiagnosticsStats getDiagnostics() const;
     RemoteCursorSnapshot getRemoteCursorSnapshot(bool includePixels) override;
     void            requestFrameRefresh() override;
@@ -175,6 +176,7 @@ private:
     static void onFfiAudio(const void* audio, void* userData);
     static void onFfiCursor(const void* cursor, void* userData);
     static void onFfiDisplay(const void* snapshot, void* userData);
+    static void onFfiAuth(int state, const char* message, void* userData);
     static void onFfiDisconnect(int state, const char* message, void* userData);
 #endif
 

@@ -32,7 +32,7 @@ use crate::protocol::message_proto::{
     VideoFrame, VideoFrame_oneof_union,
 };
 use crate::protocol::rendezvous::RendezvousClient;
-use crate::protocol::session::Session;
+use crate::protocol::session::{AuthEventCallback, Session};
 use crate::protocol::wire;
 use protobuf::{Message as ProtoMessage, ProtobufEnum};
 
@@ -233,6 +233,14 @@ impl RustDeskConnector {
             peer_addr: None,
             stream_stats: String::new(),
         }
+    }
+
+    pub fn set_auth_callback(
+        &mut self,
+        callback: Option<AuthEventCallback>,
+        user_data: *mut std::ffi::c_void,
+    ) {
+        self.session.set_auth_callback(callback, user_data);
     }
 
     /// 完整连接流程 (阻塞)

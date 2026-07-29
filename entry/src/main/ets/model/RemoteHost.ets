@@ -178,6 +178,8 @@ export interface RemoteHostJSON {
   rustdeskDirectEnabled: boolean
   rustdeskDirectHost: string
   rustdeskDirectPort: number
+  rustdeskTotpEntryId?: string
+  rustdeskTotpAutoSubmit?: boolean
   rdpCredentialId: string
   rdpAuthMode?: string
   rdpRestrictedAdminSecretSource?: string
@@ -289,6 +291,9 @@ export class RemoteHost {
   rustdeskDirectEnabled: boolean = false; // 直连模式 (跳过 ID 服务器)
   rustdeskDirectHost: string = ''; // 直连 peer IP 地址
   rustdeskDirectPort: number = 21118; // 直连端口 (默认 21118; RustDesk peer TCP)
+  // 可选的本机 TOTP 条目绑定；只保存条目 ID，不保存 TOTP secret。
+  rustdeskTotpEntryId: string = '';
+  rustdeskTotpAutoSubmit: boolean = false;
   rdpCredentialId: string = ''; // RDP 绑定的 Windows 凭据 ID
   // Restricted Admin 的 NTLM Hash 保存在本机加密扩展中，不进入 RemoteHost/JSON。
   rdpAuthMode: RdpAuthMode = 'password';
@@ -459,6 +464,8 @@ export class RemoteHost {
       rustdeskDirectEnabled: this.rustdeskDirectEnabled,
       rustdeskDirectHost: this.rustdeskDirectHost,
       rustdeskDirectPort: this.rustdeskDirectPort,
+      rustdeskTotpEntryId: this.rustdeskTotpEntryId,
+      rustdeskTotpAutoSubmit: this.rustdeskTotpAutoSubmit,
       rdpCredentialId: this.rdpCredentialId,
       rdpAuthMode: this.rdpAuthMode,
       rdpRestrictedAdminSecretSource: this.rdpRestrictedAdminSecretSource,
@@ -539,6 +546,8 @@ export class RemoteHost {
     if (json.rustdeskDirectEnabled !== undefined) { host.rustdeskDirectEnabled = json.rustdeskDirectEnabled; }
     if (json.rustdeskDirectHost) { host.rustdeskDirectHost = json.rustdeskDirectHost; }
     if (json.rustdeskDirectPort) { host.rustdeskDirectPort = json.rustdeskDirectPort; }
+    if (json.rustdeskTotpEntryId) { host.rustdeskTotpEntryId = json.rustdeskTotpEntryId; }
+    if (json.rustdeskTotpAutoSubmit !== undefined) { host.rustdeskTotpAutoSubmit = json.rustdeskTotpAutoSubmit; }
     if (json.rdpCredentialId) { host.rdpCredentialId = json.rdpCredentialId; }
     host.rdpAuthMode = normalizeRdpAuthMode(json.rdpAuthMode);
     host.rdpRestrictedAdminSecretSource = normalizeRdpRestrictedAdminSecretSource(

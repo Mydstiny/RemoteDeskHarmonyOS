@@ -964,6 +964,15 @@ export class ExtensionLoader {
     }
   }
 
+  submitRustDesk2FA(sessionId: number, code: string): boolean {
+    try {
+      return rdpnapi.submitRustDesk2FA(sessionId, code) as boolean;
+    } catch (err) {
+      hilog.error(DOMAIN, TAG, '[ExtensionLoader] submitRustDesk2FA: ' + JSON.stringify(err));
+      return false;
+    }
+  }
+
   getRustDeskLastError(): string {
     try {
       const result: string = rdpnapi.getRustDeskLastError() as string;

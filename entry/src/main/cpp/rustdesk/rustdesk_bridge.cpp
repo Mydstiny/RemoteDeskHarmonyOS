@@ -38,8 +38,18 @@ extern "C" {
         void (*on_disconnect)(int, const char*, void*),
         void (*on_display)(const void*, void*),
         void* user_data);
+    void* rustdesk_connect_v3(
+        const void* cfg,
+        void (*on_frame)(const void*, void*),
+        void (*on_audio)(const void*, void*),
+        void (*on_cursor)(const void*, void*),
+        void (*on_disconnect)(int, const char*, void*),
+        void (*on_display)(const void*, void*),
+        void (*on_auth)(int, const char*, void*),
+        void* user_data);
     void  rustdesk_disconnect(void* handle);
     void  rustdesk_cancel_pending_connect();
+    bool  rustdesk_submit_2fa(const char* code);
     void  rustdesk_send_key(void* handle, unsigned int scancode, bool pressed);
     void  rustdesk_send_mouse(void* handle, int x, int y, unsigned int button, bool pressed);
     void  rustdesk_send_mouse_wheel(void* handle, int x, int y, int delta);
@@ -893,6 +903,33 @@ void RustDeskBridge::onFfiDisplay(const void* snapshotPtr, void* userData) {
     }
 }
 
+void RustDeskBridge::onFfiAuth(int state, const char* message, void* userData) {
+    auto* context = static_cast<RustDeskFfiCallbackContext*>(userData);
+    auto* impl = context ? static_cast<RustDeskBridge::Impl*>(context->impl) : nullptr;
+    if (!context || !impl) {
+        return;
+    }
+    {
+        std::lock_guard<std::mutex> lock(impl->mutex);
+        if (context->generation == 0 ||
+            context->generation != impl->cursorGeneration.load(std::memory_order_acquire) ||
+            impl->disconnectRequested.load(std::memory_order_acquire)) {
+            return;
+        }
+    }
+    const char* eventMessage = message ? message : "RustDesk Peer authentication required";
+    if (state == 0) {
+        OH_LOG_INFO(LOG_APP, "[RustDesk-FFI] Peer 2FA accepted");
+        return;
+    }
+    if (state == 2) {
+        OH_LOG_WARN(LOG_APP, "[RustDesk-FFI] Peer 2FA code rejected");
+    } else {
+        OH_LOG_INFO(LOG_APP, "[RustDesk-FFI] Peer 2FA pending");
+    }
+    impl->setState(ConnectionState::AUTHENTICATING, eventMessage);
+}
+
 void RustDeskBridge::onFfiDisconnect(int state, const char* message, void* userData) {
     auto* context = static_cast<RustDeskFfiCallbackContext*>(userData);
     auto* impl = context ? static_cast<RustDeskBridge::Impl*>(context->impl) : nullptr;
@@ -1009,6 +1046,17 @@ void RustDeskBridge::setSessionIdentity(uint64_t sessionId) {
     // until the protocol supplies the real cursor bitmap.
     impl_->cursorStore.setFallbackShape();
     impl_->cursorStore.setVisible(true);
+}
+
+bool RustDeskBridge::submitTwoFactorCode(const std::string& code) {
+#ifdef RUSTDESK_USE_REAL_CORE
+    if (mode_ == RustDeskMode::FFI) {
+        return rustdesk_submit_2fa(code.c_str());
+    }
+#else
+    (void)code;
+#endif
+    return false;
 }
 
 RustDeskDiagnosticsStats RustDeskBridge::getDiagnostics() const {
@@ -1511,9 +1559,9 @@ int RustDeskBridge::connect(const ConnectionConfig& cfg) {
                 ffiCfg.profile,
                 ffiCfg.fps);
 
-            void* ffiHandle = rustdesk_connect_v2(
+            void* ffiHandle = rustdesk_connect_v3(
                 &ffiCfg, onFfiFrame, onFfiAudio, onFfiCursor, onFfiDisconnect,
-                onFfiDisplay, callbackUserData);
+                onFfiDisplay, onFfiAuth, callbackUserData);
             bool discardHandle = serial != impl->connectSerial.load() ||
                 impl->disconnectRequested.load() || impl->ffiStreamEnded.load();
             if (!discardHandle) {

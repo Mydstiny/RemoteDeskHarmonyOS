@@ -34,13 +34,21 @@ pub mod terminal_core;
 use protocol::message_proto::{
     AudioFormat, AudioFrame, EncodedVideoFrames, VideoFrame, VideoFrame_oneof_union,
 };
+use protocol::session::AuthEventCallback;
 use control_inbox::ControlInbox;
 use cursor_state::CursorStreamUpdate;
+use std::sync::mpsc::Sender;
 
 static LAST_ERROR: Mutex<String> = Mutex::new(String::new());
 // 每次连接尝试都有单调递增 epoch；取消时递增 epoch，使等待批准的旧线程可退出，
 // 同时避免新连接把旧线程的取消状态重置掉。
 static CONNECT_EPOCH: AtomicU64 = AtomicU64::new(0);
+static PENDING_2FA: Mutex<Option<PendingTwoFactor>> = Mutex::new(None);
+
+struct PendingTwoFactor {
+    epoch: u64,
+    sender: Sender<String>,
+}
 
 pub(crate) fn begin_connect_epoch() -> u64 {
     CONNECT_EPOCH.fetch_add(1, Ordering::SeqCst).wrapping_add(1)
@@ -52,6 +60,22 @@ pub(crate) fn current_connect_epoch() -> u64 {
 
 pub(crate) fn connect_cancelled(epoch: u64) -> bool {
     CONNECT_EPOCH.load(Ordering::SeqCst) != epoch
+}
+
+pub(crate) fn register_pending_2fa(epoch: u64, sender: Sender<String>) -> io::Result<()> {
+    let mut pending = PENDING_2FA
+        .lock()
+        .map_err(|_| io::Error::new(io::ErrorKind::Other, "2FA pending state lock poisoned"))?;
+    *pending = Some(PendingTwoFactor { epoch, sender });
+    Ok(())
+}
+
+pub(crate) fn clear_pending_2fa(epoch: u64) {
+    if let Ok(mut pending) = PENDING_2FA.lock() {
+        if pending.as_ref().map(|value| value.epoch) == Some(epoch) {
+            *pending = None;
+        }
+    }
 }
 
 fn set_last_error(message: impl Into<String>) {
@@ -1026,6 +1050,7 @@ fn rustdesk_connect_impl(
     on_cursor: Option<CursorCallback>,
     on_disconnect: Option<DisconnectCallback>,
     on_display: Option<DisplayCallback>,
+    on_auth: Option<AuthEventCallback>,
     user_data: *mut c_void,
 ) -> *mut c_void {
     clear_last_error();
@@ -1114,6 +1139,7 @@ fn rustdesk_connect_impl(
 
     // 运行完整连接管线
     let mut c = connector::RustDeskConnector::new();
+    c.set_auth_callback(on_auth, user_data);
     let result = if config.direct_connection {
         // 直连模式: host=peer IP, port=peer port, 跳过 rendezvous
         eprintln!(
@@ -1328,6 +1354,7 @@ pub extern "C" fn rustdesk_connect(
         on_cursor,
         on_disconnect,
         None,
+        None,
         user_data,
     )
 }
@@ -1350,6 +1377,31 @@ pub extern "C" fn rustdesk_connect_v2(
         on_cursor,
         on_disconnect,
         on_display,
+        None,
+        user_data,
+    )
+}
+
+/// Create a RustDesk connection using V2 frame/display callbacks and auth events.
+#[no_mangle]
+pub extern "C" fn rustdesk_connect_v3(
+    cfg: *const RustDeskConfig,
+    on_frame: Option<FrameCallbackV2>,
+    on_audio: Option<AudioCallback>,
+    on_cursor: Option<CursorCallback>,
+    on_disconnect: Option<DisconnectCallback>,
+    on_display: Option<DisplayCallback>,
+    on_auth: Option<AuthEventCallback>,
+    user_data: *mut c_void,
+) -> *mut c_void {
+    rustdesk_connect_impl(
+        cfg,
+        on_frame.map(FrameCallbackKind::V2),
+        on_audio,
+        on_cursor,
+        on_disconnect,
+        on_display,
+        on_auth,
         user_data,
     )
 }
@@ -1358,6 +1410,44 @@ pub extern "C" fn rustdesk_connect_v2(
 #[no_mangle]
 pub extern "C" fn rustdesk_cancel_pending_connect() {
     CONNECT_EPOCH.fetch_add(1, Ordering::SeqCst);
+    if let Ok(mut pending) = PENDING_2FA.lock() {
+        *pending = None;
+    }
+}
+
+/// Submit one transient Peer TOTP code to the currently pending login.
+#[no_mangle]
+pub extern "C" fn rustdesk_submit_2fa(code: *const c_char) -> bool {
+    let value = ffi_string(code);
+    if value.len() < 4 || value.len() > 8 || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+        set_last_error("invalid RustDesk 2FA code format");
+        return false;
+    }
+    let epoch = current_connect_epoch();
+    let sender = match PENDING_2FA.lock() {
+        Ok(pending) if pending.as_ref().map(|entry| entry.epoch) == Some(epoch) => {
+            pending.as_ref().map(|entry| entry.sender.clone())
+        }
+        Ok(_) => None,
+        Err(_) => {
+            set_last_error("RustDesk 2FA pending state lock poisoned");
+            return false;
+        }
+    };
+    let Some(sender) = sender else {
+        set_last_error("RustDesk 2FA is not pending");
+        return false;
+    };
+    match sender.send(value) {
+        Ok(()) => {
+            set_last_error("RustDesk 2FA code submitted");
+            true
+        }
+        Err(_) => {
+            set_last_error("RustDesk 2FA submission channel closed");
+            false
+        }
+    }
 }
 
 /// 复制最近一次连接错误到调用方缓冲区，返回完整错误长度。
@@ -2268,6 +2358,13 @@ mod tests {
     fn test_rustdesk_disconnect_null() {
         rustdesk_disconnect(std::ptr::null_mut());
         // 不崩溃即为通过
+    }
+
+    #[test]
+    fn submit_2fa_rejects_invalid_codes_without_a_pending_session() {
+        let code = CString::new("12ab").unwrap();
+        assert!(!rustdesk_submit_2fa(code.as_ptr()));
+        assert!(rustdesk_last_error(std::ptr::null_mut(), 0) > 0);
     }
 
     #[test]
