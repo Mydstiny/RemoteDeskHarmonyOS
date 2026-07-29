@@ -17,6 +17,7 @@ import {
   shouldShowLoginAfterSilentAttempt,
   silentLoginFallbackMessage
 } from '../services/LoginStartupPolicy';
+import { hashForLog } from '../utils/SafeLogger';
 
 const PREFS_NAME: string = 'RemoteDesktopAppPrefs';
 const KEY_LOGIN_MODE: string = 'loginMode';
@@ -217,9 +218,12 @@ struct LoginPage {
     const nickName: string = (dataObj['nickName'] as string) ?? '';
     const displayName: string = nickName || '华为用户';
 
-    hilog.info(0x0001, 'LoginDebug', 'avatar=' + avatarUri + ', nick=' + nickName);
     hilog.info(0x0001, 'LoginDebug',
-      '[ACCOUNT-DEBUG] AGC_Auth_unionID=' + unionId + '  openID=' + openId);
+      'Account Kit 登录身份已返回 unionHash=' +
+      hashForLog(unionId) + ' openHash=' +
+      hashForLog(openId) + ' profile=' +
+      (nickName.length > 0 || avatarUri.length > 0
+        ? 'present' : 'absent'));
 
     if (unionId.trim().length === 0) {
       this.loginError = '登录失败：账号没有返回稳定的 UnionID';

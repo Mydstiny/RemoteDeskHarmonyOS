@@ -30,6 +30,7 @@ import cloudSyncLifecyclePolicyTest from './CloudSyncLifecyclePolicy.test';
 import cryptoEnvelopePolicyTest from './CryptoEnvelopePolicy.test';
 import cryptoLifecyclePolicyTest from './CryptoLifecyclePolicy.test';
 import accountScopePolicyTest from './AccountScopePolicy.test';
+import accountCredentialStoragePolicyTest from './AccountCredentialStoragePolicy.test';
 import legacySharedStoreMigrationPolicyTest from './LegacySharedStoreMigrationPolicy.test';
 import vncCloudSyncSelectionPolicyTest from './VncCloudSyncSelectionPolicy.test';
 import vncRecordPolicyTest from './VncRecordPolicy.test';
@@ -115,6 +116,7 @@ export default function testsuite() {
   cryptoEnvelopePolicyTest();
   cryptoLifecyclePolicyTest();
   accountScopePolicyTest();
+  accountCredentialStoragePolicyTest();
   legacySharedStoreMigrationPolicyTest();
   vncCloudSyncSelectionPolicyTest();
   vncRecordPolicyTest();
