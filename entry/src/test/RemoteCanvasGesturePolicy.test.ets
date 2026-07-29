@@ -55,6 +55,16 @@ export default function remoteCanvasGesturePolicyTest(): void {
       expect(claimCanvasTwoFingerPan(armed, false).owner).assertEqual('canvas-pan');
     });
 
+    it('routes held RustDesk remote-app touch through remote pan', 0, (): void => {
+      const candidate = beginCanvasTwoFingerCandidate(9, 100, 100, 0, true, true);
+      const armed = expireCanvasTwoFingerHold(candidate, 400);
+      const moved = advanceCanvasTwoFingerMove(armed, 110, 100, 401, true);
+      expect(moved.state.owner).assertEqual('remote-touch-pan');
+      expect(moved.action).assertEqual('pan');
+      expect(shouldApplyCanvasTwoFingerPan(moved.state)).assertTrue();
+      expect(claimCanvasTwoFingerPan(armed, true).owner).assertEqual('remote-touch-pan');
+    });
+
     it('does not let a parallel pinch steal an armed long-press pan', 0, (): void => {
       const candidate = beginCanvasTwoFingerCandidate(8, 100, 100, 0, true, true);
       const armed = expireCanvasTwoFingerHold(candidate, 400);

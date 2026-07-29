@@ -2259,19 +2259,15 @@ struct RemoteDesktop {
     return true;
   }
 
-  private startRustDeskRemoteAppTouchPan(event: GestureEvent): boolean {
+  private startRustDeskRemoteAppTouchPanAt(point: LocalPoint): boolean {
     if (!this.shouldUseRustDeskRemoteAppTouchScale() || !this.canForwardInput('rustdesk-touch-pan')) {
       return false;
     }
     if (this.rustDeskTouchPinchActive) {
       return true;
     }
-    const center: LocalPoint | null = this.gestureCenterPoint(event);
-    if (center === null) {
-      return false;
-    }
     const transform: RemoteSurfaceTransform = this.currentRemoteSurfaceTransform();
-    const mapped: MappedPoint = this.mapInputPointWithTransform(center.x, center.y, transform);
+    const mapped: MappedPoint = this.mapInputPointWithTransform(point.x, point.y, transform);
     if (!this.loader.sendRustDeskTouchPan(this.sessionId, 0, mapped.x, mapped.y)) {
       hilog.warn(RD_DOMAIN, RD_TAG, 'rustdesk-touch-pan start rejected by native bridge');
       return false;
@@ -2283,6 +2279,11 @@ struct RemoteDesktop {
     this.rustDeskTouchPinchLastRemoteY = mapped.y;
     this.rustDeskTouchPinchTransformSnapshot = transform;
     return true;
+  }
+
+  private startRustDeskRemoteAppTouchPan(event: GestureEvent): boolean {
+    const center: LocalPoint | null = this.gestureCenterPoint(event);
+    return center !== null && this.startRustDeskRemoteAppTouchPanAt(center);
   }
 
   private updateRustDeskRemoteAppTouchScale(event: GestureEvent): void {
@@ -2318,18 +2319,17 @@ struct RemoteDesktop {
     this.rustDeskTouchPinchLastScale = nextScale;
   }
 
-  private updateRustDeskRemoteAppTouchPan(event: GestureEvent): void {
+  private updateRustDeskRemoteAppTouchPanAt(point: LocalPoint): void {
     if (!this.rustDeskTouchPinchActive || !this.rustDeskTouchPanOnly ||
       !this.shouldUseRustDeskRemoteAppTouchScale()) {
       return;
     }
     const transform: RemoteSurfaceTransform | null = this.rustDeskTouchPinchTransformSnapshot;
-    const center: LocalPoint | null = this.gestureCenterPoint(event);
-    if (transform === null || center === null) {
+    if (transform === null) {
       this.releaseCanvasPinchInput('rustdesk-touch-pan-missing-transform');
       return;
     }
-    const mapped: MappedPoint = this.mapInputPointWithTransform(center.x, center.y, transform);
+    const mapped: MappedPoint = this.mapInputPointWithTransform(point.x, point.y, transform);
     const deltaX: number = mapped.x - this.rustDeskTouchPinchLastRemoteX;
     const deltaY: number = mapped.y - this.rustDeskTouchPinchLastRemoteY;
     if (deltaX !== 0 || deltaY !== 0) {
@@ -2340,6 +2340,15 @@ struct RemoteDesktop {
       this.rustDeskTouchPinchLastRemoteX = mapped.x;
       this.rustDeskTouchPinchLastRemoteY = mapped.y;
     }
+  }
+
+  private updateRustDeskRemoteAppTouchPan(event: GestureEvent): void {
+    const center: LocalPoint | null = this.gestureCenterPoint(event);
+    if (center === null) {
+      this.releaseCanvasPinchInput('rustdesk-touch-pan-missing-transform');
+      return;
+    }
+    this.updateRustDeskRemoteAppTouchPanAt(center);
   }
 
   private finishRustDeskRemoteAppTouchScale(): void {
@@ -2478,7 +2487,8 @@ struct RemoteDesktop {
       const nowMs: number = Date.now();
       const heldState: CanvasTwoFingerState = expireCanvasTwoFingerHold(
         this.canvasTwoFingerState, nowMs);
-      const result = advanceCanvasTwoFingerMove(heldState, point.x, point.y, nowMs);
+      const result = advanceCanvasTwoFingerMove(heldState, point.x, point.y, nowMs,
+        this.shouldUseRustDeskRemoteAppTouchScale());
       this.canvasTwoFingerState = result.state;
       if (!this.canvasTwoFingerState.holdTimerPending) {
         this.clearCanvasTwoFingerHoldTimer();
@@ -2501,8 +2511,20 @@ struct RemoteDesktop {
   }
 
   private startCanvasPanFromPoint(point: LocalPoint): boolean {
-    if (this.canvasTwoFingerState.owner !== 'canvas-pan' ||
-      this.shouldUseRustDeskRemoteAppTouchScale() || !this.canvasGestureZoomEnabled) {
+    if (this.shouldUseRustDeskRemoteAppTouchScale()) {
+      if (this.canvasTwoFingerState.owner !== 'remote-touch-pan' ||
+        !this.startRustDeskRemoteAppTouchPanAt(point)) {
+        this.resetCanvasTwoFingerGesture();
+        return false;
+      }
+      this.canvasPanActive = true;
+      this.canvasPanInputSource = 'touch';
+      this.canvasPanLastOffsetX = point.x;
+      this.canvasPanLastOffsetY = point.y;
+      this.claimCanvasPinchInput();
+      return true;
+    }
+    if (this.canvasTwoFingerState.owner !== 'canvas-pan' || !this.canvasGestureZoomEnabled) {
       return false;
     }
     if (!this.canvasTransformInitialized) {
@@ -2525,8 +2547,18 @@ struct RemoteDesktop {
   }
 
   private updateCanvasPanFromPoint(x: number, y: number): void {
-    if (!this.canvasPanActive || this.canvasPanInputSource !== 'touch' || this.rustDeskTouchPinchActive ||
-      this.canvasTwoFingerState.owner !== 'canvas-pan') {
+    if (!this.canvasPanActive || this.canvasPanInputSource !== 'touch') {
+      return;
+    }
+    if (this.rustDeskTouchPinchActive) {
+      if (this.canvasTwoFingerState.owner === 'remote-touch-pan') {
+        this.canvasPanLastOffsetX = x;
+        this.canvasPanLastOffsetY = y;
+        this.updateRustDeskRemoteAppTouchPanAt({ x, y, inside: true });
+      }
+      return;
+    }
+    if (this.canvasTwoFingerState.owner !== 'canvas-pan') {
       return;
     }
     const viewport: CanvasViewport | null = this.canvasPinchViewportSnapshot;
@@ -9502,19 +9534,13 @@ struct RemoteDesktop {
         }
 
         if (this.touchFingerCount >= 2) {
-          if (shouldApplyCanvasTwoFingerPan(this.canvasTwoFingerState) &&
-            this.canvasTwoFingerState.owner === 'canvas-pan') {
+          if (shouldApplyCanvasTwoFingerPan(this.canvasTwoFingerState)) {
             this.touchMoved = true;
             this.touchDragPending = false;
             if (!this.canvasPanActive) {
               this.startCanvasPanFromPoint(movePoint);
             }
             this.updateCanvasPanFromPoint(movePoint.x, movePoint.y);
-            return;
-          }
-          if (this.canvasTwoFingerState.owner === 'remote-touch-pan') {
-            this.touchMoved = true;
-            this.touchDragPending = false;
             return;
           }
           if (shouldSendCanvasTwoFingerScroll(this.canvasTwoFingerState) &&
@@ -9705,18 +9731,13 @@ struct RemoteDesktop {
         if (this.touchMaxFingers >= 2) {
           const avg: LocalPoint | null = this.averageTouchPoint(event);
           if (avg) {
-            if (this.canvasTwoFingerState.owner === 'canvas-pan') {
+            if (shouldApplyCanvasTwoFingerPan(this.canvasTwoFingerState)) {
               this.touchMoved = true;
               this.touchDragPending = false;
               if (!this.canvasPanActive) {
                 this.startCanvasPanFromPoint(avg);
               }
               this.updateCanvasPanFromPoint(avg.x, avg.y);
-              return;
-            }
-            if (this.canvasTwoFingerState.owner === 'remote-touch-pan') {
-              this.touchMoved = true;
-              this.touchDragPending = false;
               return;
             }
             const dx: number = avg.x - this.touchStartLocalX;

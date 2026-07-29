@@ -152,7 +152,7 @@ export function claimCanvasTwoFingerPan(state: CanvasTwoFingerState,
  * belongs to the touchpad; after arming, the first meaningful move claims pan.
  */
 export function advanceCanvasTwoFingerMove(state: CanvasTwoFingerState,
-  x: number, y: number, nowMs: number): CanvasTwoFingerMoveResult {
+  x: number, y: number, nowMs: number, remote: boolean = false): CanvasTwoFingerMoveResult {
   const next: CanvasTwoFingerState = copyState(state);
   const currentX: number = finite(x, next.lastX);
   const currentY: number = finite(y, next.lastY);
@@ -179,7 +179,7 @@ export function advanceCanvasTwoFingerMove(state: CanvasTwoFingerState,
   }
 
   if (next.owner === 'canvas-pan-armed' && moved) {
-    next.owner = 'canvas-pan';
+    next.owner = remote ? 'remote-touch-pan' : 'canvas-pan';
     next.moved = true;
     return { state: next, action: 'pan', deltaX, deltaY };
   }
