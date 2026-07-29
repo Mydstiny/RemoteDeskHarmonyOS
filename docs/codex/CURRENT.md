@@ -1,6 +1,6 @@
 # Shared Current State
 
-Updated: 2026-07-28 Asia/Shanghai
+Updated: 2026-07-29 Asia/Shanghai
 
 ## Repository
 
@@ -261,3 +261,21 @@ repeat the completed review below unless the listed files change again.
 - The classic VNC editor uses the same compact host-editor pattern as the other protocols, adds only VNC-specific transport/security/display controls, never exposes a saved password, and allows its sheet to expand to 760vp while leaving the RDP/RustDesk/SSH 420vp budget unchanged.
 - Verification for this checkpoint: `default@OhosTestCompileArkTS` passed; `assembleHap` passed with signing; `git diff --check` passed; Light open-source compliance passed. `ohosTest@OhosTestCompileArkTS` remains unavailable because the project task is not registered (`00306054`).
 - Device acceptance remains required: save a direct VNC host, confirm it appears on the same remote-host page, exercise card edit/lock/unlock/delete and batch delete, and confirm a real Mac VNC connection. Also run the existing RDP/RustDesk/SSH card smoke checks.
+
+## Settings connection statistics ledger (2026-07-29)
+
+- Implementation commit: `e495633df fix(ui): restore settings protocol icons and VNC count`.
+- The settings `连接实况窗` card now renders `protocolIcon()` resources through
+  API 23 `SymbolGlyph`; media resources such as the lock and version icons keep
+  the existing `Image` path. This restores the RDP, RustDesk, SSH and VNC
+  protocol icons without changing host-card icon ownership.
+- The card now has a dedicated `VNC 主机` row backed by `vncCount`. The
+  `远程主机` total remains the combined host projection, so VNC is visible in
+  both the total and its own protocol count without being double-counted in any
+  source service.
+- Verification for this checkpoint: `default@OhosTestCompileArkTS` passed,
+  `assembleHap` passed with `BUILD SUCCESSFUL`, and staged `git diff --check`
+  passed. The `ohosTest` task remains unavailable because it is not registered
+  (`00306054`).
+- External acceptance remains a settings UI smoke check on API 23 devices,
+  including zero/nonzero VNC counts and refresh after VNC host save/delete.

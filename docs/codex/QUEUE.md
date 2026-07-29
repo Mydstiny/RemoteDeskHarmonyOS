@@ -1,6 +1,6 @@
 # Shared Queue
 
-Updated: 2026-07-28 Asia/Shanghai
+Updated: 2026-07-29 Asia/Shanghai
 
 ## Now
 
@@ -10,6 +10,7 @@ Updated: 2026-07-28 Asia/Shanghai
 
 - RustDesk Android orientation/geometry/touch ownership implementation is complete on the user-authorized local `main`; the follow-up correction applies default `LANDSCAPE` before RustDesk authentication/Surface startup and reserves `AUTO_ROTATION` for an explicit phone-target opt-in. Validate on API 23 devices and a real RustDesk Android peer: mobile auto-rotation, portrait geometry, Surface recreation, virtual mouse/keyboard, touchpad scroll/right-click, default-off Canvas zoom, 0.4 s long-press canvas pan and remote TouchScale behavior. Keep the remote-phone system-rotation claim gated because this repository has no controlled Android endpoint or rotation-control acknowledgement.
 - VNC hosts are now projected into the existing classic remote-host cards. Validate card visibility, classic edit/lock/delete/batch-delete, direct Mac VNC connection and regression smoke for RDP/RustDesk/SSH on an API 23 device. Keep VNC CRUD in `VncHostService`/`vncrecord`; never migrate the projection into `remotehosts`.
+- Settings `连接实况窗` now renders the RDP/RustDesk/SSH/VNC protocol icons through the official `SymbolGlyph` path and includes a separate VNC host count. Validate zero/nonzero counts and refresh after VNC save/delete on an API 23 device; implementation is committed locally as `e495633df`.
 - VNC remember-password/optional-encryption quick fix is implemented on the user-authorized local `main` checkout. Keep the sole `vncrecord` table and its 19-field schema unchanged. Verify direct Mac VNC, Repeater mode12 and the single/new/two-device cloud-first matrix before release; do not push, open a PR or merge remote `main` in this task.
 - RustDesk Pro session handoff is committed locally on `main` as `97f3b0085`; the wired-log RDP visual-commit follow-ups are committed as `9eb1d7722` and `9fc3d8fcb`. The narrow continuation quick fix is committed as `46e996e36`; install the newest signed HAP and complete real Pro endpoint and RDP device acceptance before release. Keep remote push/PR/remote-main merge out of this task unless explicitly requested.
 - The official FreeRDP-aligned RDP refresh repair plan is materialized at `docs/superpowers/plans/2026-07-28-rdp-official-frame-commit-safe-repair-plan.md`. P1 GDI quick fix is implemented and isolated; P0 real-device acceptance is pending because `hdc` currently cannot connect. Keep renderer changes and any RDPGFX experiment separately gated and independently reversible.
