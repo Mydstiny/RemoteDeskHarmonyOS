@@ -5,6 +5,11 @@ export type VncTransport = 'direct_tcp' | 'ultravnc_repeater' | 'websocket_gatew
 export type VncRepeaterMode = 'mode2' | 'mode12';
 export type VncScalingMode = 'fit' | 'integer' | 'one_to_one' | 'pan';
 export type VncSecurityPolicy = 'secure_only' | 'trusted_network' | 'allow_plaintext';
+export type VncDisplayScaleMode = 'fit' | '100' | 'integer' | 'custom';
+export type VncImageQualityPreset = 'speed' | 'balanced' | 'quality' | 'custom';
+export type VncPreferredEncoding = 'auto' | 'zrle' | 'tight' | 'raw';
+export type VncColorDepth = 'auto' | '32' | '16' | '8';
+export type VncLocalCursorMode = 'auto' | 'arrow' | 'circle' | 'hidden';
 
 export interface VncSettingsValues {
   defaultTransport: VncTransport;
@@ -17,6 +22,20 @@ export interface VncSettingsValues {
   controlMode: number;
   showDiagnostics: boolean;
   scalingMode: VncScalingMode;
+  displayScaleMode: VncDisplayScaleMode;
+  customScalePercent: number;
+  imageQualityPreset: VncImageQualityPreset;
+  preferredEncoding: VncPreferredEncoding;
+  colorDepth: VncColorDepth;
+  frameRateLimit: number;
+  jpegQuality: number;
+  localCursorMode: VncLocalCursorMode;
+  touchpadSpeed: number;
+  reverseWheel: boolean;
+  swapMouseButtons: boolean;
+  diagnosticsExpanded: boolean;
+  diagnosticsRefreshMs: number;
+  diagnosticsMetricMask: number;
   clipboardEnabled: boolean;
   securityPolicy: VncSecurityPolicy;
   defaultGatewayId: string;
@@ -38,6 +57,8 @@ export interface VncHostValues {
   repeaterMode: VncRepeaterMode;
   rememberPassword: boolean;
   viewOnly: boolean;
+  /** False inherits VNC display settings; true preserves this host's scalingMode. */
+  displayOverrideEnabled: boolean;
   scalingMode: VncScalingMode;
   clipboardEnabled: boolean;
   securityPolicy: VncSecurityPolicy;
@@ -62,8 +83,13 @@ export interface VncGatewayValues {
 export function defaultVncSettings(): VncSettingsValues {
   return {
     defaultTransport: 'direct_tcp', defaultPort: 5900, connectTimeoutMs: 10000,
-    authTimeoutMs: 15000, firstFrameTimeoutMs: 15000, viewOnly: true, controlMode: 0,
-    showDiagnostics: false, scalingMode: 'fit',
+    authTimeoutMs: 15000, firstFrameTimeoutMs: 15000, viewOnly: false, controlMode: 0,
+    showDiagnostics: false, scalingMode: 'fit', displayScaleMode: 'fit',
+    customScalePercent: 100, imageQualityPreset: 'balanced', preferredEncoding: 'auto',
+    colorDepth: 'auto', frameRateLimit: 30, jpegQuality: 6,
+    localCursorMode: 'auto', touchpadSpeed: 100, reverseWheel: false,
+    swapMouseButtons: false, diagnosticsExpanded: false, diagnosticsRefreshMs: 500,
+    diagnosticsMetricMask: 63,
     clipboardEnabled: false, securityPolicy: 'secure_only', defaultGatewayId: '',
     repeaterMode: 'mode12', syncPreferences: true, syncHosts: true, syncGateways: true,
     syncSecrets: false, syncTrust: false
@@ -113,6 +139,20 @@ export function vncSettingsPayload(values: VncSettingsValues): string {
   payload['controlMode'] = values.controlMode;
   payload['showDiagnostics'] = values.showDiagnostics;
   payload['scalingMode'] = values.scalingMode;
+  payload['displayScaleMode'] = values.displayScaleMode;
+  payload['customScalePercent'] = values.customScalePercent;
+  payload['imageQualityPreset'] = values.imageQualityPreset;
+  payload['preferredEncoding'] = values.preferredEncoding;
+  payload['colorDepth'] = values.colorDepth;
+  payload['frameRateLimit'] = values.frameRateLimit;
+  payload['jpegQuality'] = values.jpegQuality;
+  payload['localCursorMode'] = values.localCursorMode;
+  payload['touchpadSpeed'] = values.touchpadSpeed;
+  payload['reverseWheel'] = values.reverseWheel;
+  payload['swapMouseButtons'] = values.swapMouseButtons;
+  payload['diagnosticsExpanded'] = values.diagnosticsExpanded;
+  payload['diagnosticsRefreshMs'] = values.diagnosticsRefreshMs;
+  payload['diagnosticsMetricMask'] = values.diagnosticsMetricMask;
   payload['clipboardEnabled'] = values.clipboardEnabled;
   payload['securityPolicy'] = values.securityPolicy;
   payload['defaultGatewayId'] = values.defaultGatewayId;
@@ -136,6 +176,7 @@ export function vncHostPayload(values: VncHostValues): string {
   payload['repeaterMode'] = values.repeaterMode;
   payload['rememberPassword'] = values.rememberPassword;
   payload['viewOnly'] = values.viewOnly;
+  payload['displayOverrideEnabled'] = values.displayOverrideEnabled;
   payload['scalingMode'] = values.scalingMode;
   payload['clipboardEnabled'] = values.clipboardEnabled;
   payload['securityPolicy'] = values.securityPolicy;

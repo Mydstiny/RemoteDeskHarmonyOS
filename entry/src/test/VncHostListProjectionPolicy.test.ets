@@ -9,7 +9,8 @@ function view(): VncHostView {
   return {
     id: 'host-record-1', userId: 'user-1', label: 'Mac VNC', host: '192.0.2.20', port: 5900,
     username: '', gatewayId: '', transport: 'direct_tcp', repeaterMode: 'mode12',
-    rememberPassword: false, viewOnly: true, scalingMode: 'fit', clipboardEnabled: false,
+    rememberPassword: false, viewOnly: true, displayOverrideEnabled: true,
+    scalingMode: 'fit', clipboardEnabled: false,
     securityPolicy: 'secure_only', tls: true, locked: true, lockType: 1,
     createdAt: 10, updatedAt: 20, syncVersion: 2, passwordConfigured: false
   };

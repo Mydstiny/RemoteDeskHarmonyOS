@@ -36,6 +36,8 @@ import remoteSurfaceTransformPolicyTest from './RemoteSurfaceTransformPolicy.tes
 import remoteCursorStylePolicyTest from './RemoteCursorStylePolicy.test';
 import remoteHostSheetLifecyclePolicyTest from './RemoteHostSheetLifecyclePolicy.test';
 import vncSessionGeometryPolicyTest from './VncSessionGeometryPolicy.test';
+import remoteFloatingPanelPlacementPolicyTest from './RemoteFloatingPanelPlacementPolicy.test';
+import vncSessionSettingsPolicyTest from './VncSessionSettingsPolicy.test';
 
 export default function testsuite() {
   abilityTest();
@@ -76,4 +78,6 @@ export default function testsuite() {
   remoteCursorStylePolicyTest();
   remoteHostSheetLifecyclePolicyTest();
   vncSessionGeometryPolicyTest();
+  remoteFloatingPanelPlacementPolicyTest();
+  vncSessionSettingsPolicyTest();
 }

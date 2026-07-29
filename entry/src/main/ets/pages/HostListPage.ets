@@ -63,6 +63,7 @@ import { RustDeskAddFlow } from '../components/hostadd/RustDeskAddFlow';
 import { SshAddFlow } from '../components/hostadd/SshAddFlow';
 import { VncAddFlow } from '../components/hostadd/VncAddFlow';
 import { VncSessionCredentialHandoff } from '../services/VncSessionCredentialHandoff';
+import { VncSettingsService } from '../services/VncSettingsService';
 import { VncSettingsSheet } from '../components/VncSettingsSheet';
 // Passphrase uses bindSheet (HostListPage is @Entry, no bindSheet limit)
 import { KeyVaultPage } from './KeyVaultPage';
@@ -165,10 +166,13 @@ import {
   SETTINGS_SHEET_TERMINAL_FG_COLOR,
   SETTINGS_SHEET_TERMINAL_FONT_SIZE,
   SETTINGS_SHEET_VNC_CLOUD_SYNC,
+  SETTINGS_SHEET_VNC_CLIPBOARD,
   SETTINGS_SHEET_VNC_CONNECTION,
   SETTINGS_SHEET_VNC_DISPLAY,
   SETTINGS_SHEET_VNC_GATEWAY,
   SETTINGS_SHEET_VNC_HOSTS,
+  SETTINGS_SHEET_VNC_INPUT,
+  SETTINGS_SHEET_VNC_PERFORMANCE,
   SETTINGS_SHEET_VNC_SECURITY,
   SETTINGS_SHEET_VNC_TIMEOUT,
   SETTINGS_SHEET_VNC_TRUST,
@@ -396,6 +400,7 @@ struct HostListPage {
   @State vncHostPasswordConfigured: boolean = false;
   @State vncHostRememberPassword: boolean = false;
   @State vncHostViewOnly: boolean = true;
+  @State vncHostDisplayOverrideEnabled: boolean = false;
   @State vncHostScalingMode: VncScalingMode = 'fit';
   @State vncHostClipboardEnabled: boolean = false;
   @State vncHostSecurityPolicy: VncSecurityPolicy = 'secure_only';
@@ -617,6 +622,7 @@ struct HostListPage {
   private keyVault: KeyVaultService = KeyVaultService.getInstance();
   private readonly vncHosts: VncHostService = VncHostService.getInstance();
   private readonly vncGateways: VncGatewayService = VncGatewayService.getInstance();
+  private readonly vncSettings: VncSettingsService = VncSettingsService.getInstance();
   private loader: ExtensionLoader = ExtensionLoader.getInstance();
   private sshKeyImporter: SshKeyImportService = new SshKeyImportService();
   private readonly sshSettings: SshSettingsService = SshSettingsService.getInstance();
@@ -1078,6 +1084,7 @@ struct HostListPage {
 
   private prepareVncAddFlow(): void {
     const context: common.Context = getContext(this) as common.Context;
+    this.vncSettings.init(context);
     this.vncHosts.init(context);
     this.vncGateways.init(context);
   }
@@ -3797,26 +3804,28 @@ struct HostListPage {
   }
 
   private prepareClassicVncEditor(host: VncHostView | null): void {
+    const defaults = this.vncSettings.get();
     this.editingHostId = host === null ? '' : vncHostUiId(host.id);
     this.label = host === null ? '' : host.label;
     this.proto = 'vnc';
     this.hostAddr = host === null ? '' : host.host;
-    this.portVal = host === null ? 5900 : host.port;
+    this.portVal = host === null ? defaults.defaultPort : host.port;
     this.username = '';
     // Never materialize a VNC password into the classic editor.
     this.sheetPwd = '';
     this.chn = '';
     this.sheetErr = '';
-    this.vncHostTransport = host === null ? 'direct_tcp' : host.transport;
-    this.vncHostRepeaterMode = host === null ? 'mode12' : host.repeaterMode;
-    this.vncHostGatewayId = host === null ? '' : host.gatewayId;
+    this.vncHostTransport = host === null ? defaults.defaultTransport : host.transport;
+    this.vncHostRepeaterMode = host === null ? defaults.repeaterMode : host.repeaterMode;
+    this.vncHostGatewayId = host === null ? defaults.defaultGatewayId : host.gatewayId;
     this.vncHostPasswordConfigured = host === null ? false : host.passwordConfigured;
     this.vncHostRememberPassword = host === null ? false : host.rememberPassword;
-    this.vncHostViewOnly = host === null ? true : host.viewOnly;
-    this.vncHostScalingMode = host === null ? 'fit' : host.scalingMode;
-    this.vncHostClipboardEnabled = host === null ? false : host.clipboardEnabled;
-    this.vncHostSecurityPolicy = host === null ? 'secure_only' : host.securityPolicy;
-    this.vncHostTls = host === null ? true : host.tls;
+    this.vncHostViewOnly = host === null ? defaults.viewOnly : host.viewOnly;
+    this.vncHostDisplayOverrideEnabled = host === null ? false : host.displayOverrideEnabled;
+    this.vncHostScalingMode = host === null ? defaults.scalingMode : host.scalingMode;
+    this.vncHostClipboardEnabled = host === null ? defaults.clipboardEnabled : host.clipboardEnabled;
+    this.vncHostSecurityPolicy = host === null ? defaults.securityPolicy : host.securityPolicy;
+    this.vncHostTls = host === null ? defaults.securityPolicy === 'secure_only' : host.tls;
   }
 
   private isEditingProHost(): boolean {
@@ -4719,7 +4728,7 @@ struct HostListPage {
         },
         onWillDismiss: (action: DismissSheetAction): void => {
           if (this.settingsLeafSheetMode >= SETTINGS_SHEET_VNC_CONNECTION &&
-            this.settingsLeafSheetMode <= SETTINGS_SHEET_VNC_GATEWAY) {
+            this.settingsLeafSheetMode <= SETTINGS_SHEET_VNC_CLIPBOARD) {
             this.handleVncSettingsLeafWillDismiss(action);
           } else {
             action.dismiss();
@@ -5721,7 +5730,7 @@ struct HostListPage {
         onOpenMail: (): void => { this.openFeedbackEmail(); }
       })
     } else if (this.settingsLeafSheetMode >= SETTINGS_SHEET_VNC_CONNECTION &&
-      this.settingsLeafSheetMode <= SETTINGS_SHEET_VNC_GATEWAY) {
+      this.settingsLeafSheetMode <= SETTINGS_SHEET_VNC_CLIPBOARD) {
       VncSettingsSheet({
         mode: this.settingsLeafSheetMode,
         onClose: (): void => {
@@ -6482,7 +6491,7 @@ struct HostListPage {
 
         ListItem() {
           this.settingsAccordionHeader(SETTINGS_SECTION_VNC, protocolIcon('vnc'),
-            'VNC', '连接、显示、安全、trust、云同步和独立主机')
+            'VNC', '连接、画面、输入、性能监视和云同步')
         }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 10 })
 
         // --- VNC protocol settings: leaf bindSheets, not a cloud-data card ---
@@ -6491,29 +6500,33 @@ struct HostListPage {
             Text('VNC').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text3)
               .fontFamily(this.font()).padding({ left: 8, bottom: 8 })
             Column() {
-              this.protocolActionRow(protocolIcon('vnc'), '连接方式与默认端口',
-                'TCP 直连、UltraVNC Repeater mode12 和默认端口',
+              this.protocolActionRow(protocolIcon('vnc'), '连接与安全',
+                '传输、端口、超时和独立安全策略',
                 (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_VNC_CONNECTION); })
               this.cardDivider()
-              this.protocolActionRow(protocolIcon('vnc'), '超时与连接行为',
-                '连接、认证和首帧超时只属于 VNC',
-                (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_VNC_TIMEOUT); })
-              this.cardDivider()
-              this.protocolActionRow(protocolIcon('vnc'), '显示与交互',
-                '只读、缩放和文本剪贴板',
+              this.protocolActionRow(protocolIcon('vnc'), '显示与画面',
+                '本地缩放、画质、编码、色深和帧率',
                 (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_VNC_DISPLAY); })
               this.cardDivider()
-              this.protocolActionRow(protocolIcon('vnc'), '安全策略与 TLS',
-                'secure_only、可信网络和明文风险',
-                (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_VNC_SECURITY); })
+              this.protocolActionRow(protocolIcon('vnc'), '输入与光标',
+                '只读、控制模式、鼠标、触控板和滚轮',
+                (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_VNC_INPUT); })
               this.cardDivider()
-              this.protocolActionRow(protocolIcon('vnc'), 'Trust / 证书管理',
-                '独立于 RDP 证书和 SSH 主机指纹',
-                (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_VNC_TRUST); })
+              this.protocolActionRow(protocolIcon('vnc'), '性能监视看板',
+                '连接实况、帧率、送显、停滞与采样频率',
+                (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_VNC_PERFORMANCE); })
+              this.cardDivider()
+              this.protocolActionRow(protocolIcon('vnc'), '剪贴板',
+                '单独控制 VNC 文本剪贴板',
+                (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_VNC_CLIPBOARD); })
               this.cardDivider()
               this.protocolActionRow(protocolIcon('vnc'), 'VNC 云同步范围',
                 '唯一物理表 vncrecord，五类逻辑 scope',
                 (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_VNC_CLOUD_SYNC); })
+              this.cardDivider()
+              this.protocolActionRow(protocolIcon('vnc'), 'Trust / 证书管理',
+                '独立于 RDP 证书和 SSH 主机指纹',
+                (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_VNC_TRUST); })
               this.cardDivider()
               this.protocolActionRow(protocolIcon('vnc'), '管理 VNC 主机',
                 this.vncHosts.list().length.toString() + ' 台 · 不写入 remotehosts',
@@ -8778,25 +8791,37 @@ struct HostListPage {
           .onChange((on: boolean): void => { this.vncHostClipboardEnabled = on; })
       }.width('100%').margin({ bottom: 8 })
 
-      Text('缩放').fontSize(11).fontColor(this.pal().text2).fontFamily(this.font()).margin({ bottom: 4 })
       Row() {
-        Button('自适应').layoutWeight(1).height(32).fontSize(10).borderRadius(8)
-          .backgroundColor(this.vncHostScalingMode === 'fit' ? this.accentColor : this.pal().surface)
-          .fontColor(this.vncHostScalingMode === 'fit' ? Color.White : this.pal().text2)
-          .onClick((): void => { this.vncHostScalingMode = 'fit'; })
-        Button('整数').layoutWeight(1).height(32).fontSize(10).borderRadius(8).margin({ left: 5 })
-          .backgroundColor(this.vncHostScalingMode === 'integer' ? this.accentColor : this.pal().surface)
-          .fontColor(this.vncHostScalingMode === 'integer' ? Color.White : this.pal().text2)
-          .onClick((): void => { this.vncHostScalingMode = 'integer'; })
-        Button('1:1').layoutWeight(1).height(32).fontSize(10).borderRadius(8).margin({ left: 5 })
-          .backgroundColor(this.vncHostScalingMode === 'one_to_one' ? this.accentColor : this.pal().surface)
-          .fontColor(this.vncHostScalingMode === 'one_to_one' ? Color.White : this.pal().text2)
-          .onClick((): void => { this.vncHostScalingMode = 'one_to_one'; })
-        Button('平移').layoutWeight(1).height(32).fontSize(10).borderRadius(8).margin({ left: 5 })
-          .backgroundColor(this.vncHostScalingMode === 'pan' ? this.accentColor : this.pal().surface)
-          .fontColor(this.vncHostScalingMode === 'pan' ? Color.White : this.pal().text2)
-          .onClick((): void => { this.vncHostScalingMode = 'pan'; })
+        Column() {
+          Text('此主机单独设置缩放').fontSize(13).fontColor(this.pal().text).fontFamily(this.font())
+          Text(this.vncHostDisplayOverrideEnabled ? '覆盖 VNC 全局显示设置' : '跟随 VNC 全局显示设置')
+            .fontSize(10).fontColor(this.pal().text3).fontFamily(this.font()).margin({ top: 2 })
+        }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+        Toggle({ type: ToggleType.Switch, isOn: this.vncHostDisplayOverrideEnabled })
+          .selectedColor(this.accentColor).scale({ x: 0.82, y: 0.82 })
+          .onChange((on: boolean): void => { this.vncHostDisplayOverrideEnabled = on; })
       }.width('100%').margin({ bottom: 8 })
+      if (this.vncHostDisplayOverrideEnabled) {
+        Text('缩放').fontSize(11).fontColor(this.pal().text2).fontFamily(this.font()).margin({ bottom: 4 })
+        Row() {
+          Button('自适应').layoutWeight(1).height(32).fontSize(10).borderRadius(8)
+            .backgroundColor(this.vncHostScalingMode === 'fit' ? this.accentColor : this.pal().surface)
+            .fontColor(this.vncHostScalingMode === 'fit' ? Color.White : this.pal().text2)
+            .onClick((): void => { this.vncHostScalingMode = 'fit'; })
+          Button('整数').layoutWeight(1).height(32).fontSize(10).borderRadius(8).margin({ left: 5 })
+            .backgroundColor(this.vncHostScalingMode === 'integer' ? this.accentColor : this.pal().surface)
+            .fontColor(this.vncHostScalingMode === 'integer' ? Color.White : this.pal().text2)
+            .onClick((): void => { this.vncHostScalingMode = 'integer'; })
+          Button('1:1').layoutWeight(1).height(32).fontSize(10).borderRadius(8).margin({ left: 5 })
+            .backgroundColor(this.vncHostScalingMode === 'one_to_one' ? this.accentColor : this.pal().surface)
+            .fontColor(this.vncHostScalingMode === 'one_to_one' ? Color.White : this.pal().text2)
+            .onClick((): void => { this.vncHostScalingMode = 'one_to_one'; })
+          Button('平移').layoutWeight(1).height(32).fontSize(10).borderRadius(8).margin({ left: 5 })
+            .backgroundColor(this.vncHostScalingMode === 'pan' ? this.accentColor : this.pal().surface)
+            .fontColor(this.vncHostScalingMode === 'pan' ? Color.White : this.pal().text2)
+            .onClick((): void => { this.vncHostScalingMode = 'pan'; })
+        }.width('100%').margin({ bottom: 8 })
+      }
 
       Text('安全策略').fontSize(11).fontColor(this.pal().text2).fontFamily(this.font()).margin({ bottom: 4 })
       Row() {
@@ -10071,7 +10096,8 @@ struct HostListPage {
     this.vncHostTransport = 'direct_tcp'; this.vncHostRepeaterMode = 'mode12';
     this.vncHostGatewayId = ''; this.vncHostPasswordConfigured = false;
     this.vncHostRememberPassword = false;
-    this.vncHostViewOnly = true; this.vncHostScalingMode = 'fit';
+    this.vncHostViewOnly = true; this.vncHostDisplayOverrideEnabled = false;
+    this.vncHostScalingMode = 'fit';
     this.vncHostClipboardEnabled = false; this.vncHostSecurityPolicy = 'secure_only';
     this.vncHostTls = true;
   }
@@ -10117,6 +10143,7 @@ struct HostListPage {
       repeaterMode: this.vncHostRepeaterMode,
       rememberPassword: this.vncHostRememberPassword,
       viewOnly: this.vncHostViewOnly,
+      displayOverrideEnabled: this.vncHostDisplayOverrideEnabled,
       scalingMode: this.vncHostScalingMode,
       clipboardEnabled: this.vncHostClipboardEnabled,
       securityPolicy: this.vncHostSecurityPolicy,

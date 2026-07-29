@@ -360,3 +360,32 @@ repeat the completed review below unless the listed files change again.
 - 外部验收仍需安装当前签名 HAP，在真实 Mac VNC 服务上验证连续多帧/局部刷新、鼠标、
   虚拟键盘、组合键、实体键盘、三指控制面板、诊断 HUD 和重复连接；当前没有把设备
   验收写成通过，也没有 push、PR 或远端 `main` 合并。
+
+## VNC macOS 画面、控制、设置与性能实施检查点（2026-07-29）
+
+- 实体计划为
+  `docs/superpowers/plans/2026-07-29-vnc-macos-display-input-settings-complete-repair-plan.md`。
+  已提交 P0 `6277705c9` 不再重复复核；本检查点只覆盖其后的 P1/P2 增量。
+- VNC 独立设置现拆为连接与安全、显示与画面、输入与光标、性能监视、剪贴板、云同步、
+  Trust、主机和 Gateway 的 `bindSheet` 叶子项。新增设置经
+  `VncSettingsService` 验证并进入现有 `vncrecord` settings JSON payload；唯一云表和
+  19 个物理字段均不变。
+- 会话端已应用 VNC 独立的 fit/100%/整数/自定义本地缩放、触控板速度、滚轮方向、
+  左右键交换、圆点/官方 Symbol 箭头光标和性能看板。组合键面板改为按真实测量尺寸
+  邻接展开、可视区夹取，并分别保存横竖屏位置。
+- Native RAW 路径新增 8/16/32 位 true-color 像素格式和 15/30/60/不限刷新请求策略；
+  输入、剪贴板和 framebuffer 请求共享串行写边界，避免 RFB TCP 消息交错。当前没有
+  伪装启用 ZRLE/Tight，也没有把本地缩放描述成 Mac 远端分辨率切换。
+- 新主机显式继承 VNC 全局显示设置，只有打开“此主机单独设置缩放”才覆盖；旧主机
+  payload 保留原缩放语义。HostList 冷启动初始化同一个 `VncSettingsService`，FAB 与
+  经典编辑器不再使用硬编码默认值。VNC auto 光标也不再读取共享 `virtualMouseStyle`。
+- VNC HUD 现在分别报告服务器帧 age 与成功送显 age，并展示 dirty rect、请求/实际色深、
+  直连/Repeater 路径、输入提交以及帧缓冲处理量；可明确区分服务器停更、首帧/Surface
+  拒绝和送显链路停滞。组合键 companion 在软键盘挤压场景按最小重叠面积落位。
+- 当前自动化证据：`rdp_native_tests` 为 `159 passed, 0 failed`；Light 开源合规和
+  `git diff --check`、`default@OhosTestCompileArkTS` 和 signed `assembleHap` 通过。
+  同一独立 reviewer 对上一轮 8 项发现逐项复查为 PASS；`ohosTest@OhosTestCompileArkTS`
+  仍因任务未注册 `00306054` 不可执行。
+- 真实 Mac/API 23 验收仍开放：连续动态画面、四角/中心鼠标、拖动/滚轮/键盘、三指
+  控制台、横竖屏组合键位置、性能看板及 RDP/RustDesk/SSH/SFTP 回归。未执行远端
+  push、PR 或远端 `main` 合并。

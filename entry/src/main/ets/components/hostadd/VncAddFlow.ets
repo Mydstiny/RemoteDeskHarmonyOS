@@ -15,9 +15,9 @@ import {
   VncRepeaterMode,
   VncScalingMode,
   VncSecurityPolicy,
-  defaultVncSettings,
   validateVncHost
 } from '../../services/VncModelPolicy';
+import { VncSettingsService } from '../../services/VncSettingsService';
 import { VncGatewayView } from '../../services/VncGatewayService';
 import { VncHostView } from '../../services/VncHostService';
 import { vncGatewayAvailability } from '../../services/VncGatewayProtocolPolicy';
@@ -49,21 +49,24 @@ export struct VncAddFlow {
   @State rememberPassword: boolean = false;
   @State gatewayId: string = '';
   @State tls: boolean = true;
-  @State viewOnly: boolean = true;
+  @State viewOnly: boolean = false;
+  @State displayOverrideEnabled: boolean = false;
   @State scalingMode: VncScalingMode = 'fit';
   @State clipboardEnabled: boolean = false;
   @State securityPolicy: VncSecurityPolicy = 'secure_only';
   @State errorText: string = '';
+  private readonly settings: VncSettingsService = VncSettingsService.getInstance();
 
   private pal(): Palette {
     return this.theme === 'light' ? buildLight(this.accentColor) : buildDark(this.accentColor);
   }
 
   aboutToAppear(): void {
-    const defaults = defaultVncSettings();
+    const defaults = this.settings.get();
     this.portText = defaults.defaultPort.toString();
     this.repeaterMode = defaults.repeaterMode;
     this.viewOnly = defaults.viewOnly;
+    this.displayOverrideEnabled = false;
     this.scalingMode = defaults.scalingMode;
     this.clipboardEnabled = defaults.clipboardEnabled;
     this.securityPolicy = defaults.securityPolicy;
@@ -81,6 +84,7 @@ export struct VncAddFlow {
       this.gatewayId = host.gatewayId;
       this.repeaterMode = host.repeaterMode;
       this.viewOnly = host.viewOnly;
+      this.displayOverrideEnabled = host.displayOverrideEnabled;
       this.scalingMode = host.scalingMode;
       this.clipboardEnabled = host.clipboardEnabled;
       this.securityPolicy = host.securityPolicy;
@@ -199,6 +203,7 @@ export struct VncAddFlow {
       repeaterMode: this.repeaterMode,
       rememberPassword: this.rememberPassword,
       viewOnly: this.viewOnly,
+      displayOverrideEnabled: this.displayOverrideEnabled,
       scalingMode: this.scalingMode,
       clipboardEnabled: this.clipboardEnabled,
       securityPolicy: this.securityPolicy,
@@ -437,25 +442,36 @@ export struct VncAddFlow {
         Toggle({ type: ToggleType.Switch, isOn: this.viewOnly }).selectedColor(this.accentColor)
           .onChange((value: boolean): void => { this.viewOnly = value; })
       }.width('100%').padding({ top: 4, bottom: 12 })
-      Text('缩放模式').fontSize(12).fontColor(this.pal().text2).margin({ bottom: 7 })
       Row() {
-        Button('适应').layoutWeight(1).height(36).borderRadius(9)
-          .backgroundColor(this.scalingMode === 'fit' ? this.accentColor : this.pal().surface)
-          .fontColor(this.scalingMode === 'fit' ? Color.White : this.pal().text2)
-          .onClick((): void => { this.scalingMode = 'fit'; })
-        Button('整数').layoutWeight(1).height(36).borderRadius(9).margin({ left: 6 })
-          .backgroundColor(this.scalingMode === 'integer' ? this.accentColor : this.pal().surface)
-          .fontColor(this.scalingMode === 'integer' ? Color.White : this.pal().text2)
-          .onClick((): void => { this.scalingMode = 'integer'; })
-        Button('1:1').layoutWeight(1).height(36).borderRadius(9).margin({ left: 6 })
-          .backgroundColor(this.scalingMode === 'one_to_one' ? this.accentColor : this.pal().surface)
-          .fontColor(this.scalingMode === 'one_to_one' ? Color.White : this.pal().text2)
-          .onClick((): void => { this.scalingMode = 'one_to_one'; })
-        Button('平移').layoutWeight(1).height(36).borderRadius(9).margin({ left: 6 })
-          .backgroundColor(this.scalingMode === 'pan' ? this.accentColor : this.pal().surface)
-          .fontColor(this.scalingMode === 'pan' ? Color.White : this.pal().text2)
-          .onClick((): void => { this.scalingMode = 'pan'; })
-      }.width('100%').margin({ bottom: 12 })
+        Column() {
+          Text('此主机单独设置缩放').fontSize(14).fontColor(this.pal().text)
+          Text(this.displayOverrideEnabled ? '覆盖 VNC 全局显示设置' : '跟随 VNC 全局显示设置')
+            .fontSize(11).fontColor(this.pal().text3).margin({ top: 3 })
+        }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+        Toggle({ type: ToggleType.Switch, isOn: this.displayOverrideEnabled }).selectedColor(this.accentColor)
+          .onChange((value: boolean): void => { this.displayOverrideEnabled = value; })
+      }.width('100%').padding({ top: 2, bottom: 10 })
+      if (this.displayOverrideEnabled) {
+        Text('缩放模式').fontSize(12).fontColor(this.pal().text2).margin({ bottom: 7 })
+        Row() {
+          Button('适应').layoutWeight(1).height(36).borderRadius(9)
+            .backgroundColor(this.scalingMode === 'fit' ? this.accentColor : this.pal().surface)
+            .fontColor(this.scalingMode === 'fit' ? Color.White : this.pal().text2)
+            .onClick((): void => { this.scalingMode = 'fit'; })
+          Button('整数').layoutWeight(1).height(36).borderRadius(9).margin({ left: 6 })
+            .backgroundColor(this.scalingMode === 'integer' ? this.accentColor : this.pal().surface)
+            .fontColor(this.scalingMode === 'integer' ? Color.White : this.pal().text2)
+            .onClick((): void => { this.scalingMode = 'integer'; })
+          Button('1:1').layoutWeight(1).height(36).borderRadius(9).margin({ left: 6 })
+            .backgroundColor(this.scalingMode === 'one_to_one' ? this.accentColor : this.pal().surface)
+            .fontColor(this.scalingMode === 'one_to_one' ? Color.White : this.pal().text2)
+            .onClick((): void => { this.scalingMode = 'one_to_one'; })
+          Button('平移').layoutWeight(1).height(36).borderRadius(9).margin({ left: 6 })
+            .backgroundColor(this.scalingMode === 'pan' ? this.accentColor : this.pal().surface)
+            .fontColor(this.scalingMode === 'pan' ? Color.White : this.pal().text2)
+            .onClick((): void => { this.scalingMode = 'pan'; })
+        }.width('100%').margin({ bottom: 12 })
+      }
       Row() {
         Column() {
           Text('文本剪贴板').fontSize(14).fontColor(this.pal().text)
@@ -491,7 +507,8 @@ export struct VncAddFlow {
           this.reviewRow('target ID', this.redactedValue(this.endpointAddress()))
         }
         this.reviewRow('TLS / 策略', (this.tls ? 'TLS' : '明文') + ' · ' + this.securityPolicy)
-        this.reviewRow('交互', (this.viewOnly ? '只读' : '可控制') + ' · ' + this.scalingMode +
+        this.reviewRow('交互', (this.viewOnly ? '只读' : '可控制') + ' · ' +
+          (this.displayOverrideEnabled ? this.scalingMode : '跟随全局显示') +
           (this.clipboardEnabled ? ' · 剪贴板' : ' · 无剪贴板'))
       }.width('100%').padding(12).borderRadius(12).backgroundColor(this.pal().surface)
       Text(this.securityStorageHint())

@@ -1,9 +1,9 @@
 # VNC macOS 画面、输入、显示设置与性能看板完整修复计划
 
 - 日期：2026-07-29
-- 当前基线：本地 `main@ca8fb0c56`
-- 状态：实体计划已落盘，尚未开始修改产品代码
-- 目标任务分支：`codex/vnc-macos-display-input-settings-repair`
+- 当前实施基线：本地 `main@6277705c9`（P0 几何/输入同步已提交）
+- 状态：P0、P1 和当前 RAW 能力范围内的 P2 已实施并通过自动化/独立复核；等待真机验收
+- 实施分支：用户明确授权的本地 `main`；不推送、不创建 PR、不合并远端 `main`
 - 优先级：P0 可用性 → P1 完整设置与诊断 → P2 编码、画质与能力式分辨率
 - 云端约束：继续只使用一张 `vncrecord`；不增加云表，不增加物理字段
 
@@ -766,3 +766,41 @@ P0、P1、P2 必须能分别回滚。P2 decoder/画质不得和 P0 输入几何�
 - [ ] RDP、RustDesk、SSH/SFTP 回归通过；
 - [ ] native、ArkTS、Hvigor、双 ABI、合规和 reviewer 门全部通过；
 - [ ] exact signed HAP 在 API 23 设备完成实机验收。
+
+## 14. 2026-07-29 实施检查点
+
+以下内容属于本计划本轮已完成的代码范围，后续 session 不得因上下文压缩重复审查
+已经提交并通过的 P0：
+
+1. P0 已提交为 `6277705c9 fix(vnc): synchronize input to framebuffer geometry`。
+2. VNC 设置模型新增本地缩放、画质预设、实际可用编码、色深、帧率、输入/光标和
+   性能看板字段；设置仍只写入唯一 `vncrecord` 的 `recordtype=settings` JSON payload，
+   不增加云表或物理字段。
+3. VNC 顶级设置已拆为连接与安全、显示与画面、输入与光标、性能监视、剪贴板、
+   云同步、Trust、主机和 Gateway 叶子项，并继续使用现有 `bindSheet`。
+4. Runtime 已应用 VNC 独立的适应窗口、100%、整数倍率和自定义缩放；触控板速度、
+   滚轮方向、左右键交换、本地圆点/官方 Symbol 箭头兜底及诊断采样均不读取
+   RDP/RustDesk/SSH 设置。
+5. Native 仅对已经审计的 RAW/CopyRect 路径提供 8/16/32 位 true-color 协商和
+   15/30/60/不限帧率请求节流；RFB 客户端写操作通过独立 mutex 保证控制包与刷新请求
+   不会在 TCP 字节流中交错。
+6. ZRLE、Tight/JPEG、远端分辨率修改继续保持禁用。UI 明确说明普通 macOS VNC 的
+   framebuffer 尺寸来自 Mac 当前显示器设置，不能把本地缩放冒充远端分辨率。
+7. 组合键浮动面板使用实际测量尺寸、可视区 clamp、主面板邻接定位和横竖屏独立位置；
+   未改变其他协议的按键发送或会话所有权。
+8. 主机显示策略新增显式 `displayOverrideEnabled`：新主机默认继承 VNC 全局显示设置，
+   旧 payload 缺少该字段时按“保留旧主机缩放”迁移；全局默认变化不再改变覆盖语义。
+   HostList 冷启动会先初始化 `VncSettingsService`，FAB 与经典编辑器读取同一默认快照。
+9. 性能看板分别记录服务器帧到达和最后成功送显时间，并展示送显拒绝、dirty rect、
+   请求/实际色深、直连/Repeater 路径和会话输入提交；完整 BGRA 累计量明确标为
+   “帧缓冲处理量”，不再冒充 wire bytes。由此可区分服务器停更和本地送显停滞。
+10. `quality` 在 Retina 大 framebuffer 上保持 32 位；15/30/60 FPS 间隔改为向上取整，
+    refresh request 通过独立 mutex 串行化且等待期间不占用输入写 mutex。VNC `auto`
+    光标不再读取共享 `virtualMouseStyle`，官方箭头增加深色描边层。
+11. 组合键 companion 在无完全无重叠空间时按最小重叠面积选择位置；新增
+    `373×843` 且软键盘占据底部的测试。最终自动化证据为 native `159/159`、
+    `default@OhosTestCompileArkTS`、signed `assembleHap`、Light 合规和
+    `git diff --check` 全部通过；同一独立 reviewer 对上一轮 8 项发现复查为 PASS。
+
+本检查点只代表代码实现完成。最终“VNC 到 Mac 完整可用”仍须满足第 13 节的 API 23
+实机、真实 Mac、连续帧、输入与多协议回归验收。

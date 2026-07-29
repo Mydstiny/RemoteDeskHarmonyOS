@@ -185,6 +185,7 @@ export class VncHostService {
       repeaterMode: values.repeaterMode,
       rememberPassword: values.rememberPassword || this.secrets.has(record.userId, record.id, 'vnc_password'),
       viewOnly: values.viewOnly,
+      displayOverrideEnabled: values.displayOverrideEnabled,
       scalingMode: values.scalingMode,
       clipboardEnabled: values.clipboardEnabled,
       securityPolicy: values.securityPolicy,
@@ -209,7 +210,9 @@ export class VncHostService {
       label: '', host: '', port: defaults.defaultPort, username: '', gatewayId: '',
       transport: defaults.defaultTransport, repeaterMode: defaults.repeaterMode,
       rememberPassword: false,
-      viewOnly: defaults.viewOnly, scalingMode: defaults.scalingMode,
+      viewOnly: defaults.viewOnly,
+      // Missing means a legacy record. Preserve its saved scaling choice.
+      displayOverrideEnabled: true, scalingMode: defaults.scalingMode,
       clipboardEnabled: defaults.clipboardEnabled,
       securityPolicy: defaults.securityPolicy, tls: false,
       locked: false, lockType: 0
@@ -228,6 +231,9 @@ export class VncHostService {
         result.rememberPassword = values['rememberPassword'] as boolean;
       }
       if (typeof values['viewOnly'] === 'boolean') { result.viewOnly = values['viewOnly'] as boolean; }
+      if (typeof values['displayOverrideEnabled'] === 'boolean') {
+        result.displayOverrideEnabled = values['displayOverrideEnabled'] as boolean;
+      }
       if (typeof values['scalingMode'] === 'string') { result.scalingMode = values['scalingMode'] as VncScalingMode; }
       if (typeof values['clipboardEnabled'] === 'boolean') { result.clipboardEnabled = values['clipboardEnabled'] as boolean; }
       if (typeof values['securityPolicy'] === 'string') { result.securityPolicy = values['securityPolicy'] as VncSecurityPolicy; }
@@ -249,6 +255,7 @@ export class VncHostService {
       label: current.label, host: current.host, port: current.port, username: current.username,
       gatewayId: current.gatewayId, transport: current.transport, repeaterMode: current.repeaterMode,
       rememberPassword: current.rememberPassword, viewOnly: current.viewOnly,
+      displayOverrideEnabled: current.displayOverrideEnabled,
       scalingMode: current.scalingMode, clipboardEnabled: current.clipboardEnabled,
       securityPolicy: current.securityPolicy, tls: current.tls,
       locked, lockType: locked ? lockType : 0

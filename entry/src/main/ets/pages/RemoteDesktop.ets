@@ -28,10 +28,21 @@ import { VncGatewayService, VncGatewayView } from '../services/VncGatewayService
 import { VncSettingsService } from '../services/VncSettingsService';
 import { VncTrustService } from '../services/VncTrustService';
 import { VncSessionCredentialHandoff } from '../services/VncSessionCredentialHandoff';
-import { VncSettingsValues } from '../services/VncModelPolicy';
+import {
+  VncSettingsValues,
+  VncDisplayScaleMode,
+  VncImageQualityPreset,
+  VncPreferredEncoding,
+  VncColorDepth,
+  VncLocalCursorMode
+} from '../services/VncModelPolicy';
 import { vncGatewayAvailability } from '../services/VncGatewayProtocolPolicy';
 import { shouldTreatVncConnectionStateAsTerminal } from '../services/VncConnectionStatePolicy';
 import { diagnoseVncConnectionError } from '../services/VncConnectionErrorPolicy';
+import {
+  EffectiveVncSessionSettings,
+  resolveEffectiveVncSessionSettings
+} from '../services/VncSessionSettingsPolicy';
 import { RustDeskRelayConfig } from '../model/RustDeskRelayConfig';
 import { rustDeskRelayKeyModeForFfi } from '../services/RustDeskRelayKeyPolicy';
 import { RdpCredential } from '../model/RdpCredential';
@@ -122,6 +133,7 @@ import {
   RemoteCursorStyle,
   resolveRemoteCursorRenderMode,
   resolveRemoteCursorVisualScale,
+  shouldRenderArrowCursor,
   shouldRenderRemoteCursorArrow,
   shouldRenderRemoteCursorFallbackIndicator,
   shouldRenderVncLocalPointerFallback,
@@ -133,6 +145,14 @@ import {
   shouldAdoptVncFrameGeometry,
   VncFrameGeometry
 } from '../services/VncSessionGeometryPolicy';
+import {
+  anchorFloatingPanelToHandle,
+  clampFloatingPanel,
+  FloatingPanelRect,
+  FloatingPanelViewport,
+  floatingPanelOrientationSuffix,
+  placeFloatingCompanion
+} from '../services/RemoteFloatingPanelPlacementPolicy';
 import {
   advanceRemoteCursorMotion,
   applyLocalCursorTarget,
@@ -476,9 +496,13 @@ const EMPTY_RUSTDESK_DIAGNOSTICS: RustDeskDiagnosticsSnapshot = {
   videoMessages: 0, receivedFrames: 0, keyframes: 0, receivedBytes: 0,
   audioFrames: 0, cadenceGaps: 0, maxCadenceGapMs: 0, testDelayCount: 0,
   receivedFps: 0, displayFps: 0, decodeFps: 0, bitrateKbps: 0, codec: -1, width: 0, height: 0,
-  connectionPath: 'unknown', lastFrameAtMs: 0, lastFrameAgeMs: -1, decodeOk: 0, decodeErrors: 0,
+  connectionPath: 'unknown', lastFrameAtMs: 0, lastFrameAgeMs: -1,
+  lastPresentedAtMs: 0, lastPresentedFrameAgeMs: -1, decodeOk: 0, decodeErrors: 0,
   decodeP50Us: 0, decodeP95Us: 0, decodeMaxUs: 0, presentedFrames: 0,
   presentationRejected: 0,
+  lastDirtyX: -1, lastDirtyY: -1, lastDirtyWidth: 0, lastDirtyHeight: 0,
+  requestedColorDepth: '', effectiveColorDepth: 0,
+  inputEventsSent: 0, inputEventsDropped: 0,
   presentationWindowSamples: 0, presentationWindowMs: 0,
   renderP50Us: 0, renderP95Us: 0, renderMaxUs: 0,
   queueDepth: 0, queueMax: 0,
@@ -566,6 +590,19 @@ struct RemoteDesktop {
   rdpControlMode: number = 0; // 0=touchpad, 1=direct touch, 2=keyboard/mouse
   @State vncControlMode: number = 0; // VNC-only: 0=touchpad, 1=direct touch, 2=keyboard/mouse
   @State @Watch('onRustDeskDiagnosticsSettingChange') vncShowDiagnostics: boolean = false;
+  private vncDisplayScaleMode: VncDisplayScaleMode = 'fit';
+  private vncCustomScalePercent: number = 100;
+  private vncImageQualityPreset: VncImageQualityPreset = 'balanced';
+  private vncPreferredEncoding: VncPreferredEncoding = 'auto';
+  private vncColorDepth: VncColorDepth = 'auto';
+  private vncFrameRateLimit: number = 30;
+  private vncLocalCursorMode: VncLocalCursorMode = 'auto';
+  private vncTouchpadSpeed: number = 100;
+  private vncReverseWheel: boolean = false;
+  private vncSwapMouseButtons: boolean = false;
+  private vncDiagnosticsRefreshMs: number = 500;
+  private vncDiagnosticsExpandedByDefault: boolean = false;
+  private vncDiagnosticsMetricMask: number = 63;
   @StorageLink('rdpDriveEnabled') rdpDriveEnabled: boolean = true;
   @StorageLink('rdpDriveName') rdpDriveName: string = 'RemoteDesktop';
   @StorageLink('remoteDesktopBgFlag') @Watch('onRemoteDesktopBgFlagChange') remoteDesktopBgFlag: boolean = false;
@@ -836,6 +873,10 @@ struct RemoteDesktop {
   @State shortcutPanelY: number = 200;
   @State kbHeight: number = 0;
   private modifierPanelPositionReady: boolean = false;
+  private modifierPanelMeasuredHeight: number = 136;
+  private shortcutPanelMeasuredHeight: number = 238;
+  private modifierPanelUserPositioned: boolean = false;
+  private shortcutPanelUserPositioned: boolean = false;
   // 修饰键虚拟状态 (Phase 2: once/locked 状态机)
   @State ctrlLatch: ModifierLatch = 'off';
   @State altLatch: ModifierLatch = 'off';
@@ -1127,6 +1168,19 @@ struct RemoteDesktop {
   }
 
   private remoteCursorDisplayStyle(): RemoteCursorStyle {
+    if (this.isVncSession()) {
+      if (this.vncLocalCursorMode === 'arrow') { return 'arrow'; }
+      if (this.vncLocalCursorMode === 'circle') { return 'circle'; }
+      const nativeCursorReady: boolean =
+        this.remoteCursorNativeVisible && this.remoteCursorPixelMap !== null;
+      if (this.vncLocalCursorMode === 'hidden') {
+        // Keep a protocol-owned server cursor when available. Otherwise use a
+        // safe VNC-only indicator so touchpad mode never loses all feedback.
+        return nativeCursorReady ? 'arrow' : 'circle';
+      }
+      // VNC auto is isolated from the shared RDP/RustDesk pointer setting.
+      return nativeCursorReady ? 'arrow' : 'circle';
+    }
     return normalizeRemoteCursorStyle(this.virtualMouseStyle);
   }
 
@@ -1756,15 +1810,24 @@ struct RemoteDesktop {
     const fallbackCircle: boolean = shouldRenderRemoteCursorFallbackIndicator(
       this.remoteCursorFallbackShape, this.connected, this.isTouchpadControlMode(),
       this.remoteCursorReady);
+    const useLocalArrow: boolean = this.isVncSession() &&
+      this.remoteCursorDisplayStyle() === 'arrow' &&
+      !(this.remoteCursorNativeVisible && this.remoteCursorPixelMap !== null);
     const vncLocalPointer: boolean = shouldRenderVncLocalPointerFallback(
       this.isVncSession(), this.connected, this.isTouchpadControlMode(),
-      this.remoteCursorReady, this.remoteCursorNativeVisible && this.remoteCursorPixelMap !== null);
+      this.remoteCursorReady, this.remoteCursorNativeVisible && this.remoteCursorPixelMap !== null) &&
+      !useLocalArrow;
     return (configuredCircle || fallbackCircle || vncLocalPointer) && shouldRenderTouchPointerIndicator(true,
       shouldUseSystemMousePointer(this.isKeyboardMouseControlMode())) && cursorViewRevision >= 0;
   }
 
   private shouldShowArrowCursor(): boolean {
     const cursorViewRevision: number = this.remoteCursorViewRevision;
+    if (this.isVncSession() &&
+      !(this.remoteCursorNativeVisible && this.remoteCursorPixelMap !== null)) {
+      return shouldRenderArrowCursor(this.remoteCursorDisplayStyle(), this.connected,
+        this.isTouchpadControlMode(), this.remoteCursorReady) && cursorViewRevision >= 0;
+    }
     return shouldRenderRemoteCursorArrow(this.remoteCursorDisplayStyle(), this.connected,
       this.isTouchpadControlMode(), this.remoteCursorReady, this.remoteCursorNativeVisible,
       this.remoteCursorPixelMap !== null, this.remoteCursorFallbackShape) && cursorViewRevision >= 0;
@@ -1822,6 +1885,8 @@ struct RemoteDesktop {
     const cursor: RemoteCursorOverlayState = this.remoteCursorOverlayState;
     const showCircle: boolean = this.shouldShowTouchIndicator();
     const showArrow: boolean = this.shouldShowArrowCursor();
+    const localVncArrow: boolean = showArrow && this.isVncSession() &&
+      !(this.remoteCursorNativeVisible && this.remoteCursorPixelMap !== null);
     cursor.showCircle = showCircle;
     cursor.circleX = this.circleCursorLocalX();
     cursor.circleY = this.circleCursorLocalY();
@@ -1832,11 +1897,14 @@ struct RemoteDesktop {
     cursor.circleDrag = this.touchIndicatorButton === TOUCH_INDICATOR_BUTTON_DRAG;
     cursor.showArrow = showArrow;
     cursor.arrowInside = showArrow ? this.arrowCursorInside() : false;
-    cursor.arrowPixelMap = showArrow ? this.remoteCursorPixelMap : null;
-    cursor.arrowWidth = showArrow ? this.remoteCursorLocalWidth() : 0;
-    cursor.arrowHeight = showArrow ? this.remoteCursorLocalHeight() : 0;
-    cursor.arrowX = showArrow ? this.remoteCursorImageX() : 0;
-    cursor.arrowY = showArrow ? this.remoteCursorImageY() : 0;
+    cursor.arrowUsesLocalSymbol = localVncArrow;
+    cursor.arrowPixelMap = showArrow && !localVncArrow ? this.remoteCursorPixelMap : null;
+    cursor.arrowWidth = localVncArrow ? 22 : (showArrow ? this.remoteCursorLocalWidth() : 0);
+    cursor.arrowHeight = localVncArrow ? 22 : (showArrow ? this.remoteCursorLocalHeight() : 0);
+    cursor.arrowX = localVncArrow ? this.arrowCursorLocalX() - 2 :
+      (showArrow ? this.remoteCursorImageX() : 0);
+    cursor.arrowY = localVncArrow ? this.arrowCursorLocalY() - 2 :
+      (showArrow ? this.remoteCursorImageY() : 0);
     cursor.viewRevision = this.remoteCursorViewRevision;
     // Publish the branch selector last. All geometry and PixelMap fields are
     // ready before the overlay is allowed to switch away from its old branch.
@@ -2212,9 +2280,23 @@ struct RemoteDesktop {
   }
 
   private resetCanvasToDisplayDefault(forceRendererRead: boolean = false): void {
-    const mode: LocalViewScaleMode = normalizeLocalViewScaleMode(this.remoteDisplayScaleMode);
-    this.canvasTransform = baseCanvasTransform(mode, this.remoteDisplayCustomScalePercent,
-      this.currentCanvasViewport(forceRendererRead));
+    let mode: LocalViewScaleMode = normalizeLocalViewScaleMode(this.remoteDisplayScaleMode);
+    let customScalePercent: number = this.remoteDisplayCustomScalePercent;
+    const viewport: CanvasViewport = this.currentCanvasViewport(forceRendererRead);
+    if (this.isVncSession()) {
+      mode = this.vncDisplayScaleMode === '100' || this.vncDisplayScaleMode === 'custom' ?
+        this.vncDisplayScaleMode : 'fit';
+      customScalePercent = this.vncCustomScalePercent;
+      if (this.vncDisplayScaleMode === 'integer') {
+        const fit: number = Math.min(viewport.surfaceWidth / viewport.sourceWidth,
+          viewport.surfaceHeight / viewport.sourceHeight);
+        if (Number.isFinite(fit) && fit >= 1) {
+          mode = 'custom';
+          customScalePercent = Math.max(100, Math.floor(fit) * 100);
+        }
+      }
+    }
+    this.canvasTransform = baseCanvasTransform(mode, customScalePercent, viewport);
     this.canvasTransformInitialized = true;
     this.canvasTransformGestureModified = false;
     this.applyCanvasTransform();
@@ -3112,6 +3194,9 @@ struct RemoteDesktop {
   }
 
   private rustDeskDiagnosticsDockHeight(): number {
+    if (this.isVncSession()) {
+      return (this.vncDiagnosticsMetricMask & 32) !== 0 ? 350 : 275;
+    }
     return this.shouldShowAdvancedDiagnostics() ?
       380 : 205;
   }
@@ -3167,7 +3252,7 @@ struct RemoteDesktop {
       return resolvedY;
     }
     const modifierY: number = this.modifierPanelVisible ? this.modifierPanelY : this.handleY;
-    const modifierHeight: number = this.modifierPanelVisible ? (this.fnLayer ? 300 : 136) : 42;
+    const modifierHeight: number = this.modifierPanelVisible ? this.modifierPanelMeasuredHeight : 42;
     const dockBottom: number = resolvedY + this.rustDeskDiagnosticsDockHeight();
     const modifierBottom: number = modifierY + modifierHeight;
     if (dockBottom + 12 <= modifierY || resolvedY >= modifierBottom + 12) {
@@ -3230,16 +3315,48 @@ struct RemoteDesktop {
   }
 
   private clampModifierPanelX(x: number): number {
-    const screenW: number = this.surfaceWidth > 0 ? this.surfaceWidth : 360;
-    const maxX: number = Math.max(8, screenW - this.modifierPanelWidth() - 8);
-    return Math.max(8, Math.min(x, maxX));
+    return clampFloatingPanel(x, 48, this.modifierPanelWidth(), 1,
+      this.floatingPanelViewport()).x;
   }
 
-  private clampModifierPanelY(y: number, estimatedHeight: number): number {
-    const screenH: number = this.surfaceHeight > 0 ? this.surfaceHeight : 640;
-    const bottomMargin: number = this.kbHeight > 0 ? this.kbHeight + 8 : 24;
-    const maxY: number = Math.max(48, screenH - bottomMargin - estimatedHeight);
-    return Math.max(48, Math.min(y, maxY));
+  private clampModifierPanelY(y: number, measuredHeight: number): number {
+    return clampFloatingPanel(8, y, 1, measuredHeight, this.floatingPanelViewport()).y;
+  }
+
+  private floatingPanelViewport(): FloatingPanelViewport {
+    return {
+      width: this.surfaceWidth > 0 ? this.surfaceWidth : 360,
+      height: this.surfaceHeight > 0 ? this.surfaceHeight : 640,
+      topMargin: 48,
+      bottomMargin: this.kbHeight > 0 ? this.kbHeight + 8 : 24,
+      sideMargin: 8
+    };
+  }
+
+  private floatingPanelStorageSuffix(width: number = 0, height: number = 0): string {
+    return floatingPanelOrientationSuffix(width > 0 ? width :
+      (this.surfaceWidth > 0 ? this.surfaceWidth : 360), height > 0 ? height :
+      (this.surfaceHeight > 0 ? this.surfaceHeight : 640));
+  }
+
+  private storedPanelRatio(scopedKey: string, legacyKey: string): number {
+    const scoped: number = AppStorage.get<number>(scopedKey) ?? -1;
+    if (this.isValidModifierPanelRatio(scoped)) {
+      return scoped;
+    }
+    return AppStorage.get<number>(legacyKey) ?? -1;
+  }
+
+  private defaultModifierPanelPosition(): FloatingPanelRect {
+    return anchorFloatingPanelToHandle(this.handleSide, this.handleY, this.modifierPanelWidth(),
+      this.modifierPanelMeasuredHeight, this.floatingPanelViewport());
+  }
+
+  private defaultShortcutPanelPosition(): FloatingPanelRect {
+    return placeFloatingCompanion(this.modifierPanelX, this.modifierPanelY,
+      this.modifierPanelWidth(), this.modifierPanelMeasuredHeight,
+      this.modifierPanelWidth(), this.shortcutPanelMeasuredHeight,
+      this.floatingPanelViewport());
   }
 
   private isValidModifierPanelRatio(value: number): boolean {
@@ -3251,19 +3368,29 @@ struct RemoteDesktop {
     const hasSurfaceSize: boolean = this.surfaceWidth > 0 && this.surfaceHeight > 0;
     const screenW: number = hasSurfaceSize ? this.surfaceWidth : 360;
     const screenH: number = hasSurfaceSize ? this.surfaceHeight : 640;
-    const panelW: number = this.modifierPanelWidth();
-    const defaultX: number = this.handleSide === 'right' ? Math.max(8, screenW - panelW - 8) : 8;
-    const defaultY: number = this.clampModifierPanelY(this.handleY - 20, this.fnLayer ? 300 : 136);
-    const savedModifierXRatio: number = AppStorage.get<number>('remoteModifierPanelXRatio') ?? -1;
-    const savedModifierYRatio: number = AppStorage.get<number>('remoteModifierPanelYRatio') ?? -1;
-    const savedShortcutXRatio: number = AppStorage.get<number>('remoteShortcutPanelXRatio') ?? -1;
-    const savedShortcutYRatio: number = AppStorage.get<number>('remoteShortcutPanelYRatio') ?? -1;
+    const suffix: string = this.floatingPanelStorageSuffix(screenW, screenH);
+    const previousSuffix: string = previousWidth > 0 && previousHeight > 0 ?
+      this.floatingPanelStorageSuffix(previousWidth, previousHeight) : suffix;
+    const orientationChanged: boolean = previousWidth > 0 && previousHeight > 0 &&
+      previousSuffix !== suffix;
+    const savedModifierXRatio: number = this.storedPanelRatio(
+      'remoteModifierPanelXRatio' + suffix, 'remoteModifierPanelXRatio');
+    const savedModifierYRatio: number = this.storedPanelRatio(
+      'remoteModifierPanelYRatio' + suffix, 'remoteModifierPanelYRatio');
+    const savedShortcutXRatio: number = this.storedPanelRatio(
+      'remoteShortcutPanelXRatio' + suffix, 'remoteShortcutPanelXRatio');
+    const savedShortcutYRatio: number = this.storedPanelRatio(
+      'remoteShortcutPanelYRatio' + suffix, 'remoteShortcutPanelYRatio');
     const priorW: number = previousWidth > 0 ? previousWidth : screenW;
     const priorH: number = previousHeight > 0 ? previousHeight : screenH;
-    const priorModifierXRatio: number = previousWidth > 0 ? this.modifierPanelX / priorW : -1;
-    const priorModifierYRatio: number = previousHeight > 0 ? this.modifierPanelY / priorH : -1;
-    const priorShortcutXRatio: number = previousWidth > 0 ? this.shortcutPanelX / priorW : -1;
-    const priorShortcutYRatio: number = previousHeight > 0 ? this.shortcutPanelY / priorH : -1;
+    const priorModifierXRatio: number = previousWidth > 0 && !orientationChanged ?
+      this.modifierPanelX / priorW : -1;
+    const priorModifierYRatio: number = previousHeight > 0 && !orientationChanged ?
+      this.modifierPanelY / priorH : -1;
+    const priorShortcutXRatio: number = previousWidth > 0 && !orientationChanged ?
+      this.shortcutPanelX / priorW : -1;
+    const priorShortcutYRatio: number = previousHeight > 0 && !orientationChanged ?
+      this.shortcutPanelY / priorH : -1;
     const modifierXRatio: number = this.isValidModifierPanelRatio(savedModifierXRatio) ?
       savedModifierXRatio : priorModifierXRatio;
     const modifierYRatio: number = this.isValidModifierPanelRatio(savedModifierYRatio) ?
@@ -3272,14 +3399,20 @@ struct RemoteDesktop {
       savedShortcutXRatio : priorShortcutXRatio;
     const shortcutYRatio: number = this.isValidModifierPanelRatio(savedShortcutYRatio) ?
       savedShortcutYRatio : priorShortcutYRatio;
-    this.modifierPanelX = this.clampModifierPanelX(this.isValidModifierPanelRatio(modifierXRatio) ?
-      screenW * modifierXRatio : defaultX);
-    this.modifierPanelY = this.clampModifierPanelY(this.isValidModifierPanelRatio(modifierYRatio) ?
-      screenH * modifierYRatio : defaultY, this.fnLayer ? 300 : 136);
-    this.shortcutPanelX = this.clampModifierPanelX(this.isValidModifierPanelRatio(shortcutXRatio) ?
-      screenW * shortcutXRatio : this.modifierPanelX);
-    this.shortcutPanelY = this.clampModifierPanelY(this.isValidModifierPanelRatio(shortcutYRatio) ?
-      screenH * shortcutYRatio : this.modifierPanelY + 150, 238);
+    const defaultModifier: FloatingPanelRect = this.defaultModifierPanelPosition();
+    this.modifierPanelUserPositioned = this.isValidModifierPanelRatio(modifierXRatio) &&
+      this.isValidModifierPanelRatio(modifierYRatio);
+    this.modifierPanelX = this.clampModifierPanelX(this.modifierPanelUserPositioned ?
+      screenW * modifierXRatio : defaultModifier.x);
+    this.modifierPanelY = this.clampModifierPanelY(this.modifierPanelUserPositioned ?
+      screenH * modifierYRatio : defaultModifier.y, this.modifierPanelMeasuredHeight);
+    const defaultShortcut: FloatingPanelRect = this.defaultShortcutPanelPosition();
+    this.shortcutPanelUserPositioned = this.isValidModifierPanelRatio(shortcutXRatio) &&
+      this.isValidModifierPanelRatio(shortcutYRatio);
+    this.shortcutPanelX = this.clampModifierPanelX(this.shortcutPanelUserPositioned ?
+      screenW * shortcutXRatio : defaultShortcut.x);
+    this.shortcutPanelY = this.clampModifierPanelY(this.shortcutPanelUserPositioned ?
+      screenH * shortcutYRatio : defaultShortcut.y, this.shortcutPanelMeasuredHeight);
     this.modifierPanelPositionReady = hasSurfaceSize;
   }
 
@@ -3293,9 +3426,9 @@ struct RemoteDesktop {
 
   private clampModifierPanelsIntoView(): void {
     this.modifierPanelX = this.clampModifierPanelX(this.modifierPanelX);
-    this.modifierPanelY = this.clampModifierPanelY(this.modifierPanelY, this.fnLayer ? 300 : 136);
+    this.modifierPanelY = this.clampModifierPanelY(this.modifierPanelY, this.modifierPanelMeasuredHeight);
     this.shortcutPanelX = this.clampModifierPanelX(this.shortcutPanelX);
-    this.shortcutPanelY = this.clampModifierPanelY(this.shortcutPanelY, 238);
+    this.shortcutPanelY = this.clampModifierPanelY(this.shortcutPanelY, this.shortcutPanelMeasuredHeight);
   }
 
   private persistModifierPanelPositions(): void {
@@ -3304,26 +3437,43 @@ struct RemoteDesktop {
     }
     const screenW: number = this.surfaceWidth;
     const screenH: number = this.surfaceHeight;
-    AppStorage.setOrCreate('remoteModifierPanelXRatio', this.modifierPanelX / screenW);
-    AppStorage.setOrCreate('remoteModifierPanelYRatio', this.modifierPanelY / screenH);
-    AppStorage.setOrCreate('remoteShortcutPanelXRatio', this.shortcutPanelX / screenW);
-    AppStorage.setOrCreate('remoteShortcutPanelYRatio', this.shortcutPanelY / screenH);
+    const suffix: string = this.floatingPanelStorageSuffix(screenW, screenH);
+    if (this.modifierPanelUserPositioned) {
+      AppStorage.setOrCreate('remoteModifierPanelXRatio' + suffix, this.modifierPanelX / screenW);
+      AppStorage.setOrCreate('remoteModifierPanelYRatio' + suffix, this.modifierPanelY / screenH);
+    }
+    if (this.shortcutPanelUserPositioned) {
+      AppStorage.setOrCreate('remoteShortcutPanelXRatio' + suffix, this.shortcutPanelX / screenW);
+      AppStorage.setOrCreate('remoteShortcutPanelYRatio' + suffix, this.shortcutPanelY / screenH);
+    }
   }
 
   private moveModifierPanel(x: number, y: number): void {
     this.modifierPanelX = this.clampModifierPanelX(x);
-    this.modifierPanelY = this.clampModifierPanelY(y, this.fnLayer ? 300 : 136);
+    this.modifierPanelY = this.clampModifierPanelY(y, this.modifierPanelMeasuredHeight);
+    this.modifierPanelUserPositioned = true;
+    if (this.shortcutPanelVisible && !this.shortcutPanelUserPositioned) {
+      const shortcut: FloatingPanelRect = this.defaultShortcutPanelPosition();
+      this.shortcutPanelX = shortcut.x;
+      this.shortcutPanelY = shortcut.y;
+    }
     this.persistModifierPanelPositions();
   }
 
   private moveShortcutPanel(x: number, y: number): void {
     this.shortcutPanelX = this.clampModifierPanelX(x);
-    this.shortcutPanelY = this.clampModifierPanelY(y, 238);
+    this.shortcutPanelY = this.clampModifierPanelY(y, this.shortcutPanelMeasuredHeight);
+    this.shortcutPanelUserPositioned = true;
     this.persistModifierPanelPositions();
   }
 
   private openModifierPanel(): void {
     this.ensureModifierPanelPositions();
+    if (!this.modifierPanelUserPositioned) {
+      const anchored: FloatingPanelRect = this.defaultModifierPanelPosition();
+      this.modifierPanelX = anchored.x;
+      this.modifierPanelY = anchored.y;
+    }
     this.modifierPanelMounted = true;
     this.modifierPanelVisible = true;
   }
@@ -3354,7 +3504,49 @@ struct RemoteDesktop {
     this.ensureModifierPanelPositions();
     this.modifierPanelMounted = true;
     this.modifierPanelVisible = true;
-    this.shortcutPanelVisible = !this.shortcutPanelVisible;
+    const opening: boolean = !this.shortcutPanelVisible;
+    if (opening && !this.shortcutPanelUserPositioned) {
+      const shortcut: FloatingPanelRect = this.defaultShortcutPanelPosition();
+      this.shortcutPanelX = shortcut.x;
+      this.shortcutPanelY = shortcut.y;
+    }
+    this.shortcutPanelVisible = opening;
+  }
+
+  private updateModifierPanelMeasuredSize(width: number, height: number, shortcut: boolean): void {
+    if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+      return;
+    }
+    if (shortcut) {
+      if (Math.abs(this.shortcutPanelMeasuredHeight - height) < 1) {
+        return;
+      }
+      this.shortcutPanelMeasuredHeight = height;
+      if (!this.shortcutPanelUserPositioned) {
+        const position: FloatingPanelRect = this.defaultShortcutPanelPosition();
+        this.shortcutPanelX = position.x;
+        this.shortcutPanelY = position.y;
+      } else {
+        this.shortcutPanelY = this.clampModifierPanelY(this.shortcutPanelY, height);
+      }
+      return;
+    }
+    if (Math.abs(this.modifierPanelMeasuredHeight - height) < 1) {
+      return;
+    }
+    this.modifierPanelMeasuredHeight = height;
+    if (!this.modifierPanelUserPositioned) {
+      const position: FloatingPanelRect = this.defaultModifierPanelPosition();
+      this.modifierPanelX = position.x;
+      this.modifierPanelY = position.y;
+    } else {
+      this.modifierPanelY = this.clampModifierPanelY(this.modifierPanelY, height);
+    }
+    if (this.shortcutPanelVisible && !this.shortcutPanelUserPositioned) {
+      const shortcutPosition: FloatingPanelRect = this.defaultShortcutPanelPosition();
+      this.shortcutPanelX = shortcutPosition.x;
+      this.shortcutPanelY = shortcutPosition.y;
+    }
   }
 
   // ============================================================
@@ -3864,15 +4056,30 @@ struct RemoteDesktop {
         this.vncHosts.init(context);
         this.vncGateways.init(context);
         this.vncTrust.init(context);
-        const vncSettings: VncSettingsValues = this.vncSettings.get();
-        this.vncControlMode = vncSettings.controlMode;
-        this.vncShowDiagnostics = vncSettings.showDiagnostics;
         const vncHost: VncHostView | null = this.vncHosts.find(vncHostId);
         if (vncHost === null) {
           this.connecting = false;
           this.connectionError = 'VNC 主机不存在 [E-VNC-HOST-404]';
           return;
         }
+        const vncSettings: VncSettingsValues = this.vncSettings.get();
+        const effective: EffectiveVncSessionSettings =
+          resolveEffectiveVncSessionSettings(vncSettings, vncHost);
+        this.vncControlMode = effective.controlMode;
+        this.vncShowDiagnostics = effective.showDiagnostics;
+        this.vncDisplayScaleMode = effective.displayScaleMode;
+        this.vncCustomScalePercent = effective.customScalePercent;
+        this.vncImageQualityPreset = effective.imageQualityPreset;
+        this.vncPreferredEncoding = effective.preferredEncoding;
+        this.vncColorDepth = effective.colorDepth;
+        this.vncFrameRateLimit = effective.frameRateLimit;
+        this.vncLocalCursorMode = effective.localCursorMode;
+        this.vncTouchpadSpeed = effective.touchpadSpeed;
+        this.vncReverseWheel = effective.reverseWheel;
+        this.vncSwapMouseButtons = effective.swapMouseButtons;
+        this.vncDiagnosticsRefreshMs = effective.diagnosticsRefreshMs;
+        this.vncDiagnosticsExpandedByDefault = effective.diagnosticsExpanded;
+        this.vncDiagnosticsMetricMask = effective.diagnosticsMetricMask;
         this.hostId = 'vnc:' + vncHost.id;
         this.pendingVncHost = vncHost;
         this.pendingHost = this.transientRemoteHostForVnc(vncHost);
@@ -4013,7 +4220,7 @@ struct RemoteDesktop {
         return;
       }
       this.refreshRustDeskDiagnostics(observedSessionId, observedAttemptId);
-    }, 1000);
+    }, this.isVncSession() ? this.vncDiagnosticsRefreshMs : 1000);
   }
 
   private stopRustDeskDiagnosticsPolling(reset: boolean): void {
@@ -5453,7 +5660,8 @@ struct RemoteDesktop {
     }
     const src = this.toSourceSpace(x, y);
     let sendButton: number = button;
-    if (this.isRustDeskSession() && this.rustdeskSwapMouseButtons) {
+    if ((this.isRustDeskSession() && this.rustdeskSwapMouseButtons) ||
+      (this.isVncSession() && this.vncSwapMouseButtons)) {
       if (sendButton === 0) {
         sendButton = 2;
       } else if (sendButton === 2) {
@@ -6898,12 +7106,16 @@ struct RemoteDesktop {
         vncRepeaterMode: isVnc ? vncRepeaterMode : 'mode12',
         vncRepeaterTarget: isVnc ? vncRepeaterTarget : '',
         vncTls: isVnc && vncOwner !== null ? vncTls : false,
-        vncViewOnly: isVnc && vncOwner !== null ? vncOwner.host.viewOnly : true,
+        vncViewOnly: isVnc && vncOwner !== null ? vncOwner.host.viewOnly : false,
         vncClipboardEnabled: isVnc && vncOwner !== null ? vncOwner.host.clipboardEnabled : false,
         vncSecurityPolicy: isVnc && vncOwner !== null ? vncOwner.host.securityPolicy : 'secure_only',
         vncConnectTimeoutMs: isVnc && vncOwner !== null ? vncOwner.settings.connectTimeoutMs : 10000,
         vncAuthTimeoutMs: isVnc && vncOwner !== null ? vncOwner.settings.authTimeoutMs : 15000,
         vncFirstFrameTimeoutMs: isVnc && vncOwner !== null ? vncOwner.settings.firstFrameTimeoutMs : 15000,
+        vncImageQualityPreset: isVnc ? this.vncImageQualityPreset : 'balanced',
+        vncPreferredEncoding: isVnc ? this.vncPreferredEncoding : 'auto',
+        vncColorDepth: isVnc ? this.vncColorDepth : 'auto',
+        vncFrameRateLimit: isVnc ? this.vncFrameRateLimit : 30,
         vncExpectedCertificateFingerprintSha256: isVnc ? vncExpectedFingerprint : ''
       };
       // 编码偏好单独处理 (0=auto → 不强制)
@@ -6967,9 +7179,6 @@ struct RemoteDesktop {
       this.nativeHandles.attachConnectedSession(sid, this.remoteProtocolOf(host));
       this.connected = true;
       this.connecting = false;
-      if (host.protocol === 'rustdesk' && this.rustdeskShowDiagnostics) {
-        this.startRustDeskDiagnosticsPolling();
-      }
       this.startRemoteCursorPolling(sid);
       this.recordActiveSession(host, sid, true);
       await this.prepareRemoteSessionPipForForeground(host, sid);
@@ -6977,8 +7186,16 @@ struct RemoteDesktop {
       // T-171: 连接成功后显示悬浮胶囊
       this.initHandlePosition();
       this.handleVisible = true;
-      if (host.protocol === 'rustdesk' && this.rustdeskShowDiagnostics) {
+      const diagnosticsEnabled: boolean =
+        (host.protocol === 'rustdesk' && this.rustdeskShowDiagnostics) ||
+        (host.protocol === 'vnc' && this.vncShowDiagnostics);
+      if (diagnosticsEnabled) {
         this.initRustDeskDiagnosticsDock();
+        this.rustDeskDiagnosticsDockExpanded =
+          host.protocol === 'vnc' && this.vncDiagnosticsExpandedByDefault;
+        this.rustDeskDiagnosticsDockY = this.avoidRustDeskDiagnosticsDockCollision(
+          this.rustDeskDiagnosticsDockSide, this.rustDeskDiagnosticsDockY);
+        this.startRustDeskDiagnosticsPolling();
       }
       this.promptPhysicalKeyboardLayout();
       if (host.protocol === 'rdp') {
@@ -9517,7 +9734,9 @@ struct RemoteDesktop {
     this.touchWheelRemainder -= delta;
     this.lastTouchWheelMs = now;
     const src = this.toSourceSpace(this.remoteCursorX, this.remoteCursorY);
-    const sendDelta: number = this.rustdeskReverseWheel ? -delta : delta;
+    const reverseWheel: boolean = this.isVncSession() ?
+      this.vncReverseWheel : this.rustdeskReverseWheel;
+    const sendDelta: number = reverseWheel ? -delta : delta;
     this.loader.sendMouseWheel(this.sessionId, src['x'], src['y'], sendDelta);
     hilog.info(RD_DOMAIN, RD_TAG,
       'touchpad-scroll delta=' + sendDelta.toString() + ' stepDy=' + stepDy.toString() +
@@ -9694,7 +9913,8 @@ struct RemoteDesktop {
           const previousTimeMs: number = this.touchpadCurveState.lastTimeMs;
           const curve = touchpadPointerCurve(stepDx, stepDy, nowMs, this.touchpadCurveState);
           this.touchpadCurveState = curve.state;
-          const userSpeed: number = this.isRustDeskSession() ? this.rustdeskTouchpadSpeed : 1.0;
+          const userSpeed: number = this.isVncSession() ? this.vncTouchpadSpeed / 100 :
+            (this.isRustDeskSession() ? this.rustdeskTouchpadSpeed : 1.0);
           const pointerSpeed: number = clampTouchpadEffectiveGain(curve.gain, userSpeed);
           const remoteDelta: RemoteSurfaceDelta = this.remoteDeltaFromLocalPair(stepDx, stepDy);
           const nextX: number = this.remoteCursorPreciseX +
@@ -10521,7 +10741,9 @@ struct RemoteDesktop {
       this.queueMouseMove(mapped.x, mapped.y);
       this.flushMouseMove();
       const src: Record<string, number> = this.toSourceSpace(mapped.x, mapped.y);
-      const sendDelta: number = this.rustdeskReverseWheel ? -delta : delta;
+      const reverseWheel: boolean = this.isVncSession() ?
+        this.vncReverseWheel : this.rustdeskReverseWheel;
+      const sendDelta: number = reverseWheel ? -delta : delta;
       this.loader.sendMouseWheel(this.sessionId, src['x'], src['y'], sendDelta);
       hilog.info(RD_DOMAIN, RD_TAG, 'physical-wheel raw=' + rawVertical.toString() +
         ' delta=' + sendDelta.toString() + ' sourceTool=' + event.sourceTool.toString() +
@@ -10878,6 +11100,14 @@ struct RemoteDesktop {
           diagnostics: this.rustDeskDiagnostics,
           localResources: this.localResourceStats,
           protocolLabel: this.isVncSession() ? 'VNC' : 'RustDesk',
+          geometryEpoch: this.isVncSession() ? this.vncGeometryEpoch : this.rustDeskGeometryEpoch,
+          surfaceWidth: this.surfaceWidth,
+          surfaceHeight: this.surfaceHeight,
+          refreshMs: this.isVncSession() ? this.vncDiagnosticsRefreshMs : 1000,
+          requestedEncoding: this.isVncSession() ? this.vncPreferredEncoding : '',
+          requestedColorDepth: this.isVncSession() ? this.vncColorDepth : '',
+          requestedFrameRate: this.isVncSession() ? this.vncFrameRateLimit : 0,
+          metricMask: this.isVncSession() ? this.vncDiagnosticsMetricMask : 63,
           proEnabled: this.shouldShowAdvancedDiagnostics(),
           expanded: this.rustDeskDiagnosticsDockExpanded,
           attachSide: this.rustDeskDiagnosticsDockSide,
@@ -10975,6 +11205,12 @@ struct RemoteDesktop {
           },
           onShortcutPositionChange: (x: number, y: number): void => {
             this.moveShortcutPanel(x, y);
+          },
+          onPanelSizeChange: (width: number, height: number): void => {
+            this.updateModifierPanelMeasuredSize(width, height, false);
+          },
+          onShortcutSizeChange: (width: number, height: number): void => {
+            this.updateModifierPanelMeasuredSize(width, height, true);
           }
         })
       }

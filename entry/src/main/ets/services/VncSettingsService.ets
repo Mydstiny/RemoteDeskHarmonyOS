@@ -9,6 +9,11 @@ import {
   VncRepeaterMode,
   VncScalingMode,
   VncSecurityPolicy,
+  VncDisplayScaleMode,
+  VncImageQualityPreset,
+  VncPreferredEncoding,
+  VncColorDepth,
+  VncLocalCursorMode,
   defaultVncSettings,
   validVncPort,
   vncSettingsPayload,
@@ -72,7 +77,17 @@ export class VncSettingsService {
       connectTimeoutMs: current.connectTimeoutMs, authTimeoutMs: current.authTimeoutMs,
       firstFrameTimeoutMs: current.firstFrameTimeoutMs, viewOnly: current.viewOnly,
       controlMode: current.controlMode, showDiagnostics: current.showDiagnostics,
-      scalingMode: current.scalingMode, clipboardEnabled: current.clipboardEnabled,
+      scalingMode: current.scalingMode, displayScaleMode: current.displayScaleMode,
+      customScalePercent: current.customScalePercent,
+      imageQualityPreset: current.imageQualityPreset,
+      preferredEncoding: current.preferredEncoding, colorDepth: current.colorDepth,
+      frameRateLimit: current.frameRateLimit, jpegQuality: current.jpegQuality,
+      localCursorMode: current.localCursorMode, touchpadSpeed: current.touchpadSpeed,
+      reverseWheel: current.reverseWheel, swapMouseButtons: current.swapMouseButtons,
+      diagnosticsExpanded: current.diagnosticsExpanded,
+      diagnosticsRefreshMs: current.diagnosticsRefreshMs,
+      diagnosticsMetricMask: current.diagnosticsMetricMask,
+      clipboardEnabled: current.clipboardEnabled,
       securityPolicy: current.securityPolicy, defaultGatewayId: current.defaultGatewayId,
       repeaterMode: current.repeaterMode, syncPreferences: current.syncPreferences,
       syncHosts: current.syncHosts, syncGateways: current.syncGateways,
@@ -241,6 +256,32 @@ export class VncSettingsService {
       controlMode: Number.isFinite(values.controlMode) ? Math.max(0, Math.min(2, Math.floor(values.controlMode))) : defaults.controlMode,
       showDiagnostics: values.showDiagnostics === true,
       scalingMode: values.scalingMode || defaults.scalingMode,
+      displayScaleMode: values.displayScaleMode === '100' || values.displayScaleMode === 'integer' ||
+        values.displayScaleMode === 'custom' ? values.displayScaleMode : 'fit',
+      customScalePercent: Number.isFinite(values.customScalePercent) ?
+        Math.max(50, Math.min(300, Math.floor(values.customScalePercent))) : defaults.customScalePercent,
+      imageQualityPreset: values.imageQualityPreset === 'speed' ||
+        values.imageQualityPreset === 'quality' ?
+        values.imageQualityPreset : 'balanced',
+      preferredEncoding: values.preferredEncoding === 'raw' ? 'raw' : 'auto',
+      colorDepth: values.colorDepth === '32' || values.colorDepth === '16' ||
+        values.colorDepth === '8' ? values.colorDepth : 'auto',
+      frameRateLimit: values.frameRateLimit === 0 || values.frameRateLimit === 15 ||
+        values.frameRateLimit === 60 ? values.frameRateLimit : 30,
+      jpegQuality: Number.isFinite(values.jpegQuality) ?
+        Math.max(0, Math.min(9, Math.floor(values.jpegQuality))) : defaults.jpegQuality,
+      localCursorMode: values.localCursorMode === 'arrow' || values.localCursorMode === 'circle' ||
+        values.localCursorMode === 'hidden' ? values.localCursorMode : 'auto',
+      touchpadSpeed: Number.isFinite(values.touchpadSpeed) ?
+        Math.max(50, Math.min(200, Math.floor(values.touchpadSpeed))) : defaults.touchpadSpeed,
+      reverseWheel: values.reverseWheel === true,
+      swapMouseButtons: values.swapMouseButtons === true,
+      diagnosticsExpanded: values.diagnosticsExpanded === true,
+      diagnosticsRefreshMs: values.diagnosticsRefreshMs === 250 ||
+        values.diagnosticsRefreshMs === 1000 ? values.diagnosticsRefreshMs : 500,
+      diagnosticsMetricMask: Number.isFinite(values.diagnosticsMetricMask) ?
+        Math.max(0, Math.min(65535, Math.floor(values.diagnosticsMetricMask))) :
+        defaults.diagnosticsMetricMask,
       clipboardEnabled: values.clipboardEnabled,
       securityPolicy: values.securityPolicy || defaults.securityPolicy,
       defaultGatewayId: values.defaultGatewayId || '',
@@ -268,6 +309,52 @@ export class VncSettingsService {
       if (typeof values['controlMode'] === 'number') { result.controlMode = values['controlMode'] as number; }
       if (typeof values['showDiagnostics'] === 'boolean') { result.showDiagnostics = values['showDiagnostics'] as boolean; }
       if (typeof values['scalingMode'] === 'string') { result.scalingMode = values['scalingMode'] as VncScalingMode; }
+      if (typeof values['displayScaleMode'] === 'string') {
+        result.displayScaleMode = values['displayScaleMode'] as VncDisplayScaleMode;
+      } else {
+        result.displayScaleMode = result.scalingMode === 'one_to_one' ||
+          result.scalingMode === 'pan' ? '100' :
+          (result.scalingMode === 'integer' ? 'integer' : 'fit');
+      }
+      if (typeof values['customScalePercent'] === 'number') {
+        result.customScalePercent = values['customScalePercent'] as number;
+      }
+      if (typeof values['imageQualityPreset'] === 'string') {
+        result.imageQualityPreset = values['imageQualityPreset'] as VncImageQualityPreset;
+      }
+      if (typeof values['preferredEncoding'] === 'string') {
+        result.preferredEncoding = values['preferredEncoding'] as VncPreferredEncoding;
+      }
+      if (typeof values['colorDepth'] === 'string') {
+        result.colorDepth = values['colorDepth'] as VncColorDepth;
+      }
+      if (typeof values['frameRateLimit'] === 'number') {
+        result.frameRateLimit = values['frameRateLimit'] as number;
+      }
+      if (typeof values['jpegQuality'] === 'number') {
+        result.jpegQuality = values['jpegQuality'] as number;
+      }
+      if (typeof values['localCursorMode'] === 'string') {
+        result.localCursorMode = values['localCursorMode'] as VncLocalCursorMode;
+      }
+      if (typeof values['touchpadSpeed'] === 'number') {
+        result.touchpadSpeed = values['touchpadSpeed'] as number;
+      }
+      if (typeof values['reverseWheel'] === 'boolean') {
+        result.reverseWheel = values['reverseWheel'] as boolean;
+      }
+      if (typeof values['swapMouseButtons'] === 'boolean') {
+        result.swapMouseButtons = values['swapMouseButtons'] as boolean;
+      }
+      if (typeof values['diagnosticsExpanded'] === 'boolean') {
+        result.diagnosticsExpanded = values['diagnosticsExpanded'] as boolean;
+      }
+      if (typeof values['diagnosticsRefreshMs'] === 'number') {
+        result.diagnosticsRefreshMs = values['diagnosticsRefreshMs'] as number;
+      }
+      if (typeof values['diagnosticsMetricMask'] === 'number') {
+        result.diagnosticsMetricMask = values['diagnosticsMetricMask'] as number;
+      }
       if (typeof values['clipboardEnabled'] === 'boolean') { result.clipboardEnabled = values['clipboardEnabled'] as boolean; }
       if (typeof values['securityPolicy'] === 'string') { result.securityPolicy = values['securityPolicy'] as VncSecurityPolicy; }
       if (typeof values['defaultGatewayId'] === 'string') { result.defaultGatewayId = values['defaultGatewayId'] as string; }
@@ -287,7 +374,17 @@ export class VncSettingsService {
       connectTimeoutMs: values.connectTimeoutMs, authTimeoutMs: values.authTimeoutMs,
       firstFrameTimeoutMs: values.firstFrameTimeoutMs, viewOnly: values.viewOnly,
       controlMode: values.controlMode, showDiagnostics: values.showDiagnostics,
-      scalingMode: values.scalingMode, clipboardEnabled: values.clipboardEnabled,
+      scalingMode: values.scalingMode, displayScaleMode: values.displayScaleMode,
+      customScalePercent: values.customScalePercent,
+      imageQualityPreset: values.imageQualityPreset,
+      preferredEncoding: values.preferredEncoding, colorDepth: values.colorDepth,
+      frameRateLimit: values.frameRateLimit, jpegQuality: values.jpegQuality,
+      localCursorMode: values.localCursorMode, touchpadSpeed: values.touchpadSpeed,
+      reverseWheel: values.reverseWheel, swapMouseButtons: values.swapMouseButtons,
+      diagnosticsExpanded: values.diagnosticsExpanded,
+      diagnosticsRefreshMs: values.diagnosticsRefreshMs,
+      diagnosticsMetricMask: values.diagnosticsMetricMask,
+      clipboardEnabled: values.clipboardEnabled,
       securityPolicy: values.securityPolicy, defaultGatewayId: values.defaultGatewayId,
       repeaterMode: values.repeaterMode, syncPreferences: values.syncPreferences,
       syncHosts: values.syncHosts, syncGateways: values.syncGateways,

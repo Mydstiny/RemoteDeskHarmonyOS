@@ -25,7 +25,18 @@ Updated: 2026-07-29 Asia/Shanghai
 - VNC hosts are now projected into the existing classic remote-host cards. Validate card visibility, classic edit/lock/delete/batch-delete, direct Mac VNC connection and regression smoke for RDP/RustDesk/SSH on an API 23 device. Keep VNC CRUD in `VncHostService`/`vncrecord`; never migrate the projection into `remotehosts`.
 - Settings `连接实况窗` now renders the RDP/RustDesk/SSH/VNC protocol icons through the official `SymbolGlyph` path and includes a separate VNC host count. Validate zero/nonzero counts and refresh after VNC save/delete on an API 23 device; implementation is committed locally as `e495633df`.
 - VNC remember-password/optional-encryption quick fix is implemented on the user-authorized local `main` checkout. Keep the sole `vncrecord` table and its 19-field schema unchanged. Verify direct Mac VNC, Repeater mode12 and the single/new/two-device cloud-first matrix before release; do not push, open a PR or merge remote `main` in this task.
-- VNC continuous-frame/input repair is complete in the current working tree and has passed the D-020 scoped read-only review. Native `rdp_native_tests` is `151 passed, 0 failed`; both production Hvigor gates, signing, Light compliance and diff checks pass; `ohosTest` remains blocked by unregistered task `00306054`. The remaining release evidence is installing the exact signed HAP and validating continuous Mac VNC frames, keyboard/mouse/touch/three-finger controls, resize position recovery and diagnostics.
+- VNC continuous-frame/input P0 is committed as `6277705c9` and must not be
+  re-reviewed after context compaction. The follow-up implementation adds
+  isolated display/quality/input/performance settings, real RAW 8/16/32-bit
+  negotiation, bounded framebuffer request rates, serialized RFB writes, a
+  VNC performance HUD, visible local cursor fallback and measured
+  orientation-specific modifier-panel placement. Native tests are
+  `159 passed, 0 failed`; `default@OhosTestCompileArkTS`、signed `assembleHap`、
+  Light 合规和同一独立 reviewer 复查均通过。Keep ZRLE/Tight and remote-resolution controls disabled
+  until their capability and interoperability gates pass. Remaining release
+  evidence is the exact signed HAP on API 23 against a real Mac plus
+  RDP/RustDesk/SSH/SFTP regression; `ohosTest` remains blocked by unregistered
+  task `00306054`.
 - RustDesk Pro session handoff is committed locally on `main` as `97f3b0085`; the wired-log RDP visual-commit follow-ups are committed as `9eb1d7722` and `9fc3d8fcb`. The narrow continuation quick fix is committed as `46e996e36`; install the newest signed HAP and complete real Pro endpoint and RDP device acceptance before release. Keep remote push/PR/remote-main merge out of this task unless explicitly requested.
 - The official FreeRDP-aligned RDP refresh repair plan is materialized at `docs/superpowers/plans/2026-07-28-rdp-official-frame-commit-safe-repair-plan.md`. The retained-transform canvas repair is also complete and isolated; P0 real-device acceptance remains pending. `hdc` now detects targets, but no HAP has been installed or run in this task. Keep renderer changes and any RDPGFX experiment separately gated and independently reversible.
 - Local VNC UX implementation is committed as `e6e6fe04c`; the follow-up relay/VNC UX corrections are committed as `d54c025` and `108d0f0`. Keep remote push/PR/remote-main merge out of this task until the user explicitly requests it.

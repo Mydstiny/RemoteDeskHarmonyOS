@@ -9,14 +9,22 @@ import {
   VncTransport,
   VncScalingMode,
   VncSecurityPolicy,
+  VncDisplayScaleMode,
+  VncImageQualityPreset,
+  VncPreferredEncoding,
+  VncColorDepth,
+  VncLocalCursorMode,
   defaultVncSettings
 } from '../services/VncModelPolicy';
 import {
   SETTINGS_SHEET_VNC_CLOUD_SYNC,
+  SETTINGS_SHEET_VNC_CLIPBOARD,
   SETTINGS_SHEET_VNC_CONNECTION,
   SETTINGS_SHEET_VNC_DISPLAY,
   SETTINGS_SHEET_VNC_GATEWAY,
   SETTINGS_SHEET_VNC_HOSTS,
+  SETTINGS_SHEET_VNC_INPUT,
+  SETTINGS_SHEET_VNC_PERFORMANCE,
   SETTINGS_SHEET_VNC_SECURITY,
   SETTINGS_SHEET_VNC_TIMEOUT,
   SETTINGS_SHEET_VNC_TRUST
@@ -47,10 +55,24 @@ export struct VncSettingsSheet {
   @State connectTimeoutText: string = '10000';
   @State authTimeoutText: string = '15000';
   @State firstFrameTimeoutText: string = '15000';
-  @State viewOnly: boolean = true;
+  @State viewOnly: boolean = false;
   @State controlMode: number = 0;
   @State showDiagnostics: boolean = false;
   @State scalingMode: VncScalingMode = 'fit';
+  @State displayScaleMode: VncDisplayScaleMode = 'fit';
+  @State customScalePercent: number = 100;
+  @State imageQualityPreset: VncImageQualityPreset = 'balanced';
+  @State preferredEncoding: VncPreferredEncoding = 'auto';
+  @State colorDepth: VncColorDepth = 'auto';
+  @State frameRateLimit: number = 30;
+  @State jpegQuality: number = 6;
+  @State localCursorMode: VncLocalCursorMode = 'auto';
+  @State touchpadSpeed: number = 100;
+  @State reverseWheel: boolean = false;
+  @State swapMouseButtons: boolean = false;
+  @State diagnosticsExpanded: boolean = false;
+  @State diagnosticsRefreshMs: number = 500;
+  @State diagnosticsMetricMask: number = 63;
   @State clipboardEnabled: boolean = false;
   @State securityPolicy: VncSecurityPolicy = 'secure_only';
   @State defaultGatewayId: string = '';
@@ -105,6 +127,20 @@ export struct VncSettingsSheet {
     this.controlMode = values.controlMode;
     this.showDiagnostics = values.showDiagnostics;
     this.scalingMode = values.scalingMode;
+    this.displayScaleMode = values.displayScaleMode;
+    this.customScalePercent = values.customScalePercent;
+    this.imageQualityPreset = values.imageQualityPreset;
+    this.preferredEncoding = values.preferredEncoding;
+    this.colorDepth = values.colorDepth;
+    this.frameRateLimit = values.frameRateLimit;
+    this.jpegQuality = values.jpegQuality;
+    this.localCursorMode = values.localCursorMode;
+    this.touchpadSpeed = values.touchpadSpeed;
+    this.reverseWheel = values.reverseWheel;
+    this.swapMouseButtons = values.swapMouseButtons;
+    this.diagnosticsExpanded = values.diagnosticsExpanded;
+    this.diagnosticsRefreshMs = values.diagnosticsRefreshMs;
+    this.diagnosticsMetricMask = values.diagnosticsMetricMask;
     this.clipboardEnabled = values.clipboardEnabled;
     this.securityPolicy = values.securityPolicy;
     this.defaultGatewayId = values.defaultGatewayId;
@@ -148,6 +184,20 @@ export struct VncSettingsSheet {
       controlMode: this.controlMode,
       showDiagnostics: this.showDiagnostics,
       scalingMode: this.scalingMode,
+      displayScaleMode: this.displayScaleMode,
+      customScalePercent: this.customScalePercent,
+      imageQualityPreset: this.imageQualityPreset,
+      preferredEncoding: this.preferredEncoding,
+      colorDepth: this.colorDepth,
+      frameRateLimit: this.frameRateLimit,
+      jpegQuality: this.jpegQuality,
+      localCursorMode: this.localCursorMode,
+      touchpadSpeed: this.touchpadSpeed,
+      reverseWheel: this.reverseWheel,
+      swapMouseButtons: this.swapMouseButtons,
+      diagnosticsExpanded: this.diagnosticsExpanded,
+      diagnosticsRefreshMs: this.diagnosticsRefreshMs,
+      diagnosticsMetricMask: this.diagnosticsMetricMask,
       clipboardEnabled: this.clipboardEnabled,
       securityPolicy: this.securityPolicy,
       defaultGatewayId: this.defaultGatewayId.trim(),
@@ -254,9 +304,12 @@ export struct VncSettingsSheet {
   }
 
   private title(): string {
-    if (this.mode === SETTINGS_SHEET_VNC_CONNECTION) { return '连接方式与默认端口'; }
+    if (this.mode === SETTINGS_SHEET_VNC_CONNECTION) { return '连接与安全'; }
     if (this.mode === SETTINGS_SHEET_VNC_TIMEOUT) { return '超时与连接行为'; }
-    if (this.mode === SETTINGS_SHEET_VNC_DISPLAY) { return '显示与交互'; }
+    if (this.mode === SETTINGS_SHEET_VNC_DISPLAY) { return '显示与画面'; }
+    if (this.mode === SETTINGS_SHEET_VNC_INPUT) { return '输入与光标'; }
+    if (this.mode === SETTINGS_SHEET_VNC_PERFORMANCE) { return '性能监视看板'; }
+    if (this.mode === SETTINGS_SHEET_VNC_CLIPBOARD) { return 'VNC 剪贴板'; }
     if (this.mode === SETTINGS_SHEET_VNC_SECURITY) { return '安全策略与 TLS'; }
     if (this.mode === SETTINGS_SHEET_VNC_TRUST) { return 'Trust / 证书管理'; }
     if (this.mode === SETTINGS_SHEET_VNC_CLOUD_SYNC) { return 'VNC 云同步范围'; }
@@ -265,9 +318,12 @@ export struct VncSettingsSheet {
   }
 
   private subtitle(): string {
-    if (this.mode === SETTINGS_SHEET_VNC_CONNECTION) { return '直连 TCP 或已保存的 UltraVNC Repeater mode12'; }
+    if (this.mode === SETTINGS_SHEET_VNC_CONNECTION) { return 'VNC 独立传输、超时和安全策略'; }
     if (this.mode === SETTINGS_SHEET_VNC_TIMEOUT) { return '只影响 VNC 会话，不读取其他协议的超时'; }
-    if (this.mode === SETTINGS_SHEET_VNC_DISPLAY) { return '默认只读，剪贴板需要显式开启'; }
+    if (this.mode === SETTINGS_SHEET_VNC_DISPLAY) { return '本地缩放与 native 实际画面能力'; }
+    if (this.mode === SETTINGS_SHEET_VNC_INPUT) { return '鼠标与键盘默认可用，可按需切换只读'; }
+    if (this.mode === SETTINGS_SHEET_VNC_PERFORMANCE) { return '连接内显示帧率、送显和停滞状态'; }
+    if (this.mode === SETTINGS_SHEET_VNC_CLIPBOARD) { return '只控制 VNC 文本剪贴板通道'; }
     if (this.mode === SETTINGS_SHEET_VNC_SECURITY) { return '安全策略不替代服务器能力协商'; }
     if (this.mode === SETTINGS_SHEET_VNC_TRUST) { return 'VNC trust 独立于 RDP 证书和 SSH 主机指纹'; }
     if (this.mode === SETTINGS_SHEET_VNC_CLOUD_SYNC) { return '物理表仍只有 vncrecord，逻辑范围独立选择'; }
@@ -328,6 +384,36 @@ export struct VncSettingsSheet {
       this.field('默认端口', '5900', this.defaultPortText, (value: string): void => {
         this.defaultPortText = value; this.markDirty();
       })
+      Text('会话超时').fontSize(12).fontColor(this.pal().text3).margin({ top: 4, bottom: 7 })
+      this.field('连接超时（ms）', '10000', this.connectTimeoutText, (value: string): void => {
+        this.connectTimeoutText = value; this.markDirty();
+      })
+      this.field('认证超时（ms）', '15000', this.authTimeoutText, (value: string): void => {
+        this.authTimeoutText = value; this.markDirty();
+      })
+      this.field('首帧超时（ms）', '15000', this.firstFrameTimeoutText, (value: string): void => {
+        this.firstFrameTimeoutText = value; this.markDirty();
+      })
+      Text('连接安全策略').fontSize(12).fontColor(this.pal().text3).margin({ top: 4, bottom: 7 })
+      Row() {
+        this.choice('仅安全', this.securityPolicy === 'secure_only', (): void => {
+          this.securityPolicy = 'secure_only'; this.markDirty();
+        })
+        this.choice('可信网络', this.securityPolicy === 'trusted_network', (): void => {
+          this.securityPolicy = 'trusted_network'; this.markDirty();
+        }, 7)
+        this.choice('允许明文', this.securityPolicy === 'allow_plaintext', (): void => {
+          this.securityPolicy = 'allow_plaintext'; this.markDirty();
+        }, 7)
+      }.width('100%').margin({ bottom: 8 })
+      Text(this.securityPolicy === 'secure_only'
+        ? '仅允许满足安全策略的连接；服务器不支持时会明确失败。'
+        : (this.securityPolicy === 'trusted_network'
+          ? '可信局域网可使用明文，仍建议优先启用 TLS。'
+          : '明文会暴露密码和屏幕内容，只适合受控网络。'))
+        .fontSize(11)
+        .fontColor(this.securityPolicy === 'allow_plaintext' ? this.pal().danger : this.pal().text3)
+        .lineHeight(18).width('100%').margin({ bottom: 10 })
       Text('WebSocket Gateway 和 SSH tunnel 仍处于 fail-closed，部署并验证服务端契约后才会开放。')
         .fontSize(11).fontColor(this.pal().text3).lineHeight(18).width('100%').margin({ top: 2, bottom: 12 })
       Button('保存').width('100%').height(42).borderRadius(10).backgroundColor(this.accentColor)
@@ -355,9 +441,114 @@ export struct VncSettingsSheet {
 
   @Builder private displayContent() {
     Column() {
-      this.toggle('只读连接', '默认禁止 VNC 键盘和鼠标输入', this.viewOnly,
+      Text('本地缩放').fontSize(12).fontColor(this.pal().text3).margin({ bottom: 7 })
+      Row() {
+        this.choice('适应窗口', this.displayScaleMode === 'fit', (): void => {
+          this.displayScaleMode = 'fit'; this.scalingMode = 'fit'; this.markDirty();
+        })
+        this.choice('100%', this.displayScaleMode === '100', (): void => {
+          this.displayScaleMode = '100'; this.scalingMode = 'one_to_one'; this.markDirty();
+        }, 6)
+      }.width('100%').margin({ bottom: 6 })
+      Row() {
+        this.choice('整数倍率', this.displayScaleMode === 'integer', (): void => {
+          this.displayScaleMode = 'integer'; this.scalingMode = 'integer'; this.markDirty();
+        })
+        this.choice('自定义', this.displayScaleMode === 'custom', (): void => {
+          this.displayScaleMode = 'custom'; this.scalingMode = 'fit'; this.markDirty();
+        }, 6)
+      }.width('100%').margin({ bottom: 8 })
+      if (this.displayScaleMode === 'custom') {
+        Row() {
+          Text('缩放比例').fontSize(13).fontColor(this.pal().text2).layoutWeight(1)
+          Text(this.customScalePercent.toString() + '%').fontSize(13).fontColor(this.accentColor)
+        }.width('100%')
+        Slider({ style: SliderStyle.OutSet, value: this.customScalePercent, min: 50, max: 300, step: 5 })
+          .selectedColor(this.accentColor)
+          .onChange((value: number): void => {
+            this.customScalePercent = Math.round(value); this.markDirty();
+          })
+          .width('100%').margin({ bottom: 8 })
+      }
+      Row() {
+        Column() {
+          Text('远端分辨率').fontSize(13).fontColor(this.pal().text2)
+          Text('连接后由 VNC 服务器报告，实际值显示在性能看板')
+            .fontSize(10).fontColor(this.pal().text3).margin({ top: 3 })
+        }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+        Text('自动').fontSize(12).fontColor(this.pal().text3)
+          .padding({ left: 12, right: 12, top: 7, bottom: 7 })
+          .borderRadius(8).backgroundColor(this.pal().surface)
+      }.width('100%').margin({ bottom: 8 })
+      Text('macOS 标准 VNC 会报告当前远端分辨率，但不能由 Viewer 强制改变。请在 Mac“系统设置 → 显示器”中调整远端分辨率。')
+        .fontSize(11).fontColor(this.pal().text3).lineHeight(18).width('100%').margin({ bottom: 12 })
+
+      Text('画质预设').fontSize(12).fontColor(this.pal().text3).margin({ bottom: 7 })
+      Row() {
+        this.choice('速度', this.imageQualityPreset === 'speed', (): void => {
+          this.imageQualityPreset = 'speed'; this.markDirty();
+        })
+        this.choice('均衡', this.imageQualityPreset === 'balanced', (): void => {
+          this.imageQualityPreset = 'balanced'; this.markDirty();
+        }, 6)
+        this.choice('质量', this.imageQualityPreset === 'quality', (): void => {
+          this.imageQualityPreset = 'quality'; this.markDirty();
+        }, 6)
+      }.width('100%').margin({ bottom: 10 })
+
+      Text('编码偏好').fontSize(12).fontColor(this.pal().text3).margin({ bottom: 7 })
+      Row() {
+        this.choice('自动', this.preferredEncoding === 'auto', (): void => {
+          this.preferredEncoding = 'auto'; this.markDirty();
+        })
+        this.choice('RAW', this.preferredEncoding === 'raw', (): void => {
+          this.preferredEncoding = 'raw'; this.markDirty();
+        }, 6)
+      }.width('100%').margin({ bottom: 10 })
+      Text('当前 native 构建只启用 RAW/CopyRect。ZRLE 与 Tight 会在解码器和互操作测试通过后开放，现阶段不会伪装成可用。')
+        .fontSize(11).fontColor(this.pal().text3).lineHeight(18).width('100%').margin({ bottom: 12 })
+
+      Text('色深').fontSize(12).fontColor(this.pal().text3).margin({ bottom: 7 })
+      Row() {
+        this.choice('自动', this.colorDepth === 'auto', (): void => {
+          this.colorDepth = 'auto'; this.markDirty();
+        })
+        this.choice('32 位', this.colorDepth === '32', (): void => {
+          this.colorDepth = '32'; this.markDirty();
+        }, 6)
+        this.choice('16 位', this.colorDepth === '16', (): void => {
+          this.colorDepth = '16'; this.markDirty();
+        }, 6)
+        this.choice('8 位', this.colorDepth === '8', (): void => {
+          this.colorDepth = '8'; this.markDirty();
+        }, 6)
+      }.width('100%').margin({ bottom: 10 })
+
+      Text('帧率上限').fontSize(12).fontColor(this.pal().text3).margin({ bottom: 7 })
+      Row() {
+        this.choice('15', this.frameRateLimit === 15, (): void => {
+          this.frameRateLimit = 15; this.markDirty();
+        })
+        this.choice('30', this.frameRateLimit === 30, (): void => {
+          this.frameRateLimit = 30; this.markDirty();
+        }, 6)
+        this.choice('60', this.frameRateLimit === 60, (): void => {
+          this.frameRateLimit = 60; this.markDirty();
+        }, 6)
+        this.choice('不限', this.frameRateLimit === 0, (): void => {
+          this.frameRateLimit = 0; this.markDirty();
+        }, 6)
+      }.width('100%').margin({ bottom: 10 })
+      Button('保存').width('100%').height(42).borderRadius(10).backgroundColor(this.accentColor)
+        .fontColor(Color.White).margin({ top: 10 }).onClick((): void => { this.save(); })
+    }.width('100%')
+  }
+
+  @Builder private inputContent() {
+    Column() {
+      this.toggle('只读连接', '开启后禁止 VNC 键盘、鼠标和触控输入', this.viewOnly,
         (value: boolean): void => { this.viewOnly = value; this.markDirty(); })
-      Text('输入模式').fontSize(12).fontColor(this.pal().text3).margin({ top: 10, bottom: 7 })
+      Text('默认控制模式').fontSize(12).fontColor(this.pal().text3).margin({ top: 10, bottom: 7 })
       Row() {
         this.choice('触控板', this.controlMode === 0, (): void => {
           this.controlMode = 0; this.markDirty();
@@ -365,29 +556,90 @@ export struct VncSettingsSheet {
         this.choice('直接触控', this.controlMode === 1, (): void => {
           this.controlMode = 1; this.markDirty();
         }, 6)
-        this.choice('键鼠', this.controlMode === 2, (): void => {
+        this.choice('键盘鼠标', this.controlMode === 2, (): void => {
           this.controlMode = 2; this.markDirty();
         }, 6)
-      }.width('100%').margin({ bottom: 10 })
-      this.toggle('连接诊断', '显示 VNC 帧率、送显、分辨率和停滞状态', this.showDiagnostics,
-        (value: boolean): void => { this.showDiagnostics = value; this.markDirty(); })
-      Text('缩放模式').fontSize(12).fontColor(this.pal().text3).margin({ top: 10, bottom: 7 })
+      }.width('100%').margin({ bottom: 12 })
+
+      Text('本地光标').fontSize(12).fontColor(this.pal().text3).margin({ bottom: 7 })
       Row() {
-        this.choice('适应', this.scalingMode === 'fit', (): void => { this.scalingMode = 'fit'; this.markDirty(); })
-        this.choice('整数', this.scalingMode === 'integer', (): void => {
-          this.scalingMode = 'integer'; this.markDirty();
+        this.choice('自动', this.localCursorMode === 'auto', (): void => {
+          this.localCursorMode = 'auto'; this.markDirty();
+        })
+        this.choice('箭头', this.localCursorMode === 'arrow', (): void => {
+          this.localCursorMode = 'arrow'; this.markDirty();
         }, 6)
-        this.choice('原始', this.scalingMode === 'one_to_one', (): void => {
-          this.scalingMode = 'one_to_one'; this.markDirty();
+        this.choice('圆点', this.localCursorMode === 'circle', (): void => {
+          this.localCursorMode = 'circle'; this.markDirty();
         }, 6)
-        this.choice('平移', this.scalingMode === 'pan', (): void => {
-          this.scalingMode = 'pan'; this.markDirty();
+        this.choice('隐藏', this.localCursorMode === 'hidden', (): void => {
+          this.localCursorMode = 'hidden'; this.markDirty();
         }, 6)
       }.width('100%').margin({ bottom: 10 })
-      this.toggle('文本剪贴板', '仅在 RFB 剪贴板能力协商成功后生效，默认关闭', this.clipboardEnabled,
-        (value: boolean): void => { this.clipboardEnabled = value; this.markDirty(); })
+      Text('服务器没有下发光标形状时，“隐藏”会安全回退为圆点，避免鼠标位置完全不可见。')
+        .fontSize(11).fontColor(this.pal().text3).lineHeight(18).width('100%').margin({ bottom: 10 })
+
+      Row() {
+        Text('触控板速度').fontSize(13).fontColor(this.pal().text2).layoutWeight(1)
+        Text(this.touchpadSpeed.toString() + '%').fontSize(13).fontColor(this.accentColor)
+      }.width('100%')
+      Slider({ style: SliderStyle.OutSet, value: this.touchpadSpeed, min: 50, max: 200, step: 5 })
+        .selectedColor(this.accentColor)
+        .onChange((value: number): void => {
+          this.touchpadSpeed = Math.round(value); this.markDirty();
+        })
+        .width('100%').margin({ bottom: 8 })
+      this.toggle('反转滚轮方向', '只作用于 VNC 会话', this.reverseWheel,
+        (value: boolean): void => { this.reverseWheel = value; this.markDirty(); })
+      this.toggle('交换左右键', '左键与右键互换，只作用于 VNC', this.swapMouseButtons,
+        (value: boolean): void => { this.swapMouseButtons = value; this.markDirty(); })
       Button('保存').width('100%').height(42).borderRadius(10).backgroundColor(this.accentColor)
         .fontColor(Color.White).margin({ top: 10 }).onClick((): void => { this.save(); })
+    }.width('100%')
+  }
+
+  @Builder private performanceContent() {
+    Column() {
+      this.toggle('显示性能监视看板', '连接后显示帧率、送显、停滞、分辨率和编码实况', this.showDiagnostics,
+        (value: boolean): void => { this.showDiagnostics = value; this.markDirty(); })
+      this.toggle('连接后默认展开', '关闭时仅显示可拖动的 FPS 胶囊', this.diagnosticsExpanded,
+        (value: boolean): void => { this.diagnosticsExpanded = value; this.markDirty(); })
+      Text('采样频率').fontSize(12).fontColor(this.pal().text3).margin({ top: 10, bottom: 7 })
+      Row() {
+        this.choice('250 ms', this.diagnosticsRefreshMs === 250, (): void => {
+          this.diagnosticsRefreshMs = 250; this.markDirty();
+        })
+        this.choice('500 ms', this.diagnosticsRefreshMs === 500, (): void => {
+          this.diagnosticsRefreshMs = 500; this.markDirty();
+        }, 6)
+        this.choice('1000 ms', this.diagnosticsRefreshMs === 1000, (): void => {
+          this.diagnosticsRefreshMs = 1000; this.markDirty();
+        }, 6)
+      }.width('100%').margin({ bottom: 12 })
+      Text('指标范围').fontSize(12).fontColor(this.pal().text3).margin({ bottom: 7 })
+      Row() {
+        this.choice('核心指标', this.diagnosticsMetricMask === 31, (): void => {
+          this.diagnosticsMetricMask = 31; this.markDirty();
+        })
+        this.choice('完整指标', this.diagnosticsMetricMask !== 31, (): void => {
+          this.diagnosticsMetricMask = 63; this.markDirty();
+        }, 6)
+      }.width('100%').margin({ bottom: 10 })
+      Text('性能看板使用 VNC 独立开关和采样频率，不读取 RustDesk Pro 看板设置。')
+        .fontSize(11).fontColor(this.pal().text3).lineHeight(18).width('100%').margin({ bottom: 12 })
+      Button('保存').width('100%').height(42).borderRadius(10).backgroundColor(this.accentColor)
+        .fontColor(Color.White).onClick((): void => { this.save(); })
+    }.width('100%')
+  }
+
+  @Builder private clipboardContent() {
+    Column() {
+      this.toggle('文本剪贴板', '在 RFB 剪贴板能力可用时同步纯文本，默认关闭', this.clipboardEnabled,
+        (value: boolean): void => { this.clipboardEnabled = value; this.markDirty(); })
+      Text('该开关不启用文件粘贴，不读取 RustDesk 或 RDP 的剪贴板设置。服务器不支持剪贴板时会保持关闭。')
+        .fontSize(11).fontColor(this.pal().text3).lineHeight(18).width('100%').margin({ top: 8, bottom: 14 })
+      Button('保存').width('100%').height(42).borderRadius(10).backgroundColor(this.accentColor)
+        .fontColor(Color.White).onClick((): void => { this.save(); })
     }.width('100%')
   }
 
@@ -494,6 +746,12 @@ export struct VncSettingsSheet {
             this.timeoutContent()
           } else if (this.mode === SETTINGS_SHEET_VNC_DISPLAY) {
             this.displayContent()
+          } else if (this.mode === SETTINGS_SHEET_VNC_INPUT) {
+            this.inputContent()
+          } else if (this.mode === SETTINGS_SHEET_VNC_PERFORMANCE) {
+            this.performanceContent()
+          } else if (this.mode === SETTINGS_SHEET_VNC_CLIPBOARD) {
+            this.clipboardContent()
           } else if (this.mode === SETTINGS_SHEET_VNC_SECURITY) {
             this.securityContent()
           } else if (this.mode === SETTINGS_SHEET_VNC_TRUST) {

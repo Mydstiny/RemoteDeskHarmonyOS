@@ -18,7 +18,12 @@ import {
   VncTransport,
   VncRepeaterMode,
   VncScalingMode,
-  VncSecurityPolicy
+  VncSecurityPolicy,
+  VncDisplayScaleMode,
+  VncImageQualityPreset,
+  VncPreferredEncoding,
+  VncColorDepth,
+  VncLocalCursorMode
 } from '../services/VncModelPolicy';
 import { VncCloudSyncScope, vncCloudSyncScopes } from '../services/VncCloudSyncSelectionPolicy';
 import { Palette, buildDark, buildLight, AppTheme } from '../common/Theme';
@@ -38,10 +43,24 @@ export struct VncSettingsPage {
   @State connectTimeoutText: string = '10000';
   @State authTimeoutText: string = '15000';
   @State firstFrameTimeoutText: string = '15000';
-  @State viewOnly: boolean = true;
+  @State viewOnly: boolean = false;
   @State controlMode: number = 0;
   @State showDiagnostics: boolean = false;
   @State scalingMode: VncScalingMode = 'fit';
+  @State displayScaleMode: VncDisplayScaleMode = 'fit';
+  @State customScalePercent: number = 100;
+  @State imageQualityPreset: VncImageQualityPreset = 'balanced';
+  @State preferredEncoding: VncPreferredEncoding = 'auto';
+  @State colorDepth: VncColorDepth = 'auto';
+  @State frameRateLimit: number = 30;
+  @State jpegQuality: number = 6;
+  @State localCursorMode: VncLocalCursorMode = 'auto';
+  @State touchpadSpeed: number = 100;
+  @State reverseWheel: boolean = false;
+  @State swapMouseButtons: boolean = false;
+  @State diagnosticsExpanded: boolean = false;
+  @State diagnosticsRefreshMs: number = 500;
+  @State diagnosticsMetricMask: number = 63;
   @State clipboardEnabled: boolean = false;
   @State securityPolicy: VncSecurityPolicy = 'secure_only';
   @State defaultGatewayId: string = '';
@@ -71,7 +90,8 @@ export struct VncSettingsPage {
   @State hostGatewayId: string = '';
   @State hostTransport: VncTransport = 'direct_tcp';
   @State hostRepeaterMode: VncRepeaterMode = 'mode12';
-  @State hostViewOnly: boolean = true;
+  @State hostViewOnly: boolean = false;
+  @State hostDisplayOverrideEnabled: boolean = false;
   @State hostScalingMode: VncScalingMode = 'fit';
   @State hostClipboardEnabled: boolean = false;
   @State hostSecurityPolicy: VncSecurityPolicy = 'secure_only';
@@ -181,6 +201,20 @@ export struct VncSettingsPage {
     this.controlMode = values.controlMode;
     this.showDiagnostics = values.showDiagnostics;
     this.scalingMode = values.scalingMode;
+    this.displayScaleMode = values.displayScaleMode;
+    this.customScalePercent = values.customScalePercent;
+    this.imageQualityPreset = values.imageQualityPreset;
+    this.preferredEncoding = values.preferredEncoding;
+    this.colorDepth = values.colorDepth;
+    this.frameRateLimit = values.frameRateLimit;
+    this.jpegQuality = values.jpegQuality;
+    this.localCursorMode = values.localCursorMode;
+    this.touchpadSpeed = values.touchpadSpeed;
+    this.reverseWheel = values.reverseWheel;
+    this.swapMouseButtons = values.swapMouseButtons;
+    this.diagnosticsExpanded = values.diagnosticsExpanded;
+    this.diagnosticsRefreshMs = values.diagnosticsRefreshMs;
+    this.diagnosticsMetricMask = values.diagnosticsMetricMask;
     this.clipboardEnabled = values.clipboardEnabled;
     this.securityPolicy = values.securityPolicy;
     this.defaultGatewayId = values.defaultGatewayId;
@@ -228,6 +262,20 @@ export struct VncSettingsPage {
       controlMode: this.controlMode,
       showDiagnostics: this.showDiagnostics,
       scalingMode: this.scalingMode,
+      displayScaleMode: this.displayScaleMode,
+      customScalePercent: this.customScalePercent,
+      imageQualityPreset: this.imageQualityPreset,
+      preferredEncoding: this.preferredEncoding,
+      colorDepth: this.colorDepth,
+      frameRateLimit: this.frameRateLimit,
+      jpegQuality: this.jpegQuality,
+      localCursorMode: this.localCursorMode,
+      touchpadSpeed: this.touchpadSpeed,
+      reverseWheel: this.reverseWheel,
+      swapMouseButtons: this.swapMouseButtons,
+      diagnosticsExpanded: this.diagnosticsExpanded,
+      diagnosticsRefreshMs: this.diagnosticsRefreshMs,
+      diagnosticsMetricMask: this.diagnosticsMetricMask,
       clipboardEnabled: this.clipboardEnabled,
       securityPolicy: this.securityPolicy,
       defaultGatewayId: this.defaultGatewayId.trim(),
@@ -286,6 +334,7 @@ export struct VncSettingsPage {
       repeaterMode: this.hostRepeaterMode,
       rememberPassword: this.hostRememberPassword,
       viewOnly: this.hostViewOnly,
+      displayOverrideEnabled: this.hostDisplayOverrideEnabled,
       scalingMode: this.hostScalingMode,
       clipboardEnabled: this.hostClipboardEnabled,
       securityPolicy: this.hostSecurityPolicy,
@@ -405,7 +454,8 @@ export struct VncSettingsPage {
     this.hostUsername = ''; this.hostPassword = ''; this.hostGatewayId = this.defaultGatewayId;
     this.hostTransport = this.defaultTransport; this.hostRepeaterMode = this.repeaterMode;
     this.hostRememberPassword = false;
-    this.hostViewOnly = this.viewOnly; this.hostScalingMode = this.scalingMode;
+    this.hostViewOnly = this.viewOnly; this.hostDisplayOverrideEnabled = false;
+    this.hostScalingMode = this.scalingMode;
     this.hostClipboardEnabled = this.clipboardEnabled; this.hostSecurityPolicy = this.securityPolicy;
     this.hostTls = this.securityPolicy === 'secure_only' ? true : false;
   }
@@ -425,6 +475,7 @@ export struct VncSettingsPage {
     this.hostTransport = host.transport;
     this.hostRepeaterMode = host.repeaterMode;
     this.hostViewOnly = host.viewOnly;
+    this.hostDisplayOverrideEnabled = host.displayOverrideEnabled;
     this.hostScalingMode = host.scalingMode;
     this.hostClipboardEnabled = host.clipboardEnabled;
     this.hostSecurityPolicy = host.securityPolicy;

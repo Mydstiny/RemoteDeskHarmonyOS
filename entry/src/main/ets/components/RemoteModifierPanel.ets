@@ -43,6 +43,12 @@ export struct RemoteModifierPanel {
   onPanelPositionChange: (x: number, y: number) => void = (_x: number, _y: number): void => {};
   /** 快捷键面板拖动结束, 上报父组件持久状态 */
   onShortcutPositionChange: (x: number, y: number) => void = (_x: number, _y: number): void => {};
+  /** 上报主面板真实布局尺寸，避免父组件按 Fn 状态猜测高度。 */
+  onPanelSizeChange: (width: number, height: number) => void =
+    (_width: number, _height: number): void => {};
+  /** 上报快捷键面板真实布局尺寸。 */
+  onShortcutSizeChange: (width: number, height: number) => void =
+    (_width: number, _height: number): void => {};
 
   @State private panelDragOffsetX: number = 0;
   @State private panelDragOffsetY: number = 0;
@@ -647,6 +653,13 @@ export struct RemoteModifierPanel {
       )
       .position({ x: this.panelEffectiveX(), y: this.panelEffectiveY() })
       .hitTestBehavior(HitTestMode.Default)
+      .onAreaChange((_old: Area, next: Area): void => {
+        const width: number = next.width as number;
+        const height: number = next.height as number;
+        if (Number.isFinite(width) && Number.isFinite(height) && width > 0 && height > 0) {
+          this.onPanelSizeChange(width, height);
+        }
+      })
     }
 
     // 快捷键面板 (长按胶囊弹出, 独立于主面板)
@@ -705,6 +718,13 @@ export struct RemoteModifierPanel {
       )
       .position({ x: this.shortcutEffectiveX(), y: this.shortcutEffectiveY() })
       .hitTestBehavior(HitTestMode.Default)
+      .onAreaChange((_old: Area, next: Area): void => {
+        const width: number = next.width as number;
+        const height: number = next.height as number;
+        if (Number.isFinite(width) && Number.isFinite(height) && width > 0 && height > 0) {
+          this.onShortcutSizeChange(width, height);
+        }
+      })
     }
     }
     .width('100%').height('100%')

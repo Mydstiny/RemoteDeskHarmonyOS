@@ -276,6 +276,8 @@ export interface RustDeskDiagnosticsSnapshot {
   connectionPath: string;
   lastFrameAtMs: number;
   lastFrameAgeMs: number;
+  lastPresentedAtMs: number;
+  lastPresentedFrameAgeMs: number;
   decodeOk: number;
   decodeErrors: number;
   decodeP50Us: number;
@@ -283,6 +285,14 @@ export interface RustDeskDiagnosticsSnapshot {
   decodeMaxUs: number;
   presentedFrames: number;
   presentationRejected: number;
+  lastDirtyX: number;
+  lastDirtyY: number;
+  lastDirtyWidth: number;
+  lastDirtyHeight: number;
+  requestedColorDepth: string;
+  effectiveColorDepth: number;
+  inputEventsSent: number;
+  inputEventsDropped: number;
   presentationWindowSamples: number;
   presentationWindowMs: number;
   renderP50Us: number;

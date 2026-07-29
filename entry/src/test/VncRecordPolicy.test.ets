@@ -17,7 +17,8 @@ function validHostRecord(): VncRecord {
   record.updatedAt = 2;
   record.payload = vncHostPayload({
     label: 'Test host', host: '192.0.2.10', port: 5900, username: '', gatewayId: '',
-    transport: 'direct_tcp', repeaterMode: 'mode12', rememberPassword: false, viewOnly: true, scalingMode: 'fit', clipboardEnabled: false,
+    transport: 'direct_tcp', repeaterMode: 'mode12', rememberPassword: false, viewOnly: true,
+    displayOverrideEnabled: false, scalingMode: 'fit', clipboardEnabled: false,
     securityPolicy: 'secure_only', tls: true, locked: false, lockType: 0
   });
   record.payloadHashSha256 = vncPayloadHashSha256(record.payload);

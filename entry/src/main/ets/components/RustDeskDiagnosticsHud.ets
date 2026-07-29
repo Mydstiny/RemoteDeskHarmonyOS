@@ -38,6 +38,8 @@ const EMPTY_DIAGNOSTICS: RustDeskDiagnosticsSnapshot = {
   connectionPath: 'unknown',
   lastFrameAtMs: 0,
   lastFrameAgeMs: -1,
+  lastPresentedAtMs: 0,
+  lastPresentedFrameAgeMs: -1,
   decodeOk: 0,
   decodeErrors: 0,
   decodeP50Us: 0,
@@ -45,6 +47,14 @@ const EMPTY_DIAGNOSTICS: RustDeskDiagnosticsSnapshot = {
   decodeMaxUs: 0,
   presentedFrames: 0,
   presentationRejected: 0,
+  lastDirtyX: -1,
+  lastDirtyY: -1,
+  lastDirtyWidth: 0,
+  lastDirtyHeight: 0,
+  requestedColorDepth: '',
+  effectiveColorDepth: 0,
+  inputEventsSent: 0,
+  inputEventsDropped: 0,
   presentationWindowSamples: 0,
   presentationWindowMs: 0,
   renderP50Us: 0,
@@ -78,6 +88,14 @@ export struct RustDeskDiagnosticsHud {
   @Prop diagnostics: RustDeskDiagnosticsSnapshot = EMPTY_DIAGNOSTICS;
   @Prop localResources: LocalResourceStats = EMPTY_RESOURCES;
   @Prop protocolLabel: string = 'RustDesk';
+  @Prop geometryEpoch: number = 0;
+  @Prop surfaceWidth: number = 0;
+  @Prop surfaceHeight: number = 0;
+  @Prop refreshMs: number = 1000;
+  @Prop requestedEncoding: string = '';
+  @Prop requestedColorDepth: string = '';
+  @Prop requestedFrameRate: number = 0;
+  @Prop metricMask: number = 63;
   @Prop proEnabled: boolean = false;
   @Prop expanded: boolean = false;
   @Prop attachSide: string = 'left';
@@ -95,6 +113,35 @@ export struct RustDeskDiagnosticsHud {
 
   private isStreamStale(): boolean {
     return this.diagnostics.videoSeen && this.diagnostics.lastFrameAgeMs >= 3000;
+  }
+
+  private vncPresentationState(): string {
+    if (!this.diagnostics.sessionActive) { return '会话未激活'; }
+    if (!this.diagnostics.videoSeen) { return '等待服务器首帧'; }
+    const staleThresholdMs: number = Math.max(3000, this.refreshMs * 6);
+    if (this.diagnostics.lastFrameAgeMs >= staleThresholdMs) {
+      return '服务器停止更新';
+    }
+    if (this.diagnostics.presentedFrames === 0) {
+      return this.diagnostics.presentationRejected > 0 ? '画布拒绝首帧' : '首帧等待送显';
+    }
+    if (this.diagnostics.lastPresentedFrameAgeMs >= staleThresholdMs) {
+      return this.diagnostics.presentationRejected > 0 ? '画布送显受阻' : '送显链路停滞';
+    }
+    return '画面持续更新';
+  }
+
+  private connectionPathLabel(): string {
+    if (this.diagnostics.connectionPath === 'direct') { return 'TCP 直连'; }
+    if (this.diagnostics.connectionPath === 'repeater') { return 'UltraVNC Repeater'; }
+    if (this.diagnostics.connectionPath === 'relay') { return 'RustDesk 中继'; }
+    return this.diagnostics.connectionPath === '' ? '未知' : this.diagnostics.connectionPath;
+  }
+
+  private vncRequestedColorDepth(): string {
+    const requested: string = this.diagnostics.requestedColorDepth !== '' ?
+      this.diagnostics.requestedColorDepth : this.requestedColorDepth;
+    return requested === '' || requested === 'auto' ? '自动' : requested + ' bit';
   }
 
   private handleEffectiveX(): number {
@@ -150,7 +197,7 @@ export struct RustDeskDiagnosticsHud {
   private panelContent() {
     Column() {
       Row() {
-        Text(this.protocolLabel === 'VNC' ? 'VNC 连接诊断' : '连接诊断')
+        Text(this.protocolLabel === 'VNC' ? 'VNC 性能监视' : '连接诊断')
           .fontSize(11).fontWeight(FontWeight.Medium).fontColor('#FFFFFF')
         Blank().layoutWeight(1)
         if (this.protocolLabel === 'VNC') {
@@ -191,7 +238,8 @@ export struct RustDeskDiagnosticsHud {
       // arguments: that captures the values from the instant the dock opens.
       this.metricLine({
         label: '状态',
-        value: rustDeskDiagnosticsStreamState(this.diagnostics.videoSeen, this.diagnostics.lastFrameAgeMs)
+        value: this.protocolLabel === 'VNC' ? this.vncPresentationState() :
+          rustDeskDiagnosticsStreamState(this.diagnostics.videoSeen, this.diagnostics.lastFrameAgeMs)
       })
       this.metricLine({
         label: '延迟',
@@ -209,7 +257,10 @@ export struct RustDeskDiagnosticsHud {
         label: '送显拒绝',
         value: this.diagnostics.presentationRejected.toString()
       })
-      this.metricLine({ label: '码率', value: formatDiagnosticBitrate(this.diagnostics.bitrateKbps) })
+      this.metricLine({
+        label: this.protocolLabel === 'VNC' ? '帧缓冲吞吐' : '码率',
+        value: formatDiagnosticBitrate(this.diagnostics.bitrateKbps)
+      })
       this.metricLine({
         label: '画面',
         value: (this.diagnostics.width > 0 ? this.diagnostics.width.toString() : '—') + ' × ' +
@@ -222,8 +273,71 @@ export struct RustDeskDiagnosticsHud {
       })
       this.metricLine({
         label: '路径',
-        value: this.diagnostics.protocolSnapshotAvailable ? this.diagnostics.connectionPath : '协议采样不可用'
+        value: this.diagnostics.protocolSnapshotAvailable ?
+          this.connectionPathLabel() : '协议采样不可用'
       })
+
+      if (this.protocolLabel === 'VNC') {
+        Divider().color('rgba(255,255,255,0.18)').margin({ top: 3, bottom: 3 })
+        this.metricLine({
+          label: '接收 / 送显总帧',
+          value: this.diagnostics.receivedFrames.toString() + ' / ' +
+            this.diagnostics.presentedFrames.toString()
+        })
+        this.metricLine({
+          label: '帧缓冲处理量',
+          value: formatDiagnosticBytes(this.diagnostics.receivedBytes)
+        })
+        this.metricLine({
+          label: '服务器帧距今',
+          value: this.diagnostics.lastFrameAgeMs >= 0 ?
+            this.diagnostics.lastFrameAgeMs.toString() + ' ms' : '尚无画面'
+        })
+        this.metricLine({
+          label: '成功送显距今',
+          value: this.diagnostics.lastPresentedFrameAgeMs >= 0 ?
+            this.diagnostics.lastPresentedFrameAgeMs.toString() + ' ms' : '尚未送显'
+        })
+        if ((this.metricMask & 32) !== 0) {
+          this.metricLine({
+            label: '本地画布 / 几何代',
+            value: Math.round(this.surfaceWidth).toString() + '×' +
+              Math.round(this.surfaceHeight).toString() + ' / ' + this.geometryEpoch.toString()
+          })
+          this.metricLine({
+            label: '请求 / 当前编码',
+            value: (this.requestedEncoding === '' ? 'auto' : this.requestedEncoding.toUpperCase()) +
+              ' / RAW'
+          })
+          this.metricLine({
+            label: '请求 / 实际色深',
+            value: this.vncRequestedColorDepth() + ' / ' +
+              (this.diagnostics.effectiveColorDepth > 0 ?
+                this.diagnostics.effectiveColorDepth.toString() + ' bit' : '待协商')
+          })
+          this.metricLine({
+            label: '帧率上限',
+            value: this.requestedFrameRate > 0 ?
+              this.requestedFrameRate.toString() + ' FPS' : '无限制'
+          })
+          this.metricLine({
+            label: '最后脏矩形',
+            value: this.diagnostics.lastDirtyWidth > 0 && this.diagnostics.lastDirtyHeight > 0 ?
+              this.diagnostics.lastDirtyX.toString() + ',' + this.diagnostics.lastDirtyY.toString() +
+                ' ' + this.diagnostics.lastDirtyWidth.toString() + '×' +
+                this.diagnostics.lastDirtyHeight.toString() : '完整帧'
+          })
+          this.metricLine({
+            label: '输入提交 / 丢弃',
+            value: this.diagnostics.inputEventsSent.toString() + ' / ' +
+              this.diagnostics.inputEventsDropped.toString()
+          })
+          this.metricLine({
+            label: '采样间隔',
+            value: this.refreshMs.toString() + ' ms'
+          })
+        }
+      }
 
       if (this.proEnabled) {
         Divider().color('rgba(255,255,255,0.18)').margin({ top: 3, bottom: 3 })

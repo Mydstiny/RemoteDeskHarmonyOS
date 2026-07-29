@@ -139,6 +139,10 @@ struct ConnectionConfig {
     int         vncConnectTimeoutMs;
     int         vncAuthTimeoutMs;
     int         vncFirstFrameTimeoutMs;
+    std::string vncImageQualityPreset; // speed | balanced | quality
+    std::string vncPreferredEncoding;  // auto | raw; unsupported values fail back to auto
+    std::string vncColorDepth;         // auto | 32 | 16 | 8
+    int         vncFrameRateLimit;     // 0 | 15 | 30 | 60
     std::string vncExpectedCertificateFingerprintSha256;
 
     ConnectionConfig()
@@ -153,10 +157,12 @@ struct ConnectionConfig {
           rdPasswordMode(0), rdAuthMode(0), rdPasswordLength(6), rdServerKeyMode(0),
           rdRelayPort(21117),
           vncTransport("direct_tcp"), vncGatewayPort(5901), vncGatewayPath("/vnc"),
-          vncRepeaterMode("mode12"), vncTls(false), vncViewOnly(true),
+          vncRepeaterMode("mode12"), vncTls(false), vncViewOnly(false),
           vncClipboardEnabled(false), vncSecurityPolicy("secure_only"),
           vncConnectTimeoutMs(10000), vncAuthTimeoutMs(15000),
-          vncFirstFrameTimeoutMs(15000) {}
+          vncFirstFrameTimeoutMs(15000), vncImageQualityPreset("balanced"),
+          vncPreferredEncoding("auto"), vncColorDepth("auto"),
+          vncFrameRateLimit(30) {}
 };
 
 /** 视频帧数据 — 从协议后端传递到渲染管线 */
@@ -174,11 +180,12 @@ struct VideoFrame {
     int            dirtyY;
     int            dirtyWidth;
     int            dirtyHeight;
+    int            colorDepth;  // RAW_BGRA source's negotiated VNC color depth; otherwise 0
 
     VideoFrame()
         : data(nullptr), size(0), width(0), height(0),
           codec(CodecType::H264), timestamp(0), isKeyFrame(false), display(0), stride(0),
-          dirtyX(-1), dirtyY(-1), dirtyWidth(0), dirtyHeight(0) {}
+          dirtyX(-1), dirtyY(-1), dirtyWidth(0), dirtyHeight(0), colorDepth(0) {}
 };
 
 /** 音频数据块 — 从协议后端传递到音频管线 */

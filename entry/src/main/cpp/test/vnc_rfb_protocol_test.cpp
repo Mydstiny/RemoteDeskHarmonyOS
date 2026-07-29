@@ -47,6 +47,38 @@ RDP_TEST_CASE(vnc_framebuffer_update_request_has_exact_rfb_wire_layout) {
     RDP_ASSERT(incremental == expectedIncremental);
 }
 
+RDP_TEST_CASE(vnc_pixel_format_policy_is_bounded_and_wire_exact) {
+    RDP_ASSERT_EQ(VncRfbProtocol::effectiveTrueColorDepth("32", "speed", 9000000), 32);
+    RDP_ASSERT_EQ(VncRfbProtocol::effectiveTrueColorDepth("16", "quality", 100), 16);
+    RDP_ASSERT_EQ(VncRfbProtocol::effectiveTrueColorDepth("8", "balanced", 100), 8);
+    RDP_ASSERT_EQ(VncRfbProtocol::effectiveTrueColorDepth("auto", "speed", 100), 16);
+    RDP_ASSERT_EQ(VncRfbProtocol::effectiveTrueColorDepth("auto", "balanced",
+        5ULL * 1024ULL * 1024ULL), 16);
+    RDP_ASSERT_EQ(VncRfbProtocol::effectiveTrueColorDepth("auto", "quality", 100), 32);
+    RDP_ASSERT_EQ(VncRfbProtocol::effectiveTrueColorDepth("auto", "quality",
+        5ULL * 1024ULL * 1024ULL), 32);
+
+    const std::vector<uint8_t> format16 = VncRfbProtocol::buildSetPixelFormat(16);
+    RDP_ASSERT_EQ(format16.size(), static_cast<size_t>(20));
+    RDP_ASSERT_EQ(format16[0], static_cast<uint8_t>(0));
+    RDP_ASSERT_EQ(format16[4], static_cast<uint8_t>(16));
+    RDP_ASSERT_EQ(format16[5], static_cast<uint8_t>(16));
+    RDP_ASSERT_EQ(format16[9], static_cast<uint8_t>(31));
+    RDP_ASSERT_EQ(format16[11], static_cast<uint8_t>(63));
+    RDP_ASSERT_EQ(format16[14], static_cast<uint8_t>(11));
+}
+
+RDP_TEST_CASE(vnc_frame_request_rate_policy_is_deterministic) {
+    RDP_ASSERT_EQ(VncRfbProtocol::normalizeFrameRateLimit(0), 0);
+    RDP_ASSERT_EQ(VncRfbProtocol::normalizeFrameRateLimit(15), 15);
+    RDP_ASSERT_EQ(VncRfbProtocol::normalizeFrameRateLimit(60), 60);
+    RDP_ASSERT_EQ(VncRfbProtocol::normalizeFrameRateLimit(37), 30);
+    RDP_ASSERT_EQ(VncRfbProtocol::framebufferRequestIntervalMs(0), static_cast<uint64_t>(0));
+    RDP_ASSERT_EQ(VncRfbProtocol::framebufferRequestIntervalMs(15), static_cast<uint64_t>(67));
+    RDP_ASSERT_EQ(VncRfbProtocol::framebufferRequestIntervalMs(30), static_cast<uint64_t>(34));
+    RDP_ASSERT_EQ(VncRfbProtocol::framebufferRequestIntervalMs(60), static_cast<uint64_t>(17));
+}
+
 RDP_TEST_CASE(vnc_ultravnc_mode12_field_is_exactly_250_bytes) {
     std::array<uint8_t, VncRfbProtocol::kUltraVncRepeaterFieldBytes> field = {0};
     std::string error;

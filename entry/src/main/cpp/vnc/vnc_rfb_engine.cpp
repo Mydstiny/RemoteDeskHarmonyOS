@@ -94,6 +94,7 @@ VncRfbEngine::~VncRfbEngine() {
 int VncRfbEngine::start() {
     if (worker_.joinable()) return -16;
     stopRequested_.store(false, std::memory_order_release);
+    lastFramebufferRequestAtMs_.store(0, std::memory_order_release);
     // Publish CONNECTING before creating the worker.  The ArkTS session
     // waiter polls getConnectionState immediately after NAPI connect returns;
     // exposing the default DISCONNECTED state during this scheduling window
@@ -368,20 +369,28 @@ bool VncRfbEngine::initializeServer(std::string& error) {
 }
 
 bool VncRfbEngine::sendPixelFormatAndEncodings(std::string& error) {
+    const uint64_t desktopPixels = static_cast<uint64_t>(framebufferWidth_) *
+        static_cast<uint64_t>(framebufferHeight_);
+    const int colorDepth = VncRfbProtocol::effectiveTrueColorDepth(
+        config_.vncColorDepth, config_.vncImageQualityPreset, desktopPixels);
+    effectiveColorDepth_ = colorDepth;
     // SetPixelFormat message type 0 has three padding bytes before the 16-byte format.
-    std::vector<uint8_t> setFormat = {0, 0, 0, 0, 32, 24, 0, 1,
-                                      0, 255, 0, 255, 0, 255, 16, 8, 0, 0, 0, 0};
+    std::vector<uint8_t> setFormat = VncRfbProtocol::buildSetPixelFormat(colorDepth);
     if (!writeBytes(setFormat.data(), setFormat.size(), error)) return false;
-    serverPixelFormat_.bitsPerPixel = 32;
-    serverPixelFormat_.depth = 24;
-    serverPixelFormat_.bigEndian = false;
-    serverPixelFormat_.trueColor = true;
-    serverPixelFormat_.redMax = 255;
-    serverPixelFormat_.greenMax = 255;
-    serverPixelFormat_.blueMax = 255;
-    serverPixelFormat_.redShift = 16;
-    serverPixelFormat_.greenShift = 8;
-    serverPixelFormat_.blueShift = 0;
+    serverPixelFormat_.bitsPerPixel = setFormat[4];
+    serverPixelFormat_.depth = setFormat[5];
+    serverPixelFormat_.bigEndian = setFormat[6] != 0;
+    serverPixelFormat_.trueColor = setFormat[7] != 0;
+    serverPixelFormat_.redMax = static_cast<uint16_t>((setFormat[8] << 8) | setFormat[9]);
+    serverPixelFormat_.greenMax = static_cast<uint16_t>((setFormat[10] << 8) | setFormat[11]);
+    serverPixelFormat_.blueMax = static_cast<uint16_t>((setFormat[12] << 8) | setFormat[13]);
+    serverPixelFormat_.redShift = setFormat[14];
+    serverPixelFormat_.greenShift = setFormat[15];
+    serverPixelFormat_.blueShift = setFormat[16];
+    VNC_DIAG_INFO(
+                "[VNC-DIAG] pixel format effectiveDepth=%{public}d requestedDepth=%{public}s quality=%{public}s framebuffer=%{public}dx%{public}d",
+                colorDepth, config_.vncColorDepth.c_str(), config_.vncImageQualityPreset.c_str(),
+                framebufferWidth_, framebufferHeight_);
 
     std::vector<uint8_t> encodings;
     encodings.reserve(4 + kMaxEncodingTypes * 4);
@@ -396,11 +405,30 @@ bool VncRfbEngine::sendPixelFormatAndEncodings(std::string& error) {
 }
 
 bool VncRfbEngine::sendFramebufferUpdateRequest(bool incremental, std::string& error) {
+    // Serialize refresh requests without holding the input write mutex during
+    // the rate-limit wait.
+    std::lock_guard<std::mutex> requestLock(framebufferRequestMutex_);
+    if (incremental) {
+        const uint64_t intervalMs = VncRfbProtocol::framebufferRequestIntervalMs(
+            config_.vncFrameRateLimit);
+        const uint64_t lastRequestMs = lastFramebufferRequestAtMs_.load(std::memory_order_acquire);
+        const uint64_t currentMs = nowMs();
+        if (intervalMs > 0 && lastRequestMs > 0 && currentMs < lastRequestMs + intervalMs) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(
+                lastRequestMs + intervalMs - currentMs));
+            if (stopRequested_.load(std::memory_order_acquire)) {
+                error = "VNC frame request cancelled";
+                return false;
+            }
+        }
+    }
     const std::vector<uint8_t> request = VncRfbProtocol::buildFramebufferUpdateRequest(
         incremental,
         static_cast<uint16_t>(framebufferWidth_),
         static_cast<uint16_t>(framebufferHeight_));
-    return writeBytes(request.data(), request.size(), error);
+    if (!writeBytes(request.data(), request.size(), error)) return false;
+    lastFramebufferRequestAtMs_.store(nowMs(), std::memory_order_release);
+    return true;
 }
 
 bool VncRfbEngine::receiveLoop(std::string& error) {
@@ -653,6 +681,7 @@ bool VncRfbEngine::readBytes(uint8_t* data, size_t size, int timeoutMs, std::str
 }
 
 bool VncRfbEngine::writeBytes(const uint8_t* data, size_t size, std::string& error) {
+    std::lock_guard<std::mutex> lock(writeMutex_);
     return transport_.writeAll(data, size, error);
 }
 
@@ -696,6 +725,7 @@ void VncRfbEngine::emitFrame(int dirtyX, int dirtyY, int dirtyWidth, int dirtyHe
     frame.dirtyY = dirtyY;
     frame.dirtyWidth = dirtyWidth;
     frame.dirtyHeight = dirtyHeight;
+    frame.colorDepth = effectiveColorDepth_;
     ++diagFrames_;
     if (diagFrames_ <= 8 || diagFrames_ % 60 == 0) {
         VNC_DIAG_INFO(

@@ -148,6 +148,14 @@ struct SessionDiagnosticsCounters {
     std::atomic<int> lastWidth {0};
     std::atomic<int> lastHeight {0};
     std::atomic<uint64_t> lastFrameAtMs {0};
+    std::atomic<uint64_t> lastPresentedAtMs {0};
+    std::atomic<int> lastDirtyX {-1};
+    std::atomic<int> lastDirtyY {-1};
+    std::atomic<int> lastDirtyWidth {0};
+    std::atomic<int> lastDirtyHeight {0};
+    std::atomic<int> effectiveColorDepth {0};
+    std::atomic<uint64_t> inputEventsSent {0};
+    std::atomic<uint64_t> inputEventsDropped {0};
     mutable std::mutex timingMutex;
     std::deque<int64_t> decodeSamplesUs;
     mutable std::mutex rateMutex;
@@ -172,6 +180,14 @@ struct SessionDiagnosticsCounters {
         lastWidth.store(0, std::memory_order_release);
         lastHeight.store(0, std::memory_order_release);
         lastFrameAtMs.store(0, std::memory_order_release);
+        lastPresentedAtMs.store(0, std::memory_order_release);
+        lastDirtyX.store(-1, std::memory_order_release);
+        lastDirtyY.store(-1, std::memory_order_release);
+        lastDirtyWidth.store(0, std::memory_order_release);
+        lastDirtyHeight.store(0, std::memory_order_release);
+        effectiveColorDepth.store(0, std::memory_order_release);
+        inputEventsSent.store(0, std::memory_order_release);
+        inputEventsDropped.store(0, std::memory_order_release);
         std::lock_guard<std::mutex> lock(timingMutex);
         decodeSamplesUs.clear();
         std::lock_guard<std::mutex> rateLock(rateMutex);
@@ -257,6 +273,8 @@ struct SessionContext {
     std::atomic<Lifecycle> lifecycle {Lifecycle::Active};
     std::atomic<uint64_t> teardownRequestId {0};
     SessionDiagnosticsCounters diagnostics;
+    std::string vncConnectionPath = "unknown";
+    std::string vncRequestedColorDepth = "auto";
 };
 
 static std::map<int, std::shared_ptr<SessionContext>> g_sessions;
@@ -733,7 +751,7 @@ napi_value NapiGetSessionDiagnostics(napi_env env, napi_callback_info info) {
             nativeStats.supported = true;
             nativeStats.sessionId = static_cast<uint64_t>(sessionId);
             nativeStats.codec = static_cast<int>(CodecType::RAW_BGRA);
-            nativeStats.connectionPath = 1;
+            nativeStats.connectionPath = it->second->vncConnectionPath == "direct" ? 1 : 0;
             nativeStats.videoMessages = counters->ingressFrames.load(std::memory_order_acquire);
             nativeStats.receivedFrames = counters->ingressFrames.load(std::memory_order_acquire);
             nativeStats.receivedBytes = counters->ingressBytes.load(std::memory_order_acquire);
@@ -780,6 +798,11 @@ napi_value NapiGetSessionDiagnostics(napi_env env, napi_callback_info info) {
     const bool videoSeen = observedFrames > 0;
     const int64_t lastFrameAgeMs = observedLastFrameAtMs > 0 && nowMs >= observedLastFrameAtMs ?
         static_cast<int64_t>(nowMs - observedLastFrameAtMs) : -1;
+    const uint64_t observedLastPresentedAtMs = counters ?
+        counters->lastPresentedAtMs.load(std::memory_order_acquire) : 0;
+    const int64_t lastPresentedFrameAgeMs =
+        observedLastPresentedAtMs > 0 && nowMs >= observedLastPresentedAtMs ?
+        static_cast<int64_t>(nowMs - observedLastPresentedAtMs) : -1;
 
     napi_value result;
     napi_create_object(env, &result);
@@ -816,11 +839,15 @@ napi_value NapiGetSessionDiagnostics(napi_env env, napi_callback_info info) {
         counters->lastWidth.load(std::memory_order_acquire) : nativeStats.width);
     SetObjectInt32(env, result, "height", counters ?
         counters->lastHeight.load(std::memory_order_acquire) : nativeStats.height);
-    SetObjectString(env, result, "connectionPath", nativeStats.connectionPath == 1 ? "direct" :
-        (nativeStats.supported ? "relay" : "unknown"));
+    SetObjectString(env, result, "connectionPath", vncSession && it != g_sessions.end() ?
+        it->second->vncConnectionPath :
+        (nativeStats.connectionPath == 1 ? "direct" : (nativeStats.supported ? "relay" : "unknown")));
     SetObjectInt64(env, result, "lastFrameAtMs", static_cast<int64_t>(
         counters ? counters->lastFrameAtMs.load(std::memory_order_acquire) : nativeStats.lastFrameAtMs));
     SetObjectInt64(env, result, "lastFrameAgeMs", lastFrameAgeMs);
+    SetObjectInt64(env, result, "lastPresentedAtMs",
+        static_cast<int64_t>(observedLastPresentedAtMs));
+    SetObjectInt64(env, result, "lastPresentedFrameAgeMs", lastPresentedFrameAgeMs);
     SetObjectInt64(env, result, "decodeOk", static_cast<int64_t>(
         counters ? counters->decodeOk.load(std::memory_order_acquire) : 0));
     SetObjectInt64(env, result, "decodeErrors", static_cast<int64_t>(
@@ -833,6 +860,22 @@ napi_value NapiGetSessionDiagnostics(napi_env env, napi_callback_info info) {
         renderer.presentedFrames));
     SetObjectInt64(env, result, "presentationRejected", static_cast<int64_t>(
         counters ? counters->presentationRejected.load(std::memory_order_acquire) : 0));
+    SetObjectInt32(env, result, "lastDirtyX",
+        counters ? counters->lastDirtyX.load(std::memory_order_acquire) : -1);
+    SetObjectInt32(env, result, "lastDirtyY",
+        counters ? counters->lastDirtyY.load(std::memory_order_acquire) : -1);
+    SetObjectInt32(env, result, "lastDirtyWidth",
+        counters ? counters->lastDirtyWidth.load(std::memory_order_acquire) : 0);
+    SetObjectInt32(env, result, "lastDirtyHeight",
+        counters ? counters->lastDirtyHeight.load(std::memory_order_acquire) : 0);
+    SetObjectString(env, result, "requestedColorDepth", vncSession && it != g_sessions.end() ?
+        it->second->vncRequestedColorDepth : "");
+    SetObjectInt32(env, result, "effectiveColorDepth",
+        counters ? counters->effectiveColorDepth.load(std::memory_order_acquire) : 0);
+    SetObjectInt64(env, result, "inputEventsSent", static_cast<int64_t>(
+        counters ? counters->inputEventsSent.load(std::memory_order_acquire) : 0));
+    SetObjectInt64(env, result, "inputEventsDropped", static_cast<int64_t>(
+        counters ? counters->inputEventsDropped.load(std::memory_order_acquire) : 0));
     SetObjectInt64(env, result, "presentationWindowSamples",
                    static_cast<int64_t>(renderer.windowSamples));
     SetObjectInt64(env, result, "presentationWindowMs", renderer.windowDurationUs / 1000);
@@ -1284,6 +1327,10 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
     getInt("vncConnectTimeoutMs", cfg.vncConnectTimeoutMs);
     getInt("vncAuthTimeoutMs", cfg.vncAuthTimeoutMs);
     getInt("vncFirstFrameTimeoutMs", cfg.vncFirstFrameTimeoutMs);
+    getString("vncImageQualityPreset", cfg.vncImageQualityPreset);
+    getString("vncPreferredEncoding", cfg.vncPreferredEncoding);
+    getString("vncColorDepth", cfg.vncColorDepth);
+    getInt("vncFrameRateLimit", cfg.vncFrameRateLimit);
     getString("vncExpectedCertificateFingerprintSha256", cfg.vncExpectedCertificateFingerprintSha256);
 
     if (cfg.rdDirectPort <= 0) cfg.rdDirectPort = 21118;
@@ -1318,6 +1365,17 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
     if (cfg.vncConnectTimeoutMs <= 0 || cfg.vncConnectTimeoutMs > 120000) cfg.vncConnectTimeoutMs = 10000;
     if (cfg.vncAuthTimeoutMs <= 0 || cfg.vncAuthTimeoutMs > 120000) cfg.vncAuthTimeoutMs = 15000;
     if (cfg.vncFirstFrameTimeoutMs <= 0 || cfg.vncFirstFrameTimeoutMs > 120000) cfg.vncFirstFrameTimeoutMs = 15000;
+    if (cfg.vncImageQualityPreset != "speed" && cfg.vncImageQualityPreset != "quality") {
+        cfg.vncImageQualityPreset = "balanced";
+    }
+    // This build advertises Raw/CopyRect only. Preserve an honest capability
+    // boundary instead of accepting a cloud value that the decoder cannot use.
+    if (cfg.vncPreferredEncoding != "raw") cfg.vncPreferredEncoding = "auto";
+    if (cfg.vncColorDepth != "32" && cfg.vncColorDepth != "16" && cfg.vncColorDepth != "8") {
+        cfg.vncColorDepth = "auto";
+    }
+    if (cfg.vncFrameRateLimit != 0 && cfg.vncFrameRateLimit != 15 &&
+        cfg.vncFrameRateLimit != 60) cfg.vncFrameRateLimit = 30;
     if (cfg.vncSecurityPolicy != "secure_only" && cfg.vncSecurityPolicy != "trusted_network" &&
         cfg.vncSecurityPolicy != "allow_plaintext") cfg.vncSecurityPolicy = "secure_only";
 
@@ -1378,6 +1436,11 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
     auto session = std::shared_ptr<SessionContext>(new SessionContext());
     session->adapter = adapter;
     session->protocolName = protocolName;
+    if (protocolName == "vnc") {
+        session->vncConnectionPath =
+            cfg.vncTransport == "ultravnc_repeater" ? "repeater" : "direct";
+        session->vncRequestedColorDepth = cfg.vncColorDepth;
+    }
 
     int sessionId = g_nextSessionId++;
     adapter->setSessionIdentity(static_cast<uint64_t>(sessionId));
@@ -1448,6 +1511,11 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
             session->diagnostics.lastCodec.store(static_cast<int>(frame.codec), std::memory_order_relaxed);
             session->diagnostics.lastWidth.store(frame.width, std::memory_order_relaxed);
             session->diagnostics.lastHeight.store(frame.height, std::memory_order_relaxed);
+            session->diagnostics.lastDirtyX.store(frame.dirtyX, std::memory_order_relaxed);
+            session->diagnostics.lastDirtyY.store(frame.dirtyY, std::memory_order_relaxed);
+            session->diagnostics.lastDirtyWidth.store(frame.dirtyWidth, std::memory_order_relaxed);
+            session->diagnostics.lastDirtyHeight.store(frame.dirtyHeight, std::memory_order_relaxed);
+            session->diagnostics.effectiveColorDepth.store(frame.colorDepth, std::memory_order_relaxed);
             session->diagnostics.lastFrameAtMs.store(static_cast<uint64_t>(
                 std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::steady_clock::now().time_since_epoch()).count()),
@@ -1477,6 +1545,10 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
             if (present.presented()) {
                 session->diagnostics.presentedFrames.fetch_add(1, std::memory_order_relaxed);
                 session->diagnostics.decodeOk.fetch_add(1, std::memory_order_relaxed);
+                session->diagnostics.lastPresentedAtMs.store(static_cast<uint64_t>(
+                    std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now().time_since_epoch()).count()),
+                    std::memory_order_release);
             } else {
                 session->diagnostics.presentationRejected.fetch_add(1, std::memory_order_relaxed);
             }
@@ -2292,7 +2364,12 @@ napi_value NapiSendKey(napi_env env, napi_callback_info info) {
 
     auto it = g_sessions.find(sessionId);
     if (it != g_sessions.end() && it->second->adapter) {
+        if (it->second->protocolName == "vnc") {
+            it->second->diagnostics.inputEventsSent.fetch_add(1, std::memory_order_relaxed);
+        }
         it->second->adapter->sendKey(static_cast<uint32_t>(scancode), pressed);
+    } else if (it != g_sessions.end() && it->second->protocolName == "vnc") {
+        it->second->diagnostics.inputEventsDropped.fetch_add(1, std::memory_order_relaxed);
     }
 
     napi_value undefined;
@@ -2319,6 +2396,9 @@ napi_value NapiSendMouse(napi_env env, napi_callback_info info) {
 
     auto it = g_sessions.find(sessionId);
     if (it != g_sessions.end() && it->second->adapter) {
+        if (it->second->protocolName == "vnc") {
+            it->second->diagnostics.inputEventsSent.fetch_add(1, std::memory_order_relaxed);
+        }
         uint64_t index = ++g_napiMouseSendCount;
         if (button >= 0 || index <= 20 || index % 120 == 0) {
             OH_LOG_INFO(LOG_APP,
@@ -2331,6 +2411,8 @@ napi_value NapiSendMouse(napi_env env, napi_callback_info info) {
                 pressed ? "yes" : "no");
         }
         it->second->adapter->sendMouse(x, y, static_cast<MouseButton>(button), pressed);
+    } else if (it != g_sessions.end() && it->second->protocolName == "vnc") {
+        it->second->diagnostics.inputEventsDropped.fetch_add(1, std::memory_order_relaxed);
     }
 
     napi_value undefined;
@@ -2354,6 +2436,9 @@ napi_value NapiSendMouseWheel(napi_env env, napi_callback_info info) {
 
     auto it = g_sessions.find(sessionId);
     if (it != g_sessions.end() && it->second->adapter) {
+        if (it->second->protocolName == "vnc") {
+            it->second->diagnostics.inputEventsSent.fetch_add(1, std::memory_order_relaxed);
+        }
         uint64_t index = ++g_napiWheelSendCount;
         if (index <= 20 || index % 100 == 0) {
             OH_LOG_INFO(LOG_APP,
@@ -2365,6 +2450,8 @@ napi_value NapiSendMouseWheel(napi_env env, napi_callback_info info) {
                 delta);
         }
         it->second->adapter->sendMouseWheel(x, y, delta);
+    } else if (it != g_sessions.end() && it->second->protocolName == "vnc") {
+        it->second->diagnostics.inputEventsDropped.fetch_add(1, std::memory_order_relaxed);
     }
 
     napi_value undefined;
@@ -2580,6 +2667,9 @@ napi_value NapiSendText(napi_env env, napi_callback_info info) {
 
     auto it = g_sessions.find(sessionId);
     if (it != g_sessions.end() && it->second->adapter) {
+        if (it->second->protocolName == "vnc") {
+            it->second->diagnostics.inputEventsSent.fetch_add(1, std::memory_order_relaxed);
+        }
         uint64_t index = ++g_napiTextSendCount;
         OH_LOG_INFO(LOG_APP,
             "[ExtLoader] NapiSendText #%{public}llu session=%{public}d len=%{public}zu found=yes",
@@ -2588,6 +2678,9 @@ napi_value NapiSendText(napi_env env, napi_callback_info info) {
             textLen);
         it->second->adapter->sendText(text);
     } else {
+        if (it != g_sessions.end() && it->second->protocolName == "vnc") {
+            it->second->diagnostics.inputEventsDropped.fetch_add(1, std::memory_order_relaxed);
+        }
         OH_LOG_WARN(LOG_APP,
             "[ExtLoader] NapiSendText session=%{public}d len=%{public}zu found=no",
             sessionId,

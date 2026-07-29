@@ -103,8 +103,11 @@ private:
     std::vector<uint8_t> framebuffer_;
     int framebufferWidth_ = 0;
     int framebufferHeight_ = 0;
+    int effectiveColorDepth_ = 0;
     int buttonMask_ = 0;
     mutable std::mutex inputMutex_;
+    mutable std::mutex writeMutex_;
+    mutable std::mutex framebufferRequestMutex_;
     bool negotiated33_ = false;
     int negotiatedMinor_ = 3;
     int ioTimeoutMs_ = 30000;
@@ -112,6 +115,7 @@ private:
     uint64_t diagFramebufferUpdates_ = 0;
     uint64_t diagFrames_ = 0;
     uint64_t diagTimeouts_ = 0;
+    std::atomic<uint64_t> lastFramebufferRequestAtMs_ {0};
 };
 
 #endif // VNC_RFB_ENGINE_H

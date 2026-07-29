@@ -73,6 +73,8 @@ import vncHostListProjectionPolicyTest from './VncHostListProjectionPolicy.test'
 import vncConnectionStatePolicyTest from './VncConnectionStatePolicy.test';
 import vncConnectionErrorPolicyTest from './VncConnectionErrorPolicy.test';
 import vncSessionGeometryPolicyTest from './VncSessionGeometryPolicy.test';
+import remoteFloatingPanelPlacementPolicyTest from './RemoteFloatingPanelPlacementPolicy.test';
+import vncSessionSettingsPolicyTest from './VncSessionSettingsPolicy.test';
 
 export default function testsuite() {
   localUnitTest();
@@ -150,4 +152,6 @@ export default function testsuite() {
   vncConnectionStatePolicyTest();
   vncConnectionErrorPolicyTest();
   vncSessionGeometryPolicyTest();
+  remoteFloatingPanelPlacementPolicyTest();
+  vncSessionSettingsPolicyTest();
 }

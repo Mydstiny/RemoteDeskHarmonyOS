@@ -307,9 +307,12 @@ export class ExtensionLoader {
         audioFrames: 0, cadenceGaps: 0, maxCadenceGapMs: 0, testDelayCount: 0,
         receivedFps: 0, displayFps: 0, decodeFps: 0, bitrateKbps: 0,
         codec: -1, width: 0, height: 0, connectionPath: 'unknown', lastFrameAtMs: 0,
-        lastFrameAgeMs: -1,
+        lastFrameAgeMs: -1, lastPresentedAtMs: 0, lastPresentedFrameAgeMs: -1,
         decodeOk: 0, decodeErrors: 0, decodeP50Us: 0, decodeP95Us: 0, decodeMaxUs: 0,
         presentedFrames: 0, presentationRejected: 0,
+        lastDirtyX: -1, lastDirtyY: -1, lastDirtyWidth: 0, lastDirtyHeight: 0,
+        requestedColorDepth: '', effectiveColorDepth: 0,
+        inputEventsSent: 0, inputEventsDropped: 0,
         presentationWindowSamples: 0, presentationWindowMs: 0,
         renderP50Us: 0, renderP95Us: 0, renderMaxUs: 0,
         queueDepth: 0, queueMax: 0, droppedFrames: 0, decoderBackend: 'unknown'

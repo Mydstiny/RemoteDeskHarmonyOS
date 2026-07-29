@@ -23,6 +23,7 @@ export class RemoteCursorOverlayState {
   renderMode: RemoteCursorRenderMode = 'none';
   showArrow: boolean = false;
   arrowInside: boolean = false;
+  arrowUsesLocalSymbol: boolean = false;
   arrowPixelMap: image.PixelMap | null = null;
   arrowWidth: number = 0;
   arrowHeight: number = 0;
@@ -61,13 +62,26 @@ export struct RemoteCursorOverlay {
         // The cursor state is published as several observed fields. Use an
         // exclusive branch here so a transition cannot draw a stale circle
         // and the new protocol cursor in the same frame.
-        else if (this.cursor.renderMode === 'arrow' && this.cursor.arrowInside &&
-          this.cursor.arrowPixelMap !== null) {
-          Image(this.cursor.arrowPixelMap)
-            .width(this.cursor.arrowWidth)
-            .height(this.cursor.arrowHeight)
-            .objectFit(ImageFit.Contain)
-            .position({ x: this.cursor.arrowX, y: this.cursor.arrowY })
+        else if (this.cursor.renderMode === 'arrow' && this.cursor.arrowInside) {
+          if (this.cursor.arrowUsesLocalSymbol) {
+            Stack() {
+              SymbolGlyph($r('sys.symbol.arrow_up_left'))
+                .fontSize(this.cursor.arrowWidth + 3)
+                .fontColor(['#111827'])
+              SymbolGlyph($r('sys.symbol.arrow_up_left'))
+                .fontSize(this.cursor.arrowWidth)
+                .fontColor(['#FFFFFF'])
+            }
+              .width(this.cursor.arrowWidth + 4)
+              .height(this.cursor.arrowHeight + 4)
+              .position({ x: this.cursor.arrowX, y: this.cursor.arrowY })
+          } else if (this.cursor.arrowPixelMap !== null) {
+            Image(this.cursor.arrowPixelMap)
+              .width(this.cursor.arrowWidth)
+              .height(this.cursor.arrowHeight)
+              .objectFit(ImageFit.Contain)
+              .position({ x: this.cursor.arrowX, y: this.cursor.arrowY })
+          }
         }
       }
     }

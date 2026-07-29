@@ -48,6 +48,58 @@ std::vector<uint8_t> buildFramebufferUpdateRequest(bool incremental,
     };
 }
 
+int effectiveTrueColorDepth(const std::string& requestedDepth,
+                            const std::string& qualityPreset,
+                            uint64_t desktopPixels) {
+    if (requestedDepth == "8") return 8;
+    if (requestedDepth == "16") return 16;
+    if (requestedDepth == "32") return 32;
+    if (qualityPreset == "quality") return 32;
+    if (qualityPreset == "speed" || desktopPixels > 4ULL * 1024ULL * 1024ULL) {
+        return 16;
+    }
+    return 32;
+}
+
+std::vector<uint8_t> buildSetPixelFormat(int colorDepth) {
+    if (colorDepth == 8) {
+        return {
+            0, 0, 0, 0,
+            8, 8, 0, 1,
+            0, 7, 0, 7, 0, 3,
+            5, 2, 0,
+            0, 0, 0,
+        };
+    }
+    if (colorDepth == 16) {
+        return {
+            0, 0, 0, 0,
+            16, 16, 0, 1,
+            0, 31, 0, 63, 0, 31,
+            11, 5, 0,
+            0, 0, 0,
+        };
+    }
+    return {
+        0, 0, 0, 0,
+        32, 24, 0, 1,
+        0, 255, 0, 255, 0, 255,
+        16, 8, 0,
+        0, 0, 0,
+    };
+}
+
+int normalizeFrameRateLimit(int frameRateLimit) {
+    return frameRateLimit == 0 || frameRateLimit == 15 || frameRateLimit == 60 ?
+        frameRateLimit : 30;
+}
+
+uint64_t framebufferRequestIntervalMs(int frameRateLimit) {
+    const int normalized = normalizeFrameRateLimit(frameRateLimit);
+    return normalized <= 0 ? 0 :
+        static_cast<uint64_t>((1000 + normalized - 1) / normalized);
+}
+
 bool isUltraVncRepeaterBanner(const uint8_t* data, size_t size) {
     static constexpr char kBanner[] = "RFB 000.000\n";
     return data != nullptr && size == kProtocolVersionBytes &&

@@ -42,6 +42,24 @@ std::vector<uint8_t> buildFramebufferUpdateRequest(bool incremental,
                                                    uint16_t width,
                                                    uint16_t height);
 
+/**
+ * Resolve the requested true-colour depth. Explicit 8/16/32-bit choices win;
+ * auto uses 16-bit for the speed preset or large RAW desktops and 32-bit
+ * otherwise.
+ */
+int effectiveTrueColorDepth(const std::string& requestedDepth,
+                            const std::string& qualityPreset,
+                            uint64_t desktopPixels);
+
+/** Build the exact 20-byte SetPixelFormat packet for 8/16/32-bit true colour. */
+std::vector<uint8_t> buildSetPixelFormat(int colorDepth);
+
+/** Normalize the only supported VNC frame-rate limits. Zero means unbounded. */
+int normalizeFrameRateLimit(int frameRateLimit);
+
+/** Minimum interval between framebuffer update requests for the rate limit. */
+uint64_t framebufferRequestIntervalMs(int frameRateLimit);
+
 /** UltraVNC mode12 sends this exact repeater banner to a viewer. */
 bool isUltraVncRepeaterBanner(const uint8_t* data, size_t size);
 
