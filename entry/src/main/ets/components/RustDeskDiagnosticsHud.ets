@@ -44,6 +44,7 @@ const EMPTY_DIAGNOSTICS: RustDeskDiagnosticsSnapshot = {
   decodeP95Us: 0,
   decodeMaxUs: 0,
   presentedFrames: 0,
+  presentationRejected: 0,
   presentationWindowSamples: 0,
   presentationWindowMs: 0,
   renderP50Us: 0,
@@ -65,6 +66,7 @@ const EMPTY_RESOURCES: LocalResourceStats = {
   gpuPercent: -1,
   sampledAtMs: 0
 };
+const DRAG_COMMIT_THRESHOLD = 5;
 
 interface RustDeskDiagnosticMetric {
   label: string;
@@ -75,6 +77,7 @@ interface RustDeskDiagnosticMetric {
 export struct RustDeskDiagnosticsHud {
   @Prop diagnostics: RustDeskDiagnosticsSnapshot = EMPTY_DIAGNOSTICS;
   @Prop localResources: LocalResourceStats = EMPTY_RESOURCES;
+  @Prop protocolLabel: string = 'RustDesk';
   @Prop proEnabled: boolean = false;
   @Prop expanded: boolean = false;
   @Prop attachSide: string = 'left';
@@ -88,6 +91,7 @@ export struct RustDeskDiagnosticsHud {
   @State private dragOffsetX: number = 0;
   @State private dragOffsetY: number = 0;
   @State private dragging: boolean = false;
+  @State private dragMoved: boolean = false;
 
   private isStreamStale(): boolean {
     return this.diagnostics.videoSeen && this.diagnostics.lastFrameAgeMs >= 3000;
@@ -116,10 +120,22 @@ export struct RustDeskDiagnosticsHud {
   private finishDrag(fromPanel: boolean): void {
     const x: number = fromPanel ? this.panelEffectiveX() : this.handleEffectiveX();
     const y: number = this.effectiveY();
+    const moved: boolean = this.dragMoved;
     this.dragging = false;
+    this.dragMoved = false;
     this.dragOffsetX = 0;
     this.dragOffsetY = 0;
+    if (!moved) {
+      return;
+    }
     this.onPositionChange(x, y, fromPanel);
+  }
+
+  private cancelDrag(): void {
+    this.dragging = false;
+    this.dragMoved = false;
+    this.dragOffsetX = 0;
+    this.dragOffsetY = 0;
   }
 
   @Builder
@@ -134,10 +150,15 @@ export struct RustDeskDiagnosticsHud {
   private panelContent() {
     Column() {
       Row() {
-        Text('连接诊断').fontSize(11).fontWeight(FontWeight.Medium).fontColor('#FFFFFF')
+        Text(this.protocolLabel === 'VNC' ? 'VNC 连接诊断' : '连接诊断')
+          .fontSize(11).fontWeight(FontWeight.Medium).fontColor('#FFFFFF')
         Blank().layoutWeight(1)
-        Text(this.proEnabled ? 'PRO' : '基础').fontSize(9).fontColor(this.accentColor)
-          .fontWeight(FontWeight.Bold)
+        if (this.protocolLabel === 'VNC') {
+          Text('RAW BGRA').fontSize(9).fontColor(this.accentColor).fontWeight(FontWeight.Bold)
+        } else {
+          Text(this.proEnabled ? 'PRO' : '基础').fontSize(9).fontColor(this.accentColor)
+            .fontWeight(FontWeight.Bold)
+        }
         Text(this.attachSide === 'left' ? '‹' : '›').fontSize(18).fontColor('#FFFFFF')
           .width(22).textAlign(TextAlign.Center).margin({ left: 4 })
       }
@@ -148,14 +169,20 @@ export struct RustDeskDiagnosticsHud {
           PanGesture({ fingers: 1, distance: 5 })
             .onActionStart((_event: GestureEvent): void => {
               this.dragging = true;
+              this.dragMoved = false;
               this.dragOffsetX = 0;
               this.dragOffsetY = 0;
             })
             .onActionUpdate((event: GestureEvent): void => {
               this.dragOffsetX = event.offsetX;
               this.dragOffsetY = event.offsetY;
+              if (Math.sqrt(event.offsetX * event.offsetX + event.offsetY * event.offsetY) >=
+                DRAG_COMMIT_THRESHOLD) {
+                this.dragMoved = true;
+              }
             })
             .onActionEnd((_event: GestureEvent): void => { this.finishDrag(true); })
+            .onActionCancel((): void => { this.cancelDrag(); })
         )
       )
 
@@ -176,7 +203,11 @@ export struct RustDeskDiagnosticsHud {
         value: formatDiagnosticFrameRate(this.diagnostics.receivedFps, this.diagnostics.receivedRateAvailable,
           this.diagnostics.videoSeen, this.isStreamStale()) + ' / ' +
           formatDiagnosticFrameRate(this.diagnostics.displayFps, this.diagnostics.presentedRateAvailable,
-            this.diagnostics.videoSeen, this.isStreamStale()) + ' FPS'
+          this.diagnostics.videoSeen, this.isStreamStale()) + ' FPS'
+      })
+      this.metricLine({
+        label: '送显拒绝',
+        value: this.diagnostics.presentationRejected.toString()
       })
       this.metricLine({ label: '码率', value: formatDiagnosticBitrate(this.diagnostics.bitrateKbps) })
       this.metricLine({
@@ -186,7 +217,8 @@ export struct RustDeskDiagnosticsHud {
       })
       this.metricLine({
         label: '编码 / 解码',
-        value: rustDeskCodecLabel(this.diagnostics.codec) + ' / ' + this.diagnostics.decoderBackend
+        value: this.protocolLabel === 'VNC' ? 'RAW BGRA' :
+          rustDeskCodecLabel(this.diagnostics.codec) + ' / ' + this.diagnostics.decoderBackend
       })
       this.metricLine({
         label: '路径',
@@ -270,14 +302,20 @@ export struct RustDeskDiagnosticsHud {
           PanGesture({ fingers: 1, distance: 5 })
             .onActionStart((_event: GestureEvent): void => {
               this.dragging = true;
+              this.dragMoved = false;
               this.dragOffsetX = 0;
               this.dragOffsetY = 0;
             })
             .onActionUpdate((event: GestureEvent): void => {
               this.dragOffsetX = event.offsetX;
               this.dragOffsetY = event.offsetY;
+              if (Math.sqrt(event.offsetX * event.offsetX + event.offsetY * event.offsetY) >=
+                DRAG_COMMIT_THRESHOLD) {
+                this.dragMoved = true;
+              }
             })
             .onActionEnd((_event: GestureEvent): void => { this.finishDrag(false); })
+            .onActionCancel((): void => { this.cancelDrag(); })
         )
       )
     }

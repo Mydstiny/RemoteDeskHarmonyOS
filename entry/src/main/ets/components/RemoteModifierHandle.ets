@@ -14,6 +14,7 @@ const DOMAIN = 0x0014;
 const HANDLE_WIDTH = 58;
 const VISIBLE_TAB_WIDTH = 24;
 const HIDDEN_LABEL_WIDTH = HANDLE_WIDTH - VISIBLE_TAB_WIDTH;
+const DRAG_COMMIT_THRESHOLD = 5;
 
 @Component
 export struct RemoteModifierHandle {
@@ -44,6 +45,7 @@ export struct RemoteModifierHandle {
   @State private dragOffsetX: number = 0;
   @State private dragOffsetY: number = 0;
   @State private dragging: boolean = false;
+  @State private dragMoved: boolean = false;
   @State private pressed: boolean = false;
 
   // ============================================================
@@ -192,22 +194,38 @@ export struct RemoteModifierHandle {
           PanGesture({ fingers: 1, distance: 5 })
             .onActionStart((_event: GestureEvent): void => {
               this.dragging = true;
+              this.dragMoved = false;
               this.dragOffsetX = 0;
               this.dragOffsetY = 0;
             })
             .onActionUpdate((event: GestureEvent): void => {
               this.dragOffsetX = event.offsetX;
               this.dragOffsetY = event.offsetY;
+              if (Math.sqrt(event.offsetX * event.offsetX + event.offsetY * event.offsetY) >=
+                DRAG_COMMIT_THRESHOLD) {
+                this.dragMoved = true;
+              }
             })
             .onActionEnd((_event: GestureEvent): void => {
               const finalX: number = this.effectiveX();
               const finalY: number = this.effectiveY();
+              const moved: boolean = this.dragMoved;
               this.dragging = false;
+              this.dragMoved = false;
               this.dragOffsetX = 0;
               this.dragOffsetY = 0;
+              if (!moved) {
+                return;
+              }
               hilog.info(DOMAIN, TAG, 'handle drag end → x=' + Math.round(finalX).toString() +
                 ' y=' + Math.round(finalY).toString());
               this.onPositionChange(finalX, finalY);
+            })
+            .onActionCancel((): void => {
+              this.dragging = false;
+              this.dragMoved = false;
+              this.dragOffsetX = 0;
+              this.dragOffsetY = 0;
             })
         )
       )

@@ -11,6 +11,7 @@ import { hilog } from '@kit.PerformanceAnalysisKit';
 
 const TAG = 'ModifierPanel';
 const DOMAIN = 0x0014;
+const DRAG_COMMIT_THRESHOLD = 5;
 
 @Component
 export struct RemoteModifierPanel {
@@ -47,6 +48,8 @@ export struct RemoteModifierPanel {
   @State private panelDragOffsetY: number = 0;
   @State private shortcutDragOffsetX: number = 0;
   @State private shortcutDragOffsetY: number = 0;
+  @State private panelDragMoved: boolean = false;
+  @State private shortcutDragMoved: boolean = false;
   @State private pressedKeyId: string = '';
   private suppressModTapName: string = '';
   private suppressModTapUntilMs: number = 0;
@@ -106,6 +109,53 @@ export struct RemoteModifierPanel {
 
   private shortcutEffectiveY(): number {
     return this.shortcutY + this.shortcutDragOffsetY;
+  }
+
+  private updateDragMoved(shortcut: boolean, offsetX: number, offsetY: number): void {
+    if (Math.sqrt(offsetX * offsetX + offsetY * offsetY) < DRAG_COMMIT_THRESHOLD) {
+      return;
+    }
+    if (shortcut) {
+      this.shortcutDragMoved = true;
+    } else {
+      this.panelDragMoved = true;
+    }
+  }
+
+  private finishPanelDrag(shortcut: boolean): void {
+    if (shortcut) {
+      const x: number = this.shortcutEffectiveX();
+      const y: number = this.shortcutEffectiveY();
+      const moved: boolean = this.shortcutDragMoved;
+      this.shortcutDragMoved = false;
+      this.shortcutDragOffsetX = 0;
+      this.shortcutDragOffsetY = 0;
+      if (moved) {
+        this.onShortcutPositionChange(x, y);
+      }
+      return;
+    }
+    const x: number = this.panelEffectiveX();
+    const y: number = this.panelEffectiveY();
+    const moved: boolean = this.panelDragMoved;
+    this.panelDragMoved = false;
+    this.panelDragOffsetX = 0;
+    this.panelDragOffsetY = 0;
+    if (moved) {
+      this.onPanelPositionChange(x, y);
+    }
+  }
+
+  private cancelPanelDrag(shortcut: boolean): void {
+    if (shortcut) {
+      this.shortcutDragMoved = false;
+      this.shortcutDragOffsetX = 0;
+      this.shortcutDragOffsetY = 0;
+      return;
+    }
+    this.panelDragMoved = false;
+    this.panelDragOffsetX = 0;
+    this.panelDragOffsetY = 0;
   }
 
   private isPressed(id: string): boolean {
@@ -419,12 +469,14 @@ export struct RemoteModifierPanel {
     .layoutWeight(1)
     .padding({ left: 6, right: 8 })
     .gesture(
-      PanGesture({ fingers: 1, distance: 2 })
+      PanGesture({ fingers: 1, distance: 5 })
         .onActionStart((_event: GestureEvent): void => {
           if (shortcut) {
+            this.shortcutDragMoved = false;
             this.shortcutDragOffsetX = 0;
             this.shortcutDragOffsetY = 0;
           } else {
+            this.panelDragMoved = false;
             this.panelDragOffsetX = 0;
             this.panelDragOffsetY = 0;
           }
@@ -437,22 +489,10 @@ export struct RemoteModifierPanel {
             this.panelDragOffsetX = event.offsetX;
             this.panelDragOffsetY = event.offsetY;
           }
+          this.updateDragMoved(shortcut, event.offsetX, event.offsetY);
         })
-        .onActionEnd((_event: GestureEvent): void => {
-          if (shortcut) {
-            const x: number = this.shortcutEffectiveX();
-            const y: number = this.shortcutEffectiveY();
-            this.onShortcutPositionChange(x, y);
-            this.shortcutDragOffsetX = 0;
-            this.shortcutDragOffsetY = 0;
-          } else {
-            const x: number = this.panelEffectiveX();
-            const y: number = this.panelEffectiveY();
-            this.onPanelPositionChange(x, y);
-            this.panelDragOffsetX = 0;
-            this.panelDragOffsetY = 0;
-          }
-        })
+        .onActionEnd((_event: GestureEvent): void => { this.finishPanelDrag(shortcut); })
+        .onActionCancel((): void => { this.cancelPanelDrag(shortcut); })
     )
   }
 

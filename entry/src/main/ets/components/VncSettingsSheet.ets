@@ -48,6 +48,8 @@ export struct VncSettingsSheet {
   @State authTimeoutText: string = '15000';
   @State firstFrameTimeoutText: string = '15000';
   @State viewOnly: boolean = true;
+  @State controlMode: number = 0;
+  @State showDiagnostics: boolean = false;
   @State scalingMode: VncScalingMode = 'fit';
   @State clipboardEnabled: boolean = false;
   @State securityPolicy: VncSecurityPolicy = 'secure_only';
@@ -100,6 +102,8 @@ export struct VncSettingsSheet {
     this.authTimeoutText = values.authTimeoutMs.toString();
     this.firstFrameTimeoutText = values.firstFrameTimeoutMs.toString();
     this.viewOnly = values.viewOnly;
+    this.controlMode = values.controlMode;
+    this.showDiagnostics = values.showDiagnostics;
     this.scalingMode = values.scalingMode;
     this.clipboardEnabled = values.clipboardEnabled;
     this.securityPolicy = values.securityPolicy;
@@ -141,6 +145,8 @@ export struct VncSettingsSheet {
       authTimeoutMs: this.numberValue(this.authTimeoutText, defaults.authTimeoutMs),
       firstFrameTimeoutMs: this.numberValue(this.firstFrameTimeoutText, defaults.firstFrameTimeoutMs),
       viewOnly: this.viewOnly,
+      controlMode: this.controlMode,
+      showDiagnostics: this.showDiagnostics,
       scalingMode: this.scalingMode,
       clipboardEnabled: this.clipboardEnabled,
       securityPolicy: this.securityPolicy,
@@ -351,6 +357,20 @@ export struct VncSettingsSheet {
     Column() {
       this.toggle('只读连接', '默认禁止 VNC 键盘和鼠标输入', this.viewOnly,
         (value: boolean): void => { this.viewOnly = value; this.markDirty(); })
+      Text('输入模式').fontSize(12).fontColor(this.pal().text3).margin({ top: 10, bottom: 7 })
+      Row() {
+        this.choice('触控板', this.controlMode === 0, (): void => {
+          this.controlMode = 0; this.markDirty();
+        })
+        this.choice('直接触控', this.controlMode === 1, (): void => {
+          this.controlMode = 1; this.markDirty();
+        }, 6)
+        this.choice('键鼠', this.controlMode === 2, (): void => {
+          this.controlMode = 2; this.markDirty();
+        }, 6)
+      }.width('100%').margin({ bottom: 10 })
+      this.toggle('连接诊断', '显示 VNC 帧率、送显、分辨率和停滞状态', this.showDiagnostics,
+        (value: boolean): void => { this.showDiagnostics = value; this.markDirty(); })
       Text('缩放模式').fontSize(12).fontColor(this.pal().text3).margin({ top: 10, bottom: 7 })
       Row() {
         this.choice('适应', this.scalingMode === 'fit', (): void => { this.scalingMode = 'fit'; this.markDirty(); })

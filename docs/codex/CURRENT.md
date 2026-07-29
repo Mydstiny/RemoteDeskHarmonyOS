@@ -29,13 +29,16 @@ Updated: 2026-07-29 Asia/Shanghai
 - Host-list settings now has an independent top-level VNC accordion and the FAB exposes the same isolated VNC add flow in both modern and classic modes. Saving can persist a VNC owner and optionally route to `RemoteDesktop` for connection.
 - The global “关闭加密” path now transactionally converts active VNC `encrypted_v2` rows in the local/current/legacy mirrors to explicitly confirmed `plain-v1` envelopes before clearing the DEK; a failed decrypt aborts the transition. VNC passwords/tokens are never silently downgraded or stranded.
 - WebSocket gateway, public relay, SSH tunnel and reverse/listen remain explicitly unavailable until their server contracts are deployed and verified.
+- VNC session runtime now aggregates complete framebuffer updates before presentation, keeps incremental refresh requests alive, presents initial and dirty BGRA frames through the active surface generation, and routes keyboard/mouse/touch/virtual-key/three-finger controls through the isolated VNC session policy. `getSessionDiagnostics` exposes VNC RAW BGRA frame age, presented-frame count and `presentationRejected`; the HUD shows 送显拒绝 so a first-frame-only failure can be distinguished from a server-side update stall.
+- Modifier and shortcut panels persist user-dragged positions as ratios. Resize/orientation recomputes positions from the saved ratios without rewriting them during clamp; fallback geometry remains unready until a real surface size arrives, preventing click drift and cumulative repositioning.
 
 ## Verification
 
 - Rust `cargo check` and `cargo check --tests`: passed for `rustdesk_ffi`.
-- Focused native `rdp_native_tests`: `150 passed, 0 failed`.
+- Focused native `rdp_native_tests`: `151 passed, 0 failed`.
 - `default@OhosTestCompileArkTS`: passed after the RustDesk Pro/RDP implementation; existing repository/dependency warnings remain.
 - Production `assembleHap`: `BUILD SUCCESSFUL` after the RustDesk Pro/RDP implementation.
+- Current VNC runtime tree also passed `default@OhosTestCompileArkTS` and signed production `assembleHap`; signed artifact: `entry/build/default/outputs/default/entry-default-signed.hap`.
 - Native test target compiles the actual VNC transport and RFB engine plus the RDP damage/visual-commit tests and the VNC transport tests.
 - `git diff --check` and `git diff --cached --check`: passed after the implementation and shared-state updates.
 - Light open-source compliance gate: passed via the repository-local `.tools/bin/pwsh` runtime.
@@ -279,3 +282,48 @@ repeat the completed review below unless the listed files change again.
   (`00306054`).
 - External acceptance remains a settings UI smoke check on API 23 devices,
   including zero/nonzero VNC counts and refresh after VNC host save/delete.
+
+## RustDesk OSS/第三方地址簿中继修复计划检查点（2026-07-29）
+
+- 用户反馈的排查与 v2 实体计划已记录在
+  `docs/superpowers/plans/2026-07-29-rustdesk-relay-2fa-repair-upgrade-plan-v2.md`。
+  本检查点没有修改 Rust、C/C++、ArkTS、测试或配置；仅新增计划并更新共享状态。
+- 当前实际基线仍是用户授权的本地 `main`，HEAD 为 `9115e5abd`，相对
+  `origin/main` 领先 87 个提交；工作树保留 11 个用户已有代码文件修改，另有本次计划文件。
+- 排查结论：本地把 exact phrase
+  `you have not logged in or your login session has expired` 仅按字符串归类为
+  `pro_session_expired` 并清空有效 token；同时把 OSS/第三方地址簿 HTTP 登录成功
+  错当作 Server Pro relay control-plane 能力。v2 已加入 profile 分层、token
+  absent/present A/B、结构化失败阶段和 token generation 保护。
+- 官方参照已固定到计划中的 RustDesk client 与 OSS server commit；官方 OSS
+  hbbs/hbbr 只校验 licence/shared key，不包含 Server Pro HTTP session 逻辑。
+  现场仍需提供第三方面板、hbbs/hbbr 版本及 relay 日志，完成真实 OSS 与 Server Pro A/B。
+- 当前验证：该计划本身尚未开始业务代码实施；当前工作树已修复
+  `entry/src/main/cpp/vnc/vnc_rfb_engine.cpp:471` 的 lambda 语法问题，重跑
+  `default@OhosTestCompileArkTS` 和 `assembleHap` 均退出码 0。不得把这两个门禁
+  结果误写成 RustDesk relay 修复已经实施。
+  `ohosTest@OhosTestCompileArkTS` 仍因任务未注册 `00306054` 不可运行；不得把旧构建日志写成当前通过。
+
+## VNC 会话刷新与输入修复检查点（2026-07-29）
+
+- 本轮只处理 VNC 会话运行时差异：RFB 按完整 `FramebufferUpdate` 聚合 Raw/CopyRect/
+  DesktopSize 变化后再送显，并在首帧、每次更新和读超时后维持增量请求；不重新审查
+  已通过的设置页、云同步、主机卡、Relay 或其他协议路径。
+- Native raw BGRA 送显现在对新/变尺寸纹理先完成整帧初始化，dirty 上传从真实
+  dirty 起始像素计算指针和行跨度；NAPI 通过通用 `getSessionDiagnostics` 暴露 VNC
+  帧计数、首帧年龄、送显拒绝和 RAW BGRA 标签，便于区分服务端无更新、surface 未就绪
+  与 GL 送显失败。
+- VNC 独立读取 `controlMode`、`showDiagnostics`；虚拟键盘、组合键、实体键盘、鼠标、
+  触控、三指控制面板和只读输入策略均经过 VNC 分流。修饰键胶囊、组合键面板和诊断
+  HUD 只有达到 5vp 移动阈值才持久化位置，取消手势会清理临时偏移，避免点击漂移。
+- 最终验证：native `rdp_native_tests` 为 `151 passed, 0 failed`；
+  `default@OhosTestCompileArkTS` 通过；生产 `assembleHap` 通过并完成签名；
+  Light 开源合规通过；`git diff --check` 通过。`ohosTest@OhosTestCompileArkTS` 仍被
+  `00306054`（任务未注册）阻断，不能声称 ArkTS 设备测试通过。
+- D-020 独立增量复核已完成并明确 PASS：`presentationRejected` 从 VNC counter
+  到 NAPI、ArkTS 类型、空快照和 HUD 完整；面板比例保存、真实 surface 首次恢复、
+  横竖屏/窗口 resize 重算与 clamp 完整，resize/clamp 不反写用户比例。复核未修改工作树，
+  也没有重新审查已通过的 RFB、输入分流、设置页、云同步、主机卡或 Relay。
+- 外部验收仍需安装当前签名 HAP，在真实 Mac VNC 服务上验证连续多帧/局部刷新、鼠标、
+  虚拟键盘、组合键、实体键盘、三指控制面板、诊断 HUD 和重复连接；当前没有把设备
+  验收写成通过，也没有 push、PR 或远端 `main` 合并。

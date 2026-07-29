@@ -71,6 +71,7 @@ export class VncSettingsService {
       defaultTransport: current.defaultTransport, defaultPort: current.defaultPort,
       connectTimeoutMs: current.connectTimeoutMs, authTimeoutMs: current.authTimeoutMs,
       firstFrameTimeoutMs: current.firstFrameTimeoutMs, viewOnly: current.viewOnly,
+      controlMode: current.controlMode, showDiagnostics: current.showDiagnostics,
       scalingMode: current.scalingMode, clipboardEnabled: current.clipboardEnabled,
       securityPolicy: current.securityPolicy, defaultGatewayId: current.defaultGatewayId,
       repeaterMode: current.repeaterMode, syncPreferences: current.syncPreferences,
@@ -237,6 +238,8 @@ export class VncSettingsService {
       authTimeoutMs: Number.isFinite(values.authTimeoutMs) ? Math.floor(values.authTimeoutMs) : defaults.authTimeoutMs,
       firstFrameTimeoutMs: Number.isFinite(values.firstFrameTimeoutMs) ? Math.floor(values.firstFrameTimeoutMs) : defaults.firstFrameTimeoutMs,
       viewOnly: values.viewOnly,
+      controlMode: Number.isFinite(values.controlMode) ? Math.max(0, Math.min(2, Math.floor(values.controlMode))) : defaults.controlMode,
+      showDiagnostics: values.showDiagnostics === true,
       scalingMode: values.scalingMode || defaults.scalingMode,
       clipboardEnabled: values.clipboardEnabled,
       securityPolicy: values.securityPolicy || defaults.securityPolicy,
@@ -262,6 +265,8 @@ export class VncSettingsService {
       if (typeof values['authTimeoutMs'] === 'number') { result.authTimeoutMs = values['authTimeoutMs'] as number; }
       if (typeof values['firstFrameTimeoutMs'] === 'number') { result.firstFrameTimeoutMs = values['firstFrameTimeoutMs'] as number; }
       if (typeof values['viewOnly'] === 'boolean') { result.viewOnly = values['viewOnly'] as boolean; }
+      if (typeof values['controlMode'] === 'number') { result.controlMode = values['controlMode'] as number; }
+      if (typeof values['showDiagnostics'] === 'boolean') { result.showDiagnostics = values['showDiagnostics'] as boolean; }
       if (typeof values['scalingMode'] === 'string') { result.scalingMode = values['scalingMode'] as VncScalingMode; }
       if (typeof values['clipboardEnabled'] === 'boolean') { result.clipboardEnabled = values['clipboardEnabled'] as boolean; }
       if (typeof values['securityPolicy'] === 'string') { result.securityPolicy = values['securityPolicy'] as VncSecurityPolicy; }
@@ -281,6 +286,7 @@ export class VncSettingsService {
       defaultTransport: values.defaultTransport, defaultPort: values.defaultPort,
       connectTimeoutMs: values.connectTimeoutMs, authTimeoutMs: values.authTimeoutMs,
       firstFrameTimeoutMs: values.firstFrameTimeoutMs, viewOnly: values.viewOnly,
+      controlMode: values.controlMode, showDiagnostics: values.showDiagnostics,
       scalingMode: values.scalingMode, clipboardEnabled: values.clipboardEnabled,
       securityPolicy: values.securityPolicy, defaultGatewayId: values.defaultGatewayId,
       repeaterMode: values.repeaterMode, syncPreferences: values.syncPreferences,

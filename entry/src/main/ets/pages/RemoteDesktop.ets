@@ -52,7 +52,7 @@ import { RemoteSessionTopBar, RemoteSessionTopBarActions } from '../components/R
 import { RustDeskDiagnosticsHud } from '../components/RustDeskDiagnosticsHud';
 import {
   shouldEnableRustDeskPro,
-  shouldShowRustDeskDiagnostics
+  shouldShowSessionDiagnostics
 } from '../services/RustDeskDiagnosticsPolicy';
 // PassphraseDialog replaced with inline bindSheet (RemoteDesktop is @Entry, no bindSheet limit)
 import { RemoteKeyDispatcher } from '../services/RemoteKeyDispatcher';
@@ -455,6 +455,7 @@ const EMPTY_RUSTDESK_DIAGNOSTICS: RustDeskDiagnosticsSnapshot = {
   receivedFps: 0, displayFps: 0, decodeFps: 0, bitrateKbps: 0, codec: -1, width: 0, height: 0,
   connectionPath: 'unknown', lastFrameAtMs: 0, lastFrameAgeMs: -1, decodeOk: 0, decodeErrors: 0,
   decodeP50Us: 0, decodeP95Us: 0, decodeMaxUs: 0, presentedFrames: 0,
+  presentationRejected: 0,
   presentationWindowSamples: 0, presentationWindowMs: 0,
   renderP50Us: 0, renderP95Us: 0, renderMaxUs: 0,
   queueDepth: 0, queueMax: 0,
@@ -540,6 +541,8 @@ struct RemoteDesktop {
   @StorageLink('virtualMouseStyle') virtualMouseStyle: string = 'circle';
   @StorageLink('rdpControlMode') @Watch('onRemoteControlModeChange')
   rdpControlMode: number = 0; // 0=touchpad, 1=direct touch, 2=keyboard/mouse
+  @State vncControlMode: number = 0; // VNC-only: 0=touchpad, 1=direct touch, 2=keyboard/mouse
+  @State @Watch('onRustDeskDiagnosticsSettingChange') vncShowDiagnostics: boolean = false;
   @StorageLink('rdpDriveEnabled') rdpDriveEnabled: boolean = true;
   @StorageLink('rdpDriveName') rdpDriveName: string = 'RemoteDesktop';
   @StorageLink('remoteDesktopBgFlag') @Watch('onRemoteDesktopBgFlagChange') remoteDesktopBgFlag: boolean = false;
@@ -877,6 +880,7 @@ struct RemoteDesktop {
   private rustDeskDisplaySwitchPending: number = -1;
   private rustDeskDisplaySwitchStartedAtMs: number = 0;
   private lastBrowseModeBlockedToastMs: number = 0;
+  private lastVncViewOnlyBlockedToastMs: number = 0;
 
   private inputDeviceListener: Callback<inputDevice.DeviceListener> =
     (data: inputDevice.DeviceListener): void => {
@@ -903,6 +907,12 @@ struct RemoteDesktop {
       hilog.info(RD_DOMAIN, RD_TAG,
         'PC large-screen detected, RustDesk control mode respects user setting=' +
           this.rustdeskControlMode.toString());
+      return;
+    }
+    if (host.protocol === 'vnc') {
+      hilog.info(RD_DOMAIN, RD_TAG,
+        'PC large-screen detected, VNC control mode respects VNC setting=' +
+          this.vncControlMode.toString());
     }
   }
 
@@ -955,11 +965,13 @@ struct RemoteDesktop {
     if (!host) { return; }
     if (host.protocol === 'rdp' && this.rdpControlMode === 2) { return; }
     if (host.protocol === 'rustdesk' && this.rustdeskControlMode === 2) { return; }
-    if (host.protocol !== 'rdp' && host.protocol !== 'rustdesk') { return; }
+    if (host.protocol === 'vnc' && this.vncControlMode === 2) { return; }
+    if (host.protocol !== 'rdp' && host.protocol !== 'rustdesk' && host.protocol !== 'vnc') { return; }
     this.externalInputPromptedThisSession = true;
     this.inputDevicePromptVisible = true;
     const name: string = deviceName && deviceName.length > 0 ? deviceName : '键盘/鼠标';
-    const protocolLabel: string = host.protocol === 'rdp' ? 'Windows RDP' : 'RustDesk';
+    const protocolLabel: string = host.protocol === 'rdp' ? 'Windows RDP' :
+      (host.protocol === 'rustdesk' ? 'RustDesk' : 'VNC');
     promptAction.showDialog({
       title: '检测到外接键鼠',
       message: '已检测到 ' + name + '，是否切换为 ' + protocolLabel + ' 键鼠模式？',
@@ -974,9 +986,17 @@ struct RemoteDesktop {
         if (host.protocol === 'rdp') {
           this.rdpControlMode = 2;
           AppStorage.setOrCreate('rdpControlMode', 2);
-        } else {
+        } else if (host.protocol === 'rustdesk') {
           this.rustdeskControlMode = 2;
           AppStorage.setOrCreate('rustdeskControlMode', 2);
+        } else {
+          const values: VncSettingsValues = this.vncSettings.get();
+          values.controlMode = 2;
+          const saved = this.vncSettings.save(values);
+          this.vncControlMode = 2;
+          if (!saved.ok) {
+            hilog.warn(RD_DOMAIN, RD_TAG, 'VNC control mode persistence failed: ' + saved.message);
+          }
         }
         this.hideTouchIndicator();
         promptAction.showToast({ message: '已切换为键鼠模式', duration: 1500 });
@@ -993,9 +1013,24 @@ struct RemoteDesktop {
     if (host.protocol === 'rdp') { return this.rdpControlMode === 2; }
     if (host.protocol === 'rustdesk') { return this.rustdeskControlMode === 2; }
     if (host.protocol === 'vnc') {
-      return this.pendingVncHost !== null && !this.pendingVncHost.viewOnly;
+      return this.vncControlMode === 2 && this.pendingVncHost !== null && !this.pendingVncHost.viewOnly;
     }
     return false;
+  }
+
+  private currentControlMode(): number {
+    const host: RemoteHost | null = this.pendingHost;
+    if (host === null) { return 0; }
+    if (host.protocol === 'rdp') { return this.rdpControlMode; }
+    if (host.protocol === 'rustdesk') { return this.rustdeskControlMode; }
+    if (host.protocol === 'vnc') {
+      return Math.max(0, Math.min(2, Math.floor(this.vncControlMode)));
+    }
+    return 0;
+  }
+
+  private isVncViewOnlySession(): boolean {
+    return this.isVncSession() && this.pendingVncHost !== null && this.pendingVncHost.viewOnly;
   }
 
   private shouldShowRustDeskSessionTopBar(): boolean {
@@ -1057,6 +1092,7 @@ struct RemoteDesktop {
     if (!host || !this.connected) { return false; }
     if (host.protocol === 'rdp') { return this.rdpControlMode === 0; }
     if (host.protocol === 'rustdesk') { return this.rustdeskControlMode === 0; }
+    if (host.protocol === 'vnc') { return this.vncControlMode === 0; }
     return false;
   }
 
@@ -1568,6 +1604,18 @@ struct RemoteDesktop {
       this.pendingVncHost !== null;
   }
 
+  private shouldShowActiveDiagnostics(): boolean {
+    const protocol: string = this.currentProtocolName();
+    const showDiagnostics: boolean = protocol === 'vnc' ? this.vncShowDiagnostics :
+      this.rustdeskShowDiagnostics;
+    return shouldShowSessionDiagnostics(showDiagnostics, this.connected, protocol, this.sessionId);
+  }
+
+  private shouldShowAdvancedDiagnostics(): boolean {
+    return this.isRustDeskSession() && shouldEnableRustDeskPro(
+      this.rustdeskShowDiagnostics, this.rustdeskShowProDiagnostics);
+  }
+
   private transientRemoteHostForVnc(host: VncHostView): RemoteHost {
     const transient: RemoteHost = new RemoteHost();
     transient.id = 'vnc:' + host.id;
@@ -1814,8 +1862,10 @@ struct RemoteDesktop {
   private onRemoteConnectionStateChange(): void {
     if (this.connected) {
       this.syncRemoteSystemPointer('connection-state');
+      this.startRustDeskDiagnosticsPolling();
     } else {
       this.restoreRemoteSystemPointer('connection-state');
+      this.stopRustDeskDiagnosticsPolling(true);
     }
     this.publishRemoteCursorOverlay();
   }
@@ -2922,7 +2972,7 @@ struct RemoteDesktop {
   }
 
   private rustDeskDiagnosticsDockHeight(): number {
-    return shouldEnableRustDeskPro(this.rustdeskShowDiagnostics, this.rustdeskShowProDiagnostics) ?
+    return this.shouldShowAdvancedDiagnostics() ?
       380 : 205;
   }
 
@@ -3052,20 +3102,53 @@ struct RemoteDesktop {
     return Math.max(48, Math.min(y, maxY));
   }
 
+  private isValidModifierPanelRatio(value: number): boolean {
+    return Number.isFinite(value) && value >= 0 && value < 1;
+  }
+
+  private restoreModifierPanelPositions(previousWidth: number = 0,
+    previousHeight: number = 0): void {
+    const hasSurfaceSize: boolean = this.surfaceWidth > 0 && this.surfaceHeight > 0;
+    const screenW: number = hasSurfaceSize ? this.surfaceWidth : 360;
+    const screenH: number = hasSurfaceSize ? this.surfaceHeight : 640;
+    const panelW: number = this.modifierPanelWidth();
+    const defaultX: number = this.handleSide === 'right' ? Math.max(8, screenW - panelW - 8) : 8;
+    const defaultY: number = this.clampModifierPanelY(this.handleY - 20, this.fnLayer ? 300 : 136);
+    const savedModifierXRatio: number = AppStorage.get<number>('remoteModifierPanelXRatio') ?? -1;
+    const savedModifierYRatio: number = AppStorage.get<number>('remoteModifierPanelYRatio') ?? -1;
+    const savedShortcutXRatio: number = AppStorage.get<number>('remoteShortcutPanelXRatio') ?? -1;
+    const savedShortcutYRatio: number = AppStorage.get<number>('remoteShortcutPanelYRatio') ?? -1;
+    const priorW: number = previousWidth > 0 ? previousWidth : screenW;
+    const priorH: number = previousHeight > 0 ? previousHeight : screenH;
+    const priorModifierXRatio: number = previousWidth > 0 ? this.modifierPanelX / priorW : -1;
+    const priorModifierYRatio: number = previousHeight > 0 ? this.modifierPanelY / priorH : -1;
+    const priorShortcutXRatio: number = previousWidth > 0 ? this.shortcutPanelX / priorW : -1;
+    const priorShortcutYRatio: number = previousHeight > 0 ? this.shortcutPanelY / priorH : -1;
+    const modifierXRatio: number = this.isValidModifierPanelRatio(savedModifierXRatio) ?
+      savedModifierXRatio : priorModifierXRatio;
+    const modifierYRatio: number = this.isValidModifierPanelRatio(savedModifierYRatio) ?
+      savedModifierYRatio : priorModifierYRatio;
+    const shortcutXRatio: number = this.isValidModifierPanelRatio(savedShortcutXRatio) ?
+      savedShortcutXRatio : priorShortcutXRatio;
+    const shortcutYRatio: number = this.isValidModifierPanelRatio(savedShortcutYRatio) ?
+      savedShortcutYRatio : priorShortcutYRatio;
+    this.modifierPanelX = this.clampModifierPanelX(this.isValidModifierPanelRatio(modifierXRatio) ?
+      screenW * modifierXRatio : defaultX);
+    this.modifierPanelY = this.clampModifierPanelY(this.isValidModifierPanelRatio(modifierYRatio) ?
+      screenH * modifierYRatio : defaultY, this.fnLayer ? 300 : 136);
+    this.shortcutPanelX = this.clampModifierPanelX(this.isValidModifierPanelRatio(shortcutXRatio) ?
+      screenW * shortcutXRatio : this.modifierPanelX);
+    this.shortcutPanelY = this.clampModifierPanelY(this.isValidModifierPanelRatio(shortcutYRatio) ?
+      screenH * shortcutYRatio : this.modifierPanelY + 150, 238);
+    this.modifierPanelPositionReady = hasSurfaceSize;
+  }
+
   private ensureModifierPanelPositions(): void {
     if (this.modifierPanelPositionReady) {
       this.clampModifierPanelsIntoView();
       return;
     }
-    const screenW: number = this.surfaceWidth > 0 ? this.surfaceWidth : 360;
-    const panelW: number = this.modifierPanelWidth();
-    const defaultX: number = this.handleSide === 'right' ? Math.max(8, screenW - panelW - 8) : 8;
-    const defaultY: number = this.clampModifierPanelY(this.handleY - 20, this.fnLayer ? 300 : 136);
-    this.modifierPanelX = this.clampModifierPanelX(defaultX);
-    this.modifierPanelY = defaultY;
-    this.shortcutPanelX = this.modifierPanelX;
-    this.shortcutPanelY = this.clampModifierPanelY(defaultY + 150, 238);
-    this.modifierPanelPositionReady = true;
+    this.restoreModifierPanelPositions();
   }
 
   private clampModifierPanelsIntoView(): void {
@@ -3075,14 +3158,28 @@ struct RemoteDesktop {
     this.shortcutPanelY = this.clampModifierPanelY(this.shortcutPanelY, 238);
   }
 
+  private persistModifierPanelPositions(): void {
+    if (this.surfaceWidth <= 0 || this.surfaceHeight <= 0) {
+      return;
+    }
+    const screenW: number = this.surfaceWidth;
+    const screenH: number = this.surfaceHeight;
+    AppStorage.setOrCreate('remoteModifierPanelXRatio', this.modifierPanelX / screenW);
+    AppStorage.setOrCreate('remoteModifierPanelYRatio', this.modifierPanelY / screenH);
+    AppStorage.setOrCreate('remoteShortcutPanelXRatio', this.shortcutPanelX / screenW);
+    AppStorage.setOrCreate('remoteShortcutPanelYRatio', this.shortcutPanelY / screenH);
+  }
+
   private moveModifierPanel(x: number, y: number): void {
     this.modifierPanelX = this.clampModifierPanelX(x);
     this.modifierPanelY = this.clampModifierPanelY(y, this.fnLayer ? 300 : 136);
+    this.persistModifierPanelPositions();
   }
 
   private moveShortcutPanel(x: number, y: number): void {
     this.shortcutPanelX = this.clampModifierPanelX(x);
     this.shortcutPanelY = this.clampModifierPanelY(y, 238);
+    this.persistModifierPanelPositions();
   }
 
   private openModifierPanel(): void {
@@ -3257,7 +3354,7 @@ struct RemoteDesktop {
 
   /** 发送单键 down+up → RemoteKeyDispatcher */
   private sendVirtualKeyTap(keyCode: number, label: string): void {
-    if (this.sessionId <= 0 || !this.connected) {
+    if (this.sessionId <= 0 || !this.connected || !this.canForwardInput('virtual-key')) {
       return;
     }
     this.keyDispatcher.sendVirtualKeyTap(this.loader, this.sessionId, keyCode, label);
@@ -3265,7 +3362,7 @@ struct RemoteDesktop {
 
   /** 发送带修饰键的按键序列 → RemoteKeyDispatcher */
   private sendModifiedKey(keyCode: number, label: string): void {
-    if (this.sessionId <= 0 || !this.connected) {
+    if (this.sessionId <= 0 || !this.connected || !this.canForwardInput('virtual-modified-key')) {
       return;
     }
     this.keyDispatcher.sendModifiedKey(this.loader, this.sessionId,
@@ -3277,7 +3374,7 @@ struct RemoteDesktop {
 
   /** 发送快捷键序列 → RemoteKeyDispatcher */
   private sendShortcutSequence(keyCodes: number[], label: string): void {
-    if (this.sessionId <= 0 || !this.connected) {
+    if (this.sessionId <= 0 || !this.connected || !this.canForwardInput('virtual-shortcut')) {
       return;
     }
     this.keyDispatcher.sendShortcutSequence(this.loader, this.sessionId, keyCodes, label,
@@ -3288,7 +3385,7 @@ struct RemoteDesktop {
 
   /** Ctrl+Alt+Del → RemoteKeyDispatcher */
   private sendCtrlAltDel(): void {
-    if (this.sessionId <= 0 || !this.connected) {
+    if (this.sessionId <= 0 || !this.connected || !this.canForwardInput('virtual-ctrl-alt-del')) {
       return;
     }
     this.keyDispatcher.sendCtrlAltDel(this.loader, this.sessionId, this.accentColor,
@@ -3627,6 +3724,9 @@ struct RemoteDesktop {
         this.vncHosts.init(context);
         this.vncGateways.init(context);
         this.vncTrust.init(context);
+        const vncSettings: VncSettingsValues = this.vncSettings.get();
+        this.vncControlMode = vncSettings.controlMode;
+        this.vncShowDiagnostics = vncSettings.showDiagnostics;
         const vncHost: VncHostView | null = this.vncHosts.find(vncHostId);
         if (vncHost === null) {
           this.connecting = false;
@@ -3707,16 +3807,15 @@ struct RemoteDesktop {
   }
 
   private onRustDeskDiagnosticsSettingChange(): void {
-    if (shouldShowRustDeskDiagnostics(this.rustdeskShowDiagnostics, this.connected,
-      this.isRustDeskSession() ? 'rustdesk' : '', this.sessionId)) {
+    if (this.shouldShowActiveDiagnostics()) {
       if (!this.rustDeskDiagnosticsDockInitialized) {
         this.initRustDeskDiagnosticsDock();
       }
-      if (!shouldEnableRustDeskPro(this.rustdeskShowDiagnostics, this.rustdeskShowProDiagnostics)) {
+      if (!this.shouldShowAdvancedDiagnostics()) {
         this.localResourceStats = EMPTY_LOCAL_RESOURCE_STATS;
       }
       this.startRustDeskDiagnosticsPolling();
-    } else if (!this.rustdeskShowDiagnostics) {
+    } else {
       this.rustDeskDiagnosticsDockExpanded = false;
       this.stopRustDeskDiagnosticsPolling(true);
     }
@@ -3727,8 +3826,7 @@ struct RemoteDesktop {
    * 必须重新建立本次 session 的轮询，否则基础面板和 Pro 本机采样都会停在空值。
    */
   private resumeRustDeskDiagnosticsAfterForeground(): void {
-    if (!shouldShowRustDeskDiagnostics(this.rustdeskShowDiagnostics, this.connected,
-      this.isRustDeskSession() ? 'rustdesk' : '', this.sessionId)) {
+    if (!this.shouldShowActiveDiagnostics()) {
       return;
     }
     if (!this.rustDeskDiagnosticsDockInitialized) {
@@ -3741,12 +3839,11 @@ struct RemoteDesktop {
   }
 
   private refreshRustDeskDiagnostics(sessionId: number, attemptId: number): void {
-    if (!shouldShowRustDeskDiagnostics(this.rustdeskShowDiagnostics, this.connected,
-      this.isRustDeskSession() ? 'rustdesk' : '', sessionId) ||
+    if (!this.shouldShowActiveDiagnostics() ||
       this.sessionId !== sessionId || this.connectAttemptId !== attemptId) {
       return;
     }
-    const snapshot: RustDeskDiagnosticsSnapshot = this.loader.getRustDeskDiagnostics(sessionId);
+    const snapshot: RustDeskDiagnosticsSnapshot = this.loader.getSessionDiagnostics(sessionId);
     // A synchronous native query must still be rejected if a reconnect
     // replaced the session between the poll guard and the assignment.
     if (this.sessionId !== sessionId || this.connectAttemptId !== attemptId ||
@@ -3754,7 +3851,7 @@ struct RemoteDesktop {
       return;
     }
     this.rustDeskDiagnostics = snapshot;
-    if (shouldEnableRustDeskPro(this.rustdeskShowDiagnostics, this.rustdeskShowProDiagnostics)) {
+    if (this.shouldShowAdvancedDiagnostics()) {
       this.localResourceStats = this.loader.getLocalResourceStats(true);
     } else {
       this.localResourceStats = EMPTY_LOCAL_RESOURCE_STATS;
@@ -3763,16 +3860,14 @@ struct RemoteDesktop {
 
   private startRustDeskDiagnosticsPolling(): void {
     if (this.rustDeskDiagnosticsTimer >= 0 ||
-      !shouldShowRustDeskDiagnostics(this.rustdeskShowDiagnostics, this.connected,
-        this.isRustDeskSession() ? 'rustdesk' : '', this.sessionId)) {
+      !this.shouldShowActiveDiagnostics()) {
       return;
     }
     const observedSessionId: number = this.sessionId;
     const observedAttemptId: number = this.connectAttemptId;
     this.refreshRustDeskDiagnostics(observedSessionId, observedAttemptId);
     this.rustDeskDiagnosticsTimer = setInterval((): void => {
-      if (!shouldShowRustDeskDiagnostics(this.rustdeskShowDiagnostics, this.connected,
-        this.isRustDeskSession() ? 'rustdesk' : '', this.sessionId) ||
+      if (!this.shouldShowActiveDiagnostics() ||
         this.sessionId !== observedSessionId || this.connectAttemptId !== observedAttemptId) {
         this.stopRustDeskDiagnosticsPolling(false);
         return;
@@ -4882,6 +4977,18 @@ struct RemoteDesktop {
 
   private canForwardInput(source: string): boolean {
     const protocol: string = this.currentProtocolName();
+    if (this.isVncViewOnlySession()) {
+      const now: number = Date.now();
+      if (source !== 'mouseMove' && now - this.lastVncViewOnlyBlockedToastMs > 2200) {
+        this.lastVncViewOnlyBlockedToastMs = now;
+        promptAction.showToast({
+          message: 'VNC 当前为只读连接，已阻止键盘、鼠标和剪贴板发送',
+          duration: 1600
+        });
+      }
+      hilog.info(RD_DOMAIN, RD_TAG, 'dropInput ' + source + ' vncViewOnly=1');
+      return false;
+    }
     if (shouldBlockRemoteInputForBrowseMode(protocol, this.rustdeskBrowseMode)) {
       const now: number = Date.now();
       if (source !== 'mouseMove' && now - this.lastBrowseModeBlockedToastMs > 2200) {
@@ -4908,7 +5015,7 @@ struct RemoteDesktop {
     const host: RemoteHost | null = this.pendingHost;
     return this.connected && this.sessionId > 0 && this.isKeyboardMouseControlMode() &&
       this.physicalKeyboardConnected && host !== null &&
-      (host.protocol === 'rdp' || host.protocol === 'rustdesk');
+      (host.protocol === 'rdp' || host.protocol === 'rustdesk' || host.protocol === 'vnc');
   }
 
   private shouldRequirePhysicalKeyboardLayout(): boolean {
@@ -9190,7 +9297,10 @@ struct RemoteDesktop {
    *   避免第 1 指落下瞬间的微移导致光标偏移。
    */
   private handleTouchPadInput = (event: TouchEvent): void => {
-    if (!this.canForwardInput('touch-pad')) { return; }
+    // A read-only VNC session still needs to observe the touch sequence so a
+    // three-finger tap can open the local control sheet. Every actual remote
+    // send below remains guarded by canForwardInput().
+    if (!this.canForwardInput('touch-pad') && !this.isVncViewOnlySession()) { return; }
     try {
       event.stopPropagation();
       const point: LocalPoint | null = this.primaryTouchPoint(event);
@@ -9428,7 +9538,7 @@ struct RemoteDesktop {
   }
 
   private handleXComponentTouch = (event: TouchEvent): void => {
-    if (!this.canForwardInput('touch')) { return; }
+    if (!this.canForwardInput('touch') && !this.isVncViewOnlySession()) { return; }
     try {
       // R0: 触控事件透传到 native InputHandler (暂用占位对象, R1 完善多点)
       event.stopPropagation();
@@ -9583,7 +9693,7 @@ struct RemoteDesktop {
       this.scheduleRemoteInputFocus('touch-down');
     }
     const host: RemoteHost | null = this.pendingHost;
-    const controlMode: number = host && host.protocol === 'rdp' ? this.rdpControlMode : this.rustdeskControlMode;
+    const controlMode: number = this.currentControlMode();
     if (this.consumeCanvasPinchTouch(event)) {
       return;
     }
@@ -10327,6 +10437,8 @@ struct RemoteDesktop {
         const hVp: number = n.height as number;
         const wPx: number = Math.round(this.vpToPx(wVp));
         const hPx: number = Math.round(this.vpToPx(hVp));
+        const previousSurfaceWidth: number = this.surfaceWidth;
+        const previousSurfaceHeight: number = this.surfaceHeight;
         if (Math.abs(wVp - this.surfaceWidth) < 1 && Math.abs(hVp - this.surfaceHeight) < 1 &&
           Math.abs(wPx - this.renderWidthPx) < 1 && Math.abs(hPx - this.renderHeightPx) < 1) {
           return;
@@ -10342,13 +10454,12 @@ struct RemoteDesktop {
         // as a new anchor so the old coordinate space cannot create a jump.
         this.touchpadAnchorValid = false;
         this.resetTouchpadPointerCurve();
+        this.restoreModifierPanelPositions(previousSurfaceWidth, previousSurfaceHeight);
         if (this.handleVisible) {
           this.handleX = this.handleSide === 'left' ?
             this.modifierHiddenLeftX() : this.modifierHiddenRightX(this.surfaceWidth);
-          this.clampModifierPanelsIntoView();
         }
-        if (shouldShowRustDeskDiagnostics(this.rustdeskShowDiagnostics, this.connected,
-          this.isRustDeskSession() ? 'rustdesk' : '', this.sessionId)) {
+        if (this.shouldShowActiveDiagnostics()) {
           this.rustDeskDiagnosticsDockY = this.avoidRustDeskDiagnosticsDockCollision(
             this.rustDeskDiagnosticsDockSide, this.rustDeskDiagnosticsDockY);
         }
@@ -10505,12 +10616,12 @@ struct RemoteDesktop {
         this.rustDeskDisplayResolutionMenu()
       }
 
-      if (shouldShowRustDeskDiagnostics(this.rustdeskShowDiagnostics, this.connected,
-        this.isRustDeskSession() ? 'rustdesk' : '', this.sessionId)) {
+      if (this.shouldShowActiveDiagnostics()) {
         RustDeskDiagnosticsHud({
           diagnostics: this.rustDeskDiagnostics,
           localResources: this.localResourceStats,
-          proEnabled: this.rustdeskShowProDiagnostics,
+          protocolLabel: this.isVncSession() ? 'VNC' : 'RustDesk',
+          proEnabled: this.shouldShowAdvancedDiagnostics(),
           expanded: this.rustDeskDiagnosticsDockExpanded,
           attachSide: this.rustDeskDiagnosticsDockSide,
           handleX: this.rustDeskDiagnosticsDockHandleX(),
@@ -10978,6 +11089,15 @@ struct RemoteDesktop {
         .fontSize(18).fontWeight(FontWeight.Medium)
         .fontColor(this.pal().text)
         .margin({ top: 8, bottom: 20 })
+      if (this.isVncSession() && this.isVncViewOnlySession()) {
+        Row() {
+          SymbolGlyph($r('sys.symbol.info_circle'))
+            .fontSize(18).fontColor([this.pal().text3]).margin({ right: 8 })
+          Text('VNC 只读连接，键盘、鼠标和剪贴板发送已禁用')
+            .fontSize(12).fontColor(this.pal().text3).layoutWeight(1)
+        }
+        .width('100%').padding({ left: 24, right: 24, bottom: 14 })
+      }
       // 键盘按钮
       Row() {
         SymbolGlyph($r('sys.symbol.keyboard'))
@@ -11026,25 +11146,27 @@ struct RemoteDesktop {
           this.openModifierPanel();
         }, 200);
       })
-      // 文件传输按钮
-      Row() {
-        SymbolGlyph($r('sys.symbol.doc'))
-          .fontSize(22).fontColor([this.pal().primary])
-          .margin({ right: 10 })
-        Text('发送文件到桌面')
-          .fontSize(16).fontColor(this.pal().text)
+      if (!this.isVncSession()) {
+        // 文件传输按钮
+        Row() {
+          SymbolGlyph($r('sys.symbol.doc'))
+            .fontSize(22).fontColor([this.pal().primary])
+            .margin({ right: 10 })
+          Text('发送文件到桌面')
+            .fontSize(16).fontColor(this.pal().text)
+        }
+        .width('100%').height(52)
+        .justifyContent(FlexAlign.Center)
+        .backgroundColor(this.pal().card)
+        .borderRadius(14)
+        .border({ width: 1, color: this.pal().cardBorder })
+        .margin({ bottom: 20, left: 24, right: 24 })
+        .enabled(!this.fileTransferBusy && this.connected)
+        .onClick(() => {
+          this.showControlPanel = false;
+          this.pickAndSendFile();
+        })
       }
-      .width('100%').height(52)
-      .justifyContent(FlexAlign.Center)
-      .backgroundColor(this.pal().card)
-      .borderRadius(14)
-      .border({ width: 1, color: this.pal().cardBorder })
-      .margin({ bottom: 20, left: 24, right: 24 })
-      .enabled(!this.fileTransferBusy && this.connected)
-      .onClick(() => {
-        this.showControlPanel = false;
-        this.pickAndSendFile();
-      })
     }
     .width('100%')
     .padding({ top: 8, bottom: 24 })

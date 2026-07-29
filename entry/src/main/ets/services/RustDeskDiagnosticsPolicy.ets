@@ -5,9 +5,16 @@
  * 依赖关系可以在没有连接、没有设备资源接口的情况下独立测试。
  */
 
+export function shouldShowSessionDiagnostics(showDiagnostics: boolean,
+  connected: boolean, protocol: string, sessionId: number): boolean {
+  return showDiagnostics && connected &&
+    (protocol === 'rustdesk' || protocol === 'vnc') && sessionId > 0;
+}
+
 export function shouldShowRustDeskDiagnostics(showDiagnostics: boolean,
   connected: boolean, protocol: string, sessionId: number): boolean {
-  return showDiagnostics && connected && protocol === 'rustdesk' && sessionId > 0;
+  return shouldShowSessionDiagnostics(showDiagnostics, connected, protocol, sessionId) &&
+    protocol === 'rustdesk';
 }
 
 export function shouldEnableRustDeskPro(showDiagnostics: boolean, proEnabled: boolean): boolean {

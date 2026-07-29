@@ -11,6 +11,14 @@
 #include "vnc_transport_policy.h"
 
 #include "common/safe_log.h"
+#if defined(__OHOS__) || defined(__MUSL__)
+#include <hilog/log.h>
+#define VNC_DIAG_INFO(...) OH_LOG_INFO(LOG_APP, __VA_ARGS__)
+#define VNC_DIAG_WARN(...) OH_LOG_WARN(LOG_APP, __VA_ARGS__)
+#else
+#define VNC_DIAG_INFO(...) do { } while (0)
+#define VNC_DIAG_WARN(...) do { } while (0)
+#endif
 
 #include <algorithm>
 #include <array>
@@ -164,6 +172,10 @@ void VncRfbEngine::run() {
         clearSensitiveConfig();
         return;
     }
+    VNC_DIAG_INFO(
+                "[VNC-DIAG] handshake complete rfb=3.%{public}03d framebuffer=%{public}dx%{public}d firstTimeoutMs=%{public}d ioTimeoutMs=%{public}d",
+                negotiatedMinor_, framebufferWidth_, framebufferHeight_,
+                config_.vncFirstFrameTimeoutMs, ioTimeoutMs_);
     // The password is only needed for VNC authentication.  Do not retain it
     // for the lifetime of an otherwise long-lived framebuffer session.
     secureClear(config_.password);
@@ -174,6 +186,7 @@ void VncRfbEngine::run() {
         clearSensitiveConfig();
         return;
     }
+    VNC_DIAG_INFO("[VNC-DIAG] initial framebuffer update request sent incremental=0 bytes=10");
     if (!receiveLoop(error) && !stopRequested_.load(std::memory_order_acquire)) {
         setState(ConnectionState::ERROR, "VNC 会话已结束: " + error);
     }
@@ -397,13 +410,26 @@ bool VncRfbEngine::receiveLoop(std::string& error) {
         const int timeout = firstMessage ? config_.vncFirstFrameTimeoutMs : ioTimeoutMs_;
         if (!readU8(type, timeout, error)) {
             if (isTimeout(error)) {
+                ++diagTimeouts_;
+                if (diagTimeouts_ <= 4 || diagTimeouts_ % 10 == 0) {
+                    VNC_DIAG_WARN(
+                                "[VNC-DIAG] server message timeout count=%{public}llu firstMessage=%{public}d request=incremental",
+                                static_cast<unsigned long long>(diagTimeouts_), firstMessage ? 1 : 0);
+                }
                 error.clear();
                 if (!sendFramebufferUpdateRequest(true, error)) return false;
                 continue;
             }
+            VNC_DIAG_WARN("[VNC-DIAG] server message read failed error=%{public}s", error.c_str());
             return false;
         }
         firstMessage = false;
+        ++diagServerMessages_;
+        if (diagServerMessages_ <= 8 || diagServerMessages_ % 60 == 0) {
+            VNC_DIAG_INFO(
+                        "[VNC-DIAG] server message count=%{public}llu type=%{public}d",
+                        static_cast<unsigned long long>(diagServerMessages_), static_cast<int>(type));
+        }
         if (type == 0) {
             if (!receiveFramebufferUpdate(error)) return false;
             if (!sendFramebufferUpdateRequest(true, error)) return false;
@@ -413,6 +439,8 @@ bool VncRfbEngine::receiveLoop(std::string& error) {
             if (!receiveServerCutText(error)) return false;
         } else {
             error = "unsupported VNC server message type";
+            VNC_DIAG_WARN("[VNC-DIAG] unsupported server message type=%{public}d",
+                        static_cast<int>(type));
             return false;
         }
     }
@@ -428,23 +456,67 @@ bool VncRfbEngine::receiveFramebufferUpdate(std::string& error) {
         error = "VNC update contains too many rectangles";
         return false;
     }
+    ++diagFramebufferUpdates_;
+    if (diagFramebufferUpdates_ <= 8 || diagFramebufferUpdates_ % 60 == 0 || count == 0) {
+        VNC_DIAG_INFO(
+                    "[VNC-DIAG] framebuffer update count=%{public}llu rectangles=%{public}u",
+                    static_cast<unsigned long long>(diagFramebufferUpdates_), count);
+    }
+    bool dirty = false;
+    bool fullFrame = false;
+    int dirtyLeft = framebufferWidth_;
+    int dirtyTop = framebufferHeight_;
+    int dirtyRight = 0;
+    int dirtyBottom = 0;
+    const auto markDirty = [&](int x, int y, int width, int height, bool full) -> void {
+        if (full) {
+            fullFrame = true;
+            dirty = true;
+            return;
+        }
+        if (fullFrame || width <= 0 || height <= 0) return;
+        dirty = true;
+        dirtyLeft = std::min(dirtyLeft, x);
+        dirtyTop = std::min(dirtyTop, y);
+        dirtyRight = std::max(dirtyRight, x + width);
+        dirtyBottom = std::max(dirtyBottom, y + height);
+    };
     for (uint16_t index = 0; index < count; ++index) {
         uint16_t x = 0, y = 0, width = 0, height = 0;
         int32_t encoding = 0;
         if (!readU16(x, ioTimeoutMs_, error) || !readU16(y, ioTimeoutMs_, error) ||
             !readU16(width, ioTimeoutMs_, error) || !readU16(height, ioTimeoutMs_, error) ||
             !readI32(encoding, ioTimeoutMs_, error)) return false;
+        if (diagFramebufferUpdates_ <= 8 || diagFramebufferUpdates_ % 60 == 0) {
+            VNC_DIAG_INFO(
+                        "[VNC-DIAG] rectangle update=%{public}llu index=%{public}u x=%{public}u y=%{public}u width=%{public}u height=%{public}u encoding=%{public}d",
+                        static_cast<unsigned long long>(diagFramebufferUpdates_), index,
+                        x, y, width, height, encoding);
+        }
         if (encoding == 0) {
             if (!receiveRawRectangle(x, y, width, height, error)) return false;
+            markDirty(x, y, width, height, false);
         } else if (encoding == 1) {
             if (!receiveCopyRectangle(x, y, width, height, error)) return false;
+            markDirty(x, y, width, height, false);
         } else if (encoding == -223) {
             if (!receiveDesktopSize(width, height, error)) return false;
+            markDirty(0, 0, framebufferWidth_, framebufferHeight_, true);
         } else if (encoding == -224) {
             break;
         } else {
             error = "VNC server selected an unsupported framebuffer encoding";
             return false;
+        }
+    }
+    // RFC 6143 groups all rectangles belonging to one server update.  Decode
+    // the complete group first and present once so a multi-rectangle Mac
+    // refresh does not force one EGL swap per rectangle.
+    if (dirty) {
+        if (fullFrame) {
+            emitFrame(-1, -1, framebufferWidth_, framebufferHeight_);
+        } else if (dirtyRight > dirtyLeft && dirtyBottom > dirtyTop) {
+            emitFrame(dirtyLeft, dirtyTop, dirtyRight - dirtyLeft, dirtyBottom - dirtyTop);
         }
     }
     return true;
@@ -476,7 +548,6 @@ bool VncRfbEngine::receiveRawRectangle(int x, int y, int width, int height, std:
             framebuffer_[destination + 3] = 0xFF;
         }
     }
-    emitFrame(x, y, width, height);
     return true;
 }
 
@@ -508,13 +579,11 @@ bool VncRfbEngine::receiveCopyRectangle(int x, int y, int width, int height, std
                     copy.data() + static_cast<size_t>(row) * width * 4,
                     static_cast<size_t>(width) * 4);
     }
-    emitFrame(x, y, width, height);
     return true;
 }
 
 bool VncRfbEngine::receiveDesktopSize(int width, int height, std::string& error) {
     if (!resizeFramebuffer(width, height, error)) return false;
-    emitFrame(-1, -1, width, height);
     return true;
 }
 
@@ -608,7 +677,11 @@ void VncRfbEngine::emitFrame(int dirtyX, int dirtyY, int dirtyWidth, int dirtyHe
         std::lock_guard<std::mutex> lock(callbackMutex_);
         callback = frameCallback_;
     }
-    if (!callback || framebuffer_.empty()) return;
+    if (!callback || framebuffer_.empty()) {
+        VNC_DIAG_WARN("[VNC-DIAG] frame emission skipped callback=%{public}d framebufferBytes=%{public}zu",
+                    callback ? 1 : 0, framebuffer_.size());
+        return;
+    }
     VideoFrame frame;
     frame.data = framebuffer_.data();
     frame.size = framebuffer_.size();
@@ -623,6 +696,13 @@ void VncRfbEngine::emitFrame(int dirtyX, int dirtyY, int dirtyWidth, int dirtyHe
     frame.dirtyY = dirtyY;
     frame.dirtyWidth = dirtyWidth;
     frame.dirtyHeight = dirtyHeight;
+    ++diagFrames_;
+    if (diagFrames_ <= 8 || diagFrames_ % 60 == 0) {
+        VNC_DIAG_INFO(
+                    "[VNC-DIAG] frame emitted count=%{public}llu size=%{public}zu framebuffer=%{public}dx%{public}d dirty=%{public}d,%{public}d %{public}dx%{public}d",
+                    static_cast<unsigned long long>(diagFrames_), frame.size, frame.width, frame.height,
+                    frame.dirtyX, frame.dirtyY, frame.dirtyWidth, frame.dirtyHeight);
+    }
     callback(frame);
 }
 

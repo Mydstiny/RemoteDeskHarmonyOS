@@ -51,6 +51,7 @@ export const VERSION: SessionVersionInfo;
   export function probeRdpCertificateAsync(host: string, port: number,
     serverName: string): Promise<RdpCertificateInfo>;
   export function getRdpRenderStats(sessionId: number): RdpRenderStats;
+  export function getSessionDiagnostics(sessionId: number): RustDeskDiagnosticsSnapshot;
   export function getRustDeskDiagnostics(sessionId: number): RustDeskDiagnosticsSnapshot;
   export function getRustDeskDisplayCapabilities(sessionId: number): RustDeskDisplayCapabilities;
   export function switchRustDeskDisplay(sessionId: number, display: number): boolean;
@@ -281,6 +282,7 @@ export interface RustDeskDiagnosticsSnapshot {
   decodeP95Us: number;
   decodeMaxUs: number;
   presentedFrames: number;
+  presentationRejected: number;
   presentationWindowSamples: number;
   presentationWindowMs: number;
   renderP50Us: number;

@@ -108,6 +108,10 @@ private:
     bool negotiated33_ = false;
     int negotiatedMinor_ = 3;
     int ioTimeoutMs_ = 30000;
+    uint64_t diagServerMessages_ = 0;
+    uint64_t diagFramebufferUpdates_ = 0;
+    uint64_t diagFrames_ = 0;
+    uint64_t diagTimeouts_ = 0;
 };
 
 #endif // VNC_RFB_ENGINE_H

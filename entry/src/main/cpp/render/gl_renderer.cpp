@@ -796,18 +796,18 @@ RdpPresentMetrics GLRenderer::RenderRawBGRAInternal(
 
     const auto uploadBeginAt = clock::now();
     int rowStride = stride > 0 ? stride : width * 4;
-    const bool textureWouldChange =
-        rawTexture_ == 0 || width != rawTextureWidth_ || height != rawTextureHeight_;
-    if (useDirtyRect && textureWouldChange) {
+    if (rowStride < width * 4 || rowStride % 4 != 0) {
         ReleaseCurrent();
-        OH_LOG_WARN(LOG_APP,
-                    "[GL] RenderRawBGRA dirty skipped: texture not initialized for %{public}dx%{public}d",
-                    width, height);
-        metrics.result = RdpPresentResult::RendererNotReady;
+        metrics.result = RdpPresentResult::InvalidFrame;
         return metrics;
     }
+    const bool textureWouldChange =
+        rawTexture_ == 0 || width != rawTextureWidth_ || height != rawTextureHeight_;
 
-    // 首次或软解输出尺寸变化时重建纹理；sourceWidth_/sourceHeight_ 保持远端真实尺寸用于坐标映射。
+    // Both raw callers provide the complete framebuffer and use the dirty
+    // rectangle only to reduce the steady-state upload. A new or resized
+    // texture must therefore be initialized from the full buffer; rejecting
+    // the first dirty rectangle would leave the texture uninitialized forever.
     if (textureWouldChange) {
         rawTextureWidth_ = width;
         rawTextureHeight_ = height;
@@ -818,7 +818,7 @@ RdpPresentMetrics GLRenderer::RenderRawBGRAInternal(
         dirtyX >= 0 && dirtyY >= 0 && dirtyWidth > 0 && dirtyHeight > 0 &&
         dirtyX < width && dirtyY < height &&
         dirtyWidth <= width - dirtyX && dirtyHeight <= height - dirtyY;
-    const bool partialUpload = dirtyInBounds &&
+    const bool partialUpload = !textureWouldChange && dirtyInBounds &&
         (dirtyX != 0 || dirtyY != 0 || dirtyWidth != width || dirtyHeight != height);
     const int uploadX = partialUpload ? dirtyX : 0;
     // QUAD_VERTICES deliberately maps v=0 to the visual top, so the texture
@@ -827,7 +827,13 @@ RdpPresentMetrics GLRenderer::RenderRawBGRAInternal(
     const int uploadY = partialUpload ? dirtyY : 0;
     const int uploadW = partialUpload ? dirtyWidth : width;
     const int uploadH = partialUpload ? dirtyHeight : height;
-    const uint8_t* uploadData = bgraData;
+    // The VNC/RDP raw callback owns the complete framebuffer.  When a dirty
+    // rectangle is uploaded, GL must start at that rectangle's first pixel;
+    // using the framebuffer base makes every later update overwrite the
+    // wrong texture region and leaves the visible image looking frozen.
+    const uint8_t* uploadData = partialUpload ?
+        bgraData + static_cast<size_t>(dirtyY) * static_cast<size_t>(rowStride) +
+        static_cast<size_t>(dirtyX) * 4 : bgraData;
 
     // 上传 BGRA 像素数据到 GL 纹理；局部上传时保留原始 row length，避免行尾错位。
     glActiveTexture(GL_TEXTURE0);

@@ -4,6 +4,12 @@ Updated: 2026-07-29 Asia/Shanghai
 
 ## Now
 
+- RustDesk OSS/第三方地址簿中继报错修复计划已合并到
+  `docs/superpowers/plans/2026-07-29-rustdesk-relay-2fa-repair-upgrade-plan-v2.md`；首要实施项是
+  分离地址簿 HTTP 登录与 relay control-plane，修正 exact phrase 的误判/误清 token，并完成
+  token absent/present 与真实 Server Pro A/B。该修复尚未开始业务代码实施；当前工作树的
+  `assembleHap` 已通过，VNC C++ lambda 语法问题属于另一项会话修复，不能混写到 relay 计划。
+
 - RustDesk Peer 2FA 和 TOTP 绑定实现已在本地 `main` 完成；真实 Peer/hbbr/API 23
   设备验收仍待执行。Logo 模式已加入个性化设置，真实 Logo 仅在白名单 issuer 上
   请求 Simple Icons CDN，离线自动回退首字母；不把 TOTP secret/account 放入 URL。
@@ -12,6 +18,7 @@ Updated: 2026-07-29 Asia/Shanghai
 - VNC hosts are now projected into the existing classic remote-host cards. Validate card visibility, classic edit/lock/delete/batch-delete, direct Mac VNC connection and regression smoke for RDP/RustDesk/SSH on an API 23 device. Keep VNC CRUD in `VncHostService`/`vncrecord`; never migrate the projection into `remotehosts`.
 - Settings `连接实况窗` now renders the RDP/RustDesk/SSH/VNC protocol icons through the official `SymbolGlyph` path and includes a separate VNC host count. Validate zero/nonzero counts and refresh after VNC save/delete on an API 23 device; implementation is committed locally as `e495633df`.
 - VNC remember-password/optional-encryption quick fix is implemented on the user-authorized local `main` checkout. Keep the sole `vncrecord` table and its 19-field schema unchanged. Verify direct Mac VNC, Repeater mode12 and the single/new/two-device cloud-first matrix before release; do not push, open a PR or merge remote `main` in this task.
+- VNC continuous-frame/input repair is complete in the current working tree and has passed the D-020 scoped read-only review. Native `rdp_native_tests` is `151 passed, 0 failed`; both production Hvigor gates, signing, Light compliance and diff checks pass; `ohosTest` remains blocked by unregistered task `00306054`. The remaining release evidence is installing the exact signed HAP and validating continuous Mac VNC frames, keyboard/mouse/touch/three-finger controls, resize position recovery and diagnostics.
 - RustDesk Pro session handoff is committed locally on `main` as `97f3b0085`; the wired-log RDP visual-commit follow-ups are committed as `9eb1d7722` and `9fc3d8fcb`. The narrow continuation quick fix is committed as `46e996e36`; install the newest signed HAP and complete real Pro endpoint and RDP device acceptance before release. Keep remote push/PR/remote-main merge out of this task unless explicitly requested.
 - The official FreeRDP-aligned RDP refresh repair plan is materialized at `docs/superpowers/plans/2026-07-28-rdp-official-frame-commit-safe-repair-plan.md`. P1 GDI quick fix is implemented and isolated; P0 real-device acceptance is pending because `hdc` currently cannot connect. Keep renderer changes and any RDPGFX experiment separately gated and independently reversible.
 - Local VNC UX implementation is committed as `e6e6fe04c`; the follow-up relay/VNC UX corrections are committed as `d54c025` and `108d0f0`. Keep remote push/PR/remote-main merge out of this task until the user explicitly requests it.

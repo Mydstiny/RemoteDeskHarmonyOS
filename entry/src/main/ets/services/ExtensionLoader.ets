@@ -290,14 +290,14 @@ export class ExtensionLoader {
     }
   }
 
-  getRustDeskDiagnostics(sessionId: number): RustDeskDiagnosticsSnapshot {
+  getSessionDiagnostics(sessionId: number): RustDeskDiagnosticsSnapshot {
     try {
-      return rdpnapi.getRustDeskDiagnostics(sessionId) as RustDeskDiagnosticsSnapshot;
+      return rdpnapi.getSessionDiagnostics(sessionId) as RustDeskDiagnosticsSnapshot;
     } catch (err) {
       const nowMs: number = Date.now();
       if (nowMs - this.diagnosticsLastErrorAtMs >= 5000) {
         this.diagnosticsLastErrorAtMs = nowMs;
-        hilog.warn(DOMAIN, TAG, '[ExtensionLoader] getRustDeskDiagnostics unavailable: ' + JSON.stringify(err));
+        hilog.warn(DOMAIN, TAG, '[ExtensionLoader] getSessionDiagnostics unavailable: ' + JSON.stringify(err));
       }
       return {
         supported: false, sessionActive: false, protocolSnapshotAvailable: false,
@@ -309,11 +309,17 @@ export class ExtensionLoader {
         codec: -1, width: 0, height: 0, connectionPath: 'unknown', lastFrameAtMs: 0,
         lastFrameAgeMs: -1,
         decodeOk: 0, decodeErrors: 0, decodeP50Us: 0, decodeP95Us: 0, decodeMaxUs: 0,
-        presentedFrames: 0, presentationWindowSamples: 0, presentationWindowMs: 0,
+        presentedFrames: 0, presentationRejected: 0,
+        presentationWindowSamples: 0, presentationWindowMs: 0,
         renderP50Us: 0, renderP95Us: 0, renderMaxUs: 0,
         queueDepth: 0, queueMax: 0, droppedFrames: 0, decoderBackend: 'unknown'
       };
     }
+  }
+
+  /** Compatibility facade retained for RustDesk-specific callers. */
+  getRustDeskDiagnostics(sessionId: number): RustDeskDiagnosticsSnapshot {
+    return this.getSessionDiagnostics(sessionId);
   }
 
   getLocalResourceStats(includePro: boolean = true): LocalResourceStats {

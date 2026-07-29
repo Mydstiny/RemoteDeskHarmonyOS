@@ -39,6 +39,8 @@ export struct VncSettingsPage {
   @State authTimeoutText: string = '15000';
   @State firstFrameTimeoutText: string = '15000';
   @State viewOnly: boolean = true;
+  @State controlMode: number = 0;
+  @State showDiagnostics: boolean = false;
   @State scalingMode: VncScalingMode = 'fit';
   @State clipboardEnabled: boolean = false;
   @State securityPolicy: VncSecurityPolicy = 'secure_only';
@@ -176,6 +178,8 @@ export struct VncSettingsPage {
     this.authTimeoutText = values.authTimeoutMs.toString();
     this.firstFrameTimeoutText = values.firstFrameTimeoutMs.toString();
     this.viewOnly = values.viewOnly;
+    this.controlMode = values.controlMode;
+    this.showDiagnostics = values.showDiagnostics;
     this.scalingMode = values.scalingMode;
     this.clipboardEnabled = values.clipboardEnabled;
     this.securityPolicy = values.securityPolicy;
@@ -221,6 +225,8 @@ export struct VncSettingsPage {
       authTimeoutMs: this.numberValue(this.authTimeoutText, 15000),
       firstFrameTimeoutMs: this.numberValue(this.firstFrameTimeoutText, 15000),
       viewOnly: this.viewOnly,
+      controlMode: this.controlMode,
+      showDiagnostics: this.showDiagnostics,
       scalingMode: this.scalingMode,
       clipboardEnabled: this.clipboardEnabled,
       securityPolicy: this.securityPolicy,
@@ -631,6 +637,23 @@ export struct VncSettingsPage {
       }.width('100%').margin({ bottom: 8 })
       this.settingToggle('只读连接', '默认禁止键鼠控制，连接后仍可按会话能力开启', this.viewOnly,
         (value: boolean): void => { this.viewOnly = value; })
+      Text('输入模式').fontSize(12).fontColor(this.pal().text3).margin({ top: 8, bottom: 6 })
+      Row() {
+        Button('触控板').layoutWeight(1).height(34).fontSize(12).borderRadius(8)
+          .backgroundColor(this.controlMode === 0 ? this.accentColor : this.pal().surface)
+          .fontColor(this.controlMode === 0 ? Color.White : this.pal().text2)
+          .onClick((): void => { this.controlMode = 0; })
+        Button('直接触控').layoutWeight(1).height(34).fontSize(12).margin({ left: 6 }).borderRadius(8)
+          .backgroundColor(this.controlMode === 1 ? this.accentColor : this.pal().surface)
+          .fontColor(this.controlMode === 1 ? Color.White : this.pal().text2)
+          .onClick((): void => { this.controlMode = 1; })
+        Button('键鼠').layoutWeight(1).height(34).fontSize(12).margin({ left: 6 }).borderRadius(8)
+          .backgroundColor(this.controlMode === 2 ? this.accentColor : this.pal().surface)
+          .fontColor(this.controlMode === 2 ? Color.White : this.pal().text2)
+          .onClick((): void => { this.controlMode = 2; })
+      }.width('100%').margin({ bottom: 8 })
+      this.settingToggle('连接诊断', '在 VNC 会话中显示帧率、送显和停滞状态', this.showDiagnostics,
+        (value: boolean): void => { this.showDiagnostics = value; })
       this.settingToggle('文本剪贴板', '只有 RFB ServerCutText/ClientCutText 能力通过后才启用', this.clipboardEnabled,
         (value: boolean): void => { this.clipboardEnabled = value; })
       Text('安全策略').fontSize(12).fontColor(this.pal().text3).margin({ top: 5, bottom: 6 })

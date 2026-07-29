@@ -13,6 +13,9 @@ export interface VncSettingsValues {
   authTimeoutMs: number;
   firstFrameTimeoutMs: number;
   viewOnly: boolean;
+  /** 0=touchpad, 1=direct touch, 2=keyboard/mouse. */
+  controlMode: number;
+  showDiagnostics: boolean;
   scalingMode: VncScalingMode;
   clipboardEnabled: boolean;
   securityPolicy: VncSecurityPolicy;
@@ -59,7 +62,8 @@ export interface VncGatewayValues {
 export function defaultVncSettings(): VncSettingsValues {
   return {
     defaultTransport: 'direct_tcp', defaultPort: 5900, connectTimeoutMs: 10000,
-    authTimeoutMs: 15000, firstFrameTimeoutMs: 15000, viewOnly: true, scalingMode: 'fit',
+    authTimeoutMs: 15000, firstFrameTimeoutMs: 15000, viewOnly: true, controlMode: 0,
+    showDiagnostics: false, scalingMode: 'fit',
     clipboardEnabled: false, securityPolicy: 'secure_only', defaultGatewayId: '',
     repeaterMode: 'mode12', syncPreferences: true, syncHosts: true, syncGateways: true,
     syncSecrets: false, syncTrust: false
@@ -106,6 +110,8 @@ export function vncSettingsPayload(values: VncSettingsValues): string {
   payload['authTimeoutMs'] = values.authTimeoutMs;
   payload['firstFrameTimeoutMs'] = values.firstFrameTimeoutMs;
   payload['viewOnly'] = values.viewOnly;
+  payload['controlMode'] = values.controlMode;
+  payload['showDiagnostics'] = values.showDiagnostics;
   payload['scalingMode'] = values.scalingMode;
   payload['clipboardEnabled'] = values.clipboardEnabled;
   payload['securityPolicy'] = values.securityPolicy;

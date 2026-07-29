@@ -140,6 +140,8 @@ struct SessionDiagnosticsCounters {
     std::atomic<uint64_t> ingressFrames {0};
     std::atomic<uint64_t> ingressBytes {0};
     std::atomic<uint64_t> keyframes {0};
+    std::atomic<uint64_t> presentedFrames {0};
+    std::atomic<uint64_t> presentationRejected {0};
     std::atomic<uint64_t> decodeOk {0};
     std::atomic<uint64_t> decodeErrors {0};
     std::atomic<int> lastCodec {-1};
@@ -162,6 +164,8 @@ struct SessionDiagnosticsCounters {
         ingressFrames.store(0, std::memory_order_release);
         ingressBytes.store(0, std::memory_order_release);
         keyframes.store(0, std::memory_order_release);
+        presentedFrames.store(0, std::memory_order_release);
+        presentationRejected.store(0, std::memory_order_release);
         decodeOk.store(0, std::memory_order_release);
         decodeErrors.store(0, std::memory_order_release);
         lastCodec.store(-1, std::memory_order_release);
@@ -698,8 +702,8 @@ napi_value NapiGetRdpRenderStats(napi_env env, napi_callback_info info) {
     return result;
 }
 
-/** NAPI: getRustDeskDiagnostics(sessionId: number): RustDeskDiagnosticsSnapshot */
-napi_value NapiGetRustDeskDiagnostics(napi_env env, napi_callback_info info) {
+/** NAPI: generic desktop-session diagnostics; the RustDesk name remains an alias. */
+napi_value NapiGetSessionDiagnostics(napi_env env, napi_callback_info info) {
     size_t argc = 1;
     napi_value args[1];
     napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
@@ -712,6 +716,7 @@ napi_value NapiGetRustDeskDiagnostics(napi_env env, napi_callback_info info) {
     RustDeskDiagnosticsStats nativeStats;
     SessionDiagnosticsCounters* counters = nullptr;
     bool sessionActive = false;
+    bool vncSession = false;
     auto it = g_sessions.find(sessionId);
     if (it != g_sessions.end() && it->second) {
         counters = &it->second->diagnostics;
@@ -721,6 +726,22 @@ napi_value NapiGetRustDeskDiagnostics(napi_env env, napi_callback_info info) {
             if (bridge) {
                 nativeStats = bridge->getDiagnostics();
             }
+        }
+        if (it->second->protocolName == "vnc" && it->second->adapter) {
+            sessionActive = true;
+            vncSession = true;
+            nativeStats.supported = true;
+            nativeStats.sessionId = static_cast<uint64_t>(sessionId);
+            nativeStats.codec = static_cast<int>(CodecType::RAW_BGRA);
+            nativeStats.connectionPath = 1;
+            nativeStats.videoMessages = counters->ingressFrames.load(std::memory_order_acquire);
+            nativeStats.receivedFrames = counters->ingressFrames.load(std::memory_order_acquire);
+            nativeStats.receivedBytes = counters->ingressBytes.load(std::memory_order_acquire);
+            nativeStats.keyframes = counters->keyframes.load(std::memory_order_acquire);
+            nativeStats.presentedFrames = counters->presentedFrames.load(std::memory_order_acquire);
+            nativeStats.lastFrameAtMs = counters->lastFrameAtMs.load(std::memory_order_acquire);
+            nativeStats.width = counters->lastWidth.load(std::memory_order_acquire);
+            nativeStats.height = counters->lastHeight.load(std::memory_order_acquire);
         }
     }
 
@@ -764,7 +785,7 @@ napi_value NapiGetRustDeskDiagnostics(napi_env env, napi_callback_info info) {
     napi_create_object(env, &result);
     SetObjectBool(env, result, "supported", nativeStats.supported);
     SetObjectBool(env, result, "sessionActive", sessionActive);
-    SetObjectBool(env, result, "protocolSnapshotAvailable", nativeStats.supported);
+    SetObjectBool(env, result, "protocolSnapshotAvailable", nativeStats.supported || vncSession);
     SetObjectBool(env, result, "videoSeen", videoSeen);
     SetObjectBool(env, result, "receivedRateAvailable", receivedRateAvailable);
     SetObjectBool(env, result, "presentedRateAvailable", presentedRateAvailable);
@@ -772,7 +793,9 @@ napi_value NapiGetRustDeskDiagnostics(napi_env env, napi_callback_info info) {
     SetObjectInt32(env, result, "sessionId", sessionId);
     SetObjectInt32(env, result, "latencyMs", nativeStats.latencyMs);
     SetObjectInt32(env, result, "targetBitrateKbps", nativeStats.targetBitrateKbps);
-    SetObjectInt64(env, result, "videoMessages", static_cast<int64_t>(nativeStats.videoMessages));
+    SetObjectInt64(env, result, "videoMessages", static_cast<int64_t>(
+        vncSession && counters ? counters->ingressFrames.load(std::memory_order_acquire) :
+        nativeStats.videoMessages));
     SetObjectInt64(env, result, "receivedFrames", static_cast<int64_t>(
         counters ? counters->ingressFrames.load(std::memory_order_acquire) : nativeStats.receivedFrames));
     SetObjectInt64(env, result, "keyframes", static_cast<int64_t>(
@@ -805,8 +828,11 @@ napi_value NapiGetRustDeskDiagnostics(napi_env env, napi_callback_info info) {
     SetObjectInt64(env, result, "decodeP50Us", decodeP50Us);
     SetObjectInt64(env, result, "decodeP95Us", decodeP95Us);
     SetObjectInt64(env, result, "decodeMaxUs", decodeMaxUs);
-    SetObjectInt64(env, result, "presentedFrames",
-                   static_cast<int64_t>(renderer.presentedFrames));
+    SetObjectInt64(env, result, "presentedFrames", static_cast<int64_t>(
+        vncSession && counters ? counters->presentedFrames.load(std::memory_order_acquire) :
+        renderer.presentedFrames));
+    SetObjectInt64(env, result, "presentationRejected", static_cast<int64_t>(
+        counters ? counters->presentationRejected.load(std::memory_order_acquire) : 0));
     SetObjectInt64(env, result, "presentationWindowSamples",
                    static_cast<int64_t>(renderer.windowSamples));
     SetObjectInt64(env, result, "presentationWindowMs", renderer.windowDurationUs / 1000);
@@ -816,8 +842,8 @@ napi_value NapiGetRustDeskDiagnostics(napi_env env, napi_callback_info info) {
     SetObjectInt64(env, result, "queueDepth", static_cast<int64_t>(decoder.queueDepth));
     SetObjectInt64(env, result, "queueMax", static_cast<int64_t>(decoder.queueMax));
     SetObjectInt64(env, result, "droppedFrames", static_cast<int64_t>(decoder.droppedFrames));
-    SetObjectString(env, result, "decoderBackend", decoder.valid && decoder.ready ?
-        (decoder.software ? "software" : "hardware") : "unknown");
+    SetObjectString(env, result, "decoderBackend", vncSession ? "raw-frame" :
+        (decoder.valid && decoder.ready ? (decoder.software ? "software" : "hardware") : "unknown"));
     return result;
 }
 
@@ -1405,30 +1431,61 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
             const size_t required = frame.stride > 0 && frame.height > 0 ?
                 static_cast<size_t>(frame.stride) * static_cast<size_t>(frame.height) : 0;
             if (frame.width <= 0 || frame.height <= 0 || frame.stride <= 0 || frame.size < required) {
-                OH_LOG_WARN(LOG_APP, "[ExtLoader] reject invalid VNC raw frame");
+                OH_LOG_WARN(LOG_APP,
+                            "[ExtLoader][VNC-DIAG] reject invalid raw frame width=%{public}d height=%{public}d stride=%{public}d size=%{public}zu required=%{public}zu",
+                            frame.width, frame.height, frame.stride, frame.size, required);
                 return;
             }
-            RendererNapi::SetActiveSourceSize(frame.width, frame.height);
-            const RdpPresentationTarget target = RendererNapi::GetActivePresentationTarget();
-            if (!target.ready()) return;
-            if (frame.dirtyX >= 0 && frame.dirtyY >= 0 && frame.dirtyWidth > 0 && frame.dirtyHeight > 0) {
-                RendererNapi::PresentRawBgraRectActive(frame.data, frame.size, frame.width, frame.height,
-                                                       frame.stride, frame.dirtyX, frame.dirtyY,
-                                                       frame.dirtyWidth, frame.dirtyHeight, target.generation);
-            } else {
-                RendererNapi::PresentRawBgraActive(frame.data, frame.size, frame.width, frame.height,
-                                                   frame.stride, target.generation);
-            }
-            session->diagnostics.ingressFrames.fetch_add(1, std::memory_order_relaxed);
+            const uint64_t frameNumber = session->diagnostics.ingressFrames.fetch_add(
+                1, std::memory_order_relaxed) + 1;
             session->diagnostics.ingressBytes.fetch_add(static_cast<uint64_t>(frame.size),
                                                         std::memory_order_relaxed);
+            if (frame.isKeyFrame) {
+                session->diagnostics.keyframes.fetch_add(1, std::memory_order_relaxed);
+            }
             session->diagnostics.lastCodec.store(static_cast<int>(frame.codec), std::memory_order_relaxed);
             session->diagnostics.lastWidth.store(frame.width, std::memory_order_relaxed);
             session->diagnostics.lastHeight.store(frame.height, std::memory_order_relaxed);
             session->diagnostics.lastFrameAtMs.store(static_cast<uint64_t>(
                 std::chrono::duration_cast<std::chrono::milliseconds>(
-                    std::chrono::steady_clock::now().time_since_epoch()).count()),
+                std::chrono::steady_clock::now().time_since_epoch()).count()),
                 std::memory_order_release);
+            RendererNapi::SetActiveSourceSize(frame.width, frame.height);
+            const RdpPresentationTarget target = RendererNapi::GetActivePresentationTarget();
+            if (!target.ready()) {
+                session->diagnostics.presentationRejected.fetch_add(1, std::memory_order_relaxed);
+                OH_LOG_WARN(LOG_APP,
+                            "[ExtLoader][VNC-DIAG] raw frame target not ready width=%{public}d height=%{public}d size=%{public}zu generation=%{public}llu rejection=%{public}d",
+                            frame.width, frame.height, frame.size,
+                            static_cast<unsigned long long>(target.generation),
+                            static_cast<int>(target.rejection));
+                return;
+            }
+            RdpPresentMetrics present;
+            if (frame.dirtyX >= 0 && frame.dirtyY >= 0 && frame.dirtyWidth > 0 && frame.dirtyHeight > 0) {
+                present = RendererNapi::PresentRawBgraRectActive(
+                    frame.data, frame.size, frame.width, frame.height, frame.stride,
+                    frame.dirtyX, frame.dirtyY, frame.dirtyWidth, frame.dirtyHeight,
+                    target.generation);
+            } else {
+                present = RendererNapi::PresentRawBgraActive(
+                    frame.data, frame.size, frame.width, frame.height, frame.stride,
+                    target.generation);
+            }
+            if (present.presented()) {
+                session->diagnostics.presentedFrames.fetch_add(1, std::memory_order_relaxed);
+                session->diagnostics.decodeOk.fetch_add(1, std::memory_order_relaxed);
+            } else {
+                session->diagnostics.presentationRejected.fetch_add(1, std::memory_order_relaxed);
+            }
+            if (frameNumber <= 8 || frameNumber % 60 == 0 || !present.presented()) {
+                OH_LOG_INFO(LOG_APP,
+                            "[ExtLoader][VNC-DIAG] raw frame presented count=%{public}llu size=%{public}zu framebuffer=%{public}dx%{public}d dirty=%{public}d,%{public}d %{public}dx%{public}d generation=%{public}llu result=%{public}d",
+                            static_cast<unsigned long long>(frameNumber), frame.size, frame.width, frame.height,
+                            frame.dirtyX, frame.dirtyY, frame.dirtyWidth, frame.dirtyHeight,
+                            static_cast<unsigned long long>(target.generation),
+                            static_cast<int>(present.result));
+            }
             return;
         }
         static uint64_t frameCount = 0;
@@ -4767,8 +4824,11 @@ napi_value ExtensionLoaderNapi::Init(napi_env env, napi_value exports) {
     napi_create_function(env, "getRdpRenderStats", NAPI_AUTO_LENGTH,
                          NapiGetRdpRenderStats, nullptr, &fn);
     napi_set_named_property(env, exports, "getRdpRenderStats", fn);
+    napi_create_function(env, "getSessionDiagnostics", NAPI_AUTO_LENGTH,
+                         NapiGetSessionDiagnostics, nullptr, &fn);
+    napi_set_named_property(env, exports, "getSessionDiagnostics", fn);
     napi_create_function(env, "getRustDeskDiagnostics", NAPI_AUTO_LENGTH,
-                         NapiGetRustDeskDiagnostics, nullptr, &fn);
+                         NapiGetSessionDiagnostics, nullptr, &fn);
     napi_set_named_property(env, exports, "getRustDeskDiagnostics", fn);
     napi_create_function(env, "getLocalResourceStats", NAPI_AUTO_LENGTH,
                          NapiGetLocalResourceStats, nullptr, &fn);
