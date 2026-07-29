@@ -9075,18 +9075,20 @@ struct HostListPage {
           }
         }.width('100%')
       }
-      // The existing RDP/RustDesk/SSH editor keeps its compact 420vp budget.
-      // VNC has a few extra, protocol-specific controls; FIT_CONTENT should
-      // expand it before a user ever needs to scroll the classic editor.
-      .constraintSize({ maxHeight: this.proto === 'vnc' ? 760 : 420 })
+      // Keep the action footer in the Sheet viewport. VNC has extra fields, so
+      // its content scrolls within the remaining space instead of pushing the
+      // save action below the viewport when an existing password hint is shown.
+      .constraintSize({ maxHeight: this.proto === 'vnc'
+        ? (this.breakpoint === 'sm' ? 520 : 640) : 420 })
       .scrollBar(BarState.Auto)
       .edgeEffect(EdgeEffect.Spring)
       .width('100%')
       if (this.proto === 'vnc') {
-        Button(this.editingHostId === '' ? '添加' : '保存').width('100%').height(40).fontSize(14)
-          .fontWeight(FontWeight.Medium).backgroundColor(this.accentColor).fontColor('#FFFFFF')
-          .borderRadius(10).margin({ top: 12 })
-          .onClick((): void => { this.doAdd(); })
+        Row() {
+          Button(this.editingHostId === '' ? '添加' : '保存').width('100%').height(40).fontSize(14)
+            .fontWeight(FontWeight.Medium).backgroundColor(this.accentColor).fontColor('#FFFFFF')
+            .borderRadius(10).onClick((): void => { this.doAdd(); })
+        }.width('100%').margin({ top: 12 })
       }
     }
     .padding({ left: 24, right: 24, top: 24, bottom: 24 })
