@@ -9,6 +9,8 @@ import { RemoteProtocol } from './RemoteSessionState';
 const ACTIVE_REMOTE_SESSION_KEY = 'activeRemoteSessionRecord';
 
 export interface ActiveRemoteSessionRecord {
+  ownerScopeId: string;
+  accountGeneration: number;
   sessionId: number;
   hostId: string;
   protocol: RemoteProtocol;
@@ -23,6 +25,8 @@ export interface ActiveRemoteSessionRecord {
 
 export class ActiveRemoteSessionRegistry {
   private static instance: ActiveRemoteSessionRegistry | null = null;
+  private ownerScopeId: string = '';
+  private accountGeneration: number = 0;
 
   static getInstance(): ActiveRemoteSessionRegistry {
     if (ActiveRemoteSessionRegistry.instance === null) {
@@ -31,9 +35,31 @@ export class ActiveRemoteSessionRegistry {
     return ActiveRemoteSessionRegistry.instance;
   }
 
+  bindScope(ownerScopeId: string, accountGeneration: number): void {
+    const nextOwnerScopeId: string = ownerScopeId.trim();
+    const nextAccountGeneration: number = Math.max(0, Math.floor(accountGeneration));
+    const scopeChanged: boolean = this.ownerScopeId !== nextOwnerScopeId ||
+      this.accountGeneration !== nextAccountGeneration;
+    this.ownerScopeId = nextOwnerScopeId;
+    this.accountGeneration = nextAccountGeneration;
+    if (scopeChanged) {
+      // AppStorage survives page reconstruction inside the same process. A
+      // record owned by the previous account must be removed before any
+      // consumer can observe the newly bound account.
+      this.clear('scope-bind-changed');
+    }
+  }
+
   setActive(record: ActiveRemoteSessionRecord): void {
+    if (record.ownerScopeId !== this.ownerScopeId ||
+      record.accountGeneration !== this.accountGeneration ||
+      this.ownerScopeId.length === 0 || this.accountGeneration <= 0) {
+      return;
+    }
     const now: number = Date.now();
     const next: ActiveRemoteSessionRecord = {
+      ownerScopeId: record.ownerScopeId,
+      accountGeneration: record.accountGeneration,
       sessionId: record.sessionId,
       hostId: record.hostId,
       protocol: record.protocol,
@@ -54,7 +80,13 @@ export class ActiveRemoteSessionRegistry {
     if (raw === null || raw.sessionId <= 0 || raw.hostId.length === 0) {
       return null;
     }
+    if (raw.ownerScopeId !== this.ownerScopeId ||
+      raw.accountGeneration !== this.accountGeneration) {
+      return null;
+    }
     return {
+      ownerScopeId: raw.ownerScopeId,
+      accountGeneration: raw.accountGeneration,
       sessionId: raw.sessionId,
       hostId: raw.hostId,
       protocol: raw.protocol,
@@ -68,9 +100,12 @@ export class ActiveRemoteSessionRegistry {
     };
   }
 
-  hasRestorePending(hostId: string, sessionId: number): boolean {
+  hasRestorePending(ownerScopeId: string, accountGeneration: number,
+    hostId: string, sessionId: number): boolean {
     const active = this.getActive();
     return active !== null &&
+      active.ownerScopeId === ownerScopeId &&
+      active.accountGeneration === accountGeneration &&
       active.hostId === hostId &&
       active.sessionId === sessionId &&
       active.protocolConnected &&

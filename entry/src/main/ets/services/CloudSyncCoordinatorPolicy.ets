@@ -170,9 +170,12 @@ export function cloudDistributedTableAutoSync(): boolean {
 
 /** A destructive pull or local restore owns the local RDB until it settles. */
 export function cloudLocalMutationAllowed(manualDownloadActive: boolean, localRestoreActive: boolean,
-  startupSyncPending: boolean = false, bootstrapCompleted: boolean = true): boolean {
-  return !manualDownloadActive && !localRestoreActive &&
-    (!startupSyncPending || bootstrapCompleted);
+  _startupSyncPending: boolean = false, _bootstrapCompleted: boolean = true): boolean {
+  // Local edits are independent from the cloud bootstrap. The bootstrap gate
+  // only suppresses automatic native-first uploads; otherwise Safety-0 or an
+  // unavailable cloud service would make an offline database permanently
+  // read-only.
+  return !manualDownloadActive && !localRestoreActive;
 }
 
 /** Freeze a user's selection in canonical pull/encryption order for one operation. */
@@ -198,6 +201,43 @@ export function cloudSyncProgressFinished(schedule: number): boolean {
 /** ProgressCode.SUCCESS is meaningful only on the terminal progress event. */
 export function cloudSyncProgressSucceeded(schedule: number, code: number): boolean {
   return cloudSyncProgressFinished(schedule) && code === 0;
+}
+
+export interface CloudSyncStatisticSnapshot {
+  successful: number;
+  failed: number;
+  remained: number;
+}
+
+export interface CloudSyncTableDetailsSnapshot {
+  upload: CloudSyncStatisticSnapshot;
+  download: CloudSyncStatisticSnapshot;
+}
+
+/** A successful code without complete target-table statistics is uncertain. */
+export function cloudSyncTargetTableCompleted(
+  details: Record<string, CloudSyncTableDetailsSnapshot> | null,
+  table: string
+): boolean {
+  if (details === null || table.trim().length === 0) { return false; }
+  const tableDetails: CloudSyncTableDetailsSnapshot | undefined = details[table];
+  if (tableDetails === undefined || tableDetails.upload === undefined ||
+    tableDetails.download === undefined) {
+    return false;
+  }
+  const upload: CloudSyncStatisticSnapshot = tableDetails.upload;
+  const download: CloudSyncStatisticSnapshot = tableDetails.download;
+  return upload.failed === 0 && upload.remained === 0 &&
+    download.failed === 0 && download.remained === 0;
+}
+
+/** API 23 reports the common operational failures through ProgressCode. */
+export function classifyCloudSyncProgressCode(code: number): CloudSyncFailureKind {
+  if (code === 2 || code === 7) { return 'network'; }
+  if (code === 3 || code === 4 || code === 5 || code === 6) {
+    return 'cloud_service';
+  }
+  return code === 0 ? 'none' : 'unknown';
 }
 
 /** Returns -1 after the last allowed retry attempt. */

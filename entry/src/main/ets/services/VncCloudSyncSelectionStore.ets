@@ -18,6 +18,7 @@ const PREFS_NAME: string = 'RemoteDesktopVncPrefs';
 export class VncCloudSyncSelectionStore {
   private static instance: VncCloudSyncSelectionStore;
   private selected: VncCloudSyncScope[] = VNC_CLOUD_SYNC_SELECTION_DEFAULT.slice();
+  private scopeId: string = 'device-local';
 
   static getInstance(): VncCloudSyncSelectionStore {
     if (!VncCloudSyncSelectionStore.instance) {
@@ -26,10 +27,12 @@ export class VncCloudSyncSelectionStore {
     return VncCloudSyncSelectionStore.instance;
   }
 
-  init(context: common.Context): void {
+  init(context: common.Context, scopeId: string = 'device-local'): void {
+    this.scopeId = scopeId.trim().length > 0 ? scopeId.trim() : 'device-local';
+    this.selected = VNC_CLOUD_SYNC_SELECTION_DEFAULT.slice();
     try {
       const prefs = preferences.getPreferencesSync(context, { name: PREFS_NAME });
-      const stored: string = prefs.getSync(VNC_CLOUD_SYNC_SELECTION_KEY, '') as string;
+      const stored: string = prefs.getSync(this.preferenceKey(), '') as string;
       if (stored === '') { return; }
       const parsed: string[] = JSON.parse(stored) as string[];
       if (Array.isArray(parsed)) {
@@ -65,7 +68,7 @@ export class VncCloudSyncSelectionStore {
   persistSelectedScopes(context: common.Context): boolean {
     try {
       const prefs = preferences.getPreferencesSync(context, { name: PREFS_NAME });
-      prefs.putSync(VNC_CLOUD_SYNC_SELECTION_KEY, JSON.stringify(this.selected));
+      prefs.putSync(this.preferenceKey(), JSON.stringify(this.selected));
       prefs.flushSync();
       return true;
     } catch (_e) {
@@ -84,5 +87,9 @@ export class VncCloudSyncSelectionStore {
     this.selected = previous;
     this.persistSelectedScopes(context);
     return false;
+  }
+
+  private preferenceKey(): string {
+    return VNC_CLOUD_SYNC_SELECTION_KEY + ':' + this.scopeId;
   }
 }

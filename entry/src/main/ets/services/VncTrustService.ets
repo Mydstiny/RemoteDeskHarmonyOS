@@ -1,6 +1,6 @@
 import { common } from '@kit.AbilityKit';
 import { preferences } from '@kit.ArkData';
-import { AuthService } from './AuthService';
+import { AccountSessionCoordinator } from './AccountSessionCoordinator';
 import { CloudStore } from './CloudStore';
 import { VncRecord } from '../model/VncRecord';
 import { VncCloudSyncService } from './VncCloudSyncService';
@@ -33,7 +33,7 @@ export interface VncTrustSaveResult {
 export class VncTrustService {
   private static instance: VncTrustService;
   private readonly cloud: CloudStore = CloudStore.getInstance();
-  private userId: string = 'local';
+  private userId: string = 'device-local';
   private initialized: boolean = false;
   private listenerBound: boolean = false;
   private listeners: Array<() => void> = [];
@@ -64,6 +64,11 @@ export class VncTrustService {
         this.persistLocalConfirmations();
         this.emitChange();
       });
+      AccountSessionCoordinator.getInstance().onChange((): void => {
+        this.userId = this.currentUserId();
+        if (this.context !== null) { this.loadLocalConfirmations(this.context); }
+        this.emitChange();
+      });
     }
     this.initialized = true;
   }
@@ -80,8 +85,7 @@ export class VncTrustService {
   isReady(): boolean { return this.initialized && this.cloud.isReady(); }
 
   currentUserId(): string {
-    const unionId: string = AuthService.getInstance().getUnionId();
-    return unionId.trim() === '' ? 'local' : unionId.trim();
+    return AccountSessionCoordinator.getInstance().currentScope().ownerScopeId;
   }
 
   onChange(listener: () => void): () => void {
@@ -223,7 +227,7 @@ export class VncTrustService {
     this.locallyConfirmed = [];
     try {
       const prefs = preferences.getPreferencesSync(context, { name: TRUST_PREFS_NAME });
-      const stored: string = prefs.getSync(LOCAL_TRUST_CONFIRMATIONS_KEY, '') as string;
+      const stored: string = prefs.getSync(this.confirmationPreferenceKey(), '') as string;
       if (stored === '') { return; }
       const parsed: string[] = JSON.parse(stored) as string[];
       if (!Array.isArray(parsed)) { return; }
@@ -242,12 +246,16 @@ export class VncTrustService {
     if (this.context === null) { return; }
     try {
       const prefs = preferences.getPreferencesSync(this.context, { name: TRUST_PREFS_NAME });
-      prefs.putSync(LOCAL_TRUST_CONFIRMATIONS_KEY, JSON.stringify(this.locallyConfirmed));
+      prefs.putSync(this.confirmationPreferenceKey(), JSON.stringify(this.locallyConfirmed));
       prefs.flushSync();
     } catch (_e) {
       // Losing the local marker is fail-closed: the next connection asks for
       // confirmation again rather than trusting a cloud-restored fingerprint.
     }
+  }
+
+  private confirmationPreferenceKey(): string {
+    return LOCAL_TRUST_CONFIRMATIONS_KEY + ':' + this.currentUserId();
   }
 
   private emitChange(): void {

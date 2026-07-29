@@ -22,18 +22,28 @@ export class UserAccount {
   authToken: string = '';
   loginTime: number = 0;
 
-  setLoggedIn(unionId: string, displayName: string, avatarUrl: string, token: string): void {
-    this.unionId = unionId;
+  setLoggedIn(unionId: string, displayName: string, avatarUrl: string, token: string): boolean {
+    const stableId: string = unionId.trim();
+    if (stableId.length === 0) {
+      this.setLoggedOut();
+      return false;
+    }
+    this.unionId = stableId;
     this.displayName = displayName;
     this.avatarUrl = avatarUrl;
     this.authToken = token;
     this.isLoggedIn = true;
     this.loginTime = Date.now();
+    return true;
   }
 
   setLoggedOut(): void {
+    this.unionId = '';
+    this.displayName = '';
+    this.avatarUrl = '';
     this.isLoggedIn = false;
     this.authToken = '';
+    this.loginTime = 0;
   }
 
   toJSON(): UserAccountJSON {

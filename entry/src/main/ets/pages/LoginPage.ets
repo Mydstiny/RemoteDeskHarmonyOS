@@ -7,8 +7,10 @@ import { util } from '@kit.ArkTS';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { preferences } from '@kit.ArkData';
 import { AppConfig, Palette, buildDark, buildLight } from '../common/Theme';
-import { AuthService } from '../services/AuthService';
-import { AccountKitService } from '../services/AccountKitService';
+import {
+  AccountSessionCoordinator,
+  AccountTransitionResult
+} from '../services/AccountSessionCoordinator';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import {
   SILENT_LOGIN_TIMEOUT_MS,
@@ -32,14 +34,13 @@ struct LoginPage {
   @State showSkipSheet: boolean = false;
   @State showEnterpriseSheet: boolean = false;
   @State checkingLogin: boolean = true; // 检查持久化登录状态中
-  private auth: AuthService = AuthService.getInstance();
 
   aboutToAppear(): void {
     setTimeout(() => { this.showAnimation = true; }, 100);
 
     // 首次启动 (含卸载重装) → 清除残留登录态, 强制显示登录页
     if (this.isFirstLaunch()) {
-      this.checkingLogin = false;
+      void this.prepareFirstLaunch();
       return;
     }
 
@@ -52,7 +53,7 @@ struct LoginPage {
       savedMode = prefs.getSync(KEY_LOGIN_MODE, '') as string;
     } catch { savedMode = ''; }
     if (!forceShow && savedMode === 'offline') {
-      setTimeout(() => { this.enterMainPage(); }, 50);
+      setTimeout((): void => { void this.enterOfflineMode(); }, 50);
       return;
     }
     // 已登录账号 → 静默恢复会话 (不弹窗)
@@ -104,9 +105,10 @@ struct LoginPage {
         })
       ]);
       if (response !== null && response.data) {
-        this.onLoginSuccess(response.data, false);
-        restored = true;
-        hilog.info(0x0001, 'LoginDebug', '静默登录恢复成功');
+        restored = await this.onLoginSuccess(response.data, false);
+        if (restored) {
+          hilog.info(0x0001, 'LoginDebug', '静默登录恢复成功');
+        }
       } else if (response === null) {
         this.loginError = silentLoginFallbackMessage(0, true);
         hilog.warn(0x0001, 'LoginDebug', '静默登录超时，显示登录页');
@@ -125,8 +127,16 @@ struct LoginPage {
     } finally {
       // Empty responses and provider errors are normal recovery paths. Never
       // leave a fresh install behind an infinite full-screen spinner.
-      if (shouldShowLoginAfterSilentAttempt(restored)) { this.checkingLogin = false; }
+      if (shouldShowLoginAfterSilentAttempt(restored)) {
+        await AccountSessionCoordinator.getInstance().transitionToOffline('silent-login-failed');
+        this.checkingLogin = false;
+      }
     }
+  }
+
+  private async prepareFirstLaunch(): Promise<void> {
+    await AccountSessionCoordinator.getInstance().transitionToOffline('first-launch');
+    this.checkingLogin = false;
   }
 
   /**
@@ -171,7 +181,7 @@ struct LoginPage {
 
       hilog.info(0x0001, 'LoginDebug', '步骤5: executeRequest 返回, data=' + (response.data ? '有' : '无'));
       if (response.data) {
-        this.onLoginSuccess(response.data);
+        await this.onLoginSuccess(response.data);
       } else {
         hilog.error(0x0001, 'LoginDebug', '步骤6失败: response.data 为空');
         this.loginError = '登录失败，未获取到账号信息';
@@ -197,8 +207,8 @@ struct LoginPage {
     }
   }
 
-  private onLoginSuccess(credential: authentication.AuthorizationWithHuaweiIDCredential,
-                          showToast: boolean = true): void {
+  private async onLoginSuccess(credential: authentication.AuthorizationWithHuaweiIDCredential,
+    showToast: boolean = true): Promise<boolean> {
     const unionId: string = credential.unionID ?? '';
     const openId: string = credential.openID ?? '';
     const authCode: string = credential.authorizationCode ?? '';
@@ -211,31 +221,44 @@ struct LoginPage {
     hilog.info(0x0001, 'LoginDebug',
       '[ACCOUNT-DEBUG] AGC_Auth_unionID=' + unionId + '  openID=' + openId);
 
-    this.auth.setLoginResult(unionId, displayName, avatarUri, openId);
-    AccountKitService.getInstance().saveCredential({
-      unionID: unionId, openID: openId, authorizationCode: authCode,
-      idToken: '', displayName: displayName
-    });
-    this.saveLoginMode('account');
+    if (unionId.trim().length === 0) {
+      this.loginError = '登录失败：账号没有返回稳定的 UnionID';
+      hilog.error(0x0001, 'LoginDebug', '登录被拒绝：UnionID 为空');
+      return false;
+    }
+    const transition: AccountTransitionResult =
+      await AccountSessionCoordinator.getInstance().transitionToAccount({
+        unionID: unionId,
+        openID: openId,
+        authorizationCode: authCode,
+        idToken: '',
+        displayName,
+        avatarUrl: avatarUri
+      });
+    if (!transition.ok) {
+      this.loginError = transition.message === '' ? '登录失败：账号数据域切换未完成' : transition.message;
+      return false;
+    }
     if (showToast) {
       promptAction.showToast({ message: '华为账号登录成功', duration: 2000 });
     }
     this.enterMainPage();
+    return true;
   }
 
   private enterMainPage(): void {
     router.replaceUrl({ url: 'pages/HostListPage' });
   }
 
-  /** 持久化登录模式到 Preferences */
-  private saveLoginMode(mode: string): void {
-    try {
-      const prefs = preferences.getPreferencesSync(getContext(this), { name: PREFS_NAME });
-      prefs.putSync(KEY_LOGIN_MODE, mode);
-      prefs.flushSync();
-    } catch (err) {
-      console.error('[LoginPage] saveLoginMode failed: ' + JSON.stringify(err));
+  private async enterOfflineMode(): Promise<void> {
+    const transition: AccountTransitionResult =
+      await AccountSessionCoordinator.getInstance().transitionToOffline('offline-login');
+    if (!transition.ok && transition.state === 'blocked') {
+      this.checkingLogin = false;
+      this.loginError = transition.message;
+      return;
     }
+    this.enterMainPage();
   }
 
   build() {
@@ -371,8 +394,7 @@ struct LoginPage {
           .shadow({ radius: 10, color: 'rgba(0,0,0,0.12)', offsetY: 3 })
           .onClick(() => {
             this.showSkipSheet = false;
-            this.saveLoginMode('offline'); // Preferences持久化: 离线模式
-            setTimeout(() => { this.enterMainPage(); }, 150);
+            setTimeout((): void => { void this.enterOfflineMode(); }, 150);
           })
       }
       .width('100%').padding({ left: 24, right: 24, bottom: 36 })

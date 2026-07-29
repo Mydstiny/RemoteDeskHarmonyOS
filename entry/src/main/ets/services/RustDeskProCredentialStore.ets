@@ -15,6 +15,7 @@ export class RustDeskProCredentialStore {
   private context: common.Context | null = null;
   private accounts: RustDeskProAccountState[] = [];
   private loaded: boolean = false;
+  private scopeId: string = 'device-local';
   private dataChangeListeners: Array<() => void> = [];
 
   static getInstance(): RustDeskProCredentialStore {
@@ -27,6 +28,23 @@ export class RustDeskProCredentialStore {
   init(context: common.Context): void {
     this.context = context;
     if (!this.loaded) { this.load(); }
+  }
+
+  bindScope(context: common.Context, scopeId: string): void {
+    const normalized: string = scopeId.trim().length > 0 ? scopeId.trim() : 'device-local';
+    this.context = context;
+    if (this.loaded && this.scopeId === normalized) { return; }
+    this.accounts = [];
+    this.loaded = false;
+    this.scopeId = normalized;
+    this.load();
+    this.emitDataChange();
+  }
+
+  clearMemoryForScopeTransition(): void {
+    this.accounts = [];
+    this.loaded = false;
+    this.emitDataChange();
   }
 
   onDataChange(callback: () => void): () => void {
@@ -50,7 +68,7 @@ export class RustDeskProCredentialStore {
     this.loaded = true;
     if (!this.context) { return; }
     try {
-      const prefs = preferences.getPreferencesSync(this.context, { name: STORE_NAME });
+      const prefs = preferences.getPreferencesSync(this.context, { name: this.activeStoreName() });
       const raw: string = prefs.getSync(ACCOUNTS_KEY, '') as string;
       if (raw.length === 0) { return; }
       const parsed: Object = JSON.parse(raw) as Object;
@@ -97,12 +115,16 @@ export class RustDeskProCredentialStore {
   private persist(): void {
     if (!this.context) { return; }
     try {
-      const prefs = preferences.getPreferencesSync(this.context, { name: STORE_NAME });
+      const prefs = preferences.getPreferencesSync(this.context, { name: this.activeStoreName() });
       prefs.putSync(ACCOUNTS_KEY, JSON.stringify(this.accounts));
       prefs.flushSync();
     } catch (_err) {
       // The caller still owns the in-memory state; a later init can retry persistence.
     }
+  }
+
+  private activeStoreName(): string {
+    return STORE_NAME + '_' + this.scopeId;
   }
 
   ensureDeviceIdentity(account: RustDeskProAccountState): RustDeskProAccountState {

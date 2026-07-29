@@ -287,6 +287,29 @@ export class HostSyncService {
     return this.ready;
   }
 
+  /** Drop every scope-derived cache before CloudStore switches physical files. */
+  clearForScopeTransition(): void {
+    this.hosts.clear();
+    this.relays.clear();
+    this.rdpCredentials.clear();
+    this.localHostObservationAt.clear();
+    this.localHostConfigObservationAt.clear();
+    this.deletedHostAt.clear();
+    this.healthCloudWriteAt.clear();
+    this.localRdpCredentialObservationAt.clear();
+    this.deletedRdpCredentialAt.clear();
+    this.localRelayObservationAt.clear();
+    this.deletedRelayAt.clear();
+    this.lastCloudSnapshotLoadedAt = 0;
+    this.emitDataChange();
+  }
+
+  /** Reload only after the new scope store has opened successfully. */
+  reloadForScopeTransition(): void {
+    this.clearForScopeTransition();
+    this.loadFromCloud();
+  }
+
   async whenReady(): Promise<void> {
     if (this.ready) { return; }
     if (this.initPromise) {

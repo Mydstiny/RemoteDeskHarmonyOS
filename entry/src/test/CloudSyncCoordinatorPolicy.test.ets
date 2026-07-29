@@ -7,7 +7,9 @@ import {
   cloudDistributedTableAutoSync,
   cloudSyncProgressFinished,
   cloudSyncProgressSucceeded,
+  cloudSyncTargetTableCompleted,
   classifyCloudSyncFailure,
+  classifyCloudSyncProgressCode,
   cloudSyncFailureMessage,
   coalesceAutomaticPush,
   nextCloudSyncRetryDelayMs,
@@ -58,6 +60,31 @@ export default function cloudSyncCoordinatorPolicyTest(): void {
       expect(cloudSyncProgressSucceeded(2, 2)).assertFalse();
     });
 
+    it('requires_complete_target_table_statistics_at_sync_finish', 0, (): void => {
+      expect(cloudSyncTargetTableCompleted(null, 'remotehosts')).assertFalse();
+      expect(cloudSyncTargetTableCompleted({}, 'remotehosts')).assertFalse();
+      expect(cloudSyncTargetTableCompleted({
+        remotehosts: {
+          upload: { successful: 1, failed: 0, remained: 0 },
+          download: { successful: 2, failed: 0, remained: 0 }
+        }
+      }, 'remotehosts')).assertTrue();
+      expect(cloudSyncTargetTableCompleted({
+        remotehosts: {
+          upload: { successful: 0, failed: 0, remained: 1 },
+          download: { successful: 0, failed: 0, remained: 0 }
+        }
+      }, 'remotehosts')).assertFalse();
+    });
+
+    it('classifies_numeric_progress_codes_without_string_guessing', 0, (): void => {
+      expect(classifyCloudSyncProgressCode(2)).assertEqual('network');
+      expect(classifyCloudSyncProgressCode(7)).assertEqual('network');
+      expect(classifyCloudSyncProgressCode(3)).assertEqual('cloud_service');
+      expect(classifyCloudSyncProgressCode(5)).assertEqual('cloud_service');
+      expect(classifyCloudSyncProgressCode(1)).assertEqual('unknown');
+    });
+
     it('rejects_a_suspicious_empty_startup_snapshot_without_blocking_explicit_download', 0, (): void => {
       expect(shouldRejectAutomaticEmptyCloudSnapshot('startup', 'cloudFirst', 11, 0)).assertTrue();
       expect(shouldRejectAutomaticEmptyCloudSnapshot('foreground', 'cloudFirst', 1, 0)).assertTrue();
@@ -84,7 +111,7 @@ export default function cloudSyncCoordinatorPolicyTest(): void {
       expect(cloudLocalMutationAllowed(false, false)).assertTrue();
       expect(cloudLocalMutationAllowed(true, false)).assertFalse();
       expect(cloudLocalMutationAllowed(false, true)).assertFalse();
-      expect(cloudLocalMutationAllowed(false, false, true, false)).assertFalse();
+      expect(cloudLocalMutationAllowed(false, false, true, false)).assertTrue();
       expect(cloudLocalMutationAllowed(false, false, true, true)).assertTrue();
     });
 

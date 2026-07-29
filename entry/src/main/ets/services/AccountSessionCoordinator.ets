@@ -1,0 +1,446 @@
+import { common } from '@kit.AbilityKit';
+import { preferences } from '@kit.ArkData';
+import { hilog } from '@kit.PerformanceAnalysisKit';
+import {
+  AccountKitService,
+  CredentialParams,
+  StoredCredential
+} from './AccountKitService';
+import {
+  AccountScopeToken,
+  accountScopeToken,
+  deviceLocalScopeToken
+} from './AccountScopePolicy';
+import { AuthService } from './AuthService';
+import { CloudStore } from './CloudStore';
+import { HostSyncService } from './HostSyncService';
+import { KeyVaultService } from './KeyVaultService';
+import { SensitiveDataBarrier } from './SensitiveDataBarrier';
+import { RustDeskProCredentialStore } from './RustDeskProCredentialStore';
+import { ActiveRemoteSessionRegistry } from './ActiveRemoteSessionRegistry';
+import { UserAccountJSON } from '../model/UserAccount';
+
+export interface AccountLoginIdentity extends CredentialParams {
+  avatarUrl: string;
+}
+
+export interface AccountTransitionResult {
+  ok: boolean;
+  state: string;
+  message: string;
+  scope: AccountScopeToken;
+}
+
+type AccountTransitionAction = () => Promise<AccountTransitionResult>;
+
+const ACCOUNT_SESSION_PREFS: string = 'RemoteDesktopAppPrefs';
+const LOGIN_MODE_KEY: string = 'loginMode';
+
+/**
+ * The only owner of account/store transitions. UI pages may request a
+ * transition but never open a database, mutate AuthService or publish a ready
+ * account independently.
+ */
+export class AccountSessionCoordinator {
+  private static instance: AccountSessionCoordinator;
+  private context: common.Context | null = null;
+  private current: AccountScopeToken = deviceLocalScopeToken(1);
+  private transitionTail: Promise<void> = Promise.resolve();
+  private listeners: Array<(scope: AccountScopeToken) => void> = [];
+  private initPromise: Promise<boolean> | null = null;
+  private initialized: boolean = false;
+  private transitionLoginModeSnapshot: string = '';
+  private transitionIntentGeneration: number = 0;
+
+  static getInstance(): AccountSessionCoordinator {
+    if (!AccountSessionCoordinator.instance) {
+      AccountSessionCoordinator.instance = new AccountSessionCoordinator();
+    }
+    return AccountSessionCoordinator.instance;
+  }
+
+  async init(context: common.Context): Promise<boolean> {
+    if (this.initialized) { return true; }
+    if (this.initPromise !== null) { return await this.initPromise; }
+    this.context = context;
+    SensitiveDataBarrier.getInstance().init(context as common.UIAbilityContext);
+    const operation: Promise<boolean> = this.initialize(context);
+    this.initPromise = operation;
+    const ready: boolean = await operation;
+    if (this.initPromise === operation) { this.initPromise = null; }
+    this.initialized = ready;
+    return ready;
+  }
+
+  private async initialize(context: common.Context): Promise<boolean> {
+    const accountReady: boolean = await AccountKitService.getInstance().init(context);
+    const store: CloudStore = CloudStore.getInstance();
+    const storeReady: boolean = await store.rebindScope(context, this.current);
+    if (storeReady) {
+      this.current = store.currentScope();
+      this.current.sessionState = 'offline';
+    }
+    if (!storeReady || !store.activateScope(this.current)) {
+      this.current.sessionState = 'blocked';
+      this.publish();
+      return false;
+    }
+    if (!accountReady) {
+      hilog.warn(0x0001, 'AccountSession',
+        'AccountKit persistence unavailable; local device scope remains usable');
+    }
+    RustDeskProCredentialStore.getInstance().bindScope(context, this.current.ownerScopeId);
+    ActiveRemoteSessionRegistry.getInstance()
+      .bindScope(this.current.ownerScopeId, this.current.generation);
+    this.publish();
+    return true;
+  }
+
+  currentScope(): AccountScopeToken {
+    return this.cloneScope(this.current);
+  }
+
+  onChange(listener: (scope: AccountScopeToken) => void): () => void {
+    if (this.listeners.indexOf(listener) < 0) { this.listeners.push(listener); }
+    return (): void => {
+      const index: number = this.listeners.indexOf(listener);
+      if (index >= 0) { this.listeners.splice(index, 1); }
+    };
+  }
+
+  async transitionToAccount(identity: AccountLoginIdentity): Promise<AccountTransitionResult> {
+    const intentGeneration: number = ++this.transitionIntentGeneration;
+    if (!(await this.whenReady())) {
+      return this.result(false, 'blocked', '账号生命周期初始化失败');
+    }
+    return await this.serialize((): Promise<AccountTransitionResult> =>
+      this.doTransitionToAccount(identity, intentGeneration));
+  }
+
+  async transitionToOffline(reason: string = 'offline'): Promise<AccountTransitionResult> {
+    const intentGeneration: number = ++this.transitionIntentGeneration;
+    if (!(await this.whenReady())) {
+      return this.result(false, 'blocked', '账号生命周期初始化失败');
+    }
+    return await this.serialize((): Promise<AccountTransitionResult> =>
+      this.doTransitionToOffline(reason, intentGeneration));
+  }
+
+  private async whenReady(): Promise<boolean> {
+    if (this.initialized) { return true; }
+    if (this.initPromise !== null) { return await this.initPromise; }
+    return false;
+  }
+
+  private async serialize(action: AccountTransitionAction): Promise<AccountTransitionResult> {
+    let result: AccountTransitionResult = {
+      ok: false,
+      state: 'blocked',
+      message: '账号切换未执行',
+      scope: this.cloneScope(this.current)
+    };
+    const previous: Promise<void> = this.transitionTail;
+    const run: Promise<void> = previous.catch((_err: Error): void => {}).then(async (): Promise<void> => {
+      result = await action();
+    });
+    this.transitionTail = run.catch((_err: Error): void => {});
+    await run;
+    return result;
+  }
+
+  private async doTransitionToAccount(identity: AccountLoginIdentity,
+    intentGeneration: number): Promise<AccountTransitionResult> {
+    if (this.context === null || !this.initialized) {
+      return this.result(false, 'blocked', '账号生命周期尚未初始化');
+    }
+    const generation: number = this.current.generation + 1;
+    const switching: AccountScopeToken | null =
+      accountScopeToken(identity.unionID, generation, 'switching', 'validating');
+    if (switching === null) {
+      return this.result(false, 'blocked', '账号没有返回稳定的 UnionID');
+    }
+    const previousScope: AccountScopeToken = this.cloneScope(this.current);
+    this.transitionLoginModeSnapshot = this.readLoginMode();
+    const accountKit: AccountKitService = AccountKitService.getInstance();
+    const previousCredential: StoredCredential | null =
+      accountKit.credentialSnapshot();
+    const previousAuth: UserAccountJSON =
+      AuthService.getInstance().sessionSnapshot();
+    if (!this.intentIsCurrent(intentGeneration)) {
+      return this.result(false, 'superseded', '登录请求已被更新的账号操作替代');
+    }
+
+    const store: CloudStore = CloudStore.getInstance();
+    if (!store.closeMutationGate()) {
+      return this.result(false, 'blocked', '账号数据写入闸门关闭失败');
+    }
+    if (!(await SensitiveDataBarrier.getInstance().drain('account-switch'))) {
+      store.activateScope(this.current);
+      return this.result(false, 'blocked', '远程会话仍在安全退出，账号切换已停止');
+    }
+    if (!(await store.quiesceCurrentScope())) {
+      this.current.sessionState = 'blocked';
+      this.publish();
+      return this.result(false, 'blocked', '旧账号云任务状态不确定，请重启应用后再切换账号');
+    }
+    if (!this.intentIsCurrent(intentGeneration)) {
+      return await this.restorePreviousScope(
+        previousScope, previousCredential, previousAuth,
+        generation + 1, '登录请求已被更新的账号操作替代');
+    }
+    HostSyncService.getInstance().clearForScopeTransition();
+    KeyVaultService.getInstance().clearForScopeTransition();
+    RustDeskProCredentialStore.getInstance().clearMemoryForScopeTransition();
+
+    const rebound: boolean = await store.rebindScope(
+      this.context, switching, identity.unionID);
+    if (!rebound) {
+      return await this.restorePreviousScope(
+        previousScope, previousCredential, previousAuth,
+        generation + 1, '账号物理数据域打开失败');
+    }
+    if (!this.intentIsCurrent(intentGeneration)) {
+      return await this.restorePreviousScope(
+        previousScope, previousCredential, previousAuth,
+        generation + 1, '登录请求已被更新的账号操作替代');
+    }
+
+    if (!(await accountKit.init(this.context)) || !(await accountKit.saveCredential(identity))) {
+      return await this.restorePreviousScope(
+        previousScope, previousCredential, previousAuth,
+        generation + 1, '账号凭据未能安全保存');
+    }
+    if (!this.intentIsCurrent(intentGeneration)) {
+      return await this.restorePreviousScope(
+        previousScope, previousCredential, previousAuth,
+        generation + 1, '登录请求已被更新的账号操作替代');
+    }
+    if (!AuthService.getInstance().setLoginResult(
+      identity.unionID, identity.displayName, identity.avatarUrl, identity.openID)) {
+      return await this.restorePreviousScope(
+        previousScope, previousCredential, previousAuth,
+        generation + 1, '账号身份无效');
+    }
+    if (!this.persistLoginMode('account')) {
+      return await this.restorePreviousScope(
+        previousScope, previousCredential, previousAuth,
+        generation + 1, '登录状态未能持久化');
+    }
+
+    this.current = store.currentScope();
+    this.current.sessionState = 'ready';
+    if (!store.activateScope(this.current)) {
+      return await this.restorePreviousScope(
+        previousScope, previousCredential, previousAuth,
+        generation + 1, '账号数据域状态发布失败');
+    }
+    this.reloadScopeServices();
+    this.publish();
+    return this.result(true, 'ready', '');
+  }
+
+  private async doTransitionToOffline(reason: string,
+    intentGeneration: number): Promise<AccountTransitionResult> {
+    if (this.context === null || !this.initialized) {
+      return this.result(false, 'blocked', '账号生命周期尚未初始化');
+    }
+    const previousScope: AccountScopeToken = this.cloneScope(this.current);
+    this.transitionLoginModeSnapshot = this.readLoginMode();
+    const accountKit: AccountKitService = AccountKitService.getInstance();
+    const previousCredential: StoredCredential | null =
+      accountKit.credentialSnapshot();
+    const previousAuth: UserAccountJSON =
+      AuthService.getInstance().sessionSnapshot();
+    if (!this.intentIsCurrent(intentGeneration)) {
+      return this.result(false, 'superseded', '离线请求已被更新的账号操作替代');
+    }
+    const next: AccountScopeToken = deviceLocalScopeToken(this.current.generation + 1);
+    const store: CloudStore = CloudStore.getInstance();
+    if (!store.closeMutationGate()) {
+      return this.result(false, 'blocked', '账号数据写入闸门关闭失败');
+    }
+    if (!(await SensitiveDataBarrier.getInstance().drain(reason))) {
+      store.activateScope(this.current);
+      return this.result(false, 'blocked', '远程会话仍在安全退出，离线切换已停止');
+    }
+    if (!(await store.quiesceCurrentScope())) {
+      this.current.sessionState = 'blocked';
+      this.publish();
+      return this.result(false, 'blocked', '旧账号云任务状态不确定，请重启应用后再退出账号');
+    }
+    if (!this.intentIsCurrent(intentGeneration)) {
+      return await this.restorePreviousScope(
+        previousScope, previousCredential, previousAuth,
+        next.generation + 1, '离线请求已被更新的账号操作替代');
+    }
+    HostSyncService.getInstance().clearForScopeTransition();
+    KeyVaultService.getInstance().clearForScopeTransition();
+    RustDeskProCredentialStore.getInstance().clearMemoryForScopeTransition();
+    const rebound: boolean = await store.rebindScope(this.context, next);
+    if (!rebound) {
+      return await this.restorePreviousScope(
+        previousScope, previousCredential, previousAuth,
+        next.generation + 1, '离线数据域打开失败');
+    }
+    if (!this.intentIsCurrent(intentGeneration)) {
+      return await this.restorePreviousScope(
+        previousScope, previousCredential, previousAuth,
+        next.generation + 1, '离线请求已被更新的账号操作替代');
+    }
+    if (!(await accountKit.clearCredential())) {
+      return await this.restorePreviousScope(
+        previousScope, previousCredential, previousAuth,
+        next.generation + 1, '账号凭据清除失败');
+    }
+    if (!this.intentIsCurrent(intentGeneration)) {
+      return await this.restorePreviousScope(
+        previousScope, previousCredential, previousAuth,
+        next.generation + 1, '离线请求已被更新的账号操作替代');
+    }
+    await AuthService.getInstance().logout();
+    const nextLoginMode: string =
+      reason === 'offline-login' ? 'offline' : '';
+    if (!this.persistLoginMode(nextLoginMode)) {
+      return await this.restorePreviousScope(
+        previousScope, previousCredential, previousAuth,
+        next.generation + 1, '离线登录状态未能持久化');
+    }
+    this.current = store.currentScope();
+    this.current.sessionState = 'offline';
+    if (!store.activateScope(this.current)) {
+      return await this.restorePreviousScope(
+        previousScope, previousCredential, previousAuth,
+        next.generation + 1, '离线数据域状态发布失败');
+    }
+    this.reloadScopeServices();
+    this.publish();
+    return this.result(true, 'offline', '');
+  }
+
+  /**
+   * A failed target commit reopens the previous physical store under a fresh
+   * generation, then restores both durable credentials and in-memory auth.
+   * If any rollback component fails, fall back to an explicitly logged-out
+   * device-local scope instead of publishing a mixed identity/store state.
+   */
+  private async restorePreviousScope(
+    previous: AccountScopeToken,
+    previousCredential: StoredCredential | null,
+    previousAuth: UserAccountJSON,
+    generation: number,
+    message: string
+  ): Promise<AccountTransitionResult> {
+    if (this.context === null) {
+      return this.result(false, 'blocked', message);
+    }
+    const rollback: AccountScopeToken = this.cloneScope(previous);
+    rollback.generation = Math.max(1, Math.floor(generation));
+    rollback.sessionState = rollback.kind === 'device_local' ? 'offline' : 'ready';
+    const previousUnionId: string = previousCredential !== null
+      ? previousCredential.unionID : previousAuth.unionId;
+    const store: CloudStore = CloudStore.getInstance();
+    const rebound: boolean = await store.rebindScope(
+      this.context, rollback, previousUnionId);
+    const credentialRestored: boolean =
+      await AccountKitService.getInstance()
+        .restoreCredentialSnapshot(previousCredential);
+    if (!rebound || !credentialRestored) {
+      return await this.recoverDeviceLocal(
+        rollback.generation + 1, message + '；旧账号回滚失败');
+    }
+    AuthService.getInstance().restoreSessionSnapshot(previousAuth);
+    if (!this.persistLoginMode(this.transitionLoginModeSnapshot)) {
+      return await this.recoverDeviceLocal(
+        rollback.generation + 1, message + '；登录状态回滚失败');
+    }
+    this.current = store.currentScope();
+    this.current.sessionState = rollback.sessionState;
+    if (!store.activateScope(this.current)) {
+      return await this.recoverDeviceLocal(
+        rollback.generation + 1, message + '；旧账号数据域恢复失败');
+    }
+    this.reloadScopeServices();
+    this.publish();
+    return this.result(false, this.current.sessionState, message);
+  }
+
+  private reloadScopeServices(): void {
+    if (this.context === null) { return; }
+    HostSyncService.getInstance().reloadForScopeTransition();
+    KeyVaultService.getInstance().reloadForScopeTransition();
+    RustDeskProCredentialStore.getInstance()
+      .bindScope(this.context, this.current.ownerScopeId);
+    ActiveRemoteSessionRegistry.getInstance()
+      .bindScope(this.current.ownerScopeId, this.current.generation);
+  }
+
+  private async recoverDeviceLocal(generation: number, message: string): Promise<AccountTransitionResult> {
+    if (this.context === null) { return this.result(false, 'blocked', message); }
+    await AuthService.getInstance().logout();
+    await AccountKitService.getInstance().clearCredential();
+    this.persistLoginMode('');
+    const fallback: AccountScopeToken = deviceLocalScopeToken(generation);
+    const store: CloudStore = CloudStore.getInstance();
+    const recovered: boolean = await store.rebindScope(this.context, fallback);
+    this.current = this.cloneScope(fallback);
+    if (!recovered || !store.activateScope(this.current)) {
+      this.current.sessionState = 'blocked';
+    }
+    this.reloadScopeServices();
+    this.publish();
+    return this.result(false, recovered ? 'offline' : 'blocked', message);
+  }
+
+  private readLoginMode(): string {
+    if (this.context === null) { return ''; }
+    try {
+      const prefs = preferences.getPreferencesSync(
+        this.context, { name: ACCOUNT_SESSION_PREFS });
+      return prefs.getSync(LOGIN_MODE_KEY, '') as string;
+    } catch (_error) {
+      return '';
+    }
+  }
+
+  private persistLoginMode(mode: string): boolean {
+    if (this.context === null) { return false; }
+    try {
+      const prefs = preferences.getPreferencesSync(
+        this.context, { name: ACCOUNT_SESSION_PREFS });
+      prefs.putSync(LOGIN_MODE_KEY, mode);
+      prefs.flushSync();
+      return true;
+    } catch (_error) {
+      return false;
+    }
+  }
+
+  private intentIsCurrent(generation: number): boolean {
+    return generation > 0 && generation === this.transitionIntentGeneration;
+  }
+
+  private result(ok: boolean, state: string, message: string): AccountTransitionResult {
+    return { ok, state, message, scope: this.cloneScope(this.current) };
+  }
+
+  private cloneScope(scope: AccountScopeToken): AccountScopeToken {
+    return {
+      kind: scope.kind,
+      ownerScopeId: scope.ownerScopeId,
+      generation: scope.generation,
+      sessionState: scope.sessionState,
+      cloudBindingState: scope.cloudBindingState,
+      storeIdentity: scope.storeIdentity,
+      schemaRevision: scope.schemaRevision,
+      selectionRevision: scope.selectionRevision
+    };
+  }
+
+  private publish(): void {
+    const snapshot: AccountScopeToken = this.cloneScope(this.current);
+    const listeners: Array<(scope: AccountScopeToken) => void> = this.listeners.slice();
+    for (let i = 0; i < listeners.length; i++) {
+      try { listeners[i](this.cloneScope(snapshot)); } catch (_err) { /* isolate listeners */ }
+    }
+  }
+}

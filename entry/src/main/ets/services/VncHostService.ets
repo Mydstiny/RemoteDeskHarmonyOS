@@ -1,5 +1,5 @@
 import { common } from '@kit.AbilityKit';
-import { AuthService } from './AuthService';
+import { AccountSessionCoordinator } from './AccountSessionCoordinator';
 import { CloudStore } from './CloudStore';
 import { VncRecord } from '../model/VncRecord';
 import {
@@ -29,7 +29,7 @@ export class VncHostService {
   private static instance: VncHostService;
   private readonly cloud: CloudStore = CloudStore.getInstance();
   private readonly secrets: VncSecretService = VncSecretService.getInstance();
-  private userId: string = 'local';
+  private userId: string = 'device-local';
   private initialized: boolean = false;
   private listenerBound: boolean = false;
   private listeners: Array<() => void> = [];
@@ -46,6 +46,10 @@ export class VncHostService {
     if (!this.listenerBound) {
       this.listenerBound = true;
       this.cloud.onCloudChange((): void => { this.emitChange(); });
+      AccountSessionCoordinator.getInstance().onChange((): void => {
+        this.userId = this.currentUserId();
+        this.emitChange();
+      });
     }
     this.initialized = true;
   }
@@ -53,8 +57,7 @@ export class VncHostService {
   isReady(): boolean { return this.initialized && this.cloud.isReady(); }
 
   currentUserId(): string {
-    const unionId: string = AuthService.getInstance().getUnionId();
-    return unionId.trim() === '' ? 'local' : unionId.trim();
+    return AccountSessionCoordinator.getInstance().currentScope().ownerScopeId;
   }
 
   getUserId(): string { this.userId = this.currentUserId(); return this.userId; }

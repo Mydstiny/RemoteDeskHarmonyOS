@@ -20,7 +20,6 @@ export class VncCloudSyncService {
 
   init(context: common.Context): void {
     this.context = context;
-    this.selection.init(context);
   }
 
   /**

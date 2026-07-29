@@ -59,6 +59,10 @@ export class VncSessionCredentialHandoff {
       !(item.userId === normalizedUserId && item.hostId === normalizedHostId));
   }
 
+  clearAll(): void {
+    this.pending = [];
+  }
+
   private removeExpired(): void {
     const now: number = Date.now();
     this.pending = this.pending.filter((item: PendingVncCredential): boolean =>

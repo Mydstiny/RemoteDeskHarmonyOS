@@ -144,6 +144,26 @@ export class KeyVaultService {
     return this.ready;
   }
 
+  /** Drop decrypted/redacted cache objects before changing account scope. */
+  clearForScopeTransition(): void {
+    this.sshKeys.clear();
+    this.totpEntries.clear();
+    this.localSshKeyObservationAt.clear();
+    this.localTotpObservationAt.clear();
+    this.deletedSshKeyAt.clear();
+    this.deletedTotpAt.clear();
+    this.lastCloudSnapshotLoadedAt = 0;
+    this.lastPublishedSnapshotSignature = '';
+    this.hasPublishedSnapshot = false;
+    this.emitDataChange(true);
+  }
+
+  /** Reload only after the new scope store has opened successfully. */
+  reloadForScopeTransition(): void {
+    this.clearForScopeTransition();
+    this.loadFromCloud();
+  }
+
   async whenReady(): Promise<void> {
     if (this.ready) { return; }
     if (this.initPromise) {

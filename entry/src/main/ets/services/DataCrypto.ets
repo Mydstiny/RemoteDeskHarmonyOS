@@ -28,6 +28,11 @@ import { VncRecord } from '../model/VncRecord';
 import { VNC_CLOUD_TABLE, vncCanonicalJson, vncPayloadObject } from './VncRecordPolicy';
 import { decodePlainVncSecret, vncSecretStorageModeFromPayload } from './VncSecretStoragePolicy';
 import { remoteCryptoLifecycleMutationAllowed } from './CloudLifecycleSafetyPolicy';
+import {
+  AccountSessionLease,
+  accountSessionLeaseEquals,
+  cloneAccountSessionLease
+} from './AccountScopePolicy';
 
 const TAG = 'DataCrypto';
 const DOMAIN = 0x0011;
@@ -103,6 +108,9 @@ export class DataCrypto {
   private ready: boolean = false;
   private attemptCount: number = 0;
   private lockUntil: number = 0;
+  private scopeLease: AccountSessionLease | null = null;
+  private cryptoGeneration: number = 0;
+  private pendingCryptoTasks: number = 0;
 
   // CloudStore 引用 (由 init 设置)
   private cloudStore: Object | null = null;
@@ -140,8 +148,29 @@ export class DataCrypto {
    * 初始化 — 注入 CloudStore 引用
    * @param cloudStore CloudStore 实例 (需要 getStore/setStore 方法)
    */
-  init(cloudStore: Object): void {
+  init(cloudStore: Object, lease?: AccountSessionLease): void {
     this.cloudStore = cloudStore;
+    if (lease !== undefined) { this.bindScope(lease); }
+  }
+
+  bindScope(lease: AccountSessionLease): void {
+    if (accountSessionLeaseEquals(this.scopeLease, lease)) { return; }
+    this.invalidateCryptoOperations();
+    this.scopeLease = cloneAccountSessionLease(lease);
+    this.attemptCount = 0;
+    this.lockUntil = 0;
+  }
+
+  async prepareScopeTransition(timeoutMs: number = 10000): Promise<boolean> {
+    this.invalidateCryptoOperations();
+    const startedAt: number = Date.now();
+    while (this.pendingCryptoTasks > 0 &&
+      Date.now() - startedAt < Math.max(1, timeoutMs)) {
+      await new Promise<void>((resolve: () => void): void => {
+        setTimeout(resolve, 20);
+      });
+    }
+    return this.pendingCryptoTasks === 0;
   }
 
   /** Services use this to discard redacted/decrypted snapshots exactly when the DEK state changes. */
@@ -162,15 +191,26 @@ export class DataCrypto {
       throw new Error('[DataCrypto] 密码长度不足 (最少 8 位)');
     }
 
+    const operationGeneration: number = this.beginCryptoOperation();
+    const operationLease: AccountSessionLease | null = this.scopeLease === null
+      ? null : cloneAccountSessionLease(this.scopeLease);
+    let candidateDek: Uint8Array | null = null;
+    let installed: boolean = false;
     try {
       // 1. 生成随机盐
       const salt = this.generateRandomSync(this.SALT_LENGTH);
 
       // 2. PBKDF2 派生 DEK
-      const dek = await this.deriveKey(password, salt);
+      candidateDek = await this.deriveKey(password, salt);
+      if (!this.cryptoOperationIsCurrent(operationGeneration, operationLease)) {
+        throw new Error('[DataCrypto] 账号作用域已变更');
+      }
 
       // 3. HMAC 计算验证器
-      const verifier = await this.computeVerifier(dek);
+      const verifier = await this.computeVerifier(candidateDek);
+      if (!this.cryptoOperationIsCurrent(operationGeneration, operationLease)) {
+        throw new Error('[DataCrypto] 账号作用域已变更');
+      }
 
       // 4. 存储盐值和验证器 -> 云端 (通过 insertSync 触发云同步)
       const saltB64 = this.base64Encode(salt);
@@ -182,9 +222,13 @@ export class DataCrypto {
           throw new Error('[DataCrypto] 密码学参数未写入本地数据库');
         }
       }
+      if (!this.cryptoOperationIsCurrent(operationGeneration, operationLease)) {
+        throw new Error('[DataCrypto] 账号作用域已变更');
+      }
 
       // 5. 缓存 DEK
-      this.dek = dek;
+      this.dek = candidateDek;
+      installed = true;
       this.ready = true;
       this.attemptCount = 0;
       this.notifyStateChange();
@@ -194,6 +238,9 @@ export class DataCrypto {
       const detail: string = DataCrypto.errDetail(err);
       hilog.error(DOMAIN, TAG, "[setMasterPassword] 失败: " + detail);
       throw new Error('设置主密码失败: ' + detail);
+    } finally {
+      if (!installed && candidateDek !== null) { candidateDek.fill(0); }
+      this.endCryptoOperation();
     }
   }
 
@@ -210,6 +257,11 @@ export class DataCrypto {
       return false;
     }
 
+    const operationGeneration: number = this.beginCryptoOperation();
+    const operationLease: AccountSessionLease | null = this.scopeLease === null
+      ? null : cloneAccountSessionLease(this.scopeLease);
+    let candidateDek: Uint8Array | null = null;
+    let installed: boolean = false;
     try {
       // 1. 读取盐值和验证器
       const params = this.getCryptoParams();
@@ -223,15 +275,22 @@ export class DataCrypto {
       const storedVerifier = this.base64Decode(params['verifier'] as string);
 
       // 3. PBKDF2 派生候选 DEK
-      const candidateDek = await this.deriveKey(password, salt);
+      candidateDek = await this.deriveKey(password, salt);
+      if (!this.cryptoOperationIsCurrent(operationGeneration, operationLease)) {
+        return false;
+      }
 
       // 4. 计算验证器
       const candidateVerifier = await this.computeVerifier(candidateDek);
+      if (!this.cryptoOperationIsCurrent(operationGeneration, operationLease)) {
+        return false;
+      }
 
       // 5. 常量时间比较
       if (this.constantTimeEqual(candidateVerifier, storedVerifier)) {
         // 成功
         this.dek = candidateDek;
+        installed = true;
         this.ready = true;
         this.attemptCount = 0;
         this.notifyStateChange();
@@ -251,6 +310,9 @@ export class DataCrypto {
     } catch (err) {
       hilog.error(DOMAIN, TAG, "解锁失败: " + DataCrypto.errDetail(err));
       return false;
+    } finally {
+      if (!installed && candidateDek !== null) { candidateDek.fill(0); }
+      this.endCryptoOperation();
     }
   }
 
@@ -443,6 +505,7 @@ export class DataCrypto {
 
   /** 清除内存 DEK (切后台时调用) — 保留云端盐值+验证器, 回前台后可解锁恢复 */
   lock(): boolean {
+    this.cryptoGeneration++;
     const changed: boolean = this.ready || this.dek !== null;
     if (this.dek) {
       this.dek.fill(0); // 覆写内存
@@ -452,6 +515,26 @@ export class DataCrypto {
     if (changed) { this.notifyStateChange(); }
     hilog.info(DOMAIN, TAG, 'DEK 已清除 (lock)');
     return changed;
+  }
+
+  private invalidateCryptoOperations(): void {
+    this.lock();
+    this.cryptoGeneration++;
+  }
+
+  private beginCryptoOperation(): number {
+    this.pendingCryptoTasks++;
+    return this.cryptoGeneration;
+  }
+
+  private endCryptoOperation(): void {
+    this.pendingCryptoTasks = Math.max(0, this.pendingCryptoTasks - 1);
+  }
+
+  private cryptoOperationIsCurrent(generation: number,
+    lease: AccountSessionLease | null): boolean {
+    return generation === this.cryptoGeneration &&
+      accountSessionLeaseEquals(this.scopeLease, lease);
   }
 
   /** 清除所有加密状态 (用户主动关闭加密时调用) — 清除盐值+验证器, 数据恢复明文存储 */
@@ -533,6 +616,10 @@ export class DataCrypto {
   // 注意: 迁移操作不是事务性的。如果中途崩溃，部分记录可能已加密。
   // 重新运行 autoMigrate 会跳过已加密的记录 (幂等), 因此不会造成数据损坏。
   async autoMigrate(cloud: CryptoCloudStore): Promise<number> {
+    if (!remoteCryptoLifecycleMutationAllowed()) {
+      hilog.warn(DOMAIN, TAG, '账号级加密迁移尚未完成，已跳过全表自动迁移');
+      return 0;
+    }
     if (!this.ready || !this.dek) {
       hilog.warn(DOMAIN, TAG, 'DEK 未就绪, 跳过迁移');
       return 0;

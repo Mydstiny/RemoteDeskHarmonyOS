@@ -14,7 +14,10 @@ import { inputDevice } from '@kit.InputKit';
 import { HostSyncService } from '../services/HostSyncService';
 import { AuthService } from '../services/AuthService';
 import { KeyVaultService } from '../services/KeyVaultService';
-import { AccountKitService } from '../services/AccountKitService';
+import {
+  AccountSessionCoordinator,
+  AccountTransitionResult
+} from '../services/AccountSessionCoordinator';
 import { DataCrypto } from '../services/DataCrypto';
 import { CloudStore } from '../services/CloudStore';
 import { remoteCryptoLifecycleMutationAllowed } from '../services/CloudLifecycleSafetyPolicy';
@@ -3615,6 +3618,7 @@ struct HostListPage {
       return;
     }
     const generation: number = ++this.rustDeskProPreflightGeneration;
+    const connectionScope = AccountSessionCoordinator.getInstance().currentScope();
     const host: RemoteHost = RemoteHost.fromJSON(stored.toJSON());
     const relay: RustDeskRelayConfig | undefined = this.srv.getAllRelays()
       .find((item: RustDeskRelayConfig): boolean => item.id === host.rustdeskRelayId);
@@ -3640,12 +3644,22 @@ struct HostListPage {
       if (!await this.loader.waitForPendingTeardown(5000)) {
         throw new Error('上一连接尚未完全结束，请稍后重试。');
       }
+      const scopeAfterTeardown = AccountSessionCoordinator.getInstance().currentScope();
+      if (scopeAfterTeardown.ownerScopeId !== connectionScope.ownerScopeId ||
+        scopeAfterTeardown.generation !== connectionScope.generation) {
+        throw new Error('账号已切换，旧账号连接已取消。');
+      }
       const sid: number = this.loader.connect(this.rustDeskProConfig(host));
       if (sid <= 0) { throw new Error('无法启动 RustDesk 连接 [E-RUSTDESK-PREFLIGHT-' + Math.abs(sid).toString() + ']'); }
       const timeoutMs: number = 120000;
       const startedAt: number = Date.now();
       while (Date.now() - startedAt < timeoutMs) {
         if (generation !== this.rustDeskProPreflightGeneration) { return; }
+        const activeConnectionScope = AccountSessionCoordinator.getInstance().currentScope();
+        if (activeConnectionScope.ownerScopeId !== connectionScope.ownerScopeId ||
+          activeConnectionScope.generation !== connectionScope.generation) {
+          return;
+        }
         const state: number = this.loader.getConnectionState(sid);
         if (state === 2) {
           this.rustDeskProTwoFactorActive = false;
@@ -3660,6 +3674,8 @@ struct HostListPage {
           }
           const now: number = Date.now();
           const record: ActiveRemoteSessionRecord = {
+            ownerScopeId: connectionScope.ownerScopeId,
+            accountGeneration: connectionScope.generation,
             sessionId: sid, hostId: host.id, protocol: RemoteProtocol.rustdesk,
             hostAddress: host.host, protocolConnected: true, renderAttached: false,
             restoreNeeded: true, latestSurfaceId: '', createdAtMs: now, updatedAtMs: now
@@ -3691,6 +3707,11 @@ struct HostListPage {
       throw new Error(host.rustdeskAuthMode === 'request_approval' ? '等待远端批准超时，请重新发起。' : '鉴权超时，请检查网络或密码。');
     } catch (err) {
       if (generation !== this.rustDeskProPreflightGeneration) { return; }
+      const failureScope = AccountSessionCoordinator.getInstance().currentScope();
+      if (failureScope.ownerScopeId !== connectionScope.ownerScopeId ||
+        failureScope.generation !== connectionScope.generation) {
+        return;
+      }
       this.loader.disconnect();
       this.rustDeskProTwoFactorActive = false;
       this.rustDeskProTwoFactorSessionId = -1;
@@ -3708,7 +3729,8 @@ struct HostListPage {
         const accountId: string = rustDeskProAccountIdForConnection(
           host.rustdeskProAccountId, host.rustdeskAccountId);
         this.proSync.markConnectionSessionExpired(accountId, 'connection_token_expired',
-          expectedTokenFingerprint, expectedTokenGeneration);
+          expectedTokenFingerprint, expectedTokenGeneration,
+          connectionScope.ownerScopeId, connectionScope.generation);
       }
       this.rustDeskProPreflightError = kind === 'unknown'
         ? rustDeskNativeErrorDetail(detail)
@@ -3941,17 +3963,18 @@ struct HostListPage {
   }
 
   private async doLogout(): Promise<void> {
-    // 1. 清空 App 内存登录态
-    this.auth.logout();
-    // 2. 清空持久化登录模式
-    try {
-      const prefs = preferences.getPreferencesSync(getContext(this), { name: 'RemoteDesktopAppPrefs' });
-      prefs.putSync('loginMode', '');
-      prefs.flushSync();
-    } catch (_e) { /* ignore */ }
-    // 3. 清空磁盘凭据
-    AccountKitService.getInstance().clearCredential();
-    // 4. 清除 HMS Core 系统级授权 session
+    // The coordinator drains sessions, clears plaintext caches and switches to
+    // the device-local physical store before this page leaves the account UI.
+    const transition: AccountTransitionResult =
+      await AccountSessionCoordinator.getInstance().transitionToOffline('logout');
+    if (!transition.ok) {
+      promptAction.showToast({
+        message: transition.message === '' ? '退出账号未完成，当前账号保持不变' : transition.message,
+        duration: 3000
+      });
+      return;
+    }
+    // 清除 HMS Core 系统级授权 session
     try {
       const cancelReq: authentication.CancelAuthorizationRequest =
         new authentication.HuaweiIDProvider().createCancelAuthorizationRequest();
@@ -3959,11 +3982,7 @@ struct HostListPage {
         new authentication.AuthenticationController(getContext(this));
       await cancelCtrl.executeRequest(cancelReq);
     } catch (_e) { /* 无缓存时可能抛异常, 忽略 */ }
-    // 5. 清除内存 DEK (保留云端盐值+验证器, 重新登录后可在设置中解锁)
-    try {
-      DataCrypto.getInstance().lock();
-    } catch (_e) { /* ignore */ }
-    // 6. 跳转登录页
+    // 跳转登录页
     this.closeSettingsLeafSheet();
     router.replaceUrl({ url: 'pages/LoginPage' });
   }
@@ -3984,21 +4003,27 @@ struct HostListPage {
       const dataObj: Record<string, Object> = credential as Record<string, Object>;
       const nickName: string = (dataObj['nickName'] as string) ?? '';
       const avatarUri: string = (dataObj['avatarUri'] as string) ?? '';
-      this.auth.setLoginResult(
-        credential.unionID ?? '',
-        nickName || '华为用户',
-        avatarUri,
-        credential.openID ?? ''
-      );
-      // 持久化 (参照 LoginPage.onLoginSuccess)
-      AccountKitService.getInstance().saveCredential({
-        unionID: credential.unionID ?? '',
-        openID: credential.openID ?? '',
-        authorizationCode: credential.authorizationCode ?? '',
-        idToken: '',
-        displayName: nickName || '华为用户'
-      });
-      this.saveLoginModeToPrefs('account');
+      const unionId: string = (credential.unionID ?? '').trim();
+      if (unionId.length === 0) {
+        promptAction.showToast({ message: '登录失败：账号没有返回稳定标识', duration: 2500 });
+        return;
+      }
+      const transition: AccountTransitionResult =
+        await AccountSessionCoordinator.getInstance().transitionToAccount({
+          unionID: unionId,
+          openID: credential.openID ?? '',
+          authorizationCode: credential.authorizationCode ?? '',
+          idToken: '',
+          displayName: nickName || '华为用户',
+          avatarUrl: avatarUri
+        });
+      if (!transition.ok) {
+        promptAction.showToast({
+          message: transition.message === '' ? '登录失败：账号数据域切换未完成' : transition.message,
+          duration: 2500
+        });
+        return;
+      }
       // 刷新 UI 状态
       this.accountDisplayName = nickName || '华为用户';
       this.accountAvatarUrl = avatarUri;
@@ -4009,14 +4034,6 @@ struct HostListPage {
     } catch (_err) {
       // 用户取消或登录失败, 静默
     }
-  }
-
-  private saveLoginModeToPrefs(mode: string): void {
-    try {
-      const prefs = preferences.getPreferencesSync(getContext(this), { name: 'RemoteDesktopAppPrefs' });
-      prefs.putSync('loginMode', mode);
-      prefs.flushSync();
-    } catch (_e) { /* ignore */ }
   }
 
   private saveTotpLock(locked: boolean): void {

@@ -30,7 +30,7 @@ const KEY_CREDENTIAL: string = 'credential_json';
 const AGC_TOKEN_ENDPOINT = 'https://oauth-login.cloud.huawei.com/oauth2/v3/token';
 
 /** 持久化的凭据数据结构 */
-interface StoredCredential {
+export interface StoredCredential {
   unionID: string;
   openID: string;
   authorizationCode: string;
@@ -43,7 +43,7 @@ interface StoredCredential {
 }
 
 /** 登录凭据参数 */
-interface CredentialParams {
+export interface CredentialParams {
   unionID: string;
   openID: string;
   authorizationCode: string;
@@ -55,6 +55,9 @@ export class AccountKitService {
   private static instance: AccountKitService;
   private dataPreferences: preferences.Preferences | null = null;
   private credential: StoredCredential | null = null;
+  private initPromise: Promise<boolean> | null = null;
+  private credentialRevision: number = 0;
+  private persistenceTail: Promise<void> = Promise.resolve();
 
   static getInstance(): AccountKitService {
     if (!AccountKitService.instance) {
@@ -64,12 +67,24 @@ export class AccountKitService {
   }
 
   /** 初始化持久化存储, 从磁盘恢复 */
-  async init(context: common.Context): Promise<void> {
+  async init(context: common.Context): Promise<boolean> {
+    if (this.dataPreferences !== null) { return true; }
+    if (this.initPromise !== null) { return await this.initPromise; }
+    this.initPromise = this.initializePreferences(context);
+    const initialized: boolean = await this.initPromise;
+    if (!initialized) { this.initPromise = null; }
+    return initialized;
+  }
+
+  private async initializePreferences(context: common.Context): Promise<boolean> {
     try {
       this.dataPreferences = preferences.getPreferencesSync(context, { name: STORE_NAME });
       await this.loadFromDisk();
+      return true;
     } catch (err) {
       hilog.error(0x0015, 'AccountKit', 'AccountKitService 初始化失败: ' + JSON.stringify(err));
+      this.dataPreferences = null;
+      return false;
     }
   }
 
@@ -79,8 +94,11 @@ export class AccountKitService {
     try {
       const raw: string = this.dataPreferences.getSync(KEY_CREDENTIAL, '') as string;
       if (raw !== '') {
-        this.credential = JSON.parse(raw) as StoredCredential;
+        const parsed: StoredCredential = JSON.parse(raw) as StoredCredential;
+        this.credential = parsed && typeof parsed.unionID === 'string' &&
+          parsed.unionID.trim().length > 0 ? parsed : null;
       }
+      this.credentialRevision++;
     } catch (err) {
       hilog.error(0x0015, 'AccountKit', 'AccountKitService 加载凭据失败: ' + JSON.stringify(err));
       this.credential = null;
@@ -88,26 +106,43 @@ export class AccountKitService {
   }
 
   /** 持久化到 Preferences */
-  private async saveToDisk(): Promise<void> {
-    if (!this.dataPreferences) { return; }
-    try {
-      if (this.credential) {
-        this.dataPreferences.putSync(KEY_CREDENTIAL, JSON.stringify(this.credential));
-      } else {
-        this.dataPreferences.deleteSync(KEY_CREDENTIAL);
-      }
-      this.dataPreferences.flush();
-    } catch (err) {
-      hilog.error(0x0015, 'AccountKit', 'AccountKitService 保存凭据失败: ' + JSON.stringify(err));
-    }
+  private async saveToDisk(): Promise<boolean> {
+    if (!this.dataPreferences) { return false; }
+    const snapshot: StoredCredential | null = this.credential === null
+      ? null : this.cloneCredential(this.credential);
+    let succeeded: boolean = false;
+    const previous: Promise<void> = this.persistenceTail;
+    const write: Promise<void> = previous.catch((_error: Error): void => {})
+      .then(async (): Promise<void> => {
+        try {
+          if (snapshot !== null) {
+            this.dataPreferences?.putSync(
+              KEY_CREDENTIAL, JSON.stringify(snapshot));
+          } else {
+            this.dataPreferences?.deleteSync(KEY_CREDENTIAL);
+          }
+          await this.dataPreferences?.flush();
+          succeeded = true;
+        } catch (err) {
+          hilog.error(0x0015, 'AccountKit',
+            'AccountKitService 保存凭据失败: ' + JSON.stringify(err));
+        }
+      });
+    this.persistenceTail = write.catch((_error: Error): void => {});
+    await write;
+    return succeeded;
   }
 
   /**
    * 保存登录凭据 (LoginPage 成功后调用)
    */
-  saveCredential(cred: CredentialParams): void {
+  async saveCredential(cred: CredentialParams): Promise<boolean> {
+    const unionID: string = cred.unionID.trim();
+    if (unionID.length === 0 || this.dataPreferences === null) { return false; }
+    const previous: StoredCredential | null = this.credential;
+    const previousRevision: number = this.credentialRevision;
     this.credential = {
-      unionID: cred.unionID,
+      unionID,
       openID: cred.openID,
       authorizationCode: cred.authorizationCode,
       idToken: cred.idToken,
@@ -117,18 +152,60 @@ export class AccountKitService {
       displayName: cred.displayName || '',
       loginTime: Date.now()
     };
-    this.saveToDisk().catch((_: Error) => { /* ignore */ });
+    this.credentialRevision++;
+    if (await this.saveToDisk()) { return true; }
+    this.credential = previous;
+    this.credentialRevision = previousRevision + 2;
+    return false;
   }
 
   /** 清除凭据 (退出登录) */
-  clearCredential(): void {
+  async clearCredential(): Promise<boolean> {
+    const previous: StoredCredential | null = this.credential;
+    const previousRevision: number = this.credentialRevision;
     this.credential = null;
-    this.saveToDisk().catch((_: Error) => { /* ignore */ });
+    this.credentialRevision++;
+    if (await this.saveToDisk()) { return true; }
+    this.credential = previous;
+    this.credentialRevision = previousRevision + 2;
+    return false;
   }
 
   /** 是否有有效凭据 */
   isAuthorized(): boolean {
     return this.credential !== null && this.credential.unionID !== '';
+  }
+
+  /** In-memory transaction snapshot used only by AccountSessionCoordinator. */
+  credentialSnapshot(): StoredCredential | null {
+    return this.credential === null ? null : this.cloneCredential(this.credential);
+  }
+
+  /** Restore the exact previous durable credential after a failed scope commit. */
+  async restoreCredentialSnapshot(snapshot: StoredCredential | null): Promise<boolean> {
+    if (this.dataPreferences === null) { return false; }
+    const previous: StoredCredential | null = this.credential;
+    const previousRevision: number = this.credentialRevision;
+    this.credential = snapshot === null ? null : this.cloneCredential(snapshot);
+    this.credentialRevision++;
+    if (await this.saveToDisk()) { return true; }
+    this.credential = previous;
+    this.credentialRevision = previousRevision + 2;
+    return false;
+  }
+
+  private cloneCredential(source: StoredCredential): StoredCredential {
+    return {
+      unionID: source.unionID,
+      openID: source.openID,
+      authorizationCode: source.authorizationCode,
+      idToken: source.idToken,
+      accessToken: source.accessToken,
+      refreshToken: source.refreshToken,
+      tokenExpiresAt: source.tokenExpiresAt,
+      displayName: source.displayName,
+      loginTime: source.loginTime
+    };
   }
 
   /** 获取 Authorization Code (5分钟有效, 一次性使用) */
@@ -198,6 +275,8 @@ export class AccountKitService {
    */
   async exchangeAuthCode(clientId: string, clientSecret: string): Promise<string | undefined> {
     const authCode = this.getAuthorizationCode();
+    const unionId: string = this.getUnionID();
+    const operationRevision: number = this.credentialRevision;
     if (!authCode) {
       hilog.error(DOMAIN, TAG, '[exchangeAuthCode] 无可用的 Authorization Code');
       return undefined;
@@ -218,16 +297,31 @@ export class AccountKitService {
       });
 
       if (resp.responseCode === 200) {
+        if (operationRevision !== this.credentialRevision ||
+          this.credential === null ||
+          this.credential.unionID !== unionId ||
+          this.credential.authorizationCode !== authCode) {
+          hilog.warn(DOMAIN, TAG,
+            '[exchangeAuthCode] 账号已切换，丢弃旧凭据网络结果');
+          return undefined;
+        }
         const data: Record<string, Object> = JSON.parse(resp.result as string) as Record<string, Object>;
         const accessToken = data['access_token'] as string;
         const refreshToken = data['refresh_token'] as string;
         const expiresIn = data['expires_in'] as number;
 
         if (this.credential) {
+          const previous: StoredCredential =
+            this.cloneCredential(this.credential);
           this.credential.accessToken = accessToken;
           this.credential.refreshToken = refreshToken;
           this.credential.tokenExpiresAt = Date.now() + (expiresIn || 3600) * 1000;
-          await this.saveToDisk();
+          this.credentialRevision++;
+          if (!(await this.saveToDisk())) {
+            this.credential = previous;
+            this.credentialRevision++;
+            return undefined;
+          }
         }
 
         hilog.info(DOMAIN, TAG, "[exchangeAuthCode] Access Token 换取成功, expires_in=" + expiresIn.toString());

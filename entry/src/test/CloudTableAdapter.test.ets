@@ -17,6 +17,8 @@ describe('CloudTableAdapter', (): void => {
     expect(row['passward']).assertEqual('secret');
     expect(row['rustdeskdirectport']).assertUndefined();
     expect(cloudTableColumns('remotehosts').indexOf('passward') >= 0).assertTrue();
+    expect(cloudTableColumns('rdpcredentials').indexOf('userid') >= 0).assertTrue();
+    expect(cloudTableColumns('rdpcredentials').indexOf('username') >= 0).assertTrue();
   });
 
   it('does_not_allow_a_legacy_password_shadow_to_override_passward', (): void => {

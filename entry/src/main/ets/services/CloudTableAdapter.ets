@@ -7,7 +7,9 @@
 
 const CLOUD_COLUMNS: Record<string, string[]> = {
   'cryptoparams': ['id', 'key', 'value'],
-  'rdpcredentials': ['id', 'label', 'password', 'createdat', 'updatedat'],
+  'rdpcredentials': [
+    'id', 'userid', 'label', 'username', 'password', 'createdat', 'updatedat'
+  ],
   'remotehosts': [
     'id', 'userid', 'label', 'protocol', 'host', 'port', 'username', 'passward',
     'customhostname', 'sshusekey', 'sshkeypath', 'sshkeydata', 'proxyhost', 'proxyport',
@@ -52,7 +54,6 @@ const LOCAL_ONLY_COLUMNS: Record<string, string[]> = {
     'rustdeskpromanaged', 'rustdeskprolastseenat', 'rustdeskprosyncerror',
     'rustdesktargetdevice', 'rustdeskadaptiveorientation'
   ],
-  'rdpcredentials': ['username'],
   'sshkeys': ['formatversion', 'privatekeyencrypted'],
   'usersettings': ['key', 'value']
 };

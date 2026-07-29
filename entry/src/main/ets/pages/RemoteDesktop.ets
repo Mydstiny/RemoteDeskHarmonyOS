@@ -100,6 +100,7 @@ import {
   resolveRemoteSessionPipLifecycle
 } from '../services/RemoteSessionPipLifecyclePolicy';
 import { ActiveRemoteSessionRegistry, ActiveRemoteSessionRecord } from '../services/ActiveRemoteSessionRegistry';
+import { AccountSessionCoordinator } from '../services/AccountSessionCoordinator';
 import { NativeSessionHandles, ProductionNativeHandleAdapter } from '../services/NativeSessionHandles';
 import {
   decideRemoteDesktopBackgroundAction,
@@ -4403,7 +4404,10 @@ struct RemoteDesktop {
       return;
     }
     const now: number = Date.now();
+    const activeScope = AccountSessionCoordinator.getInstance().currentScope();
     const record: ActiveRemoteSessionRecord = {
+      ownerScopeId: activeScope.ownerScopeId,
+      accountGeneration: activeScope.generation,
       sessionId: sessionId,
       hostId: host.id,
       protocol: this.remoteProtocolOf(host),
@@ -6827,6 +6831,7 @@ struct RemoteDesktop {
   // XComponent 就绪后初始化渲染管线并连接
   private async doConnect(host: RemoteHost): Promise<void> {
     const attemptId: number = ++this.connectAttemptId;
+    const connectionScope = AccountSessionCoordinator.getInstance().currentScope();
     const vncHost: VncHostView | null = this.pendingVncHost;
     const isVnc: boolean = host.protocol === 'vnc' && vncHost !== null;
     let rdpRestrictedAdminHash: string = '';
@@ -6836,6 +6841,11 @@ struct RemoteDesktop {
     try {
       if (!(await this.loader.waitForPendingTeardown())) {
         throw new Error('上一会话资源清理未完成 [E-TEARDOWN-PENDING]');
+      }
+      const scopeAfterTeardown = AccountSessionCoordinator.getInstance().currentScope();
+      if (scopeAfterTeardown.ownerScopeId !== connectionScope.ownerScopeId ||
+        scopeAfterTeardown.generation !== connectionScope.generation) {
+        throw new Error('账号已切换，旧账号连接已取消。');
       }
       this.rendererSourceWidth = 0;
       this.rendererSourceHeight = 0;
@@ -7182,6 +7192,11 @@ struct RemoteDesktop {
       if (!nativeReady) {
         return;
       }
+      const scopeAfterConnect = AccountSessionCoordinator.getInstance().currentScope();
+      if (scopeAfterConnect.ownerScopeId !== connectionScope.ownerScopeId ||
+        scopeAfterConnect.generation !== connectionScope.generation) {
+        return;
+      }
 
       this.nativeHandles.attachConnectedSession(sid, this.remoteProtocolOf(host));
       this.connected = true;
@@ -7235,6 +7250,11 @@ struct RemoteDesktop {
         this.clipboardBridgeEnabledForSession());
     } catch (err) {
       rdpRestrictedAdminHash = '';
+      const failureScope = AccountSessionCoordinator.getInstance().currentScope();
+      if (failureScope.ownerScopeId !== connectionScope.ownerScopeId ||
+        failureScope.generation !== connectionScope.generation) {
+        return;
+      }
       this.clearRdpRenderWatchdog();
       this.clearRdpNativeStateMonitor();
       this.clearRemoteCursorPolling(true, 'connect-error');
@@ -7281,7 +7301,8 @@ struct RemoteDesktop {
           const accountId: string = rustDeskProAccountIdForConnection(
             host.rustdeskProAccountId, host.rustdeskAccountId);
           this.proSync.markConnectionSessionExpired(accountId, 'connection_token_expired',
-            rdAccessTokenFingerprint, rdAccessTokenGeneration);
+            rdAccessTokenFingerprint, rdAccessTokenGeneration,
+            connectionScope.ownerScopeId, connectionScope.generation);
         }
         this.connectionErrorDetail = rustDeskProNativeErrorMessage(
           rustDeskErrorKind, host.rustdeskAuthMode);

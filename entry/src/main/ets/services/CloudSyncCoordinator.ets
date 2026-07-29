@@ -9,6 +9,11 @@ import { VncCloudSyncSelectionStore } from './VncCloudSyncSelectionStore';
 import { VNC_CLOUD_TABLE } from './VncRecordPolicy';
 import { DataCrypto } from './DataCrypto';
 import {
+  AccountSessionLease,
+  accountSessionLeaseEquals,
+  cloneAccountSessionLease
+} from './AccountScopePolicy';
+import {
   CLOUD_SYNC_MAX_RETRY_ATTEMPTS,
   CloudSyncRequest,
   CloudSyncRetryRecord,
@@ -204,6 +209,10 @@ export class CloudSyncCoordinator {
   private startupPull: Promise<CloudSyncOperationResult> | null = null;
   private startupState: CloudSyncBootstrapState = 'pending';
   private bootstrapCompleted: boolean = false;
+  private persistenceScopeId: string = 'device-local';
+  private currentLease: AccountSessionLease | null = null;
+  private acceptingRequests: boolean = false;
+  private bindingEpoch: number = 0;
 
   static getInstance(): CloudSyncCoordinator {
     if (!CloudSyncCoordinator.instance) {
@@ -212,17 +221,44 @@ export class CloudSyncCoordinator {
     return CloudSyncCoordinator.instance;
   }
 
-  init(
+  bind(
     context: common.Context,
+    lease: AccountSessionLease,
     executor: CloudSyncTableExecutor,
     onCloudFirstApplied: (tables: string[]) => void,
     hooks: CloudSyncCoordinatorHooks
-  ): void {
+  ): boolean {
+    if (this.currentLease !== null &&
+      !accountSessionLeaseEquals(this.currentLease, lease)) {
+      hilog.error(DOMAIN, TAG,
+        'refused to replace a live account lease before dispose');
+      return false;
+    }
+    if (this.retryTimer >= 0) {
+      clearTimeout(this.retryTimer);
+      this.retryTimer = -1;
+    }
     this.context = context;
     this.executor = executor;
     this.onCloudFirstApplied = onCloudFirstApplied;
     this.hooks = hooks;
-    this.vncSelection.init(context);
+    this.currentLease = cloneAccountSessionLease(lease);
+    this.acceptingRequests = true;
+    this.bindingEpoch++;
+    this.persistenceScopeId = lease.ownerScopeId.trim().length > 0
+      ? lease.ownerScopeId.trim() : 'device-local';
+    this.queueTail = Promise.resolve();
+    this.retryRecords = [];
+    this.dirtyAutomaticTables = [];
+    this.blockedAutomaticTables = [];
+    this.pendingAutomaticTables = [];
+    this.deferredAutomaticTables = [];
+    this.automaticRetryAttempts = {};
+    this.automaticMutationVersions = {};
+    this.journalMutationRevisions = {};
+    this.pendingPull = null;
+    this.startupPull = null;
+    this.restorePending = false;
     this.startupState = 'pending';
     this.bootstrapCompleted = true;
     if (hooks.hasCloudBootstrapCompleted) {
@@ -232,6 +268,72 @@ export class CloudSyncCoordinator {
     this.restoreDirtyTables();
     this.restoreConflictTables();
     this.restoreMutationJournal();
+    return true;
+  }
+
+  currentAccountLease(): AccountSessionLease | null {
+    return this.currentLease === null ? null : cloneAccountSessionLease(this.currentLease);
+  }
+
+  isLeaseCurrent(lease: AccountSessionLease): boolean {
+    return this.acceptingRequests && accountSessionLeaseEquals(this.currentLease, lease);
+  }
+
+  closeMutationGate(lease: AccountSessionLease): boolean {
+    if (!accountSessionLeaseEquals(this.currentLease, lease)) { return false; }
+    this.acceptingRequests = false;
+    if (this.retryTimer >= 0) {
+      clearTimeout(this.retryTimer);
+      this.retryTimer = -1;
+    }
+    return true;
+  }
+
+  reopenMutationGate(lease: AccountSessionLease): boolean {
+    if (!accountSessionLeaseEquals(this.currentLease, lease)) { return false; }
+    this.acceptingRequests = true;
+    this.scheduleRetryTimer();
+    return true;
+  }
+
+  /**
+   * Stop accepting work and wait until every operation submitted under this
+   * lease has completed. API 23 exposes no public cloud-sync cancellation;
+   * timeout therefore means "indeterminate" and the caller must not close or
+   * reuse the old store.
+   */
+  async quiesce(lease: AccountSessionLease, timeoutMs: number = 15000): Promise<boolean> {
+    if (!this.closeMutationGate(lease)) { return false; }
+    let timeoutId: number = -1;
+    const drained: Promise<boolean> = this.queueTail.then(
+      (): boolean => true,
+      (): boolean => true
+    );
+    const timeout: Promise<boolean> = new Promise<boolean>(
+      (resolve: (ok: boolean) => void): void => {
+        timeoutId = setTimeout((): void => { resolve(false); },
+          Math.max(1, timeoutMs)) as number;
+      });
+    const ok: boolean = await Promise.race([drained, timeout]);
+    if (timeoutId >= 0) { clearTimeout(timeoutId); }
+    return ok && accountSessionLeaseEquals(this.currentLease, lease);
+  }
+
+  async dispose(lease: AccountSessionLease, timeoutMs: number = 15000): Promise<boolean> {
+    if (!(await this.quiesce(lease, timeoutMs))) { return false; }
+    if (!accountSessionLeaseEquals(this.currentLease, lease)) { return false; }
+    this.bindingEpoch++;
+    this.executor = null;
+    this.onCloudFirstApplied = null;
+    this.hooks = null;
+    this.currentLease = null;
+    this.pendingPull = null;
+    this.startupPull = null;
+    this.pendingAutomaticTables = [];
+    this.deferredAutomaticTables = [];
+    this.retryRecords = [];
+    this.restorePending = false;
+    return true;
   }
 
   requestStartupPull(): Promise<CloudSyncOperationResult> {
@@ -657,15 +759,29 @@ export class CloudSyncCoordinator {
 
   /** Queue a database restore without allowing a concurrent cloud operation. */
   runExclusiveRestore(work: () => Promise<boolean>): Promise<boolean> {
-    if (this.restorePending) { return Promise.resolve(false); }
+    if (this.restorePending || !this.acceptingRequests ||
+      this.currentLease === null) { return Promise.resolve(false); }
+    const lease: AccountSessionLease = cloneAccountSessionLease(this.currentLease);
+    const epoch: number = this.bindingEpoch;
     this.restorePending = true;
     if (this.hooks) { this.hooks.setRestorePending(true); }
+    const run = async (): Promise<boolean> => {
+      if (!this.acceptingRequests || epoch !== this.bindingEpoch ||
+        !accountSessionLeaseEquals(this.currentLease, lease)) {
+        return false;
+      }
+      const restored: boolean = await work();
+      if (epoch !== this.bindingEpoch ||
+        !accountSessionLeaseEquals(this.currentLease, lease)) {
+        return false;
+      }
+      if (restored) { this.clearAllDirtyIntents(); }
+      return restored;
+    };
     return new Promise<boolean>((resolve: (value: boolean) => void): void => {
       this.queueTail = this.queueTail.then(async (): Promise<void> => {
         try {
-          const restored: boolean = await work();
-          if (restored) { this.clearAllDirtyIntents(); }
-          resolve(restored);
+          resolve(await run());
         } catch (_e) {
           resolve(false);
         } finally {
@@ -674,9 +790,7 @@ export class CloudSyncCoordinator {
         }
       }, async (): Promise<void> => {
         try {
-          const restored: boolean = await work();
-          if (restored) { this.clearAllDirtyIntents(); }
-          resolve(restored);
+          resolve(await run());
         } catch (_e) {
           resolve(false);
         } finally {
@@ -785,12 +899,39 @@ export class CloudSyncCoordinator {
   }
 
   private enqueue(request: CloudSyncRequest): Promise<CloudSyncOperationResult> {
+    if (!this.acceptingRequests || this.currentLease === null) {
+      return Promise.resolve(this.rejectedResult(request));
+    }
+    const lease: AccountSessionLease = cloneAccountSessionLease(this.currentLease);
+    const epoch: number = this.bindingEpoch;
     return new Promise<CloudSyncOperationResult>((resolve: (result: CloudSyncOperationResult) => void): void => {
       const run = async (): Promise<void> => {
-        resolve(await this.execute(request));
+        if (!this.acceptingRequests || epoch !== this.bindingEpoch ||
+          !accountSessionLeaseEquals(this.currentLease, lease)) {
+          resolve(this.rejectedResult(request));
+          return;
+        }
+        const result: CloudSyncOperationResult = await this.execute(request);
+        if (epoch !== this.bindingEpoch ||
+          !accountSessionLeaseEquals(this.currentLease, lease)) {
+          resolve(this.rejectedResult(request));
+          return;
+        }
+        resolve(result);
       };
       this.queueTail = this.queueTail.then(run, run);
     });
+  }
+
+  private rejectedResult(request: CloudSyncRequest): CloudSyncOperationResult {
+    return {
+      ok: false,
+      source: request.source,
+      tables: request.tables.slice(),
+      failedTables: request.tables.slice(),
+      rollbackFailed: false,
+      failureKind: 'unknown'
+    };
   }
 
   private async execute(request: CloudSyncRequest): Promise<CloudSyncOperationResult> {
@@ -808,7 +949,7 @@ export class CloudSyncCoordinator {
     if (!this.context || this.retryTimer >= 0) { return; }
     try {
       const prefs = preferences.getPreferencesSync(this.context, { name: PREFS_NAME });
-      const stored: string = prefs.getSync(RETRY_PREFERENCE_KEY, '') as string;
+      const stored: string = prefs.getSync(this.scopedPersistenceKey(RETRY_PREFERENCE_KEY), '') as string;
       if (stored.length === 0) { return; }
       const parsed = JSON.parse(stored) as Object;
       const records: CloudSyncRetryRecord[] = Array.isArray(parsed)
@@ -829,7 +970,7 @@ export class CloudSyncCoordinator {
     if (!this.context) { return; }
     try {
       const prefs = preferences.getPreferencesSync(this.context, { name: PREFS_NAME });
-      const raw: string = prefs.getSync(DIRTY_PREFERENCE_KEY, '[]') as string;
+      const raw: string = prefs.getSync(this.scopedPersistenceKey(DIRTY_PREFERENCE_KEY), '[]') as string;
       const parsed = JSON.parse(raw) as Object;
       if (!Array.isArray(parsed)) { return; }
       const values = parsed as string[];
@@ -848,7 +989,7 @@ export class CloudSyncCoordinator {
     if (!this.context) { return; }
     try {
       const prefs = preferences.getPreferencesSync(this.context, { name: PREFS_NAME });
-      const raw: string = prefs.getSync(CONFLICT_PREFERENCE_KEY, '[]') as string;
+      const raw: string = prefs.getSync(this.scopedPersistenceKey(CONFLICT_PREFERENCE_KEY), '[]') as string;
       const parsed = JSON.parse(raw) as Object;
       if (!Array.isArray(parsed)) { return; }
       const values = parsed as string[];
@@ -867,9 +1008,10 @@ export class CloudSyncCoordinator {
     try {
       const prefs = preferences.getPreferencesSync(this.context, { name: PREFS_NAME });
       if (this.blockedAutomaticTables.length === 0) {
-        prefs.deleteSync(CONFLICT_PREFERENCE_KEY);
+        prefs.deleteSync(this.scopedPersistenceKey(CONFLICT_PREFERENCE_KEY));
       } else {
-        prefs.putSync(CONFLICT_PREFERENCE_KEY, JSON.stringify(this.blockedAutomaticTables));
+        prefs.putSync(this.scopedPersistenceKey(CONFLICT_PREFERENCE_KEY),
+          JSON.stringify(this.blockedAutomaticTables));
       }
       prefs.flushSync();
     } catch (err) {
@@ -970,9 +1112,10 @@ export class CloudSyncCoordinator {
     try {
       const prefs = preferences.getPreferencesSync(this.context, { name: PREFS_NAME });
       if (this.dirtyAutomaticTables.length === 0) {
-        prefs.deleteSync(DIRTY_PREFERENCE_KEY);
+        prefs.deleteSync(this.scopedPersistenceKey(DIRTY_PREFERENCE_KEY));
       } else {
-        prefs.putSync(DIRTY_PREFERENCE_KEY, JSON.stringify(this.dirtyAutomaticTables));
+        prefs.putSync(this.scopedPersistenceKey(DIRTY_PREFERENCE_KEY),
+          JSON.stringify(this.dirtyAutomaticTables));
       }
       prefs.flushSync();
     } catch (err) {
@@ -1049,8 +1192,11 @@ export class CloudSyncCoordinator {
     if (!this.context) { return; }
     try {
       const prefs = preferences.getPreferencesSync(this.context, { name: PREFS_NAME });
-      if (this.retryRecords.length === 0) { prefs.deleteSync(RETRY_PREFERENCE_KEY); }
-      else { prefs.putSync(RETRY_PREFERENCE_KEY, JSON.stringify(this.retryRecords)); }
+      if (this.retryRecords.length === 0) {
+        prefs.deleteSync(this.scopedPersistenceKey(RETRY_PREFERENCE_KEY));
+      } else {
+        prefs.putSync(this.scopedPersistenceKey(RETRY_PREFERENCE_KEY), JSON.stringify(this.retryRecords));
+      }
       prefs.flushSync();
     } catch (err) { hilog.warn(DOMAIN, TAG, 'persist retry failed: ' + JSON.stringify(err)); }
   }
@@ -1063,8 +1209,16 @@ export class CloudSyncCoordinator {
       if (this.retryRecords[i].nextRetryAt < earliest.nextRetryAt) { earliest = this.retryRecords[i]; }
     }
     const delay: number = Math.max(0, earliest.nextRetryAt - Date.now());
+    const timerLease: AccountSessionLease | null = this.currentLease === null
+      ? null : cloneAccountSessionLease(this.currentLease);
+    const timerEpoch: number = this.bindingEpoch;
     this.retryTimer = setTimeout((): void => {
       this.retryTimer = -1;
+      if (!this.acceptingRequests || timerLease === null ||
+        timerEpoch !== this.bindingEpoch ||
+        !accountSessionLeaseEquals(this.currentLease, timerLease)) {
+        return;
+      }
       const now: number = Date.now();
       const due: CloudSyncRetryRecord[] = [];
       const remaining: CloudSyncRetryRecord[] = [];
@@ -1095,5 +1249,9 @@ export class CloudSyncCoordinator {
         );
       }
     }, delay) as number;
+  }
+
+  private scopedPersistenceKey(base: string): string {
+    return base + ':' + this.persistenceScopeId;
   }
 }
