@@ -35,6 +35,7 @@ import touchpadPointerCurvePolicyTest from './TouchpadPointerCurvePolicy.test';
 import remoteSurfaceTransformPolicyTest from './RemoteSurfaceTransformPolicy.test';
 import remoteCursorStylePolicyTest from './RemoteCursorStylePolicy.test';
 import remoteHostSheetLifecyclePolicyTest from './RemoteHostSheetLifecyclePolicy.test';
+import vncSessionGeometryPolicyTest from './VncSessionGeometryPolicy.test';
 
 export default function testsuite() {
   abilityTest();
@@ -74,4 +75,5 @@ export default function testsuite() {
   remoteSurfaceTransformPolicyTest();
   remoteCursorStylePolicyTest();
   remoteHostSheetLifecyclePolicyTest();
+  vncSessionGeometryPolicyTest();
 }

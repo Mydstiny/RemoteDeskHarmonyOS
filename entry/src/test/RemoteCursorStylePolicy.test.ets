@@ -10,6 +10,7 @@ import {
   shouldRenderCircleCursor,
   shouldRenderRemoteCursorArrow,
   shouldRenderRemoteCursorFallbackIndicator,
+  shouldRenderVncLocalPointerFallback,
   shouldRefreshRemoteCursorBitmap,
   shouldRenderVirtualTouchpadCursor,
   resolveRemoteCursorRenderMode
@@ -44,6 +45,12 @@ export default function remoteCursorStylePolicyTest() {
       expect(shouldRenderRemoteCursorFallbackIndicator(true, false, true, true)).assertFalse();
       expect(shouldRenderRemoteCursorFallbackIndicator(true, true, false, true)).assertFalse();
       expect(shouldRenderRemoteCursorFallbackIndicator(true, true, true, false)).assertFalse();
+    });
+    it('keeps a local pointer visible when VNC has no cursor pseudo-encoding', 0, (): void => {
+      expect(shouldRenderVncLocalPointerFallback(true, true, true, true, false)).assertTrue();
+      expect(shouldRenderVncLocalPointerFallback(true, true, true, true, true)).assertFalse();
+      expect(shouldRenderVncLocalPointerFallback(false, true, true, true, false)).assertFalse();
+      expect(shouldRenderVncLocalPointerFallback(true, false, true, true, false)).assertFalse();
     });
     it('never renders the fallback bitmap as an authoritative arrow', 0, (): void => {
       expect(shouldRenderRemoteCursorArrow('arrow', true, true, true, true, true, false)).assertTrue();

@@ -124,9 +124,15 @@ import {
   resolveRemoteCursorVisualScale,
   shouldRenderRemoteCursorArrow,
   shouldRenderRemoteCursorFallbackIndicator,
+  shouldRenderVncLocalPointerFallback,
   shouldRenderCircleCursor,
   shouldRefreshRemoteCursorBitmap
 } from '../services/RemoteCursorStylePolicy';
+import {
+  observedVncFrameGeometry,
+  shouldAdoptVncFrameGeometry,
+  VncFrameGeometry
+} from '../services/VncSessionGeometryPolicy';
 import {
   advanceRemoteCursorMotion,
   applyLocalCursorTarget,
@@ -700,6 +706,8 @@ struct RemoteDesktop {
   private remoteWidth: number = 1920;
   private remoteHeight: number = 1080;
   private rustDeskGeometryEpoch: number = 0;
+  private vncGeometryEpoch: number = 0;
+  private vncGeometryReady: boolean = false;
   private remoteCursorX: number = 960;
   private remoteCursorY: number = 540;
   private remoteCursorPreciseX: number = 960;
@@ -898,6 +906,7 @@ struct RemoteDesktop {
   private rdpNativeStateMonitorTimer: number = -1;
   private remoteCursorPollTimer: number = -1;
   private rustDeskGeometrySyncTimer: number = -1;
+  private vncGeometrySyncTimer: number = -1;
   private rustDeskDisplaySwitchPending: number = -1;
   private rustDeskDisplaySwitchStartedAtMs: number = 0;
   private lastBrowseModeBlockedToastMs: number = 0;
@@ -1747,7 +1756,10 @@ struct RemoteDesktop {
     const fallbackCircle: boolean = shouldRenderRemoteCursorFallbackIndicator(
       this.remoteCursorFallbackShape, this.connected, this.isTouchpadControlMode(),
       this.remoteCursorReady);
-    return (configuredCircle || fallbackCircle) && shouldRenderTouchPointerIndicator(true,
+    const vncLocalPointer: boolean = shouldRenderVncLocalPointerFallback(
+      this.isVncSession(), this.connected, this.isTouchpadControlMode(),
+      this.remoteCursorReady, this.remoteCursorNativeVisible && this.remoteCursorPixelMap !== null);
+    return (configuredCircle || fallbackCircle || vncLocalPointer) && shouldRenderTouchPointerIndicator(true,
       shouldUseSystemMousePointer(this.isKeyboardMouseControlMode())) && cursorViewRevision >= 0;
   }
 
@@ -2043,6 +2055,30 @@ struct RemoteDesktop {
 
   private resetRustDeskInputAfterGeometryChange(reason: string): void {
     this.releaseCanvasPinchInput(reason);
+    this.touchpadAnchorValid = false;
+    this.resetTouchpadPointerCurve();
+    this.invalidateRendererViewportCache();
+  }
+
+  /**
+   * End every VNC input sequence in the old framebuffer coordinate space
+   * before adopting a DesktopSize/framebuffer update. This prevents a held
+   * button or queued move from being replayed against the new geometry.
+   */
+  private resetVncInputAfterGeometryChange(reason: string): void {
+    this.releaseCanvasPinchInput(reason);
+    this.releaseAllHeldKeys();
+    if (this.touchLeftDown) {
+      this.sendMouseNow(this.remoteCursorX, this.remoteCursorY, 0, false);
+      this.touchLeftDown = false;
+    }
+    if (this.physicalMouseDownButton >= 0) {
+      this.sendMouseNow(this.remoteCursorX, this.remoteCursorY,
+        this.physicalMouseDownButton, false);
+      this.physicalMouseDownButton = -1;
+    }
+    this.resetTouchGesture();
+    this.discardPendingMouseMove();
     this.touchpadAnchorValid = false;
     this.resetTouchpadPointerCurve();
     this.invalidateRendererViewportCache();
@@ -4960,6 +4996,77 @@ struct RemoteDesktop {
     this.rustDeskGeometrySyncTimer = setInterval(sync, REMOTE_GEOMETRY_SYNC_MS);
   }
 
+  /**
+   * VNC has no negotiated client-side desktop preset. Native diagnostics are
+   * updated from each accepted RFB framebuffer update, so they are the
+   * authoritative source for rendering, pointer mapping and local overlays.
+   */
+  private syncVncLogicalSizeFromFrame(sessionId: number): void {
+    if (!this.isVncSession() || !this.connected || this.sessionId !== sessionId) {
+      return;
+    }
+    const snapshot: RustDeskDiagnosticsSnapshot = this.loader.getSessionDiagnostics(sessionId);
+    if (snapshot.sessionId !== sessionId) {
+      return;
+    }
+    const geometry: VncFrameGeometry | null = observedVncFrameGeometry(
+      snapshot.sessionActive, snapshot.receivedFrames, snapshot.width, snapshot.height);
+    if (geometry === null) {
+      return;
+    }
+    if (!shouldAdoptVncFrameGeometry(
+      this.remoteWidth, this.remoteHeight, snapshot.sessionActive,
+      snapshot.receivedFrames, snapshot.width, snapshot.height)) {
+      this.vncGeometryReady = true;
+      return;
+    }
+    const previousWidth: number = this.remoteWidth;
+    const previousHeight: number = this.remoteHeight;
+    this.resetVncInputAfterGeometryChange('vnc-framebuffer-geometry');
+    this.vncGeometryEpoch += 1;
+    RemoteSessionPipService.getInstance().updateContentSize(geometry.width, geometry.height);
+    this.updateRemoteSize({
+      width: geometry.width,
+      height: geometry.height,
+      colorDepth: 32,
+      multiMonitor: false,
+      monitorCount: 1
+    });
+    this.vncGeometryReady = true;
+    if (!this.canvasTransformGestureModified) {
+      this.resetCanvasToDisplayDefault(true);
+    }
+    this.requestRemoteCursorViewRefresh(true);
+    hilog.info(RD_DOMAIN, RD_TAG, 'VNC framebuffer geometry synchronized: ' +
+      previousWidth.toString() + 'x' + previousHeight.toString() + ' -> ' +
+      geometry.width.toString() + 'x' + geometry.height.toString() +
+      ' epoch=' + this.vncGeometryEpoch.toString() +
+      ' receivedFrames=' + snapshot.receivedFrames.toString());
+  }
+
+  private stopVncGeometrySync(): void {
+    if (this.vncGeometrySyncTimer >= 0) {
+      clearInterval(this.vncGeometrySyncTimer);
+      this.vncGeometrySyncTimer = -1;
+    }
+  }
+
+  private startVncGeometrySync(sessionId: number): void {
+    this.stopVncGeometrySync();
+    if (!this.isVncSession() || sessionId <= 0) {
+      return;
+    }
+    const sync: () => void = (): void => {
+      if (!this.connected || this.sessionId !== sessionId || !this.isVncSession()) {
+        this.stopVncGeometrySync();
+        return;
+      }
+      this.syncVncLogicalSizeFromFrame(sessionId);
+    };
+    sync();
+    this.vncGeometrySyncTimer = setInterval(sync, REMOTE_GEOMETRY_SYNC_MS);
+  }
+
   private currentRemoteSurfaceTransform(): RemoteSurfaceTransform {
     const remoteW: number = this.remoteWidth > 0 ? this.remoteWidth : 1280;
     const remoteH: number = this.remoteHeight > 0 ? this.remoteHeight : 720;
@@ -5076,6 +5183,8 @@ struct RemoteDesktop {
       ' remote=' + mapped.x.toString() + ',' + mapped.y.toString() +
       ' view=' + Math.round(this.surfaceWidth).toString() + 'x' + Math.round(this.surfaceHeight).toString() +
       ' desktop=' + this.remoteWidth.toString() + 'x' + this.remoteHeight.toString() +
+      ' geometryEpoch=' +
+      (this.isVncSession() ? this.vncGeometryEpoch : this.rustDeskGeometryEpoch).toString() +
       ' inside=' + (mapped.inside ? 'true' : 'false'));
   }
 
@@ -5103,6 +5212,12 @@ struct RemoteDesktop {
         });
       }
       hilog.info(RD_DOMAIN, RD_TAG, 'dropInput ' + source + ' browseMode=1 protocol=' + protocol);
+      return false;
+    }
+    if (this.isVncSession() && !this.vncGeometryReady) {
+      hilog.info(RD_DOMAIN, RD_TAG, 'dropInput ' + source +
+        ' vncGeometryReady=0 framebuffer=' + this.remoteWidth.toString() + 'x' +
+        this.remoteHeight.toString());
       return false;
     }
     if (this.connected && this.sessionId > 0 && this.inputForwardReady) {
@@ -5974,7 +6089,10 @@ struct RemoteDesktop {
     reason: string = 'session-stop'): void {
     this.clearRemoteCursorViewCommit();
     this.stopRustDeskGeometrySync();
+    this.stopVncGeometrySync();
     this.rustDeskGeometryEpoch = 0;
+    this.vncGeometryEpoch = 0;
+    this.vncGeometryReady = false;
     this.remoteCursorShapeLoadToken += 1;
     this.clearRemoteCursorShapeLoadWatchdog();
     this.remoteCursorShapeLoading = false;
@@ -6309,6 +6427,11 @@ struct RemoteDesktop {
     // shape, so clearing here can otherwise make the arrow disappear forever.
     this.clearRemoteCursorPolling(false, 'poll-restart');
     this.startRustDeskGeometrySync(sessionId);
+    this.startVncGeometrySync(sessionId);
+    if (this.isVncSession() && !this.remoteCursorReady) {
+      this.rememberRemoteCursor(Math.round(this.remoteWidth / 2),
+        Math.round(this.remoteHeight / 2));
+    }
     this.pollRemoteCursor(sessionId);
     this.remoteCursorPollTimer = setInterval((): void => {
       this.pollRemoteCursor(sessionId);
@@ -6501,6 +6624,7 @@ struct RemoteDesktop {
       }
       this.rendererSourceWidth = 0;
       this.rendererSourceHeight = 0;
+      this.vncGeometryReady = !isVnc;
       this.rustDeskDisplaySwitchPending = -1;
       this.rustDeskDisplaySwitchStartedAtMs = 0;
       this.invalidateRendererViewportCache();

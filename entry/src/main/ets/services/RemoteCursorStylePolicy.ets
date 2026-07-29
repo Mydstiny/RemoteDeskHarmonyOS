@@ -60,6 +60,18 @@ export function shouldRenderRemoteCursorFallbackIndicator(fallbackShape: boolean
   return fallbackShape && shouldRenderVirtualTouchpadCursor(connected, touchpadMode, cursorReady);
 }
 
+/**
+ * RFB PointerEvent carries no cursor bitmap. Until Cursor pseudo-encoding is
+ * negotiated, VNC must keep a controller-owned pointer visible even when the
+ * global virtual mouse preference is the official arrow style.
+ */
+export function shouldRenderVncLocalPointerFallback(isVnc: boolean,
+  connected: boolean, touchpadMode: boolean, cursorReady: boolean,
+  nativeCursorAvailable: boolean): boolean {
+  return isVnc && !nativeCursorAvailable &&
+    shouldRenderVirtualTouchpadCursor(connected, touchpadMode, cursorReady);
+}
+
 export function shouldRenderCircleCursor(style: RemoteCursorStyle, cursorReady: boolean,
   connected: boolean, touchpadMode: boolean): boolean {
   return style === 'circle' && shouldRenderVirtualTouchpadCursor(connected, touchpadMode, cursorReady);

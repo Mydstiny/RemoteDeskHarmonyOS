@@ -72,6 +72,7 @@ import loginStartupPolicyTest from './LoginStartupPolicy.test';
 import vncHostListProjectionPolicyTest from './VncHostListProjectionPolicy.test';
 import vncConnectionStatePolicyTest from './VncConnectionStatePolicy.test';
 import vncConnectionErrorPolicyTest from './VncConnectionErrorPolicy.test';
+import vncSessionGeometryPolicyTest from './VncSessionGeometryPolicy.test';
 
 export default function testsuite() {
   localUnitTest();
@@ -148,4 +149,5 @@ export default function testsuite() {
   vncHostListProjectionPolicyTest();
   vncConnectionStatePolicyTest();
   vncConnectionErrorPolicyTest();
+  vncSessionGeometryPolicyTest();
 }
