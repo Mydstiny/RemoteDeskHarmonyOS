@@ -2560,7 +2560,8 @@ struct RemoteDesktop {
     const claimed = claimCanvasTwoFingerPinch(this.canvasTwoFingerState, remoteAppTarget);
     if (claimed.owner === this.canvasTwoFingerState.owner &&
       (claimed.owner === 'touchpad-scroll' || claimed.owner === 'touchpad-right-click' ||
-        claimed.owner === 'canvas-pan' || claimed.owner === 'remote-touch-pan' ||
+        claimed.owner === 'canvas-pan-armed' || claimed.owner === 'canvas-pan' ||
+        claimed.owner === 'remote-touch-pan' ||
         claimed.owner === 'canvas-pinch' || claimed.owner === 'remote-touch-scale')) {
       return;
     }

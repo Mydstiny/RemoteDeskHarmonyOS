@@ -123,7 +123,11 @@ export function claimCanvasTwoFingerPinch(state: CanvasTwoFingerState,
   remote: boolean): CanvasTwoFingerState {
   const next: CanvasTwoFingerState = copyState(state);
   if (next.owner === 'touchpad-scroll' || next.owner === 'touchpad-right-click' ||
-    next.owner === 'canvas-pan' || next.owner === 'remote-touch-pan') {
+    // A completed long press has reserved this sequence for pan. Pinch and
+    // long press are parallel ArkUI recognizers, so a tiny distance jitter
+    // after the hold must not turn the first drag into a local/remote scale.
+    next.owner === 'canvas-pan-armed' || next.owner === 'canvas-pan' ||
+    next.owner === 'remote-touch-pan') {
     return next;
   }
   next.owner = remote ? 'remote-touch-scale' : 'canvas-pinch';
