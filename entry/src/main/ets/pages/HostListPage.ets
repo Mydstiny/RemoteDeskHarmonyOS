@@ -20,7 +20,6 @@ import {
 } from '../services/AccountSessionCoordinator';
 import { DataCrypto } from '../services/DataCrypto';
 import { CloudStore } from '../services/CloudStore';
-import { remoteCryptoLifecycleMutationAllowed } from '../services/CloudLifecycleSafetyPolicy';
 import { VncTrustService } from '../services/VncTrustService';
 import { VncHostService, VncHostView } from '../services/VncHostService';
 import { VncGatewayService } from '../services/VncGatewayService';
@@ -7550,7 +7549,7 @@ struct HostListPage {
       Column() {
         Text('• AES-256-GCM 加密保护，数据在本地加密后云同步')
           .fontSize(12).fontColor(this.pal().text2).fontFamily(this.font()).margin({ bottom: 4 })
-        Text('• 主密码通过系统密码保险箱跨设备同步，不会上传到服务器')
+        Text('• 主密码不会持久化或上传；新设备需要重新输入后解锁')
           .fontSize(12).fontColor(this.pal().text2).fontFamily(this.font()).margin({ bottom: 4 })
         Text('• 忘记密码将无法恢复已加密的数据，请妥善保管')
           .fontSize(12).fontColor(this.pal().danger).fontFamily(this.font()).margin({ bottom: 4 })
@@ -7611,7 +7610,7 @@ struct HostListPage {
         Text('⚠️ 确定要重置加密吗?')
           .fontSize(15).fontWeight(FontWeight.Bold).fontColor(this.pal().danger)
           .width('100%').margin({ bottom: 10 }).fontFamily(this.font())
-        Text('所有加密数据将被永久删除, 此操作不可恢复。\n其他登录了同一华为账号的设备也会同步清空。')
+        Text('本机当前账号的所有加密数据将被永久删除，此操作不可恢复。\n跨设备远程清空协议尚未启用，其他设备不会被本次操作自动清空。')
           .fontSize(12).fontColor(this.pal().text2).fontFamily(this.font())
           .width('100%').margin({ bottom: 16 })
         Row() {
@@ -7666,13 +7665,6 @@ struct HostListPage {
 
   private doCountdownTick(): void { this.cryptoResetCountdown--; if (this.cryptoResetCountdown > 0) { setTimeout(() => { this.doCountdownTick(); }, 1000); } }
   private async handleEnable(): Promise<void> {
-    if (!remoteCryptoLifecycleMutationAllowed()) {
-      promptAction.showToast({
-        message: '账号级加密迁移升级中，暂时不能启用、关闭或重置加密',
-        duration: 3000
-      });
-      return;
-    }
     this.cryptoLoading = true;
     try {
       const crypto = DataCrypto.getInstance();
@@ -7723,13 +7715,6 @@ struct HostListPage {
 
 
   private async doCloseEncryption(): Promise<void> {
-    if (!remoteCryptoLifecycleMutationAllowed()) {
-      promptAction.showToast({
-        message: '账号级加密迁移升级中，暂时不能关闭加密',
-        duration: 3000
-      });
-      return;
-    }
     const crypto = DataCrypto.getInstance();
     const cloud = CloudStore.getInstance();
     // 1. 验证主密码
@@ -7738,32 +7723,16 @@ struct HostListPage {
       promptAction.showToast({ message: '密码错误, 无法关闭加密', duration: 2000 });
       return;
     }
-    // 2. 先在同一事务中把所有 VNC encrypted_v2 secret 转换为明确确认的
-    // plain-v1，再发布关闭信令；任一步写入失败都不能发布半成品状态。
-    const count = cloud.decryptAllData(crypto, false);
+    // 2. 业务数据解密、VNC 降级、KDF 参数清除和 disabled 状态由
+    // CloudStore 在一个事务中提交；任一步失败都会完整回滚。
+    const count = cloud.disableCryptoV3(
+      crypto, cloud.currentAccountLease());
     hilog.info(0x0001, 'CloudSync', 'doCloseEncryption: 已解密 ' + count + ' 条数据');
     if (count < 0) {
       promptAction.showToast({ message: '关闭加密失败：本地数据未完整解密，请重试', duration: 2500 });
       return;
     }
-    if (!cloud.setCryptoStatus('disabled')) {
-      promptAction.showToast({ message: '关闭加密失败：本地状态未写入，请重试', duration: 2500 });
-      return;
-    }
-    // 3. 清除本地盐值和验证器后，先显式推送 cryptoparams，再推送所有敏感业务表。
-    if (!(await cloud.clearCryptoParams())) {
-      cloud.setCryptoStatus('active');
-      promptAction.showToast({ message: '关闭加密失败：参数未清除，请重试', duration: 2500 });
-      return;
-    }
-    cloud.pushTable('cryptoparams');
-    cloud.pushTable('remotehosts');
-    cloud.pushTable('rdpcredentials');
-    cloud.pushTable('rustdeskrelays');
-    cloud.pushTable('sshkeys');
-    cloud.pushTable('totpentries');
-    cloud.pushTable('vncrecord');
-    // 4. 清除内存 DEK。
+    // 3. 数据库已提交后再清除内存 DEK。
     crypto.resetSetup();
     this.closeSettingsLeafSheet();
     this.cryptoPwd = '';
@@ -7773,39 +7742,12 @@ struct HostListPage {
   }
 
   private async doResetEncryption(): Promise<void> {
-    if (!remoteCryptoLifecycleMutationAllowed()) {
-      promptAction.showToast({
-        message: '账号级加密重置升级中，暂时不能清空加密数据',
-        duration: 3000
-      });
-      return;
-    }
     const cloud = CloudStore.getInstance();
-    // 1. 跨设备信令: 通知所有设备重置 (其他设备 checkCryptoStatusChange 读到 'reset' 后自毁)
-    if (!cloud.setCryptoStatus('reset')) {
-      promptAction.showToast({ message: '重置失败：本地状态未写入，请重试', duration: 2500 });
-      return;
-    }
-    // 2. 清空三张业务表 (异步, 必须 await — 确保数据清完再推送)
-    if (!(await cloud.clearAllTables(false))) {
-      cloud.setCryptoStatus('active');
+    // 本机账号数据、KDF 参数、VNC reset epoch 与恢复状态单事务提交。
+    if (!cloud.resetCryptoV3(cloud.currentAccountLease())) {
       promptAction.showToast({ message: '重置失败：本地数据未完整清空，请重试', duration: 2500 });
       return;
     }
-    // 3. 清除加密参数 (异步, 必须 await — 盐值+验证器, crypto_status 保留 'reset')
-    if (!(await cloud.clearCryptoParams())) {
-      promptAction.showToast({ message: '重置未完成：加密参数未清除，请重试', duration: 2500 });
-      return;
-    }
-    DataCrypto.getInstance().lock();
-    // 4. 推送 cryptoparams 到云端 (此时本地清空已完成, 其他设备收到后也清空)
-    cloud.pushTable('cryptoparams');
-    cloud.pushTable('remotehosts');
-    cloud.pushTable('rdpcredentials');
-    cloud.pushTable('rustdeskrelays');
-    cloud.pushTable('sshkeys');
-    cloud.pushTable('totpentries');
-    cloud.pushVncResetTable();
     VncTrustService.getInstance().clearLocalConfirmationState(getContext(this) as common.Context);
     this.closeSettingsLeafSheet();
     this.cryptoPwd = '';

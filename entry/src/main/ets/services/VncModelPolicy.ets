@@ -209,7 +209,7 @@ export function vncTrustPayload(fingerprintSha256: string, confirmed: boolean, c
 }
 
 export function vncSecretMetadataPayload(secretKind: string, label: string,
-  storageMode: string = 'encrypted_v2'): string {
+  storageMode: string = 'encrypted_v3'): string {
   const payload: Record<string, Object> = {};
   payload['kind'] = secretKind;
   payload['label'] = label.trim();

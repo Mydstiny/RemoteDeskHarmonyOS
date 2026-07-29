@@ -119,6 +119,13 @@ import {
   vncPayloadHashSha256,
   vncCanonicalJson,
   vncPayloadObject,
+  VNC_AAD_VERSION,
+  VNC_CRYPTO_VERSION,
+  VNC_KEY_VERSION,
+  VNC_LEGACY_AAD_VERSION,
+  VNC_LEGACY_CRYPTO_VERSION,
+  VNC_LEGACY_KEY_VERSION,
+  VNC_LEGACY_SECRET_ENVELOPE_VERSION,
   VNC_SECRET_ENVELOPE_VERSION,
   VNC_PLAIN_SECRET_ENVELOPE_VERSION,
   vncRecordHasActiveEncryptedCiphertext
@@ -131,6 +138,7 @@ import {
   CLOUD_LIFECYCLE_BLOCKED_REASON,
   cloudDistributedRegistrationAllowed,
   cloudTransferAllowed,
+  remoteCryptoLifecycleMutationAllowed,
   unboundCloudAccountBinding
 } from './CloudLifecycleSafetyPolicy';
 import {
@@ -147,6 +155,21 @@ import {
   CloudSyncDurableState,
   corruptedCloudSyncDurableState
 } from './CloudSyncLifecyclePolicy';
+import {
+  CryptoCommittedState,
+  CryptoLifecycleDurableState,
+  cryptoLifecycleCanConfigure,
+  cryptoLifecycleCanDisable,
+  cryptoLifecycleCanMigrate,
+  cryptoLifecycleCanReset,
+  cryptoLifecycleMemoryStateChanged,
+  cryptoLifecycleOperationCommitted,
+  cryptoLifecycleOperationFailed,
+  cryptoLifecycleOperationStarted,
+  cryptoLifecycleSensitiveWriteAllowed,
+  newCryptoLifecycleDurableState,
+  recoverCryptoLifecycleDurableState
+} from './CryptoLifecyclePolicy';
 import { LegacySharedStoreMigrator } from './LegacySharedStoreMigrator';
 
 const TABLES: string[] = cloudSyncTableNames();
@@ -161,6 +184,8 @@ const CANONICAL_SECRET_STORAGE_VERSION: string = '3';
 const RESTORED_NOT_UPLOADED_KEY: string = 'restored_not_uploaded';
 const CLOUD_BOOTSTRAP_COMPLETED_KEY: string = 'cloud_bootstrap_completed_v1';
 const CLOUD_SYNC_DURABLE_STATE_KEY: string = 'cloud_sync_durable_state_v1';
+const CRYPTO_LIFECYCLE_DURABLE_STATE_KEY: string =
+  'crypto_lifecycle_durable_state_v1';
 const STORE_OWNER_SCOPE_KEY: string = 'store_owner_scope_id';
 const STORE_IDENTITY_KEY: string = 'store_identity';
 const STORE_SCHEMA_REVISION_KEY: string = 'store_schema_revision';
@@ -172,6 +197,15 @@ const LEGACY_VNC_CLOUD_TABLE: string = 'vncrecords';
 const VNC_LEGACY_MIGRATION_KEY: string = 'vnc_legacy_vncrecords_migrated_v1';
 const TABLE_MUTATION_RECORD_ID: string = '__table__';
 const VNC_RESET_EPOCH_KEY: string = 'vnc_reset_epoch';
+const CRYPTO_SECRET_PARAM_KEYS: string[] = [
+  'crypto_salt',
+  'crypto_verifier',
+  'crypto_kdf_version',
+  'crypto_kdf_iterations',
+  'crypto_key_version',
+  'crypto_verifier_version',
+  'crypto_envelope_version'
+];
 const LOCAL_METADATA_COLUMNS: string[] = ['key', 'value', 'updatedat'];
 const LOCAL_MUTATION_JOURNAL_COLUMNS: string[] = [
   'id', 'tablename', 'recordid', 'operation', 'revision', 'createdat', 'updatedat'
@@ -243,6 +277,7 @@ export class CloudStore implements CryptoCloudStore {
     VncCloudSyncSelectionStore.getInstance();
   // 加密状态追踪
   private lastKnownCryptoStatus: string = '';
+  private cryptoLifecycleState: CryptoLifecycleDurableState | null = null;
   // A cloud-first apply may synchronously lock/unlock DataCrypto.  Hold its
   // state callback until the completed cloud snapshot is published once.
   private suppressCryptoStateSnapshot: boolean = false;
@@ -460,6 +495,7 @@ export class CloudStore implements CryptoCloudStore {
     }
     this.store = null;
     this.currentLease = null;
+    this.cryptoLifecycleState = null;
     this.clearManualDownloadSnapshot();
     return true;
   }
@@ -503,6 +539,7 @@ export class CloudStore implements CryptoCloudStore {
       this.verifyStoreIdentity();
       await LegacySharedStoreMigrator.getInstance().migrateIfNeeded(
         context, this.store, this.currentScopeToken, verifiedUnionId);
+      this.migrateCryptoParamIdentity();
       await this.migrateLocalExtensions();
       await this.migrateLegacyVncRecords();
       this.cloudBootstrapCompleted = this.readLocalMetadata(CLOUD_BOOTSTRAP_COMPLETED_KEY) === '1';
@@ -512,6 +549,11 @@ export class CloudStore implements CryptoCloudStore {
       this.vncSyncSelection.init(context, this.currentScopeToken.ownerScopeId);
       const lease: AccountSessionLease =
         cloneAccountSessionLease(this.currentLease);
+      this.cryptoLifecycleState =
+        this.recoverCryptoLifecycleState(lease);
+      if (!this.persistCryptoLifecycleState(this.cryptoLifecycleState)) {
+        throw new Error('crypto lifecycle recovery state persistence failed');
+      }
       const crypto: DataCrypto = DataCrypto.getInstance();
       crypto.init(this, lease);
       if (!this.cryptoStateListenerBound) {
@@ -1957,6 +1999,15 @@ export class CloudStore implements CryptoCloudStore {
 
   private sensitiveWriteAllowed(recordId: string): boolean {
     const crypto: DataCrypto = DataCrypto.getInstance();
+    if (this.cryptoLifecycleState === null ||
+      !cryptoLifecycleSensitiveWriteAllowed(
+        this.cryptoLifecycleState,
+        crypto.isSetupComplete(),
+        crypto.isReady())) {
+      return this.setLastMutation(DataMutationResult.failure(
+        recordId, 'crypto_lifecycle_blocked',
+        '加密数据生命周期尚未就绪，请先解锁或完成恢复'));
+    }
     if (!sensitiveWriteRequiresUnlock(crypto.isSetupComplete(), crypto.isReady())) { return true; }
     return this.setLastMutation(DataMutationResult.failure(recordId, 'unlock_required',
       '加密数据已锁定，请先解锁后再保存'));
@@ -2029,6 +2080,95 @@ export class CloudStore implements CryptoCloudStore {
       this.store.deleteSync(predicates);
       return true;
     } catch (_e) { return false; }
+  }
+
+  /**
+   * cryptoparams is an existing three-column cloud contract. Account identity
+   * is therefore encoded into its primary key instead of relying on an
+   * unavailable userid column. The logical key remains stable for old clients,
+   * while every read in this build requires the scoped primary key as well.
+   */
+  private cryptoParamId(key: string): string {
+    const owner: string = this.currentOwnerScopeId();
+    if (owner === '' || key.trim() === '') { return ''; }
+    return 'crypto-param|' + owner + '|' + key.trim();
+  }
+
+  private cryptoParamBucket(
+    key: string, value: string
+  ): relationalStore.ValuesBucket {
+    const id: string = this.cryptoParamId(key);
+    if (id === '') { throw new Error('crypto parameter identity unavailable'); }
+    return { id, key: key.trim(), value };
+  }
+
+  /**
+   * Re-key legacy rows only after the physical store owner has been verified.
+   * Conflicting or foreign scoped rows block the store instead of guessing
+   * which account owns portable encryption material.
+   */
+  private migrateCryptoParamIdentity(): void {
+    if (!this.store) { throw new Error('crypto parameter store unavailable'); }
+    const rows: relationalStore.ResultSet = this.store.querySync(
+      new relationalStore.RdbPredicates('cryptoparams'));
+    const ids: string[] = [];
+    const keys: string[] = [];
+    const values: string[] = [];
+    try {
+      while (rows.goToNextRow()) {
+        ids.push(rows.getString(rows.getColumnIndex('id')));
+        keys.push(rows.getString(rows.getColumnIndex('key')));
+        values.push(rows.getString(rows.getColumnIndex('value')));
+      }
+    } finally {
+      rows.close();
+    }
+    this.store.beginTransaction();
+    try {
+      for (let i = 0; i < ids.length; i++) {
+        const expectedId: string = this.cryptoParamId(keys[i]);
+        if (expectedId === '' || ids[i] === '') {
+          throw new Error('malformed cryptoparams identity');
+        }
+        if (ids[i] === expectedId) { continue; }
+        if (ids[i].indexOf('crypto-param|') === 0) {
+          throw new Error('foreign cryptoparams owner identity');
+        }
+        const existingPredicates =
+          new relationalStore.RdbPredicates('cryptoparams');
+        existingPredicates.equalTo('id', expectedId);
+        const existing: relationalStore.ResultSet =
+          this.store.querySync(existingPredicates);
+        const found: boolean = existing.goToFirstRow();
+        const existingValue: string = found
+          ? existing.getString(existing.getColumnIndex('value')) : '';
+        const existingKey: string = found
+          ? existing.getString(existing.getColumnIndex('key')) : '';
+        existing.close();
+        if (found &&
+          (existingKey !== keys[i] || existingValue !== values[i])) {
+          throw new Error('conflicting legacy cryptoparams row: ' + keys[i]);
+        }
+        if (!found && !rdbInsertSucceeded(this.store.insertSync(
+          'cryptoparams',
+          this.cryptoParamBucket(keys[i], values[i]),
+          relationalStore.ConflictResolution.ON_CONFLICT_ABORT))) {
+          throw new Error('legacy cryptoparams re-key failed: ' + keys[i]);
+        }
+        const oldPredicates =
+          new relationalStore.RdbPredicates('cryptoparams');
+        oldPredicates.equalTo('id', ids[i]);
+        if (!rdbSingleRowAffected(
+          this.store.deleteSync(oldPredicates))) {
+          throw new Error('legacy cryptoparams cleanup failed: ' + ids[i]);
+        }
+      }
+      this.store.commit();
+    } catch (err) {
+      try { this.store.rollBack(); } catch (_rollbackError) {}
+      throw new Error(
+        'cryptoparams account migration failed: ' + safeError(err));
+    }
   }
 
   private readRustDeskRelayControlPlaneProfile(relayId: string) {
@@ -2287,8 +2427,14 @@ export class CloudStore implements CryptoCloudStore {
     if (!crypto.isReady()) { return false; }
     try {
       return this.saveLocalExtension(RDP_RESTRICTED_ADMIN_SECRET_TABLE, host.id, {
-        'hash': crypto.encrypt(hash),
-        'binding': crypto.encrypt(this.rdpRestrictedAdminSecretBinding(host))
+        'hash': crypto.encryptScoped(
+          this.currentOwnerScopeId(), RDP_RESTRICTED_ADMIN_SECRET_TABLE,
+          host.id, 'hash', hash, this.readVncResetEpoch()),
+        'binding': crypto.encryptScoped(
+          this.currentOwnerScopeId(), RDP_RESTRICTED_ADMIN_SECRET_TABLE,
+          host.id, 'binding',
+          this.rdpRestrictedAdminSecretBinding(host),
+          this.readVncResetEpoch())
       });
     } catch (err) {
       hilog.warn(0x0001, 'CloudSync', '[CloudStore] save RDP restricted admin secret failed: ' + safeError(err));
@@ -2332,8 +2478,15 @@ export class CloudStore implements CryptoCloudStore {
       return result;
     }
     try {
-      const binding: string = crypto.decrypt(encryptedBinding);
-      const hash: string = normalizeRdpNtlmHash(crypto.decrypt(encryptedHash));
+      const binding: string = crypto.decryptScopedOrLegacy(
+        this.currentOwnerScopeId(), RDP_RESTRICTED_ADMIN_SECRET_TABLE,
+        host.id, 'binding', encryptedBinding,
+        this.readVncResetEpoch());
+      const hash: string = normalizeRdpNtlmHash(
+        crypto.decryptScopedOrLegacy(
+          this.currentOwnerScopeId(), RDP_RESTRICTED_ADMIN_SECRET_TABLE,
+          host.id, 'hash', encryptedHash,
+          this.readVncResetEpoch()));
       if (binding !== this.rdpRestrictedAdminSecretBinding(host)) {
         this.clearRdpRestrictedAdminHash(host.id);
         result.status = 'binding_mismatch';
@@ -2433,7 +2586,9 @@ export class CloudStore implements CryptoCloudStore {
     const values: Record<string, string> = this.loadLocalExtension('remotehosts', host.id);
     const get = (key: string, fallback: string): string => values[key] !== undefined ? values[key] : fallback;
     const crypto: DataCrypto = DataCrypto.getInstance();
-    host.sshKeyPassphrase = this.decryptIfReady(crypto, get('sshkeypassphrase', host.sshKeyPassphrase));
+    host.sshKeyPassphrase = this.decryptIfReady(
+      crypto, 'localextensions/remotehosts', host.id,
+      'sshkeypassphrase', get('sshkeypassphrase', host.sshKeyPassphrase));
     return host;
   }
 
@@ -2491,7 +2646,9 @@ export class CloudStore implements CryptoCloudStore {
     const crypto: DataCrypto = DataCrypto.getInstance();
     const values: Record<string, string> = {};
     host.normalizeRdpAuthentication();
-    values['sshkeypassphrase'] = this.encryptIfReady(crypto, host.sshKeyPassphrase);
+    values['sshkeypassphrase'] = this.encryptIfReady(
+      crypto, 'localextensions/remotehosts', host.id,
+      'sshkeypassphrase', host.sshKeyPassphrase);
     return values;
   }
 
@@ -2803,68 +2960,178 @@ export class CloudStore implements CryptoCloudStore {
     return DataCrypto.getInstance().getCryptoParams();
   }
 
-  /** 存储密码学参数 (使用 insertSync 以触发云同步) */
-  setCryptoParams(salt: string, verifier: string): boolean {
-    if (!this.localMutationAllowed() || !this.store) { return false; }
+  private readCryptoParamForCurrentStore(key: string): string {
+    if (!this.store) { return ''; }
+    const id: string = this.cryptoParamId(key);
+    if (id === '') { return ''; }
     try {
-      const vb1: relationalStore.ValuesBucket = { 'id': 'salt', 'key': 'crypto_salt', 'value': salt };
-      const vb2: relationalStore.ValuesBucket = { 'id': 'verif', 'key': 'crypto_verifier', 'value': verifier };
-      const vb3: relationalStore.ValuesBucket = { 'id': 'status', 'key': 'crypto_status', 'value': 'active' };
-      this.store.beginTransaction();
-      if (!rdbInsertSucceeded(this.store.insertSync('cryptoparams', vb1, relationalStore.ConflictResolution.ON_CONFLICT_REPLACE)) ||
-        !rdbInsertSucceeded(this.store.insertSync('cryptoparams', vb2, relationalStore.ConflictResolution.ON_CONFLICT_REPLACE)) ||
-        !rdbInsertSucceeded(this.store.insertSync('cryptoparams', vb3, relationalStore.ConflictResolution.ON_CONFLICT_REPLACE))) {
-        throw new Error('cryptoparams insert failed');
+      const predicates = new relationalStore.RdbPredicates('cryptoparams');
+      predicates.equalTo('id', id);
+      predicates.equalTo('key', key);
+      const rows: relationalStore.ResultSet =
+        this.store.querySync(predicates);
+      const value: string = rows.goToFirstRow()
+        ? rows.getString(rows.getColumnIndex('value')) : '';
+      rows.close();
+      return value;
+    } catch (_e) { return ''; }
+  }
+
+  readCryptoParam(
+    key: string, lease: AccountSessionLease | null
+  ): string {
+    if (lease === null || !this.isLeaseCurrent(lease)) { return ''; }
+    return this.readCryptoParamForCurrentStore(key);
+  }
+
+  private committedCryptoState(): CryptoCommittedState {
+    const status: string = this.readCryptoParamForCurrentStore(
+      'crypto_status');
+    const salt: string = this.readCryptoParamForCurrentStore('crypto_salt');
+    const verifier: string =
+      this.readCryptoParamForCurrentStore('crypto_verifier');
+    const configured: boolean = salt !== '' && verifier !== '';
+    const readVersion = (key: string): number => {
+      const value: number =
+        Number(this.readCryptoParamForCurrentStore(key));
+      return Number.isFinite(value) && value >= 0
+        ? Math.floor(value) : 0;
+    };
+    return {
+      status: status === '' && configured ? 'active' : status,
+      configured,
+      kdfVersion: readVersion('crypto_kdf_version'),
+      kdfIterations: readVersion('crypto_kdf_iterations'),
+      keyVersion: readVersion('crypto_key_version'),
+      verifierVersion: readVersion('crypto_verifier_version'),
+      envelopeVersion: readVersion('crypto_envelope_version')
+    };
+  }
+
+  private recoverCryptoLifecycleState(
+    lease: AccountSessionLease
+  ): CryptoLifecycleDurableState {
+    const committed: CryptoCommittedState = this.committedCryptoState();
+    const raw: string =
+      this.readLocalMetadataStrict(CRYPTO_LIFECYCLE_DURABLE_STATE_KEY);
+    let candidate: CryptoLifecycleDurableState | null = null;
+    if (raw !== '') {
+      try {
+        candidate = JSON.parse(raw) as CryptoLifecycleDurableState;
+      } catch (err) {
+        candidate = newCryptoLifecycleDurableState(
+          lease, committed);
+        candidate.phase = 'blocked';
+        candidate.lastFailure =
+          'crypto_lifecycle_json_corrupted:' + safeError(err);
       }
-      if (!this.recordTableMutation('cryptoparams', 'configure')) {
-        throw new Error('cryptoparams journal failed');
-      }
-      this.store.commit();
-      this.lastKnownCryptoStatus = 'active';
-      // 立即推送到云端, 其他设备无需等待 autoSync 即可获知加密已启用
-      this.pushTable('cryptoparams');
-      return true;
-    } catch (e) {
-      try { this.store.rollBack(); } catch (_ignored) {}
-      hilog.error(0x0001, 'CloudSync', "[setCryptoParams] 写入失败: " + DataCrypto.errDetail(e));
+    }
+    return recoverCryptoLifecycleDurableState(
+      candidate, lease, committed);
+  }
+
+  private persistCryptoLifecycleState(
+    state: CryptoLifecycleDurableState
+  ): boolean {
+    if (!this.store || this.currentLease === null ||
+      state.ownerScopeId !== this.currentLease.ownerScopeId ||
+      state.storeIdentity !== this.currentLease.storeIdentity ||
+      state.generation !== this.currentLease.generation) {
       return false;
+    }
+    return this.writeLocalMetadata(
+      CRYPTO_LIFECYCLE_DURABLE_STATE_KEY,
+      JSON.stringify(state));
+  }
+
+  private cryptoLeaseIsCurrent(
+    lease: AccountSessionLease | null
+  ): boolean {
+    return lease !== null && this.isLeaseCurrent(lease);
+  }
+
+  private nextCryptoTransactionId(label: string): string {
+    if (this.cryptoLifecycleState === null) { return ''; }
+    return label + '|' + this.currentOwnerScopeId() + '|' +
+      (this.cryptoLifecycleState.revision + 1).toString() + '|' +
+      Date.now().toString();
+  }
+
+  beginCryptoConfiguration(
+    lease: AccountSessionLease | null
+  ): string {
+    if (!this.localMutationAllowed() ||
+      !this.cryptoLeaseIsCurrent(lease) ||
+      this.cryptoLifecycleState === null ||
+      !cryptoLifecycleCanConfigure(this.cryptoLifecycleState)) {
+      return '';
+    }
+    const transactionId: string =
+      this.nextCryptoTransactionId('configure');
+    const next: CryptoLifecycleDurableState =
+      cryptoLifecycleOperationStarted(
+        this.cryptoLifecycleState, 'configuring', transactionId);
+    if (!this.persistCryptoLifecycleState(next)) { return ''; }
+    this.cryptoLifecycleState = next;
+    return transactionId;
+  }
+
+  abortCryptoLifecycle(
+    transactionId: string,
+    lease: AccountSessionLease | null,
+    failure: string
+  ): void {
+    if (!this.cryptoLeaseIsCurrent(lease) ||
+      this.cryptoLifecycleState === null) {
+      return;
+    }
+    const next: CryptoLifecycleDurableState =
+      cryptoLifecycleOperationFailed(
+        this.cryptoLifecycleState, transactionId, failure);
+    if (next === this.cryptoLifecycleState) { return; }
+    let durable: CryptoLifecycleDurableState = next;
+    const committed: CryptoCommittedState =
+      this.committedCryptoState();
+    if (!committed.configured &&
+      (committed.status === '' ||
+        committed.status === 'disabled')) {
+      durable = recoverCryptoLifecycleDurableState(
+        next, lease as AccountSessionLease, committed);
+    }
+    if (this.persistCryptoLifecycleState(durable)) {
+      this.cryptoLifecycleState = durable;
     }
   }
 
-  /** 设置加密状态 (跨设备信令) */
-  setCryptoStatus(status: string): boolean {
-    if (!this.localMutationAllowed() || !this.store) { return false; }
-    try {
-      const vb: relationalStore.ValuesBucket = { 'id': 'status', 'key': 'crypto_status', 'value': status };
-      // A reset is also a VNC generation change. Keep the generation marker in
-      // the existing crypto parameter table so a stale VNC row can never win
-      // after the data wipe, without introducing another cloud table.
-      const nextVncResetEpoch: number = status === 'reset' ? this.readVncResetEpoch() + 1 : 0;
-      const epochBucket: relationalStore.ValuesBucket = {
-        'id': 'vnc-reset-epoch', 'key': VNC_RESET_EPOCH_KEY,
-        'value': nextVncResetEpoch.toString()
-      };
-      this.store.beginTransaction();
-      if (status === 'reset' &&
-        !rdbInsertSucceeded(this.store.insertSync('cryptoparams', epochBucket,
-          relationalStore.ConflictResolution.ON_CONFLICT_REPLACE))) {
-        throw new Error('cryptoparams VNC reset epoch insert failed');
-      }
-      if (!rdbInsertSucceeded(this.store.insertSync('cryptoparams', vb, relationalStore.ConflictResolution.ON_CONFLICT_REPLACE))) {
-        throw new Error('cryptoparams status insert failed');
-      }
-      if (!this.recordTableMutation('cryptoparams', 'status:' + status)) {
-        throw new Error('cryptoparams status journal failed');
-      }
-      this.store.commit();
-      this.lastKnownCryptoStatus = status;
-      hilog.info(0x0001, 'CloudSync', "[setCryptoStatus] " + status);
-      return true;
-    } catch (e) {
-      try { this.store.rollBack(); } catch (_ignored) {}
-      hilog.error(0x0001, 'CloudSync', "[setCryptoStatus] 失败: " + DataCrypto.errDetail(e));
+  markCryptoUnlocked(lease: AccountSessionLease | null): boolean {
+    if (!this.cryptoLeaseIsCurrent(lease) ||
+      this.cryptoLifecycleState === null ||
+      this.committedCryptoState().configured === false) {
       return false;
     }
+    const next: CryptoLifecycleDurableState =
+      cryptoLifecycleMemoryStateChanged(
+        this.cryptoLifecycleState, true);
+    if (next === this.cryptoLifecycleState) {
+      return this.cryptoLifecycleState.phase === 'active_unlocked';
+    }
+    if (!this.persistCryptoLifecycleState(next)) { return false; }
+    this.cryptoLifecycleState = next;
+    return true;
+  }
+
+  markCryptoLocked(lease: AccountSessionLease | null): boolean {
+    if (!this.cryptoLeaseIsCurrent(lease) ||
+      this.cryptoLifecycleState === null) {
+      return false;
+    }
+    const next: CryptoLifecycleDurableState =
+      cryptoLifecycleMemoryStateChanged(
+        this.cryptoLifecycleState, false);
+    if (next === this.cryptoLifecycleState) { return true; }
+    if (!this.persistCryptoLifecycleState(next)) { return false; }
+    this.cryptoLifecycleState = next;
+    return true;
   }
 
   /** Current VNC generation. Missing legacy markers intentionally mean epoch 0. */
@@ -2873,27 +3140,18 @@ export class CloudStore implements CryptoCloudStore {
   }
 
   private readVncResetEpoch(): number {
-    if (!this.store) { return 0; }
-    try {
-      const rs = this.store.querySqlSync("SELECT value FROM cryptoparams WHERE key = ?",
-        [VNC_RESET_EPOCH_KEY]);
-      let value: string = '';
-      if (rs.goToFirstRow()) { value = rs.getString(0); }
-      rs.close();
-      const epoch: number = Number(value);
-      return Number.isFinite(epoch) && epoch >= 0 ? Math.floor(epoch) : 0;
-    } catch (_e) {
-      return 0;
-    }
+    const epoch: number = Number(
+      this.readCryptoParamForCurrentStore(VNC_RESET_EPOCH_KEY));
+    return Number.isFinite(epoch) && epoch >= 0
+      ? Math.floor(epoch) : 0;
   }
 
   private ensureVncResetEpochAtLeast(minimum: number): boolean {
     if (!this.store) { return false; }
     const current: number = this.readVncResetEpoch();
     if (current >= minimum) { return true; }
-    const bucket: relationalStore.ValuesBucket = {
-      'id': 'vnc-reset-epoch', 'key': VNC_RESET_EPOCH_KEY, 'value': minimum.toString()
-    };
+    const bucket: relationalStore.ValuesBucket =
+      this.cryptoParamBucket(VNC_RESET_EPOCH_KEY, minimum.toString());
     if (!rdbInsertSucceeded(this.store.insertSync('cryptoparams', bucket,
       relationalStore.ConflictResolution.ON_CONFLICT_REPLACE))) {
       return false;
@@ -2903,53 +3161,551 @@ export class CloudStore implements CryptoCloudStore {
 
   /** 读取当前加密状态 */
   getCryptoStatus(): string {
-    if (!this.store) { return ''; }
-    try {
-      const rs = this.store.querySqlSync("SELECT value FROM cryptoparams WHERE key = 'crypto_status'");
-      let result: string = '';
-      if (rs.goToFirstRow()) {
-        result = rs.getString(0);
-      }
-      rs.close();
-      // 兼容旧数据: 有 salt 但无 crypto_status → 视为 active
-      if (result === '') {
-        const saltRs = this.store.querySqlSync("SELECT value FROM cryptoparams WHERE key = 'crypto_salt'");
-        if (saltRs.goToFirstRow()) {
-          result = 'active';
-        }
-        saltRs.close();
-      }
-      return result;
-    } catch (_e) {
-      return '';
+    return this.committedCryptoState().status;
+  }
+
+  /**
+   * Upgrades every account-owned sensitive value in one RDB transaction.
+   * Unknown/damaged envelopes, context mismatches and journal failures abort
+   * the entire migration; no partially encrypted account is committed.
+   */
+  migrateAllDataToScopedV3(
+    crypto: DataCrypto,
+    lease: AccountSessionLease | null
+  ): number {
+    if (!this.localMutationAllowed() || !this.store ||
+      !crypto.isReady() ||
+      !this.cryptoLeaseIsCurrent(lease) ||
+      this.cryptoLifecycleState === null ||
+      !cryptoLifecycleCanMigrate(this.cryptoLifecycleState)) {
+      return -1;
     }
+    let count: number = 0;
+    const changedTables: string[] = [];
+    const transactionId: string =
+      this.nextCryptoTransactionId('migrate');
+    const migratingState: CryptoLifecycleDurableState =
+      cryptoLifecycleOperationStarted(
+        this.cryptoLifecycleState, 'migrating', transactionId);
+    if (!this.persistCryptoLifecycleState(migratingState)) {
+      return -1;
+    }
+    this.cryptoLifecycleState = migratingState;
+    try {
+      this.store.beginTransaction();
+      count = this.migrateAllDataToScopedV3InTransaction(
+        crypto, changedTables);
+      const committed: CryptoCommittedState =
+        this.committedCryptoState();
+      const activeState: CryptoLifecycleDurableState =
+        cryptoLifecycleOperationCommitted(
+          migratingState, 'active_unlocked', committed);
+      if (!this.persistCryptoLifecycleState(activeState)) {
+        throw new Error('crypto migration lifecycle commit failed');
+      }
+      this.store.commit();
+      this.cryptoLifecycleState = activeState;
+    } catch (err) {
+      try { this.store.rollBack(); } catch (_rollbackError) {}
+      this.abortCryptoLifecycle(
+        transactionId, lease, safeError(err));
+      hilog.error(0x0001, 'CloudSync',
+        '[migrateAllDataToScopedV3] 全量回滚: ' + safeError(err));
+      return -1;
+    }
+    if (remoteCryptoLifecycleMutationAllowed()) {
+      for (let i = 0; i < changedTables.length; i++) {
+        this.pushTable(changedTables[i]);
+      }
+    }
+    return count;
+  }
+
+  /**
+   * Commits KDF metadata and every encrypted business row together. The
+   * candidate DEK exists only in DataCrypto memory and is discarded if this
+   * transaction rolls back.
+   */
+  configureCryptoV3(
+    salt: string,
+    verifier: string,
+    kdfVersion: number,
+    kdfIterations: number,
+    keyVersion: number,
+    verifierVersion: number,
+    crypto: DataCrypto,
+    transactionId: string,
+    lease: AccountSessionLease | null
+  ): number {
+    if (!this.localMutationAllowed() || !this.store ||
+      !crypto.isReady() || salt === '' || verifier === '' ||
+      kdfVersion < 1 || kdfIterations < 100000 ||
+      keyVersion < 1 || verifierVersion < 1 ||
+      !this.cryptoLeaseIsCurrent(lease) ||
+      this.cryptoLifecycleState === null ||
+      this.cryptoLifecycleState.phase !== 'configuring' ||
+      this.cryptoLifecycleState.transactionId !== transactionId) {
+      return -1;
+    }
+    const changedTables: string[] = [];
+    let count: number = 0;
+    try {
+      this.store.beginTransaction();
+      const configuring: relationalStore.ValuesBucket =
+        this.cryptoParamBucket('crypto_status', 'configuring');
+      const saltBucket: relationalStore.ValuesBucket =
+        this.cryptoParamBucket('crypto_salt', salt);
+      const verifierBucket: relationalStore.ValuesBucket =
+        this.cryptoParamBucket('crypto_verifier', verifier);
+      const kdfVersionBucket: relationalStore.ValuesBucket =
+        this.cryptoParamBucket(
+          'crypto_kdf_version', kdfVersion.toString());
+      const iterationsBucket: relationalStore.ValuesBucket =
+        this.cryptoParamBucket(
+          'crypto_kdf_iterations', kdfIterations.toString());
+      const keyVersionBucket: relationalStore.ValuesBucket =
+        this.cryptoParamBucket(
+          'crypto_key_version', keyVersion.toString());
+      const verifierVersionBucket: relationalStore.ValuesBucket =
+        this.cryptoParamBucket(
+          'crypto_verifier_version', verifierVersion.toString());
+      const envelopeVersionBucket: relationalStore.ValuesBucket =
+        this.cryptoParamBucket(
+          'crypto_envelope_version',
+          crypto.SCOPED_ENVELOPE_VERSION.toString());
+      if (!rdbInsertSucceeded(this.store.insertSync(
+        'cryptoparams', configuring,
+        relationalStore.ConflictResolution.ON_CONFLICT_REPLACE)) ||
+        !rdbInsertSucceeded(this.store.insertSync(
+          'cryptoparams', saltBucket,
+          relationalStore.ConflictResolution.ON_CONFLICT_REPLACE)) ||
+        !rdbInsertSucceeded(this.store.insertSync(
+          'cryptoparams', verifierBucket,
+          relationalStore.ConflictResolution.ON_CONFLICT_REPLACE)) ||
+        !rdbInsertSucceeded(this.store.insertSync(
+          'cryptoparams', kdfVersionBucket,
+          relationalStore.ConflictResolution.ON_CONFLICT_REPLACE)) ||
+        !rdbInsertSucceeded(this.store.insertSync(
+          'cryptoparams', iterationsBucket,
+          relationalStore.ConflictResolution.ON_CONFLICT_REPLACE)) ||
+        !rdbInsertSucceeded(this.store.insertSync(
+          'cryptoparams', keyVersionBucket,
+          relationalStore.ConflictResolution.ON_CONFLICT_REPLACE)) ||
+        !rdbInsertSucceeded(this.store.insertSync(
+          'cryptoparams', verifierVersionBucket,
+          relationalStore.ConflictResolution.ON_CONFLICT_REPLACE)) ||
+        !rdbInsertSucceeded(this.store.insertSync(
+          'cryptoparams', envelopeVersionBucket,
+          relationalStore.ConflictResolution.ON_CONFLICT_REPLACE))) {
+        throw new Error('crypto v3 parameter staging failed');
+      }
+      count = this.migrateAllDataToScopedV3InTransaction(
+        crypto, changedTables);
+      const active: relationalStore.ValuesBucket =
+        this.cryptoParamBucket('crypto_status', 'active');
+      if (!rdbInsertSucceeded(this.store.insertSync(
+        'cryptoparams', active,
+        relationalStore.ConflictResolution.ON_CONFLICT_REPLACE))) {
+        throw new Error('crypto v3 activation failed');
+      }
+      if (!this.recordTableMutation('cryptoparams', 'configure_v3')) {
+        throw new Error('crypto v3 parameter journal failed');
+      }
+      const committed: CryptoCommittedState = {
+        status: 'active',
+        configured: true,
+        kdfVersion,
+        kdfIterations,
+        keyVersion,
+        verifierVersion,
+        envelopeVersion: crypto.SCOPED_ENVELOPE_VERSION
+      };
+      const activeState: CryptoLifecycleDurableState =
+        cryptoLifecycleOperationCommitted(
+          this.cryptoLifecycleState, 'active_unlocked', committed);
+      if (!this.persistCryptoLifecycleState(activeState)) {
+        throw new Error('crypto lifecycle activation failed');
+      }
+      this.store.commit();
+      this.cryptoLifecycleState = activeState;
+    } catch (err) {
+      try { this.store.rollBack(); } catch (_rollbackError) {}
+      hilog.error(0x0001, 'CloudSync',
+        '[configureCryptoV3] 全量回滚: ' + safeError(err));
+      return -1;
+    }
+    this.lastKnownCryptoStatus = 'active';
+    if (remoteCryptoLifecycleMutationAllowed()) {
+      this.pushTable('cryptoparams');
+      for (let i = 0; i < changedTables.length; i++) {
+        this.pushTable(changedTables[i]);
+      }
+    }
+    return count;
+  }
+
+  /** Caller owns the active RDB transaction. */
+  private migrateAllDataToScopedV3InTransaction(
+    crypto: DataCrypto, changedTables: string[]
+  ): number {
+    let count: number = 0;
+    count += this.migrateLegacyHostPasswordToScopedV3(
+      crypto, changedTables);
+    count += this.migrateScalarTableToScopedV3(
+      crypto, 'remotehosts',
+      ['passward', 'sshkeydata', 'sshkeypassphrase'],
+      changedTables);
+    count += this.migrateScalarTableToScopedV3(
+      crypto, 'rdpcredentials', ['password'], changedTables);
+    count += this.migrateScalarTableToScopedV3(
+      crypto, 'sshkeys', ['privatekey'], changedTables);
+    count += this.migrateScalarTableToScopedV3(
+      crypto, 'totpentries', ['secret'], changedTables);
+    count += this.migrateScalarTableToScopedV3(
+      crypto, 'rustdeskrelays', ['apipassword', 'key'], changedTables);
+    count += this.migrateRelayAccountsToScopedV3(crypto, changedTables);
+    count += this.migrateLocalExtensionSecretsToScopedV3(crypto);
+    count += this.migrateVncSecretsToV3(crypto, changedTables);
+    return count;
+  }
+
+  /** Runs only inside migrateAllDataToScopedV3's active transaction. */
+  private migrateLegacyHostPasswordToScopedV3(
+    crypto: DataCrypto, changedTables: string[]
+  ): number {
+    if (!this.store) { throw new Error('host migration store unavailable'); }
+    const predicates = new relationalStore.RdbPredicates('remotehosts');
+    this.addCurrentOwnerPredicate(predicates);
+    const rows: relationalStore.ResultSet = this.store.querySync(predicates);
+    let count: number = 0;
+    try {
+      while (rows.goToNextRow()) {
+        const id: string = rows.getString(rows.getColumnIndex('id'));
+        const canonicalIndex: number = rows.getColumnIndex('passward');
+        const legacyIndex: number = rows.getColumnIndex('password');
+        if (id === '' || legacyIndex < 0 || rows.isColumnNull(legacyIndex)) {
+          continue;
+        }
+        const legacy: string = rows.getString(legacyIndex);
+        if (legacy === '') { continue; }
+        const canonical: string = canonicalIndex >= 0 &&
+          !rows.isColumnNull(canonicalIndex)
+          ? rows.getString(canonicalIndex) : '';
+        const bucket: relationalStore.ValuesBucket = { password: '' };
+        if (canonical === '') {
+          bucket['passward'] = crypto.migrateValueToScopedV3(
+            this.currentOwnerScopeId(), 'remotehosts', id,
+            'passward', legacy, this.readVncResetEpoch());
+        }
+        const updatePredicates =
+          new relationalStore.RdbPredicates('remotehosts');
+        updatePredicates.equalTo('id', id);
+        this.addCurrentOwnerPredicate(updatePredicates);
+        if (!rdbSingleRowAffected(
+          this.store.updateSync(bucket, updatePredicates))) {
+          throw new Error('legacy host password migration failed: ' + id);
+        }
+        if (!this.recordLocalMutation(
+          'remotehosts', id, 'crypto_migrate_v3')) {
+          throw new Error(
+            'legacy host password migration journal failed: ' + id);
+        }
+        this.rememberChangedTable(changedTables, 'remotehosts');
+        count++;
+      }
+    } finally {
+      rows.close();
+    }
+    return count;
+  }
+
+  private rememberChangedTable(tables: string[], table: string): void {
+    if (tables.indexOf(table) < 0) { tables.push(table); }
+  }
+
+  /** Runs only inside migrateAllDataToScopedV3's active transaction. */
+  private migrateScalarTableToScopedV3(crypto: DataCrypto, table: string,
+    fields: string[], changedTables: string[]): number {
+    if (!this.store) { throw new Error('crypto migration store unavailable'); }
+    const predicates = new relationalStore.RdbPredicates(table);
+    this.addCurrentOwnerPredicate(predicates);
+    const rows: relationalStore.ResultSet = this.store.querySync(predicates);
+    let count: number = 0;
+    try {
+      while (rows.goToNextRow()) {
+        const id: string = rows.getString(rows.getColumnIndex('id'));
+        if (id === '') { throw new Error('missing record identity: ' + table); }
+        const bucket: relationalStore.ValuesBucket = {};
+        let changed: boolean = false;
+        for (let i = 0; i < fields.length; i++) {
+          const field: string = fields[i];
+          const index: number = rows.getColumnIndex(field);
+          if (index < 0 || rows.isColumnNull(index)) { continue; }
+          const value: string = rows.getString(index);
+          if (value === '') { continue; }
+          const next: string = crypto.migrateValueToScopedV3(
+            this.currentOwnerScopeId(), table, id, field, value,
+            this.readVncResetEpoch());
+          if (next !== value) {
+            bucket[field] = next;
+            changed = true;
+          }
+        }
+        if (!changed) { continue; }
+        const updatePredicates = new relationalStore.RdbPredicates(table);
+        updatePredicates.equalTo('id', id);
+        this.addCurrentOwnerPredicate(updatePredicates);
+        if (!rdbSingleRowAffected(
+          this.store.updateSync(bucket, updatePredicates))) {
+          throw new Error('crypto migration update failed: ' + table + '/' + id);
+        }
+        if (!this.recordLocalMutation(table, id, 'crypto_migrate_v3')) {
+          throw new Error('crypto migration journal failed: ' + table + '/' + id);
+        }
+        this.rememberChangedTable(changedTables, table);
+        count++;
+      }
+    } finally {
+      rows.close();
+    }
+    return count;
+  }
+
+  /** Runs only inside migrateAllDataToScopedV3's active transaction. */
+  private migrateRelayAccountsToScopedV3(
+    crypto: DataCrypto, changedTables: string[]): number {
+    if (!this.store) { throw new Error('relay migration store unavailable'); }
+    const predicates = new relationalStore.RdbPredicates('rustdeskrelays');
+    this.addCurrentOwnerPredicate(predicates);
+    const rows: relationalStore.ResultSet = this.store.querySync(predicates);
+    let count: number = 0;
+    try {
+      while (rows.goToNextRow()) {
+        const id: string = rows.getString(rows.getColumnIndex('id'));
+        const index: number = rows.getColumnIndex('accountsjson');
+        if (id === '' || index < 0 || rows.isColumnNull(index)) { continue; }
+        const value: string = rows.getString(index);
+        if (value === '') { continue; }
+        const accounts: RustDeskAccountJSON[] =
+          JSON.parse(value) as RustDeskAccountJSON[];
+        let changed: boolean = false;
+        for (let i = 0; i < accounts.length; i++) {
+          if (accounts[i].id === '') {
+            throw new Error('relay account identity missing: ' + id);
+          }
+          if (accounts[i].password === '') { continue; }
+          const next: string = crypto.migrateValueToScopedV3(
+            this.currentOwnerScopeId(), 'rustdeskrelays', id,
+            'accounts/' + accounts[i].id + '/password',
+            accounts[i].password, this.readVncResetEpoch());
+          if (next !== accounts[i].password) {
+            accounts[i].password = next;
+            changed = true;
+          }
+        }
+        if (!changed) { continue; }
+        const bucket: relationalStore.ValuesBucket = {
+          accountsjson: JSON.stringify(accounts),
+          updatedat: Date.now()
+        };
+        const updatePredicates =
+          new relationalStore.RdbPredicates('rustdeskrelays');
+        updatePredicates.equalTo('id', id);
+        this.addCurrentOwnerPredicate(updatePredicates);
+        if (!rdbSingleRowAffected(
+          this.store.updateSync(bucket, updatePredicates))) {
+          throw new Error('relay accounts migration update failed: ' + id);
+        }
+        if (!this.recordLocalMutation(
+          'rustdeskrelays', id, 'crypto_migrate_v3')) {
+          throw new Error('relay accounts migration journal failed: ' + id);
+        }
+        this.rememberChangedTable(changedTables, 'rustdeskrelays');
+        count++;
+      }
+    } finally {
+      rows.close();
+    }
+    return count;
+  }
+
+  /** Runs only inside migrateAllDataToScopedV3's active transaction. */
+  private migrateLocalExtensionSecretsToScopedV3(
+    crypto: DataCrypto
+  ): number {
+    if (!this.store) {
+      throw new Error('local extension migration store unavailable');
+    }
+    const rows: relationalStore.ResultSet = this.store.querySync(
+      new relationalStore.RdbPredicates('localextensions'));
+    let count: number = 0;
+    try {
+      while (rows.goToNextRow()) {
+        const id: string = rows.getString(rows.getColumnIndex('id'));
+        const table: string =
+          rows.getString(rows.getColumnIndex('tablename'));
+        const recordId: string =
+          rows.getString(rows.getColumnIndex('recordid'));
+        const payload: string =
+          rows.getString(rows.getColumnIndex('payload'));
+        if (id === '' || recordId === '' || payload === '') { continue; }
+        if (table !== 'remotehosts' &&
+          table !== RDP_RESTRICTED_ADMIN_SECRET_TABLE) {
+          continue;
+        }
+        const source: Record<string, string> =
+          JSON.parse(payload) as Record<string, string>;
+        const next: Record<string, string> = {};
+        const keys: string[] = Object.keys(source);
+        let changed: boolean = false;
+        for (let i = 0; i < keys.length; i++) {
+          const key: string = keys[i];
+          const value: string = source[key];
+          if (table === 'remotehosts' && key === 'password') {
+            changed = true;
+            continue;
+          }
+          const sensitive: boolean =
+            (table === 'remotehosts' && key === 'sshkeypassphrase') ||
+            (table === RDP_RESTRICTED_ADMIN_SECRET_TABLE &&
+              (key === 'hash' || key === 'binding'));
+          if (!sensitive || value === '') {
+            next[key] = value;
+            continue;
+          }
+          const aadTable: string = table === 'remotehosts'
+            ? 'localextensions/remotehosts'
+            : RDP_RESTRICTED_ADMIN_SECRET_TABLE;
+          next[key] = crypto.migrateValueToScopedV3(
+            this.currentOwnerScopeId(), aadTable, recordId, key, value,
+            this.readVncResetEpoch());
+          changed = changed || next[key] !== value;
+        }
+        if (!changed) { continue; }
+        const bucket: relationalStore.ValuesBucket = {
+          payload: JSON.stringify(next),
+          updatedat: Date.now()
+        };
+        const updatePredicates =
+          new relationalStore.RdbPredicates('localextensions');
+        updatePredicates.equalTo('id', id);
+        if (!rdbSingleRowAffected(
+          this.store.updateSync(bucket, updatePredicates))) {
+          throw new Error('local extension migration failed: ' + id);
+        }
+        count++;
+      }
+    } finally {
+      rows.close();
+    }
+    return count;
+  }
+
+  /** Runs only inside migrateAllDataToScopedV3's active transaction. */
+  private migrateVncSecretsToV3(
+    crypto: DataCrypto, changedTables: string[]
+  ): number {
+    if (!this.store) { throw new Error('VNC migration store unavailable'); }
+    const tables: string[] =
+      [VNC_LOCAL_TABLE, VNC_CLOUD_TABLE, LEGACY_VNC_CLOUD_TABLE];
+    let count: number = 0;
+    for (let tableIndex = 0; tableIndex < tables.length; tableIndex++) {
+      const table: string = tables[tableIndex];
+      let rows: relationalStore.ResultSet | null = null;
+      try {
+        const predicates = new relationalStore.RdbPredicates(table);
+        this.addCurrentOwnerPredicate(predicates);
+        rows = this.store.querySync(predicates);
+      } catch (err) {
+        if (table === LEGACY_VNC_CLOUD_TABLE) { continue; }
+        throw new Error('VNC migration table unavailable: ' +
+          table + ' — ' + safeError(err));
+      }
+      try {
+        while (rows.goToNextRow()) {
+          const deletedIndex: number =
+            rows.getColumnIndex(relationalStore.Field.DELETED_FLAG_FIELD);
+          if (deletedIndex >= 0 && rows.getLong(deletedIndex) === 1) {
+            continue;
+          }
+          const record: VncRecord = this.vncRecordFromResult(rows);
+          if (record.recordType !== 'secret' ||
+            record.ciphertext === '') { continue; }
+          const storageMode: string =
+            vncSecretStorageModeFromPayload(record.payload);
+          if (storageMode === 'encrypted_v3') {
+            crypto.decryptVncFieldV3(
+              record.userId, VNC_CLOUD_TABLE, record.id, 'ciphertext',
+              record.ciphertext, record.resetEpoch);
+            continue;
+          }
+          let plaintext: string = '';
+          if (storageMode === 'encrypted_v2') {
+            plaintext = crypto.decryptLegacyVncFieldV2(
+              'remotedesktop|vnc', VNC_CLOUD_TABLE, record.id,
+              'ciphertext', record.ciphertext);
+          } else if (storageMode === 'plain_explicit_v1') {
+            plaintext = decodePlainVncSecret(record.ciphertext) || '';
+          } else {
+            plaintext = crypto.decrypt(record.ciphertext);
+          }
+          if (plaintext === '') {
+            throw new Error('VNC secret plaintext invalid: ' + record.id);
+          }
+          const metadata = vncPayloadObject(record.payload);
+          if (metadata === null) {
+            throw new Error('VNC secret metadata invalid: ' + record.id);
+          }
+          metadata['storageMode'] = 'encrypted_v3';
+          record.payload = vncCanonicalJson(metadata);
+          record.ciphertext = crypto.encryptVncFieldV3(
+            record.userId, VNC_CLOUD_TABLE, record.id,
+            'ciphertext', plaintext, record.resetEpoch,
+            record.schemaVersion > 0 ? record.schemaVersion : 1);
+          record.envelopeVersion = VNC_SECRET_ENVELOPE_VERSION;
+          record.cryptoVersion = VNC_CRYPTO_VERSION;
+          record.keyVersion = VNC_KEY_VERSION;
+          record.aadVersion = VNC_AAD_VERSION;
+          record.syncVersion = Math.max(0, record.syncVersion) + 1;
+          record.updatedAt = Date.now();
+          record.payloadHashSha256 =
+            vncPayloadHashSha256(record.payload);
+          const bucket: relationalStore.ValuesBucket =
+            this.vncRecordToBucket(record, table !== VNC_CLOUD_TABLE);
+          const updatePredicates =
+            new relationalStore.RdbPredicates(table);
+          updatePredicates.equalTo('id', record.id);
+          updatePredicates.equalTo('userid', this.currentOwnerScopeId());
+          if (!rdbSingleRowAffected(
+            this.store.updateSync(bucket, updatePredicates))) {
+            throw new Error(
+              'VNC crypto migration failed: ' + table + '/' + record.id);
+          }
+          if (table === VNC_CLOUD_TABLE) {
+            if (!this.recordLocalMutation(
+              VNC_CLOUD_TABLE, record.id, 'crypto_migrate_v3')) {
+              throw new Error(
+                'VNC crypto migration journal failed: ' + record.id);
+            }
+            this.rememberChangedTable(
+              changedTables, VNC_CLOUD_TABLE);
+          }
+          count++;
+        }
+      } finally {
+        rows.close();
+      }
+    }
+    return count;
   }
 
   /** 清空全部敏感业务表；接收云端 reset 时需要推送本地删除，手动重置则统一在最后推送。 */
   async clearAllTables(pushChanges: boolean = true): Promise<boolean> {
     if (!this.localMutationAllowed() || !this.store) { return false; }
+    const tables: string[] = this.sensitiveBusinessTables();
     try {
-      const tables: string[] = ['remotehosts', 'rdpcredentials', 'sshkeys', 'totpentries', 'rustdeskrelays', VNC_CLOUD_TABLE];
       this.store.beginTransaction();
-      // Every local-only payload belongs to one of the cleared rows. Clear
-      // stale cached secrets/metadata before recording fresh delete intents.
-      await this.store.executeSql('DELETE FROM localextensions');
-      await this.store.executeSql('DELETE FROM ' + LOCAL_MUTATION_JOURNAL_TABLE);
-      const localVncPredicates = new relationalStore.RdbPredicates(VNC_LOCAL_TABLE);
-      this.addCurrentOwnerPredicate(localVncPredicates);
-      this.store.deleteSync(localVncPredicates);
-      if (!this.clearRustDeskRelayControlPlaneProfiles()) {
-        throw new Error('relay profile metadata clear failed');
-      }
-      for (let i = 0; i < tables.length; i++) {
-        const predicates = new relationalStore.RdbPredicates(tables[i]);
-        this.addCurrentOwnerPredicate(predicates);
-        this.store.deleteSync(predicates);
-        if (!this.recordTableMutation(tables[i], 'clear')) {
-          throw new Error('clear journal failed table=' + tables[i]);
-        }
-        hilog.info(0x0001, 'CloudSync', "[clearAllTables] " + tables[i] + " 已清空");
-      }
+      this.clearAllTablesInActiveTransaction(tables);
       this.store.commit();
       // 系统 autoSync 已关闭，显式推送每一个已清空的业务表。
       if (pushChanges) {
@@ -2963,11 +3719,53 @@ export class CloudStore implements CryptoCloudStore {
     }
   }
 
+  private sensitiveBusinessTables(): string[] {
+    return [
+      'remotehosts', 'rdpcredentials', 'sshkeys', 'totpentries',
+      'rustdeskrelays', VNC_CLOUD_TABLE
+    ];
+  }
+
+  /** Caller owns the active transaction and the account physical store. */
+  private clearAllTablesInActiveTransaction(tables: string[]): void {
+    if (!this.store) {
+      throw new Error('sensitive data store unavailable');
+    }
+    // These local-only tables contain data for exactly one physical account
+    // store. They must be cleared before fresh delete intents are recorded.
+    this.store.deleteSync(
+      new relationalStore.RdbPredicates('localextensions'));
+    this.store.deleteSync(
+      new relationalStore.RdbPredicates(LOCAL_MUTATION_JOURNAL_TABLE));
+    const localVncPredicates =
+      new relationalStore.RdbPredicates(VNC_LOCAL_TABLE);
+    this.addCurrentOwnerPredicate(localVncPredicates);
+    this.store.deleteSync(localVncPredicates);
+    if (!this.clearRustDeskRelayControlPlaneProfiles()) {
+      throw new Error('relay profile metadata clear failed');
+    }
+    for (let i = 0; i < tables.length; i++) {
+      const predicates =
+        new relationalStore.RdbPredicates(tables[i]);
+      this.addCurrentOwnerPredicate(predicates);
+      this.store.deleteSync(predicates);
+      if (!this.recordTableMutation(tables[i], 'clear')) {
+        throw new Error('clear journal failed table=' + tables[i]);
+      }
+      hilog.info(0x0001, 'CloudSync',
+        '[clearAllTables] ' + tables[i] + ' 已清空');
+    }
+  }
+
   /**
    * 批量解密敏感业务表；返回 -1 表示任何本地写入失败且本次事务已回滚。
    * 调用方绝不能在 -1 后删除密码学参数或发布 disabled 信令。
    */
-  decryptAllData(crypto: DataCrypto, pushChanges: boolean = true): number {
+  decryptAllData(
+    crypto: DataCrypto,
+    pushChanges: boolean = true,
+    manageTransaction: boolean = true
+  ): number {
     if (!this.localMutationAllowed() || !this.store) { return -1; }
     let count: number = 0;
     let hostsChanged: boolean = false;
@@ -2977,7 +3775,7 @@ export class CloudStore implements CryptoCloudStore {
     let totpEntriesChanged: boolean = false;
     let vncRecordsChanged: boolean = false;
     try {
-      this.store.beginTransaction();
+      if (manageTransaction) { this.store.beginTransaction(); }
       // 1. remotehosts: the canonical password lives in `passward`.
       const hostPredicates = new relationalStore.RdbPredicates('remotehosts');
       this.addCurrentOwnerPredicate(hostPredicates);
@@ -2993,7 +3791,9 @@ export class CloudStore implements CryptoCloudStore {
         let changed: boolean = false;
         const vb: relationalStore.ValuesBucket = {};
         if (crypto.isEncrypted(pwd)) {
-          vb['passward'] = crypto.decrypt(pwd);
+          vb['passward'] = crypto.decryptScopedOrLegacy(
+            this.currentOwnerScopeId(), 'remotehosts', id, 'passward',
+            pwd, this.readVncResetEpoch());
           // Never recreate the retired local password shadow while disabling
           // encryption. If it was the only recoverable legacy value, it has
           // now been promoted into the canonical column above.
@@ -3005,7 +3805,9 @@ export class CloudStore implements CryptoCloudStore {
           changed = true;
         }
         if (crypto.isEncrypted(sshData)) {
-          vb['sshkeydata'] = crypto.decrypt(sshData);
+          vb['sshkeydata'] = crypto.decryptScopedOrLegacy(
+            this.currentOwnerScopeId(), 'remotehosts', id,
+            'sshkeydata', sshData, this.readVncResetEpoch());
           changed = true;
         }
         if (changed) {
@@ -3034,7 +3836,9 @@ export class CloudStore implements CryptoCloudStore {
         const pwd: string = rdpRs.getString(rdpRs.getColumnIndex('password'));
         const vb: relationalStore.ValuesBucket = {};
         if (crypto.isEncrypted(pwd)) {
-          vb['password'] = crypto.decrypt(pwd);
+          vb['password'] = crypto.decryptScopedOrLegacy(
+            this.currentOwnerScopeId(), 'rdpcredentials', id,
+            'password', pwd, this.readVncResetEpoch());
           const predicates = new relationalStore.RdbPredicates('rdpcredentials');
           predicates.equalTo('id', id);
           this.addCurrentOwnerPredicate(predicates);
@@ -3060,7 +3864,9 @@ export class CloudStore implements CryptoCloudStore {
         const pk: string = keyRs.getString(keyRs.getColumnIndex('privatekey'));
         if (crypto.isEncrypted(pk)) {
           const vb: relationalStore.ValuesBucket = {};
-          vb['privatekey'] = crypto.decrypt(pk);
+          vb['privatekey'] = crypto.decryptScopedOrLegacy(
+            this.currentOwnerScopeId(), 'sshkeys', id,
+            'privatekey', pk, this.readVncResetEpoch());
           const predicates = new relationalStore.RdbPredicates('sshkeys');
           predicates.equalTo('id', id);
           this.addCurrentOwnerPredicate(predicates);
@@ -3086,7 +3892,9 @@ export class CloudStore implements CryptoCloudStore {
         const sec: string = totpRs.getString(totpRs.getColumnIndex('secret'));
         if (crypto.isEncrypted(sec)) {
           const vb: relationalStore.ValuesBucket = {};
-          vb['secret'] = crypto.decrypt(sec);
+          vb['secret'] = crypto.decryptScopedOrLegacy(
+            this.currentOwnerScopeId(), 'totpentries', id,
+            'secret', sec, this.readVncResetEpoch());
           const predicates = new relationalStore.RdbPredicates('totpentries');
           predicates.equalTo('id', id);
           this.addCurrentOwnerPredicate(predicates);
@@ -3114,11 +3922,15 @@ export class CloudStore implements CryptoCloudStore {
         const apiPassword: string = relayRs.getString(relayRs.getColumnIndex('apipassword'));
         const key: string = relayRs.getString(relayRs.getColumnIndex('key'));
         if (crypto.isEncrypted(apiPassword)) {
-          vb['apipassword'] = crypto.decrypt(apiPassword);
+          vb['apipassword'] = crypto.decryptScopedOrLegacy(
+            this.currentOwnerScopeId(), 'rustdeskrelays', id,
+            'apipassword', apiPassword, this.readVncResetEpoch());
           changed = true;
         }
         if (crypto.isEncrypted(key)) {
-          vb['key'] = crypto.decrypt(key);
+          vb['key'] = crypto.decryptScopedOrLegacy(
+            this.currentOwnerScopeId(), 'rustdeskrelays', id, 'key',
+            key, this.readVncResetEpoch());
           changed = true;
         }
         const accountsIdx: number = relayRs.getColumnIndex('accountsjson');
@@ -3129,7 +3941,10 @@ export class CloudStore implements CryptoCloudStore {
               const accounts: RustDeskAccountJSON[] = JSON.parse(accountsJson) as RustDeskAccountJSON[];
               for (let i = 0; i < accounts.length; i++) {
                 if (crypto.isEncrypted(accounts[i].password)) {
-                  accounts[i].password = crypto.decrypt(accounts[i].password);
+                  accounts[i].password = crypto.decryptScopedOrLegacy(
+                    this.currentOwnerScopeId(), 'rustdeskrelays', id,
+                    'accounts/' + accounts[i].id + '/password',
+                    accounts[i].password, this.readVncResetEpoch());
                   changed = true;
                 }
               }
@@ -3158,8 +3973,8 @@ export class CloudStore implements CryptoCloudStore {
       }
       relayRs.close();
 
-      // 6. VNC secret owner: convert encrypted_v2 to the explicitly confirmed
-      // plain-v1 envelope before the global DEK is removed. This is a
+      // 6. VNC secret owner: convert encrypted_v2/v3 to the explicitly
+      // confirmed plain-v1 envelope before the global DEK is removed. This is a
       // transactional migration; a single undecryptable row aborts the whole
       // status transition instead of leaving an unreadable half-migrated set.
       const vncDecrypted: number = this.decryptVncSecretsForDisable(crypto);
@@ -3172,8 +3987,8 @@ export class CloudStore implements CryptoCloudStore {
       // text (or a plaintext NTLM hash) behind.
       count += this.decryptSensitiveLocalExtensions(crypto);
 
-      this.store.commit();
-      if (pushChanges) {
+      if (manageTransaction) { this.store.commit(); }
+      if (pushChanges && manageTransaction) {
         if (hostsChanged) { this.pushTable('remotehosts'); }
         if (rdpCredentialsChanged) { this.pushTable('rdpcredentials'); }
         if (relaysChanged) { this.pushTable('rustdeskrelays'); }
@@ -3184,6 +3999,11 @@ export class CloudStore implements CryptoCloudStore {
 
       hilog.info(0x0001, 'CloudSync', "[decryptAllData] 已解密 " + count.toString() + " 条记录");
     } catch (e) {
+      if (!manageTransaction) {
+        throw new Error(
+          '[decryptAllData] active transaction failed: ' +
+          DataCrypto.errDetail(e));
+      }
       try { this.store.rollBack(); } catch (_ignored) {}
       hilog.error(0x0001, 'CloudSync', "[decryptAllData] 失败: " + DataCrypto.errDetail(e));
       return -1;
@@ -3192,8 +4012,8 @@ export class CloudStore implements CryptoCloudStore {
   }
 
   /**
-   * Convert every active VNC encrypted_v2 row in the local, cloud and legacy
-   * compatibility tables while decryptAllData owns the active transaction.
+   * Convert every active VNC encrypted_v2/v3 row in the local, cloud and
+   * legacy compatibility tables while decryptAllData owns the transaction.
    */
   private decryptVncSecretsForDisable(crypto: DataCrypto): number {
     if (!this.store) { throw new Error('VNC store unavailable'); }
@@ -3219,8 +4039,21 @@ export class CloudStore implements CryptoCloudStore {
           if (!vncRecordIsValid(record)) { throw new Error('invalid VNC secret row: ' + record.id); }
           const metadata = vncPayloadObject(record.payload);
           if (metadata === null) { throw new Error('invalid VNC secret metadata: ' + record.id); }
-          const plaintext: string = crypto.decryptField('remotedesktop|vnc', VNC_CLOUD_TABLE,
-            record.id, 'ciphertext', record.ciphertext);
+          const storageMode: string =
+            vncSecretStorageModeFromPayload(record.payload);
+          let plaintext: string = '';
+          if (storageMode === 'encrypted_v3') {
+            plaintext = crypto.decryptVncFieldV3(
+              record.userId, VNC_CLOUD_TABLE, record.id, 'ciphertext',
+              record.ciphertext, record.resetEpoch);
+          } else if (storageMode === 'encrypted_v2') {
+            plaintext = crypto.decryptLegacyVncFieldV2(
+              'remotedesktop|vnc', VNC_CLOUD_TABLE, record.id,
+              'ciphertext', record.ciphertext);
+          } else {
+            throw new Error(
+              'unsupported encrypted VNC storage mode: ' + record.id);
+          }
           const encoded: string = encodePlainVncSecret(plaintext);
           if (encoded === '') { throw new Error('VNC secret cannot be represented as plain-v1: ' + record.id); }
           metadata['storageMode'] = 'plain_explicit_v1';
@@ -3314,7 +4147,10 @@ export class CloudStore implements CryptoCloudStore {
           // This retired shadow must never survive an encryption transition.
           if (key === 'password') { changed = true; continue; }
           if (key === 'sshkeypassphrase' && crypto.isEncrypted(value)) {
-            next[key] = crypto.decrypt(value);
+            next[key] = crypto.decryptScopedOrLegacy(
+              this.currentOwnerScopeId(), 'localextensions/remotehosts',
+              recordId, 'sshkeypassphrase', value,
+              this.readVncResetEpoch());
             changed = true;
           } else {
             next[key] = value;
@@ -3341,87 +4177,215 @@ export class CloudStore implements CryptoCloudStore {
     return changedCount;
   }
 
+  /** Caller owns the active transaction. The reset epoch and status survive. */
+  private clearCryptoSecretsInActiveTransaction(): void {
+    if (!this.store) {
+      throw new Error('crypto parameter store unavailable');
+    }
+    for (let i = 0; i < CRYPTO_SECRET_PARAM_KEYS.length; i++) {
+      const predicates =
+        new relationalStore.RdbPredicates('cryptoparams');
+      predicates.equalTo(
+        'id', this.cryptoParamId(CRYPTO_SECRET_PARAM_KEYS[i]));
+      predicates.equalTo('key', CRYPTO_SECRET_PARAM_KEYS[i]);
+      this.store.deleteSync(predicates);
+    }
+  }
+
+  private pushCryptoTransitionTables(
+    includeVncReset: boolean = false
+  ): void {
+    if (!remoteCryptoLifecycleMutationAllowed()) {
+      hilog.warn(0x0001, 'CloudSync',
+        '远端加密生命周期协议未启用；本机原子变更不会发布为跨设备破坏性操作');
+      return;
+    }
+    this.pushTable('cryptoparams');
+    this.pushTable('remotehosts');
+    this.pushTable('rdpcredentials');
+    this.pushTable('rustdeskrelays');
+    this.pushTable('sshkeys');
+    this.pushTable('totpentries');
+    if (includeVncReset) { this.pushVncResetTable(); }
+    else { this.pushTable(VNC_CLOUD_TABLE); }
+  }
+
+  /**
+   * Decrypts every sensitive row, clears KDF material and commits the disabled
+   * status in one transaction. A caller may clear the in-memory DEK only after
+   * this method returns a non-negative count.
+   */
+  disableCryptoV3(
+    crypto: DataCrypto,
+    lease: AccountSessionLease | null
+  ): number {
+    if (!this.localMutationAllowed() || !this.store ||
+      !crypto.isReady() ||
+      !this.cryptoLeaseIsCurrent(lease) ||
+      this.cryptoLifecycleState === null ||
+      !cryptoLifecycleCanDisable(this.cryptoLifecycleState)) {
+      return -1;
+    }
+    const transactionId: string =
+      this.nextCryptoTransactionId('disable');
+    const disablingState: CryptoLifecycleDurableState =
+      cryptoLifecycleOperationStarted(
+        this.cryptoLifecycleState, 'disabling', transactionId);
+    if (!this.persistCryptoLifecycleState(disablingState)) {
+      return -1;
+    }
+    this.cryptoLifecycleState = disablingState;
+    let count: number = -1;
+    try {
+      this.store.beginTransaction();
+      count = this.decryptAllData(crypto, false, false);
+      this.clearCryptoSecretsInActiveTransaction();
+      if (!rdbInsertSucceeded(this.store.insertSync(
+        'cryptoparams',
+        this.cryptoParamBucket('crypto_status', 'disabled'),
+        relationalStore.ConflictResolution.ON_CONFLICT_REPLACE))) {
+        throw new Error('crypto disabled status write failed');
+      }
+      if (!this.recordTableMutation(
+        'cryptoparams', 'disable_v3')) {
+        throw new Error('crypto disable journal failed');
+      }
+      const committed: CryptoCommittedState = {
+        status: 'disabled',
+        configured: false,
+        kdfVersion: 0,
+        kdfIterations: 0,
+        keyVersion: 0,
+        verifierVersion: 0,
+        envelopeVersion: 0
+      };
+      const disabledState: CryptoLifecycleDurableState =
+        cryptoLifecycleOperationCommitted(
+          disablingState, 'disabled', committed);
+      if (!this.persistCryptoLifecycleState(disabledState)) {
+        throw new Error('crypto disable lifecycle commit failed');
+      }
+      this.store.commit();
+      this.cryptoLifecycleState = disabledState;
+      this.lastKnownCryptoStatus = 'disabled';
+    } catch (err) {
+      try { this.store.rollBack(); } catch (_rollbackError) {}
+      this.abortCryptoLifecycle(
+        transactionId, lease, safeError(err));
+      hilog.error(0x0001, 'CloudSync',
+        '[disableCryptoV3] 全量回滚: ' + safeError(err));
+      return -1;
+    }
+    this.pushCryptoTransitionTables(false);
+    return count;
+  }
+
+  /**
+   * Local forgotten-password reset. Account rows, local-only extensions,
+   * deletion intents, reset epoch and KDF material commit together. It is
+   * deliberately not a remote wipe protocol.
+   */
+  resetCryptoV3(
+    lease: AccountSessionLease | null
+  ): boolean {
+    if (!this.localMutationAllowed() || !this.store ||
+      !this.cryptoLeaseIsCurrent(lease) ||
+      this.cryptoLifecycleState === null ||
+      !cryptoLifecycleCanReset(this.cryptoLifecycleState)) {
+      return false;
+    }
+    const transactionId: string =
+      this.nextCryptoTransactionId('reset');
+    const resetPending: CryptoLifecycleDurableState =
+      cryptoLifecycleOperationStarted(
+        this.cryptoLifecycleState, 'reset_pending', transactionId);
+    if (!this.persistCryptoLifecycleState(resetPending)) {
+      return false;
+    }
+    this.cryptoLifecycleState = resetPending;
+    try {
+      const nextEpoch: number = this.readVncResetEpoch() + 1;
+      const tables: string[] = this.sensitiveBusinessTables();
+      this.store.beginTransaction();
+      this.clearAllTablesInActiveTransaction(tables);
+      this.clearCryptoSecretsInActiveTransaction();
+      if (!rdbInsertSucceeded(this.store.insertSync(
+        'cryptoparams',
+        this.cryptoParamBucket(
+          VNC_RESET_EPOCH_KEY, nextEpoch.toString()),
+        relationalStore.ConflictResolution.ON_CONFLICT_REPLACE)) ||
+        !rdbInsertSucceeded(this.store.insertSync(
+          'cryptoparams',
+          this.cryptoParamBucket('crypto_status', 'disabled'),
+          relationalStore.ConflictResolution.ON_CONFLICT_REPLACE))) {
+        throw new Error('crypto reset marker write failed');
+      }
+      if (!this.recordTableMutation(
+        'cryptoparams', 'reset_local_v3')) {
+        throw new Error('crypto reset journal failed');
+      }
+      const committed: CryptoCommittedState = {
+        status: 'disabled',
+        configured: false,
+        kdfVersion: 0,
+        kdfIterations: 0,
+        keyVersion: 0,
+        verifierVersion: 0,
+        envelopeVersion: 0
+      };
+      const resetState: CryptoLifecycleDurableState =
+        cryptoLifecycleOperationCommitted(
+          resetPending, 'reset_committed', committed);
+      if (!this.persistCryptoLifecycleState(resetState)) {
+        throw new Error('crypto reset lifecycle commit failed');
+      }
+      this.store.commit();
+      this.cryptoLifecycleState = resetState;
+      this.lastKnownCryptoStatus = 'disabled';
+    } catch (err) {
+      try { this.store.rollBack(); } catch (_rollbackError) {}
+      this.abortCryptoLifecycle(
+        transactionId, lease, safeError(err));
+      hilog.error(0x0001, 'CloudSync',
+        '[resetCryptoV3] 全量回滚: ' + safeError(err));
+      return false;
+    }
+    DataCrypto.getInstance().lock();
+    this.notifyCryptoReset();
+    this.notifyDataSnapshotChanged();
+    this.pushCryptoTransitionTables(true);
+    return true;
+  }
+
   /** 检测加密状态变更并执行对应的本地联动操作 (跨设备同步) */
-  checkCryptoStatusChange(allowRemoteReset: boolean = false): boolean {
+  checkCryptoStatusChange(_allowRemoteReset: boolean = false): boolean {
     const newStatus: string = this.getCryptoStatus();
     if (newStatus === '' || newStatus === this.lastKnownCryptoStatus) {
       return false;
     }
     hilog.info(0x0001, 'CloudSync',
       "[checkCryptoStatusChange] " + this.lastKnownCryptoStatus + " → " + newStatus);
-    if (newStatus === 'reset') {
-      if (!allowRemoteReset) {
-        hilog.warn(0x0001, 'CloudSync',
-          '[checkCryptoStatusChange] reset not confirmed by cloud-first; preserving local data');
-        DataCrypto.getInstance().lock();
-        return false;
+    this.lastKnownCryptoStatus = newStatus;
+    if (this.currentLease !== null &&
+      this.cryptoLifecycleState !== null) {
+      const recovered: CryptoLifecycleDurableState =
+        recoverCryptoLifecycleDurableState(
+          this.cryptoLifecycleState,
+          this.currentLease,
+          this.committedCryptoState());
+      if (this.persistCryptoLifecycleState(recovered)) {
+        this.cryptoLifecycleState = recovered;
       }
-      this.lastKnownCryptoStatus = newStatus;
-      // await clearAllTables 完成后再触发回调, 避免回调读到旧数据
-      this.clearAllTables().then((cleared: boolean): void => {
-        const cryptoStateChanged: boolean = DataCrypto.getInstance().lock();
-        this.notifyCryptoReset();
-        if (cleared) {
-          hilog.info(0x0001, 'CloudSync', '[checkCryptoStatusChange] reset: 本地数据已清空');
-        } else {
-          hilog.error(0x0001, 'CloudSync', '[checkCryptoStatusChange] reset: 本地清理失败，已锁定密钥');
-        }
-        if (!cryptoStateChanged) { this.notifyDataSnapshotChanged(); }
-      }).catch((e: Error): void => {
-        hilog.error(0x0001, 'CloudSync',
-          '[checkCryptoStatusChange] reset clearAllTables 异常: ' + e.message);
-        // 即使清表失败也锁定 DEK, 防止残留明文密钥
-        const cryptoStateChanged: boolean = DataCrypto.getInstance().lock();
-        this.notifyCryptoReset();
-        if (!cryptoStateChanged) { this.notifyDataSnapshotChanged(); }
-      });
-      return true;
-    } else {
-      this.lastKnownCryptoStatus = newStatus;
     }
-
-    if (newStatus === 'disabled') {
-      // 接收端必须先解密本地数据再锁 DEK (云同步过来的数据仍是密文)
-      const crypto = DataCrypto.getInstance();
-      if (crypto.isReady()) {
-        const decrypted = this.decryptAllData(crypto);
-        if (decrypted < 0) {
-          // Keep the DEK for a later retry. Treating this status as handled would
-          // otherwise leave encrypted rows unreadable after a transient RDB failure.
-          this.lastKnownCryptoStatus = '';
-          hilog.error(0x0001, 'CloudSync', '[checkCryptoStatusChange] disabled: 本地解密失败，等待后续同步重试');
-          return false;
-        }
-        hilog.info(0x0001, 'CloudSync',
-          '[checkCryptoStatusChange] disabled: 接收端已解密 ' + decrypted.toString() + ' 条数据');
-        crypto.lock();
-      } else {
-        // DEK 未解锁 — 发送端已解密并推送明文数据到云端, 本地会通过后续 sync 事件拉取明文。
-        // 不需要本地解密, 仅记录日志。下次 onCloudChange 触发时数据已是明文。
-        hilog.warn(0x0001, 'CloudSync',
-          '[checkCryptoStatusChange] disabled: DEK未就绪, 等待云端明文数据同步到达');
-      }
-      hilog.info(0x0001, 'CloudSync', '[checkCryptoStatusChange] disabled: 等待完成快照发布');
-    }
-    return false;
-  }
-
-  /** 清除密码学参数 */
-  async clearCryptoParams(): Promise<boolean> {
-    if (!this.localMutationAllowed() || !this.store) { return false; }
-    try {
-      this.store.beginTransaction();
-      await this.store.executeSql("DELETE FROM cryptoparams WHERE key IN ('crypto_salt', 'crypto_verifier')");
-      if (!this.recordTableMutation('cryptoparams', 'clear_params')) {
-        throw new Error('cryptoparams clear journal failed');
-      }
-      this.store.commit();
-      return true;
-    } catch (e) {
-      try { this.store.rollBack(); } catch (_ignored) {}
-      hilog.error(0x0001, 'CloudSync', '[clearCryptoParams] 失败: ' + DataCrypto.errDetail(e));
+    if (newStatus === 'reset' ||
+      newStatus === 'disabled' ||
+      newStatus === 'configuring') {
+      DataCrypto.getInstance().lock();
+      hilog.warn(0x0001, 'CloudSync',
+        '[checkCryptoStatusChange] 未验证的远端加密生命周期信令已隔离；本地数据保持不变');
       return false;
     }
+    return false;
   }
 
   // ==================== Raw CRUD (不解密, 供迁移使用) ====================
@@ -3755,6 +4719,8 @@ export class CloudStore implements CryptoCloudStore {
     if (!this.store) { return result; }
     try {
       const predicates = new relationalStore.RdbPredicates('cryptoparams');
+      predicates.equalTo(
+        'id', this.cryptoParamId('rustdesk_relays'));
       predicates.equalTo('key', 'rustdesk_relays');
       const rs = this.store.querySync(predicates);
       if (rs.goToNextRow()) {
@@ -3792,13 +4758,17 @@ export class CloudStore implements CryptoCloudStore {
     const items: RustDeskAccountJSON[] = [];
     for (let i = 0; i < relay.accounts.length; i++) {
       const item: RustDeskAccountJSON = relay.accounts[i].toJSON();
-      if (item.password !== '') { item.password = this.encryptIfReady(crypto, item.password); }
+      if (item.password !== '') {
+        item.password = this.encryptIfReady(
+          crypto, 'rustdeskrelays', relay.id,
+          'accounts/' + item.id + '/password', item.password);
+      }
       items.push(item);
     }
     return JSON.stringify(items);
   }
 
-  private relayAccountsFromJson(json: string): RustDeskAccount[] {
+  private relayAccountsFromJson(json: string, relayId: string): RustDeskAccount[] {
     const accounts: RustDeskAccount[] = [];
     if (json === '') { return accounts; }
     try {
@@ -3806,7 +4776,11 @@ export class CloudStore implements CryptoCloudStore {
       const parsed: RustDeskAccountJSON[] = JSON.parse(json) as RustDeskAccountJSON[];
       for (let i = 0; i < parsed.length; i++) {
         const account: RustDeskAccount = RustDeskAccount.fromJSON(parsed[i]);
-        if (account.password !== '') { account.password = this.decryptIfReady(crypto, account.password); }
+        if (account.password !== '') {
+          account.password = this.decryptIfReady(
+            crypto, 'rustdeskrelays', relayId,
+            'accounts/' + account.id + '/password', account.password);
+        }
         accounts.push(account);
       }
     } catch (err) {
@@ -3840,8 +4814,11 @@ export class CloudStore implements CryptoCloudStore {
     vb['relayport'] = relay.relayPort;
     vb['apiserver'] = relay.apiServer;
     vb['apiusername'] = relay.apiUsername;
-    vb['apipassword'] = this.encryptIfReady(crypto, relay.apiPassword);
-    vb['key'] = this.encryptIfReady(crypto, rustDeskRelayKeyForStorage(relay.key, relay.keyMode));
+    vb['apipassword'] = this.encryptIfReady(
+      crypto, 'rustdeskrelays', relay.id, 'apipassword', relay.apiPassword);
+    vb['key'] = this.encryptIfReady(
+      crypto, 'rustdeskrelays', relay.id, 'key',
+      rustDeskRelayKeyForStorage(relay.key, relay.keyMode));
     vb['healthstatus'] = relay.healthStatus;
     vb['healthlatency'] = relay.healthLatency;
     vb['healthcheckedat'] = relay.healthCheckedAt;
@@ -4020,9 +4997,11 @@ export class CloudStore implements CryptoCloudStore {
         relay.apiUsername = rs.getString(rs.getColumnIndex('apiusername'));
         const apiPassword: string = rs.getString(rs.getColumnIndex('apipassword'));
         const key: string = rs.getString(rs.getColumnIndex('key'));
-        relay.apiPassword = decrypt ? this.decryptIfReady(crypto, apiPassword) : apiPassword;
+        relay.apiPassword = decrypt ? this.decryptIfReady(
+          crypto, 'rustdeskrelays', relay.id, 'apipassword', apiPassword) : apiPassword;
         if (decrypt) {
-          const storedKey = rustDeskRelayKeyFromStorage(this.decryptIfReady(crypto, key));
+          const storedKey = rustDeskRelayKeyFromStorage(this.decryptIfReady(
+            crypto, 'rustdeskrelays', relay.id, 'key', key));
           relay.key = storedKey.key;
           relay.keyMode = storedKey.mode;
         } else {
@@ -4036,7 +5015,9 @@ export class CloudStore implements CryptoCloudStore {
         relay.apiLoginStatus = rs.getString(rs.getColumnIndex('apiloginstatus'));
         const accountsColumn: number = rs.getColumnIndex('accountsjson');
         if (accountsColumn >= 0) {
-        relay.accounts = decrypt ? this.relayAccountsFromJson(rs.getString(accountsColumn)) : this.relayAccountsFromJsonRaw(rs.getString(accountsColumn));
+        relay.accounts = decrypt
+          ? this.relayAccountsFromJson(rs.getString(accountsColumn), relay.id)
+          : this.relayAccountsFromJsonRaw(rs.getString(accountsColumn));
         }
         relay.controlPlaneProfile = this.readRustDeskRelayControlPlaneProfile(relay.id);
         relay.syncVersion = rs.getLong(rs.getColumnIndex('syncversion'));
@@ -4071,12 +5052,15 @@ export class CloudStore implements CryptoCloudStore {
     vb['username'] = h.username;
     // `passward` is the immutable existing cloud contract. `password` is a
     // retired local shadow and must never be populated again.
-    vb['passward'] = this.encryptIfReady(crypto, h.password);
+    vb['passward'] = this.encryptIfReady(
+      crypto, 'remotehosts', h.id, 'passward', h.password);
     vb['customhostname'] = h.customHostname;
     vb['sshusekey'] = h.sshUseKey ? 1 : 0;
     vb['sshkeypath'] = h.sshKeyPath;
-    vb['sshkeydata'] = this.encryptIfReady(crypto, h.sshKeyData);
-    vb['sshkeypassphrase'] = this.encryptIfReady(crypto, h.sshKeyPassphrase);
+    vb['sshkeydata'] = this.encryptIfReady(
+      crypto, 'remotehosts', h.id, 'sshkeydata', h.sshKeyData);
+    vb['sshkeypassphrase'] = this.encryptIfReady(
+      crypto, 'remotehosts', h.id, 'sshkeypassphrase', h.sshKeyPassphrase);
     vb['sshkeyid'] = h.sshKeyId;
     vb['sshhostkeyalgorithm'] = h.sshHostKeyAlgorithm;
     vb['sshhostkeyfingerprintsha256'] = h.sshHostKeyFingerprintSha256;
@@ -4143,12 +5127,17 @@ export class CloudStore implements CryptoCloudStore {
     h.host = getStr('host');
     h.port = rs.getLong(rs.getColumnIndex('port'));
     h.username = getStr('username');
-    h.password = this.decryptIfReady(crypto, getStr('passward') || getStr('password'));
+    h.password = this.decryptIfReady(
+      crypto, 'remotehosts', h.id, 'passward',
+      getStr('passward') || getStr('password'));
     h.customHostname = getStr('customhostname');
     h.sshUseKey = rs.getLong(rs.getColumnIndex('sshusekey')) !== 0;
     h.sshKeyPath = getStr('sshkeypath');
-    h.sshKeyData = this.decryptIfReady(crypto, getStr('sshkeydata'));
-    h.sshKeyPassphrase = this.decryptIfReady(crypto, getStr('sshkeypassphrase'));
+    h.sshKeyData = this.decryptIfReady(
+      crypto, 'remotehosts', h.id, 'sshkeydata', getStr('sshkeydata'));
+    h.sshKeyPassphrase = this.decryptIfReady(
+      crypto, 'remotehosts', h.id, 'sshkeypassphrase',
+      getStr('sshkeypassphrase'));
     h.sshKeyId = getStr('sshkeyid');
     h.sshHostKeyAlgorithm = getStr('sshhostkeyalgorithm');
     h.sshHostKeyFingerprintSha256 = getStr('sshhostkeyfingerprintsha256');
@@ -4225,7 +5214,9 @@ export class CloudStore implements CryptoCloudStore {
     vb['userid'] = this.currentOwnerScopeId();
     vb['label'] = credential.label;
     vb['username'] = credential.username;
-    vb['password'] = this.encryptIfReady(crypto, credential.password);
+    vb['password'] = this.encryptIfReady(
+      crypto, 'rdpcredentials', credential.id, 'password',
+      credential.password);
     vb['createdat'] = credential.createdAt;
     return this.cloudBucket('rdpcredentials', vb);
   }
@@ -4233,10 +5224,16 @@ export class CloudStore implements CryptoCloudStore {
   private relayToCloudJson(relay: RustDeskRelayConfig): RustDeskRelayCloudJSON {
     const crypto = DataCrypto.getInstance();
     const json: RustDeskRelayCloudJSON = relay.toCloudJSON();
-    json.apiPassword = this.encryptIfReady(crypto, json.apiPassword);
-    json.key = this.encryptIfReady(crypto, rustDeskRelayKeyForStorage(json.key, relay.keyMode));
+    json.apiPassword = this.encryptIfReady(
+      crypto, 'rustdeskrelays', json.id, 'apipassword', json.apiPassword);
+    json.key = this.encryptIfReady(
+      crypto, 'rustdeskrelays', json.id, 'key',
+      rustDeskRelayKeyForStorage(json.key, relay.keyMode));
     for (let i = 0; i < json.accounts.length; i++) {
-      json.accounts[i].password = this.encryptIfReady(crypto, json.accounts[i].password);
+      json.accounts[i].password = this.encryptIfReady(
+        crypto, 'rustdeskrelays', json.id,
+        'accounts/' + json.accounts[i].id + '/password',
+        json.accounts[i].password);
     }
     return json;
   }
@@ -4252,8 +5249,10 @@ export class CloudStore implements CryptoCloudStore {
       relayPort: json.relayPort,
       apiServer: json.apiServer,
       apiUsername: json.apiUsername,
-      apiPassword: this.decryptIfReady(crypto, json.apiPassword),
-      key: this.decryptIfReady(crypto, json.key),
+      apiPassword: this.decryptIfReady(
+        crypto, 'rustdeskrelays', json.id, 'apipassword', json.apiPassword),
+      key: this.decryptIfReady(
+        crypto, 'rustdeskrelays', json.id, 'key', json.key),
       keyMode: json.keyMode,
       healthStatus: json.healthStatus,
       healthLatency: json.healthLatency,
@@ -4271,7 +5270,10 @@ export class CloudStore implements CryptoCloudStore {
           id: json.accounts[i].id,
           relayId: json.accounts[i].relayId,
           username: json.accounts[i].username,
-          password: this.decryptIfReady(crypto, json.accounts[i].password),
+          password: this.decryptIfReady(
+            crypto, 'rustdeskrelays', json.id,
+            'accounts/' + json.accounts[i].id + '/password',
+            json.accounts[i].password),
           loginStatus: json.accounts[i].loginStatus,
           lastLoginAt: json.accounts[i].lastLoginAt,
           createdAt: json.accounts[i].createdAt
@@ -4282,16 +5284,21 @@ export class CloudStore implements CryptoCloudStore {
     return RustDeskRelayConfig.fromJSON(copied);
   }
 
-  private encryptIfReady(crypto: DataCrypto, value: string): string {
+  private encryptIfReady(crypto: DataCrypto, table: string,
+    recordId: string, fieldName: string, value: string): string {
     if (value === '') { return value; }
-    if (crypto.isEncrypted(value)) { return value; }
     if (sensitiveWriteRequiresUnlock(crypto.isSetupComplete(), crypto.isReady())) {
       throw new Error('unlock_required');
     }
-    return crypto.isReady() ? crypto.encrypt(value) : value;
+    return crypto.isReady()
+      ? crypto.migrateValueToScopedV3(
+        this.currentOwnerScopeId(), table, recordId, fieldName, value,
+        this.readVncResetEpoch())
+      : value;
   }
 
-  private decryptIfReady(crypto: DataCrypto, value: string): string {
+  private decryptIfReady(crypto: DataCrypto, table: string,
+    recordId: string, fieldName: string, value: string): string {
     if (value === '') { return value; }
     // A locked configured store must never expose ciphertext as though it were
     // usable plaintext. Redact both envelopes and legacy clear values until
@@ -4300,7 +5307,11 @@ export class CloudStore implements CryptoCloudStore {
       (crypto.isSetupComplete() && !crypto.isReady())) {
       return '';
     }
-    return crypto.isReady() ? crypto.decrypt(value) : value;
+    return crypto.isReady()
+      ? crypto.decryptScopedOrLegacy(
+        this.currentOwnerScopeId(), table, recordId, fieldName, value,
+        this.readVncResetEpoch())
+      : value;
   }
 
   private rdpCredentialToBucketRaw(credential: RdpCredential): relationalStore.ValuesBucket {
@@ -4329,7 +5340,9 @@ export class CloudStore implements CryptoCloudStore {
     credential.userId = getStr('userid');
     credential.label = getStr('label');
     credential.username = getStr('username');
-    credential.password = this.decryptIfReady(crypto, getStr('password'));
+    credential.password = this.decryptIfReady(
+      crypto, 'rdpcredentials', credential.id, 'password',
+      getStr('password'));
     credential.createdAt = getLong('createdat');
     return credential;
   }
@@ -4479,7 +5492,8 @@ export class CloudStore implements CryptoCloudStore {
     vb['label'] = k.label;
     vb['keytype'] = k.keyType;
     vb['publickey'] = k.publicKey;
-    vb['privatekey'] = this.encryptIfReady(crypto, k.privateKey);
+    vb['privatekey'] = this.encryptIfReady(
+      crypto, 'sshkeys', k.id, 'privatekey', k.privateKey);
     vb['fingerprint'] = k.fingerprint;
     vb['comment'] = k.comment;
     vb['locked'] = k.locked ? 1 : 0;
@@ -4500,7 +5514,8 @@ export class CloudStore implements CryptoCloudStore {
     k.label = getStr('label');
     k.keyType = rs.getLong(rs.getColumnIndex('keytype'));
     k.publicKey = getStr('publickey');
-    k.privateKey = this.decryptIfReady(crypto, getStr('privatekey'));
+    k.privateKey = this.decryptIfReady(
+      crypto, 'sshkeys', k.id, 'privatekey', getStr('privatekey'));
     k.fingerprint = getStr('fingerprint');
     k.comment = getStr('comment');
     k.locked = rs.getLong(rs.getColumnIndex('locked')) !== 0;
@@ -4984,7 +5999,8 @@ export class CloudStore implements CryptoCloudStore {
     vb['userid'] = this.currentOwnerScopeId();
     vb['issuer'] = e.issuer;
     vb['account'] = e.account;
-    vb['secret'] = this.encryptIfReady(crypto, e.secret);
+    vb['secret'] = this.encryptIfReady(
+      crypto, 'totpentries', e.id, 'secret', e.secret);
     vb['algorithm'] = e.algorithm;
     vb['digits'] = e.digits;
     vb['period'] = e.period;
@@ -5004,7 +6020,8 @@ export class CloudStore implements CryptoCloudStore {
     e.userId = getStr('userid');
     e.issuer = getStr('issuer');
     e.account = getStr('account');
-    e.secret = this.decryptIfReady(crypto, getStr('secret'));
+    e.secret = this.decryptIfReady(
+      crypto, 'totpentries', e.id, 'secret', getStr('secret'));
     e.algorithm = rs.getLong(rs.getColumnIndex('algorithm'));
     e.digits = rs.getLong(rs.getColumnIndex('digits'));
     e.period = rs.getLong(rs.getColumnIndex('period'));
@@ -5069,8 +6086,15 @@ export class CloudStore implements CryptoCloudStore {
     const scopeSelected: boolean = this.vncSyncSelection.isRecordTypeSelected(record.recordType);
     const secretAllowed: boolean = record.recordType !== 'secret' ||
       this.vncSyncSelection.secretsAllowed();
-    const effectiveLocalOnly: boolean = localOnly || (!forceCloud && (!physicalTableSelected ||
-      !scopeSelected || !secretAllowed));
+    const plainSecret: boolean = record.recordType === 'secret' &&
+      record.deletedAt <= 0 &&
+      vncSecretStorageModeFromPayload(record.payload) ===
+        'plain_explicit_v1';
+    // Explicit plaintext consent is device-local. It never authorizes a
+    // portable/cloud copy, even when the VNC secret scope is selected.
+    const effectiveLocalOnly: boolean = localOnly || plainSecret ||
+      (!forceCloud &&
+      (!physicalTableSelected || !scopeSelected || !secretAllowed));
     let code = 'local_write_failed';
     try {
       this.store.beginTransaction();
@@ -5145,7 +6169,13 @@ export class CloudStore implements CryptoCloudStore {
     current.syncVersion = current.syncVersion + 1;
     if (current.recordType === 'secret') {
       current.ciphertext = '';
-      current.envelopeVersion = VNC_SECRET_ENVELOPE_VERSION;
+      // A tombstone has no secret material. Keep the v2 wire marker so an old
+      // client can still observe the deletion after newer clients write v3
+      // live envelopes.
+      current.envelopeVersion = VNC_LEGACY_SECRET_ENVELOPE_VERSION;
+      current.cryptoVersion = VNC_LEGACY_CRYPTO_VERSION;
+      current.keyVersion = VNC_LEGACY_KEY_VERSION;
+      current.aadVersion = VNC_LEGACY_AAD_VERSION;
       current.payload = '{}';
       current.payloadHashSha256 = vncPayloadHashSha256(current.payload);
     }

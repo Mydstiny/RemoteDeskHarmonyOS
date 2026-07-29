@@ -10,10 +10,14 @@ import {
 export const VNC_CLOUD_TABLE: string = 'vncrecord';
 export const VNC_LOCAL_TABLE: string = 'vnclocalrecords';
 export const VNC_SCHEMA_VERSION: number = 1;
-export const VNC_CRYPTO_VERSION: number = 2;
+export const VNC_CRYPTO_VERSION: number = 3;
 export const VNC_KEY_VERSION: number = 1;
-export const VNC_AAD_VERSION: number = 1;
-export const VNC_SECRET_ENVELOPE_VERSION: number = 2;
+export const VNC_AAD_VERSION: number = 2;
+export const VNC_SECRET_ENVELOPE_VERSION: number = 3;
+export const VNC_LEGACY_CRYPTO_VERSION: number = 2;
+export const VNC_LEGACY_KEY_VERSION: number = 1;
+export const VNC_LEGACY_AAD_VERSION: number = 1;
+export const VNC_LEGACY_SECRET_ENVELOPE_VERSION: number = 2;
 export const VNC_PLAIN_SECRET_ENVELOPE_VERSION: number = 1;
 // Kept only to read legacy scope-retraction rows safely. New selection
 // transitions do not write this marker because a single shared cloud row has
@@ -109,10 +113,23 @@ function isSha256Hex(value: string): boolean {
   return /^[0-9a-f]{64}$/.test(value);
 }
 
-function vncEncryptedCiphertextEnvelopeLooksValid(value: string): boolean {
+function vncEncryptedCiphertextEnvelopeLooksValid(
+  value: string, envelopeVersion: number
+): boolean {
   const parts: string[] = value.split(':');
-  return parts.length === 4 && parts[0] === VNC_SECRET_ENVELOPE_VERSION.toString() &&
+  return parts.length === 4 &&
+    parts[0] === envelopeVersion.toString() &&
     parts[1].trim() !== '' && parts[2].trim() !== '' && parts[3].trim() !== '';
+}
+
+function vncEncryptedMetadataMatches(
+  record: VncRecord, envelopeVersion: number, cryptoVersion: number,
+  keyVersion: number, aadVersion: number
+): boolean {
+  return record.envelopeVersion === envelopeVersion &&
+    record.cryptoVersion === cryptoVersion &&
+    record.keyVersion === keyVersion &&
+    record.aadVersion === aadVersion;
 }
 
 function isNonEmptyString(values: Record<string, Object>, key: string): boolean {
@@ -257,18 +274,32 @@ export function vncRecordIsValid(record: VncRecord): boolean {
       return false;
     }
     if (record.deletedAt > 0) {
-      // Tombstones intentionally carry no secret material. Keep the existing
-      // v2 envelope marker so old clients can continue to understand deletes.
-      return record.envelopeVersion === VNC_SECRET_ENVELOPE_VERSION && record.ciphertext === '' &&
-        record.cryptoVersion === VNC_CRYPTO_VERSION && record.keyVersion === VNC_KEY_VERSION &&
-        record.aadVersion === VNC_AAD_VERSION;
+      // Tombstones intentionally carry no secret material. Accept legacy v2
+      // metadata from old devices and emit only current v3 metadata locally.
+      return record.ciphertext === '' &&
+        (vncEncryptedMetadataMatches(
+          record, VNC_SECRET_ENVELOPE_VERSION, VNC_CRYPTO_VERSION,
+          VNC_KEY_VERSION, VNC_AAD_VERSION) ||
+        vncEncryptedMetadataMatches(
+          record, VNC_LEGACY_SECRET_ENVELOPE_VERSION,
+          VNC_LEGACY_CRYPTO_VERSION, VNC_LEGACY_KEY_VERSION,
+          VNC_LEGACY_AAD_VERSION));
     }
     const storageMode: VncSecretStorageMode | '' = vncSecretStorageModeFromPayload(record.payload);
+    if (storageMode === 'encrypted_v3') {
+      return vncEncryptedMetadataMatches(
+        record, VNC_SECRET_ENVELOPE_VERSION, VNC_CRYPTO_VERSION,
+        VNC_KEY_VERSION, VNC_AAD_VERSION) &&
+        vncEncryptedCiphertextEnvelopeLooksValid(
+          record.ciphertext, VNC_SECRET_ENVELOPE_VERSION);
+    }
     if (storageMode === 'encrypted_v2') {
-      return record.envelopeVersion === VNC_SECRET_ENVELOPE_VERSION &&
-        record.cryptoVersion === VNC_CRYPTO_VERSION && record.keyVersion === VNC_KEY_VERSION &&
-        record.aadVersion === VNC_AAD_VERSION &&
-        vncEncryptedCiphertextEnvelopeLooksValid(record.ciphertext);
+      return vncEncryptedMetadataMatches(
+        record, VNC_LEGACY_SECRET_ENVELOPE_VERSION,
+        VNC_LEGACY_CRYPTO_VERSION, VNC_LEGACY_KEY_VERSION,
+        VNC_LEGACY_AAD_VERSION) &&
+        vncEncryptedCiphertextEnvelopeLooksValid(
+          record.ciphertext, VNC_LEGACY_SECRET_ENVELOPE_VERSION);
     }
     if (storageMode === 'plain_explicit_v1') {
       return record.envelopeVersion === VNC_PLAIN_SECRET_ENVELOPE_VERSION &&
@@ -366,7 +397,17 @@ export function vncRecordHasActiveCiphertext(record: VncRecord): boolean {
 }
 
 export function vncRecordHasActiveEncryptedCiphertext(record: VncRecord): boolean {
-  return vncRecordHasActiveCiphertext(record) && record.envelopeVersion === VNC_SECRET_ENVELOPE_VERSION &&
-    record.cryptoVersion === VNC_CRYPTO_VERSION && record.keyVersion === VNC_KEY_VERSION &&
-    record.aadVersion === VNC_AAD_VERSION && record.ciphertext.startsWith(VNC_SECRET_ENVELOPE_VERSION.toString() + ':');
+  if (!vncRecordHasActiveCiphertext(record)) { return false; }
+  const current: boolean = vncEncryptedMetadataMatches(
+    record, VNC_SECRET_ENVELOPE_VERSION, VNC_CRYPTO_VERSION,
+    VNC_KEY_VERSION, VNC_AAD_VERSION) &&
+    record.ciphertext.startsWith(
+      VNC_SECRET_ENVELOPE_VERSION.toString() + ':');
+  const legacy: boolean = vncEncryptedMetadataMatches(
+    record, VNC_LEGACY_SECRET_ENVELOPE_VERSION,
+    VNC_LEGACY_CRYPTO_VERSION, VNC_LEGACY_KEY_VERSION,
+    VNC_LEGACY_AAD_VERSION) &&
+    record.ciphertext.startsWith(
+      VNC_LEGACY_SECRET_ENVELOPE_VERSION.toString() + ':');
+  return current || legacy;
 }

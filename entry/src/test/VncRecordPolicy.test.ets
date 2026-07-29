@@ -109,6 +109,35 @@ export default function vncRecordPolicyTest(): void {
       expect(vncRecordIsValid(record)).assertFalse();
     });
 
+    it('accepts_v3_and_legacy_v2_envelopes_for_controlled_migration', 0, (): void => {
+      const record = validHostRecord();
+      record.recordType = 'secret';
+      record.ownerId = 'host-1';
+      record.ownerType = 'host';
+      record.secretKind = 'vnc_password';
+      record.payload =
+        '{"kind":"vnc_password","label":"host","storageMode":"encrypted_v3"}';
+      record.ciphertext = '3:header:nonce:ciphertext';
+      record.envelopeVersion = 3;
+      record.cryptoVersion = 3;
+      record.keyVersion = 1;
+      record.aadVersion = 2;
+      record.payloadHashSha256 = vncPayloadHashSha256(record.payload);
+      expect(vncRecordIsValid(record)).assertTrue();
+      expect(vncRecordHasActiveEncryptedCiphertext(record)).assertTrue();
+
+      record.payload =
+        '{"kind":"vnc_password","label":"host","storageMode":"encrypted_v2"}';
+      record.ciphertext = '2:header:nonce:ciphertext';
+      record.envelopeVersion = 2;
+      record.cryptoVersion = 2;
+      record.keyVersion = 1;
+      record.aadVersion = 1;
+      record.payloadHashSha256 = vncPayloadHashSha256(record.payload);
+      expect(vncRecordIsValid(record)).assertTrue();
+      expect(vncRecordHasActiveEncryptedCiphertext(record)).assertTrue();
+    });
+
     it('accepts_explicit_plain_v1_secret_rows_without_marking_them_encrypted', 0, (): void => {
       const record = validHostRecord();
       record.recordType = 'secret';

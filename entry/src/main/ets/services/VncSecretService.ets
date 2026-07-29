@@ -8,6 +8,7 @@ import {
   VNC_CRYPTO_VERSION,
   VNC_CLOUD_TABLE,
   VNC_KEY_VERSION,
+  VNC_LEGACY_SECRET_ENVELOPE_VERSION,
   VNC_SECRET_ENVELOPE_VERSION,
   VNC_PLAIN_SECRET_ENVELOPE_VERSION,
   vncPayloadHashSha256
@@ -90,9 +91,12 @@ export class VncSecretService {
     next.ownerType = ownerType;
     next.secretKind = kind;
     next.payload = vncSecretMetadataPayload(kind, label, storageMode);
-    if (storageMode === 'encrypted_v2') {
-      next.ciphertext = crypto.encryptField('remotedesktop|vnc', VNC_CLOUD_TABLE, next.id,
-        'ciphertext', plaintext, 1, VNC_KEY_VERSION, VNC_AAD_VERSION);
+    if (storageMode === 'encrypted_v3') {
+      const resetEpoch: number = this.cloud.getVncResetEpoch();
+      next.resetEpoch = resetEpoch;
+      next.ciphertext = crypto.encryptVncFieldV3(
+        userId, VNC_CLOUD_TABLE, next.id, 'ciphertext', plaintext,
+        resetEpoch, 1);
       next.envelopeVersion = VNC_SECRET_ENVELOPE_VERSION;
       next.cryptoVersion = VNC_CRYPTO_VERSION;
       next.keyVersion = VNC_KEY_VERSION;
@@ -144,15 +148,32 @@ export class VncSecretService {
       return plaintext === null ? { state: 'invalid', plaintext: '' } :
         { state: 'available', plaintext };
     }
-    if (storageMode !== 'encrypted_v2') { return { state: 'invalid', plaintext: '' }; }
+    if (storageMode !== 'encrypted_v3' &&
+      storageMode !== 'encrypted_v2') {
+      return { state: 'invalid', plaintext: '' };
+    }
     const crypto: DataCrypto = DataCrypto.getInstance();
-    if (!crypto.isReady() || record.envelopeVersion !== VNC_SECRET_ENVELOPE_VERSION) {
+    if (!crypto.isReady()) {
       return { state: 'locked', plaintext: '' };
     }
     try {
+      if (storageMode === 'encrypted_v3' &&
+        record.envelopeVersion === VNC_SECRET_ENVELOPE_VERSION) {
+        return {
+          state: 'available',
+          plaintext: crypto.decryptVncFieldV3(
+            userId, VNC_CLOUD_TABLE, record.id, 'ciphertext',
+            record.ciphertext, record.resetEpoch)
+        };
+      }
+      if (storageMode !== 'encrypted_v2' ||
+        record.envelopeVersion !== VNC_LEGACY_SECRET_ENVELOPE_VERSION) {
+        return { state: 'invalid', plaintext: '' };
+      }
       return {
         state: 'available',
-        plaintext: crypto.decryptField('remotedesktop|vnc', VNC_CLOUD_TABLE, record.id,
+        plaintext: crypto.decryptLegacyVncFieldV2(
+          'remotedesktop|vnc', VNC_CLOUD_TABLE, record.id,
           'ciphertext', record.ciphertext)
       };
     } catch (_e) {
@@ -165,8 +186,12 @@ export class VncSecretService {
     const record: VncRecord | null = this.find(userId, this.recordId(ownerId, kind));
     if (record === null || record.deletedAt > 0 || record.ciphertext === '') { return false; }
     const mode: VncSecretStorageMode | '' = vncSecretStorageModeFromPayload(record.payload);
-    if (mode === 'encrypted_v2') {
+    if (mode === 'encrypted_v3') {
       return record.envelopeVersion === VNC_SECRET_ENVELOPE_VERSION;
+    }
+    if (mode === 'encrypted_v2') {
+      return record.envelopeVersion ===
+        VNC_LEGACY_SECRET_ENVELOPE_VERSION;
     }
     return mode === 'plain_explicit_v1' && record.envelopeVersion === VNC_PLAIN_SECRET_ENVELOPE_VERSION &&
       isPlainVncSecretEnvelope(record.ciphertext);

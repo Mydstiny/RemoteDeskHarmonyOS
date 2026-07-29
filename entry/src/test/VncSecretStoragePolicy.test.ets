@@ -3,7 +3,8 @@ import {
   decodePlainVncSecret,
   decideVncSecretStorage,
   encodePlainVncSecret,
-  isPlainVncSecretEnvelope
+  isPlainVncSecretEnvelope,
+  vncSecretStorageModeFromPayload
 } from '../main/ets/services/VncSecretStoragePolicy';
 
 export default function vncSecretStoragePolicyTest(): void {
@@ -29,7 +30,7 @@ export default function vncSecretStoragePolicyTest(): void {
       expect(decision.code).assertEqual('unlock_required');
       const ready = decideVncSecretStorage(true, true, true, false);
       expect(ready.allowed).assertTrue();
-      expect(ready.mode).assertEqual('encrypted_v2');
+      expect(ready.mode).assertEqual('encrypted_v3');
     });
 
     it('round_trips_plain_v1_secret_envelopes', 0, (): void => {
@@ -38,6 +39,17 @@ export default function vncSecretStoragePolicyTest(): void {
       expect(decodePlainVncSecret(envelope)).assertEqual('测试 VNC 密码!');
       expect(isPlainVncSecretEnvelope('plain-v1:not-valid-base64')).assertFalse();
       expect(decodePlainVncSecret('plain-v1:not-valid-base64')).assertEqual(null);
+    });
+
+    it('distinguishes_new_and_legacy_encrypted_storage_modes', 0, (): void => {
+      expect(vncSecretStorageModeFromPayload(
+        '{"kind":"vnc_password","storageMode":"encrypted_v3"}'))
+        .assertEqual('encrypted_v3');
+      expect(vncSecretStorageModeFromPayload(
+        '{"kind":"vnc_password","storageMode":"encrypted_v2"}'))
+        .assertEqual('encrypted_v2');
+      expect(vncSecretStorageModeFromPayload(
+        '{"kind":"vnc_password"}')).assertEqual('encrypted_v2');
     });
   });
 }
