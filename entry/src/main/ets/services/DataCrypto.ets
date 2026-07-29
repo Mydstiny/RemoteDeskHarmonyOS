@@ -39,6 +39,12 @@ const DOMAIN = 0x0011;
 
 export interface CryptoCloudStore {
   readCryptoParam(key: string, lease: AccountSessionLease | null): string;
+  beginExclusiveCryptoLifecycle(
+    lease: AccountSessionLease | null
+  ): Promise<boolean>;
+  endExclusiveCryptoLifecycle(
+    lease: AccountSessionLease | null
+  ): boolean;
   beginCryptoConfiguration(lease: AccountSessionLease | null): string;
   abortCryptoLifecycle(
     transactionId: string,
@@ -208,11 +214,17 @@ export class DataCrypto {
       ? null : cloneAccountSessionLease(this.scopeLease);
     let candidateDek: Uint8Array | null = null;
     let installed: boolean = false;
+    let exclusiveLifecycleAcquired: boolean = false;
     let lifecycleTransactionId: string = '';
     const cryptoStore = this.cloudStore as CryptoCloudStore;
     try {
       if (!cryptoStore) {
         throw new Error('[DataCrypto] 数据存储尚未初始化');
+      }
+      exclusiveLifecycleAcquired =
+        await cryptoStore.beginExclusiveCryptoLifecycle(operationLease);
+      if (!exclusiveLifecycleAcquired) {
+        throw new Error('[DataCrypto] 无法等待云同步进入安全静默状态');
       }
       if (this.isSetupComplete()) {
         throw new Error('[DataCrypto] 加密已经配置，不能覆盖现有密钥');
@@ -293,6 +305,11 @@ export class DataCrypto {
       throw new Error('设置主密码失败: ' + detail);
     } finally {
       if (!installed && candidateDek !== null) { candidateDek.fill(0); }
+      if (exclusiveLifecycleAcquired &&
+        !cryptoStore.endExclusiveCryptoLifecycle(operationLease)) {
+        hilog.error(DOMAIN, TAG,
+          '[setMasterPassword] 数据已安全落库，但同步门闩恢复失败并保持关闭');
+      }
       this.endCryptoOperation();
     }
   }
@@ -777,17 +794,35 @@ export class DataCrypto {
       hilog.warn(DOMAIN, TAG, 'DEK 未就绪, 跳过迁移');
       return 0;
     }
+    const operationGeneration: number = this.beginCryptoOperation();
     const operationLease: AccountSessionLease | null =
       this.scopeLease === null
         ? null : cloneAccountSessionLease(this.scopeLease);
-    const count: number =
-      cloud.migrateAllDataToScopedV3(this, operationLease);
-    if (count < 0) {
-      throw new Error('[DataCrypto] 原子加密迁移失败，全部改动已回滚');
+    let exclusiveLifecycleAcquired: boolean = false;
+    try {
+      exclusiveLifecycleAcquired =
+        await cloud.beginExclusiveCryptoLifecycle(operationLease);
+      if (!exclusiveLifecycleAcquired ||
+        !this.cryptoOperationIsCurrent(
+          operationGeneration, operationLease)) {
+        throw new Error('[DataCrypto] 无法等待云同步进入安全静默状态');
+      }
+      const count: number =
+        cloud.migrateAllDataToScopedV3(this, operationLease);
+      if (count < 0) {
+        throw new Error('[DataCrypto] 原子加密迁移失败，全部改动已回滚');
+      }
+      hilog.info(DOMAIN, TAG,
+        '原子加密迁移完成: ' + count.toString() + ' 条记录已升级');
+      return count;
+    } finally {
+      if (exclusiveLifecycleAcquired &&
+        !cloud.endExclusiveCryptoLifecycle(operationLease)) {
+        hilog.error(DOMAIN, TAG,
+          '[autoMigrate] 数据已安全落库，但同步门闩恢复失败并保持关闭');
+      }
+      this.endCryptoOperation();
     }
-    hilog.info(DOMAIN, TAG,
-      '原子加密迁移完成: ' + count.toString() + ' 条记录已升级');
-    return count;
   }
 
   // ============================================================

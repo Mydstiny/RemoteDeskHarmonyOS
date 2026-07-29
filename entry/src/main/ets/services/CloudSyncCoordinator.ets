@@ -424,6 +424,13 @@ export class CloudSyncCoordinator {
     }
     const restoreBlocked: boolean = this.restoreUploadBlocked();
     const initialDirty: string[] = this.dirtyAutomaticTables.slice();
+    const initialJournalRevisions: Record<string, number> =
+      this.captureJournalRevisions(initialDirty);
+    const initialMutationVersions: Record<string, number> = {};
+    for (let i = 0; i < initialDirty.length; i++) {
+      initialMutationVersions[initialDirty[i]] =
+        this.automaticMutationVersions[initialDirty[i]] || 0;
+    }
     const initialBootstrap: boolean = shouldUseCloudFirstForInitialBootstrap(this.bootstrapCompleted);
     this.startupState = 'pending';
     if (this.hooks && this.hooks.setStartupSyncPending) {
@@ -435,13 +442,19 @@ export class CloudSyncCoordinator {
         ? this.requestStartupCloudFirst()
         : this.requestEstablishedStartupPull(initialDirty);
     const completed: Promise<CloudSyncOperationResult> = operation.then((result: CloudSyncOperationResult): CloudSyncOperationResult => {
-      return this.finishStartupPull(result, initialBootstrap, initialDirty, restoreBlocked);
+      return this.finishStartupPull(
+        result, initialBootstrap, initialDirty,
+        initialJournalRevisions, initialMutationVersions,
+        restoreBlocked);
     }, (_e: Error): CloudSyncOperationResult => {
       const failed: CloudSyncOperationResult = {
         ok: false, source: 'startup', tables: [], failedTables: [], rollbackFailed: false,
         failureKind: 'unknown'
       };
-      return this.finishStartupPull(failed, initialBootstrap, initialDirty, restoreBlocked);
+      return this.finishStartupPull(
+        failed, initialBootstrap, initialDirty,
+        initialJournalRevisions, initialMutationVersions,
+        restoreBlocked);
     });
     this.startupPull = completed.then((result: CloudSyncOperationResult): CloudSyncOperationResult => {
       this.startupPull = null;
@@ -504,8 +517,14 @@ export class CloudSyncCoordinator {
     });
   }
 
-  private finishStartupPull(result: CloudSyncOperationResult, initialBootstrap: boolean,
-    initialDirty: string[], restoreBlocked: boolean): CloudSyncOperationResult {
+  private finishStartupPull(
+    result: CloudSyncOperationResult,
+    initialBootstrap: boolean,
+    initialDirty: string[],
+    initialJournalRevisions: Record<string, number>,
+    initialMutationVersions: Record<string, number>,
+    restoreBlocked: boolean
+  ): CloudSyncOperationResult {
     let finalResult: CloudSyncOperationResult = result;
     if (result.ok && initialBootstrap && !restoreBlocked) {
       // A pre-bootstrap journal is not evidence of user intent on a new
@@ -513,15 +532,36 @@ export class CloudSyncCoordinator {
       // including currently deselected tables, so a later selector change
       // cannot resurrect an unsafe native-first upload.
       const discardTables: string[] = initialDirty.slice();
-      if (this.hooks && this.hooks.discardMutationJournalForTables &&
-        !this.hooks.discardMutationJournalForTables(discardTables)) {
+      let journalReleased: boolean = true;
+      for (let i = 0; i < discardTables.length; i++) {
+        const table: string = discardTables[i];
+        const revision: number =
+          initialJournalRevisions[table] || 0;
+        if (revision > 0 && this.hooks &&
+          this.hooks.acknowledgeMutationJournal &&
+          !this.hooks.acknowledgeMutationJournal(
+            table, revision)) {
+          journalReleased = false;
+          break;
+        }
+      }
+      if (!journalReleased) {
         finalResult = {
           ok: false, source: result.source, tables: result.tables.slice(),
           failedTables: discardTables.slice(), rollbackFailed: false, failureKind: 'unknown'
         };
       } else {
         for (let i = 0; i < discardTables.length; i++) {
-          this.clearAutomaticIntent(discardTables[i]);
+          const table: string = discardTables[i];
+          const remainingRevision: number =
+            this.captureJournalRevisions([table])[table] || 0;
+          const currentVersion: number =
+            this.automaticMutationVersions[table] || 0;
+          if (remainingRevision <= 0 &&
+            currentVersion ===
+              (initialMutationVersions[table] || 0)) {
+            this.clearAutomaticIntent(table);
+          }
         }
         if (this.hooks && this.hooks.markCloudBootstrapCompleted &&
           !this.hooks.markCloudBootstrapCompleted()) {

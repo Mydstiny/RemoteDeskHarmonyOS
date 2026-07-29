@@ -1401,19 +1401,25 @@ struct HostListPage {
     const next: string[] = this.cloudSyncSelectedTables.slice();
     const index: number = next.indexOf(table);
     if (index >= 0) { next.splice(index, 1); } else { next.push(table); }
-    CloudSyncSelectionStore.getInstance().replaceSelectedBusinessTables(getContext(this), next);
+    if (!CloudSyncSelectionStore.getInstance()
+      .replaceSelectedBusinessTables(getContext(this), next)) {
+      this.cloudSyncError = '同步范围未能安全保存，请重试';
+      return;
+    }
     this.cloudSyncSelectedTables = CloudSyncSelectionStore.getInstance().selectedBusinessTables();
-    // Re-enabling the physical VNC table must pull its existing cloud mirror
-    // before this device starts projecting local VNC rows. Disabling it only
-    // changes this device's projection and must not upload a local snapshot or
-    // retract a row shared with another device.
-    if (table === 'vncrecord' && index < 0) {
+    // Every re-enabled physical table crosses a fresh cloud-first barrier.
+    // This is especially important after a local crypto reset: pending local
+    // deletes must never become native-first merely because the user later
+    // turned the table back on.
+    if (index < 0) {
       CloudSyncCoordinator.getInstance().requestForegroundPull().then((result): void => {
         if (!result.ok) {
-          hilog.warn(0x0001, 'CloudSync', '[HostListPage] VNC table re-enable pull failed');
-          this.cloudSyncError = 'VNC 云表重新启用失败：本地未覆盖，请检查云空间后重试';
+          hilog.warn(0x0001, 'CloudSync',
+            '[HostListPage] table re-enable pull failed table=' + table);
+          this.cloudSyncError =
+            '云表重新启用失败：本地未覆盖，请检查云空间后重试';
           promptAction.showToast({
-            message: 'VNC 云表重新启用失败，本地数据未覆盖',
+            message: '云表重新启用失败，本地数据未覆盖',
             duration: 2600
           });
         }
@@ -7589,7 +7595,7 @@ struct HostListPage {
           .fontSize(12).fontColor(this.pal().text2).fontFamily(this.font()).margin({ bottom: 4 })
         Text('• 忘记密码将无法恢复已加密的数据，请妥善保管')
           .fontSize(12).fontColor(this.pal().danger).fontFamily(this.font()).margin({ bottom: 4 })
-        Text('• 关闭加密后，数据恢复明文存储和同步')
+        Text('• 关闭加密后仅恢复本机明文；敏感云同步会自动暂停')
           .fontSize(12).fontColor(this.pal().text2).fontFamily(this.font())
       }.width('100%').padding(12).backgroundColor(this.pal().surface)
         .borderRadius(12).margin({ bottom: 20 })
@@ -7638,7 +7644,8 @@ struct HostListPage {
             .layoutWeight(1).height(44).fontSize(14)
             .backgroundColor(this.cryptoResetCountdown > 0 ? this.pal().text3 : this.pal().danger)
             .fontColor('#FFFFFF').borderRadius(12)
-            .enabled(this.cryptoResetCountdown <= 0 && this.cryptoPwd.length > 0)
+            .enabled(this.cryptoResetCountdown <= 0 &&
+              this.cryptoPwd.length > 0 && !this.cryptoLoading)
             .onClick(() => { this.doCloseEncryption(); })
         }.width('100%')
       } else if (this.cryptoMode === 3) {
@@ -7658,7 +7665,7 @@ struct HostListPage {
             .layoutWeight(1).height(44).fontSize(14)
             .backgroundColor(this.cryptoResetCountdown > 0 ? this.pal().text3 : this.pal().danger)
             .fontColor('#FFFFFF').borderRadius(12)
-            .enabled(this.cryptoResetCountdown <= 0)
+            .enabled(this.cryptoResetCountdown <= 0 && !this.cryptoLoading)
             .onClick(() => { this.doResetEncryption(); })
         }.width('100%')
       } else {
@@ -7751,45 +7758,64 @@ struct HostListPage {
 
 
   private async doCloseEncryption(): Promise<void> {
+    if (this.cryptoLoading) { return; }
+    this.cryptoLoading = true;
     const crypto = DataCrypto.getInstance();
     const cloud = CloudStore.getInstance();
-    // 1. 验证主密码
-    const ok = await crypto.unlock(this.cryptoPwd);
-    if (!ok) {
-      promptAction.showToast({ message: '密码错误, 无法关闭加密', duration: 2000 });
-      return;
+    try {
+      // 1. 验证主密码
+      const ok = await crypto.unlock(this.cryptoPwd);
+      if (!ok) {
+        promptAction.showToast({ message: '密码错误, 无法关闭加密', duration: 2000 });
+        return;
+      }
+      // 2. 业务数据解密、VNC 降级、KDF 参数清除和 disabled 状态由
+      // CloudStore 在一个事务中提交；任一步失败都会完整回滚。
+      const count = await cloud.disableCryptoV3(
+        crypto, cloud.currentAccountLease());
+      hilog.info(0x0001, 'CloudSync', 'doCloseEncryption: 已解密 ' + count + ' 条数据');
+      if (count < 0) {
+        promptAction.showToast({ message: '关闭加密失败：本地数据未完整解密，请重试', duration: 2500 });
+        return;
+      }
+      // 3. 数据库已提交后再清除内存 DEK。
+      crypto.resetSetup();
+      this.closeSettingsLeafSheet();
+      this.cryptoPwd = '';
+      this.cryptoResetCountdown = 0;
+      this.refreshCryptoStatus();
+      promptAction.showToast({
+        message: '加密已关闭，' + count +
+          ' 条数据已恢复为本机明文；敏感云同步已暂停',
+        duration: 2600
+      });
+    } finally {
+      this.cryptoLoading = false;
     }
-    // 2. 业务数据解密、VNC 降级、KDF 参数清除和 disabled 状态由
-    // CloudStore 在一个事务中提交；任一步失败都会完整回滚。
-    const count = cloud.disableCryptoV3(
-      crypto, cloud.currentAccountLease());
-    hilog.info(0x0001, 'CloudSync', 'doCloseEncryption: 已解密 ' + count + ' 条数据');
-    if (count < 0) {
-      promptAction.showToast({ message: '关闭加密失败：本地数据未完整解密，请重试', duration: 2500 });
-      return;
-    }
-    // 3. 数据库已提交后再清除内存 DEK。
-    crypto.resetSetup();
-    this.closeSettingsLeafSheet();
-    this.cryptoPwd = '';
-    this.cryptoResetCountdown = 0;
-    this.refreshCryptoStatus();
-    promptAction.showToast({ message: '加密已关闭, ' + count + ' 条数据已恢复明文', duration: 2000 });
   }
 
   private async doResetEncryption(): Promise<void> {
+    if (this.cryptoLoading) { return; }
+    this.cryptoLoading = true;
     const cloud = CloudStore.getInstance();
-    // 本机账号数据、KDF 参数、VNC reset epoch 与恢复状态单事务提交。
-    if (!cloud.resetCryptoV3(cloud.currentAccountLease())) {
-      promptAction.showToast({ message: '重置失败：本地数据未完整清空，请重试', duration: 2500 });
-      return;
+    try {
+      // 本机账号数据、KDF 参数、VNC reset epoch 与恢复状态单事务提交。
+      if (!(await cloud.resetCryptoV3(cloud.currentAccountLease()))) {
+        promptAction.showToast({ message: '重置失败：本地数据未完整清空，请重试', duration: 2500 });
+        return;
+      }
+      VncTrustService.getInstance().clearLocalConfirmationState(getContext(this) as common.Context);
+      this.closeSettingsLeafSheet();
+      this.cryptoPwd = '';
+      this.cryptoResetCountdown = 0;
+      this.refreshCryptoStatus();
+      promptAction.showToast({
+        message: '加密已重置，本机加密数据已清空；敏感云同步已暂停',
+        duration: 2600
+      });
+    } finally {
+      this.cryptoLoading = false;
     }
-    VncTrustService.getInstance().clearLocalConfirmationState(getContext(this) as common.Context);
-    this.closeSettingsLeafSheet();
-    this.cryptoPwd = '';
-    this.cryptoResetCountdown = 0;
-    this.refreshCryptoStatus();
-    promptAction.showToast({ message: '加密已重置, 所有加密数据已清空', duration: 2000 });
   }
 
   private confirmResetEncryption(): void {

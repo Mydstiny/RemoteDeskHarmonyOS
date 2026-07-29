@@ -62,6 +62,12 @@ import {
 } from './CloudSyncCoordinatorPolicy';
 import { CloudSyncSelectionStore } from './CloudSyncSelectionStore';
 import {
+  cloudSelectionAfterLocalCryptoTransition,
+  cloudTableRowsAreDownloadCompatible,
+  cloudTableRowsAreUploadSafe,
+  vncSelectionAfterLocalCryptoTransition
+} from './CloudSensitiveTransferPolicy';
+import {
   cloudServiceGuidanceRequiredForMessage,
   rdbInsertSucceeded,
   rdbSingleRowAffected
@@ -188,6 +194,7 @@ import {
   recoverCryptoLifecycleDurableState
 } from './CryptoLifecyclePolicy';
 import { LegacySharedStoreMigrator } from './LegacySharedStoreMigrator';
+import { parseLegacyRelayJson } from './LegacyRelayMigrationPolicy';
 
 const TABLES: string[] = cloudSyncTableNames();
 const RDP_RESTRICTED_ADMIN_SECRET_TABLE: string = 'rdprestrictedadminsecrets';
@@ -200,6 +207,10 @@ const CANONICAL_SECRET_STORAGE_VERSION_KEY: string = 'canonical_secret_storage_v
 const CANONICAL_SECRET_STORAGE_VERSION: string = '3';
 const DEVICE_LOCAL_HOST_TRUST_MIGRATION_KEY: string =
   'device_local_host_trust_migrated_v1';
+const LEGACY_RELAY_JSON_MIGRATION_KEY: string =
+  'legacy_relay_json_migrated_v1';
+const LEGACY_RELAY_JSON_MIGRATION_ID: string =
+  'legacy-relay-cryptoparams-v1';
 const RESTORED_NOT_UPLOADED_KEY: string = 'restored_not_uploaded';
 const RESTORED_NOT_UPLOADED_TABLE_PREFIX: string =
   'restored_not_uploaded|';
@@ -231,6 +242,11 @@ const LOCAL_METADATA_COLUMNS: string[] = ['key', 'value', 'updatedat'];
 const LOCAL_MUTATION_JOURNAL_COLUMNS: string[] = [
   'id', 'tablename', 'recordid', 'operation', 'revision', 'createdat', 'updatedat'
 ];
+
+interface CryptoCloudSelectionSnapshot {
+  ordinary: string[];
+  vnc: string[];
+}
 
 export class RdpRestrictedAdminSecretResult {
   status: string = 'missing';
@@ -308,6 +324,8 @@ export class CloudStore implements CryptoCloudStore {
   private indeterminateCloudSyncOperation: IndeterminateCloudSyncOperation | null = null;
   private cloudDownloadActive: boolean = false;
   private mutationGateOpen: boolean = false;
+  private exclusiveCryptoLease: AccountSessionLease | null = null;
+  private exclusiveCryptoReady: boolean = false;
   private cloudChangeObserver: ((accounts: Array<string>) => void) | null = null;
   private cloudAccountBinding: CloudAccountBinding = unboundCloudAccountBinding();
   private cryptoStateListenerBound: boolean = false;
@@ -518,6 +536,8 @@ export class CloudStore implements CryptoCloudStore {
     const closing: relationalStore.RdbStore | null = this.store;
     const closingLease: AccountSessionLease | null = this.currentAccountLease();
     this.mutationGateOpen = false;
+    this.exclusiveCryptoLease = null;
+    this.exclusiveCryptoReady = false;
     if (this.indeterminateCloudSyncOperation !== null) {
       hilog.error(0x0001, 'CloudSync',
         '底层云同步尚无终态；拒绝关闭或复用当前物理数据库');
@@ -575,6 +595,8 @@ export class CloudStore implements CryptoCloudStore {
     this.startupSyncPending = true;
     this.cloudDownloadActive = false;
     this.indeterminateCloudSyncOperation = null;
+    this.exclusiveCryptoLease = null;
+    this.exclusiveCryptoReady = false;
     // 初始化表级同步状态
     for (let i = 0; i < TABLES.length; i++) {
       this.tableStatus[TABLES[i]] = new TableSyncStatus();
@@ -608,6 +630,7 @@ export class CloudStore implements CryptoCloudStore {
       await LegacySharedStoreMigrator.getInstance().migrateIfNeeded(
         context, this.store, this.currentScopeToken, verifiedUnionId);
       this.migrateCryptoParamIdentity();
+      this.migrateLegacyRelayJson();
       await this.migrateLocalExtensions();
       await this.migrateDeviceLocalHostTrust();
       await this.migrateLegacyVncRecords();
@@ -710,6 +733,8 @@ export class CloudStore implements CryptoCloudStore {
       this.initialized = false;
       this.cloudAvailable = false;
       this.mutationGateOpen = false;
+      this.exclusiveCryptoLease = null;
+      this.exclusiveCryptoReady = false;
       const failedStore: relationalStore.RdbStore | null = this.store;
       const failedLease: AccountSessionLease | null = this.currentAccountLease();
       const coordinator: CloudSyncCoordinator = CloudSyncCoordinator.getInstance();
@@ -946,7 +971,12 @@ export class CloudStore implements CryptoCloudStore {
   }
 
   private localMutationAllowed(): boolean {
-    return this.mutationGateOpen && cloudLocalMutationAllowed(
+    return this.mutationGateOpen &&
+      this.localMutationEnvironmentAllowed();
+  }
+
+  private localMutationEnvironmentAllowed(): boolean {
+    return cloudLocalMutationAllowed(
       this.manualDownloadSnapshot !== null,
       this.localRestoreActive || this.localRestorePending,
       this.startupSyncPending,
@@ -954,6 +984,15 @@ export class CloudStore implements CryptoCloudStore {
       this.cloudDownloadActive,
       this.indeterminateCloudSyncOperation !== null
     );
+  }
+
+  private cryptoLifecycleMutationAllowed(
+    lease: AccountSessionLease | null
+  ): boolean {
+    return this.exclusiveCryptoReady &&
+      accountSessionLeaseEquals(this.exclusiveCryptoLease, lease) &&
+      this.cryptoLeaseIsCurrent(lease) &&
+      this.localMutationEnvironmentAllowed();
   }
 
   private coordinatorHooks(): CloudSyncCoordinatorHooks {
@@ -998,7 +1037,12 @@ export class CloudStore implements CryptoCloudStore {
       completeManualDownload: (tables: string[]): boolean => {
         // The local intent must be discarded before exposing a cloud-first
         // success; otherwise a later automatic retry could overwrite it.
-        if (!this.discardMutationJournalForTables(tables) || !this.clearRestoredNotUploaded()) {
+        // Delete only rows covered by the before-image. Sanitizers and schema
+        // adapters may create a newer journal entry while the download is
+        // being applied, and that repair must survive this completion hook.
+        if (!this.acknowledgeMutationJournalSnapshot(
+          tables, this.manualDownloadMutationJournal || []) ||
+          !this.clearRestoredNotUploaded()) {
           return false;
         }
         this.clearManualDownloadSnapshot();
@@ -1009,7 +1053,10 @@ export class CloudStore implements CryptoCloudStore {
         // cryptoparams is unavailable. Discard only the successful table's
         // journal and release the temporary snapshot; keep the global restore
         // quarantine intact until every required table has completed.
-        if (!this.discardMutationJournalForTables(tables)) { return false; }
+        if (!this.acknowledgeMutationJournalSnapshot(
+          tables, this.manualDownloadMutationJournal || [])) {
+          return false;
+        }
         this.clearManualDownloadSnapshot();
         return true;
       },
@@ -1867,6 +1914,13 @@ export class CloudStore implements CryptoCloudStore {
     this.suppressCryptoStateSnapshot = true;
     let resetClearPending: boolean = false;
     try {
+      if (tables.indexOf('cryptoparams') >= 0) {
+        const migratedRelays: number = this.migrateLegacyRelayJson();
+        if (migratedRelays < 0) {
+          this.lastError =
+            'legacy relay JSON failed validation and was quarantined';
+        }
+      }
       resetClearPending = this.checkCryptoStatusChange(tables.indexOf('cryptoparams') >= 0);
       if (!resetClearPending && tables.indexOf('usersettings') >= 0) {
         this.applyCloudUserSettingsToRuntime();
@@ -1928,10 +1982,97 @@ export class CloudStore implements CryptoCloudStore {
     }
   }
 
+  private vncCloudRowsAreUploadSafe(): boolean {
+    if (!this.store) { return false; }
+    try {
+      const predicates =
+        new relationalStore.RdbPredicates(VNC_CLOUD_TABLE);
+      this.addCurrentOwnerPredicate(predicates);
+      const rows: relationalStore.ResultSet =
+        this.store.querySync(predicates);
+      const deletedIndex: number = rows.getColumnIndex(
+        relationalStore.Field.DELETED_FLAG_FIELD);
+      const currentEpoch: number = this.readVncResetEpoch();
+      while (rows.goToNextRow()) {
+        if (deletedIndex >= 0 && rows.getLong(deletedIndex) === 1) {
+          continue;
+        }
+        const record: VncRecord = this.vncRecordFromResult(rows);
+        if (!vncRecordIsValid(record) ||
+          record.resetEpoch !== currentEpoch ||
+          (record.recordType === 'secret' &&
+            record.deletedAt <= 0 &&
+            !vncRecordHasActiveEncryptedCiphertext(record))) {
+          rows.close();
+          return false;
+        }
+      }
+      rows.close();
+      return true;
+    } catch (err) {
+      hilog.error(0x0001, 'CloudSync',
+        'VNC native-first safety scan failed: ' + safeError(err));
+      return false;
+    }
+  }
+
+  private nativeFirstTableIsSafe(table: string): boolean {
+    if (!this.store) { return false; }
+    if (table === VNC_CLOUD_TABLE) {
+      return this.vncCloudRowsAreUploadSafe();
+    }
+    try {
+      const crypto: DataCrypto = DataCrypto.getInstance();
+      return cloudTableRowsAreUploadSafe(
+        table,
+        this.exportTableRows(table),
+        crypto.isSetupComplete(),
+        (value: string): boolean => crypto.isEncrypted(value));
+    } catch (err) {
+      hilog.error(0x0001, 'CloudSync',
+        'native-first safety scan failed table=' + table +
+        ' err=' + safeError(err));
+      return false;
+    }
+  }
+
+  private downloadedTableIsCompatible(table: string): boolean {
+    if (table === VNC_CLOUD_TABLE) {
+      // VNC owns its record/envelope validator. A cloud physical row must not
+      // bypass that validator merely because its logical scope is hidden.
+      return this.vncCloudRowsAreUploadSafe();
+    }
+    try {
+      const crypto: DataCrypto = DataCrypto.getInstance();
+      return cloudTableRowsAreDownloadCompatible(
+        table,
+        this.exportTableRows(table),
+        crypto.isSetupComplete(),
+        (value: string): boolean => crypto.isEncrypted(value));
+    } catch (err) {
+      hilog.error(0x0001, 'CloudSync',
+        'cloud-first safety scan failed table=' + table +
+        ' err=' + safeError(err));
+      return false;
+    }
+  }
+
   private syncTableAsync(table: string, direction: CloudSyncDirection, label: string): Promise<boolean> {
     return new Promise<boolean>((resolve) => {
       if (!this.store || !this.cloudAvailable || this.currentLease === null) {
         this.lastSyncFailureKind = 'cloud_service';
+        resolve(false);
+        return;
+      }
+      if (direction === 'nativeFirst' &&
+        !this.nativeFirstTableIsSafe(table)) {
+        this.lastSyncFailureKind = 'unsafe_payload';
+        this.lastError = label + ' ' + table +
+          ': UNSAFE_CLOUD_PAYLOAD native-first blocked';
+        if (this.tableStatus[table]) {
+          this.tableStatus[table].fail++;
+        }
+        hilog.error(0x0001, 'CloudSync', this.lastError);
         resolve(false);
         return;
       }
@@ -2087,6 +2228,56 @@ export class CloudStore implements CryptoCloudStore {
             recordFailure('EMPTY_CLOUD_SNAPSHOT before=' + beforeVisibleRows.toString() +
               ' after=' + afterVisibleRows.toString() + ' restored=false', 'empty_snapshot');
           });
+          return;
+        }
+        if (table === 'cryptoparams') {
+          try {
+            const migrated: number =
+              this.migrateCryptoParamIdentity();
+            if (migrated > 0) {
+              CloudSyncCoordinator.getInstance()
+                .requestAutomaticPush('cryptoparams')
+                .then((_result: CloudSyncOperationResult): void => {},
+                  (): void => {});
+            }
+          } catch (err) {
+            const message: string =
+              'UNSAFE_CLOUD_PAYLOAD cryptoparams identity=' +
+              safeError(err);
+            if (!protectsEmptySnapshot) {
+              recordFailure(message, 'unsafe_payload');
+              return;
+            }
+            this.restoreProtectedTableRows(
+              table, protectedRows).then((restored: boolean): void => {
+                recordFailure(
+                  message + ' restored=' + restored.toString(),
+                  'unsafe_payload');
+              }, (): void => {
+                recordFailure(
+                  message + ' restored=false',
+                  'unsafe_payload');
+              });
+            return;
+          }
+        }
+        if (!this.downloadedTableIsCompatible(table)) {
+          const message: string =
+            'UNSAFE_CLOUD_PAYLOAD incompatible table=' + table;
+          if (!protectsEmptySnapshot) {
+            recordFailure(message, 'unsafe_payload');
+            return;
+          }
+          this.restoreProtectedTableRows(
+            table, protectedRows).then((restored: boolean): void => {
+              recordFailure(
+                message + ' restored=' + restored.toString(),
+                'unsafe_payload');
+            }, (): void => {
+              recordFailure(
+                message + ' restored=false',
+                'unsafe_payload');
+            });
           return;
         }
         if (table === 'remotehosts') {
@@ -2784,7 +2975,7 @@ export class CloudStore implements CryptoCloudStore {
    * Conflicting or foreign scoped rows block the store instead of guessing
    * which account owns portable encryption material.
    */
-  private migrateCryptoParamIdentity(): void {
+  private migrateCryptoParamIdentity(): number {
     if (!this.store) { throw new Error('crypto parameter store unavailable'); }
     const rows: relationalStore.ResultSet = this.store.querySync(
       new relationalStore.RdbPredicates('cryptoparams'));
@@ -2800,6 +2991,7 @@ export class CloudStore implements CryptoCloudStore {
     } finally {
       rows.close();
     }
+    let changed: number = 0;
     this.store.beginTransaction();
     try {
       for (let i = 0; i < ids.length; i++) {
@@ -2839,6 +3031,12 @@ export class CloudStore implements CryptoCloudStore {
           this.store.deleteSync(oldPredicates))) {
           throw new Error('legacy cryptoparams cleanup failed: ' + ids[i]);
         }
+        changed++;
+      }
+      if (changed > 0 &&
+        !this.recordTableMutation(
+          'cryptoparams', 'scope_identity_migrate')) {
+        throw new Error('cryptoparams identity journal failed');
       }
       this.store.commit();
     } catch (err) {
@@ -2846,6 +3044,7 @@ export class CloudStore implements CryptoCloudStore {
       throw new Error(
         'cryptoparams account migration failed: ' + safeError(err));
     }
+    return changed;
   }
 
   private readRustDeskRelayControlPlaneProfile(relayId: string) {
@@ -2992,6 +3191,38 @@ export class CloudStore implements CryptoCloudStore {
       }
       return true;
     } catch (_e) { return false; }
+  }
+
+  private mutationJournalRevisionsFromRows(
+    rows: Array<Record<string, string>>
+  ): Record<string, number> {
+    const result: Record<string, number> = {};
+    for (let i = 0; i < rows.length; i++) {
+      const table: string = rows[i]['tablename'] || '';
+      const revision: number = Number(rows[i]['revision'] || '0');
+      if (table !== '' && Number.isFinite(revision) &&
+        revision > (result[table] || 0)) {
+        result[table] = Math.floor(revision);
+      }
+    }
+    return result;
+  }
+
+  private acknowledgeMutationJournalSnapshot(
+    tables: string[],
+    beforeRows: Array<Record<string, string>>
+  ): boolean {
+    const covered: Record<string, number> =
+      this.mutationJournalRevisionsFromRows(beforeRows);
+    for (let i = 0; i < tables.length; i++) {
+      const revision: number = covered[tables[i]] || 0;
+      if (revision > 0 &&
+        !this.acknowledgeMutationJournal(
+          tables[i], revision)) {
+        return false;
+      }
+    }
+    return true;
   }
 
   /** Remove only entries known to be covered by a terminal successful upload. */
@@ -3742,21 +3973,28 @@ export class CloudStore implements CryptoCloudStore {
           ? rows.getString(displayIndex) : '{}';
         const historical: Record<string, string> =
           extractLegacyRemoteHostDeviceTrust(rawDisplay);
-        if (Object.keys(historical).length === 0) {
-          continue;
-        }
+        const physical: Record<string, string> =
+          projectRemoteHostDeviceTrust(
+            this.hostExtensionFromResult(rows));
         const displayPayload: RemoteHostDisplayPayload =
           decodeRemoteHostDisplayPayload(rawDisplay);
         const sanitizedDisplay: string =
           encodeRemoteHostDisplayPayload(
             displayPayload.displayConfigJson,
             displayPayload.extension);
-        if (sanitizedDisplay === rawDisplay) {
+        const needsDisplayCleanup: boolean =
+          Object.keys(historical).length > 0 &&
+          sanitizedDisplay !== rawDisplay;
+        const needsPhysicalCleanup: boolean =
+          remoteHostDeviceTrustIsMeaningful(physical);
+        if (!needsDisplayCleanup && !needsPhysicalCleanup) {
           continue;
         }
         const bucket: relationalStore.ValuesBucket =
           this.clearedRemoteHostDeviceTrustBucket();
-        bucket['displayconfig'] = sanitizedDisplay;
+        if (needsDisplayCleanup) {
+          bucket['displayconfig'] = sanitizedDisplay;
+        }
         bucket['updatedat'] = Date.now();
         const updatePredicates =
           new relationalStore.RdbPredicates('remotehosts');
@@ -4005,10 +4243,59 @@ export class CloudStore implements CryptoCloudStore {
       Date.now().toString();
   }
 
+  /**
+   * Crypto lifecycle transitions own the physical account store exclusively.
+   * API 23 has no cloud-sync cancellation primitive, so the only safe entry is
+   * to stop accepting work and wait for the current queue to reach a terminal
+   * state before permitting the matching lease to mutate encrypted rows.
+   */
+  async beginExclusiveCryptoLifecycle(
+    lease: AccountSessionLease | null
+  ): Promise<boolean> {
+    if (!this.localMutationAllowed() ||
+      !this.cryptoLeaseIsCurrent(lease) ||
+      this.exclusiveCryptoLease !== null) {
+      return false;
+    }
+    this.exclusiveCryptoLease =
+      cloneAccountSessionLease(lease as AccountSessionLease);
+    this.exclusiveCryptoReady = false;
+    if (!(await this.quiesceCurrentScope()) ||
+      !this.cryptoLeaseIsCurrent(lease)) {
+      this.exclusiveCryptoLease = null;
+      this.exclusiveCryptoReady = false;
+      return false;
+    }
+    this.exclusiveCryptoReady = true;
+    return true;
+  }
+
+  endExclusiveCryptoLifecycle(
+    lease: AccountSessionLease | null
+  ): boolean {
+    if (!accountSessionLeaseEquals(this.exclusiveCryptoLease, lease)) {
+      return false;
+    }
+    this.exclusiveCryptoReady = false;
+    this.exclusiveCryptoLease = null;
+    if (!this.cryptoLeaseIsCurrent(lease) ||
+      lease === null ||
+      !CloudSyncCoordinator.getInstance().reopenMutationGate(lease)) {
+      return false;
+    }
+    this.mutationGateOpen = true;
+    const pending: string[] =
+      Object.keys(this.pendingMutationTableRevisions());
+    for (let i = 0; i < pending.length; i++) {
+      this.pushTable(pending[i]);
+    }
+    return true;
+  }
+
   beginCryptoConfiguration(
     lease: AccountSessionLease | null
   ): string {
-    if (!this.localMutationAllowed() ||
+    if (!this.cryptoLifecycleMutationAllowed(lease) ||
       !this.cryptoLeaseIsCurrent(lease) ||
       this.cryptoLifecycleState === null ||
       !cryptoLifecycleCanConfigure(this.cryptoLifecycleState)) {
@@ -4121,7 +4408,7 @@ export class CloudStore implements CryptoCloudStore {
     crypto: DataCrypto,
     lease: AccountSessionLease | null
   ): number {
-    if (!this.localMutationAllowed() || !this.store ||
+    if (!this.cryptoLifecycleMutationAllowed(lease) || !this.store ||
       !crypto.isReady() ||
       !this.cryptoLeaseIsCurrent(lease) ||
       this.cryptoLifecycleState === null ||
@@ -4185,7 +4472,7 @@ export class CloudStore implements CryptoCloudStore {
     transactionId: string,
     lease: AccountSessionLease | null
   ): number {
-    if (!this.localMutationAllowed() || !this.store ||
+    if (!this.cryptoLifecycleMutationAllowed(lease) || !this.store ||
       !crypto.isReady() || salt === '' || verifier === '' ||
       kdfVersion < 1 || kdfIterations < 100000 ||
       keyVersion < 1 || verifierVersion < 1 ||
@@ -4712,9 +4999,13 @@ export class CloudStore implements CryptoCloudStore {
   decryptAllData(
     crypto: DataCrypto,
     pushChanges: boolean = true,
-    manageTransaction: boolean = true
+    manageTransaction: boolean = true,
+    lease: AccountSessionLease | null = null
   ): number {
-    if (!this.localMutationAllowed() || !this.store) { return -1; }
+    const mutationAllowed: boolean = lease === null
+      ? this.localMutationAllowed()
+      : this.cryptoLifecycleMutationAllowed(lease);
+    if (!mutationAllowed || !this.store) { return -1; }
     let count: number = 0;
     let hostsChanged: boolean = false;
     let rdpCredentialsChanged: boolean = false;
@@ -4960,12 +5251,15 @@ export class CloudStore implements CryptoCloudStore {
   }
 
   /**
-   * Convert every active VNC encrypted_v2/v3 row in the local, cloud and
-   * legacy compatibility tables while decryptAllData owns the transaction.
+   * Convert active VNC encrypted_v2/v3 rows only in device-local mirrors.
+   * The distributed cloud mirror must remain encrypted: disabling local
+   * encryption is not consent to publish plain-v1 or rewrite another device.
    */
   private decryptVncSecretsForDisable(crypto: DataCrypto): number {
     if (!this.store) { throw new Error('VNC store unavailable'); }
-    const tables: string[] = [VNC_LOCAL_TABLE, VNC_CLOUD_TABLE, LEGACY_VNC_CLOUD_TABLE];
+    const tables: string[] = [
+      VNC_LOCAL_TABLE, LEGACY_VNC_CLOUD_TABLE
+    ];
     let changedCount: number = 0;
     for (let tableIndex = 0; tableIndex < tables.length; tableIndex++) {
       const table: string = tables[tableIndex];
@@ -5026,14 +5320,7 @@ export class CloudStore implements CryptoCloudStore {
               bucket[column] = value;
             }
           }
-          if (table === VNC_LOCAL_TABLE || table === LEGACY_VNC_CLOUD_TABLE) { bucket['localonly'] = 1; }
-          else {
-            const cloudBucket: relationalStore.ValuesBucket = this.cloudBucket(VNC_CLOUD_TABLE, bucket);
-            for (let i = 0; i < VNC_RECORD_COLUMNS.length; i++) {
-              const column: string = VNC_RECORD_COLUMNS[i];
-              bucket[column] = cloudBucket[column];
-            }
-          }
+          bucket['localonly'] = 1;
           const predicates = new relationalStore.RdbPredicates(table);
           predicates.equalTo('id', record.id);
           predicates.equalTo('userid', record.userId);
@@ -5140,6 +5427,43 @@ export class CloudStore implements CryptoCloudStore {
     }
   }
 
+  private pauseCloudSelectionForLocalCryptoTransition(
+    reset: boolean
+  ): CryptoCloudSelectionSnapshot | null {
+    if (this.appContext === null) { return null; }
+    const snapshot: CryptoCloudSelectionSnapshot = {
+      ordinary: this.syncSelection.selectedBusinessTables(),
+      vnc: this.vncSyncSelection.selectedScopes()
+    };
+    const nextOrdinary: string[] =
+      cloudSelectionAfterLocalCryptoTransition(
+        snapshot.ordinary, reset);
+    const nextVnc: string[] =
+      vncSelectionAfterLocalCryptoTransition(
+        snapshot.vnc, reset);
+    if (!this.syncSelection.replaceSelectedBusinessTables(
+      this.appContext, nextOrdinary)) {
+      return null;
+    }
+    if (!this.vncSyncSelection.replaceSelectedScopes(
+      this.appContext, nextVnc)) {
+      this.syncSelection.replaceSelectedBusinessTables(
+        this.appContext, snapshot.ordinary);
+      return null;
+    }
+    return snapshot;
+  }
+
+  private restoreCloudSelectionAfterFailedCryptoTransition(
+    snapshot: CryptoCloudSelectionSnapshot
+  ): void {
+    if (this.appContext === null) { return; }
+    this.syncSelection.replaceSelectedBusinessTables(
+      this.appContext, snapshot.ordinary);
+    this.vncSyncSelection.replaceSelectedScopes(
+      this.appContext, snapshot.vnc);
+  }
+
   private pushCryptoTransitionTables(
     includeVncReset: boolean = false
   ): void {
@@ -5163,30 +5487,52 @@ export class CloudStore implements CryptoCloudStore {
    * status in one transaction. A caller may clear the in-memory DEK only after
    * this method returns a non-negative count.
    */
-  disableCryptoV3(
+  async disableCryptoV3(
+    crypto: DataCrypto,
+    lease: AccountSessionLease | null
+  ): Promise<number> {
+    if (!(await this.beginExclusiveCryptoLifecycle(lease))) {
+      return -1;
+    }
+    try {
+      return this.disableCryptoV3Exclusive(crypto, lease);
+    } finally {
+      if (!this.endExclusiveCryptoLifecycle(lease)) {
+        hilog.error(0x0001, 'CloudSync',
+          '[disableCryptoV3] 同步门闩恢复失败并保持关闭');
+      }
+    }
+  }
+
+  private disableCryptoV3Exclusive(
     crypto: DataCrypto,
     lease: AccountSessionLease | null
   ): number {
-    if (!this.localMutationAllowed() || !this.store ||
+    if (!this.cryptoLifecycleMutationAllowed(lease) || !this.store ||
       !crypto.isReady() ||
       !this.cryptoLeaseIsCurrent(lease) ||
       this.cryptoLifecycleState === null ||
       !cryptoLifecycleCanDisable(this.cryptoLifecycleState)) {
       return -1;
     }
+    const selectionSnapshot: CryptoCloudSelectionSnapshot | null =
+      this.pauseCloudSelectionForLocalCryptoTransition(false);
+    if (selectionSnapshot === null) { return -1; }
     const transactionId: string =
       this.nextCryptoTransactionId('disable');
     const disablingState: CryptoLifecycleDurableState =
       cryptoLifecycleOperationStarted(
         this.cryptoLifecycleState, 'disabling', transactionId);
     if (!this.persistCryptoLifecycleState(disablingState)) {
+      this.restoreCloudSelectionAfterFailedCryptoTransition(
+        selectionSnapshot);
       return -1;
     }
     this.cryptoLifecycleState = disablingState;
     let count: number = -1;
     try {
       this.store.beginTransaction();
-      count = this.decryptAllData(crypto, false, false);
+      count = this.decryptAllData(crypto, false, false, lease);
       this.clearCryptoSecretsInActiveTransaction();
       if (!rdbInsertSucceeded(this.store.insertSync(
         'cryptoparams',
@@ -5222,6 +5568,8 @@ export class CloudStore implements CryptoCloudStore {
         transactionId, lease, safeError(err));
       hilog.error(0x0001, 'CloudSync',
         '[disableCryptoV3] 全量回滚: ' + safeError(err));
+      this.restoreCloudSelectionAfterFailedCryptoTransition(
+        selectionSnapshot);
       return -1;
     }
     this.pushCryptoTransitionTables(false);
@@ -5233,21 +5581,42 @@ export class CloudStore implements CryptoCloudStore {
    * deletion intents, reset epoch and KDF material commit together. It is
    * deliberately not a remote wipe protocol.
    */
-  resetCryptoV3(
+  async resetCryptoV3(
+    lease: AccountSessionLease | null
+  ): Promise<boolean> {
+    if (!(await this.beginExclusiveCryptoLifecycle(lease))) {
+      return false;
+    }
+    try {
+      return this.resetCryptoV3Exclusive(lease);
+    } finally {
+      if (!this.endExclusiveCryptoLifecycle(lease)) {
+        hilog.error(0x0001, 'CloudSync',
+          '[resetCryptoV3] 同步门闩恢复失败并保持关闭');
+      }
+    }
+  }
+
+  private resetCryptoV3Exclusive(
     lease: AccountSessionLease | null
   ): boolean {
-    if (!this.localMutationAllowed() || !this.store ||
+    if (!this.cryptoLifecycleMutationAllowed(lease) || !this.store ||
       !this.cryptoLeaseIsCurrent(lease) ||
       this.cryptoLifecycleState === null ||
       !cryptoLifecycleCanReset(this.cryptoLifecycleState)) {
       return false;
     }
+    const selectionSnapshot: CryptoCloudSelectionSnapshot | null =
+      this.pauseCloudSelectionForLocalCryptoTransition(true);
+    if (selectionSnapshot === null) { return false; }
     const transactionId: string =
       this.nextCryptoTransactionId('reset');
     const resetPending: CryptoLifecycleDurableState =
       cryptoLifecycleOperationStarted(
         this.cryptoLifecycleState, 'reset_pending', transactionId);
     if (!this.persistCryptoLifecycleState(resetPending)) {
+      this.restoreCloudSelectionAfterFailedCryptoTransition(
+        selectionSnapshot);
       return false;
     }
     this.cryptoLifecycleState = resetPending;
@@ -5296,6 +5665,8 @@ export class CloudStore implements CryptoCloudStore {
         transactionId, lease, safeError(err));
       hilog.error(0x0001, 'CloudSync',
         '[resetCryptoV3] 全量回滚: ' + safeError(err));
+      this.restoreCloudSelectionAfterFailedCryptoTransition(
+        selectionSnapshot);
       return false;
     }
     DataCrypto.getInstance().lock();
@@ -5661,45 +6032,120 @@ export class CloudStore implements CryptoCloudStore {
     this.pushTable('rustdeskrelays');
   }
 
-  /** 从 cryptoparams 读取 relay JSON → 合并到本地 rustdeskrelays 表 */
+  /**
+   * Compatibility read. Production migration is executed only during account
+   * store initialization or after a complete cloud-first apply.
+   */
   syncRelaysFromCloud(): RustDeskRelayConfig[] {
-    const result: RustDeskRelayConfig[] = [];
-    if (!this.store) { return result; }
-    try {
-      const predicates = new relationalStore.RdbPredicates('cryptoparams');
-      predicates.equalTo(
-        'id', this.cryptoParamId('rustdesk_relays'));
-      predicates.equalTo('key', 'rustdesk_relays');
-      const rs = this.store.querySync(predicates);
-      if (rs.goToNextRow()) {
-        const json: string = rs.getString(rs.getColumnIndex('value'));
-        const cfgs: RustDeskRelayCloudJSON[] = JSON.parse(json) as RustDeskRelayCloudJSON[];
-        // 合并到本地表: 云端有而本地没有的 → insert; 本地有而云端没有的 → 保留本地
-        const localIds: Set<string> = new Set();
-        const localRelays = this.loadAllRelaysLocal();
-        for (let i = 0; i < localRelays.length; i++) { localIds.add(localRelays[i].id); }
-        for (let i = 0; i < cfgs.length; i++) {
-          const relay = this.relayFromCloudJson(cfgs[i]);
-          if (!localIds.has(relay.id)) {
-            this.upsertRelayLocal(relay);
-          }
-          result.push(relay);
-        }
-        // 如果云端为空而本地有数据, 推本地到云端
-        for (let i = 0; i < localRelays.length; i++) {
-          const found = cfgs.some((c: RustDeskRelayCloudJSON) => c.id === localRelays[i].id);
-          if (!found) { result.push(localRelays[i]); }
-        }
-        hilog.info(0x0001, 'CloudSync', '[syncRelaysFromCloud] 从云端合并 ' + cfgs.length.toString() + ' 组中继');
-      }
-      rs.close();
-    } catch (err) {
-      hilog.error(0x0001, 'CloudSync', '[syncRelaysFromCloud] 失败: ' + JSON.stringify(err));
-    }
-    return result;
+    return this.loadAllRelaysLocal();
   }
 
   // ==================== RustDesk Relay CRUD (本地) ====================
+
+  /**
+   * Converts the retired whole-table JSON container without overwriting rows
+   * already owned by the current independent relay table. The source value is
+   * retained; malformed data receives only a hash and redacted quarantine
+   * record so secrets are not duplicated into diagnostics.
+   */
+  private migrateLegacyRelayJson(): number {
+    if (!this.store ||
+      this.readLocalMetadataStrict(
+        LEGACY_RELAY_JSON_MIGRATION_KEY) === '1') {
+      return 0;
+    }
+    const predicates =
+      new relationalStore.RdbPredicates('cryptoparams');
+    predicates.equalTo(
+      'id', this.cryptoParamId('rustdesk_relays'));
+    predicates.equalTo('key', 'rustdesk_relays');
+    const rows: relationalStore.ResultSet =
+      this.store.querySync(predicates);
+    const found: boolean = rows.goToFirstRow();
+    const raw: string = found
+      ? rows.getString(rows.getColumnIndex('value')) : '';
+    rows.close();
+    // Do not mark an absent source as complete. A new device can receive the
+    // legacy row only after its first cloud-first cryptoparams transfer.
+    if (!found) { return 0; }
+    const legacyRows: RustDeskRelayJSON[] | null =
+      parseLegacyRelayJson(raw);
+    if (legacyRows === null) {
+      this.quarantineLegacyRelayJson(raw);
+      return -1;
+    }
+    let migrated: number = 0;
+    try {
+      this.store.beginTransaction();
+      for (let i = 0; i < legacyRows.length; i++) {
+        const legacy: RustDeskRelayConfig =
+          RustDeskRelayConfig.fromJSON(legacyRows[i]);
+        legacy.userId = this.currentOwnerScopeId();
+        const existingPredicates =
+          new relationalStore.RdbPredicates('rustdeskrelays');
+        existingPredicates.equalTo('id', legacy.id);
+        this.addCurrentOwnerPredicate(existingPredicates);
+        const existing: relationalStore.ResultSet =
+          this.store.querySync(existingPredicates);
+        const exists: boolean = existing.goToFirstRow();
+        existing.close();
+        if (exists) { continue; }
+        const bucket: relationalStore.ValuesBucket =
+          this.relayToBucketRaw(legacy);
+        bucket['createdat'] =
+          legacy.createdAt > 0 ? legacy.createdAt : Date.now();
+        bucket['updatedat'] =
+          legacy.updatedAt > 0 ? legacy.updatedAt : Date.now();
+        if (!rdbInsertSucceeded(
+          this.store.insertSync('rustdeskrelays', bucket))) {
+          throw new Error('legacy relay insert failed');
+        }
+        migrated++;
+      }
+      if (migrated > 0 &&
+        !this.recordTableMutation(
+          'rustdeskrelays', 'legacy_json_migration')) {
+        throw new Error('legacy relay journal failed');
+      }
+      if (!this.writeLocalMetadata(
+        LEGACY_RELAY_JSON_MIGRATION_KEY, '1')) {
+        throw new Error('legacy relay marker failed');
+      }
+      this.store.commit();
+      return migrated;
+    } catch (err) {
+      try { this.store.rollBack(); } catch (_rollbackError) {}
+      this.quarantineLegacyRelayJson(raw);
+      hilog.error(0x0001, 'CloudSync',
+        '[migrateLegacyRelayJson] 已回滚并隔离: ' + safeError(err));
+      return -1;
+    }
+  }
+
+  private quarantineLegacyRelayJson(raw: string): void {
+    if (!this.store) { return; }
+    try {
+      const bucket: relationalStore.ValuesBucket = {
+        id: LEGACY_RELAY_JSON_MIGRATION_ID + ':' +
+          this.currentOwnerScopeId(),
+        migrationid: LEGACY_RELAY_JSON_MIGRATION_ID,
+        tablename: 'cryptoparams',
+        recordid: 'rustdesk_relays',
+        reason: 'invalid_legacy_relay_json',
+        payloadhashsha256: vncPayloadHashSha256(raw),
+        payloadciphertext: '',
+        redactedsummary:
+          'Legacy relay data remains in cryptoparams and requires repair',
+        createdat: Date.now()
+      };
+      this.store.insertSync(
+        MIGRATION_QUARANTINE_TABLE, bucket,
+        relationalStore.ConflictResolution.ON_CONFLICT_REPLACE);
+    } catch (_e) {
+      hilog.error(0x0001, 'CloudSync',
+        '[migrateLegacyRelayJson] 隔离记录写入失败');
+    }
+  }
 
   private relayAccountsToJson(relay: RustDeskRelayConfig): string {
     const crypto = DataCrypto.getInstance();
@@ -6010,19 +6456,12 @@ export class CloudStore implements CryptoCloudStore {
     vb['sshkeypassphrase'] = this.encryptIfReady(
       crypto, 'remotehosts', h.id, 'sshkeypassphrase', h.sshKeyPassphrase);
     vb['sshkeyid'] = h.sshKeyId;
-    vb['sshhostkeyalgorithm'] = h.sshHostKeyAlgorithm;
-    vb['sshhostkeyfingerprintsha256'] = h.sshHostKeyFingerprintSha256;
-    vb['sshhostkeyrawbase64'] = h.sshHostKeyRawBase64;
-    vb['sshhostkeytrustedat'] = h.sshHostKeyTrustedAt;
-    vb['sshhostkeytrustmode'] = h.sshHostKeyTrustMode;
-    vb['rdpcertificatefingerprintsha256'] = h.rdpCertificateFingerprintSha256;
-    vb['rdpcertificatesubject'] = h.rdpCertificateSubject;
-    vb['rdpcertificateissuer'] = h.rdpCertificateIssuer;
-    vb['rdpcertificatecommonname'] = h.rdpCertificateCommonName;
-    vb['rdpcertificatetrustedat'] = h.rdpCertificateTrustedAt;
-    vb['rdpcertificatetrustmode'] = h.rdpCertificateTrustMode;
-    vb['rdpcertificateallowuntrustedroot'] = h.rdpCertificateAllowUntrustedRoot ? 1 : 0;
-    vb['rdpcertificateallowhostmismatch'] = h.rdpCertificateAllowHostMismatch ? 1 : 0;
+    const clearedTrust: relationalStore.ValuesBucket =
+      this.clearedRemoteHostDeviceTrustBucket();
+    const clearedTrustKeys: string[] = Object.keys(clearedTrust);
+    for (let i = 0; i < clearedTrustKeys.length; i++) {
+      vb[clearedTrustKeys[i]] = clearedTrust[clearedTrustKeys[i]];
+    }
     vb['proxyhost'] = h.proxyHost;
     vb['proxyport'] = h.proxyPort;
     vb['proxyusername'] = h.proxyUsername;
@@ -6720,19 +7159,12 @@ export class CloudStore implements CryptoCloudStore {
     vb['sshkeypath'] = h.sshKeyPath; vb['sshkeydata'] = h.sshKeyData;
     vb['sshkeypassphrase'] = h.sshKeyPassphrase;
     vb['sshkeyid'] = h.sshKeyId;
-    vb['sshhostkeyalgorithm'] = h.sshHostKeyAlgorithm;
-    vb['sshhostkeyfingerprintsha256'] = h.sshHostKeyFingerprintSha256;
-    vb['sshhostkeyrawbase64'] = h.sshHostKeyRawBase64;
-    vb['sshhostkeytrustedat'] = h.sshHostKeyTrustedAt;
-    vb['sshhostkeytrustmode'] = h.sshHostKeyTrustMode;
-    vb['rdpcertificatefingerprintsha256'] = h.rdpCertificateFingerprintSha256;
-    vb['rdpcertificatesubject'] = h.rdpCertificateSubject;
-    vb['rdpcertificateissuer'] = h.rdpCertificateIssuer;
-    vb['rdpcertificatecommonname'] = h.rdpCertificateCommonName;
-    vb['rdpcertificatetrustedat'] = h.rdpCertificateTrustedAt;
-    vb['rdpcertificatetrustmode'] = h.rdpCertificateTrustMode;
-    vb['rdpcertificateallowuntrustedroot'] = h.rdpCertificateAllowUntrustedRoot ? 1 : 0;
-    vb['rdpcertificateallowhostmismatch'] = h.rdpCertificateAllowHostMismatch ? 1 : 0;
+    const clearedTrust: relationalStore.ValuesBucket =
+      this.clearedRemoteHostDeviceTrustBucket();
+    const clearedTrustKeys: string[] = Object.keys(clearedTrust);
+    for (let i = 0; i < clearedTrustKeys.length; i++) {
+      vb[clearedTrustKeys[i]] = clearedTrust[clearedTrustKeys[i]];
+    }
     vb['proxyhost'] = h.proxyHost; vb['proxyport'] = h.proxyPort;
     vb['proxyusername'] = h.proxyUsername;
     vb['gatewayhost'] = h.gatewayHost; vb['gatewayport'] = h.gatewayPort;

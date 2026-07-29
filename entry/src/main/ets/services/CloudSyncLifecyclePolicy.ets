@@ -60,6 +60,7 @@ function isFailureKind(value: string): boolean {
     value === 'version_conflict' ||
     value === 'empty_snapshot' ||
     value === 'tombstone_cleanup' ||
+    value === 'unsafe_payload' ||
     value === 'cloud_service' ||
     value === 'network' ||
     value === 'indeterminate' ||

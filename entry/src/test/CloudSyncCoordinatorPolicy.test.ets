@@ -168,6 +168,16 @@ export default function cloudSyncCoordinatorPolicyTest(): void {
       expect(cloudSyncFailureMessage('version_conflict')).assertContain('版本冲突');
     });
 
+    it('keeps_unsafe_cloud_payloads_blocked_until_user_or_data_repair',
+      0, (): void => {
+        expect(classifyCloudSyncFailure(
+          'unsafe_payload: plaintext secret in remotehosts'))
+          .assertEqual('unsafe_payload');
+        expect(shouldBlockAutomaticRetry('unsafe_payload')).assertTrue();
+        expect(cloudSyncFailureMessage('unsafe_payload'))
+          .assertContain('安全校验');
+      });
+
     it('uses_bounded_retry_delays', 0, (): void => {
       expect(CLOUD_SYNC_MAX_RETRY_ATTEMPTS).assertEqual(3);
       expect(nextCloudSyncRetryDelayMs(1)).assertEqual(1000);

@@ -26,7 +26,8 @@ export interface CloudSyncRetryRecord {
 
 export type CloudSyncFailureKind =
   'none' | 'version_conflict' | 'empty_snapshot' | 'tombstone_cleanup' |
-  'cloud_service' | 'network' | 'indeterminate' | 'unknown';
+  'unsafe_payload' | 'cloud_service' | 'network' | 'indeterminate' |
+  'unknown';
 
 export type CloudSyncWatchdogTimeoutKind =
   'none' | 'accept_timeout' | 'idle_timeout' | 'overall_timeout';
@@ -75,6 +76,10 @@ export function classifyCloudSyncFailure(message: string): CloudSyncFailureKind 
   if (normalized.indexOf('TOMBSTONE_CLEANUP') >= 0 ||
     normalized.indexOf('CLEAN_DIRTY_DATA') >= 0) {
     return 'tombstone_cleanup';
+  }
+  if (normalized.indexOf('UNSAFE_CLOUD_PAYLOAD') >= 0 ||
+    normalized.indexOf('PLAINTEXT_SECRET') >= 0) {
+    return 'unsafe_payload';
   }
   if (normalized.indexOf('NETWORK') >= 0 || normalized.indexOf('TIMEOUT') >= 0 ||
     normalized.indexOf('OFFLINE') >= 0) {
@@ -157,7 +162,8 @@ export function shouldRejectAutomaticEmptyCloudSnapshot(
 
 /** These failures must stop native-first retries until the user resolves them. */
 export function shouldBlockAutomaticRetry(kind: CloudSyncFailureKind): boolean {
-  return kind === 'version_conflict' || kind === 'empty_snapshot' || kind === 'tombstone_cleanup';
+  return kind === 'version_conflict' || kind === 'empty_snapshot' ||
+    kind === 'tombstone_cleanup' || kind === 'unsafe_payload';
 }
 
 export function cloudSyncFailureMessage(kind: CloudSyncFailureKind): string {
@@ -169,6 +175,9 @@ export function cloudSyncFailureMessage(kind: CloudSyncFailureKind): string {
   }
   if (kind === 'tombstone_cleanup') {
     return '云端删除记录清理未完成，已暂停自动同步。请检查网络后重试。';
+  }
+  if (kind === 'unsafe_payload') {
+    return '检测到未加密或不完整的敏感云数据，已回滚本次下载并暂停自动同步。请先确认主密码和云端版本。';
   }
   if (kind === 'cloud_service') {
     return '华为云空间当前不可用，请确认账号、云空间服务和系统云同步开关。';

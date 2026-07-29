@@ -35,13 +35,29 @@ export class CloudSyncSelectionStore {
 
   effectiveTables(): string[] { return effectiveCloudSyncTables(this.selected); }
 
-  replaceSelectedBusinessTables(context: common.Context, tables: string[]): void {
+  replaceSelectedBusinessTables(
+    context: common.Context, tables: string[]
+  ): boolean {
+    const previous: string[] = this.selected.slice();
     this.selected = normalizeCloudSyncSelection(tables);
     try {
       const prefs = preferences.getPreferencesSync(context, { name: PREFS_NAME });
       prefs.putSync(this.preferenceKey(), JSON.stringify(this.selected));
       prefs.flushSync();
-    } catch (_e) { /* memory state remains usable */ }
+      return true;
+    } catch (_e) {
+      // A lifecycle transition must never observe a selection that was not
+      // durably committed. Restore both memory and Preferences best-effort.
+      this.selected = previous;
+      try {
+        const prefs = preferences.getPreferencesSync(
+          context, { name: PREFS_NAME });
+        prefs.putSync(
+          this.preferenceKey(), JSON.stringify(previous));
+        prefs.flushSync();
+      } catch (_restoreError) {}
+      return false;
+    }
   }
 
   private preferenceKey(): string {
