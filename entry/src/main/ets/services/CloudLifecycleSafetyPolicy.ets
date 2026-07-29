@@ -16,7 +16,7 @@ export interface CloudAccountBinding {
 
 export const CLOUD_LIFECYCLE_V2_ROLLOUT_ENABLED: boolean = false;
 export const REMOTE_CRYPTO_LIFECYCLE_V2_ENABLED: boolean = false;
-export const PORTABLE_BACKUP_V3_WRITE_ENABLED: boolean = false;
+export const PORTABLE_BACKUP_V3_WRITE_ENABLED: boolean = true;
 export const LEGACY_CLOUD_REST_TRANSFER_ENABLED: boolean = false;
 
 export const CLOUD_LIFECYCLE_BLOCKED_REASON: string =

@@ -66,6 +66,7 @@ import {
   localBackupLocalExtensionColumns,
   localBackupLocalTableColumns,
   localBackupLocalTableNames,
+  PortableBackupRestorePlan,
   validateLocalBackupSnapshot
 } from './LocalBackupPolicy';
 import { DataMutationResult } from './DataMutationResult';
@@ -182,6 +183,8 @@ const ACCOUNT_STORE_SCHEMA_VERSION: number = 3;
 const CANONICAL_SECRET_STORAGE_VERSION_KEY: string = 'canonical_secret_storage_version';
 const CANONICAL_SECRET_STORAGE_VERSION: string = '3';
 const RESTORED_NOT_UPLOADED_KEY: string = 'restored_not_uploaded';
+const RESTORED_NOT_UPLOADED_TABLE_PREFIX: string =
+  'restored_not_uploaded|';
 const CLOUD_BOOTSTRAP_COMPLETED_KEY: string = 'cloud_bootstrap_completed_v1';
 const CLOUD_SYNC_DURABLE_STATE_KEY: string = 'cloud_sync_durable_state_v1';
 const CRYPTO_LIFECYCLE_DURABLE_STATE_KEY: string =
@@ -230,6 +233,15 @@ export interface SyncStatus {
   syncFailCount: number;
   lastError: string;
   tableStatus: Record<string, TableSyncStatus>;
+}
+
+export interface PortableBackupSnapshot {
+  accountScope: string;
+  rdbSchemaVersion: number;
+  sourceCryptoConfigured: boolean;
+  tables: Record<string, Array<Record<string, string>>>;
+  extensions: Array<Record<string, string>>;
+  localTables: Record<string, Array<Record<string, string>>>;
 }
 
 export class CloudStore implements CryptoCloudStore {
@@ -984,6 +996,9 @@ export class CloudStore implements CryptoCloudStore {
 
   /** 本地备份专用：以稳定列顺序导出云表，不触发云同步。 */
   exportAllTableRows(): Record<string, Array<Record<string, string>>> {
+    if (!this.store) {
+      throw new Error('portable backup store unavailable');
+    }
     const snapshot: Record<string, Array<Record<string, string>>> = {};
     for (let i = 0; i < TABLES.length; i++) {
       snapshot[TABLES[i]] = this.exportTableRows(TABLES[i]);
@@ -993,11 +1008,26 @@ export class CloudStore implements CryptoCloudStore {
 
   private exportTableRows(table: string): Array<Record<string, string>> {
     const result: Array<Record<string, string>> = [];
-    if (!this.store) { return result; }
+    if (!this.store) {
+      throw new Error('portable backup store unavailable');
+    }
+    let rows: relationalStore.ResultSet | null = null;
     try {
-      const rows = this.store.querySync(new relationalStore.RdbPredicates(table));
+      const predicates = new relationalStore.RdbPredicates(table);
+      if (table !== 'cryptoparams') {
+        this.addCurrentOwnerPredicate(predicates);
+      }
+      rows = this.store.querySync(predicates);
       const columns: string[] = localBackupColumnsForTable(table);
       while (rows.goToNextRow()) {
+        const deletedIndex: number =
+          rows.getColumnIndex(relationalStore.Field.DELETED_FLAG_FIELD);
+        // Cloud deleted rows have no portable application-level tombstone
+        // contract. Exclude them instead of stripping the system flag and
+        // accidentally restoring them as live records.
+        if (deletedIndex >= 0 && rows.getLong(deletedIndex) !== 0) {
+          continue;
+        }
         const row: Record<string, string> = {};
         for (let c = 0; c < columns.length; c++) {
           const index: number = rows.getColumnIndex(columns[c]);
@@ -1007,12 +1037,14 @@ export class CloudStore implements CryptoCloudStore {
         }
         result.push(row);
       }
-      rows.close();
       result.sort((a: Record<string, string>, b: Record<string, string>): number =>
         (a['id'] || '').localeCompare(b['id'] || ''));
     } catch (err) {
-      hilog.warn(0x0001, 'CloudSync', '[CloudStore] export table failed table=' + table +
-        ' err=' + safeError(err));
+      throw new Error(
+        'portable backup table export failed table=' + table +
+        ' — ' + safeError(err));
+    } finally {
+      if (rows !== null) { rows.close(); }
     }
     return result;
   }
@@ -1149,9 +1181,13 @@ export class CloudStore implements CryptoCloudStore {
 
   exportLocalExtensionRows(): Array<Record<string, string>> {
     const result: Array<Record<string, string>> = [];
-    if (!this.store) { return result; }
+    if (!this.store) {
+      throw new Error('portable backup store unavailable');
+    }
+    let rows: relationalStore.ResultSet | null = null;
     try {
-      const rows = this.store.querySync(new relationalStore.RdbPredicates('localextensions'));
+      rows = this.store.querySync(
+        new relationalStore.RdbPredicates('localextensions'));
       const columns: string[] = localBackupLocalExtensionColumns();
       while (rows.goToNextRow()) {
         const row: Record<string, string> = {};
@@ -1161,11 +1197,14 @@ export class CloudStore implements CryptoCloudStore {
         }
         result.push(row);
       }
-      rows.close();
       result.sort((a: Record<string, string>, b: Record<string, string>): number =>
         (a['id'] || '').localeCompare(b['id'] || ''));
     } catch (err) {
-      hilog.warn(0x0001, 'CloudSync', '[CloudStore] export local extensions failed: ' + safeError(err));
+      throw new Error(
+        'portable backup local extension export failed — ' +
+        safeError(err));
+    } finally {
+      if (rows !== null) { rows.close(); }
     }
     return result;
   }
@@ -1177,6 +1216,349 @@ export class CloudStore implements CryptoCloudStore {
       snapshot[names[i]] = this.exportDeviceLocalRows(names[i], localBackupLocalTableColumns(names[i]));
     }
     return snapshot;
+  }
+
+  /**
+   * Capture one account-scoped, transaction-consistent portable snapshot.
+   * Any section failure aborts the artifact; an empty fallback is forbidden.
+   */
+  createPortableBackupSnapshot(): PortableBackupSnapshot {
+    if (!this.store || this.currentLease === null ||
+      this.currentScopeToken.kind !== 'huawei_account' ||
+      this.currentOwnerScopeId() === '') {
+      throw new Error('portable backup requires a bound account store');
+    }
+    try {
+      this.store.beginTransaction();
+      const snapshot: PortableBackupSnapshot = {
+        accountScope: this.currentOwnerScopeId(),
+        rdbSchemaVersion: this.store.version,
+        sourceCryptoConfigured: this.getCryptoStatus() === 'active',
+        tables: this.exportAllTableRows(),
+        extensions: this.exportLocalExtensionRows(),
+        localTables: this.exportAllLocalTableRows()
+      };
+      this.store.commit();
+      return snapshot;
+    } catch (err) {
+      try { this.store.rollBack(); } catch (_rollbackError) {}
+      throw new Error(
+        'portable backup snapshot failed — ' + safeError(err));
+    }
+  }
+
+  private portableOwnerTable(table: string): boolean {
+    return [
+      'usersettings', 'remotehosts', 'rdpcredentials',
+      'rustdeskrelays', 'sshkeys', 'totpentries',
+      VNC_CLOUD_TABLE, VNC_LOCAL_TABLE
+    ].indexOf(table) >= 0;
+  }
+
+  private portableRowExists(
+    table: string, id: string
+  ): boolean {
+    if (!this.store) { return false; }
+    const predicates = new relationalStore.RdbPredicates(table);
+    predicates.equalTo('id', id);
+    if (this.portableOwnerTable(table)) {
+      this.addCurrentOwnerPredicate(predicates);
+    }
+    const rows: relationalStore.ResultSet =
+      this.store.querySync(predicates);
+    try {
+      return rows.goToFirstRow();
+    } finally {
+      rows.close();
+    }
+  }
+
+  private mergePortableRows(
+    table: string, rows: Array<Record<string, string>>
+  ): number {
+    if (!this.store) {
+      throw new Error('portable restore store unavailable');
+    }
+    const allowed: string[] = table === VNC_LOCAL_TABLE
+      ? localBackupLocalTableColumns(table)
+      : localBackupColumnsForTable(table);
+    let changed: number = 0;
+    for (let i = 0; i < rows.length; i++) {
+      const source: Record<string, string> = rows[i];
+      const id: string = source['id'] || '';
+      if (id === '') {
+        throw new Error('portable restore row identity missing: ' + table);
+      }
+      if (this.portableOwnerTable(table) &&
+        source['userid'] !== this.currentOwnerScopeId()) {
+        throw new Error('portable restore owner mismatch: ' + table);
+      }
+      const bucket: relationalStore.ValuesBucket = {};
+      const keys: string[] = Object.keys(source);
+      for (let k = 0; k < keys.length; k++) {
+        if (allowed.indexOf(keys[k]) < 0) {
+          throw new Error(
+            'portable restore unknown column: ' + table + '/' +
+            keys[k]);
+        }
+        bucket[keys[k]] = source[keys[k]];
+      }
+      if (table === VNC_CLOUD_TABLE || table === VNC_LOCAL_TABLE) {
+        bucket['resetepoch'] = this.readVncResetEpoch();
+        const validationRow: Record<string, string> = {};
+        for (let k = 0; k < keys.length; k++) {
+          validationRow[keys[k]] = source[keys[k]];
+        }
+        validationRow['resetepoch'] =
+          this.readVncResetEpoch().toString();
+        if (!vncRecordIsValid(vncRecordFromCloudRow(validationRow))) {
+          throw new Error('portable restore invalid VNC row: ' + id);
+        }
+      }
+      const exists: boolean = this.portableRowExists(table, id);
+      if (exists) {
+        const predicates = new relationalStore.RdbPredicates(table);
+        predicates.equalTo('id', id);
+        if (this.portableOwnerTable(table)) {
+          this.addCurrentOwnerPredicate(predicates);
+        }
+        if (!rdbSingleRowAffected(
+          this.store.updateSync(bucket, predicates))) {
+          throw new Error(
+            'portable restore update failed: ' + table + '/' + id);
+        }
+      } else if (!rdbInsertSucceeded(
+        this.store.insertSync(
+          table, bucket,
+          relationalStore.ConflictResolution.ON_CONFLICT_ABORT))) {
+        throw new Error(
+          'portable restore insert failed: ' + table + '/' + id);
+      }
+      changed++;
+    }
+    return changed;
+  }
+
+  private portableExtensionOwnerExists(
+    table: string, recordId: string
+  ): boolean {
+    if (!this.store) { return false; }
+    const ownerTable: string =
+      table === RDP_RESTRICTED_ADMIN_SECRET_TABLE
+        ? 'remotehosts' : table;
+    if ([
+      'remotehosts', 'rdpcredentials', 'sshkeys'
+    ].indexOf(ownerTable) < 0) {
+      return false;
+    }
+    const predicates =
+      new relationalStore.RdbPredicates(ownerTable);
+    predicates.equalTo('id', recordId);
+    this.addCurrentOwnerPredicate(predicates);
+    const rows: relationalStore.ResultSet =
+      this.store.querySync(predicates);
+    try {
+      return rows.goToFirstRow();
+    } finally {
+      rows.close();
+    }
+  }
+
+  private mergePortableExtensions(
+    rows: Array<Record<string, string>>
+  ): number {
+    if (!this.store) {
+      throw new Error('portable extension restore store unavailable');
+    }
+    const allowed: string[] = localBackupLocalExtensionColumns();
+    let changed: number = 0;
+    for (let i = 0; i < rows.length; i++) {
+      const source: Record<string, string> = rows[i];
+      const id: string = source['id'] || '';
+      const table: string = source['tablename'] || '';
+      const recordId: string = source['recordid'] || '';
+      if (id !== table + ':' + recordId ||
+        table === RDP_RESTRICTED_ADMIN_SECRET_TABLE ||
+        !this.portableExtensionOwnerExists(table, recordId)) {
+        throw new Error(
+          'portable extension owner invalid: ' + id);
+      }
+      const incoming: Record<string, string> =
+        JSON.parse(source['payload'] || '{}') as
+          Record<string, string>;
+      const predicates =
+        new relationalStore.RdbPredicates('localextensions');
+      predicates.equalTo('id', id);
+      const existingRows: relationalStore.ResultSet =
+        this.store.querySync(predicates);
+      let exists: boolean = false;
+      let merged: Record<string, string> = {};
+      try {
+        exists = existingRows.goToFirstRow();
+        if (exists) {
+          merged = JSON.parse(existingRows.getString(
+            existingRows.getColumnIndex('payload'))) as
+            Record<string, string>;
+        }
+      } finally {
+        existingRows.close();
+      }
+      const incomingKeys: string[] = Object.keys(incoming);
+      for (let k = 0; k < incomingKeys.length; k++) {
+        merged[incomingKeys[k]] = incoming[incomingKeys[k]];
+      }
+      const bucket: relationalStore.ValuesBucket = {};
+      const keys: string[] = Object.keys(source);
+      for (let k = 0; k < keys.length; k++) {
+        if (allowed.indexOf(keys[k]) < 0) {
+          throw new Error(
+            'portable extension unknown column: ' + keys[k]);
+        }
+        bucket[keys[k]] = source[keys[k]];
+      }
+      bucket['payload'] = JSON.stringify(merged);
+      if (exists) {
+        if (!rdbSingleRowAffected(
+          this.store.updateSync(bucket, predicates))) {
+          throw new Error(
+            'portable extension update failed: ' + id);
+        }
+      } else if (!rdbInsertSucceeded(
+        this.store.insertSync(
+          'localextensions', bucket,
+          relationalStore.ConflictResolution.ON_CONFLICT_ABORT))) {
+        throw new Error(
+          'portable extension insert failed: ' + id);
+      }
+      changed++;
+    }
+    return changed;
+  }
+
+  /**
+   * Apply a validated portable plan as a field-level merge. Missing sections
+   * and missing columns are no-ops, so an old/redacted backup cannot clear a
+   * newer table or overwrite an existing password with NULL.
+   */
+  async mergePortableBackup(
+    plan: PortableBackupRestorePlan
+  ): Promise<boolean> {
+    if (!this.store ||
+      plan.restoreMode !== 'merge' ||
+      plan.targetAccountScope !== this.currentOwnerScopeId() ||
+      plan.presentTables.indexOf('cryptoparams') >= 0) {
+      return false;
+    }
+    this.setAutomaticPushSuppressed(true);
+    this.localRestoreActive = true;
+    try {
+      this.store.beginTransaction();
+      let changed: number = 0;
+      for (let i = 0; i < plan.presentTables.length; i++) {
+        const table: string = plan.presentTables[i];
+        if (TABLES.indexOf(table) < 0 ||
+          table === 'cryptoparams') {
+          throw new Error(
+            'portable restore table is not mergeable: ' + table);
+        }
+        const rows: Array<Record<string, string>> =
+          plan.tables[table] || [];
+        if (rows.length === 0) { continue; }
+        changed += this.mergePortableRows(table, rows);
+        if (!this.recordTableMutation(
+          table, 'portable_restore_merge')) {
+          throw new Error(
+            'portable restore journal failed: ' + table);
+        }
+        if (!this.writeLocalMetadata(
+          RESTORED_NOT_UPLOADED_TABLE_PREFIX + table, '1')) {
+          throw new Error(
+            'portable restore table quarantine failed: ' + table);
+        }
+      }
+      if (plan.extensionsPresent) {
+        const extensionChanged: number =
+          this.mergePortableExtensions(plan.extensions);
+        changed += extensionChanged;
+        if (extensionChanged > 0) {
+          const extensionTables: string[] = [];
+          for (let i = 0; i < plan.extensions.length; i++) {
+            const table: string =
+              plan.extensions[i]['tablename'] || '';
+            if (TABLES.indexOf(table) >= 0 &&
+              extensionTables.indexOf(table) < 0) {
+              extensionTables.push(table);
+            }
+          }
+          for (let i = 0; i < extensionTables.length; i++) {
+            if (!this.recordTableMutation(
+              extensionTables[i],
+              'portable_restore_extension_merge') ||
+              !this.writeLocalMetadata(
+                RESTORED_NOT_UPLOADED_TABLE_PREFIX +
+                extensionTables[i], '1')) {
+              throw new Error(
+                'portable extension quarantine failed: ' +
+                extensionTables[i]);
+            }
+          }
+        }
+      }
+      for (let i = 0;
+        i < plan.presentLocalTables.length; i++) {
+        const table: string = plan.presentLocalTables[i];
+        if (localBackupLocalTableNames().indexOf(table) < 0) {
+          throw new Error(
+            'portable local table is not mergeable: ' + table);
+        }
+        const localChanged: number = this.mergePortableRows(
+          table, plan.localTables[table] || []);
+        changed += localChanged;
+        if (localChanged > 0 && table === VNC_LOCAL_TABLE) {
+          if (!this.recordTableMutation(
+            VNC_CLOUD_TABLE,
+            'portable_restore_local_vnc_merge') ||
+            !this.writeLocalMetadata(
+              RESTORED_NOT_UPLOADED_TABLE_PREFIX +
+              VNC_CLOUD_TABLE, '1')) {
+            throw new Error(
+              'portable local VNC quarantine failed');
+          }
+        }
+      }
+      if (changed > 0 && !this.writeLocalMetadata(
+        RESTORED_NOT_UPLOADED_KEY, '1')) {
+        throw new Error(
+          'portable restore quarantine marker failed');
+      }
+      this.store.commit();
+      this.notifyDataSnapshotChanged();
+      hilog.info(0x0001, 'CloudSync',
+        'portable backup merged rows=' + changed.toString() +
+        ' quarantined=' + plan.quarantinedRows.toString());
+      return true;
+    } catch (err) {
+      let rollbackFailed: boolean = false;
+      try {
+        this.store.rollBack();
+      } catch (_rollbackError) {
+        rollbackFailed = true;
+      }
+      hilog.error(0x0001, 'CloudSync',
+        'portable backup merge failed rollbackFailed=' +
+        rollbackFailed.toString() + ' err=' + safeError(err));
+      if (rollbackFailed) {
+        // The RDB state is indeterminate. Throwing preserves the
+        // coordinator's already-persisted restore quarantine; returning false
+        // would incorrectly release it as if rollback had completed.
+        throw new Error(
+          'portable backup rollback failed; restore quarantine retained');
+      }
+      return false;
+    } finally {
+      this.localRestoreActive = false;
+      this.setAutomaticPushSuppressed(false);
+    }
   }
 
   /**
@@ -2248,9 +2630,13 @@ export class CloudStore implements CryptoCloudStore {
 
   private exportDeviceLocalRows(table: string, columns: string[]): Array<Record<string, string>> {
     const result: Array<Record<string, string>> = [];
-    if (!this.store) { return result; }
+    if (!this.store) {
+      throw new Error('local state export store unavailable');
+    }
+    let rows: relationalStore.ResultSet | null = null;
     try {
-      const rows = this.store.querySync(new relationalStore.RdbPredicates(table));
+      rows = this.store.querySync(
+        new relationalStore.RdbPredicates(table));
       while (rows.goToNextRow()) {
         const row: Record<string, string> = {};
         for (let i = 0; i < columns.length; i++) {
@@ -2259,12 +2645,14 @@ export class CloudStore implements CryptoCloudStore {
         }
         result.push(row);
       }
-      rows.close();
       result.sort((left: Record<string, string>, right: Record<string, string>): number =>
         (left['id'] || left['key'] || '').localeCompare(right['id'] || right['key'] || ''));
     } catch (err) {
-      hilog.warn(0x0001, 'CloudSync', '[CloudStore] export local state failed table=' + table +
-        ' err=' + safeError(err));
+      throw new Error(
+        'local state export failed table=' + table +
+        ' — ' + safeError(err));
+    } finally {
+      if (rows !== null) { rows.close(); }
     }
     return result;
   }
@@ -2375,7 +2763,16 @@ export class CloudStore implements CryptoCloudStore {
   }
 
   clearRestoredNotUploaded(): boolean {
-    return this.deleteLocalMetadata(RESTORED_NOT_UPLOADED_KEY);
+    if (!this.deleteLocalMetadata(RESTORED_NOT_UPLOADED_KEY)) {
+      return false;
+    }
+    for (let i = 0; i < TABLES.length; i++) {
+      if (!this.deleteLocalMetadata(
+        RESTORED_NOT_UPLOADED_TABLE_PREFIX + TABLES[i])) {
+        return false;
+      }
+    }
+    return true;
   }
 
   private cloudBucket(table: string, source: relationalStore.ValuesBucket): relationalStore.ValuesBucket {

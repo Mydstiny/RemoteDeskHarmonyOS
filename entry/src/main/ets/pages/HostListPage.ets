@@ -35,6 +35,7 @@ import { CloudSyncSelectionStore } from '../services/CloudSyncSelectionStore';
 import { cloudSyncSelectableTables, effectiveCloudSyncTables } from '../services/CloudSyncSelectionPolicy';
 import { LocalBackupDocument } from '../services/LocalBackupPolicy';
 import { LocalBackupService } from '../services/LocalBackupService';
+import { BackupRestorePreview } from '../services/BackupManifestV3';
 import { LightSensingService } from '../services/LightSensingService';
 import { SshKey } from '../model/SshKey';
 import {
@@ -1423,7 +1424,8 @@ struct HostListPage {
   private async createLocalBackup(): Promise<void> {
     try {
       const backup: LocalBackupService = LocalBackupService.getInstance();
-      const saved: boolean = await backup.saveBackup(CURRENT_RELEASE_VERSION);
+      const saved: boolean = await backup.saveBackup(
+        CURRENT_RELEASE_VERSION, getContext(this).cacheDir);
       if (saved) { promptAction.showToast({ message: '本地备份已保存', duration: 1600 }); this.closeSettingsLeafSheet(); }
       else { this.cloudSyncError = backup.getLastErrorMessage(); }
     } catch (_e) { this.cloudSyncError = '备份失败，请检查保存位置后重试'; }
@@ -1450,11 +1452,35 @@ struct HostListPage {
 
   private async confirmLocalRestore(): Promise<void> {
     if (!this.pendingLocalRestore) { this.cloudSyncError = '请重新选择备份文件'; return; }
-    const restored: boolean = await LocalBackupService.getInstance().restore(this.pendingLocalRestore);
-    if (!restored) { this.cloudSyncError = '恢复失败，原本地数据未被修改'; return; }
+    const backup: LocalBackupService =
+      LocalBackupService.getInstance();
+    const restored: boolean = await backup.restore(
+      this.pendingLocalRestore,
+      this.pendingLocalRestore.version < 3);
+    if (!restored) {
+      this.cloudSyncError = backup.getLastErrorMessage();
+      return;
+    }
     this.pendingLocalRestore = null;
-    promptAction.showToast({ message: '本地备份已恢复，未自动上传到云端', duration: 1800 });
+    promptAction.showToast({
+      message: '本地配置已合并，未自动上传到云端',
+      duration: 1800
+    });
     this.closeSettingsLeafSheet();
+  }
+
+  private localRestorePreviewSummary(): string {
+    const preview: BackupRestorePreview | null =
+      LocalBackupService.getInstance().getSelectedPreview();
+    if (preview === null) {
+      return '尚未选择备份文件';
+    }
+    const legacy: string = preview.legacyOwnerUnbound
+      ? '；旧版文件将在确认后绑定当前账号' : '';
+    return '格式 v' + preview.formatVersion.toString() +
+      ' · ' + preview.rowCount.toString() + ' 行 · ' +
+      preview.presentTables.length.toString() + ' 个数据表' +
+      legacy;
   }
 
   private currentCloudSyncSheetSpec(): CloudSyncSheetSpec {
@@ -6158,7 +6184,7 @@ struct HostListPage {
                 Row() { SymbolGlyph($r('sys.symbol.doc_plaintext')).fontSize(20).fontColor([this.accentColor]) }
                   .width(40).height(40).borderRadius(20).backgroundColor(this.pal().card).justifyContent(FlexAlign.Center)
                 Column() { Text('本地备份').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font());
-                  Text('导出全部云表数据为明文 JSON（包含 vncrecord）').fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
+                  Text('导出账号级 v3 脱敏配置；不包含密码、私钥、2FA 与设备信任').fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
                 }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 12 })
                 SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(16).fontColor([this.pal().text3])
               }.width('100%').height(68).padding({ left: 14, right: 16 })
@@ -6168,7 +6194,7 @@ struct HostListPage {
                 Row() { SymbolGlyph($r('sys.symbol.doc')).fontSize(20).fontColor([this.pal().danger]) }
                   .width(40).height(40).borderRadius(20).backgroundColor(this.pal().card).justifyContent(FlexAlign.Center)
                 Column() { Text('从本地恢复').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font());
-                  Text('选择 JSON 并覆盖此设备的全部数据').fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
+                  Text('校验 v1/v2/v3 文件并安全合并；缺表不会清空新版数据').fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
                 }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 12 })
                 SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(16).fontColor([this.pal().text3])
               }.width('100%').height(68).padding({ left: 14, right: 16 }).onClick((): void => { this.chooseLocalRestore(); })
@@ -7340,13 +7366,21 @@ struct HostListPage {
               .width(46).height(46).borderRadius(23).backgroundColor(this.pal().surface).justifyContent(FlexAlign.Center)
             Column() {
               Text(this.currentCloudSyncSheetSpec().title).fontSize(18).fontWeight(FontWeight.Bold).fontColor(this.pal().text).fontFamily(this.font())
-              Text('此操作不可撤销，请在继续前确认数据来源。').fontSize(12).fontColor(this.pal().text3).fontFamily(this.font()).margin({ top: 3 })
+              Text(this.currentCloudSyncSheetSpec().primaryDestructive
+                ? '此操作会覆盖数据，请在继续前确认数据来源。'
+                : '继续前请确认备份来源和影响范围。')
+                .fontSize(12).fontColor(this.pal().text3)
+                .fontFamily(this.font()).margin({ top: 3 })
             }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 12 })
           }.width('100%').alignItems(VerticalAlign.Center)
           Text(this.currentCloudSyncSheetSpec().message).fontSize(14).fontColor(this.pal().text2).fontFamily(this.font()).lineHeight(21).margin({ top: 18 })
           Column() {
             Text('影响范围').fontSize(12).fontWeight(FontWeight.Medium).fontColor(this.pal().text2).fontFamily(this.font())
-            Text('主机、RDP 凭据、RustDesk 中继、SSH 密钥、2FA、加密参数和个性化设置')
+            Text(this.cloudSyncStep === CLOUD_SYNC_SHEET_BACKUP_CONFIRM
+              ? '连接配置与个性化设置；所有秘密、令牌和设备信任均排除'
+              : (this.cloudSyncStep === CLOUD_SYNC_SHEET_RESTORE_CONFIRM
+                ? this.localRestorePreviewSummary()
+                : '主机、RDP 凭据、RustDesk 中继、SSH 密钥、2FA、加密参数和个性化设置'))
               .fontSize(12).fontColor(this.pal().text3).fontFamily(this.font()).lineHeight(19).margin({ top: 5 })
           }.width('100%').padding(14).borderRadius(14).backgroundColor(this.pal().surface).margin({ top: 18 })
           if (this.cloudSyncError !== '') {
@@ -7357,7 +7391,9 @@ struct HostListPage {
               .backgroundColor(this.pal().surface).fontColor(this.pal().text2).borderRadius(14)
               .onClick((): void => { this.returnToCloudSyncActions(); })
             Button(this.currentCloudSyncSheetSpec().primaryLabel).layoutWeight(1).height(46).fontSize(15).fontWeight(FontWeight.Medium)
-              .backgroundColor(this.pal().danger).fontColor('#FFFFFF').borderRadius(14).margin({ left: 12 })
+              .backgroundColor(this.currentCloudSyncSheetSpec().primaryDestructive
+                ? this.pal().danger : this.accentColor)
+              .fontColor('#FFFFFF').borderRadius(14).margin({ left: 12 })
               .onClick(async (): Promise<void> => {
                 if (this.cloudSyncStep === CLOUD_SYNC_SHEET_UPLOAD_CONFIRM) {
                   await this.confirmCloudSyncUpload();

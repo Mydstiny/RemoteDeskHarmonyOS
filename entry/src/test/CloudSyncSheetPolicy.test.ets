@@ -1,8 +1,10 @@
 import { describe, it, expect } from '@ohos/hypium';
 import {
   CLOUD_SYNC_SHEET_ACTIONS,
+  CLOUD_SYNC_SHEET_BACKUP_CONFIRM,
   CLOUD_SYNC_SHEET_DETAILS,
   CLOUD_SYNC_SHEET_DOWNLOAD_CONFIRM,
+  CLOUD_SYNC_SHEET_RESTORE_CONFIRM,
   CLOUD_SYNC_SHEET_UNAVAILABLE,
   CLOUD_SYNC_SHEET_UPLOAD_CONFIRM,
   cloudSyncSheetSpec
@@ -56,6 +58,28 @@ export default function cloudSyncSheetPolicyTest() {
       expect(spec.primaryDestructive).assertFalse();
       expect(spec.secondaryDestructive).assertFalse();
       expect(spec.canDismiss).assertTrue();
+    });
+
+    it('describes_v3_backup_as_redacted_and_non_destructive', 0, (): void => {
+      const spec = cloudSyncSheetSpec(
+        CLOUD_SYNC_SHEET_BACKUP_CONFIRM);
+      expect(spec.title).assertEqual('导出脱敏配置备份？');
+      expect(spec.message.indexOf('v3') >= 0).assertTrue();
+      expect(spec.message.indexOf('密码') >= 0).assertTrue();
+      expect(spec.message.indexOf('设备信任') >= 0).assertTrue();
+      expect(spec.primaryDestructive).assertFalse();
+      expect(spec.canDismiss).assertTrue();
+    });
+
+    it('describes_restore_as_a_missing_field_safe_merge', 0, (): void => {
+      const spec = cloudSyncSheetSpec(
+        CLOUD_SYNC_SHEET_RESTORE_CONFIRM);
+      expect(spec.title).assertEqual('合并本地配置？');
+      expect(spec.message.indexOf('缺表') >= 0).assertTrue();
+      expect(spec.message.indexOf('不会清空') >= 0).assertTrue();
+      expect(spec.message.indexOf('不会自动上传') >= 0)
+        .assertTrue();
+      expect(spec.primaryDestructive).assertFalse();
     });
   });
 }

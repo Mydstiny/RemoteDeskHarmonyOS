@@ -43,10 +43,10 @@ export default function cloudLifecycleSafetyPolicyTest(): void {
       expect(cloudTransferAllowed(bound, true)).assertTrue();
     });
 
-    it('keeps_destructive_legacy_paths_disabled_by_default', 0, (): void => {
+    it('enables_redacted_backup_while_destructive_legacy_paths_stay_disabled', 0, (): void => {
       expect(remoteCryptoLifecycleMutationAllowed()).assertFalse();
-      expect(portableBackupExportAllowed()).assertFalse();
-      expect(portableBackupRestoreAllowed()).assertFalse();
+      expect(portableBackupExportAllowed()).assertTrue();
+      expect(portableBackupRestoreAllowed()).assertTrue();
       expect(legacyCloudRestTransferAllowed()).assertFalse();
     });
   });

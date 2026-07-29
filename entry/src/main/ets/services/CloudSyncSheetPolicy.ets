@@ -32,10 +32,26 @@ export function cloudSyncSheetSpec(step: string): CloudSyncSheetSpec {
     };
   }
   if (step === CLOUD_SYNC_SHEET_BACKUP_CONFIRM) {
-    return { title: '导出本地明文备份？', message: '备份包含 SSH 私钥、动态口令和登录凭据等敏感信息。请仅保存到可信位置。', primaryLabel: '选择位置并备份', secondaryLabel: '返回', primaryDestructive: true, secondaryDestructive: false, canDismiss: true };
+    return {
+      title: '导出脱敏配置备份？',
+      message: '备份使用 v3 完整性清单，只包含当前华为账号的连接配置；密码、私钥、动态口令、VNC 凭据、登录令牌和设备信任不会导出。',
+      primaryLabel: '选择位置并备份',
+      secondaryLabel: '返回',
+      primaryDestructive: false,
+      secondaryDestructive: false,
+      canDismiss: true
+    };
   }
   if (step === CLOUD_SYNC_SHEET_RESTORE_CONFIRM) {
-    return { title: '覆盖本地数据？', message: '已验证备份文件。恢复会替换本机全部云表数据（包含 VNC 的 vncrecord），且不会自动上传到云端。', primaryLabel: '覆盖并恢复', secondaryLabel: '返回', primaryDestructive: true, secondaryDestructive: false, canDismiss: true };
+    return {
+      title: '合并本地配置？',
+      message: '已验证备份文件。恢复只合并文件中实际存在的脱敏字段；缺表、空表和缺失字段不会清空本机数据，也不会自动上传到云端。',
+      primaryLabel: '合并并恢复',
+      secondaryLabel: '返回',
+      primaryDestructive: false,
+      secondaryDestructive: false,
+      canDismiss: true
+    };
   }
   if (step === CLOUD_SYNC_SHEET_UPLOAD_CONFIRM) {
     return {
