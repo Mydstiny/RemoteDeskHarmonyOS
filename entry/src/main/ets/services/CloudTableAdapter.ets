@@ -49,7 +49,8 @@ const LOCAL_ONLY_COLUMNS: Record<string, string[]> = {
     'rustdeskpasswordmode', 'rustdeskauthmode', 'rustdeskdirectenabled',
     'rustdeskdirecthost', 'rustdeskdirectport', 'rdpcredentialid', 'sourcetype',
     'rustdeskproaccountid', 'rustdeskpropeerid', 'rustdeskproplatform',
-    'rustdeskpromanaged', 'rustdeskprolastseenat', 'rustdeskprosyncerror'
+    'rustdeskpromanaged', 'rustdeskprolastseenat', 'rustdeskprosyncerror',
+    'rustdesktargetdevice', 'rustdeskadaptiveorientation'
   ],
   'rdpcredentials': ['username'],
   'sshkeys': ['formatversion', 'privatekeyencrypted'],
@@ -69,7 +70,7 @@ const REMOTE_HOST_CLOUD_EXTENSION_COLUMNS: string[] = [
   'rdpcredentialid', 'rdpauthmode', 'rdprestrictedadminsecretsource', 'sourcetype',
   'rustdeskproaccountid', 'rustdeskpropeerid',
   'rustdeskproplatform', 'rustdeskpromanaged', 'rustdeskprolastseenat',
-  'rustdeskprosyncerror'
+  'rustdeskprosyncerror', 'rustdesktargetdevice', 'rustdeskadaptiveorientation'
 ];
 
 const REMOTE_HOST_EXTENSION_KEY: string = '_remoteDeskExtensionV1';

@@ -178,6 +178,8 @@ export interface RemoteHostJSON {
   rustdeskDirectEnabled: boolean
   rustdeskDirectHost: string
   rustdeskDirectPort: number
+  rustdeskTargetDevice?: string
+  rustdeskAdaptiveOrientation?: boolean
   rustdeskTotpEntryId?: string
   rustdeskTotpAutoSubmit?: boolean
   rdpCredentialId: string
@@ -291,6 +293,8 @@ export class RemoteHost {
   rustdeskDirectEnabled: boolean = false; // 直连模式 (跳过 ID 服务器)
   rustdeskDirectHost: string = ''; // 直连 peer IP 地址
   rustdeskDirectPort: number = 21118; // 直连端口 (默认 21118; RustDesk peer TCP)
+  rustdeskTargetDevice: string = 'computer'; // 控制目标: computer | phone
+  rustdeskAdaptiveOrientation: boolean = false; // 手机目标的自适应翻转，默认关闭
   // 可选的本机 TOTP 条目绑定；只保存条目 ID，不保存 TOTP secret。
   rustdeskTotpEntryId: string = '';
   rustdeskTotpAutoSubmit: boolean = false;
@@ -464,6 +468,8 @@ export class RemoteHost {
       rustdeskDirectEnabled: this.rustdeskDirectEnabled,
       rustdeskDirectHost: this.rustdeskDirectHost,
       rustdeskDirectPort: this.rustdeskDirectPort,
+      rustdeskTargetDevice: this.rustdeskTargetDevice,
+      rustdeskAdaptiveOrientation: this.rustdeskAdaptiveOrientation,
       rustdeskTotpEntryId: this.rustdeskTotpEntryId,
       rustdeskTotpAutoSubmit: this.rustdeskTotpAutoSubmit,
       rdpCredentialId: this.rdpCredentialId,
@@ -546,6 +552,10 @@ export class RemoteHost {
     if (json.rustdeskDirectEnabled !== undefined) { host.rustdeskDirectEnabled = json.rustdeskDirectEnabled; }
     if (json.rustdeskDirectHost) { host.rustdeskDirectHost = json.rustdeskDirectHost; }
     if (json.rustdeskDirectPort) { host.rustdeskDirectPort = json.rustdeskDirectPort; }
+    if (json.rustdeskTargetDevice === 'phone') { host.rustdeskTargetDevice = 'phone'; }
+    if (json.rustdeskAdaptiveOrientation !== undefined) {
+      host.rustdeskAdaptiveOrientation = json.rustdeskAdaptiveOrientation;
+    }
     if (json.rustdeskTotpEntryId) { host.rustdeskTotpEntryId = json.rustdeskTotpEntryId; }
     if (json.rustdeskTotpAutoSubmit !== undefined) { host.rustdeskTotpAutoSubmit = json.rustdeskTotpAutoSubmit; }
     if (json.rdpCredentialId) { host.rdpCredentialId = json.rdpCredentialId; }

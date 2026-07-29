@@ -1936,7 +1936,8 @@ export class CloudStore implements CryptoCloudStore {
       'rustdeskdirecthost', 'rustdeskdirectport', 'rdpcredentialid', 'rdpauthmode',
       'rdprestrictedadminsecretsource', 'sourcetype',
       'rustdeskproaccountid', 'rustdeskpropeerid', 'rustdeskproplatform',
-      'rustdeskpromanaged', 'rustdeskprolastseenat', 'rustdeskprosyncerror'
+      'rustdeskpromanaged', 'rustdeskprolastseenat', 'rustdeskprosyncerror',
+      'rustdesktargetdevice', 'rustdeskadaptiveorientation'
     ];
     for (let i = 0; i < columns.length; i++) {
       const index: number = rs.getColumnIndex(columns[i]);
@@ -1972,6 +1973,10 @@ export class CloudStore implements CryptoCloudStore {
     host.rustdeskRelayId = get('rustdeskrelayid', host.rustdeskRelayId);
     host.rustdeskAccountId = get('rustdeskaccountid', host.rustdeskAccountId);
     host.rustdeskDirectHost = get('rustdeskdirecthost', host.rustdeskDirectHost);
+    host.rustdeskTargetDevice = get('rustdesktargetdevice', host.rustdeskTargetDevice) === 'phone' ?
+      'phone' : 'computer';
+    host.rustdeskAdaptiveOrientation = get('rustdeskadaptiveorientation',
+      host.rustdeskAdaptiveOrientation ? '1' : '0') === '1';
     host.rdpCredentialId = get('rdpcredentialid', host.rdpCredentialId);
     host.rdpAuthMode = normalizeRdpAuthMode(get('rdpauthmode', host.rdpAuthMode));
     host.rdpRestrictedAdminSecretSource = normalizeRdpRestrictedAdminSecretSource(
@@ -2033,6 +2038,8 @@ export class CloudStore implements CryptoCloudStore {
     values['rustdeskdirectenabled'] = host.rustdeskDirectEnabled ? '1' : '0';
     values['rustdeskdirecthost'] = host.rustdeskDirectHost;
     values['rustdeskdirectport'] = host.rustdeskDirectPort.toString();
+    values['rustdesktargetdevice'] = host.rustdeskTargetDevice;
+    values['rustdeskadaptiveorientation'] = host.rustdeskAdaptiveOrientation ? '1' : '0';
     values['rustdesktotpentryid'] = host.rustdeskTotpEntryId;
     values['rustdesktotpautosubmit'] = host.rustdeskTotpAutoSubmit ? '1' : '0';
     values['rdpcredentialid'] = host.rdpCredentialId;

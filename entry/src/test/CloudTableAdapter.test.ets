@@ -48,6 +48,8 @@ describe('CloudTableAdapter', (): void => {
       rustdeskdirectport: '21117',
       sshproxytype: 'socks5',
       rustdeskproaccountid: 'account-1',
+      rustdesktargetdevice: 'phone',
+      rustdeskadaptiveorientation: '1',
       rdpauthmode: 'restricted_admin',
       rdprestrictedadminsecretsource: 'ntlm_hash',
       rdprestrictedadminhash: '0123456789ABCDEF0123456789ABCDEF',
@@ -62,6 +64,8 @@ describe('CloudTableAdapter', (): void => {
     expect(decoded.extension['rustdeskdirectport']).assertEqual('21117');
     expect(decoded.extension['sshproxytype']).assertEqual('socks5');
     expect(decoded.extension['rustdeskproaccountid']).assertEqual('account-1');
+    expect(decoded.extension['rustdesktargetdevice']).assertEqual('phone');
+    expect(decoded.extension['rustdeskadaptiveorientation']).assertEqual('1');
     expect(decoded.extension['rdpauthmode']).assertEqual('restricted_admin');
     expect(decoded.extension['rdprestrictedadminsecretsource']).assertEqual('ntlm_hash');
     expect(decoded.extension['rdprestrictedadminhash']).assertUndefined();

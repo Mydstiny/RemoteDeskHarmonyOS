@@ -191,7 +191,10 @@ import {
   shouldStartNewCanvasPinchTouchSequence
 } from '../services/RemoteCanvasPinchInputPolicy';
 import { RemoteProtocol } from '../services/RemoteSessionState';
-import { rustDeskOrientationPolicy } from '../services/RemoteOrientationPolicy';
+import {
+  canUseRustDeskAdaptiveOrientation,
+  rustDeskOrientationPolicy
+} from '../services/RemoteOrientationPolicy';
 import { createTransferSnapshot, TransferProtocol, TransferState } from '../services/FileTransferProgressModel';
 import { isRemoteCompletionConfirmed } from '../services/TransferSessionPolicy';
 import {
@@ -6728,9 +6731,14 @@ struct RemoteDesktop {
   }
 
   private async applyRustDeskOrientationPolicy(reason: string): Promise<void> {
-    const protocol: string = this.pendingHost === null ? '' : this.pendingHost.protocol;
+    const host: RemoteHost | null = this.pendingHost;
+    const protocol: string = host === null ? '' : host.protocol;
+    const adaptiveOrientationEnabled: boolean = host !== null &&
+      canUseRustDeskAdaptiveOrientation(protocol, host.rustdeskTargetDevice,
+        host.rustdeskAdaptiveOrientation, host.sourceType, host.rustdeskProManaged,
+        host.rustdeskProPlatform);
     const policy = rustDeskOrientationPolicy(protocol, this.isDesktopDevice,
-      this.connected, this.renderPreservedInPip);
+      this.connected, this.renderPreservedInPip, adaptiveOrientationEnabled);
     if (policy !== 'auto-rotate') {
       return;
     }

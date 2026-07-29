@@ -56,7 +56,7 @@ export default function localBackupPolicyTest(): void {
     it('round_trips_local_extension_rows_in_v2', 0, (): void => {
       const document = createLocalBackupDocument(emptyTables(), 100, '1.0.7', [{
         id: 'remotehosts:h1', tablename: 'remotehosts', recordid: 'h1',
-        payload: '{"rustdeskdirectport":"21117"}', updatedat: '100'
+        payload: '{"rustdeskdirectport":"21117","rustdesktargetdevice":"phone","rustdeskadaptiveorientation":"1"}', updatedat: '100'
       }]);
       const parsed = validateLocalBackupDocument(JSON.stringify(document));
       expect(parsed !== null).assertTrue();

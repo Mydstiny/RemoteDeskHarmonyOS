@@ -113,6 +113,12 @@ import {
   shouldAcceptRemoteHostSheetDismiss
 } from '../services/RemoteHostSheetLifecyclePolicy';
 import { shouldPreserveManagedRustDeskRoute } from '../services/RustDeskProSyncPolicy';
+import {
+  canUseRustDeskAdaptiveOrientation,
+  isRustDeskMobilePlatform,
+  normalizeRustDeskTargetDevice,
+  RustDeskTargetDevice
+} from '../services/RemoteOrientationPolicy';
 import { resolveFabAddStyle } from '../services/FabAddStylePolicy';
 import { resolveRustDeskBadges } from '../services/RustDeskCardBadgePolicy';
 import { cloudSyncDetailSpec } from '../services/CloudSyncGuidancePolicy';
@@ -490,6 +496,8 @@ struct HostListPage {
   @State sheetRustdeskDirectPort: number = RUSTDESK_PEER_TCP_PORT;
   @State sheetRustdeskTotpEntryId: string = '';
   @State sheetRustdeskTotpAutoSubmit: boolean = false;
+  @State sheetRustdeskTargetDevice: RustDeskTargetDevice = 'computer';
+  @State sheetRustdeskAdaptiveOrientation: boolean = false;
   @State sheetProxyHost: string = '';
   @State sheetProxyPort: number = 22;
   @State sheetProxyUser: string = '';
@@ -3723,6 +3731,14 @@ struct HostListPage {
     this.sheetRustdeskDirectEnabled = latestHost.rustdeskDirectEnabled;
     this.sheetRustdeskDirectHost = latestHost.rustdeskDirectHost;
     this.sheetRustdeskDirectPort = latestHost.rustdeskDirectPort > 0 ? latestHost.rustdeskDirectPort : RUSTDESK_PEER_TCP_PORT;
+    const proPlatformKnown: boolean = latestHost.rustdeskProManaged &&
+      latestHost.sourceType === 'rustdesk_pro' && latestHost.rustdeskProPlatform.trim() !== '';
+    this.sheetRustdeskTargetDevice = proPlatformKnown ?
+      (isRustDeskMobilePlatform(latestHost.rustdeskProPlatform) ? 'phone' : 'computer') :
+      normalizeRustDeskTargetDevice(latestHost.rustdeskTargetDevice);
+    this.sheetRustdeskAdaptiveOrientation = canUseRustDeskAdaptiveOrientation(
+      latestHost.protocol, this.sheetRustdeskTargetDevice, latestHost.rustdeskAdaptiveOrientation,
+      latestHost.sourceType, latestHost.rustdeskProManaged, latestHost.rustdeskProPlatform);
     this.sheetRustdeskTotpEntryId = latestHost.rustdeskTotpEntryId;
     this.sheetRustdeskTotpAutoSubmit = latestHost.rustdeskTotpAutoSubmit;
     this.sheetUseKey = latestHost.sshUseKey;
@@ -3767,6 +3783,67 @@ struct HostListPage {
     if (this.editingHostId === '') { return false; }
     const host = this.srv.getHost(this.editingHostId);
     return host !== undefined && host.rustdeskProManaged && host.sourceType === 'rustdesk_pro';
+  }
+
+  private rustDeskEditorTargetLocked(): boolean {
+    if (!this.isEditingProHost()) { return false; }
+    const host: RemoteHost | undefined = this.srv.getHost(this.editingHostId);
+    return host !== undefined && host.rustdeskProPlatform.trim() !== '';
+  }
+
+  private effectiveSheetRustDeskTargetDevice(): RustDeskTargetDevice {
+    if (this.rustDeskEditorTargetLocked()) {
+      const host: RemoteHost | undefined = this.srv.getHost(this.editingHostId);
+      return host !== undefined && isRustDeskMobilePlatform(host.rustdeskProPlatform) ? 'phone' : 'computer';
+    }
+    return normalizeRustDeskTargetDevice(this.sheetRustdeskTargetDevice);
+  }
+
+  private rustDeskEditorPlatformLabel(): string {
+    const host: RemoteHost | undefined = this.srv.getHost(this.editingHostId);
+    return host === undefined ? '未知' : this.hostPlatformText(host);
+  }
+
+  @Builder rustDeskTargetDeviceSection() {
+    Text('控制目标').fontSize(11).fontColor(this.pal().text2).fontFamily(this.font()).margin({ bottom: 4 })
+    if (this.rustDeskEditorTargetLocked()) {
+      Row() {
+        Text('Pro 设备平台').fontSize(13).fontColor(this.pal().text).fontFamily(this.font()).layoutWeight(1)
+        Text(this.rustDeskEditorPlatformLabel())
+          .fontSize(12).fontColor(this.pal().text3).fontFamily(this.font())
+      }.width('100%').padding({ top: 8, bottom: 8 })
+    } else {
+      Row() {
+        Button('控制电脑').layoutWeight(1).height(34).fontSize(11).borderRadius(8)
+          .backgroundColor(this.effectiveSheetRustDeskTargetDevice() === 'computer' ?
+            this.accentColor : this.pal().surface)
+          .fontColor(this.effectiveSheetRustDeskTargetDevice() === 'computer' ? Color.White : this.pal().text2)
+          .onClick((): void => {
+            this.sheetRustdeskTargetDevice = 'computer';
+            this.sheetRustdeskAdaptiveOrientation = false;
+          })
+        Button('控制手机').layoutWeight(1).height(34).fontSize(11).borderRadius(8).margin({ left: 6 })
+          .backgroundColor(this.effectiveSheetRustDeskTargetDevice() === 'phone' ?
+            this.accentColor : this.pal().surface)
+          .fontColor(this.effectiveSheetRustDeskTargetDevice() === 'phone' ? Color.White : this.pal().text2)
+          .onClick((): void => { this.sheetRustdeskTargetDevice = 'phone'; })
+      }.width('100%').margin({ bottom: 6 })
+    }
+    Row() {
+      Column() {
+        Text('自适应翻转').fontSize(13).fontColor(this.pal().text).fontFamily(this.font())
+        Text(this.effectiveSheetRustDeskTargetDevice() === 'phone' ?
+          '根据手机方向切换本机窗口，默认关闭' : '仅控制手机时可用')
+          .fontSize(10).fontColor(this.pal().text3).fontFamily(this.font()).margin({ top: 2 })
+      }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+      Toggle({ type: ToggleType.Switch, isOn: this.sheetRustdeskAdaptiveOrientation })
+        .selectedColor(this.accentColor).scale({ x: 0.82, y: 0.82 })
+        .enabled(this.effectiveSheetRustDeskTargetDevice() === 'phone')
+        .onChange((on: boolean): void => {
+          this.sheetRustdeskAdaptiveOrientation =
+            this.effectiveSheetRustDeskTargetDevice() === 'phone' && on;
+        })
+    }.width('100%').margin({ bottom: 8 })
   }
 
   private hostPlatformText(host: RemoteHost): string {
@@ -4076,6 +4153,8 @@ struct HostListPage {
     this.sheetRustdeskDirectEnabled = true;
     this.sheetRustdeskDirectHost = peer.host;
     this.sheetRustdeskDirectPort = peer.port;
+    this.sheetRustdeskTargetDevice = 'computer';
+    this.sheetRustdeskAdaptiveOrientation = false;
     this.sheetPwd = '';
     this.sheetErr = '';
     this.selectedRelayId = '';
@@ -7960,7 +8039,7 @@ struct HostListPage {
   @Builder canvasGestureZoomRow() {
     if (!this.isDesktopDevice) {
       this.rustdeskSwitchRow($r('app.media.icon_desktop'), '双指画布缩放',
-        '捏合缩放画面；缩放后双指长按约 0.4 秒，再拖动可移动画布。关闭后恢复双指右键和滚轮',
+        '缩放后双指长按约 0.4 秒，再拖动可移动画布；关闭后恢复双指右键和滚轮',
         this.canvasGestureZoomEnabled,
         (on: boolean): void => { this.saveCanvasGestureZoomEnabled(on); }, true)
     }
@@ -8759,6 +8838,8 @@ struct HostListPage {
             this.fieldRow('远程 ID', this.isEditingProHost() ? 'Pro 设备 ID（只读）' :
               (this.sheetRustdeskDirectEnabled ? '直连模式可留空' : '中继模式必填'),
               this.chn, (v: string): void => { this.chn = v; }, !this.isEditingProHost())
+
+            this.rustDeskTargetDeviceSection()
 
             // 密码模式切换
             Text('密码模式').fontSize(11).fontColor(this.pal().text2).margin({ bottom: 4 }).fontFamily(this.font())
@@ -9893,6 +9974,8 @@ struct HostListPage {
     this.sheetRustdeskDirectEnabled = false;
     this.sheetRustdeskDirectHost = '';
     this.sheetRustdeskDirectPort = RUSTDESK_PEER_TCP_PORT;
+    this.sheetRustdeskTargetDevice = 'computer';
+    this.sheetRustdeskAdaptiveOrientation = false;
     this.sheetRustdeskTotpEntryId = '';
     this.sheetRustdeskTotpAutoSubmit = false;
     this.selectedRelayId = ''; this.selectedAccountId = '';
@@ -10061,6 +10144,10 @@ struct HostListPage {
         h.rustdeskProLastSeenAt = existingHost.rustdeskProLastSeenAt;
         h.rustdeskProSyncError = existingHost.rustdeskProSyncError;
       }
+      h.rustdeskTargetDevice = this.effectiveSheetRustDeskTargetDevice();
+      h.rustdeskAdaptiveOrientation = canUseRustDeskAdaptiveOrientation(
+        h.protocol, h.rustdeskTargetDevice, this.sheetRustdeskAdaptiveOrientation,
+        h.sourceType, h.rustdeskProManaged, h.rustdeskProPlatform);
     } else {
       h.host = this.hostAddr;
       h.port = this.proto === 'rdp' ? this.rdpPortVal : this.sshPortVal;

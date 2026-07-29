@@ -22,7 +22,8 @@ const REMOTE_HOST_EXTENSION_PAYLOAD_COLUMNS: string[] = [
   'rustdeskdirecthost', 'rustdeskdirectport', 'rdpcredentialid', 'rdpauthmode',
   'rdprestrictedadminsecretsource', 'sourcetype', 'rustdeskproaccountid',
   'rustdeskpropeerid', 'rustdeskproplatform', 'rustdeskpromanaged',
-  'rustdeskprolastseenat', 'rustdeskprosyncerror'
+  'rustdeskprolastseenat', 'rustdeskprosyncerror', 'rustdesktargetdevice',
+  'rustdeskadaptiveorientation'
 ];
 
 export interface LocalBackupDocument {

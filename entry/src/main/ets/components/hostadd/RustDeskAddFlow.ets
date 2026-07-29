@@ -3,6 +3,7 @@ import { RemoteHost } from '../../model/RemoteHost';
 import { RustDeskRelayConfig } from '../../model/RustDeskRelayConfig';
 import { DiscoveredRustDeskPeer } from '../../services/RustDeskLanDiscoveryService';
 import { RustDeskRelayKeyMode, resolveRustDeskRelayKey } from '../../services/RustDeskRelayKeyPolicy';
+import { RustDeskTargetDevice } from '../../services/RemoteOrientationPolicy';
 
 @Component
 export struct RustDeskAddFlow {
@@ -37,6 +38,8 @@ export struct RustDeskAddFlow {
   @State relayApiServer: string = '';
   @State relayKey: string = '';
   @State relayKeyMode: RustDeskRelayKeyMode = 'server_public_key';
+  @State targetDevice: RustDeskTargetDevice = 'computer';
+  @State adaptiveOrientation: boolean = false;
 
   aboutToAppear(): void { this.directPortText = this.defaultDirectPort.toString(); }
   private pal(): Palette { return this.theme === 'light' ? buildLight(this.accentColor) : buildDark(this.accentColor); }
@@ -59,6 +62,8 @@ export struct RustDeskAddFlow {
     host.customHostname = this.controlId.trim(); host.password = this.password;
     host.rustdeskPasswordMode = this.passwordMode; host.rustdeskAuthMode = 'password';
     host.rustdeskDirectEnabled = this.direct;
+    host.rustdeskTargetDevice = this.targetDevice;
+    host.rustdeskAdaptiveOrientation = this.targetDevice === 'phone' && this.adaptiveOrientation;
     if (this.direct) {
       host.host = this.directHost.trim(); host.port = port;
       host.rustdeskDirectHost = host.host; host.rustdeskDirectPort = port; host.rustdeskRelayId = '';
@@ -130,6 +135,20 @@ export struct RustDeskAddFlow {
     }.alignItems(HorizontalAlign.Start).layoutWeight(1).padding(14).borderRadius(12)
     .backgroundColor(this.direct === directMode ? this.accentColor : this.pal().surface)
     .onClick((): void => { this.direct = directMode; })
+  }
+
+  @Builder private targetButton(title: string, subtitle: string, target: RustDeskTargetDevice) {
+    Column() {
+      Text(title).fontSize(14).fontWeight(FontWeight.Medium)
+        .fontColor(this.targetDevice === target ? Color.White : this.pal().text)
+      Text(subtitle).fontSize(11)
+        .fontColor(this.targetDevice === target ? '#DDEEFF' : this.pal().text3).margin({ top: 4 })
+    }.alignItems(HorizontalAlign.Start).layoutWeight(1).padding(12).borderRadius(10)
+      .backgroundColor(this.targetDevice === target ? this.accentColor : this.pal().surface)
+      .onClick((): void => {
+        this.targetDevice = target;
+        if (target === 'computer') { this.adaptiveOrientation = false; }
+      })
   }
 
   build() {
@@ -253,6 +272,26 @@ export struct RustDeskAddFlow {
       } else {
         this.field('名称', this.label, '例如：办公室电脑', (v: string): void => { this.label = v; })
         this.field('控制 ID', this.controlId, 'RustDesk 设备 ID', (v: string): void => { this.controlId = v; })
+        Text('控制目标').fontSize(12).fontColor(this.pal().text2).margin({ bottom: 5 })
+        Row() {
+          this.targetButton('控制电脑', 'Windows / macOS / Linux', 'computer')
+          Blank().width(8)
+          this.targetButton('控制手机', 'Android / iPhone / 平板', 'phone')
+        }.width('100%').margin({ bottom: 10 })
+        Row() {
+          Column() {
+            Text('自适应翻转').fontSize(13).fontColor(this.pal().text)
+            Text(this.targetDevice === 'phone' ?
+              '根据手机方向切换本机窗口，默认关闭' : '仅控制手机时可用')
+              .fontSize(10).fontColor(this.pal().text3).margin({ top: 3 })
+          }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+          Toggle({ type: ToggleType.Switch, isOn: this.adaptiveOrientation })
+            .selectedColor(this.accentColor).scale({ x: 0.86, y: 0.86 })
+            .enabled(this.targetDevice === 'phone')
+            .onChange((on: boolean): void => {
+              this.adaptiveOrientation = this.targetDevice === 'phone' && on;
+            })
+        }.width('100%').margin({ bottom: 12 })
         if (this.direct) {
           this.field('直连 IP', this.directHost, '例如：192.168.1.10', (v: string): void => { this.directHost = v; })
           this.field('直连端口', this.directPortText, this.defaultDirectPort.toString(),
