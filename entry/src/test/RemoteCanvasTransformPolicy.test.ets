@@ -108,8 +108,8 @@ export default function remoteCanvasTransformPolicyTest() {
       expect(canvasTransformCanPan(zoomed, rdpLetterboxed)).assertTrue();
       const moved: CanvasTransform = panCanvasTransform(
         zoomed, rdpLetterboxed, 9999, 9999);
-      expect(Math.round(moved.panX)).assertEqual(192);
-      expect(Math.round(moved.panY)).assertEqual(120);
+      expect(Math.round(moved.panX)).assertEqual(720);
+      expect(Math.round(moved.panY)).assertEqual(450);
     });
 
     it('prefers real overflow and clamps free pan symmetrically', 0, (): void => {
@@ -121,13 +121,13 @@ export default function remoteCanvasTransformPolicyTest() {
         freePanInsetRatio: RDP_CANVAS_FREE_PAN_INSET_RATIO
       };
       const positive: CanvasTransform = panCanvasTransform(
-        { scale: 2, panX: 0, panY: 0 }, rdpViewport, 9999, 9999);
-      expect(Math.round(positive.panX)).assertEqual(500);
-      expect(Math.round(positive.panY)).assertEqual(200);
+        { scale: 3, panX: 0, panY: 0 }, rdpViewport, 9999, 9999);
+      expect(Math.round(positive.panX)).assertEqual(1000);
+      expect(Math.round(positive.panY)).assertEqual(450);
       const negative: CanvasTransform = panCanvasTransform(
-        { scale: 2, panX: 0, panY: 0 }, rdpViewport, -9999, -9999);
-      expect(Math.round(negative.panX)).assertEqual(-500);
-      expect(Math.round(negative.panY)).assertEqual(-200);
+        { scale: 3, panX: 0, panY: 0 }, rdpViewport, -9999, -9999);
+      expect(Math.round(negative.panX)).assertEqual(-1000);
+      expect(Math.round(negative.panY)).assertEqual(-450);
     });
 
     it('keeps the multiplier within the native renderer limit', 0, (): void => {

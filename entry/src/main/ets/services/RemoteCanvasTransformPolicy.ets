@@ -2,10 +2,10 @@ export type LocalViewScaleMode = 'fit' | '100' | '125' | '150' | '175' | '200' |
 
 // Keep the ArkTS geometry mirror aligned with GLRenderer::SetCanvasTransform.
 export const CANVAS_TRANSFORM_MAX_SCALE: number = 12;
-// RDP keeps a small per-axis drag reserve once the canvas is enlarged beyond
-// Fit. This matches the mobile free-pan feel without allowing an unbounded
-// canvas displacement.
-export const RDP_CANVAS_FREE_PAN_INSET_RATIO: number = 0.12;
+// RDP keeps a near-half-surface per-axis drag reserve once the canvas is
+// enlarged beyond Fit. This leaves a useful portion visible at the boundary
+// while avoiding the short travel caused by strict content-edge clamping.
+export const RDP_CANVAS_FREE_PAN_INSET_RATIO: number = 0.45;
 
 // The first shared-display implementation persisted a derived value without
 // recording whether the user had actually selected it.  Versioned values are
@@ -116,7 +116,7 @@ function freePanInsetRatio(transformScale: number, viewport: CanvasViewport): nu
   if (viewport.freePanInsetRatio !== undefined && Number.isFinite(viewport.freePanInsetRatio)) {
     ratio = viewport.freePanInsetRatio;
   }
-  return clamp(ratio, 0, 0.25);
+  return clamp(ratio, 0, 0.5);
 }
 
 export function clampCanvasTransform(transform: CanvasTransform, viewport: CanvasViewport): CanvasTransform {
