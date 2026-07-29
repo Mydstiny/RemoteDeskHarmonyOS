@@ -2,9 +2,9 @@
 
 > 计划日期：2026-07-29（Asia/Shanghai）
 > 计划状态：实施中；P0/P1 本地实现与本轮构建门禁已完成，relay fallback port 已贯通 ArkTS/NAPI/C++/Rust 并通过 focused Rust socket tests；独立 reviewer 和真实端点验收仍待完成
-> 当前基线：用户授权的 `main` / `6802a716c`
+> 当前代码 checkpoint：用户授权的 `main` / `972a3c0`（relay control-plane、Peer 2FA 与 relay fallback port）
 > 远端参照：`origin/main` / `bfae6ef30`
-> 工作树：相对 `origin/main` 领先 89 个提交；当前有本任务实现、计划/测试文件和用户已有的其他模组修改；不 reset、不 stash、不覆盖
+> 工作树：相对 `origin/main` 已领先多个本地提交；当前有本任务实现、计划/测试文件和用户已有的其他模组修改；不 reset、不 stash、不覆盖
 
 ## 0. 目标与结论先行
 

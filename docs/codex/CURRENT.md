@@ -6,6 +6,7 @@ Updated: 2026-07-29 Asia/Shanghai
 
 - Repository: Mydstiny/RemoteDeskHarmonyOS
 - Task branch: `main` (current-branch SSH implementation explicitly authorized by the user)
+- Current RustDesk code checkpoint: `972a3c0` (`fix(rustdesk): repair relay control plane and peer 2fa`).
 - Scope: RustDesk Pro session handoff/error classification and RDP first-frame/large-refresh visual commit optimization are the current implementation. The checkout also contains the previously completed isolated SSH/VNC work.
 - The user explicitly authorized this implementation on local `main`; no remote push, PR or merge is in scope.
 
