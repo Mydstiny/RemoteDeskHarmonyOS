@@ -7,7 +7,8 @@ Updated: 2026-07-29 Asia/Shanghai
 - Repository: Mydstiny/RemoteDeskHarmonyOS
 - Task branch: `main` (current-branch SSH implementation explicitly authorized by the user)
 - Current RustDesk code checkpoint: `972a3c0` (`fix(rustdesk): repair relay control plane and peer 2fa`).
-- Scope: RustDesk Pro session handoff/error classification and RDP first-frame/large-refresh visual commit optimization are the current implementation. The checkout also contains the previously completed isolated SSH/VNC work.
+- Current RDP/canvas interaction checkpoint: `69c6308` (`fix(rustdesk): end overlay touch scale`), following `33fa8e21f`, `66d67b622`, `cc3403119`, `cf96bd5fd` and `f0ab5439b`.
+- Scope: RustDesk Pro session handoff/error classification, RDP first-frame/large-refresh visual commit optimization, and the RDP/canvas transform plus two-finger input repair are the current implementation. The checkout also contains the previously completed isolated SSH/VNC work.
 - The user explicitly authorized this implementation on local `main`; no remote push, PR or merge is in scope.
 
 ## Result
@@ -16,6 +17,9 @@ Updated: 2026-07-29 Asia/Shanghai
 - Pro host connections now validate account, server/relay and address-book binding before prompting for remote-device password or approval. Native connection errors are classified as Pro-session, device-password, approval, relay, peer or network failures so a real device-authentication failure is not reported as account expiry.
 - RustDesk relay `relayPort` now flows from ArkTS through NAPI/C++ into the Rust FFI for both screen and file-transfer relay connections. A hbbs-advertised `relay_server:port` remains authoritative; the configured hbbr port is used only when that endpoint has no explicit port, with 21117 as the validated fallback.
 - RDP keeps latest-value-wins dirty-rectangle presentation for small steady-state updates, while initial/full geometry and medium-to-broad refresh bands enter a visual commit fence: a 40 ms quiet period or 160 ms deadline commits the accumulated frame as one presentation, and a 750 ms continuation episode uses a 200 ms quiet period with a 600 ms deadline so sustained page refreshes do not fall back to strip-by-strip presentation. Small cursor/toolbar updates remain dirty-only.
+- RDP canvas transform redraws now present the already-uploaded retained texture at a latest-value-wins 60 Hz ceiling. Transform updates no longer request a FreeRDP full snapshot, retained-frame copy or `glTexSubImage2D`; a due real source frame still takes priority and ordinary damage presentation remains unchanged.
+- Canvas zoom remains off by default. When enabled outside keyboard/mouse mode, early two-finger movement remains touchpad scroll, a stationary two-finger release remains right-click, and a two-finger hold of about 0.4 seconds followed by movement pans only a locally overflowing canvas. RustDesk remote-app TouchScale stays an explicit opt-in and uses the same hold gesture for remote TouchPan without requiring local overflow.
+- RustDesk raw TouchEvent, transparent-overlay gesture fallback and terminal drain now share one remote touch lifecycle: held pan sends one TouchPan start followed by deltas and one end; overlay-only remote pinch also enters the pinch lifecycle so it cannot leave the peer touch sequence active.
 - SSH settings now has one dedicated accordion immediately after Windows RDP and RustDesk, and before 数据安全. Terminal foreground color and font size were removed from 个性化 and are now owned by `SshSettingsService` through namespaced keys with legacy aliases.
 - SSH settings exposes terminal appearance, preview/default reset, SSH host and key-vault shortcuts. SSH host fingerprint management was deliberately not migrated: 数据安全 and the existing per-host preflight remain the only trust-management path.
 - SSH settings continue to use existing `usersettings`, `RemoteHost`, `SshKey` and `KeyVaultService` owners; no SSH cloud table or sensitive global setting was added. RDP, RustDesk and VNC owners were not changed.
@@ -38,7 +42,7 @@ Updated: 2026-07-29 Asia/Shanghai
 
 - Current relay repair gates: Rust `cargo check --tests`, focused relay socket tests (2/2), and `bash scripts/build_rustdesk_ffi_ohos.sh all` for `arm64-v8a` and `x86_64` all passed.
 - Focused Rust relay socket tests: `cargo test --manifest-path rustdesk_ffi/Cargo.toml --no-default-features relay_connect` passed 2/2 outside the sandbox. They cover advertised explicit-port precedence and configured fallback-port use when the endpoint has no port.
-- Focused native `rdp_native_tests`: `151 passed, 0 failed`.
+- Focused native `rdp_native_tests`: `157 passed, 0 failed`.
 - `default@OhosTestCompileArkTS`: passed for the current relay repair; existing repository/dependency warnings remain.
 - Production `assembleHap`: `BUILD SUCCESSFUL` for the current relay repair and completed signing.
 - Current VNC runtime tree also passed `default@OhosTestCompileArkTS` and signed production `assembleHap`; signed artifact: `entry/build/default/outputs/default/entry-default-signed.hap`.
@@ -48,12 +52,14 @@ Updated: 2026-07-29 Asia/Shanghai
 - Full Rust `cargo test` remains host-blocked at link time because the local host does not provide `libopus`; this is not reported as a passing test.
 - `ohosTest@OhosTestCompileArkTS`: not runnable in this environment because the task is not registered (`00306054`); this is an environment/task-graph limitation, not a source compile failure.
 - Read-only SSH review: passed with no P0/P1/P2 findings; the reviewer confirmed the accordion order, the data-security-only fingerprint entry and no cross-module cycle.
+- RDP/canvas repair: `default@OhosTestCompileArkTS` and signed `assembleHap` passed after each code checkpoint, including `69c6308`; the final HAP is `entry/build/default/outputs/default/entry-default-signed.hap`. An independent read-only reviewer found and verified fixes for raw remote held-pan routing and overlay-only remote pinch termination; final review found no P0/P1/P2.
 
 ## External acceptance still required
 
 - RustDesk Pro: test against the real compatible Server Pro versions, including password and request-approval connections through relay, application restart, expired-token re-login, mismatched account/server/relay records, and 401/403/404/500 responses. Confirm the user-visible message is tied to the actual failing layer.
 - RustDesk relay: validate real hbbs/hbbr advertised hosts, explicit ports, omitted ports with a configured non-21117 fallback, relay key modes and both screen/file-transfer paths. This remains distinct from the OSS/third-party-panel token absent/present A/B.
-- RDP: test first desktop entry, Windows login desktop loading, browser/file-manager full refresh, window dragging, video, scrolling and 1080p/2K/4K devices. Confirm no visible scan bands, while steady-state input latency and frame rate do not regress.
+- RDP: test first desktop entry, Windows login desktop loading, browser/file-manager full refresh, window dragging, video, scrolling and 1080p/2K/4K devices. During canvas pinch/pan, confirm retained redraw metrics report transform presentation without a source full snapshot and that mouse/keyboard latency remains stable.
+- Canvas/RustDesk touch: on API 23 hardware validate default-off zoom; local pinch then lift/re-touch/hold about 0.4 seconds/drag; early two-finger scroll; stationary two-finger right-click; RustDesk remote-app held TouchPan and normal pinch in both raw-touch and overlay-only fallback paths. `hdc` currently detects device targets, but this HAP was not installed or run because no installation authorization was given.
 - User creates exactly one Huawei cloud table `vncrecord` with the 19 fields in the entity plan.
 - Two API 23 devices using one Huawei account validate scope selection, secret opt-in, trust re-confirmation, user-deletion tombstones, reset epoch and offline recovery. Scope deselection must leave the shared row unchanged.
 - Real VNC server validates direct TCP; a real UltraVNC Repeater validates viewer mode12 pairing, input, disconnect and reconnect. Mode2 requires a separate VNC server-side listener component and is not an enabled HarmonyOS viewer path.
@@ -86,7 +92,7 @@ Updated: 2026-07-29 Asia/Shanghai
 
 - The user-authorized RustDesk control-side implementation is complete on local `main`; no task branch, remote push, PR or merge was used. Commits are `73943e6d7`, `f15d5f8a7`, `bbc570169`, `4657e5c92`, `a4ae8d3e0` and review hardening `de441ac`.
 - Mobile foreground RustDesk sessions now request explicit `LANDSCAPE` by default before authentication/Surface startup and after connection. Only an explicit per-host opt-in for a phone target requests `AUTO_ROTATION`; desktop-class layouts, PIP and non-RustDesk sessions keep their existing window behavior. The repository has no remote Android system-rotation command or controlled-side source, so the change does not claim to rotate the remote phone itself.
-- The orientation policy distinguishes a pending RustDesk route from an idle page, so the system's initial portrait state cannot leak into the default landscape session. Existing two-finger gesture ownership and long-press canvas-pan behavior remain unchanged by this correction.
+- The orientation policy distinguishes a pending RustDesk route from an idle page, so the system's initial portrait state cannot leak into the default landscape session. The orientation correction itself does not alter gesture policy; a later isolated RDP/canvas checkpoint strengthened the two-finger ownership and remote TouchPan lifecycle recorded below.
 - RustDesk portrait geometry is no longer converted to a landscape request by the local adaptive-size path. Existing peer/display geometry and `geometryEpoch` changes reset pinch/touch ownership, touchpad anchors and renderer viewport mapping so cursor, virtual mouse and input do not continue in the old coordinate space.
 - Two-finger input has one owner per sequence. Canvas zoom is off by default and legacy defaults migrate off once; when enabled, pinch zooms, a two-finger hold of about 0.4 seconds followed by movement pans an overflowing canvas, early movement remains touchpad scroll, and a stationary release remains right-click. The settings description documents this interaction.
 - The remote-app TouchScale toggle remains explicit opt-in. Native enqueue is not treated as peer acceptance because this checkout has no controlled Android endpoint capability acknowledgement. Direct Touch remains mouse-compatible emulation rather than raw multi-touch injection.
@@ -99,6 +105,16 @@ Updated: 2026-07-29 Asia/Shanghai
 - `ohosTest@OhosTestCompileArkTS`: unavailable because the project task is not registered (`00306054`); no test success is claimed.
 - 2026-07-29 orientation correction: the pending-session landscape/auto-rotation cases were added to `RemoteOrientationPolicy.test.ets`; both production gates passed again after the change.
 - Real API 23 device and RustDesk Android endpoint acceptance remains open for portrait/landscape rotation, Surface recreation, virtual mouse/keyboard, touchpad scroll/right-click, Canvas pinch/long-press-pan and remote TouchScale consumption. RDP/VNC/SSH regression smoke is also required before release.
+
+## RDP canvas transform + two-finger input repair ledger (2026-07-29)
+
+- Scope commits: `33fa8e21f fix(rdp): redraw retained texture for canvas transforms`, `66d67b622 fix(input): make two-finger canvas pan reliable`, `cc3403119 fix(input): reserve held two-finger pan`, `cf96bd5fd fix(rdp): report retained transform metrics`, `f0ab5439b fix(input): route held pan to rustdesk`, and `69c6308 fix(rustdesk): end overlay touch scale`.
+- `GLRenderer::SetCanvasTransform()` now requests a coalesced retained redraw through `RdpFramePump` rather than a source refresh. The worker draws the active raw texture and swaps; it does not enter the GDI retained-frame snapshot/copy/upload path. The source scheduler and upload-gate samples exclude retained transforms, and a due source frame wins the scheduling race.
+- The ArkTS policy uses the active touch-point map as the authoritative count, caches gesture density instead of calling synchronous display lookup on every move, and has both a two-finger `LongPressGesture` fallback and raw 400 ms hold state. An armed hold cannot be stolen by parallel Pinch.
+- Local canvas pan remains deliberately bounded to overflow content and requires the zoom setting. RustDesk remote-app TouchScale has a separate owner and maps raw held movement into remote `TouchPan start/delta/end`; a gesture-only remote pinch records pinch ownership so its end/cancel likewise sends exactly one remote end. Keyboard/mouse mode remains excluded from canvas two-finger gestures.
+- Local evidence: focused native `rdp_native_tests` passed `157/157`; production ArkTS compile and signed `assembleHap` both passed after every code checkpoint; `git diff --check` passed before commits. `ohosTest@OhosTestCompileArkTS` remains unavailable because task `00306054` is not registered, so no ArkTS test execution is claimed.
+- Independent read-only review found the raw held-pan P1 and the overlay-only remote-pinch termination P1; both were fixed and re-reviewed with no remaining P0/P1/P2. `hdc` now lists targets, but no HAP was installed and no device state was changed.
+- Remaining release evidence is physical API 23 validation of RDP 1080p/2K/4K zoom smoothness and retained-transform metrics, then RustDesk remote-app raw/overlay TouchScale plus held pan. Also smoke-test local touchpad scroll/right-click, virtual mouse, keyboard and RDP/VNC/SSH isolation.
 
 ## RustDesk Pro + RDP visual commit ledger (2026-07-28)
 
