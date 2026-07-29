@@ -169,6 +169,10 @@ import {
   shouldReleaseCanvasGestureOwnership
 } from '../services/RemoteCanvasGesturePolicy';
 import {
+  CanvasTouchPointEvent,
+  resolveCanvasActiveTouchCount
+} from '../services/RemoteCanvasTouchPointPolicy';
+import {
   baseCanvasTransform,
   canvasTransformCanPan,
   CanvasTransform,
@@ -780,6 +784,10 @@ struct RemoteDesktop {
   private canvasPanInputSource: 'none' | 'touch' | 'gesture' = 'none';
   private canvasPanLastOffsetX: number = 0;
   private canvasPanLastOffsetY: number = 0;
+  // Gesture coordinates arrive in vp while the renderer transform is in px.
+  // Capture density once at gesture start instead of synchronously reading
+  // display state for every pinch/pan update.
+  private canvasGesturePxPerVp: number = 1;
   private canvasPinchInputPhase: CanvasPinchInputPhase = 'idle';
   private canvasPinchTouchCount: number = 0;
   private canvasPinchLastScale: number = 1;
@@ -2386,14 +2394,20 @@ struct RemoteDesktop {
     return canvasTransformCanPan(this.canvasTransform, this.currentCanvasViewport());
   }
 
-  private beginCanvasTwoFingerCandidateAt(point: LocalPoint): void {
+  private beginCanvasTwoFingerCandidateAt(point: LocalPoint, holdAlreadySatisfied: boolean = false): void {
     this.clearCanvasTwoFingerHoldTimer();
     this.canvasTwoFingerSequence++;
     const sequenceId: number = this.canvasTwoFingerSequence;
     const remoteAppTarget: boolean = this.shouldUseRustDeskRemoteAppTouchScale();
     const zoomEnabled: boolean = this.canvasGestureZoomEnabled || remoteAppTarget;
+    const nowMs: number = Date.now();
     this.canvasTwoFingerState = beginCanvasTwoFingerCandidate(sequenceId, point.x, point.y,
-      Date.now(), zoomEnabled, this.canPanCanvasForTwoFingerGesture());
+      holdAlreadySatisfied ? nowMs - CANVAS_TWO_FINGER_HOLD_MS : nowMs,
+      zoomEnabled, this.canPanCanvasForTwoFingerGesture());
+    if (holdAlreadySatisfied) {
+      this.canvasTwoFingerState = expireCanvasTwoFingerHold(this.canvasTwoFingerState, nowMs);
+      return;
+    }
     if (!this.canvasTwoFingerState.holdTimerPending) {
       return;
     }
@@ -2408,6 +2422,31 @@ struct RemoteDesktop {
   }
 
   /**
+   * API 23 can route an XComponent stream directly to native code. Keep a
+   * real two-finger LongPress recognizer on the transparent ArkUI owner so a
+   * held canvas pan still works when the raw TouchEvent timer is unavailable.
+   */
+  private armCanvasTwoFingerPanFromLongPress(event: GestureEvent): void {
+    if (!this.canUseCanvasTwoFingerGesture() || !this.canPanCanvasForTwoFingerGesture()) {
+      return;
+    }
+    if (this.canvasTwoFingerState.owner === 'idle') {
+      const point: LocalPoint | null = this.gestureCenterPoint(event);
+      if (point === null) {
+        return;
+      }
+      this.beginCanvasTwoFingerCandidateAt(point, true);
+      return;
+    }
+    if (this.canvasTwoFingerState.owner === 'candidate') {
+      this.canvasTwoFingerState = expireCanvasTwoFingerHold(this.canvasTwoFingerState, Date.now());
+      if (!this.canvasTwoFingerState.holdTimerPending) {
+        this.clearCanvasTwoFingerHoldTimer();
+      }
+    }
+  }
+
+  /**
    * Observe the raw XComponent stream before the per-mode input handler. The
    * same owner is then visible to the ArkUI recognizers and to touchpad/RDP
    * forwarding, which prevents a vertical two-finger scroll from becoming a
@@ -2417,10 +2456,7 @@ struct RemoteDesktop {
     if (event.sourceTool !== SourceTool.Finger) {
       return;
     }
-    const changedCount: number = event.changedTouches.length > 0 ? event.changedTouches.length : 1;
-    const activeCount: number = event.type === TouchType.Down ?
-      Math.max(event.touches.length, this.touchFingerCount + changedCount) :
-      (event.touches.length > 0 ? event.touches.length : this.touchFingerCount);
+    const activeCount: number = this.trackedCanvasTouchCount(event);
     if (event.type === TouchType.Down && activeCount >= 2 && this.touchFingerCount < 2) {
       const point: LocalPoint | null = this.averageTouchPoint(event) || this.primaryTouchPoint(event);
       if (point !== null) {
@@ -2476,6 +2512,7 @@ struct RemoteDesktop {
     if (!canvasTransformCanPan(this.canvasTransform, viewport)) {
       return false;
     }
+    this.captureCanvasGestureDensity(viewport);
     this.canvasPanActive = true;
     this.canvasPanInputSource = 'touch';
     this.canvasPanLastOffsetX = point.x;
@@ -2497,8 +2534,8 @@ struct RemoteDesktop {
       this.releaseCanvasPinchInput('canvas-pan-missing-viewport');
       return;
     }
-    const deltaX: number = this.vpToPx(x - this.canvasPanLastOffsetX);
-    const deltaY: number = this.vpToPx(y - this.canvasPanLastOffsetY);
+    const deltaX: number = this.canvasGestureVpToPx(x - this.canvasPanLastOffsetX);
+    const deltaY: number = this.canvasGestureVpToPx(y - this.canvasPanLastOffsetY);
     this.canvasPanLastOffsetX = x;
     this.canvasPanLastOffsetY = y;
     if (deltaX === 0 && deltaY === 0) {
@@ -2543,11 +2580,13 @@ struct RemoteDesktop {
     if (!this.canvasTransformInitialized) {
       this.resetCanvasToDisplayDefault();
     }
-    this.canvasPinchViewportSnapshot = this.currentCanvasViewport();
+    const viewport: CanvasViewport = this.currentCanvasViewport();
+    this.canvasPinchViewportSnapshot = viewport;
+    this.captureCanvasGestureDensity(viewport);
     this.canvasPinchActive = true;
     this.canvasPinchLastScale = 1;
-    this.canvasPinchLastCenterX = this.vpToPx(event.pinchCenterX);
-    this.canvasPinchLastCenterY = this.vpToPx(event.pinchCenterY);
+    this.canvasPinchLastCenterX = this.canvasGestureVpToPx(event.pinchCenterX);
+    this.canvasPinchLastCenterY = this.canvasGestureVpToPx(event.pinchCenterY);
     this.claimCanvasPinchInput();
   }
 
@@ -2588,6 +2627,7 @@ struct RemoteDesktop {
     if (!canvasTransformCanPan(this.canvasTransform, viewport)) {
       return;
     }
+    this.captureCanvasGestureDensity(viewport);
     this.canvasPanActive = true;
     this.canvasPanInputSource = 'gesture';
     this.canvasPanLastOffsetX = Number.isFinite(event.offsetX) ? event.offsetX : 0;
@@ -2629,6 +2669,9 @@ struct RemoteDesktop {
     this.canvasPanInputSource = 'none';
     this.canvasPanLastOffsetX = 0;
     this.canvasPanLastOffsetY = 0;
+    if (!this.canvasPinchActive) {
+      this.canvasGesturePxPerVp = 1;
+    }
   }
 
   private endCanvasPinchGesture(reason: string): void {
@@ -2667,7 +2710,9 @@ struct RemoteDesktop {
     if (this.canvasPinchInputPhase !== 'idle') {
       return;
     }
-    const state = claimCanvasPinchTouchState(this.touchFingerCount);
+    const observedTouchCount: number = this.activeTouchPoints.size > 0 ?
+      this.activeTouchPoints.size : this.touchFingerCount;
+    const state = claimCanvasPinchTouchState(observedTouchCount);
     this.canvasPinchInputPhase = state.phase;
     this.canvasPinchTouchCount = state.fingerCount;
     this.clearTouchRightClickTimer();
@@ -2695,8 +2740,8 @@ struct RemoteDesktop {
       return;
     }
     const nextScale: number = Number.isFinite(event.scale) && event.scale > 0 ? event.scale : this.canvasPinchLastScale;
-    const centerX: number = this.vpToPx(event.pinchCenterX);
-    const centerY: number = this.vpToPx(event.pinchCenterY);
+    const centerX: number = this.canvasGestureVpToPx(event.pinchCenterX);
+    const centerY: number = this.canvasGestureVpToPx(event.pinchCenterY);
     this.canvasTransform = pinchCanvasTransform(this.canvasTransform, viewport,
       centerX, centerY, nextScale / this.canvasPinchLastScale,
       centerX - this.canvasPinchLastCenterX, centerY - this.canvasPinchLastCenterY);
@@ -2715,6 +2760,9 @@ struct RemoteDesktop {
     this.canvasPinchLastScale = 1;
     this.canvasPinchViewportSnapshot = null;
     this.rustDeskTouchPinchTransformSnapshot = null;
+    if (!this.canvasPanActive) {
+      this.canvasGesturePxPerVp = 1;
+    }
   }
 
   /** Release gesture ownership from every terminal path; safe to call repeatedly. */
@@ -2764,8 +2812,9 @@ struct RemoteDesktop {
     const eventType: CanvasPinchTouchEvent = event.type === TouchType.Down ? 'down' :
       event.type === TouchType.Up ? 'up' :
         event.type === TouchType.Cancel ? 'cancel' : 'move';
+    const activeTouchCount: number = this.trackedCanvasTouchCount(event);
     if (shouldStartNewCanvasPinchTouchSequence(this.canvasPinchInputPhase, eventType,
-      event.touches.length, event.changedTouches.length)) {
+      activeTouchCount, event.changedTouches.length)) {
       this.finishCanvasPinch();
       this.canvasPinchInputPhase = 'idle';
       this.canvasPinchTouchCount = 0;
@@ -2776,7 +2825,7 @@ struct RemoteDesktop {
     const next = advanceCanvasPinchTouchState({
       phase: this.canvasPinchInputPhase,
       fingerCount: this.canvasPinchTouchCount
-    }, eventType, event.touches.length, event.changedTouches.length);
+    }, eventType, activeTouchCount, event.changedTouches.length);
     this.canvasPinchInputPhase = next.phase;
     this.canvasPinchTouchCount = next.fingerCount;
     if (next.phase === 'idle') {
@@ -9204,6 +9253,26 @@ struct RemoteDesktop {
     }
   }
 
+  private canvasTouchPointEvent(event: TouchEvent): CanvasTouchPointEvent {
+    if (event.type === TouchType.Down) {
+      return 'down';
+    }
+    if (event.type === TouchType.Up) {
+      return 'up';
+    }
+    if (event.type === TouchType.Cancel) {
+      return 'cancel';
+    }
+    return 'move';
+  }
+
+  /** The ID-keyed map is authoritative after syncActiveTouchPoints(). */
+  private trackedCanvasTouchCount(event: TouchEvent): number {
+    return resolveCanvasActiveTouchCount(this.canvasTouchPointEvent(event),
+      this.activeTouchPoints.size, event.touches.length, this.touchFingerCount,
+      event.changedTouches.length);
+  }
+
   private averageTouchPoint(event: TouchEvent): LocalPoint | null {
     let sumX: number = 0;
     let sumY: number = 0;
@@ -9246,13 +9315,18 @@ struct RemoteDesktop {
   }
 
   private remainingTouchCountAfterLift(event: TouchEvent): number {
-    if (event.type === TouchType.Cancel) {
-      return 0;
-    }
-    const changedCount: number = event.changedTouches.length > 0 ? event.changedTouches.length : 1;
-    const previousCount: number = this.touchFingerCount > 0 ?
-      this.touchFingerCount : Math.max(event.touches.length, changedCount);
-    return Math.max(0, previousCount - changedCount);
+    return this.trackedCanvasTouchCount(event);
+  }
+
+  private captureCanvasGestureDensity(viewport: CanvasViewport): void {
+    const widthDensity: number = this.surfaceWidth > 0 ? viewport.surfaceWidth / this.surfaceWidth : 0;
+    const heightDensity: number = this.surfaceHeight > 0 ? viewport.surfaceHeight / this.surfaceHeight : 0;
+    const density: number = widthDensity > 0 ? widthDensity : heightDensity;
+    this.canvasGesturePxPerVp = Number.isFinite(density) && density > 0 ? density : this.vpToPx(1);
+  }
+
+  private canvasGestureVpToPx(value: number): number {
+    return value * this.canvasGesturePxPerVp;
   }
 
   private sendTouchPadWheel(stepDy: number): void {
@@ -9355,9 +9429,7 @@ struct RemoteDesktop {
           this.resetRemoteImeSession('touchpad-down');
         }
         const oldMaxFingers: number = this.touchMaxFingers;
-        const changedCount: number = event.changedTouches.length > 0 ? event.changedTouches.length : 1;
-        const currentTouches: number = Math.max(event.touches.length,
-          this.touchFingerCount + changedCount);
+        const currentTouches: number = this.trackedCanvasTouchCount(event);
         this.touchFingerCount = currentTouches;
         if (this.touchFingerCount > this.touchMaxFingers) {
           this.touchMaxFingers = this.touchFingerCount;
@@ -9401,7 +9473,7 @@ struct RemoteDesktop {
           }
         }
       } else if (event.type === TouchType.Move) {
-        this.touchFingerCount = event.touches.length;
+        this.touchFingerCount = this.trackedCanvasTouchCount(event);
         const movePoint: LocalPoint = this.touchFingerCount >= 2 ?
           (this.averageTouchPoint(event) || { x: point.x, y: point.y, inside: true }) :
           { x: point.x, y: point.y, inside: true };
@@ -9593,7 +9665,7 @@ struct RemoteDesktop {
           this.touchDragPending = false;
           this.touchMaxFingers = 0;
         }
-        this.touchFingerCount = Math.max(event.touches.length, this.touchFingerCount + 1);
+        this.touchFingerCount = this.trackedCanvasTouchCount(event);
         if (this.touchFingerCount > this.touchMaxFingers) {
           this.touchMaxFingers = this.touchFingerCount;
         }
@@ -9628,7 +9700,7 @@ struct RemoteDesktop {
         this.sendMouseNow(mapped.x, mapped.y, 0, true);
         this.startDirectTouchRightClickTimer();
       } else if (event.type === TouchType.Move) {
-        this.touchFingerCount = event.touches.length;
+        this.touchFingerCount = this.trackedCanvasTouchCount(event);
         if (this.touchMaxFingers >= 2) {
           const avg: LocalPoint | null = this.averageTouchPoint(event);
           if (avg) {
@@ -9732,7 +9804,7 @@ struct RemoteDesktop {
     this.observeCanvasTwoFingerTouch(event);
     if (controlMode === 2) {
       this.hideTouchIndicator();
-      if (event.touches.length >= 3 || this.touchMaxFingers >= 3) {
+      if (this.trackedCanvasTouchCount(event) >= 3 || this.touchMaxFingers >= 3) {
         // 键鼠模式下 3 指仅用于控制面板开关, Move 事件不发送鼠标/滚轮
         if (event.type === TouchType.Move) {
           // 只更新 touchMoved 状态 (区分滑动 vs 点击), 不发远端事件
@@ -10595,6 +10667,9 @@ struct RemoteDesktop {
               .onActionUpdate((event: GestureEvent): void => { this.updateCanvasPinch(event); })
               .onActionEnd((_event: GestureEvent): void => { this.endCanvasPinchGesture('gesture-end'); })
               .onActionCancel((): void => { this.endCanvasPinchGesture('gesture-cancel'); }),
+            LongPressGesture({ fingers: 2, duration: CANVAS_TWO_FINGER_HOLD_MS })
+              .allowedTypes([SourceTool.Finger])
+              .onAction((event: GestureEvent): void => { this.armCanvasTwoFingerPanFromLongPress(event); }),
             PanGesture({ fingers: 2, distance: 5 })
               .allowedTypes([SourceTool.Finger])
               .onActionStart((event: GestureEvent): void => { this.startCanvasPan(event); })

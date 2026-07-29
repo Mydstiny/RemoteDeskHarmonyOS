@@ -58,6 +58,8 @@ import remoteCanvasTransformPolicyTest from './RemoteCanvasTransformPolicy.test'
 import remoteSurfaceTransformPolicyTest from './RemoteSurfaceTransformPolicy.test';
 import remoteRendererViewportPolicyTest from './RemoteRendererViewportPolicy.test';
 import remoteCanvasGesturePolicyTest from './RemoteCanvasGesturePolicy.test';
+import remoteCanvasPinchInputPolicyTest from './RemoteCanvasPinchInputPolicy.test';
+import remoteCanvasTouchPointPolicyTest from './RemoteCanvasTouchPointPolicy.test';
 import remoteCanvasZoomPreferencePolicyTest from './RemoteCanvasZoomPreferencePolicy.test';
 import remoteOrientationPolicyTest from './RemoteOrientationPolicy.test';
 import remoteResolutionPresetPolicyTest from './RemoteResolutionPresetPolicy.test';
@@ -132,6 +134,8 @@ export default function testsuite() {
   remoteSurfaceTransformPolicyTest();
   remoteRendererViewportPolicyTest();
   remoteCanvasGesturePolicyTest();
+  remoteCanvasPinchInputPolicyTest();
+  remoteCanvasTouchPointPolicyTest();
   remoteCanvasZoomPreferencePolicyTest();
   remoteOrientationPolicyTest();
   remoteResolutionPresetPolicyTest();

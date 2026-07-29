@@ -8092,7 +8092,7 @@ struct HostListPage {
   @Builder canvasGestureZoomRow() {
     if (!this.isDesktopDevice) {
       this.rustdeskSwitchRow($r('app.media.icon_desktop'), '双指画布缩放',
-        '缩放后双指长按约 0.4 秒，再拖动可移动画布；关闭后恢复双指右键和滚轮',
+        '缩放后抬手，再双指长按约0.4秒拖动画布；关闭后保留双指右键和滚轮',
         this.canvasGestureZoomEnabled,
         (on: boolean): void => { this.saveCanvasGestureZoomEnabled(on); }, true)
     }
