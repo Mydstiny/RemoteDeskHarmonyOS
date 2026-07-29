@@ -209,6 +209,7 @@ import {
   normalizeLocalViewScaleMode,
   panCanvasTransform,
   pinchCanvasTransform,
+  RDP_CANVAS_FREE_PAN_INSET_RATIO,
   REMOTE_DISPLAY_SCALE_PREFERENCE_VERSION,
   REMOTE_DISPLAY_SCALE_PREFERENCE_VERSION_KEY,
   resolveInitialRemoteDisplayScaleMode
@@ -2264,7 +2265,8 @@ struct RemoteDesktop {
       surfaceWidth: this.renderWidthPx > 0 ? this.renderWidthPx : this.vpToPx(this.surfaceWidth),
       surfaceHeight: this.renderHeightPx > 0 ? this.renderHeightPx : this.vpToPx(this.surfaceHeight),
       sourceWidth: Math.max(1, sourceWidth),
-      sourceHeight: Math.max(1, sourceHeight)
+      sourceHeight: Math.max(1, sourceHeight),
+      freePanInsetRatio: this.currentCanvasFreePanInsetRatio()
     };
     this.canvasViewportSnapshot = snapshot;
     this.canvasViewportSnapshotHandle = this.rendererHandle;
@@ -2277,6 +2279,10 @@ struct RemoteDesktop {
       return this.canvasViewportSnapshot;
     }
     return this.refreshCanvasViewportSnapshot(forceRendererRead);
+  }
+
+  private currentCanvasFreePanInsetRatio(): number {
+    return this.isRdpRemoteSession() ? RDP_CANVAS_FREE_PAN_INSET_RATIO : 0;
   }
 
   private resetCanvasToDisplayDefault(forceRendererRead: boolean = false): void {
@@ -5119,7 +5125,8 @@ struct RemoteDesktop {
             surfaceWidth: snapshot.surfaceWidth,
             surfaceHeight: snapshot.surfaceHeight,
             sourceWidth: snapshot.sourceWidth,
-            sourceHeight: snapshot.sourceHeight
+            sourceHeight: snapshot.sourceHeight,
+            freePanInsetRatio: this.currentCanvasFreePanInsetRatio()
           };
           this.canvasViewportSnapshotHandle = this.rendererHandle;
           return this.rendererViewportCache;

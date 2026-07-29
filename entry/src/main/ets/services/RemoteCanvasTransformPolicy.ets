@@ -2,6 +2,10 @@ export type LocalViewScaleMode = 'fit' | '100' | '125' | '150' | '175' | '200' |
 
 // Keep the ArkTS geometry mirror aligned with GLRenderer::SetCanvasTransform.
 export const CANVAS_TRANSFORM_MAX_SCALE: number = 12;
+// RDP keeps a small per-axis drag reserve once the canvas is enlarged beyond
+// Fit. This matches the mobile free-pan feel without allowing an unbounded
+// canvas displacement.
+export const RDP_CANVAS_FREE_PAN_INSET_RATIO: number = 0.12;
 
 // The first shared-display implementation persisted a derived value without
 // recording whether the user had actually selected it.  Versioned values are
@@ -19,6 +23,9 @@ export interface CanvasViewport {
   surfaceHeight: number;
   sourceWidth: number;
   sourceHeight: number;
+  // Optional per-axis surface reserve for protocols that support bounded
+  // free-pan. A missing/zero value preserves strict content-edge clamping.
+  freePanInsetRatio?: number;
 }
 
 export interface CanvasTransform {
@@ -101,6 +108,17 @@ function absoluteScale(transform: CanvasTransform, viewport: CanvasViewport): nu
   return containScale(viewport) * Math.max(0.01, transform.scale);
 }
 
+function freePanInsetRatio(transformScale: number, viewport: CanvasViewport): number {
+  if (transformScale <= 1.0005) {
+    return 0;
+  }
+  let ratio: number = 0;
+  if (viewport.freePanInsetRatio !== undefined && Number.isFinite(viewport.freePanInsetRatio)) {
+    ratio = viewport.freePanInsetRatio;
+  }
+  return clamp(ratio, 0, 0.25);
+}
+
 export function clampCanvasTransform(transform: CanvasTransform, viewport: CanvasViewport): CanvasTransform {
   const fit: number = containScale(viewport);
   const limits: CanvasScaleLimits = scaleLimits(viewport);
@@ -108,8 +126,13 @@ export function clampCanvasTransform(transform: CanvasTransform, viewport: Canva
   const scale: number = physicalScale / fit;
   const contentWidth: number = positive(viewport.sourceWidth, 1) * physicalScale;
   const contentHeight: number = positive(viewport.sourceHeight, 1) * physicalScale;
-  const maxPanX: number = Math.max(0, (contentWidth - positive(viewport.surfaceWidth, 1)) / 2);
-  const maxPanY: number = Math.max(0, (contentHeight - positive(viewport.surfaceHeight, 1)) / 2);
+  const surfaceWidth: number = positive(viewport.surfaceWidth, 1);
+  const surfaceHeight: number = positive(viewport.surfaceHeight, 1);
+  const insetRatio: number = freePanInsetRatio(scale, viewport);
+  const maxPanX: number = Math.max(0, (contentWidth - surfaceWidth) / 2,
+    surfaceWidth * insetRatio);
+  const maxPanY: number = Math.max(0, (contentHeight - surfaceHeight) / 2,
+    surfaceHeight * insetRatio);
   return {
     scale,
     panX: clamp(Number.isFinite(transform.panX) ? transform.panX : 0, -maxPanX, maxPanX),
@@ -120,6 +143,9 @@ export function clampCanvasTransform(transform: CanvasTransform, viewport: Canva
 /** Whether the current canvas has content outside the surface that can be panned. */
 export function canvasTransformCanPan(transform: CanvasTransform, viewport: CanvasViewport): boolean {
   const clamped: CanvasTransform = clampCanvasTransform(transform, viewport);
+  if (freePanInsetRatio(clamped.scale, viewport) > 0) {
+    return true;
+  }
   const physicalScale: number = absoluteScale(clamped, viewport);
   const sourceWidth: number = positive(viewport.sourceWidth, 1);
   const sourceHeight: number = positive(viewport.sourceHeight, 1);
