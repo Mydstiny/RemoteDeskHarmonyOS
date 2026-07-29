@@ -152,8 +152,9 @@ export class RustDeskProSyncService {
         const local: RustDeskProAccountState | undefined = this.credentials.get(legacy.id);
         if (local !== undefined && local.accessToken.length > 0) { continue; }
         this.requireCurrentOperation(operation);
-        this.credentials.save(
-          LegacyRustDeskAccountCloudAdapter.fromLegacy(legacy, relay.apiServer));
+        this.saveCredentialOrThrow(
+          LegacyRustDeskAccountCloudAdapter.fromLegacy(
+            legacy, relay.apiServer));
       }
       if (migrated !== null) {
         this.requireCurrentOperation(operation);
@@ -192,6 +193,16 @@ export class RustDeskProSyncService {
       lastSyncAt: account.lastSyncAt,
       lastSyncError: account.lastSyncError
     };
+  }
+
+  private saveCredentialOrThrow(
+    account: RustDeskProAccountState
+  ): void {
+    if (!this.credentials.save(account)) {
+      throw new RustDeskProApiError(
+        'credential_store_failed',
+        'Pro 登录凭据未能写入系统安全资产');
+    }
   }
 
   private async authenticate(input: RustDeskProLoginInput,
@@ -257,7 +268,7 @@ export class RustDeskProSyncService {
     try {
       const account = await this.authenticate(input, operation);
       this.requireCurrentOperation(operation);
-      this.credentials.save(account);
+      this.saveCredentialOrThrow(account);
       this.persistCloudAccountMetadata(account);
       return this.cloneAccount(account);
     } finally {
@@ -273,7 +284,7 @@ export class RustDeskProSyncService {
       const account = await this.authenticate(input, operation);
       const result = await this.syncAccount(account, operation);
       this.requireCurrentOperation(operation);
-      this.credentials.save(account);
+      this.saveCredentialOrThrow(account);
       this.persistCloudAccountMetadata(account);
       return result;
     } finally {
@@ -291,7 +302,7 @@ export class RustDeskProSyncService {
     try {
       const result = await this.syncAccount(account, operation);
       this.requireCurrentOperation(operation);
-      this.credentials.save(account);
+      this.saveCredentialOrThrow(account);
       return result;
     } catch (err) {
       if (!this.operationIsCurrent(operation)) {
@@ -304,7 +315,7 @@ export class RustDeskProSyncService {
         account.accessToken = '';
         account.accessTokenFingerprint = rustDeskProAccessTokenFingerprint('');
       }
-      this.credentials.save(account);
+      this.saveCredentialOrThrow(account);
       throw err instanceof Error ? err : new Error('Pro 同步失败');
     } finally {
       this.endOperation();
@@ -334,7 +345,7 @@ export class RustDeskProSyncService {
     account.accessTokenFingerprint = rustDeskProAccessTokenFingerprint('');
     account.loginStatus = 'expired';
     account.lastSyncError = reason;
-    this.credentials.save(account);
+    if (!this.credentials.save(account)) { return false; }
     this.persistCloudAccountMetadata(account);
     return true;
   }
@@ -346,7 +357,11 @@ export class RustDeskProSyncService {
       if (!account) { return; }
       await this.api.logout(account);
       this.requireCurrentOperation(operation);
-      this.credentials.clear(accountId);
+      if (!this.credentials.clear(accountId)) {
+        throw new RustDeskProApiError(
+          'credential_store_failed',
+          'Pro 登录凭据未能从系统安全资产删除');
+      }
       const relay = this.hosts.getAllRelays().find(
         (item: RustDeskRelayConfig): boolean => item.id === account.relayId);
       if (relay !== undefined) {

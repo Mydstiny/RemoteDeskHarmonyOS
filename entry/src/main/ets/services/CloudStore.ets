@@ -108,6 +108,12 @@ import {
   RemoteHostDisplayPayload
 } from './CloudTableAdapter';
 import {
+  extractLegacyRemoteHostDeviceTrust,
+  mergeRemoteHostDeviceTrust,
+  projectRemoteHostDeviceTrust,
+  remoteHostDeviceTrustIsMeaningful
+} from './RemoteHostDeviceTrustPolicy';
+import {
   VNC_CLOUD_TABLE,
   VNC_LOCAL_TABLE,
   VNC_RECORD_COLUMNS,
@@ -182,6 +188,8 @@ const MIGRATION_QUARANTINE_TABLE: string = 'migrationquarantine';
 const ACCOUNT_STORE_SCHEMA_VERSION: number = 3;
 const CANONICAL_SECRET_STORAGE_VERSION_KEY: string = 'canonical_secret_storage_version';
 const CANONICAL_SECRET_STORAGE_VERSION: string = '3';
+const DEVICE_LOCAL_HOST_TRUST_MIGRATION_KEY: string =
+  'device_local_host_trust_migrated_v1';
 const RESTORED_NOT_UPLOADED_KEY: string = 'restored_not_uploaded';
 const RESTORED_NOT_UPLOADED_TABLE_PREFIX: string =
   'restored_not_uploaded|';
@@ -553,6 +561,7 @@ export class CloudStore implements CryptoCloudStore {
         context, this.store, this.currentScopeToken, verifiedUnionId);
       this.migrateCryptoParamIdentity();
       await this.migrateLocalExtensions();
+      await this.migrateDeviceLocalHostTrust();
       await this.migrateLegacyVncRecords();
       this.cloudBootstrapCompleted = this.readLocalMetadata(CLOUD_BOOTSTRAP_COMPLETED_KEY) === '1';
       // 本地库必须独立可用；云服务未开通或网络策略设置失败时仍要恢复缓存数据。
@@ -1843,6 +1852,25 @@ export class CloudStore implements CryptoCloudStore {
           });
           return;
         }
+        if (table === 'remotehosts') {
+          const trustCleanup: number =
+            this.stripRemoteHostDeviceTrustAfterCloudPull();
+          if (trustCleanup < 0) {
+            recordFailure(
+              'DEVICE_TRUST_SANITIZE failed',
+              'unknown');
+            return;
+          }
+          if (trustCleanup > 0) {
+            // The cloud-first row may have been written by an old client.
+            // Queue one native-first scrub after this serialized pull; never
+            // adopt its trust decision into the current device overlay.
+            CloudSyncCoordinator.getInstance()
+              .requestAutomaticPush('remotehosts')
+              .then((_result: CloudSyncOperationResult): void => {},
+                (): void => {});
+          }
+        }
         const dirtyRows: number = this.countCloudDeletedRows(table);
         if (dirtyRows > 0) {
           this.cleanCloudDeletedRows(table).then((cleaned: boolean): void => {
@@ -2986,6 +3014,43 @@ export class CloudStore implements CryptoCloudStore {
     host.sshKeyPassphrase = this.decryptIfReady(
       crypto, 'localextensions/remotehosts', host.id,
       'sshkeypassphrase', get('sshkeypassphrase', host.sshKeyPassphrase));
+    host.sshHostKeyAlgorithm =
+      get('sshhostkeyalgorithm', host.sshHostKeyAlgorithm);
+    host.sshHostKeyFingerprintSha256 =
+      get('sshhostkeyfingerprintsha256',
+        host.sshHostKeyFingerprintSha256);
+    host.sshHostKeyRawBase64 =
+      get('sshhostkeyrawbase64', host.sshHostKeyRawBase64);
+    host.sshHostKeyTrustedAt = Number(
+      get('sshhostkeytrustedat',
+        host.sshHostKeyTrustedAt.toString()));
+    host.sshHostKeyTrustMode = Number(
+      get('sshhostkeytrustmode',
+        host.sshHostKeyTrustMode.toString()));
+    host.rdpCertificateFingerprintSha256 =
+      get('rdpcertificatefingerprintsha256',
+        host.rdpCertificateFingerprintSha256);
+    host.rdpCertificateSubject =
+      get('rdpcertificatesubject',
+        host.rdpCertificateSubject);
+    host.rdpCertificateIssuer =
+      get('rdpcertificateissuer',
+        host.rdpCertificateIssuer);
+    host.rdpCertificateCommonName =
+      get('rdpcertificatecommonname',
+        host.rdpCertificateCommonName);
+    host.rdpCertificateTrustedAt = Number(
+      get('rdpcertificatetrustedat',
+        host.rdpCertificateTrustedAt.toString()));
+    host.rdpCertificateTrustMode = Number(
+      get('rdpcertificatetrustmode',
+        host.rdpCertificateTrustMode.toString()));
+    host.rdpCertificateAllowUntrustedRoot =
+      get('rdpcertificateallowuntrustedroot',
+        host.rdpCertificateAllowUntrustedRoot ? '1' : '0') === '1';
+    host.rdpCertificateAllowHostMismatch =
+      get('rdpcertificateallowhostmismatch',
+        host.rdpCertificateAllowHostMismatch ? '1' : '0') === '1';
     return host;
   }
 
@@ -2998,13 +3063,6 @@ export class CloudStore implements CryptoCloudStore {
       sshProxyType === 'legacy_gateway' || sshProxyType === 'direct') {
       host.sshProxyType = sshProxyType;
     }
-    host.sshHostKeyAlgorithm = get('sshhostkeyalgorithm', host.sshHostKeyAlgorithm);
-    host.sshHostKeyFingerprintSha256 = get('sshhostkeyfingerprintsha256', host.sshHostKeyFingerprintSha256);
-    host.sshHostKeyRawBase64 = get('sshhostkeyrawbase64', host.sshHostKeyRawBase64);
-    host.rdpCertificateFingerprintSha256 = get('rdpcertificatefingerprintsha256', host.rdpCertificateFingerprintSha256);
-    host.rdpCertificateSubject = get('rdpcertificatesubject', host.rdpCertificateSubject);
-    host.rdpCertificateIssuer = get('rdpcertificateissuer', host.rdpCertificateIssuer);
-    host.rdpCertificateCommonName = get('rdpcertificatecommonname', host.rdpCertificateCommonName);
     host.rustdeskRelayId = get('rustdeskrelayid', host.rustdeskRelayId);
     host.rustdeskAccountId = get('rustdeskaccountid', host.rustdeskAccountId);
     host.rustdeskDirectHost = get('rustdeskdirecthost', host.rustdeskDirectHost);
@@ -3016,12 +3074,6 @@ export class CloudStore implements CryptoCloudStore {
     host.rdpAuthMode = normalizeRdpAuthMode(get('rdpauthmode', host.rdpAuthMode));
     host.rdpRestrictedAdminSecretSource = normalizeRdpRestrictedAdminSecretSource(
       get('rdprestrictedadminsecretsource', host.rdpRestrictedAdminSecretSource));
-    host.sshHostKeyTrustedAt = Number(get('sshhostkeytrustedat', host.sshHostKeyTrustedAt.toString()));
-    host.sshHostKeyTrustMode = Number(get('sshhostkeytrustmode', host.sshHostKeyTrustMode.toString()));
-    host.rdpCertificateTrustedAt = Number(get('rdpcertificatetrustedat', host.rdpCertificateTrustedAt.toString()));
-    host.rdpCertificateTrustMode = Number(get('rdpcertificatetrustmode', host.rdpCertificateTrustMode.toString()));
-    host.rdpCertificateAllowUntrustedRoot = get('rdpcertificateallowuntrustedroot', host.rdpCertificateAllowUntrustedRoot ? '1' : '0') === '1';
-    host.rdpCertificateAllowHostMismatch = get('rdpcertificateallowhostmismatch', host.rdpCertificateAllowHostMismatch ? '1' : '0') === '1';
     host.rustdeskPasswordMode = Number(get('rustdeskpasswordmode', host.rustdeskPasswordMode.toString()));
     host.rustdeskAuthMode = get('rustdeskauthmode', host.rustdeskAuthMode) === 'request_approval' ? 'request_approval' : 'password';
     host.rustdeskDirectEnabled = get('rustdeskdirectenabled', host.rustdeskDirectEnabled ? '1' : '0') === '1';
@@ -3046,6 +3098,32 @@ export class CloudStore implements CryptoCloudStore {
     values['sshkeypassphrase'] = this.encryptIfReady(
       crypto, 'localextensions/remotehosts', host.id,
       'sshkeypassphrase', host.sshKeyPassphrase);
+    values['sshhostkeyalgorithm'] =
+      host.sshHostKeyAlgorithm;
+    values['sshhostkeyfingerprintsha256'] =
+      host.sshHostKeyFingerprintSha256;
+    values['sshhostkeyrawbase64'] =
+      host.sshHostKeyRawBase64;
+    values['sshhostkeytrustedat'] =
+      host.sshHostKeyTrustedAt.toString();
+    values['sshhostkeytrustmode'] =
+      host.sshHostKeyTrustMode.toString();
+    values['rdpcertificatefingerprintsha256'] =
+      host.rdpCertificateFingerprintSha256;
+    values['rdpcertificatesubject'] =
+      host.rdpCertificateSubject;
+    values['rdpcertificateissuer'] =
+      host.rdpCertificateIssuer;
+    values['rdpcertificatecommonname'] =
+      host.rdpCertificateCommonName;
+    values['rdpcertificatetrustedat'] =
+      host.rdpCertificateTrustedAt.toString();
+    values['rdpcertificatetrustmode'] =
+      host.rdpCertificateTrustMode.toString();
+    values['rdpcertificateallowuntrustedroot'] =
+      host.rdpCertificateAllowUntrustedRoot ? '1' : '0';
+    values['rdpcertificateallowhostmismatch'] =
+      host.rdpCertificateAllowHostMismatch ? '1' : '0';
     return values;
   }
 
@@ -3055,19 +3133,6 @@ export class CloudStore implements CryptoCloudStore {
     host.normalizeRdpAuthentication();
     values['sshkeyid'] = host.sshKeyId;
     values['sshproxytype'] = host.sshProxyType;
-    values['sshhostkeyalgorithm'] = host.sshHostKeyAlgorithm;
-    values['sshhostkeyfingerprintsha256'] = host.sshHostKeyFingerprintSha256;
-    values['sshhostkeyrawbase64'] = host.sshHostKeyRawBase64;
-    values['sshhostkeytrustedat'] = host.sshHostKeyTrustedAt.toString();
-    values['sshhostkeytrustmode'] = host.sshHostKeyTrustMode.toString();
-    values['rdpcertificatefingerprintsha256'] = host.rdpCertificateFingerprintSha256;
-    values['rdpcertificatesubject'] = host.rdpCertificateSubject;
-    values['rdpcertificateissuer'] = host.rdpCertificateIssuer;
-    values['rdpcertificatecommonname'] = host.rdpCertificateCommonName;
-    values['rdpcertificatetrustedat'] = host.rdpCertificateTrustedAt.toString();
-    values['rdpcertificatetrustmode'] = host.rdpCertificateTrustMode.toString();
-    values['rdpcertificateallowuntrustedroot'] = host.rdpCertificateAllowUntrustedRoot ? '1' : '0';
-    values['rdpcertificateallowhostmismatch'] = host.rdpCertificateAllowHostMismatch ? '1' : '0';
     values['rustdeskrelayid'] = host.rustdeskRelayId;
     values['rustdeskaccountid'] = host.rustdeskAccountId;
     values['rustdeskpasswordmode'] = host.rustdeskPasswordMode.toString();
@@ -3233,6 +3298,225 @@ export class CloudStore implements CryptoCloudStore {
     } catch (err) {
       try { this.store.rollBack(); } catch (_ignored) {}
       throw new Error('local extension migration failed: ' + safeError(err));
+    }
+  }
+
+  /**
+   * One-time upgrade bridge. Existing installs previously stored SSH host-key
+   * and RDP certificate trust inside the distributed host row. Capture the
+   * current device's last local decision, then remove every cloud-visible and
+   * duplicate physical-column copy in one transaction.
+   */
+  private async migrateDeviceLocalHostTrust(): Promise<void> {
+    if (!this.store) { return; }
+    if (this.readLocalMetadataStrict(
+      DEVICE_LOCAL_HOST_TRUST_MIGRATION_KEY) === '1') {
+      return;
+    }
+    try {
+      this.store.beginTransaction();
+      const predicates =
+        new relationalStore.RdbPredicates('remotehosts');
+      this.addCurrentOwnerPredicate(predicates);
+      const rows: relationalStore.ResultSet =
+        this.store.querySync(predicates);
+      const idIndex: number = rows.getColumnIndex('id');
+      const displayIndex: number =
+        rows.getColumnIndex('displayconfig');
+      const deletedIndex: number = rows.getColumnIndex(
+        relationalStore.Field.DELETED_FLAG_FIELD);
+      let changedRows: number = 0;
+      while (rows.goToNextRow()) {
+        if (deletedIndex >= 0 &&
+          rows.getLong(deletedIndex) === 1) {
+          continue;
+        }
+        const id: string = idIndex >= 0
+          ? rows.getString(idIndex) : '';
+        if (id === '') { continue; }
+        const rawDisplay: string = displayIndex >= 0
+          ? rows.getString(displayIndex) : '{}';
+        const local: Record<string, string> =
+          this.loadLocalExtension('remotehosts', id);
+        const physical: Record<string, string> =
+          projectRemoteHostDeviceTrust(
+            this.hostExtensionFromResult(rows));
+        const historical: Record<string, string> =
+          extractLegacyRemoteHostDeviceTrust(rawDisplay);
+        const trust: Record<string, string> =
+          mergeRemoteHostDeviceTrust(
+            physical, historical, local);
+        const nextLocal: Record<string, string> = {};
+        if (local['sshkeypassphrase'] !== undefined) {
+          nextLocal['sshkeypassphrase'] =
+            local['sshkeypassphrase'];
+        }
+        if (remoteHostDeviceTrustIsMeaningful(trust)) {
+          const trustKeys: string[] = Object.keys(trust);
+          for (let i = 0; i < trustKeys.length; i++) {
+            nextLocal[trustKeys[i]] =
+              trust[trustKeys[i]];
+          }
+        }
+        const localSaved: boolean =
+          Object.keys(nextLocal).length > 0
+            ? this.saveLocalExtension(
+              'remotehosts', id, nextLocal)
+            : this.deleteLocalExtension(
+              'remotehosts', id);
+        if (!localSaved) {
+          throw new Error(
+            'device trust overlay migration failed id=' + id);
+        }
+
+        const displayPayload: RemoteHostDisplayPayload =
+          decodeRemoteHostDisplayPayload(rawDisplay);
+        const sanitizedDisplay: string =
+          encodeRemoteHostDisplayPayload(
+            displayPayload.displayConfigJson,
+            displayPayload.extension);
+        const needsDisplayCleanup: boolean =
+          Object.keys(historical).length > 0 &&
+          sanitizedDisplay !== rawDisplay;
+        const needsPhysicalCleanup: boolean =
+          remoteHostDeviceTrustIsMeaningful(physical);
+        if (!needsDisplayCleanup &&
+          !needsPhysicalCleanup) {
+          continue;
+        }
+        const bucket: relationalStore.ValuesBucket =
+          this.clearedRemoteHostDeviceTrustBucket();
+        if (needsDisplayCleanup) {
+          bucket['displayconfig'] = sanitizedDisplay;
+          bucket['updatedat'] = Date.now();
+        }
+        const updatePredicates =
+          new relationalStore.RdbPredicates('remotehosts');
+        updatePredicates.equalTo('id', id);
+        this.addCurrentOwnerPredicate(updatePredicates);
+        if (!rdbSingleRowAffected(
+          this.store.updateSync(bucket, updatePredicates))) {
+          throw new Error(
+            'device trust row cleanup failed id=' + id);
+        }
+        changedRows++;
+      }
+      rows.close();
+      if (changedRows > 0 &&
+        !this.recordTableMutation(
+          'remotehosts', 'device_trust_migration')) {
+        throw new Error(
+          'device trust scrub journal failed');
+      }
+      if (!this.writeLocalMetadata(
+        DEVICE_LOCAL_HOST_TRUST_MIGRATION_KEY, '1')) {
+        throw new Error(
+          'device trust migration marker failed');
+      }
+      this.store.commit();
+    } catch (err) {
+      try { this.store.rollBack(); } catch (_ignored) {}
+      throw new Error(
+        'device-local host trust migration failed: ' +
+        safeError(err));
+    }
+  }
+
+  private clearedRemoteHostDeviceTrustBucket():
+    relationalStore.ValuesBucket {
+    return {
+      sshhostkeyalgorithm: '',
+      sshhostkeyfingerprintsha256: '',
+      sshhostkeyrawbase64: '',
+      sshhostkeytrustedat: 0,
+      sshhostkeytrustmode: 0,
+      rdpcertificatefingerprintsha256: '',
+      rdpcertificatesubject: '',
+      rdpcertificateissuer: '',
+      rdpcertificatecommonname: '',
+      rdpcertificatetrustedat: 0,
+      rdpcertificatetrustmode: 0,
+      rdpcertificateallowuntrustedroot: 0,
+      rdpcertificateallowhostmismatch: 0
+    };
+  }
+
+  /**
+   * Old clients can reintroduce trust fields after the one-time migration.
+   * Strip those fields after every remote-host pull, but never copy them into
+   * localextensions on a new device.
+   *
+   * @returns -1 on rollback, 0 when unchanged, or the changed row count.
+   */
+  private stripRemoteHostDeviceTrustAfterCloudPull(): number {
+    if (!this.store) { return -1; }
+    try {
+      this.store.beginTransaction();
+      const predicates =
+        new relationalStore.RdbPredicates('remotehosts');
+      this.addCurrentOwnerPredicate(predicates);
+      const rows: relationalStore.ResultSet =
+        this.store.querySync(predicates);
+      const idIndex: number = rows.getColumnIndex('id');
+      const displayIndex: number =
+        rows.getColumnIndex('displayconfig');
+      const deletedIndex: number = rows.getColumnIndex(
+        relationalStore.Field.DELETED_FLAG_FIELD);
+      let changedRows: number = 0;
+      while (rows.goToNextRow()) {
+        if (deletedIndex >= 0 &&
+          rows.getLong(deletedIndex) === 1) {
+          continue;
+        }
+        const id: string = idIndex >= 0
+          ? rows.getString(idIndex) : '';
+        if (id === '') { continue; }
+        const rawDisplay: string = displayIndex >= 0
+          ? rows.getString(displayIndex) : '{}';
+        const historical: Record<string, string> =
+          extractLegacyRemoteHostDeviceTrust(rawDisplay);
+        if (Object.keys(historical).length === 0) {
+          continue;
+        }
+        const displayPayload: RemoteHostDisplayPayload =
+          decodeRemoteHostDisplayPayload(rawDisplay);
+        const sanitizedDisplay: string =
+          encodeRemoteHostDisplayPayload(
+            displayPayload.displayConfigJson,
+            displayPayload.extension);
+        if (sanitizedDisplay === rawDisplay) {
+          continue;
+        }
+        const bucket: relationalStore.ValuesBucket =
+          this.clearedRemoteHostDeviceTrustBucket();
+        bucket['displayconfig'] = sanitizedDisplay;
+        bucket['updatedat'] = Date.now();
+        const updatePredicates =
+          new relationalStore.RdbPredicates('remotehosts');
+        updatePredicates.equalTo('id', id);
+        this.addCurrentOwnerPredicate(updatePredicates);
+        if (!rdbSingleRowAffected(
+          this.store.updateSync(bucket, updatePredicates))) {
+          throw new Error(
+            'pulled device trust cleanup failed id=' + id);
+        }
+        changedRows++;
+      }
+      rows.close();
+      if (changedRows > 0 &&
+        !this.recordTableMutation(
+          'remotehosts', 'strip_remote_device_trust')) {
+        throw new Error(
+          'pulled device trust cleanup journal failed');
+      }
+      this.store.commit();
+      return changedRows;
+    } catch (err) {
+      try { this.store.rollBack(); } catch (_ignored) {}
+      hilog.error(0x0001, 'CloudSync',
+        '[CloudStore] pulled device trust cleanup failed: ' +
+        safeError(err));
+      return -1;
     }
   }
 

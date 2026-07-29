@@ -235,7 +235,9 @@ export default function localBackupPolicyTest(): void {
           recordid: 'host-1',
           payload: '{"sshkeypassphrase":"passphrase",' +
             '"sshhostkeyfingerprintsha256":"trust",' +
-            '"rustdeskdirectport":"21117"}',
+            '"rustdeskdirectport":"21117",' +
+            '"rustdesktotpentryid":"totp-1",' +
+            '"rustdesktotpautosubmit":"1"}',
           updatedat: '100'
         }], {}, 'owner-test');
       expect(document.tables['cryptoparams'] === undefined)
@@ -253,7 +255,9 @@ export default function localBackupPolicyTest(): void {
       expect(document.tables['remotehosts'][0]['displayconfig']
         .indexOf('rustdeskdirectport') >= 0).assertTrue();
       expect(document.extensions?.[0]['payload'])
-        .assertEqual('{"rustdeskdirectport":"21117"}');
+        .assertEqual('{"rustdeskdirectport":"21117",' +
+          '"rustdesktotpentryid":"totp-1",' +
+          '"rustdesktotpautosubmit":"1"}');
       expect(document.tables['sshkeys'][0]['privatekey'] ===
         undefined).assertTrue();
       expect(document.tables['totpentries'][0]['secret'] ===

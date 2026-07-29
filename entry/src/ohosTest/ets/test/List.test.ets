@@ -21,6 +21,8 @@ import remoteImeCommandQueueTest from './RemoteImeCommandQueue.test';
 import remoteImmersivePolicyTest from './RemoteImmersivePolicy.test';
 import rdpCertificateProbeLifecyclePolicyTest from './RdpCertificateProbeLifecyclePolicy.test';
 import rustDeskProConnectionPreflightPolicyTest from './RustDeskProConnectionPreflightPolicy.test';
+import rustDeskProCredentialPolicyTest from './RustDeskProCredentialPolicy.test';
+import remoteHostDataBoundaryPolicyTest from './RemoteHostDataBoundaryPolicy.test';
 import hostWorkspacePolicyTest from './HostWorkspacePolicy.test';
 import guideContentRegistryTest from './GuideContentRegistry.test';
 import sshKeyImportServiceTest from './SshKeyImportService.test';
@@ -63,6 +65,8 @@ export default function testsuite() {
   remoteImmersivePolicyTest();
   rdpCertificateProbeLifecyclePolicyTest();
   rustDeskProConnectionPreflightPolicyTest();
+  rustDeskProCredentialPolicyTest();
+  remoteHostDataBoundaryPolicyTest();
   hostWorkspacePolicyTest();
   guideContentRegistryTest();
   sshKeyImportServiceTest();

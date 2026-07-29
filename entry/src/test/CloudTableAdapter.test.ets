@@ -8,6 +8,10 @@ import {
   encodeRemoteHostDisplayPayload,
   decodeRemoteHostDisplayPayload
 } from '../main/ets/services/CloudTableAdapter';
+import {
+  extractLegacyRemoteHostDeviceTrust,
+  mergeRemoteHostDeviceTrust
+} from '../main/ets/services/RemoteHostDeviceTrustPolicy';
 
 describe('CloudTableAdapter', (): void => {
   it('projects remote host password to the existing passward cloud field', (): void => {
@@ -61,8 +65,12 @@ describe('CloudTableAdapter', (): void => {
       rustdeskproaccountid: 'account-1',
       rustdesktargetdevice: 'phone',
       rustdeskadaptiveorientation: '1',
+      rustdesktotpentryid: 'totp-1',
+      rustdesktotpautosubmit: '1',
       rdpauthmode: 'restricted_admin',
       rdprestrictedadminsecretsource: 'ntlm_hash',
+      sshhostkeyfingerprintsha256: 'must-stay-local',
+      rdpcertificateallowhostmismatch: '1',
       rdprestrictedadminhash: '0123456789ABCDEF0123456789ABCDEF',
       password: 'must-not-leak',
       sshkeypassphrase: 'must-not-leak'
@@ -77,12 +85,37 @@ describe('CloudTableAdapter', (): void => {
     expect(decoded.extension['rustdeskproaccountid']).assertEqual('account-1');
     expect(decoded.extension['rustdesktargetdevice']).assertEqual('phone');
     expect(decoded.extension['rustdeskadaptiveorientation']).assertEqual('1');
+    expect(decoded.extension['rustdesktotpentryid']).assertEqual('totp-1');
+    expect(decoded.extension['rustdesktotpautosubmit']).assertEqual('1');
     expect(decoded.extension['rdpauthmode']).assertEqual('restricted_admin');
     expect(decoded.extension['rdprestrictedadminsecretsource']).assertEqual('ntlm_hash');
     expect(decoded.extension['rdprestrictedadminhash']).assertUndefined();
     expect(decoded.extension['password']).assertUndefined();
     expect(decoded.extension['sshkeypassphrase']).assertUndefined();
+    expect(decoded.extension['sshhostkeyfingerprintsha256'])
+      .assertUndefined();
+    expect(decoded.extension['rdpcertificateallowhostmismatch'])
+      .assertUndefined();
     expect(decoded.displayConfigJson.indexOf('"width":1920') >= 0).assertTrue();
+  });
+
+  it('extracts_legacy_device_trust_only_for_local_migration', (): void => {
+    const legacy: string =
+      '{"width":1280,"_remoteDeskExtensionV1":{' +
+      '"sshhostkeyfingerprintsha256":"SHA256:old",' +
+      '"sshhostkeytrustedat":"100",' +
+      '"rustdeskdirecthost":"192.0.2.4"}}';
+    const extracted = extractLegacyRemoteHostDeviceTrust(legacy);
+    expect(extracted['sshhostkeyfingerprintsha256'])
+      .assertEqual('SHA256:old');
+    expect(extracted['rustdeskdirecthost'])
+      .assertUndefined();
+    const merged = mergeRemoteHostDeviceTrust(
+      { sshhostkeyfingerprintsha256: 'physical' },
+      extracted,
+      { sshhostkeyfingerprintsha256: 'local' });
+    expect(merged['sshhostkeyfingerprintsha256'])
+      .assertEqual('local');
   });
 
   it('keeps legacy displayconfig rows readable', (): void => {

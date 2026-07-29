@@ -114,7 +114,8 @@ const REMOTE_HOST_EXTENSION_SAFE: string[] = [
   'rustdeskpropeerid', 'rustdeskproplatform',
   'rustdeskpromanaged', 'rustdeskprolastseenat',
   'rustdeskprosyncerror', 'rustdesktargetdevice',
-  'rustdeskadaptiveorientation'
+  'rustdeskadaptiveorientation', 'rustdesktotpentryid',
+  'rustdesktotpautosubmit'
 ];
 
 const DISPLAY_CONFIG_SAFE: string[] = [

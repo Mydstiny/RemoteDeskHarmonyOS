@@ -1,14 +1,24 @@
 import { preferences } from '@kit.ArkData';
 import { cryptoFramework } from '@kit.CryptoArchitectureKit';
 import { common } from '@kit.AbilityKit';
+import { asset } from '@kit.AssetStoreKit';
+import { util } from '@kit.ArkTS';
 import {
   RustDeskProAccountState,
   rustDeskProAccessTokenFingerprint,
   rustDeskProTokenGeneration
 } from '../model/RustDeskProModels';
+import {
+  RustDeskProCredentialMetadata,
+  rustDeskProCredentialMetadata
+} from './RustDeskProCredentialPolicy';
 
 const STORE_NAME: string = 'RustDeskProCredentials';
 const ACCOUNTS_KEY: string = 'accounts';
+const TOKEN_ALIAS_DOMAIN: string =
+  'RemoteDeskHarmonyOS:rustdesk-pro-token:v1:';
+const ASSET_NOT_FOUND_CODE: number = 24000002;
+const ASSET_MAX_SECRET_BYTES: number = 1024;
 
 export class RustDeskProCredentialStore {
   private static instance: RustDeskProCredentialStore;
@@ -64,6 +74,95 @@ export class RustDeskProCredentialStore {
     }
   }
 
+  private sha256Hex(value: string): string {
+    const md = cryptoFramework.createMd('SHA256');
+    md.updateSync({
+      data: new util.TextEncoder().encode(value)
+    });
+    const bytes: Uint8Array = md.digestSync().data;
+    let result: string = '';
+    for (let i = 0; i < bytes.length; i++) {
+      result += bytes[i].toString(16).padStart(2, '0');
+    }
+    return result;
+  }
+
+  private tokenAlias(accountId: string): Uint8Array {
+    const identity: string =
+      this.scopeId + '\u001f' + accountId.trim();
+    return new util.TextEncoder().encode(
+      TOKEN_ALIAS_DOMAIN + this.sha256Hex(identity));
+  }
+
+  private assetErrorCode(error: Object): number {
+    if (!error || typeof error !== 'object') { return 0; }
+    const record: Record<string, Object> =
+      error as Record<string, Object>;
+    return typeof record['code'] === 'number'
+      ? record['code'] as number : 0;
+  }
+
+  private readToken(accountId: string): string {
+    if (accountId.trim() === '') { return ''; }
+    try {
+      const query: asset.AssetMap = new Map();
+      query.set(asset.Tag.ALIAS, this.tokenAlias(accountId));
+      query.set(asset.Tag.RETURN_TYPE, asset.ReturnType.ALL);
+      const rows: Array<asset.AssetMap> =
+        asset.querySync(query);
+      if (rows.length !== 1) { return ''; }
+      const secret: Uint8Array =
+        rows[0].get(asset.Tag.SECRET) as Uint8Array;
+      if (!secret || secret.length === 0 ||
+        secret.length > ASSET_MAX_SECRET_BYTES) {
+        return '';
+      }
+      return new util.TextDecoder().decodeToString(secret);
+    } catch (_err) {
+      return '';
+    }
+  }
+
+  private writeToken(accountId: string, token: string): boolean {
+    const normalizedId: string = accountId.trim();
+    if (normalizedId === '' || token === '') { return false; }
+    const secret: Uint8Array =
+      new util.TextEncoder().encode(token);
+    if (secret.length === 0 ||
+      secret.length > ASSET_MAX_SECRET_BYTES) {
+      return false;
+    }
+    try {
+      const attributes: asset.AssetMap = new Map();
+      attributes.set(asset.Tag.ALIAS,
+        this.tokenAlias(normalizedId));
+      attributes.set(asset.Tag.SECRET, secret);
+      attributes.set(asset.Tag.ACCESSIBILITY,
+        asset.Accessibility.DEVICE_FIRST_UNLOCKED);
+      attributes.set(asset.Tag.SYNC_TYPE,
+        asset.SyncType.THIS_DEVICE);
+      attributes.set(asset.Tag.CONFLICT_RESOLUTION,
+        asset.ConflictResolution.OVERWRITE);
+      asset.addSync(attributes);
+      return true;
+    } catch (_err) {
+      return false;
+    }
+  }
+
+  private removeToken(accountId: string): boolean {
+    if (accountId.trim() === '') { return true; }
+    try {
+      const query: asset.AssetMap = new Map();
+      query.set(asset.Tag.ALIAS, this.tokenAlias(accountId));
+      asset.removeSync(query);
+      return true;
+    } catch (err) {
+      return this.assetErrorCode(err as Object) ===
+        ASSET_NOT_FOUND_CODE;
+    }
+  }
+
   private load(): void {
     this.loaded = true;
     if (!this.context) { return; }
@@ -74,23 +173,57 @@ export class RustDeskProCredentialStore {
       const parsed: Object = JSON.parse(raw) as Object;
       if (!Array.isArray(parsed)) { return; }
       const rows: Object[] = parsed as Object[];
+      let legacySecretFound: boolean = false;
       for (let i = 0; i < rows.length; i++) {
         if (rows[i] && typeof rows[i] === 'object') {
           const row = rows[i] as Record<string, Object>;
-          this.accounts.push(this.fromRecord(row));
+          const accountId: string =
+            typeof row['id'] === 'string'
+              ? row['id'] as string : '';
+          const legacyToken: string =
+            typeof row['accessToken'] === 'string'
+              ? row['accessToken'] as string : '';
+          let accessToken: string = '';
+          if (legacyToken !== '') {
+            legacySecretFound = true;
+            if (this.writeToken(accountId, legacyToken)) {
+              accessToken = legacyToken;
+            }
+          } else {
+            accessToken = this.readToken(accountId);
+          }
+          this.accounts.push(
+            this.fromRecord(row, accessToken));
         }
+      }
+      if (legacySecretFound) {
+        // Scrub plaintext tokens even if Asset Store was unavailable. The
+        // affected Pro account becomes expired and must be authenticated
+        // again rather than leaving a reusable token in Preferences.
+        this.persist();
       }
     } catch (_err) {
       this.accounts = [];
     }
   }
 
-  private fromRecord(row: Record<string, Object>): RustDeskProAccountState {
-    const accessToken: string = typeof row['accessToken'] === 'string' ? row['accessToken'] as string : '';
+  private fromRecord(
+    row: Record<string, Object>, accessToken: string
+  ): RustDeskProAccountState {
     const storedFingerprint: string = typeof row['accessTokenFingerprint'] === 'string'
       ? row['accessTokenFingerprint'] as string : '';
     const storedGeneration: number = typeof row['tokenGeneration'] === 'number'
       ? row['tokenGeneration'] as number : 1;
+    let loginStatus: string =
+      typeof row['loginStatus'] === 'string'
+        ? row['loginStatus'] as string : 'none';
+    let lastSyncError: string =
+      typeof row['lastSyncError'] === 'string'
+        ? row['lastSyncError'] as string : '';
+    if (accessToken === '' && loginStatus === 'logged_in') {
+      loginStatus = 'expired';
+      lastSyncError = 'credential_asset_unavailable';
+    }
     return {
       id: typeof row['id'] === 'string' ? row['id'] as string : '',
       relayId: typeof row['relayId'] === 'string' ? row['relayId'] as string : '',
@@ -99,27 +232,35 @@ export class RustDeskProCredentialStore {
       displayName: typeof row['displayName'] === 'string' ? row['displayName'] as string : '',
       userId: typeof row['userId'] === 'string' ? row['userId'] as string : '',
       accessToken,
-      accessTokenFingerprint: storedFingerprint !== ''
-        ? storedFingerprint : rustDeskProAccessTokenFingerprint(accessToken),
+      accessTokenFingerprint: accessToken === ''
+        ? rustDeskProAccessTokenFingerprint('')
+        : (storedFingerprint !== '' ? storedFingerprint :
+          rustDeskProAccessTokenFingerprint(accessToken)),
       tokenGeneration: Number.isFinite(storedGeneration) && storedGeneration > 0
         ? Math.floor(storedGeneration) : 1,
       deviceId: typeof row['deviceId'] === 'string' ? row['deviceId'] as string : '',
       deviceUuid: typeof row['deviceUuid'] === 'string' ? row['deviceUuid'] as string : '',
-      loginStatus: typeof row['loginStatus'] === 'string' ? row['loginStatus'] as string : 'none',
+      loginStatus,
       lastLoginAt: typeof row['lastLoginAt'] === 'number' ? row['lastLoginAt'] as number : 0,
       lastSyncAt: typeof row['lastSyncAt'] === 'number' ? row['lastSyncAt'] as number : 0,
-      lastSyncError: typeof row['lastSyncError'] === 'string' ? row['lastSyncError'] as string : ''
+      lastSyncError
     };
   }
 
-  private persist(): void {
-    if (!this.context) { return; }
+  private persist(): boolean {
+    if (!this.context) { return false; }
     try {
       const prefs = preferences.getPreferencesSync(this.context, { name: this.activeStoreName() });
-      prefs.putSync(ACCOUNTS_KEY, JSON.stringify(this.accounts));
+      const metadata: Array<RustDeskProCredentialMetadata> = [];
+      for (let i = 0; i < this.accounts.length; i++) {
+        metadata.push(
+          rustDeskProCredentialMetadata(this.accounts[i]));
+      }
+      prefs.putSync(ACCOUNTS_KEY, JSON.stringify(metadata));
       prefs.flushSync();
+      return true;
     } catch (_err) {
-      // The caller still owns the in-memory state; a later init can retry persistence.
+      return false;
     }
   }
 
@@ -168,17 +309,63 @@ export class RustDeskProCredentialStore {
     return found ? this.clone(found) : undefined;
   }
 
-  save(account: RustDeskProAccountState): void {
-    const index = this.accounts.findIndex((item: RustDeskProAccountState): boolean => item.id === account.id);
-    if (index >= 0) { this.accounts[index] = this.clone(account); }
-    else { this.accounts.push(this.clone(account)); }
-    this.persist();
+  save(account: RustDeskProAccountState): boolean {
+    const next: RustDeskProAccountState =
+      this.clone(account);
+    const index = this.accounts.findIndex(
+      (item: RustDeskProAccountState): boolean =>
+        item.id === next.id);
+    const previous: RustDeskProAccountState | undefined =
+      index >= 0 ? this.clone(this.accounts[index]) : undefined;
+    const secretStored: boolean = next.accessToken === ''
+      ? this.removeToken(next.id)
+      : this.writeToken(next.id, next.accessToken);
+    if (!secretStored) { return false; }
+    if (index >= 0) {
+      this.accounts[index] = next;
+    } else {
+      this.accounts.push(next);
+    }
+    if (!this.persist()) {
+      if (previous === undefined) {
+        this.accounts = this.accounts.filter(
+          (item: RustDeskProAccountState): boolean =>
+            item.id !== next.id);
+        this.removeToken(next.id);
+      } else {
+        this.accounts[index] = previous;
+        if (previous.accessToken === '') {
+          this.removeToken(previous.id);
+        } else if (!this.writeToken(
+          previous.id, previous.accessToken)) {
+          this.removeToken(previous.id);
+        }
+      }
+      return false;
+    }
     this.emitDataChange();
+    return true;
   }
 
-  clear(id: string): void {
-    this.accounts = this.accounts.filter((account: RustDeskProAccountState): boolean => account.id !== id);
-    this.persist();
+  clear(id: string): boolean {
+    const previous: RustDeskProAccountState | undefined =
+      this.accounts.find(
+        (account: RustDeskProAccountState): boolean =>
+          account.id === id);
+    if (!this.removeToken(id)) { return false; }
+    this.accounts = this.accounts.filter(
+      (account: RustDeskProAccountState): boolean =>
+        account.id !== id);
+    if (!this.persist()) {
+      if (previous !== undefined) {
+        this.accounts.push(previous);
+        if (previous.accessToken !== '') {
+          this.writeToken(previous.id, previous.accessToken);
+        }
+      }
+      return false;
+    }
     this.emitDataChange();
+    return true;
   }
 }

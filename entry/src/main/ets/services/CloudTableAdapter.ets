@@ -59,15 +59,12 @@ const LOCAL_ONLY_COLUMNS: Record<string, string[]> = {
 };
 
 // 这些字段在既有 remotehosts 云表中没有独立列，但属于跨设备连接配置。
-// password 已由 passward 同步；sshkeypassphrase 不进入复用字段，避免敏感值泄漏。
+// 密码、SSH/RDP 设备信任和本机授权决策绝不进入该扩展。
 const REMOTE_HOST_CLOUD_EXTENSION_COLUMNS: string[] = [
-  'sshkeyid', 'sshhostkeyalgorithm', 'sshhostkeyfingerprintsha256',
-  'sshhostkeyrawbase64', 'sshhostkeytrustedat', 'sshhostkeytrustmode',
-  'rdpcertificatefingerprintsha256', 'rdpcertificatesubject', 'rdpcertificateissuer',
-  'rdpcertificatecommonname', 'rdpcertificatetrustedat', 'rdpcertificatetrustmode',
-  'rdpcertificateallowuntrustedroot', 'rdpcertificateallowhostmismatch',
-  'rustdeskrelayid', 'rustdeskaccountid', 'rustdeskpasswordmode', 'rustdeskauthmode',
+  'sshkeyid', 'rustdeskrelayid', 'rustdeskaccountid',
+  'rustdeskpasswordmode', 'rustdeskauthmode',
   'rustdeskdirectenabled', 'rustdeskdirecthost', 'rustdeskdirectport', 'sshproxytype',
+  'rustdesktotpentryid', 'rustdesktotpautosubmit',
   'rdpcredentialid', 'rdpauthmode', 'rdprestrictedadminsecretsource', 'sourcetype',
   'rustdeskproaccountid', 'rustdeskpropeerid',
   'rustdeskproplatform', 'rustdeskpromanaged', 'rustdeskprolastseenat',
