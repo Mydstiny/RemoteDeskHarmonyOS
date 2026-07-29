@@ -12,7 +12,9 @@ void RdpFrameScheduler::reset() {
 }
 
 void RdpFrameScheduler::recordPresent(const RdpPresentMetrics& present) {
-    if (!present.presented()) {
+    // Transform-only redraws have no remote-frame upload. They must not make
+    // the remote scheduler lower its delivery target during a local pinch.
+    if (!present.presented() || present.retainedFrame) {
         return;
     }
 

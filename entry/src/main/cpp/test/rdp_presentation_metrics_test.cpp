@@ -59,7 +59,7 @@ RDP_TEST_CASE(rdp_presentation_metrics_excludes_rejections_from_worker_latency) 
     RDP_ASSERT_EQ(snapshot.workerUs.max, static_cast<int64_t>(0));
 }
 
-RDP_TEST_CASE(rdp_presentation_metrics_counts_full_dirty_and_deferred_frames) {
+RDP_TEST_CASE(rdp_presentation_metrics_counts_full_dirty_retained_and_deferred_frames) {
     RdpPresentationMetrics metrics;
     metrics.recordDeferred(100);
 
@@ -72,10 +72,16 @@ RDP_TEST_CASE(rdp_presentation_metrics_counts_full_dirty_and_deferred_frames) {
     dirty.result = RdpPresentResult::Presented;
     metrics.recordPresent(300, dirty);
 
+    RdpPresentMetrics retained;
+    retained.result = RdpPresentResult::Presented;
+    retained.retainedFrame = true;
+    metrics.recordPresent(350, retained);
+
     const RdpPresentationMetricsSnapshot snapshot = metrics.snapshot(400);
-    RDP_ASSERT_EQ(snapshot.presentedFrames, static_cast<uint64_t>(2));
+    RDP_ASSERT_EQ(snapshot.presentedFrames, static_cast<uint64_t>(3));
     RDP_ASSERT_EQ(snapshot.fullFramePresents, static_cast<uint64_t>(1));
     RDP_ASSERT_EQ(snapshot.dirtyRectPresents, static_cast<uint64_t>(1));
+    RDP_ASSERT_EQ(snapshot.retainedFramePresents, static_cast<uint64_t>(1));
     RDP_ASSERT_EQ(snapshot.deferredSnapshots, static_cast<uint64_t>(1));
 }
 

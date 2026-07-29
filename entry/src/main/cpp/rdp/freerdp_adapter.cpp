@@ -788,17 +788,16 @@ struct FreeRdpAdapter::Impl {
     void startSessionWorkers(FreeRdpAdapter* owner) {
         std::lock_guard<std::mutex> lifecycleLock(workerLifecycleMutex);
         startInputQueueWorker(owner);
-        framePump.setRefreshSource(damageAccumulator);
         if (!framePump.start()) {
             presentationEnabled.store(false, std::memory_order_release);
             OH_LOG_ERROR(LOG_APP, "[RDP] frame pump unavailable; presentation remains disabled");
             return;
         }
-        // Canvas transforms only wake the pump. The pump owns the retained
-        // frame snapshot and the renderer owner performs the actual GL work.
+        // Canvas transforms only wake the pump. It redraws the already
+        // uploaded texture and never asks the GDI accumulator for a snapshot.
         auto notifier = std::make_shared<RdpRedrawNotifier>();
         notifier->bind([this]() {
-            framePump.requestRefresh();
+            framePump.requestTransformRefresh();
         });
         redrawNotifier = notifier;
         redrawCallbackToken = RendererNapi::RegisterActiveRedrawCallback([notifier]() {

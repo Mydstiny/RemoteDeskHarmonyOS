@@ -4,6 +4,7 @@
 
 #include "rdp_frame_pump.h"
 #include "render/gl_renderer.h"
+#include "rdp_transform_refresh_policy.h"
 
 #include <algorithm>
 #include <chrono>
@@ -39,7 +40,8 @@ bool RdpFramePump::start() {
     ++pumpGeneration_;
     running_ = true;
     hasFrame_ = false;
-    refreshRequested_ = false;
+    transformRefreshRequested_ = false;
+    transformRefreshSequence_ = 0;
     frame_ = RdpFrameSubmission();
     fullResyncRequired_.store(true, std::memory_order_release);
     metrics_.reset(SteadyNowUs());
@@ -73,9 +75,9 @@ void RdpFramePump::stop() {
         running_ = false;
         ++pumpGeneration_;
         hasFrame_ = false;
-        refreshRequested_ = false;
+        transformRefreshRequested_ = false;
+        transformRefreshSequence_ = 0;
         frame_ = RdpFrameSubmission();
-        refreshSource_.reset();
     }
     cv_.notify_all();
     if (worker_.joinable()) {
@@ -112,20 +114,16 @@ bool RdpFramePump::submitLatest(RdpFrameSubmission&& submission) {
     return true;
 }
 
-void RdpFramePump::requestRefresh() {
+void RdpFramePump::requestTransformRefresh() {
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        if (!running_ || !refreshSource_) {
+        if (!running_) {
             return;
         }
-        refreshRequested_ = true;
+        transformRefreshRequested_ = true;
+        ++transformRefreshSequence_;
     }
     cv_.notify_one();
-}
-
-void RdpFramePump::setRefreshSource(std::shared_ptr<RdpDamageAccumulator> source) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    refreshSource_ = std::move(source);
 }
 
 void RdpFramePump::invalidatePending() {
@@ -136,7 +134,8 @@ void RdpFramePump::invalidatePending() {
         ++pumpGeneration_;
         rejectedPending = hasFrame_;
         hasFrame_ = false;
-        refreshRequested_ = false;
+        transformRefreshRequested_ = false;
+        transformRefreshSequence_ = 0;
         frame_ = RdpFrameSubmission();
         fullResyncRequired_.store(true, std::memory_order_release);
     }
@@ -153,67 +152,81 @@ void RdpFramePump::invalidatePending() {
 void RdpFramePump::loop() {
     OH_LOG_INFO(LOG_APP, "[RDP-PUMP] render worker started");
     int64_t nextPresentAtUs = 0;
+    int64_t nextTransformPresentAtUs = 0;
     while (true) {
         RdpFrameSubmission frame;
-        std::shared_ptr<RdpDamageAccumulator> refreshSource;
-        bool refreshRequested = false;
-        uint64_t refreshPumpGeneration = 0;
+        bool renderRetainedTransform = false;
+        uint64_t selectedPumpGeneration = 0;
+        uint64_t transformSequenceAtSourceSelection = 0;
         {
             std::unique_lock<std::mutex> lock(mutex_);
             while (running_) {
                 const int64_t nowUs = SteadyNowUs();
-                if (refreshRequested_) {
-                    // A transform refresh is an explicit visual deadline. It
-                    // must wake even while normal frame pacing is waiting.
-                    refreshRequested = true;
-                    refreshRequested_ = false;
-                    refreshSource = refreshSource_;
-                    refreshPumpGeneration = pumpGeneration_;
-                    // The retained source contains the newest pixels, so a
-                    // queued submission is superseded by this full snapshot.
-                    frame_ = RdpFrameSubmission();
-                    hasFrame_ = false;
-                    break;
-                }
-
-                if (hasFrame_ && RdpFrameScheduler::IsDue(nowUs, nextPresentAtUs)) {
+                const RdpTransformRefreshDecision decision = DecideRdpTransformRefresh(
+                    hasFrame_, transformRefreshRequested_, nowUs,
+                    nextPresentAtUs, nextTransformPresentAtUs);
+                if (decision.action == RdpTransformRefreshAction::PresentSourceFrame) {
                     frame = std::move(frame_);
                     frame_ = RdpFrameSubmission();
                     hasFrame_ = false;
                     if (frame.pumpGeneration == pumpGeneration_) {
+                        selectedPumpGeneration = pumpGeneration_;
+                        transformSequenceAtSourceSelection = transformRefreshSequence_;
                         break;
                     }
                     frame = RdpFrameSubmission();
                     continue;
                 }
+                if (decision.action == RdpTransformRefreshAction::PresentRetainedFrame) {
+                    transformRefreshRequested_ = false;
+                    selectedPumpGeneration = pumpGeneration_;
+                    renderRetainedTransform = true;
+                    break;
+                }
 
-                if (!hasFrame_) {
+                if (decision.waitUntilUs == 0) {
                     cv_.wait(lock, [this]() {
-                        return !running_ || hasFrame_ || refreshRequested_;
+                        return !running_ || hasFrame_ || transformRefreshRequested_;
                     });
                     continue;
                 }
-
-                // A frame is queued but normal pacing has not reached its
-                // deadline. Refresh requests are allowed to interrupt this
-                // wait; ordinary frame submissions remain latest-value-wins.
-                const int64_t waitUs = std::max<int64_t>(1, nextPresentAtUs - nowUs);
-                cv_.wait_for(lock, std::chrono::microseconds(waitUs), [this]() {
-                    return !running_ || refreshRequested_;
-                });
+                const int64_t waitUs = std::max<int64_t>(1, decision.waitUntilUs - nowUs);
+                cv_.wait_for(lock, std::chrono::microseconds(waitUs));
             }
             if (!running_) {
                 break;
             }
         }
 
-        if (!frame.damageSource && refreshRequested && refreshSource) {
+        if (renderRetainedTransform) {
+            RdpPresentMetrics present;
+            present.retainedFrame = true;
             const RdpPresentationTarget target = RendererNapi::GetActivePresentationTarget();
-            if (target.ready() && refreshSource->requestFullSnapshot(target.generation)) {
-                frame.damageSource = std::move(refreshSource);
-                frame.pumpGeneration = refreshPumpGeneration;
-                frame.enqueuedAtUs = SteadyNowUs();
+            try {
+                present.generation = target.generation;
+                present = target.ready() ?
+                    RendererNapi::PresentRetainedActive(target.generation) : RdpPresentMetrics();
+                if (!target.ready()) {
+                    present.result = target.rejection;
+                    present.generation = target.generation;
+                    present.retainedFrame = true;
+                }
+            } catch (const std::exception& e) {
+                present.result = RdpPresentResult::Exception;
+                OH_LOG_ERROR(LOG_APP, "[RDP-PUMP] retained transform exception: %{public}s", e.what());
+            } catch (...) {
+                present.result = RdpPresentResult::Exception;
+                OH_LOG_ERROR(LOG_APP, "[RDP-PUMP] retained transform exception: unknown");
             }
+            if (present.presented()) {
+                rendered_.fetch_add(1, std::memory_order_relaxed);
+                lastWorkerCostUs_.store(present.workerUs(), std::memory_order_release);
+            } else {
+                rejected_.fetch_add(1, std::memory_order_relaxed);
+            }
+            metrics_.recordPresent(SteadyNowUs(), present);
+            nextTransformPresentAtUs = NextRdpTransformRefreshDeadlineUs(SteadyNowUs());
+            continue;
         }
         if (!frame.damageSource) {
             continue;
@@ -270,6 +283,15 @@ void RdpFramePump::loop() {
         if (present.presented()) {
             rendered_.fetch_add(1, std::memory_order_relaxed);
             lastWorkerCostUs_.store(present.workerUs(), std::memory_order_release);
+            // The source frame sampled the newest transform. Clear only the
+            // request that existed before it began so a newer UI update still
+            // receives its own retained redraw.
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (running_ && selectedPumpGeneration == pumpGeneration_ &&
+                transformRefreshRequested_ &&
+                transformRefreshSequence_ == transformSequenceAtSourceSelection) {
+                transformRefreshRequested_ = false;
+            }
         } else {
             rejected_.fetch_add(1, std::memory_order_relaxed);
             if (present.result == RdpPresentResult::SurfaceDetached ||
@@ -283,6 +305,7 @@ void RdpFramePump::loop() {
         glUploadGate_.recordPresent(present);
         metrics_.recordPresent(SteadyNowUs(), present);
         nextPresentAtUs = scheduler_.nextDeadlineUs(SteadyNowUs());
+        nextTransformPresentAtUs = NextRdpTransformRefreshDeadlineUs(SteadyNowUs());
 
         RdpPresentationMetricsSnapshot window;
         if (metrics_.takeCompletedWindow(window)) {
@@ -290,7 +313,7 @@ void RdpFramePump::loop() {
             OH_LOG_INFO(LOG_APP,
                 "[RDP-PRESENT] submitted=%{public}llu presented=%{public}llu replaced=%{public}llu"
                 " rejected=%{public}llu detached=%{public}llu copied=%{public}llu"
-                " full=%{public}llu dirty=%{public}llu deferred=%{public}llu"
+                " full=%{public}llu dirty=%{public}llu transform=%{public}llu deferred=%{public}llu"
                 " callbackP95=%{public}lldus queueP95=%{public}lldus uploadP95=%{public}lldus"
                 " drawP95=%{public}lldus swapP95=%{public}lldus workerP95=%{public}lldus"
                 " targetFps=%{public}d schedulerP95=%{public}lldus adaptations=%{public}llu"
@@ -304,6 +327,7 @@ void RdpFramePump::loop() {
                 static_cast<unsigned long long>(window.copiedBytes),
                 static_cast<unsigned long long>(window.fullFramePresents),
                 static_cast<unsigned long long>(window.dirtyRectPresents),
+                static_cast<unsigned long long>(window.retainedFramePresents),
                 static_cast<unsigned long long>(window.deferredSnapshots),
                 static_cast<long long>(window.callbackUs.p95),
                 static_cast<long long>(window.queueWaitUs.p95),

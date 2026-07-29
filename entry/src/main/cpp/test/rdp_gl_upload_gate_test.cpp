@@ -36,6 +36,18 @@ RDP_TEST_CASE(rdp_gl_upload_gate_requires_full_successful_sample_window) {
     RDP_ASSERT_EQ(snapshot.pendingSamples, RdpGlUploadGate::kDecisionSamples - 1);
 }
 
+RDP_TEST_CASE(rdp_gl_upload_gate_excludes_retained_transform_redraws) {
+    RdpGlUploadGate gate;
+    RdpPresentMetrics retained = PresentWithCosts(0, 3000, 3000);
+    retained.retainedFrame = true;
+    for (size_t i = 0; i < RdpGlUploadGate::kDecisionSamples; ++i) {
+        gate.recordPresent(retained);
+    }
+    const RdpGlUploadGateSnapshot snapshot = gate.snapshot();
+    RDP_ASSERT(snapshot.decision == RdpGlUploadDecision::InsufficientSamples);
+    RDP_ASSERT_EQ(snapshot.pendingSamples, static_cast<size_t>(0));
+}
+
 RDP_TEST_CASE(rdp_gl_upload_gate_keeps_direct_upload_below_sixty_percent) {
     RdpGlUploadGate gate;
     RecordWindow(gate, 4000, 5000, 1000);

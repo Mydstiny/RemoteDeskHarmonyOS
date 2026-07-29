@@ -81,6 +81,8 @@ public:
     void SetSessionRedrawCallback(std::function<void()> callback);
     /** Redraw the retained raw frame on the caller's renderer-owner thread. */
     void RenderRetainedFrame(uint64_t expectedGeneration = 0);
+    /** Same retained redraw with a generation-safe presentation result. */
+    RdpPresentMetrics PresentRetainedFrame(uint64_t expectedGeneration = 0);
 
     /** 最近一秒的实际 swap/presentation 统计；读取不会清零计数。 */
     RdpPresentationMetricsSnapshot GetPresentationStats();
@@ -203,7 +205,7 @@ private:
                                             int stride, bool useDirtyRect, int dirtyX,
                                             int dirtyY, int dirtyWidth, int dirtyHeight,
                                             uint64_t generation);
-    void RenderRetainedFrameLocked(uint64_t expectedGeneration);
+    RdpPresentMetrics RenderRetainedFrameLocked(uint64_t expectedGeneration);
 };
 
 // ============================================================
@@ -225,6 +227,7 @@ namespace RendererNapi {
                                                int height, int stride, int dirtyX, int dirtyY,
                                                int dirtyWidth, int dirtyHeight,
                                                uint64_t generation);
+    RdpPresentMetrics PresentRetainedActive(uint64_t generation);
     int RenderRawBgraActive(const uint8_t* data, size_t size, int width, int height, int stride);
     int RenderRawBgraRectActive(const uint8_t* data, size_t size, int width, int height, int stride,
                                 int dirtyX, int dirtyY, int dirtyWidth, int dirtyHeight);

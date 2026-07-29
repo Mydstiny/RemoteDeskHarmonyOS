@@ -1033,27 +1033,42 @@ uint64_t GLRenderer::SetCanvasTransform(double scale, double panX, double panY) 
 }
 
 void GLRenderer::RenderRetainedFrame(uint64_t expectedGeneration) {
-    std::lock_guard<std::mutex> lock(lifecycleMutex_);
-    RenderRetainedFrameLocked(expectedGeneration);
+    (void)PresentRetainedFrame(expectedGeneration);
 }
 
-void GLRenderer::RenderRetainedFrameLocked(uint64_t expectedGeneration) {
+RdpPresentMetrics GLRenderer::PresentRetainedFrame(uint64_t expectedGeneration) {
+    std::lock_guard<std::mutex> lock(lifecycleMutex_);
+    return RenderRetainedFrameLocked(expectedGeneration);
+}
+
+RdpPresentMetrics GLRenderer::RenderRetainedFrameLocked(uint64_t expectedGeneration) {
     using clock = std::chrono::steady_clock;
+    RdpPresentMetrics metrics;
+    metrics.generation = expectedGeneration;
+    metrics.retainedFrame = true;
     if ((expectedGeneration != 0 && expectedGeneration !=
             g_rendererGeneration.load(std::memory_order_acquire)) ||
         destroying_ || !initialized_ || rawShaderProgram_ == 0 || rawTexture_ == 0 ||
         rawTextureWidth_ <= 0 || rawTextureHeight_ <= 0 ||
         g_surfaceDetached.load(std::memory_order_acquire) ||
         !g_surfaceReady.load(std::memory_order_acquire)) {
-        return;
+        metrics.result = (expectedGeneration != 0 && expectedGeneration !=
+            g_rendererGeneration.load(std::memory_order_acquire)) ?
+            RdpPresentResult::GenerationMismatch :
+            (g_surfaceDetached.load(std::memory_order_acquire) ||
+             !g_surfaceReady.load(std::memory_order_acquire)) ?
+            RdpPresentResult::SurfaceDetached : RdpPresentResult::RendererNotReady;
+        return metrics;
     }
     if (!MakeCurrent()) {
-        return;
+        metrics.result = RdpPresentResult::MakeCurrentFailed;
+        return metrics;
     }
     if (expectedGeneration != 0 && expectedGeneration !=
             g_rendererGeneration.load(std::memory_order_acquire)) {
         ReleaseCurrent();
-        return;
+        metrics.result = RdpPresentResult::GenerationMismatch;
+        return metrics;
     }
     ApplyPendingCanvasTransformLocked();
     const auto drawBeginAt = clock::now();
@@ -1078,7 +1093,6 @@ void GLRenderer::RenderRetainedFrameLocked(uint64_t expectedGeneration) {
     const bool swapped = eglSwapBuffers(eglDisplay_, eglSurface_) == EGL_TRUE;
     const auto swapAt = clock::now();
     ReleaseCurrent();
-    RdpPresentMetrics metrics;
     metrics.result = swapped ? RdpPresentResult::Presented : RdpPresentResult::SwapFailed;
     metrics.drawUs = std::chrono::duration_cast<std::chrono::microseconds>(
         drawAt - drawBeginAt).count();
@@ -1087,6 +1101,7 @@ void GLRenderer::RenderRetainedFrameLocked(uint64_t expectedGeneration) {
     const auto nowUs = std::chrono::duration_cast<std::chrono::microseconds>(
         swapAt.time_since_epoch()).count();
     presentationMetrics_.recordPresent(nowUs, metrics);
+    return metrics;
 }
 
 void GLRenderer::CalculateViewport(int sourceWidth, int sourceHeight,
@@ -1895,6 +1910,38 @@ RdpPresentMetrics RendererNapi::PresentRawBgraRectActive(
     }
     return renderer->PresentRawBGRARect(data, width, height, stride,
                                         dirtyX, dirtyY, dirtyWidth, dirtyHeight, generation);
+}
+
+RdpPresentMetrics RendererNapi::PresentRetainedActive(uint64_t generation) {
+    RdpPresentMetrics metrics;
+    metrics.generation = generation;
+    metrics.retainedFrame = true;
+    std::shared_ptr<GLRenderer> renderer;
+    uint64_t contextGeneration = 0;
+    {
+        std::lock_guard<std::mutex> lock(g_activeRendererMutex);
+        if (generation == 0 ||
+            generation != g_rendererGeneration.load(std::memory_order_acquire)) {
+            metrics.result = RdpPresentResult::GenerationMismatch;
+            return metrics;
+        }
+        const int64_t handle = g_activeRendererHandle.load(std::memory_order_acquire);
+        renderer = AcquireRendererLocked(handle, true, &contextGeneration);
+    }
+    if (contextGeneration != generation) {
+        metrics.result = RdpPresentResult::GenerationMismatch;
+        return metrics;
+    }
+    if (g_surfaceDetached.load(std::memory_order_acquire) ||
+        !g_surfaceReady.load(std::memory_order_acquire)) {
+        metrics.result = RdpPresentResult::SurfaceDetached;
+        return metrics;
+    }
+    if (!renderer) {
+        metrics.result = RdpPresentResult::NoActiveRenderer;
+        return metrics;
+    }
+    return renderer->PresentRetainedFrame(generation);
 }
 
 int RendererNapi::RenderRawBgraActive(

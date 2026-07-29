@@ -31,6 +31,9 @@ struct RdpPresentMetrics {
     RdpPresentResult result = RdpPresentResult::RendererNotReady;
     uint64_t generation = 0;
     bool fullFrame = false;
+    // No framebuffer upload occurred; the renderer sampled its retained raw
+    // texture after a local canvas-transform update.
+    bool retainedFrame = false;
     int64_t queueWaitUs = 0;
     int64_t uploadUs = 0;
     int64_t drawUs = 0;
@@ -61,6 +64,7 @@ struct RdpPresentationMetricsSnapshot {
     uint64_t presentedFrames = 0;
     uint64_t fullFramePresents = 0;
     uint64_t dirtyRectPresents = 0;
+    uint64_t retainedFramePresents = 0;
     uint64_t deferredSnapshots = 0;
     uint64_t surfaceDetachedRejections = 0;
     uint64_t generationRejections = 0;
@@ -145,7 +149,10 @@ public:
 
         ++totals_.presentedFrames;
         ++current_.presentedFrames;
-        if (present.fullFrame) {
+        if (present.retainedFrame) {
+            ++totals_.retainedFramePresents;
+            ++current_.retainedFramePresents;
+        } else if (present.fullFrame) {
             ++totals_.fullFramePresents;
             ++current_.fullFramePresents;
         } else {
@@ -197,6 +204,7 @@ private:
         uint64_t presentedFrames = 0;
         uint64_t fullFramePresents = 0;
         uint64_t dirtyRectPresents = 0;
+        uint64_t retainedFramePresents = 0;
         uint64_t deferredSnapshots = 0;
         uint64_t surfaceDetachedRejections = 0;
         uint64_t generationRejections = 0;
@@ -280,6 +288,7 @@ private:
         result.presentedFrames = window.presentedFrames;
         result.fullFramePresents = window.fullFramePresents;
         result.dirtyRectPresents = window.dirtyRectPresents;
+        result.retainedFramePresents = window.retainedFramePresents;
         result.deferredSnapshots = window.deferredSnapshots;
         result.surfaceDetachedRejections = window.surfaceDetachedRejections;
         result.generationRejections = window.generationRejections;

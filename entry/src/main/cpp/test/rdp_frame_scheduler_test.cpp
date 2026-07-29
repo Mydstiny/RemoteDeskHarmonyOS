@@ -43,6 +43,17 @@ RDP_TEST_CASE(rdp_frame_scheduler_excludes_rejected_presents) {
     RDP_ASSERT_EQ(scheduler.validSamples(), static_cast<size_t>(0));
 }
 
+RDP_TEST_CASE(rdp_frame_scheduler_excludes_retained_transform_redraws) {
+    RdpFrameScheduler scheduler;
+    RdpPresentMetrics retained = PresentedAtCost(50000);
+    retained.retainedFrame = true;
+    for (int i = 0; i < 200; ++i) {
+        scheduler.recordPresent(retained);
+    }
+    RDP_ASSERT_EQ(scheduler.targetFps(), 60);
+    RDP_ASSERT_EQ(scheduler.validSamples(), static_cast<size_t>(0));
+}
+
 RDP_TEST_CASE(rdp_frame_scheduler_selects_twenty_fps_for_severe_p95) {
     RdpFrameScheduler scheduler;
     RecordPresented(scheduler, 120, 40000);

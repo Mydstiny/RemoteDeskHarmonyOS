@@ -160,6 +160,7 @@ if(RDP_BUILD_TESTS)
         test/rdp_background_frame_cache_test.cpp
         test/rdp_damage_accumulator_test.cpp
         test/rdp_frame_scheduler_test.cpp
+        test/rdp_transform_refresh_policy_test.cpp
         test/rdp_gl_upload_gate_test.cpp
         test/rdp_graphics_lifecycle_test.cpp
         test/rdp_certificate_policy_test.cpp
