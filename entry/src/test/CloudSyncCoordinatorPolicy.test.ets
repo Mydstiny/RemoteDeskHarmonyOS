@@ -1,13 +1,21 @@
 import { describe, it, expect } from '@ohos/hypium';
 import {
+  CLOUD_SYNC_ACCEPT_TIMEOUT_MS,
+  CLOUD_SYNC_IDLE_TIMEOUT_MS,
   CLOUD_SYNC_MAX_RETRY_ATTEMPTS,
+  CLOUD_SYNC_OVERALL_TIMEOUT_MS,
   CloudSyncRequest,
   CloudSyncRetryRecord,
+  CloudSyncCallbackIdentity,
+  CloudSyncWatchdogState,
   cloudLocalMutationAllowed,
+  cloudSyncCallbackIdentityMatches,
   cloudDistributedTableAutoSync,
   cloudSyncProgressFinished,
   cloudSyncProgressSucceeded,
   cloudSyncTargetTableCompleted,
+  cloudSyncWatchdogNextDelayMs,
+  cloudSyncWatchdogTimeoutKind,
   classifyCloudSyncFailure,
   classifyCloudSyncProgressCode,
   cloudSyncFailureMessage,
@@ -58,6 +66,67 @@ export default function cloudSyncCoordinatorPolicyTest(): void {
       expect(cloudSyncProgressSucceeded(2, 0)).assertTrue();
       expect(cloudSyncProgressSucceeded(1, 0)).assertFalse();
       expect(cloudSyncProgressSucceeded(2, 2)).assertFalse();
+    });
+
+    it('bounds_accept_idle_and_overall_cloud_sync_waits', 0, (): void => {
+      const waitingForAccept: CloudSyncWatchdogState = {
+        startedAt: 1000,
+        lastSignalAt: 1000,
+        signalObserved: false,
+        settled: false
+      };
+      expect(cloudSyncWatchdogNextDelayMs(waitingForAccept, 1000))
+        .assertEqual(CLOUD_SYNC_ACCEPT_TIMEOUT_MS);
+      expect(cloudSyncWatchdogTimeoutKind(
+        waitingForAccept, 1000 + CLOUD_SYNC_ACCEPT_TIMEOUT_MS - 1))
+        .assertEqual('none');
+      expect(cloudSyncWatchdogTimeoutKind(
+        waitingForAccept, 1000 + CLOUD_SYNC_ACCEPT_TIMEOUT_MS))
+        .assertEqual('accept_timeout');
+
+      const progressing: CloudSyncWatchdogState = {
+        startedAt: 1000,
+        lastSignalAt: 5000,
+        signalObserved: true,
+        settled: false
+      };
+      expect(cloudSyncWatchdogTimeoutKind(
+        progressing, 5000 + CLOUD_SYNC_IDLE_TIMEOUT_MS))
+        .assertEqual('idle_timeout');
+      progressing.lastSignalAt = 5000 + CLOUD_SYNC_IDLE_TIMEOUT_MS - 1;
+      expect(cloudSyncWatchdogTimeoutKind(
+        progressing, 5000 + CLOUD_SYNC_IDLE_TIMEOUT_MS))
+        .assertEqual('none');
+      expect(cloudSyncWatchdogTimeoutKind(
+        progressing, 1000 + CLOUD_SYNC_OVERALL_TIMEOUT_MS))
+        .assertEqual('overall_timeout');
+      progressing.settled = true;
+      expect(cloudSyncWatchdogTimeoutKind(
+        progressing, 1000 + CLOUD_SYNC_OVERALL_TIMEOUT_MS))
+        .assertEqual('none');
+      expect(cloudSyncWatchdogNextDelayMs(
+        progressing, 1000 + CLOUD_SYNC_OVERALL_TIMEOUT_MS))
+        .assertEqual(-1);
+    });
+
+    it('accepts_late_callbacks_only_for_the_exact_operation_store_and_generation', 0, (): void => {
+      const expected: CloudSyncCallbackIdentity = {
+        operationId: 9,
+        storeInstanceId: 4,
+        generation: 7
+      };
+      expect(cloudSyncCallbackIdentityMatches(expected, {
+        operationId: 9, storeInstanceId: 4, generation: 7
+      })).assertTrue();
+      expect(cloudSyncCallbackIdentityMatches(expected, {
+        operationId: 8, storeInstanceId: 4, generation: 7
+      })).assertFalse();
+      expect(cloudSyncCallbackIdentityMatches(expected, {
+        operationId: 9, storeInstanceId: 3, generation: 7
+      })).assertFalse();
+      expect(cloudSyncCallbackIdentityMatches(expected, {
+        operationId: 9, storeInstanceId: 4, generation: 6
+      })).assertFalse();
     });
 
     it('requires_complete_target_table_statistics_at_sync_finish', 0, (): void => {
@@ -113,6 +182,10 @@ export default function cloudSyncCoordinatorPolicyTest(): void {
       expect(cloudLocalMutationAllowed(false, true)).assertFalse();
       expect(cloudLocalMutationAllowed(false, false, true, false)).assertTrue();
       expect(cloudLocalMutationAllowed(false, false, true, true)).assertTrue();
+      expect(cloudLocalMutationAllowed(
+        false, false, false, true, true, false)).assertFalse();
+      expect(cloudLocalMutationAllowed(
+        false, false, false, true, false, true)).assertFalse();
     });
 
     it('forces_first_bootstrap_to_cloud_first_and_defers_automatic_uploads', 0, (): void => {

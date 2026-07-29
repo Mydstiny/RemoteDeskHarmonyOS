@@ -24,6 +24,7 @@ import {
   cloneCloudSyncDurableState,
   cloudSyncDownloadAllowed,
   cloudSyncDurableStateWithIntents,
+  cloudSyncIndeterminateSettled,
   cloudSyncOperationFinished,
   cloudSyncOperationStarted,
   cloudSyncQuiesced,
@@ -81,6 +82,8 @@ export interface CloudSyncCoordinatorHooks {
   hasRestoredNotUploaded?: () => boolean;
   clearRestoredNotUploaded?: () => boolean;
   setStartupSyncPending?: (pending: boolean) => void;
+  setCloudDownloadPending?: (pending: boolean) => void;
+  settlePendingIndeterminate?: () => void;
   hasCloudBootstrapCompleted?: () => boolean;
   markCloudBootstrapCompleted?: () => boolean;
   discardMutationJournalForTables?: (tables: string[]) => boolean;
@@ -392,6 +395,24 @@ export class CloudSyncCoordinator {
     this.deferredAutomaticTables = [];
     this.retryRecords = [];
     this.restorePending = false;
+    return true;
+  }
+
+  /**
+   * Called only after CloudStore fences an exact late native terminal callback.
+   * It releases the durable recovery phase without claiming transfer success.
+   */
+  recoverIndeterminateTransfer(lease: AccountSessionLease): boolean {
+    if (!accountSessionLeaseEquals(this.currentLease, lease) ||
+      this.durableState === null ||
+      this.durableState.phase !== 'recovery_required' ||
+      this.durableState.lastFailureKind !== 'indeterminate') {
+      return false;
+    }
+    const next: CloudSyncDurableState = cloudSyncIndeterminateSettled(
+      this.durableState, this.currentBinding, this.transfersEnabled);
+    if (!this.persistDurableCandidate(next)) { return false; }
+    this.scheduleRetryTimer();
     return true;
   }
 
@@ -1047,6 +1068,10 @@ export class CloudSyncCoordinator {
           resolve(this.rejectedResult(request));
           return;
         }
+        if (result.failureKind === 'indeterminate' &&
+          this.hooks && this.hooks.settlePendingIndeterminate) {
+          this.hooks.settlePendingIndeterminate();
+        }
         resolve(result);
       };
       this.queueTail = this.queueTail.then(run, run);
@@ -1066,14 +1091,25 @@ export class CloudSyncCoordinator {
   }
 
   private async execute(request: CloudSyncRequest): Promise<CloudSyncOperationResult> {
-    return await executeCloudSyncRequest(
-      request,
-      this.executor,
-      this.hooks,
-      (tables: string[]): void => {
-        if (this.onCloudFirstApplied) { this.onCloudFirstApplied(tables); }
+    const tracksCloudDownload: boolean = request.direction === 'cloudFirst' &&
+      this.hooks !== null && this.hooks.setCloudDownloadPending !== undefined;
+    if (tracksCloudDownload && this.hooks && this.hooks.setCloudDownloadPending) {
+      this.hooks.setCloudDownloadPending(true);
+    }
+    try {
+      return await executeCloudSyncRequest(
+        request,
+        this.executor,
+        this.hooks,
+        (tables: string[]): void => {
+          if (this.onCloudFirstApplied) { this.onCloudFirstApplied(tables); }
+        }
+      );
+    } finally {
+      if (tracksCloudDownload && this.hooks && this.hooks.setCloudDownloadPending) {
+        this.hooks.setCloudDownloadPending(false);
       }
-    );
+    }
   }
 
   private restoreRetryRecord(): void {

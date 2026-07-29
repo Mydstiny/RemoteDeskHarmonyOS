@@ -6,6 +6,7 @@ import {
   cloudSyncBootstrapCompleted,
   cloudSyncDownloadAllowed,
   cloudSyncDurableStateWithIntents,
+  cloudSyncIndeterminateSettled,
   cloudSyncOperationFinished,
   cloudSyncOperationStarted,
   cloudSyncRestoreQuarantined,
@@ -79,6 +80,22 @@ export default function cloudSyncLifecyclePolicyTest(): void {
         conflict, false, ['remotehosts'], true, 'unknown', true, 3);
       expect(blocked.phase).assertEqual('blocked');
       expect(cloudSyncAutomaticUploadAllowed(blocked)).assertFalse();
+    });
+
+    it('keeps_a_watchdog_timeout_in_recovery_until_native_terminal_arrives', 0, (): void => {
+      const initial: CloudSyncDurableState =
+        newCloudSyncDurableState(binding(), true, true, 1);
+      const timedOut: CloudSyncDurableState = cloudSyncOperationFinished(
+        initial, false, ['remotehosts'], false, 'indeterminate', true, 2);
+      expect(timedOut.phase).assertEqual('recovery_required');
+      expect(cloudSyncAutomaticUploadAllowed(timedOut)).assertFalse();
+      expect(cloudSyncDownloadAllowed(timedOut)).assertTrue();
+
+      const terminal: CloudSyncDurableState =
+        cloudSyncIndeterminateSettled(timedOut, binding(), true, 3);
+      expect(terminal.phase).assertEqual('ready');
+      expect(terminal.lastFailureKind).assertEqual('indeterminate');
+      expect(cloudSyncAutomaticUploadAllowed(terminal)).assertTrue();
     });
 
     it('rejects_a_durable_state_from_another_physical_owner_store', 0, (): void => {

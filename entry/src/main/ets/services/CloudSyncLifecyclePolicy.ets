@@ -62,6 +62,7 @@ function isFailureKind(value: string): boolean {
     value === 'tombstone_cleanup' ||
     value === 'cloud_service' ||
     value === 'network' ||
+    value === 'indeterminate' ||
     value === 'unknown';
 }
 
@@ -364,6 +365,8 @@ export function cloudSyncOperationFinished(
   next.updatedAt = now;
   if (rollbackFailed) {
     next.phase = 'blocked';
+  } else if (!ok && failureKind === 'indeterminate') {
+    next.phase = 'recovery_required';
   } else if (!ok && shouldBlockAutomaticRetry(failureKind)) {
     next.phase = 'conflict_blocked';
   } else if (!ok) {
@@ -371,6 +374,27 @@ export function cloudSyncOperationFinished(
   } else {
     next.phase = settledPhase(next);
   }
+  return next;
+}
+
+/**
+ * A watchdog timeout is only recoverable after the exact native operation
+ * later reaches a terminal callback. This transition does not claim that the
+ * timed-out transfer succeeded; it merely permits the serialized coordinator
+ * to reconcile or retry from its already persisted intents.
+ */
+export function cloudSyncIndeterminateSettled(
+  state: CloudSyncDurableState,
+  binding: CloudAccountBinding,
+  transferEnabled: boolean,
+  now: number = Date.now()
+): CloudSyncDurableState {
+  const next: CloudSyncDurableState = cloneCloudSyncDurableState(state);
+  next.revision = state.revision + 1;
+  next.updatedAt = now;
+  next.phase = transferEnabled && cloudAccountBindingIsValid(binding)
+    ? settledPhase(next)
+    : bindingPhase(binding, transferEnabled, state.bootstrapCompleted);
   return next;
 }
 

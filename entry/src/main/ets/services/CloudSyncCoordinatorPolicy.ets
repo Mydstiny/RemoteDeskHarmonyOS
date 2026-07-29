@@ -5,6 +5,9 @@ export type CloudSyncSource =
   'startup' | 'foreground' | 'cloudEvent' | 'automaticPush' | 'manualUpload' | 'manualDownload' | 'localRestore';
 
 export const CLOUD_SYNC_MAX_RETRY_ATTEMPTS: number = 3;
+export const CLOUD_SYNC_ACCEPT_TIMEOUT_MS: number = 15000;
+export const CLOUD_SYNC_IDLE_TIMEOUT_MS: number = 45000;
+export const CLOUD_SYNC_OVERALL_TIMEOUT_MS: number = 180000;
 
 export interface CloudSyncRequest {
   source: CloudSyncSource;
@@ -23,7 +26,23 @@ export interface CloudSyncRetryRecord {
 
 export type CloudSyncFailureKind =
   'none' | 'version_conflict' | 'empty_snapshot' | 'tombstone_cleanup' |
-  'cloud_service' | 'network' | 'unknown';
+  'cloud_service' | 'network' | 'indeterminate' | 'unknown';
+
+export type CloudSyncWatchdogTimeoutKind =
+  'none' | 'accept_timeout' | 'idle_timeout' | 'overall_timeout';
+
+export interface CloudSyncWatchdogState {
+  startedAt: number;
+  lastSignalAt: number;
+  signalObserved: boolean;
+  settled: boolean;
+}
+
+export interface CloudSyncCallbackIdentity {
+  operationId: number;
+  storeInstanceId: number;
+  generation: number;
+}
 
 /**
  * The first successful cloud-first snapshot is a durable device bootstrap
@@ -68,6 +87,65 @@ export function classifyCloudSyncFailure(message: string): CloudSyncFailureKind 
   return 'unknown';
 }
 
+/**
+ * A cloudSync call has three independently bounded phases:
+ * - the platform must accept the call or emit progress;
+ * - an accepted transfer must continue emitting progress;
+ * - the whole transfer must eventually reach SYNC_FINISH.
+ *
+ * A watchdog expiry does not mean that HarmonyOS cancelled the native
+ * transfer. The caller must quarantine the physical store until the matching
+ * native terminal callback arrives.
+ */
+export function cloudSyncWatchdogTimeoutKind(
+  state: CloudSyncWatchdogState,
+  now: number
+): CloudSyncWatchdogTimeoutKind {
+  if (state.settled) { return 'none'; }
+  if (now - state.startedAt >= CLOUD_SYNC_OVERALL_TIMEOUT_MS) {
+    return 'overall_timeout';
+  }
+  if (!state.signalObserved &&
+    now - state.startedAt >= CLOUD_SYNC_ACCEPT_TIMEOUT_MS) {
+    return 'accept_timeout';
+  }
+  if (state.signalObserved &&
+    now - state.lastSignalAt >= CLOUD_SYNC_IDLE_TIMEOUT_MS) {
+    return 'idle_timeout';
+  }
+  return 'none';
+}
+
+export function cloudSyncWatchdogNextDelayMs(
+  state: CloudSyncWatchdogState,
+  now: number
+): number {
+  if (state.settled) { return -1; }
+  const overallRemaining: number =
+    CLOUD_SYNC_OVERALL_TIMEOUT_MS - (now - state.startedAt);
+  const phaseRemaining: number = state.signalObserved
+    ? CLOUD_SYNC_IDLE_TIMEOUT_MS - (now - state.lastSignalAt)
+    : CLOUD_SYNC_ACCEPT_TIMEOUT_MS - (now - state.startedAt);
+  return Math.max(1, Math.min(overallRemaining, phaseRemaining));
+}
+
+/**
+ * Operation id prevents duplicate/older callbacks in one open store from
+ * acting; store instance id prevents callbacks from a previous open of the
+ * same file; generation prevents callbacks from a previous account session.
+ */
+export function cloudSyncCallbackIdentityMatches(
+  expected: CloudSyncCallbackIdentity,
+  candidate: CloudSyncCallbackIdentity
+): boolean {
+  return expected.operationId > 0 &&
+    expected.storeInstanceId > 0 &&
+    expected.generation > 0 &&
+    candidate.operationId === expected.operationId &&
+    candidate.storeInstanceId === expected.storeInstanceId &&
+    candidate.generation === expected.generation;
+}
+
 /** A suspicious empty result must never replace existing local startup data. */
 export function shouldRejectAutomaticEmptyCloudSnapshot(
   source: string, direction: CloudSyncDirection, beforeVisibleRows: number, afterVisibleRows: number
@@ -97,6 +175,9 @@ export function cloudSyncFailureMessage(kind: CloudSyncFailureKind): string {
   }
   if (kind === 'network') {
     return '云同步未完成，请检查网络后重试。';
+  }
+  if (kind === 'indeterminate') {
+    return '系统云同步回调超时，已暂停本地修改和账号切换，避免迟到数据覆盖。应用会在收到终态后自动核对；若长时间未恢复，请完全退出后重新打开应用。';
   }
   return '云同步未完成，数据未确认全部同步，请稍后重试。';
 }
@@ -170,12 +251,14 @@ export function cloudDistributedTableAutoSync(): boolean {
 
 /** A destructive pull or local restore owns the local RDB until it settles. */
 export function cloudLocalMutationAllowed(manualDownloadActive: boolean, localRestoreActive: boolean,
-  _startupSyncPending: boolean = false, _bootstrapCompleted: boolean = true): boolean {
+  _startupSyncPending: boolean = false, _bootstrapCompleted: boolean = true,
+  cloudDownloadActive: boolean = false, indeterminateTransferActive: boolean = false): boolean {
   // Local edits are independent from the cloud bootstrap. The bootstrap gate
   // only suppresses automatic native-first uploads; otherwise Safety-0 or an
   // unavailable cloud service would make an offline database permanently
   // read-only.
-  return !manualDownloadActive && !localRestoreActive;
+  return !manualDownloadActive && !localRestoreActive &&
+    !cloudDownloadActive && !indeterminateTransferActive;
 }
 
 /** Freeze a user's selection in canonical pull/encryption order for one operation. */

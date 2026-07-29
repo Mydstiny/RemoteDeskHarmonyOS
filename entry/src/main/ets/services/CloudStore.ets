@@ -40,14 +40,23 @@ import { hashForLog, safeError } from '../utils/SafeLogger';
 import { cloudSyncTableNames, CloudSyncDirection } from './CloudSyncPolicy';
 import { CloudSyncCoordinator, CloudSyncCoordinatorHooks, CloudSyncOperationResult } from './CloudSyncCoordinator';
 import {
+  CLOUD_SYNC_ACCEPT_TIMEOUT_MS,
+  CLOUD_SYNC_IDLE_TIMEOUT_MS,
+  CLOUD_SYNC_OVERALL_TIMEOUT_MS,
+  CloudSyncCallbackIdentity,
+  CloudSyncWatchdogState,
+  CloudSyncWatchdogTimeoutKind,
   cloudDistributedTableAutoSync,
   cloudLocalMutationAllowed,
   cloudSyncFailureMessage,
+  cloudSyncCallbackIdentityMatches,
   CloudSyncFailureKind,
   classifyCloudSyncFailure,
   cloudSyncProgressFinished,
   cloudSyncProgressSucceeded,
   cloudSyncTargetTableCompleted,
+  cloudSyncWatchdogNextDelayMs,
+  cloudSyncWatchdogTimeoutKind,
   classifyCloudSyncProgressCode,
   shouldRejectAutomaticEmptyCloudSnapshot
 } from './CloudSyncCoordinatorPolicy';
@@ -243,6 +252,17 @@ export interface SyncStatus {
   tableStatus: Record<string, TableSyncStatus>;
 }
 
+interface IndeterminateCloudSyncOperation {
+  operationId: number;
+  storeInstanceId: number;
+  table: string;
+  direction: CloudSyncDirection;
+  label: string;
+  lease: AccountSessionLease;
+  terminalObserved: boolean;
+  terminalSucceeded: boolean;
+}
+
 export interface PortableBackupSnapshot {
   accountScope: string;
   rdbSchemaVersion: number;
@@ -282,6 +302,9 @@ export class CloudStore implements CryptoCloudStore {
   private currentScopeToken: AccountScopeToken = deviceLocalScopeToken(1);
   private currentLease: AccountSessionLease | null = null;
   private storeInstanceSequence: number = 0;
+  private cloudSyncOperationSequence: number = 0;
+  private indeterminateCloudSyncOperation: IndeterminateCloudSyncOperation | null = null;
+  private cloudDownloadActive: boolean = false;
   private mutationGateOpen: boolean = false;
   private cloudChangeObserver: ((accounts: Array<string>) => void) | null = null;
   private cloudAccountBinding: CloudAccountBinding = unboundCloudAccountBinding();
@@ -444,11 +467,17 @@ export class CloudStore implements CryptoCloudStore {
     this.mutationGateOpen = false;
     const lease: AccountSessionLease | null = this.currentAccountLease();
     if (lease === null) { return true; }
+    if (this.indeterminateCloudSyncOperation !== null) {
+      hilog.error(0x0001, 'CloudSync',
+        '底层云同步仍处于不确定状态；拒绝切换账号或关闭物理库');
+      return false;
+    }
     return await CloudSyncCoordinator.getInstance().quiesce(lease, timeoutMs);
   }
 
   activateScope(token: AccountScopeToken): boolean {
     if (!this.updateScopeState(token)) { return false; }
+    if (this.indeterminateCloudSyncOperation !== null) { return false; }
     if (token.sessionState !== 'offline' && token.sessionState !== 'ready' &&
       token.sessionState !== 'bound') {
       return false;
@@ -487,6 +516,11 @@ export class CloudStore implements CryptoCloudStore {
     const closing: relationalStore.RdbStore | null = this.store;
     const closingLease: AccountSessionLease | null = this.currentAccountLease();
     this.mutationGateOpen = false;
+    if (this.indeterminateCloudSyncOperation !== null) {
+      hilog.error(0x0001, 'CloudSync',
+        '底层云同步尚无终态；拒绝关闭或复用当前物理数据库');
+      return false;
+    }
     const coordinator: CloudSyncCoordinator = CloudSyncCoordinator.getInstance();
     const coordinatorLease: AccountSessionLease | null =
       coordinator.currentAccountLease();
@@ -516,6 +550,8 @@ export class CloudStore implements CryptoCloudStore {
     this.store = null;
     this.currentLease = null;
     this.cryptoLifecycleState = null;
+    this.cloudDownloadActive = false;
+    this.indeterminateCloudSyncOperation = null;
     this.clearManualDownloadSnapshot();
     return true;
   }
@@ -535,6 +571,8 @@ export class CloudStore implements CryptoCloudStore {
     };
     this.cloudAccountBinding = cloudAccountBindingForScope(this.currentScopeToken);
     this.startupSyncPending = true;
+    this.cloudDownloadActive = false;
+    this.indeterminateCloudSyncOperation = null;
     // 初始化表级同步状态
     for (let i = 0; i < TABLES.length; i++) {
       this.tableStatus[TABLES[i]] = new TableSyncStatus();
@@ -902,7 +940,9 @@ export class CloudStore implements CryptoCloudStore {
       this.manualDownloadSnapshot !== null,
       this.localRestoreActive || this.localRestorePending,
       this.startupSyncPending,
-      this.cloudBootstrapCompleted
+      this.cloudBootstrapCompleted,
+      this.cloudDownloadActive,
+      this.indeterminateCloudSyncOperation !== null
     );
   }
 
@@ -964,6 +1004,16 @@ export class CloudStore implements CryptoCloudStore {
         return true;
       },
       setRestorePending: (pending: boolean): void => { this.localRestorePending = pending; },
+      setCloudDownloadPending: (pending: boolean): void => {
+        // A watchdog timeout releases the coordinator queue but cannot cancel
+        // the native RDB transfer. Keep local writes frozen until the exact
+        // late terminal callback clears the indeterminate fence.
+        if (!pending && this.indeterminateCloudSyncOperation !== null) { return; }
+        this.cloudDownloadActive = pending;
+      },
+      settlePendingIndeterminate: (): void => {
+        this.trySettlePendingIndeterminate();
+      },
       setStartupSyncPending: (pending: boolean): void => { this.setStartupSyncPending(pending); },
       hasCloudBootstrapCompleted: (): boolean => this.hasCloudBootstrapCompleted(),
       markCloudBootstrapCompleted: (): boolean => this.markCloudBootstrapCompleted(),
@@ -1689,6 +1739,120 @@ export class CloudStore implements CryptoCloudStore {
     return this.syncTableAsync(table, direction, label);
   }
 
+  private markCloudSyncIndeterminate(
+    operationId: number,
+    capturedStore: relationalStore.RdbStore,
+    capturedLease: AccountSessionLease,
+    table: string,
+    direction: CloudSyncDirection,
+    label: string
+  ): boolean {
+    if (this.store !== capturedStore || !this.isLeaseCurrent(capturedLease)) {
+      return false;
+    }
+    if (this.indeterminateCloudSyncOperation !== null) {
+      return this.indeterminateCloudSyncOperation.operationId === operationId &&
+        this.indeterminateCloudSyncOperation.storeInstanceId ===
+          capturedLease.storeInstanceId &&
+        accountSessionLeaseEquals(
+          this.indeterminateCloudSyncOperation.lease, capturedLease);
+    }
+    this.indeterminateCloudSyncOperation = {
+      operationId,
+      storeInstanceId: capturedLease.storeInstanceId,
+      table,
+      direction,
+      label,
+      lease: cloneAccountSessionLease(capturedLease),
+      terminalObserved: false,
+      terminalSucceeded: false
+    };
+    this.cloudDownloadActive = this.cloudDownloadActive ||
+      direction === 'cloudFirst';
+    return true;
+  }
+
+  private indeterminateCloudSyncMatches(
+    operationId: number,
+    capturedStore: relationalStore.RdbStore,
+    capturedLease: AccountSessionLease
+  ): boolean {
+    const pending: IndeterminateCloudSyncOperation | null =
+      this.indeterminateCloudSyncOperation;
+    if (pending === null) { return false; }
+    const expected: CloudSyncCallbackIdentity = {
+      operationId: pending.operationId,
+      storeInstanceId: pending.storeInstanceId,
+      generation: pending.lease.generation
+    };
+    const candidate: CloudSyncCallbackIdentity = {
+      operationId,
+      storeInstanceId: capturedLease.storeInstanceId,
+      generation: capturedLease.generation
+    };
+    return cloudSyncCallbackIdentityMatches(expected, candidate) &&
+      this.store === capturedStore &&
+      this.isLeaseCurrent(capturedLease) &&
+      accountSessionLeaseEquals(pending.lease, capturedLease);
+  }
+
+  private settleLateCloudSyncTerminal(
+    operationId: number,
+    capturedStore: relationalStore.RdbStore,
+    capturedLease: AccountSessionLease,
+    terminalSucceeded: boolean
+  ): void {
+    if (!this.indeterminateCloudSyncMatches(
+      operationId, capturedStore, capturedLease)) {
+      return;
+    }
+    const pending: IndeterminateCloudSyncOperation | null =
+      this.indeterminateCloudSyncOperation;
+    if (pending === null) { return; }
+    pending.terminalObserved = true;
+    pending.terminalSucceeded = terminalSucceeded;
+    setTimeout((): void => {
+      this.trySettlePendingIndeterminate();
+    }, 0);
+  }
+
+  private trySettlePendingIndeterminate(): void {
+    const pending: IndeterminateCloudSyncOperation | null =
+      this.indeterminateCloudSyncOperation;
+    if (pending === null || !pending.terminalObserved ||
+      !this.isLeaseCurrent(pending.lease)) {
+      return;
+    }
+    const coordinator: CloudSyncCoordinator =
+      CloudSyncCoordinator.getInstance();
+    if (!coordinator.recoverIndeterminateTransfer(pending.lease)) {
+      return;
+    }
+    this.indeterminateCloudSyncOperation = null;
+    this.cloudDownloadActive = false;
+    hilog.warn(0x0001, 'CloudSync',
+      '已接收匹配的迟到终态并解除物理库隔离 operation=' +
+      pending.operationId.toString() + ' table=' + pending.table +
+      ' terminalSuccess=' + pending.terminalSucceeded.toString());
+    if (pending.direction === 'cloudFirst' || pending.terminalSucceeded) {
+      setTimeout((): void => {
+        if (!this.isLeaseCurrent(pending.lease)) { return; }
+        coordinator.requestCloudEventPull()
+          .then((result: CloudSyncOperationResult): void => {
+            if (!this.isLeaseCurrent(pending.lease)) { return; }
+            if (!result.ok) {
+              hilog.warn(0x0001, 'CloudSync',
+                '迟到终态后的权威重核对未完成 failure=' +
+                result.failureKind);
+            }
+          }, (): void => {
+            hilog.warn(0x0001, 'CloudSync',
+              '迟到终态后的权威重核对 Promise 被拒绝');
+          });
+      }, 0);
+    }
+  }
+
   private notifyCloudDataApplied(tables: string[]): void {
     this.suppressCryptoStateSnapshot = true;
     let resetClearPending: boolean = false;
@@ -1761,9 +1925,18 @@ export class CloudStore implements CryptoCloudStore {
         resolve(false);
         return;
       }
+      if (this.indeterminateCloudSyncOperation !== null) {
+        this.lastSyncFailureKind = 'indeterminate';
+        this.lastError = label + ' ' + table +
+          ': blocked by indeterminate operation=' +
+          this.indeterminateCloudSyncOperation.operationId.toString();
+        resolve(false);
+        return;
+      }
       const capturedStore: relationalStore.RdbStore = this.store;
       const capturedLease: AccountSessionLease =
         cloneAccountSessionLease(this.currentLease);
+      const operationId: number = ++this.cloudSyncOperationSequence;
       const operationIsCurrent = (): boolean =>
         this.store === capturedStore && this.isLeaseCurrent(capturedLease);
       const mode: relationalStore.SyncMode = direction === 'cloudFirst'
@@ -1788,9 +1961,25 @@ export class CloudStore implements CryptoCloudStore {
       }
       let settled: boolean = false;
       let conflictRecoveryStarted: boolean = false;
+      let watchdogTimer: number = -1;
+      const watchdogStartedAt: number = Date.now();
+      const watchdogState: CloudSyncWatchdogState = {
+        startedAt: watchdogStartedAt,
+        lastSignalAt: watchdogStartedAt,
+        signalObserved: false,
+        settled: false
+      };
+      const clearWatchdog = (): void => {
+        if (watchdogTimer >= 0) {
+          clearTimeout(watchdogTimer);
+          watchdogTimer = -1;
+        }
+      };
       const finishFailure = (message: string, kind: CloudSyncFailureKind): void => {
         if (settled) { return; }
         settled = true;
+        watchdogState.settled = true;
+        clearWatchdog();
         if (!operationIsCurrent()) {
           resolve(false);
           return;
@@ -1820,6 +2009,8 @@ export class CloudStore implements CryptoCloudStore {
       const recordSuccess = (): void => {
         if (settled) { return; }
         settled = true;
+        watchdogState.settled = true;
+        clearWatchdog();
         if (!operationIsCurrent()) {
           resolve(false);
           return;
@@ -1834,6 +2025,42 @@ export class CloudStore implements CryptoCloudStore {
         }
         hilog.info(0x0001, 'CloudSync', label + ' transfer complete table=' + table);
         resolve(true);
+      };
+      const armWatchdog = (): void => {
+        clearWatchdog();
+        if (settled) { return; }
+        const delay: number =
+          cloudSyncWatchdogNextDelayMs(watchdogState, Date.now());
+        if (delay < 0) { return; }
+        watchdogTimer = setTimeout((): void => {
+          watchdogTimer = -1;
+          if (settled) { return; }
+          const timeoutKind: CloudSyncWatchdogTimeoutKind =
+            cloudSyncWatchdogTimeoutKind(watchdogState, Date.now());
+          if (timeoutKind === 'none') {
+            armWatchdog();
+            return;
+          }
+          if (!this.markCloudSyncIndeterminate(
+            operationId, capturedStore, capturedLease,
+            table, direction, label)) {
+            finishFailure('WATCHDOG_' + timeoutKind.toUpperCase() +
+              ' stale operation', 'unknown');
+            return;
+          }
+          finishFailure(
+            'WATCHDOG_' + timeoutKind.toUpperCase() +
+            ' acceptMs=' + CLOUD_SYNC_ACCEPT_TIMEOUT_MS.toString() +
+            ' idleMs=' + CLOUD_SYNC_IDLE_TIMEOUT_MS.toString() +
+            ' overallMs=' + CLOUD_SYNC_OVERALL_TIMEOUT_MS.toString(),
+            'indeterminate');
+        }, delay) as number;
+      };
+      const signalWatchdog = (): void => {
+        if (settled) { return; }
+        watchdogState.signalObserved = true;
+        watchdogState.lastSignalAt = Date.now();
+        armWatchdog();
       };
       const finishCloudFirstSuccess = (): void => {
         if (!operationIsCurrent()) {
@@ -1886,22 +2113,42 @@ export class CloudStore implements CryptoCloudStore {
         }
         recordSuccess();
       };
+      armWatchdog();
       try {
         capturedStore.cloudSync(mode, [table],
           (progress: relationalStore.ProgressDetails): void => {
+            if (settled) {
+              if (progress) {
+                const lateSchedule: number = progress.schedule as number;
+                const lateCode: number = progress.code as number;
+                if (cloudSyncProgressFinished(lateSchedule)) {
+                  const lateSucceeded: boolean =
+                    cloudSyncProgressSucceeded(lateSchedule, lateCode) &&
+                    cloudSyncTargetTableCompleted(progress.details, table);
+                  this.settleLateCloudSyncTerminal(
+                    operationId, capturedStore, capturedLease, lateSucceeded);
+                }
+              }
+              return;
+            }
             if (!operationIsCurrent()) {
               finishFailure('stale account lease', 'unknown');
               return;
             }
             if (!progress) {
-              recordFailure('progress details missing', 'unknown');
+              this.markCloudSyncIndeterminate(
+                operationId, capturedStore, capturedLease,
+                table, direction, label);
+              finishFailure('progress details missing', 'indeterminate');
               return;
             }
             const schedule: number = progress.schedule as number;
             const code: number = progress.code as number;
+            signalWatchdog();
             hilog.info(0x0001, 'CloudSync', label + ' progress table=' + table +
               ' schedule=' + schedule.toString() + ' code=' + code.toString());
             if (!cloudSyncProgressFinished(schedule)) { return; }
+            clearWatchdog();
             if (cloudSyncProgressSucceeded(schedule, code)) {
               if (!cloudSyncTargetTableCompleted(progress.details, table)) {
                 recordFailure('target table progress statistics incomplete', 'unknown');
@@ -1915,21 +2162,31 @@ export class CloudStore implements CryptoCloudStore {
             }
           },
           (err: BusinessError | undefined): void => {
+            if (settled) {
+              if (err) {
+                this.settleLateCloudSyncTerminal(
+                  operationId, capturedStore, capturedLease, false);
+              }
+              return;
+            }
             if (!operationIsCurrent()) {
               finishFailure('stale account lease', 'unknown');
               return;
             }
             if (err) {
+              clearWatchdog();
               this.cloudServiceGuidanceNeeded = this.cloudServiceGuidanceNeeded || this.errorRequiresCloudServiceGuidance(err);
               recordFailure('code=' + err.code.toString() + ' msg=' + err.message);
               return;
             }
             // On this device the completion callback confirms that the task was
             // accepted, while Progress.SYNC_FINISH arrives after the real transfer.
+            signalWatchdog();
             hilog.info(0x0001, 'CloudSync', label + ' accepted table=' + table);
           }
         );
       } catch (err) {
+        clearWatchdog();
         recordFailure('exception=' + safeError(err));
       }
     });
