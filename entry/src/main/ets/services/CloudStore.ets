@@ -165,7 +165,8 @@ import {
   cloudAccountBindingForScope,
   cloneAccountSessionLease,
   deviceLocalScopeToken,
-  ownerRecordWriteAllowed
+  ownerRecordWriteAllowed,
+  verifyAccountScopeCloudBinding
 } from './AccountScopePolicy';
 import {
   CloudSyncDurableState,
@@ -297,8 +298,9 @@ export class CloudStore implements CryptoCloudStore {
   private manualDownloadLocalTables: Record<string, Array<Record<string, string>>> | null = null;
   private localRestoreActive: boolean = false;
   private localRestorePending: boolean = false;
-  // Safety-0 starts unbound. AccountSessionCoordinator will become the only
-  // writer of this binding before the v2 rollout flag is enabled.
+  // Device-local starts unbound. AccountSessionCoordinator supplies identity
+  // from the current Account Kit authorization; this store verifies that it
+  // derives the exact owner and physical database before enabling cloud I/O.
   private currentScopeToken: AccountScopeToken = deviceLocalScopeToken(1);
   private currentLease: AccountSessionLease | null = null;
   private storeInstanceSequence: number = 0;
@@ -593,8 +595,16 @@ export class CloudStore implements CryptoCloudStore {
 
       await this.createTables();
       this.currentScopeToken.schemaRevision = this.store.version;
-      this.cloudAccountBinding = cloudAccountBindingForScope(this.currentScopeToken);
       this.verifyStoreIdentity();
+      this.currentScopeToken = verifyAccountScopeCloudBinding(
+        this.currentScopeToken, verifiedUnionId);
+      this.cloudAccountBinding =
+        cloudAccountBindingForScope(this.currentScopeToken);
+      if (this.currentScopeToken.kind === 'huawei_account' &&
+        this.currentScopeToken.cloudBindingState !== 'bound') {
+        throw new Error(
+          'Account Kit identity does not match target owner/store binding');
+      }
       await LegacySharedStoreMigrator.getInstance().migrateIfNeeded(
         context, this.store, this.currentScopeToken, verifiedUnionId);
       this.migrateCryptoParamIdentity();

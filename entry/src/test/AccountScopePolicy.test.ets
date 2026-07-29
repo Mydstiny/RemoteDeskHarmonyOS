@@ -10,7 +10,8 @@ import {
   ownerRecordWriteAllowed,
   ownerScopeIdForUnionId,
   scopeTokenIsCurrent,
-  stableAccountIdentifierIsValid
+  stableAccountIdentifierIsValid,
+  verifyAccountScopeCloudBinding
 } from '../main/ets/services/AccountScopePolicy';
 import { UserAccount } from '../main/ets/model/UserAccount';
 
@@ -44,6 +45,37 @@ export default function accountScopePolicyTest(): void {
       expect(scopeTokenIsCurrent(account, 2)).assertTrue();
       expect(scopeTokenIsCurrent(account, 1)).assertFalse();
       expect(cloudAccountBindingForScope(account).state).assertEqual('validating');
+    });
+
+    it('binds_cloud_only_to_the_current_verified_account_identity', 0, (): void => {
+      const account = accountScopeToken('union-a', 2);
+      expect(account === null).assertFalse();
+      if (account === null) { return; }
+      const bound = verifyAccountScopeCloudBinding(account, ' union-a ');
+      expect(bound.cloudBindingState).assertEqual('bound');
+      expect(bound.ownerScopeId).assertEqual(account.ownerScopeId);
+      expect(bound.storeIdentity).assertEqual(account.storeIdentity);
+
+      const wrongAccount =
+        verifyAccountScopeCloudBinding(account, 'union-b');
+      expect(wrongAccount.cloudBindingState).assertEqual('blocked');
+      const missingIdentity =
+        verifyAccountScopeCloudBinding(account, '');
+      expect(missingIdentity.cloudBindingState).assertEqual('blocked');
+
+      const forgedStore = accountScopeToken('union-a', 3);
+      expect(forgedStore === null).assertFalse();
+      if (forgedStore === null) { return; }
+      forgedStore.storeIdentity = 'remotedesktop_owner-forged.db';
+      expect(verifyAccountScopeCloudBinding(
+        forgedStore, 'union-a').cloudBindingState).assertEqual('blocked');
+    });
+
+    it('never_promotes_device_local_data_to_account_cloud', 0, (): void => {
+      const local = verifyAccountScopeCloudBinding(
+        deviceLocalScopeToken(1), 'union-a');
+      expect(local.cloudBindingState).assertEqual('unbound');
+      expect(cloudAccountBindingForScope(local).state).assertEqual('unbound');
     });
 
     it('rejects_empty_login_and_clears_every_identity_field_on_logout', 0, (): void => {

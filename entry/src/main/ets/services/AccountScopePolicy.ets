@@ -111,6 +111,45 @@ export function accountScopeToken(
   };
 }
 
+/**
+ * Promotes an account scope to a cloud-capable binding only when the stable
+ * UnionID returned by the current Account Kit authorization derives the exact
+ * owner and physical store already carried by the scope token.
+ *
+ * The caller must pass identity from the current successful Account Kit
+ * result, never a cached preference or UI field. Device-local scopes can never
+ * become cloud-bound.
+ */
+export function verifyAccountScopeCloudBinding(
+  token: AccountScopeToken,
+  verifiedUnionId: string
+): AccountScopeToken {
+  const verifiedOwnerScopeId: string =
+    ownerScopeIdForUnionId(verifiedUnionId);
+  const verifiedStoreIdentity: string =
+    accountStoreIdentity(verifiedOwnerScopeId);
+  let cloudBindingState: CloudAccountBindingState = 'blocked';
+  if (token.kind === 'device_local') {
+    cloudBindingState = 'unbound';
+  } else if (verifiedOwnerScopeId.length > 0 &&
+    verifiedStoreIdentity.length > 0 &&
+    token.ownerScopeId === verifiedOwnerScopeId &&
+    token.storeIdentity === verifiedStoreIdentity &&
+    token.generation > 0) {
+    cloudBindingState = 'bound';
+  }
+  return {
+    kind: token.kind,
+    ownerScopeId: token.ownerScopeId,
+    generation: token.generation,
+    sessionState: token.sessionState,
+    cloudBindingState,
+    storeIdentity: token.storeIdentity,
+    schemaRevision: token.schemaRevision,
+    selectionRevision: token.selectionRevision
+  };
+}
+
 export function scopeTokenIsCurrent(token: AccountScopeToken, generation: number): boolean {
   return token.generation > 0 && token.generation === generation &&
     token.ownerScopeId.trim().length > 0 && token.storeIdentity.trim().length > 0;

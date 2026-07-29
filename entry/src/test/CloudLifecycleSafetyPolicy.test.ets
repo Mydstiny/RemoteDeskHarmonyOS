@@ -41,6 +41,8 @@ export default function cloudLifecycleSafetyPolicyTest(): void {
       expect(cloudTransferAllowed(bound, false)).assertFalse();
       expect(cloudDistributedRegistrationAllowed(bound, true)).assertTrue();
       expect(cloudTransferAllowed(bound, true)).assertTrue();
+      expect(cloudDistributedRegistrationAllowed(bound)).assertTrue();
+      expect(cloudTransferAllowed(bound)).assertTrue();
     });
 
     it('enables_redacted_backup_while_destructive_legacy_paths_stay_disabled', 0, (): void => {
