@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace VncRfbProtocol {
 
@@ -31,6 +32,15 @@ int normalizeRfbMinor(int advertisedMinor);
  * Authentication use SecurityResult.
  */
 bool securityResultExpected(int negotiatedMinor, uint8_t selectedSecurityType);
+
+/**
+ * Build an RFB FramebufferUpdateRequest. The wire message is exactly
+ * message-type, incremental, x, y, width and height (10 bytes total); unlike
+ * SetPixelFormat and SetEncodings it has no padding byte.
+ */
+std::vector<uint8_t> buildFramebufferUpdateRequest(bool incremental,
+                                                   uint16_t width,
+                                                   uint16_t height);
 
 /** UltraVNC mode12 sends this exact repeater banner to a viewer. */
 bool isUltraVncRepeaterBanner(const uint8_t* data, size_t size);

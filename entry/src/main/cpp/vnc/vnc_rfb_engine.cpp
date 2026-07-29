@@ -383,11 +383,10 @@ bool VncRfbEngine::sendPixelFormatAndEncodings(std::string& error) {
 }
 
 bool VncRfbEngine::sendFramebufferUpdateRequest(bool incremental, std::string& error) {
-    std::vector<uint8_t> request = {3, 0, static_cast<uint8_t>(incremental ? 1 : 0), 0};
-    appendU16(request, 0);
-    appendU16(request, 0);
-    appendU16(request, static_cast<uint16_t>(framebufferWidth_));
-    appendU16(request, static_cast<uint16_t>(framebufferHeight_));
+    const std::vector<uint8_t> request = VncRfbProtocol::buildFramebufferUpdateRequest(
+        incremental,
+        static_cast<uint16_t>(framebufferWidth_),
+        static_cast<uint16_t>(framebufferHeight_));
     return writeBytes(request.data(), request.size(), error);
 }
 

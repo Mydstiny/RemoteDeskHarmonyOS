@@ -31,6 +31,23 @@ bool securityResultExpected(int negotiatedMinor, uint8_t selectedSecurityType) {
     return negotiatedMinor == 8;
 }
 
+std::vector<uint8_t> buildFramebufferUpdateRequest(bool incremental,
+                                                   uint16_t width,
+                                                   uint16_t height) {
+    return {
+        3,
+        static_cast<uint8_t>(incremental ? 1 : 0),
+        0,
+        0,
+        0,
+        0,
+        static_cast<uint8_t>(width >> 8),
+        static_cast<uint8_t>(width),
+        static_cast<uint8_t>(height >> 8),
+        static_cast<uint8_t>(height),
+    };
+}
+
 bool isUltraVncRepeaterBanner(const uint8_t* data, size_t size) {
     static constexpr char kBanner[] = "RFB 000.000\n";
     return data != nullptr && size == kProtocolVersionBytes &&

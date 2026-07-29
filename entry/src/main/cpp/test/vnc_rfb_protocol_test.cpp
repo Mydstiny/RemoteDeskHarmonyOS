@@ -29,6 +29,24 @@ RDP_TEST_CASE(vnc_rfb_security_result_contract_matches_version) {
     RDP_ASSERT(VncRfbProtocol::securityResultExpected(8, 2));
 }
 
+RDP_TEST_CASE(vnc_framebuffer_update_request_has_exact_rfb_wire_layout) {
+    const std::vector<uint8_t> initial =
+        VncRfbProtocol::buildFramebufferUpdateRequest(false, 1920, 1080);
+    RDP_ASSERT_EQ(initial.size(), static_cast<size_t>(10));
+    const std::vector<uint8_t> expectedInitial = {
+        3, 0, 0, 0, 0, 0, 7, 128, 4, 56,
+    };
+    RDP_ASSERT(initial == expectedInitial);
+
+    const std::vector<uint8_t> incremental =
+        VncRfbProtocol::buildFramebufferUpdateRequest(true, 2560, 1600);
+    RDP_ASSERT_EQ(incremental.size(), static_cast<size_t>(10));
+    const std::vector<uint8_t> expectedIncremental = {
+        3, 1, 0, 0, 0, 0, 10, 0, 6, 64,
+    };
+    RDP_ASSERT(incremental == expectedIncremental);
+}
+
 RDP_TEST_CASE(vnc_ultravnc_mode12_field_is_exactly_250_bytes) {
     std::array<uint8_t, VncRfbProtocol::kUltraVncRepeaterFieldBytes> field = {0};
     std::string error;
