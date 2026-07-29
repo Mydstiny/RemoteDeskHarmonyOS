@@ -766,4 +766,3 @@ P0、P1、P2 必须能分别回滚。P2 decoder/画质不得和 P0 输入几何�
 - [ ] RDP、RustDesk、SSH/SFTP 回归通过；
 - [ ] native、ArkTS、Hvigor、双 ABI、合规和 reviewer 门全部通过；
 - [ ] exact signed HAP 在 API 23 设备完成实机验收。
-
