@@ -55,6 +55,8 @@ public:
 
 private:
     void loop();
+    /** Emits a completed one-second window from either source or retained redraws. */
+    void emitPresentationMetricsWindow();
 
     mutable std::mutex mutex_;
     std::condition_variable cv_;

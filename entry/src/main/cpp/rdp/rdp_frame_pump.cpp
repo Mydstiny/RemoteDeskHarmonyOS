@@ -226,6 +226,7 @@ void RdpFramePump::loop() {
             }
             metrics_.recordPresent(SteadyNowUs(), present);
             nextTransformPresentAtUs = NextRdpTransformRefreshDeadlineUs(SteadyNowUs());
+            emitPresentationMetricsWindow();
             continue;
         }
         if (!frame.damageSource) {
@@ -306,45 +307,49 @@ void RdpFramePump::loop() {
         metrics_.recordPresent(SteadyNowUs(), present);
         nextPresentAtUs = scheduler_.nextDeadlineUs(SteadyNowUs());
         nextTransformPresentAtUs = NextRdpTransformRefreshDeadlineUs(SteadyNowUs());
-
-        RdpPresentationMetricsSnapshot window;
-        if (metrics_.takeCompletedWindow(window)) {
-            const RdpGlUploadGateSnapshot uploadGate = glUploadGate_.snapshot();
-            OH_LOG_INFO(LOG_APP,
-                "[RDP-PRESENT] submitted=%{public}llu presented=%{public}llu replaced=%{public}llu"
-                " rejected=%{public}llu detached=%{public}llu copied=%{public}llu"
-                " full=%{public}llu dirty=%{public}llu transform=%{public}llu deferred=%{public}llu"
-                " callbackP95=%{public}lldus queueP95=%{public}lldus uploadP95=%{public}lldus"
-                " drawP95=%{public}lldus swapP95=%{public}lldus workerP95=%{public}lldus"
-                " targetFps=%{public}d schedulerP95=%{public}lldus adaptations=%{public}llu"
-                " uploadGate=%{public}s uploadSwapP95=%{public}lldus"
-                " uploadShare=%{public}dpermille gateSamples=%{public}llu",
-                static_cast<unsigned long long>(window.submittedFrames),
-                static_cast<unsigned long long>(window.presentedFrames),
-                static_cast<unsigned long long>(window.replacedFrames),
-                static_cast<unsigned long long>(window.rejectedFrames),
-                static_cast<unsigned long long>(window.surfaceDetachedRejections),
-                static_cast<unsigned long long>(window.copiedBytes),
-                static_cast<unsigned long long>(window.fullFramePresents),
-                static_cast<unsigned long long>(window.dirtyRectPresents),
-                static_cast<unsigned long long>(window.retainedFramePresents),
-                static_cast<unsigned long long>(window.deferredSnapshots),
-                static_cast<long long>(window.callbackUs.p95),
-                static_cast<long long>(window.queueWaitUs.p95),
-                static_cast<long long>(window.uploadUs.p95),
-                static_cast<long long>(window.drawUs.p95),
-                static_cast<long long>(window.swapUs.p95),
-                static_cast<long long>(window.workerUs.p95),
-                scheduler_.targetFps(),
-                static_cast<long long>(scheduler_.lastP95Us()),
-                static_cast<unsigned long long>(scheduler_.adaptationCount()),
-                RdpGlUploadGate::DecisionName(uploadGate.decision),
-                static_cast<long long>(uploadGate.uploadSwapP95Us),
-                uploadGate.uploadSwapSharePermille,
-                static_cast<unsigned long long>(uploadGate.evaluatedSamples));
-        }
+        emitPresentationMetricsWindow();
     }
     OH_LOG_INFO(LOG_APP, "[RDP-PUMP] render worker stopped");
+}
+
+void RdpFramePump::emitPresentationMetricsWindow() {
+    RdpPresentationMetricsSnapshot window;
+    if (!metrics_.takeCompletedWindow(window)) {
+        return;
+    }
+    const RdpGlUploadGateSnapshot uploadGate = glUploadGate_.snapshot();
+    OH_LOG_INFO(LOG_APP,
+        "[RDP-PRESENT] submitted=%{public}llu presented=%{public}llu replaced=%{public}llu"
+        " rejected=%{public}llu detached=%{public}llu copied=%{public}llu"
+        " full=%{public}llu dirty=%{public}llu transform=%{public}llu deferred=%{public}llu"
+        " callbackP95=%{public}lldus queueP95=%{public}lldus uploadP95=%{public}lldus"
+        " drawP95=%{public}lldus swapP95=%{public}lldus workerP95=%{public}lldus"
+        " targetFps=%{public}d schedulerP95=%{public}lldus adaptations=%{public}llu"
+        " uploadGate=%{public}s uploadSwapP95=%{public}lldus"
+        " uploadShare=%{public}dpermille gateSamples=%{public}llu",
+        static_cast<unsigned long long>(window.submittedFrames),
+        static_cast<unsigned long long>(window.presentedFrames),
+        static_cast<unsigned long long>(window.replacedFrames),
+        static_cast<unsigned long long>(window.rejectedFrames),
+        static_cast<unsigned long long>(window.surfaceDetachedRejections),
+        static_cast<unsigned long long>(window.copiedBytes),
+        static_cast<unsigned long long>(window.fullFramePresents),
+        static_cast<unsigned long long>(window.dirtyRectPresents),
+        static_cast<unsigned long long>(window.retainedFramePresents),
+        static_cast<unsigned long long>(window.deferredSnapshots),
+        static_cast<long long>(window.callbackUs.p95),
+        static_cast<long long>(window.queueWaitUs.p95),
+        static_cast<long long>(window.uploadUs.p95),
+        static_cast<long long>(window.drawUs.p95),
+        static_cast<long long>(window.swapUs.p95),
+        static_cast<long long>(window.workerUs.p95),
+        scheduler_.targetFps(),
+        static_cast<long long>(scheduler_.lastP95Us()),
+        static_cast<unsigned long long>(scheduler_.adaptationCount()),
+        RdpGlUploadGate::DecisionName(uploadGate.decision),
+        static_cast<long long>(uploadGate.uploadSwapP95Us),
+        uploadGate.uploadSwapSharePermille,
+        static_cast<unsigned long long>(uploadGate.evaluatedSamples));
 }
 
 void RdpFramePump::recordInvalid(uint64_t pixels, int64_t callbackUs, int64_t nowUs) {
