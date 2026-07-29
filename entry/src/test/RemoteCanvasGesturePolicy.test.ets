@@ -116,6 +116,9 @@ export default function remoteCanvasGesturePolicyTest(): void {
       const remote = claimCanvasTwoFingerPinch(candidate, true);
       expect(remote.owner).assertEqual('remote-touch-scale');
       expect(shouldApplyCanvasTwoFingerPan(remote)).assertFalse();
+      const ended = endCanvasPinchOwnership({ pinchActive: true, panActive: false });
+      expect(ended.pinchActive).assertFalse();
+      expect(shouldReleaseCanvasGestureOwnership(ended)).assertTrue();
     });
   });
 }

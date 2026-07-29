@@ -2601,6 +2601,10 @@ struct RemoteDesktop {
     this.clearCanvasTwoFingerHoldTimer();
     if (remoteAppTarget) {
       if (this.startRustDeskRemoteAppTouchScale(event)) {
+        // Remote scale owns the same gesture lifecycle as a local pinch. In
+        // particular, overlay-only input has no raw TouchEvent drain to end
+        // the remote TouchPan stream after PinchGesture finishes.
+        this.canvasPinchActive = true;
         this.claimCanvasPinchInput();
       } else {
         this.resetCanvasTwoFingerGesture();
