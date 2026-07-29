@@ -55,6 +55,13 @@ export default function remoteCanvasGesturePolicyTest(): void {
       expect(claimCanvasTwoFingerPan(armed, false).owner).assertEqual('canvas-pan');
     });
 
+    it('honors a late hold deadline before classifying the first move', 0, (): void => {
+      const candidate = beginCanvasTwoFingerCandidate(7, 100, 100, 0, true, true);
+      const moved = advanceCanvasTwoFingerMove(candidate, 140, 100, 500);
+      expect(moved.state.owner).assertEqual('canvas-pan');
+      expect(moved.action).assertEqual('pan');
+    });
+
     it('does not arm pan when the canvas cannot overflow', 0, (): void => {
       const candidate = beginCanvasTwoFingerCandidate(3, 100, 100, 0, true, false);
       const expired = expireCanvasTwoFingerHold(candidate, 500);

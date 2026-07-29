@@ -75,10 +75,11 @@ Updated: 2026-07-28 Asia/Shanghai
 - 本次没有使用独立 reviewer agent；已完成自审，按 D-020 的独立复核要求仍需在
   交付前补齐。没有 push、PR 或远端 main 合并。
 
-## RustDesk Android orientation and touch ledger (2026-07-28)
+## RustDesk Android orientation and touch ledger (2026-07-29)
 
 - The user-authorized RustDesk control-side implementation is complete on local `main`; no task branch, remote push, PR or merge was used. Commits are `73943e6d7`, `f15d5f8a7`, `bbc570169`, `4657e5c92`, `a4ae8d3e0` and review hardening `de441ac`.
-- Mobile foreground RustDesk sessions now request `AUTO_ROTATION`; desktop-class layouts, PIP and non-RustDesk sessions keep their existing window behavior. The repository has no remote Android system-rotation command or controlled-side source, so the change does not claim to rotate the remote phone itself.
+- Mobile foreground RustDesk sessions now request explicit `LANDSCAPE` by default before authentication/Surface startup and after connection. Only an explicit per-host opt-in for a phone target requests `AUTO_ROTATION`; desktop-class layouts, PIP and non-RustDesk sessions keep their existing window behavior. The repository has no remote Android system-rotation command or controlled-side source, so the change does not claim to rotate the remote phone itself.
+- The orientation policy distinguishes a pending RustDesk route from an idle page, so the system's initial portrait state cannot leak into the default landscape session. Existing two-finger gesture ownership and long-press canvas-pan behavior remain unchanged by this correction.
 - RustDesk portrait geometry is no longer converted to a landscape request by the local adaptive-size path. Existing peer/display geometry and `geometryEpoch` changes reset pinch/touch ownership, touchpad anchors and renderer viewport mapping so cursor, virtual mouse and input do not continue in the old coordinate space.
 - Two-finger input has one owner per sequence. Canvas zoom is off by default and legacy defaults migrate off once; when enabled, pinch zooms, a two-finger hold of about 0.4 seconds followed by movement pans an overflowing canvas, early movement remains touchpad scroll, and a stationary release remains right-click. The settings description documents this interaction.
 - The remote-app TouchScale toggle remains explicit opt-in. Native enqueue is not treated as peer acceptance because this checkout has no controlled Android endpoint capability acknowledgement. Direct Touch remains mouse-compatible emulation rather than raw multi-touch injection.
@@ -89,6 +90,7 @@ Updated: 2026-07-28 Asia/Shanghai
 - `assembleHap`: passed with `BUILD SUCCESSFUL` after the implementation and review hardening.
 - `git diff --check`: passed.
 - `ohosTest@OhosTestCompileArkTS`: unavailable because the project task is not registered (`00306054`); no test success is claimed.
+- 2026-07-29 orientation correction: the pending-session landscape/auto-rotation cases were added to `RemoteOrientationPolicy.test.ets`; both production gates passed again after the change.
 - Real API 23 device and RustDesk Android endpoint acceptance remains open for portrait/landscape rotation, Surface recreation, virtual mouse/keyboard, touchpad scroll/right-click, Canvas pinch/long-press-pan and remote TouchScale consumption. RDP/VNC/SSH regression smoke is also required before release.
 
 ## RustDesk Pro + RDP visual commit ledger (2026-07-28)

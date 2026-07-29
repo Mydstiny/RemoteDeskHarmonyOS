@@ -160,8 +160,10 @@ export function advanceCanvasTwoFingerMove(state: CanvasTwoFingerState,
 
   if (next.owner === 'candidate') {
     const distance: number = distanceFromStart(next, currentX, currentY);
-    if (finite(nowMs, 0) >= next.holdDeadlineMs && next.canPan && next.zoomEnabled &&
-      distance <= CANVAS_TWO_FINGER_HOLD_SLOP_VP) {
+    // The timer normally arms the state, but input delivery can run before a
+    // delayed timer callback. Once the deadline has passed, honor the hold
+    // before classifying this move so a valid long-press cannot become scroll.
+    if (finite(nowMs, 0) >= next.holdDeadlineMs && next.canPan && next.zoomEnabled) {
       next.owner = 'canvas-pan-armed';
       next.holdTimerPending = false;
     } else if (distance > CANVAS_TWO_FINGER_HOLD_SLOP_VP) {

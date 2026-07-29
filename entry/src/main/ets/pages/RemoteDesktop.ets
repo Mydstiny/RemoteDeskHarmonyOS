@@ -749,6 +749,7 @@ struct RemoteDesktop {
   private touchLeftDown: boolean = false; // 直接模式用: 左键是否按下
   private touchGestureDone: boolean = false; // 双指手势已完成, 抑制剩余手指的多余点击
   private touchMaxFingers: number = 0;       // 本次手势最高手指数 (用于三指检测)
+  private activeTouchPoints: Map<number, LocalPoint> = new Map<number, LocalPoint>();
   private canvasTransform: CanvasTransform = { scale: 1, panX: 0, panY: 0 };
   private canvasTransformInitialized: boolean = false;
   // A default display scale must be recalculated when the surface or stream
@@ -2370,8 +2371,10 @@ struct RemoteDesktop {
       if (point === null || this.canvasTwoFingerState.owner === 'idle') {
         return;
       }
-      const result = advanceCanvasTwoFingerMove(this.canvasTwoFingerState,
-        point.x, point.y, Date.now());
+      const nowMs: number = Date.now();
+      const heldState: CanvasTwoFingerState = expireCanvasTwoFingerHold(
+        this.canvasTwoFingerState, nowMs);
+      const result = advanceCanvasTwoFingerMove(heldState, point.x, point.y, nowMs);
       this.canvasTwoFingerState = result.state;
       if (!this.canvasTwoFingerState.holdTimerPending) {
         this.clearCanvasTwoFingerHoldTimer();
@@ -2528,6 +2531,15 @@ struct RemoteDesktop {
   }
 
   private updateCanvasPan(event: GestureEvent): void {
+    // PanGesture may recognize before the 400 ms hold and will not call
+    // onActionStart again. Re-evaluate the shared owner on every update so
+    // the first post-hold update can activate the canvas pan path.
+    if (!this.canvasPanActive &&
+      (this.canvasTwoFingerState.owner === 'canvas-pan-armed' ||
+        this.canvasTwoFingerState.owner === 'canvas-pan' ||
+        this.canvasTwoFingerState.owner === 'remote-touch-pan')) {
+      this.startCanvasPan(event);
+    }
     if (!this.canvasPanActive || this.canvasPanInputSource !== 'gesture' ||
       !shouldApplyCanvasTwoFingerPan(this.canvasTwoFingerState)) {
       return;
@@ -2664,6 +2676,18 @@ struct RemoteDesktop {
   }
 
   private consumeCanvasPinchTouch(event: TouchEvent): boolean {
+    // A raw-touch pan claims the same drain phase as a pinch to stop the
+    // remote pointer path, but its local movement still has to be consumed by
+    // the canvas transform before the event is swallowed.
+    if (this.canvasPanActive && this.canvasPanInputSource === 'touch' &&
+      event.sourceTool === SourceTool.Finger && event.type === TouchType.Move) {
+      const point: LocalPoint | null = this.averageTouchPoint(event);
+      if (point !== null) {
+        this.updateCanvasPanFromPoint(point.x, point.y);
+      }
+      event.stopPropagation();
+      return true;
+    }
     if (!shouldConsumeCanvasPinchTouch(this.canvasPinchInputPhase !== 'idle',
       event.sourceTool === SourceTool.Finger)) {
       return false;
@@ -3652,6 +3676,12 @@ struct RemoteDesktop {
           // 保存 host 配置, 等 XComponent SurfaceId 绑定后再连接
           const resolvedHost: RemoteHost = this.hostWithResolvedCredential(host);
           this.pendingHost = this.hostWithRdpOneTimeCertificate(resolvedHost, p);
+          if (this.pendingHost.protocol === 'rustdesk') {
+            // Apply the mobile default before the auth sheet and Surface
+            // startup. Otherwise a portrait window can remain visible until
+            // the native connection reaches its success callback.
+            await this.applyRustDeskOrientationPolicy('page-appear', true);
+          }
           this.applyDesktopKeyboardMouseMode();
           const restoring: boolean = this.prepareRegistryRestore(host);
           if (restoring) {
@@ -6730,7 +6760,7 @@ struct RemoteDesktop {
     }
   }
 
-  private async applyRustDeskOrientationPolicy(reason: string): Promise<void> {
+  private async applyRustDeskOrientationPolicy(reason: string, sessionPending: boolean = false): Promise<void> {
     const host: RemoteHost | null = this.pendingHost;
     const protocol: string = host === null ? '' : host.protocol;
     const adaptiveOrientationEnabled: boolean = host !== null &&
@@ -6738,7 +6768,7 @@ struct RemoteDesktop {
         host.rustdeskAdaptiveOrientation, host.sourceType, host.rustdeskProManaged,
         host.rustdeskProPlatform);
     const policy = rustDeskOrientationPolicy(protocol, this.isDesktopDevice,
-      this.connected, this.renderPreservedInPip, adaptiveOrientationEnabled);
+      this.connected, this.renderPreservedInPip, adaptiveOrientationEnabled, sessionPending);
     if (policy === 'auto-rotate') {
       await this.setPreferredOrientation(window.Orientation.AUTO_ROTATION,
         'RUSTDESK-AUTO-ROTATION-' + reason);
@@ -8973,6 +9003,7 @@ struct RemoteDesktop {
     this.touchWheelRemainder = 0;
     this.lastTouchWheelMs = 0;
     this.touchpadAnchorValid = false;
+    this.activeTouchPoints.clear();
     if (this.touchpadPointerDown) {
       this.touchpadPointerDown = false;
       this.applyRemoteCursorMotionState(endLocalCursorGesture(this.remoteCursorMotion, Date.now()));
@@ -9011,19 +9042,52 @@ struct RemoteDesktop {
       this.touchDragCursorX.toString() + ',' + this.touchDragCursorY.toString());
   }
 
-  private averageTouchPoint(event: TouchEvent): LocalPoint | null {
-    if (event.touches.length === 0) {
-      return null;
+  private syncActiveTouchPoints(event: TouchEvent): void {
+    if (event.type === TouchType.Cancel) {
+      this.activeTouchPoints.clear();
+      return;
     }
+    if (event.type === TouchType.Down && this.touchFingerCount <= 0) {
+      this.activeTouchPoints.clear();
+    }
+    for (let i = 0; i < event.touches.length; i++) {
+      const touch = event.touches[i];
+      this.activeTouchPoints.set(touch.id, { x: touch.x, y: touch.y, inside: true });
+    }
+    for (let i = 0; i < event.changedTouches.length; i++) {
+      const touch = event.changedTouches[i];
+      this.activeTouchPoints.set(touch.id, { x: touch.x, y: touch.y, inside: true });
+    }
+    if (event.type === TouchType.Up) {
+      for (let i = 0; i < event.changedTouches.length; i++) {
+        this.activeTouchPoints.delete(event.changedTouches[i].id);
+      }
+    }
+  }
+
+  private averageTouchPoint(event: TouchEvent): LocalPoint | null {
     let sumX: number = 0;
     let sumY: number = 0;
-    for (let i = 0; i < event.touches.length; i++) {
-      sumX += event.touches[i].x;
-      sumY += event.touches[i].y;
+    let count: number = 0;
+    this.activeTouchPoints.forEach((point: LocalPoint): void => {
+      sumX += point.x;
+      sumY += point.y;
+      count++;
+    });
+    if (count === 0) {
+      const points = event.touches.length > 0 ? event.touches : event.changedTouches;
+      for (let i = 0; i < points.length; i++) {
+        sumX += points[i].x;
+        sumY += points[i].y;
+      }
+      count = points.length;
+    }
+    if (count === 0) {
+      return null;
     }
     return {
-      x: sumX / event.touches.length,
-      y: sumY / event.touches.length,
+      x: sumX / count,
+      y: sumY / count,
       inside: true
     };
   }
@@ -9513,6 +9577,7 @@ struct RemoteDesktop {
   private handleConfiguredTouchInput = (event: TouchEvent): void => {
     // RustDesk geometry is synchronized by its low-frequency stream timer;
     // input events must not perform renderer/NAPI reads.
+    this.syncActiveTouchPoints(event);
     if (event.type === TouchType.Down && this.hardwareKeyboardProxyActive) {
       // 触摸获焦同样可能抢走隐藏 TextArea；不重置 IME 会话，稍后恢复代理焦点。
       this.scheduleRemoteInputFocus('touch-down');

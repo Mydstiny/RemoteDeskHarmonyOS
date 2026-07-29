@@ -11,6 +11,10 @@ export default function remoteOrientationPolicyTest(): void {
         .assertEqual('landscape');
       expect(rustDeskOrientationPolicy('rustdesk', false, true, false, true))
         .assertEqual('auto-rotate');
+      expect(rustDeskOrientationPolicy('rustdesk', false, false, false, false, true))
+        .assertEqual('landscape');
+      expect(rustDeskOrientationPolicy('rustdesk', false, false, false, true, true))
+        .assertEqual('auto-rotate');
     });
 
     it('keeps the existing policy for RDP, desktop and PIP', 0, (): void => {
