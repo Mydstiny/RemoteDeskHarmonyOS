@@ -6,7 +6,8 @@ Updated: 2026-07-29 Asia/Shanghai
 
 - Cloud/data lifecycle root fix is active on
   `codex/cloud-data-lifecycle-root-fix` at implementation checkpoint
-  `89f4b7574`. Local code and build gates are complete for account-scoped
+  `f5adf90e7`. The signed upgrade-test candidate is `1.0.9 / 1000009`.
+  Local code and build gates are complete for account-scoped
   physical stores, verified account binding, durable cloud coordinator,
   fail-closed sensitive transfer, portable backup v3/legacy partial restore,
   exclusive crypto lifecycle, Asset Store credential boundaries and
@@ -16,6 +17,9 @@ Updated: 2026-07-29 Asia/Shanghai
   legacy REST sync stay disabled. D-020 independent review is also pending;
   do not start an agent unless the user explicitly lifts the current
   no-agent constraint.
+  The connected device still has `1.0.8 / 1000008`; do not perform an
+  in-place upgrade until the user explicitly authorizes testing against its
+  existing app data and a recovery path is prepared.
 
 - RustDesk OSS/第三方地址簿中继报错修复计划已合并到
   `docs/superpowers/plans/2026-07-29-rustdesk-relay-2fa-repair-upgrade-plan-v2.md`；首要实施项是

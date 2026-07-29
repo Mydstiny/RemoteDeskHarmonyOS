@@ -6,7 +6,7 @@ Updated: 2026-07-29 Asia/Shanghai
 
 - Repository: Mydstiny/RemoteDeskHarmonyOS
 - Active task branch: `codex/cloud-data-lifecycle-root-fix`.
-- Base: `main@23940521a`; implementation checkpoint: `89f4b7574`.
+- Base: `main@23940521a`; implementation checkpoint: `f5adf90e7`.
 - Scope: root remediation of account/data ownership, per-account physical RDB stores, cloud bootstrap/sync lifecycle, local backup v3/legacy partial restore, encryption lifecycle, secure credential storage, device-local trust and old shared-store/relay/VNC migration.
 - Entity plan: `docs/superpowers/plans/2026-07-28-cloud-data-lifecycle-upgrade-roadmap.md`.
 - No remote push, PR or merge has been performed. The user explicitly prohibited further sub-agents/tasks, so no new reviewer agent was started.
@@ -24,16 +24,18 @@ Updated: 2026-07-29 Asia/Shanghai
 
 Implementation commits: `6a9d430b1`, `4cdc5b1df`, `d2f365c32`, `d51214577`,
 `50ce7b36e`, `1d0f03848`, `d5ccaa73f`, `623cdd378`, `8fb395c41`,
-`beebc662e`, `89f4b7574`.
+`beebc662e`, `89f4b7574`, `f5adf90e7`.
 
 ## Current verification
 
-- `default@OhosTestCompileArkTS`: passed on implementation checkpoint `89f4b7574`; existing dependency/deprecation warnings remain.
+- Release-candidate metadata is now `1.0.9 / 1000009`; application manifest, in-app release notes, user guide, version resource, SBOM and SBOM generator agree.
+- `default@OhosTestCompileArkTS`: passed on implementation checkpoint `f5adf90e7`; existing dependency/deprecation warnings remain.
 - `assembleHap`: `BUILD SUCCESSFUL`; signed HAP generated.
 - `git diff --check`: passed.
 - Light open-source compliance: passed.
 - Data-lifecycle policy/matrix tests are included in the default ArkTS test compilation.
 - `ohosTest@OhosTestCompileArkTS` remains unavailable because the task is not registered (`00306054`); no test execution success is claimed.
+- A connected device was inspected read-only and currently has `1.0.8 / 1000008`. The `1.0.9` HAP was not installed because replacing an app that may contain real user data requires explicit authorization and a recoverable test procedure.
 
 ## Current blockers / external acceptance
 

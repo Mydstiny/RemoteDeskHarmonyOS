@@ -5,7 +5,7 @@ Updated: 2026-07-29 Asia/Shanghai
 ## Active cloud-data lifecycle handoff
 
 - Branch: `codex/cloud-data-lifecycle-root-fix`; base:
-  `main@23940521a`; implementation checkpoint: `89f4b7574`.
+  `main@23940521a`; implementation checkpoint: `f5adf90e7`.
 - Plan:
   `docs/superpowers/plans/2026-07-28-cloud-data-lifecycle-upgrade-roadmap.md`.
 - Core local implementation is complete for account transitions, per-account
@@ -17,6 +17,10 @@ Updated: 2026-07-29 Asia/Shanghai
   `assembleHap` passed and signed; `git diff --check` passed; Light compliance
   passed. `ohosTest@OhosTestCompileArkTS` is absent from the task graph
   (`00306054`) and is not claimed as passed.
+- The signed upgrade-test candidate is `1.0.9 / 1000009`. A connected device
+  was inspected read-only and still has `1.0.8 / 1000008`; no install, launch,
+  login or device-data mutation was performed. Require explicit user approval
+  and a recovery plan before an in-place upgrade test.
 - Release is NO-GO pending real Huawei Cloud schema/permissions, two API 23
   devices, A/B accounts, old released APK/RDB/backup fixtures, process-kill and
   low-storage fault injection, real Documents Providers and API 23 Asset Store

@@ -5,7 +5,7 @@
 > 适用仓库：RemoteDeskHarmonyOS
 > 审计基线：`main@23940521a414fcb55605b37fe6e65fd18412c7a3`
 > 实施分支：`codex/cloud-data-lifecycle-root-fix`
-> 当前实现：`89f4b7574`；核心代码已实施并通过本地门禁，真实华为云、双设备、旧包升级验收待完成
+> 当前实现：`f5adf90e7`；`1.0.9 / 1000009` 测试候选包已生成，真实华为云、双设备、旧包升级验收待完成
 > 目标基线：API 23 上限，兼容现有 main 及已发布旧版本数据
 > 计划原则：账号隔离优先于同步便利；可恢复优先于静默继续；无法证明安全时 fail-closed
 
@@ -68,21 +68,24 @@
 - `8fb395c41`：AccountKit credential 的 Asset Store Kit 存储边界。
 - `beebc662e`：敏感 payload、独占 crypto transition、selection、legacy relay 等全局 fail-closed 收口。
 - `89f4b7574`：旧 VNC owner/epoch/payload 隔离和无 lease 清表入口移除。
+- `f5adf90e7`：递增到 `1.0.9 / 1000009`，统一应用清单、更新说明、用户文档和 SBOM，使旧版覆盖升级可以进入真实系统升级路径。
 
 ### 0.2 本地验证与发布边界
 
-当前实现 HEAD `89f4b7574` 已通过：
+当前代码实现检查点 `f5adf90e7` 已通过：
 
 - API 23 `default@OhosTestCompileArkTS`。
 - `assembleHap`，签名 HAP 生成成功。
 - `git diff --check`。
 - `verify_open_source_release.ps1 -Mode Light`。
 - 数据生命周期矩阵和策略测试已纳入默认 ArkTS 测试编译，覆盖 clean machine、verified binding、cloud-first、watchdog、unsafe payload、备份脱敏/owner/旧七表、crypto 中断恢复、selection pause、relay migration 和 VNC legacy quarantine policy。
+- 应用版本已从 `1.0.8 / 1000008` 递增到 `1.0.9 / 1000009`；发布说明测试覆盖首次安装、从 `1.0.8` 升级、同版本重启和降级标记。
 
 已知本地限制：
 
 - `ohosTest@OhosTestCompileArkTS` 在当前 Hvigor task graph 中不存在，返回 `00306054 Task not found`；已使用仓库强制的 `default@OhosTestCompileArkTS`，但不能把 task 缺失写成测试运行成功。
 - 本轮没有安装 HAP、没有登录真实华为账号、没有访问真实云表、没有执行双设备或系统换机，也没有用已发布旧 APK 生成 fixture。
+- 只读检查确认当前连接设备安装的是 `1.0.8 / 1000008`。新的签名 HAP 已具备更高 versionCode，但为保护设备上的真实应用数据，本轮没有执行覆盖安装；该动作必须在用户明确授权并完成可恢复备份后进行。
 - 因此当前结论是“代码实现和本地构建通过，发布 NO-GO 等待外部矩阵”，不是“云同步/换机已经在真机通过”。
 
 ## 1. 证据基线
