@@ -224,12 +224,17 @@ enum RemoteKeyboardTransport {
 
 impl RustDeskConnector {
     pub fn new() -> Self {
+        let connect_epoch = crate::current_connect_epoch();
+        Self::new_with_connection_id(0, connect_epoch)
+    }
+
+    pub fn new_with_connection_id(connection_id: u64, connect_epoch: u64) -> Self {
         Self {
             state: ConnState::Disconnected,
             keypair: crypto::generate_keypair(),
             peer_pk: None,
             crypto_channel: None,
-            session: Session::new(),
+            session: Session::new_with_connection_id(connection_id, connect_epoch),
             peer_addr: None,
             stream_stats: String::new(),
         }
@@ -252,6 +257,7 @@ impl RustDeskConnector {
         &mut self,
         rendezvous_host: &str,
         rendezvous_port: u16,
+        relay_fallback_port: u16,
         server_key: &str,
         api_token: &str,
         peer_id: &str,
@@ -293,7 +299,13 @@ impl RustDeskConnector {
                 "[RustDesk-FFI] using relay uuid from rendezvous uuid={} relay_server={}",
                 relay_uuid, punch.relay_server
             );
-            rd.create_relay(peer_id, &relay_uuid, &punch.relay_server, credentials.access_key)?
+            rd.create_relay(
+                peer_id,
+                &relay_uuid,
+                &punch.relay_server,
+                relay_fallback_port,
+                credentials.access_key,
+            )?
         } else if !punch.relay_server.trim().is_empty() {
             self.state = ConnState::RequestingRelay;
             let mut relay_rd = RendezvousClient::new();
@@ -309,7 +321,13 @@ impl RustDeskConnector {
                 "[RustDesk-FFI] relay approved uuid={} relay_server={}",
                 relay_uuid, punch.relay_server
             );
-            relay_rd.create_relay(peer_id, &relay_uuid, &punch.relay_server, credentials.access_key)?
+            relay_rd.create_relay(
+                peer_id,
+                &relay_uuid,
+                &punch.relay_server,
+                relay_fallback_port,
+                credentials.access_key,
+            )?
         } else if let Some(peer_addr) = punch.peer_addr {
             self.state = ConnState::ConnectingToPeer;
             self.peer_addr = Some(peer_addr);
@@ -437,6 +455,7 @@ impl RustDeskConnector {
         &mut self,
         rendezvous_host: &str,
         rendezvous_port: u16,
+        relay_fallback_port: u16,
         server_key: &str,
         api_token: &str,
         peer_id: &str,
@@ -483,7 +502,13 @@ impl RustDeskConnector {
                 punch.relay_server, relay_uuid
             ));
             self.state = ConnState::ConnectingToPeer;
-            rd.create_relay(peer_id, &relay_uuid, &punch.relay_server, credentials.access_key)?
+            rd.create_relay(
+                peer_id,
+                &relay_uuid,
+                &punch.relay_server,
+                relay_fallback_port,
+                credentials.access_key,
+            )?
         } else if !punch.relay_server.trim().is_empty() {
             self.state = ConnState::RequestingRelay;
             let mut relay_rd = RendezvousClient::new();
@@ -503,7 +528,13 @@ impl RustDeskConnector {
                 punch.relay_server, relay_uuid
             ));
             self.state = ConnState::ConnectingToPeer;
-            relay_rd.create_relay(peer_id, &relay_uuid, &punch.relay_server, credentials.access_key)?
+            relay_rd.create_relay(
+                peer_id,
+                &relay_uuid,
+                &punch.relay_server,
+                relay_fallback_port,
+                credentials.access_key,
+            )?
         } else if let Some(peer_addr) = punch.peer_addr {
             crate::set_last_error(format!("file-transfer connecting peer addr={}", peer_addr));
             self.state = ConnState::ConnectingToPeer;

@@ -33,6 +33,14 @@ export default function localBackupPolicyTest(): void {
       expect(validateLocalBackupDocument(signedText(document)) === null).assertTrue();
     });
 
+    it('rejects_device_local_relay_control_plane_authorization', 0, (): void => {
+      const document = createLocalBackupDocument(emptyTables(), 100, '1.0.5');
+      document.tables['rustdeskrelays'].push({
+        id: 'relay-1', controlplaneprofile: 'official_server_pro_token'
+      });
+      expect(validateLocalBackupDocument(signedText(document)) === null).assertTrue();
+    });
+
     it('rejects_non_integer_text_for_integer_columns', 0, (): void => {
       const document = createLocalBackupDocument(emptyTables(), 100, '1.0.5');
       document.tables['remotehosts'].push({ id: 'host-1', port: 'invalid' });

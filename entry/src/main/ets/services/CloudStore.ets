@@ -25,7 +25,11 @@ import {
   RdpAuthMode,
   RdpRestrictedAdminSecretSource
 } from '../model/RemoteHost';
-import { RustDeskRelayConfig, RustDeskRelayJSON } from '../model/RustDeskRelayConfig';
+import {
+  RustDeskRelayConfig,
+  RustDeskRelayCloudJSON,
+  RustDeskRelayJSON
+} from '../model/RustDeskRelayConfig';
 import { RustDeskAccount, RustDeskAccountJSON } from '../model/RustDeskAccount';
 import { RdpCredential } from '../model/RdpCredential';
 import { SshKey, SshKeyType } from '../model/SshKey';
@@ -65,6 +69,11 @@ import {
 import { DataMutationResult } from './DataMutationResult';
 import { canonicalHostPassword } from './SensitiveDataMigrationPolicy';
 import { rustDeskRelayKeyForStorage, rustDeskRelayKeyFromStorage } from './RustDeskRelayKeyPolicy';
+import {
+  normalizeRustDeskControlPlaneProfile,
+  rustDeskControlPlaneProfileMetadataKey,
+  RUSTDESK_CONTROL_PLANE_PROFILE_METADATA_PREFIX
+} from './RustDeskControlPlanePolicy';
 import {
   sensitiveWriteRequiresUnlock,
   shouldRedactLockedCiphertext
@@ -828,6 +837,11 @@ export class CloudStore implements CryptoCloudStore {
     this.localRestoreActive = true;
     try {
       this.store.beginTransaction();
+      // A portable backup intentionally does not grant token handoff on this
+      // device. Manual cloud-download rollback passes its metadata snapshot.
+      if (metadata === null && !this.clearRustDeskRelayControlPlaneProfiles()) {
+        throw new Error('clear device-local relay control-plane profiles failed');
+      }
       for (let i = 0; i < TABLES.length; i++) {
         const table: string = TABLES[i];
         await this.store.executeSql('DELETE FROM ' + table);
@@ -1580,6 +1594,42 @@ export class CloudStore implements CryptoCloudStore {
       const predicates = new relationalStore.RdbPredicates(LOCAL_METADATA_TABLE);
       predicates.equalTo('key', key);
       this.store.deleteSync(predicates);
+      return true;
+    } catch (_e) { return false; }
+  }
+
+  private readRustDeskRelayControlPlaneProfile(relayId: string) {
+    const key: string = rustDeskControlPlaneProfileMetadataKey(relayId);
+    return normalizeRustDeskControlPlaneProfile(key === '' ? undefined : this.readLocalMetadata(key));
+  }
+
+  private writeRustDeskRelayControlPlaneProfile(relay: RustDeskRelayConfig): boolean {
+    const key: string = rustDeskControlPlaneProfileMetadataKey(relay.id);
+    return key !== '' && this.writeLocalMetadata(key,
+      normalizeRustDeskControlPlaneProfile(relay.controlPlaneProfile));
+  }
+
+  private deleteRustDeskRelayControlPlaneProfile(relayId: string): boolean {
+    const key: string = rustDeskControlPlaneProfileMetadataKey(relayId);
+    return key === '' || this.deleteLocalMetadata(key);
+  }
+
+  private clearRustDeskRelayControlPlaneProfiles(): boolean {
+    if (!this.store) { return false; }
+    try {
+      const rows = this.store.querySync(new relationalStore.RdbPredicates(LOCAL_METADATA_TABLE));
+      const keys: string[] = [];
+      const keyColumn: number = rows.getColumnIndex('key');
+      while (rows.goToNextRow()) {
+        const key: string = rows.getString(keyColumn);
+        if (key.indexOf(RUSTDESK_CONTROL_PLANE_PROFILE_METADATA_PREFIX) === 0) { keys.push(key); }
+      }
+      rows.close();
+      for (let i = 0; i < keys.length; i++) {
+        const predicates = new relationalStore.RdbPredicates(LOCAL_METADATA_TABLE);
+        predicates.equalTo('key', keys[i]);
+        this.store.deleteSync(predicates);
+      }
       return true;
     } catch (_e) { return false; }
   }
@@ -3174,7 +3224,7 @@ export class CloudStore implements CryptoCloudStore {
       const rs = this.store.querySync(predicates);
       if (rs.goToNextRow()) {
         const json: string = rs.getString(rs.getColumnIndex('value'));
-        const cfgs: RustDeskRelayJSON[] = JSON.parse(json) as RustDeskRelayJSON[];
+        const cfgs: RustDeskRelayCloudJSON[] = JSON.parse(json) as RustDeskRelayCloudJSON[];
         // 合并到本地表: 云端有而本地没有的 → insert; 本地有而云端没有的 → 保留本地
         const localIds: Set<string> = new Set();
         const localRelays = this.loadAllRelaysLocal();
@@ -3188,7 +3238,7 @@ export class CloudStore implements CryptoCloudStore {
         }
         // 如果云端为空而本地有数据, 推本地到云端
         for (let i = 0; i < localRelays.length; i++) {
-          const found = cfgs.some((c: RustDeskRelayJSON) => c.id === localRelays[i].id);
+          const found = cfgs.some((c: RustDeskRelayCloudJSON) => c.id === localRelays[i].id);
           if (!found) { result.push(localRelays[i]); }
         }
         hilog.info(0x0001, 'CloudSync', '[syncRelaysFromCloud] 从云端合并 ' + cfgs.length.toString() + ' 组中继');
@@ -3303,6 +3353,9 @@ export class CloudStore implements CryptoCloudStore {
     try {
       this.store.beginTransaction();
       if (!this.upsertRelayLocalInternal(relay, true)) { code = 'local_write_failed'; throw new Error('relay upsert failed'); }
+      if (!this.writeRustDeskRelayControlPlaneProfile(relay)) {
+        code = 'metadata_write_failed'; throw new Error('relay profile metadata write failed');
+      }
       if (!this.recordLocalMutation('rustdeskrelays', relay.id, 'upsert')) {
         code = 'journal_write_failed'; throw new Error('relay journal failed');
       }
@@ -3314,7 +3367,7 @@ export class CloudStore implements CryptoCloudStore {
       try { this.store.rollBack(); } catch (_ignored) {}
       hilog.error(0x0001, 'CloudSync', '[CloudStore] upsertRelay transaction failed: ' + safeError(err));
       return this.setLastMutation(DataMutationResult.failure(relay.id, code as 'local_write_failed' |
-        'journal_write_failed', 'RustDesk 中继保存未完成'));
+        'metadata_write_failed' | 'journal_write_failed', 'RustDesk 中继保存未完成'));
     }
   }
 
@@ -3330,6 +3383,9 @@ export class CloudStore implements CryptoCloudStore {
       const predicates = new relationalStore.RdbPredicates('rustdeskrelays');
       predicates.equalTo('id', id);
       if (!rdbSingleRowAffected(this.store.deleteSync(predicates))) { code = 'not_found'; throw new Error('relay delete failed'); }
+      if (!this.deleteRustDeskRelayControlPlaneProfile(id)) {
+        code = 'metadata_write_failed'; throw new Error('relay profile metadata delete failed');
+      }
       if (!this.recordLocalMutation('rustdeskrelays', id, 'delete')) {
         code = 'journal_write_failed'; throw new Error('relay journal failed');
       }
@@ -3341,7 +3397,7 @@ export class CloudStore implements CryptoCloudStore {
       try { this.store.rollBack(); } catch (_ignored) {}
       hilog.error(0x0001, 'CloudSync', '[CloudStore] deleteRelay transaction failed: ' + safeError(err));
       return this.setLastMutation(DataMutationResult.failure(id, code as 'local_write_failed' |
-        'not_found' | 'journal_write_failed', 'RustDesk 中继删除未完成'));
+        'not_found' | 'metadata_write_failed' | 'journal_write_failed', 'RustDesk 中继删除未完成'));
     }
   }
 
@@ -3434,6 +3490,7 @@ export class CloudStore implements CryptoCloudStore {
         if (accountsColumn >= 0) {
         relay.accounts = decrypt ? this.relayAccountsFromJson(rs.getString(accountsColumn)) : this.relayAccountsFromJsonRaw(rs.getString(accountsColumn));
         }
+        relay.controlPlaneProfile = this.readRustDeskRelayControlPlaneProfile(relay.id);
         relay.syncVersion = rs.getLong(rs.getColumnIndex('syncversion'));
         relay.createdAt = rs.getLong(rs.getColumnIndex('createdat'));
         const updatedAtColumn: number = rs.getColumnIndex('updatedat');
@@ -3624,9 +3681,9 @@ export class CloudStore implements CryptoCloudStore {
     return this.cloudBucket('rdpcredentials', vb);
   }
 
-  private relayToCloudJson(relay: RustDeskRelayConfig): RustDeskRelayJSON {
+  private relayToCloudJson(relay: RustDeskRelayConfig): RustDeskRelayCloudJSON {
     const crypto = DataCrypto.getInstance();
-    const json: RustDeskRelayJSON = relay.toJSON();
+    const json: RustDeskRelayCloudJSON = relay.toCloudJSON();
     json.apiPassword = this.encryptIfReady(crypto, json.apiPassword);
     json.key = this.encryptIfReady(crypto, rustDeskRelayKeyForStorage(json.key, relay.keyMode));
     for (let i = 0; i < json.accounts.length; i++) {
@@ -3635,7 +3692,7 @@ export class CloudStore implements CryptoCloudStore {
     return json;
   }
 
-  private relayFromCloudJson(json: RustDeskRelayJSON): RustDeskRelayConfig {
+  private relayFromCloudJson(json: RustDeskRelayCloudJSON): RustDeskRelayConfig {
     const crypto = DataCrypto.getInstance();
     const copied: RustDeskRelayJSON = {
       id: json.id,
@@ -3654,6 +3711,7 @@ export class CloudStore implements CryptoCloudStore {
       healthCheckedAt: json.healthCheckedAt,
       apiLoginStatus: json.apiLoginStatus,
       accounts: [],
+      controlPlaneProfile: this.readRustDeskRelayControlPlaneProfile(json.id),
       syncVersion: json.syncVersion,
       createdAt: json.createdAt,
       updatedAt: json.updatedAt ?? 0

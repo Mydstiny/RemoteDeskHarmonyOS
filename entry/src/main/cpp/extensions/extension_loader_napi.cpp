@@ -1266,6 +1266,7 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
     getString("rdAccountId", cfg.rdAccountId);
     getString("rdServerKey", cfg.rdServerKey);
     getInt("rdServerKeyMode", cfg.rdServerKeyMode);
+    getInt("rdRelayPort", cfg.rdRelayPort);
     getString("rdAccessToken", cfg.rdAccessToken);
 
     // VNC-only connection contract. These values are assembled from the
@@ -1306,6 +1307,7 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
     if (cfg.rdAuthMode != 1) cfg.rdAuthMode = 0;
     if (cfg.rdPasswordLength != 8 && cfg.rdPasswordLength != 10) cfg.rdPasswordLength = 6;
     if (cfg.rdServerKeyMode != 1 && cfg.rdServerKeyMode != 2) cfg.rdServerKeyMode = 0;
+    if (cfg.rdRelayPort <= 0 || cfg.rdRelayPort > 65535) cfg.rdRelayPort = 21117;
     if (cfg.vncTransport.empty()) cfg.vncTransport = "direct_tcp";
     if (cfg.vncGatewayPath.empty()) cfg.vncGatewayPath = "/vnc";
     // An omitted mode gets the only viewer mode we currently support. An
@@ -1336,12 +1338,12 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
         const std::string accountLog = cfg.rdAccountId.empty() ? "未设置" : SafeLog::MaskUser(cfg.rdAccountId);
         const char* serverKeyMode = cfg.rdServerKeyMode == 2 ? "shared" :
             (cfg.rdServerKeyMode == 1 ? "public" : "auto");
-        OH_LOG_INFO(LOG_APP, "[ExtLoader] RustDesk配置: quality=%{public}d direct=%{public}s:%{public}d lan=%{public}s privacy=%{public}s audio=%{public}s pwdMode=%{public}d authMode=%{public}d pwdLen=%{public}d relayId=%{public}s account=%{public}s serverKeyMode=%{public}s proToken=%{public}s",
+        OH_LOG_INFO(LOG_APP, "[ExtLoader] RustDesk配置: quality=%{public}d direct=%{public}s:%{public}d lan=%{public}s privacy=%{public}s audio=%{public}s pwdMode=%{public}d authMode=%{public}d pwdLen=%{public}d relayId=%{public}s account=%{public}s serverKeyMode=%{public}s relayFallbackPort=%{public}d proToken=%{public}s",
                     cfg.rdImageQuality, cfg.rdDirectIp ? "on" : "off", cfg.rdDirectPort,
                     cfg.rdLanDiscovery ? "on" : "off", cfg.rdPrivacyMode ? "on" : "off",
                     cfg.rdAudioEnabled ? "on" : "off",
                     cfg.rdPasswordMode, cfg.rdAuthMode, cfg.rdPasswordLength,
-                    relayLog.c_str(), accountLog.c_str(), serverKeyMode,
+                    relayLog.c_str(), accountLog.c_str(), serverKeyMode, cfg.rdRelayPort,
                     cfg.rdAccessToken.empty() ? "absent" : "present");
     } else if (protocolName == "rdp") {
         const std::string drivePathLog = cfg.rdDrivePath.empty() ? "off" : SafeLog::HashForLog(cfg.rdDrivePath);

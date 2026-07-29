@@ -35,6 +35,8 @@ import cloudStoreMutationPolicyTest from './CloudStoreMutationPolicy.test';
 import remoteImmersivePolicyTest from './RemoteImmersivePolicy.test';
 import rdpCertificateProbeLifecyclePolicyTest from './RdpCertificateProbeLifecyclePolicy.test';
 import rustDeskProConnectionPreflightPolicyTest from './RustDeskProConnectionPreflightPolicy.test';
+import rustDeskControlPlanePolicyTest from './RustDeskControlPlanePolicy.test';
+import rustDeskPeerTwoFactorPolicyTest from './RustDeskPeerTwoFactorPolicy.test';
 import cloudSyncGuidancePolicyTest from './CloudSyncGuidancePolicy.test';
 import settingsLeafSheetLifecyclePolicyTest from './SettingsLeafSheetLifecyclePolicy.test';
 import feedbackCommunityPolicyTest from './FeedbackCommunityPolicy.test';
@@ -107,6 +109,8 @@ export default function testsuite() {
   remoteImmersivePolicyTest();
   rdpCertificateProbeLifecyclePolicyTest();
   rustDeskProConnectionPreflightPolicyTest();
+  rustDeskControlPlanePolicyTest();
+  rustDeskPeerTwoFactorPolicyTest();
   cloudSyncGuidancePolicyTest();
   settingsLeafSheetLifecyclePolicyTest();
   feedbackCommunityPolicyTest();

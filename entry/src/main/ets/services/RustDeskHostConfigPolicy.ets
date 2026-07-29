@@ -23,6 +23,7 @@ export interface RustDeskConnectionCheckInput {
 }
 
 export const RUSTDESK_ID_SERVER_PORT: number = 21116;
+export const RUSTDESK_RELAY_PORT: number = 21117;
 export const RUSTDESK_PEER_TCP_PORT: number = 21118;
 
 /**
@@ -90,6 +91,15 @@ export function rustDeskAuthModeForConnection(directEnabled: boolean, requestedM
 
 export function normalizeRustDeskPort(port: number, fallback: number = RUSTDESK_ID_SERVER_PORT): number {
   return port > 0 && port <= 65535 ? port : fallback;
+}
+
+/**
+ * hbbs chooses the relay host in its rendezvous response. The configured
+ * hbbr port is only a fallback when that authoritative endpoint has no port.
+ */
+export function rustDeskRelayFallbackPort(relay: RustDeskRelayConfig | null): number {
+  if (relay === null) { return RUSTDESK_RELAY_PORT; }
+  return normalizeRustDeskPort(relay.relayPort, RUSTDESK_RELAY_PORT);
 }
 
 export function shouldBindLegacyRustDeskHostToRelay(protocol: string, directEnabled: boolean,

@@ -7,6 +7,12 @@ import { Palette, buildDark, buildLight, AppTheme } from '../../../common/Theme'
 import { ResourceFabPicker } from '../ResourceFabPicker';
 import { RustDeskRelayImportService, RustDeskRelayImportResult } from '../../../services/RustDeskRelayImportService';
 import { RustDeskRelayKeyMode, resolveRustDeskRelayKey } from '../../../services/RustDeskRelayKeyPolicy';
+import {
+  RustDeskControlPlaneProfile,
+  RUSTDESK_CONTROL_PLANE_DEFAULT,
+  rustDeskControlPlaneProfileDescription,
+  rustDeskControlPlaneProfileLabel
+} from '../../../services/RustDeskControlPlanePolicy';
 import { RustDeskRelayConfigPasteSheet } from './RustDeskRelayConfigPasteSheet';
 
 @Component
@@ -26,6 +32,7 @@ export struct ModernRelayAddFlow {
   @State apiServer: string = '';
   @State serverKey: string = '';
   @State serverKeyMode: RustDeskRelayKeyMode = 'server_public_key';
+  @State controlPlaneProfile: RustDeskControlPlaneProfile = RUSTDESK_CONTROL_PLANE_DEFAULT;
   @State proServer: string = '';
   @State proUser: string = '';
   @State proPassword: string = '';
@@ -49,6 +56,7 @@ export struct ModernRelayAddFlow {
     this.step = 'protocol'; this.errorText = ''; this.savedRelayId = '';
     this.idServer = ''; this.idPort = 21116; this.relayServer = ''; this.relayPort = 21117;
     this.apiServer = ''; this.serverKey = ''; this.serverKeyMode = 'server_public_key';
+    this.controlPlaneProfile = RUSTDESK_CONTROL_PLANE_DEFAULT;
     this.proServer = ''; this.proUser = ''; this.proPassword = '';
     this.proBusy = false;
     this.importedFileName = ''; this.importBusy = false;
@@ -84,6 +92,7 @@ export struct ModernRelayAddFlow {
     relay.relayServer = this.relayServer.trim() === '' ? relay.idServer : this.relayServer.trim();
     relay.relayPort = this.relayPort;
     relay.apiServer = this.apiServer.trim(); relay.key = key.value; relay.keyMode = key.mode;
+    relay.controlPlaneProfile = this.controlPlaneProfile;
     if (!this.hosts.addRelay(relay)) { this.errorText = '中继服务器保存失败'; return this.errorText; }
     this.savedRelayId = relay.id; this.proServer = relay.apiServer; this.step = 'saved'; this.errorText = '';
     this.onSaved(relay.id);
@@ -202,6 +211,32 @@ export struct ModernRelayAddFlow {
           (value: string): void => { this.relayPort = this.port(value, 21117); })
         this.field('Server Pro API 地址（可选）', 'http://pro.example.com:21114', this.apiServer,
           (value: string): void => { this.apiServer = value; })
+        Text('Relay 控制面认证策略').fontSize(12).fontColor(this.pal().text2).fontFamily(this.font())
+          .margin({ bottom: 5 })
+        Row() {
+          Button('OSS Key-only').layoutWeight(1).height(32).fontSize(11).borderRadius(8)
+            .backgroundColor(this.controlPlaneProfile === 'oss_key_only' ? this.accentColor : this.pal().surface)
+            .fontColor(this.controlPlaneProfile === 'oss_key_only' ? Color.White : this.pal().text2)
+            .onClick((): void => { this.controlPlaneProfile = 'oss_key_only'; })
+          Button('地址簿 API').layoutWeight(1).height(32).fontSize(11).borderRadius(8).margin({ left: 6 })
+            .backgroundColor(this.controlPlaneProfile === 'addressbook_only_custom' ? this.accentColor : this.pal().surface)
+            .fontColor(this.controlPlaneProfile === 'addressbook_only_custom' ? Color.White : this.pal().text2)
+            .onClick((): void => { this.controlPlaneProfile = 'addressbook_only_custom'; })
+        }.width('100%').margin({ bottom: 6 })
+        Row() {
+          Button('官方 Server Pro').layoutWeight(1).height(32).fontSize(11).borderRadius(8)
+            .backgroundColor(this.controlPlaneProfile === 'official_server_pro_token' ? this.accentColor : this.pal().surface)
+            .fontColor(this.controlPlaneProfile === 'official_server_pro_token' ? Color.White : this.pal().text2)
+            .onClick((): void => { this.controlPlaneProfile = 'official_server_pro_token'; })
+          Button('自定义控制面').layoutWeight(1).height(32).fontSize(11).borderRadius(8).margin({ left: 6 })
+            .backgroundColor(this.controlPlaneProfile === 'custom_control_plane' ? this.accentColor : this.pal().surface)
+            .fontColor(this.controlPlaneProfile === 'custom_control_plane' ? Color.White : this.pal().text2)
+            .onClick((): void => { this.controlPlaneProfile = 'custom_control_plane'; })
+        }.width('100%').margin({ bottom: 4 })
+        Text(rustDeskControlPlaneProfileLabel(this.controlPlaneProfile) + '：' +
+          rustDeskControlPlaneProfileDescription(this.controlPlaneProfile))
+          .fontSize(10).fontColor(this.pal().text3).fontFamily(this.font()).width('100%').lineHeight(15)
+          .margin({ bottom: 10 })
         Text('服务器 Key（可选）').fontSize(12).fontColor(this.pal().text2).fontFamily(this.font()).margin({ bottom: 5 })
         Row() {
           Button('服务器公钥').layoutWeight(1).height(32).borderRadius(8)

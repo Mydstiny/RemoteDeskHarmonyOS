@@ -118,6 +118,9 @@ struct ConnectionConfig {
     std::string rdAccountId;       // RustDesk: 绑定 API 账户 ID
     std::string rdServerKey;       // RustDesk: Rendezvous 公钥或共享准入 Key
     int         rdServerKeyMode;   // 0=legacy/auto, 1=server public key, 2=shared access key
+    // Configured hbbr fallback port. It is used only when hbbs returns a
+    // relay_server without an explicit port.
+    int         rdRelayPort;
     // Transient Server Pro control-plane session token. Never persist or log.
     std::string rdAccessToken;
 
@@ -148,6 +151,7 @@ struct ConnectionConfig {
           rdLanDiscovery(true), rdPrivacyMode(false), rdAudioEnabled(true), rdClipboardEnabled(true),
           rdDriveName("RemoteDesktop"), rdpAllowUntrustedRoot(false), rdpAllowHostMismatch(false),
           rdPasswordMode(0), rdAuthMode(0), rdPasswordLength(6), rdServerKeyMode(0),
+          rdRelayPort(21117),
           vncTransport("direct_tcp"), vncGatewayPort(5901), vncGatewayPath("/vnc"),
           vncRepeaterMode("mode12"), vncTls(false), vncViewOnly(true),
           vncClipboardEnabled(false), vncSecurityPolicy("secure_only"),

@@ -26,6 +26,15 @@ describe('CloudTableAdapter', (): void => {
     expect(row['passward']).assertEqual('canonical');
   });
 
+  it('does_not_project_device_local_relay_control_plane_authorization', (): void => {
+    const row = projectLocalRow('rustdeskrelays', {
+      id: 'relay-1', relayserver: 'relay.example.com',
+      controlplaneprofile: 'official_server_pro_token'
+    });
+    expect(row['controlplaneprofile']).assertUndefined();
+    expect(cloudTableColumns('rustdeskrelays').indexOf('controlplaneprofile')).assertEqual(-1);
+  });
+
   it('normalizes the cloud typo back to the local password field', (): void => {
     const row = normalizeCloudRow('remotehosts', { id: 'h1', passward: 'secret' });
     expect(row['password']).assertEqual('secret');

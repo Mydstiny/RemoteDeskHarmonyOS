@@ -7,8 +7,13 @@
 import { cryptoFramework } from '@kit.CryptoArchitectureKit';
 import { RustDeskAccount, RustDeskAccountJSON } from './RustDeskAccount';
 import { RustDeskRelayKeyMode, rustDeskRelayKeyFromStorage } from '../services/RustDeskRelayKeyPolicy';
+import {
+  RustDeskControlPlaneProfile,
+  normalizeRustDeskControlPlaneProfile,
+  RUSTDESK_CONTROL_PLANE_DEFAULT
+} from '../services/RustDeskControlPlanePolicy';
 
-export interface RustDeskRelayJSON {
+export interface RustDeskRelayCloudJSON {
   id: string
   userId: string
   idServer: string
@@ -30,6 +35,12 @@ export interface RustDeskRelayJSON {
   updatedAt: number
 }
 
+// Runtime clones retain the device-local profile, while cloud serialization
+// uses RustDeskRelayCloudJSON and cannot carry that authorization decision.
+export interface RustDeskRelayJSON extends RustDeskRelayCloudJSON {
+  controlPlaneProfile?: RustDeskControlPlaneProfile
+}
+
 export class RustDeskRelayConfig {
   id: string = '';            // UUID
   userId: string = '';        // 云同步 owner (华为账号 UnionID)
@@ -42,6 +53,9 @@ export class RustDeskRelayConfig {
   apiPassword: string = '';   // Never used by Server Pro login
   key: string = '';           // 协议值：公钥或 hbbs/hbbr 共享准入 Key
   keyMode: RustDeskRelayKeyMode = 'auto';
+  // Address-book API capability is independent from relay control-plane auth.
+  // Legacy rows are intentionally key-only until the user verifies a contract.
+  controlPlaneProfile: RustDeskControlPlaneProfile = RUSTDESK_CONTROL_PLANE_DEFAULT;
   healthStatus: string = 'unknown';  // unknown|online|offline|error
   healthLatency: number = 0;         // 上次检测延迟(ms)
   healthCheckedAt: number = 0;       // 上次检测时间戳
@@ -63,6 +77,31 @@ export class RustDeskRelayConfig {
   }
 
   toJSON(): RustDeskRelayJSON {
+    return {
+      id: this.id,
+      userId: this.userId,
+      idServer: this.idServer,
+      idServerPort: this.idServerPort,
+      relayServer: this.relayServer,
+      relayPort: this.relayPort,
+      apiServer: this.apiServer,
+      apiUsername: this.apiUsername,
+      apiPassword: this.apiPassword,
+      key: this.key,
+      keyMode: this.keyMode,
+      controlPlaneProfile: this.controlPlaneProfile,
+      healthStatus: this.healthStatus,
+      healthLatency: this.healthLatency,
+      healthCheckedAt: this.healthCheckedAt,
+      apiLoginStatus: this.apiLoginStatus,
+      accounts: this.accounts.map((account: RustDeskAccount): RustDeskAccountJSON => account.toJSON()),
+      syncVersion: this.syncVersion,
+      createdAt: this.createdAt,
+      updatedAt: this.updatedAt
+    };
+  }
+
+  toCloudJSON(): RustDeskRelayCloudJSON {
     return {
       id: this.id,
       userId: this.userId,
@@ -102,6 +141,7 @@ export class RustDeskRelayConfig {
       cfg.key = stored.key;
       cfg.keyMode = stored.mode;
     } else if (json.keyMode !== undefined) { cfg.keyMode = json.keyMode; }
+    cfg.controlPlaneProfile = normalizeRustDeskControlPlaneProfile(json.controlPlaneProfile);
     if (json.healthStatus) { cfg.healthStatus = json.healthStatus; }
     if (json.healthLatency) { cfg.healthLatency = json.healthLatency; }
     if (json.healthCheckedAt) { cfg.healthCheckedAt = json.healthCheckedAt; }

@@ -46,15 +46,22 @@ pub struct Session {
     state: SessionState,
     peer_info: Option<PeerInfo>,
     connect_epoch: u64,
+    connection_id: u64,
     auth_callback: Option<(AuthEventCallback, usize)>,
 }
 
 impl Session {
     pub fn new() -> Self {
+        let connect_epoch = crate::current_connect_epoch();
+        Self::new_with_connection_id(0, connect_epoch)
+    }
+
+    pub fn new_with_connection_id(connection_id: u64, connect_epoch: u64) -> Self {
         Self {
             state: SessionState::Disconnected,
             peer_info: None,
-            connect_epoch: crate::current_connect_epoch(),
+            connect_epoch,
+            connection_id,
             auth_callback: None,
         }
     }
@@ -504,6 +511,7 @@ impl Session {
             };
         let _pending_2fa_guard = PendingTwoFactorGuard {
             epoch: self.connect_epoch,
+            session_id: self.connection_id,
         };
         let mut auth_receiver: Option<Receiver<String>> = None;
         let mut last_challenge = Self::challenge_fingerprint(initial_hash);
@@ -589,7 +597,11 @@ impl Session {
                         if err == REQUIRE_2FA {
                             if auth_receiver.is_none() {
                                 let (sender, receiver) = mpsc::channel();
-                                crate::register_pending_2fa(self.connect_epoch, sender)?;
+                                crate::register_pending_2fa(
+                                    self.connect_epoch,
+                                    self.connection_id,
+                                    sender,
+                                )?;
                                 auth_receiver = Some(receiver);
                             }
                             deadline = Instant::now() + PEER_2FA_TIMEOUT;
@@ -924,11 +936,12 @@ impl Session {
 
 struct PendingTwoFactorGuard {
     epoch: u64,
+    session_id: u64,
 }
 
 impl Drop for PendingTwoFactorGuard {
     fn drop(&mut self) {
-        crate::clear_pending_2fa(self.epoch);
+        crate::clear_pending_2fa(self.epoch, self.session_id);
     }
 }
 

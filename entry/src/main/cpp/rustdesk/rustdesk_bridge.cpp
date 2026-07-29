@@ -49,7 +49,9 @@ extern "C" {
         void* user_data);
     void  rustdesk_disconnect(void* handle);
     void  rustdesk_cancel_pending_connect();
+    void  rustdesk_cancel_pending_connect_for_session(uint64_t session_id);
     bool  rustdesk_submit_2fa(const char* code);
+    bool  rustdesk_submit_2fa_for_session(uint64_t session_id, const char* code);
     void  rustdesk_send_key(void* handle, unsigned int scancode, bool pressed);
     void  rustdesk_send_mouse(void* handle, int x, int y, unsigned int button, bool pressed);
     void  rustdesk_send_mouse_wheel(void* handle, int x, int y, int delta);
@@ -1051,7 +1053,8 @@ void RustDeskBridge::setSessionIdentity(uint64_t sessionId) {
 bool RustDeskBridge::submitTwoFactorCode(const std::string& code) {
 #ifdef RUSTDESK_USE_REAL_CORE
     if (mode_ == RustDeskMode::FFI) {
-        return rustdesk_submit_2fa(code.c_str());
+        const uint64_t sessionId = impl_->sessionId.load(std::memory_order_acquire);
+        return rustdesk_submit_2fa_for_session(sessionId, code.c_str());
     }
 #else
     (void)code;
@@ -1496,14 +1499,14 @@ int RustDeskBridge::connect(const ConnectionConfig& cfg) {
         const std::string logPeer = SafeLog::MaskUser(ffiPeerId);
         const char* serverKeyMode = cfg.rdServerKeyMode == 2 ? "shared" :
             (cfg.rdServerKeyMode == 1 ? "public" : "auto");
-        OH_LOG_INFO(LOG_APP, "[RustDesk-FFI] Request peer=%{public}s serverKeyMode=%{public}s proToken=%{public}s",
+        OH_LOG_INFO(LOG_APP, "[RustDesk-FFI] Request peer=%{public}s serverKeyMode=%{public}s proToken=%{public}s relayFallbackPort=%{public}d",
                     logPeer.c_str(), serverKeyMode,
-                    cfg.rdAccessToken.empty() ? "absent" : "present");
+                    cfg.rdAccessToken.empty() ? "absent" : "present", cfg.rdRelayPort);
 
         RustDeskBridge::Impl* impl = impl_.get();
         const uint64_t callbackGeneration =
             impl_->cursorGeneration.load(std::memory_order_acquire);
-        std::thread connectThread([impl, cfg, ffiPeerId, logHost, serial, callbackGeneration]() {
+        std::thread connectThread([impl, cfg, ffiPeerId, logHost, serial, callbackGeneration, sessionId]() {
             auto callbackContext = std::make_unique<RustDeskFfiCallbackContext>();
             callbackContext->impl = impl;
             callbackContext->generation = callbackGeneration;
@@ -1537,6 +1540,8 @@ int RustDeskBridge::connect(const ConnectionConfig& cfg) {
             ffiCfg.auth_mode = (cfg.rdAuthMode == 1) ? 1 : 0;
             ffiCfg.key_mode = cfg.rdServerKeyMode;
             ffiCfg.token    = cfg.rdAccessToken.c_str();
+            ffiCfg.connection_id = sessionId;
+            ffiCfg.relay_fallback_port = cfg.rdRelayPort;
             // T-209: 直连模式映射
             ffiCfg.direct_connection = false;
             if (cfg.rdDirectIp && !cfg.host.empty()) {
@@ -1547,7 +1552,7 @@ int RustDeskBridge::connect(const ConnectionConfig& cfg) {
                     logHost.c_str(), ffiCfg.port);
             }
             OH_LOG_INFO(LOG_APP,
-                "[RustDesk-FFI] ffiCfg codec=%{public}d(%{public}s) quality=%{public}d privacy=%{public}s audio=%{public}s authMode=%{public}d size=%{public}dx%{public}d profile=%{public}d fps=%{public}d",
+                "[RustDesk-FFI] ffiCfg codec=%{public}d(%{public}s) quality=%{public}d privacy=%{public}s audio=%{public}s authMode=%{public}d size=%{public}dx%{public}d profile=%{public}d fps=%{public}d relayFallbackPort=%{public}d",
                 ffiCfg.codec,
                 rdCodecName(static_cast<int>(cfg.codec)),
                 ffiCfg.imageQuality,
@@ -1557,7 +1562,8 @@ int RustDeskBridge::connect(const ConnectionConfig& cfg) {
                 ffiCfg.width,
                 ffiCfg.height,
                 ffiCfg.profile,
-                ffiCfg.fps);
+                ffiCfg.fps,
+                ffiCfg.relay_fallback_port);
 
             void* ffiHandle = rustdesk_connect_v3(
                 &ffiCfg, onFfiFrame, onFfiAudio, onFfiCursor, onFfiDisconnect,
@@ -1680,6 +1686,7 @@ int RustDeskBridge::connect(const ConnectionConfig& cfg) {
 }
 
 void RustDeskBridge::disconnect() {
+    const uint64_t sessionId = impl_->sessionId.load(std::memory_order_acquire);
     const uint64_t disconnectGeneration =
         impl_->cursorGeneration.load(std::memory_order_acquire);
     impl_->disconnectRequested.store(true);
@@ -1696,7 +1703,7 @@ void RustDeskBridge::disconnect() {
 #ifdef RUSTDESK_USE_REAL_CORE
     // FFI 句柄在登录完成前尚未返回，先取消等待中的连接尝试，避免点击返回后
     // 审批等待线程继续占用中继连接。
-    rustdesk_cancel_pending_connect();
+    rustdesk_cancel_pending_connect_for_session(sessionId);
     void* ffiHandle = nullptr;
     std::thread ffiConnectThread;
     std::vector<std::thread> ffiCleanupThreads;

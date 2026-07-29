@@ -32,6 +32,7 @@ export function rustDeskProAccountIdForConnection(stableAccountId: string, legac
 
 export type RustDeskProNativeErrorKind =
   | 'pro_session_expired'
+  | 'control_plane_incompatible'
   | 'device_password'
   | 'approval_timeout'
   | 'relay_auth'
@@ -39,13 +40,57 @@ export type RustDeskProNativeErrorKind =
   | 'network'
   | 'unknown';
 
+export interface RustDeskNativeErrorInfo {
+  structured: boolean
+  stage: string
+  code: string
+  detail: string
+}
+
+/**
+ * Rust FFI errors use a small delimiter-safe envelope.  Legacy/native helper
+ * messages remain readable, but are never allowed to impersonate a verified
+ * Server Pro HTTP session failure.
+ */
+export function parseRustDeskNativeError(message: string): RustDeskNativeErrorInfo {
+  const marker: string = 'RDERR|';
+  const markerIndex: number = message.indexOf(marker);
+  if (markerIndex < 0) {
+    return { structured: false, stage: '', code: '', detail: message };
+  }
+  const parts: string[] = message.substring(markerIndex + marker.length).split('|');
+  const values: Record<string, string> = {};
+  for (let i = 0; i < parts.length; i++) {
+    const separator: number = parts[i].indexOf('=');
+    if (separator > 0) {
+      values[parts[i].substring(0, separator)] = parts[i].substring(separator + 1);
+    }
+  }
+  return {
+    structured: true,
+    stage: values['stage'] || '',
+    code: values['code'] || '',
+    detail: values['detail'] || message.substring(markerIndex + marker.length)
+  };
+}
+
 export function classifyRustDeskProNativeError(message: string): RustDeskProNativeErrorKind {
-  const value: string = message.toLowerCase();
+  const parsed: RustDeskNativeErrorInfo = parseRustDeskNativeError(message);
+  const value: string = parsed.detail.toLowerCase();
+  if (parsed.structured && parsed.stage === 'control_plane' &&
+    parsed.code === 'pro_session_expired') {
+    return 'pro_session_expired';
+  }
+  // This phrase is also returned by incompatible third-party relay/control
+  // planes. It is diagnostic only and must never clear a local account token.
   if (value.indexOf('you have not logged in') >= 0 ||
     value.indexOf('login session has expired') >= 0 ||
     value.indexOf('session has expired') >= 0 ||
     value.indexOf('not logged in') >= 0) {
-    return 'pro_session_expired';
+    return 'control_plane_incompatible';
+  }
+  if (parsed.structured && (parsed.stage === 'relay' || parsed.stage === 'rendezvous')) {
+    return 'relay_auth';
   }
   if (value.indexOf('no password access') >= 0 ||
     value.indexOf('remote approval timed out') >= 0 ||
@@ -86,6 +131,8 @@ export function rustDeskProNativeErrorMessage(kind: RustDeskProNativeErrorKind,
   switch (kind) {
     case 'pro_session_expired':
       return 'RustDesk Server Pro 登录会话已失效，请重新登录后重试。';
+    case 'control_plane_incompatible':
+      return '中继控制面拒绝了 Server Pro 令牌；这通常表示地址簿 API 与 OSS 中继认证不兼容。应用不会清除当前登录账号，请检查中继控制面策略和服务器日志。';
     case 'device_password':
       return '远程 RustDesk 设备密码错误，请重新输入。';
     case 'approval_timeout':
@@ -99,4 +146,16 @@ export function rustDeskProNativeErrorMessage(kind: RustDeskProNativeErrorKind,
     default:
       return 'RustDesk 连接失败，请检查设备鉴权和中继配置。';
   }
+}
+
+/** Only an explicit, verified official control-plane error may invalidate a token. */
+export function canInvalidateRustDeskProSession(message: string,
+  profile: string): boolean {
+  const parsed: RustDeskNativeErrorInfo = parseRustDeskNativeError(message);
+  return profile === 'official_server_pro_token' && parsed.structured &&
+    parsed.stage === 'control_plane' && parsed.code === 'pro_session_expired';
+}
+
+export function rustDeskNativeErrorDetail(message: string): string {
+  return parseRustDeskNativeError(message).detail;
 }

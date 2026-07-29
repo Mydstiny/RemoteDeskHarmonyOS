@@ -3,6 +3,12 @@ import { RemoteHost } from '../../model/RemoteHost';
 import { RustDeskRelayConfig } from '../../model/RustDeskRelayConfig';
 import { DiscoveredRustDeskPeer } from '../../services/RustDeskLanDiscoveryService';
 import { RustDeskRelayKeyMode, resolveRustDeskRelayKey } from '../../services/RustDeskRelayKeyPolicy';
+import {
+  RustDeskControlPlaneProfile,
+  RUSTDESK_CONTROL_PLANE_DEFAULT,
+  rustDeskControlPlaneProfileDescription,
+  rustDeskControlPlaneProfileLabel
+} from '../../services/RustDeskControlPlanePolicy';
 import { RustDeskTargetDevice } from '../../services/RemoteOrientationPolicy';
 
 @Component
@@ -38,6 +44,7 @@ export struct RustDeskAddFlow {
   @State relayApiServer: string = '';
   @State relayKey: string = '';
   @State relayKeyMode: RustDeskRelayKeyMode = 'server_public_key';
+  @State controlPlaneProfile: RustDeskControlPlaneProfile = RUSTDESK_CONTROL_PLANE_DEFAULT;
   @State targetDevice: RustDeskTargetDevice = 'computer';
   @State adaptiveOrientation: boolean = false;
 
@@ -95,6 +102,7 @@ export struct RustDeskAddFlow {
     relay.apiServer = this.relayApiServer.trim();
     relay.key = key.value;
     relay.keyMode = key.mode;
+    relay.controlPlaneProfile = this.controlPlaneProfile;
     relay.updatedAt = Date.now();
     if (!this.onAddRelay(relay)) { this.errorText = '保存中继服务器失败'; return; }
     this.relayId = relay.id;
@@ -172,6 +180,31 @@ export struct RustDeskAddFlow {
               (v: string): void => { this.relayServerPortText = v; })
             this.field('API 地址（可选）', this.relayApiServer, 'https://api.example.com',
               (v: string): void => { this.relayApiServer = v; })
+            Text('Relay 控制面认证策略').fontSize(12).fontColor(this.pal().text2).margin({ bottom: 5 })
+            Row() {
+              Button('OSS Key-only').layoutWeight(1).height(32).fontSize(11).borderRadius(8)
+                .backgroundColor(this.controlPlaneProfile === 'oss_key_only' ? this.accentColor : this.pal().surface)
+                .fontColor(this.controlPlaneProfile === 'oss_key_only' ? Color.White : this.pal().text2)
+                .onClick((): void => { this.controlPlaneProfile = 'oss_key_only'; })
+              Button('地址簿 API').layoutWeight(1).height(32).fontSize(11).borderRadius(8).margin({ left: 6 })
+                .backgroundColor(this.controlPlaneProfile === 'addressbook_only_custom' ? this.accentColor : this.pal().surface)
+                .fontColor(this.controlPlaneProfile === 'addressbook_only_custom' ? Color.White : this.pal().text2)
+                .onClick((): void => { this.controlPlaneProfile = 'addressbook_only_custom'; })
+            }.width('100%').margin({ bottom: 6 })
+            Row() {
+              Button('官方 Server Pro').layoutWeight(1).height(32).fontSize(11).borderRadius(8)
+                .backgroundColor(this.controlPlaneProfile === 'official_server_pro_token' ? this.accentColor : this.pal().surface)
+                .fontColor(this.controlPlaneProfile === 'official_server_pro_token' ? Color.White : this.pal().text2)
+                .onClick((): void => { this.controlPlaneProfile = 'official_server_pro_token'; })
+              Button('自定义控制面').layoutWeight(1).height(32).fontSize(11).borderRadius(8).margin({ left: 6 })
+                .backgroundColor(this.controlPlaneProfile === 'custom_control_plane' ? this.accentColor : this.pal().surface)
+                .fontColor(this.controlPlaneProfile === 'custom_control_plane' ? Color.White : this.pal().text2)
+                .onClick((): void => { this.controlPlaneProfile = 'custom_control_plane'; })
+            }.width('100%').margin({ bottom: 4 })
+            Text(rustDeskControlPlaneProfileLabel(this.controlPlaneProfile) + '：' +
+              rustDeskControlPlaneProfileDescription(this.controlPlaneProfile))
+              .fontSize(10).fontColor(this.pal().text3).width('100%').lineHeight(15)
+              .margin({ bottom: 10 })
             Text('服务器 Key（可选）').fontSize(12).fontColor(this.pal().text2).margin({ bottom: 5 })
             Row() {
               Button('服务器公钥').layoutWeight(1).height(32).borderRadius(8)

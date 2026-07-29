@@ -1,7 +1,11 @@
 import { preferences } from '@kit.ArkData';
 import { cryptoFramework } from '@kit.CryptoArchitectureKit';
 import { common } from '@kit.AbilityKit';
-import { RustDeskProAccountState } from '../model/RustDeskProModels';
+import {
+  RustDeskProAccountState,
+  rustDeskProAccessTokenFingerprint,
+  rustDeskProTokenGeneration
+} from '../model/RustDeskProModels';
 
 const STORE_NAME: string = 'RustDeskProCredentials';
 const ACCOUNTS_KEY: string = 'accounts';
@@ -64,6 +68,11 @@ export class RustDeskProCredentialStore {
   }
 
   private fromRecord(row: Record<string, Object>): RustDeskProAccountState {
+    const accessToken: string = typeof row['accessToken'] === 'string' ? row['accessToken'] as string : '';
+    const storedFingerprint: string = typeof row['accessTokenFingerprint'] === 'string'
+      ? row['accessTokenFingerprint'] as string : '';
+    const storedGeneration: number = typeof row['tokenGeneration'] === 'number'
+      ? row['tokenGeneration'] as number : 1;
     return {
       id: typeof row['id'] === 'string' ? row['id'] as string : '',
       relayId: typeof row['relayId'] === 'string' ? row['relayId'] as string : '',
@@ -71,7 +80,11 @@ export class RustDeskProCredentialStore {
       username: typeof row['username'] === 'string' ? row['username'] as string : '',
       displayName: typeof row['displayName'] === 'string' ? row['displayName'] as string : '',
       userId: typeof row['userId'] === 'string' ? row['userId'] as string : '',
-      accessToken: typeof row['accessToken'] === 'string' ? row['accessToken'] as string : '',
+      accessToken,
+      accessTokenFingerprint: storedFingerprint !== ''
+        ? storedFingerprint : rustDeskProAccessTokenFingerprint(accessToken),
+      tokenGeneration: Number.isFinite(storedGeneration) && storedGeneration > 0
+        ? Math.floor(storedGeneration) : 1,
       deviceId: typeof row['deviceId'] === 'string' ? row['deviceId'] as string : '',
       deviceUuid: typeof row['deviceUuid'] === 'string' ? row['deviceUuid'] as string : '',
       loginStatus: typeof row['loginStatus'] === 'string' ? row['loginStatus'] as string : 'none',
@@ -112,6 +125,9 @@ export class RustDeskProCredentialStore {
       displayName: account.displayName,
       userId: account.userId,
       accessToken: account.accessToken,
+      accessTokenFingerprint: account.accessTokenFingerprint !== ''
+        ? account.accessTokenFingerprint : rustDeskProAccessTokenFingerprint(account.accessToken),
+      tokenGeneration: rustDeskProTokenGeneration(account),
       deviceId: account.deviceId,
       deviceUuid: account.deviceUuid,
       loginStatus: account.loginStatus,

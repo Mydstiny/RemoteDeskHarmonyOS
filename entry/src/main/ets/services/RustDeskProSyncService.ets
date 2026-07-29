@@ -1,5 +1,10 @@
 import { common } from '@kit.AbilityKit';
-import { RustDeskProAccountState } from '../model/RustDeskProModels';
+import {
+  RustDeskProAccountState,
+  rustDeskProAccessTokenFingerprint,
+  rustDeskProTokenGeneration,
+  rustDeskProTokenMatchesConnection
+} from '../model/RustDeskProModels';
 import { HostSyncService } from './HostSyncService';
 import { RustDeskProApiService } from './RustDeskProApiService';
 import { RustDeskProCredentialStore } from './RustDeskProCredentialStore';
@@ -99,6 +104,9 @@ export class RustDeskProSyncService {
       displayName: account.displayName,
       userId: account.userId,
       accessToken: account.accessToken,
+      accessTokenFingerprint: account.accessTokenFingerprint !== ''
+        ? account.accessTokenFingerprint : rustDeskProAccessTokenFingerprint(account.accessToken),
+      tokenGeneration: rustDeskProTokenGeneration(account),
       deviceId: account.deviceId,
       deviceUuid: account.deviceUuid,
       loginStatus: account.loginStatus,
@@ -118,6 +126,8 @@ export class RustDeskProSyncService {
       displayName: input.username.trim(),
       userId: '',
       accessToken: '',
+      accessTokenFingerprint: rustDeskProAccessTokenFingerprint(''),
+      tokenGeneration: previous ? rustDeskProTokenGeneration(previous) : 1,
       deviceId: previous ? previous.deviceId : '',
       deviceUuid: previous ? previous.deviceUuid : '',
       loginStatus: 'none',
@@ -128,6 +138,8 @@ export class RustDeskProSyncService {
     this.credentials.ensureDeviceIdentity(account);
     const result = await this.api.login(account, input.username, input.password);
     account.accessToken = result.accessToken;
+    account.accessTokenFingerprint = rustDeskProAccessTokenFingerprint(result.accessToken);
+    account.tokenGeneration = previous ? rustDeskProTokenGeneration(previous) + 1 : 1;
     account.userId = result.userId;
     account.username = result.username.length > 0 ? result.username : input.username.trim();
     account.displayName = result.displayName.length > 0 ? result.displayName : account.username;
@@ -180,20 +192,34 @@ export class RustDeskProSyncService {
     } catch (err) {
       const code = err instanceof RustDeskProApiError ? err.code : 'sync_error';
       account.lastSyncError = code;
-      if (code === 'token_expired') { account.loginStatus = 'expired'; account.accessToken = ''; }
+      if (code === 'token_expired') {
+        account.loginStatus = 'expired';
+        account.accessToken = '';
+        account.accessTokenFingerprint = rustDeskProAccessTokenFingerprint('');
+      }
       this.credentials.save(account);
       throw err instanceof Error ? err : new Error('Pro 同步失败');
     }
   }
 
-  markConnectionSessionExpired(accountId: string, reason: string = 'connection_token_expired'): void {
+  markConnectionSessionExpired(accountId: string, reason: string = 'connection_token_expired',
+    expectedFingerprint: string = '', expectedGeneration: number = 0): boolean {
     const account = this.credentials.get(accountId);
-    if (!account) { return; }
+    if (!account) { return false; }
+    const currentFingerprint: string = account.accessTokenFingerprint !== ''
+      ? account.accessTokenFingerprint : rustDeskProAccessTokenFingerprint(account.accessToken);
+    const currentGeneration: number = rustDeskProTokenGeneration(account);
+    if (!rustDeskProTokenMatchesConnection(
+      expectedFingerprint, expectedGeneration, currentFingerprint, currentGeneration)) {
+      return false;
+    }
     account.accessToken = '';
+    account.accessTokenFingerprint = rustDeskProAccessTokenFingerprint('');
     account.loginStatus = 'expired';
     account.lastSyncError = reason;
     this.credentials.save(account);
     this.persistCloudAccountMetadata(account);
+    return true;
   }
 
   async logout(accountId: string): Promise<void> {

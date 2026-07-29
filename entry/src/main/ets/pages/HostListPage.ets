@@ -50,6 +50,10 @@ import { RustDeskRelayPage } from './RustDeskRelayPage';
 import { RustDeskProSyncService } from '../services/RustDeskProSyncService';
 import { RustDeskProAccountState } from '../model/RustDeskProModels';
 import { TotpEngine } from '../services/TotpEngine';
+import {
+  isRustDeskPeerTwoFactorManualCode,
+  rustDeskPeerTwoFactorAutoSubmitError
+} from '../services/RustDeskPeerTwoFactorPolicy';
 import { AppConfig, AppTheme, Palette, buildDark, buildLight } from '../common/Theme';
 import { showLockGate, lockGateErrorMessage } from '../components/LockGate';
 import { ColorPickerSheet } from '../components/ColorPickerSheet';
@@ -102,6 +106,7 @@ import {
   shouldAdoptRustDeskDirectPort,
   rustDeskAuthModeForConnection,
   normalizeRustDeskPort,
+  rustDeskRelayFallbackPort,
   rustDeskConnectionError,
   RUSTDESK_PEER_TCP_PORT,
   RustDeskHostEndpoint
@@ -257,8 +262,16 @@ import {
   classifyRustDeskProNativeError,
   rustDeskProAccountIdForConnection,
   rustDeskProNativeErrorMessage,
+  canInvalidateRustDeskProSession,
+  rustDeskNativeErrorDetail,
   RustDeskProNativeErrorKind
 } from '../services/RustDeskProConnectionPreflightPolicy';
+import {
+  RustDeskControlPlaneProfile,
+  RUSTDESK_CONTROL_PLANE_DEFAULT,
+  rustDeskControlPlaneRequiresAccount,
+  rustDeskControlPlaneTokenForConnection
+} from '../services/RustDeskControlPlanePolicy';
 import { shouldFallbackToNativeRdpConnectionAfterResolverFailure } from '../services/RdpCertificatePreflightPolicy';
 import {
   nextConnectionAttemptGeneration,
@@ -2557,7 +2570,8 @@ struct HostListPage {
         relayPort: relay ? relay.idServerPort : 0,
         relayKey: relay ? relay.key : '',
         relayKeyMode: relay ? relay.keyMode : 'auto',
-        proManaged: host.rustdeskProManaged && host.sourceType === 'rustdesk_pro'
+        proManaged: host.rustdeskProManaged && host.sourceType === 'rustdesk_pro' &&
+          relay !== undefined && rustDeskControlPlaneRequiresAccount(relay.controlPlaneProfile)
       });
       if (rustDeskError !== '') {
         this.releaseConnectionAttempt(host.id);
@@ -3425,6 +3439,16 @@ struct HostListPage {
     if (!host.rustdeskProManaged || host.sourceType !== 'rustdesk_pro' || host.rustdeskDirectEnabled) {
       return '';
     }
+    const relay: RustDeskRelayConfig | undefined = this.srv.getAllRelays()
+      .find((item: RustDeskRelayConfig): boolean => item.id === host.rustdeskRelayId);
+    if (relay === undefined) {
+      return 'RustDesk Pro 中继配置不存在，请检查中继服务器设置。';
+    }
+    const profile: RustDeskControlPlaneProfile = relay.controlPlaneProfile || RUSTDESK_CONTROL_PLANE_DEFAULT;
+    // Address-book API-only rows deliberately do not require a live HTTP
+    // account for the relay handshake. Their peer still connects with the
+    // configured OSS key/shared key.
+    if (!rustDeskControlPlaneRequiresAccount(profile)) { return ''; }
     const accountId: string = rustDeskProAccountIdForConnection(
       host.rustdeskProAccountId, host.rustdeskAccountId);
     if (accountId.length === 0) {
@@ -3440,11 +3464,6 @@ struct HostListPage {
     if (account.relayId !== host.rustdeskRelayId) {
       return '地址簿主机与当前 RustDesk Pro 中继绑定不一致，请重新同步地址簿。';
     }
-    const relay: RustDeskRelayConfig | undefined = this.srv.getAllRelays()
-      .find((item: RustDeskRelayConfig): boolean => item.id === host.rustdeskRelayId);
-    if (relay === undefined) {
-      return 'RustDesk Pro 中继配置不存在，请检查中继服务器设置。';
-    }
     return '';
   }
 
@@ -3455,6 +3474,11 @@ struct HostListPage {
     const accountId: string = rustDeskProAccountIdForConnection(
       host.rustdeskProAccountId, host.rustdeskAccountId);
     const account: RustDeskProAccountState | undefined = this.rustDeskProAccountForHost(host);
+    const profile: RustDeskControlPlaneProfile = relay === undefined
+      ? RUSTDESK_CONTROL_PLANE_DEFAULT : relay.controlPlaneProfile;
+    const accessToken: string = account === undefined ? '' : account.accessToken;
+    const controlPlaneToken: string = rustDeskControlPlaneTokenForConnection(
+      profile, direct, accessToken);
     const endpoint: RustDeskHostEndpoint = resolveRustDeskHostEndpoint(
       relay ?? null,
       host.host,
@@ -3480,8 +3504,9 @@ struct HostListPage {
       rdRelayId: host.rustdeskRelayId, rdAccountId: accountId,
       rdServerKey: relay ? relay.key : '',
       rdServerKeyMode: relay ? rustDeskRelayKeyModeForFfi(relay.key, relay.keyMode) : 1,
-      rdAccessToken: host.rustdeskProManaged && host.sourceType === 'rustdesk_pro' && !direct && account !== undefined
-        ? account.accessToken : ''
+      rdRelayPort: rustDeskRelayFallbackPort(relay ?? null),
+      rdAccessToken: host.rustdeskProManaged && host.sourceType === 'rustdesk_pro'
+        ? controlPlaneToken : ''
     };
   }
 
@@ -3519,8 +3544,13 @@ struct HostListPage {
       this.openRustDeskProTwoFactorPrompt(sessionId, '已绑定的 2FA 条目不可用，请手动输入验证码。');
       return;
     }
-    const code: string = TotpEngine.generateCode(entry).code;
-    if (!this.loader.submitRustDesk2FA(sessionId, code)) {
+    const generated = TotpEngine.generateCode(entry);
+    const autoSubmitError: string = rustDeskPeerTwoFactorAutoSubmitError(entry, generated);
+    if (autoSubmitError !== '') {
+      this.openRustDeskProTwoFactorPrompt(sessionId, autoSubmitError);
+      return;
+    }
+    if (!this.loader.submitRustDesk2FA(sessionId, generated.code)) {
       this.openRustDeskProTwoFactorPrompt(sessionId, this.loader.getRustDeskLastError() ||
         '自动提交验证码失败，请手动输入。');
       return;
@@ -3543,8 +3573,8 @@ struct HostListPage {
 
   private submitRustDeskProTwoFactor(): void {
     const code: string = this.rustDeskProTwoFactorInput.trim();
-    if (!/^[0-9]{4,8}$/.test(code)) {
-      this.rustDeskProTwoFactorError = '请输入 4-8 位数字验证码。';
+    if (!isRustDeskPeerTwoFactorManualCode(code)) {
+      this.rustDeskProTwoFactorError = '请输入 6 或 8 位数字验证码。';
       return;
     }
     if (this.rustDeskProTwoFactorSessionId <= 0 ||
@@ -3578,6 +3608,15 @@ struct HostListPage {
     }
     const generation: number = ++this.rustDeskProPreflightGeneration;
     const host: RemoteHost = RemoteHost.fromJSON(stored.toJSON());
+    const relay: RustDeskRelayConfig | undefined = this.srv.getAllRelays()
+      .find((item: RustDeskRelayConfig): boolean => item.id === host.rustdeskRelayId);
+    const controlPlaneProfile: RustDeskControlPlaneProfile = relay === undefined
+      ? RUSTDESK_CONTROL_PLANE_DEFAULT : relay.controlPlaneProfile;
+    const connectionAccount: RustDeskProAccountState | undefined = this.rustDeskProAccountForHost(host);
+    const expectedTokenFingerprint: string = connectionAccount === undefined
+      ? '' : connectionAccount.accessTokenFingerprint;
+    const expectedTokenGeneration: number = connectionAccount === undefined
+      ? 0 : connectionAccount.tokenGeneration;
     host.rustdeskAuthMode = this.rustDeskProAuthMode === 'request_approval' ? 'request_approval' : 'password';
     host.rustdeskPasswordMode = this.rustDeskProPasswordMode === 1 ? 1 : 0;
     if (host.rustdeskAuthMode === 'password') { host.password = this.rustDeskProPassword; }
@@ -3657,13 +3696,14 @@ struct HostListPage {
         detail.indexOf('等待远端批准超时') >= 0) {
         kind = 'approval_timeout';
       }
-      if (kind === 'pro_session_expired') {
+      if (kind === 'pro_session_expired' && canInvalidateRustDeskProSession(detail, controlPlaneProfile)) {
         const accountId: string = rustDeskProAccountIdForConnection(
           host.rustdeskProAccountId, host.rustdeskAccountId);
-        this.proSync.markConnectionSessionExpired(accountId);
+        this.proSync.markConnectionSessionExpired(accountId, 'connection_token_expired',
+          expectedTokenFingerprint, expectedTokenGeneration);
       }
       this.rustDeskProPreflightError = kind === 'unknown'
-        ? detail
+        ? rustDeskNativeErrorDetail(detail)
         : rustDeskProNativeErrorMessage(kind, host.rustdeskAuthMode);
     }
   }
@@ -4814,9 +4854,10 @@ struct HostListPage {
           }
         })
         .bindSheet($$this.showAddSheet, this.hostAddSheetContent(), {
-          height: SheetSize.FIT_CONTENT,
+          height: this.hostAddSheetHeight(),
           preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
           dragBar: false,
+          keyboardAvoidMode: this.hostAddSheetKeyboardAvoidMode(),
           backgroundColor: this.pal().sheetBg,
           blurStyle: BlurStyle.NONE,
           showClose: false,
@@ -8456,6 +8497,20 @@ struct HostListPage {
   }
 
   // ==================== Sheet builder ====================
+  private isClassicVncAddSheet(): boolean {
+    return !this.addSheetShowsModernPicker && this.modernAddProtocol === '' && this.proto === 'vnc';
+  }
+
+  private hostAddSheetHeight(): SheetSize {
+    return this.isClassicVncAddSheet() ? SheetSize.LARGE : SheetSize.FIT_CONTENT;
+  }
+
+  private hostAddSheetKeyboardAvoidMode(): SheetKeyboardAvoidMode {
+    return this.isClassicVncAddSheet()
+      ? SheetKeyboardAvoidMode.RESIZE_ONLY
+      : SheetKeyboardAvoidMode.TRANSLATE_AND_SCROLL;
+  }
+
   @Builder hostAddSheetContent() {
     if (this.addSheetShowsModernPicker) {
       HostAddWizardSheet({
@@ -8770,6 +8825,16 @@ struct HostListPage {
   }
 
   @Builder sheetBuilder() {
+    if (this.proto === 'vnc') {
+      Column() {
+        this.classicHostEditorForm()
+      }.width('100%').height('100%')
+    } else {
+      this.classicHostEditorForm()
+    }
+  }
+
+  @Builder private classicHostEditorForm() {
     Column() {
       // 标题
       Text(this.editingHostId !== '' ? '编辑主机' :
@@ -9075,11 +9140,10 @@ struct HostListPage {
           }
         }.width('100%')
       }
-      // Keep the action footer in the Sheet viewport. VNC has extra fields, so
-      // its content scrolls within the remaining space instead of pushing the
-      // save action below the viewport when an existing password hint is shown.
-      .constraintSize({ maxHeight: this.proto === 'vnc'
-        ? (this.breakpoint === 'sm' ? 520 : 640) : 420 })
+      // The VNC editor owns a large Sheet. Its Scroll receives only the space
+      // above the fixed footer, including while the keyboard resizes the Sheet.
+      .constraintSize({ maxHeight: this.proto === 'vnc' ? '100%' : 420 })
+      .layoutWeight(this.proto === 'vnc' ? 1 : 0)
       .scrollBar(BarState.Auto)
       .edgeEffect(EdgeEffect.Spring)
       .width('100%')
@@ -9091,6 +9155,7 @@ struct HostListPage {
         }.width('100%').margin({ top: 12 })
       }
     }
+    .layoutWeight(this.proto === 'vnc' ? 1 : 0)
     .padding({ left: 24, right: 24, top: 24, bottom: 24 })
     .safeAreaPadding({ bottom: 20 })
     .borderRadius(this.breakpoint === 'sm' ? 0 : 20)

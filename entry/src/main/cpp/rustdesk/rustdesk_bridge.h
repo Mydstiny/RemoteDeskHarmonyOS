@@ -15,6 +15,7 @@
 #define RUSTDESK_BRIDGE_H
 
 #include "extensions/protocol_adapter.h"
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -102,7 +103,15 @@ struct RustDeskFfiConfig {
     int         auth_mode;  // 0=设备密码, 1=请求被控端点击批准
     int         key_mode;   // 0=legacy/auto, 1=server public key, 2=shared access key
     const char* token;      // transient Server Pro control-plane session token
+    uint64_t    connection_id; // native session identity for pending Peer 2FA
+    // Configured hbbr fallback port. A hbbs-provided relay_server:port wins.
+    int         relay_fallback_port;
 };
+
+static_assert(offsetof(RustDeskFfiConfig, relay_fallback_port) == 96,
+              "RustDeskConfig ABI tail offset changed; update Rust and C++ together");
+static_assert(sizeof(RustDeskFfiConfig) == 104,
+              "RustDeskConfig ABI size changed; update Rust and C++ together");
 
 enum class RustDeskMode {
     IPC = 0,           // IPC 转发 → rustdesk_helper

@@ -17,8 +17,9 @@ use std::net::{Shutdown, TcpStream};
 use std::os::raw::c_int;
 use std::ptr;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
+use std::collections::{HashMap, HashSet};
 
 pub mod connector;
 pub mod crypto;
@@ -40,18 +41,28 @@ use cursor_state::CursorStreamUpdate;
 use std::sync::mpsc::Sender;
 
 static LAST_ERROR: Mutex<String> = Mutex::new(String::new());
-// 每次连接尝试都有单调递增 epoch；取消时递增 epoch，使等待批准的旧线程可退出，
-// 同时避免新连接把旧线程的取消状态重置掉。
+// 每个连接尝试都有独立 epoch。取消一个 session 只标记它自己的 epoch，
+// 不会让另一个 RustDesk 连接的 2FA/批准等待线程退出。
 static CONNECT_EPOCH: AtomicU64 = AtomicU64::new(0);
-static PENDING_2FA: Mutex<Option<PendingTwoFactor>> = Mutex::new(None);
+static CANCELLED_EPOCHS: LazyLock<Mutex<HashSet<u64>>> =
+    LazyLock::new(|| Mutex::new(HashSet::new()));
+static ACTIVE_CONNECT_EPOCHS: LazyLock<Mutex<HashMap<u64, Vec<u64>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+static PENDING_2FA: LazyLock<Mutex<HashMap<u64, PendingTwoFactor>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 struct PendingTwoFactor {
     epoch: u64,
+    session_id: u64,
     sender: Sender<String>,
 }
 
-pub(crate) fn begin_connect_epoch() -> u64 {
-    CONNECT_EPOCH.fetch_add(1, Ordering::SeqCst).wrapping_add(1)
+pub(crate) fn begin_connect_epoch(session_id: u64) -> u64 {
+    let epoch = CONNECT_EPOCH.fetch_add(1, Ordering::SeqCst).wrapping_add(1);
+    if let Ok(mut active) = ACTIVE_CONNECT_EPOCHS.lock() {
+        active.entry(session_id).or_default().push(epoch);
+    }
+    epoch
 }
 
 pub(crate) fn current_connect_epoch() -> u64 {
@@ -59,23 +70,84 @@ pub(crate) fn current_connect_epoch() -> u64 {
 }
 
 pub(crate) fn connect_cancelled(epoch: u64) -> bool {
-    CONNECT_EPOCH.load(Ordering::SeqCst) != epoch
+    CANCELLED_EPOCHS.lock().map(|cancelled| cancelled.contains(&epoch)).unwrap_or(true)
 }
 
-pub(crate) fn register_pending_2fa(epoch: u64, sender: Sender<String>) -> io::Result<()> {
+pub(crate) fn register_pending_2fa(epoch: u64, session_id: u64, sender: Sender<String>) -> io::Result<()> {
     let mut pending = PENDING_2FA
         .lock()
         .map_err(|_| io::Error::new(io::ErrorKind::Other, "2FA pending state lock poisoned"))?;
-    *pending = Some(PendingTwoFactor { epoch, sender });
+    let key = if session_id == 0 { epoch } else { session_id };
+    pending.insert(key, PendingTwoFactor { epoch, session_id, sender });
     Ok(())
 }
 
-pub(crate) fn clear_pending_2fa(epoch: u64) {
+pub(crate) fn clear_pending_2fa(epoch: u64, session_id: u64) {
     if let Ok(mut pending) = PENDING_2FA.lock() {
-        if pending.as_ref().map(|value| value.epoch) == Some(epoch) {
-            *pending = None;
+        pending.retain(|_, value| {
+            !(value.epoch == epoch && (session_id == 0 || value.session_id == session_id))
+        });
+    }
+}
+
+fn finish_connect_epoch(epoch: u64, session_id: u64) {
+    if let Ok(mut active) = ACTIVE_CONNECT_EPOCHS.lock() {
+        let remove_session = if let Some(epochs) = active.get_mut(&session_id) {
+            epochs.retain(|active_epoch| *active_epoch != epoch);
+            epochs.is_empty()
+        } else {
+            false
+        };
+        if remove_session {
+            active.remove(&session_id);
         }
     }
+    if let Ok(mut cancelled) = CANCELLED_EPOCHS.lock() { cancelled.remove(&epoch); }
+}
+
+fn cancel_connect_epoch(epoch: u64) {
+    if let Ok(mut cancelled) = CANCELLED_EPOCHS.lock() { cancelled.insert(epoch); }
+}
+
+pub(crate) fn cancel_pending_connect_for_session(session_id: u64) {
+    let epochs: Vec<u64> = if let Ok(active) = ACTIVE_CONNECT_EPOCHS.lock() {
+        if session_id == 0 {
+            active.values().flat_map(|values| values.iter().copied()).collect()
+        } else {
+            active.get(&session_id).cloned().unwrap_or_default()
+        }
+    } else { Vec::new() };
+    for epoch in epochs { cancel_connect_epoch(epoch); }
+    if let Ok(mut pending) = PENDING_2FA.lock() {
+        if session_id == 0 {
+            pending.clear();
+        } else {
+            pending.retain(|_, value| value.session_id != session_id);
+        }
+    }
+}
+
+fn structured_error(stage: &str, code: &str, detail: impl Into<String>) -> String {
+    let detail = detail.into().replace('|', "/").replace('\n', " ").replace('\r', " ");
+    format!("RDERR|stage={}|code={}|detail={}", stage, code, detail)
+}
+
+fn pipeline_error_message(
+    state: &connector::ConnState,
+    error: &io::Error,
+    direct_connection: bool,
+) -> String {
+    let (stage, code) = match state {
+        connector::ConnState::RendezvousConnecting => ("rendezvous", "rendezvous_failed"),
+        connector::ConnState::RequestingRelay => ("relay", "relay_request_failed"),
+        connector::ConnState::ConnectingToPeer if direct_connection =>
+            ("peer_channel", "direct_peer_connect_failed"),
+        connector::ConnState::ConnectingToPeer => ("relay", "relay_endpoint_failed"),
+        connector::ConnState::KeyExchanging => ("peer_channel", "peer_channel_failed"),
+        connector::ConnState::LoggingIn => ("peer_login", "peer_login_failed"),
+        _ => ("unknown", "connect_failed")
+    };
+    structured_error(stage, code, error.to_string())
 }
 
 fn set_last_error(message: impl Into<String>) {
@@ -179,6 +251,24 @@ pub struct RustDeskConfig {
     /// Server Pro control-plane session token. Transient only; never persist.
     /// Appended to preserve the established C ABI field order.
     pub token: *const c_char,
+    /// Native session identity used to isolate pending Peer 2FA and cancel
+    /// only the connection attempt that owns this config.
+    /// Appended to preserve the established C ABI field order.
+    pub connection_id: u64,
+    /// Configured hbbr fallback port. The hbbs relay_server endpoint keeps an
+    /// explicit port when one is advertised.
+    /// Appended to preserve the established C ABI field order.
+    pub relay_fallback_port: c_int,
+}
+
+const DEFAULT_RELAY_PORT: u16 = 21117;
+
+fn relay_fallback_port_from_config(value: c_int) -> u16 {
+    if (1..=u16::MAX as c_int).contains(&value) {
+        value as u16
+    } else {
+        DEFAULT_RELAY_PORT
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -591,6 +681,7 @@ struct RustDeskClient {
     peer_id: String,
     host: String,
     port: u16,
+    relay_fallback_port: u16,
     server_key: String,
     shared_access_key: bool,
     api_token: String,
@@ -1054,13 +1145,14 @@ fn rustdesk_connect_impl(
     user_data: *mut c_void,
 ) -> *mut c_void {
     clear_last_error();
-    let _connect_epoch = begin_connect_epoch();
     if cfg.is_null() {
         set_last_error("config pointer is null");
         return std::ptr::null_mut();
     }
 
     let config = unsafe { &*cfg };
+    let connection_id = config.connection_id;
+    let connect_epoch = begin_connect_epoch(connection_id);
     let host = ffi_string(config.host);
     let port = if config.port > 0 {
         config.port as u16
@@ -1070,6 +1162,7 @@ fn rustdesk_connect_impl(
     } else {
         21116u16
     };
+    let relay_fallback_port = relay_fallback_port_from_config(config.relay_fallback_port);
     // Direct IP access follows the RustDesk client path: the connected peer
     // address is the login username. The stored remote ID is still retained
     // by the host model for display/discovery, but must not be sent as the
@@ -1112,10 +1205,12 @@ fn rustdesk_connect_impl(
 
     if host.is_empty() {
         set_last_error("rendezvous host is empty");
+        finish_connect_epoch(connect_epoch, connection_id);
         return std::ptr::null_mut();
     }
     if peer_id.is_empty() {
         set_last_error("peer id is empty");
+        finish_connect_epoch(connect_epoch, connection_id);
         return std::ptr::null_mut();
     }
 
@@ -1134,11 +1229,12 @@ fn rustdesk_connect_impl(
             "invalid rendezvous server public key; expected Base64-encoded 32-byte key"
         };
         set_last_error(message);
+        finish_connect_epoch(connect_epoch, connection_id);
         return std::ptr::null_mut();
     }
 
     // 运行完整连接管线
-    let mut c = connector::RustDeskConnector::new();
+    let mut c = connector::RustDeskConnector::new_with_connection_id(connection_id, connect_epoch);
     c.set_auth_callback(on_auth, user_data);
     let result = if config.direct_connection {
         // 直连模式: host=peer IP, port=peer port, 跳过 rendezvous
@@ -1161,6 +1257,7 @@ fn rustdesk_connect_impl(
         c.connect(
             &host,
             port,
+            relay_fallback_port,
             &server_key,
             &api_token,
             &peer_id,
@@ -1177,6 +1274,7 @@ fn rustdesk_connect_impl(
 
     match result {
         Ok(()) => {
+            finish_connect_epoch(connect_epoch, connection_id);
             // 登录成功 — 创建可合并的控制收件箱，用于后续控制。
             let controls = Arc::new(ControlInbox::default());
             let stream_controls = Arc::clone(&controls);
@@ -1310,6 +1408,7 @@ fn rustdesk_connect_impl(
                 peer_id,
                 host,
                 port,
+                relay_fallback_port,
                 server_key,
                 shared_access_key,
                 api_token,
@@ -1327,11 +1426,9 @@ fn rustdesk_connect_impl(
             Box::into_raw(ctx) as *mut c_void
         }
         Err(err) => {
-            set_last_error(format!(
-                "connect pipeline failed: state={:?}, error={}",
-                c.state(),
-                err
-            ));
+            let message = pipeline_error_message(&c.state(), &err, config.direct_connection);
+            set_last_error(message);
+            finish_connect_epoch(connect_epoch, connection_id);
             std::ptr::null_mut()
         }
     }
@@ -1409,35 +1506,42 @@ pub extern "C" fn rustdesk_connect_v3(
 /// 取消尚未返回会话句柄的连接尝试（尤其是等待被控端批准的连接）。
 #[no_mangle]
 pub extern "C" fn rustdesk_cancel_pending_connect() {
-    CONNECT_EPOCH.fetch_add(1, Ordering::SeqCst);
-    if let Ok(mut pending) = PENDING_2FA.lock() {
-        *pending = None;
-    }
+    cancel_pending_connect_for_session(0);
 }
 
-/// Submit one transient Peer TOTP code to the currently pending login.
-#[no_mangle]
-pub extern "C" fn rustdesk_submit_2fa(code: *const c_char) -> bool {
+fn valid_peer_2fa_code(value: &str) -> bool {
+    matches!(value.len(), 6 | 8) && value.bytes().all(|byte| byte.is_ascii_digit())
+}
+
+fn submit_2fa_for_pending_session(session_id: Option<u64>, code: *const c_char) -> bool {
     let value = ffi_string(code);
-    if value.len() < 4 || value.len() > 8 || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+    if !valid_peer_2fa_code(&value) {
         set_last_error("invalid RustDesk 2FA code format");
         return false;
     }
-    let epoch = current_connect_epoch();
-    let sender = match PENDING_2FA.lock() {
-        Ok(pending) if pending.as_ref().map(|entry| entry.epoch) == Some(epoch) => {
-            pending.as_ref().map(|entry| entry.sender.clone())
-        }
-        Ok(_) => None,
+    let pending_entry = match PENDING_2FA.lock() {
+        Ok(pending) => match session_id {
+            Some(id) if id != 0 => pending.get(&id).map(|entry| (entry.epoch, entry.sender.clone())),
+            _ => {
+                let epoch = current_connect_epoch();
+                pending.values()
+                    .find(|entry| entry.epoch == epoch)
+                    .map(|entry| (entry.epoch, entry.sender.clone()))
+            }
+        },
         Err(_) => {
             set_last_error("RustDesk 2FA pending state lock poisoned");
             return false;
         }
     };
-    let Some(sender) = sender else {
+    let Some((epoch, sender)) = pending_entry else {
         set_last_error("RustDesk 2FA is not pending");
         return false;
     };
+    if connect_cancelled(epoch) {
+        set_last_error("RustDesk 2FA connection attempt was cancelled");
+        return false;
+    }
     match sender.send(value) {
         Ok(()) => {
             set_last_error("RustDesk 2FA code submitted");
@@ -1448,6 +1552,28 @@ pub extern "C" fn rustdesk_submit_2fa(code: *const c_char) -> bool {
             false
         }
     }
+}
+
+/// Submit one transient Peer TOTP code to the currently pending login.
+/// Kept for callers that predate session-scoped FFI.
+#[no_mangle]
+pub extern "C" fn rustdesk_submit_2fa(code: *const c_char) -> bool {
+    submit_2fa_for_pending_session(None, code)
+}
+
+/// Submit one transient Peer TOTP code to a specific native session.
+#[no_mangle]
+pub extern "C" fn rustdesk_submit_2fa_for_session(
+    session_id: u64,
+    code: *const c_char,
+) -> bool {
+    submit_2fa_for_pending_session(Some(session_id), code)
+}
+
+/// Cancel only the pending connection attempt(s) owned by one native session.
+#[no_mangle]
+pub extern "C" fn rustdesk_cancel_pending_connect_for_session(session_id: u64) {
+    cancel_pending_connect_for_session(session_id);
 }
 
 /// 复制最近一次连接错误到调用方缓冲区，返回完整错误长度。
@@ -1880,6 +2006,7 @@ pub extern "C" fn rustdesk_send_file(
     }
     let host = ctx.host.clone();
     let port = ctx.port;
+    let relay_fallback_port = ctx.relay_fallback_port;
     let server_key = ctx.server_key.clone();
     let shared_access_key = ctx.shared_access_key;
     let api_token = ctx.api_token.clone();
@@ -1894,7 +2021,7 @@ pub extern "C" fn rustdesk_send_file(
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let mut connector = connector::RustDeskConnector::new();
             connector
-                .connect_file_transfer(&host, port, &server_key, &api_token, &peer_id, &password, &remote_dir,
+                .connect_file_transfer(&host, port, relay_fallback_port, &server_key, &api_token, &peer_id, &password, &remote_dir,
                     request_approval, shared_access_key)
                 .and_then(|_| {
                     connector.upload_file_once(
@@ -1985,6 +2112,7 @@ mod tests {
             peer_id: String::new(),
             host: String::new(),
             port: 0,
+            relay_fallback_port: DEFAULT_RELAY_PORT,
             server_key: String::new(),
             shared_access_key: false,
             api_token: String::new(),
@@ -1998,6 +2126,16 @@ mod tests {
             stream_stats: Arc::new(Mutex::new(RustDeskStreamStats::default())),
             display_state: Arc::new(Mutex::new(display_state)),
         }
+    }
+
+    #[test]
+    fn relay_fallback_port_uses_configured_value_and_rejects_invalid_native_input() {
+        assert_eq!(relay_fallback_port_from_config(23017), 23017);
+        assert_eq!(relay_fallback_port_from_config(0), DEFAULT_RELAY_PORT);
+        assert_eq!(
+            relay_fallback_port_from_config(u16::MAX as c_int + 1),
+            DEFAULT_RELAY_PORT
+        );
     }
 
     #[test]
@@ -2284,6 +2422,8 @@ mod tests {
             auth_mode: 0,
             key_mode: 1,
             token: std::ptr::null(),
+            connection_id: 0,
+            relay_fallback_port: DEFAULT_RELAY_PORT as c_int,
         };
 
         extern "C" fn dummy_frame(_frame: *const FfiVideoFrame, _data: *mut c_void) {}
@@ -2331,6 +2471,8 @@ mod tests {
             auth_mode: 0,
             key_mode: 1,
             token: std::ptr::null(),
+            connection_id: 0,
+            relay_fallback_port: DEFAULT_RELAY_PORT as c_int,
         };
 
         extern "C" fn dummy_frame(_frame: *const FfiVideoFrame, _data: *mut c_void) {}
@@ -2365,6 +2507,59 @@ mod tests {
         let code = CString::new("12ab").unwrap();
         assert!(!rustdesk_submit_2fa(code.as_ptr()));
         assert!(rustdesk_last_error(std::ptr::null_mut(), 0) > 0);
+    }
+
+    #[test]
+    fn pending_2fa_submission_isolated_by_native_session_id() {
+        let first_session = u64::MAX - 1001;
+        let second_session = u64::MAX - 1002;
+        let first_epoch = u64::MAX - 2001;
+        let second_epoch = u64::MAX - 2002;
+        let (first_sender, first_receiver) = std::sync::mpsc::channel();
+        let (second_sender, second_receiver) = std::sync::mpsc::channel();
+        register_pending_2fa(first_epoch, first_session, first_sender).unwrap();
+        register_pending_2fa(second_epoch, second_session, second_sender).unwrap();
+
+        let first_code = CString::new("123456").unwrap();
+        assert!(rustdesk_submit_2fa_for_session(first_session, first_code.as_ptr()));
+        assert_eq!(first_receiver.try_recv().unwrap(), "123456");
+        assert!(second_receiver.try_recv().is_err());
+
+        let second_code = CString::new("654321").unwrap();
+        assert!(rustdesk_submit_2fa_for_session(second_session, second_code.as_ptr()));
+        assert_eq!(second_receiver.try_recv().unwrap(), "654321");
+        clear_pending_2fa(first_epoch, first_session);
+        clear_pending_2fa(second_epoch, second_session);
+    }
+
+    #[test]
+    fn structured_pipeline_errors_preserve_stage_and_sanitize_detail() {
+        let message = structured_error("relay", "relay_request_failed", "a|b\nnext");
+        assert_eq!(
+            message,
+            "RDERR|stage=relay|code=relay_request_failed|detail=a/b next"
+        );
+        let relay = pipeline_error_message(
+            &connector::ConnState::RequestingRelay,
+            &io::Error::new(io::ErrorKind::PermissionDenied, "relay denied"),
+            false,
+        );
+        assert!(relay.starts_with("RDERR|stage=relay|code=relay_request_failed|detail="));
+        let direct = pipeline_error_message(
+            &connector::ConnState::ConnectingToPeer,
+            &io::Error::new(io::ErrorKind::ConnectionRefused, "peer refused"),
+            true,
+        );
+        assert!(direct.starts_with("RDERR|stage=peer_channel|code=direct_peer_connect_failed|detail="));
+    }
+
+    #[test]
+    fn peer_2fa_code_accepts_supported_totp_lengths_only() {
+        assert!(valid_peer_2fa_code("123456"));
+        assert!(valid_peer_2fa_code("12345678"));
+        assert!(!valid_peer_2fa_code("12345"));
+        assert!(!valid_peer_2fa_code("1234567"));
+        assert!(!valid_peer_2fa_code("12345x"));
     }
 
     #[test]
@@ -2414,6 +2609,8 @@ mod tests {
             auth_mode: 0,
             key_mode: 1,
             token: std::ptr::null(),
+            connection_id: 0,
+            relay_fallback_port: DEFAULT_RELAY_PORT as c_int,
         };
 
         let params = resolve_stream_params_for_config(&cfg);
@@ -2445,6 +2642,8 @@ mod tests {
             auth_mode: 0,
             key_mode: 1,
             token: std::ptr::null(),
+            connection_id: 0,
+            relay_fallback_port: DEFAULT_RELAY_PORT as c_int,
         };
 
         assert_eq!(resolve_stream_params_for_config(&cfg).effective_fps, 60);

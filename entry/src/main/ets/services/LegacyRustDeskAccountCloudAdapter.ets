@@ -1,5 +1,5 @@
 import { RustDeskAccount } from '../model/RustDeskAccount';
-import { RustDeskProAccountState } from '../model/RustDeskProModels';
+import { RustDeskProAccountState, rustDeskProAccessTokenFingerprint } from '../model/RustDeskProModels';
 
 /** Marker stored in the released accountsjson.loginStatus field. */
 const PRO_METADATA_STATUS: string = 'pro_metadata';
@@ -22,6 +22,8 @@ export class LegacyRustDeskAccountCloudAdapter {
       displayName: account.username,
       userId: '',
       accessToken: '',
+      accessTokenFingerprint: rustDeskProAccessTokenFingerprint(''),
+      tokenGeneration: 1,
       deviceId: '',
       deviceUuid: '',
       loginStatus: 'requires_login',

@@ -13,6 +13,7 @@ Updated: 2026-07-29 Asia/Shanghai
 
 - RustDesk Pro API login tokens now travel only through the transient connection path into the RustDesk rendezvous `PunchHoleRequest` and `RequestRelay` messages; the existing relay/shared key remains a separate credential and the token is not persisted in host records, uploaded to cloud metadata or written to logs.
 - Pro host connections now validate account, server/relay and address-book binding before prompting for remote-device password or approval. Native connection errors are classified as Pro-session, device-password, approval, relay, peer or network failures so a real device-authentication failure is not reported as account expiry.
+- RustDesk relay `relayPort` now flows from ArkTS through NAPI/C++ into the Rust FFI for both screen and file-transfer relay connections. A hbbs-advertised `relay_server:port` remains authoritative; the configured hbbr port is used only when that endpoint has no explicit port, with 21117 as the validated fallback.
 - RDP keeps latest-value-wins dirty-rectangle presentation for small steady-state updates, while initial/full geometry and medium-to-broad refresh bands enter a visual commit fence: a 40 ms quiet period or 160 ms deadline commits the accumulated frame as one presentation, and a 750 ms continuation episode uses a 200 ms quiet period with a 600 ms deadline so sustained page refreshes do not fall back to strip-by-strip presentation. Small cursor/toolbar updates remain dirty-only.
 - SSH settings now has one dedicated accordion immediately after Windows RDP and RustDesk, and before 数据安全. Terminal foreground color and font size were removed from 个性化 and are now owned by `SshSettingsService` through namespaced keys with legacy aliases.
 - SSH settings exposes terminal appearance, preview/default reset, SSH host and key-vault shortcuts. SSH host fingerprint management was deliberately not migrated: 数据安全 and the existing per-host preflight remain the only trust-management path.
@@ -34,14 +35,15 @@ Updated: 2026-07-29 Asia/Shanghai
 
 ## Verification
 
-- Rust `cargo check` and `cargo check --tests`: passed for `rustdesk_ffi`.
+- Current relay repair gates: Rust `cargo check --tests`, focused relay socket tests (2/2), and `bash scripts/build_rustdesk_ffi_ohos.sh all` for `arm64-v8a` and `x86_64` all passed.
+- Focused Rust relay socket tests: `cargo test --manifest-path rustdesk_ffi/Cargo.toml --no-default-features relay_connect` passed 2/2 outside the sandbox. They cover advertised explicit-port precedence and configured fallback-port use when the endpoint has no port.
 - Focused native `rdp_native_tests`: `151 passed, 0 failed`.
-- `default@OhosTestCompileArkTS`: passed after the RustDesk Pro/RDP implementation; existing repository/dependency warnings remain.
-- Production `assembleHap`: `BUILD SUCCESSFUL` after the RustDesk Pro/RDP implementation.
+- `default@OhosTestCompileArkTS`: passed for the current relay repair; existing repository/dependency warnings remain.
+- Production `assembleHap`: `BUILD SUCCESSFUL` for the current relay repair and completed signing.
 - Current VNC runtime tree also passed `default@OhosTestCompileArkTS` and signed production `assembleHap`; signed artifact: `entry/build/default/outputs/default/entry-default-signed.hap`.
 - Native test target compiles the actual VNC transport and RFB engine plus the RDP damage/visual-commit tests and the VNC transport tests.
 - `git diff --check` and `git diff --cached --check`: passed after the implementation and shared-state updates.
-- Light open-source compliance gate: passed via the repository-local `.tools/bin/pwsh` runtime.
+- Light open-source compliance gate: passed for the current relay repair via the repository-local `.tools/bin/pwsh` runtime.
 - Full Rust `cargo test` remains host-blocked at link time because the local host does not provide `libopus`; this is not reported as a passing test.
 - `ohosTest@OhosTestCompileArkTS`: not runnable in this environment because the task is not registered (`00306054`); this is an environment/task-graph limitation, not a source compile failure.
 - Read-only SSH review: passed with no P0/P1/P2 findings; the reviewer confirmed the accordion order, the data-security-only fingerprint entry and no cross-module cycle.
@@ -49,6 +51,7 @@ Updated: 2026-07-29 Asia/Shanghai
 ## External acceptance still required
 
 - RustDesk Pro: test against the real compatible Server Pro versions, including password and request-approval connections through relay, application restart, expired-token re-login, mismatched account/server/relay records, and 401/403/404/500 responses. Confirm the user-visible message is tied to the actual failing layer.
+- RustDesk relay: validate real hbbs/hbbr advertised hosts, explicit ports, omitted ports with a configured non-21117 fallback, relay key modes and both screen/file-transfer paths. This remains distinct from the OSS/third-party-panel token absent/present A/B.
 - RDP: test first desktop entry, Windows login desktop loading, browser/file-manager full refresh, window dragging, video, scrolling and 1080p/2K/4K devices. Confirm no visible scan bands, while steady-state input latency and frame rate do not regress.
 - User creates exactly one Huawei cloud table `vncrecord` with the 19 fields in the entity plan.
 - Two API 23 devices using one Huawei account validate scope selection, secret opt-in, trust re-confirmation, user-deletion tombstones, reset epoch and offline recovery. Scope deselection must leave the shared row unchanged.
@@ -287,22 +290,35 @@ repeat the completed review below unless the listed files change again.
 
 - 用户反馈的排查与 v2 实体计划已记录在
   `docs/superpowers/plans/2026-07-29-rustdesk-relay-2fa-repair-upgrade-plan-v2.md`。
-  本检查点没有修改 Rust、C/C++、ArkTS、测试或配置；仅新增计划并更新共享状态。
-- 当前实际基线仍是用户授权的本地 `main`，HEAD 为 `9115e5abd`，相对
-  `origin/main` 领先 87 个提交；工作树保留 11 个用户已有代码文件修改，另有本次计划文件。
+  本检查点已按用户授权在本地 `main` 完成 P0/P1 业务实现，并保留其他模组的既有修改。
+- 当前实际基线是用户授权的本地 `main`，HEAD 为 `6802a716c`，相对
+  `origin/main` 领先 89 个提交；无活动 `codex/*` 分支。VNC 的该最新提交是用户在
+  本轮期间加入的无关改动，RustDesk 任务没有修改或回退它。
 - 排查结论：本地把 exact phrase
   `you have not logged in or your login session has expired` 仅按字符串归类为
   `pro_session_expired` 并清空有效 token；同时把 OSS/第三方地址簿 HTTP 登录成功
-  错当作 Server Pro relay control-plane 能力。v2 已加入 profile 分层、token
-  absent/present A/B、结构化失败阶段和 token generation 保护。
+  错当作 Server Pro relay control-plane 能力。实现已加入 profile 分层、token
+  absent/present 边界、结构化失败阶段、token fingerprint/generation 保护，并让
+  Peer `Auth2FA` 走同一加密通道、按 session/epoch 隔离。
+- control-plane profile 现在只按 relay ID 写入本机 `localmetadata`。`rustdeskrelays`
+  的建表/迁移 SQL、云字段白名单和便携备份均不含该字段；新设备、云下载的新 relay 和
+  普通本地备份恢复默认 `oss_key_only`，用户删除 relay 时同一事务清理 metadata。手动
+  云下载失败回滚会恢复当前设备的 metadata 快照，不会误丢用户已确认的策略。
 - 官方参照已固定到计划中的 RustDesk client 与 OSS server commit；官方 OSS
   hbbs/hbbr 只校验 licence/shared key，不包含 Server Pro HTTP session 逻辑。
   现场仍需提供第三方面板、hbbs/hbbr 版本及 relay 日志，完成真实 OSS 与 Server Pro A/B。
-- 当前验证：该计划本身尚未开始业务代码实施；当前工作树已修复
-  `entry/src/main/cpp/vnc/vnc_rfb_engine.cpp:471` 的 lambda 语法问题，重跑
-  `default@OhosTestCompileArkTS` 和 `assembleHap` 均退出码 0。不得把这两个门禁
-  结果误写成 RustDesk relay 修复已经实施。
-  `ohosTest@OhosTestCompileArkTS` 仍因任务未注册 `00306054` 不可运行；不得把旧构建日志写成当前通过。
+- 当前验证：metadata 持久化边界与 ArkTS 显式本地/云 JSON 构造修复后，`git diff --check`、
+  `cargo check --manifest-path rustdesk_ffi/Cargo.toml --tests`、
+  `bash scripts/build_rustdesk_ffi_ohos.sh all`（`arm64-v8a`、`x86_64`）、
+  `default@OhosTestCompileArkTS` 和签名 `assembleHap` 均已重新执行并通过。已知
+  `cargo test --lib` 宿主机仍会因缺少 host `libopus` 链接失败；
+  `ohosTest@OhosTestCompileArkTS` 因任务未注册 `00306054` 不可运行。
+- 当前审查：只读 reviewer 已派发一次，agent ID 为
+  `019faca9-bf75-7e62-a251-541ce970c029`；不得因上下文压缩或重复检查再次派发。
+  审查重点是 Rust/C++/NAPI ABI、session/epoch 2FA 隔离、token profile/失效边界、
+  HostListPage/RemoteDesktop 一致性和 RDP/VNC/SSH 隔离。该 agent 因容量限制未产出报告；
+  不得因上下文压缩重复派发，也不得把独立复核写成通过。独立审查和真实端点/API 23
+  仍是开放 blocker。
 
 ## VNC 会话刷新与输入修复检查点（2026-07-29）
 

@@ -7,8 +7,15 @@ Updated: 2026-07-29 Asia/Shanghai
 - RustDesk OSS/第三方地址簿中继报错修复计划已合并到
   `docs/superpowers/plans/2026-07-29-rustdesk-relay-2fa-repair-upgrade-plan-v2.md`；首要实施项是
   分离地址簿 HTTP 登录与 relay control-plane，修正 exact phrase 的误判/误清 token，并完成
-  token absent/present 与真实 Server Pro A/B。该修复尚未开始业务代码实施；当前工作树的
-  `assembleHap` 已通过，VNC C++ lambda 语法问题属于另一项会话修复，不能混写到 relay 计划。
+  token absent/present 与真实 Server Pro A/B。P0/P1 本地实现已完成，control-plane profile
+  现为当前设备 `localmetadata`，不进入 relay 云行或便携备份；新设备和普通备份恢复默认
+  key-only。一次性 reviewer agent `019faca9-bf75-7e62-a251-541ce970c029` 因容量限制未产出
+  报告，不能再次派发，独立审查仍是 blocker。`relayPort` 已从 ArkTS 贯通至 Rust FFI，hbbs 广告的
+  显式 relay 端口优先、无端口 endpoint 才使用配置 hbbr fallback；focused Rust socket tests 2/2 已在
+  沙箱外通过。本轮 `cargo check --tests`、双 ABI、ArkTS、签名 `assembleHap` 与 Light 合规门禁均已
+  重跑并通过；`ohosTest` 仍为未注册任务 `00306054`。完整 `cargo test --lib` 仍因宿主机缺少
+  host `libopus` 链接失败，`ohosTest` 仍被未注册任务 `00306054` 阻断。真实 OSS/三方地址簿 A/B、Server Pro、hbbs/hbbr、
+  Peer 2FA 和 API 23 验收保持开放。
 
 - RustDesk Peer 2FA 和 TOTP 绑定实现已在本地 `main` 完成；真实 Peer/hbbr/API 23
   设备验收仍待执行。Logo 模式已加入个性化设置，真实 Logo 仅在白名单 issuer 上

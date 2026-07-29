@@ -365,11 +365,12 @@ impl RendezvousClient {
         id: &str,
         uuid: &str,
         relay_server: &str,
+        relay_fallback_port: u16,
         server_key: &str,
     ) -> io::Result<TcpStream> {
         let mut stream = net::connect_tcp_endpoint(
             relay_server,
-            21117,
+            relay_fallback_port,
             "relay",
             Duration::from_secs(10),
         )?;
@@ -766,7 +767,7 @@ mod tests {
     }
 
     #[test]
-    fn relay_connect_accepts_hostname_endpoint_with_explicit_port() {
+    fn relay_connect_uses_explicit_endpoint_port_before_configured_fallback() {
         let listener = TcpListener::bind("127.0.0.1:0").expect("listener bind failed");
         let port = listener
             .local_addr()
@@ -783,8 +784,31 @@ mod tests {
         let client = RendezvousClient::new();
         let relay_endpoint = format!("localhost:{}", port);
         let stream = client
-            .create_relay("peer", "uuid", &relay_endpoint, "")
+            .create_relay("peer", "uuid", &relay_endpoint, 1, "")
             .expect("relay hostname should resolve and connect");
+        drop(stream);
+        accept_thread.join().expect("accept thread panicked");
+    }
+
+    #[test]
+    fn relay_connect_uses_configured_fallback_port_without_endpoint_port() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("listener bind failed");
+        let port = listener
+            .local_addr()
+            .expect("listener address missing")
+            .port();
+        let accept_thread = thread::spawn(move || {
+            let (mut stream, _) = listener
+                .accept()
+                .expect("relay connection was not accepted");
+            let payload = wire::read_frame(&mut stream).expect("relay request frame missing");
+            assert!(!payload.is_empty(), "relay request frame should not be empty");
+        });
+
+        let client = RendezvousClient::new();
+        let stream = client
+            .create_relay("peer", "uuid", "localhost", port, "")
+            .expect("configured relay fallback port should connect");
         drop(stream);
         accept_thread.join().expect("accept thread panicked");
     }
