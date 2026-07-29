@@ -17,6 +17,7 @@ import { KeyVaultService } from '../services/KeyVaultService';
 import { AccountKitService } from '../services/AccountKitService';
 import { DataCrypto } from '../services/DataCrypto';
 import { CloudStore } from '../services/CloudStore';
+import { remoteCryptoLifecycleMutationAllowed } from '../services/CloudLifecycleSafetyPolicy';
 import { VncTrustService } from '../services/VncTrustService';
 import { VncHostService, VncHostView } from '../services/VncHostService';
 import { VncGatewayService } from '../services/VncGatewayService';
@@ -7648,6 +7649,13 @@ struct HostListPage {
 
   private doCountdownTick(): void { this.cryptoResetCountdown--; if (this.cryptoResetCountdown > 0) { setTimeout(() => { this.doCountdownTick(); }, 1000); } }
   private async handleEnable(): Promise<void> {
+    if (!remoteCryptoLifecycleMutationAllowed()) {
+      promptAction.showToast({
+        message: '账号级加密迁移升级中，暂时不能启用、关闭或重置加密',
+        duration: 3000
+      });
+      return;
+    }
     this.cryptoLoading = true;
     try {
       const crypto = DataCrypto.getInstance();
@@ -7698,6 +7706,13 @@ struct HostListPage {
 
 
   private async doCloseEncryption(): Promise<void> {
+    if (!remoteCryptoLifecycleMutationAllowed()) {
+      promptAction.showToast({
+        message: '账号级加密迁移升级中，暂时不能关闭加密',
+        duration: 3000
+      });
+      return;
+    }
     const crypto = DataCrypto.getInstance();
     const cloud = CloudStore.getInstance();
     // 1. 验证主密码
@@ -7741,6 +7756,13 @@ struct HostListPage {
   }
 
   private async doResetEncryption(): Promise<void> {
+    if (!remoteCryptoLifecycleMutationAllowed()) {
+      promptAction.showToast({
+        message: '账号级加密重置升级中，暂时不能清空加密数据',
+        duration: 3000
+      });
+      return;
+    }
     const cloud = CloudStore.getInstance();
     // 1. 跨设备信令: 通知所有设备重置 (其他设备 checkCryptoStatusChange 读到 'reset' 后自毁)
     if (!cloud.setCryptoStatus('reset')) {

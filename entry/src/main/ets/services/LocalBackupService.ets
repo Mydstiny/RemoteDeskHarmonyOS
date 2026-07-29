@@ -9,11 +9,16 @@ import {
   validateLocalBackupDocument
 } from './LocalBackupPolicy';
 import { BoundedDocumentIo, BoundedDocumentIoCode } from './BoundedDocumentIo';
+import {
+  portableBackupExportAllowed,
+  portableBackupRestoreAllowed
+} from './CloudLifecycleSafetyPolicy';
 
 export class LocalBackupService {
   private static instance: LocalBackupService;
   private readonly cloud: CloudStore = CloudStore.getInstance();
-  private lastErrorCode: BoundedDocumentIoCode | 'cancelled' | 'invalid_backup' = 'cancelled';
+  private lastErrorCode: BoundedDocumentIoCode | 'cancelled' | 'invalid_backup' |
+    'unsafe_legacy_backup' = 'cancelled';
 
   static getInstance(): LocalBackupService {
     if (!LocalBackupService.instance) { LocalBackupService.instance = new LocalBackupService(); }
@@ -27,10 +32,17 @@ export class LocalBackupService {
     if (this.lastErrorCode === 'short_read') { return '备份文件读取不完整，请重新选择'; }
     if (this.lastErrorCode === 'short_write') { return '备份文件写入不完整，请更换保存位置后重试'; }
     if (this.lastErrorCode === 'invalid_backup') { return '备份文件格式或完整性校验失败'; }
+    if (this.lastErrorCode === 'unsafe_legacy_backup') {
+      return '旧版备份未按账号隔离敏感数据，安全备份升级完成前已暂停导出和覆盖恢复';
+    }
     return '备份文件读写失败，请重试';
   }
 
   async saveBackup(appVersion: string): Promise<boolean> {
+    if (!portableBackupExportAllowed()) {
+      this.lastErrorCode = 'unsafe_legacy_backup';
+      return false;
+    }
     const now: number = Date.now();
     const document: LocalBackupDocument = createLocalBackupDocument(
       this.cloud.exportAllTableRows(), now, appVersion, this.cloud.exportLocalExtensionRows(),
@@ -91,6 +103,10 @@ export class LocalBackupService {
   }
 
   async restore(document: LocalBackupDocument): Promise<boolean> {
+    if (!portableBackupRestoreAllowed()) {
+      this.lastErrorCode = 'unsafe_legacy_backup';
+      return false;
+    }
     return await CloudSyncCoordinator.getInstance().runExclusiveRestore(
       (): Promise<boolean> => this.cloud.replaceAllTableRows(document.tables, document.extensions || [],
         document.localTables)

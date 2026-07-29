@@ -27,6 +27,7 @@ import { TotpEntry } from '../model/TotpEntry';
 import { VncRecord } from '../model/VncRecord';
 import { VNC_CLOUD_TABLE, vncCanonicalJson, vncPayloadObject } from './VncRecordPolicy';
 import { decodePlainVncSecret, vncSecretStorageModeFromPayload } from './VncSecretStoragePolicy';
+import { remoteCryptoLifecycleMutationAllowed } from './CloudLifecycleSafetyPolicy';
 
 const TAG = 'DataCrypto';
 const DOMAIN = 0x0011;
@@ -476,6 +477,9 @@ export class DataCrypto {
    * 设置 crypto_status='reset', 清空所有业务表, 清除加密参数, 零化 DEK
    */
   async resetEncryption(cloud: CryptoCloudStore): Promise<void> {
+    if (!remoteCryptoLifecycleMutationAllowed()) {
+      throw new Error('账号级加密重置尚未完成，已拒绝破坏性操作');
+    }
     hilog.info(DOMAIN, TAG, '开始重置加密...');
     try {
       // 1. 先写状态信令 (其他设备收到后执行本地清理)

@@ -9,8 +9,8 @@ import {
 
 export default function cloudSyncSelectionPolicyTest(): void {
   describe('CloudSyncSelectionPolicy', (): void => {
-    it('defaults_to_every_user_selectable_table', 0, (): void => {
-      expect(CLOUD_SYNC_SELECTION_DEFAULT.length).assertEqual(7);
+    it('defaults_to_no_cloud_transfer_until_account_binding_is_validated', 0, (): void => {
+      expect(CLOUD_SYNC_SELECTION_DEFAULT.length).assertEqual(0);
       expect(cloudSyncSelectableTables().indexOf('cryptoparams')).assertEqual(-1);
       expect(cloudSyncSelectableTables().indexOf('remotehosts') >= 0).assertTrue();
       expect(cloudSyncSelectableTables().indexOf('usersettings') >= 0).assertTrue();

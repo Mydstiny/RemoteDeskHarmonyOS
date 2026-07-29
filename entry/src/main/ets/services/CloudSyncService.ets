@@ -12,6 +12,7 @@ import { RemoteHost } from '../model/RemoteHost';
 import { SshKey } from '../model/SshKey';
 import { TotpEntry } from '../model/TotpEntry';
 import { hilog } from '@kit.PerformanceAnalysisKit';
+import { legacyCloudRestTransferAllowed } from './CloudLifecycleSafetyPolicy';
 
 const TAG = 'CloudSyncService';
 const DOMAIN = 0x0014;
@@ -108,7 +109,7 @@ export class CloudSyncService {
   }
 
   private isReady(): boolean {
-    return this.unionID !== '';
+    return legacyCloudRestTransferAllowed() && this.unionID !== '';
   }
 
   // ==================== 主机同步 ====================

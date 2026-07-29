@@ -23,7 +23,10 @@ const CLOUD_SYNC_ENCRYPTED_TABLES: string[] = [
   'totpentries'
 ];
 
-export const CLOUD_SYNC_SELECTION_DEFAULT: string[] = CLOUD_SYNC_SELECTABLE_TABLES.slice();
+// New installs start with cloud transfer disabled. Existing persisted choices
+// are also held behind CloudLifecycleSafetyPolicy until an account-scoped
+// physical store has been validated.
+export const CLOUD_SYNC_SELECTION_DEFAULT: string[] = [];
 
 export function cloudSyncSelectableTables(): string[] {
   return CLOUD_SYNC_SELECTABLE_TABLES.slice();

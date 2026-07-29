@@ -124,6 +124,13 @@ import {
 import { VncCloudSyncSelectionStore } from './VncCloudSyncSelectionStore';
 import { VncCloudSyncService } from './VncCloudSyncService';
 import { decodePlainVncSecret, encodePlainVncSecret, vncSecretStorageModeFromPayload } from './VncSecretStoragePolicy';
+import {
+  CloudAccountBinding,
+  CLOUD_LIFECYCLE_BLOCKED_REASON,
+  cloudDistributedRegistrationAllowed,
+  cloudTransferAllowed,
+  unboundCloudAccountBinding
+} from './CloudLifecycleSafetyPolicy';
 
 const DB_NAME: string = 'remotedesktop';
 const TABLES: string[] = cloudSyncTableNames();
@@ -192,6 +199,9 @@ export class CloudStore implements CryptoCloudStore {
   private manualDownloadLocalTables: Record<string, Array<Record<string, string>>> | null = null;
   private localRestoreActive: boolean = false;
   private localRestorePending: boolean = false;
+  // Safety-0 starts unbound. AccountSessionCoordinator will become the only
+  // writer of this binding before the v2 rollout flag is enabled.
+  private cloudAccountBinding: CloudAccountBinding = unboundCloudAccountBinding();
   // The first process-wide cloud operation is a pull barrier. It is enabled
   // before service migrations run so startup defaults cannot become an upload.
   private startupSyncPending: boolean = true;
@@ -292,34 +302,44 @@ export class CloudStore implements CryptoCloudStore {
         (tables: string[]): void => { this.notifyCloudDataApplied(tables); },
         this.coordinatorHooks()
       );
-      // setDistributedTables — 同步关键入口, 必须捕获错误码
-      try {
-        await this.store.setDistributedTables(
-          TABLES,
-          relationalStore.DistributedType.DISTRIBUTED_CLOUD,
-          { autoSync: cloudDistributedTableAutoSync() }
-        );
-        hilog.info(0x0001, 'CloudSync',
-          'setDistributedTables 成功 — 云同步已生效');
-        this.cloudAvailable = true;
-      } catch (e) {
-        const be: BusinessError = e as BusinessError;
-        hilog.error(0x0001, 'CloudSync',
-          "setDistributedTables 失败! code=" + be.code.toString() + " msg=" + be.message);
+      // A physical distributed table is the platform sync boundary. Never
+      // register a shared/unbound store: SQL row filters cannot constrain what
+      // setDistributedTables/cloudSync publishes for another account.
+      if (cloudDistributedRegistrationAllowed(this.cloudAccountBinding)) {
+        try {
+          await this.store.setDistributedTables(
+            TABLES,
+            relationalStore.DistributedType.DISTRIBUTED_CLOUD,
+            { autoSync: cloudDistributedTableAutoSync() }
+          );
+          hilog.info(0x0001, 'CloudSync',
+            'setDistributedTables 成功 — 云同步已生效');
+          this.cloudAvailable = true;
+        } catch (e) {
+          const be: BusinessError = e as BusinessError;
+          hilog.error(0x0001, 'CloudSync',
+            "setDistributedTables 失败! code=" + be.code.toString() + " msg=" + be.message);
+          this.cloudAvailable = false;
+          this.cloudServiceGuidanceNeeded = this.errorRequiresCloudServiceGuidance(be);
+          this.lastError = 'setDistributedTables: code=' + be.code.toString() + ' msg=' + be.message;
+        }
+        // 仅 WiFi 下同步；策略设置失败不能让本地数据库也不可用。
+        try {
+          await cloudData.setCloudStrategy(
+            cloudData.StrategyType.NETWORK,
+            [cloudData.NetWorkStrategy.WIFI]
+          );
+        } catch (e) {
+          const be: BusinessError = e as BusinessError;
+          this.lastError = 'setCloudStrategy: code=' + be.code.toString() + ' msg=' + be.message;
+          hilog.error(0x0001, 'CloudSync', this.lastError);
+        }
+      } else {
         this.cloudAvailable = false;
-        this.cloudServiceGuidanceNeeded = this.errorRequiresCloudServiceGuidance(be);
-        this.lastError = 'setDistributedTables: code=' + be.code.toString() + ' msg=' + be.message;
-      }
-      // 仅 WiFi 下同步；策略设置失败不能让本地数据库也不可用。
-      try {
-        await cloudData.setCloudStrategy(
-          cloudData.StrategyType.NETWORK,
-          [cloudData.NetWorkStrategy.WIFI]
-        );
-      } catch (e) {
-        const be: BusinessError = e as BusinessError;
-        this.lastError = 'setCloudStrategy: code=' + be.code.toString() + ' msg=' + be.message;
-        hilog.error(0x0001, 'CloudSync', this.lastError);
+        this.cloudServiceGuidanceNeeded = false;
+        this.lastError = CLOUD_LIFECYCLE_BLOCKED_REASON;
+        hilog.warn(0x0001, 'CloudSync',
+          '云同步已按安全策略暂停：账号作用域与独立物理库尚未完成验证');
       }
       hilog.info(0x0001, 'CloudSync', 'CloudStore 初始化完成');
       hilog.info(0x0001, 'CloudSync', "分布式表: " + TABLES.join(',') + ", autoSync=false (应用显式协调)");
@@ -332,8 +352,10 @@ export class CloudStore implements CryptoCloudStore {
       }
       // 初始化加密状态追踪
       this.lastKnownCryptoStatus = this.getCryptoStatus();
-      hilog.info(0x0001, 'CloudSync',
-        '云空间同步已就绪 — 请确认两台设备"设置→华为账号"为同一账号');
+      if (this.cloudAvailable) {
+        hilog.info(0x0001, 'CloudSync',
+          '云空间同步已就绪 — 请确认两台设备"设置→华为账号"为同一账号');
+      }
     } catch (err) {
       hilog.error(0x0001, 'CloudSync', "初始化失败: " + DataCrypto.errDetail(err));
     }
@@ -439,6 +461,7 @@ export class CloudStore implements CryptoCloudStore {
 
   /** 兼容服务层调用；所有启动/恢复拉取都由协调器合并。 */
   pullNowAsync(): Promise<boolean> {
+    if (!this.isCloudAvailable()) { return Promise.resolve(false); }
     return CloudSyncCoordinator.getInstance().requestStartupPull()
       .then((result): boolean => result.ok);
   }
@@ -450,6 +473,10 @@ export class CloudStore implements CryptoCloudStore {
 
   /** 用户确认后覆盖云端：强制本地优先，并等待每个表完成。 */
   async uploadAllToCloud(): Promise<boolean> {
+    if (!this.isCloudAvailable()) {
+      hilog.warn(0x0001, 'CloudSync', 'manual upload blocked: account-scoped cloud store unavailable');
+      return false;
+    }
     if (!this.hasAnyBusinessRows()) {
       hilog.warn(0x0001, 'CloudSync', 'manual upload blocked: local business tables are empty');
       return false;
@@ -465,6 +492,16 @@ export class CloudStore implements CryptoCloudStore {
   }
 
   async downloadAllFromCloudResult(): Promise<CloudSyncOperationResult> {
+    if (!this.isCloudAvailable()) {
+      return {
+        ok: false,
+        source: 'manualDownload',
+        tables: this.syncableTables(),
+        failedTables: this.syncableTables(),
+        rollbackFailed: false,
+        failureKind: 'cloud_service'
+      };
+    }
     return await CloudSyncCoordinator.getInstance().requestManualDownload();
   }
 
@@ -1533,7 +1570,8 @@ export class CloudStore implements CryptoCloudStore {
   }
 
   isCloudAvailable(): boolean {
-    return this.initialized && this.store !== null && this.cloudAvailable;
+    return this.initialized && this.store !== null && this.cloudAvailable &&
+      cloudTransferAllowed(this.cloudAccountBinding);
   }
 
   /** Show the Huawei Cloud Space guidance after registration or explicit sync reports an unavailable service. */

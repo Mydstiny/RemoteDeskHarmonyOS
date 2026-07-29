@@ -8,9 +8,8 @@ import { VncRecordType } from '../model/VncRecord';
 export type VncCloudSyncScope = 'settings' | 'hosts' | 'gateways' | 'secrets' | 'trust';
 
 export const VNC_CLOUD_SYNC_SELECTION_KEY: string = 'vncCloudSyncRecordScopes';
-export const VNC_CLOUD_SYNC_SELECTION_DEFAULT: VncCloudSyncScope[] = [
-  'settings', 'hosts', 'gateways'
-];
+// VNC follows the same fail-closed rollout boundary as ordinary cloud tables.
+export const VNC_CLOUD_SYNC_SELECTION_DEFAULT: VncCloudSyncScope[] = [];
 
 const VNC_CLOUD_SYNC_SCOPES: VncCloudSyncScope[] = [
   'settings', 'hosts', 'gateways', 'secrets', 'trust'
