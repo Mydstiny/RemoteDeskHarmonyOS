@@ -1,6 +1,34 @@
 # Current Handoff
 
-Updated: 2026-07-23 Asia/Shanghai
+Updated: 2026-07-29 Asia/Shanghai
+
+## Active cloud-data lifecycle handoff
+
+- Branch: `codex/cloud-data-lifecycle-root-fix`; base:
+  `main@23940521a`; implementation checkpoint: `89f4b7574`.
+- Plan:
+  `docs/superpowers/plans/2026-07-28-cloud-data-lifecycle-upgrade-roadmap.md`.
+- Core local implementation is complete for account transitions, per-account
+  physical stores, verified cloud binding, durable coordinator/watchdogs,
+  sensitive transfer validation, portable backup v3 and legacy partial
+  restore, exclusive crypto lifecycle, Asset Store credential storage,
+  device-local trust and legacy shared-store/relay/VNC migration quarantine.
+- Latest validation: `default@OhosTestCompileArkTS` passed;
+  `assembleHap` passed and signed; `git diff --check` passed; Light compliance
+  passed. `ohosTest@OhosTestCompileArkTS` is absent from the task graph
+  (`00306054`) and is not claimed as passed.
+- Release is NO-GO pending real Huawei Cloud schema/permissions, two API 23
+  devices, A/B accounts, old released APK/RDB/backup fixtures, process-kill and
+  low-storage fault injection, real Documents Providers and API 23 Asset Store
+  behavior. System BackupExtension, remote destructive crypto and legacy REST
+  sync remain disabled.
+- The user currently prohibits further sub-agents/tasks. No agent may be
+  started implicitly. D-020 independent review therefore remains a merge
+  blocker unless the user later authorizes one or the project rule changes.
+- Preserve the unrelated user-owned SSH, Moonlight, RustDesk and VNC plan
+  edits; do not stage, reset, stash or overwrite them.
+
+## Archived 2026-07-23 handoff
 
 ## Source and scope
 

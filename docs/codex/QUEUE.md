@@ -4,6 +4,19 @@ Updated: 2026-07-29 Asia/Shanghai
 
 ## Now
 
+- Cloud/data lifecycle root fix is active on
+  `codex/cloud-data-lifecycle-root-fix` at implementation checkpoint
+  `89f4b7574`. Local code and build gates are complete for account-scoped
+  physical stores, verified account binding, durable cloud coordinator,
+  fail-closed sensitive transfer, portable backup v3/legacy partial restore,
+  exclusive crypto lifecycle, Asset Store credential boundaries and
+  shared-store/relay/VNC migration quarantine. Release remains NO-GO pending
+  real Huawei Cloud/two-device/A-B account/old APK/fault-injection/Document
+  Provider evidence. System BackupExtension, remote destructive crypto and
+  legacy REST sync stay disabled. D-020 independent review is also pending;
+  do not start an agent unless the user explicitly lifts the current
+  no-agent constraint.
+
 - RustDesk OSS/第三方地址簿中继报错修复计划已合并到
   `docs/superpowers/plans/2026-07-29-rustdesk-relay-2fa-repair-upgrade-plan-v2.md`；首要实施项是
   分离地址簿 HTTP 登录与 relay control-plane，修正 exact phrase 的误判/误清 token，并完成

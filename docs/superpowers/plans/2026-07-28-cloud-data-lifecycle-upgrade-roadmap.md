@@ -4,15 +4,16 @@
 > 重审日期：2026-07-29
 > 适用仓库：RemoteDeskHarmonyOS
 > 审计基线：`main@23940521a414fcb55605b37fe6e65fd18412c7a3`
-> 当前状态：重审修订、待实施；本文件是升级路线图，不代表代码已经完成
+> 实施分支：`codex/cloud-data-lifecycle-root-fix`
+> 当前实现：`89f4b7574`；核心代码已实施并通过本地门禁，真实华为云、双设备、旧包升级验收待完成
 > 目标基线：API 23 上限，兼容现有 main 及已发布旧版本数据
 > 计划原则：账号隔离优先于同步便利；可恢复优先于静默继续；无法证明安全时 fail-closed
 
 ## 0. 结论先行
 
-当前代码已有可保留的设备级基础：首次 cloud-first、自动上传延迟、空云整表保护、串行 CloudSyncCoordinator、dirty/retry/conflict/journal 持久化、进程内手动下载快照、`restored_not_uploaded` 隔离，以及 VNC 单云表、本地 overlay、行级 validator、`encrypted_v2`、reset epoch 和 trust 本机二次确认。本地备份也已有 32 MiB 上限、短读短写循环、写后重读和单 RDB 恢复事务；`password -> passward` 与旧 VNC 表迁移已有局部 marker/事务/回滚。
+审计基线已有可保留的设备级基础：首次 cloud-first、自动上传延迟、空云整表保护、串行 CloudSyncCoordinator、dirty/retry/conflict/journal 持久化、进程内手动下载快照、`restored_not_uploaded` 隔离，以及 VNC 单云表、本地 overlay、行级 validator、`encrypted_v2`、reset epoch 和 trust 本机二次确认。本地备份也已有 32 MiB 上限、短读短写循环、写后重读和单 RDB 恢复事务；`password -> passward` 与旧 VNC 表迁移已有局部 marker/事务/回滚。
 
-这些能力目前都是设备级、全局单例级或局部事务级，不能证明账号级安全和跨进程恢复。`cloudSync(mode, [table])` 以物理表为同步入口；只给共享库补 `WHERE userid` 仍可能让当前账号的同步操作携带其他账号物理行。因此根治边界必须升级为：
+审计证明这些能力当时仍是设备级、全局单例级或局部事务级，不能证明账号级安全和跨进程恢复。`cloudSync(mode, [table])` 以物理表为同步入口；只给共享库补 `WHERE userid` 仍可能让当前账号的同步操作携带其他账号物理行。因此根治边界必须升级为：
 
 1. 无已验证账号绑定时，禁止注册分布式表和发起任何账号云操作。
 2. 由唯一 `AccountSessionCoordinator` 管理 typed `ScopeToken`、generation、账号与系统云绑定状态、物理 store 和所有 transition。
@@ -22,7 +23,7 @@
 
 “一次修复根治”指同一套不变量、统一数据入口和完整迁移路线，不指一个不可回滚的超大补丁。实施必须先止血、再建立底座、再逐域迁移，并始终保留旧数据只读兼容和 feature flag。
 
-当前版本对本专题的发布判定仍是 **NO-GO**。在根治完成前，至少要先关闭系统备份声明、未绑定账号的云同步、无 owner/敏感表的默认上传以及未持久化的远端 crypto disable/reset。
+当前任务分支已完成上述核心代码改造，但本专题的发布判定仍是 **NO-GO**。剩余原因不再是已知 P0 代码缺口，而是尚未取得真实华为云 schema/权限、双设备、A/B 账号、旧发布包升级和进程故障注入证据。系统 BackupExtension、远端 destructive crypto lifecycle 和旧 REST 同步继续保持 fail-closed；在外部矩阵通过前不得打开。
 
 本计划明确禁止：
 
@@ -36,9 +37,59 @@
 - 把本地 `plain-v1`、Pro token、设备信任确认或登录 token 上传云端/写入便携备份。
 - 在没有官方服务端契约时开放 WebSocket、公网 relay、SSH reverse listen。
 
+### 0.1 2026-07-29 实施台账
+
+本节是当前分支的权威实施状态。后续 Phase 0–8 的复选框保留为原始目标和发布验收清单；未勾选不等于代码未实现，尤其真实云、双设备、旧 APK 和故障注入项必须以外部证据完成，不能用本地编译代替。
+
+| 范围 | 当前状态 | 代码/测试直接证明 | 仍需外部证明 |
+| --- | --- | --- | --- |
+| 账号生命周期 | 已实施 | 启动先初始化 AccountKit；登录、登出和切换统一进入 awaitable transition；空/不匹配 unionID fail-closed；generation 使旧回调失效 | 真账号登录、撤销授权、A/B 高频切换和进程重启 |
+| 物理数据隔离 | 已实施 | anonymous/device-local 与每个 Huawei owner 使用独立 storeIdentity；只有 verified binding 的账号库可注册 distributed tables；CRUD 由 service 注入并校验 owner | 同一设备两个真实账号、两设备同账号的华为云隔离行为 |
+| RDB 与旧共享库迁移 | 已实施 | schema transaction、owner 判定、migration receipt/journal/quarantine；RDP credential 增加 userid/username；cryptoparams 使用 scoped id；旧 relay JSON 事务迁移；旧 VNC 只进本地 overlay，owner/epoch/payload 不安全时脱敏隔离且保留源表 | 已发布旧包生成的真实 RDB fixture、部分迁移后杀进程再恢复 |
+| 云同步 coordinator | 已实施 | scoped durable state、单队列、cloud-first barrier、selection re-enable barrier、dirty/retry/conflict/journal、accepted/progress/overall watchdog、`SYNC_FINISH` 判定、迟到/乱序回调 fence、恢复隔离 | 华为云真实空表/部分表/权限拒绝、断网、双设备冲突和 tombstone |
+| 敏感上传/下载 | 已实施 | native-first 前逐表安全扫描；加密未激活时敏感表（包括空表）不能被解释为远端删除意图；活动加密契约拒绝云端明文；RustDesk 嵌套账号 secret 必须全为密文；VNC 使用独立 validator | 云端已有旧明文/畸形数据时的真实错误码和用户恢复路径 |
+| 本地备份 v3 | 已实施 | 32 MiB bounded I/O、写后读回、manifest/section hash、账号 owner、absent/empty/rows、旧七表部分恢复、merge no-op、事务回滚、`restored_not_uploaded`；默认排除 crypto params、密码/私钥/TOTP/VNC secret、登录 token、设备 trust/consent | 真实 Documents Provider、截断/低存储/进程杀死、各已发布备份文件 |
+| 系统备份/换机 | 安全关闭 | `allowToBackupRestore=false`；空 BackupExtension 不再向系统声明业务数据可迁移 | 若未来重新开启，必须实现统一 restore intent/import pipeline，并取得真机换机证据 |
+| 加密生命周期 | 已实施本地安全路径 | scoped envelope v3；enable/migrate/disable/reset 使用独占 lease、同步 quiescence、单 RDB transaction、durable state、selection pause 和 journal replay；普通 CRUD 不能旁路；VNC cloud mirror 保持密文 | 杀进程/断电故障注入、双设备不同密码/交错 reset；远端 destructive reset 仍关闭 |
+| 凭据与信任 | 已实施 | AccountKit/RustDesk Pro token 进入 Asset Store Kit 边界；退出/切换清理；RDP/SSH/VNC trust 与明文 consent 仅设备本地；portable backup 与云扩展会剥离 | API 23 真机 Asset Store 生命周期、锁屏/卸载/重装/备份恢复行为 |
+| 协议数据域 | 已实施数据边界 | RDP username/userid、RustDesk TOTP 绑定、Relay/SSH/TOTP/VNC owner/reference 校验；VNC 保持唯一 `vncrecord` 云表和本地 overlay；`plain-v1` 不上传 | RDP/RustDesk/SSH/TOTP/VNC 真实端点跨设备 roundtrip |
+| 遗留旁路 | 已关闭 | 旧 REST CloudSyncService 的传输 feature gate 恒为关闭；无账号 lease 的公开全表清理入口已移除；WebSocket/公网 relay/SSH reverse 等无契约能力仍关闭 | 只有正式服务端契约、权限和端到端测试后才可另案开放 |
+
+实施提交按依赖顺序为：
+
+- `6a9d430b1`：关闭不安全生命周期入口和空系统备份声明。
+- `4cdc5b1df`：账号 scope、owner 注入和隔离底座。
+- `d2f365c32`：持久化云同步生命周期状态。
+- `d51214577`：原子化加密数据生命周期。
+- `50ce7b36e`：账号安全的便携备份与恢复。
+- `1d0f03848`：协议信任和 token 设备本地化。
+- `d5ccaa73f`：不可判定云回调的 watchdog/fence。
+- `623cdd378`：云物理库与 verified account binding。
+- `8fb395c41`：AccountKit credential 的 Asset Store Kit 存储边界。
+- `beebc662e`：敏感 payload、独占 crypto transition、selection、legacy relay 等全局 fail-closed 收口。
+- `89f4b7574`：旧 VNC owner/epoch/payload 隔离和无 lease 清表入口移除。
+
+### 0.2 本地验证与发布边界
+
+当前实现 HEAD `89f4b7574` 已通过：
+
+- API 23 `default@OhosTestCompileArkTS`。
+- `assembleHap`，签名 HAP 生成成功。
+- `git diff --check`。
+- `verify_open_source_release.ps1 -Mode Light`。
+- 数据生命周期矩阵和策略测试已纳入默认 ArkTS 测试编译，覆盖 clean machine、verified binding、cloud-first、watchdog、unsafe payload、备份脱敏/owner/旧七表、crypto 中断恢复、selection pause、relay migration 和 VNC legacy quarantine policy。
+
+已知本地限制：
+
+- `ohosTest@OhosTestCompileArkTS` 在当前 Hvigor task graph 中不存在，返回 `00306054 Task not found`；已使用仓库强制的 `default@OhosTestCompileArkTS`，但不能把 task 缺失写成测试运行成功。
+- 本轮没有安装 HAP、没有登录真实华为账号、没有访问真实云表、没有执行双设备或系统换机，也没有用已发布旧 APK 生成 fixture。
+- 因此当前结论是“代码实现和本地构建通过，发布 NO-GO 等待外部矩阵”，不是“云同步/换机已经在真机通过”。
+
 ## 1. 证据基线
 
-### 1.1 2026-07-29 重审差异
+### 1.1 历史审计差异（`main@23940521a`）
+
+以下事实记录的是实施前基线，用于解释为什么产生本计划；它们不是对当前任务分支的现状描述。对应修复状态以 0.1 实施台账和实际提交为准。
 
 仍成立的关键风险：
 
@@ -68,7 +119,9 @@
 - VNC 单表/overlay、validator、reset epoch、trust 本机确认可以保留；`encrypted_v2` 的 AAD 仍未绑定真实账号和 epoch，不能描述成账号级闭环。
 - 当前本地备份 I/O 和单 RDB 恢复事务可以增量增强，不另建平行实现。
 
-### 1.2 本地代码直接证明的事实
+### 1.2 历史基线代码直接证明的事实
+
+下表的代码位置和结论均指审计基线；当前分支的修复证据见 0.1。保留本表是为了让旧问题、修复目标和回归用例可追溯。
 
 | 编号 | 事实 | 代码位置 | 计划结论 |
 | --- | --- | --- | --- |
@@ -104,6 +157,7 @@
 | [同应用端云数据同步](https://developer.huawei.com/consumer/cn/doc/harmonyos-guides/distributed-data-sync) | 端云同步环境和关系型数据同步属于独立能力，需检查云侧环境、权限和数据模型 | 先在 AGC/华为云创建并校验表和权限，再打开代码 feature flag |
 | [应用文件备份恢复](https://developer.huawei.com/consumer/cn/doc/harmonyos-guides/app-file-backup-restore) | 应用文件/数据备份恢复是独立的系统能力 | BackupExtensionAbility 必须有真实数据协议、版本和失败处理，不能只依赖 allowToBackupRestore |
 | [关系型数据库存储](https://developer.huawei.com/consumer/cn/doc/harmonyos-guides/data-persistence-by-rdb-store) | RDB 建表、迁移、事务和 ResultSet 是本地数据基础 | 所有 schema migration 要可重入、有版本和失败 marker，不能只靠吞掉 ALTER TABLE 异常 |
+| [Asset Store Kit](https://developer.huawei.com/consumer/cn/doc/harmonyos-guides-V14/asset-store-kit-overview-V14) | 面向密码、token 等短敏感数据，提供加密、别名、访问控制和认证约束 | AccountKit/RustDesk Pro token 只进入设备安全资产边界；alias 必须按 owner/device/domain 唯一，删除和查询失败均 fail-closed |
 | [Socket 连接](https://developer.huawei.com/consumer/cn/doc/harmonyos-guides/socket-connection) | Socket 的连接、读写、关闭、错误和生命周期是独立的网络能力 | RFB、Repeater 和 SSH transport 不得在 ArkUI 线程阻塞；每次 close 必须能取消 worker |
 | [WebSocket 连接](https://developer.huawei.com/consumer/cn/doc/harmonyos-guides/websocket-connection) | WebSocket 是与 Raw TCP 不同的连接模型 | 只有具备版本化服务端 binary gateway 契约时才打开 WebSocket VNC relay |
 | [Node-API 进程/线程相关指导](https://developer.huawei.com/consumer/cn/doc/harmonyos-guides/use-napi-process) | NDK/Node-API 有独立的异步、线程和跨语言生命周期约束 | native 回调必须带 session generation，不能让旧会话事件进入新页面或新账号 |
@@ -124,6 +178,7 @@
 
 - `/Users/mydestiny/Library/OpenHarmony/Sdk/23/ets/api/@ohos.application.BackupExtensionAbility.d.ts`
 - `/Users/mydestiny/Library/OpenHarmony/Sdk/23/ets/api/@ohos.data.relationalStore.d.ts`
+- `/Users/mydestiny/Library/OpenHarmony/Sdk/23/ets/api/@ohos.security.asset.d.ts`
 
 华为官方网页部分由动态文档中心渲染；实施时必须把 DevEco、SDK/API 23 和本地 d.ts 快照摘要写入验证记录。GitHub 上游 commit 只是行为对照快照，不自动授权升级依赖。
 
