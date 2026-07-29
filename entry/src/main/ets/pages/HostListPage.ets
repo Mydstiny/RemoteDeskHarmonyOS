@@ -6128,13 +6128,15 @@ struct HostListPage {
             Text('连接').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text3)
               .fontFamily(this.font()).padding({ left: 8, bottom: 8 })
             Column() {
-              this.cardItemRow(protocolIcon('rdp'), '远程主机', this.hostCount + ' 台')
+              this.protocolStatItemRow(protocolIcon('rdp'), '远程主机', this.hostCount + ' 台')
               this.cardDivider()
-              this.cardItemRow(protocolIcon('rdp'), 'RDP 协议', this.rdpCount + ' 台')
+              this.protocolStatItemRow(protocolIcon('rdp'), 'RDP 协议', this.rdpCount + ' 台')
               this.cardDivider()
-              this.cardItemRow(protocolIcon('rustdesk'), 'RustDesk 协议', this.rustdeskCount + ' 台')
+              this.protocolStatItemRow(protocolIcon('rustdesk'), 'RustDesk 协议', this.rustdeskCount + ' 台')
               this.cardDivider()
-              this.cardItemRow(protocolIcon('ssh'), 'SSH 终端', this.sshCount + ' 台')
+              this.protocolStatItemRow(protocolIcon('ssh'), 'SSH 终端', this.sshCount + ' 台')
+              this.cardDivider()
+              this.protocolStatItemRow(protocolIcon('vnc'), 'VNC 主机', this.vncCount + ' 台')
               this.cardDivider()
               this.cardItemRow($r('app.media.icon_lock'), '已锁定', this.lockedCount + ' 台')
             }.borderRadius(24).backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
@@ -7742,6 +7744,16 @@ struct HostListPage {
   @Builder cardItemRow(icon: Resource, label: string, value: string) {
     Row() {
       Row() { Image(icon).width(22).height(22).fillColor(this.pal().text3) }
+        .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
+      Text(label).fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
+        .fontColor(this.pal().text).fontFamily(this.font()).layoutWeight(1).margin({ left: 4 })
+      Text(value).fontSize(14).fontColor(this.pal().text2).margin({ right: 16 })
+    }.width('100%').height(60).padding({ left: 16, right: 16 })
+  }
+
+  @Builder protocolStatItemRow(icon: Resource, label: string, value: string) {
+    Row() {
+      Row() { SymbolGlyph(icon).fontSize(22).fontColor([this.pal().text3]) }
         .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
       Text(label).fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
         .fontColor(this.pal().text).fontFamily(this.font()).layoutWeight(1).margin({ left: 4 })
