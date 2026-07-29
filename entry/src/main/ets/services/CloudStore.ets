@@ -143,6 +143,10 @@ import {
   deviceLocalScopeToken,
   ownerRecordWriteAllowed
 } from './AccountScopePolicy';
+import {
+  CloudSyncDurableState,
+  corruptedCloudSyncDurableState
+} from './CloudSyncLifecyclePolicy';
 import { LegacySharedStoreMigrator } from './LegacySharedStoreMigrator';
 
 const TABLES: string[] = cloudSyncTableNames();
@@ -156,6 +160,7 @@ const CANONICAL_SECRET_STORAGE_VERSION_KEY: string = 'canonical_secret_storage_v
 const CANONICAL_SECRET_STORAGE_VERSION: string = '3';
 const RESTORED_NOT_UPLOADED_KEY: string = 'restored_not_uploaded';
 const CLOUD_BOOTSTRAP_COMPLETED_KEY: string = 'cloud_bootstrap_completed_v1';
+const CLOUD_SYNC_DURABLE_STATE_KEY: string = 'cloud_sync_durable_state_v1';
 const STORE_OWNER_SCOPE_KEY: string = 'store_owner_scope_id';
 const STORE_IDENTITY_KEY: string = 'store_identity';
 const STORE_SCHEMA_REVISION_KEY: string = 'store_schema_revision';
@@ -369,10 +374,15 @@ export class CloudStore implements CryptoCloudStore {
   }
 
   closeMutationGate(): boolean {
-    this.mutationGateOpen = false;
     const lease: AccountSessionLease | null = this.currentAccountLease();
-    if (lease === null) { return true; }
-    return CloudSyncCoordinator.getInstance().closeMutationGate(lease);
+    if (lease === null) {
+      this.mutationGateOpen = false;
+      return true;
+    }
+    const closed: boolean =
+      CloudSyncCoordinator.getInstance().closeMutationGate(lease);
+    if (closed) { this.mutationGateOpen = false; }
+    return closed;
   }
 
   async quiesceCurrentScope(timeoutMs: number = 15000): Promise<boolean> {
@@ -519,6 +529,7 @@ export class CloudStore implements CryptoCloudStore {
       const coordinatorBound: boolean = CloudSyncCoordinator.getInstance().bind(
         context,
         lease,
+        this.cloudAccountBinding,
         (table: string, direction: CloudSyncDirection, label: string): Promise<boolean> =>
           this.executeSyncTable(table, direction, label),
         (tables: string[]): void => { this.notifyCloudDataApplied(tables); },
@@ -790,6 +801,39 @@ export class CloudStore implements CryptoCloudStore {
     return true;
   }
 
+  private loadCloudSyncDurableState(): CloudSyncDurableState | null {
+    const raw: string = this.readLocalMetadataStrict(
+      CLOUD_SYNC_DURABLE_STATE_KEY);
+    if (raw.length === 0) { return null; }
+    try {
+      return JSON.parse(raw) as CloudSyncDurableState;
+    } catch (err) {
+      hilog.error(0x0001, 'CloudSync',
+        '云同步持久状态损坏，已阻止传输并等待恢复: ' + safeError(err));
+      return corruptedCloudSyncDurableState(
+        this.cloudAccountBinding, this.cloudBootstrapCompleted);
+    }
+  }
+
+  private persistCloudSyncDurableState(
+    state: CloudSyncDurableState
+  ): boolean {
+    if (!this.store || this.currentLease === null ||
+      state.ownerScopeId !== this.currentScopeToken.ownerScopeId ||
+      state.storeIdentity !== this.currentScopeToken.storeIdentity ||
+      state.generation !== this.currentScopeToken.generation) {
+      return false;
+    }
+    try {
+      return this.writeLocalMetadata(
+        CLOUD_SYNC_DURABLE_STATE_KEY, JSON.stringify(state));
+    } catch (err) {
+      hilog.error(0x0001, 'CloudSync',
+        '云同步持久状态写入失败: ' + safeError(err));
+      return false;
+    }
+  }
+
   private localMutationAllowed(): boolean {
     return this.mutationGateOpen && cloudLocalMutationAllowed(
       this.manualDownloadSnapshot !== null,
@@ -867,7 +911,11 @@ export class CloudStore implements CryptoCloudStore {
         this.acknowledgeMutationJournal(table, revision),
       failureKindForTable: (_table: string): CloudSyncFailureKind => this.lastSyncFailureKind,
       hasRestoredNotUploaded: (): boolean => this.hasRestoredNotUploaded(),
-      clearRestoredNotUploaded: (): boolean => this.clearRestoredNotUploaded()
+      clearRestoredNotUploaded: (): boolean => this.clearRestoredNotUploaded(),
+      loadDurableState: (): CloudSyncDurableState | null =>
+        this.loadCloudSyncDurableState(),
+      persistDurableState: (state: CloudSyncDurableState): boolean =>
+        this.persistCloudSyncDurableState(state)
     };
   }
 

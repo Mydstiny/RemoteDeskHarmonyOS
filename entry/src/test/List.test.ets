@@ -26,6 +26,7 @@ import cloudSyncSheetPolicyTest from './CloudSyncSheetPolicy.test';
 import cloudSyncSettingsPolicyTest from './CloudSyncSettingsPolicy.test';
 import cloudSyncSelectionPolicyTest from './CloudSyncSelectionPolicy.test';
 import cloudLifecycleSafetyPolicyTest from './CloudLifecycleSafetyPolicy.test';
+import cloudSyncLifecyclePolicyTest from './CloudSyncLifecyclePolicy.test';
 import accountScopePolicyTest from './AccountScopePolicy.test';
 import legacySharedStoreMigrationPolicyTest from './LegacySharedStoreMigrationPolicy.test';
 import vncCloudSyncSelectionPolicyTest from './VncCloudSyncSelectionPolicy.test';
@@ -108,6 +109,7 @@ export default function testsuite() {
   cloudSyncSettingsPolicyTest();
   cloudSyncSelectionPolicyTest();
   cloudLifecycleSafetyPolicyTest();
+  cloudSyncLifecyclePolicyTest();
   accountScopePolicyTest();
   legacySharedStoreMigrationPolicyTest();
   vncCloudSyncSelectionPolicyTest();

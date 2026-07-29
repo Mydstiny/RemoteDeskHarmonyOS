@@ -1,5 +1,4 @@
 import { common } from '@kit.AbilityKit';
-import { preferences } from '@kit.ArkData';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { CloudSyncSelectionStore } from './CloudSyncSelectionStore';
 import { CloudSyncDirection } from './CloudSyncPolicy';
@@ -13,6 +12,26 @@ import {
   accountSessionLeaseEquals,
   cloneAccountSessionLease
 } from './AccountScopePolicy';
+import {
+  CloudAccountBinding,
+  cloudTransferAllowed,
+  unboundCloudAccountBinding
+} from './CloudLifecycleSafetyPolicy';
+import {
+  CloudSyncDurableState,
+  cloudSyncAutomaticUploadAllowed,
+  cloudSyncBootstrapCompleted,
+  cloneCloudSyncDurableState,
+  cloudSyncDownloadAllowed,
+  cloudSyncDurableStateWithIntents,
+  cloudSyncOperationFinished,
+  cloudSyncOperationStarted,
+  cloudSyncQuiesced,
+  cloudSyncQuiescing,
+  cloudSyncRestoreQuarantined,
+  cloudSyncRestoreReleased,
+  recoverCloudSyncDurableState
+} from './CloudSyncLifecyclePolicy';
 import {
   CLOUD_SYNC_MAX_RETRY_ATTEMPTS,
   CloudSyncRequest,
@@ -36,10 +55,6 @@ import {
 
 const DOMAIN = 0x0001;
 const TAG = 'CloudSyncCoordinator';
-const PREFS_NAME = 'RemoteDesktopAppPrefs';
-const RETRY_PREFERENCE_KEY = 'cloudSyncRetryRecord';
-const DIRTY_PREFERENCE_KEY = 'cloudSyncDirtyTables';
-const CONFLICT_PREFERENCE_KEY = 'cloudSyncConflictTables';
 
 export interface CloudSyncOperationResult {
   ok: boolean;
@@ -69,6 +84,8 @@ export interface CloudSyncCoordinatorHooks {
   hasCloudBootstrapCompleted?: () => boolean;
   markCloudBootstrapCompleted?: () => boolean;
   discardMutationJournalForTables?: (tables: string[]) => boolean;
+  loadDurableState?: () => CloudSyncDurableState | null;
+  persistDurableState?: (state: CloudSyncDurableState) => boolean;
 }
 
 /**
@@ -187,7 +204,6 @@ export async function executeCloudSyncRequest(
  */
 export class CloudSyncCoordinator {
   private static instance: CloudSyncCoordinator;
-  private context: common.Context | null = null;
   private executor: CloudSyncTableExecutor | null = null;
   private readonly selection: CloudSyncSelectionStore = CloudSyncSelectionStore.getInstance();
   private readonly vncSelection: VncCloudSyncSelectionStore =
@@ -209,10 +225,12 @@ export class CloudSyncCoordinator {
   private startupPull: Promise<CloudSyncOperationResult> | null = null;
   private startupState: CloudSyncBootstrapState = 'pending';
   private bootstrapCompleted: boolean = false;
-  private persistenceScopeId: string = 'device-local';
   private currentLease: AccountSessionLease | null = null;
   private acceptingRequests: boolean = false;
   private bindingEpoch: number = 0;
+  private currentBinding: CloudAccountBinding = unboundCloudAccountBinding();
+  private transfersEnabled: boolean = false;
+  private durableState: CloudSyncDurableState | null = null;
 
   static getInstance(): CloudSyncCoordinator {
     if (!CloudSyncCoordinator.instance) {
@@ -224,6 +242,7 @@ export class CloudSyncCoordinator {
   bind(
     context: common.Context,
     lease: AccountSessionLease,
+    binding: CloudAccountBinding,
     executor: CloudSyncTableExecutor,
     onCloudFirstApplied: (tables: string[]) => void,
     hooks: CloudSyncCoordinatorHooks
@@ -238,15 +257,19 @@ export class CloudSyncCoordinator {
       clearTimeout(this.retryTimer);
       this.retryTimer = -1;
     }
-    this.context = context;
     this.executor = executor;
     this.onCloudFirstApplied = onCloudFirstApplied;
     this.hooks = hooks;
     this.currentLease = cloneAccountSessionLease(lease);
+    this.currentBinding = {
+      state: binding.state,
+      ownerScopeId: binding.ownerScopeId,
+      storeIdentity: binding.storeIdentity,
+      generation: binding.generation
+    };
+    this.transfersEnabled = cloudTransferAllowed(this.currentBinding);
     this.acceptingRequests = true;
     this.bindingEpoch++;
-    this.persistenceScopeId = lease.ownerScopeId.trim().length > 0
-      ? lease.ownerScopeId.trim() : 'device-local';
     this.queueTail = Promise.resolve();
     this.retryRecords = [];
     this.dirtyAutomaticTables = [];
@@ -263,6 +286,21 @@ export class CloudSyncCoordinator {
     this.bootstrapCompleted = true;
     if (hooks.hasCloudBootstrapCompleted) {
       try { this.bootstrapCompleted = hooks.hasCloudBootstrapCompleted(); } catch (_e) { this.bootstrapCompleted = false; }
+    }
+    let persistedState: CloudSyncDurableState | null = null;
+    if (hooks.loadDurableState) {
+      try { persistedState = hooks.loadDurableState(); } catch (_e) { persistedState = null; }
+    }
+    const recoveredState: CloudSyncDurableState =
+      recoverCloudSyncDurableState(
+        persistedState,
+        this.currentBinding,
+        this.transfersEnabled,
+        this.bootstrapCompleted
+      );
+    if (!this.persistDurableCandidate(recoveredState)) {
+      this.resetFailedBinding();
+      return false;
     }
     this.restoreRetryRecord();
     this.restoreDirtyTables();
@@ -281,6 +319,11 @@ export class CloudSyncCoordinator {
 
   closeMutationGate(lease: AccountSessionLease): boolean {
     if (!accountSessionLeaseEquals(this.currentLease, lease)) { return false; }
+    if (this.durableState !== null) {
+      const next: CloudSyncDurableState =
+        cloudSyncQuiescing(this.durableState);
+      if (!this.persistDurableCandidate(next)) { return false; }
+    }
     this.acceptingRequests = false;
     if (this.retryTimer >= 0) {
       clearTimeout(this.retryTimer);
@@ -291,6 +334,11 @@ export class CloudSyncCoordinator {
 
   reopenMutationGate(lease: AccountSessionLease): boolean {
     if (!accountSessionLeaseEquals(this.currentLease, lease)) { return false; }
+    if (this.durableState !== null) {
+      const next: CloudSyncDurableState = cloudSyncQuiesced(
+        this.durableState, this.currentBinding, this.transfersEnabled);
+      if (!this.persistDurableCandidate(next)) { return false; }
+    }
     this.acceptingRequests = true;
     this.scheduleRetryTimer();
     return true;
@@ -316,7 +364,15 @@ export class CloudSyncCoordinator {
       });
     const ok: boolean = await Promise.race([drained, timeout]);
     if (timeoutId >= 0) { clearTimeout(timeoutId); }
-    return ok && accountSessionLeaseEquals(this.currentLease, lease);
+    if (!ok || !accountSessionLeaseEquals(this.currentLease, lease)) {
+      return false;
+    }
+    if (this.durableState !== null) {
+      const next: CloudSyncDurableState = cloudSyncQuiesced(
+        this.durableState, this.currentBinding, this.transfersEnabled);
+      if (!this.persistDurableCandidate(next)) { return false; }
+    }
+    return true;
   }
 
   async dispose(lease: AccountSessionLease, timeoutMs: number = 15000): Promise<boolean> {
@@ -327,6 +383,9 @@ export class CloudSyncCoordinator {
     this.onCloudFirstApplied = null;
     this.hooks = null;
     this.currentLease = null;
+    this.currentBinding = unboundCloudAccountBinding();
+    this.transfersEnabled = false;
+    this.durableState = null;
     this.pendingPull = null;
     this.startupPull = null;
     this.pendingAutomaticTables = [];
@@ -338,6 +397,10 @@ export class CloudSyncCoordinator {
 
   requestStartupPull(): Promise<CloudSyncOperationResult> {
     if (this.startupPull) { return this.startupPull; }
+    if (!this.transfersEnabled) {
+      return Promise.resolve(this.rejectedResult(
+        this.makeRequest('startup', 'cloudFirst'), 'cloud_service'));
+    }
     const restoreBlocked: boolean = this.restoreUploadBlocked();
     const initialDirty: string[] = this.dirtyAutomaticTables.slice();
     const initialBootstrap: boolean = shouldUseCloudFirstForInitialBootstrap(this.bootstrapCompleted);
@@ -447,6 +510,12 @@ export class CloudSyncCoordinator {
           };
         } else {
           this.bootstrapCompleted = true;
+          if (!this.persistBootstrapCompletion()) {
+            finalResult = {
+              ok: false, source: result.source, tables: result.tables.slice(),
+              failedTables: result.tables.slice(), rollbackFailed: false, failureKind: 'unknown'
+            };
+          }
         }
       }
     }
@@ -474,6 +543,13 @@ export class CloudSyncCoordinator {
       };
     }
     this.bootstrapCompleted = true;
+    if (!this.persistBootstrapCompletion()) {
+      this.startupState = 'pending';
+      return {
+        ok: false, source: result.source, tables: result.tables.slice(),
+        failedTables: result.tables.slice(), rollbackFailed: false, failureKind: 'unknown'
+      };
+    }
     this.startupState = 'ready';
     if (this.hooks && this.hooks.setStartupSyncPending) {
       try { this.hooks.setStartupSyncPending(false); } catch (_e) { /* best effort */ }
@@ -498,6 +574,9 @@ export class CloudSyncCoordinator {
 
   requestManualUpload(): Promise<CloudSyncOperationResult> {
     const request: CloudSyncRequest = this.makeRequest('manualUpload', 'nativeFirst');
+    if (!this.transfersEnabled || !this.automaticUploadAllowed()) {
+      return Promise.resolve(this.rejectedResult(request, 'cloud_service'));
+    }
     const includeVnc: boolean = this.vncPhysicalTableSelected();
     const versions: Record<string, number> = {};
     for (let i = 0; i < request.tables.length; i++) {
@@ -534,6 +613,9 @@ export class CloudSyncCoordinator {
 
   requestManualDownload(): Promise<CloudSyncOperationResult> {
     const request: CloudSyncRequest = this.makeRequest('manualDownload', 'cloudFirst');
+    if (!this.transfersEnabled) {
+      return Promise.resolve(this.rejectedResult(request, 'cloud_service'));
+    }
     const includeVnc: boolean = this.vncPhysicalTableSelected();
     const versions: Record<string, number> = {};
     for (let i = 0; i < request.tables.length; i++) {
@@ -563,6 +645,9 @@ export class CloudSyncCoordinator {
     const request: CloudSyncRequest = {
       source: 'manualUpload', direction: 'nativeFirst', tables
     };
+    if (!this.transfersEnabled || !this.automaticUploadAllowed()) {
+      return Promise.resolve(this.rejectedResult(request, 'cloud_service'));
+    }
     const journalRevisions: Record<string, number> = this.captureJournalRevisions(tables);
     return this.enqueue(request).then((result: CloudSyncOperationResult): CloudSyncOperationResult => {
       if (!result.ok) { return result; }
@@ -581,6 +666,9 @@ export class CloudSyncCoordinator {
     const request: CloudSyncRequest = {
       source: 'manualDownload', direction: 'cloudFirst', tables
     };
+    if (!this.transfersEnabled) {
+      return Promise.resolve(this.rejectedResult(request, 'cloud_service'));
+    }
     return this.enqueue(request).then((result: CloudSyncOperationResult): CloudSyncOperationResult =>
       this.completeExplicitBootstrap(result));
   }
@@ -594,6 +682,9 @@ export class CloudSyncCoordinator {
     const version: number = (this.automaticMutationVersions[VNC_CLOUD_TABLE] || 0) + 1;
     this.automaticMutationVersions[VNC_CLOUD_TABLE] = version;
     this.markDirtyTable(VNC_CLOUD_TABLE);
+    if (!this.transfersEnabled || !this.automaticUploadAllowed()) {
+      return Promise.resolve(this.skippedResult('automaticPush'));
+    }
     if (shouldDeferAutomaticPushDuringBootstrap(this.startupState)) {
       if (this.deferredAutomaticTables.indexOf(VNC_CLOUD_TABLE) < 0) {
         this.deferredAutomaticTables.push(VNC_CLOUD_TABLE);
@@ -626,6 +717,9 @@ export class CloudSyncCoordinator {
     const version: number = (this.automaticMutationVersions[VNC_CLOUD_TABLE] || 0) + 1;
     this.automaticMutationVersions[VNC_CLOUD_TABLE] = version;
     this.markDirtyTable(VNC_CLOUD_TABLE);
+    if (!this.transfersEnabled || !this.automaticUploadAllowed()) {
+      return Promise.resolve(this.skippedResult('automaticPush'));
+    }
     if (shouldDeferAutomaticPushDuringBootstrap(this.startupState)) {
       if (this.deferredAutomaticTables.indexOf(VNC_CLOUD_TABLE) < 0) {
         this.deferredAutomaticTables.push(VNC_CLOUD_TABLE);
@@ -649,6 +743,9 @@ export class CloudSyncCoordinator {
     const version: number = (this.automaticMutationVersions[VNC_CLOUD_TABLE] || 0) + 1;
     this.automaticMutationVersions[VNC_CLOUD_TABLE] = version;
     this.markDirtyTable(VNC_CLOUD_TABLE);
+    if (!this.transfersEnabled || !this.automaticUploadAllowed()) {
+      return Promise.resolve(this.skippedResult('automaticPush'));
+    }
     if (shouldDeferAutomaticPushDuringBootstrap(this.startupState)) {
       if (this.deferredAutomaticTables.indexOf(VNC_CLOUD_TABLE) < 0) {
         this.deferredAutomaticTables.push(VNC_CLOUD_TABLE);
@@ -670,6 +767,9 @@ export class CloudSyncCoordinator {
     const version: number = (this.automaticMutationVersions[table] || 0) + 1;
     this.automaticMutationVersions[table] = version;
     this.markDirtyTable(table);
+    if (!this.transfersEnabled || !this.automaticUploadAllowed()) {
+      return Promise.resolve(this.skippedResult('automaticPush'));
+    }
     if (shouldDeferAutomaticPushDuringBootstrap(this.startupState)) {
       if (this.deferredAutomaticTables.indexOf(table) < 0) {
         this.deferredAutomaticTables.push(table);
@@ -763,6 +863,16 @@ export class CloudSyncCoordinator {
       this.currentLease === null) { return Promise.resolve(false); }
     const lease: AccountSessionLease = cloneAccountSessionLease(this.currentLease);
     const epoch: number = this.bindingEpoch;
+    const lifecycleBeforeRestore: CloudSyncDurableState | null =
+      this.durableState === null ? null :
+        cloneCloudSyncDurableState(this.durableState);
+    if (this.durableState !== null) {
+      const quarantined: CloudSyncDurableState =
+        cloudSyncRestoreQuarantined(this.durableState);
+      if (!this.persistDurableCandidate(quarantined)) {
+        return Promise.resolve(false);
+      }
+    }
     this.restorePending = true;
     if (this.hooks) { this.hooks.setRestorePending(true); }
     const run = async (): Promise<boolean> => {
@@ -775,7 +885,14 @@ export class CloudSyncCoordinator {
         !accountSessionLeaseEquals(this.currentLease, lease)) {
         return false;
       }
-      if (restored) { this.clearAllDirtyIntents(); }
+      if (restored) {
+        if (!this.clearAllDirtyIntents()) { return false; }
+      } else if (lifecycleBeforeRestore !== null) {
+        if (this.durableState === null) { return false; }
+        const released: CloudSyncDurableState = cloudSyncRestoreReleased(
+          this.durableState, lifecycleBeforeRestore);
+        if (!this.persistDurableCandidate(released)) { return false; }
+      }
       return restored;
     };
     return new Promise<boolean>((resolve: (value: boolean) => void): void => {
@@ -806,6 +923,10 @@ export class CloudSyncCoordinator {
   }
 
   private requestCloudFirst(source: CloudSyncSource): Promise<CloudSyncOperationResult> {
+    if (!this.transfersEnabled) {
+      return Promise.resolve(this.rejectedResult(
+        this.makeRequest(source, 'cloudFirst'), 'cloud_service'));
+    }
     if (source !== 'manualDownload' && this.restoreUploadBlocked()) {
       return Promise.resolve(this.skippedResult(source));
     }
@@ -899,7 +1020,8 @@ export class CloudSyncCoordinator {
   }
 
   private enqueue(request: CloudSyncRequest): Promise<CloudSyncOperationResult> {
-    if (!this.acceptingRequests || this.currentLease === null) {
+    if (!this.acceptingRequests || this.currentLease === null ||
+      !this.transfersEnabled) {
       return Promise.resolve(this.rejectedResult(request));
     }
     const lease: AccountSessionLease = cloneAccountSessionLease(this.currentLease);
@@ -911,9 +1033,17 @@ export class CloudSyncCoordinator {
           resolve(this.rejectedResult(request));
           return;
         }
+        if (!this.beginLifecycleOperation(request)) {
+          resolve(this.rejectedResult(request));
+          return;
+        }
         const result: CloudSyncOperationResult = await this.execute(request);
         if (epoch !== this.bindingEpoch ||
           !accountSessionLeaseEquals(this.currentLease, lease)) {
+          resolve(this.rejectedResult(request));
+          return;
+        }
+        if (!this.finishLifecycleOperation(result)) {
           resolve(this.rejectedResult(request));
           return;
         }
@@ -923,14 +1053,15 @@ export class CloudSyncCoordinator {
     });
   }
 
-  private rejectedResult(request: CloudSyncRequest): CloudSyncOperationResult {
+  private rejectedResult(request: CloudSyncRequest,
+    failureKind: CloudSyncFailureKind = 'unknown'): CloudSyncOperationResult {
     return {
       ok: false,
       source: request.source,
       tables: request.tables.slice(),
       failedTables: request.tables.slice(),
       rollbackFailed: false,
-      failureKind: 'unknown'
+      failureKind
     };
   }
 
@@ -946,76 +1077,40 @@ export class CloudSyncCoordinator {
   }
 
   private restoreRetryRecord(): void {
-    if (!this.context || this.retryTimer >= 0) { return; }
-    try {
-      const prefs = preferences.getPreferencesSync(this.context, { name: PREFS_NAME });
-      const stored: string = prefs.getSync(this.scopedPersistenceKey(RETRY_PREFERENCE_KEY), '') as string;
-      if (stored.length === 0) { return; }
-      const parsed = JSON.parse(stored) as Object;
-      const records: CloudSyncRetryRecord[] = Array.isArray(parsed)
-        ? parsed as CloudSyncRetryRecord[] : [parsed as CloudSyncRetryRecord];
-      for (let i = 0; i < records.length; i++) {
-        if (!isAutomaticRetryRecord(records[i])) { continue; }
-        this.retryRecords = upsertAutomaticRetryRecord(this.retryRecords, records[i]);
-        this.automaticRetryAttempts[automaticRetryKey(records[i])] = records[i].attempt;
-      }
-      this.writeRetryRecords();
-      this.scheduleRetryTimer();
-    } catch (err) {
-      hilog.warn(DOMAIN, TAG, 'restore retry ignored: ' + JSON.stringify(err));
+    if (this.durableState === null || this.retryTimer >= 0) { return; }
+    const records: CloudSyncRetryRecord[] = this.durableState.retryRecords;
+    for (let i = 0; i < records.length; i++) {
+      if (!isAutomaticRetryRecord(records[i])) { continue; }
+      this.retryRecords = upsertAutomaticRetryRecord(this.retryRecords, records[i]);
+      this.automaticRetryAttempts[automaticRetryKey(records[i])] = records[i].attempt;
     }
+    this.scheduleRetryTimer();
   }
 
   private restoreDirtyTables(): void {
-    if (!this.context) { return; }
-    try {
-      const prefs = preferences.getPreferencesSync(this.context, { name: PREFS_NAME });
-      const raw: string = prefs.getSync(this.scopedPersistenceKey(DIRTY_PREFERENCE_KEY), '[]') as string;
-      const parsed = JSON.parse(raw) as Object;
-      if (!Array.isArray(parsed)) { return; }
-      const values = parsed as string[];
-      for (let i = 0; i < values.length; i++) {
-        if (this.dirtyAutomaticTables.indexOf(values[i]) < 0) {
-          this.dirtyAutomaticTables.push(values[i]);
-          this.automaticMutationVersions[values[i]] = 1;
-        }
+    if (this.durableState === null) { return; }
+    const values: string[] = this.durableState.dirtyTables;
+    for (let i = 0; i < values.length; i++) {
+      if (this.dirtyAutomaticTables.indexOf(values[i]) < 0) {
+        this.dirtyAutomaticTables.push(values[i]);
+        this.automaticMutationVersions[values[i]] = 1;
       }
-    } catch (err) {
-      hilog.warn(DOMAIN, TAG, 'restore dirty tables ignored: ' + JSON.stringify(err));
     }
   }
 
   private restoreConflictTables(): void {
-    if (!this.context) { return; }
-    try {
-      const prefs = preferences.getPreferencesSync(this.context, { name: PREFS_NAME });
-      const raw: string = prefs.getSync(this.scopedPersistenceKey(CONFLICT_PREFERENCE_KEY), '[]') as string;
-      const parsed = JSON.parse(raw) as Object;
-      if (!Array.isArray(parsed)) { return; }
-      const values = parsed as string[];
-      for (let i = 0; i < values.length; i++) {
-        if (values[i] !== '' && this.blockedAutomaticTables.indexOf(values[i]) < 0) {
-          this.blockedAutomaticTables.push(values[i]);
-        }
+    if (this.durableState === null) { return; }
+    const values: string[] = this.durableState.conflictTables;
+    for (let i = 0; i < values.length; i++) {
+      if (values[i] !== '' && this.blockedAutomaticTables.indexOf(values[i]) < 0) {
+        this.blockedAutomaticTables.push(values[i]);
       }
-    } catch (err) {
-      hilog.warn(DOMAIN, TAG, 'restore conflict tables ignored: ' + JSON.stringify(err));
     }
   }
 
   private writeConflictTables(): void {
-    if (!this.context) { return; }
-    try {
-      const prefs = preferences.getPreferencesSync(this.context, { name: PREFS_NAME });
-      if (this.blockedAutomaticTables.length === 0) {
-        prefs.deleteSync(this.scopedPersistenceKey(CONFLICT_PREFERENCE_KEY));
-      } else {
-        prefs.putSync(this.scopedPersistenceKey(CONFLICT_PREFERENCE_KEY),
-          JSON.stringify(this.blockedAutomaticTables));
-      }
-      prefs.flushSync();
-    } catch (err) {
-      hilog.warn(DOMAIN, TAG, 'write conflict tables failed: ' + JSON.stringify(err));
+    if (!this.syncDurableIntents()) {
+      hilog.error(DOMAIN, TAG, 'write conflict tables failed');
     }
   }
 
@@ -1093,7 +1188,7 @@ export class CloudSyncCoordinator {
     try { return this.hooks.hasRestoredNotUploaded(); } catch (_e) { return false; }
   }
 
-  private clearAllDirtyIntents(): void {
+  private clearAllDirtyIntents(): boolean {
     this.dirtyAutomaticTables = [];
     this.automaticMutationVersions = {};
     this.journalMutationRevisions = {};
@@ -1101,25 +1196,14 @@ export class CloudSyncCoordinator {
     this.deferredAutomaticTables = [];
     this.retryRecords = [];
     this.automaticRetryAttempts = {};
-    this.writeDirtyTables();
-    this.writeConflictTables();
-    this.writeRetryRecords();
+    const persisted: boolean = this.syncDurableIntents();
     this.scheduleRetryTimer();
+    return persisted;
   }
 
   private writeDirtyTables(): void {
-    if (!this.context) { return; }
-    try {
-      const prefs = preferences.getPreferencesSync(this.context, { name: PREFS_NAME });
-      if (this.dirtyAutomaticTables.length === 0) {
-        prefs.deleteSync(this.scopedPersistenceKey(DIRTY_PREFERENCE_KEY));
-      } else {
-        prefs.putSync(this.scopedPersistenceKey(DIRTY_PREFERENCE_KEY),
-          JSON.stringify(this.dirtyAutomaticTables));
-      }
-      prefs.flushSync();
-    } catch (err) {
-      hilog.warn(DOMAIN, TAG, 'write dirty tables failed: ' + JSON.stringify(err));
+    if (!this.syncDurableIntents()) {
+      hilog.error(DOMAIN, TAG, 'write dirty tables failed');
     }
   }
 
@@ -1189,21 +1273,15 @@ export class CloudSyncCoordinator {
   }
 
   private writeRetryRecords(): void {
-    if (!this.context) { return; }
-    try {
-      const prefs = preferences.getPreferencesSync(this.context, { name: PREFS_NAME });
-      if (this.retryRecords.length === 0) {
-        prefs.deleteSync(this.scopedPersistenceKey(RETRY_PREFERENCE_KEY));
-      } else {
-        prefs.putSync(this.scopedPersistenceKey(RETRY_PREFERENCE_KEY), JSON.stringify(this.retryRecords));
-      }
-      prefs.flushSync();
-    } catch (err) { hilog.warn(DOMAIN, TAG, 'persist retry failed: ' + JSON.stringify(err)); }
+    if (!this.syncDurableIntents()) {
+      hilog.error(DOMAIN, TAG, 'persist retry failed');
+    }
   }
 
   private scheduleRetryTimer(): void {
     if (this.retryTimer >= 0) { clearTimeout(this.retryTimer); this.retryTimer = -1; }
-    if (this.retryRecords.length === 0) { return; }
+    if (this.retryRecords.length === 0 || !this.transfersEnabled ||
+      !this.automaticUploadAllowed()) { return; }
     let earliest: CloudSyncRetryRecord = this.retryRecords[0];
     for (let i = 1; i < this.retryRecords.length; i++) {
       if (this.retryRecords[i].nextRetryAt < earliest.nextRetryAt) { earliest = this.retryRecords[i]; }
@@ -1251,7 +1329,91 @@ export class CloudSyncCoordinator {
     }, delay) as number;
   }
 
-  private scopedPersistenceKey(base: string): string {
-    return base + ':' + this.persistenceScopeId;
+  private automaticUploadAllowed(): boolean {
+    return this.durableState !== null &&
+      cloudSyncAutomaticUploadAllowed(this.durableState);
+  }
+
+  private beginLifecycleOperation(request: CloudSyncRequest): boolean {
+    if (this.durableState === null) { return false; }
+    if (request.direction === 'nativeFirst' && !this.automaticUploadAllowed()) {
+      return false;
+    }
+    if (request.direction === 'cloudFirst' &&
+      !cloudSyncDownloadAllowed(this.durableState)) {
+      return false;
+    }
+    const next: CloudSyncDurableState = cloudSyncOperationStarted(
+      this.durableState, request.source, request.direction, request.tables);
+    return this.persistDurableCandidate(next);
+  }
+
+  private finishLifecycleOperation(result: CloudSyncOperationResult): boolean {
+    if (this.durableState === null) { return false; }
+    const next: CloudSyncDurableState = cloudSyncOperationFinished(
+      this.durableState,
+      result.ok,
+      result.failedTables,
+      result.rollbackFailed,
+      result.failureKind,
+      this.bootstrapCompleted);
+    return this.persistDurableCandidate(next);
+  }
+
+  private persistBootstrapCompletion(): boolean {
+    if (this.durableState === null) { return false; }
+    const next: CloudSyncDurableState =
+      cloudSyncBootstrapCompleted(this.durableState);
+    return this.persistDurableCandidate(next);
+  }
+
+  private syncDurableIntents(): boolean {
+    if (this.durableState === null) { return false; }
+    const next: CloudSyncDurableState = cloudSyncDurableStateWithIntents(
+      this.durableState,
+      this.dirtyAutomaticTables,
+      this.blockedAutomaticTables,
+      this.retryRecords
+    );
+    return this.persistDurableCandidate(next);
+  }
+
+  private persistDurableCandidate(state: CloudSyncDurableState): boolean {
+    if (!this.hooks ||
+      !this.hooks.persistDurableState) {
+      return false;
+    }
+    try {
+      if (!this.hooks.persistDurableState(state)) { return false; }
+      this.durableState = state;
+      return true;
+    } catch (err) {
+      hilog.error(DOMAIN, TAG,
+        'persist cloud lifecycle state failed: ' + JSON.stringify(err));
+      return false;
+    }
+  }
+
+  private resetFailedBinding(): void {
+    this.bindingEpoch++;
+    this.acceptingRequests = false;
+    this.executor = null;
+    this.onCloudFirstApplied = null;
+    this.hooks = null;
+    this.currentLease = null;
+    this.currentBinding = unboundCloudAccountBinding();
+    this.transfersEnabled = false;
+    this.durableState = null;
+    this.pendingPull = null;
+    this.startupPull = null;
+    this.pendingAutomaticTables = [];
+    this.deferredAutomaticTables = [];
+    this.retryRecords = [];
+    this.dirtyAutomaticTables = [];
+    this.blockedAutomaticTables = [];
+    this.automaticRetryAttempts = {};
+    this.automaticMutationVersions = {};
+    this.journalMutationRevisions = {};
+    this.restorePending = false;
   }
 }
