@@ -3,6 +3,10 @@ import { AccountScopeKind } from './AccountScopePolicy';
 export type LegacyRowOwnershipDecision =
   'target' | 'other_owner' | 'quarantine_missing_owner';
 
+export type LegacyVncRowMigrationDecision =
+  'migrate' | 'quarantine_owner_mismatch' |
+  'quarantine_stale_epoch' | 'quarantine_invalid_payload';
+
 export function legacyRowOwnershipDecision(
   legacyUserId: string,
   targetKind: AccountScopeKind,
@@ -34,4 +38,29 @@ export function legacyCryptoParamsMayMigrate(
   }
   if (targetKind === 'device_local') { return unique.length === 0; }
   return unique.length === 1 && unique[0] === verifiedUnionId.trim();
+}
+
+/**
+ * A legacy VNC row is never silently dropped and then covered by a completed
+ * migration marker. The caller keeps the source table untouched and records a
+ * redacted quarantine entry for every non-migratable row.
+ */
+export function legacyVncRowMigrationDecision(
+  legacyUserId: string,
+  targetOwnerScopeId: string,
+  rowResetEpoch: number,
+  currentResetEpoch: number,
+  payloadValid: boolean
+): LegacyVncRowMigrationDecision {
+  if (legacyUserId.trim() === '' ||
+    legacyUserId.trim() !== targetOwnerScopeId.trim()) {
+    return 'quarantine_owner_mismatch';
+  }
+  if (!Number.isFinite(rowResetEpoch) ||
+    !Number.isInteger(rowResetEpoch) ||
+    rowResetEpoch < 0 ||
+    rowResetEpoch !== currentResetEpoch) {
+    return 'quarantine_stale_epoch';
+  }
+  return payloadValid ? 'migrate' : 'quarantine_invalid_payload';
 }

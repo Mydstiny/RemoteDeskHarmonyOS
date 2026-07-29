@@ -7,8 +7,15 @@ import { AccountScopeToken } from './AccountScopePolicy';
 import {
   legacyCryptoParamsMayMigrate,
   legacyRowOwnershipDecision,
-  LegacyRowOwnershipDecision
+  legacyVncRowMigrationDecision,
+  LegacyRowOwnershipDecision,
+  LegacyVncRowMigrationDecision
 } from './LegacySharedStoreMigrationPolicy';
+import {
+  VNC_RECORD_COLUMNS,
+  vncRecordFromCloudRow,
+  vncRecordIsValid
+} from './VncRecordPolicy';
 
 const LEGACY_STORE_NAME: string = 'remotedesktop.db';
 const RECEIPT_TABLE: string = 'migrationreceipts';
@@ -97,6 +104,11 @@ export class LegacySharedStoreMigrator {
     let skippedRows: number = 0;
     const selected: Map<string, Set<string>> = new Map<string, Set<string>>();
     const distinctOwners: string[] = this.distinctOwners(source);
+    const cryptoOwnershipProven: boolean =
+      legacyCryptoParamsMayMigrate(
+        distinctOwners, scope.kind, verifiedUnionId);
+    const legacyVncResetEpoch: number = cryptoOwnershipProven
+      ? this.readLegacyVncResetEpoch(source) : 0;
     const sourceFingerprint: string = this.sourceFingerprint(
       sourcePath, source.version, distinctOwners);
     const startedAt: number = Date.now();
@@ -112,7 +124,8 @@ export class LegacySharedStoreMigrator {
             ? 'vnclocalrecords' : sourceTable;
         const counts: number[] = this.copyOwnedRows(
           source, target, sourceTable, targetTable, scope,
-          verifiedUnionId, receiptId, selected);
+          verifiedUnionId, receiptId, selected,
+          legacyVncResetEpoch);
         copiedRows += counts[0];
         quarantinedRows += counts[1];
         skippedRows += counts[2];
@@ -130,8 +143,7 @@ export class LegacySharedStoreMigrator {
         copiedRows += this.copyLocalExtensions(source, target, selected);
       }
       if (this.tableExists(source, 'cryptoparams')) {
-        if (legacyCryptoParamsMayMigrate(
-          distinctOwners, scope.kind, verifiedUnionId)) {
+        if (cryptoOwnershipProven) {
           copiedRows += this.copyAllRows(
             source, target, 'cryptoparams', 'cryptoparams');
           this.recordSelection(selected, 'cryptoparams', '__table__');
@@ -162,7 +174,8 @@ export class LegacySharedStoreMigrator {
   private copyOwnedRows(source: relationalStore.RdbStore,
     target: relationalStore.RdbStore, sourceTable: string, targetTable: string,
     scope: AccountScopeToken, verifiedUnionId: string, receiptId: string,
-    selected: Map<string, Set<string>>): number[] {
+    selected: Map<string, Set<string>>,
+    legacyVncResetEpoch: number): number[] {
     const targetColumns: string[] = this.tableColumns(target, targetTable);
     const rows: relationalStore.ResultSet =
       source.querySync(new relationalStore.RdbPredicates(sourceTable));
@@ -196,7 +209,31 @@ export class LegacySharedStoreMigrator {
       if (targetColumns.indexOf('userid') >= 0) {
         bucket['userid'] = scope.ownerScopeId;
       }
-      if (targetTable === 'vnclocalrecords') { bucket['localonly'] = 1; }
+      if (targetTable === 'vnclocalrecords') {
+        bucket['localonly'] = 1;
+        const row: Record<string, string> =
+          this.vncStringRow(bucket);
+        const record = vncRecordFromCloudRow(row);
+        const vncDecision: LegacyVncRowMigrationDecision =
+          legacyVncRowMigrationDecision(
+            record.userId,
+            scope.ownerScopeId,
+            record.resetEpoch,
+            legacyVncResetEpoch,
+            vncRecordIsValid(record));
+        if (vncDecision !== 'migrate') {
+          quarantined++;
+          this.writeQuarantine(
+            target,
+            receiptId,
+            sourceTable,
+            recordId,
+            vncDecision,
+            this.stringValue(bucket['payload']) + ':' +
+              this.stringValue(bucket['ciphertext']));
+          continue;
+        }
+      }
       this.insertRow(target, targetTable, bucket);
       copied++;
       this.recordSelection(selected,
@@ -354,7 +391,8 @@ export class LegacySharedStoreMigrator {
   }
 
   private writeQuarantine(target: relationalStore.RdbStore,
-    receiptId: string, table: string, recordId: string, reason: string): void {
+    receiptId: string, table: string, recordId: string, reason: string,
+    payloadFingerprint: string = ''): void {
     const safeId: string = recordId.length > 0 ? recordId : '__missing_id__';
     const id: string = receiptId + ':' + table + ':' + safeId + ':' + reason;
     this.insertRow(target, QUARANTINE_TABLE, {
@@ -363,11 +401,54 @@ export class LegacySharedStoreMigrator {
       tablename: table,
       recordid: safeId,
       reason,
-      payloadhashsha256: this.sha256Hex(table + ':' + safeId + ':' + reason),
+      payloadhashsha256: this.sha256Hex(
+        payloadFingerprint.length > 0
+          ? payloadFingerprint
+          : table + ':' + safeId + ':' + reason),
       payloadciphertext: '',
-      redactedsummary: table + ': record requires ownership confirmation',
+      redactedsummary: table + ': record requires migration repair',
       createdat: Date.now()
     });
+  }
+
+  private readLegacyVncResetEpoch(
+    source: relationalStore.RdbStore
+  ): number {
+    if (!this.tableExists(source, 'cryptoparams')) { return 0; }
+    const columns: string[] =
+      this.tableColumns(source, 'cryptoparams');
+    if (columns.indexOf('key') < 0 ||
+      columns.indexOf('value') < 0) {
+      return 0;
+    }
+    const predicates =
+      new relationalStore.RdbPredicates('cryptoparams');
+    predicates.equalTo('key', 'vnc_reset_epoch');
+    const rows: relationalStore.ResultSet =
+      source.querySync(predicates);
+    let epoch: number = 0;
+    while (rows.goToNextRow()) {
+      const candidate: number =
+        Number(rows.getString(rows.getColumnIndex('value')));
+      if (Number.isFinite(candidate) &&
+        Number.isInteger(candidate) &&
+        candidate >= epoch) {
+        epoch = candidate;
+      }
+    }
+    rows.close();
+    return epoch;
+  }
+
+  private vncStringRow(
+    bucket: relationalStore.ValuesBucket
+  ): Record<string, string> {
+    const row: Record<string, string> = {};
+    for (let i = 0; i < VNC_RECORD_COLUMNS.length; i++) {
+      const column: string = VNC_RECORD_COLUMNS[i];
+      row[column] = this.stringValue(bucket[column]);
+    }
+    return row;
   }
 
   private receiptCommitted(target: relationalStore.RdbStore,
@@ -452,7 +533,8 @@ export class LegacySharedStoreMigrator {
   }
 
   private stringValue(value: relationalStore.ValueType | undefined): string {
-    return typeof value === 'string' ? value : '';
+    if (typeof value === 'string') { return value; }
+    return typeof value === 'number' ? value.toString() : '';
   }
 
   private errorDetail(err: Object): string {

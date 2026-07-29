@@ -1,7 +1,8 @@
 import { describe, expect, it } from '@ohos/hypium';
 import {
   legacyCryptoParamsMayMigrate,
-  legacyRowOwnershipDecision
+  legacyRowOwnershipDecision,
+  legacyVncRowMigrationDecision
 } from '../main/ets/services/LegacySharedStoreMigrationPolicy';
 
 export default function legacySharedStoreMigrationPolicyTest(): void {
@@ -29,5 +30,21 @@ export default function legacySharedStoreMigrationPolicyTest(): void {
       expect(legacyCryptoParamsMayMigrate(
         ['union-a', 'union-b'], 'huawei_account', 'union-a')).assertFalse();
     });
+
+    it('quarantines_legacy_vnc_rows_that_cannot_be_proven_safe',
+      0, (): void => {
+        expect(legacyVncRowMigrationDecision(
+          'union-a', 'union-a', 3, 3, true))
+          .assertEqual('migrate');
+        expect(legacyVncRowMigrationDecision(
+          'union-b', 'union-a', 3, 3, true))
+          .assertEqual('quarantine_owner_mismatch');
+        expect(legacyVncRowMigrationDecision(
+          'union-a', 'union-a', 2, 3, true))
+          .assertEqual('quarantine_stale_epoch');
+        expect(legacyVncRowMigrationDecision(
+          'union-a', 'union-a', 3, 3, false))
+          .assertEqual('quarantine_invalid_payload');
+      });
   });
 }

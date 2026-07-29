@@ -195,6 +195,10 @@ import {
 } from './CryptoLifecyclePolicy';
 import { LegacySharedStoreMigrator } from './LegacySharedStoreMigrator';
 import { parseLegacyRelayJson } from './LegacyRelayMigrationPolicy';
+import {
+  LegacyVncRowMigrationDecision,
+  legacyVncRowMigrationDecision
+} from './LegacySharedStoreMigrationPolicy';
 
 const TABLES: string[] = cloudSyncTableNames();
 const RDP_RESTRICTED_ADMIN_SECRET_TABLE: string = 'rdprestrictedadminsecrets';
@@ -211,6 +215,8 @@ const LEGACY_RELAY_JSON_MIGRATION_KEY: string =
   'legacy_relay_json_migrated_v1';
 const LEGACY_RELAY_JSON_MIGRATION_ID: string =
   'legacy-relay-cryptoparams-v1';
+const LEGACY_VNC_MIGRATION_ID: string =
+  'legacy-vnc-table-v1';
 const RESTORED_NOT_UPLOADED_KEY: string = 'restored_not_uploaded';
 const RESTORED_NOT_UPLOADED_TABLE_PREFIX: string =
   'restored_not_uploaded|';
@@ -229,6 +235,12 @@ const LEGACY_VNC_CLOUD_TABLE: string = 'vncrecords';
 const VNC_LEGACY_MIGRATION_KEY: string = 'vnc_legacy_vncrecords_migrated_v1';
 const TABLE_MUTATION_RECORD_ID: string = '__table__';
 const VNC_RESET_EPOCH_KEY: string = 'vnc_reset_epoch';
+
+interface LegacyVncQuarantineItem {
+  recordId: string;
+  reason: LegacyVncRowMigrationDecision;
+  payloadHashSha256: string;
+}
 const CRYPTO_SECRET_PARAM_KEYS: string[] = [
   'crypto_salt',
   'crypto_verifier',
@@ -2790,12 +2802,27 @@ export class CloudStore implements CryptoCloudStore {
         localByIdentity.set(vncRecordIdentity(localRows[i].userId, localRows[i].id), localRows[i]);
       }
       const candidates: VncRecord[] = [];
+      const quarantined: LegacyVncQuarantineItem[] = [];
       const deletedFlagIndex: number = legacyRows.getColumnIndex(relationalStore.Field.DELETED_FLAG_FIELD);
       const currentResetEpoch: number = this.readVncResetEpoch();
       while (legacyRows.goToNextRow()) {
         if (deletedFlagIndex >= 0 && legacyRows.getLong(deletedFlagIndex) === 1) { continue; }
         const record: VncRecord = this.vncRecordFromResult(legacyRows);
-        if (record.resetEpoch !== currentResetEpoch || !vncRecordIsValid(record)) { continue; }
+        const decision: LegacyVncRowMigrationDecision =
+          legacyVncRowMigrationDecision(
+            record.userId,
+            this.currentOwnerScopeId(),
+            record.resetEpoch,
+            currentResetEpoch,
+            vncRecordIsValid(record));
+        if (decision !== 'migrate') {
+          quarantined.push({
+            recordId: record.id,
+            reason: decision,
+            payloadHashSha256: vncPayloadHashSha256(record.payload)
+          });
+          continue;
+        }
         const identity: string = vncRecordIdentity(record.userId, record.id);
         const local: VncRecord | undefined = localByIdentity.get(identity);
         if (local === undefined || vncRecordWins(record, local)) { candidates.push(record); }
@@ -2810,11 +2837,21 @@ export class CloudStore implements CryptoCloudStore {
           }
         }
       }
+      for (let i = 0; i < quarantined.length; i++) {
+        if (!this.writeLegacyVncQuarantine(quarantined[i])) {
+          throw new Error(
+            'legacy VNC quarantine write failed id=' +
+            quarantined[i].recordId);
+        }
+      }
       if (!this.writeLocalMetadata(VNC_LEGACY_MIGRATION_KEY, '1')) {
         throw new Error('legacy VNC migration marker write failed');
       }
       this.store.commit();
-      hilog.info(0x0001, 'CloudSync', '[CloudStore] legacy VNC rows preserved locally: ' + candidates.length.toString());
+      hilog.info(0x0001, 'CloudSync',
+        '[CloudStore] legacy VNC migration preserved=' +
+        candidates.length.toString() + ' quarantined=' +
+        quarantined.length.toString());
     } catch (err) {
       if (legacyRows !== null) {
         try { legacyRows.close(); } catch (_ignored) {}
@@ -2822,6 +2859,31 @@ export class CloudStore implements CryptoCloudStore {
       try { this.store.rollBack(); } catch (_ignored) {}
       throw new Error('legacy VNC migration failed: ' + safeError(err));
     }
+  }
+
+  private writeLegacyVncQuarantine(
+    item: LegacyVncQuarantineItem
+  ): boolean {
+    if (!this.store || item.reason === 'migrate') { return false; }
+    const recordId: string =
+      item.recordId.trim() === '' ? '__missing_id__' : item.recordId.trim();
+    const bucket: relationalStore.ValuesBucket = {
+      id: LEGACY_VNC_MIGRATION_ID + ':' +
+        this.currentOwnerScopeId() + ':' + recordId + ':' + item.reason,
+      migrationid: LEGACY_VNC_MIGRATION_ID,
+      tablename: LEGACY_VNC_CLOUD_TABLE,
+      recordid: recordId,
+      reason: item.reason,
+      payloadhashsha256: item.payloadHashSha256,
+      payloadciphertext: '',
+      redactedsummary:
+        'Legacy VNC row remains in the source table and requires repair',
+      createdat: Date.now()
+    };
+    return rdbInsertSucceeded(this.store.insertSync(
+      MIGRATION_QUARANTINE_TABLE,
+      bucket,
+      relationalStore.ConflictResolution.ON_CONFLICT_REPLACE));
   }
 
   getRdbStore(): relationalStore.RdbStore | null {
@@ -4932,26 +4994,6 @@ export class CloudStore implements CryptoCloudStore {
       }
     }
     return count;
-  }
-
-  /** 清空全部敏感业务表；接收云端 reset 时需要推送本地删除，手动重置则统一在最后推送。 */
-  async clearAllTables(pushChanges: boolean = true): Promise<boolean> {
-    if (!this.localMutationAllowed() || !this.store) { return false; }
-    const tables: string[] = this.sensitiveBusinessTables();
-    try {
-      this.store.beginTransaction();
-      this.clearAllTablesInActiveTransaction(tables);
-      this.store.commit();
-      // 系统 autoSync 已关闭，显式推送每一个已清空的业务表。
-      if (pushChanges) {
-        for (let i = 0; i < tables.length; i++) { this.pushTable(tables[i]); }
-      }
-      return true;
-    } catch (e) {
-      try { this.store.rollBack(); } catch (_ignored) {}
-      hilog.error(0x0001, 'CloudSync', "[clearAllTables] 失败: " + DataCrypto.errDetail(e));
-      return false;
-    }
   }
 
   private sensitiveBusinessTables(): string[] {
