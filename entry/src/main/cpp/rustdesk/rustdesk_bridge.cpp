@@ -13,7 +13,7 @@
  */
 
 #include "rustdesk_bridge.h"
-#include "rustdesk_display_switch_gate.h"
+#include "rustdesk_display_control_plane.h"
 #include "rustdesk_ipc.h"
 #include "common/safe_log.h"
 #include "extensions/extension_registry.h"
@@ -487,7 +487,7 @@ struct RustDeskBridge::Impl {
     AudioDataCallback       audioCallback;
     ConnectionStateCallback stateCallback;
     RustDeskDisplayStateCallback displayStateCallback;
-    RustDeskDisplaySwitchCoordinator displaySwitchCoordinator;
+    RustDeskDisplayControlPlane displayControl;
     std::mutex              mutex;
     std::atomic<uint64_t>   connectSerial {0};
     std::atomic<bool>       disconnectRequested {false};
@@ -505,7 +505,6 @@ struct RustDeskBridge::Impl {
     int                     ipcFd = -1;   // IPC socket fd (IPC 模式)
     int                     sockFd = -1;  // TCP socket fd (实验模式)
 #ifdef RUSTDESK_USE_REAL_CORE
-    void*                   ffiHandle = nullptr;  // Rust FFI 连接句柄
     std::unique_ptr<RustDeskFfiCallbackContext> ffiCallbackContext;
     // FFI connect() 在后台执行，但不能 detach：断开时必须等待它结束，
     // 否则旧连接可能在下一次连接已经开始后仍持有 rendezvous/relay 资源。
@@ -673,20 +672,19 @@ void RustDeskBridge::onFfiFrame(const void* framePtr, void* userData) {
         return;
     }
 
-    // Keep this dispatch lease through active-display publication and the
-    // matching video callback. beginDisplaySwitch() takes the same boundary,
-    // so a newer generation cannot overtake this accepted frame.
-    auto displayLease = impl->displaySwitchCoordinator.acquire();
-    if (context->generation != impl->cursorGeneration.load(std::memory_order_acquire) ||
-        impl->disconnectRequested.load(std::memory_order_acquire) ||
-        impl->ffiStreamEnded.load(std::memory_order_acquire)) {
-        return;
-    }
-    const RustDeskDisplaySwitchGateDecision displayDecision =
-        displayLease.observeFrame(ffiFrame->display, ffiFrame->isKeyFrame);
-    if (!displayDecision.acceptFrame) {
-        return;
-    }
+    // dispatchFrame owns the production lease through active-display
+    // publication and the complete video callback. beginDisplaySwitch() takes
+    // the same boundary, so a newer generation cannot overtake this frame.
+    impl->displayControl.dispatchFrame(
+        ffiFrame->display,
+        ffiFrame->isKeyFrame,
+        [&]() {
+            return context->generation ==
+                    impl->cursorGeneration.load(std::memory_order_acquire) &&
+                !impl->disconnectRequested.load(std::memory_order_acquire) &&
+                !impl->ffiStreamEnded.load(std::memory_order_acquire);
+        },
+        [&](const RustDeskDisplaySwitchGateDecision& displayDecision) {
     RustDeskDisplayStateCallback displayCallback;
     if (displayDecision.publishDisplay) {
         std::lock_guard<std::mutex> lock(impl->mutex);
@@ -791,6 +789,7 @@ void RustDeskBridge::onFfiFrame(const void* framePtr, void* userData) {
         frame.display = ffiFrame->display;
         cb(frame);
     }
+        });
 }
 
 void RustDeskBridge::onFfiAudio(const void* audioPtr, void* userData) {
@@ -933,22 +932,24 @@ void RustDeskBridge::onFfiDisplay(const void* snapshotPtr, void* userData) {
         return;
     }
 
-    auto displayLease = impl->displaySwitchCoordinator.acquire();
-    if (context->generation != impl->cursorGeneration.load(std::memory_order_acquire) ||
-        impl->disconnectRequested.load(std::memory_order_acquire) ||
-        impl->ffiStreamEnded.load(std::memory_order_acquire)) {
-        return;
-    }
-    const RustDeskDisplaySwitchGateDecision decision =
-        displayLease.observeDisplay(snapshot->currentDisplay);
-    RustDeskDisplayStateCallback callback;
-    if (decision.publishDisplay) {
-        std::lock_guard<std::mutex> lock(impl->mutex);
-        callback = impl->displayStateCallback;
-    }
-    if (callback) {
-        callback(decision.display);
-    }
+    impl->displayControl.dispatchDisplay(
+        snapshot->currentDisplay,
+        [&]() {
+            return context->generation ==
+                    impl->cursorGeneration.load(std::memory_order_acquire) &&
+                !impl->disconnectRequested.load(std::memory_order_acquire) &&
+                !impl->ffiStreamEnded.load(std::memory_order_acquire);
+        },
+        [&](const RustDeskDisplaySwitchGateDecision& decision) {
+            RustDeskDisplayStateCallback callback;
+            {
+                std::lock_guard<std::mutex> lock(impl->mutex);
+                callback = impl->displayStateCallback;
+            }
+            if (callback) {
+                callback(decision.display);
+            }
+        });
 }
 
 void RustDeskBridge::onFfiAuth(int state, const char* message, void* userData) {
@@ -990,7 +991,7 @@ void RustDeskBridge::onFfiDisconnect(int state, const char* message, void* userD
     if (!context || !impl) {
         stale = true;
     } else {
-        auto displayLease = impl->displaySwitchCoordinator.acquire();
+        auto displayLease = impl->displayControl.acquireDisplayLease();
         std::lock_guard<std::mutex> lock(impl->mutex);
         currentGeneration = impl->cursorGeneration.load(std::memory_order_acquire);
         if (context->generation == 0 || context->generation != currentGeneration) {
@@ -1012,8 +1013,7 @@ void RustDeskBridge::onFfiDisconnect(int state, const char* message, void* userD
                 // ownership out here and release it on a separate thread
                 // after this callback returns. The cleanup thread is retained
                 // by Impl and joined from disconnect().
-                endedHandle = impl->ffiHandle;
-                impl->ffiHandle = nullptr;
+                endedHandle = impl->displayControl.detachHandle();
                 if (endedHandle != nullptr) {
                     OH_LOG_INFO(LOG_APP,
                         "[RustDesk-FFI] scheduling stale handle cleanup=%{public}p reason=stream-ended",
@@ -1079,7 +1079,7 @@ RustDeskBridge::RustDeskBridge(RustDeskMode mode)
 void RustDeskBridge::setSessionIdentity(uint64_t sessionId) {
     const uint64_t generation =
         g_nextRustDeskCursorGeneration.fetch_add(1, std::memory_order_relaxed);
-    auto displayLease = impl_->displaySwitchCoordinator.acquire();
+    auto displayLease = impl_->displayControl.acquireDisplayLease();
     std::lock_guard<std::mutex> lock(impl_->mutex);
     impl_->sessionId.store(sessionId, std::memory_order_release);
     impl_->cursorGeneration.store(generation, std::memory_order_release);
@@ -1123,14 +1123,10 @@ RustDeskDiagnosticsStats RustDeskBridge::getDiagnostics() const {
     result.width = impl_->callbackWidth.load(std::memory_order_acquire);
     result.height = impl_->callbackHeight.load(std::memory_order_acquire);
 #ifdef RUSTDESK_USE_REAL_CORE
-    void* handle = nullptr;
-    {
-        std::lock_guard<std::mutex> lock(impl_->mutex);
-        handle = impl_->ffiHandle;
-    }
-    if (mode_ == RustDeskMode::FFI && handle != nullptr) {
+    auto handleLease = impl_->displayControl.acquireHandle();
+    if (mode_ == RustDeskMode::FFI && handleLease) {
         RustDeskFfiStreamStats ffiStats {};
-        const bool snapshotRead = rustdesk_get_stream_stats(handle, &ffiStats);
+        const bool snapshotRead = rustdesk_get_stream_stats(handleLease.get(), &ffiStats);
         if (snapshotRead && ffiStats.version == kRustDeskStreamStatsVersion) {
             result.supported = true;
             result.latencyMs = ffiStats.test_delay_count > 0 ?
@@ -1158,87 +1154,98 @@ RustDeskDiagnosticsStats RustDeskBridge::getDiagnostics() const {
 RustDeskDisplayCapabilities RustDeskBridge::getDisplayCapabilities() const {
     RustDeskDisplayCapabilities result;
 #ifdef RUSTDESK_USE_REAL_CORE
-    void* handle = nullptr;
-    {
-        std::lock_guard<std::mutex> lock(impl_->mutex);
-        handle = impl_->ffiHandle;
-    }
-    if (mode_ != RustDeskMode::FFI || handle == nullptr) {
-        return result;
-    }
-    RustDeskFfiDisplaySnapshot snapshot {};
-    RustDeskFfiResolution resolutions[32] {};
-    if (!rustdesk_get_display_snapshot(handle, &snapshot, resolutions, 32) ||
-        snapshot.version != kRustDeskDisplaySnapshotVersion) {
-        return result;
-    }
-    result.supported = true;
-    result.currentDisplay = snapshot.currentDisplay;
-    result.width = snapshot.width;
-    result.height = snapshot.height;
-    result.originalWidth = snapshot.originalWidth;
-    result.originalHeight = snapshot.originalHeight;
-    result.scaleMilli = snapshot.scaleMilli;
-    result.geometryEpoch = snapshot.geometryEpoch;
-    const size_t count = std::min<size_t>(snapshot.resolutionCount, 32);
-    result.resolutions.reserve(count);
-    for (size_t index = 0; index < count; ++index) {
-        if (resolutions[index].width > 0 && resolutions[index].height > 0) {
-            result.resolutions.push_back({resolutions[index].width, resolutions[index].height});
-        }
-    }
-    RustDeskFfiDisplayInfoSnapshot ffiDisplays[16] {};
-    RustDeskFfiResolution allResolutions[16 * 32] {};
-    size_t displayCount = 0;
-    size_t resolutionCount = 0;
-    if (rustdesk_get_display_list(handle, ffiDisplays, 16, allResolutions,
-                                  16 * 32, &displayCount, &resolutionCount)) {
-        const size_t safeDisplayCount = std::min<size_t>(displayCount, 16);
-        const size_t safeResolutionCount = std::min<size_t>(resolutionCount, 16 * 32);
-        result.displays.reserve(safeDisplayCount);
-        for (size_t index = 0; index < safeDisplayCount; ++index) {
-            const auto& ffiDisplay = ffiDisplays[index];
-            RustDeskDisplayInfo display;
-            display.display = ffiDisplay.display;
-            display.x = ffiDisplay.x;
-            display.y = ffiDisplay.y;
-            display.width = ffiDisplay.width;
-            display.height = ffiDisplay.height;
-            display.originalWidth = ffiDisplay.originalWidth;
-            display.originalHeight = ffiDisplay.originalHeight;
-            display.scaleMilli = ffiDisplay.scaleMilli;
-            display.online = ffiDisplay.online != 0;
-            display.cursorEmbedded = ffiDisplay.cursorEmbedded != 0;
-            const size_t nameLength = std::min<size_t>(ffiDisplay.nameLen, sizeof(ffiDisplay.name));
-            display.name.assign(reinterpret_cast<const char*>(ffiDisplay.name), nameLength);
-            const size_t offset = std::min<size_t>(ffiDisplay.resolutionOffset, safeResolutionCount);
-            const size_t countForDisplay = std::min<size_t>(ffiDisplay.resolutionCount,
-                safeResolutionCount - offset);
-            display.resolutions.reserve(countForDisplay);
-            for (size_t resolutionIndex = 0; resolutionIndex < countForDisplay; ++resolutionIndex) {
-                const auto& resolution = allResolutions[offset + resolutionIndex];
-                if (resolution.width > 0 && resolution.height > 0) {
-                    display.resolutions.push_back({resolution.width, resolution.height});
+    RustDeskDisplaySwitchGateSnapshot gate;
+    const bool queried = impl_->displayControl.queryDisplayState(
+        [&]() {
+            return mode_ == RustDeskMode::FFI &&
+                !impl_->disconnectRequested.load(std::memory_order_acquire) &&
+                !impl_->ffiStreamEnded.load(std::memory_order_acquire);
+        },
+        [&](void* handle) {
+            RustDeskFfiDisplaySnapshot snapshot {};
+            RustDeskFfiResolution resolutions[32] {};
+            if (!rustdesk_get_display_snapshot(handle, &snapshot, resolutions, 32) ||
+                snapshot.version != kRustDeskDisplaySnapshotVersion) {
+                return false;
+            }
+            result.supported = true;
+            result.currentDisplay = snapshot.currentDisplay;
+            result.width = snapshot.width;
+            result.height = snapshot.height;
+            result.originalWidth = snapshot.originalWidth;
+            result.originalHeight = snapshot.originalHeight;
+            result.scaleMilli = snapshot.scaleMilli;
+            result.geometryEpoch = snapshot.geometryEpoch;
+            const size_t count = std::min<size_t>(snapshot.resolutionCount, 32);
+            result.resolutions.reserve(count);
+            for (size_t index = 0; index < count; ++index) {
+                if (resolutions[index].width > 0 && resolutions[index].height > 0) {
+                    result.resolutions.push_back({resolutions[index].width, resolutions[index].height});
                 }
             }
-            result.displays.push_back(std::move(display));
-        }
+            RustDeskFfiDisplayInfoSnapshot ffiDisplays[16] {};
+            RustDeskFfiResolution allResolutions[16 * 32] {};
+            size_t displayCount = 0;
+            size_t resolutionCount = 0;
+            if (rustdesk_get_display_list(handle, ffiDisplays, 16, allResolutions,
+                                          16 * 32, &displayCount, &resolutionCount)) {
+                const size_t safeDisplayCount = std::min<size_t>(displayCount, 16);
+                const size_t safeResolutionCount = std::min<size_t>(resolutionCount, 16 * 32);
+                result.displays.reserve(safeDisplayCount);
+                for (size_t index = 0; index < safeDisplayCount; ++index) {
+                    const auto& ffiDisplay = ffiDisplays[index];
+                    RustDeskDisplayInfo display;
+                    display.display = ffiDisplay.display;
+                    display.x = ffiDisplay.x;
+                    display.y = ffiDisplay.y;
+                    display.width = ffiDisplay.width;
+                    display.height = ffiDisplay.height;
+                    display.originalWidth = ffiDisplay.originalWidth;
+                    display.originalHeight = ffiDisplay.originalHeight;
+                    display.scaleMilli = ffiDisplay.scaleMilli;
+                    display.online = ffiDisplay.online != 0;
+                    display.cursorEmbedded = ffiDisplay.cursorEmbedded != 0;
+                    const size_t nameLength =
+                        std::min<size_t>(ffiDisplay.nameLen, sizeof(ffiDisplay.name));
+                    display.name.assign(
+                        reinterpret_cast<const char*>(ffiDisplay.name), nameLength);
+                    const size_t offset =
+                        std::min<size_t>(ffiDisplay.resolutionOffset, safeResolutionCount);
+                    const size_t countForDisplay = std::min<size_t>(
+                        ffiDisplay.resolutionCount, safeResolutionCount - offset);
+                    display.resolutions.reserve(countForDisplay);
+                    for (size_t resolutionIndex = 0;
+                         resolutionIndex < countForDisplay;
+                         ++resolutionIndex) {
+                        const auto& resolution = allResolutions[offset + resolutionIndex];
+                        if (resolution.width > 0 && resolution.height > 0) {
+                            display.resolutions.push_back(
+                                {resolution.width, resolution.height});
+                        }
+                    }
+                    result.displays.push_back(std::move(display));
+                }
+            }
+            // A peer may expose only current-display geometry. Synthesize a
+            // one-entry catalog when the complete list is unavailable.
+            if (result.displays.empty()) {
+                RustDeskDisplayInfo display;
+                display.display = result.currentDisplay;
+                display.width = result.width;
+                display.height = result.height;
+                display.originalWidth = result.originalWidth;
+                display.originalHeight = result.originalHeight;
+                display.scaleMilli = result.scaleMilli;
+                display.online = true;
+                display.resolutions = result.resolutions;
+                result.displays.push_back(std::move(display));
+            }
+            return true;
+        },
+        gate);
+    if (!queried) {
+        return result;
     }
-    // A peer may expose only current-display geometry. Synthesize a one-entry
-    // catalog when the complete list is unavailable.
-    if (result.displays.empty()) {
-        RustDeskDisplayInfo display;
-        display.display = result.currentDisplay;
-        display.width = result.width;
-        display.height = result.height;
-        display.originalWidth = result.originalWidth;
-        display.originalHeight = result.originalHeight;
-        display.scaleMilli = result.scaleMilli;
-        display.online = true;
-        display.resolutions = result.resolutions;
-        result.displays.push_back(std::move(display));
-    }
-    const RustDeskDisplaySwitchGateSnapshot gate = impl_->displaySwitchCoordinator.snapshot();
     result.switchGeneration = gate.generation;
     result.readySwitchGeneration = gate.readyGeneration;
     result.pendingDisplay = gate.pendingDisplay;
@@ -1250,25 +1257,23 @@ RustDeskDisplayCapabilities RustDeskBridge::getDisplayCapabilities() const {
 RustDeskDisplaySwitchRequest RustDeskBridge::beginDisplaySwitch(int display) {
     RustDeskDisplaySwitchRequest result;
 #ifdef RUSTDESK_USE_REAL_CORE
-    void* handle = nullptr;
-    {
-        auto displayLease = impl_->displaySwitchCoordinator.acquire();
-        std::lock_guard<std::mutex> lock(impl_->mutex);
-        if (mode_ != RustDeskMode::FFI || impl_->ffiHandle == nullptr ||
-            display < 0 || display >= 16) {
-            return result;
-        }
-        handle = impl_->ffiHandle;
-        result.generation = displayLease.begin(display);
-    }
     // Rust owns this as one latest-wins ControlInbox transaction. Keeping the
-    // official switch/capture/refresh sequence behind one FFI call prevents
-    // rapid selections from interleaving partial triples.
-    result.accepted = rustdesk_switch_display(handle, display);
-    if (!result.accepted) {
-        auto displayLease = impl_->displaySwitchCoordinator.acquire();
-        displayLease.reject(result.generation);
-    }
+    // official switch/capture/refresh sequence behind one fenced FFI call
+    // prevents rapid selections from interleaving partial triples or racing
+    // teardown of the opaque Rust client.
+    const RustDeskDisplayControlRequest request =
+        impl_->displayControl.beginDisplaySwitch(
+            display,
+            [&]() {
+                return mode_ == RustDeskMode::FFI && display < 16 &&
+                    !impl_->disconnectRequested.load(std::memory_order_acquire) &&
+                    !impl_->ffiStreamEnded.load(std::memory_order_acquire);
+            },
+            [](void* handle, int target) {
+                return rustdesk_switch_display(handle, target);
+            });
+    result.accepted = request.accepted;
+    result.generation = request.generation;
 #else
     (void)display;
 #endif
@@ -1281,14 +1286,12 @@ bool RustDeskBridge::switchDisplay(int display) {
 
 bool RustDeskBridge::captureDisplays(const std::vector<int>& displays) {
 #ifdef RUSTDESK_USE_REAL_CORE
-    void* handle = nullptr;
-    {
-        std::lock_guard<std::mutex> lock(impl_->mutex);
-        handle = impl_->ffiHandle;
-    }
-    if (mode_ == RustDeskMode::FFI && handle != nullptr) {
-        return rustdesk_capture_displays(handle, displays.empty() ? nullptr : displays.data(),
-                                         displays.size());
+    auto handleLease = impl_->displayControl.acquireHandle();
+    if (mode_ == RustDeskMode::FFI && handleLease) {
+        return rustdesk_capture_displays(
+            handleLease.get(),
+            displays.empty() ? nullptr : displays.data(),
+            displays.size());
     }
 #else
     (void)displays;
@@ -1298,13 +1301,9 @@ bool RustDeskBridge::captureDisplays(const std::vector<int>& displays) {
 
 bool RustDeskBridge::refreshVideoDisplay(int display) {
 #ifdef RUSTDESK_USE_REAL_CORE
-    void* handle = nullptr;
-    {
-        std::lock_guard<std::mutex> lock(impl_->mutex);
-        handle = impl_->ffiHandle;
-    }
-    if (mode_ == RustDeskMode::FFI && handle != nullptr) {
-        return rustdesk_refresh_video_display(handle, display);
+    auto handleLease = impl_->displayControl.acquireHandle();
+    if (mode_ == RustDeskMode::FFI && handleLease) {
+        return rustdesk_refresh_video_display(handleLease.get(), display);
     }
 #else
     (void)display;
@@ -1314,13 +1313,10 @@ bool RustDeskBridge::refreshVideoDisplay(int display) {
 
 bool RustDeskBridge::changeDisplayResolution(int display, int width, int height) {
 #ifdef RUSTDESK_USE_REAL_CORE
-    void* handle = nullptr;
-    {
-        std::lock_guard<std::mutex> lock(impl_->mutex);
-        handle = impl_->ffiHandle;
-    }
-    if (mode_ == RustDeskMode::FFI && handle != nullptr) {
-        return rustdesk_change_display_resolution(handle, display, width, height);
+    auto handleLease = impl_->displayControl.acquireHandle();
+    if (mode_ == RustDeskMode::FFI && handleLease) {
+        return rustdesk_change_display_resolution(
+            handleLease.get(), display, width, height);
     }
 #endif
     return false;
@@ -1328,13 +1324,9 @@ bool RustDeskBridge::changeDisplayResolution(int display, int width, int height)
 
 bool RustDeskBridge::sendTouchScale(int scale) {
 #ifdef RUSTDESK_USE_REAL_CORE
-    void* handle = nullptr;
-    {
-        std::lock_guard<std::mutex> lock(impl_->mutex);
-        handle = impl_->ffiHandle;
-    }
-    if (mode_ == RustDeskMode::FFI && handle != nullptr) {
-        return rustdesk_send_touch_scale(handle, scale);
+    auto handleLease = impl_->displayControl.acquireHandle();
+    if (mode_ == RustDeskMode::FFI && handleLease) {
+        return rustdesk_send_touch_scale(handleLease.get(), scale);
     }
 #endif
     return false;
@@ -1342,13 +1334,9 @@ bool RustDeskBridge::sendTouchScale(int scale) {
 
 bool RustDeskBridge::sendTouchPan(int phase, int x, int y) {
 #ifdef RUSTDESK_USE_REAL_CORE
-    void* handle = nullptr;
-    {
-        std::lock_guard<std::mutex> lock(impl_->mutex);
-        handle = impl_->ffiHandle;
-    }
-    if (mode_ == RustDeskMode::FFI && handle != nullptr) {
-        return rustdesk_send_touch_pan(handle, phase, x, y);
+    auto handleLease = impl_->displayControl.acquireHandle();
+    if (mode_ == RustDeskMode::FFI && handleLease) {
+        return rustdesk_send_touch_pan(handleLease.get(), phase, x, y);
     }
 #endif
     return false;
@@ -1363,9 +1351,9 @@ RustDeskBridge::~RustDeskBridge() {
     bool hasFfiConnectThread = false;
     bool hasFfiCleanupThreads = false;
 #ifdef RUSTDESK_USE_REAL_CORE
+    hasFfiHandle = impl_->displayControl.hasHandle();
     {
         std::lock_guard<std::mutex> lock(impl_->mutex);
-        hasFfiHandle = impl_->ffiHandle != nullptr;
         hasFfiConnectThread = impl_->ffiConnectThread.joinable();
         hasFfiCleanupThreads = !impl_->ffiCleanupThreads.empty();
     }
@@ -1511,9 +1499,9 @@ int RustDeskBridge::connect(const ConnectionConfig& cfg) {
     bool hasFfiConnectThread = false;
     bool hasFfiCleanupThreads = false;
 #ifdef RUSTDESK_USE_REAL_CORE
+    hasFfiHandle = impl_->displayControl.hasHandle();
     {
         std::lock_guard<std::mutex> lock(impl_->mutex);
-        hasFfiHandle = impl_->ffiHandle != nullptr;
         hasFfiConnectThread = impl_->ffiConnectThread.joinable();
         hasFfiCleanupThreads = !impl_->ffiCleanupThreads.empty();
     }
@@ -1670,8 +1658,9 @@ int RustDeskBridge::connect(const ConnectionConfig& cfg) {
                 std::lock_guard<std::mutex> lock(impl->mutex);
                 discardHandle = serial != impl->connectSerial.load() ||
                     impl->disconnectRequested.load() || impl->ffiStreamEnded.load();
-                if (!discardHandle) {
-                    impl->ffiHandle = ffiHandle;
+                if (!discardHandle && ffiHandle != nullptr &&
+                    !impl->displayControl.attachHandle(ffiHandle)) {
+                    discardHandle = true;
                 }
             }
             if (discardHandle) {
@@ -1703,7 +1692,7 @@ int RustDeskBridge::connect(const ConnectionConfig& cfg) {
                 // Publish CONNECTED and verify handle ownership atomically with
                 // the disconnect callback. This prevents a stream that ended
                 // during connect from being resurrected as CONNECTED.
-                if (impl->ffiHandle == ffiHandle &&
+                if (impl->displayControl.ownsHandle(ffiHandle) &&
                     serial == impl->connectSerial.load() &&
                     !impl->disconnectRequested.load() &&
                     !impl->ffiStreamEnded.load()) {
@@ -1786,11 +1775,21 @@ void RustDeskBridge::disconnect() {
     const uint64_t disconnectGeneration =
         impl_->cursorGeneration.load(std::memory_order_acquire);
     impl_->disconnectRequested.store(true);
+#ifdef RUSTDESK_USE_REAL_CORE
+    void* ffiHandle = nullptr;
+#endif
     {
-        auto displayLease = impl_->displaySwitchCoordinator.acquire();
+        auto displayLease = impl_->displayControl.acquireDisplayLease();
         std::lock_guard<std::mutex> lock(impl_->mutex);
         impl_->cursorStore.setVisibleIfGeneration(disconnectGeneration, false);
         displayLease.reset();
+#ifdef RUSTDESK_USE_REAL_CORE
+        // Detach while the display lifecycle boundary is exclusive. Existing
+        // handle leases have drained, and no later FFI call can acquire this
+        // pointer. rustdesk_disconnect() runs after releasing the boundary
+        // because it joins the stream that emits onFfiDisconnect().
+        ffiHandle = impl_->displayControl.detachHandle();
+#endif
     }
     ++impl_->connectSerial;
     if (impl_->ipcFd >= 0) {
@@ -1802,13 +1801,10 @@ void RustDeskBridge::disconnect() {
     // FFI 句柄在登录完成前尚未返回，先取消等待中的连接尝试，避免点击返回后
     // 审批等待线程继续占用中继连接。
     rustdesk_cancel_pending_connect_for_session(sessionId);
-    void* ffiHandle = nullptr;
     std::thread ffiConnectThread;
     std::vector<std::thread> ffiCleanupThreads;
     {
         std::lock_guard<std::mutex> lock(impl_->mutex);
-        ffiHandle = impl_->ffiHandle;
-        impl_->ffiHandle = nullptr;
         ffiConnectThread = std::move(impl_->ffiConnectThread);
         ffiCleanupThreads = std::move(impl_->ffiCleanupThreads);
     }
@@ -1864,7 +1860,8 @@ ConnectionState RustDeskBridge::getState() {
 
 void RustDeskBridge::sendKey(uint32_t scancode, bool pressed) {
 #ifdef RUSTDESK_USE_REAL_CORE
-    if (mode_ == RustDeskMode::FFI && impl_->ffiHandle != nullptr) {
+    auto handleLease = impl_->displayControl.acquireHandle();
+    if (mode_ == RustDeskMode::FFI && handleLease) {
         uint64_t index = ++g_ffiKeySendCount;
         if (index <= 20 || index % 100 == 0) {
             OH_LOG_INFO(LOG_APP,
@@ -1873,7 +1870,7 @@ void RustDeskBridge::sendKey(uint32_t scancode, bool pressed) {
                 scancode,
                 pressed ? "yes" : "no");
         }
-        rustdesk_send_key(impl_->ffiHandle, scancode, pressed);
+        rustdesk_send_key(handleLease.get(), scancode, pressed);
         if (index <= 20 || index % 100 == 0) {
             char errBuf[512] = {0};
             rustdesk_last_error(errBuf, sizeof(errBuf));
@@ -1896,7 +1893,8 @@ void RustDeskBridge::sendKey(uint32_t scancode, bool pressed) {
 
 void RustDeskBridge::sendMouse(int x, int y, MouseButton button, bool pressed) {
 #ifdef RUSTDESK_USE_REAL_CORE
-    if (mode_ == RustDeskMode::FFI && impl_->ffiHandle != nullptr) {
+    auto handleLease = impl_->displayControl.acquireHandle();
+    if (mode_ == RustDeskMode::FFI && handleLease) {
         int buttonValue = static_cast<int>(button);
         uint32_t ffiButton = buttonValue < 0 ? 0xFFFFFFFFu : static_cast<uint32_t>(buttonValue);
         uint64_t index = ++g_ffiMouseSendCount;
@@ -1910,7 +1908,7 @@ void RustDeskBridge::sendMouse(int x, int y, MouseButton button, bool pressed) {
                 ffiButton,
                 pressed ? "yes" : "no");
         }
-        rustdesk_send_mouse(impl_->ffiHandle, x, y, ffiButton, pressed);
+        rustdesk_send_mouse(handleLease.get(), x, y, ffiButton, pressed);
         return;
     }
 #endif
@@ -1926,7 +1924,8 @@ void RustDeskBridge::sendMouse(int x, int y, MouseButton button, bool pressed) {
 
 void RustDeskBridge::sendMouseWheel(int x, int y, int delta) {
 #ifdef RUSTDESK_USE_REAL_CORE
-    if (mode_ == RustDeskMode::FFI && impl_->ffiHandle != nullptr) {
+    auto handleLease = impl_->displayControl.acquireHandle();
+    if (mode_ == RustDeskMode::FFI && handleLease) {
         uint64_t index = ++g_ffiWheelSendCount;
         if (index <= 20 || index % 100 == 0) {
             OH_LOG_INFO(LOG_APP,
@@ -1936,7 +1935,7 @@ void RustDeskBridge::sendMouseWheel(int x, int y, int delta) {
                 y,
                 delta);
         }
-        rustdesk_send_mouse_wheel(impl_->ffiHandle, x, y, delta);
+        rustdesk_send_mouse_wheel(handleLease.get(), x, y, delta);
         return;
     }
 #endif
@@ -1951,13 +1950,14 @@ void RustDeskBridge::sendMouseWheel(int x, int y, int delta) {
 
 void RustDeskBridge::sendText(const std::string& text) {
 #ifdef RUSTDESK_USE_REAL_CORE
-    if (mode_ == RustDeskMode::FFI && impl_->ffiHandle != nullptr) {
+    auto handleLease = impl_->displayControl.acquireHandle();
+    if (mode_ == RustDeskMode::FFI && handleLease) {
         uint64_t index = ++g_ffiTextSendCount;
         OH_LOG_INFO(LOG_APP,
             "[RustDesk-FFI] sendText #%{public}llu len=%{public}zu",
             static_cast<unsigned long long>(index),
             text.size());
-        rustdesk_send_text(impl_->ffiHandle, text.c_str());
+        rustdesk_send_text(handleLease.get(), text.c_str());
         return;
     }
 #endif
@@ -1973,7 +1973,8 @@ void RustDeskBridge::sendText(const std::string& text) {
 
 int RustDeskBridge::sendFileData(const std::string& remotePath, const uint8_t* data, uint32_t len) {
 #ifdef RUSTDESK_USE_REAL_CORE
-    if (mode_ == RustDeskMode::FFI && impl_->ffiHandle != nullptr) {
+    auto handleLease = impl_->displayControl.acquireHandle();
+    if (mode_ == RustDeskMode::FFI && handleLease) {
         uint64_t index = ++g_ffiFileSendCount;
         OH_LOG_INFO(LOG_APP,
             "[RustDesk-FFI] sendFileData #%{public}llu pathId=%{public}s len=%{public}u",
@@ -1982,7 +1983,8 @@ int RustDeskBridge::sendFileData(const std::string& remotePath, const uint8_t* d
             len);
         const uint64_t transferId = impl_->nextTransferId.fetch_add(1);
         impl_->transferStatus.markRustDeskProgress(transferId, 0, len);
-        return rustdesk_send_file(impl_->ffiHandle, transferId, remotePath.c_str(), data, len) == 0
+        return rustdesk_send_file(
+            handleLease.get(), transferId, remotePath.c_str(), data, len) == 0
             ? static_cast<int>(transferId) : -1;
     }
 #endif
@@ -1992,9 +1994,10 @@ int RustDeskBridge::sendFileData(const std::string& remotePath, const uint8_t* d
 
 SessionTransferStatus RustDeskBridge::getSessionTransferStatus() {
 #ifdef RUSTDESK_USE_REAL_CORE
-    if (mode_ == RustDeskMode::FFI && impl_->ffiHandle != nullptr) {
+    auto handleLease = impl_->displayControl.acquireHandle();
+    if (mode_ == RustDeskMode::FFI && handleLease) {
         RustDeskFfiTransferStatus ffi {};
-        if (rustdesk_get_transfer_status(impl_->ffiHandle, &ffi)) {
+        if (rustdesk_get_transfer_status(handleLease.get(), &ffi)) {
             if (ffi.state == 3) impl_->transferStatus.markRustDeskConfirmed(ffi.transferId, ffi.totalBytes);
             else if (ffi.state == 4) impl_->transferStatus.markRustDeskFailed(ffi.transferId, "remote_transfer_failed");
             else if (ffi.state == 2) impl_->transferStatus.markRustDeskProgress(ffi.transferId, ffi.transferredBytes, ffi.totalBytes);
@@ -2006,8 +2009,9 @@ SessionTransferStatus RustDeskBridge::getSessionTransferStatus() {
 
 void RustDeskBridge::sendClipboardData(const uint8_t* data, uint32_t len) {
 #ifdef RUSTDESK_USE_REAL_CORE
-    if (mode_ == RustDeskMode::FFI && impl_->ffiHandle != nullptr) {
-        rustdesk_send_clipboard(impl_->ffiHandle, data, len);
+    auto handleLease = impl_->displayControl.acquireHandle();
+    if (mode_ == RustDeskMode::FFI && handleLease) {
+        rustdesk_send_clipboard(handleLease.get(), data, len);
         return;
     }
 #endif
@@ -2016,11 +2020,13 @@ void RustDeskBridge::sendClipboardData(const uint8_t* data, uint32_t len) {
 
 std::string RustDeskBridge::getClipboardText() {
 #ifdef RUSTDESK_USE_REAL_CORE
-    if (mode_ == RustDeskMode::FFI && impl_->ffiHandle != nullptr) {
-        const size_t length = rustdesk_get_clipboard(impl_->ffiHandle, nullptr, 0);
+    auto handleLease = impl_->displayControl.acquireHandle();
+    if (mode_ == RustDeskMode::FFI && handleLease) {
+        const size_t length = rustdesk_get_clipboard(handleLease.get(), nullptr, 0);
         if (length == 0 || length > 65536) return "";
         std::vector<unsigned char> buffer(length);
-        const size_t copied = rustdesk_get_clipboard(impl_->ffiHandle, buffer.data(), buffer.size());
+        const size_t copied =
+            rustdesk_get_clipboard(handleLease.get(), buffer.data(), buffer.size());
         if (copied != length) return "";
         return std::string(reinterpret_cast<const char*>(buffer.data()), buffer.size());
     }
@@ -2030,7 +2036,7 @@ std::string RustDeskBridge::getClipboardText() {
 
 bool RustDeskBridge::isClipboardReceiveReady() {
 #ifdef RUSTDESK_USE_REAL_CORE
-    return mode_ == RustDeskMode::FFI && impl_->ffiHandle != nullptr;
+    return mode_ == RustDeskMode::FFI && impl_->displayControl.hasHandle();
 #else
     return false;
 #endif
@@ -2038,13 +2044,9 @@ bool RustDeskBridge::isClipboardReceiveReady() {
 
 void RustDeskBridge::requestFrameRefresh() {
 #ifdef RUSTDESK_USE_REAL_CORE
-    void* ffiHandle = nullptr;
-    {
-        std::lock_guard<std::mutex> lock(impl_->mutex);
-        ffiHandle = impl_->ffiHandle;
-    }
-    if (mode_ == RustDeskMode::FFI && ffiHandle != nullptr) {
-        const bool ok = rustdesk_request_frame_refresh(ffiHandle);
+    auto handleLease = impl_->displayControl.acquireHandle();
+    if (mode_ == RustDeskMode::FFI && handleLease) {
+        const bool ok = rustdesk_request_frame_refresh(handleLease.get());
         OH_LOG_INFO(LOG_APP, "[RustDesk-FFI] requestFrameRefresh sent=%{public}s", ok ? "true" : "false");
         return;
     }
@@ -2055,13 +2057,9 @@ void RustDeskBridge::requestFrameRefresh() {
 
 void RustDeskBridge::reportVideoPressure(int level) {
 #ifdef RUSTDESK_USE_REAL_CORE
-    void* ffiHandle = nullptr;
-    {
-        std::lock_guard<std::mutex> lock(impl_->mutex);
-        ffiHandle = impl_->ffiHandle;
-    }
-    if (mode_ == RustDeskMode::FFI && ffiHandle != nullptr) {
-        rustdesk_report_video_pressure(ffiHandle, level);
+    auto handleLease = impl_->displayControl.acquireHandle();
+    if (mode_ == RustDeskMode::FFI && handleLease) {
+        rustdesk_report_video_pressure(handleLease.get(), level);
         return;
     }
 #else
