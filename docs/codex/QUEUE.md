@@ -6,7 +6,7 @@ Updated: 2026-07-30 Asia/Shanghai
 
 - Cloud/data lifecycle root fix is active on
   `codex/cloud-data-lifecycle-root-fix` at implementation checkpoint
-  `2914363`. The signed upgrade-test candidate is `1.0.9 / 1000009`.
+  `382fdaaa8`. The signed upgrade-test candidate is `1.0.9 / 1000009`.
   D-020 remediation adds independent OS distributed-account verification,
   an awaitable login/account-switch cloud-first bootstrap, record-level journal
   reconciliation, a durable bounded cloud-download before-image, persisted
@@ -15,11 +15,17 @@ Updated: 2026-07-30 Asia/Shanghai
   review's remaining P1s are now closed locally: restore quarantine cannot
   publish bootstrap ready, newly enabled VNC scopes await cloud-first through
   promotion/barrier release with rollback, and RustDesk Pro token revocation
-  preserves non-secret metadata as requiring reauthentication. Current
-  ArkTS/test compilation, signed `assembleHap`, Light and diff checks pass.
+  preserves non-secret metadata as requiring reauthentication. The third
+  review's final VNC P1 is also closed locally: an independently bound durable
+  checkpoint now protects the authoritative VNC mirror/settings/journal/retry
+  before-image; promotion, phase persistence, barrier release and checkpoint
+  deletion commit atomically, process interruption recovers fail-closed, and
+  no secret-scope upload is scheduled before the checkpoint and barrier are
+  durably gone. Current ArkTS/test compilation, signed `assembleHap`, Light and
+  diff checks pass.
   Release remains NO-GO pending proof of Account Kit UnionID/distributed-account
   ID correspondence on API 23, real Huawei Cloud/two-device/A-B account/old
-  APK/fault-injection/Document Provider/Asset Store evidence and a third
+  APK/fault-injection/Document Provider/Asset Store evidence and a fresh final
   independent D-020 point review. If API 23 cannot prove the identity
   correspondence, cloud
   remains fail-closed. System BackupExtension, remote destructive crypto and

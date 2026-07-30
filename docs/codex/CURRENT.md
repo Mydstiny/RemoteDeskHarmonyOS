@@ -6,7 +6,7 @@ Updated: 2026-07-30 Asia/Shanghai
 
 - Repository: Mydstiny/RemoteDeskHarmonyOS
 - Active task branch: `codex/cloud-data-lifecycle-root-fix`.
-- Base: `main@23940521a`; implementation checkpoint: `2914363`.
+- Base: `main@23940521a`; implementation checkpoint: `382fdaaa8`.
 - Scope: root remediation of account/data ownership, per-account physical RDB stores, cloud bootstrap/sync lifecycle, local backup v3/legacy partial restore, encryption lifecycle, secure credential storage, device-local trust and old shared-store/relay/VNC migration.
 - Entity plan: `docs/superpowers/plans/2026-07-28-cloud-data-lifecycle-upgrade-roadmap.md`.
 - No remote push, PR or merge has been performed. No sub-agent was created for
@@ -42,7 +42,17 @@ Updated: 2026-07-30 Asia/Shanghai
   await their dedicated cloud-first, record-level reconcile/promotion and
   barrier release before settings save reports success; disable-only changes
   do not trigger a pull, and failed row/selection changes restore the prior
-  scope and exact prior barrier when rollback is proven.
+  scope and exact prior barrier when rollback is proven. VNC re-enable now has
+  its own owner/store/generation-bound, SHA-256-verified persistent checkpoint:
+  after cloud-first it rebases to an authoritative before-image containing the
+  exact cloud mirror, deterministic settings row, mutation journal/retry state,
+  selector and barrier. Promotion, phase persistence, barrier release and
+  checkpoint deletion share one RDB commit; upload is queued only after that
+  commit. A failed commit restores the before-image while upload stays blocked,
+  and a process interruption is recovered at the next physical-store open.
+  Incomplete restoration retains the checkpoint and pending barrier and enters
+  a distinct `recovery_required` phase that an unrelated late cloud callback
+  cannot release.
 - A zero-row cloud-first result is accepted only after the independently bound
   account, distributed-table registration, current lease and exact table's
   successful terminal progress jointly prove an authoritative result. This
@@ -63,13 +73,14 @@ Updated: 2026-07-30 Asia/Shanghai
 
 Implementation commits: `6a9d430b1`, `4cdc5b1df`, `d2f365c32`, `d51214577`,
 `50ce7b36e`, `1d0f03848`, `d5ccaa73f`, `623cdd378`, `8fb395c41`,
-`beebc662e`, `89f4b7574`, `f5adf90e7`, `8164dd5`, `2914363`.
+`beebc662e`, `89f4b7574`, `f5adf90e7`, `8164dd5`, `2914363`,
+`382fdaaa8`.
 
 ## Current verification
 
 - Release-candidate metadata is now `1.0.9 / 1000009`; application manifest, in-app release notes, user guide, version resource, SBOM and SBOM generator agree.
 - `default@OhosTestCompileArkTS`: passed in the current session for
-  `2914363`; existing dependency/deprecation warnings remain.
+  `382fdaaa8`; existing dependency/deprecation warnings remain.
 - `assembleHap`: `BUILD SUCCESSFUL` in the current session; signed HAP
   generated.
 - `git diff --check` and staged diff checks: passed.
@@ -94,9 +105,9 @@ Implementation commits: `6a9d430b1`, `4cdc5b1df`, `d2f365c32`, `d51214577`,
 - Validate Asset Store Kit behavior and actual RustDesk Pro token alias removal
   on API 23 hardware across lock, logout, account switch, restart,
   uninstall/reinstall and restore.
-- A third independent D-020 point review of `2914363` remains a merge blocker.
-  The second review's three P1 findings are addressed locally; no success is
-  claimed until the main agent performs and records a fresh review.
+- The third independent D-020 point review found one remaining VNC transaction
+  P1. It is addressed locally in `382fdaaa8`; no review success is claimed
+  until the main agent performs and records a fresh final point review.
 
 ## Preserved user changes
 

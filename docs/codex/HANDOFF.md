@@ -5,7 +5,7 @@ Updated: 2026-07-30 Asia/Shanghai
 ## Active cloud-data lifecycle handoff
 
 - Branch: `codex/cloud-data-lifecycle-root-fix`; base:
-  `main@23940521a`; implementation checkpoint: `2914363`.
+  `main@23940521a`; implementation checkpoint: `382fdaaa8`.
 - Plan:
   `docs/superpowers/plans/2026-07-28-cloud-data-lifecycle-upgrade-roadmap.md`.
 - Core local implementation is complete for account transitions, per-account
@@ -13,7 +13,7 @@ Updated: 2026-07-30 Asia/Shanghai
   sensitive transfer validation, portable backup v3 and legacy partial
   restore, exclusive crypto lifecycle, Asset Store credential storage,
   device-local trust and legacy shared-store/relay/VNC migration quarantine.
-- D-020 remediation through `2914363` requires a fresh OS distributed-account API
+- D-020 remediation through `382fdaaa8` requires a fresh OS distributed-account API
   result in addition to Account Kit, waits for cloud-first before publishing
   account ready, preserves pre-bootstrap record journal intent, persists a
   bounded cross-table download rollback transaction, blocks ordinary/VNC
@@ -25,6 +25,16 @@ Updated: 2026-07-30 Asia/Shanghai
   barrier release with exact rollback; RustDesk Pro scope revocation preserves
   non-secret account/server/device metadata as `requires_login` while the token
   remains deleted.
+- The third review's final VNC P1 is remediated in `382fdaaa8`. Newly enabled
+  scopes establish an owner/store/generation-bound checkpoint and pending
+  barrier before settings or selection change. After cloud-first, the
+  checkpoint is rebased to the authoritative VNC mirror plus the exact local
+  settings/journal/retry/selection before-image. Promotion, both durable phase
+  writes, barrier release and checkpoint deletion share one RDB transaction;
+  automatic upload begins only after commit. Faults and process interruption
+  restore under the barrier, never physically delete a deterministic settings
+  ID by assumption and retain checkpoint plus `recovery_required` if complete
+  restoration cannot be proven.
 - API 23 has no signed Account Kit/distributed-account link object. The
   implementation accepts only exact current ID equality and otherwise blocks
   distributed-table registration and transfer. This is deliberately
@@ -43,8 +53,8 @@ Updated: 2026-07-30 Asia/Shanghai
   low-storage fault injection, real Documents Providers and actual Asset Store
   alias deletion. System BackupExtension, remote destructive crypto and legacy
   REST sync remain disabled.
-- No sub-agent was created for this remediation. A third independent D-020
-  point review by the main agent remains a merge blocker.
+- No sub-agent was created for this remediation. A fresh final independent
+  D-020 point review by the main agent remains a merge blocker.
 - Preserve the unrelated user-owned SSH, Moonlight, RustDesk and VNC plan
   edits; do not stage, reset, stash or overwrite them.
 
