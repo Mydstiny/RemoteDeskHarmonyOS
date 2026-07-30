@@ -57,6 +57,7 @@ import {
   cloudSyncTargetTableCompleted,
   cloudSyncWatchdogNextDelayMs,
   cloudSyncWatchdogTimeoutKind,
+  cloudSyncBlockedByLocalRestore,
   classifyCloudSyncProgressCode,
   shouldRejectAutomaticEmptyCloudSnapshot
 } from './CloudSyncCoordinatorPolicy';
@@ -1062,9 +1063,12 @@ export class CloudStore implements CryptoCloudStore {
     previousScopes: string[],
     previousBarrier:
       CloudSelectionReenablePhase | null,
-    settingsId: string
+    settingsId: string,
+    lease: AccountSessionLease
   ): boolean {
     if (!this.store ||
+      !this.vncSelectionExclusiveLeaseCurrent(
+        lease) ||
       settingsId.trim() === '' ||
       this.readLocalMetadata(
         VNC_SELECTION_REENABLE_TRANSACTION_KEY) !== '') {
@@ -1125,38 +1129,21 @@ export class CloudStore implements CryptoCloudStore {
   async requestSelectionReenableCloudFirst(
     table: string
   ): Promise<CloudSyncOperationResult> {
+    if (table === VNC_CLOUD_TABLE &&
+      this.readLocalMetadata(
+        VNC_SELECTION_REENABLE_TRANSACTION_KEY) !== '') {
+      return {
+        ok: false,
+        source: 'selectionReenable',
+        tables: [table],
+        failedTables: [table],
+        rollbackFailed: true,
+        failureKind: 'unknown'
+      };
+    }
     const result: CloudSyncOperationResult =
       await CloudSyncCoordinator.getInstance()
         .requestSelectionReenableCloudFirst(table);
-    const vncTransaction: boolean =
-      table === VNC_CLOUD_TABLE &&
-      this.readLocalMetadata(
-        VNC_SELECTION_REENABLE_TRANSACTION_KEY) !== '';
-    if (vncTransaction) {
-      let finalized: boolean = false;
-      if (result.ok &&
-        this.stageAuthoritativeVncSelectionBeforeImage()) {
-        finalized =
-          this.finalizeVncSelectionReenableTransaction();
-      }
-      if (result.ok && finalized) {
-        return result;
-      }
-      const restored: boolean =
-        await this
-          .rollbackVncSelectionReenableTransaction();
-      return {
-        ok: false,
-        source: result.source,
-        tables: result.tables.slice(),
-        failedTables: result.failedTables.length > 0
-          ? result.failedTables.slice() : [table],
-        rollbackFailed:
-          result.rollbackFailed || !restored,
-        failureKind: result.failureKind === 'none'
-          ? 'unknown' : result.failureKind
-      };
-    }
     if (!result.ok) { return result; }
     if (!this.markSelectionReenablePulled(
       result.tables.length > 0 ? result.tables : [table]) ||
@@ -1172,6 +1159,47 @@ export class CloudStore implements CryptoCloudStore {
       };
     }
     return result;
+  }
+
+  async completeExclusiveVncSelectionCloudFirst(
+    result: CloudSyncOperationResult,
+    lease: AccountSessionLease
+  ): Promise<CloudSyncOperationResult> {
+    if (!this.vncSelectionExclusiveLeaseCurrent(
+      lease)) {
+      return {
+        ok: false,
+        source: result.source,
+        tables: result.tables.slice(),
+        failedTables: [VNC_CLOUD_TABLE],
+        rollbackFailed: true,
+        failureKind: 'unknown'
+      };
+    }
+    let finalized: boolean = false;
+    if (result.ok &&
+      this.stageAuthoritativeVncSelectionBeforeImage()) {
+      finalized =
+        this.finalizeVncSelectionReenableTransaction();
+    }
+    if (result.ok && finalized) {
+      return result;
+    }
+    const restored: boolean =
+      await this
+        .rollbackVncSelectionReenableTransactionInternal();
+    return {
+      ok: false,
+      source: result.source,
+      tables: result.tables.slice(),
+      failedTables: result.failedTables.length > 0
+        ? result.failedTables.slice()
+        : [VNC_CLOUD_TABLE],
+      rollbackFailed:
+        result.rollbackFailed || !restored,
+      failureKind: result.failureKind === 'none'
+        ? 'unknown' : result.failureKind
+    };
   }
 
   markStartupSelectionReenablePulled(): boolean {
@@ -2080,7 +2108,30 @@ export class CloudStore implements CryptoCloudStore {
       required);
   }
 
-  async rollbackVncSelectionReenableTransaction():
+  private vncSelectionExclusiveLeaseCurrent(
+    lease: AccountSessionLease | null
+  ): boolean {
+    return lease !== null &&
+      this.currentLease !== null &&
+      accountSessionLeaseEquals(
+        this.currentLease, lease) &&
+      CloudSyncCoordinator.getInstance()
+        .isExclusiveVncSelectionLease(lease);
+  }
+
+  async rollbackVncSelectionReenableTransaction(
+    lease: AccountSessionLease
+  ): Promise<boolean> {
+    if (!this.vncSelectionExclusiveLeaseCurrent(
+      lease)) {
+      this.markVncSelectionRecoveryRequired();
+      return false;
+    }
+    return await this
+      .rollbackVncSelectionReenableTransactionInternal();
+  }
+
+  private async rollbackVncSelectionReenableTransactionInternal():
     Promise<boolean> {
     if (!this.store || this.appContext === null) {
       this.markVncSelectionRecoveryRequired();
@@ -2181,7 +2232,7 @@ export class CloudStore implements CryptoCloudStore {
     if (raw === '') { return true; }
     const recovered: boolean =
       await this
-        .rollbackVncSelectionReenableTransaction();
+        .rollbackVncSelectionReenableTransactionInternal();
     if (recovered) {
       hilog.warn(0x0001, 'CloudSync',
         '已回滚上次未终结的 VNC scope 事务');
@@ -3246,6 +3297,15 @@ export class CloudStore implements CryptoCloudStore {
     return new Promise<boolean>((resolve) => {
       if (!this.store || !this.cloudAvailable || this.currentLease === null) {
         this.lastSyncFailureKind = 'cloud_service';
+        resolve(false);
+        return;
+      }
+      if (cloudSyncBlockedByLocalRestore(
+        this.localRestoreActive,
+        this.localRestorePending)) {
+        this.lastSyncFailureKind = 'restore_pending';
+        this.lastError = label + ' ' + table +
+          ': blocked by exclusive local restore';
         resolve(false);
         return;
       }

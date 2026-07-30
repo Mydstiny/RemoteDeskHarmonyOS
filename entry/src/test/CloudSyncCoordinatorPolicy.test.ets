@@ -9,6 +9,7 @@ import {
   CloudSyncCallbackIdentity,
   CloudSyncWatchdogState,
   cloudLocalMutationAllowed,
+  cloudSyncBlockedByLocalRestore,
   cloudSyncCallbackIdentityMatches,
   cloudDistributedTableAutoSync,
   cloudSyncProgressFinished,
@@ -20,6 +21,8 @@ import {
   classifyCloudSyncProgressCode,
   cloudSyncFailureMessage,
   coalesceAutomaticPush,
+  exclusiveCloudOperationLeaseValid,
+  exclusiveVncSelectionAdmissionAllowed,
   nextCloudSyncRetryDelayMs,
   retryTablesStillSelected,
   retryVncTablesStillSelected,
@@ -53,6 +56,28 @@ export default function cloudSyncCoordinatorPolicyTest(): void {
       expect(coalesceAutomaticPush('sshkeys', 'sshkeys')).assertTrue();
       expect(coalesceAutomaticPush('sshkeys', 'totpentries')).assertFalse();
     });
+
+    it('admits_one_lease_bound_VNC_mutation_and_blocks_sync_during_restore',
+      0, (): void => {
+        expect(exclusiveVncSelectionAdmissionAllowed(
+          false, false, true, true)).assertTrue();
+        expect(exclusiveVncSelectionAdmissionAllowed(
+          true, false, true, true)).assertFalse();
+        expect(exclusiveVncSelectionAdmissionAllowed(
+          false, true, true, true)).assertFalse();
+        expect(exclusiveCloudOperationLeaseValid(
+          7, 7, true)).assertTrue();
+        expect(exclusiveCloudOperationLeaseValid(
+          7, 8, true)).assertFalse();
+        expect(exclusiveCloudOperationLeaseValid(
+          7, 7, false)).assertFalse();
+        expect(cloudSyncBlockedByLocalRestore(
+          true, false)).assertTrue();
+        expect(cloudSyncBlockedByLocalRestore(
+          false, true)).assertTrue();
+        expect(cloudSyncBlockedByLocalRestore(
+          false, false)).assertFalse();
+      });
 
     it('replays_a_table_changed_while_its_upload_was_pending', 0, (): void => {
       expect(shouldReplayAutomaticPush(1, 2)).assertTrue();

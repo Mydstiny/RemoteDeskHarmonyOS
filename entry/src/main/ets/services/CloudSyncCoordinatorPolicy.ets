@@ -282,6 +282,33 @@ export function cloudLocalMutationAllowed(manualDownloadActive: boolean, localRe
     !cloudDownloadActive && !indeterminateTransferActive;
 }
 
+export function exclusiveVncSelectionAdmissionAllowed(
+  mutationPending: boolean,
+  restorePending: boolean,
+  acceptingRequests: boolean,
+  leaseAvailable: boolean
+): boolean {
+  return !mutationPending && !restorePending &&
+    acceptingRequests && leaseAvailable;
+}
+
+export function exclusiveCloudOperationLeaseValid(
+  capturedEpoch: number,
+  currentEpoch: number,
+  leaseMatches: boolean
+): boolean {
+  return capturedEpoch === currentEpoch &&
+    leaseMatches;
+}
+
+export function cloudSyncBlockedByLocalRestore(
+  localRestoreActive: boolean,
+  localRestorePending: boolean
+): boolean {
+  return localRestoreActive ||
+    localRestorePending;
+}
+
 /** Freeze a user's selection in canonical pull/encryption order for one operation. */
 export function snapshotCloudSyncTables(selectedBusinessTables: string[]): string[] {
   const selected: string[] = effectiveCloudSyncTables(selectedBusinessTables);

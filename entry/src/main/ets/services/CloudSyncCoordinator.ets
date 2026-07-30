@@ -42,6 +42,8 @@ import {
   CloudSyncFailureKind,
   automaticRetryKey,
   coalesceAutomaticPush,
+  exclusiveCloudOperationLeaseValid,
+  exclusiveVncSelectionAdmissionAllowed,
   shouldBlockAutomaticRetry,
   isAutomaticRetryRecord,
   nextCloudSyncRetryDelayMs,
@@ -66,6 +68,15 @@ export interface CloudSyncOperationResult {
   rollbackFailed: boolean;
   failureKind: CloudSyncFailureKind;
 }
+
+export type ExclusiveSelectionCloudFirst =
+  (table: string) => Promise<CloudSyncOperationResult>;
+
+export type ExclusiveVncSelectionWork =
+  (
+    lease: AccountSessionLease,
+    cloudFirst: ExclusiveSelectionCloudFirst
+  ) => Promise<void>;
 
 /** A restored local snapshot is quarantined until the user chooses a direction. */
 export function restoreQuarantinedStartupResult(
@@ -297,6 +308,9 @@ export class CloudSyncCoordinator {
   private currentBinding: CloudAccountBinding = unboundCloudAccountBinding();
   private transfersEnabled: boolean = false;
   private durableState: CloudSyncDurableState | null = null;
+  private vncSelectionMutationPending: boolean = false;
+  private exclusiveVncSelectionLease:
+    AccountSessionLease | null = null;
 
   static getInstance(): CloudSyncCoordinator {
     if (!CloudSyncCoordinator.instance) {
@@ -350,6 +364,8 @@ export class CloudSyncCoordinator {
     this.pendingPull = null;
     this.startupPull = null;
     this.restorePending = false;
+    this.vncSelectionMutationPending = false;
+    this.exclusiveVncSelectionLease = null;
     this.startupState = 'pending';
     this.bootstrapCompleted = true;
     if (hooks.hasCloudBootstrapCompleted) {
@@ -383,6 +399,17 @@ export class CloudSyncCoordinator {
 
   isLeaseCurrent(lease: AccountSessionLease): boolean {
     return this.acceptingRequests && accountSessionLeaseEquals(this.currentLease, lease);
+  }
+
+  isExclusiveVncSelectionLease(
+    lease: AccountSessionLease | null
+  ): boolean {
+    return lease !== null &&
+      accountSessionLeaseEquals(
+        this.exclusiveVncSelectionLease,
+        lease) &&
+      accountSessionLeaseEquals(
+        this.currentLease, lease);
   }
 
   closeMutationGate(lease: AccountSessionLease): boolean {
@@ -460,6 +487,8 @@ export class CloudSyncCoordinator {
     this.deferredAutomaticTables = [];
     this.retryRecords = [];
     this.restorePending = false;
+    this.vncSelectionMutationPending = false;
+    this.exclusiveVncSelectionLease = null;
     return true;
   }
 
@@ -817,6 +846,79 @@ export class CloudSyncCoordinator {
   requestSelectionReenableCloudFirst(
     table: string
   ): Promise<CloudSyncOperationResult> {
+    const request: CloudSyncRequest | null =
+      this.selectionReenableRequest(table);
+    if (request === null) {
+      return Promise.resolve(this.rejectedResult({
+        source: 'selectionReenable',
+        direction: 'cloudFirst',
+        tables: [table]
+      }, 'cloud_service'));
+    }
+    return this.enqueue(request);
+  }
+
+  /**
+   * VNC settings, its durable checkpoint, the required cloud-first and any
+   * full before-image rollback occupy one queue item under one account lease.
+   * Requests submitted later are appended behind this work and cannot start
+   * while a restore is deleting/rebuilding the physical account store.
+   */
+  runExclusiveVncSelectionMutation(
+    work: ExclusiveVncSelectionWork
+  ): Promise<boolean> {
+    if (!exclusiveVncSelectionAdmissionAllowed(
+      this.vncSelectionMutationPending,
+      this.restorePending,
+      this.acceptingRequests,
+      this.currentLease !== null)) {
+      return Promise.resolve(false);
+    }
+    const lease: AccountSessionLease =
+      cloneAccountSessionLease(
+        this.currentLease as AccountSessionLease);
+    const epoch: number = this.bindingEpoch;
+    this.vncSelectionMutationPending = true;
+    return new Promise<boolean>(
+      (resolve: (ok: boolean) => void): void => {
+        const run = async (): Promise<void> => {
+          if (!this.acceptingRequests ||
+            !exclusiveCloudOperationLeaseValid(
+              epoch, this.bindingEpoch,
+              accountSessionLeaseEquals(
+                this.currentLease, lease))) {
+            this.vncSelectionMutationPending = false;
+            resolve(false);
+            return;
+          }
+          this.exclusiveVncSelectionLease =
+            cloneAccountSessionLease(lease);
+          try {
+            await work(
+              cloneAccountSessionLease(lease),
+              (table: string):
+                Promise<CloudSyncOperationResult> =>
+                this
+                  .executeExclusiveSelectionCloudFirst(
+                    table, lease, epoch));
+            resolve(true);
+          } catch (err) {
+            hilog.error(DOMAIN, TAG,
+              'exclusive VNC selection mutation failed: ' +
+              JSON.stringify(err));
+            resolve(false);
+          } finally {
+            this.exclusiveVncSelectionLease = null;
+            this.vncSelectionMutationPending = false;
+          }
+        };
+        this.queueTail = this.queueTail.then(run, run);
+      });
+  }
+
+  private selectionReenableRequest(
+    table: string
+  ): CloudSyncRequest | null {
     let tables: string[] = [];
     if (table === VNC_CLOUD_TABLE) {
       tables = this.vncSyncTables();
@@ -828,17 +930,52 @@ export class CloudSyncCoordinator {
             table !== 'usersettings'));
     }
     if (tables.indexOf(table) < 0) {
-      return Promise.resolve(this.rejectedResult({
-        source: 'selectionReenable',
-        direction: 'cloudFirst',
-        tables: [table]
-      }, 'cloud_service'));
+      return null;
     }
-    return this.enqueue({
+    return {
       source: 'selectionReenable',
       direction: 'cloudFirst',
       tables
-    });
+    };
+  }
+
+  private async executeExclusiveSelectionCloudFirst(
+    table: string,
+    lease: AccountSessionLease,
+    epoch: number
+  ): Promise<CloudSyncOperationResult> {
+    const request: CloudSyncRequest | null =
+      this.selectionReenableRequest(table);
+    if (request === null ||
+      !this.isExclusiveVncSelectionLease(lease) ||
+      !exclusiveCloudOperationLeaseValid(
+        epoch, this.bindingEpoch, true) ||
+      !this.transfersEnabled) {
+      return this.rejectedResult({
+        source: 'selectionReenable',
+        direction: 'cloudFirst',
+        tables: [table]
+      }, 'cloud_service');
+    }
+    if (!this.beginLifecycleOperation(request)) {
+      return this.rejectedResult(request);
+    }
+    const result: CloudSyncOperationResult =
+      await this.execute(request);
+    if (!this.isExclusiveVncSelectionLease(lease) ||
+      !exclusiveCloudOperationLeaseValid(
+        epoch, this.bindingEpoch, true)) {
+      return this.rejectedResult(request);
+    }
+    if (!this.finishLifecycleOperation(result)) {
+      return this.rejectedResult(request);
+    }
+    if (result.failureKind === 'indeterminate' &&
+      this.hooks &&
+      this.hooks.settlePendingIndeterminate) {
+      this.hooks.settlePendingIndeterminate();
+    }
+    return result;
   }
 
   /** VNC manual operations use the same serialized transfer queue but never
@@ -1661,5 +1798,7 @@ export class CloudSyncCoordinator {
     this.automaticMutationVersions = {};
     this.journalMutationRevisions = {};
     this.restorePending = false;
+    this.vncSelectionMutationPending = false;
+    this.exclusiveVncSelectionLease = null;
   }
 }

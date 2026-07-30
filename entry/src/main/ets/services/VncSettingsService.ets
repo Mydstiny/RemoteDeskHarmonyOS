@@ -1,6 +1,12 @@
 import { common } from '@kit.AbilityKit';
 import { AccountSessionCoordinator } from './AccountSessionCoordinator';
+import { AccountSessionLease } from './AccountScopePolicy';
 import { CloudStore } from './CloudStore';
+import {
+  CloudSyncCoordinator,
+  CloudSyncOperationResult,
+  ExclusiveSelectionCloudFirst
+} from './CloudSyncCoordinator';
 import { DataCrypto } from './DataCrypto';
 import { VncRecord } from '../model/VncRecord';
 import {
@@ -125,6 +131,31 @@ export class VncSettingsService {
       result.message = 'VNC 超时时间不能小于 1000ms';
       return result;
     }
+    const executed: boolean =
+      await CloudSyncCoordinator.getInstance()
+        .runExclusiveVncSelectionMutation(
+          async (
+            lease: AccountSessionLease,
+            cloudFirst:
+              ExclusiveSelectionCloudFirst
+          ): Promise<void> => {
+            await this.saveWithinExclusive(
+              normalized, result, lease,
+              cloudFirst);
+          });
+    if (!executed && result.message === '') {
+      result.message =
+        'VNC 设置事务暂不可用，请等待当前云同步完成后重试';
+    }
+    return result;
+  }
+
+  private async saveWithinExclusive(
+    normalized: VncSettingsValues,
+    result: VncSettingsSaveResult,
+    lease: AccountSessionLease,
+    cloudFirst: ExclusiveSelectionCloudFirst
+  ): Promise<void> {
     const current: VncRecord | null = this.settingsRecord();
     const record: VncRecord = new VncRecord();
     const now: number = Date.now();
@@ -161,10 +192,10 @@ export class VncSettingsService {
       !this.cloud
         .beginVncSelectionReenableTransaction(
           previousScopes, previousBarrier,
-          record.id)) {
+          record.id, lease)) {
       result.message =
         'VNC 同步范围事务建立失败，设置未修改';
-      return result;
+      return;
     }
     if (selectionChanged &&
       !this.updateSyncSelection(
@@ -172,7 +203,8 @@ export class VncSettingsService {
       const restored: boolean =
         needsCloudFirstBarrier
           ? await this.cloud
-            .rollbackVncSelectionReenableTransaction()
+            .rollbackVncSelectionReenableTransaction(
+              lease)
           : this.restoreSyncSelection(
             previousScopes, previousBarrier);
       result.message = 'VNC 同步选择保存失败，请检查本地数据状态后重试';
@@ -180,7 +212,7 @@ export class VncSettingsService {
         result.message +=
           '；事务恢复未完成，上传仍保持暂停';
       }
-      return result;
+      return;
     }
     if (!this.cloud.upsertVncRecord(record)) {
       const mutationMessage: string =
@@ -188,7 +220,8 @@ export class VncSettingsService {
       const restored: boolean =
         needsCloudFirstBarrier
           ? await this.cloud
-            .rollbackVncSelectionReenableTransaction()
+            .rollbackVncSelectionReenableTransaction(
+              lease)
           : !selectionChanged ||
             this.restoreSyncSelection(
               previousScopes, previousBarrier);
@@ -198,26 +231,28 @@ export class VncSettingsService {
         result.message +=
           '；同步选择回滚未完成，上传仍保持暂停';
       }
-      return result;
+      return;
     }
     if (needsCloudFirstBarrier) {
-      const cloudFirst = await this.cloud
-        .requestSelectionReenableCloudFirst(
-          VNC_CLOUD_TABLE);
-      if (!cloudFirst.ok) {
+      const pulled: CloudSyncOperationResult =
+        await cloudFirst(VNC_CLOUD_TABLE);
+      const completed: CloudSyncOperationResult =
+        await this.cloud
+          .completeExclusiveVncSelectionCloudFirst(
+            pulled, lease);
+      if (!completed.ok) {
         result.message =
           'VNC 同步范围的 cloud-first 核对未完成，设置未发布成功';
-        if (cloudFirst.rollbackFailed) {
+        if (completed.rollbackFailed) {
           result.message +=
             '；本地回滚未完整，上传仍保持暂停';
         }
-        return result;
+        return;
       }
     }
     this.values = normalized;
     result.ok = true;
     this.emitChange();
-    return result;
   }
 
   selectedScopes(): VncCloudSyncScope[] { return this.sync.selectedScopes(); }
