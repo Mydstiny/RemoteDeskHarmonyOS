@@ -60,7 +60,9 @@ export class AccountSessionCoordinator {
   private transitionTail: Promise<void> = Promise.resolve();
   private listeners: Array<(scope: AccountScopeToken) => void> = [];
   private initPromise: Promise<boolean> | null = null;
+  private startupFallbackPromise: Promise<boolean> | null = null;
   private initialized: boolean = false;
+  private startupFallbackApplied: boolean = false;
   private transitionLoginModeSnapshot: string = '';
   private transitionIntentGeneration: number = 0;
 
@@ -78,10 +80,20 @@ export class AccountSessionCoordinator {
     SensitiveDataBarrier.getInstance().init(context as common.UIAbilityContext);
     const operation: Promise<boolean> = this.initialize(context);
     this.initPromise = operation;
-    const ready: boolean = await operation;
+    let ready: boolean = await operation;
     if (this.initPromise === operation) { this.initPromise = null; }
+    if (!ready && context !== null) {
+      const fallbackReady: boolean =
+        await this.ensureStartupFallbackIfNeeded(context);
+      if (fallbackReady) {
+        ready = true;
+      }
+    }
+    if (!ready) {
+      this.startupFallbackApplied = false;
+    }
     this.initialized = ready;
-    return ready;
+    return this.initialized;
   }
 
   private async initialize(context: common.Context): Promise<boolean> {
@@ -140,8 +152,69 @@ export class AccountSessionCoordinator {
 
   private async whenReady(): Promise<boolean> {
     if (this.initialized) { return true; }
-    if (this.initPromise !== null) { return await this.initPromise; }
+    if (this.initPromise !== null) {
+      const ready: boolean = await this.initPromise;
+      if (!ready &&
+        this.context !== null &&
+        !this.startupFallbackApplied) {
+        return await this.ensureStartupFallbackIfNeeded(this.context);
+      }
+      return ready;
+    }
+    if (this.context !== null && !this.startupFallbackApplied) {
+      return await this.ensureStartupFallbackIfNeeded(this.context);
+    }
     return false;
+  }
+
+  private async ensureStartupFallbackIfNeeded(
+    context: common.Context
+  ): Promise<boolean> {
+    if (this.startupFallbackApplied) { return this.initialized; }
+    if (this.startupFallbackPromise !== null) { return await this.startupFallbackPromise; }
+    const attempt: Promise<boolean> = this.ensureStartupFallback(context);
+    this.startupFallbackPromise = attempt.finally(
+      (): void => { this.startupFallbackPromise = null; });
+    const ready: boolean = await attempt;
+    this.startupFallbackApplied = ready;
+    return ready;
+  }
+
+  private async ensureStartupFallback(
+    context: common.Context
+  ): Promise<boolean> {
+    const store: CloudStore = CloudStore.getInstance();
+    const fallback: AccountScopeToken =
+      deviceLocalScopeToken(this.current.generation + 1);
+    try {
+      const rebound: boolean = await store.rebindScope(
+        context,
+        fallback,
+        '',
+        unavailablePlatformCloudIdentityProof()
+      );
+      if (!rebound) {
+        return false;
+      }
+      const fallbackScope: AccountScopeToken = store.currentScope();
+      fallbackScope.sessionState = 'offline';
+      if (!store.activateScope(fallbackScope)) {
+        return false;
+      }
+      this.current = fallbackScope;
+      this.current.sessionState = 'offline';
+      this.current.cloudBindingState =
+        this.current.kind === 'device_local'
+          ? 'unbound' : this.current.cloudBindingState;
+      this.reloadScopeServices();
+      this.publish();
+      hilog.warn(0x0001, 'AccountSession',
+        '账号生命周期初始化未完成，已回退到本地设备作用域并允许离线入口');
+      this.initialized = true;
+      return true;
+    } catch (_error) {
+      return false;
+    }
   }
 
   private async serialize(action: AccountTransitionAction): Promise<AccountTransitionResult> {
