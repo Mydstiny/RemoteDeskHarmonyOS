@@ -2,7 +2,7 @@ import { Palette, buildDark, buildLight } from '../../common/Theme';
 import { RemoteHost } from '../../model/RemoteHost';
 import { RustDeskRelayConfig } from '../../model/RustDeskRelayConfig';
 import { DiscoveredRustDeskPeer } from '../../services/RustDeskLanDiscoveryService';
-import { RustDeskRelayKeyMode, resolveRustDeskRelayKey } from '../../services/RustDeskRelayKeyPolicy';
+import { RustDeskRelayKeyMode } from '../../services/RustDeskRelayKeyPolicy';
 import {
   RustDeskControlPlaneProfile,
   RUSTDESK_CONTROL_PLANE_DEFAULT,
@@ -10,6 +10,11 @@ import {
   rustDeskControlPlaneProfileLabel
 } from '../../services/RustDeskControlPlanePolicy';
 import { RustDeskTargetDevice } from '../../services/RemoteOrientationPolicy';
+import {
+  RustDeskRelaySetupCoordinator,
+  RustDeskRelaySetupDraft
+} from '../../services/RustDeskRelaySetupCoordinator';
+import { RustDeskRelaySaveResult } from '../../services/RustDeskRelaySavePolicy';
 
 @Component
 export struct RustDeskAddFlow {
@@ -21,7 +26,6 @@ export struct RustDeskAddFlow {
   @Prop defaultDirectPort: number = 21117;
   onBackToProtocols: () => void = (): void => {};
   onStartLanScan: () => void = (): void => {};
-  onAddRelay: (relay: RustDeskRelayConfig) => boolean = (_relay: RustDeskRelayConfig): boolean => false;
   onSave: (host: RemoteHost, connectNow: boolean) => void =
     (_host: RemoteHost, _connectNow: boolean): void => {};
   @State step: number = 1;
@@ -47,8 +51,17 @@ export struct RustDeskAddFlow {
   @State controlPlaneProfile: RustDeskControlPlaneProfile = RUSTDESK_CONTROL_PLANE_DEFAULT;
   @State targetDevice: RustDeskTargetDevice = 'computer';
   @State adaptiveOrientation: boolean = false;
+  @State relayDraftId: string = '';
+  @State relaySaving: boolean = false;
+  @State relaySaveDiagnostic: string = '';
 
-  aboutToAppear(): void { this.directPortText = this.defaultDirectPort.toString(); }
+  private relaySetup: RustDeskRelaySetupCoordinator =
+    RustDeskRelaySetupCoordinator.getInstance();
+
+  aboutToAppear(): void {
+    this.directPortText = this.defaultDirectPort.toString();
+    this.relayDraftId = this.relaySetup.nextDraftId();
+  }
   private pal(): Palette { return this.theme === 'light' ? buildLight(this.accentColor) : buildDark(this.accentColor); }
 
   private selectedRelay(): RustDeskRelayConfig | undefined {
@@ -82,30 +95,30 @@ export struct RustDeskAddFlow {
   }
 
   private saveRelay(): void {
-    if (this.relayIdServer.trim() === '') {
-      this.errorText = 'ID 服务器不能为空'; return;
-    }
     const idServerPort: number = parseInt(this.relayIdServerPortText);
     const relayPort: number = parseInt(this.relayServerPortText);
-    if (isNaN(idServerPort) || idServerPort <= 0 || idServerPort > 65535 ||
-      isNaN(relayPort) || relayPort <= 0 || relayPort > 65535) {
-      this.errorText = '服务器端口必须在 1-65535 之间'; return;
+    const draft = new RustDeskRelaySetupDraft();
+    draft.relayId = this.relayDraftId;
+    draft.idServer = this.relayIdServer;
+    draft.idServerPort = isNaN(idServerPort) ? 0 : idServerPort;
+    draft.relayServer = this.relayServer;
+    draft.relayPort = isNaN(relayPort) ? 0 : relayPort;
+    draft.apiServer = this.relayApiServer;
+    draft.key = this.relayKey;
+    draft.keyMode = this.relayKeyMode;
+    draft.controlPlaneProfile = this.controlPlaneProfile;
+    if (this.relaySaving) { return; }
+    this.relaySaving = true;
+    const result: RustDeskRelaySaveResult =
+      this.relaySetup.save(draft);
+    this.relaySaving = false;
+    this.relayDraftId = draft.relayId;
+    this.relaySaveDiagnostic = result.diagnosticSummary();
+    if (!result.ok) {
+      this.errorText = result.message;
+      return;
     }
-    const key = resolveRustDeskRelayKey(this.relayKey, this.relayKeyMode, false);
-    if (!key.ok) { this.errorText = key.error; return; }
-    const relay = new RustDeskRelayConfig();
-    relay.id = RustDeskRelayConfig.generateId();
-    relay.idServer = this.relayIdServer.trim();
-    relay.idServerPort = idServerPort;
-    relay.relayServer = this.relayServer.trim() === '' ? relay.idServer : this.relayServer.trim();
-    relay.relayPort = relayPort;
-    relay.apiServer = this.relayApiServer.trim();
-    relay.key = key.value;
-    relay.keyMode = key.mode;
-    relay.controlPlaneProfile = this.controlPlaneProfile;
-    relay.updatedAt = Date.now();
-    if (!this.onAddRelay(relay)) { this.errorText = '保存中继服务器失败'; return; }
-    this.relayId = relay.id;
+    this.relayId = result.relayId;
     this.addingRelay = false;
     this.errorText = '';
   }
@@ -226,7 +239,9 @@ export struct RustDeskAddFlow {
               Button('取消').layoutWeight(1).height(38).borderRadius(10).backgroundColor(this.pal().surface)
                 .fontColor(this.pal().text2).onClick((): void => { this.addingRelay = false; })
               Button('保存并选择').layoutWeight(1).height(38).borderRadius(10).margin({ left: 8 })
-                .backgroundColor(this.accentColor).fontColor(Color.White).onClick((): void => { this.saveRelay(); })
+                .backgroundColor(this.relaySaving ? this.pal().text3 : this.accentColor)
+                .fontColor(Color.White).enabled(!this.relaySaving)
+                .onClick((): void => { this.saveRelay(); })
             }.width('100%')
           } else if (this.relays.length === 0) {
             Text('还没有中继服务器，请先添加后再继续。').fontSize(13).fontColor(this.pal().text3)
@@ -349,7 +364,15 @@ export struct RustDeskAddFlow {
             .onClick((): void => { const host = this.buildHost(); if (host) { this.onSave(host, true); } })
         }.width('100%')
       }
-      if (this.errorText !== '') { Text(this.errorText).fontSize(12).fontColor(this.pal().danger).margin({ top: 10 }) }
+      if (this.errorText !== '') {
+        Column() {
+          Text(this.errorText).fontSize(12).fontColor(this.pal().danger).width('100%')
+          if (this.relaySaveDiagnostic !== '') {
+            Text(this.relaySaveDiagnostic).fontSize(10).fontColor(this.pal().text3)
+              .width('100%').margin({ top: 4 })
+          }
+        }.width('100%').margin({ top: 10 })
+      }
     }.width('100%').padding({ left: 20, right: 20, top: 20, bottom: 22 }).backgroundColor(this.pal().card)
   }
 }

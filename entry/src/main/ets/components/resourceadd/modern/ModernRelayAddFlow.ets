@@ -1,7 +1,5 @@
 import { promptAction } from '@kit.ArkUI';
 import { common } from '@kit.AbilityKit';
-import { RustDeskRelayConfig } from '../../../model/RustDeskRelayConfig';
-import { HostSyncService } from '../../../services/HostSyncService';
 import { RustDeskProSyncService } from '../../../services/RustDeskProSyncService';
 import { Palette, buildDark, buildLight, AppTheme } from '../../../common/Theme';
 import { ResourceFabPicker } from '../ResourceFabPicker';
@@ -14,6 +12,11 @@ import {
   rustDeskControlPlaneProfileLabel
 } from '../../../services/RustDeskControlPlanePolicy';
 import { RustDeskRelayConfigPasteSheet } from './RustDeskRelayConfigPasteSheet';
+import {
+  RustDeskRelaySetupCoordinator,
+  RustDeskRelaySetupDraft
+} from '../../../services/RustDeskRelaySetupCoordinator';
+import { RustDeskRelaySaveResult } from '../../../services/RustDeskRelaySavePolicy';
 
 @Component
 export struct ModernRelayAddFlow {
@@ -39,10 +42,13 @@ export struct ModernRelayAddFlow {
   @State proBusy: boolean = false;
   @State importedFileName: string = '';
   @State importBusy: boolean = false;
+  @State relayDraftId: string = '';
+  @State relaySaving: boolean = false;
+  @State relaySaveDiagnostic: string = '';
 
-  private hosts = HostSyncService.getInstance();
   private pro = RustDeskProSyncService.getInstance();
   private relayImporter = new RustDeskRelayImportService();
+  private relaySetup = RustDeskRelaySetupCoordinator.getInstance();
 
   private pal(): Palette { return this.theme === 'light' ? buildLight(this.accentColor) : buildDark(this.accentColor); }
   private font(): string { return AppTheme.fontFamily; }
@@ -60,6 +66,8 @@ export struct ModernRelayAddFlow {
     this.proServer = ''; this.proUser = ''; this.proPassword = '';
     this.proBusy = false;
     this.importedFileName = ''; this.importBusy = false;
+    this.relayDraftId = this.relaySetup.nextDraftId();
+    this.relaySaving = false; this.relaySaveDiagnostic = '';
   }
 
   // 仅请求宿主关闭；等待 Sheet onDisappear 后再清理，避免退出动画中闪现第一步。
@@ -77,25 +85,31 @@ export struct ModernRelayAddFlow {
   }
 
   private saveRustDesk(): string {
-    if (this.idServer.trim().length === 0) {
-      this.errorText = 'ID 服务器不能为空'; return this.errorText;
+    if (this.relaySaving) { return this.errorText; }
+    const draft = new RustDeskRelaySetupDraft();
+    draft.relayId = this.relayDraftId;
+    draft.idServer = this.idServer;
+    draft.idServerPort = this.idPort;
+    draft.relayServer = this.relayServer;
+    draft.relayPort = this.relayPort;
+    draft.apiServer = this.apiServer;
+    draft.key = this.serverKey;
+    draft.keyMode = this.serverKeyMode;
+    draft.controlPlaneProfile = this.controlPlaneProfile;
+    this.relaySaving = true;
+    const result: RustDeskRelaySaveResult =
+      this.relaySetup.save(draft);
+    this.relaySaving = false;
+    this.relayDraftId = draft.relayId;
+    this.relaySaveDiagnostic = result.diagnosticSummary();
+    if (!result.ok) {
+      this.errorText = result.message;
+      return this.errorText;
     }
-    if (!this.validPort(this.idPort) || !this.validPort(this.relayPort)) {
-      this.errorText = '服务器端口必须在 1–65535 之间'; return this.errorText;
-    }
-    const key = resolveRustDeskRelayKey(this.serverKey, this.serverKeyMode, false);
-    if (!key.ok) { this.errorText = key.error; return this.errorText; }
-    const relay = new RustDeskRelayConfig(); relay.id = RustDeskRelayConfig.generateId();
-    relay.idServer = this.idServer.trim(); relay.idServerPort = this.idPort;
-    // RustDesk permits the relay endpoint to be omitted; use the ID endpoint
-    // locally so the rest of the model never needs a fake duplicate entry.
-    relay.relayServer = this.relayServer.trim() === '' ? relay.idServer : this.relayServer.trim();
-    relay.relayPort = this.relayPort;
-    relay.apiServer = this.apiServer.trim(); relay.key = key.value; relay.keyMode = key.mode;
-    relay.controlPlaneProfile = this.controlPlaneProfile;
-    if (!this.hosts.addRelay(relay)) { this.errorText = '中继服务器保存失败'; return this.errorText; }
-    this.savedRelayId = relay.id; this.proServer = relay.apiServer; this.step = 'saved'; this.errorText = '';
-    this.onSaved(relay.id);
+    this.savedRelayId = result.relayId;
+    this.proServer = this.apiServer.trim();
+    this.step = 'saved'; this.errorText = '';
+    this.onSaved(result.relayId);
     return '';
   }
 
@@ -149,7 +163,6 @@ export struct ModernRelayAddFlow {
     } finally { this.proBusy = false; }
   }
 
-  private validPort(port: number): boolean { return port > 0 && port <= 65535; }
   private port(value: string, fallback: number): number { const parsed = parseInt(value); return isNaN(parsed) ? fallback : parsed; }
 
   @Builder private header(title: string, subtitle: string) {
@@ -179,8 +192,15 @@ export struct ModernRelayAddFlow {
 
   @Builder private error() {
     if (this.errorText.length > 0) {
-      Text(this.errorText).fontSize(12).fontColor(this.pal().danger).fontFamily(this.font())
-        .width('100%').padding(10).borderRadius(9).backgroundColor(this.pal().surface).margin({ bottom: 10 })
+      Column() {
+        Text(this.errorText).fontSize(12).fontColor(this.pal().danger).fontFamily(this.font())
+          .width('100%')
+        if (this.relaySaveDiagnostic !== '') {
+          Text(this.relaySaveDiagnostic).fontSize(10).fontColor(this.pal().text3)
+            .fontFamily(this.font()).width('100%').margin({ top: 4 })
+        }
+      }.width('100%').padding(10).borderRadius(9)
+        .backgroundColor(this.pal().surface).margin({ bottom: 10 })
     }
   }
 
@@ -257,8 +277,11 @@ export struct ModernRelayAddFlow {
           '留空将使用 RustDesk 默认公钥；公钥复制残留空白会自动规范化。')
           .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font()).width('100%').margin({ bottom: 11 })
         this.error()
-        Button('保存').width('100%').height(42).borderRadius(10).backgroundColor(this.accentColor)
-          .fontColor(Color.White).onClick((): void => { this.saveRustDesk(); })
+        Button(this.relaySaving ? '保存中…' : (this.errorText === '' ? '保存' : '重试保存'))
+          .width('100%').height(42).borderRadius(10)
+          .backgroundColor(this.relaySaving ? this.pal().text3 : this.accentColor)
+          .fontColor(Color.White).enabled(!this.relaySaving)
+          .onClick((): void => { this.saveRustDesk(); })
       }.width('100%')
     }.constraintSize({ maxHeight: 460 }).scrollBar(BarState.Auto).edgeEffect(EdgeEffect.Spring)
   }

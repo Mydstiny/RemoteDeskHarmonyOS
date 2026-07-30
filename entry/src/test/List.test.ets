@@ -95,6 +95,7 @@ import vncSheetLayoutPolicyTest from './VncSheetLayoutPolicy.test';
 import vncHostFlowPolicyTest from './VncHostFlowPolicy.test';
 import vncFloatingPanelLifecyclePolicyTest from './VncFloatingPanelLifecyclePolicy.test';
 import vncSessionUiPolicyTest from './VncSessionUiPolicy.test';
+import rustDeskRelaySavePolicyTest from './RustDeskRelaySavePolicy.test';
 
 export default function testsuite() {
   localUnitTest();
@@ -194,4 +195,5 @@ export default function testsuite() {
   vncHostFlowPolicyTest();
   vncFloatingPanelLifecyclePolicyTest();
   vncSessionUiPolicyTest();
+  rustDeskRelaySavePolicyTest();
 }

@@ -89,6 +89,10 @@ import { DataMutationResult } from './DataMutationResult';
 import { canonicalHostPassword } from './SensitiveDataMigrationPolicy';
 import { rustDeskRelayKeyForStorage, rustDeskRelayKeyFromStorage } from './RustDeskRelayKeyPolicy';
 import {
+  rustDeskRelayIdFingerprint,
+  rustDeskRelayReadbackMatches
+} from './RustDeskRelaySavePolicy';
+import {
   normalizeRustDeskControlPlaneProfile,
   rustDeskControlPlaneProfileMetadataKey,
   RUSTDESK_CONTROL_PLANE_PROFILE_METADATA_PREFIX
@@ -5190,6 +5194,8 @@ export class CloudStore implements CryptoCloudStore {
     result.code = this.lastMutationResult.code;
     result.recordId = this.lastMutationResult.recordId;
     result.message = this.lastMutationResult.message;
+    result.stage = this.lastMutationResult.stage;
+    result.localCommitted = this.lastMutationResult.localCommitted;
     return result;
   }
 
@@ -8101,19 +8107,34 @@ export class CloudStore implements CryptoCloudStore {
     return vb;
   }
 
-  upsertRelay(relay: RustDeskRelayConfig): boolean {
-    if (!this.store) { return this.setLastMutation(DataMutationResult.failure(relay.id, 'not_ready', '本地数据库未就绪')); }
+  upsertRelayResult(relay: RustDeskRelayConfig, attemptId: string = ''): DataMutationResult {
+    const relayFingerprint: string = rustDeskRelayIdFingerprint(relay.id);
+    hilog.info(0x0001, 'RustDeskSave', 'attempt=' + attemptId + ' relay=' +
+      relayFingerprint + ' stage=waiting_gate');
+    if (!this.store) {
+      this.setLastMutation(DataMutationResult.failure(
+        relay.id, 'not_ready', '本地数据库未就绪', 'waiting_gate'));
+      return this.getLastMutationResult();
+    }
     if (!this.localMutationAllowed()) {
-      return this.setLastMutation(DataMutationResult.failure(relay.id, 'restore_in_progress', '恢复进行中，暂不能保存'));
+      this.setLastMutation(DataMutationResult.failure(
+        relay.id, 'restore_in_progress', '恢复进行中，暂不能保存', 'waiting_gate'));
+      return this.getLastMutationResult();
     }
     if (!this.recordOwnerWriteAllowed(relay.userId)) {
-      return this.setLastMutation(DataMutationResult.failure(
-        relay.id, 'invalid_data', 'RustDesk 中继属于其他账号，已拒绝保存'));
+      this.setLastMutation(DataMutationResult.failure(
+        relay.id, 'invalid_data', 'RustDesk 中继属于其他账号，已拒绝保存', 'waiting_gate'));
+      return this.getLastMutationResult();
     }
     relay.userId = this.currentOwnerScopeId();
-    if (!this.sensitiveWriteAllowed(relay.id)) { return false; }
+    if (!this.sensitiveWriteAllowed(relay.id)) {
+      this.lastMutationResult.stage = 'waiting_gate';
+      return this.getLastMutationResult();
+    }
     let code = 'local_write_failed';
     try {
+      hilog.info(0x0001, 'RustDeskSave', 'attempt=' + attemptId + ' relay=' +
+        relayFingerprint + ' stage=committing');
       this.store.beginTransaction();
       if (!this.upsertRelayLocalInternal(relay, true)) { code = 'local_write_failed'; throw new Error('relay upsert failed'); }
       if (!this.writeRustDeskRelayControlPlaneProfile(relay)) {
@@ -8123,15 +8144,45 @@ export class CloudStore implements CryptoCloudStore {
         code = 'journal_write_failed'; throw new Error('relay journal failed');
       }
       this.store.commit();
-      this.setLastMutation(DataMutationResult.success(relay.id));
-      this.syncRelaysToCloud();
-      return true;
     } catch (err) {
       try { this.store.rollBack(); } catch (_ignored) {}
-      hilog.error(0x0001, 'CloudSync', '[CloudStore] upsertRelay transaction failed: ' + safeError(err));
-      return this.setLastMutation(DataMutationResult.failure(relay.id, code as 'local_write_failed' |
-        'metadata_write_failed' | 'journal_write_failed', 'RustDesk 中继保存未完成'));
+      hilog.error(0x0001, 'RustDeskSave', 'attempt=' + attemptId + ' relay=' +
+        relayFingerprint + ' stage=committing code=' + code +
+        ' committed=false rolled_back=true error=' + safeError(err));
+      this.setLastMutation(DataMutationResult.failure(relay.id, code as 'local_write_failed' |
+        'metadata_write_failed' | 'journal_write_failed', 'RustDesk 中继保存未完成',
+        'committing'));
+      return this.getLastMutationResult();
     }
+
+    hilog.info(0x0001, 'RustDeskSave', 'attempt=' + attemptId + ' relay=' +
+      relayFingerprint + ' stage=verifying');
+    const readback: RustDeskRelayConfig | null = this.loadRelayById(relay.id);
+    if (readback === null) {
+      this.setLastMutation(DataMutationResult.failure(
+        relay.id, 'readback_not_found', 'RustDesk 中继提交后无法回读',
+        'verifying', true));
+      hilog.error(0x0001, 'RustDeskSave', 'attempt=' + attemptId + ' relay=' +
+        relayFingerprint + ' stage=verifying code=readback_not_found committed=true');
+      return this.getLastMutationResult();
+    }
+    if (!rustDeskRelayReadbackMatches(relay, readback)) {
+      this.setLastMutation(DataMutationResult.failure(
+        relay.id, 'readback_mismatch', 'RustDesk 中继提交后校验不一致',
+        'verifying', true));
+      hilog.error(0x0001, 'RustDeskSave', 'attempt=' + attemptId + ' relay=' +
+        relayFingerprint + ' stage=verifying code=readback_mismatch committed=true');
+      return this.getLastMutationResult();
+    }
+    this.setLastMutation(DataMutationResult.success(relay.id));
+    hilog.info(0x0001, 'RustDeskSave', 'attempt=' + attemptId + ' relay=' +
+      relayFingerprint + ' stage=completed code=ok committed=true');
+    this.syncRelaysToCloud();
+    return this.getLastMutationResult();
+  }
+
+  upsertRelay(relay: RustDeskRelayConfig): boolean {
+    return this.upsertRelayResult(relay).ok;
   }
 
   deleteRelay(id: string): boolean {
@@ -8168,6 +8219,17 @@ export class CloudStore implements CryptoCloudStore {
   loadAllRelays(): RustDeskRelayConfig[] {
     // 分布式表已完成端云合并；读取时绝不再把旧 JSON 反向写回云端。
     return this.loadAllRelaysLocal();
+  }
+
+  loadRelayById(id: string): RustDeskRelayConfig | null {
+    if (id.trim().length === 0) { return null; }
+    const relays: RustDeskRelayConfig[] = this.loadAllRelaysLocalInternal(true);
+    for (let i = 0; i < relays.length; i++) {
+      if (relays[i].id === id) {
+        return RustDeskRelayConfig.fromJSON(relays[i].toJSON());
+      }
+    }
+    return null;
   }
 
   // ---- 本地 CRUD (不触发云同步, 供内部和 sync 方法使用) ----

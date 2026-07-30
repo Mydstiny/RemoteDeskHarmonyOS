@@ -16,6 +16,11 @@ import {
   shouldBindLegacyRustDeskHostToRelay
 } from './RustDeskHostConfigPolicy';
 import { shouldKeepDeletedRelay, shouldKeepLocalRelayConfig } from './RustDeskRelaySyncPolicy';
+import { DataMutationResult } from './DataMutationResult';
+import {
+  RustDeskRelaySaveResult,
+  rustDeskRelayIdFingerprint
+} from './RustDeskRelaySavePolicy';
 import {
   serializedSnapshotChanged,
   shouldKeepDeletedHost,
@@ -40,6 +45,7 @@ export class HostSyncService {
   private localRelayObservationAt: Map<string, number> = new Map();
   private deletedRelayAt: Map<string, number> = new Map();
   private lastCloudSnapshotLoadedAt: number = 0;
+  private relaySaveSequence: number = 0;
 
   static getInstance(): HostSyncService {
     if (!HostSyncService.instance) {
@@ -716,31 +722,116 @@ export class HostSyncService {
     return result;
   }
 
-  addRelay(relay: RustDeskRelayConfig): boolean {
+  private nextRelaySaveAttemptId(): string {
+    this.relaySaveSequence++;
+    return Date.now().toString(36) + '-' + this.relaySaveSequence.toString(36);
+  }
+
+  addRelayResult(
+    relay: RustDeskRelayConfig,
+    attemptId: string = ''
+  ): RustDeskRelaySaveResult {
+    const resolvedAttemptId: string = attemptId.trim().length > 0
+      ? attemptId : this.nextRelaySaveAttemptId();
     if (!relay.id) { relay.id = RustDeskRelayConfig.generateId(); }
-    relay.createdAt = Date.now();
-    if (this.ready && !this.cloud.upsertRelay(relay)) { return false; }
+    if (relay.createdAt <= 0) { relay.createdAt = Date.now(); }
+    if (!this.ready) {
+      return RustDeskRelaySaveResult.fromMutation(
+        resolvedAttemptId, relay.id,
+        DataMutationResult.failure(
+          relay.id, 'not_ready', '本地数据库正在准备，草稿已保留', 'waiting_gate'));
+    }
+    const mutation: DataMutationResult =
+      this.cloud.upsertRelayResult(relay, resolvedAttemptId);
+    const result: RustDeskRelaySaveResult =
+      RustDeskRelaySaveResult.fromMutation(
+        resolvedAttemptId, relay.id, mutation,
+        mutation.ok && this.cloud.isCloudAvailable());
+    if (!result.ok) {
+      hilog.warn(0x0001, 'RustDeskSave', 'attempt=' + resolvedAttemptId +
+        ' relay=' + rustDeskRelayIdFingerprint(relay.id) + ' stage=' +
+        result.stage + ' code=' + result.code + ' committed=' +
+        result.localCommitted.toString());
+      return result;
+    }
+    const readback: RustDeskRelayConfig | null = this.cloud.loadRelayById(relay.id);
+    if (readback === null) {
+      return RustDeskRelaySaveResult.fromMutation(
+        resolvedAttemptId, relay.id,
+        DataMutationResult.failure(
+          relay.id, 'readback_not_found', '保存后无法刷新服务器记录',
+          'verifying', true));
+    }
     const observedAt: number = Date.now();
-    if (relay.updatedAt <= 0) { relay.updatedAt = observedAt; }
-    this.localRelayObservationAt.set(relay.id, observedAt);
-    this.deletedRelayAt.delete(relay.id);
-    this.relays.set(relay.id, relay);
-    this.bindUniqueUnboundRustDeskHost(relay);
+    this.localRelayObservationAt.set(readback.id, observedAt);
+    this.deletedRelayAt.delete(readback.id);
+    this.relays.set(readback.id, readback);
+    this.bindUniqueUnboundRustDeskHost(readback);
     this.emitDataChange();
-    return true;
+    hilog.info(0x0001, 'RustDeskSave', 'attempt=' + resolvedAttemptId +
+      ' relay=' + rustDeskRelayIdFingerprint(readback.id) +
+      ' operation=add stage=completed code=ok');
+    return result;
+  }
+
+  addRelay(relay: RustDeskRelayConfig): boolean {
+    return this.addRelayResult(relay).ok;
+  }
+
+  updateRelayResult(
+    relay: RustDeskRelayConfig,
+    attemptId: string = ''
+  ): RustDeskRelaySaveResult {
+    const resolvedAttemptId: string = attemptId.trim().length > 0
+      ? attemptId : this.nextRelaySaveAttemptId();
+    if (!this.relays.has(relay.id)) {
+      return RustDeskRelaySaveResult.fromMutation(
+        resolvedAttemptId, relay.id,
+        DataMutationResult.failure(
+          relay.id, 'not_found', '要编辑的服务器已不存在，请重新载入列表',
+          'waiting_gate'));
+    }
+    if (!this.ready) {
+      return RustDeskRelaySaveResult.fromMutation(
+        resolvedAttemptId, relay.id,
+        DataMutationResult.failure(
+          relay.id, 'not_ready', '本地数据库正在准备，草稿已保留', 'waiting_gate'));
+    }
+    const mutation: DataMutationResult =
+      this.cloud.upsertRelayResult(relay, resolvedAttemptId);
+    const result: RustDeskRelaySaveResult =
+      RustDeskRelaySaveResult.fromMutation(
+        resolvedAttemptId, relay.id, mutation,
+        mutation.ok && this.cloud.isCloudAvailable());
+    if (!result.ok) {
+      hilog.warn(0x0001, 'RustDeskSave', 'attempt=' + resolvedAttemptId +
+        ' relay=' + rustDeskRelayIdFingerprint(relay.id) + ' stage=' +
+        result.stage + ' code=' + result.code + ' committed=' +
+        result.localCommitted.toString());
+      return result;
+    }
+    const readback: RustDeskRelayConfig | null = this.cloud.loadRelayById(relay.id);
+    if (readback === null) {
+      return RustDeskRelaySaveResult.fromMutation(
+        resolvedAttemptId, relay.id,
+        DataMutationResult.failure(
+          relay.id, 'readback_not_found', '保存后无法刷新服务器记录',
+          'verifying', true));
+    }
+    const observedAt: number = Date.now();
+    this.localRelayObservationAt.set(readback.id, observedAt);
+    this.deletedRelayAt.delete(readback.id);
+    this.relays.set(readback.id, readback);
+    this.bindUniqueUnboundRustDeskHost(readback);
+    this.emitDataChange();
+    hilog.info(0x0001, 'RustDeskSave', 'attempt=' + resolvedAttemptId +
+      ' relay=' + rustDeskRelayIdFingerprint(readback.id) +
+      ' operation=update stage=completed code=ok');
+    return result;
   }
 
   updateRelay(relay: RustDeskRelayConfig): boolean {
-    if (!this.relays.has(relay.id)) { return false; }
-    if (this.ready && !this.cloud.upsertRelay(relay)) { return false; }
-    const observedAt: number = Date.now();
-    if (relay.updatedAt <= 0) { relay.updatedAt = observedAt; }
-    this.localRelayObservationAt.set(relay.id, observedAt);
-    this.deletedRelayAt.delete(relay.id);
-    this.relays.set(relay.id, relay);
-    this.bindUniqueUnboundRustDeskHost(relay);
-    this.emitDataChange();
-    return true;
+    return this.updateRelayResult(relay).ok;
   }
 
   removeRelay(id: string): boolean {

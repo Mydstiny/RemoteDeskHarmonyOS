@@ -37,6 +37,14 @@ import { VncGatewayService, VncGatewayView } from '../services/VncGatewayService
 import { VncGatewayValues } from '../services/VncModelPolicy';
 import { vncGatewayAvailability } from '../services/VncGatewayProtocolPolicy';
 import { protocolIcon } from '../services/ProtocolIconPolicy';
+import {
+  RustDeskRelaySaveRecovery,
+  RustDeskRelaySaveResult
+} from '../services/RustDeskRelaySavePolicy';
+import {
+  RustDeskRelaySetupCoordinator,
+  RustDeskRelaySetupDraft
+} from '../services/RustDeskRelaySetupCoordinator';
 
 class TcpTestResult {
   ok: boolean = false;
@@ -77,6 +85,12 @@ export struct RustDeskRelayPage {
   @State formControlPlaneProfile: RustDeskControlPlaneProfile = RUSTDESK_CONTROL_PLANE_DEFAULT;
   @State formTestResult: string = '';
   @State importingRelayConfig: boolean = false;
+  @State relaySaving: boolean = false;
+  @State relaySaveError: string = '';
+  @State relaySaveRecovery: RustDeskRelaySaveRecovery = 'none';
+  @State relaySaveDiagnostic: string = '';
+  @State relayDraftId: string = '';
+  @State relaySaveRevision: number = 0;
   // Server Pro account form and local-only account state
   @State proAccounts: RustDeskProAccountState[] = [];
   @State proRelayId: string = '';
@@ -100,6 +114,8 @@ export struct RustDeskRelayPage {
   private proSync: RustDeskProSyncService = RustDeskProSyncService.getInstance();
   private vncGatewayService: VncGatewayService = VncGatewayService.getInstance();
   private relayImporter: RustDeskRelayImportService = new RustDeskRelayImportService();
+  private relaySetup: RustDeskRelaySetupCoordinator =
+    RustDeskRelaySetupCoordinator.getInstance();
   private dataUnsubscribe: (() => void) | null = null;
   private proDataUnsubscribe: (() => void) | null = null;
   private vncDataUnsubscribe: (() => void) | null = null;
@@ -382,6 +398,7 @@ export struct RustDeskRelayPage {
     if (this.relaySheetClosing) { return; }
     this.menuVisibleRelayId = '';
     this.editingRelayId = relay.id;
+    this.relayDraftId = relay.id;
     this.formIdServer = relay.idServer;
     this.formIdPort = relay.idServerPort;
     this.formRelayServer = relay.relayServer;
@@ -392,6 +409,10 @@ export struct RustDeskRelayPage {
     this.formControlPlaneProfile = relay.controlPlaneProfile;
     this.relayKind = this.relayKindForProfile(relay.controlPlaneProfile);
     this.formTestResult = '';
+    this.relaySaveError = '';
+    this.relaySaveRecovery = 'none';
+    this.relaySaveDiagnostic = '';
+    this.relaySaving = false;
     this.sheetContent = 1;
     this.showSheet = true;
   }
@@ -474,48 +495,47 @@ export struct RustDeskRelayPage {
     this.formRelayServer = ''; this.formRelayPort = 21117;
     this.formApiServer = ''; this.formKey = ''; this.formKeyMode = 'server_public_key';
     this.formControlPlaneProfile = RUSTDESK_CONTROL_PLANE_DEFAULT; this.formTestResult = '';
+    this.relayDraftId = this.relaySetup.nextDraftId();
+    this.relaySaving = false; this.relaySaveError = ''; this.relaySaveRecovery = 'none';
+    this.relaySaveDiagnostic = '';
   }
 
   private doSaveRelay(): string {
-    if (this.formIdServer.trim() === '') {
-      const error = 'ID服务器地址不能为空';
-      promptAction.showToast({ message: error, duration: 2000 }); return error;
-    }
-    if (this.formIdPort <= 0 || this.formIdPort > 65535 ||
-      this.formRelayPort <= 0 || this.formRelayPort > 65535) {
-      const error = '服务器端口必须在 1–65535 之间';
-      promptAction.showToast({ message: error, duration: 2000 }); return error;
-    }
-    if (this.relayKind === 'pro' && this.formApiServer.trim() === '') {
-      const error = 'Server Pro 必须填写 API 地址';
-      promptAction.showToast({ message: error, duration: 2000 }); return error;
-    }
-    const key = resolveRustDeskRelayKey(this.formKey, this.formKeyMode, false);
-    if (!key.ok) {
-      promptAction.showToast({ message: key.error, duration: 2600 }); return key.error;
-    }
+    if (this.relaySaving) { return this.relaySaveError; }
+    this.relaySaveError = '';
+    this.relaySaveRecovery = 'none';
     const isNew: boolean = this.editingRelayId === '';
-    const r = new RustDeskRelayConfig();
-    r.id = isNew ? RustDeskRelayConfig.generateId() : this.editingRelayId;
-    r.idServer = this.formIdServer.trim(); r.idServerPort = this.formIdPort;
-    r.relayServer = this.formRelayServer.trim() === '' ? r.idServer : this.formRelayServer.trim();
-    r.relayPort = this.formRelayPort;
-    r.apiServer = this.formApiServer.trim(); r.key = key.value; r.keyMode = key.mode;
-    r.controlPlaneProfile = this.formControlPlaneProfile;
-    let saved: boolean;
-    if (!isNew) {
-      const existing = this.relays.find((x: RustDeskRelayConfig) => x.id === this.editingRelayId);
-      if (existing) { r.accounts = existing.accounts; }
-      saved = this.srv.updateRelay(r);
-    } else { saved = this.srv.addRelay(r); }
-    if (!saved) {
-      const error = '中继服务器保存失败';
-      promptAction.showToast({ message: error, duration: 2200 });
-      return error;
+    const draft = new RustDeskRelaySetupDraft();
+    draft.relayId = isNew ? this.relayDraftId : this.editingRelayId;
+    draft.idServer = this.formIdServer;
+    draft.idServerPort = this.formIdPort;
+    draft.relayServer = this.formRelayServer;
+    draft.relayPort = this.formRelayPort;
+    draft.apiServer = this.formApiServer;
+    draft.key = this.formKey;
+    draft.keyMode = this.formKeyMode;
+    draft.controlPlaneProfile = this.formControlPlaneProfile;
+    this.relaySaveRevision++;
+    const attemptId: string = 'relay-save-' + Date.now().toString(36) + '-' +
+      this.relaySaveRevision.toString(36);
+    const existing: RustDeskRelayConfig | null = isNew ? null :
+      (this.relays.find((x: RustDeskRelayConfig): boolean =>
+        x.id === this.editingRelayId) ?? null);
+    this.relaySaving = true;
+    const result: RustDeskRelaySaveResult =
+      this.relaySetup.save(draft, existing, attemptId);
+    this.relaySaving = false;
+    this.relayDraftId = draft.relayId;
+    this.relaySaveDiagnostic = result.diagnosticSummary();
+    if (!result.ok) {
+      this.relaySaveError = result.message;
+      this.relaySaveRecovery = result.recovery;
+      if (result.localCommitted) { this.load(); }
+      return result.message;
     }
     this.load();
     if (isNew) {
-      this.savedRelayId = r.id;
+      this.savedRelayId = result.relayId;
       this.sheetContent = 4;
       return '';
     }
@@ -1865,11 +1885,39 @@ export struct RustDeskRelayPage {
           if (this.formTestResult !== '') {
             Text(this.formTestResult).fontSize(12).fontColor(this.formTestResult.startsWith('✓') ? this.accentColor : this.pal().danger).margin({ top: 4 })
           }
+          if (this.relaySaveError !== '') {
+            Column() {
+              Text(this.relaySaveError).fontSize(12).fontColor(this.pal().danger)
+                .fontFamily(this.font()).width('100%')
+              if (this.relaySaveRecovery === 'unlock') {
+                Text('请先在“数据安全”中解锁；返回后草稿仍会保留。')
+                  .fontSize(11).fontColor(this.pal().text2).fontFamily(this.font())
+                  .width('100%').margin({ top: 4 })
+              } else if (this.relaySaveRecovery === 'wait_for_restore') {
+                Text('等待恢复完成后点击重试；无需重新填写。')
+                  .fontSize(11).fontColor(this.pal().text2).fontFamily(this.font())
+                  .width('100%').margin({ top: 4 })
+              } else if (this.relaySaveRecovery === 'review_account') {
+                Text('该记录属于另一账号；请切回原账号，或关闭后重新添加。')
+                  .fontSize(11).fontColor(this.pal().text2).fontFamily(this.font())
+                  .width('100%').margin({ top: 4 })
+              }
+              if (this.relaySaveDiagnostic !== '') {
+                Text(this.relaySaveDiagnostic).fontSize(10).fontColor(this.pal().text3)
+                  .fontFamily(this.font()).width('100%').margin({ top: 5 })
+              }
+            }.width('100%').padding(10).borderRadius(8)
+              .backgroundColor(this.pal().danger + '12').margin({ top: 6 })
+          }
           Row() {
             Button('测试连接').width('48%').height(36).fontSize(13).backgroundColor(this.pal().surface).fontColor(this.accentColor).borderRadius(8)
-              .onClick(() => { this.doTestConnection(); })
-            Button('保存').width('48%').height(36).fontSize(13).fontWeight(FontWeight.Medium)
-              .backgroundColor(this.accentColor).fontColor('#FFFFFF').borderRadius(8).margin({ left: 12 })
+              .enabled(!this.relaySaving).onClick(() => { this.doTestConnection(); })
+            Button(this.relaySaving ? '保存中…' :
+              (this.relaySaveError === '' ? '保存' : '重试保存'))
+              .width('48%').height(36).fontSize(13).fontWeight(FontWeight.Medium)
+              .backgroundColor(this.relaySaving ? this.pal().text3 : this.accentColor)
+              .fontColor('#FFFFFF').borderRadius(8).margin({ left: 12 })
+              .enabled(!this.relaySaving)
               .onClick(() => { this.doSaveRelay(); })
           }.width('100%').margin({ top: 12 })
         }.width('100%')

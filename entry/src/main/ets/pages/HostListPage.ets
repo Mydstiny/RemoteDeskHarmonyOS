@@ -8669,9 +8669,6 @@ struct HostListPage {
         defaultDirectPort: this.rustdeskDirectPort,
         onBackToProtocols: (): void => { this.modernAddProtocol = ''; this.addSheetShowsModernPicker = true; },
         onStartLanScan: (): void => { this.startLanScan(); },
-        onAddRelay: (relay: RustDeskRelayConfig): boolean => {
-          return this.srv.addRelay(relay);
-        },
         onSave: (host: RemoteHost, connectNow: boolean): void => {
           this.saveHostFromAddFlow(host, connectNow);
         }
