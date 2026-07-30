@@ -5,7 +5,7 @@ Updated: 2026-07-30 Asia/Shanghai
 ## Active cloud-data lifecycle handoff
 
 - Branch: `codex/cloud-data-lifecycle-root-fix`; base:
-  `main@23940521a`; implementation checkpoint: `382fdaaa8`.
+  `main@23940521a`; implementation checkpoint: `88a6128`.
 - Plan:
   `docs/superpowers/plans/2026-07-28-cloud-data-lifecycle-upgrade-roadmap.md`.
 - Core local implementation is complete for account transitions, per-account
@@ -13,7 +13,7 @@ Updated: 2026-07-30 Asia/Shanghai
   sensitive transfer validation, portable backup v3 and legacy partial
   restore, exclusive crypto lifecycle, Asset Store credential storage,
   device-local trust and legacy shared-store/relay/VNC migration quarantine.
-- D-020 remediation through `382fdaaa8` requires a fresh OS distributed-account API
+- D-020 remediation through `88a6128` requires a fresh OS distributed-account API
   result in addition to Account Kit, waits for cloud-first before publishing
   account ready, preserves pre-bootstrap record journal intent, persists a
   bounded cross-table download rollback transaction, blocks ordinary/VNC
@@ -31,10 +31,25 @@ Updated: 2026-07-30 Asia/Shanghai
   checkpoint is rebased to the authoritative VNC mirror plus the exact local
   settings/journal/retry/selection before-image. Promotion, both durable phase
   writes, barrier release and checkpoint deletion share one RDB transaction;
-  automatic upload begins only after commit. Faults and process interruption
-  restore under the barrier, never physically delete a deterministic settings
-  ID by assumption and retain checkpoint plus `recovery_required` if complete
-  restoration cannot be proven.
+  automatic upload begins only after commit. The code-level recovery path
+  restores under the barrier, never physically deletes a deterministic
+  settings ID by assumption and retains checkpoint plus `recovery_required`
+  if complete restoration cannot be proven; real process-interruption evidence
+  is not claimed.
+- The final point review's P0 and two P1 findings are remediated in
+  `df2a6b4` and `88a6128`. VNC checkpoint creation, settings mutation,
+  cloud-first/finalization and full-store rollback now occupy one exclusive
+  coordinator queue item under the same account/store/generation lease, so the
+  next normal/event/retry request waits until recovery finishes. Cloud-first
+  completion atomically rebases the authoritative VNC checkpoint before
+  journal replay and ordinary checkpoint deletion. Security metadata reads use
+  strict present/absent/error results with read-back proof; `querySync` errors
+  block native-first, promotion, retry, bootstrap publication and post-commit
+  upload success instead of impersonating an absent row.
+- Policy fault injection covers rebase-write failure, commit kill-points,
+  post-commit authoritative recovery state and metadata-query exceptions. This
+  is code-level evidence only; real process kill, reboot and low-storage
+  recovery are still NO-GO acceptance items.
 - API 23 has no signed Account Kit/distributed-account link object. The
   implementation accepts only exact current ID equality and otherwise blocks
   distributed-table registration and transfer. This is deliberately
@@ -55,7 +70,7 @@ Updated: 2026-07-30 Asia/Shanghai
   REST sync remain disabled.
 - No sub-agent was created for this remediation. A fresh final independent
   D-020 point review by the main agent remains a merge blocker.
-- Preserve the unrelated user-owned SSH, Moonlight, RustDesk and VNC plan
+- Preserve the unrelated user-owned SSH, Moonlight, RustDesk, VNC and RDP plan
   edits; do not stage, reset, stash or overwrite them.
 
 ## Archived 2026-07-23 handoff

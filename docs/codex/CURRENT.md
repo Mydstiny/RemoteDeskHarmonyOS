@@ -6,7 +6,7 @@ Updated: 2026-07-30 Asia/Shanghai
 
 - Repository: Mydstiny/RemoteDeskHarmonyOS
 - Active task branch: `codex/cloud-data-lifecycle-root-fix`.
-- Base: `main@23940521a`; implementation checkpoint: `382fdaaa8`.
+- Base: `main@23940521a`; implementation checkpoint: `88a6128`.
 - Scope: root remediation of account/data ownership, per-account physical RDB stores, cloud bootstrap/sync lifecycle, local backup v3/legacy partial restore, encryption lifecycle, secure credential storage, device-local trust and old shared-store/relay/VNC migration.
 - Entity plan: `docs/superpowers/plans/2026-07-28-cloud-data-lifecycle-upgrade-roadmap.md`.
 - No remote push, PR or merge has been performed. No sub-agent was created for
@@ -48,11 +48,28 @@ Updated: 2026-07-30 Asia/Shanghai
   exact cloud mirror, deterministic settings row, mutation journal/retry state,
   selector and barrier. Promotion, phase persistence, barrier release and
   checkpoint deletion share one RDB commit; upload is queued only after that
-  commit. A failed commit restores the before-image while upload stays blocked,
-  and a process interruption is recovered at the next physical-store open.
-  Incomplete restoration retains the checkpoint and pending barrier and enters
-  a distinct `recovery_required` phase that an unrelated late cloud callback
-  cannot release.
+  commit. The entire VNC settings mutation, its checkpoint establishment,
+  cloud-first, promotion/finalization and any full-store rollback now execute
+  as one coordinator queue item under the same account/store/generation lease;
+  ordinary, event and retry sync requests cannot overlap the restore and the
+  next queue item waits for it to finish. A failed commit restores the
+  before-image while upload stays blocked. The startup code has a durable
+  recovery path for process interruption, but real kill/reboot/low-storage
+  evidence remains an external release blocker. Incomplete restoration retains
+  the checkpoint and pending barrier and enters a distinct
+  `recovery_required` phase that an unrelated late cloud callback cannot
+  release.
+- Selection cloud-first completion now rebases the authoritative VNC
+  checkpoint, replays only the captured local mutation journal and deletes the
+  ordinary download checkpoint in one RDB transaction. A process stop before
+  that commit leaves both old checkpoints; a stop after commit leaves only the
+  authoritative VNC image. Pure fault-injection tests cover rebase-write
+  failure, commit kill-points and the post-commit authoritative recovery image.
+- Security metadata reads are strict `present` / `absent` / `error` results.
+  A `querySync` exception is never treated as an absent checkpoint or barrier:
+  it blocks native-first, promotion, automatic retry, bootstrap publication and
+  post-commit upload success. Critical checkpoint, barrier, durable lifecycle
+  and bootstrap writes also require a matching read-back before advancing.
 - A zero-row cloud-first result is accepted only after the independently bound
   account, distributed-table registration, current lease and exact table's
   successful terminal progress jointly prove an authoritative result. This
@@ -74,18 +91,20 @@ Updated: 2026-07-30 Asia/Shanghai
 Implementation commits: `6a9d430b1`, `4cdc5b1df`, `d2f365c32`, `d51214577`,
 `50ce7b36e`, `1d0f03848`, `d5ccaa73f`, `623cdd378`, `8fb395c41`,
 `beebc662e`, `89f4b7574`, `f5adf90e7`, `8164dd5`, `2914363`,
-`382fdaaa8`.
+`382fdaaa8`, `df2a6b4`, `88a6128`.
 
 ## Current verification
 
 - Release-candidate metadata is now `1.0.9 / 1000009`; application manifest, in-app release notes, user guide, version resource, SBOM and SBOM generator agree.
 - `default@OhosTestCompileArkTS`: passed in the current session for
-  `382fdaaa8`; existing dependency/deprecation warnings remain.
+  `88a6128`; existing dependency/deprecation warnings remain.
 - `assembleHap`: `BUILD SUCCESSFUL` in the current session; signed HAP
   generated.
 - `git diff --check` and staged diff checks: passed.
 - Light open-source compliance: passed in the current session.
-- Data-lifecycle policy/matrix tests are included in the default ArkTS test compilation.
+- Data-lifecycle policy/matrix tests, including coordinator exclusivity,
+  authoritative checkpoint kill-points and `querySync` tri-state fault
+  injection, are included in the default ArkTS test compilation.
 - `ohosTest@OhosTestCompileArkTS` remains unavailable because the task is not registered (`00306054`); no test execution success is claimed.
 - A connected device was inspected read-only and currently has `1.0.8 / 1000008`. The `1.0.9` HAP was not installed because replacing an app that may contain real user data requires explicit authorization and a recoverable test procedure.
 
@@ -105,13 +124,14 @@ Implementation commits: `6a9d430b1`, `4cdc5b1df`, `d2f365c32`, `d51214577`,
 - Validate Asset Store Kit behavior and actual RustDesk Pro token alias removal
   on API 23 hardware across lock, logout, account switch, restart,
   uninstall/reinstall and restore.
-- The third independent D-020 point review found one remaining VNC transaction
-  P1. It is addressed locally in `382fdaaa8`; no review success is claimed
-  until the main agent performs and records a fresh final point review.
+- The final independent D-020 point review found one P0 and two P1 findings.
+  They are addressed locally in `df2a6b4` and `88a6128`; no review success is
+  claimed until the main agent performs and records a fresh final point review.
 
 ## Preserved user changes
 
-- Unrelated user-owned SSH, Moonlight, RustDesk and VNC plan edits remain unstaged and were not included in the cloud-data commits.
+- Unrelated user-owned SSH, Moonlight, RustDesk, VNC and RDP plan edits remain
+  unstaged and were not included in the cloud-data commits.
 
 ## Previous implementation archive
 

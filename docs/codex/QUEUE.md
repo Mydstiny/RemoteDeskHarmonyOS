@@ -6,7 +6,7 @@ Updated: 2026-07-30 Asia/Shanghai
 
 - Cloud/data lifecycle root fix is active on
   `codex/cloud-data-lifecycle-root-fix` at implementation checkpoint
-  `382fdaaa8`. The signed upgrade-test candidate is `1.0.9 / 1000009`.
+  `88a6128`. The signed upgrade-test candidate is `1.0.9 / 1000009`.
   D-020 remediation adds independent OS distributed-account verification,
   an awaitable login/account-switch cloud-first bootstrap, record-level journal
   reconciliation, a durable bounded cloud-download before-image, persisted
@@ -19,15 +19,23 @@ Updated: 2026-07-30 Asia/Shanghai
   review's final VNC P1 is also closed locally: an independently bound durable
   checkpoint now protects the authoritative VNC mirror/settings/journal/retry
   before-image; promotion, phase persistence, barrier release and checkpoint
-  deletion commit atomically, process interruption recovers fail-closed, and
-  no secret-scope upload is scheduled before the checkpoint and barrier are
-  durably gone. Current ArkTS/test compilation, signed `assembleHap`, Light and
-  diff checks pass.
+  deletion commit atomically, the startup code has a fail-closed interruption
+  recovery path, and no secret-scope upload is scheduled before the checkpoint
+  and barrier are durably gone. The final review's P0 and two P1 findings are
+  closed locally in `df2a6b4` and `88a6128`: checkpoint establishment, the
+  entire VNC settings
+  mutation and full-store recovery share one exclusive coordinator queue item
+  and lease; the authoritative VNC checkpoint rebase/journal replay/ordinary
+  checkpoint deletion share the cloud-first completion transaction; metadata
+  uses strict present/absent/error reads and query errors block native-first,
+  promotion, retry and post-commit success. Current ArkTS/test compilation,
+  signed `assembleHap`, Light and diff checks pass.
   Release remains NO-GO pending proof of Account Kit UnionID/distributed-account
   ID correspondence on API 23, real Huawei Cloud/two-device/A-B account/old
   APK/fault-injection/Document Provider/Asset Store evidence and a fresh final
-  independent D-020 point review. If API 23 cannot prove the identity
-  correspondence, cloud
+  independent D-020 point review. Pure fault injection is not a substitute for
+  real process-kill/reboot/low-storage evidence. If API 23 cannot prove the
+  identity correspondence, cloud
   remains fail-closed. System BackupExtension, remote destructive crypto and
   legacy REST sync stay disabled. Do not start a sub-agent for this remediation.
   The connected device still has `1.0.8 / 1000008`; do not perform an
