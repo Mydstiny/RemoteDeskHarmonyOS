@@ -380,6 +380,72 @@ export function cloudSyncOperationFinished(
 }
 
 /**
+ * A caller-owned durable transaction still has a checkpoint and fail-closed
+ * barrier, but could not restore its before-image. Unlike a timed-out native
+ * operation, this state must not be released by an unrelated late callback.
+ */
+export function cloudSyncExternalRecoveryRequired(
+  state: CloudSyncDurableState,
+  failedTables: string[],
+  now: number = Date.now()
+): CloudSyncDurableState {
+  const next: CloudSyncDurableState =
+    cloneCloudSyncDurableState(state);
+  next.revision = state.revision + 1;
+  next.phase = 'recovery_required';
+  next.lastFailureKind = 'unknown';
+  next.failedTables = uniqueNonBlank(failedTables);
+  next.updatedAt = now;
+  return next;
+}
+
+/**
+ * Release only the exact external recovery tables that were durably restored.
+ * Unknown/corrupt recovery states and unrelated failures remain fail-closed.
+ */
+export function cloudSyncExternalRecoverySettled(
+  state: CloudSyncDurableState,
+  binding: CloudAccountBinding,
+  transferEnabled: boolean,
+  restoredTables: string[],
+  now: number = Date.now()
+): CloudSyncDurableState {
+  const next: CloudSyncDurableState =
+    cloneCloudSyncDurableState(state);
+  const restored: string[] =
+    uniqueNonBlank(restoredTables);
+  if (state.phase !== 'recovery_required' ||
+    state.lastFailureKind !== 'unknown' ||
+    state.failedTables.length === 0) {
+    return next;
+  }
+  const remaining: string[] = [];
+  let matched: boolean = false;
+  for (let i = 0; i < state.failedTables.length; i++) {
+    if (restored.indexOf(state.failedTables[i]) >= 0) {
+      matched = true;
+    } else {
+      remaining.push(state.failedTables[i]);
+    }
+  }
+  if (!matched) { return next; }
+  next.revision = state.revision + 1;
+  next.failedTables = remaining;
+  next.updatedAt = now;
+  if (remaining.length === 0) {
+    next.lastFailureKind = 'none';
+    next.phase =
+      transferEnabled &&
+      cloudAccountBindingIsValid(binding)
+        ? settledPhase(next)
+        : bindingPhase(
+          binding, transferEnabled,
+          state.bootstrapCompleted);
+  }
+  return next;
+}
+
+/**
  * A watchdog timeout is only recoverable after the exact native operation
  * later reaches a terminal callback. This transition does not claim that the
  * timed-out transfer succeeded; it merely permits the serialized coordinator

@@ -6,6 +6,8 @@ import {
   cloudSyncBootstrapCompleted,
   cloudSyncDownloadAllowed,
   cloudSyncDurableStateWithIntents,
+  cloudSyncExternalRecoveryRequired,
+  cloudSyncExternalRecoverySettled,
   cloudSyncIndeterminateSettled,
   cloudSyncOperationFinished,
   cloudSyncOperationStarted,
@@ -100,6 +102,42 @@ export default function cloudSyncLifecyclePolicyTest(): void {
       expect(terminal.lastFailureKind).assertEqual('indeterminate');
       expect(cloudSyncAutomaticUploadAllowed(terminal)).assertTrue();
     });
+
+    it('keeps_external_checkpoint_recovery_distinct_and_releases_only_the_restored_table',
+      0, (): void => {
+        const initial: CloudSyncDurableState =
+          newCloudSyncDurableState(
+            binding(), true, true, 1);
+        const required: CloudSyncDurableState =
+          cloudSyncExternalRecoveryRequired(
+            initial,
+            ['vncrecord', 'remotehosts'], 2);
+        expect(required.phase)
+          .assertEqual('recovery_required');
+        expect(required.lastFailureKind)
+          .assertEqual('unknown');
+        expect(cloudSyncAutomaticUploadAllowed(
+          required)).assertFalse();
+
+        const partial: CloudSyncDurableState =
+          cloudSyncExternalRecoverySettled(
+            required, binding(), true,
+            ['vncrecord'], 3);
+        expect(partial.phase)
+          .assertEqual('recovery_required');
+        expect(partial.failedTables.length)
+          .assertEqual(1);
+        expect(partial.failedTables[0])
+          .assertEqual('remotehosts');
+
+        const settled: CloudSyncDurableState =
+          cloudSyncExternalRecoverySettled(
+            partial, binding(), true,
+            ['remotehosts'], 4);
+        expect(settled.phase).assertEqual('ready');
+        expect(settled.lastFailureKind)
+          .assertEqual('none');
+      });
 
     it('rejects_a_durable_state_from_another_physical_owner_store', 0, (): void => {
       const foreign: CloudSyncDurableState =

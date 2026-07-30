@@ -187,12 +187,18 @@ import {
 } from './CloudDownloadTransactionPolicy';
 import {
   CloudSelectionReenablePhase,
+  VncSelectionFinalizeResult,
   cloudSelectionBarrierAfterRollback,
   cloudSelectionAfterAuthoritativePull,
   cloudSelectionAfterLocalPromotion,
   cloudSelectionLocalPromotionAllowed,
   cloudSelectionNativeFirstAllowed,
-  normalizeCloudSelectionReenablePhase
+  executeVncSelectionFinalize,
+  normalizeCloudSelectionReenablePhase,
+  vncSelectionPostCommitUploadAllowed,
+  vncSelectionRecoveryBarrier,
+  vncSettingsRollbackJournal,
+  vncSettingsRollbackRows
 } from './CloudSelectionReenablePolicy';
 import {
   CloudBootstrapRecordReconcileAction,
@@ -200,7 +206,10 @@ import {
 } from './CloudBootstrapReconcilePolicy';
 import {
   CloudSyncDurableState,
-  corruptedCloudSyncDurableState
+  cloudSyncExternalRecoveryRequired,
+  cloudSyncExternalRecoverySettled,
+  corruptedCloudSyncDurableState,
+  recoverCloudSyncDurableState
 } from './CloudSyncLifecyclePolicy';
 import {
   CryptoCommittedState,
@@ -248,6 +257,8 @@ const CLOUD_BOOTSTRAP_COMPLETED_KEY: string = 'cloud_bootstrap_completed_v1';
 const CLOUD_SYNC_DURABLE_STATE_KEY: string = 'cloud_sync_durable_state_v1';
 const CLOUD_DOWNLOAD_TRANSACTION_KEY: string =
   'cloud_download_transaction_v1';
+const VNC_SELECTION_REENABLE_TRANSACTION_KEY:
+  string = 'vnc_selection_reenable_transaction_v1';
 const CLOUD_SELECTION_REENABLE_BARRIERS_KEY: string =
   'cloud_selection_reenable_barriers_v1';
 const CRYPTO_LIFECYCLE_DURABLE_STATE_KEY: string =
@@ -337,6 +348,20 @@ interface CloudDownloadTransactionPayload {
   metadata: Array<Record<string, string>>;
   mutationJournal: Array<Record<string, string>>;
   localTables: Record<string, Array<Record<string, string>>>;
+}
+
+interface VncSelectionReenableTransactionPayload
+  extends CloudDownloadTransactionPayload {
+  stage: string;
+  previousScopes: string[];
+  previousBarrier: string;
+  settingsId: string;
+}
+
+interface VncSelectionReenableCheckpoint {
+  raw: string;
+  envelope: CloudDownloadTransactionEnvelope;
+  payload: VncSelectionReenableTransactionPayload;
 }
 
 export class CloudStore implements CryptoCloudStore {
@@ -706,6 +731,11 @@ export class CloudStore implements CryptoCloudStore {
       this.initialized = true;
       this.syncSelection.init(context, this.currentScopeToken.ownerScopeId);
       this.vncSyncSelection.init(context, this.currentScopeToken.ownerScopeId);
+      if (!(await this
+        .recoverPendingVncSelectionReenableTransaction())) {
+        throw new Error(
+          'pending VNC selection transaction recovery failed');
+      }
       const lease: AccountSessionLease =
         cloneAccountSessionLease(this.currentLease);
       this.cryptoLifecycleState =
@@ -1022,12 +1052,111 @@ export class CloudStore implements CryptoCloudStore {
       barriers);
   }
 
+  /**
+   * Establish the fail-closed VNC settings transaction before either the
+   * logical selector or deterministic settings row is changed. The same RDB
+   * commit writes the checkpoint and pending barrier, so a process death can
+   * never expose an enabled secret scope without a recovery record.
+   */
+  beginVncSelectionReenableTransaction(
+    previousScopes: string[],
+    previousBarrier:
+      CloudSelectionReenablePhase | null,
+    settingsId: string
+  ): boolean {
+    if (!this.store ||
+      settingsId.trim() === '' ||
+      this.readLocalMetadata(
+        VNC_SELECTION_REENABLE_TRANSACTION_KEY) !== '') {
+      return false;
+    }
+    try {
+      this.store.beginTransaction();
+      const base: CloudDownloadTransactionPayload =
+        this.captureCloudDownloadPayload();
+      const payload:
+        VncSelectionReenableTransactionPayload = {
+        snapshot: base.snapshot,
+        extensions: base.extensions,
+        metadata: base.metadata,
+        mutationJournal: base.mutationJournal,
+        localTables: base.localTables,
+        stage: 'prepared',
+        previousScopes: previousScopes.slice(),
+        previousBarrier:
+          previousBarrier === null
+            ? '' : previousBarrier,
+        settingsId
+      };
+      const envelope:
+        CloudDownloadTransactionEnvelope | null =
+        cloudDownloadTransactionEnvelope(
+          'vnc_scope_reenable',
+          this.currentScopeToken.ownerScopeId,
+          this.currentScopeToken.storeIdentity,
+          this.currentScopeToken.generation,
+          JSON.stringify(payload));
+      if (envelope === null ||
+        !this.writeLocalMetadata(
+          VNC_SELECTION_REENABLE_TRANSACTION_KEY,
+          JSON.stringify(envelope))) {
+        throw new Error(
+          'VNC selection checkpoint persistence failed');
+      }
+      const barriers: Record<string, string> =
+        this.selectionReenableBarriers();
+      barriers[VNC_CLOUD_TABLE] = 'pending_pull';
+      if (!this.persistSelectionReenableBarriers(
+        barriers)) {
+        throw new Error(
+          'VNC pending barrier persistence failed');
+      }
+      this.store.commit();
+      return true;
+    } catch (err) {
+      try { this.store.rollBack(); } catch (_ignored) {}
+      hilog.error(0x0001, 'CloudSync',
+        'VNC scope checkpoint 建立失败: ' +
+        safeError(err));
+      return false;
+    }
+  }
+
   async requestSelectionReenableCloudFirst(
     table: string
   ): Promise<CloudSyncOperationResult> {
     const result: CloudSyncOperationResult =
       await CloudSyncCoordinator.getInstance()
         .requestSelectionReenableCloudFirst(table);
+    const vncTransaction: boolean =
+      table === VNC_CLOUD_TABLE &&
+      this.readLocalMetadata(
+        VNC_SELECTION_REENABLE_TRANSACTION_KEY) !== '';
+    if (vncTransaction) {
+      let finalized: boolean = false;
+      if (result.ok &&
+        this.stageAuthoritativeVncSelectionBeforeImage()) {
+        finalized =
+          this.finalizeVncSelectionReenableTransaction();
+      }
+      if (result.ok && finalized) {
+        return result;
+      }
+      const restored: boolean =
+        await this
+          .rollbackVncSelectionReenableTransaction();
+      return {
+        ok: false,
+        source: result.source,
+        tables: result.tables.slice(),
+        failedTables: result.failedTables.length > 0
+          ? result.failedTables.slice() : [table],
+        rollbackFailed:
+          result.rollbackFailed || !restored,
+        failureKind: result.failureKind === 'none'
+          ? 'unknown' : result.failureKind
+      };
+    }
     if (!result.ok) { return result; }
     if (!this.markSelectionReenablePulled(
       result.tables.length > 0 ? result.tables : [table]) ||
@@ -1358,6 +1487,355 @@ export class CloudStore implements CryptoCloudStore {
       barriers);
   }
 
+  private captureCloudDownloadPayload():
+    CloudDownloadTransactionPayload {
+    return {
+      snapshot: this.exportAllTableRows(),
+      extensions: this.exportLocalExtensionRows(),
+      metadata: this.exportLocalMetadataRows(),
+      mutationJournal:
+        this.exportMutationJournalRows(),
+      localTables: this.exportAllLocalTableRows()
+    };
+  }
+
+  private readVncSelectionReenableCheckpoint():
+    VncSelectionReenableCheckpoint | null {
+    const raw: string = this.readLocalMetadata(
+      VNC_SELECTION_REENABLE_TRANSACTION_KEY);
+    if (raw === '') { return null; }
+    const envelope: CloudDownloadTransactionEnvelope | null =
+      parseCloudDownloadTransactionEnvelope(
+        raw,
+        this.currentScopeToken.ownerScopeId,
+        this.currentScopeToken.storeIdentity,
+        this.currentScopeToken.generation);
+    if (envelope === null ||
+      envelope.operation !==
+        'vnc_scope_reenable') {
+      return null;
+    }
+    try {
+      const payload:
+        VncSelectionReenableTransactionPayload =
+        JSON.parse(envelope.payloadJson) as
+          VncSelectionReenableTransactionPayload;
+      if ((payload.stage !== 'prepared' &&
+        payload.stage !== 'authoritative') ||
+        !Array.isArray(payload.previousScopes) ||
+        payload.settingsId.trim() === '' ||
+        (payload.previousBarrier !== '' &&
+          normalizeCloudSelectionReenablePhase(
+            payload.previousBarrier) === null)) {
+        return null;
+      }
+      for (let i = 0;
+        i < payload.previousScopes.length; i++) {
+        if (typeof payload.previousScopes[i] !==
+          'string') {
+          return null;
+        }
+      }
+      return { raw, envelope, payload };
+    } catch (_error) {
+      return null;
+    }
+  }
+
+  private cloneMetadataRow(
+    row: Record<string, string>
+  ): Record<string, string> {
+    const result: Record<string, string> = {};
+    const keys: string[] = Object.keys(row);
+    for (let i = 0; i < keys.length; i++) {
+      result[keys[i]] = row[keys[i]];
+    }
+    return result;
+  }
+
+  private metadataRow(
+    rows: Array<Record<string, string>>,
+    key: string
+  ): Record<string, string> | null {
+    for (let i = 0; i < rows.length; i++) {
+      if (rows[i]['key'] === key) {
+        return this.cloneMetadataRow(rows[i]);
+      }
+    }
+    return null;
+  }
+
+  private metadataWithoutKeys(
+    rows: Array<Record<string, string>>,
+    keys: string[]
+  ): Array<Record<string, string>> {
+    const result: Array<Record<string, string>> = [];
+    for (let i = 0; i < rows.length; i++) {
+      if (keys.indexOf(rows[i]['key'] || '') < 0) {
+        result.push(
+          this.cloneMetadataRow(rows[i]));
+      }
+    }
+    return result;
+  }
+
+  private metadataWithVncBarrier(
+    rows: Array<Record<string, string>>,
+    phase: CloudSelectionReenablePhase | null
+  ): Array<Record<string, string>> {
+    const result: Array<Record<string, string>> =
+      this.metadataWithoutKeys(
+        rows,
+        [CLOUD_SELECTION_REENABLE_BARRIERS_KEY]);
+    const current: Record<string, string> | null =
+      this.metadataRow(
+        rows,
+        CLOUD_SELECTION_REENABLE_BARRIERS_KEY);
+    let barriers: Record<string, string> = {};
+    if (current !== null) {
+      try {
+        barriers = JSON.parse(
+          current['value'] || '{}') as
+            Record<string, string>;
+      } catch (_error) {
+        barriers = {};
+      }
+    }
+    if (phase === null) {
+      barriers =
+        this.selectionReenableBarriersWithout(
+          barriers, [VNC_CLOUD_TABLE]);
+    } else {
+      barriers[VNC_CLOUD_TABLE] = phase;
+    }
+    if (Object.keys(barriers).length > 0) {
+      const row: Record<string, string> = {};
+      row['key'] =
+        CLOUD_SELECTION_REENABLE_BARRIERS_KEY;
+      row['value'] = JSON.stringify(barriers);
+      row['updatedat'] = Date.now().toString();
+      result.push(row);
+    }
+    return result;
+  }
+
+  /**
+   * Once cloud-first has committed, replace the prepared checkpoint with a
+   * rollback image that preserves the authoritative cloud mirror. The
+   * pre-save local settings row, selector barrier and its journal entries are
+   * spliced back into that image so finalization failure undoes only the
+   * user's uncommitted scope change.
+   */
+  private stageAuthoritativeVncSelectionBeforeImage():
+    boolean {
+    if (!this.store) { return false; }
+    const checkpoint:
+      VncSelectionReenableCheckpoint | null =
+      this.readVncSelectionReenableCheckpoint();
+    if (checkpoint === null ||
+      checkpoint.payload.stage !== 'prepared') {
+      return false;
+    }
+    try {
+      this.store.beginTransaction();
+      const current: CloudDownloadTransactionPayload =
+        this.captureCloudDownloadPayload();
+      const rollbackRows = vncSettingsRollbackRows(
+        current.snapshot[VNC_CLOUD_TABLE] || [],
+        current.localTables[VNC_LOCAL_TABLE] || [],
+        checkpoint.payload.localTables[
+          VNC_LOCAL_TABLE] || [],
+        checkpoint.payload.settingsId);
+      current.snapshot[VNC_CLOUD_TABLE] =
+        rollbackRows.cloudRows;
+      current.localTables[VNC_LOCAL_TABLE] =
+        rollbackRows.localRows;
+      current.mutationJournal =
+        vncSettingsRollbackJournal(
+          current.mutationJournal,
+          checkpoint.payload.mutationJournal,
+          checkpoint.payload.settingsId,
+          VNC_CLOUD_TABLE, VNC_LOCAL_TABLE);
+      const previousBarrier:
+        CloudSelectionReenablePhase | null =
+        checkpoint.payload.previousBarrier === ''
+          ? null
+          : normalizeCloudSelectionReenablePhase(
+            checkpoint.payload.previousBarrier);
+      current.metadata =
+        this.metadataWithVncBarrier(
+          this.metadataWithoutKeys(
+            current.metadata,
+            [
+              VNC_SELECTION_REENABLE_TRANSACTION_KEY,
+              CLOUD_DOWNLOAD_TRANSACTION_KEY
+            ]),
+          previousBarrier);
+      const next:
+        VncSelectionReenableTransactionPayload = {
+        snapshot: current.snapshot,
+        extensions: current.extensions,
+        metadata: current.metadata,
+        mutationJournal:
+          current.mutationJournal,
+        localTables: current.localTables,
+        stage: 'authoritative',
+        previousScopes:
+          checkpoint.payload.previousScopes.slice(),
+        previousBarrier:
+          checkpoint.payload.previousBarrier,
+        settingsId:
+          checkpoint.payload.settingsId
+      };
+      const envelope:
+        CloudDownloadTransactionEnvelope | null =
+        cloudDownloadTransactionEnvelope(
+          'vnc_scope_reenable',
+          this.currentScopeToken.ownerScopeId,
+          this.currentScopeToken.storeIdentity,
+          this.currentScopeToken.generation,
+          JSON.stringify(next));
+      if (envelope === null ||
+        !this.writeLocalMetadata(
+          VNC_SELECTION_REENABLE_TRANSACTION_KEY,
+          JSON.stringify(envelope))) {
+        throw new Error(
+          'authoritative VNC checkpoint persistence failed');
+      }
+      this.store.commit();
+      return true;
+    } catch (err) {
+      try { this.store.rollBack(); } catch (_ignored) {}
+      hilog.error(0x0001, 'CloudSync',
+        'VNC 权威 before-image 建立失败: ' +
+        safeError(err));
+      return false;
+    }
+  }
+
+  private persistVncSelectionBarrierPhase(
+    expected: CloudSelectionReenablePhase,
+    next: CloudSelectionReenablePhase
+  ): boolean {
+    const barriers: Record<string, string> =
+      this.selectionReenableBarriers();
+    if (barriers[VNC_CLOUD_TABLE] !== expected) {
+      return false;
+    }
+    barriers[VNC_CLOUD_TABLE] = next;
+    return this.persistSelectionReenableBarriers(
+      barriers);
+  }
+
+  private promoteVncSelectionWithinTransaction(
+    records: VncRecord[]
+  ): boolean {
+    const physicalTableSelected: boolean =
+      this.syncSelection.selectedBusinessTables()
+        .indexOf(VNC_CLOUD_TABLE) >= 0;
+    if (!physicalTableSelected) { return false; }
+    for (let i = 0; i < records.length; i++) {
+      const record: VncRecord = records[i];
+      const selected: boolean =
+        this.vncSyncSelection.isRecordTypeSelected(
+          record.recordType);
+      const secretAllowed: boolean =
+        record.recordType !== 'secret' ||
+        this.vncSyncSelection.secretsAllowed();
+      if (selected && secretAllowed) {
+        if (!this.upsertVncRecordInternal(
+          record, false) ||
+          !this.upsertVncRecordInternal(
+            record, true) ||
+          !this.recordLocalMutation(
+            VNC_CLOUD_TABLE, record.id,
+            'scope_promote')) {
+          return false;
+        }
+      } else if (!this.upsertVncRecordInternal(
+        record, true)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  /**
+   * Promotion, phase changes, release and checkpoint deletion form one RDB
+   * commit. Automatic upload is scheduled only after that commit.
+   */
+  private finalizeVncSelectionReenableTransaction():
+    boolean {
+    if (!this.store) { return false; }
+    const checkpoint:
+      VncSelectionReenableCheckpoint | null =
+      this.readVncSelectionReenableCheckpoint();
+    if (checkpoint === null ||
+      checkpoint.payload.stage !==
+        'authoritative') {
+      return false;
+    }
+    const records: VncRecord[] =
+      this.mergeVncRecords(
+        true, this.currentOwnerScopeId(), false);
+    const store: relationalStore.RdbStore =
+      this.store;
+    const finalized: VncSelectionFinalizeResult =
+      executeVncSelectionFinalize({
+        begin: (): boolean => {
+          store.beginTransaction();
+          return true;
+        },
+        persistPullComplete: (): boolean =>
+          this.persistVncSelectionBarrierPhase(
+            'pending_pull', 'pull_complete'),
+        promote: (): boolean =>
+          this.promoteVncSelectionWithinTransaction(
+            records),
+        persistPromotionComplete: (): boolean =>
+          this.persistVncSelectionBarrierPhase(
+            'pull_complete',
+            'promotion_complete'),
+        releaseBarrier: (): boolean => {
+          const barriers: Record<string, string> =
+            this.selectionReenableBarriers();
+          if (barriers[VNC_CLOUD_TABLE] !==
+            'promotion_complete') {
+            return false;
+          }
+          return this.persistSelectionReenableBarriers(
+            this.selectionReenableBarriersWithout(
+              barriers, [VNC_CLOUD_TABLE]));
+        },
+        deleteCheckpoint: (): boolean =>
+          this.deleteLocalMetadata(
+            VNC_SELECTION_REENABLE_TRANSACTION_KEY),
+        commit: (): boolean => {
+          store.commit();
+          return true;
+        },
+        rollback: (): void => {
+          store.rollBack();
+        }
+      });
+    const uploadAllowed: boolean =
+      vncSelectionPostCommitUploadAllowed(
+        finalized,
+        this.readLocalMetadata(
+          VNC_SELECTION_REENABLE_TRANSACTION_KEY) !== '',
+        this.selectionReenableBarrierPhase(
+          VNC_CLOUD_TABLE));
+    if (uploadAllowed) {
+      void CloudSyncCoordinator.getInstance()
+        .requestVncTableAutomaticPush();
+    } else if (!finalized.ok) {
+      hilog.error(0x0001, 'CloudSync',
+        'VNC scope finalization failed step=' +
+        finalized.failedStep);
+    }
+    return uploadAllowed;
+  }
+
   private cloudDownloadPayloadFromMemory():
     CloudDownloadTransactionPayload | null {
     if (this.manualDownloadSnapshot === null ||
@@ -1499,6 +1977,216 @@ export class CloudStore implements CryptoCloudStore {
     } catch (_error) {
       return false;
     }
+  }
+
+  private vncRecoveryMetadata(
+    checkpoint: VncSelectionReenableCheckpoint
+  ): Array<Record<string, string>> {
+    let metadata: Array<Record<string, string>> =
+      this.metadataWithoutKeys(
+        checkpoint.payload.metadata,
+        [
+          VNC_SELECTION_REENABLE_TRANSACTION_KEY,
+          CLOUD_DOWNLOAD_TRANSACTION_KEY,
+          CLOUD_SELECTION_REENABLE_BARRIERS_KEY,
+          CLOUD_SYNC_DURABLE_STATE_KEY
+        ]);
+    // Keep the coordinator's latest post-pull/failure lifecycle and retry
+    // state aligned with its in-memory state during an in-process rollback.
+    const currentMetadata: Array<Record<string, string>> =
+      this.exportLocalMetadataRows();
+    const durable: Record<string, string> | null =
+      this.metadataRow(
+        currentMetadata,
+        CLOUD_SYNC_DURABLE_STATE_KEY);
+    if (durable !== null) {
+      metadata.push(durable);
+    }
+    const previousBarrier:
+      CloudSelectionReenablePhase | null =
+      checkpoint.payload.previousBarrier === ''
+        ? null
+        : normalizeCloudSelectionReenablePhase(
+          checkpoint.payload.previousBarrier);
+    const originalBarrierRow:
+      Record<string, string> | null =
+      this.metadataRow(
+        checkpoint.payload.metadata,
+        CLOUD_SELECTION_REENABLE_BARRIERS_KEY);
+    let barriers: Record<string, string> = {};
+    if (originalBarrierRow !== null) {
+      try {
+        barriers = JSON.parse(
+          originalBarrierRow['value'] || '{}') as
+            Record<string, string>;
+      } catch (_error) {
+        barriers = {};
+      }
+    }
+    const recoveryPhase:
+      CloudSelectionReenablePhase | null =
+      vncSelectionRecoveryBarrier(
+        true, previousBarrier);
+    if (recoveryPhase !== null) {
+      barriers[VNC_CLOUD_TABLE] =
+        recoveryPhase;
+    }
+    const barrierMetadata:
+      Record<string, string> = {};
+    barrierMetadata['key'] =
+      CLOUD_SELECTION_REENABLE_BARRIERS_KEY;
+    barrierMetadata['value'] =
+      JSON.stringify(barriers);
+    barrierMetadata['updatedat'] =
+      Date.now().toString();
+    metadata.push(barrierMetadata);
+    // The checkpoint survives the data restore and is removed only after the
+    // previous selector has also been durably restored.
+    const checkpointMetadata:
+      Record<string, string> = {};
+    checkpointMetadata['key'] =
+      VNC_SELECTION_REENABLE_TRANSACTION_KEY;
+    checkpointMetadata['value'] =
+      checkpoint.raw;
+    checkpointMetadata['updatedat'] =
+      Date.now().toString();
+    metadata.push(checkpointMetadata);
+    return metadata;
+  }
+
+  private markVncSelectionRecoveryRequired():
+    boolean {
+    const coordinator: CloudSyncCoordinator =
+      CloudSyncCoordinator.getInstance();
+    if (this.currentLease !== null &&
+      accountSessionLeaseEquals(
+        coordinator.currentAccountLease(),
+        this.currentLease) &&
+      coordinator.requireExternalRecovery(
+        [VNC_CLOUD_TABLE])) {
+      return true;
+    }
+    const recovered: CloudSyncDurableState =
+      recoverCloudSyncDurableState(
+        this.loadCloudSyncDurableState(),
+        this.cloudAccountBinding,
+        cloudTransferAllowed(
+          this.cloudAccountBinding),
+        this.cloudBootstrapCompleted);
+    const required: CloudSyncDurableState =
+      cloudSyncExternalRecoveryRequired(
+        recovered, [VNC_CLOUD_TABLE]);
+    return this.persistCloudSyncDurableState(
+      required);
+  }
+
+  async rollbackVncSelectionReenableTransaction():
+    Promise<boolean> {
+    if (!this.store || this.appContext === null) {
+      this.markVncSelectionRecoveryRequired();
+      return false;
+    }
+    const checkpoint:
+      VncSelectionReenableCheckpoint | null =
+      this.readVncSelectionReenableCheckpoint();
+    if (checkpoint === null) {
+      this.markVncSelectionRecoveryRequired();
+      return false;
+    }
+    const payload:
+      VncSelectionReenableTransactionPayload =
+      checkpoint.payload;
+    const restored: boolean =
+      await this.restoreManualDownloadSnapshot(
+        payload.snapshot,
+        payload.extensions,
+        this.vncRecoveryMetadata(checkpoint),
+        payload.mutationJournal,
+        payload.localTables);
+    if (!restored) {
+      this.markVncSelectionRecoveryRequired();
+      return false;
+    }
+    this.vncSyncSelection.stageSelectedScopes(
+      payload.previousScopes);
+    if (!this.vncSyncSelection
+      .persistSelectedScopes(this.appContext)) {
+      this.markVncSelectionRecoveryRequired();
+      return false;
+    }
+    const previousBarrier:
+      CloudSelectionReenablePhase | null =
+      payload.previousBarrier === ''
+        ? null
+        : normalizeCloudSelectionReenablePhase(
+          payload.previousBarrier);
+    try {
+      this.store.beginTransaction();
+      const durable: CloudSyncDurableState | null =
+        this.loadCloudSyncDurableState();
+      if (durable !== null &&
+        durable.phase === 'recovery_required' &&
+        durable.lastFailureKind === 'unknown' &&
+        durable.failedTables.indexOf(
+          VNC_CLOUD_TABLE) >= 0) {
+        const coordinator:
+          CloudSyncCoordinator =
+          CloudSyncCoordinator.getInstance();
+        if (this.currentLease !== null &&
+          accountSessionLeaseEquals(
+            coordinator.currentAccountLease(),
+            this.currentLease)) {
+          throw new Error(
+            'VNC recovery requires process restart before lifecycle release');
+        }
+        const settled: CloudSyncDurableState =
+          cloudSyncExternalRecoverySettled(
+            durable,
+            this.cloudAccountBinding,
+            cloudTransferAllowed(
+              this.cloudAccountBinding),
+            [VNC_CLOUD_TABLE]);
+        if (settled.phase ===
+            'recovery_required' ||
+          !this.persistCloudSyncDurableState(
+            settled)) {
+          throw new Error(
+            'VNC recovery lifecycle release failed');
+        }
+      }
+      if (!this.restoreSelectionReenableBarrier(
+        VNC_CLOUD_TABLE, previousBarrier) ||
+        !this.deleteLocalMetadata(
+          VNC_SELECTION_REENABLE_TRANSACTION_KEY)) {
+        throw new Error(
+          'VNC recovery finalization failed');
+      }
+      this.store.commit();
+      this.notifyDataSnapshotChanged();
+      return true;
+    } catch (err) {
+      try { this.store.rollBack(); } catch (_ignored) {}
+      hilog.error(0x0001, 'CloudSync',
+        'VNC scope rollback finalization failed: ' +
+        safeError(err));
+      this.markVncSelectionRecoveryRequired();
+      return false;
+    }
+  }
+
+  private async recoverPendingVncSelectionReenableTransaction():
+    Promise<boolean> {
+    const raw: string = this.readLocalMetadata(
+      VNC_SELECTION_REENABLE_TRANSACTION_KEY);
+    if (raw === '') { return true; }
+    const recovered: boolean =
+      await this
+        .rollbackVncSelectionReenableTransaction();
+    if (recovered) {
+      hilog.warn(0x0001, 'CloudSync',
+        '已回滚上次未终结的 VNC scope 事务');
+    }
+    return recovered;
   }
 
   /**

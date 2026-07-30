@@ -3,7 +3,7 @@ import { util } from '@kit.ArkTS';
 
 export type CloudDownloadTransactionOperation =
   'startup_bootstrap' | 'manual_download' |
-  'selection_reenable';
+  'selection_reenable' | 'vnc_scope_reenable';
 
 export interface CloudDownloadTransactionEnvelope {
   version: number;
@@ -79,7 +79,8 @@ export function parseCloudDownloadTransactionEnvelope(
       CLOUD_DOWNLOAD_TRANSACTION_VERSION ||
       (parsed.operation !== 'startup_bootstrap' &&
         parsed.operation !== 'manual_download' &&
-        parsed.operation !== 'selection_reenable') ||
+        parsed.operation !== 'selection_reenable' &&
+        parsed.operation !== 'vnc_scope_reenable') ||
       parsed.ownerScopeId !== ownerScopeId ||
       parsed.storeIdentity !== storeIdentity ||
       parsed.generation <= 0 ||

@@ -24,6 +24,7 @@ import {
   cloneCloudSyncDurableState,
   cloudSyncDownloadAllowed,
   cloudSyncDurableStateWithIntents,
+  cloudSyncExternalRecoveryRequired,
   cloudSyncIndeterminateSettled,
   cloudSyncOperationFinished,
   cloudSyncOperationStarted,
@@ -478,6 +479,18 @@ export class CloudSyncCoordinator {
     if (!this.persistDurableCandidate(next)) { return false; }
     this.scheduleRetryTimer();
     return true;
+  }
+
+  /** A caller-owned durable transaction could not restore its before-image. */
+  requireExternalRecovery(
+    failedTables: string[]
+  ): boolean {
+    if (this.durableState === null) { return false; }
+    const next: CloudSyncDurableState =
+      cloudSyncExternalRecoveryRequired(
+        this.durableState,
+        failedTables);
+    return this.persistDurableCandidate(next);
   }
 
   requestStartupPull(): Promise<CloudSyncOperationResult> {

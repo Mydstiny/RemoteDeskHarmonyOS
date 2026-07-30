@@ -56,5 +56,27 @@ export default function cloudDownloadTransactionPolicyTest():
           'owner-a', 'store-a.db', 3) === null)
           .assertTrue();
       });
+
+    it('binds_a_vnc_scope_reenable_checkpoint_to_the_same_owner_store_and_generation',
+      0, (): void => {
+        const envelope:
+          CloudDownloadTransactionEnvelope | null =
+          cloudDownloadTransactionEnvelope(
+            'vnc_scope_reenable',
+            'owner-a', 'store-a.db', 9,
+            '{"stage":"authoritative"}', 100);
+        expect(envelope === null).assertFalse();
+        if (envelope === null) { return; }
+        const raw: string = JSON.stringify(envelope);
+        expect(parseCloudDownloadTransactionEnvelope(
+          raw, 'owner-a', 'store-a.db', 9) !== null)
+          .assertTrue();
+        expect(parseCloudDownloadTransactionEnvelope(
+          raw, 'owner-b', 'store-a.db', 9) === null)
+          .assertTrue();
+        expect(parseCloudDownloadTransactionEnvelope(
+          raw, 'owner-a', 'store-a.db', 8) === null)
+          .assertTrue();
+      });
   });
 }
