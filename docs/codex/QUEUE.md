@@ -6,7 +6,7 @@ Updated: 2026-07-30 Asia/Shanghai
 
 - Cloud/data lifecycle root fix is active on
   `codex/cloud-data-lifecycle-root-fix` at implementation checkpoint
-  `0ffaa1c`. The signed upgrade-test candidate is `1.0.9 / 1000009`.
+  `0d6216e`. The signed upgrade-test candidate is `1.0.9 / 1000009`.
   D-020 remediation adds independent OS distributed-account verification,
   an awaitable login/account-switch cloud-first bootstrap, record-level journal
   reconciliation, a durable bounded cloud-download before-image, persisted
@@ -42,11 +42,17 @@ Updated: 2026-07-30 Asia/Shanghai
   barrier reads. Tests now inject query errors through
   `CloudStore.readLocalMetadataState`, use the real signed checkpoint parser
   and route a committed authoritative checkpoint through the restart-recovery
-  collaborator.
+  collaborator. The terminal continuation review's P1/P2 are closed locally
+  in `0d6216e`: malformed `vncrecord` barrier values and non-object JSON now
+  fail closed before promotion and after commit, while startup and in-process
+  rollback share one production adapter that owns snapshot/selection restore,
+  checkpoint deletion, barrier read-back and `recovery_required` marking.
+  Table-driven semantic JSON cases and restore/delete/commit failures are in
+  the default ArkTS test compilation.
   Release remains NO-GO pending proof of Account Kit UnionID/distributed-account
   ID correspondence on API 23, real Huawei Cloud/two-device/A-B account/old
   APK/fault-injection/Document Provider/Asset Store evidence and the requested
-  targeted review of `0ffaa1c`. Pure fault injection is not a
+  targeted review of `0d6216e`. Pure fault injection is not a
   substitute for real process-kill/reboot/low-storage evidence. If API 23 cannot prove the
   identity correspondence, cloud
   remains fail-closed. System BackupExtension, remote destructive crypto and
