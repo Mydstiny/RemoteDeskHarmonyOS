@@ -7,6 +7,7 @@ import { RemoteSessionBackgroundTaskService } from './RemoteSessionBackgroundTas
 import { RemoteSessionLiveViewService } from './RemoteSessionLiveViewService';
 import { RemoteSessionPipService } from './RemoteSessionPipService';
 import { RustDeskProSyncService } from './RustDeskProSyncService';
+import { RustDeskHostAddHandoff } from './RustDeskHostAddHandoff';
 import { SshPreflightService } from './SshPreflightService';
 import { VncSessionCredentialHandoff } from './VncSessionCredentialHandoff';
 
@@ -73,6 +74,7 @@ export class SensitiveDataBarrier {
       return false;
     }
     ActiveRemoteSessionRegistry.getInstance().clear(reason);
+    RustDeskHostAddHandoff.getInstance().clearAll();
     VncSessionCredentialHandoff.getInstance().clearAll();
     SshPreflightService.getInstance().clearAll();
     if (!(await DataCrypto.getInstance().prepareScopeTransition(10000))) {

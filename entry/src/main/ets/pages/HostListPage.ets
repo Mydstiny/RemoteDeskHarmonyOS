@@ -66,6 +66,10 @@ import { RdpAddFlow } from '../components/hostadd/RdpAddFlow';
 import { RustDeskAddFlow } from '../components/hostadd/RustDeskAddFlow';
 import { SshAddFlow } from '../components/hostadd/SshAddFlow';
 import { VncAddFlow } from '../components/hostadd/VncAddFlow';
+import {
+  RustDeskHostAddDraft,
+  RustDeskHostAddHandoff
+} from '../services/RustDeskHostAddHandoff';
 import { VncSessionCredentialHandoff } from '../services/VncSessionCredentialHandoff';
 import { VncSettingsService } from '../services/VncSettingsService';
 import { VncSettingsSheet } from '../components/VncSettingsSheet';
@@ -572,6 +576,10 @@ struct HostListPage {
   @State relayAddTrigger: number = 0;
   @State relayRustDeskAddTrigger: number = 0;
   @State relayVncAddTrigger: number = 0;
+  @State rustDeskRelayReturnToHostAdd: boolean = false;
+  @State rustDeskAddResumeDraft: RustDeskHostAddDraft | null = null;
+  @State rustDeskAddResumeRevision: number = 0;
+  private rustDeskHostAddReturnTab: number = 0;
   private lastVncRelayRouteRequestId: string = '';
   private terminalFontSizes: number[] = [12, 13, 14, 15, 16, 17, 18, 20, 22, 24, 26, 28, 30, 32];
   private terminalColorPresets: string[] = [
@@ -1142,6 +1150,7 @@ struct HostListPage {
     const openRustDeskRelayDirectory: boolean = this.pendingRustDeskRelayDirectoryOpen;
     this.pendingRustDeskRelayDirectoryOpen = false;
     this.resetForm();
+    this.rustDeskAddResumeDraft = null;
 
     if (openVncGatewayDirectory || openRustDeskRelayDirectory) {
       if (!this.pageActive) { return; }
@@ -1186,6 +1195,51 @@ struct HostListPage {
     // 都来自刚刚持久化的主机记录，而不是 Sheet 回调中的旧对象副本。
     hilog.info(0x0001, 'HostList', 'add-host Sheet disappeared; starting saved connection host=' + pendingHostId);
     this.handleHostCardClick(host);
+  }
+
+  private resumeRustDeskHostAddFromRelayDirectory(
+    savedRelayId: string
+  ): void {
+    if (!this.rustDeskRelayReturnToHostAdd) { return; }
+    this.rustDeskRelayReturnToHostAdd = false;
+    const scope = CloudStore.getInstance().currentScope();
+    const handoff: RustDeskHostAddHandoff =
+      RustDeskHostAddHandoff.getInstance();
+    if (savedRelayId.trim() !== '') {
+      handoff.selectRelay(
+        scope.ownerScopeId, scope.storeIdentity,
+        scope.generation, savedRelayId);
+    }
+    const draft: RustDeskHostAddDraft | null =
+      handoff.take(
+        scope.ownerScopeId, scope.storeIdentity,
+        scope.generation);
+    if (draft === null) {
+      promptAction.showToast({
+        message: '主机草稿已过期或账号已切换，请重新添加',
+        duration: 2400
+      });
+      return;
+    }
+    this.noteSheetDismissed();
+    if (this.isDesktopDevice && this.breakpoint === 'xl') {
+      this.curTab = this.rustDeskHostAddReturnTab;
+      const titles: string[] =
+        ['RDP 远程桌面', 'RustDesk', 'SSH 终端', 'VNC 主机'];
+      this.hostPageTitle =
+        titles[this.curTab] ?? '远程主机';
+    } else {
+      this.curTab = 0;
+      this.tabsCtrl.changeIndex(0);
+    }
+    this.updateHostFilter();
+    this.rustDeskAddResumeDraft = draft;
+    this.rustDeskAddResumeRevision++;
+    this.addSheetShowsModernPicker = false;
+    this.modernAddProtocol = 'rustdesk';
+    this.openSheetSafely((): void => {
+      this.showAddSheet = true;
+    });
   }
 
   private requestAddSheetClose(): void {
@@ -8706,9 +8760,29 @@ struct HostListPage {
         lanScanning: this.lanScanning,
         lanPeers: this.lanScanResults,
         defaultDirectPort: this.rustdeskDirectPort,
+        initialDraft: this.rustDeskAddResumeDraft,
+        initialDraftRevision:
+          this.rustDeskAddResumeRevision,
         onBackToProtocols: (): void => { this.modernAddProtocol = ''; this.addSheetShowsModernPicker = true; },
         onStartLanScan: (): void => { this.startLanScan(); },
-        onManageRelays: (): void => {
+        onManageRelays: (
+          draft: RustDeskHostAddDraft): void => {
+          const scope = CloudStore.getInstance().currentScope();
+          if (!RustDeskHostAddHandoff.getInstance().put(
+            scope.ownerScopeId, scope.storeIdentity,
+            scope.generation, draft)) {
+            promptAction.showToast({
+              message: '当前账号数据域不可用，无法暂存主机草稿',
+              duration: 2200
+            });
+            return;
+          }
+          this.rustDeskHostAddReturnTab =
+            this.isDesktopDevice &&
+            this.breakpoint === 'xl' &&
+            this.curTab >= 0 && this.curTab <= 3
+              ? this.curTab : 0;
+          this.rustDeskRelayReturnToHostAdd = true;
           this.pendingRustDeskRelayDirectoryOpen = true;
           this.requestAddSheetClose();
         },
@@ -9941,7 +10015,12 @@ struct HostListPage {
   @Builder relayContent() {
     RustDeskRelayPage({ addTrigger: this.relayAddTrigger,
       rustDeskAddTrigger: this.relayRustDeskAddTrigger, vncAddTrigger: this.relayVncAddTrigger,
-      hideTabBar: this.isDesktopDevice && this.breakpoint === 'xl' })
+      hideTabBar: this.isDesktopDevice && this.breakpoint === 'xl',
+      returnToHostAdd: this.rustDeskRelayReturnToHostAdd,
+      onReturnToHostAdd: (relayId: string): void => {
+        this.resumeRustDeskHostAddFromRelayDirectory(
+          relayId);
+      } })
   }
 
   @Builder keyVaultSheet() {

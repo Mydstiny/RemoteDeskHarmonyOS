@@ -62,6 +62,9 @@ export struct RustDeskRelayPage {
   @Prop @Watch('onRustDeskAddTrigger') rustDeskAddTrigger: number = 0;
   @Prop @Watch('onVncAddTrigger') vncAddTrigger: number = 0;
   @Prop hideTabBar: boolean = false;
+  @Prop returnToHostAdd: boolean = false;
+  onReturnToHostAdd: (relayId: string) => void =
+    (_relayId: string): void => {};
   @StorageProp('currentBreakpoint') breakpoint: string = 'sm';
   @StorageProp('isDesktopDevice') isDesktopDevice: boolean = false;
   @StorageProp('topRectHeight') topRectHeight: number = 0;
@@ -119,6 +122,7 @@ export struct RustDeskRelayPage {
   @State testingVncGatewayId: string = '';
   @State vncTestResultId: string = '';
   @State vncTestResult: string = '';
+  private pendingHostAddReturnRelayId: string = '';
   private srv: HostSyncService = HostSyncService.getInstance();
   private proSync: RustDeskProSyncService = RustDeskProSyncService.getInstance();
   private vncGatewayService: VncGatewayService = VncGatewayService.getInstance();
@@ -396,6 +400,11 @@ export struct RustDeskRelayPage {
   }
 
   private finishSheetDismiss(): void {
+    const returnToHostAdd: boolean =
+      this.returnToHostAdd;
+    const returnRelayId: string =
+      this.pendingHostAddReturnRelayId;
+    this.pendingHostAddReturnRelayId = '';
     this.relaySheetClosing = false;
     this.sheetContent = 1;
     this.resetRelayForm();
@@ -414,6 +423,9 @@ export struct RustDeskRelayPage {
     this.vncTestResult = '';
     this.load();
     this.loadProAccounts();
+    if (returnToHostAdd) {
+      this.onReturnToHostAdd(returnRelayId);
+    }
   }
 
   private openEditRelaySheet(relay: RustDeskRelayConfig): void {
@@ -595,6 +607,12 @@ export struct RustDeskRelayPage {
       result.cloudSyncFailureKind;
     this.load();
     this.savedRelayId = result.relayId;
+    if (this.returnToHostAdd) {
+      this.pendingHostAddReturnRelayId =
+        result.relayId;
+      this.closeSheet();
+      return;
+    }
     this.sheetContent = 4;
   }
 

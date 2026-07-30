@@ -69,6 +69,7 @@ import touchpadPointerCurvePolicyTest from './TouchpadPointerCurvePolicy.test';
 import connectionAttemptPolicyTest from './ConnectionAttemptPolicy.test';
 import rustDeskRelayImportServiceTest from './RustDeskRelayImportService.test';
 import hostAddConnectionHandoffPolicyTest from './HostAddConnectionHandoffPolicy.test';
+import rustDeskHostAddHandoffTest from './RustDeskHostAddHandoff.test';
 import remoteCanvasTransformPolicyTest from './RemoteCanvasTransformPolicy.test';
 import remoteSurfaceTransformPolicyTest from './RemoteSurfaceTransformPolicy.test';
 import remoteRendererViewportPolicyTest from './RemoteRendererViewportPolicy.test';
@@ -173,6 +174,7 @@ export default function testsuite() {
   connectionAttemptPolicyTest();
   rustDeskRelayImportServiceTest();
   hostAddConnectionHandoffPolicyTest();
+  rustDeskHostAddHandoffTest();
   remoteCanvasTransformPolicyTest();
   remoteSurfaceTransformPolicyTest();
   remoteRendererViewportPolicyTest();

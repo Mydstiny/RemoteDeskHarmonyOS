@@ -3,6 +3,10 @@ import { RemoteHost } from '../../model/RemoteHost';
 import { RustDeskRelayConfig } from '../../model/RustDeskRelayConfig';
 import { DiscoveredRustDeskPeer } from '../../services/RustDeskLanDiscoveryService';
 import { RustDeskTargetDevice } from '../../services/RemoteOrientationPolicy';
+import {
+  cloneRustDeskHostAddDraft,
+  RustDeskHostAddDraft
+} from '../../services/RustDeskHostAddHandoff';
 
 @Component
 export struct RustDeskAddFlow {
@@ -12,9 +16,13 @@ export struct RustDeskAddFlow {
   @Prop lanScanning: boolean = false;
   @Prop lanPeers: DiscoveredRustDeskPeer[] = [];
   @Prop defaultDirectPort: number = 21117;
+  @Prop initialDraft: RustDeskHostAddDraft | null = null;
+  @Prop @Watch('onInitialDraftChanged')
+  initialDraftRevision: number = 0;
   onBackToProtocols: () => void = (): void => {};
   onStartLanScan: () => void = (): void => {};
-  onManageRelays: () => void = (): void => {};
+  onManageRelays: (draft: RustDeskHostAddDraft) => void =
+    (_draft: RustDeskHostAddDraft): void => {};
   onSave: (host: RemoteHost, connectNow: boolean) => void =
     (_host: RemoteHost, _connectNow: boolean): void => {};
   @State step: number = 1;
@@ -33,9 +41,61 @@ export struct RustDeskAddFlow {
   @State adaptiveOrientation: boolean = false;
 
   aboutToAppear(): void {
-    this.directPortText = this.defaultDirectPort.toString();
+    if (this.initialDraft === null) {
+      this.directPortText = this.defaultDirectPort.toString();
+    } else {
+      this.applyDraft(this.initialDraft);
+    }
   }
   private pal(): Palette { return this.theme === 'light' ? buildLight(this.accentColor) : buildDark(this.accentColor); }
+
+  private onInitialDraftChanged(): void {
+    if (this.initialDraft !== null) {
+      this.applyDraft(this.initialDraft);
+    }
+  }
+
+  private applyDraft(source: RustDeskHostAddDraft): void {
+    const draft: RustDeskHostAddDraft =
+      cloneRustDeskHostAddDraft(source);
+    this.step = draft.step;
+    this.direct = draft.direct;
+    this.useLan = draft.useLan;
+    this.selectedLanPeerId = draft.selectedLanPeerId;
+    this.label = draft.label;
+    this.controlId = draft.controlId;
+    this.directHost = draft.directHost;
+    this.directPortText = draft.directPortText;
+    this.relayId = draft.relayId;
+    this.password = draft.password;
+    this.passwordMode = draft.passwordMode;
+    this.targetDevice = draft.targetDevice;
+    this.adaptiveOrientation = draft.adaptiveOrientation;
+    this.errorText = '';
+  }
+
+  private currentDraft(): RustDeskHostAddDraft {
+    const draft = new RustDeskHostAddDraft();
+    draft.step = this.step;
+    draft.direct = this.direct;
+    draft.useLan = this.useLan;
+    draft.selectedLanPeerId = this.selectedLanPeerId;
+    draft.label = this.label;
+    draft.controlId = this.controlId;
+    draft.directHost = this.directHost;
+    draft.directPortText = this.directPortText;
+    draft.relayId = this.relayId;
+    draft.password = this.password;
+    draft.passwordMode = this.passwordMode;
+    draft.targetDevice = this.targetDevice;
+    draft.adaptiveOrientation = this.adaptiveOrientation;
+    return draft;
+  }
+
+  private manageRelays(): void {
+    this.errorText = '';
+    this.onManageRelays(this.currentDraft());
+  }
 
   private selectedRelay(): RustDeskRelayConfig | undefined {
     return this.relays.find((relay: RustDeskRelayConfig): boolean => relay.id === this.relayId);
@@ -131,7 +191,7 @@ export struct RustDeskAddFlow {
               .width('100%').textAlign(TextAlign.Center).padding(18)
             Button('前往中继目录').width('100%').height(40).borderRadius(10)
               .backgroundColor(this.pal().surface).fontColor(this.accentColor)
-              .onClick((): void => { this.onManageRelays(); })
+              .onClick((): void => { this.manageRelays(); })
           } else {
             ForEach(this.relays, (relay: RustDeskRelayConfig) => {
               Row() {
@@ -145,7 +205,7 @@ export struct RustDeskAddFlow {
             }, (relay: RustDeskRelayConfig): string => relay.id + ':' + relay.updatedAt.toString())
             Button('管理中继服务器').width('100%').height(36).borderRadius(9)
               .backgroundColor(this.pal().surface).fontColor(this.accentColor)
-              .onClick((): void => { this.onManageRelays(); })
+              .onClick((): void => { this.manageRelays(); })
           }
         } else {
           Text('直连仅支持设备密码，不能请求被控端批准。').fontSize(12).fontColor(this.pal().danger)
