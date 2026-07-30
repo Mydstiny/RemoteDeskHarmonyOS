@@ -1,19 +1,29 @@
 # Current Handoff
 
-Updated: 2026-07-29 Asia/Shanghai
+Updated: 2026-07-30 Asia/Shanghai
 
 ## Active cloud-data lifecycle handoff
 
 - Branch: `codex/cloud-data-lifecycle-root-fix`; base:
-  `main@23940521a`; implementation checkpoint: `f5adf90e7`.
+  `main@23940521a`; implementation checkpoint: `8164dd5`.
 - Plan:
   `docs/superpowers/plans/2026-07-28-cloud-data-lifecycle-upgrade-roadmap.md`.
 - Core local implementation is complete for account transitions, per-account
-  physical stores, verified cloud binding, durable coordinator/watchdogs,
+  physical stores, fail-closed cloud binding, durable coordinator/watchdogs,
   sensitive transfer validation, portable backup v3 and legacy partial
   restore, exclusive crypto lifecycle, Asset Store credential storage,
   device-local trust and legacy shared-store/relay/VNC migration quarantine.
-- Latest validation: `default@OhosTestCompileArkTS` passed;
+- D-020 remediation `8164dd5` requires a fresh OS distributed-account API
+  result in addition to Account Kit, waits for cloud-first before publishing
+  account ready, preserves pre-bootstrap record journal intent, persists a
+  bounded cross-table download rollback transaction, blocks ordinary/VNC
+  native-first during selection re-enable, accepts only proven authoritative
+  empty snapshots and revokes RustDesk Pro Asset Store aliases on scope exit.
+- API 23 has no signed Account Kit/distributed-account link object. The
+  implementation accepts only exact current ID equality and otherwise blocks
+  distributed-table registration and transfer. This is deliberately
+  fail-closed and still requires real-device proof before release.
+- Latest current-session validation: `default@OhosTestCompileArkTS` passed;
   `assembleHap` passed and signed; `git diff --check` passed; Light compliance
   passed. `ohosTest@OhosTestCompileArkTS` is absent from the task graph
   (`00306054`) and is not claimed as passed.
@@ -21,14 +31,14 @@ Updated: 2026-07-29 Asia/Shanghai
   was inspected read-only and still has `1.0.8 / 1000008`; no install, launch,
   login or device-data mutation was performed. Require explicit user approval
   and a recovery plan before an in-place upgrade test.
-- Release is NO-GO pending real Huawei Cloud schema/permissions, two API 23
+- Release is NO-GO pending API 23 identity-correspondence proof, real Huawei
+  Cloud schema/permissions and authoritative empty-set behavior, two API 23
   devices, A/B accounts, old released APK/RDB/backup fixtures, process-kill and
-  low-storage fault injection, real Documents Providers and API 23 Asset Store
-  behavior. System BackupExtension, remote destructive crypto and legacy REST
-  sync remain disabled.
-- The user currently prohibits further sub-agents/tasks. No agent may be
-  started implicitly. D-020 independent review therefore remains a merge
-  blocker unless the user later authorizes one or the project rule changes.
+  low-storage fault injection, real Documents Providers and actual Asset Store
+  alias deletion. System BackupExtension, remote destructive crypto and legacy
+  REST sync remain disabled.
+- No sub-agent was created for this remediation. A fresh independent D-020
+  re-review by the main agent remains a merge blocker.
 - Preserve the unrelated user-owned SSH, Moonlight, RustDesk and VNC plan
   edits; do not stage, reset, stash or overwrite them.
 

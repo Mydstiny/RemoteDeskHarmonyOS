@@ -1,49 +1,92 @@
 # Shared Current State
 
-Updated: 2026-07-29 Asia/Shanghai
+Updated: 2026-07-30 Asia/Shanghai
 
 ## Repository
 
 - Repository: Mydstiny/RemoteDeskHarmonyOS
 - Active task branch: `codex/cloud-data-lifecycle-root-fix`.
-- Base: `main@23940521a`; implementation checkpoint: `f5adf90e7`.
+- Base: `main@23940521a`; implementation checkpoint: `8164dd5`.
 - Scope: root remediation of account/data ownership, per-account physical RDB stores, cloud bootstrap/sync lifecycle, local backup v3/legacy partial restore, encryption lifecycle, secure credential storage, device-local trust and old shared-store/relay/VNC migration.
 - Entity plan: `docs/superpowers/plans/2026-07-28-cloud-data-lifecycle-upgrade-roadmap.md`.
-- No remote push, PR or merge has been performed. The user explicitly prohibited further sub-agents/tasks, so no new reviewer agent was started.
+- No remote push, PR or merge has been performed. No sub-agent was created for
+  the D-020 remediation.
 
 ## Current cloud-data lifecycle result
 
-- AccountKit initializes before account-dependent storage. Login/logout/account switch use an awaitable account transition with exact verified unionID binding, generation fencing and sensitive-cache/session draining.
+- AccountKit initializes before account-dependent storage. Login/logout/account
+  switch use an awaitable account transition with generation fencing and
+  sensitive-cache/session draining. A Huawei-account scope now also requires a
+  fresh `DISTRIBUTED_DATASYNC` permission check and
+  `getOsAccountDistributedInfo()` proof. API 23 exposes no signed correspondence
+  object, so only exact current Account Kit UnionID/distributed-account ID
+  equality is accepted; every unavailable, denied, logged-out or mismatched
+  result fails closed before distributed-table registration.
 - Anonymous data and each Huawei owner use separate physical store identities. Only a verified bound account store can register distributed tables or transfer cloud data; service-layer CRUD injects and checks owner.
-- Cloud sync has a scoped durable lifecycle, one queue, cloud-first and selection re-enable barriers, per-table mutation journal/retry/conflict state, accepted/progress/overall watchdogs, `SYNC_FINISH` validation and stale/late callback fencing.
+- Login and account-switch navigation now waits for the current account's first
+  cloud-first bootstrap. The ready/mutation gate is not published until the
+  authoritative pull and durable selection-reenable promotion complete.
+- Initial bootstrap reconciles pre-bootstrap intent at record level and retains
+  its mutation journal. Manual download, initial bootstrap and selection
+  re-enable share an account/store/generation-bound, SHA-256-verified and
+  size-bounded persistent before-image; an interrupted process rolls it back
+  on the next physical-store open.
+- Cloud sync has a scoped durable lifecycle, one queue, cloud-first and durable
+  selection re-enable barriers, per-table mutation journal/retry/conflict state,
+  accepted/progress/overall watchdogs, `SYNC_FINISH` validation and stale/late
+  callback fencing. Native-first cannot pass a pending selection barrier,
+  including VNC promotion/retry paths.
+- A zero-row cloud-first result is accepted only after the independently bound
+  account, distributed-table registration, current lease and exact table's
+  successful terminal progress jointly prove an authoritative result. This
+  allows a legitimate remote delete-all without treating an unproven empty
+  response as authoritative.
 - Native-first and cloud-first sensitive transfers validate encryption shape. Empty sensitive tables cannot become a remote wipe while encryption is inactive; plaintext or malformed nested secrets block the operation.
 - Portable backup v3 is account-scoped and redacted, distinguishes absent/empty/rows, supports legacy seven-table partial merge, preserves newer missing fields, validates hashes/owners/VNC rows and retains `restored_not_uploaded` until explicit cloud upload. System BackupExtension remains disabled with `allowToBackupRestore=false`.
 - Crypto enable/migrate/disable/reset use an exclusive account lease, queue quiescence, durable lifecycle state, one RDB transaction, selection pause and journal replay. Remote destructive crypto lifecycle and old REST sync remain feature-gated off.
-- AccountKit and RustDesk Pro credentials use the Asset Store Kit boundary. RDP/SSH/VNC trust and plaintext consent are device-local and are removed from cloud/portable-backup projections.
+- AccountKit and RustDesk Pro credentials use the Asset Store Kit boundary.
+  RustDesk Pro scope transitions now remove outgoing token aliases before
+  rebinding and drain memory even when removal fails; tokens remain excluded
+  from Preferences, cloud and logs. RDP/SSH/VNC trust and plaintext consent are
+  device-local and are removed from cloud/portable-backup projections.
 - Legacy shared RDB migration uses owner proof, receipt, journal and redacted quarantine. Legacy relay JSON migrates transactionally. Legacy VNC rows only enter the local overlay; owner, reset epoch or payload failures are quarantined without deleting the source. The public no-lease full-table clear path was removed.
 
 Implementation commits: `6a9d430b1`, `4cdc5b1df`, `d2f365c32`, `d51214577`,
 `50ce7b36e`, `1d0f03848`, `d5ccaa73f`, `623cdd378`, `8fb395c41`,
-`beebc662e`, `89f4b7574`, `f5adf90e7`.
+`beebc662e`, `89f4b7574`, `f5adf90e7`, `8164dd5`.
 
 ## Current verification
 
 - Release-candidate metadata is now `1.0.9 / 1000009`; application manifest, in-app release notes, user guide, version resource, SBOM and SBOM generator agree.
-- `default@OhosTestCompileArkTS`: passed on implementation checkpoint `f5adf90e7`; existing dependency/deprecation warnings remain.
-- `assembleHap`: `BUILD SUCCESSFUL`; signed HAP generated.
-- `git diff --check`: passed.
-- Light open-source compliance: passed.
+- `default@OhosTestCompileArkTS`: passed in the current session for
+  `8164dd5`; existing dependency/deprecation warnings remain.
+- `assembleHap`: `BUILD SUCCESSFUL` in the current session; signed HAP
+  generated.
+- `git diff --check` and staged diff checks: passed.
+- Light open-source compliance: passed in the current session.
 - Data-lifecycle policy/matrix tests are included in the default ArkTS test compilation.
 - `ohosTest@OhosTestCompileArkTS` remains unavailable because the task is not registered (`00306054`); no test execution success is claimed.
 - A connected device was inspected read-only and currently has `1.0.8 / 1000008`. The `1.0.9` HAP was not installed because replacing an app that may contain real user data requires explicit authorization and a recoverable test procedure.
 
 ## Current blockers / external acceptance
 
-- Release remains NO-GO until real Huawei Cloud schema/permissions, empty/partial/denied tables, two API 23 devices, A/B accounts, offline conflict/tombstone and late-callback behavior are recorded.
+- Release remains NO-GO until a real API 23 device proves whether current
+  Account Kit UnionID and OS distributed-account ID have a trustworthy exact
+  correspondence. If they use different namespaces, cloud remains intentionally
+  blocked until an official stronger binding is available; no fallback to a
+  cached or self-asserted identity is permitted.
+- Release also remains NO-GO until real Huawei Cloud schema/permissions,
+  authoritative empty/partial/denied tables, two API 23 devices, A/B accounts,
+  offline conflict/tombstone, selection re-enable and late-callback behavior
+  are recorded.
 - Obtain upgrade fixtures from actually released APKs, including old shared RDB, RDP username/password shadow, legacy relay JSON, SSH/TOTP and old VNC tables; run process-kill/reboot/low-storage/fault-injection at each migration/backup/crypto stage.
 - Validate portable backup with real Documents Providers and owner mismatch/corruption/truncation. System migration remains disabled unless a real BackupExtension import pipeline and two-device/replace-device evidence are added.
-- Validate Asset Store Kit behavior on API 23 hardware across lock, logout, account switch, restart, uninstall/reinstall and restore.
-- D-020 independent review remains a merge blocker. It was not run because the user explicitly prohibited further agents; this does not block continued local implementation, but the branch must not merge without an explicitly authorized independent review or a documented rule change.
+- Validate Asset Store Kit behavior and actual RustDesk Pro token alias removal
+  on API 23 hardware across lock, logout, account switch, restart,
+  uninstall/reinstall and restore.
+- D-020 independent re-review of `8164dd5` remains a merge blocker. The prior
+  review produced the findings addressed by this commit; no success is claimed
+  until the main agent performs a fresh independent review.
 
 ## Preserved user changes
 
