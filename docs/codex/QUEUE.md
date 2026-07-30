@@ -5,13 +5,17 @@ Updated: 2026-07-30 Asia/Shanghai
 ## Now
 
 - VNC product-parity/Sheet remediation is active on
-  `codex/vnc-product-parity-sheet-remediation-v2` at `90f51eed9`.
+  `codex/vnc-product-parity-sheet-remediation-v2` at `d17976c10`.
   Sheet/action reachability, two-step host/Gateway flows, settings ownership,
   visible VNC controls, view-only explanation, isolated diagnostics, measured
-  modifier-panel placement, Cursor `-239` and bounded ZRLE are implemented.
-  Native tests are `168 passed, 0 failed`; both required Hvigor gates, signed
-  HAP, Light compliance and diff checks pass. Independent D-020 review remains
-  the local merge gate. Release remains NO-GO pending API 23 layout/input,
+  modifier-panel placement, Cursor `-239`, bounded ZRLE, KeyEvent-based VNC
+  text input, connect-failure callback cleanup, desktop classic default
+  hydration and production small-height Sheet adaptation are implemented.
+  Native tests are `171 passed, 0 failed`; both required Hvigor gates, signed
+  HAP, Light compliance and diff checks pass. The first independent D-020
+  audit's four findings are fixed; the same reviewer must complete the
+  remediation and remaining renderer/isolation/zlib checks before local merge.
+  Release remains NO-GO pending API 23 layout/input,
   real macOS/TigerVNC/UltraVNC-LibVNCServer interoperability, cross-protocol
   regression and cloud device/account matrices. `ohosTest` remains unavailable
   as unregistered task `00306054`. Do not push, open a PR or merge remote main.

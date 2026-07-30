@@ -5,18 +5,23 @@ Updated: 2026-07-30 Asia/Shanghai
 ## Active VNC V2 handoff
 
 - Branch: `codex/vnc-product-parity-sheet-remediation-v2`; base local
-  `main@66fba4141`; implementation checkpoint `90f51eed9`.
+  `main@66fba4141`; implementation checkpoint `d17976c10`.
 - Plan:
   `docs/superpowers/plans/2026-07-29-vnc-complete-product-parity-and-sheet-layout-remediation-plan-v2.md`.
 - Commits: `e3c3fd7b7` plan, `6fd0e4539` Sheet/flow/settings,
   `6e47c052c` visible controls/diagnostics/panel placement, `b742f7b12`
-  Cursor, `90f51eed9` bounded ZRLE and zlib compliance.
-- Latest evidence: native `168 passed, 0 failed`;
+  Cursor, `90f51eed9` bounded ZRLE and zlib compliance, `e1e23ebd6`
+  implementation/release-gate documentation, `d17976c10` D-020 remediation.
+- Latest evidence: native `171 passed, 0 failed`;
   `default@OhosTestCompileArkTS` passed; signed `assembleHap` passed; Light and
   `git diff --check` passed.
-- Next gate: one independent D-020 review of user requirements, entity plan,
-  `66fba4141..HEAD`, VNC/other-protocol isolation, native bounds and compliance.
-  Resolve every finding and rerun the complete gate before local merge.
+- The first independent D-020 audit found four gaps: text input used
+  ClientCutText, synchronous connect failure retained a strong video callback,
+  desktop classic FAB skipped VNC defaults, and the extreme-height layout
+  policy was not wired to the production Sheet. `d17976c10` fixes all four.
+- Next gate: resume the same reviewer on the remediation and its remaining
+  RAW_BGRA lifecycle, non-VNC isolation and system-zlib ABI checks. Resolve
+  every further finding and rerun the complete gate before local merge.
 - After review approval, fast-forward local `main`, delete only the merged VNC
   branch and preserve all unrelated dirty plan files. Do not push, create a PR
   or merge remote main.

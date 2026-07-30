@@ -7,7 +7,7 @@ Updated: 2026-07-30 Asia/Shanghai
 - Repository: Mydstiny/RemoteDeskHarmonyOS
 - Active task branch: `codex/vnc-product-parity-sheet-remediation-v2`.
 - Base: local `main@66fba4141`; current implementation checkpoint:
-  `90f51eed9`.
+  `d17976c10`.
 - Scope: VNC-only Sheet/action reachability, owner/flow cleanup, visible session
   controls, isolated diagnostics, Cursor `-239` and bounded ZRLE.
 - Entity plan:
@@ -23,6 +23,13 @@ Updated: 2026-07-30 Asia/Shanghai
   `RESIZE_ONLY` keyboard avoidance. Modern host and mode12 Gateway flows are
   two-step; existing RustDesk relay builders and other protocol Sheets are
   unchanged.
+- The Sheet scaffold now measures its production viewport and switches through
+  regular, compact and action-only densities. When the keyboard or a very short
+  window cannot fit the full header, the fixed VNC footer remains the priority;
+  no-footer directory Sheets keep their existing layout.
+- The desktop `xl` classic FAB path hydrates VNC defaults through the existing
+  VNC settings owner before opening the editor. Modern VNC and every non-VNC
+  protocol retain their existing routing.
 - The VNC session exposes a discoverable toolbar for keyboard, control mode,
   shortcuts, display, HUD, console and disconnect. View-only state is
   explained. VNC toolbar/HUD/position state is namespaced and does not consume
@@ -39,6 +46,12 @@ Updated: 2026-07-30 Asia/Shanghai
   and decompressed bounds, tile/palette/run/pixel arithmetic, and reports the
   effective source encoding to the VNC HUD. Tight and ContinuousUpdates remain
   disabled.
+- Soft-keyboard text is strict UTF-8 converted to bounded RFB KeyEvent
+  down/up pairs and no longer uses ClientCutText. Clipboard policy controls
+  clipboard synchronization only; view-only still blocks all remote input.
+- Session video callbacks weakly reference their `SessionContext`, and both
+  synchronous and asynchronous connect-failure cleanup use the common callback
+  teardown path before session ownership is released.
 - Production links the API 23 system `libz.so`; host tests use `ZLIB::ZLIB`.
   License, NOTICE, provenance and SPDX SBOM are updated without claiming the
   host zlib version as the device runtime version.
@@ -46,15 +59,20 @@ Updated: 2026-07-30 Asia/Shanghai
   sole VNC cloud table and runtime/effective capabilities remain device-local.
 
 Implementation commits: `e3c3fd7b7`, `6fd0e4539`, `6e47c052c`,
-`b742f7b12`, `90f51eed9`.
+`b742f7b12`, `90f51eed9`, `e1e23ebd6`, `d17976c10`.
 
 ## Current VNC verification and blockers
 
-- Native host tests: `168 passed, 0 failed`.
-- `default@OhosTestCompileArkTS`: passed at `90f51eed9`.
-- `assembleHap`: passed and signed at `90f51eed9`.
+- Native host tests: `171 passed, 0 failed`.
+- `default@OhosTestCompileArkTS`: passed after `d17976c10`.
+- `assembleHap`: passed and signed after `d17976c10`.
 - Light open-source compliance and `git diff --check`: passed.
-- Independent D-020 review is the next merge gate.
+- The first independent D-020 audit found four actionable gaps: VNC text was
+  incorrectly routed through ClientCutText, a synchronous failure callback
+  cycle, missing desktop-classic VNC default hydration and an unwired
+  extreme-height Sheet policy. All four are remediated in `d17976c10`; the
+  same reviewer must inspect the remediation and finish the remaining renderer,
+  isolation and zlib ABI checks before the local merge gate is satisfied.
 - `ohosTest@OhosTestCompileArkTS` remains unavailable because task `00306054`
   is not registered; no device-test success is claimed.
 - Release remains NO-GO until this exact HAP passes API 23 layout/input,
