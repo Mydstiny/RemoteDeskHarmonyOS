@@ -41,9 +41,21 @@ RDP_TEST_CASE(rustdesk_display_switch_latest_generation_wins) {
     RDP_ASSERT_EQ(gate.snapshot().readyGeneration, latest);
     RDP_ASSERT_EQ(gate.snapshot().confirmedDisplay, 2);
 
-    RDP_ASSERT(!gate.observeDisplay(1).publishDisplay);
-    RDP_ASSERT(!gate.observeFrame(1, true).acceptFrame);
     RDP_ASSERT(gate.observeFrame(2, false).acceptFrame);
+}
+
+RDP_TEST_CASE(rustdesk_display_switch_accepts_authoritative_post_commit_fallback) {
+    RustDeskDisplaySwitchGate gate;
+    gate.observeDisplay(0);
+    gate.begin(2);
+    gate.observeDisplay(2);
+    RDP_ASSERT(gate.observeFrame(2, true).acceptFrame);
+
+    const auto fallback = gate.observeDisplay(1);
+    RDP_ASSERT(fallback.publishDisplay);
+    RDP_ASSERT_EQ(fallback.display, 1);
+    RDP_ASSERT(gate.observeFrame(1, true).acceptFrame);
+    RDP_ASSERT(!gate.observeFrame(2, true).acceptFrame);
 }
 
 RDP_TEST_CASE(rustdesk_display_switch_can_return_to_the_confirmed_display) {

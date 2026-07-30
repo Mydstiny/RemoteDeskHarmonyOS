@@ -2893,13 +2893,21 @@ impl RustDeskConnector {
                 display.resolutions = current_resolutions;
             }
         }
-        let current_index = state
-            .desired_display
-            .filter(|desired| {
-                displays
-                    .iter()
-                    .any(|display| display.display == *desired && display.online)
-            })
+        let desired_online = state.desired_display.filter(|desired| {
+            displays
+                .iter()
+                .any(|display| display.display == *desired && display.online)
+        });
+        if desired_online.is_none()
+            && state.desired_display.is_some()
+            && state.pending_switch_generation.is_none()
+        {
+            // Once a confirmed target leaves the online catalog, the peer's
+            // first online monitor becomes authoritative again. A still
+            // pending local target remains fenced until the user retries.
+            state.desired_display = None;
+        }
+        let current_index = desired_online
             .or_else(|| {
                 displays
                     .iter()
@@ -3352,6 +3360,34 @@ mod tests {
         assert!(RustDeskConnector::populate_display_state(&mut state, &peer));
         assert_eq!(state.current_display, 1);
         assert_eq!((state.width, state.height), (2560, 1440));
+    }
+
+    #[test]
+    fn offline_confirmed_target_releases_to_the_first_online_monitor() {
+        let mut peer = PeerInfo::new();
+        peer.set_current_display(2);
+
+        let mut online = DisplayInfo::new();
+        online.set_width(1920);
+        online.set_height(1080);
+        online.set_online(true);
+        let mut offline = DisplayInfo::new();
+        offline.set_width(2560);
+        offline.set_height(1440);
+        offline.set_online(false);
+        peer.mut_displays().push(online);
+        peer.mut_displays().push(offline);
+
+        let mut state = RustDeskDisplayState {
+            desired_display: Some(1),
+            switch_generation: 3,
+            confirmed_switch_generation: 3,
+            ..RustDeskDisplayState::default()
+        };
+        assert!(RustDeskConnector::populate_display_state(&mut state, &peer));
+        assert_eq!(state.current_display, 0);
+        assert_eq!(state.desired_display, None);
+        assert_eq!((state.width, state.height), (1920, 1080));
     }
 
     #[test]

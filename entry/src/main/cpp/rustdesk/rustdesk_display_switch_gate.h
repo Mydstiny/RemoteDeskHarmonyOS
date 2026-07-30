@@ -34,14 +34,12 @@ public:
         pendingDisplay_ = -1;
         confirmedDisplay_ = -1;
         acknowledgementSeen_ = false;
-        hasLocalSelection_ = false;
     }
 
     uint64_t begin(int display) {
         generation_ = generation_ == UINT64_MAX ? 1 : generation_ + 1;
         pendingDisplay_ = display;
         acknowledgementSeen_ = false;
-        hasLocalSelection_ = true;
         return generation_;
     }
 
@@ -62,9 +60,6 @@ public:
             if (display == pendingDisplay_) {
                 acknowledgementSeen_ = true;
             }
-            return decision;
-        }
-        if (hasLocalSelection_ && confirmedDisplay_ >= 0 && display != confirmedDisplay_) {
             return decision;
         }
         confirmedDisplay_ = display;
@@ -116,7 +111,6 @@ private:
     int pendingDisplay_ = -1;
     int confirmedDisplay_ = -1;
     bool acknowledgementSeen_ = false;
-    bool hasLocalSelection_ = false;
 };
 
 #endif // RUSTDESK_DISPLAY_SWITCH_GATE_H
