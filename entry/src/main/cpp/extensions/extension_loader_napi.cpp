@@ -2510,6 +2510,12 @@ napi_value NapiGetRustDeskDisplayCapabilities(napi_env env, napi_callback_info i
     napi_create_object(env, &result);
     SetObjectBool(env, result, "supported", capabilities.supported);
     SetObjectInt32(env, result, "currentDisplay", capabilities.currentDisplay);
+    SetObjectInt64(env, result, "switchGeneration",
+                   static_cast<int64_t>(capabilities.switchGeneration));
+    SetObjectInt64(env, result, "readySwitchGeneration",
+                   static_cast<int64_t>(capabilities.readySwitchGeneration));
+    SetObjectInt32(env, result, "pendingDisplay", capabilities.pendingDisplay);
+    SetObjectBool(env, result, "inputBlocked", capabilities.inputBlocked);
     SetObjectInt32(env, result, "width", capabilities.width);
     SetObjectInt32(env, result, "height", capabilities.height);
     SetObjectInt32(env, result, "originalWidth", capabilities.originalWidth);
@@ -2557,6 +2563,35 @@ napi_value NapiGetRustDeskDisplayCapabilities(napi_env env, napi_callback_info i
         napi_set_element(env, displays, static_cast<uint32_t>(index), item);
     }
     napi_set_named_property(env, result, "displays", displays);
+    return result;
+}
+
+/** NAPI: beginRustDeskDisplaySwitch(sessionId, display): { accepted, generation } */
+napi_value NapiBeginRustDeskDisplaySwitch(napi_env env, napi_callback_info info) {
+    size_t argc = 2;
+    napi_value args[2];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    int32_t sessionId = 0;
+    int32_t display = -1;
+    if (argc >= 2) {
+        napi_get_value_int32(env, args[0], &sessionId);
+        napi_get_value_int32(env, args[1], &display);
+    }
+
+    RustDeskDisplaySwitchRequest request;
+    auto it = g_sessions.find(sessionId);
+    if (IsValidRustDeskDisplay(display) && it != g_sessions.end() && it->second &&
+        it->second->protocolName == "rustdesk" && it->second->adapter) {
+        auto* bridge = dynamic_cast<RustDeskBridge*>(it->second->adapter.get());
+        if (bridge) {
+            request = bridge->beginDisplaySwitch(display);
+        }
+    }
+
+    napi_value result;
+    napi_create_object(env, &result);
+    SetObjectBool(env, result, "accepted", request.accepted);
+    SetObjectInt64(env, result, "generation", static_cast<int64_t>(request.generation));
     return result;
 }
 
@@ -5002,6 +5037,10 @@ napi_value ExtensionLoaderNapi::Init(napi_env env, napi_value exports) {
     napi_create_function(env, "getRustDeskDisplayCapabilities", NAPI_AUTO_LENGTH,
                          NapiGetRustDeskDisplayCapabilities, nullptr, &fn);
     napi_set_named_property(env, exports, "getRustDeskDisplayCapabilities", fn);
+
+    napi_create_function(env, "beginRustDeskDisplaySwitch", NAPI_AUTO_LENGTH,
+                         NapiBeginRustDeskDisplaySwitch, nullptr, &fn);
+    napi_set_named_property(env, exports, "beginRustDeskDisplaySwitch", fn);
 
     napi_create_function(env, "switchRustDeskDisplay", NAPI_AUTO_LENGTH,
                          NapiSwitchRustDeskDisplay, nullptr, &fn);

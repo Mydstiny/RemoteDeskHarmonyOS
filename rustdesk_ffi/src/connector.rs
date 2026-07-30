@@ -1643,6 +1643,25 @@ impl RustDeskConnector {
                 let message = Self::build_switch_display_message(display);
                 Self::send_message_encrypted(crypto, &message)
             }
+            crate::ControlMsg::DisplaySwitch {
+                display,
+                generation,
+            } => {
+                let switch = Self::build_switch_display_message(display);
+                Self::send_message_encrypted(crypto, &switch)?;
+                let capture =
+                    Self::build_capture_displays_message(Vec::new(), Vec::new(), vec![display]);
+                Self::send_message_encrypted(crypto, &capture)?;
+                let refresh = Self::build_refresh_video_display_message(display);
+                let result = Self::send_message_encrypted(crypto, &refresh);
+                if result.is_ok() {
+                    eprintln!(
+                        "[RustDesk-FFI] display switch sent generation={} target={}",
+                        generation, display
+                    );
+                }
+                result
+            }
             crate::ControlMsg::CaptureDisplays { add, sub, set } => {
                 let message = Self::build_capture_displays_message(add, sub, set);
                 Self::send_message_encrypted(crypto, &message)
@@ -1721,6 +1740,7 @@ impl RustDeskConnector {
             crate::ControlMsg::Shutdown => "shutdown",
             crate::ControlMsg::RefreshVideo => "refresh_video",
             crate::ControlMsg::SwitchDisplay { .. } => "switch_display",
+            crate::ControlMsg::DisplaySwitch { .. } => "display_switch",
             crate::ControlMsg::CaptureDisplays { .. } => "capture_displays",
             crate::ControlMsg::RefreshVideoDisplay { .. } => "refresh_video_display",
             crate::ControlMsg::VideoPressure { .. } => "video_pressure",
@@ -2863,23 +2883,45 @@ impl RustDeskConnector {
             }
         }
 
-        let current = info.get_current_display();
-        let current_index = if current >= 0
-            && displays.iter().any(|display| display.display == current)
-        {
-            current
-        } else {
-            displays.first().map(|display| display.display).unwrap_or(0)
-        };
+        let peer_current = info.get_current_display();
         let current_resolutions = Self::collect_resolutions(info.get_resolutions());
         if let Some(display) = displays
             .iter_mut()
-            .find(|display| display.display == current_index)
+            .find(|display| display.display == peer_current)
         {
             if !current_resolutions.is_empty() {
                 display.resolutions = current_resolutions;
             }
         }
+        let desired_online = state.desired_display.filter(|desired| {
+            displays
+                .iter()
+                .any(|display| display.display == *desired && display.online)
+        });
+        if desired_online.is_none()
+            && state.desired_display.is_some()
+            && state.pending_switch_generation.is_none()
+        {
+            // Once a confirmed target leaves the online catalog, the peer's
+            // first online monitor becomes authoritative again. A still
+            // pending local target remains fenced until the user retries.
+            state.desired_display = None;
+        }
+        let current_index = desired_online
+            .or_else(|| {
+                displays
+                    .iter()
+                    .find(|display| display.display == peer_current && display.online)
+                    .map(|display| display.display)
+            })
+            .or_else(|| {
+                displays
+                    .iter()
+                    .find(|display| display.online)
+                    .map(|display| display.display)
+            })
+            .or_else(|| displays.first().map(|display| display.display))
+            .unwrap_or(0);
 
         state.current_display = current_index;
         state.displays = displays;
@@ -2992,6 +3034,15 @@ impl RustDeskConnector {
         let Ok(mut state) = display_state.lock() else {
             return;
         };
+        if let Some(desired) = state.desired_display {
+            if display_index != desired {
+                eprintln!(
+                    "[RustDesk-FFI] stale display geometry ignored received={} desired={}",
+                    display_index, desired
+                );
+                return;
+            }
+        }
         let resolutions = Self::collect_resolutions(display.get_resolutions());
         let legacy_scale_milli = state.scale_milli;
         let legacy_current_display = state.current_display;
@@ -3038,6 +3089,9 @@ impl RustDeskConnector {
             });
         }
         let changed = Self::sync_active_display(&mut state, display_index);
+        if let Some(generation) = state.pending_switch_generation.take() {
+            state.confirmed_switch_generation = generation;
+        }
         if changed {
             state.geometry_epoch = state.geometry_epoch.wrapping_add(1).max(1);
         }
@@ -3062,6 +3116,15 @@ impl RustDeskConnector {
         if display < 0 || display as usize >= crate::RUSTDESK_MAX_DISPLAYS {
             return;
         }
+        if let Some(desired) = state.desired_display {
+            if display != desired {
+                eprintln!(
+                    "[RustDesk-FFI] stale follow-current-display ignored received={} desired={}",
+                    display, desired
+                );
+                return;
+            }
+        }
         if state.displays.is_empty() {
             // Legacy peers can report a current-display change without a
             // catalog. Preserve the last known geometry while following the
@@ -3070,13 +3133,27 @@ impl RustDeskConnector {
                 state.current_display = display;
                 state.geometry_epoch = state.geometry_epoch.wrapping_add(1).max(1);
             }
+            if let Some(generation) = state.pending_switch_generation.take() {
+                state.confirmed_switch_generation = generation;
+            }
             if let Ok(mut stats) = stream_stats.lock() {
                 stats.width = state.width;
                 stats.height = state.height;
             }
             return;
         }
-        if Self::sync_active_display(&mut state, display) {
+        if !state
+            .displays
+            .iter()
+            .any(|candidate| candidate.display == display)
+        {
+            return;
+        }
+        let changed = Self::sync_active_display(&mut state, display);
+        if let Some(generation) = state.pending_switch_generation.take() {
+            state.confirmed_switch_generation = generation;
+        }
+        if changed {
             state.geometry_epoch = state.geometry_epoch.wrapping_add(1).max(1);
             if let Ok(mut stats) = stream_stats.lock() {
                 stats.width = state.width;
@@ -3263,6 +3340,57 @@ mod tests {
     }
 
     #[test]
+    fn invalid_peer_current_display_prefers_the_first_online_monitor() {
+        let mut peer = PeerInfo::new();
+        peer.set_current_display(7);
+
+        let mut offline = DisplayInfo::new();
+        offline.set_width(1920);
+        offline.set_height(1080);
+        offline.set_online(false);
+        let mut online = DisplayInfo::new();
+        online.set_x(1920);
+        online.set_width(2560);
+        online.set_height(1440);
+        online.set_online(true);
+        peer.mut_displays().push(offline);
+        peer.mut_displays().push(online);
+
+        let mut state = RustDeskDisplayState::default();
+        assert!(RustDeskConnector::populate_display_state(&mut state, &peer));
+        assert_eq!(state.current_display, 1);
+        assert_eq!((state.width, state.height), (2560, 1440));
+    }
+
+    #[test]
+    fn offline_confirmed_target_releases_to_the_first_online_monitor() {
+        let mut peer = PeerInfo::new();
+        peer.set_current_display(2);
+
+        let mut online = DisplayInfo::new();
+        online.set_width(1920);
+        online.set_height(1080);
+        online.set_online(true);
+        let mut offline = DisplayInfo::new();
+        offline.set_width(2560);
+        offline.set_height(1440);
+        offline.set_online(false);
+        peer.mut_displays().push(online);
+        peer.mut_displays().push(offline);
+
+        let mut state = RustDeskDisplayState {
+            desired_display: Some(1),
+            switch_generation: 3,
+            confirmed_switch_generation: 3,
+            ..RustDeskDisplayState::default()
+        };
+        assert!(RustDeskConnector::populate_display_state(&mut state, &peer));
+        assert_eq!(state.current_display, 0);
+        assert_eq!(state.desired_display, None);
+        assert_eq!((state.width, state.height), (1920, 1080));
+    }
+
+    #[test]
     fn empty_peer_info_clears_stale_display_geometry() {
         let mut state = RustDeskDisplayState {
             current_display: 1,
@@ -3341,6 +3469,7 @@ mod tests {
                     ..RustDeskDisplayInfoState::default()
                 },
             ],
+            ..RustDeskDisplayState::default()
         }));
         let stream_stats = Arc::new(Mutex::new(crate::RustDeskStreamStats::default()));
         let mut supported = SupportedResolutions::new();
@@ -3374,6 +3503,7 @@ mod tests {
             geometry_epoch: 4,
             resolutions: vec![(1920, 1080)],
             displays: Vec::new(),
+            ..RustDeskDisplayState::default()
         }));
         let stream_stats = Arc::new(Mutex::new(crate::RustDeskStreamStats::default()));
         let mut supported = SupportedResolutions::new();
@@ -3397,6 +3527,115 @@ mod tests {
         drop(state);
         let stats = stream_stats.lock().expect("stream stats lock");
         assert_eq!((stats.width, stats.height), (1080, 1920));
+    }
+
+    #[test]
+    fn rapid_display_switch_ignores_stale_geometry_ack() {
+        let display_state = Arc::new(Mutex::new(RustDeskDisplayState {
+            current_display: 0,
+            desired_display: Some(2),
+            switch_generation: 2,
+            pending_switch_generation: Some(2),
+            width: 1920,
+            height: 1080,
+            displays: vec![
+                RustDeskDisplayInfoState {
+                    display: 0,
+                    width: 1920,
+                    height: 1080,
+                    online: true,
+                    ..RustDeskDisplayInfoState::default()
+                },
+                RustDeskDisplayInfoState {
+                    display: 1,
+                    width: 1600,
+                    height: 900,
+                    online: true,
+                    ..RustDeskDisplayInfoState::default()
+                },
+                RustDeskDisplayInfoState {
+                    display: 2,
+                    width: 2560,
+                    height: 1440,
+                    online: true,
+                    ..RustDeskDisplayInfoState::default()
+                },
+            ],
+            ..RustDeskDisplayState::default()
+        }));
+        let stream_stats = Arc::new(Mutex::new(crate::RustDeskStreamStats::default()));
+        let mut stale = SwitchDisplay::new();
+        stale.set_display(1);
+        stale.set_width(1680);
+        stale.set_height(1050);
+        RustDeskConnector::apply_switch_display_geometry(&display_state, &stale, &stream_stats);
+
+        {
+            let state = display_state.lock().expect("display state lock");
+            assert_eq!(state.current_display, 0);
+            assert_eq!(state.pending_switch_generation, Some(2));
+            assert_eq!(state.confirmed_switch_generation, 0);
+        }
+
+        let mut latest = SwitchDisplay::new();
+        latest.set_display(2);
+        latest.set_width(2560);
+        latest.set_height(1440);
+        RustDeskConnector::apply_switch_display_geometry(&display_state, &latest, &stream_stats);
+        let state = display_state.lock().expect("display state lock");
+        assert_eq!(state.current_display, 2);
+        assert_eq!(state.pending_switch_generation, None);
+        assert_eq!(state.confirmed_switch_generation, 2);
+    }
+
+    #[test]
+    fn rapid_display_switch_ignores_stale_follow_current_ack() {
+        let display_state = Arc::new(Mutex::new(RustDeskDisplayState {
+            current_display: 0,
+            desired_display: Some(2),
+            switch_generation: 2,
+            pending_switch_generation: Some(2),
+            width: 1920,
+            height: 1080,
+            displays: vec![
+                RustDeskDisplayInfoState {
+                    display: 0,
+                    width: 1920,
+                    height: 1080,
+                    online: true,
+                    ..RustDeskDisplayInfoState::default()
+                },
+                RustDeskDisplayInfoState {
+                    display: 1,
+                    width: 1600,
+                    height: 900,
+                    online: true,
+                    ..RustDeskDisplayInfoState::default()
+                },
+                RustDeskDisplayInfoState {
+                    display: 2,
+                    width: 2560,
+                    height: 1440,
+                    online: true,
+                    ..RustDeskDisplayInfoState::default()
+                },
+            ],
+            ..RustDeskDisplayState::default()
+        }));
+        let stream_stats = Arc::new(Mutex::new(crate::RustDeskStreamStats::default()));
+
+        RustDeskConnector::apply_follow_current_display(&display_state, 1, &stream_stats);
+        {
+            let state = display_state.lock().expect("display state lock");
+            assert_eq!(state.current_display, 0);
+            assert_eq!(state.pending_switch_generation, Some(2));
+        }
+
+        RustDeskConnector::apply_follow_current_display(&display_state, 2, &stream_stats);
+        let state = display_state.lock().expect("display state lock");
+        assert_eq!(state.current_display, 2);
+        assert_eq!(state.pending_switch_generation, None);
+        assert_eq!(state.confirmed_switch_generation, 2);
     }
 
     #[test]

@@ -11,6 +11,8 @@ pub(crate) struct ControlInboxSnapshot {
     pub reliable_depth: usize,
     pub max_reliable_depth: usize,
     pub coalesced_mouse_moves: u64,
+    pub coalesced_display_switches: u64,
+    pub discarded_pointer_updates: u64,
     pub coalesced_refreshes: u64,
     pub coalesced_video_pressure: u64,
     pub coalesced_touch_scales: u64,
@@ -49,6 +51,7 @@ impl PendingTouchUpdate {
 struct ControlInboxState {
     next_sequence: u64,
     reliable: VecDeque<SequencedControl>,
+    display_switch: Option<SequencedControl>,
     mouse_move: Option<ControlMsg>,
     refresh_pending: bool,
     video_pressure: Option<u32>,
@@ -60,6 +63,8 @@ struct ControlInboxState {
     pending_touch_pan_ends: usize,
     max_reliable_depth: usize,
     coalesced_mouse_moves: u64,
+    coalesced_display_switches: u64,
+    discarded_pointer_updates: u64,
     coalesced_refreshes: u64,
     coalesced_video_pressure: u64,
     coalesced_touch_scales: u64,
@@ -72,6 +77,7 @@ impl Default for ControlInboxState {
         Self {
             next_sequence: 1,
             reliable: VecDeque::new(),
+            display_switch: None,
             mouse_move: None,
             refresh_pending: false,
             video_pressure: None,
@@ -83,6 +89,8 @@ impl Default for ControlInboxState {
             pending_touch_pan_ends: 0,
             max_reliable_depth: 0,
             coalesced_mouse_moves: 0,
+            coalesced_display_switches: 0,
+            discarded_pointer_updates: 0,
             coalesced_refreshes: 0,
             coalesced_video_pressure: 0,
             coalesced_touch_scales: 0,
@@ -104,6 +112,7 @@ impl Default for ControlInbox {
 enum OrderedPending {
     Reliable,
     TouchUpdate,
+    DisplaySwitch,
 }
 
 impl ControlInbox {
@@ -125,6 +134,22 @@ impl ControlInbox {
             ControlMsg::MouseMove { .. } => {
                 if state.mouse_move.replace(message).is_some() {
                     state.coalesced_mouse_moves += 1;
+                }
+                true
+            }
+            ControlMsg::DisplaySwitch { .. } => {
+                // Display selection is a coordinate-space barrier. Keep the
+                // release messages already queued by ArkTS, but discard old
+                // coalesced movement/deltas so they cannot cross into the new
+                // monitor. The switch itself is a latest-value-wins ordered
+                // slot and is emitted as one official single-canvas sequence.
+                Self::discard_stale_pointer_updates(&mut state);
+                if state
+                    .display_switch
+                    .replace(SequencedControl { sequence, message })
+                    .is_some()
+                {
+                    state.coalesced_display_switches += 1;
                 }
                 true
             }
@@ -231,6 +256,12 @@ impl ControlInbox {
                 OrderedPending::TouchUpdate => {
                     Self::take_touch_update(&mut state, &mut batch, limit);
                 }
+                OrderedPending::DisplaySwitch => {
+                    let Some(queued) = state.display_switch.take() else {
+                        break;
+                    };
+                    batch.push(queued.message);
+                }
             }
         }
 
@@ -271,6 +302,8 @@ impl ControlInbox {
             reliable_depth: state.reliable.len(),
             max_reliable_depth: state.max_reliable_depth,
             coalesced_mouse_moves: state.coalesced_mouse_moves,
+            coalesced_display_switches: state.coalesced_display_switches,
+            discarded_pointer_updates: state.discarded_pointer_updates,
             coalesced_refreshes: state.coalesced_refreshes,
             coalesced_video_pressure: state.coalesced_video_pressure,
             coalesced_touch_scales: state.coalesced_touch_scales,
@@ -307,6 +340,25 @@ impl ControlInbox {
         if let Some((x, y)) = pending.pan.take() {
             Self::enqueue_reliable(state, sequence, ControlMsg::TouchPanUpdate { x, y });
         }
+    }
+
+    fn discard_stale_pointer_updates(state: &mut ControlInboxState) {
+        if state.mouse_move.take().is_some() {
+            state.discarded_pointer_updates += 1;
+        }
+        if let Some(pending) = state.touch_update.take() {
+            state.discarded_pointer_updates += usize::from(pending.scale.is_some()) as u64;
+            state.discarded_pointer_updates += usize::from(pending.pan.is_some()) as u64;
+        }
+        let previous_depth = state.reliable.len();
+        state.reliable.retain(|queued| {
+            !matches!(
+                &queued.message,
+                ControlMsg::TouchScale { scale } if *scale > 0
+            ) && !matches!(&queued.message, ControlMsg::TouchPanUpdate { .. })
+        });
+        state.discarded_pointer_updates +=
+            previous_depth.saturating_sub(state.reliable.len()) as u64;
     }
 
     fn merge_touch_scale(state: &mut ControlInboxState, sequence: u64, scale: i32) {
@@ -346,18 +398,27 @@ impl ControlInbox {
     }
 
     fn next_ordered_pending(state: &ControlInboxState) -> Option<OrderedPending> {
-        match (state.reliable.front(), state.touch_update.as_ref()) {
-            (None, None) => None,
-            (Some(_), None) => Some(OrderedPending::Reliable),
-            (None, Some(_)) => Some(OrderedPending::TouchUpdate),
-            (Some(reliable), Some(touch)) => {
-                if reliable.sequence <= touch.sequence {
-                    Some(OrderedPending::Reliable)
-                } else {
-                    Some(OrderedPending::TouchUpdate)
-                }
+        let mut selected: Option<(u64, OrderedPending)> = None;
+        if let Some(reliable) = state.reliable.front() {
+            selected = Some((reliable.sequence, OrderedPending::Reliable));
+        }
+        if let Some(touch) = state.touch_update.as_ref() {
+            if selected
+                .as_ref()
+                .map_or(true, |(sequence, _)| touch.sequence < *sequence)
+            {
+                selected = Some((touch.sequence, OrderedPending::TouchUpdate));
             }
         }
+        if let Some(display_switch) = state.display_switch.as_ref() {
+            if selected
+                .as_ref()
+                .map_or(true, |(sequence, _)| display_switch.sequence < *sequence)
+            {
+                selected = Some((display_switch.sequence, OrderedPending::DisplaySwitch));
+            }
+        }
+        selected.map(|(_, pending)| pending)
     }
 
     fn take_touch_update(state: &mut ControlInboxState, batch: &mut Vec<ControlMsg>, limit: usize) {
@@ -393,6 +454,7 @@ impl ControlInbox {
     fn has_pending(state: &ControlInboxState) -> bool {
         !state.reliable.is_empty()
             || state.mouse_move.is_some()
+            || state.display_switch.is_some()
             || state.refresh_pending
             || state.video_pressure.is_some()
             || state.touch_update.is_some()
@@ -415,6 +477,44 @@ fn mouse_moves_coalesce_to_the_latest_coordinate() {
         [ControlMsg::MouseMove { x: 8, y: 9 }]
     ));
     assert_eq!(inbox.snapshot().coalesced_mouse_moves, 1);
+}
+
+#[test]
+fn display_switch_drops_old_pointer_updates_and_keeps_release_order() {
+    let inbox = ControlInbox::default();
+    inbox.enqueue(ControlMsg::MouseMove { x: 40, y: 50 });
+    inbox.enqueue(ControlMsg::TouchPanStart { x: 40, y: 50 });
+    inbox.enqueue(ControlMsg::TouchPanUpdate { x: 5, y: 6 });
+    inbox.enqueue(ControlMsg::TouchPanEnd { x: 45, y: 56 });
+    inbox.enqueue(ControlMsg::KeyEvent {
+        scancode: 2072,
+        pressed: false,
+    });
+    inbox.enqueue(ControlMsg::DisplaySwitch {
+        display: 1,
+        generation: 1,
+    });
+    inbox.enqueue(ControlMsg::DisplaySwitch {
+        display: 2,
+        generation: 2,
+    });
+
+    let batch = inbox.take_batch(CONTROL_BATCH_LIMIT);
+    assert!(matches!(
+        batch.as_slice(),
+        [
+            ControlMsg::TouchPanStart { .. },
+            ControlMsg::TouchPanEnd { .. },
+            ControlMsg::KeyEvent { pressed: false, .. },
+            ControlMsg::DisplaySwitch {
+                display: 2,
+                generation: 2
+            },
+        ]
+    ));
+    let snapshot = inbox.snapshot();
+    assert_eq!(snapshot.coalesced_display_switches, 1);
+    assert_eq!(snapshot.discarded_pointer_updates, 2);
 }
 
 #[test]

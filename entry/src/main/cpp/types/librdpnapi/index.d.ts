@@ -54,6 +54,8 @@ export const VERSION: SessionVersionInfo;
   export function getSessionDiagnostics(sessionId: number): RustDeskDiagnosticsSnapshot;
   export function getRustDeskDiagnostics(sessionId: number): RustDeskDiagnosticsSnapshot;
   export function getRustDeskDisplayCapabilities(sessionId: number): RustDeskDisplayCapabilities;
+  export function beginRustDeskDisplaySwitch(sessionId: number,
+    display: number): RustDeskDisplaySwitchRequest;
   export function switchRustDeskDisplay(sessionId: number, display: number): boolean;
   export function changeRustDeskDisplayResolution(sessionId: number, display: number,
     width: number, height: number): boolean;
@@ -332,6 +334,10 @@ export interface RustDeskDisplayInfo {
 export interface RustDeskDisplayCapabilities {
   supported: boolean;
   currentDisplay: number;
+  switchGeneration: number;
+  readySwitchGeneration: number;
+  pendingDisplay: number;
+  inputBlocked: boolean;
   width: number;
   height: number;
   originalWidth: number;
@@ -340,6 +346,11 @@ export interface RustDeskDisplayCapabilities {
   geometryEpoch: number;
   resolutions: RustDeskDisplayResolution[];
   displays: RustDeskDisplayInfo[];
+}
+
+export interface RustDeskDisplaySwitchRequest {
+  accepted: boolean;
+  generation: number;
 }
 
 export interface LocalResourceStats {
