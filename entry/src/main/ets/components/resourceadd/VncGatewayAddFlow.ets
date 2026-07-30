@@ -13,7 +13,13 @@ import {
 } from '../../services/VncModelPolicy';
 import { VncGatewayView } from '../../services/VncGatewayService';
 import { VncGatewayAvailability, vncGatewayAvailability } from '../../services/VncGatewayProtocolPolicy';
-import { protocolIcon } from '../../services/ProtocolIconPolicy';
+import {
+  VNC_GATEWAY_ADD_STEP_COUNT,
+  isVncGatewayTransportSelectable,
+  nextVncFlowStep,
+  previousVncFlowStep
+} from '../../services/VncHostFlowPolicy';
+import { VncSheetScaffold } from '../vnc/VncSheetScaffold';
 
 @Component
 export struct VncGatewayAddFlow {
@@ -66,24 +72,12 @@ export struct VncGatewayAddFlow {
 
   private stepTitle(): string {
     if (this.step === 0) { return '端点与协议'; }
-    if (this.step === 1) { return '安全与可用性'; }
-    return this.isEditing() ? '确认更新 Gateway' : '确认 VNC Gateway';
+    return this.isEditing() ? '安全与确认更新' : '安全与确认';
   }
 
   private stepDetail(): string {
     if (this.step === 0) { return '选择 VNC 专属中继类型并填写服务器端点'; }
-    if (this.step === 1) { return '不支持的服务端契约会保持明确的不可用状态'; }
-    return '卡片只显示非敏感端点，令牌不会出现在摘要中';
-  }
-
-  private selectTransport(value: VncTransport): void {
-    this.transport = value;
-    this.errorText = '';
-    if (value === 'ultravnc_repeater') {
-      if (this.portText === '') { this.portText = '5901'; }
-    } else if (value === 'websocket_gateway') {
-      if (this.path === '') { this.path = '/vnc'; }
-    }
+    return '确认 TLS、启用状态与非敏感摘要';
   }
 
   private portValue(): number {
@@ -98,13 +92,14 @@ export struct VncGatewayAddFlow {
   }
 
   private endpointValid(): boolean {
+    if (!isVncGatewayTransportSelectable(this.transport)) {
+      this.errorText = '该旧 Gateway 类型尚未实现连接契约；当前只能新增 UltraVNC Repeater mode12';
+      return false;
+    }
     if (this.label.trim() === '') { this.errorText = '请填写 Gateway 名称'; return false; }
     if (this.host.trim() === '') { this.errorText = '请填写 Gateway 地址'; return false; }
     if (this.portValue() < 1 || this.portValue() > 65535) {
       this.errorText = 'Gateway 端口必须在 1-65535 之间'; return false;
-    }
-    if (this.transport === 'websocket_gateway' && this.path.trim() === '') {
-      this.errorText = 'WebSocket Gateway 必须填写路径'; return false;
     }
     if (this.transport === 'ultravnc_repeater' && this.targetId.trim() === '') {
       this.errorText = 'UltraVNC Repeater mode12 必须填写目标 ID'; return false;
@@ -132,12 +127,16 @@ export struct VncGatewayAddFlow {
   private next(): void {
     this.errorText = '';
     if (this.step === 0 && !this.endpointValid()) { return; }
-    if (this.step < 2) { this.step += 1; }
+    this.step = nextVncFlowStep(this.step, VNC_GATEWAY_ADD_STEP_COUNT);
   }
 
   private back(): void {
     this.errorText = '';
-    if (this.step > 0) { this.step -= 1; } else { this.onClose(); }
+    if (this.step > 0) {
+      this.step = previousVncFlowStep(this.step, VNC_GATEWAY_ADD_STEP_COUNT);
+    } else {
+      this.onClose();
+    }
   }
 
   private save(): void {
@@ -173,33 +172,22 @@ export struct VncGatewayAddFlow {
     }.alignItems(HorizontalAlign.Start).width('100%').margin({ bottom: 12 })
   }
 
-  @Builder private transportButton(title: string, subtitle: string, value: VncTransport) {
-    Row() {
-      SymbolGlyph(protocolIcon(value === 'ultravnc_repeater' ? 'vnc_gateway' : 'vnc'))
-        .fontSize(21).fontColor([this.transport === value ? Color.White : this.pal().text2])
-      Column() {
-        Text(title).fontSize(13).fontWeight(FontWeight.Medium)
-          .fontColor(this.transport === value ? Color.White : this.pal().text)
-        Text(subtitle).fontSize(10).margin({ top: 3 })
-          .fontColor(this.transport === value ? '#DDEEFF' : this.pal().text3)
-      }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 10 })
-    }.width('100%').padding(12).borderRadius(11)
-      .backgroundColor(this.transport === value ? this.accentColor : this.pal().surface)
-      .margin({ bottom: 8 }).onClick((): void => { this.selectTransport(value); })
-  }
-
   @Builder private endpointStep() {
     Column() {
-      Text('VNC Gateway 类型').fontSize(12).fontColor(this.pal().text2).margin({ bottom: 7 })
-      this.transportButton('UltraVNC Repeater', '当前可用：Viewer mode12', 'ultravnc_repeater')
-      this.transportButton('WebSocket Gateway', '服务端契约未部署：仅保存，不可连接', 'websocket_gateway')
-      this.transportButton('SSH 隧道', '需要独立 SSH tunnel owner：暂不可用', 'ssh_tunnel')
+      Row() {
+        Column() {
+          Text('UltraVNC Repeater').fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
+          Text('当前唯一可用的 VNC Gateway · Viewer mode12')
+            .fontSize(11).fontColor(this.pal().text3).margin({ top: 3 })
+        }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+        Text('VNC').fontSize(10).fontColor(this.accentColor)
+          .padding({ left: 8, right: 8, top: 4, bottom: 4 })
+          .borderRadius(8).backgroundColor(this.pal().surface)
+      }.width('100%').padding(12).borderRadius(11).backgroundColor(this.pal().surface)
+        .margin({ bottom: 14 })
       this.field('名称', this.label, '例如：办公室 VNC Repeater', (value: string): void => { this.label = value; })
       this.field('服务器地址', this.host, 'relay.example.com', (value: string): void => { this.host = value; })
       this.field('服务器端口', this.portText, '5901', (value: string): void => { this.portText = value; })
-      if (this.transport === 'websocket_gateway') {
-        this.field('WebSocket 路径', this.path, '/vnc', (value: string): void => { this.path = value; })
-      }
       if (this.transport === 'ultravnc_repeater') {
         this.field('目标 ID', this.targetId, '例如：office-01', (value: string): void => { this.targetId = value; })
         Text('仅支持 Viewer mode12。mode2 是 server-side listener 角色，不会被伪装成客户端可选项。')
@@ -210,9 +198,6 @@ export struct VncGatewayAddFlow {
 
   @Builder private securityStep() {
     Column() {
-      this.field('Gateway 令牌（可选）', this.accessToken,
-        this.existingTokenConfigured ? '留空保留现有令牌；输入新令牌将替换' : '留空表示不保存令牌',
-        (value: string): void => { this.accessToken = value; }, true)
       Row() {
         Text('TLS').fontSize(14).fontColor(this.pal().text).layoutWeight(1)
         Toggle({ type: ToggleType.Switch, isOn: this.tls }).selectedColor(this.accentColor)
@@ -223,7 +208,7 @@ export struct VncGatewayAddFlow {
         Toggle({ type: ToggleType.Switch, isOn: this.gatewayEnabled }).selectedColor(this.accentColor)
           .onChange((value: boolean): void => { this.gatewayEnabled = value; })
       }.width('100%').height(48)
-      Text('令牌只进入独立 VNC secret 记录；不会进入 RustDesk 中继、普通备份或卡片文字。')
+      Text('mode12 不使用 Gateway 令牌。旧记录中的令牌不会显示，也不会被本次更新清空。')
         .fontSize(11).fontColor(this.pal().text3).lineHeight(17).width('100%').margin({ top: 8 })
       Column() {
         Text('当前状态').fontSize(12).fontColor(this.pal().text2)
@@ -248,13 +233,12 @@ export struct VncGatewayAddFlow {
         this.reviewRow('类型', this.transport === 'ultravnc_repeater' ? 'VNC Gateway · Repeater' : 'VNC Gateway')
         this.reviewRow('名称', this.label.trim())
         this.reviewRow('端点', this.host.trim() + ':' + this.portValue().toString())
-        if (this.transport === 'websocket_gateway') { this.reviewRow('路径', this.path.trim()) }
         if (this.transport === 'ultravnc_repeater') {
           this.reviewRow('目标 ID', this.redactedTargetId(this.targetId) + ' · mode12')
         }
         this.reviewRow('安全', (this.tls ? 'TLS' : '明文') + ' · ' +
           (this.gatewayEnabled && this.availability().enabled ? '已启用' : '已停用'))
-        this.reviewRow('令牌', this.accessToken.length > 0 || this.existingTokenConfigured ? '已配置（不显示）' : '未配置')
+        this.reviewRow('令牌', 'mode12 不使用')
       }.width('100%').padding(12).borderRadius(12).backgroundColor(this.pal().surface)
       Text(this.availability().enabled ? '保存后可被 VNC 主机添加流程选择。' : this.availability().message)
         .fontSize(11).fontColor(this.availability().enabled ? this.pal().text3 : this.pal().danger)
@@ -266,42 +250,44 @@ export struct VncGatewayAddFlow {
     Row() {
       Button(this.step === 0 ? '取消' : '上一步').layoutWeight(1).height(44).borderRadius(12)
         .backgroundColor(this.pal().surface).fontColor(this.pal().text2).onClick((): void => { this.back(); })
-      if (this.step < 2) {
+      if (this.step < VNC_GATEWAY_ADD_STEP_COUNT - 1) {
         Button('下一步').layoutWeight(1).height(44).borderRadius(12).margin({ left: 8 })
           .backgroundColor(this.accentColor).fontColor(Color.White).onClick((): void => { this.next(); })
       } else {
         Button(this.isEditing() ? '更新' : '保存').layoutWeight(1).height(44).borderRadius(12).margin({ left: 8 })
           .backgroundColor(this.accentColor).fontColor(Color.White).onClick((): void => { this.save(); })
       }
-    }.width('100%').margin({ top: 18 })
+    }.width('100%')
+  }
+
+  @Builder private flowBody() {
+    Column() {
+      if (this.step === 0) {
+        this.endpointStep()
+      } else {
+        this.securityStep()
+        Divider().strokeWidth(0.5).color(this.pal().divider).margin({ top: 16, bottom: 16 })
+        Text('Gateway 摘要').fontSize(13).fontWeight(FontWeight.Medium)
+          .fontColor(this.pal().text).width('100%').margin({ bottom: 10 })
+        this.reviewStep()
+      }
+      if (this.errorText !== '') {
+        Text(this.errorText).fontSize(12).fontColor(this.pal().danger).lineHeight(18)
+          .width('100%').margin({ top: 12 })
+      }
+    }.width('100%')
   }
 
   build() {
-    Column() {
-      Row() {
-        SymbolGlyph(protocolIcon('vnc_gateway')).fontSize(22).fontColor([this.accentColor])
-        Column() {
-          Text(this.isEditing() ? '编辑 VNC Gateway' : '添加 VNC Gateway')
-            .fontSize(20).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
-          Text((this.step + 1).toString() + '/3  ' + this.stepTitle())
-            .fontSize(12).fontColor(this.pal().text3).margin({ top: 3 })
-        }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 10 })
-        Button() { SymbolGlyph($r('sys.symbol.xmark')).fontSize(18).fontColor([this.pal().text2]) }
-          .width(36).height(36).borderRadius(18).padding(0).backgroundColor(this.pal().surface)
-          .onClick((): void => { this.onClose(); })
-      }.width('100%').margin({ bottom: 5 })
-      Text(this.stepDetail()).fontSize(11).fontColor(this.pal().text3).width('100%').margin({ bottom: 12 })
-      Column() {
-        if (this.step === 0) { this.endpointStep() }
-        else if (this.step === 1) { this.securityStep() }
-        else { this.reviewStep() }
-        if (this.errorText !== '') {
-          Text(this.errorText).fontSize(12).fontColor(this.pal().danger).lineHeight(18)
-            .width('100%').margin({ top: 12 })
-        }
-      }.width('100%')
-      this.actionBar()
-    }.width('100%').padding({ left: 20, right: 20, top: 18, bottom: 20 })
-      .backgroundColor(this.pal().card)
+    VncSheetScaffold({
+      title: this.isEditing() ? '编辑 VNC Gateway' : '添加 VNC Gateway',
+      subtitle: this.stepDetail(),
+      stepText: (this.step + 1).toString() + '/' + VNC_GATEWAY_ADD_STEP_COUNT.toString() +
+        '  ' + this.stepTitle(),
+      leadingBack: true,
+      onLeadingAction: (): void => { this.back(); },
+      contentBuilder: this.flowBody,
+      footerBuilder: this.actionBar
+    })
   }
 }

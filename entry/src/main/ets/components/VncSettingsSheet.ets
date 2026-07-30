@@ -30,7 +30,7 @@ import {
   SETTINGS_SHEET_VNC_TRUST
 } from '../services/SettingsSheetRoutePolicy';
 import { Palette, buildDark, buildLight } from '../common/Theme';
-import { protocolIcon } from '../services/ProtocolIconPolicy';
+import { VncSheetScaffold } from './vnc/VncSheetScaffold';
 
 /**
  * A leaf VNC settings surface hosted by HostListPage's single bindSheet.
@@ -85,14 +85,14 @@ export struct VncSettingsSheet {
   @State cryptoReady: boolean = false;
   @State errorText: string = '';
   @State revision: number = 0;
+  @State dirty: boolean = false;
+  @State saving: boolean = false;
 
   private readonly settings: VncSettingsService = VncSettingsService.getInstance();
   private readonly trustService: VncTrustService = VncTrustService.getInstance();
   private settingsUnsubscribe: (() => void) | null = null;
   private trustUnsubscribe: (() => void) | null = null;
   private cryptoUnsubscribe: (() => void) | null = null;
-  private dirty: boolean = false;
-
   private pal(): Palette {
     return this.theme === 'light' ? buildLight(this.accentColor) : buildDark(this.accentColor);
   }
@@ -217,6 +217,7 @@ export struct VncSettingsSheet {
   }
 
   private save(): void {
+    if (!this.dirty || this.saving) { return; }
     this.errorText = '';
     const current: VncSettingsValues = this.settings.get();
     const needsSecretConfirmation: boolean = this.syncSecrets && !current.syncSecrets;
@@ -260,17 +261,20 @@ export struct VncSettingsSheet {
   }
 
   private async persistSettings(): Promise<void> {
-    const result =
-      await this.settings.save(
-        this.settingsValues());
-    if (!result.ok) {
-      this.errorText = result.message;
-      return;
+    this.saving = true;
+    try {
+      const result = await this.settings.save(this.settingsValues());
+      if (!result.ok) {
+        this.errorText = result.message;
+        return;
+      }
+      this.dirty = false;
+      this.onDirtyChanged(false);
+      promptAction.showToast({ message: 'VNC 设置已保存', duration: 1500 });
+      this.onSaved();
+    } finally {
+      this.saving = false;
     }
-    this.dirty = false;
-    this.onDirtyChanged(false);
-    promptAction.showToast({ message: 'VNC 设置已保存', duration: 1500 });
-    this.onSaved();
   }
 
   private scopeChecked(scope: VncCloudSyncScope): boolean {
@@ -308,7 +312,7 @@ export struct VncSettingsSheet {
   }
 
   private title(): string {
-    if (this.mode === SETTINGS_SHEET_VNC_CONNECTION) { return '连接与安全'; }
+    if (this.mode === SETTINGS_SHEET_VNC_CONNECTION) { return '连接默认值'; }
     if (this.mode === SETTINGS_SHEET_VNC_TIMEOUT) { return '超时与连接行为'; }
     if (this.mode === SETTINGS_SHEET_VNC_DISPLAY) { return '显示与画面'; }
     if (this.mode === SETTINGS_SHEET_VNC_INPUT) { return '输入与光标'; }
@@ -322,7 +326,7 @@ export struct VncSettingsSheet {
   }
 
   private subtitle(): string {
-    if (this.mode === SETTINGS_SHEET_VNC_CONNECTION) { return 'VNC 独立传输、超时和安全策略'; }
+    if (this.mode === SETTINGS_SHEET_VNC_CONNECTION) { return 'VNC 独立传输与默认端口'; }
     if (this.mode === SETTINGS_SHEET_VNC_TIMEOUT) { return '只影响 VNC 会话，不读取其他协议的超时'; }
     if (this.mode === SETTINGS_SHEET_VNC_DISPLAY) { return '本地缩放与 native 实际画面能力'; }
     if (this.mode === SETTINGS_SHEET_VNC_INPUT) { return '鼠标与键盘默认可用，可按需切换只读'; }
@@ -333,18 +337,6 @@ export struct VncSettingsSheet {
     if (this.mode === SETTINGS_SHEET_VNC_CLOUD_SYNC) { return '物理表仍只有 vncrecord，逻辑范围独立选择'; }
     if (this.mode === SETTINGS_SHEET_VNC_HOSTS) { return '主机记录不会进入 remotehosts'; }
     return 'VNC Gateway 与 RustDesk 中继分属不同 owner';
-  }
-
-  @Builder private header() {
-    Row() {
-      SymbolGlyph(protocolIcon('vnc')).fontSize(24).fontColor([this.accentColor])
-      Column() {
-        Text(this.title()).fontSize(19).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
-        Text(this.subtitle()).fontSize(11).fontColor(this.pal().text3).margin({ top: 4 })
-      }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 12 })
-      SymbolGlyph($r('sys.symbol.xmark')).fontSize(18).fontColor([this.pal().text2])
-        .width(36).height(36).onClick((): void => { this.onClose(); })
-    }.width('100%').padding({ left: 22, right: 18, top: 20, bottom: 16 })
   }
 
   @Builder private field(label: string, placeholder: string, value: string, onChange: (value: string) => void) {
@@ -388,40 +380,8 @@ export struct VncSettingsSheet {
       this.field('默认端口', '5900', this.defaultPortText, (value: string): void => {
         this.defaultPortText = value; this.markDirty();
       })
-      Text('会话超时').fontSize(12).fontColor(this.pal().text3).margin({ top: 4, bottom: 7 })
-      this.field('连接超时（ms）', '10000', this.connectTimeoutText, (value: string): void => {
-        this.connectTimeoutText = value; this.markDirty();
-      })
-      this.field('认证超时（ms）', '15000', this.authTimeoutText, (value: string): void => {
-        this.authTimeoutText = value; this.markDirty();
-      })
-      this.field('首帧超时（ms）', '15000', this.firstFrameTimeoutText, (value: string): void => {
-        this.firstFrameTimeoutText = value; this.markDirty();
-      })
-      Text('连接安全策略').fontSize(12).fontColor(this.pal().text3).margin({ top: 4, bottom: 7 })
-      Row() {
-        this.choice('仅安全', this.securityPolicy === 'secure_only', (): void => {
-          this.securityPolicy = 'secure_only'; this.markDirty();
-        })
-        this.choice('可信网络', this.securityPolicy === 'trusted_network', (): void => {
-          this.securityPolicy = 'trusted_network'; this.markDirty();
-        }, 7)
-        this.choice('允许明文', this.securityPolicy === 'allow_plaintext', (): void => {
-          this.securityPolicy = 'allow_plaintext'; this.markDirty();
-        }, 7)
-      }.width('100%').margin({ bottom: 8 })
-      Text(this.securityPolicy === 'secure_only'
-        ? '仅允许满足安全策略的连接；服务器不支持时会明确失败。'
-        : (this.securityPolicy === 'trusted_network'
-          ? '可信局域网可使用明文，仍建议优先启用 TLS。'
-          : '明文会暴露密码和屏幕内容，只适合受控网络。'))
-        .fontSize(11)
-        .fontColor(this.securityPolicy === 'allow_plaintext' ? this.pal().danger : this.pal().text3)
-        .lineHeight(18).width('100%').margin({ bottom: 10 })
       Text('WebSocket Gateway 和 SSH tunnel 仍处于 fail-closed，部署并验证服务端契约后才会开放。')
-        .fontSize(11).fontColor(this.pal().text3).lineHeight(18).width('100%').margin({ top: 2, bottom: 12 })
-      Button('保存').width('100%').height(42).borderRadius(10).backgroundColor(this.accentColor)
-        .fontColor(Color.White).onClick((): void => { this.save(); })
+        .fontSize(11).fontColor(this.pal().text3).lineHeight(18).width('100%').margin({ top: 2 })
     }.width('100%')
   }
 
@@ -438,8 +398,6 @@ export struct VncSettingsSheet {
       })
       Text('最小值为 1000ms。连接失败只结束当前 VNC 会话，不改变其他协议的重试策略。')
         .fontSize(11).fontColor(this.pal().text3).lineHeight(18).margin({ bottom: 12 })
-      Button('保存').width('100%').height(42).borderRadius(10).backgroundColor(this.accentColor)
-        .fontColor(Color.White).onClick((): void => { this.save(); })
     }.width('100%')
   }
 
@@ -543,8 +501,6 @@ export struct VncSettingsSheet {
           this.frameRateLimit = 0; this.markDirty();
         }, 6)
       }.width('100%').margin({ bottom: 10 })
-      Button('保存').width('100%').height(42).borderRadius(10).backgroundColor(this.accentColor)
-        .fontColor(Color.White).margin({ top: 10 }).onClick((): void => { this.save(); })
     }.width('100%')
   }
 
@@ -597,8 +553,6 @@ export struct VncSettingsSheet {
         (value: boolean): void => { this.reverseWheel = value; this.markDirty(); })
       this.toggle('交换左右键', '左键与右键互换，只作用于 VNC', this.swapMouseButtons,
         (value: boolean): void => { this.swapMouseButtons = value; this.markDirty(); })
-      Button('保存').width('100%').height(42).borderRadius(10).backgroundColor(this.accentColor)
-        .fontColor(Color.White).margin({ top: 10 }).onClick((): void => { this.save(); })
     }.width('100%')
   }
 
@@ -631,8 +585,6 @@ export struct VncSettingsSheet {
       }.width('100%').margin({ bottom: 10 })
       Text('性能看板使用 VNC 独立开关和采样频率，不读取 RustDesk Pro 看板设置。')
         .fontSize(11).fontColor(this.pal().text3).lineHeight(18).width('100%').margin({ bottom: 12 })
-      Button('保存').width('100%').height(42).borderRadius(10).backgroundColor(this.accentColor)
-        .fontColor(Color.White).onClick((): void => { this.save(); })
     }.width('100%')
   }
 
@@ -642,8 +594,6 @@ export struct VncSettingsSheet {
         (value: boolean): void => { this.clipboardEnabled = value; this.markDirty(); })
       Text('该开关不启用文件粘贴，不读取 RustDesk 或 RDP 的剪贴板设置。服务器不支持剪贴板时会保持关闭。')
         .fontSize(11).fontColor(this.pal().text3).lineHeight(18).width('100%').margin({ top: 8, bottom: 14 })
-      Button('保存').width('100%').height(42).borderRadius(10).backgroundColor(this.accentColor)
-        .fontColor(Color.White).onClick((): void => { this.save(); })
     }.width('100%')
   }
 
@@ -668,8 +618,6 @@ export struct VncSettingsSheet {
           : '允许明文只适合受控网络，连接卡片会明确标出风险。'))
         .fontSize(12).fontColor(this.securityPolicy === 'allow_plaintext' ? this.pal().danger : this.pal().text3)
         .lineHeight(19).width('100%').margin({ bottom: 12 })
-      Button('保存').width('100%').height(42).borderRadius(10).backgroundColor(this.accentColor)
-        .fontColor(Color.White).onClick((): void => { this.save(); })
     }.width('100%')
   }
 
@@ -721,8 +669,6 @@ export struct VncSettingsSheet {
         .fontSize(11)
         .fontColor(DataCrypto.getInstance().isReady() ? this.pal().success : this.pal().text3)
         .margin({ top: 4, bottom: 12 })
-      Button('保存同步范围').width('100%').height(42).borderRadius(10).backgroundColor(this.accentColor)
-        .fontColor(Color.White).onClick((): void => { this.save(); })
     }.width('100%')
   }
 
@@ -739,41 +685,66 @@ export struct VncSettingsSheet {
     }.width('100%')
   }
 
-  build() {
+  private hasSaveAction(): boolean {
+    return this.mode === SETTINGS_SHEET_VNC_CONNECTION ||
+      this.mode === SETTINGS_SHEET_VNC_TIMEOUT ||
+      this.mode === SETTINGS_SHEET_VNC_DISPLAY ||
+      this.mode === SETTINGS_SHEET_VNC_INPUT ||
+      this.mode === SETTINGS_SHEET_VNC_PERFORMANCE ||
+      this.mode === SETTINGS_SHEET_VNC_CLIPBOARD ||
+      this.mode === SETTINGS_SHEET_VNC_SECURITY ||
+      this.mode === SETTINGS_SHEET_VNC_CLOUD_SYNC;
+  }
+
+  @Builder private sheetBody() {
     Column() {
-      this.header()
-      Scroll() {
-        Column() {
-          if (this.mode === SETTINGS_SHEET_VNC_CONNECTION) {
-            this.connectionContent()
-          } else if (this.mode === SETTINGS_SHEET_VNC_TIMEOUT) {
-            this.timeoutContent()
-          } else if (this.mode === SETTINGS_SHEET_VNC_DISPLAY) {
-            this.displayContent()
-          } else if (this.mode === SETTINGS_SHEET_VNC_INPUT) {
-            this.inputContent()
-          } else if (this.mode === SETTINGS_SHEET_VNC_PERFORMANCE) {
-            this.performanceContent()
-          } else if (this.mode === SETTINGS_SHEET_VNC_CLIPBOARD) {
-            this.clipboardContent()
-          } else if (this.mode === SETTINGS_SHEET_VNC_SECURITY) {
-            this.securityContent()
-          } else if (this.mode === SETTINGS_SHEET_VNC_TRUST) {
-            this.trustContent()
-          } else if (this.mode === SETTINGS_SHEET_VNC_CLOUD_SYNC) {
-            this.cloudContent()
-          } else if (this.mode === SETTINGS_SHEET_VNC_HOSTS) {
-            this.directoryContent(true)
-          } else {
-            this.directoryContent(false)
-          }
-          if (this.errorText !== '') {
-            Text(this.errorText).fontSize(12).fontColor(this.pal().danger).lineHeight(18)
-              .width('100%').margin({ top: 12 })
-          }
-        }.width('100%').padding({ left: 22, right: 22, bottom: 26 })
-      }.scrollBar(BarState.Auto).edgeEffect(EdgeEffect.Spring).width('100%')
-    }.width('100%').constraintSize({ maxWidth: 620, maxHeight: 620 })
-      .backgroundColor(this.pal().bg)
+      if (this.mode === SETTINGS_SHEET_VNC_CONNECTION) {
+        this.connectionContent()
+      } else if (this.mode === SETTINGS_SHEET_VNC_TIMEOUT) {
+        this.timeoutContent()
+      } else if (this.mode === SETTINGS_SHEET_VNC_DISPLAY) {
+        this.displayContent()
+      } else if (this.mode === SETTINGS_SHEET_VNC_INPUT) {
+        this.inputContent()
+      } else if (this.mode === SETTINGS_SHEET_VNC_PERFORMANCE) {
+        this.performanceContent()
+      } else if (this.mode === SETTINGS_SHEET_VNC_CLIPBOARD) {
+        this.clipboardContent()
+      } else if (this.mode === SETTINGS_SHEET_VNC_SECURITY) {
+        this.securityContent()
+      } else if (this.mode === SETTINGS_SHEET_VNC_TRUST) {
+        this.trustContent()
+      } else if (this.mode === SETTINGS_SHEET_VNC_CLOUD_SYNC) {
+        this.cloudContent()
+      } else if (this.mode === SETTINGS_SHEET_VNC_HOSTS) {
+        this.directoryContent(true)
+      } else {
+        this.directoryContent(false)
+      }
+      if (this.errorText !== '') {
+        Text(this.errorText).fontSize(12).fontColor(this.pal().danger).lineHeight(18)
+          .width('100%').margin({ top: 12 })
+      }
+    }.width('100%')
+  }
+
+  @Builder private saveFooter() {
+    Button(this.saving ? '保存中…' : (this.mode === SETTINGS_SHEET_VNC_CLOUD_SYNC ? '保存同步范围' : '保存'))
+      .width('100%').height(44).borderRadius(11)
+      .backgroundColor(this.dirty && !this.saving ? this.accentColor : this.pal().surface)
+      .fontColor(this.dirty && !this.saving ? Color.White : this.pal().text3)
+      .enabled(this.dirty && !this.saving)
+      .onClick((): void => { this.save(); })
+  }
+
+  build() {
+    VncSheetScaffold({
+      title: this.title(),
+      subtitle: this.subtitle(),
+      showFooter: this.hasSaveAction(),
+      onLeadingAction: (): void => { this.onClose(); },
+      contentBuilder: this.sheetBody,
+      footerBuilder: this.saveFooter
+    })
   }
 }

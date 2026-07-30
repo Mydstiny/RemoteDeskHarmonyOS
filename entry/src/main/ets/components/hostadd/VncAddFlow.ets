@@ -1,10 +1,10 @@
 /**
  * VNC host wizard shared by the modern and classic host FAB paths.
  *
- * The wizard deliberately separates endpoint, security, display and review
- * decisions. Passwords never appear in the review step and no username field
- * is exposed: the current VNC viewer/native path uses VNC password
- * authentication, not a general username credential.
+ * The modern wizard uses two user-facing steps: endpoint, then access/control
+ * with a non-sensitive summary. Passwords never appear in the summary and no
+ * username field is exposed because the current native viewer uses VNC
+ * password authentication.
  */
 import { promptAction } from '@kit.ArkUI';
 import { Palette, buildDark, buildLight } from '../../common/Theme';
@@ -22,6 +22,12 @@ import { VncGatewayView } from '../../services/VncGatewayService';
 import { VncHostView } from '../../services/VncHostService';
 import { vncGatewayAvailability } from '../../services/VncGatewayProtocolPolicy';
 import { protocolIcon } from '../../services/ProtocolIconPolicy';
+import {
+  VNC_HOST_ADD_STEP_COUNT,
+  nextVncFlowStep,
+  previousVncFlowStep
+} from '../../services/VncHostFlowPolicy';
+import { VncSheetScaffold } from '../vnc/VncSheetScaffold';
 
 @Component
 export struct VncAddFlow {
@@ -153,16 +159,12 @@ export struct VncAddFlow {
 
   private stepTitle(): string {
     if (this.step === 0) { return '连接方式与基础信息'; }
-    if (this.step === 1) { return '认证与安全'; }
-    if (this.step === 2) { return '显示与交互'; }
-    return this.editingId.trim() === '' ? '确认 VNC 主机' : '确认更新 VNC 主机';
+    return this.editingId.trim() === '' ? '访问、操控与确认' : '访问、操控与确认更新';
   }
 
   private stepDetail(): string {
     if (this.step === 0) { return '先确定直连还是已保存的 VNC Gateway'; }
-    if (this.step === 1) { return '密码只进入 VNC secret owner，不能写入普通主机表'; }
-    if (this.step === 2) { return '默认只读；高级连接超时在 VNC 设置中统一管理'; }
-    return '只展示非敏感连接摘要，密码不会出现在这里';
+    return '密码、TLS、控制与显示在一处确认；摘要不会显示密码';
   }
 
   private endpointValid(): boolean {
@@ -223,12 +225,16 @@ export struct VncAddFlow {
   private next(): void {
     this.errorText = '';
     if (this.step === 0 && !this.endpointValid()) { return; }
-    if (this.step < 3) { this.step += 1; }
+    this.step = nextVncFlowStep(this.step, VNC_HOST_ADD_STEP_COUNT);
   }
 
   private back(): void {
     this.errorText = '';
-    if (this.step > 0) { this.step -= 1; } else { this.onBackToProtocols(); }
+    if (this.step > 0) {
+      this.step = previousVncFlowStep(this.step, VNC_HOST_ADD_STEP_COUNT);
+    } else {
+      this.onBackToProtocols();
+    }
   }
 
   private dispatchSave(values: VncHostValues, connectNow: boolean, plainStorageConfirmed: boolean): void {
@@ -437,7 +443,8 @@ export struct VncAddFlow {
       Row() {
         Column() {
           Text('只读模式').fontSize(14).fontColor(this.pal().text)
-          Text('默认关闭远端输入，适合第一次连接').fontSize(11).fontColor(this.pal().text3).margin({ top: 3 })
+          Text(this.viewOnly ? '当前禁止远端键盘和鼠标输入' : '当前允许远端键盘和鼠标输入')
+            .fontSize(11).fontColor(this.pal().text3).margin({ top: 3 })
         }.alignItems(HorizontalAlign.Start).layoutWeight(1)
         Toggle({ type: ToggleType.Switch, isOn: this.viewOnly }).selectedColor(this.accentColor)
           .onChange((value: boolean): void => { this.viewOnly = value; })
@@ -520,7 +527,7 @@ export struct VncAddFlow {
     Row() {
       Button(this.step === 0 ? '返回协议' : '上一步').layoutWeight(1).height(44).borderRadius(12)
         .backgroundColor(this.pal().surface).fontColor(this.pal().text2).onClick((): void => { this.back(); })
-      if (this.step < 3) {
+      if (this.step < VNC_HOST_ADD_STEP_COUNT - 1) {
         Button('下一步').layoutWeight(1).height(44).borderRadius(12).margin({ left: 8 })
           .backgroundColor(this.accentColor).fontColor(Color.White).onClick((): void => { this.next(); })
       } else {
@@ -530,41 +537,42 @@ export struct VncAddFlow {
           .layoutWeight(1).height(44).borderRadius(12).margin({ left: 8 })
           .backgroundColor(this.accentColor).fontColor(Color.White).onClick((): void => { this.save(true); })
       }
-    }.width('100%').margin({ top: 18 })
+    }.width('100%')
+  }
+
+  @Builder private flowBody() {
+    Column() {
+      if (this.step === 0) {
+        this.endpointStep()
+      } else {
+        Text('认证与安全').fontSize(13).fontWeight(FontWeight.Medium)
+          .fontColor(this.pal().text).width('100%').margin({ bottom: 10 })
+        this.securityStep()
+        Divider().strokeWidth(0.5).color(this.pal().divider).margin({ top: 16, bottom: 16 })
+        Text('显示与交互').fontSize(13).fontWeight(FontWeight.Medium)
+          .fontColor(this.pal().text).width('100%').margin({ bottom: 10 })
+        this.displayStep()
+        Divider().strokeWidth(0.5).color(this.pal().divider).margin({ top: 16, bottom: 16 })
+        Text('连接摘要').fontSize(13).fontWeight(FontWeight.Medium)
+          .fontColor(this.pal().text).width('100%').margin({ bottom: 10 })
+        this.reviewStep()
+      }
+      if (this.errorText !== '') {
+        Text(this.errorText).fontSize(12).fontColor(this.pal().danger).lineHeight(18)
+          .width('100%').margin({ top: 12 })
+      }
+    }.width('100%')
   }
 
   build() {
-    Column() {
-      Row() {
-        Button() { SymbolGlyph($r('sys.symbol.chevron_left')).fontSize(18).fontColor([this.pal().text2]) }
-          .width(36).height(36).borderRadius(18).padding(0).backgroundColor(this.pal().surface)
-          .onClick((): void => { this.back(); })
-        Column() {
-          Text(this.editingId.trim() === '' ? '添加 VNC 主机' : '编辑 VNC 主机')
-            .fontSize(20).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
-          Text((this.step + 1).toString() + '/4  ' + this.stepTitle())
-            .fontSize(12).fontColor(this.pal().text3).margin({ top: 3 })
-        }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 12 })
-      }.width('100%').margin({ bottom: 4 })
-      Text(this.stepDetail()).fontSize(11).fontColor(this.pal().text3).width('100%').margin({ bottom: 14 })
-      Column() {
-        if (this.step === 0) {
-          this.endpointStep()
-        } else if (this.step === 1) {
-          this.securityStep()
-        } else if (this.step === 2) {
-          this.displayStep()
-        } else {
-          this.reviewStep()
-        }
-        if (this.errorText !== '') {
-          Text(this.errorText).fontSize(12).fontColor(this.pal().danger).lineHeight(18)
-            .width('100%').margin({ top: 12 })
-        }
-      }.width('100%')
-      this.actionBar()
-    }.width('100%').padding({ left: 20, right: 20, top: 18, bottom: 20 })
-      .safeAreaPadding({ bottom: 18 })
-      .backgroundColor(this.pal().card)
+    VncSheetScaffold({
+      title: this.editingId.trim() === '' ? '添加 VNC 主机' : '编辑 VNC 主机',
+      subtitle: this.stepDetail(),
+      stepText: (this.step + 1).toString() + '/' + VNC_HOST_ADD_STEP_COUNT.toString() + '  ' + this.stepTitle(),
+      leadingBack: true,
+      onLeadingAction: (): void => { this.back(); },
+      contentBuilder: this.flowBody,
+      footerBuilder: this.actionBar
+    })
   }
 }

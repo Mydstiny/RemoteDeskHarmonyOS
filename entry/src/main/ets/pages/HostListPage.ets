@@ -477,6 +477,7 @@ struct HostListPage {
   // 保存并连接必须等新增主机 Sheet 的 native onDisappear 后再交给鉴权 Sheet。
   private pendingAddSheetConnectHostId: string = '';
   private pendingVncConnectHostId: string = '';
+  private pendingVncGatewayDirectoryOpen: boolean = false;
   private connectionAttemptGeneration: number = 0;
   private connectionAttemptHostId: string = '';
   @StorageLink('rustdeskImageQuality') rustdeskImageQuality: number = 1; // 0=fast, 1=balanced, 2=quality
@@ -1130,7 +1131,23 @@ struct HostListPage {
     this.pendingVncConnectHostId = '';
     const pendingHostId: string = this.pendingAddSheetConnectHostId;
     this.pendingAddSheetConnectHostId = '';
+    const openVncGatewayDirectory: boolean = this.pendingVncGatewayDirectoryOpen;
+    this.pendingVncGatewayDirectoryOpen = false;
     this.resetForm();
+
+    if (openVncGatewayDirectory) {
+      if (!this.pageActive) { return; }
+      if (this.isDesktopDevice && this.breakpoint === 'xl') {
+        this.curTab = 6;
+        this.hostPageTitle = '中继服务器';
+      } else {
+        this.curTab = 2;
+        this.tabsCtrl.changeIndex(2);
+      }
+      this.updateHostFilter();
+      this.relayVncAddTrigger++;
+      return;
+    }
 
     if (pendingVncHostId !== '') {
       if (!this.pageActive) { return; }
@@ -4782,9 +4799,10 @@ struct HostListPage {
 
       Column().width('100%').height('100%').hitTestBehavior(HitTestMode.None)
       .bindSheet($$this.showSettingsLeafSheet, this.settingsLeafSheet(), {
-        height: SheetSize.FIT_CONTENT,
+        height: this.settingsLeafSheetHeight(),
         preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
         dragBar: this.breakpoint === 'sm',
+        keyboardAvoidMode: this.settingsLeafKeyboardAvoidMode(),
         backgroundColor: this.pal().sheetBg,
         blurStyle: BlurStyle.NONE,
         showClose: settingsLeafSheetUsesSystemCloseButton(),
@@ -5769,6 +5787,21 @@ struct HostListPage {
   }
 
   // ==================== 设置 ====================
+  private isVncSettingsLeafSheet(): boolean {
+    return this.settingsLeafSheetMode >= SETTINGS_SHEET_VNC_CONNECTION &&
+      this.settingsLeafSheetMode <= SETTINGS_SHEET_VNC_CLIPBOARD;
+  }
+
+  private settingsLeafSheetHeight(): SheetSize {
+    return this.isVncSettingsLeafSheet() ? SheetSize.LARGE : SheetSize.FIT_CONTENT;
+  }
+
+  private settingsLeafKeyboardAvoidMode(): SheetKeyboardAvoidMode {
+    return this.isVncSettingsLeafSheet()
+      ? SheetKeyboardAvoidMode.RESIZE_ONLY
+      : SheetKeyboardAvoidMode.TRANSLATE_AND_SCROLL;
+  }
+
   @Builder settingsLeafSheet() {
     if (this.settingsLeafSheetMode === SETTINGS_SHEET_ACCOUNT) {
       this.accountSheet()
@@ -6566,9 +6599,17 @@ struct HostListPage {
             Text('VNC').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text3)
               .fontFamily(this.font()).padding({ left: 8, bottom: 8 })
             Column() {
-              this.protocolActionRow(protocolIcon('vnc'), '连接与安全',
-                '传输、端口、超时和独立安全策略',
+              this.protocolActionRow(protocolIcon('vnc'), '连接默认值',
+                'TCP 直连、Repeater mode12 与默认端口',
                 (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_VNC_CONNECTION); })
+              this.cardDivider()
+              this.protocolActionRow(protocolIcon('vnc'), '超时与连接行为',
+                '连接、认证与首帧超时，只作用于 VNC',
+                (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_VNC_TIMEOUT); })
+              this.cardDivider()
+              this.protocolActionRow(protocolIcon('vnc'), '安全策略与 TLS',
+                '仅安全、可信网络与明文风险策略',
+                (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_VNC_SECURITY); })
               this.cardDivider()
               this.protocolActionRow(protocolIcon('vnc'), '显示与画面',
                 '本地缩放、画质、编码、色深和帧率',
@@ -8576,12 +8617,16 @@ struct HostListPage {
     return !this.addSheetShowsModernPicker && this.modernAddProtocol === '' && this.proto === 'vnc';
   }
 
+  private isVncAddSheet(): boolean {
+    return this.isClassicVncAddSheet() || this.modernAddProtocol === 'vnc';
+  }
+
   private hostAddSheetHeight(): SheetSize {
-    return this.isClassicVncAddSheet() ? SheetSize.LARGE : SheetSize.FIT_CONTENT;
+    return this.isVncAddSheet() ? SheetSize.LARGE : SheetSize.FIT_CONTENT;
   }
 
   private hostAddSheetKeyboardAvoidMode(): SheetKeyboardAvoidMode {
-    return this.isClassicVncAddSheet()
+    return this.isVncAddSheet()
       ? SheetKeyboardAvoidMode.RESIZE_ONLY
       : SheetKeyboardAvoidMode.TRANSLATE_AND_SCROLL;
   }
@@ -8643,19 +8688,8 @@ struct HostListPage {
           this.vncAddFromModernPicker = false;
         },
         onOpenSettings: (): void => {
+          this.pendingVncGatewayDirectoryOpen = true;
           this.requestAddSheetClose();
-          setTimeout((): void => {
-            if (!this.pageActive) { return; }
-            if (this.isDesktopDevice && this.breakpoint === 'xl') {
-              this.curTab = 6;
-              this.hostPageTitle = '中继服务器';
-            } else {
-              this.curTab = 2;
-              this.tabsCtrl.changeIndex(2);
-            }
-            this.updateHostFilter();
-            this.relayVncAddTrigger++;
-          }, SETTINGS_PANEL_DISMISS_TO_LEAF_OPEN_MS);
         },
         onSave: (values: VncHostValues, password: string, connectNow: boolean,
           plainStorageConfirmed: boolean): void => {

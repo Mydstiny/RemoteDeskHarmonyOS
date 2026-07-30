@@ -914,9 +914,10 @@ export struct VncSettingsPage {
     }.width('100%').height('100%').backgroundColor(this.pal().bg)
       .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.BOTTOM])
       .bindSheet($$this.hostFlowVisible, this.hostFlowContent(), {
-        height: SheetSize.FIT_CONTENT,
+        height: SheetSize.LARGE,
         preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
         dragBar: this.breakpoint === 'sm',
+        keyboardAvoidMode: SheetKeyboardAvoidMode.RESIZE_ONLY,
         backgroundColor: this.pal().sheetBg,
         blurStyle: BlurStyle.NONE,
         showClose: false,

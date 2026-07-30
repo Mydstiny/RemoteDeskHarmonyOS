@@ -799,6 +799,16 @@ export struct RustDeskRelayPage {
     return this.isDesktopDevice && this.breakpoint === 'xl';
   }
 
+  private relaySheetHeight(): SheetSize {
+    return this.sheetContent === 10 ? SheetSize.LARGE : SheetSize.FIT_CONTENT;
+  }
+
+  private relaySheetKeyboardAvoidMode(): SheetKeyboardAvoidMode {
+    return this.sheetContent === 10
+      ? SheetKeyboardAvoidMode.RESIZE_ONLY
+      : SheetKeyboardAvoidMode.TRANSLATE_AND_SCROLL;
+  }
+
   // ==================== Build ====================
 
   build() {
@@ -851,9 +861,10 @@ export struct RustDeskRelayPage {
     .width('100%').height('100%')
     .overlay(this.TitleBarOverlay(), { align: Alignment.Top })
     .bindSheet($$this.showSheet, this.relaySheetBuilder(), {
-      height: SheetSize.FIT_CONTENT,
+      height: this.relaySheetHeight(),
       preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
       dragBar: false,
+      keyboardAvoidMode: this.relaySheetKeyboardAvoidMode(),
       backgroundColor: this.pal().sheetBg, blurStyle: BlurStyle.NONE, showClose: false,
       onDisappear: () => { this.finishSheetDismiss(); }
     })
