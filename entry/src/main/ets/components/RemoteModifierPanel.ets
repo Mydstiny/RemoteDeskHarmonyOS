@@ -16,6 +16,8 @@ const DRAG_COMMIT_THRESHOLD = 5;
 @Component
 export struct RemoteModifierPanel {
   @Prop visible: boolean = false;
+  /** VNC can mount the panel invisibly for one layout pass before revealing it. */
+  @Prop prepareOnly: boolean = false;
   @Prop shortcutVisible: boolean = false;
   @Prop attachSide: string = 'right';
   @Prop ctrlLatch: string = 'off';
@@ -537,7 +539,7 @@ export struct RemoteModifierPanel {
   build() {
     Column() {
     // 主面板
-    if (this.visible) {
+    if (this.visible || this.prepareOnly) {
       Column() {
         // 标题栏
         Row() {
@@ -652,7 +654,8 @@ export struct RemoteModifierPanel {
           .animation({ duration: 180, curve: Curve.EaseOut })
       )
       .position({ x: this.panelEffectiveX(), y: this.panelEffectiveY() })
-      .hitTestBehavior(HitTestMode.Default)
+      .opacity(this.prepareOnly ? 0 : 1)
+      .hitTestBehavior(this.prepareOnly ? HitTestMode.None : HitTestMode.Default)
       .onAreaChange((_old: Area, next: Area): void => {
         const width: number = next.width as number;
         const height: number = next.height as number;

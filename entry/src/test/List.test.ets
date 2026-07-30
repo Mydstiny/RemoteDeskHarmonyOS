@@ -93,6 +93,8 @@ import vncSessionSettingsPolicyTest from './VncSessionSettingsPolicy.test';
 import cloudDataWiringTest from './CloudDataWiring.test';
 import vncSheetLayoutPolicyTest from './VncSheetLayoutPolicy.test';
 import vncHostFlowPolicyTest from './VncHostFlowPolicy.test';
+import vncFloatingPanelLifecyclePolicyTest from './VncFloatingPanelLifecyclePolicy.test';
+import vncSessionUiPolicyTest from './VncSessionUiPolicy.test';
 
 export default function testsuite() {
   localUnitTest();
@@ -190,4 +192,6 @@ export default function testsuite() {
   cloudDataWiringTest();
   vncSheetLayoutPolicyTest();
   vncHostFlowPolicyTest();
+  vncFloatingPanelLifecyclePolicyTest();
+  vncSessionUiPolicyTest();
 }

@@ -73,6 +73,8 @@ import { RemoteModifierPanel } from '../components/RemoteModifierPanel';
 import { RemoteCursorOverlay, RemoteCursorOverlayState } from '../components/RemoteCursorOverlay';
 import { RemoteSessionTopBar, RemoteSessionTopBarActions } from '../components/RemoteSessionTopBar';
 import { RustDeskDiagnosticsHud } from '../components/RustDeskDiagnosticsHud';
+import { VncDiagnosticsHud } from '../components/VncDiagnosticsHud';
+import { VncSessionToolbar, VncSessionToolbarActions } from '../components/VncSessionToolbar';
 import {
   shouldEnableRustDeskPro,
   shouldShowSessionDiagnostics
@@ -154,6 +156,15 @@ import {
   floatingPanelOrientationSuffix,
   placeFloatingCompanion
 } from '../services/RemoteFloatingPanelPlacementPolicy';
+import {
+  shouldOpenVncFloatingPanelAfterSheetDisappear
+} from '../services/VncFloatingPanelLifecyclePolicy';
+import {
+  nextVncControlMode,
+  nextVncDisplayScaleMode,
+  shouldShowVncSessionToolbar,
+  vncToolbarAutoCollapseDelayMs
+} from '../services/VncSessionUiPolicy';
 import {
   advanceRemoteCursorMotion,
   applyLocalCursorTarget,
@@ -703,6 +714,8 @@ struct RemoteDesktop {
   private disappearDecisionGeneration: number = 0;
   private rustDeskDiagnosticsTimer: number = -1;
   private rustDeskDiagnosticsDockInitialized: boolean = false;
+  private vncDiagnosticsDockInitialized: boolean = false;
+  private vncToolbarCollapseTimer: number = -1;
   private backgroundSessionInfo: RemoteSessionBgInfo | null = null;
   private backgroundHasAudio: boolean = false;
   private backgroundHasVideo: boolean = false;
@@ -850,6 +863,9 @@ struct RemoteDesktop {
   private rustDeskTouchPanOnly: boolean = false;
   private rustDeskTouchPinchTransformSnapshot: RemoteSurfaceTransform | null = null;
   private keepKeyboardAfterSheetClose: boolean = false;
+  private pendingModifierPanelOpenAfterControlPanel: boolean = false;
+  private pendingModifierPanelSessionId: number = -1;
+  private modifierPanelPrepareOnly: boolean = false;
   // 三指控制面板
   @State showControlPanel: boolean = false;
   @State keyboardOpen: boolean = false;
@@ -866,6 +882,10 @@ struct RemoteDesktop {
   @State rustDeskDiagnosticsDockExpanded: boolean = false;
   @State rustDeskDiagnosticsDockSide: string = 'left';
   @State rustDeskDiagnosticsDockY: number = 360;
+  @State vncDiagnosticsDockExpanded: boolean = false;
+  @State vncDiagnosticsDockSide: string = 'right';
+  @State vncDiagnosticsDockY: number = 360;
+  @State vncToolbarCollapsed: boolean = false;
   @State modifierPanelMounted: boolean = false;
   @State modifierPanelVisible: boolean = false;
   @State shortcutPanelVisible: boolean = false;
@@ -1114,6 +1134,172 @@ struct RemoteDesktop {
     const host: RemoteHost | null = this.pendingHost;
     if (!host) { return false; }
     return shouldShowRustDeskTopBar(host.protocol, this.isDesktopDevice, this.breakpoint, this.rustdeskControlMode);
+  }
+
+  private shouldShowVncSessionToolbar(): boolean {
+    return shouldShowVncSessionToolbar(this.currentProtocolName(), this.connected, this.sessionId);
+  }
+
+  private clearVncToolbarAutoCollapse(): void {
+    if (this.vncToolbarCollapseTimer >= 0) {
+      clearTimeout(this.vncToolbarCollapseTimer);
+      this.vncToolbarCollapseTimer = -1;
+    }
+  }
+
+  private scheduleVncToolbarAutoCollapse(sessionId: number = this.sessionId): void {
+    this.clearVncToolbarAutoCollapse();
+    const delayMs: number =
+      vncToolbarAutoCollapseDelayMs(this.connected && this.isVncSession(), this.vncToolbarCollapsed);
+    if (delayMs <= 0 || sessionId <= 0) {
+      return;
+    }
+    this.vncToolbarCollapseTimer = setTimeout((): void => {
+      this.vncToolbarCollapseTimer = -1;
+      if (this.connected && this.isVncSession() && this.sessionId === sessionId) {
+        this.vncToolbarCollapsed = true;
+        this.clampModifierPanelsIntoView();
+      }
+    }, delayMs);
+  }
+
+  private expandVncToolbar(): void {
+    this.vncToolbarCollapsed = false;
+    this.clampModifierPanelsIntoView();
+    this.scheduleVncToolbarAutoCollapse();
+  }
+
+  private markVncToolbarInteraction(): void {
+    if (this.vncToolbarCollapsed) {
+      this.vncToolbarCollapsed = false;
+    }
+    this.scheduleVncToolbarAutoCollapse();
+  }
+
+  private vncControlModeLabel(): string {
+    if (this.isVncViewOnlySession()) { return '只读'; }
+    if (this.vncControlMode === 1) { return '触控'; }
+    if (this.vncControlMode === 2) { return '键鼠'; }
+    return '触控板';
+  }
+
+  private vncDisplayScaleLabel(): string {
+    if (this.vncDisplayScaleMode === '100') { return '100%'; }
+    if (this.vncDisplayScaleMode === 'integer') { return '整数'; }
+    if (this.vncDisplayScaleMode === 'custom') { return this.vncCustomScalePercent.toString() + '%'; }
+    return '适应';
+  }
+
+  private persistVncLiveSettings(values: VncSettingsValues, reason: string): void {
+    void this.vncSettings.save(values).then((saved): void => {
+      if (!saved.ok) {
+        hilog.warn(RD_DOMAIN, RD_TAG, 'VNC live setting persistence failed reason=' +
+          reason + ' detail=' + saved.message);
+      }
+    });
+  }
+
+  private cycleVncControlMode(): void {
+    if (this.isVncViewOnlySession()) {
+      promptAction.showToast({ message: '当前 VNC 主机为只读连接，无法切换输入模式', duration: 1600 });
+      return;
+    }
+    this.vncControlMode = nextVncControlMode(this.vncControlMode, false);
+    const values: VncSettingsValues = this.vncSettings.get();
+    values.controlMode = this.vncControlMode;
+    this.persistVncLiveSettings(values, 'control-mode');
+    this.hideTouchIndicator();
+    this.syncRemoteSystemPointer('vnc-control-mode', true, true);
+    this.scheduleRemoteInputFocus('vnc-control-mode');
+    promptAction.showToast({ message: 'VNC 操控模式：' + this.vncControlModeLabel(), duration: 1200 });
+  }
+
+  private cycleVncDisplayScale(): void {
+    this.vncDisplayScaleMode = nextVncDisplayScaleMode(this.vncDisplayScaleMode);
+    const values: VncSettingsValues = this.vncSettings.get();
+    values.displayScaleMode = this.vncDisplayScaleMode;
+    values.scalingMode = this.vncDisplayScaleMode === '100' ? 'one_to_one' :
+      (this.vncDisplayScaleMode === 'integer' ? 'integer' : 'fit');
+    this.persistVncLiveSettings(values, 'display-scale');
+    this.resetCanvasToDisplayDefault();
+    promptAction.showToast({ message: 'VNC 显示缩放：' + this.vncDisplayScaleLabel(), duration: 1200 });
+  }
+
+  private toggleVncDiagnostics(): void {
+    this.vncShowDiagnostics = !this.vncShowDiagnostics;
+    const values: VncSettingsValues = this.vncSettings.get();
+    values.showDiagnostics = this.vncShowDiagnostics;
+    this.persistVncLiveSettings(values, 'diagnostics');
+    promptAction.showToast({
+      message: this.vncShowDiagnostics ? 'VNC 性能监视已显示' : 'VNC 性能监视已隐藏',
+      duration: 1200
+    });
+  }
+
+  private openVncModifierPanel(): void {
+    if (this.isVncViewOnlySession()) {
+      promptAction.showToast({ message: '当前 VNC 主机为只读连接，组合键发送已禁用', duration: 1600 });
+      return;
+    }
+    if (!this.handleVisible) {
+      this.initHandlePosition();
+      this.handleVisible = true;
+    }
+    this.ensureModifierPanelPositions();
+    if (!this.modifierPanelUserPositioned) {
+      const anchored: FloatingPanelRect = this.defaultModifierPanelPosition();
+      this.modifierPanelX = anchored.x;
+      this.modifierPanelY = anchored.y;
+    }
+    // Mount invisibly for one real layout pass. The size callback recomputes
+    // the anchor before reveal, eliminating the visible fallback-position jump.
+    this.modifierPanelPrepareOnly = true;
+    this.modifierPanelMounted = true;
+    this.modifierPanelVisible = false;
+  }
+
+  private vncToolbarActions(): VncSessionToolbarActions {
+    return {
+      onExpand: (): void => { this.expandVncToolbar(); },
+      onToggleKeyboard: (): void => {
+        this.markVncToolbarInteraction();
+        if (this.isVncViewOnlySession()) {
+          promptAction.showToast({ message: '当前 VNC 主机为只读连接，键盘输入已禁用', duration: 1600 });
+          return;
+        }
+        if (this.keyboardOpen) {
+          this.keepKeyboardAfterSheetClose = false;
+          this.dismissKeyboard();
+        } else {
+          this.openKeyboard();
+        }
+      },
+      onCycleControlMode: (): void => {
+        this.markVncToolbarInteraction();
+        this.cycleVncControlMode();
+      },
+      onOpenShortcuts: (): void => {
+        this.markVncToolbarInteraction();
+        this.openVncModifierPanel();
+      },
+      onCycleDisplayScale: (): void => {
+        this.markVncToolbarInteraction();
+        this.cycleVncDisplayScale();
+      },
+      onToggleDiagnostics: (): void => {
+        this.markVncToolbarInteraction();
+        this.toggleVncDiagnostics();
+      },
+      onOpenConsole: (): void => {
+        this.markVncToolbarInteraction();
+        this.showControlPanel = true;
+      },
+      onDisconnect: (): void => {
+        this.clearVncToolbarAutoCollapse();
+        this.disconnectAndCleanup('vnc-toolbar-close');
+        this.goBack();
+      }
+    };
   }
 
   private isRustDeskSession(): boolean {
@@ -3205,9 +3391,6 @@ struct RemoteDesktop {
   }
 
   private rustDeskDiagnosticsDockHeight(): number {
-    if (this.isVncSession()) {
-      return (this.vncDiagnosticsMetricMask & 32) !== 0 ? 350 : 275;
-    }
     return this.shouldShowAdvancedDiagnostics() ?
       380 : 205;
   }
@@ -3312,6 +3495,114 @@ struct RemoteDesktop {
     }
   }
 
+  private vncDiagnosticsDockWidth(): number {
+    return 270;
+  }
+
+  private vncDiagnosticsDockHeight(): number {
+    return (this.vncDiagnosticsMetricMask & 32) !== 0 ? 350 : 275;
+  }
+
+  private vncDiagnosticsDockHandleWidth(): number {
+    return 76;
+  }
+
+  private vncDiagnosticsDockVisibleWidth(): number {
+    return 28;
+  }
+
+  private vncDiagnosticsDockPanelX(): number {
+    const screenW: number = this.surfaceWidth > 0 ? this.surfaceWidth : 360;
+    return this.vncDiagnosticsDockSide === 'left' ? 8 :
+      Math.max(8, screenW - this.vncDiagnosticsDockWidth() - 8);
+  }
+
+  private vncDiagnosticsDockHandleX(): number {
+    const screenW: number = this.surfaceWidth > 0 ? this.surfaceWidth : 360;
+    if (this.vncDiagnosticsDockSide === 'left') {
+      return -(this.vncDiagnosticsDockHandleWidth() - this.vncDiagnosticsDockVisibleWidth());
+    }
+    return Math.max(8, screenW - this.vncDiagnosticsDockVisibleWidth());
+  }
+
+  private clampVncDiagnosticsDockY(y: number): number {
+    const screenH: number = this.surfaceHeight > 0 ? this.surfaceHeight : 640;
+    const topMargin: number = this.dropHoverActive ? 116 : 58;
+    const bottomMargin: number = this.kbHeight > 0 ? this.kbHeight + 8 : 24;
+    const maxY: number = Math.max(topMargin, screenH - bottomMargin - this.vncDiagnosticsDockHeight());
+    return Math.max(topMargin, Math.min(y, maxY));
+  }
+
+  private avoidVncDiagnosticsDockCollision(side: string, y: number): number {
+    let resolvedY: number = this.clampVncDiagnosticsDockY(y);
+    if (side !== this.handleSide || !this.handleVisible) {
+      return resolvedY;
+    }
+    const modifierY: number = this.modifierPanelVisible ? this.modifierPanelY : this.handleY;
+    const modifierHeight: number = this.modifierPanelVisible ? this.modifierPanelMeasuredHeight : 42;
+    const dockBottom: number = resolvedY + this.vncDiagnosticsDockHeight();
+    const modifierBottom: number = modifierY + modifierHeight;
+    if (dockBottom + 12 <= modifierY || resolvedY >= modifierBottom + 12) {
+      return resolvedY;
+    }
+    const above: number =
+      this.clampVncDiagnosticsDockY(modifierY - this.vncDiagnosticsDockHeight() - 12);
+    const below: number = this.clampVncDiagnosticsDockY(modifierBottom + 12);
+    return Math.abs(above - y) <= Math.abs(below - y) ? above : below;
+  }
+
+  private initVncDiagnosticsDock(): void {
+    const screenH: number = this.surfaceHeight > 0 ? this.surfaceHeight : 640;
+    const savedSide: string = AppStorage.get<string>('vncDiagnosticsDockSide') ?? '';
+    const savedYRatio: number = AppStorage.get<number>('vncDiagnosticsDockYRatio') ?? -1;
+    const defaultSide: string = this.handleSide === 'left' ? 'right' : 'left';
+    const side: string = savedSide === 'left' || savedSide === 'right' ? savedSide : defaultSide;
+    const initialY: number = savedYRatio > 0 && savedYRatio < 1 ?
+      Math.round(screenH * savedYRatio) : Math.round(screenH * 0.56);
+    this.vncDiagnosticsDockSide = side;
+    this.vncDiagnosticsDockY = this.avoidVncDiagnosticsDockCollision(side, initialY);
+    this.vncDiagnosticsDockExpanded = false;
+    this.vncDiagnosticsDockInitialized = true;
+  }
+
+  private snapVncDiagnosticsDockToEdge(x: number, y: number, fromPanel: boolean): void {
+    const screenW: number = this.surfaceWidth > 0 ? this.surfaceWidth : 360;
+    const referenceX: number = x + (fromPanel ? this.vncDiagnosticsDockWidth() / 2 :
+      this.vncDiagnosticsDockHandleWidth() / 2);
+    const side: string = referenceX < screenW / 2 ? 'left' : 'right';
+    const clampedY: number = this.avoidVncDiagnosticsDockCollision(side, y);
+    animateTo({ duration: 180, curve: Curve.EaseOut }, (): void => {
+      this.vncDiagnosticsDockSide = side;
+      this.vncDiagnosticsDockY = clampedY;
+    });
+    AppStorage.setOrCreate('vncDiagnosticsDockSide', side);
+    const screenH: number = this.surfaceHeight > 0 ? this.surfaceHeight : 640;
+    AppStorage.setOrCreate('vncDiagnosticsDockYRatio', clampedY / screenH);
+  }
+
+  private toggleVncDiagnosticsDock(): void {
+    this.vncDiagnosticsDockExpanded = !this.vncDiagnosticsDockExpanded;
+    if (this.vncDiagnosticsDockExpanded) {
+      this.vncDiagnosticsDockY = this.avoidVncDiagnosticsDockCollision(
+        this.vncDiagnosticsDockSide, this.vncDiagnosticsDockY);
+    }
+  }
+
+  private updateVncDiagnosticsDockForKeyboard(): void {
+    if (!this.vncDiagnosticsDockExpanded) {
+      return;
+    }
+    const screenH: number = this.surfaceHeight > 0 ? this.surfaceHeight : 640;
+    const topMargin: number = this.dropHoverActive ? 116 : 58;
+    const bottomMargin: number = this.kbHeight > 0 ? this.kbHeight + 8 : 24;
+    if (screenH - topMargin - bottomMargin < this.vncDiagnosticsDockHeight()) {
+      this.vncDiagnosticsDockExpanded = false;
+      return;
+    }
+    this.vncDiagnosticsDockY = this.avoidVncDiagnosticsDockCollision(
+      this.vncDiagnosticsDockSide, this.vncDiagnosticsDockY);
+  }
+
   private modifierPanelWidth(): number {
     if (this.breakpoint === 'xl') {
       return 320;
@@ -3331,14 +3622,34 @@ struct RemoteDesktop {
   }
 
   private clampModifierPanelY(y: number, measuredHeight: number): number {
-    return clampFloatingPanel(8, y, 1, measuredHeight, this.floatingPanelViewport()).y;
+    const viewport: FloatingPanelViewport = this.floatingPanelViewport();
+    let resolvedY: number =
+      clampFloatingPanel(8, y, 1, measuredHeight, viewport).y;
+    if (!this.isVncSession() || !this.vncDiagnosticsDockExpanded ||
+      this.vncDiagnosticsDockSide !== this.handleSide) {
+      return resolvedY;
+    }
+    const panelBottom: number = resolvedY + measuredHeight;
+    const hudTop: number = this.vncDiagnosticsDockY;
+    const hudBottom: number = hudTop + this.vncDiagnosticsDockHeight();
+    if (panelBottom + 12 <= hudTop || resolvedY >= hudBottom + 12) {
+      return resolvedY;
+    }
+    const above: number = clampFloatingPanel(
+      8, hudTop - measuredHeight - 12, 1, measuredHeight, viewport).y;
+    const below: number = clampFloatingPanel(
+      8, hudBottom + 12, 1, measuredHeight, viewport).y;
+    resolvedY = Math.abs(above - y) <= Math.abs(below - y) ? above : below;
+    return resolvedY;
   }
 
   private floatingPanelViewport(): FloatingPanelViewport {
+    const vncToolbarMargin: number =
+      this.isVncSession() && !this.vncToolbarCollapsed ? 70 : 48;
     return {
       width: this.surfaceWidth > 0 ? this.surfaceWidth : 360,
       height: this.surfaceHeight > 0 ? this.surfaceHeight : 640,
-      topMargin: 48,
+      topMargin: vncToolbarMargin,
       bottomMargin: this.kbHeight > 0 ? this.kbHeight + 8 : 24,
       sideMargin: 8
     };
@@ -3490,6 +3801,7 @@ struct RemoteDesktop {
   }
 
   private closeModifierPanel(): void {
+    this.modifierPanelPrepareOnly = false;
     this.modifierPanelVisible = false;
     this.shortcutPanelVisible = false;
     setTimeout((): void => {
@@ -3502,6 +3814,8 @@ struct RemoteDesktop {
   private toggleModifierPanel(): void {
     if (this.modifierPanelVisible) {
       this.closeModifierPanel();
+    } else if (this.isVncSession()) {
+      this.openVncModifierPanel();
     } else {
       this.openModifierPanel();
     }
@@ -3543,6 +3857,10 @@ struct RemoteDesktop {
       return;
     }
     if (Math.abs(this.modifierPanelMeasuredHeight - height) < 1) {
+      if (this.modifierPanelPrepareOnly && this.isVncSession()) {
+        this.modifierPanelPrepareOnly = false;
+        this.modifierPanelVisible = true;
+      }
       return;
     }
     this.modifierPanelMeasuredHeight = height;
@@ -3557,6 +3875,10 @@ struct RemoteDesktop {
       const shortcutPosition: FloatingPanelRect = this.defaultShortcutPanelPosition();
       this.shortcutPanelX = shortcutPosition.x;
       this.shortcutPanelY = shortcutPosition.y;
+    }
+    if (this.modifierPanelPrepareOnly && this.isVncSession()) {
+      this.modifierPanelPrepareOnly = false;
+      this.modifierPanelVisible = true;
     }
   }
 
@@ -3779,6 +4101,7 @@ struct RemoteDesktop {
             w.getWindowAvoidArea(window.AvoidAreaType.TYPE_KEYBOARD);
           this.kbHeight = px2vp(keyboardArea.bottomRect.height);
           this.updateRustDeskDiagnosticsDockForKeyboard();
+          this.updateVncDiagnosticsDockForKeyboard();
         } catch (_e) {
           // 初始读取失败, 后续 avoidAreaChange 会更新
         }
@@ -3786,6 +4109,7 @@ struct RemoteDesktop {
           if (data.type === window.AvoidAreaType.TYPE_KEYBOARD) {
             this.kbHeight = px2vp(data.area.bottomRect.height);
             this.updateRustDeskDiagnosticsDockForKeyboard();
+            this.updateVncDiagnosticsDockForKeyboard();
             hilog.info(RD_DOMAIN, RD_TAG,
               'kbHeight changed: ' + Math.round(this.kbHeight).toString() + 'vp');
           }
@@ -4048,6 +4372,9 @@ struct RemoteDesktop {
 
   async aboutToAppear(): Promise<void> {
     this.cancelPendingDisappearDecision();
+    if (this.connected && this.isVncSession()) {
+      this.scheduleVncToolbarAutoCollapse();
+    }
     this.restoreRemoteSystemPointer('page-appear');
     this.proSync.init(getContext(this) as common.Context);
     this.physicalKeyboardLayout = RemoteKeyboardLayout.WINDOWS;
@@ -4166,7 +4493,9 @@ struct RemoteDesktop {
 
   private onRustDeskDiagnosticsSettingChange(): void {
     if (this.shouldShowActiveDiagnostics()) {
-      if (!this.rustDeskDiagnosticsDockInitialized) {
+      if (this.isVncSession() && !this.vncDiagnosticsDockInitialized) {
+        this.initVncDiagnosticsDock();
+      } else if (!this.isVncSession() && !this.rustDeskDiagnosticsDockInitialized) {
         this.initRustDeskDiagnosticsDock();
       }
       if (!this.shouldShowAdvancedDiagnostics()) {
@@ -4175,6 +4504,7 @@ struct RemoteDesktop {
       this.startRustDeskDiagnosticsPolling();
     } else {
       this.rustDeskDiagnosticsDockExpanded = false;
+      this.vncDiagnosticsDockExpanded = false;
       this.stopRustDeskDiagnosticsPolling(true);
     }
   }
@@ -4187,7 +4517,9 @@ struct RemoteDesktop {
     if (!this.shouldShowActiveDiagnostics()) {
       return;
     }
-    if (!this.rustDeskDiagnosticsDockInitialized) {
+    if (this.isVncSession() && !this.vncDiagnosticsDockInitialized) {
+      this.initVncDiagnosticsDock();
+    } else if (!this.isVncSession() && !this.rustDeskDiagnosticsDockInitialized) {
       this.initRustDeskDiagnosticsDock();
     }
     this.startRustDeskDiagnosticsPolling();
@@ -4243,10 +4575,12 @@ struct RemoteDesktop {
       this.rustDeskDiagnostics = EMPTY_RUSTDESK_DIAGNOSTICS;
       this.localResourceStats = EMPTY_LOCAL_RESOURCE_STATS;
       this.rustDeskDiagnosticsDockExpanded = false;
+      this.vncDiagnosticsDockExpanded = false;
     }
   }
 
   aboutToDisappear(): void {
+    this.clearVncToolbarAutoCollapse();
     this.releaseCanvasPinchInput('page-disappear');
     this.restoreRemoteSystemPointer('page-disappear');
     this.stopRustDeskDiagnosticsPolling(true);
@@ -5904,6 +6238,14 @@ struct RemoteDesktop {
         this.showRdpSessionErrorSheet = true;
       }, 60);
     }
+    const shouldOpenModifier: boolean = shouldOpenVncFloatingPanelAfterSheetDisappear(
+      this.pendingModifierPanelOpenAfterControlPanel, this.connected,
+      this.pendingModifierPanelSessionId, this.sessionId);
+    this.pendingModifierPanelOpenAfterControlPanel = false;
+    this.pendingModifierPanelSessionId = -1;
+    if (shouldOpenModifier) {
+      this.openVncModifierPanel();
+    }
   }
 
   private clearRdpRenderWatchdog(): void {
@@ -7205,6 +7547,18 @@ struct RemoteDesktop {
       this.nativeHandles.attachConnectedSession(sid, this.remoteProtocolOf(host));
       this.connected = true;
       this.connecting = false;
+      if (host.protocol === 'vnc') {
+        this.vncToolbarCollapsed = false;
+        this.scheduleVncToolbarAutoCollapse(sid);
+        const hintShown: boolean = AppStorage.get<boolean>('vncSessionToolbarHintShown') ?? false;
+        if (!hintShown) {
+          AppStorage.setOrCreate('vncSessionToolbarHintShown', true);
+          promptAction.showToast({
+            message: 'VNC 控制栏可打开键盘、鼠标模式、组合键、画面与性能监视',
+            duration: 2600
+          });
+        }
+      }
       this.startRemoteCursorPolling(sid);
       this.recordActiveSession(host, sid, true);
       await this.prepareRemoteSessionPipForForeground(host, sid);
@@ -7216,11 +7570,14 @@ struct RemoteDesktop {
         (host.protocol === 'rustdesk' && this.rustdeskShowDiagnostics) ||
         (host.protocol === 'vnc' && this.vncShowDiagnostics);
       if (diagnosticsEnabled) {
-        this.initRustDeskDiagnosticsDock();
-        this.rustDeskDiagnosticsDockExpanded =
-          host.protocol === 'vnc' && this.vncDiagnosticsExpandedByDefault;
-        this.rustDeskDiagnosticsDockY = this.avoidRustDeskDiagnosticsDockCollision(
-          this.rustDeskDiagnosticsDockSide, this.rustDeskDiagnosticsDockY);
+        if (host.protocol === 'vnc') {
+          this.initVncDiagnosticsDock();
+          this.vncDiagnosticsDockExpanded = this.vncDiagnosticsExpandedByDefault;
+          this.vncDiagnosticsDockY = this.avoidVncDiagnosticsDockCollision(
+            this.vncDiagnosticsDockSide, this.vncDiagnosticsDockY);
+        } else {
+          this.initRustDeskDiagnosticsDock();
+        }
         this.startRustDeskDiagnosticsPolling();
       }
       this.promptPhysicalKeyboardLayout();
@@ -7440,6 +7797,9 @@ struct RemoteDesktop {
     // page/session teardown.
     this.vncTransientPassword = '';
     this.vncAuthResolved = false;
+    this.clearVncToolbarAutoCollapse();
+    this.vncToolbarCollapsed = false;
+    this.modifierPanelPrepareOnly = false;
     this.releaseCanvasPinchInput('disconnect-' + reason);
     this.restoreRemoteSystemPointer('disconnect-' + reason);
     // Cancel a pending restore continuation before starting explicit teardown.
@@ -7487,7 +7847,11 @@ struct RemoteDesktop {
       ' sessionId=' + this.sessionId.toString());
     // T-171: 断开时隐藏胶囊和面板 + 释放所有修饰键
     this.handleVisible = false;
+    this.pendingModifierPanelOpenAfterControlPanel = false;
+    this.pendingModifierPanelSessionId = -1;
     this.rustDeskDiagnosticsDockExpanded = false;
+    this.vncDiagnosticsDockExpanded = false;
+    this.modifierPanelPrepareOnly = false;
     this.modifierPanelMounted = false;
     this.modifierPanelVisible = false;
     this.shortcutPanelVisible = false;
@@ -7816,7 +8180,11 @@ struct RemoteDesktop {
 
     // 隐藏 UI 元素
     this.handleVisible = false;
+    this.pendingModifierPanelOpenAfterControlPanel = false;
+    this.pendingModifierPanelSessionId = -1;
     this.rustDeskDiagnosticsDockExpanded = false;
+    this.vncDiagnosticsDockExpanded = false;
+    this.modifierPanelPrepareOnly = false;
     this.modifierPanelMounted = false;
     this.modifierPanelVisible = false;
     this.shortcutPanelVisible = false;
@@ -10968,8 +11336,13 @@ struct RemoteDesktop {
             this.modifierHiddenLeftX() : this.modifierHiddenRightX(this.surfaceWidth);
         }
         if (this.shouldShowActiveDiagnostics()) {
-          this.rustDeskDiagnosticsDockY = this.avoidRustDeskDiagnosticsDockCollision(
-            this.rustDeskDiagnosticsDockSide, this.rustDeskDiagnosticsDockY);
+          if (this.isVncSession()) {
+            this.vncDiagnosticsDockY = this.avoidVncDiagnosticsDockCollision(
+              this.vncDiagnosticsDockSide, this.vncDiagnosticsDockY);
+          } else {
+            this.rustDeskDiagnosticsDockY = this.avoidRustDeskDiagnosticsDockCollision(
+              this.rustDeskDiagnosticsDockSide, this.rustDeskDiagnosticsDockY);
+          }
         }
         hilog.info(RD_DOMAIN, RD_TAG, 'surface area=' + Math.round(wVp).toString() + 'x' +
           Math.round(hVp).toString() + 'vp render=' + wPx.toString() + 'x' + hPx.toString() + 'px');
@@ -11101,6 +11474,18 @@ struct RemoteDesktop {
         }, { disableDataPrefetch: !this.isDesktopDevice || this.breakpoint !== 'xl' })
       }
 
+      if (this.shouldShowVncSessionToolbar()) {
+        VncSessionToolbar({
+          viewOnly: this.isVncViewOnlySession(),
+          keyboardOpen: this.keyboardOpen,
+          controlModeLabel: this.vncControlModeLabel(),
+          displayScaleLabel: this.vncDisplayScaleLabel(),
+          diagnosticsEnabled: this.vncShowDiagnostics,
+          collapsed: this.vncToolbarCollapsed,
+          actions: this.vncToolbarActions()
+        })
+      }
+
       if (this.connected && this.shouldShowRustDeskSessionTopBar()) {
         RemoteSessionTopBar({
           layout: remoteTopBarLayout(this.isDesktopDevice, this.breakpoint),
@@ -11128,31 +11513,56 @@ struct RemoteDesktop {
       }
 
       if (this.shouldShowActiveDiagnostics()) {
-        RustDeskDiagnosticsHud({
-          diagnostics: this.rustDeskDiagnostics,
-          localResources: this.localResourceStats,
-          protocolLabel: this.isVncSession() ? 'VNC' : 'RustDesk',
-          geometryEpoch: this.isVncSession() ? this.vncGeometryEpoch : this.rustDeskGeometryEpoch,
-          surfaceWidth: this.surfaceWidth,
-          surfaceHeight: this.surfaceHeight,
-          refreshMs: this.isVncSession() ? this.vncDiagnosticsRefreshMs : 1000,
-          requestedEncoding: this.isVncSession() ? this.vncPreferredEncoding : '',
-          requestedColorDepth: this.isVncSession() ? this.vncColorDepth : '',
-          requestedFrameRate: this.isVncSession() ? this.vncFrameRateLimit : 0,
-          metricMask: this.isVncSession() ? this.vncDiagnosticsMetricMask : 63,
-          proEnabled: this.shouldShowAdvancedDiagnostics(),
-          expanded: this.rustDeskDiagnosticsDockExpanded,
-          attachSide: this.rustDeskDiagnosticsDockSide,
-          handleX: this.rustDeskDiagnosticsDockHandleX(),
-          panelX: this.rustDeskDiagnosticsDockPanelX(),
-          panelY: this.rustDeskDiagnosticsDockY,
-          onToggle: (): void => {
-            this.toggleRustDeskDiagnosticsDock();
-          },
-          onPositionChange: (x: number, y: number, fromPanel: boolean): void => {
-            this.snapRustDeskDiagnosticsDockToEdge(x, y, fromPanel);
-          }
-        })
+        if (this.isVncSession()) {
+          VncDiagnosticsHud({
+            diagnostics: this.rustDeskDiagnostics,
+            geometryEpoch: this.vncGeometryEpoch,
+            surfaceWidth: this.surfaceWidth,
+            surfaceHeight: this.surfaceHeight,
+            refreshMs: this.vncDiagnosticsRefreshMs,
+            requestedEncoding: this.vncPreferredEncoding,
+            requestedColorDepth: this.vncColorDepth,
+            requestedFrameRate: this.vncFrameRateLimit,
+            metricMask: this.vncDiagnosticsMetricMask,
+            expanded: this.vncDiagnosticsDockExpanded,
+            attachSide: this.vncDiagnosticsDockSide,
+            handleX: this.vncDiagnosticsDockHandleX(),
+            panelX: this.vncDiagnosticsDockPanelX(),
+            panelY: this.vncDiagnosticsDockY,
+            onToggle: (): void => {
+              this.toggleVncDiagnosticsDock();
+            },
+            onPositionChange: (x: number, y: number, fromPanel: boolean): void => {
+              this.snapVncDiagnosticsDockToEdge(x, y, fromPanel);
+            }
+          })
+        } else {
+          RustDeskDiagnosticsHud({
+            diagnostics: this.rustDeskDiagnostics,
+            localResources: this.localResourceStats,
+            protocolLabel: 'RustDesk',
+            geometryEpoch: this.rustDeskGeometryEpoch,
+            surfaceWidth: this.surfaceWidth,
+            surfaceHeight: this.surfaceHeight,
+            refreshMs: 1000,
+            requestedEncoding: '',
+            requestedColorDepth: '',
+            requestedFrameRate: 0,
+            metricMask: 63,
+            proEnabled: this.shouldShowAdvancedDiagnostics(),
+            expanded: this.rustDeskDiagnosticsDockExpanded,
+            attachSide: this.rustDeskDiagnosticsDockSide,
+            handleX: this.rustDeskDiagnosticsDockHandleX(),
+            panelX: this.rustDeskDiagnosticsDockPanelX(),
+            panelY: this.rustDeskDiagnosticsDockY,
+            onToggle: (): void => {
+              this.toggleRustDeskDiagnosticsDock();
+            },
+            onPositionChange: (x: number, y: number, fromPanel: boolean): void => {
+              this.snapRustDeskDiagnosticsDockToEdge(x, y, fromPanel);
+            }
+          })
+        }
       }
 
       // T-171: 侧边吸附悬浮胶囊
@@ -11187,6 +11597,7 @@ struct RemoteDesktop {
       if (this.connected && this.modifierPanelMounted) {
         RemoteModifierPanel({
           visible: this.modifierPanelVisible,
+          prepareOnly: this.modifierPanelPrepareOnly,
           shortcutVisible: this.shortcutPanelVisible,
           attachSide: this.handleSide,
           ctrlLatch: this.ctrlLatch,
@@ -11326,7 +11737,8 @@ struct RemoteDesktop {
 
       // PC/键鼠模式不再显示底部工具栏, 固定左上角断开按钮必须覆盖所有 PC 窗口宽度。
       if (this.connected && this.isDesktopDevice &&
-        (!this.pendingHost || this.pendingHost.protocol !== 'rustdesk')) {
+        (!this.pendingHost ||
+          (this.pendingHost.protocol !== 'rustdesk' && this.pendingHost.protocol !== 'vnc'))) {
         Button($r('app.string.btn_disconnect'))
           .height(28)
           .fontSize(11)
@@ -11660,13 +12072,18 @@ struct RemoteDesktop {
       .borderRadius(14)
       .margin({ bottom: 12, left: 24, right: 24 })
       .onClick(() => {
+        if (this.isVncSession()) {
+          this.pendingModifierPanelOpenAfterControlPanel = true;
+          this.pendingModifierPanelSessionId = this.sessionId;
+          this.showControlPanel = false;
+          return;
+        }
         this.showControlPanel = false;
         if (!this.handleVisible) {
           this.initHandlePosition();
           this.handleVisible = true;
         }
         this.ensureModifierPanelPositions();
-        // 短暂延迟后展开面板, 避免和 sheet 关闭动画重叠
         setTimeout((): void => {
           this.openModifierPanel();
         }, 200);
