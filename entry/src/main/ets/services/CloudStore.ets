@@ -192,7 +192,6 @@ import {
   VNC_SELECTION_REENABLE_TRANSACTION_KEY,
   CloudDownloadTransactionPayload,
   CloudStoreVncAuthoritativeCompletionPort,
-  CloudStoreVncRollbackPort,
   CloudStoreVncSelectionFinalizationPort,
   VncAuthoritativeCompletionWiringResult,
   VncSelectionCheckpointIdentity,
@@ -203,10 +202,12 @@ import {
   completeVncAuthoritativeCloudFirst as
     completeVncAuthoritativeCloudFirstWiring,
   finalizeVncSelectionReenable,
-  readVncSelectionReenableCheckpointState,
-  recoverPendingVncSelectionReenable,
-  rollbackVncSelectionCheckpoint
+  readVncSelectionReenableCheckpointState
 } from './CloudStoreVncLifecycleWiring';
+import {
+  CloudStoreStartupRecoveryIo,
+  CloudStoreStartupRecoveryRunner
+} from './CloudStoreStartupRecoveryRunner';
 import {
   CloudMetadataReadResult,
   cloudMetadataAbsentProven,
@@ -438,6 +439,10 @@ export class CloudStore implements CryptoCloudStore {
   private suppressCryptoStateSnapshot: boolean = false;
   private readonly wiringPorts:
     CloudStoreWiringPorts | null;
+  // Set only on a detached instance created by the startup verification
+  // factory. It never exposes or replaces the singleton's private RDB handle.
+  private startupRecoveryVerificationIo:
+    CloudStoreStartupRecoveryIo | null = null;
 
   constructor(
     wiringPorts: CloudStoreWiringPorts | null = null
@@ -486,8 +491,26 @@ export class CloudStore implements CryptoCloudStore {
     return CloudStore.instance;
   }
 
+  /**
+   * Build a detached, RDB-free initialization target for executable startup
+   * wiring verification. The returned instance can only exercise the
+   * startup-recovery I/O supplied by the caller; it cannot mutate the
+   * production singleton or obtain a relationalStore handle.
+   */
+  static createStartupRecoveryVerificationStore(
+    io: CloudStoreStartupRecoveryIo
+  ): CloudStore {
+    const detached: CloudStore =
+      new CloudStore();
+    detached.startupRecoveryVerificationIo =
+      io;
+    return detached;
+  }
+
   /** 初始化数据库 + 开启云同步 */
-  async init(context: common.Context): Promise<void> {
+  async init(
+    context: common.Context | null
+  ): Promise<void> {
     if (this.initialized) { return; }
     if (this.initPromise !== null) {
       await this.initPromise;
@@ -685,7 +708,9 @@ export class CloudStore implements CryptoCloudStore {
     return true;
   }
 
-  private async openScopeStore(context: common.Context, token: AccountScopeToken,
+  private async openScopeStore(
+    context: common.Context | null,
+    token: AccountScopeToken,
     verifiedUnionId: string = '',
     platformProof: PlatformCloudIdentityProof =
       unavailablePlatformCloudIdentityProof()): Promise<void> {
@@ -712,7 +737,16 @@ export class CloudStore implements CryptoCloudStore {
     for (let i = 0; i < TABLES.length; i++) {
       this.tableStatus[TABLES[i]] = new TableSyncStatus();
     }
+    const startupRecoveryVerification:
+      boolean =
+      this.startupRecoveryVerificationIo !==
+        null;
     try {
+      if (!startupRecoveryVerification) {
+        if (context === null) {
+          throw new Error(
+            'CloudStore production initialization requires a context');
+        }
       const config: relationalStore.StoreConfig = {
         name: this.currentScopeToken.storeIdentity,
         securityLevel: relationalStore.SecurityLevel.S1,
@@ -765,10 +799,23 @@ export class CloudStore implements CryptoCloudStore {
       this.initialized = true;
       this.syncSelection.init(context, this.currentScopeToken.ownerScopeId);
       this.vncSyncSelection.init(context, this.currentScopeToken.ownerScopeId);
+      } else {
+        // The detached verification store has no RDB and cannot proceed beyond
+        // the production startup-recovery gate.
+        this.initialized = true;
+      }
       if (!(await this
         .recoverPendingVncSelectionReenableTransaction())) {
         throw new Error(
           'pending VNC selection transaction recovery failed');
+      }
+      if (startupRecoveryVerification) {
+        return;
+      }
+      if (this.store === null ||
+        this.currentLease === null) {
+        throw new Error(
+          'CloudStore startup state unavailable after VNC recovery');
       }
       const lease: AccountSessionLease =
         cloneAccountSessionLease(this.currentLease);
@@ -2383,10 +2430,10 @@ export class CloudStore implements CryptoCloudStore {
     checkpointOverride:
       VncSelectionReenableCheckpoint | null
   ): Promise<boolean> {
-    const port:
-      CloudStoreVncRollbackPort | null =
-      this.vncSelectionRollbackPort();
-    if (port === null) {
+    const runner:
+      CloudStoreStartupRecoveryRunner | null =
+      this.vncSelectionStartupRecoveryRunner();
+    if (runner === null) {
       this.markVncSelectionRecoveryRequired();
       return false;
     }
@@ -2400,8 +2447,8 @@ export class CloudStore implements CryptoCloudStore {
       return false;
     }
     const restored: boolean =
-      await rollbackVncSelectionCheckpoint(
-        checkpoint, port);
+      await runner.rollbackCheckpoint(
+        checkpoint);
     if (!restored) {
       hilog.error(0x0001, 'CloudSync',
         'VNC scope rollback finalization failed');
@@ -2409,43 +2456,134 @@ export class CloudStore implements CryptoCloudStore {
     return restored;
   }
 
-  private vncSelectionRollbackPort():
-    CloudStoreVncRollbackPort | null {
-    if (!this.store ||
-      this.appContext === null) {
+  private vncSelectionStartupRecoveryRunner():
+    CloudStoreStartupRecoveryRunner | null {
+    const io:
+      CloudStoreStartupRecoveryIo | null =
+      this.vncSelectionStartupRecoveryIo();
+    if (io === null) {
       return null;
     }
-    const store: relationalStore.RdbStore =
+    return new CloudStoreStartupRecoveryRunner(
+      io);
+  }
+
+  /**
+   * Construct the live startup adapter once for both production and the
+   * detached initialization contract. The verification branch substitutes
+   * only bottom-level I/O; checkpoint projection, table/key routing and the
+   * startup state machine remain production code.
+   */
+  private vncSelectionStartupRecoveryIo():
+    CloudStoreStartupRecoveryIo | null {
+    const verification:
+      CloudStoreStartupRecoveryIo | null =
+      this.startupRecoveryVerificationIo;
+    const store:
+      relationalStore.RdbStore | null =
       this.store;
-    const context: common.Context =
+    const context:
+      common.Context | null =
       this.appContext;
+    if (verification === null &&
+      (store === null || context === null)) {
+      return null;
+    }
     return {
+      checkpointIdentity:
+        (): VncSelectionCheckpointIdentity =>
+          verification !== null
+            ? verification
+              .checkpointIdentity()
+            : this
+              .vncSelectionCheckpointIdentity(),
       readMetadataState:
         (key: string):
           CloudMetadataReadResult =>
-          this.readLocalMetadataState(key),
-      restoreSnapshot: async (
+          verification !== null
+            ? verification
+              .readMetadataState(key)
+            : this
+              .readLocalMetadataState(key),
+      recoveryMetadata: (
         checkpoint:
           VncSelectionReenableCheckpoint
-      ): Promise<boolean> =>
-        await this.restoreManualDownloadSnapshot(
-          checkpoint.payload.snapshot,
-          checkpoint.payload.extensions,
-          this.vncRecoveryMetadata(checkpoint),
-          checkpoint.payload.mutationJournal,
-          checkpoint.payload.localTables),
-      persistPreviousScopes:
-        (scopes: string[]): boolean => {
+      ): Array<Record<string, string>> =>
+        verification !== null
+          ? verification
+            .recoveryMetadata(checkpoint)
+          : this.vncRecoveryMetadata(
+            checkpoint),
+      restoreManualDownloadSnapshot:
+        async (
+          snapshot:
+            Record<string,
+              Array<Record<string, string>>>,
+          extensions:
+            Array<Record<string, string>>,
+          metadata:
+            Array<Record<string, string>>,
+          mutationJournal:
+            Array<Record<string, string>>,
+          localTables:
+            Record<string,
+              Array<Record<string, string>>>
+        ): Promise<boolean> => {
+          if (verification !== null) {
+            return await verification
+              .restoreManualDownloadSnapshot(
+                snapshot,
+                extensions,
+                metadata,
+                mutationJournal,
+                localTables);
+          }
+          return await this
+            .restoreManualDownloadSnapshot(
+              snapshot,
+              extensions,
+              metadata,
+              mutationJournal,
+              localTables);
+        },
+      stageSelectedScopes:
+        (scopes: string[]): void => {
+          if (verification !== null) {
+            verification
+              .stageSelectedScopes(scopes);
+            return;
+          }
           this.vncSyncSelection
             .stageSelectedScopes(scopes);
+        },
+      persistSelectedScopes:
+        (): boolean => {
+          if (verification !== null) {
+            return verification
+              .persistSelectedScopes();
+          }
+          if (context === null) {
+            return false;
+          }
           return this.vncSyncSelection
             .persistSelectedScopes(context);
         },
       beginTransaction: (): boolean => {
+        if (verification !== null) {
+          return verification
+            .beginTransaction();
+        }
+        if (store === null) {
+          return false;
+        }
         store.beginTransaction();
         return true;
       },
       settleRecoveryLifecycle: (): boolean => {
+        if (verification !== null) {
+          return verification
+            .settleRecoveryLifecycle();
+        }
         const durable:
           CloudSyncDurableState | null =
           this.loadCloudSyncDurableState();
@@ -2480,48 +2618,86 @@ export class CloudStore implements CryptoCloudStore {
           this.persistCloudSyncDurableState(
             settled);
       },
-      restoreBarrier: (
+      restoreSelectionReenableBarrier: (
+        table: string,
         previousPhase:
           CloudSelectionReenablePhase | null
-      ): boolean =>
-        this.restoreSelectionReenableBarrier(
-          VNC_CLOUD_TABLE,
-          previousPhase),
-      deleteCheckpoint: (): boolean =>
-        this.deleteLocalMetadata(
-          VNC_SELECTION_REENABLE_TRANSACTION_KEY),
+      ): boolean => {
+        if (table !== VNC_CLOUD_TABLE) {
+          return false;
+        }
+        if (verification !== null) {
+          return verification
+            .restoreSelectionReenableBarrier(
+              table,
+              previousPhase);
+        }
+        return this
+          .restoreSelectionReenableBarrier(
+            table,
+            previousPhase);
+      },
+      deleteLocalMetadata:
+        (key: string): boolean =>
+          verification !== null
+            ? verification
+              .deleteLocalMetadata(key)
+            : this
+              .deleteLocalMetadata(key),
       commit: (): boolean => {
+        if (verification !== null) {
+          return verification.commit();
+        }
+        if (store === null) {
+          return false;
+        }
         store.commit();
         return true;
       },
       rollback: (): void => {
-        store.rollBack();
+        if (verification !== null) {
+          verification.rollback();
+        } else if (store !== null) {
+          store.rollBack();
+        }
       },
       publishSnapshot: (): void => {
-        this.notifyDataSnapshotChanged();
+        if (verification !== null) {
+          verification.publishSnapshot();
+        } else {
+          this.notifyDataSnapshotChanged();
+        }
       },
       markRecoveryRequired: (): void => {
-        this.markVncSelectionRecoveryRequired();
+        if (verification !== null) {
+          verification
+            .markRecoveryRequired();
+        } else {
+          this
+            .markVncSelectionRecoveryRequired();
+        }
+      },
+      onRecovered: (): void => {
+        if (verification !== null) {
+          verification.onRecovered();
+        } else {
+          hilog.warn(0x0001, 'CloudSync',
+            '已回滚上次未终结的 VNC scope 事务');
+        }
       }
     };
   }
 
   private async recoverPendingVncSelectionReenableTransaction():
     Promise<boolean> {
-    const port:
-      CloudStoreVncRollbackPort | null =
-      this.vncSelectionRollbackPort();
-    if (port === null) {
+    const runner:
+      CloudStoreStartupRecoveryRunner | null =
+      this.vncSelectionStartupRecoveryRunner();
+    if (runner === null) {
       this.markVncSelectionRecoveryRequired();
       return false;
     }
-    return await recoverPendingVncSelectionReenable(
-      this.vncSelectionCheckpointIdentity(),
-      port,
-      (): void => {
-        hilog.warn(0x0001, 'CloudSync',
-          '已回滚上次未终结的 VNC scope 事务');
-      });
+    return await runner.recoverPending();
   }
 
   /**
@@ -4454,7 +4630,10 @@ export class CloudStore implements CryptoCloudStore {
   }
 
   isReady(): boolean {
-    return this.initialized && this.store !== null;
+    return this.initialized &&
+      (this.store !== null ||
+        this.startupRecoveryVerificationIo !==
+          null);
   }
 
   async syncAllToCloud(): Promise<boolean> {

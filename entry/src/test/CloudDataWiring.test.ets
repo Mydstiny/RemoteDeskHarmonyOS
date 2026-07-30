@@ -16,16 +16,17 @@ import {
   CLOUD_SELECTION_REENABLE_BARRIERS_KEY,
   VNC_SELECTION_REENABLE_TRANSACTION_KEY,
   CloudStoreVncAuthoritativeCompletionPort,
-  CloudStoreVncRollbackPort,
   CloudStoreVncSelectionFinalizationPort,
   VncSelectionCheckpointIdentity,
   VncSelectionReenableCheckpoint,
   VncSelectionReenableTransactionPayload,
   completeVncAuthoritativeCloudFirst,
   finalizeVncSelectionReenable,
-  readVncSelectionBarrierPhase,
-  recoverPendingVncSelectionReenable
+  readVncSelectionBarrierPhase
 } from '../main/ets/services/CloudStoreVncLifecycleWiring';
+import {
+  CloudStoreStartupRecoveryIo
+} from '../main/ets/services/CloudStoreStartupRecoveryRunner';
 import { CloudSyncDirection } from '../main/ets/services/CloudSyncPolicy';
 import {
   CloudSyncFailureKind
@@ -672,58 +673,87 @@ type RecoveryFault =
   'delete' | 'commit';
 
 /**
- * Low-level persistence fake for the production startup rollback adapter.
- * It cannot decide checkpoint recovery success itself; the shared wiring
- * collaborator owns ordering, deletion, read-back and fail-closed marking.
+ * Bottom-level persistence fake injected into a detached CloudStore. The test
+ * still calls CloudStore.init, so CloudStore's private startup call point,
+ * production adapter construction and runner own checkpoint parsing, payload
+ * projection, key/table routing and fail-closed behavior.
  */
-class FakeVncRollbackPort
-  implements CloudStoreVncRollbackPort {
+class FakeVncStartupRecoveryIo
+  implements CloudStoreStartupRecoveryIo {
   fault: RecoveryFault = 'none';
   events: string[] = [];
   recoveryRequired: boolean = false;
   snapshotPublished: boolean = false;
   recoveredStage: string = '';
-  private readonly store: CloudStore;
+  recoveredCallback: boolean = false;
+  stagedScopes: string[] = [];
+  private readonly metadataReader:
+    CloudStore;
   private readonly metadata:
     MetadataMapQueryPort;
   private working:
     Record<string, string> = {};
 
-  constructor(
-    store: CloudStore,
-    metadata: MetadataMapQueryPort
-  ) {
-    this.store = store;
+  constructor(metadata: MetadataMapQueryPort) {
     this.metadata = metadata;
-    this.metadata.set(
-      VNC_SELECTION_REENABLE_TRANSACTION_KEY,
-      vncCheckpointRaw('authoritative'));
+    this.metadataReader =
+      new CloudStore({
+        metadataQuery: metadata
+      });
     this.metadata.set(
       CLOUD_SELECTION_REENABLE_BARRIERS_KEY,
       vncBarrierRaw('pending_pull'));
   }
 
+  checkpointIdentity():
+    VncSelectionCheckpointIdentity {
+    return vncCheckpointIdentity();
+  }
+
   readMetadataState(
     key: string
   ): CloudMetadataReadResult {
-    return this.store
+    return this.metadataReader
       .readLocalMetadataState(key);
   }
 
-  async restoreSnapshot(
+  recoveryMetadata(
     checkpoint:
       VncSelectionReenableCheckpoint
-  ): Promise<boolean> {
-    this.events.push('restore');
+  ): Array<Record<string, string>> {
+    this.events.push('metadata');
     this.recoveredStage =
       checkpoint.payload.stage;
+    return checkpoint.payload.metadata;
+  }
+
+  async restoreManualDownloadSnapshot(
+    _snapshot:
+      Record<string,
+        Array<Record<string, string>>>,
+    _extensions:
+      Array<Record<string, string>>,
+    _metadata:
+      Array<Record<string, string>>,
+    _mutationJournal:
+      Array<Record<string, string>>,
+    _localTables:
+      Record<string,
+        Array<Record<string, string>>>
+  ): Promise<boolean> {
+    this.events.push('restore');
     return this.fault !== 'restore';
   }
 
-  persistPreviousScopes(
-    _scopes: string[]
-  ): boolean {
-    this.events.push('scopes');
+  stageSelectedScopes(
+    scopes: string[]
+  ): void {
+    this.events.push('scopes:stage');
+    this.stagedScopes = scopes;
+  }
+
+  persistSelectedScopes(): boolean {
+    this.events.push('scopes:persist');
     return this.fault !== 'scopes';
   }
 
@@ -742,12 +772,15 @@ class FakeVncRollbackPort
     return this.fault !== 'lifecycle';
   }
 
-  restoreBarrier(
+  restoreSelectionReenableBarrier(
+    table: string,
     previousPhase:
       CloudSelectionReenablePhase | null
   ): boolean {
-    this.events.push('barrier');
-    if (this.fault === 'barrier') {
+    this.events.push(
+      'barrier:' + table);
+    if (this.fault === 'barrier' ||
+      table !== 'vncrecord') {
       return false;
     }
     if (previousPhase === null) {
@@ -761,13 +794,14 @@ class FakeVncRollbackPort
     return true;
   }
 
-  deleteCheckpoint(): boolean {
-    this.events.push('delete');
+  deleteLocalMetadata(
+    key: string
+  ): boolean {
+    this.events.push('delete:' + key);
     if (this.fault === 'delete') {
       return false;
     }
-    delete this.working[
-      VNC_SELECTION_REENABLE_TRANSACTION_KEY];
+    delete this.working[key];
     return true;
   }
 
@@ -794,6 +828,11 @@ class FakeVncRollbackPort
   markRecoveryRequired(): void {
     this.events.push('fail_closed');
     this.recoveryRequired = true;
+  }
+
+  onRecovered(): void {
+    this.events.push('recovered');
+    this.recoveredCallback = true;
   }
 
   checkpointPresent(): boolean {
@@ -1287,37 +1326,36 @@ export default function cloudDataWiringTest():
           .vncCheckpointStage())
           .assertEqual('authoritative');
 
-        const restartedStore =
-          new CloudStore({
-            metadataQuery: successMetadata
-          });
-        const recoveryPort =
-          new FakeVncRollbackPort(
-            restartedStore,
+        const recoveryIo =
+          new FakeVncStartupRecoveryIo(
             successMetadata);
-        let recoveredPublished:
-          boolean = false;
-        const recovered: boolean =
-          await recoverPendingVncSelectionReenable(
-            vncCheckpointIdentity(),
-            recoveryPort,
-            (): void => {
-              recoveredPublished = true;
-            });
-        expect(recovered).assertTrue();
-        expect(recoveryPort
+        const restartedStore =
+          CloudStore
+            .createStartupRecoveryVerificationStore(
+              recoveryIo);
+        await restartedStore.init(null);
+        expect(restartedStore.isReady())
+          .assertTrue();
+        expect(recoveryIo
           .recoveredStage)
           .assertEqual('authoritative');
-        expect(recoveredPublished)
+        expect(recoveryIo
+          .recoveredCallback)
           .assertTrue();
-        expect(recoveryPort
+        expect(recoveryIo
           .checkpointPresent())
           .assertFalse();
-        expect(recoveryPort.events.join(','))
+        expect(recoveryIo
+          .stagedScopes.join(','))
+          .assertEqual('settings');
+        expect(recoveryIo.events.join(','))
           .assertEqual(
-            'restore,scopes,begin,lifecycle,' +
-            'barrier,delete,commit,publish');
-        expect(recoveryPort
+            'metadata,restore,scopes:stage,' +
+            'scopes:persist,begin,lifecycle,' +
+            'barrier:vncrecord,delete:' +
+            VNC_SELECTION_REENABLE_TRANSACTION_KEY +
+            ',commit,publish,recovered');
+        expect(recoveryIo
           .recoveryRequired)
           .assertFalse();
 
@@ -1334,32 +1372,41 @@ export default function cloudDataWiringTest():
               metadataQuery:
                 failedMetadata
             });
-          const failedPort =
-            new FakeVncRollbackPort(
+          const failedCompletion =
+            new FakeVncCompletionPort(
               failedStore,
               failedMetadata);
-          failedPort.fault = failures[i];
-          let callbackObserved:
-            boolean = false;
-          expect(await
-            recoverPendingVncSelectionReenable(
-              vncCheckpointIdentity(),
-              failedPort,
-              (): void => {
-                callbackObserved = true;
-              }))
+          expect(
+            completeVncAuthoritativeCloudFirst(
+              ['vncrecord'],
+              failedCompletion).ok)
+            .assertTrue();
+          const failedIo =
+            new FakeVncStartupRecoveryIo(
+              failedMetadata);
+          failedIo.fault = failures[i];
+          const failedStartup =
+            CloudStore
+              .createStartupRecoveryVerificationStore(
+                failedIo);
+          await failedStartup.init(null);
+          expect(failedStartup.isReady())
             .assertFalse();
-          expect(failedPort
+          expect(failedIo
             .checkpointPresent())
             .assertTrue();
-          expect(failedPort
+          expect(failedIo
             .recoveryRequired)
             .assertTrue();
-          expect(failedPort
+          expect(failedIo
             .snapshotPublished)
             .assertFalse();
-          expect(callbackObserved)
+          expect(failedIo
+            .recoveredCallback)
             .assertFalse();
+          expect(failedIo.events.indexOf(
+            'fail_closed') >= 0)
+            .assertTrue();
         }
       });
 
