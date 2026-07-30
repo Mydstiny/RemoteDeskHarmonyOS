@@ -144,6 +144,11 @@ interface SessionVersionInfo {
   version: string;
   apiVersion: number;
   buildType: string;
+  appVersion: string;
+  gitShortSha: string;
+  buildTimeUtc: string;
+  rustDeskFfiAbiVersion: number;
+  rustDeskProtocolFixture: string;
 }
 
 interface ProtocolInfo {

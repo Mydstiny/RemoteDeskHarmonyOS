@@ -1,4 +1,4 @@
-export const CURRENT_RELEASE_VERSION: string = '1.0.9';
+export const CURRENT_RELEASE_VERSION: string = '1.0.10';
 
 export interface ReleaseNotePage {
   id: string;
@@ -11,28 +11,34 @@ export function pagesForReleasedVersion(version: string): ReleaseNotePage[] {
   if (version !== CURRENT_RELEASE_VERSION) { return []; }
   return [
     {
-      id: 'account-data-isolation',
+      id: 'rustdesk-relay-save',
       symbol: $rawfile('icons/shield-check.svg'),
-      title: '账号数据完全隔离',
-      desc: '离线模式和每个已验证的华为账号使用独立本地数据空间；登录、登出或切换账号时会停止旧账号同步并清理敏感缓存。'
+      title: 'RustDesk 服务器可靠保存',
+      desc: '服务器配置先在本机事务提交并按稳定 ID 回读；云同步失败不会再伪装成本地保存失败，失败时保留草稿并给出可操作原因。'
     },
     {
-      id: 'fail-closed-cloud-sync',
+      id: 'rustdesk-unified-setup',
       symbol: $rawfile('icons/globe-alt.svg'),
-      title: '云同步故障安全升级',
-      desc: '首次拉取、重新启用同步、超时和迟到回调进入统一持久化队列；账号或数据形态无法验证时会停止同步，避免覆盖本地或云端数据。'
+      title: '更清晰的服务器添加流程',
+      desc: 'RustDesk 服务器统一为一个添加流程，默认只需导入配置或填写服务器地址与公钥；端口、API 和控制面能力按需展开。'
     },
     {
-      id: 'portable-backup-v3',
+      id: 'rustdesk-auth-boundaries',
       symbol: $rawfile('icons/shield-check.svg'),
-      title: '本地备份与恢复 v3',
-      desc: '备份新增账号绑定和完整性清单，并支持旧版备份按兼容表部分恢复；登录令牌、密码、私钥、2FA 密钥和设备信任默认不会导出。'
+      title: '登录与中继凭据不再混用',
+      desc: '地址簿登录、Server Pro 控制面令牌、共享访问 Key 和服务器公钥保持独立；只有来源和能力均可证明的配置才会向连接请求投影令牌。'
     },
     {
-      id: 'welcome-1-0-9',
+      id: 'rustdesk-connection-diagnostics',
       symbol: $rawfile('icons/cog-6-tooth.svg'),
-      title: '欢迎使用 1.0.9',
-      desc: '这一版重建了账号、云同步、加密和本地备份的生命周期边界；涉及跨设备云数据的最终结果仍以设置页的同步状态为准。'
+      title: '连接诊断可判定',
+      desc: 'FORCE_RELAY 与 DIRECT_IP 路径显式校验并返回结构化阶段、错误码和尝试编号；日志不会记录密码、令牌、密钥或完整地址。'
+    },
+    {
+      id: 'welcome-1-0-10',
+      symbol: $rawfile('icons/cog-6-tooth.svg'),
+      title: '欢迎使用 1.0.10',
+      desc: '这一版聚焦 RustDesk 服务器保存、普通用户控制面登录与中继连接。AUTO/P2P 回退仍需真实协议和设备验证，当前不会被界面描述为已经可用。'
     }
   ];
 }

@@ -23,6 +23,14 @@
 #define LOG_DOMAIN 0x0000
 #define LOG_TAG "RDP_NAPI"
 
+#ifndef REMOTEDESK_GIT_SHORT_SHA
+#define REMOTEDESK_GIT_SHORT_SHA "unknown"
+#endif
+
+#ifndef REMOTEDESK_BUILD_TIME_UTC
+#define REMOTEDESK_BUILD_TIME_UTC "unknown"
+#endif
+
 // 前向声明各子系统 NAPI 初始化函数
 namespace RendererNapi {
     napi_value Init(napi_env env, napi_value exports);
@@ -81,17 +89,24 @@ static napi_value InitVersionInfo(napi_env env, napi_value exports) {
     napi_create_object(env, &versionObj);
 
     SetStringProperty(env, versionObj, "moduleName", "rdpnapi");
-    SetStringProperty(env, versionObj, "version", "1.0.0");
-    SetIntProperty(env, versionObj, "apiVersion", 20);
+    SetStringProperty(env, versionObj, "version", "1.0.1");
+    SetIntProperty(env, versionObj, "apiVersion", 21);
 #ifdef NDEBUG
     SetStringProperty(env, versionObj, "buildType", "release");
 #else
     SetStringProperty(env, versionObj, "buildType", "debug");
 #endif
+    SetStringProperty(env, versionObj, "appVersion", "1.0.10");
+    SetStringProperty(env, versionObj, "gitShortSha", REMOTEDESK_GIT_SHORT_SHA);
+    SetStringProperty(env, versionObj, "buildTimeUtc", REMOTEDESK_BUILD_TIME_UTC);
+    SetIntProperty(env, versionObj, "rustDeskFfiAbiVersion", 2);
+    SetStringProperty(env, versionObj, "rustDeskProtocolFixture", "93d064a9b0eb");
 
     napi_set_named_property(env, exports, "VERSION", versionObj);
 
-    OH_LOG_INFO(LOG_APP, "[NAPI] rdpnapi 模块已加载, 版本 1.0.0");
+    OH_LOG_INFO(LOG_APP,
+                "[NAPI] rdpnapi loaded version=1.0.1 api=21 app=1.0.10 build=%{public}s",
+                REMOTEDESK_GIT_SHORT_SHA);
     return exports;
 }
 

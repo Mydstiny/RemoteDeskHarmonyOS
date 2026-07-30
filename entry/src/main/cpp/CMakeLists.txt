@@ -12,6 +12,22 @@
 cmake_minimum_required(VERSION 3.5.0)
 project(rdpnapi)
 
+# Non-sensitive build identity. The values are exported through the existing
+# NAPI VERSION object for field diagnostics; they never enter protocol frames.
+set(REMOTEDESK_GIT_SHORT_SHA "unknown")
+execute_process(
+    COMMAND git rev-parse --short=12 HEAD
+    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/../../../..
+    RESULT_VARIABLE REMOTEDESK_GIT_RESULT
+    OUTPUT_VARIABLE REMOTEDESK_GIT_OUTPUT
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET
+)
+if(REMOTEDESK_GIT_RESULT EQUAL 0 AND REMOTEDESK_GIT_OUTPUT MATCHES "^[0-9a-fA-F]+$")
+    set(REMOTEDESK_GIT_SHORT_SHA "${REMOTEDESK_GIT_OUTPUT}")
+endif()
+string(TIMESTAMP REMOTEDESK_BUILD_TIME_UTC "%Y-%m-%dT%H:%M:%SZ" UTC)
+
 # ============================================================
 # 源文件清单
 # ============================================================
@@ -322,6 +338,10 @@ set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra")
 
 # 定义共享库目标
 add_library(rdpnapi SHARED ${ALL_SOURCES})
+target_compile_definitions(rdpnapi PRIVATE
+    REMOTEDESK_GIT_SHORT_SHA="${REMOTEDESK_GIT_SHORT_SHA}"
+    REMOTEDESK_BUILD_TIME_UTC="${REMOTEDESK_BUILD_TIME_UTC}"
+)
 
 # 输出名称
 set_target_properties(rdpnapi PROPERTIES
