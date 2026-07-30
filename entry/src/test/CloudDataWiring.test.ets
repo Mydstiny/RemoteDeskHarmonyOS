@@ -9,10 +9,21 @@ import {
 } from '../main/ets/services/CloudSyncCoordinator';
 import {
   CloudStore,
-  CloudStoreMetadataQueryPort,
-  CloudStoreVncAuthoritativeCompletionPort,
-  CloudStoreVncSelectionFinalizationPort
+  CloudStoreMetadataQueryPort
 } from '../main/ets/services/CloudStore';
+import {
+  CLOUD_DOWNLOAD_TRANSACTION_KEY,
+  CLOUD_SELECTION_REENABLE_BARRIERS_KEY,
+  VNC_SELECTION_REENABLE_TRANSACTION_KEY,
+  CloudStoreVncAuthoritativeCompletionPort,
+  CloudStoreVncSelectionFinalizationPort,
+  VncSelectionCheckpointIdentity,
+  VncSelectionReenableCheckpoint,
+  VncSelectionReenableTransactionPayload,
+  completeVncAuthoritativeCloudFirst,
+  finalizeVncSelectionReenable,
+  recoverPendingVncSelectionReenable
+} from '../main/ets/services/CloudStoreVncLifecycleWiring';
 import { CloudSyncDirection } from '../main/ets/services/CloudSyncPolicy';
 import {
   CloudSyncFailureKind
@@ -30,7 +41,9 @@ import {
   CloudMetadataReadResult
 } from '../main/ets/services/CloudMetadataSafetyPolicy';
 import {
-  CloudDownloadTransactionOperation
+  CloudDownloadTransactionEnvelope,
+  CloudDownloadTransactionOperation,
+  cloudDownloadTransactionEnvelope
 } from '../main/ets/services/CloudDownloadTransactionPolicy';
 
 class DeferredSignal {
@@ -237,32 +250,190 @@ type CompletionFault =
   'none' | 'begin' | 'rebase' |
   'journal' | 'delete' | 'commit';
 
+function vncCheckpointIdentity():
+  VncSelectionCheckpointIdentity {
+  const lease: AccountSessionLease =
+    accountLease();
+  return {
+    ownerScopeId: lease.ownerScopeId,
+    storeIdentity: lease.storeIdentity,
+    generation: lease.generation
+  };
+}
+
+function vncCheckpointRaw(
+  stage: string
+): string {
+  const payload:
+    VncSelectionReenableTransactionPayload = {
+    snapshot: {},
+    extensions: [],
+    metadata: [],
+    mutationJournal: [],
+    localTables: {},
+    stage,
+    previousScopes: ['settings'],
+    previousBarrier: '',
+    settingsId: 'vnc-settings-wiring'
+  };
+  const identity:
+    VncSelectionCheckpointIdentity =
+    vncCheckpointIdentity();
+  const envelope:
+    CloudDownloadTransactionEnvelope | null =
+    cloudDownloadTransactionEnvelope(
+      'vnc_scope_reenable',
+      identity.ownerScopeId,
+      identity.storeIdentity,
+      identity.generation,
+      JSON.stringify(payload),
+      1000);
+  return envelope === null
+    ? '' : JSON.stringify(envelope);
+}
+
+function checkpointStageFromRaw(
+  raw: string
+): string {
+  try {
+    const envelope:
+      CloudDownloadTransactionEnvelope =
+      JSON.parse(raw) as
+        CloudDownloadTransactionEnvelope;
+    const payload:
+      VncSelectionReenableTransactionPayload =
+      JSON.parse(envelope.payloadJson) as
+        VncSelectionReenableTransactionPayload;
+    return payload.stage;
+  } catch (_error) {
+    return '';
+  }
+}
+
+function cloneStringRecord(
+  source: Record<string, string>
+): Record<string, string> {
+  const result: Record<string, string> = {};
+  const keys: string[] =
+    Object.keys(source);
+  for (let i = 0; i < keys.length; i++) {
+    result[keys[i]] = source[keys[i]];
+  }
+  return result;
+}
+
+class MetadataMapQueryPort
+  implements CloudStoreMetadataQueryPort {
+  private values:
+    Record<string, string> = {};
+  private errorKeys: string[] = [];
+
+  queryValue(key: string):
+    string | null {
+    if (this.errorKeys.indexOf(key) >= 0) {
+      throw new Error(
+        'injected querySync failure key=' +
+        key);
+    }
+    const value: string | undefined =
+      this.values[key];
+    return value === undefined
+      ? null : value;
+  }
+
+  set(key: string, value: string): void {
+    this.values[key] = value;
+  }
+
+  delete(key: string): void {
+    delete this.values[key];
+  }
+
+  has(key: string): boolean {
+    return this.values[key] !== undefined;
+  }
+
+  value(key: string): string {
+    return this.values[key] || '';
+  }
+
+  snapshot(): Record<string, string> {
+    return cloneStringRecord(this.values);
+  }
+
+  replace(
+    values: Record<string, string>
+  ): void {
+    this.values =
+      cloneStringRecord(values);
+  }
+
+  setError(
+    key: string,
+    enabled: boolean
+  ): void {
+    const index: number =
+      this.errorKeys.indexOf(key);
+    if (enabled && index < 0) {
+      this.errorKeys.push(key);
+    } else if (!enabled && index >= 0) {
+      this.errorKeys.splice(index, 1);
+    }
+  }
+}
+
 /**
  * Minimal transactional fake. Mutations are written only to working state
  * between begin/commit, so rollback and kill-point assertions exercise the
- * same port that CloudStore's production completion method drives.
+ * same stateless collaborator that CloudStore's private completion entry uses.
+ * All post-commit reads still traverse CloudStore.readLocalMetadataState.
  */
 class FakeVncCompletionPort
   implements
   CloudStoreVncAuthoritativeCompletionPort {
   fault: CompletionFault = 'none';
-  readBackError: boolean = false;
+  postCommitReadError: boolean = false;
   events: string[] = [];
-  generalCheckpointPresent:
-    boolean = true;
-  vncCheckpointStage: string =
-    'prepared';
   journalState: string = 'captured';
   snapshotCleared: boolean = false;
+  private readonly store: CloudStore;
+  private readonly metadata:
+    MetadataMapQueryPort;
   private transactionId: number = 0;
-  private workingGeneral: boolean = true;
-  private workingStage: string = 'prepared';
+  private working:
+    Record<string, string> = {};
   private workingJournal: string =
     'captured';
+
+  constructor(
+    store: CloudStore,
+    metadata: MetadataMapQueryPort
+  ) {
+    this.store = store;
+    this.metadata = metadata;
+    this.metadata.set(
+      CLOUD_DOWNLOAD_TRANSACTION_KEY,
+      'general-before-image');
+    this.metadata.set(
+      VNC_SELECTION_REENABLE_TRANSACTION_KEY,
+      vncCheckpointRaw('prepared'));
+  }
 
   activeOperation():
     CloudDownloadTransactionOperation | null {
     return 'selection_reenable';
+  }
+
+  checkpointIdentity():
+    VncSelectionCheckpointIdentity {
+    return vncCheckpointIdentity();
+  }
+
+  readMetadataState(
+    key: string
+  ): CloudMetadataReadResult {
+    return this.store
+      .readLocalMetadataState(key);
   }
 
   beginTransaction(): boolean {
@@ -271,10 +442,8 @@ class FakeVncCompletionPort
       return false;
     }
     this.transactionId++;
-    this.workingGeneral =
-      this.generalCheckpointPresent;
-    this.workingStage =
-      this.vncCheckpointStage;
+    this.working =
+      this.metadata.snapshot();
     this.workingJournal =
       this.journalState;
     return true;
@@ -288,8 +457,9 @@ class FakeVncCompletionPort
     if (this.fault === 'rebase') {
       return false;
     }
-    this.workingStage =
-      'authoritative';
+    this.working[
+      VNC_SELECTION_REENABLE_TRANSACTION_KEY] =
+      vncCheckpointRaw('authoritative');
     return true;
   }
 
@@ -313,7 +483,8 @@ class FakeVncCompletionPort
     if (this.fault === 'delete') {
       return false;
     }
-    this.workingGeneral = false;
+    delete this.working[
+      CLOUD_DOWNLOAD_TRANSACTION_KEY];
     return true;
   }
 
@@ -324,12 +495,14 @@ class FakeVncCompletionPort
     if (this.fault === 'commit') {
       return false;
     }
-    this.generalCheckpointPresent =
-      this.workingGeneral;
-    this.vncCheckpointStage =
-      this.workingStage;
+    this.metadata.replace(this.working);
     this.journalState =
       this.workingJournal;
+    if (this.postCommitReadError) {
+      this.metadata.setError(
+        VNC_SELECTION_REENABLE_TRANSACTION_KEY,
+        true);
+    }
     return true;
   }
 
@@ -337,33 +510,21 @@ class FakeVncCompletionPort
     this.events.push(
       this.transactionId.toString() +
       ':rollback');
-    this.workingGeneral =
-      this.generalCheckpointPresent;
-    this.workingStage =
-      this.vncCheckpointStage;
+    this.working =
+      this.metadata.snapshot();
     this.workingJournal =
       this.journalState;
   }
 
-  readDownloadCheckpointState():
-    CloudMetadataReadResult {
-    if (this.readBackError) {
-      return { state: 'error', value: '' };
-    }
-    return this.generalCheckpointPresent
-      ? { state: 'present', value: 'general' }
-      : { state: 'absent', value: '' };
+  generalCheckpointPresent(): boolean {
+    return this.metadata.has(
+      CLOUD_DOWNLOAD_TRANSACTION_KEY);
   }
 
-  readVncCheckpointStageState():
-    CloudMetadataReadResult {
-    if (this.readBackError) {
-      return { state: 'error', value: '' };
-    }
-    return {
-      state: 'present',
-      value: this.vncCheckpointStage
-    };
+  vncCheckpointStage(): string {
+    return checkpointStageFromRaw(
+      this.metadata.value(
+        VNC_SELECTION_REENABLE_TRANSACTION_KEY));
   }
 
   clearInMemorySnapshot(): void {
@@ -375,28 +536,42 @@ class FakeVncCompletionPort
 class FakeVncFinalizationPort
   implements
   CloudStoreVncSelectionFinalizationPort {
-  checkpointStage:
-    CloudMetadataReadResult = {
-      state: 'present',
-      value: 'authoritative'
-    };
-  checkpointAfter:
-    CloudMetadataReadResult = {
-      state: 'absent',
-      value: ''
-    };
-  barrierAfter:
-    CloudMetadataReadResult = {
-      state: 'absent',
-      value: ''
-    };
   events: string[] = [];
   uploadRequested: boolean = false;
+  postCommitErrorKey: string = '';
+  private readonly store: CloudStore;
+  private readonly metadata:
+    MetadataMapQueryPort;
+  private working:
+    Record<string, string> = {};
 
-  readCheckpointStageState():
+  constructor(
+    store: CloudStore,
+    metadata: MetadataMapQueryPort
+  ) {
+    this.store = store;
+    this.metadata = metadata;
+    this.metadata.set(
+      VNC_SELECTION_REENABLE_TRANSACTION_KEY,
+      vncCheckpointRaw('authoritative'));
+    this.metadata.set(
+      CLOUD_SELECTION_REENABLE_BARRIERS_KEY,
+      JSON.stringify({
+        vncrecord: 'pending_pull'
+      }));
+  }
+
+  checkpointIdentity():
+    VncSelectionCheckpointIdentity {
+    return vncCheckpointIdentity();
+  }
+
+  readMetadataState(
+    key: string
+  ):
     CloudMetadataReadResult {
-    this.events.push('read_stage');
-    return this.checkpointStage;
+    return this.store
+      .readLocalMetadataState(key);
   }
 
   preparePromotion(): boolean {
@@ -406,11 +581,18 @@ class FakeVncFinalizationPort
 
   beginTransaction(): boolean {
     this.events.push('begin');
+    this.working =
+      this.metadata.snapshot();
     return true;
   }
 
   persistPullComplete(): boolean {
     this.events.push('pull_complete');
+    this.working[
+      CLOUD_SELECTION_REENABLE_BARRIERS_KEY] =
+      JSON.stringify({
+        vncrecord: 'pull_complete'
+      });
     return true;
   }
 
@@ -423,40 +605,42 @@ class FakeVncFinalizationPort
     boolean {
     this.events.push(
       'promotion_complete');
+    this.working[
+      CLOUD_SELECTION_REENABLE_BARRIERS_KEY] =
+      JSON.stringify({
+        vncrecord: 'promotion_complete'
+      });
     return true;
   }
 
   releaseBarrier(): boolean {
     this.events.push('release');
+    delete this.working[
+      CLOUD_SELECTION_REENABLE_BARRIERS_KEY];
     return true;
   }
 
   deleteCheckpoint(): boolean {
     this.events.push('delete');
+    delete this.working[
+      VNC_SELECTION_REENABLE_TRANSACTION_KEY];
     return true;
   }
 
   commit(): boolean {
     this.events.push('commit');
+    this.metadata.replace(this.working);
+    if (this.postCommitErrorKey !== '') {
+      this.metadata.setError(
+        this.postCommitErrorKey, true);
+    }
     return true;
   }
 
   rollback(): void {
     this.events.push('rollback');
-  }
-
-  readCheckpointAfterCommitState():
-    CloudMetadataReadResult {
-    this.events.push(
-      'read_checkpoint_after');
-    return this.checkpointAfter;
-  }
-
-  readBarrierAfterCommitState():
-    CloudMetadataReadResult {
-    this.events.push(
-      'read_barrier_after');
-    return this.barrierAfter;
+    this.working =
+      this.metadata.snapshot();
   }
 
   requestAutomaticUpload(): void {
@@ -823,16 +1007,18 @@ export default function cloudDataWiringTest():
 
     it('drives_CloudStore_authoritative_completion_in_one_transaction',
       0, (): void => {
-        const port =
-          new FakeVncCompletionPort();
+        const metadata =
+          new MetadataMapQueryPort();
         const store =
           new CloudStore({
-            vncAuthoritativeCompletion:
-              port
+            metadataQuery: metadata
           });
-        expect(store
-          .completeVncAuthoritativeCloudFirst(
-            ['vncrecord']))
+        const port =
+          new FakeVncCompletionPort(
+            store, metadata);
+        expect(
+          completeVncAuthoritativeCloudFirst(
+            ['vncrecord'], port).ok)
           .assertTrue();
         expect(port.events.join(','))
           .assertEqual(
@@ -840,9 +1026,9 @@ export default function cloudDataWiringTest():
             '1:journal:vncrecord,' +
             '1:delete,1:commit,publish');
         expect(port
-          .generalCheckpointPresent)
+          .generalCheckpointPresent())
           .assertFalse();
-        expect(port.vncCheckpointStage)
+        expect(port.vncCheckpointStage())
           .assertEqual('authoritative');
         expect(port.journalState)
           .assertEqual('replayed');
@@ -859,17 +1045,19 @@ export default function cloudDataWiringTest():
         ];
         for (let i = 0;
           i < faults.length; i++) {
-          const port =
-            new FakeVncCompletionPort();
-          port.fault = faults[i];
+          const metadata =
+            new MetadataMapQueryPort();
           const store =
             new CloudStore({
-              vncAuthoritativeCompletion:
-                port
+              metadataQuery: metadata
             });
-          expect(store
-            .completeVncAuthoritativeCloudFirst(
-              ['vncrecord']))
+          const port =
+            new FakeVncCompletionPort(
+              store, metadata);
+          port.fault = faults[i];
+          expect(
+            completeVncAuthoritativeCloudFirst(
+              ['vncrecord'], port).ok)
             .assertFalse();
           if (faults[i] === 'begin') {
             expect(port.events.indexOf(
@@ -881,9 +1069,9 @@ export default function cloudDataWiringTest():
               .assertTrue();
           }
           expect(port
-            .generalCheckpointPresent)
+            .generalCheckpointPresent())
             .assertTrue();
-          expect(port.vncCheckpointStage)
+          expect(port.vncCheckpointStage())
             .assertEqual('prepared');
           expect(port.journalState)
             .assertEqual('captured');
@@ -894,17 +1082,19 @@ export default function cloudDataWiringTest():
 
     it('keeps_committed_authoritative_recovery_model_when_postcommit_readback_errors',
       0, (): void => {
-        const port =
-          new FakeVncCompletionPort();
-        port.readBackError = true;
+        const metadata =
+          new MetadataMapQueryPort();
         const store =
           new CloudStore({
-            vncAuthoritativeCompletion:
-              port
+            metadataQuery: metadata
           });
-        expect(store
-          .completeVncAuthoritativeCloudFirst(
-            ['vncrecord']))
+        const port =
+          new FakeVncCompletionPort(
+            store, metadata);
+        port.postCommitReadError = true;
+        expect(
+          completeVncAuthoritativeCloudFirst(
+            ['vncrecord'], port).ok)
           .assertFalse();
         expect(port.events.indexOf(
           '1:commit') >= 0)
@@ -913,9 +1103,9 @@ export default function cloudDataWiringTest():
           '1:rollback'))
           .assertEqual(-1);
         expect(port
-          .generalCheckpointPresent)
+          .generalCheckpointPresent())
           .assertFalse();
-        expect(port.vncCheckpointStage)
+        expect(port.vncCheckpointStage())
           .assertEqual('authoritative');
         expect(port.journalState)
           .assertEqual('replayed');
@@ -923,65 +1113,182 @@ export default function cloudDataWiringTest():
           .assertFalse();
       });
 
+    it('routes_committed_authoritative_checkpoint_into_startup_recovery_wiring',
+      0, async (): Promise<void> => {
+        const metadata =
+          new MetadataMapQueryPort();
+        const firstProcessStore =
+          new CloudStore({
+            metadataQuery: metadata
+          });
+        const completion =
+          new FakeVncCompletionPort(
+            firstProcessStore, metadata);
+        expect(
+          completeVncAuthoritativeCloudFirst(
+            ['vncrecord'],
+            completion).ok)
+          .assertTrue();
+        expect(completion
+          .vncCheckpointStage())
+          .assertEqual('authoritative');
+
+        const restartedStore =
+          new CloudStore({
+            metadataQuery: metadata
+          });
+        let rollbackStage: string = '';
+        let recoveredPublished:
+          boolean = false;
+        const recovered: boolean =
+          await recoverPendingVncSelectionReenable({
+            checkpointIdentity:
+              (): VncSelectionCheckpointIdentity =>
+                vncCheckpointIdentity(),
+            readMetadataState:
+              (key: string):
+                CloudMetadataReadResult =>
+                restartedStore
+                  .readLocalMetadataState(key),
+            rollbackCheckpoint: async (
+              checkpoint:
+                VncSelectionReenableCheckpoint
+            ): Promise<boolean> => {
+              rollbackStage =
+                checkpoint.payload.stage;
+              metadata.delete(
+                VNC_SELECTION_REENABLE_TRANSACTION_KEY);
+              return true;
+            },
+            recovered: (): void => {
+              recoveredPublished = true;
+            }
+          });
+        expect(recovered).assertTrue();
+        expect(rollbackStage)
+          .assertEqual('authoritative');
+        expect(recoveredPublished)
+          .assertTrue();
+        expect(metadata.has(
+          VNC_SELECTION_REENABLE_TRANSACTION_KEY))
+          .assertFalse();
+      });
+
     it('metadata_errors_block_actual_finalization_promotion_and_postcommit_upload',
       0, (): void => {
-        const preReadError =
-          new FakeVncFinalizationPort();
-        preReadError.checkpointStage = {
-          state: 'error', value: ''
-        };
-        const blockedBeforePromotion =
+        const preCheckpointMetadata =
+          new MetadataMapQueryPort();
+        const preCheckpointStore =
           new CloudStore({
-            vncSelectionFinalization:
-              preReadError
+            metadataQuery:
+              preCheckpointMetadata
           });
-        expect(blockedBeforePromotion
-          .finalizeVncSelectionReenableTransaction())
+        const preCheckpointPort =
+          new FakeVncFinalizationPort(
+            preCheckpointStore,
+            preCheckpointMetadata);
+        preCheckpointMetadata.setError(
+          VNC_SELECTION_REENABLE_TRANSACTION_KEY,
+          true);
+        expect(finalizeVncSelectionReenable(
+          preCheckpointPort).ok)
           .assertFalse();
-        expect(preReadError.events.join(','))
-          .assertEqual('read_stage');
-        expect(preReadError.uploadRequested)
+        expect(preCheckpointPort
+          .events.length)
+          .assertEqual(0);
+        expect(preCheckpointPort
+          .uploadRequested)
           .assertFalse();
 
-        const checkpointReadError =
-          new FakeVncFinalizationPort();
-        checkpointReadError
-          .checkpointAfter = {
-          state: 'error', value: ''
-        };
-        const blockedAfterCommit =
+        const preBarrierMetadata =
+          new MetadataMapQueryPort();
+        const preBarrierStore =
           new CloudStore({
-            vncSelectionFinalization:
-              checkpointReadError
+            metadataQuery:
+              preBarrierMetadata
           });
-        expect(blockedAfterCommit
-          .finalizeVncSelectionReenableTransaction())
+        const preBarrierPort =
+          new FakeVncFinalizationPort(
+            preBarrierStore,
+            preBarrierMetadata);
+        preBarrierMetadata.setError(
+          CLOUD_SELECTION_REENABLE_BARRIERS_KEY,
+          true);
+        expect(finalizeVncSelectionReenable(
+          preBarrierPort).ok)
           .assertFalse();
-        expect(checkpointReadError.events
-          .indexOf('promote') >= 0)
-          .assertTrue();
-        expect(checkpointReadError.events
+        expect(preBarrierPort.events
+          .indexOf('release'))
+          .assertEqual(-1);
+        expect(preBarrierPort
+          .uploadRequested)
+          .assertFalse();
+
+        const checkpointMetadata =
+          new MetadataMapQueryPort();
+        const checkpointStore =
+          new CloudStore({
+            metadataQuery:
+              checkpointMetadata
+          });
+        const checkpointPort =
+          new FakeVncFinalizationPort(
+            checkpointStore,
+            checkpointMetadata);
+        checkpointPort.postCommitErrorKey =
+          VNC_SELECTION_REENABLE_TRANSACTION_KEY;
+        expect(finalizeVncSelectionReenable(
+          checkpointPort).ok)
+          .assertFalse();
+        expect(checkpointPort.events
           .indexOf('commit') >= 0)
           .assertTrue();
-        expect(checkpointReadError
+        expect(checkpointPort
           .uploadRequested)
           .assertFalse();
 
-        const barrierReadError =
-          new FakeVncFinalizationPort();
-        barrierReadError.barrierAfter = {
-          state: 'error', value: ''
-        };
-        const blockedBarrierRead =
+        const barrierMetadata =
+          new MetadataMapQueryPort();
+        const barrierStore =
           new CloudStore({
-            vncSelectionFinalization:
-              barrierReadError
+            metadataQuery: barrierMetadata
           });
-        expect(blockedBarrierRead
-          .finalizeVncSelectionReenableTransaction())
+        const barrierPort =
+          new FakeVncFinalizationPort(
+            barrierStore,
+            barrierMetadata);
+        barrierPort.postCommitErrorKey =
+          CLOUD_SELECTION_REENABLE_BARRIERS_KEY;
+        expect(finalizeVncSelectionReenable(
+          barrierPort).ok)
           .assertFalse();
-        expect(barrierReadError
+        expect(barrierPort
           .uploadRequested)
+          .assertFalse();
+
+        const successMetadata =
+          new MetadataMapQueryPort();
+        const successStore =
+          new CloudStore({
+            metadataQuery: successMetadata
+          });
+        const successPort =
+          new FakeVncFinalizationPort(
+            successStore,
+            successMetadata);
+        expect(finalizeVncSelectionReenable(
+          successPort).ok)
+          .assertTrue();
+        expect(successPort.events.join(','))
+          .assertEqual(
+            'prepare,begin,pull_complete,' +
+            'promote,promotion_complete,' +
+            'release,delete,commit,upload');
+        expect(successMetadata.has(
+          VNC_SELECTION_REENABLE_TRANSACTION_KEY))
+          .assertFalse();
+        expect(successMetadata.has(
+          CLOUD_SELECTION_REENABLE_BARRIERS_KEY))
           .assertFalse();
       });
   });

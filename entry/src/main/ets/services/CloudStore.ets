@@ -187,6 +187,25 @@ import {
   parseCloudDownloadTransactionEnvelope
 } from './CloudDownloadTransactionPolicy';
 import {
+  CLOUD_DOWNLOAD_TRANSACTION_KEY,
+  CLOUD_SELECTION_REENABLE_BARRIERS_KEY,
+  VNC_SELECTION_REENABLE_TRANSACTION_KEY,
+  CloudDownloadTransactionPayload,
+  CloudStoreVncAuthoritativeCompletionPort,
+  CloudStoreVncSelectionFinalizationPort,
+  VncAuthoritativeCompletionWiringResult,
+  VncSelectionCheckpointIdentity,
+  VncSelectionFinalizationWiringResult,
+  VncSelectionReenableCheckpoint,
+  VncSelectionReenableCheckpointRead,
+  VncSelectionReenableTransactionPayload,
+  completeVncAuthoritativeCloudFirst as
+    completeVncAuthoritativeCloudFirstWiring,
+  finalizeVncSelectionReenable,
+  readVncSelectionReenableCheckpointState,
+  recoverPendingVncSelectionReenable
+} from './CloudStoreVncLifecycleWiring';
+import {
   CloudMetadataReadResult,
   cloudMetadataAbsentProven,
   cloudMetadataBoundaryReadable,
@@ -195,17 +214,12 @@ import {
 } from './CloudMetadataSafetyPolicy';
 import {
   CloudSelectionReenablePhase,
-  VncAuthoritativeCompletionResult,
-  VncSelectionFinalizeResult,
   cloudSelectionBarrierAfterRollback,
   cloudSelectionAfterAuthoritativePull,
   cloudSelectionAfterLocalPromotion,
   cloudSelectionLocalPromotionAllowed,
   cloudSelectionNativeFirstAllowed,
-  executeVncAuthoritativeCompletion,
-  executeVncSelectionFinalize,
   normalizeCloudSelectionReenablePhase,
-  vncSelectionPostCommitUploadAllowed,
   vncSelectionRecoveryBarrier,
   vncSettingsRollbackJournal,
   vncSettingsRollbackRows
@@ -265,12 +279,6 @@ const RESTORED_NOT_UPLOADED_TABLE_PREFIX: string =
   'restored_not_uploaded|';
 const CLOUD_BOOTSTRAP_COMPLETED_KEY: string = 'cloud_bootstrap_completed_v1';
 const CLOUD_SYNC_DURABLE_STATE_KEY: string = 'cloud_sync_durable_state_v1';
-const CLOUD_DOWNLOAD_TRANSACTION_KEY: string =
-  'cloud_download_transaction_v1';
-const VNC_SELECTION_REENABLE_TRANSACTION_KEY:
-  string = 'vnc_selection_reenable_transaction_v1';
-const CLOUD_SELECTION_REENABLE_BARRIERS_KEY: string =
-  'cloud_selection_reenable_barriers_v1';
 const CRYPTO_LIFECYCLE_DURABLE_STATE_KEY: string =
   'crypto_lifecycle_durable_state_v1';
 const STORE_OWNER_SCOPE_KEY: string = 'store_owner_scope_id';
@@ -352,33 +360,6 @@ export interface PortableBackupSnapshot {
   localTables: Record<string, Array<Record<string, string>>>;
 }
 
-interface CloudDownloadTransactionPayload {
-  snapshot: Record<string, Array<Record<string, string>>>;
-  extensions: Array<Record<string, string>>;
-  metadata: Array<Record<string, string>>;
-  mutationJournal: Array<Record<string, string>>;
-  localTables: Record<string, Array<Record<string, string>>>;
-}
-
-interface VncSelectionReenableTransactionPayload
-  extends CloudDownloadTransactionPayload {
-  stage: string;
-  previousScopes: string[];
-  previousBarrier: string;
-  settingsId: string;
-}
-
-interface VncSelectionReenableCheckpoint {
-  raw: string;
-  envelope: CloudDownloadTransactionEnvelope;
-  payload: VncSelectionReenableTransactionPayload;
-}
-
-interface VncSelectionReenableCheckpointRead {
-  metadata: CloudMetadataReadResult;
-  checkpoint: VncSelectionReenableCheckpoint | null;
-}
-
 interface SelectionReenableBarrierSnapshot {
   readable: boolean;
   barriers: Record<string, string>;
@@ -392,56 +373,8 @@ export interface CloudStoreMetadataQueryPort {
   queryValue(key: string): string | null;
 }
 
-/**
- * Persistence boundary for the VNC authoritative completion transaction.
- * The live RDB adapter and fault-injection adapters pass through the same
- * CloudStore completion method and post-commit verification.
- */
-export interface CloudStoreVncAuthoritativeCompletionPort {
-  activeOperation:
-    () => CloudDownloadTransactionOperation | null;
-  beginTransaction: () => boolean;
-  rebaseAuthoritativeCheckpoint:
-    () => boolean;
-  reconcileJournal:
-    (tables: string[]) => boolean;
-  deleteDownloadCheckpoint:
-    () => boolean;
-  commit: () => boolean;
-  rollback: () => void;
-  readDownloadCheckpointState:
-    () => CloudMetadataReadResult;
-  readVncCheckpointStageState:
-    () => CloudMetadataReadResult;
-  clearInMemorySnapshot: () => void;
-}
-
-export interface CloudStoreVncSelectionFinalizationPort {
-  readCheckpointStageState:
-    () => CloudMetadataReadResult;
-  preparePromotion: () => boolean;
-  beginTransaction: () => boolean;
-  persistPullComplete: () => boolean;
-  promote: () => boolean;
-  persistPromotionComplete:
-    () => boolean;
-  releaseBarrier: () => boolean;
-  deleteCheckpoint: () => boolean;
-  commit: () => boolean;
-  rollback: () => void;
-  readCheckpointAfterCommitState:
-    () => CloudMetadataReadResult;
-  readBarrierAfterCommitState:
-    () => CloudMetadataReadResult;
-  requestAutomaticUpload: () => void;
-}
-
 export interface CloudStoreWiringPorts {
   metadataQuery?: CloudStoreMetadataQueryPort;
-  vncAuthoritativeCompletion?:
-    CloudStoreVncAuthoritativeCompletionPort;
-  vncSelectionFinalization?:
-    CloudStoreVncSelectionFinalizationPort;
 }
 
 export class CloudStore implements CryptoCloudStore {
@@ -1738,57 +1671,24 @@ export class CloudStore implements CryptoCloudStore {
     };
   }
 
+  private vncSelectionCheckpointIdentity():
+    VncSelectionCheckpointIdentity {
+    return {
+      ownerScopeId:
+        this.currentScopeToken.ownerScopeId,
+      storeIdentity:
+        this.currentScopeToken.storeIdentity,
+      generation:
+        this.currentScopeToken.generation
+    };
+  }
+
   private readVncSelectionReenableCheckpointState():
     VncSelectionReenableCheckpointRead {
-    const metadata: CloudMetadataReadResult =
-      this.readLocalMetadataState(
-        VNC_SELECTION_REENABLE_TRANSACTION_KEY);
-    if (metadata.state !== 'present') {
-      return { metadata, checkpoint: null };
-    }
-    const envelope: CloudDownloadTransactionEnvelope | null =
-      parseCloudDownloadTransactionEnvelope(
-        metadata.value,
-        this.currentScopeToken.ownerScopeId,
-        this.currentScopeToken.storeIdentity,
-        this.currentScopeToken.generation);
-    if (envelope === null ||
-      envelope.operation !==
-        'vnc_scope_reenable') {
-      return { metadata, checkpoint: null };
-    }
-    try {
-      const payload:
-        VncSelectionReenableTransactionPayload =
-        JSON.parse(envelope.payloadJson) as
-          VncSelectionReenableTransactionPayload;
-      if ((payload.stage !== 'prepared' &&
-        payload.stage !== 'authoritative') ||
-        !Array.isArray(payload.previousScopes) ||
-        payload.settingsId.trim() === '' ||
-        (payload.previousBarrier !== '' &&
-          normalizeCloudSelectionReenablePhase(
-            payload.previousBarrier) === null)) {
-        return { metadata, checkpoint: null };
-      }
-      for (let i = 0;
-        i < payload.previousScopes.length; i++) {
-        if (typeof payload.previousScopes[i] !==
-          'string') {
-          return { metadata, checkpoint: null };
-        }
-      }
-      return {
-        metadata,
-        checkpoint: {
-          raw: metadata.value,
-          envelope,
-          payload
-        }
-      };
-    } catch (_error) {
-      return { metadata, checkpoint: null };
-    }
+    return readVncSelectionReenableCheckpointState(
+      (key: string): CloudMetadataReadResult =>
+        this.readLocalMetadataState(key),
+      this.vncSelectionCheckpointIdentity());
   }
 
   private readVncSelectionReenableCheckpoint():
@@ -2018,106 +1918,39 @@ export class CloudStore implements CryptoCloudStore {
    * Promotion, phase changes, release and checkpoint deletion form one RDB
    * commit. Automatic upload is scheduled only after that commit.
    */
-  finalizeVncSelectionReenableTransaction():
+  private finalizeVncSelectionReenableTransaction():
     boolean {
     const port:
       CloudStoreVncSelectionFinalizationPort | null =
       this.vncSelectionFinalizationPort();
     if (port === null) { return false; }
-    const checkpointStage:
-      CloudMetadataReadResult =
-      port.readCheckpointStageState();
-    if (checkpointStage.state !==
-      'present' ||
-      checkpointStage.value !==
-        'authoritative') {
-      return false;
-    }
-    if (!port.preparePromotion()) {
-      return false;
-    }
-    const finalized: VncSelectionFinalizeResult =
-      executeVncSelectionFinalize({
-        begin: (): boolean =>
-          port.beginTransaction(),
-        persistPullComplete: (): boolean =>
-          port.persistPullComplete(),
-        promote: (): boolean =>
-          port.promote(),
-        persistPromotionComplete: (): boolean =>
-          port.persistPromotionComplete(),
-        releaseBarrier: (): boolean =>
-          port.releaseBarrier(),
-        deleteCheckpoint: (): boolean =>
-          port.deleteCheckpoint(),
-        commit: (): boolean =>
-          port.commit(),
-        rollback: (): void =>
-          port.rollback()
-      });
-    const checkpointRead:
-      CloudMetadataReadResult =
-      port
-        .readCheckpointAfterCommitState();
-    const barrierRead:
-      CloudMetadataReadResult =
-      port.readBarrierAfterCommitState();
-    const barrierPhase:
-      CloudSelectionReenablePhase | null =
-      barrierRead.state === 'absent'
-        ? null
-        : barrierRead.state === 'present'
-          ? normalizeCloudSelectionReenablePhase(
-            barrierRead.value)
-          : 'pending_pull';
-    const uploadAllowed: boolean =
-      vncSelectionPostCommitUploadAllowed(
-        finalized,
-        !cloudMetadataAbsentProven(
-          checkpointRead),
-        barrierPhase);
-    if (uploadAllowed) {
-      port.requestAutomaticUpload();
-    } else if (!finalized.ok) {
+    const result:
+      VncSelectionFinalizationWiringResult =
+      finalizeVncSelectionReenable(port);
+    if (!result.ok &&
+      !result.transaction.ok) {
       hilog.error(0x0001, 'CloudSync',
         'VNC scope finalization failed step=' +
-        finalized.failedStep);
+        result.transaction.failedStep);
     }
-    return uploadAllowed;
+    return result.ok;
   }
 
   private vncSelectionFinalizationPort():
     CloudStoreVncSelectionFinalizationPort | null {
-    if (this.wiringPorts !== null &&
-      this.wiringPorts
-        .vncSelectionFinalization !==
-        undefined) {
-      return this.wiringPorts
-        .vncSelectionFinalization;
-    }
     if (!this.store) { return null; }
     const store: relationalStore.RdbStore =
       this.store;
     let records: VncRecord[] = [];
     const port:
       CloudStoreVncSelectionFinalizationPort = {
-      readCheckpointStageState:
-        (): CloudMetadataReadResult => {
-          const checkpoint:
-            VncSelectionReenableCheckpointRead =
-            this
-              .readVncSelectionReenableCheckpointState();
-          if (checkpoint.metadata.state !==
-            'present' ||
-            checkpoint.checkpoint === null) {
-            return checkpoint.metadata;
-          }
-          return {
-            state: 'present',
-            value:
-              checkpoint.checkpoint.payload.stage
-          };
-        },
+      checkpointIdentity:
+        (): VncSelectionCheckpointIdentity =>
+          this.vncSelectionCheckpointIdentity(),
+      readMetadataState:
+        (key: string):
+          CloudMetadataReadResult =>
+          this.readLocalMetadataState(key),
       preparePromotion: (): boolean => {
         records = this.mergeVncRecords(
           true,
@@ -2164,28 +1997,6 @@ export class CloudStore implements CryptoCloudStore {
       rollback: (): void => {
         store.rollBack();
       },
-      readCheckpointAfterCommitState:
-        (): CloudMetadataReadResult =>
-          this.readLocalMetadataState(
-            VNC_SELECTION_REENABLE_TRANSACTION_KEY),
-      readBarrierAfterCommitState:
-        (): CloudMetadataReadResult => {
-          const snapshot:
-            SelectionReenableBarrierSnapshot =
-            this
-              .selectionReenableBarrierSnapshot();
-          if (!snapshot.readable) {
-            return { state: 'error', value: '' };
-          }
-          const phase:
-            CloudSelectionReenablePhase | null =
-            normalizeCloudSelectionReenablePhase(
-              snapshot.barriers[
-                VNC_CLOUD_TABLE]);
-          return phase === null
-            ? { state: 'absent', value: '' }
-            : { state: 'present', value: phase };
-        },
       requestAutomaticUpload: (): void => {
         void CloudSyncCoordinator.getInstance()
           .requestVncTableAutomaticPush();
@@ -2298,72 +2109,30 @@ export class CloudStore implements CryptoCloudStore {
    * admission, ordering, read-back validation and publication stay in this
    * production method.
    */
-  completeVncAuthoritativeCloudFirst(
+  private completeVncAuthoritativeCloudFirst(
     tables: string[]
   ): boolean {
     const port:
       CloudStoreVncAuthoritativeCompletionPort | null =
       this.vncAuthoritativeCompletionPort();
-    if (port === null ||
-      port.activeOperation() !==
-        'selection_reenable' ||
-      tables.indexOf(VNC_CLOUD_TABLE) < 0) {
-      return false;
-    }
-    const completed:
-      VncAuthoritativeCompletionResult =
-      executeVncAuthoritativeCompletion({
-        begin: (): boolean =>
-          port.beginTransaction(),
-        rebaseAuthoritativeCheckpoint:
-          (): boolean =>
-            port
-              .rebaseAuthoritativeCheckpoint(),
-        reconcileJournal: (): boolean =>
-          port.reconcileJournal(
-              tables),
-        deleteDownloadCheckpoint: (): boolean =>
-          port.deleteDownloadCheckpoint(),
-        commit: (): boolean =>
-          port.commit(),
-        rollback: (): void =>
-          port.rollback()
-      });
-    if (!completed.ok) {
+    if (port === null) { return false; }
+    const result:
+      VncAuthoritativeCompletionWiringResult =
+      completeVncAuthoritativeCloudFirstWiring(
+        tables, port);
+    if (!result.transaction.ok) {
       hilog.error(0x0001, 'CloudSync',
         'VNC cloud-first 权威 checkpoint 原子提交失败 step=' +
-        completed.failedStep);
-      return false;
-    }
-    const downloadCheckpoint:
-      CloudMetadataReadResult =
-      port.readDownloadCheckpointState();
-    const vncCheckpointStage:
-      CloudMetadataReadResult =
-      port.readVncCheckpointStageState();
-    if (!cloudMetadataAbsentProven(
-      downloadCheckpoint) ||
-      vncCheckpointStage.state !==
-        'present' ||
-      vncCheckpointStage.value !==
-        'authoritative') {
+        result.transaction.failedStep);
+    } else if (!result.ok) {
       hilog.error(0x0001, 'CloudSync',
         'VNC cloud-first 权威 checkpoint 提交后校验失败');
-      return false;
     }
-    port.clearInMemorySnapshot();
-    return true;
+    return result.ok;
   }
 
   private vncAuthoritativeCompletionPort():
     CloudStoreVncAuthoritativeCompletionPort | null {
-    if (this.wiringPorts !== null &&
-      this.wiringPorts
-        .vncAuthoritativeCompletion !==
-        undefined) {
-      return this.wiringPorts
-        .vncAuthoritativeCompletion;
-    }
     if (!this.store) { return null; }
     const store: relationalStore.RdbStore =
       this.store;
@@ -2372,6 +2141,13 @@ export class CloudStore implements CryptoCloudStore {
       activeOperation:
         (): CloudDownloadTransactionOperation | null =>
           this.cloudDownloadCheckpointOperation,
+      checkpointIdentity:
+        (): VncSelectionCheckpointIdentity =>
+          this.vncSelectionCheckpointIdentity(),
+      readMetadataState:
+        (key: string):
+          CloudMetadataReadResult =>
+          this.readLocalMetadataState(key),
       beginTransaction: (): boolean => {
         store.beginTransaction();
         return true;
@@ -2395,27 +2171,6 @@ export class CloudStore implements CryptoCloudStore {
       rollback: (): void => {
         store.rollBack();
       },
-      readDownloadCheckpointState:
-        (): CloudMetadataReadResult =>
-          this.readLocalMetadataState(
-            CLOUD_DOWNLOAD_TRANSACTION_KEY),
-      readVncCheckpointStageState:
-        (): CloudMetadataReadResult => {
-          const checkpoint:
-            VncSelectionReenableCheckpointRead =
-            this
-              .readVncSelectionReenableCheckpointState();
-          if (checkpoint.metadata.state !==
-            'present' ||
-            checkpoint.checkpoint === null) {
-            return checkpoint.metadata;
-          }
-          return {
-            state: 'present',
-            value:
-              checkpoint.checkpoint.payload.stage
-          };
-        },
       clearInMemorySnapshot: (): void => {
         this.clearManualDownloadSnapshot();
       }
@@ -2617,13 +2372,24 @@ export class CloudStore implements CryptoCloudStore {
 
   private async rollbackVncSelectionReenableTransactionInternal():
     Promise<boolean> {
+    return await this
+      .rollbackVncSelectionCheckpointInternal(
+        null);
+  }
+
+  private async rollbackVncSelectionCheckpointInternal(
+    checkpointOverride:
+      VncSelectionReenableCheckpoint | null
+  ): Promise<boolean> {
     if (!this.store || this.appContext === null) {
       this.markVncSelectionRecoveryRequired();
       return false;
     }
     const checkpoint:
       VncSelectionReenableCheckpoint | null =
-      this.readVncSelectionReenableCheckpoint();
+      checkpointOverride === null
+        ? this.readVncSelectionReenableCheckpoint()
+        : checkpointOverride;
     if (checkpoint === null) {
       this.markVncSelectionRecoveryRequired();
       return false;
@@ -2732,27 +2498,26 @@ export class CloudStore implements CryptoCloudStore {
 
   private async recoverPendingVncSelectionReenableTransaction():
     Promise<boolean> {
-    const checkpointRead:
-      VncSelectionReenableCheckpointRead =
-      this
-        .readVncSelectionReenableCheckpointState();
-    if (checkpointRead.metadata.state ===
-      'absent') {
-      return true;
-    }
-    if (checkpointRead.metadata.state ===
-        'error' ||
-      checkpointRead.checkpoint === null) {
-      return false;
-    }
-    const recovered: boolean =
-      await this
-        .rollbackVncSelectionReenableTransactionInternal();
-    if (recovered) {
-      hilog.warn(0x0001, 'CloudSync',
-        '已回滚上次未终结的 VNC scope 事务');
-    }
-    return recovered;
+    return await recoverPendingVncSelectionReenable({
+      checkpointIdentity:
+        (): VncSelectionCheckpointIdentity =>
+          this.vncSelectionCheckpointIdentity(),
+      readMetadataState:
+        (key: string):
+          CloudMetadataReadResult =>
+          this.readLocalMetadataState(key),
+      rollbackCheckpoint: async (
+        checkpoint:
+          VncSelectionReenableCheckpoint
+      ): Promise<boolean> =>
+        await this
+          .rollbackVncSelectionCheckpointInternal(
+            checkpoint),
+      recovered: (): void => {
+        hilog.warn(0x0001, 'CloudSync',
+          '已回滚上次未终结的 VNC scope 事务');
+      }
+    });
   }
 
   /**
