@@ -2,10 +2,11 @@
 
 Updated: 2026-07-30 Asia/Shanghai
 
-## Active VNC V2 handoff
+## Completed VNC V2 handoff
 
-- Branch: `codex/vnc-product-parity-sheet-remediation-v2`; base local
-  `main@66fba4141`; implementation checkpoint `d17976c10`.
+- Branch `codex/vnc-product-parity-sheet-remediation-v2` was based on local
+  `main@66fba4141`, reviewed at `2797fd481`, fast-forward merged into local
+  `main` and deleted during closure. Final implementation fix: `d17976c10`.
 - Plan:
   `docs/superpowers/plans/2026-07-29-vnc-complete-product-parity-and-sheet-layout-remediation-plan-v2.md`.
 - Commits: `e3c3fd7b7` plan, `6fd0e4539` Sheet/flow/settings,
@@ -22,15 +23,14 @@ Updated: 2026-07-30 Asia/Shanghai
 - The same reviewer completed remediation, RAW_BGRA lifecycle, non-VNC
   isolation and system-zlib ABI checks with an explicit D-020 PASS and no
   P0/P1/P2. The local merge gate is satisfied.
-- After review approval, fast-forward local `main`, delete only the merged VNC
-  branch and preserve all unrelated dirty plan files. Do not push, create a PR
-  or merge remote main.
+- All unrelated dirty plan files were preserved. No push, PR or remote-main
+  merge was performed.
 - External release blockers: `ohosTest` task registration `00306054`, API 23
   Sheet/input/layout validation, real Mac continuous-frame/Cursor/Retina ZRLE,
   TigerVNC and UltraVNC/LibVNCServer interoperability, other-protocol smoke and
   one-/two-device/account-switch cloud matrices.
-- The VNC task must close before sending the prepared RustDesk login/control
-  plane implementation prompt to its existing Codex task.
+- VNC is closed locally; the prepared RustDesk login/control-plane
+  implementation prompt may now be sent to its existing Codex task.
 
 ## Completed cloud-data lifecycle handoff
 

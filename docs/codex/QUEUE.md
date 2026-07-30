@@ -4,8 +4,9 @@ Updated: 2026-07-30 Asia/Shanghai
 
 ## Now
 
-- VNC product-parity/Sheet remediation is active on
-  `codex/vnc-product-parity-sheet-remediation-v2` at `d17976c10`.
+- VNC product-parity/Sheet remediation is locally complete. The reviewed branch
+  tip `2797fd481` is fast-forward merged into local `main`; the final
+  implementation fix is `d17976c10`.
   Sheet/action reachability, two-step host/Gateway flows, settings ownership,
   visible VNC controls, view-only explanation, isolated diagnostics, measured
   modifier-panel placement, Cursor `-239`, bounded ZRLE, KeyEvent-based VNC
@@ -15,7 +16,7 @@ Updated: 2026-07-30 Asia/Shanghai
   HAP, Light compliance and diff checks pass. The first independent D-020
   audit's four findings are fixed, and the same reviewer completed the
   remediation plus remaining renderer/isolation/zlib checks with an explicit
-  PASS and no P0/P1/P2. Local fast-forward merge and branch cleanup are next.
+  PASS and no P0/P1/P2. The merged task branch is deleted during closure.
   Release remains NO-GO pending API 23 layout/input,
   real macOS/TigerVNC/UltraVNC-LibVNCServer interoperability, cross-protocol
   regression and cloud device/account matrices. `ohosTest` remains unavailable

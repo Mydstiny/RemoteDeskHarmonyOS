@@ -5,9 +5,9 @@ Updated: 2026-07-30 Asia/Shanghai
 ## Repository
 
 - Repository: Mydstiny/RemoteDeskHarmonyOS
-- Active task branch: `codex/vnc-product-parity-sheet-remediation-v2`.
-- Base: local `main@66fba4141`; current implementation checkpoint:
-  `d17976c10`.
+- Active task branch: none; VNC V2 was fast-forward merged into local `main`.
+- Base: local `main@66fba4141`; reviewed VNC branch tip:
+  `2797fd481` (`d17976c10` is the final implementation fix).
 - Scope: VNC-only Sheet/action reachability, owner/flow cleanup, visible session
   controls, isolated diagnostics, Cursor `-239` and bounded ZRLE.
 - Entity plan:
@@ -15,6 +15,8 @@ Updated: 2026-07-30 Asia/Shanghai
 - Cloud/data lifecycle D-020 work is already fast-forward merged into local
   `main@66fba4141` and its branch is deleted.
 - No remote push, PR or remote-main merge is authorized or performed.
+- The merged task branch is deleted during this closure; unrelated SSH,
+  Moonlight, RDP and RustDesk plan files remain untouched in the working tree.
 
 ## Current VNC V2 result
 
@@ -61,7 +63,7 @@ Updated: 2026-07-30 Asia/Shanghai
 Implementation commits: `e3c3fd7b7`, `6fd0e4539`, `6e47c052c`,
 `b742f7b12`, `90f51eed9`, `e1e23ebd6`, `d17976c10`.
 
-## Current VNC verification and blockers
+## Completed VNC verification and release blockers
 
 - Native host tests: `171 passed, 0 failed`.
 - `default@OhosTestCompileArkTS`: passed after `d17976c10`.
