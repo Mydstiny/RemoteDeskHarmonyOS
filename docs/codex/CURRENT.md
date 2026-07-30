@@ -2,6 +2,32 @@
 
 Updated: 2026-07-30 Asia/Shanghai
 
+## Current VNC settings Sheet crash hotfix
+
+- `codex/vnc-settings-sheet-crash-hotfix` is based on local
+  `main@bfea42cb0`; its independently reviewed implementation checkpoint is
+  `0455966`.
+- The API 23 crash report identified `Cannot read property bind of undefined`
+  at `VncSettingsSheet.ets:725`. All VNC settings entries shared the same
+  failure: a parent `@Builder` method was passed directly through
+  `@BuilderParam`, so ArkUI rebound `this` to `VncSheetScaffold` and the
+  settings owner state/methods were unavailable at runtime.
+- VNC settings, VNC host add and VNC Gateway add now pass lexical arrow
+  closures into the shared scaffold. Generated ArkTS keeps those closures in
+  both construction and params-generator paths, so the scaffold's later
+  `.bind(this)` cannot replace the parent owner.
+- The VNC settings accordion now derives a `760vp` maximum from its eleven
+  `62vp` action rows, ten dividers and section chrome instead of clipping the
+  final Gateway entry at `620vp`. The policy test covers the current row count,
+  exact height and monotonic growth.
+- Independent review returned PASS with no P0/P1/P2/P3. The mandatory
+  `default@OhosTestCompileArkTS`, signed `assembleHap`, Light compliance,
+  generated-code inspection and `git diff --check` pass.
+- No HAP was installed and no device data was changed. Release evidence still
+  requires API 23 clicks through all eleven VNC settings entries, save/no-save
+  footer paths, VNC host/Gateway add flows, large text/breakpoint layout and
+  RDP/RustDesk/SSH isolation smoke tests.
+
 ## Current RustDesk multimonitor switch result
 
 - `codex/rustdesk-multimonitor-switch-hardening` is based on local
@@ -91,7 +117,11 @@ Updated: 2026-07-30 Asia/Shanghai
 ## Repository
 
 - Repository: Mydstiny/RemoteDeskHarmonyOS
-- Active task branch: none after the RustDesk multimonitor local closure.
+- Active task branch: none after the VNC settings Sheet hotfix local closure.
+- VNC settings Sheet hotfix base: local `main@bfea42cb0`; independently
+  reviewed implementation checkpoint: `0455966`.
+- Scope: VNC-only BuilderParam owner preservation and complete settings
+  accordion expansion.
 - RustDesk multimonitor base: local `main@1615aff58`; independently reviewed
   implementation checkpoint: `0d6c7fd0b`.
 - Scope: RustDesk display-switch input fencing, generation/ACK/keyframe

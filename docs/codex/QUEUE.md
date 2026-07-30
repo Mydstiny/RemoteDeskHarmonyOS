@@ -4,6 +4,19 @@ Updated: 2026-07-30 Asia/Shanghai
 
 ## Now
 
+- VNC settings Sheet crash hotfix is locally complete at independently reviewed
+  checkpoint `0455966`, based on `main@bfea42cb0`. All three VNC consumers of
+  the shared Sheet scaffold now preserve their parent builder context through
+  lexical closures, eliminating the API 23 `bind of undefined` crash without
+  changing RDP, RustDesk or SSH. The VNC settings accordion now allocates
+  `760vp` for all eleven action rows instead of clipping the final Gateway
+  entry at `620vp`. ArkTS test compilation, signed `assembleHap`, generated
+  code inspection, Light compliance and diff checks pass; independent review
+  returned PASS with no P0/P1/P2/P3. No HAP was installed. Device validation
+  remains for all settings routes, save/no-save footer behavior, host/Gateway
+  flows, large text/breakpoints and other-protocol smoke tests. Do not push,
+  open a PR or merge remote main.
+
 - RustDesk multi-display single-canvas switching is locally complete at
   independently reviewed checkpoint `0d6c7fd0b`, based on
   `main@1615aff58`. Input release and old-move draining precede the official
