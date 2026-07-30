@@ -2,8 +2,9 @@
  * vnc_rfb_engine.cpp - bounded RFB 3.3/3.7/3.8 client implementation.
  *
  * Supported encodings are intentionally small and auditable: Raw, CopyRect,
- * DesktopSize and LastRect. Every rectangle and payload is checked before it
- * is allocated or copied. The engine never calls the shared video decoder.
+ * Cursor, DesktopSize and LastRect. Every rectangle, cursor mask and
+ * allocation is checked before use. The engine never calls the shared video
+ * decoder.
  */
 #include "vnc_rfb_engine.h"
 #include "vnc_des.h"
@@ -38,7 +39,6 @@ constexpr size_t kMaxRectanglePixels = 8 * 1024 * 1024;
 constexpr size_t kMaxClipboardBytes = 1024 * 1024;
 constexpr int kMaxFramebufferEdge = 8192;
 constexpr int kMaxSecurityTypes = 64;
-constexpr int kMaxEncodingTypes = 16;
 
 uint64_t nowMs() {
     return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -83,9 +83,10 @@ void secureClear(std::string& value) {
 } // namespace
 
 VncRfbEngine::VncRfbEngine(const ConnectionConfig& config, VideoFrameCallback frameCallback,
-                           StateCallback stateCallback)
+                           StateCallback stateCallback, CursorCallback cursorCallback)
     : config_(config), frameCallback_(std::move(frameCallback)),
-      stateCallback_(std::move(stateCallback)) {}
+      stateCallback_(std::move(stateCallback)),
+      cursorCallback_(std::move(cursorCallback)) {}
 
 VncRfbEngine::~VncRfbEngine() {
     stop();
@@ -393,14 +394,16 @@ bool VncRfbEngine::sendPixelFormatAndEncodings(std::string& error) {
                 framebufferWidth_, framebufferHeight_);
 
     std::vector<uint8_t> encodings;
-    encodings.reserve(4 + kMaxEncodingTypes * 4);
+    encodings.reserve(4 + 5 * 4);
     encodings.push_back(2);
     encodings.push_back(0);
-    appendU16(encodings, 4);
-    appendI32(encodings, 0);       // Raw
-    appendI32(encodings, 1);       // CopyRect
-    appendI32(encodings, -223);    // DesktopSize
-    appendI32(encodings, -224);    // LastRect
+    appendU16(encodings, 5);
+    appendI32(encodings, 0);                           // Raw
+    appendI32(encodings, 1);                           // CopyRect
+    appendI32(encodings, VncCursorProtocol::kEncoding); // Cursor
+    appendI32(encodings, -223);                        // DesktopSize
+    appendI32(encodings, -224);                        // LastRect
+    VNC_DIAG_INFO("[VNC-DIAG] SetEncodings raw copyrect cursor desktop-size last-rect");
     return writeBytes(encodings.data(), encodings.size(), error);
 }
 
@@ -527,6 +530,8 @@ bool VncRfbEngine::receiveFramebufferUpdate(std::string& error) {
         } else if (encoding == 1) {
             if (!receiveCopyRectangle(x, y, width, height, error)) return false;
             markDirty(x, y, width, height, false);
+        } else if (encoding == VncCursorProtocol::kEncoding) {
+            if (!receiveCursorRectangle(x, y, width, height, error)) return false;
         } else if (encoding == -223) {
             if (!receiveDesktopSize(width, height, error)) return false;
             markDirty(0, 0, framebufferWidth_, framebufferHeight_, true);
@@ -606,6 +611,53 @@ bool VncRfbEngine::receiveCopyRectangle(int x, int y, int width, int height, std
         std::memcpy(framebuffer_.data() + destination,
                     copy.data() + static_cast<size_t>(row) * width * 4,
                     static_cast<size_t>(width) * 4);
+    }
+    return true;
+}
+
+bool VncRfbEngine::receiveCursorRectangle(int hotX, int hotY, int width, int height,
+                                          std::string& error) {
+    size_t payloadBytes = 0;
+    if (width == 0 && height == 0) {
+        payloadBytes = 0;
+    } else {
+        if (width <= 0 || height <= 0 ||
+            width > VncCursorProtocol::kMaxDimension ||
+            height > VncCursorProtocol::kMaxDimension) {
+            error = "VNC cursor dimensions exceed the safe limit";
+            return false;
+        }
+        const size_t bytesPerPixel =
+            static_cast<size_t>(serverPixelFormat_.bitsPerPixel / 8);
+        size_t pixelBytes = 0;
+        size_t maskBytes = 0;
+        if (!checkedPixelBytes(width, height, bytesPerPixel, pixelBytes) ||
+            !checkedPixelBytes((width + 7) / 8, height, 1, maskBytes) ||
+            pixelBytes > std::numeric_limits<size_t>::max() - maskBytes) {
+            error = "VNC cursor payload size overflows";
+            return false;
+        }
+        payloadBytes = pixelBytes + maskBytes;
+    }
+    std::vector<uint8_t> payload(payloadBytes);
+    if (payloadBytes > 0 &&
+        !readBytes(payload.data(), payload.size(), ioTimeoutMs_, error)) {
+        return false;
+    }
+    VncCursorProtocol::DecodedCursor cursor;
+    if (!VncCursorProtocol::decodePayload(
+            serverPixelFormat_, hotX, hotY, width, height,
+            payloadBytes > 0 ? payload.data() : nullptr, payloadBytes,
+            cursor, error)) {
+        return false;
+    }
+    CursorCallback callback;
+    {
+        std::lock_guard<std::mutex> lock(callbackMutex_);
+        callback = cursorCallback_;
+    }
+    if (callback) {
+        callback(cursor);
     }
     return true;
 }

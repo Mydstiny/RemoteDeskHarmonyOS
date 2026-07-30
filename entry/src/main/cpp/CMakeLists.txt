@@ -74,6 +74,7 @@ set(SSH_SOURCES
 # -- VNC 适配器 --
 set(VNC_SOURCES
     vnc/vnc_adapter.cpp
+    vnc/vnc_cursor_protocol.cpp
     vnc/vnc_des.cpp
     vnc/vnc_rfb_protocol.cpp
     vnc/vnc_transport.cpp
@@ -178,6 +179,7 @@ if(RDP_BUILD_TESTS)
         test/decoder_pipeline_lifecycle_policy_test.cpp
         test/safe_log_test.cpp
         test/vnc_des_test.cpp
+        test/vnc_cursor_protocol_test.cpp
         test/vnc_transport_policy_test.cpp
         common/safe_log.cpp
         input/remote_cursor_snapshot.cpp
@@ -197,6 +199,7 @@ if(RDP_BUILD_TESTS)
         render/video_perf_counters.cpp
         extensions/session_teardown_executor.cpp
         vnc/vnc_des.cpp
+        vnc/vnc_cursor_protocol.cpp
         vnc/vnc_rfb_protocol.cpp
         vnc/vnc_transport.cpp
         vnc/vnc_rfb_engine.cpp

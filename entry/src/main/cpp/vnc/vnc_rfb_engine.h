@@ -5,6 +5,8 @@
 #define VNC_RFB_ENGINE_H
 
 #include "extensions/protocol_adapter.h"
+#include "vnc_cursor_protocol.h"
+#include "vnc_pixel_format.h"
 #include "vnc_transport.h"
 
 #include <atomic>
@@ -19,9 +21,11 @@
 class VncRfbEngine {
 public:
     using StateCallback = std::function<void(ConnectionState, const std::string&)>;
+    using CursorCallback =
+        std::function<void(const VncCursorProtocol::DecodedCursor&)>;
 
     VncRfbEngine(const ConnectionConfig& config, VideoFrameCallback frameCallback,
-                 StateCallback stateCallback);
+                 StateCallback stateCallback, CursorCallback cursorCallback);
     ~VncRfbEngine();
 
     VncRfbEngine(const VncRfbEngine&) = delete;
@@ -40,19 +44,6 @@ public:
     void requestFrameRefresh();
 
 private:
-    struct PixelFormat {
-        uint8_t bitsPerPixel = 32;
-        uint8_t depth = 24;
-        bool bigEndian = false;
-        bool trueColor = true;
-        uint16_t redMax = 255;
-        uint16_t greenMax = 255;
-        uint16_t blueMax = 255;
-        uint8_t redShift = 16;
-        uint8_t greenShift = 8;
-        uint8_t blueShift = 0;
-    };
-
     void run();
     bool handshake(std::string& error);
     bool negotiateVersion(std::string& error);
@@ -66,6 +57,8 @@ private:
     bool receiveFramebufferUpdate(std::string& error);
     bool receiveRawRectangle(int x, int y, int width, int height, std::string& error);
     bool receiveCopyRectangle(int x, int y, int width, int height, std::string& error);
+    bool receiveCursorRectangle(int hotX, int hotY, int width, int height,
+                                std::string& error);
     bool receiveDesktopSize(int width, int height, std::string& error);
     bool receiveServerCutText(std::string& error);
     bool readReason(std::string& reason, std::string& error);
@@ -91,6 +84,7 @@ private:
     ConnectionConfig config_;
     VideoFrameCallback frameCallback_;
     StateCallback stateCallback_;
+    CursorCallback cursorCallback_;
     mutable std::mutex callbackMutex_;
     mutable std::mutex clipboardMutex_;
     std::string clipboardText_;
@@ -99,7 +93,7 @@ private:
     std::atomic<bool> stopRequested_ {false};
     std::thread worker_;
     VncTransport transport_;
-    PixelFormat serverPixelFormat_;
+    VncRfbProtocol::PixelFormat serverPixelFormat_;
     std::vector<uint8_t> framebuffer_;
     int framebufferWidth_ = 0;
     int framebufferHeight_ = 0;

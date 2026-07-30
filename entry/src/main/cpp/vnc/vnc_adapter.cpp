@@ -1,7 +1,8 @@
 /**
  * vnc_adapter.cpp - VNC protocol adapter
  *
- * VNC 协议：默认端口 5900+N (display N)，支持 Tight/ZRLE 编码。
+ * VNC 协议：默认端口 5900+N (display N)，支持 Raw、CopyRect、Cursor
+ * 和 DesktopSize；压缩编码与 ContinuousUpdates 由独立能力门控制。
  */
 
 #include "vnc_adapter.h"
@@ -9,12 +10,19 @@
 #include "extensions/extension_registry.h"
 #include <hilog/log.h>
 #include <algorithm>
+#include <atomic>
 #include <utility>
 
 #undef LOG_DOMAIN
 #undef LOG_TAG
 #define LOG_DOMAIN 0x0008
 #define LOG_TAG "VNC_ADAPTER"
+
+namespace {
+
+std::atomic<uint64_t> g_nextVncCursorGeneration {1};
+
+} // namespace
 
 struct VncAdapter::Impl {
     ConnectionConfig config;
@@ -25,6 +33,8 @@ struct VncAdapter::Impl {
     std::unique_ptr<VncRfbEngine> engine;
     std::mutex mutex;
     uint64_t sessionId = 0;
+    uint64_t cursorGeneration = 0;
+    RemoteCursorStore cursorStore;
 };
 
 VncAdapter::VncAdapter() : impl_(std::make_unique<Impl>()) {
@@ -39,13 +49,37 @@ std::string VncAdapter::protocolName() { return "VNC"; }
 int VncAdapter::defaultPort() { return 5900; }
 std::string VncAdapter::protocolVersion() { return "RFB 3.3/3.7/3.8"; }
 
+void VncAdapter::setSessionIdentity(uint64_t sessionId) {
+    const uint64_t generation =
+        g_nextVncCursorGeneration.fetch_add(1, std::memory_order_relaxed);
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    impl_->sessionId = sessionId;
+    impl_->cursorGeneration = generation;
+    impl_->cursorStore.reset(sessionId, "vnc", generation);
+    impl_->cursorStore.setFallbackShape();
+    impl_->cursorStore.setVisible(true);
+}
+
+RemoteCursorSnapshot VncAdapter::getRemoteCursorSnapshot(bool includePixels) {
+    return impl_->cursorStore.snapshot(includePixels);
+}
+
 int VncAdapter::connect(const ConnectionConfig& cfg) {
     std::lock_guard<std::mutex> lifecycleLock(lifecycleMutex_);
     disconnectLocked();
+    uint64_t cursorGeneration = 0;
     {
         std::lock_guard<std::mutex> lock(impl_->mutex);
         impl_->config = cfg;
         impl_->state = ConnectionState::CONNECTING;
+        if (impl_->cursorGeneration == 0) {
+            impl_->cursorGeneration =
+                g_nextVncCursorGeneration.fetch_add(1, std::memory_order_relaxed);
+            impl_->cursorStore.reset(impl_->sessionId, "vnc", impl_->cursorGeneration);
+            impl_->cursorStore.setFallbackShape();
+        }
+        cursorGeneration = impl_->cursorGeneration;
+        impl_->cursorStore.setVisible(true);
     }
     ConnectionStateCallback connectingCallback;
     {
@@ -70,7 +104,25 @@ int VncAdapter::connect(const ConnectionConfig& cfg) {
         }
         if (callback) callback(state, message);
     };
-    auto engine = std::make_unique<VncRfbEngine>(cfg, std::move(frameCallback), std::move(stateCallback));
+    auto cursorCallback = [this, cursorGeneration](
+        const VncCursorProtocol::DecodedCursor& cursor) {
+        std::lock_guard<std::mutex> lock(impl_->mutex);
+        if (cursorGeneration == 0 || impl_->cursorGeneration != cursorGeneration) {
+            return;
+        }
+        if (!cursor.visible) {
+            impl_->cursorStore.setVisibleIfGeneration(cursorGeneration, false);
+            return;
+        }
+        if (impl_->cursorStore.setShapeIfGeneration(
+                cursorGeneration, cursor.shapeId, cursor.width, cursor.height,
+                cursor.hotX, cursor.hotY, cursor.rgba)) {
+            impl_->cursorStore.setVisibleIfGeneration(cursorGeneration, true);
+        }
+    };
+    auto engine = std::make_unique<VncRfbEngine>(
+        cfg, std::move(frameCallback), std::move(stateCallback),
+        std::move(cursorCallback));
     VncRfbEngine* engineAddress = engine.get();
     {
         std::lock_guard<std::mutex> lock(impl_->mutex);
@@ -105,6 +157,10 @@ void VncAdapter::disconnectLocked() {
         std::lock_guard<std::mutex> lock(impl_->mutex);
         engine = std::move(impl_->engine);
         impl_->state = ConnectionState::DISCONNECTED;
+        if (impl_->cursorGeneration != 0) {
+            impl_->cursorStore.setVisibleIfGeneration(
+                impl_->cursorGeneration, false);
+        }
         callback = impl_->stateCallback;
     }
     if (engine) engine->stop();
@@ -123,11 +179,31 @@ void VncAdapter::sendKey(uint32_t scancode, bool pressed) {
 }
 void VncAdapter::sendMouse(int x, int y, MouseButton button, bool pressed) {
     std::lock_guard<std::mutex> lock(impl_->mutex);
-    if (impl_->engine) impl_->engine->sendMouse(x, y, button, pressed);
+    if (impl_->engine) {
+        impl_->engine->sendMouse(x, y, button, pressed);
+        if (!impl_->config.vncViewOnly &&
+            impl_->engine->state() == ConnectionState::CONNECTED &&
+            impl_->cursorGeneration != 0) {
+            impl_->cursorStore.setPositionIfGeneration(
+                impl_->cursorGeneration, x, y);
+            impl_->cursorStore.setVisibleIfGeneration(
+                impl_->cursorGeneration, true);
+        }
+    }
 }
 void VncAdapter::sendMouseWheel(int x, int y, int delta) {
     std::lock_guard<std::mutex> lock(impl_->mutex);
-    if (impl_->engine) impl_->engine->sendMouseWheel(x, y, delta);
+    if (impl_->engine) {
+        impl_->engine->sendMouseWheel(x, y, delta);
+        if (!impl_->config.vncViewOnly &&
+            impl_->engine->state() == ConnectionState::CONNECTED &&
+            impl_->cursorGeneration != 0) {
+            impl_->cursorStore.setPositionIfGeneration(
+                impl_->cursorGeneration, x, y);
+            impl_->cursorStore.setVisibleIfGeneration(
+                impl_->cursorGeneration, true);
+        }
+    }
 }
 void VncAdapter::sendText(const std::string& text) {
     std::lock_guard<std::mutex> lock(impl_->mutex);

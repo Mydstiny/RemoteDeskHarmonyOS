@@ -4,7 +4,7 @@
  * VNC/RFB 适配器。RFB 引擎、transport 和 raw framebuffer 均属于 VNC
  * namespace，不进入 RDP/RustDesk 的 decoder 或 settings。
  *
- * 当前支持：RFB 3.3/3.7/3.8、None/VNC password、Raw、CopyRect、
+ * 当前支持：RFB 3.3/3.7/3.8、None/VNC password、Raw、CopyRect、Cursor、
  * DesktopSize、UltraVNC pairing、TLS transport、键鼠和文本剪贴板。
  * WebSocket/generic relay code remains contract-gated and is not enabled by
  * the native entry point until a versioned server protocol is deployed.
@@ -29,6 +29,8 @@ public:
     int         connect(const ConnectionConfig& cfg) override;
     void        disconnect() override;
     ConnectionState getState() override;
+    void        setSessionIdentity(uint64_t sessionId) override;
+    RemoteCursorSnapshot getRemoteCursorSnapshot(bool includePixels) override;
     void        sendKey(uint32_t scancode, bool pressed) override;
     void        sendMouse(int x, int y, MouseButton button, bool pressed) override;
     void        sendMouseWheel(int x, int y, int delta) override;
