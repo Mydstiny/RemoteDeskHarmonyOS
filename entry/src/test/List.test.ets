@@ -101,6 +101,7 @@ import rustDeskConnectionContextPolicyTest from './RustDeskConnectionContextPoli
 import rustDeskConnectionStrategyPolicyTest from './RustDeskConnectionStrategyPolicy.test';
 import rustDeskControlPlaneCapabilityPolicyTest from './RustDeskControlPlaneCapabilityPolicy.test';
 import rustDeskRelayPersistencePolicyTest from './RustDeskRelayPersistencePolicy.test';
+import rustDeskDisplaySwitchPolicyTest from './RustDeskDisplaySwitchPolicy.test';
 
 export default function testsuite() {
   localUnitTest();
@@ -206,4 +207,5 @@ export default function testsuite() {
   rustDeskConnectionStrategyPolicyTest();
   rustDeskControlPlaneCapabilityPolicyTest();
   rustDeskRelayPersistencePolicyTest();
+  rustDeskDisplaySwitchPolicyTest();
 }

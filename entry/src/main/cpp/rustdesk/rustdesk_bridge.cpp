@@ -13,6 +13,7 @@
  */
 
 #include "rustdesk_bridge.h"
+#include "rustdesk_display_switch_gate.h"
 #include "rustdesk_ipc.h"
 #include "common/safe_log.h"
 #include "extensions/extension_registry.h"
@@ -486,6 +487,7 @@ struct RustDeskBridge::Impl {
     AudioDataCallback       audioCallback;
     ConnectionStateCallback stateCallback;
     RustDeskDisplayStateCallback displayStateCallback;
+    RustDeskDisplaySwitchGate displaySwitchGate;
     std::mutex              mutex;
     std::atomic<uint64_t>   connectSerial {0};
     std::atomic<bool>       disconnectRequested {false};
@@ -669,6 +671,25 @@ void RustDeskBridge::onFfiFrame(const void* framePtr, void* userData) {
             ffiFrame->abiVersion,
             ffiFrame->structSize);
         return;
+    }
+
+    RustDeskDisplaySwitchGateDecision displayDecision;
+    RustDeskDisplayStateCallback displayCallback;
+    {
+        std::lock_guard<std::mutex> lock(impl->mutex);
+        displayDecision = impl->displaySwitchGate.observeFrame(
+            ffiFrame->display, ffiFrame->isKeyFrame);
+        if (displayDecision.publishDisplay) {
+            displayCallback = impl->displayStateCallback;
+        }
+    }
+    if (!displayDecision.acceptFrame) {
+        return;
+    }
+    if (displayCallback) {
+        // Publish the selected display before forwarding its keyframe so the
+        // decoder accepts the same frame that releases the input barrier.
+        displayCallback(displayDecision.display);
     }
 
     uint64_t index = ++g_ffiVideoFrameCount;
@@ -906,13 +927,17 @@ void RustDeskBridge::onFfiDisplay(const void* snapshotPtr, void* userData) {
         return;
     }
 
+    RustDeskDisplaySwitchGateDecision decision;
     RustDeskDisplayStateCallback callback;
     {
         std::lock_guard<std::mutex> lock(impl->mutex);
-        callback = impl->displayStateCallback;
+        decision = impl->displaySwitchGate.observeDisplay(snapshot->currentDisplay);
+        if (decision.publishDisplay) {
+            callback = impl->displayStateCallback;
+        }
     }
     if (callback) {
-        callback(snapshot->currentDisplay);
+        callback(decision.display);
     }
 }
 
@@ -961,6 +986,7 @@ void RustDeskBridge::onFfiDisconnect(int state, const char* message, void* userD
             stale = true;
         } else {
             impl->ffiStreamEnded.store(true, std::memory_order_release);
+            impl->displaySwitchGate.reset();
             wasConnected = impl->state == ConnectionState::CONNECTED;
             requested = impl->disconnectRequested.load(std::memory_order_acquire);
             // disconnect() already applies the visibility transition for the
@@ -1052,6 +1078,7 @@ void RustDeskBridge::setSessionIdentity(uint64_t sessionId) {
     impl_->callbackWidth.store(0, std::memory_order_release);
     impl_->callbackHeight.store(0, std::memory_order_release);
     impl_->lastFrameAtMs.store(0, std::memory_order_release);
+    impl_->displaySwitchGate.reset();
     impl_->cursorStore.reset(sessionId, "rustdesk", generation);
     // RustDesk does not guarantee that an unchanged cursor shape is repeated
     // after every UI/surface handoff. This local bootstrap shape is explicitly
@@ -1199,27 +1226,47 @@ RustDeskDisplayCapabilities RustDeskBridge::getDisplayCapabilities() const {
         display.resolutions = result.resolutions;
         result.displays.push_back(std::move(display));
     }
+    {
+        std::lock_guard<std::mutex> lock(impl_->mutex);
+        const RustDeskDisplaySwitchGateSnapshot gate = impl_->displaySwitchGate.snapshot();
+        result.switchGeneration = gate.generation;
+        result.readySwitchGeneration = gate.readyGeneration;
+        result.pendingDisplay = gate.pendingDisplay;
+        result.inputBlocked = gate.inputBlocked;
+    }
+#endif
+    return result;
+}
+
+RustDeskDisplaySwitchRequest RustDeskBridge::beginDisplaySwitch(int display) {
+    RustDeskDisplaySwitchRequest result;
+#ifdef RUSTDESK_USE_REAL_CORE
+    void* handle = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(impl_->mutex);
+        if (mode_ != RustDeskMode::FFI || impl_->ffiHandle == nullptr ||
+            display < 0 || display >= 16) {
+            return result;
+        }
+        handle = impl_->ffiHandle;
+        result.generation = impl_->displaySwitchGate.begin(display);
+    }
+    // Rust owns this as one latest-wins ControlInbox transaction. Keeping the
+    // official switch/capture/refresh sequence behind one FFI call prevents
+    // rapid selections from interleaving partial triples.
+    result.accepted = rustdesk_switch_display(handle, display);
+    if (!result.accepted) {
+        std::lock_guard<std::mutex> lock(impl_->mutex);
+        impl_->displaySwitchGate.reject(result.generation);
+    }
+#else
+    (void)display;
 #endif
     return result;
 }
 
 bool RustDeskBridge::switchDisplay(int display) {
-#ifdef RUSTDESK_USE_REAL_CORE
-    void* handle = nullptr;
-    {
-        std::lock_guard<std::mutex> lock(impl_->mutex);
-        handle = impl_->ffiHandle;
-    }
-    if (mode_ == RustDeskMode::FFI && handle != nullptr) {
-        // Rust owns this as one latest-wins ControlInbox transaction. Keeping
-        // the official switch/capture/refresh sequence behind one FFI call
-        // prevents rapid selections from interleaving partial triples.
-        return rustdesk_switch_display(handle, display);
-    }
-#else
-    (void)display;
-#endif
-    return false;
+    return beginDisplaySwitch(display).accepted;
 }
 
 bool RustDeskBridge::captureDisplays(const std::vector<int>& displays) {
@@ -1732,6 +1779,7 @@ void RustDeskBridge::disconnect() {
     {
         std::lock_guard<std::mutex> lock(impl_->mutex);
         impl_->cursorStore.setVisibleIfGeneration(disconnectGeneration, false);
+        impl_->displaySwitchGate.reset();
     }
     ++impl_->connectSerial;
     if (impl_->ipcFd >= 0) {

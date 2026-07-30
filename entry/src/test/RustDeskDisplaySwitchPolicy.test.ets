@@ -1,0 +1,75 @@
+import { describe, it, expect } from '@ohos/hypium';
+import {
+  beginRustDeskDisplaySwitchState,
+  idleRustDeskDisplaySwitchState,
+  observeRustDeskDisplaySwitch
+} from '../main/ets/services/RustDeskDisplaySwitchPolicy';
+
+export default function rustDeskDisplaySwitchPolicyTest(): void {
+  describe('RustDeskDisplaySwitchPolicy', (): void => {
+    it('waits_for_the_exact_target_generation_and_keyframe_gate', 0, (): void => {
+      const pending = beginRustDeskDisplaySwitchState(true, 4, 2, 1000);
+      expect(pending.inputBlocked).assertTrue();
+
+      const stale = observeRustDeskDisplaySwitch(pending, {
+        currentDisplay: 2,
+        readySwitchGeneration: 3,
+        pendingDisplay: -1,
+        inputBlocked: false
+      }, 1100, 5000);
+      expect(stale.adoptCapabilities).assertFalse();
+      expect(stale.state.inputBlocked).assertTrue();
+
+      const ready = observeRustDeskDisplaySwitch(stale.state, {
+        currentDisplay: 2,
+        readySwitchGeneration: 4,
+        pendingDisplay: -1,
+        inputBlocked: false
+      }, 1200, 5000);
+      expect(ready.adoptCapabilities).assertTrue();
+      expect(ready.state.inputBlocked).assertFalse();
+    });
+
+    it('keeps_only_the_latest_rapid_selection', 0, (): void => {
+      const first = beginRustDeskDisplaySwitchState(true, 7, 1, 1000);
+      const latest = beginRustDeskDisplaySwitchState(true, 8, 3, 1050);
+      const oldReady = observeRustDeskDisplaySwitch(latest, {
+        currentDisplay: first.pendingDisplay,
+        readySwitchGeneration: first.generation,
+        pendingDisplay: -1,
+        inputBlocked: false
+      }, 1100, 5000);
+      expect(oldReady.adoptCapabilities).assertFalse();
+      expect(oldReady.state.generation).assertEqual(8);
+      expect(oldReady.state.pendingDisplay).assertEqual(3);
+    });
+
+    it('reports_timeout_once_without_unblocking_input', 0, (): void => {
+      const pending = beginRustDeskDisplaySwitchState(true, 2, 1, 1000);
+      const timeout = observeRustDeskDisplaySwitch(pending, {
+        currentDisplay: 0,
+        readySwitchGeneration: 0,
+        pendingDisplay: 1,
+        inputBlocked: true
+      }, 7000, 5000);
+      expect(timeout.notifyTimeout).assertTrue();
+      expect(timeout.state.inputBlocked).assertTrue();
+
+      const repeated = observeRustDeskDisplaySwitch(timeout.state, {
+        currentDisplay: 0,
+        readySwitchGeneration: 0,
+        pendingDisplay: 1,
+        inputBlocked: true
+      }, 8000, 5000);
+      expect(repeated.notifyTimeout).assertFalse();
+      expect(repeated.state.inputBlocked).assertTrue();
+    });
+
+    it('stays_idle_when_native_rejects_the_request', 0, (): void => {
+      const rejected = beginRustDeskDisplaySwitchState(false, 0, 2, 1000);
+      expect(rejected.inputBlocked).assertFalse();
+      expect(rejected.pendingDisplay).assertEqual(
+        idleRustDeskDisplaySwitchState().pendingDisplay);
+    });
+  });
+}

@@ -17,6 +17,7 @@ import {
   RdpRenderStats,
   RendererViewport,
   RustDeskDisplayCapabilities,
+  RustDeskDisplaySwitchRequest,
   RustDeskDiagnosticsSnapshot,
   LocalResourceStats,
   RemoteCursorSnapshot,
@@ -481,6 +482,10 @@ export class ExtensionLoader {
       return {
         supported: false,
         currentDisplay: 0,
+        switchGeneration: 0,
+        readySwitchGeneration: 0,
+        pendingDisplay: -1,
+        inputBlocked: false,
         width: 0,
         height: 0,
         originalWidth: 0,
@@ -490,6 +495,16 @@ export class ExtensionLoader {
         resolutions: [],
         displays: []
       };
+    }
+  }
+
+  beginRustDeskDisplaySwitch(sessionId: number, display: number): RustDeskDisplaySwitchRequest {
+    try {
+      return rdpnapi.beginRustDeskDisplaySwitch(sessionId, display) as RustDeskDisplaySwitchRequest;
+    } catch (err) {
+      hilog.warn(DOMAIN, TAG,
+        '[ExtensionLoader] beginRustDeskDisplaySwitch unavailable: ' + JSON.stringify(err));
+      return { accepted: false, generation: 0 };
     }
   }
 

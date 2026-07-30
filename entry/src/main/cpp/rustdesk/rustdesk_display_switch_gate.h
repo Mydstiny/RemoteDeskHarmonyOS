@@ -1,0 +1,122 @@
+#ifndef RUSTDESK_DISPLAY_SWITCH_GATE_H
+#define RUSTDESK_DISPLAY_SWITCH_GATE_H
+
+#include <cstdint>
+
+struct RustDeskDisplaySwitchGateSnapshot {
+    uint64_t generation = 0;
+    uint64_t readyGeneration = 0;
+    int pendingDisplay = -1;
+    int confirmedDisplay = -1;
+    bool inputBlocked = false;
+};
+
+struct RustDeskDisplaySwitchGateDecision {
+    bool acceptFrame = false;
+    bool publishDisplay = false;
+    int display = -1;
+};
+
+/**
+ * Serializes a local single-canvas display selection against asynchronous
+ * display snapshots and interleaved video frames.
+ *
+ * The owner must provide external synchronization. A pending selection is
+ * committed only after the latest target has both acknowledged its display
+ * snapshot and produced a keyframe. Frames from stale generations never
+ * become active or release the input barrier.
+ */
+class RustDeskDisplaySwitchGate {
+public:
+    void reset() {
+        generation_ = 0;
+        readyGeneration_ = 0;
+        pendingDisplay_ = -1;
+        confirmedDisplay_ = -1;
+        acknowledgementSeen_ = false;
+        hasLocalSelection_ = false;
+    }
+
+    uint64_t begin(int display) {
+        generation_ = generation_ == UINT64_MAX ? 1 : generation_ + 1;
+        pendingDisplay_ = display;
+        acknowledgementSeen_ = false;
+        hasLocalSelection_ = true;
+        return generation_;
+    }
+
+    void reject(uint64_t generation) {
+        if (generation != generation_ || pendingDisplay_ < 0) {
+            return;
+        }
+        pendingDisplay_ = -1;
+        acknowledgementSeen_ = false;
+    }
+
+    RustDeskDisplaySwitchGateDecision observeDisplay(int display) {
+        RustDeskDisplaySwitchGateDecision decision;
+        if (display < 0) {
+            return decision;
+        }
+        if (pendingDisplay_ >= 0) {
+            if (display == pendingDisplay_) {
+                acknowledgementSeen_ = true;
+            }
+            return decision;
+        }
+        if (hasLocalSelection_ && confirmedDisplay_ >= 0 && display != confirmedDisplay_) {
+            return decision;
+        }
+        confirmedDisplay_ = display;
+        decision.publishDisplay = true;
+        decision.display = display;
+        return decision;
+    }
+
+    RustDeskDisplaySwitchGateDecision observeFrame(int display, bool keyFrame) {
+        RustDeskDisplaySwitchGateDecision decision;
+        if (display < 0) {
+            return decision;
+        }
+        if (pendingDisplay_ >= 0) {
+            if (display != pendingDisplay_ || !acknowledgementSeen_ || !keyFrame) {
+                return decision;
+            }
+            confirmedDisplay_ = pendingDisplay_;
+            pendingDisplay_ = -1;
+            acknowledgementSeen_ = false;
+            readyGeneration_ = generation_;
+            decision.acceptFrame = true;
+            decision.publishDisplay = true;
+            decision.display = confirmedDisplay_;
+            return decision;
+        }
+        if (confirmedDisplay_ < 0) {
+            confirmedDisplay_ = display;
+            decision.publishDisplay = true;
+            decision.display = display;
+        }
+        decision.acceptFrame = display == confirmedDisplay_;
+        return decision;
+    }
+
+    RustDeskDisplaySwitchGateSnapshot snapshot() const {
+        RustDeskDisplaySwitchGateSnapshot result;
+        result.generation = generation_;
+        result.readyGeneration = readyGeneration_;
+        result.pendingDisplay = pendingDisplay_;
+        result.confirmedDisplay = confirmedDisplay_;
+        result.inputBlocked = pendingDisplay_ >= 0;
+        return result;
+    }
+
+private:
+    uint64_t generation_ = 0;
+    uint64_t readyGeneration_ = 0;
+    int pendingDisplay_ = -1;
+    int confirmedDisplay_ = -1;
+    bool acknowledgementSeen_ = false;
+    bool hasLocalSelection_ = false;
+};
+
+#endif // RUSTDESK_DISPLAY_SWITCH_GATE_H

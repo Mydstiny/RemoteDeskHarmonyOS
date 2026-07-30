@@ -165,6 +165,7 @@ if(RDP_BUILD_TESTS)
         test/video_backpressure_test.cpp
         test/software_decode_latency_policy_test.cpp
         test/remote_cursor_snapshot_test.cpp
+        test/rustdesk_display_switch_gate_test.cpp
         test/video_perf_counters_test.cpp
         test/video_activity_state_test.cpp
         test/rdp_audio_policy_test.cpp

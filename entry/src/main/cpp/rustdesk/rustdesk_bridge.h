@@ -70,6 +70,10 @@ struct RustDeskDisplayInfo {
 struct RustDeskDisplayCapabilities {
     bool supported = false;
     int currentDisplay = 0;
+    uint64_t switchGeneration = 0;
+    uint64_t readySwitchGeneration = 0;
+    int pendingDisplay = -1;
+    bool inputBlocked = false;
     int width = 0;
     int height = 0;
     int originalWidth = 0;
@@ -78,6 +82,11 @@ struct RustDeskDisplayCapabilities {
     uint32_t geometryEpoch = 0;
     std::vector<RustDeskDisplayResolution> resolutions;
     std::vector<RustDeskDisplayInfo> displays;
+};
+
+struct RustDeskDisplaySwitchRequest {
+    bool accepted = false;
+    uint64_t generation = 0;
 };
 
 using RustDeskDisplayStateCallback = std::function<void(int display)>;
@@ -150,6 +159,7 @@ public:
     void sendText(const std::string& text) override;
     void setDisplayStateCallback(RustDeskDisplayStateCallback callback);
     RustDeskDisplayCapabilities getDisplayCapabilities() const;
+    RustDeskDisplaySwitchRequest beginDisplaySwitch(int display);
     bool switchDisplay(int display);
     bool captureDisplays(const std::vector<int>& displays);
     bool refreshVideoDisplay(int display);

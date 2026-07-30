@@ -258,6 +258,12 @@ import {
   canUseRustDeskAdaptiveOrientation,
   rustDeskOrientationPolicy
 } from '../services/RemoteOrientationPolicy';
+import {
+  RustDeskDisplaySwitchState,
+  beginRustDeskDisplaySwitchState,
+  idleRustDeskDisplaySwitchState,
+  observeRustDeskDisplaySwitch
+} from '../services/RustDeskDisplaySwitchPolicy';
 import { createTransferSnapshot, TransferProtocol, TransferState } from '../services/FileTransferProgressModel';
 import { isRemoteCompletionConfirmed } from '../services/TransferSessionPolicy';
 import {
@@ -309,6 +315,7 @@ import {
   RustDeskDisplayCapabilities,
   RustDeskDisplayInfo,
   RustDeskDisplayResolution,
+  RustDeskDisplaySwitchRequest,
   RustDeskDiagnosticsSnapshot,
   SessionConfig,
   SessionTransferStatus
@@ -533,6 +540,10 @@ const EMPTY_RUSTDESK_DIAGNOSTICS: RustDeskDiagnosticsSnapshot = {
 const EMPTY_RUSTDESK_DISPLAY_CAPABILITIES: RustDeskDisplayCapabilities = {
   supported: false,
   currentDisplay: 0,
+  switchGeneration: 0,
+  readySwitchGeneration: 0,
+  pendingDisplay: -1,
+  inputBlocked: false,
   width: 0,
   height: 0,
   originalWidth: 0,
@@ -542,6 +553,7 @@ const EMPTY_RUSTDESK_DISPLAY_CAPABILITIES: RustDeskDisplayCapabilities = {
   resolutions: [],
   displays: []
 };
+const RUSTDESK_DISPLAY_SWITCH_TIMEOUT_MS: number = 5000;
 
 const EMPTY_LOCAL_RESOURCE_STATS: LocalResourceStats = {
   supported: false, cpuAvailable: false, cpuPercent: -1, memoryBytes: 0,
@@ -978,8 +990,8 @@ struct RemoteDesktop {
   private remoteCursorPollTimer: number = -1;
   private rustDeskGeometrySyncTimer: number = -1;
   private vncGeometrySyncTimer: number = -1;
-  private rustDeskDisplaySwitchPending: number = -1;
-  private rustDeskDisplaySwitchStartedAtMs: number = 0;
+  private rustDeskDisplaySwitchState: RustDeskDisplaySwitchState =
+    idleRustDeskDisplaySwitchState();
   private lastBrowseModeBlockedToastMs: number = 0;
   private lastVncViewOnlyBlockedToastMs: number = 0;
 
@@ -2434,33 +2446,26 @@ struct RemoteDesktop {
     if (!this.isRustDeskSession() || this.sessionId <= 0 || !display.online) {
       return;
     }
-    if (display.display === this.rustDeskDisplayCapabilities.currentDisplay) {
+    if (!this.rustDeskDisplaySwitchState.inputBlocked &&
+      display.display === this.rustDeskDisplayCapabilities.currentDisplay) {
+      return;
+    }
+    if (this.rustDeskDisplaySwitchState.inputBlocked &&
+      display.display === this.rustDeskDisplaySwitchState.pendingDisplay) {
       return;
     }
     this.resetRustDeskInputAfterGeometryChange('rustdesk-display-switch');
-    if (!this.loader.switchRustDeskDisplay(this.sessionId, display.display)) {
+    const request: RustDeskDisplaySwitchRequest =
+      this.loader.beginRustDeskDisplaySwitch(this.sessionId, display.display);
+    this.rustDeskDisplaySwitchState = beginRustDeskDisplaySwitchState(
+      request.accepted, request.generation, display.display, Date.now());
+    if (!request.accepted) {
       promptAction.showToast({ message: '远端显示器切换请求未被接受', duration: 1800 });
       return;
     }
 
-    const capabilities: RustDeskDisplayCapabilities = this.rustDeskDisplayCapabilities;
-    this.rustDeskDisplaySwitchPending = display.display;
-    this.rustDeskDisplaySwitchStartedAtMs = Date.now();
-    this.rustDeskDisplayCapabilities = {
-      supported: capabilities.supported,
-      currentDisplay: display.display,
-      width: display.width,
-      height: display.height,
-      originalWidth: display.originalWidth,
-      originalHeight: display.originalHeight,
-      scaleMilli: display.scaleMilli,
-      geometryEpoch: capabilities.geometryEpoch,
-      resolutions: display.resolutions,
-      displays: capabilities.displays
-    };
-    this.applyRustDeskDisplayGeometry(display);
     promptAction.showToast({
-      message: '已切换到 ' + this.rustDeskDisplayLabel(display),
+      message: '正在切换到 ' + this.rustDeskDisplayLabel(display),
       duration: 1400
     });
   }
@@ -2474,15 +2479,25 @@ struct RemoteDesktop {
     if (!capabilities.supported || capabilities.displays.length === 0) {
       return;
     }
-    if (this.rustDeskDisplaySwitchPending >= 0 &&
-      capabilities.currentDisplay !== this.rustDeskDisplaySwitchPending) {
-      if (Date.now() - this.rustDeskDisplaySwitchStartedAtMs < 5000) {
-        return;
-      }
-      this.rustDeskDisplaySwitchPending = -1;
+    const observation = observeRustDeskDisplaySwitch(
+      this.rustDeskDisplaySwitchState,
+      {
+        currentDisplay: capabilities.currentDisplay,
+        readySwitchGeneration: capabilities.readySwitchGeneration,
+        pendingDisplay: capabilities.pendingDisplay,
+        inputBlocked: capabilities.inputBlocked
+      },
+      Date.now(),
+      RUSTDESK_DISPLAY_SWITCH_TIMEOUT_MS);
+    this.rustDeskDisplaySwitchState = observation.state;
+    if (observation.notifyTimeout) {
+      promptAction.showToast({
+        message: '远端显示器仍在切换，输入保持暂停，可重新选择显示器',
+        duration: 2200
+      });
     }
-    if (capabilities.currentDisplay === this.rustDeskDisplaySwitchPending) {
-      this.rustDeskDisplaySwitchPending = -1;
+    if (!observation.adoptCapabilities) {
+      return;
     }
     const previous: RustDeskDisplayCapabilities = this.rustDeskDisplayCapabilities;
     const epochChanged: boolean = this.rustDeskGeometryEpoch > 0 && capabilities.geometryEpoch > 0 &&
@@ -2499,6 +2514,12 @@ struct RemoteDesktop {
       const current = this.rustDeskDisplayById(capabilities.currentDisplay, capabilities.displays);
       if (current !== null) {
         this.applyRustDeskDisplayGeometry(current);
+        if (previous.currentDisplay !== capabilities.currentDisplay) {
+          promptAction.showToast({
+            message: '已切换到 ' + this.rustDeskDisplayLabel(current),
+            duration: 1400
+          });
+        }
       }
     }
   }
@@ -5836,9 +5857,11 @@ struct RemoteDesktop {
       hilog.info(RD_DOMAIN, RD_TAG, 'dropInput ' + source + ' browseMode=1 protocol=' + protocol);
       return false;
     }
-    if (this.isRustDeskSession() && this.rustDeskDisplaySwitchPending >= 0) {
+    if (this.isRustDeskSession() && this.rustDeskDisplaySwitchState.inputBlocked) {
       hilog.info(RD_DOMAIN, RD_TAG, 'dropInput ' + source +
-        ' rustDeskDisplaySwitchPending=' + this.rustDeskDisplaySwitchPending.toString());
+        ' rustDeskDisplaySwitchPending=' +
+        this.rustDeskDisplaySwitchState.pendingDisplay.toString() +
+        ' generation=' + this.rustDeskDisplaySwitchState.generation.toString());
       return false;
     }
     if (this.isVncSession() && !this.vncGeometryReady) {
@@ -7269,8 +7292,7 @@ struct RemoteDesktop {
       this.rendererSourceWidth = 0;
       this.rendererSourceHeight = 0;
       this.vncGeometryReady = !isVnc;
-      this.rustDeskDisplaySwitchPending = -1;
-      this.rustDeskDisplaySwitchStartedAtMs = 0;
+      this.rustDeskDisplaySwitchState = idleRustDeskDisplaySwitchState();
       this.invalidateRendererViewportCache();
       const rdpAuthMode: RdpAuthMode = normalizeRdpAuthMode(host.rdpAuthMode);
       const rdpRestrictedAdminSecretSource: RdpRestrictedAdminSecretSource =
@@ -7724,8 +7746,7 @@ struct RemoteDesktop {
       if (this.sessionId > 0) {
         this.loader.disconnect();
         this.sessionId = -1;
-        this.rustDeskDisplaySwitchPending = -1;
-        this.rustDeskDisplaySwitchStartedAtMs = 0;
+        this.rustDeskDisplaySwitchState = idleRustDeskDisplaySwitchState();
       }
       this.showRustDeskTwoFactorSheet = false;
       this.rustDeskTwoFactorSessionId = -1;
@@ -8042,8 +8063,7 @@ struct RemoteDesktop {
           disconnectRequestId.toString() + ' elapsedMs=' +
           (Date.now() - nativeDisconnectStartedAtMs).toString());
         this.sessionId = -1;
-        this.rustDeskDisplaySwitchPending = -1;
-        this.rustDeskDisplaySwitchStartedAtMs = 0;
+        this.rustDeskDisplaySwitchState = idleRustDeskDisplaySwitchState();
         this.rendererHandle = -1;
         this.decoderHandle = -1;
         this.pipRendererHandle = -1;
