@@ -173,9 +173,10 @@ export function rustDeskProNativeErrorMessage(kind: RustDeskProNativeErrorKind,
 
 /** Only an explicit, verified official control-plane error may invalidate a token. */
 export function canInvalidateRustDeskProSession(message: string,
-  profile: string): boolean {
+  profile: string, tokenProjected: boolean): boolean {
   const parsed: RustDeskNativeErrorInfo = parseRustDeskNativeError(message);
-  return profile === 'official_server_pro_token' && parsed.structured &&
+  return tokenProjected &&
+    profile === 'official_server_pro_token' && parsed.structured &&
     parsed.stage === 'control_plane' && parsed.code === 'pro_session_expired';
 }
 

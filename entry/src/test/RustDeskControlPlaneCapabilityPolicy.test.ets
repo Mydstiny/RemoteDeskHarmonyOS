@@ -1,6 +1,7 @@
 import { describe, expect, it } from '@ohos/hypium';
 import {
   issueRustDeskControlPlaneCapabilityProof,
+  rustDeskControlPlaneBindingIdentity,
   rustDeskControlPlaneCapabilityProofMatches,
   rustDeskControlPlaneCapabilitySourceForProof,
   RustDeskControlPlaneCapabilityAttestation,
@@ -74,15 +75,24 @@ export default function rustDeskControlPlaneCapabilityPolicyTest():
       0, (): void => {
         const source: RustDeskControlPlaneCapabilityBinding =
           binding();
-        expect(source.accountApiServer.indexOf('api.') >= 0)
+        const identity = rustDeskControlPlaneBindingIdentity(source);
+        expect(identity.ok).assertTrue();
+        expect(identity.apiOriginFingerprint.length > 0).assertTrue();
+        expect(identity.rendezvousEndpointFingerprint.length > 0)
           .assertTrue();
-        expect(source.idServer.indexOf('id.') >= 0)
+        expect(identity.relayEndpointFingerprint.length > 0)
           .assertTrue();
-        expect(source.relayServer.indexOf('relay.') >= 0)
-          .assertTrue();
-        const result = issueRustDeskControlPlaneCapabilityProof(
-          source, locallyClaimedAttestation());
-        expect(result.code).assertEqual('untrusted_attestation');
+        expect(identity.apiOriginFingerprint ===
+          identity.rendezvousEndpointFingerprint).assertFalse();
+        expect(identity.rendezvousEndpointFingerprint ===
+          identity.relayEndpointFingerprint).assertFalse();
+        source.configuredApiServer = 'https://other-api.example.test';
+        expect(rustDeskControlPlaneBindingIdentity(source).code)
+          .assertEqual('identity_invalid');
+        source.configuredApiServer = source.accountApiServer;
+        source.idServerPort = 0;
+        expect(rustDeskControlPlaneBindingIdentity(source).code)
+          .assertEqual('endpoint_invalid');
       });
 
     it('rejects_fabricated_schema_v2_and_legacy_local_proofs',

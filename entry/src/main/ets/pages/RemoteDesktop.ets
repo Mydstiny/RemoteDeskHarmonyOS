@@ -7736,10 +7736,17 @@ struct RemoteDesktop {
       }
       this.connectionErrorDetail = rustDeskNativeErrorDetail(rawConnectionDetail);
       if (host.protocol === 'rustdesk' && rustDeskErrorKind !== 'unknown') {
-        const controlPlaneProfile: RustDeskControlPlaneProfile = rustDeskRelay === undefined
-          ? RUSTDESK_CONTROL_PLANE_DEFAULT : rustDeskRelay.controlPlaneProfile;
+        const controlPlaneProfile: RustDeskControlPlaneProfile =
+          rustDeskConnection === null
+            ? RUSTDESK_CONTROL_PLANE_DEFAULT
+            : rustDeskConnection.profile;
+        const tokenProjected: boolean =
+          rustDeskConnection !== null &&
+          rustDeskConnection.accessToken !== '';
         if (rustDeskErrorKind === 'pro_session_expired' &&
-          canInvalidateRustDeskProSession(rawConnectionDetail, controlPlaneProfile)) {
+          canInvalidateRustDeskProSession(
+            rawConnectionDetail, controlPlaneProfile,
+            tokenProjected)) {
           this.proSync.markConnectionSessionExpired(rdAccountId, 'connection_token_expired',
             rdAccessTokenFingerprint, rdAccessTokenGeneration,
             connectionScope.ownerScopeId, connectionScope.generation);

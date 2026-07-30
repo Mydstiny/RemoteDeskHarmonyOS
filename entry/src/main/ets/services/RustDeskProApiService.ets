@@ -77,7 +77,15 @@ export class RustDeskProApiService {
         endpointId + ' token=' +
         (account.accessToken.length > 0
           ? 'present' : 'absent'));
-      const response = await client.request(url, options);
+      let response: http.HttpResponse;
+      try {
+        response = await client.request(url, options);
+      } catch (_err) {
+        throw new RustDeskProApiError(
+          'network_error',
+          'Pro API 网络请求失败（请求 ' + routeId +
+          '，端点编号 ' + endpointId + '）');
+      }
       const rawResult: Object = response.result as Object;
       let responseBytes: number = 0;
       if (typeof rawResult === 'string') {

@@ -2498,10 +2498,11 @@ blocked_by_server_contract
 | `6ce3dfe62` | FORCE_RELAY/DIRECT_IP 策略、fail-closed AUTO、结构化 native/Rust 诊断 |
 | `fcc2cbb38` | `1.0.10/1000010`、NAPI API 21、非敏感 build identity、发布说明和 SBOM |
 | `bf7a0448f` | 记录首轮本地门禁、真机只读状态和发布 NO-GO 边界 |
-| `6e4735703` | 把 relay token 能力绑定到真实 Server Pro 登录/同步产生的身份与 endpoint 证明 |
+| `6e4735703` | 首次把 relay token 绑定到本地身份/endpoint proof；其自授信任模型已由 `3607d97` 取代 |
 | `33d9e20f1` | 生产 RDB 事务、控制面 profile、mutation journal 和稳定 ID 回读原子化 |
 | `439d45aca` | 主机添加草稿跨 server setup 一次性安全交接、自动返回和选择新中继 |
 | `afe25a38a` | ArkTS、Rust、C++ 网络/路径/账号/设备诊断统一改为不可逆短指纹 |
+| `3607d97` | trusted issuer registry、无证明 API-only fallback、独立 API/ID/Relay 绑定和 HTTP 诊断闭环 |
 
 各提交只暂存本任务文件。SSH、Moonlight、RDP 和 2-in-1 RustDesk 受控端计划文件保持为
 用户工作树内容，没有进入上述提交。
@@ -2569,7 +2570,7 @@ blocked_by_server_contract
 | NAT test / TCP hole punch | `blocked_by_server_contract` | 当前没有足够 wire/设备证据，未伪造 NAT 类型或 P2P 成功 |
 | P2P 失败自动 relay | `blocked_by_server_contract` | 依赖真实 NAT/candidate/取消代次状态机，保持 NO-GO |
 | IPv6 / UDP blocked / network change | `blocked_by_platform` | 保留到 Release 2 的真实网络矩阵 |
-| 官方 Server Pro token | `partially_aligned` | 本地投影/失效边界已修；真实 ordinary/admin A/B 尚未执行 |
+| 官方 Server Pro token | `unsupported_fail_closed` | trusted issuer registry 当前为空；真实 adapter/issuer 协议与 ordinary/admin A/B 验收前不投影 |
 | 第三方控制面 | `blocked_by_server_contract` | 只有能力经过证明的 profile 才可启用，不猜测换票接口 |
 | OSS key-only/shared `-k` | `partially_aligned` | wire fixture/单元测试通过；真实 OSS 服务端尚未执行 |
 
@@ -2605,7 +2606,12 @@ findings 已在 `33d9e20f1`、`439d45aca` 整改。二次复核确认这些 P1 �
 capability 仍可由 profile + 通用 HTTP 流程自授、端点同主机限制和三处诊断泄漏，结论
 为 NOT PASS。本轮已改为无可信 issuer 即 API-only、三个端点独立绑定、静态 route 日志、
 服务端正文不进入日志/UI，并修复 HostList 原始 host ID；仍需同一 reviewer 复核本轮
-整改。无论本地复核结果如何，当前发布仍为 **NO-GO**。以下真实证据开放：
+整改。第三轮确认上述 1 P0 + 2 P1 已关闭，同时指出 effective API-only 尚未传播到
+连接错误撤销路径：无 token 的结构化 expiry 仍可能按持久化 official profile 清除 HTTP
+会话；本轮继续把 effective profile 与 `tokenProjected` 绑定到 HostList/RemoteDesktop
+错误处理，只有本次实际投影可信 token 才允许代次匹配撤销；同时用纯结构测试证明
+API/ID/Relay 可分别位于不同主机，且 API-only 即便收到结构化 expiry 也不撤销 HTTP
+会话。无论本地复核结果如何，当前发布仍为 **NO-GO**。以下真实证据开放：
 
 1. 官方 Server Pro ordinary/admin、own/shared/denied device 与明确 HTTP 401/撤销；
 2. 超享/第三方 API-only 与经过证明的 control-plane token A/B；

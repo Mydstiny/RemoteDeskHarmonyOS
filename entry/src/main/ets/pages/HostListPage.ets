@@ -3778,13 +3778,13 @@ struct HostListPage {
     const host: RemoteHost = RemoteHost.fromJSON(stored.toJSON());
     const relay: RustDeskRelayConfig | undefined = this.srv.getAllRelays()
       .find((item: RustDeskRelayConfig): boolean => item.id === host.rustdeskRelayId);
-    const controlPlaneProfile: RustDeskControlPlaneProfile = relay === undefined
-      ? RUSTDESK_CONTROL_PLANE_DEFAULT : relay.controlPlaneProfile;
-    const connectionAccount: RustDeskProAccountState | undefined = this.rustDeskProAccountForHost(host);
-    const expectedTokenFingerprint: string = connectionAccount === undefined
-      ? '' : connectionAccount.accessTokenFingerprint;
-    const expectedTokenGeneration: number = connectionAccount === undefined
-      ? 0 : connectionAccount.tokenGeneration;
+    let controlPlaneProfile: RustDeskControlPlaneProfile =
+      'third_party_api_only';
+    let tokenProjected: boolean = false;
+    let connectionAccount: RustDeskProAccountState | undefined =
+      undefined;
+    let expectedTokenFingerprint: string = '';
+    let expectedTokenGeneration: number = 0;
     host.rustdeskAuthMode = this.rustDeskProAuthMode === 'request_approval' ? 'request_approval' : 'password';
     host.rustdeskPasswordMode = this.rustDeskProPasswordMode === 1 ? 1 : 0;
     if (host.rustdeskAuthMode === 'password') { host.password = this.rustDeskProPassword; }
@@ -3805,7 +3805,28 @@ struct HostListPage {
         scopeAfterTeardown.generation !== connectionScope.generation) {
         throw new Error('账号已切换，旧账号连接已取消。');
       }
-      const sid: number = this.loader.connect(this.rustDeskProConfig(host));
+      const effectiveContext: RustDeskConnectionContext =
+        this.rustDeskConnectionContext(host, relay);
+      if (!effectiveContext.ready) {
+        throw new Error(effectiveContext.message);
+      }
+      controlPlaneProfile = effectiveContext.profile;
+      tokenProjected = effectiveContext.accessToken !== '';
+      connectionAccount = this.rustDeskProAccountForHost(host);
+      expectedTokenFingerprint =
+        tokenProjected && connectionAccount !== undefined
+          ? connectionAccount.accessTokenFingerprint : '';
+      expectedTokenGeneration =
+        tokenProjected && connectionAccount !== undefined
+          ? connectionAccount.tokenGeneration : 0;
+      const sessionConfig: SessionConfig =
+        this.rustDeskProConfig(host);
+      if (sessionConfig.rdAccessToken !==
+        effectiveContext.accessToken) {
+        throw new Error(
+          '账号状态已变化，请重新发起连接。');
+      }
+      const sid: number = this.loader.connect(sessionConfig);
       if (sid <= 0) { throw new Error('无法启动 RustDesk 连接 [E-RUSTDESK-PREFLIGHT-' + Math.abs(sid).toString() + ']'); }
       const timeoutMs: number = 120000;
       const startedAt: number = Date.now();
@@ -3881,7 +3902,9 @@ struct HostListPage {
         detail.indexOf('等待远端批准超时') >= 0) {
         kind = 'approval_timeout';
       }
-      if (kind === 'pro_session_expired' && canInvalidateRustDeskProSession(detail, controlPlaneProfile)) {
+      if (kind === 'pro_session_expired' &&
+        canInvalidateRustDeskProSession(
+          detail, controlPlaneProfile, tokenProjected)) {
         const invalidatedAccountId: string = connectionAccount === undefined
           ? rustDeskProAccountIdForConnection(
             host.rustdeskProAccountId, host.rustdeskAccountId)
