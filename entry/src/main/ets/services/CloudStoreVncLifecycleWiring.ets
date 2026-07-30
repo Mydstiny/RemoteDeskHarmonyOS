@@ -157,15 +157,43 @@ export function readVncSelectionBarrierPhase(
     };
   }
   try {
+    const parsedValue: Object =
+      JSON.parse(metadata.value) as Object;
+    if (parsedValue === null ||
+      Array.isArray(parsedValue) ||
+      typeof parsedValue !== 'object') {
+      return {
+        metadata,
+        readable: false,
+        phase: 'pending_pull'
+      };
+    }
     const parsed: Record<string, Object> =
-      JSON.parse(metadata.value) as
-        Record<string, Object>;
+      parsedValue as Record<string, Object>;
+    const keys: string[] =
+      Object.keys(parsed);
+    if (keys.indexOf(VNC_CLOUD_TABLE) < 0) {
+      return {
+        metadata,
+        readable: true,
+        phase: null
+      };
+    }
+    const phase:
+      CloudSelectionReenablePhase | null =
+      normalizeCloudSelectionReenablePhase(
+        parsed[VNC_CLOUD_TABLE]);
+    if (phase === null) {
+      return {
+        metadata,
+        readable: false,
+        phase: 'pending_pull'
+      };
+    }
     return {
       metadata,
       readable: true,
-      phase:
-        normalizeCloudSelectionReenablePhase(
-          parsed[VNC_CLOUD_TABLE])
+      phase
     };
   } catch (_error) {
     return {
@@ -373,31 +401,110 @@ export function finalizeVncSelectionReenable(
   };
 }
 
-export interface CloudStoreVncPendingRecoveryPort {
-  checkpointIdentity:
-    () => VncSelectionCheckpointIdentity;
+export interface CloudStoreVncRollbackPort {
   readMetadataState:
     CloudStoreMetadataStateReader;
-  rollbackCheckpoint:
+  restoreSnapshot:
     (checkpoint:
       VncSelectionReenableCheckpoint) =>
       Promise<boolean>;
-  recovered: () => void;
+  persistPreviousScopes:
+    (scopes: string[]) => boolean;
+  beginTransaction: () => boolean;
+  settleRecoveryLifecycle: () => boolean;
+  restoreBarrier:
+    (previousPhase:
+      CloudSelectionReenablePhase | null) =>
+      boolean;
+  deleteCheckpoint: () => boolean;
+  commit: () => boolean;
+  rollback: () => void;
+  publishSnapshot: () => void;
+  markRecoveryRequired: () => void;
+}
+
+/**
+ * Shared production rollback adapter. The private CloudStore startup and
+ * in-process failure paths both provide only low-level persistence closures;
+ * checkpoint deletion, read-back and fail-closed ordering cannot be replaced
+ * by a test-only high-level callback.
+ */
+export async function rollbackVncSelectionCheckpoint(
+  checkpoint: VncSelectionReenableCheckpoint,
+  port: CloudStoreVncRollbackPort
+): Promise<boolean> {
+  const payload:
+    VncSelectionReenableTransactionPayload =
+    checkpoint.payload;
+  if (!(await port.restoreSnapshot(
+    checkpoint)) ||
+    !port.persistPreviousScopes(
+      payload.previousScopes)) {
+    port.markRecoveryRequired();
+    return false;
+  }
+  const previousBarrier:
+    CloudSelectionReenablePhase | null =
+    payload.previousBarrier === ''
+      ? null
+      : normalizeCloudSelectionReenablePhase(
+        payload.previousBarrier);
+  let begun: boolean = false;
+  try {
+    if (!port.beginTransaction()) {
+      throw new Error(
+        'VNC recovery transaction begin failed');
+    }
+    begun = true;
+    if (!port.settleRecoveryLifecycle() ||
+      !port.restoreBarrier(previousBarrier) ||
+      !port.deleteCheckpoint() ||
+      !port.commit()) {
+      throw new Error(
+        'VNC recovery transaction failed');
+    }
+    const checkpointAfter:
+      CloudMetadataReadResult =
+      port.readMetadataState(
+        VNC_SELECTION_REENABLE_TRANSACTION_KEY);
+    const barrierAfter:
+      VncSelectionBarrierPhaseRead =
+      readVncSelectionBarrierPhase(
+        port.readMetadataState);
+    if (!cloudMetadataAbsentProven(
+      checkpointAfter) ||
+      !barrierAfter.readable ||
+      barrierAfter.phase !== previousBarrier) {
+      throw new Error(
+        'VNC recovery post-commit verification failed');
+    }
+    port.publishSnapshot();
+    return true;
+  } catch (_error) {
+    if (begun) {
+      try { port.rollback(); } catch (_ignored) {}
+    }
+    port.markRecoveryRequired();
+    return false;
+  }
 }
 
 /**
  * Startup calls this collaborator before cloud registration. A committed
  * authoritative checkpoint is treated as pending recovery, not as a completed
- * finalization, and is passed to the real rollback path.
+ * finalization, and is passed through the same production rollback adapter as
+ * an in-process failure.
  */
 export async function recoverPendingVncSelectionReenable(
-  port: CloudStoreVncPendingRecoveryPort
+  identity: VncSelectionCheckpointIdentity,
+  port: CloudStoreVncRollbackPort,
+  onRecovered: () => void
 ): Promise<boolean> {
   const checkpointRead:
     VncSelectionReenableCheckpointRead =
     readVncSelectionReenableCheckpointState(
       port.readMetadataState,
-      port.checkpointIdentity());
+      identity);
   if (checkpointRead.metadata.state ===
     'absent') {
     return true;
@@ -407,11 +514,11 @@ export async function recoverPendingVncSelectionReenable(
     checkpointRead.checkpoint === null) {
     return false;
   }
-  const recovered: boolean =
-    await port.rollbackCheckpoint(
-      checkpointRead.checkpoint);
-  if (recovered) {
-    port.recovered();
+  const recoverySucceeded: boolean =
+    await rollbackVncSelectionCheckpoint(
+      checkpointRead.checkpoint, port);
+  if (recoverySucceeded) {
+    onRecovered();
   }
-  return recovered;
+  return recoverySucceeded;
 }

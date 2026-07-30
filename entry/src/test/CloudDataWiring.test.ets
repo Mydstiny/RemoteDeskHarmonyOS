@@ -16,12 +16,14 @@ import {
   CLOUD_SELECTION_REENABLE_BARRIERS_KEY,
   VNC_SELECTION_REENABLE_TRANSACTION_KEY,
   CloudStoreVncAuthoritativeCompletionPort,
+  CloudStoreVncRollbackPort,
   CloudStoreVncSelectionFinalizationPort,
   VncSelectionCheckpointIdentity,
   VncSelectionReenableCheckpoint,
   VncSelectionReenableTransactionPayload,
   completeVncAuthoritativeCloudFirst,
   finalizeVncSelectionReenable,
+  readVncSelectionBarrierPhase,
   recoverPendingVncSelectionReenable
 } from '../main/ets/services/CloudStoreVncLifecycleWiring';
 import { CloudSyncDirection } from '../main/ets/services/CloudSyncPolicy';
@@ -45,6 +47,9 @@ import {
   CloudDownloadTransactionOperation,
   cloudDownloadTransactionEnvelope
 } from '../main/ets/services/CloudDownloadTransactionPolicy';
+import {
+  CloudSelectionReenablePhase
+} from '../main/ets/services/CloudSelectionReenablePolicy';
 
 class DeferredSignal {
   promise: Promise<void>;
@@ -310,6 +315,15 @@ function checkpointStageFromRaw(
   }
 }
 
+function vncBarrierRaw(
+  phase: string
+): string {
+  const barriers:
+    Record<string, string> = {};
+  barriers['vncrecord'] = phase;
+  return JSON.stringify(barriers);
+}
+
 function cloneStringRecord(
   source: Record<string, string>
 ): Record<string, string> {
@@ -539,6 +553,9 @@ class FakeVncFinalizationPort
   events: string[] = [];
   uploadRequested: boolean = false;
   postCommitErrorKey: string = '';
+  overridePostCommitBarrier:
+    boolean = false;
+  postCommitBarrierRaw: string = '';
   private readonly store: CloudStore;
   private readonly metadata:
     MetadataMapQueryPort;
@@ -556,9 +573,7 @@ class FakeVncFinalizationPort
       vncCheckpointRaw('authoritative'));
     this.metadata.set(
       CLOUD_SELECTION_REENABLE_BARRIERS_KEY,
-      JSON.stringify({
-        vncrecord: 'pending_pull'
-      }));
+      vncBarrierRaw('pending_pull'));
   }
 
   checkpointIdentity():
@@ -590,9 +605,7 @@ class FakeVncFinalizationPort
     this.events.push('pull_complete');
     this.working[
       CLOUD_SELECTION_REENABLE_BARRIERS_KEY] =
-      JSON.stringify({
-        vncrecord: 'pull_complete'
-      });
+      vncBarrierRaw('pull_complete');
     return true;
   }
 
@@ -607,9 +620,8 @@ class FakeVncFinalizationPort
       'promotion_complete');
     this.working[
       CLOUD_SELECTION_REENABLE_BARRIERS_KEY] =
-      JSON.stringify({
-        vncrecord: 'promotion_complete'
-      });
+      vncBarrierRaw(
+        'promotion_complete');
     return true;
   }
 
@@ -630,6 +642,11 @@ class FakeVncFinalizationPort
   commit(): boolean {
     this.events.push('commit');
     this.metadata.replace(this.working);
+    if (this.overridePostCommitBarrier) {
+      this.metadata.set(
+        CLOUD_SELECTION_REENABLE_BARRIERS_KEY,
+        this.postCommitBarrierRaw);
+    }
     if (this.postCommitErrorKey !== '') {
       this.metadata.setError(
         this.postCommitErrorKey, true);
@@ -646,6 +663,142 @@ class FakeVncFinalizationPort
   requestAutomaticUpload(): void {
     this.events.push('upload');
     this.uploadRequested = true;
+  }
+}
+
+type RecoveryFault =
+  'none' | 'restore' | 'scopes' |
+  'begin' | 'lifecycle' | 'barrier' |
+  'delete' | 'commit';
+
+/**
+ * Low-level persistence fake for the production startup rollback adapter.
+ * It cannot decide checkpoint recovery success itself; the shared wiring
+ * collaborator owns ordering, deletion, read-back and fail-closed marking.
+ */
+class FakeVncRollbackPort
+  implements CloudStoreVncRollbackPort {
+  fault: RecoveryFault = 'none';
+  events: string[] = [];
+  recoveryRequired: boolean = false;
+  snapshotPublished: boolean = false;
+  recoveredStage: string = '';
+  private readonly store: CloudStore;
+  private readonly metadata:
+    MetadataMapQueryPort;
+  private working:
+    Record<string, string> = {};
+
+  constructor(
+    store: CloudStore,
+    metadata: MetadataMapQueryPort
+  ) {
+    this.store = store;
+    this.metadata = metadata;
+    this.metadata.set(
+      VNC_SELECTION_REENABLE_TRANSACTION_KEY,
+      vncCheckpointRaw('authoritative'));
+    this.metadata.set(
+      CLOUD_SELECTION_REENABLE_BARRIERS_KEY,
+      vncBarrierRaw('pending_pull'));
+  }
+
+  readMetadataState(
+    key: string
+  ): CloudMetadataReadResult {
+    return this.store
+      .readLocalMetadataState(key);
+  }
+
+  async restoreSnapshot(
+    checkpoint:
+      VncSelectionReenableCheckpoint
+  ): Promise<boolean> {
+    this.events.push('restore');
+    this.recoveredStage =
+      checkpoint.payload.stage;
+    return this.fault !== 'restore';
+  }
+
+  persistPreviousScopes(
+    _scopes: string[]
+  ): boolean {
+    this.events.push('scopes');
+    return this.fault !== 'scopes';
+  }
+
+  beginTransaction(): boolean {
+    this.events.push('begin');
+    if (this.fault === 'begin') {
+      return false;
+    }
+    this.working =
+      this.metadata.snapshot();
+    return true;
+  }
+
+  settleRecoveryLifecycle(): boolean {
+    this.events.push('lifecycle');
+    return this.fault !== 'lifecycle';
+  }
+
+  restoreBarrier(
+    previousPhase:
+      CloudSelectionReenablePhase | null
+  ): boolean {
+    this.events.push('barrier');
+    if (this.fault === 'barrier') {
+      return false;
+    }
+    if (previousPhase === null) {
+      delete this.working[
+        CLOUD_SELECTION_REENABLE_BARRIERS_KEY];
+    } else {
+      this.working[
+        CLOUD_SELECTION_REENABLE_BARRIERS_KEY] =
+        vncBarrierRaw(previousPhase);
+    }
+    return true;
+  }
+
+  deleteCheckpoint(): boolean {
+    this.events.push('delete');
+    if (this.fault === 'delete') {
+      return false;
+    }
+    delete this.working[
+      VNC_SELECTION_REENABLE_TRANSACTION_KEY];
+    return true;
+  }
+
+  commit(): boolean {
+    this.events.push('commit');
+    if (this.fault === 'commit') {
+      return false;
+    }
+    this.metadata.replace(this.working);
+    return true;
+  }
+
+  rollback(): void {
+    this.events.push('rollback');
+    this.working =
+      this.metadata.snapshot();
+  }
+
+  publishSnapshot(): void {
+    this.events.push('publish');
+    this.snapshotPublished = true;
+  }
+
+  markRecoveryRequired(): void {
+    this.events.push('fail_closed');
+    this.recoveryRequired = true;
+  }
+
+  checkpointPresent(): boolean {
+    return this.metadata.has(
+      VNC_SELECTION_REENABLE_TRANSACTION_KEY);
   }
 }
 
@@ -1115,15 +1268,16 @@ export default function cloudDataWiringTest():
 
     it('routes_committed_authoritative_checkpoint_into_startup_recovery_wiring',
       0, async (): Promise<void> => {
-        const metadata =
+        const successMetadata =
           new MetadataMapQueryPort();
         const firstProcessStore =
           new CloudStore({
-            metadataQuery: metadata
+            metadataQuery: successMetadata
           });
         const completion =
           new FakeVncCompletionPort(
-            firstProcessStore, metadata);
+            firstProcessStore,
+            successMetadata);
         expect(
           completeVncAuthoritativeCloudFirst(
             ['vncrecord'],
@@ -1135,43 +1289,225 @@ export default function cloudDataWiringTest():
 
         const restartedStore =
           new CloudStore({
-            metadataQuery: metadata
+            metadataQuery: successMetadata
           });
-        let rollbackStage: string = '';
+        const recoveryPort =
+          new FakeVncRollbackPort(
+            restartedStore,
+            successMetadata);
         let recoveredPublished:
           boolean = false;
         const recovered: boolean =
-          await recoverPendingVncSelectionReenable({
-            checkpointIdentity:
-              (): VncSelectionCheckpointIdentity =>
-                vncCheckpointIdentity(),
-            readMetadataState:
-              (key: string):
-                CloudMetadataReadResult =>
-                restartedStore
-                  .readLocalMetadataState(key),
-            rollbackCheckpoint: async (
-              checkpoint:
-                VncSelectionReenableCheckpoint
-            ): Promise<boolean> => {
-              rollbackStage =
-                checkpoint.payload.stage;
-              metadata.delete(
-                VNC_SELECTION_REENABLE_TRANSACTION_KEY);
-              return true;
-            },
-            recovered: (): void => {
+          await recoverPendingVncSelectionReenable(
+            vncCheckpointIdentity(),
+            recoveryPort,
+            (): void => {
               recoveredPublished = true;
-            }
-          });
+            });
         expect(recovered).assertTrue();
-        expect(rollbackStage)
+        expect(recoveryPort
+          .recoveredStage)
           .assertEqual('authoritative');
         expect(recoveredPublished)
           .assertTrue();
-        expect(metadata.has(
-          VNC_SELECTION_REENABLE_TRANSACTION_KEY))
+        expect(recoveryPort
+          .checkpointPresent())
           .assertFalse();
+        expect(recoveryPort.events.join(','))
+          .assertEqual(
+            'restore,scopes,begin,lifecycle,' +
+            'barrier,delete,commit,publish');
+        expect(recoveryPort
+          .recoveryRequired)
+          .assertFalse();
+
+        const failures:
+          RecoveryFault[] = [
+          'restore', 'delete', 'commit'
+        ];
+        for (let i = 0;
+          i < failures.length; i++) {
+          const failedMetadata =
+            new MetadataMapQueryPort();
+          const failedStore =
+            new CloudStore({
+              metadataQuery:
+                failedMetadata
+            });
+          const failedPort =
+            new FakeVncRollbackPort(
+              failedStore,
+              failedMetadata);
+          failedPort.fault = failures[i];
+          let callbackObserved:
+            boolean = false;
+          expect(await
+            recoverPendingVncSelectionReenable(
+              vncCheckpointIdentity(),
+              failedPort,
+              (): void => {
+                callbackObserved = true;
+              }))
+            .assertFalse();
+          expect(failedPort
+            .checkpointPresent())
+            .assertTrue();
+          expect(failedPort
+            .recoveryRequired)
+            .assertTrue();
+          expect(failedPort
+            .snapshotPublished)
+            .assertFalse();
+          expect(callbackObserved)
+            .assertFalse();
+        }
+      });
+
+    it('rejects_semantically_malformed_vnc_barriers_before_and_after_commit',
+      0, (): void => {
+        const malformed:
+          string[] = [
+          '{"vncrecord":"corrupt"}',
+          '{"vncrecord":null}',
+          '{"vncrecord":{}}',
+          '{"vncrecord":[]}',
+          '[]',
+          '"text"',
+          '42',
+          'null'
+        ];
+        for (let i = 0;
+          i < malformed.length; i++) {
+          const beforeMetadata =
+            new MetadataMapQueryPort();
+          const beforeStore =
+            new CloudStore({
+              metadataQuery:
+                beforeMetadata
+            });
+          const beforePort =
+            new FakeVncFinalizationPort(
+              beforeStore,
+              beforeMetadata);
+          beforeMetadata.set(
+            CLOUD_SELECTION_REENABLE_BARRIERS_KEY,
+            malformed[i]);
+          const beforeRead =
+            readVncSelectionBarrierPhase(
+              (key: string):
+                CloudMetadataReadResult =>
+                beforeStore
+                  .readLocalMetadataState(key));
+          expect(beforeRead.readable)
+            .assertFalse();
+          expect(finalizeVncSelectionReenable(
+            beforePort).ok)
+            .assertFalse();
+          expect(beforePort.events.length)
+            .assertEqual(0);
+          expect(beforePort.uploadRequested)
+            .assertFalse();
+
+          const afterMetadata =
+            new MetadataMapQueryPort();
+          const afterStore =
+            new CloudStore({
+              metadataQuery:
+                afterMetadata
+            });
+          const afterPort =
+            new FakeVncFinalizationPort(
+              afterStore,
+              afterMetadata);
+          afterPort
+            .overridePostCommitBarrier = true;
+          afterPort.postCommitBarrierRaw =
+            malformed[i];
+          expect(finalizeVncSelectionReenable(
+            afterPort).ok)
+            .assertFalse();
+          expect(afterPort.events
+            .indexOf('commit') >= 0)
+            .assertTrue();
+          expect(afterPort.uploadRequested)
+            .assertFalse();
+        }
+
+        const absent:
+          string[] = [
+          '{}',
+          '{"remotehosts":"pending_pull"}'
+        ];
+        for (let i = 0;
+          i < absent.length; i++) {
+          const metadata =
+            new MetadataMapQueryPort();
+          const store =
+            new CloudStore({
+              metadataQuery: metadata
+            });
+          metadata.set(
+            CLOUD_SELECTION_REENABLE_BARRIERS_KEY,
+            absent[i]);
+          const read =
+            readVncSelectionBarrierPhase(
+              (key: string):
+                CloudMetadataReadResult =>
+                store.readLocalMetadataState(
+                  key));
+          expect(read.readable).assertTrue();
+          expect(read.phase === null)
+            .assertTrue();
+        }
+
+        const phases:
+          string[] = [
+          'pending_pull',
+          'pull_complete',
+          'promotion_complete'
+        ];
+        for (let i = 0;
+          i < phases.length; i++) {
+          const metadata =
+            new MetadataMapQueryPort();
+          const store =
+            new CloudStore({
+              metadataQuery: metadata
+            });
+          metadata.set(
+            CLOUD_SELECTION_REENABLE_BARRIERS_KEY,
+            vncBarrierRaw(phases[i]));
+          const read =
+            readVncSelectionBarrierPhase(
+              (key: string):
+                CloudMetadataReadResult =>
+                store.readLocalMetadataState(
+                  key));
+          expect(read.readable).assertTrue();
+          expect(read.phase)
+            .assertEqual(phases[i]);
+        }
+
+        const noVncKeyMetadata =
+          new MetadataMapQueryPort();
+        const noVncKeyStore =
+          new CloudStore({
+            metadataQuery:
+              noVncKeyMetadata
+          });
+        const noVncKeyPort =
+          new FakeVncFinalizationPort(
+            noVncKeyStore,
+            noVncKeyMetadata);
+        noVncKeyPort
+          .overridePostCommitBarrier = true;
+        noVncKeyPort.postCommitBarrierRaw =
+          '{}';
+        expect(finalizeVncSelectionReenable(
+          noVncKeyPort).ok)
+          .assertTrue();
+        expect(noVncKeyPort.uploadRequested)
+          .assertTrue();
       });
 
     it('metadata_errors_block_actual_finalization_promotion_and_postcommit_upload',

@@ -192,6 +192,7 @@ import {
   VNC_SELECTION_REENABLE_TRANSACTION_KEY,
   CloudDownloadTransactionPayload,
   CloudStoreVncAuthoritativeCompletionPort,
+  CloudStoreVncRollbackPort,
   CloudStoreVncSelectionFinalizationPort,
   VncAuthoritativeCompletionWiringResult,
   VncSelectionCheckpointIdentity,
@@ -203,7 +204,8 @@ import {
     completeVncAuthoritativeCloudFirstWiring,
   finalizeVncSelectionReenable,
   readVncSelectionReenableCheckpointState,
-  recoverPendingVncSelectionReenable
+  recoverPendingVncSelectionReenable,
+  rollbackVncSelectionCheckpoint
 } from './CloudStoreVncLifecycleWiring';
 import {
   CloudMetadataReadResult,
@@ -2381,7 +2383,10 @@ export class CloudStore implements CryptoCloudStore {
     checkpointOverride:
       VncSelectionReenableCheckpoint | null
   ): Promise<boolean> {
-    if (!this.store || this.appContext === null) {
+    const port:
+      CloudStoreVncRollbackPort | null =
+      this.vncSelectionRollbackPort();
+    if (port === null) {
       this.markVncSelectionRecoveryRequired();
       return false;
     }
@@ -2394,42 +2399,65 @@ export class CloudStore implements CryptoCloudStore {
       this.markVncSelectionRecoveryRequired();
       return false;
     }
-    const payload:
-      VncSelectionReenableTransactionPayload =
-      checkpoint.payload;
     const restored: boolean =
-      await this.restoreManualDownloadSnapshot(
-        payload.snapshot,
-        payload.extensions,
-        this.vncRecoveryMetadata(checkpoint),
-        payload.mutationJournal,
-        payload.localTables);
+      await rollbackVncSelectionCheckpoint(
+        checkpoint, port);
     if (!restored) {
-      this.markVncSelectionRecoveryRequired();
-      return false;
+      hilog.error(0x0001, 'CloudSync',
+        'VNC scope rollback finalization failed');
     }
-    this.vncSyncSelection.stageSelectedScopes(
-      payload.previousScopes);
-    if (!this.vncSyncSelection
-      .persistSelectedScopes(this.appContext)) {
-      this.markVncSelectionRecoveryRequired();
-      return false;
+    return restored;
+  }
+
+  private vncSelectionRollbackPort():
+    CloudStoreVncRollbackPort | null {
+    if (!this.store ||
+      this.appContext === null) {
+      return null;
     }
-    const previousBarrier:
-      CloudSelectionReenablePhase | null =
-      payload.previousBarrier === ''
-        ? null
-        : normalizeCloudSelectionReenablePhase(
-          payload.previousBarrier);
-    try {
-      this.store.beginTransaction();
-      const durable: CloudSyncDurableState | null =
-        this.loadCloudSyncDurableState();
-      if (durable !== null &&
-        durable.phase === 'recovery_required' &&
-        durable.lastFailureKind === 'unknown' &&
-        durable.failedTables.indexOf(
-          VNC_CLOUD_TABLE) >= 0) {
+    const store: relationalStore.RdbStore =
+      this.store;
+    const context: common.Context =
+      this.appContext;
+    return {
+      readMetadataState:
+        (key: string):
+          CloudMetadataReadResult =>
+          this.readLocalMetadataState(key),
+      restoreSnapshot: async (
+        checkpoint:
+          VncSelectionReenableCheckpoint
+      ): Promise<boolean> =>
+        await this.restoreManualDownloadSnapshot(
+          checkpoint.payload.snapshot,
+          checkpoint.payload.extensions,
+          this.vncRecoveryMetadata(checkpoint),
+          checkpoint.payload.mutationJournal,
+          checkpoint.payload.localTables),
+      persistPreviousScopes:
+        (scopes: string[]): boolean => {
+          this.vncSyncSelection
+            .stageSelectedScopes(scopes);
+          return this.vncSyncSelection
+            .persistSelectedScopes(context);
+        },
+      beginTransaction: (): boolean => {
+        store.beginTransaction();
+        return true;
+      },
+      settleRecoveryLifecycle: (): boolean => {
+        const durable:
+          CloudSyncDurableState | null =
+          this.loadCloudSyncDurableState();
+        if (durable === null ||
+          durable.phase !==
+            'recovery_required' ||
+          durable.lastFailureKind !==
+            'unknown' ||
+          durable.failedTables.indexOf(
+            VNC_CLOUD_TABLE) < 0) {
+          return true;
+        }
         const coordinator:
           CloudSyncCoordinator =
           CloudSyncCoordinator.getInstance();
@@ -2437,87 +2465,63 @@ export class CloudStore implements CryptoCloudStore {
           accountSessionLeaseEquals(
             coordinator.currentAccountLease(),
             this.currentLease)) {
-          throw new Error(
-            'VNC recovery requires process restart before lifecycle release');
+          return false;
         }
-        const settled: CloudSyncDurableState =
+        const settled:
+          CloudSyncDurableState =
           cloudSyncExternalRecoverySettled(
             durable,
             this.cloudAccountBinding,
             cloudTransferAllowed(
               this.cloudAccountBinding),
             [VNC_CLOUD_TABLE]);
-        if (settled.phase ===
-            'recovery_required' ||
-          !this.persistCloudSyncDurableState(
-            settled)) {
-          throw new Error(
-            'VNC recovery lifecycle release failed');
-        }
+        return settled.phase !==
+          'recovery_required' &&
+          this.persistCloudSyncDurableState(
+            settled);
+      },
+      restoreBarrier: (
+        previousPhase:
+          CloudSelectionReenablePhase | null
+      ): boolean =>
+        this.restoreSelectionReenableBarrier(
+          VNC_CLOUD_TABLE,
+          previousPhase),
+      deleteCheckpoint: (): boolean =>
+        this.deleteLocalMetadata(
+          VNC_SELECTION_REENABLE_TRANSACTION_KEY),
+      commit: (): boolean => {
+        store.commit();
+        return true;
+      },
+      rollback: (): void => {
+        store.rollBack();
+      },
+      publishSnapshot: (): void => {
+        this.notifyDataSnapshotChanged();
+      },
+      markRecoveryRequired: (): void => {
+        this.markVncSelectionRecoveryRequired();
       }
-      if (!this.restoreSelectionReenableBarrier(
-        VNC_CLOUD_TABLE, previousBarrier) ||
-        !this.deleteLocalMetadata(
-          VNC_SELECTION_REENABLE_TRANSACTION_KEY)) {
-        throw new Error(
-          'VNC recovery finalization failed');
-      }
-      this.store.commit();
-      const checkpointMetadata:
-        CloudMetadataReadResult =
-        this.readLocalMetadataState(
-          VNC_SELECTION_REENABLE_TRANSACTION_KEY);
-      const barrierSnapshot:
-        SelectionReenableBarrierSnapshot =
-        this.selectionReenableBarrierSnapshot();
-      const currentBarrier:
-        CloudSelectionReenablePhase | null =
-        barrierSnapshot.readable
-          ? normalizeCloudSelectionReenablePhase(
-            barrierSnapshot.barriers[
-              VNC_CLOUD_TABLE])
-          : 'pending_pull';
-      if (!cloudMetadataAbsentProven(
-        checkpointMetadata) ||
-        !barrierSnapshot.readable ||
-        currentBarrier !== previousBarrier) {
-        throw new Error(
-          'VNC recovery post-commit metadata verification failed');
-      }
-      this.notifyDataSnapshotChanged();
-      return true;
-    } catch (err) {
-      try { this.store.rollBack(); } catch (_ignored) {}
-      hilog.error(0x0001, 'CloudSync',
-        'VNC scope rollback finalization failed: ' +
-        safeError(err));
-      this.markVncSelectionRecoveryRequired();
-      return false;
-    }
+    };
   }
 
   private async recoverPendingVncSelectionReenableTransaction():
     Promise<boolean> {
-    return await recoverPendingVncSelectionReenable({
-      checkpointIdentity:
-        (): VncSelectionCheckpointIdentity =>
-          this.vncSelectionCheckpointIdentity(),
-      readMetadataState:
-        (key: string):
-          CloudMetadataReadResult =>
-          this.readLocalMetadataState(key),
-      rollbackCheckpoint: async (
-        checkpoint:
-          VncSelectionReenableCheckpoint
-      ): Promise<boolean> =>
-        await this
-          .rollbackVncSelectionCheckpointInternal(
-            checkpoint),
-      recovered: (): void => {
+    const port:
+      CloudStoreVncRollbackPort | null =
+      this.vncSelectionRollbackPort();
+    if (port === null) {
+      this.markVncSelectionRecoveryRequired();
+      return false;
+    }
+    return await recoverPendingVncSelectionReenable(
+      this.vncSelectionCheckpointIdentity(),
+      port,
+      (): void => {
         hilog.warn(0x0001, 'CloudSync',
           '已回滚上次未终结的 VNC scope 事务');
-      }
-    });
+      });
   }
 
   /**
