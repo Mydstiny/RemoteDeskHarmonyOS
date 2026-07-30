@@ -33,6 +33,7 @@ import accountScopePolicyTest from './AccountScopePolicy.test';
 import platformCloudIdentityPolicyTest from './PlatformCloudIdentityPolicy.test';
 import cloudDownloadTransactionPolicyTest from './CloudDownloadTransactionPolicy.test';
 import cloudLifecycleBarrierPolicyTest from './CloudLifecycleBarrierPolicy.test';
+import cloudMetadataSafetyPolicyTest from './CloudMetadataSafetyPolicy.test';
 import accountCredentialStoragePolicyTest from './AccountCredentialStoragePolicy.test';
 import rustDeskProCredentialPolicyTest from './RustDeskProCredentialPolicy.test';
 import cloudSensitiveTransferPolicyTest from './CloudSensitiveTransferPolicy.test';
@@ -126,6 +127,7 @@ export default function testsuite() {
   platformCloudIdentityPolicyTest();
   cloudDownloadTransactionPolicyTest();
   cloudLifecycleBarrierPolicyTest();
+  cloudMetadataSafetyPolicyTest();
   accountCredentialStoragePolicyTest();
   rustDeskProCredentialPolicyTest();
   cloudSensitiveTransferPolicyTest();

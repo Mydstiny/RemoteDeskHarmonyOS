@@ -7,6 +7,7 @@ import {
   cloudSelectionLocalPromotionAllowed,
   cloudSelectionNativeFirstAllowed,
   cloudSelectionTransitionNeedsCloudFirst,
+  executeVncAuthoritativeCompletion,
   executeVncSelectionFinalize,
   vncSelectionPostCommitUploadAllowed,
   vncSelectionRecoveryBarrier,
@@ -130,6 +131,151 @@ export default function cloudLifecycleBarrierPolicyTest():
         expect(vncSelectionPostCommitUploadAllowed(
           finalized, true, 'pending_pull'))
           .assertFalse();
+      });
+
+    it('atomically_rebases_authoritative_VNC_state_before_replaying_the_local_journal',
+      0, (): void => {
+        const steps: string[] = [];
+        const completed =
+          executeVncAuthoritativeCompletion({
+            begin: (): boolean => {
+              steps.push('begin'); return true;
+            },
+            rebaseAuthoritativeCheckpoint:
+              (): boolean => {
+                steps.push('authoritative');
+                return true;
+              },
+            reconcileJournal: (): boolean => {
+              steps.push('journal'); return true;
+            },
+            deleteDownloadCheckpoint:
+              (): boolean => {
+                steps.push('delete'); return true;
+              },
+            commit: (): boolean => {
+              steps.push('commit'); return true;
+            },
+            rollback: (): void => {
+              steps.push('rollback');
+            }
+          });
+        expect(completed.ok).assertTrue();
+        expect(steps.join(',')).assertEqual(
+          'begin,authoritative,journal,delete,commit');
+      });
+
+    it('keeps_general_and_prepared_checkpoints_if_authoritative_rebase_write_fails',
+      0, (): void => {
+        let generalCheckpointPresent:
+          boolean = true;
+        let preparedCheckpointPresent:
+          boolean = true;
+        let rolledBack: boolean = false;
+        const completed =
+          executeVncAuthoritativeCompletion({
+            begin: (): boolean => true,
+            rebaseAuthoritativeCheckpoint:
+              (): boolean => false,
+            reconcileJournal: (): boolean => {
+              return true;
+            },
+            deleteDownloadCheckpoint:
+              (): boolean => {
+                generalCheckpointPresent = false;
+                return true;
+              },
+            commit: (): boolean => true,
+            rollback: (): void => {
+              rolledBack = true;
+              generalCheckpointPresent = true;
+              preparedCheckpointPresent = true;
+            }
+          });
+        expect(completed.ok).assertFalse();
+        expect(completed.failedStep)
+          .assertEqual('authoritative_rebase');
+        expect(rolledBack).assertTrue();
+        expect(generalCheckpointPresent)
+          .assertTrue();
+        expect(preparedCheckpointPresent)
+          .assertTrue();
+      });
+
+    it('restores_both_checkpoint_writes_when_the_atomic_commit_kill_point_fails',
+      0, (): void => {
+        let generalCheckpointPresent:
+          boolean = true;
+        let authoritativeCheckpointPresent:
+          boolean = false;
+        const completed =
+          executeVncAuthoritativeCompletion({
+            begin: (): boolean => true,
+            rebaseAuthoritativeCheckpoint:
+              (): boolean => {
+                authoritativeCheckpointPresent =
+                  true;
+                return true;
+              },
+            reconcileJournal:
+              (): boolean => true,
+            deleteDownloadCheckpoint:
+              (): boolean => {
+                generalCheckpointPresent = false;
+                return true;
+              },
+            commit: (): boolean => false,
+            rollback: (): void => {
+              generalCheckpointPresent = true;
+              authoritativeCheckpointPresent =
+                false;
+            }
+          });
+        expect(completed.failedStep)
+          .assertEqual('commit');
+        expect(generalCheckpointPresent)
+          .assertTrue();
+        expect(authoritativeCheckpointPresent)
+          .assertFalse();
+      });
+
+    it('restart_after_atomic_commit_uses_the_authoritative_mirror_not_the_pre_pull_image',
+      0, (): void => {
+        let generalCheckpointPresent:
+          boolean = true;
+        let vncRecoveryMirror: string =
+          'pre-pull-local';
+        const completed =
+          executeVncAuthoritativeCompletion({
+            begin: (): boolean => true,
+            rebaseAuthoritativeCheckpoint:
+              (): boolean => {
+                vncRecoveryMirror =
+                  'authoritative-cloud';
+                return true;
+              },
+            reconcileJournal:
+              (): boolean => true,
+            deleteDownloadCheckpoint:
+              (): boolean => {
+                generalCheckpointPresent = false;
+                return true;
+              },
+            commit: (): boolean => true,
+            rollback: (): void => {
+              generalCheckpointPresent = true;
+              vncRecoveryMirror =
+                'pre-pull-local';
+            }
+          });
+
+        expect(completed.ok).assertTrue();
+        // This models a process kill immediately after commit and before the
+        // completion Promise returns. Startup sees only the rebased VNC image.
+        expect(generalCheckpointPresent)
+          .assertFalse();
+        expect(vncRecoveryMirror)
+          .assertEqual('authoritative-cloud');
       });
 
     it('rolls_back_release_failure_without_deleting_checkpoint_or_uploading_secret_scope',

@@ -187,13 +187,22 @@ import {
   parseCloudDownloadTransactionEnvelope
 } from './CloudDownloadTransactionPolicy';
 import {
+  CloudMetadataReadResult,
+  cloudMetadataAbsentProven,
+  cloudMetadataBoundaryReadable,
+  cloudMetadataCheckpointBlocks,
+  readCloudMetadataState
+} from './CloudMetadataSafetyPolicy';
+import {
   CloudSelectionReenablePhase,
+  VncAuthoritativeCompletionResult,
   VncSelectionFinalizeResult,
   cloudSelectionBarrierAfterRollback,
   cloudSelectionAfterAuthoritativePull,
   cloudSelectionAfterLocalPromotion,
   cloudSelectionLocalPromotionAllowed,
   cloudSelectionNativeFirstAllowed,
+  executeVncAuthoritativeCompletion,
   executeVncSelectionFinalize,
   normalizeCloudSelectionReenablePhase,
   vncSelectionPostCommitUploadAllowed,
@@ -363,6 +372,16 @@ interface VncSelectionReenableCheckpoint {
   raw: string;
   envelope: CloudDownloadTransactionEnvelope;
   payload: VncSelectionReenableTransactionPayload;
+}
+
+interface VncSelectionReenableCheckpointRead {
+  metadata: CloudMetadataReadResult;
+  checkpoint: VncSelectionReenableCheckpoint | null;
+}
+
+interface SelectionReenableBarrierSnapshot {
+  readable: boolean;
+  barriers: Record<string, string>;
 }
 
 export class CloudStore implements CryptoCloudStore {
@@ -727,7 +746,18 @@ export class CloudStore implements CryptoCloudStore {
       await this.migrateLocalExtensions();
       await this.migrateDeviceLocalHostTrust();
       await this.migrateLegacyVncRecords();
-      this.cloudBootstrapCompleted = this.readLocalMetadata(CLOUD_BOOTSTRAP_COMPLETED_KEY) === '1';
+      const bootstrapMetadata:
+        CloudMetadataReadResult =
+        this.readLocalMetadataState(
+          CLOUD_BOOTSTRAP_COMPLETED_KEY);
+      if (!cloudMetadataBoundaryReadable(
+        bootstrapMetadata)) {
+        throw new Error(
+          'cloud bootstrap metadata query failed');
+      }
+      this.cloudBootstrapCompleted =
+        bootstrapMetadata.state === 'present' &&
+        bootstrapMetadata.value === '1';
       // 本地库必须独立可用；云服务未开通或网络策略设置失败时仍要恢复缓存数据。
       this.initialized = true;
       this.syncSelection.init(context, this.currentScopeToken.ownerScopeId);
@@ -1013,24 +1043,36 @@ export class CloudStore implements CryptoCloudStore {
     table: string
   ): CloudSelectionReenablePhase | null {
     if (TABLES.indexOf(table) < 0) { return null; }
+    const snapshot:
+      SelectionReenableBarrierSnapshot =
+      this.selectionReenableBarrierSnapshot();
+    if (!snapshot.readable) {
+      return 'pending_pull';
+    }
     return normalizeCloudSelectionReenablePhase(
-      this.selectionReenableBarriers()[table]);
+      snapshot.barriers[table]);
   }
 
   beginSelectionReenableBarrier(table: string): boolean {
     if (TABLES.indexOf(table) < 0) { return false; }
-    const barriers: Record<string, string> =
-      this.selectionReenableBarriers();
-    barriers[table] = 'pending_pull';
-    return this.persistSelectionReenableBarriers(barriers);
+    const snapshot:
+      SelectionReenableBarrierSnapshot =
+      this.selectionReenableBarrierSnapshot();
+    if (!snapshot.readable) { return false; }
+    snapshot.barriers[table] = 'pending_pull';
+    return this.persistSelectionReenableBarriers(
+      snapshot.barriers);
   }
 
   abortSelectionReenableBarrier(table: string): boolean {
-    const barriers: Record<string, string> =
-      this.selectionReenableBarriers();
+    if (TABLES.indexOf(table) < 0) { return false; }
+    const snapshot:
+      SelectionReenableBarrierSnapshot =
+      this.selectionReenableBarrierSnapshot();
+    if (!snapshot.readable) { return false; }
     return this.persistSelectionReenableBarriers(
       this.selectionReenableBarriersWithout(
-        barriers, [table]));
+        snapshot.barriers, [table]));
   }
 
   restoreSelectionReenableBarrier(
@@ -1038,19 +1080,21 @@ export class CloudStore implements CryptoCloudStore {
     previousPhase: CloudSelectionReenablePhase | null
   ): boolean {
     if (TABLES.indexOf(table) < 0) { return false; }
-    const barriers: Record<string, string> =
-      this.selectionReenableBarriers();
+    const snapshot:
+      SelectionReenableBarrierSnapshot =
+      this.selectionReenableBarrierSnapshot();
+    if (!snapshot.readable) { return false; }
     const restored: CloudSelectionReenablePhase | null =
       cloudSelectionBarrierAfterRollback(
         previousPhase);
     if (restored === null) {
       return this.persistSelectionReenableBarriers(
         this.selectionReenableBarriersWithout(
-          barriers, [table]));
+          snapshot.barriers, [table]));
     }
-    barriers[table] = restored;
+    snapshot.barriers[table] = restored;
     return this.persistSelectionReenableBarriers(
-      barriers);
+      snapshot.barriers);
   }
 
   /**
@@ -1069,13 +1113,24 @@ export class CloudStore implements CryptoCloudStore {
     if (!this.store ||
       !this.vncSelectionExclusiveLeaseCurrent(
         lease) ||
-      settingsId.trim() === '' ||
-      this.readLocalMetadata(
-        VNC_SELECTION_REENABLE_TRANSACTION_KEY) !== '') {
+      settingsId.trim() === '') {
       return false;
     }
     try {
       this.store.beginTransaction();
+      const checkpointRead:
+        CloudMetadataReadResult =
+        this.readLocalMetadataState(
+          VNC_SELECTION_REENABLE_TRANSACTION_KEY);
+      const barrierSnapshot:
+        SelectionReenableBarrierSnapshot =
+        this.selectionReenableBarrierSnapshot();
+      if (!cloudMetadataAbsentProven(
+        checkpointRead) ||
+        !barrierSnapshot.readable) {
+        throw new Error(
+          'VNC selection safety metadata unavailable');
+      }
       const base: CloudDownloadTransactionPayload =
         this.captureCloudDownloadPayload();
       const payload:
@@ -1100,18 +1155,23 @@ export class CloudStore implements CryptoCloudStore {
           this.currentScopeToken.storeIdentity,
           this.currentScopeToken.generation,
           JSON.stringify(payload));
+      const encodedEnvelope: string =
+        envelope === null
+          ? '' : JSON.stringify(envelope);
       if (envelope === null ||
         !this.writeLocalMetadata(
           VNC_SELECTION_REENABLE_TRANSACTION_KEY,
-          JSON.stringify(envelope))) {
+          encodedEnvelope) ||
+        !this.localMetadataValueMatches(
+          VNC_SELECTION_REENABLE_TRANSACTION_KEY,
+          encodedEnvelope)) {
         throw new Error(
           'VNC selection checkpoint persistence failed');
       }
-      const barriers: Record<string, string> =
-        this.selectionReenableBarriers();
-      barriers[VNC_CLOUD_TABLE] = 'pending_pull';
+      barrierSnapshot.barriers[
+        VNC_CLOUD_TABLE] = 'pending_pull';
       if (!this.persistSelectionReenableBarriers(
-        barriers)) {
+        barrierSnapshot.barriers)) {
         throw new Error(
           'VNC pending barrier persistence failed');
       }
@@ -1130,8 +1190,9 @@ export class CloudStore implements CryptoCloudStore {
     table: string
   ): Promise<CloudSyncOperationResult> {
     if (table === VNC_CLOUD_TABLE &&
-      this.readLocalMetadata(
-        VNC_SELECTION_REENABLE_TRANSACTION_KEY) !== '') {
+      cloudMetadataCheckpointBlocks(
+        this.readLocalMetadataState(
+          VNC_SELECTION_REENABLE_TRANSACTION_KEY))) {
       return {
         ok: false,
         source: 'selectionReenable',
@@ -1176,12 +1237,8 @@ export class CloudStore implements CryptoCloudStore {
         failureKind: 'unknown'
       };
     }
-    let finalized: boolean = false;
-    if (result.ok &&
-      this.stageAuthoritativeVncSelectionBeforeImage()) {
-      finalized =
-        this.finalizeVncSelectionReenableTransaction();
-    }
+    const finalized: boolean = result.ok &&
+      this.finalizeVncSelectionReenableTransaction();
     if (result.ok && finalized) {
       return result;
     }
@@ -1203,42 +1260,55 @@ export class CloudStore implements CryptoCloudStore {
   }
 
   markStartupSelectionReenablePulled(): boolean {
-    const barriers: Record<string, string> =
-      this.selectionReenableBarriers();
-    const tables: string[] = Object.keys(barriers);
+    const snapshot:
+      SelectionReenableBarrierSnapshot =
+      this.selectionReenableBarrierSnapshot();
+    if (!snapshot.readable) { return false; }
+    const tables: string[] =
+      Object.keys(snapshot.barriers);
     return this.markSelectionReenablePulled(tables);
   }
 
   prepareSelectionReenablePromotions(): boolean {
-    const barriers: Record<string, string> =
-      this.selectionReenableBarriers();
-    const tables: string[] = Object.keys(barriers)
+    const snapshot:
+      SelectionReenableBarrierSnapshot =
+      this.selectionReenableBarrierSnapshot();
+    if (!snapshot.readable) { return false; }
+    const tables: string[] =
+      Object.keys(snapshot.barriers)
       .filter((table: string): boolean =>
-        barriers[table] === 'pull_complete');
+        snapshot.barriers[table] ===
+          'pull_complete');
     if (tables.length === 0) { return true; }
     if (tables.indexOf(VNC_CLOUD_TABLE) >= 0 &&
       !this.reconcileVncSyncSelection(true)) {
       return false;
     }
     for (let i = 0; i < tables.length; i++) {
-      barriers[tables[i]] =
+      snapshot.barriers[tables[i]] =
         cloudSelectionAfterLocalPromotion(
           'pull_complete');
     }
     return this.persistSelectionReenableBarriers(
-      barriers);
+      snapshot.barriers);
   }
 
   releaseSelectionReenableBarriers(): boolean {
-    const barriers: Record<string, string> =
-      this.selectionReenableBarriers();
-    const tables: string[] = Object.keys(barriers)
+    const snapshot:
+      SelectionReenableBarrierSnapshot =
+      this.selectionReenableBarrierSnapshot();
+    if (!snapshot.readable) { return false; }
+    const tables: string[] =
+      Object.keys(snapshot.barriers)
       .filter((table: string): boolean =>
-        barriers[table] === 'promotion_complete');
+        snapshot.barriers[table] ===
+          'promotion_complete');
     if (tables.length === 0) { return true; }
     if (!this.persistSelectionReenableBarriers(
       this.selectionReenableBarriersWithout(
-        barriers, tables))) { return false; }
+        snapshot.barriers, tables))) {
+      return false;
+    }
     for (let i = 0; i < tables.length; i++) {
       if (tables[i] === VNC_CLOUD_TABLE) {
         void CloudSyncCoordinator.getInstance()
@@ -1270,7 +1340,11 @@ export class CloudStore implements CryptoCloudStore {
   }
 
   markCloudBootstrapCompleted(): boolean {
-    if (!this.store || !this.writeLocalMetadata(CLOUD_BOOTSTRAP_COMPLETED_KEY, '1')) {
+    if (!this.store ||
+      !this.writeLocalMetadata(
+        CLOUD_BOOTSTRAP_COMPLETED_KEY, '1') ||
+      !this.localMetadataValueMatches(
+        CLOUD_BOOTSTRAP_COMPLETED_KEY, '1')) {
       return false;
     }
     this.cloudBootstrapCompleted = true;
@@ -1278,11 +1352,22 @@ export class CloudStore implements CryptoCloudStore {
   }
 
   private loadCloudSyncDurableState(): CloudSyncDurableState | null {
-    const raw: string = this.readLocalMetadataStrict(
-      CLOUD_SYNC_DURABLE_STATE_KEY);
-    if (raw.length === 0) { return null; }
+    const metadata: CloudMetadataReadResult =
+      this.readLocalMetadataState(
+        CLOUD_SYNC_DURABLE_STATE_KEY);
+    if (metadata.state === 'error') {
+      hilog.error(0x0001, 'CloudSync',
+        '云同步持久状态查询失败，已阻止传输并等待恢复');
+      return corruptedCloudSyncDurableState(
+        this.cloudAccountBinding,
+        this.cloudBootstrapCompleted);
+    }
+    if (metadata.state === 'absent') {
+      return null;
+    }
     try {
-      return JSON.parse(raw) as CloudSyncDurableState;
+      return JSON.parse(metadata.value) as
+        CloudSyncDurableState;
     } catch (err) {
       hilog.error(0x0001, 'CloudSync',
         '云同步持久状态损坏，已阻止传输并等待恢复: ' + safeError(err));
@@ -1301,8 +1386,14 @@ export class CloudStore implements CryptoCloudStore {
       return false;
     }
     try {
+      const encoded: string =
+        JSON.stringify(state);
       return this.writeLocalMetadata(
-        CLOUD_SYNC_DURABLE_STATE_KEY, JSON.stringify(state));
+        CLOUD_SYNC_DURABLE_STATE_KEY,
+        encoded) &&
+        this.localMetadataValueMatches(
+          CLOUD_SYNC_DURABLE_STATE_KEY,
+          encoded);
     } catch (err) {
       hilog.error(0x0001, 'CloudSync',
         '云同步持久状态写入失败: ' + safeError(err));
@@ -1376,6 +1467,23 @@ export class CloudStore implements CryptoCloudStore {
         this.rollbackCloudDownloadTransaction(),
       completeSelectionReenableDownload: (
         tables: string[]): boolean => {
+        if (tables.indexOf(
+          VNC_CLOUD_TABLE) >= 0) {
+          const checkpointRead:
+            CloudMetadataReadResult =
+            this.readLocalMetadataState(
+              VNC_SELECTION_REENABLE_TRANSACTION_KEY);
+          if (!cloudMetadataBoundaryReadable(
+            checkpointRead)) {
+            return false;
+          }
+          if (checkpointRead.state ===
+            'present') {
+            return this
+              .completeVncAuthoritativeCloudFirst(
+                tables);
+          }
+        }
         if (!this.reconcileStartupMutationSnapshot(
           tables)) {
           return false;
@@ -1434,15 +1542,36 @@ export class CloudStore implements CryptoCloudStore {
     this.cloudDownloadCheckpointOperation = null;
   }
 
-  private selectionReenableBarriers():
+  private failClosedSelectionReenableBarriers():
     Record<string, string> {
     const result: Record<string, string> = {};
-    const raw: string = this.readLocalMetadata(
+    for (let i = 0; i < TABLES.length; i++) {
+      result[TABLES[i]] = 'pending_pull';
+    }
+    return result;
+  }
+
+  private selectionReenableBarrierSnapshot():
+    SelectionReenableBarrierSnapshot {
+    const result: Record<string, string> = {};
+    const metadata: CloudMetadataReadResult =
+      this.readLocalMetadataState(
       CLOUD_SELECTION_REENABLE_BARRIERS_KEY);
-    if (raw === '') { return result; }
+    if (!cloudMetadataBoundaryReadable(
+      metadata)) {
+      return {
+        readable: false,
+        barriers:
+          this.failClosedSelectionReenableBarriers()
+      };
+    }
+    if (metadata.state === 'absent') {
+      return { readable: true, barriers: result };
+    }
     try {
       const parsed: Record<string, Object> =
-        JSON.parse(raw) as Record<string, Object>;
+        JSON.parse(metadata.value) as
+          Record<string, Object>;
       const keys: string[] = Object.keys(parsed);
       for (let i = 0; i < keys.length; i++) {
         const phase: CloudSelectionReenablePhase | null =
@@ -1454,13 +1583,13 @@ export class CloudStore implements CryptoCloudStore {
         }
       }
     } catch (_error) {
-      // A malformed barrier is not equivalent to "no barrier". Use a
-      // synthetic all-table barrier so automatic upload remains fail-closed.
-      for (let i = 0; i < TABLES.length; i++) {
-        result[TABLES[i]] = 'pending_pull';
-      }
+      return {
+        readable: false,
+        barriers:
+          this.failClosedSelectionReenableBarriers()
+      };
     }
-    return result;
+    return { readable: true, barriers: result };
   }
 
   private persistSelectionReenableBarriers(
@@ -1469,11 +1598,19 @@ export class CloudStore implements CryptoCloudStore {
     const keys: string[] = Object.keys(barriers);
     if (keys.length === 0) {
       return this.deleteLocalMetadata(
-        CLOUD_SELECTION_REENABLE_BARRIERS_KEY);
+        CLOUD_SELECTION_REENABLE_BARRIERS_KEY) &&
+        cloudMetadataAbsentProven(
+          this.readLocalMetadataState(
+            CLOUD_SELECTION_REENABLE_BARRIERS_KEY));
     }
+    const encoded: string =
+      JSON.stringify(barriers);
     return this.writeLocalMetadata(
       CLOUD_SELECTION_REENABLE_BARRIERS_KEY,
-      JSON.stringify(barriers));
+      encoded) &&
+      this.localMetadataValueMatches(
+        CLOUD_SELECTION_REENABLE_BARRIERS_KEY,
+        encoded);
   }
 
   private selectionReenableBarriersWithout(
@@ -1493,26 +1630,33 @@ export class CloudStore implements CryptoCloudStore {
   private selectionReenableBlocked(
     table: string
   ): boolean {
+    const snapshot:
+      SelectionReenableBarrierSnapshot =
+      this.selectionReenableBarrierSnapshot();
+    if (!snapshot.readable) { return true; }
     const phase: CloudSelectionReenablePhase | null =
       normalizeCloudSelectionReenablePhase(
-        this.selectionReenableBarriers()[table]);
+        snapshot.barriers[table]);
     return !cloudSelectionNativeFirstAllowed(phase);
   }
 
   private markSelectionReenablePulled(
     tables: string[]
   ): boolean {
-    const barriers: Record<string, string> =
-      this.selectionReenableBarriers();
+    const snapshot:
+      SelectionReenableBarrierSnapshot =
+      this.selectionReenableBarrierSnapshot();
+    if (!snapshot.readable) { return false; }
     for (let i = 0; i < tables.length; i++) {
-      if (barriers[tables[i]] === 'pending_pull') {
-        barriers[tables[i]] =
+      if (snapshot.barriers[tables[i]] ===
+        'pending_pull') {
+        snapshot.barriers[tables[i]] =
           cloudSelectionAfterAuthoritativePull(
             'pending_pull');
       }
     }
     return this.persistSelectionReenableBarriers(
-      barriers);
+      snapshot.barriers);
   }
 
   private captureCloudDownloadPayload():
@@ -1527,21 +1671,24 @@ export class CloudStore implements CryptoCloudStore {
     };
   }
 
-  private readVncSelectionReenableCheckpoint():
-    VncSelectionReenableCheckpoint | null {
-    const raw: string = this.readLocalMetadata(
-      VNC_SELECTION_REENABLE_TRANSACTION_KEY);
-    if (raw === '') { return null; }
+  private readVncSelectionReenableCheckpointState():
+    VncSelectionReenableCheckpointRead {
+    const metadata: CloudMetadataReadResult =
+      this.readLocalMetadataState(
+        VNC_SELECTION_REENABLE_TRANSACTION_KEY);
+    if (metadata.state !== 'present') {
+      return { metadata, checkpoint: null };
+    }
     const envelope: CloudDownloadTransactionEnvelope | null =
       parseCloudDownloadTransactionEnvelope(
-        raw,
+        metadata.value,
         this.currentScopeToken.ownerScopeId,
         this.currentScopeToken.storeIdentity,
         this.currentScopeToken.generation);
     if (envelope === null ||
       envelope.operation !==
         'vnc_scope_reenable') {
-      return null;
+      return { metadata, checkpoint: null };
     }
     try {
       const payload:
@@ -1555,19 +1702,33 @@ export class CloudStore implements CryptoCloudStore {
         (payload.previousBarrier !== '' &&
           normalizeCloudSelectionReenablePhase(
             payload.previousBarrier) === null)) {
-        return null;
+        return { metadata, checkpoint: null };
       }
       for (let i = 0;
         i < payload.previousScopes.length; i++) {
         if (typeof payload.previousScopes[i] !==
           'string') {
-          return null;
+          return { metadata, checkpoint: null };
         }
       }
-      return { raw, envelope, payload };
+      return {
+        metadata,
+        checkpoint: {
+          raw: metadata.value,
+          envelope,
+          payload
+        }
+      };
     } catch (_error) {
-      return null;
+      return { metadata, checkpoint: null };
     }
+  }
+
+  private readVncSelectionReenableCheckpoint():
+    VncSelectionReenableCheckpoint | null {
+    return this
+      .readVncSelectionReenableCheckpointState()
+      .checkpoint;
   }
 
   private cloneMetadataRow(
@@ -1654,7 +1815,7 @@ export class CloudStore implements CryptoCloudStore {
    * spliced back into that image so finalization failure undoes only the
    * user's uncommitted scope change.
    */
-  private stageAuthoritativeVncSelectionBeforeImage():
+  private stageAuthoritativeVncSelectionBeforeImageWithinTransaction():
     boolean {
     if (!this.store) { return false; }
     const checkpoint:
@@ -1664,95 +1825,93 @@ export class CloudStore implements CryptoCloudStore {
       checkpoint.payload.stage !== 'prepared') {
       return false;
     }
-    try {
-      this.store.beginTransaction();
-      const current: CloudDownloadTransactionPayload =
-        this.captureCloudDownloadPayload();
-      const rollbackRows = vncSettingsRollbackRows(
-        current.snapshot[VNC_CLOUD_TABLE] || [],
-        current.localTables[VNC_LOCAL_TABLE] || [],
-        checkpoint.payload.localTables[
-          VNC_LOCAL_TABLE] || [],
-        checkpoint.payload.settingsId);
-      current.snapshot[VNC_CLOUD_TABLE] =
-        rollbackRows.cloudRows;
-      current.localTables[VNC_LOCAL_TABLE] =
-        rollbackRows.localRows;
-      current.mutationJournal =
-        vncSettingsRollbackJournal(
-          current.mutationJournal,
-          checkpoint.payload.mutationJournal,
-          checkpoint.payload.settingsId,
-          VNC_CLOUD_TABLE, VNC_LOCAL_TABLE);
-      const previousBarrier:
-        CloudSelectionReenablePhase | null =
-        checkpoint.payload.previousBarrier === ''
-          ? null
-          : normalizeCloudSelectionReenablePhase(
-            checkpoint.payload.previousBarrier);
-      current.metadata =
-        this.metadataWithVncBarrier(
-          this.metadataWithoutKeys(
-            current.metadata,
-            [
-              VNC_SELECTION_REENABLE_TRANSACTION_KEY,
-              CLOUD_DOWNLOAD_TRANSACTION_KEY
-            ]),
-          previousBarrier);
-      const next:
-        VncSelectionReenableTransactionPayload = {
-        snapshot: current.snapshot,
-        extensions: current.extensions,
-        metadata: current.metadata,
-        mutationJournal:
-          current.mutationJournal,
-        localTables: current.localTables,
-        stage: 'authoritative',
-        previousScopes:
-          checkpoint.payload.previousScopes.slice(),
-        previousBarrier:
-          checkpoint.payload.previousBarrier,
-        settingsId:
-          checkpoint.payload.settingsId
-      };
-      const envelope:
-        CloudDownloadTransactionEnvelope | null =
-        cloudDownloadTransactionEnvelope(
-          'vnc_scope_reenable',
-          this.currentScopeToken.ownerScopeId,
-          this.currentScopeToken.storeIdentity,
-          this.currentScopeToken.generation,
-          JSON.stringify(next));
-      if (envelope === null ||
-        !this.writeLocalMetadata(
-          VNC_SELECTION_REENABLE_TRANSACTION_KEY,
-          JSON.stringify(envelope))) {
-        throw new Error(
-          'authoritative VNC checkpoint persistence failed');
-      }
-      this.store.commit();
-      return true;
-    } catch (err) {
-      try { this.store.rollBack(); } catch (_ignored) {}
-      hilog.error(0x0001, 'CloudSync',
-        'VNC 权威 before-image 建立失败: ' +
-        safeError(err));
+    const current: CloudDownloadTransactionPayload =
+      this.captureCloudDownloadPayload();
+    const rollbackRows = vncSettingsRollbackRows(
+      current.snapshot[VNC_CLOUD_TABLE] || [],
+      current.localTables[VNC_LOCAL_TABLE] || [],
+      checkpoint.payload.localTables[
+        VNC_LOCAL_TABLE] || [],
+      checkpoint.payload.settingsId);
+    current.snapshot[VNC_CLOUD_TABLE] =
+      rollbackRows.cloudRows;
+    current.localTables[VNC_LOCAL_TABLE] =
+      rollbackRows.localRows;
+    current.mutationJournal =
+      vncSettingsRollbackJournal(
+        current.mutationJournal,
+        checkpoint.payload.mutationJournal,
+        checkpoint.payload.settingsId,
+        VNC_CLOUD_TABLE, VNC_LOCAL_TABLE);
+    const previousBarrier:
+      CloudSelectionReenablePhase | null =
+      checkpoint.payload.previousBarrier === ''
+        ? null
+        : normalizeCloudSelectionReenablePhase(
+          checkpoint.payload.previousBarrier);
+    current.metadata =
+      this.metadataWithVncBarrier(
+        this.metadataWithoutKeys(
+          current.metadata,
+          [
+            VNC_SELECTION_REENABLE_TRANSACTION_KEY,
+            CLOUD_DOWNLOAD_TRANSACTION_KEY
+          ]),
+        previousBarrier);
+    const next:
+      VncSelectionReenableTransactionPayload = {
+      snapshot: current.snapshot,
+      extensions: current.extensions,
+      metadata: current.metadata,
+      mutationJournal:
+        current.mutationJournal,
+      localTables: current.localTables,
+      stage: 'authoritative',
+      previousScopes:
+        checkpoint.payload.previousScopes.slice(),
+      previousBarrier:
+        checkpoint.payload.previousBarrier,
+      settingsId:
+        checkpoint.payload.settingsId
+    };
+    const envelope:
+      CloudDownloadTransactionEnvelope | null =
+      cloudDownloadTransactionEnvelope(
+        'vnc_scope_reenable',
+        this.currentScopeToken.ownerScopeId,
+        this.currentScopeToken.storeIdentity,
+        this.currentScopeToken.generation,
+        JSON.stringify(next));
+    const encodedEnvelope: string =
+      envelope === null
+        ? '' : JSON.stringify(envelope);
+    if (envelope === null ||
+      !this.writeLocalMetadata(
+        VNC_SELECTION_REENABLE_TRANSACTION_KEY,
+        encodedEnvelope) ||
+      !this.localMetadataValueMatches(
+        VNC_SELECTION_REENABLE_TRANSACTION_KEY,
+        encodedEnvelope)) {
       return false;
     }
+    return true;
   }
 
   private persistVncSelectionBarrierPhase(
     expected: CloudSelectionReenablePhase,
     next: CloudSelectionReenablePhase
   ): boolean {
-    const barriers: Record<string, string> =
-      this.selectionReenableBarriers();
-    if (barriers[VNC_CLOUD_TABLE] !== expected) {
+    const snapshot:
+      SelectionReenableBarrierSnapshot =
+      this.selectionReenableBarrierSnapshot();
+    if (!snapshot.readable ||
+      snapshot.barriers[VNC_CLOUD_TABLE] !==
+        expected) {
       return false;
     }
-    barriers[VNC_CLOUD_TABLE] = next;
+    snapshot.barriers[VNC_CLOUD_TABLE] = next;
     return this.persistSelectionReenableBarriers(
-      barriers);
+      snapshot.barriers);
   }
 
   private promoteVncSelectionWithinTransaction(
@@ -1825,15 +1984,19 @@ export class CloudStore implements CryptoCloudStore {
             'pull_complete',
             'promotion_complete'),
         releaseBarrier: (): boolean => {
-          const barriers: Record<string, string> =
-            this.selectionReenableBarriers();
-          if (barriers[VNC_CLOUD_TABLE] !==
+          const snapshot:
+            SelectionReenableBarrierSnapshot =
+            this.selectionReenableBarrierSnapshot();
+          if (!snapshot.readable ||
+            snapshot.barriers[
+              VNC_CLOUD_TABLE] !==
             'promotion_complete') {
             return false;
           }
           return this.persistSelectionReenableBarriers(
             this.selectionReenableBarriersWithout(
-              barriers, [VNC_CLOUD_TABLE]));
+              snapshot.barriers,
+              [VNC_CLOUD_TABLE]));
         },
         deleteCheckpoint: (): boolean =>
           this.deleteLocalMetadata(
@@ -1846,13 +2009,23 @@ export class CloudStore implements CryptoCloudStore {
           store.rollBack();
         }
       });
+    const checkpointRead:
+      CloudMetadataReadResult =
+      this.readLocalMetadataState(
+        VNC_SELECTION_REENABLE_TRANSACTION_KEY);
+    const barrierSnapshot:
+      SelectionReenableBarrierSnapshot =
+      this.selectionReenableBarrierSnapshot();
     const uploadAllowed: boolean =
       vncSelectionPostCommitUploadAllowed(
         finalized,
-        this.readLocalMetadata(
-          VNC_SELECTION_REENABLE_TRANSACTION_KEY) !== '',
-        this.selectionReenableBarrierPhase(
-          VNC_CLOUD_TABLE));
+        !cloudMetadataAbsentProven(
+          checkpointRead),
+        barrierSnapshot.readable
+          ? normalizeCloudSelectionReenablePhase(
+            barrierSnapshot.barriers[
+              VNC_CLOUD_TABLE])
+          : 'pending_pull');
     if (uploadAllowed) {
       void CloudSyncCoordinator.getInstance()
         .requestVncTableAutomaticPush();
@@ -1893,8 +2066,9 @@ export class CloudStore implements CryptoCloudStore {
     operation: CloudDownloadTransactionOperation
   ): boolean {
     if (!this.store ||
-      this.readLocalMetadata(
-        CLOUD_DOWNLOAD_TRANSACTION_KEY) !== '') {
+      !cloudMetadataAbsentProven(
+        this.readLocalMetadataState(
+          CLOUD_DOWNLOAD_TRANSACTION_KEY))) {
       return false;
     }
     try {
@@ -1923,10 +2097,16 @@ export class CloudStore implements CryptoCloudStore {
           this.currentScopeToken.storeIdentity,
           this.currentScopeToken.generation,
           payloadJson);
+      const encodedEnvelope: string =
+        envelope === null
+          ? '' : JSON.stringify(envelope);
       if (envelope === null ||
         !this.writeLocalMetadata(
           CLOUD_DOWNLOAD_TRANSACTION_KEY,
-          JSON.stringify(envelope))) {
+          encodedEnvelope) ||
+        !this.localMetadataValueMatches(
+          CLOUD_DOWNLOAD_TRANSACTION_KEY,
+          encodedEnvelope)) {
         throw new Error(
           'cloud download transaction persistence failed');
       }
@@ -1946,7 +2126,76 @@ export class CloudStore implements CryptoCloudStore {
   private completeCloudDownloadTransaction(): boolean {
     if (this.cloudDownloadCheckpointOperation === null ||
       !this.deleteLocalMetadata(
-        CLOUD_DOWNLOAD_TRANSACTION_KEY)) {
+        CLOUD_DOWNLOAD_TRANSACTION_KEY) ||
+      !cloudMetadataAbsentProven(
+        this.readLocalMetadataState(
+          CLOUD_DOWNLOAD_TRANSACTION_KEY))) {
+      return false;
+    }
+    this.clearManualDownloadSnapshot();
+    return true;
+  }
+
+  private completeVncAuthoritativeCloudFirst(
+    tables: string[]
+  ): boolean {
+    if (!this.store ||
+      this.cloudDownloadCheckpointOperation !==
+        'selection_reenable' ||
+      tables.indexOf(VNC_CLOUD_TABLE) < 0) {
+      return false;
+    }
+    const store: relationalStore.RdbStore =
+      this.store;
+    const completed:
+      VncAuthoritativeCompletionResult =
+      executeVncAuthoritativeCompletion({
+        begin: (): boolean => {
+          store.beginTransaction();
+          return true;
+        },
+        rebaseAuthoritativeCheckpoint:
+          (): boolean =>
+            this
+              .stageAuthoritativeVncSelectionBeforeImageWithinTransaction(),
+        reconcileJournal: (): boolean =>
+          this
+            .reconcileStartupMutationSnapshotWithinTransaction(
+              tables),
+        deleteDownloadCheckpoint: (): boolean =>
+          this.deleteLocalMetadata(
+            CLOUD_DOWNLOAD_TRANSACTION_KEY),
+        commit: (): boolean => {
+          store.commit();
+          return true;
+        },
+        rollback: (): void => {
+          store.rollBack();
+        }
+      });
+    if (!completed.ok) {
+      hilog.error(0x0001, 'CloudSync',
+        'VNC cloud-first 权威 checkpoint 原子提交失败 step=' +
+        completed.failedStep);
+      return false;
+    }
+    const downloadCheckpoint:
+      CloudMetadataReadResult =
+      this.readLocalMetadataState(
+        CLOUD_DOWNLOAD_TRANSACTION_KEY);
+    const vncCheckpoint:
+      VncSelectionReenableCheckpointRead =
+      this
+        .readVncSelectionReenableCheckpointState();
+    if (!cloudMetadataAbsentProven(
+      downloadCheckpoint) ||
+      vncCheckpoint.metadata.state !==
+        'present' ||
+      vncCheckpoint.checkpoint === null ||
+      vncCheckpoint.checkpoint.payload.stage !==
+        'authoritative') {
+      hilog.error(0x0001, 'CloudSync',
+        'VNC cloud-first 权威 checkpoint 提交后校验失败');
       return false;
     }
     this.clearManualDownloadSnapshot();
@@ -1964,22 +2213,31 @@ export class CloudStore implements CryptoCloudStore {
         payload.metadata,
         payload.mutationJournal,
         payload.localTables));
-    if (restored) {
+    const checkpointCleared: boolean =
+      restored &&
       this.deleteLocalMetadata(
-        CLOUD_DOWNLOAD_TRANSACTION_KEY);
-    }
+        CLOUD_DOWNLOAD_TRANSACTION_KEY) &&
+      cloudMetadataAbsentProven(
+        this.readLocalMetadataState(
+          CLOUD_DOWNLOAD_TRANSACTION_KEY));
     this.clearManualDownloadSnapshot();
-    return restored;
+    return restored && checkpointCleared;
   }
 
   private async recoverPendingCloudDownloadTransaction():
     Promise<boolean> {
-    const raw: string = this.readLocalMetadata(
+    const metadata: CloudMetadataReadResult =
+      this.readLocalMetadataState(
       CLOUD_DOWNLOAD_TRANSACTION_KEY);
-    if (raw === '') { return true; }
+    if (metadata.state === 'absent') {
+      return true;
+    }
+    if (metadata.state === 'error') {
+      return false;
+    }
     const envelope: CloudDownloadTransactionEnvelope | null =
       parseCloudDownloadTransactionEnvelope(
-        raw,
+        metadata.value,
         this.currentScopeToken.ownerScopeId,
         this.currentScopeToken.storeIdentity,
         this.currentScopeToken.generation);
@@ -1996,8 +2254,13 @@ export class CloudStore implements CryptoCloudStore {
           payload.mutationJournal,
           payload.localTables);
       if (!restored) { return false; }
-      this.deleteLocalMetadata(
-        CLOUD_DOWNLOAD_TRANSACTION_KEY);
+      if (!this.deleteLocalMetadata(
+        CLOUD_DOWNLOAD_TRANSACTION_KEY) ||
+        !cloudMetadataAbsentProven(
+          this.readLocalMetadataState(
+            CLOUD_DOWNLOAD_TRANSACTION_KEY))) {
+        return false;
+      }
       hilog.warn(0x0001, 'CloudSync',
         '已回滚上次未终结的云下载事务 operation=' +
         envelope.operation);
@@ -2213,6 +2476,27 @@ export class CloudStore implements CryptoCloudStore {
           'VNC recovery finalization failed');
       }
       this.store.commit();
+      const checkpointMetadata:
+        CloudMetadataReadResult =
+        this.readLocalMetadataState(
+          VNC_SELECTION_REENABLE_TRANSACTION_KEY);
+      const barrierSnapshot:
+        SelectionReenableBarrierSnapshot =
+        this.selectionReenableBarrierSnapshot();
+      const currentBarrier:
+        CloudSelectionReenablePhase | null =
+        barrierSnapshot.readable
+          ? normalizeCloudSelectionReenablePhase(
+            barrierSnapshot.barriers[
+              VNC_CLOUD_TABLE])
+          : 'pending_pull';
+      if (!cloudMetadataAbsentProven(
+        checkpointMetadata) ||
+        !barrierSnapshot.readable ||
+        currentBarrier !== previousBarrier) {
+        throw new Error(
+          'VNC recovery post-commit metadata verification failed');
+      }
       this.notifyDataSnapshotChanged();
       return true;
     } catch (err) {
@@ -2227,9 +2511,19 @@ export class CloudStore implements CryptoCloudStore {
 
   private async recoverPendingVncSelectionReenableTransaction():
     Promise<boolean> {
-    const raw: string = this.readLocalMetadata(
-      VNC_SELECTION_REENABLE_TRANSACTION_KEY);
-    if (raw === '') { return true; }
+    const checkpointRead:
+      VncSelectionReenableCheckpointRead =
+      this
+        .readVncSelectionReenableCheckpointState();
+    if (checkpointRead.metadata.state ===
+      'absent') {
+      return true;
+    }
+    if (checkpointRead.metadata.state ===
+        'error' ||
+      checkpointRead.checkpoint === null) {
+      return false;
+    }
     const recovered: boolean =
       await this
         .rollbackVncSelectionReenableTransactionInternal();
@@ -2249,11 +2543,33 @@ export class CloudStore implements CryptoCloudStore {
     tables: string[]
   ): boolean {
     if (!this.store) { return false; }
+    try {
+      this.store.beginTransaction();
+      if (!this
+        .reconcileStartupMutationSnapshotWithinTransaction(
+          tables)) {
+        throw new Error(
+          'record-level journal reconcile failed');
+      }
+      this.store.commit();
+      return true;
+    } catch (err) {
+      try { this.store.rollBack(); } catch (_ignored) {}
+      hilog.error(0x0001, 'CloudSync',
+        '启动 journal 记录级 reconcile 失败: ' +
+        safeError(err));
+      return false;
+    }
+  }
+
+  private reconcileStartupMutationSnapshotWithinTransaction(
+    tables: string[]
+  ): boolean {
+    if (!this.store) { return false; }
     const payload: CloudDownloadTransactionPayload | null =
       this.cloudDownloadPayloadFromMemory();
     if (payload === null) { return false; }
     try {
-      this.store.beginTransaction();
       for (let i = 0; i < tables.length; i++) {
         const table: string = tables[i];
         if (TABLES.indexOf(table) < 0) { continue; }
@@ -2322,12 +2638,10 @@ export class CloudStore implements CryptoCloudStore {
           }
         }
       }
-      this.store.commit();
       return true;
     } catch (err) {
-      try { this.store.rollBack(); } catch (_ignored) {}
       hilog.error(0x0001, 'CloudSync',
-        '启动 journal 记录级 reconcile 失败: ' +
+        '事务内 journal 记录级 reconcile 失败: ' +
         safeError(err));
       return false;
     }
@@ -3006,8 +3320,22 @@ export class CloudStore implements CryptoCloudStore {
       if (markRestoredNotUploaded && !this.writeLocalMetadata(RESTORED_NOT_UPLOADED_KEY, '1')) {
         throw new Error('set restored upload marker failed');
       }
+      const bootstrapMetadata:
+        CloudMetadataReadResult =
+        this.readLocalMetadataState(
+          CLOUD_BOOTSTRAP_COMPLETED_KEY);
+      if (!cloudMetadataBoundaryReadable(
+        bootstrapMetadata)) {
+        throw new Error(
+          'restored bootstrap metadata query failed');
+      }
+      const restoredBootstrapCompleted:
+        boolean =
+        bootstrapMetadata.state === 'present' &&
+        bootstrapMetadata.value === '1';
       this.store.commit();
-      this.cloudBootstrapCompleted = this.readLocalMetadata(CLOUD_BOOTSTRAP_COMPLETED_KEY) === '1';
+      this.cloudBootstrapCompleted =
+        restoredBootstrapCompleted;
       this.localRestoreActive = false;
       if (publishReload) {
         // A restored crypto parameter set can belong to another password. Do
@@ -4188,27 +4516,63 @@ export class CloudStore implements CryptoCloudStore {
       '加密数据已锁定，请先解锁后再保存'));
   }
 
+  private readLocalMetadataState(
+    key: string
+  ): CloudMetadataReadResult {
+    if (!this.store || key === '') {
+      return { state: 'error', value: '' };
+    }
+    const store: relationalStore.RdbStore =
+      this.store;
+    return readCloudMetadataState(
+      (): string | null => {
+        let rows:
+          relationalStore.ResultSet | null = null;
+        try {
+          const predicates =
+            new relationalStore.RdbPredicates(
+              LOCAL_METADATA_TABLE);
+          predicates.equalTo('key', key);
+          rows = store.querySync(predicates);
+          if (!rows.goToFirstRow()) {
+            return null;
+          }
+          return rows.getString(
+            rows.getColumnIndex('value'));
+        } finally {
+          if (rows !== null) {
+            rows.close();
+          }
+        }
+      });
+  }
+
   private readLocalMetadata(key: string): string {
-    if (!this.store || key === '') { return ''; }
-    try {
-      const predicates = new relationalStore.RdbPredicates(LOCAL_METADATA_TABLE);
-      predicates.equalTo('key', key);
-      const rows = this.store.querySync(predicates);
-      const value: string = rows.goToFirstRow() ? rows.getString(rows.getColumnIndex('value')) : '';
-      rows.close();
-      return value;
-    } catch (_e) { return ''; }
+    const result: CloudMetadataReadResult =
+      this.readLocalMetadataState(key);
+    return result.state === 'present'
+      ? result.value : '';
   }
 
   private readLocalMetadataStrict(key: string): string {
-    if (!this.store || key === '') { throw new Error('metadata store unavailable'); }
-    const predicates = new relationalStore.RdbPredicates(LOCAL_METADATA_TABLE);
-    predicates.equalTo('key', key);
-    const rows: relationalStore.ResultSet = this.store.querySync(predicates);
-    const value: string = rows.goToFirstRow()
-      ? rows.getString(rows.getColumnIndex('value')) : '';
-    rows.close();
-    return value;
+    const result: CloudMetadataReadResult =
+      this.readLocalMetadataState(key);
+    if (!cloudMetadataBoundaryReadable(result)) {
+      throw new Error(
+        'metadata query failed key=' + key);
+    }
+    return result.state === 'present'
+      ? result.value : '';
+  }
+
+  private localMetadataValueMatches(
+    key: string,
+    expected: string
+  ): boolean {
+    const result: CloudMetadataReadResult =
+      this.readLocalMetadataState(key);
+    return result.state === 'present' &&
+      result.value === expected;
   }
 
   private verifyStoreIdentity(): void {
@@ -4604,7 +4968,12 @@ export class CloudStore implements CryptoCloudStore {
   }
 
   hasRestoredNotUploaded(): boolean {
-    return this.readLocalMetadata(RESTORED_NOT_UPLOADED_KEY) === '1';
+    const metadata: CloudMetadataReadResult =
+      this.readLocalMetadataState(
+        RESTORED_NOT_UPLOADED_KEY);
+    return metadata.state === 'error' ||
+      (metadata.state === 'present' &&
+        metadata.value === '1');
   }
 
   clearRestoredNotUploaded(): boolean {

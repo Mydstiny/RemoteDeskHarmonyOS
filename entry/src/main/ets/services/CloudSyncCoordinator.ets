@@ -1568,7 +1568,11 @@ export class CloudSyncCoordinator {
 
   private restoreUploadBlocked(): boolean {
     if (!this.hooks || !this.hooks.hasRestoredNotUploaded) { return false; }
-    try { return this.hooks.hasRestoredNotUploaded(); } catch (_e) { return false; }
+    try {
+      return this.hooks.hasRestoredNotUploaded();
+    } catch (_e) {
+      return true;
+    }
   }
 
   private clearAllDirtyIntents(): boolean {

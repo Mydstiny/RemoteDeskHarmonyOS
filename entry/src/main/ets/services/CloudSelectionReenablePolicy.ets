@@ -83,6 +83,74 @@ export interface VncSelectionFinalizeResult {
   failedStep: VncSelectionFinalizeStep;
 }
 
+export type VncAuthoritativeCompletionStep =
+  'begin' | 'authoritative_rebase' |
+  'journal_reconcile' |
+  'download_checkpoint_delete' |
+  'commit' | 'none';
+
+export interface VncAuthoritativeCompletionHooks {
+  begin: () => boolean;
+  rebaseAuthoritativeCheckpoint: () => boolean;
+  reconcileJournal: () => boolean;
+  deleteDownloadCheckpoint: () => boolean;
+  commit: () => boolean;
+  rollback: () => void;
+}
+
+export interface VncAuthoritativeCompletionResult {
+  ok: boolean;
+  failedStep:
+    VncAuthoritativeCompletionStep;
+}
+
+/**
+ * The cloud mirror is captured before the local mutation journal is replayed.
+ * Rebase, replay and ordinary checkpoint deletion become visible together or
+ * not at all, so every process kill point has one unambiguous recovery source.
+ */
+export function executeVncAuthoritativeCompletion(
+  hooks: VncAuthoritativeCompletionHooks
+): VncAuthoritativeCompletionResult {
+  let begun: boolean = false;
+  let failedStep:
+    VncAuthoritativeCompletionStep =
+    'begin';
+  try {
+    if (!hooks.begin()) {
+      return { ok: false, failedStep };
+    }
+    begun = true;
+    failedStep = 'authoritative_rebase';
+    if (!hooks.rebaseAuthoritativeCheckpoint()) {
+      throw new Error(
+        'authoritative checkpoint rebase failed');
+    }
+    failedStep = 'journal_reconcile';
+    if (!hooks.reconcileJournal()) {
+      throw new Error(
+        'journal reconcile failed');
+    }
+    failedStep =
+      'download_checkpoint_delete';
+    if (!hooks.deleteDownloadCheckpoint()) {
+      throw new Error(
+        'download checkpoint delete failed');
+    }
+    failedStep = 'commit';
+    if (!hooks.commit()) {
+      throw new Error(
+        'authoritative completion commit failed');
+    }
+    return { ok: true, failedStep: 'none' };
+  } catch (_error) {
+    if (begun) {
+      try { hooks.rollback(); } catch (_ignored) {}
+    }
+    return { ok: false, failedStep };
+  }
+}
+
 /**
  * Every durable finalization step executes inside one caller-owned RDB
  * transaction. No upload is part of this sequence; it is permitted only
