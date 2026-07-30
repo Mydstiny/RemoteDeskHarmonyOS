@@ -6,7 +6,7 @@ Updated: 2026-07-30 Asia/Shanghai
 
 - Cloud/data lifecycle root fix is active on
   `codex/cloud-data-lifecycle-root-fix` at implementation checkpoint
-  `0d6216e`. The signed upgrade-test candidate is `1.0.9 / 1000009`.
+  `0c0b3d4`. The signed upgrade-test candidate is `1.0.9 / 1000009`.
   D-020 remediation adds independent OS distributed-account verification,
   an awaitable login/account-switch cloud-first bootstrap, record-level journal
   reconciliation, a durable bounded cloud-download before-image, persisted
@@ -48,11 +48,18 @@ Updated: 2026-07-30 Asia/Shanghai
   rollback share one production adapter that owns snapshot/selection restore,
   checkpoint deletion, barrier read-back and `recovery_required` marking.
   Table-driven semantic JSON cases and restore/delete/commit failures are in
-  the default ArkTS test compilation.
+  the default ArkTS test compilation. The final P2 startup-integration gap is
+  closed locally in `0c0b3d4`: the test now calls the real
+  `CloudStore.init` / `openScopeStore` startup gate on an isolated RDB-free
+  instance, while the private production adapter and startup runner route
+  bottom-level snapshot, VNC table, transaction and exact checkpoint-key I/O.
+  Removing the startup call or misrouting restore/delete leaves the checkpoint
+  or ready state wrong and fails the behavior assertions; no public
+  singleton/RDB recovery mutator was added.
   Release remains NO-GO pending proof of Account Kit UnionID/distributed-account
   ID correspondence on API 23, real Huawei Cloud/two-device/A-B account/old
   APK/fault-injection/Document Provider/Asset Store evidence and the requested
-  targeted review of `0d6216e`. Pure fault injection is not a
+  targeted review of `0c0b3d4`. Pure fault injection is not a
   substitute for real process-kill/reboot/low-storage evidence. If API 23 cannot prove the
   identity correspondence, cloud
   remains fail-closed. System BackupExtension, remote destructive crypto and

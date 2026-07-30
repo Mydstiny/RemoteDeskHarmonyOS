@@ -5,7 +5,7 @@ Updated: 2026-07-30 Asia/Shanghai
 ## Active cloud-data lifecycle handoff
 
 - Branch: `codex/cloud-data-lifecycle-root-fix`; base:
-  `main@23940521a`; implementation checkpoint: `0d6216e`.
+  `main@23940521a`; implementation checkpoint: `0c0b3d4`.
 - Plan:
   `docs/superpowers/plans/2026-07-28-cloud-data-lifecycle-upgrade-roadmap.md`.
 - Core local implementation is complete for account transitions, per-account
@@ -13,7 +13,7 @@ Updated: 2026-07-30 Asia/Shanghai
   sensitive transfer validation, portable backup v3 and legacy partial
   restore, exclusive crypto lifecycle, Asset Store credential storage,
   device-local trust and legacy shared-store/relay/VNC migration quarantine.
-- D-020 remediation through `0d6216e` requires a fresh OS distributed-account API
+- D-020 remediation through `0c0b3d4` requires a fresh OS distributed-account API
   result in addition to Account Kit, waits for cloud-first before publishing
   account ready, preserves pre-bootstrap record journal intent, persists a
   bounded cross-table download rollback transaction, blocks ordinary/VNC
@@ -75,6 +75,15 @@ Updated: 2026-07-30 Asia/Shanghai
   recovery marking. Tests cover malformed barrier JSON before and after
   commit, successful restart deletion, and checkpoint retention on
   restore/delete/commit failures. Review approval is not yet claimed.
+- The final remaining P2 test-wiring gap is remediated in `0c0b3d4`. A safe
+  detached verification store traverses the real `CloudStore.init` and
+  `openScopeStore` startup call point, which constructs the same private
+  production adapter and `CloudStoreStartupRecoveryRunner`. The fake supplies
+  only bottom-level I/O, so startup-call removal and restore/checkpoint-delete
+  misrouting break success/readiness or checkpoint-retention assertions.
+  Restore/delete/commit failures keep the checkpoint, publish no snapshot,
+  mark recovery required and leave initialization not ready. No runtime ArkTS
+  execution or review approval is claimed.
 - API 23 has no signed Account Kit/distributed-account link object. The
   implementation accepts only exact current ID equality and otherwise blocks
   distributed-table registration and transfer. This is deliberately
