@@ -746,8 +746,8 @@ export struct VncSettingsSheet {
       subtitle: this.subtitle(),
       showFooter: this.hasSaveAction(),
       onLeadingAction: (): void => { this.onClose(); },
-      contentBuilder: this.sheetBody,
-      footerBuilder: this.saveFooter
+      contentBuilder: (): void => { this.sheetBody(); },
+      footerBuilder: (): void => { this.saveFooter(); }
     })
   }
 }

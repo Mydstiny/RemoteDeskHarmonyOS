@@ -13,6 +13,11 @@ export const SETTINGS_SECTION_ABOUT: string = 'about';
 export const SETTINGS_SECTION_FEEDBACK: string = 'feedback';
 export const SETTINGS_SECTION_RATING: string = 'rating';
 
+export const SETTINGS_VNC_ACTION_ROW_COUNT: number = 11;
+const SETTINGS_VNC_ACTION_ROW_HEIGHT_VP: number = 62;
+const SETTINGS_VNC_ACTION_DIVIDER_HEIGHT_VP: number = 0.5;
+const SETTINGS_VNC_SECTION_CHROME_HEIGHT_VP: number = 73;
+
 export const SETTINGS_SUPPORT_EMAIL: string = 'lijiong1219@petalmail.com';
 export const SETTINGS_SUPPORT_SUBJECT: string = 'RemoteDesktop 用户反馈';
 export const SETTINGS_APP_BUNDLE_NAME: string = 'com.example.remotedesktop';
@@ -58,6 +63,14 @@ export function settingsNextExpandedSection(current: string, selected: string): 
     return current;
   }
   return current === selected ? SETTINGS_SECTION_NONE : selected;
+}
+
+export function settingsVncExpandedMaxHeight(actionRowCount: number = SETTINGS_VNC_ACTION_ROW_COUNT): number {
+  const boundedCount: number = Number.isFinite(actionRowCount) ? Math.max(0, Math.floor(actionRowCount)) : 0;
+  const dividerCount: number = Math.max(0, boundedCount - 1);
+  return Math.ceil(SETTINGS_VNC_SECTION_CHROME_HEIGHT_VP +
+    boundedCount * SETTINGS_VNC_ACTION_ROW_HEIGHT_VP +
+    dividerCount * SETTINGS_VNC_ACTION_DIVIDER_HEIGHT_VP);
 }
 
 export function settingsFeedbackBody(versionName: string, breakpoint: string, isDesktopDevice: boolean): string {

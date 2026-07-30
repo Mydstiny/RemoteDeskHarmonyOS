@@ -7,6 +7,7 @@ import {
   SETTINGS_SECTION_NONE,
   SETTINGS_SECTION_RATING,
   SETTINGS_SECTION_TUTORIAL,
+  SETTINGS_VNC_ACTION_ROW_COUNT,
   SETTINGS_RATING_SUBTITLE,
   SETTINGS_SUPPORT_EMAIL,
   SETTINGS_SUPPORT_SUBJECT,
@@ -24,7 +25,8 @@ import {
   settingsFeedbackMailPanelParams,
   settingsFeedbackMailtoUri,
   settingsRatingUriCandidates,
-  settingsRatingWantAction
+  settingsRatingWantAction,
+  settingsVncExpandedMaxHeight
 } from '../main/ets/services/SettingsAccordionPolicy';
 
 export default function settingsAccordionPolicyTest() {
@@ -42,6 +44,12 @@ export default function settingsAccordionPolicyTest() {
         .assertEqual(SETTINGS_SECTION_TUTORIAL);
       expect(settingsNextExpandedSection(SETTINGS_SECTION_CONNECTION_LIVE, SETTINGS_SECTION_CONNECTION_LIVE))
         .assertEqual('');
+    });
+
+    it('vnc_accordion_height_contains_every_action_row', 0, (): void => {
+      expect(SETTINGS_VNC_ACTION_ROW_COUNT).assertEqual(11);
+      expect(settingsVncExpandedMaxHeight()).assertEqual(760);
+      expect(settingsVncExpandedMaxHeight(12) > settingsVncExpandedMaxHeight()).assertTrue();
     });
 
     it('feedback_and_rating_are_direct_action_rows_not_expandable_sections', 0, (): void => {

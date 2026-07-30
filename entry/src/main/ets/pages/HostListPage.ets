@@ -209,12 +209,14 @@ import {
   SETTINGS_SECTION_VNC,
   SETTINGS_SECTION_SECURITY,
   SETTINGS_SECTION_TUTORIAL,
+  SETTINGS_VNC_ACTION_ROW_COUNT,
   SettingsFeedbackLaunchAttempt,
   settingsFeedbackLaunchAttempts,
   settingsFeedbackMailPanelParams,
   settingsNextExpandedSection,
   settingsRatingUriCandidates,
-  settingsRatingWantAction
+  settingsRatingWantAction,
+  settingsVncExpandedMaxHeight
 } from '../services/SettingsAccordionPolicy';
 import {
   legacyRdpPresetForResolutionId,
@@ -1751,7 +1753,7 @@ struct HostListPage {
       return 540;
     }
     if (section === SETTINGS_SECTION_VNC) {
-      return 620;
+      return settingsVncExpandedMaxHeight(SETTINGS_VNC_ACTION_ROW_COUNT);
     }
     if (section === SETTINGS_SECTION_SECURITY) {
       return 420;

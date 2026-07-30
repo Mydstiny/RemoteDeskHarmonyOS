@@ -286,8 +286,8 @@ export struct VncGatewayAddFlow {
         '  ' + this.stepTitle(),
       leadingBack: true,
       onLeadingAction: (): void => { this.back(); },
-      contentBuilder: this.flowBody,
-      footerBuilder: this.actionBar
+      contentBuilder: (): void => { this.flowBody(); },
+      footerBuilder: (): void => { this.actionBar(); }
     })
   }
 }

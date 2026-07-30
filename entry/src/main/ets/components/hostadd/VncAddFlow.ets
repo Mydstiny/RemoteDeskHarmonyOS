@@ -571,8 +571,8 @@ export struct VncAddFlow {
       stepText: (this.step + 1).toString() + '/' + VNC_HOST_ADD_STEP_COUNT.toString() + '  ' + this.stepTitle(),
       leadingBack: true,
       onLeadingAction: (): void => { this.back(); },
-      contentBuilder: this.flowBody,
-      footerBuilder: this.actionBar
+      contentBuilder: (): void => { this.flowBody(); },
+      footerBuilder: (): void => { this.actionBar(); }
     })
   }
 }
