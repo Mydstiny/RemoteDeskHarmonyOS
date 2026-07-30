@@ -141,11 +141,24 @@ export default function rustDeskProConnectionPreflightPolicyTest(): void {
       expect(parsed.structured).assertTrue();
       expect(parsed.stage).assertEqual('control_plane');
       expect(parsed.code).assertEqual('pro_session_expired');
+      expect(parsed.attemptId).assertEqual('');
       expect(rustDeskNativeErrorDetail(error)).assertEqual('session expired');
       expect(classifyRustDeskProNativeError(error)).assertEqual('pro_session_expired');
       expect(canInvalidateRustDeskProSession(error, 'official_server_pro_token')).assertTrue();
       expect(canInvalidateRustDeskProSession(error, 'third_party_control_plane')).assertFalse();
       expect(canInvalidateRustDeskProSession(error, 'oss_key_only')).assertFalse();
+    });
+
+    it('classifies_redacted_native_codes_and_preserves_attempt_identity', 0, (): void => {
+      const error = 'RDERR|stage=relay|code=control_plane_login_required|' +
+        'attempt=184|detail=control plane rejected the relay session as unauthenticated';
+      const parsed = parseRustDeskNativeError(error);
+      expect(parsed.attemptId).assertEqual('184');
+      expect(classifyRustDeskProNativeError(error)).assertEqual('control_plane_incompatible');
+      expect(canInvalidateRustDeskProSession(error, 'official_server_pro_token')).assertFalse();
+      expect(classifyRustDeskProNativeError(
+        'RDERR|stage=peer_login|code=peer_password_rejected|attempt=185|detail=rejected'))
+        .assertEqual('device_password');
     });
 
     it('protects_a_new_token_generation_from_a_late_old_failure', 0, (): void => {

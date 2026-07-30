@@ -44,6 +44,35 @@ pub struct PunchHoleInfo {
     pub relay_uuid: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RendezvousConnectionStrategy {
+    ForceRelay,
+}
+
+impl RendezvousConnectionStrategy {
+    fn nat_type(self) -> NatType {
+        match self {
+            // This is an honest "unknown/conservative" value for the only
+            // currently supported rendezvous strategy. It must not be reused
+            // as an AUTO NAT result.
+            Self::ForceRelay => NatType::SYMMETRIC,
+        }
+    }
+
+    fn force_relay(self) -> bool {
+        matches!(self, Self::ForceRelay)
+    }
+
+    fn diagnostic(self) -> &'static str {
+        match self {
+            Self::ForceRelay => "strategy=force_relay,nat=conservative_symmetric",
+        }
+    }
+}
+
+const HARMONY_RENDEZVOUS_VERSION: &str =
+    concat!("harmonyos-rustdesk-ffi/", env!("CARGO_PKG_VERSION"));
+
 fn validated_server_key(server_key: &str) -> io::Result<&str> {
     crypto::normalized_server_public_key(server_key).ok_or_else(|| {
         io::Error::new(
@@ -53,17 +82,22 @@ fn validated_server_key(server_key: &str) -> io::Result<&str> {
     })
 }
 
-fn punch_hole_request_message(peer_id: &str, licence_key: &str, token: &str) -> RendezvousMessage {
+fn punch_hole_request_message(
+    peer_id: &str,
+    licence_key: &str,
+    token: &str,
+    strategy: RendezvousConnectionStrategy,
+) -> RendezvousMessage {
     let mut req = PunchHoleRequest::new();
     req.set_id(peer_id.to_string());
-    req.set_nat_type(NatType::SYMMETRIC);
+    req.set_nat_type(strategy.nat_type());
     req.set_licence_key(licence_key.to_string());
     if !token.is_empty() {
         req.set_token(token.to_string());
     }
     req.set_conn_type(ConnType::DEFAULT_CONN);
-    req.set_version("harmonyos-rustdesk-ffi".to_string());
-    req.set_force_relay(true);
+    req.set_version(HARMONY_RENDEZVOUS_VERSION.to_string());
+    req.set_force_relay(strategy.force_relay());
 
     let mut msg = RendezvousMessage::new();
     msg.union = Some(RendezvousMessage_oneof_union::punch_hole_request(req));
@@ -115,23 +149,27 @@ impl RendezvousClient {
         Ok(())
     }
 
-    pub fn request_punch_hole(
+    pub fn request_force_relay(
         &mut self,
         peer_id: &str,
         licence_key: &str,
         token: &str,
     ) -> io::Result<PunchHoleInfo> {
         self.ensure_connected()?;
+        let strategy = RendezvousConnectionStrategy::ForceRelay;
         let req_debug = format!(
-            "peer_id={}, nat=SYMMETRIC, conn=DEFAULT_CONN, force_relay=true, version=harmonyos-rustdesk-ffi",
-            peer_id
+            "{},conn=DEFAULT_CONN,force_relay=true,token={},key={},version={}",
+            strategy.diagnostic(),
+            if token.is_empty() { "absent" } else { "present" },
+            if licence_key.is_empty() { "absent" } else { "present" },
+            HARMONY_RENDEZVOUS_VERSION
         );
 
         // hbbs `-k` compares this protobuf string verbatim.  It may be a
         // normal signing public key or an arbitrary administrator supplied
         // shared access value; verification is handled separately by the
         // connector when a public key is actually available.
-        let msg = punch_hole_request_message(peer_id, licence_key, token);
+        let msg = punch_hole_request_message(peer_id, licence_key, token, strategy);
         self.send_message(&msg)?;
 
         let response = self.read_next_non_keyexchange()?;
@@ -311,8 +349,9 @@ impl RendezvousClient {
 
         let uuid = new_relay_uuid();
         eprintln!(
-            "[RustDesk-FFI] request relay id={} uuid={} relay_server={} secure={}",
-            id, uuid, relay_server, secure
+            "[RustDesk-FFI] request relay strategy=force_relay secure={} token={} key=handled-separately",
+            secure,
+            if token.is_empty() { "absent" } else { "present" }
         );
 
         let mut req = RequestRelay::new();
@@ -345,9 +384,8 @@ impl RendezvousClient {
                     response_uuid.to_string()
                 };
                 eprintln!(
-                    "[RustDesk-FFI] relay response uuid={} relay_server={} pk_len={} socket_addr_len={}",
-                    approved_uuid,
-                    resp.get_relay_server(),
+                    "[RustDesk-FFI] relay response accepted relay_endpoint={} pk_len={} socket_addr_len={}",
+                    if resp.get_relay_server().is_empty() { "absent" } else { "present" },
                     resp.get_pk().len(),
                     resp.get_socket_addr().len()
                 );
@@ -678,7 +716,12 @@ mod tests {
     fn arbitrary_shared_access_key_is_preserved_in_punch_and_relay_messages() {
         let key = " =tenant-key:42/abc=\n";
         let token = "pro-session-token";
-        let punch = punch_hole_request_message("peer-123", key, token);
+        let punch = punch_hole_request_message(
+            "peer-123",
+            key,
+            token,
+            RendezvousConnectionStrategy::ForceRelay,
+        );
         let punch_bytes = punch.write_to_bytes().expect("serialize punch request");
         let parsed_punch: RendezvousMessage = protobuf::parse_from_bytes(&punch_bytes)
             .expect("parse punch request");
@@ -686,6 +729,10 @@ mod tests {
             Some(RendezvousMessage_oneof_union::punch_hole_request(req)) => {
                 assert_eq!(req.get_licence_key(), key);
                 assert_eq!(req.get_token(), token);
+                assert_eq!(req.get_nat_type(), NatType::SYMMETRIC);
+                assert!(req.get_force_relay());
+                assert_eq!(req.get_conn_type(), ConnType::DEFAULT_CONN);
+                assert_eq!(req.get_version(), HARMONY_RENDEZVOUS_VERSION);
             }
             other => panic!("expected PunchHoleRequest, got: {:?}", other),
         }

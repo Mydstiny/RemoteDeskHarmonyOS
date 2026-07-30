@@ -38,7 +38,7 @@ use protobuf::{Message as ProtoMessage, ProtobufEnum};
 
 use std::io;
 use std::io::ErrorKind;
-use std::net::{SocketAddr, TcpStream};
+use std::net::TcpStream;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -194,7 +194,6 @@ pub struct RustDeskConnector {
     peer_pk: Option<[u8; 32]>,
     crypto_channel: Option<CryptoChannel>,
     session: Session,
-    peer_addr: Option<SocketAddr>,
     /// streaming 消息统计 — 诊断对端停止发送前的行为
     pub stream_stats: String,
 }
@@ -235,7 +234,6 @@ impl RustDeskConnector {
             peer_pk: None,
             crypto_channel: None,
             session: Session::new_with_connection_id(connection_id, connect_epoch),
-            peer_addr: None,
             stream_stats: String::new(),
         }
     }
@@ -282,22 +280,21 @@ impl RustDeskConnector {
         rd.connect(rendezvous_host, rendezvous_port, server_key, rendezvous_secure)?;
 
         self.state = ConnState::RequestingRelay;
-        let punch = rd.request_punch_hole(peer_id, credentials.access_key, api_token)?;
+        let punch = rd.request_force_relay(peer_id, credentials.access_key, api_token)?;
 
         // === Phase 2: Peer TCP + 加密通道 ===
         eprintln!(
-            "[RustDesk-FFI] punch response peer_addr={:?} relay_server={} relay_uuid={:?} signed_pk_len={}",
-            punch.peer_addr,
-            punch.relay_server,
-            punch.relay_uuid,
+            "[RustDesk-FFI] force-relay response peer_endpoint={} relay_endpoint={} relay_ticket={} signed_pk_len={}",
+            if punch.peer_addr.is_some() { "present" } else { "absent" },
+            if punch.relay_server.is_empty() { "absent" } else { "present" },
+            if punch.relay_uuid.is_some() { "present" } else { "absent" },
             punch.signed_pk.len()
         );
 
         let mut peer_stream = if let Some(relay_uuid) = punch.relay_uuid {
             self.state = ConnState::ConnectingToPeer;
             eprintln!(
-                "[RustDesk-FFI] using relay uuid from rendezvous uuid={} relay_server={}",
-                relay_uuid, punch.relay_server
+                "[RustDesk-FFI] force-relay ticket accepted relay_endpoint=present"
             );
             rd.create_relay(
                 peer_id,
@@ -318,8 +315,7 @@ impl RustDeskConnector {
             )?;
             self.state = ConnState::ConnectingToPeer;
             eprintln!(
-                "[RustDesk-FFI] relay approved uuid={} relay_server={}",
-                relay_uuid, punch.relay_server
+                "[RustDesk-FFI] force-relay request approved relay_endpoint=present"
             );
             relay_rd.create_relay(
                 peer_id,
@@ -328,18 +324,10 @@ impl RustDeskConnector {
                 relay_fallback_port,
                 credentials.access_key,
             )?
-        } else if let Some(peer_addr) = punch.peer_addr {
-            self.state = ConnState::ConnectingToPeer;
-            self.peer_addr = Some(peer_addr);
-            eprintln!(
-                "[RustDesk-FFI] no relay server, connecting direct peer={}",
-                peer_addr
-            );
-            rd.connect_to_peer(peer_addr)?
         } else {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                "rendezvous response did not include peer address or relay uuid",
+                "force-relay response did not include a relay endpoint",
             ));
         };
 
@@ -399,7 +387,7 @@ impl RustDeskConnector {
         &mut self,
         peer_host: &str,
         peer_port: u16,
-        peer_id: &str,
+        _peer_id: &str,
         password: &str,
         preferred_codec: i32,
         image_quality: i32,
@@ -410,10 +398,10 @@ impl RustDeskConnector {
         // === Phase 1: TCP 直连 peer ===
         self.state = ConnState::ConnectingToPeer;
         eprintln!(
-            "[RustDesk-FFI] direct connect to peer {}:{}",
-            peer_host, peer_port
+            "[RustDesk-FFI] direct connect endpoint=provided port={}",
+            peer_port
         );
-        let mut stream = net::connect_tcp_host(
+        let stream = net::connect_tcp_host(
             peer_host,
             peer_port,
             "direct",
@@ -468,39 +456,31 @@ impl RustDeskConnector {
         let rendezvous_secure = !shared_access_key && !server_key.trim().is_empty() &&
             !api_token.trim().is_empty();
         crate::set_last_error(format!(
-            "file-transfer connecting rendezvous host={} port={} peer={} dir={}",
-            rendezvous_host, rendezvous_port, peer_id, remote_dir
+            "file-transfer rendezvous connecting port={} strategy=force_relay",
+            rendezvous_port
         ));
         self.state = ConnState::RendezvousConnecting;
         let mut rd = RendezvousClient::new();
         rd.connect(rendezvous_host, rendezvous_port, server_key, rendezvous_secure)?;
 
-        crate::set_last_error(format!(
-            "file-transfer requesting punch peer={} dir={}",
-            peer_id, remote_dir
-        ));
+        crate::set_last_error("file-transfer requesting force relay".to_string());
         self.state = ConnState::RequestingRelay;
-        let punch = rd.request_punch_hole(peer_id, credentials.access_key, api_token)?;
+        let punch = rd.request_force_relay(peer_id, credentials.access_key, api_token)?;
         crate::set_last_error(format!(
-            "file-transfer punch peer_addr={:?} relay_server={} relay_uuid={:?} signed_pk_len={}",
-            punch.peer_addr,
-            punch.relay_server,
-            punch.relay_uuid,
+            "file-transfer force-relay response relay_endpoint={} relay_ticket={} signed_pk_len={}",
+            if punch.relay_server.is_empty() { "absent" } else { "present" },
+            if punch.relay_uuid.is_some() { "present" } else { "absent" },
             punch.signed_pk.len()
         ));
         eprintln!(
-            "[RustDesk-FFI] file-transfer punch response peer_addr={:?} relay_server={} relay_uuid={:?} signed_pk_len={}",
-            punch.peer_addr,
-            punch.relay_server,
-            punch.relay_uuid,
+            "[RustDesk-FFI] file-transfer force-relay response relay_endpoint={} relay_ticket={} signed_pk_len={}",
+            if punch.relay_server.is_empty() { "absent" } else { "present" },
+            if punch.relay_uuid.is_some() { "present" } else { "absent" },
             punch.signed_pk.len()
         );
 
         let mut peer_stream = if let Some(relay_uuid) = punch.relay_uuid {
-            crate::set_last_error(format!(
-                "file-transfer connecting relay server={} uuid={}",
-                punch.relay_server, relay_uuid
-            ));
+            crate::set_last_error("file-transfer connecting approved relay".to_string());
             self.state = ConnState::ConnectingToPeer;
             rd.create_relay(
                 peer_id,
@@ -512,10 +492,7 @@ impl RustDeskConnector {
         } else if !punch.relay_server.trim().is_empty() {
             self.state = ConnState::RequestingRelay;
             let mut relay_rd = RendezvousClient::new();
-            crate::set_last_error(format!(
-                "file-transfer requesting relay uuid server={}",
-                punch.relay_server
-            ));
+            crate::set_last_error("file-transfer requesting relay ticket".to_string());
             relay_rd.connect(rendezvous_host, rendezvous_port, server_key, rendezvous_secure)?;
             let relay_uuid = relay_rd.request_relay_uuid(
                 peer_id,
@@ -523,10 +500,7 @@ impl RustDeskConnector {
                 !punch.signed_pk.is_empty(),
                 api_token,
             )?;
-            crate::set_last_error(format!(
-                "file-transfer connecting relay server={} uuid={}",
-                punch.relay_server, relay_uuid
-            ));
+            crate::set_last_error("file-transfer connecting approved relay".to_string());
             self.state = ConnState::ConnectingToPeer;
             relay_rd.create_relay(
                 peer_id,
@@ -535,15 +509,10 @@ impl RustDeskConnector {
                 relay_fallback_port,
                 credentials.access_key,
             )?
-        } else if let Some(peer_addr) = punch.peer_addr {
-            crate::set_last_error(format!("file-transfer connecting peer addr={}", peer_addr));
-            self.state = ConnState::ConnectingToPeer;
-            self.peer_addr = Some(peer_addr);
-            rd.connect_to_peer(peer_addr)?
         } else {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                "file-transfer rendezvous response did not include peer address or relay uuid",
+                "file-transfer force-relay response did not include a relay endpoint",
             ));
         };
 
@@ -562,12 +531,12 @@ impl RustDeskConnector {
         };
         self.crypto_channel = Some(crypto);
 
-        crate::set_last_error(format!("file-transfer logging in dir={}", remote_dir));
+        crate::set_last_error("file-transfer peer login".to_string());
         self.state = ConnState::LoggingIn;
         let crypto = self.crypto_channel.as_mut().unwrap();
         self.session
             .login_file_transfer_encrypted(crypto, peer_id, password, remote_dir, request_approval)?;
-        crate::set_last_error(format!("login_file_transfer ok dir={}", remote_dir));
+        crate::set_last_error("file-transfer peer login complete".to_string());
         self.state = ConnState::Connected;
         Ok(())
     }

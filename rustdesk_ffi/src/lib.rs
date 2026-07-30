@@ -127,17 +127,87 @@ pub(crate) fn cancel_pending_connect_for_session(session_id: u64) {
     }
 }
 
-fn structured_error(stage: &str, code: &str, detail: impl Into<String>) -> String {
+fn structured_error(
+    stage: &str,
+    code: &str,
+    detail: impl Into<String>,
+    attempt: u64,
+) -> String {
     let detail = detail.into().replace('|', "/").replace('\n', " ").replace('\r', " ");
-    format!("RDERR|stage={}|code={}|detail={}", stage, code, detail)
+    format!(
+        "RDERR|stage={}|code={}|attempt={}|detail={}",
+        stage, code, attempt, detail
+    )
+}
+
+fn pipeline_error_classification(
+    base_code: &'static str,
+    error: &io::Error,
+) -> (&'static str, &'static str) {
+    let value = error.to_string().to_lowercase();
+    if value.contains("please login")
+        || value.contains("not logged in")
+        || value.contains("login session has expired")
+        || value.contains("you have not logged in")
+    {
+        return (
+            "control_plane_login_required",
+            "control plane rejected the relay session as unauthenticated",
+        );
+    }
+    if value.contains("wrong password")
+        || value.contains("invalid password")
+        || value.contains("password is wrong")
+    {
+        return ("peer_password_rejected", "remote device rejected the device password");
+    }
+    if value.contains("approval timed out")
+        || value.contains("remote approval timed out")
+        || value.contains("no password access")
+    {
+        return ("approval_unavailable", "remote approval was not completed");
+    }
+    if value.contains("id does not exist")
+        || value.contains("peer not found")
+        || value.contains("peer is offline")
+        || value.contains("remote desktop is offline")
+    {
+        return ("peer_unavailable", "remote peer is unavailable");
+    }
+    if value.contains("license mismatch")
+        || value.contains("license overuse")
+        || value.contains("key mismatch")
+        || value.contains("relay refused")
+    {
+        return (
+            "relay_credential_rejected",
+            "relay rejected the configured connection credential",
+        );
+    }
+    let detail = match error.kind() {
+        io::ErrorKind::TimedOut => "connection stage timed out",
+        io::ErrorKind::ConnectionRefused => "connection stage was refused",
+        io::ErrorKind::PermissionDenied => "connection stage was denied",
+        io::ErrorKind::NotFound
+        | io::ErrorKind::AddrNotAvailable
+        | io::ErrorKind::NetworkUnreachable => "connection endpoint is unavailable",
+        io::ErrorKind::ConnectionReset
+        | io::ErrorKind::ConnectionAborted
+        | io::ErrorKind::BrokenPipe => "connection was interrupted",
+        io::ErrorKind::InvalidInput => "connection configuration is invalid",
+        io::ErrorKind::InvalidData => "server returned an invalid connection response",
+        _ => "connection stage failed",
+    };
+    (base_code, detail)
 }
 
 fn pipeline_error_message(
     state: &connector::ConnState,
     error: &io::Error,
     direct_connection: bool,
+    attempt: u64,
 ) -> String {
-    let (stage, code) = match state {
+    let (stage, base_code) = match state {
         connector::ConnState::RendezvousConnecting => ("rendezvous", "rendezvous_failed"),
         connector::ConnState::RequestingRelay => ("relay", "relay_request_failed"),
         connector::ConnState::ConnectingToPeer if direct_connection =>
@@ -147,7 +217,8 @@ fn pipeline_error_message(
         connector::ConnState::LoggingIn => ("peer_login", "peer_login_failed"),
         _ => ("unknown", "connect_failed")
     };
-    structured_error(stage, code, error.to_string())
+    let (code, detail) = pipeline_error_classification(base_code, error);
+    structured_error(stage, code, detail, attempt)
 }
 
 fn set_last_error(message: impl Into<String>) {
@@ -1204,12 +1275,14 @@ fn rustdesk_connect_impl(
     );
 
     if host.is_empty() {
-        set_last_error("rendezvous host is empty");
+        set_last_error(structured_error(
+            "config", "rendezvous_host_missing", "rendezvous endpoint is missing", connection_id));
         finish_connect_epoch(connect_epoch, connection_id);
         return std::ptr::null_mut();
     }
     if peer_id.is_empty() {
-        set_last_error("peer id is empty");
+        set_last_error(structured_error(
+            "config", "peer_id_missing", "remote peer identity is missing", connection_id));
         finish_connect_epoch(connect_epoch, connection_id);
         return std::ptr::null_mut();
     }
@@ -1228,7 +1301,8 @@ fn rustdesk_connect_impl(
         } else {
             "invalid rendezvous server public key; expected Base64-encoded 32-byte key"
         };
-        set_last_error(message);
+        set_last_error(structured_error(
+            "config", "server_key_invalid", message, connection_id));
         finish_connect_epoch(connect_epoch, connection_id);
         return std::ptr::null_mut();
     }
@@ -1239,8 +1313,8 @@ fn rustdesk_connect_impl(
     let result = if config.direct_connection {
         // 直连模式: host=peer IP, port=peer port, 跳过 rendezvous
         eprintln!(
-            "[RustDesk-FFI] direct_connection=true, connecting to peer {}:{}",
-            host, port
+            "[RustDesk-FFI] direct_connection=true endpoint=provided port={}",
+            port
         );
         c.connect_direct(
             &host,
@@ -1426,7 +1500,8 @@ fn rustdesk_connect_impl(
             Box::into_raw(ctx) as *mut c_void
         }
         Err(err) => {
-            let message = pipeline_error_message(&c.state(), &err, config.direct_connection);
+            let message = pipeline_error_message(
+                &c.state(), &err, config.direct_connection, connection_id);
             set_last_error(message);
             finish_connect_epoch(connect_epoch, connection_id);
             std::ptr::null_mut()
@@ -2534,23 +2609,38 @@ mod tests {
 
     #[test]
     fn structured_pipeline_errors_preserve_stage_and_sanitize_detail() {
-        let message = structured_error("relay", "relay_request_failed", "a|b\nnext");
+        let message = structured_error("relay", "relay_request_failed", "a|b\nnext", 42);
         assert_eq!(
             message,
-            "RDERR|stage=relay|code=relay_request_failed|detail=a/b next"
+            "RDERR|stage=relay|code=relay_request_failed|attempt=42|detail=a/b next"
         );
         let relay = pipeline_error_message(
             &connector::ConnState::RequestingRelay,
             &io::Error::new(io::ErrorKind::PermissionDenied, "relay denied"),
             false,
+            43,
         );
-        assert!(relay.starts_with("RDERR|stage=relay|code=relay_request_failed|detail="));
+        assert!(relay.starts_with(
+            "RDERR|stage=relay|code=relay_request_failed|attempt=43|detail="));
         let direct = pipeline_error_message(
             &connector::ConnState::ConnectingToPeer,
             &io::Error::new(io::ErrorKind::ConnectionRefused, "peer refused"),
             true,
+            44,
         );
-        assert!(direct.starts_with("RDERR|stage=peer_channel|code=direct_peer_connect_failed|detail="));
+        assert!(direct.starts_with(
+            "RDERR|stage=peer_channel|code=direct_peer_connect_failed|attempt=44|detail="));
+        let login = pipeline_error_message(
+            &connector::ConnState::RequestingRelay,
+            &io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "Connection failed, please login! peer_id=sensitive"),
+            false,
+            45,
+        );
+        assert!(login.contains("code=control_plane_login_required"));
+        assert!(login.contains("attempt=45"));
+        assert!(!login.contains("sensitive"));
     }
 
     #[test]

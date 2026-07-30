@@ -1302,6 +1302,7 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
     // RustDesk 扩展配置
     getInt("rdImageQuality", cfg.rdImageQuality);
     getBool("rdDirectIp", cfg.rdDirectIp);
+    getString("rdConnectionStrategy", cfg.rdConnectionStrategy);
     getInt("rdDirectPort", cfg.rdDirectPort);
     getBool("rdLanDiscovery", cfg.rdLanDiscovery);
     getBool("rdPrivacyMode", cfg.rdPrivacyMode);
@@ -1343,6 +1344,19 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
     getInt("vncFrameRateLimit", cfg.vncFrameRateLimit);
     getString("vncExpectedCertificateFingerprintSha256", cfg.vncExpectedCertificateFingerprintSha256);
 
+    if (cfg.rdConnectionStrategy.empty()) {
+        cfg.rdConnectionStrategy = cfg.rdDirectIp ? "direct_ip" : "force_relay";
+    } else if (cfg.rdConnectionStrategy == "direct_ip") {
+        cfg.rdDirectIp = true;
+    } else if (cfg.rdConnectionStrategy == "force_relay" ||
+               cfg.rdConnectionStrategy == "auto") {
+        cfg.rdDirectIp = false;
+    } else {
+        // Preserve an explicit invalid sentinel so native rejects the request
+        // instead of silently changing a future/typoed strategy to relay.
+        cfg.rdConnectionStrategy = "invalid";
+        cfg.rdDirectIp = false;
+    }
     if (cfg.rdDirectPort <= 0) cfg.rdDirectPort = 21118;
     if (cfg.port == 0) {
         // RustDesk 的通用端口字段在直连模式代表 peer TCP 端口；
@@ -1406,8 +1420,8 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
         const std::string accountLog = cfg.rdAccountId.empty() ? "未设置" : SafeLog::MaskUser(cfg.rdAccountId);
         const char* serverKeyMode = cfg.rdServerKeyMode == 2 ? "shared" :
             (cfg.rdServerKeyMode == 1 ? "public" : "auto");
-        OH_LOG_INFO(LOG_APP, "[ExtLoader] RustDesk配置: quality=%{public}d direct=%{public}s:%{public}d lan=%{public}s privacy=%{public}s audio=%{public}s pwdMode=%{public}d authMode=%{public}d pwdLen=%{public}d relayId=%{public}s account=%{public}s serverKeyMode=%{public}s relayFallbackPort=%{public}d proToken=%{public}s",
-                    cfg.rdImageQuality, cfg.rdDirectIp ? "on" : "off", cfg.rdDirectPort,
+        OH_LOG_INFO(LOG_APP, "[ExtLoader] RustDesk配置: quality=%{public}d strategy=%{public}s directPort=%{public}d lan=%{public}s privacy=%{public}s audio=%{public}s pwdMode=%{public}d authMode=%{public}d pwdLen=%{public}d relayId=%{public}s account=%{public}s serverKeyMode=%{public}s relayFallbackPort=%{public}d proToken=%{public}s",
+                    cfg.rdImageQuality, cfg.rdConnectionStrategy.c_str(), cfg.rdDirectPort,
                     cfg.rdLanDiscovery ? "on" : "off", cfg.rdPrivacyMode ? "on" : "off",
                     cfg.rdAudioEnabled ? "on" : "off",
                     cfg.rdPasswordMode, cfg.rdAuthMode, cfg.rdPasswordLength,

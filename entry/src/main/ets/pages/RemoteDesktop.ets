@@ -45,6 +45,12 @@ import {
 } from '../services/VncSessionSettingsPolicy';
 import { RustDeskRelayConfig } from '../model/RustDeskRelayConfig';
 import { rustDeskRelayKeyModeForFfi } from '../services/RustDeskRelayKeyPolicy';
+import {
+  resolveRustDeskConnectionStrategy,
+  rustDeskConnectionStrategyForHost,
+  RustDeskConnectionStrategyAvailability,
+  RustDeskConnectionStrategy
+} from '../services/RustDeskConnectionStrategyPolicy';
 import { RdpCredential } from '../model/RdpCredential';
 import { RustDeskProAccountState } from '../model/RustDeskProModels';
 import {
@@ -7437,6 +7443,14 @@ struct RemoteDesktop {
         }
       }
       const rustDeskDirect: boolean = host.protocol === 'rustdesk' && host.rustdeskDirectEnabled;
+      const rustDeskStrategy: RustDeskConnectionStrategy =
+        rustDeskConnectionStrategyForHost(rustDeskDirect);
+      const rustDeskStrategyAvailability: RustDeskConnectionStrategyAvailability =
+        resolveRustDeskConnectionStrategy(rustDeskStrategy, rustDeskDirect);
+      if (host.protocol === 'rustdesk' && !rustDeskStrategyAvailability.supported) {
+        throw new Error(rustDeskStrategyAvailability.message +
+          ' [E-RUSTDESK-STRATEGY-' + rustDeskStrategyAvailability.code + ']');
+      }
       const directHost: string = host.rustdeskDirectHost.trim();
       if (rustDeskDirect && directHost.length === 0) {
         throw new Error('RustDesk 直连地址为空，请在主机编辑中填写局域网地址 [E-RUSTDESK-DIRECT-HOST]');
@@ -7490,6 +7504,7 @@ struct RemoteDesktop {
         // not read or inherit RustDesk/RDP preferences.
         rdImageQuality: host.protocol === 'rustdesk' ? (AppStorage.get<number>('rustdeskImageQuality') ?? 1) : 1,
         rdDirectIp: rustDeskDirect,
+        rdConnectionStrategy: host.protocol === 'rustdesk' ? rustDeskStrategy : 'force_relay',
         rdDirectPort: sessionPort,
         rdLanDiscovery: host.protocol === 'rustdesk' ? (AppStorage.get<boolean>('rustdeskLanDiscovery') ?? true) : false,
         rdPrivacyMode: host.protocol === 'rustdesk' ? (AppStorage.get<boolean>('rustdeskPrivacyMode') ?? false) : false,

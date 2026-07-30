@@ -418,6 +418,7 @@ export interface SessionConfig {
   // RustDesk 扩展字段
   rdImageQuality?: number;   // 0=fast, 1=balanced, 2=quality
   rdDirectIp?: boolean;      // 直连IP模式
+  rdConnectionStrategy?: 'force_relay' | 'direct_ip' | 'auto';
   rdDirectPort?: number;     // 直连端口
   rdLanDiscovery?: boolean;  // LAN发现
   rdPrivacyMode?: boolean;   // 隐私模式

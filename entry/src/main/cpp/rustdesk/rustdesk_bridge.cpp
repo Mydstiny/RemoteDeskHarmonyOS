@@ -1474,6 +1474,37 @@ int RustDeskBridge::connect(const ConnectionConfig& cfg) {
     impl_->ffiStreamEnded.store(false);
     const uint64_t serial = ++impl_->connectSerial;
     impl_->setState(ConnectionState::CONNECTING, "Connecting...");
+    const std::string connectionStrategy = cfg.rdConnectionStrategy.empty()
+        ? (cfg.rdDirectIp ? "direct_ip" : "force_relay")
+        : cfg.rdConnectionStrategy;
+
+    if (connectionStrategy == "auto") {
+        const std::string message =
+            "RDERR|stage=strategy|code=auto_unavailable|attempt=" +
+            std::to_string(sessionId) +
+            "|detail=automatic path is unavailable until NAT and relay fallback validation completes";
+        impl_->setState(ConnectionState::ERROR, message);
+        OH_LOG_WARN(LOG_APP,
+            "[RustDesk] strategy=auto rejected fail-closed; NAT/fallback capability is unavailable");
+        return -42;
+    }
+    if (connectionStrategy != "force_relay" &&
+        connectionStrategy != "direct_ip") {
+        const std::string message =
+            "RDERR|stage=strategy|code=invalid_strategy|attempt=" +
+            std::to_string(sessionId) + "|detail=invalid connection strategy";
+        impl_->setState(ConnectionState::ERROR, message);
+        OH_LOG_ERROR(LOG_APP, "[RustDesk] invalid connection strategy rejected");
+        return -43;
+    }
+    if ((connectionStrategy == "direct_ip") != cfg.rdDirectIp) {
+        const std::string message =
+            "RDERR|stage=strategy|code=strategy_mode_mismatch|attempt=" +
+            std::to_string(sessionId) + "|detail=connection strategy and direct mode disagree";
+        impl_->setState(ConnectionState::ERROR, message);
+        OH_LOG_ERROR(LOG_APP, "[RustDesk] connection strategy/direct mode mismatch rejected");
+        return -44;
+    }
 
     if (cfg.rdAuthMode == 1 && cfg.rdDirectIp) {
         // 点击批准依赖 ID/中继会话返回新的 Hash；直连模式没有这条批准通道。
@@ -1499,8 +1530,8 @@ int RustDeskBridge::connect(const ConnectionConfig& cfg) {
         const std::string logPeer = SafeLog::MaskUser(ffiPeerId);
         const char* serverKeyMode = cfg.rdServerKeyMode == 2 ? "shared" :
             (cfg.rdServerKeyMode == 1 ? "public" : "auto");
-        OH_LOG_INFO(LOG_APP, "[RustDesk-FFI] Request peer=%{public}s serverKeyMode=%{public}s proToken=%{public}s relayFallbackPort=%{public}d",
-                    logPeer.c_str(), serverKeyMode,
+        OH_LOG_INFO(LOG_APP, "[RustDesk-FFI] Request peer=%{public}s strategy=%{public}s serverKeyMode=%{public}s proToken=%{public}s relayFallbackPort=%{public}d",
+                    logPeer.c_str(), connectionStrategy.c_str(), serverKeyMode,
                     cfg.rdAccessToken.empty() ? "absent" : "present", cfg.rdRelayPort);
 
         RustDeskBridge::Impl* impl = impl_.get();

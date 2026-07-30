@@ -97,6 +97,7 @@ import vncFloatingPanelLifecyclePolicyTest from './VncFloatingPanelLifecyclePoli
 import vncSessionUiPolicyTest from './VncSessionUiPolicy.test';
 import rustDeskRelaySavePolicyTest from './RustDeskRelaySavePolicy.test';
 import rustDeskConnectionContextPolicyTest from './RustDeskConnectionContextPolicy.test';
+import rustDeskConnectionStrategyPolicyTest from './RustDeskConnectionStrategyPolicy.test';
 
 export default function testsuite() {
   localUnitTest();
@@ -198,4 +199,5 @@ export default function testsuite() {
   vncSessionUiPolicyTest();
   rustDeskRelaySavePolicyTest();
   rustDeskConnectionContextPolicyTest();
+  rustDeskConnectionStrategyPolicyTest();
 }

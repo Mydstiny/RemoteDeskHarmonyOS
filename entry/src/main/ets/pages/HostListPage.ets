@@ -117,6 +117,7 @@ import {
   RustDeskHostEndpoint
 } from '../services/RustDeskHostConfigPolicy';
 import { rustDeskRelayKeyModeForFfi } from '../services/RustDeskRelayKeyPolicy';
+import { rustDeskConnectionStrategyForHost } from '../services/RustDeskConnectionStrategyPolicy';
 import { sheetOpenDelayMsAfterDismiss } from '../services/SheetTransitionPolicy';
 import {
   nextRemoteHostSheetGeneration,
@@ -3595,6 +3596,7 @@ struct HostListPage {
       multiMonitor: false, monitorCount: 1, colorDepth: 32,
       authMethod: 'password', privateKeyPem: '', privateKeyPassphrase: '',
       rdImageQuality: this.rustdeskImageQuality, rdDirectIp: direct,
+      rdConnectionStrategy: rustDeskConnectionStrategyForHost(direct),
       rdDirectPort: endpoint.port,
       rdLanDiscovery: this.rustdeskLanDiscovery, rdPrivacyMode: this.rustdeskPrivacyMode,
       rdAudioEnabled: this.rustdeskAudioEnabled, rdClipboardEnabled: this.rustdeskClipboardEnabled,

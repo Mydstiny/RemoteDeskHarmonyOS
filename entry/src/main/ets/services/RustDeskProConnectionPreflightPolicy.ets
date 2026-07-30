@@ -44,6 +44,7 @@ export interface RustDeskNativeErrorInfo {
   structured: boolean
   stage: string
   code: string
+  attemptId: string
   detail: string
 }
 
@@ -56,7 +57,7 @@ export function parseRustDeskNativeError(message: string): RustDeskNativeErrorIn
   const marker: string = 'RDERR|';
   const markerIndex: number = message.indexOf(marker);
   if (markerIndex < 0) {
-    return { structured: false, stage: '', code: '', detail: message };
+    return { structured: false, stage: '', code: '', attemptId: '', detail: message };
   }
   const parts: string[] = message.substring(markerIndex + marker.length).split('|');
   const values: Record<string, string> = {};
@@ -70,6 +71,7 @@ export function parseRustDeskNativeError(message: string): RustDeskNativeErrorIn
     structured: true,
     stage: values['stage'] || '',
     code: values['code'] || '',
+    attemptId: values['attempt'] || '',
     detail: values['detail'] || message.substring(markerIndex + marker.length)
   };
 }
@@ -80,6 +82,21 @@ export function classifyRustDeskProNativeError(message: string): RustDeskProNati
   if (parsed.structured && parsed.stage === 'control_plane' &&
     parsed.code === 'pro_session_expired') {
     return 'pro_session_expired';
+  }
+  if (parsed.structured && parsed.code === 'control_plane_login_required') {
+    return 'control_plane_incompatible';
+  }
+  if (parsed.structured && parsed.code === 'peer_password_rejected') {
+    return 'device_password';
+  }
+  if (parsed.structured && parsed.code === 'approval_unavailable') {
+    return 'approval_timeout';
+  }
+  if (parsed.structured && parsed.code === 'peer_unavailable') {
+    return 'peer_missing';
+  }
+  if (parsed.structured && parsed.code === 'relay_credential_rejected') {
+    return 'relay_auth';
   }
   // This phrase is also returned by incompatible third-party relay/control
   // planes. It is diagnostic only and must never clear a local account token.

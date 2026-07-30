@@ -101,6 +101,7 @@ struct ConnectionConfig {
     std::string expectedHostKeyFingerprintSha256; // 🆕 SSH 预期主机指纹 SHA256
     int         rdImageQuality;    // RustDesk: 0=速度, 1=平衡, 2=画质
     bool        rdDirectIp;        // RustDesk: 直连 IP 模式
+    std::string rdConnectionStrategy; // force_relay | direct_ip | auto (auto currently fail-closed)
     int         rdDirectPort;      // RustDesk: 直连端口
     bool        rdLanDiscovery;    // RustDesk: LAN 发现
     bool        rdPrivacyMode;     // RustDesk: 隐私模式
@@ -151,7 +152,7 @@ struct ConnectionConfig {
           colorDepth(32), rdpAuthIdentityMode(0), rdpAuthMode(RdpAuthenticationMode::Password),
           rdpRestrictedAdminSecretSource(RdpRestrictedAdminSecretSource::NtlmHash), authMethod("password"),
           sshProxyPort(0),
-          rdImageQuality(1), rdDirectIp(false), rdDirectPort(21118),
+          rdImageQuality(1), rdDirectIp(false), rdConnectionStrategy(), rdDirectPort(21118),
           rdLanDiscovery(true), rdPrivacyMode(false), rdAudioEnabled(true), rdClipboardEnabled(true),
           rdDriveName("RemoteDesktop"), rdpAllowUntrustedRoot(false), rdpAllowHostMismatch(false),
           rdPasswordMode(0), rdAuthMode(0), rdPasswordLength(6), rdServerKeyMode(0),
