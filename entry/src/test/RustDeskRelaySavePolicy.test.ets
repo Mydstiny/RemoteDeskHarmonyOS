@@ -3,6 +3,7 @@ import { RustDeskRelayConfig } from '../main/ets/model/RustDeskRelayConfig';
 import { DataMutationResult } from '../main/ets/services/DataMutationResult';
 import {
   RustDeskRelaySaveResult,
+  rustDeskRelayCreatePayloadMatches,
   rustDeskRelayIdFingerprint,
   rustDeskRelayReadbackMatches,
   rustDeskRelaySaveRecoveryForCode
@@ -84,6 +85,51 @@ export default function rustDeskRelaySavePolicyTest(): void {
       expect(result.recovery).assertEqual('review_fields');
       expect(result.message).assertEqual('ID 服务器地址不能为空');
     });
+
+    it('never_turns_a_missing_edit_target_into_a_create',
+      0, (): void => {
+        const draft = new RustDeskRelaySetupDraft();
+        draft.operation = 'update';
+        draft.editingRelayId = 'relay-deleted';
+        draft.relayId = 'relay-deleted';
+        draft.idServer = 'rd.example.test';
+        const result =
+          RustDeskRelaySetupCoordinator.getInstance()
+            .save(
+              draft, null, 'attempt-missing-edit');
+        expect(result.ok).assertFalse();
+        expect(result.code).assertEqual('not_found');
+      });
+
+    it('distinguishes_cloud_pending_completed_failed_and_not_configured',
+      0, (): void => {
+        const local = RustDeskRelaySaveResult.fromMutation(
+          'attempt-cloud', 'relay-cloud',
+          DataMutationResult.success('relay-cloud'));
+        expect(local.cloudSyncState)
+          .assertEqual('not_configured');
+        local.applyCloudSyncState('pending');
+        expect(local.cloudSyncState).assertEqual('pending');
+        local.applyCloudSyncState('completed');
+        expect(local.cloudSyncState).assertEqual('completed');
+        local.applyCloudSyncState(
+          'failed', 'network');
+        expect(local.cloudSyncState).assertEqual('failed');
+        expect(local.cloudSyncFailureKind)
+          .assertEqual('network');
+      });
+
+    it('accepts_duplicate_create_retries_only_for_the_same_payload',
+      0, (): void => {
+        const first = relay('relay-stable');
+        const retry =
+          RustDeskRelayConfig.fromJSON(first.toJSON());
+        expect(rustDeskRelayCreatePayloadMatches(
+          first, retry)).assertTrue();
+        retry.key = 'different-key';
+        expect(rustDeskRelayCreatePayloadMatches(
+          first, retry)).assertFalse();
+      });
 
     it('diagnostic_summary_contains_only_safe_identifiers_and_state', 0, (): void => {
       const mutation = DataMutationResult.failure(

@@ -16,9 +16,15 @@ import {
   shouldBindLegacyRustDeskHostToRelay
 } from './RustDeskHostConfigPolicy';
 import { shouldKeepDeletedRelay, shouldKeepLocalRelayConfig } from './RustDeskRelaySyncPolicy';
-import { DataMutationResult } from './DataMutationResult';
 import {
+  DataMutationResult,
+  DataMutationStage
+} from './DataMutationResult';
+import {
+  RustDeskRelayCloudSyncOutcome,
+  RustDeskRelayCloudSyncState,
   RustDeskRelaySaveResult,
+  rustDeskRelayCreatePayloadMatches,
   rustDeskRelayIdFingerprint
 } from './RustDeskRelaySavePolicy';
 import {
@@ -731,6 +737,89 @@ export class HostSyncService {
     return Date.now().toString(36) + '-' + this.relaySaveSequence.toString(36);
   }
 
+  private completeRelayMutation(
+    relay: RustDeskRelayConfig,
+    attemptId: string,
+    operation: string,
+    mutation: DataMutationResult,
+    previous: RustDeskRelayConfig | undefined
+  ): RustDeskRelaySaveResult {
+    const result: RustDeskRelaySaveResult =
+      RustDeskRelaySaveResult.fromMutation(
+        attemptId, relay.id, mutation,
+        mutation.ok &&
+          this.cloud.rustDeskRelayCloudSyncInitialState() ===
+            'pending');
+    if (!result.ok) {
+      hilog.warn(0x0001, 'RustDeskSave',
+        'attempt=' + attemptId + ' relay=' +
+        rustDeskRelayIdFingerprint(relay.id) + ' stage=' +
+        result.stage + ' code=' + result.code +
+        ' committed=' + result.localCommitted.toString());
+      return result;
+    }
+    const readback: RustDeskRelayConfig | null =
+      this.cloud.loadRelayById(relay.id);
+    if (readback === null) {
+      return RustDeskRelaySaveResult.fromMutation(
+        attemptId, relay.id,
+        DataMutationResult.failure(
+          relay.id, 'readback_not_found',
+          '保存后无法刷新服务器记录',
+          'verifying', true));
+    }
+    const observedAt: number = Date.now();
+    this.localRelayObservationAt.set(readback.id, observedAt);
+    this.deletedRelayAt.delete(readback.id);
+    this.relays.set(readback.id, readback);
+    if (previous !== undefined &&
+      rustDeskRelayCapabilityIdentityChanged(
+        previous, readback)) {
+      RustDeskProCredentialStore.getInstance()
+        .invalidateControlPlaneProofsForRelay(readback.id);
+    }
+    this.bindUniqueUnboundRustDeskHost(readback);
+    this.emitDataChange();
+    result.applyCloudSyncState(
+      this.cloud.rustDeskRelayCloudSyncInitialState());
+    hilog.info(0x0001, 'RustDeskSave',
+      'attempt=' + attemptId + ' relay=' +
+      rustDeskRelayIdFingerprint(readback.id) +
+      ' operation=' + operation +
+      ' stage=completed code=ok cloud=' +
+      result.cloudSyncState);
+    return result;
+  }
+
+  private observeRelayCloudSync(
+    result: RustDeskRelaySaveResult,
+    onCloudState:
+      ((state: RustDeskRelayCloudSyncState,
+        failureKind: string) => void) | null = null
+  ): void {
+    if (!result.ok) { return; }
+    const initial: RustDeskRelayCloudSyncState =
+      this.cloud.rustDeskRelayCloudSyncInitialState();
+    result.applyCloudSyncState(initial);
+    if (onCloudState !== null) {
+      onCloudState(initial, '');
+    }
+    if (initial === 'not_configured') { return; }
+    void this.cloud.syncRelaysToCloudAsync()
+      .then((outcome: RustDeskRelayCloudSyncOutcome): void => {
+        result.applyCloudSyncState(
+          outcome.state, outcome.failureKind);
+        if (onCloudState !== null) {
+          onCloudState(
+            outcome.state, outcome.failureKind);
+        }
+      });
+  }
+
+  async retryRelayCloudSync(): Promise<RustDeskRelayCloudSyncOutcome> {
+    return await this.cloud.syncRelaysToCloudAsync();
+  }
+
   addRelayResult(
     relay: RustDeskRelayConfig,
     attemptId: string = ''
@@ -747,46 +836,95 @@ export class HostSyncService {
     }
     const previous: RustDeskRelayConfig | undefined =
       this.relays.get(relay.id);
+    if (previous !== undefined) {
+      if (!rustDeskRelayCreatePayloadMatches(
+        previous, relay)) {
+        return RustDeskRelaySaveResult.fromMutation(
+          resolvedAttemptId, relay.id,
+          DataMutationResult.failure(
+            relay.id, 'invalid_data',
+            '该草稿 ID 已被另一条服务器配置占用',
+            'validating'));
+      }
+      const unchanged: RustDeskRelaySaveResult =
+        RustDeskRelaySaveResult.fromMutation(
+          resolvedAttemptId, relay.id,
+          DataMutationResult.success(
+            relay.id, 'unchanged'));
+      unchanged.applyCloudSyncState(
+        this.cloud.rustDeskRelayCloudSyncInitialState());
+      return unchanged;
+    }
     const mutation: DataMutationResult =
       this.cloud.upsertRelayResult(relay, resolvedAttemptId);
-    const result: RustDeskRelaySaveResult =
-      RustDeskRelaySaveResult.fromMutation(
-        resolvedAttemptId, relay.id, mutation,
-        mutation.ok && this.cloud.isCloudAvailable());
-    if (!result.ok) {
-      hilog.warn(0x0001, 'RustDeskSave', 'attempt=' + resolvedAttemptId +
-        ' relay=' + rustDeskRelayIdFingerprint(relay.id) + ' stage=' +
-        result.stage + ' code=' + result.code + ' committed=' +
-        result.localCommitted.toString());
-      return result;
-    }
-    const readback: RustDeskRelayConfig | null = this.cloud.loadRelayById(relay.id);
-    if (readback === null) {
-      return RustDeskRelaySaveResult.fromMutation(
-        resolvedAttemptId, relay.id,
-        DataMutationResult.failure(
-          relay.id, 'readback_not_found', '保存后无法刷新服务器记录',
-          'verifying', true));
-    }
-    const observedAt: number = Date.now();
-    this.localRelayObservationAt.set(readback.id, observedAt);
-    this.deletedRelayAt.delete(readback.id);
-    this.relays.set(readback.id, readback);
-    if (previous !== undefined &&
-      rustDeskRelayCapabilityIdentityChanged(previous, readback)) {
-      RustDeskProCredentialStore.getInstance()
-        .invalidateControlPlaneProofsForRelay(readback.id);
-    }
-    this.bindUniqueUnboundRustDeskHost(readback);
-    this.emitDataChange();
-    hilog.info(0x0001, 'RustDeskSave', 'attempt=' + resolvedAttemptId +
-      ' relay=' + rustDeskRelayIdFingerprint(readback.id) +
-      ' operation=add stage=completed code=ok');
-    return result;
+    return this.completeRelayMutation(
+      relay, resolvedAttemptId, 'add',
+      mutation, previous);
   }
 
   addRelay(relay: RustDeskRelayConfig): boolean {
-    return this.addRelayResult(relay).ok;
+    const result: RustDeskRelaySaveResult =
+      this.addRelayResult(relay);
+    this.observeRelayCloudSync(result);
+    return result.ok;
+  }
+
+  async addRelayResultAsync(
+    relay: RustDeskRelayConfig,
+    attemptId: string = '',
+    onStage:
+      ((stage: DataMutationStage) => void) | null = null,
+    onCloudState:
+      ((state: RustDeskRelayCloudSyncState,
+        failureKind: string) => void) | null = null
+  ): Promise<RustDeskRelaySaveResult> {
+    const resolvedAttemptId: string =
+      attemptId.trim().length > 0
+        ? attemptId : this.nextRelaySaveAttemptId();
+    if (!relay.id) {
+      relay.id = RustDeskRelayConfig.generateId();
+    }
+    if (relay.createdAt <= 0) {
+      relay.createdAt = Date.now();
+    }
+    if (!this.ready) {
+      return RustDeskRelaySaveResult.fromMutation(
+        resolvedAttemptId, relay.id,
+        DataMutationResult.failure(
+          relay.id, 'not_ready',
+          '本地数据库正在准备，草稿已保留',
+          'waiting_gate'));
+    }
+    const previous: RustDeskRelayConfig | undefined =
+      this.relays.get(relay.id);
+    if (previous !== undefined) {
+      if (!rustDeskRelayCreatePayloadMatches(
+        previous, relay)) {
+        return RustDeskRelaySaveResult.fromMutation(
+          resolvedAttemptId, relay.id,
+          DataMutationResult.failure(
+            relay.id, 'invalid_data',
+            '该草稿 ID 已被另一条服务器配置占用',
+            'validating'));
+      }
+      const unchanged: RustDeskRelaySaveResult =
+        RustDeskRelaySaveResult.fromMutation(
+          resolvedAttemptId, relay.id,
+          DataMutationResult.success(
+            relay.id, 'unchanged'));
+      this.observeRelayCloudSync(
+        unchanged, onCloudState);
+      return unchanged;
+    }
+    const mutation: DataMutationResult =
+      await this.cloud.upsertRelayResultAsync(
+        relay, resolvedAttemptId, onStage);
+    const result: RustDeskRelaySaveResult =
+      this.completeRelayMutation(
+        relay, resolvedAttemptId, 'add',
+        mutation, previous);
+    this.observeRelayCloudSync(result, onCloudState);
+    return result;
   }
 
   updateRelayResult(
@@ -812,43 +950,57 @@ export class HostSyncService {
     }
     const mutation: DataMutationResult =
       this.cloud.upsertRelayResult(relay, resolvedAttemptId);
-    const result: RustDeskRelaySaveResult =
-      RustDeskRelaySaveResult.fromMutation(
-        resolvedAttemptId, relay.id, mutation,
-        mutation.ok && this.cloud.isCloudAvailable());
-    if (!result.ok) {
-      hilog.warn(0x0001, 'RustDeskSave', 'attempt=' + resolvedAttemptId +
-        ' relay=' + rustDeskRelayIdFingerprint(relay.id) + ' stage=' +
-        result.stage + ' code=' + result.code + ' committed=' +
-        result.localCommitted.toString());
-      return result;
-    }
-    const readback: RustDeskRelayConfig | null = this.cloud.loadRelayById(relay.id);
-    if (readback === null) {
-      return RustDeskRelaySaveResult.fromMutation(
-        resolvedAttemptId, relay.id,
-        DataMutationResult.failure(
-          relay.id, 'readback_not_found', '保存后无法刷新服务器记录',
-          'verifying', true));
-    }
-    const observedAt: number = Date.now();
-    this.localRelayObservationAt.set(readback.id, observedAt);
-    this.deletedRelayAt.delete(readback.id);
-    this.relays.set(readback.id, readback);
-    if (rustDeskRelayCapabilityIdentityChanged(previous, readback)) {
-      RustDeskProCredentialStore.getInstance()
-        .invalidateControlPlaneProofsForRelay(readback.id);
-    }
-    this.bindUniqueUnboundRustDeskHost(readback);
-    this.emitDataChange();
-    hilog.info(0x0001, 'RustDeskSave', 'attempt=' + resolvedAttemptId +
-      ' relay=' + rustDeskRelayIdFingerprint(readback.id) +
-      ' operation=update stage=completed code=ok');
-    return result;
+    return this.completeRelayMutation(
+      relay, resolvedAttemptId, 'update',
+      mutation, previous);
   }
 
   updateRelay(relay: RustDeskRelayConfig): boolean {
-    return this.updateRelayResult(relay).ok;
+    const result: RustDeskRelaySaveResult =
+      this.updateRelayResult(relay);
+    this.observeRelayCloudSync(result);
+    return result.ok;
+  }
+
+  async updateRelayResultAsync(
+    relay: RustDeskRelayConfig,
+    attemptId: string = '',
+    onStage:
+      ((stage: DataMutationStage) => void) | null = null,
+    onCloudState:
+      ((state: RustDeskRelayCloudSyncState,
+        failureKind: string) => void) | null = null
+  ): Promise<RustDeskRelaySaveResult> {
+    const resolvedAttemptId: string =
+      attemptId.trim().length > 0
+        ? attemptId : this.nextRelaySaveAttemptId();
+    const previous: RustDeskRelayConfig | undefined =
+      this.relays.get(relay.id);
+    if (previous === undefined) {
+      return RustDeskRelaySaveResult.fromMutation(
+        resolvedAttemptId, relay.id,
+        DataMutationResult.failure(
+          relay.id, 'not_found',
+          '要编辑的服务器已不存在，请重新载入列表',
+          'waiting_gate'));
+    }
+    if (!this.ready) {
+      return RustDeskRelaySaveResult.fromMutation(
+        resolvedAttemptId, relay.id,
+        DataMutationResult.failure(
+          relay.id, 'not_ready',
+          '本地数据库正在准备，草稿已保留',
+          'waiting_gate'));
+    }
+    const mutation: DataMutationResult =
+      await this.cloud.upsertRelayResultAsync(
+        relay, resolvedAttemptId, onStage);
+    const result: RustDeskRelaySaveResult =
+      this.completeRelayMutation(
+        relay, resolvedAttemptId, 'update',
+        mutation, previous);
+    this.observeRelayCloudSync(result, onCloudState);
+    return result;
   }
 
   removeRelay(id: string): boolean {

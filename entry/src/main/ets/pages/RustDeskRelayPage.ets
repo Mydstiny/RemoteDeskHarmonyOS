@@ -37,6 +37,9 @@ import { VncGatewayValues } from '../services/VncModelPolicy';
 import { vncGatewayAvailability } from '../services/VncGatewayProtocolPolicy';
 import { protocolIcon } from '../services/ProtocolIconPolicy';
 import {
+  RustDeskRelayCloudSyncOutcome,
+  RustDeskRelayCloudSyncState,
+  rustDeskRelayCloudSyncMessage,
   RustDeskRelaySaveRecovery,
   RustDeskRelaySaveResult
 } from '../services/RustDeskRelaySavePolicy';
@@ -44,6 +47,7 @@ import {
   RustDeskRelaySetupCoordinator,
   RustDeskRelaySetupDraft
 } from '../services/RustDeskRelaySetupCoordinator';
+import { DataMutationStage } from '../services/DataMutationResult';
 
 class TcpTestResult {
   ok: boolean = false;
@@ -90,6 +94,10 @@ export struct RustDeskRelayPage {
   @State relaySaveError: string = '';
   @State relaySaveRecovery: RustDeskRelaySaveRecovery = 'none';
   @State relaySaveDiagnostic: string = '';
+  @State relaySaveStage: DataMutationStage = 'idle';
+  @State relayCloudSyncState:
+    RustDeskRelayCloudSyncState = 'not_configured';
+  @State relayCloudFailureKind: string = '';
   @State relayDraftId: string = '';
   @State relaySaveRevision: number = 0;
   // Server Pro account form and local-only account state
@@ -428,6 +436,9 @@ export struct RustDeskRelayPage {
     this.relaySaveRecovery = 'none';
     this.relaySaveDiagnostic = '';
     this.relaySaving = false;
+    this.relaySaveStage = 'idle';
+    this.relayCloudSyncState = 'not_configured';
+    this.relayCloudFailureKind = '';
     this.sheetContent = 1;
     this.showSheet = true;
   }
@@ -513,7 +524,9 @@ export struct RustDeskRelayPage {
     this.showRelayAdvanced = false;
     this.relayDraftId = this.relaySetup.nextDraftId();
     this.relaySaving = false; this.relaySaveError = ''; this.relaySaveRecovery = 'none';
-    this.relaySaveDiagnostic = '';
+    this.relaySaveDiagnostic = ''; this.relaySaveStage = 'idle';
+    this.relayCloudSyncState = 'not_configured';
+    this.relayCloudFailureKind = '';
   }
 
   private relayPortFromText(value: string, defaultPort: number): number {
@@ -523,12 +536,15 @@ export struct RustDeskRelayPage {
     return Number.isInteger(port) ? port : 0;
   }
 
-  private doSaveRelay(): string {
-    if (this.relaySaving) { return this.relaySaveError; }
+  private async doSaveRelay(): Promise<void> {
+    if (this.relaySaving) { return; }
     this.relaySaveError = '';
     this.relaySaveRecovery = 'none';
     const isNew: boolean = this.editingRelayId === '';
     const draft = new RustDeskRelaySetupDraft();
+    draft.operation = isNew ? 'create' : 'update';
+    draft.editingRelayId =
+      isNew ? '' : this.editingRelayId;
     draft.relayId = isNew ? this.relayDraftId : this.editingRelayId;
     draft.idServer = this.formIdServer;
     draft.idServerPort = this.relayPortFromText(this.formIdPortText, 21116);
@@ -545,8 +561,25 @@ export struct RustDeskRelayPage {
       (this.relays.find((x: RustDeskRelayConfig): boolean =>
         x.id === this.editingRelayId) ?? null);
     this.relaySaving = true;
+    this.relaySaveStage = 'validating';
     const result: RustDeskRelaySaveResult =
-      this.relaySetup.save(draft, existing, attemptId);
+      await this.relaySetup.saveAsync(
+        draft, existing, attemptId,
+        (stage: DataMutationStage): void => {
+          this.relaySaveStage = stage;
+        },
+        (state: RustDeskRelayCloudSyncState,
+          failureKind: string): void => {
+          this.relayCloudSyncState = state;
+          this.relayCloudFailureKind =
+            state === 'failed' ? failureKind : '';
+          this.relaySaveDiagnostic =
+            'attempt=' + attemptId +
+            ' stage=completed code=ok committed=true cloud=' +
+            state +
+            (failureKind === ''
+              ? '' : ' cloud_failure=' + failureKind);
+        });
     this.relaySaving = false;
     this.relayDraftId = draft.relayId;
     this.relaySaveDiagnostic = result.diagnosticSummary();
@@ -554,16 +587,29 @@ export struct RustDeskRelayPage {
       this.relaySaveError = result.message;
       this.relaySaveRecovery = result.recovery;
       if (result.localCommitted) { this.load(); }
-      return result.message;
+      return;
     }
+    this.relaySaveStage = 'completed';
+    this.relayCloudSyncState = result.cloudSyncState;
+    this.relayCloudFailureKind =
+      result.cloudSyncFailureKind;
     this.load();
-    if (isNew) {
-      this.savedRelayId = result.relayId;
-      this.sheetContent = 4;
-      return '';
-    }
-    this.closeSheet();
-    return '';
+    this.savedRelayId = result.relayId;
+    this.sheetContent = 4;
+  }
+
+  private async retryRelayCloudSync(): Promise<void> {
+    this.relayCloudSyncState = 'pending';
+    this.relayCloudFailureKind = '';
+    const outcome: RustDeskRelayCloudSyncOutcome =
+      await this.srv.retryRelayCloudSync();
+    this.relayCloudSyncState = outcome.state;
+    this.relayCloudFailureKind = outcome.failureKind;
+    this.relaySaveDiagnostic =
+      this.relaySaveDiagnostic.replace(
+        /cloud=[^ ]+/, 'cloud=' + outcome.state) +
+      (outcome.failureKind === ''
+        ? '' : ' cloud_failure=' + outcome.failureKind);
   }
 
   private applyRelayImport(result: RustDeskRelayImportResult): void {
@@ -1955,9 +2001,16 @@ export struct RustDeskRelayPage {
               if (this.relaySaveDiagnostic !== '') {
                 Text(this.relaySaveDiagnostic).fontSize(10).fontColor(this.pal().text3)
                   .fontFamily(this.font()).width('100%').margin({ top: 5 })
+                  .copyOption(CopyOptions.InApp)
               }
             }.width('100%').padding(10).borderRadius(8)
               .backgroundColor(this.pal().danger + '12').margin({ top: 6 })
+          }
+          if (this.relaySaving) {
+            Text('保存阶段：' + this.relaySaveStage)
+              .fontSize(11).fontColor(this.accentColor)
+              .fontFamily(this.font()).width('100%')
+              .margin({ top: 8 })
           }
           Column().height(18)
         }.width('100%')
@@ -1995,6 +2048,37 @@ export struct RustDeskRelayPage {
       Text('现在可以完成，也可以继续登录 Server Pro 或兼容地址簿；连接测试可从中继卡片发起。')
         .fontSize(12).fontColor(this.pal().text3).fontFamily(this.font()).textAlign(TextAlign.Center)
         .lineHeight(19).margin({ top: 8, bottom: 18 })
+      Column() {
+        Text(rustDeskRelayCloudSyncMessage(
+          this.relayCloudSyncState))
+          .fontSize(12)
+          .fontColor(this.relayCloudSyncState === 'failed'
+            ? this.pal().danger
+            : (this.relayCloudSyncState === 'completed'
+              ? this.pal().success : this.pal().text2))
+          .fontFamily(this.font()).width('100%')
+        if (this.relaySaveDiagnostic !== '') {
+          Text(this.relaySaveDiagnostic)
+            .fontSize(10).fontColor(this.pal().text3)
+            .fontFamily(this.font()).width('100%')
+            .margin({ top: 5 })
+            .copyOption(CopyOptions.InApp)
+        }
+        if (this.relayCloudSyncState === 'failed' ||
+          this.relayCloudSyncState === 'pending') {
+          Button(this.relayCloudSyncState === 'pending'
+            ? '再次请求云端上传' : '重试云端上传')
+            .width('100%').height(38).fontSize(12)
+            .borderRadius(9).margin({ top: 10 })
+            .backgroundColor(this.pal().surface)
+            .fontColor(this.accentColor)
+            .onClick((): void => {
+              void this.retryRelayCloudSync();
+            })
+        }
+      }.width('100%').padding(10).borderRadius(9)
+        .backgroundColor(this.pal().surface)
+        .margin({ bottom: 14 })
       Row() {
         Button('完成').layoutWeight(1).height(42).borderRadius(11)
           .backgroundColor(this.pal().surface).fontColor(this.pal().text2)

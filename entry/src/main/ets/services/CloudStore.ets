@@ -85,13 +85,24 @@ import {
   PortableBackupRestorePlan,
   validateLocalBackupSnapshot
 } from './LocalBackupPolicy';
-import { DataMutationResult } from './DataMutationResult';
+import {
+  DataMutationResult,
+  DataMutationStage
+} from './DataMutationResult';
 import { canonicalHostPassword } from './SensitiveDataMigrationPolicy';
 import { rustDeskRelayKeyForStorage, rustDeskRelayKeyFromStorage } from './RustDeskRelayKeyPolicy';
 import {
+  RustDeskRelayCloudSyncOutcome,
+  RustDeskRelayCloudSyncState,
   rustDeskRelayIdFingerprint,
-  rustDeskRelayReadbackMatches
 } from './RustDeskRelaySavePolicy';
+import {
+  commitRustDeskRelayPersistence,
+  RustDeskRelayPersistenceGate,
+  RustDeskRelayPersistencePort,
+  rustDeskRelayPersistenceGateResult,
+  verifyRustDeskRelayPersistence
+} from './RustDeskRelayPersistencePolicy';
 import {
   normalizeRustDeskControlPlaneProfile,
   rustDeskControlPlaneProfileMetadataKey,
@@ -7886,8 +7897,39 @@ export class CloudStore implements CryptoCloudStore {
   // ==================== RustDesk Relay 云同步 ====================
 
   /** 中继使用独立的 rustdeskrelays 云表；不再把整表 JSON 塞入 cryptoparams。 */
+  rustDeskRelayCloudSyncInitialState(): RustDeskRelayCloudSyncState {
+    return this.isCloudAvailable() &&
+      this.syncableTables().indexOf('rustdeskrelays') >= 0
+      ? 'pending' : 'not_configured';
+  }
+
+  async syncRelaysToCloudAsync(): Promise<RustDeskRelayCloudSyncOutcome> {
+    const outcome = new RustDeskRelayCloudSyncOutcome();
+    outcome.state = this.rustDeskRelayCloudSyncInitialState();
+    if (outcome.state === 'not_configured') { return outcome; }
+    try {
+      const result: CloudSyncOperationResult =
+        await CloudSyncCoordinator.getInstance()
+          .requestAutomaticPush('rustdeskrelays');
+      if (!result.ok) {
+        outcome.state = 'failed';
+        outcome.failureKind = result.failureKind;
+      } else if (result.tables.indexOf('rustdeskrelays') >= 0) {
+        outcome.state = 'completed';
+      } else {
+        // Deferred/coalesced work remains represented by the durable local
+        // mutation journal and must not be called completed.
+        outcome.state = 'pending';
+      }
+    } catch (_err) {
+      outcome.state = 'failed';
+      outcome.failureKind = 'unknown';
+    }
+    return outcome;
+  }
+
   syncRelaysToCloud(): void {
-    this.pushTable('rustdeskrelays');
+    void this.syncRelaysToCloudAsync();
   }
 
   /**
@@ -8107,82 +8149,141 @@ export class CloudStore implements CryptoCloudStore {
     return vb;
   }
 
-  upsertRelayResult(relay: RustDeskRelayConfig, attemptId: string = ''): DataMutationResult {
+  private rustDeskRelayPersistencePort(
+    relay: RustDeskRelayConfig
+  ): RustDeskRelayPersistencePort {
+    return {
+      beginTransaction: (): void => {
+        if (!this.store) { throw new Error('relay store unavailable'); }
+        this.store.beginTransaction();
+      },
+      upsertRelay: (): boolean =>
+        this.upsertRelayLocalInternal(relay, true),
+      writeControlPlaneProfile: (): boolean =>
+        this.writeRustDeskRelayControlPlaneProfile(relay),
+      recordMutationJournal: (): boolean =>
+        this.recordLocalMutation(
+          'rustdeskrelays', relay.id, 'upsert'),
+      commit: (): void => {
+        if (!this.store) { throw new Error('relay store unavailable'); }
+        this.store.commit();
+      },
+      rollback: (): void => {
+        if (!this.store) { throw new Error('relay store unavailable'); }
+        this.store.rollBack();
+      },
+      readback: (): RustDeskRelayConfig | null =>
+        this.loadRelayById(relay.id)
+    };
+  }
+
+  private commitRelayPersistenceResult(
+    relay: RustDeskRelayConfig,
+    attemptId: string
+  ): DataMutationResult {
     const relayFingerprint: string = rustDeskRelayIdFingerprint(relay.id);
     hilog.info(0x0001, 'RustDeskSave', 'attempt=' + attemptId + ' relay=' +
       relayFingerprint + ' stage=waiting_gate');
-    if (!this.store) {
-      this.setLastMutation(DataMutationResult.failure(
-        relay.id, 'not_ready', '本地数据库未就绪', 'waiting_gate'));
-      return this.getLastMutationResult();
-    }
-    if (!this.localMutationAllowed()) {
-      this.setLastMutation(DataMutationResult.failure(
-        relay.id, 'restore_in_progress', '恢复进行中，暂不能保存', 'waiting_gate'));
-      return this.getLastMutationResult();
-    }
-    if (!this.recordOwnerWriteAllowed(relay.userId)) {
-      this.setLastMutation(DataMutationResult.failure(
-        relay.id, 'invalid_data', 'RustDesk 中继属于其他账号，已拒绝保存', 'waiting_gate'));
+    const storeReady: boolean = this.store !== null;
+    const mutationAllowed: boolean =
+      storeReady && this.localMutationAllowed();
+    const ownerAllowed: boolean = mutationAllowed &&
+      this.recordOwnerWriteAllowed(relay.userId);
+    const sensitiveAllowed: boolean = ownerAllowed &&
+      this.sensitiveWriteAllowed(relay.id);
+    const gate: RustDeskRelayPersistenceGate = {
+      storeReady,
+      localMutationAllowed: mutationAllowed,
+      ownerAllowed,
+      sensitiveWriteAllowed: sensitiveAllowed,
+      sensitiveFailure: sensitiveAllowed
+        ? null : this.getLastMutationResult()
+    };
+    const blocked: DataMutationResult | null =
+      rustDeskRelayPersistenceGateResult(relay.id, gate);
+    if (blocked !== null) {
+      this.setLastMutation(blocked);
       return this.getLastMutationResult();
     }
     relay.userId = this.currentOwnerScopeId();
-    if (!this.sensitiveWriteAllowed(relay.id)) {
-      this.lastMutationResult.stage = 'waiting_gate';
-      return this.getLastMutationResult();
-    }
-    let code = 'local_write_failed';
-    try {
-      hilog.info(0x0001, 'RustDeskSave', 'attempt=' + attemptId + ' relay=' +
-        relayFingerprint + ' stage=committing');
-      this.store.beginTransaction();
-      if (!this.upsertRelayLocalInternal(relay, true)) { code = 'local_write_failed'; throw new Error('relay upsert failed'); }
-      if (!this.writeRustDeskRelayControlPlaneProfile(relay)) {
-        code = 'metadata_write_failed'; throw new Error('relay profile metadata write failed');
-      }
-      if (!this.recordLocalMutation('rustdeskrelays', relay.id, 'upsert')) {
-        code = 'journal_write_failed'; throw new Error('relay journal failed');
-      }
-      this.store.commit();
-    } catch (err) {
-      try { this.store.rollBack(); } catch (_ignored) {}
+    hilog.info(0x0001, 'RustDeskSave', 'attempt=' + attemptId +
+      ' relay=' + relayFingerprint + ' stage=committing');
+    const result: DataMutationResult =
+      commitRustDeskRelayPersistence(
+        relay, this.rustDeskRelayPersistencePort(relay));
+    if (!result.ok) {
       hilog.error(0x0001, 'RustDeskSave', 'attempt=' + attemptId + ' relay=' +
-        relayFingerprint + ' stage=committing code=' + code +
-        ' committed=false rolled_back=true error=' + safeError(err));
-      this.setLastMutation(DataMutationResult.failure(relay.id, code as 'local_write_failed' |
-        'metadata_write_failed' | 'journal_write_failed', 'RustDesk 中继保存未完成',
-        'committing'));
+        relayFingerprint + ' stage=committing code=' +
+        result.code + ' committed=false rolled_back=true');
+      this.setLastMutation(result);
       return this.getLastMutationResult();
     }
-
-    hilog.info(0x0001, 'RustDeskSave', 'attempt=' + attemptId + ' relay=' +
-      relayFingerprint + ' stage=verifying');
-    const readback: RustDeskRelayConfig | null = this.loadRelayById(relay.id);
-    if (readback === null) {
-      this.setLastMutation(DataMutationResult.failure(
-        relay.id, 'readback_not_found', 'RustDesk 中继提交后无法回读',
-        'verifying', true));
-      hilog.error(0x0001, 'RustDeskSave', 'attempt=' + attemptId + ' relay=' +
-        relayFingerprint + ' stage=verifying code=readback_not_found committed=true');
-      return this.getLastMutationResult();
-    }
-    if (!rustDeskRelayReadbackMatches(relay, readback)) {
-      this.setLastMutation(DataMutationResult.failure(
-        relay.id, 'readback_mismatch', 'RustDesk 中继提交后校验不一致',
-        'verifying', true));
-      hilog.error(0x0001, 'RustDeskSave', 'attempt=' + attemptId + ' relay=' +
-        relayFingerprint + ' stage=verifying code=readback_mismatch committed=true');
-      return this.getLastMutationResult();
-    }
-    this.setLastMutation(DataMutationResult.success(relay.id));
-    hilog.info(0x0001, 'RustDeskSave', 'attempt=' + attemptId + ' relay=' +
-      relayFingerprint + ' stage=completed code=ok committed=true');
-    this.syncRelaysToCloud();
+    this.setLastMutation(result);
     return this.getLastMutationResult();
   }
 
+  private verifyRelayPersistenceResult(
+    relay: RustDeskRelayConfig,
+    attemptId: string
+  ): DataMutationResult {
+    const relayFingerprint: string =
+      rustDeskRelayIdFingerprint(relay.id);
+    hilog.info(0x0001, 'RustDeskSave', 'attempt=' + attemptId + ' relay=' +
+      relayFingerprint + ' stage=verifying');
+    const result: DataMutationResult =
+      verifyRustDeskRelayPersistence(
+        relay, this.rustDeskRelayPersistencePort(relay));
+    this.setLastMutation(result);
+    if (!result.ok) {
+      hilog.error(0x0001, 'RustDeskSave', 'attempt=' + attemptId + ' relay=' +
+        relayFingerprint + ' stage=verifying code=' +
+        result.code + ' committed=true');
+      return this.getLastMutationResult();
+    }
+    hilog.info(0x0001, 'RustDeskSave', 'attempt=' + attemptId + ' relay=' +
+      relayFingerprint + ' stage=completed code=ok committed=true');
+    return this.getLastMutationResult();
+  }
+
+  upsertRelayResult(
+    relay: RustDeskRelayConfig,
+    attemptId: string = ''
+  ): DataMutationResult {
+    const committed: DataMutationResult =
+      this.commitRelayPersistenceResult(relay, attemptId);
+    return committed.ok
+      ? this.verifyRelayPersistenceResult(relay, attemptId)
+      : committed;
+  }
+
+  async upsertRelayResultAsync(
+    relay: RustDeskRelayConfig,
+    attemptId: string = '',
+    onStage: ((stage: DataMutationStage) => void) | null = null
+  ): Promise<DataMutationResult> {
+    if (onStage !== null) { onStage('waiting_gate'); }
+    await new Promise<void>((resolve: () => void): void => {
+      setTimeout(resolve, 0);
+    });
+    if (onStage !== null) { onStage('committing'); }
+    await new Promise<void>((resolve: () => void): void => {
+      setTimeout(resolve, 0);
+    });
+    const committed: DataMutationResult =
+      this.commitRelayPersistenceResult(relay, attemptId);
+    if (!committed.ok) { return committed; }
+    if (onStage !== null) { onStage('verifying'); }
+    await new Promise<void>((resolve: () => void): void => {
+      setTimeout(resolve, 0);
+    });
+    return this.verifyRelayPersistenceResult(relay, attemptId);
+  }
+
   upsertRelay(relay: RustDeskRelayConfig): boolean {
-    return this.upsertRelayResult(relay).ok;
+    const result: DataMutationResult =
+      this.upsertRelayResult(relay);
+    if (result.ok) { this.syncRelaysToCloud(); }
+    return result.ok;
   }
 
   deleteRelay(id: string): boolean {
@@ -8221,15 +8322,94 @@ export class CloudStore implements CryptoCloudStore {
     return this.loadAllRelaysLocal();
   }
 
-  loadRelayById(id: string): RustDeskRelayConfig | null {
-    if (id.trim().length === 0) { return null; }
-    const relays: RustDeskRelayConfig[] = this.loadAllRelaysLocalInternal(true);
-    for (let i = 0; i < relays.length; i++) {
-      if (relays[i].id === id) {
-        return RustDeskRelayConfig.fromJSON(relays[i].toJSON());
-      }
+  private relayFromCurrentRow(
+    rows: relationalStore.ResultSet,
+    decrypt: boolean
+  ): RustDeskRelayConfig {
+    const crypto = DataCrypto.getInstance();
+    const relay = new RustDeskRelayConfig();
+    relay.id = rows.getString(rows.getColumnIndex('id'));
+    relay.userId = rows.getString(
+      rows.getColumnIndex('userid'));
+    relay.idServer = rows.getString(
+      rows.getColumnIndex('idserver'));
+    relay.idServerPort = rows.getLong(
+      rows.getColumnIndex('idserverport'));
+    relay.relayServer = rows.getString(
+      rows.getColumnIndex('relayserver'));
+    relay.relayPort = rows.getLong(
+      rows.getColumnIndex('relayport'));
+    relay.apiServer = rows.getString(
+      rows.getColumnIndex('apiserver'));
+    relay.apiUsername = rows.getString(
+      rows.getColumnIndex('apiusername'));
+    const apiPassword: string = rows.getString(
+      rows.getColumnIndex('apipassword'));
+    const key: string = rows.getString(
+      rows.getColumnIndex('key'));
+    relay.apiPassword = decrypt ? this.decryptIfReady(
+      crypto, 'rustdeskrelays', relay.id,
+      'apipassword', apiPassword) : apiPassword;
+    if (decrypt) {
+      const storedKey = rustDeskRelayKeyFromStorage(
+        this.decryptIfReady(
+          crypto, 'rustdeskrelays', relay.id, 'key', key));
+      relay.key = storedKey.key;
+      relay.keyMode = storedKey.mode;
+    } else {
+      relay.key = key;
     }
-    return null;
+    relay.healthStatus = rows.getString(
+      rows.getColumnIndex('healthstatus'));
+    relay.healthLatency = rows.getLong(
+      rows.getColumnIndex('healthlatency'));
+    relay.healthCheckedAt = rows.getLong(
+      rows.getColumnIndex('healthcheckedat'));
+    relay.apiLoginStatus = rows.getString(
+      rows.getColumnIndex('apiloginstatus'));
+    const accountsColumn: number =
+      rows.getColumnIndex('accountsjson');
+    if (accountsColumn >= 0) {
+      relay.accounts = decrypt
+        ? this.relayAccountsFromJson(
+          rows.getString(accountsColumn), relay.id)
+        : this.relayAccountsFromJsonRaw(
+          rows.getString(accountsColumn));
+    }
+    relay.controlPlaneProfile =
+      this.readRustDeskRelayControlPlaneProfile(relay.id);
+    relay.syncVersion = rows.getLong(
+      rows.getColumnIndex('syncversion'));
+    relay.createdAt = rows.getLong(
+      rows.getColumnIndex('createdat'));
+    const updatedAtColumn: number =
+      rows.getColumnIndex('updatedat');
+    relay.updatedAt = updatedAtColumn >= 0
+      ? rows.getLong(updatedAtColumn) : 0;
+    return relay;
+  }
+
+  loadRelayById(id: string): RustDeskRelayConfig | null {
+    const normalized: string = id.trim();
+    if (!this.store || normalized === '') { return null; }
+    let rows: relationalStore.ResultSet | null = null;
+    try {
+      const predicates =
+        new relationalStore.RdbPredicates('rustdeskrelays');
+      predicates.equalTo('id', normalized);
+      this.addCurrentOwnerPredicate(predicates);
+      rows = this.store.querySync(predicates);
+      if (!rows.goToFirstRow()) { return null; }
+      return this.relayFromCurrentRow(rows, true);
+    } catch (err) {
+      hilog.error(0x0001, 'RustDeskSave',
+        'stable-id readback failed relay=' +
+        rustDeskRelayIdFingerprint(normalized) +
+        ' error=' + safeError(err));
+      return null;
+    } finally {
+      if (rows !== null) { rows.close(); }
+    }
   }
 
   // ---- 本地 CRUD (不触发云同步, 供内部和 sync 方法使用) ----
@@ -8288,55 +8468,19 @@ export class CloudStore implements CryptoCloudStore {
   private loadAllRelaysLocalInternal(decrypt: boolean): RustDeskRelayConfig[] {
     const result: RustDeskRelayConfig[] = [];
     if (!this.store) { return result; }
+    let rows: relationalStore.ResultSet | null = null;
     try {
       const predicates = new relationalStore.RdbPredicates('rustdeskrelays');
       this.addCurrentOwnerPredicate(predicates);
-      const rs = this.store.querySync(predicates);
-      while (rs.goToNextRow()) {
-        const crypto = DataCrypto.getInstance();
-        const relay = new RustDeskRelayConfig();
-        relay.id = rs.getString(rs.getColumnIndex('id'));
-        relay.userId = rs.getString(rs.getColumnIndex('userid'));
-        relay.idServer = rs.getString(rs.getColumnIndex('idserver'));
-        relay.idServerPort = rs.getLong(rs.getColumnIndex('idserverport'));
-        relay.relayServer = rs.getString(rs.getColumnIndex('relayserver'));
-        relay.relayPort = rs.getLong(rs.getColumnIndex('relayport'));
-        relay.apiServer = rs.getString(rs.getColumnIndex('apiserver'));
-        relay.apiUsername = rs.getString(rs.getColumnIndex('apiusername'));
-        const apiPassword: string = rs.getString(rs.getColumnIndex('apipassword'));
-        const key: string = rs.getString(rs.getColumnIndex('key'));
-        relay.apiPassword = decrypt ? this.decryptIfReady(
-          crypto, 'rustdeskrelays', relay.id, 'apipassword', apiPassword) : apiPassword;
-        if (decrypt) {
-          const storedKey = rustDeskRelayKeyFromStorage(this.decryptIfReady(
-            crypto, 'rustdeskrelays', relay.id, 'key', key));
-          relay.key = storedKey.key;
-          relay.keyMode = storedKey.mode;
-        } else {
-          // Raw reads are used by DataCrypto migration. Keep the exact
-          // database representation so a raw write cannot double-wrap it.
-          relay.key = key;
-        }
-        relay.healthStatus = rs.getString(rs.getColumnIndex('healthstatus'));
-        relay.healthLatency = rs.getLong(rs.getColumnIndex('healthlatency'));
-        relay.healthCheckedAt = rs.getLong(rs.getColumnIndex('healthcheckedat'));
-        relay.apiLoginStatus = rs.getString(rs.getColumnIndex('apiloginstatus'));
-        const accountsColumn: number = rs.getColumnIndex('accountsjson');
-        if (accountsColumn >= 0) {
-        relay.accounts = decrypt
-          ? this.relayAccountsFromJson(rs.getString(accountsColumn), relay.id)
-          : this.relayAccountsFromJsonRaw(rs.getString(accountsColumn));
-        }
-        relay.controlPlaneProfile = this.readRustDeskRelayControlPlaneProfile(relay.id);
-        relay.syncVersion = rs.getLong(rs.getColumnIndex('syncversion'));
-        relay.createdAt = rs.getLong(rs.getColumnIndex('createdat'));
-        const updatedAtColumn: number = rs.getColumnIndex('updatedat');
-        relay.updatedAt = updatedAtColumn >= 0 ? rs.getLong(updatedAtColumn) : 0;
-        result.push(relay);
+      rows = this.store.querySync(predicates);
+      while (rows.goToNextRow()) {
+        result.push(
+          this.relayFromCurrentRow(rows, decrypt));
       }
-      rs.close();
     } catch (err) {
       hilog.error(0x0001, 'CloudSync', '[CloudStore] loadAllRelays 失败: ' + JSON.stringify(err));
+    } finally {
+      if (rows !== null) { rows.close(); }
     }
     return result;
   }

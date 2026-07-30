@@ -12,6 +12,14 @@ export type RustDeskRelaySaveRecovery =
   'none' | 'retry' | 'unlock' | 'wait_for_restore' | 'reload' |
   'review_account' | 'review_fields';
 
+export type RustDeskRelayCloudSyncState =
+  'not_configured' | 'pending' | 'completed' | 'failed';
+
+export class RustDeskRelayCloudSyncOutcome {
+  state: RustDeskRelayCloudSyncState = 'not_configured';
+  failureKind: string = '';
+}
+
 export class RustDeskRelaySaveResult {
   ok: boolean = false;
   attemptId: string = '';
@@ -23,6 +31,9 @@ export class RustDeskRelaySaveResult {
   recovery: RustDeskRelaySaveRecovery = 'retry';
   localCommitted: boolean = false;
   cloudSyncRequested: boolean = false;
+  cloudSyncState: RustDeskRelayCloudSyncState =
+    'not_configured';
+  cloudSyncFailureKind: string = '';
 
   static fromMutation(
     attemptId: string,
@@ -42,14 +53,42 @@ export class RustDeskRelaySaveResult {
       ? 'review_fields' : rustDeskRelaySaveRecoveryForCode(mutation.code);
     result.localCommitted = mutation.localCommitted;
     result.cloudSyncRequested = mutation.ok && cloudSyncRequested;
+    result.cloudSyncState = mutation.ok && cloudSyncRequested
+      ? 'pending' : 'not_configured';
     return result;
+  }
+
+  applyCloudSyncState(
+    state: RustDeskRelayCloudSyncState,
+    failureKind: string = ''
+  ): RustDeskRelaySaveResult {
+    this.cloudSyncState = state;
+    this.cloudSyncRequested =
+      state === 'pending' || state === 'completed' ||
+      state === 'failed';
+    this.cloudSyncFailureKind =
+      state === 'failed' ? failureKind : '';
+    return this;
   }
 
   diagnosticSummary(): string {
     return 'attempt=' + this.attemptId + ' relay=' + this.relayIdFingerprint +
       ' stage=' + this.stage + ' code=' + this.code + ' committed=' +
       this.localCommitted.toString() + ' cloud=' +
-      (this.cloudSyncRequested ? 'requested' : 'not_requested');
+      this.cloudSyncState +
+      (this.cloudSyncFailureKind === ''
+        ? '' : ' cloud_failure=' + this.cloudSyncFailureKind);
+  }
+}
+
+export function rustDeskRelayCloudSyncMessage(
+  state: RustDeskRelayCloudSyncState
+): string {
+  switch (state) {
+    case 'completed': return '云端上传已完成';
+    case 'pending': return '本地已保存，云端上传待处理；应用会按日志自动重试';
+    case 'failed': return '本地已保存，云端上传失败；可立即重试';
+    default: return '本地已保存；当前账号未配置此表的云同步';
   }
 }
 
@@ -151,4 +190,21 @@ export function rustDeskRelayReadbackMatches(
     expected.syncVersion === actual.syncVersion &&
     expected.updatedAt === actual.updatedAt &&
     accountsMatch(expected.accounts, actual.accounts);
+}
+
+/** Stable-ID retries are idempotent only for the same configuration payload. */
+export function rustDeskRelayCreatePayloadMatches(
+  expected: RustDeskRelayConfig,
+  actual: RustDeskRelayConfig
+): boolean {
+  return expected.id === actual.id &&
+    expected.idServer === actual.idServer &&
+    expected.idServerPort === actual.idServerPort &&
+    expected.relayServer === actual.relayServer &&
+    expected.relayPort === actual.relayPort &&
+    expected.apiServer === actual.apiServer &&
+    expected.key === actual.key &&
+    expected.keyMode === actual.keyMode &&
+    expected.controlPlaneProfile ===
+      actual.controlPlaneProfile;
 }
