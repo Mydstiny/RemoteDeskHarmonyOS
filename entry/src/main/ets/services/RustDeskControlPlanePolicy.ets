@@ -1,85 +1,149 @@
 /**
- * RustDeskControlPlanePolicy — separate address-book HTTP access from relay
- * control-plane authentication.
+ * RustDeskControlPlanePolicy — keeps transport keys, address-book HTTP
+ * credentials and rendezvous control-plane credentials in distinct profiles.
  *
- * A Server Pro-compatible address-book API does not prove that the paired
- * hbbs/hbbr accepts the official Server Pro token contract.  Older relay
- * records therefore default to the key-only profile and must opt into token
- * handoff explicitly.
+ * The profile is device-local authorization metadata. It is deliberately not
+ * part of RustDeskRelayCloudJSON, because syncing a server address must never
+ * authorize another device to send an HTTP token to hbbs/hbbr.
  */
 
 export type RustDeskControlPlaneProfile =
   | 'oss_key_only'
-  | 'addressbook_only_custom'
+  | 'oss_shared_access_key'
   | 'official_server_pro_token'
-  | 'custom_control_plane';
+  | 'third_party_api_only'
+  | 'third_party_control_plane'
+  | 'direct_ip';
 
-export const RUSTDESK_CONTROL_PLANE_DEFAULT: RustDeskControlPlaneProfile = 'oss_key_only';
-// This policy authorizes transient token handoff, so it is deliberately scoped
-// to the current device rather than any synchronized relay record.
+export type RustDeskControlPlaneCapabilitySource =
+  | 'none'
+  | 'official_server_pro'
+  | 'verified_third_party';
+
+export const RUSTDESK_CONTROL_PLANE_DEFAULT: RustDeskControlPlaneProfile =
+  'oss_key_only';
 export const RUSTDESK_CONTROL_PLANE_PROFILE_METADATA_PREFIX: string =
   'rustdesk_control_plane_profile:';
 
 const PROFILES: RustDeskControlPlaneProfile[] = [
   'oss_key_only',
-  'addressbook_only_custom',
+  'oss_shared_access_key',
   'official_server_pro_token',
-  'custom_control_plane'
+  'third_party_api_only',
+  'third_party_control_plane',
+  'direct_ip'
 ];
 
-export function normalizeRustDeskControlPlaneProfile(value: string | undefined): RustDeskControlPlaneProfile {
-  if (value !== undefined && PROFILES.indexOf(value as RustDeskControlPlaneProfile) >= 0) {
+/**
+ * Legacy custom-control-plane rows are intentionally migrated to API-only.
+ * An old UI choice is not proof that the paired rendezvous server implements
+ * the official token contract.
+ */
+export function normalizeRustDeskControlPlaneProfile(
+  value: string | undefined
+): RustDeskControlPlaneProfile {
+  if (value === 'addressbook_only_custom' ||
+    value === 'custom_control_plane') {
+    return 'third_party_api_only';
+  }
+  if (value !== undefined &&
+    PROFILES.indexOf(value as RustDeskControlPlaneProfile) >= 0) {
     return value as RustDeskControlPlaneProfile;
   }
   return RUSTDESK_CONTROL_PLANE_DEFAULT;
 }
 
-export function rustDeskControlPlaneProfileMetadataKey(relayId: string): string {
-  return relayId === '' ? '' : RUSTDESK_CONTROL_PLANE_PROFILE_METADATA_PREFIX + relayId;
+export function rustDeskControlPlaneProfileForKeyMode(
+  profile: RustDeskControlPlaneProfile,
+  keyMode: string
+): RustDeskControlPlaneProfile {
+  const normalized: RustDeskControlPlaneProfile =
+    normalizeRustDeskControlPlaneProfile(profile);
+  if (normalized === 'oss_key_only' ||
+    normalized === 'oss_shared_access_key') {
+    return keyMode === 'shared_access_key'
+      ? 'oss_shared_access_key' : 'oss_key_only';
+  }
+  return normalized;
 }
 
-export function rustDeskControlPlaneProfileLabel(profile: RustDeskControlPlaneProfile): string {
+export function rustDeskControlPlaneProfileMetadataKey(
+  relayId: string
+): string {
+  return relayId === ''
+    ? '' : RUSTDESK_CONTROL_PLANE_PROFILE_METADATA_PREFIX + relayId;
+}
+
+export function rustDeskControlPlaneProfileLabel(
+  profile: RustDeskControlPlaneProfile
+): string {
   switch (normalizeRustDeskControlPlaneProfile(profile)) {
-    case 'official_server_pro_token': return 'Server Pro 控制面';
-    case 'addressbook_only_custom': return '地址簿 API 兼容';
-    case 'custom_control_plane': return '自定义控制面';
-    default: return 'OSS Key-only';
+    case 'oss_shared_access_key': return 'OSS 共享 -k';
+    case 'official_server_pro_token': return '官方 Server Pro';
+    case 'third_party_api_only': return '第三方地址簿 API';
+    case 'third_party_control_plane': return '第三方控制面';
+    case 'direct_ip': return 'Direct IP';
+    default: return 'OSS 服务器公钥';
   }
 }
 
-export function rustDeskControlPlaneProfileDescription(profile: RustDeskControlPlaneProfile): string {
+export function rustDeskControlPlaneProfileDescription(
+  profile: RustDeskControlPlaneProfile
+): string {
   switch (normalizeRustDeskControlPlaneProfile(profile)) {
-    case 'official_server_pro_token': return '向官方兼容的 rendezvous 控制面发送 Pro 会话令牌。';
-    case 'addressbook_only_custom': return '令牌只用于地址簿 HTTP API，relay 连接按 OSS Key-only。';
-    case 'custom_control_plane': return '仅在第三方明确兼容官方 token 契约并完成验证后启用。';
-    default: return 'relay 只使用服务器公钥或 hbbs/hbbr 共享 Key，不发送地址簿令牌。';
+    case 'oss_shared_access_key':
+      return '仅向 hbbs/hbbr licence_key 发送共享 -k，不发送地址簿令牌。';
+    case 'official_server_pro_token':
+      return '仅把同一中继下的官方 Server Pro 会话令牌发送到 rendezvous 控制面。';
+    case 'third_party_api_only':
+      return '令牌只用于第三方地址簿 HTTP API；连接按 OSS Key 模式执行。';
+    case 'third_party_control_plane':
+      return '只有本机完成协议能力验证后才允许向第三方 rendezvous 发送令牌。';
+    case 'direct_ip':
+      return '直接连接目标 IP，不使用地址簿或控制面令牌。';
+    default:
+      return '使用 Ed25519 服务器公钥验证身份，不发送地址簿令牌。';
   }
 }
 
-export function rustDeskControlPlaneProfileForRelayKind(kind: string): RustDeskControlPlaneProfile {
+export function rustDeskControlPlaneProfileForRelayKind(
+  kind: string
+): RustDeskControlPlaneProfile {
   if (kind === 'pro') { return 'official_server_pro_token'; }
-  // "Advanced" chooses the form, not a verified third-party token contract.
-  // Keep its default key-only until the user explicitly opts into that contract.
-  if (kind === 'advanced') { return RUSTDESK_CONTROL_PLANE_DEFAULT; }
+  if (kind === 'advanced') { return 'third_party_api_only'; }
   return RUSTDESK_CONTROL_PLANE_DEFAULT;
 }
 
-export function rustDeskControlPlaneAllowsToken(profile: RustDeskControlPlaneProfile): boolean {
-  const normalized = normalizeRustDeskControlPlaneProfile(profile);
-  return normalized === 'official_server_pro_token' || normalized === 'custom_control_plane';
+export function rustDeskControlPlaneAllowsToken(
+  profile: RustDeskControlPlaneProfile,
+  capabilitySource: RustDeskControlPlaneCapabilitySource = 'none'
+): boolean {
+  const normalized: RustDeskControlPlaneProfile =
+    normalizeRustDeskControlPlaneProfile(profile);
+  return (normalized === 'official_server_pro_token' &&
+    capabilitySource === 'official_server_pro') ||
+    (normalized === 'third_party_control_plane' &&
+      capabilitySource === 'verified_third_party');
 }
 
 export function rustDeskControlPlaneTokenForConnection(
   profile: RustDeskControlPlaneProfile,
   direct: boolean,
-  accessToken: string
+  accessToken: string,
+  capabilitySource: RustDeskControlPlaneCapabilitySource = 'none'
 ): string {
-  if (direct || accessToken.trim().length === 0 || !rustDeskControlPlaneAllowsToken(profile)) {
+  if (direct || accessToken.trim().length === 0 ||
+    !rustDeskControlPlaneAllowsToken(profile, capabilitySource)) {
     return '';
   }
   return accessToken;
 }
 
-export function rustDeskControlPlaneRequiresAccount(profile: RustDeskControlPlaneProfile): boolean {
-  return rustDeskControlPlaneAllowsToken(profile);
+export function rustDeskControlPlaneRequiresAccount(
+  profile: RustDeskControlPlaneProfile
+): boolean {
+  const normalized: RustDeskControlPlaneProfile =
+    normalizeRustDeskControlPlaneProfile(profile);
+  return normalized === 'official_server_pro_token' ||
+    normalized === 'third_party_control_plane';
 }

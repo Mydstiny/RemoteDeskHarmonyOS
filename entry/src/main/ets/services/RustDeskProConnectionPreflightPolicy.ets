@@ -127,12 +127,18 @@ export function classifyRustDeskProNativeError(message: string): RustDeskProNati
 }
 
 export function rustDeskProNativeErrorMessage(kind: RustDeskProNativeErrorKind,
-  authMode: string): string {
+  authMode: string, profile: string = 'oss_key_only'): string {
   switch (kind) {
     case 'pro_session_expired':
       return 'RustDesk Server Pro 登录会话已失效，请重新登录后重试。';
     case 'control_plane_incompatible':
-      return '中继控制面拒绝了 Server Pro 令牌；这通常表示地址簿 API 与 OSS 中继认证不兼容。应用不会清除当前登录账号，请检查中继控制面策略和服务器日志。';
+      if (profile === 'official_server_pro_token') {
+        return '中继控制面拒绝了本次官方 Server Pro 建链令牌。应用不会仅凭这条连接错误清除当前登录账号，请核对 API 与 hbbs/hbbr 是否属于同一套 Server Pro 服务。';
+      }
+      if (profile === 'third_party_control_plane') {
+        return '第三方控制面的 token 契约与当前连接不兼容。应用已保留登录账号，并禁止在未重新验证能力前继续投影 token。';
+      }
+      return '地址簿登录成功并不代表 hbbs/hbbr 接受同一 token；当前连接没有发送地址簿 token。请将中继按 OSS 公钥/共享 -k 配置，或让服务商提供明确的控制面兼容证明。';
     case 'device_password':
       return '远程 RustDesk 设备密码错误，请重新输入。';
     case 'approval_timeout':

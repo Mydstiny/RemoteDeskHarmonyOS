@@ -3,7 +3,8 @@ import { DataMutationResult } from './DataMutationResult';
 import { HostSyncService } from './HostSyncService';
 import {
   RustDeskControlPlaneProfile,
-  RUSTDESK_CONTROL_PLANE_DEFAULT
+  RUSTDESK_CONTROL_PLANE_DEFAULT,
+  rustDeskControlPlaneProfileForKeyMode
 } from './RustDeskControlPlanePolicy';
 import {
   RustDeskRelayKeyMode,
@@ -91,6 +92,14 @@ export class RustDeskRelaySetupCoordinator {
       return this.validationFailure(
         resolvedAttemptId, relayId, key.error);
     }
+    const controlPlaneProfile: RustDeskControlPlaneProfile =
+      rustDeskControlPlaneProfileForKeyMode(
+        draft.controlPlaneProfile, key.mode);
+    if (controlPlaneProfile === 'direct_ip') {
+      return this.validationFailure(
+        resolvedAttemptId, relayId,
+        'Direct IP 是主机连接方式，不能保存为中继控制面配置');
+    }
 
     const relay = new RustDeskRelayConfig();
     relay.id = relayId;
@@ -102,7 +111,7 @@ export class RustDeskRelaySetupCoordinator {
     relay.apiServer = draft.apiServer.trim();
     relay.key = key.value;
     relay.keyMode = key.mode;
-    relay.controlPlaneProfile = draft.controlPlaneProfile;
+    relay.controlPlaneProfile = controlPlaneProfile;
     if (existing !== null) {
       relay.userId = existing.userId;
       relay.accounts = existing.accounts;

@@ -144,7 +144,7 @@ export default function rustDeskProConnectionPreflightPolicyTest(): void {
       expect(rustDeskNativeErrorDetail(error)).assertEqual('session expired');
       expect(classifyRustDeskProNativeError(error)).assertEqual('pro_session_expired');
       expect(canInvalidateRustDeskProSession(error, 'official_server_pro_token')).assertTrue();
-      expect(canInvalidateRustDeskProSession(error, 'custom_control_plane')).assertFalse();
+      expect(canInvalidateRustDeskProSession(error, 'third_party_control_plane')).assertFalse();
       expect(canInvalidateRustDeskProSession(error, 'oss_key_only')).assertFalse();
     });
 

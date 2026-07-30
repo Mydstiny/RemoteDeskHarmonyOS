@@ -3,6 +3,7 @@ import {
   normalizeRustDeskControlPlaneProfile,
   rustDeskControlPlaneAllowsToken,
   rustDeskControlPlaneProfileMetadataKey,
+  rustDeskControlPlaneProfileForKeyMode,
   rustDeskControlPlaneProfileForRelayKind,
   rustDeskControlPlaneRequiresAccount,
   rustDeskControlPlaneTokenForConnection,
@@ -18,39 +19,59 @@ export default function rustDeskControlPlanePolicyTest(): void {
         RUSTDESK_CONTROL_PLANE_DEFAULT);
       expect(normalizeRustDeskControlPlaneProfile('unknown')).assertEqual(
         RUSTDESK_CONTROL_PLANE_DEFAULT);
+      expect(normalizeRustDeskControlPlaneProfile('addressbook_only_custom'))
+        .assertEqual('third_party_api_only');
+      expect(normalizeRustDeskControlPlaneProfile('custom_control_plane'))
+        .assertEqual('third_party_api_only');
     });
 
-    it('sends_tokens_only_for_explicit_control_plane_profiles', 0, (): void => {
+    it('sends_tokens_only_for_profiles_with_matching_capability_evidence', 0, (): void => {
       expect(rustDeskControlPlaneAllowsToken('oss_key_only')).assertFalse();
-      expect(rustDeskControlPlaneAllowsToken('addressbook_only_custom')).assertFalse();
-      expect(rustDeskControlPlaneAllowsToken('official_server_pro_token')).assertTrue();
-      expect(rustDeskControlPlaneAllowsToken('custom_control_plane')).assertTrue();
-      expect(rustDeskControlPlaneRequiresAccount('addressbook_only_custom')).assertFalse();
+      expect(rustDeskControlPlaneAllowsToken('oss_shared_access_key')).assertFalse();
+      expect(rustDeskControlPlaneAllowsToken('third_party_api_only')).assertFalse();
+      expect(rustDeskControlPlaneAllowsToken(
+        'official_server_pro_token', 'official_server_pro')).assertTrue();
+      expect(rustDeskControlPlaneAllowsToken(
+        'third_party_control_plane', 'none')).assertFalse();
+      expect(rustDeskControlPlaneAllowsToken(
+        'third_party_control_plane', 'verified_third_party')).assertTrue();
+      expect(rustDeskControlPlaneRequiresAccount('third_party_api_only')).assertFalse();
       expect(rustDeskControlPlaneRequiresAccount('official_server_pro_token')).assertTrue();
     });
 
-    it('keeps_advanced_custom_relay_key_only_until_token_compatibility_is_explicit', 0, (): void => {
+    it('keeps_key_mode_and_control_plane_profiles_distinct', 0, (): void => {
       expect(rustDeskControlPlaneProfileForRelayKind('oss')).assertEqual('oss_key_only');
-      expect(rustDeskControlPlaneProfileForRelayKind('advanced')).assertEqual('oss_key_only');
+      expect(rustDeskControlPlaneProfileForRelayKind('advanced')).assertEqual('third_party_api_only');
       expect(rustDeskControlPlaneProfileForRelayKind('pro')).assertEqual('official_server_pro_token');
+      expect(rustDeskControlPlaneProfileForKeyMode(
+        'oss_key_only', 'shared_access_key')).assertEqual('oss_shared_access_key');
+      expect(rustDeskControlPlaneProfileForKeyMode(
+        'oss_shared_access_key', 'server_public_key')).assertEqual('oss_key_only');
+      expect(rustDeskControlPlaneProfileForKeyMode(
+        'third_party_api_only', 'shared_access_key')).assertEqual('third_party_api_only');
     });
 
     it('never_sends_a_pro_token_on_oss_or_direct_connections', 0, (): void => {
       expect(rustDeskControlPlaneTokenForConnection('oss_key_only', false, 'token-a'))
         .assertEqual('');
-      expect(rustDeskControlPlaneTokenForConnection('addressbook_only_custom', false, 'token-b'))
+      expect(rustDeskControlPlaneTokenForConnection('third_party_api_only', false, 'token-b'))
         .assertEqual('');
-      expect(rustDeskControlPlaneTokenForConnection('official_server_pro_token', true, 'token-c'))
+      expect(rustDeskControlPlaneTokenForConnection(
+        'official_server_pro_token', true, 'token-c', 'official_server_pro'))
         .assertEqual('');
     });
 
     it('passes_a_token_only_when_the_profile_and_route_allow_it', 0, (): void => {
       expect(rustDeskControlPlaneTokenForConnection(
-        'official_server_pro_token', false, 'token-value')).assertEqual('token-value');
+        'official_server_pro_token', false, 'token-value', 'official_server_pro'))
+        .assertEqual('token-value');
       expect(rustDeskControlPlaneTokenForConnection(
-        'custom_control_plane', false, 'token-value')).assertEqual('token-value');
+        'third_party_control_plane', false, 'token-value', 'none')).assertEqual('');
       expect(rustDeskControlPlaneTokenForConnection(
-        'official_server_pro_token', false, '   ')).assertEqual('');
+        'third_party_control_plane', false, 'token-value', 'verified_third_party'))
+        .assertEqual('token-value');
+      expect(rustDeskControlPlaneTokenForConnection(
+        'official_server_pro_token', false, '   ', 'official_server_pro')).assertEqual('');
     });
 
     it('keeps_profile_authorization_out_of_cloud_serialization', 0, (): void => {

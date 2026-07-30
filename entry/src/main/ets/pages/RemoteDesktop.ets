@@ -57,10 +57,12 @@ import {
 } from '../services/RustDeskProConnectionPreflightPolicy';
 import {
   RustDeskControlPlaneProfile,
-  RUSTDESK_CONTROL_PLANE_DEFAULT,
-  rustDeskControlPlaneRequiresAccount,
-  rustDeskControlPlaneTokenForConnection
+  RUSTDESK_CONTROL_PLANE_DEFAULT
 } from '../services/RustDeskControlPlanePolicy';
+import {
+  resolveRustDeskConnectionContext,
+  RustDeskConnectionContext
+} from '../services/RustDeskConnectionContextPolicy';
 import { AppConfig, Palette, buildDark, buildLight } from '../common/Theme';
 import { showLockGate, lockGateErrorMessage } from '../components/LockGate';
 import { TotpEngine } from '../services/TotpEngine';
@@ -1379,6 +1381,40 @@ struct RemoteDesktop {
   private isProRustDeskHost(host: RemoteHost | null): boolean {
     return host !== null && host.protocol === 'rustdesk' &&
       host.sourceType === 'rustdesk_pro' && host.rustdeskProManaged;
+  }
+
+  private rustDeskConnectionContext(
+    host: RemoteHost,
+    relay: RustDeskRelayConfig | undefined
+  ): RustDeskConnectionContext {
+    const explicitAccountId: string = rustDeskProAccountIdForConnection(
+      host.rustdeskProAccountId, host.rustdeskAccountId);
+    let account: RustDeskProAccountState | undefined =
+      explicitAccountId === '' ? undefined :
+        this.proSync.getAccount(explicitAccountId);
+    if (account === undefined && explicitAccountId === '') {
+      const candidates: RustDeskProAccountState[] = this.proSync.getAccounts()
+        .filter((item: RustDeskProAccountState): boolean =>
+          item.relayId === host.rustdeskRelayId &&
+          item.loginStatus === 'logged_in' &&
+          item.accessToken.trim() !== '');
+      if (candidates.length === 1) { account = candidates[0]; }
+    }
+    const accountId: string = account === undefined
+      ? explicitAccountId : account.id;
+    return resolveRustDeskConnectionContext({
+      direct: host.rustdeskDirectEnabled,
+      relayId: relay === undefined ? host.rustdeskRelayId : relay.id,
+      profile: relay === undefined
+        ? RUSTDESK_CONTROL_PLANE_DEFAULT : relay.controlPlaneProfile,
+      keyMode: relay === undefined ? 'server_public_key' : relay.keyMode,
+      accountId,
+      accountRelayId: account === undefined ? '' : account.relayId,
+      accountPresent: account !== undefined,
+      accountLoginStatus: account === undefined ? 'none' : account.loginStatus,
+      accessToken: account === undefined ? '' : account.accessToken,
+      thirdPartyCapabilityVerified: false
+    });
   }
 
   /**
@@ -7183,7 +7219,9 @@ struct RemoteDesktop {
     let rdpRestrictedAdminHash: string = '';
     let rdAccessTokenFingerprint: string = '';
     let rdAccessTokenGeneration: number = 0;
+    let rdAccountId: string = '';
     let rustDeskRelay: RustDeskRelayConfig | undefined;
+    let rustDeskConnection: RustDeskConnectionContext | null = null;
     try {
       if (!(await this.loader.waitForPendingTeardown())) {
         throw new Error('上一会话资源清理未完成 [E-TEARDOWN-PENDING]');
@@ -7313,7 +7351,7 @@ struct RemoteDesktop {
         this.ensureRdpTransferDir() : '';
       let rdServerKey: string = '';
       let rdServerKeyMode: number = 1;
-      let rdAccountId: string = host.rustdeskAccountId;
+      rdAccountId = host.rustdeskAccountId;
       let rdAccessToken: string = '';
       if (host.protocol === 'rustdesk' && host.rustdeskRelayId.length > 0) {
         rustDeskRelay = this.srv.getAllRelays()
@@ -7326,15 +7364,28 @@ struct RemoteDesktop {
       if (host.protocol === 'rustdesk') {
         rdAccountId = rustDeskProAccountIdForConnection(
           host.rustdeskProAccountId, host.rustdeskAccountId);
-        if (host.rustdeskProManaged && host.sourceType === 'rustdesk_pro' && !host.rustdeskDirectEnabled) {
-          const account: RustDeskProAccountState | undefined = this.proSync.getAccount(rdAccountId);
-          const profile: RustDeskControlPlaneProfile = rustDeskRelay === undefined
-            ? RUSTDESK_CONTROL_PLANE_DEFAULT : rustDeskRelay.controlPlaneProfile;
-          if (account !== undefined) {
-            rdAccessToken = rustDeskControlPlaneTokenForConnection(profile, false, account.accessToken);
-            rdAccessTokenFingerprint = account.accessTokenFingerprint;
-            rdAccessTokenGeneration = account.tokenGeneration;
+        let account: RustDeskProAccountState | undefined =
+          rdAccountId === '' ? undefined : this.proSync.getAccount(rdAccountId);
+        if (account === undefined && rdAccountId === '') {
+          const candidates: RustDeskProAccountState[] = this.proSync.getAccounts()
+            .filter((item: RustDeskProAccountState): boolean =>
+              item.relayId === host.rustdeskRelayId &&
+              item.loginStatus === 'logged_in' &&
+              item.accessToken.trim() !== '');
+          if (candidates.length === 1) {
+            account = candidates[0];
+            rdAccountId = candidates[0].id;
           }
+        }
+        rustDeskConnection = this.rustDeskConnectionContext(host, rustDeskRelay);
+        if (!rustDeskConnection.ready) {
+          throw new Error(rustDeskConnection.message + ' [E-RUSTDESK-CONTEXT-' +
+            rustDeskConnection.code + ']');
+        }
+        rdAccessToken = rustDeskConnection.accessToken;
+        if (account !== undefined && rdAccessToken !== '') {
+          rdAccessTokenFingerprint = account.accessTokenFingerprint;
+          rdAccessTokenGeneration = account.tokenGeneration;
         }
       }
       let vncOwner: VncSessionOwner | null = null;
@@ -7404,8 +7455,8 @@ struct RemoteDesktop {
           relayPort: rustDeskRelay ? rustDeskRelay.idServerPort : 0,
           relayKey: rustDeskRelay ? rustDeskRelay.key : '',
           relayKeyMode: rustDeskRelay ? rustDeskRelay.keyMode : 'auto',
-          proManaged: host.rustdeskProManaged && host.sourceType === 'rustdesk_pro' &&
-            rustDeskRelay !== undefined && rustDeskControlPlaneRequiresAccount(rustDeskRelay.controlPlaneProfile)
+          proManaged: rustDeskConnection !== null &&
+            rustDeskConnection.requiresAccount
         });
         if (rustDeskError !== '') { throw new Error(rustDeskError + ' [E-RUSTDESK-CONFIG]'); }
         sessionHost = rustDeskRelay?.idServer.trim() ?? '';
@@ -7654,19 +7705,17 @@ struct RemoteDesktop {
         rustDeskErrorKind = 'approval_timeout';
       }
       this.connectionErrorDetail = rustDeskNativeErrorDetail(rawConnectionDetail);
-      if (this.isProRustDeskHost(host) && rustDeskErrorKind !== 'unknown') {
+      if (host.protocol === 'rustdesk' && rustDeskErrorKind !== 'unknown') {
         const controlPlaneProfile: RustDeskControlPlaneProfile = rustDeskRelay === undefined
           ? RUSTDESK_CONTROL_PLANE_DEFAULT : rustDeskRelay.controlPlaneProfile;
         if (rustDeskErrorKind === 'pro_session_expired' &&
           canInvalidateRustDeskProSession(rawConnectionDetail, controlPlaneProfile)) {
-          const accountId: string = rustDeskProAccountIdForConnection(
-            host.rustdeskProAccountId, host.rustdeskAccountId);
-          this.proSync.markConnectionSessionExpired(accountId, 'connection_token_expired',
+          this.proSync.markConnectionSessionExpired(rdAccountId, 'connection_token_expired',
             rdAccessTokenFingerprint, rdAccessTokenGeneration,
             connectionScope.ownerScopeId, connectionScope.generation);
         }
         this.connectionErrorDetail = rustDeskProNativeErrorMessage(
-          rustDeskErrorKind, host.rustdeskAuthMode);
+          rustDeskErrorKind, host.rustdeskAuthMode, controlPlaneProfile);
       }
       // VNC 没有 remotehosts 健康字段；它的 TLS 首次信任必须在 native
       // 清理完成后进入独立 trust 确认流程，确认后由该 owner 重新连接。

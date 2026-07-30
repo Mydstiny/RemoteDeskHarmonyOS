@@ -277,10 +277,12 @@ import {
 } from '../services/RustDeskProConnectionPreflightPolicy';
 import {
   RustDeskControlPlaneProfile,
-  RUSTDESK_CONTROL_PLANE_DEFAULT,
-  rustDeskControlPlaneRequiresAccount,
-  rustDeskControlPlaneTokenForConnection
+  RUSTDESK_CONTROL_PLANE_DEFAULT
 } from '../services/RustDeskControlPlanePolicy';
+import {
+  resolveRustDeskConnectionContext,
+  RustDeskConnectionContext
+} from '../services/RustDeskConnectionContextPolicy';
 import { shouldFallbackToNativeRdpConnectionAfterResolverFailure } from '../services/RdpCertificatePreflightPolicy';
 import {
   nextConnectionAttemptGeneration,
@@ -2645,6 +2647,8 @@ struct HostListPage {
     } else if (host.protocol === 'rustdesk') {
       const relay: RustDeskRelayConfig | undefined = host.rustdeskDirectEnabled ? undefined :
         this.srv.getAllRelays().find((item: RustDeskRelayConfig): boolean => item.id === host.rustdeskRelayId);
+      const connectionContext: RustDeskConnectionContext =
+        this.rustDeskConnectionContext(host, relay);
       const rustDeskError: string = rustDeskConnectionError({
         directEnabled: host.rustdeskDirectEnabled,
         directHost: host.rustdeskDirectHost,
@@ -2655,8 +2659,7 @@ struct HostListPage {
         relayPort: relay ? relay.idServerPort : 0,
         relayKey: relay ? relay.key : '',
         relayKeyMode: relay ? relay.keyMode : 'auto',
-        proManaged: host.rustdeskProManaged && host.sourceType === 'rustdesk_pro' &&
-          relay !== undefined && rustDeskControlPlaneRequiresAccount(relay.controlPlaneProfile)
+        proManaged: relay !== undefined && connectionContext.requiresAccount
       });
       if (rustDeskError !== '') {
         this.releaseConnectionAttempt(host.id);
@@ -3517,53 +3520,64 @@ struct HostListPage {
   private rustDeskProAccountForHost(host: RemoteHost): RustDeskProAccountState | undefined {
     const accountId: string = rustDeskProAccountIdForConnection(
       host.rustdeskProAccountId, host.rustdeskAccountId);
-    return this.proSync.getAccount(accountId);
+    if (accountId !== '') { return this.proSync.getAccount(accountId); }
+    const candidates: RustDeskProAccountState[] = this.proSync.getAccounts()
+      .filter((account: RustDeskProAccountState): boolean =>
+        account.relayId === host.rustdeskRelayId &&
+        account.loginStatus === 'logged_in' &&
+        account.accessToken.trim() !== '');
+    return candidates.length === 1 ? candidates[0] : undefined;
+  }
+
+  private rustDeskConnectionContext(
+    host: RemoteHost,
+    relay: RustDeskRelayConfig | undefined
+  ): RustDeskConnectionContext {
+    const explicitAccountId: string = rustDeskProAccountIdForConnection(
+      host.rustdeskProAccountId, host.rustdeskAccountId);
+    const account: RustDeskProAccountState | undefined =
+      this.rustDeskProAccountForHost(host);
+    const accountId: string = account === undefined
+      ? explicitAccountId : account.id;
+    return resolveRustDeskConnectionContext({
+      direct: host.rustdeskDirectEnabled,
+      relayId: relay === undefined ? host.rustdeskRelayId : relay.id,
+      profile: relay === undefined
+        ? RUSTDESK_CONTROL_PLANE_DEFAULT : relay.controlPlaneProfile,
+      keyMode: relay === undefined ? 'server_public_key' : relay.keyMode,
+      accountId,
+      accountRelayId: account === undefined ? '' : account.relayId,
+      accountPresent: account !== undefined,
+      accountLoginStatus: account === undefined ? 'none' : account.loginStatus,
+      accessToken: account === undefined ? '' : account.accessToken,
+      thirdPartyCapabilityVerified: false
+    });
   }
 
   private rustDeskProBindingError(host: RemoteHost): string {
-    if (!host.rustdeskProManaged || host.sourceType !== 'rustdesk_pro' || host.rustdeskDirectEnabled) {
-      return '';
-    }
+    if (host.rustdeskDirectEnabled) { return ''; }
     const relay: RustDeskRelayConfig | undefined = this.srv.getAllRelays()
       .find((item: RustDeskRelayConfig): boolean => item.id === host.rustdeskRelayId);
     if (relay === undefined) {
-      return 'RustDesk Pro 中继配置不存在，请检查中继服务器设置。';
+      return 'RustDesk 中继配置不存在，请检查中继服务器设置。';
     }
-    const profile: RustDeskControlPlaneProfile = relay.controlPlaneProfile || RUSTDESK_CONTROL_PLANE_DEFAULT;
-    // Address-book API-only rows deliberately do not require a live HTTP
-    // account for the relay handshake. Their peer still connects with the
-    // configured OSS key/shared key.
-    if (!rustDeskControlPlaneRequiresAccount(profile)) { return ''; }
-    const accountId: string = rustDeskProAccountIdForConnection(
-      host.rustdeskProAccountId, host.rustdeskAccountId);
-    if (accountId.length === 0) {
-      return '地址簿主机未绑定 RustDesk Pro 账号，请重新同步地址簿。';
-    }
-    const account: RustDeskProAccountState | undefined = this.proSync.getAccount(accountId);
-    if (account === undefined) {
-      return 'RustDesk Pro 账号信息不存在，请重新登录并同步地址簿。';
-    }
-    if (account.loginStatus !== 'logged_in' || account.accessToken.trim().length === 0) {
-      return 'RustDesk Server Pro 登录会话已失效，请重新登录后重试。';
-    }
-    if (account.relayId !== host.rustdeskRelayId) {
-      return '地址簿主机与当前 RustDesk Pro 中继绑定不一致，请重新同步地址簿。';
-    }
-    return '';
+    const connectionContext: RustDeskConnectionContext =
+      this.rustDeskConnectionContext(host, relay);
+    return connectionContext.ready ? '' : connectionContext.message;
   }
 
   private rustDeskProConfig(host: RemoteHost): SessionConfig {
     const relay: RustDeskRelayConfig | undefined = this.srv.getAllRelays()
       .find((item: RustDeskRelayConfig): boolean => item.id === host.rustdeskRelayId);
     const direct: boolean = host.rustdeskDirectEnabled;
-    const accountId: string = rustDeskProAccountIdForConnection(
-      host.rustdeskProAccountId, host.rustdeskAccountId);
-    const account: RustDeskProAccountState | undefined = this.rustDeskProAccountForHost(host);
-    const profile: RustDeskControlPlaneProfile = relay === undefined
-      ? RUSTDESK_CONTROL_PLANE_DEFAULT : relay.controlPlaneProfile;
-    const accessToken: string = account === undefined ? '' : account.accessToken;
-    const controlPlaneToken: string = rustDeskControlPlaneTokenForConnection(
-      profile, direct, accessToken);
+    const account: RustDeskProAccountState | undefined =
+      this.rustDeskProAccountForHost(host);
+    const accountId: string = account === undefined
+      ? rustDeskProAccountIdForConnection(
+        host.rustdeskProAccountId, host.rustdeskAccountId)
+      : account.id;
+    const connectionContext: RustDeskConnectionContext =
+      this.rustDeskConnectionContext(host, relay);
     const endpoint: RustDeskHostEndpoint = resolveRustDeskHostEndpoint(
       relay ?? null,
       host.host,
@@ -3590,8 +3604,7 @@ struct HostListPage {
       rdServerKey: relay ? relay.key : '',
       rdServerKeyMode: relay ? rustDeskRelayKeyModeForFfi(relay.key, relay.keyMode) : 1,
       rdRelayPort: rustDeskRelayFallbackPort(relay ?? null),
-      rdAccessToken: host.rustdeskProManaged && host.sourceType === 'rustdesk_pro'
-        ? controlPlaneToken : ''
+      rdAccessToken: connectionContext.accessToken
     };
   }
 
@@ -3800,15 +3813,18 @@ struct HostListPage {
         kind = 'approval_timeout';
       }
       if (kind === 'pro_session_expired' && canInvalidateRustDeskProSession(detail, controlPlaneProfile)) {
-        const accountId: string = rustDeskProAccountIdForConnection(
-          host.rustdeskProAccountId, host.rustdeskAccountId);
-        this.proSync.markConnectionSessionExpired(accountId, 'connection_token_expired',
+        const invalidatedAccountId: string = connectionAccount === undefined
+          ? rustDeskProAccountIdForConnection(
+            host.rustdeskProAccountId, host.rustdeskAccountId)
+          : connectionAccount.id;
+        this.proSync.markConnectionSessionExpired(invalidatedAccountId, 'connection_token_expired',
           expectedTokenFingerprint, expectedTokenGeneration,
           connectionScope.ownerScopeId, connectionScope.generation);
       }
       this.rustDeskProPreflightError = kind === 'unknown'
         ? rustDeskNativeErrorDetail(detail)
-        : rustDeskProNativeErrorMessage(kind, host.rustdeskAuthMode);
+        : rustDeskProNativeErrorMessage(
+          kind, host.rustdeskAuthMode, controlPlaneProfile);
     }
   }
 

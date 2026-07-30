@@ -281,7 +281,8 @@ export struct RustDeskRelayPage {
 
   private relayKindForProfile(profile: RustDeskControlPlaneProfile): string {
     if (profile === 'official_server_pro_token') { return 'pro'; }
-    if (profile === 'custom_control_plane' || profile === 'addressbook_only_custom') { return 'advanced'; }
+    if (profile === 'third_party_control_plane' ||
+      profile === 'third_party_api_only') { return 'advanced'; }
     return 'oss';
   }
 
@@ -1850,24 +1851,40 @@ export struct RustDeskRelayPage {
                 Button('服务器公钥').layoutWeight(1).height(32).fontSize(12).borderRadius(8)
                   .backgroundColor(this.formKeyMode === 'server_public_key' ? this.accentColor : this.pal().surface)
                   .fontColor(this.formKeyMode === 'server_public_key' ? Color.White : this.pal().text2)
-                  .onClick((): void => { this.formKeyMode = 'server_public_key'; })
+                  .onClick((): void => {
+                    this.formKeyMode = 'server_public_key';
+                    if (this.formControlPlaneProfile === 'oss_shared_access_key') {
+                      this.formControlPlaneProfile = 'oss_key_only';
+                    }
+                  })
                 Button('共享 -k').layoutWeight(1).height(32).fontSize(12).borderRadius(8).margin({ left: 8 })
                   .backgroundColor(this.formKeyMode === 'shared_access_key' ? this.accentColor : this.pal().surface)
                   .fontColor(this.formKeyMode === 'shared_access_key' ? Color.White : this.pal().text2)
-                  .onClick((): void => { this.formKeyMode = 'shared_access_key'; })
+                  .onClick((): void => {
+                    this.formKeyMode = 'shared_access_key';
+                    if (this.formControlPlaneProfile === 'oss_key_only') {
+                      this.formControlPlaneProfile = 'oss_shared_access_key';
+                    }
+                  })
               }.width('100%').margin({ bottom: 10 })
 
               Text('控制面配置').fontSize(11).fontColor(this.pal().text2).margin({ bottom: 4 })
               Row() {
                 Button('OSS / 仅 Key').layoutWeight(1).height(32).fontSize(11).borderRadius(8)
-                  .backgroundColor(this.formControlPlaneProfile === 'oss_key_only' ? this.accentColor : this.pal().surface)
-                  .fontColor(this.formControlPlaneProfile === 'oss_key_only' ? Color.White : this.pal().text2)
+                  .backgroundColor(this.formControlPlaneProfile === 'oss_key_only' ||
+                    this.formControlPlaneProfile === 'oss_shared_access_key' ?
+                    this.accentColor : this.pal().surface)
+                  .fontColor(this.formControlPlaneProfile === 'oss_key_only' ||
+                    this.formControlPlaneProfile === 'oss_shared_access_key' ?
+                    Color.White : this.pal().text2)
                   .onClick((): void => { this.formControlPlaneProfile = 'oss_key_only'; this.relayKind = 'oss'; })
                 Button('仅地址簿 API').layoutWeight(1).height(32).fontSize(11).borderRadius(8).margin({ left: 6 })
-                  .backgroundColor(this.formControlPlaneProfile === 'addressbook_only_custom' ? this.accentColor : this.pal().surface)
-                  .fontColor(this.formControlPlaneProfile === 'addressbook_only_custom' ? Color.White : this.pal().text2)
+                  .backgroundColor(this.formControlPlaneProfile === 'third_party_api_only' ?
+                    this.accentColor : this.pal().surface)
+                  .fontColor(this.formControlPlaneProfile === 'third_party_api_only' ?
+                    Color.White : this.pal().text2)
                   .onClick((): void => {
-                    this.formControlPlaneProfile = 'addressbook_only_custom'; this.relayKind = 'advanced';
+                    this.formControlPlaneProfile = 'third_party_api_only'; this.relayKind = 'advanced';
                   })
               }.width('100%').margin({ bottom: 5 })
               Row() {
@@ -1879,15 +1896,14 @@ export struct RustDeskRelayPage {
                   .onClick((): void => {
                     this.formControlPlaneProfile = 'official_server_pro_token'; this.relayKind = 'pro';
                   })
-                Button('第三方控制面').layoutWeight(1).height(32).fontSize(11).borderRadius(8).margin({ left: 6 })
-                  .backgroundColor(this.formControlPlaneProfile === 'custom_control_plane' ?
-                    this.accentColor : this.pal().surface)
-                  .fontColor(this.formControlPlaneProfile === 'custom_control_plane' ?
-                    Color.White : this.pal().text2)
-                  .onClick((): void => {
-                    this.formControlPlaneProfile = 'custom_control_plane'; this.relayKind = 'advanced';
-                  })
+                Button('第三方控制面（需验证）').layoutWeight(1).height(32).fontSize(10)
+                  .borderRadius(8).margin({ left: 6 })
+                  .backgroundColor(this.pal().surface).fontColor(this.pal().text3)
+                  .enabled(false)
               }.width('100%').margin({ bottom: 4 })
+              Text('第三方面板默认仅使用 HTTP 地址簿；当前未验证其 rendezvous token 契约，因此不会发送 token。')
+                .fontSize(10).fontColor(this.pal().text3).width('100%').lineHeight(15)
+                .margin({ bottom: 5 })
               Text(rustDeskControlPlaneProfileLabel(this.formControlPlaneProfile) + '：' +
                 rustDeskControlPlaneProfileDescription(this.formControlPlaneProfile))
                 .fontSize(10).fontColor(this.pal().text3).width('100%').lineHeight(15)
