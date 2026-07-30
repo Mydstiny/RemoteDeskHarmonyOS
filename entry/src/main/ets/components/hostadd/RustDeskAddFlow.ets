@@ -2,19 +2,7 @@ import { Palette, buildDark, buildLight } from '../../common/Theme';
 import { RemoteHost } from '../../model/RemoteHost';
 import { RustDeskRelayConfig } from '../../model/RustDeskRelayConfig';
 import { DiscoveredRustDeskPeer } from '../../services/RustDeskLanDiscoveryService';
-import { RustDeskRelayKeyMode } from '../../services/RustDeskRelayKeyPolicy';
-import {
-  RustDeskControlPlaneProfile,
-  RUSTDESK_CONTROL_PLANE_DEFAULT,
-  rustDeskControlPlaneProfileDescription,
-  rustDeskControlPlaneProfileLabel
-} from '../../services/RustDeskControlPlanePolicy';
 import { RustDeskTargetDevice } from '../../services/RemoteOrientationPolicy';
-import {
-  RustDeskRelaySetupCoordinator,
-  RustDeskRelaySetupDraft
-} from '../../services/RustDeskRelaySetupCoordinator';
-import { RustDeskRelaySaveResult } from '../../services/RustDeskRelaySavePolicy';
 
 @Component
 export struct RustDeskAddFlow {
@@ -26,6 +14,7 @@ export struct RustDeskAddFlow {
   @Prop defaultDirectPort: number = 21117;
   onBackToProtocols: () => void = (): void => {};
   onStartLanScan: () => void = (): void => {};
+  onManageRelays: () => void = (): void => {};
   onSave: (host: RemoteHost, connectNow: boolean) => void =
     (_host: RemoteHost, _connectNow: boolean): void => {};
   @State step: number = 1;
@@ -40,27 +29,11 @@ export struct RustDeskAddFlow {
   @State password: string = '';
   @State passwordMode: number = 0;
   @State errorText: string = '';
-  @State addingRelay: boolean = false;
-  @State relayIdServer: string = '';
-  @State relayIdServerPortText: string = '21116';
-  @State relayServer: string = '';
-  @State relayServerPortText: string = '21117';
-  @State relayApiServer: string = '';
-  @State relayKey: string = '';
-  @State relayKeyMode: RustDeskRelayKeyMode = 'server_public_key';
-  @State controlPlaneProfile: RustDeskControlPlaneProfile = RUSTDESK_CONTROL_PLANE_DEFAULT;
   @State targetDevice: RustDeskTargetDevice = 'computer';
   @State adaptiveOrientation: boolean = false;
-  @State relayDraftId: string = '';
-  @State relaySaving: boolean = false;
-  @State relaySaveDiagnostic: string = '';
-
-  private relaySetup: RustDeskRelaySetupCoordinator =
-    RustDeskRelaySetupCoordinator.getInstance();
 
   aboutToAppear(): void {
     this.directPortText = this.defaultDirectPort.toString();
-    this.relayDraftId = this.relaySetup.nextDraftId();
   }
   private pal(): Palette { return this.theme === 'light' ? buildLight(this.accentColor) : buildDark(this.accentColor); }
 
@@ -92,35 +65,6 @@ export struct RustDeskAddFlow {
       host.rustdeskDirectHost = ''; host.rustdeskDirectPort = this.defaultDirectPort;
     }
     return host;
-  }
-
-  private saveRelay(): void {
-    const idServerPort: number = parseInt(this.relayIdServerPortText);
-    const relayPort: number = parseInt(this.relayServerPortText);
-    const draft = new RustDeskRelaySetupDraft();
-    draft.relayId = this.relayDraftId;
-    draft.idServer = this.relayIdServer;
-    draft.idServerPort = isNaN(idServerPort) ? 0 : idServerPort;
-    draft.relayServer = this.relayServer;
-    draft.relayPort = isNaN(relayPort) ? 0 : relayPort;
-    draft.apiServer = this.relayApiServer;
-    draft.key = this.relayKey;
-    draft.keyMode = this.relayKeyMode;
-    draft.controlPlaneProfile = this.controlPlaneProfile;
-    if (this.relaySaving) { return; }
-    this.relaySaving = true;
-    const result: RustDeskRelaySaveResult =
-      this.relaySetup.save(draft);
-    this.relaySaving = false;
-    this.relayDraftId = draft.relayId;
-    this.relaySaveDiagnostic = result.diagnosticSummary();
-    if (!result.ok) {
-      this.errorText = result.message;
-      return;
-    }
-    this.relayId = result.relayId;
-    this.addingRelay = false;
-    this.errorText = '';
   }
 
   @Builder private field(title: string, value: string, hint: string, change: (value: string) => void,
@@ -182,73 +126,12 @@ export struct RustDeskAddFlow {
           this.modeButton('局域网直连', 'IP + 端口直接连接', true)
         }.width('100%').margin({ bottom: 16 })
         if (!this.direct) {
-          if (this.addingRelay) {
-            this.field('ID 服务器', this.relayIdServer, 'hbbs.example.com',
-              (v: string): void => { this.relayIdServer = v; })
-            this.field('ID 服务器端口', this.relayIdServerPortText, '21116',
-              (v: string): void => { this.relayIdServerPortText = v; })
-            this.field('中继服务器', this.relayServer, 'hbbr.example.com',
-              (v: string): void => { this.relayServer = v; })
-            this.field('中继服务器端口', this.relayServerPortText, '21117',
-              (v: string): void => { this.relayServerPortText = v; })
-            this.field('API 地址（可选）', this.relayApiServer, 'https://api.example.com',
-              (v: string): void => { this.relayApiServer = v; })
-            Text('Relay 控制面认证策略').fontSize(12).fontColor(this.pal().text2).margin({ bottom: 5 })
-            Row() {
-              Button('OSS Key-only').layoutWeight(1).height(32).fontSize(11).borderRadius(8)
-                .backgroundColor(this.controlPlaneProfile === 'oss_key_only' ? this.accentColor : this.pal().surface)
-                .fontColor(this.controlPlaneProfile === 'oss_key_only' ? Color.White : this.pal().text2)
-                .onClick((): void => { this.controlPlaneProfile = 'oss_key_only'; })
-              Button('地址簿 API').layoutWeight(1).height(32).fontSize(11).borderRadius(8).margin({ left: 6 })
-                .backgroundColor(this.controlPlaneProfile === 'addressbook_only_custom' ? this.accentColor : this.pal().surface)
-                .fontColor(this.controlPlaneProfile === 'addressbook_only_custom' ? Color.White : this.pal().text2)
-                .onClick((): void => { this.controlPlaneProfile = 'addressbook_only_custom'; })
-            }.width('100%').margin({ bottom: 6 })
-            Row() {
-              Button('官方 Server Pro').layoutWeight(1).height(32).fontSize(11).borderRadius(8)
-                .backgroundColor(this.controlPlaneProfile === 'official_server_pro_token' ? this.accentColor : this.pal().surface)
-                .fontColor(this.controlPlaneProfile === 'official_server_pro_token' ? Color.White : this.pal().text2)
-                .onClick((): void => { this.controlPlaneProfile = 'official_server_pro_token'; })
-              Button('自定义控制面').layoutWeight(1).height(32).fontSize(11).borderRadius(8).margin({ left: 6 })
-                .backgroundColor(this.controlPlaneProfile === 'custom_control_plane' ? this.accentColor : this.pal().surface)
-                .fontColor(this.controlPlaneProfile === 'custom_control_plane' ? Color.White : this.pal().text2)
-                .onClick((): void => { this.controlPlaneProfile = 'custom_control_plane'; })
-            }.width('100%').margin({ bottom: 4 })
-            Text(rustDeskControlPlaneProfileLabel(this.controlPlaneProfile) + '：' +
-              rustDeskControlPlaneProfileDescription(this.controlPlaneProfile))
-              .fontSize(10).fontColor(this.pal().text3).width('100%').lineHeight(15)
-              .margin({ bottom: 10 })
-            Text('服务器 Key（可选）').fontSize(12).fontColor(this.pal().text2).margin({ bottom: 5 })
-            Row() {
-              Button('服务器公钥').layoutWeight(1).height(32).borderRadius(8)
-                .backgroundColor(this.relayKeyMode === 'server_public_key' ? this.accentColor : this.pal().surface)
-                .fontColor(this.relayKeyMode === 'server_public_key' ? Color.White : this.pal().text2)
-                .onClick((): void => { this.relayKeyMode = 'server_public_key'; })
-              Button('自定义共享 Key').layoutWeight(1).height(32).borderRadius(8).margin({ left: 8 })
-                .backgroundColor(this.relayKeyMode === 'shared_access_key' ? this.accentColor : this.pal().surface)
-                .fontColor(this.relayKeyMode === 'shared_access_key' ? Color.White : this.pal().text2)
-                .onClick((): void => { this.relayKeyMode = 'shared_access_key'; })
-            }.width('100%').margin({ bottom: 7 })
-            this.field(this.relayKeyMode === 'shared_access_key' ? '共享 Key（原样发送）' : '服务器公钥', this.relayKey,
-              this.relayKeyMode === 'shared_access_key' ? '与 hbbs/hbbr -k 完全一致' : 'Base64 32 字节 Ed25519 公钥',
-              (v: string): void => { this.relayKey = v; }, this.relayKeyMode === 'shared_access_key')
-            Text(this.relayKeyMode === 'shared_access_key' ?
-              '不会删除空格或 =；此模式不能验证服务器身份。' : '留空将使用 RustDesk 默认公钥。')
-              .fontSize(10).fontColor(this.pal().text3).width('100%').margin({ top: -5, bottom: 10 })
-            Row() {
-              Button('取消').layoutWeight(1).height(38).borderRadius(10).backgroundColor(this.pal().surface)
-                .fontColor(this.pal().text2).onClick((): void => { this.addingRelay = false; })
-              Button('保存并选择').layoutWeight(1).height(38).borderRadius(10).margin({ left: 8 })
-                .backgroundColor(this.relaySaving ? this.pal().text3 : this.accentColor)
-                .fontColor(Color.White).enabled(!this.relaySaving)
-                .onClick((): void => { this.saveRelay(); })
-            }.width('100%')
-          } else if (this.relays.length === 0) {
-            Text('还没有中继服务器，请先添加后再继续。').fontSize(13).fontColor(this.pal().text3)
+          if (this.relays.length === 0) {
+            Text('还没有中继服务器，请先到中继目录添加。').fontSize(13).fontColor(this.pal().text3)
               .width('100%').textAlign(TextAlign.Center).padding(18)
-            Button('添加中继服务器').width('100%').height(40).borderRadius(10)
+            Button('前往中继目录').width('100%').height(40).borderRadius(10)
               .backgroundColor(this.pal().surface).fontColor(this.accentColor)
-              .onClick((): void => { this.addingRelay = true; })
+              .onClick((): void => { this.onManageRelays(); })
           } else {
             ForEach(this.relays, (relay: RustDeskRelayConfig) => {
               Row() {
@@ -260,9 +143,9 @@ export struct RustDeskAddFlow {
               }.width('100%').padding(12).borderRadius(10).backgroundColor(this.pal().surface).margin({ bottom: 7 })
               .onClick((): void => { this.relayId = relay.id; })
             }, (relay: RustDeskRelayConfig): string => relay.id + ':' + relay.updatedAt.toString())
-            Button('添加其他中继服务器').width('100%').height(36).borderRadius(9)
+            Button('管理中继服务器').width('100%').height(36).borderRadius(9)
               .backgroundColor(this.pal().surface).fontColor(this.accentColor)
-              .onClick((): void => { this.addingRelay = true; })
+              .onClick((): void => { this.onManageRelays(); })
           }
         } else {
           Text('直连仅支持设备密码，不能请求被控端批准。').fontSize(12).fontColor(this.pal().danger)
@@ -365,13 +248,8 @@ export struct RustDeskAddFlow {
         }.width('100%')
       }
       if (this.errorText !== '') {
-        Column() {
-          Text(this.errorText).fontSize(12).fontColor(this.pal().danger).width('100%')
-          if (this.relaySaveDiagnostic !== '') {
-            Text(this.relaySaveDiagnostic).fontSize(10).fontColor(this.pal().text3)
-              .width('100%').margin({ top: 4 })
-          }
-        }.width('100%').margin({ top: 10 })
+        Text(this.errorText).fontSize(12).fontColor(this.pal().danger)
+          .width('100%').margin({ top: 10 })
       }
     }.width('100%').padding({ left: 20, right: 20, top: 20, bottom: 22 }).backgroundColor(this.pal().card)
   }

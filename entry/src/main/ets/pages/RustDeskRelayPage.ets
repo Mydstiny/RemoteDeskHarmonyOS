@@ -28,7 +28,6 @@ import {
   RustDeskControlPlaneProfile,
   RUSTDESK_CONTROL_PLANE_DEFAULT,
   rustDeskControlPlaneProfileDescription,
-  rustDeskControlPlaneProfileForRelayKind,
   rustDeskControlPlaneProfileLabel
 } from '../services/RustDeskControlPlanePolicy';
 import { RustDeskRelayConfigPasteSheet } from '../components/resourceadd/modern/RustDeskRelayConfigPasteSheet';
@@ -56,6 +55,7 @@ export struct RustDeskRelayPage {
   @StorageLink('currentTheme') theme: string = 'light';
   @StorageLink('accentColor') accentColor: string = '#007DFF';
   @Prop @Watch('onAddTrigger') addTrigger: number = 0;
+  @Prop @Watch('onRustDeskAddTrigger') rustDeskAddTrigger: number = 0;
   @Prop @Watch('onVncAddTrigger') vncAddTrigger: number = 0;
   @Prop hideTabBar: boolean = false;
   @StorageProp('currentBreakpoint') breakpoint: string = 'sm';
@@ -65,7 +65,7 @@ export struct RustDeskRelayPage {
   @State vncGateways: VncGatewayView[] = [];
   @State expandedRelayIds: string[] = [];
   @State showSheet: boolean = false;
-  @State sheetContent: number = 1;  // 1/3/4=RustDesk, 5/6=add pickers, 10=VNC Gateway
+  @State sheetContent: number = 1;  // 1/3/4=RustDesk, 5=protocol picker, 10=VNC Gateway
   @State savedRelayId: string = '';
   @State relayKind: string = 'oss';
   @State editingRelayId: string = '';
@@ -76,13 +76,14 @@ export struct RustDeskRelayPage {
   @State menuVisibleRelayId: string = '';
   // Relay form
   @State formIdServer: string = '';
-  @State formIdPort: number = 21116;
+  @State formIdPortText: string = '21116';
   @State formRelayServer: string = '';
-  @State formRelayPort: number = 21117;
+  @State formRelayPortText: string = '21117';
   @State formApiServer: string = '';
   @State formKey: string = '';
   @State formKeyMode: RustDeskRelayKeyMode = 'server_public_key';
   @State formControlPlaneProfile: RustDeskControlPlaneProfile = RUSTDESK_CONTROL_PLANE_DEFAULT;
+  @State showRelayAdvanced: boolean = false;
   @State formTestResult: string = '';
   @State importingRelayConfig: boolean = false;
   @State relaySaving: boolean = false;
@@ -209,6 +210,10 @@ export struct RustDeskRelayPage {
   }
   onAddTrigger(): void {
     if (this.addTrigger > 0) { this.openAddRelaySheet(); }
+  }
+
+  onRustDeskAddTrigger(): void {
+    if (this.rustDeskAddTrigger > 0) { this.openRustDeskRelaySheet(); }
   }
 
   onVncAddTrigger(): void {
@@ -361,6 +366,14 @@ export struct RustDeskRelayPage {
     this.showSheet = true;
   }
 
+  private openRustDeskRelaySheet(): void {
+    if (this.relaySheetClosing) { return; }
+    this.resetRelayForm();
+    this.relayKind = 'oss';
+    this.sheetContent = 1;
+    this.showSheet = true;
+  }
+
   private openVncGatewaySheet(): void {
     if (this.relaySheetClosing) { return; }
     this.editingVncGateway = null;
@@ -400,14 +413,15 @@ export struct RustDeskRelayPage {
     this.editingRelayId = relay.id;
     this.relayDraftId = relay.id;
     this.formIdServer = relay.idServer;
-    this.formIdPort = relay.idServerPort;
+    this.formIdPortText = relay.idServerPort.toString();
     this.formRelayServer = relay.relayServer;
-    this.formRelayPort = relay.relayPort;
+    this.formRelayPortText = relay.relayPort.toString();
     this.formApiServer = relay.apiServer;
     this.formKey = relay.key;
     this.formKeyMode = resolveRustDeskRelayKey(relay.key, relay.keyMode, false).mode;
     this.formControlPlaneProfile = relay.controlPlaneProfile;
     this.relayKind = this.relayKindForProfile(relay.controlPlaneProfile);
+    this.showRelayAdvanced = true;
     this.formTestResult = '';
     this.relaySaveError = '';
     this.relaySaveRecovery = 'none';
@@ -491,13 +505,21 @@ export struct RustDeskRelayPage {
   // ==================== Relay CRUD ====================
 
   private resetRelayForm(): void {
-    this.editingRelayId = ''; this.formIdServer = ''; this.formIdPort = 21116;
-    this.formRelayServer = ''; this.formRelayPort = 21117;
+    this.editingRelayId = ''; this.formIdServer = ''; this.formIdPortText = '21116';
+    this.formRelayServer = ''; this.formRelayPortText = '21117';
     this.formApiServer = ''; this.formKey = ''; this.formKeyMode = 'server_public_key';
     this.formControlPlaneProfile = RUSTDESK_CONTROL_PLANE_DEFAULT; this.formTestResult = '';
+    this.showRelayAdvanced = false;
     this.relayDraftId = this.relaySetup.nextDraftId();
     this.relaySaving = false; this.relaySaveError = ''; this.relaySaveRecovery = 'none';
     this.relaySaveDiagnostic = '';
+  }
+
+  private relayPortFromText(value: string, defaultPort: number): number {
+    const normalized: string = value.trim();
+    if (normalized === '') { return defaultPort; }
+    const port: number = Number(normalized);
+    return Number.isInteger(port) ? port : 0;
   }
 
   private doSaveRelay(): string {
@@ -508,9 +530,9 @@ export struct RustDeskRelayPage {
     const draft = new RustDeskRelaySetupDraft();
     draft.relayId = isNew ? this.relayDraftId : this.editingRelayId;
     draft.idServer = this.formIdServer;
-    draft.idServerPort = this.formIdPort;
+    draft.idServerPort = this.relayPortFromText(this.formIdPortText, 21116);
     draft.relayServer = this.formRelayServer;
-    draft.relayPort = this.formRelayPort;
+    draft.relayPort = this.relayPortFromText(this.formRelayPortText, 21117);
     draft.apiServer = this.formApiServer;
     draft.key = this.formKey;
     draft.keyMode = this.formKeyMode;
@@ -544,10 +566,13 @@ export struct RustDeskRelayPage {
   }
 
   private applyRelayImport(result: RustDeskRelayImportResult): void {
-    this.formIdServer = result.idServer; this.formIdPort = result.idServerPort;
-    this.formRelayServer = result.relayServer; this.formRelayPort = result.relayPort;
+    this.formIdServer = result.idServer; this.formIdPortText = result.idServerPort.toString();
+    this.formRelayServer = result.relayServer; this.formRelayPortText = result.relayPort.toString();
     this.formApiServer = result.apiServer; this.formKey = result.key;
     this.formKeyMode = resolveRustDeskRelayKey(result.key, 'auto', false).mode;
+    this.showRelayAdvanced = result.apiServer !== '' ||
+      result.idServerPort !== 21116 || result.relayPort !== 21117 ||
+      result.relayServer !== result.idServer || this.formKeyMode === 'shared_access_key';
   }
 
   private importAndSavePastedRelay(result: RustDeskRelayImportResult): string {
@@ -587,44 +612,6 @@ export struct RustDeskRelayPage {
     }
     try { tcp?.close(); } catch (_e2) { /* ignore */ }
     return result;
-  }
-
-  private async doTestConnection(): Promise<void> {
-    if (this.formRelayServer.trim() === '') { this.formTestResult = '✗ 请先输入中继服务器地址'; return; }
-    this.formTestResult = '⏳ 检测中...';
-    const r = await this.tcpTest(this.formRelayServer.trim(), this.formRelayPort);
-    if (r.ok) {
-      this.formTestResult = '✓ TCP 连通 (' + r.lat + 'ms)';
-      this._updateRelayHealth('online', r.lat);
-    } else {
-      if (this.formIdServer.trim() !== '') {
-        const idR = await this.tcpTest(this.formIdServer.trim(), this.formIdPort);
-        if (idR.ok) {
-          this.formTestResult = '△ ID服务器可达 (' + idR.lat + 'ms), 中继端口不通';
-          this._updateRelayHealth('error', 0);
-        } else {
-          this.formTestResult = '✗ 服务器不可达 (ID和中继均不通)';
-          this._updateRelayHealth('offline', 0);
-        }
-      } else {
-        this.formTestResult = '✗ 中继端口不可达';
-        this._updateRelayHealth('offline', 0);
-      }
-    }
-  }
-
-  private _updateRelayHealth(status: string, latency: number): void {
-    if (this.editingRelayId !== '') {
-      const current = this.relays.find((x: RustDeskRelayConfig) => x.id === this.editingRelayId);
-      if (current) {
-        const relay = RustDeskRelayConfig.fromJSON(current.toJSON());
-        relay.healthStatus = status;
-        relay.healthLatency = latency;
-        relay.healthCheckedAt = Date.now();
-        this.srv.updateRelay(relay);
-        this.load();
-      }
-    }
   }
 
   private async doTestRelay(relay: RustDeskRelayConfig): Promise<void> {
@@ -820,11 +807,12 @@ export struct RustDeskRelayPage {
   }
 
   private relaySheetHeight(): SheetSize {
-    return this.sheetContent === 10 ? SheetSize.LARGE : SheetSize.FIT_CONTENT;
+    return this.sheetContent === 1 || this.sheetContent === 10
+      ? SheetSize.LARGE : SheetSize.FIT_CONTENT;
   }
 
   private relaySheetKeyboardAvoidMode(): SheetKeyboardAvoidMode {
-    return this.sheetContent === 10
+    return this.sheetContent === 1 || this.sheetContent === 10
       ? SheetKeyboardAvoidMode.RESIZE_ONLY
       : SheetKeyboardAvoidMode.TRANSLATE_AND_SCROLL;
   }
@@ -1547,20 +1535,12 @@ export struct RustDeskRelayPage {
     ResourceFabPicker({
       kind: 'gateway',
       onSelect: (option: string): void => {
-        if (option === 'rustdesk') { this.sheetContent = 6; }
+        if (option === 'rustdesk') {
+          this.relayKind = 'oss';
+          this.formControlPlaneProfile = RUSTDESK_CONTROL_PLANE_DEFAULT;
+          this.sheetContent = 1;
+        }
         if (option === 'vnc') { this.openVncGatewaySheet(); }
-      },
-      onClose: (): void => { this.closeSheet(); }
-    })
-  }
-
-  @Builder relayTypeChoiceSheet() {
-    ResourceFabPicker({
-      kind: 'relay',
-      onSelect: (option: string): void => {
-        this.relayKind = option;
-        this.formControlPlaneProfile = rustDeskControlPlaneProfileForRelayKind(option);
-        this.sheetContent = 1;
       },
       onClose: (): void => { this.closeSheet(); }
     })
@@ -1820,70 +1800,104 @@ export struct RustDeskRelayPage {
 
   @Builder relayEditSheet() {
     Column() {
-      Text(this.editingRelayId !== '' ? '编辑中继服务器' :
-        (this.relayKind === 'pro' ? '添加 Server Pro 中继' :
-          (this.relayKind === 'advanced' ? '高级自定义中继' : '添加 OSS 中继')))
+      Text(this.editingRelayId !== '' ? '编辑 RustDesk 中继' : '添加 RustDesk 中继')
         .fontSize(19).fontWeight(FontWeight.Bold).fontColor(this.pal().text).fontFamily(this.font())
-        .width('100%').margin({ bottom: 16 })
+        .width('100%')
+      Text('默认只需服务器地址和公钥；保存后再测试连接或登录地址簿。')
+        .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
+        .width('100%').lineHeight(17).margin({ top: 5, bottom: 14 })
       Scroll() {
         Column() {
-          Button('粘贴从Rustdesk复制来的加密配置')
+          Button('粘贴 RustDesk 加密配置')
             .width('100%').height(36).fontSize(13).backgroundColor(this.pal().surface)
             .fontColor(this.accentColor).borderRadius(8).enabled(!this.importingRelayConfig)
             .margin({ bottom: 6 }).onClick((): void => { this.sheetContent = 9; })
-          Button('从文件导入配置（兼容）')
+          Button('从文件导入配置')
             .width('100%').height(32).fontSize(12).backgroundColor(this.pal().surface)
             .fontColor(this.pal().text2).borderRadius(8).enabled(!this.importingRelayConfig)
             .margin({ bottom: 10 }).onClick((): void => { void this.importRelayConfig(); })
-          this._f('ID服务器地址', 'rs.example.com', this.formIdServer, (v: string) => { this.formIdServer = v; })
-          this._f('ID服务器端口', '21116', this.formIdPort.toString(), (v: string) => { const n = parseInt(v); this.formIdPort = isNaN(n) ? 21116 : n; })
-          this._f('中继服务器地址', 'relay.example.com', this.formRelayServer, (v: string) => { this.formRelayServer = v; })
-              this._f('中继端口', '21117', this.formRelayPort.toString(), (v: string) => { const n = parseInt(v); this.formRelayPort = isNaN(n) ? 21117 : n; })
-          this._f('通用 API服务器(可选)', '', this.formApiServer, (v: string) => { this.formApiServer = v; })
-          Text('Relay 控制面认证策略').fontSize(11).fontColor(this.pal().text2).margin({ bottom: 4 })
-          Row() {
-            Button('OSS Key-only').layoutWeight(1).height(32).fontSize(11).borderRadius(8)
-              .backgroundColor(this.formControlPlaneProfile === 'oss_key_only' ? this.accentColor : this.pal().surface)
-              .fontColor(this.formControlPlaneProfile === 'oss_key_only' ? Color.White : this.pal().text2)
-              .onClick((): void => { this.formControlPlaneProfile = 'oss_key_only'; this.relayKind = 'oss'; })
-            Button('地址簿 API').layoutWeight(1).height(32).fontSize(11).borderRadius(8).margin({ left: 6 })
-              .backgroundColor(this.formControlPlaneProfile === 'addressbook_only_custom' ? this.accentColor : this.pal().surface)
-              .fontColor(this.formControlPlaneProfile === 'addressbook_only_custom' ? Color.White : this.pal().text2)
-              .onClick((): void => { this.formControlPlaneProfile = 'addressbook_only_custom'; this.relayKind = 'advanced'; })
-          }.width('100%').margin({ bottom: 5 })
-          Row() {
-            Button('官方 Server Pro').layoutWeight(1).height(32).fontSize(11).borderRadius(8)
-              .backgroundColor(this.formControlPlaneProfile === 'official_server_pro_token' ? this.accentColor : this.pal().surface)
-              .fontColor(this.formControlPlaneProfile === 'official_server_pro_token' ? Color.White : this.pal().text2)
-              .onClick((): void => { this.formControlPlaneProfile = 'official_server_pro_token'; this.relayKind = 'pro'; })
-            Button('自定义控制面').layoutWeight(1).height(32).fontSize(11).borderRadius(8).margin({ left: 6 })
-              .backgroundColor(this.formControlPlaneProfile === 'custom_control_plane' ? this.accentColor : this.pal().surface)
-              .fontColor(this.formControlPlaneProfile === 'custom_control_plane' ? Color.White : this.pal().text2)
-              .onClick((): void => { this.formControlPlaneProfile = 'custom_control_plane'; this.relayKind = 'advanced'; })
-          }.width('100%').margin({ bottom: 4 })
-          Text(rustDeskControlPlaneProfileLabel(this.formControlPlaneProfile) + '：' +
-            rustDeskControlPlaneProfileDescription(this.formControlPlaneProfile))
-            .fontSize(10).fontColor(this.pal().text3).width('100%').lineHeight(15).margin({ bottom: 7 })
-          Text('服务器 Key（可选）').fontSize(11).fontColor(this.pal().text2).fontFamily(this.font()).margin({ bottom: 4 })
-          Row() {
-            Button('服务器公钥').layoutWeight(1).height(32).fontSize(12).borderRadius(8)
-              .backgroundColor(this.formKeyMode === 'server_public_key' ? this.accentColor : this.pal().surface)
-              .fontColor(this.formKeyMode === 'server_public_key' ? Color.White : this.pal().text2)
-              .onClick((): void => { this.formKeyMode = 'server_public_key'; })
-            Button('自定义共享 Key').layoutWeight(1).height(32).fontSize(12).borderRadius(8).margin({ left: 8 })
-              .backgroundColor(this.formKeyMode === 'shared_access_key' ? this.accentColor : this.pal().surface)
-              .fontColor(this.formKeyMode === 'shared_access_key' ? Color.White : this.pal().text2)
-              .onClick((): void => { this.formKeyMode = 'shared_access_key'; })
-          }.width('100%').margin({ bottom: 6 })
+          this._f('服务器地址', 'hbbs.example.com', this.formIdServer,
+            (v: string): void => { this.formIdServer = v; })
           this._f(this.formKeyMode === 'shared_access_key' ? '共享 Key（原样发送）' : '服务器公钥',
             this.formKeyMode === 'shared_access_key' ? '与 hbbs/hbbr -k 完全一致' : 'Base64 32 字节 Ed25519 公钥',
             this.formKey, (v: string) => { this.formKey = v; }, this.formKeyMode === 'shared_access_key')
           Text(this.formKeyMode === 'shared_access_key' ?
             '不会删除空格或 =；此模式不能验证服务器身份。' :
-            '留空将使用 RustDesk 默认公钥。')
-            .fontSize(10).fontColor(this.pal().text3).fontFamily(this.font()).width('100%').margin({ top: -5, bottom: 8 })
+            '请填写服务商提供的服务器公钥；留空仅适用于使用 RustDesk 默认公钥的服务器。')
+            .fontSize(10).fontColor(this.pal().text3).fontFamily(this.font()).width('100%')
+            .lineHeight(15).margin({ top: -5, bottom: 8 })
+
+          Button(this.showRelayAdvanced ? '收起高级设置' : '展开高级设置')
+            .width('100%').height(34).fontSize(12).borderRadius(8)
+            .backgroundColor(this.pal().surface).fontColor(this.accentColor)
+            .onClick((): void => { this.showRelayAdvanced = !this.showRelayAdvanced; })
+
+          if (this.showRelayAdvanced) {
+            Column() {
+              Text('连接端点').fontSize(11).fontWeight(FontWeight.Medium)
+                .fontColor(this.pal().text2).width('100%').margin({ bottom: 8 })
+              this._f('ID 服务器端口', '21116', this.formIdPortText,
+                (v: string): void => { this.formIdPortText = v; })
+              this._f('独立中继服务器地址（留空则同上）', 'hbbr.example.com', this.formRelayServer,
+                (v: string): void => { this.formRelayServer = v; })
+              this._f('中继端口', '21117', this.formRelayPortText,
+                (v: string): void => { this.formRelayPortText = v; })
+              this._f('地址簿 / Server Pro API 地址（可选）', 'https://api.example.com',
+                this.formApiServer, (v: string): void => { this.formApiServer = v; })
+
+              Text('Key 类型').fontSize(11).fontColor(this.pal().text2).margin({ bottom: 4 })
+              Row() {
+                Button('服务器公钥').layoutWeight(1).height(32).fontSize(12).borderRadius(8)
+                  .backgroundColor(this.formKeyMode === 'server_public_key' ? this.accentColor : this.pal().surface)
+                  .fontColor(this.formKeyMode === 'server_public_key' ? Color.White : this.pal().text2)
+                  .onClick((): void => { this.formKeyMode = 'server_public_key'; })
+                Button('共享 -k').layoutWeight(1).height(32).fontSize(12).borderRadius(8).margin({ left: 8 })
+                  .backgroundColor(this.formKeyMode === 'shared_access_key' ? this.accentColor : this.pal().surface)
+                  .fontColor(this.formKeyMode === 'shared_access_key' ? Color.White : this.pal().text2)
+                  .onClick((): void => { this.formKeyMode = 'shared_access_key'; })
+              }.width('100%').margin({ bottom: 10 })
+
+              Text('控制面配置').fontSize(11).fontColor(this.pal().text2).margin({ bottom: 4 })
+              Row() {
+                Button('OSS / 仅 Key').layoutWeight(1).height(32).fontSize(11).borderRadius(8)
+                  .backgroundColor(this.formControlPlaneProfile === 'oss_key_only' ? this.accentColor : this.pal().surface)
+                  .fontColor(this.formControlPlaneProfile === 'oss_key_only' ? Color.White : this.pal().text2)
+                  .onClick((): void => { this.formControlPlaneProfile = 'oss_key_only'; this.relayKind = 'oss'; })
+                Button('仅地址簿 API').layoutWeight(1).height(32).fontSize(11).borderRadius(8).margin({ left: 6 })
+                  .backgroundColor(this.formControlPlaneProfile === 'addressbook_only_custom' ? this.accentColor : this.pal().surface)
+                  .fontColor(this.formControlPlaneProfile === 'addressbook_only_custom' ? Color.White : this.pal().text2)
+                  .onClick((): void => {
+                    this.formControlPlaneProfile = 'addressbook_only_custom'; this.relayKind = 'advanced';
+                  })
+              }.width('100%').margin({ bottom: 5 })
+              Row() {
+                Button('官方 Server Pro').layoutWeight(1).height(32).fontSize(11).borderRadius(8)
+                  .backgroundColor(this.formControlPlaneProfile === 'official_server_pro_token' ?
+                    this.accentColor : this.pal().surface)
+                  .fontColor(this.formControlPlaneProfile === 'official_server_pro_token' ?
+                    Color.White : this.pal().text2)
+                  .onClick((): void => {
+                    this.formControlPlaneProfile = 'official_server_pro_token'; this.relayKind = 'pro';
+                  })
+                Button('第三方控制面').layoutWeight(1).height(32).fontSize(11).borderRadius(8).margin({ left: 6 })
+                  .backgroundColor(this.formControlPlaneProfile === 'custom_control_plane' ?
+                    this.accentColor : this.pal().surface)
+                  .fontColor(this.formControlPlaneProfile === 'custom_control_plane' ?
+                    Color.White : this.pal().text2)
+                  .onClick((): void => {
+                    this.formControlPlaneProfile = 'custom_control_plane'; this.relayKind = 'advanced';
+                  })
+              }.width('100%').margin({ bottom: 4 })
+              Text(rustDeskControlPlaneProfileLabel(this.formControlPlaneProfile) + '：' +
+                rustDeskControlPlaneProfileDescription(this.formControlPlaneProfile))
+                .fontSize(10).fontColor(this.pal().text3).width('100%').lineHeight(15)
+            }.width('100%').padding({ top: 12 })
+          }
+
           if (this.formTestResult !== '') {
-            Text(this.formTestResult).fontSize(12).fontColor(this.formTestResult.startsWith('✓') ? this.accentColor : this.pal().danger).margin({ top: 4 })
+            Text(this.formTestResult).fontSize(12)
+              .fontColor(this.formTestResult.startsWith('✓') ? this.pal().success : this.pal().danger)
+              .width('100%').margin({ top: 10 })
           }
           if (this.relaySaveError !== '') {
             Column() {
@@ -1909,22 +1923,23 @@ export struct RustDeskRelayPage {
             }.width('100%').padding(10).borderRadius(8)
               .backgroundColor(this.pal().danger + '12').margin({ top: 6 })
           }
-          Row() {
-            Button('测试连接').width('48%').height(36).fontSize(13).backgroundColor(this.pal().surface).fontColor(this.accentColor).borderRadius(8)
-              .enabled(!this.relaySaving).onClick(() => { this.doTestConnection(); })
-            Button(this.relaySaving ? '保存中…' :
-              (this.relaySaveError === '' ? '保存' : '重试保存'))
-              .width('48%').height(36).fontSize(13).fontWeight(FontWeight.Medium)
-              .backgroundColor(this.relaySaving ? this.pal().text3 : this.accentColor)
-              .fontColor('#FFFFFF').borderRadius(8).margin({ left: 12 })
-              .enabled(!this.relaySaving)
-              .onClick(() => { this.doSaveRelay(); })
-          }.width('100%').margin({ top: 12 })
+          Column().height(18)
         }.width('100%')
-      }.constraintSize({ maxHeight: 380 }).scrollBar(BarState.Auto).edgeEffect(EdgeEffect.Spring)
-      Blank().height(24)
-    }.width('100%')
-    .padding({ left: 24, right: 24, top: 24, bottom: 40 })
+      }.layoutWeight(1).scrollBar(BarState.Auto).edgeEffect(EdgeEffect.Spring)
+
+      Row() {
+        Button('取消').layoutWeight(1).height(44).fontSize(14).borderRadius(11)
+          .backgroundColor(this.pal().surface).fontColor(this.pal().text2)
+          .enabled(!this.relaySaving).onClick((): void => { this.closeSheet(); })
+        Button(this.relaySaving ? '保存中…' :
+          (this.relaySaveError === '' ? '保存到本机' : '重试保存'))
+          .layoutWeight(1).height(44).fontSize(14).fontWeight(FontWeight.Medium)
+          .backgroundColor(this.relaySaving ? this.pal().text3 : this.accentColor)
+          .fontColor(Color.White).borderRadius(11).margin({ left: 10 })
+          .enabled(!this.relaySaving).onClick((): void => { this.doSaveRelay(); })
+      }.width('100%').margin({ top: 10 })
+    }.width('100%').height('100%')
+    .padding({ left: 24, right: 24, top: 24, bottom: this.breakpoint === 'sm' ? 24 : 30 })
     .borderRadius(this.breakpoint === 'sm' ? 0 : 20)
     .backgroundColor(this.pal().sheetBg)
     .backgroundBlurStyle(BlurStyle.Regular)
@@ -1939,16 +1954,16 @@ export struct RustDeskRelayPage {
   @Builder relaySavedSheet() {
     Column() {
       SymbolGlyph($r('sys.symbol.checkmark_circle_fill')).fontSize(42).fontColor([this.pal().success])
-      Text('服务器已保存').fontSize(20).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
+      Text('已保存到本机').fontSize(20).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
         .fontFamily(this.font()).margin({ top: 12 })
-      Text('可以继续添加 Server Pro 账户并同步地址簿，也可以稍后从中继卡片添加。')
+      Text('现在可以完成，也可以继续登录 Server Pro 或兼容地址簿；连接测试可从中继卡片发起。')
         .fontSize(12).fontColor(this.pal().text3).fontFamily(this.font()).textAlign(TextAlign.Center)
         .lineHeight(19).margin({ top: 8, bottom: 18 })
       Row() {
-        Button('保存并完成').layoutWeight(1).height(42).borderRadius(11)
+        Button('完成').layoutWeight(1).height(42).borderRadius(11)
           .backgroundColor(this.pal().surface).fontColor(this.pal().text2)
           .onClick((): void => { this.closeSheet(); })
-        Button('下一步：Pro 账户').layoutWeight(1).height(42).borderRadius(11).margin({ left: 10 })
+        Button('登录并同步地址簿').layoutWeight(1).height(42).borderRadius(11).margin({ left: 10 })
           .backgroundColor(this.accentColor).fontColor(Color.White).onClick((): void => {
             const relay: RustDeskRelayConfig | undefined = this.srv.getAllRelays().find(
               (item: RustDeskRelayConfig): boolean => item.id === this.savedRelayId);
@@ -2007,8 +2022,6 @@ export struct RustDeskRelayPage {
       this.relaySavedSheet()
     } else if (this.sheetContent === 5) {
       this.relayProtocolChoiceSheet()
-    } else if (this.sheetContent === 6) {
-      this.relayTypeChoiceSheet()
     } else if (this.sheetContent === 10) {
       VncGatewayAddFlow({
         initialGateway: this.editingVncGateway,

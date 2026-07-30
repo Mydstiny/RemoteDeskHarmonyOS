@@ -479,6 +479,7 @@ struct HostListPage {
   private pendingAddSheetConnectHostId: string = '';
   private pendingVncConnectHostId: string = '';
   private pendingVncGatewayDirectoryOpen: boolean = false;
+  private pendingRustDeskRelayDirectoryOpen: boolean = false;
   private connectionAttemptGeneration: number = 0;
   private connectionAttemptHostId: string = '';
   @StorageLink('rustdeskImageQuality') rustdeskImageQuality: number = 1; // 0=fast, 1=balanced, 2=quality
@@ -566,6 +567,7 @@ struct HostListPage {
   @State rdpCredPassword: string = '';
   private rdpCredentialEditorReturnToManager: boolean = false;
   @State relayAddTrigger: number = 0;
+  @State relayRustDeskAddTrigger: number = 0;
   @State relayVncAddTrigger: number = 0;
   private lastVncRelayRouteRequestId: string = '';
   private terminalFontSizes: number[] = [12, 13, 14, 15, 16, 17, 18, 20, 22, 24, 26, 28, 30, 32];
@@ -1134,9 +1136,11 @@ struct HostListPage {
     this.pendingAddSheetConnectHostId = '';
     const openVncGatewayDirectory: boolean = this.pendingVncGatewayDirectoryOpen;
     this.pendingVncGatewayDirectoryOpen = false;
+    const openRustDeskRelayDirectory: boolean = this.pendingRustDeskRelayDirectoryOpen;
+    this.pendingRustDeskRelayDirectoryOpen = false;
     this.resetForm();
 
-    if (openVncGatewayDirectory) {
+    if (openVncGatewayDirectory || openRustDeskRelayDirectory) {
       if (!this.pageActive) { return; }
       if (this.isDesktopDevice && this.breakpoint === 'xl') {
         this.curTab = 6;
@@ -1146,7 +1150,11 @@ struct HostListPage {
         this.tabsCtrl.changeIndex(2);
       }
       this.updateHostFilter();
-      this.relayVncAddTrigger++;
+      if (openVncGatewayDirectory) {
+        this.relayVncAddTrigger++;
+      } else {
+        this.relayRustDeskAddTrigger++;
+      }
       return;
     }
 
@@ -8669,6 +8677,10 @@ struct HostListPage {
         defaultDirectPort: this.rustdeskDirectPort,
         onBackToProtocols: (): void => { this.modernAddProtocol = ''; this.addSheetShowsModernPicker = true; },
         onStartLanScan: (): void => { this.startLanScan(); },
+        onManageRelays: (): void => {
+          this.pendingRustDeskRelayDirectoryOpen = true;
+          this.requestAddSheetClose();
+        },
         onSave: (host: RemoteHost, connectNow: boolean): void => {
           this.saveHostFromAddFlow(host, connectNow);
         }
@@ -9111,14 +9123,8 @@ struct HostListPage {
                   .backgroundColor(this.accentColor).fontColor('#FFFFFF').borderRadius(16)
                   .margin({ top: 10 }).padding({ left: 16, right: 16 })
                   .onClick(() => {
+                    this.pendingRustDeskRelayDirectoryOpen = true;
                     this.requestAddSheetClose();
-                    // PC侧边栏 relay=5, 移动 Tabs relay=2
-                    if (this.isDesktopDevice && this.breakpoint === 'xl') {
-                      this.curTab = 6;
-                    } else {
-                      this.curTab = 2;
-                    }
-                    this.relayAddTrigger++;
                   })
               }.width('100%').padding({ top: 16, bottom: 16 })
               .borderRadius(10).backgroundColor(this.pal().surface)
@@ -9194,13 +9200,8 @@ struct HostListPage {
                     Blank()
                     Text('去添加 →').fontSize(11).fontColor(this.accentColor).fontFamily(this.font())
                       .onClick(() => {
+                        this.pendingRustDeskRelayDirectoryOpen = true;
                         this.requestAddSheetClose();
-                        if (this.isDesktopDevice && this.breakpoint === 'xl') {
-                          this.curTab = 6;
-                        } else {
-                          this.curTab = 2;
-                        }
-                        this.relayAddTrigger++;
                       })
                   }.width('100%').padding({ left: 10, right: 10, top: 8, bottom: 8 })
                 }
@@ -9907,7 +9908,8 @@ struct HostListPage {
   }
 
   @Builder relayContent() {
-    RustDeskRelayPage({ addTrigger: this.relayAddTrigger, vncAddTrigger: this.relayVncAddTrigger,
+    RustDeskRelayPage({ addTrigger: this.relayAddTrigger,
+      rustDeskAddTrigger: this.relayRustDeskAddTrigger, vncAddTrigger: this.relayVncAddTrigger,
       hideTabBar: this.isDesktopDevice && this.breakpoint === 'xl' })
   }
 
