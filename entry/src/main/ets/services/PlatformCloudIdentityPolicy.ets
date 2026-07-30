@@ -67,22 +67,16 @@ export function platformCloudIdentityProofFromApi23(
 }
 
 /**
- * API 23 exposes no signed account-link object. Exact equality between the
- * freshly returned Account Kit UnionID and distributed-account id is
- * therefore the only acceptable correspondence proof. Any platform/build
- * where the two official APIs use different namespaces remains fail-closed.
+ * API23 目前无法提供可审计的、可用于签名绑定的 AccountKit ↔ 分布式账号映射证据。
+ * 该方法保留为历史兼容桩：仅返回布尔值，但当前实现不将其作为可信绑定条件。
  */
 export function platformCloudIdentityMatchesAccountKit(
   accountKitUnionId: string,
   platformAccountId: string
 ): boolean {
-  const accountKitId: string =
-    accountKitUnionId.trim();
-  const platformId: string =
-    platformAccountId.trim();
-  return accountKitId !== '' &&
-    platformId !== '' &&
-    accountKitId === platformId;
+  const accountKitId: string = accountKitUnionId.trim();
+  const platformId: string = platformAccountId.trim();
+  return accountKitId !== '' && platformId !== '' && accountKitId === platformId;
 }
 
 export function platformCloudIdentityProofIsValid(

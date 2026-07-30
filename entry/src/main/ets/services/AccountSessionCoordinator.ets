@@ -8,6 +8,7 @@ import {
 } from './AccountKitService';
 import {
   AccountScopeToken,
+  cloudAccountBindingForScope,
   accountScopeToken,
   deviceLocalScopeToken
 } from './AccountScopePolicy';
@@ -29,6 +30,7 @@ import {
   CloudSyncCoordinator,
   CloudSyncOperationResult
 } from './CloudSyncCoordinator';
+import { cloudTransferAllowed } from './CloudLifecycleSafetyPolicy';
 
 export interface AccountLoginIdentity extends CredentialParams {
   avatarUrl: string;
@@ -168,11 +170,6 @@ export class AccountSessionCoordinator {
       await PlatformCloudIdentityService.getInstance()
         .proveCurrentCloudAccount(
           this.context, identity.unionID);
-    if (!platformCloudIdentityProofIsValid(platformProof)) {
-      return this.result(
-        false, 'blocked',
-        this.platformIdentityFailureMessage(platformProof));
-    }
     const switching: AccountScopeToken | null =
       accountScopeToken(
         identity.unionID, generation, 'switching', 'validating',
@@ -226,29 +223,45 @@ export class AccountSessionCoordinator {
         previousScope, previousCredential, previousAuth,
         generation + 1, '账号物理数据域打开失败');
     }
+
+    const currentScope: AccountScopeToken = store.currentScope();
+    const cloudBound: boolean = cloudTransferAllowed(
+      cloudAccountBindingForScope(currentScope));
+
     if (!this.intentIsCurrent(intentGeneration)) {
       return await this.restorePreviousScope(
         previousScope, previousCredential, previousAuth,
         generation + 1, '登录请求已被更新的账号操作替代');
     }
 
-    const bootstrap: CloudSyncOperationResult =
-      await CloudSyncCoordinator.getInstance()
-        .requestStartupPull();
-    if (!bootstrap.ok) {
-      return await this.restorePreviousScope(
-        previousScope, previousCredential, previousAuth,
-        generation + 1,
-        bootstrap.failureKind === 'restore_pending'
-          ? '当前账号存在尚未确认上传的本地恢复数据，已保持隔离且未执行云端拉取'
-          : '当前账号首次云端核对未完成，本地数据未开放写入');
-    }
-    if (!store.markStartupSelectionReenablePulled() ||
-      !store.prepareSelectionReenablePromotions()) {
-      return await this.restorePreviousScope(
-        previousScope, previousCredential, previousAuth,
-        generation + 1,
-        '同步范围重新启用的 cloud-first 状态未能安全落盘');
+    if (cloudBound) {
+      const bootstrap: CloudSyncOperationResult =
+        await CloudSyncCoordinator.getInstance()
+          .requestStartupPull();
+      if (!bootstrap.ok) {
+        return await this.restorePreviousScope(
+          previousScope, previousCredential, previousAuth,
+          generation + 1,
+          bootstrap.failureKind === 'restore_pending'
+            ? '当前账号存在尚未确认上传的本地恢复数据，已保持隔离且未执行云端拉取'
+            : '当前账号首次云端核对未完成，本地数据未开放写入');
+      }
+      if (!store.markStartupSelectionReenablePulled() ||
+        !store.prepareSelectionReenablePromotions()) {
+        return await this.restorePreviousScope(
+          previousScope, previousCredential, previousAuth,
+          generation + 1,
+          '同步范围重新启用的 cloud-first 状态未能安全落盘');
+      }
+    } else if (platformProof.state === 'permission_denied' ||
+      platformProof.state === 'identity_unavailable' ||
+      platformProof.state === 'not_logged_in' ||
+      platformProof.state === 'platform_error') {
+      hilog.warn(0x0001, 'AccountSession',
+        '华为账号已完成本地登录，但平台云身份不可验证，跳过云端 startup pull，保持本地可用');
+    } else if (platformProof.state === 'identity_mismatch') {
+      hilog.warn(0x0001, 'AccountSession',
+        '华为账号已完成本地登录，但平台云身份未绑定，跳过 cloud-first，保持本地可用');
     }
     if (!this.intentIsCurrent(intentGeneration)) {
       return await this.restorePreviousScope(
@@ -279,7 +292,7 @@ export class AccountSessionCoordinator {
         generation + 1, '登录状态未能持久化');
     }
 
-    this.current = store.currentScope();
+    this.current = currentScope;
     this.current.sessionState = 'ready';
     if (!store.activateScope(this.current)) {
       return await this.restorePreviousScope(

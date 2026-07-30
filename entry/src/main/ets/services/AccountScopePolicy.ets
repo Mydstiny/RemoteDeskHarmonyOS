@@ -151,6 +151,12 @@ export function verifyAccountScopeCloudBinding(
     token.platformIdentityFingerprint ===
       platformProof.fingerprint) {
     cloudBindingState = 'bound';
+  } else if (verifiedOwnerScopeId.length > 0 &&
+    verifiedStoreIdentity.length > 0 &&
+    token.ownerScopeId === verifiedOwnerScopeId &&
+    token.storeIdentity === verifiedStoreIdentity &&
+    token.generation > 0) {
+    cloudBindingState = 'validating';
   }
   return {
     kind: token.kind,

@@ -7,7 +7,6 @@ import {
 import { distributedAccount } from '@kit.BasicServicesKit';
 import {
   PlatformCloudIdentityProof,
-  platformCloudIdentityMatchesAccountKit,
   platformCloudIdentityProofFromApi23,
   unavailablePlatformCloudIdentityProof
 } from './PlatformCloudIdentityPolicy';
@@ -64,13 +63,12 @@ export class PlatformCloudIdentityService {
       const info: distributedAccount.DistributedInfo =
         await distributedAccount.getDistributedAccountAbility()
           .getOsAccountDistributedInfo();
-      if (!platformCloudIdentityMatchesAccountKit(
-        accountKitUnionId, info.id || '')) {
+      if (!info.id || info.id.trim() === '') {
         return unavailablePlatformCloudIdentityProof(
-          'identity_mismatch');
+          'identity_unavailable');
       }
       return platformCloudIdentityProofFromApi23(
-        info.id || '',
+        info.id,
         info.status ===
           distributedAccount.DistributedAccountStatus.LOGGED_IN);
     } catch (_error) {

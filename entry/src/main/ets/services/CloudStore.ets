@@ -782,7 +782,7 @@ export class CloudStore implements CryptoCloudStore {
       this.cloudAccountBinding =
         cloudAccountBindingForScope(this.currentScopeToken);
       if (this.currentScopeToken.kind === 'huawei_account' &&
-        this.currentScopeToken.cloudBindingState !== 'bound') {
+        this.currentScopeToken.cloudBindingState === 'blocked') {
         throw new Error(
           'Account Kit scope or independent platform cloud identity does not match target binding');
       }

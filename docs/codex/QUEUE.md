@@ -134,6 +134,13 @@ Updated: 2026-07-30 Asia/Shanghai
   in-place upgrade until the user explicitly authorizes testing against its
   existing app data and a recovery path is prepared.
 
+- 华为账号登录误报修复（`accountkit` 与平台独立身份不一致提示）完成本地闭环：
+  登录后不再因平台独立身份不可验证直接阻断本地入口；先打开该账号本地作用域，
+  仅在 `cloudTransferAllowed` 为真时执行 `requestStartupPull` 和云侧 selection
+  重放。若后续 cloud-first 失败，继续保持本地隔离与 ready 挂起。
+  本地恢复若未进入账号作用域将返回独立提示 `account_scope_required`，
+  不再把这类状态误报为“备份属于其他华为账号”。
+
 - The older RustDesk relay/2FA checkpoint in
   `docs/superpowers/plans/2026-07-29-rustdesk-relay-2fa-repair-upgrade-plan-v2.md`
   is superseded for login/control-plane/save status by the v3 plan and

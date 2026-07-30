@@ -2,6 +2,21 @@
 
 Updated: 2026-07-30 Asia/Shanghai
 
+## Current cloud-account startup fix
+
+- `main` includes a local fix for the production-reported `accountkit account mismatch` login block:
+  AccountKit 登录不再在 `平台分布式身份无法独立验证` 时阻塞应用进入华为账号本地作用域；
+  应用仍会打开该账号的本地数据库，并继续提供本地读写能力。
+- 云端启动仅在 `cloudTransferAllowed(bind)` 为真时执行 `requestStartupPull`，
+  否则保持 bootstrap ready 隔离，先以本地作用域运行，不上传/不下发云数据。
+- 本地恢复流程将“未建立本地作用域”改为独立错误码 `account_scope_required`，
+  停止将未登录前置状态误报为“备份属于其他华为账号”；只有在读取到真实
+  `owner` 冲突时才返回 `owner_mismatch`。
+- `default@OhosTestCompileArkTS`、`assembleHap`、`git diff --check` 通过；
+  未完成 `Light` 合规执行（当前环境缺少 PowerShell 运行时）。
+- 该修复未改变“未绑定/验证失败时的 cloud-first” fail-closed 约束；API 23
+  真实证据仍是设备测试的 NO-GO 前置。
+
 ## Current VNC settings Sheet crash hotfix
 
 - `codex/vnc-settings-sheet-crash-hotfix` is based on local

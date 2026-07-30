@@ -27,6 +27,7 @@ export class LocalBackupService {
   private readonly cloud: CloudStore = CloudStore.getInstance();
   private lastErrorCode: BoundedDocumentIoCode | 'cancelled' | 'invalid_backup' |
     'unsafe_legacy_backup' | 'snapshot_failed' | 'owner_mismatch' |
+    'account_scope_required' |
     'selection_expired' | 'restore_failed' = 'cancelled';
   private selectedPreview: BackupRestorePreview | null = null;
   private selectedDocumentFingerprint: string = '';
@@ -50,6 +51,9 @@ export class LocalBackupService {
     }
     if (this.lastErrorCode === 'owner_mismatch') {
       return '备份属于其他华为账号，已拒绝导入当前账号';
+    }
+    if (this.lastErrorCode === 'account_scope_required') {
+      return '当前尚未建立华为账号本地作用域，请先切换到华为账号后重试';
     }
     if (this.lastErrorCode === 'selection_expired') {
       return '账号会话或备份内容已变化，请重新选择备份文件';
@@ -197,7 +201,7 @@ export class LocalBackupService {
     const selectionScope = this.cloud.currentScope();
     if (selectionScope.kind !== 'huawei_account' ||
       selectionScope.ownerScopeId.trim() === '') {
-      this.lastErrorCode = 'owner_mismatch';
+      this.lastErrorCode = 'account_scope_required';
       return null;
     }
     const uris: string[] = await new picker.DocumentViewPicker().select();
