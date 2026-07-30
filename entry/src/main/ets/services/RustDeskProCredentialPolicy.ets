@@ -3,6 +3,10 @@ import {
   rustDeskProAccessTokenFingerprint,
   rustDeskProTokenGeneration
 } from '../model/RustDeskProModels';
+import {
+  cloneRustDeskControlPlaneCapabilityProof,
+  RustDeskControlPlaneCapabilityProof
+} from '../model/RustDeskControlPlaneCapabilityModels';
 
 /**
  * Device-local, non-secret metadata persisted in Preferences.
@@ -26,6 +30,7 @@ export interface RustDeskProCredentialMetadata {
   lastLoginAt: number
   lastSyncAt: number
   lastSyncError: string
+  controlPlaneCapabilityProof?: RustDeskControlPlaneCapabilityProof
 }
 
 export function rustDeskProCredentialMetadata(
@@ -45,7 +50,10 @@ export function rustDeskProCredentialMetadata(
     loginStatus: account.loginStatus,
     lastLoginAt: account.lastLoginAt,
     lastSyncAt: account.lastSyncAt,
-    lastSyncError: account.lastSyncError
+    lastSyncError: account.lastSyncError,
+    controlPlaneCapabilityProof:
+      cloneRustDeskControlPlaneCapabilityProof(
+        account.controlPlaneCapabilityProof)
   };
 }
 
@@ -74,6 +82,7 @@ export function rustDeskProCredentialAfterTokenRevocation(
     loginStatus: 'requires_login',
     lastLoginAt: account.lastLoginAt,
     lastSyncAt: account.lastSyncAt,
-    lastSyncError: 'credential_revoked_on_scope_transition'
+    lastSyncError: 'credential_revoked_on_scope_transition',
+    controlPlaneCapabilityProof: undefined
   };
 }

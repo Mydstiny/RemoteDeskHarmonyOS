@@ -19,6 +19,14 @@ import {
   accountSessionLeaseEquals,
   cloneAccountSessionLease
 } from './AccountScopePolicy';
+import {
+  issueRustDeskControlPlaneCapabilityProof,
+  rustDeskControlPlaneBinding,
+  RustDeskControlPlaneCapabilityIssueResult
+} from './RustDeskControlPlaneCapabilityPolicy';
+import {
+  cloneRustDeskControlPlaneCapabilityProof
+} from '../model/RustDeskControlPlaneCapabilityModels';
 
 export interface RustDeskProLoginInput {
   id: string
@@ -191,7 +199,10 @@ export class RustDeskProSyncService {
       loginStatus: account.loginStatus,
       lastLoginAt: account.lastLoginAt,
       lastSyncAt: account.lastSyncAt,
-      lastSyncError: account.lastSyncError
+      lastSyncError: account.lastSyncError,
+      controlPlaneCapabilityProof:
+        cloneRustDeskControlPlaneCapabilityProof(
+          account.controlPlaneCapabilityProof)
     };
   }
 
@@ -224,7 +235,8 @@ export class RustDeskProSyncService {
       loginStatus: 'none',
       lastLoginAt: 0,
       lastSyncAt: 0,
-      lastSyncError: ''
+      lastSyncError: '',
+      controlPlaneCapabilityProof: undefined
     };
     this.credentials.ensureDeviceIdentity(account);
     const result = await this.api.login(account, input.username, input.password);
@@ -263,6 +275,36 @@ export class RustDeskProSyncService {
     return result;
   }
 
+  private bindAuthenticatedControlPlaneCapability(
+    account: RustDeskProAccountState,
+    operation: RustDeskProOperation
+  ): RustDeskControlPlaneCapabilityIssueResult {
+    this.requireCurrentOperation(operation);
+    const relay: RustDeskRelayConfig | undefined =
+      this.hosts.getAllRelays().find(
+        (item: RustDeskRelayConfig): boolean =>
+          item.id === account.relayId);
+    const unavailable = new RustDeskControlPlaneCapabilityIssueResult();
+    if (relay === undefined ||
+      relay.controlPlaneProfile !== 'official_server_pro_token') {
+      unavailable.code = 'profile_not_verified';
+      unavailable.message =
+        '地址簿已同步；当前服务器未声明为官方 Server Pro 控制面，连接令牌保持禁用。';
+      account.controlPlaneCapabilityProof = undefined;
+      return unavailable;
+    }
+    const result: RustDeskControlPlaneCapabilityIssueResult =
+      issueRustDeskControlPlaneCapabilityProof(
+        rustDeskControlPlaneBinding(
+          'official_server_pro',
+          operation.lease.ownerScopeId,
+          account,
+          relay));
+    account.controlPlaneCapabilityProof =
+      result.ok ? result.proof : undefined;
+    return result;
+  }
+
   async login(input: RustDeskProLoginInput): Promise<RustDeskProAccountState> {
     const operation: RustDeskProOperation = this.beginOperation();
     try {
@@ -284,6 +326,7 @@ export class RustDeskProSyncService {
       const account = await this.authenticate(input, operation);
       const result = await this.syncAccount(account, operation);
       this.requireCurrentOperation(operation);
+      this.bindAuthenticatedControlPlaneCapability(account, operation);
       this.saveCredentialOrThrow(account);
       this.persistCloudAccountMetadata(account);
       return result;
@@ -302,6 +345,7 @@ export class RustDeskProSyncService {
     try {
       const result = await this.syncAccount(account, operation);
       this.requireCurrentOperation(operation);
+      this.bindAuthenticatedControlPlaneCapability(account, operation);
       this.saveCredentialOrThrow(account);
       return result;
     } catch (err) {
@@ -314,6 +358,7 @@ export class RustDeskProSyncService {
         account.loginStatus = 'expired';
         account.accessToken = '';
         account.accessTokenFingerprint = rustDeskProAccessTokenFingerprint('');
+        account.controlPlaneCapabilityProof = undefined;
       }
       this.saveCredentialOrThrow(account);
       throw err instanceof Error ? err : new Error('Pro 同步失败');
@@ -345,6 +390,7 @@ export class RustDeskProSyncService {
     account.accessTokenFingerprint = rustDeskProAccessTokenFingerprint('');
     account.loginStatus = 'expired';
     account.lastSyncError = reason;
+    account.controlPlaneCapabilityProof = undefined;
     if (!this.credentials.save(account)) { return false; }
     this.persistCloudAccountMetadata(account);
     return true;

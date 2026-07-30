@@ -26,6 +26,10 @@ import {
   shouldKeepDeletedHost,
   shouldKeepLocalHostConfig
 } from './HostSyncMergePolicy';
+import { RustDeskProCredentialStore } from './RustDeskProCredentialStore';
+import {
+  rustDeskRelayCapabilityIdentityChanged
+} from './RustDeskControlPlaneCapabilityPolicy';
 
 export class HostSyncService {
   private static instance: HostSyncService;
@@ -741,6 +745,8 @@ export class HostSyncService {
         DataMutationResult.failure(
           relay.id, 'not_ready', '本地数据库正在准备，草稿已保留', 'waiting_gate'));
     }
+    const previous: RustDeskRelayConfig | undefined =
+      this.relays.get(relay.id);
     const mutation: DataMutationResult =
       this.cloud.upsertRelayResult(relay, resolvedAttemptId);
     const result: RustDeskRelaySaveResult =
@@ -766,6 +772,11 @@ export class HostSyncService {
     this.localRelayObservationAt.set(readback.id, observedAt);
     this.deletedRelayAt.delete(readback.id);
     this.relays.set(readback.id, readback);
+    if (previous !== undefined &&
+      rustDeskRelayCapabilityIdentityChanged(previous, readback)) {
+      RustDeskProCredentialStore.getInstance()
+        .invalidateControlPlaneProofsForRelay(readback.id);
+    }
     this.bindUniqueUnboundRustDeskHost(readback);
     this.emitDataChange();
     hilog.info(0x0001, 'RustDeskSave', 'attempt=' + resolvedAttemptId +
@@ -784,7 +795,9 @@ export class HostSyncService {
   ): RustDeskRelaySaveResult {
     const resolvedAttemptId: string = attemptId.trim().length > 0
       ? attemptId : this.nextRelaySaveAttemptId();
-    if (!this.relays.has(relay.id)) {
+    const previous: RustDeskRelayConfig | undefined =
+      this.relays.get(relay.id);
+    if (previous === undefined) {
       return RustDeskRelaySaveResult.fromMutation(
         resolvedAttemptId, relay.id,
         DataMutationResult.failure(
@@ -822,6 +835,10 @@ export class HostSyncService {
     this.localRelayObservationAt.set(readback.id, observedAt);
     this.deletedRelayAt.delete(readback.id);
     this.relays.set(readback.id, readback);
+    if (rustDeskRelayCapabilityIdentityChanged(previous, readback)) {
+      RustDeskProCredentialStore.getInstance()
+        .invalidateControlPlaneProofsForRelay(readback.id);
+    }
     this.bindUniqueUnboundRustDeskHost(readback);
     this.emitDataChange();
     hilog.info(0x0001, 'RustDeskSave', 'attempt=' + resolvedAttemptId +
@@ -856,6 +873,8 @@ export class HostSyncService {
     }
     const result: boolean = this.relays.delete(id);
     if (result) {
+      RustDeskProCredentialStore.getInstance()
+        .invalidateControlPlaneProofsForRelay(id);
       this.localRelayObservationAt.delete(id);
       this.deletedRelayAt.set(id, Date.now());
       this.emitDataChange();

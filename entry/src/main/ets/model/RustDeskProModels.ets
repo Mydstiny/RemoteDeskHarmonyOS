@@ -1,4 +1,7 @@
 import { buffer, util } from '@kit.ArkTS';
+import {
+  RustDeskControlPlaneCapabilityProof
+} from './RustDeskControlPlaneCapabilityModels';
 
 /**
  * RustDesk Server Pro 账号与地址簿模型。
@@ -119,6 +122,7 @@ export interface RustDeskProAccountState {
   lastLoginAt: number
   lastSyncAt: number
   lastSyncError: string
+  controlPlaneCapabilityProof?: RustDeskControlPlaneCapabilityProof
 }
 
 /** Stable non-secret identity for one access-token generation. */

@@ -6,6 +6,13 @@ import {
   rustDeskControlPlaneRequiresAccount,
   rustDeskControlPlaneTokenForConnection
 } from './RustDeskControlPlanePolicy';
+import {
+  RustDeskControlPlaneCapabilityProof
+} from '../model/RustDeskControlPlaneCapabilityModels';
+import {
+  rustDeskControlPlaneCapabilityProofMatches,
+  RustDeskControlPlaneCapabilityBinding
+} from './RustDeskControlPlaneCapabilityPolicy';
 
 export type RustDeskConnectionContextCode =
   | 'ready'
@@ -25,7 +32,18 @@ export interface RustDeskConnectionContextInput {
   accountPresent: boolean
   accountLoginStatus: string
   accessToken: string
-  thirdPartyCapabilityVerified: boolean
+  accessTokenFingerprint: string
+  tokenGeneration: number
+  ownerScopeId: string
+  accountApiServer: string
+  configuredApiServer: string
+  idServer: string
+  idServerPort: number
+  relayServer: string
+  relayPort: number
+  serverKeyMode: string
+  serverKey: string
+  capabilityProof?: RustDeskControlPlaneCapabilityProof
 }
 
 export interface RustDeskConnectionContext {
@@ -95,17 +113,38 @@ export function resolveRustDeskConnectionContext(
     return context(false, 'reauthentication_required', profile, true, '', 'none',
       '控制面登录会话已失效，请重新登录后重试。');
   }
-  const capabilitySource: RustDeskControlPlaneCapabilitySource =
+  const expectedSource: RustDeskControlPlaneCapabilitySource =
     profile === 'official_server_pro_token'
       ? 'official_server_pro'
-      : (input.thirdPartyCapabilityVerified
+      : (profile === 'third_party_control_plane'
         ? 'verified_third_party' : 'none');
+  const binding: RustDeskControlPlaneCapabilityBinding = {
+    source: expectedSource,
+    ownerScopeId: input.ownerScopeId,
+    accountId: input.accountId,
+    relayId: input.relayId,
+    tokenGeneration: input.tokenGeneration,
+    accessTokenFingerprint: input.accessTokenFingerprint,
+    accountApiServer: input.accountApiServer,
+    configuredApiServer: input.configuredApiServer,
+    idServer: input.idServer,
+    idServerPort: input.idServerPort,
+    relayServer: input.relayServer,
+    relayPort: input.relayPort,
+    serverKeyMode: input.serverKeyMode,
+    serverKey: input.serverKey
+  };
+  const capabilitySource: RustDeskControlPlaneCapabilitySource =
+    expectedSource !== 'none' &&
+    rustDeskControlPlaneCapabilityProofMatches(
+      input.capabilityProof, binding)
+      ? expectedSource : 'none';
   const accessToken: string = rustDeskControlPlaneTokenForConnection(
     profile, false, input.accessToken, capabilitySource);
   if (accessToken === '') {
     return context(false, 'capability_unverified', profile, true, '',
       capabilitySource,
-      '第三方控制面尚未完成本机协议能力验证，已禁止发送地址簿令牌。');
+      '控制面能力证明与当前账号、API、端点或服务器身份不一致，已禁止发送地址簿令牌；请重新登录并同步验证。');
   }
   return context(true, 'ready', profile, true, accessToken,
     capabilitySource, '');

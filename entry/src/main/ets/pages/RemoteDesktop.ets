@@ -1419,7 +1419,20 @@ struct RemoteDesktop {
       accountPresent: account !== undefined,
       accountLoginStatus: account === undefined ? 'none' : account.loginStatus,
       accessToken: account === undefined ? '' : account.accessToken,
-      thirdPartyCapabilityVerified: false
+      accessTokenFingerprint: account === undefined
+        ? '' : account.accessTokenFingerprint,
+      tokenGeneration: account === undefined ? 0 : account.tokenGeneration,
+      ownerScopeId: CloudStore.getInstance().currentScope().ownerScopeId,
+      accountApiServer: account === undefined ? '' : account.serverUrl,
+      configuredApiServer: relay === undefined ? '' : relay.apiServer,
+      idServer: relay === undefined ? '' : relay.idServer,
+      idServerPort: relay === undefined ? 0 : relay.idServerPort,
+      relayServer: relay === undefined ? '' : relay.relayServer,
+      relayPort: relay === undefined ? 0 : relay.relayPort,
+      serverKeyMode: relay === undefined ? '' : relay.keyMode,
+      serverKey: relay === undefined ? '' : relay.key,
+      capabilityProof: account === undefined
+        ? undefined : account.controlPlaneCapabilityProof
     });
   }
 

@@ -13,6 +13,10 @@ import {
   rustDeskProCredentialAfterTokenRevocation,
   rustDeskProCredentialMetadata
 } from './RustDeskProCredentialPolicy';
+import {
+  cloneRustDeskControlPlaneCapabilityProof,
+  rustDeskControlPlaneCapabilityProofFromObject
+} from '../model/RustDeskControlPlaneCapabilityModels';
 
 const STORE_NAME: string = 'RustDeskProCredentials';
 const ACCOUNTS_KEY: string = 'accounts';
@@ -286,7 +290,10 @@ export class RustDeskProCredentialStore {
       loginStatus,
       lastLoginAt: typeof row['lastLoginAt'] === 'number' ? row['lastLoginAt'] as number : 0,
       lastSyncAt: typeof row['lastSyncAt'] === 'number' ? row['lastSyncAt'] as number : 0,
-      lastSyncError
+      lastSyncError,
+      controlPlaneCapabilityProof:
+        rustDeskControlPlaneCapabilityProofFromObject(
+          row['controlPlaneCapabilityProof'])
     };
   }
 
@@ -339,7 +346,10 @@ export class RustDeskProCredentialStore {
       loginStatus: account.loginStatus,
       lastLoginAt: account.lastLoginAt,
       lastSyncAt: account.lastSyncAt,
-      lastSyncError: account.lastSyncError
+      lastSyncError: account.lastSyncError,
+      controlPlaneCapabilityProof:
+        cloneRustDeskControlPlaneCapabilityProof(
+          account.controlPlaneCapabilityProof)
     };
   }
 
@@ -406,6 +416,27 @@ export class RustDeskProCredentialStore {
           this.writeToken(previous.id, previous.accessToken);
         }
       }
+      return false;
+    }
+    this.emitDataChange();
+    return true;
+  }
+
+  invalidateControlPlaneProofsForRelay(relayId: string): boolean {
+    const normalized: string = relayId.trim();
+    if (normalized === '') { return true; }
+    const previous: RustDeskProAccountState[] = this.getAll();
+    let changed: boolean = false;
+    for (let i = 0; i < this.accounts.length; i++) {
+      if (this.accounts[i].relayId === normalized &&
+        this.accounts[i].controlPlaneCapabilityProof !== undefined) {
+        this.accounts[i].controlPlaneCapabilityProof = undefined;
+        changed = true;
+      }
+    }
+    if (!changed) { return true; }
+    if (!this.persist()) {
+      this.accounts = previous;
       return false;
     }
     this.emitDataChange();

@@ -98,6 +98,7 @@ import vncSessionUiPolicyTest from './VncSessionUiPolicy.test';
 import rustDeskRelaySavePolicyTest from './RustDeskRelaySavePolicy.test';
 import rustDeskConnectionContextPolicyTest from './RustDeskConnectionContextPolicy.test';
 import rustDeskConnectionStrategyPolicyTest from './RustDeskConnectionStrategyPolicy.test';
+import rustDeskControlPlaneCapabilityPolicyTest from './RustDeskControlPlaneCapabilityPolicy.test';
 
 export default function testsuite() {
   localUnitTest();
@@ -200,4 +201,5 @@ export default function testsuite() {
   rustDeskRelaySavePolicyTest();
   rustDeskConnectionContextPolicyTest();
   rustDeskConnectionStrategyPolicyTest();
+  rustDeskControlPlaneCapabilityPolicyTest();
 }

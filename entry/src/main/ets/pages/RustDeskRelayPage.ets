@@ -748,9 +748,20 @@ export struct RustDeskRelayPage {
       this.loadProAccounts();
       this.formProPwd = '';
       const count = result.addedIds.length + result.updatedIds.length;
+      const account: RustDeskProAccountState | undefined =
+        this.proSync.getAccount(accountId);
+      const capabilityReady: boolean =
+        account?.controlPlaneCapabilityProof !== undefined;
       promptAction.showToast({
-        message: count > 0 ? 'Pro 已同步 ' + count.toString() + ' 台设备' : '登录成功，但个人地址簿为空',
-        duration: 2200
+        message: capabilityReady
+          ? (count > 0
+            ? 'Pro 已同步 ' + count.toString() +
+              ' 台设备，控制面身份已绑定'
+            : '登录成功，地址簿为空；控制面身份已绑定')
+          : (count > 0
+            ? '地址簿已同步；API、ID、Relay 或 Key 身份未对齐，连接令牌保持禁用'
+            : '登录成功；控制面身份未对齐，连接令牌保持禁用'),
+        duration: capabilityReady ? 2200 : 3600
       });
       this.closeSheet();
     } catch (err) {
@@ -765,9 +776,18 @@ export struct RustDeskRelayPage {
       const result = await this.proSync.sync(accountId);
       this.loadProAccounts();
       const count = result.addedIds.length + result.updatedIds.length;
+      const account: RustDeskProAccountState | undefined =
+        this.proSync.getAccount(accountId);
+      const capabilityReady: boolean =
+        account?.controlPlaneCapabilityProof !== undefined;
       promptAction.showToast({
-        message: count > 0 ? 'Pro 已同步 ' + count.toString() + ' 台设备' : '同步完成，但个人地址簿为空',
-        duration: 2200
+        message: capabilityReady
+          ? (count > 0
+            ? 'Pro 已同步 ' + count.toString() +
+              ' 台设备，控制面身份已重新验证'
+            : '同步完成，控制面身份已重新验证')
+          : '地址簿同步成功；控制面身份未对齐，连接令牌保持禁用',
+        duration: capabilityReady ? 2200 : 3600
       });
     } catch (err) {
       this.formProError = err instanceof Error ? err.message : 'Pro 同步失败';
