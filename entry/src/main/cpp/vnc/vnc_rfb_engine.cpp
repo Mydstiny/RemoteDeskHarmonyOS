@@ -1,10 +1,10 @@
 /**
  * vnc_rfb_engine.cpp - bounded RFB 3.3/3.7/3.8 client implementation.
  *
- * Supported encodings are intentionally small and auditable: Raw, CopyRect,
- * Cursor, DesktopSize and LastRect. Every rectangle, cursor mask and
- * allocation is checked before use. The engine never calls the shared video
- * decoder.
+ * Supported encodings are intentionally small and auditable: bounded ZRLE,
+ * Raw, CopyRect, Cursor, DesktopSize and LastRect. Every rectangle, cursor
+ * mask, compressed input and decompressed output is checked before use. The
+ * engine never calls the shared video decoder.
  */
 #include "vnc_rfb_engine.h"
 #include "vnc_des.h"
@@ -36,6 +36,7 @@ namespace {
 constexpr size_t kMaxReasonBytes = 64 * 1024;
 constexpr size_t kMaxDesktopPixels = 16 * 1024 * 1024;
 constexpr size_t kMaxRectanglePixels = 8 * 1024 * 1024;
+constexpr size_t kMaxZrleCompressedBytes = 64 * 1024 * 1024;
 constexpr size_t kMaxClipboardBytes = 1024 * 1024;
 constexpr int kMaxFramebufferEdge = 8192;
 constexpr int kMaxSecurityTypes = 64;
@@ -56,20 +57,11 @@ bool checkedPixelBytes(int width, int height, size_t bytesPerPixel, size_t& byte
     return true;
 }
 
-void appendU16(std::vector<uint8_t>& output, uint16_t value) {
-    output.push_back(static_cast<uint8_t>((value >> 8) & 0xFF));
-    output.push_back(static_cast<uint8_t>(value & 0xFF));
-}
-
 void appendU32(std::vector<uint8_t>& output, uint32_t value) {
     output.push_back(static_cast<uint8_t>((value >> 24) & 0xFF));
     output.push_back(static_cast<uint8_t>((value >> 16) & 0xFF));
     output.push_back(static_cast<uint8_t>((value >> 8) & 0xFF));
     output.push_back(static_cast<uint8_t>(value & 0xFF));
-}
-
-void appendI32(std::vector<uint8_t>& output, int32_t value) {
-    appendU32(output, static_cast<uint32_t>(value));
 }
 
 void secureClear(std::string& value) {
@@ -393,17 +385,12 @@ bool VncRfbEngine::sendPixelFormatAndEncodings(std::string& error) {
                 colorDepth, config_.vncColorDepth.c_str(), config_.vncImageQualityPreset.c_str(),
                 framebufferWidth_, framebufferHeight_);
 
-    std::vector<uint8_t> encodings;
-    encodings.reserve(4 + 5 * 4);
-    encodings.push_back(2);
-    encodings.push_back(0);
-    appendU16(encodings, 5);
-    appendI32(encodings, 0);                           // Raw
-    appendI32(encodings, 1);                           // CopyRect
-    appendI32(encodings, VncCursorProtocol::kEncoding); // Cursor
-    appendI32(encodings, -223);                        // DesktopSize
-    appendI32(encodings, -224);                        // LastRect
-    VNC_DIAG_INFO("[VNC-DIAG] SetEncodings raw copyrect cursor desktop-size last-rect");
+    const std::vector<uint8_t> encodings =
+        VncRfbProtocol::buildSetEncodings(config_.vncPreferredEncoding);
+    VNC_DIAG_INFO(
+                "[VNC-DIAG] SetEncodings requested=%{public}s effectivePreference=%{public}s fallback=raw",
+                config_.vncPreferredEncoding.c_str(),
+                config_.vncPreferredEncoding == "raw" ? "raw" : "zrle");
     return writeBytes(encodings.data(), encodings.size(), error);
 }
 
@@ -499,6 +486,7 @@ bool VncRfbEngine::receiveFramebufferUpdate(std::string& error) {
     int dirtyTop = framebufferHeight_;
     int dirtyRight = 0;
     int dirtyBottom = 0;
+    int frameEncoding = -1;
     const auto markDirty = [&](int x, int y, int width, int height, bool full) -> void {
         if (full) {
             fullFrame = true;
@@ -524,18 +512,28 @@ bool VncRfbEngine::receiveFramebufferUpdate(std::string& error) {
                         static_cast<unsigned long long>(diagFramebufferUpdates_), index,
                         x, y, width, height, encoding);
         }
-        if (encoding == 0) {
+        if (encoding == VncRfbProtocol::kRawEncoding) {
             if (!receiveRawRectangle(x, y, width, height, error)) return false;
             markDirty(x, y, width, height, false);
-        } else if (encoding == 1) {
+            if (frameEncoding != VncRfbProtocol::kZrleEncoding) {
+                frameEncoding = VncRfbProtocol::kRawEncoding;
+            }
+        } else if (encoding == VncRfbProtocol::kCopyRectEncoding) {
             if (!receiveCopyRectangle(x, y, width, height, error)) return false;
             markDirty(x, y, width, height, false);
+            if (frameEncoding < 0) {
+                frameEncoding = VncRfbProtocol::kCopyRectEncoding;
+            }
+        } else if (encoding == VncRfbProtocol::kZrleEncoding) {
+            if (!receiveZrleRectangle(x, y, width, height, error)) return false;
+            markDirty(x, y, width, height, false);
+            frameEncoding = VncRfbProtocol::kZrleEncoding;
         } else if (encoding == VncCursorProtocol::kEncoding) {
             if (!receiveCursorRectangle(x, y, width, height, error)) return false;
-        } else if (encoding == -223) {
+        } else if (encoding == VncRfbProtocol::kDesktopSizeEncoding) {
             if (!receiveDesktopSize(width, height, error)) return false;
             markDirty(0, 0, framebufferWidth_, framebufferHeight_, true);
-        } else if (encoding == -224) {
+        } else if (encoding == VncRfbProtocol::kLastRectEncoding) {
             break;
         } else {
             error = "VNC server selected an unsupported framebuffer encoding";
@@ -546,6 +544,9 @@ bool VncRfbEngine::receiveFramebufferUpdate(std::string& error) {
     // the complete group first and present once so a multi-rectangle Mac
     // refresh does not force one EGL swap per rectangle.
     if (dirty) {
+        if (frameEncoding >= 0) {
+            effectiveEncoding_ = frameEncoding;
+        }
         if (fullFrame) {
             emitFrame(-1, -1, framebufferWidth_, framebufferHeight_);
         } else if (dirtyRight > dirtyLeft && dirtyBottom > dirtyTop) {
@@ -611,6 +612,71 @@ bool VncRfbEngine::receiveCopyRectangle(int x, int y, int width, int height, std
         std::memcpy(framebuffer_.data() + destination,
                     copy.data() + static_cast<size_t>(row) * width * 4,
                     static_cast<size_t>(width) * 4);
+    }
+    return true;
+}
+
+bool VncRfbEngine::receiveZrleRectangle(int x, int y, int width, int height,
+                                        std::string& error) {
+    if (!validRectangle(x, y, width, height)) {
+        error = "VNC ZRLE rectangle is outside the framebuffer";
+        return false;
+    }
+    size_t pixels = 0;
+    if (!checkedPixelBytes(width, height, 1, pixels) || pixels > kMaxRectanglePixels) {
+        error = "VNC ZRLE rectangle exceeds the safe pixel limit";
+        return false;
+    }
+    uint32_t compressedLength = 0;
+    if (!readU32(compressedLength, ioTimeoutMs_, error)) {
+        return false;
+    }
+    size_t maxDecodedBytes = 0;
+    if (!VncRfbProtocol::maxZrleDecodedBytes(
+            width, height, serverPixelFormat_, maxDecodedBytes)) {
+        error = "VNC ZRLE decompressed bound is invalid";
+        return false;
+    }
+    const size_t rectangleCompressedLimit =
+        std::min(kMaxZrleCompressedBytes, maxDecodedBytes + 64U * 1024U);
+    if (compressedLength == 0 || compressedLength > rectangleCompressedLimit) {
+        error = "VNC ZRLE compressed length exceeds the rectangle-safe limit";
+        return false;
+    }
+    std::vector<uint8_t> compressed;
+    try {
+        compressed.resize(compressedLength);
+    } catch (const std::bad_alloc&) {
+        error = "VNC ZRLE compressed allocation failed";
+        return false;
+    }
+    if (!readBytes(compressed.data(), compressed.size(), ioTimeoutMs_, error)) {
+        return false;
+    }
+    std::vector<uint8_t> decoded;
+    if (!zrleInflater_.inflateChunk(compressed.data(), compressed.size(),
+                                    maxDecodedBytes, decoded, error)) {
+        return false;
+    }
+    std::vector<uint8_t> rgba;
+    if (!VncRfbProtocol::decodeZrleTiles(
+            serverPixelFormat_, width, height, decoded.data(), decoded.size(),
+            rgba, error)) {
+        return false;
+    }
+    for (int row = 0; row < height; ++row) {
+        for (int column = 0; column < width; ++column) {
+            const size_t source =
+                (static_cast<size_t>(row) * static_cast<size_t>(width) +
+                 static_cast<size_t>(column)) * 4U;
+            const size_t destination =
+                (static_cast<size_t>(y + row) * static_cast<size_t>(framebufferWidth_) +
+                 static_cast<size_t>(x + column)) * 4U;
+            framebuffer_[destination] = rgba[source + 2];
+            framebuffer_[destination + 1] = rgba[source + 1];
+            framebuffer_[destination + 2] = rgba[source];
+            framebuffer_[destination + 3] = rgba[source + 3];
+        }
     }
     return true;
 }
@@ -778,6 +844,7 @@ void VncRfbEngine::emitFrame(int dirtyX, int dirtyY, int dirtyWidth, int dirtyHe
     frame.dirtyWidth = dirtyWidth;
     frame.dirtyHeight = dirtyHeight;
     frame.colorDepth = effectiveColorDepth_;
+    frame.sourceEncoding = effectiveEncoding_;
     ++diagFrames_;
     if (diagFrames_ <= 8 || diagFrames_ % 60 == 0) {
         VNC_DIAG_INFO(

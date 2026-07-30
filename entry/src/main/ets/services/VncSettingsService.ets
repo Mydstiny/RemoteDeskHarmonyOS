@@ -359,7 +359,8 @@ export class VncSettingsService {
       imageQualityPreset: values.imageQualityPreset === 'speed' ||
         values.imageQualityPreset === 'quality' ?
         values.imageQualityPreset : 'balanced',
-      preferredEncoding: values.preferredEncoding === 'raw' ? 'raw' : 'auto',
+      preferredEncoding: values.preferredEncoding === 'raw' ||
+        values.preferredEncoding === 'zrle' ? values.preferredEncoding : 'auto',
       colorDepth: values.colorDepth === '32' || values.colorDepth === '16' ||
         values.colorDepth === '8' ? values.colorDepth : 'auto',
       frameRateLimit: values.frameRateLimit === 0 || values.frameRateLimit === 15 ||

@@ -20,6 +20,7 @@
 #include "render/video_perf_counters.h"
 #include "video/video_activity_state.h"
 #include "rustdesk/rustdesk_bridge.h"
+#include "vnc/vnc_rfb_protocol.h"
 #include <napi/native_api.h>
 #include <hilog/log.h>
 #include <map>
@@ -154,6 +155,7 @@ struct SessionDiagnosticsCounters {
     std::atomic<int> lastDirtyWidth {0};
     std::atomic<int> lastDirtyHeight {0};
     std::atomic<int> effectiveColorDepth {0};
+    std::atomic<int> sourceEncoding {-1};
     std::atomic<uint64_t> inputEventsSent {0};
     std::atomic<uint64_t> inputEventsDropped {0};
     mutable std::mutex timingMutex;
@@ -186,6 +188,7 @@ struct SessionDiagnosticsCounters {
         lastDirtyWidth.store(0, std::memory_order_release);
         lastDirtyHeight.store(0, std::memory_order_release);
         effectiveColorDepth.store(0, std::memory_order_release);
+        sourceEncoding.store(-1, std::memory_order_release);
         inputEventsSent.store(0, std::memory_order_release);
         inputEventsDropped.store(0, std::memory_order_release);
         std::lock_guard<std::mutex> lock(timingMutex);
@@ -885,7 +888,12 @@ napi_value NapiGetSessionDiagnostics(napi_env env, napi_callback_info info) {
     SetObjectInt64(env, result, "queueDepth", static_cast<int64_t>(decoder.queueDepth));
     SetObjectInt64(env, result, "queueMax", static_cast<int64_t>(decoder.queueMax));
     SetObjectInt64(env, result, "droppedFrames", static_cast<int64_t>(decoder.droppedFrames));
-    SetObjectString(env, result, "decoderBackend", vncSession ? "raw-frame" :
+    const int sourceEncoding = counters ?
+        counters->sourceEncoding.load(std::memory_order_acquire) : -1;
+    const std::string vncBackend = sourceEncoding == VncRfbProtocol::kZrleEncoding ? "ZRLE" :
+        (sourceEncoding == VncRfbProtocol::kCopyRectEncoding ? "CopyRect" :
+         (sourceEncoding == VncRfbProtocol::kRawEncoding ? "RAW" : "等待服务器"));
+    SetObjectString(env, result, "decoderBackend", vncSession ? vncBackend :
         (decoder.valid && decoder.ready ? (decoder.software ? "software" : "hardware") : "unknown"));
     return result;
 }
@@ -1368,9 +1376,9 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
     if (cfg.vncImageQualityPreset != "speed" && cfg.vncImageQualityPreset != "quality") {
         cfg.vncImageQualityPreset = "balanced";
     }
-    // This build advertises Raw/CopyRect only. Preserve an honest capability
-    // boundary instead of accepting a cloud value that the decoder cannot use.
-    if (cfg.vncPreferredEncoding != "raw") cfg.vncPreferredEncoding = "auto";
+    if (cfg.vncPreferredEncoding != "raw" && cfg.vncPreferredEncoding != "zrle") {
+        cfg.vncPreferredEncoding = "auto";
+    }
     if (cfg.vncColorDepth != "32" && cfg.vncColorDepth != "16" && cfg.vncColorDepth != "8") {
         cfg.vncColorDepth = "auto";
     }
@@ -1516,6 +1524,8 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
             session->diagnostics.lastDirtyWidth.store(frame.dirtyWidth, std::memory_order_relaxed);
             session->diagnostics.lastDirtyHeight.store(frame.dirtyHeight, std::memory_order_relaxed);
             session->diagnostics.effectiveColorDepth.store(frame.colorDepth, std::memory_order_relaxed);
+            session->diagnostics.sourceEncoding.store(
+                frame.sourceEncoding, std::memory_order_relaxed);
             session->diagnostics.lastFrameAtMs.store(static_cast<uint64_t>(
                 std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::steady_clock::now().time_since_epoch()).count()),

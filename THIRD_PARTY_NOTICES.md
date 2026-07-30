@@ -13,6 +13,7 @@ source and license files before redistribution.
 | libssh2 | bundled source/artifacts; upstream COPYING retained | BSD-3-Clause | SSH/SFTP |
 | Mbed TLS | bundled artifacts under `libs/mbedtls` | Apache-2.0 | cryptography support |
 | Opus | built by `scripts/build_opus_ohos.sh` | BSD-3-Clause | RustDesk audio decode |
+| zlib | platform/API 23 system library; see `docs/compliance/ZLIB_SYSTEM_PROVENANCE.md` | Zlib | VNC ZRLE and FreeRDP compression |
 | Rust crates | versions locked in `rustdesk_ffi/Cargo.lock` | per-crate, recorded in SBOM | RustDesk bridge and terminal support |
 | `@hw-agconnect/auth` | `entry/oh-package.json5` / lockfile | Huawei package terms | authentication/cloud integration |
 | Hypium / Hamock | root package lock | OpenHarmony package terms | tests only |

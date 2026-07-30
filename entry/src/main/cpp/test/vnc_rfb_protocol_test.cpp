@@ -6,6 +6,78 @@
 #include <array>
 #include <cstdint>
 #include <string>
+#include <vector>
+#include <zlib.h>
+
+namespace {
+
+VncRfbProtocol::PixelFormat rgba8888Format() {
+    VncRfbProtocol::PixelFormat format;
+    format.bitsPerPixel = 32;
+    format.depth = 24;
+    format.bigEndian = false;
+    format.trueColor = true;
+    format.redMax = 255;
+    format.greenMax = 255;
+    format.blueMax = 255;
+    format.redShift = 16;
+    format.greenShift = 8;
+    format.blueShift = 0;
+    return format;
+}
+
+VncRfbProtocol::PixelFormat rgb565Format() {
+    VncRfbProtocol::PixelFormat format;
+    format.bitsPerPixel = 16;
+    format.depth = 16;
+    format.bigEndian = false;
+    format.trueColor = true;
+    format.redMax = 31;
+    format.greenMax = 63;
+    format.blueMax = 31;
+    format.redShift = 11;
+    format.greenShift = 5;
+    format.blueShift = 0;
+    return format;
+}
+
+VncRfbProtocol::PixelFormat rgb332Format() {
+    VncRfbProtocol::PixelFormat format;
+    format.bitsPerPixel = 8;
+    format.depth = 8;
+    format.bigEndian = false;
+    format.trueColor = true;
+    format.redMax = 7;
+    format.greenMax = 7;
+    format.blueMax = 3;
+    format.redShift = 5;
+    format.greenShift = 2;
+    format.blueShift = 0;
+    return format;
+}
+
+std::vector<uint8_t> deflateSyncFlush(z_stream& stream,
+                                      const std::vector<uint8_t>& input) {
+    std::vector<uint8_t> output;
+    stream.next_in = const_cast<Bytef*>(
+        reinterpret_cast<const Bytef*>(input.data()));
+    stream.avail_in = static_cast<uInt>(input.size());
+    std::array<uint8_t, 256> buffer = {0};
+    do {
+        stream.next_out = reinterpret_cast<Bytef*>(buffer.data());
+        stream.avail_out = static_cast<uInt>(buffer.size());
+        const int result = deflate(&stream, Z_SYNC_FLUSH);
+        if (result != Z_OK) {
+            return {};
+        }
+        output.insert(output.end(), buffer.begin(),
+                      buffer.begin() + static_cast<std::ptrdiff_t>(
+                          buffer.size() - stream.avail_out));
+    } while (stream.avail_in != 0 || stream.avail_out == 0);
+    return output;
+}
+
+} // namespace
 
 RDP_TEST_CASE(vnc_rfb_client_init_is_shared_one_byte) {
     RDP_ASSERT_EQ(VncRfbProtocol::clientInitSharedFlag(), static_cast<uint8_t>(1));
@@ -66,6 +138,224 @@ RDP_TEST_CASE(vnc_pixel_format_policy_is_bounded_and_wire_exact) {
     RDP_ASSERT_EQ(format16[9], static_cast<uint8_t>(31));
     RDP_ASSERT_EQ(format16[11], static_cast<uint8_t>(63));
     RDP_ASSERT_EQ(format16[14], static_cast<uint8_t>(11));
+}
+
+RDP_TEST_CASE(vnc_set_encodings_advertises_cursor_and_bounded_zrle_with_raw_fallback) {
+    const std::vector<uint8_t> automatic =
+        VncRfbProtocol::buildSetEncodings("auto");
+    const std::vector<uint8_t> expectedAutomatic = {
+        2, 0, 0, 6,
+        0, 0, 0, 16,
+        0, 0, 0, 1,
+        0, 0, 0, 0,
+        255, 255, 255, 17,
+        255, 255, 255, 33,
+        255, 255, 255, 32,
+    };
+    RDP_ASSERT(automatic == expectedAutomatic);
+    RDP_ASSERT(VncRfbProtocol::buildSetEncodings("zrle") == expectedAutomatic);
+
+    const std::vector<uint8_t> raw =
+        VncRfbProtocol::buildSetEncodings("raw");
+    const std::vector<uint8_t> expectedRaw = {
+        2, 0, 0, 5,
+        0, 0, 0, 1,
+        0, 0, 0, 0,
+        255, 255, 255, 17,
+        255, 255, 255, 33,
+        255, 255, 255, 32,
+    };
+    RDP_ASSERT(raw == expectedRaw);
+}
+
+RDP_TEST_CASE(vnc_zrle_decodes_negotiated_8_16_and_big_endian_32_bit_pixels) {
+    std::string error;
+    std::vector<uint8_t> rgba;
+
+    const VncRfbProtocol::PixelFormat format8 = rgb332Format();
+    const std::vector<uint8_t> solid8 = {1, 0xE0};
+    RDP_ASSERT_EQ(VncRfbProtocol::compactPixelBytes(format8), static_cast<size_t>(1));
+    RDP_ASSERT(VncRfbProtocol::decodeZrleTiles(
+        format8, 1, 1, solid8.data(), solid8.size(), rgba, error));
+    RDP_ASSERT(rgba == std::vector<uint8_t>({255, 0, 0, 255}));
+
+    const VncRfbProtocol::PixelFormat format16 = rgb565Format();
+    const std::vector<uint8_t> solid16 = {1, 0xE0, 0x07};
+    RDP_ASSERT_EQ(VncRfbProtocol::compactPixelBytes(format16), static_cast<size_t>(2));
+    RDP_ASSERT(VncRfbProtocol::decodeZrleTiles(
+        format16, 1, 1, solid16.data(), solid16.size(), rgba, error));
+    RDP_ASSERT(rgba == std::vector<uint8_t>({0, 255, 0, 255}));
+
+    VncRfbProtocol::PixelFormat bigEndian = rgba8888Format();
+    bigEndian.bigEndian = true;
+    const std::vector<uint8_t> solid32BigEndian = {1, 0x00, 0x00, 0xFF};
+    RDP_ASSERT_EQ(VncRfbProtocol::compactPixelBytes(bigEndian), static_cast<size_t>(3));
+    RDP_ASSERT(VncRfbProtocol::decodeZrleTiles(
+        bigEndian, 1, 1, solid32BigEndian.data(), solid32BigEndian.size(), rgba, error));
+    RDP_ASSERT(rgba == std::vector<uint8_t>({0, 0, 255, 255}));
+}
+
+RDP_TEST_CASE(vnc_zrle_decodes_raw_solid_packed_and_rle_tiles) {
+    const VncRfbProtocol::PixelFormat format = rgba8888Format();
+    RDP_ASSERT_EQ(VncRfbProtocol::compactPixelBytes(format), static_cast<size_t>(3));
+    std::string error;
+    std::vector<uint8_t> rgba;
+
+    const std::vector<uint8_t> raw = {
+        0,
+        0, 0, 255,
+        255, 0, 0,
+    };
+    RDP_ASSERT(VncRfbProtocol::decodeZrleTiles(
+        format, 2, 1, raw.data(), raw.size(), rgba, error));
+    RDP_ASSERT(rgba == std::vector<uint8_t>({
+        255, 0, 0, 255,
+        0, 0, 255, 255,
+    }));
+
+    const std::vector<uint8_t> solid = {1, 0, 255, 0};
+    RDP_ASSERT(VncRfbProtocol::decodeZrleTiles(
+        format, 3, 1, solid.data(), solid.size(), rgba, error));
+    RDP_ASSERT(rgba == std::vector<uint8_t>({
+        0, 255, 0, 255,
+        0, 255, 0, 255,
+        0, 255, 0, 255,
+    }));
+
+    const std::vector<uint8_t> packed = {
+        2,
+        0, 0, 255,
+        255, 0, 0,
+        0x40,
+    };
+    RDP_ASSERT(VncRfbProtocol::decodeZrleTiles(
+        format, 2, 1, packed.data(), packed.size(), rgba, error));
+    RDP_ASSERT(rgba == std::vector<uint8_t>({
+        255, 0, 0, 255,
+        0, 0, 255, 255,
+    }));
+
+    const std::vector<uint8_t> plainRle = {
+        128,
+        0, 0, 255,
+        2,
+    };
+    RDP_ASSERT(VncRfbProtocol::decodeZrleTiles(
+        format, 3, 1, plainRle.data(), plainRle.size(), rgba, error));
+    RDP_ASSERT_EQ(rgba.size(), static_cast<size_t>(12));
+    RDP_ASSERT_EQ(rgba[0], static_cast<uint8_t>(255));
+    RDP_ASSERT_EQ(rgba[8], static_cast<uint8_t>(255));
+
+    const std::vector<uint8_t> paletteRle = {
+        130,
+        0, 0, 255,
+        255, 0, 0,
+        0x80, 1,
+        1,
+    };
+    RDP_ASSERT(VncRfbProtocol::decodeZrleTiles(
+        format, 3, 1, paletteRle.data(), paletteRle.size(), rgba, error));
+    RDP_ASSERT(rgba == std::vector<uint8_t>({
+        255, 0, 0, 255,
+        255, 0, 0, 255,
+        0, 0, 255, 255,
+    }));
+}
+
+RDP_TEST_CASE(vnc_zrle_rejects_palette_reuse_truncation_run_overflow_and_trailing_data) {
+    const VncRfbProtocol::PixelFormat format = rgba8888Format();
+    std::string error;
+    std::vector<uint8_t> rgba;
+    const std::vector<uint8_t> paletteReuse = {127};
+    RDP_ASSERT(!VncRfbProtocol::decodeZrleTiles(
+        format, 1, 1, paletteReuse.data(), paletteReuse.size(), rgba, error));
+    const std::vector<uint8_t> rlePaletteReuse = {129};
+    RDP_ASSERT(!VncRfbProtocol::decodeZrleTiles(
+        format, 1, 1, rlePaletteReuse.data(), rlePaletteReuse.size(), rgba, error));
+    const std::vector<uint8_t> truncated = {0, 0, 0};
+    RDP_ASSERT(!VncRfbProtocol::decodeZrleTiles(
+        format, 1, 1, truncated.data(), truncated.size(), rgba, error));
+    const std::vector<uint8_t> runOverflow = {128, 0, 0, 255, 1};
+    RDP_ASSERT(!VncRfbProtocol::decodeZrleTiles(
+        format, 1, 1, runOverflow.data(), runOverflow.size(), rgba, error));
+    const std::vector<uint8_t> trailing = {1, 0, 0, 255, 0};
+    RDP_ASSERT(!VncRfbProtocol::decodeZrleTiles(
+        format, 1, 1, trailing.data(), trailing.size(), rgba, error));
+}
+
+RDP_TEST_CASE(vnc_zrle_malformed_corpus_fails_closed_without_partial_output) {
+    const VncRfbProtocol::PixelFormat format = rgba8888Format();
+    const std::vector<std::vector<uint8_t>> malformed = {
+        {},
+        {17},
+        {126},
+        {127},
+        {129},
+        {1},
+        {2, 0, 0, 255},
+        {2, 0, 0, 255, 255, 0, 0},
+        {128, 0, 0, 255},
+        {128, 0, 0, 255, 255},
+        {130, 0, 0, 255, 255, 0, 0, 2},
+        {130, 0, 0, 255, 255, 0, 0, 0x80, 255},
+        {255},
+    };
+    for (const std::vector<uint8_t>& bytes : malformed) {
+        std::vector<uint8_t> rgba = {1, 2, 3, 4};
+        std::string error;
+        const uint8_t* data = bytes.empty() ? nullptr : bytes.data();
+        RDP_ASSERT(!VncRfbProtocol::decodeZrleTiles(
+            format, 3, 1, data, bytes.size(), rgba, error));
+        RDP_ASSERT(rgba.empty());
+        RDP_ASSERT(!error.empty());
+    }
+}
+
+RDP_TEST_CASE(vnc_zrle_connection_stream_is_persistent_bounded_and_flush_checked) {
+    z_stream compressor {};
+    RDP_ASSERT_EQ(deflateInit(&compressor, Z_DEFAULT_COMPRESSION), Z_OK);
+    const std::vector<uint8_t> firstPlain = {1, 0, 0, 255};
+    const std::vector<uint8_t> secondPlain = {1, 0, 255, 0};
+    const std::vector<uint8_t> firstCompressed =
+        deflateSyncFlush(compressor, firstPlain);
+    const std::vector<uint8_t> secondCompressed =
+        deflateSyncFlush(compressor, secondPlain);
+    deflateEnd(&compressor);
+    RDP_ASSERT(!firstCompressed.empty());
+    RDP_ASSERT(!secondCompressed.empty());
+
+    VncRfbProtocol::ZrleInflater inflater;
+    std::vector<uint8_t> output;
+    std::string error;
+    RDP_ASSERT(inflater.inflateChunk(
+        firstCompressed.data(), firstCompressed.size(), 64, output, error));
+    RDP_ASSERT(output == firstPlain);
+    RDP_ASSERT(inflater.inflateChunk(
+        secondCompressed.data(), secondCompressed.size(), 64, output, error));
+    RDP_ASSERT(output == secondPlain);
+
+    VncRfbProtocol::ZrleInflater truncatedInflater;
+    RDP_ASSERT(!truncatedInflater.inflateChunk(
+        firstCompressed.data(), firstCompressed.size() - 1, 64, output, error));
+
+    z_stream bombCompressor {};
+    RDP_ASSERT_EQ(deflateInit(&bombCompressor, Z_BEST_COMPRESSION), Z_OK);
+    const std::vector<uint8_t> largePlain(4096, 0);
+    const std::vector<uint8_t> bomb =
+        deflateSyncFlush(bombCompressor, largePlain);
+    deflateEnd(&bombCompressor);
+    VncRfbProtocol::ZrleInflater boundedInflater;
+    RDP_ASSERT(!boundedInflater.inflateChunk(
+        bomb.data(), bomb.size(), 128, output, error));
+}
+
+RDP_TEST_CASE(vnc_zrle_decompressed_bound_is_finite_for_large_rectangles) {
+    const VncRfbProtocol::PixelFormat format = rgba8888Format();
+    size_t bound = 0;
+    RDP_ASSERT(VncRfbProtocol::maxZrleDecodedBytes(2940, 1912, format, bound));
+    RDP_ASSERT(bound > static_cast<size_t>(2940) * 1912 * 3);
+    RDP_ASSERT(bound < static_cast<size_t>(64) * 1024 * 1024);
+    RDP_ASSERT(!VncRfbProtocol::maxZrleDecodedBytes(0, 1912, format, bound));
 }
 
 RDP_TEST_CASE(vnc_frame_request_rate_policy_is_deterministic) {

@@ -5,9 +5,12 @@
 #ifndef VNC_RFB_PROTOCOL_H
 #define VNC_RFB_PROTOCOL_H
 
+#include "vnc_pixel_format.h"
+
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -15,7 +18,11 @@ namespace VncRfbProtocol {
 
 constexpr size_t kProtocolVersionBytes = 12;
 constexpr size_t kUltraVncRepeaterFieldBytes = 250;
-
+constexpr int kDesktopSizeEncoding = -223;
+constexpr int kLastRectEncoding = -224;
+constexpr int kRawEncoding = 0;
+constexpr int kCopyRectEncoding = 1;
+constexpr int kZrleEncoding = 16;
 /** The RFB ClientInit shared flag. A viewer always sends one byte. */
 uint8_t clientInitSharedFlag();
 
@@ -54,6 +61,13 @@ int effectiveTrueColorDepth(const std::string& requestedDepth,
 /** Build the exact 20-byte SetPixelFormat packet for 8/16/32-bit true colour. */
 std::vector<uint8_t> buildSetPixelFormat(int colorDepth);
 
+/**
+ * Build the SetEncodings packet. ZRLE is preferred for auto/zrle and omitted
+ * for an explicit raw request; Raw remains the mandatory fallback. Cursor,
+ * DesktopSize and LastRect are always advertised.
+ */
+std::vector<uint8_t> buildSetEncodings(const std::string& preferredEncoding);
+
 /** Normalize the only supported VNC frame-rate limits. Zero means unbounded. */
 int normalizeFrameRateLimit(int frameRateLimit);
 
@@ -75,6 +89,42 @@ bool buildRepeaterTargetField(const std::string& target,
 /** Parse the same fixed-width field and return the target without the ID:. */
 bool parseRepeaterTargetField(const uint8_t* data, size_t size, std::string& target,
                               std::string& error);
+
+/** Number of bytes in a ZRLE CPIXEL for the negotiated true-colour format. */
+size_t compactPixelBytes(const PixelFormat& format);
+
+/** Maximum valid decompressed byte count for one bounded ZRLE rectangle. */
+bool maxZrleDecodedBytes(int width, int height, const PixelFormat& format,
+                         size_t& maxBytes);
+
+/**
+ * Decode the uncompressed tile stream for one ZRLE rectangle into tightly
+ * packed RGBA bytes. The output contains exactly width*height*4 bytes.
+ */
+bool decodeZrleTiles(const PixelFormat& format, int width, int height,
+                     const uint8_t* data, size_t size,
+                     std::vector<uint8_t>& rgba, std::string& error);
+
+/**
+ * Connection-scoped RFC 6143 ZRLE inflater. One instance must be retained for
+ * the entire RFB connection because successive rectangles share one zlib
+ * stream.
+ */
+class ZrleInflater {
+public:
+    ZrleInflater();
+    ~ZrleInflater();
+    ZrleInflater(const ZrleInflater&) = delete;
+    ZrleInflater& operator=(const ZrleInflater&) = delete;
+
+    bool inflateChunk(const uint8_t* compressed, size_t compressedSize,
+                      size_t maxOutputBytes, std::vector<uint8_t>& output,
+                      std::string& error);
+
+private:
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
+};
 
 } // namespace VncRfbProtocol
 

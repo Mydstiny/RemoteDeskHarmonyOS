@@ -1,8 +1,8 @@
 /**
  * vnc_adapter.cpp - VNC protocol adapter
  *
- * VNC 协议：默认端口 5900+N (display N)，支持 Raw、CopyRect、Cursor
- * 和 DesktopSize；压缩编码与 ContinuousUpdates 由独立能力门控制。
+ * VNC 协议：默认端口 5900+N (display N)，支持 bounded ZRLE、Raw、
+ * CopyRect、Cursor 和 DesktopSize；Tight/ContinuousUpdates 未启用。
  */
 
 #include "vnc_adapter.h"

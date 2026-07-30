@@ -6,7 +6,7 @@
 
 #include "extensions/protocol_adapter.h"
 #include "vnc_cursor_protocol.h"
-#include "vnc_pixel_format.h"
+#include "vnc_rfb_protocol.h"
 #include "vnc_transport.h"
 
 #include <atomic>
@@ -57,6 +57,7 @@ private:
     bool receiveFramebufferUpdate(std::string& error);
     bool receiveRawRectangle(int x, int y, int width, int height, std::string& error);
     bool receiveCopyRectangle(int x, int y, int width, int height, std::string& error);
+    bool receiveZrleRectangle(int x, int y, int width, int height, std::string& error);
     bool receiveCursorRectangle(int hotX, int hotY, int width, int height,
                                 std::string& error);
     bool receiveDesktopSize(int width, int height, std::string& error);
@@ -94,6 +95,7 @@ private:
     std::thread worker_;
     VncTransport transport_;
     VncRfbProtocol::PixelFormat serverPixelFormat_;
+    VncRfbProtocol::ZrleInflater zrleInflater_;
     std::vector<uint8_t> framebuffer_;
     int framebufferWidth_ = 0;
     int framebufferHeight_ = 0;
@@ -109,6 +111,7 @@ private:
     uint64_t diagFramebufferUpdates_ = 0;
     uint64_t diagFrames_ = 0;
     uint64_t diagTimeouts_ = 0;
+    int effectiveEncoding_ = VncRfbProtocol::kRawEncoding;
     std::atomic<uint64_t> lastFramebufferRequestAtMs_ {0};
 };
 

@@ -140,7 +140,7 @@ struct ConnectionConfig {
     int         vncAuthTimeoutMs;
     int         vncFirstFrameTimeoutMs;
     std::string vncImageQualityPreset; // speed | balanced | quality
-    std::string vncPreferredEncoding;  // auto | raw; unsupported values fail back to auto
+    std::string vncPreferredEncoding;  // auto | zrle | raw; unsupported values fail back to auto
     std::string vncColorDepth;         // auto | 32 | 16 | 8
     int         vncFrameRateLimit;     // 0 | 15 | 30 | 60
     std::string vncExpectedCertificateFingerprintSha256;
@@ -181,11 +181,13 @@ struct VideoFrame {
     int            dirtyWidth;
     int            dirtyHeight;
     int            colorDepth;  // RAW_BGRA source's negotiated VNC color depth; otherwise 0
+    int            sourceEncoding; // RFB encoding for RAW_BGRA; otherwise -1
 
     VideoFrame()
         : data(nullptr), size(0), width(0), height(0),
           codec(CodecType::H264), timestamp(0), isKeyFrame(false), display(0), stride(0),
-          dirtyX(-1), dirtyY(-1), dirtyWidth(0), dirtyHeight(0), colorDepth(0) {}
+          dirtyX(-1), dirtyY(-1), dirtyWidth(0), dirtyHeight(0), colorDepth(0),
+          sourceEncoding(-1) {}
 };
 
 /** 音频数据块 — 从协议后端传递到音频管线 */

@@ -141,6 +141,7 @@ if(RDP_BUILD_TESTS)
     # exercised through the pure protocol helpers, but this prevents the
     # production VNC sources from silently drifting out of the test build.
     find_package(OpenSSL REQUIRED)
+    find_package(ZLIB REQUIRED)
     add_executable(rdp_native_tests
         test/test_main.cpp
         ../../test/cpp/extension_registry_test.cpp
@@ -213,7 +214,7 @@ if(RDP_BUILD_TESTS)
     # std::optional and other C++17 facilities compile consistently.
     target_compile_features(rdp_native_tests PRIVATE cxx_std_17)
     target_include_directories(rdp_native_tests PRIVATE ${OPENSSL_INCLUDE_DIR})
-    target_link_libraries(rdp_native_tests PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+    target_link_libraries(rdp_native_tests PRIVATE OpenSSL::SSL OpenSSL::Crypto ZLIB::ZLIB)
 endif()
 
 if(RDP_TESTS_ONLY)
@@ -370,6 +371,7 @@ target_link_libraries(rdpnapi PUBLIC
 target_link_libraries(rdpnapi PUBLIC
     libhuks_ndk.z.so       # HUKS 通用密钥库
     libohcrypto.so         # CryptoArchitectureKit (KDF/Digest/Rand)
+    libz.so                # OHOS system zlib (VNC ZRLE / FreeRDP)
 )
 
 # SSH2 支持 (OpenSSL + libssh2, 静态链接, ABI分目录)
@@ -425,7 +427,6 @@ if(USE_REAL_FREERDP)
         freerdp_client_channels
         freerdp3
         winpr3
-        libz.so      # zlib (OHOS sysroot, FreeRDP 依赖)
     )
     if(FFMPEG_SOFTDEC_LIBS)
         target_link_libraries(rdpnapi PUBLIC

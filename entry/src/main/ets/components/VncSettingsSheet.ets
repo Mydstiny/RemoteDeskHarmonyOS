@@ -463,11 +463,14 @@ export struct VncSettingsSheet {
         this.choice('自动', this.preferredEncoding === 'auto', (): void => {
           this.preferredEncoding = 'auto'; this.markDirty();
         })
+        this.choice('ZRLE', this.preferredEncoding === 'zrle', (): void => {
+          this.preferredEncoding = 'zrle'; this.markDirty();
+        }, 6)
         this.choice('RAW', this.preferredEncoding === 'raw', (): void => {
           this.preferredEncoding = 'raw'; this.markDirty();
         }, 6)
       }.width('100%').margin({ bottom: 10 })
-      Text('当前 native 构建只启用 RAW/CopyRect。ZRLE 与 Tight 会在解码器和互操作测试通过后开放，现阶段不会伪装成可用。')
+      Text('自动模式优先请求 ZRLE，并在服务器不支持时自动回退 RAW/CopyRect；RAW 适合诊断兼容问题。Tight 尚未开放。')
         .fontSize(11).fontColor(this.pal().text3).lineHeight(18).width('100%').margin({ bottom: 12 })
 
       Text('色深').fontSize(12).fontColor(this.pal().text3).margin({ bottom: 7 })
