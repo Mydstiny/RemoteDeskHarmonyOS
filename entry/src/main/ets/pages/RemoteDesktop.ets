@@ -1910,12 +1910,14 @@ struct RemoteDesktop {
       next.password = this.rustDeskSessionPassword;
     }
     if (this.srv.updateHost(next)) {
-      hilog.info(RD_DOMAIN, RD_TAG, 'RustDesk Pro auth choice persisted host=' +
-        host.id + ' mode=' + this.rustDeskSessionAuthChoice +
+      hilog.info(RD_DOMAIN, RD_TAG, 'RustDesk Pro auth choice persisted hostId=' +
+        hashForLog(host.id) + ' mode=' + this.rustDeskSessionAuthChoice +
         ' passwordSaved=' + (this.rustDeskSessionAuthChoice === 'password' &&
           this.rustDeskSessionRememberPassword ? 'true' : 'false'));
     } else {
-      hilog.warn(RD_DOMAIN, RD_TAG, 'RustDesk Pro auth choice persistence failed host=' + host.id);
+      hilog.warn(RD_DOMAIN, RD_TAG,
+        'RustDesk Pro auth choice persistence failed hostId=' +
+        hashForLog(host.id));
     }
   }
 

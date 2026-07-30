@@ -236,8 +236,11 @@ struct RustDeskFfiCallbackContext {
 // RustDesk 真实 TCP 连接 (在独立线程中运行)
 // ============================================================
 static void rdRealConnectThread(RdIpcConnectReq req, int ipcClientFd) {
-    OH_LOG_INFO(LOG_APP, "[RustDesk-REAL] 开始连接 %{public}s:%{public}u peer=%{public}s",
-                req.host, req.port, req.peerId);
+    const std::string endpointId = SafeLog::HashForLog(req.host);
+    const std::string peerId = SafeLog::HashForLog(req.peerId);
+    OH_LOG_INFO(LOG_APP,
+                "[RustDesk-REAL] 开始连接 endpointId=%{public}s port=%{public}u peerId=%{public}s",
+                endpointId.c_str(), req.port, peerId.c_str());
 
     int tcpFd = socket(AF_INET, SOCK_STREAM, 0);
     if (tcpFd < 0) {
@@ -253,7 +256,9 @@ static void rdRealConnectThread(RdIpcConnectReq req, int ipcClientFd) {
     addr.sin_family = AF_INET;
     addr.sin_port = htons(static_cast<uint16_t>(req.port));
     if (inet_pton(AF_INET, req.host, &addr.sin_addr) <= 0) {
-        OH_LOG_ERROR(LOG_APP, "[RustDesk-REAL] 地址解析失败: %{public}s", req.host);
+        OH_LOG_ERROR(LOG_APP,
+                     "[RustDesk-REAL] 地址解析失败 endpointId=%{public}s",
+                     endpointId.c_str());
         close(tcpFd);
         uint8_t errAck[6] = {1, 0, 0, 0, RD_IPC_CONNECT_ACK, 0x02};
         send(ipcClientFd, errAck, 6, 0);
@@ -316,7 +321,9 @@ void rdSetHelperSocketPath(const char* path) {
     if (path && path[0] != '\0') {
         g_socketPath = path;
         g_rustdeskHelperSocketPath = g_socketPath.c_str();
-        OH_LOG_INFO(LOG_APP, "[RustDesk-IPC] socket 路径已更新: %{public}s", g_rustdeskHelperSocketPath);
+        OH_LOG_INFO(LOG_APP,
+                    "[RustDesk-IPC] socket 路径已更新 pathId=%{public}s",
+                    SafeLog::HashForLog(g_rustdeskHelperSocketPath).c_str());
     }
 }
 
@@ -326,7 +333,9 @@ static std::string g_helperBinPath;
 void rdSetHelperBinPath(const char* path) {
     if (path && path[0] != '\0') {
         g_helperBinPath = path;
-        OH_LOG_INFO(LOG_APP, "[RustDesk-IPC] helper 路径已设置: %{public}s", path);
+        OH_LOG_INFO(LOG_APP,
+                    "[RustDesk-IPC] helper 路径已设置 pathId=%{public}s",
+                    SafeLog::HashForLog(path).c_str());
     }
 }
 
@@ -339,7 +348,9 @@ static volatile bool g_helperRunning = false;
 
 static void* rdHelperThreadFn(void* arg) {
     const char* socketPath = (const char*)arg;
-    OH_LOG_INFO(LOG_APP, "[RustDesk-IPC] helper 线程启动, socket=%{public}s", socketPath);
+    OH_LOG_INFO(LOG_APP,
+                "[RustDesk-IPC] helper 线程启动 socketPathId=%{public}s",
+                SafeLog::HashForLog(socketPath).c_str());
 
     // 删掉旧 socket 文件
     unlink(socketPath);
@@ -1358,7 +1369,9 @@ static int rdIpcConnect(const char* socketPath, int& fd) {
     // 恢复阻塞模式
     fcntl(fd, F_SETFL, flags);
 
-    OH_LOG_INFO(LOG_APP, "[RustDesk-IPC] Connected to helper: %{public}s fd=%{public}d", socketPath, fd);
+    OH_LOG_INFO(LOG_APP,
+                "[RustDesk-IPC] Connected to helper pathId=%{public}s fd=%{public}d",
+                SafeLog::HashForLog(socketPath).c_str(), fd);
     return 0;
 }
 
@@ -1519,18 +1532,19 @@ int RustDeskBridge::connect(const ConnectionConfig& cfg) {
     if (mode_ == RustDeskMode::FFI) {
         // ---- FFI 模式: 直接调用 librustdesk_ffi.a ----
         OH_LOG_INFO(LOG_APP, "[RustDesk-FFI] Using real core (protobuf protocol)");
-        const std::string logHost = SafeLog::MaskHost(cfg.host);
+        const std::string logHost = SafeLog::HashForLog(cfg.host);
         const int effectivePort = cfg.port > 0 ? cfg.port :
             (cfg.rdDirectIp ? 21118 : RD_DEFAULT_TCP_PORT);
-        OH_LOG_INFO(LOG_APP, "[RustDesk-FFI] Connecting to %{public}s:%{public}d",
+        OH_LOG_INFO(LOG_APP,
+                    "[RustDesk-FFI] Connecting endpointId=%{public}s port=%{public}d",
                     logHost.c_str(), effectivePort);
         const std::string ffiPeerId = cfg.rdDirectIp && !cfg.host.empty()
             ? cfg.host
             : (cfg.customHostname.empty() ? cfg.username : cfg.customHostname);
-        const std::string logPeer = SafeLog::MaskUser(ffiPeerId);
+        const std::string logPeer = SafeLog::HashForLog(ffiPeerId);
         const char* serverKeyMode = cfg.rdServerKeyMode == 2 ? "shared" :
             (cfg.rdServerKeyMode == 1 ? "public" : "auto");
-        OH_LOG_INFO(LOG_APP, "[RustDesk-FFI] Request peer=%{public}s strategy=%{public}s serverKeyMode=%{public}s proToken=%{public}s relayFallbackPort=%{public}d",
+        OH_LOG_INFO(LOG_APP, "[RustDesk-FFI] Request peerId=%{public}s strategy=%{public}s serverKeyMode=%{public}s proToken=%{public}s relayFallbackPort=%{public}d",
                     logPeer.c_str(), connectionStrategy.c_str(), serverKeyMode,
                     cfg.rdAccessToken.empty() ? "absent" : "present", cfg.rdRelayPort);
 
@@ -1579,7 +1593,7 @@ int RustDeskBridge::connect(const ConnectionConfig& cfg) {
                 // 仅当 rdDirectIp=true 且 host 非空时才走直连路径
                 // host 此时是对端 IP 地址 (ArkTS 侧根据 per-host 配置填入)
                 ffiCfg.direct_connection = true;
-                OH_LOG_INFO(LOG_APP, "[RustDesk-FFI] direct_connection=true, peer=%{public}s:%{public}d",
+                OH_LOG_INFO(LOG_APP, "[RustDesk-FFI] direct_connection=true peerId=%{public}s port=%{public}d",
                     logHost.c_str(), ffiCfg.port);
             }
             OH_LOG_INFO(LOG_APP,

@@ -27,6 +27,7 @@ pub mod crypto_channel;
 mod control_inbox;
 mod cursor_state;
 mod net;
+mod safe_diagnostics;
 #[cfg(feature = "opus-audio")]
 pub mod opus_ffi;
 pub mod protocol;

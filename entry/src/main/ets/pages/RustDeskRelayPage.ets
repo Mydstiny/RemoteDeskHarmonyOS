@@ -40,6 +40,7 @@ import {
   RustDeskRelayCloudSyncOutcome,
   RustDeskRelayCloudSyncState,
   rustDeskRelayCloudSyncMessage,
+  rustDeskRelayIdFingerprint,
   RustDeskRelaySaveRecovery,
   RustDeskRelaySaveResult
 } from '../services/RustDeskRelaySavePolicy';
@@ -682,8 +683,11 @@ export struct RustDeskRelayPage {
   private async doTestRelay(relay: RustDeskRelayConfig): Promise<void> {
     const target = RustDeskRelayConfig.fromJSON(relay.toJSON());
     this.testingRelayId = target.id;
-    hilog.info(0x0001, 'RustDeskRelay', 'health test start id=' + target.id +
-      ' relay=' + target.relayServer + ':' + target.relayPort.toString());
+    const relayId: string =
+      rustDeskRelayIdFingerprint(target.id);
+    hilog.info(0x0001, 'RustDeskRelay',
+      'health test start relayId=' + relayId +
+      ' relayEndpoint=configured');
     target.healthStatus = 'unknown';
     const pendingSaved = this.srv.updateRelay(target);
     hilog.info(0x0001, 'RustDeskRelay', 'health test pending saved=' + pendingSaved.toString());
@@ -705,7 +709,7 @@ export struct RustDeskRelayPage {
       }
       target.healthCheckedAt = Date.now();
       const saved = this.srv.updateRelay(target);
-      hilog.info(0x0001, 'RustDeskRelay', 'health test result id=' + target.id +
+      hilog.info(0x0001, 'RustDeskRelay', 'health test result relayId=' + relayId +
         ' status=' + target.healthStatus + ' latency=' + target.healthLatency.toString() +
         ' saved=' + saved.toString());
       this.load();

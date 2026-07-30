@@ -141,8 +141,8 @@ impl Session {
             Some(remote_dir),
         )?;
         eprintln!(
-            "[RustDesk-FFI] login_file_transfer_encrypted response ok dir={}",
-            remote_dir
+            "[RustDesk-FFI] login_file_transfer_encrypted response ok dir_id={}",
+            crate::safe_diagnostics::sensitive_id(remote_dir)
         );
         Ok(())
     }

@@ -157,7 +157,9 @@ export class HostSyncService {
         next.port = RUSTDESK_PEER_TCP_PORT;
         next.rustdeskDirectPort = RUSTDESK_PEER_TCP_PORT;
         if (this.ready && !this.cloud.updateHost(next)) {
-          hilog.warn(0x0001, 'CloudSync', 'RustDesk 直连端口迁移写入失败: ' + hostId);
+          hilog.warn(0x0001, 'CloudSync',
+            'RustDesk 直连端口迁移写入失败 hostId=' +
+            rustDeskRelayIdFingerprint(hostId));
           return;
         }
         this.hosts.set(hostId, next);
@@ -258,7 +260,9 @@ export class HostSyncService {
         next.host = relay.idServer;
         next.port = relay.idServerPort;
         if (this.ready && !this.cloud.updateHost(next)) {
-          hilog.warn(0x0001, 'CloudSync', 'Pro 主机路由迁移写入失败: ' + hostId);
+          hilog.warn(0x0001, 'CloudSync',
+            'Pro 主机路由迁移写入失败 hostId=' +
+            rustDeskRelayIdFingerprint(hostId));
         }
         this.hosts.set(hostId, next);
         migratedProHosts = true;
@@ -374,13 +378,17 @@ export class HostSyncService {
       const ok: boolean = this.cloud.insertHost(host);
       if (!ok) {
         this.localHostConfigObservationAt.delete(host.id);
-        hilog.error(0x0001, 'CloudSync', "HostSyncService.addHost: CloudStore 写入失败 " + host.label);
+        hilog.error(0x0001, 'CloudSync',
+          'HostSyncService.addHost: CloudStore 写入失败 hostId=' +
+          rustDeskRelayIdFingerprint(host.id));
         return false;
       }
       this.cloud.pushTable('remotehosts');
     }
     this.hosts.set(host.id, host);
-    hilog.info(0x0001, 'CloudSync', "主机已写入: " + host.label);
+    hilog.info(0x0001, 'CloudSync',
+      '主机已写入 hostId=' +
+      rustDeskRelayIdFingerprint(host.id));
     this.emitDataChange();
     return true;
   }
@@ -389,7 +397,9 @@ export class HostSyncService {
     const current: RemoteHost | undefined = this.hosts.get(host.id);
     if (!current) { return false; }
     if (!serializedSnapshotChanged(JSON.stringify(current.toJSON()), JSON.stringify(host.toJSON()))) {
-      hilog.info(0x0001, 'CloudSync', 'HostSyncService.updateHost: unchanged host skipped id=' + host.id);
+      hilog.info(0x0001, 'CloudSync',
+        'HostSyncService.updateHost: unchanged host skipped hostId=' +
+        rustDeskRelayIdFingerprint(host.id));
       return true;
     }
     const observedAt: number = Date.now();
@@ -399,7 +409,9 @@ export class HostSyncService {
       const ok: boolean = this.cloud.updateHost(host);
       if (!ok) {
         this.localHostConfigObservationAt.delete(host.id);
-        hilog.error(0x0001, 'CloudSync', "HostSyncService.updateHost: CloudStore 写入失败 " + host.label);
+        hilog.error(0x0001, 'CloudSync',
+          'HostSyncService.updateHost: CloudStore 写入失败 hostId=' +
+          rustDeskRelayIdFingerprint(host.id));
         return false;
       }
       this.cloud.pushTable('remotehosts');
@@ -672,7 +684,9 @@ export class HostSyncService {
     this.localHostConfigObservationAt.set(next.id, observedAt);
     if (this.ready && !this.cloud.updateHost(next)) {
       this.localHostConfigObservationAt.delete(next.id);
-      hilog.warn(0x0001, 'CloudSync', 'RustDesk 旧主机 relay 绑定写入失败: ' + current.id);
+      hilog.warn(0x0001, 'CloudSync',
+        'RustDesk 旧主机 relay 绑定写入失败 hostId=' +
+        rustDeskRelayIdFingerprint(current.id));
       return false;
     }
     this.hosts.set(next.id, next);

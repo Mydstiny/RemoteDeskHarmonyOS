@@ -10,6 +10,7 @@ import { socket } from '@kit.NetworkKit';
 import { util } from '@kit.ArkTS';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
+import { rustDeskRelayIdFingerprint } from './RustDeskRelaySavePolicy';
 
 const TAG = 'RustDeskLanDisc';
 const RD_DISCOVERY_PORT: number = 21119;
@@ -236,9 +237,12 @@ export class RustDeskLanDiscoveryService {
             }
             try {
               const rawPeer: RustDeskLanPeerDiscovery | null = parseRustDeskLanPeerDiscovery(data.message);
+              const sourceId: string =
+                rustDeskRelayIdFingerprint(
+                  data.remoteInfo.address);
               hilog.info(0x0001, TAG,
-                `UDP response from ${data.remoteInfo.address} bytes=${data.message.byteLength} ` +
-                `parsed=${rawPeer !== null} cmd=${rawPeer?.cmd ?? ''} id=${rawPeer?.id ?? ''} ` +
+                `UDP response sourceId=${sourceId} bytes=${data.message.byteLength} ` +
+                `parsed=${rawPeer !== null} cmd=${rawPeer?.cmd ?? ''} ` +
                 `platform=${rawPeer?.platform ?? ''}`);
               const peer: DiscoveredRustDeskPeer | null = this.parseDiscoveryResponse(
                 data.message, data.remoteInfo.address);
@@ -247,11 +251,19 @@ export class RustDeskLanDiscoveryService {
                 discovered.push(peer);
                 onPeer(peer);
                 hilog.info(0x0001, TAG,
-                  `discovered: ${peer.peerId} @ ${peer.host}:${peer.port} [${peer.deviceName}]`);
+                  'discovered peerId=' +
+                  rustDeskRelayIdFingerprint(
+                    peer.peerId) +
+                  ' sourceId=' +
+                  rustDeskRelayIdFingerprint(peer.host) +
+                  ' port=configured');
               }
             } catch (e) {
               hilog.warn(0x0001, TAG,
-                `UDP response parse failed from ${data.remoteInfo.address}: ${JSON.stringify(e)}`);
+                'UDP response parse failed sourceId=' +
+                rustDeskRelayIdFingerprint(
+                  data.remoteInfo.address) +
+                ': ' + JSON.stringify(e));
             }
           });
 

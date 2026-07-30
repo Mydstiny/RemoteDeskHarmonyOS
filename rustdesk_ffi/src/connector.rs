@@ -566,6 +566,7 @@ impl RustDeskConnector {
         let mut awaiting_done: Vec<AwaitingFileDone> = Vec::new();
         let started = Instant::now();
         let mut last_wait_report = 0u64;
+        let path_id = crate::safe_diagnostics::sensitive_id(remote_path);
 
         while (!pending.is_empty() || !awaiting_done.is_empty()) && started.elapsed() < timeout {
             match crypto.recv() {
@@ -612,15 +613,15 @@ impl RustDeskConnector {
                         last_wait_report = elapsed;
                         if awaiting_done.is_empty() {
                             crate::set_last_error(format!(
-                                "file-transfer waiting peer confirm path={} elapsed={}s pending={}",
-                                remote_path,
+                                "file-transfer waiting peer confirm path_id={} elapsed={}s pending={}",
+                                path_id,
                                 elapsed,
                                 pending.len()
                             ));
                         } else {
                             crate::set_last_error(format!(
-                                "file-transfer waiting remote done path={} elapsed={}s pending={} awaiting_done={}",
-                                remote_path,
+                                "file-transfer waiting remote done path_id={} elapsed={}s pending={} awaiting_done={}",
+                                path_id,
                                 elapsed,
                                 pending.len(),
                                 awaiting_done.len()
@@ -635,7 +636,7 @@ impl RustDeskConnector {
         crypto.set_read_timeout(None).ok();
 
         if pending.is_empty() && awaiting_done.is_empty() {
-            crate::set_last_error(format!("file transfer done path={}", remote_path));
+            crate::set_last_error(format!("file transfer done path_id={}", path_id));
             Ok(())
         } else {
             Err(io::Error::new(
@@ -978,24 +979,28 @@ impl RustDeskConnector {
                             &remote_path,
                             remote_upload_dir.as_deref(),
                         );
+                        let upload_path_id =
+                            crate::safe_diagnostics::sensitive_id(&upload_path);
+                        let original_path_id =
+                            crate::safe_diagnostics::sensitive_id(&remote_path);
                         crate::set_last_error(format!(
-                            "streaming: send file path={} size={}",
-                            upload_path,
+                            "streaming: send file path_id={} size={}",
+                            upload_path_id,
                             data.len()
                         ));
                         // 文件传输: 先发 receive，等远端 digest 后再发数据块。
                         eprintln!(
-                            "[RustDesk-FFI] streaming: send file path={} original_path={} size={}",
-                            upload_path,
-                            remote_path,
+                            "[RustDesk-FFI] streaming: send file path_id={} original_path_id={} size={}",
+                            upload_path_id,
+                            original_path_id,
                             data.len()
                         );
                         match Self::request_file_upload(crypto, &upload_path, data) {
                             Ok(upload) => pending_file_uploads.push(upload),
                             Err(e) => {
                                 crate::set_last_error(format!(
-                                    "streaming: file send error path={} err={}",
-                                    upload_path, e
+                                    "streaming: file send error path_id={} err={}",
+                                    upload_path_id, e
                                 ));
                                 eprintln!("[RustDesk-FFI] streaming: file send error: {}", e);
                             }
@@ -1823,17 +1828,19 @@ impl RustDeskConnector {
             Self::send_message_encrypted(crypto, &msg)?;
         }
 
+        let remote_dir_id = crate::safe_diagnostics::sensitive_id(remote_dir);
+        let file_id = crate::safe_diagnostics::sensitive_id(file_name);
         eprintln!(
-            "[RustDesk-FFI] file upload requested: receive dir={} file={} size={} id={}",
-            remote_dir,
-            file_name,
+            "[RustDesk-FFI] file upload requested: dir_id={} file_id={} size={} id={}",
+            remote_dir_id,
+            file_id,
             data.len(),
             transfer_id
         );
         crate::set_last_error(format!(
-            "file upload requested dir={} file={} size={} id={}",
-            remote_dir,
-            file_name,
+            "file upload requested dir_id={} file_id={} size={} id={}",
+            remote_dir_id,
+            file_id,
             data.len(),
             transfer_id
         ));
@@ -1885,11 +1892,15 @@ impl RustDeskConnector {
             Self::send_message_encrypted(crypto, &msg)?;
         }
 
+        let remote_dir_id =
+            crate::safe_diagnostics::sensitive_id(&upload.remote_dir);
+        let file_id =
+            crate::safe_diagnostics::sensitive_id(&upload.file_name);
         eprintln!(
-            "[RustDesk-FFI] file upload data: reason={} dir={} file={} size={} chunks_sent={} chunks_total={} start_blk={} id={}",
+            "[RustDesk-FFI] file upload data: reason={} dir_id={} file_id={} size={} chunks_sent={} chunks_total={} start_blk={} id={}",
             reason,
-            upload.remote_dir,
-            upload.file_name,
+            remote_dir_id,
+            file_id,
             upload.data.len(),
             sent_chunks,
             total_chunks,
@@ -1897,9 +1908,9 @@ impl RustDeskConnector {
             upload.id
         );
         crate::set_last_error(format!(
-            "file upload data reason={} file={} size={} chunks_sent={} chunks_total={} id={}",
+            "file upload data reason={} file_id={} size={} chunks_sent={} chunks_total={} id={}",
             reason,
-            upload.file_name,
+            file_id,
             upload.data.len(),
             sent_chunks,
             total_chunks,
@@ -2049,13 +2060,17 @@ impl RustDeskConnector {
             {
                 let upload = pending_uploads.remove(pos);
                 if confirm.get_skip() {
+                    let dir_id = crate::safe_diagnostics::sensitive_id(
+                        &upload.remote_dir);
+                    let file_id = crate::safe_diagnostics::sensitive_id(
+                        &upload.file_name);
                     eprintln!(
-                        "[RustDesk-FFI] file upload skipped by peer: dir={} file={} id={}",
-                        upload.remote_dir, upload.file_name, upload.id
+                        "[RustDesk-FFI] file upload skipped by peer: dir_id={} file_id={} id={}",
+                        dir_id, file_id, upload.id
                     );
                     crate::set_last_error(format!(
-                        "file transfer error path={} file={} err=skipped by peer",
-                        upload.remote_dir, upload.file_name
+                        "file transfer error dir_id={} file_id={} err=skipped by peer",
+                        dir_id, file_id
                     ));
                     return Err(io::Error::new(
                         io::ErrorKind::PermissionDenied,
@@ -2096,21 +2111,23 @@ impl RustDeskConnector {
     ) -> io::Result<()> {
         match &resp.union {
             Some(FileResponse_oneof_union::error(err)) => {
+                let error_id =
+                    crate::safe_diagnostics::sensitive_id(err.get_error());
                 crate::set_last_error(format!(
-                    "file transfer error id={} file_num={} err={}",
+                    "file transfer error id={} file_num={} error_id={}",
                     err.get_id(),
                     err.get_file_num(),
-                    err.get_error()
+                    error_id
                 ));
                 eprintln!(
-                    "[RustDesk-FFI] file transfer error: id={} file_num={} error={}",
+                    "[RustDesk-FFI] file transfer error: id={} file_num={} error_id={}",
                     err.get_id(),
                     err.get_file_num(),
-                    err.get_error()
+                    error_id
                 );
                 return Err(io::Error::new(
                     io::ErrorKind::Other,
-                    format!("remote file transfer error: {}", err.get_error()),
+                    "remote file transfer rejected the upload",
                 ));
             }
             Some(FileResponse_oneof_union::done(done)) => {
@@ -2120,10 +2137,10 @@ impl RustDeskConnector {
                 {
                     let completed = awaiting_done.remove(pos);
                     crate::set_last_error(format!(
-                        "file transfer done id={} file_num={} file={}",
+                        "file transfer done id={} file_num={} file_id={}",
                         done.get_id(),
                         done.get_file_num(),
-                        completed.file_name
+                        crate::safe_diagnostics::sensitive_id(&completed.file_name)
                     ));
                 } else {
                     crate::set_last_error(format!(

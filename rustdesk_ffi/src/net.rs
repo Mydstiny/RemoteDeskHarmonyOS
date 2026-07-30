@@ -166,7 +166,12 @@ fn has_uri_or_path(value: &str) -> bool {
 fn invalid_endpoint(stage: &str, endpoint: &str, reason: &str) -> io::Error {
     io::Error::new(
         io::ErrorKind::InvalidInput,
-        format!("{} endpoint invalid '{}': {}", stage, endpoint, reason),
+        format!(
+            "{} endpoint invalid endpoint_id={} reason={}",
+            stage,
+            crate::safe_diagnostics::sensitive_id(endpoint),
+            reason
+        ),
     )
 }
 
@@ -175,15 +180,17 @@ fn connect_parsed_endpoint(
     stage: &str,
     timeout: Duration,
 ) -> io::Result<TcpStream> {
-    let display = format!("{}:{}", endpoint.host, endpoint.port);
+    let endpoint_id = crate::safe_diagnostics::sensitive_id(
+        &format!("{}:{}", endpoint.host, endpoint.port),
+    );
     let candidates: Vec<_> = (endpoint.host.as_str(), endpoint.port)
         .to_socket_addrs()
         .map_err(|error| {
             io::Error::new(
                 io::ErrorKind::AddrNotAvailable,
                 format!(
-                    "{} resolve failed endpoint={} error={}",
-                    stage, display, error
+                    "{} resolve failed endpoint_id={} error_kind={:?}",
+                    stage, endpoint_id, error.kind()
                 ),
             )
         })?
@@ -192,15 +199,15 @@ fn connect_parsed_endpoint(
         return Err(io::Error::new(
             io::ErrorKind::AddrNotAvailable,
             format!(
-                "{} resolve returned no addresses endpoint={}",
-                stage, display
+                "{} resolve returned no addresses endpoint_id={}",
+                stage, endpoint_id
             ),
         ));
     }
     eprintln!(
-        "[RustDesk-FFI] {} resolved endpoint={} addresses={}",
+        "[RustDesk-FFI] {} resolved endpoint_id={} addresses={}",
         stage,
-        display,
+        endpoint_id,
         candidates.len()
     );
 
@@ -214,29 +221,32 @@ fn connect_parsed_endpoint(
         match TcpStream::connect_timeout(&address, remaining) {
             Ok(stream) => {
                 eprintln!(
-                    "[RustDesk-FFI] {} connected endpoint={} address={}",
-                    stage, display, address
+                    "[RustDesk-FFI] {} connected endpoint_id={}",
+                    stage, endpoint_id
                 );
                 return Ok(stream);
             }
-            Err(error) => last_error = Some((address, error)),
+            Err(error) => last_error = Some(error),
         }
     }
 
-    let (address, error) = match last_error {
+    let error = match last_error {
         Some(value) => value,
         None => {
             return Err(io::Error::new(
                 io::ErrorKind::TimedOut,
-                format!("{} connect timed out endpoint={}", stage, display),
+                format!(
+                    "{} connect timed out endpoint_id={}",
+                    stage, endpoint_id
+                ),
             ));
         }
     };
     Err(io::Error::new(
         error.kind(),
         format!(
-            "{} connect failed endpoint={} address={} error={}",
-            stage, display, address, error
+            "{} connect failed endpoint_id={} error_kind={:?}",
+            stage, endpoint_id, error.kind()
         ),
     ))
 }
@@ -290,5 +300,8 @@ mod tests {
         let error = parse_endpoint("https://hbbs.example.com", 21116, "test").unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
         assert!(error.to_string().contains("URL schemes"));
+        assert!(!error.to_string().contains("hbbs.example.com"));
+        assert!(!error.to_string().contains("https://"));
+        assert!(error.to_string().contains("endpoint_id="));
     }
 }

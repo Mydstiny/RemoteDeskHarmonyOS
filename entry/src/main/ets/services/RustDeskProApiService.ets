@@ -2,6 +2,7 @@ import { http } from '@kit.NetworkKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { RustDeskProAccountState, RustDeskProAddressBook } from '../model/RustDeskProModels';
 import { CURRENT_RELEASE_VERSION } from './ReleaseNotesRegistry';
+import { rustDeskRelayIdFingerprint } from './RustDeskRelaySavePolicy';
 import {
   buildRustDeskProLoginRequest,
   normalizeRustDeskProServerUrl,
@@ -64,21 +65,39 @@ export class RustDeskProApiService {
         // Match the official RustDesk client for empty POST requests.
         headers['Content-Length'] = '0';
       }
-      hilog.info(LOG_DOMAIN, LOG_TAG, 'request ' + method.toString() + ' ' + url);
+      const endpointId: string =
+        rustDeskRelayIdFingerprint(
+          normalizeRustDeskProServerUrl(
+            account.serverUrl));
+      hilog.info(LOG_DOMAIN, LOG_TAG,
+        'request method=' + method.toString() +
+        ' path=' + path + ' endpointId=' +
+        endpointId + ' token=' +
+        (account.accessToken.length > 0
+          ? 'present' : 'absent'));
       const response = await client.request(url, options);
       const rawResult: Object = response.result as Object;
       let bodyPreview = '';
+      let responseBytes: number = 0;
       if (typeof rawResult === 'string') {
+        responseBytes = (rawResult as string).length;
         bodyPreview = (rawResult as string).replace(/\s+/g, ' ')
           .replace(/("(?:access_token|token|password)"\s*:\s*")[^"]+("|,|})/g, '$1<redacted>$2')
           .substring(0, 240);
       } else {
-        try { bodyPreview = JSON.stringify(rawResult).substring(0, 240); } catch (_err) { bodyPreview = '<unserializable>'; }
+        try {
+          const serialized: string =
+            JSON.stringify(rawResult);
+          responseBytes = serialized.length;
+          bodyPreview = serialized.substring(0, 240);
+        } catch (_err) {
+          bodyPreview = '<unserializable>';
+        }
       }
-      let headerPreview = '';
-      try { headerPreview = JSON.stringify(response.header).substring(0, 240); } catch (_err) { headerPreview = '<unserializable>'; }
       hilog.info(LOG_DOMAIN, LOG_TAG, 'response status=' + response.responseCode.toString() +
-        ' resultType=' + response.resultType.toString() + ' header=' + headerPreview + ' body=' + bodyPreview);
+        ' resultType=' + response.resultType.toString() +
+        ' bytes=' + responseBytes.toString() +
+        ' endpointId=' + endpointId);
       let payload: Object = JSON.parse('{}') as Object;
       if (typeof response.result === 'string' && (response.result as string).length > 0) {
         try { payload = JSON.parse(response.result as string) as Object; } catch (_err) {
@@ -87,8 +106,10 @@ export class RustDeskProApiService {
           // actual HTTP failure; successful responses must remain strict JSON.
           if (response.responseCode >= 200 && response.responseCode < 300) {
             throw new RustDeskProApiError('invalid_response',
-              'Pro 服务器返回了无效 JSON (HTTP ' + response.responseCode.toString() + ', ' + url +
-              ', 响应: ' + bodyPreview.substring(0, 120) + ')', response.responseCode as number);
+              'Pro 服务器返回了无效 JSON (HTTP ' +
+              response.responseCode.toString() +
+              '，端点编号 ' + endpointId + ')',
+              response.responseCode as number);
           }
           const errorPayload: RustDeskProErrorPayload = { error: bodyPreview };
           payload = errorPayload as Object;
