@@ -67,12 +67,13 @@ Implementation commits: `e3c3fd7b7`, `6fd0e4539`, `6e47c052c`,
 - `default@OhosTestCompileArkTS`: passed after `d17976c10`.
 - `assembleHap`: passed and signed after `d17976c10`.
 - Light open-source compliance and `git diff --check`: passed.
-- The first independent D-020 audit found four actionable gaps: VNC text was
+- The independent D-020 audit found four actionable gaps: VNC text was
   incorrectly routed through ClientCutText, a synchronous failure callback
   cycle, missing desktop-classic VNC default hydration and an unwired
-  extreme-height Sheet policy. All four are remediated in `d17976c10`; the
-  same reviewer must inspect the remediation and finish the remaining renderer,
-  isolation and zlib ABI checks before the local merge gate is satisfied.
+  extreme-height Sheet policy. All four are remediated in `d17976c10`.
+  The same reviewer completed the remediation, RAW_BGRA lifecycle,
+  non-VNC isolation and system-zlib ABI audit with an explicit PASS and no
+  remaining P0/P1/P2. The local merge gate is satisfied.
 - `ohosTest@OhosTestCompileArkTS` remains unavailable because task `00306054`
   is not registered; no device-test success is claimed.
 - Release remains NO-GO until this exact HAP passes API 23 layout/input,

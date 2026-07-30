@@ -19,9 +19,9 @@ Updated: 2026-07-30 Asia/Shanghai
   ClientCutText, synchronous connect failure retained a strong video callback,
   desktop classic FAB skipped VNC defaults, and the extreme-height layout
   policy was not wired to the production Sheet. `d17976c10` fixes all four.
-- Next gate: resume the same reviewer on the remediation and its remaining
-  RAW_BGRA lifecycle, non-VNC isolation and system-zlib ABI checks. Resolve
-  every further finding and rerun the complete gate before local merge.
+- The same reviewer completed remediation, RAW_BGRA lifecycle, non-VNC
+  isolation and system-zlib ABI checks with an explicit D-020 PASS and no
+  P0/P1/P2. The local merge gate is satisfied.
 - After review approval, fast-forward local `main`, delete only the merged VNC
   branch and preserve all unrelated dirty plan files. Do not push, create a PR
   or merge remote main.

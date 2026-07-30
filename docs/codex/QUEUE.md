@@ -13,8 +13,9 @@ Updated: 2026-07-30 Asia/Shanghai
   hydration and production small-height Sheet adaptation are implemented.
   Native tests are `171 passed, 0 failed`; both required Hvigor gates, signed
   HAP, Light compliance and diff checks pass. The first independent D-020
-  audit's four findings are fixed; the same reviewer must complete the
-  remediation and remaining renderer/isolation/zlib checks before local merge.
+  audit's four findings are fixed, and the same reviewer completed the
+  remediation plus remaining renderer/isolation/zlib checks with an explicit
+  PASS and no P0/P1/P2. Local fast-forward merge and branch cleanup are next.
   Release remains NO-GO pending API 23 layout/input,
   real macOS/TigerVNC/UltraVNC-LibVNCServer interoperability, cross-protocol
   regression and cloud device/account matrices. `ohosTest` remains unavailable
