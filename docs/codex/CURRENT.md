@@ -6,11 +6,12 @@ Updated: 2026-07-30 Asia/Shanghai
 
 - Repository: Mydstiny/RemoteDeskHarmonyOS
 - Active task branch: `codex/cloud-data-lifecycle-root-fix`.
-- Base: `main@23940521a`; implementation checkpoint: `0c0b3d4`.
+- Base: `main@23940521a`; final reviewed implementation checkpoint:
+  `c88fc2968`.
 - Scope: root remediation of account/data ownership, per-account physical RDB stores, cloud bootstrap/sync lifecycle, local backup v3/legacy partial restore, encryption lifecycle, secure credential storage, device-local trust and old shared-store/relay/VNC migration.
 - Entity plan: `docs/superpowers/plans/2026-07-28-cloud-data-lifecycle-upgrade-roadmap.md`.
-- No remote push, PR or merge has been performed. No sub-agent was created for
-  the D-020 remediation.
+- No remote push, PR or merge has been performed. The final independent D-020
+  incremental review of `0c0b3d49d..c88fc2968` passed with no P0/P1/P2.
 
 ## Current cloud-data lifecycle result
 
@@ -100,6 +101,10 @@ Updated: 2026-07-30 Asia/Shanghai
   or exact checkpoint deletion is removed or miswired. The capability cannot
   obtain or mutate the production singleton's RDB, and no lease-free
   CloudStore recovery mutator was exposed.
+- Final independent D-020 review at `c88fc2968` confirmed the real isolated
+  `CloudStore.init` / `openScopeStore` startup path, private production
+  adapter, readiness/checkpoint failure behavior and external NO-GO ledger;
+  the cloud/data lifecycle branch is approved for local fast-forward merge.
 - A zero-row cloud-first result is accepted only after the independently bound
   account, distributed-table registration, current lease and exact table's
   successful terminal progress jointly prove an authoritative result. This

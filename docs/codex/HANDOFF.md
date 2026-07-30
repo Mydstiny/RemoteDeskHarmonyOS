@@ -5,7 +5,7 @@ Updated: 2026-07-30 Asia/Shanghai
 ## Active cloud-data lifecycle handoff
 
 - Branch: `codex/cloud-data-lifecycle-root-fix`; base:
-  `main@23940521a`; implementation checkpoint: `0c0b3d4`.
+  `main@23940521a`; final reviewed checkpoint: `c88fc2968`.
 - Plan:
   `docs/superpowers/plans/2026-07-28-cloud-data-lifecycle-upgrade-roadmap.md`.
 - Core local implementation is complete for account transitions, per-account
@@ -65,8 +65,7 @@ Updated: 2026-07-30 Asia/Shanghai
   share the same signed-checkpoint and barrier metadata readers. Tests now
   inject real `readLocalMetadataState` query errors before barrier release and
   after commit, and simulate a restart that routes the committed authoritative
-  checkpoint into pending recovery. Review approval of this follow-up is not
-  yet claimed.
+  checkpoint into pending recovery.
 - The terminal continuation review's remaining P1/P2 are remediated in
   `0d6216e`. Barrier parsing now distinguishes a missing `vncrecord` key from a
   present invalid phase and rejects every non-object JSON top level. The same
@@ -74,7 +73,7 @@ Updated: 2026-07-30 Asia/Shanghai
   recovery paths; it owns checkpoint deletion/read-back and fail-closed
   recovery marking. Tests cover malformed barrier JSON before and after
   commit, successful restart deletion, and checkpoint retention on
-  restore/delete/commit failures. Review approval is not yet claimed.
+  restore/delete/commit failures.
 - The final remaining P2 test-wiring gap is remediated in `0c0b3d4`. A safe
   detached verification store traverses the real `CloudStore.init` and
   `openScopeStore` startup call point, which constructs the same private
@@ -82,8 +81,9 @@ Updated: 2026-07-30 Asia/Shanghai
   only bottom-level I/O, so startup-call removal and restore/checkpoint-delete
   misrouting break success/readiness or checkpoint-retention assertions.
   Restore/delete/commit failures keep the checkpoint, publish no snapshot,
-  mark recovery required and leave initialization not ready. No runtime ArkTS
-  execution or review approval is claimed.
+  mark recovery required and leave initialization not ready. The final
+  independent D-020 incremental review passed at `c88fc2968` with no
+  P0/P1/P2. No ArkTS runtime execution is claimed.
 - API 23 has no signed Account Kit/distributed-account link object. The
   implementation accepts only exact current ID equality and otherwise blocks
   distributed-table registration and transfer. This is deliberately

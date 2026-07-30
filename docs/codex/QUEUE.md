@@ -6,7 +6,7 @@ Updated: 2026-07-30 Asia/Shanghai
 
 - Cloud/data lifecycle root fix is active on
   `codex/cloud-data-lifecycle-root-fix` at implementation checkpoint
-  `0c0b3d4`. The signed upgrade-test candidate is `1.0.9 / 1000009`.
+  `c88fc2968`. The signed upgrade-test candidate is `1.0.9 / 1000009`.
   D-020 remediation adds independent OS distributed-account verification,
   an awaitable login/account-switch cloud-first bootstrap, record-level journal
   reconciliation, a durable bounded cloud-download before-image, persisted
@@ -56,10 +56,12 @@ Updated: 2026-07-30 Asia/Shanghai
   Removing the startup call or misrouting restore/delete leaves the checkpoint
   or ready state wrong and fails the behavior assertions; no public
   singleton/RDB recovery mutator was added.
+  The final independent D-020 incremental review passed at `c88fc2968` with no
+  P0/P1/P2, so this branch is approved for local fast-forward merge and cleanup.
   Release remains NO-GO pending proof of Account Kit UnionID/distributed-account
   ID correspondence on API 23, real Huawei Cloud/two-device/A-B account/old
-  APK/fault-injection/Document Provider/Asset Store evidence and the requested
-  targeted review of `0c0b3d4`. Pure fault injection is not a
+  APK/fault-injection/Document Provider/Asset Store evidence. Pure fault
+  injection is not a
   substitute for real process-kill/reboot/low-storage evidence. If API 23 cannot prove the
   identity correspondence, cloud
   remains fail-closed. System BackupExtension, remote destructive crypto and
