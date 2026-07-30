@@ -6,7 +6,7 @@ Updated: 2026-07-30 Asia/Shanghai
 
 - Cloud/data lifecycle root fix is active on
   `codex/cloud-data-lifecycle-root-fix` at implementation checkpoint
-  `88a6128`. The signed upgrade-test candidate is `1.0.9 / 1000009`.
+  `501565e`. The signed upgrade-test candidate is `1.0.9 / 1000009`.
   D-020 remediation adds independent OS distributed-account verification,
   an awaitable login/account-switch cloud-first bootstrap, record-level journal
   reconciliation, a durable bounded cloud-download before-image, persisted
@@ -29,12 +29,18 @@ Updated: 2026-07-30 Asia/Shanghai
   checkpoint deletion share the cloud-first completion transaction; metadata
   uses strict present/absent/error reads and query errors block native-first,
   promotion, retry and post-commit success. Current ArkTS/test compilation,
-  signed `assembleHap`, Light and diff checks pass.
+  signed `assembleHap`, Light and diff checks pass. The final source review
+  confirmed those production invariants and left one P1 implementation-test
+  gap. `501565e` now drives the real coordinator queue, retry scheduler and
+  lease fencing plus the production CloudStore completion/finalization and
+  metadata entry points through narrow I/O fakes. It covers transaction
+  ordering, pre-commit rollback, post-commit recovery and metadata-error
+  blocking without claiming ArkTS runtime execution.
   Release remains NO-GO pending proof of Account Kit UnionID/distributed-account
   ID correspondence on API 23, real Huawei Cloud/two-device/A-B account/old
-  APK/fault-injection/Document Provider/Asset Store evidence and a fresh final
-  independent D-020 point review. Pure fault injection is not a substitute for
-  real process-kill/reboot/low-storage evidence. If API 23 cannot prove the
+  APK/fault-injection/Document Provider/Asset Store evidence and the requested
+  targeted review of the new wiring tests. Pure fault injection is not a
+  substitute for real process-kill/reboot/low-storage evidence. If API 23 cannot prove the
   identity correspondence, cloud
   remains fail-closed. System BackupExtension, remote destructive crypto and
   legacy REST sync stay disabled. Do not start a sub-agent for this remediation.

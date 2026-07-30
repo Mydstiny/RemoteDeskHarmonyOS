@@ -6,7 +6,7 @@ Updated: 2026-07-30 Asia/Shanghai
 
 - Repository: Mydstiny/RemoteDeskHarmonyOS
 - Active task branch: `codex/cloud-data-lifecycle-root-fix`.
-- Base: `main@23940521a`; implementation checkpoint: `88a6128`.
+- Base: `main@23940521a`; implementation checkpoint: `501565e`.
 - Scope: root remediation of account/data ownership, per-account physical RDB stores, cloud bootstrap/sync lifecycle, local backup v3/legacy partial restore, encryption lifecycle, secure credential storage, device-local trust and old shared-store/relay/VNC migration.
 - Entity plan: `docs/superpowers/plans/2026-07-28-cloud-data-lifecycle-upgrade-roadmap.md`.
 - No remote push, PR or merge has been performed. No sub-agent was created for
@@ -70,6 +70,16 @@ Updated: 2026-07-30 Asia/Shanghai
   it blocks native-first, promotion, automatic retry, bootstrap publication and
   post-commit upload success. Critical checkpoint, barrier, durable lifecycle
   and bootstrap writes also require a matching read-back before advancing.
+- Implementation-level ArkTS coverage now instantiates the production
+  `CloudSyncCoordinator` queue with a controlled clock and real request paths,
+  proving that cloud events, retries and automatic uploads wait behind an
+  exclusive VNC mutation/restore and that an invalidated lease fails closed.
+  Narrow I/O ports drive the production `CloudStore` authoritative-completion
+  and finalization methods, checking one begin/commit boundary for checkpoint
+  rebase, journal replay and ordinary-checkpoint deletion, rollback at every
+  pre-commit fault, the committed recovery model after a read-back fault, and
+  strict metadata present/absent/error propagation into bootstrap, retry,
+  promotion and post-commit upload decisions.
 - A zero-row cloud-first result is accepted only after the independently bound
   account, distributed-table registration, current lease and exact table's
   successful terminal progress jointly prove an authoritative result. This
@@ -91,20 +101,21 @@ Updated: 2026-07-30 Asia/Shanghai
 Implementation commits: `6a9d430b1`, `4cdc5b1df`, `d2f365c32`, `d51214577`,
 `50ce7b36e`, `1d0f03848`, `d5ccaa73f`, `623cdd378`, `8fb395c41`,
 `beebc662e`, `89f4b7574`, `f5adf90e7`, `8164dd5`, `2914363`,
-`382fdaaa8`, `df2a6b4`, `88a6128`.
+`382fdaaa8`, `df2a6b4`, `88a6128`, `501565e`.
 
 ## Current verification
 
 - Release-candidate metadata is now `1.0.9 / 1000009`; application manifest, in-app release notes, user guide, version resource, SBOM and SBOM generator agree.
 - `default@OhosTestCompileArkTS`: passed in the current session for
-  `88a6128`; existing dependency/deprecation warnings remain.
+  `501565e`; existing dependency/deprecation warnings remain.
 - `assembleHap`: `BUILD SUCCESSFUL` in the current session; signed HAP
   generated.
 - `git diff --check` and staged diff checks: passed.
 - Light open-source compliance: passed in the current session.
-- Data-lifecycle policy/matrix tests, including coordinator exclusivity,
-  authoritative checkpoint kill-points and `querySync` tri-state fault
-  injection, are included in the default ArkTS test compilation.
+- Data-lifecycle policy/matrix and implementation-wiring tests, including the
+  real coordinator queue/retry callback, CloudStore completion/finalization
+  entry points, authoritative checkpoint kill-points and metadata tri-state
+  fault injection, are included in the default ArkTS test compilation.
 - `ohosTest@OhosTestCompileArkTS` remains unavailable because the task is not registered (`00306054`); no test execution success is claimed.
 - A connected device was inspected read-only and currently has `1.0.8 / 1000008`. The `1.0.9` HAP was not installed because replacing an app that may contain real user data requires explicit authorization and a recoverable test procedure.
 
@@ -124,9 +135,10 @@ Implementation commits: `6a9d430b1`, `4cdc5b1df`, `d2f365c32`, `d51214577`,
 - Validate Asset Store Kit behavior and actual RustDesk Pro token alias removal
   on API 23 hardware across lock, logout, account switch, restart,
   uninstall/reinstall and restore.
-- The final independent D-020 point review found one P0 and two P1 findings.
-  They are addressed locally in `df2a6b4` and `88a6128`; no review success is
-  claimed until the main agent performs and records a fresh final point review.
+- The final independent D-020 source review confirmed the production
+  invariants and left one P1 test-wiring gap. That gap is addressed locally in
+  `501565e`; no approval of the newly added implementation-level coverage is
+  claimed until the main agent performs the requested targeted review.
 
 ## Preserved user changes
 
