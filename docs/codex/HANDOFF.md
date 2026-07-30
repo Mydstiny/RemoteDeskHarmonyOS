@@ -5,7 +5,7 @@ Updated: 2026-07-30 Asia/Shanghai
 ## Active cloud-data lifecycle handoff
 
 - Branch: `codex/cloud-data-lifecycle-root-fix`; base:
-  `main@23940521a`; implementation checkpoint: `501565e`.
+  `main@23940521a`; implementation checkpoint: `0ffaa1c`.
 - Plan:
   `docs/superpowers/plans/2026-07-28-cloud-data-lifecycle-upgrade-roadmap.md`.
 - Core local implementation is complete for account transitions, per-account
@@ -13,7 +13,7 @@ Updated: 2026-07-30 Asia/Shanghai
   sensitive transfer validation, portable backup v3 and legacy partial
   restore, exclusive crypto lifecycle, Asset Store credential storage,
   device-local trust and legacy shared-store/relay/VNC migration quarantine.
-- D-020 remediation through `501565e` requires a fresh OS distributed-account API
+- D-020 remediation through `0ffaa1c` requires a fresh OS distributed-account API
   result in addition to Account Kit, waits for cloud-first before publishing
   account ready, preserves pre-bootstrap record journal intent, persists a
   bounded cross-table download rollback transaction, blocks ordinary/VNC
@@ -58,6 +58,15 @@ Updated: 2026-07-30 Asia/Shanghai
   authoritative rebase/journal/delete, rollback and post-commit recovery, and
   fail-closed metadata-error propagation. These tests compile in the default
   ArkTS test target; no device/runtime test execution is claimed.
+- The continuation review found two P1s in that test seam. `0ffaa1c` restores
+  both RDB-changing CloudStore completion/finalization entries to private,
+  moves their testable orchestration into a stateless module with no
+  singleton/RDB handle, and makes completion, finalization and startup recovery
+  share the same signed-checkpoint and barrier metadata readers. Tests now
+  inject real `readLocalMetadataState` query errors before barrier release and
+  after commit, and simulate a restart that routes the committed authoritative
+  checkpoint into pending recovery. Review approval of this follow-up is not
+  yet claimed.
 - API 23 has no signed Account Kit/distributed-account link object. The
   implementation accepts only exact current ID equality and otherwise blocks
   distributed-table registration and transfer. This is deliberately
