@@ -6,17 +6,22 @@ Updated: 2026-07-30 Asia/Shanghai
 
 - Cloud/data lifecycle root fix is active on
   `codex/cloud-data-lifecycle-root-fix` at implementation checkpoint
-  `8164dd5`. The signed upgrade-test candidate is `1.0.9 / 1000009`.
+  `2914363`. The signed upgrade-test candidate is `1.0.9 / 1000009`.
   D-020 remediation adds independent OS distributed-account verification,
   an awaitable login/account-switch cloud-first bootstrap, record-level journal
   reconciliation, a durable bounded cloud-download before-image, persisted
   ordinary/VNC selection re-enable barriers, authoritative remote empty-set
-  acceptance and real RustDesk Pro Asset Store token revocation. Current
+  acceptance and real RustDesk Pro Asset Store token revocation. The second
+  review's remaining P1s are now closed locally: restore quarantine cannot
+  publish bootstrap ready, newly enabled VNC scopes await cloud-first through
+  promotion/barrier release with rollback, and RustDesk Pro token revocation
+  preserves non-secret metadata as requiring reauthentication. Current
   ArkTS/test compilation, signed `assembleHap`, Light and diff checks pass.
   Release remains NO-GO pending proof of Account Kit UnionID/distributed-account
   ID correspondence on API 23, real Huawei Cloud/two-device/A-B account/old
-  APK/fault-injection/Document Provider/Asset Store evidence and an independent
-  D-020 re-review. If API 23 cannot prove the identity correspondence, cloud
+  APK/fault-injection/Document Provider/Asset Store evidence and a third
+  independent D-020 point review. If API 23 cannot prove the identity
+  correspondence, cloud
   remains fail-closed. System BackupExtension, remote destructive crypto and
   legacy REST sync stay disabled. Do not start a sub-agent for this remediation.
   The connected device still has `1.0.8 / 1000008`; do not perform an

@@ -5,7 +5,7 @@ Updated: 2026-07-30 Asia/Shanghai
 ## Active cloud-data lifecycle handoff
 
 - Branch: `codex/cloud-data-lifecycle-root-fix`; base:
-  `main@23940521a`; implementation checkpoint: `8164dd5`.
+  `main@23940521a`; implementation checkpoint: `2914363`.
 - Plan:
   `docs/superpowers/plans/2026-07-28-cloud-data-lifecycle-upgrade-roadmap.md`.
 - Core local implementation is complete for account transitions, per-account
@@ -13,12 +13,18 @@ Updated: 2026-07-30 Asia/Shanghai
   sensitive transfer validation, portable backup v3 and legacy partial
   restore, exclusive crypto lifecycle, Asset Store credential storage,
   device-local trust and legacy shared-store/relay/VNC migration quarantine.
-- D-020 remediation `8164dd5` requires a fresh OS distributed-account API
+- D-020 remediation through `2914363` requires a fresh OS distributed-account API
   result in addition to Account Kit, waits for cloud-first before publishing
   account ready, preserves pre-bootstrap record journal intent, persists a
   bounded cross-table download rollback transaction, blocks ordinary/VNC
   native-first during selection re-enable, accepts only proven authoritative
   empty snapshots and revokes RustDesk Pro Asset Store aliases on scope exit.
+- The second review's final three P1 findings are remediated locally:
+  `restored_not_uploaded` now returns `restore_pending` without publishing
+  ready; VNC newly enabled scopes await cloud-first, record promotion and
+  barrier release with exact rollback; RustDesk Pro scope revocation preserves
+  non-secret account/server/device metadata as `requires_login` while the token
+  remains deleted.
 - API 23 has no signed Account Kit/distributed-account link object. The
   implementation accepts only exact current ID equality and otherwise blocks
   distributed-table registration and transfer. This is deliberately
@@ -37,8 +43,8 @@ Updated: 2026-07-30 Asia/Shanghai
   low-storage fault injection, real Documents Providers and actual Asset Store
   alias deletion. System BackupExtension, remote destructive crypto and legacy
   REST sync remain disabled.
-- No sub-agent was created for this remediation. A fresh independent D-020
-  re-review by the main agent remains a merge blocker.
+- No sub-agent was created for this remediation. A third independent D-020
+  point review by the main agent remains a merge blocker.
 - Preserve the unrelated user-owned SSH, Moonlight, RustDesk and VNC plan
   edits; do not stage, reset, stash or overwrite them.
 

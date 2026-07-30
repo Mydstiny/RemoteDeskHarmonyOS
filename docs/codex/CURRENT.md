@@ -6,7 +6,7 @@ Updated: 2026-07-30 Asia/Shanghai
 
 - Repository: Mydstiny/RemoteDeskHarmonyOS
 - Active task branch: `codex/cloud-data-lifecycle-root-fix`.
-- Base: `main@23940521a`; implementation checkpoint: `8164dd5`.
+- Base: `main@23940521a`; implementation checkpoint: `2914363`.
 - Scope: root remediation of account/data ownership, per-account physical RDB stores, cloud bootstrap/sync lifecycle, local backup v3/legacy partial restore, encryption lifecycle, secure credential storage, device-local trust and old shared-store/relay/VNC migration.
 - Entity plan: `docs/superpowers/plans/2026-07-28-cloud-data-lifecycle-upgrade-roadmap.md`.
 - No remote push, PR or merge has been performed. No sub-agent was created for
@@ -25,7 +25,10 @@ Updated: 2026-07-30 Asia/Shanghai
 - Anonymous data and each Huawei owner use separate physical store identities. Only a verified bound account store can register distributed tables or transfer cloud data; service-layer CRUD injects and checks owner.
 - Login and account-switch navigation now waits for the current account's first
   cloud-first bootstrap. The ready/mutation gate is not published until the
-  authoritative pull and durable selection-reenable promotion complete.
+  authoritative pull and durable selection-reenable promotion complete. A
+  `restored_not_uploaded` scope returns an explicit `restore_pending` failure:
+  restored rows remain quarantined, no pull or automatic upload is attempted,
+  and the account is not published as ready.
 - Initial bootstrap reconciles pre-bootstrap intent at record level and retains
   its mutation journal. Manual download, initial bootstrap and selection
   re-enable share an account/store/generation-bound, SHA-256-verified and
@@ -35,7 +38,11 @@ Updated: 2026-07-30 Asia/Shanghai
   selection re-enable barriers, per-table mutation journal/retry/conflict state,
   accepted/progress/overall watchdogs, `SYNC_FINISH` validation and stale/late
   callback fencing. Native-first cannot pass a pending selection barrier,
-  including VNC promotion/retry paths.
+  including VNC promotion/retry paths. Newly enabled VNC logical scopes now
+  await their dedicated cloud-first, record-level reconcile/promotion and
+  barrier release before settings save reports success; disable-only changes
+  do not trigger a pull, and failed row/selection changes restore the prior
+  scope and exact prior barrier when rollback is proven.
 - A zero-row cloud-first result is accepted only after the independently bound
   account, distributed-table registration, current lease and exact table's
   successful terminal progress jointly prove an authoritative result. This
@@ -46,20 +53,23 @@ Updated: 2026-07-30 Asia/Shanghai
 - Crypto enable/migrate/disable/reset use an exclusive account lease, queue quiescence, durable lifecycle state, one RDB transaction, selection pause and journal replay. Remote destructive crypto lifecycle and old REST sync remain feature-gated off.
 - AccountKit and RustDesk Pro credentials use the Asset Store Kit boundary.
   RustDesk Pro scope transitions now remove outgoing token aliases before
-  rebinding and drain memory even when removal fails; tokens remain excluded
-  from Preferences, cloud and logs. RDP/SSH/VNC trust and plaintext consent are
-  device-local and are removed from cloud/portable-backup projections.
+  rebinding and drain token memory even when removal fails. Non-secret
+  server/account/device metadata remains durable as `requires_login`, so a
+  failed scope transition can reload the outgoing configuration without
+  restoring the deleted token. Tokens remain excluded from Preferences, cloud
+  and logs. RDP/SSH/VNC trust and plaintext consent are device-local and are
+  removed from cloud/portable-backup projections.
 - Legacy shared RDB migration uses owner proof, receipt, journal and redacted quarantine. Legacy relay JSON migrates transactionally. Legacy VNC rows only enter the local overlay; owner, reset epoch or payload failures are quarantined without deleting the source. The public no-lease full-table clear path was removed.
 
 Implementation commits: `6a9d430b1`, `4cdc5b1df`, `d2f365c32`, `d51214577`,
 `50ce7b36e`, `1d0f03848`, `d5ccaa73f`, `623cdd378`, `8fb395c41`,
-`beebc662e`, `89f4b7574`, `f5adf90e7`, `8164dd5`.
+`beebc662e`, `89f4b7574`, `f5adf90e7`, `8164dd5`, `2914363`.
 
 ## Current verification
 
 - Release-candidate metadata is now `1.0.9 / 1000009`; application manifest, in-app release notes, user guide, version resource, SBOM and SBOM generator agree.
 - `default@OhosTestCompileArkTS`: passed in the current session for
-  `8164dd5`; existing dependency/deprecation warnings remain.
+  `2914363`; existing dependency/deprecation warnings remain.
 - `assembleHap`: `BUILD SUCCESSFUL` in the current session; signed HAP
   generated.
 - `git diff --check` and staged diff checks: passed.
@@ -84,9 +94,9 @@ Implementation commits: `6a9d430b1`, `4cdc5b1df`, `d2f365c32`, `d51214577`,
 - Validate Asset Store Kit behavior and actual RustDesk Pro token alias removal
   on API 23 hardware across lock, logout, account switch, restart,
   uninstall/reinstall and restore.
-- D-020 independent re-review of `8164dd5` remains a merge blocker. The prior
-  review produced the findings addressed by this commit; no success is claimed
-  until the main agent performs a fresh independent review.
+- A third independent D-020 point review of `2914363` remains a merge blocker.
+  The second review's three P1 findings are addressed locally; no success is
+  claimed until the main agent performs and records a fresh review.
 
 ## Preserved user changes
 
