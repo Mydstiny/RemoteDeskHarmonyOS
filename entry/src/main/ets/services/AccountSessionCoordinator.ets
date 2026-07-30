@@ -31,6 +31,7 @@ import {
   CloudSyncOperationResult
 } from './CloudSyncCoordinator';
 import { cloudTransferAllowed } from './CloudLifecycleSafetyPolicy';
+import { safeError } from '../utils/SafeLogger';
 
 export interface AccountLoginIdentity extends CredentialParams {
   avatarUrl: string;
@@ -80,8 +81,16 @@ export class AccountSessionCoordinator {
     SensitiveDataBarrier.getInstance().init(context as common.UIAbilityContext);
     const operation: Promise<boolean> = this.initialize(context);
     this.initPromise = operation;
-    let ready: boolean = await operation;
-    if (this.initPromise === operation) { this.initPromise = null; }
+    let ready: boolean = false;
+    try {
+      ready = await operation;
+    } catch (error) {
+      hilog.error(0x0001, 'AccountSession',
+        '账号生命周期初始化异常: ' + safeError(error));
+      ready = false;
+    } finally {
+      if (this.initPromise === operation) { this.initPromise = null; }
+    }
     if (!ready && context !== null) {
       const fallbackReady: boolean =
         await this.ensureStartupFallbackIfNeeded(context);
@@ -153,7 +162,13 @@ export class AccountSessionCoordinator {
   private async whenReady(): Promise<boolean> {
     if (this.initialized) { return true; }
     if (this.initPromise !== null) {
-      const ready: boolean = await this.initPromise;
+      let ready: boolean = false;
+      try {
+        ready = await this.initPromise;
+      } catch (error) {
+        hilog.error(0x0001, 'AccountSession',
+          '等待账号生命周期时捕获初始化异常: ' + safeError(error));
+      }
       if (!ready &&
         this.context !== null &&
         !this.startupFallbackApplied) {
