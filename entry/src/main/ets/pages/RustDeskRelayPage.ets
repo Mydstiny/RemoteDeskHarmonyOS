@@ -827,8 +827,8 @@ export struct RustDeskRelayPage {
               ' 台设备，控制面身份已绑定'
             : '登录成功，地址簿为空；控制面身份已绑定')
           : (count > 0
-            ? '地址簿已同步；API、ID、Relay 或 Key 身份未对齐，连接令牌保持禁用'
-            : '登录成功；控制面身份未对齐，连接令牌保持禁用'),
+            ? '地址簿已同步；尚无可验证的控制面能力证明，连接按 API-only 模式且不发送地址簿令牌'
+            : '登录成功；尚无可验证的控制面能力证明，连接按 API-only 模式'),
         duration: capabilityReady ? 2200 : 3600
       });
       this.closeSheet();
@@ -854,7 +854,7 @@ export struct RustDeskRelayPage {
             ? 'Pro 已同步 ' + count.toString() +
               ' 台设备，控制面身份已重新验证'
             : '同步完成，控制面身份已重新验证')
-          : '地址簿同步成功；控制面身份未对齐，连接令牌保持禁用',
+          : '地址簿同步成功；尚无可验证的控制面能力证明，连接按 API-only 模式且不发送地址簿令牌',
         duration: capabilityReady ? 2200 : 3600
       });
     } catch (err) {

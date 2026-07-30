@@ -40,6 +40,23 @@ export class RustDeskProApiError extends Error {
   }
 }
 
+export function rustDeskProApiRouteId(path: string): string {
+  const query: number = path.indexOf('?');
+  const route: string = query >= 0
+    ? path.substring(0, query) : path;
+  switch (route) {
+    case '/api/login': return 'login';
+    case '/api/logout': return 'logout';
+    case '/api/ab/personal': return 'address_book_personal';
+    case '/api/ab/shared/profiles':
+      return 'address_book_shared_profiles';
+    case '/api/ab/peers': return 'address_book_peers';
+    case '/api/ab/get': return 'address_book_legacy_get';
+    case '/api/ab': return 'address_book_legacy';
+    default: return 'unknown';
+  }
+}
+
 export function normalizeRustDeskProServerUrl(value: string): string {
   let url = value.trim();
   while (url.endsWith('/')) { url = url.substring(0, url.length - 1); }
@@ -73,14 +90,18 @@ export function parseRustDeskProLoginResponse(payload: Object, status: number): 
   const root = payload as Record<string, Object>;
   const rawError: Object | undefined = root['error'];
   if (status !== 200) {
-    const message = typeof rawError === 'string' ? rawError as string : 'Pro 登录失败 (HTTP ' + status.toString() + ')';
+    const message: string = status === 401 || status === 403
+      ? '用户名、密码或服务端认证策略拒绝登录（HTTP ' +
+        status.toString() + '）'
+      : 'Pro 登录请求失败（HTTP ' + status.toString() + '）';
     throw new RustDeskProApiError('http_error', message, status);
   }
   if (typeof root['type'] === 'string' && (root['type'] as string) === 'email_check') {
     throw new RustDeskProApiError('two_factor_required', 'Pro 账号需要二次验证', status);
   }
   if (rawError !== undefined && typeof rawError === 'string') {
-    throw new RustDeskProApiError('auth_error', rawError as string, status);
+    throw new RustDeskProApiError(
+      'auth_error', 'Pro 服务拒绝登录请求', status);
   }
   const token: string = typeof root['access_token'] === 'string' ? root['access_token'] as string : '';
   if (token.length === 0) {
@@ -100,12 +121,13 @@ export function parseRustDeskProAddressBookResponse(payload: Object, status: num
     throw new RustDeskProApiError('token_expired', 'Pro 登录已过期，请重新登录', status);
   }
   if (status !== 200) {
-    const rawError: Object | undefined = root['error'];
-    const message = typeof rawError === 'string' ? rawError as string : 'Pro 地址簿同步失败 (HTTP ' + status.toString() + ')';
-    throw new RustDeskProApiError('http_error', message, status);
+    throw new RustDeskProApiError('http_error',
+      'Pro 地址簿同步失败（HTTP ' + status.toString() + '）',
+      status);
   }
   if (typeof root['error'] === 'string') {
-    throw new RustDeskProApiError('api_error', root['error'] as string, status);
+    throw new RustDeskProApiError(
+      'api_error', 'Pro 地址簿服务拒绝同步请求', status);
   }
   return RustDeskProAddressBook.fromResponse(payload);
 }
@@ -116,15 +138,14 @@ export function parseRustDeskProPersonalAddressBookResponse(payload: Object, sta
   }
   if (status === 404) { return ''; }
   if (status !== 200) {
-    const root = payload as Record<string, Object>;
-    const rawError: Object | undefined = root['error'];
-    const message = typeof rawError === 'string' ? rawError as string :
-      'Pro 个人地址簿查询失败 (HTTP ' + status.toString() + ')';
-    throw new RustDeskProApiError('http_error', message, status);
+    throw new RustDeskProApiError('http_error',
+      'Pro 个人地址簿查询失败（HTTP ' +
+      status.toString() + '）', status);
   }
   const root = payload as Record<string, Object>;
   if (typeof root['error'] === 'string') {
-    throw new RustDeskProApiError('api_error', root['error'] as string, status);
+    throw new RustDeskProApiError(
+      'api_error', 'Pro 个人地址簿服务拒绝请求', status);
   }
   const guid = typeof root['guid'] === 'string' ? root['guid'] as string : '';
   if (guid.length === 0) {
@@ -138,15 +159,14 @@ export function parseRustDeskProAddressBookPage(payload: Object, status: number)
     throw new RustDeskProApiError('token_expired', 'Pro 登录已过期，请重新登录', status);
   }
   if (status !== 200) {
-    const root = payload as Record<string, Object>;
-    const rawError: Object | undefined = root['error'];
-    const message = typeof rawError === 'string' ? rawError as string :
-      'Pro 地址簿分页同步失败 (HTTP ' + status.toString() + ')';
-    throw new RustDeskProApiError('http_error', message, status);
+    throw new RustDeskProApiError('http_error',
+      'Pro 地址簿分页同步失败（HTTP ' +
+      status.toString() + '）', status);
   }
   const root = payload as Record<string, Object>;
   if (typeof root['error'] === 'string') {
-    throw new RustDeskProApiError('api_error', root['error'] as string, status);
+    throw new RustDeskProApiError(
+      'api_error', 'Pro 地址簿分页服务拒绝请求', status);
   }
   const rawTotal: Object | undefined = root['total'];
   const total = typeof rawTotal === 'number' ? rawTotal as number : 0;
@@ -164,15 +184,14 @@ export function parseRustDeskProSharedAddressBookProfiles(payload: Object, statu
   // Older compatible servers may not expose shared address books.
   if (status === 404) { return []; }
   if (status !== 200) {
-    const root = payload as Record<string, Object>;
-    const rawError: Object | undefined = root['error'];
-    const message = typeof rawError === 'string' ? rawError as string :
-      'Pro 共享地址簿列表查询失败 (HTTP ' + status.toString() + ')';
-    throw new RustDeskProApiError('http_error', message, status);
+    throw new RustDeskProApiError('http_error',
+      'Pro 共享地址簿列表查询失败（HTTP ' +
+      status.toString() + '）', status);
   }
   const root = payload as Record<string, Object>;
   if (typeof root['error'] === 'string') {
-    throw new RustDeskProApiError('api_error', root['error'] as string, status);
+    throw new RustDeskProApiError(
+      'api_error', 'Pro 共享地址簿服务拒绝请求', status);
   }
   const result: string[] = [];
   const data: Object | undefined = root['data'];

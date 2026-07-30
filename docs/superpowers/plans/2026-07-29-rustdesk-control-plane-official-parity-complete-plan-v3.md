@@ -2497,6 +2497,11 @@ blocked_by_server_contract
 | `f88e8e317` | profile、HTTP 地址簿登录、Server Pro 控制面令牌、共享 Key 和公钥严格分离 |
 | `6ce3dfe62` | FORCE_RELAY/DIRECT_IP 策略、fail-closed AUTO、结构化 native/Rust 诊断 |
 | `fcc2cbb38` | `1.0.10/1000010`、NAPI API 21、非敏感 build identity、发布说明和 SBOM |
+| `bf7a0448f` | 记录首轮本地门禁、真机只读状态和发布 NO-GO 边界 |
+| `6e4735703` | 把 relay token 能力绑定到真实 Server Pro 登录/同步产生的身份与 endpoint 证明 |
+| `33d9e20f1` | 生产 RDB 事务、控制面 profile、mutation journal 和稳定 ID 回读原子化 |
+| `439d45aca` | 主机添加草稿跨 server setup 一次性安全交接、自动返回和选择新中继 |
+| `afe25a38a` | ArkTS、Rust、C++ 网络/路径/账号/设备诊断统一改为不可逆短指纹 |
 
 各提交只暂存本任务文件。SSH、Moonlight、RDP 和 2-in-1 RustDesk 受控端计划文件保持为
 用户工作树内容，没有进入上述提交。
@@ -2506,14 +2511,22 @@ blocked_by_server_contract
 - `RustDeskRelayPage`、主机添加入口和保留的兼容入口复用
   `RustDeskRelaySetupCoordinator` 与 `RustDeskRelaySavePolicy`；不可达且继续维护独立
   行为的 `ModernRelayAddFlow` 已移除。
-- 保存结果不再压成 boolean：结果包含 attempt、stage、code、稳定记录 ID、
-  `localCommitted`、`readBackVerified` 和 cloud 状态。
-- 本地事务先提交；提交后按稳定 ID 强制回读。云不可用只形成可重试的
-  `local_committed_cloud_pending`，不撤销已经证明的本地结果。
+- 保存结果不再压成 boolean：结果包含 attempt、stage、code、稳定记录 ID 指纹、
+  `localCommitted` 和 `not_configured/pending/completed/failed` cloud 状态；只有稳定 ID
+  与 owner 回读内容完全匹配后才返回 `ok`。
+- 本地 relay 行、device-local 控制面 profile 和 durable mutation journal 在一个 RDB
+  事务内提交；提交后按稳定 ID 与当前 owner 强制回读，所有 ResultSet 都在 `finally`
+  关闭。云不可用只形成可重试的 cloud pending/failed 状态，不撤销已经证明的本地结果。
+- 创建时遇到同 ID 但不同内容会失败关闭，编辑缺失返回 `not_found`；重复点击和相同草稿
+  使用稳定 ID/attempt 隔离，不会把编辑静默变成新增。生产 port fault injection 覆盖
+  relay/profile/journal/commit/readback 失败和 rollback。
 - `unlock_required`、owner/account 变化、恢复中、事务失败、回读失败和云失败保持独立
   recovery action。失败后保留页面草稿，重复保存由 draft fingerprint 和 attempt 隔离。
 - 默认手工流程只展示服务器地址和服务器公钥；导入配置是并列入口。API、端口、共享
   Key、profile 和控制面登录位于高级/保存后步骤。唯一 Sheet owner 保持 footer 可达。
+- 从“添加主机”进入 server setup 时，全量主机草稿只保存在进程内，并绑定
+  owner/store/generation、TTL 和一次性消费；保存成功后自动返回并选择新中继。密码不会
+  写入路由、持久化层或日志，退出/账号切换/敏感屏障触发时会清除。
 - 新增/编辑/失败/回滚日志只记录 stage/code/attempt、Key 模式和 token present/absent，
   不记录密码、token、完整 Key、公钥、账号或完整 endpoint。
 
@@ -2523,8 +2536,20 @@ blocked_by_server_contract
   `oss_key_only`、`oss_shared_access_key`、`official_server_pro_token`、
   `third_party_api_only`、`third_party_control_plane`、`direct_ip`。
   旧的不明确第三方 profile fail-closed 归一到 API-only。
-- 地址簿来源不再授予连接 token 能力。只有 profile capability、owner/account 绑定和
-  有效控制面会话同时成立时才把 token 投影到 `PunchHoleRequest`/`RequestRelay`。
+- 地址簿来源、用户选择的 profile、通用 `/api/login` 成功和地址簿同步成功都不授予
+  rendezvous token 能力。proof issuer 必须来自已注册、版本化且完成真实服务端验收的
+  official/third-party adapter 或服务端可验证能力证据；本版本没有足够公开协议证据，
+  因而可信 issuer registry 保持为空。
+- 旧 schema-v1 本地 proof 全部失效；本地伪造 schema-v2 也不能进入 trusted registry。
+  没有可信 proof 时，`official_server_pro_token`/`third_party_control_plane` 的运行时
+  effective profile 降级为 `third_party_api_only`：HTTP 登录与地址簿保持有效，连接按
+  OSS Key 路径继续，但 `PunchHoleRequest`/`RequestRelay` token 必为空。
+- 未来 proof 只允许持久化不可逆的 issuer/contract/evidence、owner、account、token
+  generation、API origin、ID endpoint、Relay endpoint 与 server identity 指纹；
+  logout、明确撤销、scope/账号/relay/key 变化必须使其失效。用户手工选择 profile
+  不能生成 proof。
+- API、ID 和 Relay 是三个独立配置/身份绑定；不再用“必须同主机”冒充能力证明，允许
+  反向代理、独立 hbbr 和多域名部署，由未来可信 attestation 声明三者关系。
 - `please login` 或 `login session expired` 字符串只进入兼容性/控制面错误分类，不清除
   有效账号。当前只有明确结构化的 `control_plane/pro_session_expired` 可以触发重新认证；
   native 尚不伪造该证据。
@@ -2554,8 +2579,9 @@ relay”，不是伪造的真实 NAT 探测结果。hbbs 未返回 relay endpoin
 
 ### 21.5 构建和自动化证据
 
-- Rust：`cargo test --lib --no-default-features` 为 `150 passed, 0 failed`；
-  `cargo check --tests --no-default-features` 通过。
+- Rust：`cargo test --lib --no-default-features` 和
+  `cargo check --tests --no-default-features` 通过；新增 safe-diagnostics 测试覆盖
+  endpoint/path/error 指纹以及 token/凭据不出现在摘要中。
 - ArkTS：`default@OhosTestCompileArkTS` 通过，包含新增 save/context/profile/strategy/
   release-note 策略测试。
 - Native/HAP：`assembleHap` 双 ABI native 重编译、打包和签名均
@@ -2568,12 +2594,18 @@ relay”，不是伪造的真实 NAT 探测结果。hbbs 未返回 relay endpoin
 - `ohosTest@OhosTestCompileArkTS` 实际执行失败：项目未注册该任务（`00306054`）。
 - USB 设备只读查询显示仍安装 `1.0.8/1000008`；为保护现有用户数据，没有安装
   `1.0.10` 候选 HAP。
+- Native host suite 为 `171 passed, 0 failed`。
 - crate 全量 `cargo fmt --check` 会报告既有全仓格式差异并重写无关 terminal/native
   文件，因此未做跨模组机械格式化；本任务 diff 自身通过 whitespace 检查。
 
 ### 21.6 完成边界和发布判定
 
-本地实现阶段进入独立 D-020 复核，但当前发布仍为 **NO-GO**。以下证据开放：
+首轮独立 D-020 复核的事务/回读、保存可见性、主机草稿交接和生产 fault-injection
+findings 已在 `33d9e20f1`、`439d45aca` 整改。二次复核确认这些 P1 已关闭，但指出
+capability 仍可由 profile + 通用 HTTP 流程自授、端点同主机限制和三处诊断泄漏，结论
+为 NOT PASS。本轮已改为无可信 issuer 即 API-only、三个端点独立绑定、静态 route 日志、
+服务端正文不进入日志/UI，并修复 HostList 原始 host ID；仍需同一 reviewer 复核本轮
+整改。无论本地复核结果如何，当前发布仍为 **NO-GO**。以下真实证据开放：
 
 1. 官方 Server Pro ordinary/admin、own/shared/denied device 与明确 HTTP 401/撤销；
 2. 超享/第三方 API-only 与经过证明的 control-plane token A/B；
@@ -2585,4 +2617,5 @@ relay”，不是伪造的真实 NAT 探测结果。hbbs 未返回 relay endpoin
 7. RDP、VNC、SSH/SFTP 非 RustDesk 回归。
 
 未取得真实服务端协议证据前，不新增换票 endpoint、不伪造官方版本、不把 AUTO 显示为
-可用，也不因英文字符串删除 token。独立 reviewer 的结果和整改提交将在本节后续补录。
+可用，也不因英文字符串删除 token。独立 reviewer 的最终整改复核结论将在本节闭环时
+补录。

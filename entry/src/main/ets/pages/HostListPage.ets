@@ -3492,7 +3492,7 @@ struct HostListPage {
       // 完成后再把同一个请求打开，避免旧动画和新 builder 同时存在。
       this.rustDeskProPreflightPendingHostId = host.id;
       hilog.info(0x0001, 'HostList', 'RustDesk preflight queued until previous Sheet disappears host=' +
-        host.id);
+        hashForLog(host.id));
       return;
     }
     const generation: number = this.prepareRustDeskProPreflight(host);

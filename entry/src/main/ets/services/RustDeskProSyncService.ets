@@ -20,8 +20,6 @@ import {
   cloneAccountSessionLease
 } from './AccountScopePolicy';
 import {
-  issueRustDeskControlPlaneCapabilityProof,
-  rustDeskControlPlaneBinding,
   RustDeskControlPlaneCapabilityIssueResult
 } from './RustDeskControlPlaneCapabilityPolicy';
 import {
@@ -285,24 +283,12 @@ export class RustDeskProSyncService {
         (item: RustDeskRelayConfig): boolean =>
           item.id === account.relayId);
     const unavailable = new RustDeskControlPlaneCapabilityIssueResult();
-    if (relay === undefined ||
-      relay.controlPlaneProfile !== 'official_server_pro_token') {
-      unavailable.code = 'profile_not_verified';
-      unavailable.message =
-        '地址簿已同步；当前服务器未声明为官方 Server Pro 控制面，连接令牌保持禁用。';
-      account.controlPlaneCapabilityProof = undefined;
-      return unavailable;
-    }
-    const result: RustDeskControlPlaneCapabilityIssueResult =
-      issueRustDeskControlPlaneCapabilityProof(
-        rustDeskControlPlaneBinding(
-          'official_server_pro',
-          operation.lease.ownerScopeId,
-          account,
-          relay));
-    account.controlPlaneCapabilityProof =
-      result.ok ? result.proof : undefined;
-    return result;
+    account.controlPlaneCapabilityProof = undefined;
+    unavailable.code = relay === undefined
+      ? 'relay_missing' : 'capability_attestation_unavailable';
+    unavailable.message =
+      '地址簿已同步；当前构建没有可验证的官方／第三方控制面能力证明，连接将按 API-only 模式且不发送地址簿令牌。';
+    return unavailable;
   }
 
   async login(input: RustDeskProLoginInput): Promise<RustDeskProAccountState> {

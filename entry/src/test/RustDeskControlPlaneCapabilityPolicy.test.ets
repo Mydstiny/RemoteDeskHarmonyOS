@@ -2,77 +2,100 @@ import { describe, expect, it } from '@ohos/hypium';
 import {
   issueRustDeskControlPlaneCapabilityProof,
   rustDeskControlPlaneCapabilityProofMatches,
+  rustDeskControlPlaneCapabilitySourceForProof,
+  RustDeskControlPlaneCapabilityAttestation,
   RustDeskControlPlaneCapabilityBinding
 } from '../main/ets/services/RustDeskControlPlaneCapabilityPolicy';
+import {
+  RustDeskControlPlaneCapabilityProof
+} from '../main/ets/model/RustDeskControlPlaneCapabilityModels';
 
 function binding(): RustDeskControlPlaneCapabilityBinding {
   return {
-    source: 'official_server_pro',
     ownerScopeId: 'owner-private',
     accountId: 'account-private',
     relayId: 'relay-private',
     tokenGeneration: 4,
     accessTokenFingerprint: 'token-fingerprint',
-    accountApiServer: 'https://rd.example.test:21114/api/',
-    configuredApiServer: 'https://rd.example.test:21114',
-    idServer: 'rd.example.test',
+    accountApiServer: 'https://api.example.test:21114/api/',
+    configuredApiServer: 'https://api.example.test:21114',
+    idServer: 'id.example.test',
     idServerPort: 21116,
-    relayServer: 'RD.EXAMPLE.TEST.',
+    relayServer: 'relay.example.test',
     relayPort: 21117,
     serverKeyMode: 'server_public_key',
     serverKey: 'server-key-private'
   };
 }
 
+function locallyClaimedAttestation():
+  RustDeskControlPlaneCapabilityAttestation {
+  return {
+    source: 'official_server_pro',
+    issuerId: 'local-profile-selection',
+    contractId: 'generic-api-login-and-address-book',
+    evidenceFingerprint: 'locally-generated'
+  };
+}
+
+function fabricatedProof(): RustDeskControlPlaneCapabilityProof {
+  return {
+    schemaVersion: 2,
+    source: 'official_server_pro',
+    attestationIssuerFingerprint: 'fabricated-issuer',
+    attestationContractFingerprint: 'fabricated-contract',
+    attestationEvidenceFingerprint: 'fabricated-evidence',
+    ownerScopeFingerprint: 'fabricated-owner',
+    accountIdFingerprint: 'fabricated-account',
+    relayIdFingerprint: 'fabricated-relay',
+    tokenGeneration: 4,
+    accessTokenFingerprint: 'token-fingerprint',
+    apiOriginFingerprint: 'fabricated-api',
+    rendezvousEndpointFingerprint: 'fabricated-id',
+    relayEndpointFingerprint: 'fabricated-hbbr',
+    serverIdentityFingerprint: 'fabricated-key',
+    verifiedAt: 1
+  };
+}
+
 export default function rustDeskControlPlaneCapabilityPolicyTest():
   void {
   describe('RustDeskControlPlaneCapabilityPolicy', (): void => {
-    it('issues_only_fingerprints_for_one_authenticated_identity',
+    it('does_not_mint_capability_from_profile_login_or_address_book',
       0, (): void => {
-        const source: RustDeskControlPlaneCapabilityBinding =
-          binding();
-        const result =
-          issueRustDeskControlPlaneCapabilityProof(source);
-        expect(result.ok).assertTrue();
-        expect(result.proof !== undefined).assertTrue();
-        const raw: string = JSON.stringify(result.proof);
-        expect(raw.indexOf(source.ownerScopeId)).assertEqual(-1);
-        expect(raw.indexOf(source.accountId)).assertEqual(-1);
-        expect(raw.indexOf(source.relayId)).assertEqual(-1);
-        expect(raw.indexOf(source.accountApiServer)).assertEqual(-1);
-        expect(raw.indexOf(source.idServer)).assertEqual(-1);
-        expect(raw.indexOf(source.serverKey)).assertEqual(-1);
-        expect(rustDeskControlPlaneCapabilityProofMatches(
-          result.proof, source)).assertTrue();
+        const result = issueRustDeskControlPlaneCapabilityProof(
+          binding(), locallyClaimedAttestation());
+        expect(result.ok).assertFalse();
+        expect(result.code).assertEqual('untrusted_attestation');
+        expect(result.proof === undefined).assertTrue();
       });
 
-    it('rejects_profile_only_or_cross_origin_bindings',
+    it('binds_api_id_and_relay_independently_not_by_same_host',
       0, (): void => {
         const source: RustDeskControlPlaneCapabilityBinding =
           binding();
-        source.configuredApiServer =
-          'https://panel.example.test:21114';
-        const apiMismatch =
-          issueRustDeskControlPlaneCapabilityProof(source);
-        expect(apiMismatch.ok).assertFalse();
-        source.configuredApiServer =
-          'https://rd.example.test:21114';
-        source.relayServer = 'relay.example.test';
-        const endpointMismatch =
-          issueRustDeskControlPlaneCapabilityProof(source);
-        expect(endpointMismatch.ok).assertFalse();
+        expect(source.accountApiServer.indexOf('api.') >= 0)
+          .assertTrue();
+        expect(source.idServer.indexOf('id.') >= 0)
+          .assertTrue();
+        expect(source.relayServer.indexOf('relay.') >= 0)
+          .assertTrue();
+        const result = issueRustDeskControlPlaneCapabilityProof(
+          source, locallyClaimedAttestation());
+        expect(result.code).assertEqual('untrusted_attestation');
       });
 
-    it('invalidates_a_persisted_proof_after_any_identity_change',
+    it('rejects_fabricated_schema_v2_and_legacy_local_proofs',
       0, (): void => {
-        const source: RustDeskControlPlaneCapabilityBinding =
-          binding();
-        const issued =
-          issueRustDeskControlPlaneCapabilityProof(source);
-        expect(issued.ok).assertTrue();
-        source.serverKey = 'rotated-key';
+        const proof: RustDeskControlPlaneCapabilityProof =
+          fabricatedProof();
+        expect(rustDeskControlPlaneCapabilitySourceForProof(
+          proof)).assertEqual('none');
         expect(rustDeskControlPlaneCapabilityProofMatches(
-          issued.proof, source)).assertFalse();
+          proof, binding())).assertFalse();
+        proof.schemaVersion = 1;
+        expect(rustDeskControlPlaneCapabilitySourceForProof(
+          proof)).assertEqual('none');
       });
   });
 }

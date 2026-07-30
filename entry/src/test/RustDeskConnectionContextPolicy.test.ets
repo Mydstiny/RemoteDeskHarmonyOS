@@ -5,70 +5,59 @@ import {
   RustDeskConnectionContextInput
 } from '../main/ets/services/RustDeskConnectionContextPolicy';
 import {
-  issueRustDeskControlPlaneCapabilityProof,
-  RustDeskControlPlaneCapabilityBinding
-} from '../main/ets/services/RustDeskControlPlaneCapabilityPolicy';
-import {
   RustDeskControlPlaneProfile
 } from '../main/ets/services/RustDeskControlPlanePolicy';
-
-function officialBinding(): RustDeskControlPlaneCapabilityBinding {
-  return {
-    source: 'official_server_pro',
-    ownerScopeId: 'owner-1',
-    accountId: 'account-1',
-    relayId: 'relay-1',
-    tokenGeneration: 7,
-    accessTokenFingerprint: 'token-fingerprint',
-    accountApiServer: 'https://rd.example.test:21114',
-    configuredApiServer: 'https://rd.example.test:21114',
-    idServer: 'rd.example.test',
-    idServerPort: 21116,
-    relayServer: 'rd.example.test',
-    relayPort: 21117,
-    serverKeyMode: 'server_public_key',
-    serverKey: 'server-public-key'
-  };
-}
+import {
+  RustDeskControlPlaneCapabilityProof
+} from '../main/ets/model/RustDeskControlPlaneCapabilityModels';
 
 function input(
   profile: RustDeskControlPlaneProfile =
     'official_server_pro_token'
 ): RustDeskConnectionContextInput {
-  const binding: RustDeskControlPlaneCapabilityBinding =
-    officialBinding();
   return {
     direct: false,
-    relayId: binding.relayId,
+    relayId: 'relay-1',
     profile,
-    keyMode: binding.serverKeyMode,
-    accountId: binding.accountId,
-    accountRelayId: binding.relayId,
+    keyMode: 'server_public_key',
+    accountId: 'account-1',
+    accountRelayId: 'relay-1',
     accountPresent: true,
     accountLoginStatus: 'logged_in',
     accessToken: 'secret-token',
-    accessTokenFingerprint: binding.accessTokenFingerprint,
-    tokenGeneration: binding.tokenGeneration,
-    ownerScopeId: binding.ownerScopeId,
-    accountApiServer: binding.accountApiServer,
-    configuredApiServer: binding.configuredApiServer,
-    idServer: binding.idServer,
-    idServerPort: binding.idServerPort,
-    relayServer: binding.relayServer,
-    relayPort: binding.relayPort,
-    serverKeyMode: binding.serverKeyMode,
-    serverKey: binding.serverKey,
+    accessTokenFingerprint: 'token-fingerprint',
+    tokenGeneration: 7,
+    ownerScopeId: 'owner-1',
+    accountApiServer: 'https://api.example.test:21114',
+    configuredApiServer: 'https://api.example.test:21114',
+    idServer: 'id.example.test',
+    idServerPort: 21116,
+    relayServer: 'relay.example.test',
+    relayPort: 21117,
+    serverKeyMode: 'server_public_key',
+    serverKey: 'server-public-key',
     capabilityProof: undefined
   };
 }
 
-function verifiedOfficialInput(): RustDeskConnectionContextInput {
-  const value: RustDeskConnectionContextInput = input();
-  const issued = issueRustDeskControlPlaneCapabilityProof(
-    officialBinding());
-  expect(issued.ok).assertTrue();
-  value.capabilityProof = issued.proof;
-  return value;
+function fabricatedProof(): RustDeskControlPlaneCapabilityProof {
+  return {
+    schemaVersion: 2,
+    source: 'official_server_pro',
+    attestationIssuerFingerprint: 'local-issuer',
+    attestationContractFingerprint: 'local-contract',
+    attestationEvidenceFingerprint: 'local-evidence',
+    ownerScopeFingerprint: 'local-owner',
+    accountIdFingerprint: 'local-account',
+    relayIdFingerprint: 'local-relay',
+    tokenGeneration: 7,
+    accessTokenFingerprint: 'token-fingerprint',
+    apiOriginFingerprint: 'local-api',
+    rendezvousEndpointFingerprint: 'local-id',
+    relayEndpointFingerprint: 'local-relay-endpoint',
+    serverIdentityFingerprint: 'local-server',
+    verifiedAt: 1
+  };
 }
 
 export default function rustDeskConnectionContextPolicyTest(): void {
@@ -87,105 +76,61 @@ export default function rustDeskConnectionContextPolicyTest(): void {
         expect(apiOnly.accessToken).assertEqual('');
       });
 
-    it('does_not_treat_an_official_profile_as_capability_proof',
+    it('downgrades_profile_and_generic_http_login_to_api_only',
       0, (): void => {
         const result = resolveRustDeskConnectionContext(input());
-        expect(result.ready).assertFalse();
-        expect(result.code).assertEqual('capability_unverified');
-        expect(result.accessToken).assertEqual('');
-      });
-
-    it('projects_only_a_verified_official_binding',
-      0, (): void => {
-        const result = resolveRustDeskConnectionContext(
-          verifiedOfficialInput());
         expect(result.ready).assertTrue();
-        expect(result.accessToken).assertEqual('secret-token');
-        expect(result.capabilitySource)
-          .assertEqual('official_server_pro');
+        expect(result.code).assertEqual('api_only_fallback');
+        expect(result.profile).assertEqual('third_party_api_only');
+        expect(result.requiresAccount).assertFalse();
+        expect(result.accessToken).assertEqual('');
+        expect(result.capabilitySource).assertEqual('none');
       });
 
-    it('invalidates_proof_on_owner_token_api_endpoint_or_key_change',
+    it('does_not_accept_a_locally_fabricated_capability_proof',
       0, (): void => {
-        const mutations: Array<
-          (value: RustDeskConnectionContextInput) => void
-        > = [
-          (value: RustDeskConnectionContextInput): void => {
-            value.ownerScopeId = 'owner-2';
-          },
-          (value: RustDeskConnectionContextInput): void => {
-            value.tokenGeneration = 8;
-          },
-          (value: RustDeskConnectionContextInput): void => {
-            value.configuredApiServer =
-              'https://other.example.test:21114';
-          },
-          (value: RustDeskConnectionContextInput): void => {
-            value.idServerPort = 21118;
-          },
-          (value: RustDeskConnectionContextInput): void => {
-            value.relayServer = 'other.example.test';
-          },
-          (value: RustDeskConnectionContextInput): void => {
-            value.serverKey = 'replacement-key';
-          }
-        ];
-        for (let i = 0; i < mutations.length; i++) {
-          const value: RustDeskConnectionContextInput =
-            verifiedOfficialInput();
-          mutations[i](value);
-          const result =
-            resolveRustDeskConnectionContext(value);
-          expect(result.ready).assertFalse();
-          expect(result.code)
-            .assertEqual('capability_unverified');
-          expect(result.accessToken).assertEqual('');
-        }
+        const value: RustDeskConnectionContextInput = input();
+        value.capabilityProof = fabricatedProof();
+        const result = resolveRustDeskConnectionContext(value);
+        expect(result.ready).assertTrue();
+        expect(result.code).assertEqual('api_only_fallback');
+        expect(result.accessToken).assertEqual('');
       });
 
     it('fails_closed_for_unverified_third_party_control_planes',
       0, (): void => {
         const result = resolveRustDeskConnectionContext(
           input('third_party_control_plane'));
-        expect(result.ready).assertFalse();
-        expect(result.code).assertEqual('capability_unverified');
+        expect(result.ready).assertTrue();
+        expect(result.code).assertEqual('api_only_fallback');
+        expect(result.profile).assertEqual('third_party_api_only');
         expect(result.accessToken).assertEqual('');
       });
 
-    it('requires_reauthentication_before_capability_validation',
+    it('keeps_direct_connections_independent_from_http_accounts',
       0, (): void => {
-        const official: RustDeskConnectionContextInput =
-          verifiedOfficialInput();
-        official.accessToken = '';
-        const result = resolveRustDeskConnectionContext(official);
-        expect(result.ready).assertFalse();
-        expect(result.code)
-          .assertEqual('reauthentication_required');
         const direct: RustDeskConnectionContextInput = input();
         direct.direct = true;
         direct.accountId = '';
         direct.accountRelayId = '';
         direct.accountPresent = false;
         direct.accountLoginStatus = 'none';
-        direct.accessToken = 'secret-token';
-        direct.capabilityProof = undefined;
-        const directResult =
-          resolveRustDeskConnectionContext(direct);
-        expect(directResult.ready).assertTrue();
-        expect(directResult.profile).assertEqual('direct_ip');
-        expect(directResult.accessToken).assertEqual('');
+        direct.capabilityProof = fabricatedProof();
+        const result = resolveRustDeskConnectionContext(direct);
+        expect(result.ready).assertTrue();
+        expect(result.profile).assertEqual('direct_ip');
+        expect(result.accessToken).assertEqual('');
       });
 
     it('keeps_diagnostics_free_of_ids_and_token_values',
       0, (): void => {
-        const result = resolveRustDeskConnectionContext(
-          verifiedOfficialInput());
+        const result = resolveRustDeskConnectionContext(input());
         const diagnostic: string =
           rustDeskConnectionContextDiagnostic(result);
         expect(diagnostic.indexOf('relay-1')).assertEqual(-1);
         expect(diagnostic.indexOf('account-1')).assertEqual(-1);
         expect(diagnostic.indexOf('secret-token')).assertEqual(-1);
-        expect(diagnostic.indexOf('token=projected') >= 0)
+        expect(diagnostic.indexOf('token=withheld') >= 0)
           .assertTrue();
       });
   });

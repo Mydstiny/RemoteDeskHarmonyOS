@@ -13,12 +13,11 @@ import {
 } from './RustDeskControlPlanePolicy';
 import { normalizeRustDeskProServerUrl } from './RustDeskProApiPolicy';
 
-const CAPABILITY_SCHEMA_VERSION: number = 1;
+const CAPABILITY_SCHEMA_VERSION: number = 2;
 const CAPABILITY_HASH_DOMAIN: string =
   'RemoteDeskHarmonyOS:rustdesk-control-plane-capability:v1:';
 
 export interface RustDeskControlPlaneCapabilityBinding {
-  source: RustDeskControlPlaneCapabilitySource
   ownerScopeId: string
   accountId: string
   relayId: string
@@ -33,6 +32,32 @@ export interface RustDeskControlPlaneCapabilityBinding {
   serverKeyMode: string
   serverKey: string
 }
+
+/**
+ * An attestation is supplied by a versioned adapter after it has verified a
+ * server capability contract. A profile choice, successful /api/login, or a
+ * compatible address-book response is never an attestation.
+ *
+ * No issuer is registered in this release because RustDesk Server Pro does
+ * not publish a capability response/signature contract that this independent
+ * client can safely verify. Keeping the registry empty is intentional:
+ * address-book sync works, while rendezvous token projection fails closed.
+ */
+export interface RustDeskControlPlaneCapabilityAttestation {
+  source: RustDeskControlPlaneCapabilitySource
+  issuerId: string
+  contractId: string
+  evidenceFingerprint: string
+}
+
+interface RustDeskTrustedCapabilityContract {
+  source: RustDeskControlPlaneCapabilitySource
+  issuerFingerprint: string
+  contractFingerprint: string
+}
+
+const TRUSTED_CAPABILITY_CONTRACTS:
+  RustDeskTrustedCapabilityContract[] = [];
 
 export class RustDeskControlPlaneCapabilityIssueResult {
   ok: boolean = false;
@@ -92,13 +117,11 @@ function endpointFingerprint(kind: string, host: string, port: number): string {
 }
 
 export function rustDeskControlPlaneBinding(
-  source: RustDeskControlPlaneCapabilitySource,
   ownerScopeId: string,
   account: RustDeskProAccountState,
   relay: RustDeskRelayConfig
 ): RustDeskControlPlaneCapabilityBinding {
   return {
-    source,
     ownerScopeId,
     accountId: account.id,
     relayId: relay.id,
@@ -115,8 +138,49 @@ export function rustDeskControlPlaneBinding(
   };
 }
 
+function attestationIsTrusted(
+  attestation: RustDeskControlPlaneCapabilityAttestation
+): boolean {
+  // Register a provider here only after its versioned contract, server
+  // evidence and revocation behavior have passed real-endpoint acceptance.
+  const issuerFingerprint: string = sha256Fingerprint(
+    'attestation-issuer', attestation.issuerId.trim());
+  const contractFingerprint: string = sha256Fingerprint(
+    'attestation-contract', attestation.contractId.trim());
+  return TRUSTED_CAPABILITY_CONTRACTS.some(
+    (contract: RustDeskTrustedCapabilityContract): boolean =>
+      contract.source === attestation.source &&
+      contract.issuerFingerprint === issuerFingerprint &&
+      contract.contractFingerprint === contractFingerprint);
+}
+
+export function rustDeskControlPlaneCapabilitySourceForProof(
+  proof: RustDeskControlPlaneCapabilityProof | undefined
+): RustDeskControlPlaneCapabilitySource {
+  if (proof === undefined ||
+    proof.schemaVersion !== CAPABILITY_SCHEMA_VERSION ||
+    proof.attestationEvidenceFingerprint.trim() === '') {
+    return 'none';
+  }
+  const source: RustDeskControlPlaneCapabilitySource =
+    proof.source === 'official_server_pro'
+      ? 'official_server_pro'
+      : (proof.source === 'verified_third_party'
+        ? 'verified_third_party' : 'none');
+  if (source === 'none') { return 'none'; }
+  const trusted: boolean = TRUSTED_CAPABILITY_CONTRACTS.some(
+    (contract: RustDeskTrustedCapabilityContract): boolean =>
+      contract.source === source &&
+      contract.issuerFingerprint ===
+        proof.attestationIssuerFingerprint &&
+      contract.contractFingerprint ===
+        proof.attestationContractFingerprint);
+  return trusted ? source : 'none';
+}
+
 export function issueRustDeskControlPlaneCapabilityProof(
-  binding: RustDeskControlPlaneCapabilityBinding
+  binding: RustDeskControlPlaneCapabilityBinding,
+  attestation: RustDeskControlPlaneCapabilityAttestation
 ): RustDeskControlPlaneCapabilityIssueResult {
   const result = new RustDeskControlPlaneCapabilityIssueResult();
   const accountApiOrigin: string =
@@ -125,12 +189,15 @@ export function issueRustDeskControlPlaneCapabilityProof(
     canonicalApiOrigin(binding.configuredApiServer);
   const apiOrigin: string = accountApiOrigin === configuredApiOrigin
     ? accountApiOrigin : '';
-  const apiHost: string = normalizedEndpointHost(apiOrigin);
-  const idHost: string = normalizedEndpointHost(binding.idServer);
-  const relayHost: string = normalizedEndpointHost(binding.relayServer);
-  if (binding.source === 'none') {
+  if (attestation.source === 'none') {
     result.code = 'unsupported_source';
     result.message = '该地址簿来源没有已验证的控制面协议能力。';
+    return result;
+  }
+  if (!attestationIsTrusted(attestation)) {
+    result.code = 'untrusted_attestation';
+    result.message =
+      '地址簿已同步；当前没有可验证的控制面能力提供方，连接按 API-only 处理。';
     return result;
   }
   if (binding.ownerScopeId.trim() === '' ||
@@ -139,17 +206,12 @@ export function issueRustDeskControlPlaneCapabilityProof(
     result.message = '账号数据域尚未就绪，无法绑定控制面能力。';
     return result;
   }
-  if (apiOrigin === '' || apiHost === '' ||
-    idHost === '' || relayHost === '') {
+  if (apiOrigin === '' ||
+    normalizedEndpointHost(binding.idServer) === '' ||
+    normalizedEndpointHost(binding.relayServer) === '') {
     result.code = 'identity_invalid';
     result.message =
       '登录 API 与当前中继 API 配置不一致，控制面令牌保持禁用。';
-    return result;
-  }
-  if (apiHost !== idHost || apiHost !== relayHost) {
-    result.code = 'origin_mismatch';
-    result.message =
-      'API、ID 与 Relay 服务器不属于同一主机，地址簿已保留但控制面令牌保持禁用。';
     return result;
   }
   if (binding.tokenGeneration <= 0 ||
@@ -178,7 +240,12 @@ export function issueRustDeskControlPlaneCapabilityProof(
   result.message = '';
   result.proof = {
     schemaVersion: CAPABILITY_SCHEMA_VERSION,
-    source: binding.source,
+    source: attestation.source,
+    attestationIssuerFingerprint: sha256Fingerprint(
+      'attestation-issuer', attestation.issuerId.trim()),
+    attestationContractFingerprint: sha256Fingerprint(
+      'attestation-contract', attestation.contractId.trim()),
+    attestationEvidenceFingerprint: attestation.evidenceFingerprint,
     ownerScopeFingerprint: sha256Fingerprint(
       'owner', binding.ownerScopeId.trim()),
     accountIdFingerprint: sha256Fingerprint(
@@ -204,28 +271,47 @@ export function rustDeskControlPlaneCapabilityProofMatches(
 ): boolean {
   if (proof === undefined ||
     proof.schemaVersion !== CAPABILITY_SCHEMA_VERSION ||
-    proof.source !== binding.source ||
     proof.tokenGeneration !== binding.tokenGeneration ||
     proof.accessTokenFingerprint !== binding.accessTokenFingerprint) {
     return false;
   }
-  const expected: RustDeskControlPlaneCapabilityIssueResult =
-    issueRustDeskControlPlaneCapabilityProof(binding);
-  if (!expected.ok || expected.proof === undefined) { return false; }
-  return proof.ownerScopeFingerprint ===
-      expected.proof.ownerScopeFingerprint &&
+  // This release has no registered capability issuer. Old locally minted
+  // schema-v1 proofs and any fabricated schema-v2 proof are rejected.
+  if (rustDeskControlPlaneCapabilitySourceForProof(proof) === 'none') {
+    return false;
+  }
+  const accountApiOrigin: string =
+    canonicalApiOrigin(binding.accountApiServer);
+  const configuredApiOrigin: string =
+    canonicalApiOrigin(binding.configuredApiServer);
+  const apiOrigin: string =
+    accountApiOrigin === configuredApiOrigin
+      ? accountApiOrigin : '';
+  const rendezvousFingerprint: string = endpointFingerprint(
+    'rendezvous', binding.idServer, binding.idServerPort);
+  const relayFingerprint: string = endpointFingerprint(
+    'relay', binding.relayServer, binding.relayPort);
+  if (apiOrigin === '' || rendezvousFingerprint === '' ||
+    relayFingerprint === '') {
+    return false;
+  }
+  return proof.ownerScopeFingerprint === sha256Fingerprint(
+      'owner', binding.ownerScopeId.trim()) &&
     proof.accountIdFingerprint ===
-      expected.proof.accountIdFingerprint &&
+      sha256Fingerprint('account', binding.accountId.trim()) &&
     proof.relayIdFingerprint ===
-      expected.proof.relayIdFingerprint &&
+      sha256Fingerprint('relay-id', binding.relayId.trim()) &&
     proof.apiOriginFingerprint ===
-      expected.proof.apiOriginFingerprint &&
+      sha256Fingerprint('api-origin', apiOrigin) &&
     proof.rendezvousEndpointFingerprint ===
-      expected.proof.rendezvousEndpointFingerprint &&
+      rendezvousFingerprint &&
     proof.relayEndpointFingerprint ===
-      expected.proof.relayEndpointFingerprint &&
+      relayFingerprint &&
     proof.serverIdentityFingerprint ===
-      expected.proof.serverIdentityFingerprint;
+      sha256Fingerprint(
+        'server-identity',
+        binding.serverKeyMode.trim() + '\u001f' +
+        binding.serverKey.trim());
 }
 
 export function rustDeskRelayCapabilityIdentityChanged(

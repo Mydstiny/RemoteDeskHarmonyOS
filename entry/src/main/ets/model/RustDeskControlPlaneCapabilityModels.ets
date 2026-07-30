@@ -6,6 +6,9 @@
 export interface RustDeskControlPlaneCapabilityProof {
   schemaVersion: number
   source: string
+  attestationIssuerFingerprint: string
+  attestationContractFingerprint: string
+  attestationEvidenceFingerprint: string
   ownerScopeFingerprint: string
   accountIdFingerprint: string
   relayIdFingerprint: string
@@ -25,6 +28,12 @@ export function cloneRustDeskControlPlaneCapabilityProof(
   return {
     schemaVersion: proof.schemaVersion,
     source: proof.source,
+    attestationIssuerFingerprint:
+      proof.attestationIssuerFingerprint,
+    attestationContractFingerprint:
+      proof.attestationContractFingerprint,
+    attestationEvidenceFingerprint:
+      proof.attestationEvidenceFingerprint,
     ownerScopeFingerprint: proof.ownerScopeFingerprint,
     accountIdFingerprint: proof.accountIdFingerprint,
     relayIdFingerprint: proof.relayIdFingerprint,
@@ -48,7 +57,10 @@ export function rustDeskControlPlaneCapabilityProofFromObject(
   const row: Record<string, Object> =
     value as Record<string, Object>;
   const stringKeys: string[] = [
-    'source', 'ownerScopeFingerprint', 'accountIdFingerprint',
+    'source', 'attestationIssuerFingerprint',
+    'attestationContractFingerprint',
+    'attestationEvidenceFingerprint',
+    'ownerScopeFingerprint', 'accountIdFingerprint',
     'relayIdFingerprint', 'accessTokenFingerprint',
     'apiOriginFingerprint', 'rendezvousEndpointFingerprint',
     'relayEndpointFingerprint', 'serverIdentityFingerprint'
@@ -60,6 +72,7 @@ export function rustDeskControlPlaneCapabilityProofFromObject(
     }
   }
   if (typeof row['schemaVersion'] !== 'number' ||
+    row['schemaVersion'] as number !== 2 ||
     typeof row['tokenGeneration'] !== 'number' ||
     typeof row['verifiedAt'] !== 'number') {
     return undefined;
@@ -67,6 +80,12 @@ export function rustDeskControlPlaneCapabilityProofFromObject(
   return {
     schemaVersion: row['schemaVersion'] as number,
     source: row['source'] as string,
+    attestationIssuerFingerprint:
+      row['attestationIssuerFingerprint'] as string,
+    attestationContractFingerprint:
+      row['attestationContractFingerprint'] as string,
+    attestationEvidenceFingerprint:
+      row['attestationEvidenceFingerprint'] as string,
     ownerScopeFingerprint: row['ownerScopeFingerprint'] as string,
     accountIdFingerprint: row['accountIdFingerprint'] as string,
     relayIdFingerprint: row['relayIdFingerprint'] as string,

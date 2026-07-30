@@ -7,6 +7,7 @@ import {
   parseRustDeskProAddressBookPage,
   parseRustDeskProPersonalAddressBookResponse,
   parseRustDeskProSharedAddressBookProfiles,
+  rustDeskProApiRouteId,
   RustDeskProApiError
 } from '../main/ets/services/RustDeskProApiPolicy';
 
@@ -63,6 +64,23 @@ export default function rustDeskProApiPolicyTest() {
       try { parseRustDeskProAddressBookResponse({}, 401); }
       catch (err) { code = err instanceof RustDeskProApiError ? err.code : ''; }
       expect(code).assertEqual('token_expired');
+    });
+
+    it('never_exposes_server_error_body_or_address_book_guid', 0, () => {
+      let message = '';
+      try {
+        parseRustDeskProLoginResponse({
+          error: 'token=secret-value account=private-user'
+        }, 500);
+      } catch (err) {
+        message = err instanceof Error ? err.message : '';
+      }
+      expect(message.indexOf('secret-value')).assertEqual(-1);
+      expect(message.indexOf('private-user')).assertEqual(-1);
+      const routeId: string = rustDeskProApiRouteId(
+        '/api/ab/peers?current=1&pageSize=100&ab=private-guid');
+      expect(routeId).assertEqual('address_book_peers');
+      expect(routeId.indexOf('private-guid')).assertEqual(-1);
     });
 
     it('parses_modern_personal_address_book_page', 0, () => {
