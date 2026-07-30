@@ -5,15 +5,64 @@ Updated: 2026-07-30 Asia/Shanghai
 ## Repository
 
 - Repository: Mydstiny/RemoteDeskHarmonyOS
-- Active task branch: `codex/cloud-data-lifecycle-root-fix`.
-- Base: `main@23940521a`; final reviewed implementation checkpoint:
-  `c88fc2968`.
-- Scope: root remediation of account/data ownership, per-account physical RDB stores, cloud bootstrap/sync lifecycle, local backup v3/legacy partial restore, encryption lifecycle, secure credential storage, device-local trust and old shared-store/relay/VNC migration.
-- Entity plan: `docs/superpowers/plans/2026-07-28-cloud-data-lifecycle-upgrade-roadmap.md`.
-- No remote push, PR or merge has been performed. The final independent D-020
-  incremental review of `0c0b3d49d..c88fc2968` passed with no P0/P1/P2.
+- Active task branch: `codex/vnc-product-parity-sheet-remediation-v2`.
+- Base: local `main@66fba4141`; current implementation checkpoint:
+  `90f51eed9`.
+- Scope: VNC-only Sheet/action reachability, owner/flow cleanup, visible session
+  controls, isolated diagnostics, Cursor `-239` and bounded ZRLE.
+- Entity plan:
+  `docs/superpowers/plans/2026-07-29-vnc-complete-product-parity-and-sheet-layout-remediation-plan-v2.md`.
+- Cloud/data lifecycle D-020 work is already fast-forward merged into local
+  `main@66fba4141` and its branch is deleted.
+- No remote push, PR or remote-main merge is authorized or performed.
 
-## Current cloud-data lifecycle result
+## Current VNC V2 result
+
+- VNC settings, modern host add and Gateway add use a VNC-only Sheet scaffold
+  with fixed header/footer, scroll-bounded body, large Sheet sizing and
+  `RESIZE_ONLY` keyboard avoidance. Modern host and mode12 Gateway flows are
+  two-step; existing RustDesk relay builders and other protocol Sheets are
+  unchanged.
+- The VNC session exposes a discoverable toolbar for keyboard, control mode,
+  shortcuts, display, HUD, console and disconnect. View-only state is
+  explained. VNC toolbar/HUD/position state is namespaced and does not consume
+  RustDesk settings or entitlement state.
+- Modifier/shortcut panel opening is generation-fenced through the control
+  Sheet `onDisappear`. The panel completes one invisible measurement pass
+  before placement and uses a viewport that accounts for VNC toolbar,
+  keyboard and HUD; previously accepted per-orientation ratios remain intact.
+- Native RFB now requests Cursor `-239`, validates dimensions/hotspot/pixel
+  payload/mask, publishes the shape through the existing generation-safe
+  cursor store and retains the local fallback.
+- Native RFB now advertises bounded ZRLE `16` for auto/zrle, retains Raw and
+  CopyRect fallback, keeps one inflater per connection, validates compressed
+  and decompressed bounds, tile/palette/run/pixel arithmetic, and reports the
+  effective source encoding to the VNC HUD. Tight and ContinuousUpdates remain
+  disabled.
+- Production links the API 23 system `libz.so`; host tests use `ZLIB::ZLIB`.
+  License, NOTICE, provenance and SPDX SBOM are updated without claiming the
+  host zlib version as the device runtime version.
+- No cloud physical schema or payload field changed. `vncrecord` remains the
+  sole VNC cloud table and runtime/effective capabilities remain device-local.
+
+Implementation commits: `e3c3fd7b7`, `6fd0e4539`, `6e47c052c`,
+`b742f7b12`, `90f51eed9`.
+
+## Current VNC verification and blockers
+
+- Native host tests: `168 passed, 0 failed`.
+- `default@OhosTestCompileArkTS`: passed at `90f51eed9`.
+- `assembleHap`: passed and signed at `90f51eed9`.
+- Light open-source compliance and `git diff --check`: passed.
+- Independent D-020 review is the next merge gate.
+- `ohosTest@OhosTestCompileArkTS` remains unavailable because task `00306054`
+  is not registered; no device-test success is claimed.
+- Release remains NO-GO until this exact HAP passes API 23 layout/input,
+  macOS continuous-frame/Cursor/Retina ZRLE, TigerVNC and
+  UltraVNC/LibVNCServer interoperability, other-protocol regression and the
+  one-/two-device/account-switch cloud matrix.
+
+## Completed cloud-data lifecycle baseline
 
 - AccountKit initializes before account-dependent storage. Login/logout/account
   switch use an awaitable account transition with generation fencing and
@@ -129,7 +178,7 @@ Implementation commits: `6a9d430b1`, `4cdc5b1df`, `d2f365c32`, `d51214577`,
 `382fdaaa8`, `df2a6b4`, `88a6128`, `501565e`, `0ffaa1c`,
 `0d6216e`, `0c0b3d4`.
 
-## Current verification
+## Cloud baseline verification
 
 - Release-candidate metadata is now `1.0.9 / 1000009`; application manifest, in-app release notes, user guide, version resource, SBOM and SBOM generator agree.
 - `default@OhosTestCompileArkTS`: passed in the current session for
@@ -145,7 +194,7 @@ Implementation commits: `6a9d430b1`, `4cdc5b1df`, `d2f365c32`, `d51214577`,
 - `ohosTest@OhosTestCompileArkTS` remains unavailable because the task is not registered (`00306054`); no test execution success is claimed.
 - A connected device was inspected read-only and currently has `1.0.8 / 1000008`. The `1.0.9` HAP was not installed because replacing an app that may contain real user data requires explicit authorization and a recoverable test procedure.
 
-## Current blockers / external acceptance
+## Cloud external acceptance
 
 - Release remains NO-GO until a real API 23 device proves whether current
   Account Kit UnionID and OS distributed-account ID have a trustworthy exact
@@ -168,8 +217,8 @@ Implementation commits: `6a9d430b1`, `4cdc5b1df`, `d2f365c32`, `d51214577`,
 
 ## Preserved user changes
 
-- Unrelated user-owned SSH, Moonlight, RustDesk, VNC and RDP plan edits remain
-  unstaged and were not included in the cloud-data commits.
+- Unrelated user-owned SSH, Moonlight, RustDesk and RDP plan edits remain
+  unstaged and were not included in the VNC commits.
 
 ## Previous implementation archive
 

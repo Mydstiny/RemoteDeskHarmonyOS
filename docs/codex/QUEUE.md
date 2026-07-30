@@ -4,7 +4,19 @@ Updated: 2026-07-30 Asia/Shanghai
 
 ## Now
 
-- Cloud/data lifecycle root fix is active on
+- VNC product-parity/Sheet remediation is active on
+  `codex/vnc-product-parity-sheet-remediation-v2` at `90f51eed9`.
+  Sheet/action reachability, two-step host/Gateway flows, settings ownership,
+  visible VNC controls, view-only explanation, isolated diagnostics, measured
+  modifier-panel placement, Cursor `-239` and bounded ZRLE are implemented.
+  Native tests are `168 passed, 0 failed`; both required Hvigor gates, signed
+  HAP, Light compliance and diff checks pass. Independent D-020 review remains
+  the local merge gate. Release remains NO-GO pending API 23 layout/input,
+  real macOS/TigerVNC/UltraVNC-LibVNCServer interoperability, cross-protocol
+  regression and cloud device/account matrices. `ohosTest` remains unavailable
+  as unregistered task `00306054`. Do not push, open a PR or merge remote main.
+
+- Cloud/data lifecycle root fix is completed and locally merged from
   `codex/cloud-data-lifecycle-root-fix` at implementation checkpoint
   `c88fc2968`. The signed upgrade-test candidate is `1.0.9 / 1000009`.
   D-020 remediation adds independent OS distributed-account verification,
@@ -98,8 +110,10 @@ Updated: 2026-07-30 Asia/Shanghai
   VNC performance HUD, visible local cursor fallback and measured
   orientation-specific modifier-panel placement. Native tests are
   `159 passed, 0 failed`; `default@OhosTestCompileArkTS`、signed `assembleHap`、
-  Light 合规和同一独立 reviewer 复查均通过。Keep ZRLE/Tight and remote-resolution controls disabled
-  until their capability and interoperability gates pass. Remaining release
+  Light 合规和同一独立 reviewer 复查均通过。This checkpoint's old
+  “keep ZRLE disabled” boundary is superseded by the V2 bounded ZRLE
+  implementation at `90f51eed9`; Tight and remote-resolution controls remain
+  disabled. Remaining release
   evidence is the exact signed HAP on API 23 against a real Mac plus
   RDP/RustDesk/SSH/SFTP regression; `ohosTest` remains blocked by unregistered
   task `00306054`.

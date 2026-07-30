@@ -5,10 +5,41 @@
 - 原始审计工作树：`codex/cloud-data-lifecycle-root-fix@6a9d430b1`
 - 实施基线：`main@66fba4141`
 - 实施分支：`codex/vnc-product-parity-sheet-remediation-v2`
-- 文档状态：计划已批准，2026-07-30 开始按阶段实施
+- 文档状态：代码与自动化门禁已完成，独立复核和本地分支闭环进行中；真机/多端点验收仍为发布阻塞
 - 云端前置：云数据生命周期分支已通过 D-020 并快进合并到本地 `main`
 - 实施优先级：P0 保存动作可达与会话可控 → P1 UI/设置一致性 → P2 RFB 画面效率与光标能力
 - 云端约束：继续只使用一张物理云表 `vncrecord`
+
+## 实施检查点（2026-07-30）
+
+已完成并提交：
+
+- `6fd0e4539`：VNC-only Sheet 壳层、固定 footer、设置 owner 去重、主机与
+  Gateway 两步流程；
+- `6e47c052c`：VNC 独立会话工具栏、只读解释、独立性能看板、组合键面板
+  `onDisappear`/测量后显现与碰撞约束；
+- `b742f7b12`：Cursor `-239` 协商、有界 shape/mask/hotspot 解码和会话代际隔离；
+- `90f51eed9`：连接级有界 ZRLE、Raw fallback、requested/effective 诊断、设置入口、
+  zlib 许可证/provenance/SBOM。
+
+当前自动化证据：
+
+- native `168 passed, 0 failed`；
+- `default@OhosTestCompileArkTS` 通过；
+- `assembleHap` 通过并生成签名 HAP；
+- Light 开源合规和 `git diff --check` 通过。
+
+未被上述证据替代的发布验收：
+
+- API 23 真机上的 360vp/大字体/输入法/安全区布局；
+- 当前签名 HAP 对 macOS Screen Sharing 的持续帧、输入、Cursor 和 Retina ZRLE；
+- TigerVNC 与 UltraVNC/LibVNCServer 互操作；
+- RDP、RustDesk、SSH/SFTP 真机零回归；
+- 单设备、双设备和账号切换云矩阵；
+- `ohosTest@OhosTestCompileArkTS` 仍因任务未注册 `00306054` 不可执行。
+
+因此本分支可在独立源码复核通过后完成本地合并，但发布状态保持 NO-GO，不能把编译或
+host-side 测试写成上述真机验收已通过。
 
 ## 0. 结论先行
 
@@ -919,24 +950,24 @@ DevEco 中创建/注册测试模块后，再执行真机 ohosTest。
 
 只有全部满足才可宣称 VNC V2 完成：
 
-- [ ] 所有 VNC Sheet 的保存/下一步固定可见，输入法和安全区不遮挡；
-- [ ] 现代添加为两步，经典编辑保持经典卡片风格；
-- [ ] 设置字段无重复 owner；
-- [ ] 第三页只用卡片标签区分 RustDesk/VNC，RustDesk 原流程无变化；
-- [ ] VNC Gateway 只开放真实可用 mode12；
-- [ ] 会话内有可见鼠标、键盘、组合键、显示、HUD 和断开入口；
-- [ ] view-only 明确可见；
-- [ ] 组合键面板首次展开不漂移；
-- [ ] VNC 性能看板与 RustDesk 设置完全隔离；
+- [ ] 所有 VNC Sheet 的保存/下一步固定可见，输入法和安全区不遮挡（代码/策略已完成，真机待验）；
+- [x] 现代添加为两步，经典编辑保持经典卡片风格；
+- [x] 设置字段无重复 owner；
+- [x] 第三页只用卡片标签区分 RustDesk/VNC，RustDesk 原流程无变化；
+- [x] VNC Gateway 只开放真实可用 mode12；
+- [x] 会话内有可见鼠标、键盘、组合键、显示、HUD 和断开入口；
+- [x] view-only 明确可见；
+- [ ] 组合键面板首次展开不漂移（生命周期/布局策略已完成，真机待验）；
+- [x] VNC 性能看板与 RustDesk 设置完全隔离；
 - [ ] Mac 画面持续刷新；
-- [ ] 画面、输入、光标和 HUD 使用同一 framebuffer 几何；
-- [ ] Cursor pseudo-encoding 或本地 fallback 保证鼠标可见；
-- [ ] requested/effective 编码、色深和帧率表述真实；
-- [ ] ZRLE 通过安全和互操作门禁后才开放；
-- [ ] 标准 Mac VNC 不提供虚假的远端分辨率选择；
-- [ ] 仍只有一张 `vncrecord`，无云物理 schema 变化；
+- [ ] 画面、输入、光标和 HUD 使用同一 framebuffer 几何（代码/策略已完成，真机待验）；
+- [x] Cursor pseudo-encoding 或本地 fallback 保证鼠标可见；
+- [x] requested/effective 编码、色深和帧率表述真实；
+- [ ] ZRLE 通过安全和互操作门禁后才开放（安全/边界测试已通过，多端点互操作待验）；
+- [x] 标准 Mac VNC 不提供虚假的远端分辨率选择；
+- [x] 仍只有一张 `vncrecord`，无云物理 schema 变化；
 - [ ] 单设备、多设备和账号切换不破坏 VNC owner；
 - [ ] RDP、RustDesk、SSH/SFTP 回归通过；
-- [ ] 两项 Hvigor、native tests、合规、真机和独立复核全部通过；
+- [ ] 两项 Hvigor、native tests、合规、真机和独立复核全部通过（自动化已通过，真机/复核待完成）；
 - [ ] 任务分支已合并回本地 `main` 并清理；
-- [ ] 未经用户授权没有 push、PR 或远端合并。
+- [x] 未经用户授权没有 push、PR 或远端合并。
