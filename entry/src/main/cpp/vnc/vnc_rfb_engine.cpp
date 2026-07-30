@@ -951,18 +951,20 @@ void VncRfbEngine::sendMouseWheel(int x, int y, int delta) {
 }
 
 void VncRfbEngine::sendText(const std::string& text) {
-    if (config_.vncViewOnly || !config_.vncClipboardEnabled || state() != ConnectionState::CONNECTED ||
-        text.size() > kMaxClipboardBytes) return;
+    if (text.empty() || !VncRfbProtocol::canSendTextInput(
+        config_.vncViewOnly, config_.vncClipboardEnabled,
+        state() == ConnectionState::CONNECTED)) {
+        return;
+    }
     std::vector<uint8_t> packet;
-    packet.reserve(8 + text.size());
-    packet.push_back(6);
-    packet.push_back(0);
-    packet.push_back(0);
-    packet.push_back(0);
-    appendU32(packet, static_cast<uint32_t>(text.size()));
-    packet.insert(packet.end(), text.begin(), text.end());
     std::string error;
-    writeBytes(packet.data(), packet.size(), error);
+    if (!VncRfbProtocol::buildTextKeyEvents(text, packet, error)) {
+        VNC_DIAG_WARN("[VNC-DIAG] text input rejected: %{public}s", error.c_str());
+        return;
+    }
+    if (!packet.empty()) {
+        writeBytes(packet.data(), packet.size(), error);
+    }
 }
 
 void VncRfbEngine::sendClipboard(const uint8_t* data, uint32_t len) {

@@ -5,7 +5,8 @@ import {
   clampVncFlowStep,
   isVncGatewayTransportSelectable,
   nextVncFlowStep,
-  previousVncFlowStep
+  previousVncFlowStep,
+  shouldPrepareClassicVncEditor
 } from '../main/ets/services/VncHostFlowPolicy';
 
 export default function vncHostFlowPolicyTest(): void {
@@ -23,6 +24,14 @@ export default function vncHostFlowPolicyTest(): void {
       expect(isVncGatewayTransportSelectable('ultravnc_repeater')).assertTrue();
       expect(isVncGatewayTransportSelectable('websocket_gateway')).assertFalse();
       expect(isVncGatewayTransportSelectable('ssh_tunnel')).assertFalse();
+    });
+
+    it('hydrates_vnc_defaults_only_for_the_direct_classic_editor', 0, (): void => {
+      expect(shouldPrepareClassicVncEditor('vnc', false)).assertTrue();
+      expect(shouldPrepareClassicVncEditor('vnc', true)).assertFalse();
+      expect(shouldPrepareClassicVncEditor('rdp', false)).assertFalse();
+      expect(shouldPrepareClassicVncEditor('rustdesk', false)).assertFalse();
+      expect(shouldPrepareClassicVncEditor('ssh', false)).assertFalse();
     });
   });
 }

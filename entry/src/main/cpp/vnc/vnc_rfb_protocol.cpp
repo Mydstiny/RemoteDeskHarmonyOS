@@ -18,6 +18,90 @@ bool isPrintableTargetByte(uint8_t value) {
     return value >= 0x21 && value <= 0x7e;
 }
 
+bool decodeNextUtf8Codepoint(const std::string& text, size_t& offset,
+                             uint32_t& codepoint) {
+    if (offset >= text.size()) {
+        return false;
+    }
+    const uint8_t first = static_cast<uint8_t>(text[offset]);
+    if (first <= 0x7F) {
+        codepoint = first;
+        ++offset;
+        return true;
+    }
+
+    size_t continuationCount = 0;
+    uint32_t value = 0;
+    uint32_t minimum = 0;
+    if (first >= 0xC2 && first <= 0xDF) {
+        continuationCount = 1;
+        value = first & 0x1FU;
+        minimum = 0x80;
+    } else if (first >= 0xE0 && first <= 0xEF) {
+        continuationCount = 2;
+        value = first & 0x0FU;
+        minimum = 0x800;
+    } else if (first >= 0xF0 && first <= 0xF4) {
+        continuationCount = 3;
+        value = first & 0x07U;
+        minimum = 0x10000;
+    } else {
+        return false;
+    }
+    if (continuationCount > text.size() - offset - 1U) {
+        return false;
+    }
+    for (size_t index = 1; index <= continuationCount; ++index) {
+        const uint8_t continuation = static_cast<uint8_t>(text[offset + index]);
+        if ((continuation & 0xC0U) != 0x80U) {
+            return false;
+        }
+        value = (value << 6U) | (continuation & 0x3FU);
+    }
+    if (value < minimum || value > 0x10FFFFU ||
+        (value >= 0xD800U && value <= 0xDFFFU)) {
+        return false;
+    }
+    offset += continuationCount + 1U;
+    codepoint = value;
+    return true;
+}
+
+bool codepointToKeysym(uint32_t codepoint, uint32_t& keysym) {
+    switch (codepoint) {
+        case 0x08: keysym = 0xFF08; return true; // BackSpace
+        case 0x09: keysym = 0xFF09; return true; // Tab
+        case 0x0A:
+        case 0x0D: keysym = 0xFF0D; return true; // Return
+        case 0x1B: keysym = 0xFF1B; return true; // Escape
+        case 0x7F: keysym = 0xFFFF; return true; // Delete
+        default: break;
+    }
+    if (codepoint < 0x20U) {
+        return false;
+    }
+    if (codepoint <= 0xFFU) {
+        keysym = codepoint;
+        return true;
+    }
+    if (codepoint <= 0x10FFFFU) {
+        keysym = 0x01000000U | codepoint;
+        return true;
+    }
+    return false;
+}
+
+void appendKeyEvent(std::vector<uint8_t>& packet, uint32_t keysym, bool pressed) {
+    packet.push_back(4);
+    packet.push_back(static_cast<uint8_t>(pressed ? 1 : 0));
+    packet.push_back(0);
+    packet.push_back(0);
+    packet.push_back(static_cast<uint8_t>(keysym >> 24));
+    packet.push_back(static_cast<uint8_t>(keysym >> 16));
+    packet.push_back(static_cast<uint8_t>(keysym >> 8));
+    packet.push_back(static_cast<uint8_t>(keysym));
+}
+
 bool checkedMultiply(size_t left, size_t right, size_t& result) {
     if (left != 0 && right > std::numeric_limits<size_t>::max() / left) {
         return false;
@@ -391,6 +475,57 @@ std::vector<uint8_t> buildSetEncodings(const std::string& preferredEncoding) {
         packet.push_back(static_cast<uint8_t>(value));
     }
     return packet;
+}
+
+bool canSendTextInput(bool viewOnly, bool clipboardEnabled, bool connected) {
+    (void)clipboardEnabled;
+    return !viewOnly && connected;
+}
+
+bool buildTextKeyEvents(const std::string& text, std::vector<uint8_t>& packet,
+                        std::string& error) {
+    packet.clear();
+    error.clear();
+    if (text.empty()) {
+        return true;
+    }
+
+    std::vector<uint8_t> candidate;
+    try {
+        candidate.reserve(std::min(
+            text.size(), kMaxTextInputCodepoints) * static_cast<size_t>(16));
+    } catch (const std::bad_alloc&) {
+        error = "VNC text input allocation failed";
+        return false;
+    }
+
+    size_t offset = 0;
+    size_t codepointCount = 0;
+    while (offset < text.size()) {
+        if (++codepointCount > kMaxTextInputCodepoints) {
+            error = "VNC text input exceeds the safe codepoint limit";
+            return false;
+        }
+        uint32_t codepoint = 0;
+        if (!decodeNextUtf8Codepoint(text, offset, codepoint)) {
+            error = "VNC text input is not valid UTF-8";
+            return false;
+        }
+        uint32_t keysym = 0;
+        if (!codepointToKeysym(codepoint, keysym)) {
+            error = "VNC text input contains an unsupported control character";
+            return false;
+        }
+        try {
+            appendKeyEvent(candidate, keysym, true);
+            appendKeyEvent(candidate, keysym, false);
+        } catch (const std::bad_alloc&) {
+            error = "VNC text input allocation failed";
+            return false;
+        }
+    }
+    packet.swap(candidate);
+    return true;
 }
 
 int normalizeFrameRateLimit(int frameRateLimit) {

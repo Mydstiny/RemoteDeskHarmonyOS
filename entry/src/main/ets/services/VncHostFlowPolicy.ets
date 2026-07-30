@@ -20,3 +20,12 @@ export function previousVncFlowStep(step: number, stepCount: number): number {
 export function isVncGatewayTransportSelectable(transport: VncTransport): boolean {
   return transport === 'ultravnc_repeater';
 }
+
+/**
+ * The classic editor owns its own VNC defaults. Direct desktop FAB routing
+ * must hydrate them before the Sheet opens; the modern picker does this in
+ * VncAddFlow and must not share classic form state.
+ */
+export function shouldPrepareClassicVncEditor(protocol: string, modernPicker: boolean): boolean {
+  return protocol === 'vnc' && !modernPicker;
+}

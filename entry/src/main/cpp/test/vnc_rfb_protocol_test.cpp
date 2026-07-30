@@ -168,6 +168,57 @@ RDP_TEST_CASE(vnc_set_encodings_advertises_cursor_and_bounded_zrle_with_raw_fall
     RDP_ASSERT(raw == expectedRaw);
 }
 
+RDP_TEST_CASE(vnc_text_input_uses_key_events_independent_of_clipboard_policy) {
+    RDP_ASSERT(VncRfbProtocol::canSendTextInput(false, true, true));
+    RDP_ASSERT(VncRfbProtocol::canSendTextInput(false, false, true));
+    RDP_ASSERT(!VncRfbProtocol::canSendTextInput(true, true, true));
+    RDP_ASSERT(!VncRfbProtocol::canSendTextInput(true, false, true));
+    RDP_ASSERT(!VncRfbProtocol::canSendTextInput(false, true, false));
+
+    std::vector<uint8_t> packet;
+    std::string error;
+    RDP_ASSERT(VncRfbProtocol::buildTextKeyEvents("A", packet, error));
+    const std::vector<uint8_t> expected = {
+        4, 1, 0, 0, 0, 0, 0, 0x41,
+        4, 0, 0, 0, 0, 0, 0, 0x41,
+    };
+    RDP_ASSERT(packet == expected);
+}
+
+RDP_TEST_CASE(vnc_text_input_maps_latin1_and_unicode_keysyms) {
+    std::vector<uint8_t> packet;
+    std::string error;
+    RDP_ASSERT(VncRfbProtocol::buildTextKeyEvents(
+        std::string("A\xC3\xA9\xE4\xB8\xAD"), packet, error));
+    RDP_ASSERT_EQ(packet.size(), static_cast<size_t>(48));
+    RDP_ASSERT_EQ(packet[7], static_cast<uint8_t>(0x41));
+    RDP_ASSERT_EQ(packet[23], static_cast<uint8_t>(0xE9));
+    RDP_ASSERT_EQ(packet[36], static_cast<uint8_t>(0x01));
+    RDP_ASSERT_EQ(packet[37], static_cast<uint8_t>(0x00));
+    RDP_ASSERT_EQ(packet[38], static_cast<uint8_t>(0x4E));
+    RDP_ASSERT_EQ(packet[39], static_cast<uint8_t>(0x2D));
+    RDP_ASSERT_EQ(packet[44], static_cast<uint8_t>(0x01));
+    RDP_ASSERT_EQ(packet[45], static_cast<uint8_t>(0x00));
+    RDP_ASSERT_EQ(packet[46], static_cast<uint8_t>(0x4E));
+    RDP_ASSERT_EQ(packet[47], static_cast<uint8_t>(0x2D));
+}
+
+RDP_TEST_CASE(vnc_text_input_rejects_malformed_utf8_without_partial_packets) {
+    const std::vector<std::string> malformed = {
+        std::string("\xC0\xAF", 2),
+        std::string("\xE2\x82", 2),
+        std::string("\xED\xA0\x80", 3),
+        std::string("\xF4\x90\x80\x80", 4),
+    };
+    for (const std::string& text : malformed) {
+        std::vector<uint8_t> packet = {1, 2, 3};
+        std::string error;
+        RDP_ASSERT(!VncRfbProtocol::buildTextKeyEvents(text, packet, error));
+        RDP_ASSERT(packet.empty());
+        RDP_ASSERT(!error.empty());
+    }
+}
+
 RDP_TEST_CASE(vnc_zrle_decodes_negotiated_8_16_and_big_endian_32_bit_pixels) {
     std::string error;
     std::vector<uint8_t> rgba;

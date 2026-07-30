@@ -130,6 +130,7 @@ import {
   RustDeskTargetDevice
 } from '../services/RemoteOrientationPolicy';
 import { resolveFabAddStyle } from '../services/FabAddStylePolicy';
+import { shouldPrepareClassicVncEditor } from '../services/VncHostFlowPolicy';
 import { resolveRustDeskBadges } from '../services/RustDeskCardBadgePolicy';
 import { cloudSyncDetailSpec } from '../services/CloudSyncGuidancePolicy';
 import {
@@ -4921,9 +4922,13 @@ struct HostListPage {
               this.resetForm();
               const nextProto: string = this.activeFilterProto !== '' ? this.activeFilterProto : 'rdp';
               this.switchHostProtocol(nextProto, RemoteHost.getDefaultPort(nextProto));
-              this.addSheetShowsModernPicker =
+              const modernPicker: boolean =
                 resolveFabAddStyle(this.fabAddStyle, this.isDesktopDevice) === 'modern';
+              this.addSheetShowsModernPicker = modernPicker;
               this.modernAddProtocol = '';
+              if (shouldPrepareClassicVncEditor(nextProto, modernPicker)) {
+                this.prepareClassicVncEditor(null);
+              }
               this.openSheetSafely((): void => { this.showAddSheet = true; });
             } else if (this.curTab === 4) {
               this.kvAddTrigger++;

@@ -1,6 +1,11 @@
 import { Palette, buildDark, buildLight } from '../../common/Theme';
 import { protocolIcon } from '../../services/ProtocolIconPolicy';
-import { VNC_SHEET_MAX_WIDTH } from '../../services/VncSheetLayoutPolicy';
+import {
+  resolveVncSheetLayout,
+  VNC_SHEET_DENSITY_ACTION_ONLY,
+  VNC_SHEET_DENSITY_REGULAR,
+  VNC_SHEET_MAX_WIDTH
+} from '../../services/VncSheetLayoutPolicy';
 
 @Component
 export struct VncSheetScaffold {
@@ -12,6 +17,7 @@ export struct VncSheetScaffold {
   @Prop leadingBack: boolean = false;
   @Prop showFooter: boolean = true;
   @Prop bottomSafePadding: number = 18;
+  @State measuredHeight: number = 0;
   onLeadingAction: () => void = (): void => {};
 
   @Builder
@@ -25,47 +31,82 @@ export struct VncSheetScaffold {
     return this.theme === 'light' ? buildLight(this.accentColor) : buildDark(this.accentColor);
   }
 
+  private density(): number {
+    if (!this.showFooter || !Number.isFinite(this.measuredHeight) || this.measuredHeight <= 0) {
+      return VNC_SHEET_DENSITY_REGULAR;
+    }
+    return resolveVncSheetLayout(this.measuredHeight, 0, this.bottomSafePadding).density;
+  }
+
+  private compactHeight(): boolean {
+    return this.density() !== VNC_SHEET_DENSITY_REGULAR;
+  }
+
+  private actionOnlyHeight(): boolean {
+    return this.density() === VNC_SHEET_DENSITY_ACTION_ONLY;
+  }
+
   @Builder
   private header() {
     Row() {
       if (this.leadingBack) {
         Button() {
-          SymbolGlyph($r('sys.symbol.chevron_left')).fontSize(18).fontColor([this.pal().text2])
+          SymbolGlyph($r('sys.symbol.chevron_left'))
+            .fontSize(this.compactHeight() ? 16 : 18).fontColor([this.pal().text2])
         }
-        .width(36).height(36).borderRadius(18).padding(0).backgroundColor(this.pal().surface)
+        .width(this.compactHeight() ? 32 : 36).height(this.compactHeight() ? 32 : 36)
+        .borderRadius(this.compactHeight() ? 16 : 18).padding(0).backgroundColor(this.pal().surface)
         .onClick((): void => { this.onLeadingAction(); })
       } else {
-        SymbolGlyph(protocolIcon('vnc')).fontSize(24).fontColor([this.accentColor])
+        SymbolGlyph(protocolIcon('vnc'))
+          .fontSize(this.compactHeight() ? 21 : 24).fontColor([this.accentColor])
       }
       Column() {
-        Text(this.title).fontSize(19).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
+        Text(this.title).fontSize(this.compactHeight() ? 17 : 19)
+          .fontWeight(FontWeight.Bold).fontColor(this.pal().text)
         if (this.stepText !== '') {
-          Text(this.stepText).fontSize(12).fontColor(this.pal().text3).margin({ top: 3 })
-        } else if (this.subtitle !== '') {
+          Text(this.stepText).fontSize(this.compactHeight() ? 11 : 12)
+            .fontColor(this.pal().text3).margin({ top: this.compactHeight() ? 2 : 3 })
+        } else if (this.subtitle !== '' && !this.compactHeight()) {
           Text(this.subtitle).fontSize(11).fontColor(this.pal().text3).margin({ top: 4 })
         }
-      }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 12 })
+      }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+        .margin({ left: this.compactHeight() ? 9 : 12 })
       if (!this.leadingBack) {
         Button() {
-          SymbolGlyph($r('sys.symbol.xmark')).fontSize(18).fontColor([this.pal().text2])
+          SymbolGlyph($r('sys.symbol.xmark'))
+            .fontSize(this.compactHeight() ? 16 : 18).fontColor([this.pal().text2])
         }
-        .width(36).height(36).borderRadius(18).padding(0).backgroundColor(this.pal().surface)
+        .width(this.compactHeight() ? 32 : 36).height(this.compactHeight() ? 32 : 36)
+        .borderRadius(this.compactHeight() ? 16 : 18).padding(0).backgroundColor(this.pal().surface)
         .onClick((): void => { this.onLeadingAction(); })
       }
-    }.width('100%').padding({ left: 20, right: 20, top: 18, bottom: 14 })
+    }.width('100%').padding({
+      left: 20,
+      right: 20,
+      top: this.compactHeight() ? 8 : 18,
+      bottom: this.compactHeight() ? 6 : 14
+    })
   }
 
   build() {
     Column() {
-      this.header()
+      if (!this.actionOnlyHeight()) {
+        this.header()
+      }
       Scroll() {
         Column() {
-          if (this.subtitle !== '' && this.stepText !== '') {
+          if (this.subtitle !== '' && (this.stepText !== '' || this.compactHeight())) {
             Text(this.subtitle).fontSize(11).fontColor(this.pal().text3)
-              .lineHeight(17).width('100%').margin({ bottom: 14 })
+              .lineHeight(17).width('100%')
+              .margin({ bottom: this.compactHeight() ? 8 : 14 })
           }
           this.contentBuilder()
-        }.width('100%').padding({ left: 20, right: 20, bottom: 18 })
+        }.width('100%').padding({
+          left: 20,
+          right: 20,
+          bottom: this.compactHeight() ? 8 : 18
+        })
       }
       .layoutWeight(1)
       .width('100%')
@@ -76,7 +117,12 @@ export struct VncSheetScaffold {
           Divider().strokeWidth(0.5).color(this.pal().divider)
           Row() {
             this.footerBuilder()
-          }.width('100%').padding({ left: 20, right: 20, top: 12, bottom: 10 })
+          }.width('100%').padding({
+            left: 20,
+            right: 20,
+            top: this.compactHeight() ? 6 : 12,
+            bottom: this.compactHeight() ? 4 : 10
+          })
         }
         .width('100%')
         .safeAreaPadding({ bottom: this.bottomSafePadding })
@@ -87,5 +133,11 @@ export struct VncSheetScaffold {
     .height('100%')
     .constraintSize({ maxWidth: VNC_SHEET_MAX_WIDTH })
     .backgroundColor(this.pal().bg)
+    .onAreaChange((_old: Area, next: Area): void => {
+      const height: number = next.height as number;
+      if (Number.isFinite(height) && height > 0 && Math.abs(height - this.measuredHeight) >= 0.5) {
+        this.measuredHeight = height;
+      }
+    })
   }
 }

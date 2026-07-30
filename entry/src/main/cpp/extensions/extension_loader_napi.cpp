@@ -63,6 +63,8 @@ namespace ExtensionLoaderNapi {
     napi_value Init(napi_env env, napi_value exports);
 }
 
+static void PrepareAdapterForTeardown(const std::shared_ptr<ProtocolAdapter>& adapter);
+
 namespace {
 
 constexpr int kRustDeskMaxDisplays = 16;
@@ -1496,7 +1498,11 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
         });
     }
 
-    adapter->setVideoCallback([session](const VideoFrame& frame) {
+    adapter->setVideoCallback([weakSession](const VideoFrame& frame) {
+        const std::shared_ptr<SessionContext> session = weakSession.lock();
+        if (!session) {
+            return;
+        }
         // VNC produces a complete raw BGRA framebuffer. It is deliberately
         // presented through the generation-safe raw renderer and never enters
         // the shared H.264/VPx decoder pipeline.
@@ -1699,8 +1705,8 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
     if (ret != 0) {
         OH_LOG_ERROR(LOG_APP, "[ExtLoader] 连接失败: ret=%{public}d host=%{public}s:%{public}d auth=%{public}s",
             ret, logHost.c_str(), cfg.port, cfg.authMethod.c_str());
+        PrepareAdapterForTeardown(adapter);
         if (auto sshAdapter = std::dynamic_pointer_cast<SshAdapter>(adapter)) {
-            sshAdapter->setConnectionStateCallback(nullptr);
             sshAdapter->disconnect();
         }
         g_sessions.erase(sessionId);
@@ -1851,7 +1857,7 @@ static void CleanupSshConnectFailure(SshConnectAsyncData& data) {
     DeactivateSessionContextIfActive(
         data.adapter, static_cast<uint64_t>(std::max(data.sessionId, 0)));
     if (data.adapter) {
-        data.adapter->setConnectionStateCallback(nullptr);
+        PrepareAdapterForTeardown(data.adapter);
         data.adapter->disconnect();
     }
 }
@@ -2051,6 +2057,7 @@ static void PrepareAdapterForTeardown(const std::shared_ptr<ProtocolAdapter>& ad
     if (!adapter) {
         return;
     }
+    adapter->setConnectionStateCallback(nullptr);
     adapter->setVideoCallback(nullptr);
     adapter->setAudioCallback(nullptr);
     if (auto* ssh = dynamic_cast<SshAdapter*>(adapter.get())) {

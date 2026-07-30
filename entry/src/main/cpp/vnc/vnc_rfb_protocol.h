@@ -23,6 +23,7 @@ constexpr int kLastRectEncoding = -224;
 constexpr int kRawEncoding = 0;
 constexpr int kCopyRectEncoding = 1;
 constexpr int kZrleEncoding = 16;
+constexpr size_t kMaxTextInputCodepoints = 4096;
 /** The RFB ClientInit shared flag. A viewer always sends one byte. */
 uint8_t clientInitSharedFlag();
 
@@ -67,6 +68,21 @@ std::vector<uint8_t> buildSetPixelFormat(int colorDepth);
  * DesktopSize and LastRect are always advertised.
  */
 std::vector<uint8_t> buildSetEncodings(const std::string& preferredEncoding);
+
+/**
+ * Whether soft-keyboard text may be sent for the current session. Clipboard
+ * policy is intentionally not an input gate: text uses RFB KeyEvent while
+ * clipboard synchronization uses ClientCutText.
+ */
+bool canSendTextInput(bool viewOnly, bool clipboardEnabled, bool connected);
+
+/**
+ * Strictly decode UTF-8 and build one RFB KeyEvent down/up pair per Unicode
+ * code point. Latin-1 uses its legacy X11 keysym; other printable Unicode
+ * values use the X11 0x01000000 Unicode keysym namespace.
+ */
+bool buildTextKeyEvents(const std::string& text, std::vector<uint8_t>& packet,
+                        std::string& error);
 
 /** Normalize the only supported VNC frame-rate limits. Zero means unbounded. */
 int normalizeFrameRateLimit(int frameRateLimit);
