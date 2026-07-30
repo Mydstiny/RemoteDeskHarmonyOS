@@ -196,12 +196,29 @@ export class VncSettingsService {
   private updateSyncSelection(values: VncSettingsValues, requestReconcile: boolean = true): boolean {
     const previousScopes: VncCloudSyncScope[] = this.sync.selectedScopes();
     const scopes: string[] = this.scopesFor(values);
+    const newlyEnabled: boolean =
+      scopes.some((scope: string): boolean =>
+        previousScopes.indexOf(
+          scope as VncCloudSyncScope) < 0);
+    const needsCloudFirstBarrier: boolean =
+      newlyEnabled &&
+      this.cloud.syncableTables().indexOf(
+        VNC_CLOUD_TABLE) >= 0;
+    if (needsCloudFirstBarrier &&
+      !this.cloud.beginSelectionReenableBarrier(
+        VNC_CLOUD_TABLE)) {
+      return false;
+    }
     // Stage first. The selector is not durable until the RDB projection has
     // completed, so a failed reconcile cannot leave a restart-time scope that
     // was never actually applied.
     this.sync.stageSelectedScopes(scopes);
     if (!this.cloud.reconcileVncSyncSelection()) {
       this.sync.stageSelectedScopes(previousScopes);
+      if (needsCloudFirstBarrier) {
+        this.cloud.abortSelectionReenableBarrier(
+          VNC_CLOUD_TABLE);
+      }
       return false;
     }
     if (!this.sync.persistSelectedScopes()) {
@@ -211,12 +228,23 @@ export class VncSettingsService {
       this.sync.stageSelectedScopes(previousScopes);
       this.cloud.reconcileVncSyncSelection();
       this.sync.persistSelectedScopes();
+      if (needsCloudFirstBarrier) {
+        this.cloud.abortSelectionReenableBarrier(
+          VNC_CLOUD_TABLE);
+      }
       return false;
     }
     // A scope can be turned off after its mirror was already uploaded. The
     // reconciliation keeps the local owner and leaves the shared cloud row
     // untouched; only an explicitly selected scope is uploaded.
-    if (requestReconcile) { void this.sync.requestSelectionReconcile(); }
+    if (requestReconcile) {
+      if (needsCloudFirstBarrier) {
+        void this.cloud.requestSelectionReenableCloudFirst(
+          VNC_CLOUD_TABLE);
+      } else {
+        void this.sync.requestSelectionReconcile();
+      }
+    }
     return true;
   }
 

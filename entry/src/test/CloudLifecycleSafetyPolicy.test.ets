@@ -23,7 +23,8 @@ export default function cloudLifecycleSafetyPolicyTest(): void {
         state: 'bound',
         ownerScopeId: 'owner-a',
         storeIdentity: '',
-        generation: 1
+        generation: 1,
+        platformIdentityFingerprint: ''
       };
       expect(cloudAccountBindingIsValid(incomplete)).assertFalse();
       expect(cloudDistributedRegistrationAllowed(incomplete, true)).assertFalse();
@@ -34,7 +35,10 @@ export default function cloudLifecycleSafetyPolicyTest(): void {
         state: 'bound',
         ownerScopeId: 'owner-a',
         storeIdentity: 'account-owner-a.db',
-        generation: 1
+        generation: 1,
+        platformIdentityFingerprint:
+          'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' +
+          'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
       };
       expect(cloudAccountBindingIsValid(bound)).assertTrue();
       expect(cloudDistributedRegistrationAllowed(bound, false)).assertFalse();

@@ -12,6 +12,7 @@ export interface CloudAccountBinding {
   ownerScopeId: string;
   storeIdentity: string;
   generation: number;
+  platformIdentityFingerprint: string;
 }
 
 export const CLOUD_LIFECYCLE_V2_ROLLOUT_ENABLED: boolean = true;
@@ -27,7 +28,8 @@ export function unboundCloudAccountBinding(): CloudAccountBinding {
     state: 'unbound',
     ownerScopeId: '',
     storeIdentity: '',
-    generation: 0
+    generation: 0,
+    platformIdentityFingerprint: ''
   };
 }
 
@@ -35,7 +37,8 @@ export function cloudAccountBindingIsValid(binding: CloudAccountBinding): boolea
   return binding.state === 'bound' &&
     binding.ownerScopeId.trim().length > 0 &&
     binding.storeIdentity.trim().length > 0 &&
-    binding.generation > 0;
+    binding.generation > 0 &&
+    binding.platformIdentityFingerprint.trim().length === 64;
 }
 
 export function cloudDistributedRegistrationAllowed(

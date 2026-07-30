@@ -75,6 +75,12 @@ export interface CloudSyncCoordinatorHooks {
   completeManualDownload: (tables: string[]) => boolean | void;
   /** Complete only successful tables without clearing unrelated restore quarantine. */
   completeManualDownloadPartial?: (tables: string[]) => boolean | void;
+  beginSelectionReenableDownload?: () => boolean;
+  rollbackSelectionReenableDownload?: () => Promise<boolean>;
+  completeSelectionReenableDownload?: (tables: string[]) => boolean;
+  beginStartupDownload?: () => boolean;
+  rollbackStartupDownload?: () => Promise<boolean>;
+  completeStartupDownload?: (dirtyTables: string[]) => boolean;
   setRestorePending: (pending: boolean) => void;
   pendingMutationTableRevisions?: () => Record<string, number>;
   acknowledgeMutationJournal?: (table: string, coveredRevision: number) => boolean;
@@ -89,6 +95,7 @@ export interface CloudSyncCoordinatorHooks {
   discardMutationJournalForTables?: (tables: string[]) => boolean;
   loadDurableState?: () => CloudSyncDurableState | null;
   persistDurableState?: (state: CloudSyncDurableState) => boolean;
+  selectionReenableBlocked?: (table: string) => boolean;
 }
 
 /**
@@ -119,9 +126,18 @@ export async function executeCloudSyncRequest(
       failureKind: request.tables.length === 0 ? 'none' : 'unknown'
     };
   }
-  if (request.source === 'manualDownload') {
+  if (request.source === 'manualDownload' ||
+    request.source === 'selectionReenable') {
     try {
-      if (!hooks || !hooks.beginManualDownload()) {
+      const begun: boolean = request.source ===
+        'manualDownload'
+        ? hooks !== null &&
+          hooks.beginManualDownload()
+        : hooks !== null &&
+          hooks.beginSelectionReenableDownload !==
+            undefined &&
+          hooks.beginSelectionReenableDownload();
+      if (!begun) {
         return {
           ok: false, source: request.source, tables: request.tables.slice(),
           failedTables: request.tables.slice(), rollbackFailed: false, failureKind: 'unknown'
@@ -159,7 +175,39 @@ export async function executeCloudSyncRequest(
     }
   }
   let rollbackFailed: boolean = false;
-  if (request.source === 'manualDownload' && hooks) {
+  if (request.source === 'selectionReenable' &&
+    hooks) {
+    try {
+      if (failedTables.length === 0) {
+        const completed: boolean =
+          hooks.completeSelectionReenableDownload !==
+            undefined &&
+          hooks.completeSelectionReenableDownload(
+            request.tables.slice());
+        if (!completed) {
+          failedTables.push(
+            request.tables.length > 0
+              ? request.tables[0] : '');
+          if (failureKind === 'none') {
+            failureKind = 'unknown';
+          }
+          rollbackFailed =
+            hooks.rollbackSelectionReenableDownload ===
+              undefined ||
+            !(await hooks
+              .rollbackSelectionReenableDownload());
+        }
+      } else {
+        rollbackFailed =
+          hooks.rollbackSelectionReenableDownload ===
+            undefined ||
+          !(await hooks
+            .rollbackSelectionReenableDownload());
+      }
+    } catch (_error) {
+      rollbackFailed = true;
+    }
+  } else if (request.source === 'manualDownload' && hooks) {
     try {
       if (failedTables.length === 0) {
         const completed: boolean | void = hooks.completeManualDownload(request.tables.slice());
@@ -268,7 +316,9 @@ export class CloudSyncCoordinator {
       state: binding.state,
       ownerScopeId: binding.ownerScopeId,
       storeIdentity: binding.storeIdentity,
-      generation: binding.generation
+      generation: binding.generation,
+      platformIdentityFingerprint:
+        binding.platformIdentityFingerprint
     };
     this.transfersEnabled = cloudTransferAllowed(this.currentBinding);
     this.acceptingRequests = true;
@@ -436,25 +486,43 @@ export class CloudSyncCoordinator {
     if (this.hooks && this.hooks.setStartupSyncPending) {
       try { this.hooks.setStartupSyncPending(true); } catch (_e) { /* best effort */ }
     }
-    const operation: Promise<CloudSyncOperationResult> = restoreBlocked
+    const startupCheckpointStarted: boolean =
+      initialBootstrap && !restoreBlocked &&
+      this.hooks !== null &&
+      this.hooks.beginStartupDownload !== undefined &&
+      this.hooks.beginStartupDownload();
+    const checkpointFailed: boolean =
+      initialBootstrap && !restoreBlocked &&
+      !startupCheckpointStarted;
+    const checkpointFailure: CloudSyncOperationResult = {
+      ok: false, source: 'startup', tables: [],
+      failedTables: this.selectedTables(),
+      rollbackFailed: false, failureKind: 'unknown'
+    };
+    const operation: Promise<CloudSyncOperationResult> = checkpointFailed
+      ? Promise.resolve(checkpointFailure)
+      : restoreBlocked
       ? Promise.resolve(this.skippedResult('startup'))
       : initialBootstrap
         ? this.requestStartupCloudFirst()
         : this.requestEstablishedStartupPull(initialDirty);
-    const completed: Promise<CloudSyncOperationResult> = operation.then((result: CloudSyncOperationResult): CloudSyncOperationResult => {
-      return this.finishStartupPull(
+    const completed: Promise<CloudSyncOperationResult> = operation.then(
+      async (result: CloudSyncOperationResult):
+        Promise<CloudSyncOperationResult> => {
+      return await this.finishStartupPull(
         result, initialBootstrap, initialDirty,
         initialJournalRevisions, initialMutationVersions,
-        restoreBlocked);
-    }, (_e: Error): CloudSyncOperationResult => {
+        restoreBlocked, startupCheckpointStarted);
+    }, async (_e: Error):
+      Promise<CloudSyncOperationResult> => {
       const failed: CloudSyncOperationResult = {
         ok: false, source: 'startup', tables: [], failedTables: [], rollbackFailed: false,
         failureKind: 'unknown'
       };
-      return this.finishStartupPull(
+      return await this.finishStartupPull(
         failed, initialBootstrap, initialDirty,
         initialJournalRevisions, initialMutationVersions,
-        restoreBlocked);
+        restoreBlocked, startupCheckpointStarted);
     });
     this.startupPull = completed.then((result: CloudSyncOperationResult): CloudSyncOperationResult => {
       this.startupPull = null;
@@ -479,7 +547,8 @@ export class CloudSyncCoordinator {
     const pushable: string[] = dirty.filter((table: string): boolean =>
       (selected.indexOf(table) >= 0 ||
         (table === VNC_CLOUD_TABLE && this.vncPhysicalTableSelected())) &&
-      !this.isAutomaticSyncBlocked(table));
+      !this.isAutomaticSyncBlocked(table) &&
+      !this.selectionReenableBlocked(table));
     const ordinaryPushable: string[] = pushable.filter((table: string): boolean => table !== VNC_CLOUD_TABLE);
     const vncPushable: boolean = pushable.indexOf(VNC_CLOUD_TABLE) >= 0 &&
       this.vncUploadTables().length > 0;
@@ -517,66 +586,79 @@ export class CloudSyncCoordinator {
     });
   }
 
-  private finishStartupPull(
+  private async finishStartupPull(
     result: CloudSyncOperationResult,
     initialBootstrap: boolean,
     initialDirty: string[],
-    initialJournalRevisions: Record<string, number>,
-    initialMutationVersions: Record<string, number>,
-    restoreBlocked: boolean
-  ): CloudSyncOperationResult {
+    _initialJournalRevisions: Record<string, number>,
+    _initialMutationVersions: Record<string, number>,
+    restoreBlocked: boolean,
+    startupCheckpointStarted: boolean
+  ): Promise<CloudSyncOperationResult> {
     let finalResult: CloudSyncOperationResult = result;
-    if (result.ok && initialBootstrap && !restoreBlocked) {
-      // A pre-bootstrap journal is not evidence of user intent on a new
-      // device. Clear every recorded table intent after the authoritative pull,
-      // including currently deselected tables, so a later selector change
-      // cannot resurrect an unsafe native-first upload.
-      const discardTables: string[] = initialDirty.slice();
-      let journalReleased: boolean = true;
-      for (let i = 0; i < discardTables.length; i++) {
-        const table: string = discardTables[i];
-        const revision: number =
-          initialJournalRevisions[table] || 0;
-        if (revision > 0 && this.hooks &&
-          this.hooks.acknowledgeMutationJournal &&
-          !this.hooks.acknowledgeMutationJournal(
-            table, revision)) {
-          journalReleased = false;
-          break;
+    if (initialBootstrap && !restoreBlocked &&
+      startupCheckpointStarted) {
+      if (!result.ok) {
+        const restored: boolean =
+          this.hooks !== null &&
+          this.hooks.rollbackStartupDownload !==
+            undefined &&
+          (await this.hooks.rollbackStartupDownload());
+        finalResult = {
+          ok: false,
+          source: result.source,
+          tables: result.tables.slice(),
+          failedTables: result.failedTables.slice(),
+          rollbackFailed: !restored,
+          failureKind: result.failureKind
+        };
+      } else if (this.hooks === null ||
+        this.hooks.completeStartupDownload === undefined ||
+        !this.hooks.completeStartupDownload(
+          initialDirty.slice())) {
+        const restored: boolean =
+          this.hooks !== null &&
+          this.hooks.rollbackStartupDownload !==
+            undefined &&
+          (await this.hooks.rollbackStartupDownload());
+        finalResult = {
+          ok: false, source: result.source,
+          tables: result.tables.slice(),
+          failedTables: initialDirty.slice(),
+          rollbackFailed: !restored,
+          failureKind: 'unknown'
+        };
+      }
+    }
+    if (finalResult.ok && initialBootstrap &&
+      !restoreBlocked) {
+      // The record-level reconcile above retains every genuine pre-bootstrap
+      // journal entry. Queue those intents only after the authoritative pull
+      // has committed, never before.
+      for (let i = 0; i < initialDirty.length; i++) {
+        if (this.deferredAutomaticTables.indexOf(
+          initialDirty[i]) < 0) {
+          this.deferredAutomaticTables.push(
+            initialDirty[i]);
         }
       }
-      if (!journalReleased) {
+      if (this.hooks && this.hooks.markCloudBootstrapCompleted &&
+        !this.hooks.markCloudBootstrapCompleted()) {
         finalResult = {
-          ok: false, source: result.source, tables: result.tables.slice(),
-          failedTables: discardTables.slice(), rollbackFailed: false, failureKind: 'unknown'
+          ok: false, source: result.source,
+          tables: result.tables.slice(),
+          failedTables: result.tables.slice(),
+          rollbackFailed: false, failureKind: 'unknown'
         };
       } else {
-        for (let i = 0; i < discardTables.length; i++) {
-          const table: string = discardTables[i];
-          const remainingRevision: number =
-            this.captureJournalRevisions([table])[table] || 0;
-          const currentVersion: number =
-            this.automaticMutationVersions[table] || 0;
-          if (remainingRevision <= 0 &&
-            currentVersion ===
-              (initialMutationVersions[table] || 0)) {
-            this.clearAutomaticIntent(table);
-          }
-        }
-        if (this.hooks && this.hooks.markCloudBootstrapCompleted &&
-          !this.hooks.markCloudBootstrapCompleted()) {
+        this.bootstrapCompleted = true;
+        if (!this.persistBootstrapCompletion()) {
           finalResult = {
-            ok: false, source: result.source, tables: result.tables.slice(),
-            failedTables: result.tables.slice(), rollbackFailed: false, failureKind: 'unknown'
+            ok: false, source: result.source,
+            tables: result.tables.slice(),
+            failedTables: result.tables.slice(),
+            rollbackFailed: false, failureKind: 'unknown'
           };
-        } else {
-          this.bootstrapCompleted = true;
-          if (!this.persistBootstrapCompletion()) {
-            finalResult = {
-              ok: false, source: result.source, tables: result.tables.slice(),
-              failedTables: result.tables.slice(), rollbackFailed: false, failureKind: 'unknown'
-            };
-          }
         }
       }
     }
@@ -695,6 +777,38 @@ export class CloudSyncCoordinator {
         });
       }
       return Promise.resolve(this.completeExplicitBootstrap(result));
+    });
+  }
+
+  /**
+   * A newly re-enabled table gets an exact cloud-first barrier. CloudStore's
+   * durable barrier keeps every native-first path blocked until the caller
+   * records this terminal success and completes local promotion.
+   */
+  requestSelectionReenableCloudFirst(
+    table: string
+  ): Promise<CloudSyncOperationResult> {
+    let tables: string[] = [];
+    if (table === VNC_CLOUD_TABLE) {
+      tables = this.vncSyncTables();
+    } else {
+      tables = this.selectedTables().filter(
+        (candidate: string): boolean =>
+          candidate === table ||
+          (candidate === 'cryptoparams' &&
+            table !== 'usersettings'));
+    }
+    if (tables.indexOf(table) < 0) {
+      return Promise.resolve(this.rejectedResult({
+        source: 'selectionReenable',
+        direction: 'cloudFirst',
+        tables: [table]
+      }, 'cloud_service'));
+    }
+    return this.enqueue({
+      source: 'selectionReenable',
+      direction: 'cloudFirst',
+      tables
     });
   }
 
@@ -1049,6 +1163,9 @@ export class CloudSyncCoordinator {
   }
 
   private tablesForAutomaticRetry(retryKey: string): string[] {
+    if (this.selectionReenableBlocked(retryKey)) {
+      return [];
+    }
     if (retryKey === VNC_CLOUD_TABLE) { return this.vncUploadTables(); }
     const selected: string[] = this.selectedTables();
     return selected.filter((candidate: string): boolean =>
@@ -1056,7 +1173,10 @@ export class CloudSyncCoordinator {
   }
 
   private requestVncStartupPush(): Promise<CloudSyncOperationResult> {
-    if (this.restoreUploadBlocked() || this.isAutomaticSyncBlocked(VNC_CLOUD_TABLE)) {
+    if (this.restoreUploadBlocked() ||
+      this.isAutomaticSyncBlocked(VNC_CLOUD_TABLE) ||
+      this.selectionReenableBlocked(
+        VNC_CLOUD_TABLE)) {
       return Promise.resolve(this.skippedResult('startup'));
     }
     const tables: string[] = this.vncUploadTables();
@@ -1076,6 +1196,20 @@ export class CloudSyncCoordinator {
     return this.enqueue({ source, direction: 'cloudFirst', tables });
   }
 
+  private selectionReenableBlocked(
+    table: string
+  ): boolean {
+    if (!this.hooks ||
+      !this.hooks.selectionReenableBlocked) {
+      return false;
+    }
+    try {
+      return this.hooks.selectionReenableBlocked(table);
+    } catch (_error) {
+      return true;
+    }
+  }
+
   private skippedResult(source: CloudSyncSource): CloudSyncOperationResult {
     return { ok: true, source, tables: [], failedTables: [], rollbackFailed: false, failureKind: 'none' };
   }
@@ -1084,6 +1218,13 @@ export class CloudSyncCoordinator {
     if (!this.acceptingRequests || this.currentLease === null ||
       !this.transfersEnabled) {
       return Promise.resolve(this.rejectedResult(request));
+    }
+    if (request.direction === 'nativeFirst' &&
+      request.tables.some(
+        (table: string): boolean =>
+          this.selectionReenableBlocked(table))) {
+      return Promise.resolve(
+        this.rejectedResult(request, 'cloud_service'));
     }
     const lease: AccountSessionLease = cloneAccountSessionLease(this.currentLease);
     const epoch: number = this.bindingEpoch;

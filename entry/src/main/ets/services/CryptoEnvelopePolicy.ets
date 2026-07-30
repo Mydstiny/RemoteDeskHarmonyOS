@@ -50,4 +50,3 @@ export function cryptoEnvelopeCanMigrateToV3(value: string): boolean {
   return kind === 'plaintext' || kind === 'legacy_v1' ||
     kind === 'scoped_v3';
 }
-

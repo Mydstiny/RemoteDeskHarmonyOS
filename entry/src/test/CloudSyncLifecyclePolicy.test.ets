@@ -24,7 +24,10 @@ function binding(state: 'unbound' | 'validating' | 'bound' | 'blocked' = 'bound'
     state,
     ownerScopeId: 'owner-a',
     storeIdentity: 'remotedesktop_owner-a.db',
-    generation: 7
+    generation: 7,
+    platformIdentityFingerprint:
+      'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' +
+      'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
   };
 }
 
@@ -105,7 +108,10 @@ export default function cloudSyncLifecyclePolicyTest(): void {
         state: 'bound',
         ownerScopeId: 'owner-b',
         storeIdentity: 'remotedesktop_owner-b.db',
-        generation: 1
+        generation: 1,
+        platformIdentityFingerprint:
+          'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' +
+          'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
       };
       const recovered: CloudSyncDurableState =
         recoverCloudSyncDurableState(foreign, target, true, false, 2);

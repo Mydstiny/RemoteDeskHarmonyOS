@@ -52,6 +52,14 @@
       {
         "name": "ohos.permission.KEEP_BACKGROUND_RUNNING"
       },
+      {
+        "name": "ohos.permission.DISTRIBUTED_DATASYNC",
+        "reason": "$string:datasync_reason",
+        "usedScene": {
+          "abilities": ["EntryAbility"],
+          "when": "inuse"
+        }
+      },
       // Temporarily disabled until the READ_PASTEBOARD ACL request is approved.
       // Restore this declaration together with an ACL-enabled signing profile
       // before validating the RDP system file paste flow.

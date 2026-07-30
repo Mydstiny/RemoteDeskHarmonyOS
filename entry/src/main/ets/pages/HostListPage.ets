@@ -1397,12 +1397,24 @@ struct HostListPage {
     this.cloudSyncStep = CLOUD_SYNC_SHEET_ACTIONS;
   }
 
-  private toggleCloudSyncTable(table: string): void {
+  private async toggleCloudSyncTable(
+    table: string
+  ): Promise<void> {
     const next: string[] = this.cloudSyncSelectedTables.slice();
     const index: number = next.indexOf(table);
     if (index >= 0) { next.splice(index, 1); } else { next.push(table); }
+    const cloud: CloudStore = CloudStore.getInstance();
+    if (index < 0 &&
+      !cloud.beginSelectionReenableBarrier(table)) {
+      this.cloudSyncError =
+        '同步范围禁写门禁未能保存，已拒绝重新启用';
+      return;
+    }
     if (!CloudSyncSelectionStore.getInstance()
       .replaceSelectedBusinessTables(getContext(this), next)) {
+      if (index < 0) {
+        cloud.abortSelectionReenableBarrier(table);
+      }
       this.cloudSyncError = '同步范围未能安全保存，请重试';
       return;
     }
@@ -1412,18 +1424,23 @@ struct HostListPage {
     // deletes must never become native-first merely because the user later
     // turned the table back on.
     if (index < 0) {
-      CloudSyncCoordinator.getInstance().requestForegroundPull().then((result): void => {
-        if (!result.ok) {
-          hilog.warn(0x0001, 'CloudSync',
-            '[HostListPage] table re-enable pull failed table=' + table);
-          this.cloudSyncError =
-            '云表重新启用失败：本地未覆盖，请检查云空间后重试';
-          promptAction.showToast({
-            message: '云表重新启用失败，本地数据未覆盖',
-            duration: 2600
-          });
-        }
-      });
+      const result =
+        await cloud.requestSelectionReenableCloudFirst(
+          table);
+      if (!result.ok) {
+        hilog.warn(0x0001, 'CloudSync',
+          '[HostListPage] table re-enable pull failed table=' + table);
+        this.cloudSyncError =
+          '云表重新启用失败：上传仍被暂停，请检查云空间后重试';
+        promptAction.showToast({
+          message: '云表重新启用失败，上传仍保持暂停',
+          duration: 2600
+        });
+      }
+    } else if (!cloud.abortSelectionReenableBarrier(
+      table)) {
+      this.cloudSyncError =
+        '同步范围已关闭，但旧门禁清理失败；上传仍保持暂停';
     }
   }
 
@@ -7295,7 +7312,9 @@ struct HostListPage {
           ForEach(cloudSyncSelectableTables(), (table: string) => {
             Row() {
               Checkbox().select(this.cloudSyncSelectedTables.indexOf(table) >= 0).selectedColor(this.accentColor)
-                .onChange((): void => { this.toggleCloudSyncTable(table); })
+                .onChange((): void => {
+                  void this.toggleCloudSyncTable(table);
+                })
               Column() {
                 Text(table === 'usersettings' ? '个性化与协议设置' : table === 'remotehosts' ? '远程主机' : table === 'rdpcredentials' ? 'Windows 登录凭据' : table === 'rustdeskrelays' ? 'RustDesk 中继配置' : table === 'sshkeys' ? 'SSH 密钥' : table === 'totpentries' ? '双重验证动态口令' : 'VNC 记录（vncrecord）')
                   .fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font())

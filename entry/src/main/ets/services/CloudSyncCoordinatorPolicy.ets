@@ -2,7 +2,10 @@ import { CloudSyncDirection, cloudPullOrder } from './CloudSyncPolicy';
 import { effectiveCloudSyncTables } from './CloudSyncSelectionPolicy';
 
 export type CloudSyncSource =
-  'startup' | 'foreground' | 'cloudEvent' | 'automaticPush' | 'manualUpload' | 'manualDownload' | 'localRestore';
+  'startup' | 'foreground' | 'cloudEvent' |
+  'automaticPush' | 'manualUpload' |
+  'manualDownload' | 'selectionReenable' |
+  'localRestore';
 
 export const CLOUD_SYNC_MAX_RETRY_ATTEMPTS: number = 3;
 export const CLOUD_SYNC_ACCEPT_TIMEOUT_MS: number = 15000;
@@ -153,11 +156,16 @@ export function cloudSyncCallbackIdentityMatches(
 
 /** A suspicious empty result must never replace existing local startup data. */
 export function shouldRejectAutomaticEmptyCloudSnapshot(
-  source: string, direction: CloudSyncDirection, beforeVisibleRows: number, afterVisibleRows: number
+  source: string,
+  direction: CloudSyncDirection,
+  beforeVisibleRows: number,
+  afterVisibleRows: number,
+  authoritativeEmptyProof: boolean = false
 ): boolean {
   return direction === 'cloudFirst' &&
     (source === 'startup' || source === 'foreground' || source === 'cloudEvent') &&
-    beforeVisibleRows > 0 && afterVisibleRows === 0;
+    beforeVisibleRows > 0 && afterVisibleRows === 0 &&
+    !authoritativeEmptyProof;
 }
 
 /** These failures must stop native-first retries until the user resolves them. */

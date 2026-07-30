@@ -19,6 +19,16 @@ import { SensitiveDataBarrier } from './SensitiveDataBarrier';
 import { RustDeskProCredentialStore } from './RustDeskProCredentialStore';
 import { ActiveRemoteSessionRegistry } from './ActiveRemoteSessionRegistry';
 import { UserAccountJSON } from '../model/UserAccount';
+import {
+  PlatformCloudIdentityProof,
+  platformCloudIdentityProofIsValid,
+  unavailablePlatformCloudIdentityProof
+} from './PlatformCloudIdentityPolicy';
+import { PlatformCloudIdentityService } from './PlatformCloudIdentityService';
+import {
+  CloudSyncCoordinator,
+  CloudSyncOperationResult
+} from './CloudSyncCoordinator';
 
 export interface AccountLoginIdentity extends CredentialParams {
   avatarUrl: string;
@@ -154,8 +164,19 @@ export class AccountSessionCoordinator {
       return this.result(false, 'blocked', '账号生命周期尚未初始化');
     }
     const generation: number = this.current.generation + 1;
+    const platformProof: PlatformCloudIdentityProof =
+      await PlatformCloudIdentityService.getInstance()
+        .proveCurrentCloudAccount(
+          this.context, identity.unionID);
+    if (!platformCloudIdentityProofIsValid(platformProof)) {
+      return this.result(
+        false, 'blocked',
+        this.platformIdentityFailureMessage(platformProof));
+    }
     const switching: AccountScopeToken | null =
-      accountScopeToken(identity.unionID, generation, 'switching', 'validating');
+      accountScopeToken(
+        identity.unionID, generation, 'switching', 'validating',
+        platformProof.fingerprint);
     if (switching === null) {
       return this.result(false, 'blocked', '账号没有返回稳定的 UnionID');
     }
@@ -190,10 +211,16 @@ export class AccountSessionCoordinator {
     }
     HostSyncService.getInstance().clearForScopeTransition();
     KeyVaultService.getInstance().clearForScopeTransition();
-    RustDeskProCredentialStore.getInstance().clearMemoryForScopeTransition();
+    if (!RustDeskProCredentialStore.getInstance()
+      .clearForScopeTransition()) {
+      return await this.restorePreviousScope(
+        previousScope, previousCredential, previousAuth,
+        generation + 1,
+        '旧账号 RustDesk Pro 凭据未能从 Asset Store 安全清除');
+    }
 
     const rebound: boolean = await store.rebindScope(
-      this.context, switching, identity.unionID);
+      this.context, switching, identity.unionID, platformProof);
     if (!rebound) {
       return await this.restorePreviousScope(
         previousScope, previousCredential, previousAuth,
@@ -203,6 +230,29 @@ export class AccountSessionCoordinator {
       return await this.restorePreviousScope(
         previousScope, previousCredential, previousAuth,
         generation + 1, '登录请求已被更新的账号操作替代');
+    }
+
+    const bootstrap: CloudSyncOperationResult =
+      await CloudSyncCoordinator.getInstance()
+        .requestStartupPull();
+    if (!bootstrap.ok) {
+      return await this.restorePreviousScope(
+        previousScope, previousCredential, previousAuth,
+        generation + 1,
+        '当前账号首次云端核对未完成，本地数据未开放写入');
+    }
+    if (!store.markStartupSelectionReenablePulled() ||
+      !store.prepareSelectionReenablePromotions()) {
+      return await this.restorePreviousScope(
+        previousScope, previousCredential, previousAuth,
+        generation + 1,
+        '同步范围重新启用的 cloud-first 状态未能安全落盘');
+    }
+    if (!this.intentIsCurrent(intentGeneration)) {
+      return await this.restorePreviousScope(
+        previousScope, previousCredential, previousAuth,
+        generation + 1,
+        '登录请求已被更新的账号操作替代');
     }
 
     if (!(await accountKit.init(this.context)) || !(await accountKit.saveCredential(identity))) {
@@ -233,6 +283,10 @@ export class AccountSessionCoordinator {
       return await this.restorePreviousScope(
         previousScope, previousCredential, previousAuth,
         generation + 1, '账号数据域状态发布失败');
+    }
+    if (!store.releaseSelectionReenableBarriers()) {
+      hilog.warn(0x0001, 'AccountSession',
+        '同步范围 promotion 已完成但 barrier 尚未释放；上传保持暂停');
     }
     this.reloadScopeServices();
     this.publish();
@@ -275,7 +329,13 @@ export class AccountSessionCoordinator {
     }
     HostSyncService.getInstance().clearForScopeTransition();
     KeyVaultService.getInstance().clearForScopeTransition();
-    RustDeskProCredentialStore.getInstance().clearMemoryForScopeTransition();
+    if (!RustDeskProCredentialStore.getInstance()
+      .clearForScopeTransition()) {
+      return await this.restorePreviousScope(
+        previousScope, previousCredential, previousAuth,
+        next.generation + 1,
+        'RustDesk Pro 凭据未能从 Asset Store 安全清除');
+    }
     const rebound: boolean = await store.rebindScope(this.context, next);
     if (!rebound) {
       return await this.restorePreviousScope(
@@ -339,8 +399,25 @@ export class AccountSessionCoordinator {
     const previousUnionId: string = previousCredential !== null
       ? previousCredential.unionID : previousAuth.unionId;
     const store: CloudStore = CloudStore.getInstance();
+    let previousPlatformProof: PlatformCloudIdentityProof =
+      unavailablePlatformCloudIdentityProof();
+    if (rollback.kind === 'huawei_account') {
+      previousPlatformProof =
+        await PlatformCloudIdentityService.getInstance()
+          .proveCurrentCloudAccount(
+            this.context, previousUnionId);
+      if (!platformCloudIdentityProofIsValid(
+        previousPlatformProof) ||
+        previousPlatformProof.fingerprint !==
+          rollback.platformIdentityFingerprint) {
+        return await this.recoverDeviceLocal(
+          rollback.generation + 1,
+          message + '；平台云账号已变化，旧账号不可安全回滚');
+      }
+    }
     const rebound: boolean = await store.rebindScope(
-      this.context, rollback, previousUnionId);
+      this.context, rollback, previousUnionId,
+      previousPlatformProof);
     const credentialRestored: boolean =
       await AccountKitService.getInstance()
         .restoreCredentialSnapshot(previousCredential);
@@ -432,8 +509,25 @@ export class AccountSessionCoordinator {
       cloudBindingState: scope.cloudBindingState,
       storeIdentity: scope.storeIdentity,
       schemaRevision: scope.schemaRevision,
-      selectionRevision: scope.selectionRevision
+      selectionRevision: scope.selectionRevision,
+      platformIdentityFingerprint:
+        scope.platformIdentityFingerprint
     };
+  }
+
+  private platformIdentityFailureMessage(
+    proof: PlatformCloudIdentityProof
+  ): string {
+    if (proof.state === 'permission_denied') {
+      return '未授权分布式数据访问，无法验证当前华为云账号';
+    }
+    if (proof.state === 'not_logged_in') {
+      return '系统当前没有已登录的分布式华为账号';
+    }
+    if (proof.state === 'identity_mismatch') {
+      return 'Account Kit 账号与系统云账号无法建立可信对应，云同步已停止';
+    }
+    return '无法独立验证当前平台云账号，云同步已安全停止';
   }
 
   private publish(): void {

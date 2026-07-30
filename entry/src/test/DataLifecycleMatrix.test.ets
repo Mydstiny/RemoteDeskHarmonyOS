@@ -46,6 +46,10 @@ import {
 import {
   parseLegacyRelayJson
 } from '../main/ets/services/LegacyRelayMigrationPolicy';
+import {
+  PlatformCloudIdentityProof,
+  platformCloudIdentityProofFromApi23
+} from '../main/ets/services/PlatformCloudIdentityPolicy';
 
 function emptyTables(): Record<string, Array<Record<string, string>>> {
   const result: Record<string, Array<Record<string, string>>> = {};
@@ -113,17 +117,23 @@ export default function dataLifecycleMatrixTest(): void {
 
     it('new_device_login_requires_exact_identity_then_pulls_before_push',
       0, (): void => {
-        const candidate = accountScopeToken('union-a', 2);
+        const proof: PlatformCloudIdentityProof =
+          platformCloudIdentityProofFromApi23(
+            'union-a', true);
+        const candidate = accountScopeToken(
+          'union-a', 2, 'bound', 'validating',
+          proof.fingerprint);
         expect(candidate !== null).assertTrue();
         if (candidate === null) { return; }
         expect(cloudTransferAllowed(
           cloudAccountBindingForScope(candidate))).assertFalse();
         const bound = verifyAccountScopeCloudBinding(
-          candidate, ' union-a ');
+          candidate, ' union-a ', proof);
         expect(cloudTransferAllowed(
           cloudAccountBindingForScope(bound))).assertTrue();
         expect(verifyAccountScopeCloudBinding(
-          candidate, 'union-b').cloudBindingState)
+          candidate, 'union-b',
+          proof).cloudBindingState)
           .assertEqual('blocked');
         expect(shouldUseCloudFirstForInitialBootstrap(false))
           .assertTrue();

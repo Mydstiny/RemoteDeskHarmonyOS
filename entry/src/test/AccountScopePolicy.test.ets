@@ -14,6 +14,16 @@ import {
   verifyAccountScopeCloudBinding
 } from '../main/ets/services/AccountScopePolicy';
 import { UserAccount } from '../main/ets/model/UserAccount';
+import {
+  PlatformCloudIdentityProof,
+  platformCloudIdentityProofFromApi23,
+  unavailablePlatformCloudIdentityProof
+} from '../main/ets/services/PlatformCloudIdentityPolicy';
+
+function platformProof(id: string = 'union-a'):
+  PlatformCloudIdentityProof {
+  return platformCloudIdentityProofFromApi23(id, true);
+}
 
 export default function accountScopePolicyTest(): void {
   describe('AccountScopePolicy', (): void => {
@@ -36,7 +46,11 @@ export default function accountScopePolicyTest(): void {
 
     it('keeps_device_local_and_account_scopes_physically_separate', 0, (): void => {
       const local = deviceLocalScopeToken(1);
-      const account = accountScopeToken('union-a', 2);
+      const proof: PlatformCloudIdentityProof =
+        platformProof();
+      const account = accountScopeToken(
+        'union-a', 2, 'bound', 'validating',
+        proof.fingerprint);
       expect(account === null).assertFalse();
       if (account === null) { return; }
       expect(local.storeIdentity === account.storeIdentity).assertFalse();
@@ -48,32 +62,52 @@ export default function accountScopePolicyTest(): void {
     });
 
     it('binds_cloud_only_to_the_current_verified_account_identity', 0, (): void => {
-      const account = accountScopeToken('union-a', 2);
+      const proof: PlatformCloudIdentityProof =
+        platformProof();
+      const account = accountScopeToken(
+        'union-a', 2, 'bound', 'validating',
+        proof.fingerprint);
       expect(account === null).assertFalse();
       if (account === null) { return; }
-      const bound = verifyAccountScopeCloudBinding(account, ' union-a ');
+      const bound = verifyAccountScopeCloudBinding(
+        account, ' union-a ', proof);
       expect(bound.cloudBindingState).assertEqual('bound');
       expect(bound.ownerScopeId).assertEqual(account.ownerScopeId);
       expect(bound.storeIdentity).assertEqual(account.storeIdentity);
 
       const wrongAccount =
-        verifyAccountScopeCloudBinding(account, 'union-b');
+        verifyAccountScopeCloudBinding(
+          account, 'union-b', proof);
       expect(wrongAccount.cloudBindingState).assertEqual('blocked');
       const missingIdentity =
-        verifyAccountScopeCloudBinding(account, '');
+        verifyAccountScopeCloudBinding(
+          account, '', proof);
       expect(missingIdentity.cloudBindingState).assertEqual('blocked');
 
-      const forgedStore = accountScopeToken('union-a', 3);
+      const forgedStore = accountScopeToken(
+        'union-a', 3, 'bound', 'validating',
+        proof.fingerprint);
       expect(forgedStore === null).assertFalse();
       if (forgedStore === null) { return; }
       forgedStore.storeIdentity = 'remotedesktop_owner-forged.db';
       expect(verifyAccountScopeCloudBinding(
-        forgedStore, 'union-a').cloudBindingState).assertEqual('blocked');
+        forgedStore, 'union-a',
+        proof).cloudBindingState).assertEqual('blocked');
+
+      expect(verifyAccountScopeCloudBinding(
+        account, 'union-a',
+        unavailablePlatformCloudIdentityProof())
+        .cloudBindingState).assertEqual('blocked');
+      expect(verifyAccountScopeCloudBinding(
+        account, 'union-a',
+        platformProof('union-b'))
+        .cloudBindingState).assertEqual('blocked');
     });
 
     it('never_promotes_device_local_data_to_account_cloud', 0, (): void => {
       const local = verifyAccountScopeCloudBinding(
-        deviceLocalScopeToken(1), 'union-a');
+        deviceLocalScopeToken(1), 'union-a',
+        unavailablePlatformCloudIdentityProof());
       expect(local.cloudBindingState).assertEqual('unbound');
       expect(cloudAccountBindingForScope(local).state).assertEqual('unbound');
     });
@@ -94,7 +128,11 @@ export default function accountScopePolicyTest(): void {
     });
 
     it('fences_reopened_stores_with_an_immutable_instance_id', 0, (): void => {
-      const scope = accountScopeToken('union-a', 7);
+      const proof: PlatformCloudIdentityProof =
+        platformProof();
+      const scope = accountScopeToken(
+        'union-a', 7, 'bound', 'validating',
+        proof.fingerprint);
       expect(scope === null).assertFalse();
       if (scope === null) { return; }
       const first = accountSessionLease(scope, 11);

@@ -4,6 +4,10 @@ import {
   CloudAccountBinding,
   CloudAccountBindingState
 } from './CloudLifecycleSafetyPolicy';
+import {
+  PlatformCloudIdentityProof,
+  platformCloudIdentityProofIsValid
+} from './PlatformCloudIdentityPolicy';
 
 export type AccountScopeKind = 'device_local' | 'huawei_account';
 export type AccountSessionState =
@@ -18,6 +22,7 @@ export interface AccountScopeToken {
   storeIdentity: string;
   schemaRevision: number;
   selectionRevision: number;
+  platformIdentityFingerprint: string;
 }
 
 /**
@@ -86,7 +91,8 @@ export function deviceLocalScopeToken(generation: number): AccountScopeToken {
     cloudBindingState: 'unbound',
     storeIdentity: DEVICE_LOCAL_STORE_IDENTITY,
     schemaRevision: 0,
-    selectionRevision: 0
+    selectionRevision: 0,
+    platformIdentityFingerprint: ''
   };
 }
 
@@ -94,7 +100,8 @@ export function accountScopeToken(
   unionId: string,
   generation: number,
   sessionState: AccountSessionState = 'bound',
-  cloudBindingState: CloudAccountBindingState = 'validating'
+  cloudBindingState: CloudAccountBindingState = 'validating',
+  platformIdentityFingerprint: string = ''
 ): AccountScopeToken | null {
   const ownerScopeId: string = ownerScopeIdForUnionId(unionId);
   const storeIdentity: string = accountStoreIdentity(ownerScopeId);
@@ -107,22 +114,26 @@ export function accountScopeToken(
     cloudBindingState,
     storeIdentity,
     schemaRevision: 0,
-    selectionRevision: 0
+    selectionRevision: 0,
+    platformIdentityFingerprint:
+      platformIdentityFingerprint.trim()
   };
 }
 
 /**
  * Promotes an account scope to a cloud-capable binding only when the stable
  * UnionID returned by the current Account Kit authorization derives the exact
- * owner and physical store already carried by the scope token.
+ * owner and physical store already carried by the scope token, and a fresh
+ * independent platform distributed-account proof matches the token.
  *
- * The caller must pass identity from the current successful Account Kit
- * result, never a cached preference or UI field. Device-local scopes can never
- * become cloud-bound.
+ * The caller must pass both identities from current official API results,
+ * never a cached preference or UI field. Device-local scopes can never become
+ * cloud-bound.
  */
 export function verifyAccountScopeCloudBinding(
   token: AccountScopeToken,
-  verifiedUnionId: string
+  verifiedUnionId: string,
+  platformProof: PlatformCloudIdentityProof
 ): AccountScopeToken {
   const verifiedOwnerScopeId: string =
     ownerScopeIdForUnionId(verifiedUnionId);
@@ -135,7 +146,10 @@ export function verifyAccountScopeCloudBinding(
     verifiedStoreIdentity.length > 0 &&
     token.ownerScopeId === verifiedOwnerScopeId &&
     token.storeIdentity === verifiedStoreIdentity &&
-    token.generation > 0) {
+    token.generation > 0 &&
+    platformCloudIdentityProofIsValid(platformProof) &&
+    token.platformIdentityFingerprint ===
+      platformProof.fingerprint) {
     cloudBindingState = 'bound';
   }
   return {
@@ -146,7 +160,9 @@ export function verifyAccountScopeCloudBinding(
     cloudBindingState,
     storeIdentity: token.storeIdentity,
     schemaRevision: token.schemaRevision,
-    selectionRevision: token.selectionRevision
+    selectionRevision: token.selectionRevision,
+    platformIdentityFingerprint:
+      token.platformIdentityFingerprint
   };
 }
 
@@ -192,6 +208,8 @@ export function cloudAccountBindingForScope(token: AccountScopeToken): CloudAcco
     state: token.cloudBindingState,
     ownerScopeId: token.ownerScopeId,
     storeIdentity: token.storeIdentity,
-    generation: token.generation
+    generation: token.generation,
+    platformIdentityFingerprint:
+      token.platformIdentityFingerprint
   };
 }

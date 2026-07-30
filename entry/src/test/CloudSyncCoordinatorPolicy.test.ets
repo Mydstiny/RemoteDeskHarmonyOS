@@ -159,6 +159,9 @@ export default function cloudSyncCoordinatorPolicyTest(): void {
       expect(shouldRejectAutomaticEmptyCloudSnapshot('foreground', 'cloudFirst', 1, 0)).assertTrue();
       expect(shouldRejectAutomaticEmptyCloudSnapshot('manualDownload', 'cloudFirst', 11, 0)).assertFalse();
       expect(shouldRejectAutomaticEmptyCloudSnapshot('startup', 'cloudFirst', 0, 0)).assertFalse();
+      expect(shouldRejectAutomaticEmptyCloudSnapshot(
+        'startup', 'cloudFirst', 11, 0, true))
+        .assertFalse();
     });
 
     it('classifies_version_conflict_and_pauses_automatic_retries', 0, (): void => {

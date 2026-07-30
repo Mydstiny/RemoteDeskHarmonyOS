@@ -57,6 +57,39 @@ export class RustDeskProCredentialStore {
     this.emitDataChange();
   }
 
+  /**
+   * A Huawei-account scope transition is also a credential revocation
+   * boundary. Remove every Asset Store token in the outgoing scope before the
+   * metadata/cache can be rebound to another owner.
+   */
+  clearForScopeTransition(): boolean {
+    if (!this.loaded) { this.load(); }
+    const accountIds: string[] = [];
+    for (let i = 0; i < this.accounts.length; i++) {
+      const id: string = this.accounts[i].id.trim();
+      if (id !== '' && accountIds.indexOf(id) < 0) {
+        accountIds.push(id);
+      }
+    }
+    let removed: boolean = true;
+    for (let i = 0; i < accountIds.length; i++) {
+      if (!this.removeToken(accountIds[i])) { removed = false; }
+    }
+    this.accounts = [];
+    this.loaded = removed;
+    if (!removed) {
+      // Keep durable account ids available for a later revocation retry, but
+      // never retain a plaintext token in this process.
+      this.loaded = false;
+      this.emitDataChange();
+      return false;
+    }
+    const persisted: boolean = this.persist();
+    if (!persisted) { this.loaded = false; }
+    this.emitDataChange();
+    return persisted;
+  }
+
   onDataChange(callback: () => void): () => void {
     if (this.dataChangeListeners.indexOf(callback) < 0) {
       this.dataChangeListeners.push(callback);
