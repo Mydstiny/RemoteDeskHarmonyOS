@@ -1065,11 +1065,15 @@ struct RemoteDesktop {
         } else {
           const values: VncSettingsValues = this.vncSettings.get();
           values.controlMode = 2;
-          const saved = this.vncSettings.save(values);
+          void this.vncSettings.save(values)
+            .then((saved): void => {
+              if (!saved.ok) {
+                hilog.warn(RD_DOMAIN, RD_TAG,
+                  'VNC control mode persistence failed: ' +
+                  saved.message);
+              }
+            });
           this.vncControlMode = 2;
-          if (!saved.ok) {
-            hilog.warn(RD_DOMAIN, RD_TAG, 'VNC control mode persistence failed: ' + saved.message);
-          }
         }
         this.hideTouchIndicator();
         promptAction.showToast({ message: '已切换为键鼠模式', duration: 1500 });

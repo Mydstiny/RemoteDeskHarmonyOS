@@ -40,3 +40,24 @@ export function cloudSelectionLocalPromotionAllowed(
   return allowBarrierPromotion ||
     localMutationAllowed;
 }
+
+export function cloudSelectionTransitionNeedsCloudFirst(
+  previousSelection: string[],
+  nextSelection: string[],
+  physicalTableSelected: boolean
+): boolean {
+  if (!physicalTableSelected) { return false; }
+  for (let i = 0; i < nextSelection.length; i++) {
+    if (previousSelection.indexOf(
+      nextSelection[i]) < 0) {
+      return true;
+    }
+  }
+  return false;
+}
+
+export function cloudSelectionBarrierAfterRollback(
+  previousPhase: CloudSelectionReenablePhase | null
+): CloudSelectionReenablePhase | null {
+  return previousPhase;
+}

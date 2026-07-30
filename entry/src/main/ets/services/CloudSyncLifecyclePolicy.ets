@@ -64,6 +64,7 @@ function isFailureKind(value: string): boolean {
     value === 'cloud_service' ||
     value === 'network' ||
     value === 'indeterminate' ||
+    value === 'restore_pending' ||
     value === 'unknown';
 }
 

@@ -22,6 +22,10 @@ import {
 import { VncCloudSyncService } from './VncCloudSyncService';
 import { VncCloudSyncScope } from './VncCloudSyncSelectionPolicy';
 import { VNC_CLOUD_TABLE } from './VncRecordPolicy';
+import {
+  CloudSelectionReenablePhase,
+  cloudSelectionTransitionNeedsCloudFirst
+} from './CloudSelectionReenablePolicy';
 
 export interface VncSettingsSaveResult {
   ok: boolean;
@@ -107,7 +111,9 @@ export class VncSettingsService {
     };
   }
 
-  save(next: VncSettingsValues): VncSettingsSaveResult {
+  async save(
+    next: VncSettingsValues
+  ): Promise<VncSettingsSaveResult> {
     const result: VncSettingsSaveResult = { ok: false, message: '' };
     const normalized: VncSettingsValues = this.normalize(next);
     if (!validVncPort(normalized.defaultPort)) {
@@ -142,21 +148,64 @@ export class VncSettingsService {
     const previousScopes: VncCloudSyncScope[] = this.sync.selectedScopes();
     const nextScopes: string[] = this.scopesFor(normalized);
     const selectionChanged: boolean = !this.sameScopes(previousScopes, nextScopes);
-    if (!this.updateSyncSelection(normalized, false)) {
+    const previousBarrier:
+      CloudSelectionReenablePhase | null =
+      this.cloud.selectionReenableBarrierPhase(
+        VNC_CLOUD_TABLE);
+    const needsCloudFirstBarrier: boolean =
+      cloudSelectionTransitionNeedsCloudFirst(
+        previousScopes, nextScopes,
+        this.cloud.syncableTables().indexOf(
+          VNC_CLOUD_TABLE) >= 0);
+    if (selectionChanged &&
+      !this.updateSyncSelection(
+        normalized, previousScopes,
+        needsCloudFirstBarrier,
+        previousBarrier)) {
       result.message = 'VNC 同步选择保存失败，请检查本地数据状态后重试';
       return result;
     }
     if (!this.cloud.upsertVncRecord(record)) {
-      this.restoreSyncSelection(previousScopes);
-      result.message = this.cloud.getLastMutationResult().message || 'VNC 设置保存失败';
+      const mutationMessage: string =
+        this.cloud.getLastMutationResult().message;
+      const restored: boolean = !selectionChanged ||
+        this.restoreSyncSelection(
+          previousScopes, previousBarrier);
+      result.message = mutationMessage ||
+        'VNC 设置保存失败';
+      if (!restored) {
+        result.message +=
+          '；同步选择回滚未完成，上传仍保持暂停';
+      }
       return result;
     }
-    this.values = normalized;
-    if (selectionChanged) {
-      // Reconcile other VNC record types after the settings row is durable;
-      // this keeps a re-enabled scope from uploading a pre-save snapshot.
-      void this.sync.requestSelectionReconcile();
+    if (needsCloudFirstBarrier) {
+      const cloudFirst = await this.cloud
+        .requestSelectionReenableCloudFirst(
+          VNC_CLOUD_TABLE);
+      if (!cloudFirst.ok) {
+        const recordRestored: boolean =
+          current === null
+            ? this.cloud
+              .discardVncRecordAfterFailedCreate(
+                record.userId, record.id)
+            : this.cloud.upsertVncRecord(
+              current, true);
+        const selectionRestored: boolean =
+          this.restoreSyncSelection(
+            previousScopes, previousBarrier,
+            recordRestored);
+        result.message =
+          'VNC 同步范围的 cloud-first 核对未完成，设置未发布成功';
+        if (!recordRestored ||
+          !selectionRestored) {
+          result.message +=
+            '；本地回滚未完整，上传仍保持暂停';
+        }
+        return result;
+      }
     }
+    this.values = normalized;
     result.ok = true;
     this.emitChange();
     return result;
@@ -193,17 +242,14 @@ export class VncSettingsService {
     return null;
   }
 
-  private updateSyncSelection(values: VncSettingsValues, requestReconcile: boolean = true): boolean {
-    const previousScopes: VncCloudSyncScope[] = this.sync.selectedScopes();
+  private updateSyncSelection(
+    values: VncSettingsValues,
+    previousScopes: VncCloudSyncScope[],
+    needsCloudFirstBarrier: boolean,
+    previousBarrier:
+      CloudSelectionReenablePhase | null
+  ): boolean {
     const scopes: string[] = this.scopesFor(values);
-    const newlyEnabled: boolean =
-      scopes.some((scope: string): boolean =>
-        previousScopes.indexOf(
-          scope as VncCloudSyncScope) < 0);
-    const needsCloudFirstBarrier: boolean =
-      newlyEnabled &&
-      this.cloud.syncableTables().indexOf(
-        VNC_CLOUD_TABLE) >= 0;
     if (needsCloudFirstBarrier &&
       !this.cloud.beginSelectionReenableBarrier(
         VNC_CLOUD_TABLE)) {
@@ -213,49 +259,34 @@ export class VncSettingsService {
     // completed, so a failed reconcile cannot leave a restart-time scope that
     // was never actually applied.
     this.sync.stageSelectedScopes(scopes);
-    if (!this.cloud.reconcileVncSyncSelection()) {
-      this.sync.stageSelectedScopes(previousScopes);
-      if (needsCloudFirstBarrier) {
-        this.cloud.abortSelectionReenableBarrier(
-          VNC_CLOUD_TABLE);
-      }
+    if (!this.cloud.reconcileVncSyncSelection() ||
+      !this.sync.persistSelectedScopes()) {
+      this.restoreSyncSelection(
+        previousScopes, previousBarrier);
       return false;
-    }
-    if (!this.sync.persistSelectedScopes()) {
-      // Persistence failed after the new projection committed. Restore both
-      // the previous in-memory projection and its durable scope before
-      // returning an error to the caller.
-      this.sync.stageSelectedScopes(previousScopes);
-      this.cloud.reconcileVncSyncSelection();
-      this.sync.persistSelectedScopes();
-      if (needsCloudFirstBarrier) {
-        this.cloud.abortSelectionReenableBarrier(
-          VNC_CLOUD_TABLE);
-      }
-      return false;
-    }
-    // A scope can be turned off after its mirror was already uploaded. The
-    // reconciliation keeps the local owner and leaves the shared cloud row
-    // untouched; only an explicitly selected scope is uploaded.
-    if (requestReconcile) {
-      if (needsCloudFirstBarrier) {
-        void this.cloud.requestSelectionReenableCloudFirst(
-          VNC_CLOUD_TABLE);
-      } else {
-        void this.sync.requestSelectionReconcile();
-      }
     }
     return true;
   }
 
-  private restoreSyncSelection(scopes: VncCloudSyncScope[]): void {
+  private restoreSyncSelection(
+    scopes: VncCloudSyncScope[],
+    previousBarrier:
+      CloudSelectionReenablePhase | null,
+    restoreBarrier: boolean = true
+  ): boolean {
     this.sync.stageSelectedScopes(scopes);
-    if (!this.cloud.reconcileVncSyncSelection()) {
+    const projectionRestored: boolean =
+      this.cloud.reconcileVncSyncSelection();
+    const selectionRestored: boolean =
       this.sync.persistSelectedScopes();
-      return;
+    if (!projectionRestored ||
+      !selectionRestored ||
+      !restoreBarrier) {
+      return false;
     }
-    if (!this.sync.persistSelectedScopes()) { return; }
-    void this.sync.requestSelectionReconcile();
+    return this.cloud
+      .restoreSelectionReenableBarrier(
+        VNC_CLOUD_TABLE, previousBarrier);
   }
 
   private scopesFor(values: VncSettingsValues): string[] {

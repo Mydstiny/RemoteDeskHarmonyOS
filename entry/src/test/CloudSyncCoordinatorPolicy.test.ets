@@ -31,7 +31,10 @@ import {
   shouldUseCloudFirstForInitialBootstrap,
   upsertAutomaticRetryRecord
 } from '../main/ets/services/CloudSyncCoordinatorPolicy';
-import { executeCloudSyncRequest } from '../main/ets/services/CloudSyncCoordinator';
+import {
+  executeCloudSyncRequest,
+  restoreQuarantinedStartupResult
+} from '../main/ets/services/CloudSyncCoordinator';
 
 export default function cloudSyncCoordinatorPolicyTest(): void {
   describe('CloudSyncCoordinatorPolicy', (): void => {
@@ -207,6 +210,25 @@ export default function cloudSyncCoordinatorPolicyTest(): void {
       expect(shouldDeferAutomaticPushDuringBootstrap('pending')).assertTrue();
       expect(shouldDeferAutomaticPushDuringBootstrap('ready')).assertFalse();
     });
+
+    it('never_marks_a_restore_quarantine_as_a_successful_startup_pull',
+      0, (): void => {
+        const result =
+          restoreQuarantinedStartupResult(
+            ['remotehosts', 'vncrecord']);
+        expect(result.ok).assertFalse();
+        expect(result.source).assertEqual('startup');
+        expect(result.tables.length).assertEqual(0);
+        expect(result.failedTables.length)
+          .assertEqual(2);
+        expect(result.failureKind)
+          .assertEqual('restore_pending');
+        expect(shouldBlockAutomaticRetry(
+          result.failureKind)).assertTrue();
+        expect(cloudSyncFailureMessage(
+          result.failureKind))
+          .assertContain('恢复隔离');
+      });
 
     it('does_not_treat_the_vnc_physical_table_as_an_ordinary_secret_table', 0, (): void => {
       const ordinary: string[] = snapshotCloudSyncTables(['vncrecord']);

@@ -30,7 +30,7 @@ export interface CloudSyncRetryRecord {
 export type CloudSyncFailureKind =
   'none' | 'version_conflict' | 'empty_snapshot' | 'tombstone_cleanup' |
   'unsafe_payload' | 'cloud_service' | 'network' | 'indeterminate' |
-  'unknown';
+  'restore_pending' | 'unknown';
 
 export type CloudSyncWatchdogTimeoutKind =
   'none' | 'accept_timeout' | 'idle_timeout' | 'overall_timeout';
@@ -171,7 +171,8 @@ export function shouldRejectAutomaticEmptyCloudSnapshot(
 /** These failures must stop native-first retries until the user resolves them. */
 export function shouldBlockAutomaticRetry(kind: CloudSyncFailureKind): boolean {
   return kind === 'version_conflict' || kind === 'empty_snapshot' ||
-    kind === 'tombstone_cleanup' || kind === 'unsafe_payload';
+    kind === 'tombstone_cleanup' || kind === 'unsafe_payload' ||
+    kind === 'restore_pending';
 }
 
 export function cloudSyncFailureMessage(kind: CloudSyncFailureKind): string {
@@ -195,6 +196,9 @@ export function cloudSyncFailureMessage(kind: CloudSyncFailureKind): string {
   }
   if (kind === 'indeterminate') {
     return '系统云同步回调超时，已暂停本地修改和账号切换，避免迟到数据覆盖。应用会在收到终态后自动核对；若长时间未恢复，请完全退出后重新打开应用。';
+  }
+  if (kind === 'restore_pending') {
+    return '本地恢复数据尚未确认上传，已保持恢复隔离；首次云端核对和自动上传均未执行。请明确选择保留本地恢复或从云端重新下载。';
   }
   return '云同步未完成，数据未确认全部同步，请稍后重试。';
 }

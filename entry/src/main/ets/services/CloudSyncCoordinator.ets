@@ -66,6 +66,20 @@ export interface CloudSyncOperationResult {
   failureKind: CloudSyncFailureKind;
 }
 
+/** A restored local snapshot is quarantined until the user chooses a direction. */
+export function restoreQuarantinedStartupResult(
+  tables: string[]
+): CloudSyncOperationResult {
+  return {
+    ok: false,
+    source: 'startup',
+    tables: [],
+    failedTables: snapshotCloudSyncTables(tables),
+    rollbackFailed: false,
+    failureKind: 'restore_pending'
+  };
+}
+
 export type CloudSyncTableExecutor = (table: string, direction: CloudSyncDirection, label: string) => Promise<boolean>;
 
 export interface CloudSyncCoordinatorHooks {
@@ -502,7 +516,9 @@ export class CloudSyncCoordinator {
     const operation: Promise<CloudSyncOperationResult> = checkpointFailed
       ? Promise.resolve(checkpointFailure)
       : restoreBlocked
-      ? Promise.resolve(this.skippedResult('startup'))
+      ? Promise.resolve(
+        restoreQuarantinedStartupResult(
+          this.selectedTables()))
       : initialBootstrap
         ? this.requestStartupCloudFirst()
         : this.requestEstablishedStartupPull(initialDirty);

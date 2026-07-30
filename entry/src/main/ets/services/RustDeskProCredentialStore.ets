@@ -10,6 +10,7 @@ import {
 } from '../model/RustDeskProModels';
 import {
   RustDeskProCredentialMetadata,
+  rustDeskProCredentialAfterTokenRevocation,
   rustDeskProCredentialMetadata
 } from './RustDeskProCredentialPolicy';
 
@@ -60,7 +61,8 @@ export class RustDeskProCredentialStore {
   /**
    * A Huawei-account scope transition is also a credential revocation
    * boundary. Remove every Asset Store token in the outgoing scope before the
-   * metadata/cache can be rebound to another owner.
+   * cache can be rebound to another owner. Non-secret account/server/device
+   * metadata remains durable and is marked as requiring authentication.
    */
   clearForScopeTransition(): boolean {
     if (!this.loaded) { this.load(); }
@@ -75,19 +77,21 @@ export class RustDeskProCredentialStore {
     for (let i = 0; i < accountIds.length; i++) {
       if (!this.removeToken(accountIds[i])) { removed = false; }
     }
-    this.accounts = [];
-    this.loaded = removed;
-    if (!removed) {
-      // Keep durable account ids available for a later revocation retry, but
-      // never retain a plaintext token in this process.
-      this.loaded = false;
-      this.emitDataChange();
-      return false;
+    const revokedAccounts: RustDeskProAccountState[] =
+      [];
+    for (let i = 0; i < this.accounts.length; i++) {
+      revokedAccounts.push(
+        rustDeskProCredentialAfterTokenRevocation(
+          this.accounts[i]));
     }
+    this.accounts = revokedAccounts;
+    // Keep the sanitized in-memory metadata loaded even when persistence
+    // fails. Reloading the old Preferences record in the same process could
+    // otherwise rehydrate a token whose Asset Store deletion was not proven.
+    this.loaded = true;
     const persisted: boolean = this.persist();
-    if (!persisted) { this.loaded = false; }
     this.emitDataChange();
-    return persisted;
+    return removed && persisted;
   }
 
   onDataChange(callback: () => void): () => void {
@@ -213,16 +217,22 @@ export class RustDeskProCredentialStore {
           const accountId: string =
             typeof row['id'] === 'string'
               ? row['id'] as string : '';
+          const storedLoginStatus: string =
+            typeof row['loginStatus'] === 'string'
+              ? row['loginStatus'] as string : '';
           const legacyToken: string =
             typeof row['accessToken'] === 'string'
               ? row['accessToken'] as string : '';
           let accessToken: string = '';
           if (legacyToken !== '') {
             legacySecretFound = true;
-            if (this.writeToken(accountId, legacyToken)) {
+            if (storedLoginStatus !==
+              'requires_login' &&
+              this.writeToken(accountId, legacyToken)) {
               accessToken = legacyToken;
             }
-          } else {
+          } else if (storedLoginStatus !==
+            'requires_login') {
             accessToken = this.readToken(accountId);
           }
           this.accounts.push(

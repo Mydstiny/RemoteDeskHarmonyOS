@@ -239,7 +239,9 @@ export class AccountSessionCoordinator {
       return await this.restorePreviousScope(
         previousScope, previousCredential, previousAuth,
         generation + 1,
-        '当前账号首次云端核对未完成，本地数据未开放写入');
+        bootstrap.failureKind === 'restore_pending'
+          ? '当前账号存在尚未确认上传的本地恢复数据，已保持隔离且未执行云端拉取'
+          : '当前账号首次云端核对未完成，本地数据未开放写入');
     }
     if (!store.markStartupSelectionReenablePulled() ||
       !store.prepareSelectionReenablePromotions()) {

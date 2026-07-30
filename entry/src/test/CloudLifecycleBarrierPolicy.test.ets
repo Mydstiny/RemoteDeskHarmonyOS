@@ -2,8 +2,10 @@ import { describe, expect, it } from '@ohos/hypium';
 import {
   cloudSelectionAfterAuthoritativePull,
   cloudSelectionAfterLocalPromotion,
+  cloudSelectionBarrierAfterRollback,
   cloudSelectionLocalPromotionAllowed,
   cloudSelectionNativeFirstAllowed,
+  cloudSelectionTransitionNeedsCloudFirst,
   normalizeCloudSelectionReenablePhase
 } from '../main/ets/services/CloudSelectionReenablePolicy';
 import {
@@ -50,6 +52,31 @@ export default function cloudLifecycleBarrierPolicyTest():
         expect(cloudBootstrapRecordReconcileAction(
           false, 'update', false))
           .assertEqual('invalid');
+      });
+
+    it('requires_cloud_first_only_when_a_vnc_scope_is_newly_enabled',
+      0, (): void => {
+        expect(cloudSelectionTransitionNeedsCloudFirst(
+          [], ['hosts'], true)).assertTrue();
+        expect(cloudSelectionTransitionNeedsCloudFirst(
+          ['hosts'], ['hosts', 'secrets'],
+          true)).assertTrue();
+        expect(cloudSelectionTransitionNeedsCloudFirst(
+          ['hosts'], [], true)).assertFalse();
+        expect(cloudSelectionTransitionNeedsCloudFirst(
+          [], ['hosts'], false)).assertFalse();
+      });
+
+    it('restores_the_exact_pre_save_barrier_after_a_failed_vnc_save',
+      0, (): void => {
+        expect(cloudSelectionBarrierAfterRollback(
+          null) === null).assertTrue();
+        expect(cloudSelectionBarrierAfterRollback(
+          'pull_complete'))
+          .assertEqual('pull_complete');
+        expect(cloudSelectionBarrierAfterRollback(
+          'pending_pull'))
+          .assertEqual('pending_pull');
       });
   });
 }

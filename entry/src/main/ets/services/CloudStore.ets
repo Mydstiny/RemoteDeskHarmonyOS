@@ -187,6 +187,7 @@ import {
 } from './CloudDownloadTransactionPolicy';
 import {
   CloudSelectionReenablePhase,
+  cloudSelectionBarrierAfterRollback,
   cloudSelectionAfterAuthoritativePull,
   cloudSelectionAfterLocalPromotion,
   cloudSelectionLocalPromotionAllowed,
@@ -977,6 +978,14 @@ export class CloudStore implements CryptoCloudStore {
     return this.syncSelection.effectiveTables();
   }
 
+  selectionReenableBarrierPhase(
+    table: string
+  ): CloudSelectionReenablePhase | null {
+    if (TABLES.indexOf(table) < 0) { return null; }
+    return normalizeCloudSelectionReenablePhase(
+      this.selectionReenableBarriers()[table]);
+  }
+
   beginSelectionReenableBarrier(table: string): boolean {
     if (TABLES.indexOf(table) < 0) { return false; }
     const barriers: Record<string, string> =
@@ -991,6 +1000,26 @@ export class CloudStore implements CryptoCloudStore {
     return this.persistSelectionReenableBarriers(
       this.selectionReenableBarriersWithout(
         barriers, [table]));
+  }
+
+  restoreSelectionReenableBarrier(
+    table: string,
+    previousPhase: CloudSelectionReenablePhase | null
+  ): boolean {
+    if (TABLES.indexOf(table) < 0) { return false; }
+    const barriers: Record<string, string> =
+      this.selectionReenableBarriers();
+    const restored: CloudSelectionReenablePhase | null =
+      cloudSelectionBarrierAfterRollback(
+        previousPhase);
+    if (restored === null) {
+      return this.persistSelectionReenableBarriers(
+        this.selectionReenableBarriersWithout(
+          barriers, [table]));
+    }
+    barriers[table] = restored;
+    return this.persistSelectionReenableBarriers(
+      barriers);
   }
 
   async requestSelectionReenableCloudFirst(

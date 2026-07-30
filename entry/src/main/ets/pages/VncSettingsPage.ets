@@ -305,15 +305,19 @@ export struct VncSettingsPage {
         buttons: [{ text: '取消', color: this.pal().text2 }, { text: '确认开启', color: this.accentColor }]
       }).then((result: Object): void => {
         const values: Record<string, number> = result as Record<string, number>;
-        if (values['index'] === 1) { this.persistSettings(); }
+        if (values['index'] === 1) {
+          void this.persistSettings();
+        }
       });
       return;
     }
-    this.persistSettings();
+    void this.persistSettings();
   }
 
-  private persistSettings(): void {
-    const result = this.settings.save(this.settingsValues());
+  private async persistSettings(): Promise<void> {
+    const result =
+      await this.settings.save(
+        this.settingsValues());
     this.errorMessage = result.ok ? '' : result.message;
     if (result.ok) {
       this.cloudStatus = this.settings.cloudSyncStatus();

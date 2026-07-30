@@ -245,20 +245,24 @@ export struct VncSettingsSheet {
         buttons: [{ text: '取消', color: this.pal().text2 }, { text: '确认保存', color: this.needsDangerousConfirmation(needsPlaintextConfirmation) ? this.pal().danger : this.accentColor }]
       }).then((result: Object): void => {
         const dialogResult: Record<string, number> = result as Record<string, number>;
-        if (dialogResult['index'] === 1) { this.persistSettings(); }
+        if (dialogResult['index'] === 1) {
+          void this.persistSettings();
+        }
         else { this.load(); }
       });
       return;
     }
-    this.persistSettings();
+    void this.persistSettings();
   }
 
   private needsDangerousConfirmation(needsPlaintextConfirmation: boolean): boolean {
     return needsPlaintextConfirmation;
   }
 
-  private persistSettings(): void {
-    const result = this.settings.save(this.settingsValues());
+  private async persistSettings(): Promise<void> {
+    const result =
+      await this.settings.save(
+        this.settingsValues());
     if (!result.ok) {
       this.errorText = result.message;
       return;

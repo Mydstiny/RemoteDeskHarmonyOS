@@ -1,4 +1,8 @@
-import { RustDeskProAccountState } from '../model/RustDeskProModels';
+import {
+  RustDeskProAccountState,
+  rustDeskProAccessTokenFingerprint,
+  rustDeskProTokenGeneration
+} from '../model/RustDeskProModels';
 
 /**
  * Device-local, non-secret metadata persisted in Preferences.
@@ -42,5 +46,34 @@ export function rustDeskProCredentialMetadata(
     lastLoginAt: account.lastLoginAt,
     lastSyncAt: account.lastSyncAt,
     lastSyncError: account.lastSyncError
+  };
+}
+
+/**
+ * Asset revocation removes only the reusable secret. Server/account/device
+ * metadata remains available so a failed scope transition can safely reload
+ * the outgoing configuration and ask the user to authenticate again.
+ */
+export function rustDeskProCredentialAfterTokenRevocation(
+  account: RustDeskProAccountState
+): RustDeskProAccountState {
+  return {
+    id: account.id,
+    relayId: account.relayId,
+    serverUrl: account.serverUrl,
+    username: account.username,
+    displayName: account.displayName,
+    userId: account.userId,
+    accessToken: '',
+    accessTokenFingerprint:
+      rustDeskProAccessTokenFingerprint(''),
+    tokenGeneration:
+      rustDeskProTokenGeneration(account) + 1,
+    deviceId: account.deviceId,
+    deviceUuid: account.deviceUuid,
+    loginStatus: 'requires_login',
+    lastLoginAt: account.lastLoginAt,
+    lastSyncAt: account.lastSyncAt,
+    lastSyncError: 'credential_revoked_on_scope_transition'
   };
 }
