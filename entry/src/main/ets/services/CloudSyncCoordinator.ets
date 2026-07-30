@@ -1,4 +1,3 @@
-import { common } from '@kit.AbilityKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { CloudSyncSelectionStore } from './CloudSyncSelectionStore';
 import { CloudSyncDirection } from './CloudSyncPolicy';
@@ -93,6 +92,48 @@ export function restoreQuarantinedStartupResult(
 }
 
 export type CloudSyncTableExecutor = (table: string, direction: CloudSyncDirection, label: string) => Promise<boolean>;
+
+/**
+ * Narrow production dependency used when the coordinator freezes one
+ * request. Tests can inject an isolated selection without mutating the
+ * process singleton; production still reads CloudSyncSelectionStore.
+ */
+export interface CloudSyncSelectionSource {
+  selectedBusinessTables(): string[];
+}
+
+export type CloudSyncRetryTimerTask = () => void;
+
+/**
+ * Retry scheduling is an I/O boundary, not retry policy. Keeping it behind a
+ * clock lets implementation tests fire the real retry callback while another
+ * coordinator queue item owns the account lease.
+ */
+export interface CloudSyncRetryClock {
+  now(): number;
+  schedule(
+    task: CloudSyncRetryTimerTask,
+    delayMs: number
+  ): number;
+  cancel(timerId: number): void;
+}
+
+class SystemCloudSyncRetryClock implements CloudSyncRetryClock {
+  now(): number {
+    return Date.now();
+  }
+
+  schedule(
+    task: CloudSyncRetryTimerTask,
+    delayMs: number
+  ): number {
+    return setTimeout(task, delayMs) as number;
+  }
+
+  cancel(timerId: number): void {
+    clearTimeout(timerId);
+  }
+}
 
 export interface CloudSyncCoordinatorHooks {
   beginManualDownload: () => boolean;
@@ -282,9 +323,12 @@ export async function executeCloudSyncRequest(
 export class CloudSyncCoordinator {
   private static instance: CloudSyncCoordinator;
   private executor: CloudSyncTableExecutor | null = null;
-  private readonly selection: CloudSyncSelectionStore = CloudSyncSelectionStore.getInstance();
+  private readonly selection:
+    CloudSyncSelectionSource;
   private readonly vncSelection: VncCloudSyncSelectionStore =
     VncCloudSyncSelectionStore.getInstance();
+  private readonly retryClock:
+    CloudSyncRetryClock;
   private queueTail: Promise<void> = Promise.resolve();
   private pendingAutomaticTables: string[] = [];
   private deferredAutomaticTables: string[] = [];
@@ -312,6 +356,16 @@ export class CloudSyncCoordinator {
   private exclusiveVncSelectionLease:
     AccountSessionLease | null = null;
 
+  constructor(
+    selection: CloudSyncSelectionSource =
+      CloudSyncSelectionStore.getInstance(),
+    retryClock: CloudSyncRetryClock =
+      new SystemCloudSyncRetryClock()
+  ) {
+    this.selection = selection;
+    this.retryClock = retryClock;
+  }
+
   static getInstance(): CloudSyncCoordinator {
     if (!CloudSyncCoordinator.instance) {
       CloudSyncCoordinator.instance = new CloudSyncCoordinator();
@@ -320,7 +374,6 @@ export class CloudSyncCoordinator {
   }
 
   bind(
-    context: common.Context,
     lease: AccountSessionLease,
     binding: CloudAccountBinding,
     executor: CloudSyncTableExecutor,
@@ -334,7 +387,7 @@ export class CloudSyncCoordinator {
       return false;
     }
     if (this.retryTimer >= 0) {
-      clearTimeout(this.retryTimer);
+      this.retryClock.cancel(this.retryTimer);
       this.retryTimer = -1;
     }
     this.executor = executor;
@@ -421,7 +474,7 @@ export class CloudSyncCoordinator {
     }
     this.acceptingRequests = false;
     if (this.retryTimer >= 0) {
-      clearTimeout(this.retryTimer);
+      this.retryClock.cancel(this.retryTimer);
       this.retryTimer = -1;
     }
     return true;
@@ -1642,7 +1695,8 @@ export class CloudSyncCoordinator {
       tables: request.tables.slice(),
       failedTables: failedTables.slice(),
       attempt,
-      nextRetryAt: Date.now() + delay
+      nextRetryAt:
+        this.retryClock.now() + delay
     };
     this.retryRecords = upsertAutomaticRetryRecord(this.retryRecords, record);
     this.writeRetryRecords();
@@ -1666,25 +1720,31 @@ export class CloudSyncCoordinator {
   }
 
   private scheduleRetryTimer(): void {
-    if (this.retryTimer >= 0) { clearTimeout(this.retryTimer); this.retryTimer = -1; }
+    if (this.retryTimer >= 0) {
+      this.retryClock.cancel(this.retryTimer);
+      this.retryTimer = -1;
+    }
     if (this.retryRecords.length === 0 || !this.transfersEnabled ||
       !this.automaticUploadAllowed()) { return; }
     let earliest: CloudSyncRetryRecord = this.retryRecords[0];
     for (let i = 1; i < this.retryRecords.length; i++) {
       if (this.retryRecords[i].nextRetryAt < earliest.nextRetryAt) { earliest = this.retryRecords[i]; }
     }
-    const delay: number = Math.max(0, earliest.nextRetryAt - Date.now());
+    const delay: number =
+      Math.max(0, earliest.nextRetryAt -
+      this.retryClock.now());
     const timerLease: AccountSessionLease | null = this.currentLease === null
       ? null : cloneAccountSessionLease(this.currentLease);
     const timerEpoch: number = this.bindingEpoch;
-    this.retryTimer = setTimeout((): void => {
+    this.retryTimer = this.retryClock.schedule((): void => {
       this.retryTimer = -1;
       if (!this.acceptingRequests || timerLease === null ||
         timerEpoch !== this.bindingEpoch ||
         !accountSessionLeaseEquals(this.currentLease, timerLease)) {
         return;
       }
-      const now: number = Date.now();
+      const now: number =
+        this.retryClock.now();
       const due: CloudSyncRetryRecord[] = [];
       const remaining: CloudSyncRetryRecord[] = [];
       for (let i = 0; i < this.retryRecords.length; i++) {
@@ -1713,7 +1773,7 @@ export class CloudSyncCoordinator {
           retryKey
         );
       }
-    }, delay) as number;
+    }, delay);
   }
 
   private automaticUploadAllowed(): boolean {
