@@ -2,7 +2,10 @@ import { describe, it, expect } from '@ohos/hypium';
 import {
   beginRustDeskDisplaySwitchState,
   idleRustDeskDisplaySwitchState,
-  observeRustDeskDisplaySwitch
+  observeRustDeskDisplaySwitch,
+  releaseRustDeskInputForDisplaySwitch,
+  requestRustDeskDisplaySwitch,
+  shouldRequestRustDeskDisplaySwitch
 } from '../main/ets/services/RustDeskDisplaySwitchPolicy';
 
 export default function rustDeskDisplaySwitchPolicyTest(): void {
@@ -63,6 +66,72 @@ export default function rustDeskDisplaySwitchPolicyTest(): void {
       }, 8000, 5000);
       expect(repeated.notifyTimeout).assertFalse();
       expect(repeated.state.inputBlocked).assertTrue();
+    });
+
+    it('allows_the_same_target_to_retry_only_after_timeout', 0, (): void => {
+      const pending = beginRustDeskDisplaySwitchState(true, 5, 1, 1000);
+      expect(shouldRequestRustDeskDisplaySwitch(pending, 1, 0)).assertFalse();
+
+      const timeout = observeRustDeskDisplaySwitch(pending, {
+        currentDisplay: 0,
+        readySwitchGeneration: 0,
+        pendingDisplay: 1,
+        inputBlocked: true
+      }, 7000, 5000);
+      expect(timeout.state.timeoutNotified).assertTrue();
+      expect(shouldRequestRustDeskDisplaySwitch(timeout.state, 1, 0)).assertTrue();
+
+      const retried = beginRustDeskDisplaySwitchState(true, 6, 1, 7001);
+      expect(retried.generation).assertEqual(6);
+      expect(retried.startedAtMs).assertEqual(7001);
+      expect(retried.timeoutNotified).assertFalse();
+      expect(retried.inputBlocked).assertTrue();
+    });
+
+    it('releases_all_old_input_before_requesting_a_new_generation', 0, (): void => {
+      const effects: string[] = [];
+      const outcome = requestRustDeskDisplaySwitch(2, 3000, {
+        releaseInput: (): void => {
+          releaseRustDeskInputForDisplaySwitch({
+            discardPendingMouseMove: (): void => {
+              effects.push('discard-move');
+            },
+            releaseCanvasPinchInput: (): void => {
+              effects.push('release-pinch');
+            },
+            resetTouchGesture: (): void => {
+              effects.push('reset-touch');
+            },
+            releaseAllHeldKeys: (): void => {
+              effects.push('release-held');
+            },
+            clearHeldPointerState: (): void => {
+              effects.push('clear-pointer');
+            },
+            resetAllLatches: (): void => {
+              effects.push('reset-latches');
+            },
+            resetTouchpadState: (): void => {
+              effects.push('reset-touchpad');
+            },
+            invalidateViewport: (): void => {
+              effects.push('invalidate-viewport');
+            }
+          });
+        },
+        requestDisplay: (display: number) => {
+          effects.push('request-' + display.toString());
+          return {
+            accepted: true,
+            generation: 9
+          };
+        }
+      });
+      expect(effects.join(',')).assertEqual(
+        'discard-move,release-pinch,reset-touch,release-held,clear-pointer,' +
+          'reset-latches,reset-touchpad,invalidate-viewport,request-2');
+      expect(outcome.state.generation).assertEqual(9);
+      expect(outcome.state.inputBlocked).assertTrue();
     });
 
     it('stays_idle_when_native_rejects_the_request', 0, (): void => {

@@ -28,6 +28,32 @@ export interface RustDeskDisplaySwitchObservation {
   notifyTimeout: boolean
 }
 
+export interface RustDeskDisplaySwitchNativeRequest {
+  accepted: boolean
+  generation: number
+}
+
+export interface RustDeskDisplaySwitchBeginHooks {
+  releaseInput: () => void
+  requestDisplay: (display: number) => RustDeskDisplaySwitchNativeRequest
+}
+
+export interface RustDeskDisplaySwitchBeginOutcome {
+  request: RustDeskDisplaySwitchNativeRequest
+  state: RustDeskDisplaySwitchState
+}
+
+export interface RustDeskDisplaySwitchInputReleaseHooks {
+  discardPendingMouseMove: () => void
+  releaseCanvasPinchInput: () => void
+  resetTouchGesture: () => void
+  releaseAllHeldKeys: () => void
+  clearHeldPointerState: () => void
+  resetAllLatches: () => void
+  resetTouchpadState: () => void
+  invalidateViewport: () => void
+}
+
 export function idleRustDeskDisplaySwitchState(): RustDeskDisplaySwitchState {
   return {
     generation: 0,
@@ -53,6 +79,59 @@ export function beginRustDeskDisplaySwitchState(
     startedAtMs: nowMs,
     inputBlocked: true,
     timeoutNotified: false
+  };
+}
+
+export function shouldRequestRustDeskDisplaySwitch(
+  state: RustDeskDisplaySwitchState,
+  display: number,
+  currentDisplay: number
+): boolean {
+  if (display < 0) {
+    return false;
+  }
+  if (!state.inputBlocked) {
+    return display !== currentDisplay;
+  }
+  return display !== state.pendingDisplay || state.timeoutNotified;
+}
+
+export function releaseRustDeskInputForDisplaySwitch(
+  hooks: RustDeskDisplaySwitchInputReleaseHooks
+): void {
+  hooks.discardPendingMouseMove();
+  hooks.releaseCanvasPinchInput();
+  hooks.resetTouchGesture();
+  hooks.releaseAllHeldKeys();
+  hooks.clearHeldPointerState();
+  hooks.resetAllLatches();
+  hooks.resetTouchpadState();
+  hooks.invalidateViewport();
+}
+
+export function requestRustDeskDisplaySwitch(
+  display: number,
+  nowMs: number,
+  hooks: RustDeskDisplaySwitchBeginHooks
+): RustDeskDisplaySwitchBeginOutcome {
+  if (display < 0) {
+    const invalidRequest: RustDeskDisplaySwitchNativeRequest = {
+      accepted: false,
+      generation: 0
+    };
+    return {
+      request: invalidRequest,
+      state: idleRustDeskDisplaySwitchState()
+    };
+  }
+  // Releasing input before entering native is part of the switch transaction:
+  // no held control or coalesced move may cross the generation boundary.
+  hooks.releaseInput();
+  const request: RustDeskDisplaySwitchNativeRequest = hooks.requestDisplay(display);
+  return {
+    request,
+    state: beginRustDeskDisplaySwitchState(
+      request.accepted, request.generation, display, nowMs)
   };
 }
 

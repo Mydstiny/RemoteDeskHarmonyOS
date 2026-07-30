@@ -260,9 +260,11 @@ import {
 } from '../services/RemoteOrientationPolicy';
 import {
   RustDeskDisplaySwitchState,
-  beginRustDeskDisplaySwitchState,
   idleRustDeskDisplaySwitchState,
-  observeRustDeskDisplaySwitch
+  observeRustDeskDisplaySwitch,
+  releaseRustDeskInputForDisplaySwitch,
+  requestRustDeskDisplaySwitch,
+  shouldRequestRustDeskDisplaySwitch
 } from '../services/RustDeskDisplaySwitchPolicy';
 import { createTransferSnapshot, TransferProtocol, TransferState } from '../services/FileTransferProgressModel';
 import { isRemoteCompletionConfirmed } from '../services/TransferSessionPolicy';
@@ -2386,16 +2388,22 @@ struct RemoteDesktop {
     // Drop the coalesced move before any release helper can flush it in the
     // old coordinate space. Release controls themselves remain reliable and
     // are queued before the native display-switch barrier.
-    this.discardPendingMouseMove();
-    this.releaseCanvasPinchInput(reason);
-    this.resetTouchGesture();
-    this.releaseAllHeldKeys();
-    this.touchLeftDown = false;
-    this.physicalMouseDownButton = -1;
-    this.resetAllLatches();
-    this.touchpadAnchorValid = false;
-    this.resetTouchpadPointerCurve();
-    this.invalidateRendererViewportCache();
+    releaseRustDeskInputForDisplaySwitch({
+      discardPendingMouseMove: (): void => this.discardPendingMouseMove(),
+      releaseCanvasPinchInput: (): void => this.releaseCanvasPinchInput(reason),
+      resetTouchGesture: (): void => this.resetTouchGesture(),
+      releaseAllHeldKeys: (): void => this.releaseAllHeldKeys(),
+      clearHeldPointerState: (): void => {
+        this.touchLeftDown = false;
+        this.physicalMouseDownButton = -1;
+      },
+      resetAllLatches: (): void => this.resetAllLatches(),
+      resetTouchpadState: (): void => {
+        this.touchpadAnchorValid = false;
+        this.resetTouchpadPointerCurve();
+      },
+      invalidateViewport: (): void => this.invalidateRendererViewportCache()
+    });
   }
 
   /**
@@ -2446,19 +2454,20 @@ struct RemoteDesktop {
     if (!this.isRustDeskSession() || this.sessionId <= 0 || !display.online) {
       return;
     }
-    if (!this.rustDeskDisplaySwitchState.inputBlocked &&
-      display.display === this.rustDeskDisplayCapabilities.currentDisplay) {
+    if (!shouldRequestRustDeskDisplaySwitch(
+      this.rustDeskDisplaySwitchState,
+      display.display,
+      this.rustDeskDisplayCapabilities.currentDisplay)) {
       return;
     }
-    if (this.rustDeskDisplaySwitchState.inputBlocked &&
-      display.display === this.rustDeskDisplaySwitchState.pendingDisplay) {
-      return;
-    }
-    this.resetRustDeskInputAfterGeometryChange('rustdesk-display-switch');
-    const request: RustDeskDisplaySwitchRequest =
-      this.loader.beginRustDeskDisplaySwitch(this.sessionId, display.display);
-    this.rustDeskDisplaySwitchState = beginRustDeskDisplaySwitchState(
-      request.accepted, request.generation, display.display, Date.now());
+    const outcome = requestRustDeskDisplaySwitch(display.display, Date.now(), {
+      releaseInput: (): void =>
+        this.resetRustDeskInputAfterGeometryChange('rustdesk-display-switch'),
+      requestDisplay: (target: number): RustDeskDisplaySwitchRequest =>
+        this.loader.beginRustDeskDisplaySwitch(this.sessionId, target)
+    });
+    const request: RustDeskDisplaySwitchRequest = outcome.request;
+    this.rustDeskDisplaySwitchState = outcome.state;
     if (!request.accepted) {
       promptAction.showToast({ message: '远端显示器切换请求未被接受', duration: 1800 });
       return;

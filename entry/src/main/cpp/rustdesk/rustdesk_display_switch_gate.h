@@ -2,6 +2,7 @@
 #define RUSTDESK_DISPLAY_SWITCH_GATE_H
 
 #include <cstdint>
+#include <mutex>
 
 struct RustDeskDisplaySwitchGateSnapshot {
     uint64_t generation = 0;
@@ -111,6 +112,77 @@ private:
     int pendingDisplay_ = -1;
     int confirmedDisplay_ = -1;
     bool acknowledgementSeen_ = false;
+};
+
+/**
+ * Owns the dispatch boundary around RustDeskDisplaySwitchGate.
+ *
+ * A Lease must remain alive through display publication and delivery of the
+ * accepted frame. begin() obtains the same boundary, so a newer generation
+ * cannot be established between an old decision and its callback dispatch.
+ * This lock is deliberately independent from RustDeskBridge::Impl::mutex:
+ * video delivery may synchronously report decoder pressure back to the bridge.
+ */
+class RustDeskDisplaySwitchCoordinator {
+public:
+    class Lease {
+    public:
+        Lease(Lease&&) = default;
+        Lease& operator=(Lease&&) = default;
+        Lease(const Lease&) = delete;
+        Lease& operator=(const Lease&) = delete;
+
+        uint64_t begin(int display) {
+            return gate_->begin(display);
+        }
+
+        void reject(uint64_t generation) {
+            gate_->reject(generation);
+        }
+
+        void reset() {
+            gate_->reset();
+        }
+
+        RustDeskDisplaySwitchGateDecision observeDisplay(int display) {
+            return gate_->observeDisplay(display);
+        }
+
+        RustDeskDisplaySwitchGateDecision observeFrame(int display, bool keyFrame) {
+            return gate_->observeFrame(display, keyFrame);
+        }
+
+        RustDeskDisplaySwitchGateSnapshot snapshot() const {
+            return gate_->snapshot();
+        }
+
+    private:
+        friend class RustDeskDisplaySwitchCoordinator;
+
+        Lease(std::mutex& dispatchMutex, RustDeskDisplaySwitchGate& gate)
+            : lock_(dispatchMutex), gate_(&gate) {}
+
+        std::unique_lock<std::mutex> lock_;
+        RustDeskDisplaySwitchGate* gate_ = nullptr;
+    };
+
+    Lease acquire() {
+        return Lease(dispatchMutex_, gate_);
+    }
+
+    RustDeskDisplaySwitchGateSnapshot snapshot() {
+        auto lease = acquire();
+        return lease.snapshot();
+    }
+
+    void reset() {
+        auto lease = acquire();
+        lease.reset();
+    }
+
+private:
+    std::mutex dispatchMutex_;
+    RustDeskDisplaySwitchGate gate_;
 };
 
 #endif // RUSTDESK_DISPLAY_SWITCH_GATE_H

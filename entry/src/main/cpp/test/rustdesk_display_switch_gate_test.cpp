@@ -1,6 +1,11 @@
 #include "test_runner.h"
 #include "rustdesk/rustdesk_display_switch_gate.h"
 
+#include <chrono>
+#include <condition_variable>
+#include <mutex>
+#include <thread>
+
 RDP_TEST_CASE(rustdesk_display_switch_requires_ack_then_target_keyframe) {
     RustDeskDisplaySwitchGate gate;
     const auto initial = gate.observeDisplay(0);
@@ -69,4 +74,81 @@ RDP_TEST_CASE(rustdesk_display_switch_can_return_to_the_confirmed_display) {
     RDP_ASSERT(committed.acceptFrame);
     RDP_ASSERT_EQ(gate.snapshot().readyGeneration, returnGeneration);
     RDP_ASSERT_EQ(gate.snapshot().confirmedDisplay, 0);
+}
+
+RDP_TEST_CASE(rustdesk_display_switch_dispatch_finishes_before_next_generation_begins) {
+    RustDeskDisplaySwitchCoordinator coordinator;
+    {
+        auto lease = coordinator.acquire();
+        lease.observeDisplay(0);
+        lease.begin(1);
+        lease.observeDisplay(1);
+    }
+
+    std::mutex stateMutex;
+    std::condition_variable stateChanged;
+    bool dispatchEntered = false;
+    bool releaseDispatch = false;
+    bool beginStarted = false;
+    bool beginCompleted = false;
+    uint64_t latestGeneration = 0;
+
+    std::thread frameThread([&]() {
+        auto lease = coordinator.acquire();
+        const auto decision = lease.observeFrame(1, true);
+        RDP_ASSERT(decision.acceptFrame);
+        {
+            std::lock_guard<std::mutex> lock(stateMutex);
+            dispatchEntered = true;
+        }
+        stateChanged.notify_all();
+
+        std::unique_lock<std::mutex> lock(stateMutex);
+        RDP_ASSERT(stateChanged.wait_for(lock, std::chrono::seconds(1), [&]() {
+            return releaseDispatch;
+        }));
+    });
+
+    {
+        std::unique_lock<std::mutex> lock(stateMutex);
+        RDP_ASSERT(stateChanged.wait_for(lock, std::chrono::seconds(1), [&]() {
+            return dispatchEntered;
+        }));
+    }
+
+    std::thread beginThread([&]() {
+        {
+            std::lock_guard<std::mutex> lock(stateMutex);
+            beginStarted = true;
+        }
+        stateChanged.notify_all();
+        auto lease = coordinator.acquire();
+        latestGeneration = lease.begin(2);
+        {
+            std::lock_guard<std::mutex> lock(stateMutex);
+            beginCompleted = true;
+        }
+        stateChanged.notify_all();
+    });
+
+    {
+        std::unique_lock<std::mutex> lock(stateMutex);
+        RDP_ASSERT(stateChanged.wait_for(lock, std::chrono::seconds(1), [&]() {
+            return beginStarted;
+        }));
+        RDP_ASSERT(!stateChanged.wait_for(lock, std::chrono::milliseconds(50), [&]() {
+            return beginCompleted;
+        }));
+        releaseDispatch = true;
+    }
+    stateChanged.notify_all();
+    frameThread.join();
+    beginThread.join();
+
+    RDP_ASSERT(beginCompleted);
+    RDP_ASSERT(latestGeneration > 1);
+    const auto snapshot = coordinator.snapshot();
+    RDP_ASSERT_EQ(snapshot.generation, latestGeneration);
+    RDP_ASSERT_EQ(snapshot.pendingDisplay, 2);
+    RDP_ASSERT(snapshot.inputBlocked);
 }

@@ -1,7 +1,7 @@
 # RustDesk 多屏切换快速加固计划
 
-日期：2026-07-30  
-任务分支：`codex/rustdesk-multimonitor-switch-hardening`  
+日期：2026-07-30
+任务分支：`codex/rustdesk-multimonitor-switch-hardening`
 基线：本地 `main@1615aff58`
 
 ## 目标
