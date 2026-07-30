@@ -1643,6 +1643,25 @@ impl RustDeskConnector {
                 let message = Self::build_switch_display_message(display);
                 Self::send_message_encrypted(crypto, &message)
             }
+            crate::ControlMsg::DisplaySwitch {
+                display,
+                generation,
+            } => {
+                let switch = Self::build_switch_display_message(display);
+                Self::send_message_encrypted(crypto, &switch)?;
+                let capture =
+                    Self::build_capture_displays_message(Vec::new(), Vec::new(), vec![display]);
+                Self::send_message_encrypted(crypto, &capture)?;
+                let refresh = Self::build_refresh_video_display_message(display);
+                let result = Self::send_message_encrypted(crypto, &refresh);
+                if result.is_ok() {
+                    eprintln!(
+                        "[RustDesk-FFI] display switch sent generation={} target={}",
+                        generation, display
+                    );
+                }
+                result
+            }
             crate::ControlMsg::CaptureDisplays { add, sub, set } => {
                 let message = Self::build_capture_displays_message(add, sub, set);
                 Self::send_message_encrypted(crypto, &message)
@@ -1721,6 +1740,7 @@ impl RustDeskConnector {
             crate::ControlMsg::Shutdown => "shutdown",
             crate::ControlMsg::RefreshVideo => "refresh_video",
             crate::ControlMsg::SwitchDisplay { .. } => "switch_display",
+            crate::ControlMsg::DisplaySwitch { .. } => "display_switch",
             crate::ControlMsg::CaptureDisplays { .. } => "capture_displays",
             crate::ControlMsg::RefreshVideoDisplay { .. } => "refresh_video_display",
             crate::ControlMsg::VideoPressure { .. } => "video_pressure",
@@ -3341,6 +3361,7 @@ mod tests {
                     ..RustDeskDisplayInfoState::default()
                 },
             ],
+            ..RustDeskDisplayState::default()
         }));
         let stream_stats = Arc::new(Mutex::new(crate::RustDeskStreamStats::default()));
         let mut supported = SupportedResolutions::new();
@@ -3374,6 +3395,7 @@ mod tests {
             geometry_epoch: 4,
             resolutions: vec![(1920, 1080)],
             displays: Vec::new(),
+            ..RustDeskDisplayState::default()
         }));
         let stream_stats = Arc::new(Mutex::new(crate::RustDeskStreamStats::default()));
         let mut supported = SupportedResolutions::new();

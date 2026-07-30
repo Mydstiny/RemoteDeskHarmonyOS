@@ -556,6 +556,10 @@ pub(crate) struct RustDeskDisplayInfoState {
 #[derive(Debug, Clone)]
 pub(crate) struct RustDeskDisplayState {
     pub current_display: i32,
+    pub desired_display: Option<i32>,
+    pub switch_generation: u64,
+    pub pending_switch_generation: Option<u64>,
+    pub confirmed_switch_generation: u64,
     pub width: i32,
     pub height: i32,
     pub original_width: i32,
@@ -570,6 +574,10 @@ impl Default for RustDeskDisplayState {
     fn default() -> Self {
         Self {
             current_display: 0,
+            desired_display: None,
+            switch_generation: 0,
+            pending_switch_generation: None,
+            confirmed_switch_generation: 0,
             width: 0,
             height: 0,
             original_width: 0,
@@ -721,6 +729,13 @@ pub(crate) enum ControlMsg {
     },
     SwitchDisplay {
         display: i32,
+    },
+    /// One latest-wins single-canvas switch transaction. The connector emits
+    /// SwitchDisplay, CaptureDisplays(set=[display]) and
+    /// RefreshVideoDisplay(display) without yielding to another control.
+    DisplaySwitch {
+        display: i32,
+        generation: u64,
     },
     CaptureDisplays {
         add: Vec<i32>,
@@ -1847,8 +1862,20 @@ pub extern "C" fn rustdesk_switch_display(handle: *mut c_void, display: c_int) -
         return false;
     }
     let ctx = unsafe { &*(handle as *const RustDeskClient) };
-    ctx.controls.enqueue(ControlMsg::SwitchDisplay { display });
-    true
+    let generation = {
+        let Ok(mut state) = ctx.display_state.lock() else {
+            set_last_error("rustdesk_switch_display display state lock poisoned");
+            return false;
+        };
+        state.switch_generation = state.switch_generation.wrapping_add(1).max(1);
+        state.desired_display = Some(display);
+        state.pending_switch_generation = Some(state.switch_generation);
+        state.switch_generation
+    };
+    ctx.controls.enqueue(ControlMsg::DisplaySwitch {
+        display,
+        generation,
+    })
 }
 
 #[no_mangle]
@@ -2226,6 +2253,7 @@ mod tests {
             geometry_epoch: 7,
             resolutions: vec![(1080, 1920), (720, 1280), (540, 960)],
             displays: Vec::new(),
+            ..RustDeskDisplayState::default()
         });
         let handle = &mut client as *mut RustDeskClient as *mut c_void;
         let mut snapshot = RustDeskDisplaySnapshot::default();
@@ -2411,7 +2439,10 @@ mod tests {
         assert!(matches!(
             controls.as_slice(),
             [
-                ControlMsg::SwitchDisplay { display: 1 },
+                ControlMsg::DisplaySwitch {
+                    display: 1,
+                    generation: 1
+                },
                 ControlMsg::CaptureDisplays { add, sub, set },
                 ControlMsg::RefreshVideoDisplay { display: 1 },
             ] if add.is_empty() && sub.is_empty() && set == &vec![1, 2]

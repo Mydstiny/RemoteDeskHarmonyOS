@@ -2371,7 +2371,16 @@ struct RemoteDesktop {
   }
 
   private resetRustDeskInputAfterGeometryChange(reason: string): void {
+    // Drop the coalesced move before any release helper can flush it in the
+    // old coordinate space. Release controls themselves remain reliable and
+    // are queued before the native display-switch barrier.
+    this.discardPendingMouseMove();
     this.releaseCanvasPinchInput(reason);
+    this.resetTouchGesture();
+    this.releaseAllHeldKeys();
+    this.touchLeftDown = false;
+    this.physicalMouseDownButton = -1;
+    this.resetAllLatches();
     this.touchpadAnchorValid = false;
     this.resetTouchpadPointerCurve();
     this.invalidateRendererViewportCache();
@@ -5825,6 +5834,11 @@ struct RemoteDesktop {
         });
       }
       hilog.info(RD_DOMAIN, RD_TAG, 'dropInput ' + source + ' browseMode=1 protocol=' + protocol);
+      return false;
+    }
+    if (this.isRustDeskSession() && this.rustDeskDisplaySwitchPending >= 0) {
+      hilog.info(RD_DOMAIN, RD_TAG, 'dropInput ' + source +
+        ' rustDeskDisplaySwitchPending=' + this.rustDeskDisplaySwitchPending.toString());
       return false;
     }
     if (this.isVncSession() && !this.vncGeometryReady) {
