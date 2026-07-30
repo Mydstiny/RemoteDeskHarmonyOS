@@ -2,6 +2,74 @@
 
 Updated: 2026-07-30 Asia/Shanghai
 
+## Completed RustDesk control-plane v3 handoff
+
+- Branch `codex/rustdesk-control-plane-v3` was based on the authorized local
+  `main@d0e6ffee2`. The reviewed implementation checkpoint is `d404178b1`;
+  after documentation/build closure the branch is fast-forward merged into
+  local `main` and deleted. No push, PR or remote-main merge was performed.
+- Plan:
+  `docs/superpowers/plans/2026-07-29-rustdesk-control-plane-official-parity-complete-plan-v3.md`.
+- Implementation commits:
+  `bbbd87fe8`, `3fb718560`, `6a12a978b`, `f88e8e317`, `6ce3dfe62`,
+  `fcc2cbb38`, `bf7a0448f`, `6e4735703`, `33d9e20f1`, `439d45aca`,
+  `afe25a38a`, `3607d9769`, `d404178b1`.
+- Relay save is a structured, transactional result with stable-ID owner
+  read-back, idempotent attempts, rollback/fault injection, retained drafts
+  and separate local/cloud outcomes. A cloud, account transition, restore or
+  crypto state cannot silently turn a proven local commit into a generic save
+  failure; unsafe owner/crypto cases still fail closed.
+- The RustDesk add surfaces share one setup owner with fixed reachable
+  actions, keyboard/safe-area adaptation and progressive disclosure. The
+  default path is import or address plus public key; Server Pro login and
+  connection testing follow local save. Host-add handoff is
+  owner/store/generation-bound, one-shot and clears sensitive draft data.
+- Profiles and credentials are separate:
+  `oss_key_only`, `oss_shared_access_key`,
+  `official_server_pro_token`, `third_party_api_only`,
+  `third_party_control_plane`, `direct_ip`. HTTP address-book tokens, future
+  control-plane tokens, shared `-k` and Ed25519 server public keys are not
+  interchangeable.
+- No profile, generic `/api/login` or address-book response can self-grant
+  rendezvous capability. The trusted issuer registry is empty. Unverified Pro
+  and third-party profiles preserve HTTP login/sync but effective-fallback to
+  API-only and send no HTTP token in native rendezvous messages.
+- API, ID and Relay may use independent hosts. Capability identity binds
+  account API, owner/account/relay, token generation/fingerprint, both native
+  endpoints/ports and server identity through irreversible fingerprints.
+- Legacy `please login` text is diagnostic only. Even a structured expiry
+  cannot revoke an API-only HTTP session. Revocation requires the exact
+  attempt to have projected a trusted token under the effective official
+  profile plus matching scope/generation/fingerprint fences.
+- FORCE_RELAY and DIRECT_IP are explicit. AUTO/NAT/TCP hole punch/P2P fallback
+  remain unsupported or blocked rather than claiming unproved connectivity.
+  HTTP/native diagnostics redact routes, endpoints, paths, accounts, devices
+  and credentials.
+- Independent review history:
+  first review findings on transaction/read-back/save visibility/draft
+  handoff were fixed in `33d9e20f1` and `439d45aca`; second review's
+  self-granted proof/same-host/diagnostic findings were fixed in
+  `3607d9769`; third review's effective-profile revocation and test-evidence
+  findings were fixed in `d404178b1`; fourth review returned PASS with no
+  remaining P0/P1.
+- Verification: Rust `151 passed, 0 failed`; native
+  `171 passed, 0 failed`; `default@OhosTestCompileArkTS` passed; signed
+  `assembleHap` passed; Light and `git diff --check` passed.
+  `ohosTest@OhosTestCompileArkTS` is unavailable as unregistered task
+  `00306054`, so no device-test success is claimed.
+- Candidate is `1.0.10 / 1000010`. Device `3BKGK24B06000015` was not upgraded
+  from installed `1.0.8 / 1000008`; protecting existing app data takes
+  precedence over an unauthorized install.
+- Local code is complete. Release remains NO-GO until real official Server Pro
+  ordinary/admin and own/shared/denied matrices, explicit 401/revocation,
+  trustworthy adapter/issuer proof, 超享 API-only/control-plane A/B, OSS
+  public-key/shared-`-k`, password/approval/Peer 2FA, P2P/relay/direct/network
+  changes, API 23 upgrade/restart/keyboard/safe-area and multi-device cloud
+  matrices pass. Also run RDP/VNC/SSH/SFTP regression and register/fix
+  `ohosTest` before release.
+- Unrelated SSH, Moonlight, RDP and RustDesk controlled-host plan edits remain
+  user-owned and were neither staged nor changed.
+
 ## Completed VNC V2 handoff
 
 - Branch `codex/vnc-product-parity-sheet-remediation-v2` was based on local

@@ -2,21 +2,76 @@
 
 Updated: 2026-07-30 Asia/Shanghai
 
+## Current RustDesk control-plane v3 result
+
+- `codex/rustdesk-control-plane-v3` was based on the user-authorized local
+  `main@d0e6ffee2`. The independently reviewed implementation checkpoint is
+  `d404178b1`; after the documentation/build closure it is fast-forward merged
+  into local `main` and the task branch is deleted.
+- Entity plan:
+  `docs/superpowers/plans/2026-07-29-rustdesk-control-plane-official-parity-complete-plan-v3.md`.
+- RustDesk relay create/edit now has structured save stages and error codes,
+  one production RDB transaction for relay/profile/journal, stable-ID
+  read-back, idempotent attempts, draft preservation and retryable cloud status.
+  Local commit success is not rolled back merely because cloud upload is
+  pending or failed.
+- The three relay-add surfaces converge on one RustDesk setup owner. The
+  default path asks only for import or server address plus public key; ports,
+  API, shared `-k` and control-plane profile are progressively disclosed.
+  Fixed actions remain reachable with keyboard/safe-area adaptation, and a
+  host-add draft returns once to the new relay without persisting its password.
+- HTTP address-book login, official/third-party control-plane capability,
+  shared `-k`, Ed25519 server public key and direct-IP are separate profiles
+  and credentials. Profile selection, generic `/api/login` and successful
+  address-book sync cannot mint rendezvous capability. The trusted issuer
+  registry is intentionally empty, so unverified official/third-party
+  profiles run as API-only and project no HTTP token into
+  `PunchHoleRequest`/`RequestRelay`.
+- A connection may bind API, ID and Relay to three different hosts. The HTTP
+  API is bound to the account that obtained the token; owner, account, relay,
+  token generation/fingerprint, both native endpoints and server identity are
+  independently fingerprinted. Old local proofs and fabricated schema-v2
+  proofs fail closed.
+- `please login` and `login session expired` text never clears a valid HTTP
+  account. Session invalidation requires an effective official profile, a
+  token actually projected in that exact attempt, a structured
+  `control_plane/pro_session_expired` error and matching
+  owner/account/token-generation fencing. API-only fallback retains login and
+  address-book state even if native returns that structured code.
+- FORCE_RELAY and DIRECT_IP are explicit end-to-end strategies. AUTO, NAT
+  probing and P2P-to-relay fallback remain fail-closed because the repository
+  does not yet have sufficient server/wire/device evidence; no P2P success is
+  fabricated.
+- Diagnostics use static route IDs and irreversible short fingerprints.
+  NetworkKit raw errors, URL/query/GUID/body, token, password, Key, full
+  endpoint, account and peer/host identifiers do not enter task diagnostics.
+- Independent D-020 review finished with PASS at `d404178b1`, with no remaining
+  P0/P1. Native host tests are `171 passed, 0 failed`; Rust unit tests are
+  `151 passed, 0 failed`; both mandatory Hvigor gates, signed HAP, Light
+  compliance and `git diff --check` pass. `ohosTest` remains unavailable as
+  unregistered task `00306054`.
+- Candidate metadata is `1.0.10 / 1000010`. The connected API 23 device remains
+  on `1.0.8 / 1000008`; no install or user-data mutation was performed.
+- Local code is complete, but release remains NO-GO pending real official
+  Server Pro, 超享/third-party, OSS hbbs/hbbr, password/approval/Peer 2FA,
+  P2P/relay/direct, API 23 lifecycle and multi-device cloud matrices.
+
 ## Repository
 
 - Repository: Mydstiny/RemoteDeskHarmonyOS
-- Active task branch: none; VNC V2 was fast-forward merged into local `main`.
-- Base: local `main@66fba4141`; reviewed VNC branch tip:
-  `2797fd481` (`d17976c10` is the final implementation fix).
-- Scope: VNC-only Sheet/action reachability, owner/flow cleanup, visible session
-  controls, isolated diagnostics, Cursor `-239` and bounded ZRLE.
+- Active task branch: none after the RustDesk v3 local fast-forward closure.
+- RustDesk v3 base: local `main@d0e6ffee2`; independently reviewed
+  implementation checkpoint: `d404178b1`.
+- Scope: RustDesk login/control-plane separation, relay-save durability,
+  unified setup UX, connection strategy and redacted diagnostics.
 - Entity plan:
-  `docs/superpowers/plans/2026-07-29-vnc-complete-product-parity-and-sheet-layout-remediation-plan-v2.md`.
-- Cloud/data lifecycle D-020 work is already fast-forward merged into local
-  `main@66fba4141` and its branch is deleted.
+  `docs/superpowers/plans/2026-07-29-rustdesk-control-plane-official-parity-complete-plan-v3.md`.
+- Cloud/data lifecycle D-020 and VNC V2 were already fast-forward merged into
+  the local base; their owners and accepted behavior were not rewritten.
 - No remote push, PR or remote-main merge is authorized or performed.
 - The merged task branch is deleted during this closure; unrelated SSH,
-  Moonlight, RDP and RustDesk plan files remain untouched in the working tree.
+  Moonlight, RDP and RustDesk controlled-host plan files remain untouched in
+  the working tree.
 
 ## Current VNC V2 result
 
@@ -201,7 +256,9 @@ Implementation commits: `6a9d430b1`, `4cdc5b1df`, `d2f365c32`, `d51214577`,
 
 ## Cloud baseline verification
 
-- Release-candidate metadata is now `1.0.9 / 1000009`; application manifest, in-app release notes, user guide, version resource, SBOM and SBOM generator agree.
+- The cloud-lifecycle checkpoint used `1.0.9 / 1000009`; the current RustDesk
+  v3 candidate supersedes it with `1.0.10 / 1000010`, and application
+  metadata, release notes, user guide and SBOM agree.
 - `default@OhosTestCompileArkTS`: passed in the current session for
   `0c0b3d4`; existing dependency/deprecation warnings remain.
 - `assembleHap`: `BUILD SUCCESSFUL` in the current session; signed HAP

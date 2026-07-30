@@ -4,6 +4,24 @@ Updated: 2026-07-30 Asia/Shanghai
 
 ## Now
 
+- RustDesk login/control-plane/relay-save v3 is locally complete at reviewed
+  implementation checkpoint `d404178b1`, based on local `main@d0e6ffee2`.
+  Structured transactional save/read-back, one setup owner, progressive
+  disclosure, host-draft return, strict credential/profile separation,
+  effective API-only fallback, split API/ID/Relay binding, projected-token
+  revocation fencing, FORCE_RELAY/DIRECT_IP and redacted diagnostics are
+  implemented. The same independent D-020 reviewer returned PASS with no
+  remaining P0/P1. Rust is `151/151`, native is `171/171`; both required
+  Hvigor gates, signed HAP, Light and diff checks pass. Candidate metadata is
+  `1.0.10 / 1000010`; do not install over the connected device's
+  `1.0.8 / 1000008` data without explicit recovery-aware authorization.
+  Release remains NO-GO until official Server Pro adapter/issuer evidence,
+  超享/third-party and OSS A/B, password/approval/Peer 2FA,
+  P2P/relay/direct/network-change, API 23 lifecycle and multi-device cloud
+  matrices are recorded. AUTO/NAT/P2P fallback and every unverified
+  control-plane token remain fail-closed. Do not push, open a PR or merge
+  remote main.
+
 - VNC product-parity/Sheet remediation is locally complete. The reviewed branch
   tip `2797fd481` is fast-forward merged into local `main`; the final
   implementation fix is `d17976c10`.
@@ -88,18 +106,11 @@ Updated: 2026-07-30 Asia/Shanghai
   in-place upgrade until the user explicitly authorizes testing against its
   existing app data and a recovery path is prepared.
 
-- RustDesk OSS/第三方地址簿中继报错修复计划已合并到
-  `docs/superpowers/plans/2026-07-29-rustdesk-relay-2fa-repair-upgrade-plan-v2.md`；首要实施项是
-  分离地址簿 HTTP 登录与 relay control-plane，修正 exact phrase 的误判/误清 token，并完成
-  token absent/present 与真实 Server Pro A/B。P0/P1 本地实现已完成，control-plane profile
-  现为当前设备 `localmetadata`，不进入 relay 云行或便携备份；新设备和普通备份恢复默认
-  key-only。当前本地代码 checkpoint 为 `972a3c0`。一次性 reviewer agent `019faca9-bf75-7e62-a251-541ce970c029` 因容量限制未产出
-  报告，不能再次派发，独立审查仍是 blocker。`relayPort` 已从 ArkTS 贯通至 Rust FFI，hbbs 广告的
-  显式 relay 端口优先、无端口 endpoint 才使用配置 hbbr fallback；focused Rust socket tests 2/2 已在
-  沙箱外通过。本轮 `cargo check --tests`、双 ABI、ArkTS、签名 `assembleHap` 与 Light 合规门禁均已
-  重跑并通过；`ohosTest` 仍为未注册任务 `00306054`。完整 `cargo test --lib` 仍因宿主机缺少
-  host `libopus` 链接失败。真实 OSS/三方地址簿 A/B、Server Pro、hbbs/hbbr、
-  Peer 2FA 和 API 23 验收保持开放。
+- The older RustDesk relay/2FA checkpoint in
+  `docs/superpowers/plans/2026-07-29-rustdesk-relay-2fa-repair-upgrade-plan-v2.md`
+  is superseded for login/control-plane/save status by the v3 plan and
+  `d404178b1`. Do not reuse its obsolete reviewer blocker or host-libopus test
+  status; its real endpoint and device acceptance items remain open.
 
 - RustDesk Peer 2FA 和 TOTP 绑定实现已在本地 `main` 完成；真实 Peer/hbbr/API 23
   设备验收仍待执行。Logo 模式已加入个性化设置，真实 Logo 仅在白名单 issuer 上

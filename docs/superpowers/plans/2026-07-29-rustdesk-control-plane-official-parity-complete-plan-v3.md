@@ -2503,6 +2503,7 @@ blocked_by_server_contract
 | `439d45aca` | 主机添加草稿跨 server setup 一次性安全交接、自动返回和选择新中继 |
 | `afe25a38a` | ArkTS、Rust、C++ 网络/路径/账号/设备诊断统一改为不可逆短指纹 |
 | `3607d97` | trusted issuer registry、无证明 API-only fallback、独立 API/ID/Relay 绑定和 HTTP 诊断闭环 |
+| `d404178b1` | effective profile/实际 token 投影撤销门禁、三端点纯绑定验证和 API-only expiry 回归 |
 
 各提交只暂存本任务文件。SSH、Moonlight、RDP 和 2-in-1 RustDesk 受控端计划文件保持为
 用户工作树内容，没有进入上述提交。
@@ -2611,7 +2612,10 @@ capability 仍可由 profile + 通用 HTTP 流程自授、端点同主机限制�
 会话；本轮继续把 effective profile 与 `tokenProjected` 绑定到 HostList/RemoteDesktop
 错误处理，只有本次实际投影可信 token 才允许代次匹配撤销；同时用纯结构测试证明
 API/ID/Relay 可分别位于不同主机，且 API-only 即便收到结构化 expiry 也不撤销 HTTP
-会话。无论本地复核结果如何，当前发布仍为 **NO-GO**。以下真实证据开放：
+会话。第四轮同一 reviewer 对 `d0e6ffee2..d404178b1` 完整 diff、用户现场错误、
+owner/token/crypto/revocation、非 RustDesk 隔离、两项新增回归和门禁证据给出
+**PASS（local code complete）**，未发现剩余 P0/P1。当前发布仍为 **NO-GO**。以下
+真实证据开放：
 
 1. 官方 Server Pro ordinary/admin、own/shared/denied device 与明确 HTTP 401/撤销；
 2. 超享/第三方 API-only 与经过证明的 control-plane token A/B；
@@ -2623,5 +2627,5 @@ API/ID/Relay 可分别位于不同主机，且 API-only 即便收到结构化 ex
 7. RDP、VNC、SSH/SFTP 非 RustDesk 回归。
 
 未取得真实服务端协议证据前，不新增换票 endpoint、不伪造官方版本、不把 AUTO 显示为
-可用，也不因英文字符串删除 token。独立 reviewer 的最终整改复核结论将在本节闭环时
-补录。
+可用，也不因英文字符串删除 token。文档 P2 已在本闭环中补录；它不改变真实服务端与
+设备验收的 NO-GO 判定。
