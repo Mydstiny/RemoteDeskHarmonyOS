@@ -2480,3 +2480,109 @@ blocked_by_server_contract
 
 这保证先修复“服务器配置根本无法可靠保存”，再修复“登录和地址簿成功但连接仍报登录
 失效”，最后推进 AUTO/P2P；三个层级有独立证据，不再互相掩盖。
+
+## 21. v3.3 本地实施记录（2026-07-30）
+
+本节记录 `codex/rustdesk-control-plane-v3` 基于用户授权的本地
+`main@d0e6ffee2` 的实际实施结果。它区分“本地代码和自动化闭环”与“真实服务端/设备发布
+验收”，不把后者写成通过。
+
+### 21.1 可回滚提交
+
+| 提交 | 结果 |
+|---|---|
+| `bbbd87fe8` | 纳入 v3.1 实体计划并固定任务边界 |
+| `3fb718560` | 结构化保存阶段/错误码、本地事务、稳定 ID 回读、幂等和草稿保留 |
+| `6a12a978b` | 单一 RustDesk server setup owner、固定 footer、键盘/安全区和渐进披露 |
+| `f88e8e317` | profile、HTTP 地址簿登录、Server Pro 控制面令牌、共享 Key 和公钥严格分离 |
+| `6ce3dfe62` | FORCE_RELAY/DIRECT_IP 策略、fail-closed AUTO、结构化 native/Rust 诊断 |
+| `fcc2cbb38` | `1.0.10/1000010`、NAPI API 21、非敏感 build identity、发布说明和 SBOM |
+
+各提交只暂存本任务文件。SSH、Moonlight、RDP 和 2-in-1 RustDesk 受控端计划文件保持为
+用户工作树内容，没有进入上述提交。
+
+### 21.2 保存和 UX 本地闭环
+
+- `RustDeskRelayPage`、主机添加入口和保留的兼容入口复用
+  `RustDeskRelaySetupCoordinator` 与 `RustDeskRelaySavePolicy`；不可达且继续维护独立
+  行为的 `ModernRelayAddFlow` 已移除。
+- 保存结果不再压成 boolean：结果包含 attempt、stage、code、稳定记录 ID、
+  `localCommitted`、`readBackVerified` 和 cloud 状态。
+- 本地事务先提交；提交后按稳定 ID 强制回读。云不可用只形成可重试的
+  `local_committed_cloud_pending`，不撤销已经证明的本地结果。
+- `unlock_required`、owner/account 变化、恢复中、事务失败、回读失败和云失败保持独立
+  recovery action。失败后保留页面草稿，重复保存由 draft fingerprint 和 attempt 隔离。
+- 默认手工流程只展示服务器地址和服务器公钥；导入配置是并列入口。API、端口、共享
+  Key、profile 和控制面登录位于高级/保存后步骤。唯一 Sheet owner 保持 footer 可达。
+- 新增/编辑/失败/回滚日志只记录 stage/code/attempt、Key 模式和 token present/absent，
+  不记录密码、token、完整 Key、公钥、账号或完整 endpoint。
+
+### 21.3 控制面和连接语义
+
+- canonical profiles 为：
+  `oss_key_only`、`oss_shared_access_key`、`official_server_pro_token`、
+  `third_party_api_only`、`third_party_control_plane`、`direct_ip`。
+  旧的不明确第三方 profile fail-closed 归一到 API-only。
+- 地址簿来源不再授予连接 token 能力。只有 profile capability、owner/account 绑定和
+  有效控制面会话同时成立时才把 token 投影到 `PunchHoleRequest`/`RequestRelay`。
+- `please login` 或 `login session expired` 字符串只进入兼容性/控制面错误分类，不清除
+  有效账号。当前只有明确结构化的 `control_plane/pro_session_expired` 可以触发重新认证；
+  native 尚不伪造该证据。
+- 官方 Server Pro、第三方 API-only/控制面和 OSS 手工主机使用不同恢复文案。设备密码、
+  请求批准和 Peer 2FA 仍是控制面建链后的 Peer 认证步骤。
+- 官方 OSS `hbbs` 源码核对表明 `PunchHoleRequest.version` 不参与登录判定，`-k` 由
+  `licence_key` 独立校验。Pro 授权实现不开源，因此继续发送真实
+  `harmonyos-rustdesk-ffi/<crate-version>` 身份，不伪装官方客户端版本。
+
+### 21.4 连接策略和能力状态
+
+| 能力 | 当前状态 | 说明 |
+|---|---|---|
+| FORCE_RELAY | `partially_aligned` | ArkTS/NAPI/C++/Rust 显式一致；真实 hbbs/hbbr 尚未验收 |
+| DIRECT_IP | `partially_aligned` | 继续使用既有直连传输并增加策略一致性校验；真实 Peer 尚未验收 |
+| AUTO | `unsupported_fail_closed` | 返回结构化 `auto_unavailable`，不静默改成 relay |
+| NAT test / TCP hole punch | `blocked_by_server_contract` | 当前没有足够 wire/设备证据，未伪造 NAT 类型或 P2P 成功 |
+| P2P 失败自动 relay | `blocked_by_server_contract` | 依赖真实 NAT/candidate/取消代次状态机，保持 NO-GO |
+| IPv6 / UDP blocked / network change | `blocked_by_platform` | 保留到 Release 2 的真实网络矩阵 |
+| 官方 Server Pro token | `partially_aligned` | 本地投影/失效边界已修；真实 ordinary/admin A/B 尚未执行 |
+| 第三方控制面 | `blocked_by_server_contract` | 只有能力经过证明的 profile 才可启用，不猜测换票接口 |
+| OSS key-only/shared `-k` | `partially_aligned` | wire fixture/单元测试通过；真实 OSS 服务端尚未执行 |
+
+FORCE_RELAY 请求明确发送保守 `SYMMETRIC` 和 `force_relay=true`，含义是“调用方强制
+relay”，不是伪造的真实 NAT 探测结果。hbbs 未返回 relay endpoint 时失败关闭，不再
+偷偷接受 direct peer 地址。
+
+### 21.5 构建和自动化证据
+
+- Rust：`cargo test --lib --no-default-features` 为 `150 passed, 0 failed`；
+  `cargo check --tests --no-default-features` 通过。
+- ArkTS：`default@OhosTestCompileArkTS` 通过，包含新增 save/context/profile/strategy/
+  release-note 策略测试。
+- Native/HAP：`assembleHap` 双 ABI native 重编译、打包和签名均
+  `BUILD SUCCESSFUL`。
+- 合规：Light 开源合规和 `git diff --check` 通过；SPDX 根包版本与
+  `1.0.10/1000010` 一致，RustDesk protocol provenance 仍固定为
+  `93d064a9b0eb58ab94db88ff727a877ef773c0d8`。
+- build identity 已从现有 NAPI `VERSION` 暴露 app version、Git short SHA、UTC build
+  time、FFI ABI 2 和 protocol fixture `93d064a9b0eb`，不进入连接报文。
+- `ohosTest@OhosTestCompileArkTS` 实际执行失败：项目未注册该任务（`00306054`）。
+- USB 设备只读查询显示仍安装 `1.0.8/1000008`；为保护现有用户数据，没有安装
+  `1.0.10` 候选 HAP。
+- crate 全量 `cargo fmt --check` 会报告既有全仓格式差异并重写无关 terminal/native
+  文件，因此未做跨模组机械格式化；本任务 diff 自身通过 whitespace 检查。
+
+### 21.6 完成边界和发布判定
+
+本地实现阶段进入独立 D-020 复核，但当前发布仍为 **NO-GO**。以下证据开放：
+
+1. 官方 Server Pro ordinary/admin、own/shared/denied device 与明确 HTTP 401/撤销；
+2. 超享/第三方 API-only 与经过证明的 control-plane token A/B；
+3. OSS hbbs/hbbr 公钥、共享 `-k`、密码、批准和 Peer 2FA；
+4. FORCE_RELAY、DIRECT_IP、AUTO/P2P、对称 NAT、CGNAT、IPv6、UDP blocked、
+   取消/超时/重连和 network change；
+5. API 23 上 1.0.8→1.0.10 保数据升级、保存后重启回读、手机键盘/安全区和多窗口；
+6. 单/双设备、账号切换、恢复、加密锁定与 cloud push 失败矩阵；
+7. RDP、VNC、SSH/SFTP 非 RustDesk 回归。
+
+未取得真实服务端协议证据前，不新增换票 endpoint、不伪造官方版本、不把 AUTO 显示为
+可用，也不因英文字符串删除 token。独立 reviewer 的结果和整改提交将在本节后续补录。
