@@ -2,6 +2,38 @@
 
 Updated: 2026-07-30 Asia/Shanghai
 
+## Current RustDesk multimonitor switch result
+
+- `codex/rustdesk-multimonitor-switch-hardening` is based on local
+  `main@1615aff58`; its independently reviewed implementation checkpoint is
+  `0d6c7fd0b`. After this documentation/build closure it is merged into local
+  `main` and the task branch is deleted.
+- Entity plan:
+  `docs/superpowers/plans/2026-07-30-rustdesk-multimonitor-switch-hardening-quick-fix-plan.md`.
+- The single-canvas product boundary is retained while the controlled peer can
+  expose multiple displays. A switch releases held keyboard, mouse and touch
+  input, removes coalesced old-screen movement, blocks new input, sends the
+  official latest-wins switch/capture/refresh transaction and adopts geometry
+  only after the exact target ACK and target keyframe.
+- Rapid selections retain only the latest generation. Stale display ACKs,
+  frames and PeerInfo updates cannot restore an old target; invalid or offline
+  current-display state falls back to the first online catalog display.
+- Native display publication and matching frame delivery are serialized
+  against the next generation. Capability polling, switching, input and
+  teardown pin the opaque Rust FFI handle, so stream-ended or explicit
+  disconnect cannot free it during an in-flight call.
+- Timeout notification keeps input blocked but permits an explicit retry of
+  the same target with a fresh generation. Disconnect and session replacement
+  reset both native and ArkTS switch state.
+- Independent review returned PASS at `0d6c7fd0b` with no remaining P0/P1/P2.
+  Native host tests are `178 passed, 0 failed`; focused Rust display/control
+  tests passed; `default@OhosTestCompileArkTS`, signed `assembleHap`, Light
+  compliance and `git diff --check` pass.
+- No HAP was installed and no real endpoint was controlled. Release remains
+  NO-GO pending API 23 testing against a real multi-display RustDesk peer,
+  including rapid switching, timeout/retry, monitor unplug/offline fallback,
+  reconnect and keyboard/mouse/touch release behavior.
+
 ## Current RustDesk control-plane v3 result
 
 - `codex/rustdesk-control-plane-v3` was based on the user-authorized local
@@ -59,15 +91,16 @@ Updated: 2026-07-30 Asia/Shanghai
 ## Repository
 
 - Repository: Mydstiny/RemoteDeskHarmonyOS
-- Active task branch: none after the RustDesk v3 local fast-forward closure.
-- RustDesk v3 base: local `main@d0e6ffee2`; independently reviewed
-  implementation checkpoint: `d404178b1`.
-- Scope: RustDesk login/control-plane separation, relay-save durability,
-  unified setup UX, connection strategy and redacted diagnostics.
+- Active task branch: none after the RustDesk multimonitor local closure.
+- RustDesk multimonitor base: local `main@1615aff58`; independently reviewed
+  implementation checkpoint: `0d6c7fd0b`.
+- Scope: RustDesk display-switch input fencing, generation/ACK/keyframe
+  confirmation, online fallback and FFI handle lifecycle safety.
 - Entity plan:
-  `docs/superpowers/plans/2026-07-29-rustdesk-control-plane-official-parity-complete-plan-v3.md`.
+  `docs/superpowers/plans/2026-07-30-rustdesk-multimonitor-switch-hardening-quick-fix-plan.md`.
 - Cloud/data lifecycle D-020 and VNC V2 were already fast-forward merged into
-  the local base; their owners and accepted behavior were not rewritten.
+  the local base; RustDesk control-plane v3 is also already merged. Their
+  owners and accepted behavior were not rewritten.
 - No remote push, PR or remote-main merge is authorized or performed.
 - The merged task branch is deleted during this closure; unrelated SSH,
   Moonlight, RDP and RustDesk controlled-host plan files remain untouched in

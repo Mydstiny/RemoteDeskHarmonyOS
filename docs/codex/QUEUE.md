@@ -4,6 +4,21 @@ Updated: 2026-07-30 Asia/Shanghai
 
 ## Now
 
+- RustDesk multi-display single-canvas switching is locally complete at
+  independently reviewed checkpoint `0d6c7fd0b`, based on
+  `main@1615aff58`. Input release and old-move draining precede the official
+  latest-wins switch transaction; input and geometry remain fenced until the
+  exact target ACK and keyframe. Stale generations cannot publish an old
+  display, invalid/offline current display chooses the first online catalog
+  entry, timeout permits same-target retry, and the opaque Rust FFI handle is
+  pinned across query/control calls and drained before teardown. Native host
+  tests are `178/178`; focused Rust tests, both required Hvigor gates, signed
+  HAP, Light and diff checks pass. The reviewer returned PASS with no remaining
+  P0/P1/P2. Release remains NO-GO pending API 23 testing against a real
+  multi-monitor peer for rapid switches, timeout/retry, unplug fallback,
+  reconnect and held keyboard/mouse/touch release. No HAP install, remote push,
+  PR or remote-main merge is part of this closure.
+
 - RustDesk login/control-plane/relay-save v3 is locally complete at reviewed
   implementation checkpoint `d404178b1`, based on local `main@d0e6ffee2`.
   Structured transactional save/read-back, one setup owner, progressive
