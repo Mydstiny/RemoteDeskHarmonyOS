@@ -36,6 +36,32 @@ interface RustDeskProErrorPayload {
   error: string
 }
 
+/**
+ * 从服务器拒绝响应中提取可诊断的 error/message 文本（脱敏、截断）。
+ * 只保留错误说明，不记录 URL、query、GUID、token、账号或完整响应体。
+ */
+function extractServerRejectionReason(raw: string): string {
+  let value = raw.replace(/\s+/g, ' ').trim();
+  try {
+    const obj = JSON.parse(raw) as Record<string, Object>;
+    const keys: string[] = ['error', 'message', 'detail', 'reason', 'msg'];
+    for (let i = 0; i < keys.length; i++) {
+      const v: Object | undefined = obj[keys[i]];
+      if (typeof v === 'string' && (v as string).length > 0) {
+        value = v as string;
+        break;
+      }
+    }
+  } catch (_err) {
+    // 非 JSON：保留纯文本开头。
+  }
+  value = value
+    .replace(/("(?:access_token|token|password|secret|authorization)"\s*:\s*")[^"]+(")/gi, '$1<redacted>$2')
+    .replace(/(token|password|secret|authorization)\s*[=:]\s*[\w.\-]+/gi, '$1=<redacted>');
+  if (value.length > 200) { value = value.substring(0, 200) + '…'; }
+  return value;
+}
+
 export class RustDeskProApiService {
   private static instance: RustDeskProApiService;
 
@@ -105,6 +131,14 @@ export class RustDeskProApiService {
         ' bytes=' + responseBytes.toString() +
         ' route=' + routeId +
         ' endpointId=' + endpointId);
+      if (response.responseCode >= 400 &&
+        typeof rawResult === 'string' &&
+        (rawResult as string).length > 0) {
+        hilog.warn(LOG_DOMAIN, LOG_TAG,
+          'server rejected route=' + routeId +
+          ' status=' + response.responseCode.toString() +
+          ' reason=' + extractServerRejectionReason(rawResult as string));
+      }
       let payload: Object = JSON.parse('{}') as Object;
       if (typeof response.result === 'string' && (response.result as string).length > 0) {
         try { payload = JSON.parse(response.result as string) as Object; } catch (_err) {
