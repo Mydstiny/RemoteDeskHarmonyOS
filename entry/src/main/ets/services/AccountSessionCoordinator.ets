@@ -313,8 +313,12 @@ export class AccountSessionCoordinator {
     }
 
     const currentScope: AccountScopeToken = store.currentScope();
-    const cloudBound: boolean = cloudTransferAllowed(
-      cloudAccountBindingForScope(currentScope));
+    // 云同步是否真正可用的判定必须同时满足: 账号绑定有效 且 物理库已完成
+    // setDistributedTables 注册 (cloudAvailable)。若云端注册失败/云空间未开通,
+    // 本地账号登录仍应成功, 只是云功能暂停; 不能把必然失败的 startup pull
+    // 作为登录硬前置。
+    const cloudBound: boolean = store.isCloudAvailable() &&
+      cloudTransferAllowed(cloudAccountBindingForScope(currentScope));
 
     if (!this.intentIsCurrent(intentGeneration)) {
       return await this.restorePreviousScope(
@@ -341,6 +345,10 @@ export class AccountSessionCoordinator {
           generation + 1,
           '同步范围重新启用的 cloud-first 状态未能安全落盘');
       }
+    } else if (cloudAccountBindingForScope(currentScope).state === 'bound' &&
+      !store.isCloudAvailable()) {
+      hilog.warn(0x0001, 'AccountSession',
+        '华为账号本地登录成功，但云端存储不可用（setDistributedTables 失败或云空间未开通），跳过 cloud-first，保持本地可用');
     } else if (platformProof.state === 'permission_denied' ||
       platformProof.state === 'identity_unavailable' ||
       platformProof.state === 'not_logged_in' ||

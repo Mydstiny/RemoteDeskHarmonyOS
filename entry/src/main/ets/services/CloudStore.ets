@@ -410,6 +410,8 @@ export class CloudStore implements CryptoCloudStore {
   private syncSuccessCount: number = 0;
   private syncFailCount: number = 0;
   private lastError: string = '';
+  // 诊断: 记录 createTables 当前执行的 DDL 步骤, 失败时精确定位语句
+  private schemaStep: string = '';
   private lastSyncFailureKind: CloudSyncFailureKind = 'none';
   private tableStatus: Record<string, TableSyncStatus> = {}
   private automaticPushSuppressed: boolean = false;
@@ -884,6 +886,9 @@ export class CloudStore implements CryptoCloudStore {
           this.cloudAvailable = false;
           this.cloudServiceGuidanceNeeded = this.errorRequiresCloudServiceGuidance(be);
           this.lastError = 'setDistributedTables: code=' + be.code.toString() + ' msg=' + be.message;
+          // 诊断: 8 表整批注册失败时, 用子集探针定位是 vncrecord 云表问题
+          // 还是全局配置/平台问题 (仅诊断用, 不改变生产注册语义)。
+          await this.probeCloudRegistrationSubsets();
         }
         // 仅 WiFi 下同步；策略设置失败不能让本地数据库也不可用。
         try {
@@ -4187,7 +4192,10 @@ export class CloudStore implements CryptoCloudStore {
     const column: string = separator < 0
       ? columnDefinition : columnDefinition.substring(0, separator);
     if (column.length === 0) { throw new Error('empty schema column'); }
-    if (this.tableColumns(table).indexOf(column) >= 0) { return; }
+    this.schemaStep = 'ensureColumn:PRAGMA:' + table;
+    const columns: string[] = this.tableColumns(table);
+    if (columns.indexOf(column) >= 0) { return; }
+    this.schemaStep = 'ensureColumn:ALTER:' + table + '.' + column;
     await this.store.executeSql(
       'ALTER TABLE ' + table + ' ADD COLUMN ' + columnDefinition);
   }
@@ -4200,8 +4208,12 @@ export class CloudStore implements CryptoCloudStore {
       throw new Error('database schema is newer than this app: ' +
         currentVersion.toString());
     }
-    this.store.beginTransaction();
+    // 平台约束（已真机验证）: OpenHarmony RDB 服务在 beginTransaction() 内执行
+    // DDL (CREATE/ALTER) 不会物化表, 后续 ALTER 报 14800021 "no such table"。
+    // 因此 schema 迁移不包手动事务; 所有 DDL 均幂等 (IF NOT EXISTS + 列检测),
+    // 中途失败重跑可自愈, 不再依赖事务回滚保证原子性。
     try {
+    this.schemaStep = 'create:remotehosts';
     await this.store.executeSql(`
       CREATE TABLE IF NOT EXISTS remotehosts (
         id TEXT PRIMARY KEY,
@@ -4288,6 +4300,7 @@ export class CloudStore implements CryptoCloudStore {
     for (const colDef of hostKeyCols) {
       await this.ensureColumn('remotehosts', colDef);
     }
+    this.schemaStep = 'create:rdpcredentials';
     await this.store.executeSql(`
       CREATE TABLE IF NOT EXISTS rdpcredentials (
         id TEXT PRIMARY KEY,
@@ -4300,6 +4313,7 @@ export class CloudStore implements CryptoCloudStore {
       )
     `);
     await this.ensureColumn('rdpcredentials', 'userid TEXT');
+    this.schemaStep = 'create:sshkeys';
     await this.store.executeSql(`
       CREATE TABLE IF NOT EXISTS sshkeys (
         id TEXT PRIMARY KEY,
@@ -4321,6 +4335,7 @@ export class CloudStore implements CryptoCloudStore {
     `);
     await this.ensureColumn('sshkeys', 'formatversion INTEGER');
     await this.ensureColumn('sshkeys', 'privatekeyencrypted INTEGER');
+    this.schemaStep = 'create:totpentries';
     await this.store.executeSql(`
       CREATE TABLE IF NOT EXISTS totpentries (
         id TEXT PRIMARY KEY,
@@ -4340,6 +4355,7 @@ export class CloudStore implements CryptoCloudStore {
       )
     `);
     // 密码学参数表 (盐值+验证器, 云同步以实现跨设备解密)
+    this.schemaStep = 'create:cryptoparams';
     await this.store.executeSql(`
       CREATE TABLE IF NOT EXISTS cryptoparams (
         id TEXT PRIMARY KEY,
@@ -4347,6 +4363,7 @@ export class CloudStore implements CryptoCloudStore {
         value TEXT
       )
     `);
+    this.schemaStep = 'create:usersettings';
     await this.store.executeSql(`
       CREATE TABLE IF NOT EXISTS usersettings (
         id TEXT PRIMARY KEY,
@@ -4362,6 +4379,7 @@ export class CloudStore implements CryptoCloudStore {
     await this.ensureColumn('usersettings', 'payload TEXT');
     await this.ensureColumn('usersettings', 'schemaversion INTEGER');
     // RustDesk 中继服务器配置表 (本地缓存, 云同步通过 cryptoparams)
+    this.schemaStep = 'create:rustdeskrelays';
     await this.store.executeSql(`
       CREATE TABLE IF NOT EXISTS rustdeskrelays (
         id TEXT PRIMARY KEY,
@@ -4387,6 +4405,7 @@ export class CloudStore implements CryptoCloudStore {
     // VNC owns exactly one cloud table. Logical settings, hosts, gateways,
     // secrets and trust rows are separated by recordtype; no existing protocol
     // table is extended with VNC-specific fields.
+    this.schemaStep = 'create:vncrecord';
     await this.store.executeSql(`
       CREATE TABLE IF NOT EXISTS vncrecord (
         id TEXT PRIMARY KEY,
@@ -4439,6 +4458,7 @@ export class CloudStore implements CryptoCloudStore {
       await this.ensureColumn('remotehosts', colDef);
     }
     // 本地扩展表不参与 setDistributedTables；它保存云表没有的字段。
+    this.schemaStep = 'create:localextensions';
     await this.store.executeSql(`
       CREATE TABLE IF NOT EXISTS localextensions (
         id TEXT PRIMARY KEY,
@@ -4450,6 +4470,7 @@ export class CloudStore implements CryptoCloudStore {
     `);
     // Device-local recovery state. These tables are never registered as cloud
     // tables, so the existing Huawei schema remains unchanged.
+    this.schemaStep = 'create:localmetadata';
     await this.store.executeSql(`
       CREATE TABLE IF NOT EXISTS localmetadata (
         key TEXT PRIMARY KEY,
@@ -4457,6 +4478,7 @@ export class CloudStore implements CryptoCloudStore {
         updatedat INTEGER
       )
     `);
+    this.schemaStep = 'create:localmutationjournal';
     await this.store.executeSql(`
       CREATE TABLE IF NOT EXISTS localmutationjournal (
         id TEXT PRIMARY KEY,
@@ -4468,6 +4490,7 @@ export class CloudStore implements CryptoCloudStore {
         updatedat INTEGER
       )
     `);
+    this.schemaStep = 'create:migrationreceipts';
     await this.store.executeSql(`
       CREATE TABLE IF NOT EXISTS migrationreceipts (
         id TEXT PRIMARY KEY,
@@ -4484,6 +4507,7 @@ export class CloudStore implements CryptoCloudStore {
         completedat INTEGER
       )
     `);
+    this.schemaStep = 'create:migrationquarantine';
     await this.store.executeSql(`
       CREATE TABLE IF NOT EXISTS migrationquarantine (
         id TEXT PRIMARY KEY,
@@ -4499,6 +4523,7 @@ export class CloudStore implements CryptoCloudStore {
     `);
     // Device-local VNC rows never enter setDistributedTables. They are used
     // for non-syncable caches and local key/trust mirrors only.
+    this.schemaStep = 'create:vnclocalrecords';
     await this.store.executeSql(`
       CREATE TABLE IF NOT EXISTS vnclocalrecords (
         id TEXT PRIMARY KEY,
@@ -4523,11 +4548,43 @@ export class CloudStore implements CryptoCloudStore {
         localonly INTEGER
       )
     `);
+    this.schemaStep = 'setVersion';
     this.store.version = ACCOUNT_STORE_SCHEMA_VERSION;
-    this.store.commit();
     } catch (err) {
-      try { this.store.rollBack(); } catch (_rollbackError) {}
-      throw new Error('schema migration failed: ' + safeError(err));
+      const detail: string = DataCrypto.errDetail(err);
+      hilog.error(0x0001, 'CloudSync',
+        'createTables failed at step[' + this.schemaStep + ']: ' + detail);
+      throw new Error('schema migration failed at step[' + this.schemaStep + ']: ' + detail);
+    }
+  }
+
+  /**
+   * 诊断探针: 整批 setDistributedTables 失败时, 用子集定位是特定云表
+   * (如 vncrecord) 结构不匹配, 还是全局配置/平台问题。仅诊断用。
+   */
+  private async probeCloudRegistrationSubsets(): Promise<void> {
+    if (!this.store) { return; }
+    const probes: string[][] = [
+      ['usersettings'],
+      ['vncrecord'],
+      ['cryptoparams', 'usersettings', 'remotehosts', 'rdpcredentials',
+        'rustdeskrelays', 'sshkeys', 'totpentries']
+    ];
+    for (const subset of probes) {
+      try {
+        await this.store.setDistributedTables(
+          subset,
+          relationalStore.DistributedType.DISTRIBUTED_CLOUD,
+          { autoSync: false }
+        );
+        hilog.info(0x0001, 'CloudSync',
+          'probeCloud subset=[' + subset.join(',') + '] SUCCESS');
+      } catch (err) {
+        const be: BusinessError = err as BusinessError;
+        hilog.error(0x0001, 'CloudSync',
+          'probeCloud subset=[' + subset.join(',') + '] FAIL code=' +
+          be.code.toString() + ' msg=' + be.message);
+      }
     }
   }
 
@@ -4786,12 +4843,18 @@ export class CloudStore implements CryptoCloudStore {
     const storedStore: string = this.readLocalMetadataStrict(STORE_IDENTITY_KEY);
     const storedPlatformIdentity: string =
       this.readLocalMetadataStrict(STORE_PLATFORM_IDENTITY_KEY);
+    // 平台分布式身份仅在“可独立证明”时参与校验 (指纹为 64 位十六进制)。
+    // 若当前设备/系统无法提供可信证明 (validating), 账号本地作用域仍可打开,
+    // 云端传输保持 fail-closed (cloudDistributedRegistrationAllowed=false),
+    // 与 verifyAccountScopeCloudBinding 的 validating 语义一致。
+    const platformIdentityCheckable: boolean =
+      expectedPlatformIdentity.length === 64;
     if ((storedOwner !== '' && storedOwner !== expectedOwner) ||
       (storedStore !== '' && storedStore !== expectedStore) ||
       (this.currentScopeToken.kind === 'huawei_account' &&
-        (expectedPlatformIdentity.length !== 64 ||
-          (storedPlatformIdentity !== '' &&
-            storedPlatformIdentity !== expectedPlatformIdentity)))) {
+        platformIdentityCheckable &&
+        storedPlatformIdentity !== '' &&
+        storedPlatformIdentity !== expectedPlatformIdentity)) {
       throw new Error('physical database owner identity mismatch');
     }
     this.store.beginTransaction();

@@ -87,6 +87,7 @@ struct LoginPage {
 
   /** 静默恢复登录 (杀后台后保留登录态, 不弹窗) */
   private async trySilentLogin(): Promise<void> {
+    await this.ensureAccountSessionReady();
     let restored: boolean = false;
     try {
       // 使用 Authorization 流程 (与 doHuaweiLogin 同一类型),
@@ -136,6 +137,7 @@ struct LoginPage {
   }
 
   private async prepareFirstLaunch(): Promise<void> {
+    await this.ensureAccountSessionReady();
     await AccountSessionCoordinator.getInstance().transitionToOffline('first-launch');
     this.checkingLogin = false;
   }
@@ -210,6 +212,7 @@ struct LoginPage {
 
   private async onLoginSuccess(credential: authentication.AuthorizationWithHuaweiIDCredential,
     showToast: boolean = true): Promise<boolean> {
+    await this.ensureAccountSessionReady();
     const unionId: string = credential.unionID ?? '';
     const openId: string = credential.openID ?? '';
     const authCode: string = credential.authorizationCode ?? '';
@@ -255,6 +258,7 @@ struct LoginPage {
   }
 
   private async enterOfflineMode(): Promise<void> {
+    await this.ensureAccountSessionReady();
     const transition: AccountTransitionResult =
       await AccountSessionCoordinator.getInstance().transitionToOffline('offline-login');
     if (!transition.ok && transition.state === 'blocked') {
@@ -263,6 +267,15 @@ struct LoginPage {
       return;
     }
     this.enterMainPage();
+  }
+
+  private async ensureAccountSessionReady(): Promise<void> {
+    const context = getContext(this);
+    try {
+      await AccountSessionCoordinator.getInstance().init(context);
+    } catch (_error) {
+      // 维持现有失败处理链路（失败也需恢复到页面控制器），不在 UI 层吞掉异常。
+    }
   }
 
   build() {
