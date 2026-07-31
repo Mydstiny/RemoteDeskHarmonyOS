@@ -34,6 +34,20 @@ const TERMINAL_BG_CSS: string = '#0D0D0D';
 /** 选区高亮底色 */
 const SELECTION_BG: string = 'rgba(90,140,255,0.40)';
 
+/**
+ * SSH 输出字节的稳定传输载体。
+ *
+ * 不要用 @Prop/@State 直接持有 ArrayBuffer：ArkUI 观察系统会给 ArrayBuffer 包
+ * 观察代理，watch 回调中访问 byteLength 时走 Reflect.get(target, key, proxy)，
+ * ArrayBuffer 内置 byteLength getter 要求 this 是真实 ArrayBuffer（internal
+ * slot），代理对象没有 → 抛 “don't have internal slot” 导致整页闪退。
+ * 该载体是普通对象，父组件写入、子组件读取都绕开观察代理；inputSequence 序号
+ * 仍由 @Prop @Watch 驱动消费。
+ */
+export class TerminalInputBuffer {
+  buffer: ArrayBuffer = new ArrayBuffer(0);
+}
+
 @Component
 export struct NativeTerminalRenderer {
   @Prop @Watch('onResize') cols: number = 80;
@@ -45,7 +59,8 @@ export struct NativeTerminalRenderer {
   @Prop @Watch('onCellSizeChange') cellWvp: number = 9;
   @Prop @Watch('onCellSizeChange') cellHvp: number = 20;
   @Prop @Watch('onFontChange') fontSize: number = 18;
-  @Prop inputData: ArrayBuffer = new ArrayBuffer(0);
+  /** 由 SshTerminal 在构造时传入的稳定引用（普通字段，不参与状态观察）。 */
+  inputBuffer: TerminalInputBuffer = new TerminalInputBuffer();
   @Prop @Watch('onInputSequenceChange') inputSequence: number = 0;
   @StorageProp('sshTerminalForegroundColor') @Watch('onFgColorChange') terminalFgColor: string = '#33FF33';
   @Prop selectMode: boolean = false;
@@ -233,10 +248,10 @@ export struct NativeTerminalRenderer {
 
   private onInputSequenceChange(): void {
     if (this.handle <= 0) { return; }
-    if (this.inputData.byteLength === 0) { return; }
+    if (this.inputBuffer.buffer.byteLength === 0) { return; }
     // inputData is one ordered SSH byte chunk. The Rust core owns bounded
     // scrollback and parses UTF-8/VT sequences without a lossy JS conversion.
-    this.bridge.writeBytes(this.handle, this.inputData);
+    this.bridge.writeBytes(this.handle, this.inputBuffer.buffer);
     if (this.followBottom) {
       this.bridge.scrollToBottom(this.handle);
     }

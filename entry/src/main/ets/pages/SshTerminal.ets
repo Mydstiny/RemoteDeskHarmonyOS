@@ -34,7 +34,7 @@ import { RemoteHost } from '../model/RemoteHost';
 import { Palette, buildDark, buildLight } from '../common/Theme';
 import { showLockGate, lockGateErrorMessage } from '../components/LockGate';
 import { TerminalEmulator } from '../components/TerminalEmulator';
-import { NativeTerminalRenderer } from '../components/NativeTerminalRenderer';
+import { NativeTerminalRenderer, TerminalInputBuffer } from '../components/NativeTerminalRenderer';
 import { SessionConfig, SftpFileEntry, SshPrivateKeyInfo, TerminalCoreMode } from '../types/rdpnapi';
 import { SshPreflightService } from '../services/SshPreflightService';
 import {
@@ -88,8 +88,12 @@ struct SshTerminal {
   @State userAtHost: string = '';
   /** 当前 SSH 输出 chunk；终端核心拥有 scrollback，不在页面累计完整历史。 */
   @State termOutput: string = '';
-  /** 原始 SSH 输出 chunk；Native terminal core 直接消费字节，避免 UTF-8/VT 损坏。 */
-  @State termOutputBytes: ArrayBuffer = new ArrayBuffer(0);
+  /**
+   * 原始 SSH 输出 chunk 的稳定载体；Native terminal core 直接消费字节，避免
+   * UTF-8/VT 损坏。必须是普通字段：ArrayBuffer 不能进 @State/@Prop（观察代理
+   * 会让 byteLength 访问抛 “don't have internal slot” 闪退）。
+   */
+  private terminalInputBuffer: TerminalInputBuffer = new TerminalInputBuffer();
   /** 即使连续两个 chunk 文本相同，也用序号触发终端核心消费。 */
   @State termOutputSequence: number = 0;
   /** 由 Rust terminal_core 的 DECSET/DECRST 状态驱动粘贴与输入保护。 */
@@ -241,7 +245,7 @@ struct SshTerminal {
     }
     this.terminalOutputQueue.splice(0, batchCount);
     this.terminalOutputQueueBytes -= batchBytes;
-    this.termOutputBytes = merged;
+    this.terminalInputBuffer.buffer = merged;
     this.termOutput = this.decodeTerminalChunk(merged);
     this.termOutputSequence++;
     if (this.terminalOutputQueue.length > 0) {
@@ -514,7 +518,7 @@ struct SshTerminal {
     this.orientationApplied = false;
     // ArkUI 可能复用页面实例；每次进入都必须从全新的会话输出开始。
     this.termOutput = '';
-    this.termOutputBytes = new ArrayBuffer(0);
+    this.terminalInputBuffer.buffer = new ArrayBuffer(0);
     this.clearTerminalOutputQueue();
     this.terminalDecodeRemainder = new Uint8Array(0);
     this.bracketedPasteEnabled = false;
@@ -531,11 +535,16 @@ struct SshTerminal {
     this.termRows = this.calcRowsFallback();
     this.termCols = this.calcColsFallback();
 
-    // 手机/平板 SSH 默认竖屏；桌面/2in1 由系统窗口管理当前方向。
+    // 进入 SSH 终端跟随设备当前朝向（不锁定窗口方向）；用户仍可手动切换横竖屏。
     const defaultOrientation: SshTerminalOrientation = defaultSshTerminalOrientation(this.isDesktopDevice);
-    this.isLandscape = defaultOrientation === 'landscape';
-    if (!this.isDesktopDevice) {
-      await this.setPreferredOrientation(window.Orientation.PORTRAIT, 'SSH-PORTRAIT');
+    if (defaultOrientation === 'system') {
+      this.isLandscape = await this.readDeviceIsLandscape();
+    } else {
+      this.isLandscape = defaultOrientation === 'landscape';
+      await this.setPreferredOrientation(
+        defaultOrientation === 'landscape' ? window.Orientation.LANDSCAPE : window.Orientation.PORTRAIT,
+        defaultOrientation === 'landscape' ? 'SSH-LANDSCAPE' : 'SSH-PORTRAIT'
+      );
     }
 
     // SSH 终端始终深色模式 — 强制系统状态栏/导航栏亮色图标
@@ -616,7 +625,7 @@ struct SshTerminal {
     this.sessionId = -1;
     this.connected = false;
     this.termOutput = '';
-    this.termOutputBytes = new ArrayBuffer(0);
+    this.terminalInputBuffer.buffer = new ArrayBuffer(0);
     this.clearTerminalOutputQueue();
     this.terminalDecodeRemainder = new Uint8Array(0);
     this.termOutputSequence++;
@@ -624,6 +633,20 @@ struct SshTerminal {
       setTimeout((): void => {
         this.setPreferredOrientation(window.Orientation.UNSPECIFIED, 'SSH-UNSPECIFIED');
       }, 250);
+    }
+  }
+
+  /** 读取设备当前窗口朝向（宽 > 高 为横屏），用于进入终端时跟随设备朝向。 */
+  private async readDeviceIsLandscape(): Promise<boolean> {
+    try {
+      const ctx = this.getUIContext().getHostContext();
+      if (!ctx) { return false; }
+      const win: window.Window = await window.getLastWindow(ctx);
+      const props: window.WindowProperties = win.getWindowProperties();
+      return props.windowRect.width > props.windowRect.height;
+    } catch (err) {
+      hilog.warn(0x0001, 'SshTerminal', 'readDeviceIsLandscape failed: ' + JSON.stringify(err));
+      return false;
     }
   }
 
@@ -2129,7 +2152,7 @@ struct SshTerminal {
                 fontSize: this.renderFontVp,
                 viewportHeight: this.terminalPaneHeight(),
                 visibleViewportHeight: this.terminalRowsViewportHeight(),
-                inputData: this.termOutputBytes,
+                inputBuffer: this.terminalInputBuffer,
                 inputSequence: this.termOutputSequence,
                 selectMode: this.selectMode,
                 bottomAlignSparseContent: !this.isDesktopDevice,

@@ -1,5 +1,37 @@
 # Shared Current State
 
+## Current SSH terminal crash + forced-portrait fix (2026-07-31)
+
+- 现场：SSH 连接进入终端先被强制竖屏（平板/手机与设备当前朝向无关），随后
+  首个输出批次到达时整页闪退。crashlog：`TypeError: don't have internal slot`
+  at `onInputSequenceChange`（NativeTerminalRenderer.ets:236）←
+  `updateStateVars`（NativeTerminalRenderer.ets:49），进程存活 9s。
+- 根因 1（闪退）：`991f2255c` 把 NativeTerminalRenderer 输入通道从 string 改为
+  `@Prop inputData: ArrayBuffer` + `@Prop inputSequence`。ArkUI 状态管理会给
+  @Prop 的 ArrayBuffer 包观察代理，watch 回调 `this.inputData.byteLength` 走
+  代理 get（Reflect.get(target,key,proxy)），ArrayBuffer 内置 byteLength
+  getter 要求 this 是真实 ArrayBuffer（internal slot）→ 抛
+  “don't have internal slot” 整页闪退。@State termOutputBytes 同理危险。
+- 根因 2（竖屏）：`SshTerminalOrientationPolicy.defaultSshTerminalOrientation`
+  对非桌面设备固定返回 `portrait`，aboutToAppear 无条件
+  `setPreferredOrientation(PORTRAIT)`，与设备当前朝向无关。
+- 修复：
+  1. 新增普通载体 `TerminalInputBuffer`（非 @Observed，绕开观察代理），
+     SshTerminal 写入、NativeTerminalRenderer 经普通字段读取；
+     `inputSequence` @Prop @Watch 仍驱动消费；删除 @State termOutputBytes /
+     @Prop inputData 两个 ArrayBuffer 状态变量。
+  2. 默认朝向改 `system`：进入终端跟随设备当前朝向（readDeviceIsLandscape 读
+     windowRect），不再强制竖屏；终端内手动切换仍可锁定横/竖屏，退出恢复
+     UNSPECIFIED。
+- 验证：`default@OhosTestCompileArkTS` 与 `assembleHap`（含 SignHap）均
+  BUILD SUCCESSFUL（非 daemon、exit 0）；`git diff --check` 干净。
+- 剩余：真机（MatePad Mini）装新 HAP 验证横屏进入 + 首个输出批次渲染 +
+  手动旋转/切换；建议顺带确认备用 TerminalEmulator（string 通道）不受影响。
+
+
+
+Updated: 2026-07-31 Asia/Shanghai
+
 ## Current RustDesk relay keymode/readback + direct punch fix (2026-07-31)
 
 - 现场：从官方 RustDesk 导出的加密配置粘贴导入中继，公共密钥保存报
