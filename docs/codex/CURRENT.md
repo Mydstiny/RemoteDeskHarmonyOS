@@ -1,5 +1,38 @@
 # Shared Current State
 
+## Current RustDesk 请求批准“转圈”根因修正（2026-07-31，本地 main `992d5ca`）
+
+- 现场：密码连接正常，但“请求批准”一直转圈；用户指出“被控端有密码照样可以
+  请求批准”（老版本/官方行为）。
+- 根因（上一轮 `ca8f081` 误判）：官方 RustDesk 被控端在安全模式为“点击批准
+  (Click)”或“密码+点击 (Both)”时，即使设置了设备密码，对空密码的批准请求也
+  会先返回 `No Password Access`，同时弹出批准框并**保持连接存活**
+  （`src/server/connection.rs`：`try_start_cm(...); send_login_error(...);
+  return true;`），直到被控端用户点击“接受”后才发送 `LoginResponse OK`。
+  官方 viewer 对该串的映射也是 `wait-remote-accept-nook`（等待远端接受），
+  并非终态错误。`ca8f081` 把该中间态当终态直接失败，破坏了“被控端有密码时
+  请求批准”的官方可用路径。
+- 修复：
+  1. FFI `session.rs`：`request_approval` 模式收到 `No Password Access` 时保持
+     `WaitingRemoteApproval` 继续等待（并重置 90s 批准超时），不再立即失败；
+     非批准（密码）模式收到该串仍快速失败（点击批准模式不接受设备密码）。
+  2. FFI `lib.rs`：`peer_password_required` 的 detail 改为描述点击批准语义。
+  3. ArkTS `RustDeskProConnectionPreflightPolicy.ets`：`peer_password_required`
+     提示改用“请求批准”并在被控端点击接受；`approval_timeout` 提示检查被控端
+     批准框/仅密码模式。
+  4. 一并提交先前未提交的 HTTP 4xx 脱敏服务器拒绝原因日志
+     （`RustDeskProApiService/Policy.ets`）。
+- 验证：FFI OHOS 双 ABI 构建成功；`default@OhosTestCompileArkTS` 与 signed
+  `assembleHap` BUILD SUCCESSFUL（非 daemon、exit 0）；native
+  `rdp_native_tests` 178/178；Light 合规 PASS；`git diff --check` 干净。
+  宿主 cargo test 仍因既有 `rendezvous.rs` 测试（dfd9636 引入）在 host target
+  缺 `PunchHoleResponse` 无法编译，非本次改动引入。
+- 提交：`992d5ca`（本地 main，无 push/PR）。
+- 剩余：真机复测——被控端“点击批准/密码+点击”模式点“接受”后应建链成功；
+  “仅密码”模式仍会 90s 超时并提示改用设备密码。
+
+
+
 ## Current SSH 密钥管理 Sheet 布局 + 私钥编辑修复 (2026-07-31)
 
 - 现场：SSH 密钥管理 Sheet（密钥列表 → 编辑）内容过长时“保存修改”按钮被
