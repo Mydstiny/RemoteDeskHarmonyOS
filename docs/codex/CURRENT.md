@@ -1,5 +1,31 @@
 # Shared Current State
 
+## Current RustDesk relay keymode/readback + direct punch fix (2026-07-31)
+
+- 现场：从官方 RustDesk 导出的加密配置粘贴导入中继，公共密钥保存报
+  “提交后校验不一致”，只有切“共享 -k”能保存；老版本同一配置可连接，
+  新版本 Pro 主机报“中继鉴权失败”、手动主机报
+  “server returned an invalid connection response”。
+- 根因 1：`rustdeskrelays` 无 `keymode` 列，公共密钥读回恒为 `auto`，
+  保存校验用字符串严格比较 keyMode，导致所有公共密钥保存必然
+  `readback_mismatch`。修复为语义比较（auto 时按密钥内容推断模式），
+  幂等 create-payload 比较同样处理。
+- 根因 2：OSS hbbs 可能无视 `force_relay=true`，对在线的被控端直接返回
+  `PunchHoleResponse.socket_addr`（直连地址）而不给 `relay_server`；原实现
+  把该合法响应当 InvalidData 报错。修复后屏幕/文件传输连接直接连接返回的
+  地址（官方客户端行为）。
+- 验证：ArkTS 编译与签名 HAP 均 BUILD SUCCESSFUL（非 daemon、exit 0）；
+  native `rdp_native_tests` 178/178；RustDesk FFI OHOS 双 ABI 构建成功；
+  `git diff --check` 干净。宿主 cargo test 仍因本机无 host libopus 无法链接。
+- 提交：`dfd9636`（本地 main，无 push/PR）。
+- 剩余：Pro 主机“中继鉴权失败”= hbbs 明确拒绝 licence_key
+  （LICENSE_MISMATCH / key mismatch）。代码侧 key 值在 shared 模式原样
+  往返，与老版本相同，需服务器日志（hbbs/hbbr 拒绝原文）或 A/B
+  （同一中继用手动主机 vs Pro 主机）确认是服务器 -k 与配置 key 不一致，
+  还是新版本 token 投影被魔改服务器拒绝。
+
+
+
 Updated: 2026-07-31 Asia/Shanghai
 
 ## Current VNC cloud schema fix (2026-07-31, local main `6b777c4`)
