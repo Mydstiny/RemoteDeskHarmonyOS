@@ -1,5 +1,31 @@
 # Shared Current State
 
+## Current SSH 密钥管理 Sheet 布局 + 私钥编辑修复 (2026-07-31)
+
+- 现场：SSH 密钥管理 Sheet（密钥列表 → 编辑）内容过长时“保存修改”按钮被
+  Sheet 底部截断、滚动不可达；且界面只能改密码/导出，无法编辑私钥 PEM 内容。
+- 根因 1（截断）：`SshKeyManagerSheet` 的 Scroll `constraintSize maxHeight: 560`
+  硬编码，小屏/FIT_CONTENT Sheet 下内容超高，底部按钮被挤出屏幕。
+- 根因 2（无法编辑私钥）：Sheet 只有“私钥保护（改密码）”和“导出私钥文件”，
+  没有私钥内容编辑入口。
+- 修复：
+  1. Scroll maxHeight 改为按屏幕可用高度动态计算
+     （`scrollMaxHeight()`：vp 高度 − 280，上限 560、下限 280），保证保存/
+     删除按钮滚动可达、不被截断。
+  2. 新增“私钥内容”分区（仅标准格式密钥）：默认收起，点“编辑私钥”展开
+     TextArea 编辑 PEM 全文；保存时用 native `inspectSshPrivateKey` 校验，
+     校验通过后同步重算 keyType/公钥/指纹/加密状态（OpenSSH 格式无需密码；
+     加密 PEM 需输入当前密码验证）。
+  3. `KeyVaultPage.onKeyManagerChange` 同步 `sheetKey`，保存后摘要区立即刷新。
+- 验证：`default@OhosTestCompileArkTS` 与 `assembleHap`（含 SignHap）均
+  BUILD SUCCESSFUL（非 daemon、exit 0）；`git diff --check` 干净。
+- 剩余：真机验证——小屏手机上编辑 Sheet 的保存按钮滚动可达；编辑未加密私钥后
+  公钥/指纹自动更新；编辑加密私钥需输入当前密码。
+
+
+
+Updated: 2026-07-31 Asia/Shanghai
+
 ## Current SSH terminal crash + forced-portrait fix (2026-07-31)
 
 - 现场：SSH 连接进入终端先被强制竖屏（平板/手机与设备当前朝向无关），随后

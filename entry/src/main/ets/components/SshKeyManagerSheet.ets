@@ -2,18 +2,18 @@
  * SshKeyManagerSheet.ets — SSH 密钥详情/管理 Sheet
  *
  * 替换旧的 keyVaultEditSheet() + sshEditFormSheet().
- * 分区: 摘要 / 基本信息 / 公钥 / 私钥保护 / 导出 / 危险区
+ * 分区: 摘要 / 基本信息 / 私钥内容 / 公钥 / 私钥保护 / 导出 / 危险区
  * 旧格式 (formatVersion=0) 密钥隐藏公钥/私钥保护/导出区.
  */
-import { promptAction } from '@kit.ArkUI';
+import { promptAction, display } from '@kit.ArkUI';
 import { pasteboard, BusinessError } from '@kit.BasicServicesKit';
 import { picker, fileIo } from '@kit.CoreFileKit';
 import { util } from '@kit.ArkTS';
-import { SshKey } from '../model/SshKey';
+import { SshKey, SshKeyType } from '../model/SshKey';
 import { Palette, buildDark, buildLight, AppTheme } from '../common/Theme';
 import { showLockGate, lockGateErrorMessage } from './LockGate';
 import { ExtensionLoader } from '../services/ExtensionLoader';
-import { GeneratedSshKeyPair } from '../types/rdpnapi';
+import { GeneratedSshKeyPair, SshPrivateKeyInfo } from '../types/rdpnapi';
 
 @Component
 export struct SshKeyManagerSheet {
@@ -31,6 +31,12 @@ export struct SshKeyManagerSheet {
   @State editComment: string = '';
   @State showFullPublicKey: boolean = false;
   @State saving: boolean = false;
+  /** 私钥内容编辑区（默认收起，展开后可编辑 PEM 全文） */
+  @State showPrivateKeyEditor: boolean = false;
+  @State editPrivateKey: string = '';
+  @State editKeyPassphrase: string = '';
+  @State editKeyError: string = '';
+  @State savingPrivateKey: boolean = false;
 
   private loader: ExtensionLoader = ExtensionLoader.getInstance();
 
@@ -39,10 +45,21 @@ export struct SshKeyManagerSheet {
   }
 
   private font(): string { return AppTheme.fontFamily; }
+  /** Scroll 最大高度：按屏幕可用高度动态计算，保证保存按钮不被 Sheet 底部截断。 */
+  private scrollMaxHeight(): number {
+    try {
+      const d: display.Display = display.getDefaultDisplaySync();
+      const heightVp: number = d.height / d.densityPixels;
+      return Math.max(280, Math.min(560, heightVp - 280));
+    } catch (_err) {
+      return 560;
+    }
+  }
 
   aboutToAppear(): void {
     this.editLabel = this.sshKey.label;
     this.editComment = this.sshKey.comment;
+    this.editPrivateKey = this.sshKey.privateKey;
   }
 
   // ====== 基本信息保存 ======
@@ -71,6 +88,59 @@ export struct SshKeyManagerSheet {
     if (this.onChange) { this.onChange(updated); }
     promptAction.showToast({ message: '已保存', duration: 1500 });
     this.saving = false;
+  }
+
+  // ====== 私钥内容保存 ======
+  private savePrivateKey(): void {
+    if (this.savingPrivateKey) { return; }
+    const pem: string = this.editPrivateKey.trim();
+    if (pem === '') {
+      this.editKeyError = '私钥内容不能为空';
+      return;
+    }
+    if (!SshKey.looksLikeOpenSshPrivateKey(pem)) {
+      this.editKeyError = '不是有效的 OpenSSH 私钥格式（缺少 BEGIN/END PRIVATE KEY 标记）';
+      return;
+    }
+    const info: SshPrivateKeyInfo = this.loader.inspectSshPrivateKey(pem, this.editKeyPassphrase);
+    if (!info.ok) {
+      if (info.encrypted && this.editKeyPassphrase === '') {
+        this.editKeyError = '私钥已加密，请输入当前私钥密码后保存';
+        return;
+      }
+      this.editKeyError = '私钥校验失败: ' + (info.error || '无法解析该私钥');
+      return;
+    }
+    this.savingPrivateKey = true;
+    const updated: SshKey = new SshKey();
+    updated.id = this.sshKey.id;
+    updated.label = this.sshKey.label;
+    updated.comment = this.sshKey.comment;
+    updated.keyType = this.mapKeyType(info.keyType);
+    updated.privateKey = pem;
+    updated.publicKey = info.publicKeyOpenSsh;
+    updated.fingerprint = info.fingerprintSha256;
+    updated.locked = this.sshKey.locked;
+    updated.lockType = this.sshKey.lockType;
+    updated.createdAt = this.sshKey.createdAt;
+    updated.syncVersion = this.sshKey.syncVersion;
+    updated.userId = this.sshKey.userId;
+    updated.formatVersion = 1;
+    updated.privateKeyEncrypted = info.encrypted;
+    if (this.onChange) { this.onChange(updated); }
+    promptAction.showToast({ message: '私钥已保存', duration: 1500 });
+    this.savingPrivateKey = false;
+    this.showPrivateKeyEditor = false;
+    this.editKeyPassphrase = '';
+    this.editKeyError = '';
+  }
+
+  /** inspectSshPrivateKey 的 keyType 字符串 → SshKeyType 枚举 */
+  private mapKeyType(type: string): SshKeyType {
+    if (type === 'ssh-ed25519') { return SshKeyType.ED25519; }
+    if (type === 'ssh-rsa') { return SshKeyType.RSA; }
+    if (type.startsWith('ecdsa-sha2-')) { return SshKeyType.ECDSA; }
+    return this.sshKey.keyType;
   }
 
   // ====== 复制公钥 ======
@@ -251,6 +321,61 @@ export struct SshKeyManagerSheet {
         .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
         .margin({ bottom: 16 })
 
+        // ========== 私钥内容区 (仅标准格式) ==========
+        if (!this.sshKey.isLegacyFormat()) {
+          this.sectionHeader('私钥内容')
+          Column() {
+            Row() {
+              Text(this.sshKey.privateKeyEncrypted ? '已有密码保护，编辑后需密码验证' : '未加密私钥，可安全编辑')
+                .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
+                .layoutWeight(1).margin({ right: 8 })
+              this._actionBtn(this.showPrivateKeyEditor ? '收起' : '编辑私钥', () => {
+                this.showPrivateKeyEditor = !this.showPrivateKeyEditor;
+                if (this.showPrivateKeyEditor && this.editPrivateKey === '') {
+                  this.editPrivateKey = this.sshKey.privateKey;
+                }
+              })
+            }.width('100%').margin({ bottom: 8 })
+
+            if (this.showPrivateKeyEditor) {
+              TextArea({ placeholder: '粘贴 OpenSSH 格式私钥...', text: this.editPrivateKey })
+                .height(160)
+                .backgroundColor(this.pal().surface).borderRadius(10)
+                .fontColor(this.pal().text).placeholderColor(this.pal().text3)
+                .fontFamily('monospace').fontSize(12)
+                .padding({ left: 12, right: 12, top: 10, bottom: 10 })
+                .width('100%')
+                .onChange((v: string) => { this.editPrivateKey = v; this.editKeyError = ''; })
+
+              if (this.sshKey.privateKeyEncrypted) {
+                TextInput({ placeholder: '当前私钥密码 (验证用)', text: this.editKeyPassphrase })
+                  .type(InputType.Password).height(38)
+                  .backgroundColor(this.pal().surface).borderRadius(8)
+                  .fontColor(this.pal().text).placeholderColor(this.pal().text3)
+                  .fontFamily(this.font()).fontSize(13)
+                  .padding({ left: 10, right: 10 }).margin({ top: 8 })
+                  .width('100%')
+                  .onChange((v: string) => { this.editKeyPassphrase = v; this.editKeyError = ''; })
+              }
+
+              if (this.editKeyError !== '') {
+                Text(this.editKeyError).fontSize(11).fontColor(this.pal().danger)
+                  .fontFamily(this.font()).width('100%').margin({ top: 6 })
+              }
+
+              Button('保存私钥')
+                .width('100%').height(40).fontSize(13).fontWeight(FontWeight.Medium)
+                .backgroundColor(this.accentColor).fontColor('#FFFFFF').borderRadius(8)
+                .margin({ top: 10 }).enabled(!this.savingPrivateKey)
+                .onClick(() => { this.savePrivateKey(); })
+            }
+          }
+          .width('100%').padding(14).borderRadius(12)
+          .backgroundColor(this.pal().card)
+          .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
+          .margin({ bottom: 16 })
+        }
+
         // ========== 公钥区 (仅标准格式) ==========
         if (!this.sshKey.isLegacyFormat()) {
           this.sectionHeader('公钥')
@@ -349,7 +474,7 @@ export struct SshKeyManagerSheet {
       .width('100%')
     }
     .scrollBar(BarState.Off).edgeEffect(EdgeEffect.Spring)
-    .constraintSize({ maxHeight: 560 })
+    .constraintSize({ maxHeight: this.scrollMaxHeight() })
     .width('100%')
   }
 
