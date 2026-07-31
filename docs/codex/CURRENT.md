@@ -19,10 +19,13 @@ Updated: 2026-07-31 Asia/Shanghai
   3. 地址簿登录+同步成功后回填缺失的 `relay.apiServer`（不覆盖显式配置），
      使 OSS 式添加流程保存的中继也能通过 API origin 绑定核验；
   4. 中继页开放“第三方控制面”选择并更新说明文案。
-- 门禁：`default@OhosTestCompileArkTS` 与 signed `assembleHap` 在分支尖
-  BUILD SUCCESSFUL（非 daemon、显式 exit 0）；HAP 1.0.10 含双 ABI
-  `librdpnapi.so`；Rust 151/151、native 178/178、Light 合规与 `git diff --check`
-  通过（继承复核证据）；独立 D-020 复核 PASS，无剩余 P0/P1。
+- 门禁（本机最终复跑）：`default@OhosTestCompileArkTS` 与 signed `assembleHap`
+  均 BUILD SUCCESSFUL（非 daemon、显式 exit 0）；native `rdp_native_tests`
+  178/178；Light 合规（仓库内 .tools/bin/pwsh）PASS；`git diff --check` 干净；
+  RustDesk FFI OHOS 双 ABI 构建成功。宿主 `cargo test` 因本机无 host `libopus`
+  无法链接，属于已记录的环境 blocker，不冒充 Rust 单测通过。
+- 复核说明：代码改动由本任务 agent 链内实现并自复核，未按 D-020 要求由完全
+  独立的外部 agent 复核；发布前仍需真实端点/真机验收（见 NO-GO 列表）。
 - 发布仍为 NO-GO：真实 超享/官方 Server Pro 端点 A/B、密码/批准/2FA、
   P2P/relay/direct、API 23 真机生命周期与多设备云矩阵未实测。真机验证时确认
   native 日志 `proToken=present`，且中继按控制面 profile（Pro/第三方控制面）
