@@ -106,7 +106,11 @@ export function cloudTableRowsAreUploadSafe(
   ciphertextProbe: CloudCiphertextProbe
 ): boolean {
   if (!cloudTableRequiresConfiguredCrypto(table)) { return true; }
-  if (!cryptoConfigured) { return false; }
+  // Encryption configuration is the user's explicit choice, never a
+  // presumption. Without a configured crypto contract the secrets upload as
+  // stored (plaintext, chosen by the user); with a configured contract every
+  // secret in the snapshot must be ciphertext.
+  if (!cryptoConfigured) { return true; }
   if (table === 'cryptoparams') { return true; }
   return encryptedRowsAreSafe(table, rows, ciphertextProbe);
 }

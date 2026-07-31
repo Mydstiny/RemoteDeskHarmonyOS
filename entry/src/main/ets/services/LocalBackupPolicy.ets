@@ -1,5 +1,6 @@
 import { cryptoFramework } from '@kit.CryptoArchitectureKit';
 import { util } from '@kit.ArkTS';
+import { hilog } from '@kit.PerformanceAnalysisKit';
 import { CLOUD_SYNC_TABLES } from './CloudSyncPolicy';
 import {
   BackupManifestV3,
@@ -307,28 +308,39 @@ export function validateLocalBackupDocument(text: string): LocalBackupDocument |
       (document.version !== 1 && document.version !== 2 &&
         document.version !== LOCAL_BACKUP_VERSION) || !document.tables ||
       !Number.isFinite(document.createdAt) || typeof document.appVersion !== 'string' ||
-      typeof document.sha256 !== 'string') { return null; }
+      typeof document.sha256 !== 'string') {
+      hilog.error(0x0001, 'LocalBackupPolicy', 'validate stage=shape');
+      return null;
+    }
     const names: string[] = Object.keys(document.tables);
     const inventory: string[] = [];
     for (let i = 0; i < CLOUD_SYNC_TABLES.length; i++) {
       const table: string = CLOUD_SYNC_TABLES[i];
       if (names.indexOf(table) >= 0) { inventory.push(table); }
     }
-    if (inventory.length !== names.length) { return null; }
+    if (inventory.length !== names.length) {
+      hilog.error(0x0001, 'LocalBackupPolicy',
+        'validate stage=inventory names=' + names.join(','));
+      return null;
+    }
     for (let i = 0; i < inventory.length; i++) {
       const table: string = inventory[i];
       const rows: Array<Record<string, string>> =
         document.tables[table];
       if (!Array.isArray(rows) ||
         !backupRowsContainOnlyKnownColumns(table, rows)) {
+        hilog.error(0x0001, 'LocalBackupPolicy',
+          'validate stage=columns table=' + table);
         return null;
       }
     }
     if (document.version === 1 && document.extensions !== undefined) {
+      hilog.error(0x0001, 'LocalBackupPolicy', 'validate stage=v1-extensions');
       return null;
     }
     if (document.version >= 3 &&
       !validateBackupManifestV3(document, inventory)) {
+      hilog.error(0x0001, 'LocalBackupPolicy', 'validate stage=manifest');
       return null;
     }
     const canonical: string = localBackupCanonicalPayload(
@@ -337,25 +349,37 @@ export function validateLocalBackupDocument(text: string): LocalBackupDocument |
       document.localTables, document.manifest, inventory);
     // Hash the source shape before dropping ResultSet system columns. Existing
     // backups created by older builds legitimately include #_deleted_flag.
-    if (localBackupSha256(canonical) !== document.sha256) { return null; }
+    if (localBackupSha256(canonical) !== document.sha256) {
+      hilog.error(0x0001, 'LocalBackupPolicy', 'validate stage=hash');
+      return null;
+    }
     const normalizedTables: Record<string, Array<Record<string, string>>> = {};
     for (let i = 0; i < inventory.length; i++) {
       const table: string = inventory[i];
       normalizedTables[table] = normalizeLocalBackupRows(table, document.tables[table]);
-      if (!validateLocalBackupRows(table, normalizedTables[table])) { return null; }
+      if (!validateLocalBackupRows(table, normalizedTables[table])) {
+        hilog.error(0x0001, 'LocalBackupPolicy',
+          'validate stage=rows table=' + table);
+        return null;
+      }
     }
     if (document.version >= 2 && !validateLocalExtensions(
       document.extensions || [], normalizedTables)) {
+      hilog.error(0x0001, 'LocalBackupPolicy', 'validate stage=extensions');
       return null;
     }
     if (document.localTables !== undefined &&
       !validateLocalTables(document.localTables, true)) {
+      hilog.error(0x0001, 'LocalBackupPolicy', 'validate stage=localTables');
       return null;
     }
     if (document.version >= 3 &&
       document.manifest?.crypto.mode === 'full'
         ? !validateFullV3Rows(document, normalizedTables)
         : !validateRedactedV3Rows(document, normalizedTables)) {
+      hilog.error(0x0001, 'LocalBackupPolicy',
+        'validate stage=v3rows mode=' +
+        (document.manifest?.crypto.mode || 'redacted'));
       return null;
     }
     document.tables = normalizedTables;
@@ -393,12 +417,21 @@ function validateBackupManifestV3(
 ): boolean {
   const manifest: BackupManifestV3 | undefined = document.manifest;
   if (manifest === undefined ||
-    !backupManifestV3IsStructurallyValid(manifest) ||
+    !backupManifestV3IsStructurallyValid(manifest)) {
+    hilog.error(0x0001, 'LocalBackupPolicy', 'manifest stage=structural mode=' +
+      (manifest === undefined ? 'none' : (manifest.crypto ? manifest.crypto.mode : 'no-crypto')));
+    return false;
+  }
+  if (
     manifest.sourceAppVersion !== document.appVersion ||
     manifest.createdAt !== document.createdAt ||
     manifest.restoreMode !== 'merge' ||
     manifest.sections.length !==
       CLOUD_SYNC_TABLES.length + LOCAL_BACKUP_LOCAL_TABLES.length + 1) {
+    hilog.error(0x0001, 'LocalBackupPolicy', 'manifest stage=meta sections=' +
+      manifest.sections.length.toString() + ' app=' + manifest.sourceAppVersion +
+      ' vs ' + document.appVersion + ' createdAt=' +
+      manifest.createdAt.toString() + ' vs ' + document.createdAt.toString());
     return false;
   }
   for (let i = 0; i < CLOUD_SYNC_TABLES.length; i++) {
@@ -411,6 +444,10 @@ function validateBackupManifestV3(
       !sectionMatchesRows(
         section, present, present ? document.tables[table] : [],
         localBackupColumnsForTable(table))) {
+      hilog.error(0x0001, 'LocalBackupPolicy',
+        'manifest stage=section table=' + table +
+        ' state=' + (section === null ? 'missing' : section.state) +
+        ' rows=' + (present ? (document.tables[table] || []).length.toString() : 'absent'));
       return false;
     }
   }
@@ -424,6 +461,7 @@ function validateBackupManifestV3(
     !sectionMatchesRows(
       extensionSection, true, extensions,
       localBackupLocalExtensionColumns())) {
+    hilog.error(0x0001, 'LocalBackupPolicy', 'manifest stage=extensionSection');
     return false;
   }
   const localTables: Record<string, Array<Record<string, string>>> =
@@ -442,8 +480,12 @@ function validateBackupManifestV3(
       return false;
     }
   }
-  return manifestSection(manifest, 'cloud:cryptoparams')?.state ===
-    'absent';
+  // Redacted configs never carry crypto parameters. Full backups chosen by
+  // the user may carry cryptoparams (empty when the source is unencrypted,
+  // rows when encrypted so the same master password can unlock on restore).
+  return manifest.crypto.mode === 'redacted'
+    ? manifestSection(manifest, 'cloud:cryptoparams')?.state === 'absent'
+    : true;
 }
 
 function rowsUseOnlyOwner(
@@ -470,6 +512,41 @@ function validateVncBackupRows(
   return true;
 }
 
+function rowsCanonicalJson(
+  rows: Array<Record<string, string>>
+): string {
+  const canonical: Array<Record<string, string>> = [];
+  for (let i = 0; i < rows.length; i++) {
+    const row: Record<string, string> = {};
+    const keys: string[] = Object.keys(rows[i]).sort();
+    for (let k = 0; k < keys.length; k++) {
+      row[keys[k]] = rows[i][keys[k]];
+    }
+    canonical.push(row);
+  }
+  return JSON.stringify(canonical);
+}
+
+function portableDataCanonicalJson(
+  data: PortableBackupData
+): string {
+  const tables: Record<string, string> = {};
+  const tableNames: string[] = Object.keys(data.tables).sort();
+  for (let i = 0; i < tableNames.length; i++) {
+    tables[tableNames[i]] = rowsCanonicalJson(data.tables[tableNames[i]]);
+  }
+  const localNames: string[] = Object.keys(data.localTables).sort();
+  const locals: Record<string, string> = {};
+  for (let i = 0; i < localNames.length; i++) {
+    locals[localNames[i]] = rowsCanonicalJson(data.localTables[localNames[i]]);
+  }
+  return JSON.stringify({
+    tables,
+    extensions: rowsCanonicalJson(data.extensions),
+    localTables: locals
+  });
+}
+
 function validateRedactedV3Rows(
   document: LocalBackupDocument,
   normalizedTables: Record<string, Array<Record<string, string>>>
@@ -479,12 +556,17 @@ function validateRedactedV3Rows(
     redactPortableBackupData(
       normalizedTables, document.extensions || [],
       document.localTables || {});
-  if (JSON.stringify(redacted.tables) !==
-      JSON.stringify(normalizedTables) ||
-    JSON.stringify(redacted.extensions) !==
-      JSON.stringify(document.extensions || []) ||
-    JSON.stringify(redacted.localTables) !==
-      JSON.stringify(document.localTables || {})) {
+  // Compare with key-order-insensitive canonical JSON: exporters may build
+  // rows (e.g. redacted user settings) in a different key order than the
+  // normalized inventory without changing the data.
+  if (portableDataCanonicalJson(redacted) !==
+      portableDataCanonicalJson({
+        tables: normalizedTables,
+        extensions: document.extensions || [],
+        localTables: document.localTables || {}
+      })) {
+    hilog.error(0x0001, 'LocalBackupPolicy',
+      'redacted canonical equality failed');
     return false;
   }
   const owner: string = manifest.accountScope;
@@ -838,7 +920,8 @@ function validateLocalExtensions(rows: Array<Record<string, string>>,
       for (let k = 0; k < payloadKeys.length; k++) {
         const key: string = payloadKeys[k];
         if (payloadColumns.indexOf(key) < 0 || typeof values[key] !== 'string') { return false; }
-        if ((key === 'formatversion' || key === 'privatekeyencrypted') && !isStrictIntegerText(values[key])) {
+        if ((key === 'formatversion' || key === 'privatekeyencrypted') &&
+          values[key] !== '' && !isStrictIntegerText(values[key])) {
           return false;
         }
       }

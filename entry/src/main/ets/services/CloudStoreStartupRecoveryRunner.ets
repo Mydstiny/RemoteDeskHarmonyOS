@@ -52,7 +52,8 @@ export interface CloudStoreStartupRecoveryIo {
   restoreSelectionReenableBarrier: (
     table: string,
     previousPhase:
-      CloudSelectionReenablePhase | null
+      CloudSelectionReenablePhase | null,
+    verify?: boolean
   ) => boolean;
   deleteLocalMetadata:
     (key: string) => boolean;
@@ -132,7 +133,7 @@ export class CloudStoreStartupRecoveryRunner {
       ): boolean =>
         io.restoreSelectionReenableBarrier(
           VNC_CLOUD_TABLE,
-          previousPhase),
+          previousPhase, false),
       deleteCheckpoint: (): boolean =>
         io.deleteLocalMetadata(
           VNC_SELECTION_REENABLE_TRANSACTION_KEY),

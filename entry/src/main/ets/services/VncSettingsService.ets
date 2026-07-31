@@ -239,8 +239,20 @@ export class VncSettingsService {
       const completed: CloudSyncOperationResult =
         await this.cloud
           .completeExclusiveVncSelectionCloudFirst(
-            pulled, lease);
+            pulled, lease, true);
       if (!completed.ok) {
+        if (!completed.rollbackFailed && !pulled.ok) {
+          // Platform/table failure (e.g. AGC vncrecord missing primary key):
+          // keep the already-persisted local scope selection, uploads stay
+          // paused by the pending_pull barrier. Encryption and sync scope
+          // remain the user's explicit choice, never app presumptions.
+          this.values = normalized;
+          result.ok = true;
+          result.message =
+            'VNC 同步范围已保存在本机；云端首次核对因平台错误未完成，上传保持暂停，请修复云端 vncrecord 表后重试';
+          this.emitChange();
+          return;
+        }
         result.message =
           'VNC 同步范围的 cloud-first 核对未完成，设置未发布成功';
         if (completed.rollbackFailed) {

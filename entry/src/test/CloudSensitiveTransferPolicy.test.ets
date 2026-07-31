@@ -12,12 +12,14 @@ function encrypted(value: string): boolean {
 
 export default function cloudSensitiveTransferPolicyTest(): void {
   describe('CloudSensitiveTransferPolicy', (): void => {
-    it('blocks_sensitive_native_first_when_crypto_is_disabled', 0,
+    it('uploads_sensitive_rows_as_stored_when_crypto_is_disabled', 0,
       (): void => {
+        // Encryption is the user's explicit choice; without a configured
+        // crypto contract the data uploads as stored (plaintext by choice).
         expect(cloudTableRowsAreUploadSafe(
-          'remotehosts', [], false, encrypted)).assertFalse();
+          'remotehosts', [], false, encrypted)).assertTrue();
         expect(cloudTableRowsAreUploadSafe(
-          'cryptoparams', [], false, encrypted)).assertFalse();
+          'cryptoparams', [], false, encrypted)).assertTrue();
         expect(cloudTableRowsAreUploadSafe(
           'usersettings', [], false, encrypted)).assertTrue();
       });

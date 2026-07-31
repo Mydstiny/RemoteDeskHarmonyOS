@@ -21,6 +21,7 @@ import {
 import { DataCrypto } from '../services/DataCrypto';
 import { CloudStore } from '../services/CloudStore';
 import { VncTrustService } from '../services/VncTrustService';
+import { VncCloudSyncSelectionStore } from '../services/VncCloudSyncSelectionStore';
 import { VncHostService, VncHostView } from '../services/VncHostService';
 import { VncGatewayService } from '../services/VncGatewayService';
 import { VncGatewayView } from '../services/VncGatewayService';
@@ -1517,6 +1518,17 @@ struct HostListPage {
       if (!result.ok) {
         hilog.warn(0x0001, 'CloudSync',
           '[HostListPage] table re-enable pull failed table=' + table);
+        const vncNoScope: boolean = table === 'vncrecord' &&
+          !VncCloudSyncSelectionStore.getInstance().hasSelection();
+        if (vncNoScope) {
+          // Initializing the VNC physical table must jump straight to the
+          // logical scope selector; without scopes there is nothing to sync.
+          this.cloudSyncError =
+            '请选择要同步的 VNC 内容（设置/主机/网关/机密/信任）';
+          this.openSettingsLeafSheet(
+            SETTINGS_SHEET_VNC_CLOUD_SYNC);
+          return;
+        }
         this.cloudSyncError =
           '云表重新启用失败：上传仍被暂停，请检查云空间后重试';
         promptAction.showToast({

@@ -1198,7 +1198,8 @@ export class CloudStore implements CryptoCloudStore {
 
   restoreSelectionReenableBarrier(
     table: string,
-    previousPhase: CloudSelectionReenablePhase | null
+    previousPhase: CloudSelectionReenablePhase | null,
+    verify: boolean = true
   ): boolean {
     if (TABLES.indexOf(table) < 0) { return false; }
     const snapshot:
@@ -1211,11 +1212,11 @@ export class CloudStore implements CryptoCloudStore {
     if (restored === null) {
       return this.persistSelectionReenableBarriers(
         this.selectionReenableBarriersWithout(
-          snapshot.barriers, [table]));
+          snapshot.barriers, [table]), verify);
     }
     snapshot.barriers[table] = restored;
     return this.persistSelectionReenableBarriers(
-      snapshot.barriers);
+      snapshot.barriers, verify);
   }
 
   /**
@@ -1279,24 +1280,42 @@ export class CloudStore implements CryptoCloudStore {
       const encodedEnvelope: string =
         envelope === null
           ? '' : JSON.stringify(envelope);
-      if (envelope === null ||
-        !this.writeLocalMetadata(
-          VNC_SELECTION_REENABLE_TRANSACTION_KEY,
-          encodedEnvelope) ||
-        !this.localMetadataValueMatches(
-          VNC_SELECTION_REENABLE_TRANSACTION_KEY,
-          encodedEnvelope)) {
+      if (envelope === null) {
         throw new Error(
-          'VNC selection checkpoint persistence failed');
+          'VNC selection checkpoint envelope unavailable');
+      }
+      if (!this.writeLocalMetadata(
+        VNC_SELECTION_REENABLE_TRANSACTION_KEY,
+        encodedEnvelope)) {
+        throw new Error(
+          'VNC selection checkpoint write failed');
       }
       barrierSnapshot.barriers[
         VNC_CLOUD_TABLE] = 'pending_pull';
-      if (!this.persistSelectionReenableBarriers(
-        barrierSnapshot.barriers)) {
+      const barriersEncoded: string =
+        JSON.stringify(barrierSnapshot.barriers);
+      if (!this.writeLocalMetadata(
+        CLOUD_SELECTION_REENABLE_BARRIERS_KEY,
+        barriersEncoded)) {
         throw new Error(
-          'VNC pending barrier persistence failed');
+          'VNC pending barrier write failed');
       }
       this.store.commit();
+      // Real-device OpenHarmony RDB does not expose uncommitted writes to a
+      // subsequent querySync, so verify both rows only after commit.
+      if (!this.localMetadataValueMatches(
+        VNC_SELECTION_REENABLE_TRANSACTION_KEY,
+        encodedEnvelope) ||
+        !this.localMetadataValueMatches(
+          CLOUD_SELECTION_REENABLE_BARRIERS_KEY,
+          barriersEncoded)) {
+        this.deleteLocalMetadata(
+          VNC_SELECTION_REENABLE_TRANSACTION_KEY);
+        this.deleteLocalMetadata(
+          CLOUD_SELECTION_REENABLE_BARRIERS_KEY);
+        throw new Error(
+          'VNC selection checkpoint persistence verification failed');
+      }
       return true;
     } catch (err) {
       try { this.store.rollBack(); } catch (_ignored) {}
@@ -1345,7 +1364,8 @@ export class CloudStore implements CryptoCloudStore {
 
   async completeExclusiveVncSelectionCloudFirst(
     result: CloudSyncOperationResult,
-    lease: AccountSessionLease
+    lease: AccountSessionLease,
+    keepLocalOnPlatformFailure: boolean = false
   ): Promise<CloudSyncOperationResult> {
     if (!this.vncSelectionExclusiveLeaseCurrent(
       lease)) {
@@ -1362,6 +1382,30 @@ export class CloudStore implements CryptoCloudStore {
       this.finalizeVncSelectionReenableTransaction();
     if (result.ok && finalized) {
       return result;
+    }
+    if (keepLocalOnPlatformFailure && !result.ok) {
+      // The cloud-first pull itself failed at the platform/table layer (for
+      // example the AGC vncrecord table has no primary key, so the platform
+      // sync returns a generic error). The local scope selection was already
+      // persisted before the pull; keep it, clear the pending checkpoint, and
+      // retain the pending_pull barrier so uploads stay fail-closed until a
+      // successful cloud-first completes. Finalization failures still roll
+      // back because they may leave an inconsistent authoritative checkpoint.
+      this.deleteLocalMetadata(
+        VNC_SELECTION_REENABLE_TRANSACTION_KEY);
+      hilog.warn(0x0001, 'CloudSync',
+        'VNC cloud-first 平台失败：保留本地范围选择，上传保持暂停');
+      return {
+        ok: false,
+        source: result.source,
+        tables: result.tables.slice(),
+        failedTables: result.failedTables.length > 0
+          ? result.failedTables.slice()
+          : [VNC_CLOUD_TABLE],
+        rollbackFailed: false,
+        failureKind: result.failureKind === 'none'
+          ? 'unknown' : result.failureKind
+      };
     }
     const restored: boolean =
       await this
@@ -1471,10 +1515,6 @@ export class CloudStore implements CryptoCloudStore {
           tables.join(',') +
           '），请重启应用并重新登录完成首次同步后再上传';
       }
-    }
-    const crypto: DataCrypto = DataCrypto.getInstance();
-    if (!crypto.isSetupComplete()) {
-      return '上传敏感数据前请先在「数据安全」设置安全密码（端到端加密）';
     }
     return '';
   }
@@ -1742,21 +1782,29 @@ export class CloudStore implements CryptoCloudStore {
   }
 
   private persistSelectionReenableBarriers(
-    barriers: Record<string, string>
+    barriers: Record<string, string>,
+    verify: boolean = true
   ): boolean {
     const keys: string[] = Object.keys(barriers);
     if (keys.length === 0) {
       return this.deleteLocalMetadata(
         CLOUD_SELECTION_REENABLE_BARRIERS_KEY) &&
-        cloudMetadataAbsentProven(
-          this.readLocalMetadataState(
-            CLOUD_SELECTION_REENABLE_BARRIERS_KEY));
+        (!verify ||
+          cloudMetadataAbsentProven(
+            this.readLocalMetadataState(
+              CLOUD_SELECTION_REENABLE_BARRIERS_KEY)));
     }
     const encoded: string =
       JSON.stringify(barriers);
-    return this.writeLocalMetadata(
+    if (!this.writeLocalMetadata(
       CLOUD_SELECTION_REENABLE_BARRIERS_KEY,
-      encoded) &&
+      encoded)) {
+      return false;
+    }
+    // In-transaction callers (VNC lifecycle wiring) verify the committed row
+    // after commit; the RDB service does not expose uncommitted writes to a
+    // subsequent querySync on this platform.
+    return !verify ||
       this.localMetadataValueMatches(
         CLOUD_SELECTION_REENABLE_BARRIERS_KEY,
         encoded);
@@ -2004,9 +2052,6 @@ export class CloudStore implements CryptoCloudStore {
     if (envelope === null ||
       !this.writeLocalMetadata(
         VNC_SELECTION_REENABLE_TRANSACTION_KEY,
-        encodedEnvelope) ||
-      !this.localMetadataValueMatches(
-        VNC_SELECTION_REENABLE_TRANSACTION_KEY,
         encodedEnvelope)) {
       return false;
     }
@@ -2027,7 +2072,7 @@ export class CloudStore implements CryptoCloudStore {
     }
     snapshot.barriers[VNC_CLOUD_TABLE] = next;
     return this.persistSelectionReenableBarriers(
-      snapshot.barriers);
+      snapshot.barriers, false);
   }
 
   private promoteVncSelectionWithinTransaction(
@@ -2134,7 +2179,7 @@ export class CloudStore implements CryptoCloudStore {
         return this.persistSelectionReenableBarriers(
           this.selectionReenableBarriersWithout(
             snapshot.barriers,
-            [VNC_CLOUD_TABLE]));
+            [VNC_CLOUD_TABLE]), false);
       },
       deleteCheckpoint: (): boolean =>
         this.deleteLocalMetadata(
