@@ -2,6 +2,21 @@
 
 Updated: 2026-07-30 Asia/Shanghai
 
+## RustDesk 登录可连接性修复 handoff（2026-07-31）
+
+- 根因：`53afa3b` 的绑定身份投影路径不可达——`sourceFitsProfile` 对空能力证明
+  提前返回 api_only_fallback，证明注册表为空且登录强制清空 proof，token 恒被
+  扣留；且 OSS 式添加的中继无 apiServer、第三方控制面按钮禁用。
+- 修复：`cd82824`（计划记录）+ `3ddfed269`（代码）已快进合并到本地 main，
+  任务分支已删除；工作树干净。投影门禁=可信证明或绑定身份核验；伪造证明
+  fail-closed；登录后回填 relay.apiServer；开放第三方控制面选择。
+- 门禁：Hvigor 测试编译 + signed assembleHap BUILD SUCCESSFUL（exit 0）；
+  HAP 1.0.10 含双 ABI native；Rust 151/151、native 178/178、Light、diff 检查
+  通过；独立 D-020 复核 PASS。
+- 下一步（NO-GO 前置）：真机安装 1.0.10 HAP 后对 超享 与官方 Server Pro 各做
+  登录→地址簿→连接闭环；确认 `proToken=present`；覆盖安装 1.0.8 数据需恢复
+  感知授权。严禁 push/PR/合并远端。
+
 ## Cloud store-name root fix handoff (2026-07-31)
 
 - Commits on local `main`: `961b698` (canonical store binding + account-scope

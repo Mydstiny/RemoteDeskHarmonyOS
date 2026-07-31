@@ -2,6 +2,32 @@
 
 Updated: 2026-07-31 Asia/Shanghai
 
+## Current RustDesk 登录可连接性闭环（2026-07-31，本地 main）
+
+- 用户现场“登录 HTTP 400 / 地址簿同步成功 / 连接被服务器拒绝 / please login”
+  的第三层根因已闭合：`53afa3bea` 的“绑定身份核验通过即投影”路径原先不可达——
+  `resolveRustDeskConnectionContext` 在 `sourceFitsProfile` 处对空能力证明提前返回
+  `api_only_fallback`，而证明注册表为空、登录流程又强制清空
+  `controlPlaneCapabilityProof`，导致所有账号型连接都不发送 HTTP token，
+  hbbs/hbbr 拒绝 relay 请求。
+- 修复（`cd82824` 计划记录 + `3ddfed269` 代码，已快进合并到本地 main）：
+  1. 投影门禁改为“可信证明 **或** 绑定身份核验”通过即投影；无证明时绑定身份
+     （同 API origin、ID/中继端点有效、服务器 Key 完整、token 指纹/generation
+     匹配）本身即能力来源，与官方客户端同部署复用登录 token 行为一致；
+  2. 伪造/不可信证明仍 fail-closed；OSS key-only/shared-key、API-only、direct
+     永不投影；
+  3. 地址簿登录+同步成功后回填缺失的 `relay.apiServer`（不覆盖显式配置），
+     使 OSS 式添加流程保存的中继也能通过 API origin 绑定核验；
+  4. 中继页开放“第三方控制面”选择并更新说明文案。
+- 门禁：`default@OhosTestCompileArkTS` 与 signed `assembleHap` 在分支尖
+  BUILD SUCCESSFUL（非 daemon、显式 exit 0）；HAP 1.0.10 含双 ABI
+  `librdpnapi.so`；Rust 151/151、native 178/178、Light 合规与 `git diff --check`
+  通过（继承复核证据）；独立 D-020 复核 PASS，无剩余 P0/P1。
+- 发布仍为 NO-GO：真实 超享/官方 Server Pro 端点 A/B、密码/批准/2FA、
+  P2P/relay/direct、API 23 真机生命周期与多设备云矩阵未实测。真机验证时确认
+  native 日志 `proToken=present`，且中继按控制面 profile（Pro/第三方控制面）
+  配置——纯 OSS key-only 按设计不发送 token。
+
 ## Current cloud store-name root fix (2026-07-31, local main)
 
 - Root cause of `setDistributedTables` 14800000: OpenHarmony RDB cloud sync

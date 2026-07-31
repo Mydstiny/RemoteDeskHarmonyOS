@@ -4,6 +4,15 @@ Updated: 2026-07-30 Asia/Shanghai
 
 ## Now
 
+- RustDesk 登录可连接性闭环（`cd82824` + `3ddfed269`，本地 main，分支已删）：
+  控制面 token 投影门禁从“必须可信证明”改为“可信证明或绑定身份核验”，
+  修复 `53afa3b` 投影路径不可达导致的“登录+地址簿成功但连接被 please login/
+  服务器拒绝”；中继页开放第三方控制面选择；地址簿登录后回填 relay.apiServer。
+  两项 Hvigor 门禁、Rust/native 测试、Light 与 diff 检查通过，独立 D-020 复核
+  PASS。发布仍为 NO-GO（真实 超享/Server Pro 端点、密码/批准/2FA、P2P/relay/
+  direct、API 23 真机与多设备云矩阵未实测）。真机闭环验证时确认 native 日志
+  `proToken=present`。
+
 - Cloud store-name root fix is committed on local `main` (`961b698` source,
   `3c8aa76` tests, `88e0ff3` import fix). Verified huawei_account scopes open
   the canonical `remotedesktop.db` cloud store; unverified/device-local scopes
