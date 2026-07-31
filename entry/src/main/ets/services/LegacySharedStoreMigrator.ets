@@ -40,7 +40,8 @@ const OWNER_TABLES: string[] = [
   'totpentries',
   'usersettings',
   'vncrecords',
-  'vncrecord'
+  'vncrecord',
+  'vncrecordv2'
 ];
 const EXPLICIT_OWNER_TABLES: string[] = [
   'remotehosts',
@@ -49,7 +50,8 @@ const EXPLICIT_OWNER_TABLES: string[] = [
   'totpentries',
   'usersettings',
   'vncrecords',
-  'vncrecord'
+  'vncrecord',
+  'vncrecordv2'
 ];
 
 export interface LegacySharedStoreMigrationResult {
@@ -193,7 +195,8 @@ export class LegacySharedStoreMigrator {
         const sourceTable: string = EXPLICIT_OWNER_TABLES[i];
         if (!this.tableExists(source, sourceTable)) { continue; }
         const targetTable: string =
-          sourceTable === 'vncrecords' || sourceTable === 'vncrecord'
+          sourceTable === 'vncrecords' || sourceTable === 'vncrecord' ||
+            sourceTable === 'vncrecordv2'
             ? 'vnclocalrecords' : sourceTable;
         const counts: number[] = this.copyOwnedRows(
           source, target, sourceTable, targetTable, scope,
@@ -341,7 +344,7 @@ export class LegacySharedStoreMigrator {
       this.insertRow(target, targetTable, bucket);
       copied++;
       this.recordSelection(selected,
-        sourceTable === 'vncrecords' ? 'vncrecord' : sourceTable, recordId);
+        sourceTable === 'vncrecords' ? 'vncrecordv2' : sourceTable, recordId);
       if (sourceTable === 'remotehosts') {
         const credentialId: string =
           this.stringValue(sourceRow['rdpcredentialid']);
@@ -463,7 +466,8 @@ export class LegacySharedStoreMigrator {
       'totpentries',
       'usersettings',
       'vncrecords',
-      'vncrecord'
+      'vncrecord',
+      'vncrecordv2'
     ];
     let updated: number = 0;
     for (let i = 0; i < tables.length; i++) {
@@ -528,7 +532,7 @@ export class LegacySharedStoreMigrator {
     const now: number = Date.now();
     for (let i = 0; i < tables.length; i++) {
       const table: string = tables[i] === 'vncrecords'
-        ? 'vncrecord' : tables[i];
+        ? 'vncrecordv2' : tables[i];
       const bucket: relationalStore.ValuesBucket = {
         id: receiptId + ':dirty:' + table,
         tablename: table,

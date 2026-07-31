@@ -1518,7 +1518,7 @@ struct HostListPage {
       if (!result.ok) {
         hilog.warn(0x0001, 'CloudSync',
           '[HostListPage] table re-enable pull failed table=' + table);
-        const vncNoScope: boolean = table === 'vncrecord' &&
+        const vncNoScope: boolean = table === 'vncrecordv2' &&
           !VncCloudSyncSelectionStore.getInstance().hasSelection();
         if (vncNoScope) {
           // Initializing the VNC physical table must jump straight to the
@@ -7502,7 +7502,7 @@ struct HostListPage {
               Column() {
                 Text(table === 'usersettings' ? '个性化与协议设置' : table === 'remotehosts' ? '远程主机' : table === 'rdpcredentials' ? 'Windows 登录凭据' : table === 'rustdeskrelays' ? 'RustDesk 中继配置' : table === 'sshkeys' ? 'SSH 密钥' : table === 'totpentries' ? '双重验证动态口令' : 'VNC 记录（vncrecord）')
                   .fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font())
-                Text(table === 'usersettings' ? '主题、外观和协议偏好' : table === 'vncrecord' ? '物理表开关；逻辑范围和 secrets 仍在 VNC 设置中选择' : '包含敏感数据，启用时自动同步加密参数')
+                Text(table === 'usersettings' ? '主题、外观和协议偏好' : table === 'vncrecordv2' ? '物理表开关；逻辑范围和 secrets 仍在 VNC 设置中选择' : '包含敏感数据，启用时自动同步加密参数')
                   .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font()).margin({ top: 3 })
               }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 10 })
             }.width('100%').padding(14).borderRadius(14).backgroundColor(this.pal().surface).margin({ bottom: 8 })

@@ -57,7 +57,7 @@ export default function cloudSensitiveTransferPolicyTest(): void {
     it('pauses_remote_secret_paths_for_disable_and_all_vnc_for_reset',
       0, (): void => {
         const selected: string[] = [
-          'usersettings', 'remotehosts', 'sshkeys', 'vncrecord'
+          'usersettings', 'remotehosts', 'sshkeys', 'vncrecordv2'
         ];
         expect(cloudSelectionAfterLocalCryptoTransition(
           selected, false).join(','))

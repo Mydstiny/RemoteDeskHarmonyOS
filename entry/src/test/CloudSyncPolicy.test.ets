@@ -19,7 +19,7 @@ export default function cloudSyncPolicyTest() {
       expect(tables.indexOf('sshkeys') >= 0).assertTrue();
       expect(tables.indexOf('totpentries') >= 0).assertTrue();
       expect(tables.indexOf('usersettings') >= 0).assertTrue();
-      expect(tables.indexOf('vncrecord')).assertEqual(7);
+      expect(tables.indexOf('vncrecordv2')).assertEqual(7);
       expect(tables.indexOf('vncrecords')).assertEqual(-1);
       expect(CLOUD_SYNC_TABLES.length).assertEqual(tables.length);
     });

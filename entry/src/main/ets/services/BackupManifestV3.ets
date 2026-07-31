@@ -329,7 +329,7 @@ export function redactPortableBackupData(
       excludedRows += sourceRows.length;
       continue;
     }
-    if (table === 'vncrecord') {
+    if (table === 'vncrecordv2') {
       const portable: Array<Record<string, string>> =
         redactVncRows(sourceRows);
       excludedRows += sourceRows.length - portable.length;

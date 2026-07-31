@@ -81,7 +81,7 @@ function legacySevenTableDocument(): LocalBackupDocument {
   const tables: Record<string, Array<Record<string, string>>> = {};
   for (let i = 0; i < CLOUD_SYNC_TABLES.length; i++) {
     const table: string = CLOUD_SYNC_TABLES[i];
-    if (table !== 'vncrecord') { tables[table] = current[table]; }
+    if (table !== 'vncrecordv2') { tables[table] = current[table]; }
   }
   tables['remotehosts'].push({
     id: 'legacy-host',
@@ -181,7 +181,7 @@ export default function dataLifecycleMatrixTest(): void {
           issuer: 'Example',
           secret: 'totp-secret'
         });
-        tables['vncrecord'].push({
+        tables['vncrecordv2'].push({
           id: 'vnc-secret',
           userid: 'owner-a',
           recordtype: 'secret'
@@ -194,7 +194,7 @@ export default function dataLifecycleMatrixTest(): void {
           undefined).assertTrue();
         expect(backup.tables['totpentries'][0]['secret'] ===
           undefined).assertTrue();
-        expect(backup.tables['vncrecord'].length).assertEqual(0);
+        expect(backup.tables['vncrecordv2'].length).assertEqual(0);
         expect(adaptLocalBackupDocumentForRestore(
           backup, 'owner-b', false)).assertNull();
 
@@ -203,12 +203,12 @@ export default function dataLifecycleMatrixTest(): void {
         expect(parsed !== null).assertTrue();
         if (parsed === null) { return; }
         const preview = createLocalBackupRestorePreview(parsed);
-        expect(preview.absentTables.indexOf('vncrecord') >= 0)
+        expect(preview.absentTables.indexOf('vncrecordv2') >= 0)
           .assertTrue();
         const plan = adaptLocalBackupDocumentForRestore(
           parsed, 'owner-a', true);
         expect(plan !== null).assertTrue();
-        expect(plan?.presentTables.indexOf('vncrecord') < 0)
+        expect(plan?.presentTables.indexOf('vncrecordv2') < 0)
           .assertTrue();
         expect(plan?.tables['remotehosts'][0]['passward'] ===
           undefined).assertTrue();
@@ -232,7 +232,7 @@ export default function dataLifecycleMatrixTest(): void {
         expect(recovered.phase).assertEqual('active_locked');
 
         const ordinary: string[] = [
-          'usersettings', 'remotehosts', 'sshkeys', 'vncrecord'
+          'usersettings', 'remotehosts', 'sshkeys', 'vncrecordv2'
         ];
         expect(cloudSelectionAfterLocalCryptoTransition(
           ordinary, false).join(','))

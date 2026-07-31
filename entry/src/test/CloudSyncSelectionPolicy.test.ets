@@ -14,7 +14,7 @@ export default function cloudSyncSelectionPolicyTest(): void {
       expect(cloudSyncSelectableTables().indexOf('cryptoparams')).assertEqual(-1);
       expect(cloudSyncSelectableTables().indexOf('remotehosts') >= 0).assertTrue();
       expect(cloudSyncSelectableTables().indexOf('usersettings') >= 0).assertTrue();
-      expect(cloudSyncSelectableTables().indexOf('vncrecord') >= 0).assertTrue();
+      expect(cloudSyncSelectableTables().indexOf('vncrecordv2') >= 0).assertTrue();
     });
 
     it('normalizes_unknown_and_duplicate_table_names', 0, (): void => {
@@ -40,9 +40,9 @@ export default function cloudSyncSelectionPolicyTest(): void {
     });
 
     it('keeps_vnc_physical_selection_outside_the_crypto_auto_pair', 0, (): void => {
-      const tables: string[] = effectiveCloudSyncTables(['vncrecord']);
+      const tables: string[] = effectiveCloudSyncTables(['vncrecordv2']);
       expect(tables.length).assertEqual(1);
-      expect(tables[0]).assertEqual('vncrecord');
+      expect(tables[0]).assertEqual('vncrecordv2');
     });
   });
 }

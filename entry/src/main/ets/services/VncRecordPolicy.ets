@@ -7,7 +7,7 @@ import {
   VncSecretStorageMode
 } from './VncSecretStoragePolicy';
 
-export const VNC_CLOUD_TABLE: string = 'vncrecord';
+export const VNC_CLOUD_TABLE: string = 'vncrecordv2';
 export const VNC_LOCAL_TABLE: string = 'vnclocalrecords';
 export const VNC_SCHEMA_VERSION: number = 1;
 export const VNC_CRYPTO_VERSION: number = 3;

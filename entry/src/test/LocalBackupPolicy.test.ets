@@ -32,7 +32,7 @@ function legacySevenTables(): Record<string, Array<Record<string, string>>> {
     emptyTables();
   const legacy: Record<string, Array<Record<string, string>>> = {};
   for (let i = 0; i < CLOUD_SYNC_TABLES.length; i++) {
-    if (CLOUD_SYNC_TABLES[i] !== 'vncrecord') {
+    if (CLOUD_SYNC_TABLES[i] !== 'vncrecordv2') {
       legacy[CLOUD_SYNC_TABLES[i]] = current[CLOUD_SYNC_TABLES[i]];
     }
   }
@@ -243,12 +243,12 @@ export default function localBackupPolicyTest(): void {
       expect(parsed !== null).assertTrue();
       const preview = createLocalBackupRestorePreview(
         parsed as LocalBackupDocument);
-      expect(preview.absentTables.indexOf('vncrecord') >= 0)
+      expect(preview.absentTables.indexOf('vncrecordv2') >= 0)
         .assertTrue();
       const plan = adaptLocalBackupDocumentForRestore(
         parsed as LocalBackupDocument, 'owner-target', true);
       expect(plan !== null).assertTrue();
-      expect(plan?.presentTables.indexOf('vncrecord') < 0)
+      expect(plan?.presentTables.indexOf('vncrecordv2') < 0)
         .assertTrue();
       expect(plan?.tables['remotehosts'][0]['userid'])
         .assertEqual('owner-target');
@@ -385,7 +385,7 @@ export default function localBackupPolicyTest(): void {
       const plan = adaptLocalBackupDocumentForRestore(
         parsed as LocalBackupDocument, 'owner-target', true);
       expect(plan !== null).assertTrue();
-      expect(plan?.presentTables.indexOf('vncrecord') < 0)
+      expect(plan?.presentTables.indexOf('vncrecordv2') < 0)
         .assertTrue();
       expect(plan?.presentLocalTables.length).assertEqual(0);
       expect(plan?.extensionsPresent).assertFalse();
@@ -405,14 +405,14 @@ export default function localBackupPolicyTest(): void {
       const tombstone: Record<string, string> =
         portableVncHostRow(owner, 'vnc-deleted');
       tombstone['deletedat'] = '9';
-      tables['vncrecord'].push(
+      tables['vncrecordv2'].push(
         host, secret, trust, tombstone);
       const document = createLocalBackupDocument(
         tables, 100, '1.0.8', [], {
           vnclocalrecords: [secret, trust]
         }, owner);
-      expect(document.tables['vncrecord'].length).assertEqual(1);
-      expect(document.tables['vncrecord'][0]['id'])
+      expect(document.tables['vncrecordv2'].length).assertEqual(1);
+      expect(document.tables['vncrecordv2'][0]['id'])
         .assertEqual('vnc-host');
       expect(document.localTables?.['vnclocalrecords'].length)
         .assertEqual(0);

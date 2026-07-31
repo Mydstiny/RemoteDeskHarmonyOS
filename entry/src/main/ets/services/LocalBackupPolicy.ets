@@ -72,7 +72,7 @@ export function localBackupColumnsForTable(table: string): string[] {
   if (table === 'rustdeskrelays') { return ['id', 'userid', 'idserver', 'idserverport', 'relayserver', 'relayport', 'apiserver', 'apiusername', 'apipassword', 'key', 'healthstatus', 'healthlatency', 'healthcheckedat', 'apiloginstatus', 'accountsjson', 'syncversion', 'createdat', 'updatedat']; }
   if (table === 'sshkeys') { return ['id', 'userid', 'label', 'keytype', 'publickey', 'privatekey', 'fingerprint', 'comment', 'locked', 'locktype', 'syncversion', 'createdat', 'updatedat', 'formatversion', 'privatekeyencrypted']; }
   if (table === 'totpentries') { return ['id', 'userid', 'issuer', 'account', 'secret', 'algorithm', 'digits', 'period', 'iconurl', 'locked', 'locktype', 'syncversion', 'createdat', 'updatedat']; }
-  if (table === 'vncrecord') {
+  if (table === 'vncrecordv2') {
     return ['id', 'userid', 'recordtype', 'ownerid', 'ownertype', 'secretkind', 'payload', 'ciphertext', 'envelopeversion', 'cryptoversion', 'keyversion', 'aadversion', 'payloadhashsha256', 'syncversion', 'schemaversion', 'resetepoch', 'createdat', 'updatedat', 'deletedat'];
   }
   return [];
@@ -102,7 +102,7 @@ function localBackupIntegerColumns(table: string): string[] {
   if (table === 'rustdeskrelays') { return ['idserverport', 'relayport', 'healthlatency', 'healthcheckedat', 'syncversion', 'createdat', 'updatedat']; }
   if (table === 'sshkeys') { return ['keytype', 'locked', 'locktype', 'syncversion', 'createdat', 'updatedat', 'formatversion', 'privatekeyencrypted']; }
   if (table === 'totpentries') { return ['algorithm', 'digits', 'period', 'locked', 'locktype', 'syncversion', 'createdat', 'updatedat']; }
-  if (table === 'vncrecord') { return ['envelopeversion', 'cryptoversion', 'keyversion', 'aadversion', 'syncversion', 'schemaversion', 'resetepoch', 'createdat', 'updatedat', 'deletedat']; }
+  if (table === 'vncrecordv2') { return ['envelopeversion', 'cryptoversion', 'keyversion', 'aadversion', 'syncversion', 'schemaversion', 'resetepoch', 'createdat', 'updatedat', 'deletedat']; }
   return [];
 }
 
@@ -581,8 +581,8 @@ function validateRedactedV3Rows(
       return false;
     }
   }
-  if (normalizedTables['vncrecord'] !== undefined &&
-    !validateVncBackupRows(normalizedTables['vncrecord'], owner)) {
+  if (normalizedTables['vncrecordv2'] !== undefined &&
+    !validateVncBackupRows(normalizedTables['vncrecordv2'], owner)) {
     return false;
   }
   const localVnc: Array<Record<string, string>> =
@@ -614,7 +614,7 @@ function validateFullV3Rows(
     }
   }
   const vncRows: Array<Record<string, string>> =
-    normalizedTables['vncrecord'] || [];
+    normalizedTables['vncrecordv2'] || [];
   for (let i = 0; i < vncRows.length; i++) {
     if ((vncRows[i]['userid'] || '') !== owner ||
       Number(vncRows[i]['deletedat'] || '0') > 0) {
@@ -657,7 +657,7 @@ function reboundRows(
   const result: Array<Record<string, string>> = [];
   const ownerTables: string[] = [
     'usersettings', 'remotehosts', 'rdpcredentials',
-    'rustdeskrelays', 'sshkeys', 'totpentries', 'vncrecord',
+    'rustdeskrelays', 'sshkeys', 'totpentries', 'vncrecordv2',
     'vnclocalrecords'
   ];
   for (let i = 0; i < rows.length; i++) {
@@ -669,7 +669,7 @@ function reboundRows(
     if (ownerTables.indexOf(table) >= 0) {
       row['userid'] = targetOwner;
     }
-    if ((table === 'vncrecord' || table === 'vnclocalrecords') &&
+    if ((table === 'vncrecordv2' || table === 'vnclocalrecords') &&
       row['ownertype'] === 'account') {
       row['ownerid'] = targetOwner;
     }
@@ -778,7 +778,7 @@ export function adaptLocalBackupDocumentForRestore(
     const table: string = presentTables[i];
     const rebound: Array<Record<string, string>> =
       reboundRows(table, portable.tables[table], owner);
-    if (table === 'vncrecord') {
+    if (table === 'vncrecordv2') {
       const valid: Array<Record<string, string>> =
         sensitivityMode === 'full'
           ? validFullVncRows(rebound, owner)

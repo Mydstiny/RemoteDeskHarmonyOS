@@ -28,7 +28,7 @@ function validHostRecord(): VncRecord {
 export default function vncRecordPolicyTest(): void {
   describe('VncRecordPolicy', (): void => {
     it('uses_the_single_vncrecord_cloud_table', 0, (): void => {
-      expect(VNC_CLOUD_TABLE).assertEqual('vncrecord');
+      expect(VNC_CLOUD_TABLE).assertEqual('vncrecordv2');
     });
     it('accepts_non_secret_host_rows_in_the_vnc_owner_domain', 0, (): void => {
       expect(vncRecordIsValid(validHostRecord())).assertTrue();

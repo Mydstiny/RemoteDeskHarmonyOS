@@ -311,6 +311,10 @@ const STORE_PLATFORM_IDENTITY_KEY: string =
 // registered, so a table-name correction cannot erase an installed user's data
 // or silently publish it to the replacement cloud table.
 const LEGACY_VNC_CLOUD_TABLE: string = 'vncrecords';
+/** Pre-rename cloud VNC table name (legacy source for one-time migration). */
+const LEGACY_VNC_CLOUD_RECORD_TABLE: string = 'vncrecord';
+const VNC_CLOUD_TABLE_RENAME_KEY: string =
+  'vnc_cloud_table_rename_v1';
 const VNC_LEGACY_MIGRATION_KEY: string = 'vnc_legacy_vncrecords_migrated_v1';
 const TABLE_MUTATION_RECORD_ID: string = '__table__';
 const VNC_RESET_EPOCH_KEY: string = 'vnc_reset_epoch';
@@ -4555,9 +4559,9 @@ export class CloudStore implements CryptoCloudStore {
     // VNC owns exactly one cloud table. Logical settings, hosts, gateways,
     // secrets and trust rows are separated by recordtype; no existing protocol
     // table is extended with VNC-specific fields.
-    this.schemaStep = 'create:vncrecord';
+    this.schemaStep = 'create:' + VNC_CLOUD_TABLE;
     await this.store.executeSql(`
-      CREATE TABLE IF NOT EXISTS vncrecord (
+      CREATE TABLE IF NOT EXISTS ${VNC_CLOUD_TABLE} (
         id TEXT PRIMARY KEY,
         userid TEXT,
         recordtype TEXT,
@@ -4579,6 +4583,24 @@ export class CloudStore implements CryptoCloudStore {
         deletedat INTEGER
       )
     `);
+    // One-time rename migration: old `vncrecord` rows (created before the
+    // AGC cloud table was recreated with a primary key) move into the new
+    // table name. Both schemas are identical, so INSERT OR IGNORE keeps the
+    // new table authoritative and is safe to re-run.
+    if (this.tableExists(LEGACY_VNC_CLOUD_RECORD_TABLE)) {
+      if (this.readLocalMetadataStrict(
+        VNC_CLOUD_TABLE_RENAME_KEY) !== '1') {
+        this.schemaStep = 'migrate:' + VNC_CLOUD_TABLE;
+        await this.store.executeSql(
+          'INSERT OR IGNORE INTO ' + VNC_CLOUD_TABLE +
+          ' SELECT * FROM ' + LEGACY_VNC_CLOUD_RECORD_TABLE);
+        if (!this.writeLocalMetadata(
+          VNC_CLOUD_TABLE_RENAME_KEY, '1')) {
+          throw new Error(
+            'VNC cloud table rename marker write failed');
+        }
+      }
+    }
     await this.ensureColumn('rustdeskrelays', 'accountsjson TEXT');
     await this.ensureColumn('rustdeskrelays', 'updatedat INTEGER');
     await this.ensureColumn('remotehosts', 'rustdeskrelayid TEXT');

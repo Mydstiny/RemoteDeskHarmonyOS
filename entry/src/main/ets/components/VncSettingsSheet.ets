@@ -229,10 +229,10 @@ export struct VncSettingsSheet {
       if (needsSecretConfirmation) {
         const crypto: DataCrypto = DataCrypto.getInstance();
         message += crypto.isReady()
-          ? 'VNC 密码和网关令牌会以绑定上下文的 AES-GCM 密文进入 vncrecord。'
+          ? 'VNC 密码和网关令牌会以绑定上下文的 AES-GCM 密文进入 vncrecordv2。'
           : crypto.isSetupComplete()
             ? '应用加密已锁定。现有 AES-GCM 密文会保留；新凭据可关闭“记住密码”后临时使用。'
-            : '应用加密未启用。明确选择记住密码的 VNC 凭据可能以未加密形式进入 vncrecord，请确认风险。';
+            : '应用加密未启用。明确选择记住密码的 VNC 凭据可能以未加密形式进入 vncrecordv2，请确认风险。';
       }
       if (needsTrustConfirmation) {
         message += (message === '' ? '' : '\n') + 'trust 指纹只同步记录，不会自动信任新设备。';
@@ -334,7 +334,7 @@ export struct VncSettingsSheet {
     if (this.mode === SETTINGS_SHEET_VNC_CLIPBOARD) { return '只控制 VNC 文本剪贴板通道'; }
     if (this.mode === SETTINGS_SHEET_VNC_SECURITY) { return '安全策略不替代服务器能力协商'; }
     if (this.mode === SETTINGS_SHEET_VNC_TRUST) { return 'VNC trust 独立于 RDP 证书和 SSH 主机指纹'; }
-    if (this.mode === SETTINGS_SHEET_VNC_CLOUD_SYNC) { return '物理表仍只有 vncrecord，逻辑范围独立选择'; }
+    if (this.mode === SETTINGS_SHEET_VNC_CLOUD_SYNC) { return '物理表仍只有 vncrecordv2，逻辑范围独立选择'; }
     if (this.mode === SETTINGS_SHEET_VNC_HOSTS) { return '主机记录不会进入 remotehosts'; }
     return 'VNC Gateway 与 RustDesk 中继分属不同 owner';
   }
@@ -652,7 +652,7 @@ export struct VncSettingsSheet {
 
   @Builder private cloudContent() {
     Column() {
-      Text('物理云表固定为 vncrecord；以下是该表内的逻辑 scope。关闭某个 scope 不会删除共享云行。')
+      Text('物理云表固定为 vncrecordv2；以下是该表内的逻辑 scope。关闭某个 scope 不会删除共享云行。')
         .fontSize(12).fontColor(this.pal().text3).lineHeight(19).width('100%').margin({ bottom: 10 })
       ForEach(vncCloudSyncScopes(), (scope: VncCloudSyncScope) => {
         Row() {

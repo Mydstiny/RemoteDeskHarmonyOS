@@ -334,7 +334,7 @@ export class AccountSessionCoordinator {
         // The startup cloud-first is the bootstrap gate: uploads stay
         // blocked and bootstrapCompleted stays false until an authoritative
         // pull succeeds. A single table/platform failure (for example the AGC
-        // vncrecord table missing its primary key) must NOT roll the login
+        // vncrecordv2 table missing its primary key) must NOT roll the login
         // back to device-local: the account scope stays active with sync
         // paused so local data remains usable and the user can resolve the
         // failing table in its own settings.

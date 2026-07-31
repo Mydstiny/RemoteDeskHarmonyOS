@@ -25,7 +25,7 @@ export function relayDirectoryMatchesFilter(kind: RelayDirectoryKind,
 }
 
 export function relayDirectoryOwner(kind: RelayDirectoryKind): string {
-  return kind === 'vnc' ? 'VncGatewayService/vncrecord' : 'HostSyncService/rustdeskrelays';
+  return kind === 'vnc' ? 'VncGatewayService/vncrecordv2' : 'HostSyncService/rustdeskrelays';
 }
 
 export function relayDirectoryEntry(kind: RelayDirectoryKind, id: string, label: string,

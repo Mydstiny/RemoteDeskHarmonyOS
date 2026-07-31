@@ -2,7 +2,7 @@ import { RemoteHost } from '../model/RemoteHost';
 import { VncHostView } from './VncHostService';
 
 /**
- * VNC remains owned by VncHostService/vncrecord. These helpers only create a
+ * VNC remains owned by VncHostService/vncrecordv2. These helpers only create a
  * transient RemoteHost-shaped view for the existing host-card UI and routing.
  */
 export const VNC_HOST_UI_PREFIX: string = 'vnc:';

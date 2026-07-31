@@ -147,7 +147,7 @@ export function cloudSelectionAfterLocalCryptoTransition(
   for (let i = 0; i < selected.length; i++) {
     const table: string = selected[i];
     if (SENSITIVE_BUSINESS_TABLES.indexOf(table) >= 0) { continue; }
-    if (reset && table === 'vncrecord') { continue; }
+    if (reset && table === 'vncrecordv2') { continue; }
     result.push(table);
   }
   return result;

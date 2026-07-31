@@ -256,8 +256,8 @@ export function retryTablesStillSelected(retryTables: string[], selectedBusiness
  */
 export function retryVncTablesStillSelected(retryTables: string[], selectedVncTables: string[]): string[] {
   const selected: string[] = selectedVncTables.slice();
-  const hasVncBusinessTable: boolean = retryTables.indexOf('vncrecord') >= 0;
-  if (hasVncBusinessTable && selected.indexOf('vncrecord') < 0) { return []; }
+  const hasVncBusinessTable: boolean = retryTables.indexOf('vncrecordv2') >= 0;
+  if (hasVncBusinessTable && selected.indexOf('vncrecordv2') < 0) { return []; }
   return retryTables.filter((table: string): boolean => selected.indexOf(table) >= 0);
 }
 

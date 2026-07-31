@@ -240,7 +240,7 @@ export default function cloudSyncCoordinatorPolicyTest(): void {
       0, (): void => {
         const result =
           restoreQuarantinedStartupResult(
-            ['remotehosts', 'vncrecord']);
+            ['remotehosts', 'vncrecordv2']);
         expect(result.ok).assertFalse();
         expect(result.source).assertEqual('startup');
         expect(result.tables.length).assertEqual(0);
@@ -256,9 +256,9 @@ export default function cloudSyncCoordinatorPolicyTest(): void {
       });
 
     it('does_not_treat_the_vnc_physical_table_as_an_ordinary_secret_table', 0, (): void => {
-      const ordinary: string[] = snapshotCloudSyncTables(['vncrecord']);
+      const ordinary: string[] = snapshotCloudSyncTables(['vncrecordv2']);
       expect(ordinary.length).assertEqual(1);
-      expect(ordinary[0]).assertEqual('vncrecord');
+      expect(ordinary[0]).assertEqual('vncrecordv2');
     });
 
     it('keeps_retry_intent_for_each_distinct_automatic_table', 0, (): void => {
@@ -286,10 +286,10 @@ export default function cloudSyncCoordinatorPolicyTest(): void {
 
     it('uses_the_single_vncrecord_cloud_table_for_vnc_retries', 0, (): void => {
       const retained: string[] = retryVncTablesStillSelected(
-        ['cryptoparams', 'vncrecord'], ['cryptoparams', 'vncrecord']);
+        ['cryptoparams', 'vncrecordv2'], ['cryptoparams', 'vncrecordv2']);
       expect(retained.length).assertEqual(2);
       const dropped: string[] = retryVncTablesStillSelected(
-        ['vncrecord'], []);
+        ['vncrecordv2'], []);
       expect(dropped.length).assertEqual(0);
     });
 
@@ -349,7 +349,7 @@ export default function cloudSyncCoordinatorPolicyTest(): void {
     it('does_not_block_vncrecord_when_optional_crypto_sync_fails', 0, async (): Promise<void> => {
       const trace: string[] = [];
       const result = await executeCloudSyncRequest(
-        { source: 'automaticPush', direction: 'nativeFirst', tables: ['cryptoparams', 'vncrecord'] },
+        { source: 'automaticPush', direction: 'nativeFirst', tables: ['cryptoparams', 'vncrecordv2'] },
         async (table: string): Promise<boolean> => {
           trace.push(table);
           return table !== 'cryptoparams';
@@ -359,7 +359,7 @@ export default function cloudSyncCoordinatorPolicyTest(): void {
       );
       expect(trace.length).assertEqual(2);
       expect(trace[0]).assertEqual('cryptoparams');
-      expect(trace[1]).assertEqual('vncrecord');
+      expect(trace[1]).assertEqual('vncrecordv2');
       expect(result.ok).assertFalse();
       expect(result.failedTables.length).assertEqual(1);
       expect(result.failedTables[0]).assertEqual('cryptoparams');
@@ -368,7 +368,7 @@ export default function cloudSyncCoordinatorPolicyTest(): void {
     it('keeps_crypto_fail_closed_for_mixed_protocol_downloads', 0, async (): Promise<void> => {
       const trace: string[] = [];
       const result = await executeCloudSyncRequest(
-        { source: 'automaticPush', direction: 'nativeFirst', tables: ['cryptoparams', 'vncrecord', 'remotehosts'] },
+        { source: 'automaticPush', direction: 'nativeFirst', tables: ['cryptoparams', 'vncrecordv2', 'remotehosts'] },
         async (table: string): Promise<boolean> => {
           trace.push(table);
           return table !== 'cryptoparams';
@@ -379,7 +379,7 @@ export default function cloudSyncCoordinatorPolicyTest(): void {
       expect(trace.length).assertEqual(1);
       expect(trace[0]).assertEqual('cryptoparams');
       expect(result.failedTables.length).assertEqual(3);
-      expect(result.failedTables[1]).assertEqual('vncrecord');
+      expect(result.failedTables[1]).assertEqual('vncrecordv2');
       expect(result.failedTables[2]).assertEqual('remotehosts');
     });
 
@@ -388,7 +388,7 @@ export default function cloudSyncCoordinatorPolicyTest(): void {
         let rolledBack: boolean = false;
         const completedTables: string[] = [];
         const result = await executeCloudSyncRequest(
-          { source: 'manualDownload', direction: 'cloudFirst', tables: ['cryptoparams', 'vncrecord'] },
+          { source: 'manualDownload', direction: 'cloudFirst', tables: ['cryptoparams', 'vncrecordv2'] },
           async (table: string): Promise<boolean> => { return table !== 'cryptoparams'; },
           {
             beginManualDownload: (): boolean => true,
@@ -409,7 +409,7 @@ export default function cloudSyncCoordinatorPolicyTest(): void {
         expect(result.failedTables[0]).assertEqual('cryptoparams');
         expect(rolledBack).assertFalse();
         expect(completedTables.length).assertEqual(1);
-        expect(completedTables[0]).assertEqual('vncrecord');
+        expect(completedTables[0]).assertEqual('vncrecordv2');
       });
 
     it('reports_when_a_failed_download_cannot_restore_its_snapshot', 0, async (): Promise<void> => {

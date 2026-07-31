@@ -321,7 +321,7 @@ function vncBarrierRaw(
 ): string {
   const barriers:
     Record<string, string> = {};
-  barriers['vncrecord'] = phase;
+  barriers['vncrecordv2'] = phase;
   return JSON.stringify(barriers);
 }
 
@@ -780,7 +780,7 @@ class FakeVncStartupRecoveryIo
     this.events.push(
       'barrier:' + table);
     if (this.fault === 'barrier' ||
-      table !== 'vncrecord') {
+      table !== 'vncrecordv2') {
       return false;
     }
     if (previousPhase === null) {
@@ -1210,7 +1210,7 @@ export default function cloudDataWiringTest():
             store, metadata);
         expect(
           completeVncAuthoritativeCloudFirst(
-            ['vncrecord'], port).ok)
+            ['vncrecordv2'], port).ok)
           .assertTrue();
         expect(port.events.join(','))
           .assertEqual(
@@ -1249,7 +1249,7 @@ export default function cloudDataWiringTest():
           port.fault = faults[i];
           expect(
             completeVncAuthoritativeCloudFirst(
-              ['vncrecord'], port).ok)
+              ['vncrecordv2'], port).ok)
             .assertFalse();
           if (faults[i] === 'begin') {
             expect(port.events.indexOf(
@@ -1286,7 +1286,7 @@ export default function cloudDataWiringTest():
         port.postCommitReadError = true;
         expect(
           completeVncAuthoritativeCloudFirst(
-            ['vncrecord'], port).ok)
+            ['vncrecordv2'], port).ok)
           .assertFalse();
         expect(port.events.indexOf(
           '1:commit') >= 0)
@@ -1319,7 +1319,7 @@ export default function cloudDataWiringTest():
             successMetadata);
         expect(
           completeVncAuthoritativeCloudFirst(
-            ['vncrecord'],
+            ['vncrecordv2'],
             completion).ok)
           .assertTrue();
         expect(completion
@@ -1378,7 +1378,7 @@ export default function cloudDataWiringTest():
               failedMetadata);
           expect(
             completeVncAuthoritativeCloudFirst(
-              ['vncrecord'],
+              ['vncrecordv2'],
               failedCompletion).ok)
             .assertTrue();
           const failedIo =
