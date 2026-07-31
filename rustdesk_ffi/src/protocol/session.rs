@@ -589,10 +589,19 @@ impl Session {
                 Some(Message_oneof_union::login_response(resp)) => {
                     if resp.has_error() {
                         let err = resp.get_error().to_string();
-                        if request_approval && err == NO_PASSWORD_ACCESS {
-                            self.state = SessionState::WaitingRemoteApproval;
+                        if err == NO_PASSWORD_ACCESS {
+                            // 被控端设置了设备密码访问，明确拒绝空密码
+                            // （包括“请求批准”）。官方客户端此时立即报错，
+                            // 无限等待只会让 UI 一直转圈直到超时。
+                            self.state = SessionState::Error(err.clone());
                             last_variant = "no_password_access".to_string();
-                            continue;
+                            break Err(io::Error::new(
+                                io::ErrorKind::PermissionDenied,
+                                format!(
+                                    "{}",
+                                    err
+                                ),
+                            ));
                         }
                         if err == REQUIRE_2FA {
                             if auth_receiver.is_none() {

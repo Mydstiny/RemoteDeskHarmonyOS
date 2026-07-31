@@ -164,9 +164,14 @@ fn pipeline_error_classification(
     }
     if value.contains("approval timed out")
         || value.contains("remote approval timed out")
-        || value.contains("no password access")
     {
         return ("approval_unavailable", "remote approval was not completed");
+    }
+    if value.contains("no password access") {
+        return (
+            "peer_password_required",
+            "remote device requires a device password; passwordless approval was denied",
+        );
     }
     if value.contains("id does not exist")
         || value.contains("peer not found")

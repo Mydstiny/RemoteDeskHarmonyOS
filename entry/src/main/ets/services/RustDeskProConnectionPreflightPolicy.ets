@@ -34,6 +34,7 @@ export type RustDeskProNativeErrorKind =
   | 'pro_session_expired'
   | 'control_plane_incompatible'
   | 'device_password'
+  | 'peer_password_required'
   | 'approval_timeout'
   | 'relay_auth'
   | 'peer_missing'
@@ -92,6 +93,9 @@ export function classifyRustDeskProNativeError(message: string): RustDeskProNati
   if (parsed.structured && parsed.code === 'approval_unavailable') {
     return 'approval_timeout';
   }
+  if (parsed.structured && parsed.code === 'peer_password_required') {
+    return 'peer_password_required';
+  }
   if (parsed.structured && parsed.code === 'peer_unavailable') {
     return 'peer_missing';
   }
@@ -109,8 +113,10 @@ export function classifyRustDeskProNativeError(message: string): RustDeskProNati
   if (parsed.structured && (parsed.stage === 'relay' || parsed.stage === 'rendezvous')) {
     return 'relay_auth';
   }
-  if (value.indexOf('no password access') >= 0 ||
-    value.indexOf('remote approval timed out') >= 0 ||
+  if (value.indexOf('no password access') >= 0) {
+    return 'peer_password_required';
+  }
+  if (value.indexOf('remote approval timed out') >= 0 ||
     value.indexOf('approval timed out') >= 0) {
     return 'approval_timeout';
   }
@@ -158,6 +164,8 @@ export function rustDeskProNativeErrorMessage(kind: RustDeskProNativeErrorKind,
       return '地址簿登录成功并不代表 hbbs/hbbr 接受同一 token；当前连接没有发送地址簿 token。请将中继按 OSS 公钥/共享 -k 配置，或让服务商提供明确的控制面兼容证明。';
     case 'device_password':
       return '远程 RustDesk 设备密码错误，请重新输入。';
+    case 'peer_password_required':
+      return '该设备设置了访问密码，无密码的请求批准被拒绝；请改用设备密码连接。';
     case 'approval_timeout':
       return authMode === 'request_approval' ? '远端未批准本次连接，请重新发起请求。' : '远端设备未提供可用密码。';
     case 'relay_auth':
