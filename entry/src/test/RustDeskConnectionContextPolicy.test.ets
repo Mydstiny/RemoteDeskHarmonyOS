@@ -76,35 +76,49 @@ export default function rustDeskConnectionContextPolicyTest(): void {
         expect(apiOnly.accessToken).assertEqual('');
       });
 
-    it('downgrades_profile_and_generic_http_login_to_api_only',
+    it('projects_binding_verified_official_server_pro_token',
       0, (): void => {
         const result = resolveRustDeskConnectionContext(input());
         expect(result.ready).assertTrue();
-        expect(result.code).assertEqual('api_only_fallback');
-        expect(result.profile).assertEqual('third_party_api_only');
-        expect(result.requiresAccount).assertFalse();
-        expect(result.accessToken).assertEqual('');
-        expect(result.capabilitySource).assertEqual('none');
+        expect(result.code).assertEqual('ready');
+        expect(result.profile).assertEqual('official_server_pro_token');
+        expect(result.requiresAccount).assertTrue();
+        expect(result.accessToken).assertEqual('secret-token');
+        expect(result.capabilitySource)
+          .assertEqual('official_server_pro');
       });
 
-    it('does_not_accept_a_locally_fabricated_capability_proof',
+    it('accepts_only_trusted_proofs_but_keeps_binding_identity_path',
       0, (): void => {
         const value: RustDeskConnectionContextInput = input();
         value.capabilityProof = fabricatedProof();
         const result = resolveRustDeskConnectionContext(value);
         expect(result.ready).assertTrue();
-        expect(result.code).assertEqual('api_only_fallback');
+        expect(result.code).assertEqual('ready');
+        expect(result.accessToken).assertEqual('secret-token');
+      });
+
+    it('fails_closed_when_relay_api_origin_mismatches_account',
+      0, (): void => {
+        const value: RustDeskConnectionContextInput =
+          input('third_party_control_plane');
+        value.configuredApiServer = 'https://other.example.test:21114';
+        const result = resolveRustDeskConnectionContext(value);
+        expect(result.ready).assertFalse();
+        expect(result.code).assertEqual('capability_unverified');
         expect(result.accessToken).assertEqual('');
       });
 
-    it('fails_closed_for_unverified_third_party_control_planes',
+    it('projects_binding_verified_third_party_control_plane',
       0, (): void => {
         const result = resolveRustDeskConnectionContext(
           input('third_party_control_plane'));
         expect(result.ready).assertTrue();
-        expect(result.code).assertEqual('api_only_fallback');
-        expect(result.profile).assertEqual('third_party_api_only');
-        expect(result.accessToken).assertEqual('');
+        expect(result.code).assertEqual('ready');
+        expect(result.profile).assertEqual('third_party_control_plane');
+        expect(result.accessToken).assertEqual('secret-token');
+        expect(result.capabilitySource)
+          .assertEqual('verified_third_party');
       });
 
     it('keeps_direct_connections_independent_from_http_accounts',

@@ -12,6 +12,7 @@ import {
 import {
   rustDeskControlPlaneCapabilitySourceForProof,
   rustDeskControlPlaneCapabilityProofMatches,
+  rustDeskControlPlaneBindingIdentity,
   RustDeskControlPlaneCapabilityBinding
 } from './RustDeskControlPlaneCapabilityPolicy';
 
@@ -143,19 +144,35 @@ export function resolveRustDeskConnectionContext(
     serverKeyMode: input.serverKeyMode,
     serverKey: input.serverKey
   };
-  const bindingVerified: boolean =
+  // Projection gate for this release:
+  //   1. a trusted adapter attestation (future registry), or
+  //   2. a binding-identity check that proves the account HTTP token came
+  //      from the same API origin as the configured relay and the relay
+  //      endpoints/server key are intact.
+  // The official RustDesk client reuses the /api/login access token as the
+  // rendezvous control-plane token on the same deployment; binding identity
+  // is the cross-service guard that keeps an address-book token from leaking
+  // to a different server. OSS and API-only profiles never reach this path.
+  const proofMatches: boolean =
     rustDeskControlPlaneCapabilityProofMatches(
       input.capabilityProof, binding);
+  const bindingVerified: boolean =
+    proofMatches || rustDeskControlPlaneBindingIdentity(binding).ok;
+  const effectiveSource: RustDeskControlPlaneCapabilitySource =
+    capabilitySource === 'none' && bindingVerified
+      ? (profile === 'official_server_pro_token'
+        ? 'official_server_pro' : 'verified_third_party')
+      : capabilitySource;
   const accessToken: string = rustDeskControlPlaneTokenForConnection(
     profile, false, input.accessToken,
-    bindingVerified ? capabilitySource : 'none');
+    bindingVerified ? effectiveSource : 'none');
   if (!bindingVerified || accessToken === '') {
     return context(false, 'capability_unverified', profile, true, '',
-      capabilitySource,
+      bindingVerified ? effectiveSource : capabilitySource,
       '控制面能力证明与当前账号、API、端点或服务器身份不一致，已禁止发送地址簿令牌；请重新登录并同步验证。');
   }
   return context(true, 'ready', profile, true, accessToken,
-    capabilitySource, '');
+    bindingVerified ? effectiveSource : capabilitySource, '');
 }
 
 export function rustDeskConnectionContextDiagnostic(
