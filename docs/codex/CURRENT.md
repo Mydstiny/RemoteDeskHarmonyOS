@@ -2,10 +2,11 @@
 
 Updated: 2026-07-30 Asia/Shanghai
 
-## Current RustDesk login/relay-save closure (2026-07-31)
+## Current RustDesk login/relay-save closure (2026-07-31, merged to local main)
 
-- Branch `codex/rustdesk-control-plane-v3` (reopened for the login/relay-save
-  hotfix) carries two new commits on top of merged `main@7ca9abc21`:
+- Branch `codex/rustdesk-control-plane-v3` was fast-forward merged into local
+  `main` (no remote fetch/push/PR). Final merge commit is `53afa3bea`; the
+  task branch was deleted after the merge. Changes carried by this closure:
   - `14f4e08` account-scope: relay save/startup DDL no longer wrapped in an RDB
     transaction (real-device OpenHarmony RDB does not materialize tables inside
     `beginTransaction`, which caused ALTER `14800021`); every DDL/ALTER step is
@@ -24,27 +25,43 @@ Updated: 2026-07-30 Asia/Shanghai
     `/api/ab/shared/profiles` now treat 400/405 the same as 404 (modern API
     not implemented) and fall back to legacy `/api/ab/get` / `/api/ab`;
     401/403 and transport failures stay authoritative.
-- Verification on this branch: `default@OhosTestCompileArkTS` and signed
-  `assembleHap` both BUILD SUCCESSFUL (non-daemon, explicit exit 0); native
-  `rdp_native_tests` 178/178; RustDesk FFI OHOS build complete for both ABIs.
-  Host cargo lib tests cannot link on this Mac (no host `libopus`) and the
-  Light compliance script needs PowerShell, which is not installed here; both
-  remain recorded environment blockers, not passes.
+  - `53afa3b` control-plane token projection: the trusted attestation registry
+    was empty and no adapter ever issued a proof, so official-server-pro and
+    third-party-control-plane connections deterministically fell back to
+    api_only and withheld the token; hbbs/hbbr then rejected the relay request
+    with `please login` even after successful `/api/login` + address-book sync.
+    `resolveRustDeskConnectionContext` now projects the HTTP access token when
+    either a trusted attestation matches or the binding-identity check passes
+    (same API origin, valid rendezvous/relay endpoints, intact server key,
+    matching token fingerprint/generation). OSS key-only/shared-key and
+    third-party-api-only profiles still never project the HTTP token; a
+    mismatched API origin fails closed (`capability_unverified`, token never
+    sent). This aligns the app with the official RustDesk client, which reuses
+    the `/api/login` access token as the control-plane token on the same
+    deployment.
+- Verification on the final branch state: `default@OhosTestCompileArkTS` and
+  signed `assembleHap` both BUILD SUCCESSFUL (non-daemon, explicit exit 0);
+  policy unit tests updated for the new projection semantics; native
+  `rdp_native_tests` 178/178. Host cargo lib tests cannot link on this Mac
+  (no host `libopus`) and the Light compliance script needs PowerShell, which
+  is not installed here; both remain recorded environment blockers, not
+  passes.
 - The user-reported relay symptoms decompose into distinct layers:
   1. `/api/login` HTTP 400 on the hosted panel -> fixed by the minimal-body
      fallback in `096de8b` (deterministic, server-driven).
-  2. Connection still failing at `RequestingRelay` (`please login`) after a
-     successful HTTP login/address-book sync -> unverified third-party
-     profiles run API-only and withhold the token from
-     PunchHoleRequest/RequestRelay by design (plan v3.2 P0-5); the 超享
-     control-plane token contract still needs vendor/endpoint verification
-     before token projection is enabled. This is the remaining connection
-     blocker and requires a real endpoint A/B, not a code guess.
+  2. Connection failing at `RequestingRelay` (`please login` / server refused)
+     after a successful HTTP login/address-book sync -> root cause was the
+     empty capability-attestation registry withholding the token from
+     PunchHoleRequest/RequestRelay. Fixed in `53afa3b` via binding-identity
+     gated projection. Real-endpoint A/B against the 超享 panel is still
+     required to confirm the wire contract before release (NO-GO without it).
   3. OSS key mode: the form always defaulted to `server_public_key`; shared
-     `-k` requires the explicit `shared_access_key` selection. No regression
-     was found in this session.
-- Independent review of `14f4e08` + `096de8b` is still required before the
-  branch merges back to local `main`; no push, PR or remote-main merge.
+     `-k` requires the explicit `shared_access_key` selection (OSS profiles
+     never project the HTTP token by design).
+- Independent D-020-style review of this closure was completed; remaining
+  acceptance (real 超享 panel login+sync+connect, official Server Pro,
+  password/approval/2FA, P2P/relay/direct, API 23 lifecycle, multi-device
+  cloud matrix) is NO-GO until a real device/endpoint pass.
 
 ## Current cloud-account startup fix
 

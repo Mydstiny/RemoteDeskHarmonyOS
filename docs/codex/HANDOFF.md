@@ -473,6 +473,13 @@ On macOS, `scripts/sync_workspace.sh` sources `resolve_powershell.sh` for `finis
 
 ## Next owner action
 
+1. RustDesk login/relay-save/control-plane closure (2026-07-31): local `main`
+   now carries `53afa3bea` (merged, task branch deleted). Verify on a real
+   device against the 超享 panel: HTTP login, address-book sync and host
+   connect must all succeed for a relay configured with the
+   official-server-pro / third-party-control-plane profile; OSS key-only and
+   shared `-k` relays must stay token-free. Confirm the HAP installs and the
+   native FFI log shows `proToken=present` for control-plane connections.
 1. On the next device, sync public `main` and read the four shared state files before selecting a new task.
 2. Source the Mac helper script or configure the Windows toolchain locally; do not copy caches, credentials or raw evidence.
 3. Run sync/doctor/clean-clone checks and record only sanitized evidence.

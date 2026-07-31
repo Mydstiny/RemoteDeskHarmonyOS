@@ -1,6 +1,9 @@
 # RustDesk 中继保存、控制面认证与官方功能对齐完整计划 v3.2
 
 > 计划日期：2026-07-29；v3.2 执行校准：2026-07-30（Asia/Shanghai）
+> 2026-07-31 现场热修闭环：登录 HTTP 400 精简体重试、地址簿 400/405 老接口回退、
+> 控制面 token 改为“绑定身份核验通过即投影”（与官方客户端同源 token 行为一致），
+> 已随 `53afa3bea` 合并回本地 `main`；真实 超享/Server Pro 端点 A/B 验收仍为 NO-GO
 >
 > 计划类型：实体实施计划；v3.2 起进入正式实施，不再停留在只读评估
 >
@@ -793,6 +796,13 @@ plane Token。
   一致时，才把控制面 Token 投影到 `PunchHoleRequest`/`RequestRelay`；
 - `third_party_api_only`：HTTP 地址簿可登录/同步，但连接 wire 永不发送该 HTTP Token；
 - `third_party_control_plane`：必须有设备本地 adapter/capability 证明才允许投影 Token；
+
+  2026-07-31 修订：trusted attestation 注册表为空且无任何签发路径，导致该 profile 与
+  `official_server_pro_token` 全部落入 API-only 并扣留 token，正是“登录/同步成功但
+  连接 `please login`”的确定根因。现改为：显式控制面 profile 下，绑定身份核验
+  （API origin 一致、端点有效、服务器 Key 完整、token 指纹/generation 匹配）通过即投影
+  同一 HTTP access token；OSS/API-only profile 与 direct-IP 仍永不投影。真实端点 A/B
+  验收前保持发布 NO-GO。
 - `direct_ip`：无 hbbs/hbbr Token、无 relay fallback，端点必须由用户明确配置。
 
 现有 localmetadata 的迁移规则：
@@ -1599,6 +1609,10 @@ build_direct_peer_login()
 - secure TCP 要求；
 - ordinary/admin 行为；
 - 真实 endpoint A/B。
+
+2026-07-31 状态：token 投影已按绑定身份核验实现并合入本地 `main`
+（`53afa3bea`，配合登录 400 精简体重试与地址簿老接口回退）。剩余真实端点 A/B、
+refresh/expiry、PunchHoleRequest/RequestRelay 字段级确认仍为发布 NO-GO 前置。
 
 超享当前先按未知能力处理：
 

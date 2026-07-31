@@ -4,6 +4,20 @@ Updated: 2026-07-30 Asia/Shanghai
 
 ## Now
 
+- RustDesk login/control-plane/relay-save v3 hotfix is locally complete and
+  fast-forward merged into local `main` at `53afa3bea` (branch
+  `codex/rustdesk-control-plane-v3` deleted). The closure covers: structured
+  relay save/read-back with draft preservation; Pro login HTTP 400 fallback to
+  the official minimal body; address-book legacy API fallback on 400/405;
+  account-scope tolerance when cloud registration is unavailable; and
+  binding-identity-gated control-plane token projection that fixes the
+  `please login` / `server refused` connection failure after a successful
+  login+sync (official RustDesk client reuses the same token on one
+  deployment). Both mandatory Hvigor gates pass with explicit exit 0. Real
+  endpoint/device acceptance (超享 panel A/B, official Server Pro,
+  password/approval/2FA, P2P/relay/direct, API 23, multi-device cloud) remains
+  NO-GO. Do not push, open a PR or merge remote main.
+
 - VNC settings Sheet crash hotfix is locally complete at independently reviewed
   checkpoint `0455966`, based on `main@bfea42cb0`. All three VNC consumers of
   the shared Sheet scaffold now preserve their parent builder context through
