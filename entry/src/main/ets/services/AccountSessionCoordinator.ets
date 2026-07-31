@@ -331,19 +331,29 @@ export class AccountSessionCoordinator {
         await CloudSyncCoordinator.getInstance()
           .requestStartupPull();
       if (!bootstrap.ok) {
-        return await this.restorePreviousScope(
-          previousScope, previousCredential, previousAuth,
-          generation + 1,
-          bootstrap.failureKind === 'restore_pending'
-            ? '当前账号存在尚未确认上传的本地恢复数据，已保持隔离且未执行云端拉取'
-            : '当前账号首次云端核对未完成，本地数据未开放写入');
+        if (bootstrap.failureKind !== 'restore_pending') {
+          return await this.restorePreviousScope(
+            previousScope, previousCredential, previousAuth,
+            generation + 1,
+            '当前账号首次云端核对未完成，本地数据未开放写入');
+        }
+        // Restore quarantine is intentionally kept fail-closed: the local
+        // restored data is visible and isolated, cloud-first is NOT marked
+        // ready, and automatic push stays blocked. Rolling the login back to
+        // device-local would deadlock the user out of the account scope where
+        // the explicit upload/download resolution UI lives, so keep the
+        // account scope active with cloud sync paused.
+        hilog.warn(0x0001, 'AccountSession',
+          '恢复隔离已保持：本地恢复数据可见且不上传，云同步暂停；请在同步设置中明确选择上传本地恢复或从云端重新下载');
       }
-      if (!store.markStartupSelectionReenablePulled() ||
-        !store.prepareSelectionReenablePromotions()) {
-        return await this.restorePreviousScope(
-          previousScope, previousCredential, previousAuth,
-          generation + 1,
-          '同步范围重新启用的 cloud-first 状态未能安全落盘');
+      if (bootstrap.ok) {
+        if (!store.markStartupSelectionReenablePulled() ||
+          !store.prepareSelectionReenablePromotions()) {
+          return await this.restorePreviousScope(
+            previousScope, previousCredential, previousAuth,
+            generation + 1,
+            '同步范围重新启用的 cloud-first 状态未能安全落盘');
+        }
       }
     } else if (cloudAccountBindingForScope(currentScope).state === 'bound' &&
       !store.isCloudAvailable()) {
