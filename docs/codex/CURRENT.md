@@ -20,6 +20,10 @@ Updated: 2026-07-30 Asia/Shanghai
     device-registration payload is rejected with 400. Other statuses and
     transport failures propagate unchanged; strict 2xx parsing is preserved;
     400 is labeled as a contract mismatch instead of a generic failure.
+  - `8acb5b6` address-book legacy fallback: `/api/ab/personal` and
+    `/api/ab/shared/profiles` now treat 400/405 the same as 404 (modern API
+    not implemented) and fall back to legacy `/api/ab/get` / `/api/ab`;
+    401/403 and transport failures stay authoritative.
 - Verification on this branch: `default@OhosTestCompileArkTS` and signed
   `assembleHap` both BUILD SUCCESSFUL (non-daemon, explicit exit 0); native
   `rdp_native_tests` 178/178; RustDesk FFI OHOS build complete for both ABIs.
