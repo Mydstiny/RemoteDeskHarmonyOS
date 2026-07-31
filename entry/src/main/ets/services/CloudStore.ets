@@ -278,6 +278,9 @@ import {
 } from './LegacySharedStoreMigrationPolicy';
 
 const TABLES: string[] = cloudSyncTableNames();
+// 实验专用：验证 AGC 云空间服务对新类型的最小上传链路，不进入业务表清单。
+const VNC_SMOKE_TABLE: string = 'vncsmoketest';
+const VNC_SMOKE_RUN_KEY: string = 'vncsmoketest_smoke_run';
 const RDP_RESTRICTED_ADMIN_SECRET_TABLE: string = 'rdprestrictedadminsecrets';
 const LOCAL_METADATA_TABLE: string = 'localmetadata';
 const LOCAL_MUTATION_JOURNAL_TABLE: string = 'localmutationjournal';
@@ -975,6 +978,8 @@ export class CloudStore implements CryptoCloudStore {
       // 订阅云端数据变更 (事件驱动, 替代定时轮询)
       if (this.cloudAvailable) {
         this.subscribeCloudChanges();
+        // 实验：vncsmoketest 独立冒烟，不影响业务表。
+        this.runVncSmokeTest();
       }
       // 初始化加密状态追踪
       this.lastKnownCryptoStatus = this.getCryptoStatus();
@@ -3937,6 +3942,103 @@ export class CloudStore implements CryptoCloudStore {
         'native-first safety scan failed table=' + table +
         ' err=' + safeError(err));
       return false;
+    }
+  }
+
+  /**
+   * 实验专用（vncsmoketest）：验证 AGC 云空间服务对新类型的最小上传链路。
+   * 只注册/同步 vncsmoketest 单表，不进入业务 TABLES 与协调器；
+   * 成功后写本地 marker，失败不写 marker（下次启动自动重试）。
+   */
+  private async runVncSmokeTest(): Promise<void> {
+    const smokeTag: string = 'VncSmoke';
+    try {
+      if (!this.store || !this.cloudAvailable) {
+        hilog.info(0x0001, smokeTag, 'skip: cloud unavailable');
+        return;
+      }
+      const smokeStore: relationalStore.RdbStore = this.store;
+      if (this.readLocalMetadataStrict(VNC_SMOKE_RUN_KEY) === '1') {
+        hilog.info(0x0001, smokeTag, 'skip: marker already set');
+        return;
+      }
+      await smokeStore.executeSql(
+        'CREATE TABLE IF NOT EXISTS ' + VNC_SMOKE_TABLE +
+        ' (id TEXT PRIMARY KEY, marker TEXT)');
+      hilog.info(0x0001, smokeTag, 'local table ready');
+      try {
+        await smokeStore.setDistributedTables(
+          [VNC_SMOKE_TABLE],
+          relationalStore.DistributedType.DISTRIBUTED_CLOUD,
+          { autoSync: false }
+        );
+        hilog.info(0x0001, smokeTag, 'setDistributedTables ok');
+      } catch (e) {
+        const be: BusinessError = e as BusinessError;
+        hilog.error(0x0001, smokeTag,
+          'setDistributedTables failed code=' + be.code.toString() +
+          ' msg=' + be.message);
+        return;
+      }
+      const rowId: string = 'smoke-' + Date.now().toString();
+      const bucket: relationalStore.ValuesBucket = { id: rowId, marker: 'vncsmoke-hello' };
+      await smokeStore.insert(VNC_SMOKE_TABLE, bucket);
+      hilog.info(0x0001, smokeTag, 'inserted id=' + rowId);
+      const outcome: string = await new Promise<string>((resolve): void => {
+        let settled: boolean = false;
+        const finish = (text: string): void => {
+          if (!settled) {
+            settled = true;
+            resolve(text);
+          }
+        };
+        try {
+          smokeStore.cloudSync(
+            relationalStore.SyncMode.SYNC_MODE_NATIVE_FIRST,
+            [VNC_SMOKE_TABLE],
+            (progress: relationalStore.ProgressDetails): void => {
+              let progressJson: string = 'null';
+              if (progress) {
+                try { progressJson = JSON.stringify(progress); } catch (_e) { progressJson = 'unserializable'; }
+              }
+              hilog.info(0x0001, smokeTag, 'progress ' + progressJson);
+              if (!progress) { return; }
+              const schedule: number = progress.schedule as number;
+              const code: number = progress.code as number;
+              if (cloudSyncProgressFinished(schedule)) {
+                const ok: boolean = cloudSyncProgressSucceeded(schedule, code) &&
+                  cloudSyncTargetTableCompleted(progress.details, VNC_SMOKE_TABLE);
+                finish('finished schedule=' + schedule.toString() + ' code=' + code.toString() +
+                  ' ok=' + ok.toString());
+              }
+            },
+            (err: BusinessError | undefined): void => {
+              if (err) {
+                hilog.error(0x0001, smokeTag,
+                  'callback error code=' + err.code.toString() + ' msg=' + err.message);
+                finish('callback-error code=' + err.code.toString() + ' msg=' + err.message);
+              } else {
+                hilog.info(0x0001, smokeTag, 'callback accepted (no error)');
+                finish('accepted');
+              }
+            }
+          );
+        } catch (e) {
+          const be: BusinessError = e as BusinessError;
+          finish('throw code=' + be.code.toString() + ' msg=' + be.message);
+        }
+      });
+      hilog.info(0x0001, smokeTag, 'OUTCOME=' + outcome);
+      if (outcome.indexOf('ok=true') >= 0) {
+        if (this.writeLocalMetadata(VNC_SMOKE_RUN_KEY, '1')) {
+          hilog.info(0x0001, smokeTag, 'SUCCESS marker written');
+        }
+      }
+    } catch (e) {
+      const be: BusinessError = e as BusinessError;
+      hilog.error(0x0001, smokeTag,
+        'smoke exception code=' + (be ? be.code.toString() : '?') +
+        ' msg=' + (be ? be.message : safeError(e)));
     }
   }
 

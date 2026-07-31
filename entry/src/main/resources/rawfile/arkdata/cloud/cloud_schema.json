@@ -1384,6 +1384,34 @@
       "updatedat",
       "deletedat"
      ]
+    },
+    {
+     "name": "vncsmoketest",
+     "alias": "vncsmoketest",
+     "fields": [
+      {
+       "colName": "id",
+       "alias": "id",
+       "type": 3,
+       "primary": true,
+       "nullable": true
+      },
+      {
+       "colName": "marker",
+       "alias": "marker",
+       "type": 3,
+       "primary": false,
+       "nullable": true
+      }
+     ],
+     "deviceSyncFields": [
+      "id",
+      "marker"
+     ],
+     "cloudSyncFields": [
+      "id",
+      "marker"
+     ]
     }
    ]
   }
