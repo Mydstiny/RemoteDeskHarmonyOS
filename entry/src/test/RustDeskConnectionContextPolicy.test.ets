@@ -88,14 +88,25 @@ export default function rustDeskConnectionContextPolicyTest(): void {
           .assertEqual('official_server_pro');
       });
 
-    it('accepts_only_trusted_proofs_but_keeps_binding_identity_path',
+    it('rejects_a_locally_fabricated_proof_even_when_binding_identity_passes',
       0, (): void => {
         const value: RustDeskConnectionContextInput = input();
         value.capabilityProof = fabricatedProof();
         const result = resolveRustDeskConnectionContext(value);
+        expect(result.ready).assertFalse();
+        expect(result.code).assertEqual('capability_unverified');
+        expect(result.accessToken).assertEqual('');
+      });
+
+    it('projects_when_binding_identity_passes_without_any_proof',
+      0, (): void => {
+        const result = resolveRustDeskConnectionContext(
+          input('official_server_pro_token'));
         expect(result.ready).assertTrue();
         expect(result.code).assertEqual('ready');
         expect(result.accessToken).assertEqual('secret-token');
+        expect(result.capabilitySource)
+          .assertEqual('official_server_pro');
       });
 
     it('fails_closed_when_relay_api_origin_mismatches_account',

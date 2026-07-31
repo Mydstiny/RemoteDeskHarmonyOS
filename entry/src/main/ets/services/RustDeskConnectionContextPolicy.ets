@@ -107,11 +107,6 @@ export function resolveRustDeskConnectionContext(
       capabilitySource === 'official_server_pro') ||
     (profile === 'third_party_control_plane' &&
       capabilitySource === 'verified_third_party');
-  if (!sourceFitsProfile) {
-    return context(true, 'api_only_fallback',
-      'third_party_api_only', false, '', 'none',
-      '地址簿登录保持有效；当前没有可信控制面能力证明，本次连接按 API-only/OSS Key 模式且不发送地址簿令牌。');
-  }
   if (input.accountId.trim() === '') {
     return context(false, 'account_required', profile, true, '', 'none',
       '该控制面要求绑定账号，请先登录并同步地址簿。');
@@ -149,6 +144,12 @@ export function resolveRustDeskConnectionContext(
   //   2. a binding-identity check that proves the account HTTP token came
   //      from the same API origin as the configured relay and the relay
   //      endpoints/server key are intact.
+  // A missing attestation must NOT short-circuit into api_only_fallback before
+  // binding identity is evaluated; otherwise no account profile can ever
+  // project the token (registry is empty by design) and every connection on a
+  // control-plane relay fails with "please login" after a successful HTTP
+  // login + address-book sync, diverging from the official client which reuses
+  // the same HTTP token on one deployment.
   // The official RustDesk client reuses the /api/login access token as the
   // rendezvous control-plane token on the same deployment; binding identity
   // is the cross-service guard that keeps an address-book token from leaking
@@ -158,21 +159,27 @@ export function resolveRustDeskConnectionContext(
       input.capabilityProof, binding);
   const bindingVerified: boolean =
     proofMatches || rustDeskControlPlaneBindingIdentity(binding).ok;
+  // Without a trusted attestation, binding identity itself is the capability
+  // source: the account token demonstrably came from the same API origin as
+  // the configured relay. A locally fabricated proof is never accepted: if a
+  // proof exists it must be trusted AND match this exact binding.
   const effectiveSource: RustDeskControlPlaneCapabilitySource =
     capabilitySource === 'none' && bindingVerified
       ? (profile === 'official_server_pro_token'
         ? 'official_server_pro' : 'verified_third_party')
-      : capabilitySource;
+      : (sourceFitsProfile && proofMatches ? capabilitySource : 'none');
+  const verified: boolean = bindingVerified &&
+    (capabilitySource === 'none' || (sourceFitsProfile && proofMatches));
   const accessToken: string = rustDeskControlPlaneTokenForConnection(
     profile, false, input.accessToken,
-    bindingVerified ? effectiveSource : 'none');
-  if (!bindingVerified || accessToken === '') {
+    verified ? effectiveSource : 'none');
+  if (!verified || accessToken === '') {
     return context(false, 'capability_unverified', profile, true, '',
-      bindingVerified ? effectiveSource : capabilitySource,
+      effectiveSource,
       '控制面能力证明与当前账号、API、端点或服务器身份不一致，已禁止发送地址簿令牌；请重新登录并同步验证。');
   }
   return context(true, 'ready', profile, true, accessToken,
-    bindingVerified ? effectiveSource : capabilitySource, '');
+    effectiveSource, '');
 }
 
 export function rustDeskConnectionContextDiagnostic(

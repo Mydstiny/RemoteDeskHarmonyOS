@@ -1984,12 +1984,17 @@ export struct RustDeskRelayPage {
                   .onClick((): void => {
                     this.formControlPlaneProfile = 'official_server_pro_token'; this.relayKind = 'pro';
                   })
-                Button('第三方控制面（需验证）').layoutWeight(1).height(32).fontSize(10)
+                Button('第三方控制面').layoutWeight(1).height(32).fontSize(11)
                   .borderRadius(8).margin({ left: 6 })
-                  .backgroundColor(this.pal().surface).fontColor(this.pal().text3)
-                  .enabled(false)
+                  .backgroundColor(this.formControlPlaneProfile === 'third_party_control_plane' ?
+                    this.accentColor : this.pal().surface)
+                  .fontColor(this.formControlPlaneProfile === 'third_party_control_plane' ?
+                    Color.White : this.pal().text2)
+                  .onClick((): void => {
+                    this.formControlPlaneProfile = 'third_party_control_plane'; this.relayKind = 'advanced';
+                  })
               }.width('100%').margin({ bottom: 4 })
-              Text('第三方面板默认仅使用 HTTP 地址簿；当前未验证其 rendezvous token 契约，因此不会发送 token。')
+              Text('第三方控制面会在账号、API 地址、ID/中继端点和服务器 Key 与登录绑定一致时，复用同一 HTTP 登录令牌；不一致时拒绝发送令牌（fail-closed）。')
                 .fontSize(10).fontColor(this.pal().text3).width('100%').lineHeight(15)
                 .margin({ bottom: 5 })
               Text(rustDeskControlPlaneProfileLabel(this.formControlPlaneProfile) + '：' +

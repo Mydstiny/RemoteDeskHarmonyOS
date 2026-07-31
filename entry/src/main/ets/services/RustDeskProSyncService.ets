@@ -1,4 +1,5 @@
 import { common } from '@kit.AbilityKit';
+import { hilog } from '@kit.PerformanceAnalysisKit';
 import {
   RustDeskProAccountState,
   rustDeskProAccessTokenFingerprint,
@@ -13,6 +14,7 @@ import { RustDeskProReconcileResult } from './RustDeskProSyncPolicy';
 import { LegacyRustDeskAccountCloudAdapter } from './LegacyRustDeskAccountCloudAdapter';
 import { RustDeskAccount } from '../model/RustDeskAccount';
 import { RustDeskRelayConfig } from '../model/RustDeskRelayConfig';
+import { rustDeskRelayIdFingerprint } from './RustDeskRelaySavePolicy';
 import { CloudStore } from './CloudStore';
 import {
   AccountSessionLease,
@@ -180,6 +182,41 @@ export class RustDeskProSyncService {
     this.hosts.updateRelay(next);
   }
 
+  /**
+   * A control-plane relay is one deployment: /api/login lives on the same
+   * origin as hbbs/hbbr. When the relay was saved without an API address (the
+   * common OSS/超享 add flow) and the user then logs in with their RustDesk
+   * account, the successful login proves the API origin. Persist it back onto
+   * the relay so the connection binding-identity check (accountApiServer ==
+   * relay.apiServer) can pass and the same HTTP token is projected to the
+   * rendezvous/relay exactly like the official client. Never overwrite an
+   * explicitly configured API address.
+   */
+  private backfillRelayApiServerIfMissing(
+    account: RustDeskProAccountState
+  ): void {
+    const relay: RustDeskRelayConfig | undefined =
+      this.hosts.getAllRelays().find(
+        (item: RustDeskRelayConfig): boolean =>
+          item.id === account.relayId);
+    if (relay === undefined ||
+      relay.apiServer.trim().length > 0 ||
+      account.serverUrl.trim().length === 0) {
+      return;
+    }
+    const next: RustDeskRelayConfig =
+      RustDeskRelayConfig.fromJSON(relay.toJSON());
+    next.apiServer =
+      normalizeRustDeskProServerUrl(account.serverUrl);
+    const result = this.hosts.updateRelayResult(next);
+    if (!result.ok) {
+      hilog.warn(0x0001, 'RustDeskProSync',
+        'relay apiServer backfill failed relay=' +
+        rustDeskRelayIdFingerprint(relay.id) +
+        ' code=' + result.code);
+    }
+  }
+
   private cloneAccount(account: RustDeskProAccountState): RustDeskProAccountState {
     return {
       id: account.id,
@@ -313,6 +350,7 @@ export class RustDeskProSyncService {
       const result = await this.syncAccount(account, operation);
       this.requireCurrentOperation(operation);
       this.bindAuthenticatedControlPlaneCapability(account, operation);
+      this.backfillRelayApiServerIfMissing(account);
       this.saveCredentialOrThrow(account);
       this.persistCloudAccountMetadata(account);
       return result;
@@ -332,6 +370,7 @@ export class RustDeskProSyncService {
       const result = await this.syncAccount(account, operation);
       this.requireCurrentOperation(operation);
       this.bindAuthenticatedControlPlaneCapability(account, operation);
+      this.backfillRelayApiServerIfMissing(account);
       this.saveCredentialOrThrow(account);
       return result;
     } catch (err) {
