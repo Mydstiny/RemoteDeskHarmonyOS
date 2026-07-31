@@ -2,6 +2,46 @@
 
 Updated: 2026-07-30 Asia/Shanghai
 
+## Current RustDesk login/relay-save closure (2026-07-31)
+
+- Branch `codex/rustdesk-control-plane-v3` (reopened for the login/relay-save
+  hotfix) carries two new commits on top of merged `main@7ca9abc21`:
+  - `14f4e08` account-scope: relay save/startup DDL no longer wrapped in an RDB
+    transaction (real-device OpenHarmony RDB does not materialize tables inside
+    `beginTransaction`, which caused ALTER `14800021`); every DDL/ALTER step is
+    tracked by `schemaStep` so a failed migration reports the failing table;
+    batch `setDistributedTables` failure is probed by subsets to separate
+    `vncrecord`-specific from global/platform causes; a valid Huawei binding
+    with unavailable distributed cloud stays locally usable instead of blocking
+    login with a doomed startup pull; LoginPage awaits account-session
+    readiness before silent-restore/first-launch/login/offline transitions.
+  - `096de8b` Pro login HTTP 400 fallback: `/api/login` retries exactly once
+    with the official minimal `username`/`password` body when the extended
+    device-registration payload is rejected with 400. Other statuses and
+    transport failures propagate unchanged; strict 2xx parsing is preserved;
+    400 is labeled as a contract mismatch instead of a generic failure.
+- Verification on this branch: `default@OhosTestCompileArkTS` and signed
+  `assembleHap` both BUILD SUCCESSFUL (non-daemon, explicit exit 0); native
+  `rdp_native_tests` 178/178; RustDesk FFI OHOS build complete for both ABIs.
+  Host cargo lib tests cannot link on this Mac (no host `libopus`) and the
+  Light compliance script needs PowerShell, which is not installed here; both
+  remain recorded environment blockers, not passes.
+- The user-reported relay symptoms decompose into distinct layers:
+  1. `/api/login` HTTP 400 on the hosted panel -> fixed by the minimal-body
+     fallback in `096de8b` (deterministic, server-driven).
+  2. Connection still failing at `RequestingRelay` (`please login`) after a
+     successful HTTP login/address-book sync -> unverified third-party
+     profiles run API-only and withhold the token from
+     PunchHoleRequest/RequestRelay by design (plan v3.2 P0-5); the 超享
+     control-plane token contract still needs vendor/endpoint verification
+     before token projection is enabled. This is the remaining connection
+     blocker and requires a real endpoint A/B, not a code guess.
+  3. OSS key mode: the form always defaulted to `server_public_key`; shared
+     `-k` requires the explicit `shared_access_key` selection. No regression
+     was found in this session.
+- Independent review of `14f4e08` + `096de8b` is still required before the
+  branch merges back to local `main`; no push, PR or remote-main merge.
+
 ## Current cloud-account startup fix
 
 - `main` includes a local fix for the production-reported `accountkit account mismatch` login block:
