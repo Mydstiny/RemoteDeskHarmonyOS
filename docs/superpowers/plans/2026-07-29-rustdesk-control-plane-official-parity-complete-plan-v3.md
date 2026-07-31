@@ -1,5 +1,18 @@
 # RustDesk 中继保存、控制面认证与官方功能对齐完整计划 v3.2
 
+> 2026-07-31 第二轮彻查（登录后可连接性）：用户现场“Pro 登录 400、地址簿同步成功、
+> 连接被服务器拒绝/please login”在 `53afa3bea` 合入后仍复现。代码级彻查确认
+> `53afa3bea` 的“绑定身份核验通过即投影”路径**不可达**：`resolveRustDeskConnectionContext`
+> 在最前用 `sourceFitsProfile`（要求可信能力证明）做门禁，而
+> `TRUSTED_CAPABILITY_CONTRACTS` 为空且登录/同步流程强制清空 `controlPlaneCapabilityProof`，
+> 导致 `official_server_pro_token`/`third_party_control_plane` 一律提前落入
+> `api_only_fallback`，`rdAccessToken` 恒为空。此外中继页“第三方控制面（需验证）”
+> 按钮仍 `enabled(false)`，且地址簿登录成功后不把 `account.serverUrl` 回填为
+> `relay.apiServer`（绑定核验的 API origin 条件因此永远无法满足）。
+> 本闭环修复：投影门禁改为“可信证明 **或** 绑定身份核验”，开放第三方控制面选择，
+> 登录成功后回填 relay.apiServer（同一部署语义），并保持 OSS/API-only/direct 永不投影、
+> origin 不一致 fail-closed。真实 超享/Server Pro 端点 A/B 仍为发布 NO-GO。
+
 > 计划日期：2026-07-29；v3.2 执行校准：2026-07-30（Asia/Shanghai）
 > 2026-07-31 现场热修闭环：登录 HTTP 400 精简体重试、地址簿 400/405 老接口回退、
 > 控制面 token 改为“绑定身份核验通过即投影”（与官方客户端同源 token 行为一致），
