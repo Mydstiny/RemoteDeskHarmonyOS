@@ -5,6 +5,7 @@ import { CURRENT_RELEASE_VERSION } from './ReleaseNotesRegistry';
 import { rustDeskRelayIdFingerprint } from './RustDeskRelaySavePolicy';
 import {
   buildRustDeskProLoginRequest,
+  buildRustDeskProMinimalLoginRequest,
   normalizeRustDeskProServerUrl,
   parseRustDeskProAddressBookPage,
   parseRustDeskProAddressBookResponse,
@@ -140,8 +141,26 @@ export class RustDeskProApiService {
 
   async login(account: RustDeskProAccountState, username: string, password: string): Promise<RustDeskProLoginResult> {
     const body = buildRustDeskProLoginRequest(username, password, account.deviceId, account.deviceUuid, APP_VERSION);
-    const response = await this.request(account, '/api/login', http.RequestMethod.POST, body as Object);
-    return parseRustDeskProLoginResponse(response.payload, response.status);
+    const attempt = async (payload: Object): Promise<RustDeskProLoginResult> => {
+      const response: RustDeskProHttpResponse =
+        await this.request(account, '/api/login', http.RequestMethod.POST, payload);
+      return parseRustDeskProLoginResponse(response.payload, response.status);
+    };
+    try {
+      return await attempt(body as Object);
+    } catch (err) {
+      // Deterministic compatibility fallback: only when the server actively
+      // rejects the extended device-registration payload with HTTP 400.
+      // Retry once with the official minimal username/password login body.
+      // Any other failure propagates unchanged.
+      const apiError: RustDeskProApiError =
+        err instanceof RustDeskProApiError ? err : new RustDeskProApiError('login_failed', 'Pro 登录失败');
+      if (apiError.code !== 'http_error' || apiError.status !== 400) {
+        throw apiError;
+      }
+      const minimalBody = buildRustDeskProMinimalLoginRequest(username, password);
+      return await attempt(minimalBody);
+    }
   }
 
   async getAddressBook(account: RustDeskProAccountState): Promise<RustDeskProAddressBook> {

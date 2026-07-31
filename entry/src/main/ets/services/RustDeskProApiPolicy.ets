@@ -9,6 +9,12 @@ export interface RustDeskProLoginRequest {
   deviceInfo: RustDeskProDeviceInfo
 }
 
+/** Official-client-compatible minimal /api/login body (username/password only). */
+export interface RustDeskProMinimalLoginRequest {
+  username: string
+  password: string
+}
+
 export interface RustDeskProDeviceInfo {
   os: string
   platform: string
@@ -86,14 +92,33 @@ export function buildRustDeskProLoginRequest(username: string, password: string,
   };
 }
 
+/**
+ * Minimal login body matching the official RustDesk client's /api/login
+ * contract.  Some third-party panels reject the extended device
+ * registration payload with HTTP 400 even though the account is valid;
+ * the API service retries with this body only when the extended request
+ * was actively rejected, so official Server Pro behavior is unchanged.
+ */
+export function buildRustDeskProMinimalLoginRequest(username: string, password: string): RustDeskProMinimalLoginRequest {
+  return {
+    username: username.trim(),
+    password: password
+  };
+}
+
 export function parseRustDeskProLoginResponse(payload: Object, status: number): RustDeskProLoginResult {
   const root = payload as Record<string, Object>;
   const rawError: Object | undefined = root['error'];
   if (status !== 200) {
-    const message: string = status === 401 || status === 403
-      ? '用户名、密码或服务端认证策略拒绝登录（HTTP ' +
-        status.toString() + '）'
-      : 'Pro 登录请求失败（HTTP ' + status.toString() + '）';
+    let message: string;
+    if (status === 400) {
+      message = 'Pro 登录请求被服务器拒绝（HTTP 400），可能因为该面板不识别扩展登录字段，已尝试官方精简登录格式';
+    } else if (status === 401 || status === 403) {
+      message = '用户名、密码或服务端认证策略拒绝登录（HTTP ' +
+        status.toString() + '）';
+    } else {
+      message = 'Pro 登录请求失败（HTTP ' + status.toString() + '）';
+    }
     throw new RustDeskProApiError('http_error', message, status);
   }
   if (typeof root['type'] === 'string' && (root['type'] as string) === 'email_check') {

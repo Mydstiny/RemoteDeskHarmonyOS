@@ -1,6 +1,7 @@
 import { describe, it, expect } from '@ohos/hypium';
 import {
   buildRustDeskProLoginRequest,
+  buildRustDeskProMinimalLoginRequest,
   normalizeRustDeskProServerUrl,
   parseRustDeskProAddressBookResponse,
   parseRustDeskProLoginResponse,
@@ -23,6 +24,26 @@ export default function rustDeskProApiPolicyTest() {
       expect(body.type).assertEqual('account');
       expect(body.id).assertEqual('rdh-device');
       expect(body.deviceInfo['os']).assertEqual('HarmonyOS');
+    });
+
+    it('builds_official_minimal_login_fallback_body', 0, () => {
+      const body = buildRustDeskProMinimalLoginRequest(' alice ', 'secret');
+      expect(body['username']).assertEqual('alice');
+      expect(body['password']).assertEqual('secret');
+      expect(body['type']).assertEqual(undefined);
+      expect(body['deviceInfo']).assertEqual(undefined);
+    });
+
+    it('labels_http_400_login_rejection_as_contract_mismatch', 0, () => {
+      let code = '';
+      let message = '';
+      try { parseRustDeskProLoginResponse({ error: 'remote_rejected' }, 400); }
+      catch (err) {
+        if (err instanceof RustDeskProApiError) { code = err.code; message = err.message; }
+      }
+      expect(code).assertEqual('http_error');
+      expect(message.indexOf('HTTP 400')).assertGreaterThan(-1);
+      expect(message.indexOf('精简登录')).assertGreaterThan(-1);
     });
 
     it('parses_login_token_and_user', 0, () => {
