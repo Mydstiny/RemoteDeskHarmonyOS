@@ -188,16 +188,15 @@ impl RendezvousClient {
                     ));
                 }
                 let relay_server = resp.get_relay_server().to_string();
-                if relay_server.is_empty() {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        format!("punch hole response missing relay server ({})", req_debug),
-                    ));
-                }
+                // OSS hbbs may ignore force_relay and answer a direct peer
+                // address in socket_addr without a relay_server. That is a
+                // valid punch response, not an error: the caller connects the
+                // returned address directly (official client behavior).
+                let peer_addr: SocketAddr = decode_socket_addr(resp.get_socket_addr())?;
                 Ok(PunchHoleInfo {
                     relay_server,
                     signed_pk: resp.get_pk().to_vec(),
-                    peer_addr: Some(decode_socket_addr(resp.get_socket_addr())?),
+                    peer_addr: Some(peer_addr),
                     relay_uuid: None,
                 })
             }
@@ -747,6 +746,36 @@ mod tests {
             }
             other => panic!("expected RequestRelay, got: {:?}", other),
         }
+    }
+
+    #[test]
+    fn punch_response_with_direct_peer_address_is_not_a_relay_error() {
+        // OSS hbbs may ignore force_relay and answer with only a direct peer
+        // address in socket_addr (no relay_server). The client must accept
+        // that as a direct-connect punch response, not InvalidData.
+        let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 5)), 21118);
+        let mut encoded: Vec<u8> = vec![10, 0, 0, 5];
+        encoded.extend_from_slice(&21118u16.to_le_bytes());
+        let mut resp = PunchHoleResponse::new();
+        resp.set_socket_addr(encoded);
+        let mut msg = RendezvousMessage::new();
+        msg.union = Some(RendezvousMessage_oneof_union::punch_hole_response(resp));
+        let payload = msg.write_to_bytes().expect("serialize punch response");
+
+        let server = TcpListener::bind("127.0.0.1:0").expect("bind test server");
+        let port = server.local_addr().expect("server addr").port();
+        let server_thread = thread::spawn(move || {
+            let (mut stream, _) = server.accept().expect("accept");
+            let _hello = wire::read_frame(&mut stream).expect("read punch request");
+            wire::write_frame(&mut stream, &payload).expect("write punch response");
+        });
+
+        let mut rd = RendezvousClient::new();
+        rd.connect("127.0.0.1", port, "", false).expect("connect rendezvous");
+        let info = rd.request_force_relay("peer-123", "key", "").expect("force relay");
+        assert!(info.relay_server.is_empty(), "no relay server expected");
+        assert_eq!(info.peer_addr, Some(addr), "direct peer address expected");
+        server_thread.join().expect("server thread");
     }
 
     #[test]

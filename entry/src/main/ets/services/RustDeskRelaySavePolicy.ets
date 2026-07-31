@@ -7,6 +7,10 @@ import {
   DataMutationResult,
   DataMutationStage
 } from './DataMutationResult';
+import {
+  RustDeskRelayKeyMode,
+  resolveRustDeskRelayKey
+} from './RustDeskRelayKeyPolicy';
 
 export type RustDeskRelaySaveRecovery =
   'none' | 'retry' | 'unlock' | 'wait_for_restore' | 'reload' |
@@ -164,6 +168,32 @@ function accountsMatch(expected: RustDeskAccount[], actual: RustDeskAccount[]): 
 }
 
 /**
+ * The relay table stores the credential text without a dedicated keymode
+ * column: shared `-k` values carry their mode inside the storage envelope,
+ * while public-key values come back as `auto`. Mode comparison must therefore
+ * be semantic, not string-based: when either side is `auto`, infer the mode
+ * from the credential itself and compare with the explicit side.
+ */
+export function relayKeyModeSemanticallyMatches(
+  expectedMode: RustDeskRelayKeyMode,
+  actualMode: RustDeskRelayKeyMode,
+  key: string
+): boolean {
+  if (expectedMode === actualMode) { return true; }
+  const expectedExplicit: boolean =
+    expectedMode === 'server_public_key' || expectedMode === 'shared_access_key';
+  const actualExplicit: boolean =
+    actualMode === 'server_public_key' || actualMode === 'shared_access_key';
+  if (expectedExplicit && actualMode === 'auto') {
+    return resolveRustDeskRelayKey(key, 'auto', false).mode === expectedMode;
+  }
+  if (actualExplicit && expectedMode === 'auto') {
+    return resolveRustDeskRelayKey(key, 'auto', false).mode === actualMode;
+  }
+  return false;
+}
+
+/**
  * Exact post-commit verification without serializing or logging a secret-bearing
  * relay object. createdAt is excluded because RDB owns it for a first insert.
  */
@@ -181,7 +211,7 @@ export function rustDeskRelayReadbackMatches(
     expected.apiUsername === actual.apiUsername &&
     expected.apiPassword === actual.apiPassword &&
     expected.key === actual.key &&
-    expected.keyMode === actual.keyMode &&
+    relayKeyModeSemanticallyMatches(expected.keyMode, actual.keyMode, expected.key) &&
     expected.controlPlaneProfile === actual.controlPlaneProfile &&
     expected.healthStatus === actual.healthStatus &&
     expected.healthLatency === actual.healthLatency &&
@@ -204,7 +234,7 @@ export function rustDeskRelayCreatePayloadMatches(
     expected.relayPort === actual.relayPort &&
     expected.apiServer === actual.apiServer &&
     expected.key === actual.key &&
-    expected.keyMode === actual.keyMode &&
+    relayKeyModeSemanticallyMatches(expected.keyMode, actual.keyMode, expected.key) &&
     expected.controlPlaneProfile ===
       actual.controlPlaneProfile;
 }

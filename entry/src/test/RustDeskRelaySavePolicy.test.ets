@@ -3,6 +3,7 @@ import { RustDeskRelayConfig } from '../main/ets/model/RustDeskRelayConfig';
 import { DataMutationResult } from '../main/ets/services/DataMutationResult';
 import {
   RustDeskRelaySaveResult,
+  relayKeyModeSemanticallyMatches,
   rustDeskRelayCreatePayloadMatches,
   rustDeskRelayIdFingerprint,
   rustDeskRelayReadbackMatches,
@@ -58,6 +59,40 @@ export default function rustDeskRelaySavePolicyTest(): void {
       expect(rustDeskRelayReadbackMatches(expected, actual)).assertTrue();
       actual.key = 'different';
       expect(rustDeskRelayReadbackMatches(expected, actual)).assertFalse();
+    });
+
+    it('accepts_public_key_readback_when_database_round_trip_loses_keymode', 0, (): void => {
+      const expected = relay('relay-pub');
+      expected.key = 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=';
+      expected.keyMode = 'server_public_key';
+      const actual = RustDeskRelayConfig.fromJSON(expected.toJSON());
+      // RDB 没有 keymode 列：公共密钥读回为 auto（密钥值不变）。
+      actual.keyMode = 'auto';
+      expect(rustDeskRelayReadbackMatches(expected, actual)).assertTrue();
+      expect(relayKeyModeSemanticallyMatches(
+        'server_public_key', 'auto', expected.key)).assertTrue();
+    });
+
+    it('rejects_shared_value_under_public_key_semantics', 0, (): void => {
+      const expected = relay('relay-mix');
+      expected.key = 'shared-key-value';
+      expected.keyMode = 'server_public_key';
+      const actual = RustDeskRelayConfig.fromJSON(expected.toJSON());
+      actual.keyMode = 'auto';
+      expect(rustDeskRelayReadbackMatches(expected, actual)).assertFalse();
+      expect(relayKeyModeSemanticallyMatches(
+        'server_public_key', 'auto', expected.key)).assertFalse();
+    });
+
+    it('accepts_shared_key_readback_when_database_round_trip_loses_keymode', 0, (): void => {
+      const expected = relay('relay-shared');
+      expected.key = 'shared-key-value';
+      expected.keyMode = 'shared_access_key';
+      const actual = RustDeskRelayConfig.fromJSON(expected.toJSON());
+      actual.keyMode = 'auto';
+      expect(rustDeskRelayReadbackMatches(expected, actual)).assertTrue();
+      expect(relayKeyModeSemanticallyMatches(
+        'shared_access_key', 'auto', expected.key)).assertTrue();
     });
 
     it('uses_an_irreversible_short_relay_identifier_for_diagnostics', 0, (): void => {

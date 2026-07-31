@@ -324,6 +324,14 @@ impl RustDeskConnector {
                 relay_fallback_port,
                 credentials.access_key,
             )?
+        } else if let Some(peer_addr) = punch.peer_addr {
+            // OSS hbbs answered a direct peer address and no relay endpoint.
+            // Connect it directly instead of failing the whole pipeline.
+            self.state = ConnState::ConnectingToPeer;
+            eprintln!(
+                "[RustDesk-FFI] punch response direct peer endpoint present"
+            );
+            rd.connect_to_peer(peer_addr)?
         } else {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -509,6 +517,12 @@ impl RustDeskConnector {
                 relay_fallback_port,
                 credentials.access_key,
             )?
+        } else if let Some(peer_addr) = punch.peer_addr {
+            self.state = ConnState::ConnectingToPeer;
+            eprintln!(
+                "[RustDesk-FFI] file-transfer punch response direct peer endpoint present"
+            );
+            rd.connect_to_peer(peer_addr)?
         } else {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
