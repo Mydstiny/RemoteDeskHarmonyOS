@@ -8,7 +8,13 @@ export type BackupSectionKind = 'cloud_table' | 'local_extensions' |
   'local_table';
 export type BackupSectionState = 'absent' | 'empty' | 'rows';
 export type BackupRestoreMode = 'merge' | 'replace_selected';
-export type BackupSensitivityMode = 'redacted';
+/**
+ * redacted: portable config only (no passwords/private keys/2FA/tokens).
+ * full: complete backup chosen by the user; secrets are kept as stored
+ * (ciphertext when the source has crypto, plaintext otherwise by the user's
+ * explicit choice), device trust (public keys/certificates) is always kept.
+ */
+export type BackupSensitivityMode = 'redacted' | 'full';
 
 export interface BackupSectionManifestV3 {
   id: string;
@@ -83,17 +89,8 @@ const SECRET_COLUMNS: Record<string, string[]> = {
   'totpentries': ['secret']
 };
 
-const DEVICE_TRUST_COLUMNS: Record<string, string[]> = {
-  'remotehosts': [
-    'sshhostkeyalgorithm', 'sshhostkeyfingerprintsha256',
-    'sshhostkeyrawbase64', 'sshhostkeytrustedat',
-    'sshhostkeytrustmode', 'rdpcertificatefingerprintsha256',
-    'rdpcertificatesubject', 'rdpcertificateissuer',
-    'rdpcertificatecommonname', 'rdpcertificatetrustedat',
-    'rdpcertificatetrustmode', 'rdpcertificateallowuntrustedroot',
-    'rdpcertificateallowhostmismatch'
-  ]
-};
+// Device trust columns (SSH host public keys, RDP certificates) are retained
+// in every backup mode; they are public data, not secrets.
 
 const REMOTE_HOST_EXTENSION_TRUST: string[] = [
   'sshhostkeyalgorithm', 'sshhostkeyfingerprintsha256',
@@ -180,11 +177,10 @@ function redactRemoteHostDisplayConfig(
       const keys: string[] = Object.keys(extension);
       for (let i = 0; i < keys.length; i++) {
         const key: string = keys[i];
-        if (REMOTE_HOST_EXTENSION_SAFE.indexOf(key) >= 0 &&
+        if ((REMOTE_HOST_EXTENSION_SAFE.indexOf(key) >= 0 ||
+          REMOTE_HOST_EXTENSION_TRUST.indexOf(key) >= 0) &&
           typeof extension[key] === 'string') {
           safeExtension[key] = extension[key];
-        } else if (REMOTE_HOST_EXTENSION_TRUST.indexOf(key) >= 0) {
-          result.removedDeviceTrustFields++;
         } else {
           result.removedSecretFields++;
         }
@@ -291,10 +287,11 @@ function redactExtensionRows(
       try {
         const source: Record<string, string> =
           JSON.parse(next['payload'] || '{}') as Record<string, string>;
-        const payload: Record<string, string> = {};
-        const keys: string[] = Object.keys(source);
-        for (let k = 0; k < keys.length; k++) {
-          if (REMOTE_HOST_EXTENSION_SAFE.indexOf(keys[k]) >= 0 &&
+      const payload: Record<string, string> = {};
+      const keys: string[] = Object.keys(source);
+      for (let k = 0; k < keys.length; k++) {
+          if ((REMOTE_HOST_EXTENSION_SAFE.indexOf(keys[k]) >= 0 ||
+            REMOTE_HOST_EXTENSION_TRUST.indexOf(keys[k]) >= 0) &&
             typeof source[keys[k]] === 'string') {
             payload[keys[k]] = source[keys[k]];
           }
@@ -354,18 +351,15 @@ export function redactPortableBackupData(
       continue;
     }
     const secretColumns: string[] = SECRET_COLUMNS[table] || [];
-    const trustColumns: string[] = DEVICE_TRUST_COLUMNS[table] || [];
-    const removed: string[] = secretColumns.concat(trustColumns);
+    // Device trust (SSH host public keys, RDP certificates) is NOT secret and
+    // is intentionally retained in every backup mode; only secret columns are
+    // removed by the redacted mode.
+    const removed: string[] = secretColumns;
     const nextRows: Array<Record<string, string>> = [];
     for (let r = 0; r < sourceRows.length; r++) {
       for (let c = 0; c < secretColumns.length; c++) {
         if (sourceRows[r][secretColumns[c]] !== undefined) {
           removedSecretFields++;
-        }
-      }
-      for (let c = 0; c < trustColumns.length; c++) {
-        if (sourceRows[r][trustColumns[c]] !== undefined) {
-          removedDeviceTrustFields++;
         }
       }
       const removedForRow: string[] = table === 'remotehosts'
@@ -418,6 +412,41 @@ export function redactPortableBackupData(
   };
 }
 
+/**
+ * Complete backup selected explicitly by the user: every column (including
+ * passwords/private keys/2FA/tokens as stored, device trust, cryptoparams,
+ * VNC secret/trust rows and full extension payloads) is preserved. When the
+ * source has crypto configured the secrets are ciphertext and the backup
+ * carries cryptoparams so the same master password can unlock them on the
+ * target; otherwise they are plaintext by the user's explicit choice.
+ */
+export function fullPortableBackupData(
+  tables: Record<string, Array<Record<string, string>>>,
+  extensions: Array<Record<string, string>>,
+  localTables: Record<string, Array<Record<string, string>>>
+): PortableBackupRedactionResult {
+  const fullTables: Record<string, Array<Record<string, string>>> = {};
+  const names: string[] = Object.keys(tables);
+  for (let i = 0; i < names.length; i++) {
+    fullTables[names[i]] = copyRows(tables[names[i]] || []);
+  }
+  const fullExtensions: Array<Record<string, string>> =
+    copyRows(extensions);
+  const fullLocal: Record<string, Array<Record<string, string>>> = {};
+  const localNames: string[] = Object.keys(localTables);
+  for (let i = 0; i < localNames.length; i++) {
+    fullLocal[localNames[i]] = copyRows(localTables[localNames[i]] || []);
+  }
+  return {
+    tables: fullTables,
+    extensions: fullExtensions,
+    localTables: fullLocal,
+    removedSecretFields: 0,
+    removedDeviceTrustFields: 0,
+    excludedRows: 0
+  };
+}
+
 export function backupSectionSha256(
   rows: Array<Record<string, string>>
 ): string {
@@ -467,6 +496,8 @@ export function backupSectionTombstones(
 export function backupManifestV3IsStructurallyValid(
   manifest: BackupManifestV3
 ): boolean {
+  const mode: string = manifest && manifest.crypto
+    ? manifest.crypto.mode : '';
   if (!manifest || manifest.formatVersion !== 3 ||
     !Number.isFinite(manifest.rdbSchemaVersion) ||
     manifest.rdbSchemaVersion < 1 ||
@@ -476,11 +507,16 @@ export function backupManifestV3IsStructurallyValid(
     (manifest.restoreMode !== 'merge' &&
       manifest.restoreMode !== 'replace_selected') ||
     !Array.isArray(manifest.sections) ||
-    manifest.crypto.mode !== 'redacted' ||
-    manifest.crypto.verifierIncluded ||
-    manifest.trust.deviceTrustIncluded ||
-    manifest.trust.plaintextConsentIncluded ||
-    manifest.trust.loginTokensIncluded) {
+    (mode !== 'redacted' && mode !== 'full')) {
+    return false;
+  }
+  // Redacted configs must never carry verifier or secret material; full
+  // backups may carry the crypto verifier/params (encrypted source) and
+  // plaintext consent (unencrypted source) exactly as the user chose.
+  if (mode === 'redacted' &&
+    (manifest.crypto.verifierIncluded ||
+      manifest.trust.plaintextConsentIncluded ||
+      manifest.trust.loginTokensIncluded)) {
     return false;
   }
   const ids: Set<string> = new Set<string>();

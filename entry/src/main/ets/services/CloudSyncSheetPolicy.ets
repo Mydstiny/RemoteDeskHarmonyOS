@@ -33,8 +33,8 @@ export function cloudSyncSheetSpec(step: string): CloudSyncSheetSpec {
   }
   if (step === CLOUD_SYNC_SHEET_BACKUP_CONFIRM) {
     return {
-      title: '导出脱敏配置备份？',
-      message: '备份使用 v3 完整性清单，只包含当前华为账号的连接配置；密码、私钥、动态口令、VNC 凭据、登录令牌和设备信任不会导出。',
+      title: '导出本地备份？',
+      message: '备份使用 v3 完整性清单并绑定当前华为账号。可在下方选择“脱敏配置”（不含密码、私钥、2FA 与登录令牌，保留设备信任）或“完整备份”（包含全部数据，是否加密由你决定）。',
       primaryLabel: '选择位置并备份',
       secondaryLabel: '返回',
       primaryDestructive: false,

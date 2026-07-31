@@ -15,7 +15,10 @@ import {
   PortableBackupRestorePlan,
   validateLocalBackupDocument
 } from './LocalBackupPolicy';
-import { BackupRestorePreview } from './BackupManifestV3';
+import {
+  BackupRestorePreview,
+  BackupSensitivityMode
+} from './BackupManifestV3';
 import { BoundedDocumentIo, BoundedDocumentIoCode } from './BoundedDocumentIo';
 import {
   portableBackupExportAllowed,
@@ -72,7 +75,8 @@ export class LocalBackupService {
   }
 
   async saveBackup(
-    appVersion: string, stagingDirectory: string
+    appVersion: string, stagingDirectory: string,
+    sensitivityMode: BackupSensitivityMode = 'redacted'
   ): Promise<boolean> {
     if (!portableBackupExportAllowed()) {
       this.lastErrorCode = 'unsafe_legacy_backup';
@@ -89,7 +93,8 @@ export class LocalBackupService {
     const document: LocalBackupDocument = createLocalBackupDocument(
       snapshot.tables, now, appVersion, snapshot.extensions,
       snapshot.localTables, snapshot.accountScope,
-      snapshot.rdbSchemaVersion, snapshot.sourceCryptoConfigured);
+      snapshot.rdbSchemaVersion, snapshot.sourceCryptoConfigured,
+      sensitivityMode);
     const bytes: Uint8Array = new util.TextEncoder().encode(JSON.stringify(document));
     if (bytes.length > LOCAL_BACKUP_MAX_BYTES) { this.lastErrorCode = 'too_large'; return false; }
     const baseName: string =

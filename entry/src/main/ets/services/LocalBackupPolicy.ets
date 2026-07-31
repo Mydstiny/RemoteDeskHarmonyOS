@@ -4,6 +4,7 @@ import { CLOUD_SYNC_TABLES } from './CloudSyncPolicy';
 import {
   BackupManifestV3,
   BackupRestorePreview,
+  BackupSensitivityMode,
   BackupSectionManifestV3,
   backupManifestV3IsStructurallyValid,
   backupSectionOwners,
@@ -12,6 +13,7 @@ import {
   backupSectionTombstones,
   PortableBackupData,
   PortableBackupRedactionResult,
+  fullPortableBackupData,
   redactPortableBackupData
 } from './BackupManifestV3';
 import {
@@ -203,7 +205,8 @@ function sectionManifest(
 function createBackupManifestV3(
   data: PortableBackupRedactionResult, createdAt: number,
   appVersion: string, accountScope: string, rdbSchemaVersion: number,
-  sourceCryptoConfigured: boolean
+  sourceCryptoConfigured: boolean,
+  sensitivityMode: BackupSensitivityMode = 'redacted'
 ): BackupManifestV3 {
   const sections: BackupSectionManifestV3[] = [];
   const tableNames: string[] = Object.keys(data.tables);
@@ -236,15 +239,18 @@ function createBackupManifestV3(
     restoreMode: 'merge',
     sections,
     crypto: {
-      mode: 'redacted',
+      mode: sensitivityMode,
       sourceCryptoConfigured,
       sourceEnvelopeVersion: 3,
-      verifierIncluded: false
+      // Full backups from an encrypted source carry cryptoparams so the same
+      // master password can unlock the ciphertext on the target device.
+      verifierIncluded: sensitivityMode === 'full' && sourceCryptoConfigured
     },
     trust: {
-      deviceTrustIncluded: false,
-      plaintextConsentIncluded: false,
-      loginTokensIncluded: false
+      deviceTrustIncluded: true,
+      plaintextConsentIncluded:
+        sensitivityMode === 'full' && !sourceCryptoConfigured,
+      loginTokensIncluded: sensitivityMode === 'full'
     }
   };
 }
@@ -264,16 +270,19 @@ export function createLocalBackupDocument(
   localTables: Record<string, Array<Record<string, string>>> = {},
   accountScope: string = 'legacy-unbound',
   rdbSchemaVersion: number = 3,
-  sourceCryptoConfigured: boolean = false
+  sourceCryptoConfigured: boolean = false,
+  sensitivityMode: BackupSensitivityMode = 'redacted'
 ): LocalBackupDocument {
-  const redacted: PortableBackupRedactionResult =
-    redactPortableBackupData(tables, extensions, localTables);
+  const portable: PortableBackupRedactionResult =
+    sensitivityMode === 'full'
+      ? fullPortableBackupData(tables, extensions, localTables)
+      : redactPortableBackupData(tables, extensions, localTables);
   const manifest: BackupManifestV3 = createBackupManifestV3(
-    redacted, createdAt, appVersion, accountScope,
-    rdbSchemaVersion, sourceCryptoConfigured);
+    portable, createdAt, appVersion, accountScope,
+    rdbSchemaVersion, sourceCryptoConfigured, sensitivityMode);
   const payload: string = localBackupCanonicalPayload(
-    createdAt, appVersion, redacted.tables, redacted.extensions,
-    LOCAL_BACKUP_VERSION, redacted.localTables, manifest);
+    createdAt, appVersion, portable.tables, portable.extensions,
+    LOCAL_BACKUP_VERSION, portable.localTables, manifest);
   const parsed = JSON.parse(payload) as Record<string, Object>;
   return {
     format: LOCAL_BACKUP_FORMAT,
@@ -344,8 +353,9 @@ export function validateLocalBackupDocument(text: string): LocalBackupDocument |
       return null;
     }
     if (document.version >= 3 &&
-      !validateRedactedV3Rows(
-        document, normalizedTables)) {
+      document.manifest?.crypto.mode === 'full'
+        ? !validateFullV3Rows(document, normalizedTables)
+        : !validateRedactedV3Rows(document, normalizedTables)) {
       return null;
     }
     document.tables = normalizedTables;
@@ -498,12 +508,60 @@ function validateRedactedV3Rows(
   return validateVncBackupRows(localVnc, owner);
 }
 
+/**
+ * Full-backup validation: rows must keep the exact owner and known columns
+ * (already enforced by backupRowsContainOnlyKnownColumns/normalize), VNC rows
+ * may include secret/trust rows, and cryptoparams rows are expected when the
+ * source was encrypted. There is deliberately no redaction-equality check.
+ */
+function validateFullV3Rows(
+  document: LocalBackupDocument,
+  normalizedTables: Record<string, Array<Record<string, string>>>
+): boolean {
+  const manifest: BackupManifestV3 = document.manifest as BackupManifestV3;
+  const owner: string = manifest.accountScope;
+  const ownerTables: string[] = [
+    'usersettings', 'remotehosts', 'rdpcredentials',
+    'rustdeskrelays', 'sshkeys', 'totpentries'
+  ];
+  for (let i = 0; i < ownerTables.length; i++) {
+    const table: string = ownerTables[i];
+    if (normalizedTables[table] !== undefined &&
+      !rowsUseOnlyOwner(normalizedTables[table], owner)) {
+      return false;
+    }
+  }
+  const vncRows: Array<Record<string, string>> =
+    normalizedTables['vncrecord'] || [];
+  for (let i = 0; i < vncRows.length; i++) {
+    if ((vncRows[i]['userid'] || '') !== owner ||
+      Number(vncRows[i]['deletedat'] || '0') > 0) {
+      return false;
+    }
+  }
+  const localVnc: Array<Record<string, string>> =
+    (document.localTables || {})['vnclocalrecords'] || [];
+  for (let i = 0; i < localVnc.length; i++) {
+    if ((localVnc[i]['userid'] || '') !== owner ||
+      Number(localVnc[i]['deletedat'] || '0') > 0) {
+      return false;
+    }
+  }
+  if (manifest.crypto.sourceCryptoConfigured &&
+    (normalizedTables['cryptoparams'] === undefined ||
+      normalizedTables['cryptoparams'].length === 0)) {
+    return false;
+  }
+  return true;
+}
+
 export interface PortableBackupRestorePlan extends PortableBackupData {
   sourceFormatVersion: number;
   sourceAccountScope: string;
   targetAccountScope: string;
   legacyOwnerAdopted: boolean;
   restoreMode: 'merge';
+  sensitivityMode: BackupSensitivityMode;
   presentTables: string[];
   presentLocalTables: string[];
   extensionsPresent: boolean;
@@ -550,6 +608,25 @@ function validPortableVncRows(
   return result;
 }
 
+/**
+ * Full-backup VNC filter: keeps secret/trust rows (ciphertext or plaintext by
+ * the user's explicit choice) and only drops tombstoned rows. Owner rebinding
+ * happens before this filter, so rows already carry the target owner.
+ */
+function validFullVncRows(
+  rows: Array<Record<string, string>>, owner: string
+): Array<Record<string, string>> {
+  const result: Array<Record<string, string>> = [];
+  for (let i = 0; i < rows.length; i++) {
+    const row: Record<string, string> = rows[i];
+    if ((row['userid'] || '') === owner &&
+      Number(row['deletedat'] || '0') <= 0) {
+      result.push(row);
+    }
+  }
+  return result;
+}
+
 export function createLocalBackupRestorePreview(
   document: LocalBackupDocument
 ): BackupRestorePreview {
@@ -578,8 +655,9 @@ export function createLocalBackupRestorePreview(
     absentTables,
     rowCount,
     tombstoneCount,
-    secretsIncluded: false,
-    deviceTrustIncluded: false
+    secretsIncluded: document.manifest?.crypto.mode === 'full',
+    deviceTrustIncluded:
+      document.manifest?.trust.deviceTrustIncluded === true
   };
 }
 
@@ -595,24 +673,34 @@ export function adaptLocalBackupDocumentForRestore(
   if (owner === '') { return null; }
   const sourceOwner: string = document.manifest?.accountScope || '';
   const legacy: boolean = document.version < 3;
+  const sensitivityMode: BackupSensitivityMode =
+    document.version >= 3 &&
+      document.manifest?.crypto.mode === 'full'
+      ? 'full' : 'redacted';
   if ((legacy && !allowLegacyOwnerAdoption) ||
     (!legacy && sourceOwner !== owner)) {
     return null;
   }
-  const redacted: PortableBackupRedactionResult =
-    redactPortableBackupData(
-      document.tables, document.extensions || [],
-      document.localTables || {});
+  const portable: PortableBackupRedactionResult =
+    sensitivityMode === 'full'
+      ? fullPortableBackupData(
+          document.tables, document.extensions || [],
+          document.localTables || {})
+      : redactPortableBackupData(
+          document.tables, document.extensions || [],
+          document.localTables || {});
   const tables: Record<string, Array<Record<string, string>>> = {};
-  const presentTables: string[] = Object.keys(redacted.tables);
-  let quarantinedRows: number = redacted.excludedRows;
+  const presentTables: string[] = Object.keys(portable.tables);
+  let quarantinedRows: number = portable.excludedRows;
   for (let i = 0; i < presentTables.length; i++) {
     const table: string = presentTables[i];
     const rebound: Array<Record<string, string>> =
-      reboundRows(table, redacted.tables[table], owner);
+      reboundRows(table, portable.tables[table], owner);
     if (table === 'vncrecord') {
       const valid: Array<Record<string, string>> =
-        validPortableVncRows(rebound, owner);
+        sensitivityMode === 'full'
+          ? validFullVncRows(rebound, owner)
+          : validPortableVncRows(rebound, owner);
       quarantinedRows += rebound.length - valid.length;
       tables[table] = valid;
     } else {
@@ -621,14 +709,16 @@ export function adaptLocalBackupDocumentForRestore(
   }
   const localTables: Record<string, Array<Record<string, string>>> = {};
   const presentLocalTables: string[] =
-    Object.keys(redacted.localTables);
+    Object.keys(portable.localTables);
   for (let i = 0; i < presentLocalTables.length; i++) {
     const table: string = presentLocalTables[i];
     const rebound: Array<Record<string, string>> =
-      reboundRows(table, redacted.localTables[table], owner);
+      reboundRows(table, portable.localTables[table], owner);
     if (table === 'vnclocalrecords') {
       const valid: Array<Record<string, string>> =
-        validPortableVncRows(rebound, owner);
+        sensitivityMode === 'full'
+          ? validFullVncRows(rebound, owner)
+          : validPortableVncRows(rebound, owner);
       quarantinedRows += rebound.length - valid.length;
       localTables[table] = valid;
     } else {
@@ -641,8 +731,9 @@ export function adaptLocalBackupDocumentForRestore(
     targetAccountScope: owner,
     legacyOwnerAdopted: legacy,
     restoreMode: 'merge',
+    sensitivityMode,
     tables,
-    extensions: redacted.extensions,
+    extensions: portable.extensions,
     localTables,
     presentTables,
     presentLocalTables,

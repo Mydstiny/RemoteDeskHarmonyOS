@@ -120,6 +120,67 @@ export default function localBackupPolicyTest(): void {
         JSON.stringify(document)) !== null).assertTrue();
     });
 
+    it('full_mode_keeps_secrets_private_keys_totp_and_device_trust', 0,
+      (): void => {
+        const tables = emptyTables();
+        tables['cryptoparams'].push({
+          id: 'salt', key: 'crypto_salt', value: 'secret'
+        });
+        tables['remotehosts'].push({
+          id: 'host-1', userid: 'owner-test', label: 'host',
+          passward: 'password',
+          sshhostkeyfingerprintsha256: 'fingerprint',
+          displayconfig: '{"width":1920,"_remoteDeskExtensionV1":{' +
+            '"sshhostkeyfingerprintsha256":"nested-fingerprint",' +
+            '"password":"nested-password","rustdeskdirectport":"21117"}}'
+        });
+        tables['sshkeys'].push({
+          id: 'key-1', userid: 'owner-test',
+          privatekey: 'private', publickey: 'public'
+        });
+        tables['totpentries'].push({
+          id: 'totp-1', userid: 'owner-test',
+          secret: 'totp-secret'
+        });
+        const document = createLocalBackupDocument(
+          tables, 100, '1.0.10', [{
+            id: 'remotehosts:host-1', tablename: 'remotehosts',
+            recordid: 'host-1',
+            payload: '{"sshkeypassphrase":"passphrase",' +
+              '"sshhostkeyfingerprintsha256":"trust",' +
+              '"rustdeskdirectport":"21117"}',
+            updatedat: '100'
+          }], {}, 'owner-test', 3, true, 'full');
+        expect(document.manifest?.crypto.mode).assertEqual('full');
+        expect(document.manifest?.crypto.verifierIncluded).assertTrue();
+        expect(document.manifest?.trust.deviceTrustIncluded).assertTrue();
+        expect(document.manifest?.trust.plaintextConsentIncluded)
+          .assertFalse();
+        expect(document.tables['cryptoparams'] !== undefined)
+          .assertTrue();
+        expect(document.tables['remotehosts'][0]['passward'])
+          .assertEqual('password');
+        expect(document.tables['remotehosts'][0]
+          ['sshhostkeyfingerprintsha256']).assertEqual('fingerprint');
+        expect(document.tables['sshkeys'][0]['privatekey'])
+          .assertEqual('private');
+        expect(document.tables['totpentries'][0]['secret'])
+          .assertEqual('totp-secret');
+        expect(document.extensions?.[0]['payload'])
+          .assertEqual('{"sshkeypassphrase":"passphrase",' +
+            '"sshhostkeyfingerprintsha256":"trust",' +
+            '"rustdeskdirectport":"21117"}');
+        expect(validateLocalBackupDocument(
+          JSON.stringify(document)) !== null).assertTrue();
+        // An unencrypted source explicitly consents to plaintext secrets.
+        const plain = createLocalBackupDocument(
+          tables, 100, '1.0.10', [], {}, 'owner-test', 3, false, 'full');
+        expect(plain.manifest?.crypto.verifierIncluded).assertFalse();
+        expect(plain.manifest?.trust.plaintextConsentIncluded).assertTrue();
+        expect(validateLocalBackupDocument(
+          JSON.stringify(plain)) !== null).assertTrue();
+      });
+
     it('accepts_legacy_distributed_delete_flag_but_strips_it_before_restore', 0, (): void => {
       const tables = legacySevenTables();
       tables['remotehosts'].push({
@@ -195,7 +256,7 @@ export default function localBackupPolicyTest(): void {
         .assertTrue();
     });
 
-    it('redacts_crypto_secrets_totp_private_keys_and_device_trust', 0, (): void => {
+    it('redacts_secrets_and_totp_but_retains_device_trust', 0, (): void => {
       const tables = emptyTables();
       tables['cryptoparams'].push({
         id: 'salt', key: 'crypto_salt', value: 'secret'
@@ -244,10 +305,12 @@ export default function localBackupPolicyTest(): void {
         .assertTrue();
       expect(document.tables['remotehosts'][0]['passward'] ===
         undefined).assertTrue();
+      // Device trust (public SSH host key / RDP certificate material) is not
+      // secret and is intentionally retained in every backup mode.
       expect(document.tables['remotehosts'][0]
-        ['sshhostkeyfingerprintsha256'] === undefined).assertTrue();
+        ['sshhostkeyfingerprintsha256']).assertEqual('fingerprint');
       expect(document.tables['remotehosts'][0]['displayconfig']
-        .indexOf('nested-fingerprint') < 0).assertTrue();
+        .indexOf('nested-fingerprint') >= 0).assertTrue();
       expect(document.tables['remotehosts'][0]['displayconfig']
         .indexOf('nested-password') < 0).assertTrue();
       expect(document.tables['remotehosts'][0]['displayconfig']
@@ -255,7 +318,8 @@ export default function localBackupPolicyTest(): void {
       expect(document.tables['remotehosts'][0]['displayconfig']
         .indexOf('rustdeskdirectport') >= 0).assertTrue();
       expect(document.extensions?.[0]['payload'])
-        .assertEqual('{"rustdeskdirectport":"21117",' +
+        .assertEqual('{"sshhostkeyfingerprintsha256":"trust",' +
+          '"rustdeskdirectport":"21117",' +
           '"rustdesktotpentryid":"totp-1",' +
           '"rustdesktotpautosubmit":"1"}');
       expect(document.tables['sshkeys'][0]['privatekey'] ===

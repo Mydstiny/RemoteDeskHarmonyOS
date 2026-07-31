@@ -403,6 +403,8 @@ struct HostListPage {
   @State showPopupSheet: boolean = false;
   @State popupSheetMode: number = 0; // 0=crypto, 1=about(用 aboutSheetMode 子路由), 2=SSH host key, 4=RDP certificate
   @State cloudSyncStep: string = CLOUD_SYNC_SHEET_ACTIONS;
+  /** User's explicit portable-backup sensitivity choice at export time. */
+  @State backupFullMode: boolean = false;
   @State cloudSyncError: string = '';
   @State cloudSyncSelectedTables: string[] = [];
   @State appearanceContentHeight: number = 0;
@@ -1533,7 +1535,8 @@ struct HostListPage {
     try {
       const backup: LocalBackupService = LocalBackupService.getInstance();
       const saved: boolean = await backup.saveBackup(
-        CURRENT_RELEASE_VERSION, getContext(this).cacheDir);
+        CURRENT_RELEASE_VERSION, getContext(this).cacheDir,
+        this.backupFullMode ? 'full' : 'redacted');
       if (saved) { promptAction.showToast({ message: '本地备份已保存', duration: 1600 }); this.closeSettingsLeafSheet(); }
       else { this.cloudSyncError = backup.getLastErrorMessage(); }
     } catch (_e) { this.cloudSyncError = '备份失败，请检查保存位置后重试'; }
@@ -6368,7 +6371,7 @@ struct HostListPage {
                 Row() { SymbolGlyph($r('sys.symbol.doc_plaintext')).fontSize(20).fontColor([this.accentColor]) }
                   .width(40).height(40).borderRadius(20).backgroundColor(this.pal().card).justifyContent(FlexAlign.Center)
                 Column() { Text('本地备份').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font());
-                  Text('导出账号级 v3 脱敏配置；不包含密码、私钥、2FA 与设备信任').fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
+                  Text('可导出脱敏配置或含密码、私钥、2FA 与设备信任的完整备份').fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
                 }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 12 })
                 SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(16).fontColor([this.pal().text3])
               }.width('100%').height(68).padding({ left: 14, right: 16 })
@@ -7568,10 +7571,42 @@ struct HostListPage {
             }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 12 })
           }.width('100%').alignItems(VerticalAlign.Center)
           Text(this.currentCloudSyncSheetSpec().message).fontSize(14).fontColor(this.pal().text2).fontFamily(this.font()).lineHeight(21).margin({ top: 18 })
+          if (this.cloudSyncStep === CLOUD_SYNC_SHEET_BACKUP_CONFIRM) {
+            Column() {
+              Text('备份内容').fontSize(12).fontWeight(FontWeight.Medium).fontColor(this.pal().text2).fontFamily(this.font())
+                .width('100%').margin({ bottom: 8 })
+              Row() {
+                SymbolGlyph(this.backupFullMode
+                  ? $r('sys.symbol.circle')
+                  : $r('sys.symbol.checkmark_circle_fill'))
+                  .fontSize(18).fontColor([this.backupFullMode ? this.pal().text3 : this.accentColor])
+                Column() {
+                  Text('脱敏配置（推荐）').fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font())
+                  Text('不含密码、SSH 私钥、2FA 与登录令牌；保留设备信任（SSH 公钥/RDP 证书）')
+                    .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font()).lineHeight(17).margin({ top: 2 })
+                }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 10 })
+              }.width('100%').padding(12).borderRadius(14).backgroundColor(this.pal().surface)
+                .onClick((): void => { this.backupFullMode = false; this.cloudSyncError = ''; })
+              Row() {
+                SymbolGlyph(this.backupFullMode
+                  ? $r('sys.symbol.checkmark_circle_fill')
+                  : $r('sys.symbol.circle'))
+                  .fontSize(18).fontColor([this.backupFullMode ? this.accentColor : this.pal().text3])
+                Column() {
+                  Text('完整备份').fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font())
+                  Text('包含密码、SSH 私钥、2FA、VNC 与设备信任；源已加密则携带加密参数（恢复需相同主密码），未加密则按你的选择以明文保存')
+                    .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font()).lineHeight(17).margin({ top: 2 })
+                }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 10 })
+              }.width('100%').padding(12).borderRadius(14).backgroundColor(this.pal().surface).margin({ top: 8 })
+                .onClick((): void => { this.backupFullMode = true; this.cloudSyncError = ''; })
+            }.width('100%').margin({ top: 16 })
+          }
           Column() {
             Text('影响范围').fontSize(12).fontWeight(FontWeight.Medium).fontColor(this.pal().text2).fontFamily(this.font())
             Text(this.cloudSyncStep === CLOUD_SYNC_SHEET_BACKUP_CONFIRM
-              ? '连接配置与个性化设置；所有秘密、令牌和设备信任均排除'
+              ? (this.backupFullMode
+                ? '全部连接配置、密码、私钥、2FA、VNC、设备信任与个性化设置'
+                : '连接配置与个性化设置；保留设备信任（SSH 公钥/RDP 证书），不含密码、私钥、2FA 与登录令牌')
               : (this.cloudSyncStep === CLOUD_SYNC_SHEET_RESTORE_CONFIRM
                 ? this.localRestorePreviewSummary()
                 : '主机、RDP 凭据、RustDesk 中继、SSH 密钥、2FA、加密参数和个性化设置'))

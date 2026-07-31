@@ -3392,10 +3392,13 @@ export class CloudStore implements CryptoCloudStore {
   async mergePortableBackup(
     plan: PortableBackupRestorePlan
   ): Promise<boolean> {
+    const fullBackup: boolean =
+      plan.sensitivityMode === 'full';
     if (!this.store ||
       plan.restoreMode !== 'merge' ||
       plan.targetAccountScope !== this.currentOwnerScopeId() ||
-      plan.presentTables.indexOf('cryptoparams') >= 0) {
+      (!fullBackup &&
+        plan.presentTables.indexOf('cryptoparams') >= 0)) {
       return false;
     }
     this.setAutomaticPushSuppressed(true);
@@ -3406,7 +3409,7 @@ export class CloudStore implements CryptoCloudStore {
       for (let i = 0; i < plan.presentTables.length; i++) {
         const table: string = plan.presentTables[i];
         if (TABLES.indexOf(table) < 0 ||
-          table === 'cryptoparams') {
+          (table === 'cryptoparams' && !fullBackup)) {
           throw new Error(
             'portable restore table is not mergeable: ' + table);
         }
