@@ -104,6 +104,13 @@ export default function rustDeskProApiPolicyTest() {
       expect(routeId.indexOf('private-guid')).assertEqual(-1);
     });
 
+    it('treats_modern_address_book_400_405_as_legacy_fallback_signal', 0, () => {
+      expect(parseRustDeskProPersonalAddressBookResponse({}, 400)).assertEqual('');
+      expect(parseRustDeskProPersonalAddressBookResponse({}, 405)).assertEqual('');
+      expect(parseRustDeskProSharedAddressBookProfiles({}, 400).length).assertEqual(0);
+      expect(parseRustDeskProSharedAddressBookProfiles({}, 405).length).assertEqual(0);
+    });
+
     it('parses_modern_personal_address_book_page', 0, () => {
       expect(parseRustDeskProPersonalAddressBookResponse({ guid: 'ab-1' }, 200)).assertEqual('ab-1');
       const page = parseRustDeskProAddressBookPage({ total: 1, data: [

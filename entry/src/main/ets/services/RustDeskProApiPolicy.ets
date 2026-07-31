@@ -161,7 +161,7 @@ export function parseRustDeskProPersonalAddressBookResponse(payload: Object, sta
   if (status === 401 || status === 403) {
     throw new RustDeskProApiError('token_expired', 'Pro 登录已过期，请重新登录', status);
   }
-  if (status === 404) { return ''; }
+  if (status === 404 || status === 400 || status === 405) { return ''; }
   if (status !== 200) {
     throw new RustDeskProApiError('http_error',
       'Pro 个人地址簿查询失败（HTTP ' +
@@ -207,7 +207,7 @@ export function parseRustDeskProSharedAddressBookProfiles(payload: Object, statu
     throw new RustDeskProApiError('token_expired', 'Pro 登录已过期，请重新登录', status);
   }
   // Older compatible servers may not expose shared address books.
-  if (status === 404) { return []; }
+  if (status === 404 || status === 400 || status === 405) { return []; }
   if (status !== 200) {
     throw new RustDeskProApiError('http_error',
       'Pro 共享地址簿列表查询失败（HTTP ' +

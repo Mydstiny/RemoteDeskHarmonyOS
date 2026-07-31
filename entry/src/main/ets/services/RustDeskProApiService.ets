@@ -169,9 +169,14 @@ export class RustDeskProApiService {
     }
     // Current RustDesk servers expose the personal address book and peers as
     // separate paginated endpoints. Older deployments use the legacy /api/ab/get
-    // payload, so keep it as a compatibility fallback.
-    const personal = await this.request(account, '/api/ab/personal', http.RequestMethod.POST, null);
-    const personalGuid = parseRustDeskProPersonalAddressBookResponse(personal.payload, personal.status);
+    // payload. Some hosted panels reject the modern endpoint shape with 400/405
+    // instead of 404; treat those the same as "not supported" and fall back to
+    // the legacy payload. 401/403 and transport failures stay authoritative.
+    const personal: RustDeskProHttpResponse =
+      await this.request(account, '/api/ab/personal', http.RequestMethod.POST, null);
+    const personalGuid: string =
+      personal.status === 400 || personal.status === 404 || personal.status === 405
+        ? '' : parseRustDeskProPersonalAddressBookResponse(personal.payload, personal.status);
     if (personalGuid.length === 0) {
       const legacy = await this.request(account, '/api/ab/get', http.RequestMethod.POST,
         JSON.parse('{}') as Object);
