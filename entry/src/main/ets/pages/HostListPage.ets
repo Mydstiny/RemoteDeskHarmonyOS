@@ -1585,10 +1585,12 @@ struct HostListPage {
     }
     const legacy: string = preview.legacyOwnerUnbound
       ? '；旧版文件将在确认后绑定当前账号' : '';
+    const redacted: string = !preview.secretsIncluded
+      ? '；该备份为脱敏配置，不含密码、SSH 私钥、2FA 与设备信任（SSH 公钥/RDP 证书），恢复后需重新导入/确认' : '';
     return '格式 v' + preview.formatVersion.toString() +
       ' · ' + preview.rowCount.toString() + ' 行 · ' +
       preview.presentTables.length.toString() + ' 个数据表' +
-      legacy;
+      legacy + redacted;
   }
 
   private currentCloudSyncSheetSpec(): CloudSyncSheetSpec {
@@ -1613,7 +1615,10 @@ struct HostListPage {
       this.cloudSyncStep = CLOUD_SYNC_SHEET_UNAVAILABLE;
       return;
     }
-    const uploadError: string = cloud.getLastSyncErrorMessage();
+    const blockedReason: string = cloud.manualUploadBlockedReason();
+    const uploadError: string =
+      blockedReason !== '' ? blockedReason :
+        cloud.getLastSyncErrorMessage();
     this.cloudSyncError = uploadError !== '' ? uploadError :
       '上传未确认全部完成，请检查网络后重试。';
     this.cloudSyncStep = CLOUD_SYNC_SHEET_UPLOAD_CONFIRM;

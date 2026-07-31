@@ -1452,6 +1452,34 @@ export class CloudStore implements CryptoCloudStore {
   }
 
   /**
+   * Explains why a manual upload was rejected before it reached the transfer
+   * queue. The coordinator's pre-enqueue gates (bootstrap not completed,
+   * pending selection-re-enable barriers, crypto not configured) do not set
+   * lastSyncFailureKind, so without this the UI would show a misleading
+   * "check network" error.
+   */
+  manualUploadBlockedReason(): string {
+    if (!this.hasCloudBootstrapCompleted()) {
+      return '请先完成首次云端核对：云同步设置 → 从云端重新下载，之后再手动上传';
+    }
+    const snapshot: SelectionReenableBarrierSnapshot =
+      this.selectionReenableBarrierSnapshot();
+    if (snapshot.readable) {
+      const tables: string[] = Object.keys(snapshot.barriers);
+      if (tables.length > 0) {
+        return '同步范围存在待完成的云端优先核对（' +
+          tables.join(',') +
+          '），请重启应用并重新登录完成首次同步后再上传';
+      }
+    }
+    const crypto: DataCrypto = DataCrypto.getInstance();
+    if (!crypto.isSetupComplete()) {
+      return '上传敏感数据前请先在「数据安全」设置安全密码（端到端加密）';
+    }
+    return '';
+  }
+
+  /**
    * Startup attempts may fail because Cloud Space is unavailable. Release the
    * local write gate after the attempt, but keep the coordinator's automatic
    * upload gate closed until a later authoritative operation succeeds.
@@ -3296,8 +3324,13 @@ export class CloudStore implements CryptoCloudStore {
       if (id !== table + ':' + recordId ||
         table === RDP_RESTRICTED_ADMIN_SECRET_TABLE ||
         !this.portableExtensionOwnerExists(table, recordId)) {
-        throw new Error(
-          'portable extension owner invalid: ' + id);
+        // A dangling/malformed extension row (or a restricted-admin secret,
+        // which is intentionally never restored) must not fail the whole
+        // portable restore. Skip and count it, matching the VNC row
+        // quarantine semantics; legitimate rows still merge below.
+        hilog.warn(0x0001, 'CloudSync',
+          'portable extension skipped (invalid owner/reference): ' + id);
+        continue;
       }
       const incoming: Record<string, string> =
         JSON.parse(source['payload'] || '{}') as
