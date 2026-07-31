@@ -6,7 +6,8 @@ import {
 } from './CloudLifecycleSafetyPolicy';
 import {
   PlatformCloudIdentityProof,
-  platformCloudIdentityProofIsValid
+  platformCloudIdentityProofIsValid,
+  unavailablePlatformCloudIdentityProof
 } from './PlatformCloudIdentityPolicy';
 
 export type AccountScopeKind = 'device_local' | 'huawei_account';
