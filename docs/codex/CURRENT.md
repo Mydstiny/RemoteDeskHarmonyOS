@@ -1,6 +1,6 @@
 # Shared Current State
 
-Updated: 2026-07-30 Asia/Shanghai
+Updated: 2026-07-31 Asia/Shanghai
 
 ## Current RustDesk login/relay-save closure (2026-07-31, merged to local main)
 
@@ -39,13 +39,14 @@ Updated: 2026-07-30 Asia/Shanghai
     sent). This aligns the app with the official RustDesk client, which reuses
     the `/api/login` access token as the control-plane token on the same
     deployment.
-- Verification on the final branch state: `default@OhosTestCompileArkTS` and
-  signed `assembleHap` both BUILD SUCCESSFUL (non-daemon, explicit exit 0);
+- Verification on the final main state (`b8308ced3`): `default@OhosTestCompileArkTS`
+  and signed `assembleHap` both BUILD SUCCESSFUL (non-daemon, explicit exit 0);
   policy unit tests updated for the new projection semantics; native
-  `rdp_native_tests` 178/178. Host cargo lib tests cannot link on this Mac
-  (no host `libopus`) and the Light compliance script needs PowerShell, which
-  is not installed here; both remain recorded environment blockers, not
-  passes.
+  `rdp_native_tests` 178/178 (host binary); focused Rust `relay_connect` 2/2
+  (sandbox-external); Light open-source compliance passed via the
+  repository-local `.tools/bin/pwsh` runtime. Host cargo lib tests still cannot
+  link on this Mac (no host `libopus`) and remain a recorded environment
+  blocker, not a pass.
 - The user-reported relay symptoms decompose into distinct layers:
   1. `/api/login` HTTP 400 on the hosted panel -> fixed by the minimal-body
      fallback in `096de8b` (deterministic, server-driven).
