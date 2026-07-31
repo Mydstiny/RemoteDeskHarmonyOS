@@ -4,6 +4,12 @@ Updated: 2026-07-30 Asia/Shanghai
 
 ## Now
 
+- VNC 云表 `vncrecordv2` 启动/ChkSchema 已修复（`6b777c4`，本地 main）：
+  HAP 内置 8 表 `cloud_schema.json`（rawfile/arkdata/cloud/），真机同步期
+  ChkSchema 通过、selection re-enable code=0。剩余外部 blocker：AGC 控制台
+  vncrecordv2 表字段定义为空（驱动 `fields is null`/Code:24/-1108），需用户
+  在 AGC 补全 19 字段并发布新 schema 版本后，待上传记录才能上行。
+
 - RustDesk 登录可连接性闭环（`cd82824` + `3ddfed269`，本地 main，分支已删）：
   控制面 token 投影门禁从“必须可信证明”改为“可信证明或绑定身份核验”，
   修复 `53afa3b` 投影路径不可达导致的“登录+地址簿成功但连接被 please login/
@@ -19,8 +25,8 @@ Updated: 2026-07-30 Asia/Shanghai
   stay local-only and fail-closed; account-scope → canonical migration is
   ownership-checked with tombstone, crypto and metadata carryover. Both Hvigor
   gates, Light and diff checks pass. Pending: real API 23 install + cloud
-  matrix on the reconnected device, AGC `vncrecord` dedup primary key, and
-  removal of any leftover diagnostic instrumentation before release.
+  matrix on the reconnected device, and **AGC `vncrecord` primary key** (the
+  only remaining blocker for VNC cloud sync; all seven ordinary tables sync).
 
 - RustDesk login/control-plane/relay-save v3 hotfix is locally complete and
   fast-forward merged into local `main` at `53afa3bea` (branch

@@ -2,6 +2,30 @@
 
 Updated: 2026-07-31 Asia/Shanghai
 
+## Current VNC cloud schema fix (2026-07-31, local main `6b777c4`)
+
+- 根因闭环（App 侧）：OpenHarmony 云同步引擎的同步期 ChkSchema 使用设备
+  SchemaMeta（HAP `arkdata/cloud/cloud_schema.json` 优先，其次 AGC 下发）。
+  之前 HAP 未内置 schema，AGC 未及时下发 `vncrecordv2`，导致
+  `setDistributedTables` 成功但同步期 `ChkSchema -1075`（schema 不含
+  vncrecordv2）。修复：HAP 内置完整 8 表 `cloud_schema.json`
+  （`bundleName=com.example.remotedesktop`，database.name=remotedesktop，
+  Field.type 按 ylong 枚举 Text=3/Number=1，全部 nullable=true 以匹配本地
+  SQLite notnull 语义，id 为 TEXT 主键，列定义与 CloudStore.ets DDL 逐列
+  校验一致）。
+- 真机验证（OpenHarmony-7.0.0.32(Beta2)）：部署后同步期 ChkSchema 通过，
+  vncrecordv2 拉取/selection re-enable 均 code=0（无待上传时完整成功）。
+- 剩余外部 blocker（非 App 可修）：AGC 云空间服务中 `vncrecordv2` 表在
+  下发 schema（schemaVersion 23）里**字段定义为空**。上传 2 条本地记录时
+  云盘驱动日志 `getRecordAttributes fields is null`、
+  `saveRecords ex out records size: 0`、`CloudDbHwImpl Code:24` → -1108，
+  应用提示“云同步未完成，数据未确认全部同步”。对照实验：usersettings 等
+  7 表走 `batchUpdate` 且 `out records size: 1` 正常。必须由用户在 AGC
+  控制台补全 vncrecordv2 的 19 个字段（或删除重建该表）并发布新 schema
+  版本（schemaVersion 23→24+），驱动刷新后本地待上传记录即可上行。
+- 门禁：`default@OhosTestCompileArkTS` 与 signed `assembleHap` 均 BUILD
+  SUCCESSFUL（非 daemon，exit 0）；Light 合规 PASS；`git diff --check` 干净。
+
 ## Current RustDesk 登录可连接性闭环（2026-07-31，本地 main）
 
 - 用户现场“登录 HTTP 400 / 地址簿同步成功 / 连接被服务器拒绝 / please login”
