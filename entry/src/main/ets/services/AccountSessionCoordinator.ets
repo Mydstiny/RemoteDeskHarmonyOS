@@ -261,7 +261,7 @@ export class AccountSessionCoordinator {
     const switching: AccountScopeToken | null =
       accountScopeToken(
         identity.unionID, generation, 'switching', 'validating',
-        platformProof.fingerprint);
+        platformProof);
     if (switching === null) {
       return this.result(false, 'blocked', '账号没有返回稳定的 UnionID');
     }

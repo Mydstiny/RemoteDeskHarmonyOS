@@ -39,6 +39,16 @@ export interface AccountSessionLease {
 
 const DEVICE_LOCAL_OWNER_SCOPE_ID: string = 'device-local';
 const DEVICE_LOCAL_STORE_IDENTITY: string = 'remotedesktop_device_local.db';
+/**
+ * Platform cloud binding requires the RDB store id (StoreConfig.name without
+ * the ".db" suffix) to equal the AGC cloud schema database.name. The AGC cloud
+ * database for this bundle is deployed under the canonical name `remotedesktop`,
+ * so every cloud-capable (verified) account scope must open exactly this store.
+ * Per-account hashed store names (`remotedesktop_owner-<sha>.db`) are therefore
+ * LOCAL-ONLY: they can never register distributed cloud tables (14800000) and
+ * are used only while the platform cloud identity cannot be verified.
+ */
+export const ACCOUNT_CLOUD_STORE_IDENTITY: string = 'remotedesktop.db';
 
 function sha256Hex(value: string): string {
   const md = cryptoFramework.createMd('SHA256');
@@ -82,6 +92,11 @@ export function accountStoreIdentity(ownerScopeId: string): string {
   return 'remotedesktop_' + normalized + '.db';
 }
 
+/** The single cloud-capable physical store name (matches AGC database.name). */
+export function accountCloudStoreIdentity(): string {
+  return ACCOUNT_CLOUD_STORE_IDENTITY;
+}
+
 export function deviceLocalScopeToken(generation: number): AccountScopeToken {
   return {
     kind: 'device_local',
@@ -101,10 +116,17 @@ export function accountScopeToken(
   generation: number,
   sessionState: AccountSessionState = 'bound',
   cloudBindingState: CloudAccountBindingState = 'validating',
-  platformIdentityFingerprint: string = ''
+  platformProof: PlatformCloudIdentityProof =
+    unavailablePlatformCloudIdentityProof()
 ): AccountScopeToken | null {
   const ownerScopeId: string = ownerScopeIdForUnionId(unionId);
-  const storeIdentity: string = accountStoreIdentity(ownerScopeId);
+  // Only an independently verified platform cloud identity may target the
+  // canonical cloud store. Any other account uses its local-only hashed store
+  // and stays fail-closed for cloud registration/transfer.
+  const storeIdentity: string =
+    platformCloudIdentityProofIsValid(platformProof)
+      ? ACCOUNT_CLOUD_STORE_IDENTITY
+      : accountStoreIdentity(ownerScopeId);
   if (ownerScopeId.length === 0 || storeIdentity.length === 0) { return null; }
   return {
     kind: 'huawei_account',
@@ -116,7 +138,7 @@ export function accountScopeToken(
     schemaRevision: 0,
     selectionRevision: 0,
     platformIdentityFingerprint:
-      platformIdentityFingerprint.trim()
+      platformProof.fingerprint.trim()
   };
 }
 
@@ -138,7 +160,7 @@ export function verifyAccountScopeCloudBinding(
   const verifiedOwnerScopeId: string =
     ownerScopeIdForUnionId(verifiedUnionId);
   const verifiedStoreIdentity: string =
-    accountStoreIdentity(verifiedOwnerScopeId);
+    accountCloudStoreIdentity();
   let cloudBindingState: CloudAccountBindingState = 'blocked';
   if (token.kind === 'device_local') {
     cloudBindingState = 'unbound';
@@ -154,8 +176,11 @@ export function verifyAccountScopeCloudBinding(
   } else if (verifiedOwnerScopeId.length > 0 &&
     verifiedStoreIdentity.length > 0 &&
     token.ownerScopeId === verifiedOwnerScopeId &&
-    token.storeIdentity === verifiedStoreIdentity &&
+    (token.storeIdentity === verifiedStoreIdentity ||
+      token.storeIdentity === accountStoreIdentity(verifiedOwnerScopeId)) &&
     token.generation > 0) {
+    // A hashed local-only store (or a canonical store without a valid proof)
+    // remains locally usable; only cloud transfer stays fail-closed.
     cloudBindingState = 'validating';
   }
   return {

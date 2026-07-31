@@ -41,6 +41,41 @@ export function legacyCryptoParamsMayMigrate(
 }
 
 /**
+ * Rows in the 1.0.9/1.0.10 account-scoped physical store carry
+ * userid == ownerScopeId ("owner-<sha256>"). Migration into the canonical
+ * cloud store must only take rows owned by the exact target owner scope;
+ * blank owners are quarantined and foreign owners are skipped.
+ */
+export function accountScopedRowOwnershipDecision(
+  recordOwnerScopeId: string,
+  targetOwnerScopeId: string
+): LegacyRowOwnershipDecision {
+  const owner: string = recordOwnerScopeId.trim();
+  const target: string = targetOwnerScopeId.trim();
+  if (owner.length === 0) { return 'quarantine_missing_owner'; }
+  return owner === target ? 'target' : 'other_owner';
+}
+
+/**
+ * Crypto parameters from the account-scoped store may only migrate when the
+ * source contains exactly one non-local owner and it is the target owner scope.
+ */
+export function accountScopedCryptoParamsMayMigrate(
+  distinctNonLocalOwners: string[],
+  targetOwnerScopeId: string
+): boolean {
+  const owners: string[] = distinctNonLocalOwners
+    .map((value: string): string => value.trim())
+    .filter((value: string): boolean =>
+      value.length > 0 && value !== 'local' && value !== 'device-local');
+  const unique: string[] = [];
+  for (let i = 0; i < owners.length; i++) {
+    if (unique.indexOf(owners[i]) < 0) { unique.push(owners[i]); }
+  }
+  return unique.length === 1 && unique[0] === targetOwnerScopeId.trim();
+}
+
+/**
  * A legacy VNC row is never silently dropped and then covered by a completed
  * migration marker. The caller keeps the source table untouched and records a
  * redacted quarantine entry for every non-migratable row.

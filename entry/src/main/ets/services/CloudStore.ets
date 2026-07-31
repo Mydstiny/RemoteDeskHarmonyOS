@@ -183,8 +183,10 @@ import {
 import {
   AccountSessionLease,
   AccountScopeToken,
+  ACCOUNT_CLOUD_STORE_IDENTITY,
   accountSessionLease,
   accountSessionLeaseEquals,
+  accountStoreIdentity,
   cloudAccountBindingForScope,
   cloneAccountSessionLease,
   deviceLocalScopeToken,
@@ -779,6 +781,46 @@ export class CloudStore implements CryptoCloudStore {
 
       await this.createTables();
       this.currentScopeToken.schemaRevision = this.store.version;
+      // Canonical cloud store admission control. The AGC cloud schema binds
+      // only to the store id `remotedesktop`; a per-account hashed store can
+      // never register distributed cloud tables (14800000). When the canonical
+      // store is already owned by a different account on this OS user, fall
+      // back to the local-only hashed store and keep cloud fail-closed.
+      if (this.currentScopeToken.kind === 'huawei_account' &&
+        this.currentScopeToken.storeIdentity === ACCOUNT_CLOUD_STORE_IDENTITY &&
+        this.store !== null) {
+        const storedOwner: string =
+          this.readLocalMetadataStrict(STORE_OWNER_SCOPE_KEY);
+        if (storedOwner !== '' &&
+          storedOwner !== this.currentScopeToken.ownerScopeId) {
+          const fallbackIdentity: string =
+            accountStoreIdentity(this.currentScopeToken.ownerScopeId);
+          if (fallbackIdentity.length === 0) {
+            throw new Error('account-scoped local store identity unavailable');
+          }
+          const foreignStore: relationalStore.RdbStore = this.store;
+          this.store = null;
+          this.currentLease = null;
+          try { await foreignStore.close(); } catch (_closeError) {}
+          this.currentScopeToken.storeIdentity = fallbackIdentity;
+          this.currentScopeToken.cloudBindingState = 'blocked';
+          this.cloudAccountBinding =
+            cloudAccountBindingForScope(this.currentScopeToken);
+          const fallbackConfig: relationalStore.StoreConfig = {
+            name: fallbackIdentity,
+            securityLevel: relationalStore.SecurityLevel.S1,
+            autoCleanDirtyData: false
+          };
+          this.store = await relationalStore.getRdbStore(context, fallbackConfig);
+          this.storeInstanceSequence++;
+          this.currentLease = accountSessionLease(
+            this.currentScopeToken, this.storeInstanceSequence);
+          await this.createTables();
+          this.currentScopeToken.schemaRevision = this.store.version;
+          hilog.warn(0x0001, 'CloudSync',
+            '规范云库属于其他账号，已回退到本地哈希作用域（云同步 fail-closed）');
+        }
+      }
       this.currentScopeToken = verifyAccountScopeCloudBinding(
         this.currentScopeToken, verifiedUnionId, platformProof);
       this.cloudAccountBinding =
@@ -789,12 +831,25 @@ export class CloudStore implements CryptoCloudStore {
           'Account Kit scope or independent platform cloud identity does not match target binding');
       }
       this.verifyStoreIdentity();
+      const migrator: LegacySharedStoreMigrator =
+        LegacySharedStoreMigrator.getInstance();
+      if (this.currentScopeToken.kind === 'huawei_account' &&
+        this.currentScopeToken.storeIdentity === ACCOUNT_CLOUD_STORE_IDENTITY) {
+        // remotedesktop.db == the canonical cloud target, so the legacy
+        // self-migration is skipped; instead migrate the 1.0.9/1.0.10
+        // account-scoped store into the canonical cloud store first, then
+        // recover any pending download transaction carried over with it.
+        await migrator.migrateAccountScopedStoreIfNeeded(
+          context, this.store, this.currentScopeToken, verifiedUnionId);
+      } else {
+        await migrator.migrateIfNeeded(
+          context, this.store, this.currentScopeToken, verifiedUnionId,
+          { targetStoreName: this.currentScopeToken.storeIdentity });
+      }
       if (!(await this.recoverPendingCloudDownloadTransaction())) {
         throw new Error(
           'pending cloud download transaction recovery failed');
       }
-      await LegacySharedStoreMigrator.getInstance().migrateIfNeeded(
-        context, this.store, this.currentScopeToken, verifiedUnionId);
       this.migrateCryptoParamIdentity();
       this.migrateLegacyRelayJson();
       await this.migrateLocalExtensions();
@@ -886,9 +941,6 @@ export class CloudStore implements CryptoCloudStore {
           this.cloudAvailable = false;
           this.cloudServiceGuidanceNeeded = this.errorRequiresCloudServiceGuidance(be);
           this.lastError = 'setDistributedTables: code=' + be.code.toString() + ' msg=' + be.message;
-          // 诊断: 8 表整批注册失败时, 用子集探针定位是 vncrecord 云表问题
-          // 还是全局配置/平台问题 (仅诊断用, 不改变生产注册语义)。
-          await this.probeCloudRegistrationSubsets();
         }
         // 仅 WiFi 下同步；策略设置失败不能让本地数据库也不可用。
         try {
@@ -4555,36 +4607,6 @@ export class CloudStore implements CryptoCloudStore {
       hilog.error(0x0001, 'CloudSync',
         'createTables failed at step[' + this.schemaStep + ']: ' + detail);
       throw new Error('schema migration failed at step[' + this.schemaStep + ']: ' + detail);
-    }
-  }
-
-  /**
-   * 诊断探针: 整批 setDistributedTables 失败时, 用子集定位是特定云表
-   * (如 vncrecord) 结构不匹配, 还是全局配置/平台问题。仅诊断用。
-   */
-  private async probeCloudRegistrationSubsets(): Promise<void> {
-    if (!this.store) { return; }
-    const probes: string[][] = [
-      ['usersettings'],
-      ['vncrecord'],
-      ['cryptoparams', 'usersettings', 'remotehosts', 'rdpcredentials',
-        'rustdeskrelays', 'sshkeys', 'totpentries']
-    ];
-    for (const subset of probes) {
-      try {
-        await this.store.setDistributedTables(
-          subset,
-          relationalStore.DistributedType.DISTRIBUTED_CLOUD,
-          { autoSync: false }
-        );
-        hilog.info(0x0001, 'CloudSync',
-          'probeCloud subset=[' + subset.join(',') + '] SUCCESS');
-      } catch (err) {
-        const be: BusinessError = err as BusinessError;
-        hilog.error(0x0001, 'CloudSync',
-          'probeCloud subset=[' + subset.join(',') + '] FAIL code=' +
-          be.code.toString() + ' msg=' + be.message);
-      }
     }
   }
 

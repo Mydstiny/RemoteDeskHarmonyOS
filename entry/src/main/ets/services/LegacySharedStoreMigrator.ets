@@ -3,8 +3,10 @@ import { cryptoFramework } from '@kit.CryptoArchitectureKit';
 import { relationalStore } from '@kit.ArkData';
 import { fileIo } from '@kit.CoreFileKit';
 import { util } from '@kit.ArkTS';
-import { AccountScopeToken } from './AccountScopePolicy';
+import { AccountScopeToken, accountStoreIdentity } from './AccountScopePolicy';
 import {
+  accountScopedCryptoParamsMayMigrate,
+  accountScopedRowOwnershipDecision,
   legacyCryptoParamsMayMigrate,
   legacyRowOwnershipDecision,
   legacyVncRowMigrationDecision,
@@ -18,10 +20,18 @@ import {
 } from './VncRecordPolicy';
 
 const LEGACY_STORE_NAME: string = 'remotedesktop.db';
+const ACCOUNT_SCOPED_MIGRATION_ID: string = 'account-scoped-store-v1';
 const RECEIPT_TABLE: string = 'migrationreceipts';
 const QUARANTINE_TABLE: string = 'migrationquarantine';
 const JOURNAL_TABLE: string = 'localmutationjournal';
 const MIGRATION_ID: string = 'legacy-shared-store-v1';
+/** Store-scoped metadata that must survive an account-scope migration. */
+const CARRYOVER_METADATA_EXCLUDE_KEYS: string[] = [
+  'store_owner_scope_id',
+  'store_identity',
+  'store_schema_revision',
+  'store_platform_cloud_identity_fingerprint'
+];
 const OWNER_TABLES: string[] = [
   'remotehosts',
   'rdpcredentials',
@@ -50,6 +60,15 @@ export interface LegacySharedStoreMigrationResult {
   skippedRows: number;
 }
 
+export type LegacySharedStoreSourceKind = 'legacy' | 'account_scope';
+
+export interface LegacySharedStoreMigrationOptions {
+  sourceName?: string;
+  migrationId?: string;
+  sourceKind?: LegacySharedStoreSourceKind;
+  targetStoreName?: string;
+}
+
 export class LegacySharedStoreMigrator {
   private static instance: LegacySharedStoreMigrator;
 
@@ -61,15 +80,31 @@ export class LegacySharedStoreMigrator {
   }
 
   async migrateIfNeeded(context: common.Context, target: relationalStore.RdbStore,
-    scope: AccountScopeToken, verifiedUnionId: string = ''):
+    scope: AccountScopeToken, verifiedUnionId: string = '',
+    options: LegacySharedStoreMigrationOptions = {}):
     Promise<LegacySharedStoreMigrationResult> {
     const empty: LegacySharedStoreMigrationResult = {
       found: false, migrated: false, copiedRows: 0,
       quarantinedRows: 0, skippedRows: 0
     };
-    const path: string = context.databaseDir + '/' + LEGACY_STORE_NAME;
+    const sourceName: string =
+      options.sourceName !== undefined && options.sourceName.length > 0
+        ? options.sourceName : LEGACY_STORE_NAME;
+    const migrationId: string =
+      options.migrationId !== undefined && options.migrationId.length > 0
+        ? options.migrationId : MIGRATION_ID;
+    const sourceKind: LegacySharedStoreSourceKind =
+      options.sourceKind === 'account_scope' ? 'account_scope' : 'legacy';
+    const targetStoreName: string =
+      options.targetStoreName !== undefined ? options.targetStoreName : '';
+    // The canonical cloud store is the migration target for verified account
+    // scopes; a legacy source with the same file must never self-migrate.
+    if (targetStoreName.length > 0 && sourceName === targetStoreName) {
+      return empty;
+    }
+    const path: string = context.databaseDir + '/' + sourceName;
     if (!fileIo.accessSync(path)) { return empty; }
-    const receiptId: string = MIGRATION_ID + ':' + scope.ownerScopeId;
+    const receiptId: string = migrationId + ':' + scope.ownerScopeId;
     if (this.receiptCommitted(target, receiptId)) {
       return {
         found: true, migrated: true, copiedRows: 0,
@@ -78,14 +113,15 @@ export class LegacySharedStoreMigrator {
     }
     const source: relationalStore.RdbStore = await relationalStore.getRdbStore(
       context, {
-        name: LEGACY_STORE_NAME,
+        name: sourceName,
         securityLevel: relationalStore.SecurityLevel.S1,
         isReadOnly: true
       });
     let result: LegacySharedStoreMigrationResult = empty;
     try {
       result = this.copySource(
-        source, target, scope, verifiedUnionId, receiptId, path);
+        source, target, scope, verifiedUnionId, receiptId, path,
+        migrationId, sourceName, sourceKind);
     } finally {
       // The target receipt and copied rows are already one committed
       // transaction. A source-handle close error must not turn that durable
@@ -95,9 +131,40 @@ export class LegacySharedStoreMigrator {
     return result;
   }
 
+  /**
+   * Migrates the 1.0.9/1.0.10 account-scoped physical store
+   * (`remotedesktop_owner-<sha>.db`) into the canonical cloud store
+   * (`remotedesktop.db`) for the same verified account scope. Rows are
+   * ownership-checked, tombstoned deletions are applied, crypto is migrated
+   * only when the source has exactly one owner, and store-scoped metadata
+   * (barriers/checkpoints/restore quarantine) is carried over.
+   */
+  async migrateAccountScopedStoreIfNeeded(
+    context: common.Context,
+    target: relationalStore.RdbStore,
+    scope: AccountScopeToken,
+    verifiedUnionId: string = ''
+  ): Promise<LegacySharedStoreMigrationResult> {
+    const sourceName: string = accountStoreIdentity(scope.ownerScopeId);
+    const empty: LegacySharedStoreMigrationResult = {
+      found: false, migrated: false, copiedRows: 0,
+      quarantinedRows: 0, skippedRows: 0
+    };
+    if (sourceName.length === 0) { return empty; }
+    return await this.migrateIfNeeded(context, target, scope,
+      verifiedUnionId, {
+        sourceName,
+        migrationId: ACCOUNT_SCOPED_MIGRATION_ID,
+        sourceKind: 'account_scope',
+        targetStoreName: scope.storeIdentity
+      });
+  }
+
   private copySource(source: relationalStore.RdbStore,
     target: relationalStore.RdbStore, scope: AccountScopeToken,
-    verifiedUnionId: string, receiptId: string, sourcePath: string):
+    verifiedUnionId: string, receiptId: string, sourcePath: string,
+    migrationId: string, sourceName: string,
+    sourceKind: LegacySharedStoreSourceKind):
     LegacySharedStoreMigrationResult {
     let copiedRows: number = 0;
     let quarantinedRows: number = 0;
@@ -105,8 +172,11 @@ export class LegacySharedStoreMigrator {
     const selected: Map<string, Set<string>> = new Map<string, Set<string>>();
     const distinctOwners: string[] = this.distinctOwners(source);
     const cryptoOwnershipProven: boolean =
-      legacyCryptoParamsMayMigrate(
-        distinctOwners, scope.kind, verifiedUnionId);
+      sourceKind === 'account_scope'
+        ? accountScopedCryptoParamsMayMigrate(
+            distinctOwners, scope.ownerScopeId)
+        : legacyCryptoParamsMayMigrate(
+            distinctOwners, scope.kind, verifiedUnionId);
     const legacyVncResetEpoch: number = cryptoOwnershipProven
       ? this.readLegacyVncResetEpoch(source) : 0;
     const sourceFingerprint: string = this.sourceFingerprint(
@@ -115,7 +185,7 @@ export class LegacySharedStoreMigrator {
     target.beginTransaction();
     try {
       this.writeReceipt(target, receiptId, scope, sourceFingerprint,
-        'running', '{}', '', startedAt, 0);
+        'running', '{}', '', startedAt, 0, migrationId, sourceName);
       for (let i = 0; i < EXPLICIT_OWNER_TABLES.length; i++) {
         const sourceTable: string = EXPLICIT_OWNER_TABLES[i];
         if (!this.tableExists(source, sourceTable)) { continue; }
@@ -125,7 +195,7 @@ export class LegacySharedStoreMigrator {
         const counts: number[] = this.copyOwnedRows(
           source, target, sourceTable, targetTable, scope,
           verifiedUnionId, receiptId, selected,
-          legacyVncResetEpoch);
+          legacyVncResetEpoch, migrationId, sourceKind);
         copiedRows += counts[0];
         quarantinedRows += counts[1];
         skippedRows += counts[2];
@@ -134,7 +204,7 @@ export class LegacySharedStoreMigrator {
         const rdpCounts: number[] = this.copyReferencedRows(
           source, target, 'rdpcredentials',
           selected.get('rdpcredentials') ?? new Set<string>(),
-          scope.ownerScopeId, receiptId);
+          scope.ownerScopeId, receiptId, migrationId);
         copiedRows += rdpCounts[0];
         quarantinedRows += rdpCounts[1];
         skippedRows += rdpCounts[2];
@@ -150,15 +220,27 @@ export class LegacySharedStoreMigrator {
         } else {
           quarantinedRows++;
           this.writeQuarantine(target, receiptId, 'cryptoparams',
-            '__table__', 'ambiguous_crypto_owner');
+            '__table__', 'ambiguous_crypto_owner', '', migrationId);
         }
       }
-      this.writeMigrationJournal(target, receiptId, selected);
+      if (sourceKind === 'account_scope') {
+        copiedRows += this.copyLocalMetadataCarryover(source, target);
+        // Legacy 1.0.7/1.0.8 rows still present in the canonical cloud store
+        // carry userid == unionID. Normalize them to the target owner scope so
+        // the app's userid-filtered reads keep showing them.
+        copiedRows += this.normalizeLegacyOwnerRows(
+          target, verifiedUnionId, scope.ownerScopeId);
+      }
+      this.writeMigrationJournal(target, receiptId, selected, migrationId,
+        sourceKind === 'account_scope'
+          ? 'account_scope_migrated_not_uploaded'
+          : 'legacy_migrated_not_uploaded');
       const countsJson: string = JSON.stringify({
         copiedRows, quarantinedRows, skippedRows
       });
       this.writeReceipt(target, receiptId, scope, sourceFingerprint,
-        'committed', countsJson, '', startedAt, Date.now());
+        'committed', countsJson, '', startedAt, Date.now(),
+        migrationId, sourceName);
       target.commit();
       return {
         found: true, migrated: true, copiedRows,
@@ -175,7 +257,8 @@ export class LegacySharedStoreMigrator {
     target: relationalStore.RdbStore, sourceTable: string, targetTable: string,
     scope: AccountScopeToken, verifiedUnionId: string, receiptId: string,
     selected: Map<string, Set<string>>,
-    legacyVncResetEpoch: number): number[] {
+    legacyVncResetEpoch: number, migrationId: string,
+    sourceKind: LegacySharedStoreSourceKind): number[] {
     const targetColumns: string[] = this.tableColumns(target, targetTable);
     const rows: relationalStore.ResultSet =
       source.querySync(new relationalStore.RdbPredicates(sourceTable));
@@ -185,19 +268,36 @@ export class LegacySharedStoreMigrator {
     let quarantined: number = 0;
     let skipped: number = 0;
     while (rows.goToNextRow()) {
+      const sourceRow: relationalStore.ValuesBucket = rows.getRow();
+      const recordId: string = this.stringValue(sourceRow['id']);
+      if (deletedIndex >= 0 && rows.getLong(deletedIndex) === 1 &&
+        sourceKind === 'account_scope') {
+        // Apply tombstone deletions from the account-scoped store so hosts
+        // deleted after 1.0.8 cannot be resurrected by stale canonical rows.
+        if (recordId.length > 0) {
+          const deletePredicates =
+            new relationalStore.RdbPredicates(targetTable);
+          deletePredicates.equalTo('id', recordId);
+          target.deleteSync(deletePredicates);
+        }
+        copied++;
+        continue;
+      }
       if (deletedIndex >= 0 && rows.getLong(deletedIndex) === 1) {
         skipped++;
         continue;
       }
-      const sourceRow: relationalStore.ValuesBucket = rows.getRow();
-      const recordId: string = this.stringValue(sourceRow['id']);
       const userId: string = this.stringValue(sourceRow['userid']);
       const decision: LegacyRowOwnershipDecision =
-        legacyRowOwnershipDecision(userId, scope.kind, verifiedUnionId);
+        sourceKind === 'account_scope'
+          ? accountScopedRowOwnershipDecision(
+              userId, scope.ownerScopeId)
+          : legacyRowOwnershipDecision(
+              userId, scope.kind, verifiedUnionId);
       if (decision === 'quarantine_missing_owner') {
         quarantined++;
         this.writeQuarantine(target, receiptId, sourceTable, recordId,
-          'missing_owner');
+          'missing_owner', '', migrationId);
         continue;
       }
       if (decision !== 'target') {
@@ -230,7 +330,8 @@ export class LegacySharedStoreMigrator {
             recordId,
             vncDecision,
             this.stringValue(bucket['payload']) + ':' +
-              this.stringValue(bucket['ciphertext']));
+              this.stringValue(bucket['ciphertext']),
+            migrationId);
           continue;
         }
       }
@@ -253,7 +354,7 @@ export class LegacySharedStoreMigrator {
   private copyReferencedRows(source: relationalStore.RdbStore,
     target: relationalStore.RdbStore, table: string,
     selectedIds: Set<string>, targetOwner: string,
-    receiptId: string): number[] {
+    receiptId: string, migrationId: string): number[] {
     const targetColumns: string[] = this.tableColumns(target, table);
     const rows: relationalStore.ResultSet =
       source.querySync(new relationalStore.RdbPredicates(table));
@@ -272,7 +373,7 @@ export class LegacySharedStoreMigrator {
       if (!selectedIds.has(id)) {
         quarantined++;
         this.writeQuarantine(target, receiptId, table, id,
-          'unreferenced_credential_owner_unknown');
+          'unreferenced_credential_owner_unknown', '', migrationId);
         continue;
       }
       const bucket: relationalStore.ValuesBucket =
@@ -308,6 +409,73 @@ export class LegacySharedStoreMigrator {
     }
     rows.close();
     return copied;
+  }
+
+  /**
+   * Carries store-scoped safety metadata (restore quarantine markers,
+   * bootstrap/barrier/checkpoint state, crypto lifecycle, migration markers)
+   * from the account-scoped store into the canonical cloud store. The four
+   * store-identity keys are excluded: they are re-derived and written by
+   * CloudStore.verifyStoreIdentity() after migration.
+   */
+  private copyLocalMetadataCarryover(source: relationalStore.RdbStore,
+    target: relationalStore.RdbStore): number {
+    if (!this.tableExists(source, 'localmetadata') ||
+      !this.tableExists(target, 'localmetadata')) {
+      return 0;
+    }
+    const targetColumns: string[] =
+      this.tableColumns(target, 'localmetadata');
+    if (targetColumns.indexOf('key') < 0 ||
+      targetColumns.indexOf('value') < 0) {
+      return 0;
+    }
+    const rows: relationalStore.ResultSet =
+      source.querySync(new relationalStore.RdbPredicates('localmetadata'));
+    let copied: number = 0;
+    while (rows.goToNextRow()) {
+      const sourceRow: relationalStore.ValuesBucket = rows.getRow();
+      const key: string = this.stringValue(sourceRow['key']);
+      if (key === '' ||
+        CARRYOVER_METADATA_EXCLUDE_KEYS.indexOf(key) >= 0) {
+        continue;
+      }
+      this.insertRow(target, 'localmetadata',
+        this.projectBucket(sourceRow, targetColumns));
+      copied++;
+    }
+    rows.close();
+    return copied;
+  }
+
+  private normalizeLegacyOwnerRows(target: relationalStore.RdbStore,
+    legacyUnionId: string, targetOwnerScopeId: string): number {
+    const unionId: string = legacyUnionId.trim();
+    if (unionId.length === 0) { return 0; }
+    const tables: string[] = [
+      'remotehosts',
+      'rdpcredentials',
+      'rustdeskrelays',
+      'sshkeys',
+      'totpentries',
+      'usersettings',
+      'vncrecords',
+      'vncrecord'
+    ];
+    let updated: number = 0;
+    for (let i = 0; i < tables.length; i++) {
+      if (!this.tableExists(target, tables[i]) ||
+        this.tableColumns(target, tables[i]).indexOf('userid') < 0) {
+        continue;
+      }
+      const predicates =
+        new relationalStore.RdbPredicates(tables[i]);
+      predicates.equalTo('userid', unionId);
+      const changed: number = target.updateSync(
+        { userid: targetOwnerScopeId }, predicates);
+      if (changed > 0) { updated += changed; }
+    }
+    return updated;
   }
 
   private copyAllRows(source: relationalStore.RdbStore,
@@ -351,7 +519,8 @@ export class LegacySharedStoreMigrator {
   }
 
   private writeMigrationJournal(target: relationalStore.RdbStore,
-    receiptId: string, selected: Map<string, Set<string>>): void {
+    receiptId: string, selected: Map<string, Set<string>>,
+    migrationId: string, operation: string): void {
     const tables: string[] = Array.from(selected.keys());
     const now: number = Date.now();
     for (let i = 0; i < tables.length; i++) {
@@ -361,7 +530,7 @@ export class LegacySharedStoreMigrator {
         id: receiptId + ':dirty:' + table,
         tablename: table,
         recordid: '__table__',
-        operation: 'legacy_migrated_not_uploaded',
+        operation,
         revision: now + i,
         createdat: now,
         updatedat: now
@@ -373,11 +542,11 @@ export class LegacySharedStoreMigrator {
   private writeReceipt(target: relationalStore.RdbStore, receiptId: string,
     scope: AccountScopeToken, sourceFingerprint: string, status: string,
     countsJson: string, errorDetail: string, startedAt: number,
-    completedAt: number): void {
+    completedAt: number, migrationId: string, sourceName: string): void {
     this.insertRow(target, RECEIPT_TABLE, {
       id: receiptId,
-      migrationid: MIGRATION_ID,
-      sourcestore: LEGACY_STORE_NAME,
+      migrationid: migrationId,
+      sourcestore: sourceName,
       sourcefingerprint: sourceFingerprint,
       targetowner: scope.ownerScopeId,
       targetstore: scope.storeIdentity,
@@ -392,12 +561,12 @@ export class LegacySharedStoreMigrator {
 
   private writeQuarantine(target: relationalStore.RdbStore,
     receiptId: string, table: string, recordId: string, reason: string,
-    payloadFingerprint: string = ''): void {
+    payloadFingerprint: string = '', migrationId: string = MIGRATION_ID): void {
     const safeId: string = recordId.length > 0 ? recordId : '__missing_id__';
     const id: string = receiptId + ':' + table + ':' + safeId + ':' + reason;
     this.insertRow(target, QUARANTINE_TABLE, {
       id,
-      migrationid: MIGRATION_ID,
+      migrationid: migrationId,
       tablename: table,
       recordid: safeId,
       reason,
