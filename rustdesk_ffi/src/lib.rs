@@ -170,7 +170,7 @@ fn pipeline_error_classification(
     if value.contains("no password access") {
         return (
             "peer_password_required",
-            "remote device requires a device password; passwordless approval was denied",
+            "remote device uses click-approval mode; a device password alone is not accepted, switch to the request-approval flow",
         );
     }
     if value.contains("id does not exist")

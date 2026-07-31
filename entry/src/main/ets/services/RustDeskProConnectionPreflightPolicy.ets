@@ -165,9 +165,11 @@ export function rustDeskProNativeErrorMessage(kind: RustDeskProNativeErrorKind,
     case 'device_password':
       return '远程 RustDesk 设备密码错误，请重新输入。';
     case 'peer_password_required':
-      return '该设备设置了访问密码，无密码的请求批准被拒绝；请改用设备密码连接。';
+      return '该设备采用点击批准安全模式，设备密码不足以单独鉴权；请改用“请求批准”，并在被控端点击“接受”。若被控端为“密码+点击”模式，还需保证设备密码正确。';
     case 'approval_timeout':
-      return authMode === 'request_approval' ? '远端未批准本次连接，请重新发起请求。' : '远端设备未提供可用密码。';
+      return authMode === 'request_approval'
+        ? '等待远端批准超时：请在被控端弹出的批准窗口点击“接受”后重试；若被控端安全模式为“仅密码”，请改用设备密码连接。'
+        : '远端设备未提供可用密码。';
     case 'relay_auth':
       return 'RustDesk 中继鉴权失败，请检查服务器 Key 和账号绑定。';
     case 'peer_missing':

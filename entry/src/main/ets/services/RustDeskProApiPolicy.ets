@@ -112,7 +112,11 @@ export function parseRustDeskProLoginResponse(payload: Object, status: number): 
   if (status !== 200) {
     let message: string;
     if (status === 400) {
-      message = 'Pro 登录请求被服务器拒绝（HTTP 400），可能因为该面板不识别扩展登录字段，已尝试官方精简登录格式';
+      const reason: string = typeof rawError === 'string'
+        ? (rawError as string) : '';
+      message = reason !== '' && reason !== 'remote_rejected'
+        ? '服务器拒绝登录（HTTP 400）：' + reason
+        : 'Pro 登录请求被服务器拒绝（HTTP 400）';
     } else if (status === 401 || status === 403) {
       message = '用户名、密码或服务端认证策略拒绝登录（HTTP ' +
         status.toString() + '）';

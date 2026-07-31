@@ -162,8 +162,12 @@ export class RustDeskProApiService {
       }
       if (response.responseCode < 200 ||
         response.responseCode >= 300) {
+        const reason: string =
+          typeof rawResult === 'string' && (rawResult as string).length > 0
+            ? extractServerRejectionReason(rawResult as string)
+            : 'remote_rejected';
         const errorPayload: RustDeskProErrorPayload = {
-          error: 'remote_rejected'
+          error: reason
         };
         payload = errorPayload as Object;
       }

@@ -590,17 +590,28 @@ impl Session {
                     if resp.has_error() {
                         let err = resp.get_error().to_string();
                         if err == NO_PASSWORD_ACCESS {
-                            // 被控端设置了设备密码访问，明确拒绝空密码
-                            // （包括“请求批准”）。官方客户端此时立即报错，
-                            // 无限等待只会让 UI 一直转圈直到超时。
+                            // 官方被控端语义：approve_mode 为“点击批准(Click)”
+                            // 或“密码+点击(Both)”时，即使设置了设备密码，空密码
+                            // 的批准请求也会先返回 No Password Access，同时弹出
+                            // 批准框并保持连接存活（server/connection.rs
+                            // return true），直到被控端用户点击“接受”后才发送
+                            // LoginResponse OK。因此这里必须继续等待，不能当终态。
+                            // 官方 viewer 对该串的映射也是 wait-remote-accept-nook
+                            // （“请等待远端接受你的会话请求”）。仅在 90s 超时后
+                            // 才按“远端未批准”失败，避免 UI 无限转圈。
+                            if request_approval {
+                                self.state = SessionState::WaitingRemoteApproval;
+                                last_variant = "no_password_access".to_string();
+                                deadline = Instant::now() + APPROVAL_TIMEOUT;
+                                continue;
+                            }
+                            // 非批准模式（密码连接）收到该串：被控端是点击批准
+                            // 模式，密码本身不参与鉴权，必须改用“请求批准”流程。
                             self.state = SessionState::Error(err.clone());
                             last_variant = "no_password_access".to_string();
                             break Err(io::Error::new(
                                 io::ErrorKind::PermissionDenied,
-                                format!(
-                                    "{}",
-                                    err
-                                ),
+                                format!("{}", err),
                             ));
                         }
                         if err == REQUIRE_2FA {
