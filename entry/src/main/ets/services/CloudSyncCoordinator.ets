@@ -827,11 +827,35 @@ export class CloudSyncCoordinator {
   }
 
   requestManualUpload(): Promise<CloudSyncOperationResult> {
-    const request: CloudSyncRequest = this.makeRequest('manualUpload', 'nativeFirst');
+    const base: CloudSyncRequest = this.makeRequest('manualUpload', 'nativeFirst');
     if (!this.transfersEnabled || !this.automaticUploadAllowed()) {
-      return Promise.resolve(this.rejectedResult(request, 'cloud_service'));
+      return Promise.resolve(this.rejectedResult(base, 'cloud_service'));
     }
-    const includeVnc: boolean = this.vncPhysicalTableSelected();
+    // Tables behind a pending selection re-enable barrier must complete their
+    // cloud-first closed loop before any native-first upload. Skip them here
+    // so one stuck table (e.g. vncrecord with an AGC-side schema problem)
+    // cannot freeze every other table's manual upload.
+    const tables: string[] = base.tables.filter(
+      (table: string): boolean =>
+        !this.selectionReenableBlocked(table));
+    const includeVnc: boolean = this.vncPhysicalTableSelected() &&
+      !this.selectionReenableBlocked(VNC_CLOUD_TABLE);
+    const request: CloudSyncRequest = {
+      source: 'manualUpload',
+      direction: 'nativeFirst',
+      tables
+    };
+    if (tables.length === 0 && !includeVnc) {
+      const allBlocked: CloudSyncOperationResult = {
+        ok: false,
+        source: 'manualUpload',
+        tables: [],
+        failedTables: base.tables.slice(),
+        rollbackFailed: false,
+        failureKind: 'unknown'
+      };
+      return Promise.resolve(allBlocked);
+    }
     const versions: Record<string, number> = {};
     for (let i = 0; i < request.tables.length; i++) {
       versions[request.tables[i]] = this.automaticMutationVersions[request.tables[i]] || 0;

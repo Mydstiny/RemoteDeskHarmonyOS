@@ -1511,9 +1511,14 @@ export class CloudStore implements CryptoCloudStore {
     if (snapshot.readable) {
       const tables: string[] = Object.keys(snapshot.barriers);
       if (tables.length > 0) {
+        const vncBlocked: boolean =
+          tables.indexOf(VNC_CLOUD_TABLE) >= 0;
+        if (vncBlocked && tables.length === 1) {
+          return 'VNC 云表存在待完成的首次云端核对，上传已暂停；请先在 VNC 云同步设置中完成该表的首次核对（云端表结构异常时，修复 AGC vncrecord 表后重新保存范围即可恢复）';
+        }
         return '同步范围存在待完成的云端优先核对（' +
           tables.join(',') +
-          '），请重启应用并重新登录完成首次同步后再上传';
+          '），请先在对应设置中完成首次同步后再上传';
       }
     }
     return '';
