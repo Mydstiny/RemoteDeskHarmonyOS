@@ -4,6 +4,15 @@ Updated: 2026-07-30 Asia/Shanghai
 
 ## Now
 
+- Cloud store-name root fix is committed on local `main` (`961b698` source,
+  `3c8aa76` tests, `88e0ff3` import fix). Verified huawei_account scopes open
+  the canonical `remotedesktop.db` cloud store; unverified/device-local scopes
+  stay local-only and fail-closed; account-scope → canonical migration is
+  ownership-checked with tombstone, crypto and metadata carryover. Both Hvigor
+  gates, Light and diff checks pass. Pending: real API 23 install + cloud
+  matrix on the reconnected device, AGC `vncrecord` dedup primary key, and
+  removal of any leftover diagnostic instrumentation before release.
+
 - RustDesk login/control-plane/relay-save v3 hotfix is locally complete and
   fast-forward merged into local `main` at `53afa3bea` (branch
   `codex/rustdesk-control-plane-v3` deleted). The closure covers: structured

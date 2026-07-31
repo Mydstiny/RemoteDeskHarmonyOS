@@ -2,6 +2,23 @@
 
 Updated: 2026-07-30 Asia/Shanghai
 
+## Cloud store-name root fix handoff (2026-07-31)
+
+- Commits on local `main`: `961b698` (canonical store binding + account-scope
+  migration), `3c8aa76` (policy tests), `88e0ff3` (import fix), plus
+  `f14e034` docs checkpoint (user-owned upgrade plans preserved).
+- 14800000 root cause and fix are recorded in CURRENT.md; the platform
+  constraint is D-008 in DECISIONS.md.
+- Verified: `default@OhosTestCompileArkTS` and signed `assembleHap` BUILD
+  SUCCESSFUL (non-daemon), Light compliance PASS, `git diff --check` PASS.
+- Next device step: install the signed HAP on the reconnected MatePad,
+  log in with the Huawei account, confirm the canonical store registers the
+  eight cloud tables, cloud-first pull completes, and the 13 hosts appear;
+  then test second-device pull/push and account-switch isolation. hdc was
+  offline (`Connect server failed`) at handoff.
+- Do not push/PR/merge remote until the on-device matrix and AGC `vncrecord`
+  dedup primary key are resolved.
+
 ## Completed RustDesk control-plane v3 handoff
 
 - Branch `codex/rustdesk-control-plane-v3` was based on the authorized local

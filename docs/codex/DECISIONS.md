@@ -28,6 +28,25 @@ Only durable engineering conclusions are rewritten into `docs/codex`. Do not com
 
 Before changing ArkTS or HarmonyOS APIs, search the local API 23 reference documentation. Do not import `@kit.uiMaterial` or other API 26-only facilities; use API 23-compatible UIDesignKit/HDS or native alternatives. ArkTS strict mode requires declared interfaces/types, avoids `any`/`unknown` in the affected patterns, and uses bracket indexing for dynamic object keys.
 
+## D-008 - RDB cloud sync binds to the AGC store id, not the app account
+
+OpenHarmony RDB cloud sync registers distributed tables against the local
+store id (`StoreConfig.name` minus `.db`), and the AGC cloud schema
+`database.name` must equal that store id (`rdb_schema_config` matches
+`schema.name == storeName`; `RdbGeneralStore::SetDistributedTables` returns
+14800000 when `CreateDistributedTable` fails). The AGC schema is deployed per
+OS user/bundle and cannot contain per-account database names, so per-account
+physical stores (`remotedesktop_owner-<sha>.db`) can never sync cloud data.
+Consequences:
+- Exactly one canonical cloud store (`remotedesktop.db`) exists per OS user;
+  only an account whose platform cloud identity is verified opens it.
+- Unverified accounts and device-local scopes use local-only stores
+  (`remotedesktop_owner-<sha>.db` / `remotedesktop_device_local.db`) with cloud
+  fail-closed; cloud isolation across accounts relies on the OS Huawei account
+  dimension, not on app-level store names.
+- In-app account switching to a different OS Huawei account falls back to the
+  local hashed store; it never reads the previous account's canonical store.
+
 ## D-008 - Toolchains are machine-local and ABI-explicit
 
 Windows and macOS each configure their own DevEco SDK, native SDK, LLVM/CMake/Ninja, Node/Hvigor/ohpm, Rust/Cargo targets, linker, sysroot and private signing inputs. Do not migrate caches or assume a path from the other OS. OHOS Rust builds must select `aarch64-unknown-linux-ohos` or `x86_64-unknown-linux-ohos` with the matching Clang target and sysroot.

@@ -2,6 +2,39 @@
 
 Updated: 2026-07-31 Asia/Shanghai
 
+## Current cloud store-name root fix (2026-07-31, local main)
+
+- Root cause of `setDistributedTables` 14800000: OpenHarmony RDB cloud sync
+  requires the local store id (StoreConfig.name without `.db`) to equal the
+  AGC cloud schema `database.name`. 1.0.7/1.0.8 both opened `remotedesktop.db`
+  (verified from the released HAP abc bytecode; no account-scope code in
+  either), while the 1.0.9/1.0.10 account-scope physical store
+  `remotedesktop_owner-<sha256>.db` has no matching AGC cloud database, so
+  `CreateDistributedTable` fails and every registration attempt returns
+  14800000 even for single-table probes.
+- Fix on local `main` (commits `961b698`, `3c8aa76`, `88e0ff3`):
+  - Verified huawei_account scopes now open the canonical cloud store
+    `remotedesktop.db`; unverified accounts keep local-only hashed stores and
+    device-local stays `remotedesktop_device_local.db`, all cloud transfer
+    fail-closed (`bound` only).
+  - `LegacySharedStoreMigrator` gained an account-scope source kind:
+    ownership-checked row copy, tombstone deletions (deleted hosts cannot
+    resurrect), crypto single-owner gate, localmetadata safety carryover
+    (barriers/checkpoints/restore quarantine), and legacy unionID → ownerScope
+    normalization; legacy self-migration is skipped when source==target.
+  - Canonical store admission control falls back to the local hashed store
+    when the canonical store belongs to a different account on the same OS
+    user (privacy preserved, cloud stays off for that scope).
+  - Diagnostic `probeCloudRegistrationSubsets` removed before release.
+- Verification on `88e0ff3`: `default@OhosTestCompileArkTS` BUILD SUCCESSFUL,
+  signed `assembleHap` BUILD SUCCESSFUL (both non-daemon), Light
+  open-source-compliance PASS, `git diff --check` PASS. Policy tests updated
+  for canonical/hashed store selection and account-scope migration policy.
+- External blockers remain: real API 23 device re-test after install
+  (hdc offline at closure), and AGC `vncrecord` table has no dedup primary key
+  (user-confirmed; does not block registration, but conflict/dedup semantics
+  on the cloud table should be fixed in AGC console).
+
 ## Current RustDesk login/relay-save closure (2026-07-31, merged to local main)
 
 - Branch `codex/rustdesk-control-plane-v3` was fast-forward merged into local
