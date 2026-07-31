@@ -2189,17 +2189,29 @@ export class CloudStore implements CryptoCloudStore {
       const encodedEnvelope: string =
         envelope === null
           ? '' : JSON.stringify(envelope);
-      if (envelope === null ||
-        !this.writeLocalMetadata(
-          CLOUD_DOWNLOAD_TRANSACTION_KEY,
-          encodedEnvelope) ||
-        !this.localMetadataValueMatches(
-          CLOUD_DOWNLOAD_TRANSACTION_KEY,
-          encodedEnvelope)) {
+      if (envelope === null) {
         throw new Error(
-          'cloud download transaction persistence failed');
+          'cloud download before-image envelope unavailable');
+      }
+      if (!this.writeLocalMetadata(
+        CLOUD_DOWNLOAD_TRANSACTION_KEY,
+        encodedEnvelope)) {
+        throw new Error(
+          'cloud download transaction metadata write failed');
       }
       this.store.commit();
+      // Real-device OpenHarmony RDB does not expose uncommitted writes to a
+      // subsequent querySync on the same store, so the read-back verification
+      // must run after commit. A verification failure removes the row and
+      // fails the transaction (the in-memory snapshots are discarded).
+      if (!this.localMetadataValueMatches(
+        CLOUD_DOWNLOAD_TRANSACTION_KEY,
+        encodedEnvelope)) {
+        this.deleteLocalMetadata(
+          CLOUD_DOWNLOAD_TRANSACTION_KEY);
+        throw new Error(
+          'cloud download transaction persistence verification failed');
+      }
       this.cloudDownloadCheckpointOperation = operation;
       return true;
     } catch (err) {

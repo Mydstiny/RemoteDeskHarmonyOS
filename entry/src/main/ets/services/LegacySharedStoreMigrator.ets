@@ -102,7 +102,10 @@ export class LegacySharedStoreMigrator {
     if (targetStoreName.length > 0 && sourceName === targetStoreName) {
       return empty;
     }
-    const path: string = context.databaseDir + '/' + sourceName;
+    // RDB stores live under <databaseDir>/rdb/ on HarmonyOS. context.databaseDir
+    // itself is <...>/database/<bundle>/<module>, so the missing "/rdb/" segment
+    // made every existence check fail and silently skipped the migration.
+    const path: string = context.databaseDir + '/rdb/' + sourceName;
     if (!fileIo.accessSync(path)) { return empty; }
     const receiptId: string = migrationId + ':' + scope.ownerScopeId;
     if (this.receiptCommitted(target, receiptId)) {
