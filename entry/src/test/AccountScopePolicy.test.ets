@@ -2,6 +2,7 @@ import { describe, it, expect } from '@ohos/hypium';
 import {
   accountSessionLease,
   accountSessionLeaseEquals,
+  accountCloudStoreIdentity,
   accountScopeToken,
   accountStoreIdentity,
   cloudAccountBindingForScope,
@@ -14,6 +15,7 @@ import {
   verifyAccountScopeCloudBinding
 } from '../main/ets/services/AccountScopePolicy';
 import { UserAccount } from '../main/ets/model/UserAccount';
+import { cloudTransferAllowed } from '../main/ets/services/CloudLifecycleSafetyPolicy';
 import {
   PlatformCloudIdentityProof,
   platformCloudIdentityProofFromApi23,
@@ -50,7 +52,7 @@ export default function accountScopePolicyTest(): void {
         platformProof();
       const account = accountScopeToken(
         'union-a', 2, 'bound', 'validating',
-        proof.fingerprint);
+        proof);
       expect(account === null).assertFalse();
       if (account === null) { return; }
       expect(local.storeIdentity === account.storeIdentity).assertFalse();
@@ -66,7 +68,7 @@ export default function accountScopePolicyTest(): void {
         platformProof();
       const account = accountScopeToken(
         'union-a', 2, 'bound', 'validating',
-        proof.fingerprint);
+        proof);
       expect(account === null).assertFalse();
       if (account === null) { return; }
       const bound = verifyAccountScopeCloudBinding(
@@ -86,7 +88,7 @@ export default function accountScopePolicyTest(): void {
 
       const forgedStore = accountScopeToken(
         'union-a', 3, 'bound', 'validating',
-        proof.fingerprint);
+        proof);
       expect(forgedStore === null).assertFalse();
       if (forgedStore === null) { return; }
       forgedStore.storeIdentity = 'remotedesktop_owner-forged.db';
@@ -94,14 +96,71 @@ export default function accountScopePolicyTest(): void {
         forgedStore, 'union-a',
         proof).cloudBindingState).assertEqual('blocked');
 
+      // A canonical store opened without a valid platform proof (or with a
+      // proof from another account) stays locally usable; only cloud transfer
+      // remains fail-closed.
       expect(verifyAccountScopeCloudBinding(
         account, 'union-a',
         unavailablePlatformCloudIdentityProof())
-        .cloudBindingState).assertEqual('blocked');
+        .cloudBindingState).assertEqual('validating');
       expect(verifyAccountScopeCloudBinding(
         account, 'union-a',
         platformProof('union-b'))
-        .cloudBindingState).assertEqual('blocked');
+        .cloudBindingState).assertEqual('validating');
+    });
+
+    it('verified_account_targets_the_canonical_cloud_store', 0, (): void => {
+      const proof: PlatformCloudIdentityProof =
+        platformProof();
+      const account = accountScopeToken(
+        'union-a', 5, 'bound', 'validating', proof);
+      expect(account === null).assertFalse();
+      if (account === null) { return; }
+      // AGC cloud binding requires storeId == database.name (`remotedesktop`),
+      // so a verified account must open exactly the canonical cloud store.
+      expect(account.storeIdentity).assertEqual('remotedesktop.db');
+      expect(accountCloudStoreIdentity()).assertEqual('remotedesktop.db');
+      expect(account.storeIdentity ===
+        accountStoreIdentity(account.ownerScopeId)).assertFalse();
+      const bound = verifyAccountScopeCloudBinding(
+        account, 'union-a', proof);
+      expect(bound.cloudBindingState).assertEqual('bound');
+      expect(bound.storeIdentity).assertEqual('remotedesktop.db');
+      expect(cloudAccountBindingForScope(bound).storeIdentity)
+        .assertEqual('remotedesktop.db');
+    });
+
+    it('unverified_account_keeps_local_only_hashed_store', 0, (): void => {
+      const account = accountScopeToken(
+        'union-a', 6, 'bound', 'validating',
+        unavailablePlatformCloudIdentityProof());
+      expect(account === null).assertFalse();
+      if (account === null) { return; }
+      const hashed: string =
+        accountStoreIdentity(account.ownerScopeId);
+      expect(account.storeIdentity).assertEqual(hashed);
+      expect(account.storeIdentity === 'remotedesktop.db').assertFalse();
+      const local = verifyAccountScopeCloudBinding(
+        account, 'union-a',
+        unavailablePlatformCloudIdentityProof());
+      expect(local.cloudBindingState).assertEqual('validating');
+      expect(cloudTransferAllowed(
+        cloudAccountBindingForScope(local))).assertFalse();
+    });
+
+    it('hashed_local_only_scope_can_never_promote_to_cloud', 0, (): void => {
+      const account = accountScopeToken(
+        'union-a', 8, 'bound', 'validating',
+        unavailablePlatformCloudIdentityProof());
+      expect(account === null).assertFalse();
+      if (account === null) { return; }
+      // Even a later valid proof cannot turn a hashed local-only store into a
+      // cloud-bound store; the physical store id must equal the AGC schema.
+      const bound = verifyAccountScopeCloudBinding(
+        account, 'union-a', platformProof());
+      expect(bound.cloudBindingState).assertEqual('validating');
+      expect(cloudTransferAllowed(
+        cloudAccountBindingForScope(bound))).assertFalse();
     });
 
     it('never_promotes_device_local_data_to_account_cloud', 0, (): void => {
@@ -132,7 +191,7 @@ export default function accountScopePolicyTest(): void {
         platformProof();
       const scope = accountScopeToken(
         'union-a', 7, 'bound', 'validating',
-        proof.fingerprint);
+        proof);
       expect(scope === null).assertFalse();
       if (scope === null) { return; }
       const first = accountSessionLease(scope, 11);

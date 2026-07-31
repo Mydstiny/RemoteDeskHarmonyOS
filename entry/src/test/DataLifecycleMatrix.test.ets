@@ -122,7 +122,7 @@ export default function dataLifecycleMatrixTest(): void {
             'union-a', true);
         const candidate = accountScopeToken(
           'union-a', 2, 'bound', 'validating',
-          proof.fingerprint);
+          proof);
         expect(candidate !== null).assertTrue();
         if (candidate === null) { return; }
         expect(cloudTransferAllowed(

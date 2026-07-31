@@ -1,5 +1,7 @@
 import { describe, expect, it } from '@ohos/hypium';
 import {
+  accountScopedCryptoParamsMayMigrate,
+  accountScopedRowOwnershipDecision,
   legacyCryptoParamsMayMigrate,
   legacyRowOwnershipDecision,
   legacyVncRowMigrationDecision
@@ -45,6 +47,33 @@ export default function legacySharedStoreMigrationPolicyTest(): void {
         expect(legacyVncRowMigrationDecision(
           'union-a', 'union-a', 3, 3, false))
           .assertEqual('quarantine_invalid_payload');
+      });
+
+    it('account_scoped_rows_follow_exact_owner_scope_binding', 0, (): void => {
+      expect(accountScopedRowOwnershipDecision('', 'owner-a'))
+        .assertEqual('quarantine_missing_owner');
+      expect(accountScopedRowOwnershipDecision('owner-a', 'owner-a'))
+        .assertEqual('target');
+      expect(accountScopedRowOwnershipDecision(' owner-a ', 'owner-a'))
+        .assertEqual('target');
+      expect(accountScopedRowOwnershipDecision('owner-b', 'owner-a'))
+        .assertEqual('other_owner');
+      expect(accountScopedRowOwnershipDecision('union-a', 'owner-a'))
+        .assertEqual('other_owner');
+    });
+
+    it('account_scoped_crypto_requires_a_single_matching_owner_scope', 0,
+      (): void => {
+        expect(accountScopedCryptoParamsMayMigrate(
+          ['owner-a'], 'owner-a')).assertTrue();
+        expect(accountScopedCryptoParamsMayMigrate(
+          [], 'owner-a')).assertFalse();
+        expect(accountScopedCryptoParamsMayMigrate(
+          ['local', 'owner-a'], 'owner-a')).assertTrue();
+        expect(accountScopedCryptoParamsMayMigrate(
+          ['owner-a', 'owner-b'], 'owner-a')).assertFalse();
+        expect(accountScopedCryptoParamsMayMigrate(
+          ['owner-b'], 'owner-a')).assertFalse();
       });
   });
 }
