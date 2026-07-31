@@ -1,0 +1,1391 @@
+{
+ "bundleName": "com.example.remotedesktop",
+ "metaVersion": 65537,
+ "version": 23,
+ "e2eeEnable": false,
+ "databases": [
+  {
+   "name": "remotedesktop",
+   "alias": "remotedesktop",
+   "version": 23,
+   "tables": [
+    {
+     "name": "cryptoparams",
+     "alias": "cryptoparams",
+     "fields": [
+      {
+       "colName": "id",
+       "alias": "id",
+       "type": 3,
+       "primary": true,
+       "nullable": true
+      },
+      {
+       "colName": "key",
+       "alias": "key",
+       "type": 3,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "value",
+       "alias": "value",
+       "type": 3,
+       "primary": false,
+       "nullable": true
+      }
+     ],
+     "deviceSyncFields": [
+      "id",
+      "key",
+      "value"
+     ],
+     "cloudSyncFields": [
+      "id",
+      "key",
+      "value"
+     ]
+    },
+    {
+     "name": "usersettings",
+     "alias": "usersettings",
+     "fields": [
+      {
+       "colName": "id",
+       "alias": "id",
+       "type": 3,
+       "primary": true,
+       "nullable": true
+      },
+      {
+       "colName": "userid",
+       "alias": "userid",
+       "type": 3,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "key",
+       "alias": "key",
+       "type": 3,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "value",
+       "alias": "value",
+       "type": 3,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "payload",
+       "alias": "payload",
+       "type": 3,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "schemaversion",
+       "alias": "schemaversion",
+       "type": 1,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "updatedat",
+       "alias": "updatedat",
+       "type": 1,
+       "primary": false,
+       "nullable": true
+      }
+     ],
+     "deviceSyncFields": [
+      "id",
+      "userid",
+      "key",
+      "value",
+      "payload",
+      "schemaversion",
+      "updatedat"
+     ],
+     "cloudSyncFields": [
+      "id",
+      "userid",
+      "key",
+      "value",
+      "payload",
+      "schemaversion",
+      "updatedat"
+     ]
+    },
+    {
+     "name": "remotehosts",
+     "alias": "remotehosts",
+     "fields": [
+      {
+       "colName": "id",
+       "alias": "id",
+       "type": 3,
+       "primary": true,
+       "nullable": true
+      },
+      {
+       "colName": "userid",
+       "alias": "userid",
+       "type": 3,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "label",
+       "alias": "label",
+       "type": 3,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "protocol",
+       "alias": "protocol",
+       "type": 3,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "host",
+       "alias": "host",
+       "type": 3,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "port",
+       "alias": "port",
+       "type": 1,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "username",
+       "alias": "username",
+       "type": 3,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "password",
+       "alias": "password",
+       "type": 3,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "passward",
+       "alias": "passward",
+       "type": 3,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "customhostname",
+       "alias": "customhostname",
+       "type": 3,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "sshusekey",
+       "alias": "sshusekey",
+       "type": 1,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "sshkeypath",
+       "alias": "sshkeypath",
+       "type": 3,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "sshkeydata",
+       "alias": "sshkeydata",
+       "type": 3,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "sshkeypassphrase",
+       "alias": "sshkeypassphrase",
+       "type": 3,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "sshkeyid",
+       "alias": "sshkeyid",
+       "type": 3,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "sshhostkeyalgorithm",
+       "alias": "sshhostkeyalgorithm",
+       "type": 3,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "sshhostkeyfingerprintsha256",
+       "alias": "sshhostkeyfingerprintsha256",
+       "type": 3,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "sshhostkeyrawbase64",
+       "alias": "sshhostkeyrawbase64",
+       "type": 3,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "sshhostkeytrustedat",
+       "alias": "sshhostkeytrustedat",
+       "type": 1,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "sshhostkeytrustmode",
+       "alias": "sshhostkeytrustmode",
+       "type": 1,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "rdpcertificatefingerprintsha256",
+       "alias": "rdpcertificatefingerprintsha256",
+       "type": 3,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "rdpcertificatesubject",
+       "alias": "rdpcertificatesubject",
+       "type": 3,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "rdpcertificateissuer",
+       "alias": "rdpcertificateissuer",
+       "type": 3,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "rdpcertificatecommonname",
+       "alias": "rdpcertificatecommonname",
+       "type": 3,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "rdpcertificatetrustedat",
+       "alias": "rdpcertificatetrustedat",
+       "type": 1,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "rdpcertificatetrustmode",
+       "alias": "rdpcertificatetrustmode",
+       "type": 1,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "rdpcertificateallowuntrustedroot",
+       "alias": "rdpcertificateallowuntrustedroot",
+       "type": 1,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "rdpcertificateallowhostmismatch",
+       "alias": "rdpcertificateallowhostmismatch",
+       "type": 1,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "proxyhost",
+       "alias": "proxyhost",
+       "type": 3,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "proxyport",
+       "alias": "proxyport",
+       "type": 1,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "proxyusername",
+       "alias": "proxyusername",
+       "type": 3,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "gatewayhost",
+       "alias": "gatewayhost",
+       "type": 3,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "gatewayport",
+       "alias": "gatewayport",
+       "type": 1,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "displayconfig",
+       "alias": "displayconfig",
+       "type": 3,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "locked",
+       "alias": "locked",
+       "type": 1,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "locktype",
+       "alias": "locktype",
+       "type": 1,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "isfavorite",
+       "alias": "isfavorite",
+       "type": 1,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "groupid",
+       "alias": "groupid",
+       "type": 3,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "sortorder",
+       "alias": "sortorder",
+       "type": 1,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "icon",
+       "alias": "icon",
+       "type": 3,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "lastconnected",
+       "alias": "lastconnected",
+       "type": 1,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "lasthealth",
+       "alias": "lasthealth",
+       "type": 1,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "lastlatency",
+       "alias": "lastlatency",
+       "type": 1,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "syncversion",
+       "alias": "syncversion",
+       "type": 1,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "rustdeskrelayid",
+       "alias": "rustdeskrelayid",
+       "type": 3,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "rustdeskaccountid",
+       "alias": "rustdeskaccountid",
+       "type": 3,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "rustdeskpasswordmode",
+       "alias": "rustdeskpasswordmode",
+       "type": 1,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "rustdeskauthmode",
+       "alias": "rustdeskauthmode",
+       "type": 3,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "rustdeskdirectenabled",
+       "alias": "rustdeskdirectenabled",
+       "type": 1,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "rustdeskdirecthost",
+       "alias": "rustdeskdirecthost",
+       "type": 3,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "rustdeskdirectport",
+       "alias": "rustdeskdirectport",
+       "type": 1,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "rdpcredentialid",
+       "alias": "rdpcredentialid",
+       "type": 3,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "sourcetype",
+       "alias": "sourcetype",
+       "type": 3,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "rustdeskproaccountid",
+       "alias": "rustdeskproaccountid",
+       "type": 3,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "rustdeskpropeerid",
+       "alias": "rustdeskpropeerid",
+       "type": 3,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "rustdeskproplatform",
+       "alias": "rustdeskproplatform",
+       "type": 3,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "rustdeskpromanaged",
+       "alias": "rustdeskpromanaged",
+       "type": 1,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "rustdeskprolastseenat",
+       "alias": "rustdeskprolastseenat",
+       "type": 1,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "rustdeskprosyncerror",
+       "alias": "rustdeskprosyncerror",
+       "type": 3,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "createdat",
+       "alias": "createdat",
+       "type": 1,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "updatedat",
+       "alias": "updatedat",
+       "type": 1,
+       "primary": false,
+       "nullable": true
+      }
+     ],
+     "deviceSyncFields": [
+      "id",
+      "userid",
+      "label",
+      "protocol",
+      "host",
+      "port",
+      "username",
+      "password",
+      "passward",
+      "customhostname",
+      "sshusekey",
+      "sshkeypath",
+      "sshkeydata",
+      "sshkeypassphrase",
+      "sshkeyid",
+      "sshhostkeyalgorithm",
+      "sshhostkeyfingerprintsha256",
+      "sshhostkeyrawbase64",
+      "sshhostkeytrustedat",
+      "sshhostkeytrustmode",
+      "rdpcertificatefingerprintsha256",
+      "rdpcertificatesubject",
+      "rdpcertificateissuer",
+      "rdpcertificatecommonname",
+      "rdpcertificatetrustedat",
+      "rdpcertificatetrustmode",
+      "rdpcertificateallowuntrustedroot",
+      "rdpcertificateallowhostmismatch",
+      "proxyhost",
+      "proxyport",
+      "proxyusername",
+      "gatewayhost",
+      "gatewayport",
+      "displayconfig",
+      "locked",
+      "locktype",
+      "isfavorite",
+      "groupid",
+      "sortorder",
+      "icon",
+      "lastconnected",
+      "lasthealth",
+      "lastlatency",
+      "syncversion",
+      "rustdeskrelayid",
+      "rustdeskaccountid",
+      "rustdeskpasswordmode",
+      "rustdeskauthmode",
+      "rustdeskdirectenabled",
+      "rustdeskdirecthost",
+      "rustdeskdirectport",
+      "rdpcredentialid",
+      "sourcetype",
+      "rustdeskproaccountid",
+      "rustdeskpropeerid",
+      "rustdeskproplatform",
+      "rustdeskpromanaged",
+      "rustdeskprolastseenat",
+      "rustdeskprosyncerror",
+      "createdat",
+      "updatedat"
+     ],
+     "cloudSyncFields": [
+      "id",
+      "userid",
+      "label",
+      "protocol",
+      "host",
+      "port",
+      "username",
+      "password",
+      "passward",
+      "customhostname",
+      "sshusekey",
+      "sshkeypath",
+      "sshkeydata",
+      "sshkeypassphrase",
+      "sshkeyid",
+      "sshhostkeyalgorithm",
+      "sshhostkeyfingerprintsha256",
+      "sshhostkeyrawbase64",
+      "sshhostkeytrustedat",
+      "sshhostkeytrustmode",
+      "rdpcertificatefingerprintsha256",
+      "rdpcertificatesubject",
+      "rdpcertificateissuer",
+      "rdpcertificatecommonname",
+      "rdpcertificatetrustedat",
+      "rdpcertificatetrustmode",
+      "rdpcertificateallowuntrustedroot",
+      "rdpcertificateallowhostmismatch",
+      "proxyhost",
+      "proxyport",
+      "proxyusername",
+      "gatewayhost",
+      "gatewayport",
+      "displayconfig",
+      "locked",
+      "locktype",
+      "isfavorite",
+      "groupid",
+      "sortorder",
+      "icon",
+      "lastconnected",
+      "lasthealth",
+      "lastlatency",
+      "syncversion",
+      "rustdeskrelayid",
+      "rustdeskaccountid",
+      "rustdeskpasswordmode",
+      "rustdeskauthmode",
+      "rustdeskdirectenabled",
+      "rustdeskdirecthost",
+      "rustdeskdirectport",
+      "rdpcredentialid",
+      "sourcetype",
+      "rustdeskproaccountid",
+      "rustdeskpropeerid",
+      "rustdeskproplatform",
+      "rustdeskpromanaged",
+      "rustdeskprolastseenat",
+      "rustdeskprosyncerror",
+      "createdat",
+      "updatedat"
+     ]
+    },
+    {
+     "name": "rdpcredentials",
+     "alias": "rdpcredentials",
+     "fields": [
+      {
+       "colName": "id",
+       "alias": "id",
+       "type": 3,
+       "primary": true,
+       "nullable": true
+      },
+      {
+       "colName": "userid",
+       "alias": "userid",
+       "type": 3,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "label",
+       "alias": "label",
+       "type": 3,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "username",
+       "alias": "username",
+       "type": 3,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "password",
+       "alias": "password",
+       "type": 3,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "createdat",
+       "alias": "createdat",
+       "type": 1,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "updatedat",
+       "alias": "updatedat",
+       "type": 1,
+       "primary": false,
+       "nullable": true
+      }
+     ],
+     "deviceSyncFields": [
+      "id",
+      "userid",
+      "label",
+      "username",
+      "password",
+      "createdat",
+      "updatedat"
+     ],
+     "cloudSyncFields": [
+      "id",
+      "userid",
+      "label",
+      "username",
+      "password",
+      "createdat",
+      "updatedat"
+     ]
+    },
+    {
+     "name": "sshkeys",
+     "alias": "sshkeys",
+     "fields": [
+      {
+       "colName": "id",
+       "alias": "id",
+       "type": 3,
+       "primary": true,
+       "nullable": true
+      },
+      {
+       "colName": "userid",
+       "alias": "userid",
+       "type": 3,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "label",
+       "alias": "label",
+       "type": 3,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "keytype",
+       "alias": "keytype",
+       "type": 1,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "publickey",
+       "alias": "publickey",
+       "type": 3,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "privatekey",
+       "alias": "privatekey",
+       "type": 3,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "fingerprint",
+       "alias": "fingerprint",
+       "type": 3,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "comment",
+       "alias": "comment",
+       "type": 3,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "locked",
+       "alias": "locked",
+       "type": 1,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "locktype",
+       "alias": "locktype",
+       "type": 1,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "syncversion",
+       "alias": "syncversion",
+       "type": 1,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "createdat",
+       "alias": "createdat",
+       "type": 1,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "updatedat",
+       "alias": "updatedat",
+       "type": 1,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "formatversion",
+       "alias": "formatversion",
+       "type": 1,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "privatekeyencrypted",
+       "alias": "privatekeyencrypted",
+       "type": 1,
+       "primary": false,
+       "nullable": true
+      }
+     ],
+     "deviceSyncFields": [
+      "id",
+      "userid",
+      "label",
+      "keytype",
+      "publickey",
+      "privatekey",
+      "fingerprint",
+      "comment",
+      "locked",
+      "locktype",
+      "syncversion",
+      "createdat",
+      "updatedat",
+      "formatversion",
+      "privatekeyencrypted"
+     ],
+     "cloudSyncFields": [
+      "id",
+      "userid",
+      "label",
+      "keytype",
+      "publickey",
+      "privatekey",
+      "fingerprint",
+      "comment",
+      "locked",
+      "locktype",
+      "syncversion",
+      "createdat",
+      "updatedat",
+      "formatversion",
+      "privatekeyencrypted"
+     ]
+    },
+    {
+     "name": "totpentries",
+     "alias": "totpentries",
+     "fields": [
+      {
+       "colName": "id",
+       "alias": "id",
+       "type": 3,
+       "primary": true,
+       "nullable": true
+      },
+      {
+       "colName": "userid",
+       "alias": "userid",
+       "type": 3,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "issuer",
+       "alias": "issuer",
+       "type": 3,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "account",
+       "alias": "account",
+       "type": 3,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "secret",
+       "alias": "secret",
+       "type": 3,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "algorithm",
+       "alias": "algorithm",
+       "type": 1,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "digits",
+       "alias": "digits",
+       "type": 1,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "period",
+       "alias": "period",
+       "type": 1,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "iconurl",
+       "alias": "iconurl",
+       "type": 3,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "locked",
+       "alias": "locked",
+       "type": 1,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "locktype",
+       "alias": "locktype",
+       "type": 1,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "syncversion",
+       "alias": "syncversion",
+       "type": 1,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "createdat",
+       "alias": "createdat",
+       "type": 1,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "updatedat",
+       "alias": "updatedat",
+       "type": 1,
+       "primary": false,
+       "nullable": true
+      }
+     ],
+     "deviceSyncFields": [
+      "id",
+      "userid",
+      "issuer",
+      "account",
+      "secret",
+      "algorithm",
+      "digits",
+      "period",
+      "iconurl",
+      "locked",
+      "locktype",
+      "syncversion",
+      "createdat",
+      "updatedat"
+     ],
+     "cloudSyncFields": [
+      "id",
+      "userid",
+      "issuer",
+      "account",
+      "secret",
+      "algorithm",
+      "digits",
+      "period",
+      "iconurl",
+      "locked",
+      "locktype",
+      "syncversion",
+      "createdat",
+      "updatedat"
+     ]
+    },
+    {
+     "name": "rustdeskrelays",
+     "alias": "rustdeskrelays",
+     "fields": [
+      {
+       "colName": "id",
+       "alias": "id",
+       "type": 3,
+       "primary": true,
+       "nullable": true
+      },
+      {
+       "colName": "userid",
+       "alias": "userid",
+       "type": 3,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "idserver",
+       "alias": "idserver",
+       "type": 3,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "idserverport",
+       "alias": "idserverport",
+       "type": 1,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "relayserver",
+       "alias": "relayserver",
+       "type": 3,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "relayport",
+       "alias": "relayport",
+       "type": 1,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "apiserver",
+       "alias": "apiserver",
+       "type": 3,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "apiusername",
+       "alias": "apiusername",
+       "type": 3,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "apipassword",
+       "alias": "apipassword",
+       "type": 3,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "key",
+       "alias": "key",
+       "type": 3,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "healthstatus",
+       "alias": "healthstatus",
+       "type": 3,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "healthlatency",
+       "alias": "healthlatency",
+       "type": 1,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "healthcheckedat",
+       "alias": "healthcheckedat",
+       "type": 1,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "apiloginstatus",
+       "alias": "apiloginstatus",
+       "type": 3,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "accountsjson",
+       "alias": "accountsjson",
+       "type": 3,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "syncversion",
+       "alias": "syncversion",
+       "type": 1,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "createdat",
+       "alias": "createdat",
+       "type": 1,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "updatedat",
+       "alias": "updatedat",
+       "type": 1,
+       "primary": false,
+       "nullable": true
+      }
+     ],
+     "deviceSyncFields": [
+      "id",
+      "userid",
+      "idserver",
+      "idserverport",
+      "relayserver",
+      "relayport",
+      "apiserver",
+      "apiusername",
+      "apipassword",
+      "key",
+      "healthstatus",
+      "healthlatency",
+      "healthcheckedat",
+      "apiloginstatus",
+      "accountsjson",
+      "syncversion",
+      "createdat",
+      "updatedat"
+     ],
+     "cloudSyncFields": [
+      "id",
+      "userid",
+      "idserver",
+      "idserverport",
+      "relayserver",
+      "relayport",
+      "apiserver",
+      "apiusername",
+      "apipassword",
+      "key",
+      "healthstatus",
+      "healthlatency",
+      "healthcheckedat",
+      "apiloginstatus",
+      "accountsjson",
+      "syncversion",
+      "createdat",
+      "updatedat"
+     ]
+    },
+    {
+     "name": "vncrecordv2",
+     "alias": "vncrecordv2",
+     "fields": [
+      {
+       "colName": "id",
+       "alias": "id",
+       "type": 3,
+       "primary": true,
+       "nullable": true
+      },
+      {
+       "colName": "userid",
+       "alias": "userid",
+       "type": 3,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "recordtype",
+       "alias": "recordtype",
+       "type": 3,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "ownerid",
+       "alias": "ownerid",
+       "type": 3,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "ownertype",
+       "alias": "ownertype",
+       "type": 3,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "secretkind",
+       "alias": "secretkind",
+       "type": 3,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "payload",
+       "alias": "payload",
+       "type": 3,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "ciphertext",
+       "alias": "ciphertext",
+       "type": 3,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "envelopeversion",
+       "alias": "envelopeversion",
+       "type": 1,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "cryptoversion",
+       "alias": "cryptoversion",
+       "type": 1,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "keyversion",
+       "alias": "keyversion",
+       "type": 1,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "aadversion",
+       "alias": "aadversion",
+       "type": 1,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "payloadhashsha256",
+       "alias": "payloadhashsha256",
+       "type": 3,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "syncversion",
+       "alias": "syncversion",
+       "type": 1,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "schemaversion",
+       "alias": "schemaversion",
+       "type": 1,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "resetepoch",
+       "alias": "resetepoch",
+       "type": 1,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "createdat",
+       "alias": "createdat",
+       "type": 1,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "updatedat",
+       "alias": "updatedat",
+       "type": 1,
+       "primary": false,
+       "nullable": true
+      },
+      {
+       "colName": "deletedat",
+       "alias": "deletedat",
+       "type": 1,
+       "primary": false,
+       "nullable": true
+      }
+     ],
+     "deviceSyncFields": [
+      "id",
+      "userid",
+      "recordtype",
+      "ownerid",
+      "ownertype",
+      "secretkind",
+      "payload",
+      "ciphertext",
+      "envelopeversion",
+      "cryptoversion",
+      "keyversion",
+      "aadversion",
+      "payloadhashsha256",
+      "syncversion",
+      "schemaversion",
+      "resetepoch",
+      "createdat",
+      "updatedat",
+      "deletedat"
+     ],
+     "cloudSyncFields": [
+      "id",
+      "userid",
+      "recordtype",
+      "ownerid",
+      "ownertype",
+      "secretkind",
+      "payload",
+      "ciphertext",
+      "envelopeversion",
+      "cryptoversion",
+      "keyversion",
+      "aadversion",
+      "payloadhashsha256",
+      "syncversion",
+      "schemaversion",
+      "resetepoch",
+      "createdat",
+      "updatedat",
+      "deletedat"
+     ]
+    }
+   ]
+  }
+ ]
+}
