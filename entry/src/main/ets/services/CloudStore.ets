@@ -189,7 +189,9 @@ import {
   accountStoreIdentity,
   cloudAccountBindingForScope,
   cloneAccountSessionLease,
+  cryptoParamCloudRecordId,
   deviceLocalScopeToken,
+  legacyScopedCryptoParamRecordId,
   ownerRecordWriteAllowed,
   verifyAccountScopeCloudBinding
 } from './AccountScopePolicy';
@@ -232,6 +234,16 @@ import {
   cloudMetadataCheckpointBlocks,
   readCloudMetadataState
 } from './CloudMetadataSafetyPolicy';
+import {
+  CLOUD_BOOTSTRAP_COMPLETED_KEY,
+  CLOUD_SYNC_DURABLE_STATE_KEY,
+  RESTORED_NOT_UPLOADED_KEY,
+  RESTORED_NOT_UPLOADED_TABLE_PREFIX,
+  CloudRestoreResolutionResult,
+  completeCloudRestoreResolution,
+  pendingRestoreResolutionTables,
+  writeFullRestoreQuarantineMarkers
+} from './CloudStoreRestoreResolutionWiring';
 import {
   CloudSelectionReenablePhase,
   cloudSelectionBarrierAfterRollback,
@@ -278,9 +290,6 @@ import {
 } from './LegacySharedStoreMigrationPolicy';
 
 const TABLES: string[] = cloudSyncTableNames();
-// 实验专用：验证 AGC 云空间服务对新类型的最小上传链路，不进入业务表清单。
-const VNC_SMOKE_TABLE: string = 'vncsmoketest';
-const VNC_SMOKE_RUN_KEY: string = 'vncsmoketest_smoke_run';
 const RDP_RESTRICTED_ADMIN_SECRET_TABLE: string = 'rdprestrictedadminsecrets';
 const LOCAL_METADATA_TABLE: string = 'localmetadata';
 const LOCAL_MUTATION_JOURNAL_TABLE: string = 'localmutationjournal';
@@ -297,11 +306,6 @@ const LEGACY_RELAY_JSON_MIGRATION_ID: string =
   'legacy-relay-cryptoparams-v1';
 const LEGACY_VNC_MIGRATION_ID: string =
   'legacy-vnc-table-v1';
-const RESTORED_NOT_UPLOADED_KEY: string = 'restored_not_uploaded';
-const RESTORED_NOT_UPLOADED_TABLE_PREFIX: string =
-  'restored_not_uploaded|';
-const CLOUD_BOOTSTRAP_COMPLETED_KEY: string = 'cloud_bootstrap_completed_v1';
-const CLOUD_SYNC_DURABLE_STATE_KEY: string = 'cloud_sync_durable_state_v1';
 const CRYPTO_LIFECYCLE_DURABLE_STATE_KEY: string =
   'crypto_lifecycle_durable_state_v1';
 const STORE_OWNER_SCOPE_KEY: string = 'store_owner_scope_id';
@@ -978,8 +982,6 @@ export class CloudStore implements CryptoCloudStore {
       // 订阅云端数据变更 (事件驱动, 替代定时轮询)
       if (this.cloudAvailable) {
         this.subscribeCloudChanges();
-        // 实验：vncsmoketest 独立冒烟，不影响业务表。
-        this.runVncSmokeTest();
       }
       // 初始化加密状态追踪
       this.lastKnownCryptoStatus = this.getCryptoStatus();
@@ -1137,7 +1139,8 @@ export class CloudStore implements CryptoCloudStore {
       hilog.warn(0x0001, 'CloudSync', 'manual upload blocked: account-scoped cloud store unavailable');
       return false;
     }
-    if (!this.hasAnyBusinessRows()) {
+    if (!this.hasAnyBusinessRows() &&
+      !this.requiresRestoreDirectionDecision()) {
       hilog.warn(0x0001, 'CloudSync', 'manual upload blocked: local business tables are empty');
       return false;
     }
@@ -1604,6 +1607,62 @@ export class CloudStore implements CryptoCloudStore {
     }
   }
 
+  /**
+   * Publish the terminal result of the user's explicit restore decision as
+   * one durable RDB transaction. A selected subset may have synced
+   * successfully, but no global marker is removed while another restored
+   * table remains uncovered.
+   */
+  private completeRestoreResolution(
+    state: CloudSyncDurableState,
+    resolvedTables: string[]
+  ): boolean {
+    if (!this.store || this.currentLease === null ||
+      state.ownerScopeId !==
+        this.currentScopeToken.ownerScopeId ||
+      state.storeIdentity !==
+        this.currentScopeToken.storeIdentity ||
+      state.generation !==
+        this.currentScopeToken.generation) {
+      return false;
+    }
+    const store: relationalStore.RdbStore =
+      this.store;
+    let encoded: string;
+    try {
+      encoded = JSON.stringify(state);
+    } catch (err) {
+      hilog.error(0x0001, 'CloudSync',
+        '恢复隔离状态编码失败: ' + safeError(err));
+      return false;
+    }
+    const result: CloudRestoreResolutionResult =
+      completeCloudRestoreResolution(
+        encoded, resolvedTables, TABLES, {
+          beginTransaction: (): void =>
+            store.beginTransaction(),
+          commit: (): void => store.commit(),
+          rollback: (): void => store.rollBack(),
+          readMetadata: (key: string):
+            CloudMetadataReadResult =>
+            this.readLocalMetadataState(key),
+          writeMetadata: (key: string,
+            value: string): boolean =>
+            this.writeLocalMetadata(key, value),
+          deleteMetadata: (key: string): boolean =>
+            this.deleteLocalMetadata(key)
+        });
+    if (!result.ok) {
+      hilog.error(0x0001, 'CloudSync',
+        '恢复隔离终结事务失败 committed=' +
+        result.committed.toString() +
+        ' reason=' + result.reason);
+      return false;
+    }
+    this.cloudBootstrapCompleted = true;
+    return true;
+  }
+
   private localMutationAllowed(): boolean {
     return this.mutationGateOpen &&
       this.localMutationEnvironmentAllowed();
@@ -1645,8 +1704,7 @@ export class CloudStore implements CryptoCloudStore {
         // adapters may create a newer journal entry while the download is
         // being applied, and that repair must survive this completion hook.
         if (!this.acknowledgeMutationJournalSnapshot(
-          tables, this.manualDownloadMutationJournal || []) ||
-          !this.clearRestoredNotUploaded()) {
+          tables, this.manualDownloadMutationJournal || [])) {
           return false;
         }
         return this.completeCloudDownloadTransaction();
@@ -1726,7 +1784,14 @@ export class CloudStore implements CryptoCloudStore {
         this.acknowledgeMutationJournal(table, revision),
       failureKindForTable: (_table: string): CloudSyncFailureKind => this.lastSyncFailureKind,
       hasRestoredNotUploaded: (): boolean => this.hasRestoredNotUploaded(),
+      pendingRestoreTables: (): string[] | null =>
+        this.restoredTablesAwaitingDecision(),
       clearRestoredNotUploaded: (): boolean => this.clearRestoredNotUploaded(),
+      completeRestoreResolution: (
+        state: CloudSyncDurableState,
+        resolvedTables: string[]): boolean =>
+        this.completeRestoreResolution(
+          state, resolvedTables),
       loadDurableState: (): CloudSyncDurableState | null =>
         this.loadCloudSyncDurableState(),
       persistDurableState: (state: CloudSyncDurableState): boolean =>
@@ -3662,7 +3727,13 @@ export class CloudStore implements CryptoCloudStore {
       if (!this.ensureVncResetEpochAtLeast(protectedVncResetEpoch)) {
         throw new Error('preserve VNC reset epoch failed');
       }
-      if (markRestoredNotUploaded && !this.writeLocalMetadata(RESTORED_NOT_UPLOADED_KEY, '1')) {
+      if (markRestoredNotUploaded &&
+        !writeFullRestoreQuarantineMarkers(
+          TABLES,
+          (key: string,
+            value: string): boolean =>
+            this.writeLocalMetadata(
+              key, value))) {
         throw new Error('set restored upload marker failed');
       }
       const bootstrapMetadata:
@@ -3942,103 +4013,6 @@ export class CloudStore implements CryptoCloudStore {
         'native-first safety scan failed table=' + table +
         ' err=' + safeError(err));
       return false;
-    }
-  }
-
-  /**
-   * 实验专用（vncsmoketest）：验证 AGC 云空间服务对新类型的最小上传链路。
-   * 只注册/同步 vncsmoketest 单表，不进入业务 TABLES 与协调器；
-   * 成功后写本地 marker，失败不写 marker（下次启动自动重试）。
-   */
-  private async runVncSmokeTest(): Promise<void> {
-    const smokeTag: string = 'VncSmoke';
-    try {
-      if (!this.store || !this.cloudAvailable) {
-        hilog.info(0x0001, smokeTag, 'skip: cloud unavailable');
-        return;
-      }
-      const smokeStore: relationalStore.RdbStore = this.store;
-      if (this.readLocalMetadataStrict(VNC_SMOKE_RUN_KEY) === '1') {
-        hilog.info(0x0001, smokeTag, 'skip: marker already set');
-        return;
-      }
-      await smokeStore.executeSql(
-        'CREATE TABLE IF NOT EXISTS ' + VNC_SMOKE_TABLE +
-        ' (id TEXT PRIMARY KEY, marker TEXT)');
-      hilog.info(0x0001, smokeTag, 'local table ready');
-      try {
-        await smokeStore.setDistributedTables(
-          [VNC_SMOKE_TABLE],
-          relationalStore.DistributedType.DISTRIBUTED_CLOUD,
-          { autoSync: false }
-        );
-        hilog.info(0x0001, smokeTag, 'setDistributedTables ok');
-      } catch (e) {
-        const be: BusinessError = e as BusinessError;
-        hilog.error(0x0001, smokeTag,
-          'setDistributedTables failed code=' + be.code.toString() +
-          ' msg=' + be.message);
-        return;
-      }
-      const rowId: string = 'smoke-' + Date.now().toString();
-      const bucket: relationalStore.ValuesBucket = { id: rowId, marker: 'vncsmoke-hello' };
-      await smokeStore.insert(VNC_SMOKE_TABLE, bucket);
-      hilog.info(0x0001, smokeTag, 'inserted id=' + rowId);
-      const outcome: string = await new Promise<string>((resolve): void => {
-        let settled: boolean = false;
-        const finish = (text: string): void => {
-          if (!settled) {
-            settled = true;
-            resolve(text);
-          }
-        };
-        try {
-          smokeStore.cloudSync(
-            relationalStore.SyncMode.SYNC_MODE_NATIVE_FIRST,
-            [VNC_SMOKE_TABLE],
-            (progress: relationalStore.ProgressDetails): void => {
-              let progressJson: string = 'null';
-              if (progress) {
-                try { progressJson = JSON.stringify(progress); } catch (_e) { progressJson = 'unserializable'; }
-              }
-              hilog.info(0x0001, smokeTag, 'progress ' + progressJson);
-              if (!progress) { return; }
-              const schedule: number = progress.schedule as number;
-              const code: number = progress.code as number;
-              if (cloudSyncProgressFinished(schedule)) {
-                const ok: boolean = cloudSyncProgressSucceeded(schedule, code) &&
-                  cloudSyncTargetTableCompleted(progress.details, VNC_SMOKE_TABLE);
-                finish('finished schedule=' + schedule.toString() + ' code=' + code.toString() +
-                  ' ok=' + ok.toString());
-              }
-            },
-            (err: BusinessError | undefined): void => {
-              if (err) {
-                hilog.error(0x0001, smokeTag,
-                  'callback error code=' + err.code.toString() + ' msg=' + err.message);
-                finish('callback-error code=' + err.code.toString() + ' msg=' + err.message);
-              } else {
-                hilog.info(0x0001, smokeTag, 'callback accepted (no error)');
-                finish('accepted');
-              }
-            }
-          );
-        } catch (e) {
-          const be: BusinessError = e as BusinessError;
-          finish('throw code=' + be.code.toString() + ' msg=' + be.message);
-        }
-      });
-      hilog.info(0x0001, smokeTag, 'OUTCOME=' + outcome);
-      if (outcome.indexOf('ok=true') >= 0) {
-        if (this.writeLocalMetadata(VNC_SMOKE_RUN_KEY, '1')) {
-          hilog.info(0x0001, smokeTag, 'SUCCESS marker written');
-        }
-      }
-    } catch (e) {
-      const be: BusinessError = e as BusinessError;
-      hilog.error(0x0001, smokeTag,
-        'smoke exception code=' + (be ? be.code.toString() : '?') +
-        ' msg=' + (be ? be.message : safeError(e)));
     }
   }
 
@@ -5146,9 +5120,8 @@ export class CloudStore implements CryptoCloudStore {
    * while every read in this build requires the scoped primary key as well.
    */
   private cryptoParamId(key: string): string {
-    const owner: string = this.currentOwnerScopeId();
-    if (owner === '' || key.trim() === '') { return ''; }
-    return 'crypto-param|' + owner + '|' + key.trim();
+    return cryptoParamCloudRecordId(
+      this.currentOwnerScopeId(), key);
   }
 
   private cryptoParamBucket(
@@ -5185,11 +5158,15 @@ export class CloudStore implements CryptoCloudStore {
     try {
       for (let i = 0; i < ids.length; i++) {
         const expectedId: string = this.cryptoParamId(keys[i]);
+        const previousScopedId: string =
+          legacyScopedCryptoParamRecordId(
+            this.currentOwnerScopeId(), keys[i]);
         if (expectedId === '' || ids[i] === '') {
           throw new Error('malformed cryptoparams identity');
         }
         if (ids[i] === expectedId) { continue; }
-        if (ids[i].indexOf('crypto-param|') === 0) {
+        if (ids[i].indexOf('crypto-param|') === 0 &&
+          ids[i] !== previousScopedId) {
           throw new Error('foreign cryptoparams owner identity');
         }
         const existingPredicates =
@@ -5474,12 +5451,26 @@ export class CloudStore implements CryptoCloudStore {
   }
 
   hasRestoredNotUploaded(): boolean {
-    const metadata: CloudMetadataReadResult =
-      this.readLocalMetadataState(
-        RESTORED_NOT_UPLOADED_KEY);
-    return metadata.state === 'error' ||
-      (metadata.state === 'present' &&
-        metadata.value === '1');
+    const pending: string[] | null =
+      this.restoredTablesAwaitingDecision();
+    // Any unreadable/malformed boundary, global legacy marker, or orphan
+    // per-table marker keeps automatic sync closed. Only a proven empty set
+    // may reopen transfer.
+    return pending === null || pending.length > 0;
+  }
+
+  restoredTablesAwaitingDecision():
+    string[] | null {
+    return pendingRestoreResolutionTables(
+      TABLES,
+      (key: string):
+        CloudMetadataReadResult =>
+        this.readLocalMetadataState(key));
+  }
+
+  requiresRestoreDirectionDecision(): boolean {
+    return CloudSyncCoordinator.getInstance()
+      .requiresRestoreDirectionDecision();
   }
 
   clearRestoredNotUploaded(): boolean {

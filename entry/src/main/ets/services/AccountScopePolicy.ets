@@ -62,6 +62,28 @@ function sha256Hex(value: string): string {
   return hex;
 }
 
+export function cryptoParamCloudRecordId(
+  ownerScopeId: string,
+  key: string
+): string {
+  const owner: string = ownerScopeId.trim();
+  const logicalKey: string = key.trim();
+  if (owner.length === 0 || logicalKey.length === 0) { return ''; }
+  return sha256Hex(
+    'RemoteDeskHarmonyOS:cryptoparams:v2:' + owner + ':' + logicalKey)
+    .slice(0, 32);
+}
+
+export function legacyScopedCryptoParamRecordId(
+  ownerScopeId: string,
+  key: string
+): string {
+  const owner: string = ownerScopeId.trim();
+  const logicalKey: string = key.trim();
+  if (owner.length === 0 || logicalKey.length === 0) { return ''; }
+  return 'crypto-param|' + owner + '|' + logicalKey;
+}
+
 export function stableAccountIdentifierIsValid(unionId: string): boolean {
   return unionId.trim().length > 0;
 }

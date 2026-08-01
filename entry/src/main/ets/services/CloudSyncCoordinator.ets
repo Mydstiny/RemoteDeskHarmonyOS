@@ -25,11 +25,15 @@ import {
   cloudSyncDurableStateWithIntents,
   cloudSyncExternalRecoveryRequired,
   cloudSyncIndeterminateSettled,
+  cloudSyncManualDownloadAllowed,
+  cloudSyncManualUploadAllowed,
   cloudSyncOperationFinished,
   cloudSyncOperationStarted,
   cloudSyncQuiesced,
   cloudSyncQuiescing,
   cloudSyncRestoreQuarantined,
+  cloudSyncRestoreResolutionAttemptFinished,
+  cloudSyncRestoreResolutionCompleted,
   cloudSyncRestoreReleased,
   recoverCloudSyncDurableState
 } from './CloudSyncLifecyclePolicy';
@@ -102,6 +106,11 @@ export interface CloudSyncSelectionSource {
   selectedBusinessTables(): string[];
 }
 
+export interface VncCloudSyncSelectionSource {
+  hasSelection(): boolean;
+  needsCrypto(cryptoConfigured: boolean): boolean;
+}
+
 export type CloudSyncRetryTimerTask = () => void;
 
 /**
@@ -153,7 +162,14 @@ export interface CloudSyncCoordinatorHooks {
   acknowledgeMutationJournal?: (table: string, coveredRevision: number) => boolean;
   failureKindForTable?: (table: string) => CloudSyncFailureKind;
   hasRestoredNotUploaded?: () => boolean;
+  /** Exact restored-table markers; null means the metadata boundary is unreadable. */
+  pendingRestoreTables?: () => string[] | null;
   clearRestoredNotUploaded?: () => boolean;
+  /** Atomically clears restore markers and persists the supplied ready state. */
+  completeRestoreResolution?: (
+    state: CloudSyncDurableState,
+    resolvedTables: string[]
+  ) => boolean;
   setStartupSyncPending?: (pending: boolean) => void;
   setCloudDownloadPending?: (pending: boolean) => void;
   settlePendingIndeterminate?: () => void;
@@ -325,8 +341,8 @@ export class CloudSyncCoordinator {
   private executor: CloudSyncTableExecutor | null = null;
   private readonly selection:
     CloudSyncSelectionSource;
-  private readonly vncSelection: VncCloudSyncSelectionStore =
-    VncCloudSyncSelectionStore.getInstance();
+  private readonly vncSelection:
+    VncCloudSyncSelectionSource;
   private readonly retryClock:
     CloudSyncRetryClock;
   private queueTail: Promise<void> = Promise.resolve();
@@ -338,6 +354,7 @@ export class CloudSyncCoordinator {
   private retryTimer: number = -1;
   private retryRecords: CloudSyncRetryRecord[] = [];
   private restorePending: boolean = false;
+  private restoreResolutionOperationInFlight: boolean = false;
   private automaticRetryAttempts: Record<string, number> = {};
   private automaticMutationVersions: Record<string, number> = {};
   private dirtyAutomaticTables: string[] = [];
@@ -360,10 +377,13 @@ export class CloudSyncCoordinator {
     selection: CloudSyncSelectionSource =
       CloudSyncSelectionStore.getInstance(),
     retryClock: CloudSyncRetryClock =
-      new SystemCloudSyncRetryClock()
+      new SystemCloudSyncRetryClock(),
+    vncSelection: VncCloudSyncSelectionSource =
+      VncCloudSyncSelectionStore.getInstance()
   ) {
     this.selection = selection;
     this.retryClock = retryClock;
+    this.vncSelection = vncSelection;
   }
 
   static getInstance(): CloudSyncCoordinator {
@@ -417,6 +437,7 @@ export class CloudSyncCoordinator {
     this.pendingPull = null;
     this.startupPull = null;
     this.restorePending = false;
+    this.restoreResolutionOperationInFlight = false;
     this.vncSelectionMutationPending = false;
     this.exclusiveVncSelectionLease = null;
     this.startupState = 'pending';
@@ -448,6 +469,10 @@ export class CloudSyncCoordinator {
 
   currentAccountLease(): AccountSessionLease | null {
     return this.currentLease === null ? null : cloneAccountSessionLease(this.currentLease);
+  }
+
+  requiresRestoreDirectionDecision(): boolean {
+    return this.restoreResolutionPending();
   }
 
   isLeaseCurrent(lease: AccountSessionLease): boolean {
@@ -540,6 +565,7 @@ export class CloudSyncCoordinator {
     this.deferredAutomaticTables = [];
     this.retryRecords = [];
     this.restorePending = false;
+    this.restoreResolutionOperationInFlight = false;
     this.vncSelectionMutationPending = false;
     this.exclusiveVncSelectionLease = null;
     return true;
@@ -786,8 +812,39 @@ export class CloudSyncCoordinator {
     return finalResult;
   }
 
-  private completeExplicitBootstrap(result: CloudSyncOperationResult): CloudSyncOperationResult {
+  private completeExplicitBootstrap(
+    result: CloudSyncOperationResult,
+    resolvedTables: string[] = result.tables
+  ): CloudSyncOperationResult {
     if (!result.ok) { return result; }
+    if (this.restoreResolutionPending()) {
+      if (this.durableState === null || !this.hooks ||
+        !this.hooks.completeRestoreResolution) {
+        return this.restoreResolutionRejected(result);
+      }
+      const completed: CloudSyncDurableState =
+        cloudSyncRestoreResolutionCompleted(
+          this.durableState);
+      try {
+        if (!this.hooks.completeRestoreResolution(
+          completed,
+          snapshotCloudSyncTables(resolvedTables))) {
+          return this.restoreResolutionRejected(result);
+        }
+      } catch (_error) {
+        return this.restoreResolutionRejected(result);
+      }
+      this.durableState = completed;
+      this.bootstrapCompleted = true;
+      this.startupState = 'ready';
+      if (this.hooks.setStartupSyncPending) {
+        try {
+          this.hooks.setStartupSyncPending(false);
+        } catch (_error) { /* best effort */ }
+      }
+      this.flushDeferredAutomaticPushes();
+      return result;
+    }
     if (!this.bootstrapCompleted && this.hooks && this.hooks.markCloudBootstrapCompleted &&
       !this.hooks.markCloudBootstrapCompleted()) {
       this.startupState = 'pending';
@@ -828,8 +885,20 @@ export class CloudSyncCoordinator {
 
   requestManualUpload(): Promise<CloudSyncOperationResult> {
     const base: CloudSyncRequest = this.makeRequest('manualUpload', 'nativeFirst');
-    if (!this.transfersEnabled || !this.automaticUploadAllowed()) {
+    if (!this.transfersEnabled || !this.manualUploadAllowed()) {
       return Promise.resolve(this.rejectedResult(base, 'cloud_service'));
+    }
+    const resolvingRestore: boolean =
+      this.restoreResolutionPending();
+    const restoredTables: string[] | null =
+      resolvingRestore
+        ? this.restoreTablesForExplicitDecision()
+        : [];
+    if (restoredTables === null) {
+      return Promise.resolve(
+        this.restoreResolutionRejected(
+          this.rejectedResult(
+            base, 'restore_pending')));
     }
     // Tables behind a pending selection re-enable barrier must complete their
     // cloud-first closed loop before any native-first upload. Skip them here
@@ -837,14 +906,25 @@ export class CloudSyncCoordinator {
     // cannot freeze every other table's manual upload.
     const tables: string[] = base.tables.filter(
       (table: string): boolean =>
-        !this.selectionReenableBlocked(table));
+        !this.selectionReenableBlocked(table) ||
+        (resolvingRestore &&
+          restoredTables.indexOf(table) >= 0));
     const includeVnc: boolean = this.vncPhysicalTableSelected() &&
-      !this.selectionReenableBlocked(VNC_CLOUD_TABLE);
+      (!this.selectionReenableBlocked(VNC_CLOUD_TABLE) ||
+        (resolvingRestore &&
+          restoredTables.indexOf(
+            VNC_CLOUD_TABLE) >= 0));
     const request: CloudSyncRequest = {
       source: 'manualUpload',
       direction: 'nativeFirst',
       tables
     };
+    if (resolvingRestore) {
+      return this.enqueueRestoreDecision(
+        request,
+        includeVnc ? this.vncUploadTables() : [],
+        restoredTables);
+    }
     if (tables.length === 0 && !includeVnc) {
       const allBlocked: CloudSyncOperationResult = {
         ok: false,
@@ -872,29 +952,58 @@ export class CloudSyncCoordinator {
           this.clearDirtyTable(table);
         }
       }
-      if (this.hooks && this.hooks.hasRestoredNotUploaded && this.hooks.hasRestoredNotUploaded() &&
-        this.hooks.clearRestoredNotUploaded && !this.hooks.clearRestoredNotUploaded()) {
-        hilog.warn(DOMAIN, TAG, 'manual upload completed but restored-state marker could not be cleared');
-      }
       // The ordinary selector may opt the physical VNC table in, but the
       // VNC request still has to pass through its independent logical scopes.
       // Run it after the ordinary queue item so this explicit operation stays
       // serialized without ever uploading the whole physical table blindly.
       if (includeVnc) {
-        return this.requestVncManualUpload().then((vncResult: CloudSyncOperationResult): CloudSyncOperationResult => {
-          return vncResult.ok ? this.completeExplicitBootstrap(result) : vncResult;
+        return this.requestVncManualUpload(false).then((vncResult: CloudSyncOperationResult): CloudSyncOperationResult => {
+          if (!vncResult.ok) { return vncResult; }
+          const tables: string[] = snapshotCloudSyncTables(
+            result.tables.concat(vncResult.tables));
+          const combined: CloudSyncOperationResult = {
+            ok: true,
+            source: 'manualUpload',
+            tables,
+            failedTables: [],
+            rollbackFailed: false,
+            failureKind: 'none'
+          };
+          return this.completeExplicitBootstrap(
+            combined, resolvingRestore
+              ? restoredTables : tables);
         });
       }
-      return Promise.resolve(this.completeExplicitBootstrap(result));
+      return Promise.resolve(this.completeExplicitBootstrap(
+        result, resolvingRestore
+          ? restoredTables : result.tables));
     });
   }
 
   requestManualDownload(): Promise<CloudSyncOperationResult> {
     const request: CloudSyncRequest = this.makeRequest('manualDownload', 'cloudFirst');
-    if (!this.transfersEnabled) {
+    if (!this.transfersEnabled || !this.manualDownloadAllowed()) {
       return Promise.resolve(this.rejectedResult(request, 'cloud_service'));
     }
+    const resolvingRestore: boolean =
+      this.restoreResolutionPending();
+    const restoredTables: string[] | null =
+      resolvingRestore
+        ? this.restoreTablesForExplicitDecision()
+        : [];
+    if (restoredTables === null) {
+      return Promise.resolve(
+        this.restoreResolutionRejected(
+          this.rejectedResult(
+            request, 'restore_pending')));
+    }
     const includeVnc: boolean = this.vncPhysicalTableSelected();
+    if (resolvingRestore) {
+      return this.enqueueRestoreDecision(
+        request,
+        includeVnc ? this.vncSyncTables() : [],
+        restoredTables);
+    }
     const versions: Record<string, number> = {};
     for (let i = 0; i < request.tables.length; i++) {
       versions[request.tables[i]] = this.automaticMutationVersions[request.tables[i]] || 0;
@@ -907,12 +1016,209 @@ export class CloudSyncCoordinator {
         if ((this.automaticMutationVersions[table] || 0) === versions[table]) { this.clearDirtyTable(table); }
       }
       if (includeVnc) {
-        return this.requestVncManualDownload().then((vncResult: CloudSyncOperationResult): CloudSyncOperationResult => {
-          return vncResult.ok ? this.completeExplicitBootstrap(result) : vncResult;
+        return this.requestVncManualDownload(false).then((vncResult: CloudSyncOperationResult): CloudSyncOperationResult => {
+          if (!vncResult.ok) { return vncResult; }
+          const tables: string[] = snapshotCloudSyncTables(
+            result.tables.concat(vncResult.tables));
+          const combined: CloudSyncOperationResult = {
+            ok: true,
+            source: 'manualDownload',
+            tables,
+            failedTables: [],
+            rollbackFailed: false,
+            failureKind: 'none'
+          };
+          return this.completeExplicitBootstrap(
+            combined, resolvingRestore
+              ? restoredTables : tables);
         });
       }
-      return Promise.resolve(this.completeExplicitBootstrap(result));
+      return Promise.resolve(this.completeExplicitBootstrap(
+        result, resolvingRestore
+          ? restoredTables : result.tables));
     });
+  }
+
+  private settleRestoreDecisionTables(
+    source: 'manualUpload' | 'manualDownload',
+    tables: string[],
+    versions: Record<string, number>,
+    journalRevisions: Record<string, number>
+  ): void {
+    for (let i = 0; i < tables.length; i++) {
+      const table: string = tables[i];
+      this.clearAutomaticSyncBlock(table);
+      if (source === 'manualUpload') {
+        this.acknowledgeJournal(
+          table, journalRevisions[table] || 0);
+      }
+      const currentJournalRevision: number =
+        this.captureJournalRevisions(
+          [table])[table] || 0;
+      if ((this.automaticMutationVersions[table] || 0) ===
+        (versions[table] || 0) &&
+        (source === 'manualDownload' ||
+          currentJournalRevision <= 0)) {
+        this.clearDirtyTable(table);
+      }
+    }
+  }
+
+  /**
+   * One restore direction is one queue item. Ordinary tables, the independent
+   * VNC projection and atomic marker completion therefore share one lease and
+   * cannot be interleaved with another upload/download decision.
+   */
+  private enqueueRestoreDecision(
+    ordinaryRequest: CloudSyncRequest,
+    vncTables: string[],
+    restoredTables: string[]
+  ): Promise<CloudSyncOperationResult> {
+    const source: 'manualUpload' |
+      'manualDownload' =
+      ordinaryRequest.source === 'manualUpload'
+        ? 'manualUpload' : 'manualDownload';
+    const direction: CloudSyncDirection =
+      ordinaryRequest.direction;
+    const ordinaryTables: string[] =
+      snapshotCloudSyncTables(
+        ordinaryRequest.tables);
+    const vncRequestTables: string[] =
+      snapshotCloudSyncTables(vncTables);
+    const allTransferTables: string[] =
+      snapshotCloudSyncTables(
+        ordinaryTables.concat(
+          vncRequestTables));
+    const aggregateRequest: CloudSyncRequest = {
+      source,
+      direction,
+      tables: allTransferTables
+    };
+    if (!this.acceptingRequests ||
+      this.currentLease === null ||
+      !this.transfersEnabled) {
+      return Promise.resolve(
+        this.rejectedResult(
+          aggregateRequest));
+    }
+    if (direction === 'nativeFirst' &&
+      !this.restoreUploadBarrierOverrideAllowed(
+        allTransferTables)) {
+      return Promise.resolve(
+        this.rejectedResult(
+          aggregateRequest,
+          'cloud_service'));
+    }
+    const versions: Record<string, number> = {};
+    for (let i = 0;
+      i < allTransferTables.length; i++) {
+      versions[allTransferTables[i]] =
+        this.automaticMutationVersions[
+          allTransferTables[i]] || 0;
+    }
+    const journalRevisions:
+      Record<string, number> =
+      source === 'manualUpload'
+        ? this.captureJournalRevisions(
+          allTransferTables)
+        : {};
+    const lease: AccountSessionLease =
+      cloneAccountSessionLease(
+        this.currentLease);
+    const epoch: number = this.bindingEpoch;
+    return new Promise<CloudSyncOperationResult>(
+      (resolve: (result:
+        CloudSyncOperationResult) => void): void => {
+        const run = async (): Promise<void> => {
+          const leaseCurrent = (): boolean =>
+            this.acceptingRequests &&
+            epoch === this.bindingEpoch &&
+            accountSessionLeaseEquals(
+              this.currentLease, lease);
+          if (!leaseCurrent()) {
+            resolve(this.rejectedResult(
+              aggregateRequest));
+            return;
+          }
+          const legs: CloudSyncRequest[] = [];
+          if (ordinaryTables.length > 0) {
+            legs.push({
+              source, direction,
+              tables: ordinaryTables
+            });
+          }
+          if (vncRequestTables.length > 0) {
+            legs.push({
+              source, direction,
+              tables: vncRequestTables
+            });
+          }
+          const completedTables: string[] = [];
+          for (let i = 0; i < legs.length; i++) {
+            if (!this.beginLifecycleOperation(
+              legs[i])) {
+              resolve(this.rejectedResult(
+                legs[i]));
+              return;
+            }
+            const result: CloudSyncOperationResult =
+              await this.execute(legs[i]);
+            if (!leaseCurrent()) {
+              resolve(this.rejectedResult(
+                legs[i]));
+              return;
+            }
+            if (!this.finishLifecycleOperation(
+              result)) {
+              resolve(this.rejectedResult(
+                legs[i]));
+              return;
+            }
+            if (result.failureKind ===
+              'indeterminate' && this.hooks &&
+              this.hooks.settlePendingIndeterminate) {
+              this.hooks
+                .settlePendingIndeterminate();
+            }
+            if (!result.ok) {
+              resolve(result);
+              return;
+            }
+            this.settleRestoreDecisionTables(
+              source, result.tables,
+              versions, journalRevisions);
+            for (let j = 0;
+              j < result.tables.length; j++) {
+              if (completedTables.indexOf(
+                result.tables[j]) < 0) {
+                completedTables.push(
+                  result.tables[j]);
+              }
+            }
+          }
+          if (!leaseCurrent()) {
+            resolve(this.rejectedResult(
+              aggregateRequest));
+            return;
+          }
+          const combined: CloudSyncOperationResult = {
+            ok: true,
+            source,
+            tables: completedTables,
+            failedTables: [],
+            rollbackFailed: false,
+            failureKind: 'none'
+          };
+          const covered: string[] =
+            snapshotCloudSyncTables(
+              restoredTables.concat(
+                completedTables));
+          resolve(this.completeExplicitBootstrap(
+            combined, covered));
+        };
+        this.queueTail =
+          this.queueTail.then(run, run);
+      });
   }
 
   /**
@@ -1057,14 +1363,21 @@ export class CloudSyncCoordinator {
 
   /** VNC manual operations use the same serialized transfer queue but never
    * inherit the ordinary RDP/RustDesk/SSH selection. */
-  requestVncManualUpload(): Promise<CloudSyncOperationResult> {
+  requestVncManualUpload(
+    finalizeExplicit: boolean = true
+  ): Promise<CloudSyncOperationResult> {
     const tables: string[] = this.vncUploadTables();
     if (tables.length === 0) { return Promise.resolve(this.skippedResult('manualUpload')); }
     const request: CloudSyncRequest = {
       source: 'manualUpload', direction: 'nativeFirst', tables
     };
-    if (!this.transfersEnabled || !this.automaticUploadAllowed()) {
+    if (!this.transfersEnabled || !this.manualUploadAllowed()) {
       return Promise.resolve(this.rejectedResult(request, 'cloud_service'));
+    }
+    const versions: Record<string, number> = {};
+    for (let i = 0; i < tables.length; i++) {
+      versions[tables[i]] =
+        this.automaticMutationVersions[tables[i]] || 0;
     }
     const journalRevisions: Record<string, number> = this.captureJournalRevisions(tables);
     return this.enqueue(request).then((result: CloudSyncOperationResult): CloudSyncOperationResult => {
@@ -1072,23 +1385,50 @@ export class CloudSyncCoordinator {
       for (let i = 0; i < tables.length; i++) {
         this.clearAutomaticSyncBlock(tables[i]);
         this.acknowledgeJournal(tables[i], journalRevisions[tables[i]] || 0);
-        this.clearDirtyTable(tables[i]);
+        const currentJournalRevision: number =
+          this.captureJournalRevisions(
+            [tables[i]])[tables[i]] || 0;
+        if ((this.automaticMutationVersions[tables[i]] || 0) ===
+          versions[tables[i]] &&
+          currentJournalRevision <= 0) {
+          this.clearDirtyTable(tables[i]);
+        }
       }
-      return this.completeExplicitBootstrap(result);
+      return finalizeExplicit
+        ? this.completeExplicitBootstrap(result, tables)
+        : result;
     });
   }
 
-  requestVncManualDownload(): Promise<CloudSyncOperationResult> {
+  requestVncManualDownload(
+    finalizeExplicit: boolean = true
+  ): Promise<CloudSyncOperationResult> {
     const tables: string[] = this.vncSyncTables();
     if (tables.length === 0) { return Promise.resolve(this.skippedResult('manualDownload')); }
     const request: CloudSyncRequest = {
       source: 'manualDownload', direction: 'cloudFirst', tables
     };
-    if (!this.transfersEnabled) {
+    if (!this.transfersEnabled || !this.manualDownloadAllowed()) {
       return Promise.resolve(this.rejectedResult(request, 'cloud_service'));
     }
-    return this.enqueue(request).then((result: CloudSyncOperationResult): CloudSyncOperationResult =>
-      this.completeExplicitBootstrap(result));
+    const versions: Record<string, number> = {};
+    for (let i = 0; i < tables.length; i++) {
+      versions[tables[i]] =
+        this.automaticMutationVersions[tables[i]] || 0;
+    }
+    return this.enqueue(request).then((result: CloudSyncOperationResult): CloudSyncOperationResult => {
+      if (!result.ok) { return result; }
+      for (let i = 0; i < tables.length; i++) {
+        this.clearAutomaticSyncBlock(tables[i]);
+        if ((this.automaticMutationVersions[tables[i]] || 0) ===
+          versions[tables[i]]) {
+          this.clearDirtyTable(tables[i]);
+        }
+      }
+      return finalizeExplicit
+        ? this.completeExplicitBootstrap(result, tables)
+        : result;
+    });
   }
 
   requestVncAutomaticPush(recordType: VncRecordType): Promise<CloudSyncOperationResult> {
@@ -1465,7 +1805,11 @@ export class CloudSyncCoordinator {
     if (request.direction === 'nativeFirst' &&
       request.tables.some(
         (table: string): boolean =>
-          this.selectionReenableBlocked(table))) {
+          this.selectionReenableBlocked(table)) &&
+      !(request.source === 'manualUpload' &&
+        this.restoreResolutionPending() &&
+        this.restoreUploadBarrierOverrideAllowed(
+          request.tables))) {
       return Promise.resolve(
         this.rejectedResult(request, 'cloud_service'));
     }
@@ -1652,6 +1996,59 @@ export class CloudSyncCoordinator {
     }
   }
 
+  private restoreResolutionPending(): boolean {
+    return (this.durableState !== null &&
+      this.durableState.phase === 'restore_quarantine') ||
+      this.restoreUploadBlocked();
+  }
+
+  private restoreTablesForExplicitDecision():
+    string[] | null {
+    if (!this.hooks ||
+      !this.hooks.pendingRestoreTables) {
+      return null;
+    }
+    try {
+      const pending: string[] | null =
+        this.hooks.pendingRestoreTables();
+      if (pending === null) {
+        return null;
+      }
+      return snapshotCloudSyncTables(pending);
+    } catch (_error) {
+      return null;
+    }
+  }
+
+  private restoreUploadBarrierOverrideAllowed(
+    tables: string[]
+  ): boolean {
+    const pending: string[] | null =
+      this.restoreTablesForExplicitDecision();
+    if (pending === null) { return false; }
+    for (let i = 0; i < tables.length; i++) {
+      if (this.selectionReenableBlocked(tables[i]) &&
+        pending.indexOf(tables[i]) < 0) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  private restoreResolutionRejected(
+    result: CloudSyncOperationResult
+  ): CloudSyncOperationResult {
+    this.startupState = 'pending';
+    return {
+      ok: false,
+      source: result.source,
+      tables: result.tables.slice(),
+      failedTables: result.tables.slice(),
+      rollbackFailed: false,
+      failureKind: 'restore_pending'
+    };
+  }
+
   private clearAllDirtyIntents(): boolean {
     this.dirtyAutomaticTables = [];
     this.automaticMutationVersions = {};
@@ -1805,29 +2202,70 @@ export class CloudSyncCoordinator {
       cloudSyncAutomaticUploadAllowed(this.durableState);
   }
 
+  private manualUploadAllowed(): boolean {
+    return this.durableState !== null &&
+      cloudSyncManualUploadAllowed(
+        this.durableState,
+        this.restoreResolutionPending());
+  }
+
+  private manualDownloadAllowed(): boolean {
+    return this.durableState !== null &&
+      cloudSyncManualDownloadAllowed(
+        this.durableState,
+        this.restoreResolutionPending());
+  }
+
   private beginLifecycleOperation(request: CloudSyncRequest): boolean {
     if (this.durableState === null) { return false; }
-    if (request.direction === 'nativeFirst' && !this.automaticUploadAllowed()) {
+    this.restoreResolutionOperationInFlight = false;
+    const resolvingRestore: boolean =
+      (request.source === 'manualUpload' ||
+        request.source === 'manualDownload') &&
+      this.restoreResolutionPending();
+    if (request.direction === 'nativeFirst' &&
+      (request.source === 'manualUpload'
+        ? !this.manualUploadAllowed()
+        : !this.automaticUploadAllowed())) {
       return false;
     }
     if (request.direction === 'cloudFirst' &&
-      !cloudSyncDownloadAllowed(this.durableState)) {
+      (request.source === 'manualDownload'
+        ? !this.manualDownloadAllowed()
+        : !cloudSyncDownloadAllowed(this.durableState))) {
       return false;
     }
     const next: CloudSyncDurableState = cloudSyncOperationStarted(
       this.durableState, request.source, request.direction, request.tables);
-    return this.persistDurableCandidate(next);
+    const persisted: boolean =
+      this.persistDurableCandidate(next);
+    if (persisted) {
+      this.restoreResolutionOperationInFlight =
+        resolvingRestore;
+    }
+    return persisted;
   }
 
   private finishLifecycleOperation(result: CloudSyncOperationResult): boolean {
     if (this.durableState === null) { return false; }
-    const next: CloudSyncDurableState = cloudSyncOperationFinished(
-      this.durableState,
-      result.ok,
-      result.failedTables,
-      result.rollbackFailed,
-      result.failureKind,
-      this.bootstrapCompleted);
+    const resolvingRestore: boolean =
+      this.restoreResolutionOperationInFlight;
+    this.restoreResolutionOperationInFlight = false;
+    const next: CloudSyncDurableState = resolvingRestore
+      ? cloudSyncRestoreResolutionAttemptFinished(
+        this.durableState,
+        result.ok,
+        result.failedTables,
+        result.rollbackFailed,
+        result.failureKind,
+        this.bootstrapCompleted)
+      : cloudSyncOperationFinished(
+        this.durableState,
+        result.ok,
+        result.failedTables,
+        result.rollbackFailed,
+        result.failureKind,
+        this.bootstrapCompleted);
     return this.persistDurableCandidate(next);
   }
 
@@ -1886,6 +2324,7 @@ export class CloudSyncCoordinator {
     this.automaticMutationVersions = {};
     this.journalMutationRevisions = {};
     this.restorePending = false;
+    this.restoreResolutionOperationInFlight = false;
     this.vncSelectionMutationPending = false;
     this.exclusiveVncSelectionLease = null;
   }

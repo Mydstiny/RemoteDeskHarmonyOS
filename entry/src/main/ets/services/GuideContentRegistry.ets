@@ -12,52 +12,40 @@ export interface GuideContentPage {
 
 const SHARED_GUIDE_PAGES: GuideContentPage[] = [
   {
-    id: 'protocols',
+    id: 'four-protocol-workspace',
     symbol: $rawfile('icons/computer-desktop.svg'),
-    title: '先选适合的连接方式',
-    desc: 'RDP 连接 Windows，RustDesk 适合跨平台远控，SSH/SFTP 适合服务器维护；VNC 仅在当前版本明确支持时使用。'
+    title: '四种协议，一个工作台',
+    desc: 'RDP 连接 Windows，RustDesk 负责跨平台远控，SSH/SFTP 管理服务器，VNC 连接标准兼容设备。先按目标设备选择协议。'
   },
   {
-    id: 'add-first-host',
+    id: 'add-and-organize',
     symbol: $rawfile('icons/globe-alt.svg'),
-    title: '从“添加”开始',
-    desc: '点击主机页的添加按钮，选择协议，按向导填写地址、端口、账号和密码，再保存第一台主机。'
+    title: '添加、分组，再连接',
+    desc: '从统一“添加”入口选择协议并保存主机；再用分组和协议筛选整理设备。连接前仍可检查地址、端口和账号。'
   },
   {
-    id: 'connection-security',
+    id: 'verify-before-trust',
     symbol: $rawfile('icons/shield-check.svg'),
-    title: '第一次连接先核对安全信息',
-    desc: 'RDP 会检查服务器证书，SSH 会显示主机指纹；RustDesk 可能需要设备密码或被控端批准。确认无误再信任。'
+    title: '第一次连接，先确认身份',
+    desc: '核对 RDP 证书、SSH 主机指纹或 RustDesk 被控端信息；密码、批准和二次验证只在来源可信时提交。'
   },
   {
-    id: 'remote-controls',
+    id: 'session-controls',
     symbol: $rawfile('icons/computer-desktop.svg'),
-    title: '连接后这样操作',
-    desc: '远程画面支持触控、触控板、键鼠和虚拟键盘。三指触摸或控制栏可以打开键盘、剪贴板、缩放和断开操作。'
+    title: '按设备选择操控方式',
+    desc: '手机可用触控和虚拟键盘，Pad/PC 可配合触控板、鼠标与实体键盘；会话控制栏用于切换输入、缩放和断开。'
   },
   {
-    id: 'transfer-clipboard',
+    id: 'files-and-tools',
     symbol: $rawfile('icons/folder-open.svg'),
-    title: '文件和剪贴板按真实能力工作',
-    desc: 'SFTP 可浏览、上传和下载文件；文本剪贴板按当前会话能力同步。未就绪或不支持的操作不会假装成功。'
+    title: '文件、剪贴板与安全工具',
+    desc: '用 SFTP 浏览和传输文件，按会话能力同步文本剪贴板；密钥库与验证器帮助保管 SSH 密钥和一次性验证码。'
   },
   {
-    id: 'background-video',
-    symbol: $rawfile('icons/cog-6-tooth.svg'),
-    title: '后台继续连接，画面可进画中画',
-    desc: '有真实远程视频时，后台会维持连接并尝试系统媒体播控和视频画中画；是否显示媒体胶囊仍由系统开关和设备能力决定。'
-  },
-  {
-    id: 'secure-sync-backup',
-    symbol: $rawfile('icons/key.svg'),
-    title: '把凭据和数据保护好',
-    desc: '主密码保护密钥库和验证器；登录华为账号可选择同步，离线模式只存本机。本地备份导入前会先校验。'
-  },
-  {
-    id: 'help-and-settings',
+    id: 'cloud-and-backup',
     symbol: $rawfile('icons/cloud.svg'),
-    title: '遇到问题先看设置',
-    desc: '设置里可以重新打开教程、查看前置操作、反馈问题和获取社区入口。反馈时附上协议、设备和复现步骤。'
+    title: '同步前，先选数据和方向',
+    desc: '华为账号云同步只处理你勾选的数据。恢复备份后，请明确选择“上传本机”或“下载云端”，确认方向后再执行。'
   }
 ];
 
@@ -70,10 +58,10 @@ function sharedPages(): GuideContentPage[] {
 export function firstInstallGuidePages(): GuideContentPage[] {
   const pages: GuideContentPage[] = sharedPages();
   pages.push({
-    id: 'welcome',
+    id: 'start-first-host',
     symbol: $rawfile('icons/shield-check.svg'),
-    title: '欢迎使用',
-    desc: '教程完成。现在就从统一“添加”入口创建第一台远程主机，连接前按提示完成安全确认。'
+    title: '从第一台主机开始',
+    desc: '准备好了。进入工作台，选择协议并添加第一台主机；遇到提示时先核对安全信息，再开始连接。'
   });
   return pages;
 }
@@ -83,8 +71,8 @@ export function settingsUsageGuidePages(): GuideContentPage[] {
   pages.push({
     id: 'revisit',
     symbol: $rawfile('icons/cog-6-tooth.svg'),
-    title: '随时在设置查看',
-    desc: '需要回顾时，从“设置 → 教程 → 简单使用教程”重新打开；部署细节可继续查看“如何进行前置操作”。'
+    title: '需要时随时回来',
+    desc: '从“设置 → 教程 → 简单使用教程”可以重新查看；协议部署、账号和服务端准备请继续打开“如何进行前置操作”。'
   });
   return pages;
 }

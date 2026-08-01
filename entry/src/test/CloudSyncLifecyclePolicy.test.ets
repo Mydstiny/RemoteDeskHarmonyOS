@@ -9,9 +9,13 @@ import {
   cloudSyncExternalRecoveryRequired,
   cloudSyncExternalRecoverySettled,
   cloudSyncIndeterminateSettled,
+  cloudSyncManualDownloadAllowed,
+  cloudSyncManualUploadAllowed,
   cloudSyncOperationFinished,
   cloudSyncOperationStarted,
   cloudSyncRestoreQuarantined,
+  cloudSyncRestoreResolutionAttemptFinished,
+  cloudSyncRestoreResolutionCompleted,
   cloudSyncRestoreReleased,
   corruptedCloudSyncDurableState,
   newCloudSyncDurableState,
@@ -179,6 +183,74 @@ export default function cloudSyncLifecyclePolicyTest(): void {
         cloudSyncRestoreReleased(quarantined, initial, 3);
       expect(released.phase).assertEqual('ready');
       expect(released.revision).assertEqual(quarantined.revision + 1);
+    });
+
+    it('allows_only_explicit_direction_while_restore_is_quarantined', 0, (): void => {
+      const initial: CloudSyncDurableState =
+        newCloudSyncDurableState(binding(), true, true, 1);
+      const quarantined: CloudSyncDurableState =
+        cloudSyncRestoreQuarantined(initial, 2);
+      expect(cloudSyncAutomaticUploadAllowed(
+        quarantined)).assertFalse();
+      expect(cloudSyncDownloadAllowed(
+        quarantined)).assertFalse();
+      expect(cloudSyncManualUploadAllowed(
+        quarantined, true)).assertTrue();
+      expect(cloudSyncManualDownloadAllowed(
+        quarantined, true)).assertTrue();
+      expect(cloudSyncManualUploadAllowed(
+        quarantined, false)).assertFalse();
+      expect(cloudSyncManualDownloadAllowed(
+        quarantined, false)).assertFalse();
+    });
+
+    it('keeps_each_terminal_restore_leg_quarantined_until_atomic_completion', 0, (): void => {
+      const initial: CloudSyncDurableState =
+        newCloudSyncDurableState(binding(), true, true, 1);
+      const quarantined: CloudSyncDurableState =
+        cloudSyncRestoreQuarantined(initial, 2);
+      const started: CloudSyncDurableState =
+        cloudSyncOperationStarted(
+          quarantined, 'manualUpload',
+          'nativeFirst', ['remotehosts'], 3);
+      const legComplete: CloudSyncDurableState =
+        cloudSyncRestoreResolutionAttemptFinished(
+          started, true, [], false,
+          'none', true, 4);
+      expect(legComplete.phase)
+        .assertEqual('restore_quarantine');
+      expect(cloudSyncAutomaticUploadAllowed(
+        legComplete)).assertFalse();
+
+      const completed: CloudSyncDurableState =
+        cloudSyncRestoreResolutionCompleted(
+          legComplete, 5);
+      expect(completed.phase).assertEqual('ready');
+      expect(completed.bootstrapCompleted)
+        .assertTrue();
+      expect(completed.lastFailureKind)
+        .assertEqual('none');
+    });
+
+    it('retains_stronger_recovery_after_indeterminate_restore_resolution', 0, (): void => {
+      const initial: CloudSyncDurableState =
+        newCloudSyncDurableState(binding(), true, true, 1);
+      const quarantined: CloudSyncDurableState =
+        cloudSyncRestoreQuarantined(initial, 2);
+      const started: CloudSyncDurableState =
+        cloudSyncOperationStarted(
+          quarantined, 'manualUpload',
+          'nativeFirst', ['remotehosts'], 3);
+      const indeterminate: CloudSyncDurableState =
+        cloudSyncRestoreResolutionAttemptFinished(
+          started, false, ['remotehosts'], false,
+          'indeterminate', true, 4);
+      expect(indeterminate.phase)
+        .assertEqual('recovery_required');
+      expect(cloudSyncManualUploadAllowed(
+        indeterminate, true)).assertFalse();
+      expect(cloudSyncManualDownloadAllowed(
+        indeterminate, true)).assertTrue();
     });
 
     it('treats_unknown_or_malformed_persisted_state_as_recovery_required', 0, (): void => {

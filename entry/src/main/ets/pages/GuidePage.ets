@@ -9,7 +9,7 @@ import { Palette, buildDark, buildLight } from '../common/Theme';
 import {
   resolveStartupMode,
   shouldPresentGuideAsBottomSheet,
-  shouldPresentGuideAsDialog,
+  shouldPresentGuideAsCenterSheet,
   StartupMode
 } from '../services/ReleaseNotesPolicy';
 import { CURRENT_RELEASE_VERSION, pagesForReleasedVersion, ReleaseNotePage } from '../services/ReleaseNotesRegistry';
@@ -17,7 +17,7 @@ import { firstInstallGuidePages, GuideContentPage } from '../services/GuideConte
 
 const GUIDE_KEY = 'guide_shown_v4';
 const LAST_SEEN_RELEASE_KEY = 'last_seen_release_version';
-const RELEASE_DIALOG_ENTER_DELAY_MS = 120;
+const GUIDE_SHEET_ENTER_DELAY_MS = 120;
 const GUIDE_SHEET_REFLOW_DELAY_MS = 80;
 
 @Entry
@@ -32,10 +32,10 @@ struct GuidePage {
   @State showContent: boolean = false;
   @State showGuideSheet: boolean = false;
   @State mode: StartupMode = StartupMode.FIRST_INSTALL_GUIDE;
-  // 首次构建也要有真实内容，系统隐私确认可能会暂时打断 ArkUI Sheet 的挂载。
   @State activePages: GuideContentPage[] = firstInstallGuidePages();
   private tutorialPages: GuideContentPage[] = firstInstallGuidePages();
   private isFinishing: boolean = false;
+  private guideSheetEnterTimer: number = -1;
   private guideSheetReopenTimer: number = -1;
 
   async aboutToAppear(): Promise<void> {
@@ -53,10 +53,14 @@ struct GuidePage {
       this.activePages = this.mode === StartupMode.RELEASE_NOTES ? releasePages : this.tutorialPages;
     } catch (_e) { /* 出错继续显示 */ }
     if (this.activePages.length === 0) { this.activePages = this.tutorialPages; }
-    setTimeout(() => {
+    this.cancelGuideSheetEnter();
+    this.guideSheetEnterTimer = setTimeout((): void => {
+      this.guideSheetEnterTimer = -1;
       this.showContent = true;
-      if (this.usesGuideSheet()) { this.showGuideSheet = true; }
-    }, RELEASE_DIALOG_ENTER_DELAY_MS);
+      if (!this.appInBackground && this.usesGuideSheet() && !this.isFinishing) {
+        this.showGuideSheet = true;
+      }
+    }, GUIDE_SHEET_ENTER_DELAY_MS);
   }
 
   private pal(): Palette {
@@ -72,7 +76,7 @@ struct GuidePage {
   }
 
   private usesGuideSheet(): boolean {
-    return this.mode === StartupMode.RELEASE_NOTES;
+    return this.mode !== StartupMode.LOGIN;
   }
 
   private onBackgroundFlagChange(): void {
@@ -92,6 +96,13 @@ struct GuidePage {
     }
   }
 
+  private cancelGuideSheetEnter(): void {
+    if (this.guideSheetEnterTimer !== -1) {
+      clearTimeout(this.guideSheetEnterTimer);
+      this.guideSheetEnterTimer = -1;
+    }
+  }
+
   private scheduleGuideSheetReopen(): void {
     if (this.guideSheetReopenTimer !== -1 || this.appInBackground ||
       !this.usesGuideSheet() || this.isFinishing) {
@@ -105,8 +116,8 @@ struct GuidePage {
     }, GUIDE_SHEET_REFLOW_DELAY_MS);
   }
 
-  private presentGuideAsDialog(): boolean {
-    return shouldPresentGuideAsDialog(this.mode, this.breakpoint);
+  private presentGuideAsCenterSheet(): boolean {
+    return shouldPresentGuideAsCenterSheet(this.mode, this.breakpoint);
   }
 
   private presentGuideAsBottomSheet(): boolean {
@@ -117,8 +128,8 @@ struct GuidePage {
     // Keep the content below the usable window height on phones and small
     // freeform windows. The pages are intentionally short so the Sheet never
     // needs to grow beyond the viewport just to fit a paragraph.
-    if (this.presentGuideAsBottomSheet()) { return '76%'; }
-    return this.breakpoint === 'xl' ? 560 : 520;
+    if (this.presentGuideAsBottomSheet()) { return '82%'; }
+    return this.breakpoint === 'xl' ? 620 : 580;
   }
 
   @Builder guidePanel(isSheet: boolean) {
@@ -212,8 +223,8 @@ struct GuidePage {
       .constraintSize({ maxWidth: 640, maxHeight: 720 })
       .clip(true)
       .backgroundColor(isSheet ? this.pal().sheetBg : this.pal().bg)
-      .borderRadius(this.presentGuideAsDialog() ? 24 : 0)
-      .border(this.presentGuideAsDialog() ?
+      .borderRadius(this.presentGuideAsCenterSheet() ? 24 : 0)
+      .border(this.presentGuideAsCenterSheet() ?
         { width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid } :
         { width: 0, color: Color.Transparent, style: BorderStyle.Solid })
       .align(Alignment.Center)
@@ -225,11 +236,7 @@ struct GuidePage {
 
   build() {
     Stack() {
-      if (this.usesGuideSheet()) {
-        Column().width('100%').height('100%').backgroundColor(this.pal().bg)
-      } else {
-        this.guidePanel(false)
-      }
+      Column().width('100%').height('100%').backgroundColor(this.pal().bg)
     }
     .width('100%').height('100%')
     .backgroundColor(this.pal().bg)
@@ -247,6 +254,7 @@ struct GuidePage {
   }
 
   aboutToDisappear(): void {
+    this.cancelGuideSheetEnter();
     this.cancelGuideSheetReopen();
   }
 
@@ -272,12 +280,9 @@ struct GuidePage {
   private finish(): void {
     if (this.isFinishing) { return; }
     this.isFinishing = true;
+    this.cancelGuideSheetEnter();
     this.cancelGuideSheetReopen();
     this.persistCompletion();
-    if (!this.usesGuideSheet()) {
-      router.replaceUrl({ url: 'pages/LoginPage' });
-      return;
-    }
     this.showGuideSheet = false;
   }
 }

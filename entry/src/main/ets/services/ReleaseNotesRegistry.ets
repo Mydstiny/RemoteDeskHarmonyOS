@@ -1,4 +1,4 @@
-export const CURRENT_RELEASE_VERSION: string = '1.0.10';
+export const CURRENT_RELEASE_VERSION: string = '1.1.0';
 
 export interface ReleaseNotePage {
   id: string;
@@ -11,84 +11,46 @@ export function pagesForReleasedVersion(version: string): ReleaseNotePage[] {
   if (version !== CURRENT_RELEASE_VERSION) { return []; }
   return [
     {
-      id: 'rustdesk-relay-save',
-      symbol: $rawfile('icons/shield-check.svg'),
-      title: 'RustDesk 服务器可靠保存',
-      desc: '服务器配置先在本机事务提交并按稳定 ID 回读；云同步失败不会再伪装成本地保存失败，失败时保留草稿并给出可操作原因。'
+      id: 'release-1-1-0',
+      symbol: $rawfile('icons/computer-desktop.svg'),
+      title: '1.1.0：一次完整升级',
+      desc: '这是从 1.0.8 到 1.1.0 的累计更新：四协议工作台、远程输入、连接性能、数据安全与云同步恢复都得到持续改进。'
     },
     {
-      id: 'rustdesk-unified-setup',
+      id: 'release-four-protocols',
       symbol: $rawfile('icons/globe-alt.svg'),
-      title: '更清晰的服务器添加流程',
-      desc: 'RustDesk 服务器统一为一个添加流程，默认只需导入配置或填写服务器地址与公钥；端口、API 和控制面能力按需展开。'
+      title: '四种协议各归其位',
+      desc: 'RDP、RustDesk、SSH/SFTP 与 VNC 共用主机工作台，同时保留各自的认证、连接与设置边界；添加和筛选路径更统一。'
     },
     {
-      id: 'rustdesk-auth-boundaries',
+      id: 'release-input-performance',
+      symbol: $rawfile('icons/computer-desktop.svg'),
+      title: '远程画面与输入更顺手',
+      desc: 'VNC 的 ZRLE 解码、滚轮与键盘输入得到优化；触控、触控板、鼠标、实体键盘和输入法继续按设备形态协同工作。'
+    },
+    {
+      id: 'release-cloud-recovery',
+      symbol: $rawfile('icons/cloud.svg'),
+      title: '云同步恢复不再卡死',
+      desc: '导入本地备份后，自动同步会等待你的选择；明确执行“上传本机”或“下载云端”后，仅同步已勾选的数据，未勾选的数据继续保留在本机。'
+    },
+    {
+      id: 'release-security-boundaries',
       symbol: $rawfile('icons/shield-check.svg'),
-      title: '登录与中继凭据不再混用',
-      desc: '地址簿登录、Server Pro 控制面令牌、共享访问 Key 和服务器公钥保持独立；只有来源和能力均可证明的配置才会向连接请求投影令牌。'
+      title: '凭据与数据边界更清楚',
+      desc: '证书、主机指纹、RustDesk 凭据、SSH 密钥和验证器继续分开管理；云同步按账号和勾选范围执行，不把失败显示成成功。'
     },
     {
-      id: 'rustdesk-connection-diagnostics',
+      id: 'release-rustdesk-workflow',
       symbol: $rawfile('icons/cog-6-tooth.svg'),
-      title: '连接诊断可判定',
-      desc: 'FORCE_RELAY 与 DIRECT_IP 路径显式校验并返回结构化阶段、错误码和尝试编号；日志不会记录密码、令牌、密钥或完整地址。'
+      title: 'RustDesk 配置与诊断更可靠',
+      desc: '服务器保存、统一添加流程、认证边界与连接诊断得到加强；本地保存和云端结果分别反馈，失败时保留可继续处理的信息。'
     },
     {
-      id: 'welcome-1-0-10',
+      id: 'welcome-1-1-0',
       symbol: $rawfile('icons/cog-6-tooth.svg'),
-      title: '欢迎使用 1.0.10',
-      desc: '这一版聚焦 RustDesk 服务器保存、普通用户控制面登录与中继连接。AUTO/P2P 回退仍需真实协议和设备验证，当前不会被界面描述为已经可用。'
+      title: '欢迎使用 1.1.0',
+      desc: '这一版汇总 1.0.8 以来的远程协议、输入、数据安全与云同步改进。仍需真实协议或设备验证的能力不会被界面描述为已经可用。'
     }
   ];
-}
-
-export enum StartupMode { FIRST_INSTALL_GUIDE, RELEASE_NOTES, LOGIN }
-
-function parseVersion(value: string): number[] | null {
-  const parts: string[] = value.split('.');
-  if (parts.length !== 3) { return null; }
-  const values: number[] = [];
-  for (let i: number = 0; i < parts.length; i++) {
-    if (!/^\d+$/.test(parts[i])) { return null; }
-    values.push(Number(parts[i]));
-  }
-  return values;
-}
-
-export function compareReleaseVersion(left: string, right: string): number {
-  const a: number[] | null = parseVersion(left);
-  const b: number[] | null = parseVersion(right);
-  if (a === null || b === null) { return 0; }
-  for (let i: number = 0; i < 3; i++) {
-    if (a[i] < b[i]) { return -1; }
-    if (a[i] > b[i]) { return 1; }
-  }
-  return 0;
-}
-
-export function resolveStartupMode(guideShown: boolean, lastSeen: string, current: string,
-  hasCurrentReleaseNotes: boolean): StartupMode {
-  if (!guideShown) { return StartupMode.FIRST_INSTALL_GUIDE; }
-  if (!hasCurrentReleaseNotes || parseVersion(current) === null) {
-    return StartupMode.LOGIN;
-  }
-  const previous: string = lastSeen.length === 0 ? '0.0.0' : lastSeen;
-  if (parseVersion(previous) === null) { return StartupMode.LOGIN; }
-  return compareReleaseVersion(previous, current) < 0 ? StartupMode.RELEASE_NOTES : StartupMode.LOGIN;
-}
-
-/**
- * 手机端的首次介绍和版本更新说明都使用底部半屏 Sheet。
- * 登录模式没有引导内容，不应触发 Sheet。
- */
-export function shouldPresentGuideAsBottomSheet(mode: StartupMode, breakpoint: string): boolean {
-  return mode !== StartupMode.LOGIN && breakpoint === 'sm';
-}
-
-/**
- * Pad/PC 端的版本更新说明和首次介绍都使用居中系统 Sheet。
- */
-export function shouldPresentGuideAsDialog(mode: StartupMode, breakpoint: string): boolean {
-  return mode !== StartupMode.LOGIN && breakpoint !== 'sm';
 }

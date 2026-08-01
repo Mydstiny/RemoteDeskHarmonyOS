@@ -124,10 +124,7 @@ import {
 import { rustDeskRelayKeyModeForFfi } from '../services/RustDeskRelayKeyPolicy';
 import { rustDeskConnectionStrategyForHost } from '../services/RustDeskConnectionStrategyPolicy';
 import { sheetOpenDelayMsAfterDismiss } from '../services/SheetTransitionPolicy';
-import {
-  nextRemoteHostSheetGeneration,
-  shouldAcceptRemoteHostSheetDismiss
-} from '../services/RemoteHostSheetLifecyclePolicy';
+import { nextRemoteHostSheetGeneration } from '../services/RemoteHostSheetLifecyclePolicy';
 import { shouldPreserveManagedRustDeskRoute } from '../services/RustDeskProSyncPolicy';
 import {
   canUseRustDeskAdaptiveOrientation,
@@ -1485,6 +1482,13 @@ struct HostListPage {
     this.cloudSyncStep = CLOUD_SYNC_SHEET_ACTIONS;
   }
 
+  private cloudDirectionConfirmationAvailable():
+    boolean {
+    return this.cloudSyncSelectedTables.length > 0 ||
+      CloudStore.getInstance()
+        .requiresRestoreDirectionDecision();
+  }
+
   private async toggleCloudSyncTable(
     table: string
   ): Promise<void> {
@@ -1492,7 +1496,10 @@ struct HostListPage {
     const index: number = next.indexOf(table);
     if (index >= 0) { next.splice(index, 1); } else { next.push(table); }
     const cloud: CloudStore = CloudStore.getInstance();
+    const resolvingRestore: boolean =
+      cloud.requiresRestoreDirectionDecision();
     if (index < 0 &&
+      !resolvingRestore &&
       !cloud.beginSelectionReenableBarrier(table)) {
       this.cloudSyncError =
         '同步范围禁写门禁未能保存，已拒绝重新启用';
@@ -1500,7 +1507,7 @@ struct HostListPage {
     }
     if (!CloudSyncSelectionStore.getInstance()
       .replaceSelectedBusinessTables(getContext(this), next)) {
-      if (index < 0) {
+      if (index < 0 && !resolvingRestore) {
         cloud.abortSelectionReenableBarrier(table);
       }
       this.cloudSyncError = '同步范围未能安全保存，请重试';
@@ -1512,6 +1519,11 @@ struct HostListPage {
     // deletes must never become native-first merely because the user later
     // turned the table back on.
     if (index < 0) {
+      if (resolvingRestore) {
+        this.cloudSyncError =
+          '恢复数据等待方向确认：请选择“上传本机”或“下载云端”完成同步';
+        return;
+      }
       const result =
         await cloud.requestSelectionReenableCloudFirst(
           table);
@@ -1614,6 +1626,8 @@ struct HostListPage {
 
   private async confirmCloudSyncUpload(): Promise<void> {
     const cloud: CloudStore = CloudStore.getInstance();
+    const resolvingRestore: boolean =
+      cloud.requiresRestoreDirectionDecision();
     if (cloud.requiresCloudServiceGuidance()) {
       this.cloudSyncStep = CLOUD_SYNC_SHEET_UNAVAILABLE;
       return;
@@ -1622,7 +1636,12 @@ struct HostListPage {
     this.cloudSyncStep = CLOUD_SYNC_SHEET_UPLOADING;
     const completed: boolean = await cloud.uploadAllToCloud();
     if (completed) {
-      promptAction.showToast({ message: '已上传 ' + cloud.syncableTables().length.toString() + ' 类已选数据到华为云空间', duration: 2000 });
+      promptAction.showToast({
+        message: resolvingRestore
+          ? '恢复方向已确认：已选数据已上传，未选数据保留本机'
+          : '已上传 ' + cloud.syncableTables().length.toString() + ' 类已选数据到华为云空间',
+        duration: 2400
+      });
       this.closeSettingsLeafSheet();
       return;
     }
@@ -1641,6 +1660,8 @@ struct HostListPage {
 
   private async confirmCloudSyncDownload(): Promise<void> {
     const cloud: CloudStore = CloudStore.getInstance();
+    const resolvingRestore: boolean =
+      cloud.requiresRestoreDirectionDecision();
     if (cloud.requiresCloudServiceGuidance()) {
       this.cloudSyncStep = CLOUD_SYNC_SHEET_UNAVAILABLE;
       return;
@@ -1650,7 +1671,12 @@ struct HostListPage {
     const result = await cloud.downloadAllFromCloudResult();
     if (result.ok) {
       this.applyCloudUserSettings();
-      promptAction.showToast({ message: '已从华为云空间恢复 ' + cloud.syncableTables().length.toString() + ' 类已选数据', duration: 2000 });
+      promptAction.showToast({
+        message: resolvingRestore
+          ? '恢复方向已确认：已选数据已下载，未选数据保留本机'
+          : '已从华为云空间恢复 ' + cloud.syncableTables().length.toString() + ' 类已选数据',
+        duration: 2400
+      });
       this.closeSettingsLeafSheet();
       return;
     }
@@ -2809,22 +2835,6 @@ struct HostListPage {
     return this.rdpCertificateState === RdpCertificatePreflightState.PROBING;
   }
 
-  private handleRdpCertificateSheetDismiss(action: DismissSheetAction): void {
-    if (!shouldAcceptRemoteHostSheetDismiss({
-      busy: this.isRdpCertificateBusy(),
-      closing: this.rdpCertificateClosing,
-      pendingRoute: this.rdpCertificatePendingRouteParams !== null
-    })) {
-      return;
-    }
-    const elapsed: number = Date.now() - this.rdpCertificateOpenedAt;
-    if (elapsed < 500) {
-      return;
-    }
-    this.doRdpCertificateCancel(false);
-    action.dismiss();
-  }
-
   private doRdpCertificateCancel(closeSheet: boolean = true): void {
     if (this.rdpCertificateClosing) {
       return;
@@ -3167,19 +3177,6 @@ struct HostListPage {
   private isSshPreflightBusy(): boolean {
     return this.sshPreflightState === SshPreflightState.PROBING ||
       this.sshPreflightState === SshPreflightState.VERIFYING_PASSPHRASE;
-  }
-
-  private handleSshPreflightSheetDismiss(action: DismissSheetAction): void {
-    const elapsed: number = Date.now() - this.sshPreflightOpenedAt;
-    if (elapsed < 500 || !shouldAcceptRemoteHostSheetDismiss({
-      busy: this.isSshPreflightBusy(),
-      closing: this.sshPreflightClosing,
-      pendingRoute: this.sshPreflightPendingRouteParams !== null
-    })) {
-      return;
-    }
-    this.doSshPreflightCancel(false);
-    action.dismiss();
   }
 
   private handleSshPreflightSheetDisappear(): void {
@@ -4805,48 +4802,49 @@ struct HostListPage {
     }
   }
 
-  private handleRemoteHostSheetDismiss(action: DismissSheetAction): void {
+  private handleRemoteHostSheetWillDismiss(action: DismissSheetAction): void {
     switch (this.remoteHostSheetMode) {
       case REMOTE_HOST_SHEET_SSH_PREFLIGHT:
-        this.handleSshPreflightSheetDismiss(action);
-        return;
+        this.doSshPreflightCancel(false);
+        break;
       case REMOTE_HOST_SHEET_RDP_CERTIFICATE:
-        this.handleRdpCertificateSheetDismiss(action);
-        return;
+        this.doRdpCertificateCancel(false);
+        break;
       case REMOTE_HOST_SHEET_RUSTDESK_PREFLIGHT:
-        if (!shouldAcceptRemoteHostSheetDismiss({
-          busy: this.rustDeskProPreflightState === RustDeskProPreflightState.CONNECTING,
-          closing: this.rustDeskProPreflightClosing,
-          pendingRoute: this.rustDeskProPreflightPendingRouteParams !== null
-        })) {
-          return;
-        }
         this.cancelRustDeskProPreflight(false);
-        action.dismiss();
-        return;
+        break;
       case REMOTE_HOST_SHEET_PASSPHRASE:
         this.beginRemoteHostSheetClose(REMOTE_HOST_SHEET_PASSPHRASE);
-        action.dismiss();
-        return;
+        break;
       case REMOTE_HOST_SHEET_PUBLIC_KEY:
-        if (!shouldAcceptRemoteHostSheetDismiss({
-          busy: this.sshPublicKeyInstallBusy,
-          closing: this.remoteHostSheetClosing,
-          pendingRoute: false
-        })) {
-          return;
-        }
         this.beginRemoteHostSheetClose(REMOTE_HOST_SHEET_PUBLIC_KEY);
-        action.dismiss();
-        return;
+        break;
       default:
         return;
     }
+    // Registering onWillDismiss normally makes ArkUI spring the Sheet back
+    // before dismissing it. onWillSpringBackWhenDismiss below suppresses that
+    // default bounce, so this remains a single native exit animation while the
+    // cancellation generation is advanced before any async success can route.
+    action.dismiss();
   }
 
   private handleRemoteHostSheetDisappear(): void {
     const mode: number = this.remoteHostSheetClosingMode !== REMOTE_HOST_SHEET_NONE
       ? this.remoteHostSheetClosingMode : this.remoteHostSheetMode;
+    // onWillDismiss normally cancels before the native exit starts. Keep this
+    // fallback for lifecycle-driven closes that reach onDisappear without the
+    // interactive callback; the generation must still be invalidated before
+    // cleanup and routing decisions are drained.
+    if (!this.remoteHostSheetClosing) {
+      if (mode === REMOTE_HOST_SHEET_SSH_PREFLIGHT) {
+        this.doSshPreflightCancel(false);
+      } else if (mode === REMOTE_HOST_SHEET_RDP_CERTIFICATE) {
+        this.doRdpCertificateCancel(false);
+      } else if (mode === REMOTE_HOST_SHEET_RUSTDESK_PREFLIGHT) {
+        this.cancelRustDeskProPreflight(false);
+      }
+    }
     switch (mode) {
       case REMOTE_HOST_SHEET_SSH_PREFLIGHT:
         this.handleSshPreflightSheetDisappear();
@@ -4929,7 +4927,11 @@ struct HostListPage {
         showClose: false,
         maskColor: 'rgba(0,0,0,0.4)',
         onWillDismiss: (action: DismissSheetAction): void => {
-          this.handleRemoteHostSheetDismiss(action);
+          this.handleRemoteHostSheetWillDismiss(action);
+        },
+        onWillSpringBackWhenDismiss: (_action: SpringBackAction): void => {
+          // Deliberately do not spring back: cancellation has already been
+          // recorded and action.dismiss() owns the one native exit transition.
         },
         onDisappear: (): void => {
           this.handleRemoteHostSheetDisappear();
@@ -4946,16 +4948,19 @@ struct HostListPage {
         blurStyle: BlurStyle.NONE,
         showClose: settingsLeafSheetUsesSystemCloseButton(),
         maskColor: 'rgba(0,0,0,0.4)',
+        onWillDismiss: (action: DismissSheetAction): void => {
+          this.handleVncSettingsLeafWillDismiss(action);
+        },
+        onWillSpringBackWhenDismiss: (action: SpringBackAction): void => {
+          // Only an unsaved VNC editor must stay open while its confirmation
+          // dialog is shown. Ordinary settings Sheets skip the default bounce
+          // and dismiss with the same single native transition as the FAB.
+          if (this.vncSettingsLeafDirty) {
+            action.springBack();
+          }
+        },
         onDisappear: (): void => {
           this.handleSettingsLeafSheetDisappear();
-        },
-        onWillDismiss: (action: DismissSheetAction): void => {
-          if (this.settingsLeafSheetMode >= SETTINGS_SHEET_VNC_CONNECTION &&
-            this.settingsLeafSheetMode <= SETTINGS_SHEET_VNC_CLIPBOARD) {
-            this.handleVncSettingsLeafWillDismiss(action);
-          } else {
-            action.dismiss();
-          }
         }
       })
       Column() {
@@ -7461,7 +7466,7 @@ struct HostListPage {
             }.width('100%').padding({ left: 14, right: 16, top: 13, bottom: 13 })
           }.width('100%').borderRadius(16).backgroundColor(this.pal().surface)
             .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
-            .onClick((): void => { this.cloudSyncError = ''; this.cloudSyncStep = this.cloudSyncSelectedTables.length > 0 ? CLOUD_SYNC_SHEET_UPLOAD_CONFIRM : CLOUD_SYNC_SHEET_MANAGE_TABLES; })
+            .onClick((): void => { this.cloudSyncError = ''; this.cloudSyncStep = this.cloudDirectionConfirmationAvailable() ? CLOUD_SYNC_SHEET_UPLOAD_CONFIRM : CLOUD_SYNC_SHEET_MANAGE_TABLES; })
 
           Column() {
             Row() {
@@ -7469,13 +7474,13 @@ struct HostListPage {
                 .width(40).height(40).borderRadius(20).backgroundColor(this.pal().surface).justifyContent(FlexAlign.Center)
               Column() {
                 Text(this.currentCloudSyncSheetSpec().secondaryLabel).fontSize(15).fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font())
-                Text('从云端恢复此设备的全部可同步数据').fontSize(12).fontColor(this.pal().text3).fontFamily(this.font()).margin({ top: 3 })
+                Text('以已选数据的云端版本为准，覆盖本机').fontSize(12).fontColor(this.pal().text3).fontFamily(this.font()).margin({ top: 3 })
               }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 12 })
               SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(16).fontColor([this.pal().text3])
             }.width('100%').padding({ left: 14, right: 16, top: 13, bottom: 13 })
           }.width('100%').borderRadius(16).backgroundColor(this.pal().surface)
             .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid }).margin({ top: 10 })
-            .onClick((): void => { this.cloudSyncError = ''; this.cloudSyncStep = this.cloudSyncSelectedTables.length > 0 ? CLOUD_SYNC_SHEET_DOWNLOAD_CONFIRM : CLOUD_SYNC_SHEET_MANAGE_TABLES; })
+            .onClick((): void => { this.cloudSyncError = ''; this.cloudSyncStep = this.cloudDirectionConfirmationAvailable() ? CLOUD_SYNC_SHEET_DOWNLOAD_CONFIRM : CLOUD_SYNC_SHEET_MANAGE_TABLES; })
 
           Column() {
             Row() {
@@ -7494,6 +7499,11 @@ struct HostListPage {
       } else if (this.cloudSyncStep === CLOUD_SYNC_SHEET_MANAGE_TABLES) {
         Column() {
           Text('管理同步数据').fontSize(18).fontWeight(FontWeight.Bold).fontColor(this.pal().text).fontFamily(this.font())
+          if (CloudStore.getInstance().requiresRestoreDirectionDecision()) {
+            Text('本地备份恢复尚未完成方向确认。勾选需要同步的数据后返回；未勾选的数据会保留本机，不会阻塞其他表。')
+              .fontSize(12).fontColor(this.accentColor).fontFamily(this.font())
+              .lineHeight(19).margin({ top: 8 })
+          }
           Text('取消勾选不会删除数据，只会停止此设备未来的上传和下载。加密参数会随敏感数据自动保护。')
             .fontSize(12).fontColor(this.pal().text3).fontFamily(this.font()).lineHeight(19).margin({ top: 8, bottom: 14 })
           ForEach(cloudSyncSelectableTables(), (table: string) => {

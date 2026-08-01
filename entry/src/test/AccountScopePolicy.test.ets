@@ -7,7 +7,9 @@ import {
   accountStoreIdentity,
   cloudAccountBindingForScope,
   cloneAccountSessionLease,
+  cryptoParamCloudRecordId,
   deviceLocalScopeToken,
+  legacyScopedCryptoParamRecordId,
   ownerRecordWriteAllowed,
   ownerScopeIdForUnionId,
   scopeTokenIsCurrent,
@@ -44,6 +46,24 @@ export default function accountScopePolicyTest(): void {
       expect(first === second).assertFalse();
       expect(first.indexOf('union-a')).assertEqual(-1);
       expect(accountStoreIdentity(first).indexOf('union-a')).assertEqual(-1);
+    });
+
+    it('derives_bounded_cloud_safe_crypto_parameter_record_ids', 0, (): void => {
+      const ownerA: string = ownerScopeIdForUnionId('union-a');
+      const ownerB: string = ownerScopeIdForUnionId('union-b');
+      const first: string = cryptoParamCloudRecordId(
+        ownerA, 'crypto_status');
+      const again: string = cryptoParamCloudRecordId(
+        ' ' + ownerA + ' ', ' crypto_status ');
+      const otherOwner: string = cryptoParamCloudRecordId(
+        ownerB, 'crypto_status');
+      expect(first).assertEqual(again);
+      expect(first.length).assertEqual(32);
+      expect(/^[0-9a-f]{32}$/.test(first)).assertTrue();
+      expect(first === otherOwner).assertFalse();
+      expect(legacyScopedCryptoParamRecordId(
+        ownerA, 'crypto_status')).assertEqual(
+        'crypto-param|' + ownerA + '|crypto_status');
     });
 
     it('keeps_device_local_and_account_scopes_physically_separate', 0, (): void => {

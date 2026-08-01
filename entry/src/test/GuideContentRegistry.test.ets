@@ -14,29 +14,27 @@ export default function guideContentRegistryTest(): void {
     it('keeps_first_install_and_settings_guides_equal_except_final_page', 0, (): void => {
       const firstInstall: GuideContentPage[] = firstInstallGuidePages();
       const settings: GuideContentPage[] = settingsUsageGuidePages();
-      expect(firstInstall.length).assertEqual(9);
+      expect(firstInstall.length).assertEqual(7);
       expect(settings.length).assertEqual(firstInstall.length);
       for (let i = 0; i < firstInstall.length - 1; i++) {
         expect(settings[i].id).assertEqual(firstInstall[i].id);
         expect(settings[i].title).assertEqual(firstInstall[i].title);
         expect(settings[i].desc).assertEqual(firstInstall[i].desc);
       }
-      expect(firstInstall[firstInstall.length - 1].id).assertEqual('welcome');
+      expect(firstInstall[firstInstall.length - 1].id).assertEqual('start-first-host');
       expect(settings[settings.length - 1].id).assertEqual('revisit');
-      expect(firstInstall[firstInstall.length - 1].title).assertEqual('欢迎使用');
-      expect(settings[settings.length - 1].title).assertEqual('随时在设置查看');
+      expect(firstInstall[firstInstall.length - 1].title).assertEqual('从第一台主机开始');
+      expect(settings[settings.length - 1].title).assertEqual('需要时随时回来');
     });
 
     it('covers_current_user_facing_capabilities', 0, (): void => {
       const pages: GuideContentPage[] = firstInstallGuidePages();
-      expect(containsPage(pages, 'protocols')).assertTrue();
-      expect(containsPage(pages, 'add-first-host')).assertTrue();
-      expect(containsPage(pages, 'connection-security')).assertTrue();
-      expect(containsPage(pages, 'remote-controls')).assertTrue();
-      expect(containsPage(pages, 'transfer-clipboard')).assertTrue();
-      expect(containsPage(pages, 'background-video')).assertTrue();
-      expect(containsPage(pages, 'secure-sync-backup')).assertTrue();
-      expect(containsPage(pages, 'help-and-settings')).assertTrue();
+      expect(containsPage(pages, 'four-protocol-workspace')).assertTrue();
+      expect(containsPage(pages, 'add-and-organize')).assertTrue();
+      expect(containsPage(pages, 'verify-before-trust')).assertTrue();
+      expect(containsPage(pages, 'session-controls')).assertTrue();
+      expect(containsPage(pages, 'files-and-tools')).assertTrue();
+      expect(containsPage(pages, 'cloud-and-backup')).assertTrue();
     });
 
     it('uses_unique_non_empty_page_content', 0, (): void => {

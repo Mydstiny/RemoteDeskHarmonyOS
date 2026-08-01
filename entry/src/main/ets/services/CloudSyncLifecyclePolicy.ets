@@ -538,6 +538,20 @@ export function cloudSyncAutomaticUploadAllowed(
       state.phase === 'conflict_blocked');
 }
 
+/**
+ * A portable restore is intentionally fail-closed for every background path,
+ * but the user's explicit local-first decision must remain reachable or the
+ * quarantine can never be resolved. Recovery/blocked phases are excluded:
+ * an indeterminate transfer or failed rollback still needs reconciliation.
+ */
+export function cloudSyncManualUploadAllowed(
+  state: CloudSyncDurableState,
+  resolvingRestore: boolean
+): boolean {
+  return cloudSyncAutomaticUploadAllowed(state) ||
+    (resolvingRestore && state.phase === 'restore_quarantine');
+}
+
 export function cloudSyncDownloadAllowed(
   state: CloudSyncDurableState
 ): boolean {
@@ -546,4 +560,58 @@ export function cloudSyncDownloadAllowed(
     state.phase === 'retry_wait' ||
     state.phase === 'conflict_blocked' ||
     state.phase === 'recovery_required';
+}
+
+/** Cloud-first is the only safe explicit escape from an interrupted upload. */
+export function cloudSyncManualDownloadAllowed(
+  state: CloudSyncDurableState,
+  resolvingRestore: boolean
+): boolean {
+  return cloudSyncDownloadAllowed(state) ||
+    (resolvingRestore && state.phase === 'restore_quarantine');
+}
+
+/**
+ * One ordinary/VNC leg has reached a terminal result while a restored backup
+ * is still quarantined. Definite success or failure returns to quarantine so
+ * the remaining leg can run, while indeterminate and rollback failures retain
+ * their stronger recovery/blocked state.
+ */
+export function cloudSyncRestoreResolutionAttemptFinished(
+  state: CloudSyncDurableState,
+  ok: boolean,
+  failedTables: string[],
+  rollbackFailed: boolean,
+  failureKind: CloudSyncFailureKind,
+  bootstrapCompleted: boolean,
+  now: number = Date.now()
+): CloudSyncDurableState {
+  const finished: CloudSyncDurableState = cloudSyncOperationFinished(
+    state, ok, failedTables, rollbackFailed,
+    failureKind, bootstrapCompleted, now);
+  if (finished.phase === 'blocked' ||
+    finished.phase === 'recovery_required') {
+    return finished;
+  }
+  return cloudSyncRestoreQuarantined(finished, now);
+}
+
+/** All restored tables reached the user's chosen terminal direction. */
+export function cloudSyncRestoreResolutionCompleted(
+  state: CloudSyncDurableState,
+  now: number = Date.now()
+): CloudSyncDurableState {
+  const next: CloudSyncDurableState =
+    cloneCloudSyncDurableState(state);
+  next.revision = state.revision + 1;
+  next.bootstrapCompleted = true;
+  next.lastFailureKind = 'none';
+  next.failedTables = [];
+  next.updatedAt = now;
+  // settledPhase deliberately preserves restore_quarantine. Move to the
+  // neutral ready candidate only after CloudStore atomically commits marker
+  // deletion and this lifecycle candidate.
+  next.phase = 'ready';
+  next.phase = settledPhase(next);
+  return next;
 }

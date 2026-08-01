@@ -72,6 +72,10 @@ foreach ($relative in $forbidden) {
     Add-Failure "Private/local configuration is tracked: $relative"
   }
 }
+$cloudSchemaOverride = 'entry/src/main/resources/rawfile/arkdata/cloud/cloud_schema.json'
+if (Test-Path (Join-Path $root $cloudSchemaOverride)) {
+  Add-Failure 'A bundled ArkData cloud schema overrides the authoritative Huawei Cloud Space container schema.'
+}
 $localArtifactPatterns = @(
   '^\.planning/',
   '^\.superpowers/',

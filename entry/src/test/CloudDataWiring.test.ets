@@ -5,7 +5,8 @@ import {
   CloudSyncOperationResult,
   CloudSyncRetryClock,
   CloudSyncRetryTimerTask,
-  CloudSyncSelectionSource
+  CloudSyncSelectionSource,
+  VncCloudSyncSelectionSource
 } from '../main/ets/services/CloudSyncCoordinator';
 import {
   CloudStore,
@@ -32,7 +33,9 @@ import {
   CloudSyncFailureKind
 } from '../main/ets/services/CloudSyncCoordinatorPolicy';
 import {
-  CloudSyncDurableState
+  CloudSyncDurableState,
+  cloudSyncRestoreQuarantined,
+  newCloudSyncDurableState
 } from '../main/ets/services/CloudSyncLifecyclePolicy';
 import {
   AccountSessionLease
@@ -51,6 +54,17 @@ import {
 import {
   CloudSelectionReenablePhase
 } from '../main/ets/services/CloudSelectionReenablePolicy';
+import {
+  CLOUD_BOOTSTRAP_COMPLETED_KEY,
+  CLOUD_SYNC_DURABLE_STATE_KEY,
+  RESTORED_NOT_UPLOADED_KEY,
+  RESTORED_NOT_UPLOADED_TABLE_PREFIX,
+  CloudRestoreResolutionPort,
+  CloudRestoreResolutionResult,
+  completeCloudRestoreResolution,
+  pendingRestoreResolutionTables,
+  writeFullRestoreQuarantineMarkers
+} from '../main/ets/services/CloudStoreRestoreResolutionWiring';
 
 class DeferredSignal {
   promise: Promise<void>;
@@ -85,6 +99,28 @@ class FixedSelectionSource
 
   selectedBusinessTables(): string[] {
     return this.tables.slice();
+  }
+}
+
+class FixedVncSelectionSource
+  implements VncCloudSyncSelectionSource {
+  private readonly selected: boolean;
+  private readonly crypto: boolean;
+
+  constructor(selected: boolean,
+    crypto: boolean = false) {
+    this.selected = selected;
+    this.crypto = crypto;
+  }
+
+  hasSelection(): boolean {
+    return this.selected;
+  }
+
+  needsCrypto(
+    _cryptoConfigured: boolean
+  ): boolean {
+    return this.crypto;
   }
 }
 
@@ -145,6 +181,10 @@ class CoordinatorHooks
     null;
   durableState:
     CloudSyncDurableState | null = null;
+  restoreResolutionAllowed: boolean = true;
+  restoreResolutionCount: number = 0;
+  restoreResolutionTables: string[] = [];
+  pendingRestoredTables: string[] | null = [];
 
   beginManualDownload(): boolean {
     return true;
@@ -176,6 +216,11 @@ class CoordinatorHooks
       : this.restoredNotUploaded;
   }
 
+  pendingRestoreTables(): string[] | null {
+    return this.pendingRestoredTables === null
+      ? null : this.pendingRestoredTables.slice();
+  }
+
   hasCloudBootstrapCompleted(): boolean {
     return true;
   }
@@ -188,6 +233,21 @@ class CoordinatorHooks
   persistDurableState(
     state: CloudSyncDurableState
   ): boolean {
+    this.durableState = state;
+    return true;
+  }
+
+  completeRestoreResolution(
+    state: CloudSyncDurableState,
+    resolvedTables: string[]
+  ): boolean {
+    if (!this.restoreResolutionAllowed) {
+      return false;
+    }
+    this.restoreResolutionCount++;
+    this.restoreResolutionTables =
+      resolvedTables.slice();
+    this.restoredNotUploaded = false;
     this.durableState = state;
     return true;
   }
@@ -223,6 +283,21 @@ function accountBinding():
       'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' +
       'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
   };
+}
+
+function quarantinedCoordinatorHooks():
+  CoordinatorHooks {
+  const hooks: CoordinatorHooks =
+    new CoordinatorHooks();
+  hooks.restoredNotUploaded = true;
+  hooks.pendingRestoredTables =
+    ['remotehosts', 'sshkeys'];
+  hooks.durableState =
+    cloudSyncRestoreQuarantined(
+      newCloudSyncDurableState(
+        accountBinding(), true, true, 1),
+      2);
+  return hooks;
 }
 
 async function flushPromiseQueue(): Promise<void> {
@@ -395,6 +470,128 @@ class MetadataMapQueryPort
       this.errorKeys.splice(index, 1);
     }
   }
+}
+
+type RestoreResolutionFault =
+  'none' | 'begin' | 'read' |
+  'write-bootstrap' | 'write-durable' |
+  'delete-global' | 'delete-table' |
+  'write-barrier' | 'delete-barrier' |
+  'commit' | 'post-read';
+
+class FakeRestoreResolutionPort
+  implements CloudRestoreResolutionPort {
+  fault: RestoreResolutionFault = 'none';
+  beginCount: number = 0;
+  commitCount: number = 0;
+  rollbackCount: number = 0;
+  private values:
+    Record<string, string> = {};
+  private before:
+    Record<string, string> = {};
+  private committed: boolean = false;
+
+  seed(key: string, value: string): void {
+    this.values[key] = value;
+  }
+
+  has(key: string): boolean {
+    return this.values[key] !== undefined;
+  }
+
+  value(key: string): string {
+    return this.values[key] || '';
+  }
+
+  beginTransaction(): void {
+    this.beginCount++;
+    if (this.fault === 'begin') {
+      throw new Error('begin fault');
+    }
+    this.before = cloneStringRecord(this.values);
+  }
+
+  commit(): void {
+    if (this.fault === 'commit') {
+      throw new Error('commit fault');
+    }
+    this.commitCount++;
+    this.committed = true;
+  }
+
+  rollback(): void {
+    this.rollbackCount++;
+    this.values = cloneStringRecord(this.before);
+  }
+
+  readMetadata(key: string):
+    CloudMetadataReadResult {
+    if (this.fault === 'read' ||
+      (this.fault === 'post-read' &&
+        this.committed)) {
+      return { state: 'error', value: '' };
+    }
+    const value: string | undefined =
+      this.values[key];
+    return value === undefined
+      ? { state: 'absent', value: '' }
+      : { state: 'present', value };
+  }
+
+  writeMetadata(
+    key: string, value: string
+  ): boolean {
+    if ((this.fault === 'write-bootstrap' &&
+      key === CLOUD_BOOTSTRAP_COMPLETED_KEY) ||
+      (this.fault === 'write-durable' &&
+        key === CLOUD_SYNC_DURABLE_STATE_KEY) ||
+      (this.fault === 'write-barrier' &&
+        key ===
+          CLOUD_SELECTION_REENABLE_BARRIERS_KEY)) {
+      return false;
+    }
+    this.values[key] = value;
+    return true;
+  }
+
+  deleteMetadata(key: string): boolean {
+    if ((this.fault === 'delete-global' &&
+      key === RESTORED_NOT_UPLOADED_KEY) ||
+      (this.fault === 'delete-table' &&
+        key.indexOf(
+          RESTORED_NOT_UPLOADED_TABLE_PREFIX) === 0) ||
+      (this.fault === 'delete-barrier' &&
+        key ===
+          CLOUD_SELECTION_REENABLE_BARRIERS_KEY)) {
+      return false;
+    }
+    delete this.values[key];
+    return true;
+  }
+}
+
+function seededRestoreResolutionPort(
+  withRemainingBarrier: boolean = true
+): FakeRestoreResolutionPort {
+  const port: FakeRestoreResolutionPort =
+    new FakeRestoreResolutionPort();
+  port.seed(RESTORED_NOT_UPLOADED_KEY, '1');
+  port.seed(
+    RESTORED_NOT_UPLOADED_TABLE_PREFIX +
+      'remotehosts', '1');
+  port.seed(
+    RESTORED_NOT_UPLOADED_TABLE_PREFIX +
+      'vncrecordv2', '1');
+  const barriers: Record<string, string> = {};
+  barriers['remotehosts'] = 'pending_pull';
+  barriers['vncrecordv2'] = 'pending_pull';
+  if (withRemainingBarrier) {
+    barriers['sshkeys'] = 'pending_pull';
+  }
+  port.seed(
+    CLOUD_SELECTION_REENABLE_BARRIERS_KEY,
+    JSON.stringify(barriers));
+  return port;
 }
 
 /**
@@ -1194,6 +1391,619 @@ export default function cloudDataWiringTest():
             'restore_pending');
         expect(await bootstrap.dispose(
           accountLease(), 1000))
+          .assertTrue();
+      });
+
+    it('lets_explicit_upload_resolve_restore_quarantine_but_keeps_automatic_closed',
+      0, async (): Promise<void> => {
+        const hooks: CoordinatorHooks =
+          quarantinedCoordinatorHooks();
+        const coordinator =
+          new CloudSyncCoordinator(
+            new FixedSelectionSource(
+              ['remotehosts', 'sshkeys']),
+            new ControlledRetryClock());
+        const executions: string[] = [];
+        expect(coordinator.bind(
+          accountLease(),
+          accountBinding(),
+          async (
+            table: string,
+            direction: CloudSyncDirection,
+            label: string
+          ): Promise<boolean> => {
+            executions.push(
+              label + ':' + direction + ':' + table);
+            return true;
+          },
+          (_tables: string[]): void => {
+          },
+          hooks)).assertTrue();
+
+        expect((await coordinator
+          .requestStartupPull()).failureKind)
+          .assertEqual('restore_pending');
+        const beforeAutomatic: number =
+          executions.length;
+        expect((await coordinator
+          .requestAutomaticPush(
+            'remotehosts')).ok).assertTrue();
+        expect(executions.length)
+          .assertEqual(beforeAutomatic);
+
+        const uploaded: CloudSyncOperationResult =
+          await coordinator.requestManualUpload();
+        expect(uploaded.ok).assertTrue();
+        expect(executions.some(
+          (event: string): boolean =>
+            event.indexOf(
+              'manualUpload:nativeFirst:remotehosts') >= 0))
+          .assertTrue();
+        expect(hooks.restoreResolutionCount)
+          .assertEqual(1);
+        expect(hooks.restoredNotUploaded)
+          .assertFalse();
+        expect(hooks.durableState !== null &&
+          hooks.durableState.phase === 'ready')
+          .assertTrue();
+        expect(hooks.restoreResolutionTables
+          .indexOf('remotehosts') >= 0)
+          .assertTrue();
+        expect(hooks.restoreResolutionTables
+          .indexOf('sshkeys') >= 0)
+          .assertTrue();
+        expect(await coordinator.dispose(
+          accountLease(), 1000))
+          .assertTrue();
+      });
+
+    it('keeps_restore_quarantine_after_terminal_failure_and_allows_explicit_retry',
+      0, async (): Promise<void> => {
+        const hooks: CoordinatorHooks =
+          quarantinedCoordinatorHooks();
+        const coordinator =
+          new CloudSyncCoordinator(
+            new FixedSelectionSource(
+              ['remotehosts', 'sshkeys']),
+            new ControlledRetryClock());
+        let failSsh: boolean = true;
+        expect(coordinator.bind(
+          accountLease(),
+          accountBinding(),
+          async (
+            table: string,
+            _direction: CloudSyncDirection,
+            _label: string
+          ): Promise<boolean> =>
+            !(failSsh && table === 'sshkeys'),
+          (_tables: string[]): void => {
+          },
+          hooks)).assertTrue();
+
+        const failed: CloudSyncOperationResult =
+          await coordinator.requestManualUpload();
+        expect(failed.ok).assertFalse();
+        expect(hooks.restoreResolutionCount)
+          .assertEqual(0);
+        expect(hooks.restoredNotUploaded)
+          .assertTrue();
+        expect(hooks.durableState !== null &&
+          hooks.durableState.phase ===
+            'restore_quarantine')
+          .assertTrue();
+
+        failSsh = false;
+        expect((await coordinator
+          .requestManualUpload()).ok)
+          .assertTrue();
+        expect(hooks.restoreResolutionCount)
+          .assertEqual(1);
+        expect(await coordinator.dispose(
+          accountLease(), 1000))
+          .assertTrue();
+      });
+
+    it('keeps_quarantine_when_atomic_restore_completion_rejects_uncovered_tables',
+      0, async (): Promise<void> => {
+        const hooks: CoordinatorHooks =
+          quarantinedCoordinatorHooks();
+        hooks.restoreResolutionAllowed = false;
+        const coordinator =
+          new CloudSyncCoordinator(
+            new FixedSelectionSource(
+              ['remotehosts']),
+            new ControlledRetryClock());
+        expect(coordinator.bind(
+          accountLease(),
+          accountBinding(),
+          async (): Promise<boolean> => true,
+          (_tables: string[]): void => {
+          },
+          hooks)).assertTrue();
+
+        const result: CloudSyncOperationResult =
+          await coordinator.requestManualDownload();
+        expect(result.ok).assertFalse();
+        expect(result.failureKind)
+          .assertEqual('restore_pending');
+        expect(hooks.restoredNotUploaded)
+          .assertTrue();
+        expect(hooks.durableState !== null &&
+          hooks.durableState.phase ===
+            'restore_quarantine')
+          .assertTrue();
+        expect(await coordinator.dispose(
+          accountLease(), 1000))
+          .assertTrue();
+      });
+
+    it('resolves_unselected_restore_markers_as_local_only_after_explicit_direction',
+      0, async (): Promise<void> => {
+        const hooks: CoordinatorHooks =
+          quarantinedCoordinatorHooks();
+        hooks.pendingRestoredTables = [
+          'remotehosts', 'sshkeys',
+          'vncrecordv2'
+        ];
+        const coordinator =
+          new CloudSyncCoordinator(
+            new FixedSelectionSource([]),
+            new ControlledRetryClock());
+        let executions: number = 0;
+        expect(coordinator.bind(
+          accountLease(), accountBinding(),
+          async (): Promise<boolean> => {
+            executions++;
+            return true;
+          },
+          (_tables: string[]): void => {},
+          hooks)).assertTrue();
+
+        const result: CloudSyncOperationResult =
+          await coordinator.requestManualUpload();
+        expect(result.ok).assertTrue();
+        expect(executions).assertEqual(0);
+        expect(hooks.restoreResolutionTables.join(','))
+          .assertEqual(
+            'remotehosts,sshkeys,vncrecordv2');
+        expect(hooks.durableState !== null &&
+          hooks.durableState.phase === 'ready')
+          .assertTrue();
+        expect(await coordinator.dispose(
+          accountLease(), 1000)).assertTrue();
+      });
+
+    it('atomically_releases_durable_quarantine_when_restore_died_before_writing_markers',
+      0, async (): Promise<void> => {
+        const hooks: CoordinatorHooks =
+          quarantinedCoordinatorHooks();
+        hooks.restoredNotUploaded = false;
+        hooks.pendingRestoredTables = [];
+        const coordinator =
+          new CloudSyncCoordinator(
+            new FixedSelectionSource([]),
+            new ControlledRetryClock());
+        expect(coordinator.bind(
+          accountLease(), accountBinding(),
+          async (): Promise<boolean> => false,
+          (_tables: string[]): void => {},
+          hooks)).assertTrue();
+
+        const result: CloudSyncOperationResult =
+          await coordinator.requestManualDownload();
+        expect(result.ok).assertTrue();
+        expect(hooks.restoreResolutionCount)
+          .assertEqual(1);
+        expect(hooks.restoreResolutionTables.length)
+          .assertEqual(0);
+        expect(hooks.durableState !== null &&
+          hooks.durableState.phase === 'ready')
+          .assertTrue();
+        expect(await coordinator.dispose(
+          accountLease(), 1000)).assertTrue();
+      });
+
+    it('syncs_only_selected_restore_tables_but_atomically_covers_every_marker',
+      0, async (): Promise<void> => {
+        const hooks: CoordinatorHooks =
+          quarantinedCoordinatorHooks();
+        hooks.pendingRestoredTables = [
+          'remotehosts', 'sshkeys',
+          'vncrecordv2'
+        ];
+        hooks.selectionBlocked =
+          (table: string): boolean =>
+            table === 'remotehosts';
+        const coordinator =
+          new CloudSyncCoordinator(
+            new FixedSelectionSource(
+              ['remotehosts']),
+            new ControlledRetryClock());
+        const executions: string[] = [];
+        expect(coordinator.bind(
+          accountLease(), accountBinding(),
+          async (table: string,
+            direction: CloudSyncDirection):
+            Promise<boolean> => {
+            executions.push(
+              direction + ':' + table);
+            return true;
+          },
+          (_tables: string[]): void => {},
+          hooks)).assertTrue();
+
+        expect((await coordinator
+          .requestManualUpload()).ok)
+          .assertTrue();
+        expect(executions.join(','))
+          .assertEqual(
+            'nativeFirst:remotehosts');
+        expect(hooks.restoreResolutionTables.join(','))
+          .assertEqual(
+            'remotehosts,sshkeys,vncrecordv2');
+        expect(await coordinator.dispose(
+          accountLease(), 1000)).assertTrue();
+      });
+
+    it('serializes_ordinary_and_vnc_restore_legs_before_an_opposite_direction',
+      0, async (): Promise<void> => {
+        const hooks: CoordinatorHooks =
+          quarantinedCoordinatorHooks();
+        hooks.pendingRestoredTables = [
+          'remotehosts', 'vncrecordv2'
+        ];
+        const coordinator =
+          new CloudSyncCoordinator(
+            new FixedSelectionSource([
+              'remotehosts', 'vncrecordv2'
+            ]),
+            new ControlledRetryClock(),
+            new FixedVncSelectionSource(true));
+        const events: string[] = [];
+        expect(coordinator.bind(
+          accountLease(), accountBinding(),
+          async (table: string,
+            direction: CloudSyncDirection):
+            Promise<boolean> => {
+            events.push(direction + ':' + table);
+            return true;
+          },
+          (_tables: string[]): void => {},
+          hooks)).assertTrue();
+
+        const upload:
+          Promise<CloudSyncOperationResult> =
+          coordinator.requestManualUpload();
+        const download:
+          Promise<CloudSyncOperationResult> =
+          coordinator.requestManualDownload();
+        const uploadResult:
+          CloudSyncOperationResult = await upload;
+        const downloadResult:
+          CloudSyncOperationResult = await download;
+        expect(uploadResult.ok).assertTrue();
+        expect(downloadResult.ok).assertTrue();
+        expect(events.join(','))
+          .assertEqual(
+            'nativeFirst:remotehosts,' +
+            'nativeFirst:vncrecordv2,' +
+            'cloudFirst:remotehosts,' +
+            'cloudFirst:vncrecordv2');
+        expect(hooks.restoreResolutionCount)
+          .assertEqual(1);
+        expect(await coordinator.dispose(
+          accountLease(), 1000)).assertTrue();
+      });
+
+    it('keeps_restore_quarantined_when_vnc_leg_fails_then_reruns_both_legs_on_retry',
+      0, async (): Promise<void> => {
+        const hooks: CoordinatorHooks =
+          quarantinedCoordinatorHooks();
+        hooks.pendingRestoredTables = [
+          'remotehosts', 'vncrecordv2'
+        ];
+        const coordinator =
+          new CloudSyncCoordinator(
+            new FixedSelectionSource([
+              'remotehosts', 'vncrecordv2'
+            ]),
+            new ControlledRetryClock(),
+            new FixedVncSelectionSource(true));
+        let failVnc: boolean = true;
+        const events: string[] = [];
+        expect(coordinator.bind(
+          accountLease(), accountBinding(),
+          async (table: string,
+            direction: CloudSyncDirection):
+            Promise<boolean> => {
+            events.push(direction + ':' + table);
+            return !(failVnc &&
+              table === 'vncrecordv2');
+          },
+          (_tables: string[]): void => {},
+          hooks)).assertTrue();
+
+        const failed: CloudSyncOperationResult =
+          await coordinator.requestManualUpload();
+        expect(failed.ok).assertFalse();
+        expect(events.join(','))
+          .assertEqual(
+            'nativeFirst:remotehosts,' +
+            'nativeFirst:vncrecordv2');
+        expect(hooks.restoreResolutionCount)
+          .assertEqual(0);
+        expect(hooks.restoredNotUploaded)
+          .assertTrue();
+        expect(hooks.durableState !== null &&
+          hooks.durableState.phase ===
+            'restore_quarantine')
+          .assertTrue();
+
+        failVnc = false;
+        const retried: CloudSyncOperationResult =
+          await coordinator.requestManualUpload();
+        expect(retried.ok).assertTrue();
+        expect(events.join(','))
+          .assertEqual(
+            'nativeFirst:remotehosts,' +
+            'nativeFirst:vncrecordv2,' +
+            'nativeFirst:remotehosts,' +
+            'nativeFirst:vncrecordv2');
+        expect(hooks.restoreResolutionCount)
+          .assertEqual(1);
+        expect(hooks.restoredNotUploaded)
+          .assertFalse();
+        expect(hooks.durableState !== null &&
+          hooks.durableState.phase === 'ready')
+          .assertTrue();
+        expect(await coordinator.dispose(
+          accountLease(), 1000)).assertTrue();
+      });
+
+    it('runs_the_exact_restore_resolution_transaction_and_releases_covered_barriers',
+      0, (): void => {
+        const port: FakeRestoreResolutionPort =
+          seededRestoreResolutionPort();
+        const tables: string[] = [
+          'remotehosts', 'sshkeys',
+          'vncrecordv2'
+        ];
+        const result: CloudRestoreResolutionResult =
+          completeCloudRestoreResolution(
+            '{"phase":"ready"}',
+            ['remotehosts', 'vncrecordv2'],
+            tables, port);
+        expect(result.ok).assertTrue();
+        expect(result.committed).assertTrue();
+        expect(port.commitCount).assertEqual(1);
+        expect(port.rollbackCount).assertEqual(0);
+        expect(port.value(
+          CLOUD_BOOTSTRAP_COMPLETED_KEY))
+          .assertEqual('1');
+        expect(port.value(
+          CLOUD_SYNC_DURABLE_STATE_KEY))
+          .assertEqual('{"phase":"ready"}');
+        expect(port.has(
+          RESTORED_NOT_UPLOADED_KEY))
+          .assertFalse();
+        expect(port.has(
+          RESTORED_NOT_UPLOADED_TABLE_PREFIX +
+            'remotehosts')).assertFalse();
+        expect(port.has(
+          RESTORED_NOT_UPLOADED_TABLE_PREFIX +
+            'vncrecordv2')).assertFalse();
+        expect(port.value(
+          CLOUD_SELECTION_REENABLE_BARRIERS_KEY))
+          .assertEqual(
+            '{"sshkeys":"pending_pull"}');
+      });
+
+    it('commits_ready_state_for_consistent_empty_marker_set_after_process_death',
+      0, (): void => {
+        const port: FakeRestoreResolutionPort =
+          new FakeRestoreResolutionPort();
+        const result: CloudRestoreResolutionResult =
+          completeCloudRestoreResolution(
+            '{"phase":"ready"}', [],
+            ['remotehosts', 'vncrecordv2'],
+            port);
+        expect(result.ok).assertTrue();
+        expect(result.committed).assertTrue();
+        expect(port.commitCount).assertEqual(1);
+        expect(port.value(
+          CLOUD_SYNC_DURABLE_STATE_KEY))
+          .assertEqual('{"phase":"ready"}');
+      });
+
+    it('writes_the_full_restore_global_and_per_table_marker_contract',
+      0, (): void => {
+        const values: Record<string, string> = {};
+        const tables: string[] = [
+          'remotehosts', 'sshkeys',
+          'vncrecordv2'
+        ];
+        expect(writeFullRestoreQuarantineMarkers(
+          tables,
+          (key: string, value: string):
+            boolean => {
+            values[key] = value;
+            return true;
+          })).assertTrue();
+        expect(values[
+          RESTORED_NOT_UPLOADED_KEY])
+          .assertEqual('1');
+        for (let i = 0; i < tables.length; i++) {
+          expect(values[
+            RESTORED_NOT_UPLOADED_TABLE_PREFIX +
+              tables[i]]).assertEqual('1');
+        }
+      });
+
+    it('upgrades_legacy_global_only_and_orphan_table_restore_markers_fail_closed',
+      0, (): void => {
+        const tables: string[] = [
+          'remotehosts', 'sshkeys',
+          'vncrecordv2'
+        ];
+        const globalOnly:
+          FakeRestoreResolutionPort =
+          new FakeRestoreResolutionPort();
+        globalOnly.seed(
+          RESTORED_NOT_UPLOADED_KEY, '1');
+        expect((pendingRestoreResolutionTables(
+          tables,
+          (key: string):
+            CloudMetadataReadResult =>
+            globalOnly.readMetadata(key)) || [])
+          .join(',')).assertEqual(
+            tables.join(','));
+
+        const tableOnly:
+          FakeRestoreResolutionPort =
+          new FakeRestoreResolutionPort();
+        tableOnly.seed(
+          RESTORED_NOT_UPLOADED_TABLE_PREFIX +
+            'sshkeys', '1');
+        expect((pendingRestoreResolutionTables(
+          tables,
+          (key: string):
+            CloudMetadataReadResult =>
+            tableOnly.readMetadata(key)) || [])
+          .join(',')).assertEqual('sshkeys');
+      });
+
+    it('rolls_back_every_restore_resolution_precommit_fault',
+      0, (): void => {
+        const faults: RestoreResolutionFault[] = [
+          'begin', 'read', 'write-bootstrap',
+          'write-durable', 'delete-global',
+          'delete-table', 'write-barrier',
+          'delete-barrier', 'commit'
+        ];
+        const tables: string[] = [
+          'remotehosts', 'sshkeys',
+          'vncrecordv2'
+        ];
+        for (let i = 0; i < faults.length; i++) {
+          const port: FakeRestoreResolutionPort =
+            seededRestoreResolutionPort(
+              faults[i] !== 'delete-barrier');
+          port.fault = faults[i];
+          const result: CloudRestoreResolutionResult =
+            completeCloudRestoreResolution(
+              '{"phase":"ready"}',
+              ['remotehosts', 'vncrecordv2'],
+              tables, port);
+          expect(result.ok).assertFalse();
+          expect(result.committed).assertFalse();
+          expect(port.has(
+            RESTORED_NOT_UPLOADED_KEY))
+            .assertTrue();
+          if (faults[i] === 'begin') {
+            expect(port.rollbackCount)
+              .assertEqual(0);
+          } else {
+            expect(port.rollbackCount)
+              .assertEqual(1);
+          }
+        }
+      });
+
+    it('fails_closed_on_uncovered_or_malformed_restore_markers_and_postcommit_readback',
+      0, (): void => {
+        const tables: string[] = [
+          'remotehosts', 'vncrecordv2'
+        ];
+        const uncovered:
+          FakeRestoreResolutionPort =
+          seededRestoreResolutionPort(false);
+        expect(completeCloudRestoreResolution(
+          '{"phase":"ready"}',
+          ['remotehosts'], tables,
+          uncovered).ok).assertFalse();
+        expect(uncovered.rollbackCount)
+          .assertEqual(1);
+
+        const malformed:
+          FakeRestoreResolutionPort =
+          seededRestoreResolutionPort(false);
+        malformed.seed(
+          RESTORED_NOT_UPLOADED_TABLE_PREFIX +
+            'remotehosts', 'bad');
+        expect(pendingRestoreResolutionTables(
+          tables,
+          (key: string):
+            CloudMetadataReadResult =>
+            malformed.readMetadata(key)) === null)
+          .assertTrue();
+
+        const postCommit:
+          FakeRestoreResolutionPort =
+          seededRestoreResolutionPort(false);
+        postCommit.fault = 'post-read';
+        const committed:
+          CloudRestoreResolutionResult =
+          completeCloudRestoreResolution(
+            '{"phase":"ready"}',
+            tables, tables, postCommit);
+        expect(committed.ok).assertFalse();
+        expect(committed.committed).assertTrue();
+        expect(postCommit.commitCount)
+          .assertEqual(1);
+        expect(postCommit.rollbackCount)
+          .assertEqual(0);
+      });
+
+    it('rejects_every_structurally_invalid_or_future_selection_barrier',
+      0, (): void => {
+        const malformed: string[] = [
+          '[]', '"text"', '42',
+          '{"future":"pending_pull"}',
+          '{"remotehosts":"bad"}'
+        ];
+        const tables: string[] = [
+          'remotehosts', 'vncrecordv2'
+        ];
+        for (let i = 0;
+          i < malformed.length; i++) {
+          const port:
+            FakeRestoreResolutionPort =
+            seededRestoreResolutionPort(false);
+          port.seed(
+            CLOUD_SELECTION_REENABLE_BARRIERS_KEY,
+            malformed[i]);
+          const result:
+            CloudRestoreResolutionResult =
+            completeCloudRestoreResolution(
+              '{"phase":"ready"}',
+              tables, tables, port);
+          expect(result.ok).assertFalse();
+          expect(result.committed).assertFalse();
+          expect(port.rollbackCount)
+            .assertEqual(1);
+          expect(port.has(
+            RESTORED_NOT_UPLOADED_KEY))
+            .assertTrue();
+        }
+      });
+
+    it('treats_any_present_or_unreadable_global_restore_marker_as_quarantine',
+      0, (): void => {
+        const metadata =
+          new MetadataMapQueryPort();
+        const store = new CloudStore({
+          metadataQuery: metadata
+        });
+        expect(store.hasRestoredNotUploaded())
+          .assertFalse();
+        metadata.set(
+          RESTORED_NOT_UPLOADED_KEY,
+          'malformed');
+        expect(store.hasRestoredNotUploaded())
+          .assertTrue();
+        metadata.setError(
+          RESTORED_NOT_UPLOADED_KEY, true);
+        expect(store.hasRestoredNotUploaded())
           .assertTrue();
       });
 
