@@ -14,6 +14,10 @@
 #include "common/safe_log.h"
 #if defined(__OHOS__) || defined(__MUSL__)
 #include <hilog/log.h>
+#undef LOG_DOMAIN
+#undef LOG_TAG
+#define LOG_DOMAIN 0x0009
+#define LOG_TAG "VNC_RFB_ENGINE"
 #define VNC_DIAG_INFO(...) OH_LOG_INFO(LOG_APP, __VA_ARGS__)
 #define VNC_DIAG_WARN(...) OH_LOG_WARN(LOG_APP, __VA_ARGS__)
 #else
@@ -130,7 +134,14 @@ void VncRfbEngine::run() {
         clearSensitiveConfig();
         return;
     }
-    if (config_.vncFirstFrameTimeoutMs > 0) ioTimeoutMs_ = std::max(1000, config_.vncFirstFrameTimeoutMs);
+    // 首帧超时是“连接后等待第一帧”的上限；不能把同一个 15 秒值复用作
+    // 后续每条服务器消息的空闲超时，否则服务器短暂停顿（例如切换应用
+    // 动画间隙）时客户端会阻塞最多 15 秒才重发增量请求，表现为“卡很久
+    // 才一帧一帧挪过去”。ioTimeoutMs_ 仍保护大矩形（22.5MB 全帧）读取。
+    if (config_.vncFirstFrameTimeoutMs > 0) {
+        ioTimeoutMs_ = std::max(1000, config_.vncFirstFrameTimeoutMs);
+    }
+    idleTimeoutMs_ = 5000;
 
     VncTransportConfig transportConfig;
     transportConfig.transport = config_.vncTransport;
@@ -425,7 +436,9 @@ bool VncRfbEngine::receiveLoop(std::string& error) {
     bool firstMessage = true;
     while (!stopRequested_.load(std::memory_order_acquire)) {
         uint8_t type = 0;
-        const int timeout = firstMessage ? config_.vncFirstFrameTimeoutMs : ioTimeoutMs_;
+        // 首帧仍等待 firstFrameTimeoutMs；后续消息等待独立的空闲超时，
+        // 避免服务器动画间隙停顿导致客户端长时间阻塞。
+        const int timeout = firstMessage ? config_.vncFirstFrameTimeoutMs : idleTimeoutMs_;
         if (!readU8(type, timeout, error)) {
             if (isTimeout(error)) {
                 ++diagTimeouts_;
@@ -468,8 +481,9 @@ bool VncRfbEngine::receiveLoop(std::string& error) {
 bool VncRfbEngine::receiveFramebufferUpdate(std::string& error) {
     uint8_t padding[1] = {0};
     uint16_t count = 0;
-    if (!readBytes(padding, sizeof(padding), ioTimeoutMs_, error) ||
-        !readU16(count, ioTimeoutMs_, error)) return false;
+    // FBU 头部是小读取，跟随空闲超时；实际矩形负载仍受 ioTimeoutMs_ 保护。
+    if (!readBytes(padding, sizeof(padding), idleTimeoutMs_, error) ||
+        !readU16(count, idleTimeoutMs_, error)) return false;
     if (count > 4096) {
         error = "VNC update contains too many rectangles";
         return false;

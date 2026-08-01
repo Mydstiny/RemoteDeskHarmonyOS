@@ -726,6 +726,7 @@ struct RemoteDesktop {
   private vncPasswordSheetClosing: boolean = false;
   private vncTransientPassword: string = '';
   private vncAuthResolved: boolean = false;
+  private vncAuthRetryPending: boolean = false;
   private rustDeskSessionAuthChoice: RustDeskAuthChoice = 'password';
   private rustDeskSessionPassword: string = '';
   private rustDeskSessionRememberPassword: boolean = false;
@@ -1747,7 +1748,7 @@ struct RemoteDesktop {
     if (host === null) { return; }
     const loaded = this.vncHosts.passwordStateFor(host.id);
     this.vncPasswordStatus = loaded.state;
-    if (loaded.state === 'available') {
+    if (loaded.state === 'available' && !this.vncAuthRetryPending) {
       this.vncAuthResolved = true;
       this.vncTransientPassword = '';
       this.tryStartConnect();
@@ -1755,7 +1756,9 @@ struct RemoteDesktop {
     }
     this.vncAuthResolved = false;
     let message: string = '';
-    if (loaded.state === 'locked') {
+    if (this.vncAuthRetryPending) {
+      message = '上次 VNC 密码认证失败。请重新输入密码，或选择“无密码连接”。';
+    } else if (loaded.state === 'locked') {
       message = '已保存的 VNC 密码仍是加密密文；解锁应用加密后可使用，也可以输入一次性密码连接。';
     } else if (loaded.state === 'consent_required') {
       message = '这台设备有已同步的未加密密码。使用前请在本设备再次确认，不会自动信任新设备。';
@@ -1806,6 +1809,7 @@ struct RemoteDesktop {
     // short-lived value used by the pending connection path.
     this.vncPasswordInput = '';
     this.vncAuthResolved = true;
+    this.vncAuthRetryPending = false;
     this.vncPasswordDismissReason = 'confirm';
     this.vncPasswordPendingStart = true;
     this.vncPasswordSheetClosing = true;
@@ -1944,6 +1948,14 @@ struct RemoteDesktop {
       value.indexOf('no password access') >= 0 ||
       value.indexOf('remote approval timed out') >= 0 ||
       value.indexOf('approval') >= 0;
+  }
+
+  private shouldOfferVncAuthRetry(detail: string): boolean {
+    const value: string = detail;
+    return value.indexOf('E-VNC-AUTH-PASSWORD') >= 0 ||
+      value.indexOf('E-VNC-AUTH-MISSING') >= 0 ||
+      value.indexOf('VNC 密码认证失败') >= 0 ||
+      value.indexOf('VNC 未提供可用密码') >= 0;
   }
 
   private currentProtocolName(): string {
@@ -7077,7 +7089,8 @@ struct RemoteDesktop {
         ' visible=' + (snapshot.visible ? '1' : '0') +
         ' pixelMap=' + (this.remoteCursorPixelMap !== null ? '1' : '0') +
         ' fallback=' + (snapshot.fallbackShape ? '1' : '0') +
-        ' positionTransport=' + (this.isRustDeskSession() ? 'rustdesk-ffi' : 'freerdp') +
+        ' positionTransport=' + (this.isRustDeskSession() ? 'rustdesk-ffi' :
+          (this.isVncSession() ? 'vnc-rfb' : 'freerdp')) +
         ' positionAvailable=' + (snapshot.positionAvailable ? '1' : '0') +
         ' position=' + snapshot.x.toString() + ',' + snapshot.y.toString() +
         ' shapeSource=' + snapshot.shapeSource +
@@ -7330,6 +7343,19 @@ struct RemoteDesktop {
       const pageSurface: RemoteSessionPipContentSize = this.currentPageSurfaceSize(w, h);
 
       // 初始化渲染器 (XComponent surface 已就绪)
+      // 断开清理会把 native surface 标记为 detached；马上重连时
+      // initRenderer 之前必须重新绑定最新 SurfaceId，否则新会话的
+      // 每一帧都会被 SurfaceDetached 拒绝，表现为“断线后立刻重连失败”。
+      if (this.latestSurfaceId.length > 0) {
+        const rebound: boolean = rdpnapi.setXComponentSurfaceId(
+          this.latestSurfaceId, pageSurface.width, pageSurface.height) as boolean;
+        hilog.info(RD_DOMAIN, RD_TAG,
+          'doConnect: surface rebound before initRenderer id=' + this.latestSurfaceId +
+            ' ok=' + (rebound ? 'true' : 'false'));
+        if (!rebound) {
+          throw new Error('渲染器 Surface 重新绑定失败 [E-RENDERER-SURFACE-REBIND]');
+        }
+      }
       console.info('[RD-DIAG] initRenderer: xcId=' + this.xcId + ' w=' + pageSurface.width +
         ' h=' + pageSurface.height + ' remote=' + w + 'x' + h);
       const rHandle: number = this.loader.initRenderer(this.xcId, pageSurface.width, pageSurface.height);
@@ -7806,6 +7832,18 @@ struct RemoteDesktop {
         // 连接失败也要立即刷新普通主机的本机健康状态；云写入由服务按
         // 节流策略处理，页面监听器仍会立刻收到 UNKNOWN。
         await this.srv.updateConnectionHealth(host.id, -1, false);
+      }
+      // VNC 密码认证失败必须允许当场重试：清除一次性凭据并重新打开
+      // 密码 Sheet，而不是让保存过的错误密码在下一次点击时被自动使用。
+      if (host.protocol === 'vnc' && vncHost !== null &&
+        this.shouldOfferVncAuthRetry(this.connectionErrorDetail)) {
+        this.vncAuthRetryPending = true;
+        this.vncTransientPassword = '';
+        this.vncAuthResolved = false;
+        this.connectionError = '';
+        this.connectionErrorDetail = '';
+        this.connecting = true;
+        this.openVncPasswordSheet('上次 VNC 密码认证失败，请重新输入密码。');
       }
       if (this.isProRustDeskHost(host) && this.shouldOfferRustDeskAuthRetry(this.connectionErrorDetail)) {
         const fresh: RemoteHost | undefined = this.srv.getHost(host.id);
@@ -10240,7 +10278,14 @@ struct RemoteDesktop {
     if (!this.canForwardInput('mouseWheel')) {
       return;
     }
-    this.touchWheelRemainder += stepDy * TOUCHPAD_SCROLL_GAIN;
+    // 双指滚轮必须应用会话触控板速度（VNC 有独立 50-200% 设置），
+    // 否则用户调快触控板速度后双指滚动仍然只有固定增益。
+    const wheelSpeed: number = this.isVncSession() ?
+      (Number.isFinite(this.vncTouchpadSpeed) && this.vncTouchpadSpeed > 0 ?
+        this.vncTouchpadSpeed / 100 : 1) :
+      (Number.isFinite(this.rustdeskTouchpadSpeed) && this.rustdeskTouchpadSpeed > 0 ?
+        this.rustdeskTouchpadSpeed : 1);
+    this.touchWheelRemainder += stepDy * TOUCHPAD_SCROLL_GAIN * wheelSpeed;
     const now: number = Date.now();
     if (now - this.lastTouchWheelMs < TOUCHPAD_SCROLL_FLUSH_MS) {
       return;
@@ -11255,7 +11300,13 @@ struct RemoteDesktop {
       if (event.sourceTool === SourceTool.MOUSE) {
         delta = rawVertical > 0 ? 1 : -1;
       } else {
-        this.physicalWheelRemainder += rawVertical * TOUCHPAD_SCROLL_GAIN;
+        // 实体触控板/鼠标轴同样应用会话触控板速度，与双指滚轮保持一致。
+        const wheelSpeed: number = this.isVncSession() ?
+          (Number.isFinite(this.vncTouchpadSpeed) && this.vncTouchpadSpeed > 0 ?
+            this.vncTouchpadSpeed / 100 : 1) :
+          (Number.isFinite(this.rustdeskTouchpadSpeed) && this.rustdeskTouchpadSpeed > 0 ?
+            this.rustdeskTouchpadSpeed : 1);
+        this.physicalWheelRemainder += rawVertical * TOUCHPAD_SCROLL_GAIN * wheelSpeed;
         delta = this.physicalWheelRemainder > 0 ? Math.floor(this.physicalWheelRemainder) :
           Math.ceil(this.physicalWheelRemainder);
         if (delta === 0) { return; }

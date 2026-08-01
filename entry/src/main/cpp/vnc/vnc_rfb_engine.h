@@ -107,6 +107,7 @@ private:
     bool negotiated33_ = false;
     int negotiatedMinor_ = 3;
     int ioTimeoutMs_ = 30000;
+    int idleTimeoutMs_ = 5000;
     uint64_t diagServerMessages_ = 0;
     uint64_t diagFramebufferUpdates_ = 0;
     uint64_t diagFrames_ = 0;

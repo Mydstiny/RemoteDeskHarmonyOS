@@ -9218,8 +9218,10 @@ struct HostListPage {
             }
           }
 
-          // 密码
-          if ((this.proto !== 'rdp' && this.proto !== 'vnc') || this.sheetRdpAuthMode === 'password') {
+          // 密码：VNC 的密码/记住密码已由 vncClassicEditorFields 提供，
+          // 通用密码行必须排除 VNC，避免 sheetRdpAuthMode 默认值造成双密码槽位。
+          if (this.proto !== 'vnc' &&
+            ((this.proto !== 'rdp' && this.proto !== 'vnc') || this.sheetRdpAuthMode === 'password')) {
             this.pwdRow(!(this.proto === 'rdp' && this.selectedRdpCredentialId !== ''))
           }
 
