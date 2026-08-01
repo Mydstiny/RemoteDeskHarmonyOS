@@ -19,7 +19,8 @@ void RdpGlUploadGate::reset() {
 }
 
 void RdpGlUploadGate::recordPresent(const RdpPresentMetrics& present) {
-    if (!present.presented()) {
+    // The upload experiment is measured only from source-frame uploads.
+    if (!present.presented() || present.retainedFrame) {
         return;
     }
 

@@ -15,7 +15,9 @@
 #define RUSTDESK_BRIDGE_H
 
 #include "extensions/protocol_adapter.h"
+#include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <vector>
 
@@ -50,9 +52,28 @@ struct RustDeskDisplayResolution {
     int height = 0;
 };
 
+struct RustDeskDisplayInfo {
+    int display = 0;
+    int x = 0;
+    int y = 0;
+    int width = 0;
+    int height = 0;
+    int originalWidth = 0;
+    int originalHeight = 0;
+    int scaleMilli = 1000;
+    bool online = false;
+    bool cursorEmbedded = false;
+    std::string name;
+    std::vector<RustDeskDisplayResolution> resolutions;
+};
+
 struct RustDeskDisplayCapabilities {
     bool supported = false;
     int currentDisplay = 0;
+    uint64_t switchGeneration = 0;
+    uint64_t readySwitchGeneration = 0;
+    int pendingDisplay = -1;
+    bool inputBlocked = false;
     int width = 0;
     int height = 0;
     int originalWidth = 0;
@@ -60,7 +81,15 @@ struct RustDeskDisplayCapabilities {
     int scaleMilli = 1000;
     uint32_t geometryEpoch = 0;
     std::vector<RustDeskDisplayResolution> resolutions;
+    std::vector<RustDeskDisplayInfo> displays;
 };
+
+struct RustDeskDisplaySwitchRequest {
+    bool accepted = false;
+    uint64_t generation = 0;
+};
+
+using RustDeskDisplayStateCallback = std::function<void(int display)>;
 
 // C 兼容连接配置 (与 rustdesk_ffi/src/lib.rs 中的 RustDeskConfig 内存布局一致)
 // 必须保持与 Rust #[repr(C)] 完全对应
@@ -82,7 +111,16 @@ struct RustDeskFfiConfig {
     bool        direct_connection; // 直连模式: false=rendezvous (默认), true=TCP直连peer
     int         auth_mode;  // 0=设备密码, 1=请求被控端点击批准
     int         key_mode;   // 0=legacy/auto, 1=server public key, 2=shared access key
+    const char* token;      // transient Server Pro control-plane session token
+    uint64_t    connection_id; // native session identity for pending Peer 2FA
+    // Configured hbbr fallback port. A hbbs-provided relay_server:port wins.
+    int         relay_fallback_port;
 };
+
+static_assert(offsetof(RustDeskFfiConfig, relay_fallback_port) == 96,
+              "RustDeskConfig ABI tail offset changed; update Rust and C++ together");
+static_assert(sizeof(RustDeskFfiConfig) == 104,
+              "RustDeskConfig ABI size changed; update Rust and C++ together");
 
 enum class RustDeskMode {
     IPC = 0,           // IPC 转发 → rustdesk_helper
@@ -108,6 +146,7 @@ public:
     void            disconnect() override;
     ConnectionState getState() override;
     void            setSessionIdentity(uint64_t sessionId) override;
+    bool            submitTwoFactorCode(const std::string& code);
     RustDeskDiagnosticsStats getDiagnostics() const;
     RemoteCursorSnapshot getRemoteCursorSnapshot(bool includePixels) override;
     void            requestFrameRefresh() override;
@@ -118,7 +157,12 @@ public:
     void sendMouse(int x, int y, MouseButton button, bool pressed) override;
     void sendMouseWheel(int x, int y, int delta) override;
     void sendText(const std::string& text) override;
+    void setDisplayStateCallback(RustDeskDisplayStateCallback callback);
     RustDeskDisplayCapabilities getDisplayCapabilities() const;
+    RustDeskDisplaySwitchRequest beginDisplaySwitch(int display);
+    bool switchDisplay(int display);
+    bool captureDisplays(const std::vector<int>& displays);
+    bool refreshVideoDisplay(int display);
     bool changeDisplayResolution(int display, int width, int height);
     bool sendTouchScale(int scale);
     bool sendTouchPan(int phase, int x, int y);
@@ -150,6 +194,8 @@ private:
     static void onFfiFrame(const void* frame, void* userData);
     static void onFfiAudio(const void* audio, void* userData);
     static void onFfiCursor(const void* cursor, void* userData);
+    static void onFfiDisplay(const void* snapshot, void* userData);
+    static void onFfiAuth(int state, const char* message, void* userData);
     static void onFfiDisconnect(int state, const char* message, void* userData);
 #endif
 

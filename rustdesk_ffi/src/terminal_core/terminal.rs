@@ -30,6 +30,15 @@ pub struct Terminal {
     cursor_visible: bool,
     parser: Parser,
 
+    // 常用 xterm/DEC 模式。它们不仅影响显示，也影响 ArkTS 输入编码。
+    auto_wrap: bool,
+    bracketed_paste: bool,
+    mouse_tracking: u16,
+    sgr_mouse: bool,
+    application_cursor_keys: bool,
+    application_keypad: bool,
+    tab_stops: Vec<bool>,
+
     // 备用屏 (alternate screen)
     alt_active: bool,
     /// 保存的主屏 buffer (进入备用屏时暂存)
@@ -67,6 +76,13 @@ impl Terminal {
             attrs,
             cursor_visible: true,
             parser: Parser::new(),
+            auto_wrap: true,
+            bracketed_paste: false,
+            mouse_tracking: 0,
+            sgr_mouse: false,
+            application_cursor_keys: false,
+            application_keypad: false,
+            tab_stops: default_tab_stops(cols),
 
             alt_active: false,
             main_buffer: Vec::new(),
@@ -115,6 +131,11 @@ impl Terminal {
             .saturating_sub(self.cursor_y);
         self.cols = cols.max(1);
         self.rows = rows.max(1);
+
+        let old_tab_stops = std::mem::replace(&mut self.tab_stops, default_tab_stops(self.cols));
+        for (index, enabled) in old_tab_stops.into_iter().enumerate().take(self.cols) {
+            self.tab_stops[index] = enabled;
+        }
 
         // 调整当前活动 buffer
         for row in &mut self.buffer {
@@ -231,9 +252,13 @@ impl Terminal {
     pub(crate) fn print_char(&mut self, ch: char) {
         let width = UnicodeWidthChar::width(ch).unwrap_or(1).max(1);
         if self.cursor_x >= self.cols {
-            self.mark_current_row_wrapped();
-            self.cursor_x = 0;
-            self.line_feed();
+            if self.auto_wrap {
+                self.mark_current_row_wrapped();
+                self.cursor_x = 0;
+                self.line_feed();
+            } else {
+                self.cursor_x = self.cols.saturating_sub(1);
+            }
         }
 
         let abs_row = self.screen_top + self.cursor_y;
@@ -303,8 +328,25 @@ impl Terminal {
 
     pub(crate) fn tab(&mut self) {
         let old_y = self.cursor_y;
-        let next = ((self.cursor_x / 8) + 1) * 8;
-        self.cursor_x = next.min(self.cols.saturating_sub(1));
+        self.cursor_x = self.next_tab_stop(self.cursor_x);
+        self.mark_cursor_moved(old_y);
+    }
+
+    pub(crate) fn tab_forward(&mut self, count: usize) {
+        for _ in 0..count.max(1) {
+            self.tab();
+        }
+    }
+
+    pub(crate) fn tab_backward(&mut self, count: usize) {
+        let old_y = self.cursor_y;
+        for _ in 0..count.max(1) {
+            let start = self.cursor_x.saturating_sub(1);
+            self.cursor_x = (0..=start)
+                .rev()
+                .find(|index| self.tab_stops.get(*index).copied().unwrap_or(false))
+                .unwrap_or(0);
+        }
         self.mark_cursor_moved(old_y);
     }
 
@@ -339,6 +381,26 @@ impl Terminal {
         self.scroll_top = 0;
         self.scroll_bottom = self.rows.saturating_sub(1);
         self.mark_all_dirty();
+    }
+
+    /// RIS (ESC c): reset terminal state, including modes and saved cursor.
+    /// ED/EL clear operations must not call this; applications routinely clear
+    /// the screen while keeping bracketed paste, mouse and application modes.
+    pub(crate) fn reset_terminal(&mut self) {
+        if self.alt_active {
+            self.leave_alt_screen(true);
+        }
+        self.attrs = CellAttrs::default();
+        self.cursor_visible = true;
+        self.auto_wrap = true;
+        self.bracketed_paste = false;
+        self.mouse_tracking = 0;
+        self.sgr_mouse = false;
+        self.application_cursor_keys = false;
+        self.application_keypad = false;
+        self.tab_stops = default_tab_stops(self.cols);
+        self.saved_cursor = None;
+        self.clear_screen();
     }
 
     pub(crate) fn clear_screen_from_cursor(&mut self) {
@@ -661,12 +723,15 @@ impl Terminal {
 
     /// IL (CSI L): 在光标行插入 N 行 (滚动区域内), 下方行下移
     pub(crate) fn insert_lines(&mut self, n: usize) {
-        let n = n.max(1).min(self.rows.saturating_sub(self.cursor_y));
+        if self.cursor_y < self.scroll_top || self.cursor_y > self.scroll_bottom {
+            return;
+        }
+        let n = n
+            .max(1)
+            .min(self.scroll_bottom.saturating_sub(self.cursor_y).saturating_add(1));
         if n == 0 {
             return;
         }
-        // 只在滚动区域内操作
-        let region_top = self.screen_top + self.scroll_top;
         let region_bottom = self.screen_top + self.scroll_bottom;
         self.ensure_abs_row(region_bottom);
 
@@ -691,7 +756,12 @@ impl Terminal {
 
     /// DL (CSI M): 删除光标行 N 行 (滚动区域内), 下方行上移
     pub(crate) fn delete_lines(&mut self, n: usize) {
-        let n = n.max(1).min(self.rows.saturating_sub(self.cursor_y));
+        if self.cursor_y < self.scroll_top || self.cursor_y > self.scroll_bottom {
+            return;
+        }
+        let n = n
+            .max(1)
+            .min(self.scroll_bottom.saturating_sub(self.cursor_y).saturating_add(1));
         if n == 0 {
             return;
         }
@@ -721,6 +791,77 @@ impl Terminal {
             self.cursor_visible = visible;
             self.mark_dirty(self.cursor_y);
         }
+    }
+
+    pub(crate) fn set_auto_wrap(&mut self, enabled: bool) {
+        self.auto_wrap = enabled;
+    }
+
+    pub(crate) fn set_bracketed_paste(&mut self, enabled: bool) {
+        self.bracketed_paste = enabled;
+    }
+
+    pub(crate) fn set_mouse_tracking(&mut self, mode: u16) {
+        self.mouse_tracking = mode;
+    }
+
+    pub(crate) fn set_sgr_mouse(&mut self, enabled: bool) {
+        self.sgr_mouse = enabled;
+    }
+
+    pub(crate) fn set_application_cursor_keys(&mut self, enabled: bool) {
+        self.application_cursor_keys = enabled;
+    }
+
+    pub(crate) fn set_application_keypad(&mut self, enabled: bool) {
+        self.application_keypad = enabled;
+    }
+
+    pub(crate) fn set_tab_stop(&mut self) {
+        if let Some(stop) = self.tab_stops.get_mut(self.cursor_x.min(self.cols.saturating_sub(1))) {
+            *stop = true;
+        }
+    }
+
+    pub(crate) fn clear_tab_stop(&mut self, mode: u16) {
+        if mode == 3 {
+            self.tab_stops.fill(false);
+        } else if let Some(stop) = self.tab_stops.get_mut(self.cursor_x.min(self.cols.saturating_sub(1))) {
+            *stop = false;
+        }
+    }
+
+    pub(crate) fn bracketed_paste(&self) -> bool {
+        self.bracketed_paste
+    }
+
+    pub(crate) fn mouse_tracking(&self) -> u16 {
+        self.mouse_tracking
+    }
+
+    pub(crate) fn sgr_mouse(&self) -> bool {
+        self.sgr_mouse
+    }
+
+    pub(crate) fn application_cursor_keys(&self) -> bool {
+        self.application_cursor_keys
+    }
+
+    pub(crate) fn application_keypad(&self) -> bool {
+        self.application_keypad
+    }
+
+    pub(crate) fn auto_wrap(&self) -> bool {
+        self.auto_wrap
+    }
+
+    fn next_tab_stop(&self, cursor_x: usize) -> usize {
+        let start = cursor_x.saturating_add(1);
+        (start..self.cols)
+            .find(|index| self.tab_stops.get(*index).copied().unwrap_or(false))
+            // Keep the wrap-pending position when there is no later tab stop;
+            // the next printable character will then obey DECAWM.
+            .unwrap_or(self.cols)
     }
 
     pub(crate) fn set_sgr(&mut self, params: &[u16]) {
@@ -878,6 +1019,12 @@ impl Terminal {
             cursor_x: self.cursor_x.min(self.cols.saturating_sub(1)),
             cursor_y: self.cursor_y.min(self.rows.saturating_sub(1)),
             cursor_visible: self.cursor_visible,
+            bracketed_paste: self.bracketed_paste,
+            mouse_tracking: self.mouse_tracking,
+            sgr_mouse: self.sgr_mouse,
+            application_cursor_keys: self.application_cursor_keys,
+            application_keypad: self.application_keypad,
+            auto_wrap: self.auto_wrap,
             view_top: self.view_top,
             screen_top: self.screen_top,
             is_at_bottom: self.is_at_bottom(),
@@ -975,6 +1122,10 @@ impl Terminal {
             }
         }
     }
+}
+
+fn default_tab_stops(cols: usize) -> Vec<bool> {
+    (0..cols).map(|index| index % 8 == 0).collect()
 }
 
 fn signed_clamp(base: usize, delta: isize, min: usize, max: usize) -> usize {

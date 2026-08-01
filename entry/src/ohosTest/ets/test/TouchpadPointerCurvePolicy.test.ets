@@ -2,13 +2,14 @@ import { describe, it, expect } from '@ohos/hypium';
 import {
   clampTouchpadEffectiveGain,
   resetTouchpadPointerCurveState,
+  TouchpadPointerCurveState,
   touchpadPointerCurve
 } from '../../../main/ets/services/TouchpadPointerCurvePolicy';
 
 export default function touchpadPointerCurvePolicyTest(): void {
   describe('TouchpadPointerCurvePolicy', (): void => {
     it('long_event_gap_resets_velocity_instead_of_spiking', 0, (): void => {
-      const previous = { smoothedSpeed: 0.9, lastTimeMs: 1000 };
+      const previous: TouchpadPointerCurveState = { smoothedSpeed: 0.9, lastTimeMs: 1000 };
       const result = touchpadPointerCurve(40, 0, 1201, previous);
       expect(result.gain).assertEqual(0.75);
       expect(result.state.smoothedSpeed).assertEqual(0);

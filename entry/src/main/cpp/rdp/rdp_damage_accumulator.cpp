@@ -1,6 +1,8 @@
 #include "rdp_damage_accumulator.h"
+#include "rdp_visual_commit_policy.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstring>
 #include <new>
 
@@ -60,6 +62,59 @@ bool RdpDamageAccumulator::CoversFullThreshold(const RdpDamageRect& rect,
     return damagePixels * 100U >= framePixels * kFullFrameThresholdPercent;
 }
 
+bool RdpDamageAccumulator::LooksLikeBroadRefresh(const RdpDamageRect& rect,
+                                                 int frameWidth, int frameHeight) {
+    if (!rect.valid || frameWidth <= 0 || frameHeight <= 0) {
+        return false;
+    }
+    // Browser/document refreshes may arrive as medium-width horizontal bands,
+    // not only as full-width strips. The live device trace showed widths from
+    // roughly 20% to 70% of the desktop. Keep small cursor updates dirty-only,
+    // while a large band/area opens the visual commit fence.
+    const bool horizontalBand = static_cast<int64_t>(rect.width) * 100 >=
+        static_cast<int64_t>(frameWidth) * 20 &&
+        static_cast<int64_t>(rect.height) * 100 <=
+            static_cast<int64_t>(frameHeight) * 30 &&
+        (rect.height >= 2 || static_cast<int64_t>(rect.width) * 100 >=
+            static_cast<int64_t>(frameWidth) * 75);
+    const bool verticalBand = static_cast<int64_t>(rect.height) * 100 >=
+        static_cast<int64_t>(frameHeight) * 20 &&
+        static_cast<int64_t>(rect.width) * 100 <=
+            static_cast<int64_t>(frameWidth) * 30 &&
+        (rect.width >= 2 || static_cast<int64_t>(rect.height) * 100 >=
+            static_cast<int64_t>(frameHeight) * 75);
+    const uint64_t damagePixels = static_cast<uint64_t>(rect.width) *
+        static_cast<uint64_t>(rect.height);
+    const uint64_t framePixels = static_cast<uint64_t>(frameWidth) *
+        static_cast<uint64_t>(frameHeight);
+    const bool largeArea = damagePixels * 100U >= framePixels * 25U;
+    return horizontalBand || verticalBand || largeArea;
+}
+
+bool RdpDamageAccumulator::LooksLikeRefreshContinuation(const RdpDamageRect& rect,
+                                                        int frameWidth, int frameHeight) {
+    if (!rect.valid || frameWidth <= 0 || frameHeight <= 0) {
+        return false;
+    }
+
+    // Once a visual refresh fence is already active, the remaining RDP GDI
+    // updates can be narrower than the first band. Treat a meaningful strip
+    // as part of that same episode, but leave tiny cursor/toolbar updates on
+    // the low-latency dirty path. The absolute minimums keep the rule useful
+    // on small test frames without classifying a 1x1 cursor as a repaint.
+    const int64_t minimumHorizontalLength = std::max<int64_t>(8, frameWidth * 8LL / 100LL);
+    const int64_t minimumVerticalLength = std::max<int64_t>(8, frameHeight * 8LL / 100LL);
+    const int64_t minimumHorizontalThickness = 2;
+    const int64_t minimumVerticalThickness = 2;
+    const bool horizontalStrip = static_cast<int64_t>(rect.width) >= minimumHorizontalLength &&
+        static_cast<int64_t>(rect.height) >= minimumHorizontalThickness &&
+        static_cast<int64_t>(rect.height) * 100 <= static_cast<int64_t>(frameHeight) * 12;
+    const bool verticalStrip = static_cast<int64_t>(rect.height) >= minimumVerticalLength &&
+        static_cast<int64_t>(rect.width) >= minimumVerticalThickness &&
+        static_cast<int64_t>(rect.width) * 100 <= static_cast<int64_t>(frameWidth) * 12;
+    return horizontalStrip || verticalStrip;
+}
+
 RdpDamageUpdateResult RdpDamageAccumulator::update(
     const uint8_t* data, size_t size, int width, int height, int sourceStride,
     int dirtyX, int dirtyY, int dirtyWidth, int dirtyHeight,
@@ -79,6 +134,8 @@ RdpDamageUpdateResult RdpDamageAccumulator::update(
     const RdpDamageRect clipped = ClipRect(
         width, height, dirtyX, dirtyY, dirtyWidth, dirtyHeight);
     std::lock_guard<std::mutex> lock(mutex_);
+    const int64_t nowUs = std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
     const bool geometryChanged = width_ != width || height_ != height ||
         stride_ != width * 4 || staging_.size() !=
             static_cast<size_t>(width) * static_cast<size_t>(height) * 4U;
@@ -104,9 +161,40 @@ RdpDamageUpdateResult RdpDamageAccumulator::update(
             rendererGeneration_ = rendererGeneration;
             pendingDamage_ = {0, 0, width, height, true};
             pendingFullFrame_ = true;
+            visualCommitActive_ = true;
+            // A full resync establishes the first visible canvas, but it is
+            // not evidence that a page repaint is continuing. Only a later
+            // broad refresh (or a real burst already in progress) may open
+            // the narrow-strip continuation path. This keeps a normal
+            // post-connect toolbar/cursor update on the dirty path.
+            visualCommitBurstDetected_ = false;
+            visualCommitContinuation_ = visualCommitContinuation_ ||
+                RdpVisualCommitPolicy::InBurstContinuation(nowUs, visualCommitLastCommitUs_);
+            visualCommitStartedUs_ = nowUs;
+            visualCommitLastUpdateUs_ = nowUs;
             result.copiedBytes = static_cast<uint64_t>(tightStride) *
                 static_cast<uint64_t>(height);
         } else {
+            const bool continuation = RdpVisualCommitPolicy::InBurstContinuation(
+                nowUs, visualCommitLastCommitUs_);
+            const bool broadRefresh = LooksLikeBroadRefresh(clipped, width_, height_);
+            const bool narrowContinuation = LooksLikeRefreshContinuation(
+                clipped, width_, height_) &&
+                ((visualCommitActive_ && visualCommitBurstDetected_) || continuation);
+            const bool refreshSignal = broadRefresh || narrowContinuation;
+            if (!visualCommitActive_ && refreshSignal) {
+                pendingFullFrame_ = true;
+                visualCommitActive_ = true;
+                visualCommitBurstDetected_ = true;
+                visualCommitContinuation_ = continuation;
+                visualCommitStartedUs_ = nowUs;
+                visualCommitLastUpdateUs_ = nowUs;
+            } else if (visualCommitActive_ && refreshSignal) {
+                // The first full resync may already have opened the fence;
+                // remember that the following broad updates are a real burst
+                // so the committed frame gets a continuation tail as well.
+                visualCommitBurstDetected_ = true;
+            }
             const size_t rowBytes = static_cast<size_t>(clipped.width) * 4U;
             for (int row = 0; row < clipped.height; ++row) {
                 const size_t sourceOffset =
@@ -118,11 +206,20 @@ RdpDamageUpdateResult RdpDamageAccumulator::update(
                 std::memcpy(staging_.data() + destinationOffset, data + sourceOffset, rowBytes);
             }
             pendingDamage_ = UnionRect(pendingDamage_, clipped);
+            if (pendingFullFrame_ && visualCommitActive_ && refreshSignal) {
+                visualCommitLastUpdateUs_ = nowUs;
+            }
             result.copiedBytes = static_cast<uint64_t>(rowBytes) *
                 static_cast<uint64_t>(clipped.height);
             if (CoversFullThreshold(pendingDamage_, width_, height_)) {
                 pendingDamage_ = {0, 0, width_, height_, true};
                 pendingFullFrame_ = true;
+                if (!visualCommitActive_) {
+                    visualCommitActive_ = true;
+                    visualCommitBurstDetected_ = true;
+                    visualCommitStartedUs_ = nowUs;
+                }
+                visualCommitLastUpdateUs_ = nowUs;
             }
         }
     } catch (const std::bad_alloc&) {
@@ -146,6 +243,12 @@ bool RdpDamageAccumulator::requestFullSnapshot(uint64_t rendererGeneration) {
     rendererGeneration_ = rendererGeneration;
     pendingDamage_ = {0, 0, width_, height_, true};
     pendingFullFrame_ = true;
+    visualCommitActive_ = false;
+    visualCommitBurstDetected_ = false;
+    visualCommitContinuation_ = false;
+    visualCommitStartedUs_ = 0;
+    visualCommitLastUpdateUs_ = 0;
+    visualCommitLastCommitUs_ = 0;
     return true;
 }
 
@@ -157,6 +260,27 @@ RdpDamageSnapshot RdpDamageAccumulator::takeSnapshot() {
     }
 
     const bool fullFrame = pendingFullFrame_;
+    bool committedVisualBurst = false;
+    int64_t visualCommitAtUs = 0;
+    if (fullFrame && visualCommitActive_) {
+        const int64_t nowUs = std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count();
+        const RdpVisualCommitDecision decision = RdpVisualCommitPolicy::Evaluate(
+            nowUs, visualCommitStartedUs_, visualCommitLastUpdateUs_,
+            visualCommitContinuation_ ?
+                RdpVisualCommitPolicy::kBurstContinuationQuietPeriodUs :
+                RdpVisualCommitPolicy::kQuietPeriodUs,
+            visualCommitContinuation_ ?
+                RdpVisualCommitPolicy::kBurstContinuationMaximumWindowUs :
+                RdpVisualCommitPolicy::kMaximumWindowUs);
+        if (decision.defer) {
+            snapshot.deferred = true;
+            snapshot.retryAtUs = decision.retryAtUs;
+            return snapshot;
+        }
+        committedVisualBurst = visualCommitBurstDetected_;
+        visualCommitAtUs = nowUs;
+    }
     const RdpDamageRect damage = fullFrame ?
         RdpDamageRect{0, 0, width_, height_, true} : pendingDamage_;
     const int snapshotStride = damage.width * 4;
@@ -191,6 +315,14 @@ RdpDamageSnapshot RdpDamageAccumulator::takeSnapshot() {
     snapshot.snapshotCopiedBytes = snapshotBytes;
     pendingDamage_ = RdpDamageRect();
     pendingFullFrame_ = false;
+    if (fullFrame && visualCommitActive_) {
+        visualCommitActive_ = false;
+        visualCommitBurstDetected_ = false;
+        visualCommitContinuation_ = false;
+        visualCommitStartedUs_ = 0;
+        visualCommitLastUpdateUs_ = 0;
+        visualCommitLastCommitUs_ = committedVisualBurst ? visualCommitAtUs : 0;
+    }
     return snapshot;
 }
 
@@ -203,6 +335,12 @@ void RdpDamageAccumulator::clear() {
     rendererGeneration_ = 0;
     pendingDamage_ = RdpDamageRect();
     pendingFullFrame_ = false;
+    visualCommitActive_ = false;
+    visualCommitBurstDetected_ = false;
+    visualCommitContinuation_ = false;
+    visualCommitStartedUs_ = 0;
+    visualCommitLastUpdateUs_ = 0;
+    visualCommitLastCommitUs_ = 0;
 }
 
 bool RdpDamageAccumulator::hasPending() const {

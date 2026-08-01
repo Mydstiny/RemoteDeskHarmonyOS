@@ -12,7 +12,7 @@ $packages = [System.Collections.Generic.List[object]]::new()
 $packages.Add([ordered]@{
   name = 'RemoteDeskHarmonyOS'
   SPDXID = 'SPDXRef-Package-RemoteDeskHarmonyOS'
-  versionInfo = '1.0.8'
+  versionInfo = '1.1.0'
   downloadLocation = 'https://github.com/Mydstiny/RemoteDeskHarmonyOS'
   filesAnalyzed = $false
   licenseConcluded = 'AGPL-3.0-or-later'
@@ -43,6 +43,7 @@ $native = @(
   @('libssh2','1.11.1','BSD-3-Clause','https://www.libssh2.org/'),
   @('Mbed-TLS','bundled-ohos','Apache-2.0','https://github.com/Mbed-TLS/mbedtls'),
   @('Opus','bundled-ohos-fixed-point','BSD-3-Clause','https://opus-codec.org/'),
+  @('zlib','platform-system','Zlib','https://zlib.net/'),
   @('Huawei-AGConnect-Auth','1.0.2','LicenseRef-Huawei-AGConnect','https://developer.huawei.com/')
 )
 foreach ($item in $native) {

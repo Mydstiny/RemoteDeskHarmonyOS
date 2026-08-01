@@ -4,6 +4,8 @@ declare module 'librdpnapi.so' {
   export function listProtocols(): ProtocolInfo[];
 
   export function connect(config: SessionConfig): number;
+  export function connectSshAsync(config: SessionConfig): Promise<number>;
+  export function getPendingSshConnectId(): number;
   export function disconnect(sessionId: number, rendererHandle?: number,
     decoderHandle?: number, audioHandle?: number): number;
   export function beginDisconnect(sessionId: number, rendererHandle: number,
@@ -18,19 +20,30 @@ declare module 'librdpnapi.so' {
   export function sendText(sessionId: number, text: string): void;
   export function sendFile(sessionId: number, remotePath: string, data: ArrayBuffer): number;
   export function writeRemoteFileChunk(sessionId: number, remotePath: string, data: ArrayBuffer, offset: number, truncate: boolean): number;
+  export function writeRemoteFileChunkAsync(sessionId: number, remotePath: string, data: ArrayBuffer,
+    offset: number, truncate: boolean): Promise<SftpWriteAsyncResult>;
   export function listRemoteDir(sessionId: number, remotePath: string): SftpFileEntry[];
+  export function listRemoteDirAsync(sessionId: number, remotePath: string): Promise<SftpListAsyncResult>;
   export function readRemoteFile(sessionId: number, remotePath: string): ArrayBuffer;
   export function readRemoteFileChunk(sessionId: number, remotePath: string, offset: number, maxLen: number): ArrayBuffer;
+  export function readRemoteFileChunkAsync(sessionId: number, remotePath: string, offset: number,
+    maxLen: number): Promise<SftpReadAsyncResult>;
   export function removeRemoteFile(sessionId: number, remotePath: string): number;
+  export function removeRemoteFileAsync(sessionId: number, remotePath: string): Promise<SftpMutationAsyncResult>;
   export function removeRemoteDir(sessionId: number, remotePath: string): number;
+  export function removeRemoteDirAsync(sessionId: number, remotePath: string): Promise<SftpMutationAsyncResult>;
   export function makeRemoteDir(sessionId: number, remotePath: string): number;
+  export function makeRemoteDirAsync(sessionId: number, remotePath: string): Promise<SftpMutationAsyncResult>;
   export function renameRemotePath(sessionId: number, oldPath: string, newPath: string): number;
+  export function renameRemotePathAsync(sessionId: number, oldPath: string,
+    newPath: string): Promise<SftpMutationAsyncResult>;
   export function sendClipboard(sessionId: number, data: ArrayBuffer): void;
   export function setSessionClipboardFiles(sessionId: number, paths: string[]): boolean;
   export function getSessionClipboardText(sessionId: number): string;
   export function isSessionClipboardReady(sessionId: number): boolean;
 
   export function getConnectionState(sessionId: number): number;
+  export function submitRustDesk2FA(sessionId: number, code: string): boolean;
   export function getRemoteCursorSnapshot(sessionId: number, includePixels?: boolean): RemoteCursorSnapshot;
   export function getRemoteCursorSnapshotPixelsAsync(sessionId: number): Promise<RemoteCursorSnapshot>;
   export function getConnectionLastMessage(sessionId: number): string;
@@ -39,8 +52,12 @@ declare module 'librdpnapi.so' {
   export function probeRdpCertificateAsync(host: string, port: number,
     serverName: string): Promise<RdpCertificateInfo>;
   export function getRdpRenderStats(sessionId: number): RdpRenderStats;
+  export function getSessionDiagnostics(sessionId: number): RustDeskDiagnosticsSnapshot;
   export function getRustDeskDiagnostics(sessionId: number): RustDeskDiagnosticsSnapshot;
   export function getRustDeskDisplayCapabilities(sessionId: number): RustDeskDisplayCapabilities;
+  export function beginRustDeskDisplaySwitch(sessionId: number,
+    display: number): RustDeskDisplaySwitchRequest;
+  export function switchRustDeskDisplay(sessionId: number, display: number): boolean;
   export function changeRustDeskDisplayResolution(sessionId: number, display: number,
     width: number, height: number): boolean;
   export function sendRustDeskTouchScale(sessionId: number, scale: number): boolean;
@@ -51,9 +68,20 @@ declare module 'librdpnapi.so' {
   export function presentRdpCachedFrame(sessionId: number): boolean;
 
   export function readData(sessionId: number): string;
+  export function execSshCommand(sessionId: number, command: string,
+    timeoutMs?: number): SshCommandResult;
+  export function execSshCommandAsync(sessionId: number, command: string,
+    timeoutMs?: number): Promise<SshCommandResult>;
+  export function execSshSubsystem(sessionId: number, subsystem: string,
+    timeoutMs?: number): SshCommandResult;
+  export function execSshSubsystemAsync(sessionId: number, subsystem: string,
+    timeoutMs?: number): Promise<SshCommandResult>;
+  export function sendSshSignal(sessionId: number, signal: string): number;
+  export function sendSshEof(sessionId: number): number;
   export function resizePty(sessionId: number, cols: number, rows: number): void;
   export function measureSshLatency(sessionId: number): number;
-  export function setOnDataCallback(sessionId: number, cb: ((data: string) => void) | null): void;
+  export function measureSshLatencyAsync(sessionId: number): Promise<number>;
+  export function setOnDataCallback(sessionId: number, cb: ((data: ArrayBuffer) => void) | null): void;
   export function setHelperSocketPath(socketPath: string, binPath: string): void;
 
   // SSH 密钥工具 (函数声明)
@@ -62,15 +90,16 @@ declare module 'librdpnapi.so' {
   export function changeSshPrivateKeyPassphrase(privateKeyPem: string, oldPassphrase: string, newPassphrase: string): string;
   export function validatePublicKeyForAuthorizedKeys(publicKeyOpenSsh: string): boolean;
   export function installSshPublicKey(host: string, port: number, username: string, password: string, privateKeyPem: string, passphrase: string, publicKey: string): SshPublicKeyInstallResult;
-  export function testSshKeyAuth(host: string, port: number, username: string, privateKeyPem: string, passphrase: string): SshAuthTestResult;
-  export function probeSshHostKey(host: string, port: number): SshHostKeyInfo;
+  export function testSshKeyAuth(host: string, port: number, username: string, privateKeyPem: string,
+    passphrase: string, proxy?: SshProxyConfig): SshAuthTestResult;
+  export function probeSshHostKey(host: string, port: number, proxy?: SshProxyConfig): SshHostKeyInfo;
 
   export function initRenderer(xcId: string, width: number, height: number): number;
   export function destroyRenderer(handle: number): void;
   export function renderFrame(handle: number, textureId: number): void;
   export function renderRawBGRA(handle: number, data: ArrayBuffer, width: number, height: number, stride: number): void;
   export function resizeRenderer(handle: number, width: number, height: number): void;
-  export function setRendererCanvasTransform(handle: number, scale: number, panX: number, panY: number): void;
+  export function setRendererCanvasTransform(handle: number, scale: number, panX: number, panY: number): number;
   export function testRender(handle: number): void;
   export function registerNativeXComponent(): boolean;
   export function setXComponentSurfaceId(surfaceId: string, width: number, height: number): boolean;
@@ -104,6 +133,7 @@ declare module 'librdpnapi.so' {
   export function terminalCoreCreate(cols: number, rows: number): number;
   export function terminalCoreDestroy(handle: number): void;
   export function terminalCoreWrite(handle: number, data: string): void;
+  export function terminalCoreWriteBytes(handle: number, data: ArrayBuffer): void;
   export function terminalCoreResize(handle: number, cols: number, rows: number): void;
   export function terminalCoreScrollView(handle: number, deltaLines: number): void;
   export function terminalCoreScrollToBottom(handle: number): void;
@@ -116,6 +146,11 @@ interface SessionVersionInfo {
   version: string;
   apiVersion: number;
   buildType: string;
+  appVersion: string;
+  gitShortSha: string;
+  buildTimeUtc: string;
+  rustDeskFfiAbiVersion: number;
+  rustDeskProtocolFixture: string;
 }
 
 interface ProtocolInfo {
@@ -126,6 +161,7 @@ interface ProtocolInfo {
 }
 
 export interface RendererViewport {
+  transformVersion: number;
   sourceWidth: number;
   sourceHeight: number;
   surfaceWidth: number;
@@ -241,12 +277,23 @@ export interface RustDeskDiagnosticsSnapshot {
   connectionPath: string;
   lastFrameAtMs: number;
   lastFrameAgeMs: number;
+  lastPresentedAtMs: number;
+  lastPresentedFrameAgeMs: number;
   decodeOk: number;
   decodeErrors: number;
   decodeP50Us: number;
   decodeP95Us: number;
   decodeMaxUs: number;
   presentedFrames: number;
+  presentationRejected: number;
+  lastDirtyX: number;
+  lastDirtyY: number;
+  lastDirtyWidth: number;
+  lastDirtyHeight: number;
+  requestedColorDepth: string;
+  effectiveColorDepth: number;
+  inputEventsSent: number;
+  inputEventsDropped: number;
   presentationWindowSamples: number;
   presentationWindowMs: number;
   renderP50Us: number;
@@ -263,9 +310,28 @@ export interface RustDeskDisplayResolution {
   height: number;
 }
 
+export interface RustDeskDisplayInfo {
+  display: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  originalWidth: number;
+  originalHeight: number;
+  scaleMilli: number;
+  online: boolean;
+  cursorEmbedded: boolean;
+  name: string;
+  resolutions: RustDeskDisplayResolution[];
+}
+
 export interface RustDeskDisplayCapabilities {
   supported: boolean;
   currentDisplay: number;
+  switchGeneration: number;
+  readySwitchGeneration: number;
+  pendingDisplay: number;
+  inputBlocked: boolean;
   width: number;
   height: number;
   originalWidth: number;
@@ -273,6 +339,12 @@ export interface RustDeskDisplayCapabilities {
   scaleMilli: number;
   geometryEpoch: number;
   resolutions: RustDeskDisplayResolution[];
+  displays: RustDeskDisplayInfo[];
+}
+
+export interface RustDeskDisplaySwitchRequest {
+  accepted: boolean;
+  generation: number;
 }
 
 export interface LocalResourceStats {
@@ -289,7 +361,9 @@ export interface LocalResourceStats {
 export interface RemoteCursorSnapshot {
   sessionId: number;
   protocol: string;
-  shapeId: number;
+  generation: number;
+  shapeId: string;
+  shapeSource: string;
   x: number;
   y: number;
   width: number;
@@ -297,6 +371,7 @@ export interface RemoteCursorSnapshot {
   hotX: number;
   hotY: number;
   fallbackShape: boolean;
+  protocolShapeAvailable: boolean;
   positionAvailable: boolean;
   visible: boolean;
   shapeRevision: number;
@@ -338,6 +413,12 @@ export interface SessionConfig {
   authMethod: string;
   privateKeyPem: string;
   privateKeyPassphrase: string;
+  keyboardInteractiveResponses?: string[];
+  sshProxyType?: 'direct' | 'http_connect' | 'socks5' | 'legacy_gateway';
+  sshProxyHost?: string;
+  sshProxyPort?: number;
+  sshProxyUsername?: string;
+  sshProxyPassword?: string;
   expectedHostKeyRawBase64?: string;
   expectedHostKeyFingerprintSha256?: string;
   expectedRdpCertificateFingerprintSha256?: string;
@@ -346,6 +427,7 @@ export interface SessionConfig {
   // RustDesk 扩展字段
   rdImageQuality?: number;   // 0=fast, 1=balanced, 2=quality
   rdDirectIp?: boolean;      // 直连IP模式
+  rdConnectionStrategy?: 'force_relay' | 'direct_ip' | 'auto';
   rdDirectPort?: number;     // 直连端口
   rdLanDiscovery?: boolean;  // LAN发现
   rdPrivacyMode?: boolean;   // 隐私模式
@@ -360,6 +442,28 @@ export interface SessionConfig {
   rdAccountId?: string;      // API账户ID
   rdServerKey?: string;      // Rendezvous 公钥或共享准入 Key
   rdServerKeyMode?: number;  // 0=legacy/auto, 1=server public key, 2=shared access key
+  // Configured hbbr fallback port. hbbs-provided relay_server:port remains authoritative.
+  rdRelayPort?: number;
+  // Server Pro control-plane token; transient only, never persist in RemoteHost/cloud.
+  rdAccessToken?: string;
+  vncTransport?: string;
+  vncGatewayHost?: string;
+  vncGatewayPort?: number;
+  vncGatewayPath?: string;
+  vncRepeaterMode?: string;
+  vncRepeaterTarget?: string;
+  vncTls?: boolean;
+  vncViewOnly?: boolean;
+  vncClipboardEnabled?: boolean;
+  vncSecurityPolicy?: string;
+  vncConnectTimeoutMs?: number;
+  vncAuthTimeoutMs?: number;
+  vncFirstFrameTimeoutMs?: number;
+  vncImageQualityPreset?: string;
+  vncPreferredEncoding?: string;
+  vncColorDepth?: string;
+  vncFrameRateLimit?: number;
+  vncExpectedCertificateFingerprintSha256?: string;
 }
 
 export interface SftpFileEntry {
@@ -370,12 +474,41 @@ export interface SftpFileEntry {
   mtime: number;
 }
 
+export interface SftpListAsyncResult {
+  errorCode: number;
+  entries: SftpFileEntry[];
+}
+
+export interface SftpReadAsyncResult {
+  errorCode: number;
+  data: ArrayBuffer;
+}
+
+export interface SftpWriteAsyncResult {
+  errorCode: number;
+  bytesWritten: number;
+}
+
+export interface SftpMutationAsyncResult {
+  errorCode: number;
+}
+
+export interface SshCommandResult {
+  errorCode: number;
+  exitCode: number;
+  signaled: boolean;
+  signal: string;
+  stdout: ArrayBuffer;
+  stderr: ArrayBuffer;
+}
+
 export enum ConnectionState {
   DISCONNECTED = 0,
   CONNECTING = 1,
   CONNECTED = 2,
   RECONNECTING = 3,
-  ERROR = 4
+  ERROR = 4,
+  AUTHENTICATING = 5
 }
 
 export enum MouseButton {
@@ -402,11 +535,26 @@ export interface TerminalCoreSnapshot {
   cursorX: number;
   cursorY: number;
   cursorVisible: boolean;
+  bracketedPaste: boolean;
+  mouseTracking: number;
+  sgrMouse: boolean;
+  applicationCursorKeys: boolean;
+  applicationKeypad: boolean;
+  autoWrap: boolean;
   viewTop: number;
   screenTop: number;
   isAtBottom: boolean;
   dirtyRows: number[];
   cells: TerminalCoreCell[];
+}
+
+export interface TerminalCoreMode {
+  bracketedPaste: boolean;
+  mouseTracking: number;
+  sgrMouse: boolean;
+  applicationCursorKeys: boolean;
+  applicationKeypad: boolean;
+  autoWrap: boolean;
 }
 
 // SSH 密钥工具 (top-level 类型导出, 供 ArkTS import)
@@ -441,6 +589,14 @@ export interface SshAuthTestResult {
   ok: boolean;
   code: number;
   message: string;
+}
+
+export interface SshProxyConfig {
+  type?: string;
+  host?: string;
+  port?: number;
+  username?: string;
+  password?: string;
 }
 
 export interface SshHostKeyInfo {

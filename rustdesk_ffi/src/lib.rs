@@ -17,8 +17,9 @@ use std::net::{Shutdown, TcpStream};
 use std::os::raw::c_int;
 use std::ptr;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
+use std::collections::{HashMap, HashSet};
 
 pub mod connector;
 pub mod crypto;
@@ -26,6 +27,7 @@ pub mod crypto_channel;
 mod control_inbox;
 mod cursor_state;
 mod net;
+mod safe_diagnostics;
 #[cfg(feature = "opus-audio")]
 pub mod opus_ffi;
 pub mod protocol;
@@ -34,16 +36,34 @@ pub mod terminal_core;
 use protocol::message_proto::{
     AudioFormat, AudioFrame, EncodedVideoFrames, VideoFrame, VideoFrame_oneof_union,
 };
+use protocol::session::AuthEventCallback;
 use control_inbox::ControlInbox;
 use cursor_state::CursorStreamUpdate;
+use std::sync::mpsc::Sender;
 
 static LAST_ERROR: Mutex<String> = Mutex::new(String::new());
-// 每次连接尝试都有单调递增 epoch；取消时递增 epoch，使等待批准的旧线程可退出，
-// 同时避免新连接把旧线程的取消状态重置掉。
+// 每个连接尝试都有独立 epoch。取消一个 session 只标记它自己的 epoch，
+// 不会让另一个 RustDesk 连接的 2FA/批准等待线程退出。
 static CONNECT_EPOCH: AtomicU64 = AtomicU64::new(0);
+static CANCELLED_EPOCHS: LazyLock<Mutex<HashSet<u64>>> =
+    LazyLock::new(|| Mutex::new(HashSet::new()));
+static ACTIVE_CONNECT_EPOCHS: LazyLock<Mutex<HashMap<u64, Vec<u64>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+static PENDING_2FA: LazyLock<Mutex<HashMap<u64, PendingTwoFactor>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
-pub(crate) fn begin_connect_epoch() -> u64 {
-    CONNECT_EPOCH.fetch_add(1, Ordering::SeqCst).wrapping_add(1)
+struct PendingTwoFactor {
+    epoch: u64,
+    session_id: u64,
+    sender: Sender<String>,
+}
+
+pub(crate) fn begin_connect_epoch(session_id: u64) -> u64 {
+    let epoch = CONNECT_EPOCH.fetch_add(1, Ordering::SeqCst).wrapping_add(1);
+    if let Ok(mut active) = ACTIVE_CONNECT_EPOCHS.lock() {
+        active.entry(session_id).or_default().push(epoch);
+    }
+    epoch
 }
 
 pub(crate) fn current_connect_epoch() -> u64 {
@@ -51,7 +71,160 @@ pub(crate) fn current_connect_epoch() -> u64 {
 }
 
 pub(crate) fn connect_cancelled(epoch: u64) -> bool {
-    CONNECT_EPOCH.load(Ordering::SeqCst) != epoch
+    CANCELLED_EPOCHS.lock().map(|cancelled| cancelled.contains(&epoch)).unwrap_or(true)
+}
+
+pub(crate) fn register_pending_2fa(epoch: u64, session_id: u64, sender: Sender<String>) -> io::Result<()> {
+    let mut pending = PENDING_2FA
+        .lock()
+        .map_err(|_| io::Error::new(io::ErrorKind::Other, "2FA pending state lock poisoned"))?;
+    let key = if session_id == 0 { epoch } else { session_id };
+    pending.insert(key, PendingTwoFactor { epoch, session_id, sender });
+    Ok(())
+}
+
+pub(crate) fn clear_pending_2fa(epoch: u64, session_id: u64) {
+    if let Ok(mut pending) = PENDING_2FA.lock() {
+        pending.retain(|_, value| {
+            !(value.epoch == epoch && (session_id == 0 || value.session_id == session_id))
+        });
+    }
+}
+
+fn finish_connect_epoch(epoch: u64, session_id: u64) {
+    if let Ok(mut active) = ACTIVE_CONNECT_EPOCHS.lock() {
+        let remove_session = if let Some(epochs) = active.get_mut(&session_id) {
+            epochs.retain(|active_epoch| *active_epoch != epoch);
+            epochs.is_empty()
+        } else {
+            false
+        };
+        if remove_session {
+            active.remove(&session_id);
+        }
+    }
+    if let Ok(mut cancelled) = CANCELLED_EPOCHS.lock() { cancelled.remove(&epoch); }
+}
+
+fn cancel_connect_epoch(epoch: u64) {
+    if let Ok(mut cancelled) = CANCELLED_EPOCHS.lock() { cancelled.insert(epoch); }
+}
+
+pub(crate) fn cancel_pending_connect_for_session(session_id: u64) {
+    let epochs: Vec<u64> = if let Ok(active) = ACTIVE_CONNECT_EPOCHS.lock() {
+        if session_id == 0 {
+            active.values().flat_map(|values| values.iter().copied()).collect()
+        } else {
+            active.get(&session_id).cloned().unwrap_or_default()
+        }
+    } else { Vec::new() };
+    for epoch in epochs { cancel_connect_epoch(epoch); }
+    if let Ok(mut pending) = PENDING_2FA.lock() {
+        if session_id == 0 {
+            pending.clear();
+        } else {
+            pending.retain(|_, value| value.session_id != session_id);
+        }
+    }
+}
+
+fn structured_error(
+    stage: &str,
+    code: &str,
+    detail: impl Into<String>,
+    attempt: u64,
+) -> String {
+    let detail = detail.into().replace('|', "/").replace('\n', " ").replace('\r', " ");
+    format!(
+        "RDERR|stage={}|code={}|attempt={}|detail={}",
+        stage, code, attempt, detail
+    )
+}
+
+fn pipeline_error_classification(
+    base_code: &'static str,
+    error: &io::Error,
+) -> (&'static str, &'static str) {
+    let value = error.to_string().to_lowercase();
+    if value.contains("please login")
+        || value.contains("not logged in")
+        || value.contains("login session has expired")
+        || value.contains("you have not logged in")
+    {
+        return (
+            "control_plane_login_required",
+            "control plane rejected the relay session as unauthenticated",
+        );
+    }
+    if value.contains("wrong password")
+        || value.contains("invalid password")
+        || value.contains("password is wrong")
+    {
+        return ("peer_password_rejected", "remote device rejected the device password");
+    }
+    if value.contains("approval timed out")
+        || value.contains("remote approval timed out")
+    {
+        return ("approval_unavailable", "remote approval was not completed");
+    }
+    if value.contains("no password access") {
+        return (
+            "peer_password_required",
+            "remote device uses click-approval mode; a device password alone is not accepted, switch to the request-approval flow",
+        );
+    }
+    if value.contains("id does not exist")
+        || value.contains("peer not found")
+        || value.contains("peer is offline")
+        || value.contains("remote desktop is offline")
+    {
+        return ("peer_unavailable", "remote peer is unavailable");
+    }
+    if value.contains("license mismatch")
+        || value.contains("license overuse")
+        || value.contains("key mismatch")
+        || value.contains("relay refused")
+    {
+        return (
+            "relay_credential_rejected",
+            "relay rejected the configured connection credential",
+        );
+    }
+    let detail = match error.kind() {
+        io::ErrorKind::TimedOut => "connection stage timed out",
+        io::ErrorKind::ConnectionRefused => "connection stage was refused",
+        io::ErrorKind::PermissionDenied => "connection stage was denied",
+        io::ErrorKind::NotFound
+        | io::ErrorKind::AddrNotAvailable
+        | io::ErrorKind::NetworkUnreachable => "connection endpoint is unavailable",
+        io::ErrorKind::ConnectionReset
+        | io::ErrorKind::ConnectionAborted
+        | io::ErrorKind::BrokenPipe => "connection was interrupted",
+        io::ErrorKind::InvalidInput => "connection configuration is invalid",
+        io::ErrorKind::InvalidData => "server returned an invalid connection response",
+        _ => "connection stage failed",
+    };
+    (base_code, detail)
+}
+
+fn pipeline_error_message(
+    state: &connector::ConnState,
+    error: &io::Error,
+    direct_connection: bool,
+    attempt: u64,
+) -> String {
+    let (stage, base_code) = match state {
+        connector::ConnState::RendezvousConnecting => ("rendezvous", "rendezvous_failed"),
+        connector::ConnState::RequestingRelay => ("relay", "relay_request_failed"),
+        connector::ConnState::ConnectingToPeer if direct_connection =>
+            ("peer_channel", "direct_peer_connect_failed"),
+        connector::ConnState::ConnectingToPeer => ("relay", "relay_endpoint_failed"),
+        connector::ConnState::KeyExchanging => ("peer_channel", "peer_channel_failed"),
+        connector::ConnState::LoggingIn => ("peer_login", "peer_login_failed"),
+        _ => ("unknown", "connect_failed")
+    };
+    let (code, detail) = pipeline_error_classification(base_code, error);
+    structured_error(stage, code, detail, attempt)
 }
 
 fn set_last_error(message: impl Into<String>) {
@@ -152,6 +325,27 @@ pub struct RustDeskConfig {
     /// 0=legacy/auto, 1=Ed25519 server public key, 2=shared hbbs/hbbr -k text.
     /// Appended to preserve the established C ABI field order.
     pub key_mode: c_int,
+    /// Server Pro control-plane session token. Transient only; never persist.
+    /// Appended to preserve the established C ABI field order.
+    pub token: *const c_char,
+    /// Native session identity used to isolate pending Peer 2FA and cancel
+    /// only the connection attempt that owns this config.
+    /// Appended to preserve the established C ABI field order.
+    pub connection_id: u64,
+    /// Configured hbbr fallback port. The hbbs relay_server endpoint keeps an
+    /// explicit port when one is advertised.
+    /// Appended to preserve the established C ABI field order.
+    pub relay_fallback_port: c_int,
+}
+
+const DEFAULT_RELAY_PORT: u16 = 21117;
+
+fn relay_fallback_port_from_config(value: c_int) -> u16 {
+    if (1..=u16::MAX as c_int).contains(&value) {
+        value as u16
+    } else {
+        DEFAULT_RELAY_PORT
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -214,7 +408,11 @@ fn resolve_stream_params_for_config(config: &RustDeskConfig) -> ResolvedStreamPa
     }
 }
 
-/// 视频帧数据
+/// Legacy encoded video frame passed across the Rust/C++ boundary.
+///
+/// This layout is kept stable for callers of `rustdesk_connect`. The callback
+/// only borrows `data` for the duration of the callback. Consumers must copy
+/// the bytes before returning when they need asynchronous processing.
 #[repr(C)]
 pub struct FfiVideoFrame {
     pub data: *const u8,
@@ -224,6 +422,25 @@ pub struct FfiVideoFrame {
     pub codec: c_int, // 0=H264, 1=H265, 2=VP8, 3=VP9
     pub timestamp: u64,
     pub is_key_frame: bool,
+}
+
+/// Versioned encoded video frame with RustDesk display routing metadata.
+///
+/// This is intentionally a separate C ABI type instead of an appended tail on
+/// `FfiVideoFrame`: a V1 caller must never cause the producer or consumer to
+/// read beyond the memory guaranteed by the V1 contract.
+#[repr(C)]
+pub struct FfiVideoFrameV2 {
+    pub data: *const u8,
+    pub size: usize,
+    pub width: c_int,
+    pub height: c_int,
+    pub codec: c_int, // 0=H264, 1=H265, 2=VP8, 3=VP9
+    pub timestamp: u64,
+    pub is_key_frame: bool,
+    pub display: c_int,
+    pub abi_version: u32,
+    pub struct_size: u32,
 }
 
 /// 音频数据
@@ -239,7 +456,7 @@ pub struct FfiAudioData {
 /// Remote cursor update. Pixel bytes are valid only for the callback duration.
 #[repr(C)]
 pub struct FfiCursorUpdate {
-    pub kind: c_int, // 0=shape, 1=position, 2=visibility
+    pub kind: c_int, // 0=shape, 1=position, 2=visibility, 3=cache miss
     pub shape_id: u64,
     pub x: c_int,
     pub y: c_int,
@@ -269,7 +486,11 @@ pub enum FfiConnectionState {
 /// thread or consumes the counters.
 pub const RUSTDESK_STREAM_STATS_VERSION: u32 = 1;
 pub const RUSTDESK_DISPLAY_SNAPSHOT_VERSION: u32 = 1;
+pub const RUSTDESK_DISPLAY_LIST_VERSION: u32 = 1;
+pub const RUSTDESK_VIDEO_FRAME_ABI_VERSION: u32 = 2;
 pub const RUSTDESK_MAX_DISPLAY_RESOLUTIONS: usize = 32;
+pub const RUSTDESK_MAX_DISPLAYS: usize = 16;
+pub const RUSTDESK_DISPLAY_NAME_BYTES: usize = 128;
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -315,11 +536,35 @@ impl Default for RustDeskStreamStats {
     }
 }
 
-/// Mutable display geometry shared by the streaming worker and the FFI caller.
-/// RustDesk sends this through `Misc.switch_display`, including Android rotations.
+/// One remote display as received from RustDesk `PeerInfo`/`SwitchDisplay`.
+///
+/// This is intentionally an owned Rust-side representation. The FFI list API
+/// copies it into fixed-width snapshots so no Rust allocation is exposed to C++.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct RustDeskDisplayInfoState {
+    pub display: i32,
+    pub x: i32,
+    pub y: i32,
+    pub width: i32,
+    pub height: i32,
+    pub name: String,
+    pub online: bool,
+    pub cursor_embedded: bool,
+    pub original_width: i32,
+    pub original_height: i32,
+    pub scale_milli: i32,
+    pub resolutions: Vec<(i32, i32)>,
+}
+
+/// Mutable display catalog shared by the streaming worker and FFI callers.
+/// RustDesk sends display geometry through `PeerInfo` and `Misc.switch_display`.
 #[derive(Debug, Clone)]
 pub(crate) struct RustDeskDisplayState {
     pub current_display: i32,
+    pub desired_display: Option<i32>,
+    pub switch_generation: u64,
+    pub pending_switch_generation: Option<u64>,
+    pub confirmed_switch_generation: u64,
     pub width: i32,
     pub height: i32,
     pub original_width: i32,
@@ -327,12 +572,17 @@ pub(crate) struct RustDeskDisplayState {
     pub scale_milli: i32,
     pub geometry_epoch: u32,
     pub resolutions: Vec<(i32, i32)>,
+    pub displays: Vec<RustDeskDisplayInfoState>,
 }
 
 impl Default for RustDeskDisplayState {
     fn default() -> Self {
         Self {
             current_display: 0,
+            desired_display: None,
+            switch_generation: 0,
+            pending_switch_generation: None,
+            confirmed_switch_generation: 0,
             width: 0,
             height: 0,
             original_width: 0,
@@ -340,6 +590,7 @@ impl Default for RustDeskDisplayState {
             scale_milli: 1000,
             geometry_epoch: 0,
             resolutions: Vec::new(),
+            displays: Vec::new(),
         }
     }
 }
@@ -365,6 +616,48 @@ pub struct RustDeskResolution {
     pub height: i32,
 }
 
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct RustDeskDisplayInfoSnapshot {
+    pub display: i32,
+    pub x: i32,
+    pub y: i32,
+    pub width: i32,
+    pub height: i32,
+    pub original_width: i32,
+    pub original_height: i32,
+    pub scale_milli: i32,
+    pub online: u8,
+    pub cursor_embedded: u8,
+    pub reserved: [u8; 2],
+    pub name_len: u32,
+    pub name: [u8; RUSTDESK_DISPLAY_NAME_BYTES],
+    pub resolution_offset: u32,
+    pub resolution_count: u32,
+}
+
+impl Default for RustDeskDisplayInfoSnapshot {
+    fn default() -> Self {
+        Self {
+            display: 0,
+            x: 0,
+            y: 0,
+            width: 0,
+            height: 0,
+            original_width: 0,
+            original_height: 0,
+            scale_milli: 1000,
+            online: 0,
+            cursor_embedded: 0,
+            reserved: [0; 2],
+            name_len: 0,
+            name: [0; RUSTDESK_DISPLAY_NAME_BYTES],
+            resolution_offset: 0,
+            resolution_count: 0,
+        }
+    }
+}
+
 // ============================================================
 // 回调类型
 // ============================================================
@@ -372,15 +665,29 @@ pub struct RustDeskResolution {
 /// 视频帧回调
 pub type FrameCallback = extern "C" fn(frame: *const FfiVideoFrame, user_data: *mut c_void);
 
+/// V2 video frame callback with explicit display routing metadata.
+pub type FrameCallbackV2 =
+    extern "C" fn(frame: *const FfiVideoFrameV2, user_data: *mut c_void);
+
 /// 音频数据回调
 pub type AudioCallback = extern "C" fn(audio: *const FfiAudioData, user_data: *mut c_void);
 
 /// Remote cursor callback.
 pub type CursorCallback = extern "C" fn(cursor: *const FfiCursorUpdate, user_data: *mut c_void);
 
+/// Initial remote display snapshot delivered before the V2 stream starts.
+pub type DisplayCallback =
+    extern "C" fn(snapshot: *const RustDeskDisplaySnapshot, user_data: *mut c_void);
+
 /// 断开连接回调
 pub type DisconnectCallback =
     extern "C" fn(state: FfiConnectionState, message: *const c_char, user_data: *mut c_void);
+
+#[derive(Clone, Copy)]
+enum FrameCallbackKind {
+    V1(FrameCallback),
+    V2(FrameCallbackV2),
+}
 
 // ============================================================
 // 内部类型: RustDesk 客户端句柄
@@ -425,6 +732,24 @@ pub(crate) enum ControlMsg {
         width: i32,
         height: i32,
     },
+    SwitchDisplay {
+        display: i32,
+    },
+    /// One latest-wins single-canvas switch transaction. The connector emits
+    /// SwitchDisplay, CaptureDisplays(set=[display]) and
+    /// RefreshVideoDisplay(display) without yielding to another control.
+    DisplaySwitch {
+        display: i32,
+        generation: u64,
+    },
+    CaptureDisplays {
+        add: Vec<i32>,
+        sub: Vec<i32>,
+        set: Vec<i32>,
+    },
+    RefreshVideoDisplay {
+        display: i32,
+    },
     TouchScale {
         scale: i32,
     },
@@ -448,8 +773,10 @@ struct RustDeskClient {
     peer_id: String,
     host: String,
     port: u16,
+    relay_fallback_port: u16,
     server_key: String,
     shared_access_key: bool,
+    api_token: String,
     password: String,
     request_approval: bool,
     controls: Arc<ControlInbox>,
@@ -501,7 +828,8 @@ fn dispatch_encoded_frames(
     codec: c_int,
     width: c_int,
     height: c_int,
-    on_frame: FrameCallback,
+    display: c_int,
+    on_frame: FrameCallbackKind,
     user_data: *mut c_void,
 ) {
     static FFI_FRAME_CB_COUNT: AtomicU64 = AtomicU64::new(0);
@@ -511,16 +839,37 @@ fn dispatch_encoded_frames(
         if data.is_empty() {
             continue;
         }
-        let ffi_frame = FfiVideoFrame {
-            data: data.as_ptr(),
-            size: data.len(),
-            width,
-            height,
-            codec,
-            timestamp: frame.get_pts().max(0) as u64,
-            is_key_frame: frame.get_key(),
-        };
-        on_frame(&ffi_frame, user_data);
+        let timestamp = frame.get_pts().max(0) as u64;
+        let is_key_frame = frame.get_key();
+        match on_frame {
+            FrameCallbackKind::V1(callback) => {
+                let ffi_frame = FfiVideoFrame {
+                    data: data.as_ptr(),
+                    size: data.len(),
+                    width,
+                    height,
+                    codec,
+                    timestamp,
+                    is_key_frame,
+                };
+                callback(&ffi_frame, user_data);
+            }
+            FrameCallbackKind::V2(callback) => {
+                let ffi_frame = FfiVideoFrameV2 {
+                    data: data.as_ptr(),
+                    size: data.len(),
+                    width,
+                    height,
+                    codec,
+                    timestamp,
+                    is_key_frame,
+                    display,
+                    abi_version: RUSTDESK_VIDEO_FRAME_ABI_VERSION,
+                    struct_size: std::mem::size_of::<FfiVideoFrameV2>() as u32,
+                };
+                callback(&ffi_frame, user_data);
+            }
+        }
         // Fast-path counters only (no format/IO in hot path)
         FFI_FRAME_CB_COUNT.fetch_add(1, Ordering::Relaxed);
         FFI_SUBFRAME_TOTAL.fetch_add(1, Ordering::Relaxed);
@@ -530,35 +879,68 @@ fn dispatch_encoded_frames(
 fn dispatch_video_frame(
     frame: &VideoFrame,
     display_state: &Arc<Mutex<RustDeskDisplayState>>,
-    on_frame: Option<FrameCallback>,
+    on_frame: Option<FrameCallbackKind>,
     user_data: *mut c_void,
 ) {
     let Some(on_frame) = on_frame else {
         return;
     };
+    let display = frame.get_display();
     let (width, height) = display_state
         .lock()
-        .map(|state| (state.width.max(1), state.height.max(1)))
+        .map(|state| {
+            state
+                .displays
+                .iter()
+                .find(|info| info.display == display)
+                .map(|info| (info.width.max(1), info.height.max(1)))
+                .unwrap_or((state.width.max(1), state.height.max(1)))
+        })
         .unwrap_or((1, 1));
 
     match frame.union {
         Some(VideoFrame_oneof_union::h264s(ref frames)) => {
-            dispatch_encoded_frames(frames, 0, width, height, on_frame, user_data);
+            dispatch_encoded_frames(frames, 0, width, height, display, on_frame, user_data);
         }
         Some(VideoFrame_oneof_union::h265s(ref frames)) => {
-            dispatch_encoded_frames(frames, 1, width, height, on_frame, user_data);
+            dispatch_encoded_frames(frames, 1, width, height, display, on_frame, user_data);
         }
         Some(VideoFrame_oneof_union::vp8s(ref frames)) => {
-            dispatch_encoded_frames(frames, 2, width, height, on_frame, user_data);
+            dispatch_encoded_frames(frames, 2, width, height, display, on_frame, user_data);
         }
         Some(VideoFrame_oneof_union::vp9s(ref frames)) => {
-            dispatch_encoded_frames(frames, 3, width, height, on_frame, user_data);
+            dispatch_encoded_frames(frames, 3, width, height, display, on_frame, user_data);
         }
         Some(VideoFrame_oneof_union::av1s(ref frames)) => {
-            dispatch_encoded_frames(frames, 4, width, height, on_frame, user_data);
+            dispatch_encoded_frames(frames, 4, width, height, display, on_frame, user_data);
         }
         Some(VideoFrame_oneof_union::rgb(_)) | Some(VideoFrame_oneof_union::yuv(_)) | None => {}
     }
+}
+
+fn dispatch_display_snapshot(
+    display_state: &Arc<Mutex<RustDeskDisplayState>>,
+    on_display: Option<DisplayCallback>,
+    user_data: *mut c_void,
+) {
+    let Some(on_display) = on_display else {
+        return;
+    };
+    let Ok(state) = display_state.lock() else {
+        return;
+    };
+    let snapshot = RustDeskDisplaySnapshot {
+        version: RUSTDESK_DISPLAY_SNAPSHOT_VERSION,
+        current_display: state.current_display,
+        width: state.width,
+        height: state.height,
+        original_width: state.original_width,
+        original_height: state.original_height,
+        scale_milli: state.scale_milli,
+        geometry_epoch: state.geometry_epoch,
+        resolution_count: state.resolutions.len().min(RUSTDESK_MAX_DISPLAY_RESOLUTIONS) as u32,
+    };
+    on_display(&snapshot, user_data);
 }
 
 /// Async audio worker — runs Opus decode + PCM callback on dedicated thread.
@@ -824,6 +1206,14 @@ fn dispatch_cursor_update(
             ffi.visible = visible;
             on_cursor(&ffi, user_data);
         }
+        CursorStreamUpdate::CacheMiss { id, reason: _ } => {
+            ffi.kind = 3;
+            ffi.shape_id = id;
+            // The cache miss is diagnostic-only.  The native store must keep
+            // its last valid shape and visibility unchanged.
+            ffi.visible = true;
+            on_cursor(&ffi, user_data);
+        }
     }
 }
 
@@ -836,23 +1226,25 @@ fn dispatch_cursor_update(
 /// 此函数阻塞直到登录完成 (通常 5-15s)。
 /// 应在独立线程中调用。
 /// 成功返回不透明句柄，失败返回 null。
-#[no_mangle]
-pub extern "C" fn rustdesk_connect(
+fn rustdesk_connect_impl(
     cfg: *const RustDeskConfig,
-    on_frame: Option<FrameCallback>,
+    on_frame: Option<FrameCallbackKind>,
     on_audio: Option<AudioCallback>,
     on_cursor: Option<CursorCallback>,
     on_disconnect: Option<DisconnectCallback>,
+    on_display: Option<DisplayCallback>,
+    on_auth: Option<AuthEventCallback>,
     user_data: *mut c_void,
 ) -> *mut c_void {
     clear_last_error();
-    let _connect_epoch = begin_connect_epoch();
     if cfg.is_null() {
         set_last_error("config pointer is null");
         return std::ptr::null_mut();
     }
 
     let config = unsafe { &*cfg };
+    let connection_id = config.connection_id;
+    let connect_epoch = begin_connect_epoch(connection_id);
     let host = ffi_string(config.host);
     let port = if config.port > 0 {
         config.port as u16
@@ -862,6 +1254,7 @@ pub extern "C" fn rustdesk_connect(
     } else {
         21116u16
     };
+    let relay_fallback_port = relay_fallback_port_from_config(config.relay_fallback_port);
     // Direct IP access follows the RustDesk client path: the connected peer
     // address is the login username. The stored remote ID is still retained
     // by the host model for display/discovery, but must not be sent as the
@@ -873,6 +1266,11 @@ pub extern "C" fn rustdesk_connect(
     };
     let server_key = ffi_string(config.key);
     let shared_access_key = config.key_mode == 2;
+    let api_token = if config.direct_connection {
+        String::new()
+    } else {
+        ffi_string(config.token)
+    };
     let password = ffi_string(config.password);
     let request_approval = config.auth_mode == 1 && !config.direct_connection;
     let privacy_mode = config.privacy_mode;
@@ -898,11 +1296,15 @@ pub extern "C" fn rustdesk_connect(
     );
 
     if host.is_empty() {
-        set_last_error("rendezvous host is empty");
+        set_last_error(structured_error(
+            "config", "rendezvous_host_missing", "rendezvous endpoint is missing", connection_id));
+        finish_connect_epoch(connect_epoch, connection_id);
         return std::ptr::null_mut();
     }
     if peer_id.is_empty() {
-        set_last_error("peer id is empty");
+        set_last_error(structured_error(
+            "config", "peer_id_missing", "remote peer identity is missing", connection_id));
+        finish_connect_epoch(connect_epoch, connection_id);
         return std::ptr::null_mut();
     }
 
@@ -920,17 +1322,20 @@ pub extern "C" fn rustdesk_connect(
         } else {
             "invalid rendezvous server public key; expected Base64-encoded 32-byte key"
         };
-        set_last_error(message);
+        set_last_error(structured_error(
+            "config", "server_key_invalid", message, connection_id));
+        finish_connect_epoch(connect_epoch, connection_id);
         return std::ptr::null_mut();
     }
 
     // 运行完整连接管线
-    let mut c = connector::RustDeskConnector::new();
+    let mut c = connector::RustDeskConnector::new_with_connection_id(connection_id, connect_epoch);
+    c.set_auth_callback(on_auth, user_data);
     let result = if config.direct_connection {
         // 直连模式: host=peer IP, port=peer port, 跳过 rendezvous
         eprintln!(
-            "[RustDesk-FFI] direct_connection=true, connecting to peer {}:{}",
-            host, port
+            "[RustDesk-FFI] direct_connection=true endpoint=provided port={}",
+            port
         );
         c.connect_direct(
             &host,
@@ -947,7 +1352,9 @@ pub extern "C" fn rustdesk_connect(
         c.connect(
             &host,
             port,
+            relay_fallback_port,
             &server_key,
+            &api_token,
             &peer_id,
             &password,
             preferred_codec,
@@ -962,6 +1369,7 @@ pub extern "C" fn rustdesk_connect(
 
     match result {
         Ok(()) => {
+            finish_connect_epoch(connect_epoch, connection_id);
             // 登录成功 — 创建可合并的控制收件箱，用于后续控制。
             let controls = Arc::new(ControlInbox::default());
             let stream_controls = Arc::clone(&controls);
@@ -998,10 +1406,15 @@ pub extern "C" fn rustdesk_connect(
             let stream_stats_for_thread = Arc::clone(&stream_stats);
             let stream_display_state = Arc::clone(&display_state);
             let frame_display_state = Arc::clone(&display_state);
+            let display_callback_state = Arc::clone(&display_state);
             eprintln!(
                 "[RustDesk-FFI] remote display size={}x{} requested={}x{}",
                 remote_width, remote_height, config.width, config.height
             );
+            // The display callback runs before the streaming thread is
+            // spawned, so the consumer can select the peer's current display
+            // before the first interleaved video frame arrives.
+            dispatch_display_snapshot(&display_state, on_display, callback_user_data as *mut c_void);
 
             let stream_handle = std::thread::spawn(move || {
                 let callback_user_data = callback_user_data as *mut c_void;
@@ -1048,6 +1461,13 @@ pub extern "C" fn rustdesk_connect(
                     |cursor| {
                         dispatch_cursor_update(cursor, on_cursor, callback_user_data);
                     },
+                    || {
+                        dispatch_display_snapshot(
+                            &display_callback_state,
+                            on_display,
+                            callback_user_data,
+                        );
+                    },
                 );
 
                 // Stop audio worker
@@ -1083,8 +1503,10 @@ pub extern "C" fn rustdesk_connect(
                 peer_id,
                 host,
                 port,
+                relay_fallback_port,
                 server_key,
                 shared_access_key,
+                api_token,
                 password,
                 request_approval,
                 controls,
@@ -1099,20 +1521,155 @@ pub extern "C" fn rustdesk_connect(
             Box::into_raw(ctx) as *mut c_void
         }
         Err(err) => {
-            set_last_error(format!(
-                "connect pipeline failed: state={:?}, error={}",
-                c.state(),
-                err
-            ));
+            let message = pipeline_error_message(
+                &c.state(), &err, config.direct_connection, connection_id);
+            set_last_error(message);
+            finish_connect_epoch(connect_epoch, connection_id);
             std::ptr::null_mut()
         }
     }
 }
 
+/// Create a RustDesk connection using the stable legacy V1 frame callback.
+#[no_mangle]
+pub extern "C" fn rustdesk_connect(
+    cfg: *const RustDeskConfig,
+    on_frame: Option<FrameCallback>,
+    on_audio: Option<AudioCallback>,
+    on_cursor: Option<CursorCallback>,
+    on_disconnect: Option<DisconnectCallback>,
+    user_data: *mut c_void,
+) -> *mut c_void {
+    rustdesk_connect_impl(
+        cfg,
+        on_frame.map(FrameCallbackKind::V1),
+        on_audio,
+        on_cursor,
+        on_disconnect,
+        None,
+        None,
+        user_data,
+    )
+}
+
+/// Create a RustDesk connection using the V2 frame/display callbacks.
+#[no_mangle]
+pub extern "C" fn rustdesk_connect_v2(
+    cfg: *const RustDeskConfig,
+    on_frame: Option<FrameCallbackV2>,
+    on_audio: Option<AudioCallback>,
+    on_cursor: Option<CursorCallback>,
+    on_disconnect: Option<DisconnectCallback>,
+    on_display: Option<DisplayCallback>,
+    user_data: *mut c_void,
+) -> *mut c_void {
+    rustdesk_connect_impl(
+        cfg,
+        on_frame.map(FrameCallbackKind::V2),
+        on_audio,
+        on_cursor,
+        on_disconnect,
+        on_display,
+        None,
+        user_data,
+    )
+}
+
+/// Create a RustDesk connection using V2 frame/display callbacks and auth events.
+#[no_mangle]
+pub extern "C" fn rustdesk_connect_v3(
+    cfg: *const RustDeskConfig,
+    on_frame: Option<FrameCallbackV2>,
+    on_audio: Option<AudioCallback>,
+    on_cursor: Option<CursorCallback>,
+    on_disconnect: Option<DisconnectCallback>,
+    on_display: Option<DisplayCallback>,
+    on_auth: Option<AuthEventCallback>,
+    user_data: *mut c_void,
+) -> *mut c_void {
+    rustdesk_connect_impl(
+        cfg,
+        on_frame.map(FrameCallbackKind::V2),
+        on_audio,
+        on_cursor,
+        on_disconnect,
+        on_display,
+        on_auth,
+        user_data,
+    )
+}
+
 /// 取消尚未返回会话句柄的连接尝试（尤其是等待被控端批准的连接）。
 #[no_mangle]
 pub extern "C" fn rustdesk_cancel_pending_connect() {
-    CONNECT_EPOCH.fetch_add(1, Ordering::SeqCst);
+    cancel_pending_connect_for_session(0);
+}
+
+fn valid_peer_2fa_code(value: &str) -> bool {
+    matches!(value.len(), 6 | 8) && value.bytes().all(|byte| byte.is_ascii_digit())
+}
+
+fn submit_2fa_for_pending_session(session_id: Option<u64>, code: *const c_char) -> bool {
+    let value = ffi_string(code);
+    if !valid_peer_2fa_code(&value) {
+        set_last_error("invalid RustDesk 2FA code format");
+        return false;
+    }
+    let pending_entry = match PENDING_2FA.lock() {
+        Ok(pending) => match session_id {
+            Some(id) if id != 0 => pending.get(&id).map(|entry| (entry.epoch, entry.sender.clone())),
+            _ => {
+                let epoch = current_connect_epoch();
+                pending.values()
+                    .find(|entry| entry.epoch == epoch)
+                    .map(|entry| (entry.epoch, entry.sender.clone()))
+            }
+        },
+        Err(_) => {
+            set_last_error("RustDesk 2FA pending state lock poisoned");
+            return false;
+        }
+    };
+    let Some((epoch, sender)) = pending_entry else {
+        set_last_error("RustDesk 2FA is not pending");
+        return false;
+    };
+    if connect_cancelled(epoch) {
+        set_last_error("RustDesk 2FA connection attempt was cancelled");
+        return false;
+    }
+    match sender.send(value) {
+        Ok(()) => {
+            set_last_error("RustDesk 2FA code submitted");
+            true
+        }
+        Err(_) => {
+            set_last_error("RustDesk 2FA submission channel closed");
+            false
+        }
+    }
+}
+
+/// Submit one transient Peer TOTP code to the currently pending login.
+/// Kept for callers that predate session-scoped FFI.
+#[no_mangle]
+pub extern "C" fn rustdesk_submit_2fa(code: *const c_char) -> bool {
+    submit_2fa_for_pending_session(None, code)
+}
+
+/// Submit one transient Peer TOTP code to a specific native session.
+#[no_mangle]
+pub extern "C" fn rustdesk_submit_2fa_for_session(
+    session_id: u64,
+    code: *const c_char,
+) -> bool {
+    submit_2fa_for_pending_session(Some(session_id), code)
+}
+
+/// Cancel only the pending connection attempt(s) owned by one native session.
+#[no_mangle]
+pub extern "C" fn rustdesk_cancel_pending_connect_for_session(session_id: u64) {
+    cancel_pending_connect_for_session(session_id);
 }
 
 /// 复制最近一次连接错误到调用方缓冲区，返回完整错误长度。
@@ -1199,6 +1756,175 @@ pub extern "C" fn rustdesk_get_display_snapshot(
     true
 }
 
+fn copy_display_name(name: &str, target: &mut [u8; RUSTDESK_DISPLAY_NAME_BYTES]) -> u32 {
+    let mut length = name.len().min(target.len());
+    while length > 0 && !name.is_char_boundary(length) {
+        length -= 1;
+    }
+    target[..length].copy_from_slice(&name.as_bytes()[..length]);
+    length as u32
+}
+
+/// Copy the complete remote display catalog into fixed-width C snapshots.
+///
+/// The resolution array is flattened. Each display reports its offset and
+/// count, so the caller can use one bounded allocation for all displays.
+#[no_mangle]
+pub extern "C" fn rustdesk_get_display_list(
+    handle: *mut c_void,
+    out_displays: *mut RustDeskDisplayInfoSnapshot,
+    display_capacity: usize,
+    out_resolutions: *mut RustDeskResolution,
+    resolution_capacity: usize,
+    out_display_count: *mut usize,
+    out_resolution_count: *mut usize,
+) -> bool {
+    if handle.is_null() || out_display_count.is_null() || out_resolution_count.is_null() {
+        return false;
+    }
+    let ctx = unsafe { &*(handle as *const RustDeskClient) };
+    let Ok(state) = ctx.display_state.lock() else {
+        return false;
+    };
+
+    let fallback;
+    let displays = if state.displays.is_empty() {
+        fallback = vec![RustDeskDisplayInfoState {
+            display: state.current_display,
+            width: state.width,
+            height: state.height,
+            original_width: state.original_width,
+            original_height: state.original_height,
+            scale_milli: state.scale_milli,
+            resolutions: state.resolutions.clone(),
+            ..RustDeskDisplayInfoState::default()
+        }];
+        fallback.as_slice()
+    } else {
+        state.displays.as_slice()
+    };
+    let displays = &displays[..displays.len().min(RUSTDESK_MAX_DISPLAYS)];
+    let total_resolution_count: usize = displays
+        .iter()
+        .map(|display| display.resolutions.len().min(RUSTDESK_MAX_DISPLAY_RESOLUTIONS))
+        .sum();
+
+    unsafe {
+        *out_display_count = displays.len();
+        *out_resolution_count = total_resolution_count;
+    }
+
+    let mut resolution_offset = 0usize;
+    for (index, display) in displays.iter().enumerate() {
+        let resolutions = &display.resolutions[..display
+            .resolutions
+            .len()
+            .min(RUSTDESK_MAX_DISPLAY_RESOLUTIONS)];
+        if !out_displays.is_null() && index < display_capacity {
+            let mut snapshot = RustDeskDisplayInfoSnapshot {
+                display: display.display,
+                x: display.x,
+                y: display.y,
+                width: display.width,
+                height: display.height,
+                original_width: display.original_width,
+                original_height: display.original_height,
+                scale_milli: display.scale_milli,
+                online: display.online as u8,
+                cursor_embedded: display.cursor_embedded as u8,
+                resolution_offset: resolution_offset as u32,
+                resolution_count: resolutions.len() as u32,
+                ..RustDeskDisplayInfoSnapshot::default()
+            };
+            snapshot.name_len = copy_display_name(&display.name, &mut snapshot.name);
+            unsafe {
+                ptr::write(out_displays.add(index), snapshot);
+            }
+        }
+        for (resolution_index, (width, height)) in resolutions.iter().enumerate() {
+            let output_index = resolution_offset + resolution_index;
+            if !out_resolutions.is_null() && output_index < resolution_capacity {
+                unsafe {
+                    ptr::write(
+                        out_resolutions.add(output_index),
+                        RustDeskResolution {
+                            width: *width,
+                            height: *height,
+                        },
+                    );
+                }
+            }
+        }
+        resolution_offset += resolutions.len();
+    }
+    true
+}
+
+#[no_mangle]
+pub extern "C" fn rustdesk_switch_display(handle: *mut c_void, display: c_int) -> bool {
+    if handle.is_null() || display < 0 || display as usize >= RUSTDESK_MAX_DISPLAYS {
+        set_last_error("rustdesk_switch_display invalid display");
+        return false;
+    }
+    let ctx = unsafe { &*(handle as *const RustDeskClient) };
+    let generation = {
+        let Ok(mut state) = ctx.display_state.lock() else {
+            set_last_error("rustdesk_switch_display display state lock poisoned");
+            return false;
+        };
+        state.switch_generation = state.switch_generation.wrapping_add(1).max(1);
+        state.desired_display = Some(display);
+        state.pending_switch_generation = Some(state.switch_generation);
+        state.switch_generation
+    };
+    ctx.controls.enqueue(ControlMsg::DisplaySwitch {
+        display,
+        generation,
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn rustdesk_capture_displays(
+    handle: *mut c_void,
+    set_displays: *const c_int,
+    set_count: usize,
+) -> bool {
+    if handle.is_null() || set_count > RUSTDESK_MAX_DISPLAYS {
+        return false;
+    }
+    if set_count > 0 && set_displays.is_null() {
+        return false;
+    }
+    let set = if set_count == 0 {
+        Vec::new()
+    } else {
+        unsafe { std::slice::from_raw_parts(set_displays, set_count) }.to_vec()
+    };
+    if set
+        .iter()
+        .any(|display| *display < 0 || *display as usize >= RUSTDESK_MAX_DISPLAYS)
+    {
+        return false;
+    }
+    let ctx = unsafe { &*(handle as *const RustDeskClient) };
+    ctx.controls.enqueue(ControlMsg::CaptureDisplays {
+        add: Vec::new(),
+        sub: Vec::new(),
+        set,
+    });
+    true
+}
+
+#[no_mangle]
+pub extern "C" fn rustdesk_refresh_video_display(handle: *mut c_void, display: c_int) -> bool {
+    if handle.is_null() || display < 0 || display as usize >= RUSTDESK_MAX_DISPLAYS {
+        return false;
+    }
+    let ctx = unsafe { &*(handle as *const RustDeskClient) };
+    ctx.controls.enqueue(ControlMsg::RefreshVideoDisplay { display });
+    true
+}
+
 #[no_mangle]
 pub extern "C" fn rustdesk_change_display_resolution(
     handle: *mut c_void,
@@ -1206,7 +1932,12 @@ pub extern "C" fn rustdesk_change_display_resolution(
     width: c_int,
     height: c_int,
 ) -> bool {
-    if handle.is_null() || width <= 0 || height <= 0 {
+    if handle.is_null()
+        || display < 0
+        || display as usize >= RUSTDESK_MAX_DISPLAYS
+        || width <= 0
+        || height <= 0
+    {
         set_last_error("rustdesk_change_display_resolution invalid arguments");
         return false;
     }
@@ -1221,8 +1952,7 @@ pub extern "C" fn rustdesk_send_touch_scale(handle: *mut c_void, scale: c_int) -
         return false;
     }
     let ctx = unsafe { &*(handle as *const RustDeskClient) };
-    ctx.controls.enqueue(ControlMsg::TouchScale { scale });
-    true
+    ctx.controls.enqueue(ControlMsg::TouchScale { scale })
 }
 
 #[no_mangle]
@@ -1242,8 +1972,7 @@ pub extern "C" fn rustdesk_send_touch_pan(
         _ => return false,
     };
     let ctx = unsafe { &*(handle as *const RustDeskClient) };
-    ctx.controls.enqueue(message);
-    true
+    ctx.controls.enqueue(message)
 }
 
 /// 断开 RustDesk 连接并释放资源
@@ -1385,8 +2114,10 @@ pub extern "C" fn rustdesk_send_file(
     }
     let host = ctx.host.clone();
     let port = ctx.port;
+    let relay_fallback_port = ctx.relay_fallback_port;
     let server_key = ctx.server_key.clone();
     let shared_access_key = ctx.shared_access_key;
+    let api_token = ctx.api_token.clone();
     let peer_id = ctx.peer_id.clone();
     let password = ctx.password.clone();
     let request_approval = ctx.request_approval;
@@ -1398,7 +2129,7 @@ pub extern "C" fn rustdesk_send_file(
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let mut connector = connector::RustDeskConnector::new();
             connector
-                .connect_file_transfer(&host, port, &server_key, &peer_id, &password, &remote_dir,
+                .connect_file_transfer(&host, port, relay_fallback_port, &server_key, &api_token, &peer_id, &password, &remote_dir,
                     request_approval, shared_access_key)
                 .and_then(|_| {
                     connector.upload_file_once(
@@ -1481,6 +2212,7 @@ pub extern "C" fn rustdesk_version() -> *const c_char {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::protocol::message_proto::{EncodedVideoFrame, VideoFrame_oneof_union};
     use std::ffi::CString;
 
     fn test_client_with_display_state(display_state: RustDeskDisplayState) -> RustDeskClient {
@@ -1488,8 +2220,10 @@ mod tests {
             peer_id: String::new(),
             host: String::new(),
             port: 0,
+            relay_fallback_port: DEFAULT_RELAY_PORT,
             server_key: String::new(),
             shared_access_key: false,
+            api_token: String::new(),
             password: String::new(),
             request_approval: false,
             controls: Arc::new(ControlInbox::default()),
@@ -1503,6 +2237,16 @@ mod tests {
     }
 
     #[test]
+    fn relay_fallback_port_uses_configured_value_and_rejects_invalid_native_input() {
+        assert_eq!(relay_fallback_port_from_config(23017), 23017);
+        assert_eq!(relay_fallback_port_from_config(0), DEFAULT_RELAY_PORT);
+        assert_eq!(
+            relay_fallback_port_from_config(u16::MAX as c_int + 1),
+            DEFAULT_RELAY_PORT
+        );
+    }
+
+    #[test]
     fn display_snapshot_copies_geometry_and_clamps_the_output_buffer() {
         let mut client = test_client_with_display_state(RustDeskDisplayState {
             current_display: 2,
@@ -1513,6 +2257,8 @@ mod tests {
             scale_milli: 1250,
             geometry_epoch: 7,
             resolutions: vec![(1080, 1920), (720, 1280), (540, 960)],
+            displays: Vec::new(),
+            ..RustDeskDisplayState::default()
         });
         let handle = &mut client as *mut RustDeskClient as *mut c_void;
         let mut snapshot = RustDeskDisplaySnapshot::default();
@@ -1536,15 +2282,195 @@ mod tests {
     }
 
     #[test]
+    fn display_list_copies_catalog_names_and_flattened_resolutions() {
+        let mut client = test_client_with_display_state(RustDeskDisplayState {
+            current_display: 1,
+            displays: vec![
+                RustDeskDisplayInfoState {
+                    display: 0,
+                    x: 0,
+                    width: 1920,
+                    height: 1080,
+                    name: "Primary".to_string(),
+                    online: true,
+                    resolutions: vec![(1920, 1080)],
+                    ..RustDeskDisplayInfoState::default()
+                },
+                RustDeskDisplayInfoState {
+                    display: 1,
+                    x: 1920,
+                    width: 2560,
+                    height: 1440,
+                    name: "Secondary".to_string(),
+                    online: true,
+                    resolutions: vec![(2560, 1440), (1920, 1080)],
+                    ..RustDeskDisplayInfoState::default()
+                },
+            ],
+            ..RustDeskDisplayState::default()
+        });
+        let handle = &mut client as *mut RustDeskClient as *mut c_void;
+        let mut displays = [RustDeskDisplayInfoSnapshot::default(); 1];
+        let mut resolutions = [RustDeskResolution::default(); 3];
+        let mut display_count = 0usize;
+        let mut resolution_count = 0usize;
+
+        assert!(rustdesk_get_display_list(
+            handle,
+            displays.as_mut_ptr(),
+            displays.len(),
+            resolutions.as_mut_ptr(),
+            resolutions.len(),
+            &mut display_count,
+            &mut resolution_count,
+        ));
+        assert_eq!(display_count, 2);
+        assert_eq!(resolution_count, 3);
+        assert_eq!(displays[0].display, 0);
+        assert_eq!(displays[0].name_len as usize, "Primary".len());
+        assert_eq!(&displays[0].name[..7], b"Primary");
+        assert_eq!(displays[0].resolution_offset, 0);
+        assert_eq!(displays[0].resolution_count, 1);
+        assert_eq!((resolutions[1].width, resolutions[1].height), (2560, 1440));
+        assert_eq!((resolutions[2].width, resolutions[2].height), (1920, 1080));
+    }
+
+    extern "C" fn collect_display_frame(frame: *const FfiVideoFrameV2, user_data: *mut c_void) {
+        unsafe {
+            let frames = &mut *(user_data as *mut Vec<(i32, i32, i32, u32)>);
+            let frame = &*frame;
+            frames.push((frame.display, frame.width, frame.height, frame.abi_version));
+        }
+    }
+
+    extern "C" fn collect_legacy_frame(frame: *const FfiVideoFrame, user_data: *mut c_void) {
+        unsafe {
+            let frames = &mut *(user_data as *mut Vec<(i32, i32)>);
+            let frame = &*frame;
+            frames.push((frame.width, frame.height));
+        }
+    }
+
+    #[test]
+    fn video_frame_abis_keep_separate_stable_layouts() {
+        assert_eq!(std::mem::size_of::<FfiVideoFrame>(), 48);
+        assert_eq!(std::mem::size_of::<FfiVideoFrameV2>(), 56);
+    }
+
+    #[test]
+    fn legacy_frame_callback_receives_only_the_v1_layout() {
+        let display_state = Arc::new(Mutex::new(RustDeskDisplayState {
+            width: 1920,
+            height: 1080,
+            displays: vec![RustDeskDisplayInfoState {
+                display: 1,
+                width: 2560,
+                height: 1440,
+                ..RustDeskDisplayInfoState::default()
+            }],
+            ..RustDeskDisplayState::default()
+        }));
+        let mut frame = VideoFrame::new();
+        frame.set_display(1);
+        let mut encoded = EncodedVideoFrames::new();
+        let mut encoded_frame = EncodedVideoFrame::new();
+        encoded_frame.set_data(vec![0x01]);
+        encoded.mut_frames().push(encoded_frame);
+        frame.union = Some(VideoFrame_oneof_union::h264s(encoded));
+        let mut received = Vec::new();
+
+        dispatch_video_frame(
+            &frame,
+            &display_state,
+            Some(FrameCallbackKind::V1(collect_legacy_frame)),
+            &mut received as *mut Vec<(i32, i32)> as *mut c_void,
+        );
+
+        assert_eq!(received, vec![(2560, 1440)]);
+    }
+
+    #[test]
+    fn encoded_frames_preserve_display_and_use_matching_geometry() {
+        let display_state = Arc::new(Mutex::new(RustDeskDisplayState {
+            width: 1920,
+            height: 1080,
+            displays: vec![
+                RustDeskDisplayInfoState {
+                    display: 0,
+                    width: 1920,
+                    height: 1080,
+                    ..RustDeskDisplayInfoState::default()
+                },
+                RustDeskDisplayInfoState {
+                    display: 1,
+                    width: 2560,
+                    height: 1440,
+                    ..RustDeskDisplayInfoState::default()
+                },
+            ],
+            ..RustDeskDisplayState::default()
+        }));
+        let mut frame = VideoFrame::new();
+        frame.set_display(1);
+        let mut encoded = EncodedVideoFrames::new();
+        let mut encoded_frame = EncodedVideoFrame::new();
+        encoded_frame.set_data(vec![0x01, 0x02]);
+        encoded_frame.set_key(true);
+        encoded.mut_frames().push(encoded_frame);
+        frame.union = Some(VideoFrame_oneof_union::h264s(encoded));
+        let mut received = Vec::new();
+
+        dispatch_video_frame(
+            &frame,
+            &display_state,
+            Some(FrameCallbackKind::V2(collect_display_frame)),
+            &mut received as *mut Vec<(i32, i32, i32, u32)> as *mut c_void,
+        );
+
+        assert_eq!(received, vec![(1, 2560, 1440, RUSTDESK_VIDEO_FRAME_ABI_VERSION)]);
+    }
+
+    #[test]
+    fn display_control_ffi_enqueues_switch_capture_and_refresh() {
+        let mut client = test_client_with_display_state(RustDeskDisplayState::default());
+        let handle = &mut client as *mut RustDeskClient as *mut c_void;
+        let selected = [1 as c_int, 2 as c_int];
+
+        assert!(rustdesk_switch_display(handle, 1));
+        assert!(rustdesk_capture_displays(handle, selected.as_ptr(), selected.len()));
+        assert!(rustdesk_refresh_video_display(handle, 1));
+
+        let controls = client.controls.take_batch(3);
+        assert!(matches!(
+            controls.as_slice(),
+            [
+                ControlMsg::DisplaySwitch {
+                    display: 1,
+                    generation: 1
+                },
+                ControlMsg::CaptureDisplays { add, sub, set },
+                ControlMsg::RefreshVideoDisplay { display: 1 },
+            ] if add.is_empty() && sub.is_empty() && set == &vec![1, 2]
+        ));
+    }
+
+    #[test]
     fn display_and_touch_ffi_controls_enqueue_the_official_messages() {
         let mut client = test_client_with_display_state(RustDeskDisplayState::default());
         let handle = &mut client as *mut RustDeskClient as *mut c_void;
 
+        assert!(!rustdesk_change_display_resolution(handle, -1, 1920, 1080));
+        assert!(!rustdesk_change_display_resolution(
+            handle,
+            RUSTDESK_MAX_DISPLAYS as c_int,
+            1920,
+            1080
+        ));
         assert!(!rustdesk_change_display_resolution(handle, 0, 0, 1080));
         assert!(!rustdesk_change_display_resolution(handle, 0, 1920, 0));
         assert!(rustdesk_change_display_resolution(handle, 1, 1080, 1920));
-        assert!(rustdesk_send_touch_scale(handle, 1250));
         assert!(rustdesk_send_touch_pan(handle, 0, 100, 200));
+        assert!(rustdesk_send_touch_scale(handle, 1250));
         assert!(rustdesk_send_touch_pan(handle, 1, -10, 12));
         assert!(rustdesk_send_touch_pan(handle, 2, 90, 212));
         assert!(!rustdesk_send_touch_pan(handle, 3, 0, 0));
@@ -1552,8 +2478,8 @@ mod tests {
         let controls = client.controls.take_batch(8);
         assert!(matches!(controls.as_slice(), [
             ControlMsg::ChangeDisplayResolution { display: 1, width: 1080, height: 1920 },
-            ControlMsg::TouchScale { scale: 1250 },
             ControlMsg::TouchPanStart { x: 100, y: 200 },
+            ControlMsg::TouchScale { scale: 1250 },
             ControlMsg::TouchPanUpdate { x: -10, y: 12 },
             ControlMsg::TouchPanEnd { x: 90, y: 212 },
         ]));
@@ -1607,6 +2533,9 @@ mod tests {
             direct_connection: false,
             auth_mode: 0,
             key_mode: 1,
+            token: std::ptr::null(),
+            connection_id: 0,
+            relay_fallback_port: DEFAULT_RELAY_PORT as c_int,
         };
 
         extern "C" fn dummy_frame(_frame: *const FfiVideoFrame, _data: *mut c_void) {}
@@ -1653,6 +2582,9 @@ mod tests {
             direct_connection: false,
             auth_mode: 0,
             key_mode: 1,
+            token: std::ptr::null(),
+            connection_id: 0,
+            relay_fallback_port: DEFAULT_RELAY_PORT as c_int,
         };
 
         extern "C" fn dummy_frame(_frame: *const FfiVideoFrame, _data: *mut c_void) {}
@@ -1680,6 +2612,81 @@ mod tests {
     fn test_rustdesk_disconnect_null() {
         rustdesk_disconnect(std::ptr::null_mut());
         // 不崩溃即为通过
+    }
+
+    #[test]
+    fn submit_2fa_rejects_invalid_codes_without_a_pending_session() {
+        let code = CString::new("12ab").unwrap();
+        assert!(!rustdesk_submit_2fa(code.as_ptr()));
+        assert!(rustdesk_last_error(std::ptr::null_mut(), 0) > 0);
+    }
+
+    #[test]
+    fn pending_2fa_submission_isolated_by_native_session_id() {
+        let first_session = u64::MAX - 1001;
+        let second_session = u64::MAX - 1002;
+        let first_epoch = u64::MAX - 2001;
+        let second_epoch = u64::MAX - 2002;
+        let (first_sender, first_receiver) = std::sync::mpsc::channel();
+        let (second_sender, second_receiver) = std::sync::mpsc::channel();
+        register_pending_2fa(first_epoch, first_session, first_sender).unwrap();
+        register_pending_2fa(second_epoch, second_session, second_sender).unwrap();
+
+        let first_code = CString::new("123456").unwrap();
+        assert!(rustdesk_submit_2fa_for_session(first_session, first_code.as_ptr()));
+        assert_eq!(first_receiver.try_recv().unwrap(), "123456");
+        assert!(second_receiver.try_recv().is_err());
+
+        let second_code = CString::new("654321").unwrap();
+        assert!(rustdesk_submit_2fa_for_session(second_session, second_code.as_ptr()));
+        assert_eq!(second_receiver.try_recv().unwrap(), "654321");
+        clear_pending_2fa(first_epoch, first_session);
+        clear_pending_2fa(second_epoch, second_session);
+    }
+
+    #[test]
+    fn structured_pipeline_errors_preserve_stage_and_sanitize_detail() {
+        let message = structured_error("relay", "relay_request_failed", "a|b\nnext", 42);
+        assert_eq!(
+            message,
+            "RDERR|stage=relay|code=relay_request_failed|attempt=42|detail=a/b next"
+        );
+        let relay = pipeline_error_message(
+            &connector::ConnState::RequestingRelay,
+            &io::Error::new(io::ErrorKind::PermissionDenied, "relay denied"),
+            false,
+            43,
+        );
+        assert!(relay.starts_with(
+            "RDERR|stage=relay|code=relay_request_failed|attempt=43|detail="));
+        let direct = pipeline_error_message(
+            &connector::ConnState::ConnectingToPeer,
+            &io::Error::new(io::ErrorKind::ConnectionRefused, "peer refused"),
+            true,
+            44,
+        );
+        assert!(direct.starts_with(
+            "RDERR|stage=peer_channel|code=direct_peer_connect_failed|attempt=44|detail="));
+        let login = pipeline_error_message(
+            &connector::ConnState::RequestingRelay,
+            &io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "Connection failed, please login! peer_id=sensitive"),
+            false,
+            45,
+        );
+        assert!(login.contains("code=control_plane_login_required"));
+        assert!(login.contains("attempt=45"));
+        assert!(!login.contains("sensitive"));
+    }
+
+    #[test]
+    fn peer_2fa_code_accepts_supported_totp_lengths_only() {
+        assert!(valid_peer_2fa_code("123456"));
+        assert!(valid_peer_2fa_code("12345678"));
+        assert!(!valid_peer_2fa_code("12345"));
+        assert!(!valid_peer_2fa_code("1234567"));
+        assert!(!valid_peer_2fa_code("12345x"));
     }
 
     #[test]
@@ -1728,6 +2735,9 @@ mod tests {
             direct_connection: false,
             auth_mode: 0,
             key_mode: 1,
+            token: std::ptr::null(),
+            connection_id: 0,
+            relay_fallback_port: DEFAULT_RELAY_PORT as c_int,
         };
 
         let params = resolve_stream_params_for_config(&cfg);
@@ -1758,6 +2768,9 @@ mod tests {
             direct_connection: false,
             auth_mode: 0,
             key_mode: 1,
+            token: std::ptr::null(),
+            connection_id: 0,
+            relay_fallback_port: DEFAULT_RELAY_PORT as c_int,
         };
 
         assert_eq!(resolve_stream_params_for_config(&cfg).effective_fps, 60);

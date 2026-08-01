@@ -14,6 +14,7 @@ import {
   shouldResetRemoteImeOnPointerDown,
   shouldAcceptRemoteImeTextChange,
   shouldCloseRemoteImeSessionOnEditChange,
+  shouldCloseRemoteImeSessionOnAvoidAreaChange,
   shouldRecenterRemoteImeShadow,
   shouldWaitForRemoteImeInput,
   splitRemoteImeCaretMovement
@@ -43,6 +44,15 @@ export default function remoteImeSessionPolicyTest(): void {
       expect(shouldCloseRemoteImeSessionOnEditChange(true, false, true, true)).assertFalse();
       expect(shouldCloseRemoteImeSessionOnEditChange(true, true, false)).assertFalse();
       expect(shouldCloseRemoteImeSessionOnEditChange(false, false, true)).assertFalse();
+    });
+
+    it('reconciles_manual_keyboard_hide_from_avoid_area', 0, (): void => {
+      expect(shouldCloseRemoteImeSessionOnAvoidAreaChange(true, 420, 0)).assertTrue();
+      expect(shouldCloseRemoteImeSessionOnAvoidAreaChange(true, 0, 0)).assertFalse();
+      expect(shouldCloseRemoteImeSessionOnAvoidAreaChange(true, 0, 420)).assertFalse();
+      expect(shouldCloseRemoteImeSessionOnAvoidAreaChange(false, 420, 0)).assertFalse();
+      expect(shouldCloseRemoteImeSessionOnAvoidAreaChange(true, 420, 0, true)).assertFalse();
+      expect(shouldCloseRemoteImeSessionOnAvoidAreaChange(true, 420, 0, false, true)).assertFalse();
     });
 
     it('ignores_expected_and_programmatic_selection', 0, (): void => {

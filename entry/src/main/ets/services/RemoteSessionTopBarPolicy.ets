@@ -80,7 +80,8 @@ export function remoteTopBarLayout(isDesktopDevice: boolean, breakpoint: string)
 function knownRustDeskCapabilities(): RemoteSessionCapabilities {
   return resolveSessionCapabilities({
     protocol: 'rustdesk', connected: true, rdpDriveMounted: false, rdpClipboardReady: false, sftpConnected: false,
-    rustDeskVerifiedPeer: true, rustDeskInboundClipboard: true, rustDeskTransferConfirmed: true
+    rustDeskVerifiedPeer: true, rustDeskInboundClipboard: true, rustDeskTransferConfirmed: true,
+    vncClipboardEnabled: false, vncClipboardReady: false, vncViewOnly: true
   });
 }
 

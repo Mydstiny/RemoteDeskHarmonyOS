@@ -14,14 +14,29 @@ import { inputDevice } from '@kit.InputKit';
 import { HostSyncService } from '../services/HostSyncService';
 import { AuthService } from '../services/AuthService';
 import { KeyVaultService } from '../services/KeyVaultService';
-import { AccountKitService } from '../services/AccountKitService';
+import {
+  AccountSessionCoordinator,
+  AccountTransitionResult
+} from '../services/AccountSessionCoordinator';
 import { DataCrypto } from '../services/DataCrypto';
 import { CloudStore } from '../services/CloudStore';
+import { VncTrustService } from '../services/VncTrustService';
+import { VncCloudSyncSelectionStore } from '../services/VncCloudSyncSelectionStore';
+import { VncHostService, VncHostView } from '../services/VncHostService';
+import { VncGatewayService } from '../services/VncGatewayService';
+import { VncGatewayView } from '../services/VncGatewayService';
+import {
+  VncHostValues, VncTransport, VncRepeaterMode, VncScalingMode, VncSecurityPolicy, validateVncHost
+} from '../services/VncModelPolicy';
+import {
+  isVncHostProjection, projectVncHost, vncHostRecordIdFromUiId, vncHostUiId
+} from '../services/VncHostListProjectionPolicy';
 import { CloudSyncCoordinator } from '../services/CloudSyncCoordinator';
 import { CloudSyncSelectionStore } from '../services/CloudSyncSelectionStore';
 import { cloudSyncSelectableTables, effectiveCloudSyncTables } from '../services/CloudSyncSelectionPolicy';
 import { LocalBackupDocument } from '../services/LocalBackupPolicy';
 import { LocalBackupService } from '../services/LocalBackupService';
+import { BackupRestorePreview } from '../services/BackupManifestV3';
 import { LightSensingService } from '../services/LightSensingService';
 import { SshKey } from '../model/SshKey';
 import {
@@ -34,8 +49,16 @@ import {
 } from '../model/RemoteHost';
 import { RustDeskRelayConfig } from '../model/RustDeskRelayConfig';
 import { RustDeskAccount } from '../model/RustDeskAccount';
+import { TotpEntry } from '../model/TotpEntry';
 import { RdpCredential } from '../model/RdpCredential';
 import { RustDeskRelayPage } from './RustDeskRelayPage';
+import { RustDeskProSyncService } from '../services/RustDeskProSyncService';
+import { RustDeskProAccountState } from '../model/RustDeskProModels';
+import { TotpEngine } from '../services/TotpEngine';
+import {
+  isRustDeskPeerTwoFactorManualCode,
+  rustDeskPeerTwoFactorAutoSubmitError
+} from '../services/RustDeskPeerTwoFactorPolicy';
 import { AppConfig, AppTheme, Palette, buildDark, buildLight } from '../common/Theme';
 import { showLockGate, lockGateErrorMessage } from '../components/LockGate';
 import { ColorPickerSheet } from '../components/ColorPickerSheet';
@@ -43,6 +66,14 @@ import { HostAddWizardSheet } from '../components/hostadd/HostAddWizardSheet';
 import { RdpAddFlow } from '../components/hostadd/RdpAddFlow';
 import { RustDeskAddFlow } from '../components/hostadd/RustDeskAddFlow';
 import { SshAddFlow } from '../components/hostadd/SshAddFlow';
+import { VncAddFlow } from '../components/hostadd/VncAddFlow';
+import {
+  RustDeskHostAddDraft,
+  RustDeskHostAddHandoff
+} from '../services/RustDeskHostAddHandoff';
+import { VncSessionCredentialHandoff } from '../services/VncSessionCredentialHandoff';
+import { VncSettingsService } from '../services/VncSettingsService';
+import { VncSettingsSheet } from '../components/VncSettingsSheet';
 // Passphrase uses bindSheet (HostListPage is @Entry, no bindSheet limit)
 import { KeyVaultPage } from './KeyVaultPage';
 import { SshPreflightState } from '../components/SshPreflightSheet';
@@ -62,6 +93,7 @@ import {
 } from '../services/RdpCertificatePreflightPolicy';
 import { ExtensionLoader } from '../services/ExtensionLoader';
 import { SshKeyImportService, SshKeyImportResult } from '../services/SshKeyImportService';
+import { SshSettingsService } from '../services/SshSettingsService';
 import {
   nextRdpCertificateProbeGeneration,
   shouldApplyRdpCertificateProbeResult
@@ -84,18 +116,24 @@ import {
   shouldAdoptRustDeskDirectPort,
   rustDeskAuthModeForConnection,
   normalizeRustDeskPort,
+  rustDeskRelayFallbackPort,
   rustDeskConnectionError,
   RUSTDESK_PEER_TCP_PORT,
   RustDeskHostEndpoint
 } from '../services/RustDeskHostConfigPolicy';
 import { rustDeskRelayKeyModeForFfi } from '../services/RustDeskRelayKeyPolicy';
+import { rustDeskConnectionStrategyForHost } from '../services/RustDeskConnectionStrategyPolicy';
 import { sheetOpenDelayMsAfterDismiss } from '../services/SheetTransitionPolicy';
-import {
-  nextRemoteHostSheetGeneration,
-  shouldAcceptRemoteHostSheetDismiss
-} from '../services/RemoteHostSheetLifecyclePolicy';
+import { nextRemoteHostSheetGeneration } from '../services/RemoteHostSheetLifecyclePolicy';
 import { shouldPreserveManagedRustDeskRoute } from '../services/RustDeskProSyncPolicy';
+import {
+  canUseRustDeskAdaptiveOrientation,
+  isRustDeskMobilePlatform,
+  normalizeRustDeskTargetDevice,
+  RustDeskTargetDevice
+} from '../services/RemoteOrientationPolicy';
 import { resolveFabAddStyle } from '../services/FabAddStylePolicy';
+import { shouldPrepareClassicVncEditor } from '../services/VncHostFlowPolicy';
 import { resolveRustDeskBadges } from '../services/RustDeskCardBadgePolicy';
 import { cloudSyncDetailSpec } from '../services/CloudSyncGuidancePolicy';
 import {
@@ -135,10 +173,23 @@ import {
   SETTINGS_SHEET_RDP_CREDENTIALS,
   SETTINGS_SHEET_TERMINAL_FG_COLOR,
   SETTINGS_SHEET_TERMINAL_FONT_SIZE,
+  SETTINGS_SHEET_VNC_CLOUD_SYNC,
+  SETTINGS_SHEET_VNC_CLIPBOARD,
+  SETTINGS_SHEET_VNC_CONNECTION,
+  SETTINGS_SHEET_VNC_DISPLAY,
+  SETTINGS_SHEET_VNC_GATEWAY,
+  SETTINGS_SHEET_VNC_HOSTS,
+  SETTINGS_SHEET_VNC_INPUT,
+  SETTINGS_SHEET_VNC_PERFORMANCE,
+  SETTINGS_SHEET_VNC_SECURITY,
+  SETTINGS_SHEET_VNC_TIMEOUT,
+  SETTINGS_SHEET_VNC_TRUST,
   SETTINGS_SHEET_WALLPAPER,
+  SETTINGS_PANEL_DISMISS_TO_LEAF_OPEN_MS,
   settingsLeafSheetUsesSystemCloseButton,
   settingsLeafOpenDelayMs
 } from '../services/SettingsSheetRoutePolicy';
+import { protocolIcon } from '../services/ProtocolIconPolicy';
 import {
   SETTINGS_APP_BUNDLE_NAME,
   SETTINGS_BROWSER_VIEW_ACTION,
@@ -152,14 +203,18 @@ import {
   SETTINGS_SECTION_NONE,
   SETTINGS_SECTION_RDP,
   SETTINGS_SECTION_RUSTDESK,
+  SETTINGS_SECTION_SSH,
+  SETTINGS_SECTION_VNC,
   SETTINGS_SECTION_SECURITY,
   SETTINGS_SECTION_TUTORIAL,
+  SETTINGS_VNC_ACTION_ROW_COUNT,
   SettingsFeedbackLaunchAttempt,
   settingsFeedbackLaunchAttempts,
   settingsFeedbackMailPanelParams,
   settingsNextExpandedSection,
   settingsRatingUriCandidates,
-  settingsRatingWantAction
+  settingsRatingWantAction,
+  settingsVncExpandedMaxHeight
 } from '../services/SettingsAccordionPolicy';
 import {
   legacyRdpPresetForResolutionId,
@@ -175,6 +230,9 @@ import {
   REMOTE_DISPLAY_SCALE_PREFERENCE_VERSION_KEY,
   resolveInitialRemoteDisplayScaleMode
 } from '../services/RemoteCanvasTransformPolicy';
+import {
+  resolveCanvasGestureZoomPreference
+} from '../services/RemoteCanvasZoomPreferencePolicy';
 import {
   CLOUD_SYNC_SHEET_ACTIONS,
   CLOUD_SYNC_SHEET_DOWNLOADING,
@@ -201,15 +259,35 @@ import {
 import { CURRENT_RELEASE_VERSION } from '../services/ReleaseNotesRegistry';
 import { AboutSettingsSheet } from '../components/AboutSettingsSheet';
 import { FeedbackSettingsSheet } from '../components/FeedbackSettingsSheet';
-import { RdpCertificateInfo, SshHostKeyInfo, SshPrivateKeyInfo, SshPublicKeyInstallResult } from '../types/rdpnapi';
+import {
+  RdpCertificateInfo,
+  SshHostKeyInfo,
+  SshPrivateKeyInfo,
+  SshPublicKeyInstallResult,
+  SshProxyConfig
+} from '../types/rdpnapi';
 import { SessionConfig } from '../types/rdpnapi';
 import { ActiveRemoteSessionRegistry, ActiveRemoteSessionRecord } from '../services/ActiveRemoteSessionRegistry';
 import { RemoteProtocol } from '../services/RemoteSessionState';
 import {
   RustDeskProPreflightState,
   rustDeskProPeerIdForConnection,
-  shouldOpenRustDeskProPreflight
+  shouldOpenRustDeskProPreflight,
+  classifyRustDeskProNativeError,
+  rustDeskProAccountIdForConnection,
+  rustDeskProNativeErrorMessage,
+  canInvalidateRustDeskProSession,
+  rustDeskNativeErrorDetail,
+  RustDeskProNativeErrorKind
 } from '../services/RustDeskProConnectionPreflightPolicy';
+import {
+  RustDeskControlPlaneProfile,
+  RUSTDESK_CONTROL_PLANE_DEFAULT
+} from '../services/RustDeskControlPlanePolicy';
+import {
+  resolveRustDeskConnectionContext,
+  RustDeskConnectionContext
+} from '../services/RustDeskConnectionContextPolicy';
 import { shouldFallbackToNativeRdpConnectionAfterResolverFailure } from '../services/RdpCertificatePreflightPolicy';
 import {
   nextConnectionAttemptGeneration,
@@ -258,6 +336,7 @@ struct HostListPage {
   private hostDataSource: HostDataSource = new HostDataSource();
   private hostDataSignature: string = '';
   private hostDataUnsubscribe: (() => void) | null = null;
+  private vncHostDataUnsubscribe: (() => void) | null = null;
   private skipInitialPageShowLoad: boolean = true;
   private keyVaultDataUnsubscribe: (() => void) | null = null;
   private pageActive: boolean = false;
@@ -272,6 +351,7 @@ struct HostListPage {
   @State rdpCount: number = 0;
   @State rustdeskCount: number = 0;
   @State sshCount: number = 0;
+  @State vncCount: number = 0;
   @State keyCount: number = 0;
   @State totpCount: number = 0;
   @State hostViewRevision: number = 0;
@@ -288,10 +368,12 @@ struct HostListPage {
   @State showAddSheet: boolean = false;
   @State addSheetShowsModernPicker: boolean = false;
   @State modernAddProtocol: string = '';
+  @State vncAddFromModernPicker: boolean = false;
   @State addSheetClosing: boolean = false;
   // Keep the released storage/cloud key while exposing the broader FAB-style semantics in UI code.
   @StorageLink('hostAddMode') fabAddStyle: string = 'modern';
   @StorageLink('virtualMouseStyle') virtualMouseStyle: string = 'circle';
+  @StorageLink('totpLogoMode') totpLogoMode: string = 'logo';
   @State lanScanning: boolean = false;
   @State lanScanResults: DiscoveredRustDeskPeer[] = [];
   private lanDiscovery: RustDeskLanDiscoveryService = new RustDeskLanDiscoveryService();
@@ -312,17 +394,31 @@ struct HostListPage {
   @State showSettingsPanel: boolean = false;
   @State showSettingsLeafSheet: boolean = false;
   @State settingsLeafSheetMode: number = SETTINGS_SHEET_NONE;
+  @State vncSettingsLeafDirty: boolean = false;
   @State expandedSettingsSection: string = SETTINGS_SECTION_NONE;
   @State aboutSheetMode: number = 0; // 0=使用教程 1=关于应用 2=隐私政策 3=前置操作
   // 合并 Sheet: 单 bindSheet + mode 切换 (避免 $$ 多 bindSheet 错位)
   @State showPopupSheet: boolean = false;
   @State popupSheetMode: number = 0; // 0=crypto, 1=about(用 aboutSheetMode 子路由), 2=SSH host key, 4=RDP certificate
   @State cloudSyncStep: string = CLOUD_SYNC_SHEET_ACTIONS;
+  /** User's explicit portable-backup sensitivity choice at export time. */
+  @State backupFullMode: boolean = false;
   @State cloudSyncError: string = '';
   @State cloudSyncSelectedTables: string[] = [];
   @State appearanceContentHeight: number = 0;
   private pendingLocalRestore: LocalBackupDocument | null = null;
   @State sheetPwd: string = '';
+  @State vncHostTransport: VncTransport = 'direct_tcp';
+  @State vncHostRepeaterMode: VncRepeaterMode = 'mode12';
+  @State vncHostGatewayId: string = '';
+  @State vncHostPasswordConfigured: boolean = false;
+  @State vncHostRememberPassword: boolean = false;
+  @State vncHostViewOnly: boolean = true;
+  @State vncHostDisplayOverrideEnabled: boolean = false;
+  @State vncHostScalingMode: VncScalingMode = 'fit';
+  @State vncHostClipboardEnabled: boolean = false;
+  @State vncHostSecurityPolicy: VncSecurityPolicy = 'secure_only';
+  @State vncHostTls: boolean = true;
   @State sheetUseKey: boolean = false;
   @State sheetKeyPath: string = '';
   @State sheetKeyText: string = '';
@@ -374,6 +470,12 @@ struct HostListPage {
   @State rustDeskProPasswordVisible: boolean = false;
   @State rustDeskProRememberPassword: boolean = true;
   @State rustDeskProPreflightError: string = '';
+  @State rustDeskProTwoFactorActive: boolean = false;
+  @State rustDeskProTwoFactorInput: string = '';
+  @State rustDeskProTwoFactorError: string = '';
+  @State rustDeskProTwoFactorSubmitting: boolean = false;
+  private rustDeskProTwoFactorSessionId: number = -1;
+  private rustDeskProTwoFactorAutoAttemptSessionId: number = -1;
   private rustDeskProPreflightGeneration: number = 0;
   // RustDesk preflight Sheet 退出动画完成前，不允许复用同一 bindSheet 宿主。
   private rustDeskProPreflightClosing: boolean = false;
@@ -384,6 +486,9 @@ struct HostListPage {
   private remoteHostSheetClosingMode: number = REMOTE_HOST_SHEET_NONE;
   // 保存并连接必须等新增主机 Sheet 的 native onDisappear 后再交给鉴权 Sheet。
   private pendingAddSheetConnectHostId: string = '';
+  private pendingVncConnectHostId: string = '';
+  private pendingVncGatewayDirectoryOpen: boolean = false;
+  private pendingRustDeskRelayDirectoryOpen: boolean = false;
   private connectionAttemptGeneration: number = 0;
   private connectionAttemptHostId: string = '';
   @StorageLink('rustdeskImageQuality') rustdeskImageQuality: number = 1; // 0=fast, 1=balanced, 2=quality
@@ -423,9 +528,14 @@ struct HostListPage {
   @State sheetRustdeskDirectEnabled: boolean = false; // per-host 直连开关
   @State sheetRustdeskDirectHost: string = '';
   @State sheetRustdeskDirectPort: number = RUSTDESK_PEER_TCP_PORT;
+  @State sheetRustdeskTotpEntryId: string = '';
+  @State sheetRustdeskTotpAutoSubmit: boolean = false;
+  @State sheetRustdeskTargetDevice: RustDeskTargetDevice = 'computer';
+  @State sheetRustdeskAdaptiveOrientation: boolean = false;
   @State sheetProxyHost: string = '';
   @State sheetProxyPort: number = 22;
   @State sheetProxyUser: string = '';
+  @State sheetProxyType: string = 'http_connect';
   @StorageLink('currentBreakpoint') @Watch('onBreakpointChange') breakpoint: string = 'sm';
   @StorageProp('isDesktopDevice') isDesktopDevice: boolean = false;
   @StorageProp('topRectHeight') topRectHeight: number = 0;
@@ -453,9 +563,9 @@ struct HostListPage {
   // This field is write-only. Existing Restricted Admin hashes are never displayed in the editor.
   @State sheetRdpRestrictedAdminHash: string = '';
   @State sheetRdpBlankPasswordConfirmed: boolean = false;
-  @StorageLink('terminalFgColor') terminalFgColor: string = '#33FF33';
+  @StorageLink('sshTerminalForegroundColor') terminalFgColor: string = '#33FF33';
   @State showTerminalFgColor: boolean = false;
-  @StorageLink('terminalFontSize') terminalFontSize: number = 18;
+  @StorageLink('sshTerminalFontSize') terminalFontSize: number = 18;
   @State showTerminalFontSize: boolean = false;
   @State showRdpCredentialSheet: boolean = false;
   @State showRdpCredentialEditorSheet: boolean = false;
@@ -466,6 +576,13 @@ struct HostListPage {
   @State rdpCredPassword: string = '';
   private rdpCredentialEditorReturnToManager: boolean = false;
   @State relayAddTrigger: number = 0;
+  @State relayRustDeskAddTrigger: number = 0;
+  @State relayVncAddTrigger: number = 0;
+  @State rustDeskRelayReturnToHostAdd: boolean = false;
+  @State rustDeskAddResumeDraft: RustDeskHostAddDraft | null = null;
+  @State rustDeskAddResumeRevision: number = 0;
+  private rustDeskHostAddReturnTab: number = 0;
+  private lastVncRelayRouteRequestId: string = '';
   private terminalFontSizes: number[] = [12, 13, 14, 15, 16, 17, 18, 20, 22, 24, 26, 28, 30, 32];
   private terminalColorPresets: string[] = [
     '#33FF33','#F0F0F0','#FFB000','#00FFFF',
@@ -521,10 +638,15 @@ struct HostListPage {
   private settingsLeafSheetClosingPopupMode: number = 0;
   // ============================
   private srv: HostSyncService = HostSyncService.getInstance();
+  private readonly proSync: RustDeskProSyncService = RustDeskProSyncService.getInstance();
   private auth: AuthService = AuthService.getInstance();
   private keyVault: KeyVaultService = KeyVaultService.getInstance();
+  private readonly vncHosts: VncHostService = VncHostService.getInstance();
+  private readonly vncGateways: VncGatewayService = VncGatewayService.getInstance();
+  private readonly vncSettings: VncSettingsService = VncSettingsService.getInstance();
   private loader: ExtensionLoader = ExtensionLoader.getInstance();
   private sshKeyImporter: SshKeyImportService = new SshKeyImportService();
+  private readonly sshSettings: SshSettingsService = SshSettingsService.getInstance();
   private lightSensing: LightSensingService = LightSensingService.getInstance();
   @State showPassphraseSheet: boolean = false;
   private hlPassphraseResolve: ((v: string) => void) | null = null;
@@ -660,7 +782,7 @@ struct HostListPage {
       this.updateHostFilter(); // 非xl显示全部主机
     } else {
       // 非xl→xl: 标题跟随当前 tab
-      const titles: string[] = ['RDP 远程主机', 'RustDesk 远程主机', 'SSH 终端', '', '', '中继服务器'];
+      const titles: string[] = ['RDP 远程主机', 'RustDesk 远程主机', 'SSH 终端', 'VNC 主机', '', '', '中继服务器'];
       this.hostPageTitle = titles[this.curTab] || '';
       this.updateHostFilter();
     }
@@ -668,6 +790,9 @@ struct HostListPage {
 
   async aboutToAppear(): Promise<void> {
     this.pageActive = true;
+    // Keep VNC storage isolated while preparing its display projection before
+    // the first host-list snapshot is built.
+    this.prepareVncAddFlow();
     this.registerDataRefreshListeners();
     this.ensureEnvironmentColorMode();
     const items: WallpaperItem[] = [];
@@ -679,6 +804,8 @@ struct HostListPage {
     this.syncWallpaperColor();
     this.updateWindowMetrics();
     this.refreshHaloPresets();
+    this.sshSettings.init(getContext(this) as common.Context);
+    this.proSync.init(getContext(this) as common.Context);
     // 恢复 TOTP 隐私保护状态 (Preferences 持久化)
     try {
       const prefs = preferences.getPreferencesSync(getContext(this), { name: 'RemoteDesktopAppPrefs' });
@@ -691,10 +818,8 @@ struct HostListPage {
       const savedLiveViewMode: number = prefs.getSync('liveViewMode', 1) as number;
       const savedHostAddMode: string = prefs.getSync('hostAddMode', 'modern') as string;
       const savedVirtualMouseStyle: string = prefs.getSync('virtualMouseStyle', 'circle') as string;
+      const savedTotpLogoMode: string = prefs.getSync('totpLogoMode', 'logo') as string;
       const savedWallpaper: string = prefs.getSync('wallpaperColor', '') as string;
-      // 终端设置
-      const savedTermFg: string = prefs.getSync('terminalFgColor', '') as string;
-      const savedTermFontSize: number = prefs.getSync('terminalFontSize', 0) as number;
       const savedUseNativeCore: boolean = prefs.getSync('useNativeTerminalCore', true) as boolean;
       if (!savedFollowSystem && savedTheme !== '') {
         AppStorage.setOrCreate('currentTheme', savedTheme);
@@ -725,14 +850,12 @@ struct HostListPage {
       AppStorage.setOrCreate('hostAddMode', this.fabAddStyle);
       this.virtualMouseStyle = normalizeRemoteCursorStyle(savedVirtualMouseStyle);
       AppStorage.setOrCreate('virtualMouseStyle', this.virtualMouseStyle);
+      this.totpLogoMode = savedTotpLogoMode === 'initials' ? 'initials' : 'logo';
+      AppStorage.setOrCreate('totpLogoMode', this.totpLogoMode);
       if (savedWallpaper !== '') { AppStorage.setOrCreate('wallpaperColor', savedWallpaper); }
       const savedWallIdx: number = prefs.getSync('wallpaperIdx', -1) as number;
       if (savedWallIdx >= 0 && savedWallIdx < this.wallpaperItems.length) {
         this.wallpaperIdx = savedWallIdx;
-      }
-      if (savedTermFg !== '') { AppStorage.setOrCreate('terminalFgColor', savedTermFg); }
-      if (savedTermFontSize >= 12 && savedTermFontSize <= 32) {
-        AppStorage.setOrCreate('terminalFontSize', savedTermFontSize);
       }
       AppStorage.setOrCreate('useNativeTerminalCore', savedUseNativeCore);
       // RustDesk / RDP 设置
@@ -766,8 +889,11 @@ struct HostListPage {
         prefs.getSync('remoteDisplayCustomScalePercent', 100) as number;
       const canvasGestureZoomDefaultVersion: number =
         prefs.getSync('canvasGestureZoomDefaultVersion', 0) as number;
-      let savedCanvasGestureZoomEnabled: boolean =
-        prefs.getSync('canvasGestureZoomEnabled', !this.isDesktopDevice) as boolean;
+      const canvasZoomPreference = resolveCanvasGestureZoomPreference(
+        prefs.getSync('canvasGestureZoomEnabled', false) as boolean,
+        canvasGestureZoomDefaultVersion,
+        prefs.getSync('canvasGestureZoomUserConfigured', false) as boolean);
+      const savedCanvasGestureZoomEnabled: boolean = canvasZoomPreference.enabled;
       const savedRdpColorDepth: number = prefs.getSync('rdpColorDepth', 32) as number;
       const savedRdpAudioEnabled: boolean = prefs.getSync('rdpAudioEnabled', true) as boolean;
       const savedRdpClipboardEnabled: boolean = prefs.getSync('rdpClipboardEnabled', true) as boolean;
@@ -822,17 +948,14 @@ struct HostListPage {
         remoteDisplayScalePreferenceVersion);
       this.remoteDisplayCustomScalePercent = Math.max(50, Math.min(300,
         Number.isFinite(savedRemoteDisplayCustomScalePercent) ? savedRemoteDisplayCustomScalePercent : 100));
-      if (canvasGestureZoomDefaultVersion < 1) {
-        savedCanvasGestureZoomEnabled = !this.isDesktopDevice;
-        prefs.putSync('canvasGestureZoomEnabled', savedCanvasGestureZoomEnabled);
-        prefs.putSync('canvasGestureZoomDefaultVersion', 1);
-      }
       this.canvasGestureZoomEnabled = savedCanvasGestureZoomEnabled;
       prefs.putSync('rdpDesktopResolutionId', this.rdpDesktopResolutionId);
       prefs.putSync('remoteDisplayScaleMode', this.remoteDisplayScaleMode);
       prefs.putSync(REMOTE_DISPLAY_SCALE_PREFERENCE_VERSION_KEY,
         REMOTE_DISPLAY_SCALE_PREFERENCE_VERSION);
       prefs.putSync('remoteDisplayCustomScalePercent', this.remoteDisplayCustomScalePercent);
+      prefs.putSync('canvasGestureZoomDefaultVersion', canvasZoomPreference.version);
+      prefs.putSync('canvasGestureZoomUserConfigured', canvasZoomPreference.userConfigured);
       prefs.flush();
       this.rdpColorDepth = savedRdpColorDepth === 16 || savedRdpColorDepth === 24 ? savedRdpColorDepth : 32;
       this.rdpAudioEnabled = savedRdpAudioEnabled;
@@ -884,6 +1007,7 @@ struct HostListPage {
     this.registerInputDeviceWatcher();
     this.syncAmbientLightMonitor();
     this.ensureGripMonitorOnPageShow();
+    this.handleVncRelayRouteRequest();
   }
 
   onPageShow(): void {
@@ -906,6 +1030,7 @@ struct HostListPage {
     this.applyDesktopRustDeskInputMode();
     this.syncAmbientLightMonitor();
     this.ensureGripMonitorOnPageShow();
+    this.handleVncRelayRouteRequest();
   }
 
   private openSheetSafely(openAction: () => void, allowDuringConnectionAttempt: boolean = false): void {
@@ -978,14 +1103,82 @@ struct HostListPage {
     this.requestAddSheetClose();
   }
 
+  private prepareVncAddFlow(): void {
+    const context: common.Context = getContext(this) as common.Context;
+    this.vncSettings.init(context);
+    this.vncHosts.init(context);
+    this.vncGateways.init(context);
+  }
+
+  private saveVncHostFromAddFlow(values: VncHostValues, password: string, connectNow: boolean,
+    plainStorageConfirmed: boolean = false): void {
+    if (this.addSheetClosing || this.pendingAddSheetConnectHostId !== '' ||
+      this.pendingVncConnectHostId !== '') {
+      hilog.info(0x0001, 'HostList', 'ignored repeated VNC add-host save while Sheet is closing');
+      return;
+    }
+    if (!this.vncHosts.isReady()) {
+      promptAction.showToast({ message: 'VNC 服务尚未完成云同步初始化，请稍后重试', duration: 2200 });
+      return;
+    }
+    const result = this.vncHosts.save(values, '', password, plainStorageConfirmed);
+    if (!result.ok) {
+      promptAction.showToast({ message: result.message || '保存 VNC 主机失败', duration: 2200 });
+      return;
+    }
+    this.pendingVncConnectHostId = connectNow ? result.id : '';
+    if (connectNow && !values.rememberPassword && password.length > 0) {
+      VncSessionCredentialHandoff.getInstance().put(this.vncHosts.currentUserId(), result.id, password);
+    }
+    promptAction.showToast({
+      message: connectNow ? 'VNC 主机已保存，正在准备连接' : 'VNC 主机已保存',
+      duration: 1800
+    });
+    this.requestAddSheetClose();
+  }
+
   private handleAddSheetDisappear(): void {
     this.noteSheetDismissed();
     this.addSheetClosing = false;
     this.addSheetShowsModernPicker = false;
     this.modernAddProtocol = '';
+    this.vncAddFromModernPicker = false;
+    const pendingVncHostId: string = this.pendingVncConnectHostId;
+    this.pendingVncConnectHostId = '';
     const pendingHostId: string = this.pendingAddSheetConnectHostId;
     this.pendingAddSheetConnectHostId = '';
+    const openVncGatewayDirectory: boolean = this.pendingVncGatewayDirectoryOpen;
+    this.pendingVncGatewayDirectoryOpen = false;
+    const openRustDeskRelayDirectory: boolean = this.pendingRustDeskRelayDirectoryOpen;
+    this.pendingRustDeskRelayDirectoryOpen = false;
     this.resetForm();
+    this.rustDeskAddResumeDraft = null;
+
+    if (openVncGatewayDirectory || openRustDeskRelayDirectory) {
+      if (!this.pageActive) { return; }
+      if (this.isDesktopDevice && this.breakpoint === 'xl') {
+        this.curTab = 6;
+        this.hostPageTitle = '中继服务器';
+      } else {
+        this.curTab = 2;
+        this.tabsCtrl.changeIndex(2);
+      }
+      this.updateHostFilter();
+      if (openVncGatewayDirectory) {
+        this.relayVncAddTrigger++;
+      } else {
+        this.relayRustDeskAddTrigger++;
+      }
+      return;
+    }
+
+    if (pendingVncHostId !== '') {
+      if (!this.pageActive) { return; }
+      hilog.info(0x0001, 'HostList', 'VNC add-host Sheet disappeared; starting saved connection host=' +
+        pendingVncHostId);
+      router.pushUrl({ url: 'pages/RemoteDesktop', params: { vncHostId: pendingVncHostId } });
+      return;
+    }
 
     if (!shouldStartHostAddConnectionAfterDisappear(
       this.pageActive, this.addSheetClosing, pendingHostId)) {
@@ -1004,6 +1197,51 @@ struct HostListPage {
     // 都来自刚刚持久化的主机记录，而不是 Sheet 回调中的旧对象副本。
     hilog.info(0x0001, 'HostList', 'add-host Sheet disappeared; starting saved connection host=' + pendingHostId);
     this.handleHostCardClick(host);
+  }
+
+  private resumeRustDeskHostAddFromRelayDirectory(
+    savedRelayId: string
+  ): void {
+    if (!this.rustDeskRelayReturnToHostAdd) { return; }
+    this.rustDeskRelayReturnToHostAdd = false;
+    const scope = CloudStore.getInstance().currentScope();
+    const handoff: RustDeskHostAddHandoff =
+      RustDeskHostAddHandoff.getInstance();
+    if (savedRelayId.trim() !== '') {
+      handoff.selectRelay(
+        scope.ownerScopeId, scope.storeIdentity,
+        scope.generation, savedRelayId);
+    }
+    const draft: RustDeskHostAddDraft | null =
+      handoff.take(
+        scope.ownerScopeId, scope.storeIdentity,
+        scope.generation);
+    if (draft === null) {
+      promptAction.showToast({
+        message: '主机草稿已过期或账号已切换，请重新添加',
+        duration: 2400
+      });
+      return;
+    }
+    this.noteSheetDismissed();
+    if (this.isDesktopDevice && this.breakpoint === 'xl') {
+      this.curTab = this.rustDeskHostAddReturnTab;
+      const titles: string[] =
+        ['RDP 远程桌面', 'RustDesk', 'SSH 终端', 'VNC 主机'];
+      this.hostPageTitle =
+        titles[this.curTab] ?? '远程主机';
+    } else {
+      this.curTab = 0;
+      this.tabsCtrl.changeIndex(0);
+    }
+    this.updateHostFilter();
+    this.rustDeskAddResumeDraft = draft;
+    this.rustDeskAddResumeRevision++;
+    this.addSheetShowsModernPicker = false;
+    this.modernAddProtocol = 'rustdesk';
+    this.openSheetSafely((): void => {
+      this.showAddSheet = true;
+    });
   }
 
   private requestAddSheetClose(): void {
@@ -1150,6 +1388,32 @@ struct HostListPage {
     this.resetSettingsLeafSheetAfterDismiss();
   }
 
+  private dismissVncSettingsIfNeeded(continueAction: () => void): void {
+    if (!this.vncSettingsLeafDirty) {
+      continueAction();
+      return;
+    }
+    promptAction.showDialog({
+      title: '放弃未保存的 VNC 设置？',
+      message: '当前叶子设置还有未保存修改。放弃后这些修改不会写入本地或云端。',
+      buttons: [{ text: '继续编辑', color: this.pal().text2 }, { text: '放弃修改', color: this.pal().danger }]
+    }).then((result: Object): void => {
+      const dialogResult: Record<string, number> = result as Record<string, number>;
+      if (dialogResult['index'] === 1) {
+        this.vncSettingsLeafDirty = false;
+        continueAction();
+      }
+    });
+  }
+
+  private handleVncSettingsLeafWillDismiss(action: DismissSheetAction): void {
+    if (!this.vncSettingsLeafDirty) {
+      action.dismiss();
+      return;
+    }
+    this.dismissVncSettingsIfNeeded((): void => { action.dismiss(); });
+  }
+
   private resetSettingsLeafSheetAfterDismiss(): void {
     const next = settingsLeafSheetClosedState();
     if (next.cancelPendingOpen && this.pendingSheetOpenTimer !== -1) {
@@ -1177,6 +1441,7 @@ struct HostListPage {
     // Sheet transition has completed so the outgoing builder remains visible.
     this.closeLegacySettingsSheetFlags();
     this.resetSettingsLeafSheetAfterDismiss();
+    this.vncSettingsLeafDirty = false;
     if (this.pendingSettingsLeafSheetMode !== SETTINGS_SHEET_NONE) {
       this.scheduleSettingsLeafSheetOpen(this.pendingSettingsLeafSheetMode,
         this.pendingSettingsLeafPrepare,
@@ -1217,18 +1482,85 @@ struct HostListPage {
     this.cloudSyncStep = CLOUD_SYNC_SHEET_ACTIONS;
   }
 
-  private toggleCloudSyncTable(table: string): void {
+  private cloudDirectionConfirmationAvailable():
+    boolean {
+    return this.cloudSyncSelectedTables.length > 0 ||
+      CloudStore.getInstance()
+        .requiresRestoreDirectionDecision();
+  }
+
+  private async toggleCloudSyncTable(
+    table: string
+  ): Promise<void> {
     const next: string[] = this.cloudSyncSelectedTables.slice();
     const index: number = next.indexOf(table);
     if (index >= 0) { next.splice(index, 1); } else { next.push(table); }
-    CloudSyncSelectionStore.getInstance().replaceSelectedBusinessTables(getContext(this), next);
+    const cloud: CloudStore = CloudStore.getInstance();
+    const resolvingRestore: boolean =
+      cloud.requiresRestoreDirectionDecision();
+    if (index < 0 &&
+      !resolvingRestore &&
+      !cloud.beginSelectionReenableBarrier(table)) {
+      this.cloudSyncError =
+        '同步范围禁写门禁未能保存，已拒绝重新启用';
+      return;
+    }
+    if (!CloudSyncSelectionStore.getInstance()
+      .replaceSelectedBusinessTables(getContext(this), next)) {
+      if (index < 0 && !resolvingRestore) {
+        cloud.abortSelectionReenableBarrier(table);
+      }
+      this.cloudSyncError = '同步范围未能安全保存，请重试';
+      return;
+    }
     this.cloudSyncSelectedTables = CloudSyncSelectionStore.getInstance().selectedBusinessTables();
+    // Every re-enabled physical table crosses a fresh cloud-first barrier.
+    // This is especially important after a local crypto reset: pending local
+    // deletes must never become native-first merely because the user later
+    // turned the table back on.
+    if (index < 0) {
+      if (resolvingRestore) {
+        this.cloudSyncError =
+          '恢复数据等待方向确认：请选择“上传本机”或“下载云端”完成同步';
+        return;
+      }
+      const result =
+        await cloud.requestSelectionReenableCloudFirst(
+          table);
+      if (!result.ok) {
+        hilog.warn(0x0001, 'CloudSync',
+          '[HostListPage] table re-enable pull failed table=' + table);
+        const vncNoScope: boolean = table === 'vncrecordv2' &&
+          !VncCloudSyncSelectionStore.getInstance().hasSelection();
+        if (vncNoScope) {
+          // Initializing the VNC physical table must jump straight to the
+          // logical scope selector; without scopes there is nothing to sync.
+          this.cloudSyncError =
+            '请选择要同步的 VNC 内容（设置/主机/网关/机密/信任）';
+          this.openSettingsLeafSheet(
+            SETTINGS_SHEET_VNC_CLOUD_SYNC);
+          return;
+        }
+        this.cloudSyncError =
+          '云表重新启用失败：上传仍被暂停，请检查云空间后重试';
+        promptAction.showToast({
+          message: '云表重新启用失败，上传仍保持暂停',
+          duration: 2600
+        });
+      }
+    } else if (!cloud.abortSelectionReenableBarrier(
+      table)) {
+      this.cloudSyncError =
+        '同步范围已关闭，但旧门禁清理失败；上传仍保持暂停';
+    }
   }
 
   private async createLocalBackup(): Promise<void> {
     try {
       const backup: LocalBackupService = LocalBackupService.getInstance();
-      const saved: boolean = await backup.saveBackup(CURRENT_RELEASE_VERSION);
+      const saved: boolean = await backup.saveBackup(
+        CURRENT_RELEASE_VERSION, getContext(this).cacheDir,
+        this.backupFullMode ? 'full' : 'redacted');
       if (saved) { promptAction.showToast({ message: '本地备份已保存', duration: 1600 }); this.closeSettingsLeafSheet(); }
       else { this.cloudSyncError = backup.getLastErrorMessage(); }
     } catch (_e) { this.cloudSyncError = '备份失败，请检查保存位置后重试'; }
@@ -1255,11 +1587,37 @@ struct HostListPage {
 
   private async confirmLocalRestore(): Promise<void> {
     if (!this.pendingLocalRestore) { this.cloudSyncError = '请重新选择备份文件'; return; }
-    const restored: boolean = await LocalBackupService.getInstance().restore(this.pendingLocalRestore);
-    if (!restored) { this.cloudSyncError = '恢复失败，原本地数据未被修改'; return; }
+    const backup: LocalBackupService =
+      LocalBackupService.getInstance();
+    const restored: boolean = await backup.restore(
+      this.pendingLocalRestore,
+      this.pendingLocalRestore.version < 3);
+    if (!restored) {
+      this.cloudSyncError = backup.getLastErrorMessage();
+      return;
+    }
     this.pendingLocalRestore = null;
-    promptAction.showToast({ message: '本地备份已恢复，未自动上传到云端', duration: 1800 });
+    promptAction.showToast({
+      message: '本地配置已合并，未自动上传到云端',
+      duration: 1800
+    });
     this.closeSettingsLeafSheet();
+  }
+
+  private localRestorePreviewSummary(): string {
+    const preview: BackupRestorePreview | null =
+      LocalBackupService.getInstance().getSelectedPreview();
+    if (preview === null) {
+      return '尚未选择备份文件';
+    }
+    const legacy: string = preview.legacyOwnerUnbound
+      ? '；旧版文件将在确认后绑定当前账号' : '';
+    const redacted: string = !preview.secretsIncluded
+      ? '；该备份为脱敏配置，不含密码、SSH 私钥、2FA 与设备信任（SSH 公钥/RDP 证书），恢复后需重新导入/确认' : '';
+    return '格式 v' + preview.formatVersion.toString() +
+      ' · ' + preview.rowCount.toString() + ' 行 · ' +
+      preview.presentTables.length.toString() + ' 个数据表' +
+      legacy + redacted;
   }
 
   private currentCloudSyncSheetSpec(): CloudSyncSheetSpec {
@@ -1268,6 +1626,8 @@ struct HostListPage {
 
   private async confirmCloudSyncUpload(): Promise<void> {
     const cloud: CloudStore = CloudStore.getInstance();
+    const resolvingRestore: boolean =
+      cloud.requiresRestoreDirectionDecision();
     if (cloud.requiresCloudServiceGuidance()) {
       this.cloudSyncStep = CLOUD_SYNC_SHEET_UNAVAILABLE;
       return;
@@ -1276,7 +1636,12 @@ struct HostListPage {
     this.cloudSyncStep = CLOUD_SYNC_SHEET_UPLOADING;
     const completed: boolean = await cloud.uploadAllToCloud();
     if (completed) {
-      promptAction.showToast({ message: '已上传 ' + cloud.syncableTables().length.toString() + ' 类已选数据到华为云空间', duration: 2000 });
+      promptAction.showToast({
+        message: resolvingRestore
+          ? '恢复方向已确认：已选数据已上传，未选数据保留本机'
+          : '已上传 ' + cloud.syncableTables().length.toString() + ' 类已选数据到华为云空间',
+        duration: 2400
+      });
       this.closeSettingsLeafSheet();
       return;
     }
@@ -1284,7 +1649,10 @@ struct HostListPage {
       this.cloudSyncStep = CLOUD_SYNC_SHEET_UNAVAILABLE;
       return;
     }
-    const uploadError: string = cloud.getLastSyncErrorMessage();
+    const blockedReason: string = cloud.manualUploadBlockedReason();
+    const uploadError: string =
+      blockedReason !== '' ? blockedReason :
+        cloud.getLastSyncErrorMessage();
     this.cloudSyncError = uploadError !== '' ? uploadError :
       '上传未确认全部完成，请检查网络后重试。';
     this.cloudSyncStep = CLOUD_SYNC_SHEET_UPLOAD_CONFIRM;
@@ -1292,6 +1660,8 @@ struct HostListPage {
 
   private async confirmCloudSyncDownload(): Promise<void> {
     const cloud: CloudStore = CloudStore.getInstance();
+    const resolvingRestore: boolean =
+      cloud.requiresRestoreDirectionDecision();
     if (cloud.requiresCloudServiceGuidance()) {
       this.cloudSyncStep = CLOUD_SYNC_SHEET_UNAVAILABLE;
       return;
@@ -1301,7 +1671,12 @@ struct HostListPage {
     const result = await cloud.downloadAllFromCloudResult();
     if (result.ok) {
       this.applyCloudUserSettings();
-      promptAction.showToast({ message: '已从华为云空间恢复 ' + cloud.syncableTables().length.toString() + ' 类已选数据', duration: 2000 });
+      promptAction.showToast({
+        message: resolvingRestore
+          ? '恢复方向已确认：已选数据已下载，未选数据保留本机'
+          : '已从华为云空间恢复 ' + cloud.syncableTables().length.toString() + ' 类已选数据',
+        duration: 2400
+      });
       this.closeSettingsLeafSheet();
       return;
     }
@@ -1320,6 +1695,84 @@ struct HostListPage {
     animateTo({ duration: SETTINGS_ACCORDION_ANIMATION_MS, curve: Curve.FastOutSlowIn }, (): void => {
       this.expandedSettingsSection = settingsNextExpandedSection(this.expandedSettingsSection, section);
     });
+  }
+
+  private openSshHostListFromSettings(): void {
+    this.showSettingsPanel = false;
+    if (this.isDesktopDevice && this.breakpoint === 'xl') {
+      this.curTab = 2;
+      this.activeFilterProto = 'ssh';
+      this.hostPageTitle = 'SSH 终端';
+      this.updateHostFilter();
+      return;
+    }
+    this.curTab = 0;
+    this.activeFilterProto = '';
+    this.tabsCtrl.changeIndex(0);
+    this.updateHostFilter();
+  }
+
+  private openSshKeyVaultFromSettings(): void {
+    this.showSettingsPanel = false;
+    if (this.isDesktopDevice && this.breakpoint === 'xl') {
+      this.curTab = 4;
+      this.keyVaultInnerTab = 0;
+      return;
+    }
+    this.curTab = 1;
+    this.tabsCtrl.changeIndex(1);
+  }
+
+  private openVncHostManagerFromSettings(): void {
+    this.dismissVncSettingsIfNeeded((): void => {
+      this.closeSettingsLeafSheet();
+      setTimeout((): void => {
+        if (this.pageActive) { router.pushUrl({ url: 'pages/VncSettingsPage' }); }
+      }, SETTINGS_PANEL_DISMISS_TO_LEAF_OPEN_MS);
+    });
+  }
+
+  private openVncGatewayManagerFromSettings(): void {
+    this.dismissVncSettingsIfNeeded((): void => {
+      this.closeSettingsLeafSheet();
+      setTimeout((): void => {
+        if (!this.pageActive) { return; }
+        if (this.isDesktopDevice && this.breakpoint === 'xl') {
+          this.curTab = 6;
+          this.hostPageTitle = '中继服务器';
+        } else {
+          this.curTab = 2;
+          this.tabsCtrl.changeIndex(2);
+        }
+        this.updateHostFilter();
+      }, SETTINGS_PANEL_DISMISS_TO_LEAF_OPEN_MS);
+    });
+  }
+
+  private handleVncRelayRouteRequest(): void {
+    const params: Object = router.getParams();
+    if (params === null || params === undefined) { return; }
+    const values: Record<string, Object> = params as Record<string, Object>;
+    const requestId: string = typeof values['vncRelayRequestId'] === 'string'
+      ? values['vncRelayRequestId'] as string : '';
+    const openGateway: boolean = values['openVncGateway'] === true || values['openVncGateway'] === 'true';
+    if (!openGateway || requestId === '' || requestId === this.lastVncRelayRouteRequestId) { return; }
+    this.lastVncRelayRouteRequestId = requestId;
+    if (this.isDesktopDevice && this.breakpoint === 'xl') {
+      this.curTab = 6;
+      this.hostPageTitle = '中继服务器';
+    } else {
+      this.curTab = 2;
+      this.tabsCtrl.changeIndex(2);
+    }
+    this.updateHostFilter();
+    this.relayVncAddTrigger++;
+  }
+
+  private resetSshTerminalAppearance(): void {
+    this.terminalFgColor = this.sshSettings.saveForegroundColor('#33FF33');
+    this.terminalFontSize = this.sshSettings.saveFontSize(18);
+    promptAction.showToast({ message: 'SSH 终端显示已恢复默认', duration: 1500 });
   }
 
   private settingsSectionExpanded(section: string): boolean {
@@ -1341,6 +1794,12 @@ struct HostListPage {
     }
     if (section === SETTINGS_SECTION_RUSTDESK) {
       return 980;
+    }
+    if (section === SETTINGS_SECTION_SSH) {
+      return 540;
+    }
+    if (section === SETTINGS_SECTION_VNC) {
+      return settingsVncExpandedMaxHeight(SETTINGS_VNC_ACTION_ROW_COUNT);
     }
     if (section === SETTINGS_SECTION_SECURITY) {
       return 420;
@@ -1595,6 +2054,7 @@ struct HostListPage {
     }
     const pendingHostId: string = this.pendingAddSheetConnectHostId;
     this.pendingAddSheetConnectHostId = '';
+    this.pendingVncConnectHostId = '';
     if (pendingHostId !== '') {
       this.releaseConnectionAttempt(pendingHostId);
     }
@@ -1822,11 +2282,10 @@ struct HostListPage {
       this.refreshCryptoStatus();
       this.refreshHostListView();
       this.rdpCredentials = this.srv.getAllRdpCredentials();
-      this.hostCount = this.srv.getHostCount();
-      this.lockedCount = this.srv.getLockedHostCount();
       this.rdpCount = this.srv.getRdpCount();
       this.rustdeskCount = this.srv.getRustdeskCount();
       this.sshCount = this.srv.getSshCount();
+      this.vncCount = this.vncHosts.list().length;
       this.keyCount = KeyVaultService.getInstance().getSshKeyCount();
       this.totpCount = KeyVaultService.getInstance().getTotpCount();
       this.accountDisplayName = this.auth.isLoggedIn() ? this.auth.getDisplayName() : '';
@@ -1869,6 +2328,11 @@ struct HostListPage {
         this.load();
       });
     }
+    if (!this.vncHostDataUnsubscribe) {
+      this.vncHostDataUnsubscribe = this.vncHosts.onChange((): void => {
+        this.load();
+      });
+    }
   }
 
   private unregisterDataRefreshListeners(): void {
@@ -1880,6 +2344,10 @@ struct HostListPage {
       this.keyVaultDataUnsubscribe();
       this.keyVaultDataUnsubscribe = null;
     }
+    if (this.vncHostDataUnsubscribe) {
+      this.vncHostDataUnsubscribe();
+      this.vncHostDataUnsubscribe = null;
+    }
   }
 
   private refreshHostListView(): void {
@@ -1887,11 +2355,19 @@ struct HostListPage {
     // 引用时，LazyForEach/卡片内部只收到 reload 却继续显示旧字段。
     const nextHosts: RemoteHost[] = this.srv.getAllHosts().map((host: RemoteHost): RemoteHost =>
       RemoteHost.fromJSON(host.toJSON()));
-    this.hostCount = this.srv.getHostCount();
-    this.lockedCount = this.srv.getLockedHostCount();
+    const vncViews: VncHostView[] = this.vncHosts.list();
+    for (let i = 0; i < vncViews.length; i++) {
+      nextHosts.push(projectVncHost(vncViews[i]));
+    }
+    this.hostCount = nextHosts.length;
+    this.lockedCount = 0;
+    for (let i = 0; i < nextHosts.length; i++) {
+      if (nextHosts[i].locked) { this.lockedCount += 1; }
+    }
     this.rdpCount = this.srv.getRdpCount();
     this.rustdeskCount = this.srv.getRustdeskCount();
     this.sshCount = this.srv.getSshCount();
+    this.vncCount = vncViews.length;
     const nextSignature: string = JSON.stringify(
       nextHosts.map((host: RemoteHost): Object => host.toJSON()));
     if (nextSignature === this.hostDataSignature) { return; }
@@ -2179,9 +2655,20 @@ struct HostListPage {
     }).then((result: Object): void => {
       const r: Record<string, number> = result as Record<string, number>;
       if (r['index'] === 1) {
-        const ids: string[] = [];
-        this.hostSelectedIds.forEach((id: string): void => { ids.push(id); });
-        this.srv.removeHosts(ids);
+        const remoteIds: string[] = [];
+        const vncIds: string[] = [];
+        this.hostSelectedIds.forEach((id: string): void => {
+          // Do not classify by the display prefix alone: a legacy remotehosts
+          // row may legally contain an arbitrary ID beginning with "vnc:".
+          // Resolve the selected snapshot first so deletion stays with the
+          // actual owner service.
+          const selectedHost: RemoteHost | undefined = this.hosts.find(
+            (host: RemoteHost): boolean => host.id === id);
+          const vncId: string = selectedHost === undefined ? '' : this.vncRecordIdForHost(selectedHost);
+          if (vncId !== '') { vncIds.push(vncId); } else { remoteIds.push(id); }
+        });
+        if (remoteIds.length > 0) { this.srv.removeHosts(remoteIds); }
+        for (let i = 0; i < vncIds.length; i++) { this.vncHosts.remove(vncIds[i]); }
         this.hostSelectionMode = false;
         this.hostSelectedIds = new Set<string>();
       }
@@ -2263,6 +2750,8 @@ struct HostListPage {
     } else if (host.protocol === 'rustdesk') {
       const relay: RustDeskRelayConfig | undefined = host.rustdeskDirectEnabled ? undefined :
         this.srv.getAllRelays().find((item: RustDeskRelayConfig): boolean => item.id === host.rustdeskRelayId);
+      const connectionContext: RustDeskConnectionContext =
+        this.rustDeskConnectionContext(host, relay);
       const rustDeskError: string = rustDeskConnectionError({
         directEnabled: host.rustdeskDirectEnabled,
         directHost: host.rustdeskDirectHost,
@@ -2273,7 +2762,7 @@ struct HostListPage {
         relayPort: relay ? relay.idServerPort : 0,
         relayKey: relay ? relay.key : '',
         relayKeyMode: relay ? relay.keyMode : 'auto',
-        proManaged: host.rustdeskProManaged && host.sourceType === 'rustdesk_pro'
+        proManaged: relay !== undefined && connectionContext.requiresAccount
       });
       if (rustDeskError !== '') {
         this.releaseConnectionAttempt(host.id);
@@ -2288,6 +2777,15 @@ struct HostListPage {
         router.pushUrl({ url: 'pages/RemoteDesktop', params: params });
         this.releaseConnectionAttempt(host.id);
       }
+    } else if (host.protocol === 'vnc') {
+      const vncHostId: string = this.vncRecordIdForHost(host);
+      if (vncHostId === '') {
+        promptAction.showToast({ message: 'VNC 主机记录无效，请重新添加', duration: 2200 });
+        return;
+      }
+      const params: Record<string, Object> = {};
+      params['vncHostId'] = vncHostId;
+      router.pushUrl({ url: 'pages/RemoteDesktop', params: params });
     } else {
       const params: Record<string, Object> = {};
       params['hostId'] = host.id;
@@ -2335,22 +2833,6 @@ struct HostListPage {
 
   private isRdpCertificateBusy(): boolean {
     return this.rdpCertificateState === RdpCertificatePreflightState.PROBING;
-  }
-
-  private handleRdpCertificateSheetDismiss(action: DismissSheetAction): void {
-    if (!shouldAcceptRemoteHostSheetDismiss({
-      busy: this.isRdpCertificateBusy(),
-      closing: this.rdpCertificateClosing,
-      pendingRoute: this.rdpCertificatePendingRouteParams !== null
-    })) {
-      return;
-    }
-    const elapsed: number = Date.now() - this.rdpCertificateOpenedAt;
-    if (elapsed < 500) {
-      return;
-    }
-    this.doRdpCertificateCancel(false);
-    action.dismiss();
   }
 
   private doRdpCertificateCancel(closeSheet: boolean = true): void {
@@ -2697,19 +3179,6 @@ struct HostListPage {
       this.sshPreflightState === SshPreflightState.VERIFYING_PASSPHRASE;
   }
 
-  private handleSshPreflightSheetDismiss(action: DismissSheetAction): void {
-    const elapsed: number = Date.now() - this.sshPreflightOpenedAt;
-    if (elapsed < 500 || !shouldAcceptRemoteHostSheetDismiss({
-      busy: this.isSshPreflightBusy(),
-      closing: this.sshPreflightClosing,
-      pendingRoute: this.sshPreflightPendingRouteParams !== null
-    })) {
-      return;
-    }
-    this.doSshPreflightCancel(false);
-    action.dismiss();
-  }
-
   private handleSshPreflightSheetDisappear(): void {
     this.noteSheetDismissed();
     const routeParams: Record<string, Object> | null = this.sshPreflightPendingRouteParams;
@@ -2742,6 +3211,21 @@ struct HostListPage {
   /** 获取当前 preflight host (从 CloudStore) */
   private getSshPreflightHost(): RemoteHost | undefined {
     return this.srv.getHost(this.sshPreflightHostId);
+  }
+
+  /**
+   * 主机指纹/密钥预检必须使用与最终 SSH 会话相同的传输路径。
+   * 代理密码不在 RemoteHost 中持久化，因此此处只传递已保存的非敏感
+   * 端点和用户名；若代理要求密码，native 会返回明确的代理认证错误。
+   */
+  private sshPreflightProxy(host: RemoteHost): SshProxyConfig {
+    return {
+      type: host.proxyHost.length > 0 ? host.sshProxyType : 'direct',
+      host: host.proxyHost,
+      port: host.proxyPort,
+      username: host.proxyUsername,
+      password: ''
+    };
   }
 
   private resolveSshKeyMaterial(host: RemoteHost): SshKeyMaterial {
@@ -2792,7 +3276,7 @@ struct HostListPage {
     try {
       await new Promise<void>((r) => setTimeout(r, 80));
       if (!this.isCurrentSshPreflight(host, generation)) { return; }
-      const info = this.loader.probeSshHostKey(host.host, host.port);
+      const info = this.loader.probeSshHostKey(host.host, host.port, this.sshPreflightProxy(host));
       if (!this.isCurrentSshPreflight(host, generation)) { return; }
       if (!info.ok) {
         this.sshPreflightState = SshPreflightState.ERROR;
@@ -2881,7 +3365,10 @@ struct HostListPage {
       await new Promise<void>((r) => setTimeout(r, 60));
       if (!this.isCurrentSshPreflight(host, generation)) { return; }
       const keyData = this.resolveSshKeyMaterial(host).privateKey;
-      const result = this.loader.testSshKeyAuth(host.host, host.port, host.username, keyData, passphrase);
+      const result = this.loader.testSshKeyAuth(
+        host.host, host.port, host.username, keyData, passphrase,
+        this.sshPreflightProxy(host)
+      );
       if (!this.isCurrentSshPreflight(host, generation)) { return; }
       if (result.ok) {
         this.doSshPreflightReady(host, generation);
@@ -2921,7 +3408,8 @@ struct HostListPage {
         return;
       }
       const result = this.loader.testSshKeyAuth(
-        host.host, host.port, host.username, keyData, this.sshPreflightPassphraseInput
+        host.host, host.port, host.username, keyData, this.sshPreflightPassphraseInput,
+        this.sshPreflightProxy(host)
       );
       if (!this.isCurrentSshPreflight(host, generation)) { return; }
       if (result.ok) {
@@ -2970,11 +3458,26 @@ struct HostListPage {
     this.connectToHost(host);
   }
 
+  private vncRecordIdForHost(host: RemoteHost): string {
+    return isVncHostProjection(host) ? vncHostRecordIdFromUiId(host.id) : '';
+  }
+
   private async toggleLock(host: RemoteHost): Promise<void> {
     const r = await showLockGate(host.label, 'biometric');
     if (!r.ok) {
       const msg: string = lockGateErrorMessage(r);
       if (msg !== '') { promptAction.showToast({ message: msg, duration: 2000 }); }
+      return;
+    }
+    const vncHostId: string = this.vncRecordIdForHost(host);
+    if (vncHostId !== '') {
+      const nextLocked: boolean = !host.locked;
+      if (!this.vncHosts.updateLock(vncHostId, nextLocked,
+        nextLocked ? LockType.BIOMETRIC : LockType.NONE)) {
+        promptAction.showToast({ message: '保存 VNC 主机状态失败', duration: 2000 });
+        return;
+      }
+      promptAction.showToast({ message: nextLocked ? '已锁定' : '已解锁', duration: 1500 });
       return;
     }
     host.locked = !host.locked;
@@ -3008,7 +3511,7 @@ struct HostListPage {
       // 完成后再把同一个请求打开，避免旧动画和新 builder 同时存在。
       this.rustDeskProPreflightPendingHostId = host.id;
       hilog.info(0x0001, 'HostList', 'RustDesk preflight queued until previous Sheet disappears host=' +
-        host.id);
+        hashForLog(host.id));
       return;
     }
     const generation: number = this.prepareRustDeskProPreflight(host);
@@ -3088,10 +3591,80 @@ struct HostListPage {
     this.openRustDeskProPreflight(nextHost);
   }
 
+  private rustDeskProAccountForHost(host: RemoteHost): RustDeskProAccountState | undefined {
+    const accountId: string = rustDeskProAccountIdForConnection(
+      host.rustdeskProAccountId, host.rustdeskAccountId);
+    if (accountId !== '') { return this.proSync.getAccount(accountId); }
+    const candidates: RustDeskProAccountState[] = this.proSync.getAccounts()
+      .filter((account: RustDeskProAccountState): boolean =>
+        account.relayId === host.rustdeskRelayId &&
+        account.loginStatus === 'logged_in' &&
+        account.accessToken.trim() !== '');
+    return candidates.length === 1 ? candidates[0] : undefined;
+  }
+
+  private rustDeskConnectionContext(
+    host: RemoteHost,
+    relay: RustDeskRelayConfig | undefined
+  ): RustDeskConnectionContext {
+    const explicitAccountId: string = rustDeskProAccountIdForConnection(
+      host.rustdeskProAccountId, host.rustdeskAccountId);
+    const account: RustDeskProAccountState | undefined =
+      this.rustDeskProAccountForHost(host);
+    const accountId: string = account === undefined
+      ? explicitAccountId : account.id;
+    return resolveRustDeskConnectionContext({
+      direct: host.rustdeskDirectEnabled,
+      relayId: relay === undefined ? host.rustdeskRelayId : relay.id,
+      profile: relay === undefined
+        ? RUSTDESK_CONTROL_PLANE_DEFAULT : relay.controlPlaneProfile,
+      keyMode: relay === undefined ? 'server_public_key' : relay.keyMode,
+      accountId,
+      accountRelayId: account === undefined ? '' : account.relayId,
+      accountPresent: account !== undefined,
+      accountLoginStatus: account === undefined ? 'none' : account.loginStatus,
+      accessToken: account === undefined ? '' : account.accessToken,
+      accessTokenFingerprint: account === undefined
+        ? '' : account.accessTokenFingerprint,
+      tokenGeneration: account === undefined ? 0 : account.tokenGeneration,
+      ownerScopeId: CloudStore.getInstance().currentScope().ownerScopeId,
+      accountApiServer: account === undefined ? '' : account.serverUrl,
+      configuredApiServer: relay === undefined ? '' : relay.apiServer,
+      idServer: relay === undefined ? '' : relay.idServer,
+      idServerPort: relay === undefined ? 0 : relay.idServerPort,
+      relayServer: relay === undefined ? '' : relay.relayServer,
+      relayPort: relay === undefined ? 0 : relay.relayPort,
+      serverKeyMode: relay === undefined ? '' : relay.keyMode,
+      serverKey: relay === undefined ? '' : relay.key,
+      capabilityProof: account === undefined
+        ? undefined : account.controlPlaneCapabilityProof
+    });
+  }
+
+  private rustDeskProBindingError(host: RemoteHost): string {
+    if (host.rustdeskDirectEnabled) { return ''; }
+    const relay: RustDeskRelayConfig | undefined = this.srv.getAllRelays()
+      .find((item: RustDeskRelayConfig): boolean => item.id === host.rustdeskRelayId);
+    if (relay === undefined) {
+      return 'RustDesk 中继配置不存在，请检查中继服务器设置。';
+    }
+    const connectionContext: RustDeskConnectionContext =
+      this.rustDeskConnectionContext(host, relay);
+    return connectionContext.ready ? '' : connectionContext.message;
+  }
+
   private rustDeskProConfig(host: RemoteHost): SessionConfig {
     const relay: RustDeskRelayConfig | undefined = this.srv.getAllRelays()
       .find((item: RustDeskRelayConfig): boolean => item.id === host.rustdeskRelayId);
     const direct: boolean = host.rustdeskDirectEnabled;
+    const account: RustDeskProAccountState | undefined =
+      this.rustDeskProAccountForHost(host);
+    const accountId: string = account === undefined
+      ? rustDeskProAccountIdForConnection(
+        host.rustdeskProAccountId, host.rustdeskAccountId)
+      : account.id;
+    const connectionContext: RustDeskConnectionContext =
+      this.rustDeskConnectionContext(host, relay);
     const endpoint: RustDeskHostEndpoint = resolveRustDeskHostEndpoint(
       relay ?? null,
       host.host,
@@ -3109,20 +3682,108 @@ struct HostListPage {
       multiMonitor: false, monitorCount: 1, colorDepth: 32,
       authMethod: 'password', privateKeyPem: '', privateKeyPassphrase: '',
       rdImageQuality: this.rustdeskImageQuality, rdDirectIp: direct,
+      rdConnectionStrategy: rustDeskConnectionStrategyForHost(direct),
       rdDirectPort: endpoint.port,
       rdLanDiscovery: this.rustdeskLanDiscovery, rdPrivacyMode: this.rustdeskPrivacyMode,
       rdAudioEnabled: this.rustdeskAudioEnabled, rdClipboardEnabled: this.rustdeskClipboardEnabled,
       rdPasswordMode: host.rustdeskPasswordMode,
       rdAuthMode: rustDeskAuthModeForConnection(direct, host.rustdeskAuthMode) === 'request_approval' ? 1 : 0,
-      rdRelayId: host.rustdeskRelayId, rdAccountId: host.rustdeskAccountId,
+      rdRelayId: host.rustdeskRelayId, rdAccountId: accountId,
       rdServerKey: relay ? relay.key : '',
-      rdServerKeyMode: relay ? rustDeskRelayKeyModeForFfi(relay.key, relay.keyMode) : 1
+      rdServerKeyMode: relay ? rustDeskRelayKeyModeForFfi(relay.key, relay.keyMode) : 1,
+      rdRelayPort: rustDeskRelayFallbackPort(relay ?? null),
+      rdAccessToken: connectionContext.accessToken
     };
+  }
+
+  private openRustDeskProTwoFactorPrompt(sessionId: number, message: string): void {
+    if (this.rustDeskProTwoFactorSessionId !== sessionId) {
+      this.rustDeskProTwoFactorInput = '';
+      this.rustDeskProTwoFactorError = '';
+      this.rustDeskProTwoFactorSubmitting = false;
+    }
+    this.rustDeskProTwoFactorSessionId = sessionId;
+    this.rustDeskProTwoFactorActive = true;
+    if (message.indexOf('Wrong 2FA Code') >= 0) {
+      this.rustDeskProTwoFactorError = '验证码错误，请输入远端设备当前显示的 2FA 验证码。';
+      this.rustDeskProTwoFactorSubmitting = false;
+    }
+  }
+
+  private async tryAutoSubmitRustDeskProTwoFactor(sessionId: number, host: RemoteHost): Promise<void> {
+    if (!host.rustdeskTotpAutoSubmit || host.rustdeskTotpEntryId === '' ||
+      this.rustDeskProTwoFactorAutoAttemptSessionId === sessionId) {
+      return;
+    }
+    this.rustDeskProTwoFactorAutoAttemptSessionId = sessionId;
+    const gate = await showLockGate('RustDesk 2FA 自动填写', 'biometric');
+    if (this.rustDeskProPreflightState !== RustDeskProPreflightState.CONNECTING) {
+      return;
+    }
+    if (!gate.ok) {
+      this.openRustDeskProTwoFactorPrompt(sessionId, lockGateErrorMessage(gate) ||
+        '未通过系统身份认证，请手动输入验证码。');
+      return;
+    }
+    const entry: TotpEntry | undefined = this.keyVault.getTotpEntry(host.rustdeskTotpEntryId);
+    if (entry === undefined || entry.secret.length === 0) {
+      this.openRustDeskProTwoFactorPrompt(sessionId, '已绑定的 2FA 条目不可用，请手动输入验证码。');
+      return;
+    }
+    const generated = TotpEngine.generateCode(entry);
+    const autoSubmitError: string = rustDeskPeerTwoFactorAutoSubmitError(entry, generated);
+    if (autoSubmitError !== '') {
+      this.openRustDeskProTwoFactorPrompt(sessionId, autoSubmitError);
+      return;
+    }
+    if (!this.loader.submitRustDesk2FA(sessionId, generated.code)) {
+      this.openRustDeskProTwoFactorPrompt(sessionId, this.loader.getRustDeskLastError() ||
+        '自动提交验证码失败，请手动输入。');
+      return;
+    }
+    this.openRustDeskProTwoFactorPrompt(sessionId, '2FA code submitted');
+    this.rustDeskProTwoFactorSubmitting = true;
+  }
+
+  private cancelRustDeskProTwoFactor(): void {
+    this.rustDeskProPreflightGeneration += 1;
+    this.loader.disconnect();
+    this.rustDeskProTwoFactorActive = false;
+    this.rustDeskProTwoFactorSessionId = -1;
+    this.rustDeskProTwoFactorAutoAttemptSessionId = -1;
+    this.rustDeskProTwoFactorInput = '';
+    this.rustDeskProTwoFactorSubmitting = false;
+    this.rustDeskProPreflightState = RustDeskProPreflightState.ERROR;
+    this.rustDeskProPreflightError = '连接已取消。';
+  }
+
+  private submitRustDeskProTwoFactor(): void {
+    const code: string = this.rustDeskProTwoFactorInput.trim();
+    if (!isRustDeskPeerTwoFactorManualCode(code)) {
+      this.rustDeskProTwoFactorError = '请输入 6 或 8 位数字验证码。';
+      return;
+    }
+    if (this.rustDeskProTwoFactorSessionId <= 0 ||
+      !this.loader.submitRustDesk2FA(this.rustDeskProTwoFactorSessionId, code)) {
+      this.rustDeskProTwoFactorError = this.loader.getRustDeskLastError() ||
+        '验证码提交失败，请重新连接。';
+      this.rustDeskProTwoFactorSubmitting = false;
+      return;
+    }
+    this.rustDeskProTwoFactorInput = '';
+    this.rustDeskProTwoFactorError = '';
+    this.rustDeskProTwoFactorSubmitting = true;
   }
 
   private async confirmRustDeskProPreflight(): Promise<void> {
     const stored: RemoteHost | undefined = this.srv.getHost(this.rustDeskProPreflightHostId);
     if (!stored || this.rustDeskProPreflightState === RustDeskProPreflightState.CONNECTING) { return; }
+    const bindingError: string = this.rustDeskProBindingError(stored);
+    if (bindingError !== '') {
+      this.rustDeskProPreflightError = bindingError;
+      this.rustDeskProPreflightState = RustDeskProPreflightState.ERROR;
+      return;
+    }
     if (this.rustDeskProAuthMode === 'password' && this.rustDeskProPassword.trim().length === 0) {
       this.rustDeskProPreflightError = '请输入远程 RustDesk 设备密码。';
       return;
@@ -3132,24 +3793,74 @@ struct HostListPage {
       return;
     }
     const generation: number = ++this.rustDeskProPreflightGeneration;
+    const connectionScope = AccountSessionCoordinator.getInstance().currentScope();
     const host: RemoteHost = RemoteHost.fromJSON(stored.toJSON());
+    const relay: RustDeskRelayConfig | undefined = this.srv.getAllRelays()
+      .find((item: RustDeskRelayConfig): boolean => item.id === host.rustdeskRelayId);
+    let controlPlaneProfile: RustDeskControlPlaneProfile =
+      'third_party_api_only';
+    let tokenProjected: boolean = false;
+    let connectionAccount: RustDeskProAccountState | undefined =
+      undefined;
+    let expectedTokenFingerprint: string = '';
+    let expectedTokenGeneration: number = 0;
     host.rustdeskAuthMode = this.rustDeskProAuthMode === 'request_approval' ? 'request_approval' : 'password';
     host.rustdeskPasswordMode = this.rustDeskProPasswordMode === 1 ? 1 : 0;
     if (host.rustdeskAuthMode === 'password') { host.password = this.rustDeskProPassword; }
     this.rustDeskProPreflightError = '';
+    this.rustDeskProTwoFactorActive = false;
+    this.rustDeskProTwoFactorSessionId = -1;
+    this.rustDeskProTwoFactorAutoAttemptSessionId = -1;
+    this.rustDeskProTwoFactorInput = '';
+    this.rustDeskProTwoFactorError = '';
+    this.rustDeskProTwoFactorSubmitting = false;
     this.rustDeskProPreflightState = RustDeskProPreflightState.CONNECTING;
     try {
       if (!await this.loader.waitForPendingTeardown(5000)) {
         throw new Error('上一连接尚未完全结束，请稍后重试。');
       }
-      const sid: number = this.loader.connect(this.rustDeskProConfig(host));
+      const scopeAfterTeardown = AccountSessionCoordinator.getInstance().currentScope();
+      if (scopeAfterTeardown.ownerScopeId !== connectionScope.ownerScopeId ||
+        scopeAfterTeardown.generation !== connectionScope.generation) {
+        throw new Error('账号已切换，旧账号连接已取消。');
+      }
+      const effectiveContext: RustDeskConnectionContext =
+        this.rustDeskConnectionContext(host, relay);
+      if (!effectiveContext.ready) {
+        throw new Error(effectiveContext.message);
+      }
+      controlPlaneProfile = effectiveContext.profile;
+      tokenProjected = effectiveContext.accessToken !== '';
+      connectionAccount = this.rustDeskProAccountForHost(host);
+      expectedTokenFingerprint =
+        tokenProjected && connectionAccount !== undefined
+          ? connectionAccount.accessTokenFingerprint : '';
+      expectedTokenGeneration =
+        tokenProjected && connectionAccount !== undefined
+          ? connectionAccount.tokenGeneration : 0;
+      const sessionConfig: SessionConfig =
+        this.rustDeskProConfig(host);
+      if (sessionConfig.rdAccessToken !==
+        effectiveContext.accessToken) {
+        throw new Error(
+          '账号状态已变化，请重新发起连接。');
+      }
+      const sid: number = this.loader.connect(sessionConfig);
       if (sid <= 0) { throw new Error('无法启动 RustDesk 连接 [E-RUSTDESK-PREFLIGHT-' + Math.abs(sid).toString() + ']'); }
-      const timeoutMs: number = host.rustdeskAuthMode === 'request_approval' ? 100000 : 25000;
+      const timeoutMs: number = 120000;
       const startedAt: number = Date.now();
       while (Date.now() - startedAt < timeoutMs) {
         if (generation !== this.rustDeskProPreflightGeneration) { return; }
+        const activeConnectionScope = AccountSessionCoordinator.getInstance().currentScope();
+        if (activeConnectionScope.ownerScopeId !== connectionScope.ownerScopeId ||
+          activeConnectionScope.generation !== connectionScope.generation) {
+          return;
+        }
         const state: number = this.loader.getConnectionState(sid);
         if (state === 2) {
+          this.rustDeskProTwoFactorActive = false;
+          this.rustDeskProTwoFactorSessionId = -1;
+          this.rustDeskProTwoFactorAutoAttemptSessionId = -1;
           this.rustDeskProPreflightState = RustDeskProPreflightState.AUTHENTICATED;
           const saved: RemoteHost = RemoteHost.fromJSON(stored.toJSON());
           saved.rustdeskAuthMode = host.rustdeskAuthMode;
@@ -3159,6 +3870,8 @@ struct HostListPage {
           }
           const now: number = Date.now();
           const record: ActiveRemoteSessionRecord = {
+            ownerScopeId: connectionScope.ownerScopeId,
+            accountGeneration: connectionScope.generation,
             sessionId: sid, hostId: host.id, protocol: RemoteProtocol.rustdesk,
             hostAddress: host.host, protocolConnected: true, renderAttached: false,
             restoreNeeded: true, latestSurfaceId: '', createdAtMs: now, updatedAtMs: now
@@ -3177,6 +3890,10 @@ struct HostListPage {
           this.showRemoteHostSheet = false;
           return;
         }
+        if (state === 5) {
+          await this.tryAutoSubmitRustDeskProTwoFactor(sid, host);
+          this.openRustDeskProTwoFactorPrompt(sid, this.loader.getConnectionLastMessage(sid));
+        }
         if (state === 4 || state === 0) {
           const detail: string = this.loader.getRustDeskLastError() || this.loader.getConnectionLastMessage(sid);
           throw new Error(detail || '远端鉴权失败，请检查密码后重试。');
@@ -3186,14 +3903,66 @@ struct HostListPage {
       throw new Error(host.rustdeskAuthMode === 'request_approval' ? '等待远端批准超时，请重新发起。' : '鉴权超时，请检查网络或密码。');
     } catch (err) {
       if (generation !== this.rustDeskProPreflightGeneration) { return; }
+      const failureScope = AccountSessionCoordinator.getInstance().currentScope();
+      if (failureScope.ownerScopeId !== connectionScope.ownerScopeId ||
+        failureScope.generation !== connectionScope.generation) {
+        return;
+      }
       this.loader.disconnect();
+      this.rustDeskProTwoFactorActive = false;
+      this.rustDeskProTwoFactorSessionId = -1;
+      this.rustDeskProTwoFactorAutoAttemptSessionId = -1;
+      this.rustDeskProTwoFactorInput = '';
+      this.rustDeskProTwoFactorSubmitting = false;
       this.rustDeskProPreflightState = RustDeskProPreflightState.ERROR;
-      this.rustDeskProPreflightError = err instanceof Error ? err.message : JSON.stringify(err);
+      const detail: string = err instanceof Error ? err.message : JSON.stringify(err);
+      let kind: RustDeskProNativeErrorKind = classifyRustDeskProNativeError(detail);
+      if (kind === 'unknown' && host.rustdeskAuthMode === 'request_approval' &&
+        detail.indexOf('等待远端批准超时') >= 0) {
+        kind = 'approval_timeout';
+      }
+      if (kind === 'pro_session_expired' &&
+        canInvalidateRustDeskProSession(
+          detail, controlPlaneProfile, tokenProjected)) {
+        const invalidatedAccountId: string = connectionAccount === undefined
+          ? rustDeskProAccountIdForConnection(
+            host.rustdeskProAccountId, host.rustdeskAccountId)
+          : connectionAccount.id;
+        this.proSync.markConnectionSessionExpired(invalidatedAccountId, 'connection_token_expired',
+          expectedTokenFingerprint, expectedTokenGeneration,
+          connectionScope.ownerScopeId, connectionScope.generation);
+      }
+      this.rustDeskProPreflightError = kind === 'unknown'
+        ? rustDeskNativeErrorDetail(detail)
+        : rustDeskProNativeErrorMessage(
+          kind, host.rustdeskAuthMode, controlPlaneProfile);
     }
   }
 
   // 编辑主机 (锁定状态需先鉴权)
   private async editHost(host: RemoteHost): Promise<void> {
+    const vncHostId: string = this.vncRecordIdForHost(host);
+    if (vncHostId !== '') {
+      const latestVnc: VncHostView | null = this.vncHosts.find(vncHostId);
+      if (latestVnc === null) {
+        promptAction.showToast({ message: 'VNC 主机记录不存在或已删除', duration: 2000 });
+        return;
+      }
+      if (latestVnc.locked) {
+        const gate = await showLockGate(latestVnc.label, 'biometric');
+        if (!gate.ok) {
+          const msg: string = lockGateErrorMessage(gate);
+          if (msg !== '') { promptAction.showToast({ message: msg, duration: 2000 }); }
+          return;
+        }
+      }
+      this.prepareClassicVncEditor(latestVnc);
+      this.addSheetShowsModernPicker = false;
+      this.modernAddProtocol = '';
+      this.vncAddFromModernPicker = false;
+      this.openSheetSafely((): void => { this.showAddSheet = true; });
+      return;
+    }
     const latestHost: RemoteHost = this.srv.getHost(host.id) ?? host;
     if (latestHost.locked) {
       const r = await showLockGate(latestHost.label, 'biometric');
@@ -3233,6 +4002,16 @@ struct HostListPage {
     this.sheetRustdeskDirectEnabled = latestHost.rustdeskDirectEnabled;
     this.sheetRustdeskDirectHost = latestHost.rustdeskDirectHost;
     this.sheetRustdeskDirectPort = latestHost.rustdeskDirectPort > 0 ? latestHost.rustdeskDirectPort : RUSTDESK_PEER_TCP_PORT;
+    const proPlatformKnown: boolean = latestHost.rustdeskProManaged &&
+      latestHost.sourceType === 'rustdesk_pro' && latestHost.rustdeskProPlatform.trim() !== '';
+    this.sheetRustdeskTargetDevice = proPlatformKnown ?
+      (isRustDeskMobilePlatform(latestHost.rustdeskProPlatform) ? 'phone' : 'computer') :
+      normalizeRustDeskTargetDevice(latestHost.rustdeskTargetDevice);
+    this.sheetRustdeskAdaptiveOrientation = canUseRustDeskAdaptiveOrientation(
+      latestHost.protocol, this.sheetRustdeskTargetDevice, latestHost.rustdeskAdaptiveOrientation,
+      latestHost.sourceType, latestHost.rustdeskProManaged, latestHost.rustdeskProPlatform);
+    this.sheetRustdeskTotpEntryId = latestHost.rustdeskTotpEntryId;
+    this.sheetRustdeskTotpAutoSubmit = latestHost.rustdeskTotpAutoSubmit;
     this.sheetUseKey = latestHost.sshUseKey;
     this.sheetKeyPath = latestHost.sshKeyPath;
     this.sheetKeyText = latestHost.sshKeyData;
@@ -3242,14 +4021,102 @@ struct HostListPage {
     this.sheetProxyHost = latestHost.proxyHost;
     this.sheetProxyPort = latestHost.proxyPort;
     this.sheetProxyUser = latestHost.proxyUsername;
+    this.sheetProxyType = latestHost.proxyHost === '' ? 'http_connect' :
+      (latestHost.sshProxyType === 'direct' ? 'legacy_gateway' : latestHost.sshProxyType);
     this.sheetUseProxy = (latestHost.proxyHost !== '');
     this.openSheetSafely((): void => { this.showAddSheet = true; });
+  }
+
+  private prepareClassicVncEditor(host: VncHostView | null): void {
+    const defaults = this.vncSettings.get();
+    this.editingHostId = host === null ? '' : vncHostUiId(host.id);
+    this.label = host === null ? '' : host.label;
+    this.proto = 'vnc';
+    this.hostAddr = host === null ? '' : host.host;
+    this.portVal = host === null ? defaults.defaultPort : host.port;
+    this.username = '';
+    // Never materialize a VNC password into the classic editor.
+    this.sheetPwd = '';
+    this.chn = '';
+    this.sheetErr = '';
+    this.vncHostTransport = host === null ? defaults.defaultTransport : host.transport;
+    this.vncHostRepeaterMode = host === null ? defaults.repeaterMode : host.repeaterMode;
+    this.vncHostGatewayId = host === null ? defaults.defaultGatewayId : host.gatewayId;
+    this.vncHostPasswordConfigured = host === null ? false : host.passwordConfigured;
+    this.vncHostRememberPassword = host === null ? false : host.rememberPassword;
+    this.vncHostViewOnly = host === null ? defaults.viewOnly : host.viewOnly;
+    this.vncHostDisplayOverrideEnabled = host === null ? false : host.displayOverrideEnabled;
+    this.vncHostScalingMode = host === null ? defaults.scalingMode : host.scalingMode;
+    this.vncHostClipboardEnabled = host === null ? defaults.clipboardEnabled : host.clipboardEnabled;
+    this.vncHostSecurityPolicy = host === null ? defaults.securityPolicy : host.securityPolicy;
+    this.vncHostTls = host === null ? defaults.securityPolicy === 'secure_only' : host.tls;
   }
 
   private isEditingProHost(): boolean {
     if (this.editingHostId === '') { return false; }
     const host = this.srv.getHost(this.editingHostId);
     return host !== undefined && host.rustdeskProManaged && host.sourceType === 'rustdesk_pro';
+  }
+
+  private rustDeskEditorTargetLocked(): boolean {
+    if (!this.isEditingProHost()) { return false; }
+    const host: RemoteHost | undefined = this.srv.getHost(this.editingHostId);
+    return host !== undefined && host.rustdeskProPlatform.trim() !== '';
+  }
+
+  private effectiveSheetRustDeskTargetDevice(): RustDeskTargetDevice {
+    if (this.rustDeskEditorTargetLocked()) {
+      const host: RemoteHost | undefined = this.srv.getHost(this.editingHostId);
+      return host !== undefined && isRustDeskMobilePlatform(host.rustdeskProPlatform) ? 'phone' : 'computer';
+    }
+    return normalizeRustDeskTargetDevice(this.sheetRustdeskTargetDevice);
+  }
+
+  private rustDeskEditorPlatformLabel(): string {
+    const host: RemoteHost | undefined = this.srv.getHost(this.editingHostId);
+    return host === undefined ? '未知' : this.hostPlatformText(host);
+  }
+
+  @Builder rustDeskTargetDeviceSection() {
+    Text('控制目标').fontSize(11).fontColor(this.pal().text2).fontFamily(this.font()).margin({ bottom: 4 })
+    if (this.rustDeskEditorTargetLocked()) {
+      Row() {
+        Text('Pro 设备平台').fontSize(13).fontColor(this.pal().text).fontFamily(this.font()).layoutWeight(1)
+        Text(this.rustDeskEditorPlatformLabel())
+          .fontSize(12).fontColor(this.pal().text3).fontFamily(this.font())
+      }.width('100%').padding({ top: 8, bottom: 8 })
+    } else {
+      Row() {
+        Button('控制电脑').layoutWeight(1).height(34).fontSize(11).borderRadius(8)
+          .backgroundColor(this.effectiveSheetRustDeskTargetDevice() === 'computer' ?
+            this.accentColor : this.pal().surface)
+          .fontColor(this.effectiveSheetRustDeskTargetDevice() === 'computer' ? Color.White : this.pal().text2)
+          .onClick((): void => {
+            this.sheetRustdeskTargetDevice = 'computer';
+            this.sheetRustdeskAdaptiveOrientation = false;
+          })
+        Button('控制手机').layoutWeight(1).height(34).fontSize(11).borderRadius(8).margin({ left: 6 })
+          .backgroundColor(this.effectiveSheetRustDeskTargetDevice() === 'phone' ?
+            this.accentColor : this.pal().surface)
+          .fontColor(this.effectiveSheetRustDeskTargetDevice() === 'phone' ? Color.White : this.pal().text2)
+          .onClick((): void => { this.sheetRustdeskTargetDevice = 'phone'; })
+      }.width('100%').margin({ bottom: 6 })
+    }
+    Row() {
+      Column() {
+        Text('自适应翻转').fontSize(13).fontColor(this.pal().text).fontFamily(this.font())
+        Text(this.effectiveSheetRustDeskTargetDevice() === 'phone' ?
+          '根据手机方向切换本机窗口，默认关闭' : '仅控制手机时可用')
+          .fontSize(10).fontColor(this.pal().text3).fontFamily(this.font()).margin({ top: 2 })
+      }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+      Toggle({ type: ToggleType.Switch, isOn: this.sheetRustdeskAdaptiveOrientation })
+        .selectedColor(this.accentColor).scale({ x: 0.82, y: 0.82 })
+        .enabled(this.effectiveSheetRustDeskTargetDevice() === 'phone')
+        .onChange((on: boolean): void => {
+          this.sheetRustdeskAdaptiveOrientation =
+            this.effectiveSheetRustDeskTargetDevice() === 'phone' && on;
+        })
+    }.width('100%').margin({ bottom: 8 })
   }
 
   private hostPlatformText(host: RemoteHost): string {
@@ -3261,6 +4128,11 @@ struct HostListPage {
 
   // 直接删除主机 (滑动触发)
   private deleteHost(host: RemoteHost): void {
+    const vncHostId: string = this.vncRecordIdForHost(host);
+    if (vncHostId !== '') {
+      this.vncHosts.remove(vncHostId);
+      return;
+    }
     this.srv.removeHost(host.id);
   }
 
@@ -3284,23 +4156,26 @@ struct HostListPage {
     }).then((result: Object): void => {
       const r: Record<string, number> = result as Record<string, number>;
       if (r['index'] === 1) {
-        this.srv.removeHost(host.id);
+        const vncHostId: string = this.vncRecordIdForHost(host);
+        if (vncHostId !== '') { this.vncHosts.remove(vncHostId); }
+        else { this.srv.removeHost(host.id); }
       }
     });
   }
 
   private async doLogout(): Promise<void> {
-    // 1. 清空 App 内存登录态
-    this.auth.logout();
-    // 2. 清空持久化登录模式
-    try {
-      const prefs = preferences.getPreferencesSync(getContext(this), { name: 'RemoteDesktopAppPrefs' });
-      prefs.putSync('loginMode', '');
-      prefs.flushSync();
-    } catch (_e) { /* ignore */ }
-    // 3. 清空磁盘凭据
-    AccountKitService.getInstance().clearCredential();
-    // 4. 清除 HMS Core 系统级授权 session
+    // The coordinator drains sessions, clears plaintext caches and switches to
+    // the device-local physical store before this page leaves the account UI.
+    const transition: AccountTransitionResult =
+      await AccountSessionCoordinator.getInstance().transitionToOffline('logout');
+    if (!transition.ok) {
+      promptAction.showToast({
+        message: transition.message === '' ? '退出账号未完成，当前账号保持不变' : transition.message,
+        duration: 3000
+      });
+      return;
+    }
+    // 清除 HMS Core 系统级授权 session
     try {
       const cancelReq: authentication.CancelAuthorizationRequest =
         new authentication.HuaweiIDProvider().createCancelAuthorizationRequest();
@@ -3308,11 +4183,7 @@ struct HostListPage {
         new authentication.AuthenticationController(getContext(this));
       await cancelCtrl.executeRequest(cancelReq);
     } catch (_e) { /* 无缓存时可能抛异常, 忽略 */ }
-    // 5. 清除内存 DEK (保留云端盐值+验证器, 重新登录后可在设置中解锁)
-    try {
-      DataCrypto.getInstance().lock();
-    } catch (_e) { /* ignore */ }
-    // 6. 跳转登录页
+    // 跳转登录页
     this.closeSettingsLeafSheet();
     router.replaceUrl({ url: 'pages/LoginPage' });
   }
@@ -3333,21 +4204,27 @@ struct HostListPage {
       const dataObj: Record<string, Object> = credential as Record<string, Object>;
       const nickName: string = (dataObj['nickName'] as string) ?? '';
       const avatarUri: string = (dataObj['avatarUri'] as string) ?? '';
-      this.auth.setLoginResult(
-        credential.unionID ?? '',
-        nickName || '华为用户',
-        avatarUri,
-        credential.openID ?? ''
-      );
-      // 持久化 (参照 LoginPage.onLoginSuccess)
-      AccountKitService.getInstance().saveCredential({
-        unionID: credential.unionID ?? '',
-        openID: credential.openID ?? '',
-        authorizationCode: credential.authorizationCode ?? '',
-        idToken: '',
-        displayName: nickName || '华为用户'
-      });
-      this.saveLoginModeToPrefs('account');
+      const unionId: string = (credential.unionID ?? '').trim();
+      if (unionId.length === 0) {
+        promptAction.showToast({ message: '登录失败：账号没有返回稳定标识', duration: 2500 });
+        return;
+      }
+      const transition: AccountTransitionResult =
+        await AccountSessionCoordinator.getInstance().transitionToAccount({
+          unionID: unionId,
+          openID: credential.openID ?? '',
+          authorizationCode: credential.authorizationCode ?? '',
+          idToken: '',
+          displayName: nickName || '华为用户',
+          avatarUrl: avatarUri
+        });
+      if (!transition.ok) {
+        promptAction.showToast({
+          message: transition.message === '' ? '登录失败：账号数据域切换未完成' : transition.message,
+          duration: 2500
+        });
+        return;
+      }
       // 刷新 UI 状态
       this.accountDisplayName = nickName || '华为用户';
       this.accountAvatarUrl = avatarUri;
@@ -3358,14 +4235,6 @@ struct HostListPage {
     } catch (_err) {
       // 用户取消或登录失败, 静默
     }
-  }
-
-  private saveLoginModeToPrefs(mode: string): void {
-    try {
-      const prefs = preferences.getPreferencesSync(getContext(this), { name: 'RemoteDesktopAppPrefs' });
-      prefs.putSync('loginMode', mode);
-      prefs.flushSync();
-    } catch (_e) { /* ignore */ }
   }
 
   private saveTotpLock(locked: boolean): void {
@@ -3445,8 +4314,11 @@ struct HostListPage {
       const prefs = preferences.getPreferencesSync(getContext(this), { name: 'RemoteDesktopAppPrefs' });
       const restoreVersion: number = prefs.getSync(VIRTUAL_MOUSE_STYLE_RESTORE_VERSION_KEY, 0) as number;
       applyVirtualMouseStyle = shouldApplyCloudVirtualMouseStyle(restoreVersion);
+      this.sshSettings.applyCloudSettings(settings);
       for (let i = 0; i < keys.length; i++) {
         const key: string = keys[i];
+        if (key === 'sshTerminalForegroundColor' || key === 'sshTerminalFontSize' ||
+          key === 'terminalFgColor' || key === 'terminalFontSize') { continue; }
         if (key === 'virtualMouseStyle' && !applyVirtualMouseStyle) { continue; }
         const value = settings[key];
         prefs.putSync(key, value);
@@ -3516,6 +4388,11 @@ struct HostListPage {
     this.persistPref('virtualMouseStyle', this.virtualMouseStyle);
   }
 
+  private saveTotpLogoMode(mode: string): void {
+    this.totpLogoMode = mode === 'initials' ? 'initials' : 'logo';
+    this.persistPref('totpLogoMode', this.totpLogoMode);
+  }
+
   private saveRustDeskLanDiscovery(on: boolean): void {
     this.rustdeskLanDiscovery = on;
     this.persistRustDeskBooleanPref('rustdeskLanDiscovery', this.rustdeskLanDiscovery);
@@ -3544,6 +4421,8 @@ struct HostListPage {
     this.sheetRustdeskDirectEnabled = true;
     this.sheetRustdeskDirectHost = peer.host;
     this.sheetRustdeskDirectPort = peer.port;
+    this.sheetRustdeskTargetDevice = 'computer';
+    this.sheetRustdeskAdaptiveOrientation = false;
     this.sheetPwd = '';
     this.sheetErr = '';
     this.selectedRelayId = '';
@@ -3731,6 +4610,7 @@ struct HostListPage {
   private saveCanvasGestureZoomEnabled(on: boolean): void {
     this.canvasGestureZoomEnabled = on;
     this.persistPref('canvasGestureZoomEnabled', on);
+    this.persistPref('canvasGestureZoomUserConfigured', true);
     if (on && this.rustdeskRemoteAppTouchScaleEnabled) {
       this.rustdeskRemoteAppTouchScaleEnabled = false;
       this.persistPref('rustdeskRemoteAppTouchScaleEnabled', false);
@@ -3922,48 +4802,49 @@ struct HostListPage {
     }
   }
 
-  private handleRemoteHostSheetDismiss(action: DismissSheetAction): void {
+  private handleRemoteHostSheetWillDismiss(action: DismissSheetAction): void {
     switch (this.remoteHostSheetMode) {
       case REMOTE_HOST_SHEET_SSH_PREFLIGHT:
-        this.handleSshPreflightSheetDismiss(action);
-        return;
+        this.doSshPreflightCancel(false);
+        break;
       case REMOTE_HOST_SHEET_RDP_CERTIFICATE:
-        this.handleRdpCertificateSheetDismiss(action);
-        return;
+        this.doRdpCertificateCancel(false);
+        break;
       case REMOTE_HOST_SHEET_RUSTDESK_PREFLIGHT:
-        if (!shouldAcceptRemoteHostSheetDismiss({
-          busy: this.rustDeskProPreflightState === RustDeskProPreflightState.CONNECTING,
-          closing: this.rustDeskProPreflightClosing,
-          pendingRoute: this.rustDeskProPreflightPendingRouteParams !== null
-        })) {
-          return;
-        }
         this.cancelRustDeskProPreflight(false);
-        action.dismiss();
-        return;
+        break;
       case REMOTE_HOST_SHEET_PASSPHRASE:
         this.beginRemoteHostSheetClose(REMOTE_HOST_SHEET_PASSPHRASE);
-        action.dismiss();
-        return;
+        break;
       case REMOTE_HOST_SHEET_PUBLIC_KEY:
-        if (!shouldAcceptRemoteHostSheetDismiss({
-          busy: this.sshPublicKeyInstallBusy,
-          closing: this.remoteHostSheetClosing,
-          pendingRoute: false
-        })) {
-          return;
-        }
         this.beginRemoteHostSheetClose(REMOTE_HOST_SHEET_PUBLIC_KEY);
-        action.dismiss();
-        return;
+        break;
       default:
         return;
     }
+    // Registering onWillDismiss normally makes ArkUI spring the Sheet back
+    // before dismissing it. onWillSpringBackWhenDismiss below suppresses that
+    // default bounce, so this remains a single native exit animation while the
+    // cancellation generation is advanced before any async success can route.
+    action.dismiss();
   }
 
   private handleRemoteHostSheetDisappear(): void {
     const mode: number = this.remoteHostSheetClosingMode !== REMOTE_HOST_SHEET_NONE
       ? this.remoteHostSheetClosingMode : this.remoteHostSheetMode;
+    // onWillDismiss normally cancels before the native exit starts. Keep this
+    // fallback for lifecycle-driven closes that reach onDisappear without the
+    // interactive callback; the generation must still be invalidated before
+    // cleanup and routing decisions are drained.
+    if (!this.remoteHostSheetClosing) {
+      if (mode === REMOTE_HOST_SHEET_SSH_PREFLIGHT) {
+        this.doSshPreflightCancel(false);
+      } else if (mode === REMOTE_HOST_SHEET_RDP_CERTIFICATE) {
+        this.doRdpCertificateCancel(false);
+      } else if (mode === REMOTE_HOST_SHEET_RUSTDESK_PREFLIGHT) {
+        this.cancelRustDeskProPreflight(false);
+      }
+    }
     switch (mode) {
       case REMOTE_HOST_SHEET_SSH_PREFLIGHT:
         this.handleSshPreflightSheetDisappear();
@@ -4046,7 +4927,11 @@ struct HostListPage {
         showClose: false,
         maskColor: 'rgba(0,0,0,0.4)',
         onWillDismiss: (action: DismissSheetAction): void => {
-          this.handleRemoteHostSheetDismiss(action);
+          this.handleRemoteHostSheetWillDismiss(action);
+        },
+        onWillSpringBackWhenDismiss: (_action: SpringBackAction): void => {
+          // Deliberately do not spring back: cancellation has already been
+          // recorded and action.dismiss() owns the one native exit transition.
         },
         onDisappear: (): void => {
           this.handleRemoteHostSheetDisappear();
@@ -4055,13 +4940,25 @@ struct HostListPage {
 
       Column().width('100%').height('100%').hitTestBehavior(HitTestMode.None)
       .bindSheet($$this.showSettingsLeafSheet, this.settingsLeafSheet(), {
-        height: SheetSize.FIT_CONTENT,
+        height: this.settingsLeafSheetHeight(),
         preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
         dragBar: this.breakpoint === 'sm',
+        keyboardAvoidMode: this.settingsLeafKeyboardAvoidMode(),
         backgroundColor: this.pal().sheetBg,
         blurStyle: BlurStyle.NONE,
         showClose: settingsLeafSheetUsesSystemCloseButton(),
         maskColor: 'rgba(0,0,0,0.4)',
+        onWillDismiss: (action: DismissSheetAction): void => {
+          this.handleVncSettingsLeafWillDismiss(action);
+        },
+        onWillSpringBackWhenDismiss: (action: SpringBackAction): void => {
+          // Only an unsaved VNC editor must stay open while its confirmation
+          // dialog is shown. Ordinary settings Sheets skip the default bounce
+          // and dismiss with the same single native transition as the FAB.
+          if (this.vncSettingsLeafDirty) {
+            action.springBack();
+          }
+        },
         onDisappear: (): void => {
           this.handleSettingsLeafSheetDisappear();
         }
@@ -4079,12 +4976,13 @@ struct HostListPage {
             Column() {
               Row().width('100%').height(44)
               Column() {
-                this.sidebarTab('RDP 远程桌面', $rawfile('icons/computer-desktop.svg'), 0)
-                this.sidebarTab('RustDesk', $rawfile('icons/globe-alt.svg'), 1)
-                this.sidebarTab('SSH 终端', $rawfile('icons/command-line.svg'), 2)
-                this.sidebarTab('密钥保险库', $rawfile('icons/key.svg'), 3)
-                this.sidebarTab('2FA 验证器', $rawfile('icons/shield-check.svg'), 4)
-                this.sidebarRelayTab('中继服务器', 5)
+                this.sidebarTab('RDP 远程桌面', protocolIcon('rdp'), 0)
+                this.sidebarTab('RustDesk', protocolIcon('rustdesk'), 1)
+                this.sidebarTab('SSH 终端', protocolIcon('ssh'), 2)
+                this.sidebarTab('VNC 主机', protocolIcon('vnc'), 3)
+                this.sidebarTab('密钥保险库', protocolIcon('key_vault'), 4)
+                this.sidebarTab('2FA 验证器', protocolIcon('totp'), 5)
+                this.sidebarRelayTab('中继服务器', 6)
               }.layoutWeight(1).padding({ top: 24 })
               // 设置
               this.sidebarSettingsBtn()
@@ -4095,8 +4993,8 @@ struct HostListPage {
 
             // 主内容区 (hostContent 使用 updateHostFilter 预过滤的数据源)
             Column() {
-              if (this.curTab <= 2) { this.hostContent() }
-              else if (this.curTab === 5) { this.relayContent() }
+              if (this.curTab <= 3) { this.hostContent() }
+              else if (this.curTab === 6) { this.relayContent() }
               else { this.keyVaultContent() }
             }.layoutWeight(1).height('100%')
           }
@@ -4163,20 +5061,24 @@ struct HostListPage {
         .onClick(() => {
           if (this.isDesktopDevice && this.breakpoint === 'xl') {
             // PC 全屏侧边栏: RDP/RustDesk/SSH/密钥/2FA/中继
-            if (this.curTab <= 2) {
+            if (this.curTab <= 3) {
               this.resetForm();
               const nextProto: string = this.activeFilterProto !== '' ? this.activeFilterProto : 'rdp';
               this.switchHostProtocol(nextProto, RemoteHost.getDefaultPort(nextProto));
-              this.addSheetShowsModernPicker =
+              const modernPicker: boolean =
                 resolveFabAddStyle(this.fabAddStyle, this.isDesktopDevice) === 'modern';
+              this.addSheetShowsModernPicker = modernPicker;
               this.modernAddProtocol = '';
+              if (shouldPrepareClassicVncEditor(nextProto, modernPicker)) {
+                this.prepareClassicVncEditor(null);
+              }
               this.openSheetSafely((): void => { this.showAddSheet = true; });
-            } else if (this.curTab === 3) {
-              this.kvAddTrigger++;
             } else if (this.curTab === 4) {
-              this.keyVaultInnerTab = 1;
               this.kvAddTrigger++;
             } else if (this.curTab === 5) {
+              this.keyVaultInnerTab = 1;
+              this.kvAddTrigger++;
+            } else if (this.curTab === 6) {
               this.relayAddTrigger++;
             }
           } else {
@@ -4193,9 +5095,10 @@ struct HostListPage {
           }
         })
         .bindSheet($$this.showAddSheet, this.hostAddSheetContent(), {
-          height: SheetSize.FIT_CONTENT,
+          height: this.hostAddSheetHeight(),
           preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
           dragBar: false,
+          keyboardAvoidMode: this.hostAddSheetKeyboardAvoidMode(),
           backgroundColor: this.pal().sheetBg,
           blurStyle: BlurStyle.NONE,
           showClose: false,
@@ -4276,10 +5179,10 @@ struct HostListPage {
 
   // ==================== 主机列表 ====================
   // PC 侧边栏 Tab 按钮
-  @Builder sidebarTab(label: string, icon: ResourceStr, index: number) {
+  @Builder sidebarTab(label: string, icon: Resource, index: number) {
     Row() {
-      Image(icon).width(28).height(28)
-        .fillColor(this.curTab === index ? this.accentColor : this.pal().text3)
+      SymbolGlyph(icon).fontSize(28)
+        .fontColor([this.curTab === index ? this.accentColor : this.pal().text3])
       Text(label)
         .fontSize(16).fontWeight(FontWeight.Medium)
         .fontColor(this.curTab === index ? this.accentColor : this.pal().text3)
@@ -4291,10 +5194,10 @@ struct HostListPage {
     .onClick(() => {
       this.curTab = index;
       if (this.isDesktopDevice) {
-        const titles: string[] = ['RDP 远程主机', 'RustDesk 远程主机', 'SSH 终端', '', '', '中继服务器'];
+        const titles: string[] = ['RDP 远程主机', 'RustDesk 远程主机', 'SSH 终端', 'VNC 主机', '', '', '中继服务器'];
         this.hostPageTitle = titles[index] || '';
-        if (index === 3) { this.keyVaultInnerTab = 0; }
-        if (index === 4) { this.keyVaultInnerTab = 1; }
+        if (index === 4) { this.keyVaultInnerTab = 0; }
+        if (index === 5) { this.keyVaultInnerTab = 1; }
       }
       this.updateHostFilter();
     })
@@ -4316,7 +5219,7 @@ struct HostListPage {
     .onClick(() => {
       this.curTab = index;
       if (this.isDesktopDevice) {
-        const titles: string[] = ['RDP 远程主机', 'RustDesk 远程主机', 'SSH 终端', '', '', '中继服务器'];
+        const titles: string[] = ['RDP 远程主机', 'RustDesk 远程主机', 'SSH 终端', 'VNC 主机', '', '', '中继服务器'];
         this.hostPageTitle = titles[index] || '';
       }
       this.updateHostFilter();
@@ -4325,8 +5228,7 @@ struct HostListPage {
 
   @Builder sidebarSettingsBtn() {
     Row() {
-      Image($rawfile('icons/cog-6-tooth.svg')).width(28).height(28)
-        .fillColor(this.pal().text3)
+      SymbolGlyph(protocolIcon('settings')).fontSize(28).fontColor([this.pal().text3])
       Text('设置')
         .fontSize(16).fontWeight(FontWeight.Medium)
         .fontColor(this.pal().text3)
@@ -4938,22 +5840,24 @@ struct HostListPage {
 
       Divider().strokeWidth(0.5).color(this.pal().cardBorder).width('100%')
 
-      Row() {
-        SymbolGlyph($r('sys.symbol.folder_badge_plus'))
-          .fontSize(16).fontColor([this.pal().text])
-        Text(host.groupId === 'ops' ? '移出工作组' : '加入 ops 工作组')
-          .fontSize(13).fontColor(this.pal().text).fontFamily(this.font()).margin({ left: 8 })
-      }
-      .width('100%').padding({ left: 12, right: 12, top: 8, bottom: 8 })
-      .onClick(() => {
-        const nextGroup = host.groupId === 'ops' ? '' : 'ops';
-        if (!this.srv.setGroup(host.id, nextGroup)) {
-          promptAction.showToast({ message: '工作组保存失败 [E-HOST-WS-2]', duration: 1800 });
+      if (!isVncHostProjection(host)) {
+        Row() {
+          SymbolGlyph($r('sys.symbol.folder_badge_plus'))
+            .fontSize(16).fontColor([this.pal().text])
+          Text(host.groupId === 'ops' ? '移出工作组' : '加入 ops 工作组')
+            .fontSize(13).fontColor(this.pal().text).fontFamily(this.font()).margin({ left: 8 })
         }
-        animateTo({ duration: 150 }, () => { this.hostActionPopupId = ''; });
-      })
+        .width('100%').padding({ left: 12, right: 12, top: 8, bottom: 8 })
+        .onClick(() => {
+          const nextGroup = host.groupId === 'ops' ? '' : 'ops';
+          if (!this.srv.setGroup(host.id, nextGroup)) {
+            promptAction.showToast({ message: '工作组保存失败 [E-HOST-WS-2]', duration: 1800 });
+          }
+          animateTo({ duration: 150 }, () => { this.hostActionPopupId = ''; });
+        })
 
-      Divider().strokeWidth(0.5).color(this.pal().cardBorder).width('100%')
+        Divider().strokeWidth(0.5).color(this.pal().cardBorder).width('100%')
+      }
 
       Row() {
         SymbolGlyph($r('sys.symbol.ohos_trash'))
@@ -5031,6 +5935,21 @@ struct HostListPage {
   }
 
   // ==================== 设置 ====================
+  private isVncSettingsLeafSheet(): boolean {
+    return this.settingsLeafSheetMode >= SETTINGS_SHEET_VNC_CONNECTION &&
+      this.settingsLeafSheetMode <= SETTINGS_SHEET_VNC_CLIPBOARD;
+  }
+
+  private settingsLeafSheetHeight(): SheetSize {
+    return this.isVncSettingsLeafSheet() ? SheetSize.LARGE : SheetSize.FIT_CONTENT;
+  }
+
+  private settingsLeafKeyboardAvoidMode(): SheetKeyboardAvoidMode {
+    return this.isVncSettingsLeafSheet()
+      ? SheetKeyboardAvoidMode.RESIZE_ONLY
+      : SheetKeyboardAvoidMode.TRANSLATE_AND_SCROLL;
+  }
+
   @Builder settingsLeafSheet() {
     if (this.settingsLeafSheetMode === SETTINGS_SHEET_ACCOUNT) {
       this.accountSheet()
@@ -5056,6 +5975,21 @@ struct HostListPage {
       FeedbackSettingsSheet({
         onClose: (): void => { this.closeSettingsLeafSheet(); },
         onOpenMail: (): void => { this.openFeedbackEmail(); }
+      })
+    } else if (this.settingsLeafSheetMode >= SETTINGS_SHEET_VNC_CONNECTION &&
+      this.settingsLeafSheetMode <= SETTINGS_SHEET_VNC_CLIPBOARD) {
+      VncSettingsSheet({
+        mode: this.settingsLeafSheetMode,
+        onClose: (): void => {
+          this.dismissVncSettingsIfNeeded((): void => { this.closeSettingsLeafSheet(); });
+        },
+        onOpenHostManager: (): void => { this.openVncHostManagerFromSettings(); },
+        onOpenGatewayManager: (): void => { this.openVncGatewayManagerFromSettings(); },
+        onSaved: (): void => { this.refreshCryptoStatus(); },
+        onReverseWheelSaved: (reverse: boolean): void => {
+          this.saveRemoteReverseWheel(reverse);
+        },
+        onDirtyChanged: (dirty: boolean): void => { this.vncSettingsLeafDirty = dirty; }
       })
     } else {
       Column().width('100%').height(1)
@@ -5207,7 +6141,7 @@ struct HostListPage {
 
         ListItem() {
           this.settingsAccordionHeader(SETTINGS_SECTION_APPEARANCE, $r('sys.symbol.paintpalette_fill'),
-            '个性化', '添加方式、主题色、壁纸、光晕和终端显示')
+            '个性化', '添加方式、主题色、壁纸与光晕')
         }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 10 })
 
         // --- 个性化卡片 ---
@@ -5260,6 +6194,29 @@ struct HostListPage {
                     .fontColor(this.virtualMouseStyle === 'arrow' ? Color.White : this.pal().text2)
                     .backgroundColor(this.virtualMouseStyle === 'arrow' ? this.accentColor : this.pal().surface)
                     .borderRadius(10).onClick((): void => { this.saveVirtualMouseStyle('arrow'); })
+                }.width('100%').padding({ left: 16, right: 16, bottom: 12 })
+              }
+              this.cardDivider()
+              Column() {
+                Row() {
+                  Row() { Text('◎').fontSize(22).fontColor(this.pal().text) }
+                    .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
+                  Column() {
+                    Text('2FA 验证器头像').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
+                      .fontColor(this.pal().text).fontFamily(this.font())
+                    Text('切换真实品牌 Logo 或高对比度首字母')
+                      .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
+                  }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
+                }.width('100%').padding({ left: 16, right: 16, top: 12, bottom: 8 })
+                Row() {
+                  Button('真实 Logo').layoutWeight(1).height(36).fontSize(13)
+                    .fontColor(this.totpLogoMode === 'logo' ? Color.White : this.pal().text2)
+                    .backgroundColor(this.totpLogoMode === 'logo' ? this.accentColor : this.pal().surface)
+                    .borderRadius(10).onClick((): void => { this.saveTotpLogoMode('logo'); })
+                  Button('首字母').layoutWeight(1).height(36).fontSize(13).margin({ left: 8 })
+                    .fontColor(this.totpLogoMode === 'initials' ? Color.White : this.pal().text2)
+                    .backgroundColor(this.totpLogoMode === 'initials' ? this.accentColor : this.pal().surface)
+                    .borderRadius(10).onClick((): void => { this.saveTotpLogoMode('initials'); })
                 }.width('100%').padding({ left: 16, right: 16, bottom: 12 })
               }
               this.cardDivider()
@@ -5377,28 +6334,6 @@ struct HostListPage {
                   .fontSize(12).fontColor(this.isDesktopDevice ? this.pal().text3 : this.accentColor)
                   .fontFamily(this.font()).margin({ right: 8 })
               }.width('100%').height(62).padding({ left: 16, right: 16 })
-              this.cardDivider()
-              // 终端字体颜色
-              Row() {
-                Row() { Text('Aa').fontSize(16).fontColor(this.pal().text).fontWeight(FontWeight.Bold) }
-                  .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
-                Text('终端字体颜色').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
-                  .fontColor(this.pal().text).fontFamily(this.font()).layoutWeight(1).margin({ left: 4 })
-                Column().width(24).height(24).borderRadius(12).backgroundColor(this.terminalFgColor)
-                Text(' >').fontSize(14).fontColor(this.pal().text3).margin({ left: 6 })
-              }.width('100%').height(60).padding({ left: 16, right: 16 })
-              .onClick(() => { this.openSettingsLeafSheet(SETTINGS_SHEET_TERMINAL_FG_COLOR); })
-              this.cardDivider()
-              // 终端字体大小
-              Row() {
-                Row() { Text('T').fontSize(14).fontColor(this.pal().text).fontWeight(FontWeight.Bold) }
-                  .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
-                Text('终端字体大小').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
-                  .fontColor(this.pal().text).fontFamily(this.font()).layoutWeight(1).margin({ left: 4 })
-                Text(this.terminalFontSize + 'vp').fontSize(13).fontColor(this.pal().text2)
-                Text(' >').fontSize(14).fontColor(this.pal().text3).margin({ left: 6 })
-              }.width('100%').height(60).padding({ left: 16, right: 16 })
-              .onClick(() => { this.openSettingsLeafSheet(SETTINGS_SHEET_TERMINAL_FONT_SIZE); })
             }.borderRadius(24).backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
             .shadow({ radius: 16, color: 'rgba(0,0,0,0.04)', offsetY: 4 })
             .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
@@ -5456,7 +6391,7 @@ struct HostListPage {
                 Row() { SymbolGlyph($r('sys.symbol.doc_plaintext')).fontSize(20).fontColor([this.accentColor]) }
                   .width(40).height(40).borderRadius(20).backgroundColor(this.pal().card).justifyContent(FlexAlign.Center)
                 Column() { Text('本地备份').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font());
-                  Text('导出全部 7 类数据为明文 JSON').fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
+                  Text('可导出脱敏配置或含密码、私钥、2FA 与设备信任的完整备份').fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
                 }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 12 })
                 SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(16).fontColor([this.pal().text3])
               }.width('100%').height(68).padding({ left: 14, right: 16 })
@@ -5466,7 +6401,7 @@ struct HostListPage {
                 Row() { SymbolGlyph($r('sys.symbol.doc')).fontSize(20).fontColor([this.pal().danger]) }
                   .width(40).height(40).borderRadius(20).backgroundColor(this.pal().card).justifyContent(FlexAlign.Center)
                 Column() { Text('从本地恢复').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font());
-                  Text('选择 JSON 并覆盖此设备的全部数据').fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
+                  Text('校验 v1/v2/v3 文件并安全合并；缺表不会清空新版数据').fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
                 }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 12 })
                 SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(16).fontColor([this.pal().text3])
               }.width('100%').height(68).padding({ left: 14, right: 16 }).onClick((): void => { this.chooseLocalRestore(); })
@@ -5493,13 +6428,15 @@ struct HostListPage {
             Text('连接').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text3)
               .fontFamily(this.font()).padding({ left: 8, bottom: 8 })
             Column() {
-              this.cardItemRow($r('app.media.icon_desktop'), '远程主机', this.hostCount + ' 台')
+              this.protocolStatItemRow(protocolIcon('rdp'), '远程主机', this.hostCount + ' 台')
               this.cardDivider()
-              this.cardItemRow($r('app.media.icon_desktop'), 'RDP 协议', this.rdpCount + ' 台')
+              this.protocolStatItemRow(protocolIcon('rdp'), 'RDP 协议', this.rdpCount + ' 台')
               this.cardDivider()
-              this.cardItemRow($r('app.media.icon_laptop'), 'RustDesk 协议', this.rustdeskCount + ' 台')
+              this.protocolStatItemRow(protocolIcon('rustdesk'), 'RustDesk 协议', this.rustdeskCount + ' 台')
               this.cardDivider()
-              this.cardItemRow($r('app.media.icon_terminal'), 'SSH 终端', this.sshCount + ' 台')
+              this.protocolStatItemRow(protocolIcon('ssh'), 'SSH 终端', this.sshCount + ' 台')
+              this.cardDivider()
+              this.protocolStatItemRow(protocolIcon('vnc'), 'VNC 主机', this.vncCount + ' 台')
               this.cardDivider()
               this.cardItemRow($r('app.media.icon_lock'), '已锁定', this.lockedCount + ' 台')
             }.borderRadius(24).backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
@@ -5583,7 +6520,7 @@ struct HostListPage {
         .animation({ duration: SETTINGS_ACCORDION_ANIMATION_MS, curve: Curve.FastOutSlowIn })
 
         ListItem() {
-          this.settingsAccordionHeader(SETTINGS_SECTION_RDP, $r('sys.symbol.gearshape_fill'),
+          this.settingsAccordionHeader(SETTINGS_SECTION_RDP, protocolIcon('rdp'),
             'Windows RDP', '分辨率、色深、输入、音频和凭据')
         }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 10 })
 
@@ -5631,7 +6568,7 @@ struct HostListPage {
         .animation({ duration: SETTINGS_ACCORDION_ANIMATION_MS, curve: Curve.FastOutSlowIn })
 
         ListItem() {
-          this.settingsAccordionHeader(SETTINGS_SECTION_RUSTDESK, $r('sys.symbol.gearshape_fill'),
+          this.settingsAccordionHeader(SETTINGS_SECTION_RUSTDESK, protocolIcon('rustdesk'),
             'RustDesk', '画质、编码、LAN 发现、隐私和音频')
         }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 10 })
 
@@ -5718,6 +6655,154 @@ struct HostListPage {
         .opacity(this.settingsSectionExpanded(SETTINGS_SECTION_RUSTDESK) ? 1 : 0)
         .scale({ x: 1, y: this.settingsSectionExpanded(SETTINGS_SECTION_RUSTDESK) ? 1 : 0.98 })
         .translate({ y: this.settingsSectionExpanded(SETTINGS_SECTION_RUSTDESK) ? 0 : -8 })
+        .clip(true)
+        .animation({ duration: SETTINGS_ACCORDION_ANIMATION_MS, curve: Curve.FastOutSlowIn })
+
+        ListItem() {
+          this.settingsAccordionHeader(SETTINGS_SECTION_SSH, protocolIcon('ssh'),
+            'SSH 终端', '终端显示、SSH 主机与密钥')
+        }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 10 })
+
+        // --- SSH 终端卡片 ---
+        ListItem() {
+          Column() {
+            Text('SSH 终端').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text3)
+              .fontFamily(this.font()).padding({ left: 8, bottom: 8 })
+            Column() {
+              Row() {
+                Row() { Text('Aa').fontSize(16).fontColor(this.pal().text).fontWeight(FontWeight.Bold) }
+                  .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
+                Text('终端字体颜色').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
+                  .fontColor(this.pal().text).fontFamily(this.font()).layoutWeight(1).margin({ left: 4 })
+                Column().width(24).height(24).borderRadius(12).backgroundColor(this.terminalFgColor)
+                Text(' >').fontSize(14).fontColor(this.pal().text3).margin({ left: 6 })
+              }.width('100%').height(60).padding({ left: 16, right: 16 })
+                .onClick(() => { this.openSettingsLeafSheet(SETTINGS_SHEET_TERMINAL_FG_COLOR); })
+              this.cardDivider()
+              Row() {
+                Row() { Text('T').fontSize(14).fontColor(this.pal().text).fontWeight(FontWeight.Bold) }
+                  .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
+                Text('终端字体大小').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
+                  .fontColor(this.pal().text).fontFamily(this.font()).layoutWeight(1).margin({ left: 4 })
+                Text(this.terminalFontSize + 'vp').fontSize(13).fontColor(this.pal().text2)
+                Text(' >').fontSize(14).fontColor(this.pal().text3).margin({ left: 6 })
+              }.width('100%').height(60).padding({ left: 16, right: 16 })
+                .onClick(() => { this.openSettingsLeafSheet(SETTINGS_SHEET_TERMINAL_FONT_SIZE); })
+              this.cardDivider()
+              Row() {
+                Column() {
+                  Text('终端预览').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
+                    .fontColor(this.pal().text).fontFamily(this.font())
+                  Text('显示当前颜色和字号，不影响已建立会话的 PTY 尺寸')
+                    .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
+                    .maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
+                }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 16 })
+                Column() {
+                  Text('user@host:~$ ls -la').fontSize(Math.max(12, Math.min(18, this.terminalFontSize)))
+                    .fontColor(this.terminalFgColor).fontFamily('monospace')
+                  Text('drwxr-xr-x  4 user  staff').fontSize(10)
+                    .fontColor(this.terminalFgColor).fontFamily('monospace').margin({ top: 4 })
+                }.width(188).alignItems(HorizontalAlign.Start).padding({ left: 10, right: 10, top: 8, bottom: 8 })
+                  .backgroundColor('#0D0D0D').borderRadius(8)
+              }.width('100%').height(88).padding({ left: 0, right: 16 })
+              this.cardDivider()
+              this.cardActionRow($r('app.media.icon_terminal'), '管理 SSH 主机',
+                this.sshCount.toString() + ' 台主机 · 地址、认证和代理仍按主机配置',
+                (): void => { this.openSshHostListFromSettings(); })
+              this.cardDivider()
+              this.cardActionRow($r('app.media.icon_lock'), 'SSH 密钥保险库',
+                this.keyCount.toString() + ' 个密钥 · 私钥和 passphrase 不进入通用设置',
+                (): void => { this.openSshKeyVaultFromSettings(); })
+              this.cardDivider()
+              Row() {
+                Column() {
+                  Text('主机指纹').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
+                    .fontColor(this.pal().text).fontFamily(this.font())
+                  Text('继续在“数据安全”中管理，暂不迁移 trust 入口')
+                    .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
+                    .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+                }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 16 })
+                Button('恢复默认').height(32).fontSize(12).backgroundColor(this.pal().surface)
+                  .fontColor(this.pal().text2).borderRadius(8)
+                  .onClick((): void => { this.resetSshTerminalAppearance(); })
+              }.width('100%').height(62).padding({ left: 0, right: 16 })
+            }.borderRadius(24).backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
+              .shadow({ radius: 16, color: 'rgba(0,0,0,0.04)', offsetY: 4 })
+              .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
+          }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 20 })
+        }
+        .constraintSize({ maxHeight: this.settingsSectionExpanded(SETTINGS_SECTION_SSH) ?
+          this.settingsSectionExpandedMaxHeight(SETTINGS_SECTION_SSH) : 0 })
+        .opacity(this.settingsSectionExpanded(SETTINGS_SECTION_SSH) ? 1 : 0)
+        .scale({ x: 1, y: this.settingsSectionExpanded(SETTINGS_SECTION_SSH) ? 1 : 0.98 })
+        .translate({ y: this.settingsSectionExpanded(SETTINGS_SECTION_SSH) ? 0 : -8 })
+        .clip(true)
+        .animation({ duration: SETTINGS_ACCORDION_ANIMATION_MS, curve: Curve.FastOutSlowIn })
+
+        ListItem() {
+          this.settingsAccordionHeader(SETTINGS_SECTION_VNC, protocolIcon('vnc'),
+            'VNC', '连接、画面、输入、性能监视和云同步')
+        }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 10 })
+
+        // --- VNC protocol settings: leaf bindSheets, not a cloud-data card ---
+        ListItem() {
+          Column() {
+            Text('VNC').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text3)
+              .fontFamily(this.font()).padding({ left: 8, bottom: 8 })
+            Column() {
+              this.protocolActionRow(protocolIcon('vnc'), '连接默认值',
+                'TCP 直连、Repeater mode12 与默认端口',
+                (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_VNC_CONNECTION); })
+              this.cardDivider()
+              this.protocolActionRow(protocolIcon('vnc'), '超时与连接行为',
+                '连接、认证与首帧超时，只作用于 VNC',
+                (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_VNC_TIMEOUT); })
+              this.cardDivider()
+              this.protocolActionRow(protocolIcon('vnc'), '安全策略与 TLS',
+                '仅安全、可信网络与明文风险策略',
+                (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_VNC_SECURITY); })
+              this.cardDivider()
+              this.protocolActionRow(protocolIcon('vnc'), '显示与画面',
+                '本地缩放、画质、编码、色深和帧率',
+                (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_VNC_DISPLAY); })
+              this.cardDivider()
+              this.protocolActionRow(protocolIcon('vnc'), '输入与光标',
+                '只读、控制模式、鼠标、触控板和滚轮',
+                (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_VNC_INPUT); })
+              this.cardDivider()
+              this.protocolActionRow(protocolIcon('vnc'), '性能监视看板',
+                '连接实况、帧率、送显、停滞与采样频率',
+                (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_VNC_PERFORMANCE); })
+              this.cardDivider()
+              this.protocolActionRow(protocolIcon('vnc'), '剪贴板',
+                '单独控制 VNC 文本剪贴板',
+                (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_VNC_CLIPBOARD); })
+              this.cardDivider()
+              this.protocolActionRow(protocolIcon('vnc'), 'VNC 云同步范围',
+                '唯一物理表 vncrecord，五类逻辑 scope',
+                (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_VNC_CLOUD_SYNC); })
+              this.cardDivider()
+              this.protocolActionRow(protocolIcon('vnc'), 'Trust / 证书管理',
+                '独立于 RDP 证书和 SSH 主机指纹',
+                (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_VNC_TRUST); })
+              this.cardDivider()
+              this.protocolActionRow(protocolIcon('vnc'), '管理 VNC 主机',
+                this.vncHosts.list().length.toString() + ' 台 · 不写入 remotehosts',
+                (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_VNC_HOSTS); })
+              this.cardDivider()
+              this.protocolActionRow(protocolIcon('vnc_gateway'), '管理 VNC Gateway',
+                this.vncGateways.list().length.toString() + ' 个 · 在第三页中继目录管理',
+                (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_VNC_GATEWAY); })
+            }.borderRadius(24).backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
+              .shadow({ radius: 16, color: 'rgba(0,0,0,0.04)', offsetY: 4 })
+              .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
+          }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 20 })
+        }
+        .constraintSize({ maxHeight: this.settingsSectionExpanded(SETTINGS_SECTION_VNC) ?
+          this.settingsSectionExpandedMaxHeight(SETTINGS_SECTION_VNC) : 0 })
+        .opacity(this.settingsSectionExpanded(SETTINGS_SECTION_VNC) ? 1 : 0)
+        .scale({ x: 1, y: this.settingsSectionExpanded(SETTINGS_SECTION_VNC) ? 1 : 0.98 })
+        .translate({ y: this.settingsSectionExpanded(SETTINGS_SECTION_VNC) ? 0 : -8 })
         .clip(true)
         .animation({ duration: SETTINGS_ACCORDION_ANIMATION_MS, curve: Curve.FastOutSlowIn })
 
@@ -6361,7 +7446,7 @@ struct HostListPage {
               .width(46).height(46).borderRadius(23).backgroundColor(this.pal().surface).justifyContent(FlexAlign.Center)
             Column() {
               Text('华为云空间').fontSize(16).fontWeight(FontWeight.Bold).fontColor(this.pal().text).fontFamily(this.font())
-              Text('主机、RDP 凭据、SSH 密钥、2FA 与个性化设置共 7 类数据')
+              Text('主机、RDP 凭据、SSH 密钥、2FA、VNC 与个性化设置共 7 类业务数据')
                 .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font()).maxLines(2).margin({ top: 3 })
             }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 12 })
           }.width('100%').alignItems(VerticalAlign.Center)
@@ -6381,7 +7466,7 @@ struct HostListPage {
             }.width('100%').padding({ left: 14, right: 16, top: 13, bottom: 13 })
           }.width('100%').borderRadius(16).backgroundColor(this.pal().surface)
             .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
-            .onClick((): void => { this.cloudSyncError = ''; this.cloudSyncStep = this.cloudSyncSelectedTables.length > 0 ? CLOUD_SYNC_SHEET_UPLOAD_CONFIRM : CLOUD_SYNC_SHEET_MANAGE_TABLES; })
+            .onClick((): void => { this.cloudSyncError = ''; this.cloudSyncStep = this.cloudDirectionConfirmationAvailable() ? CLOUD_SYNC_SHEET_UPLOAD_CONFIRM : CLOUD_SYNC_SHEET_MANAGE_TABLES; })
 
           Column() {
             Row() {
@@ -6389,13 +7474,13 @@ struct HostListPage {
                 .width(40).height(40).borderRadius(20).backgroundColor(this.pal().surface).justifyContent(FlexAlign.Center)
               Column() {
                 Text(this.currentCloudSyncSheetSpec().secondaryLabel).fontSize(15).fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font())
-                Text('从云端恢复此设备的全部可同步数据').fontSize(12).fontColor(this.pal().text3).fontFamily(this.font()).margin({ top: 3 })
+                Text('以已选数据的云端版本为准，覆盖本机').fontSize(12).fontColor(this.pal().text3).fontFamily(this.font()).margin({ top: 3 })
               }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 12 })
               SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(16).fontColor([this.pal().text3])
             }.width('100%').padding({ left: 14, right: 16, top: 13, bottom: 13 })
           }.width('100%').borderRadius(16).backgroundColor(this.pal().surface)
             .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid }).margin({ top: 10 })
-            .onClick((): void => { this.cloudSyncError = ''; this.cloudSyncStep = this.cloudSyncSelectedTables.length > 0 ? CLOUD_SYNC_SHEET_DOWNLOAD_CONFIRM : CLOUD_SYNC_SHEET_MANAGE_TABLES; })
+            .onClick((): void => { this.cloudSyncError = ''; this.cloudSyncStep = this.cloudDirectionConfirmationAvailable() ? CLOUD_SYNC_SHEET_DOWNLOAD_CONFIRM : CLOUD_SYNC_SHEET_MANAGE_TABLES; })
 
           Column() {
             Row() {
@@ -6414,16 +7499,23 @@ struct HostListPage {
       } else if (this.cloudSyncStep === CLOUD_SYNC_SHEET_MANAGE_TABLES) {
         Column() {
           Text('管理同步数据').fontSize(18).fontWeight(FontWeight.Bold).fontColor(this.pal().text).fontFamily(this.font())
+          if (CloudStore.getInstance().requiresRestoreDirectionDecision()) {
+            Text('本地备份恢复尚未完成方向确认。勾选需要同步的数据后返回；未勾选的数据会保留本机，不会阻塞其他表。')
+              .fontSize(12).fontColor(this.accentColor).fontFamily(this.font())
+              .lineHeight(19).margin({ top: 8 })
+          }
           Text('取消勾选不会删除数据，只会停止此设备未来的上传和下载。加密参数会随敏感数据自动保护。')
             .fontSize(12).fontColor(this.pal().text3).fontFamily(this.font()).lineHeight(19).margin({ top: 8, bottom: 14 })
           ForEach(cloudSyncSelectableTables(), (table: string) => {
             Row() {
               Checkbox().select(this.cloudSyncSelectedTables.indexOf(table) >= 0).selectedColor(this.accentColor)
-                .onChange((): void => { this.toggleCloudSyncTable(table); })
+                .onChange((): void => {
+                  void this.toggleCloudSyncTable(table);
+                })
               Column() {
-                Text(table === 'usersettings' ? '个性化与协议设置' : table === 'remotehosts' ? '远程主机' : table === 'rdpcredentials' ? 'Windows 登录凭据' : table === 'rustdeskrelays' ? 'RustDesk 中继配置' : table === 'sshkeys' ? 'SSH 密钥' : '双重验证动态口令')
+                Text(table === 'usersettings' ? '个性化与协议设置' : table === 'remotehosts' ? '远程主机' : table === 'rdpcredentials' ? 'Windows 登录凭据' : table === 'rustdeskrelays' ? 'RustDesk 中继配置' : table === 'sshkeys' ? 'SSH 密钥' : table === 'totpentries' ? '双重验证动态口令' : 'VNC 记录（vncrecord）')
                   .fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font())
-                Text(table === 'usersettings' ? '主题、外观和协议偏好' : '包含敏感数据，启用时自动同步加密参数')
+                Text(table === 'usersettings' ? '主题、外观和协议偏好' : table === 'vncrecordv2' ? '物理表开关；逻辑范围和 secrets 仍在 VNC 设置中选择' : '包含敏感数据，启用时自动同步加密参数')
                   .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font()).margin({ top: 3 })
               }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 10 })
             }.width('100%').padding(14).borderRadius(14).backgroundColor(this.pal().surface).margin({ bottom: 8 })
@@ -6496,13 +7588,53 @@ struct HostListPage {
               .width(46).height(46).borderRadius(23).backgroundColor(this.pal().surface).justifyContent(FlexAlign.Center)
             Column() {
               Text(this.currentCloudSyncSheetSpec().title).fontSize(18).fontWeight(FontWeight.Bold).fontColor(this.pal().text).fontFamily(this.font())
-              Text('此操作不可撤销，请在继续前确认数据来源。').fontSize(12).fontColor(this.pal().text3).fontFamily(this.font()).margin({ top: 3 })
+              Text(this.currentCloudSyncSheetSpec().primaryDestructive
+                ? '此操作会覆盖数据，请在继续前确认数据来源。'
+                : '继续前请确认备份来源和影响范围。')
+                .fontSize(12).fontColor(this.pal().text3)
+                .fontFamily(this.font()).margin({ top: 3 })
             }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 12 })
           }.width('100%').alignItems(VerticalAlign.Center)
           Text(this.currentCloudSyncSheetSpec().message).fontSize(14).fontColor(this.pal().text2).fontFamily(this.font()).lineHeight(21).margin({ top: 18 })
+          if (this.cloudSyncStep === CLOUD_SYNC_SHEET_BACKUP_CONFIRM) {
+            Column() {
+              Text('备份内容').fontSize(12).fontWeight(FontWeight.Medium).fontColor(this.pal().text2).fontFamily(this.font())
+                .width('100%').margin({ bottom: 8 })
+              Row() {
+                SymbolGlyph(this.backupFullMode
+                  ? $r('sys.symbol.circle')
+                  : $r('sys.symbol.checkmark_circle_fill'))
+                  .fontSize(18).fontColor([this.backupFullMode ? this.pal().text3 : this.accentColor])
+                Column() {
+                  Text('脱敏配置（推荐）').fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font())
+                  Text('不含密码、SSH 私钥、2FA 与登录令牌；保留设备信任（SSH 公钥/RDP 证书）')
+                    .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font()).lineHeight(17).margin({ top: 2 })
+                }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 10 })
+              }.width('100%').padding(12).borderRadius(14).backgroundColor(this.pal().surface)
+                .onClick((): void => { this.backupFullMode = false; this.cloudSyncError = ''; })
+              Row() {
+                SymbolGlyph(this.backupFullMode
+                  ? $r('sys.symbol.checkmark_circle_fill')
+                  : $r('sys.symbol.circle'))
+                  .fontSize(18).fontColor([this.backupFullMode ? this.accentColor : this.pal().text3])
+                Column() {
+                  Text('完整备份').fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font())
+                  Text('包含密码、SSH 私钥、2FA、VNC 与设备信任；源已加密则携带加密参数（恢复需相同主密码），未加密则按你的选择以明文保存')
+                    .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font()).lineHeight(17).margin({ top: 2 })
+                }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 10 })
+              }.width('100%').padding(12).borderRadius(14).backgroundColor(this.pal().surface).margin({ top: 8 })
+                .onClick((): void => { this.backupFullMode = true; this.cloudSyncError = ''; })
+            }.width('100%').margin({ top: 16 })
+          }
           Column() {
             Text('影响范围').fontSize(12).fontWeight(FontWeight.Medium).fontColor(this.pal().text2).fontFamily(this.font())
-            Text('主机、RDP 凭据、RustDesk 中继、SSH 密钥、2FA、加密参数和个性化设置')
+            Text(this.cloudSyncStep === CLOUD_SYNC_SHEET_BACKUP_CONFIRM
+              ? (this.backupFullMode
+                ? '全部连接配置、密码、私钥、2FA、VNC、设备信任与个性化设置'
+                : '连接配置与个性化设置；保留设备信任（SSH 公钥/RDP 证书），不含密码、私钥、2FA 与登录令牌')
+              : (this.cloudSyncStep === CLOUD_SYNC_SHEET_RESTORE_CONFIRM
+                ? this.localRestorePreviewSummary()
+                : '主机、RDP 凭据、RustDesk 中继、SSH 密钥、2FA、加密参数和个性化设置'))
               .fontSize(12).fontColor(this.pal().text3).fontFamily(this.font()).lineHeight(19).margin({ top: 5 })
           }.width('100%').padding(14).borderRadius(14).backgroundColor(this.pal().surface).margin({ top: 18 })
           if (this.cloudSyncError !== '') {
@@ -6513,7 +7645,9 @@ struct HostListPage {
               .backgroundColor(this.pal().surface).fontColor(this.pal().text2).borderRadius(14)
               .onClick((): void => { this.returnToCloudSyncActions(); })
             Button(this.currentCloudSyncSheetSpec().primaryLabel).layoutWeight(1).height(46).fontSize(15).fontWeight(FontWeight.Medium)
-              .backgroundColor(this.pal().danger).fontColor('#FFFFFF').borderRadius(14).margin({ left: 12 })
+              .backgroundColor(this.currentCloudSyncSheetSpec().primaryDestructive
+                ? this.pal().danger : this.accentColor)
+              .fontColor('#FFFFFF').borderRadius(14).margin({ left: 12 })
               .onClick(async (): Promise<void> => {
                 if (this.cloudSyncStep === CLOUD_SYNC_SHEET_UPLOAD_CONFIRM) {
                   await this.confirmCloudSyncUpload();
@@ -6705,11 +7839,11 @@ struct HostListPage {
       Column() {
         Text('• AES-256-GCM 加密保护，数据在本地加密后云同步')
           .fontSize(12).fontColor(this.pal().text2).fontFamily(this.font()).margin({ bottom: 4 })
-        Text('• 主密码通过系统密码保险箱跨设备同步，不会上传到服务器')
+        Text('• 主密码不会持久化或上传；新设备需要重新输入后解锁')
           .fontSize(12).fontColor(this.pal().text2).fontFamily(this.font()).margin({ bottom: 4 })
         Text('• 忘记密码将无法恢复已加密的数据，请妥善保管')
           .fontSize(12).fontColor(this.pal().danger).fontFamily(this.font()).margin({ bottom: 4 })
-        Text('• 关闭加密后，数据恢复明文存储和同步')
+        Text('• 关闭加密后仅恢复本机明文；敏感云同步会自动暂停')
           .fontSize(12).fontColor(this.pal().text2).fontFamily(this.font())
       }.width('100%').padding(12).backgroundColor(this.pal().surface)
         .borderRadius(12).margin({ bottom: 20 })
@@ -6758,7 +7892,8 @@ struct HostListPage {
             .layoutWeight(1).height(44).fontSize(14)
             .backgroundColor(this.cryptoResetCountdown > 0 ? this.pal().text3 : this.pal().danger)
             .fontColor('#FFFFFF').borderRadius(12)
-            .enabled(this.cryptoResetCountdown <= 0 && this.cryptoPwd.length > 0)
+            .enabled(this.cryptoResetCountdown <= 0 &&
+              this.cryptoPwd.length > 0 && !this.cryptoLoading)
             .onClick(() => { this.doCloseEncryption(); })
         }.width('100%')
       } else if (this.cryptoMode === 3) {
@@ -6766,7 +7901,7 @@ struct HostListPage {
         Text('⚠️ 确定要重置加密吗?')
           .fontSize(15).fontWeight(FontWeight.Bold).fontColor(this.pal().danger)
           .width('100%').margin({ bottom: 10 }).fontFamily(this.font())
-        Text('所有加密数据将被永久删除, 此操作不可恢复。\n其他登录了同一华为账号的设备也会同步清空。')
+        Text('本机当前账号的所有加密数据将被永久删除，此操作不可恢复。\n跨设备远程清空协议尚未启用，其他设备不会被本次操作自动清空。')
           .fontSize(12).fontColor(this.pal().text2).fontFamily(this.font())
           .width('100%').margin({ bottom: 16 })
         Row() {
@@ -6778,7 +7913,7 @@ struct HostListPage {
             .layoutWeight(1).height(44).fontSize(14)
             .backgroundColor(this.cryptoResetCountdown > 0 ? this.pal().text3 : this.pal().danger)
             .fontColor('#FFFFFF').borderRadius(12)
-            .enabled(this.cryptoResetCountdown <= 0)
+            .enabled(this.cryptoResetCountdown <= 0 && !this.cryptoLoading)
             .onClick(() => { this.doResetEncryption(); })
         }.width('100%')
       } else {
@@ -6871,77 +8006,64 @@ struct HostListPage {
 
 
   private async doCloseEncryption(): Promise<void> {
+    if (this.cryptoLoading) { return; }
+    this.cryptoLoading = true;
     const crypto = DataCrypto.getInstance();
     const cloud = CloudStore.getInstance();
-    // 1. 验证主密码
-    const ok = await crypto.unlock(this.cryptoPwd);
-    if (!ok) {
-      promptAction.showToast({ message: '密码错误, 无法关闭加密', duration: 2000 });
-      return;
+    try {
+      // 1. 验证主密码
+      const ok = await crypto.unlock(this.cryptoPwd);
+      if (!ok) {
+        promptAction.showToast({ message: '密码错误, 无法关闭加密', duration: 2000 });
+        return;
+      }
+      // 2. 业务数据解密、VNC 降级、KDF 参数清除和 disabled 状态由
+      // CloudStore 在一个事务中提交；任一步失败都会完整回滚。
+      const count = await cloud.disableCryptoV3(
+        crypto, cloud.currentAccountLease());
+      hilog.info(0x0001, 'CloudSync', 'doCloseEncryption: 已解密 ' + count + ' 条数据');
+      if (count < 0) {
+        promptAction.showToast({ message: '关闭加密失败：本地数据未完整解密，请重试', duration: 2500 });
+        return;
+      }
+      // 3. 数据库已提交后再清除内存 DEK。
+      crypto.resetSetup();
+      this.closeSettingsLeafSheet();
+      this.cryptoPwd = '';
+      this.cryptoResetCountdown = 0;
+      this.refreshCryptoStatus();
+      promptAction.showToast({
+        message: '加密已关闭，' + count +
+          ' 条数据已恢复为本机明文；敏感云同步已暂停',
+        duration: 2600
+      });
+    } finally {
+      this.cryptoLoading = false;
     }
-    // 2. 先完成本地解密，再发布关闭信令；任一步写入失败都不能向云端发布半成品状态。
-    const count = cloud.decryptAllData(crypto, false);
-    hilog.info(0x0001, 'CloudSync', 'doCloseEncryption: 已解密 ' + count + ' 条数据');
-    if (count < 0) {
-      promptAction.showToast({ message: '关闭加密失败：本地数据未完整解密，请重试', duration: 2500 });
-      return;
-    }
-    if (!cloud.setCryptoStatus('disabled')) {
-      promptAction.showToast({ message: '关闭加密失败：本地状态未写入，请重试', duration: 2500 });
-      return;
-    }
-    // 3. 清除本地盐值和验证器后，先显式推送 cryptoparams，再推送所有敏感业务表。
-    if (!(await cloud.clearCryptoParams())) {
-      cloud.setCryptoStatus('active');
-      promptAction.showToast({ message: '关闭加密失败：参数未清除，请重试', duration: 2500 });
-      return;
-    }
-    cloud.pushTable('cryptoparams');
-    cloud.pushTable('remotehosts');
-    cloud.pushTable('rdpcredentials');
-    cloud.pushTable('rustdeskrelays');
-    cloud.pushTable('sshkeys');
-    cloud.pushTable('totpentries');
-    // 4. 清除内存 DEK。
-    crypto.resetSetup();
-    this.closeSettingsLeafSheet();
-    this.cryptoPwd = '';
-    this.cryptoResetCountdown = 0;
-    this.refreshCryptoStatus();
-    promptAction.showToast({ message: '加密已关闭, ' + count + ' 条数据已恢复明文', duration: 2000 });
   }
 
   private async doResetEncryption(): Promise<void> {
+    if (this.cryptoLoading) { return; }
+    this.cryptoLoading = true;
     const cloud = CloudStore.getInstance();
-    // 1. 跨设备信令: 通知所有设备重置 (其他设备 checkCryptoStatusChange 读到 'reset' 后自毁)
-    if (!cloud.setCryptoStatus('reset')) {
-      promptAction.showToast({ message: '重置失败：本地状态未写入，请重试', duration: 2500 });
-      return;
+    try {
+      // 本机账号数据、KDF 参数、VNC reset epoch 与恢复状态单事务提交。
+      if (!(await cloud.resetCryptoV3(cloud.currentAccountLease()))) {
+        promptAction.showToast({ message: '重置失败：本地数据未完整清空，请重试', duration: 2500 });
+        return;
+      }
+      VncTrustService.getInstance().clearLocalConfirmationState(getContext(this) as common.Context);
+      this.closeSettingsLeafSheet();
+      this.cryptoPwd = '';
+      this.cryptoResetCountdown = 0;
+      this.refreshCryptoStatus();
+      promptAction.showToast({
+        message: '加密已重置，本机加密数据已清空；敏感云同步已暂停',
+        duration: 2600
+      });
+    } finally {
+      this.cryptoLoading = false;
     }
-    // 2. 清空三张业务表 (异步, 必须 await — 确保数据清完再推送)
-    if (!(await cloud.clearAllTables(false))) {
-      cloud.setCryptoStatus('active');
-      promptAction.showToast({ message: '重置失败：本地数据未完整清空，请重试', duration: 2500 });
-      return;
-    }
-    // 3. 清除加密参数 (异步, 必须 await — 盐值+验证器, crypto_status 保留 'reset')
-    if (!(await cloud.clearCryptoParams())) {
-      promptAction.showToast({ message: '重置未完成：加密参数未清除，请重试', duration: 2500 });
-      return;
-    }
-    DataCrypto.getInstance().lock();
-    // 4. 推送 cryptoparams 到云端 (此时本地清空已完成, 其他设备收到后也清空)
-    cloud.pushTable('cryptoparams');
-    cloud.pushTable('remotehosts');
-    cloud.pushTable('rdpcredentials');
-    cloud.pushTable('rustdeskrelays');
-    cloud.pushTable('sshkeys');
-    cloud.pushTable('totpentries');
-    this.closeSettingsLeafSheet();
-    this.cryptoPwd = '';
-    this.cryptoResetCountdown = 0;
-    this.refreshCryptoStatus();
-    promptAction.showToast({ message: '加密已重置, 所有加密数据已清空', duration: 2000 });
   }
 
   private confirmResetEncryption(): void {
@@ -6974,6 +8096,16 @@ struct HostListPage {
     }.width('100%').height(60).padding({ left: 16, right: 16 })
   }
 
+  @Builder protocolStatItemRow(icon: Resource, label: string, value: string) {
+    Row() {
+      Row() { SymbolGlyph(icon).fontSize(22).fontColor([this.pal().text3]) }
+        .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
+      Text(label).fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
+        .fontColor(this.pal().text).fontFamily(this.font()).layoutWeight(1).margin({ left: 4 })
+      Text(value).fontSize(14).fontColor(this.pal().text2).margin({ right: 16 })
+    }.width('100%').height(60).padding({ left: 16, right: 16 })
+  }
+
   @Builder cardActionRow(icon: Resource, label: string, value: string, action: () => void) {
     Row() {
       Row() { Image(icon).width(22).height(22).fillColor(this.pal().text3) }
@@ -6989,6 +8121,21 @@ struct HostListPage {
     }
     .width('100%').height(62).padding({ left: 16, right: 16 })
     .onClick(action)
+  }
+
+  @Builder protocolActionRow(icon: Resource, label: string, value: string, action: () => void) {
+    Row() {
+      SymbolGlyph(icon).fontSize(22).fontColor([this.pal().text3])
+        .width(22).height(22).margin({ left: 9, right: 9 })
+      Column() {
+        Text(label).fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
+          .fontColor(this.pal().text).fontFamily(this.font())
+        Text(value).fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
+          .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).margin({ top: 2 })
+      }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
+      SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(18).fontColor([this.pal().text3])
+        .margin({ right: 14 })
+    }.width('100%').height(62).padding({ left: 16, right: 16 }).onClick(action)
   }
 
   @Builder cardDivider() {
@@ -7224,7 +8371,7 @@ struct HostListPage {
         Column() {
           Text('远程滚轮方向').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
             .fontColor(this.pal().text).fontFamily(this.font())
-          Text('适用于 RDP、RustDesk、实体鼠标和触控板')
+          Text('适用于 RDP、RustDesk、VNC、实体鼠标和触控板')
             .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
             .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
         }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
@@ -7249,7 +8396,7 @@ struct HostListPage {
   @Builder canvasGestureZoomRow() {
     if (!this.isDesktopDevice) {
       this.rustdeskSwitchRow($r('app.media.icon_desktop'), '双指画布缩放',
-        '捏合后缩放和平移画面；双指轻点始终保留右键，关闭后保留原有双指右键和滚轮',
+        '缩放后抬手，再双指长按约0.4秒拖动画布；关闭后保留双指右键和滚轮',
         this.canvasGestureZoomEnabled,
         (on: boolean): void => { this.saveCanvasGestureZoomEnabled(on); }, true)
     }
@@ -7654,12 +8801,34 @@ struct HostListPage {
   }
 
   // ==================== Sheet builder ====================
+  private isClassicVncAddSheet(): boolean {
+    return !this.addSheetShowsModernPicker && this.modernAddProtocol === '' && this.proto === 'vnc';
+  }
+
+  private isVncAddSheet(): boolean {
+    return this.isClassicVncAddSheet() || this.modernAddProtocol === 'vnc';
+  }
+
+  private hostAddSheetHeight(): SheetSize {
+    return this.isVncAddSheet() ? SheetSize.LARGE : SheetSize.FIT_CONTENT;
+  }
+
+  private hostAddSheetKeyboardAvoidMode(): SheetKeyboardAvoidMode {
+    return this.isVncAddSheet()
+      ? SheetKeyboardAvoidMode.RESIZE_ONLY
+      : SheetKeyboardAvoidMode.TRANSLATE_AND_SCROLL;
+  }
+
   @Builder hostAddSheetContent() {
     if (this.addSheetShowsModernPicker) {
       HostAddWizardSheet({
         onSelectProtocol: (protocol: string): void => {
           this.modernAddProtocol = protocol;
           this.addSheetShowsModernPicker = false;
+          if (protocol === 'vnc') {
+            this.prepareVncAddFlow();
+            this.vncAddFromModernPicker = true;
+          }
           if (protocol !== 'rdp') {
             this.switchHostProtocol(protocol, RemoteHost.getDefaultPort(protocol));
           }
@@ -7681,10 +8850,31 @@ struct HostListPage {
         lanScanning: this.lanScanning,
         lanPeers: this.lanScanResults,
         defaultDirectPort: this.rustdeskDirectPort,
+        initialDraft: this.rustDeskAddResumeDraft,
+        initialDraftRevision:
+          this.rustDeskAddResumeRevision,
         onBackToProtocols: (): void => { this.modernAddProtocol = ''; this.addSheetShowsModernPicker = true; },
         onStartLanScan: (): void => { this.startLanScan(); },
-        onAddRelay: (relay: RustDeskRelayConfig): boolean => {
-          return this.srv.addRelay(relay);
+        onManageRelays: (
+          draft: RustDeskHostAddDraft): void => {
+          const scope = CloudStore.getInstance().currentScope();
+          if (!RustDeskHostAddHandoff.getInstance().put(
+            scope.ownerScopeId, scope.storeIdentity,
+            scope.generation, draft)) {
+            promptAction.showToast({
+              message: '当前账号数据域不可用，无法暂存主机草稿',
+              duration: 2200
+            });
+            return;
+          }
+          this.rustDeskHostAddReturnTab =
+            this.isDesktopDevice &&
+            this.breakpoint === 'xl' &&
+            this.curTab >= 0 && this.curTab <= 3
+              ? this.curTab : 0;
+          this.rustDeskRelayReturnToHostAdd = true;
+          this.pendingRustDeskRelayDirectoryOpen = true;
+          this.requestAddSheetClose();
         },
         onSave: (host: RemoteHost, connectNow: boolean): void => {
           this.saveHostFromAddFlow(host, connectNow);
@@ -7696,6 +8886,23 @@ struct HostListPage {
         onBackToProtocols: (): void => { this.modernAddProtocol = ''; this.addSheetShowsModernPicker = true; },
         onSave: (host: RemoteHost, connectNow: boolean): void => {
           this.saveHostFromAddFlow(host, connectNow);
+        }
+      })
+    } else if (this.modernAddProtocol === 'vnc') {
+      VncAddFlow({
+        gateways: this.vncGateways.list(),
+        onBackToProtocols: (): void => {
+          this.modernAddProtocol = '';
+          this.addSheetShowsModernPicker = this.vncAddFromModernPicker;
+          this.vncAddFromModernPicker = false;
+        },
+        onOpenSettings: (): void => {
+          this.pendingVncGatewayDirectoryOpen = true;
+          this.requestAddSheetClose();
+        },
+        onSave: (values: VncHostValues, password: string, connectNow: boolean,
+          plainStorageConfirmed: boolean): void => {
+          this.saveVncHostFromAddFlow(values, password, connectNow, plainStorageConfirmed);
         }
       })
     } else {
@@ -7761,11 +8968,209 @@ struct HostListPage {
     .borderRadius(this.breakpoint === 'sm' ? { topLeft: 20, topRight: 20, bottomLeft: 0, bottomRight: 0 } : 20)
   }
 
+  private vncClassicGateways(): VncGatewayView[] {
+    return this.vncGateways.list().filter((gateway: VncGatewayView): boolean =>
+      gateway.enabled && gateway.transport === 'ultravnc_repeater' && gateway.repeaterMode === 'mode12');
+  }
+
+  private selectClassicVncTransport(transport: VncTransport): void {
+    this.vncHostTransport = transport;
+    this.sheetErr = '';
+    if (transport === 'direct_tcp') {
+      this.vncHostGatewayId = '';
+      if (this.portVal <= 0) { this.portVal = 5900; }
+      return;
+    }
+    const gateways: VncGatewayView[] = this.vncClassicGateways();
+    if (this.vncHostGatewayId === '' && gateways.length > 0) {
+      this.vncHostGatewayId = gateways[0].id;
+    }
+    const selected: VncGatewayView | undefined = gateways.find(
+      (gateway: VncGatewayView): boolean => gateway.id === this.vncHostGatewayId);
+    if (selected !== undefined) {
+      this.portVal = selected.port;
+      if (this.hostAddr.trim() === '' && selected.targetId.trim() !== '') {
+        this.hostAddr = selected.targetId;
+      }
+    }
+  }
+
+  private selectClassicVncGateway(gateway: VncGatewayView): void {
+    this.vncHostGatewayId = gateway.id;
+    this.portVal = gateway.port;
+    if (this.hostAddr.trim() === '' && gateway.targetId.trim() !== '') {
+      this.hostAddr = gateway.targetId;
+    }
+    this.sheetErr = '';
+  }
+
+  @Builder vncClassicEditorFields() {
+    Column() {
+      Row() {
+        Text('连接方式').fontSize(11).fontColor(this.pal().text2).fontFamily(this.font())
+        Blank()
+        Text('VNC Viewer').fontSize(10).fontColor(this.pal().text3).fontFamily(this.font())
+      }.width('100%').margin({ bottom: 4 })
+      Row() {
+        Button('TCP 直连').layoutWeight(1).height(34).fontSize(11).borderRadius(8)
+          .backgroundColor(this.vncHostTransport === 'direct_tcp' ? this.accentColor : this.pal().surface)
+          .fontColor(this.vncHostTransport === 'direct_tcp' ? Color.White : this.pal().text2)
+          .onClick((): void => { this.selectClassicVncTransport('direct_tcp'); })
+        Button('UltraVNC Repeater').layoutWeight(1).height(34).fontSize(11).borderRadius(8)
+          .margin({ left: 6 })
+          .backgroundColor(this.vncHostTransport === 'ultravnc_repeater' ? this.accentColor : this.pal().surface)
+          .fontColor(this.vncHostTransport === 'ultravnc_repeater' ? Color.White : this.pal().text2)
+          .onClick((): void => { this.selectClassicVncTransport('ultravnc_repeater'); })
+      }.width('100%').margin({ bottom: 8 })
+
+      if (this.vncHostTransport === 'direct_tcp') {
+        this.fieldRow('地址', '192.168.1.100 或 mac.local', this.hostAddr,
+          (v: string): void => { this.hostAddr = v; })
+        this.fieldRow('端口', '5900', this.portVal.toString(), (v: string): void => {
+          const value: number = parseInt(v);
+          this.portVal = isNaN(value) ? 5900 : value;
+        })
+      } else {
+        this.fieldRow('Repeater Target ID', '目标 ID', this.hostAddr,
+          (v: string): void => { this.hostAddr = v; })
+        Text('仅支持 Viewer mode12；mode2 是服务端监听角色，不能从此处连接。')
+          .fontSize(10).fontColor(this.pal().text3).fontFamily(this.font()).margin({ bottom: 8 })
+        Text('选择 VNC Gateway').fontSize(11).fontColor(this.pal().text2).fontFamily(this.font())
+          .margin({ bottom: 4 })
+        if (this.vncClassicGateways().length === 0) {
+          Text('暂无可用的 VNC Gateway，请先到中继服务器添加。')
+            .fontSize(11).fontColor(this.pal().danger).width('100%').padding(10)
+            .backgroundColor(this.pal().surface).borderRadius(8).margin({ bottom: 8 })
+        } else {
+          Column() {
+            ForEach(this.vncClassicGateways(), (gateway: VncGatewayView) => {
+              Row() {
+                Column() {
+                  Text(gateway.label).fontSize(12).fontColor(this.pal().text).fontFamily(this.font())
+                  Text(gateway.host + ':' + gateway.port.toString() + ' · mode12')
+                    .fontSize(10).fontColor(this.pal().text3).fontFamily(this.font()).margin({ top: 2 })
+                }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+                if (this.vncHostGatewayId === gateway.id) {
+                  SymbolGlyph($r('sys.symbol.checkmark')).fontSize(17).fontColor([this.accentColor])
+                }
+              }.width('100%').padding({ left: 10, right: 10, top: 8, bottom: 8 })
+                .borderRadius(8)
+                .backgroundColor(this.vncHostGatewayId === gateway.id ? this.pal().surface : Color.Transparent)
+                .onClick((): void => { this.selectClassicVncGateway(gateway); })
+            }, (gateway: VncGatewayView): string => gateway.id + ':' + this.hostViewRevision.toString())
+          }.width('100%').backgroundColor(this.pal().surface).borderRadius(8).padding(4).margin({ bottom: 8 })
+        }
+        this.fieldRow('端口', 'Gateway 端口', this.portVal.toString(), (v: string): void => {
+          const value: number = parseInt(v);
+          this.portVal = isNaN(value) ? 5901 : value;
+        })
+      }
+
+      this.pwdRow()
+      if (this.vncHostPasswordConfigured && this.sheetPwd === '') {
+        Text('已保存密码不会在编辑页回显；留空保存会保留现有密码，输入新密码才会替换。')
+          .fontSize(10).fontColor(this.pal().text3).fontFamily(this.font()).lineHeight(16)
+          .margin({ top: -4, bottom: 8 })
+      }
+      Row() {
+        Text('记住密码').fontSize(13).fontColor(this.pal().text).fontFamily(this.font()).layoutWeight(1)
+        Toggle({ type: ToggleType.Switch, isOn: this.vncHostRememberPassword })
+          .selectedColor(this.accentColor).scale({ x: 0.82, y: 0.82 })
+          .onChange((on: boolean): void => { this.vncHostRememberPassword = on; })
+      }.width('100%').margin({ bottom: 8 })
+      Text(this.vncHostRememberPassword
+        ? '密码只会写入 VNC secret；编辑时不会回显已保存密码。'
+        : '关闭后不保存密码，连接时可临时输入。')
+        .fontSize(10).fontColor(this.pal().text3).fontFamily(this.font()).margin({ bottom: 8 })
+
+      Row() {
+        Text('只读模式').fontSize(13).fontColor(this.pal().text).fontFamily(this.font()).layoutWeight(1)
+        Toggle({ type: ToggleType.Switch, isOn: this.vncHostViewOnly })
+          .selectedColor(this.accentColor).scale({ x: 0.82, y: 0.82 })
+          .onChange((on: boolean): void => { this.vncHostViewOnly = on; })
+      }.width('100%').margin({ bottom: 8 })
+      Row() {
+        Text('剪贴板文本').fontSize(13).fontColor(this.pal().text).fontFamily(this.font()).layoutWeight(1)
+        Toggle({ type: ToggleType.Switch, isOn: this.vncHostClipboardEnabled })
+          .selectedColor(this.accentColor).scale({ x: 0.82, y: 0.82 })
+          .onChange((on: boolean): void => { this.vncHostClipboardEnabled = on; })
+      }.width('100%').margin({ bottom: 8 })
+
+      Row() {
+        Column() {
+          Text('此主机单独设置缩放').fontSize(13).fontColor(this.pal().text).fontFamily(this.font())
+          Text(this.vncHostDisplayOverrideEnabled ? '覆盖 VNC 全局显示设置' : '跟随 VNC 全局显示设置')
+            .fontSize(10).fontColor(this.pal().text3).fontFamily(this.font()).margin({ top: 2 })
+        }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+        Toggle({ type: ToggleType.Switch, isOn: this.vncHostDisplayOverrideEnabled })
+          .selectedColor(this.accentColor).scale({ x: 0.82, y: 0.82 })
+          .onChange((on: boolean): void => { this.vncHostDisplayOverrideEnabled = on; })
+      }.width('100%').margin({ bottom: 8 })
+      if (this.vncHostDisplayOverrideEnabled) {
+        Text('缩放').fontSize(11).fontColor(this.pal().text2).fontFamily(this.font()).margin({ bottom: 4 })
+        Row() {
+          Button('自适应').layoutWeight(1).height(32).fontSize(10).borderRadius(8)
+            .backgroundColor(this.vncHostScalingMode === 'fit' ? this.accentColor : this.pal().surface)
+            .fontColor(this.vncHostScalingMode === 'fit' ? Color.White : this.pal().text2)
+            .onClick((): void => { this.vncHostScalingMode = 'fit'; })
+          Button('整数').layoutWeight(1).height(32).fontSize(10).borderRadius(8).margin({ left: 5 })
+            .backgroundColor(this.vncHostScalingMode === 'integer' ? this.accentColor : this.pal().surface)
+            .fontColor(this.vncHostScalingMode === 'integer' ? Color.White : this.pal().text2)
+            .onClick((): void => { this.vncHostScalingMode = 'integer'; })
+          Button('1:1').layoutWeight(1).height(32).fontSize(10).borderRadius(8).margin({ left: 5 })
+            .backgroundColor(this.vncHostScalingMode === 'one_to_one' ? this.accentColor : this.pal().surface)
+            .fontColor(this.vncHostScalingMode === 'one_to_one' ? Color.White : this.pal().text2)
+            .onClick((): void => { this.vncHostScalingMode = 'one_to_one'; })
+          Button('平移').layoutWeight(1).height(32).fontSize(10).borderRadius(8).margin({ left: 5 })
+            .backgroundColor(this.vncHostScalingMode === 'pan' ? this.accentColor : this.pal().surface)
+            .fontColor(this.vncHostScalingMode === 'pan' ? Color.White : this.pal().text2)
+            .onClick((): void => { this.vncHostScalingMode = 'pan'; })
+        }.width('100%').margin({ bottom: 8 })
+      }
+
+      Text('安全策略').fontSize(11).fontColor(this.pal().text2).fontFamily(this.font()).margin({ bottom: 4 })
+      Row() {
+        Button('仅 TLS').layoutWeight(1).height(32).fontSize(10).borderRadius(8)
+          .backgroundColor(this.vncHostSecurityPolicy === 'secure_only' ? this.accentColor : this.pal().surface)
+          .fontColor(this.vncHostSecurityPolicy === 'secure_only' ? Color.White : this.pal().text2)
+          .onClick((): void => { this.vncHostSecurityPolicy = 'secure_only'; this.vncHostTls = true; })
+        Button('可信网络').layoutWeight(1).height(32).fontSize(10).borderRadius(8).margin({ left: 5 })
+          .backgroundColor(this.vncHostSecurityPolicy === 'trusted_network' ? this.accentColor : this.pal().surface)
+          .fontColor(this.vncHostSecurityPolicy === 'trusted_network' ? Color.White : this.pal().text2)
+          .onClick((): void => { this.vncHostSecurityPolicy = 'trusted_network'; })
+        Button('允许明文').layoutWeight(1).height(32).fontSize(10).borderRadius(8).margin({ left: 5 })
+          .backgroundColor(this.vncHostSecurityPolicy === 'allow_plaintext' ? this.pal().danger : this.pal().surface)
+          .fontColor(this.vncHostSecurityPolicy === 'allow_plaintext' ? Color.White : this.pal().text2)
+          .onClick((): void => { this.vncHostSecurityPolicy = 'allow_plaintext'; })
+      }.width('100%').margin({ bottom: 8 })
+      Row() {
+        Text('TLS').fontSize(13).fontColor(this.pal().text).fontFamily(this.font()).layoutWeight(1)
+        Toggle({ type: ToggleType.Switch, isOn: this.vncHostTls })
+          .selectedColor(this.accentColor).scale({ x: 0.82, y: 0.82 })
+          .onChange((on: boolean): void => { this.vncHostTls = on; })
+      }.width('100%').margin({ bottom: 4 })
+      Text('VNC 当前不使用用户名；高级超时和 trust 仍在 VNC 设置页管理。')
+        .fontSize(10).fontColor(this.pal().text3).fontFamily(this.font())
+    }.width('100%')
+  }
+
   @Builder sheetBuilder() {
+    if (this.proto === 'vnc') {
+      Column() {
+        this.classicHostEditorForm()
+      }.width('100%').height('100%')
+    } else {
+      this.classicHostEditorForm()
+    }
+  }
+
+  @Builder private classicHostEditorForm() {
     Column() {
       // 标题
       Text(this.editingHostId !== '' ? '编辑主机' :
-        (this.proto === 'ssh' ? '添加 SSH 终端' : (this.proto === 'rustdesk' ? '添加 RustDesk 主机' : '添加 RDP 主机')))
+        (this.proto === 'ssh' ? '添加 SSH 终端' :
+          (this.proto === 'rustdesk' ? '添加 RustDesk 主机' :
+            (this.proto === 'vnc' ? '添加 VNC 主机' : '添加 RDP 主机'))))
         .fontSize(16).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
         .width('100%').margin({ bottom: 12 }).fontFamily(this.font())
 
@@ -7775,6 +9180,7 @@ struct HostListPage {
           Row() {
             this.protoBtn('RDP', 'rdp', 3389)
             this.protoBtn('RustDesk', 'rustdesk', 21116)
+            this.protoBtn('VNC', 'vnc', 5900)
             this.protoBtn('SSH', 'ssh', 22)
           }.width('100%').margin({ bottom: 12 })
 
@@ -7783,35 +9189,39 @@ struct HostListPage {
 
           // RustDesk: 无需地址/端口/用户名, 走远程ID + 中继
           if (this.proto !== 'rustdesk') {
-            // 地址
-            this.fieldRow('地址', this.proto === 'ssh' ? '192.168.1.10' : '192.168.1.100', this.hostAddr, (v: string): void => { this.hostAddr = v; })
+            if (this.proto === 'vnc') {
+              this.vncClassicEditorFields()
+            } else {
+              // 地址
+              this.fieldRow('地址', this.proto === 'ssh' ? '192.168.1.10' : '192.168.1.100', this.hostAddr, (v: string): void => { this.hostAddr = v; })
 
-            // 端口 + 用户名
-            Row() {
-              Column() {
-                if (this.proto === 'ssh') {
-                  this.fieldRow('端口', '22', this.sshPortVal.toString(), (v: string): void => {
-                    const n: number = parseInt(v);
-                    this.sshPortVal = isNaN(n) ? RemoteHost.getDefaultPort('ssh') : n;
-                    this.portVal = this.sshPortVal;
-                  })
-                } else {
-                  this.fieldRow('端口', '3389', this.rdpPortVal.toString(), (v: string): void => {
-                    const n: number = parseInt(v);
-                    this.rdpPortVal = isNaN(n) ? RemoteHost.getDefaultPort('rdp') : n;
-                    this.portVal = this.rdpPortVal;
-                  })
-                }
-              }.width('30%')
-              Column() {
-                this.fieldRow('用户名', this.proto === 'rdp' && this.sheetRdpAuthMode === 'password' &&
-                  this.selectedRdpCredentialId !== '' ? '已使用 Windows 凭据' :
-                  (this.proto === 'rdp' ? 'user 或 DOMAIN\\user' : 'root'),
-                  this.username, (v: string): void => { this.username = v; },
-                  !(this.proto === 'rdp' && this.sheetRdpAuthMode === 'password' &&
-                    this.selectedRdpCredentialId !== ''))
-              }.width('60%').margin({ left: 12 })
-            }.width('100%')
+              // 端口 + 用户名
+              Row() {
+                Column() {
+                  if (this.proto === 'ssh') {
+                    this.fieldRow('端口', '22', this.sshPortVal.toString(), (v: string): void => {
+                      const n: number = parseInt(v);
+                      this.sshPortVal = isNaN(n) ? RemoteHost.getDefaultPort('ssh') : n;
+                      this.portVal = this.sshPortVal;
+                    })
+                  } else {
+                    this.fieldRow('端口', '3389', this.rdpPortVal.toString(), (v: string): void => {
+                      const n: number = parseInt(v);
+                      this.rdpPortVal = isNaN(n) ? RemoteHost.getDefaultPort('rdp') : n;
+                      this.portVal = this.rdpPortVal;
+                    })
+                  }
+                }.width('30%')
+                Column() {
+                  this.fieldRow('用户名', this.proto === 'rdp' && this.sheetRdpAuthMode === 'password' &&
+                    this.selectedRdpCredentialId !== '' ? '已使用 Windows 凭据' :
+                    (this.proto === 'rdp' ? 'user 或 DOMAIN\\user' : 'root'),
+                    this.username, (v: string): void => { this.username = v; },
+                    !(this.proto === 'rdp' && this.sheetRdpAuthMode === 'password' &&
+                      this.selectedRdpCredentialId !== ''))
+                }.width('60%').margin({ left: 12 })
+              }.width('100%')
+            }
           }
 
           if (this.proto === 'rdp') {
@@ -7821,8 +9231,10 @@ struct HostListPage {
             }
           }
 
-          // 密码
-          if (this.proto !== 'rdp' || this.sheetRdpAuthMode === 'password') {
+          // 密码：VNC 的密码/记住密码已由 vncClassicEditorFields 提供，
+          // 通用密码行必须排除 VNC，避免 sheetRdpAuthMode 默认值造成双密码槽位。
+          if (this.proto !== 'vnc' &&
+            ((this.proto !== 'rdp' && this.proto !== 'vnc') || this.sheetRdpAuthMode === 'password')) {
             this.pwdRow(!(this.proto === 'rdp' && this.selectedRdpCredentialId !== ''))
           }
 
@@ -7835,6 +9247,8 @@ struct HostListPage {
             this.fieldRow('远程 ID', this.isEditingProHost() ? 'Pro 设备 ID（只读）' :
               (this.sheetRustdeskDirectEnabled ? '直连模式可留空' : '中继模式必填'),
               this.chn, (v: string): void => { this.chn = v; }, !this.isEditingProHost())
+
+            this.rustDeskTargetDeviceSection()
 
             // 密码模式切换
             Text('密码模式').fontSize(11).fontColor(this.pal().text2).margin({ bottom: 4 }).fontFamily(this.font())
@@ -7889,6 +9303,8 @@ struct HostListPage {
                 .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font()).margin({ left: 4 })
             }.width('100%').margin({ bottom: 8 })
 
+            this.rustDeskTotpBindingSection()
+
             // 中继服务器选择
             Row() {
               Text('中继配置').fontSize(11).fontColor(this.pal().text2).margin({ bottom: 4 }).fontFamily(this.font())
@@ -7904,14 +9320,8 @@ struct HostListPage {
                   .backgroundColor(this.accentColor).fontColor('#FFFFFF').borderRadius(16)
                   .margin({ top: 10 }).padding({ left: 16, right: 16 })
                   .onClick(() => {
+                    this.pendingRustDeskRelayDirectoryOpen = true;
                     this.requestAddSheetClose();
-                    // PC侧边栏 relay=5, 移动 Tabs relay=2
-                    if (this.isDesktopDevice && this.breakpoint === 'xl') {
-                      this.curTab = 5;
-                    } else {
-                      this.curTab = 2;
-                    }
-                    this.relayAddTrigger++;
                   })
               }.width('100%').padding({ top: 16, bottom: 16 })
               .borderRadius(10).backgroundColor(this.pal().surface)
@@ -7987,13 +9397,8 @@ struct HostListPage {
                     Blank()
                     Text('去添加 →').fontSize(11).fontColor(this.accentColor).fontFamily(this.font())
                       .onClick(() => {
+                        this.pendingRustDeskRelayDirectoryOpen = true;
                         this.requestAddSheetClose();
-                        if (this.isDesktopDevice && this.breakpoint === 'xl') {
-                          this.curTab = 5;
-                        } else {
-                          this.curTab = 2;
-                        }
-                        this.relayAddTrigger++;
                       })
                   }.width('100%').padding({ left: 10, right: 10, top: 8, bottom: 8 })
                 }
@@ -8048,18 +9453,32 @@ struct HostListPage {
           if (this.sheetErr !== '') {
             Text(this.sheetErr).fontSize(12).fontColor(this.pal().danger).width('100%').margin({ top: 8 })
           }
-
-          Button(this.editingHostId === '' ? '添加' : '保存').width('100%').height(40).fontSize(14).fontWeight(FontWeight.Medium)
-            .backgroundColor(this.accentColor).fontColor('#FFFFFF').borderRadius(10).margin({ top: 16 })
-            .onClick(() => { this.doAdd(); })
+          if (this.proto !== 'vnc') {
+            Button(this.editingHostId === '' ? '添加' : '保存').width('100%').height(40).fontSize(14)
+              .fontWeight(FontWeight.Medium).backgroundColor(this.accentColor).fontColor('#FFFFFF')
+              .borderRadius(10).margin({ top: 16 })
+              .onClick((): void => { this.doAdd(); })
+          }
         }.width('100%')
       }
-      .constraintSize({ maxHeight: 420 })
+      // The VNC editor owns a large Sheet. Its Scroll receives only the space
+      // above the fixed footer, including while the keyboard resizes the Sheet.
+      .constraintSize({ maxHeight: this.proto === 'vnc' ? '100%' : 420 })
+      .layoutWeight(this.proto === 'vnc' ? 1 : 0)
       .scrollBar(BarState.Auto)
       .edgeEffect(EdgeEffect.Spring)
       .width('100%')
+      if (this.proto === 'vnc') {
+        Row() {
+          Button(this.editingHostId === '' ? '添加' : '保存').width('100%').height(40).fontSize(14)
+            .fontWeight(FontWeight.Medium).backgroundColor(this.accentColor).fontColor('#FFFFFF')
+            .borderRadius(10).onClick((): void => { this.doAdd(); })
+        }.width('100%').margin({ top: 12 })
+      }
     }
-    .padding({ left: 24, right: 24, top: 24, bottom: 40 })
+    .layoutWeight(this.proto === 'vnc' ? 1 : 0)
+    .padding({ left: 24, right: 24, top: 24, bottom: 24 })
+    .safeAreaPadding({ bottom: 20 })
     .borderRadius(this.breakpoint === 'sm' ? 0 : 20)
     .backgroundColor(this.pal().bg)
     .backgroundBlurStyle(BlurStyle.Regular)
@@ -8083,6 +9502,9 @@ struct HostListPage {
       .onClick(() => {
         if (this.editingHostId !== '') { return; }
         this.switchHostProtocol(protoVal, defaultPort);
+        if (protoVal === 'vnc') {
+          this.prepareClassicVncEditor(null);
+        }
         if (protoVal === 'rustdesk') { this.sheetPwdMode = 0; }
       })
   }
@@ -8101,7 +9523,9 @@ struct HostListPage {
   @Builder pwdRow(enabled: boolean = true) {
     Column() {
       Text('密码').fontSize(11).fontColor(this.pal().text2).fontFamily(this.font()).margin({ bottom: 4 })
-      TextInput({ placeholder: enabled ? '输入密码' : '已使用 Windows 凭据', text: this.sheetPwd })
+      TextInput({ placeholder: enabled ?
+        (this.proto === 'vnc' && this.vncHostPasswordConfigured
+          ? '已保存密码（不回显；留空保留）' : '输入密码') : '已使用 Windows 凭据', text: this.sheetPwd })
         .type(InputType.Password).height(38).backgroundColor(this.pal().surface).borderRadius(8)
         .fontColor(this.pal().text).placeholderColor(this.pal().text3).fontFamily(this.font())
         .fontSize(13).padding({ left: 10, right: 10 }).enabled(enabled)
@@ -8430,6 +9854,13 @@ struct HostListPage {
       if (this.sheetUseProxy) {
         this.fieldRow('代理地址', 'gateway.example.com', this.sheetProxyHost, (v: string): void => { this.sheetProxyHost = v; })
         Row() {
+          Text('代理类型').fontSize(13).fontColor(this.pal().text).fontFamily(this.font())
+          Blank()
+          Button(this.sshProxyTypeLabel()).fontSize(12).fontColor(this.accentColor)
+            .backgroundColor(this.pal().surface).borderRadius(8)
+            .onClick((): void => { this.cycleSshProxyType(); })
+        }.width('100%').height(36)
+        Row() {
           Column() {
             this.fieldRow('代理端口', '22', this.sheetProxyPort.toString(), (v: string): void => {
               const n: number = parseInt(v); this.sheetProxyPort = isNaN(n) ? 22 : n;
@@ -8452,6 +9883,68 @@ struct HostListPage {
     this.sheetKeyText = '';
   }
 
+  private sshProxyTypeLabel(): string {
+    if (this.sheetProxyType === 'socks5') { return 'SOCKS5'; }
+    if (this.sheetProxyType === 'legacy_gateway') { return '旧跳板机（需改）'; }
+    return 'HTTP CONNECT';
+  }
+
+  private cycleSshProxyType(): void {
+    this.sheetProxyType = this.sheetProxyType === 'http_connect' ? 'socks5' : 'http_connect';
+  }
+
+  @Builder rustDeskTotpBindingSection() {
+    Column({ space: 6 }) {
+      Text('RustDesk 2FA 验证器（可选）').fontSize(11).fontColor(this.pal().text2)
+        .fontFamily(this.font()).width('100%')
+      Text('仅保存本机验证器条目 ID；启用自动提交前，每次连接仍需系统身份认证。')
+        .fontSize(10).fontColor(this.pal().text3).fontFamily(this.font()).width('100%')
+      if (this.keyVault.getAllTotpEntries().length === 0) {
+        Text('验证器为空，请先在“2FA 验证器”中添加条目。')
+          .fontSize(11).fontColor(this.pal().text3).width('100%')
+      } else {
+        ForEach(this.keyVault.getAllTotpEntries(), (entry: TotpEntry) => {
+          Row() {
+            Column() {
+              Text(entry.displayLabel()).fontSize(12).fontColor(this.pal().text)
+                .fontFamily(this.font()).maxLines(1)
+              Text(TotpEntry.algoLabel(entry.algorithm) + ' · ' + entry.digits.toString() + ' 位')
+                .fontSize(10).fontColor(this.pal().text3).fontFamily(this.font())
+            }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+            Button(this.sheetRustdeskTotpEntryId === entry.id ? '已绑定' : '绑定')
+              .height(30).fontSize(11).borderRadius(8)
+              .backgroundColor(this.sheetRustdeskTotpEntryId === entry.id ? this.accentColor : this.pal().surface)
+              .fontColor(this.sheetRustdeskTotpEntryId === entry.id ? Color.White : this.accentColor)
+              .onClick(async (): Promise<void> => {
+                if (this.sheetRustdeskTotpEntryId === entry.id) {
+                  this.sheetRustdeskTotpEntryId = '';
+                  this.sheetRustdeskTotpAutoSubmit = false;
+                  return;
+                }
+                const gate = await showLockGate('绑定 RustDesk 2FA', 'biometric');
+                if (!gate.ok) {
+                  const msg: string = lockGateErrorMessage(gate);
+                  if (msg !== '') { promptAction.showToast({ message: msg, duration: 2000 }); }
+                  return;
+                }
+                this.sheetRustdeskTotpEntryId = entry.id;
+                this.sheetRustdeskTotpAutoSubmit = false;
+              })
+          }.width('100%').padding({ top: 4, bottom: 4 })
+        }, (entry: TotpEntry): string => entry.id)
+        if (this.sheetRustdeskTotpEntryId !== '') {
+          Row() {
+            Text('连接时自动生成并填写').fontSize(12).fontColor(this.pal().text)
+              .fontFamily(this.font()).layoutWeight(1)
+            Toggle({ type: ToggleType.Switch, isOn: this.sheetRustdeskTotpAutoSubmit })
+              .selectedColor(this.accentColor).scale({ x: 0.82, y: 0.82 })
+              .onChange((on: boolean): void => { this.sheetRustdeskTotpAutoSubmit = on; })
+          }.width('100%').margin({ top: 4 })
+        }
+      }
+    }.width('100%').padding({ top: 6, bottom: 8 })
+  }
+
   @Builder rustDeskProPreflightPanel() {
     Column({ space: 14 }) {
       Row() {
@@ -8460,10 +9953,45 @@ struct HostListPage {
           Text('鉴权成功后才会进入远程画面').fontSize(13).fontColor(this.pal().text2)
         }.alignItems(HorizontalAlign.Start).layoutWeight(1)
         Button('取消').fontSize(14).backgroundColor(Color.Transparent).fontColor(this.accentColor)
-          .enabled(this.rustDeskProPreflightState !== RustDeskProPreflightState.CONNECTING)
-          .onClick((): void => { this.cancelRustDeskProPreflight(); })
+          .enabled(this.rustDeskProPreflightState !== RustDeskProPreflightState.CONNECTING ||
+            this.rustDeskProTwoFactorActive)
+          .onClick((): void => {
+            if (this.rustDeskProTwoFactorActive) {
+              this.cancelRustDeskProTwoFactor();
+            } else {
+              this.cancelRustDeskProPreflight();
+            }
+          })
       }.width('100%')
 
+      if (this.rustDeskProTwoFactorActive) {
+        Text('远端设备要求 2FA 验证，请输入当前动态验证码。')
+          .fontSize(14).fontColor(this.pal().text2).width('100%')
+        TextInput({ text: this.rustDeskProTwoFactorInput, placeholder: '输入 2FA 验证码' })
+          .type(InputType.Normal).height(48).width('100%')
+          .backgroundColor(this.pal().surface).borderRadius(10).maxLength(8)
+          .onChange((value: string): void => {
+            this.rustDeskProTwoFactorInput = value.replace(/[^0-9]/g, '');
+            this.rustDeskProTwoFactorError = '';
+            this.rustDeskProTwoFactorSubmitting = false;
+          })
+        Text(this.rustDeskProTwoFactorSubmitting ? '验证码已提交，等待远端确认…' :
+          '验证码只用于当前连接，不会写入主机配置。')
+          .fontSize(11).fontColor(this.pal().text3).width('100%')
+        if (this.rustDeskProTwoFactorError.length > 0) {
+          Text(this.rustDeskProTwoFactorError).fontSize(13).fontColor('#D92D20').width('100%')
+        }
+        Row({ space: 10 }) {
+          Button('取消').layoutWeight(1).height(42).fontSize(13)
+            .backgroundColor(this.pal().surface).fontColor(this.pal().text2).borderRadius(10)
+            .onClick((): void => { this.cancelRustDeskProTwoFactor(); })
+          Button(this.rustDeskProTwoFactorSubmitting ? '等待中' : '验证')
+            .layoutWeight(1).height(42).fontSize(13).fontWeight(FontWeight.Medium)
+            .backgroundColor(this.accentColor).fontColor(Color.White).borderRadius(10)
+            .enabled(!this.rustDeskProTwoFactorSubmitting)
+            .onClick((): void => { this.submitRustDeskProTwoFactor(); })
+        }.width('100%')
+      } else {
       Row({ space: 8 }) {
         Button('设备密码')
           .backgroundColor(this.rustDeskProAuthMode === 'password' ? this.accentColor : this.pal().surface)
@@ -8514,6 +10042,7 @@ struct HostListPage {
         Text('连接请求会发送到远端设备，请在对方设备上点击批准。')
           .fontSize(14).fontColor(this.pal().text2).width('100%')
       }
+      }
 
       if (this.rustDeskProPreflightError.length > 0) {
         Text(this.rustDeskProPreflightError).fontSize(13).fontColor('#D92D20').width('100%')
@@ -8521,7 +10050,8 @@ struct HostListPage {
       if (this.rustDeskProPreflightState === RustDeskProPreflightState.CONNECTING) {
         Row({ space: 10 }) {
           LoadingProgress().width(20).height(20).color(this.accentColor)
-          Text(this.rustDeskProAuthMode === 'request_approval' ? '等待远端批准…' : '正在后台验证密码…')
+          Text(this.rustDeskProTwoFactorActive ? '等待远端确认 2FA…' :
+            (this.rustDeskProAuthMode === 'request_approval' ? '等待远端批准…' : '正在后台验证密码…'))
             .fontSize(14).fontColor(this.pal().text2)
         }.width('100%')
       }
@@ -8575,7 +10105,14 @@ struct HostListPage {
   }
 
   @Builder relayContent() {
-    RustDeskRelayPage({ addTrigger: this.relayAddTrigger, hideTabBar: this.isDesktopDevice && this.breakpoint === 'xl' })
+    RustDeskRelayPage({ addTrigger: this.relayAddTrigger,
+      rustDeskAddTrigger: this.relayRustDeskAddTrigger, vncAddTrigger: this.relayVncAddTrigger,
+      hideTabBar: this.isDesktopDevice && this.breakpoint === 'xl',
+      returnToHostAdd: this.rustDeskRelayReturnToHostAdd,
+      onReturnToHostAdd: (relayId: string): void => {
+        this.resumeRustDeskHostAddFromRelayDirectory(
+          relayId);
+      } })
   }
 
   @Builder keyVaultSheet() {
@@ -8704,10 +10241,8 @@ struct HostListPage {
             Column().width(48).height(48).borderRadius(14)
               .backgroundColor(hex)
               .border({ width: this.terminalFgColor === hex ? 3 : 0, color: this.pal().text })
-              .onClick(() => {
-                this.terminalFgColor = hex;
-                AppStorage.setOrCreate('terminalFgColor', hex);
-                this.persistPref('terminalFgColor', hex);
+            .onClick(() => {
+                this.terminalFgColor = this.sshSettings.saveForegroundColor(hex);
               })
           }
         })
@@ -8742,9 +10277,7 @@ struct HostListPage {
             .backgroundColor(this.terminalFontSize === sz ? this.accentColor : this.pal().card)
             .border({ width: this.terminalFontSize === sz ? 0 : 1, color: this.pal().cardBorder })
             .onClick(() => {
-              this.terminalFontSize = sz;
-              AppStorage.setOrCreate('terminalFontSize', sz);
-              this.persistPref('terminalFontSize', sz);
+              this.terminalFontSize = this.sshSettings.saveFontSize(sz);
             })
           }
         })
@@ -8847,6 +10380,10 @@ struct HostListPage {
     this.sheetRustdeskDirectEnabled = false;
     this.sheetRustdeskDirectHost = '';
     this.sheetRustdeskDirectPort = RUSTDESK_PEER_TCP_PORT;
+    this.sheetRustdeskTargetDevice = 'computer';
+    this.sheetRustdeskAdaptiveOrientation = false;
+    this.sheetRustdeskTotpEntryId = '';
+    this.sheetRustdeskTotpAutoSubmit = false;
     this.selectedRelayId = ''; this.selectedAccountId = '';
     this.selectedRdpCredentialId = '';
     this.sheetRdpAuthMode = 'password';
@@ -8857,10 +10394,107 @@ struct HostListPage {
     this.sheetKeyId = ''; this.sheetKeyPassphrase = '';
     this.sheetKeyMode = 0; this.sheetUseProxy = false;
     this.sheetProxyHost = ''; this.sheetProxyPort = 22; this.sheetProxyUser = '';
+    this.sheetProxyType = 'http_connect';
+    this.vncHostTransport = 'direct_tcp'; this.vncHostRepeaterMode = 'mode12';
+    this.vncHostGatewayId = ''; this.vncHostPasswordConfigured = false;
+    this.vncHostRememberPassword = false;
+    this.vncHostViewOnly = true; this.vncHostDisplayOverrideEnabled = false;
+    this.vncHostScalingMode = 'fit';
+    this.vncHostClipboardEnabled = false; this.vncHostSecurityPolicy = 'secure_only';
+    this.vncHostTls = true;
+  }
+
+  private commitClassicVncSave(values: VncHostValues, recordId: string, password: string,
+    allowPlaintext: boolean, securityConfirmed: boolean = false): void {
+    if (values.securityPolicy === 'allow_plaintext' && !securityConfirmed) {
+      promptAction.showDialog({
+        title: '确认允许 VNC 明文连接',
+        message: '该策略会允许不加密的 VNC 连接。请确认当前网络可信，并了解密码和屏幕内容可能被窃听。',
+        buttons: [{ text: '取消', color: this.pal().text2 }, { text: '确认保存', color: this.pal().danger }]
+      }).then((result: Object): void => {
+        const dialogResult: Record<string, number> = result as Record<string, number>;
+        if (dialogResult['index'] === 1) {
+          this.commitClassicVncSave(values, recordId, password, allowPlaintext, true);
+        }
+      });
+      return;
+    }
+    if (!this.vncHosts.isReady()) {
+      this.sheetErr = 'VNC 服务尚未完成云同步初始化，请稍后重试';
+      return;
+    }
+    const result = this.vncHosts.save(values, recordId, password, allowPlaintext);
+    if (!result.ok) {
+      this.sheetErr = result.message || '保存 VNC 主机失败';
+      return;
+    }
+    promptAction.showToast({ message: recordId === '' ? 'VNC 主机已保存' : 'VNC 主机已更新', duration: 1800 });
+    this.requestAddSheetClose();
+  }
+
+  private saveVncHostFromClassicForm(): void {
+    const recordId: string = vncHostRecordIdFromUiId(this.editingHostId);
+    const existing: VncHostView | null = recordId === '' ? null : this.vncHosts.find(recordId);
+    const values: VncHostValues = {
+      label: this.label.trim(),
+      host: this.hostAddr.trim(),
+      port: this.portVal,
+      username: '',
+      gatewayId: this.vncHostTransport === 'direct_tcp' ? '' : this.vncHostGatewayId.trim(),
+      transport: this.vncHostTransport,
+      repeaterMode: this.vncHostRepeaterMode,
+      rememberPassword: this.vncHostRememberPassword,
+      viewOnly: this.vncHostViewOnly,
+      displayOverrideEnabled: this.vncHostDisplayOverrideEnabled,
+      scalingMode: this.vncHostScalingMode,
+      clipboardEnabled: this.vncHostClipboardEnabled,
+      securityPolicy: this.vncHostSecurityPolicy,
+      tls: this.vncHostTls,
+      locked: existing === null ? false : existing.locked,
+      lockType: existing === null ? 0 : existing.lockType
+    };
+    const errors: string[] = validateVncHost(values);
+    if (errors.length > 0) { this.sheetErr = errors[0]; return; }
+    if (values.securityPolicy === 'secure_only' && !values.tls) {
+      this.sheetErr = '当前安全策略要求 TLS，请打开 TLS 或选择可信网络/允许明文';
+      return;
+    }
+    if (values.transport === 'ultravnc_repeater' &&
+      this.vncClassicGateways().find((gateway: VncGatewayView): boolean => gateway.id === values.gatewayId) === undefined) {
+      this.sheetErr = '请选择已启用且支持 mode12 的 VNC Gateway';
+      return;
+    }
+    const password: string = this.sheetPwd;
+    if (password.length > 0 && values.rememberPassword) {
+      const crypto: DataCrypto = DataCrypto.getInstance();
+      if (crypto.isSetupComplete() && !crypto.isReady()) {
+        this.sheetErr = '应用加密已锁定；请先解锁，或关闭“记住密码”后保存';
+        return;
+      }
+      if (!crypto.isSetupComplete()) {
+        promptAction.showDialog({
+          title: '确认保存未加密密码',
+          message: '应用加密未启用。打开“记住密码”会把 VNC 密码以未加密形式保存；关闭此选项即可仅临时使用。',
+          buttons: [{ text: '关闭记住密码', color: this.pal().text2 },
+            { text: '确认保存', color: this.pal().danger }]
+        }).then((result: Object): void => {
+          const dialogResult: Record<string, number> = result as Record<string, number>;
+          if (dialogResult['index'] === 1) {
+            this.commitClassicVncSave(values, recordId, password, true);
+          }
+        });
+        return;
+      }
+    }
+    this.commitClassicVncSave(values, recordId, password, false);
   }
 
   private doAdd(): void {
     if (!shouldAcceptHostAddSave(this.addSheetClosing, this.pendingAddSheetConnectHostId)) {
+      return;
+    }
+    if (this.proto === 'vnc') {
+      this.saveVncHostFromClassicForm();
       return;
     }
     const editingId: string = this.editingHostId;
@@ -8892,6 +10526,8 @@ struct HostListPage {
       h.rustdeskDirectEnabled = this.sheetRustdeskDirectEnabled;
       h.rustdeskDirectHost = this.sheetRustdeskDirectHost;
       h.rustdeskDirectPort = this.sheetRustdeskDirectPort > 0 ? this.sheetRustdeskDirectPort : RUSTDESK_PEER_TCP_PORT;
+      h.rustdeskTotpEntryId = this.sheetRustdeskTotpEntryId;
+      h.rustdeskTotpAutoSubmit = this.sheetRustdeskTotpAutoSubmit && this.sheetRustdeskTotpEntryId !== '';
       h.rdpCredentialId = '';
       // Server Pro 管理主机的连接身份由地址簿控制；本地编辑只允许修改显示/凭据等字段。
       if (existingHost && existingHost.rustdeskProManaged && existingHost.sourceType === 'rustdesk_pro') {
@@ -8916,6 +10552,10 @@ struct HostListPage {
         h.rustdeskProLastSeenAt = existingHost.rustdeskProLastSeenAt;
         h.rustdeskProSyncError = existingHost.rustdeskProSyncError;
       }
+      h.rustdeskTargetDevice = this.effectiveSheetRustDeskTargetDevice();
+      h.rustdeskAdaptiveOrientation = canUseRustDeskAdaptiveOrientation(
+        h.protocol, h.rustdeskTargetDevice, this.sheetRustdeskAdaptiveOrientation,
+        h.sourceType, h.rustdeskProManaged, h.rustdeskProPlatform);
     } else {
       h.host = this.hostAddr;
       h.port = this.proto === 'rdp' ? this.rdpPortVal : this.sshPortVal;
@@ -8948,9 +10588,20 @@ struct HostListPage {
       h.sshKeyData = this.sheetKeyText;
       h.sshKeyId = this.sheetKeyId;
       h.sshKeyPassphrase = this.sheetKeyPassphrase;
+      h.sshProxyType = 'direct';
+      h.proxyHost = ''; h.proxyPort = 0; h.proxyUsername = '';
       if (this.sheetUseProxy) {
+        if (this.sheetProxyHost.trim() === '' || this.sheetProxyPort <= 0 || this.sheetProxyPort > 65535) {
+          this.sheetErr = '代理地址或端口无效';
+          return;
+        }
+        if (this.sheetProxyType !== 'http_connect' && this.sheetProxyType !== 'socks5') {
+          this.sheetErr = '旧版跳板机字段不再直连，请选择 HTTP CONNECT 或 SOCKS5';
+          return;
+        }
         h.proxyHost = this.sheetProxyHost; h.proxyPort = this.sheetProxyPort;
         h.proxyUsername = this.sheetProxyUser;
+        h.sshProxyType = this.sheetProxyType === 'socks5' ? 'socks5' : 'http_connect';
       }
     }
     const e: string[] = h.getValidationErrors();
@@ -9249,7 +10900,8 @@ struct HostListPage {
     }
     this.sshHostKeyBusyId = host.id;
     try {
-      const info: SshHostKeyInfo = this.loader.probeSshHostKey(host.host, host.port);
+      const info: SshHostKeyInfo = this.loader.probeSshHostKey(
+        host.host, host.port, this.sshPreflightProxy(host));
       if (!info.ok) {
         promptAction.showToast({
           message: '重新获取失败: ' + (info.errorMessage || '无法读取 SSH 主机指纹'),

@@ -179,6 +179,8 @@ export struct KeyVaultPage {
   private onKeyManagerChange(updated: SshKey): void {
     this.kvs.updateSshKey(updated);
     this.load();
+    // 同步当前 Sheet 显示的密钥，让公钥/指纹/类型立即刷新
+    this.sheetKey = updated;
   }
 
   // SshKeyManagerSheet 回调: 删除

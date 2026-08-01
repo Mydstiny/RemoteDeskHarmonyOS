@@ -21,10 +21,13 @@
 #include <algorithm>
 #include <thread>
 #include <chrono>
+#include <cerrno>
+#include <cstdlib>
 
 #ifdef __OHOS__
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <arpa/inet.h>
 #include <netdb.h>
 #include <unistd.h>
 #include <fcntl.h>
@@ -378,6 +381,61 @@ static std::string encodeAuthorizedKeysLine(const unsigned char* pubKeyDer, size
         result = "ssh-rsa " + base64Encode(wire.data(), wire.size());
 
         RSA_free(rsa);
+    } else if (keyType == "ecdsa-sha2-nistp256" ||
+               keyType == "ecdsa-sha2-nistp384" ||
+               keyType == "ecdsa-sha2-nistp521") {
+        EC_KEY* ec = EVP_PKEY_get1_EC_KEY(pkey);
+        if (!ec) {
+            EVP_PKEY_free(pkey);
+            return "";
+        }
+        const EC_GROUP* group = EC_KEY_get0_group(ec);
+        const EC_POINT* point = EC_KEY_get0_public_key(ec);
+        if (group == nullptr || point == nullptr) {
+            EC_KEY_free(ec);
+            EVP_PKEY_free(pkey);
+            return "";
+        }
+        const int nid = group == nullptr ? NID_undef : EC_GROUP_get_curve_name(group);
+        const char* curveName = nid == NID_X9_62_prime256v1 ? "nistp256" :
+            (nid == NID_secp384r1 ? "nistp384" :
+             (nid == NID_secp521r1 ? "nistp521" : nullptr));
+        if (curveName == nullptr) {
+            EC_KEY_free(ec);
+            EVP_PKEY_free(pkey);
+            return "";
+        }
+
+        std::vector<unsigned char> pointBytes;
+        const size_t pointLen = EC_POINT_point2oct(
+            group, point, POINT_CONVERSION_UNCOMPRESSED, nullptr, 0, nullptr);
+        if (pointLen == 0) {
+            EC_KEY_free(ec);
+            EVP_PKEY_free(pkey);
+            return "";
+        }
+        pointBytes.resize(pointLen);
+        if (EC_POINT_point2oct(group, point, POINT_CONVERSION_UNCOMPRESSED,
+                               pointBytes.data(), pointBytes.size(), nullptr) != pointLen) {
+            EC_KEY_free(ec);
+            EVP_PKEY_free(pkey);
+            return "";
+        }
+
+        std::vector<unsigned char> wire;
+        auto appendString = [&wire](const unsigned char* data, size_t len) {
+            const uint32_t length = static_cast<uint32_t>(len);
+            wire.push_back(static_cast<unsigned char>((length >> 24) & 0xFF));
+            wire.push_back(static_cast<unsigned char>((length >> 16) & 0xFF));
+            wire.push_back(static_cast<unsigned char>((length >> 8) & 0xFF));
+            wire.push_back(static_cast<unsigned char>(length & 0xFF));
+            wire.insert(wire.end(), data, data + len);
+        };
+        appendString(reinterpret_cast<const unsigned char*>(keyType.data()), keyType.size());
+        appendString(reinterpret_cast<const unsigned char*>(curveName), strlen(curveName));
+        appendString(pointBytes.data(), pointBytes.size());
+        result = keyType + " " + base64Encode(wire.data(), wire.size());
+        EC_KEY_free(ec);
     }
 
     EVP_PKEY_free(pkey);
@@ -389,45 +447,69 @@ static std::string encodeAuthorizedKeysLine(const unsigned char* pubKeyDer, size
     return result;
 }
 
+static std::string sshKeyTypeForPkey(EVP_PKEY* pkey) {
+    if (!pkey) {
+        return "";
+    }
+    const int type = EVP_PKEY_base_id(pkey);
+    if (type == EVP_PKEY_ED25519) {
+        return "ssh-ed25519";
+    }
+    if (type == EVP_PKEY_RSA) {
+        return "ssh-rsa";
+    }
+    if (type == EVP_PKEY_EC) {
+        EC_KEY* ec = EVP_PKEY_get1_EC_KEY(pkey);
+        if (!ec) {
+            return "";
+        }
+        const EC_GROUP* group = EC_KEY_get0_group(ec);
+        const int nid = group == nullptr ? NID_undef : EC_GROUP_get_curve_name(group);
+        EC_KEY_free(ec);
+        if (nid == NID_X9_62_prime256v1) {
+            return "ecdsa-sha2-nistp256";
+        }
+        if (nid == NID_secp384r1) {
+            return "ecdsa-sha2-nistp384";
+        }
+        if (nid == NID_secp521r1) {
+            return "ecdsa-sha2-nistp521";
+        }
+    }
+    return "";
+}
+
 /**
- * 计算 OpenSSH 风格 SHA256 fingerprint
- * 格式: "SHA256:" + base64(sha256(raw_public_key_bytes_from_DER))
+ * 计算 OpenSSH 风格 SHA256 fingerprint。
+ *
+ * OpenSSH hashes the SSH public-key blob used in authorized_keys, never the
+ * SubjectPublicKeyInfo DER wrapper. Re-encode the supported public key into
+ * that wire format before hashing.
  */
 static std::string computeFingerprint(const unsigned char* pubKeyDer, size_t pubKeyDerLen) {
-    // Parse DER to EVP_PKEY
     const unsigned char* p = pubKeyDer;
     EVP_PKEY* pkey = d2i_PUBKEY(nullptr, &p, static_cast<long>(pubKeyDerLen));
     if (!pkey) {
         return "SHA256:(error)";
     }
 
-    // For fingerprint, we need the SSH wire format key blob (same as inside authorized_keys Base64)
-    // But simpler: just SHA256 the DER, then Base64
-    unsigned char hash[EVP_MAX_MD_SIZE];
-    unsigned int hashLen = 0;
-
-    EVP_MD_CTX* ctx = EVP_MD_CTX_new();
-    if (!ctx) {
-        EVP_PKEY_free(pkey);
+    const std::string keyType = sshKeyTypeForPkey(pkey);
+    EVP_PKEY_free(pkey);
+    if (keyType.empty()) {
         return "SHA256:(error)";
     }
 
-    EVP_DigestInit_ex(ctx, EVP_sha256(), nullptr);
-    EVP_DigestUpdate(ctx, pubKeyDer, pubKeyDerLen);
-    EVP_DigestFinal_ex(ctx, hash, &hashLen);
-    EVP_MD_CTX_free(ctx);
-    EVP_PKEY_free(pkey);
-
-    // The OpenSSH fingerprint is SHA256 of the SSH wire format key blob, not the DER.
-    // But we want a consistent fingerprint for display. Let's use the DER hash for now,
-    // which is still a valid, unique fingerprint.
-    // For true OpenSSH compatibility, we'd need to build the wire format blob first.
-    // This is "close enough" for display and uniqueness purposes.
-
-    std::string b64 = base64Encode(hash, hashLen);
-    // Strip trailing '=' padding for OpenSSH fingerprint style
-    while (!b64.empty() && b64.back() == '=') b64.pop_back();
-    return "SHA256:" + b64;
+    const std::string line = encodeAuthorizedKeysLine(
+        pubKeyDer, pubKeyDerLen, keyType, "");
+    const size_t separator = line.find(' ');
+    if (separator == std::string::npos || separator + 1 >= line.size()) {
+        return "SHA256:(error)";
+    }
+    std::vector<unsigned char> blob;
+    if (!base64Decode(line.substr(separator + 1), blob) || blob.empty()) {
+        return "SHA256:(error)";
+    }
+    return computeSshBlobFingerprint(blob);
 }
 
 // ============================================================
@@ -617,14 +699,8 @@ SshPrivateKeyInfo inspectSshPrivateKey(
     }
 
     // 3. 获取密钥类型
-    int pkeyId = EVP_PKEY_id(pkey);
-    if (pkeyId == EVP_PKEY_ED25519) {
-        result.keyType = "ssh-ed25519";
-    } else if (pkeyId == EVP_PKEY_RSA) {
-        result.keyType = "ssh-rsa";
-    } else if (pkeyId == EVP_PKEY_EC) {
-        result.keyType = "ecdsa-sha2-nistp256"; // simplified
-    } else {
+    result.keyType = sshKeyTypeForPkey(pkey);
+    if (result.keyType.empty()) {
         result.keyType = "unknown";
     }
 
@@ -825,6 +901,26 @@ static int tcpConnectWithTimeout(const std::string& host, int port, int timeoutS
                     sock = -1;
                     continue;
                 }
+#ifdef __OHOS__
+                int socketError = 0;
+                socklen_t socketErrorLength = sizeof(socketError);
+                if (getsockopt(sock, SOL_SOCKET, SO_ERROR, &socketError,
+                               &socketErrorLength) != 0 || socketError != 0) {
+                    close(sock);
+                    sock = -1;
+                    continue;
+                }
+#else
+                int socketError = 0;
+                int socketErrorLength = sizeof(socketError);
+                if (getsockopt(sock, SOL_SOCKET, SO_ERROR,
+                               reinterpret_cast<char*>(&socketError),
+                               &socketErrorLength) == SOCKET_ERROR || socketError != 0) {
+                    closesocket(sock);
+                    sock = -1;
+                    continue;
+                }
+#endif
             } else {
 #ifdef __OHOS__
                 close(sock);
@@ -847,6 +943,292 @@ static int tcpConnectWithTimeout(const std::string& host, int port, int timeoutS
     }
 
     freeaddrinfo(res);
+    return sock;
+}
+
+static void closeSocketFd(int sock) {
+#ifdef __OHOS__
+    close(sock);
+#else
+    closesocket(sock);
+#endif
+}
+
+static bool setSocketIoTimeout(int sock, int timeoutSec) {
+    if (sock < 0 || timeoutSec <= 0) {
+        return false;
+    }
+#ifdef __OHOS__
+    struct timeval timeout;
+    timeout.tv_sec = timeoutSec;
+    timeout.tv_usec = 0;
+    return setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) == 0 &&
+           setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout)) == 0;
+#else
+    const DWORD timeoutMs = static_cast<DWORD>(timeoutSec) * 1000U;
+    return setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO,
+                      reinterpret_cast<const char*>(&timeoutMs), sizeof(timeoutMs)) == 0 &&
+           setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO,
+                      reinterpret_cast<const char*>(&timeoutMs), sizeof(timeoutMs)) == 0;
+#endif
+}
+
+static bool sendSocketAll(int sock, const uint8_t* data, size_t len) {
+    if (sock < 0 || (data == nullptr && len > 0)) {
+        return false;
+    }
+    size_t sentTotal = 0;
+    while (sentTotal < len) {
+#ifdef __OHOS__
+        const ssize_t sent = send(sock, data + sentTotal, len - sentTotal, 0);
+#else
+        const int sent = send(sock, reinterpret_cast<const char*>(data + sentTotal),
+                              static_cast<int>(len - sentTotal), 0);
+#endif
+        if (sent > 0) {
+            sentTotal += static_cast<size_t>(sent);
+            continue;
+        }
+#ifdef __OHOS__
+        if (sent < 0 && errno == EINTR) {
+            continue;
+        }
+#else
+        if (sent == SOCKET_ERROR && WSAGetLastError() == WSAEINTR) {
+            continue;
+        }
+#endif
+        return false;
+    }
+    return true;
+}
+
+static bool receiveSocketExact(int sock, uint8_t* data, size_t len) {
+    if (sock < 0 || (data == nullptr && len > 0)) {
+        return false;
+    }
+    size_t receivedTotal = 0;
+    while (receivedTotal < len) {
+#ifdef __OHOS__
+        const ssize_t received = recv(sock, data + receivedTotal, len - receivedTotal, 0);
+#else
+        const int received = recv(sock, reinterpret_cast<char*>(data + receivedTotal),
+                                  static_cast<int>(len - receivedTotal), 0);
+#endif
+        if (received > 0) {
+            receivedTotal += static_cast<size_t>(received);
+            continue;
+        }
+#ifdef __OHOS__
+        if (received < 0 && errno == EINTR) {
+            continue;
+        }
+#else
+        if (received == SOCKET_ERROR && WSAGetLastError() == WSAEINTR) {
+            continue;
+        }
+#endif
+        return false;
+    }
+    return true;
+}
+
+static bool receiveProxyHeaders(int sock, std::string& headers, size_t maxLen) {
+    headers.clear();
+    char byte = 0;
+    while (headers.find("\r\n\r\n") == std::string::npos) {
+#ifdef __OHOS__
+        const ssize_t received = recv(sock, &byte, 1, 0);
+#else
+        const int received = recv(sock, &byte, 1, 0);
+#endif
+        if (received > 0) {
+            headers.push_back(byte);
+            if (headers.size() > maxLen) {
+                return false;
+            }
+            continue;
+        }
+#ifdef __OHOS__
+        if (received < 0 && errno == EINTR) {
+            continue;
+        }
+#else
+        if (received == SOCKET_ERROR && WSAGetLastError() == WSAEINTR) {
+            continue;
+        }
+#endif
+        return false;
+    }
+    return true;
+}
+
+static bool connectThroughProxy(
+    int sock, const std::string& targetHost, int targetPort, const SshProxyOptions& proxy) {
+    const std::string proxyType = proxy.type.empty() ? "direct" : proxy.type;
+    if (proxyType == "direct") {
+        return true;
+    }
+    if ((proxyType != "http_connect" && proxyType != "socks5") ||
+        proxy.host.empty() || proxy.port <= 0 || proxy.port > 65535 ||
+        targetHost.empty() || targetPort <= 0 || targetPort > 65535 ||
+        targetHost.size() > 255 ||
+        targetHost.find_first_of("\r\n") != std::string::npos ||
+        proxy.host.find_first_of("\r\n") != std::string::npos) {
+        return false;
+    }
+
+    if (!setSocketIoTimeout(sock, 10)) {
+        return false;
+    }
+
+    std::string normalizedTarget = targetHost;
+    if (normalizedTarget.size() >= 2 && normalizedTarget.front() == '[' &&
+        normalizedTarget.back() == ']') {
+        normalizedTarget = normalizedTarget.substr(1, normalizedTarget.size() - 2);
+    }
+    if (normalizedTarget.empty() || normalizedTarget.size() > 255) {
+        return false;
+    }
+
+    if (proxyType == "http_connect") {
+        std::string hostHeader = normalizedTarget;
+        in6_addr ipv6 {};
+        if (inet_pton(AF_INET6, normalizedTarget.c_str(), &ipv6) == 1) {
+            hostHeader = "[" + normalizedTarget + "]";
+        }
+        hostHeader += ":" + std::to_string(targetPort);
+        if (proxy.username.find_first_of("\r\n") != std::string::npos ||
+            proxy.password.find_first_of("\r\n") != std::string::npos) {
+            return false;
+        }
+        std::string request = "CONNECT " + hostHeader + " HTTP/1.1\r\n";
+        request += "Host: " + hostHeader + "\r\nProxy-Connection: Keep-Alive\r\n";
+        if (!proxy.username.empty() || !proxy.password.empty()) {
+            const std::string credentials = proxy.username + ":" + proxy.password;
+            request += "Proxy-Authorization: Basic " +
+                base64Encode(reinterpret_cast<const unsigned char*>(credentials.data()),
+                             credentials.size()) + "\r\n";
+        }
+        request += "\r\n";
+        if (!sendSocketAll(sock, reinterpret_cast<const uint8_t*>(request.data()), request.size())) {
+            return false;
+        }
+        std::string response;
+        if (!receiveProxyHeaders(sock, response, 16 * 1024)) {
+            return false;
+        }
+        const size_t lineEnd = response.find("\r\n");
+        if (lineEnd == std::string::npos) {
+            return false;
+        }
+        const std::string statusLine = response.substr(0, lineEnd);
+        const size_t statusStart = statusLine.find(' ');
+        if (statusStart == std::string::npos) {
+            return false;
+        }
+        char* statusEnd = nullptr;
+        const long status = std::strtol(statusLine.c_str() + statusStart + 1, &statusEnd, 10);
+        if (statusEnd == statusLine.c_str() + statusStart + 1 || status < 200 || status >= 300) {
+            return false;
+        }
+        return true;
+    }
+
+    const bool hasCredentials = !proxy.username.empty() || !proxy.password.empty();
+    if (proxy.username.size() > 255 || proxy.password.size() > 255) {
+        return false;
+    }
+    std::vector<uint8_t> greeting {
+        0x05, static_cast<uint8_t>(hasCredentials ? 0x02 : 0x01), 0x00};
+    if (hasCredentials) {
+        greeting.push_back(0x02);
+    }
+    if (!sendSocketAll(sock, greeting.data(), greeting.size())) {
+        return false;
+    }
+    uint8_t methodReply[2] = {0, 0};
+    if (!receiveSocketExact(sock, methodReply, sizeof(methodReply)) || methodReply[0] != 0x05) {
+        return false;
+    }
+    if (methodReply[1] == 0x02) {
+        if (!hasCredentials) {
+            return false;
+        }
+        std::vector<uint8_t> auth {0x01, static_cast<uint8_t>(proxy.username.size())};
+        auth.insert(auth.end(), proxy.username.begin(), proxy.username.end());
+        auth.push_back(static_cast<uint8_t>(proxy.password.size()));
+        auth.insert(auth.end(), proxy.password.begin(), proxy.password.end());
+        if (!sendSocketAll(sock, auth.data(), auth.size())) {
+            return false;
+        }
+        uint8_t authReply[2] = {0, 0};
+        if (!receiveSocketExact(sock, authReply, sizeof(authReply)) ||
+            authReply[0] != 0x01 || authReply[1] != 0x00) {
+            return false;
+        }
+    } else if (methodReply[1] != 0x00) {
+        return false;
+    }
+
+    std::vector<uint8_t> request {0x05, 0x01, 0x00};
+    in_addr ipv4 {};
+    in6_addr ipv6 {};
+    if (inet_pton(AF_INET, normalizedTarget.c_str(), &ipv4) == 1) {
+        request.push_back(0x01);
+        const uint8_t* bytes = reinterpret_cast<const uint8_t*>(&ipv4);
+        request.insert(request.end(), bytes, bytes + sizeof(ipv4));
+    } else if (inet_pton(AF_INET6, normalizedTarget.c_str(), &ipv6) == 1) {
+        request.push_back(0x04);
+        const uint8_t* bytes = reinterpret_cast<const uint8_t*>(&ipv6);
+        request.insert(request.end(), bytes, bytes + sizeof(ipv6));
+    } else {
+        request.push_back(0x03);
+        request.push_back(static_cast<uint8_t>(normalizedTarget.size()));
+        request.insert(request.end(), normalizedTarget.begin(), normalizedTarget.end());
+    }
+    request.push_back(static_cast<uint8_t>((targetPort >> 8) & 0xFF));
+    request.push_back(static_cast<uint8_t>(targetPort & 0xFF));
+    if (!sendSocketAll(sock, request.data(), request.size())) {
+        return false;
+    }
+    uint8_t replyHead[4] = {0, 0, 0, 0};
+    if (!receiveSocketExact(sock, replyHead, sizeof(replyHead)) ||
+        replyHead[0] != 0x05 || replyHead[1] != 0x00) {
+        return false;
+    }
+    size_t addressLength = 0;
+    if (replyHead[3] == 0x01) {
+        addressLength = 4;
+    } else if (replyHead[3] == 0x04) {
+        addressLength = 16;
+    } else if (replyHead[3] == 0x03) {
+        uint8_t domainLength = 0;
+        if (!receiveSocketExact(sock, &domainLength, 1)) {
+            return false;
+        }
+        addressLength = domainLength;
+    } else {
+        return false;
+    }
+    std::vector<uint8_t> discard(addressLength + 2);
+    return receiveSocketExact(sock, discard.data(), discard.size());
+}
+
+static int connectForSshOperation(
+    const std::string& host, int port, const SshProxyOptions& proxy) {
+    const std::string proxyType = proxy.type.empty() ? "direct" : proxy.type;
+    const bool direct = proxyType == "direct";
+    const std::string connectHost = direct ? host : proxy.host;
+    const int connectPort = direct ? port : proxy.port;
+    int sock = tcpConnectWithTimeout(connectHost, connectPort, 10);
+    if (sock < 0) {
+        return -1;
+    }
+    if (!direct && !connectThroughProxy(sock, host, port, proxy)) {
+        closeSocketFd(sock);
+        return -2;
+    }
     return sock;
 }
 
@@ -1061,7 +1443,8 @@ SshAuthTestResult testSshKeyAuth(
     int port,
     const std::string& username,
     const std::string& privateKeyPem,
-    const std::string& passphrase)
+    const std::string& passphrase,
+    const SshProxyOptions& proxy)
 {
     SshAuthTestResult result;
     result.ok = false;
@@ -1079,10 +1462,10 @@ SshAuthTestResult testSshKeyAuth(
         return result;
     }
 
-    int sock = tcpConnectWithTimeout(host, port, 10);
+    int sock = connectForSshOperation(host, port, proxy);
     if (sock < 0) {
         result.code = -1;
-        result.message = "TCP connect failed";
+        result.message = sock == -2 ? "SSH proxy handshake failed" : "TCP connect failed";
         return result;
     }
 
@@ -1148,7 +1531,8 @@ SshAuthTestResult testSshKeyAuth(
 
 SshHostKeyInfo probeSshHostKey(
     const std::string& host,
-    int port)
+    int port,
+    const SshProxyOptions& proxy)
 {
     SshHostKeyInfo result;
     result.ok = false;
@@ -1157,10 +1541,11 @@ SshHostKeyInfo probeSshHostKey(
     result.errorCode = 0;
 
     // Step 1: TCP connect
-    int sock = tcpConnectWithTimeout(host, port, 10);
+    int sock = connectForSshOperation(host, port, proxy);
     if (sock < 0) {
         result.errorCode = -1;
-        result.errorMessage = "TCP connect failed: " + host + ":" + std::to_string(port);
+        result.errorMessage = (sock == -2 ? "SSH proxy handshake failed: " :
+            "TCP connect failed: ") + host + ":" + std::to_string(port);
         return result;
     }
 

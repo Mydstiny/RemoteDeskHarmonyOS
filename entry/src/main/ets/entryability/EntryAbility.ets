@@ -13,6 +13,8 @@ import { KeyVaultService } from '../services/KeyVaultService';
 import { HostSyncService } from '../services/HostSyncService';
 import { DataCrypto } from '../services/DataCrypto';
 import { CloudSyncCoordinator } from '../services/CloudSyncCoordinator';
+import { CloudStore } from '../services/CloudStore';
+import { AccountSessionCoordinator } from '../services/AccountSessionCoordinator';
 import { BreakpointUtil } from '../utils/BreakpointUtil';
 import { ExtensionLoader } from '../services/ExtensionLoader';
 import { RemoteSessionBackgroundTaskService } from '../services/RemoteSessionBackgroundTaskService';
@@ -156,16 +158,29 @@ export default class EntryAbility extends UIAbility {
       } catch (err) {
         hilog.error(0x0001, 'Auth', "AGC Auth SDK 初始化失败: " + JSON.stringify(err));
       }
-      // 初始化密钥保险库 + 主机服务 (串行初始化, 避免竞态)
+      // AccountKit persistence must exist before any silent-login callback can
+      // save a credential. Local stores remain usable when it is unavailable.
       hilog.info(0x0001, 'CloudSync', 'EntryAbility: 开始初始化 CloudStore...');
-      KeyVaultService.getInstance().init(this.context).then(() => {
+      AccountSessionCoordinator.getInstance().init(this.context).then((scopeReady: boolean): Promise<void> => {
+        if (!scopeReady) {
+          hilog.warn(0x0001, 'AccountSession',
+            '账号生命周期初始化失败；仅保留安全空状态');
+        }
+        return KeyVaultService.getInstance().init(this.context);
+      }).then(() => {
         hilog.info(0x0001, 'CloudSync', 'KeyVaultService init done');
         return HostSyncService.getInstance().init(this.context);
-      }).then(() => {
+      }).then((): Promise<void> => {
         hilog.info(0x0001, 'CloudSync', 'HostSyncService init done');
-        return CloudSyncCoordinator.getInstance().requestStartupPull();
-      }).then((result) => {
-        hilog.info(0x0001, 'CloudSync', 'EntryAbility startup cloud pull ok=' + result.ok.toString());
+        if (!CloudStore.getInstance().isCloudAvailable()) {
+          hilog.warn(0x0001, 'CloudSync',
+            'EntryAbility startup cloud pull skipped: account-scoped cloud store unavailable');
+          return Promise.resolve();
+        }
+        return CloudSyncCoordinator.getInstance().requestStartupPull().then((result): void => {
+          hilog.info(0x0001, 'CloudSync',
+            'EntryAbility startup cloud pull ok=' + result.ok.toString());
+        });
       }).catch((err: Error) => {
         hilog.error(0x0001, 'CloudSync', "服务初始化失败: " + JSON.stringify(err));
       });

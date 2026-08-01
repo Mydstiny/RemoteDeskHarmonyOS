@@ -23,28 +23,28 @@ export default function guideContentRegistryTest(): void {
     it('keeps_both_guides_equal_except_the_final_page', 0, (): void => {
       const firstInstall: GuideContentPage[] = firstInstallGuidePages();
       const settings: GuideContentPage[] = settingsUsageGuidePages();
-      expect(firstInstall.length).assertEqual(9);
+      expect(firstInstall.length).assertEqual(7);
       expect(settings.length).assertEqual(firstInstall.length);
       for (let i = 0; i < firstInstall.length - 1; i++) {
         expect(settings[i].id).assertEqual(firstInstall[i].id);
         expect(settings[i].title).assertEqual(firstInstall[i].title);
         expect(settings[i].desc).assertEqual(firstInstall[i].desc);
       }
-      expect(firstInstall[firstInstall.length - 1].id).assertEqual('welcome');
+      expect(firstInstall[firstInstall.length - 1].id).assertEqual('start-first-host');
       expect(settings[settings.length - 1].id).assertEqual('revisit');
     });
 
     it('covers_current_features_and_the_complete_release', 0, (): void => {
       const guide: GuideContentPage[] = firstInstallGuidePages();
       const release: ReleaseNotePage[] = pagesForReleasedVersion(CURRENT_RELEASE_VERSION);
-      expect(containsGuidePage(guide, 'background-video')).assertTrue();
-      expect(containsGuidePage(guide, 'secure-sync-backup')).assertTrue();
-      expect(release.length).assertEqual(8);
-      expect(containsReleasePage(release, 'background-video-pip')).assertTrue();
-      expect(containsReleasePage(release, 'native-vp9-background-crash')).assertTrue();
-      expect(containsReleasePage(release, 'pip-frame-lifecycle')).assertTrue();
-      expect(containsReleasePage(release, 'grip-permission-startup')).assertTrue();
-      expect(release[release.length - 1].id).assertEqual('welcome-1-0-8');
+      expect(containsGuidePage(guide, 'session-controls')).assertTrue();
+      expect(containsGuidePage(guide, 'cloud-and-backup')).assertTrue();
+      expect(release.length).assertEqual(7);
+      expect(containsReleasePage(release, 'release-four-protocols')).assertTrue();
+      expect(containsReleasePage(release, 'release-input-performance')).assertTrue();
+      expect(containsReleasePage(release, 'release-cloud-recovery')).assertTrue();
+      expect(containsReleasePage(release, 'release-security-boundaries')).assertTrue();
+      expect(release[release.length - 1].id).assertEqual('welcome-1-1-0');
     });
   });
 }

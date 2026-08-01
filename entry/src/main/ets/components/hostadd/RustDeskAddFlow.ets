@@ -2,7 +2,11 @@ import { Palette, buildDark, buildLight } from '../../common/Theme';
 import { RemoteHost } from '../../model/RemoteHost';
 import { RustDeskRelayConfig } from '../../model/RustDeskRelayConfig';
 import { DiscoveredRustDeskPeer } from '../../services/RustDeskLanDiscoveryService';
-import { RustDeskRelayKeyMode, resolveRustDeskRelayKey } from '../../services/RustDeskRelayKeyPolicy';
+import { RustDeskTargetDevice } from '../../services/RemoteOrientationPolicy';
+import {
+  cloneRustDeskHostAddDraft,
+  RustDeskHostAddDraft
+} from '../../services/RustDeskHostAddHandoff';
 
 @Component
 export struct RustDeskAddFlow {
@@ -12,9 +16,13 @@ export struct RustDeskAddFlow {
   @Prop lanScanning: boolean = false;
   @Prop lanPeers: DiscoveredRustDeskPeer[] = [];
   @Prop defaultDirectPort: number = 21117;
+  @Prop initialDraft: RustDeskHostAddDraft | null = null;
+  @Prop @Watch('onInitialDraftChanged')
+  initialDraftRevision: number = 0;
   onBackToProtocols: () => void = (): void => {};
   onStartLanScan: () => void = (): void => {};
-  onAddRelay: (relay: RustDeskRelayConfig) => boolean = (_relay: RustDeskRelayConfig): boolean => false;
+  onManageRelays: (draft: RustDeskHostAddDraft) => void =
+    (_draft: RustDeskHostAddDraft): void => {};
   onSave: (host: RemoteHost, connectNow: boolean) => void =
     (_host: RemoteHost, _connectNow: boolean): void => {};
   @State step: number = 1;
@@ -29,17 +37,65 @@ export struct RustDeskAddFlow {
   @State password: string = '';
   @State passwordMode: number = 0;
   @State errorText: string = '';
-  @State addingRelay: boolean = false;
-  @State relayIdServer: string = '';
-  @State relayIdServerPortText: string = '21116';
-  @State relayServer: string = '';
-  @State relayServerPortText: string = '21117';
-  @State relayApiServer: string = '';
-  @State relayKey: string = '';
-  @State relayKeyMode: RustDeskRelayKeyMode = 'server_public_key';
+  @State targetDevice: RustDeskTargetDevice = 'computer';
+  @State adaptiveOrientation: boolean = false;
 
-  aboutToAppear(): void { this.directPortText = this.defaultDirectPort.toString(); }
+  aboutToAppear(): void {
+    if (this.initialDraft === null) {
+      this.directPortText = this.defaultDirectPort.toString();
+    } else {
+      this.applyDraft(this.initialDraft);
+    }
+  }
   private pal(): Palette { return this.theme === 'light' ? buildLight(this.accentColor) : buildDark(this.accentColor); }
+
+  private onInitialDraftChanged(): void {
+    if (this.initialDraft !== null) {
+      this.applyDraft(this.initialDraft);
+    }
+  }
+
+  private applyDraft(source: RustDeskHostAddDraft): void {
+    const draft: RustDeskHostAddDraft =
+      cloneRustDeskHostAddDraft(source);
+    this.step = draft.step;
+    this.direct = draft.direct;
+    this.useLan = draft.useLan;
+    this.selectedLanPeerId = draft.selectedLanPeerId;
+    this.label = draft.label;
+    this.controlId = draft.controlId;
+    this.directHost = draft.directHost;
+    this.directPortText = draft.directPortText;
+    this.relayId = draft.relayId;
+    this.password = draft.password;
+    this.passwordMode = draft.passwordMode;
+    this.targetDevice = draft.targetDevice;
+    this.adaptiveOrientation = draft.adaptiveOrientation;
+    this.errorText = '';
+  }
+
+  private currentDraft(): RustDeskHostAddDraft {
+    const draft = new RustDeskHostAddDraft();
+    draft.step = this.step;
+    draft.direct = this.direct;
+    draft.useLan = this.useLan;
+    draft.selectedLanPeerId = this.selectedLanPeerId;
+    draft.label = this.label;
+    draft.controlId = this.controlId;
+    draft.directHost = this.directHost;
+    draft.directPortText = this.directPortText;
+    draft.relayId = this.relayId;
+    draft.password = this.password;
+    draft.passwordMode = this.passwordMode;
+    draft.targetDevice = this.targetDevice;
+    draft.adaptiveOrientation = this.adaptiveOrientation;
+    return draft;
+  }
+
+  private manageRelays(): void {
+    this.errorText = '';
+    this.onManageRelays(this.currentDraft());
+  }
 
   private selectedRelay(): RustDeskRelayConfig | undefined {
     return this.relays.find((relay: RustDeskRelayConfig): boolean => relay.id === this.relayId);
@@ -59,6 +115,8 @@ export struct RustDeskAddFlow {
     host.customHostname = this.controlId.trim(); host.password = this.password;
     host.rustdeskPasswordMode = this.passwordMode; host.rustdeskAuthMode = 'password';
     host.rustdeskDirectEnabled = this.direct;
+    host.rustdeskTargetDevice = this.targetDevice;
+    host.rustdeskAdaptiveOrientation = this.targetDevice === 'phone' && this.adaptiveOrientation;
     if (this.direct) {
       host.host = this.directHost.trim(); host.port = port;
       host.rustdeskDirectHost = host.host; host.rustdeskDirectPort = port; host.rustdeskRelayId = '';
@@ -67,34 +125,6 @@ export struct RustDeskAddFlow {
       host.rustdeskDirectHost = ''; host.rustdeskDirectPort = this.defaultDirectPort;
     }
     return host;
-  }
-
-  private saveRelay(): void {
-    if (this.relayIdServer.trim() === '') {
-      this.errorText = 'ID 服务器不能为空'; return;
-    }
-    const idServerPort: number = parseInt(this.relayIdServerPortText);
-    const relayPort: number = parseInt(this.relayServerPortText);
-    if (isNaN(idServerPort) || idServerPort <= 0 || idServerPort > 65535 ||
-      isNaN(relayPort) || relayPort <= 0 || relayPort > 65535) {
-      this.errorText = '服务器端口必须在 1-65535 之间'; return;
-    }
-    const key = resolveRustDeskRelayKey(this.relayKey, this.relayKeyMode, false);
-    if (!key.ok) { this.errorText = key.error; return; }
-    const relay = new RustDeskRelayConfig();
-    relay.id = RustDeskRelayConfig.generateId();
-    relay.idServer = this.relayIdServer.trim();
-    relay.idServerPort = idServerPort;
-    relay.relayServer = this.relayServer.trim() === '' ? relay.idServer : this.relayServer.trim();
-    relay.relayPort = relayPort;
-    relay.apiServer = this.relayApiServer.trim();
-    relay.key = key.value;
-    relay.keyMode = key.mode;
-    relay.updatedAt = Date.now();
-    if (!this.onAddRelay(relay)) { this.errorText = '保存中继服务器失败'; return; }
-    this.relayId = relay.id;
-    this.addingRelay = false;
-    this.errorText = '';
   }
 
   @Builder private field(title: string, value: string, hint: string, change: (value: string) => void,
@@ -132,6 +162,20 @@ export struct RustDeskAddFlow {
     .onClick((): void => { this.direct = directMode; })
   }
 
+  @Builder private targetButton(title: string, subtitle: string, target: RustDeskTargetDevice) {
+    Column() {
+      Text(title).fontSize(14).fontWeight(FontWeight.Medium)
+        .fontColor(this.targetDevice === target ? Color.White : this.pal().text)
+      Text(subtitle).fontSize(11)
+        .fontColor(this.targetDevice === target ? '#DDEEFF' : this.pal().text3).margin({ top: 4 })
+    }.alignItems(HorizontalAlign.Start).layoutWeight(1).padding(12).borderRadius(10)
+      .backgroundColor(this.targetDevice === target ? this.accentColor : this.pal().surface)
+      .onClick((): void => {
+        this.targetDevice = target;
+        if (target === 'computer') { this.adaptiveOrientation = false; }
+      })
+  }
+
   build() {
     Column() {
       this.header()
@@ -142,46 +186,12 @@ export struct RustDeskAddFlow {
           this.modeButton('局域网直连', 'IP + 端口直接连接', true)
         }.width('100%').margin({ bottom: 16 })
         if (!this.direct) {
-          if (this.addingRelay) {
-            this.field('ID 服务器', this.relayIdServer, 'hbbs.example.com',
-              (v: string): void => { this.relayIdServer = v; })
-            this.field('ID 服务器端口', this.relayIdServerPortText, '21116',
-              (v: string): void => { this.relayIdServerPortText = v; })
-            this.field('中继服务器', this.relayServer, 'hbbr.example.com',
-              (v: string): void => { this.relayServer = v; })
-            this.field('中继服务器端口', this.relayServerPortText, '21117',
-              (v: string): void => { this.relayServerPortText = v; })
-            this.field('API 地址（可选）', this.relayApiServer, 'https://api.example.com',
-              (v: string): void => { this.relayApiServer = v; })
-            Text('服务器 Key（可选）').fontSize(12).fontColor(this.pal().text2).margin({ bottom: 5 })
-            Row() {
-              Button('服务器公钥').layoutWeight(1).height(32).borderRadius(8)
-                .backgroundColor(this.relayKeyMode === 'server_public_key' ? this.accentColor : this.pal().surface)
-                .fontColor(this.relayKeyMode === 'server_public_key' ? Color.White : this.pal().text2)
-                .onClick((): void => { this.relayKeyMode = 'server_public_key'; })
-              Button('自定义共享 Key').layoutWeight(1).height(32).borderRadius(8).margin({ left: 8 })
-                .backgroundColor(this.relayKeyMode === 'shared_access_key' ? this.accentColor : this.pal().surface)
-                .fontColor(this.relayKeyMode === 'shared_access_key' ? Color.White : this.pal().text2)
-                .onClick((): void => { this.relayKeyMode = 'shared_access_key'; })
-            }.width('100%').margin({ bottom: 7 })
-            this.field(this.relayKeyMode === 'shared_access_key' ? '共享 Key（原样发送）' : '服务器公钥', this.relayKey,
-              this.relayKeyMode === 'shared_access_key' ? '与 hbbs/hbbr -k 完全一致' : 'Base64 32 字节 Ed25519 公钥',
-              (v: string): void => { this.relayKey = v; }, this.relayKeyMode === 'shared_access_key')
-            Text(this.relayKeyMode === 'shared_access_key' ?
-              '不会删除空格或 =；此模式不能验证服务器身份。' : '留空将使用 RustDesk 默认公钥。')
-              .fontSize(10).fontColor(this.pal().text3).width('100%').margin({ top: -5, bottom: 10 })
-            Row() {
-              Button('取消').layoutWeight(1).height(38).borderRadius(10).backgroundColor(this.pal().surface)
-                .fontColor(this.pal().text2).onClick((): void => { this.addingRelay = false; })
-              Button('保存并选择').layoutWeight(1).height(38).borderRadius(10).margin({ left: 8 })
-                .backgroundColor(this.accentColor).fontColor(Color.White).onClick((): void => { this.saveRelay(); })
-            }.width('100%')
-          } else if (this.relays.length === 0) {
-            Text('还没有中继服务器，请先添加后再继续。').fontSize(13).fontColor(this.pal().text3)
+          if (this.relays.length === 0) {
+            Text('还没有中继服务器，请先到中继目录添加。').fontSize(13).fontColor(this.pal().text3)
               .width('100%').textAlign(TextAlign.Center).padding(18)
-            Button('添加中继服务器').width('100%').height(40).borderRadius(10)
+            Button('前往中继目录').width('100%').height(40).borderRadius(10)
               .backgroundColor(this.pal().surface).fontColor(this.accentColor)
-              .onClick((): void => { this.addingRelay = true; })
+              .onClick((): void => { this.manageRelays(); })
           } else {
             ForEach(this.relays, (relay: RustDeskRelayConfig) => {
               Row() {
@@ -193,9 +203,9 @@ export struct RustDeskAddFlow {
               }.width('100%').padding(12).borderRadius(10).backgroundColor(this.pal().surface).margin({ bottom: 7 })
               .onClick((): void => { this.relayId = relay.id; })
             }, (relay: RustDeskRelayConfig): string => relay.id + ':' + relay.updatedAt.toString())
-            Button('添加其他中继服务器').width('100%').height(36).borderRadius(9)
+            Button('管理中继服务器').width('100%').height(36).borderRadius(9)
               .backgroundColor(this.pal().surface).fontColor(this.accentColor)
-              .onClick((): void => { this.addingRelay = true; })
+              .onClick((): void => { this.manageRelays(); })
           }
         } else {
           Text('直连仅支持设备密码，不能请求被控端批准。').fontSize(12).fontColor(this.pal().danger)
@@ -253,6 +263,26 @@ export struct RustDeskAddFlow {
       } else {
         this.field('名称', this.label, '例如：办公室电脑', (v: string): void => { this.label = v; })
         this.field('控制 ID', this.controlId, 'RustDesk 设备 ID', (v: string): void => { this.controlId = v; })
+        Text('控制目标').fontSize(12).fontColor(this.pal().text2).margin({ bottom: 5 })
+        Row() {
+          this.targetButton('控制电脑', 'Windows / macOS / Linux', 'computer')
+          Blank().width(8)
+          this.targetButton('控制手机', 'Android / iPhone / 平板', 'phone')
+        }.width('100%').margin({ bottom: 10 })
+        Row() {
+          Column() {
+            Text('自适应翻转').fontSize(13).fontColor(this.pal().text)
+            Text(this.targetDevice === 'phone' ?
+              '根据手机方向切换本机窗口，默认关闭' : '仅控制手机时可用')
+              .fontSize(10).fontColor(this.pal().text3).margin({ top: 3 })
+          }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+          Toggle({ type: ToggleType.Switch, isOn: this.adaptiveOrientation })
+            .selectedColor(this.accentColor).scale({ x: 0.86, y: 0.86 })
+            .enabled(this.targetDevice === 'phone')
+            .onChange((on: boolean): void => {
+              this.adaptiveOrientation = this.targetDevice === 'phone' && on;
+            })
+        }.width('100%').margin({ bottom: 12 })
         if (this.direct) {
           this.field('直连 IP', this.directHost, '例如：192.168.1.10', (v: string): void => { this.directHost = v; })
           this.field('直连端口', this.directPortText, this.defaultDirectPort.toString(),
@@ -277,7 +307,10 @@ export struct RustDeskAddFlow {
             .onClick((): void => { const host = this.buildHost(); if (host) { this.onSave(host, true); } })
         }.width('100%')
       }
-      if (this.errorText !== '') { Text(this.errorText).fontSize(12).fontColor(this.pal().danger).margin({ top: 10 }) }
+      if (this.errorText !== '') {
+        Text(this.errorText).fontSize(12).fontColor(this.pal().danger)
+          .width('100%').margin({ top: 10 })
+      }
     }.width('100%').padding({ left: 20, right: 20, top: 20, bottom: 22 }).backgroundColor(this.pal().card)
   }
 }

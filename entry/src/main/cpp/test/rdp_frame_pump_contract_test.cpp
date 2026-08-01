@@ -17,6 +17,10 @@ static_assert(std::is_same<decltype(&RdpFramePump::submitLatest),
     bool (RdpFramePump::*)(RdpFrameSubmission&&)>::value,
     "RdpFramePump must accept owned damage-source signals");
 
+static_assert(std::is_same<decltype(&RdpFramePump::requestTransformRefresh),
+    void (RdpFramePump::*)()>::value,
+    "RdpFramePump must redraw a retained frame without requesting a GDI snapshot");
+
 static_assert(std::is_same<decltype(RdpFrameSubmission::damageSource),
     std::shared_ptr<RdpDamageAccumulator>>::value,
     "RdpFrameSubmission pixels must come from the owned damage accumulator");

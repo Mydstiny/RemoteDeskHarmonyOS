@@ -33,6 +33,9 @@ enum SshError {
     ERR_SSH_CONNECT_TIMEOUT     = -13,
     ERR_SSH_DNS_RESOLVE         = -14,
     ERR_SSH_BANNER_INVALID      = -15,
+    ERR_SSH_PROXY_INVALID       = -16,
+    ERR_SSH_PROXY_AUTH          = -17,
+    ERR_SSH_PROXY_FAILED        = -18,
 
     // SSH 协议层 (-2x)
     ERR_SSH_SESSION_INIT        = -21,
@@ -50,12 +53,23 @@ enum SshError {
     ERR_SSH_CHANNEL_OPEN        = -41,
     ERR_SSH_CHANNEL_CLOSED      = -42,
     ERR_SSH_PTY_FAILED          = -43,
+    ERR_SSH_COMMAND_TIMEOUT     = -45,
+    ERR_SSH_SUBSYSTEM_FAILED    = -46,
     ERR_SSH_SHELL_FAILED        = -44,
 
     // 数据传输层 (-5x)
     ERR_SSH_READ_FAILED         = -51,
     ERR_SSH_WRITE_FAILED        = -52,
     ERR_SSH_SESSION_CLOSED      = -53,
+    ERR_SSH_OUTPUT_LIMIT        = -54,
+};
+
+struct SshCommandResult {
+    int exitCode = -1;
+    bool signaled = false;
+    std::string signal;
+    std::vector<uint8_t> stdoutBytes;
+    std::vector<uint8_t> stderrBytes;
 };
 
 class SshAdapter : public ProtocolAdapter {
@@ -71,6 +85,9 @@ public:
     int connect(const ConnectionConfig& cfg) override;
     void disconnect() override;
     ConnectionState getState() override;
+
+    /** 请求取消尚未完成的 SSH 连接；不会阻塞调用线程。 */
+    void requestConnectCancel();
 
     void sendKey(uint32_t scancode, bool pressed) override;
     void sendMouse(int x, int y, MouseButton button, bool pressed) override;
@@ -111,9 +128,24 @@ public:
                               const std::string& privateKeyPem,
                               const std::string& passphrase = "");
 
+    /** 使用 keyboard-interactive 认证，支持预置 MFA/OTP 响应。 */
+    int authenticateKeyboardInteractive();
+
+    /** 在独立 SSH channel 上执行命令，不影响交互式 Shell。 */
+    int executeCommand(const std::string& command, SshCommandResult& result,
+                       int timeoutMs = 30000);
+
+    /** 在独立 SSH channel 上启动 subsystem 并收集其输出。 */
+    int executeSubsystem(const std::string& subsystem, SshCommandResult& result,
+                         int timeoutMs = 30000);
+
+    /** 向交互式 Shell channel 发送 SSH signal / EOF。 */
+    int sendChannelSignal(const std::string& signal);
+    int sendChannelEof();
+
     // ---- 推送式数据回调 (替代 50ms 轮询) ----
 
-    using DataCallback = std::function<void(const std::string&)>;
+    using DataCallback = std::function<void(const std::vector<uint8_t>&)>;
 
     /** 设置推送回调 — 后台 reader 线程读到数据后立即调用. nullptr 关闭推送. */
     void setOnDataCallback(DataCallback cb);
@@ -133,7 +165,7 @@ public:
 
 private:
     int sockFd_;
-    ConnectionState state_;
+    std::atomic<ConnectionState> state_;
     ConnectionStateCallback stateCallback_;
     std::string serverBanner_;
     bool authenticated_;
@@ -144,12 +176,18 @@ private:
     LIBSSH2_SFTP* sftp_;
     ConnectionConfig savedCfg_;
 
-    void setState(ConnectionState s);
+    void setState(ConnectionState s, const std::string& message = "");
 
     // exchangeBanner() 已移除 — libssh2 内部处理 banner
 
     /** POSIX socket 连接 */
     int tcpConnect(const std::string& host, int port);
+
+    /** 在已连接的代理 socket 上完成 HTTP CONNECT/SOCKS5 握手。 */
+    int connectThroughProxy(const ConnectionConfig& cfg);
+    int sendSocketBytes(const uint8_t* data, size_t len, int timeoutSec);
+    int receiveSocketBytes(uint8_t* data, size_t len, int timeoutSec);
+    int receiveProxyHeaders(std::string& headers, size_t maxLen, int timeoutSec);
 
     // ---- SSH 协议方法 (libssh2 集成) ----
 
@@ -158,6 +196,12 @@ private:
 
     /** 密码认证 */
     int authenticatePassword();
+
+    /** keyboard-interactive 认证回调 */
+    static void keyboardInteractiveCallback(
+        const char* name, int nameLen, const char* instruction, int instructionLen,
+        int numPrompts, const LIBSSH2_USERAUTH_KBDINT_PROMPT* prompts,
+        LIBSSH2_USERAUTH_KBDINT_RESPONSE* responses, void** abstract);
 
     /** 打开 SSH 会话通道 */
     int openChannel();
@@ -175,11 +219,13 @@ private:
     std::thread        readerThread_;
     std::atomic<bool>  readerRunning_{false};
     DataCallback       onDataCallback_;
-    std::string        pendingData_;             // 回调注册前到达的首批 shell 输出
     std::mutex         callbackMutex_;          // 保护 onDataCallback_
-    std::mutex         sessionMutex_;           // 串行化 libssh2 session/channel 操作
+    std::mutex         stateCallbackMutex_;     // 保护 stateCallback_
+    mutable std::mutex sessionMutex_;           // 串行化 libssh2 session/channel 操作
+    std::recursive_mutex lifecycleMutex_;       // 串行化 connect/disconnect 生命周期
+    std::atomic<bool> connectCancelRequested_{false};
 
-    /** 后台循环: select(100ms) → libssh2_channel_read → cb(data) */
+    /** 后台循环: select(100ms) → libssh2_channel_read → cb(bytes) */
     void readerLoop();
 
     /** 启动 / 停止 reader 线程 */
@@ -188,6 +234,9 @@ private:
 
     /** 确保 SFTP 子系统已初始化。调用方必须持有 sessionMutex_。 */
     int ensureSftpLocked();
+
+    int executeChannelRequest(const std::string& request, bool subsystem,
+                              SshCommandResult& result, int timeoutMs);
 };
 
 /** 注册到 ExtensionSystem */

@@ -2,7 +2,7 @@
  * AuthService.ets — 华为账号认证服务
  * 封装 HMS Account Kit 登录状态管理
  */
-import { UserAccount } from '../model/UserAccount';
+import { UserAccount, UserAccountJSON } from '../model/UserAccount';
 
 export class AuthService {
   private static instance: AuthService;
@@ -21,6 +21,14 @@ export class AuthService {
 
   getCurrentUser(): UserAccount {
     return this.currentUser;
+  }
+
+  sessionSnapshot(): UserAccountJSON {
+    return this.currentUser.toJSON();
+  }
+
+  restoreSessionSnapshot(snapshot: UserAccountJSON): void {
+    this.currentUser = UserAccount.fromJSON(snapshot);
   }
 
   getUnionId(): string {
@@ -42,8 +50,8 @@ export class AuthService {
   /**
    * 记录 HMS 登录成功
    */
-  setLoginResult(unionId: string, displayName: string, avatarUrl: string, token: string): void {
-    this.currentUser.setLoggedIn(unionId, displayName, avatarUrl, token);
+  setLoginResult(unionId: string, displayName: string, avatarUrl: string, token: string): boolean {
+    return this.currentUser.setLoggedIn(unionId, displayName, avatarUrl, token);
   }
 
   async logout(): Promise<void> {

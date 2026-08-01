@@ -4,7 +4,9 @@
 
 #include "rdp_frame_pump.h"
 #include "render/gl_renderer.h"
+#include "rdp_transform_refresh_policy.h"
 
+#include <algorithm>
 #include <chrono>
 #include <exception>
 #include <hilog/log.h>
@@ -38,6 +40,8 @@ bool RdpFramePump::start() {
     ++pumpGeneration_;
     running_ = true;
     hasFrame_ = false;
+    transformRefreshRequested_ = false;
+    transformRefreshSequence_ = 0;
     frame_ = RdpFrameSubmission();
     fullResyncRequired_.store(true, std::memory_order_release);
     metrics_.reset(SteadyNowUs());
@@ -71,6 +75,8 @@ void RdpFramePump::stop() {
         running_ = false;
         ++pumpGeneration_;
         hasFrame_ = false;
+        transformRefreshRequested_ = false;
+        transformRefreshSequence_ = 0;
         frame_ = RdpFrameSubmission();
     }
     cv_.notify_all();
@@ -108,6 +114,18 @@ bool RdpFramePump::submitLatest(RdpFrameSubmission&& submission) {
     return true;
 }
 
+void RdpFramePump::requestTransformRefresh() {
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!running_) {
+            return;
+        }
+        transformRefreshRequested_ = true;
+        ++transformRefreshSequence_;
+    }
+    cv_.notify_one();
+}
+
 void RdpFramePump::invalidatePending() {
     bool rejectedPending = false;
     uint64_t rendererGeneration = 0;
@@ -116,6 +134,8 @@ void RdpFramePump::invalidatePending() {
         ++pumpGeneration_;
         rejectedPending = hasFrame_;
         hasFrame_ = false;
+        transformRefreshRequested_ = false;
+        transformRefreshSequence_ = 0;
         frame_ = RdpFrameSubmission();
         fullResyncRequired_.store(true, std::memory_order_release);
     }
@@ -132,34 +152,85 @@ void RdpFramePump::invalidatePending() {
 void RdpFramePump::loop() {
     OH_LOG_INFO(LOG_APP, "[RDP-PUMP] render worker started");
     int64_t nextPresentAtUs = 0;
+    int64_t nextTransformPresentAtUs = 0;
     while (true) {
         RdpFrameSubmission frame;
+        bool renderRetainedTransform = false;
+        uint64_t selectedPumpGeneration = 0;
+        uint64_t transformSequenceAtSourceSelection = 0;
         {
             std::unique_lock<std::mutex> lock(mutex_);
             while (running_) {
-                cv_.wait(lock, [this]() { return !running_ || hasFrame_; });
-                if (!running_) {
-                    break;
-                }
                 const int64_t nowUs = SteadyNowUs();
-                if (!RdpFrameScheduler::IsDue(nowUs, nextPresentAtUs)) {
-                    cv_.wait_for(lock, std::chrono::microseconds(nextPresentAtUs - nowUs));
+                const RdpTransformRefreshDecision decision = DecideRdpTransformRefresh(
+                    hasFrame_, transformRefreshRequested_, nowUs,
+                    nextPresentAtUs, nextTransformPresentAtUs);
+                if (decision.action == RdpTransformRefreshAction::PresentSourceFrame) {
+                    frame = std::move(frame_);
+                    frame_ = RdpFrameSubmission();
+                    hasFrame_ = false;
+                    if (frame.pumpGeneration == pumpGeneration_) {
+                        selectedPumpGeneration = pumpGeneration_;
+                        transformSequenceAtSourceSelection = transformRefreshSequence_;
+                        break;
+                    }
+                    frame = RdpFrameSubmission();
                     continue;
                 }
-                frame = std::move(frame_);
-                frame_ = RdpFrameSubmission();
-                hasFrame_ = false;
-                if (frame.pumpGeneration == pumpGeneration_) {
+                if (decision.action == RdpTransformRefreshAction::PresentRetainedFrame) {
+                    transformRefreshRequested_ = false;
+                    selectedPumpGeneration = pumpGeneration_;
+                    renderRetainedTransform = true;
                     break;
                 }
-                frame = RdpFrameSubmission();
+
+                if (decision.waitUntilUs == 0) {
+                    cv_.wait(lock, [this]() {
+                        return !running_ || hasFrame_ || transformRefreshRequested_;
+                    });
+                    continue;
+                }
+                const int64_t waitUs = std::max<int64_t>(1, decision.waitUntilUs - nowUs);
+                cv_.wait_for(lock, std::chrono::microseconds(waitUs));
             }
             if (!running_) {
                 break;
             }
-            if (!frame.damageSource) {
-                continue;
+        }
+
+        if (renderRetainedTransform) {
+            RdpPresentMetrics present;
+            present.retainedFrame = true;
+            const RdpPresentationTarget target = RendererNapi::GetActivePresentationTarget();
+            try {
+                present.generation = target.generation;
+                present = target.ready() ?
+                    RendererNapi::PresentRetainedActive(target.generation) : RdpPresentMetrics();
+                if (!target.ready()) {
+                    present.result = target.rejection;
+                    present.generation = target.generation;
+                    present.retainedFrame = true;
+                }
+            } catch (const std::exception& e) {
+                present.result = RdpPresentResult::Exception;
+                OH_LOG_ERROR(LOG_APP, "[RDP-PUMP] retained transform exception: %{public}s", e.what());
+            } catch (...) {
+                present.result = RdpPresentResult::Exception;
+                OH_LOG_ERROR(LOG_APP, "[RDP-PUMP] retained transform exception: unknown");
             }
+            if (present.presented()) {
+                rendered_.fetch_add(1, std::memory_order_relaxed);
+                lastWorkerCostUs_.store(present.workerUs(), std::memory_order_release);
+            } else {
+                rejected_.fetch_add(1, std::memory_order_relaxed);
+            }
+            metrics_.recordPresent(SteadyNowUs(), present);
+            nextTransformPresentAtUs = NextRdpTransformRefreshDeadlineUs(SteadyNowUs());
+            emitPresentationMetricsWindow();
+            continue;
+        }
+        if (!frame.damageSource) {
+            continue;
         }
 
         const int64_t queueWaitUs =
@@ -167,6 +238,18 @@ void RdpFramePump::loop() {
         const int64_t snapshotBeginUs = SteadyNowUs();
         RdpDamageSnapshot snapshot = frame.damageSource->takeSnapshot();
         const int64_t snapshotCopyUs = SteadyNowUs() - snapshotBeginUs;
+        if (snapshot.deferred) {
+            metrics_.recordDeferred(SteadyNowUs());
+            if (snapshot.retryAtUs > nextPresentAtUs) {
+                nextPresentAtUs = snapshot.retryAtUs;
+            }
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (running_ && !hasFrame_ && frame.pumpGeneration == pumpGeneration_) {
+                frame_ = std::move(frame);
+                hasFrame_ = true;
+            }
+            continue;
+        }
         if (snapshot.valid) {
             metrics_.recordCopy(SteadyNowUs(), snapshot.snapshotCopiedBytes, snapshotCopyUs);
         } else if (!frame.damageSource->hasPending()) {
@@ -175,6 +258,7 @@ void RdpFramePump::loop() {
 
         RdpPresentMetrics present;
         present.generation = snapshot.rendererGeneration;
+        present.fullFrame = snapshot.fullFrame;
         try {
             if (!snapshot.valid || snapshot.pixels.empty()) {
                 present.result = RdpPresentResult::InvalidFrame;
@@ -200,6 +284,15 @@ void RdpFramePump::loop() {
         if (present.presented()) {
             rendered_.fetch_add(1, std::memory_order_relaxed);
             lastWorkerCostUs_.store(present.workerUs(), std::memory_order_release);
+            // The source frame sampled the newest transform. Clear only the
+            // request that existed before it began so a newer UI update still
+            // receives its own retained redraw.
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (running_ && selectedPumpGeneration == pumpGeneration_ &&
+                transformRefreshRequested_ &&
+                transformRefreshSequence_ == transformSequenceAtSourceSelection) {
+                transformRefreshRequested_ = false;
+            }
         } else {
             rejected_.fetch_add(1, std::memory_order_relaxed);
             if (present.result == RdpPresentResult::SurfaceDetached ||
@@ -213,40 +306,50 @@ void RdpFramePump::loop() {
         glUploadGate_.recordPresent(present);
         metrics_.recordPresent(SteadyNowUs(), present);
         nextPresentAtUs = scheduler_.nextDeadlineUs(SteadyNowUs());
-
-        RdpPresentationMetricsSnapshot window;
-        if (metrics_.takeCompletedWindow(window)) {
-            const RdpGlUploadGateSnapshot uploadGate = glUploadGate_.snapshot();
-            OH_LOG_INFO(LOG_APP,
-                "[RDP-PRESENT] submitted=%{public}llu presented=%{public}llu replaced=%{public}llu"
-                " rejected=%{public}llu detached=%{public}llu copied=%{public}llu"
-                " callbackP95=%{public}lldus queueP95=%{public}lldus uploadP95=%{public}lldus"
-                " drawP95=%{public}lldus swapP95=%{public}lldus workerP95=%{public}lldus"
-                " targetFps=%{public}d schedulerP95=%{public}lldus adaptations=%{public}llu"
-                " uploadGate=%{public}s uploadSwapP95=%{public}lldus"
-                " uploadShare=%{public}dpermille gateSamples=%{public}llu",
-                static_cast<unsigned long long>(window.submittedFrames),
-                static_cast<unsigned long long>(window.presentedFrames),
-                static_cast<unsigned long long>(window.replacedFrames),
-                static_cast<unsigned long long>(window.rejectedFrames),
-                static_cast<unsigned long long>(window.surfaceDetachedRejections),
-                static_cast<unsigned long long>(window.copiedBytes),
-                static_cast<long long>(window.callbackUs.p95),
-                static_cast<long long>(window.queueWaitUs.p95),
-                static_cast<long long>(window.uploadUs.p95),
-                static_cast<long long>(window.drawUs.p95),
-                static_cast<long long>(window.swapUs.p95),
-                static_cast<long long>(window.workerUs.p95),
-                scheduler_.targetFps(),
-                static_cast<long long>(scheduler_.lastP95Us()),
-                static_cast<unsigned long long>(scheduler_.adaptationCount()),
-                RdpGlUploadGate::DecisionName(uploadGate.decision),
-                static_cast<long long>(uploadGate.uploadSwapP95Us),
-                uploadGate.uploadSwapSharePermille,
-                static_cast<unsigned long long>(uploadGate.evaluatedSamples));
-        }
+        nextTransformPresentAtUs = NextRdpTransformRefreshDeadlineUs(SteadyNowUs());
+        emitPresentationMetricsWindow();
     }
     OH_LOG_INFO(LOG_APP, "[RDP-PUMP] render worker stopped");
+}
+
+void RdpFramePump::emitPresentationMetricsWindow() {
+    RdpPresentationMetricsSnapshot window;
+    if (!metrics_.takeCompletedWindow(window)) {
+        return;
+    }
+    const RdpGlUploadGateSnapshot uploadGate = glUploadGate_.snapshot();
+    OH_LOG_INFO(LOG_APP,
+        "[RDP-PRESENT] submitted=%{public}llu presented=%{public}llu replaced=%{public}llu"
+        " rejected=%{public}llu detached=%{public}llu copied=%{public}llu"
+        " full=%{public}llu dirty=%{public}llu transform=%{public}llu deferred=%{public}llu"
+        " callbackP95=%{public}lldus queueP95=%{public}lldus uploadP95=%{public}lldus"
+        " drawP95=%{public}lldus swapP95=%{public}lldus workerP95=%{public}lldus"
+        " targetFps=%{public}d schedulerP95=%{public}lldus adaptations=%{public}llu"
+        " uploadGate=%{public}s uploadSwapP95=%{public}lldus"
+        " uploadShare=%{public}dpermille gateSamples=%{public}llu",
+        static_cast<unsigned long long>(window.submittedFrames),
+        static_cast<unsigned long long>(window.presentedFrames),
+        static_cast<unsigned long long>(window.replacedFrames),
+        static_cast<unsigned long long>(window.rejectedFrames),
+        static_cast<unsigned long long>(window.surfaceDetachedRejections),
+        static_cast<unsigned long long>(window.copiedBytes),
+        static_cast<unsigned long long>(window.fullFramePresents),
+        static_cast<unsigned long long>(window.dirtyRectPresents),
+        static_cast<unsigned long long>(window.retainedFramePresents),
+        static_cast<unsigned long long>(window.deferredSnapshots),
+        static_cast<long long>(window.callbackUs.p95),
+        static_cast<long long>(window.queueWaitUs.p95),
+        static_cast<long long>(window.uploadUs.p95),
+        static_cast<long long>(window.drawUs.p95),
+        static_cast<long long>(window.swapUs.p95),
+        static_cast<long long>(window.workerUs.p95),
+        scheduler_.targetFps(),
+        static_cast<long long>(scheduler_.lastP95Us()),
+        static_cast<unsigned long long>(scheduler_.adaptationCount()),
+        RdpGlUploadGate::DecisionName(uploadGate.decision),
+        static_cast<long long>(uploadGate.uploadSwapP95Us),
+        uploadGate.uploadSwapSharePermille,
+        static_cast<unsigned long long>(uploadGate.evaluatedSamples));
 }
 
 void RdpFramePump::recordInvalid(uint64_t pixels, int64_t callbackUs, int64_t nowUs) {

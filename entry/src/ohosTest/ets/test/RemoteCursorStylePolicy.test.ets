@@ -9,6 +9,7 @@ import {
   shouldRenderCircleCursor,
   shouldRenderRemoteCursorArrow,
   shouldRenderRemoteCursorFallbackIndicator,
+  shouldRenderVncLocalPointerFallback,
   shouldRefreshRemoteCursorBitmap,
   shouldApplyCloudVirtualMouseStyle,
   VIRTUAL_MOUSE_STYLE_RESTORE_VERSION,
@@ -54,6 +55,12 @@ export default function remoteCursorStylePolicyTest(): void {
       expect(shouldRenderRemoteCursorFallbackIndicator(true, false, true, true)).assertFalse();
       expect(shouldRenderRemoteCursorFallbackIndicator(true, true, false, true)).assertFalse();
       expect(shouldRenderRemoteCursorFallbackIndicator(true, true, true, false)).assertFalse();
+    });
+
+    it('keeps_a_controller_pointer_for_vnc_without_native_cursor_shape', 0, (): void => {
+      expect(shouldRenderVncLocalPointerFallback(true, true, true, true, false)).assertTrue();
+      expect(shouldRenderVncLocalPointerFallback(true, true, true, true, true)).assertFalse();
+      expect(shouldRenderVncLocalPointerFallback(false, true, true, true, false)).assertFalse();
     });
 
     it('never_renders_the_fallback_bitmap_as_an_authoritative_arrow', 0, (): void => {

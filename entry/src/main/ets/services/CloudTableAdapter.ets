@@ -7,7 +7,9 @@
 
 const CLOUD_COLUMNS: Record<string, string[]> = {
   'cryptoparams': ['id', 'key', 'value'],
-  'rdpcredentials': ['id', 'label', 'password', 'createdat', 'updatedat'],
+  'rdpcredentials': [
+    'id', 'userid', 'label', 'username', 'password', 'createdat', 'updatedat'
+  ],
   'remotehosts': [
     'id', 'userid', 'label', 'protocol', 'host', 'port', 'username', 'passward',
     'customhostname', 'sshusekey', 'sshkeypath', 'sshkeydata', 'proxyhost', 'proxyport',
@@ -28,7 +30,14 @@ const CLOUD_COLUMNS: Record<string, string[]> = {
     'id', 'userid', 'issuer', 'account', 'secret', 'algorithm', 'digits', 'period', 'iconurl',
     'locked', 'locktype', 'syncversion', 'createdat', 'updatedat'
   ],
-  'usersettings': ['id', 'userid', 'payload', 'schemaversion', 'updatedat']
+  'usersettings': ['id', 'userid', 'payload', 'schemaversion', 'updatedat'],
+  // VNC owns one cloud table. Logical record types are separated by
+  // `recordtype`; no VNC column is added to an existing protocol table.
+  'vncrecordv2': [
+    'id', 'userid', 'recordtype', 'ownerid', 'ownertype', 'secretkind', 'payload', 'ciphertext',
+    'envelopeversion', 'cryptoversion', 'keyversion', 'aadversion', 'payloadhashsha256',
+    'syncversion', 'schemaversion', 'resetepoch', 'createdat', 'updatedat', 'deletedat'
+  ]
 };
 
 const LOCAL_ONLY_COLUMNS: Record<string, string[]> = {
@@ -42,27 +51,24 @@ const LOCAL_ONLY_COLUMNS: Record<string, string[]> = {
     'rustdeskpasswordmode', 'rustdeskauthmode', 'rustdeskdirectenabled',
     'rustdeskdirecthost', 'rustdeskdirectport', 'rdpcredentialid', 'sourcetype',
     'rustdeskproaccountid', 'rustdeskpropeerid', 'rustdeskproplatform',
-    'rustdeskpromanaged', 'rustdeskprolastseenat', 'rustdeskprosyncerror'
+    'rustdeskpromanaged', 'rustdeskprolastseenat', 'rustdeskprosyncerror',
+    'rustdesktargetdevice', 'rustdeskadaptiveorientation'
   ],
-  'rdpcredentials': ['username'],
   'sshkeys': ['formatversion', 'privatekeyencrypted'],
   'usersettings': ['key', 'value']
 };
 
 // 这些字段在既有 remotehosts 云表中没有独立列，但属于跨设备连接配置。
-// password 已由 passward 同步；sshkeypassphrase 不进入复用字段，避免敏感值泄漏。
+// 密码、SSH/RDP 设备信任和本机授权决策绝不进入该扩展。
 const REMOTE_HOST_CLOUD_EXTENSION_COLUMNS: string[] = [
-  'sshkeyid', 'sshhostkeyalgorithm', 'sshhostkeyfingerprintsha256',
-  'sshhostkeyrawbase64', 'sshhostkeytrustedat', 'sshhostkeytrustmode',
-  'rdpcertificatefingerprintsha256', 'rdpcertificatesubject', 'rdpcertificateissuer',
-  'rdpcertificatecommonname', 'rdpcertificatetrustedat', 'rdpcertificatetrustmode',
-  'rdpcertificateallowuntrustedroot', 'rdpcertificateallowhostmismatch',
-  'rustdeskrelayid', 'rustdeskaccountid', 'rustdeskpasswordmode', 'rustdeskauthmode',
-  'rustdeskdirectenabled', 'rustdeskdirecthost', 'rustdeskdirectport',
+  'sshkeyid', 'rustdeskrelayid', 'rustdeskaccountid',
+  'rustdeskpasswordmode', 'rustdeskauthmode',
+  'rustdeskdirectenabled', 'rustdeskdirecthost', 'rustdeskdirectport', 'sshproxytype',
+  'rustdesktotpentryid', 'rustdesktotpautosubmit',
   'rdpcredentialid', 'rdpauthmode', 'rdprestrictedadminsecretsource', 'sourcetype',
   'rustdeskproaccountid', 'rustdeskpropeerid',
   'rustdeskproplatform', 'rustdeskpromanaged', 'rustdeskprolastseenat',
-  'rustdeskprosyncerror'
+  'rustdeskprosyncerror', 'rustdesktargetdevice', 'rustdeskadaptiveorientation'
 ];
 
 const REMOTE_HOST_EXTENSION_KEY: string = '_remoteDeskExtensionV1';

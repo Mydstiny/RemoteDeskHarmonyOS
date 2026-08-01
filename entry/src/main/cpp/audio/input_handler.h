@@ -12,6 +12,7 @@
 #include "extensions/protocol_adapter.h"
 #include <cstdint>
 #include <memory>
+#include <mutex>
 
 class InputHandler {
 public:
@@ -31,6 +32,7 @@ public:
 
 private:
     InputHandler() = default;
+    std::mutex activeAdapterMutex_;
     std::shared_ptr<ProtocolAdapter> activeAdapter_;
 };
 

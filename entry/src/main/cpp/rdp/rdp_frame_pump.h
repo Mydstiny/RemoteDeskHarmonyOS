@@ -33,6 +33,8 @@ public:
     bool start();
     void stop();
     bool submitLatest(RdpFrameSubmission&& submission);
+    /** Request a transform-only redraw; caller only wakes this worker. */
+    void requestTransformRefresh();
     void invalidatePending();
     bool isRunning() const;
 
@@ -53,12 +55,16 @@ public:
 
 private:
     void loop();
+    /** Emits a completed one-second window from either source or retained redraws. */
+    void emitPresentationMetricsWindow();
 
     mutable std::mutex mutex_;
     std::condition_variable cv_;
     std::thread worker_;
     bool running_ = false;
     bool hasFrame_ = false;
+    bool transformRefreshRequested_ = false;
+    uint64_t transformRefreshSequence_ = 0;
     uint64_t pumpGeneration_ = 0;
     RdpFrameSubmission frame_;
     RdpPresentationMetrics metrics_;

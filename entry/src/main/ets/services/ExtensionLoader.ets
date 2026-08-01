@@ -12,14 +12,21 @@ import {
   SshPublicKeyInstallResult,
   SshAuthTestResult,
   SshHostKeyInfo,
+  SshProxyConfig,
   RdpCertificateInfo,
   RdpRenderStats,
   RendererViewport,
   RustDeskDisplayCapabilities,
+  RustDeskDisplaySwitchRequest,
   RustDeskDiagnosticsSnapshot,
   LocalResourceStats,
   RemoteCursorSnapshot,
-  SessionTransferStatus
+  SessionTransferStatus,
+  SshCommandResult,
+  SftpListAsyncResult,
+  SftpReadAsyncResult,
+  SftpWriteAsyncResult,
+  SftpMutationAsyncResult
 } from '../types/rdpnapi';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import {
@@ -38,6 +45,7 @@ const DOMAIN = 0x0013;
 export class ExtensionLoader {
   private static instance: ExtensionLoader;
   private currentSessionId: number = -1;
+  private sshConnectGeneration: number = 0;
   private rendererHandle: number = -1;
   private decoderHandle: number = -1;
   private audioPlayerHandle: number = -1;
@@ -52,6 +60,7 @@ export class ExtensionLoader {
   // ====== 协议连接 ======
 
   connect(config: SessionConfig): number {
+    this.sshConnectGeneration++;
     try {
       this.currentSessionId = rdpnapi.connect(config) as number;
       return this.currentSessionId;
@@ -61,7 +70,34 @@ export class ExtensionLoader {
     }
   }
 
+  async connectSshAsync(config: SessionConfig): Promise<number> {
+    const generation: number = ++this.sshConnectGeneration;
+    try {
+      const pendingPromise: Promise<number> = rdpnapi.connectSshAsync(config) as Promise<number>;
+      // The native Promise resolves only after DNS/KEX/authentication. Make
+      // the reserved session visible immediately so page teardown can cancel
+      // a connection that is still in flight.
+      const pendingId: number = rdpnapi.getPendingSshConnectId() as number;
+      if (generation === this.sshConnectGeneration && pendingId > 0) {
+        this.currentSessionId = pendingId;
+      }
+      const result: number = await pendingPromise;
+      if (generation !== this.sshConnectGeneration) {
+        return -1;
+      }
+      this.currentSessionId = result;
+      return result;
+    } catch (err) {
+      hilog.error(DOMAIN, TAG, '[ExtensionLoader] connectSshAsync: ' + JSON.stringify(err));
+      if (generation === this.sshConnectGeneration) {
+        this.currentSessionId = -1;
+      }
+      return -1;
+    }
+  }
+
   disconnect(): number {
+    this.sshConnectGeneration++;
     let requestId: number = 0;
     try {
       if (this.currentSessionId > 0 || this.rendererHandle > 0 ||
@@ -83,6 +119,7 @@ export class ExtensionLoader {
   }
 
   disconnectAll(): number {
+    this.sshConnectGeneration++;
     let requestId: number = 0;
     try {
       requestId = rdpnapi.disconnectAll(
@@ -254,14 +291,14 @@ export class ExtensionLoader {
     }
   }
 
-  getRustDeskDiagnostics(sessionId: number): RustDeskDiagnosticsSnapshot {
+  getSessionDiagnostics(sessionId: number): RustDeskDiagnosticsSnapshot {
     try {
-      return rdpnapi.getRustDeskDiagnostics(sessionId) as RustDeskDiagnosticsSnapshot;
+      return rdpnapi.getSessionDiagnostics(sessionId) as RustDeskDiagnosticsSnapshot;
     } catch (err) {
       const nowMs: number = Date.now();
       if (nowMs - this.diagnosticsLastErrorAtMs >= 5000) {
         this.diagnosticsLastErrorAtMs = nowMs;
-        hilog.warn(DOMAIN, TAG, '[ExtensionLoader] getRustDeskDiagnostics unavailable: ' + JSON.stringify(err));
+        hilog.warn(DOMAIN, TAG, '[ExtensionLoader] getSessionDiagnostics unavailable: ' + JSON.stringify(err));
       }
       return {
         supported: false, sessionActive: false, protocolSnapshotAvailable: false,
@@ -271,13 +308,22 @@ export class ExtensionLoader {
         audioFrames: 0, cadenceGaps: 0, maxCadenceGapMs: 0, testDelayCount: 0,
         receivedFps: 0, displayFps: 0, decodeFps: 0, bitrateKbps: 0,
         codec: -1, width: 0, height: 0, connectionPath: 'unknown', lastFrameAtMs: 0,
-        lastFrameAgeMs: -1,
+        lastFrameAgeMs: -1, lastPresentedAtMs: 0, lastPresentedFrameAgeMs: -1,
         decodeOk: 0, decodeErrors: 0, decodeP50Us: 0, decodeP95Us: 0, decodeMaxUs: 0,
-        presentedFrames: 0, presentationWindowSamples: 0, presentationWindowMs: 0,
+        presentedFrames: 0, presentationRejected: 0,
+        lastDirtyX: -1, lastDirtyY: -1, lastDirtyWidth: 0, lastDirtyHeight: 0,
+        requestedColorDepth: '', effectiveColorDepth: 0,
+        inputEventsSent: 0, inputEventsDropped: 0,
+        presentationWindowSamples: 0, presentationWindowMs: 0,
         renderP50Us: 0, renderP95Us: 0, renderMaxUs: 0,
         queueDepth: 0, queueMax: 0, droppedFrames: 0, decoderBackend: 'unknown'
       };
     }
+  }
+
+  /** Compatibility facade retained for RustDesk-specific callers. */
+  getRustDeskDiagnostics(sessionId: number): RustDeskDiagnosticsSnapshot {
+    return this.getSessionDiagnostics(sessionId);
   }
 
   getLocalResourceStats(includePro: boolean = true): LocalResourceStats {
@@ -436,14 +482,39 @@ export class ExtensionLoader {
       return {
         supported: false,
         currentDisplay: 0,
+        switchGeneration: 0,
+        readySwitchGeneration: 0,
+        pendingDisplay: -1,
+        inputBlocked: false,
         width: 0,
         height: 0,
         originalWidth: 0,
         originalHeight: 0,
         scaleMilli: 1000,
         geometryEpoch: 0,
-        resolutions: []
+        resolutions: [],
+        displays: []
       };
+    }
+  }
+
+  beginRustDeskDisplaySwitch(sessionId: number, display: number): RustDeskDisplaySwitchRequest {
+    try {
+      return rdpnapi.beginRustDeskDisplaySwitch(sessionId, display) as RustDeskDisplaySwitchRequest;
+    } catch (err) {
+      hilog.warn(DOMAIN, TAG,
+        '[ExtensionLoader] beginRustDeskDisplaySwitch unavailable: ' + JSON.stringify(err));
+      return { accepted: false, generation: 0 };
+    }
+  }
+
+  switchRustDeskDisplay(sessionId: number, display: number): boolean {
+    try {
+      return rdpnapi.switchRustDeskDisplay(sessionId, display) as boolean;
+    } catch (err) {
+      hilog.warn(DOMAIN, TAG,
+        '[ExtensionLoader] switchRustDeskDisplay unavailable: ' + JSON.stringify(err));
+      return false;
     }
   }
 
@@ -476,11 +547,12 @@ export class ExtensionLoader {
     }
   }
 
-  setRendererCanvasTransform(handle: number, scale: number, panX: number, panY: number): void {
+  setRendererCanvasTransform(handle: number, scale: number, panX: number, panY: number): number {
     try {
-      rdpnapi.setRendererCanvasTransform(handle, scale, panX, panY);
+      return rdpnapi.setRendererCanvasTransform(handle, scale, panX, panY) as number;
     } catch (err) {
       hilog.error(DOMAIN, TAG, '[ExtensionLoader] setRendererCanvasTransform: ' + JSON.stringify(err));
+      return 0;
     }
   }
 
@@ -652,12 +724,31 @@ export class ExtensionLoader {
     }
   }
 
+  async writeRemoteFileChunkAsync(sessionId: number, remotePath: string, data: ArrayBuffer,
+    offset: number, truncate: boolean): Promise<SftpWriteAsyncResult> {
+    try {
+      return await (rdpnapi.writeRemoteFileChunkAsync(sessionId, remotePath, data, offset, truncate) as Promise<SftpWriteAsyncResult>);
+    } catch (err) {
+      hilog.error(DOMAIN, TAG, '[ExtensionLoader] writeRemoteFileChunkAsync: ' + JSON.stringify(err));
+      return { errorCode: -1, bytesWritten: -1 };
+    }
+  }
+
   listRemoteDir(sessionId: number, remotePath: string): SftpFileEntry[] {
     try {
       return rdpnapi.listRemoteDir(sessionId, remotePath) as SftpFileEntry[];
     } catch (err) {
       hilog.error(DOMAIN, TAG, '[ExtensionLoader] listRemoteDir: ' + JSON.stringify(err));
       return [];
+    }
+  }
+
+  async listRemoteDirAsync(sessionId: number, remotePath: string): Promise<SftpListAsyncResult> {
+    try {
+      return await (rdpnapi.listRemoteDirAsync(sessionId, remotePath) as Promise<SftpListAsyncResult>);
+    } catch (err) {
+      hilog.error(DOMAIN, TAG, '[ExtensionLoader] listRemoteDirAsync: ' + JSON.stringify(err));
+      return { errorCode: -1, entries: [] };
     }
   }
 
@@ -679,12 +770,31 @@ export class ExtensionLoader {
     }
   }
 
+  async readRemoteFileChunkAsync(sessionId: number, remotePath: string, offset: number,
+    maxLen: number): Promise<SftpReadAsyncResult> {
+    try {
+      return await (rdpnapi.readRemoteFileChunkAsync(sessionId, remotePath, offset, maxLen) as Promise<SftpReadAsyncResult>);
+    } catch (err) {
+      hilog.error(DOMAIN, TAG, '[ExtensionLoader] readRemoteFileChunkAsync: ' + JSON.stringify(err));
+      return { errorCode: -1, data: new ArrayBuffer(0) };
+    }
+  }
+
   removeRemoteFile(sessionId: number, remotePath: string): number {
     try {
       return rdpnapi.removeRemoteFile(sessionId, remotePath) as number;
     } catch (err) {
       hilog.error(DOMAIN, TAG, '[ExtensionLoader] removeRemoteFile: ' + JSON.stringify(err));
       return -1;
+    }
+  }
+
+  async removeRemoteFileAsync(sessionId: number, remotePath: string): Promise<SftpMutationAsyncResult> {
+    try {
+      return await (rdpnapi.removeRemoteFileAsync(sessionId, remotePath) as Promise<SftpMutationAsyncResult>);
+    } catch (err) {
+      hilog.error(DOMAIN, TAG, '[ExtensionLoader] removeRemoteFileAsync: ' + JSON.stringify(err));
+      return { errorCode: -1 };
     }
   }
 
@@ -697,6 +807,15 @@ export class ExtensionLoader {
     }
   }
 
+  async removeRemoteDirAsync(sessionId: number, remotePath: string): Promise<SftpMutationAsyncResult> {
+    try {
+      return await (rdpnapi.removeRemoteDirAsync(sessionId, remotePath) as Promise<SftpMutationAsyncResult>);
+    } catch (err) {
+      hilog.error(DOMAIN, TAG, '[ExtensionLoader] removeRemoteDirAsync: ' + JSON.stringify(err));
+      return { errorCode: -1 };
+    }
+  }
+
   makeRemoteDir(sessionId: number, remotePath: string): number {
     try {
       return rdpnapi.makeRemoteDir(sessionId, remotePath) as number;
@@ -706,12 +825,31 @@ export class ExtensionLoader {
     }
   }
 
+  async makeRemoteDirAsync(sessionId: number, remotePath: string): Promise<SftpMutationAsyncResult> {
+    try {
+      return await (rdpnapi.makeRemoteDirAsync(sessionId, remotePath) as Promise<SftpMutationAsyncResult>);
+    } catch (err) {
+      hilog.error(DOMAIN, TAG, '[ExtensionLoader] makeRemoteDirAsync: ' + JSON.stringify(err));
+      return { errorCode: -1 };
+    }
+  }
+
   renameRemotePath(sessionId: number, oldPath: string, newPath: string): number {
     try {
       return rdpnapi.renameRemotePath(sessionId, oldPath, newPath) as number;
     } catch (err) {
       hilog.error(DOMAIN, TAG, '[ExtensionLoader] renameRemotePath: ' + JSON.stringify(err));
       return -1;
+    }
+  }
+
+  async renameRemotePathAsync(sessionId: number, oldPath: string,
+    newPath: string): Promise<SftpMutationAsyncResult> {
+    try {
+      return await (rdpnapi.renameRemotePathAsync(sessionId, oldPath, newPath) as Promise<SftpMutationAsyncResult>);
+    } catch (err) {
+      hilog.error(DOMAIN, TAG, '[ExtensionLoader] renameRemotePathAsync: ' + JSON.stringify(err));
+      return { errorCode: -1 };
     }
   }
 
@@ -739,6 +877,76 @@ export class ExtensionLoader {
     } catch (err) {
       hilog.error(DOMAIN, TAG, '[ExtensionLoader] readData: ' + JSON.stringify(err));
       return '';
+    }
+  }
+
+  execSshCommand(sessionId: number, command: string, timeoutMs: number = 30000): SshCommandResult {
+    try {
+      return rdpnapi.execSshCommand(sessionId, command, timeoutMs) as SshCommandResult;
+    } catch (err) {
+      hilog.error(DOMAIN, TAG, '[ExtensionLoader] execSshCommand: ' + JSON.stringify(err));
+      return {
+        errorCode: -53,
+        exitCode: -1,
+        signaled: false,
+        signal: '',
+        stdout: new ArrayBuffer(0),
+        stderr: new ArrayBuffer(0)
+      };
+    }
+  }
+
+  async execSshCommandAsync(sessionId: number, command: string,
+    timeoutMs: number = 30000): Promise<SshCommandResult> {
+    try {
+      return await rdpnapi.execSshCommandAsync(sessionId, command, timeoutMs) as SshCommandResult;
+    } catch (err) {
+      hilog.error(DOMAIN, TAG, '[ExtensionLoader] execSshCommandAsync: ' + JSON.stringify(err));
+      return {
+        errorCode: -53, exitCode: -1, signaled: false, signal: '',
+        stdout: new ArrayBuffer(0), stderr: new ArrayBuffer(0)
+      };
+    }
+  }
+
+  execSshSubsystem(sessionId: number, subsystem: string, timeoutMs: number = 30000): SshCommandResult {
+    try {
+      return rdpnapi.execSshSubsystem(sessionId, subsystem, timeoutMs) as SshCommandResult;
+    } catch (err) {
+      hilog.error(DOMAIN, TAG, '[ExtensionLoader] execSshSubsystem: ' + JSON.stringify(err));
+      return { errorCode: -46, exitCode: -1, signaled: false, signal: '',
+        stdout: new ArrayBuffer(0), stderr: new ArrayBuffer(0) };
+    }
+  }
+
+  async execSshSubsystemAsync(sessionId: number, subsystem: string,
+    timeoutMs: number = 30000): Promise<SshCommandResult> {
+    try {
+      return await rdpnapi.execSshSubsystemAsync(sessionId, subsystem, timeoutMs) as SshCommandResult;
+    } catch (err) {
+      hilog.error(DOMAIN, TAG, '[ExtensionLoader] execSshSubsystemAsync: ' + JSON.stringify(err));
+      return {
+        errorCode: -46, exitCode: -1, signaled: false, signal: '',
+        stdout: new ArrayBuffer(0), stderr: new ArrayBuffer(0)
+      };
+    }
+  }
+
+  sendSshSignal(sessionId: number, signal: string): number {
+    try {
+      return rdpnapi.sendSshSignal(sessionId, signal) as number;
+    } catch (err) {
+      hilog.error(DOMAIN, TAG, '[ExtensionLoader] sendSshSignal: ' + JSON.stringify(err));
+      return -53;
+    }
+  }
+
+  sendSshEof(sessionId: number): number {
+    try {
+      return rdpnapi.sendSshEof(sessionId) as number;
+    } catch (err) {
+      hilog.error(DOMAIN, TAG, '[ExtensionLoader] sendSshEof: ' + JSON.stringify(err));
+      return -53;
     }
   }
 
@@ -780,6 +988,15 @@ export class ExtensionLoader {
     }
   }
 
+  submitRustDesk2FA(sessionId: number, code: string): boolean {
+    try {
+      return rdpnapi.submitRustDesk2FA(sessionId, code) as boolean;
+    } catch (err) {
+      hilog.error(DOMAIN, TAG, '[ExtensionLoader] submitRustDesk2FA: ' + JSON.stringify(err));
+      return false;
+    }
+  }
+
   getRustDeskLastError(): string {
     try {
       const result: string = rdpnapi.getRustDeskLastError() as string;
@@ -807,12 +1024,21 @@ export class ExtensionLoader {
     }
   }
 
+  async measureSshLatencyAsync(sessionId: number): Promise<number> {
+    try {
+      return await rdpnapi.measureSshLatencyAsync(sessionId) as number;
+    } catch (err) {
+      hilog.error(DOMAIN, TAG, '[ExtensionLoader] measureSshLatencyAsync: ' + JSON.stringify(err));
+      return -1;
+    }
+  }
+
   /**
    * 注册推送式 SSH 数据回调.
    * 后台 reader 线程读到数据后立即触发 cb(data).
    * 传 null 卸载.
    */
-  setOnDataCallback(sessionId: number, cb: ((data: string) => void) | null): void {
+  setOnDataCallback(sessionId: number, cb: ((data: ArrayBuffer) => void) | null): void {
     try {
       rdpnapi.setOnDataCallback(sessionId, cb);
     } catch (err) {
@@ -907,9 +1133,10 @@ export class ExtensionLoader {
    * 测试 SSH 密钥认证是否可用 (同步阻塞)
    */
   testSshKeyAuth(host: string, port: number, username: string,
-                 privateKeyPem: string, passphrase: string): SshAuthTestResult {
+                 privateKeyPem: string, passphrase: string,
+                 proxy?: SshProxyConfig): SshAuthTestResult {
     try {
-      return rdpnapi.testSshKeyAuth(host, port, username, privateKeyPem, passphrase) as SshAuthTestResult;
+      return rdpnapi.testSshKeyAuth(host, port, username, privateKeyPem, passphrase, proxy) as SshAuthTestResult;
     } catch (err) {
       hilog.error(DOMAIN, TAG, '[ExtensionLoader] testSshKeyAuth: ' + JSON.stringify(err));
       return { ok: false, code: -99,
@@ -921,9 +1148,9 @@ export class ExtensionLoader {
    * 探测 SSH 主机公钥 (仅 TCP + KEX, 不做用户认证)
    * 同步阻塞 1-5s, 调用方应显示 loading 状态
    */
-  probeSshHostKey(host: string, port: number): SshHostKeyInfo {
+  probeSshHostKey(host: string, port: number, proxy?: SshProxyConfig): SshHostKeyInfo {
     try {
-      return rdpnapi.probeSshHostKey(host, port) as SshHostKeyInfo;
+      return rdpnapi.probeSshHostKey(host, port, proxy) as SshHostKeyInfo;
     } catch (err) {
       hilog.error(DOMAIN, TAG, '[ExtensionLoader] probeSshHostKey: ' + JSON.stringify(err));
       return {

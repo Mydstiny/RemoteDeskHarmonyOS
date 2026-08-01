@@ -207,6 +207,18 @@ export function shouldCloseRemoteImeSessionOnEditChange(
   return keyboardOpen && !isEditing && editingObserved && !selectionAcknowledgementPending;
 }
 
+/** Reconcile a manual system-keyboard dismissal that emits no edit change. */
+export function shouldCloseRemoteImeSessionOnAvoidAreaChange(
+  keyboardOpen: boolean,
+  previousHeight: number,
+  nextHeight: number,
+  keepKeyboardAfterSheetClose: boolean = false,
+  submitRefocusPending: boolean = false
+): boolean {
+  return keyboardOpen && previousHeight > 0 && nextHeight <= 0 &&
+    !keepKeyboardAfterSheetClose && !submitRefocusPending;
+}
+
 export function shouldWaitForRemoteImeInput(
   connected: boolean,
   sessionId: number,

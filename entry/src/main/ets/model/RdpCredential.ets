@@ -8,6 +8,7 @@ import { cryptoFramework } from '@kit.CryptoArchitectureKit';
 
 export interface RdpCredentialJSON {
   id: string
+  userId?: string
   label: string
   username: string
   password: string
@@ -16,6 +17,7 @@ export interface RdpCredentialJSON {
 
 export class RdpCredential {
   id: string = '';
+  userId: string = '';
   label: string = '';
   username: string = '';
   password: string = '';
@@ -29,6 +31,7 @@ export class RdpCredential {
   toJSON(): RdpCredentialJSON {
     return {
       id: this.id,
+      userId: this.userId,
       label: this.label,
       username: this.username,
       password: this.password,
@@ -39,6 +42,7 @@ export class RdpCredential {
   static fromJSON(json: RdpCredentialJSON): RdpCredential {
     const c = new RdpCredential();
     if (json.id) { c.id = json.id; }
+    c.userId = json.userId || '';
     c.label = json.label || '';
     c.username = json.username || '';
     c.password = json.password || '';

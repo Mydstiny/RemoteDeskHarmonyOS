@@ -1,11 +1,16 @@
 import { describe, it, expect } from '@ohos/hypium';
 import {
   RustDeskProPreflightState,
+  canInvalidateRustDeskProSession,
+  classifyRustDeskProNativeError,
+  parseRustDeskNativeError,
   shouldRouteAfterRustDeskProPreflight,
   shouldKeepRustDeskProSheetOpen,
   rustDeskProPeerIdForConnection,
-  shouldOpenRustDeskProPreflight
+  shouldOpenRustDeskProPreflight,
+  rustDeskNativeErrorDetail
 } from '../main/ets/services/RustDeskProConnectionPreflightPolicy';
+import { rustDeskProTokenMatchesConnection } from '../main/ets/model/RustDeskProModels';
 import { RemoteHost } from '../main/ets/model/RemoteHost';
 import {
   rustDeskConnectionError,
@@ -119,6 +124,69 @@ export default function rustDeskProConnectionPreflightPolicyTest(): void {
       expect(shouldBindLegacyRustDeskHostToRelay(
         'rustdesk', true, '', 'relay.example.com', 21116, 'relay.example.com', 21116
       )).assertFalse();
+    });
+
+    it('does_not_treat_the_legacy_relay_phrase_as_a_verified_pro_expiry', 0, (): void => {
+      const phrase = 'you have not logged in or your login session has expired';
+      expect(classifyRustDeskProNativeError(phrase)).assertEqual('control_plane_incompatible');
+      expect(canInvalidateRustDeskProSession(
+        phrase, 'official_server_pro_token', true)).assertFalse();
+      const relayError = 'RDERR|stage=relay|code=relay_request_failed|detail=' + phrase;
+      expect(classifyRustDeskProNativeError(relayError)).assertEqual('control_plane_incompatible');
+      expect(canInvalidateRustDeskProSession(
+        relayError, 'official_server_pro_token', true)).assertFalse();
+    });
+
+    it('invalidates_only_an_explicit_official_control_plane_expiry', 0, (): void => {
+      const error = 'RDERR|stage=control_plane|code=pro_session_expired|detail=session expired';
+      const parsed = parseRustDeskNativeError(error);
+      expect(parsed.structured).assertTrue();
+      expect(parsed.stage).assertEqual('control_plane');
+      expect(parsed.code).assertEqual('pro_session_expired');
+      expect(parsed.attemptId).assertEqual('');
+      expect(rustDeskNativeErrorDetail(error)).assertEqual('session expired');
+      expect(classifyRustDeskProNativeError(error)).assertEqual('pro_session_expired');
+      expect(canInvalidateRustDeskProSession(
+        error, 'official_server_pro_token', true)).assertTrue();
+      expect(canInvalidateRustDeskProSession(
+        error, 'official_server_pro_token', false)).assertFalse();
+      expect(canInvalidateRustDeskProSession(
+        error, 'third_party_control_plane', true)).assertFalse();
+      expect(canInvalidateRustDeskProSession(
+        error, 'oss_key_only', true)).assertFalse();
+    });
+
+    it('keeps_http_session_for_api_only_fallback_even_on_structured_expiry',
+      0, (): void => {
+        const error =
+          'RDERR|stage=control_plane|code=pro_session_expired|' +
+          'detail=session expired';
+        expect(canInvalidateRustDeskProSession(
+          error, 'third_party_api_only', false)).assertFalse();
+        expect(canInvalidateRustDeskProSession(
+          error, 'official_server_pro_token', false)).assertFalse();
+      });
+
+    it('classifies_redacted_native_codes_and_preserves_attempt_identity', 0, (): void => {
+      const error = 'RDERR|stage=relay|code=control_plane_login_required|' +
+        'attempt=184|detail=control plane rejected the relay session as unauthenticated';
+      const parsed = parseRustDeskNativeError(error);
+      expect(parsed.attemptId).assertEqual('184');
+      expect(classifyRustDeskProNativeError(error)).assertEqual('control_plane_incompatible');
+      expect(canInvalidateRustDeskProSession(
+        error, 'official_server_pro_token', true)).assertFalse();
+      expect(classifyRustDeskProNativeError(
+        'RDERR|stage=peer_login|code=peer_password_rejected|attempt=185|detail=rejected'))
+        .assertEqual('device_password');
+    });
+
+    it('protects_a_new_token_generation_from_a_late_old_failure', 0, (): void => {
+      expect(rustDeskProTokenMatchesConnection('old-fingerprint', 3,
+        'new-fingerprint', 4)).assertFalse();
+      expect(rustDeskProTokenMatchesConnection('new-fingerprint', 4,
+        'new-fingerprint', 4)).assertTrue();
+      expect(rustDeskProTokenMatchesConnection('', 0,
+        'current-fingerprint', 9)).assertTrue();
     });
   });
 }

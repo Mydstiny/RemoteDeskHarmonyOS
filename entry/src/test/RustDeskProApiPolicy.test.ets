@@ -1,12 +1,14 @@
 import { describe, it, expect } from '@ohos/hypium';
 import {
   buildRustDeskProLoginRequest,
+  buildRustDeskProMinimalLoginRequest,
   normalizeRustDeskProServerUrl,
   parseRustDeskProAddressBookResponse,
   parseRustDeskProLoginResponse,
   parseRustDeskProAddressBookPage,
   parseRustDeskProPersonalAddressBookResponse,
   parseRustDeskProSharedAddressBookProfiles,
+  rustDeskProApiRouteId,
   RustDeskProApiError
 } from '../main/ets/services/RustDeskProApiPolicy';
 
@@ -22,6 +24,26 @@ export default function rustDeskProApiPolicyTest() {
       expect(body.type).assertEqual('account');
       expect(body.id).assertEqual('rdh-device');
       expect(body.deviceInfo['os']).assertEqual('HarmonyOS');
+    });
+
+    it('builds_official_minimal_login_fallback_body', 0, () => {
+      const body = buildRustDeskProMinimalLoginRequest(' alice ', 'secret');
+      expect(body['username']).assertEqual('alice');
+      expect(body['password']).assertEqual('secret');
+      expect(body['type']).assertEqual(undefined);
+      expect(body['deviceInfo']).assertEqual(undefined);
+    });
+
+    it('labels_http_400_login_rejection_as_contract_mismatch', 0, () => {
+      let code = '';
+      let message = '';
+      try { parseRustDeskProLoginResponse({ error: 'remote_rejected' }, 400); }
+      catch (err) {
+        if (err instanceof RustDeskProApiError) { code = err.code; message = err.message; }
+      }
+      expect(code).assertEqual('http_error');
+      expect(message.indexOf('HTTP 400')).assertGreaterThan(-1);
+      expect(message.indexOf('精简登录')).assertGreaterThan(-1);
     });
 
     it('parses_login_token_and_user', 0, () => {
@@ -63,6 +85,30 @@ export default function rustDeskProApiPolicyTest() {
       try { parseRustDeskProAddressBookResponse({}, 401); }
       catch (err) { code = err instanceof RustDeskProApiError ? err.code : ''; }
       expect(code).assertEqual('token_expired');
+    });
+
+    it('never_exposes_server_error_body_or_address_book_guid', 0, () => {
+      let message = '';
+      try {
+        parseRustDeskProLoginResponse({
+          error: 'token=secret-value account=private-user'
+        }, 500);
+      } catch (err) {
+        message = err instanceof Error ? err.message : '';
+      }
+      expect(message.indexOf('secret-value')).assertEqual(-1);
+      expect(message.indexOf('private-user')).assertEqual(-1);
+      const routeId: string = rustDeskProApiRouteId(
+        '/api/ab/peers?current=1&pageSize=100&ab=private-guid');
+      expect(routeId).assertEqual('address_book_peers');
+      expect(routeId.indexOf('private-guid')).assertEqual(-1);
+    });
+
+    it('treats_modern_address_book_400_405_as_legacy_fallback_signal', 0, () => {
+      expect(parseRustDeskProPersonalAddressBookResponse({}, 400)).assertEqual('');
+      expect(parseRustDeskProPersonalAddressBookResponse({}, 405)).assertEqual('');
+      expect(parseRustDeskProSharedAddressBookProfiles({}, 400).length).assertEqual(0);
+      expect(parseRustDeskProSharedAddressBookProfiles({}, 405).length).assertEqual(0);
     });
 
     it('parses_modern_personal_address_book_page', 0, () => {

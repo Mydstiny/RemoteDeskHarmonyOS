@@ -27,6 +27,7 @@ export interface PresetItem { label: string; width: number; height: number }
 export type RdpAuthMode = 'password' | 'blank_password' | 'restricted_admin';
 /** Restricted Admin always requires the user's real NTLM password hash. */
 export type RdpRestrictedAdminSecretSource = 'ntlm_hash';
+export type SshProxyType = 'direct' | 'http_connect' | 'socks5' | 'legacy_gateway';
 
 export function normalizeRdpAuthMode(value: string | undefined): RdpAuthMode {
   if (value === 'blank_password' || value === 'restricted_admin') { return value; }
@@ -169,6 +170,7 @@ export interface RemoteHostJSON {
   proxyHost: string
   proxyPort: number
   proxyUsername: string
+  sshProxyType?: string
   rustdeskRelayId: string
   rustdeskAccountId: string
   rustdeskPasswordMode: number
@@ -176,6 +178,10 @@ export interface RemoteHostJSON {
   rustdeskDirectEnabled: boolean
   rustdeskDirectHost: string
   rustdeskDirectPort: number
+  rustdeskTargetDevice?: string
+  rustdeskAdaptiveOrientation?: boolean
+  rustdeskTotpEntryId?: string
+  rustdeskTotpAutoSubmit?: boolean
   rdpCredentialId: string
   rdpAuthMode?: string
   rdpRestrictedAdminSecretSource?: string
@@ -278,6 +284,7 @@ export class RemoteHost {
   proxyHost: string = '';       // SSH 代理/跳板机地址
   proxyPort: number = 22;       // SSH 代理端口
   proxyUsername: string = '';   // SSH 代理用户名
+  sshProxyType: SshProxyType = 'direct'; // SSH 传输代理协议
   rustdeskRelayId: string = ''; // RustDesk 中继服务器配置 ID
   rustdeskAccountId: string = ''; // RustDesk Server Pro account ID
   rustdeskPasswordMode: number = 0; // RustDesk 密码模式: 0=一次性, 1=永久
@@ -286,6 +293,11 @@ export class RemoteHost {
   rustdeskDirectEnabled: boolean = false; // 直连模式 (跳过 ID 服务器)
   rustdeskDirectHost: string = ''; // 直连 peer IP 地址
   rustdeskDirectPort: number = 21118; // 直连端口 (默认 21118; RustDesk peer TCP)
+  rustdeskTargetDevice: string = 'computer'; // 控制目标: computer | phone
+  rustdeskAdaptiveOrientation: boolean = false; // 手机目标的自适应翻转，默认关闭
+  // 可选的本机 TOTP 条目绑定；只保存条目 ID，不保存 TOTP secret。
+  rustdeskTotpEntryId: string = '';
+  rustdeskTotpAutoSubmit: boolean = false;
   rdpCredentialId: string = ''; // RDP 绑定的 Windows 凭据 ID
   // Restricted Admin 的 NTLM Hash 保存在本机加密扩展中，不进入 RemoteHost/JSON。
   rdpAuthMode: RdpAuthMode = 'password';
@@ -396,6 +408,7 @@ export class RemoteHost {
   static getDefaultPort(protocol: string): number {
     if (protocol === 'rustdesk') { return 21116; }
     if (protocol === 'ssh') { return 22; }
+    if (protocol === 'vnc') { return 5900; }
     return 3389;
   }
 
@@ -447,6 +460,7 @@ export class RemoteHost {
       proxyHost: this.proxyHost,
       proxyPort: this.proxyPort,
       proxyUsername: this.proxyUsername,
+      sshProxyType: this.sshProxyType,
       rustdeskRelayId: this.rustdeskRelayId,
       rustdeskAccountId: this.rustdeskAccountId,
       rustdeskPasswordMode: this.rustdeskPasswordMode,
@@ -454,6 +468,10 @@ export class RemoteHost {
       rustdeskDirectEnabled: this.rustdeskDirectEnabled,
       rustdeskDirectHost: this.rustdeskDirectHost,
       rustdeskDirectPort: this.rustdeskDirectPort,
+      rustdeskTargetDevice: this.rustdeskTargetDevice,
+      rustdeskAdaptiveOrientation: this.rustdeskAdaptiveOrientation,
+      rustdeskTotpEntryId: this.rustdeskTotpEntryId,
+      rustdeskTotpAutoSubmit: this.rustdeskTotpAutoSubmit,
       rdpCredentialId: this.rdpCredentialId,
       rdpAuthMode: this.rdpAuthMode,
       rdpRestrictedAdminSecretSource: this.rdpRestrictedAdminSecretSource,
@@ -523,6 +541,10 @@ export class RemoteHost {
     if (json.proxyHost) { host.proxyHost = json.proxyHost; }
     if (json.proxyPort) { host.proxyPort = json.proxyPort; }
     if (json.proxyUsername) { host.proxyUsername = json.proxyUsername; }
+    if (json.sshProxyType === 'http_connect' || json.sshProxyType === 'socks5' ||
+      json.sshProxyType === 'legacy_gateway' || json.sshProxyType === 'direct') {
+      host.sshProxyType = json.sshProxyType;
+    }
     if (json.rustdeskRelayId) { host.rustdeskRelayId = json.rustdeskRelayId; }
     if (json.rustdeskAccountId) { host.rustdeskAccountId = json.rustdeskAccountId; }
     if (json.rustdeskPasswordMode !== undefined) { host.rustdeskPasswordMode = json.rustdeskPasswordMode; }
@@ -530,6 +552,12 @@ export class RemoteHost {
     if (json.rustdeskDirectEnabled !== undefined) { host.rustdeskDirectEnabled = json.rustdeskDirectEnabled; }
     if (json.rustdeskDirectHost) { host.rustdeskDirectHost = json.rustdeskDirectHost; }
     if (json.rustdeskDirectPort) { host.rustdeskDirectPort = json.rustdeskDirectPort; }
+    if (json.rustdeskTargetDevice === 'phone') { host.rustdeskTargetDevice = 'phone'; }
+    if (json.rustdeskAdaptiveOrientation !== undefined) {
+      host.rustdeskAdaptiveOrientation = json.rustdeskAdaptiveOrientation;
+    }
+    if (json.rustdeskTotpEntryId) { host.rustdeskTotpEntryId = json.rustdeskTotpEntryId; }
+    if (json.rustdeskTotpAutoSubmit !== undefined) { host.rustdeskTotpAutoSubmit = json.rustdeskTotpAutoSubmit; }
     if (json.rdpCredentialId) { host.rdpCredentialId = json.rdpCredentialId; }
     host.rdpAuthMode = normalizeRdpAuthMode(json.rdpAuthMode);
     host.rdpRestrictedAdminSecretSource = normalizeRdpRestrictedAdminSecretSource(

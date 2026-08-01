@@ -10,6 +10,17 @@ export const SETTINGS_SHEET_RDP_CREDENTIALS: number = 8;
 export const SETTINGS_SHEET_RDP_CREDENTIAL_EDITOR: number = 9;
 export const SETTINGS_SHEET_KEY_VAULT: number = 10;
 export const SETTINGS_SHEET_FEEDBACK: number = 11;
+export const SETTINGS_SHEET_VNC_CONNECTION: number = 12;
+export const SETTINGS_SHEET_VNC_TIMEOUT: number = 13;
+export const SETTINGS_SHEET_VNC_DISPLAY: number = 14;
+export const SETTINGS_SHEET_VNC_SECURITY: number = 15;
+export const SETTINGS_SHEET_VNC_TRUST: number = 16;
+export const SETTINGS_SHEET_VNC_CLOUD_SYNC: number = 17;
+export const SETTINGS_SHEET_VNC_HOSTS: number = 18;
+export const SETTINGS_SHEET_VNC_GATEWAY: number = 19;
+export const SETTINGS_SHEET_VNC_INPUT: number = 20;
+export const SETTINGS_SHEET_VNC_PERFORMANCE: number = 21;
+export const SETTINGS_SHEET_VNC_CLIPBOARD: number = 22;
 
 export const SETTINGS_PANEL_DISMISS_TO_LEAF_OPEN_MS: number = 360;
 

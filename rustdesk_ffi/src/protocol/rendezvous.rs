@@ -44,6 +44,35 @@ pub struct PunchHoleInfo {
     pub relay_uuid: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RendezvousConnectionStrategy {
+    ForceRelay,
+}
+
+impl RendezvousConnectionStrategy {
+    fn nat_type(self) -> NatType {
+        match self {
+            // This is an honest "unknown/conservative" value for the only
+            // currently supported rendezvous strategy. It must not be reused
+            // as an AUTO NAT result.
+            Self::ForceRelay => NatType::SYMMETRIC,
+        }
+    }
+
+    fn force_relay(self) -> bool {
+        matches!(self, Self::ForceRelay)
+    }
+
+    fn diagnostic(self) -> &'static str {
+        match self {
+            Self::ForceRelay => "strategy=force_relay,nat=conservative_symmetric",
+        }
+    }
+}
+
+const HARMONY_RENDEZVOUS_VERSION: &str =
+    concat!("harmonyos-rustdesk-ffi/", env!("CARGO_PKG_VERSION"));
+
 fn validated_server_key(server_key: &str) -> io::Result<&str> {
     crypto::normalized_server_public_key(server_key).ok_or_else(|| {
         io::Error::new(
@@ -53,14 +82,22 @@ fn validated_server_key(server_key: &str) -> io::Result<&str> {
     })
 }
 
-fn punch_hole_request_message(peer_id: &str, licence_key: &str) -> RendezvousMessage {
+fn punch_hole_request_message(
+    peer_id: &str,
+    licence_key: &str,
+    token: &str,
+    strategy: RendezvousConnectionStrategy,
+) -> RendezvousMessage {
     let mut req = PunchHoleRequest::new();
     req.set_id(peer_id.to_string());
-    req.set_nat_type(NatType::SYMMETRIC);
+    req.set_nat_type(strategy.nat_type());
     req.set_licence_key(licence_key.to_string());
+    if !token.is_empty() {
+        req.set_token(token.to_string());
+    }
     req.set_conn_type(ConnType::DEFAULT_CONN);
-    req.set_version("harmonyos-rustdesk-ffi".to_string());
-    req.set_force_relay(true);
+    req.set_version(HARMONY_RENDEZVOUS_VERSION.to_string());
+    req.set_force_relay(strategy.force_relay());
 
     let mut msg = RendezvousMessage::new();
     msg.union = Some(RendezvousMessage_oneof_union::punch_hole_request(req));
@@ -112,22 +149,27 @@ impl RendezvousClient {
         Ok(())
     }
 
-    pub fn request_punch_hole(
+    pub fn request_force_relay(
         &mut self,
         peer_id: &str,
-        server_key: &str,
+        licence_key: &str,
+        token: &str,
     ) -> io::Result<PunchHoleInfo> {
         self.ensure_connected()?;
+        let strategy = RendezvousConnectionStrategy::ForceRelay;
         let req_debug = format!(
-            "peer_id={}, nat=SYMMETRIC, conn=DEFAULT_CONN, force_relay=true, version=harmonyos-rustdesk-ffi",
-            peer_id
+            "{},conn=DEFAULT_CONN,force_relay=true,token={},key={},version={}",
+            strategy.diagnostic(),
+            if token.is_empty() { "absent" } else { "present" },
+            if licence_key.is_empty() { "absent" } else { "present" },
+            HARMONY_RENDEZVOUS_VERSION
         );
 
         // hbbs `-k` compares this protobuf string verbatim.  It may be a
         // normal signing public key or an arbitrary administrator supplied
         // shared access value; verification is handled separately by the
         // connector when a public key is actually available.
-        let msg = punch_hole_request_message(peer_id, server_key);
+        let msg = punch_hole_request_message(peer_id, licence_key, token, strategy);
         self.send_message(&msg)?;
 
         let response = self.read_next_non_keyexchange()?;
@@ -146,16 +188,15 @@ impl RendezvousClient {
                     ));
                 }
                 let relay_server = resp.get_relay_server().to_string();
-                if relay_server.is_empty() {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        format!("punch hole response missing relay server ({})", req_debug),
-                    ));
-                }
+                // OSS hbbs may ignore force_relay and answer a direct peer
+                // address in socket_addr without a relay_server. That is a
+                // valid punch response, not an error: the caller connects the
+                // returned address directly (official client behavior).
+                let peer_addr: SocketAddr = decode_socket_addr(resp.get_socket_addr())?;
                 Ok(PunchHoleInfo {
                     relay_server,
                     signed_pk: resp.get_pk().to_vec(),
-                    peer_addr: Some(decode_socket_addr(resp.get_socket_addr())?),
+                    peer_addr: Some(peer_addr),
                     relay_uuid: None,
                 })
             }
@@ -243,6 +284,7 @@ impl RendezvousClient {
         id: &str,
         uuid: &str,
         relay_server: &str,
+        token: &str,
     ) -> io::Result<SocketAddr> {
         self.ensure_connected()?;
 
@@ -251,6 +293,9 @@ impl RendezvousClient {
         req.set_uuid(uuid.to_string());
         req.set_relay_server(relay_server.to_string());
         req.set_secure(true);
+        if !token.is_empty() {
+            req.set_token(token.to_string());
+        }
 
         let mut msg = RendezvousMessage::new();
         msg.union = Some(RendezvousMessage_oneof_union::request_relay(req));
@@ -297,13 +342,15 @@ impl RendezvousClient {
         id: &str,
         relay_server: &str,
         secure: bool,
+        token: &str,
     ) -> io::Result<String> {
         self.ensure_connected()?;
 
         let uuid = new_relay_uuid();
         eprintln!(
-            "[RustDesk-FFI] request relay id={} uuid={} relay_server={} secure={}",
-            id, uuid, relay_server, secure
+            "[RustDesk-FFI] request relay strategy=force_relay secure={} token={} key=handled-separately",
+            secure,
+            if token.is_empty() { "absent" } else { "present" }
         );
 
         let mut req = RequestRelay::new();
@@ -311,6 +358,9 @@ impl RendezvousClient {
         req.set_uuid(uuid.clone());
         req.set_relay_server(relay_server.to_string());
         req.set_secure(secure);
+        if !token.is_empty() {
+            req.set_token(token.to_string());
+        }
 
         let mut msg = RendezvousMessage::new();
         msg.union = Some(RendezvousMessage_oneof_union::request_relay(req));
@@ -333,9 +383,8 @@ impl RendezvousClient {
                     response_uuid.to_string()
                 };
                 eprintln!(
-                    "[RustDesk-FFI] relay response uuid={} relay_server={} pk_len={} socket_addr_len={}",
-                    approved_uuid,
-                    resp.get_relay_server(),
+                    "[RustDesk-FFI] relay response accepted relay_endpoint={} pk_len={} socket_addr_len={}",
+                    if resp.get_relay_server().is_empty() { "absent" } else { "present" },
                     resp.get_pk().len(),
                     resp.get_socket_addr().len()
                 );
@@ -353,11 +402,12 @@ impl RendezvousClient {
         id: &str,
         uuid: &str,
         relay_server: &str,
+        relay_fallback_port: u16,
         server_key: &str,
     ) -> io::Result<TcpStream> {
         let mut stream = net::connect_tcp_endpoint(
             relay_server,
-            21117,
+            relay_fallback_port,
             "relay",
             Duration::from_secs(10),
         )?;
@@ -664,13 +714,24 @@ mod tests {
     #[test]
     fn arbitrary_shared_access_key_is_preserved_in_punch_and_relay_messages() {
         let key = " =tenant-key:42/abc=\n";
-        let punch = punch_hole_request_message("peer-123", key);
+        let token = "pro-session-token";
+        let punch = punch_hole_request_message(
+            "peer-123",
+            key,
+            token,
+            RendezvousConnectionStrategy::ForceRelay,
+        );
         let punch_bytes = punch.write_to_bytes().expect("serialize punch request");
         let parsed_punch: RendezvousMessage = protobuf::parse_from_bytes(&punch_bytes)
             .expect("parse punch request");
         match parsed_punch.union {
             Some(RendezvousMessage_oneof_union::punch_hole_request(req)) => {
                 assert_eq!(req.get_licence_key(), key);
+                assert_eq!(req.get_token(), token);
+                assert_eq!(req.get_nat_type(), NatType::SYMMETRIC);
+                assert!(req.get_force_relay());
+                assert_eq!(req.get_conn_type(), ConnType::DEFAULT_CONN);
+                assert_eq!(req.get_version(), HARMONY_RENDEZVOUS_VERSION);
             }
             other => panic!("expected PunchHoleRequest, got: {:?}", other),
         }
@@ -685,6 +746,36 @@ mod tests {
             }
             other => panic!("expected RequestRelay, got: {:?}", other),
         }
+    }
+
+    #[test]
+    fn punch_response_with_direct_peer_address_is_not_a_relay_error() {
+        // OSS hbbs may ignore force_relay and answer with only a direct peer
+        // address in socket_addr (no relay_server). The client must accept
+        // that as a direct-connect punch response, not InvalidData.
+        let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 5)), 21118);
+        let mut encoded: Vec<u8> = vec![10, 0, 0, 5];
+        encoded.extend_from_slice(&21118u16.to_le_bytes());
+        let mut resp = PunchHoleResponse::new();
+        resp.set_socket_addr(encoded);
+        let mut msg = RendezvousMessage::new();
+        msg.union = Some(RendezvousMessage_oneof_union::punch_hole_response(resp));
+        let payload = msg.write_to_bytes().expect("serialize punch response");
+
+        let server = TcpListener::bind("127.0.0.1:0").expect("bind test server");
+        let port = server.local_addr().expect("server addr").port();
+        let server_thread = thread::spawn(move || {
+            let (mut stream, _) = server.accept().expect("accept");
+            let _hello = wire::read_frame(&mut stream).expect("read punch request");
+            wire::write_frame(&mut stream, &payload).expect("write punch response");
+        });
+
+        let mut rd = RendezvousClient::new();
+        rd.connect("127.0.0.1", port, "", false).expect("connect rendezvous");
+        let info = rd.request_force_relay("peer-123", "key", "").expect("force relay");
+        assert!(info.relay_server.is_empty(), "no relay server expected");
+        assert_eq!(info.peer_addr, Some(addr), "direct peer address expected");
+        server_thread.join().expect("server thread");
     }
 
     #[test]
@@ -752,7 +843,7 @@ mod tests {
     }
 
     #[test]
-    fn relay_connect_accepts_hostname_endpoint_with_explicit_port() {
+    fn relay_connect_uses_explicit_endpoint_port_before_configured_fallback() {
         let listener = TcpListener::bind("127.0.0.1:0").expect("listener bind failed");
         let port = listener
             .local_addr()
@@ -769,8 +860,31 @@ mod tests {
         let client = RendezvousClient::new();
         let relay_endpoint = format!("localhost:{}", port);
         let stream = client
-            .create_relay("peer", "uuid", &relay_endpoint, "")
+            .create_relay("peer", "uuid", &relay_endpoint, 1, "")
             .expect("relay hostname should resolve and connect");
+        drop(stream);
+        accept_thread.join().expect("accept thread panicked");
+    }
+
+    #[test]
+    fn relay_connect_uses_configured_fallback_port_without_endpoint_port() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("listener bind failed");
+        let port = listener
+            .local_addr()
+            .expect("listener address missing")
+            .port();
+        let accept_thread = thread::spawn(move || {
+            let (mut stream, _) = listener
+                .accept()
+                .expect("relay connection was not accepted");
+            let payload = wire::read_frame(&mut stream).expect("relay request frame missing");
+            assert!(!payload.is_empty(), "relay request frame should not be empty");
+        });
+
+        let client = RendezvousClient::new();
+        let stream = client
+            .create_relay("peer", "uuid", "localhost", port, "")
+            .expect("configured relay fallback port should connect");
         drop(stream);
         accept_thread.join().expect("accept thread panicked");
     }

@@ -30,6 +30,10 @@ struct RdpPresentationTarget {
 struct RdpPresentMetrics {
     RdpPresentResult result = RdpPresentResult::RendererNotReady;
     uint64_t generation = 0;
+    bool fullFrame = false;
+    // No framebuffer upload occurred; the renderer sampled its retained raw
+    // texture after a local canvas-transform update.
+    bool retainedFrame = false;
     int64_t queueWaitUs = 0;
     int64_t uploadUs = 0;
     int64_t drawUs = 0;
@@ -58,6 +62,10 @@ struct RdpPresentationMetricsSnapshot {
     uint64_t replacedFrames = 0;
     uint64_t rejectedFrames = 0;
     uint64_t presentedFrames = 0;
+    uint64_t fullFramePresents = 0;
+    uint64_t dirtyRectPresents = 0;
+    uint64_t retainedFramePresents = 0;
+    uint64_t deferredSnapshots = 0;
     uint64_t surfaceDetachedRejections = 0;
     uint64_t generationRejections = 0;
     uint64_t windowSamples = 0;
@@ -141,11 +149,28 @@ public:
 
         ++totals_.presentedFrames;
         ++current_.presentedFrames;
+        if (present.retainedFrame) {
+            ++totals_.retainedFramePresents;
+            ++current_.retainedFramePresents;
+        } else if (present.fullFrame) {
+            ++totals_.fullFramePresents;
+            ++current_.fullFramePresents;
+        } else {
+            ++totals_.dirtyRectPresents;
+            ++current_.dirtyRectPresents;
+        }
         appendNonNegative(current_.queueWaitUs, present.queueWaitUs);
         appendNonNegative(current_.uploadUs, present.uploadUs);
         appendNonNegative(current_.drawUs, present.drawUs);
         appendNonNegative(current_.swapUs, present.swapUs);
         appendNonNegative(current_.workerUs, present.workerUs());
+    }
+
+    void recordDeferred(int64_t nowUs) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        rollWindowLocked(nowUs);
+        ++totals_.deferredSnapshots;
+        ++current_.deferredSnapshots;
     }
 
     RdpPresentationMetricsSnapshot snapshot(int64_t nowUs) {
@@ -177,6 +202,10 @@ private:
         uint64_t replacedFrames = 0;
         uint64_t rejectedFrames = 0;
         uint64_t presentedFrames = 0;
+        uint64_t fullFramePresents = 0;
+        uint64_t dirtyRectPresents = 0;
+        uint64_t retainedFramePresents = 0;
+        uint64_t deferredSnapshots = 0;
         uint64_t surfaceDetachedRejections = 0;
         uint64_t generationRejections = 0;
         int64_t durationUs = 0;
@@ -257,6 +286,10 @@ private:
         result.replacedFrames = window.replacedFrames;
         result.rejectedFrames = window.rejectedFrames;
         result.presentedFrames = window.presentedFrames;
+        result.fullFramePresents = window.fullFramePresents;
+        result.dirtyRectPresents = window.dirtyRectPresents;
+        result.retainedFramePresents = window.retainedFramePresents;
+        result.deferredSnapshots = window.deferredSnapshots;
         result.surfaceDetachedRejections = window.surfaceDetachedRejections;
         result.generationRejections = window.generationRejections;
         result.windowSamples = window.presentedFrames;

@@ -3,6 +3,7 @@
     "pages/GuidePage",
     "pages/LoginPage",
     "pages/HostListPage",
+    "pages/VncSettingsPage",
     "pages/RemoteDesktop",
     "pages/SshTerminal"
   ]

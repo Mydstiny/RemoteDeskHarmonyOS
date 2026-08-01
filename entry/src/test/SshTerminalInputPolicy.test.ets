@@ -62,6 +62,12 @@ export default function sshTerminalInputPolicyTest(): void {
       expect(encodeSpecialKey(KeyCode.KEYCODE_MOVE_HOME, CTRL_SHIFT)).assertEqual('\u001b[1;6H');
     });
 
+    it('should_encode_application_cursor_and_keypad_modes', 0, (): void => {
+      expect(encodeSpecialKey(KeyCode.KEYCODE_DPAD_UP, NONE, true, false)).assertEqual('\u001bOA');
+      expect(encodeSpecialKey(KeyCode.KEYCODE_NUMPAD_7, NONE, false, true)).assertEqual('\u001bOw');
+      expect(encodeSpecialKey(KeyCode.KEYCODE_NUMPAD_ENTER, NONE, false, true)).assertEqual('\u001bOM');
+    });
+
     it('should_encode_function_keys_and_numpad_keys', 0, (): void => {
       expect(encodeSpecialKey(KeyCode.KEYCODE_F1, NONE)).assertEqual('\u001bOP');
       expect(encodeSpecialKey(KeyCode.KEYCODE_F4, NONE)).assertEqual('\u001bOS');

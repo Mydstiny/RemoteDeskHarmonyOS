@@ -1,5 +1,11 @@
 import { common } from '@kit.AbilityKit';
-import { RustDeskProAccountState } from '../model/RustDeskProModels';
+import { hilog } from '@kit.PerformanceAnalysisKit';
+import {
+  RustDeskProAccountState,
+  rustDeskProAccessTokenFingerprint,
+  rustDeskProTokenGeneration,
+  rustDeskProTokenMatchesConnection
+} from '../model/RustDeskProModels';
 import { HostSyncService } from './HostSyncService';
 import { RustDeskProApiService } from './RustDeskProApiService';
 import { RustDeskProCredentialStore } from './RustDeskProCredentialStore';
@@ -8,6 +14,19 @@ import { RustDeskProReconcileResult } from './RustDeskProSyncPolicy';
 import { LegacyRustDeskAccountCloudAdapter } from './LegacyRustDeskAccountCloudAdapter';
 import { RustDeskAccount } from '../model/RustDeskAccount';
 import { RustDeskRelayConfig } from '../model/RustDeskRelayConfig';
+import { rustDeskRelayIdFingerprint } from './RustDeskRelaySavePolicy';
+import { CloudStore } from './CloudStore';
+import {
+  AccountSessionLease,
+  accountSessionLeaseEquals,
+  cloneAccountSessionLease
+} from './AccountScopePolicy';
+import {
+  RustDeskControlPlaneCapabilityIssueResult
+} from './RustDeskControlPlaneCapabilityPolicy';
+import {
+  cloneRustDeskControlPlaneCapabilityProof
+} from '../model/RustDeskControlPlaneCapabilityModels';
 
 export interface RustDeskProLoginInput {
   id: string
@@ -17,12 +36,19 @@ export interface RustDeskProLoginInput {
   password: string
 }
 
+interface RustDeskProOperation {
+  generation: number;
+  lease: AccountSessionLease;
+}
+
 export class RustDeskProSyncService {
   private static instance: RustDeskProSyncService;
   private readonly api: RustDeskProApiService = RustDeskProApiService.getInstance();
   private readonly credentials: RustDeskProCredentialStore = RustDeskProCredentialStore.getInstance();
   private readonly hosts: HostSyncService = HostSyncService.getInstance();
   private context: common.Context | null = null;
+  private operationGeneration: number = 0;
+  private activeOperations: number = 0;
 
   static getInstance(): RustDeskProSyncService {
     if (!RustDeskProSyncService.instance) {
@@ -37,20 +63,86 @@ export class RustDeskProSyncService {
     // EntryAbility starts this initialization too; HostSyncService safely
     // coalesces concurrent init calls. Pro sync must never race the first
     // CloudStore load and then lose imported hosts.
-    void this.hosts.init(context).then((): void => { this.importCloudAccountMetadata(); });
+    void this.initializeCurrentScope(context);
   }
 
   getAccounts(): RustDeskProAccountState[] {
     return this.credentials.getAll();
   }
 
+  getAccount(accountId: string): RustDeskProAccountState | undefined {
+    const id: string = accountId.trim();
+    if (id.length === 0) { return undefined; }
+    return this.credentials.get(id);
+  }
+
   onDataChange(callback: () => void): () => void {
     return this.credentials.onDataChange(callback);
   }
 
-  private importCloudAccountMetadata(): void {
+  async prepareScopeTransition(timeoutMs: number = 10000): Promise<boolean> {
+    this.operationGeneration++;
+    const startedAt: number = Date.now();
+    while (this.activeOperations > 0 &&
+      Date.now() - startedAt < Math.max(1, timeoutMs)) {
+      await new Promise<void>((resolve: () => void): void => {
+        setTimeout(resolve, 20);
+      });
+    }
+    return this.activeOperations === 0;
+  }
+
+  private beginOperation(): RustDeskProOperation {
+    const lease: AccountSessionLease | null =
+      CloudStore.getInstance().currentAccountLease();
+    if (lease === null) {
+      throw new RustDeskProApiError('account_scope_unavailable',
+        '账号数据域尚未就绪');
+    }
+    this.activeOperations++;
+    return {
+      generation: this.operationGeneration,
+      lease: cloneAccountSessionLease(lease)
+    };
+  }
+
+  private endOperation(): void {
+    this.activeOperations = Math.max(0, this.activeOperations - 1);
+  }
+
+  private operationIsCurrent(operation: RustDeskProOperation): boolean {
+    return operation.generation === this.operationGeneration &&
+      accountSessionLeaseEquals(
+        CloudStore.getInstance().currentAccountLease(), operation.lease);
+  }
+
+  private requireCurrentOperation(operation: RustDeskProOperation): void {
+    if (!this.operationIsCurrent(operation)) {
+      throw new RustDeskProApiError('account_scope_changed',
+        '账号已切换，已丢弃旧账号网络结果');
+    }
+  }
+
+  private async initializeCurrentScope(context: common.Context): Promise<void> {
+    let operation: RustDeskProOperation | null = null;
+    try {
+      operation = this.beginOperation();
+      await this.hosts.init(context);
+      this.requireCurrentOperation(operation);
+      this.importCloudAccountMetadata(operation);
+    } catch (_err) {
+      // A page may initialize while the account scope is still opening or
+      // leaving. The active scope will initialize the service again.
+    } finally {
+      if (operation !== null) { this.endOperation(); }
+    }
+  }
+
+  private importCloudAccountMetadata(operation: RustDeskProOperation): void {
+    this.requireCurrentOperation(operation);
     const relays: RustDeskRelayConfig[] = this.hosts.getAllRelays();
     for (let i = 0; i < relays.length; i++) {
+      this.requireCurrentOperation(operation);
       const relay: RustDeskRelayConfig = relays[i];
       let migrated: RustDeskRelayConfig | null = null;
       for (let j = 0; j < relay.accounts.length; j++) {
@@ -67,9 +159,15 @@ export class RustDeskProSyncService {
         }
         const local: RustDeskProAccountState | undefined = this.credentials.get(legacy.id);
         if (local !== undefined && local.accessToken.length > 0) { continue; }
-        this.credentials.save(LegacyRustDeskAccountCloudAdapter.fromLegacy(legacy, relay.apiServer));
+        this.requireCurrentOperation(operation);
+        this.saveCredentialOrThrow(
+          LegacyRustDeskAccountCloudAdapter.fromLegacy(
+            legacy, relay.apiServer));
       }
-      if (migrated !== null) { this.hosts.updateRelay(migrated); }
+      if (migrated !== null) {
+        this.requireCurrentOperation(operation);
+        this.hosts.updateRelay(migrated);
+      }
     }
   }
 
@@ -84,6 +182,41 @@ export class RustDeskProSyncService {
     this.hosts.updateRelay(next);
   }
 
+  /**
+   * A control-plane relay is one deployment: /api/login lives on the same
+   * origin as hbbs/hbbr. When the relay was saved without an API address (the
+   * common OSS/超享 add flow) and the user then logs in with their RustDesk
+   * account, the successful login proves the API origin. Persist it back onto
+   * the relay so the connection binding-identity check (accountApiServer ==
+   * relay.apiServer) can pass and the same HTTP token is projected to the
+   * rendezvous/relay exactly like the official client. Never overwrite an
+   * explicitly configured API address.
+   */
+  private backfillRelayApiServerIfMissing(
+    account: RustDeskProAccountState
+  ): void {
+    const relay: RustDeskRelayConfig | undefined =
+      this.hosts.getAllRelays().find(
+        (item: RustDeskRelayConfig): boolean =>
+          item.id === account.relayId);
+    if (relay === undefined ||
+      relay.apiServer.trim().length > 0 ||
+      account.serverUrl.trim().length === 0) {
+      return;
+    }
+    const next: RustDeskRelayConfig =
+      RustDeskRelayConfig.fromJSON(relay.toJSON());
+    next.apiServer =
+      normalizeRustDeskProServerUrl(account.serverUrl);
+    const result = this.hosts.updateRelayResult(next);
+    if (!result.ok) {
+      hilog.warn(0x0001, 'RustDeskProSync',
+        'relay apiServer backfill failed relay=' +
+        rustDeskRelayIdFingerprint(relay.id) +
+        ' code=' + result.code);
+    }
+  }
+
   private cloneAccount(account: RustDeskProAccountState): RustDeskProAccountState {
     return {
       id: account.id,
@@ -93,16 +226,34 @@ export class RustDeskProSyncService {
       displayName: account.displayName,
       userId: account.userId,
       accessToken: account.accessToken,
+      accessTokenFingerprint: account.accessTokenFingerprint !== ''
+        ? account.accessTokenFingerprint : rustDeskProAccessTokenFingerprint(account.accessToken),
+      tokenGeneration: rustDeskProTokenGeneration(account),
       deviceId: account.deviceId,
       deviceUuid: account.deviceUuid,
       loginStatus: account.loginStatus,
       lastLoginAt: account.lastLoginAt,
       lastSyncAt: account.lastSyncAt,
-      lastSyncError: account.lastSyncError
+      lastSyncError: account.lastSyncError,
+      controlPlaneCapabilityProof:
+        cloneRustDeskControlPlaneCapabilityProof(
+          account.controlPlaneCapabilityProof)
     };
   }
 
-  private async authenticate(input: RustDeskProLoginInput): Promise<RustDeskProAccountState> {
+  private saveCredentialOrThrow(
+    account: RustDeskProAccountState
+  ): void {
+    if (!this.credentials.save(account)) {
+      throw new RustDeskProApiError(
+        'credential_store_failed',
+        'Pro 登录凭据未能写入系统安全资产');
+    }
+  }
+
+  private async authenticate(input: RustDeskProLoginInput,
+    operation: RustDeskProOperation): Promise<RustDeskProAccountState> {
+    this.requireCurrentOperation(operation);
     const previous = this.credentials.get(input.id);
     const account: RustDeskProAccountState = {
       id: input.id,
@@ -112,16 +263,22 @@ export class RustDeskProSyncService {
       displayName: input.username.trim(),
       userId: '',
       accessToken: '',
+      accessTokenFingerprint: rustDeskProAccessTokenFingerprint(''),
+      tokenGeneration: previous ? rustDeskProTokenGeneration(previous) : 1,
       deviceId: previous ? previous.deviceId : '',
       deviceUuid: previous ? previous.deviceUuid : '',
       loginStatus: 'none',
       lastLoginAt: 0,
       lastSyncAt: 0,
-      lastSyncError: ''
+      lastSyncError: '',
+      controlPlaneCapabilityProof: undefined
     };
     this.credentials.ensureDeviceIdentity(account);
     const result = await this.api.login(account, input.username, input.password);
+    this.requireCurrentOperation(operation);
     account.accessToken = result.accessToken;
+    account.accessTokenFingerprint = rustDeskProAccessTokenFingerprint(result.accessToken);
+    account.tokenGeneration = previous ? rustDeskProTokenGeneration(previous) + 1 : 1;
     account.userId = result.userId;
     account.username = result.username.length > 0 ? result.username : input.username.trim();
     account.displayName = result.displayName.length > 0 ? result.displayName : account.username;
@@ -131,13 +288,19 @@ export class RustDeskProSyncService {
     return account;
   }
 
-  private async syncAccount(account: RustDeskProAccountState): Promise<RustDeskProReconcileResult> {
+  private async syncAccount(account: RustDeskProAccountState,
+    operation: RustDeskProOperation): Promise<RustDeskProReconcileResult> {
+    this.requireCurrentOperation(operation);
     if (this.context !== null) {
       await this.hosts.init(this.context);
+      this.requireCurrentOperation(operation);
     }
     await this.hosts.whenReady();
+    this.requireCurrentOperation(operation);
     const addressBook = await this.api.getAddressBook(account);
+    this.requireCurrentOperation(operation);
     const relay = this.hosts.getAllRelays().find((item) => item.id === account.relayId);
+    this.requireCurrentOperation(operation);
     const result = this.hosts.reconcileRustDeskProHosts(account.relayId, account.id, addressBook.peers,
       addressBook.updatedAt > 0 ? addressBook.updatedAt : Date.now(),
       relay ? relay.idServer : '', relay ? relay.idServerPort : 21116);
@@ -147,49 +310,139 @@ export class RustDeskProSyncService {
     return result;
   }
 
+  private bindAuthenticatedControlPlaneCapability(
+    account: RustDeskProAccountState,
+    operation: RustDeskProOperation
+  ): RustDeskControlPlaneCapabilityIssueResult {
+    this.requireCurrentOperation(operation);
+    const relay: RustDeskRelayConfig | undefined =
+      this.hosts.getAllRelays().find(
+        (item: RustDeskRelayConfig): boolean =>
+          item.id === account.relayId);
+    const unavailable = new RustDeskControlPlaneCapabilityIssueResult();
+    account.controlPlaneCapabilityProof = undefined;
+    unavailable.code = relay === undefined
+      ? 'relay_missing' : 'capability_attestation_unavailable';
+    unavailable.message =
+      '地址簿已同步；当前构建没有可验证的官方／第三方控制面能力证明，连接将按 API-only 模式且不发送地址簿令牌。';
+    return unavailable;
+  }
+
   async login(input: RustDeskProLoginInput): Promise<RustDeskProAccountState> {
-    const account = await this.authenticate(input);
-    this.credentials.save(account);
-    this.persistCloudAccountMetadata(account);
-    return this.cloneAccount(account);
+    const operation: RustDeskProOperation = this.beginOperation();
+    try {
+      const account = await this.authenticate(input, operation);
+      this.requireCurrentOperation(operation);
+      this.saveCredentialOrThrow(account);
+      this.persistCloudAccountMetadata(account);
+      return this.cloneAccount(account);
+    } finally {
+      this.endOperation();
+    }
   }
 
   async loginAndSync(input: RustDeskProLoginInput): Promise<RustDeskProReconcileResult> {
     // Keep login + first address-book pull atomic. A successful login followed
     // by a failed address-book request must not leave a half-created account.
-    const account = await this.authenticate(input);
-    const result = await this.syncAccount(account);
-    this.credentials.save(account);
-    this.persistCloudAccountMetadata(account);
-    return result;
-  }
-
-  async sync(accountId: string): Promise<RustDeskProReconcileResult> {
-    const account = this.credentials.get(accountId);
-    if (!account) { throw new RustDeskProApiError('account_missing', 'Pro 账号不存在'); }
+    const operation: RustDeskProOperation = this.beginOperation();
     try {
-      const result = await this.syncAccount(account);
-      this.credentials.save(account);
+      const account = await this.authenticate(input, operation);
+      const result = await this.syncAccount(account, operation);
+      this.requireCurrentOperation(operation);
+      this.bindAuthenticatedControlPlaneCapability(account, operation);
+      this.backfillRelayApiServerIfMissing(account);
+      this.saveCredentialOrThrow(account);
+      this.persistCloudAccountMetadata(account);
       return result;
-    } catch (err) {
-      const code = err instanceof RustDeskProApiError ? err.code : 'sync_error';
-      account.lastSyncError = code;
-      if (code === 'token_expired') { account.loginStatus = 'expired'; account.accessToken = ''; }
-      this.credentials.save(account);
-      throw err instanceof Error ? err : new Error('Pro 同步失败');
+    } finally {
+      this.endOperation();
     }
   }
 
-  async logout(accountId: string): Promise<void> {
+  async sync(accountId: string): Promise<RustDeskProReconcileResult> {
+    const operation: RustDeskProOperation = this.beginOperation();
     const account = this.credentials.get(accountId);
-    if (!account) { return; }
-    await this.api.logout(account);
-    this.credentials.clear(accountId);
-    const relay = this.hosts.getAllRelays().find((item: RustDeskRelayConfig): boolean => item.id === account.relayId);
-    if (relay !== undefined) {
-      const next: RustDeskRelayConfig = RustDeskRelayConfig.fromJSON(relay.toJSON());
-      next.accounts = next.accounts.filter((item: RustDeskAccount): boolean => item.id !== accountId);
-      this.hosts.updateRelay(next);
+    if (!account) {
+      this.endOperation();
+      throw new RustDeskProApiError('account_missing', 'Pro 账号不存在');
+    }
+    try {
+      const result = await this.syncAccount(account, operation);
+      this.requireCurrentOperation(operation);
+      this.bindAuthenticatedControlPlaneCapability(account, operation);
+      this.backfillRelayApiServerIfMissing(account);
+      this.saveCredentialOrThrow(account);
+      return result;
+    } catch (err) {
+      if (!this.operationIsCurrent(operation)) {
+        throw err instanceof Error ? err : new Error('账号已切换');
+      }
+      const code = err instanceof RustDeskProApiError ? err.code : 'sync_error';
+      account.lastSyncError = code;
+      if (code === 'token_expired') {
+        account.loginStatus = 'expired';
+        account.accessToken = '';
+        account.accessTokenFingerprint = rustDeskProAccessTokenFingerprint('');
+        account.controlPlaneCapabilityProof = undefined;
+      }
+      this.saveCredentialOrThrow(account);
+      throw err instanceof Error ? err : new Error('Pro 同步失败');
+    } finally {
+      this.endOperation();
+    }
+  }
+
+  markConnectionSessionExpired(accountId: string, reason: string = 'connection_token_expired',
+    expectedFingerprint: string = '', expectedGeneration: number = 0,
+    expectedOwnerScopeId: string = '', expectedAccountGeneration: number = 0): boolean {
+    const lease: AccountSessionLease | null =
+      CloudStore.getInstance().currentAccountLease();
+    if (lease === null ||
+      expectedOwnerScopeId.trim() !== lease.ownerScopeId ||
+      expectedAccountGeneration !== lease.generation) {
+      return false;
+    }
+    const account = this.credentials.get(accountId);
+    if (!account) { return false; }
+    const currentFingerprint: string = account.accessTokenFingerprint !== ''
+      ? account.accessTokenFingerprint : rustDeskProAccessTokenFingerprint(account.accessToken);
+    const currentGeneration: number = rustDeskProTokenGeneration(account);
+    if (!rustDeskProTokenMatchesConnection(
+      expectedFingerprint, expectedGeneration, currentFingerprint, currentGeneration)) {
+      return false;
+    }
+    account.accessToken = '';
+    account.accessTokenFingerprint = rustDeskProAccessTokenFingerprint('');
+    account.loginStatus = 'expired';
+    account.lastSyncError = reason;
+    account.controlPlaneCapabilityProof = undefined;
+    if (!this.credentials.save(account)) { return false; }
+    this.persistCloudAccountMetadata(account);
+    return true;
+  }
+
+  async logout(accountId: string): Promise<void> {
+    const operation: RustDeskProOperation = this.beginOperation();
+    const account = this.credentials.get(accountId);
+    try {
+      if (!account) { return; }
+      await this.api.logout(account);
+      this.requireCurrentOperation(operation);
+      if (!this.credentials.clear(accountId)) {
+        throw new RustDeskProApiError(
+          'credential_store_failed',
+          'Pro 登录凭据未能从系统安全资产删除');
+      }
+      const relay = this.hosts.getAllRelays().find(
+        (item: RustDeskRelayConfig): boolean => item.id === account.relayId);
+      if (relay !== undefined) {
+        const next: RustDeskRelayConfig = RustDeskRelayConfig.fromJSON(relay.toJSON());
+        next.accounts = next.accounts.filter(
+          (item: RustDeskAccount): boolean => item.id !== accountId);
+        this.hosts.updateRelay(next);
+      }
+    } finally {
+      this.endOperation();
     }
   }
 }

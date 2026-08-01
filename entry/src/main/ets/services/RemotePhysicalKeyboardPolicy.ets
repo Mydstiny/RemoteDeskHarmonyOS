@@ -53,6 +53,20 @@ export function shouldConsumeRemoteBack(connected: boolean, isDesktopDevice: boo
     physicalKeyboardConnected && hardwareKeyboardProxyActive;
 }
 
+export function shouldAutoSwitchVncKeyboardMouseMode(
+  protocol: string,
+  connected: boolean,
+  viewOnly: boolean,
+  externalKeyboardMouseConnected: boolean,
+  currentMode: number,
+  sessionId: number,
+  alreadyAppliedSessionId: number
+): boolean {
+  return protocol === 'vnc' && connected && !viewOnly &&
+    externalKeyboardMouseConnected && currentMode !== 2 && sessionId > 0 &&
+    alreadyAppliedSessionId !== sessionId;
+}
+
 export function remoteKeyboardLayoutDescription(layout: RemoteKeyboardLayout): string {
   if (layout === RemoteKeyboardLayout.MACOS) {
     return 'Ctrl 映射为 Command，Win/Meta 映射为 Control；使用 Win/Meta+空格切换远端输入法。';

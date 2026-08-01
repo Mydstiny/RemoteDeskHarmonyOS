@@ -33,6 +33,7 @@ class FreeRdpAdapter;
 struct FreeRdpContext {
 	rdpContext base;           // MUST be first — FreeRDP 内部以此访问 rdpContext
 	FreeRdpAdapter* adapter;  // 回指针，供回调中使用
+	uint64_t generation = 0;   // connection generation that owns this context
 };
 #endif
 

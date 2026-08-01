@@ -281,7 +281,7 @@ export struct RemoteSessionTopBar {
         const next: number = this.codec >= 5 ? 0 : this.codec + 1;
         this.actions.onSetRustDeskCodec(next);
       })
-      this.menuItem('分辨率', 'resolutionSettings', (): void => {
+      this.menuItem('显示器与分辨率', 'resolutionSettings', (): void => {
         this.actions.onOpenRustDeskResolution();
       })
       this.menuItem('虚拟显示器', 'virtualDisplay', (): void => {})

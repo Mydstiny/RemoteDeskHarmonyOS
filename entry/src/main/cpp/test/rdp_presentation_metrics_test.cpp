@@ -59,6 +59,32 @@ RDP_TEST_CASE(rdp_presentation_metrics_excludes_rejections_from_worker_latency) 
     RDP_ASSERT_EQ(snapshot.workerUs.max, static_cast<int64_t>(0));
 }
 
+RDP_TEST_CASE(rdp_presentation_metrics_counts_full_dirty_retained_and_deferred_frames) {
+    RdpPresentationMetrics metrics;
+    metrics.recordDeferred(100);
+
+    RdpPresentMetrics full;
+    full.result = RdpPresentResult::Presented;
+    full.fullFrame = true;
+    metrics.recordPresent(200, full);
+
+    RdpPresentMetrics dirty;
+    dirty.result = RdpPresentResult::Presented;
+    metrics.recordPresent(300, dirty);
+
+    RdpPresentMetrics retained;
+    retained.result = RdpPresentResult::Presented;
+    retained.retainedFrame = true;
+    metrics.recordPresent(350, retained);
+
+    const RdpPresentationMetricsSnapshot snapshot = metrics.snapshot(400);
+    RDP_ASSERT_EQ(snapshot.presentedFrames, static_cast<uint64_t>(3));
+    RDP_ASSERT_EQ(snapshot.fullFramePresents, static_cast<uint64_t>(1));
+    RDP_ASSERT_EQ(snapshot.dirtyRectPresents, static_cast<uint64_t>(1));
+    RDP_ASSERT_EQ(snapshot.retainedFramePresents, static_cast<uint64_t>(1));
+    RDP_ASSERT_EQ(snapshot.deferredSnapshots, static_cast<uint64_t>(1));
+}
+
 RDP_TEST_CASE(rdp_presentation_metrics_completed_window_uses_interval_counts) {
     RdpPresentationMetrics metrics;
     metrics.recordSubmission(100, 1000, 10, 20, false);
@@ -78,4 +104,22 @@ RDP_TEST_CASE(rdp_presentation_metrics_completed_window_uses_interval_counts) {
     const RdpPresentationMetricsSnapshot lifetime = metrics.snapshot(1000300);
     RDP_ASSERT_EQ(lifetime.submittedFrames, static_cast<uint64_t>(2));
     RDP_ASSERT_EQ(lifetime.copiedBytes, static_cast<uint64_t>(3000));
+}
+
+RDP_TEST_CASE(rdp_presentation_metrics_completes_retained_only_window) {
+    RdpPresentationMetrics metrics;
+    RdpPresentMetrics retained;
+    retained.result = RdpPresentResult::Presented;
+    retained.retainedFrame = true;
+    metrics.recordPresent(100, retained);
+    // The next retained redraw rolls a completed window, which the frame pump
+    // emits even when a static RDP desktop produced no source frame.
+    metrics.recordPresent(1000100, retained);
+
+    RdpPresentationMetricsSnapshot window;
+    RDP_ASSERT(metrics.takeCompletedWindow(window));
+    RDP_ASSERT_EQ(window.presentedFrames, static_cast<uint64_t>(1));
+    RDP_ASSERT_EQ(window.retainedFramePresents, static_cast<uint64_t>(1));
+    RDP_ASSERT_EQ(window.fullFramePresents, static_cast<uint64_t>(0));
+    RDP_ASSERT_EQ(window.dirtyRectPresents, static_cast<uint64_t>(0));
 }

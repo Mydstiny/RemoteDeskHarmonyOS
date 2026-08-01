@@ -1,9 +1,13 @@
 import { describe, it, expect } from '@ohos/hypium';
 import {
   baseCanvasTransform,
+  canvasTransformCanPan,
   clampCanvasTransform,
+  CANVAS_TRANSFORM_MAX_SCALE,
   normalizeLocalViewScaleMode,
+  panCanvasTransform,
   pinchCanvasTransform,
+  RDP_CANVAS_FREE_PAN_INSET_RATIO,
   REMOTE_DISPLAY_SCALE_PREFERENCE_VERSION,
   resolveInitialRemoteDisplayScaleMode
 } from '../main/ets/services/RemoteCanvasTransformPolicy';
@@ -50,6 +54,92 @@ export default function remoteCanvasTransformPolicyTest() {
       const result = clampCanvasTransform({ scale: 2, panX: 9999, panY: -9999 }, viewport);
       expect(Math.round(result.panX)).assertEqual(500);
       expect(Math.round(result.panY)).assertEqual(-200);
+    });
+
+    it('only makes an overflowing canvas pannable', 0, () => {
+      expect(canvasTransformCanPan(baseCanvasTransform('fit', 100, viewport), viewport))
+        .assertFalse();
+      expect(canvasTransformCanPan(baseCanvasTransform('100', 100, viewport), viewport))
+        .assertTrue();
+    });
+
+    it('moves an overflowing canvas and clamps both directions', 0, () => {
+      const zoomed = baseCanvasTransform('100', 100, viewport);
+      const moved = panCanvasTransform(zoomed, viewport, 120, -80);
+      expect(Math.round(moved.panX)).assertEqual(120);
+      expect(Math.round(moved.panY)).assertEqual(-80);
+      const bounded = panCanvasTransform(moved, viewport, 9999, -9999);
+      expect(Math.round(bounded.panX)).assertEqual(500);
+      expect(Math.round(bounded.panY)).assertEqual(-200);
+    });
+
+    it('keeps strict per-axis bounds when free pan is not enabled', 0, (): void => {
+      const letterboxed: CanvasViewport = {
+        surfaceWidth: 1600,
+        surfaceHeight: 1000,
+        sourceWidth: 1280,
+        sourceHeight: 1024
+      };
+      const moved: CanvasTransform = panCanvasTransform(
+        { scale: 1.2, panX: 0, panY: 0 }, letterboxed, 9999, 9999);
+      expect(Math.round(moved.panX)).assertEqual(0);
+      expect(Math.round(moved.panY)).assertEqual(100);
+    });
+
+    it('allows bounded two-axis free pan for an enlarged RDP canvas', 0, (): void => {
+      const rdpLetterboxed: CanvasViewport = {
+        surfaceWidth: 1600,
+        surfaceHeight: 1000,
+        sourceWidth: 1280,
+        sourceHeight: 1024,
+        freePanInsetRatio: RDP_CANVAS_FREE_PAN_INSET_RATIO
+      };
+      const fit: CanvasTransform = baseCanvasTransform('fit', 100, rdpLetterboxed);
+      expect(canvasTransformCanPan(fit, rdpLetterboxed)).assertFalse();
+      const fitMoved: CanvasTransform = panCanvasTransform(
+        fit, rdpLetterboxed, 9999, -9999);
+      expect(Math.round(fitMoved.panX)).assertEqual(0);
+      expect(Math.round(fitMoved.panY)).assertEqual(0);
+      const shrunken: CanvasTransform = panCanvasTransform(
+        { scale: 0.8, panX: 0, panY: 0 }, rdpLetterboxed, 9999, -9999);
+      expect(Math.round(shrunken.panX)).assertEqual(0);
+      expect(Math.round(shrunken.panY)).assertEqual(0);
+      const zoomed: CanvasTransform = { scale: 1.2, panX: 0, panY: 0 };
+      expect(canvasTransformCanPan(zoomed, rdpLetterboxed)).assertTrue();
+      const moved: CanvasTransform = panCanvasTransform(
+        zoomed, rdpLetterboxed, 9999, 9999);
+      expect(Math.round(moved.panX)).assertEqual(720);
+      expect(Math.round(moved.panY)).assertEqual(450);
+    });
+
+    it('prefers real overflow and clamps free pan symmetrically', 0, (): void => {
+      const rdpViewport: CanvasViewport = {
+        surfaceWidth: viewport.surfaceWidth,
+        surfaceHeight: viewport.surfaceHeight,
+        sourceWidth: viewport.sourceWidth,
+        sourceHeight: viewport.sourceHeight,
+        freePanInsetRatio: RDP_CANVAS_FREE_PAN_INSET_RATIO
+      };
+      const positive: CanvasTransform = panCanvasTransform(
+        { scale: 3, panX: 0, panY: 0 }, rdpViewport, 9999, 9999);
+      expect(Math.round(positive.panX)).assertEqual(1000);
+      expect(Math.round(positive.panY)).assertEqual(450);
+      const negative: CanvasTransform = panCanvasTransform(
+        { scale: 3, panX: 0, panY: 0 }, rdpViewport, -9999, -9999);
+      expect(Math.round(negative.panX)).assertEqual(-1000);
+      expect(Math.round(negative.panY)).assertEqual(-450);
+    });
+
+    it('keeps the multiplier within the native renderer limit', 0, (): void => {
+      const smallViewport: CanvasViewport = {
+        surfaceWidth: 100,
+        surfaceHeight: 100,
+        sourceWidth: 1000,
+        sourceHeight: 1000
+      };
+      const maxed = baseCanvasTransform('custom', 300, smallViewport);
+      expect(Math.round(maxed.scale * 100) / 100).assertEqual(CANVAS_TRANSFORM_MAX_SCALE);
+      expect(maxed.scale <= CANVAS_TRANSFORM_MAX_SCALE).assertTrue();
     });
   });
 }

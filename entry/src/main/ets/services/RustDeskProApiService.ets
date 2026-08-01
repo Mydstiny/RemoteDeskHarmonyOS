@@ -2,14 +2,17 @@ import { http } from '@kit.NetworkKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { RustDeskProAccountState, RustDeskProAddressBook } from '../model/RustDeskProModels';
 import { CURRENT_RELEASE_VERSION } from './ReleaseNotesRegistry';
+import { rustDeskRelayIdFingerprint } from './RustDeskRelaySavePolicy';
 import {
   buildRustDeskProLoginRequest,
+  buildRustDeskProMinimalLoginRequest,
   normalizeRustDeskProServerUrl,
   parseRustDeskProAddressBookPage,
   parseRustDeskProAddressBookResponse,
   parseRustDeskProLoginResponse,
   parseRustDeskProPersonalAddressBookResponse,
   parseRustDeskProSharedAddressBookProfiles,
+  rustDeskProApiRouteId,
   RustDeskProApiError,
   RustDeskProLoginResult
 } from './RustDeskProApiPolicy';
@@ -31,6 +34,32 @@ interface RustDeskProLogoutRequest {
 
 interface RustDeskProErrorPayload {
   error: string
+}
+
+/**
+ * 从服务器拒绝响应中提取可诊断的 error/message 文本（脱敏、截断）。
+ * 只保留错误说明，不记录 URL、query、GUID、token、账号或完整响应体。
+ */
+function extractServerRejectionReason(raw: string): string {
+  let value = raw.replace(/\s+/g, ' ').trim();
+  try {
+    const obj = JSON.parse(raw) as Record<string, Object>;
+    const keys: string[] = ['error', 'message', 'detail', 'reason', 'msg'];
+    for (let i = 0; i < keys.length; i++) {
+      const v: Object | undefined = obj[keys[i]];
+      if (typeof v === 'string' && (v as string).length > 0) {
+        value = v as string;
+        break;
+      }
+    }
+  } catch (_err) {
+    // 非 JSON：保留纯文本开头。
+  }
+  value = value
+    .replace(/("(?:access_token|token|password|secret|authorization)"\s*:\s*")[^"]+(")/gi, '$1<redacted>$2')
+    .replace(/(token|password|secret|authorization)\s*[=:]\s*[\w.\-]+/gi, '$1=<redacted>');
+  if (value.length > 200) { value = value.substring(0, 200) + '…'; }
+  return value;
 }
 
 export class RustDeskProApiService {
@@ -64,21 +93,52 @@ export class RustDeskProApiService {
         // Match the official RustDesk client for empty POST requests.
         headers['Content-Length'] = '0';
       }
-      hilog.info(LOG_DOMAIN, LOG_TAG, 'request ' + method.toString() + ' ' + url);
-      const response = await client.request(url, options);
-      const rawResult: Object = response.result as Object;
-      let bodyPreview = '';
-      if (typeof rawResult === 'string') {
-        bodyPreview = (rawResult as string).replace(/\s+/g, ' ')
-          .replace(/("(?:access_token|token|password)"\s*:\s*")[^"]+("|,|})/g, '$1<redacted>$2')
-          .substring(0, 240);
-      } else {
-        try { bodyPreview = JSON.stringify(rawResult).substring(0, 240); } catch (_err) { bodyPreview = '<unserializable>'; }
+      const endpointId: string =
+        rustDeskRelayIdFingerprint(
+          normalizeRustDeskProServerUrl(
+            account.serverUrl));
+      const routeId: string = rustDeskProApiRouteId(path);
+      hilog.info(LOG_DOMAIN, LOG_TAG,
+        'request method=' + method.toString() +
+        ' route=' + routeId + ' endpointId=' +
+        endpointId + ' token=' +
+        (account.accessToken.length > 0
+          ? 'present' : 'absent'));
+      let response: http.HttpResponse;
+      try {
+        response = await client.request(url, options);
+      } catch (_err) {
+        throw new RustDeskProApiError(
+          'network_error',
+          'Pro API 网络请求失败（请求 ' + routeId +
+          '，端点编号 ' + endpointId + '）');
       }
-      let headerPreview = '';
-      try { headerPreview = JSON.stringify(response.header).substring(0, 240); } catch (_err) { headerPreview = '<unserializable>'; }
+      const rawResult: Object = response.result as Object;
+      let responseBytes: number = 0;
+      if (typeof rawResult === 'string') {
+        responseBytes = (rawResult as string).length;
+      } else {
+        try {
+          const serialized: string =
+            JSON.stringify(rawResult);
+          responseBytes = serialized.length;
+        } catch (_err) {
+          responseBytes = 0;
+        }
+      }
       hilog.info(LOG_DOMAIN, LOG_TAG, 'response status=' + response.responseCode.toString() +
-        ' resultType=' + response.resultType.toString() + ' header=' + headerPreview + ' body=' + bodyPreview);
+        ' resultType=' + response.resultType.toString() +
+        ' bytes=' + responseBytes.toString() +
+        ' route=' + routeId +
+        ' endpointId=' + endpointId);
+      if (response.responseCode >= 400 &&
+        typeof rawResult === 'string' &&
+        (rawResult as string).length > 0) {
+        hilog.warn(LOG_DOMAIN, LOG_TAG,
+          'server rejected route=' + routeId +
+          ' status=' + response.responseCode.toString() +
+          ' reason=' + extractServerRejectionReason(rawResult as string));
+      }
       let payload: Object = JSON.parse('{}') as Object;
       if (typeof response.result === 'string' && (response.result as string).length > 0) {
         try { payload = JSON.parse(response.result as string) as Object; } catch (_err) {
@@ -87,14 +147,29 @@ export class RustDeskProApiService {
           // actual HTTP failure; successful responses must remain strict JSON.
           if (response.responseCode >= 200 && response.responseCode < 300) {
             throw new RustDeskProApiError('invalid_response',
-              'Pro 服务器返回了无效 JSON (HTTP ' + response.responseCode.toString() + ', ' + url +
-              ', 响应: ' + bodyPreview.substring(0, 120) + ')', response.responseCode as number);
+              'Pro 服务器返回了无效 JSON（HTTP ' +
+              response.responseCode.toString() + '，请求 ' +
+              routeId + '）',
+              response.responseCode as number);
           }
-          const errorPayload: RustDeskProErrorPayload = { error: bodyPreview };
+          const errorPayload: RustDeskProErrorPayload = {
+            error: 'remote_rejected'
+          };
           payload = errorPayload as Object;
         }
       } else if (response.result && typeof response.result === 'object') {
         payload = response.result as Object;
+      }
+      if (response.responseCode < 200 ||
+        response.responseCode >= 300) {
+        const reason: string =
+          typeof rawResult === 'string' && (rawResult as string).length > 0
+            ? extractServerRejectionReason(rawResult as string)
+            : 'remote_rejected';
+        const errorPayload: RustDeskProErrorPayload = {
+          error: reason
+        };
+        payload = errorPayload as Object;
       }
       return { status: response.responseCode as number, payload };
     } finally {
@@ -104,8 +179,26 @@ export class RustDeskProApiService {
 
   async login(account: RustDeskProAccountState, username: string, password: string): Promise<RustDeskProLoginResult> {
     const body = buildRustDeskProLoginRequest(username, password, account.deviceId, account.deviceUuid, APP_VERSION);
-    const response = await this.request(account, '/api/login', http.RequestMethod.POST, body as Object);
-    return parseRustDeskProLoginResponse(response.payload, response.status);
+    const attempt = async (payload: Object): Promise<RustDeskProLoginResult> => {
+      const response: RustDeskProHttpResponse =
+        await this.request(account, '/api/login', http.RequestMethod.POST, payload);
+      return parseRustDeskProLoginResponse(response.payload, response.status);
+    };
+    try {
+      return await attempt(body as Object);
+    } catch (err) {
+      // Deterministic compatibility fallback: only when the server actively
+      // rejects the extended device-registration payload with HTTP 400.
+      // Retry once with the official minimal username/password login body.
+      // Any other failure propagates unchanged.
+      const apiError: RustDeskProApiError =
+        err instanceof RustDeskProApiError ? err : new RustDeskProApiError('login_failed', 'Pro 登录失败');
+      if (apiError.code !== 'http_error' || apiError.status !== 400) {
+        throw apiError;
+      }
+      const minimalBody = buildRustDeskProMinimalLoginRequest(username, password);
+      return await attempt(minimalBody);
+    }
   }
 
   async getAddressBook(account: RustDeskProAccountState): Promise<RustDeskProAddressBook> {
@@ -114,9 +207,14 @@ export class RustDeskProApiService {
     }
     // Current RustDesk servers expose the personal address book and peers as
     // separate paginated endpoints. Older deployments use the legacy /api/ab/get
-    // payload, so keep it as a compatibility fallback.
-    const personal = await this.request(account, '/api/ab/personal', http.RequestMethod.POST, null);
-    const personalGuid = parseRustDeskProPersonalAddressBookResponse(personal.payload, personal.status);
+    // payload. Some hosted panels reject the modern endpoint shape with 400/405
+    // instead of 404; treat those the same as "not supported" and fall back to
+    // the legacy payload. 401/403 and transport failures stay authoritative.
+    const personal: RustDeskProHttpResponse =
+      await this.request(account, '/api/ab/personal', http.RequestMethod.POST, null);
+    const personalGuid: string =
+      personal.status === 400 || personal.status === 404 || personal.status === 405
+        ? '' : parseRustDeskProPersonalAddressBookResponse(personal.payload, personal.status);
     if (personalGuid.length === 0) {
       const legacy = await this.request(account, '/api/ab/get', http.RequestMethod.POST,
         JSON.parse('{}') as Object);

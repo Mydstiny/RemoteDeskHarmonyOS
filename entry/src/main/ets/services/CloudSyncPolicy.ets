@@ -1,3 +1,7 @@
+// Huawei Cloud Space owns the deployed Record Type schema. Do not bundle an
+// `arkdata/cloud/cloud_schema.json` override in the HAP: the system prefers the
+// HAP copy over the service schema, so a stale copy rejects otherwise valid
+// uploads after any container schema revision.
 export const CLOUD_SYNC_TABLES: string[] = [
   'cryptoparams',
   'usersettings',
@@ -5,7 +9,8 @@ export const CLOUD_SYNC_TABLES: string[] = [
   'rdpcredentials',
   'rustdeskrelays',
   'sshkeys',
-  'totpentries'
+  'totpentries',
+  'vncrecordv2'
 ];
 
 export type CloudSyncOperation = 'upload' | 'download' | 'refresh';

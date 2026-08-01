@@ -7,7 +7,7 @@
 //   4. 主循环: 接收 Message → 分发 video_frame/audio_frame 等
 
 use super::message_proto::{
-    AudioFrame, FileTransfer, ImageQuality, KeyEvent, LoginRequest, LoginResponse,
+    AudioFrame, Auth2FA, FileTransfer, ImageQuality, KeyEvent, LoginRequest, LoginResponse,
     LoginResponse_oneof_union, Message, Message_oneof_union, Misc, Misc_oneof_union, MouseEvent,
     OptionMessage, OptionMessage_BoolOption, PeerInfo, SupportedDecoding,
     SupportedDecoding_PreferCodec, VideoFrame,
@@ -15,9 +15,19 @@ use super::message_proto::{
 use super::wire;
 use protobuf::Message as ProtoMessage;
 use sha2::{Digest, Sha256};
+use std::ffi::{c_char, c_void, CString};
 use std::io;
 use std::net::TcpStream;
+use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::time::{Duration, Instant};
+
+/// FFI callback for an interactive Peer authentication event.
+/// The message pointer is borrowed only for the duration of the callback.
+pub type AuthEventCallback = extern "C" fn(i32, *const c_char, *mut c_void);
+
+const AUTH_EVENT_ACCEPTED: i32 = 0;
+const AUTH_EVENT_REQUIRED: i32 = 1;
+const AUTH_EVENT_WRONG_CODE: i32 = 2;
 
 /// 会话状态
 #[derive(Debug, Clone, PartialEq)]
@@ -25,6 +35,8 @@ pub enum SessionState {
     Disconnected,
     LoggingIn,
     WaitingRemoteApproval,
+    WaitingPeer2FA,
+    RetryingPeer2FA,
     Connected,
     Error(String),
 }
@@ -34,15 +46,42 @@ pub struct Session {
     state: SessionState,
     peer_info: Option<PeerInfo>,
     connect_epoch: u64,
+    connection_id: u64,
+    auth_callback: Option<(AuthEventCallback, usize)>,
 }
 
 impl Session {
     pub fn new() -> Self {
+        let connect_epoch = crate::current_connect_epoch();
+        Self::new_with_connection_id(0, connect_epoch)
+    }
+
+    pub fn new_with_connection_id(connection_id: u64, connect_epoch: u64) -> Self {
         Self {
             state: SessionState::Disconnected,
             peer_info: None,
-            connect_epoch: crate::current_connect_epoch(),
+            connect_epoch,
+            connection_id,
+            auth_callback: None,
         }
+    }
+
+    pub fn set_auth_callback(
+        &mut self,
+        callback: Option<AuthEventCallback>,
+        user_data: *mut c_void,
+    ) {
+        self.auth_callback = callback.map(|cb| (cb, user_data as usize));
+    }
+
+    fn notify_auth_event(&self, state: i32, message: &str) {
+        let Some((callback, user_data)) = self.auth_callback else {
+            return;
+        };
+        let safe_message = CString::new(message).unwrap_or_else(|_| {
+            CString::new("RustDesk authentication event").expect("static auth message")
+        });
+        callback(state, safe_message.as_ptr(), user_data as *mut c_void);
     }
 
     /// 发送 LoginRequest 通过加密通道 (替代原始 TCP login)
@@ -102,8 +141,8 @@ impl Session {
             Some(remote_dir),
         )?;
         eprintln!(
-            "[RustDesk-FFI] login_file_transfer_encrypted response ok dir={}",
-            remote_dir
+            "[RustDesk-FFI] login_file_transfer_encrypted response ok dir_id={}",
+            crate::safe_diagnostics::sensitive_id(remote_dir)
         );
         Ok(())
     }
@@ -460,13 +499,21 @@ impl Session {
     ) -> io::Result<()> {
         const APPROVAL_TIMEOUT: Duration = Duration::from_secs(90);
         const PASSWORD_TIMEOUT: Duration = Duration::from_secs(30);
+        const PEER_2FA_TIMEOUT: Duration = Duration::from_secs(90);
         const NO_PASSWORD_ACCESS: &str = "No Password Access";
-        let deadline = Instant::now()
+        const REQUIRE_2FA: &str = "2FA Required";
+        const WRONG_2FA: &str = "Wrong 2FA Code";
+        let mut deadline = Instant::now()
             + if request_approval {
                 APPROVAL_TIMEOUT
             } else {
                 PASSWORD_TIMEOUT
             };
+        let _pending_2fa_guard = PendingTwoFactorGuard {
+            epoch: self.connect_epoch,
+            session_id: self.connection_id,
+        };
+        let mut auth_receiver: Option<Receiver<String>> = None;
         let mut last_challenge = Self::challenge_fingerprint(initial_hash);
         let mut last_variant = "none".to_string();
 
@@ -496,6 +543,26 @@ impl Session {
                 ));
             }
 
+            if let Some(receiver) = auth_receiver.as_ref() {
+                match receiver.try_recv() {
+                    Ok(code) => {
+                        Self::send_auth_2fa(channel, &code)?;
+                        self.state = SessionState::RetryingPeer2FA;
+                        self.notify_auth_event(AUTH_EVENT_REQUIRED, "2FA code submitted");
+                        last_variant = "auth_2fa_submitted".to_string();
+                    }
+                    Err(TryRecvError::Empty) => {}
+                    Err(TryRecvError::Disconnected) => {
+                        self.state =
+                            SessionState::Error("2FA submission channel closed".to_string());
+                        break Err(io::Error::new(
+                            io::ErrorKind::BrokenPipe,
+                            "2FA submission channel closed",
+                        ));
+                    }
+                }
+            }
+
             let response_payload = match channel.recv() {
                 Ok(payload) => payload,
                 Err(err)
@@ -522,9 +589,51 @@ impl Session {
                 Some(Message_oneof_union::login_response(resp)) => {
                     if resp.has_error() {
                         let err = resp.get_error().to_string();
-                        if request_approval && err == NO_PASSWORD_ACCESS {
-                            self.state = SessionState::WaitingRemoteApproval;
+                        if err == NO_PASSWORD_ACCESS {
+                            // 官方被控端语义：approve_mode 为“点击批准(Click)”
+                            // 或“密码+点击(Both)”时，即使设置了设备密码，空密码
+                            // 的批准请求也会先返回 No Password Access，同时弹出
+                            // 批准框并保持连接存活（server/connection.rs
+                            // return true），直到被控端用户点击“接受”后才发送
+                            // LoginResponse OK。因此这里必须继续等待，不能当终态。
+                            // 官方 viewer 对该串的映射也是 wait-remote-accept-nook
+                            // （“请等待远端接受你的会话请求”）。仅在 90s 超时后
+                            // 才按“远端未批准”失败，避免 UI 无限转圈。
+                            if request_approval {
+                                self.state = SessionState::WaitingRemoteApproval;
+                                last_variant = "no_password_access".to_string();
+                                deadline = Instant::now() + APPROVAL_TIMEOUT;
+                                continue;
+                            }
+                            // 非批准模式（密码连接）收到该串：被控端是点击批准
+                            // 模式，密码本身不参与鉴权，必须改用“请求批准”流程。
+                            self.state = SessionState::Error(err.clone());
                             last_variant = "no_password_access".to_string();
+                            break Err(io::Error::new(
+                                io::ErrorKind::PermissionDenied,
+                                format!("{}", err),
+                            ));
+                        }
+                        if err == REQUIRE_2FA {
+                            if auth_receiver.is_none() {
+                                let (sender, receiver) = mpsc::channel();
+                                crate::register_pending_2fa(
+                                    self.connect_epoch,
+                                    self.connection_id,
+                                    sender,
+                                )?;
+                                auth_receiver = Some(receiver);
+                            }
+                            deadline = Instant::now() + PEER_2FA_TIMEOUT;
+                            self.state = SessionState::WaitingPeer2FA;
+                            self.notify_auth_event(AUTH_EVENT_REQUIRED, REQUIRE_2FA);
+                            last_variant = "2fa_required".to_string();
+                            continue;
+                        }
+                        if err == WRONG_2FA && auth_receiver.is_some() {
+                            self.state = SessionState::WaitingPeer2FA;
+                            self.notify_auth_event(AUTH_EVENT_WRONG_CODE, WRONG_2FA);
+                            last_variant = "2fa_wrong_code".to_string();
                             continue;
                         }
                         self.state = SessionState::Error(err.clone());
@@ -532,6 +641,9 @@ impl Session {
                     }
                     if let Some(LoginResponse_oneof_union::peer_info(info)) = resp.union {
                         self.peer_info = Some(info);
+                    }
+                    if auth_receiver.is_some() {
+                        self.notify_auth_event(AUTH_EVENT_ACCEPTED, "2FA accepted");
                     }
                     self.state = SessionState::Connected;
                     break Ok(());
@@ -582,6 +694,26 @@ impl Session {
             eprintln!("[RustDesk-FFI] waiting for remote approval ended with error");
         }
         result
+    }
+
+    fn send_auth_2fa(
+        channel: &mut crate::crypto_channel::CryptoChannel,
+        code: &str,
+    ) -> io::Result<()> {
+        let msg = Self::build_auth_2fa_message(code)?;
+        let payload = msg
+            .write_to_bytes()
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        channel.send(&payload)
+    }
+
+    fn build_auth_2fa_message(code: &str) -> io::Result<Message> {
+        let mut auth = Auth2FA::new();
+        auth.set_code(code.to_string());
+        auth.set_hwid(Vec::new());
+        let mut msg = Message::new();
+        msg.union = Some(Message_oneof_union::auth_2fa(auth));
+        Ok(msg)
     }
 
     fn challenge_fingerprint(hash: &super::message_proto::Hash) -> [u8; 32] {
@@ -815,6 +947,22 @@ impl Session {
     pub fn peer_info(&self) -> Option<&PeerInfo> {
         self.peer_info.as_ref()
     }
+
+    /// Keep the latest peer catalog available to the streaming layer.
+    pub fn update_peer_info(&mut self, peer_info: PeerInfo) {
+        self.peer_info = Some(peer_info);
+    }
+}
+
+struct PendingTwoFactorGuard {
+    epoch: u64,
+    session_id: u64,
+}
+
+impl Drop for PendingTwoFactorGuard {
+    fn drop(&mut self) {
+        crate::clear_pending_2fa(self.epoch, self.session_id);
+    }
 }
 
 #[cfg(test)]
@@ -827,14 +975,31 @@ mod tests {
         let encoded = Session::build_refresh_video_message()
             .write_to_bytes()
             .expect("refresh message should serialize");
-        let decoded: Message = protobuf::parse_from_bytes(&encoded)
-            .expect("refresh message should deserialize");
+        let decoded: Message =
+            protobuf::parse_from_bytes(&encoded).expect("refresh message should deserialize");
 
         match decoded.union {
             Some(Message_oneof_union::misc(misc)) => match misc.union {
                 Some(Misc_oneof_union::refresh_video(value)) => assert!(value),
                 other => panic!("unexpected Misc oneof variant: {:?}", other),
             },
+            other => panic!("unexpected Message variant: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn auth_2fa_message_uses_official_message_variant() {
+        let encoded = Session::build_auth_2fa_message("123456")
+            .expect("2FA message should be built")
+            .write_to_bytes()
+            .expect("2FA message should serialize");
+        let decoded: Message =
+            protobuf::parse_from_bytes(&encoded).expect("2FA message should deserialize");
+        match decoded.union {
+            Some(Message_oneof_union::auth_2fa(auth)) => {
+                assert_eq!(auth.get_code(), "123456");
+                assert!(auth.get_hwid().is_empty());
+            }
             other => panic!("unexpected Message variant: {:?}", other),
         }
     }

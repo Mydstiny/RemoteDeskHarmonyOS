@@ -74,4 +74,8 @@ export class SshPreflightService {
       this.tokens.delete(id);
     }
   }
+
+  clearAll(): void {
+    this.tokens.clear();
+  }
 }

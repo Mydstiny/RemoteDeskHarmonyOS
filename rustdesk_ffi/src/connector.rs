@@ -17,26 +17,28 @@
 use crate::crypto::{self, KeyPair};
 use crate::crypto_channel::CryptoChannel;
 use crate::control_inbox::{CONTROL_BATCH_LIMIT, ControlInbox};
-use crate::cursor_state::{CursorState, CursorStreamUpdate};
+use crate::cursor_state::{
+    CursorCacheMissReason, CursorIdResult, CursorState, CursorStreamUpdate,
+};
 use crate::net;
 use crate::protocol::message_proto::{
-    AudioFormat, AudioFrame, Clipboard, ClipboardFormat, ControlKey, EncodedVideoFrames,
-    FileAction, FileAction_oneof_union, FileEntry, FileResponse, FileResponse_oneof_union,
-    FileTransferBlock, FileTransferDone, FileTransferReceiveRequest,
-    DisplayResolution, FileTransferSendConfirmRequest, FileType, IdPk, KeyEvent,
+    AudioFormat, AudioFrame, CaptureDisplays, Clipboard, ClipboardFormat, ControlKey, DisplayInfo,
+    DisplayResolution, EncodedVideoFrames, FileAction, FileAction_oneof_union, FileEntry,
+    FileResponse, FileResponse_oneof_union, FileTransferBlock, FileTransferDone,
+    FileTransferReceiveRequest, FileTransferSendConfirmRequest, FileType, IdPk, KeyEvent,
     KeyEvent_oneof_union, KeyboardMode, Message, Message_oneof_union, Misc, Misc_oneof_union,
-    MouseEvent, PointerDeviceEvent, PublicKey, Resolution, SwitchDisplay, TouchEvent,
-    TouchPanEnd, TouchPanStart, TouchPanUpdate, TouchScaleUpdate, VideoFrame,
-    VideoFrame_oneof_union,
+    MouseEvent, PeerInfo, PointerDeviceEvent, PublicKey, Resolution, SupportedResolutions,
+    SwitchDisplay, TouchEvent, TouchPanEnd, TouchPanStart, TouchPanUpdate, TouchScaleUpdate,
+    VideoFrame, VideoFrame_oneof_union,
 };
 use crate::protocol::rendezvous::RendezvousClient;
-use crate::protocol::session::Session;
+use crate::protocol::session::{AuthEventCallback, Session};
 use crate::protocol::wire;
 use protobuf::{Message as ProtoMessage, ProtobufEnum};
 
 use std::io;
 use std::io::ErrorKind;
-use std::net::{SocketAddr, TcpStream};
+use std::net::TcpStream;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -192,7 +194,6 @@ pub struct RustDeskConnector {
     peer_pk: Option<[u8; 32]>,
     crypto_channel: Option<CryptoChannel>,
     session: Session,
-    peer_addr: Option<SocketAddr>,
     /// streaming 消息统计 — 诊断对端停止发送前的行为
     pub stream_stats: String,
 }
@@ -222,15 +223,27 @@ enum RemoteKeyboardTransport {
 
 impl RustDeskConnector {
     pub fn new() -> Self {
+        let connect_epoch = crate::current_connect_epoch();
+        Self::new_with_connection_id(0, connect_epoch)
+    }
+
+    pub fn new_with_connection_id(connection_id: u64, connect_epoch: u64) -> Self {
         Self {
             state: ConnState::Disconnected,
             keypair: crypto::generate_keypair(),
             peer_pk: None,
             crypto_channel: None,
-            session: Session::new(),
-            peer_addr: None,
+            session: Session::new_with_connection_id(connection_id, connect_epoch),
             stream_stats: String::new(),
         }
+    }
+
+    pub fn set_auth_callback(
+        &mut self,
+        callback: Option<AuthEventCallback>,
+        user_data: *mut std::ffi::c_void,
+    ) {
+        self.session.set_auth_callback(callback, user_data);
     }
 
     /// 完整连接流程 (阻塞)
@@ -242,7 +255,9 @@ impl RustDeskConnector {
         &mut self,
         rendezvous_host: &str,
         rendezvous_port: u16,
+        relay_fallback_port: u16,
         server_key: &str,
+        api_token: &str,
         peer_id: &str,
         password: &str,
         preferred_codec: i32,
@@ -254,60 +269,73 @@ impl RustDeskConnector {
         shared_access_key: bool,
     ) -> io::Result<()> {
         let credentials = RendezvousCredentials::new(server_key, shared_access_key);
+        let rendezvous_secure = !shared_access_key && !server_key.trim().is_empty() &&
+            !api_token.trim().is_empty();
         // === Phase 1: Rendezvous 握手 ===
         self.state = ConnState::RendezvousConnecting;
         let mut rd = RendezvousClient::new();
         // 客户端连接远端 ID 时不要 RegisterPeer；RegisterPeer 是被控端注册自己的 ID。
-        // 普通密码连接没有 token，按 upstream 行为跳过 ID server secure_tcp，仅跳过服务端
-        // 主动发来的 KeyExchange 后读取 PunchHoleResponse。
-        rd.connect(rendezvous_host, rendezvous_port, server_key, false)?;
+        // Server Pro 的控制端会话 token 必须进入 PunchHoleRequest/RequestRelay。
+        // 只有同时拥有真实公钥和 token 时才启用 upstream 的 rendezvous secure_tcp。
+        rd.connect(rendezvous_host, rendezvous_port, server_key, rendezvous_secure)?;
 
         self.state = ConnState::RequestingRelay;
-        let punch = rd.request_punch_hole(peer_id, credentials.access_key)?;
+        let punch = rd.request_force_relay(peer_id, credentials.access_key, api_token)?;
 
         // === Phase 2: Peer TCP + 加密通道 ===
         eprintln!(
-            "[RustDesk-FFI] punch response peer_addr={:?} relay_server={} relay_uuid={:?} signed_pk_len={}",
-            punch.peer_addr,
-            punch.relay_server,
-            punch.relay_uuid,
+            "[RustDesk-FFI] force-relay response peer_endpoint={} relay_endpoint={} relay_ticket={} signed_pk_len={}",
+            if punch.peer_addr.is_some() { "present" } else { "absent" },
+            if punch.relay_server.is_empty() { "absent" } else { "present" },
+            if punch.relay_uuid.is_some() { "present" } else { "absent" },
             punch.signed_pk.len()
         );
 
         let mut peer_stream = if let Some(relay_uuid) = punch.relay_uuid {
             self.state = ConnState::ConnectingToPeer;
             eprintln!(
-                "[RustDesk-FFI] using relay uuid from rendezvous uuid={} relay_server={}",
-                relay_uuid, punch.relay_server
+                "[RustDesk-FFI] force-relay ticket accepted relay_endpoint=present"
             );
-            rd.create_relay(peer_id, &relay_uuid, &punch.relay_server, credentials.access_key)?
+            rd.create_relay(
+                peer_id,
+                &relay_uuid,
+                &punch.relay_server,
+                relay_fallback_port,
+                credentials.access_key,
+            )?
         } else if !punch.relay_server.trim().is_empty() {
             self.state = ConnState::RequestingRelay;
             let mut relay_rd = RendezvousClient::new();
-            relay_rd.connect(rendezvous_host, rendezvous_port, server_key, false)?;
+            relay_rd.connect(rendezvous_host, rendezvous_port, server_key, rendezvous_secure)?;
             let relay_uuid = relay_rd.request_relay_uuid(
                 peer_id,
                 &punch.relay_server,
                 !punch.signed_pk.is_empty(),
+                api_token,
             )?;
             self.state = ConnState::ConnectingToPeer;
             eprintln!(
-                "[RustDesk-FFI] relay approved uuid={} relay_server={}",
-                relay_uuid, punch.relay_server
+                "[RustDesk-FFI] force-relay request approved relay_endpoint=present"
             );
-            relay_rd.create_relay(peer_id, &relay_uuid, &punch.relay_server, credentials.access_key)?
+            relay_rd.create_relay(
+                peer_id,
+                &relay_uuid,
+                &punch.relay_server,
+                relay_fallback_port,
+                credentials.access_key,
+            )?
         } else if let Some(peer_addr) = punch.peer_addr {
+            // OSS hbbs answered a direct peer address and no relay endpoint.
+            // Connect it directly instead of failing the whole pipeline.
             self.state = ConnState::ConnectingToPeer;
-            self.peer_addr = Some(peer_addr);
             eprintln!(
-                "[RustDesk-FFI] no relay server, connecting direct peer={}",
-                peer_addr
+                "[RustDesk-FFI] punch response direct peer endpoint present"
             );
             rd.connect_to_peer(peer_addr)?
         } else {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                "rendezvous response did not include peer address or relay uuid",
+                "force-relay response did not include a relay endpoint",
             ));
         };
 
@@ -367,7 +395,7 @@ impl RustDeskConnector {
         &mut self,
         peer_host: &str,
         peer_port: u16,
-        peer_id: &str,
+        _peer_id: &str,
         password: &str,
         preferred_codec: i32,
         image_quality: i32,
@@ -378,10 +406,10 @@ impl RustDeskConnector {
         // === Phase 1: TCP 直连 peer ===
         self.state = ConnState::ConnectingToPeer;
         eprintln!(
-            "[RustDesk-FFI] direct connect to peer {}:{}",
-            peer_host, peer_port
+            "[RustDesk-FFI] direct connect endpoint=provided port={}",
+            peer_port
         );
-        let mut stream = net::connect_tcp_host(
+        let stream = net::connect_tcp_host(
             peer_host,
             peer_port,
             "direct",
@@ -423,7 +451,9 @@ impl RustDeskConnector {
         &mut self,
         rendezvous_host: &str,
         rendezvous_port: u16,
+        relay_fallback_port: u16,
         server_key: &str,
+        api_token: &str,
         peer_id: &str,
         password: &str,
         remote_dir: &str,
@@ -431,70 +461,72 @@ impl RustDeskConnector {
         shared_access_key: bool,
     ) -> io::Result<()> {
         let credentials = RendezvousCredentials::new(server_key, shared_access_key);
+        let rendezvous_secure = !shared_access_key && !server_key.trim().is_empty() &&
+            !api_token.trim().is_empty();
         crate::set_last_error(format!(
-            "file-transfer connecting rendezvous host={} port={} peer={} dir={}",
-            rendezvous_host, rendezvous_port, peer_id, remote_dir
+            "file-transfer rendezvous connecting port={} strategy=force_relay",
+            rendezvous_port
         ));
         self.state = ConnState::RendezvousConnecting;
         let mut rd = RendezvousClient::new();
-        rd.connect(rendezvous_host, rendezvous_port, server_key, false)?;
+        rd.connect(rendezvous_host, rendezvous_port, server_key, rendezvous_secure)?;
 
-        crate::set_last_error(format!(
-            "file-transfer requesting punch peer={} dir={}",
-            peer_id, remote_dir
-        ));
+        crate::set_last_error("file-transfer requesting force relay".to_string());
         self.state = ConnState::RequestingRelay;
-        let punch = rd.request_punch_hole(peer_id, credentials.access_key)?;
+        let punch = rd.request_force_relay(peer_id, credentials.access_key, api_token)?;
         crate::set_last_error(format!(
-            "file-transfer punch peer_addr={:?} relay_server={} relay_uuid={:?} signed_pk_len={}",
-            punch.peer_addr,
-            punch.relay_server,
-            punch.relay_uuid,
+            "file-transfer force-relay response relay_endpoint={} relay_ticket={} signed_pk_len={}",
+            if punch.relay_server.is_empty() { "absent" } else { "present" },
+            if punch.relay_uuid.is_some() { "present" } else { "absent" },
             punch.signed_pk.len()
         ));
         eprintln!(
-            "[RustDesk-FFI] file-transfer punch response peer_addr={:?} relay_server={} relay_uuid={:?} signed_pk_len={}",
-            punch.peer_addr,
-            punch.relay_server,
-            punch.relay_uuid,
+            "[RustDesk-FFI] file-transfer force-relay response relay_endpoint={} relay_ticket={} signed_pk_len={}",
+            if punch.relay_server.is_empty() { "absent" } else { "present" },
+            if punch.relay_uuid.is_some() { "present" } else { "absent" },
             punch.signed_pk.len()
         );
 
         let mut peer_stream = if let Some(relay_uuid) = punch.relay_uuid {
-            crate::set_last_error(format!(
-                "file-transfer connecting relay server={} uuid={}",
-                punch.relay_server, relay_uuid
-            ));
+            crate::set_last_error("file-transfer connecting approved relay".to_string());
             self.state = ConnState::ConnectingToPeer;
-            rd.create_relay(peer_id, &relay_uuid, &punch.relay_server, credentials.access_key)?
+            rd.create_relay(
+                peer_id,
+                &relay_uuid,
+                &punch.relay_server,
+                relay_fallback_port,
+                credentials.access_key,
+            )?
         } else if !punch.relay_server.trim().is_empty() {
             self.state = ConnState::RequestingRelay;
             let mut relay_rd = RendezvousClient::new();
-            crate::set_last_error(format!(
-                "file-transfer requesting relay uuid server={}",
-                punch.relay_server
-            ));
-            relay_rd.connect(rendezvous_host, rendezvous_port, server_key, false)?;
+            crate::set_last_error("file-transfer requesting relay ticket".to_string());
+            relay_rd.connect(rendezvous_host, rendezvous_port, server_key, rendezvous_secure)?;
             let relay_uuid = relay_rd.request_relay_uuid(
                 peer_id,
                 &punch.relay_server,
                 !punch.signed_pk.is_empty(),
+                api_token,
             )?;
-            crate::set_last_error(format!(
-                "file-transfer connecting relay server={} uuid={}",
-                punch.relay_server, relay_uuid
-            ));
+            crate::set_last_error("file-transfer connecting approved relay".to_string());
             self.state = ConnState::ConnectingToPeer;
-            relay_rd.create_relay(peer_id, &relay_uuid, &punch.relay_server, credentials.access_key)?
+            relay_rd.create_relay(
+                peer_id,
+                &relay_uuid,
+                &punch.relay_server,
+                relay_fallback_port,
+                credentials.access_key,
+            )?
         } else if let Some(peer_addr) = punch.peer_addr {
-            crate::set_last_error(format!("file-transfer connecting peer addr={}", peer_addr));
             self.state = ConnState::ConnectingToPeer;
-            self.peer_addr = Some(peer_addr);
+            eprintln!(
+                "[RustDesk-FFI] file-transfer punch response direct peer endpoint present"
+            );
             rd.connect_to_peer(peer_addr)?
         } else {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                "file-transfer rendezvous response did not include peer address or relay uuid",
+                "file-transfer force-relay response did not include a relay endpoint",
             ));
         };
 
@@ -513,12 +545,12 @@ impl RustDeskConnector {
         };
         self.crypto_channel = Some(crypto);
 
-        crate::set_last_error(format!("file-transfer logging in dir={}", remote_dir));
+        crate::set_last_error("file-transfer peer login".to_string());
         self.state = ConnState::LoggingIn;
         let crypto = self.crypto_channel.as_mut().unwrap();
         self.session
             .login_file_transfer_encrypted(crypto, peer_id, password, remote_dir, request_approval)?;
-        crate::set_last_error(format!("login_file_transfer ok dir={}", remote_dir));
+        crate::set_last_error("file-transfer peer login complete".to_string());
         self.state = ConnState::Connected;
         Ok(())
     }
@@ -548,6 +580,7 @@ impl RustDeskConnector {
         let mut awaiting_done: Vec<AwaitingFileDone> = Vec::new();
         let started = Instant::now();
         let mut last_wait_report = 0u64;
+        let path_id = crate::safe_diagnostics::sensitive_id(remote_path);
 
         while (!pending.is_empty() || !awaiting_done.is_empty()) && started.elapsed() < timeout {
             match crypto.recv() {
@@ -594,15 +627,15 @@ impl RustDeskConnector {
                         last_wait_report = elapsed;
                         if awaiting_done.is_empty() {
                             crate::set_last_error(format!(
-                                "file-transfer waiting peer confirm path={} elapsed={}s pending={}",
-                                remote_path,
+                                "file-transfer waiting peer confirm path_id={} elapsed={}s pending={}",
+                                path_id,
                                 elapsed,
                                 pending.len()
                             ));
                         } else {
                             crate::set_last_error(format!(
-                                "file-transfer waiting remote done path={} elapsed={}s pending={} awaiting_done={}",
-                                remote_path,
+                                "file-transfer waiting remote done path_id={} elapsed={}s pending={} awaiting_done={}",
+                                path_id,
                                 elapsed,
                                 pending.len(),
                                 awaiting_done.len()
@@ -617,7 +650,7 @@ impl RustDeskConnector {
         crypto.set_read_timeout(None).ok();
 
         if pending.is_empty() && awaiting_done.is_empty() {
-            crate::set_last_error(format!("file transfer done path={}", remote_path));
+            crate::set_last_error(format!("file transfer done path_id={}", path_id));
             Ok(())
         } else {
             Err(io::Error::new(
@@ -798,7 +831,7 @@ impl RustDeskConnector {
     /// 运行 streaming 循环 (阻塞)
     ///
     /// 持续接收加密消息，分发到回调。
-    pub fn run_streaming<VF, AFF, AF, CF, CU>(
+    pub fn run_streaming<VF, AFF, AF, CF, CU, DS>(
         &mut self,
         preferred_codec: i32,
         image_quality: i32,
@@ -813,6 +846,7 @@ impl RustDeskConnector {
         mut on_audio: AF,
         mut on_clipboard: CF,
         mut on_cursor: CU,
+        mut on_display_state: DS,
     ) -> io::Result<()>
     where
         VF: FnMut(&VideoFrame),
@@ -820,6 +854,7 @@ impl RustDeskConnector {
         AF: FnMut(&AudioFrame),
         CF: FnMut(&[u8]),
         CU: FnMut(CursorStreamUpdate),
+        DS: FnMut(),
     {
         let remote_keyboard_transport = self
             .session
@@ -867,7 +902,7 @@ impl RustDeskConnector {
         let mut sent_mouse_buttons: u64 = 0;
         let mut control_send_errors: u64 = 0;
         let mut last_msg_kind = "none";
-        let mut cursor_state = CursorState::new(4);
+        let mut cursor_state = CursorState::new();
         let mut physical_modifiers = PhysicalModifierState::default();
         let mut pending_file_uploads: Vec<PendingFileUpload> = Vec::new();
         let mut awaiting_file_done: Vec<AwaitingFileDone> = Vec::new();
@@ -908,12 +943,17 @@ impl RustDeskConnector {
                     .map(|last| diagnostic_now.duration_since(last).as_millis())
                     .unwrap_or(0);
                 eprintln!(
-                    "[RustDesk-FFI] control diag reliable_depth={} max_reliable_depth={} coalesced_mouse={} coalesced_refresh={} coalesced_pressure={} batch_limit_hits={} receive_gap_ms={} sent_total={} sent_mouse_moves={} sent_mouse_buttons={} send_errors={} cursor_positions={} cursor_gap_ms={}",
+                    "[RustDesk-FFI] control diag reliable_depth={} max_reliable_depth={} coalesced_mouse={} coalesced_refresh={} coalesced_pressure={} coalesced_touch_scale={} coalesced_touch_pan={} touch_active={} touch_update_pending={} touch_barrier_wait={} batch_limit_hits={} receive_gap_ms={} sent_total={} sent_mouse_moves={} sent_mouse_buttons={} send_errors={} cursor_positions={} cursor_gap_ms={}",
                     snapshot.reliable_depth,
                     snapshot.max_reliable_depth,
                     snapshot.coalesced_mouse_moves,
                     snapshot.coalesced_refreshes,
                     snapshot.coalesced_video_pressure,
+                    snapshot.coalesced_touch_scales,
+                    snapshot.coalesced_touch_pan_updates,
+                    snapshot.touch_active,
+                    snapshot.touch_update_pending,
+                    snapshot.touch_barrier_wait,
                     snapshot.batch_limit_hits,
                     diagnostic_now.duration_since(last_successful_receive_at).as_millis(),
                     sent_control_total,
@@ -953,24 +993,28 @@ impl RustDeskConnector {
                             &remote_path,
                             remote_upload_dir.as_deref(),
                         );
+                        let upload_path_id =
+                            crate::safe_diagnostics::sensitive_id(&upload_path);
+                        let original_path_id =
+                            crate::safe_diagnostics::sensitive_id(&remote_path);
                         crate::set_last_error(format!(
-                            "streaming: send file path={} size={}",
-                            upload_path,
+                            "streaming: send file path_id={} size={}",
+                            upload_path_id,
                             data.len()
                         ));
                         // 文件传输: 先发 receive，等远端 digest 后再发数据块。
                         eprintln!(
-                            "[RustDesk-FFI] streaming: send file path={} original_path={} size={}",
-                            upload_path,
-                            remote_path,
+                            "[RustDesk-FFI] streaming: send file path_id={} original_path_id={} size={}",
+                            upload_path_id,
+                            original_path_id,
                             data.len()
                         );
                         match Self::request_file_upload(crypto, &upload_path, data) {
                             Ok(upload) => pending_file_uploads.push(upload),
                             Err(e) => {
                                 crate::set_last_error(format!(
-                                    "streaming: file send error path={} err={}",
-                                    upload_path, e
+                                    "streaming: file send error path_id={} err={}",
+                                    upload_path_id, e
                                 ));
                                 eprintln!("[RustDesk-FFI] streaming: file send error: {}", e);
                             }
@@ -1208,6 +1252,13 @@ impl RustDeskConnector {
                         Some(Misc_oneof_union::refresh_video(_)) => "misc/refresh_video",
                         Some(Misc_oneof_union::video_received(_)) => "misc/video_received",
                         Some(Misc_oneof_union::switch_display(_)) => "misc/switch_display",
+                        Some(Misc_oneof_union::capture_displays(_)) => "misc/capture_displays",
+                        Some(Misc_oneof_union::refresh_video_display(_)) => {
+                            "misc/refresh_video_display"
+                        }
+                        Some(Misc_oneof_union::follow_current_display(_)) => {
+                            "misc/follow_current_display"
+                        }
                         _ => "misc/other",
                     };
                     last_msg_kind = misc_key;
@@ -1217,6 +1268,15 @@ impl RustDeskConnector {
                     }
                     if let Some(Misc_oneof_union::switch_display(ref display)) = misc.union {
                         Self::apply_switch_display_geometry(&display_state, display, &stream_stats);
+                        on_display_state();
+                    }
+                    if let Some(Misc_oneof_union::follow_current_display(display)) = misc.union {
+                        Self::apply_follow_current_display(
+                            &display_state,
+                            display,
+                            &stream_stats,
+                        );
+                        on_display_state();
                     }
                 }
                 Some(Message_oneof_union::login_response(ref resp)) => {
@@ -1285,21 +1345,36 @@ impl RustDeskConnector {
                 Some(Message_oneof_union::cursor_id(id)) => {
                     last_msg_kind = "cursor_id";
                     *msg_stats.entry("cursor_id").or_default() += 1;
-                    if cursor_state.apply_id(id) {
-                        if let Some(shape) = cursor_state.current_shape().cloned() {
+                    match cursor_state.apply_id(id) {
+                        CursorIdResult::Selected(shape) => {
                             on_cursor(CursorStreamUpdate::Shape(shape));
                             on_cursor(CursorStreamUpdate::Visibility(true));
                         }
-                    } else {
-                        eprintln!(
-                            "[RustDesk-FFI] cursor id pending id={} cache_miss=true",
-                            id,
-                        );
+                        CursorIdResult::CacheMiss { id, reason } => {
+                            eprintln!(
+                                "[RustDesk-FFI] cursor id pending id={} cache_miss=true reason={:?} preserve_previous=true",
+                                id,
+                                reason,
+                            );
+                            if reason == CursorCacheMissReason::BudgetEvicted {
+                                eprintln!(
+                                    "[RustDesk-FFI] cursor cache exhausted id={} recovery=protocol_data_required",
+                                    id,
+                                );
+                            }
+                            // Keep the current shape and visibility.  The
+                            // next CursorData for this id will select and
+                            // publish the real bitmap.
+                            on_cursor(CursorStreamUpdate::CacheMiss { id, reason });
+                        }
                     }
                 }
-                Some(Message_oneof_union::peer_info(_)) => {
+                Some(Message_oneof_union::peer_info(ref info)) => {
                     last_msg_kind = "peer_info";
                     *msg_stats.entry("peer_info").or_default() += 1;
+                    self.session.update_peer_info(info.clone());
+                    Self::apply_peer_info_geometry(&display_state, info, &stream_stats);
+                    on_display_state();
                 }
                 Some(Message_oneof_union::file_response(ref resp)) => {
                     last_msg_kind = Self::file_response_kind(resp);
@@ -1493,6 +1568,36 @@ impl RustDeskConnector {
         message
     }
 
+    fn build_switch_display_message(display: i32) -> Message {
+        let mut switch_display = SwitchDisplay::new();
+        switch_display.set_display(display);
+        let mut misc = Misc::new();
+        misc.union = Some(Misc_oneof_union::switch_display(switch_display));
+        let mut message = Message::new();
+        message.union = Some(Message_oneof_union::misc(misc));
+        message
+    }
+
+    fn build_capture_displays_message(add: Vec<i32>, sub: Vec<i32>, set: Vec<i32>) -> Message {
+        let mut capture = CaptureDisplays::new();
+        capture.set_add(add);
+        capture.set_sub(sub);
+        capture.set_set(set);
+        let mut misc = Misc::new();
+        misc.union = Some(Misc_oneof_union::capture_displays(capture));
+        let mut message = Message::new();
+        message.union = Some(Message_oneof_union::misc(misc));
+        message
+    }
+
+    fn build_refresh_video_display_message(display: i32) -> Message {
+        let mut misc = Misc::new();
+        misc.set_refresh_video_display(display);
+        let mut message = Message::new();
+        message.union = Some(Message_oneof_union::misc(misc));
+        message
+    }
+
     fn build_touch_scale_message(scale: i32) -> Message {
         let mut update = TouchScaleUpdate::new();
         update.set_scale(scale);
@@ -1547,6 +1652,37 @@ impl RustDeskConnector {
             crate::ControlMsg::RefreshVideo => {
                 crate::set_last_error("send refresh video");
                 Session::send_refresh_video(crypto)
+            }
+            crate::ControlMsg::SwitchDisplay { display } => {
+                let message = Self::build_switch_display_message(display);
+                Self::send_message_encrypted(crypto, &message)
+            }
+            crate::ControlMsg::DisplaySwitch {
+                display,
+                generation,
+            } => {
+                let switch = Self::build_switch_display_message(display);
+                Self::send_message_encrypted(crypto, &switch)?;
+                let capture =
+                    Self::build_capture_displays_message(Vec::new(), Vec::new(), vec![display]);
+                Self::send_message_encrypted(crypto, &capture)?;
+                let refresh = Self::build_refresh_video_display_message(display);
+                let result = Self::send_message_encrypted(crypto, &refresh);
+                if result.is_ok() {
+                    eprintln!(
+                        "[RustDesk-FFI] display switch sent generation={} target={}",
+                        generation, display
+                    );
+                }
+                result
+            }
+            crate::ControlMsg::CaptureDisplays { add, sub, set } => {
+                let message = Self::build_capture_displays_message(add, sub, set);
+                Self::send_message_encrypted(crypto, &message)
+            }
+            crate::ControlMsg::RefreshVideoDisplay { display } => {
+                let message = Self::build_refresh_video_display_message(display);
+                Self::send_message_encrypted(crypto, &message)
             }
             crate::ControlMsg::VideoPressure { .. } => Ok(()),
             crate::ControlMsg::KeyEvent { scancode, pressed } => {
@@ -1617,6 +1753,10 @@ impl RustDeskConnector {
         match control {
             crate::ControlMsg::Shutdown => "shutdown",
             crate::ControlMsg::RefreshVideo => "refresh_video",
+            crate::ControlMsg::SwitchDisplay { .. } => "switch_display",
+            crate::ControlMsg::DisplaySwitch { .. } => "display_switch",
+            crate::ControlMsg::CaptureDisplays { .. } => "capture_displays",
+            crate::ControlMsg::RefreshVideoDisplay { .. } => "refresh_video_display",
             crate::ControlMsg::VideoPressure { .. } => "video_pressure",
             crate::ControlMsg::KeyEvent { .. } => "key",
             crate::ControlMsg::MouseEvent { .. } => "mouse",
@@ -1722,17 +1862,19 @@ impl RustDeskConnector {
             Self::send_message_encrypted(crypto, &msg)?;
         }
 
+        let remote_dir_id = crate::safe_diagnostics::sensitive_id(remote_dir);
+        let file_id = crate::safe_diagnostics::sensitive_id(file_name);
         eprintln!(
-            "[RustDesk-FFI] file upload requested: receive dir={} file={} size={} id={}",
-            remote_dir,
-            file_name,
+            "[RustDesk-FFI] file upload requested: dir_id={} file_id={} size={} id={}",
+            remote_dir_id,
+            file_id,
             data.len(),
             transfer_id
         );
         crate::set_last_error(format!(
-            "file upload requested dir={} file={} size={} id={}",
-            remote_dir,
-            file_name,
+            "file upload requested dir_id={} file_id={} size={} id={}",
+            remote_dir_id,
+            file_id,
             data.len(),
             transfer_id
         ));
@@ -1784,11 +1926,15 @@ impl RustDeskConnector {
             Self::send_message_encrypted(crypto, &msg)?;
         }
 
+        let remote_dir_id =
+            crate::safe_diagnostics::sensitive_id(&upload.remote_dir);
+        let file_id =
+            crate::safe_diagnostics::sensitive_id(&upload.file_name);
         eprintln!(
-            "[RustDesk-FFI] file upload data: reason={} dir={} file={} size={} chunks_sent={} chunks_total={} start_blk={} id={}",
+            "[RustDesk-FFI] file upload data: reason={} dir_id={} file_id={} size={} chunks_sent={} chunks_total={} start_blk={} id={}",
             reason,
-            upload.remote_dir,
-            upload.file_name,
+            remote_dir_id,
+            file_id,
             upload.data.len(),
             sent_chunks,
             total_chunks,
@@ -1796,9 +1942,9 @@ impl RustDeskConnector {
             upload.id
         );
         crate::set_last_error(format!(
-            "file upload data reason={} file={} size={} chunks_sent={} chunks_total={} id={}",
+            "file upload data reason={} file_id={} size={} chunks_sent={} chunks_total={} id={}",
             reason,
-            upload.file_name,
+            file_id,
             upload.data.len(),
             sent_chunks,
             total_chunks,
@@ -1948,13 +2094,17 @@ impl RustDeskConnector {
             {
                 let upload = pending_uploads.remove(pos);
                 if confirm.get_skip() {
+                    let dir_id = crate::safe_diagnostics::sensitive_id(
+                        &upload.remote_dir);
+                    let file_id = crate::safe_diagnostics::sensitive_id(
+                        &upload.file_name);
                     eprintln!(
-                        "[RustDesk-FFI] file upload skipped by peer: dir={} file={} id={}",
-                        upload.remote_dir, upload.file_name, upload.id
+                        "[RustDesk-FFI] file upload skipped by peer: dir_id={} file_id={} id={}",
+                        dir_id, file_id, upload.id
                     );
                     crate::set_last_error(format!(
-                        "file transfer error path={} file={} err=skipped by peer",
-                        upload.remote_dir, upload.file_name
+                        "file transfer error dir_id={} file_id={} err=skipped by peer",
+                        dir_id, file_id
                     ));
                     return Err(io::Error::new(
                         io::ErrorKind::PermissionDenied,
@@ -1995,21 +2145,23 @@ impl RustDeskConnector {
     ) -> io::Result<()> {
         match &resp.union {
             Some(FileResponse_oneof_union::error(err)) => {
+                let error_id =
+                    crate::safe_diagnostics::sensitive_id(err.get_error());
                 crate::set_last_error(format!(
-                    "file transfer error id={} file_num={} err={}",
+                    "file transfer error id={} file_num={} error_id={}",
                     err.get_id(),
                     err.get_file_num(),
-                    err.get_error()
+                    error_id
                 ));
                 eprintln!(
-                    "[RustDesk-FFI] file transfer error: id={} file_num={} error={}",
+                    "[RustDesk-FFI] file transfer error: id={} file_num={} error_id={}",
                     err.get_id(),
                     err.get_file_num(),
-                    err.get_error()
+                    error_id
                 );
                 return Err(io::Error::new(
                     io::ErrorKind::Other,
-                    format!("remote file transfer error: {}", err.get_error()),
+                    "remote file transfer rejected the upload",
                 ));
             }
             Some(FileResponse_oneof_union::done(done)) => {
@@ -2019,10 +2171,10 @@ impl RustDeskConnector {
                 {
                     let completed = awaiting_done.remove(pos);
                     crate::set_last_error(format!(
-                        "file transfer done id={} file_num={} file={}",
+                        "file transfer done id={} file_num={} file_id={}",
                         done.get_id(),
                         done.get_file_num(),
-                        completed.file_name
+                        crate::safe_diagnostics::sensitive_id(&completed.file_name)
                     ));
                 } else {
                     crate::set_last_error(format!(
@@ -2676,36 +2828,8 @@ impl RustDeskConnector {
         }
     }
 
-    pub fn peer_display_state(&self) -> crate::RustDeskDisplayState {
-        let mut state = crate::RustDeskDisplayState::default();
-        let Some(info) = self.session.peer_info() else {
-            return state;
-        };
-        let displays = info.get_displays();
-        let current = info.get_current_display();
-        state.current_display = if current >= 0 { current } else { 0 };
-        let display = if current >= 0 {
-            displays.get(current as usize)
-        } else {
-            None
-        }
-        .or_else(|| displays.iter().find(|display| display.get_online()))
-        .or_else(|| displays.first());
-        let Some(display) = display else {
-            return state;
-        };
-        state.width = display.get_width().max(0);
-        state.height = display.get_height().max(0);
-        state.original_width = display.get_original_resolution().get_width().max(0);
-        state.original_height = display.get_original_resolution().get_height().max(0);
-        let scale = display.get_scale();
-        state.scale_milli = if scale.is_finite() && scale > 0.0 {
-            (scale * 1000.0).round() as i32
-        } else {
-            1000
-        };
-        state.resolutions = info
-            .get_resolutions()
+    fn collect_resolutions(supported: &SupportedResolutions) -> Vec<(i32, i32)> {
+        supported
             .get_resolutions()
             .iter()
             .filter_map(|resolution| {
@@ -2714,9 +2838,202 @@ impl RustDeskConnector {
                 if width > 0 && height > 0 { Some((width, height)) } else { None }
             })
             .take(crate::RUSTDESK_MAX_DISPLAY_RESOLUTIONS)
+            .collect()
+    }
+
+    fn display_info_state(index: usize, display: &DisplayInfo) -> crate::RustDeskDisplayInfoState {
+        let original = display.get_original_resolution();
+        let scale = display.get_scale();
+        crate::RustDeskDisplayInfoState {
+            display: index as i32,
+            x: display.get_x(),
+            y: display.get_y(),
+            width: display.get_width().max(0),
+            height: display.get_height().max(0),
+            name: display.get_name().to_string(),
+            online: display.get_online(),
+            cursor_embedded: display.get_cursor_embedded(),
+            original_width: original.get_width().max(0),
+            original_height: original.get_height().max(0),
+            scale_milli: if scale.is_finite() && scale > 0.0 {
+                (scale * 1000.0).round() as i32
+            } else {
+                1000
+            },
+            resolutions: Vec::new(),
+        }
+    }
+
+    fn populate_display_state(
+        state: &mut crate::RustDeskDisplayState,
+        info: &PeerInfo,
+    ) -> bool {
+        let previous_displays = state.displays.clone();
+        let previous_geometry = (
+            state.current_display,
+            state.width,
+            state.height,
+            state.original_width,
+            state.original_height,
+            state.scale_milli,
+            state.resolutions.clone(),
+        );
+        let mut displays: Vec<crate::RustDeskDisplayInfoState> = info
+            .get_displays()
+            .iter()
+            .take(crate::RUSTDESK_MAX_DISPLAYS)
+            .enumerate()
+            .map(|(index, display)| Self::display_info_state(index, display))
             .collect();
-        state.geometry_epoch = 1;
+
+        // PeerInfo exposes one resolution list for the current display. Keep
+        // lists learned from SwitchDisplay for the other entries.
+        for display in &mut displays {
+            if let Some(previous) = previous_displays
+                .iter()
+                .find(|previous| previous.display == display.display)
+            {
+                display.resolutions = previous.resolutions.clone();
+            }
+        }
+
+        let peer_current = info.get_current_display();
+        let current_resolutions = Self::collect_resolutions(info.get_resolutions());
+        if let Some(display) = displays
+            .iter_mut()
+            .find(|display| display.display == peer_current)
+        {
+            if !current_resolutions.is_empty() {
+                display.resolutions = current_resolutions;
+            }
+        }
+        let desired_online = state.desired_display.filter(|desired| {
+            displays
+                .iter()
+                .any(|display| display.display == *desired && display.online)
+        });
+        if desired_online.is_none()
+            && state.desired_display.is_some()
+            && state.pending_switch_generation.is_none()
+        {
+            // Once a confirmed target leaves the online catalog, the peer's
+            // first online monitor becomes authoritative again. A still
+            // pending local target remains fenced until the user retries.
+            state.desired_display = None;
+        }
+        let current_index = desired_online
+            .or_else(|| {
+                displays
+                    .iter()
+                    .find(|display| display.display == peer_current && display.online)
+                    .map(|display| display.display)
+            })
+            .or_else(|| {
+                displays
+                    .iter()
+                    .find(|display| display.online)
+                    .map(|display| display.display)
+            })
+            .or_else(|| displays.first().map(|display| display.display))
+            .unwrap_or(0);
+
+        state.current_display = current_index;
+        state.displays = displays;
+        if let Some(display) = state
+            .displays
+            .iter()
+            .find(|display| display.display == current_index)
+        {
+            state.width = display.width;
+            state.height = display.height;
+            state.original_width = display.original_width;
+            state.original_height = display.original_height;
+            state.scale_milli = display.scale_milli;
+            state.resolutions = display.resolutions.clone();
+        } else {
+            // A peer-info refresh without display entries must not leave the
+            // previous monitor's geometry or resolution list visible.
+            state.current_display = 0;
+            state.width = 0;
+            state.height = 0;
+            state.original_width = 0;
+            state.original_height = 0;
+            state.scale_milli = 1000;
+            state.resolutions.clear();
+        }
+
+        previous_geometry
+            != (
+                state.current_display,
+                state.width,
+                state.height,
+                state.original_width,
+                state.original_height,
+                state.scale_milli,
+                state.resolutions.clone(),
+            )
+            || previous_displays != state.displays
+    }
+
+    fn apply_peer_info_geometry(
+        display_state: &Arc<Mutex<crate::RustDeskDisplayState>>,
+        info: &PeerInfo,
+        stream_stats: &Arc<Mutex<crate::RustDeskStreamStats>>,
+    ) {
+        let Ok(mut state) = display_state.lock() else {
+            return;
+        };
+        let changed = Self::populate_display_state(&mut state, info);
+        if changed || state.geometry_epoch == 0 {
+            state.geometry_epoch = state.geometry_epoch.wrapping_add(1).max(1);
+        }
+        if let Ok(mut stats) = stream_stats.lock() {
+            stats.width = state.width;
+            stats.height = state.height;
+        }
+        eprintln!(
+            "[RustDesk-FFI] peer display catalog displays={} current={} size={}x{} epoch={}",
+            state.displays.len(),
+            state.current_display,
+            state.width,
+            state.height,
+            state.geometry_epoch
+        );
+    }
+
+    pub fn peer_display_state(&self) -> crate::RustDeskDisplayState {
+        let mut state = crate::RustDeskDisplayState::default();
+        if let Some(info) = self.session.peer_info() {
+            Self::populate_display_state(&mut state, info);
+            state.geometry_epoch = 1;
+        }
         state
+    }
+
+    fn sync_active_display(state: &mut crate::RustDeskDisplayState, display: i32) -> bool {
+        let Some(info) = state
+            .displays
+            .iter()
+            .find(|info| info.display == display)
+            .cloned()
+        else {
+            return false;
+        };
+        let changed = state.current_display != display
+            || state.width != info.width
+            || state.height != info.height
+            || state.original_width != info.original_width
+            || state.original_height != info.original_height
+            || state.scale_milli != info.scale_milli
+            || state.resolutions != info.resolutions;
+        state.current_display = display;
+        state.width = info.width;
+        state.height = info.height;
+        state.original_width = info.original_width;
+        state.original_height = info.original_height;
+        state.scale_milli = info.scale_milli;
+        state.resolutions = info.resolutions;
+        changed
     }
 
     fn apply_switch_display_geometry(
@@ -2724,46 +3041,138 @@ impl RustDeskConnector {
         display: &SwitchDisplay,
         stream_stats: &Arc<Mutex<crate::RustDeskStreamStats>>,
     ) {
+        let display_index = display.get_display();
+        if display_index < 0 || display_index as usize >= crate::RUSTDESK_MAX_DISPLAYS {
+            return;
+        }
         let Ok(mut state) = display_state.lock() else {
             return;
         };
-        let width = display.get_width().max(0);
-        let height = display.get_height().max(0);
-        let original_width = display.get_original_resolution().get_width().max(0);
-        let original_height = display.get_original_resolution().get_height().max(0);
-        let resolutions: Vec<(i32, i32)> = display
-            .get_resolutions()
-            .get_resolutions()
+        if let Some(desired) = state.desired_display {
+            if display_index != desired {
+                eprintln!(
+                    "[RustDesk-FFI] stale display geometry ignored received={} desired={}",
+                    display_index, desired
+                );
+                return;
+            }
+        }
+        let resolutions = Self::collect_resolutions(display.get_resolutions());
+        let legacy_scale_milli = state.scale_milli;
+        let legacy_current_display = state.current_display;
+        if let Some(target) = state
+            .displays
+            .iter_mut()
+            .find(|info| info.display == display_index)
+        {
+            target.x = display.get_x();
+            target.y = display.get_y();
+            if display.get_width() > 0 {
+                target.width = display.get_width();
+            }
+            if display.get_height() > 0 {
+                target.height = display.get_height();
+            }
+            target.cursor_embedded = display.get_cursor_embedded();
+            target.online = true;
+            if display.has_original_resolution() {
+                target.original_width = display.get_original_resolution().get_width().max(0);
+                target.original_height = display.get_original_resolution().get_height().max(0);
+            }
+            if !resolutions.is_empty() {
+                target.resolutions = resolutions;
+            }
+        } else {
+            state.displays.push(crate::RustDeskDisplayInfoState {
+                display: display_index,
+                x: display.get_x(),
+                y: display.get_y(),
+                width: display.get_width().max(0),
+                height: display.get_height().max(0),
+                online: true,
+                cursor_embedded: display.get_cursor_embedded(),
+                original_width: display.get_original_resolution().get_width().max(0),
+                original_height: display.get_original_resolution().get_height().max(0),
+                scale_milli: if display_index == legacy_current_display {
+                    legacy_scale_milli
+                } else {
+                    1000
+                },
+                resolutions,
+                ..crate::RustDeskDisplayInfoState::default()
+            });
+        }
+        let changed = Self::sync_active_display(&mut state, display_index);
+        if let Some(generation) = state.pending_switch_generation.take() {
+            state.confirmed_switch_generation = generation;
+        }
+        if changed {
+            state.geometry_epoch = state.geometry_epoch.wrapping_add(1).max(1);
+        }
+        if let Ok(mut stats) = stream_stats.lock() {
+            stats.width = state.width;
+            stats.height = state.height;
+        }
+        eprintln!(
+            "[RustDesk-FFI] display geometry epoch={} display={} size={}x{}",
+            state.geometry_epoch, state.current_display, state.width, state.height
+        );
+    }
+
+    fn apply_follow_current_display(
+        display_state: &Arc<Mutex<crate::RustDeskDisplayState>>,
+        display: i32,
+        stream_stats: &Arc<Mutex<crate::RustDeskStreamStats>>,
+    ) {
+        let Ok(mut state) = display_state.lock() else {
+            return;
+        };
+        if display < 0 || display as usize >= crate::RUSTDESK_MAX_DISPLAYS {
+            return;
+        }
+        if let Some(desired) = state.desired_display {
+            if display != desired {
+                eprintln!(
+                    "[RustDesk-FFI] stale follow-current-display ignored received={} desired={}",
+                    display, desired
+                );
+                return;
+            }
+        }
+        if state.displays.is_empty() {
+            // Legacy peers can report a current-display change without a
+            // catalog. Preserve the last known geometry while following the
+            // new display index.
+            if state.current_display != display {
+                state.current_display = display;
+                state.geometry_epoch = state.geometry_epoch.wrapping_add(1).max(1);
+            }
+            if let Some(generation) = state.pending_switch_generation.take() {
+                state.confirmed_switch_generation = generation;
+            }
+            if let Ok(mut stats) = stream_stats.lock() {
+                stats.width = state.width;
+                stats.height = state.height;
+            }
+            return;
+        }
+        if !state
+            .displays
             .iter()
-            .filter_map(|resolution| {
-                let width = resolution.get_width();
-                let height = resolution.get_height();
-                if width > 0 && height > 0 { Some((width, height)) } else { None }
-            })
-            .take(crate::RUSTDESK_MAX_DISPLAY_RESOLUTIONS)
-            .collect();
-        let changed = state.current_display != display.get_display()
-            || state.width != width
-            || state.height != height
-            || state.original_width != original_width
-            || state.original_height != original_height
-            || state.resolutions != resolutions;
-        state.current_display = display.get_display();
-        if width > 0 { state.width = width; }
-        if height > 0 { state.height = height; }
-        if original_width > 0 { state.original_width = original_width; }
-        if original_height > 0 { state.original_height = original_height; }
-        state.resolutions = resolutions;
+            .any(|candidate| candidate.display == display)
+        {
+            return;
+        }
+        let changed = Self::sync_active_display(&mut state, display);
+        if let Some(generation) = state.pending_switch_generation.take() {
+            state.confirmed_switch_generation = generation;
+        }
         if changed {
             state.geometry_epoch = state.geometry_epoch.wrapping_add(1).max(1);
             if let Ok(mut stats) = stream_stats.lock() {
                 stats.width = state.width;
                 stats.height = state.height;
             }
-            eprintln!(
-                "[RustDesk-FFI] display geometry epoch={} display={} size={}x{}",
-                state.geometry_epoch, state.current_display, state.width, state.height
-            );
         }
     }
 
@@ -2780,9 +3189,11 @@ mod tests {
         PhysicalModifierState, RemoteKeyboardTransport, RendezvousCredentials,
     };
     use crate::protocol::message_proto::{
-        Hash, LoginResponse, Message, Misc_oneof_union, PointerDeviceEvent_oneof_union,
-        Resolution, SupportedResolutions, SwitchDisplay, TouchEvent_oneof_union,
+        DisplayInfo, Hash, LoginResponse, Message, Misc_oneof_union, PeerInfo,
+        PointerDeviceEvent_oneof_union, Resolution, SupportedResolutions, SwitchDisplay,
+        TouchEvent_oneof_union,
     };
+    use crate::{RustDeskDisplayInfoState, RustDeskDisplayState};
     use crate::protocol::message_proto::KeyboardMode;
     use crate::protocol::wire;
     use protobuf::Message as ProtoMessage;
@@ -2861,6 +3272,237 @@ mod tests {
                 _ => panic!("touch pan must use a pointer device event"),
             }
         }
+
+        let switch_message = RustDeskConnector::build_switch_display_message(1);
+        match switch_message.union {
+            Some(Message_oneof_union::misc(misc)) => match misc.union {
+                Some(Misc_oneof_union::switch_display(switch_display)) => {
+                    assert_eq!(switch_display.get_display(), 1);
+                }
+                _ => panic!("display switch must use Misc.switch_display"),
+            },
+            _ => panic!("display switch must use a Misc message"),
+        }
+
+        let capture_message = RustDeskConnector::build_capture_displays_message(
+            vec![2],
+            vec![0],
+            vec![1, 2],
+        );
+        match capture_message.union {
+            Some(Message_oneof_union::misc(misc)) => match misc.union {
+                Some(Misc_oneof_union::capture_displays(capture)) => {
+                    assert_eq!(capture.get_add(), &[2]);
+                    assert_eq!(capture.get_sub(), &[0]);
+                    assert_eq!(capture.get_set(), &[1, 2]);
+                }
+                _ => panic!("display capture must use Misc.capture_displays"),
+            },
+            _ => panic!("display capture must use a Misc message"),
+        }
+
+        let refresh_message = RustDeskConnector::build_refresh_video_display_message(2);
+        match refresh_message.union {
+            Some(Message_oneof_union::misc(misc)) => match misc.union {
+                Some(Misc_oneof_union::refresh_video_display(display)) => {
+                    assert_eq!(display, 2);
+                }
+                _ => panic!("display refresh must use Misc.refresh_video_display"),
+            },
+            _ => panic!("display refresh must use a Misc message"),
+        }
+    }
+
+    #[test]
+    fn peer_info_builds_a_bounded_multimonitor_catalog() {
+        let mut peer = PeerInfo::new();
+        peer.set_current_display(1);
+
+        let mut primary = DisplayInfo::new();
+        primary.set_x(0);
+        primary.set_y(0);
+        primary.set_width(1920);
+        primary.set_height(1080);
+        primary.set_name("Primary".to_string());
+        primary.set_online(true);
+        primary.set_scale(1.0);
+
+        let mut secondary = DisplayInfo::new();
+        secondary.set_x(1920);
+        secondary.set_y(0);
+        secondary.set_width(2560);
+        secondary.set_height(1440);
+        secondary.set_name("Secondary".to_string());
+        secondary.set_online(true);
+        secondary.set_scale(1.25);
+
+        peer.mut_displays().push(primary);
+        peer.mut_displays().push(secondary);
+        peer.mut_resolutions()
+            .mut_resolutions()
+            .push(resolution(2560, 1440));
+
+        let mut state = RustDeskDisplayState::default();
+        assert!(RustDeskConnector::populate_display_state(&mut state, &peer));
+        assert_eq!(state.displays.len(), 2);
+        assert_eq!(state.current_display, 1);
+        assert_eq!(state.displays[0].name, "Primary");
+        assert_eq!((state.displays[1].x, state.displays[1].y), (1920, 0));
+        assert_eq!((state.width, state.height), (2560, 1440));
+        assert_eq!(state.scale_milli, 1250);
+        assert_eq!(state.resolutions, vec![(2560, 1440)]);
+    }
+
+    #[test]
+    fn invalid_peer_current_display_prefers_the_first_online_monitor() {
+        let mut peer = PeerInfo::new();
+        peer.set_current_display(7);
+
+        let mut offline = DisplayInfo::new();
+        offline.set_width(1920);
+        offline.set_height(1080);
+        offline.set_online(false);
+        let mut online = DisplayInfo::new();
+        online.set_x(1920);
+        online.set_width(2560);
+        online.set_height(1440);
+        online.set_online(true);
+        peer.mut_displays().push(offline);
+        peer.mut_displays().push(online);
+
+        let mut state = RustDeskDisplayState::default();
+        assert!(RustDeskConnector::populate_display_state(&mut state, &peer));
+        assert_eq!(state.current_display, 1);
+        assert_eq!((state.width, state.height), (2560, 1440));
+    }
+
+    #[test]
+    fn offline_confirmed_target_releases_to_the_first_online_monitor() {
+        let mut peer = PeerInfo::new();
+        peer.set_current_display(2);
+
+        let mut online = DisplayInfo::new();
+        online.set_width(1920);
+        online.set_height(1080);
+        online.set_online(true);
+        let mut offline = DisplayInfo::new();
+        offline.set_width(2560);
+        offline.set_height(1440);
+        offline.set_online(false);
+        peer.mut_displays().push(online);
+        peer.mut_displays().push(offline);
+
+        let mut state = RustDeskDisplayState {
+            desired_display: Some(1),
+            switch_generation: 3,
+            confirmed_switch_generation: 3,
+            ..RustDeskDisplayState::default()
+        };
+        assert!(RustDeskConnector::populate_display_state(&mut state, &peer));
+        assert_eq!(state.current_display, 0);
+        assert_eq!(state.desired_display, None);
+        assert_eq!((state.width, state.height), (1920, 1080));
+    }
+
+    #[test]
+    fn empty_peer_info_clears_stale_display_geometry() {
+        let mut state = RustDeskDisplayState {
+            current_display: 1,
+            width: 2560,
+            height: 1440,
+            original_width: 2560,
+            original_height: 1440,
+            scale_milli: 1250,
+            resolutions: vec![(2560, 1440)],
+            displays: vec![RustDeskDisplayInfoState {
+                display: 1,
+                width: 2560,
+                height: 1440,
+                ..RustDeskDisplayInfoState::default()
+            }],
+            ..RustDeskDisplayState::default()
+        };
+
+        assert!(RustDeskConnector::populate_display_state(&mut state, &PeerInfo::new()));
+        assert_eq!(state.current_display, 0);
+        assert_eq!((state.width, state.height), (0, 0));
+        assert_eq!((state.original_width, state.original_height), (0, 0));
+        assert_eq!(state.scale_milli, 1000);
+        assert!(state.resolutions.is_empty());
+        assert!(state.displays.is_empty());
+    }
+
+    #[test]
+    fn legacy_follow_display_preserves_geometry_without_a_catalog() {
+        let display_state = Arc::new(Mutex::new(RustDeskDisplayState {
+            current_display: 0,
+            width: 1920,
+            height: 1080,
+            geometry_epoch: 3,
+            displays: Vec::new(),
+            ..RustDeskDisplayState::default()
+        }));
+        let stream_stats = Arc::new(Mutex::new(crate::RustDeskStreamStats::default()));
+
+        RustDeskConnector::apply_follow_current_display(&display_state, 2, &stream_stats);
+
+        let state = display_state.lock().expect("display state lock");
+        assert_eq!(state.current_display, 2);
+        assert_eq!((state.width, state.height), (1920, 1080));
+        assert_eq!(state.geometry_epoch, 4);
+        let stats = stream_stats.lock().expect("stream stats lock");
+        assert_eq!((stats.width, stats.height), (1920, 1080));
+    }
+
+    #[test]
+    fn switch_display_updates_only_the_selected_catalog_entry() {
+        let display_state = Arc::new(Mutex::new(RustDeskDisplayState {
+            current_display: 0,
+            width: 1920,
+            height: 1080,
+            original_width: 1920,
+            original_height: 1080,
+            scale_milli: 1000,
+            geometry_epoch: 1,
+            resolutions: vec![(1920, 1080)],
+            displays: vec![
+                RustDeskDisplayInfoState {
+                    display: 0,
+                    width: 1920,
+                    height: 1080,
+                    name: "Primary".to_string(),
+                    resolutions: vec![(1920, 1080)],
+                    ..RustDeskDisplayInfoState::default()
+                },
+                RustDeskDisplayInfoState {
+                    display: 1,
+                    width: 2560,
+                    height: 1440,
+                    name: "Secondary".to_string(),
+                    resolutions: vec![(2560, 1440)],
+                    ..RustDeskDisplayInfoState::default()
+                },
+            ],
+            ..RustDeskDisplayState::default()
+        }));
+        let stream_stats = Arc::new(Mutex::new(crate::RustDeskStreamStats::default()));
+        let mut supported = SupportedResolutions::new();
+        supported.mut_resolutions().push(resolution(1920, 1200));
+        let mut switch = SwitchDisplay::new();
+        switch.set_display(1);
+        switch.set_x(1920);
+        switch.set_y(0);
+        switch.set_width(1920);
+        switch.set_height(1200);
+        switch.set_resolutions(supported);
+
+        RustDeskConnector::apply_switch_display_geometry(&display_state, &switch, &stream_stats);
+
+        let state = display_state.lock().expect("display state lock");
+        assert_eq!((state.current_display, state.width, state.height), (1, 1920, 1200));
+        assert_eq!((state.displays[0].width, state.displays[0].height), (1920, 1080));
+        assert_eq!(state.displays[1].resolutions, vec![(1920, 1200)]);
+        assert_eq!(state.displays[1].name, "Secondary");
     }
 
     #[test]
@@ -2874,6 +3516,8 @@ mod tests {
             scale_milli: 1250,
             geometry_epoch: 4,
             resolutions: vec![(1920, 1080)],
+            displays: Vec::new(),
+            ..RustDeskDisplayState::default()
         }));
         let stream_stats = Arc::new(Mutex::new(crate::RustDeskStreamStats::default()));
         let mut supported = SupportedResolutions::new();
@@ -2897,6 +3541,115 @@ mod tests {
         drop(state);
         let stats = stream_stats.lock().expect("stream stats lock");
         assert_eq!((stats.width, stats.height), (1080, 1920));
+    }
+
+    #[test]
+    fn rapid_display_switch_ignores_stale_geometry_ack() {
+        let display_state = Arc::new(Mutex::new(RustDeskDisplayState {
+            current_display: 0,
+            desired_display: Some(2),
+            switch_generation: 2,
+            pending_switch_generation: Some(2),
+            width: 1920,
+            height: 1080,
+            displays: vec![
+                RustDeskDisplayInfoState {
+                    display: 0,
+                    width: 1920,
+                    height: 1080,
+                    online: true,
+                    ..RustDeskDisplayInfoState::default()
+                },
+                RustDeskDisplayInfoState {
+                    display: 1,
+                    width: 1600,
+                    height: 900,
+                    online: true,
+                    ..RustDeskDisplayInfoState::default()
+                },
+                RustDeskDisplayInfoState {
+                    display: 2,
+                    width: 2560,
+                    height: 1440,
+                    online: true,
+                    ..RustDeskDisplayInfoState::default()
+                },
+            ],
+            ..RustDeskDisplayState::default()
+        }));
+        let stream_stats = Arc::new(Mutex::new(crate::RustDeskStreamStats::default()));
+        let mut stale = SwitchDisplay::new();
+        stale.set_display(1);
+        stale.set_width(1680);
+        stale.set_height(1050);
+        RustDeskConnector::apply_switch_display_geometry(&display_state, &stale, &stream_stats);
+
+        {
+            let state = display_state.lock().expect("display state lock");
+            assert_eq!(state.current_display, 0);
+            assert_eq!(state.pending_switch_generation, Some(2));
+            assert_eq!(state.confirmed_switch_generation, 0);
+        }
+
+        let mut latest = SwitchDisplay::new();
+        latest.set_display(2);
+        latest.set_width(2560);
+        latest.set_height(1440);
+        RustDeskConnector::apply_switch_display_geometry(&display_state, &latest, &stream_stats);
+        let state = display_state.lock().expect("display state lock");
+        assert_eq!(state.current_display, 2);
+        assert_eq!(state.pending_switch_generation, None);
+        assert_eq!(state.confirmed_switch_generation, 2);
+    }
+
+    #[test]
+    fn rapid_display_switch_ignores_stale_follow_current_ack() {
+        let display_state = Arc::new(Mutex::new(RustDeskDisplayState {
+            current_display: 0,
+            desired_display: Some(2),
+            switch_generation: 2,
+            pending_switch_generation: Some(2),
+            width: 1920,
+            height: 1080,
+            displays: vec![
+                RustDeskDisplayInfoState {
+                    display: 0,
+                    width: 1920,
+                    height: 1080,
+                    online: true,
+                    ..RustDeskDisplayInfoState::default()
+                },
+                RustDeskDisplayInfoState {
+                    display: 1,
+                    width: 1600,
+                    height: 900,
+                    online: true,
+                    ..RustDeskDisplayInfoState::default()
+                },
+                RustDeskDisplayInfoState {
+                    display: 2,
+                    width: 2560,
+                    height: 1440,
+                    online: true,
+                    ..RustDeskDisplayInfoState::default()
+                },
+            ],
+            ..RustDeskDisplayState::default()
+        }));
+        let stream_stats = Arc::new(Mutex::new(crate::RustDeskStreamStats::default()));
+
+        RustDeskConnector::apply_follow_current_display(&display_state, 1, &stream_stats);
+        {
+            let state = display_state.lock().expect("display state lock");
+            assert_eq!(state.current_display, 0);
+            assert_eq!(state.pending_switch_generation, Some(2));
+        }
+
+        RustDeskConnector::apply_follow_current_display(&display_state, 2, &stream_stats);
+        let state = display_state.lock().expect("display state lock");
+        assert_eq!(state.current_display, 2);
+        assert_eq!(state.pending_switch_generation, None);
+        assert_eq!(state.confirmed_switch_generation, 2);
     }
 
     #[test]

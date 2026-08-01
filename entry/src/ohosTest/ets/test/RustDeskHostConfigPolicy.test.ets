@@ -9,6 +9,7 @@ import {
   rustDeskServerKeyError,
   rustDeskAuthModeForConnection,
   rustDeskCardEndpoint,
+  rustDeskRelayFallbackPort,
   shouldAdoptRustDeskDirectPort
 } from '../../../main/ets/services/RustDeskHostConfigPolicy';
 import {
@@ -44,6 +45,15 @@ export default function rustDeskHostConfigPolicyTest(): void {
       const endpoint = resolveRustDeskHostEndpoint(makeRelay(), '', false, '', 21116);
       expect(endpoint.host).assertEqual('id.example.com');
       expect(endpoint.port).assertEqual(21117);
+    });
+
+    it('configured_relay_port_should_only_be_a_hbbr_fallback', 0, (): void => {
+      const relay = makeRelay();
+      relay.relayPort = 23017;
+      expect(rustDeskRelayFallbackPort(relay)).assertEqual(23017);
+      relay.relayPort = 0;
+      expect(rustDeskRelayFallbackPort(relay)).assertEqual(21117);
+      expect(rustDeskRelayFallbackPort(null)).assertEqual(21117);
     });
 
     it('oss_relay_should_allow_empty_server_key', 0, (): void => {

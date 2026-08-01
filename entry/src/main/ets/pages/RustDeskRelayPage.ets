@@ -16,19 +16,39 @@ import { socket } from '@kit.NetworkKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { common } from '@kit.AbilityKit';
 import { RustDeskRelayConfig } from '../model/RustDeskRelayConfig';
-import { VncRelayConfig } from '../model/VncRelayConfig';
 import { RustDeskProAccountState } from '../model/RustDeskProModels';
 import { HostSyncService } from '../services/HostSyncService';
 import { RustDeskProSyncService } from '../services/RustDeskProSyncService';
 import { snapshotSelectedRelay } from '../services/RustDeskRelayHealthPolicy';
 import { Palette, buildDark, buildLight, AppTheme } from '../common/Theme';
-import { resolveFabAddStyle } from '../services/FabAddStylePolicy';
 import { ResourceFabPicker } from '../components/resourceadd/ResourceFabPicker';
-import { VncRelayConfigService } from '../services/VncRelayConfigService';
-import { ModernRelayAddFlow } from '../components/resourceadd/modern/ModernRelayAddFlow';
 import { RustDeskRelayImportService, RustDeskRelayImportResult } from '../services/RustDeskRelayImportService';
 import { RustDeskRelayKeyMode, resolveRustDeskRelayKey } from '../services/RustDeskRelayKeyPolicy';
+import {
+  RustDeskControlPlaneProfile,
+  RUSTDESK_CONTROL_PLANE_DEFAULT,
+  rustDeskControlPlaneProfileDescription,
+  rustDeskControlPlaneProfileLabel
+} from '../services/RustDeskControlPlanePolicy';
 import { RustDeskRelayConfigPasteSheet } from '../components/resourceadd/modern/RustDeskRelayConfigPasteSheet';
+import { VncGatewayAddFlow } from '../components/resourceadd/VncGatewayAddFlow';
+import { VncGatewayService, VncGatewayView } from '../services/VncGatewayService';
+import { VncGatewayValues } from '../services/VncModelPolicy';
+import { vncGatewayAvailability } from '../services/VncGatewayProtocolPolicy';
+import { protocolIcon } from '../services/ProtocolIconPolicy';
+import {
+  RustDeskRelayCloudSyncOutcome,
+  RustDeskRelayCloudSyncState,
+  rustDeskRelayCloudSyncMessage,
+  rustDeskRelayIdFingerprint,
+  RustDeskRelaySaveRecovery,
+  RustDeskRelaySaveResult
+} from '../services/RustDeskRelaySavePolicy';
+import {
+  RustDeskRelaySetupCoordinator,
+  RustDeskRelaySetupDraft
+} from '../services/RustDeskRelaySetupCoordinator';
+import { DataMutationStage } from '../services/DataMutationResult';
 
 class TcpTestResult {
   ok: boolean = false;
@@ -40,39 +60,50 @@ export struct RustDeskRelayPage {
   @StorageLink('currentTheme') theme: string = 'light';
   @StorageLink('accentColor') accentColor: string = '#007DFF';
   @Prop @Watch('onAddTrigger') addTrigger: number = 0;
+  @Prop @Watch('onRustDeskAddTrigger') rustDeskAddTrigger: number = 0;
+  @Prop @Watch('onVncAddTrigger') vncAddTrigger: number = 0;
   @Prop hideTabBar: boolean = false;
+  @Prop returnToHostAdd: boolean = false;
+  onReturnToHostAdd: (relayId: string) => void =
+    (_relayId: string): void => {};
   @StorageProp('currentBreakpoint') breakpoint: string = 'sm';
   @StorageProp('isDesktopDevice') isDesktopDevice: boolean = false;
   @StorageProp('topRectHeight') topRectHeight: number = 0;
-  @StorageProp('hostAddMode') fabAddStyle: string = 'modern';
   @State relays: RustDeskRelayConfig[] = [];
-  @State vncRelays: VncRelayConfig[] = [];
+  @State vncGateways: VncGatewayView[] = [];
   @State expandedRelayIds: string[] = [];
   @State showSheet: boolean = false;
-  @State sheetContent: number = 1;  // 1/3/4/7=legacy/edit surfaces, 8=isolated modern add flow
+  @State sheetContent: number = 1;  // 1/3/4=RustDesk, 5=protocol picker, 10=VNC Gateway
   @State savedRelayId: string = '';
   @State relayKind: string = 'oss';
   @State editingRelayId: string = '';
   // PC: selected relay object for detail panel (reference change = guaranteed re-render)
   @State selectedPcRelay: RustDeskRelayConfig | null = null;
+  @State selectedPcVncGateway: VncGatewayView | null = null;
   // PC popup menu
   @State menuVisibleRelayId: string = '';
   // Relay form
   @State formIdServer: string = '';
-  @State formIdPort: number = 21116;
+  @State formIdPortText: string = '21116';
   @State formRelayServer: string = '';
-  @State formRelayPort: number = 21117;
+  @State formRelayPortText: string = '21117';
   @State formApiServer: string = '';
   @State formKey: string = '';
   @State formKeyMode: RustDeskRelayKeyMode = 'server_public_key';
+  @State formControlPlaneProfile: RustDeskControlPlaneProfile = RUSTDESK_CONTROL_PLANE_DEFAULT;
+  @State showRelayAdvanced: boolean = false;
   @State formTestResult: string = '';
   @State importingRelayConfig: boolean = false;
-  // UltraVNC Repeater form (device-local until VNC sessions are enabled)
-  @State editingVncRelayId: string = '';
-  @State formVncName: string = '';
-  @State formVncHost: string = '';
-  @State formVncPort: number = 5901;
-  @State formVncTargetId: string = '';
+  @State relaySaving: boolean = false;
+  @State relaySaveError: string = '';
+  @State relaySaveRecovery: RustDeskRelaySaveRecovery = 'none';
+  @State relaySaveDiagnostic: string = '';
+  @State relaySaveStage: DataMutationStage = 'idle';
+  @State relayCloudSyncState:
+    RustDeskRelayCloudSyncState = 'not_configured';
+  @State relayCloudFailureKind: string = '';
+  @State relayDraftId: string = '';
+  @State relaySaveRevision: number = 0;
   // Server Pro account form and local-only account state
   @State proAccounts: RustDeskProAccountState[] = [];
   @State proRelayId: string = '';
@@ -86,12 +117,19 @@ export struct RustDeskRelayPage {
   @State testingRelayId: string = '';
   @State relaySheetClosing: boolean = false;
   @State relayViewRevision: number = 0;
-  @State vncViewRevision: number = 0;
   @State proViewRevision: number = 0;
+  @State vncViewRevision: number = 0;
+  @State editingVncGateway: VncGatewayView | null = null;
+  @State testingVncGatewayId: string = '';
+  @State vncTestResultId: string = '';
+  @State vncTestResult: string = '';
+  private pendingHostAddReturnRelayId: string = '';
   private srv: HostSyncService = HostSyncService.getInstance();
   private proSync: RustDeskProSyncService = RustDeskProSyncService.getInstance();
-  private vncSrv: VncRelayConfigService = VncRelayConfigService.getInstance();
+  private vncGatewayService: VncGatewayService = VncGatewayService.getInstance();
   private relayImporter: RustDeskRelayImportService = new RustDeskRelayImportService();
+  private relaySetup: RustDeskRelaySetupCoordinator =
+    RustDeskRelaySetupCoordinator.getInstance();
   private dataUnsubscribe: (() => void) | null = null;
   private proDataUnsubscribe: (() => void) | null = null;
   private vncDataUnsubscribe: (() => void) | null = null;
@@ -108,17 +146,16 @@ export struct RustDeskRelayPage {
 
   aboutToAppear(): void {
     this.pageActive = true;
+    this.vncGatewayService.init(getContext(this) as common.Context);
     this.proSync.init(getContext(this) as common.Context);
-    this.vncSrv.init(getContext(this) as common.Context);
     this.registerDataRefreshListener();
     this.load();
     this.loadProAccounts();
-    this.loadVncRelays();
     this.srv.whenReady().then((): void => {
       if (this.pageActive) { this.load(); }
     });
   }
-  onPageShow(): void { this.load(); this.loadVncRelays(); }
+  onPageShow(): void { this.load(); }
   aboutToDisappear(): void {
     this.pageActive = false;
     if (this.dataUnsubscribe) {
@@ -147,8 +184,8 @@ export struct RustDeskRelayPage {
       });
     }
     if (!this.vncDataUnsubscribe) {
-      this.vncDataUnsubscribe = this.vncSrv.onDataChange((): void => {
-        if (this.pageActive) { this.loadVncRelays(); }
+      this.vncDataUnsubscribe = this.vncGatewayService.onChange((): void => {
+        if (this.pageActive) { this.loadVncGateways(); }
       });
     }
   }
@@ -161,17 +198,39 @@ export struct RustDeskRelayPage {
     if (selectedRelayId !== '') {
       this.selectedPcRelay = snapshotSelectedRelay(nextRelays, selectedRelayId);
     }
+    this.loadVncGateways();
+  }
+
+  private loadVncGateways(): void {
+    const selectedGatewayId: string = this.selectedPcVncGateway ? this.selectedPcVncGateway.id : '';
+    this.vncGateways = this.vncGatewayService.list().map((gateway: VncGatewayView): VncGatewayView => ({
+      id: gateway.id, userId: gateway.userId, label: gateway.label, transport: gateway.transport,
+      host: gateway.host, port: gateway.port, path: gateway.path, repeaterMode: gateway.repeaterMode,
+      targetId: gateway.targetId, tls: gateway.tls, enabled: gateway.enabled,
+      createdAt: gateway.createdAt, updatedAt: gateway.updatedAt, syncVersion: gateway.syncVersion,
+      tokenConfigured: gateway.tokenConfigured
+    }));
+    this.vncViewRevision += 1;
+    if (selectedGatewayId !== '') {
+      const next: VncGatewayView | undefined = this.vncGateways.find(
+        (gateway: VncGatewayView): boolean => gateway.id === selectedGatewayId);
+      this.selectedPcVncGateway = next === undefined ? null : next;
+    }
   }
   private loadProAccounts(): void {
     this.proAccounts = this.proSync.getAccounts();
     this.proViewRevision += 1;
   }
-  private loadVncRelays(): void {
-    this.vncRelays = this.vncSrv.getAll();
-    this.vncViewRevision += 1;
-  }
   onAddTrigger(): void {
     if (this.addTrigger > 0) { this.openAddRelaySheet(); }
+  }
+
+  onRustDeskAddTrigger(): void {
+    if (this.rustDeskAddTrigger > 0) { this.openRustDeskRelaySheet(); }
+  }
+
+  onVncAddTrigger(): void {
+    if (this.vncAddTrigger > 0) { this.openVncGatewaySheet(); }
   }
 
   // ==================== Stats ====================
@@ -196,7 +255,9 @@ export struct RustDeskRelayPage {
     this.relays.forEach((r: RustDeskRelayConfig) => { c += this.hostCountForRelay(r.id); });
     return c;
   }
-  private totalRelayCount(): number { return this.relays.length + this.vncRelays.length; }
+  private totalRelayCount(): number {
+    return this.relays.length + this.vncGateways.length;
+  }
 
   // ==================== Expand / Collapse ====================
 
@@ -231,6 +292,13 @@ export struct RustDeskRelayPage {
     return '未检测';
   }
 
+  private relayKindForProfile(profile: RustDeskControlPlaneProfile): string {
+    if (profile === 'official_server_pro_token') { return 'pro'; }
+    if (profile === 'third_party_control_plane' ||
+      profile === 'third_party_api_only') { return 'advanced'; }
+    return 'oss';
+  }
+
   private relayCheckedAtLabel(relay: RustDeskRelayConfig): string {
     if (relay.healthCheckedAt <= 0) { return ''; }
     const diff: number = Date.now() - relay.healthCheckedAt;
@@ -238,6 +306,46 @@ export struct RustDeskRelayPage {
     if (diff < 3600000) { return Math.floor(diff / 60000) + '分钟前'; }
     if (diff < 86400000) { return Math.floor(diff / 3600000) + '小时前'; }
     return Math.floor(diff / 86400000) + '天前';
+  }
+
+  private vncGatewayStatusLabel(gateway: VncGatewayView): string {
+    if (!gateway.enabled) { return '已停用'; }
+    if (this.testingVncGatewayId === gateway.id) { return '检测中'; }
+    const availability = vncGatewayAvailability(gateway.transport, gateway.tls,
+      gateway.tokenConfigured, gateway.repeaterMode);
+    if (!availability.enabled) { return '不可用'; }
+    if (this.vncTestResultId === gateway.id && this.vncTestResult.startsWith('✓')) {
+      return this.vncTestResult;
+    }
+    if (this.vncTestResultId === gateway.id && this.vncTestResult.startsWith('✗')) {
+      return '端口异常';
+    }
+    return '可用 · 未检测';
+  }
+
+  private vncGatewayStatusColor(gateway: VncGatewayView): string {
+    if (!gateway.enabled) { return this.pal().text3; }
+    const availability = vncGatewayAvailability(gateway.transport, gateway.tls,
+      gateway.tokenConfigured, gateway.repeaterMode);
+    if (!availability.enabled) { return this.pal().danger; }
+    if (this.vncTestResultId === gateway.id && this.vncTestResult.startsWith('✓')) {
+      return this.pal().success;
+    }
+    if (this.vncTestResultId === gateway.id && this.vncTestResult.startsWith('✗')) {
+      return this.pal().danger;
+    }
+    return this.pal().text3;
+  }
+
+  private gatewayAvailability(gateway: VncGatewayView) {
+    return vncGatewayAvailability(gateway.transport, gateway.tls,
+      gateway.tokenConfigured, gateway.repeaterMode);
+  }
+
+  private redactedVncTarget(value: string): string {
+    const normalized: string = value.trim();
+    if (normalized.length <= 4) { return normalized === '' ? '未填写' : '•••'; }
+    return normalized.substring(0, 2) + '…' + normalized.substring(normalized.length - 2);
   }
 
   private hostCountForRelay(relayId: string): number {
@@ -265,9 +373,25 @@ export struct RustDeskRelayPage {
   private openAddRelaySheet(): void {
     if (this.relaySheetClosing) { return; }
     this.resetRelayForm();
-    this.resetVncRelayForm();
     this.relayKind = 'oss';
-    this.sheetContent = resolveFabAddStyle(this.fabAddStyle, this.isDesktopDevice) === 'modern' ? 8 : 1;
+    // Keep the released RustDesk entry contract while exposing VNC as a
+    // separate add action. The directory itself has no protocol filter.
+    this.sheetContent = 5;
+    this.showSheet = true;
+  }
+
+  private openRustDeskRelaySheet(): void {
+    if (this.relaySheetClosing) { return; }
+    this.resetRelayForm();
+    this.relayKind = 'oss';
+    this.sheetContent = 1;
+    this.showSheet = true;
+  }
+
+  private openVncGatewaySheet(): void {
+    if (this.relaySheetClosing) { return; }
+    this.editingVncGateway = null;
+    this.sheetContent = 10;
     this.showSheet = true;
   }
 
@@ -277,10 +401,14 @@ export struct RustDeskRelayPage {
   }
 
   private finishSheetDismiss(): void {
+    const returnToHostAdd: boolean =
+      this.returnToHostAdd;
+    const returnRelayId: string =
+      this.pendingHostAddReturnRelayId;
+    this.pendingHostAddReturnRelayId = '';
     this.relaySheetClosing = false;
     this.sheetContent = 1;
     this.resetRelayForm();
-    this.resetVncRelayForm();
     this.proRelayId = '';
     this.proAccountId = '';
     this.proCreateNewAccount = false;
@@ -290,24 +418,48 @@ export struct RustDeskRelayPage {
     this.formProError = '';
     this.proBusy = false;
     this.savedRelayId = '';
+    this.editingVncGateway = null;
+    this.testingVncGatewayId = '';
+    this.vncTestResultId = '';
+    this.vncTestResult = '';
     this.load();
     this.loadProAccounts();
-    this.loadVncRelays();
+    if (returnToHostAdd) {
+      this.onReturnToHostAdd(returnRelayId);
+    }
   }
 
   private openEditRelaySheet(relay: RustDeskRelayConfig): void {
     if (this.relaySheetClosing) { return; }
     this.menuVisibleRelayId = '';
     this.editingRelayId = relay.id;
+    this.relayDraftId = relay.id;
     this.formIdServer = relay.idServer;
-    this.formIdPort = relay.idServerPort;
+    this.formIdPortText = relay.idServerPort.toString();
     this.formRelayServer = relay.relayServer;
-    this.formRelayPort = relay.relayPort;
+    this.formRelayPortText = relay.relayPort.toString();
     this.formApiServer = relay.apiServer;
     this.formKey = relay.key;
     this.formKeyMode = resolveRustDeskRelayKey(relay.key, relay.keyMode, false).mode;
+    this.formControlPlaneProfile = relay.controlPlaneProfile;
+    this.relayKind = this.relayKindForProfile(relay.controlPlaneProfile);
+    this.showRelayAdvanced = true;
     this.formTestResult = '';
+    this.relaySaveError = '';
+    this.relaySaveRecovery = 'none';
+    this.relaySaveDiagnostic = '';
+    this.relaySaving = false;
+    this.relaySaveStage = 'idle';
+    this.relayCloudSyncState = 'not_configured';
+    this.relayCloudFailureKind = '';
     this.sheetContent = 1;
+    this.showSheet = true;
+  }
+
+  private openEditVncGatewaySheet(gateway: VncGatewayView): void {
+    if (this.relaySheetClosing) { return; }
+    this.editingVncGateway = gateway;
+    this.sheetContent = 10;
     this.showSheet = true;
   }
 
@@ -378,62 +530,115 @@ export struct RustDeskRelayPage {
   // ==================== Relay CRUD ====================
 
   private resetRelayForm(): void {
-    this.editingRelayId = ''; this.formIdServer = ''; this.formIdPort = 21116;
-    this.formRelayServer = ''; this.formRelayPort = 21117;
-    this.formApiServer = ''; this.formKey = ''; this.formKeyMode = 'server_public_key'; this.formTestResult = '';
+    this.editingRelayId = ''; this.formIdServer = ''; this.formIdPortText = '21116';
+    this.formRelayServer = ''; this.formRelayPortText = '21117';
+    this.formApiServer = ''; this.formKey = ''; this.formKeyMode = 'server_public_key';
+    this.formControlPlaneProfile = RUSTDESK_CONTROL_PLANE_DEFAULT; this.formTestResult = '';
+    this.showRelayAdvanced = false;
+    this.relayDraftId = this.relaySetup.nextDraftId();
+    this.relaySaving = false; this.relaySaveError = ''; this.relaySaveRecovery = 'none';
+    this.relaySaveDiagnostic = ''; this.relaySaveStage = 'idle';
+    this.relayCloudSyncState = 'not_configured';
+    this.relayCloudFailureKind = '';
   }
 
-  private doSaveRelay(): string {
-    if (this.formIdServer.trim() === '') {
-      const error = 'ID服务器地址不能为空';
-      promptAction.showToast({ message: error, duration: 2000 }); return error;
-    }
-    if (this.formIdPort <= 0 || this.formIdPort > 65535 ||
-      this.formRelayPort <= 0 || this.formRelayPort > 65535) {
-      const error = '服务器端口必须在 1–65535 之间';
-      promptAction.showToast({ message: error, duration: 2000 }); return error;
-    }
-    if (this.relayKind === 'pro' && this.formApiServer.trim() === '') {
-      const error = 'Server Pro 必须填写 API 地址';
-      promptAction.showToast({ message: error, duration: 2000 }); return error;
-    }
-    const key = resolveRustDeskRelayKey(this.formKey, this.formKeyMode, false);
-    if (!key.ok) {
-      promptAction.showToast({ message: key.error, duration: 2600 }); return key.error;
-    }
+  private relayPortFromText(value: string, defaultPort: number): number {
+    const normalized: string = value.trim();
+    if (normalized === '') { return defaultPort; }
+    const port: number = Number(normalized);
+    return Number.isInteger(port) ? port : 0;
+  }
+
+  private async doSaveRelay(): Promise<void> {
+    if (this.relaySaving) { return; }
+    this.relaySaveError = '';
+    this.relaySaveRecovery = 'none';
     const isNew: boolean = this.editingRelayId === '';
-    const r = new RustDeskRelayConfig();
-    r.id = isNew ? RustDeskRelayConfig.generateId() : this.editingRelayId;
-    r.idServer = this.formIdServer.trim(); r.idServerPort = this.formIdPort;
-    r.relayServer = this.formRelayServer.trim() === '' ? r.idServer : this.formRelayServer.trim();
-    r.relayPort = this.formRelayPort;
-    r.apiServer = this.formApiServer.trim(); r.key = key.value; r.keyMode = key.mode;
-    let saved: boolean;
-    if (!isNew) {
-      const existing = this.relays.find((x: RustDeskRelayConfig) => x.id === this.editingRelayId);
-      if (existing) { r.accounts = existing.accounts; }
-      saved = this.srv.updateRelay(r);
-    } else { saved = this.srv.addRelay(r); }
-    if (!saved) {
-      const error = '中继服务器保存失败';
-      promptAction.showToast({ message: error, duration: 2200 });
-      return error;
+    const draft = new RustDeskRelaySetupDraft();
+    draft.operation = isNew ? 'create' : 'update';
+    draft.editingRelayId =
+      isNew ? '' : this.editingRelayId;
+    draft.relayId = isNew ? this.relayDraftId : this.editingRelayId;
+    draft.idServer = this.formIdServer;
+    draft.idServerPort = this.relayPortFromText(this.formIdPortText, 21116);
+    draft.relayServer = this.formRelayServer;
+    draft.relayPort = this.relayPortFromText(this.formRelayPortText, 21117);
+    draft.apiServer = this.formApiServer;
+    draft.key = this.formKey;
+    draft.keyMode = this.formKeyMode;
+    draft.controlPlaneProfile = this.formControlPlaneProfile;
+    this.relaySaveRevision++;
+    const attemptId: string = 'relay-save-' + Date.now().toString(36) + '-' +
+      this.relaySaveRevision.toString(36);
+    const existing: RustDeskRelayConfig | null = isNew ? null :
+      (this.relays.find((x: RustDeskRelayConfig): boolean =>
+        x.id === this.editingRelayId) ?? null);
+    this.relaySaving = true;
+    this.relaySaveStage = 'validating';
+    const result: RustDeskRelaySaveResult =
+      await this.relaySetup.saveAsync(
+        draft, existing, attemptId,
+        (stage: DataMutationStage): void => {
+          this.relaySaveStage = stage;
+        },
+        (state: RustDeskRelayCloudSyncState,
+          failureKind: string): void => {
+          this.relayCloudSyncState = state;
+          this.relayCloudFailureKind =
+            state === 'failed' ? failureKind : '';
+          this.relaySaveDiagnostic =
+            'attempt=' + attemptId +
+            ' stage=completed code=ok committed=true cloud=' +
+            state +
+            (failureKind === ''
+              ? '' : ' cloud_failure=' + failureKind);
+        });
+    this.relaySaving = false;
+    this.relayDraftId = draft.relayId;
+    this.relaySaveDiagnostic = result.diagnosticSummary();
+    if (!result.ok) {
+      this.relaySaveError = result.message;
+      this.relaySaveRecovery = result.recovery;
+      if (result.localCommitted) { this.load(); }
+      return;
     }
+    this.relaySaveStage = 'completed';
+    this.relayCloudSyncState = result.cloudSyncState;
+    this.relayCloudFailureKind =
+      result.cloudSyncFailureKind;
     this.load();
-    if (isNew) {
-      this.savedRelayId = r.id;
-      this.sheetContent = 4;
-      return '';
+    this.savedRelayId = result.relayId;
+    if (this.returnToHostAdd) {
+      this.pendingHostAddReturnRelayId =
+        result.relayId;
+      this.closeSheet();
+      return;
     }
-    this.closeSheet();
-    return '';
+    this.sheetContent = 4;
+  }
+
+  private async retryRelayCloudSync(): Promise<void> {
+    this.relayCloudSyncState = 'pending';
+    this.relayCloudFailureKind = '';
+    const outcome: RustDeskRelayCloudSyncOutcome =
+      await this.srv.retryRelayCloudSync();
+    this.relayCloudSyncState = outcome.state;
+    this.relayCloudFailureKind = outcome.failureKind;
+    this.relaySaveDiagnostic =
+      this.relaySaveDiagnostic.replace(
+        /cloud=[^ ]+/, 'cloud=' + outcome.state) +
+      (outcome.failureKind === ''
+        ? '' : ' cloud_failure=' + outcome.failureKind);
   }
 
   private applyRelayImport(result: RustDeskRelayImportResult): void {
-    this.formIdServer = result.idServer; this.formIdPort = result.idServerPort;
-    this.formRelayServer = result.relayServer; this.formRelayPort = result.relayPort;
+    this.formIdServer = result.idServer; this.formIdPortText = result.idServerPort.toString();
+    this.formRelayServer = result.relayServer; this.formRelayPortText = result.relayPort.toString();
     this.formApiServer = result.apiServer; this.formKey = result.key;
     this.formKeyMode = resolveRustDeskRelayKey(result.key, 'auto', false).mode;
+    this.showRelayAdvanced = result.apiServer !== '' ||
+      result.idServerPort !== 21116 || result.relayPort !== 21117 ||
+      result.relayServer !== result.idServer || this.formKeyMode === 'shared_access_key';
   }
 
   private importAndSavePastedRelay(result: RustDeskRelayImportResult): string {
@@ -456,48 +661,6 @@ export struct RustDeskRelayPage {
     this.formTestResult = '✓ 已导入 ' + result.fileName + '，请确认后保存';
   }
 
-  private resetVncRelayForm(): void {
-    this.editingVncRelayId = '';
-    this.formVncName = '';
-    this.formVncHost = '';
-    this.formVncPort = 5901;
-    this.formVncTargetId = '';
-  }
-
-  private openEditVncRelaySheet(relay: VncRelayConfig): void {
-    if (this.relaySheetClosing) { return; }
-    this.editingVncRelayId = relay.id;
-    this.formVncName = relay.name;
-    this.formVncHost = relay.host;
-    this.formVncPort = relay.port;
-    this.formVncTargetId = relay.targetId;
-    this.sheetContent = 7;
-    this.showSheet = true;
-  }
-
-  private doSaveVncRelay(): void {
-    if (this.formVncHost.trim() === '') {
-      promptAction.showToast({ message: 'Repeater 地址不能为空', duration: 2000 });
-      return;
-    }
-    if (this.formVncPort <= 0 || this.formVncPort > 65535) {
-      promptAction.showToast({ message: '端口必须在 1–65535 之间', duration: 2000 });
-      return;
-    }
-    const relay = new VncRelayConfig();
-    relay.id = this.editingVncRelayId.length > 0 ? this.editingVncRelayId : VncRelayConfig.generateId();
-    relay.name = this.formVncName.trim();
-    relay.host = this.formVncHost.trim();
-    relay.port = this.formVncPort;
-    relay.targetId = this.formVncTargetId.trim();
-    const existing = this.vncRelays.find((item: VncRelayConfig): boolean => item.id === relay.id);
-    relay.createdAt = existing ? existing.createdAt : Date.now();
-    relay.updatedAt = Date.now();
-    this.vncSrv.save(relay);
-    promptAction.showToast({ message: 'VNC 中继配置已保存', duration: 1800 });
-    this.closeSheet();
-  }
-
   // TCP socket 连通性测试
   private async tcpTest(host: string, port: number): Promise<TcpTestResult> {
     const start = Date.now();
@@ -517,49 +680,14 @@ export struct RustDeskRelayPage {
     return result;
   }
 
-  private async doTestConnection(): Promise<void> {
-    if (this.formRelayServer.trim() === '') { this.formTestResult = '✗ 请先输入中继服务器地址'; return; }
-    this.formTestResult = '⏳ 检测中...';
-    const r = await this.tcpTest(this.formRelayServer.trim(), this.formRelayPort);
-    if (r.ok) {
-      this.formTestResult = '✓ TCP 连通 (' + r.lat + 'ms)';
-      this._updateRelayHealth('online', r.lat);
-    } else {
-      if (this.formIdServer.trim() !== '') {
-        const idR = await this.tcpTest(this.formIdServer.trim(), this.formIdPort);
-        if (idR.ok) {
-          this.formTestResult = '△ ID服务器可达 (' + idR.lat + 'ms), 中继端口不通';
-          this._updateRelayHealth('error', 0);
-        } else {
-          this.formTestResult = '✗ 服务器不可达 (ID和中继均不通)';
-          this._updateRelayHealth('offline', 0);
-        }
-      } else {
-        this.formTestResult = '✗ 中继端口不可达';
-        this._updateRelayHealth('offline', 0);
-      }
-    }
-  }
-
-  private _updateRelayHealth(status: string, latency: number): void {
-    if (this.editingRelayId !== '') {
-      const current = this.relays.find((x: RustDeskRelayConfig) => x.id === this.editingRelayId);
-      if (current) {
-        const relay = RustDeskRelayConfig.fromJSON(current.toJSON());
-        relay.healthStatus = status;
-        relay.healthLatency = latency;
-        relay.healthCheckedAt = Date.now();
-        this.srv.updateRelay(relay);
-        this.load();
-      }
-    }
-  }
-
   private async doTestRelay(relay: RustDeskRelayConfig): Promise<void> {
     const target = RustDeskRelayConfig.fromJSON(relay.toJSON());
     this.testingRelayId = target.id;
-    hilog.info(0x0001, 'RustDeskRelay', 'health test start id=' + target.id +
-      ' relay=' + target.relayServer + ':' + target.relayPort.toString());
+    const relayId: string =
+      rustDeskRelayIdFingerprint(target.id);
+    hilog.info(0x0001, 'RustDeskRelay',
+      'health test start relayId=' + relayId +
+      ' relayEndpoint=configured');
     target.healthStatus = 'unknown';
     const pendingSaved = this.srv.updateRelay(target);
     hilog.info(0x0001, 'RustDeskRelay', 'health test pending saved=' + pendingSaved.toString());
@@ -581,13 +709,68 @@ export struct RustDeskRelayPage {
       }
       target.healthCheckedAt = Date.now();
       const saved = this.srv.updateRelay(target);
-      hilog.info(0x0001, 'RustDeskRelay', 'health test result id=' + target.id +
+      hilog.info(0x0001, 'RustDeskRelay', 'health test result relayId=' + relayId +
         ' status=' + target.healthStatus + ' latency=' + target.healthLatency.toString() +
         ' saved=' + saved.toString());
       this.load();
     } finally {
       this.testingRelayId = '';
     }
+  }
+
+  // ==================== VNC Gateway owner ====================
+
+  private saveVncGateway(values: VncGatewayValues, id: string, accessToken: string,
+    plainStorageConfirmed: boolean = false): void {
+    if (!this.vncGatewayService.isReady()) {
+      promptAction.showToast({ message: 'VNC 服务尚未完成云同步初始化，请稍后重试', duration: 2200 });
+      return;
+    }
+    const result = this.vncGatewayService.save(values, id, accessToken, plainStorageConfirmed);
+    if (!result.ok) {
+      promptAction.showToast({ message: result.message || 'VNC Gateway 保存失败', duration: 2400 });
+      return;
+    }
+    this.loadVncGateways();
+    promptAction.showToast({ message: id === '' ? 'VNC Gateway 已保存' : 'VNC Gateway 已更新', duration: 1800 });
+    this.closeSheet();
+  }
+
+  private doDeleteVncGateway(gateway: VncGatewayView): void {
+    promptAction.showDialog({
+      title: '删除 VNC Gateway',
+      message: '确定删除“' + gateway.label + '”吗？其 VNC 令牌也会一并删除。',
+      buttons: [{ text: '取消', color: this.pal().text2 }, { text: '删除', color: this.pal().danger }]
+    }).then((result: Object): void => {
+      const values: Record<string, number> = result as Record<string, number>;
+      if (values['index'] === 1 && this.vncGatewayService.remove(gateway.id)) {
+        this.vncGateways = this.vncGateways.filter((item: VncGatewayView): boolean => item.id !== gateway.id);
+        if (this.selectedPcVncGateway && this.selectedPcVncGateway.id === gateway.id) {
+          this.selectedPcVncGateway = null;
+        }
+        this.vncViewRevision += 1;
+      }
+    });
+  }
+
+  private async doTestVncGateway(gateway: VncGatewayView): Promise<void> {
+    const availability = vncGatewayAvailability(gateway.transport, gateway.tls,
+      gateway.tokenConfigured, gateway.repeaterMode);
+    if (!availability.enabled) {
+      this.vncTestResultId = gateway.id;
+      this.vncTestResult = '✗ ' + availability.message;
+      return;
+    }
+    this.testingVncGatewayId = gateway.id;
+    this.vncTestResultId = gateway.id;
+    this.vncTestResult = '⏳ TCP 端口检测中…';
+    const result = await this.tcpTest(gateway.host, gateway.port);
+    if (result.ok) {
+      this.vncTestResult = '✓ TCP 端口可达 (' + result.lat.toString() + 'ms)';
+    } else {
+      this.vncTestResult = '✗ TCP 端口不可达';
+    }
+    this.testingVncGatewayId = '';
   }
 
   private doDeleteRelay(id: string): void {
@@ -633,9 +816,20 @@ export struct RustDeskRelayPage {
       this.loadProAccounts();
       this.formProPwd = '';
       const count = result.addedIds.length + result.updatedIds.length;
+      const account: RustDeskProAccountState | undefined =
+        this.proSync.getAccount(accountId);
+      const capabilityReady: boolean =
+        account?.controlPlaneCapabilityProof !== undefined;
       promptAction.showToast({
-        message: count > 0 ? 'Pro 已同步 ' + count.toString() + ' 台设备' : '登录成功，但个人地址簿为空',
-        duration: 2200
+        message: capabilityReady
+          ? (count > 0
+            ? 'Pro 已同步 ' + count.toString() +
+              ' 台设备，控制面身份已绑定'
+            : '登录成功，地址簿为空；控制面身份已绑定')
+          : (count > 0
+            ? '地址簿已同步；尚无可验证的控制面能力证明，连接按 API-only 模式且不发送地址簿令牌'
+            : '登录成功；尚无可验证的控制面能力证明，连接按 API-only 模式'),
+        duration: capabilityReady ? 2200 : 3600
       });
       this.closeSheet();
     } catch (err) {
@@ -645,24 +839,23 @@ export struct RustDeskRelayPage {
     }
   }
 
-  private doDeleteVncRelay(id: string): void {
-    promptAction.showDialog({
-      title: '确认删除', message: '确定要删除此 VNC 中继配置吗？',
-      buttons: [{ text: '取消', color: this.pal().text2 }, { text: '删除', color: this.pal().danger }]
-    }).then((result: Object): void => {
-      const value = result as Record<string, number>;
-      if (value['index'] === 1) { this.vncSrv.remove(id); }
-    });
-  }
-
   private async doProSync(accountId: string): Promise<void> {
     try {
       const result = await this.proSync.sync(accountId);
       this.loadProAccounts();
       const count = result.addedIds.length + result.updatedIds.length;
+      const account: RustDeskProAccountState | undefined =
+        this.proSync.getAccount(accountId);
+      const capabilityReady: boolean =
+        account?.controlPlaneCapabilityProof !== undefined;
       promptAction.showToast({
-        message: count > 0 ? 'Pro 已同步 ' + count.toString() + ' 台设备' : '同步完成，但个人地址簿为空',
-        duration: 2200
+        message: capabilityReady
+          ? (count > 0
+            ? 'Pro 已同步 ' + count.toString() +
+              ' 台设备，控制面身份已重新验证'
+            : '同步完成，控制面身份已重新验证')
+          : '地址簿同步成功；尚无可验证的控制面能力证明，连接按 API-only 模式且不发送地址簿令牌',
+        duration: capabilityReady ? 2200 : 3600
       });
     } catch (err) {
       this.formProError = err instanceof Error ? err.message : 'Pro 同步失败';
@@ -700,6 +893,17 @@ export struct RustDeskRelayPage {
 
   private isPC(): boolean {
     return this.isDesktopDevice && this.breakpoint === 'xl';
+  }
+
+  private relaySheetHeight(): SheetSize {
+    return this.sheetContent === 1 || this.sheetContent === 10
+      ? SheetSize.LARGE : SheetSize.FIT_CONTENT;
+  }
+
+  private relaySheetKeyboardAvoidMode(): SheetKeyboardAvoidMode {
+    return this.sheetContent === 1 || this.sheetContent === 10
+      ? SheetKeyboardAvoidMode.RESIZE_ONLY
+      : SheetKeyboardAvoidMode.TRANSLATE_AND_SCROLL;
   }
 
   // ==================== Build ====================
@@ -754,9 +958,10 @@ export struct RustDeskRelayPage {
     .width('100%').height('100%')
     .overlay(this.TitleBarOverlay(), { align: Alignment.Top })
     .bindSheet($$this.showSheet, this.relaySheetBuilder(), {
-      height: SheetSize.FIT_CONTENT,
+      height: this.relaySheetHeight(),
       preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
       dragBar: false,
+      keyboardAvoidMode: this.relaySheetKeyboardAvoidMode(),
       backgroundColor: this.pal().sheetBg, blurStyle: BlurStyle.NONE, showClose: false,
       onDisappear: () => { this.finishSheetDismiss(); }
     })
@@ -793,7 +998,7 @@ export struct RustDeskRelayPage {
 
   @Builder emptyState() {
     Column() {
-      SymbolGlyph($r('sys.symbol.cloud_fill'))
+      SymbolGlyph(protocolIcon('rustdesk_relay'))
         .fontSize(48)
         .fontColor([this.pal().text3])
       Text('还没有中继服务器')
@@ -810,46 +1015,8 @@ export struct RustDeskRelayPage {
 
   // ==================== Mobile List (swipeAction) ====================
 
-  @Builder vncRelayCard(relay: VncRelayConfig) {
-    Column() {
-      Row() {
-        SymbolGlyph($r('sys.symbol.cloud_fill')).fontSize(22).fontColor([this.accentColor])
-          .margin({ right: 10 })
-        Column() {
-          Text(relay.displayName()).fontSize(15).fontWeight(FontWeight.Medium)
-            .fontColor(this.pal().text).fontFamily(this.font()).maxLines(1)
-            .textOverflow({ overflow: TextOverflow.Ellipsis })
-          Text(relay.host + ':' + relay.port.toString()).fontSize(11).fontColor(this.pal().text3)
-            .fontFamily(this.font()).margin({ top: 3 }).maxLines(1)
-            .textOverflow({ overflow: TextOverflow.Ellipsis })
-        }.alignItems(HorizontalAlign.Start).layoutWeight(1)
-        Text('VNC').fontSize(10).fontWeight(FontWeight.Medium).fontColor(this.accentColor)
-          .padding({ left: 8, right: 8, top: 4, bottom: 4 }).borderRadius(8)
-          .backgroundColor(this.pal().surface)
-      }.width('100%')
-      if (relay.targetId.length > 0) {
-        Text('目标 ID · ' + relay.targetId).fontSize(11).fontColor(this.pal().text2)
-          .fontFamily(this.font()).width('100%').margin({ top: 10 })
-      }
-      Row() {
-        Text('等待 VNC 连接能力启用').fontSize(11).fontColor(this.pal().text3)
-          .fontFamily(this.font()).layoutWeight(1)
-        Button('编辑').height(30).fontSize(11).fontColor(this.accentColor)
-          .backgroundColor(this.pal().surface).borderRadius(8)
-          .onClick((): void => { this.openEditVncRelaySheet(relay); })
-        Button('删除').height(30).fontSize(11).fontColor(this.pal().danger)
-          .backgroundColor(Color.Transparent).borderRadius(8).margin({ left: 4 })
-          .onClick((): void => { this.doDeleteVncRelay(relay.id); })
-      }.width('100%').margin({ top: 10 })
-    }.width('100%').padding(14).borderRadius(14).backgroundColor(this.pal().card)
-      .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
-  }
-
   @Builder mobileList() {
     List() {
-      ForEach(this.vncRelays, (relay: VncRelayConfig) => {
-        ListItem() { this.vncRelayCard(relay) }
-      }, (relay: VncRelayConfig): string => relay.id + ':' + this.vncViewRevision.toString())
       ForEach(this.relays, (relay: RustDeskRelayConfig) => {
         ListItem() {
           this.relayCardContent(relay, false)
@@ -874,6 +1041,19 @@ export struct RustDeskRelayPage {
           )
         )
       }, (relay: RustDeskRelayConfig): string => relay.id + ':' + this.relayViewRevision.toString())
+      ForEach(this.vncGateways, (gateway: VncGatewayView) => {
+        ListItem() {
+          this.vncGatewayCardContent(gateway)
+        }
+        .transition(
+          TransitionEffect.asymmetric(
+            TransitionEffect.translate({ y: 18 }).combine(TransitionEffect.OPACITY),
+            TransitionEffect.translate({ x: -160, y: -8 })
+              .combine(TransitionEffect.scale({ x: 0.82, y: 0.82 }))
+              .combine(TransitionEffect.OPACITY)
+          )
+        )
+      }, (gateway: VncGatewayView): string => gateway.id + ':' + this.vncViewRevision.toString())
     }
     .width('100%')
     .listDirection(Axis.Vertical)
@@ -949,9 +1129,6 @@ export struct RustDeskRelayPage {
 
   @Builder tabletGrid() {
     Grid() {
-      ForEach(this.vncRelays, (relay: VncRelayConfig) => {
-        GridItem() { this.vncRelayCard(relay) }
-      }, (relay: VncRelayConfig): string => relay.id + ':' + this.vncViewRevision.toString())
       ForEach(this.relays, (relay: RustDeskRelayConfig) => {
         GridItem() {
           this.relayCardContent(relay, true)
@@ -964,8 +1141,20 @@ export struct RustDeskRelayPage {
               .combine(TransitionEffect.OPACITY)
           )
         )
-            }, (relay: RustDeskRelayConfig): string =>
-              relay.id + ':' + this.relayViewRevision.toString())
+      }, (relay: RustDeskRelayConfig): string => relay.id + ':' + this.relayViewRevision.toString())
+      ForEach(this.vncGateways, (gateway: VncGatewayView) => {
+        GridItem() {
+          this.vncGatewayCardContent(gateway)
+        }
+        .transition(
+          TransitionEffect.asymmetric(
+            TransitionEffect.translate({ y: 18 }).combine(TransitionEffect.OPACITY),
+            TransitionEffect.translate({ x: -160, y: -8 })
+              .combine(TransitionEffect.scale({ x: 0.82, y: 0.82 }))
+              .combine(TransitionEffect.OPACITY)
+          )
+        )
+      }, (gateway: VncGatewayView): string => gateway.id + ':' + this.vncViewRevision.toString())
     }
     .columnsTemplate(this.gridColumnsTemplate())
     .columnsGap(this.cardGap())
@@ -981,14 +1170,16 @@ export struct RustDeskRelayPage {
       // Left: relay list
       Column() {
         List() {
-          ForEach(this.vncRelays, (relay: VncRelayConfig) => {
-            ListItem() { this.vncRelayCard(relay) }
-          }, (relay: VncRelayConfig): string => relay.id + ':' + this.vncViewRevision.toString())
           ForEach(this.relays, (relay: RustDeskRelayConfig) => {
             ListItem() {
               this.pcListItem(relay)
             }
-      }, (relay: RustDeskRelayConfig): string => relay.id + ':' + this.relayViewRevision.toString())
+          }, (relay: RustDeskRelayConfig): string => relay.id + ':' + this.relayViewRevision.toString())
+          ForEach(this.vncGateways, (gateway: VncGatewayView) => {
+            ListItem() {
+              this.pcVncGatewayListItem(gateway)
+            }
+          }, (gateway: VncGatewayView): string => gateway.id + ':' + this.vncViewRevision.toString())
         }
         .width('100%').layoutWeight(1)
         .scrollBar(BarState.Off).edgeEffect(EdgeEffect.Spring)
@@ -1013,10 +1204,21 @@ export struct RustDeskRelayPage {
                   .animation({ duration: 280, curve: Curve.FastOutSlowIn }))
             )
           }, (id: string): string => id)
+        } else if (this.selectedPcVncGateway !== null) {
+          ForEach([(this.selectedPcVncGateway as VncGatewayView).id], (id: string) => {
+            Column() {
+              this.vncGatewayDetailPanelContent()
+            }
+            .width('100%').height('100%')
+            .borderRadius(20).backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
+            .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
+            .shadow({ radius: 24, color: 'rgba(0,0,0,0.10)', offsetY: 8 })
+          }, (id: string): string => id)
         } else {
           Column() {
-            SymbolGlyph($r('sys.symbol.cloud_fill')).fontSize(36).fontColor([this.pal().text3])
-            Text('选择一个中继').fontSize(14).fontColor(this.pal().text2).fontFamily(this.font()).margin({ top: 8 })
+            SymbolGlyph(protocolIcon('rustdesk_relay'))
+              .fontSize(36).fontColor([this.pal().text3])
+            Text('选择一个服务器').fontSize(14).fontColor(this.pal().text2).fontFamily(this.font()).margin({ top: 8 })
             Text('查看详细信息').fontSize(12).fontColor(this.pal().text3).fontFamily(this.font()).margin({ top: 2 })
           }.width('100%').height('100%').justifyContent(FlexAlign.Center).alignItems(HorizontalAlign.Center)
         }
@@ -1026,14 +1228,17 @@ export struct RustDeskRelayPage {
 
   @Builder pcListItem(relay: RustDeskRelayConfig) {
     Row() {
-      SymbolGlyph($r('sys.symbol.cloud_fill'))
+      SymbolGlyph(protocolIcon('rustdesk_relay'))
         .fontSize(22)
         .fontColor([this.relayStatusColor(relay)])
         .margin({ right: 10 })
       Column() {
-        Text(relay.displayName())
-          .fontSize(15).fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font())
-          .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+        Row() {
+          this.relayTypeBadge('RustDesk 中继')
+          Text(relay.displayName()).fontSize(15).fontWeight(FontWeight.Medium)
+            .fontColor(this.pal().text).fontFamily(this.font()).margin({ left: 6 })
+            .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+        }.width('100%')
         Row() {
           Column().width(6).height(6).borderRadius(3).backgroundColor(this.relayStatusColor(relay))
           Text(this.relayStatusLabel(relay)).fontSize(12).fontColor(this.relayStatusColor(relay)).margin({ left: 4 })
@@ -1068,6 +1273,33 @@ export struct RustDeskRelayPage {
     .backgroundColor(this.selectedPcRelay !== null && (this.selectedPcRelay as RustDeskRelayConfig).id === relay.id ? this.pal().surface : Color.Transparent)
     .onClick(() => {
       this.selectedPcRelay = relay;
+      this.selectedPcVncGateway = null;
+    })
+  }
+
+  @Builder pcVncGatewayListItem(gateway: VncGatewayView) {
+    Row() {
+      SymbolGlyph(protocolIcon('vnc_gateway'))
+        .fontSize(22).fontColor([this.vncGatewayStatusColor(gateway)]).margin({ right: 10 })
+      Column() {
+        Row() {
+          this.relayTypeBadge('VNC Gateway')
+          Text(gateway.label).fontSize(15).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
+            .fontFamily(this.font()).margin({ left: 6 }).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+        }
+        Text(this.vncGatewayStatusLabel(gateway)).fontSize(12).fontColor(this.vncGatewayStatusColor(gateway))
+          .margin({ top: 3 })
+      }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+      Button() { SymbolGlyph($r('sys.symbol.square_and_pencil')).fontSize(16).fontColor([this.pal().text2]) }
+        .width(36).height(36).borderRadius(18).backgroundColor(this.pal().surface)
+        .onClick((): void => { this.openEditVncGatewaySheet(gateway); })
+    }
+    .width('100%').padding({ left: 12, right: 8, top: 10, bottom: 10 }).borderRadius(10)
+    .backgroundColor(this.selectedPcVncGateway !== null && this.selectedPcVncGateway.id === gateway.id
+      ? this.pal().surface : Color.Transparent)
+    .onClick((): void => {
+      this.selectedPcVncGateway = gateway;
+      this.selectedPcRelay = null;
     })
   }
 
@@ -1110,6 +1342,71 @@ export struct RustDeskRelayPage {
     .width(156).padding(4).borderRadius(12)
   }
 
+  @Builder vncGatewayDetailPanelContent() {
+    if (this.selectedPcVncGateway !== null) {
+      Column() {
+        Row() {
+          Column() {
+            Row() {
+              SymbolGlyph(protocolIcon('vnc_gateway')).fontSize(25).fontColor([this.accentColor])
+              Text('VNC Gateway').fontSize(11).fontColor(this.accentColor).margin({ left: 8 })
+            }
+            Text((this.selectedPcVncGateway as VncGatewayView).label)
+              .fontSize(28).fontWeight(FontWeight.Bold).fontColor(this.pal().text).fontFamily(this.font())
+              .margin({ top: 8 }).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+            Text(this.vncGatewayStatusLabel(this.selectedPcVncGateway as VncGatewayView))
+              .fontSize(14).fontColor(this.vncGatewayStatusColor(this.selectedPcVncGateway as VncGatewayView))
+              .margin({ top: 5 })
+          }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+          Row() {
+            Button(this.testingVncGatewayId === (this.selectedPcVncGateway as VncGatewayView).id ? '检测中…' : '测试 TCP')
+              .fontSize(13).height(36).backgroundColor(this.accentColor).fontColor(Color.White).borderRadius(8)
+              .padding({ left: 14, right: 14 }).enabled(this.testingVncGatewayId === '')
+              .onClick((): void => { void this.doTestVncGateway(this.selectedPcVncGateway as VncGatewayView); })
+            Button('编辑').fontSize(13).height(36).backgroundColor(this.pal().surface).fontColor(this.pal().text2)
+              .borderRadius(8).margin({ left: 8 }).padding({ left: 14, right: 14 })
+              .onClick((): void => { this.openEditVncGatewaySheet(this.selectedPcVncGateway as VncGatewayView); })
+          }
+        }.width('100%').padding({ bottom: 16 }).border({ width: { bottom: 0.5 }, color: this.pal().divider })
+          .margin({ bottom: 16 })
+        Text('服务器').fontSize(13).fontColor(this.pal().text3).fontWeight(FontWeight.Medium)
+          .width('100%').margin({ bottom: 8 })
+        Column() {
+          this._pcEndpointRow('端点', (this.selectedPcVncGateway as VncGatewayView).host,
+            (this.selectedPcVncGateway as VncGatewayView).port)
+          if ((this.selectedPcVncGateway as VncGatewayView).path !== '') {
+            Row().width('100%').height(0.5).backgroundColor(this.pal().divider).margin({ top: 5, bottom: 5 })
+            this._pcEndpointRow('路径', (this.selectedPcVncGateway as VncGatewayView).path, 0)
+          }
+          if ((this.selectedPcVncGateway as VncGatewayView).targetId !== '') {
+            Row().width('100%').height(0.5).backgroundColor(this.pal().divider).margin({ top: 5, bottom: 5 })
+            this._pcEndpointRow('目标', this.redactedVncTarget((this.selectedPcVncGateway as VncGatewayView).targetId), 0)
+          }
+          Row().width('100%').height(0.5).backgroundColor(this.pal().divider).margin({ top: 5, bottom: 5 })
+          this._pcEndpointRow('安全', (this.selectedPcVncGateway as VncGatewayView).tls ? 'TLS' : '明文', 0)
+        }.width('100%').borderRadius(10).backgroundColor(this.pal().surface).padding(14).margin({ bottom: 14 })
+        Text('健康诊断').fontSize(13).fontColor(this.pal().text3).fontWeight(FontWeight.Medium)
+          .width('100%').margin({ bottom: 8 })
+        if (this.vncTestResultId === (this.selectedPcVncGateway as VncGatewayView).id && this.vncTestResult !== '') {
+          Text(this.vncTestResult).fontSize(12)
+            .fontColor(this.vncTestResult.startsWith('✓') ? this.pal().success : this.pal().danger)
+            .width('100%').padding(12).borderRadius(10).backgroundColor(this.pal().surface)
+        } else {
+          Text(vncGatewayAvailability((this.selectedPcVncGateway as VncGatewayView).transport,
+            (this.selectedPcVncGateway as VncGatewayView).tls,
+            (this.selectedPcVncGateway as VncGatewayView).tokenConfigured,
+            (this.selectedPcVncGateway as VncGatewayView).repeaterMode).message || '尚未执行 TCP 检测')
+            .fontSize(12).fontColor(this.pal().text3).width('100%').padding(12)
+            .borderRadius(10).backgroundColor(this.pal().surface)
+        }
+        Blank().layoutWeight(1)
+        Button('删除此 VNC Gateway').width('100%').height(40).borderRadius(10)
+          .backgroundColor(Color.Transparent).fontColor(this.pal().danger)
+          .onClick((): void => { this.doDeleteVncGateway(this.selectedPcVncGateway as VncGatewayView); })
+      }.width('100%').padding({ left: 24, right: 24, top: 20, bottom: 20 })
+    }
+  }
+
   // PC detail panel — horizontal landscape layout with two columns (no scroll)
   @Builder pcDetailPanelContent() {
     Column() {
@@ -1117,8 +1414,10 @@ export struct RustDeskRelayPage {
           // ===== Header bar: name + status + actions =====
           Row() {
             Column() {
+              Text('RustDesk 中继').fontSize(11).fontColor(this.accentColor).fontFamily(this.font())
               Text((this.selectedPcRelay as RustDeskRelayConfig).displayName())
                 .fontSize(28).fontWeight(FontWeight.Bold).fontColor(this.pal().text).fontFamily(this.font())
+                .margin({ top: 4 })
               Row() {
                 Column().width(8).height(8).borderRadius(4)
                   .backgroundColor(this.relayStatusColor(this.selectedPcRelay as RustDeskRelayConfig))
@@ -1161,6 +1460,18 @@ export struct RustDeskRelayPage {
                   Row().width('100%').height(0.5).backgroundColor(this.pal().divider).margin({ top: 5, bottom: 5 })
                   this._pcEndpointRow('API', (this.selectedPcRelay as RustDeskRelayConfig).apiServer, 0)
                 }
+                Row().width('100%').height(0.5).backgroundColor(this.pal().divider).margin({ top: 5, bottom: 5 })
+                Row() {
+                  Text('控制面').fontSize(14).fontColor(this.pal().text3).fontFamily(this.font()).width(48)
+                  Text(rustDeskControlPlaneProfileLabel(
+                    (this.selectedPcRelay as RustDeskRelayConfig).controlPlaneProfile))
+                    .fontSize(14).fontColor(this.pal().text2).fontFamily(this.font())
+                  Blank()
+                }.width('100%').padding({ top: 4, bottom: 2 })
+                Text(rustDeskControlPlaneProfileDescription(
+                  (this.selectedPcRelay as RustDeskRelayConfig).controlPlaneProfile))
+                  .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
+                  .lineHeight(16).width('100%').margin({ bottom: 3 })
                 Row().width('100%').height(0.5).backgroundColor(this.pal().divider).margin({ top: 5, bottom: 5 })
                 Row() {
                   Text('密钥').fontSize(14).fontColor(this.pal().text3).fontFamily(this.font()).width(48)
@@ -1246,7 +1557,83 @@ export struct RustDeskRelayPage {
     .width('100%').padding(12).borderRadius(10).backgroundColor(this.pal().surface)
   }
 
+  @Builder vncGatewayCardContent(gateway: VncGatewayView) {
+    Column() {
+      Row() {
+        SymbolGlyph(protocolIcon('vnc_gateway')).fontSize(this.breakpoint === 'sm' ? 22 : 24)
+          .fontColor([this.vncGatewayStatusColor(gateway)])
+        Column() {
+          Row() {
+            this.relayTypeBadge('VNC Gateway')
+            Text(gateway.label).fontSize(this.breakpoint === 'sm' ? 15 : 17)
+              .fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font())
+              .margin({ left: 7 }).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+          }
+          Text(this.vncGatewayStatusLabel(gateway)).fontSize(this.breakpoint === 'sm' ? 11 : 13)
+            .fontColor(this.vncGatewayStatusColor(gateway)).fontFamily(this.font()).margin({ top: 3 })
+        }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 10 })
+        Button() { SymbolGlyph($r('sys.symbol.square_and_pencil')).fontSize(15).fontColor([this.pal().text2]) }
+          .width(32).height(32).borderRadius(16).backgroundColor(this.pal().surface)
+          .onClick((): void => { this.openEditVncGatewaySheet(gateway); })
+      }.width('100%')
+      Column() {
+        this._cardInfoRow('端点', gateway.host + ':' + gateway.port.toString())
+        if (gateway.path !== '') { this._cardInfoRow('路径', gateway.path) }
+        if (gateway.targetId !== '') {
+          this._cardInfoRow('目标', this.redactedVncTarget(gateway.targetId) + ' · ' + gateway.repeaterMode)
+        }
+        this._cardInfoRow('安全', (gateway.tls ? 'TLS' : '明文') +
+          (gateway.tokenConfigured ? ' · 令牌已配置' : ' · 无令牌'))
+        if (!this.gatewayAvailability(gateway).enabled) {
+          Text(this.gatewayAvailability(gateway).message).fontSize(10).fontColor(this.pal().danger).lineHeight(16)
+            .width('100%').margin({ top: 5 })
+        }
+        if (this.vncTestResultId === gateway.id && this.vncTestResult !== '') {
+          Text(this.vncTestResult).fontSize(10)
+            .fontColor(this.vncTestResult.startsWith('✓') ? this.pal().success : this.pal().danger)
+            .width('100%').margin({ top: 5 })
+        }
+      }.width('100%').borderRadius(10).backgroundColor(this.pal().surface)
+        .padding({ left: 10, right: 10, top: 6, bottom: 6 }).margin({ top: 9 })
+      Row() {
+        Button(this.testingVncGatewayId === gateway.id ? '检测中…' : '测试 TCP')
+          .layoutWeight(1).height(32).fontSize(11).borderRadius(8)
+          .backgroundColor(this.pal().surface).fontColor(this.accentColor)
+          .enabled(this.testingVncGatewayId === '')
+          .onClick((): void => { void this.doTestVncGateway(gateway); })
+        Button('删除').layoutWeight(1).height(32).fontSize(11).borderRadius(8)
+          .backgroundColor(this.pal().surface).fontColor(this.pal().danger).margin({ left: 7 })
+          .onClick((): void => { this.doDeleteVncGateway(gateway); })
+      }.width('100%').margin({ top: 9 })
+    }
+    .width('100%').constraintSize({ minHeight: this.breakpoint === 'sm' ? 66 : 80 })
+    .padding(this.breakpoint === 'sm' ? 12 : 14).borderRadius(14)
+    .backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
+    .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
+  }
+
   // ==================== Relay Card Content (shared by mobile & tablet) ====================
+
+  @Builder relayTypeBadge(label: string) {
+    Text(label).fontSize(10).fontColor(this.accentColor).fontFamily(this.font())
+      .padding({ left: 6, right: 6, top: 2, bottom: 2 })
+      .borderRadius(6).backgroundColor(this.pal().surface).margin({ right: 6 })
+  }
+
+  @Builder relayProtocolChoiceSheet() {
+    ResourceFabPicker({
+      kind: 'gateway',
+      onSelect: (option: string): void => {
+        if (option === 'rustdesk') {
+          this.relayKind = 'oss';
+          this.formControlPlaneProfile = RUSTDESK_CONTROL_PLANE_DEFAULT;
+          this.sheetContent = 1;
+        }
+        if (option === 'vnc') { this.openVncGatewaySheet(); }
+      },
+      onClose: (): void => { this.closeSheet(); }
+    })
+  }
 
   @Builder relayCardContent(relay: RustDeskRelayConfig, enableTap: boolean) {
     Column() {
@@ -1254,7 +1641,7 @@ export struct RustDeskRelayPage {
       // expand hit target so a tap expands while a horizontal swipe can still
       // be handled continuously by ListItem.swipeAction.
       Row() {
-        SymbolGlyph($r('sys.symbol.cloud_fill'))
+        SymbolGlyph(protocolIcon('rustdesk_relay'))
           .fontSize(this.breakpoint === 'sm' ? 22 : 24)
           .fontColor([this.accentColor])
         // The title/status/chevron region is the expand hit target.  A click
@@ -1262,10 +1649,13 @@ export struct RustDeskRelayPage {
         // of horizontal drags, so swipe-to-reveal remains continuous.
         Row() {
           Column() {
-            Text(relay.displayName())
-              .fontSize(this.breakpoint === 'sm' ? 15 : 17).fontWeight(FontWeight.Medium)
-              .fontColor(this.pal().text).fontFamily(this.font())
-              .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+            Row() {
+              this.relayTypeBadge('RustDesk 中继')
+              Text(relay.displayName())
+                .fontSize(this.breakpoint === 'sm' ? 15 : 17).fontWeight(FontWeight.Medium)
+                .fontColor(this.pal().text).fontFamily(this.font()).margin({ left: 7 })
+                .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+            }.width('100%')
             Row() {
               Column().width(this.breakpoint === 'sm' ? 6 : 7)
                 .height(this.breakpoint === 'sm' ? 6 : 7)
@@ -1282,6 +1672,9 @@ export struct RustDeskRelayPage {
                 .fontSize(this.breakpoint === 'sm' ? 11 : 12)
                 .fontColor(this.pal().text3).fontFamily(this.font())
             }.margin({ top: this.breakpoint === 'sm' ? 2 : 3 })
+            Text(rustDeskControlPlaneProfileLabel(relay.controlPlaneProfile))
+              .fontSize(this.breakpoint === 'sm' ? 10 : 11).fontColor(this.pal().text3)
+              .fontFamily(this.font()).margin({ top: 3 })
           }.alignItems(HorizontalAlign.Start).layoutWeight(1)
 
           if (!this.isPC()) {
@@ -1496,59 +1889,173 @@ export struct RustDeskRelayPage {
 
   @Builder relayEditSheet() {
     Column() {
-      Text(this.editingRelayId !== '' ? '编辑中继服务器' :
-        (this.relayKind === 'pro' ? '添加 Server Pro 中继' :
-          (this.relayKind === 'advanced' ? '高级自定义中继' : '添加 OSS 中继')))
+      Text(this.editingRelayId !== '' ? '编辑 RustDesk 中继' : '添加 RustDesk 中继')
         .fontSize(19).fontWeight(FontWeight.Bold).fontColor(this.pal().text).fontFamily(this.font())
-        .width('100%').margin({ bottom: 16 })
+        .width('100%')
+      Text('默认只需服务器地址和公钥；保存后再测试连接或登录地址簿。')
+        .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
+        .width('100%').lineHeight(17).margin({ top: 5, bottom: 14 })
       Scroll() {
         Column() {
-          Button('粘贴从Rustdesk复制来的加密配置')
+          Button('粘贴 RustDesk 加密配置')
             .width('100%').height(36).fontSize(13).backgroundColor(this.pal().surface)
             .fontColor(this.accentColor).borderRadius(8).enabled(!this.importingRelayConfig)
             .margin({ bottom: 6 }).onClick((): void => { this.sheetContent = 9; })
-          Button('从文件导入配置（兼容）')
+          Button('从文件导入配置')
             .width('100%').height(32).fontSize(12).backgroundColor(this.pal().surface)
             .fontColor(this.pal().text2).borderRadius(8).enabled(!this.importingRelayConfig)
             .margin({ bottom: 10 }).onClick((): void => { void this.importRelayConfig(); })
-          this._f('ID服务器地址', 'rs.example.com', this.formIdServer, (v: string) => { this.formIdServer = v; })
-          this._f('ID服务器端口', '21116', this.formIdPort.toString(), (v: string) => { const n = parseInt(v); this.formIdPort = isNaN(n) ? 21116 : n; })
-          this._f('中继服务器地址', 'relay.example.com', this.formRelayServer, (v: string) => { this.formRelayServer = v; })
-          this._f('中继端口', '21117', this.formRelayPort.toString(), (v: string) => { const n = parseInt(v); this.formRelayPort = isNaN(n) ? 21117 : n; })
-          this._f('通用 API服务器(可选)', '', this.formApiServer, (v: string) => { this.formApiServer = v; })
-          Text('服务器 Key（可选）').fontSize(11).fontColor(this.pal().text2).fontFamily(this.font()).margin({ bottom: 4 })
-          Row() {
-            Button('服务器公钥').layoutWeight(1).height(32).fontSize(12).borderRadius(8)
-              .backgroundColor(this.formKeyMode === 'server_public_key' ? this.accentColor : this.pal().surface)
-              .fontColor(this.formKeyMode === 'server_public_key' ? Color.White : this.pal().text2)
-              .onClick((): void => { this.formKeyMode = 'server_public_key'; })
-            Button('自定义共享 Key').layoutWeight(1).height(32).fontSize(12).borderRadius(8).margin({ left: 8 })
-              .backgroundColor(this.formKeyMode === 'shared_access_key' ? this.accentColor : this.pal().surface)
-              .fontColor(this.formKeyMode === 'shared_access_key' ? Color.White : this.pal().text2)
-              .onClick((): void => { this.formKeyMode = 'shared_access_key'; })
-          }.width('100%').margin({ bottom: 6 })
+          this._f('服务器地址', 'hbbs.example.com', this.formIdServer,
+            (v: string): void => { this.formIdServer = v; })
           this._f(this.formKeyMode === 'shared_access_key' ? '共享 Key（原样发送）' : '服务器公钥',
             this.formKeyMode === 'shared_access_key' ? '与 hbbs/hbbr -k 完全一致' : 'Base64 32 字节 Ed25519 公钥',
             this.formKey, (v: string) => { this.formKey = v; }, this.formKeyMode === 'shared_access_key')
           Text(this.formKeyMode === 'shared_access_key' ?
             '不会删除空格或 =；此模式不能验证服务器身份。' :
-            '留空将使用 RustDesk 默认公钥。')
-            .fontSize(10).fontColor(this.pal().text3).fontFamily(this.font()).width('100%').margin({ top: -5, bottom: 8 })
-          if (this.formTestResult !== '') {
-            Text(this.formTestResult).fontSize(12).fontColor(this.formTestResult.startsWith('✓') ? this.accentColor : this.pal().danger).margin({ top: 4 })
+            '请填写服务商提供的服务器公钥；留空仅适用于使用 RustDesk 默认公钥的服务器。')
+            .fontSize(10).fontColor(this.pal().text3).fontFamily(this.font()).width('100%')
+            .lineHeight(15).margin({ top: -5, bottom: 8 })
+
+          Button(this.showRelayAdvanced ? '收起高级设置' : '展开高级设置')
+            .width('100%').height(34).fontSize(12).borderRadius(8)
+            .backgroundColor(this.pal().surface).fontColor(this.accentColor)
+            .onClick((): void => { this.showRelayAdvanced = !this.showRelayAdvanced; })
+
+          if (this.showRelayAdvanced) {
+            Column() {
+              Text('连接端点').fontSize(11).fontWeight(FontWeight.Medium)
+                .fontColor(this.pal().text2).width('100%').margin({ bottom: 8 })
+              this._f('ID 服务器端口', '21116', this.formIdPortText,
+                (v: string): void => { this.formIdPortText = v; })
+              this._f('独立中继服务器地址（留空则同上）', 'hbbr.example.com', this.formRelayServer,
+                (v: string): void => { this.formRelayServer = v; })
+              this._f('中继端口', '21117', this.formRelayPortText,
+                (v: string): void => { this.formRelayPortText = v; })
+              this._f('地址簿 / Server Pro API 地址（可选）', 'https://api.example.com',
+                this.formApiServer, (v: string): void => { this.formApiServer = v; })
+
+              Text('Key 类型').fontSize(11).fontColor(this.pal().text2).margin({ bottom: 4 })
+              Row() {
+                Button('服务器公钥').layoutWeight(1).height(32).fontSize(12).borderRadius(8)
+                  .backgroundColor(this.formKeyMode === 'server_public_key' ? this.accentColor : this.pal().surface)
+                  .fontColor(this.formKeyMode === 'server_public_key' ? Color.White : this.pal().text2)
+                  .onClick((): void => {
+                    this.formKeyMode = 'server_public_key';
+                    if (this.formControlPlaneProfile === 'oss_shared_access_key') {
+                      this.formControlPlaneProfile = 'oss_key_only';
+                    }
+                  })
+                Button('共享 -k').layoutWeight(1).height(32).fontSize(12).borderRadius(8).margin({ left: 8 })
+                  .backgroundColor(this.formKeyMode === 'shared_access_key' ? this.accentColor : this.pal().surface)
+                  .fontColor(this.formKeyMode === 'shared_access_key' ? Color.White : this.pal().text2)
+                  .onClick((): void => {
+                    this.formKeyMode = 'shared_access_key';
+                    if (this.formControlPlaneProfile === 'oss_key_only') {
+                      this.formControlPlaneProfile = 'oss_shared_access_key';
+                    }
+                  })
+              }.width('100%').margin({ bottom: 10 })
+
+              Text('控制面配置').fontSize(11).fontColor(this.pal().text2).margin({ bottom: 4 })
+              Row() {
+                Button('OSS / 仅 Key').layoutWeight(1).height(32).fontSize(11).borderRadius(8)
+                  .backgroundColor(this.formControlPlaneProfile === 'oss_key_only' ||
+                    this.formControlPlaneProfile === 'oss_shared_access_key' ?
+                    this.accentColor : this.pal().surface)
+                  .fontColor(this.formControlPlaneProfile === 'oss_key_only' ||
+                    this.formControlPlaneProfile === 'oss_shared_access_key' ?
+                    Color.White : this.pal().text2)
+                  .onClick((): void => { this.formControlPlaneProfile = 'oss_key_only'; this.relayKind = 'oss'; })
+                Button('仅地址簿 API').layoutWeight(1).height(32).fontSize(11).borderRadius(8).margin({ left: 6 })
+                  .backgroundColor(this.formControlPlaneProfile === 'third_party_api_only' ?
+                    this.accentColor : this.pal().surface)
+                  .fontColor(this.formControlPlaneProfile === 'third_party_api_only' ?
+                    Color.White : this.pal().text2)
+                  .onClick((): void => {
+                    this.formControlPlaneProfile = 'third_party_api_only'; this.relayKind = 'advanced';
+                  })
+              }.width('100%').margin({ bottom: 5 })
+              Row() {
+                Button('官方 Server Pro').layoutWeight(1).height(32).fontSize(11).borderRadius(8)
+                  .backgroundColor(this.formControlPlaneProfile === 'official_server_pro_token' ?
+                    this.accentColor : this.pal().surface)
+                  .fontColor(this.formControlPlaneProfile === 'official_server_pro_token' ?
+                    Color.White : this.pal().text2)
+                  .onClick((): void => {
+                    this.formControlPlaneProfile = 'official_server_pro_token'; this.relayKind = 'pro';
+                  })
+                Button('第三方控制面').layoutWeight(1).height(32).fontSize(11)
+                  .borderRadius(8).margin({ left: 6 })
+                  .backgroundColor(this.formControlPlaneProfile === 'third_party_control_plane' ?
+                    this.accentColor : this.pal().surface)
+                  .fontColor(this.formControlPlaneProfile === 'third_party_control_plane' ?
+                    Color.White : this.pal().text2)
+                  .onClick((): void => {
+                    this.formControlPlaneProfile = 'third_party_control_plane'; this.relayKind = 'advanced';
+                  })
+              }.width('100%').margin({ bottom: 4 })
+              Text('第三方控制面会在账号、API 地址、ID/中继端点和服务器 Key 与登录绑定一致时，复用同一 HTTP 登录令牌；不一致时拒绝发送令牌（fail-closed）。')
+                .fontSize(10).fontColor(this.pal().text3).width('100%').lineHeight(15)
+                .margin({ bottom: 5 })
+              Text(rustDeskControlPlaneProfileLabel(this.formControlPlaneProfile) + '：' +
+                rustDeskControlPlaneProfileDescription(this.formControlPlaneProfile))
+                .fontSize(10).fontColor(this.pal().text3).width('100%').lineHeight(15)
+            }.width('100%').padding({ top: 12 })
           }
-          Row() {
-            Button('测试连接').width('48%').height(36).fontSize(13).backgroundColor(this.pal().surface).fontColor(this.accentColor).borderRadius(8)
-              .onClick(() => { this.doTestConnection(); })
-            Button('保存').width('48%').height(36).fontSize(13).fontWeight(FontWeight.Medium)
-              .backgroundColor(this.accentColor).fontColor('#FFFFFF').borderRadius(8).margin({ left: 12 })
-              .onClick(() => { this.doSaveRelay(); })
-          }.width('100%').margin({ top: 12 })
+
+          if (this.formTestResult !== '') {
+            Text(this.formTestResult).fontSize(12)
+              .fontColor(this.formTestResult.startsWith('✓') ? this.pal().success : this.pal().danger)
+              .width('100%').margin({ top: 10 })
+          }
+          if (this.relaySaveError !== '') {
+            Column() {
+              Text(this.relaySaveError).fontSize(12).fontColor(this.pal().danger)
+                .fontFamily(this.font()).width('100%')
+              if (this.relaySaveRecovery === 'unlock') {
+                Text('请先在“数据安全”中解锁；返回后草稿仍会保留。')
+                  .fontSize(11).fontColor(this.pal().text2).fontFamily(this.font())
+                  .width('100%').margin({ top: 4 })
+              } else if (this.relaySaveRecovery === 'wait_for_restore') {
+                Text('等待恢复完成后点击重试；无需重新填写。')
+                  .fontSize(11).fontColor(this.pal().text2).fontFamily(this.font())
+                  .width('100%').margin({ top: 4 })
+              } else if (this.relaySaveRecovery === 'review_account') {
+                Text('该记录属于另一账号；请切回原账号，或关闭后重新添加。')
+                  .fontSize(11).fontColor(this.pal().text2).fontFamily(this.font())
+                  .width('100%').margin({ top: 4 })
+              }
+              if (this.relaySaveDiagnostic !== '') {
+                Text(this.relaySaveDiagnostic).fontSize(10).fontColor(this.pal().text3)
+                  .fontFamily(this.font()).width('100%').margin({ top: 5 })
+                  .copyOption(CopyOptions.InApp)
+              }
+            }.width('100%').padding(10).borderRadius(8)
+              .backgroundColor(this.pal().danger + '12').margin({ top: 6 })
+          }
+          if (this.relaySaving) {
+            Text('保存阶段：' + this.relaySaveStage)
+              .fontSize(11).fontColor(this.accentColor)
+              .fontFamily(this.font()).width('100%')
+              .margin({ top: 8 })
+          }
+          Column().height(18)
         }.width('100%')
-      }.constraintSize({ maxHeight: 380 }).scrollBar(BarState.Auto).edgeEffect(EdgeEffect.Spring)
-      Blank().height(24)
-    }.width('100%')
-    .padding({ left: 24, right: 24, top: 24, bottom: 40 })
+      }.layoutWeight(1).scrollBar(BarState.Auto).edgeEffect(EdgeEffect.Spring)
+
+      Row() {
+        Button('取消').layoutWeight(1).height(44).fontSize(14).borderRadius(11)
+          .backgroundColor(this.pal().surface).fontColor(this.pal().text2)
+          .enabled(!this.relaySaving).onClick((): void => { this.closeSheet(); })
+        Button(this.relaySaving ? '保存中…' :
+          (this.relaySaveError === '' ? '保存到本机' : '重试保存'))
+          .layoutWeight(1).height(44).fontSize(14).fontWeight(FontWeight.Medium)
+          .backgroundColor(this.relaySaving ? this.pal().text3 : this.accentColor)
+          .fontColor(Color.White).borderRadius(11).margin({ left: 10 })
+          .enabled(!this.relaySaving).onClick((): void => { this.doSaveRelay(); })
+      }.width('100%').margin({ top: 10 })
+    }.width('100%').height('100%')
+    .padding({ left: 24, right: 24, top: 24, bottom: this.breakpoint === 'sm' ? 24 : 30 })
     .borderRadius(this.breakpoint === 'sm' ? 0 : 20)
     .backgroundColor(this.pal().sheetBg)
     .backgroundBlurStyle(BlurStyle.Regular)
@@ -1560,38 +2067,50 @@ export struct RustDeskRelayPage {
       : { width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
   }
 
-  @Builder relayProtocolChoiceSheet() {
-    ResourceFabPicker({
-      kind: 'gateway',
-      onSelect: (option: string): void => {
-        if (option === 'rustdesk') { this.sheetContent = 6; }
-        else { this.sheetContent = 7; }
-      },
-      onClose: (): void => { this.closeSheet(); }
-    })
-  }
-
-  @Builder relayTypeChoiceSheet() {
-    ResourceFabPicker({
-      kind: 'relay',
-      onSelect: (option: string): void => { this.relayKind = option; this.sheetContent = 1; },
-      onClose: (): void => { this.closeSheet(); }
-    })
-  }
-
   @Builder relaySavedSheet() {
     Column() {
       SymbolGlyph($r('sys.symbol.checkmark_circle_fill')).fontSize(42).fontColor([this.pal().success])
-      Text('服务器已保存').fontSize(20).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
+      Text('已保存到本机').fontSize(20).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
         .fontFamily(this.font()).margin({ top: 12 })
-      Text('可以继续添加 Server Pro 账户并同步地址簿，也可以稍后从中继卡片添加。')
+      Text('现在可以完成，也可以继续登录 Server Pro 或兼容地址簿；连接测试可从中继卡片发起。')
         .fontSize(12).fontColor(this.pal().text3).fontFamily(this.font()).textAlign(TextAlign.Center)
         .lineHeight(19).margin({ top: 8, bottom: 18 })
+      Column() {
+        Text(rustDeskRelayCloudSyncMessage(
+          this.relayCloudSyncState))
+          .fontSize(12)
+          .fontColor(this.relayCloudSyncState === 'failed'
+            ? this.pal().danger
+            : (this.relayCloudSyncState === 'completed'
+              ? this.pal().success : this.pal().text2))
+          .fontFamily(this.font()).width('100%')
+        if (this.relaySaveDiagnostic !== '') {
+          Text(this.relaySaveDiagnostic)
+            .fontSize(10).fontColor(this.pal().text3)
+            .fontFamily(this.font()).width('100%')
+            .margin({ top: 5 })
+            .copyOption(CopyOptions.InApp)
+        }
+        if (this.relayCloudSyncState === 'failed' ||
+          this.relayCloudSyncState === 'pending') {
+          Button(this.relayCloudSyncState === 'pending'
+            ? '再次请求云端上传' : '重试云端上传')
+            .width('100%').height(38).fontSize(12)
+            .borderRadius(9).margin({ top: 10 })
+            .backgroundColor(this.pal().surface)
+            .fontColor(this.accentColor)
+            .onClick((): void => {
+              void this.retryRelayCloudSync();
+            })
+        }
+      }.width('100%').padding(10).borderRadius(9)
+        .backgroundColor(this.pal().surface)
+        .margin({ bottom: 14 })
       Row() {
-        Button('保存并完成').layoutWeight(1).height(42).borderRadius(11)
+        Button('完成').layoutWeight(1).height(42).borderRadius(11)
           .backgroundColor(this.pal().surface).fontColor(this.pal().text2)
           .onClick((): void => { this.closeSheet(); })
-        Button('下一步：Pro 账户').layoutWeight(1).height(42).borderRadius(11).margin({ left: 10 })
+        Button('登录并同步地址簿').layoutWeight(1).height(42).borderRadius(11).margin({ left: 10 })
           .backgroundColor(this.accentColor).fontColor(Color.White).onClick((): void => {
             const relay: RustDeskRelayConfig | undefined = this.srv.getAllRelays().find(
               (item: RustDeskRelayConfig): boolean => item.id === this.savedRelayId);
@@ -1600,36 +2119,6 @@ export struct RustDeskRelayPage {
       }.width('100%')
     }.width('100%').padding({ left: 24, right: 24, top: 30, bottom: 40 })
       .borderRadius(this.breakpoint === 'sm' ? 0 : 20).backgroundColor(this.pal().sheetBg)
-  }
-
-  @Builder vncRelayEditSheet() {
-    Column() {
-      Text(this.editingVncRelayId.length > 0 ? '编辑 VNC 中继' : '添加 VNC 中继')
-        .fontSize(19).fontWeight(FontWeight.Bold).fontColor(this.pal().text).fontFamily(this.font())
-        .width('100%').margin({ bottom: 8 })
-      Text('配置 UltraVNC Repeater。当前先保存服务器信息，待 VNC 连接引擎启用后用于建立会话。')
-        .fontSize(12).fontColor(this.pal().text3).fontFamily(this.font()).lineHeight(18)
-        .width('100%').margin({ bottom: 14 })
-      this._f('配置名称（可选）', '办公室 VNC 中继', this.formVncName,
-        (v: string): void => { this.formVncName = v; })
-      this._f('Repeater 地址', 'vnc.example.com', this.formVncHost,
-        (v: string): void => { this.formVncHost = v; })
-      this._f('Repeater 端口', '5901', this.formVncPort.toString(), (v: string): void => {
-        const port = parseInt(v);
-        this.formVncPort = isNaN(port) ? 5901 : port;
-      })
-      this._f('目标 ID（可选）', '123456', this.formVncTargetId,
-        (v: string): void => { this.formVncTargetId = v; })
-      Button('保存 VNC 中继').width('100%').height(42).fontSize(14).fontWeight(FontWeight.Medium)
-        .backgroundColor(this.accentColor).fontColor(Color.White).borderRadius(10).margin({ top: 6 })
-        .onClick((): void => { this.doSaveVncRelay(); })
-      Blank().height(24)
-    }.width('100%').padding({ left: 24, right: 24, top: 24, bottom: 40 })
-      .borderRadius(this.breakpoint === 'sm' ? 0 : 20).backgroundColor(this.pal().sheetBg)
-      .backgroundBlurStyle(BlurStyle.Regular)
-      .border(this.breakpoint === 'sm'
-        ? { width: 0, color: Color.Transparent, style: BorderStyle.Solid }
-        : { width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
   }
 
   @Builder proAccountEditSheet() {
@@ -1680,14 +2169,15 @@ export struct RustDeskRelayPage {
       this.relaySavedSheet()
     } else if (this.sheetContent === 5) {
       this.relayProtocolChoiceSheet()
-    } else if (this.sheetContent === 6) {
-      this.relayTypeChoiceSheet()
-    } else if (this.sheetContent === 7) {
-      this.vncRelayEditSheet()
-    } else if (this.sheetContent === 8) {
-      ModernRelayAddFlow({
+    } else if (this.sheetContent === 10) {
+      VncGatewayAddFlow({
+        initialGateway: this.editingVncGateway,
+        editingId: this.editingVncGateway === null ? '' : this.editingVncGateway.id,
         onClose: (): void => { this.closeSheet(); },
-        onSaved: (_resourceId: string): void => { this.load(); this.loadVncRelays(); }
+        onSave: (values: VncGatewayValues, id: string, accessToken: string,
+          plainStorageConfirmed: boolean): void => {
+          this.saveVncGateway(values, id, accessToken, plainStorageConfirmed);
+        }
       })
     } else if (this.sheetContent === 9) {
       RustDeskRelayConfigPasteSheet({

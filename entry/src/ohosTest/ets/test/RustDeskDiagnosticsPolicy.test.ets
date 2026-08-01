@@ -10,6 +10,7 @@ import {
   rustDeskDiagnosticsStreamState,
   rustDeskCodecLabel,
   shouldEnableRustDeskPro,
+  shouldShowSessionDiagnostics,
   shouldShowRustDeskDiagnostics
 } from '../../../main/ets/services/RustDeskDiagnosticsPolicy';
 
@@ -20,6 +21,14 @@ export default function rustDeskDiagnosticsPolicyTest(): void {
       expect(shouldShowRustDeskDiagnostics(true, false, 'rustdesk', 1)).assertEqual(false);
       expect(shouldShowRustDeskDiagnostics(true, true, 'rdp', 1)).assertEqual(false);
       expect(shouldShowRustDeskDiagnostics(true, true, 'rustdesk', 1)).assertEqual(true);
+    });
+
+    it('generic_session_diagnostics_accepts_vnc_without_accepting_rdp', 0, (): void => {
+      expect(shouldShowSessionDiagnostics(false, true, 'vnc', 1)).assertEqual(false);
+      expect(shouldShowSessionDiagnostics(true, false, 'vnc', 1)).assertEqual(false);
+      expect(shouldShowSessionDiagnostics(true, true, 'rdp', 1)).assertEqual(false);
+      expect(shouldShowSessionDiagnostics(true, true, 'vnc', 1)).assertEqual(true);
+      expect(shouldShowSessionDiagnostics(true, true, 'vnc', 0)).assertEqual(false);
     });
 
     it('pro_is_active_only_with_basic_diagnostics', 0, (): void => {

@@ -1,0 +1,181 @@
+import { describe, it, expect } from '@ohos/hypium';
+import { RustDeskRelayConfig } from '../main/ets/model/RustDeskRelayConfig';
+import { DataMutationResult } from '../main/ets/services/DataMutationResult';
+import {
+  RustDeskRelaySaveResult,
+  relayKeyModeSemanticallyMatches,
+  rustDeskRelayCreatePayloadMatches,
+  rustDeskRelayIdFingerprint,
+  rustDeskRelayReadbackMatches,
+  rustDeskRelaySaveRecoveryForCode
+} from '../main/ets/services/RustDeskRelaySavePolicy';
+import {
+  RustDeskRelaySetupCoordinator,
+  RustDeskRelaySetupDraft
+} from '../main/ets/services/RustDeskRelaySetupCoordinator';
+
+function relay(id: string): RustDeskRelayConfig {
+  const value = new RustDeskRelayConfig();
+  value.id = id;
+  value.userId = 'owner-local';
+  value.idServer = 'id.example.invalid';
+  value.idServerPort = 21116;
+  value.relayServer = 'relay.example.invalid';
+  value.relayPort = 21117;
+  value.key = 'public-key';
+  value.keyMode = 'server_public_key';
+  value.updatedAt = 1234;
+  return value;
+}
+
+export default function rustDeskRelaySavePolicyTest(): void {
+  describe('RustDeskRelaySavePolicy', (): void => {
+    it('maps_gate_failures_to_specific_recovery_without_losing_the_stage', 0, (): void => {
+      const mutation = DataMutationResult.failure(
+        'relay-1', 'unlock_required', 'locked', 'waiting_gate');
+      const result = RustDeskRelaySaveResult.fromMutation(
+        'attempt-1', 'relay-1', mutation);
+      expect(result.ok).assertFalse();
+      expect(result.stage).assertEqual('waiting_gate');
+      expect(result.code).assertEqual('unlock_required');
+      expect(result.recovery).assertEqual('unlock');
+      expect(result.localCommitted).assertFalse();
+    });
+
+    it('marks_post_commit_readback_failure_without_claiming_rollback', 0, (): void => {
+      const mutation = DataMutationResult.failure(
+        'relay-1', 'readback_mismatch', '', 'verifying', true);
+      const result = RustDeskRelaySaveResult.fromMutation(
+        'attempt-2', 'relay-1', mutation);
+      expect(result.ok).assertFalse();
+      expect(result.localCommitted).assertTrue();
+      expect(result.recovery).assertEqual('reload');
+      expect(result.message.indexOf('校验不一致') >= 0).assertTrue();
+    });
+
+    it('compares_secret_bearing_fields_in_memory_without_serializing_them', 0, (): void => {
+      const expected = relay('relay-1');
+      const actual = RustDeskRelayConfig.fromJSON(expected.toJSON());
+      expect(rustDeskRelayReadbackMatches(expected, actual)).assertTrue();
+      actual.key = 'different';
+      expect(rustDeskRelayReadbackMatches(expected, actual)).assertFalse();
+    });
+
+    it('accepts_public_key_readback_when_database_round_trip_loses_keymode', 0, (): void => {
+      const expected = relay('relay-pub');
+      expected.key = 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=';
+      expected.keyMode = 'server_public_key';
+      const actual = RustDeskRelayConfig.fromJSON(expected.toJSON());
+      // RDB 没有 keymode 列：公共密钥读回为 auto（密钥值不变）。
+      actual.keyMode = 'auto';
+      expect(rustDeskRelayReadbackMatches(expected, actual)).assertTrue();
+      expect(relayKeyModeSemanticallyMatches(
+        'server_public_key', 'auto', expected.key)).assertTrue();
+    });
+
+    it('rejects_shared_value_under_public_key_semantics', 0, (): void => {
+      const expected = relay('relay-mix');
+      expected.key = 'shared-key-value';
+      expected.keyMode = 'server_public_key';
+      const actual = RustDeskRelayConfig.fromJSON(expected.toJSON());
+      actual.keyMode = 'auto';
+      expect(rustDeskRelayReadbackMatches(expected, actual)).assertFalse();
+      expect(relayKeyModeSemanticallyMatches(
+        'server_public_key', 'auto', expected.key)).assertFalse();
+    });
+
+    it('accepts_shared_key_readback_when_database_round_trip_loses_keymode', 0, (): void => {
+      const expected = relay('relay-shared');
+      expected.key = 'shared-key-value';
+      expected.keyMode = 'shared_access_key';
+      const actual = RustDeskRelayConfig.fromJSON(expected.toJSON());
+      actual.keyMode = 'auto';
+      expect(rustDeskRelayReadbackMatches(expected, actual)).assertTrue();
+      expect(relayKeyModeSemanticallyMatches(
+        'shared_access_key', 'auto', expected.key)).assertTrue();
+    });
+
+    it('uses_an_irreversible_short_relay_identifier_for_diagnostics', 0, (): void => {
+      const fingerprint = rustDeskRelayIdFingerprint('relay-private-id');
+      expect(fingerprint.length).assertEqual(12);
+      expect(fingerprint.indexOf('relay-private-id')).assertEqual(-1);
+      expect(rustDeskRelayIdFingerprint('relay-private-id')).assertEqual(fingerprint);
+    });
+
+    it('keeps_restore_and_owner_recovery_distinct', 0, (): void => {
+      expect(rustDeskRelaySaveRecoveryForCode('restore_in_progress'))
+        .assertEqual('wait_for_restore');
+      expect(rustDeskRelaySaveRecoveryForCode('invalid_data'))
+        .assertEqual('review_account');
+    });
+
+    it('uses_one_setup_validator_for_every_entry_point', 0, (): void => {
+      const draft = new RustDeskRelaySetupDraft();
+      draft.relayId = 'relay-validation';
+      draft.idServer = '';
+      const result = RustDeskRelaySetupCoordinator.getInstance().save(
+        draft, null, 'attempt-validation');
+      expect(result.ok).assertFalse();
+      expect(result.stage).assertEqual('validating');
+      expect(result.recovery).assertEqual('review_fields');
+      expect(result.message).assertEqual('ID 服务器地址不能为空');
+    });
+
+    it('never_turns_a_missing_edit_target_into_a_create',
+      0, (): void => {
+        const draft = new RustDeskRelaySetupDraft();
+        draft.operation = 'update';
+        draft.editingRelayId = 'relay-deleted';
+        draft.relayId = 'relay-deleted';
+        draft.idServer = 'rd.example.test';
+        const result =
+          RustDeskRelaySetupCoordinator.getInstance()
+            .save(
+              draft, null, 'attempt-missing-edit');
+        expect(result.ok).assertFalse();
+        expect(result.code).assertEqual('not_found');
+      });
+
+    it('distinguishes_cloud_pending_completed_failed_and_not_configured',
+      0, (): void => {
+        const local = RustDeskRelaySaveResult.fromMutation(
+          'attempt-cloud', 'relay-cloud',
+          DataMutationResult.success('relay-cloud'));
+        expect(local.cloudSyncState)
+          .assertEqual('not_configured');
+        local.applyCloudSyncState('pending');
+        expect(local.cloudSyncState).assertEqual('pending');
+        local.applyCloudSyncState('completed');
+        expect(local.cloudSyncState).assertEqual('completed');
+        local.applyCloudSyncState(
+          'failed', 'network');
+        expect(local.cloudSyncState).assertEqual('failed');
+        expect(local.cloudSyncFailureKind)
+          .assertEqual('network');
+      });
+
+    it('accepts_duplicate_create_retries_only_for_the_same_payload',
+      0, (): void => {
+        const first = relay('relay-stable');
+        const retry =
+          RustDeskRelayConfig.fromJSON(first.toJSON());
+        expect(rustDeskRelayCreatePayloadMatches(
+          first, retry)).assertTrue();
+        retry.key = 'different-key';
+        expect(rustDeskRelayCreatePayloadMatches(
+          first, retry)).assertFalse();
+      });
+
+    it('diagnostic_summary_contains_only_safe_identifiers_and_state', 0, (): void => {
+      const mutation = DataMutationResult.failure(
+        'relay-secret-id', 'not_ready', 'database', 'waiting_gate');
+      const result = RustDeskRelaySaveResult.fromMutation(
+        'attempt-safe', 'relay-secret-id', mutation);
+      const summary = result.diagnosticSummary();
+      expect(summary.indexOf('relay-secret-id')).assertEqual(-1);
+      expect(summary.indexOf('database')).assertEqual(-1);
+      expect(summary.indexOf('attempt-safe') >= 0).assertTrue();
+      expect(summary.indexOf('code=not_ready') >= 0).assertTrue();
+    });
+  });
+}

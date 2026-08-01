@@ -1,4 +1,7 @@
 import { buffer, util } from '@kit.ArkTS';
+import {
+  RustDeskControlPlaneCapabilityProof
+} from './RustDeskControlPlaneCapabilityModels';
 
 /**
  * RustDesk Server Pro 账号与地址簿模型。
@@ -111,10 +114,42 @@ export interface RustDeskProAccountState {
   displayName: string
   userId: string
   accessToken: string
+  accessTokenFingerprint: string
+  tokenGeneration: number
   deviceId: string
   deviceUuid: string
   loginStatus: string
   lastLoginAt: number
   lastSyncAt: number
   lastSyncError: string
+  controlPlaneCapabilityProof?: RustDeskControlPlaneCapabilityProof
+}
+
+/** Stable non-secret identity for one access-token generation. */
+export function rustDeskProAccessTokenFingerprint(token: string): string {
+  let hash: number = 2166136261;
+  for (let i = 0; i < token.length; i++) {
+    hash = (hash ^ token.charCodeAt(i)) >>> 0;
+    hash = Math.imul(hash, 16777619) >>> 0;
+  }
+  return hash.toString(16).padStart(8, '0');
+}
+
+export function rustDeskProTokenGeneration(account: RustDeskProAccountState): number {
+  return Number.isFinite(account.tokenGeneration) && account.tokenGeneration > 0
+    ? Math.floor(account.tokenGeneration) : 1;
+}
+
+/**
+ * A late native failure may arrive after a successful re-login.  Only clear
+ * the token generation that produced the failed connection.
+ */
+export function rustDeskProTokenMatchesConnection(
+  expectedFingerprint: string,
+  expectedGeneration: number,
+  currentFingerprint: string,
+  currentGeneration: number
+): boolean {
+  return (expectedFingerprint === '' || currentFingerprint === expectedFingerprint) &&
+    (expectedGeneration <= 0 || currentGeneration === expectedGeneration);
 }

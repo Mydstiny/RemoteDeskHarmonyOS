@@ -21,6 +21,8 @@ import remoteImeCommandQueueTest from './RemoteImeCommandQueue.test';
 import remoteImmersivePolicyTest from './RemoteImmersivePolicy.test';
 import rdpCertificateProbeLifecyclePolicyTest from './RdpCertificateProbeLifecyclePolicy.test';
 import rustDeskProConnectionPreflightPolicyTest from './RustDeskProConnectionPreflightPolicy.test';
+import rustDeskProCredentialPolicyTest from './RustDeskProCredentialPolicy.test';
+import remoteHostDataBoundaryPolicyTest from './RemoteHostDataBoundaryPolicy.test';
 import hostWorkspacePolicyTest from './HostWorkspacePolicy.test';
 import guideContentRegistryTest from './GuideContentRegistry.test';
 import sshKeyImportServiceTest from './SshKeyImportService.test';
@@ -35,6 +37,10 @@ import touchpadPointerCurvePolicyTest from './TouchpadPointerCurvePolicy.test';
 import remoteSurfaceTransformPolicyTest from './RemoteSurfaceTransformPolicy.test';
 import remoteCursorStylePolicyTest from './RemoteCursorStylePolicy.test';
 import remoteHostSheetLifecyclePolicyTest from './RemoteHostSheetLifecyclePolicy.test';
+import vncSessionGeometryPolicyTest from './VncSessionGeometryPolicy.test';
+import remoteFloatingPanelPlacementPolicyTest from './RemoteFloatingPanelPlacementPolicy.test';
+import vncSessionSettingsPolicyTest from './VncSessionSettingsPolicy.test';
+import remoteWheelPolicyTest from './RemoteWheelPolicy.test';
 
 export default function testsuite() {
   abilityTest();
@@ -60,6 +66,8 @@ export default function testsuite() {
   remoteImmersivePolicyTest();
   rdpCertificateProbeLifecyclePolicyTest();
   rustDeskProConnectionPreflightPolicyTest();
+  rustDeskProCredentialPolicyTest();
+  remoteHostDataBoundaryPolicyTest();
   hostWorkspacePolicyTest();
   guideContentRegistryTest();
   sshKeyImportServiceTest();
@@ -74,4 +82,8 @@ export default function testsuite() {
   remoteSurfaceTransformPolicyTest();
   remoteCursorStylePolicyTest();
   remoteHostSheetLifecyclePolicyTest();
+  vncSessionGeometryPolicyTest();
+  remoteFloatingPanelPlacementPolicyTest();
+  vncSessionSettingsPolicyTest();
+  remoteWheelPolicyTest();
 }

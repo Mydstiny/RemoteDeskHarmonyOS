@@ -1,0 +1,326 @@
+#include "test_runner.h"
+#include "rustdesk/rustdesk_display_control_plane.h"
+#include "rustdesk/rustdesk_display_switch_gate.h"
+
+#include <chrono>
+#include <condition_variable>
+#include <mutex>
+#include <thread>
+
+RDP_TEST_CASE(rustdesk_display_switch_requires_ack_then_target_keyframe) {
+    RustDeskDisplaySwitchGate gate;
+    const auto initial = gate.observeDisplay(0);
+    RDP_ASSERT(initial.publishDisplay);
+    RDP_ASSERT_EQ(initial.display, 0);
+
+    const uint64_t generation = gate.begin(1);
+    RDP_ASSERT_EQ(generation, 1);
+    RDP_ASSERT(gate.snapshot().inputBlocked);
+
+    RDP_ASSERT(!gate.observeDisplay(0).publishDisplay);
+    RDP_ASSERT(!gate.observeFrame(1, true).acceptFrame);
+    RDP_ASSERT(!gate.observeDisplay(1).publishDisplay);
+    RDP_ASSERT(!gate.observeFrame(1, false).acceptFrame);
+
+    const auto committed = gate.observeFrame(1, true);
+    RDP_ASSERT(committed.acceptFrame);
+    RDP_ASSERT(committed.publishDisplay);
+    RDP_ASSERT_EQ(committed.display, 1);
+    RDP_ASSERT_EQ(gate.snapshot().readyGeneration, generation);
+    RDP_ASSERT(!gate.snapshot().inputBlocked);
+}
+
+RDP_TEST_CASE(rustdesk_display_switch_latest_generation_wins) {
+    RustDeskDisplaySwitchGate gate;
+    gate.observeDisplay(0);
+    const uint64_t first = gate.begin(1);
+    const uint64_t latest = gate.begin(2);
+    RDP_ASSERT(latest > first);
+
+    RDP_ASSERT(!gate.observeDisplay(1).publishDisplay);
+    RDP_ASSERT(!gate.observeFrame(1, true).acceptFrame);
+    RDP_ASSERT(!gate.observeFrame(2, true).acceptFrame);
+    RDP_ASSERT(!gate.observeDisplay(2).publishDisplay);
+
+    const auto committed = gate.observeFrame(2, true);
+    RDP_ASSERT(committed.acceptFrame);
+    RDP_ASSERT_EQ(gate.snapshot().readyGeneration, latest);
+    RDP_ASSERT_EQ(gate.snapshot().confirmedDisplay, 2);
+
+    RDP_ASSERT(gate.observeFrame(2, false).acceptFrame);
+}
+
+RDP_TEST_CASE(rustdesk_display_switch_accepts_authoritative_post_commit_fallback) {
+    RustDeskDisplaySwitchGate gate;
+    gate.observeDisplay(0);
+    gate.begin(2);
+    gate.observeDisplay(2);
+    RDP_ASSERT(gate.observeFrame(2, true).acceptFrame);
+
+    const auto fallback = gate.observeDisplay(1);
+    RDP_ASSERT(fallback.publishDisplay);
+    RDP_ASSERT_EQ(fallback.display, 1);
+    RDP_ASSERT(gate.observeFrame(1, true).acceptFrame);
+    RDP_ASSERT(!gate.observeFrame(2, true).acceptFrame);
+}
+
+RDP_TEST_CASE(rustdesk_display_switch_can_return_to_the_confirmed_display) {
+    RustDeskDisplaySwitchGate gate;
+    gate.observeDisplay(0);
+    gate.begin(1);
+    const uint64_t returnGeneration = gate.begin(0);
+
+    gate.observeDisplay(0);
+    const auto committed = gate.observeFrame(0, true);
+    RDP_ASSERT(committed.acceptFrame);
+    RDP_ASSERT_EQ(gate.snapshot().readyGeneration, returnGeneration);
+    RDP_ASSERT_EQ(gate.snapshot().confirmedDisplay, 0);
+}
+
+RDP_TEST_CASE(rustdesk_display_switch_dispatch_finishes_before_next_generation_begins) {
+    RustDeskDisplayControlPlane control;
+    int fakeHandle = 7;
+    RDP_ASSERT(control.attachHandle(&fakeHandle));
+    control.dispatchDisplay(0, []() { return true; }, [](const auto&) {});
+    const auto first = control.beginDisplaySwitch(
+        1,
+        []() { return true; },
+        [](void*, int) { return true; });
+    RDP_ASSERT(first.accepted);
+    control.dispatchDisplay(1, []() { return true; }, [](const auto&) {});
+
+    std::mutex stateMutex;
+    std::condition_variable stateChanged;
+    bool dispatchEntered = false;
+    bool releaseDispatch = false;
+    bool beginStarted = false;
+    bool beginCompleted = false;
+    uint64_t latestGeneration = 0;
+
+    std::thread frameThread([&]() {
+        const bool accepted = control.dispatchFrame(
+            1,
+            true,
+            []() { return true; },
+            [&](const auto&) {
+                {
+                    std::lock_guard<std::mutex> lock(stateMutex);
+                    dispatchEntered = true;
+                }
+                stateChanged.notify_all();
+
+                std::unique_lock<std::mutex> lock(stateMutex);
+                RDP_ASSERT(stateChanged.wait_for(
+                    lock, std::chrono::seconds(1), [&]() {
+                        return releaseDispatch;
+                    }));
+            });
+        RDP_ASSERT(accepted);
+    });
+
+    {
+        std::unique_lock<std::mutex> lock(stateMutex);
+        RDP_ASSERT(stateChanged.wait_for(lock, std::chrono::seconds(1), [&]() {
+            return dispatchEntered;
+        }));
+    }
+
+    std::thread beginThread([&]() {
+        {
+            std::lock_guard<std::mutex> lock(stateMutex);
+            beginStarted = true;
+        }
+        stateChanged.notify_all();
+        const auto request = control.beginDisplaySwitch(
+            2,
+            []() { return true; },
+            [](void*, int) { return true; });
+        RDP_ASSERT(request.accepted);
+        latestGeneration = request.generation;
+        {
+            std::lock_guard<std::mutex> lock(stateMutex);
+            beginCompleted = true;
+        }
+        stateChanged.notify_all();
+    });
+
+    {
+        std::unique_lock<std::mutex> lock(stateMutex);
+        RDP_ASSERT(stateChanged.wait_for(lock, std::chrono::seconds(1), [&]() {
+            return beginStarted;
+        }));
+        RDP_ASSERT(!stateChanged.wait_for(lock, std::chrono::milliseconds(50), [&]() {
+            return beginCompleted;
+        }));
+        releaseDispatch = true;
+    }
+    stateChanged.notify_all();
+    frameThread.join();
+    beginThread.join();
+
+    RDP_ASSERT(beginCompleted);
+    RDP_ASSERT(latestGeneration > 1);
+    const auto snapshot = control.snapshot();
+    RDP_ASSERT_EQ(snapshot.generation, latestGeneration);
+    RDP_ASSERT_EQ(snapshot.pendingDisplay, 2);
+    RDP_ASSERT(snapshot.inputBlocked);
+}
+
+RDP_TEST_CASE(rustdesk_display_capability_query_pins_handle_until_snapshot_completes) {
+    RustDeskDisplayControlPlane control;
+    int fakeHandle = 11;
+    RDP_ASSERT(control.attachHandle(&fakeHandle));
+    const auto pendingRequest = control.beginDisplaySwitch(
+        4,
+        []() { return true; },
+        [](void*, int) { return true; });
+    RDP_ASSERT(pendingRequest.accepted);
+
+    std::mutex stateMutex;
+    std::condition_variable stateChanged;
+    bool queryEntered = false;
+    bool releaseQuery = false;
+    bool detachStarted = false;
+    bool detachCompleted = false;
+    void* detached = nullptr;
+    RustDeskDisplaySwitchGateSnapshot snapshot;
+
+    std::thread queryThread([&]() {
+        const bool queried = control.queryDisplayState(
+            []() { return true; },
+            [&](void* handle) {
+                RDP_ASSERT_EQ(handle, static_cast<void*>(&fakeHandle));
+                {
+                    std::lock_guard<std::mutex> lock(stateMutex);
+                    queryEntered = true;
+                }
+                stateChanged.notify_all();
+                std::unique_lock<std::mutex> lock(stateMutex);
+                RDP_ASSERT(stateChanged.wait_for(
+                    lock, std::chrono::seconds(1), [&]() {
+                        return releaseQuery;
+                    }));
+                return true;
+            },
+            snapshot);
+        RDP_ASSERT(queried);
+    });
+
+    {
+        std::unique_lock<std::mutex> lock(stateMutex);
+        RDP_ASSERT(stateChanged.wait_for(lock, std::chrono::seconds(1), [&]() {
+            return queryEntered;
+        }));
+    }
+    std::thread detachThread([&]() {
+        {
+            std::lock_guard<std::mutex> lock(stateMutex);
+            detachStarted = true;
+        }
+        stateChanged.notify_all();
+        detached = control.detachHandle();
+        {
+            std::lock_guard<std::mutex> lock(stateMutex);
+            detachCompleted = true;
+        }
+        stateChanged.notify_all();
+    });
+    {
+        std::unique_lock<std::mutex> lock(stateMutex);
+        RDP_ASSERT(stateChanged.wait_for(lock, std::chrono::seconds(1), [&]() {
+            return detachStarted;
+        }));
+        RDP_ASSERT(!stateChanged.wait_for(
+            lock, std::chrono::milliseconds(50), [&]() {
+                return detachCompleted;
+            }));
+        releaseQuery = true;
+    }
+    stateChanged.notify_all();
+    queryThread.join();
+    detachThread.join();
+
+    RDP_ASSERT_EQ(detached, static_cast<void*>(&fakeHandle));
+    RDP_ASSERT(detachCompleted);
+    RDP_ASSERT(!control.hasHandle());
+    RDP_ASSERT_EQ(snapshot.generation, pendingRequest.generation);
+    RDP_ASSERT_EQ(snapshot.readyGeneration, 0);
+    RDP_ASSERT_EQ(snapshot.pendingDisplay, 4);
+    RDP_ASSERT(snapshot.inputBlocked);
+}
+
+RDP_TEST_CASE(rustdesk_display_switch_ffi_call_pins_handle_until_result) {
+    RustDeskDisplayControlPlane control;
+    int fakeHandle = 13;
+    RDP_ASSERT(control.attachHandle(&fakeHandle));
+
+    std::mutex stateMutex;
+    std::condition_variable stateChanged;
+    bool switchEntered = false;
+    bool releaseSwitch = false;
+    bool detachStarted = false;
+    bool detachCompleted = false;
+    RustDeskDisplayControlRequest request;
+    void* detached = nullptr;
+
+    std::thread switchThread([&]() {
+        request = control.beginDisplaySwitch(
+            3,
+            []() { return true; },
+            [&](void* handle, int display) {
+                RDP_ASSERT_EQ(handle, static_cast<void*>(&fakeHandle));
+                RDP_ASSERT_EQ(display, 3);
+                {
+                    std::lock_guard<std::mutex> lock(stateMutex);
+                    switchEntered = true;
+                }
+                stateChanged.notify_all();
+                std::unique_lock<std::mutex> lock(stateMutex);
+                RDP_ASSERT(stateChanged.wait_for(
+                    lock, std::chrono::seconds(1), [&]() {
+                        return releaseSwitch;
+                    }));
+                return true;
+            });
+    });
+
+    {
+        std::unique_lock<std::mutex> lock(stateMutex);
+        RDP_ASSERT(stateChanged.wait_for(lock, std::chrono::seconds(1), [&]() {
+            return switchEntered;
+        }));
+    }
+    std::thread detachThread([&]() {
+        {
+            std::lock_guard<std::mutex> lock(stateMutex);
+            detachStarted = true;
+        }
+        stateChanged.notify_all();
+        detached = control.detachHandle();
+        {
+            std::lock_guard<std::mutex> lock(stateMutex);
+            detachCompleted = true;
+        }
+        stateChanged.notify_all();
+    });
+    {
+        std::unique_lock<std::mutex> lock(stateMutex);
+        RDP_ASSERT(stateChanged.wait_for(lock, std::chrono::seconds(1), [&]() {
+            return detachStarted;
+        }));
+        RDP_ASSERT(!stateChanged.wait_for(
+            lock, std::chrono::milliseconds(50), [&]() {
+                return detachCompleted;
+            }));
+        releaseSwitch = true;
+    }
+    stateChanged.notify_all();
+    switchThread.join();
+    detachThread.join();
+
+    RDP_ASSERT(request.accepted);
+    RDP_ASSERT(request.generation > 0);
+    RDP_ASSERT_EQ(detached, static_cast<void*>(&fakeHandle));
+    RDP_ASSERT(detachCompleted);
+    RDP_ASSERT(!control.hasHandle());
+}

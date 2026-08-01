@@ -1,0 +1,36 @@
+import { describe, it, expect } from '@ohos/hypium';
+import {
+  canUseRustDeskAdaptiveOrientation,
+  rustDeskOrientationPolicy
+} from '../main/ets/services/RemoteOrientationPolicy';
+
+export default function remoteOrientationPolicyTest(): void {
+  describe('RemoteOrientationPolicy', (): void => {
+    it('defaults mobile RustDesk sessions to landscape until adaptive rotation is enabled', 0, (): void => {
+      expect(rustDeskOrientationPolicy('rustdesk', false, true, false, false))
+        .assertEqual('landscape');
+      expect(rustDeskOrientationPolicy('rustdesk', false, true, false, true))
+        .assertEqual('auto-rotate');
+      expect(rustDeskOrientationPolicy('rustdesk', false, false, false, false, true))
+        .assertEqual('landscape');
+      expect(rustDeskOrientationPolicy('rustdesk', false, false, false, true, true))
+        .assertEqual('auto-rotate');
+    });
+
+    it('keeps the existing policy for RDP, desktop and PIP', 0, (): void => {
+      expect(rustDeskOrientationPolicy('rdp', false, true, false)).assertEqual('preserve-window');
+      expect(rustDeskOrientationPolicy('rustdesk', true, true, false)).assertEqual('preserve-window');
+      expect(rustDeskOrientationPolicy('rustdesk', false, true, true)).assertEqual('preserve-window');
+    });
+
+    it('accepts phone targets but rejects desktop Pro platforms', 0, (): void => {
+      expect(canUseRustDeskAdaptiveOrientation('rustdesk', 'phone', true)).assertTrue();
+      expect(canUseRustDeskAdaptiveOrientation('rustdesk', 'computer', true)).assertFalse();
+      expect(canUseRustDeskAdaptiveOrientation('rustdesk', 'phone', true,
+        'rustdesk_pro', true, 'Windows')).assertFalse();
+      expect(canUseRustDeskAdaptiveOrientation('rustdesk', 'phone', true,
+        'rustdesk_pro', true, 'Android')).assertTrue();
+      expect(canUseRustDeskAdaptiveOrientation('vnc', 'phone', true)).assertFalse();
+    });
+  });
+}

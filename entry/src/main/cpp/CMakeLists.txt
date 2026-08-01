@@ -12,6 +12,22 @@
 cmake_minimum_required(VERSION 3.5.0)
 project(rdpnapi)
 
+# Non-sensitive build identity. The values are exported through the existing
+# NAPI VERSION object for field diagnostics; they never enter protocol frames.
+set(REMOTEDESK_GIT_SHORT_SHA "unknown")
+execute_process(
+    COMMAND git rev-parse --short=12 HEAD
+    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/../../../..
+    RESULT_VARIABLE REMOTEDESK_GIT_RESULT
+    OUTPUT_VARIABLE REMOTEDESK_GIT_OUTPUT
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET
+)
+if(REMOTEDESK_GIT_RESULT EQUAL 0 AND REMOTEDESK_GIT_OUTPUT MATCHES "^[0-9a-fA-F]+$")
+    set(REMOTEDESK_GIT_SHORT_SHA "${REMOTEDESK_GIT_OUTPUT}")
+endif()
+string(TIMESTAMP REMOTEDESK_BUILD_TIME_UTC "%Y-%m-%dT%H:%M:%SZ" UTC)
+
 # ============================================================
 # 源文件清单
 # ============================================================
@@ -74,6 +90,11 @@ set(SSH_SOURCES
 # -- VNC 适配器 --
 set(VNC_SOURCES
     vnc/vnc_adapter.cpp
+    vnc/vnc_cursor_protocol.cpp
+    vnc/vnc_des.cpp
+    vnc/vnc_rfb_protocol.cpp
+    vnc/vnc_transport.cpp
+    vnc/vnc_rfb_engine.cpp
 )
 
 # -- 终端核心 (Rust terminal_core NAPI bridge) --
@@ -131,6 +152,12 @@ include_directories(
 option(RDP_BUILD_TESTS "Build lightweight native unit tests" OFF)
 option(RDP_TESTS_ONLY "Configure only lightweight native unit tests" OFF)
 if(RDP_BUILD_TESTS)
+    # Compile the actual VNC transport and RFB engine into the host test
+    # target as a link/ABI gate. Wire-level decisions are additionally
+    # exercised through the pure protocol helpers, but this prevents the
+    # production VNC sources from silently drifting out of the test build.
+    find_package(OpenSSL REQUIRED)
+    find_package(ZLIB REQUIRED)
     add_executable(rdp_native_tests
         test/test_main.cpp
         ../../test/cpp/extension_registry_test.cpp
@@ -138,18 +165,21 @@ if(RDP_BUILD_TESTS)
         test/video_backpressure_test.cpp
         test/software_decode_latency_policy_test.cpp
         test/remote_cursor_snapshot_test.cpp
+        test/rustdesk_display_switch_gate_test.cpp
         test/video_perf_counters_test.cpp
         test/video_activity_state_test.cpp
         test/rdp_audio_policy_test.cpp
         test/audio_queue_policy_test.cpp
         test/audio_activity_state_test.cpp
         test/rdp_frame_pump_contract_test.cpp
+        test/rdp_redraw_notifier_test.cpp
         test/rdp_presentation_metrics_test.cpp
         test/rdp_shutdown_state_test.cpp
         test/session_teardown_executor_test.cpp
         test/rdp_background_frame_cache_test.cpp
         test/rdp_damage_accumulator_test.cpp
         test/rdp_frame_scheduler_test.cpp
+        test/rdp_transform_refresh_policy_test.cpp
         test/rdp_gl_upload_gate_test.cpp
         test/rdp_graphics_lifecycle_test.cpp
         test/rdp_certificate_policy_test.cpp
@@ -166,6 +196,9 @@ if(RDP_BUILD_TESTS)
         test/decoder_callback_gate_test.cpp
         test/decoder_pipeline_lifecycle_policy_test.cpp
         test/safe_log_test.cpp
+        test/vnc_des_test.cpp
+        test/vnc_cursor_protocol_test.cpp
+        test/vnc_transport_policy_test.cpp
         common/safe_log.cpp
         input/remote_cursor_snapshot.cpp
         rdp/rdp_audio_policy.cpp
@@ -183,10 +216,22 @@ if(RDP_BUILD_TESTS)
         render/video_backpressure_controller.cpp
         render/video_perf_counters.cpp
         extensions/session_teardown_executor.cpp
+        vnc/vnc_des.cpp
+        vnc/vnc_cursor_protocol.cpp
+        vnc/vnc_rfb_protocol.cpp
+        vnc/vnc_transport.cpp
+        vnc/vnc_rfb_engine.cpp
+        test/vnc_rfb_protocol_test.cpp
     )
     target_include_directories(rdp_native_tests PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}
     )
+    # RDP_TESTS_ONLY returns before the production-wide C++ standard block
+    # below. Keep the standalone host test target explicit so headers using
+    # std::optional and other C++17 facilities compile consistently.
+    target_compile_features(rdp_native_tests PRIVATE cxx_std_17)
+    target_include_directories(rdp_native_tests PRIVATE ${OPENSSL_INCLUDE_DIR})
+    target_link_libraries(rdp_native_tests PRIVATE OpenSSL::SSL OpenSSL::Crypto ZLIB::ZLIB)
 endif()
 
 if(RDP_TESTS_ONLY)
@@ -294,6 +339,22 @@ set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra")
 
 # 定义共享库目标
 add_library(rdpnapi SHARED ${ALL_SOURCES})
+target_compile_definitions(rdpnapi PRIVATE
+    REMOTEDESK_GIT_SHORT_SHA="${REMOTEDESK_GIT_SHORT_SHA}"
+    REMOTEDESK_BUILD_TIME_UTC="${REMOTEDESK_BUILD_TIME_UTC}"
+)
+
+# VNC full-screen ZRLE decode is production-rate code even in a signed Debug
+# HAP used for on-device diagnostics. Keep symbols and assertions, but compile
+# only the hot wire/decode sources with optimization so Debug does not turn a
+# 5.4 MP frame into an artificial multi-second bottleneck.
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    set_property(SOURCE
+        vnc/vnc_rfb_protocol.cpp
+        vnc/vnc_transport.cpp
+        vnc/vnc_rfb_engine.cpp
+        APPEND PROPERTY COMPILE_OPTIONS -O2)
+endif()
 
 # 输出名称
 set_target_properties(rdpnapi PROPERTIES
@@ -343,6 +404,7 @@ target_link_libraries(rdpnapi PUBLIC
 target_link_libraries(rdpnapi PUBLIC
     libhuks_ndk.z.so       # HUKS 通用密钥库
     libohcrypto.so         # CryptoArchitectureKit (KDF/Digest/Rand)
+    libz.so                # OHOS system zlib (VNC ZRLE / FreeRDP)
 )
 
 # SSH2 支持 (OpenSSL + libssh2, 静态链接, ABI分目录)
@@ -398,7 +460,6 @@ if(USE_REAL_FREERDP)
         freerdp_client_channels
         freerdp3
         winpr3
-        libz.so      # zlib (OHOS sysroot, FreeRDP 依赖)
     )
     if(FFMPEG_SOFTDEC_LIBS)
         target_link_libraries(rdpnapi PUBLIC
@@ -473,4 +534,3 @@ set_target_properties(rustdesk_ffi PROPERTIES
     IMPORTED_LOCATION ${RUSTDESK_FFI_LIB}
 )
 target_link_libraries(rdpnapi PUBLIC rustdesk_ffi)
-

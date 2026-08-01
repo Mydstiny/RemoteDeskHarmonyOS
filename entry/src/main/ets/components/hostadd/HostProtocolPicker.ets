@@ -1,5 +1,6 @@
 /** Four-protocol entry for the modern add-host wizard. */
 import { AppTheme, Palette, buildDark, buildLight } from '../../common/Theme';
+import { ProtocolIconKey, protocolIcon } from '../../services/ProtocolIconPolicy';
 
 @Component
 export struct HostProtocolPicker {
@@ -14,6 +15,8 @@ export struct HostProtocolPicker {
 
   @Builder private protocolOption(protocol: string, title: string, subtitle: string, enabled: boolean) {
     Row() {
+      SymbolGlyph(protocolIcon(protocol as ProtocolIconKey)).fontSize(24)
+        .fontColor([enabled ? this.accentColor : this.pal().text3]).margin({ right: 14 })
       Column() {
         Text(title).fontSize(16).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
         Text(subtitle).fontSize(12).fontColor(this.pal().text3).margin({ top: 3 })
@@ -21,7 +24,7 @@ export struct HostProtocolPicker {
       if (enabled) {
         SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(18).fontColor([this.pal().text3])
       } else {
-        Text('即将支持').fontSize(11).fontColor(this.pal().text3)
+        Text('暂不可用').fontSize(11).fontColor(this.pal().text3)
           .padding({ left: 8, right: 8, top: 3, bottom: 3 }).borderRadius(8)
           .backgroundColor(this.pal().surface)
       }
@@ -45,7 +48,7 @@ export struct HostProtocolPicker {
       this.protocolOption('rdp', 'RDP', '连接 Windows 远程桌面', true)
       this.protocolOption('rustdesk', 'RustDesk', '中继、直连与局域网发现', true)
       this.protocolOption('ssh', 'SSH', '密码或密钥登录服务器', true)
-      this.protocolOption('vnc', 'VNC', '跨平台屏幕控制', false)
+      this.protocolOption('vnc', 'VNC', '跨平台屏幕控制、直连与 UltraVNC Repeater', true)
     }.width('100%').padding({ left: 20, right: 20, top: 20, bottom: 18 })
     .backgroundColor(this.pal().card)
   }

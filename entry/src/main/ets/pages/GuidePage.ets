@@ -9,7 +9,7 @@ import { Palette, buildDark, buildLight } from '../common/Theme';
 import {
   resolveStartupMode,
   shouldPresentGuideAsBottomSheet,
-  shouldPresentGuideAsDialog,
+  shouldPresentGuideAsCenterSheet,
   StartupMode
 } from '../services/ReleaseNotesPolicy';
 import { CURRENT_RELEASE_VERSION, pagesForReleasedVersion, ReleaseNotePage } from '../services/ReleaseNotesRegistry';
@@ -17,7 +17,7 @@ import { firstInstallGuidePages, GuideContentPage } from '../services/GuideConte
 
 const GUIDE_KEY = 'guide_shown_v4';
 const LAST_SEEN_RELEASE_KEY = 'last_seen_release_version';
-const RELEASE_DIALOG_ENTER_DELAY_MS = 120;
+const GUIDE_SHEET_ENTER_DELAY_MS = 120;
 const GUIDE_SHEET_REFLOW_DELAY_MS = 80;
 
 @Entry
@@ -27,14 +27,16 @@ struct GuidePage {
   @StorageLink('currentTheme') theme: string = 'light';
   @StorageProp('accentColor') accentColor: string = '#007DFF';
   @StorageLink('currentBreakpoint') @Watch('onBreakpointChange') breakpoint: string = 'sm';
+  @StorageLink('remoteDesktopBgFlag') @Watch('onBackgroundFlagChange') appInBackground: boolean = false;
   @State currentIndex: number = 0;
   @State showContent: boolean = false;
   @State showGuideSheet: boolean = false;
   @State mode: StartupMode = StartupMode.FIRST_INSTALL_GUIDE;
-  @State activePages: GuideContentPage[] = [];
+  @State activePages: GuideContentPage[] = firstInstallGuidePages();
   private tutorialPages: GuideContentPage[] = firstInstallGuidePages();
   private isFinishing: boolean = false;
-  private isReflowingGuideSheet: boolean = false;
+  private guideSheetEnterTimer: number = -1;
+  private guideSheetReopenTimer: number = -1;
 
   async aboutToAppear(): Promise<void> {
     try {
@@ -51,10 +53,14 @@ struct GuidePage {
       this.activePages = this.mode === StartupMode.RELEASE_NOTES ? releasePages : this.tutorialPages;
     } catch (_e) { /* 出错继续显示 */ }
     if (this.activePages.length === 0) { this.activePages = this.tutorialPages; }
-    setTimeout(() => {
+    this.cancelGuideSheetEnter();
+    this.guideSheetEnterTimer = setTimeout((): void => {
+      this.guideSheetEnterTimer = -1;
       this.showContent = true;
-      this.showGuideSheet = true;
-    }, RELEASE_DIALOG_ENTER_DELAY_MS);
+      if (!this.appInBackground && this.usesGuideSheet() && !this.isFinishing) {
+        this.showGuideSheet = true;
+      }
+    }, GUIDE_SHEET_ENTER_DELAY_MS);
   }
 
   private pal(): Palette {
@@ -63,15 +69,55 @@ struct GuidePage {
 
   private onBreakpointChange(): void {
     if (!this.showContent || this.mode === StartupMode.LOGIN) { return; }
-    if (!this.showGuideSheet) { return; }
+    if (!this.usesGuideSheet() || !this.showGuideSheet) { return; }
     // preferType 在 Sheet 已显示时不会可靠地从 BOTTOM 切换为 CENTER，
     // 折叠/展开或跨窗口断点时先完成原生退出，再按新断点重新打开。
-    this.isReflowingGuideSheet = true;
     this.showGuideSheet = false;
   }
 
-  private presentGuideAsDialog(): boolean {
-    return shouldPresentGuideAsDialog(this.mode, this.breakpoint);
+  private usesGuideSheet(): boolean {
+    return this.mode !== StartupMode.LOGIN;
+  }
+
+  private onBackgroundFlagChange(): void {
+    if (this.appInBackground) {
+      this.cancelGuideSheetReopen();
+      return;
+    }
+    if (this.usesGuideSheet() && !this.isFinishing && !this.showGuideSheet) {
+      this.scheduleGuideSheetReopen();
+    }
+  }
+
+  private cancelGuideSheetReopen(): void {
+    if (this.guideSheetReopenTimer !== -1) {
+      clearTimeout(this.guideSheetReopenTimer);
+      this.guideSheetReopenTimer = -1;
+    }
+  }
+
+  private cancelGuideSheetEnter(): void {
+    if (this.guideSheetEnterTimer !== -1) {
+      clearTimeout(this.guideSheetEnterTimer);
+      this.guideSheetEnterTimer = -1;
+    }
+  }
+
+  private scheduleGuideSheetReopen(): void {
+    if (this.guideSheetReopenTimer !== -1 || this.appInBackground ||
+      !this.usesGuideSheet() || this.isFinishing) {
+      return;
+    }
+    this.guideSheetReopenTimer = setTimeout((): void => {
+      this.guideSheetReopenTimer = -1;
+      if (!this.appInBackground && this.usesGuideSheet() && !this.isFinishing) {
+        this.showGuideSheet = true;
+      }
+    }, GUIDE_SHEET_REFLOW_DELAY_MS);
+  }
+
+  private presentGuideAsCenterSheet(): boolean {
+    return shouldPresentGuideAsCenterSheet(this.mode, this.breakpoint);
   }
 
   private presentGuideAsBottomSheet(): boolean {
@@ -82,11 +128,11 @@ struct GuidePage {
     // Keep the content below the usable window height on phones and small
     // freeform windows. The pages are intentionally short so the Sheet never
     // needs to grow beyond the viewport just to fit a paragraph.
-    if (this.presentGuideAsBottomSheet()) { return '76%'; }
-    return this.breakpoint === 'xl' ? 560 : 520;
+    if (this.presentGuideAsBottomSheet()) { return '82%'; }
+    return this.breakpoint === 'xl' ? 620 : 580;
   }
 
-  @Builder guidePanel() {
+  @Builder guidePanel(isSheet: boolean) {
     Column() {
       Swiper(this.swiperController) {
         ForEach(this.activePages, (page: GuideContentPage, index: number) => {
@@ -176,16 +222,16 @@ struct GuidePage {
       .height('100%')
       .constraintSize({ maxWidth: 640, maxHeight: 720 })
       .clip(true)
-      .backgroundColor(this.pal().sheetBg)
-      .borderRadius(this.presentGuideAsDialog() ? 24 : 0)
-      .border(this.presentGuideAsDialog() ?
+      .backgroundColor(isSheet ? this.pal().sheetBg : this.pal().bg)
+      .borderRadius(this.presentGuideAsCenterSheet() ? 24 : 0)
+      .border(this.presentGuideAsCenterSheet() ?
         { width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid } :
         { width: 0, color: Color.Transparent, style: BorderStyle.Solid })
       .align(Alignment.Center)
   }
 
   @Builder guideSheet() {
-    this.guidePanel()
+    this.guidePanel(true)
   }
 
   build() {
@@ -207,6 +253,11 @@ struct GuidePage {
     })
   }
 
+  aboutToDisappear(): void {
+    this.cancelGuideSheetEnter();
+    this.cancelGuideSheetReopen();
+  }
+
   private persistCompletion(): void {
     try {
       const prefs = preferences.getPreferencesSync(getContext(this), { name: 'RemoteDesktopAppPrefs' });
@@ -217,23 +268,20 @@ struct GuidePage {
   }
 
   private handleGuideSheetDisappear(): void {
-    if (this.isReflowingGuideSheet) {
-      this.isReflowingGuideSheet = false;
-      setTimeout((): void => {
-        if (!this.isFinishing && this.mode !== StartupMode.LOGIN) { this.showGuideSheet = true; }
-      }, GUIDE_SHEET_REFLOW_DELAY_MS);
+    if (this.isFinishing) {
+      router.replaceUrl({ url: 'pages/LoginPage' });
       return;
     }
-    if (!this.isFinishing) {
-      this.isFinishing = true;
-      this.persistCompletion();
-    }
-    router.replaceUrl({ url: 'pages/LoginPage' });
+    // 系统弹窗、后台切换或断点变化都可能让 Sheet 先消失；这不代表用户完成了引导。
+    this.showGuideSheet = false;
+    this.scheduleGuideSheetReopen();
   }
 
   private finish(): void {
     if (this.isFinishing) { return; }
     this.isFinishing = true;
+    this.cancelGuideSheetEnter();
+    this.cancelGuideSheetReopen();
     this.persistCompletion();
     this.showGuideSheet = false;
   }

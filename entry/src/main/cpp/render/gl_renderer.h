@@ -15,6 +15,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <functional>
 #include <mutex>
 #include <string>
 
@@ -71,8 +72,17 @@ public:
      */
     void Resize(int width, int height);
     void SetSourceSize(int width, int height);
-    /** Apply a local canvas transform. Pan uses a top-left surface origin. */
-    void SetCanvasTransform(double scale, double panX, double panY);
+    /** Apply a local canvas transform. Pan uses a top-left surface origin.
+     *  Returns the published transform version, or zero for invalid input. */
+    uint64_t SetCanvasTransform(double scale, double panX, double panY);
+    /** Register the decoder-owner wake callback; it must not touch EGL/GL. */
+    void SetRedrawCallback(std::function<void()> callback);
+    /** Register the active RDP session wake callback independently of decoder ownership. */
+    void SetSessionRedrawCallback(std::function<void()> callback);
+    /** Redraw the retained raw frame on the caller's renderer-owner thread. */
+    void RenderRetainedFrame(uint64_t expectedGeneration = 0);
+    /** Same retained redraw with a generation-safe presentation result. */
+    RdpPresentMetrics PresentRetainedFrame(uint64_t expectedGeneration = 0);
 
     /** 最近一秒的实际 swap/presentation 统计；读取不会清零计数。 */
     RdpPresentationMetricsSnapshot GetPresentationStats();
@@ -100,12 +110,14 @@ public:
     /** 获取上次渲染的视口 */
     void GetLastViewport(int& vpX, int& vpY, int& vpW, int& vpH) const {
         int sourceWidth = 0, sourceHeight = 0, surfaceWidth = 0, surfaceHeight = 0;
+        uint64_t transformVersion = 0;
         GetViewportSnapshot(vpX, vpY, vpW, vpH,
-            sourceWidth, sourceHeight, surfaceWidth, surfaceHeight);
+            sourceWidth, sourceHeight, surfaceWidth, surfaceHeight, transformVersion);
     }
     void GetViewportSnapshot(int& vpX, int& vpY, int& vpW, int& vpH,
                              int& sourceWidth, int& sourceHeight,
-                             int& surfaceWidth, int& surfaceHeight) const;
+                             int& surfaceWidth, int& surfaceHeight,
+                             uint64_t& transformVersion) const;
 
     // R1: NapiTestRender 使用的 accessor
     bool MakeCurrent();
@@ -147,6 +159,12 @@ private:
     double canvasScale_;
     double canvasPanX_;
     double canvasPanY_;
+    std::mutex transformPublishMutex_;
+    std::atomic<uint64_t> canvasTransformVersion_;
+    std::atomic<double> pendingCanvasScale_;
+    std::atomic<double> pendingCanvasPanX_;
+    std::atomic<double> pendingCanvasPanY_;
+    uint64_t appliedCanvasTransformVersion_;
     // Lock-free viewport snapshot for ArkTS/NAPI coordinate mapping. The
     // render lifecycle mutex may be held across eglSwapBuffers(), so readers
     // must never wait on it from the UI thread.
@@ -159,11 +177,15 @@ private:
     std::atomic<int> snapshotSourceHeight_;
     std::atomic<int> snapshotSurfaceWidth_;
     std::atomic<int> snapshotSurfaceHeight_;
+    std::atomic<uint64_t> snapshotTransformVersion_;
     int  rawFrameCount_;
     int64_t rendererHandle_;
     bool initialized_;
     bool destroying_;
     std::mutex lifecycleMutex_;
+    std::mutex redrawCallbackMutex_;
+    std::function<void()> redrawCallback_;
+    std::function<void()> sessionRedrawCallback_;
     RdpPresentationMetrics presentationMetrics_;
 
     // 内部方法
@@ -174,6 +196,8 @@ private:
     GLuint CreateRawShaderProgram();
     void   CreateQuadGeometry();
     void   SetupRawTexture(int width, int height);
+    void   ApplyPendingCanvasTransformLocked();
+    void   RequestRedraw();
     void   CalculateViewport(int sourceWidth, int sourceHeight,
                              int& vpX, int& vpY, int& vpW, int& vpH) const;
     void   PublishViewportSnapshot(int vpX, int vpY, int vpW, int vpH);
@@ -181,6 +205,7 @@ private:
                                             int stride, bool useDirtyRect, int dirtyX,
                                             int dirtyY, int dirtyWidth, int dirtyHeight,
                                             uint64_t generation);
+    RdpPresentMetrics RenderRetainedFrameLocked(uint64_t expectedGeneration);
 };
 
 // ============================================================
@@ -202,10 +227,15 @@ namespace RendererNapi {
                                                int height, int stride, int dirtyX, int dirtyY,
                                                int dirtyWidth, int dirtyHeight,
                                                uint64_t generation);
+    RdpPresentMetrics PresentRetainedActive(uint64_t generation);
     int RenderRawBgraActive(const uint8_t* data, size_t size, int width, int height, int stride);
     int RenderRawBgraRectActive(const uint8_t* data, size_t size, int width, int height, int stride,
                                 int dirtyX, int dirtyY, int dirtyWidth, int dirtyHeight);
     void SetActiveRenderer(int64_t handle);
+    void SetRendererRedrawCallback(int64_t handle, std::function<void()> callback);
+    uint64_t RegisterActiveRedrawCallback(std::function<void()> callback);
+    void UnregisterActiveRedrawCallback(uint64_t token);
+    void RenderRetained(int64_t handle);
     RdpPresentationMetricsSnapshot GetActivePresentationStats();
     void InvalidateActivePresentation();
     bool ReenableActivePresentation();

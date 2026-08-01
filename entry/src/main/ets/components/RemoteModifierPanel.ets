@@ -11,10 +11,13 @@ import { hilog } from '@kit.PerformanceAnalysisKit';
 
 const TAG = 'ModifierPanel';
 const DOMAIN = 0x0014;
+const DRAG_COMMIT_THRESHOLD = 5;
 
 @Component
 export struct RemoteModifierPanel {
   @Prop visible: boolean = false;
+  /** VNC can mount the panel invisibly for one layout pass before revealing it. */
+  @Prop prepareOnly: boolean = false;
   @Prop shortcutVisible: boolean = false;
   @Prop attachSide: string = 'right';
   @Prop ctrlLatch: string = 'off';
@@ -42,11 +45,19 @@ export struct RemoteModifierPanel {
   onPanelPositionChange: (x: number, y: number) => void = (_x: number, _y: number): void => {};
   /** 快捷键面板拖动结束, 上报父组件持久状态 */
   onShortcutPositionChange: (x: number, y: number) => void = (_x: number, _y: number): void => {};
+  /** 上报主面板真实布局尺寸，避免父组件按 Fn 状态猜测高度。 */
+  onPanelSizeChange: (width: number, height: number) => void =
+    (_width: number, _height: number): void => {};
+  /** 上报快捷键面板真实布局尺寸。 */
+  onShortcutSizeChange: (width: number, height: number) => void =
+    (_width: number, _height: number): void => {};
 
   @State private panelDragOffsetX: number = 0;
   @State private panelDragOffsetY: number = 0;
   @State private shortcutDragOffsetX: number = 0;
   @State private shortcutDragOffsetY: number = 0;
+  @State private panelDragMoved: boolean = false;
+  @State private shortcutDragMoved: boolean = false;
   @State private pressedKeyId: string = '';
   private suppressModTapName: string = '';
   private suppressModTapUntilMs: number = 0;
@@ -106,6 +117,53 @@ export struct RemoteModifierPanel {
 
   private shortcutEffectiveY(): number {
     return this.shortcutY + this.shortcutDragOffsetY;
+  }
+
+  private updateDragMoved(shortcut: boolean, offsetX: number, offsetY: number): void {
+    if (Math.sqrt(offsetX * offsetX + offsetY * offsetY) < DRAG_COMMIT_THRESHOLD) {
+      return;
+    }
+    if (shortcut) {
+      this.shortcutDragMoved = true;
+    } else {
+      this.panelDragMoved = true;
+    }
+  }
+
+  private finishPanelDrag(shortcut: boolean): void {
+    if (shortcut) {
+      const x: number = this.shortcutEffectiveX();
+      const y: number = this.shortcutEffectiveY();
+      const moved: boolean = this.shortcutDragMoved;
+      this.shortcutDragMoved = false;
+      this.shortcutDragOffsetX = 0;
+      this.shortcutDragOffsetY = 0;
+      if (moved) {
+        this.onShortcutPositionChange(x, y);
+      }
+      return;
+    }
+    const x: number = this.panelEffectiveX();
+    const y: number = this.panelEffectiveY();
+    const moved: boolean = this.panelDragMoved;
+    this.panelDragMoved = false;
+    this.panelDragOffsetX = 0;
+    this.panelDragOffsetY = 0;
+    if (moved) {
+      this.onPanelPositionChange(x, y);
+    }
+  }
+
+  private cancelPanelDrag(shortcut: boolean): void {
+    if (shortcut) {
+      this.shortcutDragMoved = false;
+      this.shortcutDragOffsetX = 0;
+      this.shortcutDragOffsetY = 0;
+      return;
+    }
+    this.panelDragMoved = false;
+    this.panelDragOffsetX = 0;
+    this.panelDragOffsetY = 0;
   }
 
   private isPressed(id: string): boolean {
@@ -419,12 +477,14 @@ export struct RemoteModifierPanel {
     .layoutWeight(1)
     .padding({ left: 6, right: 8 })
     .gesture(
-      PanGesture({ fingers: 1, distance: 2 })
+      PanGesture({ fingers: 1, distance: 5 })
         .onActionStart((_event: GestureEvent): void => {
           if (shortcut) {
+            this.shortcutDragMoved = false;
             this.shortcutDragOffsetX = 0;
             this.shortcutDragOffsetY = 0;
           } else {
+            this.panelDragMoved = false;
             this.panelDragOffsetX = 0;
             this.panelDragOffsetY = 0;
           }
@@ -437,22 +497,10 @@ export struct RemoteModifierPanel {
             this.panelDragOffsetX = event.offsetX;
             this.panelDragOffsetY = event.offsetY;
           }
+          this.updateDragMoved(shortcut, event.offsetX, event.offsetY);
         })
-        .onActionEnd((_event: GestureEvent): void => {
-          if (shortcut) {
-            const x: number = this.shortcutEffectiveX();
-            const y: number = this.shortcutEffectiveY();
-            this.onShortcutPositionChange(x, y);
-            this.shortcutDragOffsetX = 0;
-            this.shortcutDragOffsetY = 0;
-          } else {
-            const x: number = this.panelEffectiveX();
-            const y: number = this.panelEffectiveY();
-            this.onPanelPositionChange(x, y);
-            this.panelDragOffsetX = 0;
-            this.panelDragOffsetY = 0;
-          }
-        })
+        .onActionEnd((_event: GestureEvent): void => { this.finishPanelDrag(shortcut); })
+        .onActionCancel((): void => { this.cancelPanelDrag(shortcut); })
     )
   }
 
@@ -491,7 +539,7 @@ export struct RemoteModifierPanel {
   build() {
     Column() {
     // 主面板
-    if (this.visible) {
+    if (this.visible || this.prepareOnly) {
       Column() {
         // 标题栏
         Row() {
@@ -606,7 +654,15 @@ export struct RemoteModifierPanel {
           .animation({ duration: 180, curve: Curve.EaseOut })
       )
       .position({ x: this.panelEffectiveX(), y: this.panelEffectiveY() })
-      .hitTestBehavior(HitTestMode.Default)
+      .opacity(this.prepareOnly ? 0 : 1)
+      .hitTestBehavior(this.prepareOnly ? HitTestMode.None : HitTestMode.Default)
+      .onAreaChange((_old: Area, next: Area): void => {
+        const width: number = next.width as number;
+        const height: number = next.height as number;
+        if (Number.isFinite(width) && Number.isFinite(height) && width > 0 && height > 0) {
+          this.onPanelSizeChange(width, height);
+        }
+      })
     }
 
     // 快捷键面板 (长按胶囊弹出, 独立于主面板)
@@ -665,6 +721,13 @@ export struct RemoteModifierPanel {
       )
       .position({ x: this.shortcutEffectiveX(), y: this.shortcutEffectiveY() })
       .hitTestBehavior(HitTestMode.Default)
+      .onAreaChange((_old: Area, next: Area): void => {
+        const width: number = next.width as number;
+        const height: number = next.height as number;
+        if (Number.isFinite(width) && Number.isFinite(height) && width > 0 && height > 0) {
+          this.onShortcutSizeChange(width, height);
+        }
+      })
     }
     }
     .width('100%').height('100%')

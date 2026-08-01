@@ -114,6 +114,9 @@ public:
      */
     GLuint GetTextureId() const;
 
+    /** Wake the render owner to redraw the retained NativeImage texture. */
+    void RequestRedraw();
+
     /** 刷新解码器缓冲区 */
     void Flush();
 
@@ -191,6 +194,10 @@ private:
     std::condition_variable frameAvailableCv_;
     uint64_t frameAvailableCount_ = 0;
     uint64_t frameConsumeCount_ = 0;
+    // A transform wake is a latest-value hint, not one render obligation per
+    // pinch event. Keep at most one retained redraw pending behind the render
+    // owner so a fast UI gesture cannot build a decoder-side backlog.
+    bool redrawRequested_ = false;
     Render::VideoBackpressureController backpressure_;
     bool nativeImageContextAttached_ = false;
     std::thread renderThread_;
@@ -216,7 +223,7 @@ private:
     size_t dropOldestInputFramesLocked(size_t count);
     void handleInputBuffer(uint32_t index, OH_AVBuffer* buffer);
     void drainInputBuffers();
-    bool waitForFrameAvailable();
+    bool waitForRenderRequest(bool& hasNewFrame);
     void handleOutputBuffer(uint32_t index);
     void noteFrameAvailable();
     void stopRenderThread();
@@ -228,13 +235,17 @@ private:
 // ============================================================
 
 namespace DecoderNapi {
+    constexpr int kDecodeInactiveDisplay = 1;
     napi_value Init(napi_env env, napi_value exports);
     int DecodeNative(int64_t handle, const VideoFrame& frame);
     int DecodeActiveNative(const VideoFrame& frame);
+    bool IsActiveDisplayFrame(const VideoFrame& frame);
     int ActiveVideoPressureLevel();
     DecoderTelemetrySnapshot GetActiveTelemetry(uint64_t expectedSessionId = 0);
     void SetActiveSessionId(uint64_t sessionId);
     void ClearActiveSessionId(uint64_t sessionId);
+    bool SetActiveDisplay(int display);
+    bool RequestActiveDecoderRecovery();
     bool BindVideoPipeline(int64_t decoderHandle, int64_t rendererHandle);
     bool DetachVideoPipeline(int64_t decoderHandle);
     bool RequestDecoderRecovery(int64_t decoderHandle);

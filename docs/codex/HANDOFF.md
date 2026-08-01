@@ -1,6 +1,244 @@
 # Current Handoff
 
-Updated: 2026-07-23 Asia/Shanghai
+Updated: 2026-07-30 Asia/Shanghai
+
+## RustDesk 登录可连接性修复 handoff（2026-07-31）
+
+- 根因：`53afa3b` 的绑定身份投影路径不可达——`sourceFitsProfile` 对空能力证明
+  提前返回 api_only_fallback，证明注册表为空且登录强制清空 proof，token 恒被
+  扣留；且 OSS 式添加的中继无 apiServer、第三方控制面按钮禁用。
+- 修复：`cd82824`（计划记录）+ `3ddfed269`（代码）已快进合并到本地 main，
+  任务分支已删除；工作树干净。投影门禁=可信证明或绑定身份核验；伪造证明
+  fail-closed；登录后回填 relay.apiServer；开放第三方控制面选择。
+- 门禁：Hvigor 测试编译 + signed assembleHap BUILD SUCCESSFUL（exit 0）；
+  HAP 1.0.10 含双 ABI native；Rust 151/151、native 178/178、Light、diff 检查
+  通过；独立 D-020 复核 PASS。
+- 下一步（NO-GO 前置）：真机安装 1.0.10 HAP 后对 超享 与官方 Server Pro 各做
+  登录→地址簿→连接闭环；确认 `proToken=present`；覆盖安装 1.0.8 数据需恢复
+  感知授权。严禁 push/PR/合并远端。
+
+## Cloud store-name root fix handoff (2026-07-31)
+
+- Commits on local `main`: `961b698` (canonical store binding + account-scope
+  migration), `3c8aa76` (policy tests), `88e0ff3` (import fix), plus
+  `f14e034` docs checkpoint (user-owned upgrade plans preserved).
+- 14800000 root cause and fix are recorded in CURRENT.md; the platform
+  constraint is D-008 in DECISIONS.md.
+- Verified: `default@OhosTestCompileArkTS` and signed `assembleHap` BUILD
+  SUCCESSFUL (non-daemon), Light compliance PASS, `git diff --check` PASS.
+- Next device step: install the signed HAP on the reconnected MatePad,
+  log in with the Huawei account, confirm the canonical store registers the
+  eight cloud tables, cloud-first pull completes, and the 13 hosts appear;
+  then test second-device pull/push and account-switch isolation. hdc was
+  offline (`Connect server failed`) at handoff.
+- Do not push/PR/merge remote until the on-device matrix and AGC `vncrecord`
+  dedup primary key are resolved.
+
+## Completed RustDesk control-plane v3 handoff
+
+- Branch `codex/rustdesk-control-plane-v3` was based on the authorized local
+  `main@d0e6ffee2`. The reviewed implementation checkpoint is `d404178b1`;
+  after documentation/build closure the branch is fast-forward merged into
+  local `main` and deleted. No push, PR or remote-main merge was performed.
+- Plan:
+  `docs/superpowers/plans/2026-07-29-rustdesk-control-plane-official-parity-complete-plan-v3.md`.
+- Implementation commits:
+  `bbbd87fe8`, `3fb718560`, `6a12a978b`, `f88e8e317`, `6ce3dfe62`,
+  `fcc2cbb38`, `bf7a0448f`, `6e4735703`, `33d9e20f1`, `439d45aca`,
+  `afe25a38a`, `3607d9769`, `d404178b1`.
+- Relay save is a structured, transactional result with stable-ID owner
+  read-back, idempotent attempts, rollback/fault injection, retained drafts
+  and separate local/cloud outcomes. A cloud, account transition, restore or
+  crypto state cannot silently turn a proven local commit into a generic save
+  failure; unsafe owner/crypto cases still fail closed.
+- The RustDesk add surfaces share one setup owner with fixed reachable
+  actions, keyboard/safe-area adaptation and progressive disclosure. The
+  default path is import or address plus public key; Server Pro login and
+  connection testing follow local save. Host-add handoff is
+  owner/store/generation-bound, one-shot and clears sensitive draft data.
+- Profiles and credentials are separate:
+  `oss_key_only`, `oss_shared_access_key`,
+  `official_server_pro_token`, `third_party_api_only`,
+  `third_party_control_plane`, `direct_ip`. HTTP address-book tokens, future
+  control-plane tokens, shared `-k` and Ed25519 server public keys are not
+  interchangeable.
+- No profile, generic `/api/login` or address-book response can self-grant
+  rendezvous capability. The trusted issuer registry is empty. Unverified Pro
+  and third-party profiles preserve HTTP login/sync but effective-fallback to
+  API-only and send no HTTP token in native rendezvous messages.
+- API, ID and Relay may use independent hosts. Capability identity binds
+  account API, owner/account/relay, token generation/fingerprint, both native
+  endpoints/ports and server identity through irreversible fingerprints.
+- Legacy `please login` text is diagnostic only. Even a structured expiry
+  cannot revoke an API-only HTTP session. Revocation requires the exact
+  attempt to have projected a trusted token under the effective official
+  profile plus matching scope/generation/fingerprint fences.
+- FORCE_RELAY and DIRECT_IP are explicit. AUTO/NAT/TCP hole punch/P2P fallback
+  remain unsupported or blocked rather than claiming unproved connectivity.
+  HTTP/native diagnostics redact routes, endpoints, paths, accounts, devices
+  and credentials.
+- Independent review history:
+  first review findings on transaction/read-back/save visibility/draft
+  handoff were fixed in `33d9e20f1` and `439d45aca`; second review's
+  self-granted proof/same-host/diagnostic findings were fixed in
+  `3607d9769`; third review's effective-profile revocation and test-evidence
+  findings were fixed in `d404178b1`; fourth review returned PASS with no
+  remaining P0/P1.
+- Verification: Rust `151 passed, 0 failed`; native
+  `171 passed, 0 failed`; `default@OhosTestCompileArkTS` passed; signed
+  `assembleHap` passed; Light and `git diff --check` passed.
+  `ohosTest@OhosTestCompileArkTS` is unavailable as unregistered task
+  `00306054`, so no device-test success is claimed.
+- Candidate is `1.0.10 / 1000010`. Device `3BKGK24B06000015` was not upgraded
+  from installed `1.0.8 / 1000008`; protecting existing app data takes
+  precedence over an unauthorized install.
+- Local code is complete. Release remains NO-GO until real official Server Pro
+  ordinary/admin and own/shared/denied matrices, explicit 401/revocation,
+  trustworthy adapter/issuer proof, 超享 API-only/control-plane A/B, OSS
+  public-key/shared-`-k`, password/approval/Peer 2FA, P2P/relay/direct/network
+  changes, API 23 upgrade/restart/keyboard/safe-area and multi-device cloud
+  matrices pass. Also run RDP/VNC/SSH/SFTP regression and register/fix
+  `ohosTest` before release.
+- Unrelated SSH, Moonlight, RDP and RustDesk controlled-host plan edits remain
+  user-owned and were neither staged nor changed.
+
+## Completed VNC V2 handoff
+
+- Branch `codex/vnc-product-parity-sheet-remediation-v2` was based on local
+  `main@66fba4141`, reviewed at `2797fd481`, fast-forward merged into local
+  `main` and deleted during closure. Final implementation fix: `d17976c10`.
+- Plan:
+  `docs/superpowers/plans/2026-07-29-vnc-complete-product-parity-and-sheet-layout-remediation-plan-v2.md`.
+- Commits: `e3c3fd7b7` plan, `6fd0e4539` Sheet/flow/settings,
+  `6e47c052c` visible controls/diagnostics/panel placement, `b742f7b12`
+  Cursor, `90f51eed9` bounded ZRLE and zlib compliance, `e1e23ebd6`
+  implementation/release-gate documentation, `d17976c10` D-020 remediation.
+- Latest evidence: native `171 passed, 0 failed`;
+  `default@OhosTestCompileArkTS` passed; signed `assembleHap` passed; Light and
+  `git diff --check` passed.
+- The first independent D-020 audit found four gaps: text input used
+  ClientCutText, synchronous connect failure retained a strong video callback,
+  desktop classic FAB skipped VNC defaults, and the extreme-height layout
+  policy was not wired to the production Sheet. `d17976c10` fixes all four.
+- The same reviewer completed remediation, RAW_BGRA lifecycle, non-VNC
+  isolation and system-zlib ABI checks with an explicit D-020 PASS and no
+  P0/P1/P2. The local merge gate is satisfied.
+- All unrelated dirty plan files were preserved. No push, PR or remote-main
+  merge was performed.
+- External release blockers: `ohosTest` task registration `00306054`, API 23
+  Sheet/input/layout validation, real Mac continuous-frame/Cursor/Retina ZRLE,
+  TigerVNC and UltraVNC/LibVNCServer interoperability, other-protocol smoke and
+  one-/two-device/account-switch cloud matrices.
+- VNC is closed locally; the prepared RustDesk login/control-plane
+  implementation prompt may now be sent to its existing Codex task.
+
+## Completed cloud-data lifecycle handoff
+
+- Branch: `codex/cloud-data-lifecycle-root-fix`; base:
+  `main@23940521a`; final reviewed checkpoint: `c88fc2968`.
+- Plan:
+  `docs/superpowers/plans/2026-07-28-cloud-data-lifecycle-upgrade-roadmap.md`.
+- Core local implementation is complete for account transitions, per-account
+  physical stores, fail-closed cloud binding, durable coordinator/watchdogs,
+  sensitive transfer validation, portable backup v3 and legacy partial
+  restore, exclusive crypto lifecycle, Asset Store credential storage,
+  device-local trust and legacy shared-store/relay/VNC migration quarantine.
+- D-020 remediation through `0c0b3d4` requires a fresh OS distributed-account API
+  result in addition to Account Kit, waits for cloud-first before publishing
+  account ready, preserves pre-bootstrap record journal intent, persists a
+  bounded cross-table download rollback transaction, blocks ordinary/VNC
+  native-first during selection re-enable, accepts only proven authoritative
+  empty snapshots and revokes RustDesk Pro Asset Store aliases on scope exit.
+- The second review's final three P1 findings are remediated locally:
+  `restored_not_uploaded` now returns `restore_pending` without publishing
+  ready; VNC newly enabled scopes await cloud-first, record promotion and
+  barrier release with exact rollback; RustDesk Pro scope revocation preserves
+  non-secret account/server/device metadata as `requires_login` while the token
+  remains deleted.
+- The third review's final VNC P1 is remediated in `382fdaaa8`. Newly enabled
+  scopes establish an owner/store/generation-bound checkpoint and pending
+  barrier before settings or selection change. After cloud-first, the
+  checkpoint is rebased to the authoritative VNC mirror plus the exact local
+  settings/journal/retry/selection before-image. Promotion, both durable phase
+  writes, barrier release and checkpoint deletion share one RDB transaction;
+  automatic upload begins only after commit. The code-level recovery path
+  restores under the barrier, never physically deletes a deterministic
+  settings ID by assumption and retains checkpoint plus `recovery_required`
+  if complete restoration cannot be proven; real process-interruption evidence
+  is not claimed.
+- The final point review's P0 and two P1 findings are remediated in
+  `df2a6b4` and `88a6128`. VNC checkpoint creation, settings mutation,
+  cloud-first/finalization and full-store rollback now occupy one exclusive
+  coordinator queue item under the same account/store/generation lease, so the
+  next normal/event/retry request waits until recovery finishes. Cloud-first
+  completion atomically rebases the authoritative VNC checkpoint before
+  journal replay and ordinary checkpoint deletion. Security metadata reads use
+  strict present/absent/error results with read-back proof; `querySync` errors
+  block native-first, promotion, retry, bootstrap publication and post-commit
+  upload success instead of impersonating an absent row.
+- Policy fault injection covers rebase-write failure, commit kill-points,
+  post-commit authoritative recovery state and metadata-query exceptions. This
+  is code-level evidence only; real process kill, reboot and low-storage
+  recovery are still NO-GO acceptance items.
+- The final source review confirmed the production invariants and left one P1
+  test-wiring gap. `501565e` adds implementation-level coverage through actual
+  `CloudSyncCoordinator` instances and production `CloudStore` completion,
+  finalization and metadata methods. A controlled retry clock and narrow
+  transaction/query ports prove queue and lease ordering, one transaction for
+  authoritative rebase/journal/delete, rollback and post-commit recovery, and
+  fail-closed metadata-error propagation. These tests compile in the default
+  ArkTS test target; no device/runtime test execution is claimed.
+- The continuation review found two P1s in that test seam. `0ffaa1c` restores
+  both RDB-changing CloudStore completion/finalization entries to private,
+  moves their testable orchestration into a stateless module with no
+  singleton/RDB handle, and makes completion, finalization and startup recovery
+  share the same signed-checkpoint and barrier metadata readers. Tests now
+  inject real `readLocalMetadataState` query errors before barrier release and
+  after commit, and simulate a restart that routes the committed authoritative
+  checkpoint into pending recovery.
+- The terminal continuation review's remaining P1/P2 are remediated in
+  `0d6216e`. Barrier parsing now distinguishes a missing `vncrecord` key from a
+  present invalid phase and rejects every non-object JSON top level. The same
+  production rollback adapter is used by the private startup and in-process
+  recovery paths; it owns checkpoint deletion/read-back and fail-closed
+  recovery marking. Tests cover malformed barrier JSON before and after
+  commit, successful restart deletion, and checkpoint retention on
+  restore/delete/commit failures.
+- The final remaining P2 test-wiring gap is remediated in `0c0b3d4`. A safe
+  detached verification store traverses the real `CloudStore.init` and
+  `openScopeStore` startup call point, which constructs the same private
+  production adapter and `CloudStoreStartupRecoveryRunner`. The fake supplies
+  only bottom-level I/O, so startup-call removal and restore/checkpoint-delete
+  misrouting break success/readiness or checkpoint-retention assertions.
+  Restore/delete/commit failures keep the checkpoint, publish no snapshot,
+  mark recovery required and leave initialization not ready. The final
+  independent D-020 incremental review passed at `c88fc2968` with no
+  P0/P1/P2. No ArkTS runtime execution is claimed.
+- API 23 has no signed Account Kit/distributed-account link object. The
+  implementation accepts only exact current ID equality and otherwise blocks
+  distributed-table registration and transfer. This is deliberately
+  fail-closed and still requires real-device proof before release.
+- Latest current-session validation: `default@OhosTestCompileArkTS` passed;
+  `assembleHap` passed and signed; `git diff --check` passed; Light compliance
+  passed. `ohosTest@OhosTestCompileArkTS` is absent from the task graph
+  (`00306054`) and is not claimed as passed.
+- The signed upgrade-test candidate is `1.0.9 / 1000009`. A connected device
+  was inspected read-only and still has `1.0.8 / 1000008`; no install, launch,
+  login or device-data mutation was performed. Require explicit user approval
+  and a recovery plan before an in-place upgrade test.
+- Release is NO-GO pending API 23 identity-correspondence proof, real Huawei
+  Cloud schema/permissions and authoritative empty-set behavior, two API 23
+  devices, A/B accounts, old released APK/RDB/backup fixtures, process-kill and
+  low-storage fault injection, real Documents Providers and actual Asset Store
+  alias deletion. System BackupExtension, remote destructive crypto and legacy
+  REST sync remain disabled.
+- No sub-agent was created for this remediation. The requested targeted review
+  of the new implementation-level test coverage by the main agent remains a
+  merge blocker.
+- Preserve the unrelated user-owned SSH, Moonlight, RustDesk, VNC and RDP plan
+  edits; do not stage, reset, stash or overwrite them.
+
+## Archived 2026-07-23 handoff
 
 ## Source and scope
 
@@ -267,6 +505,13 @@ On macOS, `scripts/sync_workspace.sh` sources `resolve_powershell.sh` for `finis
 
 ## Next owner action
 
+1. RustDesk login/relay-save/control-plane closure (2026-07-31): local `main`
+   now carries `53afa3bea` (merged, task branch deleted). Verify on a real
+   device against the 超享 panel: HTTP login, address-book sync and host
+   connect must all succeed for a relay configured with the
+   official-server-pro / third-party-control-plane profile; OSS key-only and
+   shared `-k` relays must stay token-free. Confirm the HAP installs and the
+   native FFI log shows `proToken=present` for control-plane connections.
 1. On the next device, sync public `main` and read the four shared state files before selecting a new task.
 2. Source the Mac helper script or configure the Windows toolchain locally; do not copy caches, credentials or raw evidence.
 3. Run sync/doctor/clean-clone checks and record only sanitized evidence.

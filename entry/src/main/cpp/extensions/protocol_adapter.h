@@ -30,7 +30,9 @@ enum class CodecType {
     H265 = 1,
     VP8  = 2,
     VP9  = 3,
-    AV1  = 4
+    AV1  = 4,
+    /** VNC delivers a complete BGRA framebuffer, never an encoded video frame. */
+    RAW_BGRA = 5
 };
 
 /** 鼠标按钮 */
@@ -46,7 +48,8 @@ enum class ConnectionState {
     CONNECTING   = 1,
     CONNECTED    = 2,
     RECONNECTING = 3,
-    ERROR        = 4
+    ERROR        = 4,
+    AUTHENTICATING = 5
 };
 
 /** RDP credential delegation mode. Keep this independent from SSH authMethod. */
@@ -88,10 +91,17 @@ struct ConnectionConfig {
     std::string authMethod;       // 🆕 SSH 认证方式: "password" | "publickey" | "kbd-interactive"
     std::string privateKeyPem;    // 🆕 SSH 私钥 PEM (临时明文, 仅 publickey 认证)
     std::string privateKeyPassphrase; // 🆕 SSH 私钥口令 (可选)
+    std::vector<std::string> sshKeyboardInteractiveResponses; // SSH keyboard-interactive/MFA responses
+    std::string sshProxyType;          // direct | http_connect | socks5
+    std::string sshProxyHost;          // SSH transport proxy endpoint
+    int         sshProxyPort;
+    std::string sshProxyUsername;      // optional proxy username
+    std::string sshProxyPassword;      // transient proxy password
     std::string expectedHostKeyRawBase64;       // 🆕 SSH 预期主机密钥 raw blob base64 (二次校验)
     std::string expectedHostKeyFingerprintSha256; // 🆕 SSH 预期主机指纹 SHA256
     int         rdImageQuality;    // RustDesk: 0=速度, 1=平衡, 2=画质
     bool        rdDirectIp;        // RustDesk: 直连 IP 模式
+    std::string rdConnectionStrategy; // force_relay | direct_ip | auto (auto currently fail-closed)
     int         rdDirectPort;      // RustDesk: 直连端口
     bool        rdLanDiscovery;    // RustDesk: LAN 发现
     bool        rdPrivacyMode;     // RustDesk: 隐私模式
@@ -109,16 +119,51 @@ struct ConnectionConfig {
     std::string rdAccountId;       // RustDesk: 绑定 API 账户 ID
     std::string rdServerKey;       // RustDesk: Rendezvous 公钥或共享准入 Key
     int         rdServerKeyMode;   // 0=legacy/auto, 1=server public key, 2=shared access key
+    // Configured hbbr fallback port. It is used only when hbbs returns a
+    // relay_server without an explicit port.
+    int         rdRelayPort;
+    // Transient Server Pro control-plane session token. Never persist or log.
+    std::string rdAccessToken;
+
+    // VNC-only transient connection fields. These values are assembled from
+    // the isolated VNC data domain and are never persisted in RemoteHost.
+    std::string vncTransport;       // direct_tcp | ultravnc_repeater | websocket_gateway | public_relay | ssh_tunnel
+    std::string vncGatewayHost;
+    int         vncGatewayPort;
+    std::string vncGatewayPath;
+    std::string vncRepeaterMode;    // mode2 | mode12
+    std::string vncRepeaterTarget;
+    bool        vncTls;
+    bool        vncViewOnly;
+    bool        vncClipboardEnabled;
+    std::string vncSecurityPolicy;  // secure_only | trusted_network | allow_plaintext
+    int         vncConnectTimeoutMs;
+    int         vncAuthTimeoutMs;
+    int         vncFirstFrameTimeoutMs;
+    std::string vncImageQualityPreset; // speed | balanced | quality
+    std::string vncPreferredEncoding;  // auto | zrle | raw; unsupported values fail back to auto
+    std::string vncColorDepth;         // auto | 32 | 16 | 8
+    int         vncFrameRateLimit;     // 0 | 15 | 30 | 60
+    std::string vncExpectedCertificateFingerprintSha256;
 
     ConnectionConfig()
         : port(3389), width(1920), height(1080), codec(CodecType::H264),
           gatewayPort(443), multiMonitor(false), monitorCount(1),
           colorDepth(32), rdpAuthIdentityMode(0), rdpAuthMode(RdpAuthenticationMode::Password),
           rdpRestrictedAdminSecretSource(RdpRestrictedAdminSecretSource::NtlmHash), authMethod("password"),
-          rdImageQuality(1), rdDirectIp(false), rdDirectPort(21118),
+          sshProxyPort(0),
+          rdImageQuality(1), rdDirectIp(false), rdConnectionStrategy(), rdDirectPort(21118),
           rdLanDiscovery(true), rdPrivacyMode(false), rdAudioEnabled(true), rdClipboardEnabled(true),
           rdDriveName("RemoteDesktop"), rdpAllowUntrustedRoot(false), rdpAllowHostMismatch(false),
-          rdPasswordMode(0), rdAuthMode(0), rdPasswordLength(6), rdServerKeyMode(0) {}
+          rdPasswordMode(0), rdAuthMode(0), rdPasswordLength(6), rdServerKeyMode(0),
+          rdRelayPort(21117),
+          vncTransport("direct_tcp"), vncGatewayPort(5901), vncGatewayPath("/vnc"),
+          vncRepeaterMode("mode12"), vncTls(false), vncViewOnly(false),
+          vncClipboardEnabled(false), vncSecurityPolicy("secure_only"),
+          vncConnectTimeoutMs(10000), vncAuthTimeoutMs(15000),
+          vncFirstFrameTimeoutMs(15000), vncImageQualityPreset("balanced"),
+          vncPreferredEncoding("auto"), vncColorDepth("auto"),
+          vncFrameRateLimit(30) {}
 };
 
 /** 视频帧数据 — 从协议后端传递到渲染管线 */
@@ -130,10 +175,20 @@ struct VideoFrame {
     CodecType      codec;       // 编码类型
     uint64_t       timestamp;   // 时间戳 (ms)
     bool           isKeyFrame;  // 是否为关键帧
+    int            display;     // RustDesk 远端显示器编号; legacy/other protocols use 0
+    int            stride;      // RAW_BGRA row stride; encoded frames use 0
+    int            dirtyX;      // RAW_BGRA dirty rectangle; negative means full frame
+    int            dirtyY;
+    int            dirtyWidth;
+    int            dirtyHeight;
+    int            colorDepth;  // RAW_BGRA source's negotiated VNC color depth; otherwise 0
+    int            sourceEncoding; // RFB encoding for RAW_BGRA; otherwise -1
 
     VideoFrame()
         : data(nullptr), size(0), width(0), height(0),
-          codec(CodecType::H264), timestamp(0), isKeyFrame(false) {}
+          codec(CodecType::H264), timestamp(0), isKeyFrame(false), display(0), stride(0),
+          dirtyX(-1), dirtyY(-1), dirtyWidth(0), dirtyHeight(0), colorDepth(0),
+          sourceEncoding(-1) {}
 };
 
 /** 音频数据块 — 从协议后端传递到音频管线 */

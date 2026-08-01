@@ -19,6 +19,8 @@ export default function clipboardSyncPolicyTest(): void {
       expect(clipboardSyncEnabledForProtocol('rdp', true, false)).assertTrue();
       expect(clipboardSyncEnabledForProtocol('rustdesk', false, true)).assertTrue();
       expect(clipboardSyncEnabledForProtocol('rustdesk', true, false)).assertFalse();
+      expect(clipboardSyncEnabledForProtocol('vnc', true, true, true)).assertTrue();
+      expect(clipboardSyncEnabledForProtocol('vnc', true, true, false)).assertFalse();
     });
   });
 }
