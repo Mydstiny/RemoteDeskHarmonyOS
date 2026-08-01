@@ -1,5 +1,9 @@
 # SSH 模块完备升级计划
 
+> 历史版本说明：本文件保留 v1 审计和早期实施记录。自 2026-07-29 起，未来升级的权威执行依据为
+> [`docs/SSH_MODULE_UPGRADE_PLAN_V2.md`](SSH_MODULE_UPGRADE_PLAN_V2.md)。v1 中“仅 IPv4、无代理、
+> host key 指纹错误、无限 TSFN、无 exec/subsystem”等早期结论已经不符合当前代码，不得继续作为实施依据。
+>
 > 文档版本：v1.0  
 > 盘点日期：2026-07-24  
 > 代码基线：main，commit bfae6ef30  
