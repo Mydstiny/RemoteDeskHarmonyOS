@@ -4,6 +4,13 @@ Updated: 2026-07-30 Asia/Shanghai
 
 ## Now
 
+- VNC 卡顿/滚轮/重连/鉴权重试修复已提交本地 main `202ed38`：双指与实体
+  滚轮跟随 VNC 触控板速度；native 新增 5s 空闲超时避免服务器动画间隙
+  长时间阻塞；断线后立即重连前重新绑定 surface；密码认证失败可当场重试；
+  VNC 编辑页双密码槽修复；日志标签按协议输出。两项 Hvigor 门禁、native
+  178/178、Light 与 diff 检查通过，签名 HAP 已装真机。剩余为真机复测
+  （切换应用动画、滚轮速度、立即重连、错误密码重试、单密码槽）。
+
 - VNC 云表 `vncrecordv2` 启动/ChkSchema 已修复（`6b777c4`，本地 main）：
   HAP 内置 8 表 `cloud_schema.json`（rawfile/arkdata/cloud/），真机同步期
   ChkSchema 通过、selection re-enable code=0。剩余外部 blocker：AGC 控制台

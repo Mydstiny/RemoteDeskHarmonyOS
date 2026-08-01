@@ -1,5 +1,32 @@
 # Shared Current State
 
+## Current VNC 卡顿/滚轮/重连/鉴权重试修复（2026-08-01，本地 main `202ed38`）
+
+- 现场：VNC 切换应用动画时"卡很久才一帧一帧挪过去"；双指滚动与实体触控板
+  滚轮不跟随 VNC 触控板速度（50-200%）；断线后马上重连失败；密码错误后
+  第二次无法修改密码；VNC 编辑页出现两个密码输入槽位；日志误标
+  `positionTransport=freerdp`。
+- 根因与修复：
+  1. 卡顿：ArkTS `sendTouchPadWheel`/物理滚轮使用固定
+     `TOUCHPAD_SCROLL_GAIN`，未乘 VNC 触控板速度 → 双指/实体滚轮统一按
+     会话速度缩放。native `receiveLoop` 把首帧超时（15s）误用作后续消息
+     空闲超时，服务器动画间隙停顿会让客户端阻塞最多 15 秒 → 新增
+     `idleTimeoutMs_=5000` 用于 FBU 头部/消息读取，大矩形负载仍受
+     `ioTimeoutMs_` 保护。
+  2. 重连失败：断开清理把 native surface 标为 detached，马上重连的
+     `initRenderer` 未重新绑定 → `doConnect` 在 initRenderer 前用
+     `latestSurfaceId` 重新 `setXComponentSurfaceId`，消除
+     `SurfaceDetached(-3)` 帧拒绝。
+  3. 鉴权重试：新增 `vncAuthRetryPending`，密码认证失败（E-VNC-AUTH-PASSWORD/
+     MISSING）时清凭据、弹回密码 Sheet 当场重试，且下次进入仍强制先鉴权。
+  4. 双密码槽：通用密码行条件排除 VNC（`sheetRdpAuthMode` 默认值造成重复）。
+  5. 日志标签：`positionTransport` 按协议输出 `vnc-rfb/rustdesk-ffi/freerdp`。
+- 验证：`default@OhosTestCompileArkTS` 与 signed `assembleHap` 均
+  BUILD SUCCESSFUL（非 daemon、exit 0）；native `rdp_native_tests`
+  178/178；Light 合规 PASS；`git diff --check` 干净。已安装签名 HAP 到真机。
+- 剩余：真机复测——切换应用动画流畅度、双指滚动速度跟随 VNC 设置、
+  断线后立即重连、错误密码后重试、VNC 编辑页仅一个密码槽。
+
 ## Current RustDesk 请求批准“转圈”根因修正（2026-07-31，本地 main `992d5ca`）
 
 - 现场：密码连接正常，但“请求批准”一直转圈；用户指出“被控端有密码照样可以
