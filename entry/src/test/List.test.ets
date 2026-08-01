@@ -58,6 +58,7 @@ import cloudTableAdapterTest from './CloudTableAdapter.test';
 import loginStartupPolicyTest from './LoginStartupPolicy.test';
 import rustDeskProSyncPolicyTest from './RustDeskProSyncPolicy.test';
 import remoteKeyboardAvoidPolicyTest from './RemoteKeyboardAvoidPolicy.test';
+import twoFingerScrollPolicyTest from './TwoFingerScrollPolicy.test';
 
 export default function testsuite() {
   localUnitTest();
@@ -120,4 +121,5 @@ export default function testsuite() {
   loginStartupPolicyTest();
   rustDeskProSyncPolicyTest();
   remoteKeyboardAvoidPolicyTest();
+  twoFingerScrollPolicyTest();
 }

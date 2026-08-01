@@ -84,6 +84,10 @@ import {
   shouldUseSystemMousePointer
 } from '../services/RemotePointerModePolicy';
 import {
+  nextTwoFingerScrollLatch,
+  twoFingerSpreadVp
+} from '../services/TwoFingerScrollPolicy';
+import {
   normalizeRemoteCursorStyle,
   remoteCursorSnapshotChanged,
   RemoteCursorStyle,
@@ -740,6 +744,10 @@ struct RemoteDesktop {
   private directTouchPressScheduledAtMs: number = 0;
   /** touchStartLocalX/Y 这个重心锚点是按几根手指算的；数量变了必须重锚。 */
   private touchAnchorFingerCount: number = 0;
+  /** 触控模式：本次双指手势已判定为滚轮，锁定到手指全部抬起。 */
+  private touchTwoFingerScrollActive: boolean = false;
+  /** 上一帧的两指间距 (vp)，用来把捏合从滚动里区分出来。 */
+  private touchTwoFingerSpread: number = 0;
   // 为了让输入光标避开软键盘而额外施加的画布上移量 (px)
   private keyboardCanvasLiftPx: number = 0;
   private lastTouchMs: number = 0;
@@ -1534,6 +1542,12 @@ struct RemoteDesktop {
   }
 
   private startCanvasPinch(event: GestureEvent): void {
+    if (this.touchTwoFingerScrollActive) {
+      // 本次双指已经被 onTouch 认定为滚轮。此时 claim 输入会让 onTouch 再也
+      // 收不到 Move，滚动会在半途变成缩放；直接放弃这次捏合。
+      hilog.info(RD_DOMAIN, RD_TAG, 'canvas pinch skipped: two-finger scroll owns gesture');
+      return;
+    }
     if (this.shouldUseRustDeskRemoteAppTouchScale()) {
       this.claimCanvasPinchInput();
       this.startRustDeskRemoteAppTouchScale(event);
@@ -4612,6 +4626,8 @@ struct RemoteDesktop {
       if (this.keyboardCanvasLiftPx !== 0) {
         this.keyboardCanvasLiftPx = 0;
         this.applyCanvasTransform();
+        // 让位复位只改了变换，不补一帧的话空出来的区域会一直是黑的。
+        this.repaintAfterCanvasTransform('keyboard-lift-reset');
         hilog.info(RD_DOMAIN, RD_TAG, 'keyboard-lift reset reason=' + reason);
       }
       return;
@@ -4636,6 +4652,30 @@ struct RemoteDesktop {
       ' kb=' + Math.round(keyboardHeightPx).toString() +
       ' lift=' + Math.round(this.keyboardCanvasLiftPx).toString() +
       ' sign=' + KEYBOARD_LIFT_SIGN.toString());
+  }
+
+  /**
+   * 画布变换改变后强制重绘一次。
+   *
+   * GLRenderer::SetCanvasTransform 只更新变换和视口快照，屏幕要等下一帧
+   * RenderFrame/RenderRawBGRA 才会用新变换重画。远端画面静止时（RustDesk
+   * 尤其明显）根本不会有下一帧，于是软键盘收起后让位留下的黑边会一直挂着，
+   * 直到远端自己有变化。这里复用前台恢复路径的两级刷新：先用 RDP 的本地
+   * 缓存帧立刻补画，再请求远端推一帧。
+   */
+  private repaintAfterCanvasTransform(reason: string): void {
+    if (!this.connected || this.sessionId <= 0 || this.rendererHandle <= 0) {
+      return;
+    }
+    try {
+      const presented: boolean = this.loader.presentRdpCachedFrame(this.sessionId);
+      this.loader.requestFrameRefresh();
+      hilog.info(RD_DOMAIN, RD_TAG, 'canvas-repaint reason=' + reason +
+        ' cached=' + (presented ? '1' : '0'));
+    } catch (err) {
+      hilog.warn(RD_DOMAIN, RD_TAG,
+        'canvas-repaint failed reason=' + reason + ' ' + JSON.stringify(err));
+    }
   }
 
   private startRemoteCursorPolling(sessionId: number): void {
@@ -7046,6 +7086,7 @@ struct RemoteDesktop {
     if (this.keyboardCanvasLiftPx !== 0) {
       this.keyboardCanvasLiftPx = 0;
       this.applyCanvasTransform();
+      this.repaintAfterCanvasTransform('keyboard-close-' + source);
     }
     this.resetRemoteImeSession('closed-' + source);
     this.keyboardSubmitRefocusPending = false;
@@ -7432,6 +7473,8 @@ struct RemoteDesktop {
     }
     this.touchFingerCount = 0;
     this.touchAnchorFingerCount = 0;
+    this.touchTwoFingerScrollActive = false;
+    this.touchTwoFingerSpread = 0;
     this.touchDragActive = false;
     this.touchDragPending = false;
     this.touchMoved = false;
@@ -7550,6 +7593,32 @@ struct RemoteDesktop {
     hilog.info(RD_DOMAIN, RD_TAG,
       'touchpad-scroll delta=' + sendDelta.toString() + ' stepDy=' + stepDy.toString() +
         ' remote=' + this.remoteCursorX.toString() + ',' + this.remoteCursorY.toString());
+  }
+
+  /** 当前两指间距 (vp)；不足两指时返回 0。 */
+  private currentTwoFingerSpread(event: TouchEvent): number {
+    if (event.touches.length < 2) {
+      return 0;
+    }
+    return twoFingerSpreadVp(event.touches[0].x, event.touches[0].y,
+      event.touches[1].x, event.touches[1].y);
+  }
+
+  /**
+   * 触控模式的双指滚轮。
+   *
+   * 触控模式没有常驻光标，远端滚的是指针底下的那个窗口，所以必须先把远端
+   * 指针送到双指重心再发滚轮，否则会在上一次点击的位置翻页。queueMouseMove
+   * 会同步更新 remoteCursorX/Y，sendTouchPadWheel 随后读到的就是新位置。
+   */
+  private sendDirectTouchWheel(centerX: number, centerY: number, stepDy: number): void {
+    const mapped: MappedPoint = this.mapInputPoint(centerX, centerY);
+    if (!mapped.inside) {
+      return;
+    }
+    this.queueMouseMove(mapped.x, mapped.y);
+    this.flushMouseMove();
+    this.sendTouchPadWheel(stepDy);
   }
 
   private sendRemoteKeyTap(keyCode: number, label: string): void {
@@ -7848,6 +7917,10 @@ struct RemoteDesktop {
             this.touchLastLocalX = avg.x;
             this.touchLastLocalY = avg.y;
           }
+          // 加手指会让间距跳变，基线必须跟着重取，否则下一帧会被当成捏合。
+          this.touchTwoFingerSpread = this.currentTwoFingerSpread(event);
+          this.touchWheelRemainder = 0;
+          this.lastTouchWheelMs = 0;
           // 升级成多指手势：还没发出去的按下直接丢弃，已经按下的才需要释放。
           this.cancelDirectTouchPress();
           if (this.touchLeftDown) {
@@ -7875,6 +7948,7 @@ struct RemoteDesktop {
         if (this.touchMaxFingers >= 2) {
           const avg: LocalPoint | null = this.averageTouchPoint(event);
           if (avg) {
+            const spread: number = this.currentTwoFingerSpread(event);
             if (this.touchAnchorFingerCount !== event.touches.length) {
               // 触点数量变了，重心必然跳变（三指→两指→一指），这不是"手指移动了"。
               // 重新锚定，否则一次干净的三指轻点会因为手指先后抬起被误判成滑动，
@@ -7882,6 +7956,9 @@ struct RemoteDesktop {
               this.touchAnchorFingerCount = event.touches.length;
               this.touchStartLocalX = avg.x;
               this.touchStartLocalY = avg.y;
+              // 重心跳变的这一帧不能拿去算滚轮步长，同步 last 把它吃掉。
+              this.touchLastLocalX = avg.x;
+              this.touchLastLocalY = avg.y;
             } else {
               const dx: number = avg.x - this.touchStartLocalX;
               const dy: number = avg.y - this.touchStartLocalY;
@@ -7889,7 +7966,24 @@ struct RemoteDesktop {
                 this.touchMoved = true;
                 this.touchDragPending = false;
               }
+              const stepDx: number = avg.x - this.touchLastLocalX;
+              const stepDy: number = avg.y - this.touchLastLocalY;
+              // 双指纵向滑动 = 滚轮翻页。三指仍然只用于控制面板开关。
+              if (event.touches.length === 2) {
+                const wasScrolling: boolean = this.touchTwoFingerScrollActive;
+                this.touchTwoFingerScrollActive = nextTwoFingerScrollLatch(
+                  wasScrolling, stepDx, stepDy, spread - this.touchTwoFingerSpread);
+                if (this.touchTwoFingerScrollActive) {
+                  if (!wasScrolling) {
+                    hilog.info(RD_DOMAIN, RD_TAG, 'direct-touch two-finger scroll begin');
+                  }
+                  this.sendDirectTouchWheel(avg.x, avg.y, stepDy);
+                }
+              }
+              this.touchLastLocalX = avg.x;
+              this.touchLastLocalY = avg.y;
             }
+            this.touchTwoFingerSpread = spread;
           }
           return;
         }
