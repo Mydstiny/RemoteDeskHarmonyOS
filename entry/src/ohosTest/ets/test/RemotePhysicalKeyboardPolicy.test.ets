@@ -10,6 +10,7 @@ import {
   RemoteKeyboardLayout,
   remoteKeyboardLayoutDescription,
   shouldChoosePhysicalKeyboardLayout,
+  shouldAutoSwitchVncKeyboardMouseMode,
   shouldConsumeRemoteBack
 } from '../../../main/ets/services/RemotePhysicalKeyboardPolicy';
 
@@ -66,6 +67,21 @@ export default function remotePhysicalKeyboardPolicyTest(): void {
       expect(shouldConsumeRemoteBack(true, true, 'xl', true, true, false)).assertFalse();
       expect(shouldConsumeRemoteBack(true, true, 'xl', true, true, true)).assertTrue();
       expect(shouldConsumeRemoteBack(true, true, 'lg', true, true, true)).assertTrue();
+    });
+
+    it('auto_switches_detected_external_input_only_for_writable_vnc_once', 0, (): void => {
+      expect(shouldAutoSwitchVncKeyboardMouseMode(
+        'vnc', true, false, true, 0, 7, -1)).assertTrue();
+      expect(shouldAutoSwitchVncKeyboardMouseMode(
+        'vnc', true, false, true, 0, 7, 7)).assertFalse();
+      expect(shouldAutoSwitchVncKeyboardMouseMode(
+        'vnc', true, true, true, 0, 7, -1)).assertFalse();
+      expect(shouldAutoSwitchVncKeyboardMouseMode(
+        'vnc', true, false, false, 0, 7, -1)).assertFalse();
+      expect(shouldAutoSwitchVncKeyboardMouseMode(
+        'rdp', true, false, true, 0, 7, -1)).assertFalse();
+      expect(shouldAutoSwitchVncKeyboardMouseMode(
+        'vnc', true, false, true, 2, 7, -1)).assertFalse();
     });
   });
 }

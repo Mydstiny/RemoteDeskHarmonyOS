@@ -5981,6 +5981,9 @@ struct HostListPage {
         onOpenHostManager: (): void => { this.openVncHostManagerFromSettings(); },
         onOpenGatewayManager: (): void => { this.openVncGatewayManagerFromSettings(); },
         onSaved: (): void => { this.refreshCryptoStatus(); },
+        onReverseWheelSaved: (reverse: boolean): void => {
+          this.saveRemoteReverseWheel(reverse);
+        },
         onDirtyChanged: (dirty: boolean): void => { this.vncSettingsLeafDirty = dirty; }
       })
     } else {
@@ -8358,7 +8361,7 @@ struct HostListPage {
         Column() {
           Text('远程滚轮方向').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
             .fontColor(this.pal().text).fontFamily(this.font())
-          Text('适用于 RDP、RustDesk、实体鼠标和触控板')
+          Text('适用于 RDP、RustDesk、VNC、实体鼠标和触控板')
             .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
             .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
         }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })

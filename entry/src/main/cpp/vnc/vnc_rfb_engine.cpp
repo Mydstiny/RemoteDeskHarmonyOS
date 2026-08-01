@@ -376,7 +376,8 @@ bool VncRfbEngine::sendPixelFormatAndEncodings(std::string& error) {
     const uint64_t desktopPixels = static_cast<uint64_t>(framebufferWidth_) *
         static_cast<uint64_t>(framebufferHeight_);
     const int colorDepth = VncRfbProtocol::effectiveTrueColorDepth(
-        config_.vncColorDepth, config_.vncImageQualityPreset, desktopPixels);
+        config_.vncColorDepth, config_.vncImageQualityPreset, desktopPixels,
+        negotiatedMinor_);
     effectiveColorDepth_ = colorDepth;
     // SetPixelFormat message type 0 has three padding bytes before the 16-byte format.
     std::vector<uint8_t> setFormat = VncRfbProtocol::buildSetPixelFormat(colorDepth);
@@ -392,9 +393,9 @@ bool VncRfbEngine::sendPixelFormatAndEncodings(std::string& error) {
     serverPixelFormat_.greenShift = setFormat[15];
     serverPixelFormat_.blueShift = setFormat[16];
     VNC_DIAG_INFO(
-                "[VNC-DIAG] pixel format effectiveDepth=%{public}d requestedDepth=%{public}s quality=%{public}s framebuffer=%{public}dx%{public}d",
+                "[VNC-DIAG] pixel format effectiveDepth=%{public}d requestedDepth=%{public}s quality=%{public}s rfbMinor=%{public}d framebuffer=%{public}dx%{public}d",
                 colorDepth, config_.vncColorDepth.c_str(), config_.vncImageQualityPreset.c_str(),
-                framebufferWidth_, framebufferHeight_);
+                negotiatedMinor_, framebufferWidth_, framebufferHeight_);
 
     const std::vector<uint8_t> encodings =
         VncRfbProtocol::buildSetEncodings(config_.vncPreferredEncoding);
@@ -462,8 +463,9 @@ bool VncRfbEngine::receiveLoop(std::string& error) {
                         static_cast<unsigned long long>(diagServerMessages_), static_cast<int>(type));
         }
         if (type == 0) {
-            if (!receiveFramebufferUpdate(error)) return false;
-            if (!sendFramebufferUpdateRequest(true, error)) return false;
+            bool requestPipelined = false;
+            if (!receiveFramebufferUpdate(requestPipelined, error)) return false;
+            if (!requestPipelined && !sendFramebufferUpdateRequest(true, error)) return false;
         } else if (type == 2) {
             // Bell: no payload.
         } else if (type == 3) {
@@ -478,7 +480,9 @@ bool VncRfbEngine::receiveLoop(std::string& error) {
     return true;
 }
 
-bool VncRfbEngine::receiveFramebufferUpdate(std::string& error) {
+bool VncRfbEngine::receiveFramebufferUpdate(bool& requestPipelined,
+                                            std::string& error) {
+    requestPipelined = false;
     uint8_t padding[1] = {0};
     uint16_t count = 0;
     // FBU 头部是小读取，跟随空闲超时；实际矩形负载仍受 ioTimeoutMs_ 保护。
@@ -539,7 +543,9 @@ bool VncRfbEngine::receiveFramebufferUpdate(std::string& error) {
                 frameEncoding = VncRfbProtocol::kCopyRectEncoding;
             }
         } else if (encoding == VncRfbProtocol::kZrleEncoding) {
-            if (!receiveZrleRectangle(x, y, width, height, error)) return false;
+            if (!receiveZrleRectangle(x, y, width, height,
+                                      count == 1 && index == 0,
+                                      requestPipelined, error)) return false;
             markDirty(x, y, width, height, false);
             frameEncoding = VncRfbProtocol::kZrleEncoding;
         } else if (encoding == VncCursorProtocol::kEncoding) {
@@ -631,7 +637,10 @@ bool VncRfbEngine::receiveCopyRectangle(int x, int y, int width, int height, std
 }
 
 bool VncRfbEngine::receiveZrleRectangle(int x, int y, int width, int height,
+                                        bool pipelineNextRequest,
+                                        bool& requestPipelined,
                                         std::string& error) {
+    const uint64_t zrleStartMs = nowMs();
     if (!validRectangle(x, y, width, height)) {
         error = "VNC ZRLE rectangle is outside the framebuffer";
         return false;
@@ -657,40 +666,54 @@ bool VncRfbEngine::receiveZrleRectangle(int x, int y, int width, int height,
         error = "VNC ZRLE compressed length exceeds the rectangle-safe limit";
         return false;
     }
-    std::vector<uint8_t> compressed;
     try {
-        compressed.resize(compressedLength);
+        zrleCompressedBuffer_.resize(compressedLength);
     } catch (const std::bad_alloc&) {
         error = "VNC ZRLE compressed allocation failed";
         return false;
     }
-    if (!readBytes(compressed.data(), compressed.size(), ioTimeoutMs_, error)) {
+    if (!readBytes(zrleCompressedBuffer_.data(), zrleCompressedBuffer_.size(),
+                   ioTimeoutMs_, error)) {
         return false;
     }
-    std::vector<uint8_t> decoded;
-    if (!zrleInflater_.inflateChunk(compressed.data(), compressed.size(),
-                                    maxDecodedBytes, decoded, error)) {
-        return false;
-    }
-    std::vector<uint8_t> rgba;
-    if (!VncRfbProtocol::decodeZrleTiles(
-            serverPixelFormat_, width, height, decoded.data(), decoded.size(),
-            rgba, error)) {
-        return false;
-    }
-    for (int row = 0; row < height; ++row) {
-        for (int column = 0; column < width; ++column) {
-            const size_t source =
-                (static_cast<size_t>(row) * static_cast<size_t>(width) +
-                 static_cast<size_t>(column)) * 4U;
-            const size_t destination =
-                (static_cast<size_t>(y + row) * static_cast<size_t>(framebufferWidth_) +
-                 static_cast<size_t>(x + column)) * 4U;
-            framebuffer_[destination] = rgba[source + 2];
-            framebuffer_[destination + 1] = rgba[source + 1];
-            framebuffer_[destination + 2] = rgba[source];
-            framebuffer_[destination + 3] = rgba[source + 3];
+    const uint64_t zrleReadMs = nowMs();
+    // The RFB request is demand-driven.  Once this single rectangle's complete
+    // wire payload is buffered, ask the server for the next update before CPU
+    // inflate/decode and synchronous EGL presentation.  The next capture and
+    // network transfer can then overlap the current client-side frame work.
+    if (pipelineNextRequest) {
+        if (!sendFramebufferUpdateRequest(true, error)) {
+            return false;
         }
+        requestPipelined = true;
+    }
+    if (!zrleInflater_.inflateChunk(zrleCompressedBuffer_.data(),
+                                    zrleCompressedBuffer_.size(),
+                                    maxDecodedBytes, zrleDecodedBuffer_, error)) {
+        return false;
+    }
+    const uint64_t zrleInflateMs = nowMs();
+    const size_t destinationOffset =
+        (static_cast<size_t>(y) * static_cast<size_t>(framebufferWidth_) +
+         static_cast<size_t>(x)) * 4U;
+    if (!VncRfbProtocol::decodeZrleTilesToBgra(
+            serverPixelFormat_, width, height,
+            zrleDecodedBuffer_.data(), zrleDecodedBuffer_.size(),
+            framebuffer_.data() + destinationOffset,
+            framebuffer_.size() - destinationOffset,
+            static_cast<size_t>(framebufferWidth_) * 4U, error)) {
+        return false;
+    }
+    const uint64_t zrleDecodeTilesMs = nowMs();
+    if (width * height > 100000) {
+        VNC_DIAG_INFO(
+                    "[VNC-DIAG] ZRLE timing rect=%{public}dx%{public}d compressed=%{public}u readMs=%{public}llu inflateMs=%{public}llu directTilesMs=%{public}llu pipelined=%{public}d totalMs=%{public}llu",
+                    width, height, compressedLength,
+                    static_cast<unsigned long long>(zrleReadMs - zrleStartMs),
+                    static_cast<unsigned long long>(zrleInflateMs - zrleReadMs),
+                    static_cast<unsigned long long>(zrleDecodeTilesMs - zrleInflateMs),
+                    requestPipelined ? 1 : 0,
+                    static_cast<unsigned long long>(nowMs() - zrleStartMs));
     }
     return true;
 }
@@ -922,7 +945,9 @@ void VncRfbEngine::sendKey(uint32_t keyCode, bool pressed) {
                                static_cast<uint8_t>(keySym >> 24), static_cast<uint8_t>(keySym >> 16),
                                static_cast<uint8_t>(keySym >> 8), static_cast<uint8_t>(keySym)};
     std::string error;
-    writeBytes(packet, sizeof(packet), error);
+    if (!writeBytes(packet, sizeof(packet), error)) {
+        VNC_DIAG_WARN("[VNC-DIAG] RFB KeyEvent write failed: %{public}s", error.c_str());
+    }
 }
 
 void VncRfbEngine::sendMouse(int x, int y, MouseButton button, bool pressed) {
@@ -942,7 +967,9 @@ void VncRfbEngine::sendMouse(int x, int y, MouseButton button, bool pressed) {
                                static_cast<uint8_t>(x >> 8), static_cast<uint8_t>(x),
                                static_cast<uint8_t>(y >> 8), static_cast<uint8_t>(y)};
     std::string error;
-    writeBytes(packet, sizeof(packet), error);
+    if (!writeBytes(packet, sizeof(packet), error)) {
+        VNC_DIAG_WARN("[VNC-DIAG] RFB PointerEvent write failed: %{public}s", error.c_str());
+    }
 }
 
 void VncRfbEngine::sendMouseWheel(int x, int y, int delta) {
@@ -952,15 +979,28 @@ void VncRfbEngine::sendMouseWheel(int x, int y, int delta) {
     std::lock_guard<std::mutex> lock(inputMutex_);
     x = std::max(0, std::min(x, std::max(0, framebufferWidth_ - 1)));
     y = std::max(0, std::min(y, std::max(0, framebufferHeight_ - 1)));
+    // Keep a logical wheel burst contiguous on the RFB stream and pay for one
+    // socket/TLS write instead of up to 64 tiny writes.  This also prevents a
+    // pipelined framebuffer request from landing between wheel down/up pairs.
+    std::array<uint8_t, 32U * 12U> packets {};
     for (int index = 0; index < steps; ++index) {
-        const uint8_t down[6] = {5, static_cast<uint8_t>(buttonMask_ | bit),
-                                 static_cast<uint8_t>(x >> 8), static_cast<uint8_t>(x),
-                                 static_cast<uint8_t>(y >> 8), static_cast<uint8_t>(y)};
-        const uint8_t up[6] = {5, static_cast<uint8_t>(buttonMask_),
-                               static_cast<uint8_t>(x >> 8), static_cast<uint8_t>(x),
-                               static_cast<uint8_t>(y >> 8), static_cast<uint8_t>(y)};
-        std::string error;
-        if (!writeBytes(down, sizeof(down), error) || !writeBytes(up, sizeof(up), error)) return;
+        const size_t offset = static_cast<size_t>(index) * 12U;
+        packets[offset] = 5;
+        packets[offset + 1] = static_cast<uint8_t>(buttonMask_ | bit);
+        packets[offset + 2] = static_cast<uint8_t>(x >> 8);
+        packets[offset + 3] = static_cast<uint8_t>(x);
+        packets[offset + 4] = static_cast<uint8_t>(y >> 8);
+        packets[offset + 5] = static_cast<uint8_t>(y);
+        packets[offset + 6] = 5;
+        packets[offset + 7] = static_cast<uint8_t>(buttonMask_);
+        packets[offset + 8] = static_cast<uint8_t>(x >> 8);
+        packets[offset + 9] = static_cast<uint8_t>(x);
+        packets[offset + 10] = static_cast<uint8_t>(y >> 8);
+        packets[offset + 11] = static_cast<uint8_t>(y);
+    }
+    std::string error;
+    if (!writeBytes(packets.data(), static_cast<size_t>(steps) * 12U, error)) {
+        VNC_DIAG_WARN("[VNC-DIAG] RFB wheel burst write failed: %{public}s", error.c_str());
     }
 }
 

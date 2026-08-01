@@ -6,10 +6,13 @@
 
 #include <algorithm>
 #include <array>
-#include <limits>
-#include <new>
-#include <utility>
+#include <atomic>
 #include <cstring>
+#include <limits>
+#include <mutex>
+#include <new>
+#include <thread>
+#include <utility>
 #include <zlib.h>
 
 namespace {
@@ -205,6 +208,15 @@ public:
         return size_ - offset_;
     }
 
+    size_t position() const {
+        return offset_;
+    }
+
+    bool skip(size_t count) {
+        const uint8_t* ignored = nullptr;
+        return readBytes(count, ignored);
+    }
+
 private:
     const uint8_t* data_ = nullptr;
     size_t size_ = 0;
@@ -229,8 +241,10 @@ inline void writePixel(uint8_t*& destination, uint32_t pixel) {
  */
 class CompactPixelDecoder {
 public:
-    explicit CompactPixelDecoder(const VncRfbProtocol::PixelFormat& format)
-        : format_(format), bytes_(VncRfbProtocol::compactPixelBytes(format)) {
+    explicit CompactPixelDecoder(const VncRfbProtocol::PixelFormat& format,
+                                 bool blueFirst = false)
+        : format_(format), bytes_(VncRfbProtocol::compactPixelBytes(format)),
+          blueFirst_(blueFirst) {
         if (bytes_ <= 2) {
             const size_t tableSize = static_cast<size_t>(1U) << (bytes_ * 8U);
             try {
@@ -244,9 +258,7 @@ public:
                 const uint32_t red = (numericValue >> format_.redShift) & format_.redMax;
                 const uint32_t green = (numericValue >> format_.greenShift) & format_.greenMax;
                 const uint32_t blue = (numericValue >> format_.blueShift) & format_.blueMax;
-                packedPixels_[value] = scale(red, format_.redMax) |
-                    (scale(green, format_.greenMax) << 8U) |
-                    (scale(blue, format_.blueMax) << 16U) | 0xFF000000U;
+                packedPixels_[value] = pack(red, green, blue);
             }
         }
     }
@@ -288,9 +300,7 @@ public:
         const uint32_t red = (value >> format_.redShift) & format_.redMax;
         const uint32_t green = (value >> format_.greenShift) & format_.greenMax;
         const uint32_t blue = (value >> format_.blueShift) & format_.blueMax;
-        pixel = scale(red, format_.redMax) |
-            (scale(green, format_.greenMax) << 8U) |
-            (scale(blue, format_.blueMax) << 16U) | 0xFF000000U;
+        pixel = pack(red, green, blue);
         return true;
     }
 
@@ -299,10 +309,19 @@ private:
         return static_cast<uint32_t>(value * 255U / maximum);
     }
 
+    uint32_t pack(uint32_t red, uint32_t green, uint32_t blue) const {
+        const uint32_t r = scale(red, format_.redMax);
+        const uint32_t g = scale(green, format_.greenMax);
+        const uint32_t b = scale(blue, format_.blueMax);
+        return blueFirst_ ? b | (g << 8U) | (r << 16U) | 0xFF000000U :
+            r | (g << 8U) | (b << 16U) | 0xFF000000U;
+    }
+
     const VncRfbProtocol::PixelFormat& format_;
     size_t bytes_ = 0;
     std::vector<uint32_t> packedPixels_;
     bool allocationFailed_ = false;
+    bool blueFirst_ = false;
 };
 
 bool readRunLength(ByteReader& reader, size_t remainingPixels, size_t& runLength) {
@@ -464,6 +483,263 @@ bool decodeZrleTile(ByteReader& reader, const CompactPixelDecoder& decoder,
     return true;
 }
 
+struct ZrleTileJob {
+    int x = 0;
+    int y = 0;
+    int width = 0;
+    int height = 0;
+    size_t offset = 0;
+    size_t size = 0;
+};
+
+bool scanZrleTile(ByteReader& reader, size_t compactBytes,
+                  int tileWidth, int tileHeight, std::string& error) {
+    const size_t pixelCount = static_cast<size_t>(tileWidth) *
+        static_cast<size_t>(tileHeight);
+    uint8_t subencoding = 0;
+    if (!reader.readU8(subencoding)) {
+        error = "VNC ZRLE tile is missing its subencoding";
+        return false;
+    }
+    if ((subencoding >= 17 && subencoding <= 127) || subencoding == 129) {
+        error = "VNC ZRLE tile uses an invalid or palette-reuse subencoding";
+        return false;
+    }
+    if (subencoding == 0) {
+        size_t bytes = 0;
+        if (!checkedMultiply(pixelCount, compactBytes, bytes) || !reader.skip(bytes)) {
+            error = "VNC ZRLE raw tile is truncated";
+            return false;
+        }
+        return true;
+    }
+    if (subencoding == 1) {
+        if (!reader.skip(compactBytes)) {
+            error = "VNC ZRLE solid tile is truncated";
+            return false;
+        }
+        return true;
+    }
+    if (subencoding >= 2 && subencoding <= 16) {
+        const size_t paletteSize = subencoding;
+        size_t paletteBytes = 0;
+        if (!checkedMultiply(paletteSize, compactBytes, paletteBytes) ||
+            !reader.skip(paletteBytes)) {
+            error = "VNC ZRLE packed palette is truncated";
+            return false;
+        }
+        const unsigned bitsPerIndex = paletteSize == 2 ? 1U :
+            (paletteSize <= 4 ? 2U : 4U);
+        const size_t rowBytes =
+            (static_cast<size_t>(tileWidth) * bitsPerIndex + 7U) / 8U;
+        size_t packedBytes = 0;
+        if (!checkedMultiply(rowBytes, static_cast<size_t>(tileHeight), packedBytes) ||
+            !reader.skip(packedBytes)) {
+            error = "VNC ZRLE packed palette indexes are truncated";
+            return false;
+        }
+        return true;
+    }
+    if (subencoding == 128) {
+        size_t outputIndex = 0;
+        while (outputIndex < pixelCount) {
+            if (!reader.skip(compactBytes)) {
+                error = "VNC ZRLE plain RLE pixel is truncated";
+                return false;
+            }
+            size_t runLength = 0;
+            if (!readRunLength(reader, pixelCount - outputIndex, runLength)) {
+                error = "VNC ZRLE plain RLE length is invalid";
+                return false;
+            }
+            outputIndex += runLength;
+        }
+        return true;
+    }
+
+    const size_t paletteSize = static_cast<size_t>(subencoding - 128);
+    if (paletteSize < 2 || paletteSize > 127) {
+        error = "VNC ZRLE palette RLE size is invalid";
+        return false;
+    }
+    size_t paletteBytes = 0;
+    if (!checkedMultiply(paletteSize, compactBytes, paletteBytes) ||
+        !reader.skip(paletteBytes)) {
+        error = "VNC ZRLE palette RLE palette is truncated";
+        return false;
+    }
+    size_t outputIndex = 0;
+    while (outputIndex < pixelCount) {
+        uint8_t encodedIndex = 0;
+        if (!reader.readU8(encodedIndex)) {
+            error = "VNC ZRLE palette RLE index is truncated";
+            return false;
+        }
+        if (static_cast<size_t>(encodedIndex & 0x7FU) >= paletteSize) {
+            error = "VNC ZRLE palette RLE index is out of range";
+            return false;
+        }
+        size_t runLength = 1;
+        if ((encodedIndex & 0x80U) != 0 &&
+            !readRunLength(reader, pixelCount - outputIndex, runLength)) {
+            error = "VNC ZRLE palette RLE length is invalid";
+            return false;
+        }
+        outputIndex += runLength;
+    }
+    return true;
+}
+
+bool buildZrleTileJobs(int width, int height, size_t compactBytes,
+                       const uint8_t* data, size_t size,
+                       std::vector<ZrleTileJob>& jobs, std::string& error) {
+    ByteReader reader(data, size);
+    try {
+        const size_t columns = (static_cast<size_t>(width) + 63U) / 64U;
+        const size_t rows = (static_cast<size_t>(height) + 63U) / 64U;
+        size_t tileCount = 0;
+        if (!checkedMultiply(columns, rows, tileCount)) {
+            error = "VNC ZRLE tile count overflows";
+            return false;
+        }
+        jobs.reserve(tileCount);
+        for (int tileY = 0; tileY < height; tileY += 64) {
+            const int tileHeight = std::min(64, height - tileY);
+            for (int tileX = 0; tileX < width; tileX += 64) {
+                const int tileWidth = std::min(64, width - tileX);
+                const size_t start = reader.position();
+                if (!scanZrleTile(reader, compactBytes, tileWidth, tileHeight, error)) {
+                    return false;
+                }
+                jobs.push_back({tileX, tileY, tileWidth, tileHeight,
+                                start, reader.position() - start});
+            }
+        }
+    } catch (const std::bad_alloc&) {
+        error = "VNC ZRLE tile index allocation failed";
+        return false;
+    }
+    if (reader.remaining() != 0) {
+        error = "VNC ZRLE rectangle has trailing decompressed data";
+        return false;
+    }
+    return true;
+}
+
+bool decodeZrleTilesInto(const VncRfbProtocol::PixelFormat& format,
+                         int width, int height, const uint8_t* data, size_t size,
+                         uint8_t* destination, size_t destinationSize,
+                         size_t destinationStride, bool blueFirst,
+                         std::string& error) {
+    if (width <= 0 || height <= 0 || data == nullptr || size == 0 ||
+        destination == nullptr || !validPixelFormat(format)) {
+        error = "VNC ZRLE rectangle input is invalid";
+        return false;
+    }
+    const size_t compactBytes = VncRfbProtocol::compactPixelBytes(format);
+    size_t rowBytes = 0;
+    size_t lastRowOffset = 0;
+    size_t requiredBytes = 0;
+    if (compactBytes == 0 ||
+        !checkedMultiply(static_cast<size_t>(width), 4U, rowBytes) ||
+        destinationStride < rowBytes ||
+        !checkedMultiply(static_cast<size_t>(height - 1), destinationStride,
+                         lastRowOffset) ||
+        !checkedAdd(lastRowOffset, rowBytes, requiredBytes) ||
+        destinationSize < requiredBytes) {
+        error = "VNC ZRLE destination is too small";
+        return false;
+    }
+
+    std::vector<ZrleTileJob> jobs;
+    if (!buildZrleTileJobs(width, height, compactBytes, data, size, jobs, error)) {
+        return false;
+    }
+    CompactPixelDecoder decoder(format, blueFirst);
+    if (!decoder.ready()) {
+        error = "VNC ZRLE pixel lookup allocation failed";
+        return false;
+    }
+
+    size_t pixelCount = 0;
+    if (!checkedMultiply(static_cast<size_t>(width), static_cast<size_t>(height),
+                         pixelCount)) {
+        error = "VNC ZRLE rectangle size overflows";
+        return false;
+    }
+    size_t workerCount = 1;
+    if (pixelCount >= 256U * 1024U && jobs.size() >= 8U) {
+        const unsigned hardwareWorkers = std::thread::hardware_concurrency();
+        const size_t availableWorkers = hardwareWorkers == 0 ? 2U :
+            static_cast<size_t>(hardwareWorkers);
+        workerCount = std::min({static_cast<size_t>(4), availableWorkers, jobs.size()});
+    }
+
+    std::atomic<size_t> nextJob {0};
+    std::atomic<bool> failed {false};
+    std::mutex errorMutex;
+    const auto fail = [&](const std::string& workerError) -> void {
+        if (!failed.exchange(true, std::memory_order_acq_rel)) {
+            std::lock_guard<std::mutex> lock(errorMutex);
+            error = workerError;
+        }
+    };
+    const auto worker = [&]() -> void {
+        std::vector<uint8_t> tile;
+        try {
+            while (!failed.load(std::memory_order_acquire)) {
+                const size_t index = nextJob.fetch_add(1, std::memory_order_relaxed);
+                if (index >= jobs.size()) {
+                    return;
+                }
+                const ZrleTileJob& job = jobs[index];
+                ByteReader tileReader(data + job.offset, job.size);
+                std::string tileError;
+                if (!decodeZrleTile(tileReader, decoder, job.width, job.height,
+                                    tile, tileError) || tileReader.remaining() != 0) {
+                    fail(tileError.empty() ?
+                        "VNC ZRLE tile decoder did not consume its bounded input" : tileError);
+                    return;
+                }
+                const size_t copyBytes = static_cast<size_t>(job.width) * 4U;
+                for (int row = 0; row < job.height; ++row) {
+                    const size_t sourceOffset = static_cast<size_t>(row) * copyBytes;
+                    const size_t destinationOffset =
+                        static_cast<size_t>(job.y + row) * destinationStride +
+                        static_cast<size_t>(job.x) * 4U;
+                    std::memcpy(destination + destinationOffset,
+                                tile.data() + sourceOffset, copyBytes);
+                }
+            }
+        } catch (const std::bad_alloc&) {
+            fail("VNC ZRLE tile decode allocation failed");
+        } catch (const std::exception&) {
+            fail("VNC ZRLE tile worker failed");
+        }
+    };
+
+    std::vector<std::thread> workers;
+    if (workerCount > 1) {
+        try {
+            workers.reserve(workerCount - 1U);
+            for (size_t index = 1; index < workerCount; ++index) {
+                workers.emplace_back(worker);
+            }
+        } catch (const std::exception&) {
+            // Already-started workers and the caller thread can safely finish
+            // the shared atomic work queue; a thread-creation failure only
+            // reduces parallelism.
+        }
+    }
+    worker();
+    for (std::thread& decodeThread : workers) {
+        if (decodeThread.joinable()) {
+            decodeThread.join();
+        }
+    }
+    return !failed.load(std::memory_order_acquire);
+}
+
 } // namespace
 
 namespace VncRfbProtocol {
@@ -502,15 +778,31 @@ std::vector<uint8_t> buildFramebufferUpdateRequest(bool incremental,
 
 int effectiveTrueColorDepth(const std::string& requestedDepth,
                             const std::string& qualityPreset,
-                            uint64_t desktopPixels) {
-    if (requestedDepth == "8") return 8;
-    if (requestedDepth == "16") return 16;
-    if (requestedDepth == "32") return 32;
-    if (qualityPreset == "quality") return 32;
-    if (qualityPreset == "speed" || desktopPixels > 4ULL * 1024ULL * 1024ULL) {
+                            uint64_t desktopPixels,
+                            int negotiatedMinor) {
+    int requested = 32;
+    if (requestedDepth == "8") {
+        requested = 8;
+    } else if (requestedDepth == "16") {
+        requested = 16;
+    } else if (requestedDepth == "32" || qualityPreset == "quality") {
+        requested = 32;
+    // An explicit speed preset must materially reduce ZRLE work. Retina-sized
+    // sessions also need the same reduction under balanced+auto: live traces
+    // show RGB565 ZRLE inflate alone can exceed 300 ms under sustained load.
+    // Explicit 16/32-bit choices and the quality preset still win above.
+    } else if (qualityPreset == "speed" ||
+               desktopPixels > 4ULL * 1024ULL * 1024ULL) {
+        requested = 8;
+    }
+    // Apple Screen Sharing advertises RFB 3.3 but closes the socket immediately
+    // after receiving RGB332 followed by the initial framebuffer request. RFB
+    // offers no pixel-format capability probe, so keep legacy 3.3 peers on the
+    // proven RGB565 path instead of making the session unusable.
+    if (negotiatedMinor <= 3 && requested == 8) {
         return 16;
     }
-    return 32;
+    return requested;
 }
 
 std::vector<uint8_t> buildSetPixelFormat(int colorDepth) {
@@ -770,39 +1062,22 @@ bool decodeZrleTiles(const PixelFormat& format, int width, int height,
         return false;
     }
 
-    CompactPixelDecoder decoder(format);
-    if (!decoder.ready()) {
+    if (!decodeZrleTilesInto(format, width, height, data, size,
+                             rgba.data(), rgba.size(),
+                             static_cast<size_t>(width) * 4U, false, error)) {
         rgba.clear();
-        error = "VNC ZRLE pixel lookup allocation failed";
-        return false;
-    }
-    ByteReader reader(data, size);
-    std::vector<uint8_t> tile;
-    for (int tileY = 0; tileY < height; tileY += 64) {
-        const int tileHeight = std::min(64, height - tileY);
-        for (int tileX = 0; tileX < width; tileX += 64) {
-            const int tileWidth = std::min(64, width - tileX);
-            if (!decodeZrleTile(reader, decoder, tileWidth, tileHeight, tile, error)) {
-                rgba.clear();
-                return false;
-            }
-            for (int row = 0; row < tileHeight; ++row) {
-                const size_t source = static_cast<size_t>(row) *
-                    static_cast<size_t>(tileWidth) * 4U;
-                const size_t destination =
-                    (static_cast<size_t>(tileY + row) * static_cast<size_t>(width) +
-                     static_cast<size_t>(tileX)) * 4U;
-                std::memcpy(rgba.data() + destination, tile.data() + source,
-                            static_cast<size_t>(tileWidth) * 4U);
-            }
-        }
-    }
-    if (reader.remaining() != 0) {
-        rgba.clear();
-        error = "VNC ZRLE rectangle has trailing decompressed data";
         return false;
     }
     return true;
+}
+
+bool decodeZrleTilesToBgra(const PixelFormat& format, int width, int height,
+                           const uint8_t* data, size_t size,
+                           uint8_t* destination, size_t destinationSize,
+                           size_t destinationStride, std::string& error) {
+    return decodeZrleTilesInto(format, width, height, data, size,
+                               destination, destinationSize,
+                               destinationStride, true, error);
 }
 
 struct ZrleInflater::Impl {
@@ -852,6 +1127,15 @@ bool ZrleInflater::inflateChunk(const uint8_t* compressed, size_t compressedSize
     impl_->stream.next_in = const_cast<Bytef*>(
         reinterpret_cast<const Bytef*>(compressed));
     impl_->stream.avail_in = static_cast<uInt>(compressedSize);
+
+    try {
+        if (output.capacity() < maxOutputBytes) {
+            output.reserve(maxOutputBytes);
+        }
+    } catch (const std::bad_alloc&) {
+        error = "VNC ZRLE decompressed allocation failed";
+        return false;
+    }
 
     constexpr size_t kInflateChunkBytes = 64U * 1024U;
     std::array<uint8_t, kInflateChunkBytes> buffer = {0};

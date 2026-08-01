@@ -43,11 +43,13 @@ import { VncSheetScaffold } from './vnc/VncSheetScaffold';
 export struct VncSettingsSheet {
   @StorageProp('currentTheme') theme: string = 'light';
   @StorageProp('accentColor') accentColor: string = '#007DFF';
+  @StorageLink('rustdeskReverseWheel') sharedReverseWheel: boolean = false;
   @Prop mode: number = SETTINGS_SHEET_VNC_CONNECTION;
   onClose: () => void = (): void => {};
   onOpenHostManager: () => void = (): void => {};
   onOpenGatewayManager: () => void = (): void => {};
   onSaved: () => void = (): void => {};
+  onReverseWheelSaved: (reverse: boolean) => void = (_reverse: boolean): void => {};
   onDirtyChanged: (dirty: boolean) => void = (_dirty: boolean): void => {};
 
   @State defaultTransport: VncTransport = 'direct_tcp';
@@ -136,7 +138,7 @@ export struct VncSettingsSheet {
     this.jpegQuality = values.jpegQuality;
     this.localCursorMode = values.localCursorMode;
     this.touchpadSpeed = values.touchpadSpeed;
-    this.reverseWheel = values.reverseWheel;
+    this.reverseWheel = this.sharedReverseWheel;
     this.swapMouseButtons = values.swapMouseButtons;
     this.diagnosticsExpanded = values.diagnosticsExpanded;
     this.diagnosticsRefreshMs = values.diagnosticsRefreshMs;
@@ -270,6 +272,8 @@ export struct VncSettingsSheet {
       }
       this.dirty = false;
       this.onDirtyChanged(false);
+      this.sharedReverseWheel = this.reverseWheel;
+      this.onReverseWheelSaved(this.reverseWheel);
       promptAction.showToast({ message: 'VNC 设置已保存', duration: 1500 });
       this.onSaved();
     } finally {
@@ -447,7 +451,7 @@ export struct VncSettingsSheet {
 
       Text('画质预设').fontSize(12).fontColor(this.pal().text3).margin({ bottom: 7 })
       Row() {
-        this.choice('速度', this.imageQualityPreset === 'speed', (): void => {
+        this.choice('极速', this.imageQualityPreset === 'speed', (): void => {
           this.imageQualityPreset = 'speed'; this.markDirty();
         })
         this.choice('均衡', this.imageQualityPreset === 'balanced', (): void => {
@@ -457,6 +461,8 @@ export struct VncSettingsSheet {
           this.imageQualityPreset = 'quality'; this.markDirty();
         }, 6)
       }.width('100%').margin({ bottom: 10 })
+      Text('色深为“自动”时，极速和 Retina 级均衡会优先使用 8 位色；自动或显式 8 位连接 RFB 3.3 服务端（包括 macOS 屏幕共享）时会回退到兼容的 16 位色，避免首帧断连。质量或显式 16/32 位保持原画质。')
+        .fontSize(11).fontColor(this.pal().text3).lineHeight(18).width('100%').margin({ bottom: 10 })
 
       Text('编码偏好').fontSize(12).fontColor(this.pal().text3).margin({ bottom: 7 })
       Row() {
@@ -552,7 +558,7 @@ export struct VncSettingsSheet {
           this.touchpadSpeed = Math.round(value); this.markDirty();
         })
         .width('100%').margin({ bottom: 8 })
-      this.toggle('反转滚轮方向', '只作用于 VNC 会话', this.reverseWheel,
+      this.toggle('反转滚轮方向', '与“个性化 > 远程滚轮方向”共用', this.reverseWheel,
         (value: boolean): void => { this.reverseWheel = value; this.markDirty(); })
       this.toggle('交换左右键', '左键与右键互换，只作用于 VNC', this.swapMouseButtons,
         (value: boolean): void => { this.swapMouseButtons = value; this.markDirty(); })

@@ -47,6 +47,28 @@ Consequences:
 - In-app account switching to a different OS Huawei account falls back to the
   local hashed store; it never reads the previous account's canonical store.
 
+## D-009 - One table's platform failure never blocks login or other tables
+
+The startup bootstrap (cloud-first) is the upload gate: `bootstrapCompleted`
+stays false and transfers stay fail-closed until an authoritative pull
+succeeds. But a single table/platform failure (for example the AGC
+`vncrecord` table missing its primary key, which makes the platform sync
+return code=1) must not roll account login back to device-local, freeze every
+other table's manual upload, or roll back a locally persisted VNC scope
+selection. The account scope stays active with sync paused for the affected
+table; resolution happens in that table's own settings (or in AGC for
+cloud-table schema problems).
+
+## D-010 - Encryption and backup sensitivity are user choices, not presumptions
+
+Portable backup supports an explicit full mode selected at export time that
+keeps passwords, SSH private keys, 2FA, VNC secrets/trust and device trust
+(SSH host public keys / RDP certificates are public data and are retained in
+every mode). Encryption configuration is the user's explicit choice: without
+a configured crypto contract, sensitive rows upload/back up as stored
+(plaintext by consent); with a configured contract every secret must be
+ciphertext.
+
 ## D-008 - Toolchains are machine-local and ABI-explicit
 
 Windows and macOS each configure their own DevEco SDK, native SDK, LLVM/CMake/Ninja, Node/Hvigor/ohpm, Rust/Cargo targets, linker, sysroot and private signing inputs. Do not migrate caches or assume a path from the other OS. OHOS Rust builds must select `aarch64-unknown-linux-ohos` or `x86_64-unknown-linux-ohos` with the matching Clang target and sysroot.

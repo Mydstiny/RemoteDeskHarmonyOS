@@ -344,6 +344,18 @@ target_compile_definitions(rdpnapi PRIVATE
     REMOTEDESK_BUILD_TIME_UTC="${REMOTEDESK_BUILD_TIME_UTC}"
 )
 
+# VNC full-screen ZRLE decode is production-rate code even in a signed Debug
+# HAP used for on-device diagnostics. Keep symbols and assertions, but compile
+# only the hot wire/decode sources with optimization so Debug does not turn a
+# 5.4 MP frame into an artificial multi-second bottleneck.
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    set_property(SOURCE
+        vnc/vnc_rfb_protocol.cpp
+        vnc/vnc_transport.cpp
+        vnc/vnc_rfb_engine.cpp
+        APPEND PROPERTY COMPILE_OPTIONS -O2)
+endif()
+
 # 输出名称
 set_target_properties(rdpnapi PROPERTIES
     LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/libs

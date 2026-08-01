@@ -1584,11 +1584,14 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
             }
             if (frameNumber <= 8 || frameNumber % 60 == 0 || !present.presented()) {
                 OH_LOG_INFO(LOG_APP,
-                            "[ExtLoader][VNC-DIAG] raw frame presented count=%{public}llu size=%{public}zu framebuffer=%{public}dx%{public}d dirty=%{public}d,%{public}d %{public}dx%{public}d generation=%{public}llu result=%{public}d",
+                            "[ExtLoader][VNC-DIAG] raw frame presented count=%{public}llu size=%{public}zu framebuffer=%{public}dx%{public}d dirty=%{public}d,%{public}d %{public}dx%{public}d generation=%{public}llu result=%{public}d uploadUs=%{public}lld drawUs=%{public}lld swapUs=%{public}lld",
                             static_cast<unsigned long long>(frameNumber), frame.size, frame.width, frame.height,
                             frame.dirtyX, frame.dirtyY, frame.dirtyWidth, frame.dirtyHeight,
                             static_cast<unsigned long long>(target.generation),
-                            static_cast<int>(present.result));
+                            static_cast<int>(present.result),
+                            static_cast<long long>(present.uploadUs),
+                            static_cast<long long>(present.drawUs),
+                            static_cast<long long>(present.swapUs));
             }
             return;
         }

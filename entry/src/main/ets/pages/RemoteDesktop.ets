@@ -299,6 +299,7 @@ import {
   resolveRemoteImeDelete,
   resolveRemoteImeSelection,
   shouldAcceptRemoteImeTextChange,
+  shouldCloseRemoteImeSessionOnAvoidAreaChange,
   shouldCloseRemoteImeSessionOnEditChange,
   shouldRecenterRemoteImeShadow,
   shouldResetRemoteImeOnPointerDown,
@@ -337,8 +338,17 @@ import {
   remoteKeyboardLayoutDescription,
   shouldChoosePhysicalKeyboardLayout,
   physicalKeyboardLayoutForProtocol,
+  shouldAutoSwitchVncKeyboardMouseMode,
   shouldConsumeRemoteBack
 } from '../services/RemotePhysicalKeyboardPolicy';
+import {
+  accumulateContinuousRemoteWheel,
+  applyRemoteWheelDirection,
+  discreteRemoteWheelDelta,
+  nextVncTouchpadFlingDelta,
+  shouldStartVncTouchpadFling,
+  VNC_TOUCHPAD_FLING_INTERVAL_MS
+} from '../services/RemoteWheelPolicy';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { fileIo, fileUri, picker } from '@kit.CoreFileKit';
 import { preferences, unifiedDataChannel, uniformDataStruct, uniformTypeDescriptor } from '@kit.ArkData';
@@ -352,9 +362,7 @@ const TOUCH_DRAG_HOLD_MS = 1000;
 const TOUCH_INDICATOR_HIDE_MS = 900;
 const TOUCH_INDICATOR_ACTION_HIDE_MS = 1300;
 const TOUCHPAD_POINTER_GAIN = 1.0;
-const TOUCHPAD_SCROLL_GAIN = 0.08;
 const TOUCHPAD_SCROLL_FLUSH_MS = 24;
-const TOUCHPAD_SCROLL_MAX_DELTA = 2;
 const TOUCH_DIRECT_RIGHT_CLICK_MS = 650;
 const REMOTE_IME_SELECTION_ACK_TIMEOUT_MS = 600;
 const REMOTE_IME_COMMAND_RETRY_MS = 50;
@@ -617,6 +625,7 @@ struct RemoteDesktop {
   @StorageLink('rustdeskShowLocalCursor') rustdeskShowLocalCursor: boolean = true;
   @StorageLink('rustdeskBrowseMode') rustdeskBrowseMode: boolean = false;
   @StorageLink('rustdeskRelativeMouseMode') rustdeskRelativeMouseMode: boolean = false;
+  // Legacy storage key; now the shared RDP/RustDesk/VNC wheel direction.
   @StorageLink('rustdeskReverseWheel') rustdeskReverseWheel: boolean = false;
   @StorageLink('rustdeskSwapMouseButtons') rustdeskSwapMouseButtons: boolean = false;
   @StorageLink('rustdeskTouchpadSpeed') rustdeskTouchpadSpeed: number = 1.0;
@@ -633,7 +642,6 @@ struct RemoteDesktop {
   private vncFrameRateLimit: number = 30;
   private vncLocalCursorMode: VncLocalCursorMode = 'auto';
   private vncTouchpadSpeed: number = 100;
-  private vncReverseWheel: boolean = false;
   private vncSwapMouseButtons: boolean = false;
   private vncDiagnosticsRefreshMs: number = 500;
   private vncDiagnosticsExpandedByDefault: boolean = false;
@@ -849,6 +857,9 @@ struct RemoteDesktop {
   private touchDragCursorY: number = 0;  // 双指开始时的光标 Y
   private touchWheelRemainder: number = 0;
   private lastTouchWheelMs: number = 0;
+  private touchWheelLastStepDy: number = 0;
+  private touchWheelFlingTimer: number = -1;
+  private touchWheelSendCount: number = 0;
   private touchLeftDown: boolean = false; // 直接模式用: 左键是否按下
   private touchGestureDone: boolean = false; // 双指手势已完成, 抑制剩余手指的多余点击
   private touchMaxFingers: number = 0;       // 本次手势最高手指数 (用于三指检测)
@@ -962,6 +973,8 @@ struct RemoteDesktop {
   private physicalKeyboardLayoutConfirmed: boolean = false;
   private physicalKeyboardLayoutPromptVisible: boolean = false;
   private physicalKeyboardConnected: boolean = false;
+  private externalKeyboardMouseConnected: boolean = false;
+  private vncExternalInputAutoSwitchSessionId: number = -1;
   private inputDeviceRefreshEpoch: number = 0;
   private lastMacInputSourceShortcutMs: number = 0;
   private macCapsLockDownAtMs: number = 0;
@@ -982,6 +995,8 @@ struct RemoteDesktop {
   private mouseMoveTimer: number = -1;
   private physicalMouseDownButton: number = -1;
   private physicalWheelRemainder: number = 0;
+  private lastPhysicalWheelAtMs: number = 0;
+  private physicalWheelSendCount: number = 0;
   private inputDeviceListenerRegistered: boolean = false;
   private inputDevicePromptVisible: boolean = false;
   private externalInputPromptedThisSession: boolean = false;
@@ -1066,11 +1081,54 @@ struct RemoteDesktop {
       }
       const device: inputDevice.InputDeviceData = await inputDevice.getDeviceInfo(deviceId);
       if (this.isKeyboardMouseDevice(device)) {
+        const host: RemoteHost | null = this.pendingHost;
+        if (host !== null && host.protocol === 'vnc') {
+          this.externalKeyboardMouseConnected = true;
+          this.maybeAutoSwitchVncKeyboardMouseMode('device-added');
+          return;
+        }
         this.promptSwitchToKeyboardMouseMode(device.name);
       }
     } catch (err) {
       hilog.warn(RD_DOMAIN, RD_TAG, 'inputDevice add ignored: ' + JSON.stringify(err));
     }
+  }
+
+  private maybeAutoSwitchVncKeyboardMouseMode(reason: string): void {
+    const host: RemoteHost | null = this.pendingHost;
+    if (host === null || host.protocol !== 'vnc' || this.pendingVncHost === null) {
+      return;
+    }
+    // A session that already starts in keyboard/mouse mode is handled once.
+    // If the user then cycles away while the device remains attached, do not
+    // immediately override that explicit in-session choice.
+    if (this.connected && this.sessionId > 0 && this.externalKeyboardMouseConnected &&
+      this.vncControlMode === 2) {
+      this.vncExternalInputAutoSwitchSessionId = this.sessionId;
+      return;
+    }
+    if (!shouldAutoSwitchVncKeyboardMouseMode(
+      host.protocol, this.connected, this.pendingVncHost.viewOnly,
+      this.externalKeyboardMouseConnected, this.vncControlMode,
+      this.sessionId, this.vncExternalInputAutoSwitchSessionId)) {
+      return;
+    }
+    this.vncExternalInputAutoSwitchSessionId = this.sessionId;
+    this.vncControlMode = 2;
+    this.hideTouchIndicator();
+    this.syncRemoteSystemPointer('external-input-auto-switch', true, true);
+    this.scheduleRemoteInputFocus('external-input-auto-switch');
+    promptAction.showToast({ message: '检测到外接键鼠，已切换为 VNC 键鼠模式', duration: 1800 });
+    hilog.info(RD_DOMAIN, RD_TAG, 'VNC external input auto-switch reason=' + reason);
+  }
+
+  private observeVncExternalInputActivity(reason: string): void {
+    const host: RemoteHost | null = this.pendingHost;
+    if (host === null || host.protocol !== 'vnc') {
+      return;
+    }
+    this.externalKeyboardMouseConnected = true;
+    this.maybeAutoSwitchVncKeyboardMouseMode('activity-' + reason);
   }
 
   private promptSwitchToKeyboardMouseMode(deviceName: string): void {
@@ -1333,6 +1391,7 @@ struct RemoteDesktop {
   private async refreshPhysicalKeyboardPresence(reason: string): Promise<void> {
     const epoch: number = ++this.inputDeviceRefreshEpoch;
     let keyboardConnected: boolean = false;
+    let keyboardMouseConnected: boolean = false;
     try {
       const ids: Array<number> = await inputDevice.getDeviceList();
       for (let index: number = 0; index < ids.length; index++) {
@@ -1341,7 +1400,10 @@ struct RemoteDesktop {
           const sources: Array<inputDevice.SourceType> = device.sources ?? [];
           if (sources.indexOf('keyboard') >= 0) {
             keyboardConnected = true;
-            break;
+          }
+          if (sources.indexOf('keyboard') >= 0 || sources.indexOf('mouse') >= 0 ||
+            sources.indexOf('touchpad') >= 0) {
+            keyboardMouseConnected = true;
           }
         } catch (deviceErr) {
           hilog.warn(RD_DOMAIN, RD_TAG, 'inputDevice inspect failed id=' + ids[index].toString() +
@@ -1357,9 +1419,19 @@ struct RemoteDesktop {
       return;
     }
     const changed: boolean = this.physicalKeyboardConnected !== keyboardConnected;
+    const externalChanged: boolean =
+      this.externalKeyboardMouseConnected !== keyboardMouseConnected;
     this.physicalKeyboardConnected = keyboardConnected;
+    this.externalKeyboardMouseConnected = keyboardMouseConnected;
     hilog.info(RD_DOMAIN, RD_TAG, 'physical-keyboard-presence connected=' +
-      (keyboardConnected ? '1' : '0') + ' changed=' + (changed ? '1' : '0') + ' reason=' + reason);
+      (keyboardConnected ? '1' : '0') + ' changed=' + (changed ? '1' : '0') +
+      ' external=' + (keyboardMouseConnected ? '1' : '0') +
+      ' externalChanged=' + (externalChanged ? '1' : '0') + ' reason=' + reason);
+    if (!keyboardMouseConnected &&
+      this.vncExternalInputAutoSwitchSessionId === this.sessionId) {
+      this.vncExternalInputAutoSwitchSessionId = -1;
+    }
+    this.maybeAutoSwitchVncKeyboardMouseMode('presence-' + reason);
     if (!changed) {
       return;
     }
@@ -1393,8 +1465,10 @@ struct RemoteDesktop {
         // safe VNC-only indicator so touchpad mode never loses all feedback.
         return nativeCursorReady ? 'arrow' : 'circle';
       }
-      // VNC auto is isolated from the shared RDP/RustDesk pointer setting.
-      return nativeCursorReady ? 'arrow' : 'circle';
+      // VNC auto：服务器下发光标形状前，先跟随共享鼠标样式（用户选择的
+      // 真实鼠标/圆点），避免 macOS 延迟发送 Cursor 形状时一直显示圆点。
+      // 服务器形状到达后 nativeCursorReady 为 true，自然切换到真实形状。
+      return nativeCursorReady ? 'arrow' : normalizeRemoteCursorStyle(this.virtualMouseStyle);
     }
     return normalizeRemoteCursorStyle(this.virtualMouseStyle);
   }
@@ -2244,7 +2318,9 @@ struct RemoteDesktop {
     if (this.connected) {
       this.syncRemoteSystemPointer('connection-state');
       this.startRustDeskDiagnosticsPolling();
+      void this.refreshPhysicalKeyboardPresence('connection-state');
     } else {
+      this.vncExternalInputAutoSwitchSessionId = -1;
       this.restoreRemoteSystemPointer('connection-state');
       this.stopRustDeskDiagnosticsPolling(true);
     }
@@ -4215,11 +4291,18 @@ struct RemoteDesktop {
         }
         this.kbAvoidCb = (data: window.AvoidAreaOptions): void => {
           if (data.type === window.AvoidAreaType.TYPE_KEYBOARD) {
-            this.kbHeight = px2vp(data.area.bottomRect.height);
+            const previousHeight: number = this.kbHeight;
+            const nextHeight: number = px2vp(data.area.bottomRect.height);
+            this.kbHeight = nextHeight;
             this.updateRustDeskDiagnosticsDockForKeyboard();
             this.updateVncDiagnosticsDockForKeyboard();
             hilog.info(RD_DOMAIN, RD_TAG,
               'kbHeight changed: ' + Math.round(this.kbHeight).toString() + 'vp');
+            if (shouldCloseRemoteImeSessionOnAvoidAreaChange(
+              this.keyboardOpen, previousHeight, nextHeight,
+              this.keepKeyboardAfterSheetClose, this.keyboardSubmitRefocusPending)) {
+              this.markKeyboardClosed('avoid-area');
+            }
           }
         };
         w.on('avoidAreaChange', this.kbAvoidCb);
@@ -4521,7 +4604,6 @@ struct RemoteDesktop {
         this.vncFrameRateLimit = effective.frameRateLimit;
         this.vncLocalCursorMode = effective.localCursorMode;
         this.vncTouchpadSpeed = effective.touchpadSpeed;
-        this.vncReverseWheel = effective.reverseWheel;
         this.vncSwapMouseButtons = effective.swapMouseButtons;
         this.vncDiagnosticsRefreshMs = effective.diagnosticsRefreshMs;
         this.vncDiagnosticsExpandedByDefault = effective.diagnosticsExpanded;
@@ -7966,6 +8048,10 @@ struct RemoteDesktop {
     this.vncTransientPassword = '';
     this.vncAuthResolved = false;
     this.clearVncToolbarAutoCollapse();
+    this.cancelVncTouchWheelFling();
+    this.physicalWheelRemainder = 0;
+    this.lastPhysicalWheelAtMs = 0;
+    this.physicalWheelSendCount = 0;
     this.vncToolbarCollapsed = false;
     this.modifierPanelPrepareOnly = false;
     this.releaseCanvasPinchInput('disconnect-' + reason);
@@ -10122,6 +10208,7 @@ struct RemoteDesktop {
   private resetTouchGesture(): void {
     this.clearTouchRightClickTimer();
     this.clearTouchDirectRightClickTimer();
+    this.cancelVncTouchWheelFling();
     const wasDragging: boolean = this.touchDragActive;
     if (this.touchDragActive) {
       // 拖拽结束 — 释放左键
@@ -10135,6 +10222,7 @@ struct RemoteDesktop {
     this.touchMaxFingers = 0;
     this.touchWheelRemainder = 0;
     this.lastTouchWheelMs = 0;
+    this.touchWheelLastStepDy = 0;
     this.touchpadAnchorValid = false;
     this.activeTouchPoints.clear();
     if (this.touchpadPointerDown) {
@@ -10285,13 +10373,19 @@ struct RemoteDesktop {
         this.vncTouchpadSpeed / 100 : 1) :
       (Number.isFinite(this.rustdeskTouchpadSpeed) && this.rustdeskTouchpadSpeed > 0 ?
         this.rustdeskTouchpadSpeed : 1);
-    this.touchWheelRemainder += stepDy * TOUCHPAD_SCROLL_GAIN * wheelSpeed;
+    const wheelProtocol: string = this.isVncSession() ? 'vnc' : this.currentProtocolName();
+    const accumulated = accumulateContinuousRemoteWheel(
+      stepDy, this.touchWheelRemainder, wheelSpeed,
+      wheelProtocol);
     const now: number = Date.now();
-    if (now - this.lastTouchWheelMs < TOUCHPAD_SCROLL_FLUSH_MS) {
+    // RustDesk forwards every meaningful trackpad update.  VNC must do the
+    // same or a 60/120 Hz gesture is reduced to a visibly slow trickle.
+    if (wheelProtocol !== 'vnc' && now - this.lastTouchWheelMs < TOUCHPAD_SCROLL_FLUSH_MS) {
+      this.touchWheelRemainder = accumulated.remainder + accumulated.delta;
       return;
     }
-    let delta: number = this.touchWheelRemainder > 0 ?
-      Math.floor(this.touchWheelRemainder) : Math.ceil(this.touchWheelRemainder);
+    const delta: number = accumulated.delta;
+    this.touchWheelRemainder = accumulated.remainder;
     if (delta === 0) {
       if (Math.abs(stepDy) >= 1) {
         hilog.info(RD_DOMAIN, RD_TAG,
@@ -10300,21 +10394,57 @@ struct RemoteDesktop {
       }
       return;
     }
-    if (delta > TOUCHPAD_SCROLL_MAX_DELTA) {
-      delta = TOUCHPAD_SCROLL_MAX_DELTA;
-    } else if (delta < -TOUCHPAD_SCROLL_MAX_DELTA) {
-      delta = -TOUCHPAD_SCROLL_MAX_DELTA;
-    }
-    this.touchWheelRemainder -= delta;
     this.lastTouchWheelMs = now;
+    if (wheelProtocol === 'vnc') {
+      this.touchWheelLastStepDy = stepDy;
+    }
     const src = this.toSourceSpace(this.remoteCursorX, this.remoteCursorY);
-    const reverseWheel: boolean = this.isVncSession() ?
-      this.vncReverseWheel : this.rustdeskReverseWheel;
-    const sendDelta: number = reverseWheel ? -delta : delta;
+    const sendDelta: number = applyRemoteWheelDirection(delta, this.rustdeskReverseWheel);
     this.loader.sendMouseWheel(this.sessionId, src['x'], src['y'], sendDelta);
-    hilog.info(RD_DOMAIN, RD_TAG,
-      'touchpad-scroll delta=' + sendDelta.toString() + ' stepDy=' + stepDy.toString() +
-        ' remote=' + this.remoteCursorX.toString() + ',' + this.remoteCursorY.toString());
+    const sendIndex: number = ++this.touchWheelSendCount;
+    if (sendIndex <= 12 || sendIndex % 50 === 0) {
+      hilog.info(RD_DOMAIN, RD_TAG,
+        'touchpad-scroll count=' + sendIndex.toString() +
+          ' delta=' + sendDelta.toString() + ' stepDy=' + stepDy.toString() +
+          ' reverse=' + (this.rustdeskReverseWheel ? '1' : '0') +
+          ' remote=' + this.remoteCursorX.toString() + ',' + this.remoteCursorY.toString());
+    }
+  }
+
+  private cancelVncTouchWheelFling(): void {
+    if (this.touchWheelFlingTimer >= 0) {
+      clearTimeout(this.touchWheelFlingTimer);
+      this.touchWheelFlingTimer = -1;
+    }
+  }
+
+  private scheduleVncTouchWheelFling(rawDelta: number): void {
+    this.cancelVncTouchWheelFling();
+    this.touchWheelFlingTimer = setTimeout((): void => {
+      this.touchWheelFlingTimer = -1;
+      if (!this.connected || !this.isVncSession()) {
+        return;
+      }
+      const nextDelta: number = nextVncTouchpadFlingDelta(rawDelta);
+      const wheelSpeed: number = Number.isFinite(this.vncTouchpadSpeed) && this.vncTouchpadSpeed > 0 ?
+        this.vncTouchpadSpeed / 100 : 1;
+      if (Math.abs(nextDelta * wheelSpeed) < 1) {
+        return;
+      }
+      this.sendTouchPadWheel(nextDelta);
+      this.scheduleVncTouchWheelFling(nextDelta);
+    }, VNC_TOUCHPAD_FLING_INTERVAL_MS);
+  }
+
+  private startVncTouchWheelFling(lastRawDelta: number): void {
+    const wheelSpeed: number = Number.isFinite(this.vncTouchpadSpeed) && this.vncTouchpadSpeed > 0 ?
+      this.vncTouchpadSpeed / 100 : 1;
+    if (!this.isVncSession() ||
+      !shouldStartVncTouchpadFling(lastRawDelta, wheelSpeed)) {
+      return;
+    }
+    hilog.info(RD_DOMAIN, RD_TAG, 'touchpad-scroll fling start stepDy=' + lastRawDelta.toString());
+    this.scheduleVncTouchWheelFling(lastRawDelta);
   }
 
   private sendRemoteKeyTap(keyCode: number, label: string): void {
@@ -10372,6 +10502,10 @@ struct RemoteDesktop {
       }
 
       if (event.type === TouchType.Down) {
+        if (this.touchFingerCount <= 0) {
+          this.cancelVncTouchWheelFling();
+          this.touchWheelLastStepDy = 0;
+        }
         this.resetTouchpadPointerCurve();
         this.touchpadAnchorValid = true;
         if (!this.touchpadPointerDown) {
@@ -10525,6 +10659,8 @@ struct RemoteDesktop {
             ' pending=' + (this.touchDragPending ? 'true' : 'false') +
             ' done=' + (this.touchGestureDone ? 'true' : 'false'));
         if (this.touchFingerCount <= 0) {
+          const flingStepDy: number = event.type === TouchType.Up &&
+            this.touchMaxFingers === 2 && this.touchMoved ? this.touchWheelLastStepDy : 0;
           // 所有手指抬起
           if (this.touchDragActive) {
             // 单指长按拖拽结束: 释放左键，避免随后触发普通点击。
@@ -10556,6 +10692,7 @@ struct RemoteDesktop {
             this.showRemoteCursorIndicator(-1, true);
           }
           this.resetTouchGesture();
+          this.startVncTouchWheelFling(flingStepDy);
         } else {
           // 从双指变单指 (一根手指抬起, 另一根还在屏幕上)
           if (this.touchMaxFingers >= 3) {
@@ -11080,6 +11217,11 @@ struct RemoteDesktop {
   }
 
   private handleXComponentKey = (event: KeyEvent): boolean => {
+    // The hidden IME TextArea shares this handler. Its software-keyboard
+    // Backspace/Enter events must not be mistaken for an external keyboard.
+    if (!this.keyboardOpen || this.physicalKeyboardConnected) {
+      this.observeVncExternalInputActivity('keyboard');
+    }
     hilog.info(RD_DOMAIN, RD_TAG, 'hwkey-entry type=' + event.type.toString() +
       ' code=' + event.keyCode.toString() +
       ' textLength=' + (event.keyText ? event.keyText.length : 0).toString());
@@ -11285,6 +11427,10 @@ struct RemoteDesktop {
   }
 
   private handleXComponentAxis = (event?: AxisEvent): void => {
+    if (event && (event.sourceTool === SourceTool.MOUSE ||
+      event.sourceTool === SourceTool.TOUCHPAD)) {
+      this.observeVncExternalInputActivity('wheel');
+    }
     if (!event || !this.canForwardInput('mouseWheel')) { return; }
     try {
       const localX: number = event.x;
@@ -11298,7 +11444,12 @@ struct RemoteDesktop {
       // so accumulate its small vp deltas before creating protocol wheel ticks.
       let delta: number = 0;
       if (event.sourceTool === SourceTool.MOUSE) {
-        delta = rawVertical > 0 ? 1 : -1;
+        const nowMs: number = Date.now();
+        const elapsedMs: number = this.lastPhysicalWheelAtMs > 0 ?
+          nowMs - this.lastPhysicalWheelAtMs : 0;
+        this.lastPhysicalWheelAtMs = nowMs;
+        delta = discreteRemoteWheelDelta(rawVertical,
+          this.isVncSession() ? 'vnc' : this.currentProtocolName(), elapsedMs);
       } else {
         // 实体触控板/鼠标轴同样应用会话触控板速度，与双指滚轮保持一致。
         const wheelSpeed: number = this.isVncSession() ?
@@ -11306,34 +11457,38 @@ struct RemoteDesktop {
             this.vncTouchpadSpeed / 100 : 1) :
           (Number.isFinite(this.rustdeskTouchpadSpeed) && this.rustdeskTouchpadSpeed > 0 ?
             this.rustdeskTouchpadSpeed : 1);
-        this.physicalWheelRemainder += rawVertical * TOUCHPAD_SCROLL_GAIN * wheelSpeed;
-        delta = this.physicalWheelRemainder > 0 ? Math.floor(this.physicalWheelRemainder) :
-          Math.ceil(this.physicalWheelRemainder);
+        const accumulated = accumulateContinuousRemoteWheel(
+          rawVertical, this.physicalWheelRemainder, wheelSpeed,
+          this.isVncSession() ? 'vnc' : this.currentProtocolName());
+        delta = accumulated.delta;
+        this.physicalWheelRemainder = accumulated.remainder;
         if (delta === 0) { return; }
-        if (delta > TOUCHPAD_SCROLL_MAX_DELTA) {
-          delta = TOUCHPAD_SCROLL_MAX_DELTA;
-        } else if (delta < -TOUCHPAD_SCROLL_MAX_DELTA) {
-          delta = -TOUCHPAD_SCROLL_MAX_DELTA;
-        }
-        this.physicalWheelRemainder -= delta;
       }
 
       this.queueMouseMove(mapped.x, mapped.y);
       this.flushMouseMove();
       const src: Record<string, number> = this.toSourceSpace(mapped.x, mapped.y);
-      const reverseWheel: boolean = this.isVncSession() ?
-        this.vncReverseWheel : this.rustdeskReverseWheel;
-      const sendDelta: number = reverseWheel ? -delta : delta;
+      const sendDelta: number = applyRemoteWheelDirection(delta, this.rustdeskReverseWheel);
       this.loader.sendMouseWheel(this.sessionId, src['x'], src['y'], sendDelta);
-      hilog.info(RD_DOMAIN, RD_TAG, 'physical-wheel raw=' + rawVertical.toString() +
-        ' delta=' + sendDelta.toString() + ' sourceTool=' + event.sourceTool.toString() +
-        ' remote=' + mapped.x.toString() + ',' + mapped.y.toString());
+      const sendIndex: number = ++this.physicalWheelSendCount;
+      if (sendIndex <= 12 || sendIndex % 50 === 0) {
+        hilog.info(RD_DOMAIN, RD_TAG, 'physical-wheel count=' + sendIndex.toString() +
+          ' raw=' + rawVertical.toString() + ' delta=' + sendDelta.toString() +
+          ' reverse=' + (this.rustdeskReverseWheel ? '1' : '0') +
+          ' sourceTool=' + event.sourceTool.toString() +
+          ' remote=' + mapped.x.toString() + ',' + mapped.y.toString());
+      }
     } catch (err) {
       hilog.error(RD_DOMAIN, RD_TAG, 'physical-wheel forward failed: ' + JSON.stringify(err));
     }
   }
 
   private handleXComponentMouse = (event: MouseEvent): void => {
+    // ArkUI may synthesize mouse-shaped events from touch input.  Only a real
+    // mouse source is evidence for the automatic keyboard/mouse mode switch.
+    if (event.sourceTool === SourceTool.MOUSE) {
+      this.observeVncExternalInputActivity('mouse');
+    }
     if (!this.canForwardInput('mouse')) { return; }
     try {
       event.stopPropagation();

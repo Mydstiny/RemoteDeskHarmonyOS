@@ -40,6 +40,7 @@ import remoteHostSheetLifecyclePolicyTest from './RemoteHostSheetLifecyclePolicy
 import vncSessionGeometryPolicyTest from './VncSessionGeometryPolicy.test';
 import remoteFloatingPanelPlacementPolicyTest from './RemoteFloatingPanelPlacementPolicy.test';
 import vncSessionSettingsPolicyTest from './VncSessionSettingsPolicy.test';
+import remoteWheelPolicyTest from './RemoteWheelPolicy.test';
 
 export default function testsuite() {
   abilityTest();
@@ -84,4 +85,5 @@ export default function testsuite() {
   vncSessionGeometryPolicyTest();
   remoteFloatingPanelPlacementPolicyTest();
   vncSessionSettingsPolicyTest();
+  remoteWheelPolicyTest();
 }

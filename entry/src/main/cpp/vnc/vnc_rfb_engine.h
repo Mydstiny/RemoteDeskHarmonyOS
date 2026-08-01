@@ -54,10 +54,12 @@ private:
     bool sendPixelFormatAndEncodings(std::string& error);
     bool sendFramebufferUpdateRequest(bool incremental, std::string& error);
     bool receiveLoop(std::string& error);
-    bool receiveFramebufferUpdate(std::string& error);
+    bool receiveFramebufferUpdate(bool& requestPipelined, std::string& error);
     bool receiveRawRectangle(int x, int y, int width, int height, std::string& error);
     bool receiveCopyRectangle(int x, int y, int width, int height, std::string& error);
-    bool receiveZrleRectangle(int x, int y, int width, int height, std::string& error);
+    bool receiveZrleRectangle(int x, int y, int width, int height,
+                              bool pipelineNextRequest, bool& requestPipelined,
+                              std::string& error);
     bool receiveCursorRectangle(int hotX, int hotY, int width, int height,
                                 std::string& error);
     bool receiveDesktopSize(int width, int height, std::string& error);
@@ -96,6 +98,8 @@ private:
     VncTransport transport_;
     VncRfbProtocol::PixelFormat serverPixelFormat_;
     VncRfbProtocol::ZrleInflater zrleInflater_;
+    std::vector<uint8_t> zrleCompressedBuffer_;
+    std::vector<uint8_t> zrleDecodedBuffer_;
     std::vector<uint8_t> framebuffer_;
     int framebufferWidth_ = 0;
     int framebufferHeight_ = 0;

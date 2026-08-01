@@ -123,9 +123,19 @@ RDP_TEST_CASE(vnc_pixel_format_policy_is_bounded_and_wire_exact) {
     RDP_ASSERT_EQ(VncRfbProtocol::effectiveTrueColorDepth("32", "speed", 9000000), 32);
     RDP_ASSERT_EQ(VncRfbProtocol::effectiveTrueColorDepth("16", "quality", 100), 16);
     RDP_ASSERT_EQ(VncRfbProtocol::effectiveTrueColorDepth("8", "balanced", 100), 8);
-    RDP_ASSERT_EQ(VncRfbProtocol::effectiveTrueColorDepth("auto", "speed", 100), 16);
+    RDP_ASSERT_EQ(VncRfbProtocol::effectiveTrueColorDepth("auto", "speed", 100), 8);
+    RDP_ASSERT_EQ(VncRfbProtocol::effectiveTrueColorDepth("auto", "speed",
+        9ULL * 1024ULL * 1024ULL), 8);
     RDP_ASSERT_EQ(VncRfbProtocol::effectiveTrueColorDepth("auto", "balanced",
-        5ULL * 1024ULL * 1024ULL), 16);
+        5ULL * 1024ULL * 1024ULL), 8);
+    RDP_ASSERT_EQ(VncRfbProtocol::effectiveTrueColorDepth("auto", "balanced",
+        4ULL * 1024ULL * 1024ULL), 32);
+    RDP_ASSERT_EQ(VncRfbProtocol::effectiveTrueColorDepth("auto", "balanced",
+        5ULL * 1024ULL * 1024ULL, 3), 16);
+    RDP_ASSERT_EQ(VncRfbProtocol::effectiveTrueColorDepth("auto", "speed", 100, 3), 16);
+    RDP_ASSERT_EQ(VncRfbProtocol::effectiveTrueColorDepth("8", "speed", 100, 3), 16);
+    RDP_ASSERT_EQ(VncRfbProtocol::effectiveTrueColorDepth("16", "speed", 100, 3), 16);
+    RDP_ASSERT_EQ(VncRfbProtocol::effectiveTrueColorDepth("32", "speed", 100, 3), 32);
     RDP_ASSERT_EQ(VncRfbProtocol::effectiveTrueColorDepth("auto", "quality", 100), 32);
     RDP_ASSERT_EQ(VncRfbProtocol::effectiveTrueColorDepth("auto", "quality",
         5ULL * 1024ULL * 1024ULL), 32);
@@ -138,6 +148,16 @@ RDP_TEST_CASE(vnc_pixel_format_policy_is_bounded_and_wire_exact) {
     RDP_ASSERT_EQ(format16[9], static_cast<uint8_t>(31));
     RDP_ASSERT_EQ(format16[11], static_cast<uint8_t>(63));
     RDP_ASSERT_EQ(format16[14], static_cast<uint8_t>(11));
+
+    const std::vector<uint8_t> format8 = VncRfbProtocol::buildSetPixelFormat(8);
+    RDP_ASSERT_EQ(format8.size(), static_cast<size_t>(20));
+    RDP_ASSERT_EQ(format8[4], static_cast<uint8_t>(8));
+    RDP_ASSERT_EQ(format8[5], static_cast<uint8_t>(8));
+    RDP_ASSERT_EQ(format8[9], static_cast<uint8_t>(7));
+    RDP_ASSERT_EQ(format8[11], static_cast<uint8_t>(7));
+    RDP_ASSERT_EQ(format8[13], static_cast<uint8_t>(3));
+    RDP_ASSERT_EQ(format8[14], static_cast<uint8_t>(5));
+    RDP_ASSERT_EQ(format8[15], static_cast<uint8_t>(2));
 }
 
 RDP_TEST_CASE(vnc_set_encodings_advertises_cursor_and_bounded_zrle_with_raw_fallback) {
@@ -311,6 +331,105 @@ RDP_TEST_CASE(vnc_zrle_decodes_raw_solid_packed_and_rle_tiles) {
         255, 0, 0, 255,
         0, 0, 255, 255,
     }));
+}
+
+RDP_TEST_CASE(vnc_zrle_direct_bgra_decode_respects_stride_and_padding) {
+    const VncRfbProtocol::PixelFormat format = rgba8888Format();
+    const std::vector<uint8_t> solidRed = {1, 0, 0, 255};
+    constexpr size_t stride = 16;
+    std::vector<uint8_t> bgra(stride * 2U, 0xA5);
+    std::string error;
+    RDP_ASSERT(VncRfbProtocol::decodeZrleTilesToBgra(
+        format, 3, 2, solidRed.data(), solidRed.size(),
+        bgra.data(), bgra.size(), stride, error));
+    for (size_t row = 0; row < 2; ++row) {
+        for (size_t column = 0; column < 3; ++column) {
+            const size_t offset = row * stride + column * 4U;
+            RDP_ASSERT_EQ(bgra[offset], static_cast<uint8_t>(0));
+            RDP_ASSERT_EQ(bgra[offset + 1], static_cast<uint8_t>(0));
+            RDP_ASSERT_EQ(bgra[offset + 2], static_cast<uint8_t>(255));
+            RDP_ASSERT_EQ(bgra[offset + 3], static_cast<uint8_t>(255));
+        }
+        for (size_t offset = row * stride + 12U;
+             offset < (row + 1U) * stride; ++offset) {
+            RDP_ASSERT_EQ(bgra[offset], static_cast<uint8_t>(0xA5));
+        }
+    }
+}
+
+RDP_TEST_CASE(vnc_zrle_direct_bgra_covers_speed_and_balanced_pixel_formats) {
+    const std::array<VncRfbProtocol::PixelFormat, 2> formats = {
+        rgb332Format(), rgb565Format(),
+    };
+    const std::array<std::vector<uint8_t>, 2> solidRedTiles = {
+        std::vector<uint8_t> {1, 0xE0},
+        std::vector<uint8_t> {1, 0x00, 0xF8},
+    };
+    for (size_t index = 0; index < formats.size(); ++index) {
+        std::array<uint8_t, 4> bgra = {0, 0, 0, 0};
+        std::string error;
+        RDP_ASSERT(VncRfbProtocol::decodeZrleTilesToBgra(
+            formats[index], 1, 1,
+            solidRedTiles[index].data(), solidRedTiles[index].size(),
+            bgra.data(), bgra.size(), 4U, error));
+        RDP_ASSERT_EQ(bgra[0], static_cast<uint8_t>(0));
+        RDP_ASSERT_EQ(bgra[1], static_cast<uint8_t>(0));
+        RDP_ASSERT_EQ(bgra[2], static_cast<uint8_t>(255));
+        RDP_ASSERT_EQ(bgra[3], static_cast<uint8_t>(255));
+    }
+}
+
+RDP_TEST_CASE(vnc_zrle_parallel_direct_decode_matches_rgba_reference) {
+    const VncRfbProtocol::PixelFormat format = rgba8888Format();
+    constexpr int width = 640;
+    constexpr int height = 512;
+    const int columns = (width + 63) / 64;
+    const int rows = (height + 63) / 64;
+    std::vector<uint8_t> tiles;
+    for (int tileY = 0; tileY < rows; ++tileY) {
+        for (int tileX = 0; tileX < columns; ++tileX) {
+            const bool red = ((tileX + tileY) & 1) == 0;
+            tiles.push_back(1);
+            tiles.push_back(static_cast<uint8_t>(red ? 0 : 255));
+            tiles.push_back(0);
+            tiles.push_back(static_cast<uint8_t>(red ? 255 : 0));
+        }
+    }
+
+    std::vector<uint8_t> rgba;
+    std::string error;
+    RDP_ASSERT(VncRfbProtocol::decodeZrleTiles(
+        format, width, height, tiles.data(), tiles.size(), rgba, error));
+    std::vector<uint8_t> bgra(static_cast<size_t>(width) * height * 4U, 0);
+    RDP_ASSERT(VncRfbProtocol::decodeZrleTilesToBgra(
+        format, width, height, tiles.data(), tiles.size(),
+        bgra.data(), bgra.size(), static_cast<size_t>(width) * 4U, error));
+    RDP_ASSERT_EQ(bgra.size(), rgba.size());
+    for (size_t offset = 0; offset < rgba.size(); offset += 4U) {
+        RDP_ASSERT_EQ(bgra[offset], rgba[offset + 2U]);
+        RDP_ASSERT_EQ(bgra[offset + 1U], rgba[offset + 1U]);
+        RDP_ASSERT_EQ(bgra[offset + 2U], rgba[offset]);
+        RDP_ASSERT_EQ(bgra[offset + 3U], rgba[offset + 3U]);
+    }
+}
+
+RDP_TEST_CASE(vnc_zrle_direct_decode_fails_without_crossing_destination_bounds) {
+    const VncRfbProtocol::PixelFormat format = rgba8888Format();
+    const std::vector<uint8_t> malformed = {128, 0, 0, 255, 5};
+    std::vector<uint8_t> guarded(32, 0x5A);
+    std::string error;
+    RDP_ASSERT(!VncRfbProtocol::decodeZrleTilesToBgra(
+        format, 3, 1, malformed.data(), malformed.size(),
+        guarded.data() + 8U, 12U, 12U, error));
+    for (size_t index = 0; index < 8U; ++index) {
+        RDP_ASSERT_EQ(guarded[index], static_cast<uint8_t>(0x5A));
+    }
+    for (size_t index = 20U; index < guarded.size(); ++index) {
+        RDP_ASSERT_EQ(guarded[index], static_cast<uint8_t>(0x5A));
+    }
+    RDP_ASSERT(!VncRfbProtocol::decodeZrleTilesToBgra(
+        format, 3, 1, malformed.data(), malformed.size(),
+        guarded.data() + 8U, 11U, 12U, error));
 }
 
 RDP_TEST_CASE(vnc_zrle_rejects_palette_reuse_truncation_run_overflow_and_trailing_data) {

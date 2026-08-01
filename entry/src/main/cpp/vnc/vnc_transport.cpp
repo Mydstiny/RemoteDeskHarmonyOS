@@ -11,6 +11,7 @@
 #include <cstring>
 #include <fcntl.h>
 #include <netdb.h>
+#include <netinet/tcp.h>
 #include <poll.h>
 #include <sys/socket.h>
 #include <sys/types.h>
@@ -192,6 +193,15 @@ bool VncTransport::connectTcp(const std::string& host, int port, int timeoutMs, 
         }
         return false;
     }
+    // FramebufferUpdateRequest is only ten bytes and gates the server's next
+    // capture.  Avoid Nagle delay for those requests, and leave enough receive
+    // window for one compressed frame to arrive while the prior frame decodes.
+    const int noDelay = 1;
+    (void)::setsockopt(socketFd_, IPPROTO_TCP, TCP_NODELAY,
+                       &noDelay, sizeof(noDelay));
+    const int receiveBufferBytes = 4 * 1024 * 1024;
+    (void)::setsockopt(socketFd_, SOL_SOCKET, SO_RCVBUF,
+                       &receiveBufferBytes, sizeof(receiveBufferBytes));
     return true;
 }
 

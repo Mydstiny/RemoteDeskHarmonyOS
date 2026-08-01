@@ -1,12 +1,45 @@
 # Shared Current State
 
-## Current VNC 全屏 ZRLE CPU 瓶颈定位（2026-08-01）
+## Current VNC RustDesk 操控对标 + ZRLE 最终瓶颈（2026-08-01，本地 `main@4c22e1f4c`）
+
+- 有线现场从约 `0.8fps` 提升到约 `6fps` 后继续拆分耗时：`2940x1848/1912`
+  全屏 ZRLE 的 direct tile 解码已降到约 `10-25ms`，GPU upload 约 `4.5ms`、
+  draw 约 `0.3-0.4ms`、swap 约 `1-2ms`；剩余主要是 persistent-zlib inflate
+  通常约 `62-163ms` 和 macOS 服务端抓屏/压缩/整帧读取约 `30-200ms+`；持续
+  满载时 inflate 仍可出现约 `300-715ms` 的 CPU/调度尖峰。因此标准
+  Retina VNC/ZRLE 的整帧滚动通常仍只有约 `3-8fps`；客户端 GL 已不是根因，
+  不能把当前链路写成可稳定 `30fps`。
+- native 热路径已改为有界 tile 扫描、最多 4 worker 的并行 direct BGRA、复用
+  压缩/解压缓冲、单 ZRLE 矩形负载读完即流水请求下一帧、TCP_NODELAY 和扩大
+  接收窗；滚轮 RFB down/up burst 合并为一次串行写。RAW A/B 因每帧约 11MB，
+  实测 `3.9-9s`，明确不作为降级方案。
+- `极速 + 色深自动` 现在真实协商 8-bit RGB332（此前 Retina 下仍为 16-bit，
+  极速开关等同无效），用于直接降低 ZRLE wire/inflate 工作量；显式 16/32-bit
+  仍优先，显式 8-bit 仅在 RFB 3.3（含 macOS 屏幕共享）回退 16-bit 防止首帧断连。
+  最终签名 HAP 已安装；当前有线复测仍为 `balanced/16-bit`，8-bit 新样本需用户
+  切到“极速 + 自动”并连接非 RFB 3.3 服务端确认 `effectiveDepth=8` 与实际 FPS。
+- 操控按 RustDesk 当前输入曲线对齐：VNC 双指/触控板每个非噪声更新按原始位移
+  发送并保证最小 1 tick，取消 24ms 节流，30ms/0.97 惯性；实体滚轮以 4 个 RFB
+  click 为 macOS VNC 基线，连续 burst 使用 2x/3x 加速，并把每批协议包一次写出。
+  统一在最终协议边界读取 `rustdeskReverseWheel`，所以“个性化 → 远程滚轮方向”
+  同时控制 VNC/RDP/RustDesk。
+- 输入与 IME：键盘、鼠标、触控板的设备枚举和真实 Key/Mouse/Axis 活动均可让
+  VNC 每会话自动切到模式 2，用户随后手动切走不会被反复抢回；系统键盘高度从
+  正值变 0 时会闭合 stale IME 会话，修复手动收键盘后控制台仍先要求关闭键盘。
+- 验证：host native `182/182`；精确
+  `default@OhosTestCompileArkTS` 与 `assembleHap`（non-daemon）均成功；
+  `git diff --check` 通过；签名 HAP 已安装。有线真机已确认实体滚轮按 4/12 tick
+  输出；8-bit、方向切换、自动模式和键盘场景仍待最终日志闭环。
+
+## Superseded VNC 全屏 ZRLE CPU 初始定位（2026-08-01）
+
+> 本节是优化前/中期样本；最新结论与验证计数以上一节为准。
 
 - 有线设备的现场日志已排除网络为主因：锁屏静态画面主要是小增量矩形，进入桌面动画后服务端连续发送约 `2940x1848/1912` 的全屏 ZRLE 矩形。
 - 原始实现单个全屏更新约 `3.6–3.7s`，其中 `decodeZrleTiles` 约 `2.5s`；同步 `receiveLoop` 在解码完成前不会发送下一次增量请求，因此桌面表现为约一秒一帧的幻灯片。
 - 现场有线复测（16-bit、ZRLE）显示读取通常仅 `3–7ms`，而 `inflateMs` 约 `306–321ms`、`tilesMs` 约 `385–403ms`、写回约 `90ms`，`totalMs` 约 `0.79–0.81s`。这确认剩余瓶颈是设备 CPU 的 zlib/逐像素解码与提交链路，而不是链路带宽或 GL 送显。
 - 当前未提交协议改动使用 16-bit CPIXEL 查表、专用两字节读取、指针递增写入、tile 行 `memcpy` 和 LUT 分配失败保护；host native `178/178`、两项 Hvigor 门禁均通过，签名 HAP 已重新安装。最新 HAP 安装后尚未产生新的 VNC 会话日志，最终设备样本仍待补抓。
-- 后续应在同一有线设备上对比不改变画质的 raw/自适应编码与解码调度方案；不要仅凭本轮 CPU 优化把桌面流畅度写成已完全解决。
+- 后续边界已更新：RAW A/B 明显更慢，不再作为候选；稳定 30fps 需独立的视频传输或远端降分辨率方案。
 
 ## Current VNC 卡顿/滚轮/重连/鉴权重试修复（2026-08-01，本地 main `202ed38`）
 

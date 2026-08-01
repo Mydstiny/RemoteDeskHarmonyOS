@@ -52,12 +52,15 @@ std::vector<uint8_t> buildFramebufferUpdateRequest(bool incremental,
 
 /**
  * Resolve the requested true-colour depth. Explicit 8/16/32-bit choices win;
- * auto uses 16-bit for the speed preset or large RAW desktops and 32-bit
- * otherwise.
+ * auto uses 8-bit for the speed preset or Retina-sized desktops and 32-bit
+ * otherwise. RFB 3.3 is conservatively clamped to 16-bit because macOS Screen
+ * Sharing closes the connection immediately after an RGB332 request. The
+ * quality preset keeps 32-bit unless depth is explicit.
  */
 int effectiveTrueColorDepth(const std::string& requestedDepth,
                             const std::string& qualityPreset,
-                            uint64_t desktopPixels);
+                            uint64_t desktopPixels,
+                            int negotiatedMinor = 8);
 
 /** Build the exact 20-byte SetPixelFormat packet for 8/16/32-bit true colour. */
 std::vector<uint8_t> buildSetPixelFormat(int colorDepth);
@@ -120,6 +123,18 @@ bool maxZrleDecodedBytes(int width, int height, const PixelFormat& format,
 bool decodeZrleTiles(const PixelFormat& format, int width, int height,
                      const uint8_t* data, size_t size,
                      std::vector<uint8_t>& rgba, std::string& error);
+
+/**
+ * Decode one uncompressed ZRLE rectangle directly into a BGRA framebuffer.
+ * destinationStride may be wider than the rectangle, allowing the decoder to
+ * write a dirty rectangle in-place without allocating an intermediate frame.
+ * On failure the destination may contain partial pixels but no bytes outside
+ * the validated rectangle are written; callers must not present the frame.
+ */
+bool decodeZrleTilesToBgra(const PixelFormat& format, int width, int height,
+                           const uint8_t* data, size_t size,
+                           uint8_t* destination, size_t destinationSize,
+                           size_t destinationStride, std::string& error);
 
 /**
  * Connection-scoped RFC 6143 ZRLE inflater. One instance must be retained for
