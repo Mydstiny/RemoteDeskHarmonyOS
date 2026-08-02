@@ -3,10 +3,10 @@
   "task": "rustdesk-complete-repair",
   "branch": "codex/rustdesk-complete-repair",
   "base": "34946adbc",
-  "head": "0e662e94a5bfda5978b60c64b241d3cec5f7e1c0",
+  "head": "7d26f371602ddfb95071cc2fad834158abfb6769",
   "phase": "vnc-v3-stage-c-implementation",
   "status": "active",
-  "next": "Stage C second segment endpoint hardening is checkpointed at 0e662e94a; await the one existing reviewer task's read-only incremental review before proceeding.",
+  "next": "Stage C second segment Trust view hardening is checkpointed at 7d26f3716; await the one existing reviewer task's read-only incremental review before proceeding.",
   "blockers": [
     "hdc list targets and hdc shell return Connect server failed; no current hilog evidence.",
     "ohosTest@OhosTestCompileArkTS is not registered (00306054); ArkTS tests have compile/build evidence only.",
@@ -30,14 +30,14 @@
       "entry/src/test/List.test.ets",
       "entry/src/ohosTest/ets/test/List.test.ets"
     ],
-    "reason": "Stage C second RemoteDesktop endpoint hardening checkpoint 0e662e94a is ready for the one existing independent read-only reviewer task; do not redispatch a duplicate."
+    "reason": "Stage C second RemoteDesktop Trust view hardening checkpoint 7d26f3716 is ready for the one existing independent read-only reviewer task; do not redispatch a duplicate."
   },
   "lastVerification": {
-    "rdp_native_tests": "249-pass-0-fail-loopback-fixtures-host-socket-0e662e94a-2026-08-02",
-    "default@OhosTestCompileArkTS": "pass-after-0e662e94a-2026-08-02",
-    "assembleHap": "pass-after-0e662e94a-2026-08-02",
+    "rdp_native_tests": "249-pass-0-fail-loopback-fixtures-host-socket-7d26f3716-2026-08-02",
+    "default@OhosTestCompileArkTS": "pass-after-7d26f3716-2026-08-02",
+    "assembleHap": "pass-after-7d26f3716-2026-08-02",
     "ohosTest@OhosTestCompileArkTS": "blocked-task-00306054-2026-08-02",
-    "diffCheck": "pass-after-0e662e94a-2026-08-02"
+    "diffCheck": "pass-after-7d26f3716-2026-08-02"
   },
   "archives": [
     "docs/codex/archive/2026-08/README.md",

@@ -7,8 +7,8 @@ This file is the compact startup resume card. Historical checkpoints remain in
 
 - Task: `rustdesk-complete-repair` (active branch retained; current scope is VNC V3 only)
 - Branch: `codex/rustdesk-complete-repair`
-- Checkpoint: `0e662e94a`, based on `main@34946adbc`; branch is ahead by 29 and not behind.
-- Phase: VNC V3 stage C second segment incremental fixes checkpointed; awaiting the existing independent review.
+- Checkpoint: `7d26f3716`, based on `main@34946adbc`; branch is ahead by 31 and not behind.
+- Phase: VNC V3 stage C second segment Trust view hardening checkpointed; awaiting the existing independent review.
 - Worktree: clean. Do not stage unrelated changes.
 
 ## Stage A Result
@@ -42,9 +42,11 @@ This file is the compact startup resume card. Historical checkpoints remain in
   sensitive cleanup, and legacy trust writes are fixed at checkpoint
   `0d12ca1aa`. The follow-up endpoint hardening at `0e662e94a` binds TLS mode
   into the endpoint fingerprint, rejects trust rows from another physical
-  store, and registers the resolver suite in both test runners.
+  store, and registers the resolver suite in both test runners. The latest
+  `7d26f3716` checkpoint downgrades stale-store list views and makes legacy
+  trust queries endpoint-bound, with Repeater TLS binding coverage.
 - The existing reviewer task `019fc333-6789-7633-bf6f-3fea1cb2ad4d` receives one
-  unique read-only incremental review request for `0e662e94a`; do not dispatch
+  unique read-only incremental review request for `7d26f3716`; do not dispatch
   another message for this segment.
 - Keep every VNC caller fail-closed when the probe, Sheet lifecycle, owner
   binding, or expected-pin handoff is missing or stale.
@@ -52,11 +54,11 @@ This file is the compact startup resume card. Historical checkpoints remain in
 ## Verification
 
 - `rdp_native_tests`: 249 passed, 0 failed with host socket permission on
-  `0e662e94a`, 2026-08-02. The sandbox-only run reached 235/249 because 14
+  `7d26f3716`, 2026-08-02. The sandbox-only run reached 235/249 because 14
   loopback TLS fixtures could not bind; it is not used as final evidence.
-- `default@OhosTestCompileArkTS`: passed after `0e662e94a` on 2026-08-02.
-- `assembleHap`: passed after `0e662e94a` on 2026-08-02.
-- `git diff --check`: passed after `0e662e94a` on 2026-08-02.
+- `default@OhosTestCompileArkTS`: passed after `7d26f3716` on 2026-08-02.
+- `assembleHap`: passed after `7d26f3716` on 2026-08-02.
+- `git diff --check`: passed after `7d26f3716` on 2026-08-02.
 - `ohosTest@OhosTestCompileArkTS`: unavailable; task is not registered
   (`00306054`). New ArkTS tests therefore have compile/build evidence only.
 
@@ -80,7 +82,7 @@ This file is the compact startup resume card. Historical checkpoints remain in
 - Machine state: `docs/codex/STATE.json`.
 - Receipts: `docs/codex/REVIEW_RECEIPTS.jsonl`.
 - `scripts/sync_workspace.sh status` should report `RESUME_REVIEW` for
-  checkpoint `0e662e94a` until the existing reviewer returns PASS or
+  checkpoint `7d26f3716` until the existing reviewer returns PASS or
   CHANGES_REQUIRED.
 - Reuse the existing independent review session and do not redispatch duplicate
   messages for the same segment.

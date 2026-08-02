@@ -4,7 +4,7 @@ Updated: 2026-08-02 Asia/Shanghai
 
 ## Now
 
-- Stage C second segment fixes are checkpointed at `0e662e94a`; wait for the
+- Stage C second segment fixes are checkpointed at `7d26f3716`; wait for the
   existing reviewer to complete the one requested read-only incremental review.
 - Preserve stage A/B and C-first review receipts; keep probe/pin failures
   fail-closed.
