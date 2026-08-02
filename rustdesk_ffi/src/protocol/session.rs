@@ -514,7 +514,11 @@ impl Session {
             session_id: self.connection_id,
         };
         let mut auth_receiver: Option<Receiver<String>> = None;
-        let mut last_challenge = Self::challenge_fingerprint(initial_hash);
+        // The initial challenge is not a completed LoginRequest. In
+        // particular, approval-mode peers commonly echo that same hash; the
+        // first echo must still receive a LoginRequest. Repeated hashes are
+        // retransmissions, not permission to silently stop asking.
+        let mut last_challenge: Option<[u8; 32]> = None;
         let mut last_variant = "none".to_string();
 
         // 官方在等待被控端批准时保持加密通道，期间允许 TestDelay 保活。
@@ -602,7 +606,6 @@ impl Session {
                             if request_approval {
                                 self.state = SessionState::WaitingRemoteApproval;
                                 last_variant = "no_password_access".to_string();
-                                deadline = Instant::now() + APPROVAL_TIMEOUT;
                                 continue;
                             }
                             // 非批准模式（密码连接）收到该串：被控端是点击批准
@@ -615,7 +618,8 @@ impl Session {
                             ));
                         }
                         if err == REQUIRE_2FA {
-                            if auth_receiver.is_none() {
+                            let first_two_factor_challenge = auth_receiver.is_none();
+                            if first_two_factor_challenge {
                                 let (sender, receiver) = mpsc::channel();
                                 crate::register_pending_2fa(
                                     self.connect_epoch,
@@ -624,7 +628,9 @@ impl Session {
                                 )?;
                                 auth_receiver = Some(receiver);
                             }
-                            deadline = Instant::now() + PEER_2FA_TIMEOUT;
+                            if first_two_factor_challenge {
+                                deadline = Instant::now() + PEER_2FA_TIMEOUT;
+                            }
                             self.state = SessionState::WaitingPeer2FA;
                             self.notify_auth_event(AUTH_EVENT_REQUIRED, REQUIRE_2FA);
                             last_variant = "2fa_required".to_string();
@@ -650,11 +656,13 @@ impl Session {
                 }
                 Some(Message_oneof_union::hash(hash)) if request_approval => {
                     let fingerprint = Self::challenge_fingerprint(&hash);
-                    if fingerprint == last_challenge {
-                        last_variant = "duplicate_hash".to_string();
-                        continue;
-                    }
-                    last_challenge = fingerprint;
+                    let duplicate = last_challenge == Some(fingerprint);
+                    last_challenge = Some(fingerprint);
+                    last_variant = if duplicate {
+                        "duplicate_hash_resend".to_string()
+                    } else {
+                        "approval_hash".to_string()
+                    };
                     self.state = SessionState::WaitingRemoteApproval;
                     Self::send_login_request(
                         channel,

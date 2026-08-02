@@ -32,6 +32,7 @@ RDP_TEST_CASE(video_backpressure_drops_until_recovery_keyframe) {
     RDP_ASSERT(key == VideoFrameAdmission::AcceptRecoveryKeyframe);
     RDP_ASSERT(!controller.isWaitingForKeyframe());
     RDP_ASSERT(!controller.shouldRequestKeyframe());
+    RDP_ASSERT_EQ(controller.droppedFrames(), 0ULL);
     RDP_ASSERT_EQ(controller.waitKeyframeDrops(), 1ULL);
 }
 

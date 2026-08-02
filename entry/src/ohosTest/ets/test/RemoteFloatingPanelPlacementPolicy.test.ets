@@ -1,5 +1,6 @@
 import { describe, it, expect } from '@ohos/hypium';
 import {
+  FloatingPanelViewport,
   anchorFloatingPanelToHandle,
   clampFloatingPanel,
   floatingPanelOrientationSuffix,
@@ -9,7 +10,8 @@ import {
 export default function remoteFloatingPanelPlacementPolicyTest(): void {
   describe('RemoteFloatingPanelPlacementPolicy', (): void => {
     it('anchors_and_clamps_measured_panel', 0, (): void => {
-      const viewport = { width: 360, height: 640, topMargin: 48, bottomMargin: 24, sideMargin: 8 };
+      const viewport: FloatingPanelViewport =
+        { width: 360, height: 640, topMargin: 48, bottomMargin: 24, sideMargin: 8 };
       const panel = anchorFloatingPanelToHandle('right', 620, 260, 180, viewport);
       expect(panel.x).assertEqual(92);
       expect(panel.y).assertEqual(436);
@@ -19,21 +21,24 @@ export default function remoteFloatingPanelPlacementPolicyTest(): void {
     });
 
     it('places_shortcut_without_overlapping_primary_when_space_exists', 0, (): void => {
-      const viewport = { width: 900, height: 600, topMargin: 48, bottomMargin: 24, sideMargin: 8 };
+      const viewport: FloatingPanelViewport =
+        { width: 900, height: 600, topMargin: 48, bottomMargin: 24, sideMargin: 8 };
       const shortcut = placeFloatingCompanion(100, 90, 280, 150, 280, 240, viewport);
       expect(shortcut.x).assertEqual(392);
       expect(shortcut.y).assertEqual(90);
     });
 
     it('places_shortcut_below_primary_on_a_narrow_portrait_viewport', 0, (): void => {
-      const viewport = { width: 360, height: 700, topMargin: 48, bottomMargin: 24, sideMargin: 8 };
+      const viewport: FloatingPanelViewport =
+        { width: 360, height: 700, topMargin: 48, bottomMargin: 24, sideMargin: 8 };
       const shortcut = placeFloatingCompanion(92, 100, 260, 136, 260, 238, viewport);
       expect(shortcut.x).assertEqual(92);
       expect(shortcut.y).assertEqual(248);
     });
 
     it('minimizes_overlap_when_keyboard_leaves_no_nonoverlapping_position', 0, (): void => {
-      const viewport = { width: 373, height: 843, topMargin: 48, bottomMargin: 336, sideMargin: 8 };
+      const viewport: FloatingPanelViewport =
+        { width: 373, height: 843, topMargin: 48, bottomMargin: 336, sideMargin: 8 };
       const shortcut = placeFloatingCompanion(46, 100, 280, 300, 280, 300, viewport);
       const overlapWidth: number = Math.max(0,
         Math.min(326, shortcut.x + 280) - Math.max(46, shortcut.x));

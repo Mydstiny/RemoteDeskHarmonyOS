@@ -23,13 +23,19 @@ class RustDeskDisplayControlPlane {
 public:
     template<typename IsValid, typename Dispatch>
     bool dispatchFrame(int display, bool keyFrame, IsValid&& isValid, Dispatch&& dispatch) {
-        auto displayLease = displayCoordinator_.acquire();
         if (!isValid()) {
             return false;
         }
-        const RustDeskDisplaySwitchGateDecision decision =
-            displayLease.observeFrame(display, keyFrame);
-        if (!decision.acceptFrame) {
+        RustDeskDisplaySwitchGateDecision decision;
+        {
+            auto displayLease = displayCoordinator_.acquire();
+            decision = displayLease.observeFrame(display, keyFrame);
+        }
+        // The callback may synchronously report pressure, disconnect, or
+        // activate the next session. Re-check before crossing the external
+        // boundary, but never hold the non-reentrant display coordinator while
+        // invoking user/FFI code.
+        if (!decision.acceptFrame || !isValid()) {
             return false;
         }
         dispatch(decision);
@@ -38,23 +44,25 @@ public:
 
     template<typename IsValid, typename Dispatch>
     bool dispatchDisplay(int display, IsValid&& isValid, Dispatch&& dispatch) {
-        auto displayLease = displayCoordinator_.acquire();
         if (!isValid()) {
             return false;
         }
-        const RustDeskDisplaySwitchGateDecision decision =
-            displayLease.observeDisplay(display);
-        if (decision.publishDisplay) {
-            dispatch(decision);
+        RustDeskDisplaySwitchGateDecision decision;
+        {
+            auto displayLease = displayCoordinator_.acquire();
+            decision = displayLease.observeDisplay(display);
         }
-        return decision.publishDisplay;
+        if (!decision.publishDisplay || !isValid()) {
+            return false;
+        }
+        dispatch(decision);
+        return true;
     }
 
     template<typename IsValid, typename SwitchDisplay>
     RustDeskDisplayControlRequest beginDisplaySwitch(
         int display, IsValid&& isValid, SwitchDisplay&& switchDisplay) {
         RustDeskDisplayControlRequest result;
-        auto displayLease = displayCoordinator_.acquire();
         if (display < 0 || !isValid()) {
             return result;
         }
@@ -62,9 +70,20 @@ public:
         if (!handleLease) {
             return result;
         }
-        result.generation = displayLease.begin(display);
+        if (!isValid()) {
+            return result;
+        }
+        {
+            auto displayLease = displayCoordinator_.acquire();
+            result.generation = displayLease.begin(display);
+        }
+        // Keep the opaque handle pinned through the FFI call, but release the
+        // non-reentrant display coordinator before crossing the external
+        // callback boundary. A synchronous pressure/disconnect callback may
+        // therefore reacquire the display boundary safely.
         result.accepted = switchDisplay(handleLease.get(), display);
         if (!result.accepted) {
+            auto displayLease = displayCoordinator_.acquire();
             displayLease.reject(result.generation);
         }
         return result;
@@ -74,15 +93,17 @@ public:
     bool queryDisplayState(
         IsValid&& isValid,
         Query&& query,
-        RustDeskDisplaySwitchGateSnapshot& gateSnapshot) {
-        auto displayLease = displayCoordinator_.acquire();
+    RustDeskDisplaySwitchGateSnapshot& gateSnapshot) {
         if (!isValid()) {
             return false;
         }
         auto handleLease = handleGate_.acquire();
-        if (!handleLease || !query(handleLease.get())) {
+        if (!handleLease || !isValid() || !query(handleLease.get())) {
             return false;
         }
+        // The handle lease pins the Rust client through the external query;
+        // take only a short display snapshot lease after the query returns.
+        auto displayLease = displayCoordinator_.acquire();
         gateSnapshot = displayLease.snapshot();
         return true;
     }

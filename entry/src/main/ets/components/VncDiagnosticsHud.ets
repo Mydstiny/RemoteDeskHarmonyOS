@@ -92,10 +92,16 @@ export struct VncDiagnosticsHud {
   @Prop handleX: number = -48;
   @Prop panelX: number = 8;
   @Prop panelY: number = 58;
+  @Prop measurementGeneration: number = -1;
+  @Prop measurementToken: string = '';
   @StorageProp('accentColor') accentColor: string = '#007DFF';
   onToggle: () => void = (): void => {};
   onPositionChange: (x: number, y: number, fromPanel: boolean) => void =
     (_x: number, _y: number, _fromPanel: boolean): void => {};
+  onMeasured: (generation: number, measurementToken: string,
+    x: number, y: number, width: number, height: number) => void =
+    (_generation: number, _token: string, _x: number, _y: number,
+      _width: number, _height: number): void => {};
   @State private dragOffsetX: number = 0;
   @State private dragOffsetY: number = 0;
   @State private dragging: boolean = false;
@@ -170,6 +176,20 @@ export struct VncDiagnosticsHud {
     this.dragMoved = false;
     this.dragOffsetX = 0;
     this.dragOffsetY = 0;
+  }
+
+  private overlayAreaChangeHandler(fromPanel: boolean): (oldArea: Area, next: Area) => void {
+    const generation: number = this.measurementGeneration;
+    const token: string = this.measurementToken;
+    const x: number = fromPanel ? this.effectivePanelX() : this.effectiveHandleX();
+    const y: number = this.effectiveY();
+    return (_old: Area, next: Area): void => {
+      const width: number = next.width as number;
+      const height: number = next.height as number;
+      if (Number.isFinite(width) && Number.isFinite(height) && width > 0 && height > 0) {
+        this.onMeasured(generation, token, x, y, width, height);
+      }
+    };
   }
 
   @Builder
@@ -300,6 +320,7 @@ export struct VncDiagnosticsHud {
       .width(270)
       .position({ x: this.effectivePanelX(), y: this.effectiveY() })
       .hitTestBehavior(HitTestMode.Default)
+      .onAreaChange(this.overlayAreaChangeHandler(true))
     } else {
       Row() {
         Text('VNC').fontSize(9).fontWeight(FontWeight.Bold).fontColor('#FFFFFF')
@@ -314,6 +335,7 @@ export struct VncDiagnosticsHud {
       .shadow({ radius: 8, color: 'rgba(0,0,0,0.30)', offsetY: 2 })
       .position({ x: this.effectiveHandleX(), y: this.effectiveY() })
       .hitTestBehavior(HitTestMode.Default)
+      .onAreaChange(this.overlayAreaChangeHandler(false))
       .gesture(
         GestureGroup(GestureMode.Exclusive,
           TapGesture({ count: 1 }).onAction((): void => { this.onToggle(); }),

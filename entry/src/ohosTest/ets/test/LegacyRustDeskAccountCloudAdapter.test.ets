@@ -7,7 +7,8 @@ export default function legacyRustDeskAccountCloudAdapterTest(): void {
     it('must_not_put_pro_secrets_in_legacy_cloud_record', 0, (): void => {
       const account: RustDeskProAccountState = {
         id: 'pro-1', relayId: 'relay-1', serverUrl: 'https://pro.example.com', username: 'alice',
-        displayName: 'Alice', userId: '42', accessToken: 'secret-token', deviceId: 'device',
+        displayName: 'Alice', userId: '42', accessToken: 'secret-token',
+        accessTokenFingerprint: 'fingerprint-1', tokenGeneration: 1, deviceId: 'device',
         deviceUuid: 'uuid', loginStatus: 'logged_in', lastLoginAt: 100, lastSyncAt: 200, lastSyncError: ''
       };
       const legacy = LegacyRustDeskAccountCloudAdapter.toLegacy(account);
@@ -19,7 +20,8 @@ export default function legacyRustDeskAccountCloudAdapterTest(): void {
     it('cloud_metadata_requires_login_on_a_new_device', 0, (): void => {
       const account: RustDeskProAccountState = {
         id: 'pro-1', relayId: 'relay-1', serverUrl: 'https://pro.example.com', username: 'alice',
-        displayName: 'Alice', userId: '', accessToken: '', deviceId: '', deviceUuid: '',
+        displayName: 'Alice', userId: '', accessToken: '',
+        accessTokenFingerprint: '', tokenGeneration: 1, deviceId: '', deviceUuid: '',
         loginStatus: 'logged_in', lastLoginAt: 100, lastSyncAt: 0, lastSyncError: ''
       };
       const restored = LegacyRustDeskAccountCloudAdapter.fromLegacy(

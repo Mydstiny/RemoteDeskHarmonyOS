@@ -10,6 +10,8 @@ import { RemoteProtocol } from '../../../main/ets/services/RemoteSessionState';
 
 function sampleRecord(): ActiveRemoteSessionRecord {
   return {
+    ownerScopeId: 'account-a',
+    accountGeneration: 1,
     sessionId: 42,
     hostId: 'host-rdp-001',
     protocol: RemoteProtocol.rdp,
@@ -28,6 +30,7 @@ export default function activeRemoteSessionRegistryTest(): void {
     it('set_active_should_be_visible_from_next_instance_reference', 0, (): void => {
       const registry = ActiveRemoteSessionRegistry.getInstance();
       registry.resetForTest();
+      registry.bindScope('account-a', 1);
 
       registry.setActive(sampleRecord());
 
@@ -44,6 +47,7 @@ export default function activeRemoteSessionRegistryTest(): void {
     it('mark_render_detached_should_keep_protocol_and_request_restore', 0, (): void => {
       const registry = ActiveRemoteSessionRegistry.getInstance();
       registry.resetForTest();
+      registry.bindScope('account-a', 1);
       registry.setActive(sampleRecord());
 
       registry.markRenderDetached();
@@ -60,17 +64,19 @@ export default function activeRemoteSessionRegistryTest(): void {
     it('has_restore_pending_should_match_host_and_session', 0, (): void => {
       const registry = ActiveRemoteSessionRegistry.getInstance();
       registry.resetForTest();
+      registry.bindScope('account-a', 1);
       registry.setActive(sampleRecord());
       registry.markRenderDetached();
 
-      expect(registry.hasRestorePending('host-rdp-001', 42)).assertTrue();
-      expect(registry.hasRestorePending('host-rdp-001', 7)).assertFalse();
-      expect(registry.hasRestorePending('other-host', 42)).assertFalse();
+      expect(registry.hasRestorePending('account-a', 1, 'host-rdp-001', 42)).assertTrue();
+      expect(registry.hasRestorePending('account-a', 1, 'host-rdp-001', 7)).assertFalse();
+      expect(registry.hasRestorePending('account-a', 1, 'other-host', 42)).assertFalse();
     });
 
     it('mark_render_attached_should_store_latest_surface_and_clear_restore', 0, (): void => {
       const registry = ActiveRemoteSessionRegistry.getInstance();
       registry.resetForTest();
+      registry.bindScope('account-a', 1);
       registry.setActive(sampleRecord());
       registry.markRenderDetached();
 
@@ -88,6 +94,7 @@ export default function activeRemoteSessionRegistryTest(): void {
     it('clear_should_remove_active_session', 0, (): void => {
       const registry = ActiveRemoteSessionRegistry.getInstance();
       registry.resetForTest();
+      registry.bindScope('account-a', 1);
       registry.setActive(sampleRecord());
 
       registry.clear('test-clear');

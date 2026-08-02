@@ -12,6 +12,7 @@ export interface VncSessionToolbarActions {
 @Component
 export struct VncSessionToolbar {
   @StorageProp('accentColor') accentColor: string = '#007DFF';
+  @Prop deviceClass: 'pc' | 'pad' | 'phone' = 'pc';
   @Prop viewOnly: boolean = false;
   @Prop keyboardOpen: boolean = false;
   @Prop controlModeLabel: string = '触控板';
@@ -79,10 +80,14 @@ export struct VncSessionToolbar {
             (): void => { this.actions.onOpenShortcuts(); })
           this.actionButton($r('sys.symbol.desktop_fill'), this.displayScaleLabel, false,
             (): void => { this.actions.onCycleDisplayScale(); })
-          this.actionButton($r('sys.symbol.list_bullet'), '性能', this.diagnosticsEnabled,
-            (): void => { this.actions.onToggleDiagnostics(); })
-          this.actionButton($r('sys.symbol.gearshape_fill'), '控制台', false,
-            (): void => { this.actions.onOpenConsole(); })
+          if (this.deviceClass !== 'phone') {
+            this.actionButton($r('sys.symbol.list_bullet'), '性能', this.diagnosticsEnabled,
+              (): void => { this.actions.onToggleDiagnostics(); })
+          }
+          if (this.deviceClass === 'pc') {
+            this.actionButton($r('sys.symbol.gearshape_fill'), '控制台', false,
+              (): void => { this.actions.onOpenConsole(); })
+          }
           this.actionButton($r('sys.symbol.xmark'), '断开', false,
             (): void => { this.actions.onDisconnect(); }, true)
         }

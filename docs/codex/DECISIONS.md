@@ -132,3 +132,19 @@ HarmonyOS `setDistributedTables` and `cloudSync` operate at the physical databas
 ## D-023 - Destructive data transitions require durable, scoped proof
 
 Cloud-first apply, portable/system restore, schema migration and crypto disable/reset must not infer success from an accepted callback, an empty table, a local nonempty state or a UI step sequence. They use scoped durable state/receipts, transactional apply, mutation journal/checkpoint or quarantine, read-back validation and explicit terminal states. Sensitive native-first transfer is blocked unless the full payload is safe for the active encryption contract; absent backup sections are no-ops; device trust, plaintext consent and login/protocol tokens never enter cloud or portable backup. System BackupExtension and remote destructive operations remain disabled until real device/cloud evidence exists.
+
+## D-024 - Startup state is compact and review status is content-addressed
+
+Startup consumes only the short `CURRENT.md`, `QUEUE.md` and the output of the
+platform workflow `status` command. Historical state is preserved in a monthly
+archive and is queried only when the active state links to it. `STATE.json` is
+the machine-readable task record; `REVIEW_RECEIPTS.jsonl` is the durable review
+ledger and contains sanitized facts, not chat transcripts or raw model memory.
+
+A code review PASS can be reused only when the task base, declared plan hash,
+and declared code-scope tree hash match the receipt. Documentation-only changes
+do not invalidate the receipt. Code, plan, base, scope, or uncommitted scoped
+changes produce `REVIEW_REQUIRED`; a missing report produces `RESUME_REVIEW` and
+must reuse the recorded reviewer task rather than dispatching a duplicate after
+context compression. Review status is separate from build, device, endpoint,
+cloud, and release readiness.

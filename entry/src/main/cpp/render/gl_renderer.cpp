@@ -54,10 +54,10 @@ static uint64_t AdvanceRendererGeneration() {
     return g_rendererGeneration.fetch_add(1, std::memory_order_acq_rel) + 1;
 }
 
-static void OnSurfaceCreatedCB(OH_NativeXComponent* component, void* window);
-static void OnSurfaceChangedCB(OH_NativeXComponent* component, void* window);
-static void OnSurfaceDestroyedCB(OH_NativeXComponent* component, void* window);
-static void DispatchTouchEventStub(OH_NativeXComponent* component, void* window);
+[[maybe_unused]] static void OnSurfaceCreatedCB(OH_NativeXComponent* component, void* window);
+[[maybe_unused]] static void OnSurfaceChangedCB(OH_NativeXComponent* component, void* window);
+[[maybe_unused]] static void OnSurfaceDestroyedCB(OH_NativeXComponent* component, void* window);
+[[maybe_unused]] static void DispatchTouchEventStub(OH_NativeXComponent* component, void* window);
 
 static bool TryLoadNativeXComponent(napi_env env, napi_value exports, const char* source) {
     if (g_xc != nullptr) {
@@ -133,8 +133,8 @@ static bool SetNativeWindowFromSurfaceId(const char* surfaceId, int width, int h
         OH_LOG_INFO(LOG_APP, "[GL] setXComponentSurfaceId: reuse surfaceId=%{public}s win=%{public}p size=%{public}llux%{public}llu",
                     surfaceId,
                     reinterpret_cast<void*>(g_nativeWindow),
-                    g_surfaceWidth,
-                    g_surfaceHeight);
+                    static_cast<unsigned long long>(g_surfaceWidth),
+                    static_cast<unsigned long long>(g_surfaceHeight));
         return true;
     }
 
@@ -173,16 +173,20 @@ static bool SetNativeWindowFromSurfaceId(const char* surfaceId, int width, int h
     if (width > 0) { g_surfaceWidth = static_cast<uint64_t>(width); }
     if (height > 0) { g_surfaceHeight = static_cast<uint64_t>(height); }
     OH_LOG_INFO(LOG_APP, "[GL] setXComponentSurfaceId: surfaceId=%{public}s win=%{public}p size=%{public}llux%{public}llu",
-                surfaceId, window, g_surfaceWidth, g_surfaceHeight);
+                surfaceId, window,
+                static_cast<unsigned long long>(g_surfaceWidth),
+                static_cast<unsigned long long>(g_surfaceHeight));
     return true;
 }
 
-static void OnSurfaceCreatedCB(OH_NativeXComponent* component, void* window) {
+[[maybe_unused]] static void OnSurfaceCreatedCB(OH_NativeXComponent* component, void* window) {
     (void)component;
     std::lock_guard<std::mutex> surfaceLock(g_surfaceStateMutex);
     if (g_surfaceIdWindowOwned && g_nativeWindow != 0) {
         OH_LOG_INFO(LOG_APP, "[GL] XComponent SurfaceCreated: 保留 SurfaceId window=%{public}p callbackWin=%{public}p size=%{public}llux%{public}llu",
-                    reinterpret_cast<void*>(g_nativeWindow), window, g_surfaceWidth, g_surfaceHeight);
+                    reinterpret_cast<void*>(g_nativeWindow), window,
+                    static_cast<unsigned long long>(g_surfaceWidth),
+                    static_cast<unsigned long long>(g_surfaceHeight));
         const bool wasDetached = g_surfaceDetached.exchange(false, std::memory_order_acq_rel);
         g_surfaceReady.store(true, std::memory_order_release);
         if (wasDetached) {
@@ -200,23 +204,27 @@ static void OnSurfaceCreatedCB(OH_NativeXComponent* component, void* window) {
     g_surfaceDetached.store(false, std::memory_order_release);
     AdvanceRendererGeneration();
     OH_LOG_INFO(LOG_APP, "[GL] XComponent SurfaceCreated: win=%{public}p size deferred %{public}llux%{public}llu",
-                window, g_surfaceWidth, g_surfaceHeight);
+                window,
+                static_cast<unsigned long long>(g_surfaceWidth),
+                static_cast<unsigned long long>(g_surfaceHeight));
 }
 
-static void OnSurfaceChangedCB(OH_NativeXComponent* component, void* window) {
+[[maybe_unused]] static void OnSurfaceChangedCB(OH_NativeXComponent* component, void* window) {
     (void)component;
     std::lock_guard<std::mutex> surfaceLock(g_surfaceStateMutex);
     OH_LOG_INFO(LOG_APP, "[GL] XComponent SurfaceChanged: win=%{public}p size deferred %{public}llux%{public}llu",
-                window, g_surfaceWidth, g_surfaceHeight);
+                window,
+                static_cast<unsigned long long>(g_surfaceWidth),
+                static_cast<unsigned long long>(g_surfaceHeight));
 }
 
 // 空实现 stub — 防止 DispatchTouchEvent=NULL 导致框架 OnSurfaceDestroyed 中调用 NULL 指针崩溃
-static void DispatchTouchEventStub(OH_NativeXComponent* component, void* window) {
+[[maybe_unused]] static void DispatchTouchEventStub(OH_NativeXComponent* component, void* window) {
     (void)component;
     (void)window;
 }
 
-static void OnSurfaceDestroyedCB(OH_NativeXComponent* component, void* window) {
+[[maybe_unused]] static void OnSurfaceDestroyedCB(OH_NativeXComponent* component, void* window) {
     (void)component;
     (void)window;
     std::lock_guard<std::mutex> surfaceLock(g_surfaceStateMutex);
@@ -300,7 +308,7 @@ void main() {
 )";
 
 /** NV12→RGB 片段着色器 (双平面) */
-static const char* FRAGMENT_SHADER_NV12 =R"(#version 300 es
+[[maybe_unused]] static const char* FRAGMENT_SHADER_NV12 =R"(#version 300 es
 #extension GL_OES_EGL_image_external_essl3 : require
 precision mediump float;
 
@@ -472,6 +480,7 @@ int GLRenderer::Init(const std::string& xcomponentId, int width, int height) {
 }
 
 bool GLRenderer::InitEGL(const std::string& xcomponentId) {
+    (void)xcomponentId;
     // 获取默认显示
     eglDisplay_ = eglGetDisplay(EGL_DEFAULT_DISPLAY);
     if (eglDisplay_ == EGL_NO_DISPLAY) {
@@ -542,7 +551,8 @@ bool GLRenderer::InitEGL(const std::string& xcomponentId) {
         } else {
             windowSurfaceCreated = true;
             OH_LOG_INFO(LOG_APP, "[GL] ✓ XComponent window surface, %{public}llux%{public}llu",
-                        surfaceWidth, surfaceHeight);
+                        static_cast<unsigned long long>(surfaceWidth),
+                        static_cast<unsigned long long>(surfaceHeight));
             width_ = static_cast<int>(surfaceWidth);
             height_ = static_cast<int>(surfaceHeight);
         }
@@ -1291,45 +1301,95 @@ namespace {
 struct RendererContext {
     std::shared_ptr<GLRenderer> renderer;
     uint64_t generation = 0;
+    Render::DecoderSessionIdentity owner;
+    Render::DecoderSessionIdentity boundOwner;
+    bool active = false;
+    bool detached = true;
+    bool destroying = false;
 };
 
 // 活跃渲染器句柄 — 供 RenderRawBgraActive 零参数调用
 static std::atomic<int64_t> g_activeRendererHandle {0};
 static std::mutex g_activeRendererMutex;
+static Render::DecoderSessionIdentity g_activeRendererOwner;
 // Decoder callbacks can outlive the UI-side numeric handle. Handles must not
 // be raw addresses: a destroyed context can be allocated at the same address
 // during a fast PIP surface transfer, making an old callback target a new
 // renderer. Keep monotonically increasing opaque IDs in the same registry
 // mutex so stale callbacks are rejected before any context is dereferenced.
 static std::atomic<int64_t> g_nextRendererHandle {1};
-static std::unordered_map<int64_t, std::unique_ptr<RendererContext>> g_rendererContexts;
+static std::unordered_map<int64_t, std::shared_ptr<RendererContext>> g_rendererContexts;
 static std::function<void()> g_activeRedrawCallback;
 static uint64_t g_nextRedrawCallbackToken = 1;
 static uint64_t g_activeRedrawCallbackToken = 0;
 
-static RendererContext* FindRendererContextLocked(int64_t handle) {
+static std::shared_ptr<RendererContext> FindRendererContextLocked(int64_t handle) {
     if (handle <= 0) {
         return nullptr;
     }
     const auto it = g_rendererContexts.find(handle);
-    return it == g_rendererContexts.end() ? nullptr : it->second.get();
+    return it == g_rendererContexts.end() ? nullptr : it->second;
 }
 
 static bool IsActiveRendererHandleLocked(int64_t handle) {
-    return handle > 0 && g_activeRendererHandle.load(std::memory_order_acquire) == handle;
+    const auto ctx = FindRendererContextLocked(handle);
+    return handle > 0 && g_activeRendererHandle.load(std::memory_order_acquire) == handle &&
+        ctx != nullptr && ctx->active && !ctx->detached && !ctx->destroying;
+}
+
+static bool IsActiveRendererOwnerLocked(const Render::DecoderSessionIdentity& owner) {
+    return Render::SessionOwnerMatches(g_activeRendererOwner, owner);
+}
+
+static bool IsActiveRendererOwnerAndHandleLocked(
+    int64_t handle, const Render::DecoderSessionIdentity& owner) {
+    const auto ctx = FindRendererContextLocked(handle);
+    return IsActiveRendererHandleLocked(handle) && IsActiveRendererOwnerLocked(owner) &&
+        ctx != nullptr && ctx->active && !ctx->detached &&
+        Render::SessionOwnerMatches(ctx->boundOwner, owner);
 }
 
 static std::shared_ptr<GLRenderer> AcquireRendererLocked(int64_t handle,
                                                           bool requireActive,
                                                           uint64_t* generation = nullptr) {
-    auto* ctx = FindRendererContextLocked(handle);
-    if (!ctx || !ctx->renderer || (requireActive && !IsActiveRendererHandleLocked(handle))) {
+    const auto ctx = FindRendererContextLocked(handle);
+    if (!ctx || !ctx->renderer || ctx->destroying ||
+        (requireActive && (!IsActiveRendererHandleLocked(handle) || !ctx->active || ctx->detached))) {
         return nullptr;
     }
     if (generation) {
         *generation = ctx->generation;
     }
     return ctx->renderer;
+}
+
+// Public NAPI calls carry only the opaque handle, so pin the current session
+// owner for the complete object call. This closes the check-then-use window in
+// which S1 could pass the active-map lookup while S2 was being published.
+struct PublicRendererAccess {
+    Render::SessionSinkOwnerLease::Lease ownerLease;
+    std::shared_ptr<GLRenderer> renderer;
+    uint64_t generation = 0;
+};
+
+static PublicRendererAccess AcquirePublicRenderer(int64_t handle) {
+    PublicRendererAccess access;
+    const Render::DecoderSessionIdentity owner =
+        Render::SharedSessionSinkOwnerLease().snapshot();
+    access.ownerLease = Render::SharedSessionSinkOwnerLease().acquire(owner);
+    if (!access.ownerLease) {
+        return access;
+    }
+    std::lock_guard<std::mutex> lock(g_activeRendererMutex);
+    if (!IsActiveRendererOwnerAndHandleLocked(handle, owner)) {
+        access.ownerLease = {};
+        return access;
+    }
+    access.renderer = AcquireRendererLocked(handle, true, &access.generation);
+    if (!access.renderer) {
+        access.ownerLease = {};
+    }
+    return access;
 }
 
 /**
@@ -1350,6 +1410,22 @@ napi_value NapiInitRenderer(napi_env env, napi_callback_info info) {
     napi_get_value_int32(env, args[1], &width);
     napi_get_value_int32(env, args[2], &height);
 
+    const Render::DecoderSessionIdentity owner =
+        Render::SharedSessionSinkOwnerLease().snapshot();
+    // doConnect() creates the renderer before connect() publishes the session
+    // owner. Keep the shared lease only when an already-active session exists;
+    // a cold-start renderer is intentionally owner-pending until the activation
+    // transaction binds its exact session identity.
+    Render::SessionSinkOwnerLease::Lease ownerLease;
+    if (owner.valid()) {
+        ownerLease = Render::SharedSessionSinkOwnerLease().acquire(owner);
+        if (!ownerLease) {
+            napi_value errVal;
+            napi_create_int32(env, -1, &errVal);
+            return errVal;
+        }
+    }
+
     // 创建渲染器
     auto renderer = std::shared_ptr<GLRenderer>(new GLRenderer());
     int result = renderer->Init(xcomponentId, width, height);
@@ -1363,8 +1439,12 @@ napi_value NapiInitRenderer(napi_env env, napi_callback_info info) {
     // Return a process-local opaque ID instead of exposing a context address.
     // The decoder can retain this value while the UI tears down and rebuilds
     // the renderer during a PIP transfer.
-    auto ctx = std::make_unique<RendererContext>();
+    auto ctx = std::make_shared<RendererContext>();
     ctx->renderer = renderer;
+    ctx->owner = owner;
+    ctx->boundOwner = owner;
+    ctx->active = false;
+    ctx->detached = true;
     int64_t handleVal = g_nextRendererHandle.fetch_add(1, std::memory_order_relaxed);
     if (handleVal <= 0) {
         // Extremely defensive overflow handling; zero and negative values are
@@ -1373,14 +1453,30 @@ napi_value NapiInitRenderer(napi_env env, napi_callback_info info) {
     }
     {
         std::lock_guard<std::mutex> lock(g_activeRendererMutex);
-        g_rendererContexts.emplace(handleVal, std::move(ctx));
+        g_rendererContexts.emplace(handleVal, ctx);
     }
     renderer->SetRendererHandle(handleVal);
     napi_value handle;
     napi_create_int64(env, handleVal, &handle);
 
-    // 设置为活跃渲染器 — 供 RenderRawBgraActive 等内部调用使用
+    // The owner lease is intentionally held while the token enters the active
+    // map, so an S1->S2 transition cannot publish a half-bound renderer. For a
+    // cold start the token is active but owner-pending; SetActiveSessionOwner()
+    // binds it when connect() publishes the new session.
     RendererNapi::SetActiveRenderer(handleVal);
+    bool active = false;
+    if (owner.valid()) {
+        active = RendererNapi::IsActiveRendererForOwnerUnderLease(handleVal, owner);
+    } else {
+        std::lock_guard<std::mutex> lock(g_activeRendererMutex);
+        active = IsActiveRendererHandleLocked(handleVal);
+    }
+    if (!active) {
+        RendererNapi::DestroyRendererHandle(handleVal);
+        napi_value errVal;
+        napi_create_int32(env, -1, &errVal);
+        return errVal;
+    }
 
     OH_LOG_INFO(LOG_APP, "[GL] NAPI initRenderer 成功, active renderer=%{public}lld",
                 static_cast<long long>(handleVal));
@@ -1400,13 +1496,9 @@ napi_value NapiRenderFrame(napi_env env, napi_callback_info info) {
     int32_t textureId;
     napi_get_value_int32(env, args[1], &textureId);
 
-    std::shared_ptr<GLRenderer> renderer;
-    {
-        std::lock_guard<std::mutex> lock(g_activeRendererMutex);
-        renderer = AcquireRendererLocked(handleVal, true);
-    }
-    if (renderer) {
-        renderer->RenderFrame(static_cast<GLuint>(textureId));
+    auto access = AcquirePublicRenderer(handleVal);
+    if (access.renderer) {
+        access.renderer->RenderFrame(static_cast<GLuint>(textureId));
     }
 
     napi_value undefined;
@@ -1429,17 +1521,21 @@ napi_value NapiResizeRenderer(napi_env env, napi_callback_info info) {
     napi_get_value_int32(env, args[1], &width);
     napi_get_value_int32(env, args[2], &height);
 
-    std::shared_ptr<GLRenderer> renderer;
-    {
-        std::lock_guard<std::mutex> lock(g_activeRendererMutex);
-        auto* ctx = FindRendererContextLocked(handleVal);
-        if (IsActiveRendererHandleLocked(handleVal) && ctx && ctx->renderer) {
-            ctx->generation = AdvanceRendererGeneration();
-            renderer = ctx->renderer;
+    auto access = AcquirePublicRenderer(handleVal);
+    if (access.renderer) {
+        {
+            std::lock_guard<std::mutex> lock(g_activeRendererMutex);
+            const auto ctx = FindRendererContextLocked(handleVal);
+            if (!ctx || ctx->renderer != access.renderer ||
+                !IsActiveRendererHandleLocked(handleVal)) {
+                access.renderer.reset();
+            } else {
+                ctx->generation = AdvanceRendererGeneration();
+            }
         }
     }
-    if (renderer) {
-        renderer->Resize(width, height);
+    if (access.renderer) {
+        access.renderer->Resize(width, height);
     }
 
     napi_value undefined;
@@ -1460,14 +1556,10 @@ napi_value NapiSetRendererCanvasTransform(napi_env env, napi_callback_info info)
     if (argc > 1) napi_get_value_double(env, args[1], &scale);
     if (argc > 2) napi_get_value_double(env, args[2], &panX);
     if (argc > 3) napi_get_value_double(env, args[3], &panY);
-    std::shared_ptr<GLRenderer> renderer;
-    {
-        std::lock_guard<std::mutex> lock(g_activeRendererMutex);
-        renderer = AcquireRendererLocked(handleVal, true);
-    }
+    auto access = AcquirePublicRenderer(handleVal);
     uint64_t version = 0;
-    if (renderer) {
-        version = renderer->SetCanvasTransform(scale, panX, panY);
+    if (access.renderer) {
+        version = access.renderer->SetCanvasTransform(scale, panX, panY);
     }
     napi_value result;
     napi_create_double(env, static_cast<double>(version), &result);
@@ -1484,8 +1576,17 @@ napi_value NapiDestroyRenderer(napi_env env, napi_callback_info info) {
 
     int64_t handleVal;
     napi_get_value_int64(env, args[0], &handleVal);
-    RendererNapi::DeactivateRenderer(handleVal);
-    RendererNapi::DestroyRendererHandle(handleVal);
+    const Render::DecoderSessionIdentity owner = Render::SharedSessionSinkOwnerLease().snapshot();
+    if (owner.valid()) {
+        RendererNapi::DeactivateRenderer(handleVal, owner);
+        RendererNapi::DestroyRendererHandle(handleVal, owner);
+    } else {
+        // A renderer can exist between initRenderer() and connect(). In that
+        // window there is no session owner to pass to the owner-aware teardown;
+        // the opaque handle is still exact, so use the unbound cleanup path.
+        RendererNapi::DeactivateRenderer(handleVal);
+        RendererNapi::DestroyRendererHandle(handleVal);
+    }
 
     napi_value undefined;
     napi_get_undefined(env, &undefined);
@@ -1513,13 +1614,9 @@ napi_value NapiRenderRawBGRA(napi_env env, napi_callback_info info) {
     napi_get_value_int32(env, args[3], &height);
     if (argc > 4) napi_get_value_int32(env, args[4], &stride);
 
-    std::shared_ptr<GLRenderer> renderer;
-    {
-        std::lock_guard<std::mutex> lock(g_activeRendererMutex);
-        renderer = AcquireRendererLocked(handleVal, true);
-    }
-    if (renderer) {
-        renderer->RenderRawBGRA(static_cast<const uint8_t*>(data), width, height, stride);
+    auto access = AcquirePublicRenderer(handleVal);
+    if (access.renderer) {
+        access.renderer->RenderRawBGRA(static_cast<const uint8_t*>(data), width, height, stride);
     }
 
     napi_value undefined;
@@ -1539,14 +1636,10 @@ napi_value NapiTestRender(napi_env env, napi_callback_info info) {
     int64_t handleVal;
     napi_get_value_int64(env, args[0], &handleVal);
 
-    std::shared_ptr<GLRenderer> renderer;
-    {
-        std::lock_guard<std::mutex> lock(g_activeRendererMutex);
-        renderer = AcquireRendererLocked(handleVal, true);
-    }
-    if (renderer) {
+    auto access = AcquirePublicRenderer(handleVal);
+    if (access.renderer) {
         // 直接清屏蓝色并 swap — 不依赖解码器纹理
-        GLRenderer* r = renderer.get();
+        GLRenderer* r = access.renderer.get();
         if (r->MakeCurrent()) {
             glClearColor(0.0f, 0.2f, 0.8f, 1.0f); // 华为蓝 #0033CC
             glClear(GL_COLOR_BUFFER_BIT);
@@ -1569,6 +1662,7 @@ napi_value NapiTestRender(napi_env env, napi_callback_info info) {
  * 注册 surface 生命周期回调。ArkTS 在 XComponent.onLoad 中调用。
  */
 napi_value NapiRegisterNativeXComponent(napi_env env, napi_callback_info info) {
+    (void)info;
     if (g_xc != nullptr) {
         napi_value r; napi_get_boolean(env, true, &r); return r;
     }
@@ -1640,12 +1734,8 @@ napi_value NapiGetRendererViewport(napi_env env, napi_callback_info info) {
         napi_get_value_int64(env, args[0], &handle);
     }
 
-    std::shared_ptr<GLRenderer> renderer;
-    {
-        std::lock_guard<std::mutex> lock(g_activeRendererMutex);
-        renderer = AcquireRendererLocked(handle, true);
-    }
-    if (!renderer) {
+    auto access = AcquirePublicRenderer(handle);
+    if (!access.renderer) {
         napi_value nullVal;
         napi_get_null(env, &nullVal);
         return nullVal;
@@ -1654,8 +1744,8 @@ napi_value NapiGetRendererViewport(napi_env env, napi_callback_info info) {
     int vpX = 0, vpY = 0, vpW = 0, vpH = 0;
     int srcW = 0, srcH = 0, surfW = 0, surfH = 0;
     uint64_t transformVersion = 0;
-    renderer->GetViewportSnapshot(vpX, vpY, vpW, vpH, srcW, srcH, surfW, surfH,
-                                  transformVersion);
+    access.renderer->GetViewportSnapshot(vpX, vpY, vpW, vpH, srcW, srcH, surfW, surfH,
+                                         transformVersion);
 
     napi_value result;
     napi_create_object(env, &result);
@@ -1687,10 +1777,14 @@ napi_value NapiGetRendererViewport(napi_env env, napi_callback_info info) {
 
 void RendererNapi::SetActiveRenderer(int64_t handle) {
     std::shared_ptr<GLRenderer> renderer;
+    std::shared_ptr<GLRenderer> previousRenderer;
+    std::function<void()> redrawCallback;
     {
         std::lock_guard<std::mutex> lock(g_activeRendererMutex);
-        auto* ctx = FindRendererContextLocked(handle);
-        if (!ctx || !ctx->renderer) {
+        const auto ctx = FindRendererContextLocked(handle);
+        if (!ctx || !ctx->renderer || ctx->destroying ||
+            (g_activeRendererOwner.valid() && ctx->boundOwner.valid() &&
+             g_activeRendererOwner != ctx->boundOwner)) {
             OH_LOG_WARN(LOG_APP, "[GL] active renderer rejected stale handle=%{public}lld",
                         static_cast<long long>(handle));
             return;
@@ -1702,22 +1796,131 @@ void RendererNapi::SetActiveRenderer(int64_t handle) {
         }
         const uint64_t generation = AdvanceRendererGeneration();
         ctx->generation = generation;
+        // An ownerless renderer is a pending token for the next activation;
+        // never bind it to the previous session merely because that session's
+        // component state is still being retired.
+        ctx->owner = ctx->boundOwner;
+        ctx->active = true;
+        ctx->detached = false;
         g_activeRendererHandle.store(handle, std::memory_order_release);
         {
             std::lock_guard<std::mutex> surfaceLock(g_surfaceStateMutex);
             g_surfaceOwnerHandle.store(handle, std::memory_order_release);
         }
         renderer = ctx->renderer;
-        // Callback setters only touch the renderer callback mutex; keeping
-        // them in the registry critical section serializes active renderer
-        // switches with session callback registration/unregistration.
-        if (previousRenderer && previousRenderer != renderer) {
-            previousRenderer->SetSessionRedrawCallback(nullptr);
-        }
-        renderer->SetSessionRedrawCallback(g_activeRedrawCallback);
+        redrawCallback = g_activeRedrawCallback;
+    }
+    if (previousRenderer && previousRenderer != renderer) {
+        previousRenderer->SetSessionRedrawCallback(nullptr);
+    }
+    if (renderer) {
+        renderer->SetSessionRedrawCallback(std::move(redrawCallback));
     }
     OH_LOG_INFO(LOG_APP, "[GL] active renderer set handle=%{public}lld",
                 static_cast<long long>(handle));
+}
+
+bool RendererNapi::SetActiveRenderer(
+    int64_t handle, const Render::DecoderSessionIdentity& owner) {
+    auto sinkLease = Render::SharedSessionSinkOwnerLease().acquire(owner);
+    if (!sinkLease) {
+        return false;
+    }
+    std::shared_ptr<GLRenderer> renderer;
+    std::shared_ptr<GLRenderer> previousRenderer;
+    std::function<void()> redrawCallback;
+    {
+        std::lock_guard<std::mutex> lock(g_activeRendererMutex);
+        const auto ctx = FindRendererContextLocked(handle);
+        if (!ctx || !ctx->renderer ||
+            (g_activeRendererOwner.valid() && g_activeRendererOwner != owner) ||
+            (ctx->boundOwner.valid() && ctx->boundOwner != owner) || ctx->destroying) {
+            return false;
+        }
+        const int64_t previousHandle = g_activeRendererHandle.load(std::memory_order_acquire);
+        if (previousHandle != handle) {
+            previousRenderer = AcquireRendererLocked(previousHandle, false);
+        }
+        g_activeRendererOwner = owner;
+        const uint64_t generation = AdvanceRendererGeneration();
+        ctx->generation = generation;
+        ctx->boundOwner = owner;
+        ctx->owner = owner;
+        ctx->active = true;
+        ctx->detached = false;
+        g_activeRendererHandle.store(handle, std::memory_order_release);
+        {
+            std::lock_guard<std::mutex> surfaceLock(g_surfaceStateMutex);
+            g_surfaceOwnerHandle.store(handle, std::memory_order_release);
+        }
+        renderer = ctx->renderer;
+        redrawCallback = g_activeRedrawCallback;
+    }
+    if (previousRenderer && previousRenderer != renderer) {
+        previousRenderer->SetSessionRedrawCallback(nullptr);
+    }
+    if (renderer) {
+        renderer->SetSessionRedrawCallback(std::move(redrawCallback));
+    }
+    return true;
+}
+
+bool RendererNapi::IsActiveRendererForOwnerUnderLease(
+    int64_t handle, const Render::DecoderSessionIdentity& owner) {
+    std::lock_guard<std::mutex> lock(g_activeRendererMutex);
+    return IsActiveRendererOwnerAndHandleLocked(handle, owner);
+}
+
+void RendererNapi::SetActiveSessionOwner(const Render::DecoderSessionIdentity& owner) {
+    std::shared_ptr<GLRenderer> staleRenderer;
+    {
+        std::lock_guard<std::mutex> lock(g_activeRendererMutex);
+        const int64_t handle = g_activeRendererHandle.load(std::memory_order_acquire);
+        const auto ctx = FindRendererContextLocked(handle);
+        if (ctx && ctx->boundOwner.valid() && ctx->boundOwner != owner) {
+            // The old token remains permanently bound to S1. Detach it from
+            // the active slot before publishing S2; its later teardown can
+            // still destroy only that exact token.
+            staleRenderer = ctx->renderer;
+            ctx->active = false;
+            ctx->detached = true;
+            g_activeRendererHandle.store(0, std::memory_order_release);
+            g_activeRendererOwner = owner;
+            AdvanceRendererGeneration();
+        } else {
+            g_activeRendererOwner = owner;
+            if (ctx) {
+                ctx->boundOwner = owner;
+                ctx->owner = owner;
+            }
+        }
+    }
+    if (staleRenderer) {
+        staleRenderer->SetSessionRedrawCallback(nullptr);
+    }
+}
+
+void RendererNapi::ClearActiveSessionOwner(const Render::DecoderSessionIdentity& owner) {
+    std::shared_ptr<GLRenderer> staleRenderer;
+    {
+        std::lock_guard<std::mutex> lock(g_activeRendererMutex);
+        if (!IsActiveRendererOwnerLocked(owner)) {
+            return;
+        }
+        const int64_t handle = g_activeRendererHandle.load(std::memory_order_acquire);
+        const auto ctx = FindRendererContextLocked(handle);
+        if (ctx && IsActiveRendererOwnerAndHandleLocked(handle, owner)) {
+            staleRenderer = ctx->renderer;
+            ctx->active = false;
+            ctx->detached = true;
+            g_activeRendererHandle.store(0, std::memory_order_release);
+            AdvanceRendererGeneration();
+        }
+        g_activeRendererOwner = Render::DecoderSessionIdentity {};
+    }
+    if (staleRenderer) {
+        staleRenderer->SetSessionRedrawCallback(nullptr);
+    }
 }
 
 RdpPresentationMetricsSnapshot RendererNapi::GetActivePresentationStats() {
@@ -1733,9 +1936,39 @@ RdpPresentationMetricsSnapshot RendererNapi::GetActivePresentationStats() {
     return renderer->GetPresentationStats();
 }
 
+RdpPresentationMetricsSnapshot RendererNapi::GetActivePresentationStats(
+    const Render::DecoderSessionIdentity& owner) {
+    auto sinkLease = Render::SharedSessionSinkOwnerLease().acquire(owner);
+    if (!sinkLease) {
+        return RdpPresentationMetricsSnapshot();
+    }
+    std::shared_ptr<GLRenderer> renderer;
+    {
+        std::lock_guard<std::mutex> lock(g_activeRendererMutex);
+        const int64_t handle = g_activeRendererHandle.load(std::memory_order_acquire);
+        if (!IsActiveRendererOwnerAndHandleLocked(handle, owner)) {
+            return RdpPresentationMetricsSnapshot();
+        }
+        renderer = AcquireRendererLocked(handle, true);
+    }
+    return renderer ? renderer->GetPresentationStats() : RdpPresentationMetricsSnapshot();
+}
+
 void RendererNapi::InvalidateActivePresentation() {
     std::lock_guard<std::mutex> lock(g_activeRendererMutex);
     if (g_activeRendererHandle.load(std::memory_order_acquire) > 0) {
+        AdvanceRendererGeneration();
+    }
+}
+
+void RendererNapi::InvalidateActivePresentation(const Render::DecoderSessionIdentity& owner) {
+    auto sinkLease = Render::SharedSessionSinkOwnerLease().acquire(owner);
+    if (!sinkLease) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(g_activeRendererMutex);
+    const int64_t handle = g_activeRendererHandle.load(std::memory_order_acquire);
+    if (IsActiveRendererOwnerAndHandleLocked(handle, owner)) {
         AdvanceRendererGeneration();
     }
 }
@@ -1747,7 +1980,27 @@ bool RendererNapi::ReenableActivePresentation() {
         !g_surfaceReady.load(std::memory_order_acquire)) {
         return false;
     }
-    auto* ctx = FindRendererContextLocked(handle);
+    const auto ctx = FindRendererContextLocked(handle);
+    if (!ctx || !ctx->renderer) {
+        return false;
+    }
+    ctx->generation = AdvanceRendererGeneration();
+    return true;
+}
+
+bool RendererNapi::ReenableActivePresentation(const Render::DecoderSessionIdentity& owner) {
+    auto sinkLease = Render::SharedSessionSinkOwnerLease().acquire(owner);
+    if (!sinkLease) {
+        return false;
+    }
+    std::lock_guard<std::mutex> lock(g_activeRendererMutex);
+    const int64_t handle = g_activeRendererHandle.load(std::memory_order_acquire);
+    if (!IsActiveRendererOwnerAndHandleLocked(handle, owner) ||
+        g_surfaceDetached.load(std::memory_order_acquire) ||
+        !g_surfaceReady.load(std::memory_order_acquire)) {
+        return false;
+    }
+        const auto ctx = FindRendererContextLocked(handle);
     if (!ctx || !ctx->renderer) {
         return false;
     }
@@ -1759,14 +2012,44 @@ void RendererNapi::DeactivateRenderer(int64_t handle) {
     if (handle <= 0) {
         return;
     }
-    std::lock_guard<std::mutex> lock(g_activeRendererMutex);
-    if (g_activeRendererHandle.load(std::memory_order_acquire) == handle) {
-        auto renderer = AcquireRendererLocked(handle, true);
-        if (renderer) {
-            renderer->SetSessionRedrawCallback(nullptr);
+    std::shared_ptr<GLRenderer> renderer;
+    {
+        std::lock_guard<std::mutex> lock(g_activeRendererMutex);
+        const auto ctx = FindRendererContextLocked(handle);
+        if (ctx && g_activeRendererHandle.load(std::memory_order_acquire) == handle) {
+            renderer = ctx->renderer;
+            ctx->active = false;
+            ctx->detached = true;
+            g_activeRendererHandle.store(0, std::memory_order_release);
+            AdvanceRendererGeneration();
         }
+    }
+    if (renderer) {
+        renderer->SetSessionRedrawCallback(nullptr);
+    }
+}
+
+void RendererNapi::DeactivateRenderer(
+    int64_t handle, const Render::DecoderSessionIdentity& owner) {
+    if (handle <= 0) {
+        return;
+    }
+    std::shared_ptr<GLRenderer> renderer;
+    {
+        std::lock_guard<std::mutex> lock(g_activeRendererMutex);
+        const auto ctx = FindRendererContextLocked(handle);
+        if (!ctx || !IsActiveRendererOwnerAndHandleLocked(handle, owner)) {
+            return;
+        }
+        renderer = ctx->renderer;
+        ctx->active = false;
+        ctx->detached = true;
         g_activeRendererHandle.store(0, std::memory_order_release);
+        g_activeRendererOwner = Render::DecoderSessionIdentity {};
         AdvanceRendererGeneration();
+    }
+    if (renderer) {
+        renderer->SetSessionRedrawCallback(nullptr);
     }
 }
 
@@ -1775,24 +2058,57 @@ void RendererNapi::DestroyRendererHandle(int64_t handle) {
         return;
     }
     std::shared_ptr<GLRenderer> renderer;
+    bool clearCallback = false;
     {
         std::lock_guard<std::mutex> lock(g_activeRendererMutex);
-        auto* ctx = FindRendererContextLocked(handle);
+        const auto ctx = FindRendererContextLocked(handle);
         if (!ctx) {
             return;
         }
         if (g_activeRendererHandle.load(std::memory_order_acquire) == handle) {
-            if (ctx->renderer) {
-                ctx->renderer->SetSessionRedrawCallback(nullptr);
-            }
+            clearCallback = true;
             g_activeRendererHandle.store(0, std::memory_order_release);
+            g_activeRendererOwner = Render::DecoderSessionIdentity {};
             AdvanceRendererGeneration();
         }
+        ctx->active = false;
+        ctx->detached = true;
+        ctx->destroying = true;
         renderer = std::move(ctx->renderer);
         g_rendererContexts.erase(handle);
     }
-    if (renderer) {
-        renderer->Destroy();
+    if (renderer && clearCallback) {
+        renderer->SetSessionRedrawCallback(nullptr);
+    }
+}
+
+void RendererNapi::DestroyRendererHandle(
+    int64_t handle, const Render::DecoderSessionIdentity& owner) {
+    if (handle <= 0) {
+        return;
+    }
+    std::shared_ptr<GLRenderer> renderer;
+    bool clearCallback = false;
+    {
+        std::lock_guard<std::mutex> lock(g_activeRendererMutex);
+        const auto ctx = FindRendererContextLocked(handle);
+        if (!ctx || !Render::SessionOwnerMatches(ctx->boundOwner, owner)) {
+            return;
+        }
+        if (g_activeRendererHandle.load(std::memory_order_acquire) == handle) {
+            clearCallback = true;
+            g_activeRendererHandle.store(0, std::memory_order_release);
+            g_activeRendererOwner = Render::DecoderSessionIdentity {};
+            AdvanceRendererGeneration();
+        }
+        ctx->active = false;
+        ctx->detached = true;
+        ctx->destroying = true;
+        renderer = std::move(ctx->renderer);
+        g_rendererContexts.erase(handle);
+    }
+    if (renderer && clearCallback) {
+        renderer->SetSessionRedrawCallback(nullptr);
     }
 }
 
@@ -1804,6 +2120,54 @@ RdpPresentationTarget RendererNapi::GetActivePresentationTarget() {
         std::lock_guard<std::mutex> lock(g_activeRendererMutex);
         target.generation = g_rendererGeneration.load(std::memory_order_acquire);
         const int64_t handle = g_activeRendererHandle.load(std::memory_order_acquire);
+        renderer = AcquireRendererLocked(handle, true, &contextGeneration);
+    }
+    if (g_surfaceDetached.load(std::memory_order_acquire) ||
+        !g_surfaceReady.load(std::memory_order_acquire)) {
+        target.rejection = RdpPresentResult::SurfaceDetached;
+        return target;
+    }
+    if (!renderer) {
+        target.rejection = RdpPresentResult::NoActiveRenderer;
+        return target;
+    }
+    if (contextGeneration != target.generation) {
+        target.rejection = RdpPresentResult::GenerationMismatch;
+        return target;
+    }
+    if (!renderer->IsPresentationReady()) {
+        target.rejection = g_surfaceDetached.load(std::memory_order_acquire) ?
+            RdpPresentResult::SurfaceDetached : RdpPresentResult::RendererNotReady;
+        return target;
+    }
+    target.rejection = RdpPresentResult::Presented;
+    return target;
+}
+
+RdpPresentationTarget RendererNapi::GetActivePresentationTarget(
+    const Render::DecoderSessionIdentity& owner) {
+    RdpPresentationTarget target;
+    auto sinkLease = Render::SharedSessionSinkOwnerLease().acquire(owner);
+    if (!sinkLease) {
+        target.rejection = RdpPresentResult::NoActiveRenderer;
+        return target;
+    }
+    return GetActivePresentationTargetUnderOwnerLease(owner);
+}
+
+RdpPresentationTarget RendererNapi::GetActivePresentationTargetUnderOwnerLease(
+    const Render::DecoderSessionIdentity& owner) {
+    RdpPresentationTarget target;
+    std::shared_ptr<GLRenderer> renderer;
+    uint64_t contextGeneration = 0;
+    {
+        std::lock_guard<std::mutex> lock(g_activeRendererMutex);
+        target.generation = g_rendererGeneration.load(std::memory_order_acquire);
+        const int64_t handle = g_activeRendererHandle.load(std::memory_order_acquire);
+        if (!IsActiveRendererOwnerAndHandleLocked(handle, owner)) {
+            target.rejection = RdpPresentResult::NoActiveRenderer;
+            return target;
+        }
         renderer = AcquireRendererLocked(handle, true, &contextGeneration);
     }
     if (g_surfaceDetached.load(std::memory_order_acquire) ||
@@ -1873,6 +2237,51 @@ RdpPresentMetrics RendererNapi::PresentRawBgraActive(
     return renderer->PresentRawBGRA(data, width, height, stride, generation);
 }
 
+RdpPresentMetrics RendererNapi::PresentRawBgraActive(
+    const Render::DecoderSessionIdentity& owner, const uint8_t* data, size_t size,
+    int width, int height, int stride, uint64_t generation) {
+    RdpPresentMetrics metrics;
+    metrics.generation = generation;
+    if (!data || size == 0 || width <= 0 || height <= 0 || stride <= 0) {
+        metrics.result = RdpPresentResult::InvalidFrame;
+        return metrics;
+    }
+    auto sinkLease = Render::SharedSessionSinkOwnerLease().acquire(owner);
+    if (!sinkLease) {
+        metrics.result = RdpPresentResult::NoActiveRenderer;
+        return metrics;
+    }
+    std::shared_ptr<GLRenderer> renderer;
+    uint64_t contextGeneration = 0;
+    {
+        std::lock_guard<std::mutex> lock(g_activeRendererMutex);
+        if (generation == 0 || generation != g_rendererGeneration.load(std::memory_order_acquire)) {
+            metrics.result = RdpPresentResult::GenerationMismatch;
+            return metrics;
+        }
+        const int64_t handle = g_activeRendererHandle.load(std::memory_order_acquire);
+        if (!IsActiveRendererOwnerAndHandleLocked(handle, owner)) {
+            metrics.result = RdpPresentResult::NoActiveRenderer;
+            return metrics;
+        }
+        renderer = AcquireRendererLocked(handle, true, &contextGeneration);
+    }
+    if (contextGeneration != generation) {
+        metrics.result = RdpPresentResult::GenerationMismatch;
+        return metrics;
+    }
+    if (g_surfaceDetached.load(std::memory_order_acquire) ||
+        !g_surfaceReady.load(std::memory_order_acquire)) {
+        metrics.result = RdpPresentResult::SurfaceDetached;
+        return metrics;
+    }
+    if (!renderer) {
+        metrics.result = RdpPresentResult::NoActiveRenderer;
+        return metrics;
+    }
+    return renderer->PresentRawBGRA(data, width, height, stride, generation);
+}
+
 RdpPresentMetrics RendererNapi::PresentRawBgraRectActive(
     const uint8_t* data, size_t size, int width, int height, int stride,
     int dirtyX, int dirtyY, int dirtyWidth, int dirtyHeight, uint64_t generation) {
@@ -1896,6 +2305,54 @@ RdpPresentMetrics RendererNapi::PresentRawBgraRectActive(
         renderer = AcquireRendererLocked(handle, true, &contextGeneration);
     }
     if (generation == 0 || contextGeneration != generation) {
+        metrics.result = RdpPresentResult::GenerationMismatch;
+        return metrics;
+    }
+    if (g_surfaceDetached.load(std::memory_order_acquire) ||
+        !g_surfaceReady.load(std::memory_order_acquire)) {
+        metrics.result = RdpPresentResult::SurfaceDetached;
+        return metrics;
+    }
+    if (!renderer) {
+        metrics.result = RdpPresentResult::NoActiveRenderer;
+        return metrics;
+    }
+    return renderer->PresentRawBGRARect(data, width, height, stride,
+                                        dirtyX, dirtyY, dirtyWidth, dirtyHeight, generation);
+}
+
+RdpPresentMetrics RendererNapi::PresentRawBgraRectActive(
+    const Render::DecoderSessionIdentity& owner, const uint8_t* data, size_t size,
+    int width, int height, int stride, int dirtyX, int dirtyY, int dirtyWidth,
+    int dirtyHeight, uint64_t generation) {
+    RdpPresentMetrics metrics;
+    metrics.generation = generation;
+    if (!data || size == 0 || width <= 0 || height <= 0 || stride <= 0 ||
+        dirtyX < 0 || dirtyY < 0 || dirtyWidth <= 0 || dirtyHeight <= 0) {
+        metrics.result = RdpPresentResult::InvalidFrame;
+        return metrics;
+    }
+    auto sinkLease = Render::SharedSessionSinkOwnerLease().acquire(owner);
+    if (!sinkLease) {
+        metrics.result = RdpPresentResult::NoActiveRenderer;
+        return metrics;
+    }
+    std::shared_ptr<GLRenderer> renderer;
+    uint64_t contextGeneration = 0;
+    {
+        std::lock_guard<std::mutex> lock(g_activeRendererMutex);
+        if (generation == 0 || generation != g_rendererGeneration.load(std::memory_order_acquire)) {
+            metrics.result = RdpPresentResult::GenerationMismatch;
+            return metrics;
+        }
+        const int64_t handle = g_activeRendererHandle.load(std::memory_order_acquire);
+        if (!IsActiveRendererOwnerAndHandleLocked(handle, owner)) {
+            metrics.result = RdpPresentResult::NoActiveRenderer;
+            return metrics;
+        }
+        renderer = AcquireRendererLocked(handle, true, &contextGeneration);
+    }
+    if (contextGeneration != generation) {
         metrics.result = RdpPresentResult::GenerationMismatch;
         return metrics;
     }
@@ -1944,6 +2401,47 @@ RdpPresentMetrics RendererNapi::PresentRetainedActive(uint64_t generation) {
     return renderer->PresentRetainedFrame(generation);
 }
 
+RdpPresentMetrics RendererNapi::PresentRetainedActive(
+    const Render::DecoderSessionIdentity& owner, uint64_t generation) {
+    RdpPresentMetrics metrics;
+    metrics.generation = generation;
+    metrics.retainedFrame = true;
+    auto sinkLease = Render::SharedSessionSinkOwnerLease().acquire(owner);
+    if (!sinkLease) {
+        metrics.result = RdpPresentResult::NoActiveRenderer;
+        return metrics;
+    }
+    std::shared_ptr<GLRenderer> renderer;
+    uint64_t contextGeneration = 0;
+    {
+        std::lock_guard<std::mutex> lock(g_activeRendererMutex);
+        if (generation == 0 || generation != g_rendererGeneration.load(std::memory_order_acquire)) {
+            metrics.result = RdpPresentResult::GenerationMismatch;
+            return metrics;
+        }
+        const int64_t handle = g_activeRendererHandle.load(std::memory_order_acquire);
+        if (!IsActiveRendererOwnerAndHandleLocked(handle, owner)) {
+            metrics.result = RdpPresentResult::NoActiveRenderer;
+            return metrics;
+        }
+        renderer = AcquireRendererLocked(handle, true, &contextGeneration);
+    }
+    if (contextGeneration != generation) {
+        metrics.result = RdpPresentResult::GenerationMismatch;
+        return metrics;
+    }
+    if (g_surfaceDetached.load(std::memory_order_acquire) ||
+        !g_surfaceReady.load(std::memory_order_acquire)) {
+        metrics.result = RdpPresentResult::SurfaceDetached;
+        return metrics;
+    }
+    if (!renderer) {
+        metrics.result = RdpPresentResult::NoActiveRenderer;
+        return metrics;
+    }
+    return renderer->PresentRetainedFrame(generation);
+}
+
 int RendererNapi::RenderRawBgraActive(
     const uint8_t* data, size_t size, int width, int height, int stride) {
     const RdpPresentationTarget target = GetActivePresentationTarget();
@@ -1952,6 +2450,39 @@ int RendererNapi::RenderRawBgraActive(
     }
     return static_cast<int>(PresentRawBgraActive(
         data, size, width, height, stride, target.generation).result);
+}
+
+int RendererNapi::RenderRawBgraActive(
+    const Render::DecoderSessionIdentity& owner, const uint8_t* data, size_t size,
+    int width, int height, int stride) {
+    if (!data || size == 0 || width <= 0 || height <= 0 || stride <= 0) {
+        return static_cast<int>(RdpPresentResult::InvalidFrame);
+    }
+    auto sinkLease = Render::SharedSessionSinkOwnerLease().acquire(owner);
+    if (!sinkLease) {
+        return static_cast<int>(RdpPresentResult::NoActiveRenderer);
+    }
+    std::shared_ptr<GLRenderer> renderer;
+    uint64_t generation = 0;
+    uint64_t contextGeneration = 0;
+    {
+        std::lock_guard<std::mutex> lock(g_activeRendererMutex);
+        const int64_t handle = g_activeRendererHandle.load(std::memory_order_acquire);
+        generation = g_rendererGeneration.load(std::memory_order_acquire);
+        if (!IsActiveRendererOwnerAndHandleLocked(handle, owner) || generation == 0) {
+            return static_cast<int>(RdpPresentResult::NoActiveRenderer);
+        }
+        renderer = AcquireRendererLocked(handle, true, &contextGeneration);
+    }
+    if (!renderer || contextGeneration != generation) {
+        return static_cast<int>(RdpPresentResult::GenerationMismatch);
+    }
+    if (g_surfaceDetached.load(std::memory_order_acquire) ||
+        !g_surfaceReady.load(std::memory_order_acquire)) {
+        return static_cast<int>(RdpPresentResult::SurfaceDetached);
+    }
+    return static_cast<int>(renderer->PresentRawBGRA(
+        data, width, height, stride, generation).result);
 }
 
 int RendererNapi::RenderRawBgraRectActive(
@@ -1977,10 +2508,48 @@ void RendererNapi::MakeCurrent(int64_t handle) {
     }
 }
 
+void RendererNapi::MakeCurrent(
+    int64_t handle, const Render::DecoderSessionIdentity& owner) {
+    auto sinkLease = Render::SharedSessionSinkOwnerLease().acquire(owner);
+    if (!sinkLease) {
+        return;
+    }
+    std::shared_ptr<GLRenderer> renderer;
+    {
+        std::lock_guard<std::mutex> lock(g_activeRendererMutex);
+        if (!IsActiveRendererOwnerAndHandleLocked(handle, owner)) {
+            return;
+        }
+        renderer = AcquireRendererLocked(handle, true);
+    }
+    if (renderer) {
+        renderer->MakeCurrent();
+    }
+}
+
 void RendererNapi::ReleaseCurrent(int64_t handle) {
     std::shared_ptr<GLRenderer> renderer;
     {
         std::lock_guard<std::mutex> lock(g_activeRendererMutex);
+        renderer = AcquireRendererLocked(handle, true);
+    }
+    if (renderer) {
+        renderer->ReleaseCurrent();
+    }
+}
+
+void RendererNapi::ReleaseCurrent(
+    int64_t handle, const Render::DecoderSessionIdentity& owner) {
+    auto sinkLease = Render::SharedSessionSinkOwnerLease().acquire(owner);
+    if (!sinkLease) {
+        return;
+    }
+    std::shared_ptr<GLRenderer> renderer;
+    {
+        std::lock_guard<std::mutex> lock(g_activeRendererMutex);
+        if (!IsActiveRendererOwnerAndHandleLocked(handle, owner)) {
+            return;
+        }
         renderer = AcquireRendererLocked(handle, true);
     }
     if (renderer) {
@@ -1999,10 +2568,48 @@ void RendererNapi::SetRendererSourceSize(int64_t handle, int width, int height) 
     }
 }
 
+void RendererNapi::SetRendererSourceSize(
+    int64_t handle, const Render::DecoderSessionIdentity& owner, int width, int height) {
+    auto sinkLease = Render::SharedSessionSinkOwnerLease().acquire(owner);
+    if (!sinkLease) {
+        return;
+    }
+    std::shared_ptr<GLRenderer> renderer;
+    {
+        std::lock_guard<std::mutex> lock(g_activeRendererMutex);
+        if (!IsActiveRendererOwnerAndHandleLocked(handle, owner)) {
+            return;
+        }
+        renderer = AcquireRendererLocked(handle, true);
+    }
+    if (renderer) {
+        renderer->SetSourceSize(width, height);
+    }
+}
+
 void RendererNapi::RenderNative(int64_t handle, GLuint textureId) {
     std::shared_ptr<GLRenderer> renderer;
     {
         std::lock_guard<std::mutex> lock(g_activeRendererMutex);
+        renderer = AcquireRendererLocked(handle, true);
+    }
+    if (renderer) {
+        renderer->RenderFrame(textureId);
+    }
+}
+
+void RendererNapi::RenderNative(
+    int64_t handle, const Render::DecoderSessionIdentity& owner, GLuint textureId) {
+    auto sinkLease = Render::SharedSessionSinkOwnerLease().acquire(owner);
+    if (!sinkLease) {
+        return;
+    }
+    std::shared_ptr<GLRenderer> renderer;
+    {
+        std::lock_guard<std::mutex> lock(g_activeRendererMutex);
+        if (!IsActiveRendererOwnerAndHandleLocked(handle, owner)) {
+            return;
+        }
         renderer = AcquireRendererLocked(handle, true);
     }
     if (renderer) {
@@ -2022,13 +2629,54 @@ void RendererNapi::SetActiveSourceSize(int width, int height) {
     }
 }
 
+void RendererNapi::SetActiveSourceSize(
+    const Render::DecoderSessionIdentity& owner, int width, int height) {
+    auto sinkLease = Render::SharedSessionSinkOwnerLease().acquire(owner);
+    if (!sinkLease) {
+        return;
+    }
+    std::shared_ptr<GLRenderer> renderer;
+    {
+        std::lock_guard<std::mutex> lock(g_activeRendererMutex);
+        const int64_t handle = g_activeRendererHandle.load(std::memory_order_acquire);
+        if (!IsActiveRendererOwnerAndHandleLocked(handle, owner)) {
+            return;
+        }
+        renderer = AcquireRendererLocked(handle, true);
+    }
+    if (renderer) {
+        renderer->SetSourceSize(width, height);
+    }
+}
+
 void RendererNapi::SetRendererRedrawCallback(int64_t handle, std::function<void()> callback) {
     std::shared_ptr<GLRenderer> renderer;
     {
         std::lock_guard<std::mutex> lock(g_activeRendererMutex);
         // Detach/rebind must also be able to clear a callback on the previous
         // renderer after it is no longer the active presentation target.
-        renderer = AcquireRendererLocked(handle, false);
+        renderer = AcquireRendererLocked(handle, true);
+    }
+    if (renderer) {
+        renderer->SetRedrawCallback(std::move(callback));
+    }
+}
+
+void RendererNapi::SetRendererRedrawCallback(
+    int64_t handle, const Render::DecoderSessionIdentity& owner,
+    std::function<void()> callback) {
+    auto sinkLease = Render::SharedSessionSinkOwnerLease().acquire(owner);
+    if (!sinkLease) {
+        return;
+    }
+    std::shared_ptr<GLRenderer> renderer;
+    {
+        std::lock_guard<std::mutex> lock(g_activeRendererMutex);
+        const auto ctx = FindRendererContextLocked(handle);
+        if (!ctx || !Render::SessionOwnerMatches(ctx->boundOwner, owner)) {
+            return;
+        }
+        renderer = ctx->renderer;
     }
     if (renderer) {
         renderer->SetRedrawCallback(std::move(callback));
@@ -2037,6 +2685,7 @@ void RendererNapi::SetRendererRedrawCallback(int64_t handle, std::function<void(
 
 uint64_t RendererNapi::RegisterActiveRedrawCallback(std::function<void()> callback) {
     std::shared_ptr<GLRenderer> renderer;
+    std::function<void()> callbackSnapshot;
     uint64_t token = 0;
     {
         std::lock_guard<std::mutex> lock(g_activeRendererMutex);
@@ -2048,9 +2697,10 @@ uint64_t RendererNapi::RegisterActiveRedrawCallback(std::function<void()> callba
         g_activeRedrawCallbackToken = token;
         const int64_t handle = g_activeRendererHandle.load(std::memory_order_acquire);
         renderer = AcquireRendererLocked(handle, true);
-        if (renderer) {
-            renderer->SetSessionRedrawCallback(g_activeRedrawCallback);
-        }
+        callbackSnapshot = g_activeRedrawCallback;
+    }
+    if (renderer) {
+        renderer->SetSessionRedrawCallback(std::move(callbackSnapshot));
     }
     return token;
 }
@@ -2059,14 +2709,17 @@ void RendererNapi::UnregisterActiveRedrawCallback(uint64_t token) {
     if (token == 0) {
         return;
     }
-    std::lock_guard<std::mutex> lock(g_activeRendererMutex);
-    if (token != g_activeRedrawCallbackToken) {
-        return;
+    std::shared_ptr<GLRenderer> renderer;
+    {
+        std::lock_guard<std::mutex> lock(g_activeRendererMutex);
+        if (token != g_activeRedrawCallbackToken) {
+            return;
+        }
+        g_activeRedrawCallbackToken = 0;
+        g_activeRedrawCallback = nullptr;
+        const int64_t handle = g_activeRendererHandle.load(std::memory_order_acquire);
+        renderer = AcquireRendererLocked(handle, true);
     }
-    g_activeRedrawCallbackToken = 0;
-    g_activeRedrawCallback = nullptr;
-    const int64_t handle = g_activeRendererHandle.load(std::memory_order_acquire);
-    auto renderer = AcquireRendererLocked(handle, true);
     if (renderer) {
         renderer->SetSessionRedrawCallback(nullptr);
     }
@@ -2080,6 +2733,27 @@ void RendererNapi::RenderRetained(int64_t handle) {
         renderer = AcquireRendererLocked(handle, true, &generation);
     }
     if (renderer && generation != 0 && generation == g_rendererGeneration.load(std::memory_order_acquire)) {
+        renderer->RenderRetainedFrame(generation);
+    }
+}
+
+void RendererNapi::RenderRetained(
+    int64_t handle, const Render::DecoderSessionIdentity& owner) {
+    auto sinkLease = Render::SharedSessionSinkOwnerLease().acquire(owner);
+    if (!sinkLease) {
+        return;
+    }
+    std::shared_ptr<GLRenderer> renderer;
+    uint64_t generation = 0;
+    {
+        std::lock_guard<std::mutex> lock(g_activeRendererMutex);
+        if (!IsActiveRendererOwnerAndHandleLocked(handle, owner)) {
+            return;
+        }
+        renderer = AcquireRendererLocked(handle, true, &generation);
+    }
+    if (renderer && generation != 0 &&
+        generation == g_rendererGeneration.load(std::memory_order_acquire)) {
         renderer->RenderRetainedFrame(generation);
     }
 }

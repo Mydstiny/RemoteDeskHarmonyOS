@@ -525,6 +525,7 @@ interface RetiredRemoteCursorPixelMap {
 type ModifierLatch = 'off' | 'once' | 'locked';
 type RustDeskAuthChoice = 'password' | 'request_approval';
 type RustDeskAuthDismissReason = 'none' | 'confirm' | 'cancel';
+type RustDeskTwoFactorDismissReason = 'none' | 'cancel' | 'success' | 'failure';
 type VncPasswordDismissReason = 'none' | 'confirm' | 'cancel';
 
 const EMPTY_RUSTDESK_DIAGNOSTICS: RustDeskDiagnosticsSnapshot = {
@@ -704,6 +705,9 @@ struct RemoteDesktop {
   private sessionId: number = -1;
   private rustDeskTwoFactorSessionId: number = -1;
   private rustDeskTwoFactorAutoAttemptSessionId: number = -1;
+  private rustDeskTwoFactorDismissReason: RustDeskTwoFactorDismissReason = 'none';
+  private rustDeskTwoFactorSheetClosing: boolean = false;
+  private rustDeskTwoFactorDisconnectIssued: boolean = false;
   private rendererHandle: number = -1;
   private decoderHandle: number = -1;
   private surfaceReady: boolean = false;
@@ -1535,8 +1539,7 @@ struct RemoteDesktop {
       return;
     }
     const host: RemoteHost | null = this.pendingHost;
-    if (host === null || host.protocol !== 'rustdesk' || host.sourceType !== 'rustdesk_pro' ||
-      !host.rustdeskProManaged) {
+    if (host === null || host.protocol !== 'rustdesk') {
       this.tryStartConnect();
       return;
     }
@@ -1573,8 +1576,7 @@ struct RemoteDesktop {
 
   private confirmRustDeskAuthChoice(): void {
     const host: RemoteHost | null = this.pendingHost;
-    if (host === null || host.protocol !== 'rustdesk' || host.sourceType !== 'rustdesk_pro' ||
-      !host.rustdeskProManaged) {
+    if (host === null || host.protocol !== 'rustdesk') {
       this.rustDeskAuthDismissReason = 'confirm';
       this.rustDeskAuthPendingStart = true;
       this.rustDeskAuthSheetClosing = true;
@@ -1674,6 +1676,12 @@ struct RemoteDesktop {
    * connection here would lose the challenge and can create a second relay.
    */
   private openRustDeskTwoFactorPrompt(sessionId: number, message: string = ''): void {
+    // A late native/auth callback belongs to the old sheet generation. Once a
+    // close has started, it must never resurrect the sheet for the next click.
+    if (this.rustDeskTwoFactorSheetClosing || this.rustDeskTwoFactorDismissReason !== 'none' ||
+      this.sessionId !== sessionId || this.connectAttemptId <= 0) {
+      return;
+    }
     if (this.rustDeskTwoFactorSessionId !== sessionId) {
       this.rustDeskTwoFactorInput = '';
       this.rustDeskTwoFactorError = '';
@@ -1700,7 +1708,8 @@ struct RemoteDesktop {
     // native side receives the short-lived code only; it never receives the
     // TOTP secret or the vault entry.
     const gate = await showLockGate('RustDesk 2FA 自动填写', 'biometric');
-    if (this.sessionId !== sessionId || this.connectAttemptId <= 0) {
+    if (this.sessionId !== sessionId || this.connectAttemptId <= 0 ||
+      this.rustDeskTwoFactorSheetClosing || this.rustDeskTwoFactorDismissReason !== 'none') {
       return;
     }
     if (!gate.ok) {
@@ -1729,19 +1738,73 @@ struct RemoteDesktop {
     this.rustDeskTwoFactorSubmitting = true;
   }
 
-  private cancelRustDeskTwoFactor(): void {
-    this.loader.disconnect();
-    this.connectAttemptId += 1;
+  private closeRustDeskTwoFactor(
+    reason: RustDeskTwoFactorDismissReason, disconnect: boolean,
+    invalidateSession: boolean = true): void {
+    if (this.rustDeskTwoFactorDismissReason === 'none') {
+      this.rustDeskTwoFactorDismissReason = reason;
+    }
+    this.rustDeskTwoFactorSheetClosing = true;
+    if (disconnect && !this.rustDeskTwoFactorDisconnectIssued) {
+      this.rustDeskTwoFactorDisconnectIssued = true;
+      this.loader.disconnect();
+    }
+    if (invalidateSession) {
+      this.connectAttemptId += 1;
+    }
     this.showRustDeskTwoFactorSheet = false;
     this.rustDeskTwoFactorSessionId = -1;
     this.rustDeskTwoFactorAutoAttemptSessionId = -1;
     this.rustDeskTwoFactorInput = '';
     this.rustDeskTwoFactorSubmitting = false;
-    this.connectStarted = false;
-    this.connecting = false;
-    this.connectionError = '连接已取消';
-    this.connectionErrorDetail = '未建立 RustDesk 会话';
-    this.sessionId = -1;
+    if (invalidateSession) {
+      this.connectStarted = false;
+      this.connecting = false;
+      if (reason === 'cancel') {
+        this.connectionError = '连接已取消';
+        this.connectionErrorDetail = '未建立 RustDesk 会话';
+      }
+      this.sessionId = -1;
+    }
+  }
+
+  private cancelRustDeskTwoFactor(): void {
+    this.closeRustDeskTwoFactor('cancel', true);
+  }
+
+  private finalizeRustDeskTwoFactorSheet(): void {
+    // onDisappear is the only place that releases UI state. onWillDismiss and
+    // button handlers only request a close, so every native exit path reaches
+    // this same cleanup point.
+    this.showRustDeskTwoFactorSheet = false;
+    this.rustDeskTwoFactorSessionId = -1;
+    this.rustDeskTwoFactorAutoAttemptSessionId = -1;
+    this.rustDeskTwoFactorInput = '';
+    this.rustDeskTwoFactorError = '';
+    this.rustDeskTwoFactorSubmitting = false;
+    this.rustDeskTwoFactorDismissReason = 'none';
+    this.rustDeskTwoFactorSheetClosing = false;
+    this.rustDeskTwoFactorDisconnectIssued = false;
+  }
+
+  private resetRustDeskTwoFactorAfterConnectionFailure(): void {
+    const sheetLifecycleActive: boolean = this.showRustDeskTwoFactorSheet ||
+      this.rustDeskTwoFactorSheetClosing;
+    if (sheetLifecycleActive) {
+      // doConnect's catch block has already disconnected the native session;
+      // only close the UI state here. onDisappear will release the remaining
+      // generation flags, so the next connection cannot inherit 2FA UI.
+      this.closeRustDeskTwoFactor('failure', false, true);
+      return;
+    }
+    this.rustDeskTwoFactorSessionId = -1;
+    this.rustDeskTwoFactorAutoAttemptSessionId = -1;
+    this.rustDeskTwoFactorInput = '';
+    this.rustDeskTwoFactorError = '';
+    this.rustDeskTwoFactorSubmitting = false;
+    this.rustDeskTwoFactorDismissReason = 'none';
+    this.rustDeskTwoFactorSheetClosing = false;
+    this.rustDeskTwoFactorDisconnectIssued = false;
   }
 
   private submitRustDeskTwoFactor(): void {
@@ -1766,10 +1829,10 @@ struct RemoteDesktop {
   }
 
   private handleRustDeskTwoFactorSheetDismiss(action: DismissSheetAction): void {
-    action.dismiss();
-    if (this.showRustDeskTwoFactorSheet) {
+    if (this.rustDeskTwoFactorDismissReason === 'none') {
       this.cancelRustDeskTwoFactor();
     }
+    action.dismiss();
   }
 
   @Builder rustDeskTwoFactorSheetBuilder() {
@@ -1987,7 +2050,7 @@ struct RemoteDesktop {
   }
 
   private persistRustDeskSessionAuth(host: RemoteHost): void {
-    if (!this.isProRustDeskHost(host)) {
+    if (host.protocol !== 'rustdesk') {
       return;
     }
     const existing = this.srv.getHost(host.id);
@@ -2002,13 +2065,13 @@ struct RemoteDesktop {
       next.password = this.rustDeskSessionPassword;
     }
     if (this.srv.updateHost(next)) {
-      hilog.info(RD_DOMAIN, RD_TAG, 'RustDesk Pro auth choice persisted hostId=' +
+      hilog.info(RD_DOMAIN, RD_TAG, 'RustDesk auth choice persisted hostId=' +
         hashForLog(host.id) + ' mode=' + this.rustDeskSessionAuthChoice +
         ' passwordSaved=' + (this.rustDeskSessionAuthChoice === 'password' &&
           this.rustDeskSessionRememberPassword ? 'true' : 'false'));
     } else {
       hilog.warn(RD_DOMAIN, RD_TAG,
-        'RustDesk Pro auth choice persistence failed hostId=' +
+          'RustDesk auth choice persistence failed hostId=' +
         hashForLog(host.id));
     }
   }
@@ -4661,7 +4724,7 @@ struct RemoteDesktop {
           const restoring: boolean = this.prepareRegistryRestore(host);
           if (restoring) {
             this.restoreFromBackground();
-          } else if (this.isProRustDeskHost(this.pendingHost)) {
+          } else if (this.pendingHost.protocol === 'rustdesk') {
             this.openRustDeskAuthSheet();
           } else {
             this.tryStartConnect();
@@ -6287,12 +6350,7 @@ struct RemoteDesktop {
       if (state === 1) { observedConnecting = true; }
       if (state === 2) {
         if (protocol === 'rustdesk' && this.showRustDeskTwoFactorSheet) {
-          this.showRustDeskTwoFactorSheet = false;
-          this.rustDeskTwoFactorSessionId = -1;
-          this.rustDeskTwoFactorInput = '';
-          this.rustDeskTwoFactorError = '';
-          this.rustDeskTwoFactorSubmitting = false;
-          this.rustDeskTwoFactorAutoAttemptSessionId = -1;
+          this.closeRustDeskTwoFactor('success', false, false);
         }
         return true;
       }
@@ -7211,7 +7269,7 @@ struct RemoteDesktop {
         Text('平台：' + this.pendingHost.rustdeskProPlatform).fontSize(11)
           .fontColor(this.pal().text3).margin({ bottom: 14 })
       } else {
-        Text('Pro 地址簿主机').fontSize(11)
+        Text('RustDesk 主机').fontSize(11)
           .fontColor(this.pal().text3).margin({ bottom: 14 })
       }
 
@@ -7450,30 +7508,17 @@ struct RemoteDesktop {
       this.resetCanvasToDisplayDefault();
 
       // VNC delivers raw BGRA frames directly to the generation-safe renderer;
-      // it must never create or bind the shared encoded-video decoder.
+      // it must never create or bind the shared encoded-video decoder. For
+      // RustDesk auto, start with H264: the FFI balanced profile requests H264
+      // and the old value 3 incorrectly forced VP9 before the first frame.
       const rdCodecVal: number = isVnc ? 0 : (AppStorage.get<number>('rustdeskCodec') ?? 0);
-      let decoderCodec: number = host.protocol === 'rustdesk' ? 3 : 0;
+      let decoderCodec: number = 0;
       if (!isVnc) {
-        if (rdCodecVal === 1) {
-          decoderCodec = 2;
-        } else if (rdCodecVal === 2) {
-          decoderCodec = 3;
-        } else if (rdCodecVal === 3) {
-          decoderCodec = 4;
-        } else if (rdCodecVal === 4) {
-          decoderCodec = 0;
-        } else if (rdCodecVal === 5) {
-          decoderCodec = 1;
-        }
-        const dHandle: number = this.loader.initDecoder(w, h, decoderCodec);
-        hilog.info(RD_DOMAIN, RD_TAG, 'initDecoder returned: ' + dHandle);
-        if (dHandle > 0) {
-          this.decoderHandle = dHandle;
-          const bindOk: boolean = this.loader.bindVideoPipeline(this.decoderHandle, this.rendererHandle);
-          hilog.info(RD_DOMAIN, RD_TAG, 'bindVideoPipeline returned: ' + bindOk);
-        } else {
-          hilog.warn(RD_DOMAIN, RD_TAG, '解码器未就绪 (rc=' + dHandle + '), 连接将继续, 待后续初始化');
-        }
+        if (rdCodecVal === 1) { decoderCodec = 2; }
+        else if (rdCodecVal === 2) { decoderCodec = 3; }
+        else if (rdCodecVal === 3) { decoderCodec = 4; }
+        else if (rdCodecVal === 4) { decoderCodec = 0; }
+        else if (rdCodecVal === 5) { decoderCodec = 1; }
       } else {
         this.decoderHandle = -1;
         hilog.info(RD_DOMAIN, RD_TAG, 'VNC raw framebuffer path: decoder/audio shared handles skipped');
@@ -7763,6 +7808,24 @@ struct RemoteDesktop {
       }
       this.sessionId = sid;
       this.inputForwardReady = false;
+      // NapiConnect publishes the exact session owner synchronously. Decoder
+      // registration must happen after that transaction; cold-start calls
+      // before connect have no owner and fail closed, producing a connected
+      // RustDesk session with no consumer and therefore a blank screen.
+      if (!isVnc) {
+        const dHandle: number = this.loader.initDecoder(w, h, decoderCodec, this.rendererHandle);
+        hilog.info(RD_DOMAIN, RD_TAG, 'initDecoder returned: ' + dHandle +
+          ' ownerSession=' + sid.toString());
+        if (dHandle <= 0) {
+          throw new Error('解码器初始化失败 [E-DECODER-INIT] rc=' + dHandle);
+        }
+        this.decoderHandle = dHandle;
+        const bindOk: boolean = this.loader.bindVideoPipeline(this.decoderHandle, this.rendererHandle);
+        hilog.info(RD_DOMAIN, RD_TAG, 'bindVideoPipeline returned: ' + bindOk);
+        if (!bindOk) {
+          throw new Error('视频管线绑定失败 [E-DECODER-BIND]');
+        }
+      }
       const rustDeskApprovalWait: boolean = host.protocol === 'rustdesk' &&
         rustDeskAuthModeForConnection(host.rustdeskDirectEnabled, host.rustdeskAuthMode) ===
         'request_approval';
@@ -7864,13 +7927,15 @@ struct RemoteDesktop {
         this.loader.disconnect();
         this.sessionId = -1;
         this.rustDeskDisplaySwitchState = idleRustDeskDisplaySwitchState();
+      } else if (this.rendererHandle > 0) {
+        // initRenderer() intentionally precedes connect() so the first frame
+        // has a target. If connect() fails before publishing a session, the
+        // owner-aware native teardown has no session identity; release this
+        // orphan renderer explicitly so the next attempt starts clean.
+        this.loader.destroyRenderer();
+        this.rendererHandle = -1;
       }
-      this.showRustDeskTwoFactorSheet = false;
-      this.rustDeskTwoFactorSessionId = -1;
-      this.rustDeskTwoFactorAutoAttemptSessionId = -1;
-      this.rustDeskTwoFactorInput = '';
-      this.rustDeskTwoFactorError = '';
-      this.rustDeskTwoFactorSubmitting = false;
+      this.resetRustDeskTwoFactorAfterConnectionFailure();
       this.nativeHandles.markProtocolDisconnected();
       this.activeSessionRegistry.clear('connect-failed');
       this.clearRemoteInputFocusSchedule();
@@ -8775,18 +8840,22 @@ struct RemoteDesktop {
         this.nativeHandles.markSurfaceAttached(renderer);
         this.resetCanvasToDisplayDefault();
         const codecPref: number = AppStorage.get<number>('rustdeskCodec') ?? 0;
-        let decoderCodec: number = 3;
+        let decoderCodec: number = 0;
         if (codecPref === 1) { decoderCodec = 2; }
         else if (codecPref === 2) { decoderCodec = 3; }
         else if (codecPref === 3) { decoderCodec = 4; }
         else if (codecPref === 4) { decoderCodec = 0; }
         else if (codecPref === 5) { decoderCodec = 1; }
-        const decoder: number = this.loader.initDecoder(desktop.width, desktop.height, decoderCodec);
-        if (decoder > 0) {
-          this.decoderHandle = decoder;
-          this.loader.bindVideoPipeline(decoder, renderer);
-          this.loader.requestDecoderRecovery();
+        const decoder: number = this.loader.initDecoder(
+          desktop.width, desktop.height, decoderCodec, renderer);
+        if (decoder <= 0) {
+          throw new Error('后台恢复解码器初始化失败 [E-DECODER-RESTORE-INIT] rc=' + decoder);
         }
+        this.decoderHandle = decoder;
+        if (!this.loader.bindVideoPipeline(decoder, renderer)) {
+          throw new Error('后台恢复视频管线绑定失败 [E-DECODER-RESTORE-BIND]');
+        }
+        this.loader.requestDecoderRecovery();
         this.nativeHandles.attachConnectedSession(this.sessionId, RemoteProtocol.rustdesk);
         this.connected = true;
         this.connecting = false;
@@ -11811,6 +11880,7 @@ struct RemoteDesktop {
 
       if (this.shouldShowVncSessionToolbar()) {
         VncSessionToolbar({
+          deviceClass: remoteTopBarLayout(this.isDesktopDevice, this.breakpoint).deviceClass,
           viewOnly: this.isVncViewOnlySession(),
           keyboardOpen: this.keyboardOpen,
           controlModeLabel: this.vncControlModeLabel(),
@@ -12133,6 +12203,9 @@ struct RemoteDesktop {
           maskColor: 'rgba(0,0,0,0.58)',
           onWillDismiss: (action: DismissSheetAction): void => {
             this.handleRustDeskTwoFactorSheetDismiss(action);
+          },
+          onDisappear: (): void => {
+            this.finalizeRustDeskTwoFactorSheet();
           }
         })
 

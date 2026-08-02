@@ -15,7 +15,10 @@
 #define VNC_ADAPTER_H
 
 #include "extensions/protocol_adapter.h"
+#include "render/video_perf_counters.h"
 #include "vnc_rfb_engine.h"
+#include <atomic>
+#include <functional>
 #include <mutex>
 #include <memory>
 
@@ -31,6 +34,7 @@ public:
     void        disconnect() override;
     ConnectionState getState() override;
     void        setSessionIdentity(uint64_t sessionId) override;
+    void        setSessionOwner(const Render::DecoderSessionIdentity& owner);
     RemoteCursorSnapshot getRemoteCursorSnapshot(bool includePixels) override;
     void        sendKey(uint32_t scancode, bool pressed) override;
     void        sendMouse(int x, int y, MouseButton button, bool pressed) override;
@@ -41,6 +45,17 @@ public:
     void        setVideoCallback(VideoFrameCallback callback) override;
     void        setAudioCallback(AudioDataCallback callback) override;
     void        setConnectionStateCallback(ConnectionStateCallback callback) override;
+#ifdef RDP_NATIVE_CALLBACK_TESTING
+    // Calls the same production frame dispatch used by VncRfbEngine. This is
+    // test-only and is not exposed through NAPI.
+    void        InvokeVideoCallbackForTesting(const VideoFrame& frame);
+    bool        InvokeEngineVideoCallbackForTesting(
+        const VideoFrame& frame, const Render::DecoderSessionIdentity& capturedOwner);
+    bool        InvokeLateFrameAfterCallbackStateInvalidationForTesting(
+        const VideoFrame& frame, const Render::DecoderSessionIdentity& capturedOwner);
+    bool        StartSelfStoppingEngineForTesting();
+    void        SetEngineStartHookForTesting(std::function<int(VncRfbEngine&)> hook);
+#endif
     void        sendClipboardData(const uint8_t* data, uint32_t len) override;
     void        requestFrameRefresh() override;
     std::string getClipboardText() override;
@@ -49,14 +64,20 @@ public:
     bool        supportsFileTransfer() override;
 
 private:
-    void disconnectLocked();
+    struct StartingSlot;
+    std::shared_ptr<VncRfbEngine> detachEngineLocked(ConnectionStateCallback& callback);
+    std::shared_ptr<VncRfbEngine> detachStartingEngineLocked();
+    bool acceptsStartingSlot(const std::shared_ptr<StartingSlot>& slot);
+    void dispatchVideoFrame(const VideoFrame& frame,
+                            const Render::DecoderSessionIdentity& capturedOwner);
 
     struct Impl;
     std::unique_ptr<Impl> impl_;
-    // Serializes replacement/destruction of the engine with start().  The
-    // engine is stored before start() so a concurrent disconnect can never
-    // miss a just-created worker.
+    // Monotonic lifecycle fence for the two-phase install/start transition.
+    // VncRfbEngine::start() runs outside lifecycleMutex_; a disconnect or a
+    // newer connect invalidates the local engine before it can be installed.
     std::mutex lifecycleMutex_;
+    std::atomic<uint64_t> connectionSerial_ {0};
 };
 
 void registerVncAdapter();

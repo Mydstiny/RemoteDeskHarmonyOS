@@ -23,6 +23,8 @@ export struct RustDeskAddFlow {
   onStartLanScan: () => void = (): void => {};
   onManageRelays: (draft: RustDeskHostAddDraft) => void =
     (_draft: RustDeskHostAddDraft): void => {};
+  onOpenTotpBinding: (draft: RustDeskHostAddDraft) => void =
+    (_draft: RustDeskHostAddDraft): void => {};
   onSave: (host: RemoteHost, connectNow: boolean) => void =
     (_host: RemoteHost, _connectNow: boolean): void => {};
   @State step: number = 1;
@@ -36,6 +38,8 @@ export struct RustDeskAddFlow {
   @State relayId: string = '';
   @State password: string = '';
   @State passwordMode: number = 0;
+  @State totpEntryId: string = '';
+  @State totpAutoSubmit: boolean = false;
   @State errorText: string = '';
   @State targetDevice: RustDeskTargetDevice = 'computer';
   @State adaptiveOrientation: boolean = false;
@@ -69,6 +73,8 @@ export struct RustDeskAddFlow {
     this.relayId = draft.relayId;
     this.password = draft.password;
     this.passwordMode = draft.passwordMode;
+    this.totpEntryId = draft.totpEntryId;
+    this.totpAutoSubmit = draft.totpAutoSubmit && draft.totpEntryId !== '';
     this.targetDevice = draft.targetDevice;
     this.adaptiveOrientation = draft.adaptiveOrientation;
     this.errorText = '';
@@ -87,6 +93,8 @@ export struct RustDeskAddFlow {
     draft.relayId = this.relayId;
     draft.password = this.password;
     draft.passwordMode = this.passwordMode;
+    draft.totpEntryId = this.totpEntryId;
+    draft.totpAutoSubmit = this.totpAutoSubmit && this.totpEntryId !== '';
     draft.targetDevice = this.targetDevice;
     draft.adaptiveOrientation = this.adaptiveOrientation;
     return draft;
@@ -114,6 +122,8 @@ export struct RustDeskAddFlow {
     host.id = RemoteHost.generateId(); host.protocol = 'rustdesk'; host.label = this.label.trim();
     host.customHostname = this.controlId.trim(); host.password = this.password;
     host.rustdeskPasswordMode = this.passwordMode; host.rustdeskAuthMode = 'password';
+    host.rustdeskTotpEntryId = this.totpEntryId;
+    host.rustdeskTotpAutoSubmit = this.totpAutoSubmit && this.totpEntryId !== '';
     host.rustdeskDirectEnabled = this.direct;
     host.rustdeskTargetDevice = this.targetDevice;
     host.rustdeskAdaptiveOrientation = this.targetDevice === 'phone' && this.adaptiveOrientation;
@@ -298,6 +308,32 @@ export struct RustDeskAddFlow {
           Button('永久密码').layoutWeight(1).height(36).borderRadius(9).margin({ left: 8 })
             .backgroundColor(this.passwordMode === 1 ? this.accentColor : this.pal().surface)
             .fontColor(this.passwordMode === 1 ? Color.White : this.pal().text2).onClick((): void => { this.passwordMode = 1; })
+        }.width('100%').margin({ bottom: 14 })
+        Column({ space: 6 }) {
+          Row() {
+            Column() {
+              Text('RustDesk 2FA 验证器（可选）').fontSize(12).fontColor(this.pal().text)
+              Text(this.totpEntryId === '' ? '未绑定，点击选择本机验证器' : '已绑定本机验证器')
+                .fontSize(10).fontColor(this.pal().text3).margin({ top: 2 })
+            }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+            SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(16).fontColor([this.pal().text3])
+          }.width('100%').padding({ left: 12, right: 10, top: 10, bottom: 10 })
+            .borderRadius(10).backgroundColor(this.pal().surface)
+            .onClick((): void => { this.onOpenTotpBinding(this.currentDraft()); })
+          if (this.totpEntryId !== '') {
+            Row() {
+              Column() {
+                Text('连接时自动生成并填写').fontSize(12).fontColor(this.pal().text)
+                Text('仅保存条目 ID，连接前仍需系统身份认证').fontSize(10).fontColor(this.pal().text3)
+                  .margin({ top: 2 })
+              }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+              Toggle({ type: ToggleType.Switch, isOn: this.totpAutoSubmit })
+                .selectedColor(this.accentColor).scale({ x: 0.82, y: 0.82 })
+                .onChange((on: boolean): void => {
+                  this.totpAutoSubmit = this.totpEntryId !== '' && on;
+                })
+            }.width('100%').padding({ left: 12, right: 8, top: 4, bottom: 4 })
+          }
         }.width('100%').margin({ bottom: 14 })
         Row() {
           Button('保存').layoutWeight(1).height(44).borderRadius(12).backgroundColor(this.pal().surface)

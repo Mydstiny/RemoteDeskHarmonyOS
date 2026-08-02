@@ -117,11 +117,11 @@ private:
 /**
  * Owns the dispatch boundary around RustDeskDisplaySwitchGate.
  *
- * A Lease must remain alive through display publication and delivery of the
- * accepted frame. begin() obtains the same boundary, so a newer generation
- * cannot be established between an old decision and its callback dispatch.
- * This lock is deliberately independent from RustDeskBridge::Impl::mutex:
- * video delivery may synchronously report decoder pressure back to the bridge.
+ * A Lease protects one short gate observation. External callbacks must be
+ * invoked only after that lease is released and must perform their own owner
+ * or generation validation before writing a sink. This lock is deliberately
+ * independent from RustDeskBridge::Impl::mutex: video delivery may
+ * synchronously report decoder pressure back to the bridge.
  */
 class RustDeskDisplaySwitchCoordinator {
 public:

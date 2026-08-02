@@ -9,6 +9,7 @@
 #include "rdp_damage_accumulator.h"
 #include "rdp_frame_scheduler.h"
 #include "rdp_gl_upload_gate.h"
+#include "render/video_perf_counters.h"
 
 #include <atomic>
 #include <condition_variable>
@@ -20,18 +21,30 @@
 
 struct RdpFrameSubmission {
     std::shared_ptr<RdpDamageAccumulator> damageSource;
+    Render::DecoderSessionIdentity owner;
     uint64_t pumpGeneration = 0;
     int64_t enqueuedAtUs = 0;
     int64_t callbackUs = 0;
 };
 
-class RdpFramePump {
+class RdpFramePump : public std::enable_shared_from_this<RdpFramePump> {
 public:
     RdpFramePump();
     ~RdpFramePump();
 
     bool start();
     void stop();
+    bool stopWithin(std::chrono::milliseconds timeout);
+    // Deferred owners request cancellation on the caller's budget, then wait
+    // on this fence outside the caller.  Joining is valid only after the
+    // fence is true.
+    void waitForWorkerDone();
+    void joinAfterWorkerDone();
+    bool workerDoneForDeferredJoin() const;
+    static void deferStopAndJoin(std::shared_ptr<RdpFramePump> pump);
+    static bool drainDeferredJoinsWithin(std::chrono::milliseconds timeout);
+    static bool shutdownDeferredJoinsWithin(std::chrono::milliseconds timeout);
+    static std::size_t deferredJoinRemaining();
     bool submitLatest(RdpFrameSubmission&& submission);
     /** Request a transform-only redraw; caller only wakes this worker. */
     void requestTransformRefresh();
@@ -62,10 +75,12 @@ private:
     std::condition_variable cv_;
     std::thread worker_;
     bool running_ = false;
+    bool workerDone_ = true;
     bool hasFrame_ = false;
     bool transformRefreshRequested_ = false;
     uint64_t transformRefreshSequence_ = 0;
     uint64_t pumpGeneration_ = 0;
+    Render::DecoderSessionIdentity owner_;
     RdpFrameSubmission frame_;
     RdpPresentationMetrics metrics_;
     RdpFrameScheduler scheduler_;

@@ -326,6 +326,7 @@ const REMOTE_HOST_SHEET_RDP_CERTIFICATE = 2;
 const REMOTE_HOST_SHEET_RUSTDESK_PREFLIGHT = 3;
 const REMOTE_HOST_SHEET_PASSPHRASE = 4;
 const REMOTE_HOST_SHEET_PUBLIC_KEY = 5;
+const REMOTE_HOST_SHEET_RUSTDESK_TOTP_BINDING = 6;
 
 @Entry
 @Component
@@ -484,6 +485,14 @@ struct HostListPage {
   private rustDeskProPreflightPendingRouteParams: Record<string, Object> | null = null;
   private remoteHostSheetClosing: boolean = false;
   private remoteHostSheetClosingMode: number = REMOTE_HOST_SHEET_NONE;
+  // TOTP 绑定与主机编辑 Sheet 不能同时占用 native bindSheet 宿主。
+  // generation 使系统认证、旧 Sheet 回调和新一轮绑定严格隔离。
+  private rustDeskTotpBindingGeneration: number = 0;
+  private rustDeskTotpBindingClosing: boolean = false;
+  private rustDeskTotpBindingPendingOpen: boolean = false;
+  private rustDeskTotpBindingReturnToAddSheet: boolean = false;
+  private rustDeskTotpBindingReturnToModernAdd: boolean = false;
+  private preserveFormOnAddSheetDisappear: boolean = false;
   // 保存并连接必须等新增主机 Sheet 的 native onDisappear 后再交给鉴权 Sheet。
   private pendingAddSheetConnectHostId: string = '';
   private pendingVncConnectHostId: string = '';
@@ -1074,6 +1083,202 @@ struct HostListPage {
     this.showRemoteHostSheet = true;
   }
 
+  private isCurrentRustDeskTotpBinding(generation: number): boolean {
+    return !this.rustDeskTotpBindingClosing &&
+      this.rustDeskTotpBindingGeneration === generation &&
+      this.remoteHostSheetMode === REMOTE_HOST_SHEET_RUSTDESK_TOTP_BINDING &&
+      this.showRemoteHostSheet;
+  }
+
+  private rustDeskTotpBindingSummary(): string {
+    if (this.sheetRustdeskTotpEntryId === '') {
+      return '未绑定，点击选择本机验证器';
+    }
+    const entry: TotpEntry | undefined =
+      this.keyVault.getTotpEntry(this.sheetRustdeskTotpEntryId);
+    return entry === undefined ? '绑定条目已不存在，请重新选择' :
+      '已绑定：' + entry.displayLabel();
+  }
+
+  /**
+   * 2FA 绑定单独使用统一安全 Sheet。先让编辑 Sheet 完整退场，再挂载
+   * 绑定 Sheet，避免两个 native bindSheet 同时争抢宿主导致错位/复活。
+   */
+  private openRustDeskTotpBinding(): void {
+    if (this.proto !== 'rustdesk') {
+      return;
+    }
+    this.beginRustDeskTotpBinding(false);
+  }
+
+  private openRustDeskTotpBindingFromModern(draft: RustDeskHostAddDraft): void {
+    this.proto = 'rustdesk';
+    this.modernAddProtocol = 'rustdesk';
+    this.addSheetShowsModernPicker = false;
+    this.sheetRustdeskTotpEntryId = draft.totpEntryId;
+    this.sheetRustdeskTotpAutoSubmit = draft.totpAutoSubmit && draft.totpEntryId !== '';
+    this.rustDeskAddResumeDraft = draft;
+    this.rustDeskAddResumeRevision++;
+    this.beginRustDeskTotpBinding(true);
+  }
+
+  private beginRustDeskTotpBinding(returnToModernAdd: boolean): void {
+    if (this.rustDeskTotpBindingClosing ||
+      this.remoteHostSheetClosing || this.showRemoteHostSheet) {
+      return;
+    }
+    if (this.keyVault.getAllTotpEntries().length === 0) {
+      promptAction.showToast({ message: '请先在“2FA 验证器”中添加条目', duration: 2200 });
+      return;
+    }
+    const generation: number = this.rustDeskTotpBindingGeneration + 1;
+    this.rustDeskTotpBindingGeneration = generation;
+    this.rustDeskTotpBindingClosing = false;
+    this.rustDeskTotpBindingReturnToAddSheet = this.showAddSheet;
+    this.rustDeskTotpBindingReturnToModernAdd = returnToModernAdd && this.showAddSheet;
+    this.rustDeskTotpBindingPendingOpen = this.showAddSheet;
+    this.preserveFormOnAddSheetDisappear = this.showAddSheet;
+    if (this.showAddSheet) {
+      this.requestAddSheetClose();
+      return;
+    }
+    this.openSheetSafely((): void => {
+      if (this.rustDeskTotpBindingGeneration !== generation ||
+        this.rustDeskTotpBindingClosing) {
+        return;
+      }
+      this.openRemoteHostSheet(REMOTE_HOST_SHEET_RUSTDESK_TOTP_BINDING, (): void => {});
+    }, true);
+  }
+
+  private closeRustDeskTotpBinding(closeSheet: boolean = true): void {
+    this.rustDeskTotpBindingGeneration += 1;
+    this.rustDeskTotpBindingClosing = true;
+    this.beginRemoteHostSheetClose(REMOTE_HOST_SHEET_RUSTDESK_TOTP_BINDING);
+    if (closeSheet) {
+      this.showRemoteHostSheet = false;
+    }
+  }
+
+  private updateRustDeskTotpResumeDraft(entryId: string, autoSubmit: boolean): void {
+    if (!this.rustDeskTotpBindingReturnToModernAdd || this.rustDeskAddResumeDraft === null) {
+      return;
+    }
+    this.rustDeskAddResumeDraft.totpEntryId = entryId;
+    this.rustDeskAddResumeDraft.totpAutoSubmit = autoSubmit && entryId !== '';
+    this.rustDeskAddResumeRevision++;
+  }
+
+  private async bindRustDeskTotpEntry(entryId: string): Promise<void> {
+    const generation: number = this.rustDeskTotpBindingGeneration;
+    if (!this.isCurrentRustDeskTotpBinding(generation)) {
+      return;
+    }
+    const entry: TotpEntry | undefined = this.keyVault.getTotpEntry(entryId);
+    if (entry === undefined) {
+      promptAction.showToast({ message: '2FA 条目不存在或已被删除', duration: 2200 });
+      return;
+    }
+    const gate = await showLockGate('绑定 RustDesk 2FA', 'biometric');
+    if (!this.isCurrentRustDeskTotpBinding(generation)) {
+      return;
+    }
+    if (!gate.ok) {
+      const message: string = lockGateErrorMessage(gate);
+      if (message !== '') {
+        promptAction.showToast({ message: message, duration: 2000 });
+      }
+      return;
+    }
+    if (this.editingHostId !== '') {
+      const current: RemoteHost | undefined = this.srv.getHost(this.editingHostId);
+      if (current === undefined || current.protocol !== 'rustdesk') {
+        promptAction.showToast({ message: '主机已不存在，请重新打开编辑', duration: 2200 });
+        return;
+      }
+      const updated: RemoteHost = RemoteHost.fromJSON(current.toJSON());
+      updated.rustdeskTotpEntryId = entry.id;
+      updated.rustdeskTotpAutoSubmit = false;
+      if (!this.srv.updateHost(updated)) {
+        promptAction.showToast({ message: 'RustDesk 2FA 绑定保存失败', duration: 2200 });
+        return;
+      }
+    }
+    this.sheetRustdeskTotpEntryId = entry.id;
+    this.sheetRustdeskTotpAutoSubmit = false;
+    this.updateRustDeskTotpResumeDraft(entry.id, false);
+    promptAction.showToast({ message: 'RustDesk 2FA 已绑定', duration: 1600 });
+    this.closeRustDeskTotpBinding(true);
+  }
+
+  private clearRustDeskTotpBinding(): void {
+    if (this.rustDeskTotpBindingClosing) { return; }
+    if (this.editingHostId !== '') {
+      const current: RemoteHost | undefined = this.srv.getHost(this.editingHostId);
+      if (current !== undefined && current.protocol === 'rustdesk') {
+        const updated: RemoteHost = RemoteHost.fromJSON(current.toJSON());
+        updated.rustdeskTotpEntryId = '';
+        updated.rustdeskTotpAutoSubmit = false;
+        if (!this.srv.updateHost(updated)) {
+          promptAction.showToast({ message: '解除 RustDesk 2FA 绑定失败', duration: 2200 });
+          return;
+        }
+      }
+    }
+    this.sheetRustdeskTotpEntryId = '';
+    this.sheetRustdeskTotpAutoSubmit = false;
+    this.updateRustDeskTotpResumeDraft('', false);
+    promptAction.showToast({ message: 'RustDesk 2FA 已解除绑定', duration: 1600 });
+    this.closeRustDeskTotpBinding(true);
+  }
+
+  private onRustDeskTotpAutoSubmitChange(enabled: boolean): void {
+    if (this.sheetRustdeskTotpEntryId === '') {
+      this.sheetRustdeskTotpAutoSubmit = false;
+      return;
+    }
+    this.sheetRustdeskTotpAutoSubmit = enabled;
+    if (this.editingHostId === '') { return; }
+    const current: RemoteHost | undefined = this.srv.getHost(this.editingHostId);
+    if (current === undefined || current.protocol !== 'rustdesk') { return; }
+    const updated: RemoteHost = RemoteHost.fromJSON(current.toJSON());
+    updated.rustdeskTotpEntryId = this.sheetRustdeskTotpEntryId;
+    updated.rustdeskTotpAutoSubmit = enabled;
+    if (!this.srv.updateHost(updated)) {
+      promptAction.showToast({ message: '自动提交设置保存失败', duration: 2200 });
+    }
+  }
+
+  private handleRustDeskTotpBindingSheetDisappear(): void {
+    this.noteSheetDismissed();
+    const shouldReturnToAddSheet: boolean = this.rustDeskTotpBindingReturnToAddSheet;
+    const returnToModernAdd: boolean = this.rustDeskTotpBindingReturnToModernAdd;
+    const generation: number = this.rustDeskTotpBindingGeneration;
+    this.rustDeskTotpBindingReturnToAddSheet = false;
+    this.rustDeskTotpBindingReturnToModernAdd = false;
+    this.rustDeskTotpBindingPendingOpen = false;
+    this.rustDeskTotpBindingClosing = false;
+    if (!shouldReturnToAddSheet || !this.pageActive) {
+      return;
+    }
+    // 父级 onDisappear 还要先释放统一 Sheet 宿主，下一轮再恢复编辑 Sheet。
+    setTimeout((): void => {
+      if (!this.pageActive || this.rustDeskTotpBindingGeneration !== generation ||
+        this.showRemoteHostSheet || this.remoteHostSheetClosing || this.showAddSheet) {
+        return;
+      }
+      this.addSheetShowsModernPicker = false;
+      this.modernAddProtocol = returnToModernAdd ? 'rustdesk' : '';
+      this.vncAddFromModernPicker = false;
+      this.openSheetSafely((): void => {
+        if (this.rustDeskTotpBindingGeneration === generation &&
+          !this.rustDeskTotpBindingClosing) {
+          this.showAddSheet = true;
+        }
+      });
+    }, 0);
+  }
+
   private isCurrentSshPreflight(host: RemoteHost, generation: number): boolean {
     return !this.sshPreflightClosing && this.sshPreflightGeneration === generation &&
       this.sshPreflightHostId === host.id;
@@ -1151,8 +1356,32 @@ struct HostListPage {
     this.pendingVncGatewayDirectoryOpen = false;
     const openRustDeskRelayDirectory: boolean = this.pendingRustDeskRelayDirectoryOpen;
     this.pendingRustDeskRelayDirectoryOpen = false;
-    this.resetForm();
-    this.rustDeskAddResumeDraft = null;
+    const openRustDeskTotpBinding: boolean = this.rustDeskTotpBindingPendingOpen;
+    const preserveForm: boolean = this.preserveFormOnAddSheetDisappear;
+    this.rustDeskTotpBindingPendingOpen = false;
+    this.preserveFormOnAddSheetDisappear = false;
+
+    if (openRustDeskTotpBinding) {
+      const generation: number = this.rustDeskTotpBindingGeneration;
+      setTimeout((): void => {
+        if (!this.pageActive || this.rustDeskTotpBindingGeneration !== generation ||
+          this.rustDeskTotpBindingClosing || this.showRemoteHostSheet) {
+          return;
+        }
+        this.openSheetSafely((): void => {
+          if (this.rustDeskTotpBindingGeneration === generation &&
+            !this.rustDeskTotpBindingClosing) {
+            this.openRemoteHostSheet(REMOTE_HOST_SHEET_RUSTDESK_TOTP_BINDING, (): void => {});
+          }
+        }, true);
+      }, 0);
+      return;
+    }
+
+    if (!preserveForm) {
+      this.resetForm();
+      this.rustDeskAddResumeDraft = null;
+    }
 
     if (openVncGatewayDirectory || openRustDeskRelayDirectory) {
       if (!this.pageActive) { return; }
@@ -4795,6 +5024,8 @@ struct HostListPage {
       this.rdpCertificatePanel();
     } else if (this.remoteHostSheetMode === REMOTE_HOST_SHEET_RUSTDESK_PREFLIGHT) {
       this.rustDeskProPreflightPanel();
+    } else if (this.remoteHostSheetMode === REMOTE_HOST_SHEET_RUSTDESK_TOTP_BINDING) {
+      this.rustDeskTotpBindingPanel();
     } else if (this.remoteHostSheetMode === REMOTE_HOST_SHEET_PASSPHRASE) {
       this.hlPassphraseBuilder();
     } else if (this.remoteHostSheetMode === REMOTE_HOST_SHEET_PUBLIC_KEY) {
@@ -4818,6 +5049,9 @@ struct HostListPage {
         break;
       case REMOTE_HOST_SHEET_PUBLIC_KEY:
         this.beginRemoteHostSheetClose(REMOTE_HOST_SHEET_PUBLIC_KEY);
+        break;
+      case REMOTE_HOST_SHEET_RUSTDESK_TOTP_BINDING:
+        this.closeRustDeskTotpBinding(false);
         break;
       default:
         return;
@@ -4843,6 +5077,8 @@ struct HostListPage {
         this.doRdpCertificateCancel(false);
       } else if (mode === REMOTE_HOST_SHEET_RUSTDESK_PREFLIGHT) {
         this.cancelRustDeskProPreflight(false);
+      } else if (mode === REMOTE_HOST_SHEET_RUSTDESK_TOTP_BINDING) {
+        this.closeRustDeskTotpBinding(false);
       }
     }
     switch (mode) {
@@ -4854,6 +5090,9 @@ struct HostListPage {
         break;
       case REMOTE_HOST_SHEET_RUSTDESK_PREFLIGHT:
         this.handleRustDeskProPreflightDisappear();
+        break;
+      case REMOTE_HOST_SHEET_RUSTDESK_TOTP_BINDING:
+        this.handleRustDeskTotpBindingSheetDisappear();
         break;
       case REMOTE_HOST_SHEET_PASSPHRASE:
         this.finishHostPassphrasePrompt('');
@@ -8876,6 +9115,9 @@ struct HostListPage {
           this.pendingRustDeskRelayDirectoryOpen = true;
           this.requestAddSheetClose();
         },
+        onOpenTotpBinding: (draft: RustDeskHostAddDraft): void => {
+          this.openRustDeskTotpBindingFromModern(draft);
+        },
         onSave: (host: RemoteHost, connectNow: boolean): void => {
           this.saveHostFromAddFlow(host, connectNow);
         }
@@ -9895,54 +10137,79 @@ struct HostListPage {
 
   @Builder rustDeskTotpBindingSection() {
     Column({ space: 6 }) {
-      Text('RustDesk 2FA 验证器（可选）').fontSize(11).fontColor(this.pal().text2)
-        .fontFamily(this.font()).width('100%')
-      Text('仅保存本机验证器条目 ID；启用自动提交前，每次连接仍需系统身份认证。')
-        .fontSize(10).fontColor(this.pal().text3).fontFamily(this.font()).width('100%')
+      Row() {
+        Column() {
+          Text('RustDesk 2FA 验证器（可选）').fontSize(12).fontColor(this.pal().text)
+            .fontFamily(this.font()).maxLines(1)
+          Text(this.rustDeskTotpBindingSummary()).fontSize(10).fontColor(this.pal().text3)
+            .fontFamily(this.font()).maxLines(1)
+        }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+        SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(16).fontColor([this.pal().text3])
+      }.width('100%').padding({ left: 12, right: 10, top: 10, bottom: 10 })
+      .borderRadius(10).backgroundColor(this.pal().surface)
+      .onClick((): void => { this.openRustDeskTotpBinding(); })
+      if (this.sheetRustdeskTotpEntryId !== '') {
+        Row() {
+          Column() {
+            Text('连接时自动生成并填写').fontSize(12).fontColor(this.pal().text)
+              .fontFamily(this.font())
+            Text('仅保存条目 ID，连接前仍需系统身份认证').fontSize(10).fontColor(this.pal().text3)
+              .fontFamily(this.font())
+          }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+          Toggle({ type: ToggleType.Switch, isOn: this.sheetRustdeskTotpAutoSubmit })
+            .selectedColor(this.accentColor).scale({ x: 0.82, y: 0.82 })
+            .onChange((on: boolean): void => { this.onRustDeskTotpAutoSubmitChange(on); })
+        }.width('100%').padding({ left: 12, right: 8, top: 4, bottom: 4 })
+      }
+    }.width('100%').padding({ top: 6, bottom: 8 })
+  }
+
+  @Builder rustDeskTotpBindingPanel() {
+    Column({ space: 12 }) {
+      Row() {
+        Column({ space: 3 }) {
+          Text('绑定 RustDesk 2FA').fontSize(20).fontWeight(FontWeight.Bold)
+            .fontColor(this.pal().text)
+          Text('选择本机验证器后立即绑定并关闭此弹窗')
+            .fontSize(12).fontColor(this.pal().text2)
+        }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+        Button('关闭').fontSize(13).backgroundColor(Color.Transparent)
+          .fontColor(this.accentColor)
+          .onClick((): void => { this.closeRustDeskTotpBinding(true); })
+      }.width('100%')
+      Text('绑定只保存验证器条目 ID，不会复制或同步 TOTP 密钥；每次自动填写前仍会经过系统身份认证。')
+        .fontSize(12).fontColor(this.pal().text2).width('100%')
       if (this.keyVault.getAllTotpEntries().length === 0) {
-        Text('验证器为空，请先在“2FA 验证器”中添加条目。')
-          .fontSize(11).fontColor(this.pal().text3).width('100%')
+        Column({ space: 8 }) {
+          Text('当前没有可用的 2FA 验证器').fontSize(14).fontColor(this.pal().text2)
+          Text('请先在“2FA 验证器”中添加条目。').fontSize(12).fontColor(this.pal().text3)
+        }.width('100%').padding(18).backgroundColor(this.pal().surface).borderRadius(10)
       } else {
         ForEach(this.keyVault.getAllTotpEntries(), (entry: TotpEntry) => {
           Row() {
             Column() {
-              Text(entry.displayLabel()).fontSize(12).fontColor(this.pal().text)
+              Text(entry.displayLabel()).fontSize(14).fontColor(this.pal().text)
                 .fontFamily(this.font()).maxLines(1)
               Text(TotpEntry.algoLabel(entry.algorithm) + ' · ' + entry.digits.toString() + ' 位')
-                .fontSize(10).fontColor(this.pal().text3).fontFamily(this.font())
+                .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
             }.alignItems(HorizontalAlign.Start).layoutWeight(1)
-            Button(this.sheetRustdeskTotpEntryId === entry.id ? '已绑定' : '绑定')
-              .height(30).fontSize(11).borderRadius(8)
-              .backgroundColor(this.sheetRustdeskTotpEntryId === entry.id ? this.accentColor : this.pal().surface)
-              .fontColor(this.sheetRustdeskTotpEntryId === entry.id ? Color.White : this.accentColor)
+            Button(this.sheetRustdeskTotpEntryId === entry.id ? '解除绑定' : '选择')
+              .height(34).fontSize(12).borderRadius(9)
+              .backgroundColor(this.sheetRustdeskTotpEntryId === entry.id ? this.pal().surface : this.accentColor)
+              .fontColor(this.sheetRustdeskTotpEntryId === entry.id ? this.accentColor : Color.White)
               .onClick(async (): Promise<void> => {
                 if (this.sheetRustdeskTotpEntryId === entry.id) {
-                  this.sheetRustdeskTotpEntryId = '';
-                  this.sheetRustdeskTotpAutoSubmit = false;
-                  return;
+                  this.clearRustDeskTotpBinding();
+                } else {
+                  await this.bindRustDeskTotpEntry(entry.id);
                 }
-                const gate = await showLockGate('绑定 RustDesk 2FA', 'biometric');
-                if (!gate.ok) {
-                  const msg: string = lockGateErrorMessage(gate);
-                  if (msg !== '') { promptAction.showToast({ message: msg, duration: 2000 }); }
-                  return;
-                }
-                this.sheetRustdeskTotpEntryId = entry.id;
-                this.sheetRustdeskTotpAutoSubmit = false;
               })
-          }.width('100%').padding({ top: 4, bottom: 4 })
+          }.width('100%').padding({ left: 12, right: 8, top: 8, bottom: 8 })
+            .borderRadius(10).backgroundColor(this.pal().surface)
         }, (entry: TotpEntry): string => entry.id)
-        if (this.sheetRustdeskTotpEntryId !== '') {
-          Row() {
-            Text('连接时自动生成并填写').fontSize(12).fontColor(this.pal().text)
-              .fontFamily(this.font()).layoutWeight(1)
-            Toggle({ type: ToggleType.Switch, isOn: this.sheetRustdeskTotpAutoSubmit })
-              .selectedColor(this.accentColor).scale({ x: 0.82, y: 0.82 })
-              .onChange((on: boolean): void => { this.sheetRustdeskTotpAutoSubmit = on; })
-          }.width('100%').margin({ top: 4 })
-        }
       }
-    }.width('100%').padding({ top: 6, bottom: 8 })
+    }.width('100%').padding({ left: 20, right: 20, top: 18, bottom: 24 })
+      .backgroundColor(this.pal().card)
   }
 
   @Builder rustDeskProPreflightPanel() {

@@ -10,15 +10,18 @@
 #include "vnc_transport.h"
 
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
+#include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
 
-class VncRfbEngine {
+class VncRfbEngine : public std::enable_shared_from_this<VncRfbEngine> {
 public:
     using StateCallback = std::function<void(ConnectionState, const std::string&)>;
     using CursorCallback =
@@ -33,6 +36,23 @@ public:
 
     int start();
     void stop();
+    // Request stop and join only when the worker reaches its done fence.
+    // Returns false on the bounded timeout; the caller must retain ownership
+    // and hand the engine to deferStopAndJoin rather than destroying it.
+    bool stopWithin(std::chrono::milliseconds timeout);
+    void requestStop();
+    void waitForWorkerDone();
+    void joinAfterWorkerDone();
+    bool workerDoneForDeferredJoin() const;
+    bool isWorkerThread() const;
+    static void deferStopAndJoin(std::unique_ptr<VncRfbEngine> engine);
+    static void deferStopAndJoin(std::shared_ptr<VncRfbEngine> engine);
+    // The reaper is an app-scope owner. Draining never extends its supplied
+    // budget; shutdown additionally closes the owner after the worker done
+    // fence is observed. A false result retains the queue for a later call.
+    static bool drainDeferredJoinsWithin(std::chrono::milliseconds timeout);
+    static bool shutdownDeferredJoinsWithin(std::chrono::milliseconds timeout);
+    static std::size_t deferredJoinRemaining();
     ConnectionState state() const;
     void sendKey(uint32_t keyCode, bool pressed);
     void sendMouse(int x, int y, MouseButton button, bool pressed);
@@ -42,6 +62,13 @@ public:
     std::string clipboardText() const;
     bool clipboardReady() const;
     void requestFrameRefresh();
+
+#if defined(RDP_NATIVE_CALLBACK_TESTING)
+    // Initializes only test fixture bytes, then invokes production emitFrame.
+    bool invokeFrameCallbackForTesting(const VideoFrame& frame);
+    int startWorkerForTesting(std::function<void()> callback);
+    void setStopObserverForTesting(std::function<void()> observer);
+#endif
 
 private:
     void run();
@@ -94,6 +121,12 @@ private:
     std::atomic<bool> clipboardReady_ {false};
     std::atomic<ConnectionState> state_ {ConnectionState::DISCONNECTED};
     std::atomic<bool> stopRequested_ {false};
+#if defined(RDP_NATIVE_CALLBACK_TESTING)
+    std::function<void()> stopObserver_;
+#endif
+    mutable std::mutex workerStateMutex_;
+    std::condition_variable workerStateCv_;
+    bool workerDone_ = true;
     std::thread worker_;
     VncTransport transport_;
     VncRfbProtocol::PixelFormat serverPixelFormat_;

@@ -367,12 +367,16 @@ export struct RemoteSessionTopBar {
         this.iconButton($r('sys.symbol.keyboard'), this.keyboardOpen ? '#2A9D8F' : this.accentColor,
           (): void => { this.toggleMenu('keyboardMouse'); })
         Blank().width(this.layout.itemGap)
-        this.iconButton($r('sys.symbol.message'), this.accentColor, (): void => { this.toggleMenu('chat'); })
-        Blank().width(this.layout.itemGap)
-        this.iconButton($r('sys.symbol.record_circle'), this.accentColor, (): void => {
-          this.runAction('recordSession', (): void => {});
-        }, 18)
-        Blank().width(this.layout.itemGap)
+        if (this.layout.deviceClass !== 'phone') {
+          this.iconButton($r('sys.symbol.message'), this.accentColor, (): void => { this.toggleMenu('chat'); })
+          Blank().width(this.layout.itemGap)
+        }
+        if (this.layout.deviceClass === 'pc') {
+          this.iconButton($r('sys.symbol.record_circle'), this.accentColor, (): void => {
+            this.runAction('recordSession', (): void => {});
+          }, 18)
+          Blank().width(this.layout.itemGap)
+        }
         this.iconButton($r('sys.symbol.xmark'), '#FF5353', (): void => { this.actions.onDisconnect(); }, 18)
       }
       .height(this.layout.iconSize + 12)

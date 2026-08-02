@@ -150,7 +150,7 @@ bool compactUsesHighBytes(const VncRfbProtocol::PixelFormat& format) {
         format.redShift >= 8 && format.greenShift >= 8 && format.blueShift >= 8;
 }
 
-bool decodePixel(const VncRfbProtocol::PixelFormat& format, const uint8_t* data,
+[[maybe_unused]] bool decodePixel(const VncRfbProtocol::PixelFormat& format, const uint8_t* data,
                  size_t available, bool compact, std::array<uint8_t, 4>& rgba) {
     if (!validPixelFormat(format) || data == nullptr) {
         return false;

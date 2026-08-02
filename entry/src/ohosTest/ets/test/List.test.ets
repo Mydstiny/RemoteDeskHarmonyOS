@@ -1,3 +1,5 @@
+import abilityDelegatorRegistry from '@ohos.app.ability.abilityDelegatorRegistry';
+import { describe, it, expect } from '@ohos/hypium';
 import abilityTest from './Ability.test';
 import componentTest from './Component.test';
 import cloudSyncTest from './CloudSync.test';
@@ -41,8 +43,193 @@ import vncSessionGeometryPolicyTest from './VncSessionGeometryPolicy.test';
 import remoteFloatingPanelPlacementPolicyTest from './RemoteFloatingPanelPlacementPolicy.test';
 import vncSessionSettingsPolicyTest from './VncSessionSettingsPolicy.test';
 import remoteWheelPolicyTest from './RemoteWheelPolicy.test';
+// Reuse the same source-of-truth unit suites in the on-device runner.  These
+// imports intentionally avoid a second copy that could drift from entry/src/test.
+import remoteOverlayViewportPolicyTest from '../../../test/RemoteOverlayViewportPolicy.test';
+import remoteShortcutPolicyTest from '../../../test/RemoteShortcutPolicy.test';
+import remoteKeyDispatcherTest from '../../../test/RemoteKeyDispatcher.test';
+import remoteCanvasInteractionPolicyTest from '../../../test/RemoteCanvasInteractionPolicy.test';
+import remoteKeyboardLayoutSelectionPolicyTest from '../../../test/RemoteKeyboardLayoutSelectionPolicy.test';
+import remoteModifierStateControllerTest from '../../../test/RemoteModifierStateController.test';
+import remoteSessionTopBarPolicyTest from '../../../test/RemoteSessionTopBarPolicy.test';
+import totpBrandServiceTest from '../../../test/TotpBrandService.test';
+import rustDeskProAddressBookTest from '../../../test/RustDeskProAddressBook.test';
+import rustDeskProAddressBookApiServiceTest from '../../../test/RustDeskProAddressBookApiService.test';
+import rustDeskProAddressBookSyncServiceTest from '../../../test/RustDeskProAddressBookSyncService.test';
+import rustDeskProAddressBookUiPolicyTest from '../../../test/RustDeskProAddressBookUiPolicy.test';
+import totpBrandResourceIntegrationTest from './TotpBrandResourceIntegration.test';
+import nativeCallbackEntryIntegrationTest from './NativeCallbackEntryIntegration.test';
+import { FOCUSED_TEST_REGISTRATION_AUDIT } from '../../../main/ets/services/FocusedTestRegistrationAudit';
+
+function requestedClassScope(): string {
+  try {
+    const args: abilityDelegatorRegistry.AbilityDelegatorArgs =
+      abilityDelegatorRegistry.getArguments();
+    return args.parameters['-s class'] || args.testCaseNames || '';
+  } catch (_e) {
+    return '';
+  }
+}
+
+/** Exact focused suites and their source-of-truth test counts. */
+function registerFocusedRepairSuite(scope: string): number {
+  const expectedDescribeNames: string[] = focusedDescribeNames(scope);
+  if (expectedDescribeNames.length === 0) { return 0; }
+  FOCUSED_TEST_REGISTRATION_AUDIT.begin(scope, expectedDescribeNames);
+  if (scope === 'TotpBrandService') {
+    totpBrandServiceTest();
+  } else if (scope === 'TotpBrandResourceIntegration') {
+    totpBrandResourceIntegrationTest();
+  } else if (scope === 'NativeCallbackEntryIntegration') {
+    nativeCallbackEntryIntegrationTest();
+  } else if (scope === 'RustDeskProAddressBookPolicy') {
+    rustDeskProAddressBookTest();
+  } else if (scope === 'RustDeskProAddressBookApiService') {
+    rustDeskProAddressBookApiServiceTest();
+  } else if (scope === 'RustDeskProAddressBookSyncService') {
+    rustDeskProAddressBookSyncServiceTest();
+  } else if (scope === 'RustDeskProAddressBookUiPolicy') {
+    rustDeskProAddressBookUiPolicyTest();
+  } else if (scope === 'RemoteOverlayViewportPolicy_contract') {
+    remoteOverlayViewportPolicyTest('viewport');
+  } else if (scope === 'RemoteOverlayRegistry_generation_and_cleanup') {
+    remoteOverlayViewportPolicyTest('registry');
+  } else if (scope === 'RemoteShortcutCatalog_protocol_matrix') {
+    remoteShortcutPolicyTest();
+  } else if (scope === 'RemoteKeyDispatcher_semantic_atomicity') {
+    remoteKeyDispatcherTest();
+  } else if (scope === 'RemoteCanvasInteractionPolicy_real_surface_contract') {
+    remoteCanvasInteractionPolicyTest();
+  } else if (scope === 'RemoteKeyboardLayoutSelection_owner_session_generation') {
+    remoteKeyboardLayoutSelectionPolicyTest();
+  } else if (scope === 'RemoteModifierStateController_lifecycle_mirror') {
+    remoteModifierStateControllerTest();
+  } else if (scope === 'RemoteSessionTopBarPolicy') {
+    remoteSessionTopBarPolicyTest();
+  } else {
+    return 0;
+  }
+  const report = FOCUSED_TEST_REGISTRATION_AUDIT.end();
+  if (report.errors.length > 0) {
+    console.error('focused registration audit failed: ' + report.errors.join(' || '));
+    return -1;
+  }
+  console.info('focused registration audit scope=' + scope +
+    ' describeCount=' + report.describeNames.length.toString() +
+    ' testCount=' + report.registeredCount.toString());
+  return report.registeredCount;
+}
+
+function focusedDescribeNames(scope: string): string[] {
+  if (scope === 'RemoteOverlayViewportPolicy_contract') {
+    return ['RemoteOverlayViewportPolicy_contract'];
+  }
+  if (scope === 'RustDeskProAddressBookPolicy') {
+    return ['RustDeskProAddressBookPolicy'];
+  }
+  if (scope === 'RustDeskProAddressBookApiService') {
+    return ['RustDeskProAddressBookApiService'];
+  }
+  if (scope === 'RustDeskProAddressBookSyncService') {
+    return ['RustDeskProAddressBookSyncService'];
+  }
+  if (scope === 'RustDeskProAddressBookUiPolicy') {
+    return ['RustDeskProAddressBookUiPolicy'];
+  }
+  if (scope === 'TotpBrandResourceIntegration') {
+    return ['TotpBrandResourceIntegration'];
+  }
+  if (scope === 'NativeCallbackEntryIntegration') {
+    return ['NativeCallbackEntryIntegration'];
+  }
+  if (scope === 'RemoteOverlayRegistry_generation_and_cleanup') {
+    return ['RemoteOverlayRegistry_generation_and_cleanup'];
+  }
+  if (scope === 'RemoteShortcutCatalog_protocol_matrix') {
+    return ['RemoteShortcutCatalog_protocol_matrix'];
+  }
+  if (scope === 'RemoteKeyDispatcher_semantic_atomicity') {
+    return ['RemoteKeyDispatcher_semantic_atomicity'];
+  }
+  if (scope === 'RemoteCanvasInteractionPolicy_real_surface_contract') {
+    return ['RemoteCanvasInteractionPolicy_real_surface_contract'];
+  }
+  if (scope === 'RemoteKeyboardLayoutSelection_owner_session_generation') {
+    return ['RemoteKeyboardLayoutSelection_owner_session_generation'];
+  }
+  if (scope === 'RemoteModifierStateController_lifecycle_mirror') {
+    return ['RemoteModifierStateController_lifecycle_mirror'];
+  }
+  if (scope === 'RemoteSessionTopBarPolicy') {
+    return [
+      'RemoteSessionTopBarPolicy',
+      'RemoteSessionTopBarPolicy_visibility',
+      'RemoteSessionTopBarPolicy_layout',
+      'RemoteSessionTopBarPolicy_actions',
+      'RemoteSessionTopBarPolicy_autoCollapse',
+      'RemoteSessionTopBarPolicy_preferences'
+    ];
+  }
+  if (scope === 'TotpBrandService') {
+    return [
+      'TotpBrandService',
+      'TotpBrandResolver_exact_matching',
+      'TotpBrandAvatar_fallback_and_privacy',
+      'TotpBrandCache_bounded_pixelmap_ownership',
+      'TotpBrandManifest_provenance',
+      'TotpBrandTicker_page_scope'
+    ];
+  }
+  return [];
+}
+
+function expectedFocusedCount(scope: string): number {
+  if (scope === 'RustDeskProAddressBookPolicy') { return 8; }
+  if (scope === 'RustDeskProAddressBookApiService') { return 4; }
+  if (scope === 'RustDeskProAddressBookSyncService') { return 7; }
+  if (scope === 'RustDeskProAddressBookUiPolicy') { return 3; }
+  if (scope === 'TotpBrandResourceIntegration') { return 2; }
+  if (scope === 'NativeCallbackEntryIntegration') { return 1; }
+  if (scope === 'RemoteOverlayViewportPolicy_contract') { return 7; }
+  if (scope === 'RemoteOverlayRegistry_generation_and_cleanup') { return 4; }
+  if (scope === 'RemoteShortcutCatalog_protocol_matrix') { return 12; }
+  if (scope === 'RemoteKeyDispatcher_semantic_atomicity') { return 11; }
+  if (scope === 'RemoteCanvasInteractionPolicy_real_surface_contract') { return 3; }
+  if (scope === 'RemoteKeyboardLayoutSelection_owner_session_generation') { return 3; }
+  if (scope === 'RemoteModifierStateController_lifecycle_mirror') { return 1; }
+  if (scope === 'RemoteSessionTopBarPolicy') { return 19; }
+  if (scope === 'TotpBrandService') { return 22; }
+  return 0;
+}
+
+function registerFocusedScopeGuard(scope: string): void {
+  console.error('focused scope rejected by exact allowlist: ' + scope);
+  // Hypium applies -s class after registration.  Register the hard-failure
+  // guard under the exact rejected class name; a fixed guard name would be
+  // filtered out and silently turn invalid input back into 0/0.
+  describe(scope, (): void => {
+    it('unknown_scope_is_a_hard_failure', 0, (): void => {
+      // An invalid, prefixed, or otherwise malicious scope must never fall
+      // through to the full suite or report a misleading 0/0 success.
+      expect(false).assertTrue();
+    });
+  });
+}
 
 export default function testsuite() {
+  const scope: string = requestedClassScope();
+  if (scope !== '') {
+    const expectedCount: number = expectedFocusedCount(scope);
+    const registeredCount: number = registerFocusedRepairSuite(scope);
+    if (expectedCount > 0 && registeredCount === expectedCount && registeredCount > 0) {
+      console.info('focused_scope_allowlist=exact scope=' + scope +
+        ' expectedCount=' + expectedCount.toString() +
+        ' registeredCount=' + registeredCount.toString() + ' exactCount=required');
+      return;
+    }
+    registerFocusedScopeGuard(scope);
+    return;
+  }
   abilityTest();
   componentTest();
   cloudSyncTest();
@@ -86,4 +273,18 @@ export default function testsuite() {
   remoteFloatingPanelPlacementPolicyTest();
   vncSessionSettingsPolicyTest();
   remoteWheelPolicyTest();
+  rustDeskProAddressBookTest();
+  rustDeskProAddressBookApiServiceTest();
+  rustDeskProAddressBookSyncServiceTest();
+  rustDeskProAddressBookUiPolicyTest();
+  remoteOverlayViewportPolicyTest();
+  remoteShortcutPolicyTest();
+  remoteKeyDispatcherTest();
+  remoteCanvasInteractionPolicyTest();
+  remoteKeyboardLayoutSelectionPolicyTest();
+  remoteModifierStateControllerTest();
+  remoteSessionTopBarPolicyTest();
+  totpBrandServiceTest();
+  totpBrandResourceIntegrationTest();
+  nativeCallbackEntryIntegrationTest();
 }

@@ -1,5 +1,5 @@
 param(
-  [ValidateSet('status', 'sync', 'start', 'doctor', 'finish-check')]
+  [ValidateSet('status', 'bootstrap', 'sync', 'start', 'doctor', 'finish-check')]
   [string]$Action = 'status',
   [string]$Task = ''
 )
@@ -33,6 +33,20 @@ function Get-BranchesAheadOfMain {
   return $result
 }
 
+function Invoke-CodexState {
+  param([string]$StateAction)
+  $node = Get-Command node -ErrorAction SilentlyContinue
+  if ($null -eq $node) {
+    Write-Host 'state=unavailable'
+    Write-Host 'state-reason=node-not-found'
+    return
+  }
+  & $node.Source (Join-Path $root 'scripts' 'codex_state.mjs') $StateAction
+  if ($LASTEXITCODE -ne 0) {
+    throw "codex_state.mjs $StateAction failed with exit code $LASTEXITCODE."
+  }
+}
+
 function Sync-PublicMain {
   $currentBranch = Get-GitValue -GitArgs @('branch', '--show-current')
   $currentChanges = @(Invoke-GitText -GitArgs @('status', '--porcelain'))
@@ -53,7 +67,7 @@ function Sync-PublicMain {
   $syncedMain = Get-GitValue -GitArgs @('rev-parse', '--short=9', 'main')
   Write-Host "Synchronized main with origin/main at $syncedMain."
   if (Test-Path (Join-Path $root 'docs\codex\CURRENT.md')) {
-    Write-Host 'Shared state: docs/codex/CURRENT.md'
+    Write-Host 'Shared state: docs/codex/STATE.json + docs/codex/CURRENT.md'
     Write-Host 'Shared queue: docs/codex/QUEUE.md'
   }
 }
@@ -68,21 +82,11 @@ $activeBranches = @(Get-BranchesAheadOfMain)
 
 switch ($Action) {
   'status' {
-    Write-Host "workspace=$root"
-    Write-Host "branch=$branch head=$head"
-    Write-Host "main=$main origin/main=$originMain"
-    if ($branch -ne 'main') {
-      $ahead = Get-GitValue -GitArgs @('rev-list', '--count', "main..$branch")
-      $behind = Get-GitValue -GitArgs @('rev-list', '--count', "$branch..main")
-      Write-Host "relative-to-main=ahead:$ahead behind:$behind"
-    }
-    Write-Host "changes=$($changes.Count) worktrees=$($worktreeLines.Count) archive-refs=$(@(Invoke-GitText -GitArgs @('for-each-ref', '--format=%(refname)', 'refs/archive')).Count)"
-    if ($activeBranches.Count -gt 0) {
-      Write-Host "active-branches=$($activeBranches -join ',')"
-    } else {
-      Write-Host 'active-branches=none'
-    }
-    if ($changes.Count -gt 0) { $changes | ForEach-Object { Write-Host "change=$_" } }
+    Invoke-CodexState -StateAction 'status'
+  }
+
+  'bootstrap' {
+    Invoke-CodexState -StateAction 'bootstrap'
   }
 
   'sync' {
@@ -106,7 +110,7 @@ switch ($Action) {
       throw "Unfinished task branches exist: $($activeBranches -join ', ')"
     }
     Invoke-GitText -GitArgs @('switch', '-c', "codex/$Task") | ForEach-Object { Write-Host $_ }
-    Write-Host "Started codex/$Task. Update CURRENT.md before implementation."
+    Write-Host "Started codex/$Task. Update STATE.json and CURRENT.md before implementation."
   }
 
   'doctor' {
@@ -121,6 +125,13 @@ switch ($Action) {
     if ($changes.Count -gt 0) { $warnings.Add("Working tree contains $($changes.Count) change(s)") }
     $archiveCount = @(Invoke-GitText -GitArgs @('for-each-ref', '--format=%(refname)', 'refs/archive')).Count
     if ($archiveCount -eq 0) { $warnings.Add('No local refs/archive history is available') }
+    $node = Get-Command node -ErrorAction SilentlyContinue
+    if ($null -eq $node) {
+      $errors.Add('node is required to validate compact Codex state')
+    } else {
+      & $node.Source (Join-Path $root 'scripts' 'codex_state.mjs') validate | ForEach-Object { Write-Host $_ }
+      if ($LASTEXITCODE -ne 0) { $errors.Add('compact Codex state validation failed') }
+    }
     $warnings | ForEach-Object { Write-Warning $_ }
     if ($errors.Count -gt 0) {
       $errors | ForEach-Object { Write-Error $_ }

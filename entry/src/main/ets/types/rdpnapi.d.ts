@@ -43,6 +43,8 @@ declare module 'librdpnapi.so' {
   export function isSessionClipboardReady(sessionId: number): boolean;
 
   export function getConnectionState(sessionId: number): number;
+  export function onRustDeskNetworkChanged(sessionId: number, sessionGeneration: number,
+    available: boolean, networkGeneration: number): boolean;
   export function submitRustDesk2FA(sessionId: number, code: string): boolean;
   export function getRemoteCursorSnapshot(sessionId: number, includePixels?: boolean): RemoteCursorSnapshot;
   export function getRemoteCursorSnapshotPixelsAsync(sessionId: number): Promise<RemoteCursorSnapshot>;
@@ -107,7 +109,8 @@ declare module 'librdpnapi.so' {
   export function requestFrameRefresh(): void;
   export function getRendererViewport(handle: number): RendererViewport | null;
 
-  export function initDecoder(width: number, height: number, codecType: number): number;
+  export function initDecoder(width: number, height: number, codecType: number,
+    rendererHandle?: number): number;
   export function destroyDecoder(handle: number): void;
   export function decodeFrame(handle: number, data: ArrayBuffer, size: number, timestamp: number): number;
   export function getTextureId(handle: number): number;

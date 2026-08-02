@@ -1,10 +1,10 @@
 # RemoteDeskHarmonyOS Moonlight / Sunshine 串流能力完备升级计划
 
-> 文档状态：完成二次深度评估，待后续立项实施
-> 首次评估日期：2026-07-28；二次完成性审计日期：2026-07-29
+> 文档状态：完成三次深度评估，待后续立项实施
+> 首次评估日期：2026-07-28；二次完成性审计日期：2026-07-29；第三次 HarmonyOS 人因/UI 审计日期：2026-08-01
 > 当前评估快照：分支 codex/cloud-data-lifecycle-root-fix，HEAD d2f365c32；本地 main 23940521a
 > 适用仓库：/Users/mydestiny/Desktop/RemoteDesktop/RemoteDeskHarmonyOS
-> 上游评估快照：moonlight-common-c e41355ea01670fd4c830b384009d31dd0339a705；Moonlight Android f10085f552b367cf7203007693d91c322a0a2936；Moonlight Qt 546cb72e32e5ac04bbc7e0b3a254176e5696685a；Sunshine 3893c5bcdadc5f0beaa127670531afbfd60519ea
+> 上游评估快照：moonlight-common-c e41355ea01670fd4c830b384009d31dd0339a705；Moonlight Android f10085f552b367cf7203007693d91c322a0a2936；Moonlight Qt 546cb72e32e5ac04bbc7e0b3a254176e5696685a；Sunshine 3893c5bcdadc5f0beaa127670531afbfd60519ea；MoonlightOH a48821e2d309c4282d79a053e6a85245eb438a7b
 > 本轮变更边界：只更新本计划文件；不修改 ArkTS、C/C++、Rust、配置、依赖、云表、测试或构建流程代码。
 
 ## 0. 结论先行
@@ -154,15 +154,38 @@ Moonlight/GameStream 的核心价值是低延迟音视频和游戏输入闭环�
 
 #### 本次实际审计的上游快照
 
-| 项目 | 2026-07-29 审计 revision | 本计划使用方式 |
+| 项目 | 审计 revision/日期 | 本计划使用方式 |
 | --- | --- | --- |
 | moonlight-common-c | `e41355ea01670fd4c830b384009d31dd0339a705` | 协议、线程、媒体和输入的主要实现证据 |
 | common-c ENet submodule | `aca87840b57f045a1f7f9299e4b1b9b8e2a5e2f1`，来源 `cgutman/enet` | 必须与 common-c 一起锁定；禁止替换成系统/任意 ENet |
 | Moonlight Android | `f10085f552b367cf7203007693d91c322a0a2936` | 配对、NvHTTP、证书 pin、launch 参数和移动端生命周期参考 |
 | Moonlight Qt | `546cb72e32e5ac04bbc7e0b3a254176e5696685a` | 设置能力、桌面输入、HDR/高阶 codec、产品诊断参考 |
 | Sunshine | `3893c5bcdadc5f0beaa127670531afbfd60519ea` | 现代服务端互操作和测试环境参考；不打包 |
+| MoonlightOH | `a48821e2d309c4282d79a053e6a85245eb438a7b`（2026-08-01 审计） | HarmonyOS 原生页面、输入、媒体和生命周期的人因/UI 可行性对照；不作为协议依赖或视觉资产来源 |
 
 这些 revision 是“本计划评估过的证据快照”，不是未来实施时可无条件直接合入的依赖版本。P0 必须先比较新旧 revision、检查 security advisory、submodule、ABI/API、许可证和协议变化，再决定继续使用本快照还是升级；任何升级都要重新跑 parser/fuzz/真机/合规门禁。
+
+#### 2.1.1 成熟 HarmonyOS Moonlight 项目的人因/UI 审计
+
+第三次审计以 [MoonlightOH](https://gitee.com/smdsbz/moonlight-ohos) revision `a48821e2d309c4282d79a053e6a85245eb438a7b` 为主要 HarmonyOS 原生参考，并以 [likuai2010/moonlight-harmonyos](https://github.com/likuai2010/moonlight-harmonyos) 为历史对照。前者在 2026-04 仍有维护记录，使用 ArkUI、Navigation、XComponent、OH_AVCodec/OHAudio 和 native common-c 路径，公开源码/截图覆盖主机发现、手动添加、PIN 配对、应用目录、global→server→app 分层配置、连接阶段、触控/触控板、虚拟键盘、HDR/硬解和性能统计；后者公开进展主要集中在 2023–2024 年，适合作为早期 HarmonyOS 移植可行性证据，不作为当前交互基线。
+
+本审计只吸收被源码和截图证明的鸿蒙交互模式，不复制其页面代码、视觉资产或产品声明：
+
+| 参考能力 | 审计结论 | 本项目处理 |
+| --- | --- | --- |
+| mDNS 扫描 + 手动 IP/域名 | 原生鸿蒙可行，符合首次添加的两种心理模型 | 保留双入口，但进入本项目分步 Sheet，并增加权限解释、去重、地址族、端口、取消和错误就地恢复 |
+| 主机→应用封面目录 | 符合 Moonlight 用户“先选主机，再选游戏/桌面”的任务模型 | 采用响应式目录；点击 app 先开启动确认/本次设置 Sheet，不直接发起不可撤销 launch |
+| global→server→app 分层配置 | 与本计划 settings/host/profile 作用域一致 | 保留分层，增加来源标签、继承摘要、单项重置和“仅本次”临时覆盖，避免用户忘记当前修改作用域 |
+| Touch / Trackpad 分段切换 | 经原生项目证明可用，且与本项目 VNC/RustDesk 控制模式一致 | 作为连接内一级快捷控制；模式切换后给出短文字反馈并清理旧手势状态 |
+| 连接内虚拟键盘与性能统计 | 原生可行，也与本项目 RemoteModifierPanel/DiagnosticsHud 能力重叠 | 复用本项目键盘、修饰键、组合键和可拖动诊断 owner，避免再造第二套全屏键盘/统计浮层 |
+| 固定黑底、`#111` 卡片和大量原始 Slider | 视觉只适合单一深色演示，参数密度和可发现性不足 | 拒绝照搬；全部使用 Theme/AppTheme、预设优先、能力裁剪、说明副标题和高级折叠 |
+| 点击 app 立即串流 | 对熟练用户快，但容易在蜂窝网络、主机忙或 profile 变化时误启动 | 默认进入可一眼确认的 launch Sheet；可提供用户显式开启的“受信任局域网快速启动”偏好 |
+| StageStarting/网络差均使用阻塞 LoadingDialog | 遮挡上下文、无法表达阶段、取消和降级 | 改成非模态阶段卡/遮罩；首帧前可取消，网络差只显示节流 banner，媒体中断才进入重连遮罩 |
+| 侧滑删除、长按 app 才能配置 | 对触控发现性弱，鼠标/键盘也不一致 | 主动作可见，次要动作进入显式“更多”；长按/右键仅作为冗余快捷方式，不是唯一入口 |
+| 返回键打开串流操作 Sheet | 能防止误退出 | 保留其意图，但与本项目规则统一：先释放鼠标捕获，再展开控制条，再显示断开确认；实体停止入口始终可见 |
+| 后台隐藏后中断、显示后自动 resume | 能节省资源，但自动恢复可能重新发送媒体/输入 | 不直接采用；由 foreground/PIP/用户设置和 session generation 决定，恢复前输入保持锁定并请求新关键帧 |
+
+HarmonyOS 设计依据以华为官方[设计指南](https://developer.huawei.com/consumer/cn/design/?catalogVersion=V1)、[设计入门](https://developer.huawei.com/consumer/cn/design/devstart/)、[焦点导航](https://developer.huawei.com/consumer/cn/doc/design-guides/hmi-focus-0000001748650376)、[光标交互](https://developer.huawei.com/consumer/cn/doc/design-guides/hmi-cursor-0000001795531205)和[应用 UX 体验标准](https://developer.huawei.com/consumer/cn/doc/design-guides/ux-guidelines-overview-0000001760867048)为准。MoonlightOH 只证明具体能力在 HarmonyOS 上有成熟先例，不覆盖本项目 API 23、主题、多账号、云同步、单 Sheet owner、无障碍和多协议一致性门禁。
 
 ### 2.2 主机发现、控制和可达性
 
@@ -1175,7 +1198,9 @@ flowchart TD
 - 串流内 HUD/控制中心；
 - 网络与协议诊断页。
 
-不要把 Moonlight 的应用目录塞进通用 HostListPage 的“连接主机”按钮里。HostListPage 只显示主机摘要和最近使用的 profile；点击 Moonlight 主机进入其 app catalog，点击 app profile 才启动串流。
+在功能正式开放前，现代“添加主机”FAB 的协议选择器应先展示 Moonlight 占位入口：使用 Moonlight 官方品牌图标和 `Moonlight` 名称，整项采用禁用态，并显示“即将支持”；点击不得触发 `onSelect`、创建草稿、打开路由、写入设置或产生云记录。占位入口只是产品预告，不得让用户误认为当前版本已经具备配对或串流能力。功能开关与 P0-P8 门禁全部通过后，才可移除禁用态并接入新增主机流程。
+
+不要把 Moonlight 的应用目录塞进通用 HostListPage 的“连接主机”按钮里。HostListPage 只显示主机摘要和最近使用的 profile；点击 Moonlight 主机进入其 app catalog，点击 app profile 先进入第 8.14.6 节的启动确认 Sheet，再由用户明确开始串流。
 
 ### 8.2 新增主机完整流程
 
@@ -1314,8 +1339,11 @@ Moonlight 不建立独立皮肤。所有页面和浮层必须直接消费 `Theme
 
 具体组件基线：
 
-- `HostProtocolPicker` 和 `ResourceFabPicker` 继续保持相同结构：选项约 68vp、左右 18vp、24vp `SymbolGlyph`、标题 16、副标题 12、圆角 16、间隔 10；新增 Moonlight 必须同时出现在两个入口，不能只改一个。
-- `ProtocolIconPolicy` 增加唯一 `moonlight` key，并从 API 23 可用的系统 Symbol 中选定一个经编译探针验证的图标；不引入裸 SVG，也不在本计划虚构具体 symbol 名。
+- `HostProtocolPicker` 保持现有协议选项结构：选项约 68vp、左右 18vp、图标视觉尺寸约 24vp、标题 16、副标题 12、圆角 16、间隔 10。Moonlight 位于 VNC 之后；预告阶段整行使用现有禁用透明度/语义色，右侧以文字 badge 显示“即将支持”，不能只依赖灰色表达不可用。`ResourceFabPicker` 只承载 SSH 密钥、2FA 和中继等资源添加方式，不为 Moonlight 重复增加主机协议入口。
+- Moonlight 协议身份图标使用官方项目实际发布的品牌图形，不使用通用游戏手柄、月亮、显示器或第三方重绘图替代。首选来源固定为本计划已审计 Moonlight Qt revision `546cb72e32e5ac04bbc7e0b3a254176e5696685a` 的 [`app/res/moonlight.svg`](https://github.com/moonlight-stream/moonlight-qt/blob/546cb72e32e5ac04bbc7e0b3a254176e5696685a/app/res/moonlight.svg)；实施 P0 仍需确认当时官方仓库是否已更新品牌资产或使用规则。
+- 官方图形应作为本地资源随 HAP 打包，禁止运行时热链 GitHub/CDN，也禁止从搜索引擎、图标站或第三方 fork 下载。若 HarmonyOS 资源管线需要把 SVG 转为 PNG/WebP，必须保留原始 256×256 viewBox、圆形边界、白色内圆和八向放射图形的比例与留白，只做确定性的格式/尺寸转换，不重绘、不裁切、不改变品牌构图；原始上游文件、转换脚本/参数和输出 SHA-256 一并留档。
+- 官方图标由 `Image`/项目品牌资源策略渲染，不强行塞入只返回系统 `Resource` Symbol 的 `ProtocolIconPolicy`。可为协议图标策略增加“system symbol / branded asset”两类明确返回值，但不得让其他页面自行硬编码路径。Host picker、主机卡片、详情页、设置页和诊断页必须消费同一个 Moonlight 品牌资源 owner。
+- 禁用占位态通过整行 opacity 和项目语义色实现，不修改官方素材文件来制作“灰色版”；浅色、深色、accent、减少透明度和高对比度下都要验证图标边界清楚。图标提供 `accessibilityText="Moonlight"`，不可用状态另行播报“即将支持”，不能把品牌图形本身当作唯一状态信息。
 - 主机卡片沿用 `HostListPage` 的 card palette、边框/blur、约 14vp 圆角和 66/80vp 紧凑/常规高度；Moonlight 的在线、配对、同步信息通过现有 secondary/tertiary 文本和状态 badge 表达。
 - 空间不足时先隐藏诊断摘要和最近 codec，不隐藏主机名、配对警告、主动作和可访问名称。
 
@@ -1413,6 +1441,307 @@ HUD 分三层，避免一次性铺满画面：
 - 旧 RDP/RustDesk/SSH/VNC 入口、设置顺序、卡片高度和 sheet 路由无视觉/交互回归。
 
 截图只能证明布局；配对、焦点、输入释放、旋转连续性和屏幕朗读还必须有录屏/自动化/真机操作证据。
+
+### 8.14 第三次审计后的完备页面与人因设计合同
+
+本节是 Moonlight UI/UX 的实施级合同；如与 8.1–8.13 的概括性描述存在粒度差异，以本节更具体的页面、交互、浮层和验收规则为准，但不得放宽前述安全、云同步、生命周期和能力门禁。
+
+#### 8.14.1 人因目标与统一原则
+
+Moonlight 同时面对“只想立即开玩”的熟练用户和“不理解主机、PIN、codec、码率”的首次用户。设计以识别优于回忆、渐进披露、就地反馈、防误触、最小视觉遮挡和跨输入一致为核心：
+
+1. **任务优先而非参数优先**：主路径只回答“连接哪台主机、启动哪个应用、是否现在开始”；codec、色域、包长等放入有默认值的高级层。
+2. **分阶段减少选择压力**：单屏不同时暴露发现、配对、应用选择和全部串流参数。每个步骤只保留一个主动作、一个次动作和必要的取消/返回。
+3. **Fitts 命中合同**：普通触控热区不低于 44×44vp；串流内高频键盘/控制模式/停止入口不低于 48×48vp；相邻危险与普通动作至少间隔 12vp，危险动作不放在用户连续滑动/点击的末端。
+4. **Hick 选择合同**：一级快捷操作最多 5 个，超出进入“更多”；同一设置行默认提供不超过 4 个常用预设，更多值进入二级选择或自定义。
+5. **错误预防优先**：不允许点击应用卡片后无确认地占用计费网络、强退主机现有应用或覆盖 profile；地址、证书、能力和网络问题在对应字段/阶段就地显示。
+6. **控制—反馈邻近**：用户改变模式后 100ms 内出现按下/选中反馈；需要网络/native 的动作立即进入 pending 状态，400ms 后展示阶段，3s 后展示已等待时长，10s 后提供诊断/取消，不出现无限 spinner。
+7. **沉浸与安全并存**：串流画面默认无永久大工具栏，但边缘控制柄、系统返回逻辑和键盘/手柄可达路径保证停止不依赖隐藏手势。
+8. **同协议内一致、跨协议可迁移**：添加页沿用 VNC `VncSheetScaffold` 的固定 header/滚动 body/固定 footer；设置沿用 HostListPage accordion + leaf Sheet；连接内沿用 VNC 紧凑工具栏、RustDesk 自动收起顶栏、RemoteModifierPanel 和 DiagnosticsHud 的交互语法。
+9. **模式状态可见**：触控、触控板、相对鼠标、键盘捕获、控制器槽位、静音、HDR/降级、PIP 和重连都必须同时有图标、短文本和无障碍状态，不能只改变颜色。
+10. **中断可恢复**：来电、锁屏、切网、旋转、折叠、PIP、软键盘、鼠标捕获和焦点变化均先完成输入 release，再改变媒体/Surface；UI 不用“页面还在”推断 native 会话仍有效。
+
+#### 8.14.2 信息架构与页面地图
+
+~~~text
+添加主机 FAB
+  └─ 协议选择（Moonlight 预告期禁用；开放后进入添加流程）
+      └─ Moonlight 添加主机 Sheet
+          ├─ 1/4 查找主机：自动发现 / 手动地址
+          ├─ 2/4 验证主机：身份、地址、可达性、命名
+          ├─ 3/4 配对与信任：PIN、证书指纹、失败恢复
+          └─ 4/4 完成：目录摘要、默认 app/profile、保存/保存并打开
+
+Moonlight 主机卡片
+  └─ 主机详情页
+      ├─ 应用目录（默认 tab）
+      ├─ 主机状态与网络诊断
+      ├─ 主机级设置
+      ├─ 配对/证书管理
+      └─ 删除/重新配对
+
+应用卡片
+  └─ 启动确认 Sheet
+      ├─ 有效设置摘要与本次覆盖
+      ├─ 网络/主机忙/能力降级提示
+      └─ 开始串流
+          └─ 连接阶段页/遮罩
+              └─ 串流页面
+                  ├─ 最小状态层
+                  ├─ 快捷控制条
+                  ├─ 控制中心 Sheet
+                  ├─ 键盘/修饰键/虚拟控制器
+                  ├─ 诊断浮窗
+                  └─ 重连/安全/停止事务层
+~~~
+
+用户从已配对主机再次启动最近应用时，主路径应不超过“主机卡片→应用卡片→开始串流”三次明确动作；首次添加的四步不是四张独立页面栈，而是一个可回退、保留草稿且由单一 Sheet owner 承载的事务流。
+
+#### 8.14.3 Moonlight 添加主机 Sheet
+
+整体外观使用 Moonlight 版共享 Sheet scaffold：最大宽度 620vp，手机 `SheetType.BOTTOM`、其他断点 `CENTER`；header 显示官方 Moonlight 图标、标题、“n/4 + 步骤名”和返回；body 独立滚动；footer 固定放返回/下一步/保存。软键盘采用 `RESIZE_ONLY`，不把 footer 顶出可视区。退出时若已有手输地址、已选主机或已生成临时 identity，弹出“继续添加 / 丢弃草稿”，但扫描结果本身不算脏数据。
+
+**1/4 查找主机**
+
+- 顶部双选项卡为“自动发现”和“手动输入”，默认自动发现；切换不清空另一页输入。
+- 自动发现先显示 2–3 行 Sunshine 前置说明，再按“已保存”“新发现”分组展示主机卡片。卡片包含主机名、局域网地址脱敏摘要、在线/已配对状态、最近发现时间和选择圆点。
+- 扫描区必须有“正在发现（已找到 n 台）”“暂停”“重新扫描”和“改用手动输入”，不能只有旋转指示器。只有用户进入自动发现时才申请/解释所需局域网发现能力；拒绝权限后手动输入仍完全可用。
+- 多地址按 server UUID 合并成一张卡，展开后显示 IPv4/IPv6/域名候选和 RTT；不以主机名或 IP 单独去重。
+- 手动页包含“主机地址”一个主要输入和折叠的“自定义端口”。支持域名、IPv4、带方括号 IPv6 和粘贴 `host:port`；解析结果在输入框下实时显示，不在提交后才报格式错误。
+- footer 主按钮为“验证主机”，未选中/地址非法时禁用并有说明；返回回协议选择。
+
+**2/4 验证主机**
+
+- 顶部状态卡同时显示“正在联系主机 / 已找到 Sunshine / 兼容 GameStream / 无法验证”，并列出当前尝试的地址族和可取消进度。
+- 成功后显示服务器名称、server UUID 短指纹、服务端类型/版本、配对状态、应用目录能力和媒体端口检查摘要；地址与端口可展开编辑。
+- 用户填写“显示名称”，默认取服务器名称但不自动覆盖用户已编辑值；可选 Wake-on-LAN 信息折叠在高级区域。
+- TCP 控制面成功但 UDP 尚未验证时允许继续，明确写“可以保存主机，启动前仍会检查媒体网络”；服务端版本命中安全阻断时禁止下一步并给出升级说明。
+- 若同 owner 已存在相同 server UUID，主动作改为“查看已有主机”，可选择“更新地址”；不创建重复记录。
+- footer 为“上一步 / 继续配对”或已配对时“上一步 / 检查信任”。
+
+**3/4 配对与信任**
+
+- 未配对时使用独立事务卡显示四位 PIN：视觉上四个大号数字格，语义上一个只读敏感值；主说明固定为“请在主机端输入此 PIN”，并显示主机名、倒计时和当前阶段。
+- 操作为“重新生成”“按需朗读”“取消配对”；默认不复制 PIN、不自动朗读、不允许输入框编辑。PIN 超时后立即变为不可用并清除内存，页面明确要求重新生成。
+- 配对网络等待期间保留取消；失败在卡内显示“主机未确认 / PIN 错误 / 连接中断 / 版本不兼容”，分别提供重新生成、检查 Sunshine、网络诊断，不用一个通用 toast。
+- challenge 成功后切换到证书信任卡，展示主机名、SHA-256 指纹分组摘要、首次见到时间和“该指纹将用于识别这台主机”；主按钮“信任并继续”，次按钮“拒绝并取消配对”。
+- 已配对且指纹匹配时不重复展示 PIN，只显示“身份已验证”；证书变化必须红色阻断，不能在添加流程内默认覆盖旧 trust。
+
+**4/4 完成与复核**
+
+- 摘要卡显示名称、主机类型、首选地址、配对/信任、网络检查和数据保存范围；地址仅显示必要摘要。
+- 拉取应用目录并展示最多 3 个最近/推荐 app 缩略图与“共 n 个应用”；目录失败不丢弃已完成配对，提供“稍后刷新”。
+- “默认打开”可选“应用目录”或一个 app；不强迫创建 app profile。选中 app 后只生成继承全局设置的轻量 profile。
+- 高级折叠只提供“为此主机覆盖串流默认值”入口，不在完成页复制完整设置表。
+- footer 为“保存”和主强调“保存并打开应用目录”；只有用户已选择 app 且通过启动前检查时才可出现“保存并启动”，避免首次添加后意外占用网络。
+- 保存成功必须以 owner store 持久终态为准；云同步排队只显示“已保存，等待同步”，不能写“已同步”。
+
+#### 8.14.4 主机详情与应用目录
+
+主机详情页在 sm 为纵向页面，在 md/lg 为主机摘要 + 应用网格，在 xl 为 HostList sidebar + 常驻详情 pane。顶部主机摘要不使用独立品牌皮肤，沿用 `Palette.card/surface/cardBorder`、HarmonyOS Sans 和当前 accent：
+
+- 左侧官方 Moonlight 图标与主机名；次行显示“在线 / 未知 / 离线 / 需重新配对”、最近成功地址和最后在线时间。
+- 右侧主动作“启动最近应用”仅在存在最近 profile 且预检可用时显示；其他动作进入“更多”。
+- 状态 chips 包括“已配对”“证书变化”“待同步”“主机忙”“目录缓存”，每项有文字；颜色只是增强。
+- 快捷区为“唤醒”“刷新目录”“网络诊断”“主机设置”，不可用时保留位置并解释原因，避免布局跳动。
+
+应用目录页面：
+
+- 顶部固定搜索、筛选（全部/最近/收藏/隐藏）和刷新；刷新时保留旧目录并在顶部显示进度，不清空网格。
+- app 卡使用 3:4 封面、标题、主机运行状态和 profile 摘要；封面缺失时使用统一占位图，不拉伸低分辨率图片。
+- 触控单击 app 打开启动确认 Sheet；鼠标双击/Enter 仍默认打开同一确认，只有用户显式启用“受信任局域网快速启动”后才可直接开始。
+- 每张卡有可见“更多”按钮：编辑此应用设置、收藏、隐藏、查看详情；长按/右键提供同样菜单作为冗余。
+- 主机已有应用运行时，在目录顶部显示“主机正在运行：X”；提供“继续当前会话”“启动所选应用”“结束主机应用”三个语义清晰的动作，最后一项为危险操作并独立确认，禁止自动 cancel 后重试。
+- 空目录显示 Sunshine 配置引导、刷新和诊断；离线时展示目录缓存时间，允许编辑 profile，但“开始串流”禁用并说明主机离线。
+
+#### 8.14.5 设置首页、作用域与完整设置项
+
+Settings accordion 在 VNC 后加入 Moonlight，摘要为“串流、音频、输入、网络、安全、后台和云同步”。展开后使用与 VNC 相同的卡片和 `protocolActionRow`，包含以下叶页：
+
+1. **快速设置**：体验预设、有效配置摘要、恢复推荐值。
+2. **视频与画面**：分辨率、帧率、码率、codec、HDR、色彩、帧节奏和缩放。
+3. **音频**：启用、声道、主机同时播放、音量和焦点行为。
+4. **输入与控制器**：触控/触控板/鼠标、键盘捕获、控制器、虚拟控制和反馈。
+5. **网络与安全**：地址策略、计费网络、重连、加密、legacy 兼容和 Wake-on-LAN。
+6. **后台与画中画**：PIP、后台音频、锁屏/无 Surface 行为。
+7. **性能监视与诊断**：HUD、采样、日志和脱敏导出。
+8. **Moonlight 云同步范围**：唯一 `moonlightrecord` 的 settings/host/profile/trust/secret 选择。
+9. **配对身份与 Trust**：当前 client identity、主机证书、重新配对和本机清理。
+10. **管理 Moonlight 主机**：主机、profile、缓存和删除状态。
+
+全局、主机和 app profile 使用同一套叶页组件，但顶部必须有固定的“当前作用域”卡：
+
+- `全局默认`：修改所有未覆盖主机/app 的默认值。
+- `此主机`：默认显示“继承全局”；打开“为此主机覆盖”后才允许编辑。
+- `此应用`：逐组或逐项继承，值旁显示来源 badge（全局/主机/此应用）。
+- `仅本次`：只在启动确认/连接控制中心出现，离开会话自动丢弃；用户可显式“保存为此应用默认”。
+- 每个叶页提供“重置本页覆盖”，每一行提供“恢复继承”；不以清空整个 profile 代替单项恢复。
+
+设置控件合同如下：
+
+| 分组 | 首层呈现 | 二级/高级设计 | 防错与即时说明 |
+| --- | --- | --- | --- |
+| 体验预设 | 平衡（推荐）/低延迟/高画质/省电 | 展开查看映射到的分辨率、fps、码率、codec | 用户改任一映射值后标记“自定义”，不神秘覆盖 |
+| 分辨率 | 自动/设备原生/1080p/更多 | 720p、1440p、4K、16:10 和自定义宽高 | 只展示 host+device 可用项；预计缩放与比例在下方预览 |
+| 帧率 | 自动/30/60/更多 | 90/120/自定义仅能力通过后出现 | 显示设备刷新率、主机上限与实际协商可能回退 |
+| 码率 | 自动（推荐）+ 质量三档 | 自定义 Slider + 数字输入，范围随分辨率/fps 变化 | 同时显示预计每小时流量和当前网络建议；不以固定 10–100Mbps 套所有场景 |
+| Codec | 自动/H.264/HEVC/AV1 | 10-bit、YUV444 进入专业项 | 每项显示主机/设备支持；不可用不是可保存选项 |
+| HDR/色彩 | HDR 开关，默认关 | Rec.601/709/2020、limited/full 仅高级 | HDR 打开时自动展示必要条件，不静默改 codec/色域 |
+| 帧节奏 | 自动/低延迟/平滑 | jitter/queue 只在诊断实验项 | 用一句话说明延迟与稳定性取舍 |
+| 音频 | 音频开关、Stereo | 5.1/7.1、主机同时播放、焦点策略 | 输出设备不支持时禁用并说明；音频失败可无音频继续 |
+| 触控 | 直接触控/触控板/绝对鼠标/相对鼠标 | 移动/滚动速度、轻点超时、死区放在“灵敏度”Sheet | 预设低/标准/高优先；高级 Slider 有重置和实时试用区 |
+| 键盘 | 手动捕获、显示本地快捷键提示 | 系统快捷键逐项转发 | 始终保留本地逃生键；改变捕获先 release 当前按键 |
+| 控制器 | 自动槽位、实体优先 | 映射、死区、反向轴、虚拟布局 | 只显示系统已枚举设备；反馈/运动能力 fail closed |
+| 网络 | 自动地址、自动重连、计费网络每次询问 | 地址族、base port、local/remote、包长进入高级诊断 | 改端口先测试；公网提示不宣称提供中继 |
+| 安全 | 串流加密 Auto（推荐） | 要求全加密、legacy SHA-1 例外 | 当前主机不支持时显示影响；高危选项需要风险确认 |
+| 后台 | PIP、后台音频 | 无 Surface 视频策略只读展示实际行为 | 系统不允许时显示入口和原因，不假开关 |
+| 诊断 | HUD 关/简洁/详细 | 采样间隔、日志级别、导出 | Debug 显示隐私提示；导出前脱敏预览 |
+
+设置不在滑杆拖动每一帧持久化；拖动结束/选择确认后写 draft，用户离开叶页时原子提交。保存失败保持 draft 和错误，不回滚 UI 到看似成功的值。能力变化导致旧值失效时保留“原值 + 当前实际值 + 原因”，由用户选择采用推荐值或继续保留待设备可用。
+
+#### 8.14.6 启动确认与连接阶段页面
+
+点击应用后打开单一启动确认 Sheet，避免 MoonlightOH 式点击即 launch：
+
+- header 显示 app 封面、标题、主机名和在线状态。
+- “本次串流”摘要以四个可扫读 chips 显示分辨率、fps、codec/HDR、预计码率；点“调整”进入本次覆盖，不写 profile。
+- 网络卡显示局域网/计费网络、控制面/UDP 预检和预计流量。计费网络按用户策略要求单次确认。
+- 输入卡显示当前模式和实体控制器数量；没有控制器不阻止桌面 app，但游戏型 profile 可提示虚拟/实体控制方案。
+- 主机忙时默认“继续当前会话”或返回目录；“结束现有应用并启动”必须独立危险确认。
+- 主按钮“开始串流”，次动作“保存本次设置为此应用默认”；后者只有实际变更时出现。
+
+开始后进入连接阶段页/全屏遮罩，而不是连续弹 LoadingDialog。背景使用 app 封面模糊/主题实色，中央阶段卡按顺序显示：联系主机→启动/恢复应用→协商 RTSP→建立视频→建立音频→建立输入→等待首帧。已完成阶段打勾，当前阶段有进度，未开始阶段弱化；底部始终有“取消”。
+
+- 0–400ms 不闪现加载卡，避免快速局域网连接的视觉抖动。
+- 400ms 后显示当前阶段；3s 后显示已等待时长；10s 后增加“查看网络诊断”。
+- 视频首帧前不宣称“已连接”；音频失败时阶段卡提供“无音频继续 / 返回设置”；输入失败时提供“只观看继续 / 重试输入”。
+- 用户取消先冻结新输入、取消 HTTP/RTSP/common-c，再回目录；迟到成功事件因 generation 不匹配被丢弃。
+- 失败页保留 app/主机上下文，主文案为可行动原因，技术码折叠；动作按错误类型提供“重试”“降低设置重试”“网络诊断”“返回目录”。
+
+#### 8.14.7 串流页面层级与 Z-order
+
+串流页不建立新的全局视觉语言。画面背景固定黑色；浮层使用 `rgba(14,18,28,0.72–0.90)`、白色主文本、当前 accent 和轻边框，确保在任意游戏画面上可读；减少透明度时改为不透明深色 surface。层级固定如下：
+
+| 层级 | 内容 | 输入规则 |
+| --- | --- | --- |
+| L0 远端画面 | XComponent/Surface、letterbox、远端光标 | 默认接收远端输入；几何变化由 content rect 驱动 |
+| L1 虚拟输入 | 触摸区域、虚拟鼠标/手柄、按键按下态 | 只在相应模式启用；与系统手势安全区和 HUD 热区互斥 |
+| L2 最小状态 | 边缘控制柄、连接质量、捕获/只读/PIP 状态 | 控制柄热区≥44vp；状态本身不拦截画面输入 |
+| L3 快捷工具与辅助浮窗 | 快捷控制条、修饰键、诊断 dock、控制器提示 | 打开时进入 `overlayInteraction`，阻止触摸穿透并先结束远端手势 |
+| L4 事务遮罩 | 重连、证书变化、音视频致命错误、停止确认 | 模态；冻结所有远端输入并保持本地退出可用 |
+| L5 系统 owner | 单一 bindSheet、系统权限/输入法/PIP | 同时最多一个 App Sheet；关闭完成后才打开下一个 |
+
+进入任何 L3/L4 交互前发送当前 touch cancel、mouse up、key up/controller neutral；关闭后不重放旧事件。浮层拖动位置按设备/方向/profile 保存，但旋转、折叠或窗口缩小时先 clamp 到安全区，不能留在屏幕外。
+
+#### 8.14.8 最小状态层与快捷工具条
+
+**边缘控制柄**是永远可发现的入口：默认吸附握持手相反侧的中部安全区，视觉为 28–32vp 宽胶囊，但命中区至少 44×56vp；显示 Moonlight 星芒/“控”短标识和连接质量点。可拖动换侧，不响应双击危险动作。首次串流用一次非模态气泡说明“点此打开控制，系统返回也可打开”。
+
+**连接质量 chip**默认仅在状态变化后显示 3s：`良好 / 波动 / 较差 / 正在重连`，不以实时数字持续吸引注意。持续较差超过阈值才保留，点击打开网络诊断。安全/输入捕获状态可与其并列，但一行最多两个 chip。
+
+**快捷工具条**由单击画面空白、边缘控制柄、三指轻点或系统返回（未捕获时）打开；3s 无交互自动收起，触控板/鼠标 hover 或焦点在条内时暂停计时，用户可固定：
+
+- sm：底部/侧边 5 项——控制模式、键盘、控制器、更多、断开。
+- md/lg：最多 7 项——增加音频、画面/PIP；不足项进入更多。
+- xl：顶部居中，沿用 RustDesk 自动收起语法，支持鼠标 hover、快捷键和固定。
+- 每项为图标 + 8–10fp 短标签，热区至少 48vp；当前模式使用 accent + 文本，不用纯色判断。
+- “断开”使用危险色并与其他按钮隔 12vp；不能把“退出主机应用”放在工具条一级。
+- 工具条展开不会改变画面缩放；落在画面上的区域由 overlay hit map 排除远端输入。
+
+#### 8.14.9 控制中心 Sheet 的完整功能
+
+“更多”打开唯一控制中心。sm 为底部 Sheet，md/lg/xl 为居中/右侧控制 pane；顶部显示 app、主机、串流时间和实际协商摘要。分组不超过六个，最近使用分组可记忆但危险动作位置固定：
+
+| 分组 | 一级功能 | 二级/行为 |
+| --- | --- | --- |
+| 会话 | 返回画面、PIP、断开本地串流 | “退出主机应用”单独放底部危险区；显示主机响应成功/失败/未知 |
+| 控制 | Touch/触控板/绝对鼠标/相对鼠标、键盘、修饰键、控制器 | 触控板灵敏度与映射进二级；模式切换即时生效并可保存到 profile |
+| 画面 | 适应/填充/1:1、低延迟/平滑、亮度/HDR 实际状态 | codec/分辨率/fps 如需重连则标“下次连接”，不伪装为实时生效 |
+| 音频 | 静音、音量、输出设备摘要、主机同时播放 | 声道/codec 需要重连时进入下次连接草稿；焦点丢失显示原因 |
+| 网络 | 质量、RTT/丢包/FEC 摘要、立即重连、地址 | 切换地址先冻结输入并重建 generation；不允许叠加第二会话 |
+| 诊断 | 简洁/详细 HUD、复制脱敏诊断、日志 | 默认用户只看可行动摘要；专业指标进入可拖动 dock |
+
+任何当前会话修改都显示 `仅本次` badge；存在变更时控制中心底部出现“保存为此应用默认”，并列出将保存的项目。关闭 Sheet 不自动持久化临时设置。
+
+#### 8.14.10 连接中的全部辅助浮窗/功能
+
+| 浮窗/功能 | 默认状态与位置 | 内容和动作 | 人因/安全合同 |
+| --- | --- | --- | --- |
+| 鼠标捕获提示 | PC 首次捕获时顶部 chip，3s 后缩成图标 | “已捕获鼠标 · Esc 释放” | 第一次 Esc 只释放，第二次 Esc 打开工具条；永远不吞系统保留逃生键 |
+| 触控模式提示 | 模式切换后画面中央下方 1.2s | 模式名 + 一句手势摘要 | 不阻塞输入；读屏只在用户触发切换时播报一次 |
+| 虚拟键盘 | 底部，跟随输入法/横竖屏 | 文本输入、Esc/Tab/Ctrl/Alt/Shift/Win、Fn、方向/Del/Enter | 打开前 cancel 画面手势；关闭/失焦/退出补发全部 key-up；不允许触摸穿透 |
+| 修饰键面板 | 复用 RemoteModifierPanel，可吸附拖动 | 单击一次、长按锁定、Fn 层、组合键 | once/locked 有文字/边框双重状态；会话终止全部归零 |
+| 快捷键面板 | 从修饰键/控制中心打开 | Ctrl+Alt+Del、Alt+Tab、Win、复制粘贴等能力允许项 | 高风险组合需明确标签；不支持项置灰并说明，不发送半套按键 |
+| 虚拟鼠标条 | 无实体鼠标且选择触控板时按需显示 | 左/右/中键、滚轮、拖拽锁 | 热区≥48vp；拖拽锁有常驻状态和一键释放；实体鼠标接入可自动收起 |
+| 虚拟控制器 | MVP 默认关闭；第二版按 profile | 摇杆、方向键、ABXY、肩键/扳机、菜单、布局编辑 | 实体手柄接入默认收起；编辑布局期间不发送游戏输入；退出/切后台发送 neutral frame |
+| 控制器设备 chip | 手柄连接/断开后显示 3s | 设备名、槽位、电量/能力、重新映射 | 不暴露系统未提供能力；断开时远端槽位立即 neutral |
+| 音频焦点 banner | 焦点丢失时顶部非模态 | “音频已暂停：其他应用正在播放” + 恢复 | 不反复抢焦点；恢复由策略/用户操作决定 |
+| 网络质量 banner | 持续劣化后顶部 | 原因摘要、降低码率/诊断 | 节流，轻微抖动不遮画面；建议动作先作为本次设置 |
+| 性能 HUD | 默认关；简洁模式为可拖动 76×38 chip | FPS/延迟/质量；点击展开 | 复用 DiagnosticsHud 拖动阈值、吸附和安全区；不每帧触发 ArkUI 重排 |
+| 详细诊断 dock | 用户主动打开 | 实际 codec、分辨率/fps、码率、RTT、丢包/FEC、解码/渲染 p50/p95、音频 underrun、输入丢弃 | 指标采样节流；专业值不可用显示“—”，不造 0；支持脱敏复制 |
+| PIP 控制 | 系统 PIP | 播放/暂停语义、返回、断开 | PIP 不提供危险“退出主机应用”；无 Surface 输入全部锁定 |
+| 重连遮罩 | 媒体中断才出现 | 最近一帧 + “画面已暂停”、attempt/预算、立即重试、退出 | 禁止把旧静帧当在线；输入冻结；超预算进入失败终态 |
+| 安全阻断卡 | 证书变化/加密降级 | 指纹变化、影响、重新配对/退出 | 位于 L4，不允许“一直忽略”；技术细节可展开 |
+| 错误恢复 Sheet | 解码/音频/输入可降级或失败 | 降低画质重试、无音频继续、只观看继续、诊断 | 只提供真实可执行动作；错误码折叠且脱敏 |
+| 停止确认 Sheet | 点断开/第二次返回 | 默认“仅断开并保留主机应用”、危险“同时退出主机应用”、取消 | 默认焦点在仅断开；主机 quit 失败不得阻塞本地 cleanup；结果分成功/失败/未知 |
+| 系统/应用 toast | 短暂完成反馈 | 已切换模式、已保存 profile 等 | 只有真实终态才宣称成功；错误不用瞬时 toast 承载全部说明 |
+
+#### 8.14.11 输入、手势与误触防护
+
+- 画面单击默认只负责远端点击；“单击显示 HUD”只在用户轻点边缘空白/控制柄或显式开启时生效，不能和直接触控模式争用同一手势。三指轻点可以作为快捷入口，但控制柄/返回键必须提供等价可发现路径。
+- Touch 模式一指/多点透传；触控板模式一指移动、单击左键、双指滚动、双指轻点右键、长按拖拽。所有手势在设置页提供动画/文字示例，可关闭冲突手势。
+- 直接触控与画面 pinch/pan 的优先级按模式决定；开始缩放前 cancel 远端触点，缩放结束后不把最后触点重放给远端。
+- 工具条、浮窗和虚拟键盘出现时建立明确 hit map；“半透明”不意味着点击可穿透。
+- 控制模式改变、旋转、Surface 重绑、PIP、后台、锁屏、失焦、手柄断开和会话 generation 变化都必须调用统一 input flush。
+- 触控板高级项采用“低/标准/高”预设 + 可选高级 Slider；实时试用区只移动本地示意光标，不向主机发送测试动作。
+- 长按只用于增强动作（修饰键锁定、卡片更多），不得作为添加、设置、停止、释放捕获的唯一入口。
+
+#### 8.14.12 响应式、握姿和多输入适配
+
+| 场景 | 关键布局 | 高频操作位置 | 特殊规则 |
+| --- | --- | --- | --- |
+| sm 竖屏添加/设置 | 单列 Sheet、固定 footer | 主按钮靠下，返回在 header | 软键盘不遮主动作；大字号时预设自动换行 |
+| sm 横屏串流 | 画面全屏、边缘柄、底部 5 项工具条 | 根据握姿把柄吸附到非主握侧 | 左右系统返回区、打孔/圆角和虚拟手柄保留安全间距 |
+| md 折叠展开/平板 | 主机摘要 + 两列目录；控制中心居中/侧栏 | 边缘柄靠近当前握持侧但不遮内容 | 半折叠不跨铰链放关键按钮；旋转只重排不重连 |
+| lg 大平板 | 2–3 列目录、详情/设置双栏 | 画面侧边控制中心 | 虚拟键盘可缩放，不能覆盖停止入口 |
+| xl PC/2in1 | sidebar + 详情 pane；串流自由窗口/全屏 | 顶部自动收起工具条、键盘快捷键、右键菜单 | hover/focus/pressed/disabled 完整；鼠标捕获与窗口失焦规则明确 |
+| 手柄主导 | app grid 有焦点环，A 选择/B 返回 | 快捷控制可由保留组合键打开 | 焦点不进入纯视频像素；停止需可通过手柄完成但防单键误触 |
+
+握姿自适应只改变控制柄/常用控件对齐，不改变危险动作语义或步骤顺序。用户拖动后的显式位置优先于自动握姿；窗口尺寸显著变化时按归一化边缘/比例恢复并 clamp。
+
+#### 8.14.13 组件 owner 与复用边界
+
+后续实现建议形成以下 owner；名称是计划合同，不代表本轮创建文件：
+
+| 组件/页面 owner | 职责 | 复用来源 |
+| --- | --- | --- |
+| `MoonlightHostAddFlow` | 四步添加、草稿、异步 generation、保存/打开 | VncAddFlow + VncSheetScaffold + RustDesk discovery |
+| `MoonlightHostDetailPage` | 主机摘要、状态、目录 owner 和详情动作 | HostCard/HostList 响应式布局 |
+| `MoonlightAppCatalog` | 搜索/筛选/封面/缓存/更多菜单 | MoonlightOH app grid 的任务模型，不复制视觉代码 |
+| `MoonlightLaunchSheet` | 有效配置、计费网络、主机忙、开始串流 | 项目单 bindSheet 路由和连接前置 Sheet |
+| `MoonlightConnectStageOverlay` | 阶段进度、取消、降级和失败恢复 | RemoteSessionState + 非模态事务卡 |
+| `MoonlightSessionToolbar` | 最多 5/7 项快捷控制、收起、固定 | VncSessionToolbar + RemoteSessionTopBar |
+| `MoonlightControlCenter` | 六组本次设置和保存 profile | RemoteDesktop control panel + settings leaf components |
+| `MoonlightDiagnosticsHud` | 简洁 chip、详细 dock、拖动/吸附 | RustDesk/VNC DiagnosticsHud；新增 Moonlight 指标 |
+| `RemoteModifierPanel` | 修饰键、Fn、组合键 | 原组件直接复用，仅通过 capability 配置 |
+| `MoonlightControllerOverlay` | 虚拟控制器、布局编辑、实体手柄状态 | 独立 owner，不混进键盘/鼠标面板 |
+
+Moonlight 不复用 RustDesk/VNC 的协议状态或设置存储，只复用无状态视觉构件和通用输入/浮层基础设施。所有 owner 读取同一个 sessionId/generation/capability snapshot；浮窗不得各自直接查询 native 全局状态。
+
+#### 8.14.14 人因与任务验收指标
+
+除视觉截图外，P8/P9 必须用真机录屏、可访问性检查和事件日志验证：
+
+- 已配对回访用户从主机详情启动最近 app 不超过 3 次明确动作；从沉浸画面执行“仅断开”不超过 2 次动作。
+- 首次用户不阅读外部文档也能找到自动发现、手动添加、PIN 所在位置、返回和取消；5 名内部走查者中至少 4 名一次完成，失败点必须回灌设计。
+- 所有常用/危险触控热区达到本节尺寸；用触控边界可视化验证相邻热区无重叠，危险动作不存在滑动穿越触发。
+- 地址错误、主机重复、PIN 超时、证书变化、计费网络、codec 不支持、音频失败、输入失败和 UDP 不通均在对应任务上下文内恢复，不要求用户返回首页重来。
+- 工具条打开/关闭、控制模式切换和浮窗拖动不产生远端幽灵点击；每条路径都有 input flush/neutral 事件证据。
+- 连接阶段在 400ms/3s/10s 阈值行为正确；取消后无迟到路由，首帧前不显示“已连接”。
+- light/dark、自定义 accent、减少透明度、大字号和屏幕朗读下，官方品牌图标、状态、badge 和危险动作均可辨认；图标无文字时必须有 accessibilityText。
+- 方向键/键盘/手柄焦点可遍历所有可交互元素，不进入 disabled/纯装饰节点；焦点离开并返回页面后恢复到合理对象。
+- sm/md/lg/xl、旋转、折叠/展开、自由窗口和 PIP 变化不重启会话、不丢停止入口、不把浮窗留在屏幕外。
+- 与 RDP/RustDesk/SSH/VNC 做并排回归：同类主动作、返回、Sheet、设置行、工具条、诊断 dock 和确认文案的视觉/交互语法一致；Moonlight 的游戏特性不反向改变旧协议默认行为。
 
 ## 9. 全用户流程和生命周期
 
@@ -1814,6 +2143,7 @@ ArkTS 层测试：
 5. 复用现有 Opus/OpenSSL 时核对当前 libs/opus-ohos、OpenSSL 和静态链接 notice；不得另引入无来源二进制。
 6. 添加源代码 tag、源码归档、SBOM、第三方清单、许可证文件和构建 manifest。
 7. 对外发布 HAP 前验证 clean clone 可按 SOURCE_OFFER 规则获得对应源代码和构建说明。
+8. 使用 Moonlight 官方品牌图标时，将上游仓库 URL、exact revision、原始路径、获取日期、原始/转换文件 SHA-256、GPL-3.0 许可证归属和本地资源路径写入第三方素材清单、SBOM/构建 manifest 与发布 notice；保留未修改的上游原件和可复现转换记录。不得以“只是图标”或“官方 Logo”为由跳过许可证、商标/品牌使用复核。
 
 必须参考的本地规则：
 
@@ -1926,6 +2256,10 @@ ArkTS 层测试：
 - [ ] 两台设备同时编辑 host/profile/settings 可按 field-level/baseVersion 总序确定性合并；trust/secret 身份冲突不静默覆盖，tombstone 不被旧离线写复活。
 - [ ] 普通便携备份排除 secret/mirror/journal/recovery marker；恢复经过 owner/restore quarantine/cloud-first/原子回滚矩阵。
 - [ ] light/dark/accent/wallpaper/halo、sm/md/lg/xl、折叠屏/平板/PC、单 sheet、焦点、大字号、屏幕朗读和减少动效矩阵通过。
+- [ ] “添加主机”FAB 中 Moonlight 位于 VNC 之后；预告阶段使用同一份官方品牌资源、整项灰色禁用、显示“即将支持”且点击零副作用。官方图标的 exact revision、原始路径、SHA-256、转换记录、GPL/品牌复核、SBOM 和 notice 均可追溯。
+- [ ] 正式开放后的四步添加流覆盖发现/手动输入、主机验证、PIN/证书信任和完成复核；所有异步步骤可取消，草稿、迟到回调和 owner 隔离符合第 8.14.3 节。
+- [ ] 应用卡片默认先进入启动确认 Sheet；计费网络、主机忙、能力降级和仅本次覆盖均可见，不会点击即 launch、自动结束主机应用或静默持久化 profile。
+- [ ] 串流 L0-L5 层级、边缘控制柄、快捷工具条、控制中心、键盘/修饰键、虚拟控制、诊断 dock、重连/安全/停止事务层均按第 8.14 节完成互斥、input flush、44/48vp 热区和多断点验收。
 - [ ] 从触控、鼠标、键盘和实体手柄都能完成添加/配对/启动/释放/停止；停止与安全阻断始终可达。
 - [ ] 默认“只断开”保留主机应用；显式“退出主机应用”单独报告成功/失败/未知，失败不残留本地资源。
 - [ ] 前台/PIP 强杀、系统回收和重启后只提示 Resume/quit/忽略，不自动重连或结束主机应用，且使用全新 generation/会话密钥。
@@ -1993,12 +2327,20 @@ hvigorw --mode module -p module=entry -p product=default assembleHap --analyze=n
 - [Moonlight common-c security advisory](https://github.com/moonlight-stream/moonlight-common-c/security/advisories/GHSA-4927-23jw-rq62)
 - [RFC 8785 JSON Canonicalization Scheme](https://www.rfc-editor.org/rfc/rfc8785)
 
-### 14.2 鸿蒙官方能力资料
+### 14.2 成熟 HarmonyOS Moonlight 项目审计对照
+
+- [MoonlightOH / moonlight-ohos](https://gitee.com/smdsbz/moonlight-ohos)：本轮主要原生参考，审计 revision `a48821e2d309c4282d79a053e6a85245eb438a7b`；用于验证 ArkUI/XComponent、添加/配对、应用目录、分层设置和连接内控制模式，不作为协议实现、视觉资产或许可证结论的替代品。
+- [likuai2010/moonlight-harmonyos](https://github.com/likuai2010/moonlight-harmonyos)：历史 HarmonyOS 移植对照；用于核验早期软/硬解、音频、配对和虚拟控制器路线，不作为当前产品交互基线。
+
+### 14.3 鸿蒙官方能力与人因设计资料
 
 - [HarmonyOS Developer](https://developer.huawei.com/consumer/cn/develop/)
 - [HarmonyOS 文档中心](https://developer.huawei.com/consumer/cn/doc/)
-- [HarmonyOS 设计中心](https://developer.huawei.com/consumer/cn/design)
+- [HarmonyOS 设计中心](https://developer.huawei.com/consumer/cn/design/?catalogVersion=V1)
+- [HarmonyOS 设计入门](https://developer.huawei.com/consumer/cn/design/devstart/)
 - [焦点导航规范](https://developer.huawei.com/consumer/cn/doc/design-guides/hmi-focus-0000001748650376)
+- [光标交互规范](https://developer.huawei.com/consumer/cn/doc/design-guides/hmi-cursor-0000001795531205)
+- [HarmonyOS 应用 UX 体验标准](https://developer.huawei.com/consumer/cn/doc/design-guides/ux-guidelines-overview-0000001760867048)
 - [HarmonyOS 电脑应用开发入门](https://developer.huawei.com/consumer/cn/multidevice/pc/get-started/)
 - [设备兼容规则](https://developer.huawei.com/consumer/cn/doc/doccenter-architecture/device-compatible)
 - [OHAudio playback](https://developer.huawei.com/consumer/cn/doc/harmonyos-guides-V5/using-ohaudio-for-playback-V5)
@@ -2010,7 +2352,7 @@ hvigorw --mode module -p module=entry -p product=default assembleHap --analyze=n
 - [Account Kit](https://developer.huawei.com/consumer/cn/sdk/account-kit)
 - [云数据库](https://developer.huawei.com/consumer/cn/agconnect/cloud-base)
 
-### 14.3 本项目代码和规则证据
+### 14.4 本项目代码和规则证据
 
 - [README.md](/Users/mydestiny/Desktop/RemoteDesktop/RemoteDeskHarmonyOS/README.md)
 - [protocol_adapter.h](/Users/mydestiny/Desktop/RemoteDesktop/RemoteDeskHarmonyOS/entry/src/main/cpp/extensions/protocol_adapter.h)
@@ -2049,7 +2391,7 @@ hvigorw --mode module -p module=entry -p product=default assembleHap --analyze=n
 - [CMakeLists.txt](/Users/mydestiny/Desktop/RemoteDesktop/RemoteDeskHarmonyOS/entry/src/main/cpp/CMakeLists.txt)
 - [module.json5](/Users/mydestiny/Desktop/RemoteDesktop/RemoteDeskHarmonyOS/entry/src/main/module.json5)
 
-### 14.4 实施开始前的最终确认
+### 14.5 实施开始前的最终确认
 
 真正开始编码前，负责人必须在计划 issue 或 ADR 中补齐：
 
@@ -2065,7 +2407,7 @@ hvigorw --mode module -p module=entry -p product=default assembleHap --analyze=n
 10. feature flag、灰度用户和回滚开关；
 11. AccountSessionLease/SensitiveDataBarrier/legacy migration 的接入评审和账号 A↔B 真机脚本；
 12. 单物理云表、索引/长度/留存/服务端规则和 cloud-first bootstrap 的云环境评审；
-13. Moonlight 设置 route mode、系统 Symbol、sm/md/lg/xl 页面状态稿和无障碍验收人；
+13. Moonlight 设置 route mode、官方品牌资源/辅助系统 Symbol、sm/md/lg/xl 页面状态稿和无障碍验收人；
 14. 流加密策略、AES 性能结果、secret 恢复策略和 rumble/LED/motion 的明确支持结论。
 15. 配对 PIN 的主机端输入流程、owner-scoped RSA identity/HUKS-OpenSSL 路线和证书轮换删除语义；
 16. 默认只断开与显式 quit 的双命令合同，以及跨官方客户端 launch/resume/quit 的 protocolCompatUniqueId 互操作证据；

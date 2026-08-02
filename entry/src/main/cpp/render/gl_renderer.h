@@ -12,6 +12,7 @@
 #define GL_RENDERER_H
 
 #include "rdp/rdp_presentation_metrics.h"
+#include "video_perf_counters.h"
 
 #include <atomic>
 #include <cstdint>
@@ -215,32 +216,74 @@ private:
 namespace RendererNapi {
     napi_value Init(napi_env env, napi_value exports);
     void MakeCurrent(int64_t handle);
+    void MakeCurrent(int64_t handle, const Render::DecoderSessionIdentity& owner);
     void ReleaseCurrent(int64_t handle);
+    void ReleaseCurrent(int64_t handle, const Render::DecoderSessionIdentity& owner);
     void SetRendererSourceSize(int64_t handle, int width, int height);
+    void SetRendererSourceSize(int64_t handle, const Render::DecoderSessionIdentity& owner,
+                               int width, int height);
     void RenderNative(int64_t handle, GLuint textureId);
+    void RenderNative(int64_t handle, const Render::DecoderSessionIdentity& owner,
+                      GLuint textureId);
     void SetActiveSourceSize(int width, int height);
+    void SetActiveSourceSize(const Render::DecoderSessionIdentity& owner, int width, int height);
     RdpPresentationTarget GetActivePresentationTarget();
+    RdpPresentationTarget GetActivePresentationTarget(const Render::DecoderSessionIdentity& owner);
+    // The caller must already hold the shared session sink lease. This is used
+    // by callbacks that keep one lease across source read, staging, and queue
+    // submission; it intentionally does not acquire the lease again.
+    RdpPresentationTarget GetActivePresentationTargetUnderOwnerLease(
+        const Render::DecoderSessionIdentity& owner);
     bool HasReadyActiveRenderer(uint64_t* generation = nullptr);
     RdpPresentMetrics PresentRawBgraActive(const uint8_t* data, size_t size, int width,
+                                           int height, int stride, uint64_t generation);
+    RdpPresentMetrics PresentRawBgraActive(const Render::DecoderSessionIdentity& owner,
+                                           const uint8_t* data, size_t size, int width,
                                            int height, int stride, uint64_t generation);
     RdpPresentMetrics PresentRawBgraRectActive(const uint8_t* data, size_t size, int width,
                                                int height, int stride, int dirtyX, int dirtyY,
                                                int dirtyWidth, int dirtyHeight,
                                                uint64_t generation);
+    RdpPresentMetrics PresentRawBgraRectActive(const Render::DecoderSessionIdentity& owner,
+                                               const uint8_t* data, size_t size, int width,
+                                               int height, int stride, int dirtyX, int dirtyY,
+                                               int dirtyWidth, int dirtyHeight,
+                                               uint64_t generation);
     RdpPresentMetrics PresentRetainedActive(uint64_t generation);
+    RdpPresentMetrics PresentRetainedActive(const Render::DecoderSessionIdentity& owner,
+                                            uint64_t generation);
     int RenderRawBgraActive(const uint8_t* data, size_t size, int width, int height, int stride);
     int RenderRawBgraRectActive(const uint8_t* data, size_t size, int width, int height, int stride,
                                 int dirtyX, int dirtyY, int dirtyWidth, int dirtyHeight);
+    int RenderRawBgraActive(const Render::DecoderSessionIdentity& owner,
+                            const uint8_t* data, size_t size, int width, int height, int stride);
+    void RenderRetained(int64_t handle, const Render::DecoderSessionIdentity& owner);
+    bool SetActiveRenderer(int64_t handle, const Render::DecoderSessionIdentity& owner);
     void SetActiveRenderer(int64_t handle);
+    // The caller must already hold the shared session sink lease. This is a
+    // validation-only boundary for two-phase bind/init paths which cannot
+    // reacquire the non-reentrant shared lease.
+    bool IsActiveRendererForOwnerUnderLease(
+        int64_t handle, const Render::DecoderSessionIdentity& owner);
+    void SetActiveSessionOwner(const Render::DecoderSessionIdentity& owner);
+    void ClearActiveSessionOwner(const Render::DecoderSessionIdentity& owner);
     void SetRendererRedrawCallback(int64_t handle, std::function<void()> callback);
+    void SetRendererRedrawCallback(int64_t handle, const Render::DecoderSessionIdentity& owner,
+                                   std::function<void()> callback);
     uint64_t RegisterActiveRedrawCallback(std::function<void()> callback);
     void UnregisterActiveRedrawCallback(uint64_t token);
     void RenderRetained(int64_t handle);
     RdpPresentationMetricsSnapshot GetActivePresentationStats();
+    RdpPresentationMetricsSnapshot GetActivePresentationStats(
+        const Render::DecoderSessionIdentity& owner);
     void InvalidateActivePresentation();
+    void InvalidateActivePresentation(const Render::DecoderSessionIdentity& owner);
     bool ReenableActivePresentation();
+    bool ReenableActivePresentation(const Render::DecoderSessionIdentity& owner);
     void DeactivateRenderer(int64_t handle);
+    void DeactivateRenderer(int64_t handle, const Render::DecoderSessionIdentity& owner);
     void DestroyRendererHandle(int64_t handle);
+    void DestroyRendererHandle(int64_t handle, const Render::DecoderSessionIdentity& owner);
 }
 
 #endif // GL_RENDERER_H

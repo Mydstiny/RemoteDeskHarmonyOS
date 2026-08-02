@@ -12,6 +12,15 @@
 #include "vnc_transport_policy.h"
 
 #include "common/safe_log.h"
+#if defined(VNC_DIAGNOSTICS) && VNC_DIAGNOSTICS
+#define VNC_DIAGNOSTICS_ENABLED 1
+#elif !defined(VNC_DIAGNOSTICS) && (defined(__OHOS__) || defined(__MUSL__))
+#define VNC_DIAGNOSTICS_ENABLED 1
+#else
+#define VNC_DIAGNOSTICS_ENABLED 0
+#endif
+
+#if VNC_DIAGNOSTICS_ENABLED
 #if defined(__OHOS__) || defined(__MUSL__)
 #include <hilog/log.h>
 #undef LOG_DOMAIN
@@ -20,6 +29,10 @@
 #define LOG_TAG "VNC_RFB_ENGINE"
 #define VNC_DIAG_INFO(...) OH_LOG_INFO(LOG_APP, __VA_ARGS__)
 #define VNC_DIAG_WARN(...) OH_LOG_WARN(LOG_APP, __VA_ARGS__)
+#else
+#define VNC_DIAG_INFO(...) do { } while (0)
+#define VNC_DIAG_WARN(...) do { } while (0)
+#endif
 #else
 #define VNC_DIAG_INFO(...) do { } while (0)
 #define VNC_DIAG_WARN(...) do { } while (0)
@@ -34,6 +47,8 @@
 #include <limits>
 #include <new>
 #include <cstdlib>
+#include <deque>
+#include <memory>
 
 namespace {
 
@@ -78,6 +93,124 @@ void secureClear(std::string& value) {
 
 } // namespace
 
+namespace {
+
+// A self-stop can happen from a state/frame callback running on the RFB
+// worker. Keep the engine alive until that worker returns, then join it from
+// this owner handoff thread. The engine is not detached or reclaimed early.
+class VncDeferredJoiner {
+public:
+    VncDeferredJoiner() : worker_([this]() { run(); }) {}
+
+    void enqueue(std::shared_ptr<VncRfbEngine> engine) {
+        if (!engine) return;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (stopping_) {
+                // The explicit app-scope owner has been shut down. Keep the
+                // engine in the caller's owner rather than silently dropping
+                // a joinable worker or detaching it.
+                pending_.push_back(std::move(engine));
+                return;
+            }
+            pending_.push_back(std::move(engine));
+        }
+        condition_.notify_one();
+    }
+
+    bool drainWithin(std::chrono::milliseconds timeout) {
+        std::unique_lock<std::mutex> lock(mutex_);
+        return condition_.wait_for(lock, timeout, [this]() {
+            return pending_.empty() && active_ == 0;
+        });
+    }
+
+    bool shutdownWithin(std::chrono::milliseconds timeout) {
+        const auto deadline = std::chrono::steady_clock::now() + timeout;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            stopping_ = true;
+        }
+        condition_.notify_all();
+        std::unique_lock<std::mutex> lock(mutex_);
+        const bool done = condition_.wait_until(lock, deadline, [this]() {
+            return workerDone_;
+        });
+        lock.unlock();
+        if (!done || !worker_.joinable() ||
+            worker_.get_id() == std::this_thread::get_id()) {
+            return done && !worker_.joinable();
+        }
+        worker_.join();
+        return true;
+    }
+
+    std::size_t remaining() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return pending_.size() + active_;
+    }
+
+private:
+    void run() {
+        for (;;) {
+        std::shared_ptr<VncRfbEngine> engine;
+        {
+            std::unique_lock<std::mutex> lock(mutex_);
+                condition_.wait(lock, [this]() {
+                    return stopping_ || !pending_.empty();
+                });
+                if (pending_.empty() && stopping_) {
+                    workerDone_ = true;
+                    condition_.notify_all();
+                    return;
+                }
+                engine = std::move(pending_.front());
+                pending_.pop_front();
+                ++active_;
+            }
+            // Do not let one stalled engine block completed engines behind it.
+            // The owner polls independent done fences and keeps every live
+            // engine retained until its own worker exits.
+            engine->requestStop();
+            if (!engine->workerDoneForDeferredJoin()) {
+                {
+                    std::lock_guard<std::mutex> lock(mutex_);
+                    pending_.push_back(std::move(engine));
+                    --active_;
+                }
+                condition_.notify_all();
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                continue;
+            }
+            engine->joinAfterWorkerDone();
+            std::lock_guard<std::mutex> lock(mutex_);
+            --active_;
+            condition_.notify_all();
+        }
+    }
+
+    mutable std::mutex mutex_;
+    std::condition_variable condition_;
+    std::deque<std::shared_ptr<VncRfbEngine>> pending_;
+    std::thread worker_;
+    bool stopping_ = false;
+    bool workerDone_ = false;
+    std::size_t active_ = 0;
+};
+
+std::mutex g_deferredJoinerOwnerMutex;
+VncDeferredJoiner* g_deferredJoinerOwner = nullptr;
+
+VncDeferredJoiner& deferredJoiner() {
+    std::lock_guard<std::mutex> lock(g_deferredJoinerOwnerMutex);
+    if (g_deferredJoinerOwner == nullptr) {
+        g_deferredJoinerOwner = new VncDeferredJoiner();
+    }
+    return *g_deferredJoinerOwner;
+}
+
+} // namespace
+
 VncRfbEngine::VncRfbEngine(const ConnectionConfig& config, VideoFrameCallback frameCallback,
                            StateCallback stateCallback, CursorCallback cursorCallback)
     : config_(config), frameCallback_(std::move(frameCallback)),
@@ -85,7 +218,13 @@ VncRfbEngine::VncRfbEngine(const ConnectionConfig& config, VideoFrameCallback fr
       cursorCallback_(std::move(cursorCallback)) {}
 
 VncRfbEngine::~VncRfbEngine() {
-    stop();
+    if (worker_.joinable() && !stopWithin(std::chrono::milliseconds(500))) {
+        // A live engine must remain in the explicit deferred owner. Reaching
+        // this destructor with an unfinished worker is a lifecycle contract
+        // violation; aborting is fail-closed and bounded, whereas stop()
+        // would hide an unbounded join and risk reclaiming callback state.
+        std::abort();
+    }
 }
 
 int VncRfbEngine::start() {
@@ -97,23 +236,154 @@ int VncRfbEngine::start() {
     // exposing the default DISCONNECTED state during this scheduling window
     // makes it tear down a healthy VNC attempt before TCP can begin.
     state_.store(ConnectionState::CONNECTING, std::memory_order_release);
+    {
+        std::lock_guard<std::mutex> lock(workerStateMutex_);
+        workerDone_ = false;
+    }
     try {
         worker_ = std::thread(&VncRfbEngine::run, this);
     } catch (const std::exception&) {
+        {
+            std::lock_guard<std::mutex> lock(workerStateMutex_);
+            workerDone_ = true;
+        }
+        workerStateCv_.notify_all();
         clearSensitiveConfig();
         return -12;
     }
     return 0;
 }
 
-void VncRfbEngine::stop() {
-    stopRequested_.store(true, std::memory_order_release);
+void VncRfbEngine::requestStop() {
+    const bool wasRequested = stopRequested_.exchange(true, std::memory_order_acq_rel);
+#if defined(RDP_NATIVE_CALLBACK_TESTING)
+    if (!wasRequested) {
+        std::function<void()> observer;
+        {
+            std::lock_guard<std::mutex> lock(callbackMutex_);
+            observer = stopObserver_;
+        }
+        if (observer) observer();
+    }
+#else
+    (void)wasRequested;
+#endif
     transport_.close();
+}
+
+bool VncRfbEngine::isWorkerThread() const {
+    return worker_.joinable() && worker_.get_id() == std::this_thread::get_id();
+}
+
+void VncRfbEngine::deferStopAndJoin(std::unique_ptr<VncRfbEngine> engine) {
+    if (!engine) return;
+    deferStopAndJoin(std::shared_ptr<VncRfbEngine>(std::move(engine)));
+}
+
+void VncRfbEngine::deferStopAndJoin(std::shared_ptr<VncRfbEngine> engine) {
+    if (!engine) return;
+    engine->requestStop();
+    deferredJoiner().enqueue(std::move(engine));
+}
+
+bool VncRfbEngine::drainDeferredJoinsWithin(std::chrono::milliseconds timeout) {
+    return deferredJoiner().drainWithin(timeout);
+}
+
+bool VncRfbEngine::shutdownDeferredJoinsWithin(std::chrono::milliseconds timeout) {
+    VncDeferredJoiner* owner = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(g_deferredJoinerOwnerMutex);
+        owner = g_deferredJoinerOwner;
+    }
+    if (owner == nullptr) return true;
+    const bool done = owner->shutdownWithin(timeout);
+    if (done) {
+        std::lock_guard<std::mutex> lock(g_deferredJoinerOwnerMutex);
+        if (g_deferredJoinerOwner == owner) {
+            g_deferredJoinerOwner = nullptr;
+            // The worker is joined, but callers that already obtained the raw
+            // owner reference may still be returning from a method. Retain the
+            // retired owner until process exit rather than racing its delete.
+        }
+    }
+    return done;
+}
+
+std::size_t VncRfbEngine::deferredJoinRemaining() {
+    std::lock_guard<std::mutex> lock(g_deferredJoinerOwnerMutex);
+    return g_deferredJoinerOwner == nullptr ? 0 : g_deferredJoinerOwner->remaining();
+}
+
+void VncRfbEngine::stop() {
+    requestStop();
+    if (isWorkerThread()) {
+        // The owning adapter transfers its shared engine to the reaper.
+        setState(ConnectionState::DISCONNECTED, "VNC 已断开");
+        return;
+    }
+    if (stopWithin(std::chrono::milliseconds(500))) {
+        return;
+    }
+    // A public stop must never wait beyond its fixed budget. Production
+    // engines are shared-owned by VncAdapter; keep the complete engine and
+    // its callback state in the same app-scope reaper until the done fence.
+    try {
+        auto retained = shared_from_this();
+        deferStopAndJoin(std::move(retained));
+    } catch (const std::bad_weak_ptr&) {
+        // A stack/unique test engine cannot be safely retained after this
+        // call. Fail closed rather than destroying a live worker or blocking
+        // in a default destructor.
+        std::abort();
+    }
+}
+
+bool VncRfbEngine::stopWithin(std::chrono::milliseconds timeout) {
+    requestStop();
+    if (isWorkerThread()) {
+        setState(ConnectionState::DISCONNECTED, "VNC 已断开");
+        return false;
+    }
+    if (!worker_.joinable()) {
+        clearSensitiveConfig();
+        setState(ConnectionState::DISCONNECTED, "VNC 已断开");
+        return true;
+    }
+    std::unique_lock<std::mutex> lock(workerStateMutex_);
+    if (!workerStateCv_.wait_for(lock, timeout, [this]() { return workerDone_; })) {
+        return false;
+    }
+    lock.unlock();
     if (worker_.joinable() && worker_.get_id() != std::this_thread::get_id()) {
         worker_.join();
     }
-    if (!worker_.joinable()) clearSensitiveConfig();
+    clearSensitiveConfig();
     setState(ConnectionState::DISCONNECTED, "VNC 已断开");
+    return true;
+}
+
+void VncRfbEngine::waitForWorkerDone() {
+    std::unique_lock<std::mutex> lock(workerStateMutex_);
+    workerStateCv_.wait(lock, [this]() { return workerDone_ || !worker_.joinable(); });
+}
+
+void VncRfbEngine::joinAfterWorkerDone() {
+    if (!worker_.joinable() || isWorkerThread()) {
+        return;
+    }
+    {
+        std::lock_guard<std::mutex> lock(workerStateMutex_);
+        if (!workerDone_) {
+            return;
+        }
+    }
+    worker_.join();
+}
+
+bool VncRfbEngine::workerDoneForDeferredJoin() const {
+    std::lock_guard<std::mutex> lock(workerStateMutex_);
+    return workerDone_ || !worker_.joinable();
 }
 
 ConnectionState VncRfbEngine::state() const {
@@ -121,6 +391,16 @@ ConnectionState VncRfbEngine::state() const {
 }
 
 void VncRfbEngine::run() {
+    struct WorkerDone {
+        VncRfbEngine* engine;
+        ~WorkerDone() {
+            {
+                std::lock_guard<std::mutex> lock(engine->workerStateMutex_);
+                engine->workerDone_ = true;
+            }
+            engine->workerStateCv_.notify_all();
+        }
+    } workerDone {this};
     setState(ConnectionState::CONNECTING, "VNC 正在连接");
     std::string error;
     if (config_.vncSecurityPolicy.empty()) config_.vncSecurityPolicy = "secure_only";
@@ -640,7 +920,9 @@ bool VncRfbEngine::receiveZrleRectangle(int x, int y, int width, int height,
                                         bool pipelineNextRequest,
                                         bool& requestPipelined,
                                         std::string& error) {
+#if VNC_DIAGNOSTICS_ENABLED
     const uint64_t zrleStartMs = nowMs();
+#endif
     if (!validRectangle(x, y, width, height)) {
         error = "VNC ZRLE rectangle is outside the framebuffer";
         return false;
@@ -676,7 +958,9 @@ bool VncRfbEngine::receiveZrleRectangle(int x, int y, int width, int height,
                    ioTimeoutMs_, error)) {
         return false;
     }
+#if VNC_DIAGNOSTICS_ENABLED
     const uint64_t zrleReadMs = nowMs();
+#endif
     // The RFB request is demand-driven.  Once this single rectangle's complete
     // wire payload is buffered, ask the server for the next update before CPU
     // inflate/decode and synchronous EGL presentation.  The next capture and
@@ -692,7 +976,9 @@ bool VncRfbEngine::receiveZrleRectangle(int x, int y, int width, int height,
                                     maxDecodedBytes, zrleDecodedBuffer_, error)) {
         return false;
     }
+#if VNC_DIAGNOSTICS_ENABLED
     const uint64_t zrleInflateMs = nowMs();
+#endif
     const size_t destinationOffset =
         (static_cast<size_t>(y) * static_cast<size_t>(framebufferWidth_) +
          static_cast<size_t>(x)) * 4U;
@@ -704,7 +990,10 @@ bool VncRfbEngine::receiveZrleRectangle(int x, int y, int width, int height,
             static_cast<size_t>(framebufferWidth_) * 4U, error)) {
         return false;
     }
+#if VNC_DIAGNOSTICS_ENABLED
     const uint64_t zrleDecodeTilesMs = nowMs();
+#endif
+#if VNC_DIAGNOSTICS_ENABLED
     if (width * height > 100000) {
         VNC_DIAG_INFO(
                     "[VNC-DIAG] ZRLE timing rect=%{public}dx%{public}d compressed=%{public}u readMs=%{public}llu inflateMs=%{public}llu directTilesMs=%{public}llu pipelined=%{public}d totalMs=%{public}llu",
@@ -715,6 +1004,7 @@ bool VncRfbEngine::receiveZrleRectangle(int x, int y, int width, int height,
                     requestPipelined ? 1 : 0,
                     static_cast<unsigned long long>(nowMs() - zrleStartMs));
     }
+#endif
     return true;
 }
 
@@ -1051,6 +1341,58 @@ void VncRfbEngine::requestFrameRefresh() {
     std::string error;
     sendFramebufferUpdateRequest(false, error);
 }
+
+#if defined(RDP_NATIVE_CALLBACK_TESTING)
+bool VncRfbEngine::invokeFrameCallbackForTesting(const VideoFrame& frame) {
+    if (frame.data == nullptr || frame.size == 0 || frame.width <= 0 ||
+        frame.height <= 0) {
+        return false;
+    }
+    framebuffer_.assign(frame.data, frame.data + frame.size);
+    framebufferWidth_ = frame.width;
+    framebufferHeight_ = frame.height;
+    effectiveColorDepth_ = frame.colorDepth;
+    effectiveEncoding_ = VncRfbProtocol::kRawEncoding;
+    emitFrame(frame.dirtyX, frame.dirtyY, frame.dirtyWidth, frame.dirtyHeight);
+    return true;
+}
+
+int VncRfbEngine::startWorkerForTesting(std::function<void()> callback) {
+    if (!callback || worker_.joinable()) return -1;
+    {
+        std::lock_guard<std::mutex> lock(workerStateMutex_);
+        workerDone_ = false;
+    }
+    try {
+        worker_ = std::thread([this, callback = std::move(callback)]() mutable {
+            struct TestWorkerDone {
+                VncRfbEngine* engine;
+                ~TestWorkerDone() {
+                    {
+                        std::lock_guard<std::mutex> lock(engine->workerStateMutex_);
+                        engine->workerDone_ = true;
+                    }
+                    engine->workerStateCv_.notify_all();
+                }
+            } done {this};
+            callback();
+        });
+    } catch (const std::exception&) {
+        {
+            std::lock_guard<std::mutex> lock(workerStateMutex_);
+            workerDone_ = true;
+        }
+        workerStateCv_.notify_all();
+        return -12;
+    }
+    return 0;
+}
+
+void VncRfbEngine::setStopObserverForTesting(std::function<void()> observer) {
+    std::lock_guard<std::mutex> lock(callbackMutex_);
+    stopObserver_ = std::move(observer);
+}
+#endif
 
 uint32_t VncRfbEngine::keySymForHarmonyCode(uint32_t keyCode) {
     // HarmonyOS KeyCode values used by RemoteDesktop.ets. The mapper lives in

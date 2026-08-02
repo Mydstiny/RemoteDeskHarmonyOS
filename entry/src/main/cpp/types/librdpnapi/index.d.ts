@@ -114,7 +114,8 @@ export const VERSION: SessionVersionInfo;
   export function requestFrameRefresh(): void;
   export function getRendererViewport(handle: number): RendererViewport | null;
 
-  export function initDecoder(width: number, height: number, codecType: number): number;
+  export function initDecoder(width: number, height: number, codecType: number,
+    rendererHandle?: number): number;
   export function destroyDecoder(handle: number): void;
   export function decodeFrame(handle: number, data: ArrayBuffer, size: number, timestamp: number): number;
   export function getTextureId(handle: number): number;

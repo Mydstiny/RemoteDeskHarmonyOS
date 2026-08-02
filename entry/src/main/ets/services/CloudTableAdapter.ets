@@ -50,8 +50,6 @@ const LOCAL_ONLY_COLUMNS: Record<string, string[]> = {
     'rdpcertificateallowhostmismatch', 'rustdeskrelayid', 'rustdeskaccountid',
     'rustdeskpasswordmode', 'rustdeskauthmode', 'rustdeskdirectenabled',
     'rustdeskdirecthost', 'rustdeskdirectport', 'rdpcredentialid', 'sourcetype',
-    'rustdeskproaccountid', 'rustdeskpropeerid', 'rustdeskproplatform',
-    'rustdeskpromanaged', 'rustdeskprolastseenat', 'rustdeskprosyncerror',
     'rustdesktargetdevice', 'rustdeskadaptiveorientation'
   ],
   'sshkeys': ['formatversion', 'privatekeyencrypted'],
@@ -59,16 +57,14 @@ const LOCAL_ONLY_COLUMNS: Record<string, string[]> = {
 };
 
 // 这些字段在既有 remotehosts 云表中没有独立列，但属于跨设备连接配置。
-// 密码、SSH/RDP 设备信任和本机授权决策绝不进入该扩展。
+// 密码、SSH/RDP 设备信任和本机授权决策绝不进入该扩展。Peer TOTP
+// binding 是设备 owner-scoped 本地数据，严禁借 displayconfig 扩展跨设备。
 const REMOTE_HOST_CLOUD_EXTENSION_COLUMNS: string[] = [
   'sshkeyid', 'rustdeskrelayid', 'rustdeskaccountid',
   'rustdeskpasswordmode', 'rustdeskauthmode',
   'rustdeskdirectenabled', 'rustdeskdirecthost', 'rustdeskdirectport', 'sshproxytype',
-  'rustdesktotpentryid', 'rustdesktotpautosubmit',
   'rdpcredentialid', 'rdpauthmode', 'rdprestrictedadminsecretsource', 'sourcetype',
-  'rustdeskproaccountid', 'rustdeskpropeerid',
-  'rustdeskproplatform', 'rustdeskpromanaged', 'rustdeskprolastseenat',
-  'rustdeskprosyncerror', 'rustdesktargetdevice', 'rustdeskadaptiveorientation'
+  'rustdesktargetdevice', 'rustdeskadaptiveorientation'
 ];
 
 const REMOTE_HOST_EXTENSION_KEY: string = '_remoteDeskExtensionV1';

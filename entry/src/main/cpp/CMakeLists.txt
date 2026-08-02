@@ -151,6 +151,7 @@ include_directories(
 # ============================================================
 option(RDP_BUILD_TESTS "Build lightweight native unit tests" OFF)
 option(RDP_TESTS_ONLY "Configure only lightweight native unit tests" OFF)
+option(RDP_BUILD_CALLBACK_TESTS "Build OHOS production callback-entry barrier tests" OFF)
 if(RDP_BUILD_TESTS)
     # Compile the actual VNC transport and RFB engine into the host test
     # target as a link/ABI gate. Wire-level decisions are additionally
@@ -176,6 +177,8 @@ if(RDP_BUILD_TESTS)
         test/rdp_presentation_metrics_test.cpp
         test/rdp_shutdown_state_test.cpp
         test/session_teardown_executor_test.cpp
+        test/session_registry_test.cpp
+        test/disconnect_request_registry_test.cpp
         test/rdp_background_frame_cache_test.cpp
         test/rdp_damage_accumulator_test.cpp
         test/rdp_frame_scheduler_test.cpp
@@ -194,6 +197,9 @@ if(RDP_BUILD_TESTS)
         test/decoder_recovery_policy_test.cpp
         test/software_decoder_callback_gate_test.cpp
         test/decoder_callback_gate_test.cpp
+        test/callback_admission_context_test.cpp
+        test/rustdesk_connection_continuity_owner_test.cpp
+        test/rustdesk_connection_continuity_executor_test.cpp
         test/decoder_pipeline_lifecycle_policy_test.cpp
         test/safe_log_test.cpp
         test/vnc_des_test.cpp
@@ -226,6 +232,9 @@ if(RDP_BUILD_TESTS)
     target_include_directories(rdp_native_tests PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}
     )
+    # Policy/executor tests may use the explicit test-only ticket factory;
+    # never enable this definition on the production rdpnapi target.
+    target_compile_definitions(rdp_native_tests PRIVATE RDP_NATIVE_CALLBACK_TESTING=1)
     # RDP_TESTS_ONLY returns before the production-wide C++ standard block
     # below. Keep the standalone host test target explicit so headers using
     # std::optional and other C++17 facilities compile consistently.
@@ -285,9 +294,19 @@ include_directories(
 # FreeRDP 3.x 静态库 (交叉编译产出) — RDP-1
 # ============================================================
 option(USE_REAL_FREERDP "Use real FreeRDP 3.x client library" OFF)
+option(RDP_STRICT_WARNINGS "Treat native warnings as errors for acceptance builds" OFF)
 
 if(USE_REAL_FREERDP)
     add_definitions(-DUSE_REAL_FREERDP -DWITH_FREERDP_DEPRECATED)
+
+    # The prebuilt FreeRDP headers intentionally expose a small set of
+    # deprecated compatibility entry points. Keep the exemption on the one
+    # production translation unit that calls those third-party APIs; project
+    # sources and all other headers remain under -Werror.
+    if(RDP_STRICT_WARNINGS)
+        set_source_files_properties(rdp/freerdp_adapter.cpp PROPERTIES
+            COMPILE_OPTIONS "-Wno-deprecated-declarations")
+    endif()
 
     set(FREERDP_PREBUILT_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../../../libs/freerdp-ohos/${OHOS_ARCH})
 
@@ -332,6 +351,12 @@ endif()
 
 # 警告选项
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra")
+if(RDP_STRICT_WARNINGS)
+    # OHOS clang can report the injected --gcc-toolchain argument as unused;
+    # this is a toolchain diagnostic, not a source warning. Keep that single
+    # narrow exemption explicit for strict cross-architecture builds.
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Werror -Wno-unused-command-line-argument")
+endif()
 
 # ============================================================
 # 构建目标 (必须先于 target_link_libraries)
@@ -399,6 +424,12 @@ endif()
 target_link_libraries(rdpnapi PUBLIC
     libohaudio.so          # OHAudio 渲染器/采集器
 )
+
+# OHOS system network observer used by RustDesk continuity. Host focused
+# tests do not link this platform library; OHOS real/no-real targets do.
+if(OHOS_ARCH)
+    target_link_libraries(rdpnapi PUBLIC libnet_connection.so)
+endif()
 
 # 安全 (HUKS + CryptoArchitectureKit)
 target_link_libraries(rdpnapi PUBLIC
@@ -534,3 +565,19 @@ set_target_properties(rustdesk_ffi PROPERTIES
     IMPORTED_LOCATION ${RUSTDESK_FFI_LIB}
 )
 target_link_libraries(rdpnapi PUBLIC rustdesk_ffi)
+
+if(RDP_BUILD_CALLBACK_TESTS)
+    if(NOT USE_REAL_FREERDP)
+        message(FATAL_ERROR
+            "RDP_BUILD_CALLBACK_TESTS requires USE_REAL_FREERDP=ON so the "
+            "callback carrier always registers all 9 production entries")
+    endif()
+    target_compile_definitions(rdpnapi PRIVATE RDP_NATIVE_CALLBACK_TESTING=1)
+    add_executable(rdp_callback_tests
+        test/callback_entry_integration_test.cpp
+    )
+    target_compile_definitions(rdp_callback_tests PRIVATE RDP_NATIVE_CALLBACK_TESTING=1)
+    target_include_directories(rdp_callback_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    target_compile_features(rdp_callback_tests PRIVATE cxx_std_17)
+    target_link_libraries(rdp_callback_tests PRIVATE rdpnapi)
+endif()

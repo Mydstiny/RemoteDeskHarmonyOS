@@ -380,9 +380,9 @@ export class ExtensionLoader {
     }
   }
 
-  initDecoder(w: number, h: number, c: number): number {
+  initDecoder(w: number, h: number, c: number, rendererHandle: number = -1): number {
     try {
-      this.decoderHandle = rdpnapi.initDecoder(w, h, c) as number;
+      this.decoderHandle = rdpnapi.initDecoder(w, h, c, rendererHandle) as number;
     } catch (err) {
       hilog.error(DOMAIN, TAG, '[ExtensionLoader] initDecoder: ' + JSON.stringify(err));
       this.decoderHandle = -1;

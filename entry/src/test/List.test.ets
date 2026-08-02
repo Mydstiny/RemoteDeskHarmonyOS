@@ -35,7 +35,15 @@ import cloudDownloadTransactionPolicyTest from './CloudDownloadTransactionPolicy
 import cloudLifecycleBarrierPolicyTest from './CloudLifecycleBarrierPolicy.test';
 import cloudMetadataSafetyPolicyTest from './CloudMetadataSafetyPolicy.test';
 import accountCredentialStoragePolicyTest from './AccountCredentialStoragePolicy.test';
+import rustDeskProApiPolicyTest from './RustDeskProApiPolicy.test';
+import rustDeskProApiServiceTest from './RustDeskProApiService.test';
 import rustDeskProCredentialPolicyTest from './RustDeskProCredentialPolicy.test';
+import rustDeskProSyncServiceTest from './RustDeskProSyncService.test';
+import rustDeskProTwoFactorPolicyTest from './RustDeskProTwoFactorPolicy.test';
+import rustDeskProAddressBookTest from './RustDeskProAddressBook.test';
+import rustDeskProAddressBookApiServiceTest from './RustDeskProAddressBookApiService.test';
+import rustDeskProAddressBookSyncServiceTest from './RustDeskProAddressBookSyncService.test';
+import rustDeskProAddressBookUiPolicyTest from './RustDeskProAddressBookUiPolicy.test';
 import cloudSensitiveTransferPolicyTest from './CloudSensitiveTransferPolicy.test';
 import legacyRelayMigrationPolicyTest from './LegacyRelayMigrationPolicy.test';
 import dataLifecycleMatrixTest from './DataLifecycleMatrix.test';
@@ -102,6 +110,13 @@ import rustDeskConnectionStrategyPolicyTest from './RustDeskConnectionStrategyPo
 import rustDeskControlPlaneCapabilityPolicyTest from './RustDeskControlPlaneCapabilityPolicy.test';
 import rustDeskRelayPersistencePolicyTest from './RustDeskRelayPersistencePolicy.test';
 import rustDeskDisplaySwitchPolicyTest from './RustDeskDisplaySwitchPolicy.test';
+import totpBrandServiceTest from './TotpBrandService.test';
+import remoteOverlayViewportPolicyTest from './RemoteOverlayViewportPolicy.test';
+import remoteShortcutPolicyTest from './RemoteShortcutPolicy.test';
+import remoteKeyDispatcherTest from './RemoteKeyDispatcher.test';
+import remoteCanvasInteractionPolicyTest from './RemoteCanvasInteractionPolicy.test';
+import remoteKeyboardLayoutSelectionPolicyTest from './RemoteKeyboardLayoutSelectionPolicy.test';
+import remoteModifierStateControllerTest from './RemoteModifierStateController.test';
 
 export default function testsuite() {
   localUnitTest();
@@ -141,7 +156,15 @@ export default function testsuite() {
   cloudLifecycleBarrierPolicyTest();
   cloudMetadataSafetyPolicyTest();
   accountCredentialStoragePolicyTest();
+  rustDeskProApiPolicyTest();
+  rustDeskProApiServiceTest();
   rustDeskProCredentialPolicyTest();
+  rustDeskProSyncServiceTest();
+  rustDeskProTwoFactorPolicyTest();
+  rustDeskProAddressBookTest();
+  rustDeskProAddressBookApiServiceTest();
+  rustDeskProAddressBookSyncServiceTest();
+  rustDeskProAddressBookUiPolicyTest();
   cloudSensitiveTransferPolicyTest();
   legacyRelayMigrationPolicyTest();
   dataLifecycleMatrixTest();
@@ -208,4 +231,11 @@ export default function testsuite() {
   rustDeskControlPlaneCapabilityPolicyTest();
   rustDeskRelayPersistencePolicyTest();
   rustDeskDisplaySwitchPolicyTest();
+  totpBrandServiceTest();
+  remoteOverlayViewportPolicyTest();
+  remoteShortcutPolicyTest();
+  remoteKeyDispatcherTest();
+  remoteCanvasInteractionPolicyTest();
+  remoteKeyboardLayoutSelectionPolicyTest();
+  remoteModifierStateControllerTest();
 }

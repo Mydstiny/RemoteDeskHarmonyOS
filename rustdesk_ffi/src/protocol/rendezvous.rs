@@ -5,7 +5,8 @@
 // BytesCodec 帧承载 secretbox 加密 payload。
 
 use super::rendezvous_proto::{
-    ConnType, KeyExchange, NatType, PunchHoleRequest, RegisterPeer, RegisterPeerResponse,
+    ConnType, KeyExchange, NatType, PunchHoleRequest, PunchHoleResponse, RegisterPeer,
+    RegisterPeerResponse,
     RegisterPk, RendezvousMessage, RendezvousMessage_oneof_union, RequestRelay,
 };
 use super::wire;

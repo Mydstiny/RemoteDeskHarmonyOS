@@ -26,7 +26,9 @@ extern "C" {
 
 namespace {
 constexpr int kErrUnsupportedCodec = -100;
-constexpr int kErrBackendMissing = -101;
+// The no-FFmpeg build returns this code from all backend entry points; the
+// real backend naturally compiles those branches out.
+[[maybe_unused]] constexpr int kErrBackendMissing = -101;
 constexpr int kErrDecoderNotFound = -102;
 constexpr int kErrAllocFailed = -103;
 constexpr int kErrOpenFailed = -104;
@@ -188,6 +190,7 @@ int SoftwareDecoder::Decode(const uint8_t* data, size_t size, uint64_t timestamp
     (void)data;
     (void)size;
     (void)timestamp;
+    (void)presentOutput;
     return kErrBackendMissing;
 #else
     if (!impl_ || !impl_->codecCtx || !impl_->frame || !impl_->packet) {
@@ -346,7 +349,5 @@ void SoftwareDecoder::Destroy() {
 void SoftwareDecoder::SetFrameCallback(SoftwareDecoderFrameCallback callback) {
     frameCallbackGate_.Set(std::move(callback));
 }
-
-
 
 

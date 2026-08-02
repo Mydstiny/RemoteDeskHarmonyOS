@@ -2,6 +2,7 @@
 #include "rustdesk/rustdesk_display_control_plane.h"
 #include "rustdesk/rustdesk_display_switch_gate.h"
 
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <mutex>
@@ -77,7 +78,7 @@ RDP_TEST_CASE(rustdesk_display_switch_can_return_to_the_confirmed_display) {
     RDP_ASSERT_EQ(gate.snapshot().confirmedDisplay, 0);
 }
 
-RDP_TEST_CASE(rustdesk_display_switch_dispatch_finishes_before_next_generation_begins) {
+RDP_TEST_CASE(rustdesk_display_switch_dispatch_does_not_pin_generation_during_callback) {
     RustDeskDisplayControlPlane control;
     int fakeHandle = 7;
     RDP_ASSERT(control.attachHandle(&fakeHandle));
@@ -149,7 +150,7 @@ RDP_TEST_CASE(rustdesk_display_switch_dispatch_finishes_before_next_generation_b
         RDP_ASSERT(stateChanged.wait_for(lock, std::chrono::seconds(1), [&]() {
             return beginStarted;
         }));
-        RDP_ASSERT(!stateChanged.wait_for(lock, std::chrono::milliseconds(50), [&]() {
+        RDP_ASSERT(stateChanged.wait_for(lock, std::chrono::milliseconds(250), [&]() {
             return beginCompleted;
         }));
         releaseDispatch = true;
@@ -164,6 +165,65 @@ RDP_TEST_CASE(rustdesk_display_switch_dispatch_finishes_before_next_generation_b
     RDP_ASSERT_EQ(snapshot.generation, latestGeneration);
     RDP_ASSERT_EQ(snapshot.pendingDisplay, 2);
     RDP_ASSERT(snapshot.inputBlocked);
+}
+
+RDP_TEST_CASE(rustdesk_display_dispatch_pressure_disconnect_watchdog) {
+    RustDeskDisplayControlPlane control;
+    int fakeHandle = 17;
+    RDP_ASSERT(control.attachHandle(&fakeHandle));
+    control.dispatchDisplay(0, []() { return true; }, [](const auto&) {});
+
+    std::atomic<bool> callbackEntered {false};
+    std::atomic<bool> pressureLeaseAcquired {false};
+    std::atomic<bool> disconnected {false};
+    std::thread dispatchThread([&]() {
+        const bool accepted = control.dispatchFrame(
+            0,
+            true,
+            []() { return true; },
+            [&](const auto&) {
+                callbackEntered.store(true, std::memory_order_release);
+                // This models ReportVideoPressureForSession taking the same
+                // display boundary synchronously from the frame callback.
+                auto pressureLease = control.acquireDisplayLease();
+                (void)pressureLease;
+                pressureLeaseAcquired.store(true, std::memory_order_release);
+                control.detachHandle();
+                disconnected.store(true, std::memory_order_release);
+            });
+        RDP_ASSERT(accepted);
+    });
+
+    dispatchThread.join();
+    RDP_ASSERT(callbackEntered.load(std::memory_order_acquire));
+    RDP_ASSERT(pressureLeaseAcquired.load(std::memory_order_acquire));
+    RDP_ASSERT(disconnected.load(std::memory_order_acquire));
+    RDP_ASSERT(!control.hasHandle());
+}
+
+RDP_TEST_CASE(rustdesk_display_control_plane_reset_clears_pending_ready_and_input_block) {
+    RustDeskDisplayControlPlane control;
+    int fakeHandle = 23;
+    RDP_ASSERT(control.attachHandle(&fakeHandle));
+    control.dispatchDisplay(0, []() { return true; }, [](const auto&) {});
+    const auto request = control.beginDisplaySwitch(
+        1,
+        []() { return true; },
+        [](void*, int) { return true; });
+    RDP_ASSERT(request.accepted);
+    const auto before = control.snapshot();
+    RDP_ASSERT(before.inputBlocked);
+    RDP_ASSERT_EQ(before.pendingDisplay, 1);
+
+    control.resetDisplayState();
+    const auto after = control.snapshot();
+    RDP_ASSERT_EQ(after.generation, 0ULL);
+    RDP_ASSERT_EQ(after.readyGeneration, 0ULL);
+    RDP_ASSERT_EQ(after.pendingDisplay, -1);
+    RDP_ASSERT_EQ(after.confirmedDisplay, -1);
+    RDP_ASSERT(!after.inputBlocked);
+    RDP_ASSERT(control.hasHandle());
+    control.detachHandle();
 }
 
 RDP_TEST_CASE(rustdesk_display_capability_query_pins_handle_until_snapshot_completes) {
@@ -270,6 +330,11 @@ RDP_TEST_CASE(rustdesk_display_switch_ffi_call_pins_handle_until_result) {
             [&](void* handle, int display) {
                 RDP_ASSERT_EQ(handle, static_cast<void*>(&fakeHandle));
                 RDP_ASSERT_EQ(display, 3);
+                // A switch callback may synchronously report pressure or
+                // disconnect. The display lease must be re-entrant from this
+                // external boundary even while the FFI call is still pinned.
+                auto pressureLease = control.acquireDisplayLease();
+                RDP_ASSERT(pressureLease.snapshot().inputBlocked);
                 {
                     std::lock_guard<std::mutex> lock(stateMutex);
                     switchEntered = true;

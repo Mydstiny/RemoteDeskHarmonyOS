@@ -55,7 +55,7 @@ export function shouldShowRustDeskTopBar(
   protocol: string,
   isDesktopDevice: boolean,
   _breakpoint: string,
-  rustdeskControlMode: number
+  _rustdeskControlMode: number
 ): boolean {
   if (protocol !== 'rustdesk') {
     return false;
@@ -63,7 +63,10 @@ export function shouldShowRustDeskTopBar(
   if (isDesktopDevice) {
     return true;
   }
-  return rustdeskControlMode === 2;
+  // The mobile rail is also the discoverable entry for remote platform/layout
+  // selection when no physical keyboard is present. Input actions remain
+  // guarded by the session capability and control mode.
+  return true;
 }
 
 export function remoteTopBarLayout(isDesktopDevice: boolean, breakpoint: string): RemoteTopBarLayout {

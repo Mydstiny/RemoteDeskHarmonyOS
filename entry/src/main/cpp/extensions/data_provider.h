@@ -161,9 +161,9 @@ public:
      * @param base    共同祖先版本
      * @return 合并后的版本 (syncVersion 递增)
      */
-    virtual RemoteHostData resolveConflict(const RemoteHostData& local,
+    virtual RemoteHostData resolveConflict(const RemoteHostData& /*local*/,
                                            const RemoteHostData& remote,
-                                           const RemoteHostData& base) {
+                                           const RemoteHostData& /*base*/) {
         // 默认策略：remote wins (以云端为准)
         return remote;
     }

@@ -51,7 +51,7 @@ void ClipboardBridge::setText(const std::string& text) {
     OH_LOG_DEBUG(LOG_APP, "[Clipboard] setText: %{public}zu chars (cached)", text.size());
 }
 
-void ClipboardBridge::startMonitoring(ClipboardChangeCallback callback) {
+void ClipboardBridge::startMonitoring(ClipboardChangeCallback /*callback*/) {
     // TODO: OH_Pasteboard 系统级监听 (需系统权限或 observer API)
     monitoring_ = true;
     OH_LOG_INFO(LOG_APP, "[Clipboard] ✓ Monitoring started (callback-based)");
@@ -67,7 +67,7 @@ void ClipboardBridge::stopMonitoring() {
 
 namespace {
 
-napi_value NapiGetClipboardText(napi_env env, napi_callback_info info) {
+napi_value NapiGetClipboardText(napi_env env, napi_callback_info /*info*/) {
     std::string text = ClipboardBridge::instance().getText();
     napi_value result;
     napi_create_string_utf8(env, text.c_str(), NAPI_AUTO_LENGTH, &result);
@@ -83,12 +83,12 @@ napi_value NapiSetClipboardText(napi_env env, napi_callback_info info) {
     napi_value u; napi_get_undefined(env, &u); return u;
 }
 
-napi_value NapiStartClipboardMonitor(napi_env env, napi_callback_info info) {
+napi_value NapiStartClipboardMonitor(napi_env env, napi_callback_info /*info*/) {
     ClipboardBridge::instance().startMonitoring(nullptr);
     napi_value u; napi_get_undefined(env, &u); return u;
 }
 
-napi_value NapiStopClipboardMonitor(napi_env env, napi_callback_info info) {
+napi_value NapiStopClipboardMonitor(napi_env env, napi_callback_info /*info*/) {
     ClipboardBridge::instance().stopMonitoring();
     napi_value u; napi_get_undefined(env, &u); return u;
 }

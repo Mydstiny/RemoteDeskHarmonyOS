@@ -1,4 +1,5 @@
-import { describe, it, expect } from '@ohos/hypium';
+import { expect } from '@ohos/hypium';
+import { auditedDescribe as describe, auditedIt as it } from '../main/ets/services/FocusedTestRegistrationAudit';
 import {
   protocolPreferenceOwner,
   remoteTopBarDeviceClass,
@@ -9,6 +10,11 @@ import {
 } from '../main/ets/services/RemoteSessionTopBarPolicy';
 
 export default function remoteSessionTopBarPolicyTest(): void {
+  // Keep one exact class boundary around this multi-domain policy suite.  The
+  // on-device focused runner selects the outer class; without it Hypium sees
+  // only the five nested describe names and a request for the exact suite
+  // name incorrectly reports 0/0.
+  describe('RemoteSessionTopBarPolicy', (): void => {
   describe('RemoteSessionTopBarPolicy_visibility', (): void => {
     it('pc_rustdesk_should_show_on_small_window', 0, (): void => {
       expect(shouldShowRustDeskTopBar('rustdesk', true, 'md', 0)).assertTrue();
@@ -18,15 +24,15 @@ export default function remoteSessionTopBarPolicyTest(): void {
       expect(shouldShowRustDeskTopBar('rustdesk', true, 'xl', 0)).assertTrue();
     });
 
-    it('phone_rustdesk_should_show_only_in_keyboard_mouse_mode', 0, (): void => {
+    it('phone_rustdesk_should_keep_layout_choice_discoverable_in_all_modes', 0, (): void => {
       expect(shouldShowRustDeskTopBar('rustdesk', false, 'sm', 2)).assertTrue();
-      expect(shouldShowRustDeskTopBar('rustdesk', false, 'sm', 0)).assertFalse();
-      expect(shouldShowRustDeskTopBar('rustdesk', false, 'sm', 1)).assertFalse();
+      expect(shouldShowRustDeskTopBar('rustdesk', false, 'sm', 0)).assertTrue();
+      expect(shouldShowRustDeskTopBar('rustdesk', false, 'sm', 1)).assertTrue();
     });
 
-    it('pad_rustdesk_should_show_only_in_keyboard_mouse_mode', 0, (): void => {
+    it('pad_rustdesk_should_keep_layout_choice_discoverable_in_all_modes', 0, (): void => {
       expect(shouldShowRustDeskTopBar('rustdesk', false, 'lg', 2)).assertTrue();
-      expect(shouldShowRustDeskTopBar('rustdesk', false, 'lg', 0)).assertFalse();
+      expect(shouldShowRustDeskTopBar('rustdesk', false, 'lg', 0)).assertTrue();
     });
 
     it('rdp_should_not_show_rustdesk_topbar', 0, (): void => {
@@ -134,5 +140,6 @@ export default function remoteSessionTopBarPolicyTest(): void {
       expect(protocolPreferenceOwner('currentTheme')).assertEqual('shared');
       expect(protocolPreferenceOwner('accentColor')).assertEqual('shared');
     });
+  });
   });
 }

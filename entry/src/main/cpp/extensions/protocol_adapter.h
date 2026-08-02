@@ -406,7 +406,7 @@ public:
     // ---- 扩展功能 ----
 
     /** 设置剪贴板文本（从本地同步到远程） */
-    virtual void setClipboardText(const std::string& text) {}
+    virtual void setClipboardText(const std::string& /*text*/) {}
 
     /** 设置本地文件剪贴板（稳定的应用沙箱绝对路径） */
     virtual bool setClipboardFiles(const std::vector<std::string>& /*paths*/) { return false; }
