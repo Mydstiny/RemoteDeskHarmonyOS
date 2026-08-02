@@ -4,7 +4,7 @@ Updated: 2026-08-02 Asia/Shanghai
 
 ## Now
 
-- Review VNC V3 stage B checkpoint `e75abd24e` through the existing
+- Review VNC V3 stage B checkpoint `3167f610a` through the existing
   independent read-only reviewer, then record the receipt.
 - Preserve the stage A review receipt and keep probe/pin failures fail-closed.
 - Restore `hdc` connectivity and capture current VNC `hilog` when the device is

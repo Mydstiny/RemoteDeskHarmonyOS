@@ -3,10 +3,10 @@
   "task": "rustdesk-complete-repair",
   "branch": "codex/rustdesk-complete-repair",
   "base": "34946adbc",
-  "head": "e75abd24e",
+  "head": "3167f610a",
   "phase": "vnc-v3-stage-b-review-required",
   "status": "active",
-  "next": "Request one read-only incremental review of VNC V3 stage B checkpoint e75abd24e, then continue to stage C only after PASS.",
+  "next": "Request one read-only incremental review of VNC V3 stage B checkpoint 3167f610a, then continue to stage C only after PASS.",
   "blockers": [
     "hdc list targets and hdc shell return Connect server failed; no current hilog evidence.",
     "ohosTest@OhosTestCompileArkTS is not registered (00306054); ArkTS tests have compile/build evidence only.",
@@ -30,14 +30,14 @@
       "entry/src/main/ets/pages/RemoteDesktop.ets",
       "entry/src/main/ets/types/rdpnapi.d.ts"
     ],
-    "reason": "Stage B cancellation-race checkpoint is committed and awaiting one independent read-only review; stage A PASS receipt remains historical."
+    "reason": "Stage B deadline/resolver/async-cleanup checkpoint is committed and awaiting one independent read-only review; stage A PASS receipt remains historical."
   },
   "lastVerification": {
-    "rdp_native_tests": "248-pass-0-fail-loopback-fixtures-host-socket-2026-08-02",
-    "default@OhosTestCompileArkTS": "pass-after-e75abd24e-2026-08-02",
-    "assembleHap": "pass-after-e75abd24e-2026-08-02",
+    "rdp_native_tests": "249-pass-0-fail-loopback-fixtures-host-socket-2026-08-02",
+    "default@OhosTestCompileArkTS": "pass-after-3167f610a-2026-08-02",
+    "assembleHap": "pass-after-3167f610a-2026-08-02",
     "ohosTest@OhosTestCompileArkTS": "blocked-task-00306054-2026-08-02",
-    "diffCheck": "pass-after-e75abd24e-2026-08-02"
+    "diffCheck": "pass-after-3167f610a-2026-08-02"
   },
   "archives": [
     "docs/codex/archive/2026-08/README.md",

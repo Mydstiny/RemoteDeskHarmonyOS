@@ -7,7 +7,7 @@ This file is the compact startup resume card. Historical checkpoints remain in
 
 - Task: `rustdesk-complete-repair` (active branch retained; current scope is VNC V3 only)
 - Branch: `codex/rustdesk-complete-repair`
-- Checkpoint: `e75abd24e`, based on `main@34946adbc`; branch is ahead by 17 and not behind.
+- Checkpoint: `3167f610a`, based on `main@34946adbc`; branch is ahead by 19 and not behind.
 - Phase: VNC V3 stage B review-fix checkpoint; independent incremental review required.
 - Worktree: clean. Do not stage unrelated changes.
 
@@ -22,7 +22,7 @@ This file is the compact startup resume card. Historical checkpoints remain in
 
 ## Next
 
-- Request one read-only incremental review of stage B checkpoint `e75abd24e`
+- Request one read-only incremental review of stage B checkpoint `3167f610a`
   using the existing reviewer task; do not redispatch duplicate review messages.
 - Stage C follows only after stage B review passes: VNC certificate Sheet and
   connection state machine.
@@ -31,11 +31,11 @@ This file is the compact startup resume card. Historical checkpoints remain in
 
 ## Verification
 
-- `rdp_native_tests`: 248 passed, 0 failed; loopback TLS fixtures ran with host
-  socket permission on 2026-08-02.
-- `default@OhosTestCompileArkTS`: passed after `e75abd24e` on 2026-08-02.
-- `assembleHap`: passed after `e75abd24e` on 2026-08-02.
-- `git diff --check`: passed after `e75abd24e`.
+- `rdp_native_tests`: 249 passed, 0 failed; loopback TLS fixtures ran with host
+  socket permission on 2026-08-02, including the trickle-handshake deadline case.
+- `default@OhosTestCompileArkTS`: passed after `3167f610a` on 2026-08-02.
+- `assembleHap`: passed after `3167f610a` on 2026-08-02.
+- `git diff --check`: passed after `3167f610a`.
 - `ohosTest@OhosTestCompileArkTS`: unavailable; task is not registered
   (`00306054`). New ArkTS tests therefore have compile/build evidence only.
 
@@ -45,8 +45,8 @@ This file is the compact startup resume card. Historical checkpoints remain in
   current hilog or real-device/endpoint evidence is available.
 - Stage B native probe is covered by host fixtures for self-signed, trusted
   root, name mismatch, expiry, rotation, no certificate, TLS 1.0/1.1 rejection,
-  IPv4/IPv6/SNI, timeout/cancel, DNS bound, pin match/mismatch, and no RFB
-  handoff. NAPI runtime, Promise/environment teardown, Sheet lifecycle,
+  IPv4/IPv6/SNI, timeout/cancel, DNS bound, pin match/mismatch, no RFB
+  handoff, and the final transport deadline. NAPI runtime, Promise/environment teardown, Sheet lifecycle,
   TrustService migration, real Repeater, cloud, and device matrices remain
   unverified and are not release evidence.
 
