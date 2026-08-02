@@ -4,8 +4,6 @@ Updated: 2026-08-03 Asia/Shanghai
 
 ## Now
 
-- Request review for VNC V3 stage C first segment `36a8cbe57` (Sheet policy,
-  lifecycle generation, action gate, and registered tests).
 - Implement the next VNC V3 stage C segment: connect `RemoteDesktop` to the
   probe, Sheet lifecycle, password ordering, and one-shot pin handoff.
 - Preserve stage A/B review receipts and keep probe/pin failures fail-closed.

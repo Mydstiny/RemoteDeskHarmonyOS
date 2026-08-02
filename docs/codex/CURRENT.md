@@ -8,7 +8,7 @@ This file is the compact startup resume card. Historical checkpoints remain in
 - Task: `rustdesk-complete-repair` (active branch retained; current scope is VNC V3 only)
 - Branch: `codex/rustdesk-complete-repair`
 - Checkpoint: `36a8cbe57`, based on `main@34946adbc`; branch is ahead by 22 and not behind.
-- Phase: VNC V3 stage C first segment implemented; independent review pending.
+- Phase: VNC V3 stage C first segment PASS; RemoteDesktop integration next.
 - Worktree: clean. Do not stage unrelated changes.
 
 ## Stage A Result
@@ -33,7 +33,8 @@ This file is the compact startup resume card. Historical checkpoints remain in
 ## Next
 
 - Stage C first segment: pure certificate Sheet action/lifecycle policy and
-  registered Hypium suites are implemented at `36a8cbe57`.
+  registered Hypium suites are implemented and independently PASS at
+  `36a8cbe57` (receipt `vnc-v3-stage-c-sheet-policy-pass-36a8cbe5`).
 - Next segment: wire the policy into `RemoteDesktop` probe, bindSheet,
   generation, password ordering, and one-shot pin handoff.
 - Keep the same reviewer task for the next segment; request one read-only
@@ -69,7 +70,7 @@ This file is the compact startup resume card. Historical checkpoints remain in
 
 - Machine state: `docs/codex/STATE.json`.
 - Receipts: `docs/codex/REVIEW_RECEIPTS.jsonl`.
-- `scripts/sync_workspace.sh status` should report an incremental stage C
-  review requirement for `36a8cbe57`; the existing reviewer task is reused.
+- `scripts/sync_workspace.sh status` should recognize the stage C policy PASS
+  receipt while the next RemoteDesktop integration creates a new scope.
 - Reuse the existing independent review session and do not redispatch duplicate
   messages for the same segment.

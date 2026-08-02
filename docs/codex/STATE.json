@@ -16,7 +16,7 @@
     "docs/superpowers/plans/2026-08-01-vnc-certificate-settings-relay-complete-repair-plan-v3.md"
   ],
   "review": {
-    "status": "REVIEW_REQUIRED",
+    "status": "PASS",
     "taskId": "019fc333-6789-7633-bf6f-3fea1cb2ad4d",
     "scope": [
       "entry/src/main/ets/services/VncCertificateSheetPolicy.ets",
@@ -24,7 +24,7 @@
       "entry/src/test/List.test.ets",
       "entry/src/ohosTest/ets/test/List.test.ets"
     ],
-    "reason": "Stage C first segment is a VNC-only Sheet lifecycle policy checkpoint; the existing reviewer task must inspect this incremental scope before the RemoteDesktop integration segment."
+    "reason": "Independent read-only VNC V3 stage C first segment review passed at 36a8cbe57; the next RemoteDesktop integration segment must create a new incremental scope."
   },
   "lastVerification": {
     "rdp_native_tests": "248-pass-0-fail-loopback-fixtures-host-socket-2026-08-03",
