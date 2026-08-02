@@ -9,7 +9,7 @@ import { common } from '@kit.AbilityKit';
 import { VncSettingsService } from '../services/VncSettingsService';
 import { VncHostService, VncHostView } from '../services/VncHostService';
 import { VncGatewayService, VncGatewayView } from '../services/VncGatewayService';
-import { VncTrustService, VncTrustView } from '../services/VncTrustService';
+import { VncTrustView } from '../services/VncTrustService';
 import { DataCrypto } from '../services/DataCrypto';
 import {
   VncSettingsValues,
@@ -28,6 +28,7 @@ import {
 import { VncCloudSyncScope, vncCloudSyncScopes } from '../services/VncCloudSyncSelectionPolicy';
 import { Palette, buildDark, buildLight, AppTheme } from '../common/Theme';
 import { VncAddFlow } from '../components/hostadd/VncAddFlow';
+import { VncCertificateTrustManagerSheet } from '../components/VncCertificateTrustManagerSheet';
 import { SETTINGS_PANEL_DISMISS_TO_LEAF_OPEN_MS } from '../services/SettingsSheetRoutePolicy';
 
 @Entry
@@ -73,7 +74,7 @@ export struct VncSettingsPage {
 
   @State hosts: VncHostView[] = [];
   @State gateways: VncGatewayView[] = [];
-  @State trusts: VncTrustView[] = [];
+  @State showTrustManagerSheet: boolean = false;
   @State hostFormVisible: boolean = false;
   @State hostFlowVisible: boolean = false;
   @State hostFlowEditingId: string = '';
@@ -116,11 +117,9 @@ export struct VncSettingsPage {
   private readonly settings: VncSettingsService = VncSettingsService.getInstance();
   private readonly hostService: VncHostService = VncHostService.getInstance();
   private readonly gatewayService: VncGatewayService = VncGatewayService.getInstance();
-  private readonly trustService: VncTrustService = VncTrustService.getInstance();
   private settingsUnsubscribe: (() => void) | null = null;
   private hostUnsubscribe: (() => void) | null = null;
   private gatewayUnsubscribe: (() => void) | null = null;
-  private trustUnsubscribe: (() => void) | null = null;
   private cryptoUnsubscribe: (() => void) | null = null;
   private pageActive: boolean = false;
 
@@ -129,12 +128,6 @@ export struct VncSettingsPage {
   }
 
   private font(): string { return AppTheme.fontFamily; }
-
-  private redactedFingerprint(value: string): string {
-    const normalized: string = value.trim().toLowerCase();
-    if (normalized.length <= 12) { return normalized === '' ? '未知指纹' : '•••'; }
-    return normalized.substring(0, 8) + '…' + normalized.substring(normalized.length - 8);
-  }
 
   private topSafeHeightVp(): number {
     return this.topRectHeight > 0 ? px2vp(this.topRectHeight) : AppTheme.layout.statusBarH;
@@ -146,7 +139,6 @@ export struct VncSettingsPage {
     this.settings.init(context);
     this.hostService.init(context);
     this.gatewayService.init(context);
-    this.trustService.init(context);
     this.bindListeners();
     this.load();
   }
@@ -158,7 +150,6 @@ export struct VncSettingsPage {
     if (this.settingsUnsubscribe) { this.settingsUnsubscribe(); this.settingsUnsubscribe = null; }
     if (this.hostUnsubscribe) { this.hostUnsubscribe(); this.hostUnsubscribe = null; }
     if (this.gatewayUnsubscribe) { this.gatewayUnsubscribe(); this.gatewayUnsubscribe = null; }
-    if (this.trustUnsubscribe) { this.trustUnsubscribe(); this.trustUnsubscribe = null; }
     if (this.cryptoUnsubscribe) { this.cryptoUnsubscribe(); this.cryptoUnsubscribe = null; }
   }
 
@@ -176,11 +167,6 @@ export struct VncSettingsPage {
     if (this.gatewayUnsubscribe === null) {
       this.gatewayUnsubscribe = this.gatewayService.onChange((): void => {
         if (this.pageActive) { this.loadGateways(); }
-      });
-    }
-    if (this.trustUnsubscribe === null) {
-      this.trustUnsubscribe = this.trustService.onChange((): void => {
-        if (this.pageActive) { this.loadTrusts(); }
       });
     }
     if (this.cryptoUnsubscribe === null) {
@@ -228,7 +214,6 @@ export struct VncSettingsPage {
     this.cryptoReady = DataCrypto.getInstance().isReady();
     this.loadHosts();
     this.loadGateways();
-    this.loadTrusts();
   }
 
   private loadHosts(): void {
@@ -238,11 +223,6 @@ export struct VncSettingsPage {
 
   private loadGateways(): void {
     this.gateways = this.gatewayService.list();
-    this.revision += 1;
-  }
-
-  private loadTrusts(): void {
-    this.trusts = this.trustService.list();
     this.revision += 1;
   }
 
@@ -866,28 +846,34 @@ export struct VncSettingsPage {
       .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
   }
 
+  private openTrustManager(): void {
+    this.showTrustManagerSheet = true;
+  }
+
+  private recheckTrust(trust: VncTrustView): void {
+    const host: VncHostView | null = trust.ownerType === 'host'
+      ? this.hostService.find(trust.ownerId)
+      : this.hostService.list().find((item: VncHostView): boolean => item.gatewayId === trust.ownerId) || null;
+    if (host === null) {
+      promptAction.showToast({ message: '找不到当前账号下的 VNC endpoint，请先确认主机或 Gateway 仍存在', duration: 2200 });
+      return;
+    }
+    this.showTrustManagerSheet = false;
+    setTimeout((): void => {
+      if (this.pageActive) {
+        router.pushUrl({ url: 'pages/RemoteDesktop', params: { vncHostId: host.id } });
+      }
+    }, 360);
+  }
+
   @Builder private trustCardSection() {
     Column() {
-      this.cardTitle('VNC trust', '仅显示已由用户确认的指纹；云恢复不会自动信任')
-      if (this.trusts.length === 0) {
-        Text('当前没有已确认的 TLS / VeNCrypt 指纹。首次连接时由 VNC 会话完成二次确认。')
-          .fontSize(12).fontColor(this.pal().text3).width('100%')
-      } else {
-        ForEach(this.trusts, (trust: VncTrustView) => {
-          Row() {
-            Column() {
-              Text(trust.ownerId).fontSize(13).fontColor(this.pal().text)
-              Text(this.redactedFingerprint(trust.fingerprintSha256)).fontSize(10).fontColor(this.pal().text3).fontFamily('monospace')
-                .maxLines(2).margin({ top: 3 })
-              Text(trust.confirmed ? '本设备已确认' : '待本设备重新确认')
-                .fontSize(10).fontColor(trust.confirmed ? this.pal().success : this.pal().danger)
-                .margin({ top: 3 })
-            }.alignItems(HorizontalAlign.Start).layoutWeight(1)
-            Button('忘记').height(30).fontSize(11).borderRadius(7).backgroundColor(this.pal().surface)
-              .fontColor(this.pal().danger).onClick((): void => { this.trustService.remove(trust.id); })
-          }.width('100%').padding(10).borderRadius(10).backgroundColor(this.pal().surface).margin({ bottom: 7 })
-        }, (trust: VncTrustView): string => trust.id + ':' + this.revision.toString())
-      }
+      this.cardTitle('VNC TLS 证书信任', '统一在数据安全中查看、忘记和重新检查')
+      Text('主机与 Gateway 使用各自的 endpoint-bound 信任记录；云恢复候选不会自动获得本机确认。')
+        .fontSize(12).fontColor(this.pal().text3).lineHeight(19).width('100%').margin({ bottom: 12 })
+      Button('打开 VNC TLS 证书信任管理').width('100%').height(42).borderRadius(10)
+        .backgroundColor(this.accentColor).fontColor(Color.White)
+        .onClick((): void => { this.openTrustManager(); })
     }.width('100%').padding(16).borderRadius(18).backgroundColor(this.pal().card)
       .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
   }
@@ -924,5 +910,22 @@ export struct VncSettingsPage {
         maskColor: 'rgba(0,0,0,0.4)',
         onDisappear: (): void => { this.finishHostFlowDismiss(); }
       })
+      .bindSheet($$this.showTrustManagerSheet, this.trustManagerSheet(), {
+        height: SheetSize.LARGE,
+        preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
+        dragBar: this.breakpoint === 'sm',
+        backgroundColor: this.pal().sheetBg,
+        blurStyle: BlurStyle.NONE,
+        showClose: false,
+        maskColor: 'rgba(0,0,0,0.4)',
+        onDisappear: (): void => { this.showTrustManagerSheet = false; }
+      })
+  }
+
+  @Builder private trustManagerSheet() {
+    VncCertificateTrustManagerSheet({
+      onClose: (): void => { this.showTrustManagerSheet = false; },
+      onRecheck: (trust: VncTrustView): void => { this.recheckTrust(trust); }
+    })
   }
 }

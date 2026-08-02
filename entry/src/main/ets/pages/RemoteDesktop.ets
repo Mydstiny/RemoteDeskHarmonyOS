@@ -73,7 +73,8 @@ import {
   VncImageQualityPreset,
   VncPreferredEncoding,
   VncColorDepth,
-  VncLocalCursorMode
+  VncLocalCursorMode,
+  VncTrustCertificateMetadata
 } from '../services/VncModelPolicy';
 import { vncGatewayAvailability } from '../services/VncGatewayProtocolPolicy';
 import { shouldTreatVncConnectionStateAsTerminal } from '../services/VncConnectionStatePolicy';
@@ -2390,7 +2391,17 @@ struct RemoteDesktop {
     if (decision === VncCertificatePreflightDecision.TRUST ||
       decision === VncCertificatePreflightDecision.UPDATE_TRUST) {
       this.vncCertificateExpectedFingerprint = fingerprint;
-      const saved = this.vncTrust.saveForEndpoint(trustOwner, fingerprint);
+      const metadata: VncTrustCertificateMetadata = {
+        endpointLabel: host.label,
+        commonName: this.vncCertificateInfo.commonName,
+        subject: this.vncCertificateInfo.subject,
+        issuer: this.vncCertificateInfo.issuer,
+        notBeforeMs: this.vncCertificateInfo.notBeforeMs,
+        notAfterMs: this.vncCertificateInfo.notAfterMs,
+        rootTrusted: this.vncCertificateInfo.rootTrusted,
+        hostMismatch: this.vncCertificateInfo.hostMismatch
+      };
+      const saved = this.vncTrust.saveForEndpoint(trustOwner, fingerprint, metadata);
       if (!saved.ok) {
         this.vncCertificateExpectedFingerprint = '';
         this.vncCertificateState = VncCertificatePreflightState.ERROR;

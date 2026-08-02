@@ -2,7 +2,6 @@ import { promptAction } from '@kit.ArkUI';
 import { common } from '@kit.AbilityKit';
 import { DataCrypto } from '../services/DataCrypto';
 import { VncSettingsService } from '../services/VncSettingsService';
-import { VncTrustService, VncTrustView } from '../services/VncTrustService';
 import { VncCloudSyncScope, vncCloudSyncScopes } from '../services/VncCloudSyncSelectionPolicy';
 import {
   VncSettingsValues,
@@ -35,7 +34,8 @@ import { VncSheetScaffold } from './vnc/VncSheetScaffold';
 /**
  * A leaf VNC settings surface hosted by HostListPage's single bindSheet.
  *
- * This component owns only VNC settings and trust services. Host and gateway
+ * This component owns only VNC settings. Trust records are managed by the
+ * shared certificate manager opened through the callback below. Host and gateway
  * management deliberately returns to their owning directories through the
  * callbacks instead of nesting another sheet or touching RustDesk state.
  */
@@ -48,6 +48,7 @@ export struct VncSettingsSheet {
   onClose: () => void = (): void => {};
   onOpenHostManager: () => void = (): void => {};
   onOpenGatewayManager: () => void = (): void => {};
+  onOpenTrustManager: () => void = (): void => {};
   onSaved: () => void = (): void => {};
   onReverseWheelSaved: (reverse: boolean) => void = (_reverse: boolean): void => {};
   onDirtyChanged: (dirty: boolean) => void = (_dirty: boolean): void => {};
@@ -83,17 +84,13 @@ export struct VncSettingsSheet {
   @State syncGateways: boolean = true;
   @State syncSecrets: boolean = false;
   @State syncTrust: boolean = false;
-  @State trusts: VncTrustView[] = [];
   @State cryptoReady: boolean = false;
   @State errorText: string = '';
-  @State revision: number = 0;
   @State dirty: boolean = false;
   @State saving: boolean = false;
 
   private readonly settings: VncSettingsService = VncSettingsService.getInstance();
-  private readonly trustService: VncTrustService = VncTrustService.getInstance();
   private settingsUnsubscribe: (() => void) | null = null;
-  private trustUnsubscribe: (() => void) | null = null;
   private cryptoUnsubscribe: (() => void) | null = null;
   private pal(): Palette {
     return this.theme === 'light' ? buildLight(this.accentColor) : buildDark(this.accentColor);
@@ -102,9 +99,7 @@ export struct VncSettingsSheet {
   aboutToAppear(): void {
     const context: common.Context = getContext(this) as common.Context;
     this.settings.init(context);
-    this.trustService.init(context);
     this.settingsUnsubscribe = this.settings.onChange((): void => { this.load(); });
-    this.trustUnsubscribe = this.trustService.onChange((): void => { this.loadTrusts(); });
     this.cryptoUnsubscribe = DataCrypto.getInstance().onStateChange((_ready: boolean, _configured: boolean): void => {
       this.cryptoReady = DataCrypto.getInstance().isReady();
     });
@@ -113,7 +108,6 @@ export struct VncSettingsSheet {
 
   aboutToDisappear(): void {
     if (this.settingsUnsubscribe) { this.settingsUnsubscribe(); this.settingsUnsubscribe = null; }
-    if (this.trustUnsubscribe) { this.trustUnsubscribe(); this.trustUnsubscribe = null; }
     if (this.cryptoUnsubscribe) { this.cryptoUnsubscribe(); this.cryptoUnsubscribe = null; }
   }
 
@@ -152,7 +146,6 @@ export struct VncSettingsSheet {
     this.syncSecrets = values.syncSecrets;
     this.syncTrust = values.syncTrust;
     this.cryptoReady = DataCrypto.getInstance().isReady();
-    this.loadTrusts();
     this.dirty = false;
     this.onDirtyChanged(false);
   }
@@ -162,11 +155,6 @@ export struct VncSettingsSheet {
       this.dirty = true;
       this.onDirtyChanged(true);
     }
-  }
-
-  private loadTrusts(): void {
-    this.trusts = this.trustService.list();
-    this.revision += 1;
   }
 
   private numberValue(text: string, fallback: number): number {
@@ -210,12 +198,6 @@ export struct VncSettingsSheet {
       syncSecrets: this.syncSecrets,
       syncTrust: this.syncTrust
     };
-  }
-
-  private redactedFingerprint(value: string): string {
-    const normalized: string = value.trim().toLowerCase();
-    if (normalized.length <= 12) { return normalized === '' ? '未知指纹' : '•••'; }
-    return normalized.substring(0, 8) + '…' + normalized.substring(normalized.length - 8);
   }
 
   private save(): void {
@@ -632,27 +614,13 @@ export struct VncSettingsSheet {
 
   @Builder private trustContent() {
     Column() {
-      Text('trust 只表示本设备已确认的服务器指纹。云恢复记录不会自动转为信任。')
+      Text('VNC TLS 证书信任由“数据安全”中的统一管理器维护。云恢复记录不会自动转为本机信任。')
         .fontSize(12).fontColor(this.pal().text3).lineHeight(19).width('100%').margin({ bottom: 12 })
-      if (this.trusts.length === 0) {
-        Text('暂无已确认的 VNC TLS / VeNCrypt 指纹').fontSize(13).fontColor(this.pal().text3)
-          .width('100%').textAlign(TextAlign.Center).padding({ top: 20, bottom: 20 })
-      } else {
-        ForEach(this.trusts, (trust: VncTrustView) => {
-          Row() {
-            Column() {
-              Text(trust.ownerId).fontSize(13).fontColor(this.pal().text)
-              Text(this.redactedFingerprint(trust.fingerprintSha256)).fontSize(10).fontColor(this.pal().text3)
-                .maxLines(2).margin({ top: 3 })
-              Text(trust.confirmed ? '本设备已确认' : '待本设备重新确认')
-                .fontSize(10).fontColor(trust.confirmed ? this.pal().success : this.pal().danger)
-                .margin({ top: 3 })
-            }.alignItems(HorizontalAlign.Start).layoutWeight(1)
-            Button('忘记').height(30).fontSize(11).borderRadius(8).backgroundColor(this.pal().surface)
-              .fontColor(this.pal().danger).onClick((): void => { this.trustService.remove(trust.id); })
-          }.width('100%').padding(10).borderRadius(10).backgroundColor(this.pal().surface).margin({ bottom: 7 })
-        }, (trust: VncTrustView): string => trust.id + ':' + this.revision.toString())
-      }
+      Button('打开 VNC TLS 证书信任管理').width('100%').height(42).borderRadius(10)
+        .backgroundColor(this.accentColor).fontColor(Color.White)
+        .onClick((): void => { this.onOpenTrustManager(); })
+      Text('同一管理器也可从主设置“数据安全”进入；不会创建第二份可变 trust 列表。')
+        .fontSize(11).fontColor(this.pal().text3).lineHeight(18).width('100%').margin({ top: 10 })
     }.width('100%')
   }
 

@@ -7,6 +7,9 @@ import {
   vncTrustViewStateForStore,
   VncTrustService
 } from '../main/ets/services/VncTrustService';
+import { vncTrustPayload, VncTrustCertificateMetadata, finalizeVncRecord } from '../main/ets/services/VncModelPolicy';
+import { vncTrustPayloadIsLegacy, vncRecordIsValid } from '../main/ets/services/VncRecordPolicy';
+import { VncRecord } from '../main/ets/model/VncRecord';
 import { AccountSessionCoordinator } from '../main/ets/services/AccountSessionCoordinator';
 
 const STORE: string = 'a'.repeat(64);
@@ -83,6 +86,50 @@ export default function vncTrustServiceTest(): void {
       expect(service.trustForEndpoint(staleEndpoint) === null).assertTrue();
       expect(service.isTrusted(staleEndpoint, 'd'.repeat(64))).assertFalse();
       expect(service.trustedFingerprint(staleEndpoint)).assertEqual('');
+    });
+
+    it('keeps_v1_rows_as_candidates_and_writes_v2_metadata', 0, (): void => {
+      const legacyPayload: string = JSON.stringify({
+        fingerprintSha256: 'd'.repeat(64), confirmed: true, confirmedAt: 1700000000000,
+        ownerType: 'gateway'
+      });
+      expect(vncTrustPayloadIsLegacy(legacyPayload, 'gateway')).assertTrue();
+      const legacy = new VncRecord();
+      legacy.id = 'legacy-trust'; legacy.userId = 'user-1'; legacy.recordType = 'trust';
+      legacy.ownerId = 'gateway-1'; legacy.ownerType = 'gateway'; legacy.payload = legacyPayload;
+      legacy.createdAt = 1700000000000; legacy.updatedAt = 1700000000000;
+      finalizeVncRecord(legacy);
+      expect(vncRecordIsValid(legacy)).assertTrue();
+
+      const metadata: VncTrustCertificateMetadata = {
+        endpointLabel: 'Office Gateway', commonName: 'vnc.example.test',
+        subject: 'CN=vnc.example.test', issuer: 'CN=Test CA',
+        notBeforeMs: 1700000000000, notAfterMs: 1800000000000,
+        rootTrusted: true, hostMismatch: false
+      };
+      const upgraded: string = vncTrustPayload('d'.repeat(64), true, 1700000000000,
+        'gateway', STORE, BINDING, metadata);
+      expect(vncTrustPayloadIsLegacy(upgraded, 'gateway')).assertFalse();
+      const upgradedView: Record<string, Object> = JSON.parse(upgraded) as Record<string, Object>;
+      expect(upgradedView['payloadVersion'] as number).assertEqual(2);
+      expect(upgradedView['endpointLabel'] as string).assertEqual('Office Gateway');
+
+      const v2Record = new VncRecord();
+      v2Record.id = 'v2-trust'; v2Record.userId = 'user-1'; v2Record.recordType = 'trust';
+      v2Record.ownerId = 'gateway-1'; v2Record.ownerType = 'gateway'; v2Record.payload = upgraded;
+      v2Record.createdAt = 1700000000000; v2Record.updatedAt = 1700000000000;
+      finalizeVncRecord(v2Record);
+      expect(vncRecordIsValid(v2Record)).assertTrue();
+
+      const unknownVersion: Record<string, Object> = JSON.parse(upgraded) as Record<string, Object>;
+      unknownVersion['payloadVersion'] = 3;
+      const malformed = new VncRecord();
+      malformed.id = 'v3-trust'; malformed.userId = 'user-1'; malformed.recordType = 'trust';
+      malformed.ownerId = 'gateway-1'; malformed.ownerType = 'gateway';
+      malformed.payload = JSON.stringify(unknownVersion);
+      malformed.createdAt = 1700000000000; malformed.updatedAt = 1700000000000;
+      finalizeVncRecord(malformed);
+      expect(vncRecordIsValid(malformed)).assertFalse();
     });
   });
 }

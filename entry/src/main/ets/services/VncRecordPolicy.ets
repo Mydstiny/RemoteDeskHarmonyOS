@@ -140,6 +140,50 @@ function isStringValue(values: Record<string, Object>, key: string): boolean {
   return typeof values[key] === 'string';
 }
 
+function isOptionalBoundedText(values: Record<string, Object>, key: string, maxLength: number): boolean {
+  if (typeof values[key] === 'undefined') { return true; }
+  if (typeof values[key] !== 'string') { return false; }
+  const text: string = values[key] as string;
+  if (text.length > maxLength) { return false; }
+  for (let i = 0; i < text.length; i++) {
+    const code: number = text.charCodeAt(i);
+    if (code < 0x20 || code === 0x7f) { return false; }
+  }
+  return true;
+}
+
+function isOptionalNonNegativeInteger(values: Record<string, Object>, key: string): boolean {
+  if (typeof values[key] === 'undefined') { return true; }
+  if (typeof values[key] !== 'number') { return false; }
+  const numeric: number = values[key] as number;
+  return Number.isFinite(numeric) && Number.isInteger(numeric) && numeric >= 0;
+}
+
+function isOptionalBooleanStrict(values: Record<string, Object>, key: string): boolean {
+  return typeof values[key] === 'undefined' || typeof values[key] === 'boolean';
+}
+
+/**
+ * v1 rows had only owner/fingerprint/confirmation data. They remain readable
+ * as candidates, but without an endpoint binding they can never be trusted or
+ * updated implicitly. An interactive current-endpoint save upgrades the row
+ * to payloadVersion 2.
+ */
+export function vncTrustPayloadIsLegacy(payload: string, ownerType: string): boolean {
+  const values: Record<string, Object> | null = vncPayloadObject(payload);
+  if (values === null) { return false; }
+  const payloadVersion: Object = values['payloadVersion'];
+  const hasStore: boolean = typeof values['storeIdentityFingerprint'] !== 'undefined';
+  const hasBinding: boolean = typeof values['endpointBindingFingerprint'] !== 'undefined';
+  const payloadOwnerType: string = typeof values['ownerType'] === 'string' ?
+    (values['ownerType'] as string).trim() : '';
+  return typeof payloadVersion === 'undefined' && !hasStore && !hasBinding &&
+    payloadOwnerType === ownerType && (ownerType === 'host' || ownerType === 'gateway') &&
+    isSha256Hex(typeof values['fingerprintSha256'] === 'string' ?
+      (values['fingerprintSha256'] as string).trim().toLowerCase() : '') &&
+    isBooleanValue(values, 'confirmed') && isFinitePositiveIntegerValue(values['confirmedAt']);
+}
+
 function isBooleanValue(values: Record<string, Object>, key: string): boolean {
   return typeof values[key] === 'boolean';
 }
@@ -239,11 +283,29 @@ export function vncRecordPayloadSemanticallyValid(record: VncRecord): boolean {
       (values['storeIdentityFingerprint'] as string).trim().toLowerCase() : '';
     const endpointBindingFingerprint: string = typeof values['endpointBindingFingerprint'] === 'string' ?
       (values['endpointBindingFingerprint'] as string).trim().toLowerCase() : '';
-    return isSha256Hex(fingerprint) && isBooleanValue(values, 'confirmed') &&
+    const payloadVersion: Object = values['payloadVersion'];
+    const hasV2Version: boolean = typeof payloadVersion === 'number' && payloadVersion === 2;
+    const hasV2Binding: boolean = isSha256Hex(storeIdentityFingerprint) &&
+      isSha256Hex(endpointBindingFingerprint);
+    const legacy: boolean = vncTrustPayloadIsLegacy(record.payload, record.ownerType);
+    const ownerAndConfirmation: boolean = isSha256Hex(fingerprint) && isBooleanValue(values, 'confirmed') &&
       isFinitePositiveIntegerValue(values['confirmedAt']) &&
       (payloadOwnerType === 'host' || payloadOwnerType === 'gateway') &&
-      payloadOwnerType === record.ownerType && isSha256Hex(storeIdentityFingerprint) &&
-      isSha256Hex(endpointBindingFingerprint);
+      payloadOwnerType === record.ownerType;
+    const metadata: boolean = isOptionalBoundedText(values, 'endpointLabel', 128) &&
+      isOptionalBoundedText(values, 'commonName', 256) &&
+      isOptionalBoundedText(values, 'subject', 512) &&
+      isOptionalBoundedText(values, 'issuer', 512) &&
+      isOptionalNonNegativeInteger(values, 'notBeforeMs') &&
+      isOptionalNonNegativeInteger(values, 'notAfterMs') &&
+      isOptionalBooleanStrict(values, 'rootTrusted') &&
+      isOptionalBooleanStrict(values, 'hostMismatch');
+    // Rows written before the explicit payload version may still carry the
+    // endpoint fields introduced by the previous stage. Accept those rows,
+    // but reject an explicitly unknown version instead of treating it as v2.
+    const versionCompatible: boolean = typeof payloadVersion === 'undefined' || hasV2Version;
+    return ownerAndConfirmation && metadata &&
+      ((versionCompatible && hasV2Binding) || legacy);
   }
   return false;
 }

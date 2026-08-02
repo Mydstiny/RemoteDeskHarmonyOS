@@ -80,6 +80,22 @@ export interface VncGatewayValues {
   enabled: boolean;
 }
 
+/**
+ * Non-authoritative certificate metadata retained for the trust manager.
+ * The endpoint binding and SHA-256 fingerprint remain the only trust inputs;
+ * these fields are bounded display data and never contain a PEM or chain.
+ */
+export interface VncTrustCertificateMetadata {
+  endpointLabel: string;
+  commonName: string;
+  subject: string;
+  issuer: string;
+  notBeforeMs: number;
+  notAfterMs: number;
+  rootTrusted: boolean;
+  hostMismatch: boolean;
+}
+
 export function defaultVncSettings(): VncSettingsValues {
   return {
     defaultTransport: 'direct_tcp', defaultPort: 5900, connectTimeoutMs: 10000,
@@ -201,14 +217,26 @@ export function vncGatewayPayload(values: VncGatewayValues): string {
 }
 
 export function vncTrustPayload(fingerprintSha256: string, confirmed: boolean, confirmedAt: number,
-  ownerType: string, storeIdentityFingerprint: string, endpointBindingFingerprint: string): string {
+  ownerType: string, storeIdentityFingerprint: string, endpointBindingFingerprint: string,
+  metadata: VncTrustCertificateMetadata | null = null): string {
   const payload: Record<string, Object> = {};
+  payload['payloadVersion'] = 2;
   payload['fingerprintSha256'] = fingerprintSha256.trim().toLowerCase();
   payload['confirmed'] = confirmed;
   payload['confirmedAt'] = confirmedAt;
   payload['ownerType'] = ownerType.trim();
   payload['storeIdentityFingerprint'] = storeIdentityFingerprint.trim().toLowerCase();
   payload['endpointBindingFingerprint'] = endpointBindingFingerprint.trim().toLowerCase();
+  if (metadata !== null) {
+    payload['endpointLabel'] = metadata.endpointLabel.trim();
+    payload['commonName'] = metadata.commonName.trim();
+    payload['subject'] = metadata.subject.trim();
+    payload['issuer'] = metadata.issuer.trim();
+    payload['notBeforeMs'] = metadata.notBeforeMs;
+    payload['notAfterMs'] = metadata.notAfterMs;
+    payload['rootTrusted'] = metadata.rootTrusted;
+    payload['hostMismatch'] = metadata.hostMismatch;
+  }
   return vncCanonicalJson(payload);
 }
 

@@ -20,7 +20,7 @@ import {
 } from '../services/AccountSessionCoordinator';
 import { DataCrypto } from '../services/DataCrypto';
 import { CloudStore } from '../services/CloudStore';
-import { VncTrustService } from '../services/VncTrustService';
+import { VncTrustService, VncTrustView } from '../services/VncTrustService';
 import { VncCloudSyncSelectionStore } from '../services/VncCloudSyncSelectionStore';
 import { VncHostService, VncHostView } from '../services/VncHostService';
 import { VncGatewayService } from '../services/VncGatewayService';
@@ -74,6 +74,7 @@ import {
 import { VncSessionCredentialHandoff } from '../services/VncSessionCredentialHandoff';
 import { VncSettingsService } from '../services/VncSettingsService';
 import { VncSettingsSheet } from '../components/VncSettingsSheet';
+import { VncCertificateTrustManagerSheet } from '../components/VncCertificateTrustManagerSheet';
 // Passphrase uses bindSheet (HostListPage is @Entry, no bindSheet limit)
 import { KeyVaultPage } from './KeyVaultPage';
 import { SshPreflightState } from '../components/SshPreflightSheet';
@@ -320,6 +321,7 @@ const SETTINGS_ACCORDION_ANIMATION_MS = 280;
 const APPEARANCE_EXPANDED_MIN_HEIGHT = 900;
 const POPUP_SHEET_RDP_CERTIFICATES = 4;
 const POPUP_SHEET_RUSTDESK_AUTH_TRUST = 5;
+const POPUP_SHEET_VNC_CERTIFICATES = 6;
 const REMOTE_HOST_SHEET_NONE = 0;
 const REMOTE_HOST_SHEET_SSH_PREFLIGHT = 1;
 const REMOTE_HOST_SHEET_RDP_CERTIFICATE = 2;
@@ -338,6 +340,7 @@ struct HostListPage {
   private hostDataSignature: string = '';
   private hostDataUnsubscribe: (() => void) | null = null;
   private vncHostDataUnsubscribe: (() => void) | null = null;
+  private vncTrustDataUnsubscribe: (() => void) | null = null;
   private skipInitialPageShowLoad: boolean = true;
   private keyVaultDataUnsubscribe: (() => void) | null = null;
   private pageActive: boolean = false;
@@ -618,6 +621,7 @@ struct HostListPage {
   @State sshTrustedHostsView: RemoteHost[] = [];
   @State rdpCertificateBusyId: string = '';
   @State rdpTrustedHostsView: RemoteHost[] = [];
+  @State vncTrustViews: VncTrustView[] = [];
   @State dbgDgPerm: string = '?';
   @State dbgAmPerm: string = '?';
   @State dbgMonitor: string = '未注册';
@@ -652,6 +656,7 @@ struct HostListPage {
   private keyVault: KeyVaultService = KeyVaultService.getInstance();
   private readonly vncHosts: VncHostService = VncHostService.getInstance();
   private readonly vncGateways: VncGatewayService = VncGatewayService.getInstance();
+  private readonly vncTrust: VncTrustService = VncTrustService.getInstance();
   private readonly vncSettings: VncSettingsService = VncSettingsService.getInstance();
   private loader: ExtensionLoader = ExtensionLoader.getInstance();
   private sshKeyImporter: SshKeyImportService = new SshKeyImportService();
@@ -1325,6 +1330,7 @@ struct HostListPage {
     this.vncSettings.init(context);
     this.vncHosts.init(context);
     this.vncGateways.init(context);
+    this.vncTrust.init(context);
   }
 
   private saveVncHostFromAddFlow(values: VncHostValues, password: string, connectNow: boolean,
@@ -1990,6 +1996,28 @@ struct HostListPage {
     });
   }
 
+  private openVncTrustManagerFromSettings(): void {
+    this.openSettingsLeafSheet(SETTINGS_SHEET_POPUP, (): void => {
+      this.popupSheetMode = POPUP_SHEET_VNC_CERTIFICATES;
+    });
+  }
+
+  private recheckVncTrust(trust: VncTrustView): void {
+    const host: VncHostView | null = trust.ownerType === 'host'
+      ? this.vncHosts.find(trust.ownerId)
+      : this.vncHosts.list().find((item: VncHostView): boolean => item.gatewayId === trust.ownerId) || null;
+    if (host === null) {
+      promptAction.showToast({ message: '找不到当前账号下的 VNC endpoint，请先确认主机或 Gateway 仍存在', duration: 2200 });
+      return;
+    }
+    this.closeSettingsLeafSheet();
+    setTimeout((): void => {
+      if (this.pageActive) {
+        router.pushUrl({ url: 'pages/RemoteDesktop', params: { vncHostId: host.id } });
+      }
+    }, SETTINGS_PANEL_DISMISS_TO_LEAF_OPEN_MS);
+  }
+
   private handleVncRelayRouteRequest(): void {
     const params: Object = router.getParams();
     if (params === null || params === undefined) { return; }
@@ -2527,6 +2555,7 @@ struct HostListPage {
       this.rustdeskCount = this.srv.getRustdeskCount();
       this.sshCount = this.srv.getSshCount();
       this.vncCount = this.vncHosts.list().length;
+      this.refreshVncTrustView();
       this.keyCount = KeyVaultService.getInstance().getSshKeyCount();
       this.totpCount = KeyVaultService.getInstance().getTotpCount();
       this.accountDisplayName = this.auth.isLoggedIn() ? this.auth.getDisplayName() : '';
@@ -2574,6 +2603,11 @@ struct HostListPage {
         this.load();
       });
     }
+    if (!this.vncTrustDataUnsubscribe) {
+      this.vncTrustDataUnsubscribe = this.vncTrust.onChange((): void => {
+        this.refreshVncTrustView();
+      });
+    }
   }
 
   private unregisterDataRefreshListeners(): void {
@@ -2588,6 +2622,10 @@ struct HostListPage {
     if (this.vncHostDataUnsubscribe) {
       this.vncHostDataUnsubscribe();
       this.vncHostDataUnsubscribe = null;
+    }
+    if (this.vncTrustDataUnsubscribe) {
+      this.vncTrustDataUnsubscribe();
+      this.vncTrustDataUnsubscribe = null;
     }
   }
 
@@ -6271,6 +6309,7 @@ struct HostListPage {
         },
         onOpenHostManager: (): void => { this.openVncHostManagerFromSettings(); },
         onOpenGatewayManager: (): void => { this.openVncGatewayManagerFromSettings(); },
+        onOpenTrustManager: (): void => { this.openVncTrustManagerFromSettings(); },
         onSaved: (): void => { this.refreshCryptoStatus(); },
         onReverseWheelSaved: (reverse: boolean): void => {
           this.saveRemoteReverseWheel(reverse);
@@ -7094,7 +7133,7 @@ struct HostListPage {
 
         ListItem() {
           this.settingsAccordionHeader(SETTINGS_SECTION_SECURITY, $r('sys.symbol.lock_shield_fill'),
-            '数据安全', '端到端加密、2FA 隐私和 SSH 指纹')
+            '数据安全', '端到端加密、2FA 隐私和设备信任')
         }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 10 })
 
         // --- 数据安全卡片 ---
@@ -7218,6 +7257,10 @@ struct HostListPage {
                     this.popupSheetMode = POPUP_SHEET_RDP_CERTIFICATES;
                   });
                 })
+              this.cardDivider()
+              this.cardActionRow($r('app.media.icon_lock'), 'VNC TLS 证书信任',
+                this.vncTrustSummary(),
+                (): void => { this.openVncTrustManagerFromSettings(); })
               this.cardDivider()
               this.cardActionRow($r('app.media.icon_lock'), 'RustDesk 认证信任',
                 this.rustDeskHosts().length.toString() + ' 台主机',
@@ -7699,6 +7742,11 @@ struct HostListPage {
       this.rdpCertificateManagerSheet()
     } else if (this.popupSheetMode === POPUP_SHEET_RUSTDESK_AUTH_TRUST) {
       this.rustDeskAuthTrustManagerSheet()
+    } else if (this.popupSheetMode === POPUP_SHEET_VNC_CERTIFICATES) {
+      VncCertificateTrustManagerSheet({
+        onClose: (): void => { this.closeSettingsLeafSheet(); },
+        onRecheck: (trust: VncTrustView): void => { this.recheckVncTrust(trust); }
+      })
     } else if (this.popupSheetMode === 3) {
       this.cloudSyncSheet()
     } else {
@@ -11182,6 +11230,16 @@ struct HostListPage {
 
   private refreshRdpTrustedHostsView(): void {
     this.rdpTrustedHostsView = this.collectRdpTrustedHosts();
+  }
+
+  private refreshVncTrustView(): void {
+    this.vncTrustViews = this.vncTrust.list();
+  }
+
+  private vncTrustSummary(): string {
+    const confirmed: number = this.vncTrustViews.filter((trust: VncTrustView): boolean => trust.confirmed).length;
+    const pending: number = this.vncTrustViews.length - confirmed;
+    return confirmed.toString() + ' 条已信任 · ' + pending.toString() + ' 条待本机确认';
   }
 
   private formatTimestamp(ts: number): string {
