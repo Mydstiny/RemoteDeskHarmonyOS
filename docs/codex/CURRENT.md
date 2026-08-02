@@ -8,7 +8,7 @@ This file is the compact startup resume card. Historical checkpoints remain in
 - Task: `rustdesk-complete-repair` (active branch retained; current scope is VNC V3 only)
 - Branch: `codex/rustdesk-complete-repair`
 - Checkpoint: `7d26f3716`, based on `main@34946adbc`; branch is ahead by 31 and not behind.
-- Phase: VNC V3 stage C second segment Trust view hardening checkpointed; awaiting the existing independent review.
+- Phase: VNC V3 stage C second segment independently PASS; preparing the next VNC-only plan segment.
 - Worktree: clean. Do not stage unrelated changes.
 
 ## Stage A Result
@@ -46,8 +46,8 @@ This file is the compact startup resume card. Historical checkpoints remain in
   `7d26f3716` checkpoint downgrades stale-store list views and makes legacy
   trust queries endpoint-bound, with Repeater TLS binding coverage.
 - The existing reviewer task `019fc333-6789-7633-bf6f-3fea1cb2ad4d` receives one
-  unique read-only incremental review request for `7d26f3716`; do not dispatch
-  another message for this segment.
+  unique read-only incremental review request for `7d26f3716` has returned
+  `PASS`; reuse this task for the next VNC segment and do not duplicate it.
 - Keep every VNC caller fail-closed when the probe, Sheet lifecycle, owner
   binding, or expected-pin handoff is missing or stale.
 
@@ -81,8 +81,7 @@ This file is the compact startup resume card. Historical checkpoints remain in
 
 - Machine state: `docs/codex/STATE.json`.
 - Receipts: `docs/codex/REVIEW_RECEIPTS.jsonl`.
-- `scripts/sync_workspace.sh status` should report `RESUME_REVIEW` for
-  checkpoint `7d26f3716` until the existing reviewer returns PASS or
-  CHANGES_REQUIRED.
+- `scripts/sync_workspace.sh status` should retain the PASS receipt for
+  `7d26f3716`; the next code change will create a new incremental review scope.
 - Reuse the existing independent review session and do not redispatch duplicate
   messages for the same segment.
