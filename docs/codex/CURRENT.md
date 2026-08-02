@@ -1,54 +1,53 @@
 # Shared Current State
 
-This file is the compact startup resume card. Historical checkpoints are
-preserved in `docs/codex/archive/2026-08/`; do not read the archive unless the
-task or state below links to it.
+This file is the compact startup resume card. Historical checkpoints remain in
+`docs/codex/archive/2026-08/`; read them only when the active state links them.
 
 ## Active Task
 
-- Task: `rustdesk-complete-repair`
+- Task: `rustdesk-complete-repair` (active branch retained; current scope is VNC V3 only)
 - Branch: `codex/rustdesk-complete-repair`
-- Checkpoint: `54023b3f4`, based on `main@34946adbc`; branch is ahead by 6 and not behind.
-- Phase: RustDesk repair checkpoint committed; existing review blocker remains unchanged.
-- Worktree: clean after the RustDesk repair commit. Do not stage unrelated changes.
-- Next: resume the existing RustDesk review state without redispatching the incomplete reviewer.
+- Checkpoint: `73334a260`, based on `main@34946adbc`; branch is ahead by 10 and not behind.
+- Phase: VNC V3 stage A reviewed and passed; stage B is next.
+- Worktree: clean. Do not stage unrelated changes.
 
-## Current Findings
+## Stage A Result
 
-- `RemoteDesktop.doConnect()` initializes the renderer before `loader.connect()` creates the VNC session owner.
-- The native renderer entry point requires an active owner before `GLRenderer::Init()`, so cold-start VNC can fail with `rc=-1` before EGL/GL.
-- The repair boundary is reservation -> renderer owner bind -> activation transaction. Do not relax owner checks, reuse stale owners, or fabricate tokens.
-- The VNC TLS/settings/Repeater V3 plan is documented but not implemented. Keep its direct-host and Repeater-Gateway trust ownership separate.
+- Frozen VNC endpoint/trust owner, certificate preflight, probe lifecycle,
+  host defaults, shared-wheel authority, and one-shot pin policies.
+- Stage A review: `PASS` at `73334a260` by independent review session
+  `019fc333-6789-7633-bf6f-3fea1cb2ad4d`.
+- Review scope is limited to the 12 VNC policy/test files declared in
+  `STATE.json`; no RDP, RustDesk, SSH, renderer, or video-performance files.
 
-## RustDesk Repair Checkpoint
+## Next
 
-- A successful RustDesk 2FA binding now enables auto-submit by default; TOTP privacy protection gates binding/auto-fill only when `totpLocked` is enabled.
-- Automatic 2FA submission no longer reopens the manual sheet on every auth poll; manual entry is retained for missing entries, failed submission, cancellation, and wrong-code responses.
-- Request-approval connections clear transient passwords and pass `rdAuthMode=1`; the existing FFI core waits for remote approval instead of falling back to password login.
-- TOTP cards now render bundled rawfile brand assets directly, including the RustDesk logo, with initials only as an explicit/failure fallback.
-
-## Blockers
-
-- `hdc list targets` and `hdc shell` return `Connect server failed`; no current `hilog` evidence is available.
-- The previously dispatched read-only reviewer (`019faca9-bf75-7e62-a251-541ce970c029`) produced no report because of capacity limits. This is `BLOCKED`, not PASS; resume it or record a new explicitly authorized review after the existing task state changes, never duplicate it solely because of context compression.
-- API 23 real-device, endpoint interoperability, cloud and cross-protocol acceptance remain separate from local source/build evidence.
+- Stage B: native structured VNC TLS certificate probe with bounded metadata,
+  cancellation/timeout, IPv4/IPv6/SNI, stable error codes, and pin checks.
+- Keep all VNC callers fail-closed until the probe and expected-pin handoff are
+  wired through the later Sheet/state-machine stages.
 
 ## Verification
 
-- The current state records `default@OhosTestCompileArkTS`, signed `assembleHap`, Light compliance, and `git diff --check` as passed on 2026-08-02.
-- Both gates were rerun after `54023b3f4` and passed on 2026-08-02; output still contains only existing dependency/deprecation warnings.
-- `ohosTest@OhosTestCompileArkTS` remains unavailable when task `00306054` is not registered.
+- `default@OhosTestCompileArkTS`: passed after `73334a260` on 2026-08-02.
+- `assembleHap`: passed after `73334a260` on 2026-08-02.
+- `git diff --check`: passed.
+- `ohosTest@OhosTestCompileArkTS`: unavailable; task is not registered
+  (`00306054`). New ArkTS tests therefore have compile/build evidence only.
+
+## Blockers
+
+- `hdc list targets`/`hdc shell` still return `Connect server failed`; no
+  current hilog or real-device/endpoint evidence is available.
+- Stage A is policy/test scaffolding; native probe, Sheet lifecycle,
+  TrustService migration, real Repeater, cloud, and device matrices remain
+  unverified and are not release evidence.
 
 ## Review Protocol
 
 - Machine state: `docs/codex/STATE.json`.
 - Receipts: `docs/codex/REVIEW_RECEIPTS.jsonl`.
-- Run `scripts/sync_workspace.sh status` or `scripts/dev_workflow.ps1 status` and obey `review=...`.
-- `SKIP_FULL_REVIEW` means the declared base, plan hash, and code-scope tree hash still match a PASS receipt; do not reopen that unchanged scope.
-- `REVIEW_REQUIRED` means inspect only the reported scope/delta after a checkpoint commit.
-- `RESUME_REVIEW` means continue the recorded reviewer task; a missing report is never a pass.
-
-## Handoff
-
-Full pre-compaction records are preserved in `docs/codex/archive/2026-08/`.
-Durable architecture rules remain in `docs/codex/DECISIONS.md`.
+- `scripts/sync_workspace.sh status` must report `SKIP_FULL_REVIEW` for the
+  unchanged stage A scope; later stages declare their own VNC-only scope.
+- Independent review session and monitor session are already active; do not
+  redispatch duplicate messages for the same stage.
