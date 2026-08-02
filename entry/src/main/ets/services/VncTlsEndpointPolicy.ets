@@ -114,16 +114,15 @@ function bindingFingerprint(ownerType: VncTlsEndpointOwnerType, ownerId: string,
   userId: string, storeIdentityFingerprint: string, transport: VncTransport,
   connectHost: string, connectPort: number,
   serverName: string): string {
-  const seed: Record<string, Object> = {
-    ownerType: ownerType,
-    ownerId: ownerId,
-    userId: userId,
-    storeIdentityFingerprint: storeIdentityFingerprint,
-    transport: transport,
-    connectHost: normalizedHost(connectHost),
-    connectPort: connectPort,
-    serverName: normalizedHost(serverName)
-  };
+  const seed: Record<string, Object> = {};
+  seed['ownerType'] = ownerType;
+  seed['ownerId'] = ownerId;
+  seed['userId'] = userId;
+  seed['storeIdentityFingerprint'] = storeIdentityFingerprint;
+  seed['transport'] = transport;
+  seed['connectHost'] = normalizedHost(connectHost);
+  seed['connectPort'] = connectPort;
+  seed['serverName'] = normalizedHost(serverName);
   return vncPayloadHashSha256(vncCanonicalJson(seed));
 }
 

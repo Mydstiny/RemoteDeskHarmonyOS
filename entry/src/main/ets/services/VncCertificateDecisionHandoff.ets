@@ -11,6 +11,10 @@ interface PendingVncCertificateDecision {
   createdAt: number;
 }
 
+function isPositiveGeneration(value: number): boolean {
+  return Number.isSafeInteger(value) && value > 0;
+}
+
 /** Process-memory, one-shot pin handoff. It is never serialized or synced. */
 export class VncCertificateDecisionHandoff {
   private pending: PendingVncCertificateDecision[] = [];
@@ -22,7 +26,7 @@ export class VncCertificateDecisionHandoff {
     const normalizedAttemptId: string = attemptId.trim();
     const normalizedBinding: string = endpointBindingFingerprint.trim().toLowerCase();
     const normalizedFingerprint: string = fingerprintSha256.trim().toLowerCase();
-    if (normalizedUserId === '' || normalizedAttemptId === '' || generation <= 0 ||
+    if (normalizedUserId === '' || normalizedAttemptId === '' || !isPositiveGeneration(generation) ||
       !isVncSha256Fingerprint(normalizedBinding) || !isVncSha256Fingerprint(normalizedFingerprint)) {
       return false;
     }

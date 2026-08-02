@@ -13,11 +13,23 @@ export interface VncTrustView {
   id: string;
   userId: string;
   ownerId: string;
+  ownerType: 'host' | 'gateway';
+  storeIdentityFingerprint: string;
+  endpointBindingFingerprint: string;
   fingerprintSha256: string;
   confirmed: boolean;
+  cloudCandidate: boolean;
   confirmedAt: number;
   createdAt: number;
   syncVersion: number;
+}
+
+export interface VncTrustEndpoint {
+  ownerType: 'host' | 'gateway';
+  ownerId: string;
+  userId: string;
+  storeIdentityFingerprint: string;
+  endpointBindingFingerprint: string;
 }
 
 export interface VncTrustSaveResult {
@@ -129,24 +141,66 @@ export class VncTrustService {
     return '';
   }
 
-  save(ownerId: string, fingerprintSha256: string): VncTrustSaveResult {
+  /** Return a candidate or locally-confirmed row for one exact TLS endpoint. */
+  trustForEndpoint(endpoint: VncTrustEndpoint): VncTrustView | null {
+    const ownerId: string = endpoint.ownerId.trim();
+    const userId: string = endpoint.userId.trim();
+    const store: string = endpoint.storeIdentityFingerprint.trim().toLowerCase();
+    const binding: string = endpoint.endpointBindingFingerprint.trim().toLowerCase();
+    if (ownerId === '' || userId === '' || store === '' || binding === '') { return null; }
+    const values: VncTrustView[] = this.list();
+    for (let i = 0; i < values.length; i++) {
+      const value: VncTrustView = values[i];
+      if (value.ownerType === endpoint.ownerType && value.ownerId === ownerId &&
+        value.userId === userId && value.storeIdentityFingerprint === store &&
+        value.endpointBindingFingerprint === binding) {
+        return value;
+      }
+    }
+    return null;
+  }
+
+  trustedFingerprintForEndpoint(endpoint: VncTrustEndpoint): string {
+    const trust: VncTrustView | null = this.trustForEndpoint(endpoint);
+    return trust !== null && trust.confirmed ? trust.fingerprintSha256 : '';
+  }
+
+  saveForEndpoint(endpoint: VncTrustEndpoint, fingerprintSha256: string): VncTrustSaveResult {
+    return this.save(endpoint.ownerId, fingerprintSha256, endpoint);
+  }
+
+  save(ownerId: string, fingerprintSha256: string,
+    endpoint: VncTrustEndpoint | null = null): VncTrustSaveResult {
     const normalized: string = fingerprintSha256.trim().toLowerCase();
     const result: VncTrustSaveResult = { ok: false, message: '', id: '' };
-    if (ownerId.trim() === '' || normalized.length < 32) {
+    if (ownerId.trim() === '' || !/^[0-9a-f]{64}$/.test(normalized)) {
       result.message = 'VNC trust 需要主机 ID 和有效指纹';
       return result;
     }
-    result.id = 'vnctrust_' + ownerId.trim() + '_' + normalized;
+    const ownerType: 'host' | 'gateway' = endpoint === null ? 'host' : endpoint.ownerType;
+    const resolvedUserId: string = endpoint === null ? this.currentUserId() : endpoint.userId.trim();
+    const storeIdentityFingerprint: string = endpoint === null ? '' :
+      endpoint.storeIdentityFingerprint.trim().toLowerCase();
+    const endpointBindingFingerprint: string = endpoint === null ? '' :
+      endpoint.endpointBindingFingerprint.trim().toLowerCase();
+    if (resolvedUserId === '' || (endpoint !== null &&
+      (!/^[0-9a-f]{64}$/.test(storeIdentityFingerprint) ||
+        !/^[0-9a-f]{64}$/.test(endpointBindingFingerprint)))) {
+      result.message = 'VNC trust endpoint owner 无效';
+      return result;
+    }
+    result.id = 'vnctrust_' + ownerType + '_' + ownerId.trim() + '_' + normalized;
     const current: VncTrustView | null = this.find(result.id);
     const record: VncRecord = new VncRecord();
     const now: number = Date.now();
     record.id = result.id;
-    record.userId = this.currentUserId();
+    record.userId = resolvedUserId;
     record.recordType = 'trust';
     record.ownerId = ownerId.trim();
-    record.ownerType = 'host';
+    record.ownerType = ownerType;
     record.secretKind = '';
-    record.payload = vncTrustPayload(normalized, true, now);
+    record.payload = vncTrustPayload(normalized, true, now, ownerType,
+      storeIdentityFingerprint, endpointBindingFingerprint);
     record.createdAt = current === null ? now : current.createdAt;
     record.updatedAt = now;
     record.syncVersion = current === null ? 1 : current.syncVersion + 1;
@@ -155,7 +209,7 @@ export class VncTrustService {
       result.message = this.cloud.getLastMutationResult().message || 'VNC trust 保存失败';
       return result;
     }
-    this.rememberLocalConfirmation(record.ownerId, normalized);
+    this.rememberLocalConfirmation(record.ownerId, normalized, endpointBindingFingerprint);
     result.ok = true;
     this.emitChange();
     return result;
@@ -181,6 +235,9 @@ export class VncTrustService {
     let fingerprint: string = '';
     let confirmed: boolean = false;
     let confirmedAt: number = 0;
+    let ownerType: 'host' | 'gateway' = record.ownerType === 'gateway' ? 'gateway' : 'host';
+    let storeIdentityFingerprint: string = '';
+    let endpointBindingFingerprint: string = '';
     try {
       const parsed: Object = JSON.parse(record.payload) as Object;
       const values: Record<string, Object> = parsed as Record<string, Object>;
@@ -189,37 +246,58 @@ export class VncTrustService {
       }
       if (typeof values['confirmed'] === 'boolean') { confirmed = values['confirmed'] as boolean; }
       if (typeof values['confirmedAt'] === 'number') { confirmedAt = values['confirmedAt'] as number; }
+      if (values['ownerType'] === 'host' || values['ownerType'] === 'gateway') {
+        ownerType = values['ownerType'] as 'host' | 'gateway';
+      }
+      if (typeof values['storeIdentityFingerprint'] === 'string') {
+        storeIdentityFingerprint = (values['storeIdentityFingerprint'] as string).trim().toLowerCase();
+      }
+      if (typeof values['endpointBindingFingerprint'] === 'string') {
+        endpointBindingFingerprint = (values['endpointBindingFingerprint'] as string).trim().toLowerCase();
+      }
     } catch (_e) {}
+    const locallyConfirmed: boolean = confirmed && this.hasLocalConfirmation(
+      record.ownerId, fingerprint, endpointBindingFingerprint);
     return {
       id: record.id, userId: record.userId, ownerId: record.ownerId,
       fingerprintSha256: fingerprint,
       // Cloud restore can carry a historical `confirmed` bit, but that bit is
       // only a candidate on a new device. The local confirmation marker is
       // written after an interactive current-connection confirmation.
-      confirmed: confirmed && this.hasLocalConfirmation(record.ownerId, fingerprint),
+      ownerType, storeIdentityFingerprint, endpointBindingFingerprint,
+      confirmed: locallyConfirmed,
+      cloudCandidate: confirmed && !locallyConfirmed,
       confirmedAt, createdAt: record.createdAt,
       syncVersion: record.syncVersion
     };
   }
 
-  private localTrustKey(ownerId: string, fingerprintSha256: string): string {
-    return this.currentUserId() + '|' + ownerId.trim() + '|' + fingerprintSha256.trim().toLowerCase();
+  private localTrustKey(ownerId: string, fingerprintSha256: string,
+    endpointBindingFingerprint: string = ''): string {
+    const binding: string = endpointBindingFingerprint.trim().toLowerCase();
+    return this.currentUserId() + '|' + ownerId.trim() + '|' + fingerprintSha256.trim().toLowerCase() +
+      (binding === '' ? '' : '|' + binding);
   }
 
-  private hasLocalConfirmation(ownerId: string, fingerprintSha256: string): boolean {
+  private hasLocalConfirmation(ownerId: string, fingerprintSha256: string,
+    endpointBindingFingerprint: string = ''): boolean {
     return ownerId.trim() !== '' && fingerprintSha256.trim() !== '' &&
-      this.locallyConfirmed.indexOf(this.localTrustKey(ownerId, fingerprintSha256)) >= 0;
+      this.locallyConfirmed.indexOf(this.localTrustKey(ownerId, fingerprintSha256,
+        endpointBindingFingerprint)) >= 0;
   }
 
-  private rememberLocalConfirmation(ownerId: string, fingerprintSha256: string): void {
-    const key: string = this.localTrustKey(ownerId, fingerprintSha256);
+  private rememberLocalConfirmation(ownerId: string, fingerprintSha256: string,
+    endpointBindingFingerprint: string = ''): void {
+    const key: string = this.localTrustKey(ownerId, fingerprintSha256, endpointBindingFingerprint);
     if (this.locallyConfirmed.indexOf(key) < 0) { this.locallyConfirmed.push(key); }
     this.persistLocalConfirmations();
   }
 
   private forgetLocalConfirmation(ownerId: string, fingerprintSha256: string): void {
     const key: string = this.localTrustKey(ownerId, fingerprintSha256);
-    this.locallyConfirmed = this.locallyConfirmed.filter((value: string): boolean => value !== key);
+    const prefix: string = key + '|';
+    this.locallyConfirmed = this.locallyConfirmed.filter((value: string): boolean =>
+      value !== key && value.indexOf(prefix) !== 0);
     this.persistLocalConfirmations();
   }
 

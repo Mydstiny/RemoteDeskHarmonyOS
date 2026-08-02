@@ -200,11 +200,19 @@ export function vncGatewayPayload(values: VncGatewayValues): string {
   return vncCanonicalJson(payload);
 }
 
-export function vncTrustPayload(fingerprintSha256: string, confirmed: boolean, confirmedAt: number): string {
+export function vncTrustPayload(fingerprintSha256: string, confirmed: boolean, confirmedAt: number,
+  ownerType: string = '', storeIdentityFingerprint: string = '', endpointBindingFingerprint: string = ''): string {
   const payload: Record<string, Object> = {};
   payload['fingerprintSha256'] = fingerprintSha256.trim().toLowerCase();
   payload['confirmed'] = confirmed;
   payload['confirmedAt'] = confirmedAt;
+  if (ownerType.trim() !== '') { payload['ownerType'] = ownerType.trim(); }
+  if (storeIdentityFingerprint.trim() !== '') {
+    payload['storeIdentityFingerprint'] = storeIdentityFingerprint.trim().toLowerCase();
+  }
+  if (endpointBindingFingerprint.trim() !== '') {
+    payload['endpointBindingFingerprint'] = endpointBindingFingerprint.trim().toLowerCase();
+  }
   return vncCanonicalJson(payload);
 }
 

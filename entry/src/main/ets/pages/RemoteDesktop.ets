@@ -26,7 +26,41 @@ import { VncHostService, VncHostView } from '../services/VncHostService';
 import { VncSecretLoadState } from '../services/VncSecretService';
 import { VncGatewayService, VncGatewayView } from '../services/VncGatewayService';
 import { VncSettingsService } from '../services/VncSettingsService';
-import { VncTrustService } from '../services/VncTrustService';
+import { VncTrustEndpoint, VncTrustService, VncTrustView } from '../services/VncTrustService';
+import {
+  VncTlsEndpointResolution,
+  VncTlsHostInput,
+  VncTlsGatewayInput,
+  vncTlsHostInput,
+  vncTlsGatewayInput,
+  resolveVncTlsEndpoint
+} from '../services/VncTlsEndpointPolicy';
+import {
+  classifyVncCertificateProbeForOwner,
+  isVncSha256Fingerprint,
+  VncCertificatePreflightDecision,
+  VncCertificatePreflightState,
+  VncCertificateProbeView,
+  VncCertificateTrustView
+} from '../services/VncCertificatePreflightPolicy';
+import {
+  nextVncCertificateProbeGeneration,
+  nextVncConnectionAttemptGeneration,
+  shouldApplyVncCertificateProbeResult,
+  VncCertificateProbeIdentity
+} from '../services/VncCertificateProbeLifecyclePolicy';
+import {
+  nextVncCertificateSheetGeneration,
+  shouldApplyVncCertificateSheetResult,
+  shouldClearVncCertificateSensitiveHandoffs,
+  shouldRouteVncAfterCertificateSheetDisappear,
+  vncCertificateDecisionForSheetAction,
+  vncCertificateSheetActionAllowed,
+  VncCertificateSheetAction,
+  VncCertificateSheetAttempt
+} from '../services/VncCertificateSheetPolicy';
+import { VncCertificateDecisionHandoff } from '../services/VncCertificateDecisionHandoff';
+import { vncPayloadHashSha256 } from '../services/VncRecordPolicy';
 import { VncSessionCredentialHandoff } from '../services/VncSessionCredentialHandoff';
 import {
   VncSettingsValues,
@@ -314,6 +348,7 @@ import { hashForLog, maskHost, maskUser, safeError } from '../utils/SafeLogger';
 import {
   LocalResourceStats,
   RdpRenderStats,
+  VncCertificateInfo,
   RemoteCursorSnapshot,
   RustDeskDisplayCapabilities,
   RustDeskDisplayInfo,
@@ -379,6 +414,7 @@ const REMOTE_CURSOR_MAX_ASYNC_OUTSTANDING = 2;
 const REMOTE_CURSOR_PIXELMAP_RETIRE_GRACE_MS = REMOTE_CURSOR_RENDER_FRAME_MS * 2;
 const REMOTE_CURSOR_PIXELMAP_RETIRE_RETRY_MS = REMOTE_CURSOR_RENDER_FRAME_MS;
 const REMOTE_CURSOR_MAX_RETIRED_PIXELMAPS = 8;
+const VNC_CERTIFICATE_PROBE_TIMEOUT_MS = 10000;
 const REMOTE_GEOMETRY_SYNC_MS = 500;
 const REMOTE_DESKTOP_DISAPPEAR_BACKGROUND_SIGNAL_WAIT_MS = 500;
 const TOUCHPAD_MAX_LOCAL_STEP_RATIO = 0.75;
@@ -661,6 +697,12 @@ struct RemoteDesktop {
   @State showRustDeskAuthSheet: boolean = false;
   @State showRustDeskTwoFactorSheet: boolean = false;
   @State showVncPasswordSheet: boolean = false;
+  @State showVncCertificateSheet: boolean = false;
+  @State vncCertificateState: VncCertificatePreflightState = VncCertificatePreflightState.IDLE;
+  @State vncCertificateInfo: VncCertificateInfo | null = null;
+  @State vncCertificateError: string = '';
+  @State vncCertificateShowDetails: boolean = false;
+  @State vncCertificateWarning: string = '';
   @State rustDeskDiagnostics: RustDeskDiagnosticsSnapshot = EMPTY_RUSTDESK_DIAGNOSTICS;
   @State rustDeskDisplayCapabilities: RustDeskDisplayCapabilities = EMPTY_RUSTDESK_DISPLAY_CAPABILITIES;
   @State showRustDeskDisplayResolutionMenu: boolean = false;
@@ -736,6 +778,19 @@ struct RemoteDesktop {
   private vncPasswordBackPending: boolean = false;
   private vncPasswordPendingStart: boolean = false;
   private vncPasswordSheetClosing: boolean = false;
+  private vncCertificateSheetClosing: boolean = false;
+  private vncCertificatePendingRoute: boolean = false;
+  private vncCertificateBackPending: boolean = false;
+  private vncCertificateProbeGeneration: number = 0;
+  private vncCertificateConnectionAttemptGeneration: number = 0;
+  private vncCertificateSheetGeneration: number = 0;
+  private vncCertificateProbeRequestId: number = 0;
+  private vncCertificateExpectedFingerprint: string = '';
+  private vncCertificateEndpoint: VncTlsEndpointResolution | null = null;
+  private vncCertificateTrustOwner: VncTrustEndpoint | null = null;
+  private vncCertificateProbeIdentity: VncCertificateProbeIdentity | null = null;
+  private vncCertificateHandoff: VncCertificateDecisionHandoff = new VncCertificateDecisionHandoff();
+  private vncCertificateLastAttempt: VncCertificateSheetAttempt | null = null;
   private vncTransientPassword: string = '';
   private vncAuthResolved: boolean = false;
   private vncAuthRetryPending: boolean = false;
@@ -1899,6 +1954,364 @@ struct RemoteDesktop {
     .backgroundColor(this.pal().sheetBg)
   }
 
+  private vncCertificateAttemptId(host: VncHostView): string {
+    return 'vnc-cert:' + host.id.trim();
+  }
+
+  private vncCertificateStoreFingerprint(): string {
+    const scope = AccountSessionCoordinator.getInstance().currentScope();
+    return vncPayloadHashSha256('RemoteDeskHarmonyOS:vnctls-store:v1:' + scope.storeIdentity);
+  }
+
+  private resolveVncCertificateEndpoint(host: VncHostView): VncTlsEndpointResolution {
+    const scope = AccountSessionCoordinator.getInstance().currentScope();
+    const storeFingerprint: string = this.vncCertificateStoreFingerprint();
+    const hostInput: VncTlsHostInput = vncTlsHostInput(
+      host.id, host.userId, host, host.host, storeFingerprint);
+    let gatewayInput: VncTlsGatewayInput | null = null;
+    if (host.gatewayId.trim() !== '') {
+      const gateway: VncGatewayView | null = this.vncGateways.find(host.gatewayId);
+      if (gateway !== null) {
+        gatewayInput = vncTlsGatewayInput(
+          gateway.id, gateway.userId, gateway, storeFingerprint);
+      }
+    }
+    // The resolver is the single source for the socket, SNI, TLS owner and
+    // endpoint binding used by both the probe and the final connection.
+    const resolved: VncTlsEndpointResolution = resolveVncTlsEndpoint(hostInput, gatewayInput);
+    if (scope.ownerScopeId.trim() === '' || scope.generation <= 0) {
+      return resolveVncTlsEndpoint({
+        id: '', userId: '', storeIdentityFingerprint: '', label: '', host: '', port: 0,
+        username: '', gatewayId: '', transport: host.transport, repeaterMode: host.repeaterMode,
+        targetId: '', securityPolicy: host.securityPolicy, tls: host.tls
+      }, null);
+    }
+    return resolved;
+  }
+
+  private vncCertificateTrustEndpoint(endpoint: VncTlsEndpointResolution): VncTrustEndpoint | null {
+    if (!endpoint.ok || endpoint.trustOwner === null) { return null; }
+    return {
+      ownerType: endpoint.trustOwner.ownerType,
+      ownerId: endpoint.trustOwner.ownerId,
+      userId: endpoint.trustOwner.userId,
+      storeIdentityFingerprint: endpoint.trustOwner.storeIdentityFingerprint,
+      endpointBindingFingerprint: endpoint.trustOwner.endpointBindingFingerprint
+    };
+  }
+
+  private vncCertificateIdentity(host: VncHostView,
+    endpoint: VncTlsEndpointResolution): VncCertificateProbeIdentity {
+    return {
+      userId: host.userId.trim(),
+      hostId: host.id.trim(),
+      gatewayId: host.gatewayId.trim(),
+      endpointBindingFingerprint: endpoint.endpointBindingFingerprint,
+      storeGeneration: AccountSessionCoordinator.getInstance().currentScope().generation
+    };
+  }
+
+  private vncCertificateProbeView(info: VncCertificateInfo): VncCertificateProbeView {
+    return {
+      ok: info.ok,
+      fingerprintSha256: info.fingerprintSha256,
+      commonName: info.commonName,
+      subject: info.subject,
+      issuer: info.issuer,
+      notBeforeMs: info.notBeforeMs,
+      notAfterMs: info.notAfterMs,
+      rootTrusted: info.rootTrusted,
+      hostMismatch: info.hostMismatch,
+      errorCode: info.errorMessageCategory,
+      errorMessage: info.errorMessage
+    };
+  }
+
+  private vncCertificateTrustView(trust: VncTrustView | null): VncCertificateTrustView | null {
+    if (trust === null) { return null; }
+    const view: VncCertificateTrustView = {
+      ownerType: trust.ownerType,
+      ownerId: trust.ownerId,
+      userId: trust.userId,
+      storeIdentityFingerprint: trust.storeIdentityFingerprint,
+      endpointBindingFingerprint: trust.endpointBindingFingerprint,
+      fingerprintSha256: trust.fingerprintSha256,
+      confirmed: trust.confirmed,
+      confirmedAt: trust.confirmedAt,
+      cloudCandidate: trust.cloudCandidate
+    };
+    return view;
+  }
+
+  private vncCertificateInfoWarning(info: VncCertificateInfo): string {
+    const warnings: string[] = [];
+    if (!info.rootTrusted) { warnings.push('系统信任根未验证'); }
+    if (info.hostMismatch) { warnings.push('证书名称与连接地址不匹配'); }
+    if (info.notAfterMs > 0 && Date.now() > info.notAfterMs) { warnings.push('证书已过期'); }
+    if (info.notBeforeMs > 0 && Date.now() < info.notBeforeMs) { warnings.push('证书尚未生效'); }
+    return warnings.join('；');
+  }
+
+  private setVncCertificateSheetState(state: VncCertificatePreflightState): void {
+    this.vncCertificateState = state;
+    this.showVncCertificateSheet = state !== VncCertificatePreflightState.IDLE &&
+      state !== VncCertificatePreflightState.TRUSTED_MATCH &&
+      state !== VncCertificatePreflightState.CLOSING;
+  }
+
+  private async beginVncCertificatePreflight(): Promise<void> {
+    const host: VncHostView | null = this.pendingVncHost;
+    if (host === null) { return; }
+    if (this.vncCertificateSheetClosing || this.showVncPasswordSheet || this.vncPasswordSheetClosing) {
+      this.vncCertificatePendingRoute = true;
+      return;
+    }
+    this.cancelVncCertificateProbe();
+    this.vncCertificateProbeGeneration = nextVncCertificateProbeGeneration(
+      this.vncCertificateProbeGeneration);
+    this.vncCertificateConnectionAttemptGeneration = nextVncConnectionAttemptGeneration(
+      this.vncCertificateConnectionAttemptGeneration);
+    this.vncCertificateSheetGeneration = nextVncCertificateSheetGeneration(
+      this.vncCertificateSheetGeneration);
+    this.vncCertificateLastAttempt = {
+      sheetGeneration: this.vncCertificateSheetGeneration,
+      probeGeneration: this.vncCertificateProbeGeneration,
+      connectionAttemptGeneration: this.vncCertificateConnectionAttemptGeneration
+    };
+    this.vncCertificateInfo = null;
+    this.vncCertificateError = '';
+    this.vncCertificateWarning = '';
+    this.vncCertificateShowDetails = false;
+    this.vncCertificateExpectedFingerprint = '';
+    this.vncCertificateEndpoint = this.resolveVncCertificateEndpoint(host);
+    this.vncCertificateTrustOwner = this.vncCertificateTrustEndpoint(this.vncCertificateEndpoint);
+    this.vncCertificateProbeIdentity = this.vncCertificateIdentity(host, this.vncCertificateEndpoint);
+    if (!this.vncCertificateEndpoint.ok) {
+      this.vncCertificateState = VncCertificatePreflightState.ERROR;
+      this.vncCertificateError = this.vncCertificateEndpoint.errorCode || 'E-VNC-ENDPOINT-INVALID';
+      this.setVncCertificateSheetState(VncCertificatePreflightState.ERROR);
+      return;
+    }
+    if (!this.vncCertificateEndpoint.tlsRequired) {
+      this.vncCertificateState = VncCertificatePreflightState.TRUSTED_MATCH;
+      this.finishVncCertificatePreflight();
+      return;
+    }
+    this.vncCertificateState = VncCertificatePreflightState.PROBING;
+    this.setVncCertificateSheetState(VncCertificatePreflightState.PROBING);
+    const generation: number = this.vncCertificateProbeGeneration;
+    const connectionGeneration: number = this.vncCertificateConnectionAttemptGeneration;
+    const identity: VncCertificateProbeIdentity = this.vncCertificateProbeIdentity;
+    try {
+      const probe = this.loader.probeVncCertificateAsync(
+        this.vncCertificateEndpoint.connectHost,
+        this.vncCertificateEndpoint.connectPort,
+        this.vncCertificateEndpoint.serverName,
+        VNC_CERTIFICATE_PROBE_TIMEOUT_MS);
+      this.vncCertificateProbeRequestId = probe.requestId;
+      const info: VncCertificateInfo = await probe;
+      if (!shouldApplyVncCertificateProbeResult(
+        this.vncCertificateProbeGeneration, generation,
+        this.vncCertificateConnectionAttemptGeneration, connectionGeneration,
+        this.vncCertificateProbeIdentity as VncCertificateProbeIdentity, identity)) {
+        return;
+      }
+      this.vncCertificateProbeRequestId = 0;
+      this.vncCertificateInfo = info;
+      this.vncCertificateWarning = this.vncCertificateInfoWarning(info);
+      const trustOwner: VncTrustEndpoint | null = this.vncCertificateTrustOwner;
+      const trustRecord: VncTrustView | null = trustOwner === null ? null :
+        this.vncTrust.trustForEndpoint(trustOwner) as VncTrustView | null;
+      const trust: VncCertificateTrustView | null = this.vncCertificateTrustView(trustRecord);
+      const state: VncCertificatePreflightState = classifyVncCertificateProbeForOwner(
+        this.vncCertificateProbeView(info), trust,
+        trustOwner === null ? 'host' : trustOwner.ownerType,
+        trustOwner === null ? '' : trustOwner.ownerId,
+        trustOwner === null ? '' : trustOwner.userId,
+        trustOwner === null ? '' : trustOwner.storeIdentityFingerprint,
+        trustOwner === null ? '' : trustOwner.endpointBindingFingerprint);
+      this.vncCertificateState = state;
+      if (state === VncCertificatePreflightState.TRUSTED_MATCH &&
+        isVncSha256Fingerprint(info.fingerprintSha256)) {
+        this.vncCertificateExpectedFingerprint = info.fingerprintSha256.trim().toLowerCase();
+        this.finishVncCertificatePreflight();
+      } else {
+        this.setVncCertificateSheetState(state);
+        if (state === VncCertificatePreflightState.ERROR) {
+          this.vncCertificateError = info.errorMessageCategory || 'E-VNC-CERT-PROBE';
+        }
+      }
+    } catch (err) {
+      if (!shouldApplyVncCertificateProbeResult(
+        this.vncCertificateProbeGeneration, generation,
+        this.vncCertificateConnectionAttemptGeneration, connectionGeneration,
+        this.vncCertificateProbeIdentity as VncCertificateProbeIdentity, identity)) {
+        return;
+      }
+      this.vncCertificateProbeRequestId = 0;
+      this.vncCertificateState = VncCertificatePreflightState.ERROR;
+      this.vncCertificateError = 'E-VNC-CERT-PROBE';
+      this.vncCertificateInfo = null;
+      this.setVncCertificateSheetState(VncCertificatePreflightState.ERROR);
+      hilog.warn(RD_DOMAIN, RD_TAG, 'VNC certificate probe failed: ' + safeError(err));
+    }
+  }
+
+  private cancelVncCertificateProbe(): void {
+    if (this.vncCertificateProbeRequestId > 0) {
+      this.loader.cancelVncCertificateProbe(this.vncCertificateProbeRequestId);
+      this.vncCertificateProbeRequestId = 0;
+    }
+  }
+
+  private finishVncCertificatePreflight(): void {
+    if (this.pendingVncHost === null) { return; }
+    if (this.vncCertificateState === VncCertificatePreflightState.TRUSTED_MATCH &&
+      this.vncCertificateExpectedFingerprint === '' && this.vncCertificateEndpoint !== null &&
+      this.vncCertificateTrustOwner !== null) {
+      this.vncCertificateExpectedFingerprint = this.vncTrust.trustedFingerprintForEndpoint(
+        this.vncCertificateTrustOwner);
+    }
+    if (this.vncCertificateEndpoint !== null && this.vncCertificateEndpoint.tlsRequired &&
+      !isVncSha256Fingerprint(this.vncCertificateExpectedFingerprint)) {
+      this.vncCertificateState = VncCertificatePreflightState.ERROR;
+      this.vncCertificateError = 'E-VNC-CERT-TRUST-REQUIRED';
+      this.setVncCertificateSheetState(VncCertificatePreflightState.ERROR);
+      return;
+    }
+    this.vncCertificatePendingRoute = true;
+    if (!this.showVncCertificateSheet && !this.vncCertificateSheetClosing) {
+      this.routeVncCertificateToCredentials();
+    }
+  }
+
+  private routeVncCertificateToCredentials(): void {
+    if (!this.vncCertificatePendingRoute || this.vncCertificateSheetClosing ||
+      this.showVncCertificateSheet) { return; }
+    this.vncCertificatePendingRoute = false;
+    const host: VncHostView | null = this.pendingVncHost;
+    if (host === null) { return; }
+    const handoffPassword: string = VncSessionCredentialHandoff.getInstance().take(
+      host.userId, host.id);
+    if (handoffPassword !== '') {
+      this.vncPasswordStatus = 'available';
+      this.vncTransientPassword = handoffPassword;
+      this.vncAuthResolved = true;
+      this.tryStartConnect();
+      return;
+    }
+    this.prepareVncAuthentication();
+  }
+
+  private vncCertificateAction(action: VncCertificateSheetAction): void {
+    const state: VncCertificatePreflightState = this.vncCertificateState;
+    if (!vncCertificateSheetActionAllowed(state, action)) { return; }
+    if (action === VncCertificateSheetAction.CANCEL) {
+      this.cancelVncCertificateDecision();
+      return;
+    }
+    if (action === VncCertificateSheetAction.RETRY) {
+      void this.beginVncCertificatePreflight();
+      return;
+    }
+    if (action === VncCertificateSheetAction.SHOW_DETAILS ||
+      action === VncCertificateSheetAction.HIDE_DETAILS) {
+      this.vncCertificateShowDetails = action === VncCertificateSheetAction.SHOW_DETAILS;
+      return;
+    }
+    const decision: VncCertificatePreflightDecision | null =
+      vncCertificateDecisionForSheetAction(state, action);
+    if (decision === null || this.vncCertificateInfo === null ||
+      !isVncSha256Fingerprint(this.vncCertificateInfo.fingerprintSha256)) { return; }
+    const host: VncHostView | null = this.pendingVncHost;
+    const trustOwner: VncTrustEndpoint | null = this.vncCertificateTrustOwner;
+    if (host === null || trustOwner === null) { return; }
+    const fingerprint: string = this.vncCertificateInfo.fingerprintSha256.trim().toLowerCase();
+    if (decision === VncCertificatePreflightDecision.TRUST ||
+      decision === VncCertificatePreflightDecision.UPDATE_TRUST) {
+      this.vncCertificateExpectedFingerprint = fingerprint;
+      const saved = this.vncTrust.saveForEndpoint(trustOwner, fingerprint);
+      if (!saved.ok) {
+        this.vncCertificateState = VncCertificatePreflightState.ERROR;
+        this.vncCertificateError = saved.message || 'E-VNC-CERT-TRUST-SAVE';
+        return;
+      }
+    } else if (decision === VncCertificatePreflightDecision.CONTINUE_ONCE) {
+      this.vncCertificateExpectedFingerprint = '';
+      const handedOff: boolean = this.vncCertificateHandoff.put(
+        host.userId, this.vncCertificateAttemptId(host),
+        this.vncCertificateProbeGeneration,
+        trustOwner.endpointBindingFingerprint, fingerprint);
+      if (!handedOff) {
+        this.vncCertificateState = VncCertificatePreflightState.ERROR;
+        this.vncCertificateError = 'E-VNC-CERT-HANDOFF';
+        this.setVncCertificateSheetState(VncCertificatePreflightState.ERROR);
+        return;
+      }
+    }
+    this.vncCertificatePendingRoute = true;
+    this.vncCertificateSheetClosing = true;
+    this.vncCertificateState = VncCertificatePreflightState.CLOSING;
+    this.showVncCertificateSheet = false;
+  }
+
+  private cancelVncCertificateDecision(): void {
+    this.cancelVncCertificateProbe();
+    this.vncCertificateProbeGeneration = nextVncCertificateProbeGeneration(
+      this.vncCertificateProbeGeneration);
+    this.vncCertificateConnectionAttemptGeneration = nextVncConnectionAttemptGeneration(
+      this.vncCertificateConnectionAttemptGeneration);
+    this.vncCertificatePendingRoute = false;
+    this.vncCertificateBackPending = true;
+    this.vncCertificateSheetClosing = true;
+    this.vncCertificateState = VncCertificatePreflightState.CLOSING;
+    this.vncCertificateHandoff.clearAll();
+    this.vncTransientPassword = '';
+    this.vncAuthResolved = false;
+    this.connectStarted = false;
+    this.connecting = false;
+    this.connectionError = '连接已取消';
+    this.connectionErrorDetail = 'VNC 证书未确认';
+    this.showVncCertificateSheet = false;
+  }
+
+  private handleVncCertificateSheetDismiss(action: DismissSheetAction): void {
+    if (this.vncCertificateState === VncCertificatePreflightState.CLOSING) {
+      action.dismiss();
+      return;
+    }
+    this.cancelVncCertificateDecision();
+    action.dismiss();
+  }
+
+  private handleVncCertificateSheetDisappear(): void {
+    const closingAttempt: VncCertificateSheetAttempt | null = this.vncCertificateLastAttempt;
+    const activeAttempt: VncCertificateSheetAttempt = {
+      sheetGeneration: this.vncCertificateSheetGeneration,
+      probeGeneration: this.vncCertificateProbeGeneration,
+      connectionAttemptGeneration: this.vncCertificateConnectionAttemptGeneration
+    };
+    if (closingAttempt !== null && !shouldApplyVncCertificateSheetResult(activeAttempt, closingAttempt)) {
+      this.vncCertificatePendingRoute = false;
+    }
+    const shouldRoute: boolean = shouldRouteVncAfterCertificateSheetDisappear(
+      false, false, this.vncCertificatePendingRoute);
+    const goBack: boolean = this.vncCertificateBackPending;
+    this.vncCertificateSheetClosing = false;
+    this.vncCertificateBackPending = false;
+    this.showVncCertificateSheet = false;
+    if (shouldClearVncCertificateSensitiveHandoffs(goBack, false, false)) {
+      this.vncCertificateHandoff.clearAll();
+      this.vncTransientPassword = '';
+      this.vncCertificateExpectedFingerprint = '';
+    }
+    if (shouldRoute) {
+      setTimeout((): void => { this.routeVncCertificateToCredentials(); }, 0);
+      return;
+    }
+    if (goBack) { setTimeout((): void => { this.goBack(); }, 0); }
+  }
+
   private prepareVncAuthentication(): void {
     const host: VncHostView | null = this.pendingVncHost;
     if (host === null) { return; }
@@ -2177,41 +2590,25 @@ struct RemoteDesktop {
   }
 
   private handleVncTrustRequired(host: VncHostView, detail: string): void {
-    const marker: string = 'VNC_TRUST_REQUIRED:';
-    const markerIndex: number = detail.indexOf(marker);
-    if (markerIndex < 0) { return; }
-    const fingerprint: string = detail.substring(markerIndex + marker.length).trim().toLowerCase();
-    if (fingerprint.length < 32 || fingerprint.length > 128) { return; }
-    promptAction.showDialog({
-      title: '确认 VNC TLS 指纹',
-      message: host.label + '\n\nSHA-256:\n' + fingerprint +
-        '\n\n仅保存到 VNC trust；确认后将重新连接。',
-      buttons: [
-        { text: '取消', color: this.pal().text2 },
-        { text: '确认并重连', color: this.accentColor }
-      ]
-    }).then((result: Object): void => {
-      const values: Record<string, number> = result as Record<string, number>;
-      if (values['index'] !== 1) {
-        this.connectionError = 'VNC TLS trust 未确认';
-        this.connectionErrorDetail = '未保存服务器证书指纹';
-        return;
-      }
-      const saved = this.vncTrust.save(host.id, fingerprint);
-      if (!saved.ok) {
-        this.connectionError = 'VNC TLS trust 保存失败';
-        this.connectionErrorDetail = saved.message;
-        return;
-      }
-      this.connectionError = '';
-      this.connectionErrorDetail = '';
-      this.connectStarted = false;
-      this.connecting = true;
-      this.tryStartConnect();
-    }).catch((_err: Error): void => {
-      this.connectionError = 'VNC TLS trust 未确认';
-      this.connectionErrorDetail = '证书指纹确认对话框未完成';
-    });
+    const certificateFailure: boolean = detail.indexOf('E-VNC-CERT-TRUST-REQUIRED') >= 0 ||
+      detail.indexOf('E-VNC-CERT-CHANGED') >= 0 ||
+      detail.indexOf('VNC_TRUST_REQUIRED:') >= 0 ||
+      detail.indexOf('VNC_CERT_CHANGED:') >= 0;
+    if (!certificateFailure || this.pendingVncHost === null || this.pendingVncHost.id !== host.id) {
+      return;
+    }
+    // The native layer remains authoritative.  A defensive trust error starts
+    // the same structured probe/Sheet flow as the initial connection; no
+    // free-form dialog may bypass endpoint metadata or the expected-pin gate.
+    this.vncAuthRetryPending = false;
+    this.vncAuthResolved = false;
+    this.vncTransientPassword = '';
+    this.vncCertificateExpectedFingerprint = '';
+    this.connectionError = '';
+    this.connectionErrorDetail = '';
+    this.connectStarted = false;
+    this.connecting = true;
+    void this.beginVncCertificatePreflight();
   }
 
   private currentSessionCapabilities(): RemoteSessionCapabilities {
@@ -4698,16 +5095,12 @@ struct RemoteDesktop {
         this.hostLabel = vncHost.label;
         this.preAuthenticatedSessionPending = false;
         this.applyDesktopKeyboardMouseMode();
-        const handoffPassword: string = VncSessionCredentialHandoff.getInstance().take(
-          vncHost.userId, vncHost.id);
-        if (handoffPassword !== '') {
-          this.vncPasswordStatus = 'available';
-          this.vncTransientPassword = handoffPassword;
-          this.vncAuthResolved = true;
-          this.tryStartConnect();
-        } else {
-          this.prepareVncAuthentication();
-        }
+        this.vncCertificateState = VncCertificatePreflightState.IDLE;
+        this.vncCertificateExpectedFingerprint = '';
+        this.vncCertificateEndpoint = null;
+        this.vncCertificateTrustOwner = null;
+        this.vncCertificatePendingRoute = false;
+        void this.beginVncCertificatePreflight();
         return;
       }
       const id: string = p['hostId'] as string;
@@ -7390,6 +7783,96 @@ struct RemoteDesktop {
     .shadow({ radius: 24, color: 'rgba(0,0,0,0.24)', offsetY: 8 })
   }
 
+  @Builder vncCertificateSheetBuilder() {
+    Column() {
+      Row() {
+        SymbolGlyph(this.vncCertificateState === VncCertificatePreflightState.ERROR ?
+          $r('sys.symbol.exclamationmark_triangle') : $r('sys.symbol.lock'))
+          .fontSize(28)
+          .fontColor([this.vncCertificateState === VncCertificatePreflightState.ERROR ?
+            '#F0B429' : this.accentColor])
+          .margin({ right: 10 })
+        Column() {
+          Text(this.vncCertificateState === VncCertificatePreflightState.CERTIFICATE_CHANGED ?
+            'VNC TLS 证书已变化' : '确认 VNC TLS 证书')
+            .fontSize(20).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
+          Text(this.pendingVncHost ? this.pendingVncHost.label : 'VNC endpoint')
+            .fontSize(13).fontColor(this.pal().text2).margin({ top: 4 })
+        }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+      }.width('100%').margin({ bottom: 12 })
+      if (this.vncCertificateState === VncCertificatePreflightState.PROBING) {
+        LoadingProgress().width(34).height(34).color(this.accentColor).margin({ top: 18, bottom: 14 })
+        Text('正在检查 VNC TLS 证书，不会发送 RFB、密码或剪贴板数据。')
+          .fontSize(13).fontColor(this.pal().text2).lineHeight(19).width('100%')
+      } else if (this.vncCertificateInfo !== null) {
+        Text(this.vncCertificateState === VncCertificatePreflightState.CERTIFICATE_CHANGED ?
+          '当前 endpoint 返回的证书与已保存信任不一致。默认拒绝连接。' :
+          '这是该 endpoint 的首次证书确认。仅精确 SHA-256 指纹会用于连接校验。')
+          .fontSize(13).fontColor(this.pal().text2).lineHeight(19).width('100%')
+        Column({ space: 6 }) {
+          Text('CN  ' + (this.vncCertificateInfo.commonName || '未提供')).fontSize(12)
+            .fontColor(this.pal().text).width('100%')
+          Text('颁发者  ' + (this.vncCertificateInfo.issuer || '未提供')).fontSize(12)
+            .fontColor(this.pal().text).maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
+            .width('100%')
+          Text('TLS  ' + (this.vncCertificateInfo.tlsVersion || 'unknown')).fontSize(12)
+            .fontColor(this.pal().text).width('100%')
+          if (this.vncCertificateWarning !== '') {
+            Text(this.vncCertificateWarning).fontSize(12).fontColor('#C47F00')
+              .lineHeight(17).width('100%')
+          }
+          if (this.vncCertificateShowDetails) {
+            Text('SHA-256  ' + this.vncCertificateInfo.fingerprintSha256).fontSize(11)
+              .fontColor(this.pal().text3).width('100%').maxLines(2)
+            Text('Subject  ' + (this.vncCertificateInfo.subject || '未提供')).fontSize(11)
+              .fontColor(this.pal().text3).width('100%').maxLines(3)
+              .textOverflow({ overflow: TextOverflow.Ellipsis })
+          }
+          Button(this.vncCertificateShowDetails ? '收起证书详情' : '查看证书详情')
+            .height(34).fontSize(12).backgroundColor(this.pal().surface)
+            .fontColor(this.accentColor).borderRadius(8)
+            .onClick((): void => {
+              this.vncCertificateAction(this.vncCertificateShowDetails ?
+                VncCertificateSheetAction.HIDE_DETAILS : VncCertificateSheetAction.SHOW_DETAILS);
+            })
+        }.width('100%').padding({ top: 12, bottom: 12 })
+      }
+      if (this.vncCertificateError !== '') {
+        Text('检查失败：' + this.vncCertificateError).fontSize(12)
+          .fontColor(this.pal().danger).lineHeight(17).width('100%').margin({ bottom: 10 })
+      }
+      Row({ space: 8 }) {
+        Button('取消').height(40).layoutWeight(1).fontSize(13).borderRadius(9)
+          .backgroundColor(this.pal().surface).fontColor(this.pal().text2)
+          .onClick((): void => { this.vncCertificateAction(VncCertificateSheetAction.CANCEL); })
+        if (this.vncCertificateState === VncCertificatePreflightState.ERROR) {
+          Button('重试').height(40).layoutWeight(1).fontSize(13).borderRadius(9)
+            .backgroundColor(this.accentColor).fontColor(Color.White)
+            .onClick((): void => { this.vncCertificateAction(VncCertificateSheetAction.RETRY); })
+        } else if (this.vncCertificateState === VncCertificatePreflightState.TRUST_FIRST_TIME ||
+          this.vncCertificateState === VncCertificatePreflightState.CERTIFICATE_CHANGED) {
+          Button('仅本次继续').height(40).layoutWeight(1).fontSize(13).borderRadius(9)
+            .backgroundColor(this.pal().surface).fontColor(this.pal().text)
+            .onClick((): void => {
+              this.vncCertificateAction(VncCertificateSheetAction.CONTINUE_ONCE);
+            })
+          Button(this.vncCertificateState === VncCertificatePreflightState.CERTIFICATE_CHANGED ?
+            '更新并信任' : '信任').height(40).layoutWeight(1).fontSize(13).borderRadius(9)
+            .backgroundColor(this.accentColor).fontColor(Color.White)
+            .onClick((): void => {
+              this.vncCertificateAction(this.vncCertificateState ===
+                VncCertificatePreflightState.CERTIFICATE_CHANGED ?
+                VncCertificateSheetAction.UPDATE_TRUST : VncCertificateSheetAction.TRUST);
+            })
+        }
+      }.width('100%').margin({ top: 10 })
+    }.width('100%').constraintSize({ maxWidth: 560 })
+      .padding({ left: 22, right: 22, top: 20, bottom: 22 })
+      .backgroundColor(this.pal().bg).borderRadius(20)
+      .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
+      .shadow({ radius: 24, color: 'rgba(0,0,0,0.24)', offsetY: 8 })
+  }
+
   @Builder vncPasswordSheetBuilder() {
     Column() {
       Text('连接 VNC').fontSize(20).fontWeight(FontWeight.Bold)
@@ -7639,8 +8122,18 @@ struct RemoteDesktop {
       let vncRepeaterTarget: string = '';
       let vncTls: boolean = false;
       let vncExpectedFingerprint: string = '';
+      let vncEndpointForConnect: VncTlsEndpointResolution | null = null;
       if (isVnc && vncHost !== null) {
         vncOwner = this.vncOwnerForConnection(vncHost);
+        vncEndpointForConnect = this.resolveVncCertificateEndpoint(vncHost);
+        if (!vncEndpointForConnect.ok) {
+          throw new Error(vncEndpointForConnect.errorCode || 'VNC endpoint 无效 [E-VNC-ENDPOINT-INVALID]');
+        }
+        if (this.vncCertificateEndpoint === null ||
+          this.vncCertificateEndpoint.endpointBindingFingerprint !==
+            vncEndpointForConnect.endpointBindingFingerprint) {
+          throw new Error('VNC endpoint 已变化，请重新进行证书检查 [E-VNC-CERT-STALE-ENDPOINT]');
+        }
         if (vncHost.gatewayId.trim() !== '' && vncOwner.gateway === null) {
           throw new Error('VNC 网关不存在或已被删除 [E-VNC-GATEWAY-404]');
         }
@@ -7657,16 +8150,17 @@ struct RemoteDesktop {
           this.vncHosts.passwordFor(vncHost.id);
         vncGatewayHost = vncOwner.gateway === null ? '' : vncOwner.gateway.host;
         vncGatewayPort = vncOwner.gateway === null ? 0 : vncOwner.gateway.port;
-        vncServerName = vncOwner.gateway === null ? vncHost.host.trim() : vncOwner.gateway.host.trim();
+        vncServerName = vncEndpointForConnect.serverName;
         vncGatewayPath = vncOwner.gateway === null ? '/vnc' : vncOwner.gateway.path;
-        vncRepeaterMode = vncOwner.gateway === null ? vncHost.repeaterMode : vncOwner.gateway.repeaterMode;
+        vncRepeaterMode = vncEndpointForConnect.transport === 'ultravnc_repeater'
+          ? 'mode12' : vncHost.repeaterMode;
         // mode12 pairs the viewer with the target VNC server.  A host record
         // owns that target ID; the gateway target is only a legacy fallback
         // for records created by the pre-v2 relay form.
         vncRepeaterTarget = vncHost.host.trim() !== '' ? vncHost.host.trim() :
           (vncOwner.gateway === null ? '' : vncOwner.gateway.targetId);
-        vncTls = vncHost.tls || (vncOwner.gateway !== null && vncOwner.gateway.tls);
-        vncExpectedFingerprint = vncTls ? this.vncTrust.trustedFingerprint(vncHost.id) : '';
+        vncTls = vncEndpointForConnect.tlsRequired;
+        vncExpectedFingerprint = vncTls ? this.vncCertificateExpectedFingerprint : '';
         const gatewayAvailability = vncGatewayAvailability(vncHost.transport, vncTls,
           vncOwner.gateway !== null && vncOwner.gateway.tokenConfigured, vncRepeaterMode);
         if (!gatewayAvailability.enabled) {
@@ -7698,6 +8192,10 @@ struct RemoteDesktop {
       let sessionHost: string = rustDeskDirect ? directHost : host.host;
       let sessionPort: number = rustDeskDirect ?
         normalizeRustDeskPort(host.rustdeskDirectPort, RUSTDESK_PEER_TCP_PORT) : host.port;
+      if (isVnc && vncEndpointForConnect !== null) {
+        sessionHost = vncEndpointForConnect.connectHost;
+        sessionPort = vncEndpointForConnect.connectPort;
+      }
       if (host.protocol === 'rustdesk' && !rustDeskDirect) {
         const rustDeskError: string = rustDeskConnectionError({
           directEnabled: false,
@@ -7792,6 +8290,26 @@ struct RemoteDesktop {
       if (rdCodecVal > 0) {
         const codecMap: Record<number, string> = { 1: 'VP8', 2: 'VP9', 3: 'AV1', 4: 'H264', 5: 'H265' };
         cfg['codec'] = codecMap[rdCodecVal] || '';
+      }
+
+      // A CONTINUE_ONCE decision is held only in process memory and consumed
+      // at the final native connect boundary. Persistent trust reaches this
+      // point through vncCertificateExpectedFingerprint; a missing value must
+      // never degrade into an unpinned TLS connection.
+      if (isVnc && vncTls && !isVncSha256Fingerprint(
+        cfg.vncExpectedCertificateFingerprintSha256 ?? '')) {
+        if (vncHost === null || vncEndpointForConnect === null) {
+          throw new Error('VNC TLS endpoint 不可用 [E-VNC-CERT-ENDPOINT]');
+        }
+        const oneShotFingerprint: string = this.vncCertificateHandoff.take(
+          vncHost.userId,
+          this.vncCertificateAttemptId(vncHost),
+          this.vncCertificateProbeGeneration,
+          vncEndpointForConnect.endpointBindingFingerprint);
+        if (!isVncSha256Fingerprint(oneShotFingerprint)) {
+          throw new Error('VNC TLS 证书尚未确认 [E-VNC-CERT-TRUST-REQUIRED]');
+        }
+        cfg.vncExpectedCertificateFingerprintSha256 = oneShotFingerprint;
       }
 
       hilog.info(RD_DOMAIN, RD_TAG, 'Protocol codec effective: proto=' + host.protocol +
@@ -8140,6 +8658,20 @@ struct RemoteDesktop {
     // page/session teardown.
     this.vncTransientPassword = '';
     this.vncAuthResolved = false;
+    this.cancelVncCertificateProbe();
+    this.vncCertificateProbeGeneration = nextVncCertificateProbeGeneration(
+      this.vncCertificateProbeGeneration);
+    this.vncCertificateConnectionAttemptGeneration = nextVncConnectionAttemptGeneration(
+      this.vncCertificateConnectionAttemptGeneration);
+    this.vncCertificateHandoff.clearAll();
+    this.vncCertificatePendingRoute = false;
+    this.vncCertificateExpectedFingerprint = '';
+    this.vncCertificateEndpoint = null;
+    this.vncCertificateTrustOwner = null;
+    this.vncCertificateProbeIdentity = null;
+    this.vncCertificateSheetClosing = false;
+    this.showVncCertificateSheet = false;
+    this.vncCertificateState = VncCertificatePreflightState.IDLE;
     this.clearVncToolbarAutoCollapse();
     this.cancelVncTouchWheelFling();
     this.physicalWheelRemainder = 0;
@@ -12235,6 +12767,21 @@ struct RemoteDesktop {
           onDisappear: (): void => {
             this.finalizeRustDeskTwoFactorSheet();
           }
+        })
+
+      Column().width('100%').height('100%').hitTestBehavior(HitTestMode.None)
+        .bindSheet($$this.showVncCertificateSheet, this.vncCertificateSheetBuilder(), {
+          height: SheetSize.FIT_CONTENT,
+          preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
+          dragBar: true,
+          backgroundColor: this.pal().sheetBg,
+          blurStyle: BlurStyle.NONE,
+          showClose: false,
+          maskColor: 'rgba(0,0,0,0.58)',
+          onWillDismiss: (action: DismissSheetAction): void => {
+            this.handleVncCertificateSheetDismiss(action);
+          },
+          onDisappear: (): void => { this.handleVncCertificateSheetDisappear(); }
         })
 
       Column().width('100%').height('100%').hitTestBehavior(HitTestMode.None)

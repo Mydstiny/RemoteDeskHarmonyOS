@@ -54,6 +54,8 @@ export default function vncCertificateSheetPolicyTest(): void {
         .assertFalse();
       expect(shouldShowVncCertificateSheet(VncCertificatePreflightState.ERROR, false, true))
         .assertFalse();
+      expect(shouldShowVncCertificateSheet(VncCertificatePreflightState.CLOSING, false, false))
+        .assertFalse();
     });
 
     it('keeps_probe_sheet_modal_until_a_decision_or_close', 0, (): void => {

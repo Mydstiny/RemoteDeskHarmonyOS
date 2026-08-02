@@ -25,5 +25,14 @@ export default function vncCertificateDecisionHandoffTest(): void {
         200 + VNC_CERTIFICATE_DECISION_HANDOFF_TTL_MS + 1)).assertEqual('');
       expect(handoff.put('user-1', 'attempt-2', 1, BINDING, 'bad', 300)).assertFalse();
     });
+
+    it('rejects_non_integer_or_non_positive_generations', 0, (): void => {
+      const handoff: VncCertificateDecisionHandoff = new VncCertificateDecisionHandoff();
+      expect(handoff.put('user-1', 'attempt-zero', 0, BINDING, FINGERPRINT, 400)).assertFalse();
+      expect(handoff.put('user-1', 'attempt-negative', -1, BINDING, FINGERPRINT, 401)).assertFalse();
+      expect(handoff.put('user-1', 'attempt-fraction', 1.5, BINDING, FINGERPRINT, 402)).assertFalse();
+      expect(handoff.put('user-1', 'attempt-infinite', Number.POSITIVE_INFINITY,
+        BINDING, FINGERPRINT, 403)).assertFalse();
+    });
   });
 }
