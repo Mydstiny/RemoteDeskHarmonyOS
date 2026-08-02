@@ -7633,6 +7633,7 @@ struct RemoteDesktop {
       let vncPassword: string = '';
       let vncGatewayHost: string = '';
       let vncGatewayPort: number = 0;
+      let vncServerName: string = '';
       let vncGatewayPath: string = '/vnc';
       let vncRepeaterMode: string = 'mode12';
       let vncRepeaterTarget: string = '';
@@ -7656,6 +7657,7 @@ struct RemoteDesktop {
           this.vncHosts.passwordFor(vncHost.id);
         vncGatewayHost = vncOwner.gateway === null ? '' : vncOwner.gateway.host;
         vncGatewayPort = vncOwner.gateway === null ? 0 : vncOwner.gateway.port;
+        vncServerName = vncOwner.gateway === null ? vncHost.host.trim() : vncOwner.gateway.host.trim();
         vncGatewayPath = vncOwner.gateway === null ? '/vnc' : vncOwner.gateway.path;
         vncRepeaterMode = vncOwner.gateway === null ? vncHost.repeaterMode : vncOwner.gateway.repeaterMode;
         // mode12 pairs the viewer with the target VNC server.  A host record
@@ -7769,6 +7771,7 @@ struct RemoteDesktop {
         vncTransport: isVnc && vncOwner !== null ? vncOwner.host.transport : 'direct_tcp',
         vncGatewayHost: isVnc ? vncGatewayHost : '',
         vncGatewayPort: isVnc ? vncGatewayPort : 0,
+        vncServerName: isVnc ? vncServerName : '',
         vncGatewayPath: isVnc ? vncGatewayPath : '/vnc',
         vncRepeaterMode: isVnc ? vncRepeaterMode : 'mode12',
         vncRepeaterTarget: isVnc ? vncRepeaterTarget : '',

@@ -427,6 +427,7 @@ void VncRfbEngine::run() {
     transportConfig.transport = config_.vncTransport;
     transportConfig.host = config_.host;
     transportConfig.port = config_.port;
+    transportConfig.serverName = config_.vncServerName;
     transportConfig.tls = config_.vncTls;
     transportConfig.connectTimeoutMs = config_.vncConnectTimeoutMs;
     transportConfig.websocketPath = config_.vncGatewayPath.empty() ? "/vnc" : config_.vncGatewayPath;
@@ -437,6 +438,9 @@ void VncRfbEngine::run() {
     if (config_.vncTransport == "ultravnc_repeater") {
         if (!config_.vncGatewayHost.empty()) transportConfig.host = config_.vncGatewayHost;
         if (config_.vncGatewayPort > 0) transportConfig.port = config_.vncGatewayPort;
+    }
+    if (transportConfig.serverName.empty()) {
+        transportConfig.serverName = transportConfig.host;
     }
     if (!transport_.connect(transportConfig, error)) {
         if (stopRequested_.load(std::memory_order_acquire)) {
@@ -1454,7 +1458,8 @@ uint8_t VncRfbEngine::reverseBits(uint8_t value) {
 }
 
 bool VncRfbEngine::isTimeout(const std::string& error) {
-    return error.find("timed out") != std::string::npos;
+    return error.find("timed out") != std::string::npos ||
+        error.find("E-VNC-CERT-TLS-TIMEOUT") != std::string::npos;
 }
 
 void VncRfbEngine::setState(ConnectionState state, const std::string& message) {

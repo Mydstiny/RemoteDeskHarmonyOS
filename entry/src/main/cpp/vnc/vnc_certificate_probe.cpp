@@ -23,8 +23,12 @@
 #include <iomanip>
 #include <limits>
 #include <memory>
+#include <condition_variable>
+#include <mutex>
 #include <sstream>
 #include <string>
+#include <thread>
+#include <vector>
 
 #if !defined(RDP_TESTS_ONLY)
 #include <hilog/log.h>
@@ -52,6 +56,9 @@ namespace {
 constexpr size_t kMaxHostBytes = 255;
 constexpr size_t kMaxCommonNameBytes = 256;
 constexpr size_t kMaxNameBytes = 2048;
+constexpr size_t kMaxNameEntries = 64;
+constexpr size_t kMaxResolvedAddresses = 16;
+constexpr int kMaxPeerChainDepth = 8;
 constexpr int kMinTimeoutMs = 100;
 constexpr int kMaxTimeoutMs = 120000;
 
@@ -124,7 +131,8 @@ WaitStatus waitForFd(int fd, short events, const ProbeDeadline& deadline,
             return WaitStatus::TimedOut;
         }
         struct pollfd descriptor {fd, events, 0};
-        const int pollMs = std::min(remainingMs, 250);
+        // Keep cancellation responsive while retaining a bounded syscall.
+        const int pollMs = std::min(remainingMs, 50);
         const int result = ::poll(&descriptor, 1, pollMs);
         if (result > 0) {
             if ((descriptor.revents & (POLLERR | POLLHUP | POLLNVAL)) != 0) {
@@ -172,36 +180,169 @@ WaitStatus connectAddress(int fd, const sockaddr* address, socklen_t addressLeng
     return WaitStatus::Ready;
 }
 
-std::string boundedPrintable(const std::string& value, size_t maxBytes) {
-    std::string output;
-    output.reserve(std::min(value.size(), maxBytes));
-    for (unsigned char ch : value) {
-        if (output.size() >= maxBytes) {
-            break;
+struct ResolvedAddress {
+    sockaddr_storage storage {};
+    socklen_t length = 0;
+    int family = AF_UNSPEC;
+    int socktype = SOCK_STREAM;
+    int protocol = 0;
+};
+
+struct ResolveState {
+    std::mutex mutex;
+    std::condition_variable condition;
+    bool done = false;
+    bool abandoned = false;
+    int lookupResult = EAI_FAIL;
+    std::vector<ResolvedAddress> addresses;
+};
+
+WaitStatus resolveAddresses(const std::string& host, const std::string& port,
+                            const ProbeDeadline& deadline,
+                            const std::shared_ptr<std::atomic_bool>& token,
+                            std::vector<ResolvedAddress>& addresses, int& lookupResult) {
+    auto state = std::make_shared<ResolveState>();
+    std::thread resolver([state, host, port]() {
+        addrinfo hints {};
+        hints.ai_family = AF_UNSPEC;
+        hints.ai_socktype = SOCK_STREAM;
+        addrinfo* resolved = nullptr;
+        const int result = ::getaddrinfo(host.c_str(), port.c_str(), &hints, &resolved);
+        std::vector<ResolvedAddress> copied;
+        if (result == 0 && resolved != nullptr) {
+            for (addrinfo* item = resolved;
+                 item != nullptr && copied.size() < kMaxResolvedAddresses;
+                 item = item->ai_next) {
+                if (item->ai_addr == nullptr || item->ai_addrlen <= 0 ||
+                    item->ai_addrlen > sizeof(sockaddr_storage)) {
+                    continue;
+                }
+                ResolvedAddress address;
+                std::memcpy(&address.storage, item->ai_addr,
+                            static_cast<size_t>(item->ai_addrlen));
+                address.length = static_cast<socklen_t>(item->ai_addrlen);
+                address.family = item->ai_family;
+                address.socktype = item->ai_socktype;
+                address.protocol = item->ai_protocol;
+                copied.push_back(address);
+            }
         }
+        if (resolved != nullptr) {
+            ::freeaddrinfo(resolved);
+        }
+        {
+            std::lock_guard<std::mutex> lock(state->mutex);
+            state->lookupResult = result;
+            if (!state->abandoned) {
+                state->addresses = std::move(copied);
+            }
+            state->done = true;
+        }
+        state->condition.notify_one();
+    });
+
+    WaitStatus status = WaitStatus::Ready;
+    {
+        std::unique_lock<std::mutex> lock(state->mutex);
+        while (!state->done) {
+            if (isCancelled(token)) {
+                state->abandoned = true;
+                status = WaitStatus::Cancelled;
+                break;
+            }
+            int remainingMs = 0;
+            if (!hasTimeRemaining(deadline, remainingMs)) {
+                state->abandoned = true;
+                status = WaitStatus::TimedOut;
+                break;
+            }
+            const auto waitMs = std::chrono::milliseconds(std::min(remainingMs, 50));
+            state->condition.wait_for(lock, waitMs);
+        }
+        if (status == WaitStatus::Ready) {
+            lookupResult = state->lookupResult;
+            addresses = std::move(state->addresses);
+            if (lookupResult != 0 || addresses.empty()) {
+                status = WaitStatus::Failed;
+            }
+        }
+    }
+    if (status == WaitStatus::Ready || state->done) {
+        resolver.join();
+    } else {
+        // A platform resolver may remain in libc after the caller's deadline.
+        // Detach only that resolver; its shared state owns all copied results
+        // and frees the native addrinfo before publishing completion.
+        resolver.detach();
+    }
+    return status;
+}
+
+void appendBoundedPrintable(std::string& output, const unsigned char* data, size_t length,
+                            size_t maxBytes) {
+    if (data == nullptr || maxBytes == 0) {
+        return;
+    }
+    const size_t available = maxBytes > output.size() ? maxBytes - output.size() : 0;
+    const size_t count = std::min(length, available);
+    for (size_t index = 0; index < count; ++index) {
+        const unsigned char ch = data[index];
         output.push_back(ch >= 0x20 && ch <= 0x7e ? static_cast<char>(ch) : '?');
+    }
+}
+
+void appendBoundedPrintable(std::string& output, const char* data, size_t length,
+                            size_t maxBytes) {
+    appendBoundedPrintable(output, reinterpret_cast<const unsigned char*>(data), length,
+                           maxBytes);
+}
+
+std::string boundedX509Name(const X509_NAME* name) {
+    if (name == nullptr) {
+        return "";
+    }
+    std::string output;
+    output.reserve(kMaxNameBytes);
+    const int entryCount = X509_NAME_entry_count(name);
+    if (entryCount < 0) {
+        return output;
+    }
+    const int boundedEntryCount = std::min(entryCount, static_cast<int>(kMaxNameEntries));
+    for (int index = 0; index < boundedEntryCount && output.size() < kMaxNameBytes; ++index) {
+        X509_NAME_ENTRY* entry = X509_NAME_get_entry(const_cast<X509_NAME*>(name), index);
+        ASN1_OBJECT* object = entry == nullptr ? nullptr : X509_NAME_ENTRY_get_object(entry);
+        ASN1_STRING* value = entry == nullptr ? nullptr : X509_NAME_ENTRY_get_data(entry);
+        if (object == nullptr || value == nullptr) {
+            continue;
+        }
+        if (!output.empty()) {
+            output.push_back('/');
+        }
+        char objectName[128] = {0};
+        const int objectLength = OBJ_obj2txt(objectName, sizeof(objectName), object, 1);
+        if (objectLength > 0) {
+            appendBoundedPrintable(output, objectName,
+                                   static_cast<size_t>(std::min(objectLength,
+                                                                static_cast<int>(sizeof(objectName) - 1))),
+                                   kMaxNameBytes);
+        }
+        if (output.size() < kMaxNameBytes) {
+            output.push_back('=');
+        }
+        const unsigned char* data = ASN1_STRING_get0_data(value);
+        const int length = ASN1_STRING_length(value);
+        if (data != nullptr && length > 0) {
+            appendBoundedPrintable(output, data, static_cast<size_t>(length), kMaxNameBytes);
+        }
     }
     return output;
 }
 
-std::string boundedX509Name(X509_NAME* name) {
-    if (name == nullptr) {
-        return "";
-    }
-    char* text = X509_NAME_oneline(name, nullptr, 0);
-    if (text == nullptr) {
-        return "";
-    }
-    const std::string raw(text);
-    OPENSSL_free(text);
-    return boundedPrintable(raw, kMaxNameBytes);
-}
-
-std::string boundedCommonName(X509* certificate) {
+std::string boundedCommonName(const X509* certificate) {
     if (certificate == nullptr) {
         return "";
     }
-    X509_NAME* subject = X509_get_subject_name(certificate);
+    X509_NAME* subject = X509_get_subject_name(const_cast<X509*>(certificate));
     if (subject == nullptr) {
         return "";
     }
@@ -219,9 +360,10 @@ std::string boundedCommonName(X509* certificate) {
     if (data == nullptr || length <= 0) {
         return "";
     }
-    return boundedPrintable(std::string(reinterpret_cast<const char*>(data),
-                                        static_cast<size_t>(length)),
-                            kMaxCommonNameBytes);
+    std::string output;
+    output.reserve(std::min(static_cast<size_t>(length), kMaxCommonNameBytes));
+    appendBoundedPrintable(output, data, static_cast<size_t>(length), kMaxCommonNameBytes);
+    return output;
 }
 
 bool asn1TimeToMillis(const ASN1_TIME* value, int64_t& output) {
@@ -351,6 +493,8 @@ std::string vncCertificateProbeErrorCategory(int errorCode) {
         case VncCertificateProbeErrorCode::FingerprintFailed: return "fingerprint_failed";
         case VncCertificateProbeErrorCode::TlsVersionRejected: return "tls_version_rejected";
         case VncCertificateProbeErrorCode::MetadataFailed: return "metadata_failed";
+        case VncCertificateProbeErrorCode::CertificateChainTooDeep: return "certificate_chain_too_deep";
+        case VncCertificateProbeErrorCode::ResolveTimeout: return "resolve_timeout";
     }
     return "unknown";
 }
@@ -370,8 +514,29 @@ std::string vncCertificateProbeErrorMessage(int errorCode) {
         case VncCertificateProbeErrorCode::FingerprintFailed: return "VNC TLS 证书指纹读取失败 [E-VNC-CERT-FINGERPRINT]";
         case VncCertificateProbeErrorCode::TlsVersionRejected: return "VNC TLS 版本不受支持 [E-VNC-CERT-TLS-VERSION]";
         case VncCertificateProbeErrorCode::MetadataFailed: return "VNC TLS 证书元数据无效 [E-VNC-CERT-METADATA]";
+        case VncCertificateProbeErrorCode::CertificateChainTooDeep: return "VNC TLS 证书链过深 [E-VNC-CERT-CHAIN-DEPTH]";
+        case VncCertificateProbeErrorCode::ResolveTimeout: return "VNC TLS endpoint DNS 解析超时 [E-VNC-CERT-DNS-TIMEOUT]";
     }
     return "VNC TLS 证书探测失败 [E-VNC-CERT-UNKNOWN]";
+}
+
+std::string vncRedactCertificateMessageForLog(const std::string& message) {
+    std::string redacted = message;
+    constexpr const char* kMarkers[] = {"VNC_TRUST_REQUIRED:", "VNC_CERT_CHANGED:"};
+    for (const char* marker : kMarkers) {
+        const size_t markerLength = std::strlen(marker);
+        const size_t markerPosition = redacted.find(marker);
+        if (markerPosition == std::string::npos) {
+            continue;
+        }
+        const size_t fingerprintStart = markerPosition + markerLength;
+        const size_t fingerprintEnd = redacted.find_first_of(" \t\r\n;", fingerprintStart);
+        const size_t end = fingerprintEnd == std::string::npos ? redacted.size() : fingerprintEnd;
+        if (end > fingerprintStart) {
+            redacted.replace(fingerprintStart, end - fingerprintStart, "<fingerprint-redacted>");
+        }
+    }
+    return redacted;
 }
 
 VncCertificateInfo probeVncCertificate(const VncCertificateProbeConfig& config) {
@@ -387,13 +552,20 @@ VncCertificateInfo probeVncCertificate(const VncCertificateProbeConfig& config) 
         return errorResult(config, VncCertificateProbeErrorCode::Cancelled);
     }
 
-    addrinfo hints {};
-    hints.ai_family = AF_UNSPEC;
-    hints.ai_socktype = SOCK_STREAM;
-    addrinfo* addresses = nullptr;
     const std::string portText = std::to_string(config.port);
-    const int lookup = ::getaddrinfo(config.host.c_str(), portText.c_str(), &hints, &addresses);
-    if (lookup != 0 || addresses == nullptr) {
+    std::vector<ResolvedAddress> addresses;
+    int lookup = EAI_FAIL;
+    const WaitStatus resolveStatus = resolveAddresses(config.host, portText, deadline,
+                                                      config.cancelled, addresses, lookup);
+    if (resolveStatus == WaitStatus::Cancelled) {
+        return errorResult(config, VncCertificateProbeErrorCode::Cancelled);
+    }
+    if (resolveStatus == WaitStatus::TimedOut) {
+        OH_LOG_WARN(LOG_APP, "[VNC-CERT] category=resolve_timeout host=%{public}s port=%{public}d",
+                    SafeLog::MaskHost(config.host).c_str(), config.port);
+        return errorResult(config, VncCertificateProbeErrorCode::ResolveTimeout);
+    }
+    if (resolveStatus != WaitStatus::Ready || lookup != 0 || addresses.empty()) {
         OH_LOG_WARN(LOG_APP, "[VNC-CERT] category=resolve_failed host=%{public}s port=%{public}d",
                     SafeLog::MaskHost(config.host).c_str(), config.port);
         return errorResult(config, VncCertificateProbeErrorCode::ResolveFailed);
@@ -401,18 +573,19 @@ VncCertificateInfo probeVncCertificate(const VncCertificateProbeConfig& config) 
 
     int socketFd = -1;
     WaitStatus connectStatus = WaitStatus::Failed;
-    for (addrinfo* address = addresses; address != nullptr; address = address->ai_next) {
+    for (const ResolvedAddress& address : addresses) {
         if (isCancelled(config.cancelled)) {
             connectStatus = WaitStatus::Cancelled;
             break;
         }
-        socketFd = ::socket(address->ai_family, address->ai_socktype, address->ai_protocol);
+        socketFd = ::socket(address.family, address.socktype, address.protocol);
         if (socketFd < 0 || !setNonBlocking(socketFd)) {
             closeSocket(socketFd);
             continue;
         }
-        connectStatus = connectAddress(socketFd, address->ai_addr,
-                                       static_cast<socklen_t>(address->ai_addrlen),
+        connectStatus = connectAddress(socketFd,
+                                       reinterpret_cast<const sockaddr*>(&address.storage),
+                                       address.length,
                                        deadline, config.cancelled);
         if (connectStatus == WaitStatus::Ready) {
             break;
@@ -422,7 +595,6 @@ VncCertificateInfo probeVncCertificate(const VncCertificateProbeConfig& config) 
             break;
         }
     }
-    ::freeaddrinfo(addresses);
     if (connectStatus == WaitStatus::Cancelled) {
         closeSocket(socketFd);
         return errorResult(config, VncCertificateProbeErrorCode::Cancelled);
@@ -516,6 +688,15 @@ VncCertificateInfo probeVncCertificate(const VncCertificateProbeConfig& config) 
         closeSocket(socketFd);
         return errorResult(config, VncCertificateProbeErrorCode::NoCertificate);
     }
+    STACK_OF(X509)* peerChain = SSL_get_peer_cert_chain(ssl);
+    if (peerChain != nullptr && sk_X509_num(peerChain) > kMaxPeerChainDepth) {
+        X509_free(certificate);
+        SSL_shutdown(ssl);
+        SSL_free(ssl);
+        SSL_CTX_free(context);
+        closeSocket(socketFd);
+        return errorResult(config, VncCertificateProbeErrorCode::CertificateChainTooDeep);
+    }
     unsigned char digest[EVP_MAX_MD_SIZE] = {0};
     unsigned int digestSize = 0;
     if (X509_digest(certificate, EVP_sha256(), digest, &digestSize) != 1 || digestSize != 32) {
@@ -558,7 +739,11 @@ VncCertificateInfo probeVncCertificate(const VncCertificateProbeConfig& config) 
     X509_STORE* store = X509_STORE_new();
     X509_STORE_CTX* storeContext = X509_STORE_CTX_new();
     if (store != nullptr && storeContext != nullptr && X509_STORE_set_default_paths(store) == 1 &&
-        X509_STORE_CTX_init(storeContext, store, certificate, nullptr) == 1) {
+        X509_STORE_CTX_init(storeContext, store, certificate, peerChain) == 1) {
+        X509_VERIFY_PARAM* verifyParameters = X509_STORE_CTX_get0_param(storeContext);
+        if (verifyParameters != nullptr) {
+            X509_VERIFY_PARAM_set_depth(verifyParameters, kMaxPeerChainDepth);
+        }
         result.rootTrusted = X509_verify_cert(storeContext) == 1;
     }
     if (storeContext != nullptr) {

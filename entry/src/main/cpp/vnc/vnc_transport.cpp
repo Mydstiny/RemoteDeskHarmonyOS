@@ -27,7 +27,6 @@
 #include <limits>
 #include <sstream>
 
-#include <openssl/err.h>
 #include <openssl/rand.h>
 #include <openssl/sha.h>
 #include <openssl/ssl.h>
@@ -96,14 +95,12 @@ bool isIpLiteral(const std::string& value) {
         inet_pton(AF_INET6, value.c_str(), &ipv6) == 1;
 }
 
-std::string opensslError() {
-    const unsigned long code = ERR_get_error();
-    if (code == 0) {
-        return "TLS operation failed";
+void setTlsIoError(std::string& error, bool writing, const std::string& waitError = "") {
+    if (waitError == "socket operation timed out") {
+        error = "E-VNC-CERT-TLS-TIMEOUT";
+        return;
     }
-    char buffer[256] = {0};
-    ERR_error_string_n(code, buffer, sizeof(buffer));
-    return buffer;
+    error = writing ? "E-VNC-CERT-TLS-WRITE" : "E-VNC-CERT-TLS-READ";
 }
 
 } // namespace
@@ -218,10 +215,14 @@ bool VncTransport::enableTls(const VncTransportConfig& config, std::string& erro
     const SSL_METHOD* method = TLS_client_method();
     SSL_CTX* context = SSL_CTX_new(method);
     if (context == nullptr) {
-        error = opensslError();
+        error = "E-VNC-CERT-TLS-CONTEXT";
         return false;
     }
-    SSL_CTX_set_min_proto_version(context, TLS1_2_VERSION);
+    if (SSL_CTX_set_min_proto_version(context, TLS1_2_VERSION) != 1) {
+        SSL_CTX_free(context);
+        error = "E-VNC-CERT-TLS-CONTEXT";
+        return false;
+    }
     // VNC deployments frequently use self-signed certificates.  The first
     // handshake is a fingerprint-probe only and is rejected below; subsequent
     // sessions must supply the user-confirmed SHA-256 pin.  This keeps the
@@ -231,11 +232,17 @@ bool VncTransport::enableTls(const VncTransportConfig& config, std::string& erro
     SSL* ssl = SSL_new(context);
     if (ssl == nullptr) {
         SSL_CTX_free(context);
-        error = opensslError();
+        error = "E-VNC-CERT-TLS-CONTEXT";
         return false;
     }
-    SSL_set_fd(ssl, socketFd_);
-    if (!isIpLiteral(config.host) && SSL_set_tlsext_host_name(ssl, config.host.c_str()) != 1) {
+    if (SSL_set_fd(ssl, socketFd_) != 1) {
+        SSL_free(ssl);
+        SSL_CTX_free(context);
+        error = "E-VNC-CERT-TLS-CONTEXT";
+        return false;
+    }
+    const std::string serverName = config.serverName.empty() ? config.host : config.serverName;
+    if (!isIpLiteral(serverName) && SSL_set_tlsext_host_name(ssl, serverName.c_str()) != 1) {
         SSL_free(ssl);
         SSL_CTX_free(context);
         error = "E-VNC-CERT-TLS-SNI";
@@ -249,6 +256,8 @@ bool VncTransport::enableTls(const VncTransportConfig& config, std::string& erro
         const int sslError = SSL_get_error(ssl, result);
         if (sslError == SSL_ERROR_WANT_READ) {
             if (!waitForFd(socketFd_, POLLIN, config.connectTimeoutMs, error)) {
+                error = error == "socket operation timed out" ?
+                    "E-VNC-CERT-TLS-TIMEOUT" : "E-VNC-CERT-TLS-HANDSHAKE";
                 SSL_free(ssl);
                 SSL_CTX_free(context);
                 return false;
@@ -257,13 +266,15 @@ bool VncTransport::enableTls(const VncTransportConfig& config, std::string& erro
         }
         if (sslError == SSL_ERROR_WANT_WRITE) {
             if (!waitForFd(socketFd_, POLLOUT, config.connectTimeoutMs, error)) {
+                error = error == "socket operation timed out" ?
+                    "E-VNC-CERT-TLS-TIMEOUT" : "E-VNC-CERT-TLS-HANDSHAKE";
                 SSL_free(ssl);
                 SSL_CTX_free(context);
                 return false;
             }
             continue;
         }
-        error = opensslError();
+        error = "E-VNC-CERT-TLS-HANDSHAKE";
         SSL_free(ssl);
         SSL_CTX_free(context);
         return false;
@@ -290,7 +301,7 @@ bool VncTransport::validatePeerCertificate(const std::string& expectedFingerprin
     SSL* ssl = static_cast<SSL*>(ssl_);
     X509* certificate = ssl == nullptr ? nullptr : SSL_get_peer_certificate(ssl);
     if (certificate == nullptr) {
-        error = "TLS peer certificate is missing";
+        error = "E-VNC-CERT-NO-CERTIFICATE";
         return false;
     }
     unsigned char digest[EVP_MAX_MD_SIZE] = {0};
@@ -298,7 +309,7 @@ bool VncTransport::validatePeerCertificate(const std::string& expectedFingerprin
     const bool digestOk = X509_digest(certificate, EVP_sha256(), digest, &digestSize) == 1;
     X509_free(certificate);
     if (!digestOk || digestSize == 0) {
-        error = "unable to fingerprint TLS peer certificate";
+        error = "E-VNC-CERT-FINGERPRINT";
         return false;
     }
     std::ostringstream fingerprint;
@@ -324,7 +335,7 @@ bool VncTransport::validatePeerCertificate(const std::string& expectedFingerprin
         return false;
     }
     if (!constantTimeEqual(actualNormalized, expectedNormalized)) {
-        error = "E-VNC-CERT-CHANGED:" + actualFingerprint;
+        error = "E-VNC-CERT-CHANGED;VNC_CERT_CHANGED:" + actualFingerprint;
         return false;
     }
     return true;
@@ -437,7 +448,7 @@ bool VncTransport::readRaw(uint8_t* destination, size_t size, int timeoutMs, std
         if (tls_) {
             SSL* ssl = static_cast<SSL*>(ssl_);
             if (ssl == nullptr) {
-                error = "TLS session is unavailable";
+                error = "E-VNC-CERT-TLS-SESSION";
                 return false;
             }
             const int result = SSL_read(ssl, destination + offset,
@@ -448,13 +459,15 @@ bool VncTransport::readRaw(uint8_t* destination, size_t size, int timeoutMs, std
             }
             const int sslError = SSL_get_error(ssl, result);
             if (sslError == SSL_ERROR_WANT_READ || sslError == SSL_ERROR_WANT_WRITE) {
+                std::string waitError;
                 if (!waitForFd(socketFd_, sslError == SSL_ERROR_WANT_WRITE ? POLLOUT : POLLIN,
-                               timeoutMs, error)) {
+                               timeoutMs, waitError)) {
+                    setTlsIoError(error, false, waitError);
                     return false;
                 }
                 continue;
             }
-            error = "TLS read failed: " + opensslError();
+            setTlsIoError(error, false);
             return false;
         }
         const ssize_t result = ::recv(socketFd_, destination + offset, size - offset, 0);
@@ -487,7 +500,7 @@ bool VncTransport::writeRaw(const uint8_t* source, size_t size, std::string& err
         if (tls_) {
             SSL* ssl = static_cast<SSL*>(ssl_);
             if (ssl == nullptr) {
-                error = "TLS session is unavailable";
+                error = "E-VNC-CERT-TLS-SESSION";
                 return false;
             }
             const int result = SSL_write(ssl, source + offset,
@@ -498,13 +511,15 @@ bool VncTransport::writeRaw(const uint8_t* source, size_t size, std::string& err
             }
             const int sslError = SSL_get_error(ssl, result);
             if (sslError == SSL_ERROR_WANT_READ || sslError == SSL_ERROR_WANT_WRITE) {
+                std::string waitError;
                 if (!waitForFd(socketFd_, sslError == SSL_ERROR_WANT_READ ? POLLIN : POLLOUT,
-                               kDefaultTimeoutMs, error)) {
+                               kDefaultTimeoutMs, waitError)) {
+                    setTlsIoError(error, true, waitError);
                     return false;
                 }
                 continue;
             }
-            error = "TLS write failed: " + opensslError();
+            setTlsIoError(error, true);
             return false;
         }
         const ssize_t result = ::send(socketFd_, source + offset, size - offset, MSG_NOSIGNAL);

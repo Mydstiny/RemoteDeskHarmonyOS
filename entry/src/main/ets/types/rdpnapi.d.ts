@@ -479,6 +479,7 @@ export interface SessionConfig {
   vncTransport?: string;
   vncGatewayHost?: string;
   vncGatewayPort?: number;
+  vncServerName?: string;
   vncGatewayPath?: string;
   vncRepeaterMode?: string;
   vncRepeaterTarget?: string;

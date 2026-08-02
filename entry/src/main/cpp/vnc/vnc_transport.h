@@ -21,6 +21,9 @@ struct VncTransportConfig {
     std::string repeaterMode = "mode12";
     std::string repeaterTarget;
     std::string websocketPath = "/vnc";
+    // The resolver and the live transport share this explicit SNI contract.
+    // It is normally the direct host or the selected gateway host.
+    std::string serverName;
     bool tls = false;
     int connectTimeoutMs = 10000;
     std::string expectedCertificateFingerprintSha256;

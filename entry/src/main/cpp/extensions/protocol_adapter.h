@@ -130,6 +130,7 @@ struct ConnectionConfig {
     std::string vncTransport;       // direct_tcp | ultravnc_repeater | websocket_gateway | public_relay | ssh_tunnel
     std::string vncGatewayHost;
     int         vncGatewayPort;
+    std::string vncServerName;      // VNC TLS SNI; resolved with the endpoint owner
     std::string vncGatewayPath;
     std::string vncRepeaterMode;    // mode2 | mode12
     std::string vncRepeaterTarget;

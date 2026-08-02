@@ -1,8 +1,334 @@
 /** Native VNC certificate probe error-category tests. */
 #include "test_runner.h"
 #include "vnc/vnc_certificate_probe.h"
+#include "vnc/vnc_transport.h"
 
+#include <arpa/inet.h>
+#include <atomic>
+#include <chrono>
+#include <csignal>
+#include <cstdio>
+#include <cstdlib>
+#include <fcntl.h>
+#include <netinet/in.h>
+#include <poll.h>
+#include <sys/socket.h>
+#include <unistd.h>
+
+#include <openssl/evp.h>
+#include <openssl/rsa.h>
+#include <openssl/ssl.h>
+#include <openssl/x509.h>
+#include <openssl/x509v3.h>
+
+#include <memory>
 #include <string>
+#include <thread>
+#include <utility>
+
+namespace {
+
+class ScopedEnvironment final {
+public:
+    ScopedEnvironment(const char* name, const std::string& value)
+        : name_(name == nullptr ? "" : name) {
+        const char* previous = name_.empty() ? nullptr : std::getenv(name_.c_str());
+        if (previous != nullptr) {
+            previous_ = previous;
+            hadPrevious_ = true;
+        }
+        if (!name_.empty()) {
+            active_ = ::setenv(name_.c_str(), value.c_str(), 1) == 0;
+        }
+    }
+
+    ~ScopedEnvironment() {
+        if (name_.empty()) return;
+        if (hadPrevious_) {
+            (void)::setenv(name_.c_str(), previous_.c_str(), 1);
+        } else {
+            (void)::unsetenv(name_.c_str());
+        }
+    }
+
+    bool active() const { return active_; }
+
+private:
+    std::string name_;
+    std::string previous_;
+    bool hadPrevious_ = false;
+    bool active_ = false;
+};
+
+class LocalTlsFixture final {
+public:
+    explicit LocalTlsFixture(std::string commonName = "localhost", int holdHandshakeMs = 0,
+                             bool ipv6 = false, bool expired = false,
+                             bool noCertificate = false, bool trustedRoot = false)
+        : commonName_(std::move(commonName)), holdHandshakeMs_(holdHandshakeMs),
+          ipv6_(ipv6), expired_(expired), noCertificate_(noCertificate),
+          trustedRoot_(trustedRoot) {}
+
+    ~LocalTlsFixture() { stop(); }
+
+    bool start() {
+        (void)std::signal(SIGPIPE, SIG_IGN);
+        context_ = SSL_CTX_new(TLS_server_method());
+        if (context_ == nullptr || SSL_CTX_set_min_proto_version(context_, TLS1_2_VERSION) != 1) {
+            return false;
+        }
+        if (noCertificate_) {
+            // OpenSSL will reject the handshake before a peer certificate is
+            // available. This fixture keeps the no-certificate path explicit
+            // without weakening the production probe's cipher policy.
+            (void)SSL_CTX_set_cipher_list(context_, "aNULL:@SECLEVEL=0");
+            (void)SSL_CTX_set_max_proto_version(context_, TLS1_2_VERSION);
+        }
+        EVP_PKEY_CTX* keyContext = EVP_PKEY_CTX_new_id(EVP_PKEY_RSA, nullptr);
+        if (!noCertificate_ && (keyContext == nullptr || EVP_PKEY_keygen_init(keyContext) != 1 ||
+            EVP_PKEY_CTX_set_rsa_keygen_bits(keyContext, 2048) != 1 ||
+            EVP_PKEY_keygen(keyContext, &privateKey_) != 1)) {
+            if (keyContext != nullptr) EVP_PKEY_CTX_free(keyContext);
+            return false;
+        }
+        if (keyContext != nullptr) EVP_PKEY_CTX_free(keyContext);
+        if (noCertificate_) {
+            certificate_ = nullptr;
+        } else {
+            if (trustedRoot_ && !createTrustedRoot()) {
+                return false;
+            }
+            certificate_ = X509_new();
+        }
+        if (!noCertificate_ && (certificate_ == nullptr || X509_set_version(certificate_, 2) != 1 ||
+            ASN1_INTEGER_set(X509_get_serialNumber(certificate_), 1) != 1 ||
+            X509_gmtime_adj(X509_get_notBefore(certificate_), expired_ ? -7200 : -60) == nullptr ||
+            X509_gmtime_adj(X509_get_notAfter(certificate_), expired_ ? -3600 : 3600) == nullptr ||
+            X509_set_pubkey(certificate_, privateKey_) != 1)) {
+            return false;
+        }
+        X509_NAME* name = noCertificate_ ? nullptr : X509_get_subject_name(certificate_);
+        if (!noCertificate_ && (name == nullptr ||
+            X509_NAME_add_entry_by_txt(name, "CN", MBSTRING_ASC,
+            reinterpret_cast<const unsigned char*>(commonName_.c_str()),
+                                       -1, -1, 0) != 1 ||
+            X509_set_issuer_name(certificate_, trustedRoot_ ?
+                                 X509_get_subject_name(caCertificate_) : name) != 1 ||
+            X509_sign(certificate_, trustedRoot_ ? caPrivateKey_ : privateKey_, EVP_sha256()) <= 0 ||
+            SSL_CTX_use_certificate(context_, certificate_) != 1 ||
+            SSL_CTX_use_PrivateKey(context_, privateKey_) != 1)) {
+            return false;
+        }
+        if (trustedRoot_ && !writeTrustedRootFile()) {
+            return false;
+        }
+        SSL_CTX_set_tlsext_servername_callback(context_, &LocalTlsFixture::onServerName);
+        SSL_CTX_set_tlsext_servername_arg(context_, this);
+
+        const int family = ipv6_ ? AF_INET6 : AF_INET;
+        listenFd_ = ::socket(family, SOCK_STREAM, 0);
+        if (listenFd_ < 0) return false;
+        const int reuse = 1;
+        (void)::setsockopt(listenFd_, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
+        sockaddr_storage storage {};
+        socklen_t storageLength = 0;
+        if (ipv6_) {
+            auto* address = reinterpret_cast<sockaddr_in6*>(&storage);
+            address->sin6_family = AF_INET6;
+            address->sin6_addr = in6addr_loopback;
+            address->sin6_port = htons(0);
+            storageLength = sizeof(sockaddr_in6);
+        } else {
+            auto* address = reinterpret_cast<sockaddr_in*>(&storage);
+            address->sin_family = AF_INET;
+            address->sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+            address->sin_port = htons(0);
+            storageLength = sizeof(sockaddr_in);
+        }
+        if (::bind(listenFd_, reinterpret_cast<const sockaddr*>(&storage), storageLength) != 0 ||
+            ::listen(listenFd_, 8) != 0) {
+            return false;
+        }
+        if (::getsockname(listenFd_, reinterpret_cast<sockaddr*>(&storage), &storageLength) != 0) {
+            return false;
+        }
+        port_ = ipv6_ ? ntohs(reinterpret_cast<sockaddr_in6*>(&storage)->sin6_port) :
+            ntohs(reinterpret_cast<sockaddr_in*>(&storage)->sin_port);
+        if (certificate_ != nullptr) {
+            unsigned char digest[EVP_MAX_MD_SIZE] = {0};
+            unsigned int digestSize = 0;
+            if (X509_digest(certificate_, EVP_sha256(), digest, &digestSize) != 1 || digestSize != 32) {
+                return false;
+            }
+            static constexpr char kHex[] = "0123456789abcdef";
+            for (unsigned int index = 0; index < digestSize; ++index) {
+                fingerprint_.push_back(kHex[(digest[index] >> 4) & 0x0f]);
+                fingerprint_.push_back(kHex[digest[index] & 0x0f]);
+            }
+        }
+        stopRequested_.store(false, std::memory_order_release);
+        worker_ = std::thread(&LocalTlsFixture::acceptLoop, this);
+        return true;
+    }
+
+    void stop() {
+        stopRequested_.store(true, std::memory_order_release);
+        const int fd = listenFd_.exchange(-1, std::memory_order_acq_rel);
+        if (fd >= 0) {
+            (void)::shutdown(fd, SHUT_RDWR);
+            (void)::close(fd);
+        }
+        if (worker_.joinable()) worker_.join();
+        if (certificate_ != nullptr) {
+            X509_free(certificate_);
+            certificate_ = nullptr;
+        }
+        if (privateKey_ != nullptr) {
+            EVP_PKEY_free(privateKey_);
+            privateKey_ = nullptr;
+        }
+        if (context_ != nullptr) {
+            SSL_CTX_free(context_);
+            context_ = nullptr;
+        }
+        if (caCertificate_ != nullptr) {
+            X509_free(caCertificate_);
+            caCertificate_ = nullptr;
+        }
+        if (caPrivateKey_ != nullptr) {
+            EVP_PKEY_free(caPrivateKey_);
+            caPrivateKey_ = nullptr;
+        }
+        if (!trustStorePath_.empty()) {
+            (void)::unlink(trustStorePath_.c_str());
+            trustStorePath_.clear();
+        }
+    }
+
+    int port() const { return port_; }
+    const std::string& fingerprint() const { return fingerprint_; }
+    const std::string& trustStorePath() const { return trustStorePath_; }
+    bool sawServerName() const { return sawServerName_.load(std::memory_order_acquire); }
+
+private:
+    bool createTrustedRoot() {
+        EVP_PKEY_CTX* keyContext = EVP_PKEY_CTX_new_id(EVP_PKEY_RSA, nullptr);
+        if (keyContext == nullptr || EVP_PKEY_keygen_init(keyContext) != 1 ||
+            EVP_PKEY_CTX_set_rsa_keygen_bits(keyContext, 2048) != 1 ||
+            EVP_PKEY_keygen(keyContext, &caPrivateKey_) != 1) {
+            if (keyContext != nullptr) EVP_PKEY_CTX_free(keyContext);
+            return false;
+        }
+        EVP_PKEY_CTX_free(keyContext);
+        caCertificate_ = X509_new();
+        if (caCertificate_ == nullptr || X509_set_version(caCertificate_, 2) != 1 ||
+            ASN1_INTEGER_set(X509_get_serialNumber(caCertificate_), 100) != 1 ||
+            X509_gmtime_adj(X509_get_notBefore(caCertificate_), -60) == nullptr ||
+            X509_gmtime_adj(X509_get_notAfter(caCertificate_), 3600) == nullptr ||
+            X509_set_pubkey(caCertificate_, caPrivateKey_) != 1) {
+            return false;
+        }
+        X509_NAME* name = X509_get_subject_name(caCertificate_);
+        if (name == nullptr ||
+            X509_NAME_add_entry_by_txt(name, "CN", MBSTRING_ASC,
+                                       reinterpret_cast<const unsigned char*>("VNC Test Root"),
+                                       -1, -1, 0) != 1 ||
+            X509_set_issuer_name(caCertificate_, name) != 1) {
+            return false;
+        }
+        X509V3_CTX extensionContext;
+        X509V3_set_ctx_nodb(&extensionContext);
+        X509V3_set_ctx(&extensionContext, caCertificate_, caCertificate_, nullptr, nullptr, 0);
+        X509_EXTENSION* basicConstraints = X509V3_EXT_conf_nid(
+            nullptr, &extensionContext, NID_basic_constraints,
+            const_cast<char*>("critical,CA:TRUE,pathlen:1"));
+        X509_EXTENSION* keyUsage = X509V3_EXT_conf_nid(
+            nullptr, &extensionContext, NID_key_usage,
+            const_cast<char*>("critical,keyCertSign,cRLSign"));
+        const bool extensionsOk = basicConstraints != nullptr && keyUsage != nullptr &&
+            X509_add_ext(caCertificate_, basicConstraints, -1) == 1 &&
+            X509_add_ext(caCertificate_, keyUsage, -1) == 1;
+        if (basicConstraints != nullptr) X509_EXTENSION_free(basicConstraints);
+        if (keyUsage != nullptr) X509_EXTENSION_free(keyUsage);
+        return extensionsOk && X509_sign(caCertificate_, caPrivateKey_, EVP_sha256()) > 0;
+    }
+
+    bool writeTrustedRootFile() {
+        char path[] = "/tmp/vnc-test-root-XXXXXX";
+        const int fd = ::mkstemp(path);
+        if (fd < 0) return false;
+        FILE* file = ::fdopen(fd, "w");
+        if (file == nullptr) {
+            (void)::close(fd);
+            (void)::unlink(path);
+            return false;
+        }
+        const bool written = PEM_write_X509(file, caCertificate_) == 1;
+        (void)::fclose(file);
+        if (!written) {
+            (void)::unlink(path);
+            return false;
+        }
+        trustStorePath_ = path;
+        return true;
+    }
+
+    static int onServerName(SSL* ssl, int* /*alert*/, void* arg) {
+        auto* fixture = static_cast<LocalTlsFixture*>(arg);
+        const char* serverName = SSL_get_servername(ssl, TLSEXT_NAMETYPE_host_name);
+        if (fixture != nullptr && serverName != nullptr && fixture->commonName_ == serverName) {
+            fixture->sawServerName_.store(true, std::memory_order_release);
+        }
+        return SSL_TLSEXT_ERR_OK;
+    }
+
+    void acceptLoop() {
+        while (!stopRequested_.load(std::memory_order_acquire)) {
+            const int fd = listenFd_.load(std::memory_order_acquire);
+            if (fd < 0) break;
+            pollfd descriptor {fd, POLLIN, 0};
+            if (::poll(&descriptor, 1, 50) <= 0) continue;
+            const int client = ::accept(fd, nullptr, nullptr);
+            if (client < 0) continue;
+            if (holdHandshakeMs_ > 0) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(holdHandshakeMs_));
+                (void)::shutdown(client, SHUT_RDWR);
+                (void)::close(client);
+                continue;
+            }
+            SSL* ssl = SSL_new(context_);
+            if (ssl != nullptr && SSL_set_fd(ssl, client) == 1) {
+                (void)SSL_accept(ssl);
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+                (void)SSL_shutdown(ssl);
+            }
+            if (ssl != nullptr) SSL_free(ssl);
+            (void)::shutdown(client, SHUT_RDWR);
+            (void)::close(client);
+        }
+    }
+
+    std::string commonName_;
+    int holdHandshakeMs_ = 0;
+    bool ipv6_ = false;
+    bool expired_ = false;
+    bool noCertificate_ = false;
+    bool trustedRoot_ = false;
+    SSL_CTX* context_ = nullptr;
+    X509* certificate_ = nullptr;
+    EVP_PKEY* privateKey_ = nullptr;
+    X509* caCertificate_ = nullptr;
+    EVP_PKEY* caPrivateKey_ = nullptr;
+    std::atomic<int> listenFd_ {-1};
+    std::atomic<bool> stopRequested_ {true};
+    std::thread worker_;
+    int port_ = 0;
+    std::string fingerprint_;
+    std::string trustStorePath_;
+    std::atomic<bool> sawServerName_ {false};
+};
+
+} // namespace
 
 RDP_TEST_CASE(vnc_certificate_probe_error_categories_are_stable) {
     RDP_ASSERT(vncCertificateProbeErrorCategory(
@@ -10,7 +336,207 @@ RDP_TEST_CASE(vnc_certificate_probe_error_categories_are_stable) {
     RDP_ASSERT(vncCertificateProbeErrorCategory(
         static_cast<int>(VncCertificateProbeErrorCode::TlsHandshakeFailed)) == "tls_handshake_failed");
     RDP_ASSERT(vncCertificateProbeErrorCategory(9999) == "unknown");
+    RDP_ASSERT(vncCertificateProbeErrorCategory(
+        static_cast<int>(VncCertificateProbeErrorCode::CertificateChainTooDeep)) ==
+        "certificate_chain_too_deep");
+    RDP_ASSERT(vncCertificateProbeErrorCategory(
+        static_cast<int>(VncCertificateProbeErrorCode::ResolveTimeout)) == "resolve_timeout");
     RDP_ASSERT(vncCertificateProbeErrorMessage(
         static_cast<int>(VncCertificateProbeErrorCode::Cancelled)).find("E-VNC-CERT-CANCELLED")
         != std::string::npos);
+    const std::string redacted = vncRedactCertificateMessageForLog(
+        "E-VNC-CERT-TRUST-REQUIRED;VNC_TRUST_REQUIRED:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef");
+    RDP_ASSERT(redacted.find("<fingerprint-redacted>") != std::string::npos);
+    RDP_ASSERT(redacted.find("0123456789abcdef0123456789abcdef") == std::string::npos);
+    const std::string changedRedacted = vncRedactCertificateMessageForLog(
+        "E-VNC-CERT-CHANGED;VNC_CERT_CHANGED:fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210");
+    RDP_ASSERT(changedRedacted.find("<fingerprint-redacted>") != std::string::npos);
+    RDP_ASSERT(changedRedacted.find("fedcba9876543210fedcba9876543210") == std::string::npos);
+}
+
+RDP_TEST_CASE(vnc_certificate_probe_local_tls_fixture_reports_metadata_and_sni) {
+    LocalTlsFixture fixture;
+    RDP_ASSERT(fixture.start());
+    VncCertificateProbeConfig config;
+    config.host = "127.0.0.1";
+    config.port = fixture.port();
+    config.serverName = "localhost";
+    config.timeoutMs = 2000;
+    const VncCertificateInfo result = probeVncCertificate(config);
+    RDP_ASSERT(result.ok);
+    RDP_ASSERT(result.fingerprintSha256 == fixture.fingerprint());
+    RDP_ASSERT(vncCertificateFingerprintIsCanonical(result.fingerprintSha256));
+    RDP_ASSERT(result.commonName == "localhost");
+    RDP_ASSERT(!result.subject.empty());
+    RDP_ASSERT(!result.issuer.empty());
+    RDP_ASSERT(result.notAfterMs > result.notBeforeMs);
+    RDP_ASSERT(!result.hostMismatch);
+    RDP_ASSERT(result.tlsVersion == "TLS1.2" || result.tlsVersion == "TLS1.3");
+    RDP_ASSERT(fixture.sawServerName());
+}
+
+RDP_TEST_CASE(vnc_certificate_probe_reports_name_mismatch_without_trusting_the_name) {
+    LocalTlsFixture fixture("localhost");
+    RDP_ASSERT(fixture.start());
+    VncCertificateProbeConfig config;
+    config.host = "127.0.0.1";
+    config.port = fixture.port();
+    config.serverName = "different.local";
+    config.timeoutMs = 2000;
+    const VncCertificateInfo result = probeVncCertificate(config);
+    RDP_ASSERT(result.ok);
+    RDP_ASSERT(result.hostMismatch);
+}
+
+RDP_TEST_CASE(vnc_certificate_probe_bounds_large_certificate_names) {
+    LocalTlsFixture fixture(std::string(63, 'x'));
+    RDP_ASSERT(fixture.start());
+    VncCertificateProbeConfig config;
+    config.host = "127.0.0.1";
+    config.port = fixture.port();
+    config.serverName = std::string(63, 'x');
+    config.timeoutMs = 2000;
+    const VncCertificateInfo result = probeVncCertificate(config);
+    RDP_ASSERT(result.ok);
+    RDP_ASSERT(result.commonName.size() <= 256);
+    RDP_ASSERT(result.subject.size() <= 2048);
+    RDP_ASSERT(result.issuer.size() <= 2048);
+}
+
+RDP_TEST_CASE(vnc_certificate_probe_reports_a_locally_trusted_root) {
+    LocalTlsFixture fixture("trusted.local", 0, false, false, false, true);
+    RDP_ASSERT(fixture.start());
+    ScopedEnvironment trustStore("SSL_CERT_FILE", fixture.trustStorePath());
+    RDP_ASSERT(trustStore.active());
+    VncCertificateProbeConfig config;
+    config.host = "127.0.0.1";
+    config.port = fixture.port();
+    config.serverName = "trusted.local";
+    config.timeoutMs = 2000;
+    const VncCertificateInfo result = probeVncCertificate(config);
+    RDP_ASSERT(result.ok);
+    RDP_ASSERT(result.rootTrusted);
+    RDP_ASSERT(!result.hostMismatch);
+}
+
+RDP_TEST_CASE(vnc_certificate_probe_handles_a_server_without_a_peer_certificate) {
+    LocalTlsFixture fixture("no-certificate.local", 0, false, false, true);
+    RDP_ASSERT(fixture.start());
+    VncCertificateProbeConfig config;
+    config.host = "127.0.0.1";
+    config.port = fixture.port();
+    config.serverName = "no-certificate.local";
+    config.timeoutMs = 1000;
+    const VncCertificateInfo result = probeVncCertificate(config);
+    RDP_ASSERT(!result.ok);
+    RDP_ASSERT(result.errorCode == static_cast<int>(VncCertificateProbeErrorCode::NoCertificate) ||
+               result.errorCode == static_cast<int>(VncCertificateProbeErrorCode::TlsHandshakeFailed));
+}
+
+RDP_TEST_CASE(vnc_transport_local_tls_fixture_enforces_pin_and_rotation) {
+    LocalTlsFixture fixture;
+    RDP_ASSERT(fixture.start());
+    VncTransportConfig config;
+    config.transport = "direct_tcp";
+    config.host = "127.0.0.1";
+    config.serverName = "localhost";
+    config.port = fixture.port();
+    config.tls = true;
+    config.connectTimeoutMs = 2000;
+    config.expectedCertificateFingerprintSha256 = fixture.fingerprint();
+    VncTransport transport;
+    std::string error;
+    RDP_ASSERT(transport.connect(config, error));
+    transport.close();
+
+    config.expectedCertificateFingerprintSha256.clear();
+    error.clear();
+    RDP_ASSERT(!transport.connect(config, error));
+    RDP_ASSERT(error.rfind("E-VNC-CERT-TRUST-REQUIRED;VNC_TRUST_REQUIRED:", 0) == 0);
+    transport.close();
+
+    LocalTlsFixture rotated;
+    RDP_ASSERT(rotated.start());
+    config.port = rotated.port();
+    config.expectedCertificateFingerprintSha256 = fixture.fingerprint();
+    error.clear();
+    RDP_ASSERT(!transport.connect(config, error));
+    RDP_ASSERT(error.rfind("E-VNC-CERT-CHANGED;VNC_CERT_CHANGED:", 0) == 0);
+    RDP_ASSERT(error.find(rotated.fingerprint()) != std::string::npos);
+    transport.close();
+}
+
+RDP_TEST_CASE(vnc_certificate_probe_ipv6_fixture_uses_the_same_sni_contract) {
+    LocalTlsFixture fixture("localhost", 0, true);
+    RDP_ASSERT(fixture.start());
+    VncCertificateProbeConfig config;
+    config.host = "::1";
+    config.port = fixture.port();
+    config.serverName = "localhost";
+    config.timeoutMs = 2000;
+    const VncCertificateInfo result = probeVncCertificate(config);
+    RDP_ASSERT(result.ok);
+    RDP_ASSERT(result.fingerprintSha256 == fixture.fingerprint());
+    RDP_ASSERT(fixture.sawServerName());
+}
+
+RDP_TEST_CASE(vnc_certificate_probe_fixture_reports_expired_metadata_without_trusting_it) {
+    LocalTlsFixture fixture("expired.local", 0, false, true);
+    RDP_ASSERT(fixture.start());
+    VncCertificateProbeConfig config;
+    config.host = "127.0.0.1";
+    config.port = fixture.port();
+    config.serverName = "expired.local";
+    config.timeoutMs = 2000;
+    const VncCertificateInfo result = probeVncCertificate(config);
+    RDP_ASSERT(result.ok);
+    RDP_ASSERT(result.notAfterMs <
+               std::chrono::duration_cast<std::chrono::milliseconds>(
+                   std::chrono::system_clock::now().time_since_epoch()).count());
+    RDP_ASSERT(!result.rootTrusted);
+}
+
+RDP_TEST_CASE(vnc_certificate_probe_tls_timeout_and_cancel_are_bounded) {
+    LocalTlsFixture fixture("localhost", 300);
+    RDP_ASSERT(fixture.start());
+    VncCertificateProbeConfig timeoutConfig;
+    timeoutConfig.host = "127.0.0.1";
+    timeoutConfig.port = fixture.port();
+    timeoutConfig.serverName = "localhost";
+    timeoutConfig.timeoutMs = 100;
+    const auto started = std::chrono::steady_clock::now();
+    const VncCertificateInfo timeoutResult = probeVncCertificate(timeoutConfig);
+    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - started).count();
+    RDP_ASSERT(!timeoutResult.ok);
+    RDP_ASSERT(timeoutResult.errorCode ==
+               static_cast<int>(VncCertificateProbeErrorCode::TlsTimeout));
+    RDP_ASSERT(elapsed < 500);
+
+    auto cancelled = std::make_shared<std::atomic_bool>(false);
+    timeoutConfig.timeoutMs = 2000;
+    timeoutConfig.cancelled = cancelled;
+    VncCertificateInfo cancelledResult;
+    std::thread worker([&]() { cancelledResult = probeVncCertificate(timeoutConfig); });
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    cancelled->store(true, std::memory_order_release);
+    worker.join();
+    RDP_ASSERT(!cancelledResult.ok);
+    RDP_ASSERT(cancelledResult.errorCode ==
+               static_cast<int>(VncCertificateProbeErrorCode::Cancelled));
+}
+
+RDP_TEST_CASE(vnc_certificate_probe_dns_resolution_is_bounded) {
+    VncCertificateProbeConfig config;
+    config.host = "vnc-probe-resolution-timeout.invalid";
+    config.port = 5900;
+    config.timeoutMs = 100;
+    const auto started = std::chrono::steady_clock::now();
+    const VncCertificateInfo result = probeVncCertificate(config);
+    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - started).count();
+    RDP_ASSERT(!result.ok);
+    RDP_ASSERT(result.errorCode == static_cast<int>(VncCertificateProbeErrorCode::ResolveFailed) ||
+               result.errorCode == static_cast<int>(VncCertificateProbeErrorCode::ResolveTimeout));
+    RDP_ASSERT(elapsed < 1000);
 }

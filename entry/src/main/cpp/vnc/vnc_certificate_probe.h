@@ -23,6 +23,8 @@ enum class VncCertificateProbeErrorCode : int {
     FingerprintFailed = 1010,
     TlsVersionRejected = 1011,
     MetadataFailed = 1012,
+    CertificateChainTooDeep = 1013,
+    ResolveTimeout = 1014,
 };
 
 struct VncCertificateProbeConfig {
@@ -62,5 +64,8 @@ bool vncNormalizeCertificateFingerprint(const std::string& value, std::string& n
 bool vncCertificateFingerprintIsCanonical(const std::string& value);
 std::string vncCertificateProbeErrorCategory(int errorCode);
 std::string vncCertificateProbeErrorMessage(int errorCode);
+
+/** Redacts the full pin from connection logs while preserving UI handoff text. */
+std::string vncRedactCertificateMessageForLog(const std::string& message);
 
 #endif // VNC_CERTIFICATE_PROBE_H

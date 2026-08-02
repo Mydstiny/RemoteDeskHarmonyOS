@@ -438,7 +438,12 @@ static std::atomic<uint64_t> g_nextSessionOwnerToken {1};
 static std::atomic<int> g_pendingSshConnectId {-1};
 static std::atomic<uint64_t> g_nextVncCertificateProbeRequestId {1};
 static std::mutex g_vncCertificateProbeMutex;
-static std::map<uint64_t, std::shared_ptr<std::atomic_bool>> g_vncCertificateProbeTokens;
+struct VncCertificateProbeRegistration {
+    std::shared_ptr<std::atomic_bool> cancelled;
+    napi_env env = nullptr;
+    napi_async_work work = nullptr;
+};
+static std::map<uint64_t, VncCertificateProbeRegistration> g_vncCertificateProbeTokens;
 static std::atomic<uint64_t> g_napiWheelSendCount {0};
 static std::atomic<uint64_t> g_napiTextSendCount {0};
 static std::atomic<uint64_t> g_napiFileSendCount {0};
@@ -776,6 +781,44 @@ static void RemoveVncCertificateProbeToken(uint64_t requestId) {
     g_vncCertificateProbeTokens.erase(requestId);
 }
 
+static void SetVncCertificateProbeWork(uint64_t requestId, napi_env env,
+                                       napi_async_work work) {
+    std::lock_guard<std::mutex> lock(g_vncCertificateProbeMutex);
+    auto it = g_vncCertificateProbeTokens.find(requestId);
+    if (it != g_vncCertificateProbeTokens.end()) {
+        it->second.env = env;
+        it->second.work = work;
+    }
+}
+
+static void CancelVncCertificateProbesForEnvironment(void* rawEnv) {
+    const napi_env env = reinterpret_cast<napi_env>(rawEnv);
+    std::vector<napi_async_work> works;
+    std::vector<uint64_t> requestIds;
+    {
+        std::lock_guard<std::mutex> lock(g_vncCertificateProbeMutex);
+        for (const auto& entry : g_vncCertificateProbeTokens) {
+            if (entry.second.env != env) {
+                continue;
+            }
+            if (entry.second.cancelled) {
+                entry.second.cancelled->store(true, std::memory_order_release);
+            }
+            if (entry.second.work != nullptr) {
+                works.push_back(entry.second.work);
+            }
+            requestIds.push_back(entry.first);
+        }
+    }
+    for (napi_async_work work : works) {
+        (void)napi_cancel_async_work(env, work);
+    }
+    std::lock_guard<std::mutex> lock(g_vncCertificateProbeMutex);
+    for (uint64_t requestId : requestIds) {
+        g_vncCertificateProbeTokens.erase(requestId);
+    }
+}
+
 // ============================================================
 // NAPI 导出函数 (ArkTS 可见)
 // ============================================================
@@ -1069,7 +1112,8 @@ napi_value NapiProbeVncCertificateAsync(napi_env env, napi_callback_info info) {
     data->config.cancelled = std::make_shared<std::atomic_bool>(false);
     {
         std::lock_guard<std::mutex> lock(g_vncCertificateProbeMutex);
-        g_vncCertificateProbeTokens[data->requestId] = data->config.cancelled;
+        g_vncCertificateProbeTokens[data->requestId] =
+            VncCertificateProbeRegistration {data->config.cancelled, env, nullptr};
     }
 
     napi_value promise;
@@ -1100,6 +1144,7 @@ napi_value NapiProbeVncCertificateAsync(napi_env env, napi_callback_info info) {
         napi_throw_error(env, nullptr, "VNC certificate async work creation failed");
         return nullptr;
     }
+    SetVncCertificateProbeWork(data->requestId, env, data->work);
     status = napi_queue_async_work(env, data->work);
     if (status != napi_ok) {
         napi_delete_async_work(env, data->work);
@@ -1126,8 +1171,8 @@ napi_value NapiCancelVncCertificateProbe(napi_env env, napi_callback_info info) 
     if (requestId > 0) {
         std::lock_guard<std::mutex> lock(g_vncCertificateProbeMutex);
         auto it = g_vncCertificateProbeTokens.find(static_cast<uint64_t>(requestId));
-        if (it != g_vncCertificateProbeTokens.end() && it->second) {
-            it->second->store(true, std::memory_order_release);
+        if (it != g_vncCertificateProbeTokens.end() && it->second.cancelled) {
+            it->second.cancelled->store(true, std::memory_order_release);
             cancelled = true;
         }
     }
@@ -1894,6 +1939,7 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
     getString("vncTransport", cfg.vncTransport);
     getString("vncGatewayHost", cfg.vncGatewayHost);
     getInt("vncGatewayPort", cfg.vncGatewayPort);
+    getString("vncServerName", cfg.vncServerName);
     getString("vncGatewayPath", cfg.vncGatewayPath);
     getString("vncRepeaterMode", cfg.vncRepeaterMode);
     getString("vncRepeaterTarget", cfg.vncRepeaterTarget);
@@ -2127,8 +2173,10 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
             SessionContext::Lifecycle::Active) { return; }
         std::lock_guard<std::mutex> lock(session->messageMutex);
         session->lastStateMessage = message;
+        const std::string logMessage = session->protocolName == "vnc" ?
+            vncRedactCertificateMessageForLog(message) : message;
         OH_LOG_INFO(LOG_APP, "[ExtLoader] 状态变更: protocol=%{public}s state=%{public}d msg=%{public}s",
-                    session->protocolName.c_str(), static_cast<int>(state), message.c_str());
+                    session->protocolName.c_str(), static_cast<int>(state), logMessage.c_str());
     });
 
     if (auto* rustdesk = dynamic_cast<RustDeskBridge*>(adapter.get())) {
@@ -6111,6 +6159,8 @@ static napi_value NapiIsVideoPlaybackActive(napi_env env, napi_callback_info /*i
 
 napi_value ExtensionLoaderNapi::Init(napi_env env, napi_value exports) {
     napi_value fn;
+    (void)napi_add_env_cleanup_hook(env, CancelVncCertificateProbesForEnvironment,
+                                    reinterpret_cast<void*>(env));
 
     napi_create_function(env, "listProtocols", NAPI_AUTO_LENGTH,
                          NapiListProtocols, nullptr, &fn);
