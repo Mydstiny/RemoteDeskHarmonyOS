@@ -1,6 +1,9 @@
 import { promptAction } from '@kit.ArkUI';
 import { common } from '@kit.AbilityKit';
 import { VncTrustService, VncTrustView } from '../services/VncTrustService';
+import { VncGatewayService } from '../services/VncGatewayService';
+import { VncHostService } from '../services/VncHostService';
+import { buildVncTrustDirectory, VncTrustDirectoryItem } from '../services/VncTrustEndpointDirectory';
 import { showLockGate, lockGateErrorMessage } from './LockGate';
 import { Palette, buildDark, buildLight } from '../common/Theme';
 import { VncSheetScaffold } from './vnc/VncSheetScaffold';
@@ -14,14 +17,18 @@ export struct VncCertificateTrustManagerSheet {
   @StorageProp('currentTheme') theme: string = 'light';
   @StorageProp('accentColor') accentColor: string = '#007DFF';
   onClose: () => void = (): void => {};
-  onRecheck: (trust: VncTrustView) => void = (_trust: VncTrustView): void => {};
+  onRecheck: (trust: VncTrustView, hostId: string) => void =
+    (_trust: VncTrustView, _hostId: string): void => {};
 
-  @State trusts: VncTrustView[] = [];
+  @State trustItems: VncTrustDirectoryItem[] = [];
   @State revision: number = 0;
   @State busyId: string = '';
   @State errorText: string = '';
+  @State expandedIds: string[] = [];
 
   private readonly trustService: VncTrustService = VncTrustService.getInstance();
+  private readonly hostService: VncHostService = VncHostService.getInstance();
+  private readonly gatewayService: VncGatewayService = VncGatewayService.getInstance();
   private trustUnsubscribe: (() => void) | null = null;
 
   private pal(): Palette {
@@ -29,7 +36,10 @@ export struct VncCertificateTrustManagerSheet {
   }
 
   aboutToAppear(): void {
-    this.trustService.init(getContext(this) as common.Context);
+    const context = getContext(this) as common.Context;
+    this.trustService.init(context);
+    this.hostService.init(context);
+    this.gatewayService.init(context);
     this.trustUnsubscribe = this.trustService.onChange((): void => { this.load(); });
     this.load();
   }
@@ -42,7 +52,8 @@ export struct VncCertificateTrustManagerSheet {
   }
 
   private load(): void {
-    this.trusts = this.trustService.list();
+    this.trustItems = buildVncTrustDirectory(this.trustService.list(),
+      this.hostService.list(), this.gatewayService.list());
     this.revision += 1;
   }
 
@@ -70,6 +81,35 @@ export struct VncCertificateTrustManagerSheet {
     return '待本设备确认';
   }
 
+  private endpointStatusLabel(item: VncTrustDirectoryItem): string {
+    if (item.status === 'orphaned') { return 'owner 已删除/孤立记录'; }
+    if (item.status === 'target_missing') { return 'Gateway 存在 · 无当前 target'; }
+    if (item.status === 'changed') { return 'endpoint 已变化'; }
+    if (item.status === 'ambiguous') { return '多个 target · 请从主机重查'; }
+    return '当前 endpoint 存在';
+  }
+
+  private transportLabel(value: string): string {
+    if (value === 'ultravnc_repeater') { return 'UltraVNC Repeater'; }
+    if (value === 'direct_tcp') { return 'Direct TCP'; }
+    if (value === 'websocket_gateway') { return 'WebSocket Gateway'; }
+    return value === '' ? '未知传输' : value;
+  }
+
+  private canRecheck(item: VncTrustDirectoryItem): boolean {
+    return item.status === 'current' && item.selectedHostId !== '';
+  }
+
+  private isExpanded(id: string): boolean { return this.expandedIds.indexOf(id) >= 0; }
+
+  private toggleDetails(id: string): void {
+    if (this.isExpanded(id)) {
+      this.expandedIds = this.expandedIds.filter((value: string): boolean => value !== id);
+    } else {
+      this.expandedIds = this.expandedIds.concat([id]);
+    }
+  }
+
   private statusColor(trust: VncTrustView): string {
     return trust.confirmed ? this.pal().success : this.pal().danger;
   }
@@ -93,51 +133,74 @@ export struct VncCertificateTrustManagerSheet {
     promptAction.showToast({ message: 'VNC TLS 信任已删除', duration: 1500 });
   }
 
-  @Builder private trustCard(trust: VncTrustView) {
+  @Builder private trustCard(item: VncTrustDirectoryItem) {
     Column() {
       Row() {
         Column() {
-          Text(this.ownerLabel(trust)).fontSize(15).fontWeight(FontWeight.Medium)
+          Text(this.ownerLabel(item.trust)).fontSize(15).fontWeight(FontWeight.Medium)
             .fontColor(this.pal().text)
-          Text(trust.endpointLabel !== '' ? trust.endpointLabel : trust.ownerId)
+          Text(item.ownerLabel !== '' ? item.ownerLabel : item.trust.ownerId)
             .fontSize(11).fontColor(this.pal().text3).maxLines(1)
             .textOverflow({ overflow: TextOverflow.Ellipsis }).margin({ top: 3 })
         }.alignItems(HorizontalAlign.Start).layoutWeight(1)
-        Text(this.statusLabel(trust)).fontSize(10).fontColor(this.statusColor(trust))
+        Text(this.statusLabel(item.trust)).fontSize(10).fontColor(this.statusColor(item.trust))
           .maxLines(2).textAlign(TextAlign.End)
       }.width('100%').alignItems(VerticalAlign.Top)
 
-      Text(this.redactedFingerprint(trust.fingerprintSha256)).fontSize(11)
+      Text(this.redactedFingerprint(item.trust.fingerprintSha256)).fontSize(11)
         .fontColor(this.pal().text2).fontFamily('monospace').width('100%')
         .padding({ left: 10, right: 10, top: 8, bottom: 8 })
         .borderRadius(8).backgroundColor(this.pal().surface).margin({ top: 10 })
 
       Column() {
-        if (trust.commonName !== '') { Text('CN: ' + trust.commonName).fontSize(11).fontColor(this.pal().text2).maxLines(1) }
-        if (trust.issuer !== '') { Text('Issuer: ' + trust.issuer).fontSize(11).fontColor(this.pal().text2).maxLines(1).margin({ top: 3 }) }
-        Text('确认时间 ' + this.formatTimestamp(trust.confirmedAt)).fontSize(11)
+        Text(this.endpointStatusLabel(item) + ' · ' + this.transportLabel(item.transport)).fontSize(11)
+          .fontColor(item.status === 'current' ? this.pal().success : this.pal().danger)
+          .width('100%').margin({ top: 5 })
+        if (item.trust.commonName !== '') { Text('CN: ' + item.trust.commonName).fontSize(11).fontColor(this.pal().text2).maxLines(1) }
+        if (item.trust.issuer !== '') { Text('Issuer: ' + item.trust.issuer).fontSize(11).fontColor(this.pal().text2).maxLines(1).margin({ top: 3 }) }
+        Text('确认时间 ' + this.formatTimestamp(item.trust.confirmedAt)).fontSize(11)
           .fontColor(this.pal().text3).margin({ top: 5 })
-        if (trust.notAfterMs > 0) {
-          Text('有效期至 ' + this.formatTimestamp(trust.notAfterMs)).fontSize(11)
-            .fontColor(trust.notAfterMs < Date.now() ? this.pal().danger : this.pal().text3).margin({ top: 3 })
+        if (item.trust.notAfterMs > 0) {
+          Text('有效期至 ' + this.formatTimestamp(item.trust.notAfterMs)).fontSize(11)
+            .fontColor(item.trust.notAfterMs < Date.now() ? this.pal().danger : this.pal().text3).margin({ top: 3 })
         }
-        if (!trust.rootTrusted || trust.hostMismatch) {
-          Text((!trust.rootTrusted ? '根信任未验证' : '') +
-            (!trust.rootTrusted && trust.hostMismatch ? ' · ' : '') +
-            (trust.hostMismatch ? '名称不匹配' : ''))
+        if (!item.trust.rootTrusted || item.trust.hostMismatch) {
+          Text((!item.trust.rootTrusted ? '根信任未验证' : '') +
+            (!item.trust.rootTrusted && item.trust.hostMismatch ? ' · ' : '') +
+            (item.trust.hostMismatch ? '名称不匹配' : ''))
             .fontSize(10).fontColor(this.pal().danger).margin({ top: 4 })
         }
       }.width('100%').alignItems(HorizontalAlign.Start)
 
       Row() {
+        Button('查看详情').height(32).fontSize(12).padding({ left: 10, right: 10 })
+          .backgroundColor(this.pal().surface).fontColor(this.accentColor).borderRadius(8)
+          .onClick((): void => { this.toggleDetails(item.trust.id); })
         Button('重新检查').height(32).fontSize(12).padding({ left: 10, right: 10 })
           .backgroundColor(this.pal().surface).fontColor(this.accentColor).borderRadius(8)
-          .enabled(this.busyId === '').onClick((): void => { this.onRecheck(trust); })
-        Button(this.busyId === trust.id ? '删除中' : '忘记').height(32).fontSize(12)
+          .enabled(this.busyId === '' && this.canRecheck(item))
+          .onClick((): void => { this.onRecheck(item.trust, item.selectedHostId); })
+        Button(this.busyId === item.trust.id ? '删除中' : '忘记').height(32).fontSize(12)
           .padding({ left: 10, right: 10 }).backgroundColor(this.pal().surface)
           .fontColor(this.pal().danger).borderRadius(8).margin({ left: 8 })
-          .enabled(this.busyId === '').onClick((): void => { void this.forgetTrust(trust); })
+          .enabled(this.busyId === '').onClick((): void => { void this.forgetTrust(item.trust); })
       }.width('100%').margin({ top: 12 })
+      if (this.isExpanded(item.trust.id)) {
+        Column() {
+          Text('SHA-256 ' + item.trust.fingerprintSha256).fontSize(10).fontFamily('monospace')
+            .fontColor(this.pal().text2).width('100%').lineHeight(16)
+          Text('Subject: ' + (item.trust.subject === '' ? '未知' : item.trust.subject)).fontSize(11)
+            .fontColor(this.pal().text2).width('100%').margin({ top: 4 })
+          Text('Issuer: ' + (item.trust.issuer === '' ? '未知' : item.trust.issuer)).fontSize(11)
+            .fontColor(this.pal().text2).width('100%').margin({ top: 4 })
+          Text('Probe 元数据 · CN=' + (item.trust.commonName === '' ? '未知' : item.trust.commonName) +
+            ' · 根信任=' + (item.trust.rootTrusted ? '是' : '否') +
+            ' · 名称匹配=' + (item.trust.hostMismatch ? '否' : '是')).fontSize(11)
+            .fontColor(this.pal().text2).width('100%').lineHeight(16).margin({ top: 4 })
+          Text('endpoint binding ' + this.redactedFingerprint(item.trust.endpointBindingFingerprint)).fontSize(10)
+            .fontColor(this.pal().text3).fontFamily('monospace').width('100%').margin({ top: 4 })
+        }.width('100%').padding(10).margin({ top: 8 }).backgroundColor(this.pal().surface).borderRadius(8)
+      }
     }.width('100%').padding(14).borderRadius(14).backgroundColor(this.pal().card)
       .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
       .margin({ bottom: 10 })
@@ -151,7 +214,7 @@ export struct VncCertificateTrustManagerSheet {
         Text(this.errorText).fontSize(12).fontColor(this.pal().danger).lineHeight(18)
           .width('100%').padding(10).borderRadius(10).backgroundColor(this.pal().surface).margin({ bottom: 10 })
       }
-      if (this.trusts.length === 0) {
+      if (this.trustItems.length === 0) {
         Column() {
           SymbolGlyph($r('sys.symbol.lock_shield_fill')).fontSize(34).fontColor([this.pal().text3])
           Text('暂无 VNC TLS 信任记录').fontSize(15).fontColor(this.pal().text).margin({ top: 12 })
@@ -159,8 +222,8 @@ export struct VncCertificateTrustManagerSheet {
             .fontSize(12).fontColor(this.pal().text3).textAlign(TextAlign.Center).lineHeight(18).margin({ top: 6 })
         }.width('100%').padding({ top: 34, bottom: 38 })
       } else {
-        ForEach(this.trusts, (trust: VncTrustView) => { this.trustCard(trust); },
-          (trust: VncTrustView): string => trust.id + ':' + this.revision.toString())
+        ForEach(this.trustItems, (item: VncTrustDirectoryItem) => { this.trustCard(item); },
+          (item: VncTrustDirectoryItem): string => item.trust.id + ':' + this.revision.toString())
       }
     }.width('100%')
   }

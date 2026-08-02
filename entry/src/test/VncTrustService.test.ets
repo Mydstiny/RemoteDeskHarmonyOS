@@ -5,7 +5,10 @@ import {
   vncTrustEndpointIsValid,
   vncTrustStoreMatchesCurrent,
   vncTrustViewStateForStore,
-  VncTrustService
+  VncTrustService,
+  vncTrustV2ReadBackMatches,
+  vncTrustMigrationNeedsCleanup,
+  vncTrustLegacyRowIsCleaned
 } from '../main/ets/services/VncTrustService';
 import { vncTrustPayload, VncTrustCertificateMetadata, finalizeVncRecord } from '../main/ets/services/VncModelPolicy';
 import { vncTrustPayloadIsLegacy, vncRecordIsValid } from '../main/ets/services/VncRecordPolicy';
@@ -130,6 +133,18 @@ export default function vncTrustServiceTest(): void {
       malformed.createdAt = 1700000000000; malformed.updatedAt = 1700000000000;
       finalizeVncRecord(malformed);
       expect(vncRecordIsValid(malformed)).assertFalse();
+      expect(vncTrustMigrationNeedsCleanup('legacy-id', 'v2-id')).assertTrue();
+      expect(vncTrustMigrationNeedsCleanup('v2-id', 'v2-id')).assertFalse();
+      expect(vncTrustLegacyRowIsCleaned([legacy], legacy.id)).assertFalse();
+      const tombstone = new VncRecord();
+      tombstone.id = legacy.id;
+      tombstone.deletedAt = 1700000000001;
+      expect(vncTrustLegacyRowIsCleaned([tombstone], legacy.id)).assertTrue();
+      expect(vncTrustLegacyRowIsCleaned([], legacy.id)).assertTrue();
+      expect(vncTrustV2ReadBackMatches(v2Record, 'gateway', 'gateway-1', 'user-1',
+        'd'.repeat(64), STORE, BINDING)).assertTrue();
+      expect(vncTrustV2ReadBackMatches(legacy, 'gateway', 'gateway-1', 'user-1',
+        'd'.repeat(64), STORE, BINDING)).assertFalse();
     });
   });
 }

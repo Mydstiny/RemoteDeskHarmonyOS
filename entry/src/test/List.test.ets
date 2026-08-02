@@ -57,6 +57,7 @@ import vncCertificateSheetPolicyTest from './VncCertificateSheetPolicy.test';
 import vncCertificatePreflightPolicyTest from './VncCertificatePreflightPolicy.test';
 import vncCertificateProbeLifecyclePolicyTest from './VncCertificateProbeLifecyclePolicy.test';
 import vncTrustServiceTest from './VncTrustService.test';
+import vncTrustEndpointDirectoryTest from './VncTrustEndpointDirectory.test';
 import vncTlsEndpointPolicyTest from './VncTlsEndpointPolicy.test';
 import cloudSyncCoordinatorPolicyTest from './CloudSyncCoordinatorPolicy.test';
 import localBackupPolicyTest from './LocalBackupPolicy.test';
@@ -184,6 +185,7 @@ export default function testsuite() {
   vncCertificatePreflightPolicyTest();
   vncCertificateProbeLifecyclePolicyTest();
   vncTrustServiceTest();
+  vncTrustEndpointDirectoryTest();
   vncTlsEndpointPolicyTest();
   cloudSyncCoordinatorPolicyTest();
   localBackupPolicyTest();

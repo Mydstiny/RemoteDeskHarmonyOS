@@ -75,6 +75,7 @@ import { VncSessionCredentialHandoff } from '../services/VncSessionCredentialHan
 import { VncSettingsService } from '../services/VncSettingsService';
 import { VncSettingsSheet } from '../components/VncSettingsSheet';
 import { VncCertificateTrustManagerSheet } from '../components/VncCertificateTrustManagerSheet';
+import { buildVncTrustDirectory, VncTrustDirectoryItem } from '../services/VncTrustEndpointDirectory';
 // Passphrase uses bindSheet (HostListPage is @Entry, no bindSheet limit)
 import { KeyVaultPage } from './KeyVaultPage';
 import { SshPreflightState } from '../components/SshPreflightSheet';
@@ -2002,10 +2003,17 @@ struct HostListPage {
     });
   }
 
-  private recheckVncTrust(trust: VncTrustView): void {
-    const host: VncHostView | null = trust.ownerType === 'host'
-      ? this.vncHosts.find(trust.ownerId)
-      : this.vncHosts.list().find((item: VncHostView): boolean => item.gatewayId === trust.ownerId) || null;
+  private recheckVncTrust(trust: VncTrustView, selectedHostId: string): void {
+    const hosts: VncHostView[] = this.vncHosts.list();
+    const gateways: VncGatewayView[] = this.vncGateways.list();
+    const directory: VncTrustDirectoryItem[] = buildVncTrustDirectory([trust], hosts, gateways);
+    const directoryItem: VncTrustDirectoryItem | undefined = directory[0];
+    if (directoryItem === undefined || directoryItem.selectedHostId === '' ||
+      directoryItem.selectedHostId !== selectedHostId || directoryItem.status !== 'current') {
+      promptAction.showToast({ message: 'VNC endpoint 已变化或无法唯一定位，请从当前主机重新检查', duration: 2200 });
+      return;
+    }
+    const host: VncHostView | null = this.vncHosts.find(selectedHostId);
     if (host === null) {
       promptAction.showToast({ message: '找不到当前账号下的 VNC endpoint，请先确认主机或 Gateway 仍存在', duration: 2200 });
       return;
@@ -7745,7 +7753,7 @@ struct HostListPage {
     } else if (this.popupSheetMode === POPUP_SHEET_VNC_CERTIFICATES) {
       VncCertificateTrustManagerSheet({
         onClose: (): void => { this.closeSettingsLeafSheet(); },
-        onRecheck: (trust: VncTrustView): void => { this.recheckVncTrust(trust); }
+        onRecheck: (trust: VncTrustView, hostId: string): void => { this.recheckVncTrust(trust, hostId); }
       })
     } else if (this.popupSheetMode === 3) {
       this.cloudSyncSheet()

@@ -9,7 +9,11 @@ import {
   finalizeVncRecord,
   VncTrustCertificateMetadata
 } from './VncModelPolicy';
-import { vncPayloadHashSha256 } from './VncRecordPolicy';
+import {
+  vncPayloadHashSha256,
+  vncPayloadObject,
+  vncTrustPayloadIsLegacy
+} from './VncRecordPolicy';
 
 const TRUST_PREFS_NAME: string = 'RemoteDesktopVncTrustPrefs';
 const LOCAL_TRUST_CONFIRMATIONS_KEY: string = 'locallyConfirmedVncTrust';
@@ -97,6 +101,40 @@ export function vncTrustEndpointIsValid(endpoint: VncTrustEndpoint,
     /^[0-9a-f]{64}$/.test(currentStore) &&
     endpoint.storeIdentityFingerprint.trim().toLowerCase() === currentStore &&
     /^[0-9a-f]{64}$/.test(endpoint.endpointBindingFingerprint.trim().toLowerCase());
+}
+
+export function vncTrustV2ReadBackMatches(record: VncRecord | null, ownerType: 'host' | 'gateway',
+  ownerId: string, userId: string, fingerprintSha256: string,
+  storeIdentityFingerprint: string, endpointBindingFingerprint: string): boolean {
+  if (record === null || record.deletedAt > 0 || record.recordType !== 'trust' ||
+    record.ownerType !== ownerType || record.ownerId.trim() !== ownerId.trim() ||
+    record.userId.trim() !== userId.trim()) { return false; }
+  const values = vncPayloadObject(record.payload);
+  if (values === null || values['payloadVersion'] !== 2 || values['confirmed'] !== true) { return false; }
+  return values['fingerprintSha256'] === fingerprintSha256.trim().toLowerCase() &&
+    values['ownerType'] === ownerType &&
+    values['storeIdentityFingerprint'] === storeIdentityFingerprint.trim().toLowerCase() &&
+    values['endpointBindingFingerprint'] === endpointBindingFingerprint.trim().toLowerCase();
+}
+
+export function vncTrustMigrationNeedsCleanup(legacyId: string, v2Id: string): boolean {
+  const oldId: string = legacyId.trim();
+  const newId: string = v2Id.trim();
+  return oldId !== '' && newId !== '' && oldId !== newId;
+}
+
+/**
+ * A migration is complete only when the legacy id is no longer an active row.
+ * CloudStore normally leaves a tombstone, but accepting an already-absent row
+ * keeps the operation idempotent after a previous successful cleanup.
+ */
+export function vncTrustLegacyRowIsCleaned(records: VncRecord[], legacyId: string): boolean {
+  const normalizedId: string = legacyId.trim();
+  if (normalizedId === '') { return false; }
+  for (let i = 0; i < records.length; i++) {
+    if (records[i].id.trim() === normalizedId && records[i].deletedAt <= 0) { return false; }
+  }
+  return true;
 }
 
 /**
@@ -266,6 +304,9 @@ export class VncTrustService {
       return result;
     }
     result.id = 'vnctrust_' + ownerType + '_' + ownerId + '_' + normalized;
+    const previousV2: VncRecord | null = this.findRecord(result.id);
+    const legacyRecord: VncRecord | null = this.findLegacyCandidateRecord(ownerType, ownerId,
+      resolvedUserId, normalized, result.id);
     const current: VncTrustView | null = this.find(result.id) ||
       this.findLegacyCandidate(ownerType, ownerId, resolvedUserId, normalized);
     const record: VncRecord = new VncRecord();
@@ -286,6 +327,22 @@ export class VncTrustService {
       result.message = this.cloud.getLastMutationResult().message || 'VNC trust 保存失败';
       return result;
     }
+    const readBack: VncRecord | null = this.findRecord(result.id);
+    if (!vncTrustV2ReadBackMatches(readBack, ownerType, ownerId, resolvedUserId, normalized,
+      storeIdentityFingerprint, endpointBindingFingerprint)) {
+      this.rollbackV2Mutation(resolvedUserId, result.id, previousV2);
+      result.message = 'VNC trust 保存后校验失败';
+      return result;
+    }
+    if (legacyRecord !== null && vncTrustMigrationNeedsCleanup(legacyRecord.id, result.id)) {
+      const removedLegacy: boolean = this.cloud.deleteVncRecord(resolvedUserId, legacyRecord.id);
+      const legacyReadBack: VncRecord[] = this.cloud.loadVncRecords(resolvedUserId, true);
+      if (!removedLegacy || !vncTrustLegacyRowIsCleaned(legacyReadBack, legacyRecord.id)) {
+        this.rollbackV2Mutation(resolvedUserId, result.id, previousV2);
+        result.message = 'VNC trust 旧记录迁移未完成';
+        return result;
+      }
+    }
     this.rememberLocalConfirmation(record.ownerId, normalized, endpointBindingFingerprint);
     result.ok = true;
     this.emitChange();
@@ -305,6 +362,42 @@ export class VncTrustService {
   private find(id: string): VncTrustView | null {
     const values: VncTrustView[] = this.list();
     for (let i = 0; i < values.length; i++) { if (values[i].id === id) { return values[i]; } }
+    return null;
+  }
+
+  private findRecord(id: string): VncRecord | null {
+    const records: VncRecord[] = this.cloud.loadVncRecords(this.currentUserId(), true);
+    for (let i = 0; i < records.length; i++) {
+      if (records[i].id === id && records[i].recordType === 'trust' && records[i].deletedAt <= 0) {
+        return records[i];
+      }
+    }
+    return null;
+  }
+
+  private rollbackV2Mutation(userId: string, id: string, previous: VncRecord | null): void {
+    if (previous !== null) {
+      this.cloud.upsertVncRecord(previous);
+      return;
+    }
+    this.cloud.deleteVncRecord(userId, id);
+  }
+
+  private findLegacyCandidateRecord(ownerType: 'host' | 'gateway', ownerId: string,
+    userId: string, fingerprintSha256: string, newId: string): VncRecord | null {
+    const records: VncRecord[] = this.cloud.loadVncRecords(userId, true);
+    for (let i = 0; i < records.length; i++) {
+      const record: VncRecord = records[i];
+      if (record.id === newId || record.deletedAt > 0 || record.recordType !== 'trust' ||
+        record.ownerType !== ownerType || record.ownerId.trim() !== ownerId.trim()) { continue; }
+      const values = vncPayloadObject(record.payload);
+      const fingerprint: string = values !== null && typeof values['fingerprintSha256'] === 'string'
+        ? (values['fingerprintSha256'] as string).trim().toLowerCase() : '';
+      if (record.userId.trim() === userId.trim() && fingerprint === fingerprintSha256 &&
+        vncTrustPayloadIsLegacy(record.payload, ownerType)) {
+        return record;
+      }
+    }
     return null;
   }
 

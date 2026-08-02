@@ -29,6 +29,7 @@ import { VncCloudSyncScope, vncCloudSyncScopes } from '../services/VncCloudSyncS
 import { Palette, buildDark, buildLight, AppTheme } from '../common/Theme';
 import { VncAddFlow } from '../components/hostadd/VncAddFlow';
 import { VncCertificateTrustManagerSheet } from '../components/VncCertificateTrustManagerSheet';
+import { buildVncTrustDirectory, VncTrustDirectoryItem } from '../services/VncTrustEndpointDirectory';
 import { SETTINGS_PANEL_DISMISS_TO_LEAF_OPEN_MS } from '../services/SettingsSheetRoutePolicy';
 
 @Entry
@@ -850,10 +851,15 @@ export struct VncSettingsPage {
     this.showTrustManagerSheet = true;
   }
 
-  private recheckTrust(trust: VncTrustView): void {
-    const host: VncHostView | null = trust.ownerType === 'host'
-      ? this.hostService.find(trust.ownerId)
-      : this.hostService.list().find((item: VncHostView): boolean => item.gatewayId === trust.ownerId) || null;
+  private recheckTrust(trust: VncTrustView, selectedHostId: string): void {
+    const directory: VncTrustDirectoryItem[] = buildVncTrustDirectory([trust], this.hostService.list(), this.gatewayService.list());
+    const directoryItem: VncTrustDirectoryItem | undefined = directory[0];
+    if (directoryItem === undefined || directoryItem.selectedHostId === '' ||
+      directoryItem.selectedHostId !== selectedHostId || directoryItem.status !== 'current') {
+      promptAction.showToast({ message: 'VNC endpoint 已变化或无法唯一定位，请从当前主机重新检查', duration: 2200 });
+      return;
+    }
+    const host: VncHostView | null = this.hostService.find(selectedHostId);
     if (host === null) {
       promptAction.showToast({ message: '找不到当前账号下的 VNC endpoint，请先确认主机或 Gateway 仍存在', duration: 2200 });
       return;
@@ -925,7 +931,7 @@ export struct VncSettingsPage {
   @Builder private trustManagerSheet() {
     VncCertificateTrustManagerSheet({
       onClose: (): void => { this.showTrustManagerSheet = false; },
-      onRecheck: (trust: VncTrustView): void => { this.recheckTrust(trust); }
+      onRecheck: (trust: VncTrustView, hostId: string): void => { this.recheckTrust(trust, hostId); }
     })
   }
 }
