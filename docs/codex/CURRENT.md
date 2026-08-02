@@ -8,7 +8,7 @@ This file is the compact startup resume card. Historical checkpoints remain in
 - Task: `rustdesk-complete-repair` (active branch retained; current scope is VNC V3 only)
 - Branch: `codex/rustdesk-complete-repair`
 - Checkpoint: `fc9daa13f`, based on `main@34946adbc`; branch is ahead by 36 and not behind.
-- Phase: VNC V3 stage D trust-v2/manager implementation; awaiting the single incremental review.
+- Phase: VNC V3 stage D trust-v2/manager implementation; first manager segment passed, ready for the follow-up invalidation/backup segment.
 - Worktree: clean after the code checkpoint. Do not stage unrelated changes.
 
 ## Stage A Result
@@ -45,13 +45,14 @@ This file is the compact startup resume card. Historical checkpoints remain in
   store, and registers the resolver suite in both test runners. The latest
   `7d26f3716` checkpoint downgrades stale-store list views and makes legacy
   trust queries endpoint-bound, with Repeater TLS binding coverage.
-- The existing reviewer task `019fc333-6789-7633-bf6f-3fea1cb2ad4d` receives one
-  unique read-only incremental review request for `fc9daa13f`; do not duplicate
+- The existing reviewer task `019fc333-6789-7633-bf6f-3fea1cb2ad4d` passed the
+  `fc9daa13f` manager endpoint/migration segment; reuse it for the next VNC-only
+  segment and do not duplicate
   the task or start FreeRDP evaluation before VNC V3 closes.
-- Stage D checkpoint `fc9daa13f` adds endpoint-bound manager lookup/status,
+- Stage D checkpoint `fc9daa13f` passed independent review with endpoint-bound manager lookup/status,
   multi-target recheck routing, v1 candidate migration cleanup/read-back and
-  before-image rollback on failed writes. The code is VNC-only and is awaiting
-  independent review.
+  before-image rollback on failed writes. The next segment covers backup/cloud
+  wording and endpoint deletion/rotation invalidation; the code remains VNC-only.
 - Keep every VNC caller fail-closed when the probe, Sheet lifecycle, owner
   binding, or expected-pin handoff is missing or stale.
 
@@ -85,7 +86,7 @@ This file is the compact startup resume card. Historical checkpoints remain in
 
 - Machine state: `docs/codex/STATE.json`.
 - Receipts: `docs/codex/REVIEW_RECEIPTS.jsonl`.
-- `scripts/sync_workspace.sh status` should report `REVIEW_REQUIRED` for the
-  `fc9daa13f` Stage D scope until the existing reviewer returns PASS.
+- `scripts/sync_workspace.sh status` should report the recorded PASS for the
+  `fc9daa13f` Stage D scope until a new VNC-only increment is started.
 - Reuse the existing independent review session and do not redispatch duplicate
   messages for the same segment.

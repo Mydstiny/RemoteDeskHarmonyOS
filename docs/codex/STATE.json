@@ -4,9 +4,9 @@
   "branch": "codex/rustdesk-complete-repair",
   "base": "34946adbc",
   "head": "fc9daa13f",
-  "phase": "vnc-v3-stage-d-implementation",
+  "phase": "vnc-v3-stage-d-follow-up",
   "status": "active",
-  "next": "Stage D checkpoint fc9daa13f adds endpoint-bound manager lookup/status, multi-target recheck routing, v1 migration cleanup/read-back and before-image rollback; await the single incremental review before the follow-up invalidation/backup segment.",
+  "next": "Stage D manager endpoint/migration segment fc9daa13f passed; implement endpoint deletion/rotation invalidation and backup/cloud wording within VNC-only scope, then reuse the existing reviewer once.",
   "blockers": [
     "hdc list targets and hdc shell return Connect server failed; no current hilog evidence.",
     "ohosTest@OhosTestCompileArkTS is not registered (00306054); ArkTS tests have compile/build evidence only.",
@@ -17,7 +17,7 @@
     "docs/superpowers/plans/2026-08-01-vnc-certificate-settings-relay-complete-repair-plan-v3.md"
   ],
   "review": {
-    "status": "REVIEW_REQUIRED",
+    "status": "PASS",
     "taskId": "019fc333-6789-7633-bf6f-3fea1cb2ad4d",
     "scope": [
       "entry/src/main/ets/components/VncCertificateTrustManagerSheet.ets",
@@ -30,7 +30,7 @@
       "entry/src/test/VncTrustEndpointDirectory.test.ets",
       "entry/src/test/VncTrustService.test.ets"
     ],
-    "reason": "Stage D manager endpoint/migration fix checkpoint fc9daa13f is ready for the existing independent read-only reviewer; reuse the task exactly once."
+    "reason": "Stage D manager endpoint/migration checkpoint fc9daa13f passed the existing independent read-only reviewer; reuse the task for the next VNC-only increment."
   },
   "lastVerification": {
     "rdp_native_tests": "249-pass-0-fail-loopback-fixtures-host-socket-fc9daa13f-2026-08-02",
