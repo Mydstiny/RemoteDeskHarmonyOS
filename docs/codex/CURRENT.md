@@ -8,7 +8,7 @@ This file is the compact startup resume card. Historical checkpoints remain in
 - Task: `rustdesk-complete-repair` (active branch retained; current scope is VNC V3 only)
 - Branch: `codex/rustdesk-complete-repair`
 - Checkpoint: `3167f610a`, based on `main@34946adbc`; branch is ahead by 19 and not behind.
-- Phase: VNC V3 stage B review-fix checkpoint; independent incremental review required.
+- Phase: VNC V3 stage B passed; stage C implementation is next.
 - Worktree: clean. Do not stage unrelated changes.
 
 ## Stage A Result
@@ -20,12 +20,21 @@ This file is the compact startup resume card. Historical checkpoints remain in
 - Review scope is limited to the 12 VNC policy/test files declared in
   `STATE.json`; no RDP, RustDesk, SSH, renderer, or video-performance files.
 
+## Stage B Result
+
+- Review: `PASS` at code checkpoint `3167f610a` by independent task
+  `019fc333-6789-7633-bf6f-3fea1cb2ad4d`.
+- Verified async DNS, unified DNS/TCP/TLS deadline, TLS cancellation/error
+  codes, bounded certificate metadata, worker-only teardown, N-API cleanup
+  fencing, resolver exception boundaries, and trickle-handshake regression.
+- Remaining evidence gaps are OHOS NAPI runtime teardown, `ohosTest`, `hdc`,
+  real direct/Repeater endpoints, and later Sheet/TrustService integration.
+
 ## Next
 
-- Request one read-only incremental review of stage B checkpoint `3167f610a`
-  using the existing reviewer task; do not redispatch duplicate review messages.
-- Stage C follows only after stage B review passes: VNC certificate Sheet and
-  connection state machine.
+- Implement VNC V3 stage C: certificate Sheet and connection state machine.
+- Keep the same reviewer task for the next segment; request one read-only
+  review only after the segment checkpoint and required verification.
 - Keep all VNC callers fail-closed until the probe and expected-pin handoff are
   wired through the later Sheet/state-machine stages.
 
@@ -54,7 +63,7 @@ This file is the compact startup resume card. Historical checkpoints remain in
 
 - Machine state: `docs/codex/STATE.json`.
 - Receipts: `docs/codex/REVIEW_RECEIPTS.jsonl`.
-- `scripts/sync_workspace.sh status` must report `REVIEW_REQUIRED` for the
-  stage B scope until the existing reviewer records a PASS receipt.
-- Independent review session and monitor session are already active; do not
-  redispatch duplicate messages for the same stage.
+- `scripts/sync_workspace.sh status` should recognize the stage B PASS receipt;
+  new stage C code changes will create a new incremental review scope.
+- Reuse the existing independent review session and do not redispatch duplicate
+  messages for the same segment.
