@@ -7,8 +7,8 @@ This file is the compact startup resume card. Historical checkpoints remain in
 
 - Task: `rustdesk-complete-repair` (active branch retained; current scope is VNC V3 only)
 - Branch: `codex/rustdesk-complete-repair`
-- Checkpoint: `36a8cbe57`, based on `main@34946adbc`; branch is ahead by 22 and not behind.
-- Phase: VNC V3 stage C first segment PASS; RemoteDesktop integration next.
+- Checkpoint: `9db29aeb3`, based on `main@34946adbc`; branch is ahead by 25 and not behind.
+- Phase: VNC V3 stage C second segment checkpointed; RemoteDesktop integration is awaiting independent review.
 - Worktree: clean. Do not stage unrelated changes.
 
 ## Stage A Result
@@ -35,21 +35,23 @@ This file is the compact startup resume card. Historical checkpoints remain in
 - Stage C first segment: pure certificate Sheet action/lifecycle policy and
   registered Hypium suites are implemented and independently PASS at
   `36a8cbe57` (receipt `vnc-v3-stage-c-sheet-policy-pass-36a8cbe5`).
-- Next segment: wire the policy into `RemoteDesktop` probe, bindSheet,
-  generation, password ordering, and one-shot pin handoff.
-- Keep the same reviewer task for the next segment; request one read-only
-  review only after the segment checkpoint and required verification.
-- Keep all VNC callers fail-closed until the probe and expected-pin handoff are
-  wired through the later Sheet/state-machine stages.
+- Stage C second segment: `RemoteDesktop` now wires the resolver, async probe,
+  three generations, five-state certificate Sheet, password ordering, owner/
+  endpoint-bound trust, and one-shot pin handoff at checkpoint `9db29aeb3`.
+- The existing reviewer task `019fc333-6789-7633-bf6f-3fea1cb2ad4d` has one
+  unique read-only incremental review request for this checkpoint; do not
+  dispatch another message for the same segment.
+- Keep every VNC caller fail-closed when the probe, Sheet lifecycle, owner
+  binding, or expected-pin handoff is missing or stale.
 
 ## Verification
 
 - `rdp_native_tests`: 248 passed, 0 failed with host socket permission on
   2026-08-03; the sandbox-only run failed 13 loopback fixture starts and is
   not used as final evidence.
-- `default@OhosTestCompileArkTS`: passed after `36a8cbe57` on 2026-08-03.
-- `assembleHap`: passed after `36a8cbe57` on 2026-08-03.
-- `git diff --check`: passed after `36a8cbe57`.
+- `default@OhosTestCompileArkTS`: passed after `9db29aeb3` on 2026-08-03.
+- `assembleHap`: passed after `9db29aeb3` on 2026-08-03.
+- `git diff --check`: passed after `9db29aeb3`.
 - `ohosTest@OhosTestCompileArkTS`: unavailable; task is not registered
   (`00306054`). New ArkTS tests therefore have compile/build evidence only.
 
@@ -63,14 +65,16 @@ This file is the compact startup resume card. Historical checkpoints remain in
   handoff, and the final transport deadline. NAPI runtime, Promise/environment teardown, Sheet lifecycle,
   TrustService migration, real Repeater, cloud, and device matrices remain
   unverified and are not release evidence.
-- Stage C Sheet policy is static/build-tested only until `ohosTest` is
-  registered and a real device is available; no UI runtime evidence is claimed.
+- Stage C RemoteDesktop probe/Sheet/password integration is static/build-tested
+  only until `ohosTest` is registered and a real device is available; no UI or
+  endpoint runtime evidence is claimed.
 
 ## Review Protocol
 
 - Machine state: `docs/codex/STATE.json`.
 - Receipts: `docs/codex/REVIEW_RECEIPTS.jsonl`.
-- `scripts/sync_workspace.sh status` should recognize the stage C policy PASS
-  receipt while the next RemoteDesktop integration creates a new scope.
+- `scripts/sync_workspace.sh status` should report `RESUME_REVIEW` for the
+  checkpointed RemoteDesktop integration scope until the existing reviewer
+  returns PASS or CHANGES_REQUIRED.
 - Reuse the existing independent review session and do not redispatch duplicate
   messages for the same segment.

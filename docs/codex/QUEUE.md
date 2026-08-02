@@ -4,16 +4,17 @@ Updated: 2026-08-03 Asia/Shanghai
 
 ## Now
 
-- Implement the next VNC V3 stage C segment: connect `RemoteDesktop` to the
-  probe, Sheet lifecycle, password ordering, and one-shot pin handoff.
-- Preserve stage A/B review receipts and keep probe/pin failures fail-closed.
+- Stage C second segment is checkpointed at `9db29aeb3`; wait for the existing
+  independent reviewer to complete the one requested read-only review.
+- Preserve stage A/B and C-first review receipts; keep probe/pin failures
+  fail-closed.
 - Restore `hdc` connectivity and capture current VNC `hilog` when the device is
   available; do not convert static source evidence into device evidence.
 
 ## Next
 
 - Stage D: VNC trust v2, endpoint-owner migration, and the Data Security trust
-  manager after the Sheet contract is stable.
+  manager after the RemoteDesktop Sheet contract is reviewed.
 - Stage E/F: VNC settings consistency and Repeater mode12 deep checks.
 
 ## Later
