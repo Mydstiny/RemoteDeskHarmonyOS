@@ -268,7 +268,9 @@ void VncRfbEngine::requestStop() {
 #else
     (void)wasRequested;
 #endif
-    transport_.close();
+    // The worker owns SSL/socket teardown. Transport I/O observes the shared
+    // stop token and returns through its bounded poll loop, so this method
+    // never frees an SSL object concurrently with SSL_connect/read/write.
 }
 
 bool VncRfbEngine::isWorkerThread() const {

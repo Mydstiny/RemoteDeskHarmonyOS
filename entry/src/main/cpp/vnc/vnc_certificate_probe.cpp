@@ -271,6 +271,7 @@ WaitStatus resolveAddresses(const std::string& host, const std::string& port,
     }
 
     WaitStatus status = WaitStatus::Ready;
+    bool resolverDone = false;
     {
         std::unique_lock<std::mutex> lock(state->mutex);
         while (!state->done) {
@@ -288,6 +289,7 @@ WaitStatus resolveAddresses(const std::string& host, const std::string& port,
             const auto waitMs = std::chrono::milliseconds(std::min(remainingMs, 50));
             state->condition.wait_for(lock, waitMs);
         }
+        resolverDone = state->done;
         if (status == WaitStatus::Ready) {
             lookupResult = state->lookupResult;
             addresses = std::move(state->addresses);
@@ -296,7 +298,7 @@ WaitStatus resolveAddresses(const std::string& host, const std::string& port,
             }
         }
     }
-        if (status == WaitStatus::Ready || state->done) {
+        if (status == WaitStatus::Ready || resolverDone) {
             resolver.join();
         } else {
             // A platform resolver may remain in libc after the caller's deadline.
@@ -427,8 +429,7 @@ std::string tlsVersionCategory(const char* version) {
     return "unsupported";
 }
 
-bool tlsHandshakeErrorIsVersionFailure() {
-    const unsigned long error = ERR_peek_last_error();
+bool tlsHandshakeErrorIsVersionFailure(unsigned long error) {
     if (error == 0) {
         return false;
     }
@@ -690,6 +691,7 @@ VncCertificateInfo probeVncCertificate(const VncCertificateProbeConfig& config) 
     }
 
     WaitStatus tlsStatus = WaitStatus::Failed;
+    unsigned long handshakeError = 0;
     while (true) {
         if (isCancelled(config.cancelled)) {
             tlsStatus = WaitStatus::Cancelled;
@@ -700,6 +702,7 @@ VncCertificateInfo probeVncCertificate(const VncCertificateProbeConfig& config) 
             tlsStatus = WaitStatus::TimedOut;
             break;
         }
+        ERR_clear_error();
         const int result = SSL_connect(ssl);
         if (result == 1) {
             tlsStatus = hasTimeRemaining(deadline, remainingMs) ?
@@ -707,6 +710,7 @@ VncCertificateInfo probeVncCertificate(const VncCertificateProbeConfig& config) 
             break;
         }
         const int sslError = SSL_get_error(ssl, result);
+        handshakeError = ERR_peek_last_error();
         if (sslError == SSL_ERROR_WANT_READ) {
             tlsStatus = waitForFd(socketFd, POLLIN, deadline, config.cancelled);
         } else if (sslError == SSL_ERROR_WANT_WRITE) {
@@ -727,7 +731,7 @@ VncCertificateInfo probeVncCertificate(const VncCertificateProbeConfig& config) 
         const VncCertificateProbeErrorCode code =
             tlsStatus == WaitStatus::Cancelled ? VncCertificateProbeErrorCode::Cancelled :
             tlsStatus == WaitStatus::TimedOut ? VncCertificateProbeErrorCode::TlsTimeout :
-            tlsHandshakeErrorIsVersionFailure() ? VncCertificateProbeErrorCode::TlsVersionRejected :
+            tlsHandshakeErrorIsVersionFailure(handshakeError) ? VncCertificateProbeErrorCode::TlsVersionRejected :
             noPeerCertificate ? VncCertificateProbeErrorCode::NoCertificate :
             VncCertificateProbeErrorCode::TlsHandshakeFailed;
         SSL_free(ssl);

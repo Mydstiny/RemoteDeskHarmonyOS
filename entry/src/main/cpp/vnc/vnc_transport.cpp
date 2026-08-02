@@ -22,9 +22,11 @@
 #include <array>
 #include <chrono>
 #include <cctype>
+#include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
 #include <limits>
+#include <thread>
 #include <sstream>
 
 #include <openssl/rand.h>
@@ -38,14 +40,42 @@ namespace {
 
 constexpr size_t kMaxHttpHeaderBytes = 64 * 1024;
 constexpr size_t kMaxWebSocketFrameBytes = 8 * 1024 * 1024;
+constexpr size_t kMaxResolvedAddresses = 16;
+constexpr int kMaxConcurrentResolvers = 8;
 constexpr int kDefaultTimeoutMs = 10000;
+
+using Clock = std::chrono::steady_clock;
+
+struct TransportDeadline {
+    Clock::time_point value;
+};
+
+enum class TransportWaitStatus {
+    Ready,
+    Failed,
+    TimedOut,
+    Cancelled,
+};
+
+bool hasTimeRemaining(const TransportDeadline& deadline, int& remainingMs) {
+    const auto now = Clock::now();
+    if (now >= deadline.value) {
+        remainingMs = 0;
+        return false;
+    }
+    remainingMs = static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(
+        deadline.value - now).count());
+    if (remainingMs <= 0) {
+        remainingMs = 1;
+    }
+    return true;
+}
 
 bool isCancelled(const std::shared_ptr<std::atomic_bool>& token) {
     return token && token->load(std::memory_order_acquire);
 }
 
-bool tlsHandshakeErrorIsVersionFailure() {
-    const unsigned long error = ERR_peek_last_error();
+bool tlsHandshakeErrorIsVersionFailure(unsigned long error) {
     if (error == 0) {
         return false;
     }
@@ -63,6 +93,126 @@ bool tlsHandshakeErrorIsVersionFailure() {
     if (reason == SSL_R_PROTOCOL_VERSION) return true;
 #endif
     return false;
+}
+
+struct TransportResolvedAddress {
+    sockaddr_storage storage {};
+    socklen_t length = 0;
+    int family = AF_UNSPEC;
+    int socktype = SOCK_STREAM;
+    int protocol = 0;
+};
+
+struct TransportResolveState {
+    std::mutex mutex;
+    std::condition_variable condition;
+    bool done = false;
+    bool abandoned = false;
+    int lookupResult = EAI_FAIL;
+    std::vector<TransportResolvedAddress> addresses;
+};
+
+std::atomic<int> g_activeTransportResolvers {0};
+
+TransportWaitStatus resolveTransportAddresses(
+    const std::string& host, const std::string& port,
+    const TransportDeadline& deadline,
+    const std::shared_ptr<std::atomic_bool>& cancelled,
+    std::vector<TransportResolvedAddress>& addresses, int& lookupResult) {
+    const int previousResolvers = g_activeTransportResolvers.fetch_add(
+        1, std::memory_order_acq_rel);
+    if (previousResolvers >= kMaxConcurrentResolvers) {
+        g_activeTransportResolvers.fetch_sub(1, std::memory_order_acq_rel);
+        lookupResult = EAI_AGAIN;
+        return TransportWaitStatus::Failed;
+    }
+    auto state = std::make_shared<TransportResolveState>();
+    std::thread resolver;
+    try {
+        resolver = std::thread([state, host, port]() {
+            struct ResolverCounter {
+                ~ResolverCounter() {
+                    g_activeTransportResolvers.fetch_sub(1, std::memory_order_acq_rel);
+                }
+            } resolverCounter;
+            addrinfo hints {};
+            hints.ai_socktype = SOCK_STREAM;
+            hints.ai_family = AF_UNSPEC;
+            hints.ai_flags = AI_ADDRCONFIG;
+            addrinfo* resolved = nullptr;
+            const int result = ::getaddrinfo(host.c_str(), port.c_str(), &hints, &resolved);
+            std::vector<TransportResolvedAddress> copied;
+            if (result == 0 && resolved != nullptr) {
+                for (addrinfo* item = resolved;
+                     item != nullptr && copied.size() < kMaxResolvedAddresses;
+                     item = item->ai_next) {
+                    if (item->ai_addr == nullptr || item->ai_addrlen <= 0 ||
+                        item->ai_addrlen > sizeof(sockaddr_storage)) {
+                        continue;
+                    }
+                    TransportResolvedAddress address;
+                    std::memcpy(&address.storage, item->ai_addr,
+                                static_cast<size_t>(item->ai_addrlen));
+                    address.length = static_cast<socklen_t>(item->ai_addrlen);
+                    address.family = item->ai_family;
+                    address.socktype = item->ai_socktype;
+                    address.protocol = item->ai_protocol;
+                    copied.push_back(address);
+                }
+            }
+            if (resolved != nullptr) {
+                ::freeaddrinfo(resolved);
+            }
+            {
+                std::lock_guard<std::mutex> lock(state->mutex);
+                state->lookupResult = result;
+                if (!state->abandoned) {
+                    state->addresses = std::move(copied);
+                }
+                state->done = true;
+            }
+            state->condition.notify_one();
+        });
+    } catch (...) {
+        g_activeTransportResolvers.fetch_sub(1, std::memory_order_acq_rel);
+        lookupResult = EAI_MEMORY;
+        return TransportWaitStatus::Failed;
+    }
+
+    TransportWaitStatus status = TransportWaitStatus::Ready;
+    bool resolverDone = false;
+    {
+        std::unique_lock<std::mutex> lock(state->mutex);
+        while (!state->done) {
+            if (isCancelled(cancelled)) {
+                state->abandoned = true;
+                status = TransportWaitStatus::Cancelled;
+                break;
+            }
+            int remainingMs = 0;
+            if (!hasTimeRemaining(deadline, remainingMs)) {
+                state->abandoned = true;
+                status = TransportWaitStatus::TimedOut;
+                break;
+            }
+            state->condition.wait_for(lock,
+                std::chrono::milliseconds(std::min(remainingMs, 50)));
+        }
+        resolverDone = state->done;
+        if (status == TransportWaitStatus::Ready) {
+            lookupResult = state->lookupResult;
+            addresses = std::move(state->addresses);
+            if (lookupResult != 0 || addresses.empty()) {
+                status = TransportWaitStatus::Failed;
+            }
+        }
+    }
+    if (status == TransportWaitStatus::Ready || resolverDone) {
+        resolver.join();
+    } else {
+        resolver.detach();
+    }
+    return status;
 }
 
 std::string errnoMessage(const char* operation) {
@@ -136,6 +286,10 @@ bool isIpLiteral(const std::string& value) {
 }
 
 void setTlsIoError(std::string& error, bool writing, const std::string& waitError = "") {
+    if (waitError == "E-VNC-CERT-CANCELLED") {
+        error = "E-VNC-CERT-CANCELLED";
+        return;
+    }
     if (waitError == "socket operation timed out") {
         error = "E-VNC-CERT-TLS-TIMEOUT";
         return;
@@ -153,6 +307,7 @@ VncTransport::~VncTransport() {
 
 bool VncTransport::connect(const VncTransportConfig& config, std::string& error) {
     close();
+    cancelled_ = config.cancelled;
     if (isCancelled(config.cancelled)) {
         error = "E-VNC-CERT-CANCELLED";
         return false;
@@ -190,32 +345,40 @@ bool VncTransport::connect(const VncTransportConfig& config, std::string& error)
 bool VncTransport::connectTcp(const std::string& host, int port, int timeoutMs,
                               const std::shared_ptr<std::atomic_bool>& cancelled,
                               std::string& error) {
-    struct addrinfo hints;
-    std::memset(&hints, 0, sizeof(hints));
-    hints.ai_socktype = SOCK_STREAM;
-    hints.ai_family = AF_UNSPEC;
-    hints.ai_flags = AI_ADDRCONFIG;
-
-    struct addrinfo* addresses = nullptr;
+    const int boundedTimeoutMs = timeoutMs <= 0 ? kDefaultTimeoutMs : timeoutMs;
+    const TransportDeadline deadline {
+        Clock::now() + std::chrono::milliseconds(boundedTimeoutMs)};
     const std::string portText = std::to_string(port);
-    const int lookup = ::getaddrinfo(host.c_str(), portText.c_str(), &hints, &addresses);
-    if (isCancelled(cancelled)) {
-        if (addresses != nullptr) ::freeaddrinfo(addresses);
+    std::vector<TransportResolvedAddress> addresses;
+    int lookup = EAI_FAIL;
+    const TransportWaitStatus resolveStatus = resolveTransportAddresses(
+        host, portText, deadline, cancelled, addresses, lookup);
+    if (resolveStatus == TransportWaitStatus::Cancelled || isCancelled(cancelled)) {
         error = "E-VNC-CERT-CANCELLED";
         return false;
     }
-    if (lookup != 0) {
+    if (resolveStatus == TransportWaitStatus::TimedOut) {
+        error = "E-VNC-CERT-CONNECT-TIMEOUT";
+        return false;
+    }
+    if (resolveStatus != TransportWaitStatus::Ready || lookup != 0 || addresses.empty()) {
         error = "DNS lookup failed: ";
         error += gai_strerror(lookup);
         return false;
     }
 
-    for (struct addrinfo* address = addresses; address != nullptr; address = address->ai_next) {
+    error.clear();
+    for (const TransportResolvedAddress& address : addresses) {
         if (isCancelled(cancelled)) {
             error = "E-VNC-CERT-CANCELLED";
             break;
         }
-        const int fd = ::socket(address->ai_family, address->ai_socktype, address->ai_protocol);
+        int remainingMs = 0;
+        if (!hasTimeRemaining(deadline, remainingMs)) {
+            error = "E-VNC-CERT-CONNECT-TIMEOUT";
+            break;
+        }
+        const int fd = ::socket(address.family, address.socktype, address.protocol);
         if (fd < 0) {
             continue;
         }
@@ -224,20 +387,42 @@ bool VncTransport::connectTcp(const std::string& host, int port, int timeoutMs,
             ::close(fd);
             continue;
         }
-        const int result = ::connect(fd, address->ai_addr, address->ai_addrlen);
+        const int result = ::connect(fd,
+                                     reinterpret_cast<const sockaddr*>(&address.storage),
+                                     address.length);
         if (result == 0) {
-            if (isCancelled(cancelled)) {
+            if (isCancelled(cancelled) || !hasTimeRemaining(deadline, remainingMs)) {
                 ::close(fd);
-                error = "E-VNC-CERT-CANCELLED";
+                error = isCancelled(cancelled) ? "E-VNC-CERT-CANCELLED" :
+                    "E-VNC-CERT-CONNECT-TIMEOUT";
                 break;
             }
             socketFd_ = fd;
             break;
         }
-        if (errno != EINPROGRESS || !waitForFd(fd, POLLOUT, timeoutMs, error, cancelled)) {
-            if (isCancelled(cancelled)) error = "E-VNC-CERT-CANCELLED";
+        if (errno != EINPROGRESS) {
+            error = errnoMessage("connect");
             ::close(fd);
             continue;
+        }
+        if (!waitForFd(fd, POLLOUT, remainingMs, error, cancelled)) {
+            if (isCancelled(cancelled)) {
+                error = "E-VNC-CERT-CANCELLED";
+                ::close(fd);
+                break;
+            }
+            if (!hasTimeRemaining(deadline, remainingMs)) {
+                error = "E-VNC-CERT-CONNECT-TIMEOUT";
+                ::close(fd);
+                break;
+            }
+            ::close(fd);
+            continue;
+        }
+        if (isCancelled(cancelled)) {
+            error = "E-VNC-CERT-CANCELLED";
+            ::close(fd);
+            break;
         }
         int socketError = 0;
         socklen_t socketErrorLength = sizeof(socketError);
@@ -250,10 +435,14 @@ bool VncTransport::connectTcp(const std::string& host, int port, int timeoutMs,
             ::close(fd);
             continue;
         }
+        if (!hasTimeRemaining(deadline, remainingMs)) {
+            error = "E-VNC-CERT-CONNECT-TIMEOUT";
+            ::close(fd);
+            break;
+        }
         socketFd_ = fd;
         break;
     }
-    ::freeaddrinfo(addresses);
     if (isCancelled(cancelled)) {
         if (socketFd_ >= 0) {
             ::close(socketFd_);
@@ -324,11 +513,13 @@ bool VncTransport::enableTls(const VncTransportConfig& config, std::string& erro
             SSL_CTX_free(context);
             return false;
         }
+        ERR_clear_error();
         const int result = SSL_connect(ssl);
         if (result == 1) {
             break;
         }
         const int sslError = SSL_get_error(ssl, result);
+        const unsigned long handshakeError = ERR_peek_last_error();
         if (sslError == SSL_ERROR_WANT_READ) {
             if (!waitForFd(socketFd_, POLLIN, config.connectTimeoutMs, error,
                            config.cancelled)) {
@@ -364,7 +555,7 @@ bool VncTransport::enableTls(const VncTransportConfig& config, std::string& erro
         if (partialCertificate != nullptr) X509_free(partialCertificate);
         if (isCancelled(config.cancelled)) {
             error = "E-VNC-CERT-CANCELLED";
-        } else if (tlsHandshakeErrorIsVersionFailure()) {
+        } else if (tlsHandshakeErrorIsVersionFailure(handshakeError)) {
             error = "E-VNC-CERT-TLS-VERSION";
         } else if (noPeerCertificate) {
             error = "E-VNC-CERT-NO-CERTIFICATE";
@@ -541,6 +732,10 @@ bool VncTransport::writeAll(const uint8_t* source, size_t size, std::string& err
 bool VncTransport::readRaw(uint8_t* destination, size_t size, int timeoutMs, std::string& error) {
     size_t offset = 0;
     while (offset < size) {
+        if (isCancelled(cancelled_)) {
+            error = "E-VNC-CERT-CANCELLED";
+            return false;
+        }
         if (tls_) {
             SSL* ssl = static_cast<SSL*>(ssl_);
             if (ssl == nullptr) {
@@ -557,7 +752,7 @@ bool VncTransport::readRaw(uint8_t* destination, size_t size, int timeoutMs, std
             if (sslError == SSL_ERROR_WANT_READ || sslError == SSL_ERROR_WANT_WRITE) {
                 std::string waitError;
                 if (!waitForFd(socketFd_, sslError == SSL_ERROR_WANT_WRITE ? POLLOUT : POLLIN,
-                               timeoutMs, waitError)) {
+                               timeoutMs, waitError, cancelled_)) {
                     setTlsIoError(error, false, waitError);
                     return false;
                 }
@@ -579,12 +774,12 @@ bool VncTransport::readRaw(uint8_t* destination, size_t size, int timeoutMs, std
             continue;
         }
         if (errno == EAGAIN || errno == EWOULDBLOCK) {
-            if (!waitForFd(socketFd_, POLLIN, timeoutMs, error)) {
+            if (!waitForFd(socketFd_, POLLIN, timeoutMs, error, cancelled_)) {
                 return false;
             }
             continue;
         }
-        error = errnoMessage("recv");
+        error = isCancelled(cancelled_) ? "E-VNC-CERT-CANCELLED" : errnoMessage("recv");
         return false;
     }
     return true;
@@ -593,6 +788,10 @@ bool VncTransport::readRaw(uint8_t* destination, size_t size, int timeoutMs, std
 bool VncTransport::writeRaw(const uint8_t* source, size_t size, std::string& error) {
     size_t offset = 0;
     while (offset < size) {
+        if (isCancelled(cancelled_)) {
+            error = "E-VNC-CERT-CANCELLED";
+            return false;
+        }
         if (tls_) {
             SSL* ssl = static_cast<SSL*>(ssl_);
             if (ssl == nullptr) {
@@ -609,7 +808,7 @@ bool VncTransport::writeRaw(const uint8_t* source, size_t size, std::string& err
             if (sslError == SSL_ERROR_WANT_READ || sslError == SSL_ERROR_WANT_WRITE) {
                 std::string waitError;
                 if (!waitForFd(socketFd_, sslError == SSL_ERROR_WANT_READ ? POLLIN : POLLOUT,
-                               kDefaultTimeoutMs, waitError)) {
+                               kDefaultTimeoutMs, waitError, cancelled_)) {
                     setTlsIoError(error, true, waitError);
                     return false;
                 }
@@ -627,12 +826,12 @@ bool VncTransport::writeRaw(const uint8_t* source, size_t size, std::string& err
             continue;
         }
         if (result < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-            if (!waitForFd(socketFd_, POLLOUT, kDefaultTimeoutMs, error)) {
+            if (!waitForFd(socketFd_, POLLOUT, kDefaultTimeoutMs, error, cancelled_)) {
                 return false;
             }
             continue;
         }
-        error = errnoMessage("send");
+        error = isCancelled(cancelled_) ? "E-VNC-CERT-CANCELLED" : errnoMessage("send");
         return false;
     }
     return true;
@@ -808,6 +1007,7 @@ void VncTransport::close() {
         ::close(socketFd_);
         socketFd_ = -1;
     }
+    cancelled_.reset();
 }
 
 bool VncTransport::isOpen() const {

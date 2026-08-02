@@ -1,6 +1,7 @@
 /** Native VNC certificate probe error-category tests. */
 #include "test_runner.h"
 #include "vnc/vnc_certificate_probe.h"
+#include "vnc/vnc_rfb_engine.h"
 #include "vnc/vnc_transport.h"
 
 #include <arpa/inet.h>
@@ -590,6 +591,33 @@ RDP_TEST_CASE(vnc_transport_tls_cancel_returns_a_stable_code) {
     RDP_ASSERT(!connected);
     RDP_ASSERT(error == "E-VNC-CERT-CANCELLED");
     transport.close();
+}
+
+RDP_TEST_CASE(vnc_rfb_engine_stop_during_tls_keeps_ssl_teardown_on_worker) {
+    LocalTlsFixture fixture("localhost", 500);
+    RDP_ASSERT(fixture.start());
+    ConnectionConfig config;
+    config.host = "127.0.0.1";
+    config.port = fixture.port();
+    config.vncTransport = "direct_tcp";
+    config.vncServerName = "localhost";
+    config.vncTls = true;
+    config.vncSecurityPolicy = "secure_only";
+    config.vncConnectTimeoutMs = 2000;
+    config.vncExpectedCertificateFingerprintSha256 = fixture.fingerprint();
+    auto engine = std::make_shared<VncRfbEngine>(
+        config,
+        [](const VideoFrame&) {},
+        [](ConnectionState, const std::string&) {},
+        [](const VncCursorProtocol::DecodedCursor&) {});
+    RDP_ASSERT(engine->start() == 0);
+    std::this_thread::sleep_for(std::chrono::milliseconds(30));
+    const auto started = std::chrono::steady_clock::now();
+    RDP_ASSERT(engine->stopWithin(std::chrono::milliseconds(500)));
+    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - started).count();
+    RDP_ASSERT(elapsed < 700);
+    RDP_ASSERT(engine->state() == ConnectionState::DISCONNECTED);
 }
 
 RDP_TEST_CASE(vnc_certificate_probe_dns_resolution_is_bounded) {

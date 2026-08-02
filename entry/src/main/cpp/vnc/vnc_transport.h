@@ -73,6 +73,7 @@ private:
     bool open_ = false;
     void* sslContext_ = nullptr;
     void* ssl_ = nullptr;
+    std::shared_ptr<std::atomic_bool> cancelled_;
     std::mutex writeMutex_;
     std::vector<uint8_t> websocketIncoming_;
     size_t websocketIncomingOffset_ = 0;
