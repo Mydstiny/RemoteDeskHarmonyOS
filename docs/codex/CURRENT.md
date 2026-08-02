@@ -7,7 +7,7 @@ This file is the compact startup resume card. Historical checkpoints remain in
 
 - Task: `rustdesk-complete-repair` (active branch retained; current scope is VNC V3 only)
 - Branch: `codex/rustdesk-complete-repair`
-- Checkpoint: `27293a943`, based on `main@34946adbc`; branch is ahead by 15 and not behind.
+- Checkpoint: `e75abd24e`, based on `main@34946adbc`; branch is ahead by 17 and not behind.
 - Phase: VNC V3 stage B review-fix checkpoint; independent incremental review required.
 - Worktree: clean. Do not stage unrelated changes.
 
@@ -22,7 +22,7 @@ This file is the compact startup resume card. Historical checkpoints remain in
 
 ## Next
 
-- Request one read-only incremental review of stage B checkpoint `27293a943`
+- Request one read-only incremental review of stage B checkpoint `e75abd24e`
   using the existing reviewer task; do not redispatch duplicate review messages.
 - Stage C follows only after stage B review passes: VNC certificate Sheet and
   connection state machine.
@@ -31,11 +31,11 @@ This file is the compact startup resume card. Historical checkpoints remain in
 
 ## Verification
 
-- `rdp_native_tests`: 247 passed, 0 failed; loopback TLS fixtures ran with host
+- `rdp_native_tests`: 248 passed, 0 failed; loopback TLS fixtures ran with host
   socket permission on 2026-08-02.
-- `default@OhosTestCompileArkTS`: passed after `27293a943` on 2026-08-02.
-- `assembleHap`: passed after `27293a943` on 2026-08-02.
-- `git diff --check`: passed before `27293a943`.
+- `default@OhosTestCompileArkTS`: passed after `e75abd24e` on 2026-08-02.
+- `assembleHap`: passed after `e75abd24e` on 2026-08-02.
+- `git diff --check`: passed after `e75abd24e`.
 - `ohosTest@OhosTestCompileArkTS`: unavailable; task is not registered
   (`00306054`). New ArkTS tests therefore have compile/build evidence only.
 
