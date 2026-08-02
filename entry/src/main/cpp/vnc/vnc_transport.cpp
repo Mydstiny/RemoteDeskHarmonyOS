@@ -2,6 +2,7 @@
  * vnc_transport.cpp - bounded POSIX/TLS/WebSocket VNC transports.
  */
 #include "vnc_transport.h"
+#include "vnc_certificate_probe.h"
 #include "vnc_rfb_protocol.h"
 #include "vnc_transport_policy.h"
 
@@ -31,6 +32,7 @@
 #include <openssl/sha.h>
 #include <openssl/ssl.h>
 #include <openssl/x509.h>
+#include <openssl/x509v3.h>
 
 namespace {
 
@@ -85,6 +87,13 @@ std::string trimAscii(std::string value) {
         ++start;
     }
     return value.substr(start);
+}
+
+bool isIpLiteral(const std::string& value) {
+    in_addr ipv4 {};
+    in6_addr ipv6 {};
+    return inet_pton(AF_INET, value.c_str(), &ipv4) == 1 ||
+        inet_pton(AF_INET6, value.c_str(), &ipv6) == 1;
 }
 
 std::string opensslError() {
@@ -226,7 +235,12 @@ bool VncTransport::enableTls(const VncTransportConfig& config, std::string& erro
         return false;
     }
     SSL_set_fd(ssl, socketFd_);
-    SSL_set_tlsext_host_name(ssl, config.host.c_str());
+    if (!isIpLiteral(config.host) && SSL_set_tlsext_host_name(ssl, config.host.c_str()) != 1) {
+        SSL_free(ssl);
+        SSL_CTX_free(context);
+        error = "E-VNC-CERT-TLS-SNI";
+        return false;
+    }
     while (true) {
         const int result = SSL_connect(ssl);
         if (result == 1) {
@@ -252,6 +266,14 @@ bool VncTransport::enableTls(const VncTransportConfig& config, std::string& erro
         error = opensslError();
         SSL_free(ssl);
         SSL_CTX_free(context);
+        return false;
+    }
+    const char* version = SSL_get_version(ssl);
+    if (version == nullptr || (std::strcmp(version, "TLSv1.2") != 0 &&
+                               std::strcmp(version, "TLSv1.3") != 0)) {
+        SSL_free(ssl);
+        SSL_CTX_free(context);
+        error = "E-VNC-CERT-TLS-VERSION";
         return false;
     }
     sslContext_ = context;
@@ -286,17 +308,23 @@ bool VncTransport::validatePeerCertificate(const std::string& expectedFingerprin
         fingerprint.fill('0');
         fingerprint << static_cast<unsigned int>(digest[index]);
     }
-    std::string normalizedExpected = lower(expectedFingerprint);
-    normalizedExpected.erase(std::remove_if(normalizedExpected.begin(), normalizedExpected.end(),
-        [](char value) { return value == ':' || value == '-' || value == ' ' || value == '\t'; }),
-        normalizedExpected.end());
     const std::string actualFingerprint = lower(fingerprint.str());
-    if (normalizedExpected.empty()) {
-        error = "VNC_TRUST_REQUIRED:" + actualFingerprint;
+    std::string actualNormalized;
+    if (!vncNormalizeCertificateFingerprint(actualFingerprint, actualNormalized)) {
+        error = "E-VNC-CERT-FINGERPRINT";
         return false;
     }
-    if (!constantTimeEqual(actualFingerprint, normalizedExpected)) {
-        error = "TLS certificate fingerprint does not match the VNC trust record";
+    if (expectedFingerprint.empty()) {
+        error = "E-VNC-CERT-TRUST-REQUIRED;VNC_TRUST_REQUIRED:" + actualFingerprint;
+        return false;
+    }
+    std::string expectedNormalized;
+    if (!vncNormalizeCertificateFingerprint(expectedFingerprint, expectedNormalized)) {
+        error = "E-VNC-CERT-INVALID-PIN";
+        return false;
+    }
+    if (!constantTimeEqual(actualNormalized, expectedNormalized)) {
+        error = "E-VNC-CERT-CHANGED:" + actualFingerprint;
         return false;
     }
     return true;

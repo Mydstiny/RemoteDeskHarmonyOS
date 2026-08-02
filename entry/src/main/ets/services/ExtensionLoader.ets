@@ -14,6 +14,7 @@ import {
   SshHostKeyInfo,
   SshProxyConfig,
   RdpCertificateInfo,
+  VncCertificateProbePromise,
   RdpRenderStats,
   RendererViewport,
   RustDeskDisplayCapabilities,
@@ -220,6 +221,28 @@ export class ExtensionLoader {
         errorCode: -1,
         errorMessage: 'RDP 证书探测异常 [E-RDP-CERT-ASYNC]'
       };
+    }
+  }
+
+  probeVncCertificateAsync(host: string, port: number, serverName: string,
+    timeoutMs: number = 10000): VncCertificateProbePromise {
+    try {
+      return rdpnapi.probeVncCertificateAsync(host, port, serverName, timeoutMs) as VncCertificateProbePromise;
+    } catch (err) {
+      hilog.error(DOMAIN, TAG, '[ExtensionLoader] probeVncCertificateAsync: ' + JSON.stringify(err));
+      // A synchronous NAPI failure cannot provide a cancellable request id;
+      // propagate it so callers fail closed instead of receiving an
+      // un-cancellable promise with a fabricated token.
+      throw new Error(JSON.stringify(err));
+    }
+  }
+
+  cancelVncCertificateProbe(requestId: number): boolean {
+    try {
+      return rdpnapi.cancelVncCertificateProbe(requestId) as boolean;
+    } catch (err) {
+      hilog.error(DOMAIN, TAG, '[ExtensionLoader] cancelVncCertificateProbe: ' + JSON.stringify(err));
+      return false;
     }
   }
 

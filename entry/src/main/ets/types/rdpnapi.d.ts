@@ -53,6 +53,9 @@ declare module 'librdpnapi.so' {
   export function probeRdpCertificate(host: string, port: number, serverName: string): RdpCertificateInfo;
   export function probeRdpCertificateAsync(host: string, port: number,
     serverName: string): Promise<RdpCertificateInfo>;
+  export function probeVncCertificateAsync(host: string, port: number,
+    serverName: string, timeoutMs?: number): VncCertificateProbePromise;
+  export function cancelVncCertificateProbe(requestId: number): boolean;
   export function getRdpRenderStats(sessionId: number): RdpRenderStats;
   export function getSessionDiagnostics(sessionId: number): RustDeskDiagnosticsSnapshot;
   export function getRustDeskDiagnostics(sessionId: number): RustDeskDiagnosticsSnapshot;
@@ -188,6 +191,30 @@ export interface RdpCertificateInfo {
   hostMismatch: boolean;
   errorCode: number;
   errorMessage: string;
+}
+
+export interface VncCertificateInfo {
+  ok: boolean;
+  host: string;
+  port: number;
+  serverName: string;
+  fingerprintSha256: string;
+  commonName: string;
+  subject: string;
+  issuer: string;
+  notBeforeMs: number;
+  notAfterMs: number;
+  rootTrusted: boolean;
+  hostMismatch: boolean;
+  tlsVersion: string;
+  cipherCategory: string;
+  errorCode: number;
+  errorMessageCategory: string;
+  errorMessage: string;
+}
+
+export interface VncCertificateProbePromise extends Promise<VncCertificateInfo> {
+  requestId: number;
 }
 
 export interface RdpRenderStats {

@@ -93,6 +93,7 @@ set(VNC_SOURCES
     vnc/vnc_cursor_protocol.cpp
     vnc/vnc_des.cpp
     vnc/vnc_rfb_protocol.cpp
+    vnc/vnc_certificate_probe.cpp
     vnc/vnc_transport.cpp
     vnc/vnc_rfb_engine.cpp
 )
@@ -205,6 +206,7 @@ if(RDP_BUILD_TESTS)
         test/vnc_des_test.cpp
         test/vnc_cursor_protocol_test.cpp
         test/vnc_transport_policy_test.cpp
+        test/vnc_certificate_probe_test.cpp
         common/safe_log.cpp
         input/remote_cursor_snapshot.cpp
         rdp/rdp_audio_policy.cpp
@@ -225,6 +227,7 @@ if(RDP_BUILD_TESTS)
         vnc/vnc_des.cpp
         vnc/vnc_cursor_protocol.cpp
         vnc/vnc_rfb_protocol.cpp
+        vnc/vnc_certificate_probe.cpp
         vnc/vnc_transport.cpp
         vnc/vnc_rfb_engine.cpp
         test/vnc_rfb_protocol_test.cpp
@@ -234,7 +237,10 @@ if(RDP_BUILD_TESTS)
     )
     # Policy/executor tests may use the explicit test-only ticket factory;
     # never enable this definition on the production rdpnapi target.
-    target_compile_definitions(rdp_native_tests PRIVATE RDP_NATIVE_CALLBACK_TESTING=1)
+    target_compile_definitions(rdp_native_tests PRIVATE
+        RDP_NATIVE_CALLBACK_TESTING=1
+        RDP_TESTS_ONLY=1
+    )
     # RDP_TESTS_ONLY returns before the production-wide C++ standard block
     # below. Keep the standalone host test target explicit so headers using
     # std::optional and other C++17 facilities compile consistently.

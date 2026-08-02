@@ -23,6 +23,7 @@
 #include "video/video_activity_state.h"
 #include "rustdesk/rustdesk_bridge.h"
 #include "vnc/vnc_adapter.h"
+#include "vnc/vnc_certificate_probe.h"
 #include <napi/native_api.h>
 #include <hilog/log.h>
 #include <map>
@@ -435,6 +436,9 @@ static int g_nextSessionId = 1;
 static std::atomic<uint64_t> g_nextSessionGeneration {1};
 static std::atomic<uint64_t> g_nextSessionOwnerToken {1};
 static std::atomic<int> g_pendingSshConnectId {-1};
+static std::atomic<uint64_t> g_nextVncCertificateProbeRequestId {1};
+static std::mutex g_vncCertificateProbeMutex;
+static std::map<uint64_t, std::shared_ptr<std::atomic_bool>> g_vncCertificateProbeTokens;
 static std::atomic<uint64_t> g_napiWheelSendCount {0};
 static std::atomic<uint64_t> g_napiTextSendCount {0};
 static std::atomic<uint64_t> g_napiFileSendCount {0};
@@ -744,6 +748,34 @@ static napi_value CreateRdpCertificateInfoValue(napi_env env, const RdpCertifica
     return result;
 }
 
+static napi_value CreateVncCertificateInfoValue(napi_env env, const VncCertificateInfo& cert) {
+    napi_value result;
+    napi_create_object(env, &result);
+    SetObjectBool(env, result, "ok", cert.ok);
+    SetObjectString(env, result, "host", cert.host);
+    SetObjectInt32(env, result, "port", cert.port);
+    SetObjectString(env, result, "serverName", cert.serverName);
+    SetObjectString(env, result, "fingerprintSha256", cert.fingerprintSha256);
+    SetObjectString(env, result, "commonName", cert.commonName);
+    SetObjectString(env, result, "subject", cert.subject);
+    SetObjectString(env, result, "issuer", cert.issuer);
+    SetObjectInt64(env, result, "notBeforeMs", cert.notBeforeMs);
+    SetObjectInt64(env, result, "notAfterMs", cert.notAfterMs);
+    SetObjectBool(env, result, "rootTrusted", cert.rootTrusted);
+    SetObjectBool(env, result, "hostMismatch", cert.hostMismatch);
+    SetObjectString(env, result, "tlsVersion", cert.tlsVersion);
+    SetObjectString(env, result, "cipherCategory", cert.cipherCategory);
+    SetObjectInt32(env, result, "errorCode", cert.errorCode);
+    SetObjectString(env, result, "errorMessageCategory", cert.errorMessageCategory);
+    SetObjectString(env, result, "errorMessage", cert.errorMessage);
+    return result;
+}
+
+static void RemoveVncCertificateProbeToken(uint64_t requestId) {
+    std::lock_guard<std::mutex> lock(g_vncCertificateProbeMutex);
+    g_vncCertificateProbeTokens.erase(requestId);
+}
+
 // ============================================================
 // NAPI 导出函数 (ArkTS 可见)
 // ============================================================
@@ -961,6 +993,147 @@ napi_value NapiProbeRdpCertificateAsync(napi_env env, napi_callback_info info) {
     }
 
     return promise;
+}
+
+struct VncCertificateProbeAsyncData {
+    uint64_t requestId = 0;
+    VncCertificateProbeConfig config;
+    VncCertificateInfo result;
+    std::string errorMessage;
+    napi_deferred deferred = nullptr;
+    napi_async_work work = nullptr;
+    bool workerFailed = false;
+};
+
+static void ExecuteVncCertificateProbeAsync(napi_env /*env*/, void* rawData) {
+    auto* data = static_cast<VncCertificateProbeAsyncData*>(rawData);
+    if (data == nullptr) {
+        return;
+    }
+    try {
+        data->result = probeVncCertificate(data->config);
+    } catch (const std::exception& ex) {
+        data->workerFailed = true;
+        data->errorMessage = ex.what();
+    } catch (...) {
+        data->workerFailed = true;
+        data->errorMessage = "unknown native exception";
+    }
+}
+
+static void CompleteVncCertificateProbeAsync(napi_env env, napi_status status, void* rawData) {
+    auto* data = static_cast<VncCertificateProbeAsyncData*>(rawData);
+    if (data == nullptr) {
+        return;
+    }
+    if (status != napi_ok || data->workerFailed) {
+        data->result.ok = false;
+        data->result.errorCode = static_cast<int>(VncCertificateProbeErrorCode::MetadataFailed);
+        data->result.errorMessageCategory = vncCertificateProbeErrorCategory(data->result.errorCode);
+        data->result.errorMessage = vncCertificateProbeErrorMessage(data->result.errorCode);
+        OH_LOG_ERROR(LOG_APP, "[VNC-CERT-ASYNC] category=%{public}s status=%{public}d",
+                     data->result.errorMessageCategory.c_str(), status);
+    }
+    napi_value result = CreateVncCertificateInfoValue(env, data->result);
+    napi_resolve_deferred(env, data->deferred, result);
+    RemoveVncCertificateProbeToken(data->requestId);
+    napi_delete_async_work(env, data->work);
+    delete data;
+}
+
+/**
+ * NAPI: probeVncCertificateAsync(host, port, serverName, timeoutMs): Promise<VncCertificateInfo>
+ *
+ * The returned Promise carries a numeric requestId property so callers can
+ * cancel the worker through cancelVncCertificateProbe without exposing a
+ * native pointer or a mutable shared object to ArkTS.
+ */
+napi_value NapiProbeVncCertificateAsync(napi_env env, napi_callback_info info) {
+    size_t argc = 4;
+    napi_value args[4];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+
+    auto* data = new (std::nothrow) VncCertificateProbeAsyncData();
+    if (data == nullptr) {
+        napi_throw_error(env, nullptr, "VNC certificate async allocation failed");
+        return nullptr;
+    }
+    if (argc > 0) data->config.host = GetNapiString(env, args[0]);
+    if (argc > 1) napi_get_value_int32(env, args[1], &data->config.port);
+    if (argc > 2) data->config.serverName = GetNapiString(env, args[2]);
+    if (argc > 3) napi_get_value_int32(env, args[3], &data->config.timeoutMs);
+    data->requestId = g_nextVncCertificateProbeRequestId.fetch_add(1, std::memory_order_relaxed);
+    if (data->requestId == 0) {
+        data->requestId = g_nextVncCertificateProbeRequestId.fetch_add(1, std::memory_order_relaxed);
+    }
+    data->config.cancelled = std::make_shared<std::atomic_bool>(false);
+    {
+        std::lock_guard<std::mutex> lock(g_vncCertificateProbeMutex);
+        g_vncCertificateProbeTokens[data->requestId] = data->config.cancelled;
+    }
+
+    napi_value promise;
+    napi_status status = napi_create_promise(env, &data->deferred, &promise);
+    if (status != napi_ok) {
+        RemoveVncCertificateProbeToken(data->requestId);
+        delete data;
+        napi_throw_error(env, nullptr, "VNC certificate promise creation failed");
+        return nullptr;
+    }
+    napi_value requestId;
+    napi_create_int64(env, static_cast<int64_t>(data->requestId), &requestId);
+    napi_set_named_property(env, promise, "requestId", requestId);
+
+    napi_value resourceName;
+    status = napi_create_string_utf8(env, "VncCertificateProbeAsync", NAPI_AUTO_LENGTH, &resourceName);
+    if (status != napi_ok) {
+        RemoveVncCertificateProbeToken(data->requestId);
+        delete data;
+        napi_throw_error(env, nullptr, "VNC certificate resource creation failed");
+        return nullptr;
+    }
+    status = napi_create_async_work(env, resourceName, resourceName,
+        ExecuteVncCertificateProbeAsync, CompleteVncCertificateProbeAsync, data, &data->work);
+    if (status != napi_ok) {
+        RemoveVncCertificateProbeToken(data->requestId);
+        delete data;
+        napi_throw_error(env, nullptr, "VNC certificate async work creation failed");
+        return nullptr;
+    }
+    status = napi_queue_async_work(env, data->work);
+    if (status != napi_ok) {
+        napi_delete_async_work(env, data->work);
+        RemoveVncCertificateProbeToken(data->requestId);
+        delete data;
+        napi_throw_error(env, nullptr, "VNC certificate async work queue failed");
+        return nullptr;
+    }
+    OH_LOG_INFO(LOG_APP, "[VNC-CERT-ASYNC] queued requestId=%{public}llu host=%{public}s port=%{public}d",
+                static_cast<unsigned long long>(data->requestId),
+                SafeLog::MaskHost(data->config.host).c_str(), data->config.port);
+    return promise;
+}
+
+napi_value NapiCancelVncCertificateProbe(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value args[1];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    int64_t requestId = 0;
+    if (argc > 0) {
+        napi_get_value_int64(env, args[0], &requestId);
+    }
+    bool cancelled = false;
+    if (requestId > 0) {
+        std::lock_guard<std::mutex> lock(g_vncCertificateProbeMutex);
+        auto it = g_vncCertificateProbeTokens.find(static_cast<uint64_t>(requestId));
+        if (it != g_vncCertificateProbeTokens.end() && it->second) {
+            it->second->store(true, std::memory_order_release);
+            cancelled = true;
+        }
+    }
+    napi_value result;
+    napi_get_boolean(env, cancelled, &result);
+    return result;
 }
 
 /**
@@ -5962,6 +6135,13 @@ napi_value ExtensionLoaderNapi::Init(napi_env env, napi_value exports) {
     napi_create_function(env, "probeRdpCertificateAsync", NAPI_AUTO_LENGTH,
                          NapiProbeRdpCertificateAsync, nullptr, &fn);
     napi_set_named_property(env, exports, "probeRdpCertificateAsync", fn);
+
+    napi_create_function(env, "probeVncCertificateAsync", NAPI_AUTO_LENGTH,
+                         NapiProbeVncCertificateAsync, nullptr, &fn);
+    napi_set_named_property(env, exports, "probeVncCertificateAsync", fn);
+    napi_create_function(env, "cancelVncCertificateProbe", NAPI_AUTO_LENGTH,
+                         NapiCancelVncCertificateProbe, nullptr, &fn);
+    napi_set_named_property(env, exports, "cancelVncCertificateProbe", fn);
 
     napi_create_function(env, "getRdpRenderStats", NAPI_AUTO_LENGTH,
                          NapiGetRdpRenderStats, nullptr, &fn);
