@@ -11,6 +11,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <atomic>
+#include <chrono>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -49,10 +50,13 @@ public:
     bool isOpen() const;
 
 private:
-    bool connectTcp(const std::string& host, int port, int timeoutMs,
+    bool connectTcp(const std::string& host, int port,
+                    std::chrono::steady_clock::time_point deadline,
                     const std::shared_ptr<std::atomic_bool>& cancelled,
                     std::string& error);
-    bool enableTls(const VncTransportConfig& config, std::string& error);
+    bool enableTls(const VncTransportConfig& config,
+                   std::chrono::steady_clock::time_point deadline,
+                   std::string& error);
     bool validatePeerCertificate(const std::string& expectedFingerprint, std::string& error);
     bool websocketHandshake(const VncTransportConfig& config, std::string& error);
     bool readRaw(uint8_t* destination, size_t size, int timeoutMs, std::string& error);

@@ -224,45 +224,55 @@ WaitStatus resolveAddresses(const std::string& host, const std::string& port,
     std::thread resolver;
     try {
         resolver = std::thread([state, host, port]() {
-        struct ResolverCounter {
-            ~ResolverCounter() { g_activeResolvers.fetch_sub(1, std::memory_order_acq_rel); }
-        } resolverCounter;
-        addrinfo hints {};
-        hints.ai_family = AF_UNSPEC;
-        hints.ai_socktype = SOCK_STREAM;
-        addrinfo* resolved = nullptr;
-        const int result = ::getaddrinfo(host.c_str(), port.c_str(), &hints, &resolved);
-        std::vector<ResolvedAddress> copied;
-        if (result == 0 && resolved != nullptr) {
-            for (addrinfo* item = resolved;
-                 item != nullptr && copied.size() < kMaxResolvedAddresses;
-                 item = item->ai_next) {
-                if (item->ai_addr == nullptr || item->ai_addrlen <= 0 ||
-                    item->ai_addrlen > sizeof(sockaddr_storage)) {
-                    continue;
+            struct ResolverCounter {
+                ~ResolverCounter() {
+                    g_activeResolvers.fetch_sub(1, std::memory_order_acq_rel);
                 }
-                ResolvedAddress address;
-                std::memcpy(&address.storage, item->ai_addr,
-                            static_cast<size_t>(item->ai_addrlen));
-                address.length = static_cast<socklen_t>(item->ai_addrlen);
-                address.family = item->ai_family;
-                address.socktype = item->ai_socktype;
-                address.protocol = item->ai_protocol;
-                copied.push_back(address);
+            } resolverCounter;
+            int result = EAI_FAIL;
+            addrinfo* resolved = nullptr;
+            std::vector<ResolvedAddress> copied;
+            try {
+                addrinfo hints {};
+                hints.ai_family = AF_UNSPEC;
+                hints.ai_socktype = SOCK_STREAM;
+                result = ::getaddrinfo(host.c_str(), port.c_str(), &hints, &resolved);
+                if (result == 0 && resolved != nullptr) {
+                    for (addrinfo* item = resolved;
+                         item != nullptr && copied.size() < kMaxResolvedAddresses;
+                         item = item->ai_next) {
+                        if (item->ai_addr == nullptr || item->ai_addrlen <= 0 ||
+                            item->ai_addrlen > sizeof(sockaddr_storage)) {
+                            continue;
+                        }
+                        ResolvedAddress address;
+                        std::memcpy(&address.storage, item->ai_addr,
+                                    static_cast<size_t>(item->ai_addrlen));
+                        address.length = static_cast<socklen_t>(item->ai_addrlen);
+                        address.family = item->ai_family;
+                        address.socktype = item->ai_socktype;
+                        address.protocol = item->ai_protocol;
+                        copied.push_back(address);
+                    }
+                }
+            } catch (...) {
+                // Resolver threads must never let allocation/copy failures
+                // escape into std::terminate. Publish a stable lookup error.
+                result = EAI_MEMORY;
+                copied.clear();
             }
-        }
-        if (resolved != nullptr) {
-            ::freeaddrinfo(resolved);
-        }
-        {
-            std::lock_guard<std::mutex> lock(state->mutex);
-            state->lookupResult = result;
-            if (!state->abandoned) {
-                state->addresses = std::move(copied);
+            if (resolved != nullptr) {
+                ::freeaddrinfo(resolved);
             }
-            state->done = true;
-        }
-        state->condition.notify_one();
+            {
+                std::lock_guard<std::mutex> lock(state->mutex);
+                state->lookupResult = result;
+                if (!state->abandoned) {
+                    state->addresses = std::move(copied);
+                }
+                state->done = true;
+            }
+            state->condition.notify_one();
         });
     } catch (...) {
         g_activeResolvers.fetch_sub(1, std::memory_order_acq_rel);
@@ -289,7 +299,8 @@ WaitStatus resolveAddresses(const std::string& host, const std::string& port,
             const auto waitMs = std::chrono::milliseconds(std::min(remainingMs, 50));
             state->condition.wait_for(lock, waitMs);
         }
-        resolverDone = state->done;
+        const bool done = state->done;
+        resolverDone = done;
         if (status == WaitStatus::Ready) {
             lookupResult = state->lookupResult;
             addresses = std::move(state->addresses);
@@ -298,15 +309,15 @@ WaitStatus resolveAddresses(const std::string& host, const std::string& port,
             }
         }
     }
-        if (status == WaitStatus::Ready || resolverDone) {
-            resolver.join();
-        } else {
-            // A platform resolver may remain in libc after the caller's deadline.
-            // Detach only that resolver; its shared state owns all copied results
-            // and frees the native addrinfo before publishing completion. The
-            // bounded in-flight gate prevents unbounded detached-thread growth.
-            resolver.detach();
-        }
+    if (status == WaitStatus::Ready || resolverDone) {
+        resolver.join();
+    } else {
+        // A platform resolver may remain in libc after the caller's deadline.
+        // Detach only that resolver; its shared state owns all copied results
+        // and frees the native addrinfo before publishing completion. The
+        // bounded in-flight gate prevents unbounded detached-thread growth.
+        resolver.detach();
+    }
     return status;
 }
 

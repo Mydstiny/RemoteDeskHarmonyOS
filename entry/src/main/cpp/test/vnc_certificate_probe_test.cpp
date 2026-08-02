@@ -593,6 +593,30 @@ RDP_TEST_CASE(vnc_transport_tls_cancel_returns_a_stable_code) {
     transport.close();
 }
 
+RDP_TEST_CASE(vnc_transport_tls_deadline_covers_a_trickle_handshake) {
+    // The peer accepts TCP but withholds the next TLS record. The transport
+    // must spend the single connect budget across TCP and every handshake
+    // wait, rather than restarting a full timeout after each WANT_READ.
+    LocalTlsFixture fixture("localhost", 400);
+    RDP_ASSERT(fixture.start());
+    VncTransportConfig config;
+    config.transport = "direct_tcp";
+    config.host = "127.0.0.1";
+    config.serverName = "localhost";
+    config.port = fixture.port();
+    config.tls = true;
+    config.connectTimeoutMs = 120;
+    VncTransport transport;
+    std::string error;
+    const auto started = std::chrono::steady_clock::now();
+    RDP_ASSERT(!transport.connect(config, error));
+    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - started).count();
+    RDP_ASSERT(error == "E-VNC-CERT-TLS-TIMEOUT");
+    RDP_ASSERT(elapsed < 350);
+    transport.close();
+}
+
 RDP_TEST_CASE(vnc_rfb_engine_stop_during_tls_keeps_ssl_teardown_on_worker) {
     LocalTlsFixture fixture("localhost", 500);
     RDP_ASSERT(fixture.start());

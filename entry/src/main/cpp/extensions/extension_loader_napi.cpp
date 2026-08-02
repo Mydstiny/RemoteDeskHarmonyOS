@@ -440,9 +440,11 @@ static std::atomic<uint64_t> g_nextVncCertificateProbeRequestId {1};
 static std::mutex g_vncCertificateProbeMutex;
 struct VncCertificateProbeEnvironmentState {
     std::mutex mutex;
-    std::condition_variable condition;
     bool closing = false;
     size_t activeWorks = 0;
+    napi_async_cleanup_hook_handle cleanupHandle = nullptr;
+    bool cleanupHookRegistered = false;
+    bool cleanupHookRemoved = false;
 };
 struct VncCertificateProbeRegistration {
     std::shared_ptr<std::atomic_bool> cancelled;
@@ -797,8 +799,12 @@ GetVncCertificateProbeEnvironmentState(napi_env env) {
     return state;
 }
 
-// g_vncCertificateProbeMutex must be held by the caller.
-static void RemoveVncCertificateProbeTokenLocked(uint64_t requestId) {
+// g_vncCertificateProbeMutex must be held by the caller. If the final work
+// completes during environment teardown, the caller removes the async
+// cleanup hook after releasing the registry lock.
+static void RemoveVncCertificateProbeTokenLocked(
+    uint64_t requestId, napi_async_cleanup_hook_handle& cleanupHandleToRemove) {
+    cleanupHandleToRemove = nullptr;
     std::shared_ptr<VncCertificateProbeEnvironmentState> state;
     napi_env env = nullptr;
     auto it = g_vncCertificateProbeTokens.find(requestId);
@@ -813,9 +819,12 @@ static void RemoveVncCertificateProbeTokenLocked(uint64_t requestId) {
         if (state->activeWorks > 0) {
             --state->activeWorks;
         }
-        const bool eraseEnvironment = state->closing && state->activeWorks == 0;
-        state->condition.notify_all();
-        if (eraseEnvironment) {
+        if (state->closing && state->activeWorks == 0) {
+            if (state->cleanupHookRegistered && !state->cleanupHookRemoved &&
+                state->cleanupHandle != nullptr) {
+                state->cleanupHookRemoved = true;
+                cleanupHandleToRemove = state->cleanupHandle;
+            }
             auto environment = g_vncCertificateProbeEnvironments.find(env);
             if (environment != g_vncCertificateProbeEnvironments.end() &&
                 environment->second == state) {
@@ -826,42 +835,67 @@ static void RemoveVncCertificateProbeTokenLocked(uint64_t requestId) {
 }
 
 static void RemoveVncCertificateProbeToken(uint64_t requestId) {
-    std::lock_guard<std::mutex> registryLock(g_vncCertificateProbeMutex);
-    RemoveVncCertificateProbeTokenLocked(requestId);
+    napi_async_cleanup_hook_handle cleanupHandle = nullptr;
+    {
+        std::lock_guard<std::mutex> registryLock(g_vncCertificateProbeMutex);
+        RemoveVncCertificateProbeTokenLocked(requestId, cleanupHandle);
+    }
+    if (cleanupHandle != nullptr) {
+        (void)napi_remove_async_cleanup_hook(cleanupHandle);
+    }
 }
 
-static void CancelVncCertificateProbesForEnvironment(void* rawEnv) {
-    const napi_env env = reinterpret_cast<napi_env>(rawEnv);
-    std::vector<std::shared_ptr<VncCertificateProbeEnvironmentState>> states;
+static void CancelVncCertificateProbesForEnvironment(
+    napi_async_cleanup_hook_handle handle, void* rawState) {
+    napi_async_cleanup_hook_handle cleanupHandle = nullptr;
     {
         std::lock_guard<std::mutex> lock(g_vncCertificateProbeMutex);
-        auto environment = g_vncCertificateProbeEnvironments.find(env);
-        if (environment != g_vncCertificateProbeEnvironments.end()) {
-            std::lock_guard<std::mutex> stateLock(environment->second->mutex);
-            environment->second->closing = true;
-            states.push_back(environment->second);
+        std::shared_ptr<VncCertificateProbeEnvironmentState> state;
+        for (const auto& entry : g_vncCertificateProbeEnvironments) {
+            if (entry.second.get() == rawState) {
+                state = entry.second;
+                break;
+            }
         }
-        for (const auto& entry : g_vncCertificateProbeTokens) {
-            if (entry.second.env != env) {
-                continue;
+        if (state == nullptr) {
+            // The state may already have been retired by the final completion
+            // callback. The runtime still expects this hook handle to close.
+            cleanupHandle = handle;
+        } else {
+            bool activeZero = false;
+            {
+                std::lock_guard<std::mutex> stateLock(state->mutex);
+                state->closing = true;
+                state->cleanupHandle = handle;
+                state->cleanupHookRegistered = true;
+                activeZero = state->activeWorks == 0;
+                if (activeZero && !state->cleanupHookRemoved) {
+                    state->cleanupHookRemoved = true;
+                    cleanupHandle = handle;
+                }
             }
-            if (entry.second.cancelled) {
-                entry.second.cancelled->store(true, std::memory_order_release);
+            for (const auto& entry : g_vncCertificateProbeTokens) {
+                if (entry.second.environmentState != state) {
+                    continue;
+                }
+                if (entry.second.cancelled) {
+                    entry.second.cancelled->store(true, std::memory_order_release);
+                }
             }
-            if (entry.second.work != nullptr) {
-                const napi_status status = napi_cancel_async_work(env, entry.second.work);
-                if (status != napi_ok && status != napi_cancelled) {
-                    OH_LOG_WARN(LOG_APP, "[VNC-CERT-ASYNC] cleanup cancel status=%{public}d", status);
+            if (activeZero) {
+                for (auto environment = g_vncCertificateProbeEnvironments.begin();
+                     environment != g_vncCertificateProbeEnvironments.end();) {
+                    if (environment->second == state) {
+                        environment = g_vncCertificateProbeEnvironments.erase(environment);
+                    } else {
+                        ++environment;
+                    }
                 }
             }
         }
     }
-    // Do not erase registrations while work may still be executing. Completion
-    // owns removal; wait for every completion callback before the environment
-    // can be destroyed, so no callback can retain a stale napi_env.
-    for (const auto& state : states) {
-        std::unique_lock<std::mutex> lock(state->mutex);
-        state->condition.wait(lock, [&state]() { return state->activeWorks == 0; });
+    if (cleanupHandle != nullptr) {
+        (void)napi_remove_async_cleanup_hook(cleanupHandle);
     }
 }
 
@@ -1144,6 +1178,7 @@ static void CompleteVncCertificateProbeAsync(napi_env env, napi_status status, v
     // The completion callback owns the async-work handle until it is deleted.
     // Keep activeWorks > 0 across this call so the environment cleanup hook
     // cannot destroy env between the Promise operation and handle deletion.
+    napi_async_cleanup_hook_handle cleanupHandle = nullptr;
     {
         // Keep handle deletion and registry removal under the same lock used
         // by cleanup cancellation. A cleanup hook can never cancel/delete a
@@ -1152,7 +1187,10 @@ static void CompleteVncCertificateProbeAsync(napi_env env, napi_status status, v
         if (env != nullptr && data->work != nullptr) {
             napi_delete_async_work(env, data->work);
         }
-        RemoveVncCertificateProbeTokenLocked(data->requestId);
+        RemoveVncCertificateProbeTokenLocked(data->requestId, cleanupHandle);
+    }
+    if (cleanupHandle != nullptr) {
+        (void)napi_remove_async_cleanup_hook(cleanupHandle);
     }
     delete data;
 }
@@ -1214,7 +1252,8 @@ napi_value NapiProbeVncCertificateAsync(napi_env env, napi_callback_info info) {
         // before it has a real async-work handle to cancel.
         std::unique_lock<std::mutex> registryLock(g_vncCertificateProbeMutex);
         std::unique_lock<std::mutex> stateLock(data->environmentState->mutex);
-        if (data->environmentState->closing) {
+        if (data->environmentState->closing ||
+            !data->environmentState->cleanupHookRegistered) {
             stateLock.unlock();
             registryLock.unlock();
             delete data;
@@ -1234,7 +1273,6 @@ napi_value NapiProbeVncCertificateAsync(napi_env env, napi_callback_info info) {
             g_vncCertificateProbeTokens.erase(data->requestId);
             std::lock_guard<std::mutex> rollbackState(data->environmentState->mutex);
             --data->environmentState->activeWorks;
-            data->environmentState->condition.notify_all();
             registryLock.unlock();
             delete data;
             napi_throw_error(env, nullptr, "VNC certificate async work creation failed");
@@ -1245,7 +1283,6 @@ napi_value NapiProbeVncCertificateAsync(napi_env env, napi_callback_info info) {
             napi_delete_async_work(env, data->work);
             std::lock_guard<std::mutex> rollbackState(data->environmentState->mutex);
             --data->environmentState->activeWorks;
-            data->environmentState->condition.notify_all();
             registryLock.unlock();
             delete data;
             napi_throw_error(env, nullptr, "VNC certificate async admission failed");
@@ -1258,7 +1295,6 @@ napi_value NapiProbeVncCertificateAsync(napi_env env, napi_callback_info info) {
             g_vncCertificateProbeTokens.erase(registration);
             std::lock_guard<std::mutex> rollbackState(data->environmentState->mutex);
             --data->environmentState->activeWorks;
-            data->environmentState->condition.notify_all();
             registryLock.unlock();
             delete data;
             napi_throw_error(env, nullptr, "VNC certificate async work queue failed");
@@ -6271,8 +6307,50 @@ static napi_value NapiIsVideoPlaybackActive(napi_env env, napi_callback_info /*i
 
 napi_value ExtensionLoaderNapi::Init(napi_env env, napi_value exports) {
     napi_value fn;
-    (void)napi_add_env_cleanup_hook(env, CancelVncCertificateProbesForEnvironment,
-                                    reinterpret_cast<void*>(env));
+    const std::shared_ptr<VncCertificateProbeEnvironmentState> probeState =
+        GetVncCertificateProbeEnvironmentState(env);
+    bool cleanupAlreadyRegistered = false;
+    {
+        std::lock_guard<std::mutex> stateLock(probeState->mutex);
+        cleanupAlreadyRegistered = probeState->cleanupHookRegistered &&
+            !probeState->cleanupHookRemoved;
+    }
+    if (!cleanupAlreadyRegistered) {
+        napi_async_cleanup_hook_handle cleanupHandle = nullptr;
+        const napi_status cleanupStatus = napi_add_async_cleanup_hook(
+            env, CancelVncCertificateProbesForEnvironment, probeState.get(), &cleanupHandle);
+        if (cleanupStatus == napi_ok) {
+            napi_async_cleanup_hook_handle removeImmediately = nullptr;
+            {
+                std::lock_guard<std::mutex> registryLock(g_vncCertificateProbeMutex);
+                std::lock_guard<std::mutex> stateLock(probeState->mutex);
+                probeState->cleanupHandle = cleanupHandle;
+                probeState->cleanupHookRegistered = true;
+                if (probeState->closing && probeState->activeWorks == 0 &&
+                    !probeState->cleanupHookRemoved) {
+                    probeState->cleanupHookRemoved = true;
+                    removeImmediately = cleanupHandle;
+                }
+            }
+            if (removeImmediately != nullptr) {
+                (void)napi_remove_async_cleanup_hook(removeImmediately);
+            }
+        } else {
+            // Certificate probes fail closed when the runtime cannot provide
+            // the supported asynchronous teardown contract.
+            std::lock_guard<std::mutex> registryLock(g_vncCertificateProbeMutex);
+            std::lock_guard<std::mutex> stateLock(probeState->mutex);
+            probeState->closing = true;
+            auto environment = g_vncCertificateProbeEnvironments.find(env);
+            if (environment != g_vncCertificateProbeEnvironments.end() &&
+                environment->second == probeState) {
+                g_vncCertificateProbeEnvironments.erase(environment);
+            }
+            OH_LOG_ERROR(LOG_APP,
+                         "[VNC-CERT-ASYNC] cleanup hook registration failed status=%{public}d",
+                         cleanupStatus);
+        }
+    }
 
     napi_create_function(env, "listProtocols", NAPI_AUTO_LENGTH,
                          NapiListProtocols, nullptr, &fn);
