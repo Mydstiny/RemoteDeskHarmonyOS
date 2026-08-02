@@ -8,10 +8,10 @@ task or state below links to it.
 
 - Task: `rustdesk-complete-repair`
 - Branch: `codex/rustdesk-complete-repair`
-- Checkpoint: `999505c9a`, based on `main@34946adbc`; branch is ahead by 3 and not behind.
-- Phase: renderer-owner startup regression investigation and RustDesk repair continuation.
-- Worktree: 116 user-owned changes are present. Do not stash, reset, overwrite, or stage unrelated files.
-- Next: resolve the VNC renderer owner ordering issue, then resume the existing RustDesk review state.
+- Checkpoint: `54023b3f4`, based on `main@34946adbc`; branch is ahead by 6 and not behind.
+- Phase: RustDesk repair checkpoint committed; existing review blocker remains unchanged.
+- Worktree: clean after the RustDesk repair commit. Do not stage unrelated changes.
+- Next: resume the existing RustDesk review state without redispatching the incomplete reviewer.
 
 ## Current Findings
 
@@ -19,6 +19,13 @@ task or state below links to it.
 - The native renderer entry point requires an active owner before `GLRenderer::Init()`, so cold-start VNC can fail with `rc=-1` before EGL/GL.
 - The repair boundary is reservation -> renderer owner bind -> activation transaction. Do not relax owner checks, reuse stale owners, or fabricate tokens.
 - The VNC TLS/settings/Repeater V3 plan is documented but not implemented. Keep its direct-host and Repeater-Gateway trust ownership separate.
+
+## RustDesk Repair Checkpoint
+
+- A successful RustDesk 2FA binding now enables auto-submit by default; TOTP privacy protection gates binding/auto-fill only when `totpLocked` is enabled.
+- Automatic 2FA submission no longer reopens the manual sheet on every auth poll; manual entry is retained for missing entries, failed submission, cancellation, and wrong-code responses.
+- Request-approval connections clear transient passwords and pass `rdAuthMode=1`; the existing FFI core waits for remote approval instead of falling back to password login.
+- TOTP cards now render bundled rawfile brand assets directly, including the RustDesk logo, with initials only as an explicit/failure fallback.
 
 ## Blockers
 
@@ -29,7 +36,7 @@ task or state below links to it.
 ## Verification
 
 - The current state records `default@OhosTestCompileArkTS`, signed `assembleHap`, Light compliance, and `git diff --check` as passed on 2026-08-02.
-- Those are historical checkpoint facts for the current checkout; this process-only continuation has not rerun them yet.
+- Both gates were rerun after `54023b3f4` and passed on 2026-08-02; output still contains only existing dependency/deprecation warnings.
 - `ohosTest@OhosTestCompileArkTS` remains unavailable when task `00306054` is not registered.
 
 ## Review Protocol

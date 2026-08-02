@@ -3,13 +3,13 @@
   "task": "rustdesk-complete-repair",
   "branch": "codex/rustdesk-complete-repair",
   "base": "34946adbc",
-  "head": "999505c9a",
-  "phase": "investigating",
+  "head": "54023b3f4",
+  "phase": "repair-checkpoint-committed",
   "status": "active",
-  "next": "Resolve the renderer-owner startup regression, then close the existing RustDesk review blocker without re-dispatching the incomplete reviewer.",
+  "next": "Resume the existing RustDesk review blocker without re-dispatching the incomplete reviewer; device and endpoint acceptance remain separate.",
   "blockers": [
     "hdc list targets and hdc shell return Connect server failed; no current hilog evidence.",
-    "The worktree contains user-owned product changes; do not stage or overwrite them."
+    "The previously dispatched read-only reviewer produced no report because of capacity limits; do not claim PASS or dispatch a duplicate."
   ],
   "planPaths": [
     "docs/superpowers/plans/2026-08-01-rustdesk-dual-2fa-complete-repair-plan.md"
@@ -21,8 +21,8 @@
     "reason": "The previously dispatched read-only reviewer produced no report because of capacity limits; do not claim PASS or dispatch a duplicate."
   },
   "lastVerification": {
-    "default@OhosTestCompileArkTS": "pass-recorded-2026-08-02",
-    "assembleHap": "pass-recorded-2026-08-02",
+    "default@OhosTestCompileArkTS": "pass-after-54023b3f4-2026-08-02",
+    "assembleHap": "pass-after-54023b3f4-2026-08-02",
     "lightCompliance": "pass-recorded-2026-08-02",
     "diffCheck": "pass-recorded-2026-08-02"
   },
