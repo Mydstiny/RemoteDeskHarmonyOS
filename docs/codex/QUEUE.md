@@ -4,8 +4,9 @@ Updated: 2026-08-02 Asia/Shanghai
 
 ## Now
 
-- Stage C second segment passed independent review at `7d26f3716`; begin Stage D
-  trust-v2/endpoint-owner migration within VNC-only scope.
+- Stage D implementation checkpoint `cc87e9aae` is ready for the single
+  independent incremental review: trust-v2 metadata, v1 candidate migration,
+  physical-store-bound markers, and the unified certificate manager.
 - Preserve stage A/B and C-first review receipts; keep probe/pin failures
   fail-closed.
 - Restore `hdc` connectivity and capture current VNC `hilog` when the device is
@@ -13,7 +14,8 @@ Updated: 2026-08-02 Asia/Shanghai
 
 ## Next
 
-- Stage E: VNC settings consistency after Stage D trust manager review.
+- Stage D follow-up: backup/cloud wording and endpoint deletion/rotation
+  invalidation after the manager review passes.
 - Stage E/F: VNC settings consistency and Repeater mode12 deep checks.
 
 ## Later
