@@ -113,7 +113,7 @@ function safeRepeaterTarget(value: string): boolean {
 function bindingFingerprint(ownerType: VncTlsEndpointOwnerType, ownerId: string,
   userId: string, storeIdentityFingerprint: string, transport: VncTransport,
   connectHost: string, connectPort: number,
-  serverName: string): string {
+  serverName: string, tlsRequired: boolean): string {
   const seed: Record<string, Object> = {};
   seed['ownerType'] = ownerType;
   seed['ownerId'] = ownerId;
@@ -123,6 +123,9 @@ function bindingFingerprint(ownerType: VncTlsEndpointOwnerType, ownerId: string,
   seed['connectHost'] = normalizedHost(connectHost);
   seed['connectPort'] = connectPort;
   seed['serverName'] = normalizedHost(serverName);
+  // TLS mode is part of the endpoint identity. A certificate preflight for a
+  // secure endpoint must never authorize a later plaintext downgrade.
+  seed['tlsRequired'] = tlsRequired;
   return vncPayloadHashSha256(vncCanonicalJson(seed));
 }
 
@@ -199,7 +202,7 @@ export function resolveVncTlsEndpoint(host: VncTlsHostInput,
     const ownerType: VncTlsEndpointOwnerType = 'host';
     const endpointBindingFingerprint: string = bindingFingerprint(
       ownerType, hostId, userId, storeIdentityFingerprint, host.transport,
-      hostAddress, host.port, hostAddress);
+      hostAddress, host.port, hostAddress, host.tls);
     const result: VncTlsEndpointResolution = emptyResolution(host);
     result.ok = true;
     result.endpointOwnerType = ownerType;
@@ -253,7 +256,7 @@ export function resolveVncTlsEndpoint(host: VncTlsHostInput,
   const endpointBindingFingerprint: string = bindingFingerprint(
     ownerType, gateway.id.trim(), userId, storeIdentityFingerprint, gateway.transport,
     gateway.host.trim(),
-    gateway.port, gateway.host.trim());
+    gateway.port, gateway.host.trim(), gateway.tls);
   const result: VncTlsEndpointResolution = emptyResolution(host);
   result.ok = true;
   result.endpointOwnerType = ownerType;

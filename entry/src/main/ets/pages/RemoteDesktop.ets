@@ -26,7 +26,12 @@ import { VncHostService, VncHostView } from '../services/VncHostService';
 import { VncSecretLoadState } from '../services/VncSecretService';
 import { VncGatewayService, VncGatewayView } from '../services/VncGatewayService';
 import { VncSettingsService } from '../services/VncSettingsService';
-import { VncTrustEndpoint, VncTrustService, VncTrustView } from '../services/VncTrustService';
+import {
+  VncTrustEndpoint,
+  VncTrustService,
+  VncTrustView,
+  vncStoreIdentityFingerprint
+} from '../services/VncTrustService';
 import {
   VncTlsEndpointResolution,
   VncTlsHostInput,
@@ -61,7 +66,6 @@ import {
   VncCertificateSheetAttempt
 } from '../services/VncCertificateSheetPolicy';
 import { VncCertificateDecisionHandoff } from '../services/VncCertificateDecisionHandoff';
-import { vncPayloadHashSha256 } from '../services/VncRecordPolicy';
 import { VncSessionCredentialHandoff } from '../services/VncSessionCredentialHandoff';
 import {
   VncSettingsValues,
@@ -1965,7 +1969,7 @@ struct RemoteDesktop {
 
   private vncCertificateStoreFingerprint(): string {
     const scope = AccountSessionCoordinator.getInstance().currentScope();
-    return vncPayloadHashSha256('RemoteDeskHarmonyOS:vnctls-store:v1:' + scope.storeIdentity);
+    return vncStoreIdentityFingerprint(scope.storeIdentity);
   }
 
   private resolveVncCertificateEndpoint(host: VncHostView): VncTlsEndpointResolution {

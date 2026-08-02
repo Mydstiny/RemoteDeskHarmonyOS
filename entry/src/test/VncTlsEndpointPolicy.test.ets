@@ -50,6 +50,18 @@ export default function vncTlsEndpointPolicyTest(): void {
       expect(result.errorCode).assertEqual('E-VNC-TLS-REQUIRED');
     });
 
+    it('changes_binding_when_tls_mode_changes', 0, (): void => {
+      const secure: VncTlsHostInput = host();
+      secure.securityPolicy = 'allow_plaintext';
+      const tlsResult = resolveVncTlsEndpoint(secure, null);
+      expect(tlsResult.ok).assertTrue();
+      secure.tls = false;
+      const plaintextResult = resolveVncTlsEndpoint(secure, null);
+      expect(plaintextResult.ok).assertTrue();
+      expect(tlsResult.endpointBindingFingerprint ===
+        plaintextResult.endpointBindingFingerprint).assertFalse();
+    });
+
     it('binds_repeater_tls_to_the_gateway_and_host_target', 0, (): void => {
       const result = resolveVncTlsEndpoint(host('ultravnc_repeater'), gateway());
       expect(result.ok).assertTrue();

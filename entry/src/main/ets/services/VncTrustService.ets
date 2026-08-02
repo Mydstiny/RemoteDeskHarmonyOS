@@ -5,9 +5,11 @@ import { CloudStore } from './CloudStore';
 import { VncRecord } from '../model/VncRecord';
 import { VncCloudSyncService } from './VncCloudSyncService';
 import { vncTrustPayload, finalizeVncRecord } from './VncModelPolicy';
+import { vncPayloadHashSha256 } from './VncRecordPolicy';
 
 const TRUST_PREFS_NAME: string = 'RemoteDesktopVncTrustPrefs';
 const LOCAL_TRUST_CONFIRMATIONS_KEY: string = 'locallyConfirmedVncTrust';
+const VNC_STORE_FINGERPRINT_PREFIX: string = 'RemoteDeskHarmonyOS:vnctls-store:v1:';
 
 export interface VncTrustView {
   id: string;
@@ -38,19 +40,26 @@ export interface VncTrustSaveResult {
   id: string;
 }
 
+export function vncStoreIdentityFingerprint(storeIdentity: string): string {
+  const normalized: string = storeIdentity.trim();
+  return normalized === '' ? '' : vncPayloadHashSha256(VNC_STORE_FINGERPRINT_PREFIX + normalized);
+}
+
 /**
  * Endpoint-bound trust is the only write contract. Keep this pure so the
  * host/gateway owner and account/store boundary can be tested without a
  * database or a device runtime.
  */
 export function vncTrustEndpointIsValid(endpoint: VncTrustEndpoint,
-  currentUserId: string): boolean {
+  currentUserId: string, currentStoreIdentityFingerprint: string): boolean {
   const ownerId: string = endpoint.ownerId.trim();
   const userId: string = endpoint.userId.trim();
   const scope: string = currentUserId.trim();
+  const currentStore: string = currentStoreIdentityFingerprint.trim().toLowerCase();
   return (endpoint.ownerType === 'host' || endpoint.ownerType === 'gateway') &&
     ownerId !== '' && userId !== '' && scope !== '' && userId === scope &&
-    /^[0-9a-f]{64}$/.test(endpoint.storeIdentityFingerprint.trim().toLowerCase()) &&
+    /^[0-9a-f]{64}$/.test(currentStore) &&
+    endpoint.storeIdentityFingerprint.trim().toLowerCase() === currentStore &&
     /^[0-9a-f]{64}$/.test(endpoint.endpointBindingFingerprint.trim().toLowerCase());
 }
 
@@ -116,6 +125,11 @@ export class VncTrustService {
     return AccountSessionCoordinator.getInstance().currentScope().ownerScopeId;
   }
 
+  private currentStoreIdentityFingerprint(): string {
+    return vncStoreIdentityFingerprint(
+      AccountSessionCoordinator.getInstance().currentScope().storeIdentity);
+  }
+
   onChange(listener: () => void): () => void {
     if (this.listeners.indexOf(listener) < 0) { this.listeners.push(listener); }
     return (): void => {
@@ -163,7 +177,8 @@ export class VncTrustService {
     const userId: string = endpoint.userId.trim();
     const store: string = endpoint.storeIdentityFingerprint.trim().toLowerCase();
     const binding: string = endpoint.endpointBindingFingerprint.trim().toLowerCase();
-    if (!vncTrustEndpointIsValid(endpoint, this.currentUserId())) {
+    if (!vncTrustEndpointIsValid(endpoint, this.currentUserId(),
+      this.currentStoreIdentityFingerprint())) {
       return null;
     }
     const values: VncTrustView[] = this.list();
@@ -195,7 +210,8 @@ export class VncTrustService {
     const ownerType: 'host' | 'gateway' = endpoint.ownerType;
     const storeIdentityFingerprint: string = endpoint.storeIdentityFingerprint.trim().toLowerCase();
     const endpointBindingFingerprint: string = endpoint.endpointBindingFingerprint.trim().toLowerCase();
-    if (!vncTrustEndpointIsValid(endpoint, this.currentUserId()) ||
+    if (!vncTrustEndpointIsValid(endpoint, this.currentUserId(),
+      this.currentStoreIdentityFingerprint()) ||
       !/^[0-9a-f]{64}$/.test(normalized)) {
       result.message = 'VNC trust 需要完整 endpoint owner 和有效指纹';
       return result;
