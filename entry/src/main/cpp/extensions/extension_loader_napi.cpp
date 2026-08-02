@@ -8,6 +8,8 @@
 #include "extension_registry.h"
 #include "protocol_adapter.h"
 #include "session_teardown_executor.h"
+#include "session_registry.h"
+#include "disconnect_request_registry.h"
 #include "rdp/freerdp_adapter.h"
 #include "rdp/rdp_auth_mode_policy.h"
 #include "ssh/ssh_adapter.h"
@@ -20,7 +22,7 @@
 #include "render/video_perf_counters.h"
 #include "video/video_activity_state.h"
 #include "rustdesk/rustdesk_bridge.h"
-#include "vnc/vnc_rfb_protocol.h"
+#include "vnc/vnc_adapter.h"
 #include <napi/native_api.h>
 #include <hilog/log.h>
 #include <map>
@@ -41,6 +43,10 @@
 #include <stdexcept>
 #include <vector>
 #include <unistd.h>
+
+#if defined(__MUSL__)
+#include <network/netmanager/net_connection.h>
+#endif
 
 #ifdef RUSTDESK_USE_REAL_CORE
 extern "C" {
@@ -63,7 +69,9 @@ namespace ExtensionLoaderNapi {
     napi_value Init(napi_env env, napi_value exports);
 }
 
-static void PrepareAdapterForTeardown(const std::shared_ptr<ProtocolAdapter>& adapter);
+static void PrepareAdapterForTeardown(
+    const std::shared_ptr<ProtocolAdapter>& adapter,
+    const DecoderSessionIdentity& owner);
 
 namespace {
 
@@ -108,30 +116,91 @@ struct SshSecretGuard {
 static std::shared_ptr<ProtocolAdapter> g_activeConnection = nullptr;
 static std::mutex g_activeConnectionMutex;
 
-static void ActivateSessionContext(
-    const std::shared_ptr<ProtocolAdapter>& adapter, uint64_t sessionId) {
+static bool ActivateSessionContext(
+    const std::shared_ptr<ProtocolAdapter>& adapter,
+    const DecoderSessionIdentity& owner) {
+    auto activationTransaction = Render::SharedSessionActivationTransaction().acquire();
+    if (!activationTransaction) {
+        return false;
+    }
+    {
+        auto ownerTransition = Render::SharedSessionSinkOwnerLease().acquireExclusive();
+        if (!ownerTransition.beginActivate(owner)) {
+            return false;
+        }
+    }
+    // Owner publication is a two-phase transition. No callback can pass the
+    // shared owner gate until every component has observed the new identity;
+    // importantly, the exclusive owner lock is not held while component
+    // mutexes or external callbacks are touched.
+    DecoderNapi::SetActiveSessionId(owner);
+    RendererNapi::SetActiveSessionOwner(owner);
+    AudioPlayerNapi::SetActiveSessionOwner(owner);
+    {
+        auto ownerTransition = Render::SharedSessionSinkOwnerLease().acquireExclusive();
+        if (!ownerTransition.commit(owner)) {
+            return false;
+        }
+    }
     std::lock_guard<std::mutex> lock(g_activeConnectionMutex);
     g_activeConnection = adapter;
-    DecoderNapi::SetActiveSessionId(sessionId);
     InputHandler::instance().setActiveAdapter(adapter);
+    return true;
 }
 
 static bool DeactivateSessionContextIfActive(
-    const std::shared_ptr<ProtocolAdapter>& adapter, uint64_t sessionId) {
-    std::lock_guard<std::mutex> lock(g_activeConnectionMutex);
-    if (g_activeConnection != adapter) {
+    const std::shared_ptr<ProtocolAdapter>& adapter,
+    const DecoderSessionIdentity& owner) {
+    auto activationTransaction = Render::SharedSessionActivationTransaction().acquire();
+    if (!activationTransaction) {
         return false;
     }
-    DecoderNapi::ClearActiveSessionId(sessionId);
-    InputHandler::instance().setActiveAdapter(nullptr);
-    g_activeConnection = nullptr;
+    {
+        auto ownerTransition = Render::SharedSessionSinkOwnerLease().acquireExclusive();
+        if (!ownerTransition.beginDeactivate(owner)) {
+            return false;
+        }
+    }
+    // The owner gate is already closed. Cleanup now follows the same
+    // owner->component order without holding the exclusive owner lock. Each
+    // component rechecks the exact owner, so a previously-cleared component
+    // is harmless and an S1 teardown cannot touch an S2 sink.
+    DecoderNapi::ClearActiveSessionId(owner);
+    RendererNapi::ClearActiveSessionOwner(owner);
+    AudioPlayerNapi::ClearActiveSessionOwner(owner);
+    {
+        std::lock_guard<std::mutex> lock(g_activeConnectionMutex);
+        InputHandler::instance().setActiveAdapter(nullptr);
+        if (g_activeConnection == adapter) {
+            g_activeConnection = nullptr;
+        }
+    }
     return true;
 }
 
 static void DeactivateAllSessionContexts() {
-    std::lock_guard<std::mutex> lock(g_activeConnectionMutex);
-    g_activeConnection = nullptr;
-    InputHandler::instance().setActiveAdapter(nullptr);
+    auto activationTransaction = Render::SharedSessionActivationTransaction().acquire();
+    if (!activationTransaction) {
+        return;
+    }
+    DecoderSessionIdentity owner;
+    {
+        auto ownerTransition = Render::SharedSessionSinkOwnerLease().acquireExclusive();
+        owner = ownerTransition.activeSnapshot();
+        if (owner.valid()) {
+            ownerTransition.beginDeactivate(owner);
+        }
+    }
+    if (owner.valid()) {
+        DecoderNapi::ClearActiveSessionId(owner);
+        RendererNapi::ClearActiveSessionOwner(owner);
+        AudioPlayerNapi::ClearActiveSessionOwner(owner);
+    }
+    {
+        std::lock_guard<std::mutex> lock(g_activeConnectionMutex);
+        g_activeConnection = nullptr;
+        InputHandler::instance().setActiveAdapter(nullptr);
+    }
 }
 
 static std::shared_ptr<ProtocolAdapter> GetActiveSessionAdapter() {
@@ -141,12 +210,19 @@ static std::shared_ptr<ProtocolAdapter> GetActiveSessionAdapter() {
 
 struct SessionDiagnosticsCounters {
     std::atomic<uint64_t> ingressFrames {0};
+    std::atomic<uint64_t> videoCallbacks {0};
     std::atomic<uint64_t> ingressBytes {0};
     std::atomic<uint64_t> keyframes {0};
     std::atomic<uint64_t> presentedFrames {0};
     std::atomic<uint64_t> presentationRejected {0};
     std::atomic<uint64_t> decodeOk {0};
     std::atomic<uint64_t> decodeErrors {0};
+    std::atomic<uint64_t> decodeRetNotReady {0};
+    std::atomic<uint64_t> decodeRetBadCodec {0};
+    std::atomic<uint64_t> decodeRetMismatch {0};
+    std::atomic<uint64_t> decodeRetOther {0};
+    std::atomic<uint64_t> inactiveDisplayFrames {0};
+    std::atomic<uint64_t> audioFrames {0};
     std::atomic<int> lastCodec {-1};
     std::atomic<int> lastWidth {0};
     std::atomic<int> lastHeight {0};
@@ -174,12 +250,19 @@ struct SessionDiagnosticsCounters {
 
     void reset() {
         ingressFrames.store(0, std::memory_order_release);
+        videoCallbacks.store(0, std::memory_order_release);
         ingressBytes.store(0, std::memory_order_release);
         keyframes.store(0, std::memory_order_release);
         presentedFrames.store(0, std::memory_order_release);
         presentationRejected.store(0, std::memory_order_release);
         decodeOk.store(0, std::memory_order_release);
         decodeErrors.store(0, std::memory_order_release);
+        decodeRetNotReady.store(0, std::memory_order_release);
+        decodeRetBadCodec.store(0, std::memory_order_release);
+        decodeRetMismatch.store(0, std::memory_order_release);
+        decodeRetOther.store(0, std::memory_order_release);
+        inactiveDisplayFrames.store(0, std::memory_order_release);
+        audioFrames.store(0, std::memory_order_release);
         lastCodec.store(-1, std::memory_order_release);
         lastWidth.store(0, std::memory_order_release);
         lastHeight.store(0, std::memory_order_release);
@@ -273,27 +356,271 @@ struct SessionContext {
 
     std::shared_ptr<ProtocolAdapter> adapter;
     std::string protocolName;
+    mutable std::mutex adapterMutex;
+    // The numeric session id is retained for the public N-API surface; the
+    // generation and owner token are the identities used by callback and
+    // decoder telemetry gates. All video counters/controllers die with this
+    // object.
+    uint64_t sessionId = 0;
+    std::atomic<uint64_t> generation {0};
+    uint64_t ownerToken = 0;
     std::string lastStateMessage;
     std::mutex messageMutex;
     std::atomic<Lifecycle> lifecycle {Lifecycle::Active};
     std::atomic<uint64_t> teardownRequestId {0};
+    mutable std::mutex teardownPublicationMutex;
+    std::condition_variable teardownPublicationCv;
+    bool teardownRequestPublished = false;
     SessionDiagnosticsCounters diagnostics;
+    Render::VideoPerfCounters videoPerf;
+    Render::VideoPressureController videoPressure;
+    mutable std::mutex pressureSnapshotMutex;
+    Render::VideoPerfSnapshot lastPressureSnapshot;
+    Render::VideoPressureDecision lastPressureDecision;
+    uint64_t lastDecoderGeneration = 0;
+    uint64_t lastDisplayGeneration = 0;
+    uint64_t lastDropCounterGeneration = 0;
     std::string vncConnectionPath = "unknown";
     std::string vncRequestedColorDepth = "auto";
+
+    DecoderSessionIdentity identity() const {
+        return DecoderSessionIdentity {
+            sessionId, generation.load(std::memory_order_acquire), ownerToken};
+    }
 };
 
-static std::map<int, std::shared_ptr<SessionContext>> g_sessions;
-static std::map<int, uint64_t> g_disconnectRequestBySession;
+static bool IsSessionCallbackActive(const std::shared_ptr<SessionContext>& session) {
+    return session &&
+        session->lifecycle.load(std::memory_order_acquire) ==
+            SessionContext::Lifecycle::Active &&
+        Render::SharedSessionSinkOwnerLease().accepts(session->identity()) &&
+        DecoderNapi::IsActiveSessionOwner(session->identity());
+}
+
+static bool ReportVideoPressureForSession(
+    const std::shared_ptr<SessionContext>& session, int level) {
+    if (!session || session->lifecycle.load(std::memory_order_acquire) !=
+            SessionContext::Lifecycle::Active) {
+        return false;
+    }
+    std::shared_ptr<ProtocolAdapter> adapter;
+    {
+        std::lock_guard<std::mutex> lock(session->adapterMutex);
+        adapter = session->adapter;
+    }
+    if (!adapter) {
+        return false;
+    }
+    if (auto* rustdesk = dynamic_cast<RustDeskBridge*>(adapter.get())) {
+        return rustdesk->reportVideoPressureForSession(
+            session->sessionId, session->generation.load(std::memory_order_acquire),
+            session->ownerToken, level);
+    }
+    auto ownerLease = Render::SharedSessionSinkOwnerLease().acquire(session->identity());
+    if (!ownerLease) {
+        return false;
+    }
+    if (!IsSessionCallbackActive(session)) {
+        return false;
+    }
+    adapter->reportVideoPressure(level);
+    return true;
+}
+
+static SessionRegistry<SessionContext> g_sessionRegistry;
+static DisconnectRequestRegistry g_disconnectRequests;
 static SessionTeardown::Executor g_teardownExecutor;
 static uint64_t g_disconnectAllRequestId = 0;
 static int g_nextSessionId = 1;
+static std::atomic<uint64_t> g_nextSessionGeneration {1};
+static std::atomic<uint64_t> g_nextSessionOwnerToken {1};
 static std::atomic<int> g_pendingSshConnectId {-1};
 static std::atomic<uint64_t> g_napiWheelSendCount {0};
 static std::atomic<uint64_t> g_napiTextSendCount {0};
 static std::atomic<uint64_t> g_napiFileSendCount {0};
 static std::atomic<uint64_t> g_napiKeySendCount {0};
 static std::atomic<uint64_t> g_napiMouseSendCount {0};
-static Render::VideoPerfCounters g_rustdeskVideoPerf;
+
+static bool DispatchRustDeskNetworkSession(
+    const std::shared_ptr<SessionContext>& session, int32_t sessionId,
+    uint64_t sessionGeneration, bool available, uint64_t networkGeneration) {
+    if (!session || sessionId <= 0 || sessionGeneration == 0 ||
+        networkGeneration == 0) {
+        return false;
+    }
+    if (session->protocolName != "rustdesk" ||
+        session->lifecycle.load(std::memory_order_acquire) !=
+            SessionContext::Lifecycle::Active ||
+        session->generation.load(std::memory_order_acquire) != sessionGeneration) {
+        return false;
+    }
+    std::shared_ptr<ProtocolAdapter> adapter;
+    {
+        std::lock_guard<std::mutex> lock(session->adapterMutex);
+        adapter = session->adapter;
+    }
+    if (!adapter) {
+        return false;
+    }
+    const DecoderSessionIdentity owner = session->identity();
+    auto ownerLease = Render::SharedSessionSinkOwnerLease().acquire(owner);
+    if (!ownerLease) {
+        return false;
+    }
+    if (session->generation.load(std::memory_order_acquire) != sessionGeneration ||
+        session->lifecycle.load(std::memory_order_acquire) !=
+            SessionContext::Lifecycle::Active) {
+        return false;
+    }
+    auto* rustdesk = dynamic_cast<RustDeskBridge*>(adapter.get());
+    if (!rustdesk) {
+        return false;
+    }
+    // This is the only handoff into continuity. ArkTS/NAPI and the OHOS
+    // observer both call this validator; neither owns retry scheduling.
+    rustdesk->onNetworkChanged(available, networkGeneration);
+    return true;
+}
+
+static bool DispatchRustDeskNetworkEvent(
+    int32_t sessionId, uint64_t sessionGeneration, bool available,
+    uint64_t networkGeneration) {
+    if (sessionId <= 0 || sessionGeneration == 0 || networkGeneration == 0) {
+        return false;
+    }
+    std::shared_ptr<SessionContext> session;
+    const auto it = g_sessionRegistry.find(sessionId);
+    if (it != g_sessionRegistry.end()) {
+        session = it->second;
+    }
+    if (!session) {
+        return false;
+    }
+    return DispatchRustDeskNetworkSession(
+        session, sessionId, sessionGeneration, available, networkGeneration);
+}
+
+#if defined(__MUSL__)
+static std::mutex g_nativeNetworkObserverMutex;
+static uint32_t g_nativeNetworkObserverId = 0;
+static int32_t g_nativeNetworkObserverSessionId = 0;
+static uint64_t g_nativeNetworkObserverSessionGeneration = 0;
+static std::shared_ptr<SessionContext> g_nativeNetworkObserverSession;
+static std::atomic<uint64_t> g_nativeNetworkGeneration {1};
+
+static void DispatchNativeNetworkAvailability(bool available) {
+    int32_t sessionId = 0;
+    uint64_t sessionGeneration = 0;
+    std::shared_ptr<SessionContext> session;
+    {
+        std::lock_guard<std::mutex> lock(g_nativeNetworkObserverMutex);
+        sessionId = g_nativeNetworkObserverSessionId;
+        sessionGeneration = g_nativeNetworkObserverSessionGeneration;
+        session = g_nativeNetworkObserverSession;
+    }
+    if (sessionId == 0 || sessionGeneration == 0) {
+        return;
+    }
+    const uint64_t networkGeneration =
+        g_nativeNetworkGeneration.fetch_add(1, std::memory_order_acq_rel) + 1;
+    (void)DispatchRustDeskNetworkSession(
+        session, sessionId, sessionGeneration, available, networkGeneration);
+}
+
+static void OnNativeNetworkAvailable(NetConn_NetHandle* /*netHandle*/) {
+    DispatchNativeNetworkAvailability(true);
+}
+
+static void OnNativeNetworkLost(NetConn_NetHandle* /*netHandle*/) {
+    DispatchNativeNetworkAvailability(false);
+}
+
+static void OnNativeNetworkUnavailable() {
+    DispatchNativeNetworkAvailability(false);
+}
+
+static NetConn_NetConnCallback kNativeNetworkCallbacks {
+    OnNativeNetworkAvailable,
+    nullptr,
+    nullptr,
+    OnNativeNetworkLost,
+    OnNativeNetworkUnavailable,
+    nullptr,
+};
+
+static void UpdateNativeNetworkObserver(
+    const std::shared_ptr<SessionContext>& session) {
+    if (!session) {
+        return;
+    }
+    const int32_t sessionId = static_cast<int32_t>(session->sessionId);
+    const uint64_t sessionGeneration =
+        session->generation.load(std::memory_order_acquire);
+    if (sessionId <= 0 || sessionGeneration == 0) {
+        return;
+    }
+    {
+        std::lock_guard<std::mutex> lock(g_nativeNetworkObserverMutex);
+        if (g_nativeNetworkObserverId != 0) {
+            g_nativeNetworkObserverSessionId = sessionId;
+            g_nativeNetworkObserverSessionGeneration = sessionGeneration;
+            g_nativeNetworkObserverSession = session;
+            return;
+        }
+    }
+    // Do not call the system registration API while holding our state lock:
+    // some platform implementations can deliver an initial availability
+    // callback synchronously during registration.
+    uint32_t callbackId = 0;
+    const int32_t result = OH_NetConn_RegisterDefaultNetConnCallback(
+        &kNativeNetworkCallbacks, &callbackId);
+    if (result != 0) {
+        OH_LOG_WARN(LOG_APP,
+            "[ExtLoader] native network observer registration failed result=%{public}d",
+            result);
+        return;
+    }
+    bool keepRegistration = false;
+    {
+        std::lock_guard<std::mutex> lock(g_nativeNetworkObserverMutex);
+        if (g_nativeNetworkObserverId == 0) {
+            g_nativeNetworkObserverId = callbackId;
+            g_nativeNetworkObserverSessionId = sessionId;
+            g_nativeNetworkObserverSessionGeneration = sessionGeneration;
+            g_nativeNetworkObserverSession = session;
+            keepRegistration = true;
+        }
+    }
+    if (!keepRegistration) {
+        OH_NetConn_UnregisterNetConnCallback(callbackId);
+    }
+}
+
+static void ClearNativeNetworkObserver(
+    int32_t sessionId, uint64_t sessionGeneration) {
+    uint32_t callbackId = 0;
+    {
+        std::lock_guard<std::mutex> lock(g_nativeNetworkObserverMutex);
+        if (g_nativeNetworkObserverSessionId != sessionId ||
+            g_nativeNetworkObserverSessionGeneration != sessionGeneration) {
+            return;
+        }
+        g_nativeNetworkObserverSessionId = 0;
+        g_nativeNetworkObserverSessionGeneration = 0;
+        g_nativeNetworkObserverSession.reset();
+        callbackId = g_nativeNetworkObserverId;
+        g_nativeNetworkObserverId = 0;
+    }
+    if (callbackId != 0) {
+        OH_NetConn_UnregisterNetConnCallback(callbackId);
+    }
+}
+#else
+static void UpdateNativeNetworkObserver(
+    const std::shared_ptr<SessionContext>& /*session*/) {}
+static void ClearNativeNetworkObserver(
+    int32_t /*sessionId*/, uint64_t /*sessionGeneration*/) {}
+#endif
 
 // SSH 推送回调的 TSFN 映射 (sessionId → registration). 由 setOnDataCallback /
 // disconnect 维护。registration 先停止生产者，再释放 TSFN，避免 reader 线程
@@ -426,7 +753,7 @@ static napi_value CreateRdpCertificateInfoValue(napi_env env, const RdpCertifica
  *
  * 列出所有已注册的远程协议适配器
  */
-napi_value NapiListProtocols(napi_env env, napi_callback_info info) {
+napi_value NapiListProtocols(napi_env env, napi_callback_info /*info*/) {
     EnsureExtensionsLoaded();
 
     auto adapters = ExtensionSystem::instance().protocols.get("protocol");
@@ -650,8 +977,8 @@ napi_value NapiGetRdpRenderStats(napi_env env, napi_callback_info info) {
     }
 
     RdpRenderStats stats;
-    auto it = g_sessions.find(sessionId);
-    if (it != g_sessions.end() && it->second->adapter) {
+    auto it = g_sessionRegistry.find(sessionId);
+    if (it != g_sessionRegistry.end() && it->second->adapter) {
         stats = it->second->adapter->getRdpRenderStats();
     }
 
@@ -737,21 +1064,26 @@ napi_value NapiGetSessionDiagnostics(napi_env env, napi_callback_info info) {
     }
 
     RustDeskDiagnosticsStats nativeStats;
+    std::shared_ptr<SessionContext> session;
     SessionDiagnosticsCounters* counters = nullptr;
     bool sessionActive = false;
     bool vncSession = false;
-    auto it = g_sessions.find(sessionId);
-    if (it != g_sessions.end() && it->second) {
-        counters = &it->second->diagnostics;
+    bool rdpSession = false;
+    auto it = g_sessionRegistry.find(sessionId);
+    if (it != g_sessionRegistry.end() && it->second) {
+        session = it->second;
+        counters = &session->diagnostics;
         if (it->second->protocolName == "rustdesk" && it->second->adapter) {
-            sessionActive = true;
+            sessionActive = session->lifecycle.load(std::memory_order_acquire) ==
+                SessionContext::Lifecycle::Active;
             auto* bridge = dynamic_cast<RustDeskBridge*>(it->second->adapter.get());
             if (bridge) {
                 nativeStats = bridge->getDiagnostics();
             }
         }
         if (it->second->protocolName == "vnc" && it->second->adapter) {
-            sessionActive = true;
+            sessionActive = session->lifecycle.load(std::memory_order_acquire) ==
+                SessionContext::Lifecycle::Active;
             vncSession = true;
             nativeStats.supported = true;
             nativeStats.sessionId = static_cast<uint64_t>(sessionId);
@@ -766,13 +1098,47 @@ napi_value NapiGetSessionDiagnostics(napi_env env, napi_callback_info info) {
             nativeStats.width = counters->lastWidth.load(std::memory_order_acquire);
             nativeStats.height = counters->lastHeight.load(std::memory_order_acquire);
         }
+        if (it->second->protocolName == "rdp" && it->second->adapter) {
+            sessionActive = session->lifecycle.load(std::memory_order_acquire) ==
+                SessionContext::Lifecycle::Active;
+            rdpSession = true;
+            nativeStats.supported = true;
+            nativeStats.sessionId = static_cast<uint64_t>(sessionId);
+            nativeStats.codec = static_cast<int>(CodecType::RAW_BGRA);
+            nativeStats.videoMessages = counters->ingressFrames.load(std::memory_order_acquire);
+            nativeStats.receivedFrames = counters->ingressFrames.load(std::memory_order_acquire);
+            nativeStats.receivedBytes = counters->ingressBytes.load(std::memory_order_acquire);
+            nativeStats.presentedFrames = counters->presentedFrames.load(std::memory_order_acquire);
+            nativeStats.lastFrameAtMs = counters->lastFrameAtMs.load(std::memory_order_acquire);
+            nativeStats.width = counters->lastWidth.load(std::memory_order_acquire);
+            nativeStats.height = counters->lastHeight.load(std::memory_order_acquire);
+        }
     }
 
     const uint64_t nowMs = static_cast<uint64_t>(std::chrono::duration_cast<
         std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count());
-    DecoderTelemetrySnapshot decoder = DecoderNapi::GetActiveTelemetry(
-        static_cast<uint64_t>(sessionId > 0 ? sessionId : 0));
-    const RdpPresentationMetricsSnapshot renderer = RendererNapi::GetActivePresentationStats();
+    Render::VideoPerfSnapshot pressureSnapshot;
+    Render::VideoPressureDecision pressureDecision;
+    bool pressureReportReady = false;
+    if (session) {
+        std::lock_guard<std::mutex> pressureLock(session->pressureSnapshotMutex);
+        pressureDecision = session->videoPressure.tick(std::chrono::steady_clock::now());
+        pressureSnapshot = session->lastPressureSnapshot;
+        if (pressureDecision.changed && IsSessionCallbackActive(session)) {
+            session->lastPressureDecision = pressureDecision;
+            pressureReportReady = true;
+        }
+    }
+    if (pressureReportReady) {
+        ReportVideoPressureForSession(session, static_cast<int>(pressureDecision.level));
+    }
+    const DecoderSessionIdentity expectedOwner = session ? session->identity() :
+        DecoderSessionIdentity {};
+    DecoderTelemetrySnapshot decoder = DecoderNapi::GetActiveTelemetry(expectedOwner);
+    const bool ownsActivePresentation = session &&
+        DecoderNapi::IsActiveSessionOwner(expectedOwner);
+    const RdpPresentationMetricsSnapshot renderer = ownsActivePresentation ?
+        RendererNapi::GetActivePresentationStats(expectedOwner) : RdpPresentationMetricsSnapshot {};
     int64_t decodeP50Us = 0;
     int64_t decodeP95Us = 0;
     int64_t decodeMaxUs = 0;
@@ -844,7 +1210,7 @@ napi_value NapiGetSessionDiagnostics(napi_env env, napi_callback_info info) {
         counters->lastWidth.load(std::memory_order_acquire) : nativeStats.width);
     SetObjectInt32(env, result, "height", counters ?
         counters->lastHeight.load(std::memory_order_acquire) : nativeStats.height);
-    SetObjectString(env, result, "connectionPath", vncSession && it != g_sessions.end() ?
+    SetObjectString(env, result, "connectionPath", vncSession && it != g_sessionRegistry.end() ?
         it->second->vncConnectionPath :
         (nativeStats.connectionPath == 1 ? "direct" : (nativeStats.supported ? "relay" : "unknown")));
     SetObjectInt64(env, result, "lastFrameAtMs", static_cast<int64_t>(
@@ -873,7 +1239,7 @@ napi_value NapiGetSessionDiagnostics(napi_env env, napi_callback_info info) {
         counters ? counters->lastDirtyWidth.load(std::memory_order_acquire) : 0);
     SetObjectInt32(env, result, "lastDirtyHeight",
         counters ? counters->lastDirtyHeight.load(std::memory_order_acquire) : 0);
-    SetObjectString(env, result, "requestedColorDepth", vncSession && it != g_sessions.end() ?
+    SetObjectString(env, result, "requestedColorDepth", vncSession && it != g_sessionRegistry.end() ?
         it->second->vncRequestedColorDepth : "");
     SetObjectInt32(env, result, "effectiveColorDepth",
         counters ? counters->effectiveColorDepth.load(std::memory_order_acquire) : 0);
@@ -889,6 +1255,32 @@ napi_value NapiGetSessionDiagnostics(napi_env env, napi_callback_info info) {
     SetObjectInt64(env, result, "renderMaxUs", renderer.workerUs.max);
     SetObjectInt64(env, result, "queueDepth", static_cast<int64_t>(decoder.queueDepth));
     SetObjectInt64(env, result, "queueMax", static_cast<int64_t>(decoder.queueMax));
+    SetObjectInt64(env, result, "decoderGeneration",
+                   static_cast<int64_t>(decoder.decoderGeneration));
+    SetObjectInt64(env, result, "displayGeneration",
+                   static_cast<int64_t>(decoder.displayGeneration));
+    SetObjectInt64(env, result, "dropCounterGeneration",
+                   static_cast<int64_t>(decoder.dropCounterGeneration));
+    SetObjectInt32(env, result, "pressureLevel",
+                   session ? static_cast<int32_t>(session->videoPressure.level()) : 0);
+    SetObjectBool(env, result, "pressureTimedOut",
+                  session ? session->videoPressure.timedOut() : false);
+    SetObjectInt64(env, result, "pressureDelta",
+                   static_cast<int64_t>(pressureSnapshot.decodeDrops));
+    SetObjectInt64(env, result, "pressureInputDropsDelta",
+                   static_cast<int64_t>(pressureSnapshot.inputDropsDelta));
+    SetObjectInt64(env, result, "pressureWaitKeyframeDropsDelta",
+                   static_cast<int64_t>(pressureSnapshot.waitKeyframeDropsDelta));
+    SetObjectInt64(env, result, "pressureDecodeErrors",
+                   static_cast<int64_t>(pressureSnapshot.decodeErrors));
+    SetObjectInt64(env, result, "decodeRetNotReady", static_cast<int64_t>(
+        counters ? counters->decodeRetNotReady.load(std::memory_order_acquire) : 0));
+    SetObjectInt64(env, result, "decodeRetBadCodec", static_cast<int64_t>(
+        counters ? counters->decodeRetBadCodec.load(std::memory_order_acquire) : 0));
+    SetObjectInt64(env, result, "decodeRetMismatch", static_cast<int64_t>(
+        counters ? counters->decodeRetMismatch.load(std::memory_order_acquire) : 0));
+    SetObjectInt64(env, result, "decodeRetOther", static_cast<int64_t>(
+        counters ? counters->decodeRetOther.load(std::memory_order_acquire) : 0));
     SetObjectInt64(env, result, "droppedFrames", static_cast<int64_t>(decoder.droppedFrames));
     const int sourceEncoding = counters ?
         counters->sourceEncoding.load(std::memory_order_acquire) : -1;
@@ -896,7 +1288,8 @@ napi_value NapiGetSessionDiagnostics(napi_env env, napi_callback_info info) {
         (sourceEncoding == VncRfbProtocol::kCopyRectEncoding ? "CopyRect" :
          (sourceEncoding == VncRfbProtocol::kRawEncoding ? "RAW" : "等待服务器"));
     SetObjectString(env, result, "decoderBackend", vncSession ? vncBackend :
-        (decoder.valid && decoder.ready ? (decoder.software ? "software" : "hardware") : "unknown"));
+        (rdpSession ? "gdi" :
+         (decoder.valid && decoder.ready ? (decoder.software ? "software" : "hardware") : "unknown")));
     return result;
 }
 
@@ -1051,8 +1444,8 @@ napi_value NapiGetSessionTransferStatus(napi_env env, napi_callback_info info) {
     int32_t sessionId = 0;
     if (argc > 0) { napi_get_value_int32(env, args[0], &sessionId); }
     SessionTransferStatus status;
-    auto it = g_sessions.find(sessionId);
-    if (it != g_sessions.end() && it->second->adapter) {
+    auto it = g_sessionRegistry.find(sessionId);
+    if (it != g_sessionRegistry.end() && it->second->adapter) {
         status = it->second->adapter->getSessionTransferStatus();
     }
     napi_value result;
@@ -1088,8 +1481,8 @@ napi_value NapiSetRdpBackgroundVideoPrewarm(napi_env env, napi_callback_info inf
     }
 
     bool ok = false;
-    auto it = g_sessions.find(sessionId);
-    if (it != g_sessions.end() && it->second && it->second->adapter &&
+    auto it = g_sessionRegistry.find(sessionId);
+    if (it != g_sessionRegistry.end() && it->second && it->second->adapter &&
         it->second->protocolName == "rdp") {
         auto* adapter = dynamic_cast<FreeRdpAdapter*>(it->second->adapter.get());
         if (adapter) {
@@ -1117,8 +1510,8 @@ napi_value NapiPresentRdpCachedFrame(napi_env env, napi_callback_info info) {
     }
 
     bool ok = false;
-    auto it = g_sessions.find(sessionId);
-    if (it != g_sessions.end() && it->second && it->second->adapter &&
+    auto it = g_sessionRegistry.find(sessionId);
+    if (it != g_sessionRegistry.end() && it->second && it->second->adapter &&
         it->second->protocolName == "rdp") {
         auto* adapter = dynamic_cast<FreeRdpAdapter*>(it->second->adapter.get());
         if (adapter) {
@@ -1467,34 +1860,98 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
     }
 
     int sessionId = g_nextSessionId++;
+    session->sessionId = static_cast<uint64_t>(sessionId);
+    session->generation = g_nextSessionGeneration.fetch_add(1, std::memory_order_acq_rel);
+    session->ownerToken = g_nextSessionOwnerToken.fetch_add(1, std::memory_order_acq_rel);
     adapter->setSessionIdentity(static_cast<uint64_t>(sessionId));
+    if (auto* rustdesk = dynamic_cast<RustDeskBridge*>(adapter.get())) {
+        session->generation = rustdesk->sessionGeneration();
+        rustdesk->setSessionOwnerToken(session->ownerToken);
+    }
+    if (auto* rdp = dynamic_cast<FreeRdpAdapter*>(adapter.get())) {
+        rdp->setSessionOwner(session->identity());
+    }
+    if (auto* vnc = dynamic_cast<VncAdapter*>(adapter.get())) {
+        vnc->setSessionOwner(session->identity());
+    }
     g_disconnectAllRequestId = 0;
-    if (g_disconnectRequestBySession.size() > 256) {
-        for (auto it = g_disconnectRequestBySession.begin();
-             it != g_disconnectRequestBySession.end();) {
-            const SessionTeardown::State state = g_teardownExecutor.state(it->second);
+    if (g_disconnectRequests.size() > 256) {
+        const auto requests = g_disconnectRequests.snapshot();
+        for (const auto& request : requests) {
+            const SessionTeardown::State state = g_teardownExecutor.state(request.second);
             if (state == SessionTeardown::State::Complete ||
                 state == SessionTeardown::State::Failed ||
                 state == SessionTeardown::State::Unknown) {
-                it = g_disconnectRequestBySession.erase(it);
-            } else {
-                ++it;
+                g_disconnectRequests.eraseIf(request.first, request.second);
             }
         }
     }
-    g_sessions[sessionId] = session;
+    g_sessionRegistry.insertOrAssign(sessionId, session);
     const bool deferSshActivation = protocolName == "ssh";
     if (!deferSshActivation) {
         // R0: existing desktop protocols keep their established activation
         // order for compatibility. SSH commits the same context only after
         // its synchronous connect succeeds below.
-        ActivateSessionContext(adapter, static_cast<uint64_t>(sessionId));
+        if (!ActivateSessionContext(adapter, session->identity())) {
+            // Activation is the admission boundary for decoder/audio/input
+            // sinks.  Do not start a protocol worker when that transaction
+            // could not publish a complete owner; otherwise the adapter can
+            // connect successfully with no visible consumer and later
+            // callbacks can be admitted against the previous session.
+            session->lifecycle.store(SessionContext::Lifecycle::Failed,
+                                     std::memory_order_release);
+            PrepareAdapterForTeardown(adapter, session->identity());
+            try {
+                adapter->disconnect();
+            } catch (...) {
+                OH_LOG_ERROR(LOG_APP,
+                    "[ExtLoader] adapter disconnect after activation failure threw");
+            }
+            g_sessionRegistry.eraseIf(sessionId, session);
+            (void)DeactivateSessionContextIfActive(adapter, session->identity());
+            napi_value errVal;
+            napi_create_int32(env, -2, &errVal);
+            return errVal;
+        }
     }
 
     const std::weak_ptr<SessionContext> weakSession = session;
+    const std::weak_ptr<ProtocolAdapter> weakAdapter = adapter;
+    if (auto* rustdesk = dynamic_cast<RustDeskBridge*>(adapter.get())) {
+        rustdesk->setContinuityGenerationCallback(
+            [weakSession, weakAdapter](uint64_t reconnectSessionId,
+                                       uint64_t reconnectGeneration,
+                                       uint64_t reconnectOwnerToken) {
+                const std::shared_ptr<SessionContext> session = weakSession.lock();
+                const std::shared_ptr<ProtocolAdapter> adapter = weakAdapter.lock();
+                if (!session || !adapter ||
+                    session->lifecycle.load(std::memory_order_acquire) !=
+                        SessionContext::Lifecycle::Active ||
+                    session->sessionId != reconnectSessionId ||
+                    session->ownerToken != reconnectOwnerToken) {
+                    return false;
+                }
+                const uint64_t previousGeneration =
+                    session->generation.load(std::memory_order_acquire);
+                session->generation.store(reconnectGeneration, std::memory_order_release);
+                const bool activated = ActivateSessionContext(
+                    adapter, session->identity());
+                if (!activated) {
+                    session->generation.store(previousGeneration, std::memory_order_release);
+                    (void)ActivateSessionContext(adapter, session->identity());
+                    return false;
+                }
+                OH_LOG_INFO(LOG_APP,
+                    "[ExtLoader] RustDesk continuity generation committed session=%{public}llu generation=%{public}llu",
+                    static_cast<unsigned long long>(reconnectSessionId),
+                    static_cast<unsigned long long>(reconnectGeneration));
+                return true;
+            });
+    }
     adapter->setConnectionStateCallback([weakSession](ConnectionState state, const std::string& message) {
         const std::shared_ptr<SessionContext> session = weakSession.lock();
-        if (!session) { return; }
+        if (!session || session->lifecycle.load(std::memory_order_acquire) !=
+            SessionContext::Lifecycle::Active) { return; }
         std::lock_guard<std::mutex> lock(session->messageMutex);
         session->lastStateMessage = message;
         OH_LOG_INFO(LOG_APP, "[ExtLoader] 状态变更: protocol=%{public}s state=%{public}d msg=%{public}s",
@@ -1502,19 +1959,78 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
     });
 
     if (auto* rustdesk = dynamic_cast<RustDeskBridge*>(adapter.get())) {
-        rustdesk->setDisplayStateCallback([](int display) {
+        rustdesk->setDisplayStateCallback([weakSession](int display) {
+            const std::shared_ptr<SessionContext> session = weakSession.lock();
+            if (!IsSessionCallbackActive(session)) {
+                return;
+            }
             // RustDesk invokes this before its stream thread starts. The
             // decoder therefore knows the peer's current display before any
             // interleaved display frame can arrive.
-            if (DecoderNapi::SetActiveDisplay(display)) {
-                DecoderNapi::RequestActiveDecoderRecovery();
+            if (DecoderNapi::SetActiveDisplay(session->identity(), display)) {
+                DecoderNapi::RequestActiveDecoderRecovery(session->identity());
+            }
+        });
+    }
+
+    if (auto* rdp = dynamic_cast<FreeRdpAdapter*>(adapter.get())) {
+        rdp->setVideoTelemetryCallback([weakSession](
+            int width, int height, size_t bytes, bool submitted) {
+            const std::shared_ptr<SessionContext> session = weakSession.lock();
+            if (!IsSessionCallbackActive(session)) {
+                return;
+            }
+            const uint64_t nowMs = static_cast<uint64_t>(std::chrono::duration_cast<
+                std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count());
+            session->diagnostics.videoCallbacks.fetch_add(1, std::memory_order_relaxed);
+            session->diagnostics.ingressFrames.fetch_add(1, std::memory_order_relaxed);
+            session->diagnostics.ingressBytes.fetch_add(static_cast<uint64_t>(bytes),
+                                                        std::memory_order_relaxed);
+            session->diagnostics.lastCodec.store(static_cast<int>(CodecType::RAW_BGRA),
+                                                 std::memory_order_relaxed);
+            session->diagnostics.lastWidth.store(width, std::memory_order_relaxed);
+            session->diagnostics.lastHeight.store(height, std::memory_order_relaxed);
+            session->diagnostics.lastFrameAtMs.store(nowMs, std::memory_order_release);
+            if (submitted) {
+                session->diagnostics.presentedFrames.fetch_add(1, std::memory_order_relaxed);
+                session->diagnostics.decodeOk.fetch_add(1, std::memory_order_relaxed);
+                session->diagnostics.lastPresentedAtMs.store(nowMs, std::memory_order_release);
+            } else {
+                session->diagnostics.presentationRejected.fetch_add(1, std::memory_order_relaxed);
+            }
+
+            const auto now = std::chrono::steady_clock::now();
+            Render::VideoPressureDecision pressureDecision;
+            bool pressureWindowReady = false;
+            {
+                std::lock_guard<std::mutex> pressureLock(session->pressureSnapshotMutex);
+                session->videoPerf.recordIngressFrame("rdp", width, height, bytes, true);
+                // RDP GDI has no encoded decoder drop counters. A successful
+                // callback is the decode-equivalent healthy sample for this
+                // SessionContext window; the counter generation is the
+                // session generation, not a process-global adapter counter.
+                session->videoPerf.recordDecodeResult(
+                    submitted ? 0 : -1, 0, 0, 0,
+                    session->generation.load(std::memory_order_acquire));
+                if (session->videoPressure.windowDue(now)) {
+                    const Render::VideoPerfSnapshot window =
+                        session->videoPerf.snapshotAndReset();
+                    pressureDecision = session->videoPressure.observeAt(window, now);
+                    session->lastPressureSnapshot = window;
+                    session->lastPressureDecision = pressureDecision;
+                    pressureWindowReady = pressureDecision.windowComplete;
+                }
+            }
+            if (pressureWindowReady && IsSessionCallbackActive(session)) {
+                ReportVideoPressureForSession(
+                    session, static_cast<int>(pressureDecision.level));
             }
         });
     }
 
     adapter->setVideoCallback([weakSession](const VideoFrame& frame) {
         const std::shared_ptr<SessionContext> session = weakSession.lock();
-        if (!session) {
+        if (!IsSessionCallbackActive(session)) {
             return;
         }
         // VNC produces a complete raw BGRA framebuffer. It is deliberately
@@ -1550,8 +2066,9 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
                 std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::steady_clock::now().time_since_epoch()).count()),
                 std::memory_order_release);
-            RendererNapi::SetActiveSourceSize(frame.width, frame.height);
-            const RdpPresentationTarget target = RendererNapi::GetActivePresentationTarget();
+            RendererNapi::SetActiveSourceSize(session->identity(), frame.width, frame.height);
+            const RdpPresentationTarget target =
+                RendererNapi::GetActivePresentationTarget(session->identity());
             if (!target.ready()) {
                 session->diagnostics.presentationRejected.fetch_add(1, std::memory_order_relaxed);
                 OH_LOG_WARN(LOG_APP,
@@ -1564,12 +2081,12 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
             RdpPresentMetrics present;
             if (frame.dirtyX >= 0 && frame.dirtyY >= 0 && frame.dirtyWidth > 0 && frame.dirtyHeight > 0) {
                 present = RendererNapi::PresentRawBgraRectActive(
-                    frame.data, frame.size, frame.width, frame.height, frame.stride,
+                    session->identity(), frame.data, frame.size, frame.width, frame.height, frame.stride,
                     frame.dirtyX, frame.dirtyY, frame.dirtyWidth, frame.dirtyHeight,
                     target.generation);
             } else {
                 present = RendererNapi::PresentRawBgraActive(
-                    frame.data, frame.size, frame.width, frame.height, frame.stride,
+                    session->identity(), frame.data, frame.size, frame.width, frame.height, frame.stride,
                     target.generation);
             }
             if (present.presented()) {
@@ -1581,6 +2098,29 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
                     std::memory_order_release);
             } else {
                 session->diagnostics.presentationRejected.fetch_add(1, std::memory_order_relaxed);
+            }
+            Render::VideoPressureDecision pressureDecision;
+            bool pressureWindowReady = false;
+            const auto pressureNow = std::chrono::steady_clock::now();
+            {
+                std::lock_guard<std::mutex> pressureLock(session->pressureSnapshotMutex);
+                session->videoPerf.recordIngressFrame(
+                    "vnc", frame.width, frame.height, frame.size, true);
+                session->videoPerf.recordDecodeResult(
+                    present.presented() ? 0 : -1, 0, 0, 0,
+                    session->generation.load(std::memory_order_acquire));
+                if (session->videoPressure.windowDue(pressureNow)) {
+                    const Render::VideoPerfSnapshot window =
+                        session->videoPerf.snapshotAndReset();
+                    pressureDecision = session->videoPressure.observeAt(window, pressureNow);
+                    session->lastPressureSnapshot = window;
+                    session->lastPressureDecision = pressureDecision;
+                    pressureWindowReady = pressureDecision.windowComplete;
+                }
+            }
+            if (pressureWindowReady && IsSessionCallbackActive(session)) {
+                ReportVideoPressureForSession(
+                    session, static_cast<int>(pressureDecision.level));
             }
             if (frameNumber <= 8 || frameNumber % 60 == 0 || !present.presented()) {
                 OH_LOG_INFO(LOG_APP,
@@ -1595,27 +2135,27 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
             }
             return;
         }
-        static uint64_t frameCount = 0;
-        static std::atomic<uint64_t> decodeRetOk {0};
-        static std::atomic<uint64_t> decodeRetNotReady {0};
-        static std::atomic<uint64_t> decodeRetBadCodec {0};
-        static std::atomic<uint64_t> decodeRetMismatch {0};
-        static std::atomic<uint64_t> decodeRetOther {0};
-        static std::atomic<uint64_t> inactiveDisplayFrames {0};
-        if (!DecoderNapi::IsActiveDisplayFrame(frame)) {
-            const uint64_t dropped = inactiveDisplayFrames.fetch_add(1, std::memory_order_relaxed) + 1;
+        const uint64_t callbackCount = session->diagnostics.videoCallbacks.fetch_add(
+            1, std::memory_order_relaxed) + 1;
+        if (!DecoderNapi::IsActiveDisplayFrame(session->identity(), frame)) {
+            const uint64_t dropped = session->diagnostics.inactiveDisplayFrames.fetch_add(
+                1, std::memory_order_relaxed) + 1;
             if (dropped <= 8 || dropped % 300 == 0) {
                 OH_LOG_INFO(LOG_APP,
-                    "[ExtLoader] drop inactive RustDesk display before render display=%{public}d total=%{public}llu",
+                    "[ExtLoader] drop inactive RustDesk display before render session=%{public}llu generation=%{public}llu display=%{public}d total=%{public}llu",
+                    static_cast<unsigned long long>(session->sessionId),
+                    static_cast<unsigned long long>(session->generation.load(
+                        std::memory_order_acquire)),
                     frame.display,
                     static_cast<unsigned long long>(dropped));
             }
             return;
         }
         if (frame.width > 0 && frame.height > 0) {
-            RendererNapi::SetActiveSourceSize(frame.width, frame.height);
+            RendererNapi::SetActiveSourceSize(session->identity(), frame.width, frame.height);
         }
-        session->diagnostics.ingressFrames.fetch_add(1, std::memory_order_relaxed);
+        const uint64_t frameCount = session->diagnostics.ingressFrames.fetch_add(
+            1, std::memory_order_relaxed) + 1;
         session->diagnostics.ingressBytes.fetch_add(static_cast<uint64_t>(frame.size),
                                                     std::memory_order_relaxed);
         if (frame.isKeyFrame) {
@@ -1628,13 +2168,14 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
             std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count()),
             std::memory_order_release);
         recordRemoteVideoFrame(frame.size, frame.width, frame.height);
-        g_rustdeskVideoPerf.recordIngressFrame("rustdesk", frame.width, frame.height,
-                                               frame.size, frame.isKeyFrame);
+        session->videoPerf.recordIngressFrame("rustdesk", frame.width, frame.height,
+                                              frame.size, frame.isKeyFrame);
         const auto decodeStartedAt = std::chrono::steady_clock::now();
-        int ret = DecoderNapi::DecodeActiveNative(frame);
+        int ret = DecoderNapi::DecodeActiveNative(session->identity(), frame);
         const int64_t decodeElapsedUs = std::chrono::duration_cast<std::chrono::microseconds>(
             std::chrono::steady_clock::now() - decodeStartedAt).count();
-        if (ret == DecoderNapi::kDecodeInactiveDisplay) {
+        if (ret == DecoderNapi::kDecodeInactiveDisplay ||
+            ret == DecoderNapi::kDecodeInactiveSession) {
             return;
         }
         session->diagnostics.addDecodeSample(decodeElapsedUs);
@@ -1643,26 +2184,89 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
         } else {
             session->diagnostics.decodeErrors.fetch_add(1, std::memory_order_relaxed);
         }
-        g_rustdeskVideoPerf.recordDecodeResult(ret, 0, 0, 0);
-        frameCount++;
         switch (ret) {
-            case 0: decodeRetOk.fetch_add(1); break;
-            case -1: decodeRetNotReady.fetch_add(1); break;
-            case -2: decodeRetBadCodec.fetch_add(1); break;
-            case -3: decodeRetMismatch.fetch_add(1); break;
-            default: if (ret < 0) decodeRetOther.fetch_add(1); break;
+            case -1: session->diagnostics.decodeRetNotReady.fetch_add(1, std::memory_order_relaxed); break;
+            case -2: session->diagnostics.decodeRetBadCodec.fetch_add(1, std::memory_order_relaxed); break;
+            case -3: session->diagnostics.decodeRetMismatch.fetch_add(1, std::memory_order_relaxed); break;
+            default:
+                if (ret < 0) {
+                    session->diagnostics.decodeRetOther.fetch_add(1, std::memory_order_relaxed);
+                }
+                break;
         }
-        if (frameCount % 30 == 0) {
-            const std::shared_ptr<ProtocolAdapter> activeConnection = GetActiveSessionAdapter();
-            if (activeConnection) {
-                activeConnection->reportVideoPressure(DecoderNapi::ActiveVideoPressureLevel());
+
+        // Decoder queue/drop values are cumulative, so feed the real sample
+        // into this session's delta counter only when the generation check
+        // succeeds. An inactive session must not reset another session's
+        // drop baseline to zero.
+        const DecoderTelemetrySnapshot decoderTelemetry =
+            DecoderNapi::GetActiveTelemetry(session->identity());
+        if (decoderTelemetry.valid) {
+            bool resetTelemetry = false;
+            Render::VideoPressureDecision pressureDecision;
+            Render::VideoPerfSnapshot pressureWindow;
+            bool pressureWindowReady = false;
+            const auto now = std::chrono::steady_clock::now();
+            {
+                std::lock_guard<std::mutex> pressureLock(session->pressureSnapshotMutex);
+                if (session->lastDecoderGeneration != decoderTelemetry.decoderGeneration ||
+                    session->lastDisplayGeneration != decoderTelemetry.displayGeneration ||
+                    session->lastDropCounterGeneration != decoderTelemetry.dropCounterGeneration) {
+                    session->videoPerf.reset();
+                    session->videoPressure.reset();
+                    session->lastPressureSnapshot = Render::VideoPerfSnapshot {};
+                    session->lastPressureDecision = Render::VideoPressureDecision {};
+                    session->lastDecoderGeneration = decoderTelemetry.decoderGeneration;
+                    session->lastDisplayGeneration = decoderTelemetry.displayGeneration;
+                    session->lastDropCounterGeneration = decoderTelemetry.dropCounterGeneration;
+                    resetTelemetry = true;
+                }
+                session->videoPerf.recordDecodeResult(
+                    ret,
+                    decoderTelemetry.queueDepth,
+                    decoderTelemetry.inputDroppedFrames,
+                    decoderTelemetry.waitKeyframeDrops,
+                    decoderTelemetry.dropCounterGeneration);
+                if (session->videoPressure.windowDue(now)) {
+                    pressureWindow = session->videoPerf.snapshotAndReset();
+                    pressureDecision = session->videoPressure.observeAt(pressureWindow, now);
+                    session->lastPressureSnapshot = pressureWindow;
+                    session->lastPressureDecision = pressureDecision;
+                    pressureWindowReady = pressureDecision.windowComplete;
+                }
+            }
+            if (pressureWindowReady && IsSessionCallbackActive(session)) {
+                // Native/session telemetry is the sole hysteresis owner. Rust
+                // only applies this reported level to stream options.
+                ReportVideoPressureForSession(
+                    session, static_cast<int>(pressureDecision.level));
+                OH_LOG_INFO(LOG_APP,
+                    "[ExtLoader] video pressure window session=%{public}llu generation=%{public}llu callback#%{public}llu frames=%{public}llu decoderGeneration=%{public}llu displayGeneration=%{public}llu queueMax=%{public}zu dropsDelta=%{public}llu dropsTotal=%{public}llu decodeOk=%{public}llu decodeErrors=%{public}llu pressure=%{public}s timedOut=%{public}s bytes=%{public}llu reset=%{public}s",
+                    static_cast<unsigned long long>(session->sessionId),
+                    static_cast<unsigned long long>(session->generation.load(
+                        std::memory_order_acquire)),
+                    static_cast<unsigned long long>(callbackCount),
+                    static_cast<unsigned long long>(frameCount),
+                    static_cast<unsigned long long>(decoderTelemetry.decoderGeneration),
+                    static_cast<unsigned long long>(decoderTelemetry.displayGeneration),
+                    pressureWindow.decodeQueueMax,
+                    static_cast<unsigned long long>(pressureWindow.decodeDrops),
+                    static_cast<unsigned long long>(pressureWindow.decodeDropsTotal),
+                    static_cast<unsigned long long>(pressureWindow.decodeOk),
+                    static_cast<unsigned long long>(pressureWindow.decodeErrors),
+                    Render::videoPressureName(pressureDecision.level),
+                    pressureDecision.timedOut ? "yes" : "no",
+                    static_cast<unsigned long long>(pressureWindow.bytesTotal),
+                    resetTelemetry ? "yes" : "no");
             }
         }
-        if (frameCount <= 3 || frameCount % 300 == 0 || ret != 0) {
-            Render::VideoPerfSnapshot perf = g_rustdeskVideoPerf.snapshotAndReset();
-            Render::VideoPressureLevel pressure = Render::classifyVideoPressure(perf);
+        if (frameCount <= 3 || ret != 0) {
             OH_LOG_INFO(LOG_APP,
-                "[ExtLoader] video callback #%{public}llu codec=%{public}d frame=%{public}dx%{public}d size=%{public}zu key=%{public}s decodeRet=%{public}d hist[ok=%{public}llu nrdy=%{public}llu bad=%{public}llu mism=%{public}llu other=%{public}llu] perf[ingress=%{public}llu decodeOk=%{public}llu notReady=%{public}llu mismatch=%{public}llu render=%{public}llu pressure=%{public}s bytes=%{public}llu]",
+                "[ExtLoader] video callback session=%{public}llu generation=%{public}llu callback#%{public}llu frame#%{public}llu codec=%{public}d frame=%{public}dx%{public}d size=%{public}zu key=%{public}s decodeRet=%{public}d queue=%{public}zu dropsTotal=%{public}llu hist[ok=%{public}llu nrdy=%{public}llu bad=%{public}llu mism=%{public}llu other=%{public}llu]",
+                static_cast<unsigned long long>(session->sessionId),
+                static_cast<unsigned long long>(session->generation.load(
+                    std::memory_order_acquire)),
+                static_cast<unsigned long long>(callbackCount),
                 static_cast<unsigned long long>(frameCount),
                 static_cast<int>(frame.codec),
                 frame.width,
@@ -1670,18 +2274,13 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
                 frame.size,
                 frame.isKeyFrame ? "yes" : "no",
                 ret,
-                static_cast<unsigned long long>(decodeRetOk.load()),
-                static_cast<unsigned long long>(decodeRetNotReady.load()),
-                static_cast<unsigned long long>(decodeRetBadCodec.load()),
-                static_cast<unsigned long long>(decodeRetMismatch.load()),
-                static_cast<unsigned long long>(decodeRetOther.load()),
-                static_cast<unsigned long long>(perf.ingressFrames),
-                static_cast<unsigned long long>(perf.decodeOk),
-                static_cast<unsigned long long>(perf.decodeNotReady),
-                static_cast<unsigned long long>(perf.decodeMismatch),
-                static_cast<unsigned long long>(perf.renderFrames),
-                Render::videoPressureName(pressure),
-                static_cast<unsigned long long>(perf.bytesTotal));
+                decoderTelemetry.queueDepth,
+                static_cast<unsigned long long>(decoderTelemetry.droppedFrames),
+                static_cast<unsigned long long>(session->diagnostics.decodeOk.load(std::memory_order_relaxed)),
+                static_cast<unsigned long long>(session->diagnostics.decodeRetNotReady.load(std::memory_order_relaxed)),
+                static_cast<unsigned long long>(session->diagnostics.decodeRetBadCodec.load(std::memory_order_relaxed)),
+                static_cast<unsigned long long>(session->diagnostics.decodeRetMismatch.load(std::memory_order_relaxed)),
+                static_cast<unsigned long long>(session->diagnostics.decodeRetOther.load(std::memory_order_relaxed)));
         }
     });
 
@@ -1694,11 +2293,15 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
     // });
 
     if (cfg.rdAudioEnabled) {
-        adapter->setAudioCallback([](const AudioData& data) {
-            static uint64_t audioCount = 0;
-            audioCount++;
+        adapter->setAudioCallback([weakSession](const AudioData& data) {
+            const std::shared_ptr<SessionContext> session = weakSession.lock();
+            if (!IsSessionCallbackActive(session)) {
+                return;
+            }
+            const uint64_t audioCount = session->diagnostics.audioFrames.fetch_add(
+                1, std::memory_order_relaxed) + 1;
             int ret = AudioPlayerNapi::DispatchActiveNative(
-                data.data, data.size, data.sampleRate, data.channels);
+                session->identity(), data.data, data.size, data.sampleRate, data.channels);
             if (audioCount <= 10 || audioCount % 100 == 0 || ret < 0) {
                 OH_LOG_INFO(LOG_APP,
                     "[ExtLoader] audio callback #%{public}llu size=%{public}zu rate=%{public}d channels=%{public}d dispatchRet=%{public}d",
@@ -1722,20 +2325,35 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
     if (ret != 0) {
         OH_LOG_ERROR(LOG_APP, "[ExtLoader] 连接失败: ret=%{public}d host=%{public}s:%{public}d auth=%{public}s",
             ret, logHost.c_str(), cfg.port, cfg.authMethod.c_str());
-        PrepareAdapterForTeardown(adapter);
-        if (auto sshAdapter = std::dynamic_pointer_cast<SshAdapter>(adapter)) {
-            sshAdapter->disconnect();
+        PrepareAdapterForTeardown(adapter, session->identity());
+        session->lifecycle.store(SessionContext::Lifecycle::Failed,
+                                 std::memory_order_release);
+        // connect() is allowed to have allocated protocol resources before
+        // returning an error.  Teardown must therefore be protocol-agnostic;
+        // restricting this to SSH left failed RDP/RustDesk/VNC attempts with
+        // live sockets, workers, or callback registrations.
+        try {
+            adapter->disconnect();
+        } catch (...) {
+            OH_LOG_ERROR(LOG_APP,
+                "[ExtLoader] adapter disconnect after connect failure threw");
         }
-        g_sessions.erase(sessionId);
-        DeactivateSessionContextIfActive(adapter, static_cast<uint64_t>(sessionId));
+        g_sessionRegistry.eraseIf(sessionId, session);
+        (void)DeactivateSessionContextIfActive(adapter, session->identity());
         napi_value errVal;
         napi_create_int32(env, ret, &errVal);  // 传递真实错误码而非通用 -2
         return errVal;
     }
 
+    if (protocolName == "rustdesk") {
+        // The OHOS observer is scoped to this exact SessionContext generation;
+        // a later numeric session reuse cannot receive the old callback.
+        UpdateNativeNetworkObserver(session);
+    }
+
     OH_LOG_INFO(LOG_APP, "[ExtLoader] 连接成功, sessionId=%{public}d", sessionId);
     if (deferSshActivation) {
-        ActivateSessionContext(adapter, static_cast<uint64_t>(sessionId));
+        ActivateSessionContext(adapter, session->identity());
     }
 
     napi_value result;
@@ -1867,14 +2485,13 @@ static void CleanupSshConnectFailure(SshConnectAsyncData& data) {
         data.session->lifecycle.store(SessionContext::Lifecycle::Failed,
                                       std::memory_order_release);
     }
-    auto it = g_sessions.find(data.sessionId);
-    if (it != g_sessions.end() && (!data.session || it->second == data.session)) {
-        g_sessions.erase(it);
+    g_sessionRegistry.eraseIf(data.sessionId, data.session);
+    if (data.session) {
+        DeactivateSessionContextIfActive(data.adapter, data.session->identity());
     }
-    DeactivateSessionContextIfActive(
-        data.adapter, static_cast<uint64_t>(std::max(data.sessionId, 0)));
     if (data.adapter) {
-        PrepareAdapterForTeardown(data.adapter);
+        PrepareAdapterForTeardown(data.adapter, data.session ? data.session->identity() :
+            DecoderSessionIdentity {});
         data.adapter->disconnect();
     }
 }
@@ -1890,8 +2507,11 @@ static bool RegisterSshConnectSession(SshConnectAsyncData& data) {
     data.session->adapter = data.adapter;
     data.session->protocolName = "ssh";
     data.sessionId = g_nextSessionId++;
+    data.session->sessionId = static_cast<uint64_t>(data.sessionId);
+    data.session->generation = g_nextSessionGeneration.fetch_add(1, std::memory_order_acq_rel);
+    data.session->ownerToken = g_nextSessionOwnerToken.fetch_add(1, std::memory_order_acq_rel);
     data.adapter->setSessionIdentity(static_cast<uint64_t>(data.sessionId));
-    g_sessions[data.sessionId] = data.session;
+    g_sessionRegistry.insertOrAssign(data.sessionId, data.session);
 
     const std::weak_ptr<SessionContext> weakSession = data.session;
     data.adapter->setConnectionStateCallback(
@@ -1947,7 +2567,19 @@ static void CompleteSshConnectAsync(napi_env env, napi_status status, void* rawD
         // completed DNS, proxy negotiation, KEX, host-key verification and
         // authentication successfully. A failed or cancelled pending SSH
         // connection must not disturb an already active protocol session.
-        ActivateSessionContext(data->adapter, static_cast<uint64_t>(data->sessionId));
+        if (!ActivateSessionContext(data->adapter, data->session->identity())) {
+            // A successful SSH handshake is not enough to expose a session:
+            // the shared sink owner must be committed first.  Reuse the same
+            // failure path so no connected adapter is left registered without
+            // a decoder/input destination.
+            CleanupSshConnectFailure(*data);
+            napi_value result;
+            napi_create_int32(env, ERR_SSH_SESSION_INIT, &result);
+            napi_resolve_deferred(env, data->deferred, result);
+            napi_delete_async_work(env, data->work);
+            delete data;
+            return;
+        }
         napi_value result;
         napi_create_int32(env, data->sessionId, &result);
         napi_resolve_deferred(env, data->deferred, result);
@@ -2039,6 +2671,7 @@ struct TeardownNativeResources {
     int64_t rendererHandle = -1;
     int64_t decoderHandle = -1;
     int64_t audioHandle = -1;
+    DecoderSessionIdentity owner;
     std::shared_ptr<AudioPlayer> activeAudioPlayer;
 };
 
@@ -2051,27 +2684,51 @@ static int64_t GetOptionalHandle(napi_env env, size_t argc, napi_value* args, si
 }
 
 static void DeactivateNativeResources(TeardownNativeResources& resources) {
-    RendererNapi::DeactivateRenderer(resources.rendererHandle);
-    DecoderNapi::DeactivateDecoder(resources.decoderHandle);
-    resources.activeAudioPlayer = AudioPlayerNapi::TakeActiveNative();
-    resetRemoteVideoActivity();
+    if (resources.owner.valid()) {
+        RendererNapi::DeactivateRenderer(resources.rendererHandle, resources.owner);
+        DecoderNapi::DeactivateDecoder(resources.decoderHandle, resources.owner);
+        resources.activeAudioPlayer = AudioPlayerNapi::TakeActiveNative(resources.owner);
+    } else {
+        OH_LOG_WARN(LOG_APP,
+            "[ExtLoader][SHUTDOWN] reject unowned native teardown to protect active session");
+    }
+    // Video activity is legacy process-wide state. Only the still-active
+    // owner may clear it; a stale S1 teardown must not blank S2's HUD state.
+    if (resources.owner.valid() &&
+        Render::SharedSessionSinkOwnerLease().accepts(resources.owner)) {
+        resetRemoteVideoActivity();
+    }
 }
 
 static void DestroyNativeResources(TeardownNativeResources resources) {
     OH_LOG_INFO(LOG_APP, "[ExtLoader][SHUTDOWN] phase=decoder-destroy-begin");
-    DecoderNapi::DestroyDecoderHandle(resources.decoderHandle);
+    if (resources.owner.valid()) {
+        DecoderNapi::DestroyDecoderHandle(resources.decoderHandle, resources.owner);
+    }
     OH_LOG_INFO(LOG_APP, "[ExtLoader][SHUTDOWN] phase=decoder-destroy-return");
     OH_LOG_INFO(LOG_APP, "[ExtLoader][SHUTDOWN] phase=renderer-destroy-begin");
-    RendererNapi::DestroyRendererHandle(resources.rendererHandle);
+    if (resources.owner.valid()) {
+        RendererNapi::DestroyRendererHandle(resources.rendererHandle, resources.owner);
+    }
     OH_LOG_INFO(LOG_APP, "[ExtLoader][SHUTDOWN] phase=renderer-destroy-return");
     OH_LOG_INFO(LOG_APP, "[ExtLoader][SHUTDOWN] phase=audio-destroy-begin");
     AudioPlayerNapi::DestroyDetachedNative(
-        resources.audioHandle, std::move(resources.activeAudioPlayer));
+        resources.audioHandle, std::move(resources.activeAudioPlayer), resources.owner);
     OH_LOG_INFO(LOG_APP, "[ExtLoader][SHUTDOWN] phase=audio-destroy-return");
 }
 
-static void PrepareAdapterForTeardown(const std::shared_ptr<ProtocolAdapter>& adapter) {
-    if (!adapter) {
+static void PrepareAdapterForTeardown(
+    const std::shared_ptr<ProtocolAdapter>& adapter,
+    const DecoderSessionIdentity& owner) {
+    if (!adapter || !owner.valid()) {
+        return;
+    }
+    auto ownerLease = Render::SharedSessionSinkOwnerLease().acquire(owner);
+    if (!ownerLease) {
+        OH_LOG_INFO(LOG_APP,
+            "[ExtLoader][SHUTDOWN] skip stale adapter callback clear session=%{public}llu generation=%{public}llu",
+            static_cast<unsigned long long>(owner.sessionId),
+            static_cast<unsigned long long>(owner.generation));
         return;
     }
     adapter->setConnectionStateCallback(nullptr);
@@ -2095,17 +2752,18 @@ static bool HasNativeResources(const TeardownNativeResources& resources) {
 static uint64_t BeginSessionTeardown(
     int32_t sessionId, TeardownNativeResources resources) {
     if (sessionId > 0) {
-        const auto existing = g_disconnectRequestBySession.find(sessionId);
-        if (existing != g_disconnectRequestBySession.end()) {
-            return existing->second;
+        const uint64_t existing = g_disconnectRequests.find(sessionId);
+        if (existing != 0) {
+            return existing;
         }
     }
 
-    auto it = g_sessions.find(sessionId);
-    if (it == g_sessions.end() || !it->second) {
-        if (sessionId > 0) {
-            DecoderNapi::ClearActiveSessionId(static_cast<uint64_t>(sessionId));
-        }
+    std::shared_ptr<SessionContext> session;
+    const auto it = g_sessionRegistry.find(sessionId);
+    if (it != g_sessionRegistry.end()) {
+        session = it->second;
+    }
+    if (!session) {
         if (!HasNativeResources(resources)) {
             return 0;
         }
@@ -2115,24 +2773,59 @@ static uint64_t BeginSessionTeardown(
         };
         const uint64_t resourceRequestId = g_teardownExecutor.enqueue(resourceTask);
         if (resourceRequestId == 0) {
-            resourceTask();
+            try {
+                resourceTask();
+            } catch (...) {
+                // The executor normally contains task exceptions.  When it
+                // is already shutting down, this synchronous fallback must
+                // preserve the same no-throw NAPI boundary.
+                OH_LOG_ERROR(LOG_APP,
+                    "[ExtLoader][SHUTDOWN] synchronous resource teardown failed");
+            }
         }
         return resourceRequestId;
     }
-    const std::shared_ptr<SessionContext> session = it->second;
     SessionContext::Lifecycle expected = SessionContext::Lifecycle::Active;
     if (!session->lifecycle.compare_exchange_strong(
             expected, SessionContext::Lifecycle::Disconnecting)) {
+        if (expected == SessionContext::Lifecycle::Disconnecting) {
+            std::unique_lock<std::mutex> lock(session->teardownPublicationMutex);
+            session->teardownPublicationCv.wait(lock, [&]() {
+                return session->teardownRequestPublished ||
+                    session->lifecycle.load(std::memory_order_acquire) !=
+                        SessionContext::Lifecycle::Disconnecting;
+            });
+        }
         return session->teardownRequestId.load(std::memory_order_acquire);
     }
 
-    const std::shared_ptr<ProtocolAdapter> adapter = session->adapter;
-    PrepareAdapterForTeardown(adapter);
-    DeactivateSessionContextIfActive(adapter, static_cast<uint64_t>(sessionId));
+    std::shared_ptr<ProtocolAdapter> adapter;
+    {
+        std::lock_guard<std::mutex> lock(session->adapterMutex);
+        adapter = session->adapter;
+    }
+    if (session->protocolName == "rustdesk") {
+        ClearNativeNetworkObserver(
+            sessionId, session->generation.load(std::memory_order_acquire));
+    }
+    if (!resources.owner.valid()) {
+        resources.owner = session->identity();
+    }
+    PrepareAdapterForTeardown(adapter, session->identity());
     DeactivateNativeResources(resources);
-    g_sessions.erase(it);
-
-    auto task = [sessionId, session, adapter, resources = std::move(resources)]() mutable {
+    DeactivateSessionContextIfActive(adapter, session->identity());
+    struct TeardownPublicationGate {
+        std::mutex mutex;
+        std::condition_variable cv;
+        bool published = false;
+    };
+    auto publicationGate = std::make_shared<TeardownPublicationGate>();
+    auto task = [sessionId, session, adapter, resources = std::move(resources),
+                 publicationGate]() mutable {
+        {
+            std::unique_lock<std::mutex> lock(publicationGate->mutex);
+            publicationGate->cv.wait(lock, [&]() { return publicationGate->published; });
+        }
         const auto startedAt = std::chrono::steady_clock::now();
         OH_LOG_INFO(LOG_APP,
             "[ExtLoader][SHUTDOWN] sessionId=%{public}d phase=executor-start",
@@ -2150,7 +2843,10 @@ static uint64_t BeginSessionTeardown(
         } catch (...) {
             failed = true;
         }
-        session->adapter.reset();
+        {
+            std::lock_guard<std::mutex> lock(session->adapterMutex);
+            session->adapter.reset();
+        }
         session->lifecycle.store(
             failed ? SessionContext::Lifecycle::Failed : SessionContext::Lifecycle::Complete,
             std::memory_order_release);
@@ -2166,13 +2862,196 @@ static uint64_t BeginSessionTeardown(
 
     uint64_t requestId = g_teardownExecutor.enqueue(task);
     if (requestId == 0) {
-        task();
+        {
+            std::lock_guard<std::mutex> lock(publicationGate->mutex);
+            publicationGate->published = true;
+        }
+        publicationGate->cv.notify_all();
+        {
+            std::lock_guard<std::mutex> lock(session->teardownPublicationMutex);
+            session->teardownRequestPublished = true;
+        }
+        session->teardownPublicationCv.notify_all();
+        try {
+            task();
+        } catch (...) {
+            // Executor fallback runs on the caller when shutdown has already
+            // begun; do not let a best-effort adapter/resource destructor
+            // escape into NAPI or terminate the process.
+            OH_LOG_ERROR(LOG_APP,
+                "[ExtLoader][SHUTDOWN] synchronous session teardown failed sessionId=%{public}d",
+                sessionId);
+        }
+        g_sessionRegistry.eraseIf(sessionId, session);
         return 0;
     }
     session->teardownRequestId.store(requestId, std::memory_order_release);
-    g_disconnectRequestBySession[sessionId] = requestId;
+    g_disconnectRequests.insertOrAssign(sessionId, requestId);
+    {
+        std::lock_guard<std::mutex> lock(session->teardownPublicationMutex);
+        session->teardownRequestPublished = true;
+    }
+    {
+        std::lock_guard<std::mutex> lock(publicationGate->mutex);
+        publicationGate->published = true;
+    }
+    publicationGate->cv.notify_all();
+    session->teardownPublicationCv.notify_all();
+    g_sessionRegistry.eraseIf(sessionId, session);
     return requestId;
 }
+
+// Shared production disconnect core.  NapiDisconnect supplies values parsed
+// from napi arguments; the test-only carrier supplies the same native
+// resource bundle after installing a real SessionRegistry entry.  Keeping the
+// producer shutdown, owner snapshot, registry lookup, adapter teardown and
+// idempotent request handling here prevents the carrier from becoming a
+// second teardown implementation.
+static uint64_t ExecuteNapiDisconnectCore(
+    int32_t sessionId, TeardownNativeResources resources) {
+    std::shared_ptr<SshDataTsfnRegistration> dataRegistration;
+    {
+        std::lock_guard<std::mutex> lk(g_dataTsfnMutex);
+        auto tit = g_dataTsfnMap.find(sessionId);
+        if (tit != g_dataTsfnMap.end()) {
+            dataRegistration = tit->second;
+            g_dataTsfnMap.erase(tit);
+        }
+    }
+    if (dataRegistration) {
+        dataRegistration->accepting.store(false, std::memory_order_release);
+        dataRegistration->waitCondition.notify_all();
+    }
+    auto dataSession = g_sessionRegistry.find(sessionId);
+    if (dataSession != g_sessionRegistry.end() && dataSession->second) {
+        std::shared_ptr<ProtocolAdapter> dataAdapter;
+        {
+            std::lock_guard<std::mutex> lock(dataSession->second->adapterMutex);
+            dataAdapter = dataSession->second->adapter;
+        }
+        auto sshAdapter = std::dynamic_pointer_cast<SshAdapter>(dataAdapter);
+        if (sshAdapter) {
+            sshAdapter->setOnDataCallback(nullptr);
+        }
+    }
+    if (dataRegistration && dataRegistration->tsfn != nullptr) {
+        napi_release_threadsafe_function(dataRegistration->tsfn, napi_tsfn_release);
+    }
+
+    if (!resources.owner.valid()) {
+        if (const auto it = g_sessionRegistry.find(sessionId);
+            it != g_sessionRegistry.end() && it->second) {
+            resources.owner = it->second->identity();
+        } else {
+            resources.owner = Render::SharedSessionSinkOwnerLease().snapshot();
+        }
+    }
+    return BeginSessionTeardown(sessionId, std::move(resources));
+}
+
+#if defined(RDP_NATIVE_CALLBACK_TESTING)
+class ReentrantRegistryTeardownAdapter final : public ProtocolAdapter {
+public:
+    explicit ReentrantRegistryTeardownAdapter(int32_t sessionId)
+        : sessionId_(sessionId) {}
+
+    std::string protocolName() override { return "registry-teardown-test"; }
+    int defaultPort() override { return 0; }
+    int connect(const ConnectionConfig&) override { return 0; }
+    void disconnect() override {
+        disconnectCount_.fetch_add(1, std::memory_order_acq_rel);
+        TeardownNativeResources resources;
+        resources.owner = owner_;
+        reentrantRequest_.store(
+            ExecuteNapiDisconnectCore(sessionId_, std::move(resources)),
+            std::memory_order_release);
+    }
+    ConnectionState getState() override { return ConnectionState::DISCONNECTED; }
+    void sendKey(uint32_t, bool) override {}
+    void sendMouse(int, int, MouseButton, bool) override {}
+    void sendMouseWheel(int, int, int) override {}
+    void sendText(const std::string&) override {}
+    bool supportsCodec(CodecType) override { return false; }
+    std::vector<CodecType> supportedCodecs() override { return {}; }
+    void setVideoCallback(VideoFrameCallback) override {}
+    void setAudioCallback(AudioDataCallback) override {}
+    void setConnectionStateCallback(ConnectionStateCallback) override {}
+
+    void setOwner(const DecoderSessionIdentity& owner) { owner_ = owner; }
+    uint32_t disconnectCount() const {
+        return disconnectCount_.load(std::memory_order_acquire);
+    }
+    uint64_t reentrantRequest() const {
+        return reentrantRequest_.load(std::memory_order_acquire);
+    }
+
+private:
+    int32_t sessionId_ = 0;
+    DecoderSessionIdentity owner_;
+    std::atomic<uint32_t> disconnectCount_ {0};
+    std::atomic<uint64_t> reentrantRequest_ {0};
+};
+
+// Test-only carrier entry: drive the same production registry lookup,
+// BeginSessionTeardown, adapter teardown, and executor completion used by
+// NapiDisconnect.  This is intentionally placed after the production helper
+// rather than duplicating its steps in the carrier.  It is not exported by
+// release NAPI/ABI builds.
+extern "C" bool RdpTestProductionDisconnectRegistryRoundTrip(
+    int sessionId, uint64_t requestId) {
+    if (sessionId <= 0 || requestId == 0) {
+        return false;
+    }
+
+    auto adapter = std::make_shared<ReentrantRegistryTeardownAdapter>(sessionId);
+    const DecoderSessionIdentity owner {
+        static_cast<uint64_t>(sessionId), 1, requestId};
+    adapter->setOwner(owner);
+    auto session = std::make_shared<SessionContext>();
+    session->adapter = adapter;
+    session->protocolName = adapter->protocolName();
+    session->sessionId = owner.sessionId;
+    session->generation.store(owner.generation, std::memory_order_release);
+    session->ownerToken = owner.ownerToken;
+    g_sessionRegistry.insertOrAssign(sessionId, session);
+    if (!ActivateSessionContext(adapter, owner)) {
+        g_sessionRegistry.eraseIf(sessionId, session);
+        g_disconnectRequests.eraseIf(sessionId, requestId);
+        return false;
+    }
+
+    TeardownNativeResources resources;
+    resources.owner = owner;
+    const uint64_t teardownRequest = ExecuteNapiDisconnectCore(
+        sessionId, std::move(resources));
+    // The production helper, not the carrier, owns registry insertion.  A
+    // pre-insert here would exercise only the duplicate-request fast path and
+    // silently skip adapter->disconnect().
+    const bool registryObserved = teardownRequest != 0 &&
+        g_disconnectRequests.find(sessionId) == teardownRequest;
+    const bool completed = teardownRequest == 0 ||
+        g_teardownExecutor.waitFor(teardownRequest, std::chrono::seconds(2));
+    const bool reentrantIdempotent = teardownRequest != 0 &&
+        adapter->reentrantRequest() == teardownRequest;
+    const auto lifecycle = session->lifecycle.load(std::memory_order_acquire);
+    const bool terminal = lifecycle == SessionContext::Lifecycle::Complete ||
+        lifecycle == SessionContext::Lifecycle::Failed;
+    const bool requestCleared = teardownRequest == 0 ||
+        g_disconnectRequests.eraseIf(sessionId, teardownRequest);
+    const bool sessionRegistryCleared = g_sessionRegistry.find(sessionId) ==
+        g_sessionRegistry.end();
+    // Re-enter the same production core after completion.  It must be an
+    // idempotent no-op rather than resurrecting the retired adapter or
+    // touching a newly registered session with the same numeric id.
+    TeardownNativeResources repeatResources;
+    repeatResources.owner = owner;
+    const uint64_t repeatedRequest = ExecuteNapiDisconnectCore(
+        sessionId, std::move(repeatResources));
+    return registryObserved && completed && reentrantIdempotent && terminal &&
+        requestCleared && sessionRegistryCleared &&
+        adapter->disconnectCount() == 1 && repeatedRequest == 0;
+}
+#endif
 
 /**
  * NAPI: beginDisconnect(sessionId, rendererHandle, decoderHandle, audioHandle): number
@@ -2189,35 +3068,12 @@ napi_value NapiDisconnect(napi_env env, napi_callback_info info) {
     const auto shutdownStartedAt = std::chrono::steady_clock::now();
     OH_LOG_INFO(LOG_APP, "[ExtLoader][SHUTDOWN] sessionId=%{public}d phase=napi-entry", sessionId);
 
-    // 先停止有界队列的生产者，再释放 TSFN。生产者在队列满时只等待
-    // 可取消的短周期，因此页面同步断开不会和 JS 线程互相等待。
-    std::shared_ptr<SshDataTsfnRegistration> dataRegistration;
-    {
-        std::lock_guard<std::mutex> lk(g_dataTsfnMutex);
-        auto tit = g_dataTsfnMap.find(sessionId);
-        if (tit != g_dataTsfnMap.end()) {
-            dataRegistration = tit->second;
-            g_dataTsfnMap.erase(tit);
-        }
-    }
-    if (dataRegistration) {
-        dataRegistration->accepting.store(false, std::memory_order_release);
-        dataRegistration->waitCondition.notify_all();
-    }
-    auto dataSession = g_sessions.find(sessionId);
-    if (dataSession != g_sessions.end() && dataSession->second && dataSession->second->adapter) {
-        auto sshAdapter = std::dynamic_pointer_cast<SshAdapter>(dataSession->second->adapter);
-        if (sshAdapter) { sshAdapter->setOnDataCallback(nullptr); }
-    }
-    if (dataRegistration && dataRegistration->tsfn != nullptr) {
-        napi_release_threadsafe_function(dataRegistration->tsfn, napi_tsfn_release);
-    }
-
     TeardownNativeResources resources;
     resources.rendererHandle = GetOptionalHandle(env, argc, args, 1);
     resources.decoderHandle = GetOptionalHandle(env, argc, args, 2);
     resources.audioHandle = GetOptionalHandle(env, argc, args, 3);
-    const uint64_t requestId = BeginSessionTeardown(sessionId, std::move(resources));
+    const uint64_t requestId = ExecuteNapiDisconnectCore(
+        sessionId, std::move(resources));
 
     const auto shutdownElapsedUs = std::chrono::duration_cast<std::chrono::microseconds>(
         std::chrono::steady_clock::now() - shutdownStartedAt).count();
@@ -2253,11 +3109,23 @@ napi_value NapiDisconnectAll(napi_env env, napi_callback_info info) {
         return existingResult;
     }
 
-    std::vector<std::pair<int, std::shared_ptr<SessionContext>>> sessions;
-    sessions.reserve(g_sessions.size());
-    for (const auto& item : g_sessions) {
-        if (item.second) {
-            sessions.push_back(item);
+    std::vector<std::pair<int, std::shared_ptr<SessionContext>>> sessions =
+        g_sessionRegistry.snapshot();
+    // Claim only sessions that are still Active. A concurrent per-session
+    // disconnect owns any entry already in Disconnecting; including it in
+    // this batch would call adapter->disconnect() twice and let the two
+    // teardown tasks race over the same native handles.
+    std::vector<std::pair<int, std::shared_ptr<SessionContext>>> teardownSessions;
+    teardownSessions.reserve(sessions.size());
+    for (const auto& item : sessions) {
+        if (!item.second) {
+            continue;
+        }
+        SessionContext::Lifecycle expected = SessionContext::Lifecycle::Active;
+        if (item.second->lifecycle.compare_exchange_strong(
+                expected, SessionContext::Lifecycle::Disconnecting,
+                std::memory_order_acq_rel, std::memory_order_acquire)) {
+            teardownSessions.push_back(item);
         }
     }
 
@@ -2276,10 +3144,14 @@ napi_value NapiDisconnectAll(napi_env env, napi_callback_info info) {
             registration->waitCondition.notify_all();
         }
     }
-    for (const auto& item : sessions) {
-        if (item.second && item.second->adapter) {
-            const auto sshAdapter =
-                std::dynamic_pointer_cast<SshAdapter>(item.second->adapter);
+    for (const auto& item : teardownSessions) {
+        if (item.second) {
+            std::shared_ptr<ProtocolAdapter> adapter;
+            {
+                std::lock_guard<std::mutex> lock(item.second->adapterMutex);
+                adapter = item.second->adapter;
+            }
+            const auto sshAdapter = std::dynamic_pointer_cast<SshAdapter>(adapter);
             if (sshAdapter) {
                 sshAdapter->setOnDataCallback(nullptr);
             }
@@ -2291,35 +3163,62 @@ napi_value NapiDisconnectAll(napi_env env, napi_callback_info info) {
         }
     }
 
-    DeactivateAllSessionContexts();
-    for (const auto& item : sessions) {
-        DecoderNapi::ClearActiveSessionId(static_cast<uint64_t>(item.first));
-        item.second->lifecycle.store(SessionContext::Lifecycle::Disconnecting,
-                                     std::memory_order_release);
-        PrepareAdapterForTeardown(item.second->adapter);
-    }
-    g_sessions.clear();
-
     TeardownNativeResources resources;
     resources.rendererHandle = GetOptionalHandle(env, argc, args, 0);
     resources.decoderHandle = GetOptionalHandle(env, argc, args, 1);
     resources.audioHandle = GetOptionalHandle(env, argc, args, 2);
+    resources.owner = Render::SharedSessionSinkOwnerLease().snapshot();
+    // Stop protocol producers while the exact session owner is still
+    // published.  DeactivateAllSessionContexts() closes the shared owner
+    // gate; doing it first makes PrepareAdapterForTeardown() fail closed and
+    // leaves late callbacks installed on the adapter until the executor runs.
+    // That ordering was the source of the disconnectAll callback leak.
+    for (const auto& item : teardownSessions) {
+        if (!item.second) {
+            continue;
+        }
+        const auto owner = item.second->identity();
+        if (item.second->protocolName == "rustdesk") {
+            // The native network observer retains the SessionContext.  Clear
+            // it before removing the registry entry even when this batch is
+            // racing a per-session disconnect; the generation check keeps a
+            // newer observer registration untouched.
+            ClearNativeNetworkObserver(
+                item.first, owner.generation);
+        }
+        std::shared_ptr<ProtocolAdapter> adapter;
+        {
+            std::lock_guard<std::mutex> lock(item.second->adapterMutex);
+            adapter = item.second->adapter;
+        }
+        PrepareAdapterForTeardown(adapter, owner);
+    }
     DeactivateNativeResources(resources);
-
-    auto task = [sessions, resources = std::move(resources)]() mutable {
+    DeactivateAllSessionContexts();
+    auto task = [teardownSessions, resources = std::move(resources)]() mutable {
         bool failed = false;
-        for (const auto& item : sessions) {
+        for (const auto& item : teardownSessions) {
             const std::shared_ptr<SessionContext>& session = item.second;
             bool sessionFailed = false;
+            std::shared_ptr<ProtocolAdapter> adapter;
+            {
+                std::lock_guard<std::mutex> lock(session->adapterMutex);
+                adapter = session->adapter;
+            }
             try {
-                if (session->adapter) {
-                    session->adapter->disconnect();
+                if (adapter) {
+                    adapter->disconnect();
                 }
             } catch (...) {
                 failed = true;
                 sessionFailed = true;
             }
-            session->adapter.reset();
+            {
+                std::lock_guard<std::mutex> lock(session->adapterMutex);
+                if (session->adapter == adapter) {
+                    session->adapter.reset();
+                }
+            }
             session->lifecycle.store(
                 sessionFailed ? SessionContext::Lifecycle::Failed : SessionContext::Lifecycle::Complete,
                 std::memory_order_release);
@@ -2336,12 +3235,49 @@ napi_value NapiDisconnectAll(napi_env env, napi_callback_info info) {
 
     const uint64_t requestId = g_teardownExecutor.enqueue(task);
     if (requestId == 0) {
-        task();
+        // Publish the terminal/fallback request before running the synchronous
+        // task.  A concurrent single-session disconnect may already have
+        // observed Lifecycle::Disconnecting and must never wait forever for a
+        // publication that disconnectAll forgot to make.
+        for (const auto& item : teardownSessions) {
+            if (!item.second) {
+                continue;
+            }
+            item.second->teardownRequestId.store(0, std::memory_order_release);
+            {
+                std::lock_guard<std::mutex> lock(item.second->teardownPublicationMutex);
+                item.second->teardownRequestPublished = true;
+            }
+            item.second->teardownPublicationCv.notify_all();
+        }
+        try {
+            task();
+        } catch (...) {
+            OH_LOG_ERROR(LOG_APP,
+                "[ExtLoader][SHUTDOWN] synchronous disconnect-all teardown failed");
+        }
     } else {
         g_disconnectAllRequestId = requestId;
-        for (const auto& item : sessions) {
+        for (const auto& item : teardownSessions) {
+            if (!item.second) {
+                continue;
+            }
             item.second->teardownRequestId.store(requestId, std::memory_order_release);
-            g_disconnectRequestBySession[item.first] = requestId;
+            g_disconnectRequests.insertOrAssign(item.first, requestId);
+            {
+                std::lock_guard<std::mutex> lock(item.second->teardownPublicationMutex);
+                item.second->teardownRequestPublished = true;
+            }
+            item.second->teardownPublicationCv.notify_all();
+        }
+    }
+    // Keep request publication and idempotence visible before dropping the
+    // registry snapshots.  Subsequent disconnect calls hit
+    // g_disconnectRequests instead of treating an in-flight disconnectAll as
+    // a missing session.
+    for (const auto& item : teardownSessions) {
+        if (item.second) {
+            g_sessionRegistry.eraseIf(item.first, item.second);
         }
     }
 
@@ -2396,13 +3332,13 @@ napi_value NapiSendKey(napi_env env, napi_callback_info info) {
             pressed ? "yes" : "no");
     }
 
-    auto it = g_sessions.find(sessionId);
-    if (it != g_sessions.end() && it->second->adapter) {
+    auto it = g_sessionRegistry.find(sessionId);
+    if (it != g_sessionRegistry.end() && it->second->adapter) {
         if (it->second->protocolName == "vnc") {
             it->second->diagnostics.inputEventsSent.fetch_add(1, std::memory_order_relaxed);
         }
         it->second->adapter->sendKey(static_cast<uint32_t>(scancode), pressed);
-    } else if (it != g_sessions.end() && it->second->protocolName == "vnc") {
+    } else if (it != g_sessionRegistry.end() && it->second->protocolName == "vnc") {
         it->second->diagnostics.inputEventsDropped.fetch_add(1, std::memory_order_relaxed);
     }
 
@@ -2428,8 +3364,8 @@ napi_value NapiSendMouse(napi_env env, napi_callback_info info) {
     napi_get_value_int32(env, args[3], &button);
     napi_get_value_bool(env, args[4], &pressed);
 
-    auto it = g_sessions.find(sessionId);
-    if (it != g_sessions.end() && it->second->adapter) {
+    auto it = g_sessionRegistry.find(sessionId);
+    if (it != g_sessionRegistry.end() && it->second->adapter) {
         if (it->second->protocolName == "vnc") {
             it->second->diagnostics.inputEventsSent.fetch_add(1, std::memory_order_relaxed);
         }
@@ -2445,7 +3381,7 @@ napi_value NapiSendMouse(napi_env env, napi_callback_info info) {
                 pressed ? "yes" : "no");
         }
         it->second->adapter->sendMouse(x, y, static_cast<MouseButton>(button), pressed);
-    } else if (it != g_sessions.end() && it->second->protocolName == "vnc") {
+    } else if (it != g_sessionRegistry.end() && it->second->protocolName == "vnc") {
         it->second->diagnostics.inputEventsDropped.fetch_add(1, std::memory_order_relaxed);
     }
 
@@ -2468,8 +3404,8 @@ napi_value NapiSendMouseWheel(napi_env env, napi_callback_info info) {
     napi_get_value_int32(env, args[2], &y);
     napi_get_value_int32(env, args[3], &delta);
 
-    auto it = g_sessions.find(sessionId);
-    if (it != g_sessions.end() && it->second->adapter) {
+    auto it = g_sessionRegistry.find(sessionId);
+    if (it != g_sessionRegistry.end() && it->second->adapter) {
         if (it->second->protocolName == "vnc") {
             it->second->diagnostics.inputEventsSent.fetch_add(1, std::memory_order_relaxed);
         }
@@ -2484,7 +3420,7 @@ napi_value NapiSendMouseWheel(napi_env env, napi_callback_info info) {
                 delta);
         }
         it->second->adapter->sendMouseWheel(x, y, delta);
-    } else if (it != g_sessions.end() && it->second->protocolName == "vnc") {
+    } else if (it != g_sessionRegistry.end() && it->second->protocolName == "vnc") {
         it->second->diagnostics.inputEventsDropped.fetch_add(1, std::memory_order_relaxed);
     }
 
@@ -2502,9 +3438,10 @@ napi_value NapiGetRustDeskDisplayCapabilities(napi_env env, napi_callback_info i
     if (argc > 0) napi_get_value_int32(env, args[0], &sessionId);
 
     RustDeskDisplayCapabilities capabilities;
-    auto it = g_sessions.find(sessionId);
-    if (it != g_sessions.end() && it->second && it->second->protocolName == "rustdesk" &&
-        it->second->adapter) {
+    auto it = g_sessionRegistry.find(sessionId);
+    if (it != g_sessionRegistry.end() && it->second &&
+        IsSessionCallbackActive(it->second) &&
+        it->second->protocolName == "rustdesk" && it->second->adapter) {
         auto* bridge = dynamic_cast<RustDeskBridge*>(it->second->adapter.get());
         if (bridge) capabilities = bridge->getDisplayCapabilities();
     }
@@ -2582,8 +3519,9 @@ napi_value NapiBeginRustDeskDisplaySwitch(napi_env env, napi_callback_info info)
     }
 
     RustDeskDisplaySwitchRequest request;
-    auto it = g_sessions.find(sessionId);
-    if (IsValidRustDeskDisplay(display) && it != g_sessions.end() && it->second &&
+    auto it = g_sessionRegistry.find(sessionId);
+    if (IsValidRustDeskDisplay(display) && it != g_sessionRegistry.end() && it->second &&
+        IsSessionCallbackActive(it->second) &&
         it->second->protocolName == "rustdesk" && it->second->adapter) {
         auto* bridge = dynamic_cast<RustDeskBridge*>(it->second->adapter.get());
         if (bridge) {
@@ -2611,8 +3549,9 @@ napi_value NapiSwitchRustDeskDisplay(napi_env env, napi_callback_info info) {
     }
 
     bool accepted = false;
-    auto it = g_sessions.find(sessionId);
-    if (IsValidRustDeskDisplay(display) && it != g_sessions.end() && it->second &&
+    auto it = g_sessionRegistry.find(sessionId);
+    if (IsValidRustDeskDisplay(display) && it != g_sessionRegistry.end() && it->second &&
+        IsSessionCallbackActive(it->second) &&
         it->second->protocolName == "rustdesk" && it->second->adapter) {
         auto* bridge = dynamic_cast<RustDeskBridge*>(it->second->adapter.get());
         if (bridge) {
@@ -2646,8 +3585,9 @@ napi_value NapiChangeRustDeskDisplayResolution(napi_env env, napi_callback_info 
         napi_get_value_int32(env, args[3], &height);
     }
     bool accepted = false;
-    auto it = g_sessions.find(sessionId);
-    if (IsValidRustDeskDisplay(display) && it != g_sessions.end() && it->second &&
+    auto it = g_sessionRegistry.find(sessionId);
+    if (IsValidRustDeskDisplay(display) && it != g_sessionRegistry.end() && it->second &&
+        IsSessionCallbackActive(it->second) &&
         it->second->protocolName == "rustdesk" &&
         it->second->adapter) {
         auto* bridge = dynamic_cast<RustDeskBridge*>(it->second->adapter.get());
@@ -2670,8 +3610,8 @@ napi_value NapiSendRustDeskTouchScale(napi_env env, napi_callback_info info) {
         napi_get_value_int32(env, args[1], &scale);
     }
     bool accepted = false;
-    auto it = g_sessions.find(sessionId);
-    if (it != g_sessions.end() && it->second && it->second->protocolName == "rustdesk" &&
+    auto it = g_sessionRegistry.find(sessionId);
+    if (it != g_sessionRegistry.end() && it->second && it->second->protocolName == "rustdesk" &&
         it->second->adapter) {
         auto* bridge = dynamic_cast<RustDeskBridge*>(it->second->adapter.get());
         if (bridge) accepted = bridge->sendTouchScale(scale);
@@ -2697,8 +3637,8 @@ napi_value NapiSendRustDeskTouchPan(napi_env env, napi_callback_info info) {
         napi_get_value_int32(env, args[3], &y);
     }
     bool accepted = false;
-    auto it = g_sessions.find(sessionId);
-    if (it != g_sessions.end() && it->second && it->second->protocolName == "rustdesk" &&
+    auto it = g_sessionRegistry.find(sessionId);
+    if (it != g_sessionRegistry.end() && it->second && it->second->protocolName == "rustdesk" &&
         it->second->adapter) {
         auto* bridge = dynamic_cast<RustDeskBridge*>(it->second->adapter.get());
         if (bridge) accepted = bridge->sendTouchPan(phase, x, y);
@@ -2734,8 +3674,8 @@ napi_value NapiSendText(napi_env env, napi_callback_info info) {
     }
     const size_t textLen = text.size();
 
-    auto it = g_sessions.find(sessionId);
-    if (it != g_sessions.end() && it->second->adapter) {
+    auto it = g_sessionRegistry.find(sessionId);
+    if (it != g_sessionRegistry.end() && it->second->adapter) {
         if (it->second->protocolName == "vnc") {
             it->second->diagnostics.inputEventsSent.fetch_add(1, std::memory_order_relaxed);
         }
@@ -2747,7 +3687,7 @@ napi_value NapiSendText(napi_env env, napi_callback_info info) {
             textLen);
         it->second->adapter->sendText(text);
     } else {
-        if (it != g_sessions.end() && it->second->protocolName == "vnc") {
+        if (it != g_sessionRegistry.end() && it->second->protocolName == "vnc") {
             it->second->diagnostics.inputEventsDropped.fetch_add(1, std::memory_order_relaxed);
         }
         OH_LOG_WARN(LOG_APP,
@@ -2786,9 +3726,9 @@ napi_value NapiSendFile(napi_env env, napi_callback_info info) {
         napi_get_arraybuffer_info(env, args[2], &data, &dataLen);
     }
 
-    auto it = g_sessions.find(sessionId);
+    auto it = g_sessionRegistry.find(sessionId);
     const std::string pathId = SafeLog::HashForLog(remotePath);
-    if (it != g_sessions.end() && it->second->adapter) {
+    if (it != g_sessionRegistry.end() && it->second->adapter) {
         uint64_t index = ++g_napiFileSendCount;
         OH_LOG_INFO(LOG_APP,
             "[ExtLoader] NapiSendFile #%{public}llu session=%{public}d pathId=%{public}s len=%{public}zu found=yes",
@@ -2854,8 +3794,8 @@ napi_value NapiWriteRemoteFileChunk(napi_env env, napi_callback_info info) {
     }
 
     int ret = -1;
-    auto it = g_sessions.find(sessionId);
-    if (it != g_sessions.end() && it->second->adapter) {
+    auto it = g_sessionRegistry.find(sessionId);
+    if (it != g_sessionRegistry.end() && it->second->adapter) {
         ret = it->second->adapter->writeRemoteFileChunk(
             remotePath,
             static_cast<const uint8_t*>(data),
@@ -2888,8 +3828,8 @@ napi_value NapiListRemoteDir(napi_env env, napi_callback_info info) {
     napi_value result;
     napi_create_array(env, &result);
 
-    auto it = g_sessions.find(sessionId);
-    if (it == g_sessions.end() || !it->second->adapter) {
+    auto it = g_sessionRegistry.find(sessionId);
+    if (it == g_sessionRegistry.end() || !it->second->adapter) {
         OH_LOG_WARN(LOG_APP, "[ExtLoader] listRemoteDir: session not found id=%{public}d", sessionId);
         return result;
     }
@@ -2942,8 +3882,8 @@ napi_value NapiReadRemoteFile(napi_env env, napi_callback_info info) {
     }
 
     std::vector<uint8_t> bytes;
-    auto it = g_sessions.find(sessionId);
-    if (it != g_sessions.end() && it->second->adapter) {
+    auto it = g_sessionRegistry.find(sessionId);
+    if (it != g_sessionRegistry.end() && it->second->adapter) {
         int ret = it->second->adapter->readRemoteFile(remotePath, bytes);
         if (ret < 0) {
             const std::string pathId = SafeLog::HashForLog(remotePath);
@@ -2988,8 +3928,8 @@ napi_value NapiReadRemoteFileChunk(napi_env env, napi_callback_info info) {
     }
 
     std::vector<uint8_t> bytes;
-    auto it = g_sessions.find(sessionId);
-    if (it != g_sessions.end() && it->second->adapter && maxLen > 0) {
+    auto it = g_sessionRegistry.find(sessionId);
+    if (it != g_sessionRegistry.end() && it->second->adapter && maxLen > 0) {
         int ret = it->second->adapter->readRemoteFileChunk(
             remotePath,
             static_cast<uint64_t>(offsetDouble),
@@ -3197,11 +4137,16 @@ static napi_value QueueSftpAsync(napi_env env, SftpAsyncData* data, const char* 
 }
 
 static std::shared_ptr<ProtocolAdapter> FindSshSessionAdapter(int32_t sessionId) {
-    auto it = g_sessions.find(sessionId);
-    if (it == g_sessions.end() || !it->second) {
+    std::shared_ptr<SessionContext> session;
+    const auto it = g_sessionRegistry.find(sessionId);
+    if (it != g_sessionRegistry.end()) {
+        session = it->second;
+    }
+    if (!session) {
         return nullptr;
     }
-    return it->second->adapter;
+    std::lock_guard<std::mutex> lock(session->adapterMutex);
+    return session->adapter;
 }
 
 napi_value NapiListRemoteDirAsync(napi_env env, napi_callback_info info) {
@@ -3363,8 +4308,8 @@ napi_value NapiRemoveRemoteFile(napi_env env, napi_callback_info info) {
     if (argc > 0) napi_get_value_int32(env, args[0], &sessionId);
     if (argc > 1) napi_get_value_string_utf8(env, args[1], remotePath, sizeof(remotePath), nullptr);
     int ret = -1;
-    auto it = g_sessions.find(sessionId);
-    if (it != g_sessions.end() && it->second->adapter) {
+    auto it = g_sessionRegistry.find(sessionId);
+    if (it != g_sessionRegistry.end() && it->second->adapter) {
         ret = it->second->adapter->removeRemoteFile(remotePath);
     }
     napi_value result;
@@ -3381,8 +4326,8 @@ napi_value NapiRemoveRemoteDir(napi_env env, napi_callback_info info) {
     if (argc > 0) napi_get_value_int32(env, args[0], &sessionId);
     if (argc > 1) napi_get_value_string_utf8(env, args[1], remotePath, sizeof(remotePath), nullptr);
     int ret = -1;
-    auto it = g_sessions.find(sessionId);
-    if (it != g_sessions.end() && it->second->adapter) {
+    auto it = g_sessionRegistry.find(sessionId);
+    if (it != g_sessionRegistry.end() && it->second->adapter) {
         ret = it->second->adapter->removeRemoteDir(remotePath);
     }
     napi_value result;
@@ -3399,8 +4344,8 @@ napi_value NapiMakeRemoteDir(napi_env env, napi_callback_info info) {
     if (argc > 0) napi_get_value_int32(env, args[0], &sessionId);
     if (argc > 1) napi_get_value_string_utf8(env, args[1], remotePath, sizeof(remotePath), nullptr);
     int ret = -1;
-    auto it = g_sessions.find(sessionId);
-    if (it != g_sessions.end() && it->second->adapter) {
+    auto it = g_sessionRegistry.find(sessionId);
+    if (it != g_sessionRegistry.end() && it->second->adapter) {
         ret = it->second->adapter->makeRemoteDir(remotePath);
     }
     napi_value result;
@@ -3419,8 +4364,8 @@ napi_value NapiRenameRemotePath(napi_env env, napi_callback_info info) {
     if (argc > 1) napi_get_value_string_utf8(env, args[1], oldPath, sizeof(oldPath), nullptr);
     if (argc > 2) napi_get_value_string_utf8(env, args[2], newPath, sizeof(newPath), nullptr);
     int ret = -1;
-    auto it = g_sessions.find(sessionId);
-    if (it != g_sessions.end() && it->second->adapter) {
+    auto it = g_sessionRegistry.find(sessionId);
+    if (it != g_sessionRegistry.end() && it->second->adapter) {
         ret = it->second->adapter->renameRemotePath(oldPath, newPath);
     }
     napi_value result;
@@ -3447,8 +4392,8 @@ napi_value NapiSendClipboard(napi_env env, napi_callback_info info) {
         napi_get_arraybuffer_info(env, args[1], &data, &dataLen);
     }
 
-    auto it = g_sessions.find(sessionId);
-    if (it != g_sessions.end() && it->second->adapter) {
+    auto it = g_sessionRegistry.find(sessionId);
+    if (it != g_sessionRegistry.end() && it->second->adapter) {
         it->second->adapter->sendClipboardData(
             static_cast<const uint8_t*>(data),
             static_cast<uint32_t>(dataLen));
@@ -3499,8 +4444,8 @@ napi_value NapiSetSessionClipboardFiles(napi_env env, napi_callback_info info) {
                 }
                 paths.emplace_back(buffer.data(), written);
             }
-            auto it = g_sessions.find(sessionId);
-            if (valid && it != g_sessions.end() && it->second->adapter) {
+            auto it = g_sessionRegistry.find(sessionId);
+            if (valid && it != g_sessionRegistry.end() && it->second->adapter) {
                 accepted = it->second->adapter->setClipboardFiles(paths);
             }
         }
@@ -3518,8 +4463,8 @@ napi_value NapiGetSessionClipboardText(napi_env env, napi_callback_info info) {
     int32_t sessionId = 0;
     if (argc > 0) napi_get_value_int32(env, args[0], &sessionId);
     std::string text;
-    auto it = g_sessions.find(sessionId);
-    if (it != g_sessions.end() && it->second->adapter) text = it->second->adapter->getClipboardText();
+    auto it = g_sessionRegistry.find(sessionId);
+    if (it != g_sessionRegistry.end() && it->second->adapter) text = it->second->adapter->getClipboardText();
     napi_value result;
     napi_create_string_utf8(env, text.c_str(), text.size(), &result);
     return result;
@@ -3532,8 +4477,8 @@ napi_value NapiIsSessionClipboardReady(napi_env env, napi_callback_info info) {
     int32_t sessionId = 0;
     if (argc > 0) napi_get_value_int32(env, args[0], &sessionId);
     bool ready = false;
-    auto it = g_sessions.find(sessionId);
-    if (it != g_sessions.end() && it->second->adapter) ready = it->second->adapter->isClipboardReceiveReady();
+    auto it = g_sessionRegistry.find(sessionId);
+    if (it != g_sessionRegistry.end() && it->second->adapter) ready = it->second->adapter->isClipboardReceiveReady();
     napi_value result;
     napi_get_boolean(env, ready, &result);
     return result;
@@ -3552,13 +4497,46 @@ napi_value NapiGetConnectionState(napi_env env, napi_callback_info info) {
     napi_get_value_int32(env, args[0], &sessionId);
 
     int state = 0;
-    auto it = g_sessions.find(sessionId);
-    if (it != g_sessions.end() && it->second->adapter) {
+    auto it = g_sessionRegistry.find(sessionId);
+    if (it != g_sessionRegistry.end() && it->second->adapter) {
         state = static_cast<int>(it->second->adapter->getState());
     }
 
     napi_value result;
     napi_create_int32(env, state, &result);
+    return result;
+}
+
+/**
+ * Native network observer ingress for RustDesk continuity.  This only feeds
+ * the native continuity owner; it never starts a second ArkTS reconnect loop.
+ * sessionGeneration is the SessionContext generation captured by the single
+ * production observer. Numeric session ids alone are intentionally rejected.
+ * networkGeneration is supplied by the platform observer so duplicate
+ * availability notifications can be coalesced by the owner.
+ */
+napi_value NapiOnRustDeskNetworkChanged(napi_env env, napi_callback_info info) {
+    size_t argc = 4;
+    napi_value args[4];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+
+    bool accepted = false;
+    int32_t sessionId = 0;
+    int64_t sessionGeneration = 0;
+    bool available = false;
+    int64_t networkGeneration = 0;
+    if (argc >= 4 &&
+        napi_get_value_int32(env, args[0], &sessionId) == napi_ok &&
+        napi_get_value_int64(env, args[1], &sessionGeneration) == napi_ok &&
+        napi_get_value_bool(env, args[2], &available) == napi_ok &&
+        napi_get_value_int64(env, args[3], &networkGeneration) == napi_ok &&
+        sessionId > 0 && sessionGeneration > 0 && networkGeneration > 0) {
+        accepted = DispatchRustDeskNetworkEvent(
+            sessionId, static_cast<uint64_t>(sessionGeneration), available,
+            static_cast<uint64_t>(networkGeneration));
+    }
+    napi_value result;
+    napi_get_boolean(env, accepted, &result);
     return result;
 }
 
@@ -3579,8 +4557,8 @@ napi_value NapiSubmitRustDesk2FA(napi_env env, napi_callback_info info) {
     }
     std::string code = GetNapiString(env, args[1]);
     bool accepted = false;
-    auto it = g_sessions.find(sessionId);
-    if (it != g_sessions.end() && it->second->protocolName == "rustdesk" && it->second->adapter) {
+    auto it = g_sessionRegistry.find(sessionId);
+    if (it != g_sessionRegistry.end() && it->second->protocolName == "rustdesk" && it->second->adapter) {
         auto rustdesk = std::dynamic_pointer_cast<RustDeskBridge>(it->second->adapter);
         if (rustdesk) {
             accepted = rustdesk->submitTwoFactorCode(code);
@@ -3707,8 +4685,8 @@ napi_value NapiGetRemoteCursorSnapshot(napi_env env, napi_callback_info info) {
     }
 
     RemoteCursorSnapshot snapshot;
-    auto it = g_sessions.find(sessionId);
-    if (it != g_sessions.end() && it->second->adapter) {
+    auto it = g_sessionRegistry.find(sessionId);
+    if (it != g_sessionRegistry.end() && it->second->adapter) {
         snapshot = it->second->adapter->getRemoteCursorSnapshot(includePixels);
     }
 
@@ -3803,8 +4781,8 @@ napi_value NapiGetRemoteCursorSnapshotPixelsAsync(napi_env env, napi_callback_in
     if (argc > 0) {
         napi_get_value_int32(env, args[0], &data->sessionId);
     }
-    auto it = g_sessions.find(data->sessionId);
-    if (it != g_sessions.end() && it->second) {
+    auto it = g_sessionRegistry.find(data->sessionId);
+    if (it != g_sessionRegistry.end() && it->second) {
         data->adapter = it->second->adapter;
     }
 
@@ -3854,8 +4832,8 @@ napi_value NapiGetConnectionLastMessage(napi_env env, napi_callback_info info) {
     napi_get_value_int32(env, args[0], &sessionId);
 
     std::string message;
-    auto it = g_sessions.find(sessionId);
-    if (it != g_sessions.end()) {
+    auto it = g_sessionRegistry.find(sessionId);
+    if (it != g_sessionRegistry.end()) {
         std::lock_guard<std::mutex> lock(it->second->messageMutex);
         message = it->second->lastStateMessage;
     }
@@ -3869,7 +4847,7 @@ napi_value NapiGetConnectionLastMessage(napi_env env, napi_callback_info info) {
  * NAPI: getRustDeskLastError(): string
  * 返回 RustDesk FFI 最近一次连接/流错误，供 ArkTS 显示真实握手失败原因。
  */
-napi_value NapiGetRustDeskLastError(napi_env env, napi_callback_info info) {
+napi_value NapiGetRustDeskLastError(napi_env env, napi_callback_info /*info*/) {
     char buf[2048] = {0};
 #ifdef RUSTDESK_USE_REAL_CORE
     rustdesk_last_error(buf, sizeof(buf));
@@ -3897,8 +4875,8 @@ napi_value NapiReadData(napi_env env, napi_callback_info info) {
         return empty;
     }
 
-    auto it = g_sessions.find(sessionId);
-    if (it == g_sessions.end() || !it->second->adapter) {
+    auto it = g_sessionRegistry.find(sessionId);
+    if (it == g_sessionRegistry.end() || !it->second->adapter) {
         napi_value empty;
         napi_create_string_utf8(env, "", NAPI_AUTO_LENGTH, &empty);
         return empty;
@@ -3949,8 +4927,8 @@ napi_value NapiExecSshCommand(napi_env env, napi_callback_info info) {
 
     SshCommandResult commandResult;
     int errorCode = ERR_SSH_SESSION_CLOSED;
-    auto it = g_sessions.find(sessionId);
-    if (it != g_sessions.end() && it->second && it->second->adapter) {
+    auto it = g_sessionRegistry.find(sessionId);
+    if (it != g_sessionRegistry.end() && it->second && it->second->adapter) {
         auto sshAdapter = std::dynamic_pointer_cast<SshAdapter>(it->second->adapter);
         if (sshAdapter) {
             errorCode = sshAdapter->executeCommand(command, commandResult, timeoutMs);
@@ -4009,8 +4987,8 @@ napi_value NapiExecSshSubsystem(napi_env env, napi_callback_info info) {
 
     SshCommandResult commandResult;
     int errorCode = ERR_SSH_SESSION_CLOSED;
-    auto it = g_sessions.find(sessionId);
-    if (it != g_sessions.end() && it->second && it->second->adapter) {
+    auto it = g_sessionRegistry.find(sessionId);
+    if (it != g_sessionRegistry.end() && it->second && it->second->adapter) {
         auto sshAdapter = std::dynamic_pointer_cast<SshAdapter>(it->second->adapter);
         if (sshAdapter) {
             errorCode = sshAdapter->executeSubsystem(subsystem, commandResult, timeoutMs);
@@ -4202,8 +5180,8 @@ static napi_value QueueSshChannelAsync(napi_env env, napi_callback_info info,
         return nullptr;
     }
     data->subsystem = subsystem;
-    auto it = g_sessions.find(sessionId);
-    if (it != g_sessions.end() && it->second && it->second->adapter) {
+    auto it = g_sessionRegistry.find(sessionId);
+    if (it != g_sessionRegistry.end() && it->second && it->second->adapter) {
         data->adapter = std::dynamic_pointer_cast<SshAdapter>(it->second->adapter);
     }
     return QueueSshCommandAsync(env, data, resourceName);
@@ -4233,8 +5211,8 @@ napi_value NapiSendSshSignal(napi_env env, napi_callback_info info) {
     napi_get_value_int32(env, args[0], &sessionId);
     const std::string signal = GetNapiString(env, args[1]);
     int errorCode = ERR_SSH_SESSION_CLOSED;
-    auto it = g_sessions.find(sessionId);
-    if (it != g_sessions.end() && it->second && it->second->adapter) {
+    auto it = g_sessionRegistry.find(sessionId);
+    if (it != g_sessionRegistry.end() && it->second && it->second->adapter) {
         auto sshAdapter = std::dynamic_pointer_cast<SshAdapter>(it->second->adapter);
         if (sshAdapter) { errorCode = sshAdapter->sendChannelSignal(signal); }
     }
@@ -4251,8 +5229,8 @@ napi_value NapiSendSshEof(napi_env env, napi_callback_info info) {
     int32_t sessionId = 0;
     if (argc > 0) { napi_get_value_int32(env, args[0], &sessionId); }
     int errorCode = ERR_SSH_SESSION_CLOSED;
-    auto it = g_sessions.find(sessionId);
-    if (it != g_sessions.end() && it->second && it->second->adapter) {
+    auto it = g_sessionRegistry.find(sessionId);
+    if (it != g_sessionRegistry.end() && it->second && it->second->adapter) {
         auto sshAdapter = std::dynamic_pointer_cast<SshAdapter>(it->second->adapter);
         if (sshAdapter) { errorCode = sshAdapter->sendChannelEof(); }
     }
@@ -4276,8 +5254,8 @@ napi_value NapiResizePty(napi_env env, napi_callback_info info) {
     napi_get_value_int32(env, args[1], &cols);
     napi_get_value_int32(env, args[2], &rows);
 
-    auto it = g_sessions.find(sessionId);
-    if (it != g_sessions.end() && it->second->adapter) {
+    auto it = g_sessionRegistry.find(sessionId);
+    if (it != g_sessionRegistry.end() && it->second->adapter) {
         auto sshAdapter = std::dynamic_pointer_cast<SshAdapter>(it->second->adapter);
         if (sshAdapter) {
             sshAdapter->resizePty(cols, rows);
@@ -4308,8 +5286,8 @@ napi_value NapiMeasureSshLatency(napi_env env, napi_callback_info info) {
     }
 
     int latency = -1;
-    auto it = g_sessions.find(sessionId);
-    if (it != g_sessions.end() && it->second->adapter) {
+    auto it = g_sessionRegistry.find(sessionId);
+    if (it != g_sessionRegistry.end() && it->second->adapter) {
         auto sshAdapter = std::dynamic_pointer_cast<SshAdapter>(it->second->adapter);
         if (sshAdapter) {
             latency = sshAdapter->measureLatencyMs();
@@ -4383,8 +5361,8 @@ napi_value NapiMeasureSshLatencyAsync(napi_env env, napi_callback_info info) {
         napi_throw_error(env, nullptr, "SSH latency async allocation failed");
         return nullptr;
     }
-    auto it = g_sessions.find(sessionId);
-    if (it != g_sessions.end() && it->second && it->second->adapter) {
+    auto it = g_sessionRegistry.find(sessionId);
+    if (it != g_sessionRegistry.end() && it->second && it->second->adapter) {
         data->adapter = std::dynamic_pointer_cast<SshAdapter>(it->second->adapter);
     }
 
@@ -4473,8 +5451,8 @@ napi_value NapiSetOnDataCallback(napi_env env, napi_callback_info info) {
         return undefined;
     }
 
-    auto it = g_sessions.find(sessionId);
-    if (it == g_sessions.end() || !it->second->adapter) {
+    auto it = g_sessionRegistry.find(sessionId);
+    if (it == g_sessionRegistry.end() || !it->second->adapter) {
         OH_LOG_WARN(LOG_APP, "[ExtLoader] setOnDataCallback: 会话不存在 id=%{public}d", sessionId);
         napi_value undefined;
         napi_get_undefined(env, &undefined);
@@ -5138,6 +6116,10 @@ napi_value ExtensionLoaderNapi::Init(napi_env env, napi_value exports) {
     napi_create_function(env, "getConnectionState", NAPI_AUTO_LENGTH,
                          NapiGetConnectionState, nullptr, &fn);
     napi_set_named_property(env, exports, "getConnectionState", fn);
+
+    napi_create_function(env, "onRustDeskNetworkChanged", NAPI_AUTO_LENGTH,
+                         NapiOnRustDeskNetworkChanged, nullptr, &fn);
+    napi_set_named_property(env, exports, "onRustDeskNetworkChanged", fn);
 
     napi_create_function(env, "submitRustDesk2FA", NAPI_AUTO_LENGTH,
                          NapiSubmitRustDesk2FA, nullptr, &fn);

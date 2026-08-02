@@ -15,10 +15,12 @@
 #define RUSTDESK_BRIDGE_H
 
 #include "extensions/protocol_adapter.h"
+#include "rustdesk_connection_continuity_executor.h"
 #include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <vector>
 
 /** Non-destructive RustDesk stream diagnostics returned to the NAPI layer. */
@@ -133,6 +135,9 @@ enum class RustDeskMode {
  */
 class RustDeskBridge : public ProtocolAdapter {
 public:
+    using ContinuityGenerationCallback =
+        std::function<bool(uint64_t sessionId, uint64_t generation, uint64_t ownerToken)>;
+
     explicit RustDeskBridge(RustDeskMode mode = RustDeskMode::IPC);
     ~RustDeskBridge() override;
 
@@ -146,11 +151,19 @@ public:
     void            disconnect() override;
     ConnectionState getState() override;
     void            setSessionIdentity(uint64_t sessionId) override;
+    void            setSessionOwnerToken(uint64_t ownerToken);
+    void            setContinuityGenerationCallback(ContinuityGenerationCallback callback);
+    void            onNetworkChanged(bool available, uint64_t networkGeneration);
+    uint64_t        sessionGeneration() const;
     bool            submitTwoFactorCode(const std::string& code);
     RustDeskDiagnosticsStats getDiagnostics() const;
     RemoteCursorSnapshot getRemoteCursorSnapshot(bool includePixels) override;
     void            requestFrameRefresh() override;
     void            reportVideoPressure(int level) override;
+    bool            reportVideoPressureForSession(uint64_t sessionId,
+                                                  uint64_t generation,
+                                                  uint64_t ownerToken,
+                                                  int level);
 
     // ---- 输入事件 ----
     void sendKey(uint32_t scancode, bool pressed) override;
@@ -168,9 +181,10 @@ public:
     bool sendTouchPan(int phase, int x, int y);
     int  sendFileData(const std::string& remotePath, const uint8_t* data, uint32_t len) override;
     SessionTransferStatus getSessionTransferStatus() override;
-    void sendClipboardData(const uint8_t* data, uint32_t len);
+    void sendClipboardData(const uint8_t* data, uint32_t len) override;
     std::string getClipboardText() override;
     bool isClipboardReceiveReady() override;
+    RustDeskContinuityQuiesceSnapshot continuityQuiesceSnapshot() const;
 
     // ---- 编码能力 ----
     bool supportsCodec(CodecType codec) override;
@@ -181,21 +195,67 @@ public:
     void setAudioCallback(AudioDataCallback callback) override;
     void setConnectionStateCallback(ConnectionStateCallback callback) override;
 
+#ifdef RDP_NATIVE_CALLBACK_TESTING
+    // Test-only production FFI entry. It builds the same ABI v2 callback
+    // record and calls onFfiFrame; it is not exported through NAPI.
+    bool InvokeVideoCallbackForTesting(const uint8_t* data, size_t size,
+                                       int width, int height, int codec,
+                                       uint64_t timestamp, bool isKeyFrame,
+                                       int display, uint64_t generation,
+                                       uint64_t ownerToken);
+    bool InvokeTransportCallbackForTesting(int state, const char* errorClass,
+                                           uint64_t networkGeneration,
+                                           bool userInitiated, uint64_t generation,
+                                           uint64_t ownerToken);
+    void SetAttemptDequeuedHookForTesting(std::function<void()> hook);
+    void SetFirstFrameClaimHookForTesting(std::function<void()> hook);
+    void SetContinuityAttemptStageHookForTesting(std::function<void(int)> hook);
+    void SetContinuityConnectResultHookForTesting(
+        std::function<int(uint64_t, uint64_t)> hook);
+    void SetContinuityConfigForTesting(const ConnectionConfig& config);
+    uint32_t continuityConnectCallCountForTesting() const;
+    void ArmFirstGenerationFrameForTesting();
+#endif
+
     // ---- 扩展功能 ----
     bool supportsNatTraversal() override;
     bool supportsFileTransfer() override;
 
 private:
     struct Impl;
-    std::unique_ptr<Impl> impl_;
+    // A self-thread disconnect can hand the connect worker to the deferred
+    // join owner. Shared lifetime keeps callback context storage alive until
+    // that worker has actually returned.
+    std::shared_ptr<Impl> impl_;
     RustDeskMode mode_;
 
+    std::optional<RustDeskConnectionContinuityExecutor::PreparedAttemptTicket>
+        prepareContinuityAttempt(
+            const RustDeskConnectionContinuityExecutor::AttemptTicket& source);
+    bool startContinuityAttempt(
+        const RustDeskConnectionContinuityExecutor::PreparedAttemptTicket& ticket);
+    int connectInternal(
+        const ConnectionConfig& cfg,
+        const RustDeskConnectionContinuityExecutor::PreparedAttemptTicket* continuityTicket);
+    void applyContinuityFastQuiesce();
+    void onContinuityMaintenance(uint64_t nowMs);
+    void disconnectImpl(bool cancelContinuity);
+    static void completeContinuityOwnerQuiesce(Impl* impl);
+
 #ifdef RUSTDESK_USE_REAL_CORE
+    static void drainDeferredFfiHandles(Impl* impl);
+    static void scheduleFfiHandleCleanup(
+        const std::shared_ptr<Impl>& keepAlive, void* handle);
+    static void retainDeferredFfiHandleForMaintenance(
+        const std::shared_ptr<Impl>& keepAlive, void* handle);
+    static void harvestCompletedFfiWorkers(Impl* impl);
+    static void waitForFfiCallbacks(Impl* impl);
     static void onFfiFrame(const void* frame, void* userData);
     static void onFfiAudio(const void* audio, void* userData);
     static void onFfiCursor(const void* cursor, void* userData);
     static void onFfiDisplay(const void* snapshot, void* userData);
     static void onFfiAuth(int state, const char* message, void* userData);
+    static void onFfiTransportEvent(const void* event, void* userData);
     static void onFfiDisconnect(int state, const char* message, void* userData);
 #endif
 
