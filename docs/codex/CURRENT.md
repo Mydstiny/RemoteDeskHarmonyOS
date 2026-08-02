@@ -7,8 +7,8 @@ This file is the compact startup resume card. Historical checkpoints remain in
 
 - Task: `rustdesk-complete-repair` (active branch retained; current scope is VNC V3 only)
 - Branch: `codex/rustdesk-complete-repair`
-- Checkpoint: `74e52759c`, based on `main@34946adbc`; branch is ahead by 13 and not behind.
-- Phase: VNC V3 stage B implementation checkpoint; independent review required.
+- Checkpoint: `27293a943`, based on `main@34946adbc`; branch is ahead by 15 and not behind.
+- Phase: VNC V3 stage B review-fix checkpoint; independent incremental review required.
 - Worktree: clean. Do not stage unrelated changes.
 
 ## Stage A Result
@@ -22,8 +22,8 @@ This file is the compact startup resume card. Historical checkpoints remain in
 
 ## Next
 
-- Request one read-only review of stage B checkpoint `74e52759c` using the
-  existing reviewer task; do not redispatch duplicate review messages.
+- Request one read-only incremental review of stage B checkpoint `27293a943`
+  using the existing reviewer task; do not redispatch duplicate review messages.
 - Stage C follows only after stage B review passes: VNC certificate Sheet and
   connection state machine.
 - Keep all VNC callers fail-closed until the probe and expected-pin handoff are
@@ -31,11 +31,11 @@ This file is the compact startup resume card. Historical checkpoints remain in
 
 ## Verification
 
-- `rdp_native_tests`: 244 passed, 0 failed; loopback TLS fixture run required
-  host socket permission on 2026-08-02.
-- `default@OhosTestCompileArkTS`: passed after `74e52759c` on 2026-08-02.
-- `assembleHap`: passed after `74e52759c` on 2026-08-02.
-- `git diff --check`: passed before checkpoint commit.
+- `rdp_native_tests`: 247 passed, 0 failed; loopback TLS fixtures ran with host
+  socket permission on 2026-08-02.
+- `default@OhosTestCompileArkTS`: passed after `27293a943` on 2026-08-02.
+- `assembleHap`: passed after `27293a943` on 2026-08-02.
+- `git diff --check`: passed before `27293a943`.
 - `ohosTest@OhosTestCompileArkTS`: unavailable; task is not registered
   (`00306054`). New ArkTS tests therefore have compile/build evidence only.
 
@@ -44,10 +44,11 @@ This file is the compact startup resume card. Historical checkpoints remain in
 - `hdc list targets`/`hdc shell` still return `Connect server failed`; no
   current hilog or real-device/endpoint evidence is available.
 - Stage B native probe is covered by host fixtures for self-signed, trusted
-  root, name mismatch, expiry, rotation, no certificate, IPv4/IPv6/SNI,
-  timeout/cancel, DNS bound, pin match/mismatch, and no RFB handoff. NAPI
-  runtime, Sheet lifecycle, TrustService migration, real Repeater, cloud, and
-  device matrices remain unverified and are not release evidence.
+  root, name mismatch, expiry, rotation, no certificate, TLS 1.0/1.1 rejection,
+  IPv4/IPv6/SNI, timeout/cancel, DNS bound, pin match/mismatch, and no RFB
+  handoff. NAPI runtime, Promise/environment teardown, Sheet lifecycle,
+  TrustService migration, real Repeater, cloud, and device matrices remain
+  unverified and are not release evidence.
 
 ## Review Protocol
 

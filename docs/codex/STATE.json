@@ -3,10 +3,10 @@
   "task": "rustdesk-complete-repair",
   "branch": "codex/rustdesk-complete-repair",
   "base": "34946adbc",
-  "head": "74e52759c",
+  "head": "27293a943",
   "phase": "vnc-v3-stage-b-review-required",
   "status": "active",
-  "next": "Request one read-only review of VNC V3 stage B checkpoint 74e52759c, then continue to stage C only after PASS.",
+  "next": "Request one read-only incremental review of VNC V3 stage B checkpoint 27293a943, then continue to stage C only after PASS.",
   "blockers": [
     "hdc list targets and hdc shell return Connect server failed; no current hilog evidence.",
     "ohosTest@OhosTestCompileArkTS is not registered (00306054); ArkTS tests have compile/build evidence only.",
@@ -33,11 +33,11 @@
     "reason": "Stage B checkpoint is committed and awaiting one independent read-only review; stage A PASS receipt remains historical."
   },
   "lastVerification": {
-    "rdp_native_tests": "244-pass-0-fail-loopback-fixtures-2026-08-02",
-    "default@OhosTestCompileArkTS": "pass-after-74e52759c-2026-08-02",
-    "assembleHap": "pass-after-74e52759c-2026-08-02",
+    "rdp_native_tests": "247-pass-0-fail-loopback-fixtures-host-socket-2026-08-02",
+    "default@OhosTestCompileArkTS": "pass-after-27293a943-2026-08-02",
+    "assembleHap": "pass-after-27293a943-2026-08-02",
     "ohosTest@OhosTestCompileArkTS": "blocked-task-00306054-2026-08-02",
-    "diffCheck": "pass-before-74e52759c-2026-08-02"
+    "diffCheck": "pass-before-27293a943-2026-08-02"
   },
   "archives": [
     "docs/codex/archive/2026-08/README.md",

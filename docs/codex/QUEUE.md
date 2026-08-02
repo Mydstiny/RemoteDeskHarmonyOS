@@ -4,7 +4,7 @@ Updated: 2026-08-02 Asia/Shanghai
 
 ## Now
 
-- Review VNC V3 stage B checkpoint `74e52759c` through the existing
+- Review VNC V3 stage B checkpoint `27293a943` through the existing
   independent read-only reviewer, then record the receipt.
 - Preserve the stage A review receipt and keep probe/pin failures fail-closed.
 - Restore `hdc` connectivity and capture current VNC `hilog` when the device is
@@ -12,8 +12,8 @@ Updated: 2026-08-02 Asia/Shanghai
 
 ## Next
 
-- Stage C: VNC certificate Sheet and connection state machine after stage B
-  review passes.
+- Stage C: VNC certificate Sheet and connection state machine after the stage B
+  incremental review passes.
 - Stage D: VNC trust v2, endpoint-owner migration, and the Data Security trust
   manager after the Sheet contract is stable.
 - Stage E/F: VNC settings consistency and Repeater mode12 deep checks.
