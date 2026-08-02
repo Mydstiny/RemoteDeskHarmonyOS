@@ -1761,6 +1761,18 @@ export class CloudStore implements CryptoCloudStore {
         if (!this.reconcileStartupMutationSnapshot(tables)) {
           return false;
         }
+        // Keep selection-reenable promotion inside the coordinator's startup
+        // transaction.  The coordinator does not publish bootstrap=ready (or
+        // flush deferred uploads) until this finalizer succeeds.  Finalize the
+        // selection metadata before clearing the before-image, so a failed
+        // promotion still goes through the normal startup rollback path.
+        if (!this.markStartupSelectionReenablePulled()) {
+          return false;
+        }
+        if (!this.prepareSelectionReenablePromotions() ||
+          !this.releaseSelectionReenableBarriers()) {
+          return false;
+        }
         return this.completeCloudDownloadTransaction();
       },
       setRestorePending: (pending: boolean): void => { this.localRestorePending = pending; },

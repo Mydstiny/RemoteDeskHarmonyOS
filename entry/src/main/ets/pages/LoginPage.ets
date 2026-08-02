@@ -241,7 +241,7 @@ struct LoginPage {
         idToken: '',
         displayName,
         avatarUrl: avatarUri
-      });
+      }, { deferCloudBootstrap: true });
     if (!transition.ok) {
       this.loginError = transition.message === '' ? '登录失败：账号数据域切换未完成' : transition.message;
       return false;

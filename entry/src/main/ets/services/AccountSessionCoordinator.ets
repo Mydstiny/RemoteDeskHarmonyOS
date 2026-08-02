@@ -37,6 +37,14 @@ export interface AccountLoginIdentity extends CredentialParams {
   avatarUrl: string;
 }
 
+export interface AccountTransitionOptions {
+  /**
+   * Keep the account/store safety transition synchronous, but let the first
+   * cloud-first bootstrap finish after the entry page is visible.
+   */
+  deferCloudBootstrap?: boolean;
+}
+
 export interface AccountTransitionResult {
   ok: boolean;
   state: string;
@@ -141,13 +149,16 @@ export class AccountSessionCoordinator {
     };
   }
 
-  async transitionToAccount(identity: AccountLoginIdentity): Promise<AccountTransitionResult> {
+  async transitionToAccount(identity: AccountLoginIdentity,
+    options: AccountTransitionOptions = {}): Promise<AccountTransitionResult> {
     const intentGeneration: number = ++this.transitionIntentGeneration;
     if (!(await this.whenReady())) {
       return this.result(false, 'blocked', '账号生命周期初始化失败');
     }
     return await this.serialize((): Promise<AccountTransitionResult> =>
-      this.doTransitionToAccount(identity, intentGeneration));
+      this.doTransitionToAccount(
+        identity, intentGeneration,
+        options.deferCloudBootstrap === true));
   }
 
   async transitionToOffline(reason: string = 'offline'): Promise<AccountTransitionResult> {
@@ -249,7 +260,8 @@ export class AccountSessionCoordinator {
   }
 
   private async doTransitionToAccount(identity: AccountLoginIdentity,
-    intentGeneration: number): Promise<AccountTransitionResult> {
+    intentGeneration: number,
+    deferCloudBootstrap: boolean): Promise<AccountTransitionResult> {
     if (this.context === null || !this.initialized) {
       return this.result(false, 'blocked', '账号生命周期尚未初始化');
     }
@@ -326,7 +338,12 @@ export class AccountSessionCoordinator {
         generation + 1, '登录请求已被更新的账号操作替代');
     }
 
-    if (cloudBound) {
+    let startupBootstrapDeferred: boolean = false;
+    if (cloudBound && deferCloudBootstrap) {
+      startupBootstrapDeferred = true;
+      hilog.info(0x0001, 'AccountSession',
+        '账号数据域已绑定，首次 cloud-first 延后到主页显示后执行');
+    } else if (cloudBound) {
       const bootstrap: CloudSyncOperationResult =
         await CloudSyncCoordinator.getInstance()
           .requestStartupPull();
@@ -407,7 +424,48 @@ export class AccountSessionCoordinator {
     }
     this.reloadScopeServices();
     this.publish();
+    if (startupBootstrapDeferred) {
+      this.scheduleDeferredCloudBootstrap(intentGeneration, store);
+    }
     return this.result(true, 'ready', '');
+  }
+
+  /**
+   * The account/store transition is the security boundary; the initial
+   * cloud-first pull is deliberately allowed to continue after navigation.
+   * The coordinator still keeps startupState pending, so automatic uploads
+   * remain fail-closed until the authoritative pull and selection promotion
+   * complete.
+   */
+  private scheduleDeferredCloudBootstrap(
+    intentGeneration: number,
+    store: CloudStore
+  ): void {
+    void CloudSyncCoordinator.getInstance().requestStartupPull().then(
+      (bootstrap: CloudSyncOperationResult): void => {
+        if (!this.intentIsCurrent(intentGeneration)) { return; }
+        if (!bootstrap.ok) {
+          hilog.warn(0x0001, 'AccountSession',
+            '主页已显示；首次云端核对未完成 failureKind=' +
+            bootstrap.failureKind + '，云同步继续保持安全暂停');
+          return;
+        }
+        if (!store.markStartupSelectionReenablePulled() ||
+          !store.prepareSelectionReenablePromotions() ||
+          !store.releaseSelectionReenableBarriers()) {
+          hilog.error(0x0001, 'AccountSession',
+            '首次云端核对完成，但同步范围 promotion 未能安全落盘；上传保持受限');
+          return;
+        }
+        hilog.info(0x0001, 'AccountSession',
+          '后台首次云端核对完成，已完成同步范围 promotion');
+      },
+      (error: Error): void => {
+        if (!this.intentIsCurrent(intentGeneration)) { return; }
+        hilog.warn(0x0001, 'AccountSession',
+          '主页已显示；首次云端核对 Promise 异常，云同步继续保持安全暂停: ' +
+          safeError(error));
+      });
   }
 
   private async doTransitionToOffline(reason: string,
