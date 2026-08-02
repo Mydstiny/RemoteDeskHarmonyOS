@@ -527,6 +527,39 @@ export struct RustDeskRelayPage {
     this.showSheet = true;
   }
 
+  private proSyncToastResult(
+    accountId: string,
+    count: number,
+    loginFlow: boolean
+  ): { message: string; capabilityReady: boolean } {
+    const status = this.proSync.getConnectionCapabilityStatus(accountId);
+    if (status !== undefined && status.tokenProjected) {
+      return {
+        capabilityReady: true,
+        message: loginFlow
+          ? (count > 0
+            ? 'Pro 已同步 ' + count.toString() + ' 台设备，控制面绑定校验通过'
+            : '登录成功，地址簿为空；控制面绑定校验通过')
+          : (count > 0
+            ? 'Pro 已同步 ' + count.toString() + ' 台设备，控制面绑定校验通过'
+            : '同步完成，控制面绑定校验通过')
+      };
+    }
+    if (status !== undefined && !status.requiresAccount) {
+      return {
+        capabilityReady: false,
+        message: '地址簿同步成功；当前连接配置为' +
+          rustDeskControlPlaneProfileLabel(status.profile) +
+          '，仅使用地址簿 HTTP 会话，不向控制面发送地址簿令牌'
+      };
+    }
+    return {
+      capabilityReady: false,
+      message: '地址簿同步成功；控制面绑定尚未满足，连接不会发送地址簿令牌。' +
+        '请检查账号、API、ID/Relay 端点和服务器 Key 是否属于同一部署'
+    };
+  }
+
   // ==================== Relay CRUD ====================
 
   private resetRelayForm(): void {
@@ -816,20 +849,10 @@ export struct RustDeskRelayPage {
       this.loadProAccounts();
       this.formProPwd = '';
       const count = result.addedIds.length + result.updatedIds.length;
-      const account: RustDeskProAccountState | undefined =
-        this.proSync.getAccount(accountId);
-      const capabilityReady: boolean =
-        account?.controlPlaneCapabilityProof !== undefined;
+      const toast = this.proSyncToastResult(accountId, count, true);
       promptAction.showToast({
-        message: capabilityReady
-          ? (count > 0
-            ? 'Pro 已同步 ' + count.toString() +
-              ' 台设备，控制面身份已绑定'
-            : '登录成功，地址簿为空；控制面身份已绑定')
-          : (count > 0
-            ? '地址簿已同步；尚无可验证的控制面能力证明，连接按 API-only 模式且不发送地址簿令牌'
-            : '登录成功；尚无可验证的控制面能力证明，连接按 API-only 模式'),
-        duration: capabilityReady ? 2200 : 3600
+        message: toast.message,
+        duration: toast.capabilityReady ? 2200 : 3600
       });
       this.closeSheet();
     } catch (err) {
@@ -844,18 +867,10 @@ export struct RustDeskRelayPage {
       const result = await this.proSync.sync(accountId);
       this.loadProAccounts();
       const count = result.addedIds.length + result.updatedIds.length;
-      const account: RustDeskProAccountState | undefined =
-        this.proSync.getAccount(accountId);
-      const capabilityReady: boolean =
-        account?.controlPlaneCapabilityProof !== undefined;
+      const toast = this.proSyncToastResult(accountId, count, false);
       promptAction.showToast({
-        message: capabilityReady
-          ? (count > 0
-            ? 'Pro 已同步 ' + count.toString() +
-              ' 台设备，控制面身份已重新验证'
-            : '同步完成，控制面身份已重新验证')
-          : '地址簿同步成功；尚无可验证的控制面能力证明，连接按 API-only 模式且不发送地址簿令牌',
-        duration: capabilityReady ? 2200 : 3600
+        message: toast.message,
+        duration: toast.capabilityReady ? 2200 : 3600
       });
     } catch (err) {
       this.formProError = err instanceof Error ? err.message : 'Pro 同步失败';
