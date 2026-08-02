@@ -9,8 +9,8 @@ import {
 
 function identity(): VncCertificateProbeIdentity {
   return {
-    userId: 'user-1', hostId: 'host-1', gatewayId: 'gateway-1',
-    endpointBindingFingerprint: 'a'.repeat(64), storeGeneration: 3
+    userId: 'user-1', accountOwnerScopeId: 'user-1', hostId: 'host-1', gatewayId: 'gateway-1',
+    endpointBindingFingerprint: 'a'.repeat(64), storeIdentityFingerprint: 'b'.repeat(64), storeGeneration: 3
   };
 }
 
@@ -33,6 +33,9 @@ export default function vncCertificateProbeLifecyclePolicyTest(): void {
       expect(shouldApplyVncCertificateProbeResult(4, 4, 9, 9, current, same)).assertFalse();
       same.endpointBindingFingerprint = 'a'.repeat(64);
       same.storeGeneration = 4;
+      expect(shouldApplyVncCertificateProbeResult(4, 4, 9, 9, current, same)).assertFalse();
+      same.storeGeneration = 3;
+      same.accountOwnerScopeId = 'other-user';
       expect(shouldApplyVncCertificateProbeResult(4, 4, 9, 9, current, same)).assertFalse();
     });
 

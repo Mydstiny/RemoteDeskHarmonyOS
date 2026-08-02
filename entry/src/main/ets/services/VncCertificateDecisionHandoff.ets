@@ -4,6 +4,9 @@ export const VNC_CERTIFICATE_DECISION_HANDOFF_TTL_MS: number = 60 * 1000;
 
 interface PendingVncCertificateDecision {
   userId: string;
+  accountOwnerScopeId: string;
+  accountStoreIdentityFingerprint: string;
+  accountGeneration: number;
   attemptId: string;
   generation: number;
   endpointBindingFingerprint: string;
@@ -21,12 +24,18 @@ export class VncCertificateDecisionHandoff {
 
   put(userId: string, attemptId: string, generation: number,
     endpointBindingFingerprint: string, fingerprintSha256: string,
+    accountOwnerScopeId: string, accountStoreIdentityFingerprint: string,
+    accountGeneration: number,
     now: number = Date.now()): boolean {
     const normalizedUserId: string = userId.trim();
+    const normalizedAccountOwner: string = accountOwnerScopeId.trim();
+    const normalizedAccountStore: string = accountStoreIdentityFingerprint.trim().toLowerCase();
     const normalizedAttemptId: string = attemptId.trim();
     const normalizedBinding: string = endpointBindingFingerprint.trim().toLowerCase();
     const normalizedFingerprint: string = fingerprintSha256.trim().toLowerCase();
-    if (normalizedUserId === '' || normalizedAttemptId === '' || !isPositiveGeneration(generation) ||
+    if (normalizedUserId === '' || normalizedAccountOwner === '' || normalizedUserId !== normalizedAccountOwner ||
+      !isVncSha256Fingerprint(normalizedAccountStore) || !isPositiveGeneration(accountGeneration) ||
+      normalizedAttemptId === '' || !isPositiveGeneration(generation) ||
       !isVncSha256Fingerprint(normalizedBinding) || !isVncSha256Fingerprint(normalizedFingerprint)) {
       return false;
     }
@@ -35,6 +44,9 @@ export class VncCertificateDecisionHandoff {
       !(item.userId === normalizedUserId && item.attemptId === normalizedAttemptId));
     this.pending.push({
       userId: normalizedUserId,
+      accountOwnerScopeId: normalizedAccountOwner,
+      accountStoreIdentityFingerprint: normalizedAccountStore,
+      accountGeneration: accountGeneration,
       attemptId: normalizedAttemptId,
       generation: generation,
       endpointBindingFingerprint: normalizedBinding,
@@ -45,15 +57,26 @@ export class VncCertificateDecisionHandoff {
   }
 
   take(userId: string, attemptId: string, generation: number,
-    endpointBindingFingerprint: string, now: number = Date.now()): string {
+    endpointBindingFingerprint: string, accountOwnerScopeId: string,
+    accountStoreIdentityFingerprint: string, accountGeneration: number,
+    now: number = Date.now()): string {
     this.removeExpired(now);
     const normalizedUserId: string = userId.trim();
     const normalizedAttemptId: string = attemptId.trim();
     const normalizedBinding: string = endpointBindingFingerprint.trim().toLowerCase();
+    const normalizedAccountOwner: string = accountOwnerScopeId.trim();
+    const normalizedAccountStore: string = accountStoreIdentityFingerprint.trim().toLowerCase();
+    if (normalizedUserId === '' || normalizedAccountOwner === '' ||
+      normalizedUserId !== normalizedAccountOwner || !isPositiveGeneration(generation) ||
+      !isPositiveGeneration(accountGeneration) || !isVncSha256Fingerprint(normalizedBinding) ||
+      !isVncSha256Fingerprint(normalizedAccountStore)) { return ''; }
     for (let i = 0; i < this.pending.length; i++) {
       const item: PendingVncCertificateDecision = this.pending[i];
       if (item.userId === normalizedUserId && item.attemptId === normalizedAttemptId &&
-        item.generation === generation && item.endpointBindingFingerprint === normalizedBinding) {
+        item.accountOwnerScopeId === normalizedAccountOwner &&
+        item.accountStoreIdentityFingerprint === normalizedAccountStore &&
+        item.accountGeneration === accountGeneration && item.generation === generation &&
+        item.endpointBindingFingerprint === normalizedBinding) {
         this.pending.splice(i, 1);
         return item.fingerprintSha256;
       }

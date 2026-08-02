@@ -39,6 +39,22 @@ export interface VncTrustSaveResult {
 }
 
 /**
+ * Endpoint-bound trust is the only write contract. Keep this pure so the
+ * host/gateway owner and account/store boundary can be tested without a
+ * database or a device runtime.
+ */
+export function vncTrustEndpointIsValid(endpoint: VncTrustEndpoint,
+  currentUserId: string): boolean {
+  const ownerId: string = endpoint.ownerId.trim();
+  const userId: string = endpoint.userId.trim();
+  const scope: string = currentUserId.trim();
+  return (endpoint.ownerType === 'host' || endpoint.ownerType === 'gateway') &&
+    ownerId !== '' && userId !== '' && scope !== '' && userId === scope &&
+    /^[0-9a-f]{64}$/.test(endpoint.storeIdentityFingerprint.trim().toLowerCase()) &&
+    /^[0-9a-f]{64}$/.test(endpoint.endpointBindingFingerprint.trim().toLowerCase());
+}
+
+/**
  * VNC trust owner. A cloud-restored fingerprint is data only; callers must
  * invoke save after an interactive, current-connection confirmation.
  */
@@ -147,7 +163,9 @@ export class VncTrustService {
     const userId: string = endpoint.userId.trim();
     const store: string = endpoint.storeIdentityFingerprint.trim().toLowerCase();
     const binding: string = endpoint.endpointBindingFingerprint.trim().toLowerCase();
-    if (ownerId === '' || userId === '' || store === '' || binding === '') { return null; }
+    if (!vncTrustEndpointIsValid(endpoint, this.currentUserId())) {
+      return null;
+    }
     const values: VncTrustView[] = this.list();
     for (let i = 0; i < values.length; i++) {
       const value: VncTrustView = values[i];
@@ -166,37 +184,30 @@ export class VncTrustService {
   }
 
   saveForEndpoint(endpoint: VncTrustEndpoint, fingerprintSha256: string): VncTrustSaveResult {
-    return this.save(endpoint.ownerId, fingerprintSha256, endpoint);
+    return this.save(endpoint, fingerprintSha256);
   }
 
-  save(ownerId: string, fingerprintSha256: string,
-    endpoint: VncTrustEndpoint | null = null): VncTrustSaveResult {
+  private save(endpoint: VncTrustEndpoint, fingerprintSha256: string): VncTrustSaveResult {
     const normalized: string = fingerprintSha256.trim().toLowerCase();
     const result: VncTrustSaveResult = { ok: false, message: '', id: '' };
-    if (ownerId.trim() === '' || !/^[0-9a-f]{64}$/.test(normalized)) {
-      result.message = 'VNC trust 需要主机 ID 和有效指纹';
+    const ownerId: string = endpoint.ownerId.trim();
+    const resolvedUserId: string = endpoint.userId.trim();
+    const ownerType: 'host' | 'gateway' = endpoint.ownerType;
+    const storeIdentityFingerprint: string = endpoint.storeIdentityFingerprint.trim().toLowerCase();
+    const endpointBindingFingerprint: string = endpoint.endpointBindingFingerprint.trim().toLowerCase();
+    if (!vncTrustEndpointIsValid(endpoint, this.currentUserId()) ||
+      !/^[0-9a-f]{64}$/.test(normalized)) {
+      result.message = 'VNC trust 需要完整 endpoint owner 和有效指纹';
       return result;
     }
-    const ownerType: 'host' | 'gateway' = endpoint === null ? 'host' : endpoint.ownerType;
-    const resolvedUserId: string = endpoint === null ? this.currentUserId() : endpoint.userId.trim();
-    const storeIdentityFingerprint: string = endpoint === null ? '' :
-      endpoint.storeIdentityFingerprint.trim().toLowerCase();
-    const endpointBindingFingerprint: string = endpoint === null ? '' :
-      endpoint.endpointBindingFingerprint.trim().toLowerCase();
-    if (resolvedUserId === '' || (endpoint !== null &&
-      (!/^[0-9a-f]{64}$/.test(storeIdentityFingerprint) ||
-        !/^[0-9a-f]{64}$/.test(endpointBindingFingerprint)))) {
-      result.message = 'VNC trust endpoint owner 无效';
-      return result;
-    }
-    result.id = 'vnctrust_' + ownerType + '_' + ownerId.trim() + '_' + normalized;
+    result.id = 'vnctrust_' + ownerType + '_' + ownerId + '_' + normalized;
     const current: VncTrustView | null = this.find(result.id);
     const record: VncRecord = new VncRecord();
     const now: number = Date.now();
     record.id = result.id;
     record.userId = resolvedUserId;
     record.recordType = 'trust';
-    record.ownerId = ownerId.trim();
+    record.ownerId = ownerId;
     record.ownerType = ownerType;
     record.secretKind = '';
     record.payload = vncTrustPayload(normalized, true, now, ownerType,

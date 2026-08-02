@@ -127,6 +127,15 @@ export function shouldRouteVncAfterCertificateSheetDisappear(
   return pendingRoute && !sheetVisible && !closing;
 }
 
+/** A trusted result must close an already-visible Sheet before routing. */
+export function shouldCloseVncCertificateSheetBeforeRoute(
+  sheetVisible: boolean,
+  closing: boolean,
+  pendingRoute: boolean
+): boolean {
+  return pendingRoute && sheetVisible && !closing;
+}
+
 export function shouldClearVncCertificateSensitiveHandoffs(
   pageClosing: boolean,
   connectionCancelled: boolean,

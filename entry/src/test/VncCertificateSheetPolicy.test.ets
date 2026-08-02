@@ -2,6 +2,7 @@ import { describe, it, expect } from '@ohos/hypium';
 import {
   nextVncCertificateSheetGeneration,
   shouldApplyVncCertificateSheetResult,
+  shouldCloseVncCertificateSheetBeforeRoute,
   shouldClearVncCertificateSensitiveHandoffs,
   shouldKeepVncCertificateSheetOpen,
   shouldRouteVncAfterCertificateSheetDisappear,
@@ -116,6 +117,9 @@ export default function vncCertificateSheetPolicyTest(): void {
       expect(shouldRouteVncAfterCertificateSheetDisappear(false, true, true)).assertFalse();
       expect(shouldRouteVncAfterCertificateSheetDisappear(false, false, true)).assertTrue();
       expect(shouldRouteVncAfterCertificateSheetDisappear(false, false, false)).assertFalse();
+      expect(shouldCloseVncCertificateSheetBeforeRoute(true, false, true)).assertTrue();
+      expect(shouldCloseVncCertificateSheetBeforeRoute(true, true, true)).assertFalse();
+      expect(shouldCloseVncCertificateSheetBeforeRoute(false, false, true)).assertFalse();
       expect(shouldClearVncCertificateSensitiveHandoffs(true, false, false)).assertTrue();
       expect(shouldClearVncCertificateSensitiveHandoffs(false, true, false)).assertTrue();
       expect(shouldClearVncCertificateSensitiveHandoffs(false, false, true)).assertTrue();

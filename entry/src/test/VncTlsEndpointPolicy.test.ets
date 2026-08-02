@@ -35,6 +35,9 @@ export default function vncTlsEndpointPolicyTest(): void {
       expect(result.trustOwner === null).assertFalse();
       if (result.trustOwner !== null) {
         expect(result.trustOwner.ownerType).assertEqual('host');
+        expect(result.trustOwner.storeIdentityFingerprint).assertEqual('e'.repeat(64));
+        expect(result.trustOwner.endpointBindingFingerprint)
+          .assertEqual(result.endpointBindingFingerprint);
       }
       expect(result.endpointBindingFingerprint.length).assertEqual(64);
     });
@@ -55,6 +58,15 @@ export default function vncTlsEndpointPolicyTest(): void {
       expect(result.connectHost).assertEqual('198.51.100.8');
       expect(result.repeaterTarget).assertEqual('desk-1');
       expect(result.usedLegacyTargetFallback).assertFalse();
+      expect(result.trustOwner === null).assertFalse();
+      if (result.trustOwner !== null) {
+        expect(result.trustOwner.ownerType).assertEqual('gateway');
+        expect(result.trustOwner.ownerId).assertEqual('gateway-1');
+        expect(result.trustOwner.userId).assertEqual('user-1');
+        expect(result.trustOwner.storeIdentityFingerprint).assertEqual('e'.repeat(64));
+        expect(result.trustOwner.endpointBindingFingerprint)
+          .assertEqual(result.endpointBindingFingerprint);
+      }
     });
 
     it('does_not_accept_a_gateway_from_another_scope_or_transport', 0, (): void => {

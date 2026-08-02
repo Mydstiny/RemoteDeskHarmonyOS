@@ -233,8 +233,17 @@ export function vncRecordPayloadSemanticallyValid(record: VncRecord): boolean {
   if (record.recordType === 'trust') {
     const fingerprint: string = typeof values['fingerprintSha256'] === 'string' ?
       (values['fingerprintSha256'] as string).trim().toLowerCase() : '';
+    const payloadOwnerType: string = typeof values['ownerType'] === 'string' ?
+      (values['ownerType'] as string).trim() : '';
+    const storeIdentityFingerprint: string = typeof values['storeIdentityFingerprint'] === 'string' ?
+      (values['storeIdentityFingerprint'] as string).trim().toLowerCase() : '';
+    const endpointBindingFingerprint: string = typeof values['endpointBindingFingerprint'] === 'string' ?
+      (values['endpointBindingFingerprint'] as string).trim().toLowerCase() : '';
     return isSha256Hex(fingerprint) && isBooleanValue(values, 'confirmed') &&
-      isFinitePositiveIntegerValue(values['confirmedAt']);
+      isFinitePositiveIntegerValue(values['confirmedAt']) &&
+      (payloadOwnerType === 'host' || payloadOwnerType === 'gateway') &&
+      payloadOwnerType === record.ownerType && isSha256Hex(storeIdentityFingerprint) &&
+      isSha256Hex(endpointBindingFingerprint);
   }
   return false;
 }
@@ -311,7 +320,8 @@ export function vncRecordIsValid(record: VncRecord): boolean {
   const ownerTypeValid: boolean = (record.recordType === 'settings' && record.ownerType === 'account') ||
     (record.recordType === 'host' && record.ownerType === 'account') ||
     (record.recordType === 'gateway' && record.ownerType === 'account') ||
-    (record.recordType === 'trust' && record.ownerType === 'host');
+    (record.recordType === 'trust' &&
+      (record.ownerType === 'host' || record.ownerType === 'gateway'));
   const ownerIdValid: boolean = record.ownerId.trim() !== '' &&
     (record.ownerType !== 'account' || record.ownerId === record.userId);
   return ownerTypeValid && ownerIdValid && record.secretKind === '' && record.envelopeVersion === 0 &&

@@ -1,19 +1,27 @@
 export interface VncCertificateProbeIdentity {
   userId: string;
+  accountOwnerScopeId: string;
   hostId: string;
   gatewayId: string;
   endpointBindingFingerprint: string;
+  storeIdentityFingerprint: string;
   storeGeneration: number;
 }
 
 function sameProbeIdentity(left: VncCertificateProbeIdentity,
   right: VncCertificateProbeIdentity): boolean {
   return left.userId.trim() !== '' && left.userId.trim() === right.userId.trim() &&
+    left.accountOwnerScopeId.trim() !== '' &&
+    left.accountOwnerScopeId.trim() === right.accountOwnerScopeId.trim() &&
     left.hostId.trim() !== '' && left.hostId.trim() === right.hostId.trim() &&
     left.gatewayId.trim() === right.gatewayId.trim() &&
     isCanonicalEndpointBindingFingerprint(left.endpointBindingFingerprint) &&
     isCanonicalEndpointBindingFingerprint(right.endpointBindingFingerprint) &&
     left.endpointBindingFingerprint === right.endpointBindingFingerprint &&
+    isCanonicalEndpointBindingFingerprint(left.storeIdentityFingerprint) &&
+    isCanonicalEndpointBindingFingerprint(right.storeIdentityFingerprint) &&
+    left.storeIdentityFingerprint === right.storeIdentityFingerprint &&
+    isPositiveGeneration(left.storeGeneration) && isPositiveGeneration(right.storeGeneration) &&
     left.storeGeneration === right.storeGeneration;
 }
 

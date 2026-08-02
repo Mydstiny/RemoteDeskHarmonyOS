@@ -52,6 +52,7 @@ import {
 import {
   nextVncCertificateSheetGeneration,
   shouldApplyVncCertificateSheetResult,
+  shouldCloseVncCertificateSheetBeforeRoute,
   shouldClearVncCertificateSensitiveHandoffs,
   shouldRouteVncAfterCertificateSheetDisappear,
   vncCertificateDecisionForSheetAction,
@@ -791,6 +792,10 @@ struct RemoteDesktop {
   private vncCertificateProbeIdentity: VncCertificateProbeIdentity | null = null;
   private vncCertificateHandoff: VncCertificateDecisionHandoff = new VncCertificateDecisionHandoff();
   private vncCertificateLastAttempt: VncCertificateSheetAttempt | null = null;
+  private vncCertificateAccountOwnerScopeId: string = '';
+  private vncCertificateAccountStoreIdentityFingerprint: string = '';
+  private vncCertificateAccountGeneration: number = 0;
+  private vncAccountScopeUnsubscribe: (() => void) | null = null;
   private vncTransientPassword: string = '';
   private vncAuthResolved: boolean = false;
   private vncAuthRetryPending: boolean = false;
@@ -1966,6 +1971,14 @@ struct RemoteDesktop {
   private resolveVncCertificateEndpoint(host: VncHostView): VncTlsEndpointResolution {
     const scope = AccountSessionCoordinator.getInstance().currentScope();
     const storeFingerprint: string = this.vncCertificateStoreFingerprint();
+    if (scope.ownerScopeId.trim() === '' || scope.storeIdentity.trim() === '' || scope.generation <= 0 ||
+      host.userId.trim() === '' || host.userId.trim() !== scope.ownerScopeId.trim()) {
+      return resolveVncTlsEndpoint({
+        id: '', userId: '', storeIdentityFingerprint: '', label: '', host: '', port: 0,
+        username: '', gatewayId: '', transport: host.transport, repeaterMode: host.repeaterMode,
+        targetId: '', securityPolicy: host.securityPolicy, tls: host.tls
+      }, null);
+    }
     const hostInput: VncTlsHostInput = vncTlsHostInput(
       host.id, host.userId, host, host.host, storeFingerprint);
     let gatewayInput: VncTlsGatewayInput | null = null;
@@ -1979,13 +1992,6 @@ struct RemoteDesktop {
     // The resolver is the single source for the socket, SNI, TLS owner and
     // endpoint binding used by both the probe and the final connection.
     const resolved: VncTlsEndpointResolution = resolveVncTlsEndpoint(hostInput, gatewayInput);
-    if (scope.ownerScopeId.trim() === '' || scope.generation <= 0) {
-      return resolveVncTlsEndpoint({
-        id: '', userId: '', storeIdentityFingerprint: '', label: '', host: '', port: 0,
-        username: '', gatewayId: '', transport: host.transport, repeaterMode: host.repeaterMode,
-        targetId: '', securityPolicy: host.securityPolicy, tls: host.tls
-      }, null);
-    }
     return resolved;
   }
 
@@ -2002,13 +2008,42 @@ struct RemoteDesktop {
 
   private vncCertificateIdentity(host: VncHostView,
     endpoint: VncTlsEndpointResolution): VncCertificateProbeIdentity {
+    const scope = AccountSessionCoordinator.getInstance().currentScope();
+    const storeIdentityFingerprint: string = endpoint.trustOwner === null ? '' :
+      endpoint.trustOwner.storeIdentityFingerprint;
     return {
       userId: host.userId.trim(),
+      accountOwnerScopeId: scope.ownerScopeId.trim(),
       hostId: host.id.trim(),
       gatewayId: host.gatewayId.trim(),
       endpointBindingFingerprint: endpoint.endpointBindingFingerprint,
-      storeGeneration: AccountSessionCoordinator.getInstance().currentScope().generation
+      storeIdentityFingerprint: storeIdentityFingerprint,
+      storeGeneration: scope.generation
     };
+  }
+
+  private vncCertificateAccountBindingIsCurrent(identity: VncCertificateProbeIdentity): boolean {
+    const scope = AccountSessionCoordinator.getInstance().currentScope();
+    return scope.ownerScopeId.trim() !== '' && scope.storeIdentity.trim() !== '' && scope.generation > 0 &&
+      identity.accountOwnerScopeId.trim() === scope.ownerScopeId.trim() &&
+      identity.userId.trim() === scope.ownerScopeId.trim() &&
+      identity.storeGeneration === scope.generation &&
+      this.vncCertificateAccountOwnerScopeId === scope.ownerScopeId.trim() &&
+      this.vncCertificateAccountGeneration === scope.generation &&
+      this.vncCertificateAccountStoreIdentityFingerprint === identity.storeIdentityFingerprint &&
+      this.vncCertificateStoreFingerprint() === identity.storeIdentityFingerprint;
+  }
+
+  private vncCertificateLiveBindingIsCurrent(identity: VncCertificateProbeIdentity): boolean {
+    const host: VncHostView | null = this.pendingVncHost;
+    if (host === null || !this.vncCertificateAccountBindingIsCurrent(identity)) {
+      return false;
+    }
+    const endpoint: VncTlsEndpointResolution = this.resolveVncCertificateEndpoint(host);
+    return endpoint.ok && endpoint.endpointBindingFingerprint === identity.endpointBindingFingerprint &&
+      endpoint.trustOwner !== null &&
+      endpoint.trustOwner.storeIdentityFingerprint === identity.storeIdentityFingerprint &&
+      this.vncCertificateAccountStoreIdentityFingerprint === identity.storeIdentityFingerprint;
   }
 
   private vncCertificateProbeView(info: VncCertificateInfo): VncCertificateProbeView {
@@ -2083,9 +2118,19 @@ struct RemoteDesktop {
     this.vncCertificateWarning = '';
     this.vncCertificateShowDetails = false;
     this.vncCertificateExpectedFingerprint = '';
+    this.vncCertificateAccountOwnerScopeId = '';
+    this.vncCertificateAccountStoreIdentityFingerprint = '';
+    this.vncCertificateAccountGeneration = 0;
     this.vncCertificateEndpoint = this.resolveVncCertificateEndpoint(host);
     this.vncCertificateTrustOwner = this.vncCertificateTrustEndpoint(this.vncCertificateEndpoint);
     this.vncCertificateProbeIdentity = this.vncCertificateIdentity(host, this.vncCertificateEndpoint);
+    if (this.vncCertificateEndpoint.ok && this.vncCertificateTrustOwner !== null) {
+      const scope = AccountSessionCoordinator.getInstance().currentScope();
+      this.vncCertificateAccountOwnerScopeId = scope.ownerScopeId.trim();
+      this.vncCertificateAccountStoreIdentityFingerprint =
+        this.vncCertificateTrustOwner.storeIdentityFingerprint;
+      this.vncCertificateAccountGeneration = scope.generation;
+    }
     if (!this.vncCertificateEndpoint.ok) {
       this.vncCertificateState = VncCertificatePreflightState.ERROR;
       this.vncCertificateError = this.vncCertificateEndpoint.errorCode || 'E-VNC-ENDPOINT-INVALID';
@@ -2110,10 +2155,22 @@ struct RemoteDesktop {
         VNC_CERTIFICATE_PROBE_TIMEOUT_MS);
       this.vncCertificateProbeRequestId = probe.requestId;
       const info: VncCertificateInfo = await probe;
-      if (!shouldApplyVncCertificateProbeResult(
-        this.vncCertificateProbeGeneration, generation,
-        this.vncCertificateConnectionAttemptGeneration, connectionGeneration,
-        this.vncCertificateProbeIdentity as VncCertificateProbeIdentity, identity)) {
+      const activeIdentity: VncCertificateProbeIdentity | null = this.vncCertificateProbeIdentity;
+      const appliesToCurrentAttempt: boolean = activeIdentity !== null &&
+        shouldApplyVncCertificateProbeResult(
+          this.vncCertificateProbeGeneration, generation,
+          this.vncCertificateConnectionAttemptGeneration, connectionGeneration,
+          activeIdentity, identity);
+      // A stale callback from an earlier attempt must not tear down a newer
+      // probe. Only the callback that still owns the active generations may
+      // clear state after an account/store transition.
+      if (!appliesToCurrentAttempt) { return; }
+      if (!this.vncCertificateAccountBindingIsCurrent(identity)) {
+        this.clearVncSensitiveState();
+        return;
+      }
+      if (!this.vncCertificateLiveBindingIsCurrent(identity)) {
+        this.clearVncSensitiveState();
         return;
       }
       this.vncCertificateProbeRequestId = 0;
@@ -2142,10 +2199,19 @@ struct RemoteDesktop {
         }
       }
     } catch (err) {
-      if (!shouldApplyVncCertificateProbeResult(
-        this.vncCertificateProbeGeneration, generation,
-        this.vncCertificateConnectionAttemptGeneration, connectionGeneration,
-        this.vncCertificateProbeIdentity as VncCertificateProbeIdentity, identity)) {
+      const activeIdentity: VncCertificateProbeIdentity | null = this.vncCertificateProbeIdentity;
+      const appliesToCurrentAttempt: boolean = activeIdentity !== null &&
+        shouldApplyVncCertificateProbeResult(
+          this.vncCertificateProbeGeneration, generation,
+          this.vncCertificateConnectionAttemptGeneration, connectionGeneration,
+          activeIdentity, identity);
+      if (!appliesToCurrentAttempt) { return; }
+      if (!this.vncCertificateAccountBindingIsCurrent(identity)) {
+        this.clearVncSensitiveState();
+        return;
+      }
+      if (!this.vncCertificateLiveBindingIsCurrent(identity)) {
+        this.clearVncSensitiveState();
         return;
       }
       this.vncCertificateProbeRequestId = 0;
@@ -2161,6 +2227,75 @@ struct RemoteDesktop {
     if (this.vncCertificateProbeRequestId > 0) {
       this.loader.cancelVncCertificateProbe(this.vncCertificateProbeRequestId);
       this.vncCertificateProbeRequestId = 0;
+    }
+  }
+
+  /** Clear every VNC-only secret, pin, probe and owner-bound handoff. */
+  private clearVncSensitiveState(): void {
+    this.cancelVncCertificateProbe();
+    this.vncCertificateProbeGeneration = nextVncCertificateProbeGeneration(
+      this.vncCertificateProbeGeneration);
+    this.vncCertificateConnectionAttemptGeneration = nextVncConnectionAttemptGeneration(
+      this.vncCertificateConnectionAttemptGeneration);
+    this.vncCertificateHandoff.clearAll();
+    VncSessionCredentialHandoff.getInstance().clearAll();
+    this.vncCertificatePendingRoute = false;
+    this.vncCertificateExpectedFingerprint = '';
+    this.vncCertificateEndpoint = null;
+    this.vncCertificateTrustOwner = null;
+    this.vncCertificateProbeIdentity = null;
+    this.vncCertificateLastAttempt = null;
+    this.vncCertificateAccountOwnerScopeId = '';
+    this.vncCertificateAccountStoreIdentityFingerprint = '';
+    this.vncCertificateAccountGeneration = 0;
+    this.vncCertificateInfo = null;
+    this.vncCertificateError = '';
+    this.vncCertificateWarning = '';
+    this.vncCertificateShowDetails = false;
+    this.vncCertificateSheetClosing = false;
+    this.vncCertificateBackPending = false;
+    this.showVncCertificateSheet = false;
+    this.vncCertificateState = VncCertificatePreflightState.IDLE;
+    this.vncPasswordInput = '';
+    this.vncTransientPassword = '';
+    this.vncPasswordError = '';
+    this.vncPasswordStatus = 'missing';
+    this.vncPasswordDismissReason = 'none';
+    this.vncPasswordBackPending = false;
+    this.vncPasswordPendingStart = false;
+    this.vncPasswordSheetClosing = false;
+    this.showVncPasswordSheet = false;
+    this.vncAuthResolved = false;
+    this.vncAuthRetryPending = false;
+  }
+
+  /** Account/store rollover invalidates every pending VNC credential path. */
+  private bindVncAccountScopeListener(): void {
+    if (this.vncAccountScopeUnsubscribe !== null) { return; }
+    this.vncAccountScopeUnsubscribe = AccountSessionCoordinator.getInstance().onChange(
+      (scope): void => {
+        if (!this.isVncSession()) { return; }
+        const owner: string = scope.ownerScopeId.trim();
+        const store: string = this.vncCertificateStoreFingerprint();
+        const bound: boolean = owner !== '' && scope.generation > 0 &&
+          this.vncCertificateAccountOwnerScopeId === owner &&
+          this.vncCertificateAccountGeneration === scope.generation &&
+          this.vncCertificateAccountStoreIdentityFingerprint === store;
+        if (bound) { return; }
+        const established: boolean = this.connected || this.sessionId > 0;
+        this.clearVncSensitiveState();
+        this.connecting = false;
+        this.connectStarted = false;
+        if (established) {
+          this.disconnectAndCleanup('vnc-account-scope-changed');
+        }
+      });
+  }
+
+  private unbindVncAccountScopeListener(): void {
+    if (this.vncAccountScopeUnsubscribe !== null) {
+      this.vncAccountScopeUnsubscribe();
+      this.vncAccountScopeUnsubscribe = null;
     }
   }
 
@@ -2180,7 +2315,18 @@ struct RemoteDesktop {
       return;
     }
     this.vncCertificatePendingRoute = true;
-    if (!this.showVncCertificateSheet && !this.vncCertificateSheetClosing) {
+    if (shouldCloseVncCertificateSheetBeforeRoute(
+      this.showVncCertificateSheet, this.vncCertificateSheetClosing,
+      this.vncCertificatePendingRoute)) {
+      // TRUSTED_MATCH can arrive while the probe Sheet is already visible
+      // (initial connect or ERROR -> RETRY). Close it through onDisappear so
+      // credential routing never races the Sheet lifecycle.
+      this.vncCertificateSheetClosing = true;
+      this.vncCertificateState = VncCertificatePreflightState.CLOSING;
+      this.showVncCertificateSheet = false;
+      return;
+    }
+    if (!this.vncCertificateSheetClosing) {
       this.routeVncCertificateToCredentials();
     }
   }
@@ -2191,6 +2337,11 @@ struct RemoteDesktop {
     this.vncCertificatePendingRoute = false;
     const host: VncHostView | null = this.pendingVncHost;
     if (host === null) { return; }
+    if (this.vncCertificateProbeIdentity === null ||
+      !this.vncCertificateLiveBindingIsCurrent(this.vncCertificateProbeIdentity)) {
+      this.clearVncSensitiveState();
+      return;
+    }
     const handoffPassword: string = VncSessionCredentialHandoff.getInstance().take(
       host.userId, host.id);
     if (handoffPassword !== '') {
@@ -2226,12 +2377,18 @@ struct RemoteDesktop {
     const host: VncHostView | null = this.pendingVncHost;
     const trustOwner: VncTrustEndpoint | null = this.vncCertificateTrustOwner;
     if (host === null || trustOwner === null) { return; }
+    if (this.vncCertificateProbeIdentity === null ||
+      !this.vncCertificateLiveBindingIsCurrent(this.vncCertificateProbeIdentity)) {
+      this.clearVncSensitiveState();
+      return;
+    }
     const fingerprint: string = this.vncCertificateInfo.fingerprintSha256.trim().toLowerCase();
     if (decision === VncCertificatePreflightDecision.TRUST ||
       decision === VncCertificatePreflightDecision.UPDATE_TRUST) {
       this.vncCertificateExpectedFingerprint = fingerprint;
       const saved = this.vncTrust.saveForEndpoint(trustOwner, fingerprint);
       if (!saved.ok) {
+        this.vncCertificateExpectedFingerprint = '';
         this.vncCertificateState = VncCertificatePreflightState.ERROR;
         this.vncCertificateError = saved.message || 'E-VNC-CERT-TRUST-SAVE';
         return;
@@ -2241,7 +2398,10 @@ struct RemoteDesktop {
       const handedOff: boolean = this.vncCertificateHandoff.put(
         host.userId, this.vncCertificateAttemptId(host),
         this.vncCertificateProbeGeneration,
-        trustOwner.endpointBindingFingerprint, fingerprint);
+        trustOwner.endpointBindingFingerprint, fingerprint,
+        this.vncCertificateAccountOwnerScopeId,
+        this.vncCertificateAccountStoreIdentityFingerprint,
+        this.vncCertificateAccountGeneration);
       if (!handedOff) {
         this.vncCertificateState = VncCertificatePreflightState.ERROR;
         this.vncCertificateError = 'E-VNC-CERT-HANDOFF';
@@ -2256,18 +2416,10 @@ struct RemoteDesktop {
   }
 
   private cancelVncCertificateDecision(): void {
-    this.cancelVncCertificateProbe();
-    this.vncCertificateProbeGeneration = nextVncCertificateProbeGeneration(
-      this.vncCertificateProbeGeneration);
-    this.vncCertificateConnectionAttemptGeneration = nextVncConnectionAttemptGeneration(
-      this.vncCertificateConnectionAttemptGeneration);
-    this.vncCertificatePendingRoute = false;
+    this.clearVncSensitiveState();
     this.vncCertificateBackPending = true;
     this.vncCertificateSheetClosing = true;
     this.vncCertificateState = VncCertificatePreflightState.CLOSING;
-    this.vncCertificateHandoff.clearAll();
-    this.vncTransientPassword = '';
-    this.vncAuthResolved = false;
     this.connectStarted = false;
     this.connecting = false;
     this.connectionError = '连接已取消';
@@ -2445,6 +2597,7 @@ struct RemoteDesktop {
   }
 
   private cancelVncPasswordChoice(): void {
+    this.clearVncSensitiveState();
     this.vncPasswordDismissReason = 'cancel';
     this.vncPasswordBackPending = true;
     this.vncPasswordPendingStart = false;
@@ -2469,11 +2622,16 @@ struct RemoteDesktop {
   private handleVncPasswordSheetDisappear(): void {
     const reason: VncPasswordDismissReason = this.vncPasswordDismissReason;
     const shouldStart: boolean = reason === 'confirm' && this.vncPasswordPendingStart;
+    const goBack: boolean = this.vncPasswordBackPending;
     this.vncPasswordDismissReason = 'none';
     this.vncPasswordPendingStart = false;
+    if (reason === 'none' || reason === 'cancel') {
+      // The dismiss callback may run after the cancel path already cleared the
+      // sheet. Clear idempotently without re-entering the closing state.
+      this.clearVncSensitiveState();
+    }
     this.vncPasswordSheetClosing = false;
-    if (reason === 'none' || reason === 'cancel') { this.cancelVncPasswordChoice(); }
-    if (this.vncPasswordBackPending) {
+    if (goBack) {
       this.vncPasswordBackPending = false;
       setTimeout((): void => { this.goBack(); }, 0);
       return;
@@ -5064,6 +5222,7 @@ struct RemoteDesktop {
         this.vncHosts.init(context);
         this.vncGateways.init(context);
         this.vncTrust.init(context);
+        this.bindVncAccountScopeListener();
         const vncHost: VncHostView | null = this.vncHosts.find(vncHostId);
         if (vncHost === null) {
           this.connecting = false;
@@ -5262,6 +5421,12 @@ struct RemoteDesktop {
     // - 确认不是后台切换后 → 完全断连
     const isBg: boolean = AppStorage.get<boolean>('remoteDesktopBgFlag') ?? false;
     if (isBg) {
+      if (this.isVncSession()) {
+        // VNC has no background session contract. Clear pending probe, pin and
+        // password state before the protocol teardown runs.
+        this.unbindVncAccountScopeListener();
+        this.clearVncSensitiveState();
+      }
       const action: RemoteDesktopBackgroundAction = decideRemoteDesktopBackgroundAction(
         true,
         this.connected,
@@ -5296,6 +5461,7 @@ struct RemoteDesktop {
 
     // 显式 back / 左右滑退出 / 断开按钮 → 完全断连
     this.cancelPendingDisappearDecision();
+    this.unbindVncAccountScopeListener();
     hilog.info(RD_DOMAIN, RD_TAG, 'aboutToDisappear: full disconnect reason=explicit-exit');
     this.disconnectAndCleanup('explicit-exit');
   }
@@ -8124,6 +8290,16 @@ struct RemoteDesktop {
       let vncExpectedFingerprint: string = '';
       let vncEndpointForConnect: VncTlsEndpointResolution | null = null;
       if (isVnc && vncHost !== null) {
+        const liveScope = AccountSessionCoordinator.getInstance().currentScope();
+        if (vncHost.userId.trim() !== connectionScope.ownerScopeId.trim() ||
+          liveScope.ownerScopeId.trim() !== connectionScope.ownerScopeId.trim() ||
+          liveScope.generation !== connectionScope.generation ||
+          this.vncCertificateAccountOwnerScopeId !== connectionScope.ownerScopeId.trim() ||
+          this.vncCertificateAccountGeneration !== connectionScope.generation ||
+          this.vncCertificateProbeIdentity === null ||
+          !this.vncCertificateLiveBindingIsCurrent(this.vncCertificateProbeIdentity)) {
+          throw new Error('VNC 账号会话已变化，旧主机连接已拒绝 [E-VNC-SCOPE-STALE]');
+        }
         vncOwner = this.vncOwnerForConnection(vncHost);
         vncEndpointForConnect = this.resolveVncCertificateEndpoint(vncHost);
         if (!vncEndpointForConnect.ok) {
@@ -8305,11 +8481,27 @@ struct RemoteDesktop {
           vncHost.userId,
           this.vncCertificateAttemptId(vncHost),
           this.vncCertificateProbeGeneration,
-          vncEndpointForConnect.endpointBindingFingerprint);
+          vncEndpointForConnect.endpointBindingFingerprint,
+          this.vncCertificateAccountOwnerScopeId,
+          this.vncCertificateAccountStoreIdentityFingerprint,
+          this.vncCertificateAccountGeneration);
         if (!isVncSha256Fingerprint(oneShotFingerprint)) {
           throw new Error('VNC TLS 证书尚未确认 [E-VNC-CERT-TRUST-REQUIRED]');
         }
         cfg.vncExpectedCertificateFingerprintSha256 = oneShotFingerprint;
+      }
+
+      if (isVnc && vncHost !== null && vncEndpointForConnect !== null) {
+        const liveScope = AccountSessionCoordinator.getInstance().currentScope();
+        if (liveScope.ownerScopeId.trim() !== connectionScope.ownerScopeId.trim() ||
+          liveScope.generation !== connectionScope.generation ||
+          vncHost.userId.trim() !== liveScope.ownerScopeId.trim() ||
+          this.vncCertificateAccountOwnerScopeId !== liveScope.ownerScopeId.trim() ||
+          this.vncCertificateAccountGeneration !== liveScope.generation ||
+          this.vncCertificateProbeIdentity === null ||
+          !this.vncCertificateLiveBindingIsCurrent(this.vncCertificateProbeIdentity)) {
+          throw new Error('VNC 账号会话已变化，旧主机连接已拒绝 [E-VNC-SCOPE-STALE]');
+        }
       }
 
       hilog.info(RD_DOMAIN, RD_TAG, 'Protocol codec effective: proto=' + host.protocol +
@@ -8325,6 +8517,14 @@ struct RemoteDesktop {
       try {
         sid = this.loader.connect(cfg);
       } finally {
+        if (isVnc) {
+          // The native adapter copies credentials synchronously into its
+          // connection attempt; do not retain them in the page after handoff.
+          this.vncPasswordInput = '';
+          this.vncTransientPassword = '';
+          this.vncCertificateExpectedFingerprint = '';
+          this.vncCertificateHandoff.clearAll();
+        }
         // The native adapter owns its own asynchronous copy after connect;
         // never keep the local session-config reference alive on this side.
         cfg.rdpRestrictedAdminHash = '';
@@ -8455,10 +8655,20 @@ struct RemoteDesktop {
     } catch (err) {
       rdpRestrictedAdminHash = '';
       const failureScope = AccountSessionCoordinator.getInstance().currentScope();
+      const vncCertificateIdentity: VncCertificateProbeIdentity | null =
+        this.vncCertificateProbeIdentity;
+      const vncScopeBindingStale: boolean = host.protocol === 'vnc' &&
+        (vncHost === null || vncHost.userId.trim() !== failureScope.ownerScopeId.trim() ||
+          vncCertificateIdentity === null ||
+          !this.vncCertificateAccountBindingIsCurrent(vncCertificateIdentity));
+      if (vncScopeBindingStale) {
+        this.clearVncSensitiveState();
+      }
       if (failureScope.ownerScopeId !== connectionScope.ownerScopeId ||
         failureScope.generation !== connectionScope.generation) {
         return;
       }
+      if (vncScopeBindingStale) { return; }
       this.clearRdpRenderWatchdog();
       this.clearRdpNativeStateMonitor();
       this.clearRemoteCursorPolling(true, 'connect-error');
@@ -8656,22 +8866,10 @@ struct RemoteDesktop {
     // VNC passwords are connection-scoped memory only. The native session has
     // already received its copy; never retain the transient value across a
     // page/session teardown.
-    this.vncTransientPassword = '';
-    this.vncAuthResolved = false;
-    this.cancelVncCertificateProbe();
-    this.vncCertificateProbeGeneration = nextVncCertificateProbeGeneration(
-      this.vncCertificateProbeGeneration);
-    this.vncCertificateConnectionAttemptGeneration = nextVncConnectionAttemptGeneration(
-      this.vncCertificateConnectionAttemptGeneration);
-    this.vncCertificateHandoff.clearAll();
-    this.vncCertificatePendingRoute = false;
-    this.vncCertificateExpectedFingerprint = '';
-    this.vncCertificateEndpoint = null;
-    this.vncCertificateTrustOwner = null;
-    this.vncCertificateProbeIdentity = null;
-    this.vncCertificateSheetClosing = false;
-    this.showVncCertificateSheet = false;
-    this.vncCertificateState = VncCertificatePreflightState.IDLE;
+    if (this.isVncSession()) {
+      this.unbindVncAccountScopeListener();
+    }
+    this.clearVncSensitiveState();
     this.clearVncToolbarAutoCollapse();
     this.cancelVncTouchWheelFling();
     this.physicalWheelRemainder = 0;
