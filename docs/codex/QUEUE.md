@@ -1,11 +1,11 @@
 # Shared Queue
 
-Updated: 2026-08-03 Asia/Shanghai
+Updated: 2026-08-02 Asia/Shanghai
 
 ## Now
 
-- Stage C second segment is checkpointed at `9db29aeb3`; wait for the existing
-  independent reviewer to complete the one requested read-only review.
+- Stage C second segment fixes are checkpointed at `0d12ca1aa`; wait for the
+  existing reviewer to complete the one requested read-only incremental review.
 - Preserve stage A/B and C-first review receipts; keep probe/pin failures
   fail-closed.
 - Restore `hdc` connectivity and capture current VNC `hilog` when the device is
