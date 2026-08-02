@@ -60,7 +60,7 @@ import {
   rustDeskPeerTwoFactorAutoSubmitError
 } from '../services/RustDeskPeerTwoFactorPolicy';
 import { AppConfig, AppTheme, Palette, buildDark, buildLight } from '../common/Theme';
-import { showLockGate, lockGateErrorMessage } from '../components/LockGate';
+import { LockGateResult, showLockGate, lockGateErrorMessage } from '../components/LockGate';
 import { ColorPickerSheet } from '../components/ColorPickerSheet';
 import { HostAddWizardSheet } from '../components/hostadd/HostAddWizardSheet';
 import { RdpAddFlow } from '../components/hostadd/RdpAddFlow';
@@ -1179,16 +1179,26 @@ struct HostListPage {
       promptAction.showToast({ message: '2FA 条目不存在或已被删除', duration: 2200 });
       return;
     }
-    const gate = await showLockGate('绑定 RustDesk 2FA', 'biometric');
-    if (!this.isCurrentRustDeskTotpBinding(generation)) {
-      return;
-    }
-    if (!gate.ok) {
-      const message: string = lockGateErrorMessage(gate);
-      if (message !== '') {
-        promptAction.showToast({ message: message, duration: 2000 });
+    if (this.totpPageLocked) {
+      const gate: LockGateResult = await showLockGate(
+        'TOTP 隐私保护已开启，请验证系统身份后绑定 RustDesk 2FA', 'biometric');
+      if (!this.isCurrentRustDeskTotpBinding(generation)) {
+        return;
       }
-      return;
+      if (!gate.ok) {
+        const detail: string = lockGateErrorMessage(gate);
+        let message: string =
+          'TOTP 隐私保护已开启，绑定 RustDesk 2FA 前需要完成系统身份认证。';
+        if (gate.code === 12500010) {
+          message = 'TOTP 隐私保护已开启，但系统尚未录入 PIN、指纹或人脸。请先到系统设置完成锁屏认证，或关闭 TOTP 隐私保护后再绑定。';
+        } else if (gate.code === 12500003) {
+          message = 'TOTP 隐私保护已开启，系统身份认证已取消，RustDesk 2FA 未绑定。';
+        } else if (detail !== '') {
+          message += '（' + detail + '）';
+        }
+        promptAction.showToast({ message: message, duration: 3000 });
+        return;
+      }
     }
     if (this.editingHostId !== '') {
       const current: RemoteHost | undefined = this.srv.getHost(this.editingHostId);
@@ -1198,15 +1208,17 @@ struct HostListPage {
       }
       const updated: RemoteHost = RemoteHost.fromJSON(current.toJSON());
       updated.rustdeskTotpEntryId = entry.id;
-      updated.rustdeskTotpAutoSubmit = false;
+      // A successful binding is immediately usable on the next connection.
+      // The user can turn this off from the compact binding row afterwards.
+      updated.rustdeskTotpAutoSubmit = true;
       if (!this.srv.updateHost(updated)) {
         promptAction.showToast({ message: 'RustDesk 2FA 绑定保存失败', duration: 2200 });
         return;
       }
     }
     this.sheetRustdeskTotpEntryId = entry.id;
-    this.sheetRustdeskTotpAutoSubmit = false;
-    this.updateRustDeskTotpResumeDraft(entry.id, false);
+    this.sheetRustdeskTotpAutoSubmit = true;
+    this.updateRustDeskTotpResumeDraft(entry.id, true);
     promptAction.showToast({ message: 'RustDesk 2FA 已绑定', duration: 1600 });
     this.closeRustDeskTotpBinding(true);
   }
@@ -3905,7 +3917,12 @@ struct HostListPage {
       protocol: 'rustdesk',
       host: endpoint.host,
       port: endpoint.port,
-      username: '', password: host.password, width: 1920, height: 1080,
+      // Request-approval is a passwordless RustDesk login.  Never forward a
+      // saved device password as an accidental fallback for this attempt.
+      username: '',
+      password: rustDeskAuthModeForConnection(direct, host.rustdeskAuthMode) ===
+        'request_approval' ? '' : host.password,
+      width: 1920, height: 1080,
       customHostname: rustDeskProPeerIdForConnection(host.rustdeskProPeerId, host.customHostname),
       gatewayHost: '', gatewayPort: 0, domain: '', codec: '',
       multiMonitor: false, monitorCount: 1, colorDepth: 32,
@@ -3939,39 +3956,59 @@ struct HostListPage {
     }
   }
 
-  private async tryAutoSubmitRustDeskProTwoFactor(sessionId: number, host: RemoteHost): Promise<void> {
+  private async tryAutoSubmitRustDeskProTwoFactor(sessionId: number, host: RemoteHost): Promise<boolean> {
     if (!host.rustdeskTotpAutoSubmit || host.rustdeskTotpEntryId === '' ||
       this.rustDeskProTwoFactorAutoAttemptSessionId === sessionId) {
-      return;
+      // `true` means an automatic flow was already handled for this session;
+      // the caller must not reopen the manual sheet on every poll.
+      return host.rustdeskTotpAutoSubmit && host.rustdeskTotpEntryId !== '';
     }
     this.rustDeskProTwoFactorAutoAttemptSessionId = sessionId;
-    const gate = await showLockGate('RustDesk 2FA 自动填写', 'biometric');
-    if (this.rustDeskProPreflightState !== RustDeskProPreflightState.CONNECTING) {
-      return;
+    if (this.totpPageLocked) {
+      const gate = await showLockGate(
+        'TOTP 隐私保护已开启，请验证系统身份后自动填写 RustDesk 2FA', 'biometric');
+      if (this.rustDeskProPreflightState !== RustDeskProPreflightState.CONNECTING) {
+        return true;
+      }
+      if (!gate.ok) {
+        let message: string =
+          'TOTP 隐私保护已开启，自动填写 RustDesk 2FA 前需要完成系统身份认证。';
+        if (gate.code === 12500010) {
+          message = 'TOTP 隐私保护已开启，但系统尚未录入 PIN、指纹或人脸。请先到系统设置完成锁屏认证，或手动输入验证码。';
+        } else if (gate.code === 12500003) {
+          message = 'TOTP 隐私保护已开启，系统身份认证已取消，请手动输入验证码。';
+        } else {
+          const detail: string = lockGateErrorMessage(gate);
+          if (detail !== '') { message += '（' + detail + '）'; }
+        }
+        this.openRustDeskProTwoFactorPrompt(sessionId, message);
+        return true;
+      }
     }
-    if (!gate.ok) {
-      this.openRustDeskProTwoFactorPrompt(sessionId, lockGateErrorMessage(gate) ||
-        '未通过系统身份认证，请手动输入验证码。');
-      return;
+    if (this.rustDeskProPreflightState !== RustDeskProPreflightState.CONNECTING) {
+      return true;
     }
     const entry: TotpEntry | undefined = this.keyVault.getTotpEntry(host.rustdeskTotpEntryId);
     if (entry === undefined || entry.secret.length === 0) {
       this.openRustDeskProTwoFactorPrompt(sessionId, '已绑定的 2FA 条目不可用，请手动输入验证码。');
-      return;
+      return true;
     }
     const generated = TotpEngine.generateCode(entry);
     const autoSubmitError: string = rustDeskPeerTwoFactorAutoSubmitError(entry, generated);
     if (autoSubmitError !== '') {
       this.openRustDeskProTwoFactorPrompt(sessionId, autoSubmitError);
-      return;
+      return true;
     }
     if (!this.loader.submitRustDesk2FA(sessionId, generated.code)) {
       this.openRustDeskProTwoFactorPrompt(sessionId, this.loader.getRustDeskLastError() ||
         '自动提交验证码失败，请手动输入。');
-      return;
+      return true;
     }
-    this.openRustDeskProTwoFactorPrompt(sessionId, '2FA code submitted');
     this.rustDeskProTwoFactorSubmitting = true;
+    // Do not open the manual input state after an automatic submission.  The
+    // preflight sheet remains the single owner of the waiting status and is
+    // dismissed only after native reports authentication success/failure.
+    return true;
   }
 
   private cancelRustDeskProTwoFactor(): void {
@@ -4035,7 +4072,13 @@ struct HostListPage {
     let expectedTokenGeneration: number = 0;
     host.rustdeskAuthMode = this.rustDeskProAuthMode === 'request_approval' ? 'request_approval' : 'password';
     host.rustdeskPasswordMode = this.rustDeskProPasswordMode === 1 ? 1 : 0;
-    if (host.rustdeskAuthMode === 'password') { host.password = this.rustDeskProPassword; }
+    if (host.rustdeskAuthMode === 'password') {
+      host.password = this.rustDeskProPassword;
+    } else {
+      // The approval request is intentionally passwordless.  Do not let the
+      // saved password on `stored` leak into this transient SessionConfig.
+      host.password = '';
+    }
     this.rustDeskProPreflightError = '';
     this.rustDeskProTwoFactorActive = false;
     this.rustDeskProTwoFactorSessionId = -1;
@@ -4120,8 +4163,12 @@ struct HostListPage {
           return;
         }
         if (state === 5) {
-          await this.tryAutoSubmitRustDeskProTwoFactor(sid, host);
-          this.openRustDeskProTwoFactorPrompt(sid, this.loader.getConnectionLastMessage(sid));
+          const authMessage: string = this.loader.getConnectionLastMessage(sid);
+          const automaticFlowHandled: boolean =
+            await this.tryAutoSubmitRustDeskProTwoFactor(sid, host);
+          if (!automaticFlowHandled || authMessage.indexOf('Wrong 2FA Code') >= 0) {
+            this.openRustDeskProTwoFactorPrompt(sid, authMessage);
+          }
         }
         if (state === 4 || state === 0) {
           const detail: string = this.loader.getRustDeskLastError() || this.loader.getConnectionLastMessage(sid);
@@ -7116,15 +7163,22 @@ struct HostListPage {
                   SymbolGlyph($r('sys.symbol.lock_fill'))
                     .fontSize(22).fontColor([this.totpPageLocked ? this.accentColor : this.pal().text3])
                 }.width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
-                Text('TOTP 隐私保护')
-                  .fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
-                  .fontColor(this.pal().text).fontFamily(this.font()).layoutWeight(1).margin({ left: 4 })
+                Column() {
+                  Text('TOTP 隐私保护')
+                    .fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
+                    .fontColor(this.pal().text).fontFamily(this.font())
+                  Text(this.totpPageLocked ?
+                    '已开启 · 查看或绑定 2FA 前需要系统身份认证' :
+                    '未开启 · 绑定 RustDesk 2FA 无需额外认证')
+                    .fontSize(10).fontColor(this.pal().text3).fontFamily(this.font())
+                    .margin({ top: 3 })
+                }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
                 Toggle({ type: ToggleType.Switch, isOn: this.totpPageLocked })
                   .selectedColor(this.accentColor)
                   .scale({ x: 0.88, y: 0.88 })
                   .onChange(async (on: boolean) => {
                     if (on) {
-                      const r = await showLockGate('绑定 2FA 保护', 'biometric');
+                      const r = await showLockGate('开启 TOTP 隐私保护，请验证系统身份', 'biometric');
                       if (r.ok) {
                         this.totpPageLocked = true;
                         this.saveTotpLock(true);
@@ -7134,7 +7188,7 @@ struct HostListPage {
                         this.totpPageLocked = false;
                       }
                     } else {
-                      const r = await showLockGate('解除 2FA 保护', 'biometric');
+                      const r = await showLockGate('关闭 TOTP 隐私保护，请验证系统身份', 'biometric');
                       if (r.ok) {
                         this.totpPageLocked = false;
                         AppStorage.setOrCreate('totpUnlocked', false);
@@ -10153,7 +10207,10 @@ struct HostListPage {
           Column() {
             Text('连接时自动生成并填写').fontSize(12).fontColor(this.pal().text)
               .fontFamily(this.font())
-            Text('仅保存条目 ID，连接前仍需系统身份认证').fontSize(10).fontColor(this.pal().text3)
+            Text(this.totpPageLocked ?
+              '仅保存条目 ID，连接前仍需系统身份认证' :
+              '仅保存条目 ID，连接前无需额外身份认证')
+              .fontSize(10).fontColor(this.pal().text3)
               .fontFamily(this.font())
           }.alignItems(HorizontalAlign.Start).layoutWeight(1)
           Toggle({ type: ToggleType.Switch, isOn: this.sheetRustdeskTotpAutoSubmit })
@@ -10177,7 +10234,9 @@ struct HostListPage {
           .fontColor(this.accentColor)
           .onClick((): void => { this.closeRustDeskTotpBinding(true); })
       }.width('100%')
-      Text('绑定只保存验证器条目 ID，不会复制或同步 TOTP 密钥；每次自动填写前仍会经过系统身份认证。')
+      Text(this.totpPageLocked ?
+        'TOTP 隐私保护已开启：绑定前需要系统身份认证。绑定只保存验证器条目 ID，不会复制或同步 TOTP 密钥。' :
+        'TOTP 隐私保护未开启：绑定无需额外身份认证。绑定只保存验证器条目 ID，不会复制或同步 TOTP 密钥。')
         .fontSize(12).fontColor(this.pal().text2).width('100%')
       if (this.keyVault.getAllTotpEntries().length === 0) {
         Column({ space: 8 }) {

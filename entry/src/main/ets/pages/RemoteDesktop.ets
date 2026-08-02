@@ -1600,7 +1600,9 @@ struct RemoteDesktop {
       this.rustDeskSessionPassword = this.rustDeskAuthPasswordInput;
       this.rustDeskSessionRememberPassword = this.rustDeskAuthRememberPassword;
     } else {
-      // 保留已保存密码作为回退材料，但本次 FFI 连接明确走批准模式。
+      // Approval is a passwordless request.  Keep the persisted host record
+      // untouched, but remove its password from this transient connection.
+      selected.password = '';
       selected.rustdeskAuthMode = 'request_approval';
       this.rustDeskSessionPassword = '';
       this.rustDeskSessionRememberPassword = false;
@@ -1698,44 +1700,61 @@ struct RemoteDesktop {
     this.showRustDeskTwoFactorSheet = true;
   }
 
-  private async tryAutoSubmitRustDeskTwoFactor(sessionId: number, host: RemoteHost): Promise<void> {
+  private async tryAutoSubmitRustDeskTwoFactor(sessionId: number, host: RemoteHost): Promise<boolean> {
     if (!host.rustdeskTotpAutoSubmit || host.rustdeskTotpEntryId === '' ||
       this.rustDeskTwoFactorAutoAttemptSessionId === sessionId) {
-      return;
+      // `true` means an automatic flow was already handled for this session;
+      // the caller must not reopen the manual sheet on every auth poll.
+      return host.rustdeskTotpAutoSubmit && host.rustdeskTotpEntryId !== '';
     }
     this.rustDeskTwoFactorAutoAttemptSessionId = sessionId;
-    // The secret is released only after the system authentication gate.  The
-    // native side receives the short-lived code only; it never receives the
-    // TOTP secret or the vault entry.
-    const gate = await showLockGate('RustDesk 2FA 自动填写', 'biometric');
-    if (this.sessionId !== sessionId || this.connectAttemptId <= 0 ||
-      this.rustDeskTwoFactorSheetClosing || this.rustDeskTwoFactorDismissReason !== 'none') {
-      return;
-    }
-    if (!gate.ok) {
-      this.openRustDeskTwoFactorPrompt(sessionId, lockGateErrorMessage(gate) ||
-        '未通过系统身份认证，请手动输入验证码。');
-      return;
+    const totpPrivacyProtected: boolean = AppStorage.get<boolean>('totpLocked') ?? false;
+    if (totpPrivacyProtected) {
+      // The secret is released only after the system authentication gate when
+      // TOTP privacy protection is enabled. The native side receives the
+      // short-lived code only; it never receives the TOTP secret or vault entry.
+      const gate = await showLockGate(
+        'TOTP 隐私保护已开启，请验证系统身份后自动填写 RustDesk 2FA', 'biometric');
+      if (this.sessionId !== sessionId || this.connectAttemptId <= 0 ||
+        this.rustDeskTwoFactorSheetClosing || this.rustDeskTwoFactorDismissReason !== 'none') {
+        return true;
+      }
+      if (!gate.ok) {
+        let message: string =
+          'TOTP 隐私保护已开启，自动填写 RustDesk 2FA 前需要完成系统身份认证。';
+        if (gate.code === 12500010) {
+          message = 'TOTP 隐私保护已开启，但系统尚未录入 PIN、指纹或人脸。请先到系统设置完成锁屏认证，或手动输入验证码。';
+        } else if (gate.code === 12500003) {
+          message = 'TOTP 隐私保护已开启，系统身份认证已取消，请手动输入验证码。';
+        } else {
+          const detail: string = lockGateErrorMessage(gate);
+          if (detail !== '') { message += '（' + detail + '）'; }
+        }
+        this.openRustDeskTwoFactorPrompt(sessionId, message);
+        return true;
+      }
     }
     const entry: TotpEntry | undefined = this.keyVault.getTotpEntry(host.rustdeskTotpEntryId);
     if (entry === undefined || entry.secret.length === 0) {
       this.openRustDeskTwoFactorPrompt(sessionId, '已绑定的 2FA 条目不可用，请手动输入验证码。');
-      return;
+      return true;
     }
     const generated = TotpEngine.generateCode(entry);
     const autoSubmitError: string = rustDeskPeerTwoFactorAutoSubmitError(entry, generated);
     if (autoSubmitError !== '') {
       this.openRustDeskTwoFactorPrompt(sessionId, autoSubmitError);
-      return;
+      return true;
     }
     if (!this.loader.submitRustDesk2FA(sessionId, generated.code)) {
       this.openRustDeskTwoFactorPrompt(sessionId, this.loader.getRustDeskLastError() ||
         '自动提交验证码失败，请手动输入。');
-      return;
+      return true;
     }
     this.rustDeskTwoFactorSubmitting = true;
-    this.openRustDeskTwoFactorPrompt(sessionId, '2FA code submitted');
-    this.rustDeskTwoFactorSubmitting = true;
+    // A successful automatic submission must not reopen the manual-entry
+    // sheet.  The connection wait loop continues until native accepts or
+    // reports a wrong code, at which point the manual sheet is opened.
+    return true;
   }
 
   private closeRustDeskTwoFactor(
@@ -6356,10 +6375,13 @@ struct RemoteDesktop {
       }
       if (protocol === 'rustdesk' && state === 5) {
         const authMessage: string = this.loader.getConnectionLastMessage(sessionId);
+        let automaticFlowHandled: boolean = false;
         if (host !== null) {
-          await this.tryAutoSubmitRustDeskTwoFactor(sessionId, host);
+          automaticFlowHandled = await this.tryAutoSubmitRustDeskTwoFactor(sessionId, host);
         }
-        this.openRustDeskTwoFactorPrompt(sessionId, authMessage);
+        if (!automaticFlowHandled || authMessage.indexOf('Wrong 2FA Code') >= 0) {
+          this.openRustDeskTwoFactorPrompt(sessionId, authMessage);
+        }
       }
       const terminal: boolean = protocol === 'vnc' ?
         shouldTreatVncConnectionStateAsTerminal(state, observedConnecting, Date.now() - startedAt) :
@@ -7656,6 +7678,9 @@ struct RemoteDesktop {
         }
       }
       const rustDeskDirect: boolean = host.protocol === 'rustdesk' && host.rustdeskDirectEnabled;
+      const rustDeskRequestApproval: boolean = host.protocol === 'rustdesk' &&
+        rustDeskAuthModeForConnection(rustDeskDirect, host.rustdeskAuthMode) ===
+          'request_approval';
       const rustDeskStrategy: RustDeskConnectionStrategy =
         rustDeskConnectionStrategyForHost(rustDeskDirect);
       const rustDeskStrategyAvailability: RustDeskConnectionStrategyAvailability =
@@ -7695,7 +7720,8 @@ struct RemoteDesktop {
         port: sessionPort,
         username: credentials.username,
         password: isVnc ? vncPassword :
-          (host.protocol === 'rdp' && rdpAuthMode !== 'password' ? '' : host.password),
+          (host.protocol === 'rdp' && rdpAuthMode !== 'password' ? '' :
+            (rustDeskRequestApproval ? '' : host.password)),
         width: w,
         height: h,
         customHostname: host.customHostname,
@@ -7733,8 +7759,7 @@ struct RemoteDesktop {
         rdpAllowUntrustedRoot: host.rdpCertificateAllowUntrustedRoot,
         rdpAllowHostMismatch: host.rdpCertificateAllowHostMismatch,
         rdPasswordMode: host.rustdeskPasswordMode,
-        rdAuthMode: rustDeskAuthModeForConnection(rustDeskDirect, host.rustdeskAuthMode) ===
-          'request_approval' ? 1 : 0,
+        rdAuthMode: rustDeskRequestApproval ? 1 : 0,
         rdRelayId: host.rustdeskRelayId,
         rdAccountId: rdAccountId,
         rdServerKey: rdServerKey,

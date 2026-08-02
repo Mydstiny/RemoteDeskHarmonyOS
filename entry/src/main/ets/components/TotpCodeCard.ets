@@ -27,6 +27,7 @@ import {
   TotpBrandAvatarToken,
   totpBrandAssetVisibility
 } from '../services/TotpBrandAvatarState';
+import { totpBrandAssetResource } from '../services/TotpBrandAssetRegistry';
 
 @Component
 export struct TotpCodeCard {
@@ -44,6 +45,7 @@ export struct TotpCodeCard {
   @State remaining: number = 30;
   @State brandReady: boolean = false;
   @State brandFailed: boolean = false;
+  @State brandResourceFailed: boolean = false;
   @State brandPixelMap: image.PixelMap | null = null;
   private tickerUnsubscribe: (() => void) | null = null;
   private avatarState: TotpBrandAvatarState = new TotpBrandAvatarState();
@@ -144,6 +146,7 @@ export struct TotpCodeCard {
     this.avatarKey = this.brandKey(visual);
     this.brandReady = false;
     this.brandFailed = false;
+    this.brandResourceFailed = false;
     this.avatarToken = this.avatarState.begin(
       this.entry.id, visual.slug + ':' + visual.sha256);
     if (this.avatarToken !== null) {
@@ -256,7 +259,17 @@ export struct TotpCodeCard {
 
   private shouldRenderBrandAsset(visual: TotpBrandVisual): boolean {
     return visual.avatarMode === 'local' && this.brandPixelMap !== null &&
+      (this.directBrandResource(visual) === null || this.brandResourceFailed) &&
       !this.localBrandFailed(visual);
+  }
+
+  private directBrandResource(visual: TotpBrandVisual): Resource | null {
+    if (visual.avatarMode !== 'local' || visual.slug.length === 0) { return null; }
+    return totpBrandAssetResource(visual.slug);
+  }
+
+  private shouldRenderDirectBrandResource(visual: TotpBrandVisual): boolean {
+    return this.directBrandResource(visual) !== null && !this.brandResourceFailed;
   }
 
   @Builder
@@ -265,12 +278,35 @@ export struct TotpCodeCard {
     token: TotpBrandAvatarToken | null
   ) {
     Stack({ alignContent: Alignment.Center }) {
-      Text(visual.initials)
-        .fontSize(18).fontWeight(FontWeight.Bold)
-        .fontColor(visual.foreground)
-        .fontFamily(AppTheme.fontFamily)
-        .textAlign(TextAlign.Center)
-        .maxLines(1)
+      if (!this.shouldRenderDirectBrandResource(visual) && !this.shouldRenderBrandAsset(visual)) {
+        Text(visual.initials)
+          .fontSize(18).fontWeight(FontWeight.Bold)
+          .fontColor(visual.foreground)
+          .fontFamily(AppTheme.fontFamily)
+          .textAlign(TextAlign.Center)
+          .maxLines(1)
+      }
+      if (this.shouldRenderDirectBrandResource(visual)) {
+        Image(this.directBrandResource(visual) as Resource)
+          .width(42).height(42).padding(9).borderRadius(21)
+          .backgroundColor(this.pal().surface)
+          .objectFit(ImageFit.Contain)
+          .onComplete((): void => {
+            if (token !== null && this.avatarState.onComplete(token)) {
+              this.brandReady = true;
+              this.brandFailed = false;
+            }
+          })
+          .onError((): void => {
+            if (this.avatarKey === this.brandKey(visual)) {
+              // Rawfile is the primary source.  If a malformed/missing asset
+              // is ever shipped, fall back to the existing decoded asset or
+              // initials instead of leaving a broken Image node in the card.
+              this.brandResourceFailed = true;
+              this.brandReady = false;
+            }
+          })
+      }
       if (this.shouldRenderBrandAsset(visual)) {
         Image(this.brandPixelMap as image.PixelMap)
           .width(42).height(42).padding(9).borderRadius(21)
@@ -310,9 +346,9 @@ export struct TotpCodeCard {
           .margin({ right: 8 })
           .onChange((v: boolean) => { if (this.onCheckChange) { this.onCheckChange(v); } })
       }
-      // Initials are always the first paint. A local SVG can replace them only
-      // after it is ready; an asset error leaves the initials visible. No
-      // legacy URL or runtime URL is consulted here.
+      // Known brands use the bundled rawfile resource directly.  Initials are
+      // reserved for explicit initials mode or a real local-asset failure;
+      // no legacy URL or runtime URL is consulted here.
       this.brandAvatar(this.visualForBuild(), this.avatarToken)
 
       Column() {

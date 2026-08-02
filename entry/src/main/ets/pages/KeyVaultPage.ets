@@ -754,7 +754,7 @@ export struct KeyVaultPage {
                 Button('验证身份').width('60%').height(40).fontSize(14).fontWeight(FontWeight.Medium)
                   .backgroundColor(this.accentColor).fontColor('#FFFFFF').borderRadius(10)
                   .onClick(async () => {
-                    const r = await showLockGate('2FA 验证器', 'biometric');
+                    const r = await showLockGate('TOTP 隐私保护已开启，请验证系统身份', 'biometric');
                     if (r.ok) { this.totpUnlocked = true; }
                     else {
                       const msg: string = lockGateErrorMessage(r);
@@ -1023,7 +1023,7 @@ export struct KeyVaultPage {
                 }.width(80).height(32).borderRadius(16).justifyContent(FlexAlign.Center)
                 .onClick(async () => {
                   if (this.totpPageLocked && !this.totpUnlocked) {
-                    const r = await showLockGate('2FA 验证器', 'biometric');
+                    const r = await showLockGate('TOTP 隐私保护已开启，请验证系统身份', 'biometric');
                     if (r.ok) { this.showSheet = false; this.showSheet = false; this.totpUnlocked = true; this.keyVaultInnerTab = 1; }
                     else {
                       const msg: string = lockGateErrorMessage(r);
@@ -1207,7 +1207,7 @@ export struct KeyVaultPage {
               .backgroundColor(this.accentColor).fontColor('#FFFFFF').borderRadius(10)
               .shadow({ radius: 10, color: this.pal().fabGlow, offsetY: 2 })
               .onClick(async () => {
-                const r = await showLockGate('2FA 验证器', 'biometric');
+                const r = await showLockGate('TOTP 隐私保护已开启，请验证系统身份', 'biometric');
                 if (r.ok) { this.totpUnlocked = true; }
                 else {
                   const msg: string = lockGateErrorMessage(r);
