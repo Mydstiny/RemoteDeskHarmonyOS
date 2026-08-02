@@ -3,10 +3,10 @@
   "task": "rustdesk-complete-repair",
   "branch": "codex/rustdesk-complete-repair",
   "base": "34946adbc",
-  "head": "cc87e9aaef3531695472d499d5575347cb5714f1",
+  "head": "fc9daa13f",
   "phase": "vnc-v3-stage-d-implementation",
   "status": "active",
-  "next": "Stage D checkpoint cc87e9aae adds trust-v2 metadata, v1 candidate migration, store-bound markers, and the unified Data Security manager; await the single incremental review before the follow-up invalidation/backup segment.",
+  "next": "Stage D checkpoint fc9daa13f adds endpoint-bound manager lookup/status, multi-target recheck routing, v1 migration cleanup/read-back and before-image rollback; await the single incremental review before the follow-up invalidation/backup segment.",
   "blockers": [
     "hdc list targets and hdc shell return Connect server failed; no current hilog evidence.",
     "ohosTest@OhosTestCompileArkTS is not registered (00306054); ArkTS tests have compile/build evidence only.",
@@ -20,24 +20,24 @@
     "status": "REVIEW_REQUIRED",
     "taskId": "019fc333-6789-7633-bf6f-3fea1cb2ad4d",
     "scope": [
-      "entry/src/main/ets/components/VncSettingsSheet.ets",
       "entry/src/main/ets/components/VncCertificateTrustManagerSheet.ets",
       "entry/src/main/ets/pages/HostListPage.ets",
-      "entry/src/main/ets/pages/RemoteDesktop.ets",
       "entry/src/main/ets/pages/VncSettingsPage.ets",
-      "entry/src/main/ets/services/VncModelPolicy.ets",
-      "entry/src/main/ets/services/VncRecordPolicy.ets",
+      "entry/src/main/ets/services/VncTrustEndpointDirectory.ets",
       "entry/src/main/ets/services/VncTrustService.ets",
+      "entry/src/ohosTest/ets/test/List.test.ets",
+      "entry/src/test/List.test.ets",
+      "entry/src/test/VncTrustEndpointDirectory.test.ets",
       "entry/src/test/VncTrustService.test.ets"
     ],
-    "reason": "Stage D trust-v2 and unified VNC certificate manager checkpoint cc87e9aae is ready for the existing independent read-only reviewer; reuse the task exactly once."
+    "reason": "Stage D manager endpoint/migration fix checkpoint fc9daa13f is ready for the existing independent read-only reviewer; reuse the task exactly once."
   },
   "lastVerification": {
-    "rdp_native_tests": "249-pass-0-fail-loopback-fixtures-host-socket-cc87e9aae-2026-08-02",
-    "default@OhosTestCompileArkTS": "pass-after-cc87e9aae-2026-08-02",
-    "assembleHap": "pass-after-cc87e9aae-2026-08-02",
+    "rdp_native_tests": "249-pass-0-fail-loopback-fixtures-host-socket-fc9daa13f-2026-08-02",
+    "default@OhosTestCompileArkTS": "pass-after-fc9daa13f-2026-08-02",
+    "assembleHap": "pass-after-fc9daa13f-2026-08-02",
     "ohosTest@OhosTestCompileArkTS": "blocked-task-00306054-2026-08-02",
-    "diffCheck": "pass-after-cc87e9aae-2026-08-02"
+    "diffCheck": "pass-after-fc9daa13f-2026-08-02"
   },
   "archives": [
     "docs/codex/archive/2026-08/README.md",

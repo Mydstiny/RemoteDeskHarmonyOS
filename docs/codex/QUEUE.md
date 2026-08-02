@@ -4,9 +4,9 @@ Updated: 2026-08-02 Asia/Shanghai
 
 ## Now
 
-- Stage D implementation checkpoint `cc87e9aae` is ready for the single
-  independent incremental review: trust-v2 metadata, v1 candidate migration,
-  physical-store-bound markers, and the unified certificate manager.
+- Stage D implementation checkpoint `fc9daa13f` is ready for the single
+  independent incremental review: endpoint-bound manager lookup/status,
+  multi-target recheck routing, and v1 migration cleanup/read-back.
 - Preserve stage A/B and C-first review receipts; keep probe/pin failures
   fail-closed.
 - Restore `hdc` connectivity and capture current VNC `hilog` when the device is
