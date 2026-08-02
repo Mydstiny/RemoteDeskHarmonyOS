@@ -47,6 +47,11 @@ function normalizedFingerprint(value: string): string {
   return value.trim().toLowerCase();
 }
 
+function hasLocalConfirmation(trust: VncCertificateTrustView): boolean {
+  return trust.confirmed && !trust.cloudCandidate &&
+    Number.isSafeInteger(trust.confirmedAt) && trust.confirmedAt > 0;
+}
+
 export function isVncSha256Fingerprint(value: string): boolean {
   return /^[0-9a-f]{64}$/.test(normalizedFingerprint(value));
 }
@@ -69,7 +74,7 @@ export function classifyVncCertificateProbe(probe: VncCertificateProbeView,
   if (normalizedFingerprint(trust.fingerprintSha256) !== fingerprint) {
     return VncCertificatePreflightState.CERTIFICATE_CHANGED;
   }
-  if (!trust.confirmed) {
+  if (!hasLocalConfirmation(trust)) {
     return VncCertificatePreflightState.TRUST_FIRST_TIME;
   }
   return VncCertificatePreflightState.TRUSTED_MATCH;
@@ -85,10 +90,15 @@ export function classifyVncCertificateProbeForOwner(
   storeIdentityFingerprint: string,
   endpointBindingFingerprint: string
 ): VncCertificatePreflightState {
+  if (ownerId.trim() === '' || userId.trim() === '' ||
+    !isVncSha256Fingerprint(storeIdentityFingerprint) ||
+    !isVncSha256Fingerprint(endpointBindingFingerprint)) {
+    return classifyVncCertificateProbe(probe, null);
+  }
   if (trust !== null && (trust.ownerType !== ownerType || trust.ownerId.trim() !== ownerId.trim() ||
     trust.userId.trim() !== userId.trim() ||
-    trust.storeIdentityFingerprint.trim().toLowerCase() !== storeIdentityFingerprint.trim().toLowerCase() ||
-    trust.endpointBindingFingerprint.trim() !== endpointBindingFingerprint.trim())) {
+    normalizedFingerprint(trust.storeIdentityFingerprint) !== normalizedFingerprint(storeIdentityFingerprint) ||
+    normalizedFingerprint(trust.endpointBindingFingerprint) !== normalizedFingerprint(endpointBindingFingerprint))) {
     return classifyVncCertificateProbe(probe, null);
   }
   return classifyVncCertificateProbe(probe, trust);

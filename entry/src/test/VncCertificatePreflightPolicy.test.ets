@@ -58,6 +58,17 @@ export default function vncCertificatePreflightPolicyTest(): void {
         .assertEqual(VncCertificatePreflightState.CERTIFICATE_CHANGED);
     });
 
+    it('rejects_cloud_candidates_and_invalid_local_markers', 0, (): void => {
+      const candidate: VncCertificateTrustView = trust(FINGERPRINT_A, true);
+      candidate.cloudCandidate = true;
+      expect(classifyVncCertificateProbe(probe(), candidate))
+        .assertEqual(VncCertificatePreflightState.TRUST_FIRST_TIME);
+      const malformedMarker: VncCertificateTrustView = trust(FINGERPRINT_A, true);
+      malformedMarker.confirmedAt = 0;
+      expect(classifyVncCertificateProbe(probe(), malformedMarker))
+        .assertEqual(VncCertificatePreflightState.TRUST_FIRST_TIME);
+    });
+
     it('invalidates_a_saved_pin_when_owner_or_binding_changes', 0, (): void => {
       const changedOwner: VncCertificateTrustView = trust(FINGERPRINT_A, true);
       changedOwner.ownerType = 'gateway';
@@ -67,6 +78,21 @@ export default function vncCertificatePreflightPolicyTest(): void {
       const changedBinding: VncCertificateTrustView = trust(FINGERPRINT_A, true);
       expect(classifyVncCertificateProbeForOwner(
         probe(), changedBinding, 'host', 'host-1', 'user-1', STORE_FINGERPRINT, 'f'.repeat(64)))
+        .assertEqual(VncCertificatePreflightState.TRUST_FIRST_TIME);
+      const changedUser: VncCertificateTrustView = trust(FINGERPRINT_A, true);
+      expect(classifyVncCertificateProbeForOwner(
+        probe(), changedUser, 'host', 'host-1', 'other-user', STORE_FINGERPRINT, BINDING_FINGERPRINT))
+        .assertEqual(VncCertificatePreflightState.TRUST_FIRST_TIME);
+      const changedStore: VncCertificateTrustView = trust(FINGERPRINT_A, true);
+      expect(classifyVncCertificateProbeForOwner(
+        probe(), changedStore, 'host', 'host-1', 'user-1', 'f'.repeat(64), BINDING_FINGERPRINT))
+        .assertEqual(VncCertificatePreflightState.TRUST_FIRST_TIME);
+      const changedHost: VncCertificateTrustView = trust(FINGERPRINT_A, true);
+      expect(classifyVncCertificateProbeForOwner(
+        probe(), changedHost, 'host', 'other-host', 'user-1', STORE_FINGERPRINT, BINDING_FINGERPRINT))
+        .assertEqual(VncCertificatePreflightState.TRUST_FIRST_TIME);
+      expect(classifyVncCertificateProbeForOwner(
+        probe(), trust(FINGERPRINT_A, true), 'host', 'host-1', 'user-1', STORE_FINGERPRINT, 'invalid'))
         .assertEqual(VncCertificatePreflightState.TRUST_FIRST_TIME);
     });
 

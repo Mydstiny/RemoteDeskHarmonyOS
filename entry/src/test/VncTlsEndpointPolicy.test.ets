@@ -62,10 +62,40 @@ export default function vncTlsEndpointPolicyTest(): void {
       otherScope.userId = 'other-user';
       expect(resolveVncTlsEndpoint(host('ultravnc_repeater'), otherScope).errorCode)
         .assertEqual('E-VNC-ENDPOINT-OWNER');
+      const otherStore: VncTlsGatewayInput = gateway();
+      otherStore.storeIdentityFingerprint = 'f'.repeat(64);
+      expect(resolveVncTlsEndpoint(host('ultravnc_repeater'), otherStore).errorCode)
+        .assertEqual('E-VNC-ENDPOINT-OWNER');
       const wrongTransport: VncTlsGatewayInput = gateway();
       wrongTransport.transport = 'websocket_gateway';
       expect(resolveVncTlsEndpoint(host('ultravnc_repeater'), wrongTransport).errorCode)
         .assertEqual('E-VNC-GATEWAY-TRANSPORT');
+    });
+
+    it('fails_closed_for_invalid_direct_and_repeater_combinations', 0, (): void => {
+      const direct: VncTlsHostInput = host();
+      expect(resolveVncTlsEndpoint(direct, gateway()).errorCode)
+        .assertEqual('E-VNC-ENDPOINT-OWNER');
+      const invalidStore: VncTlsHostInput = host();
+      invalidStore.storeIdentityFingerprint = 'not-a-fingerprint';
+      expect(resolveVncTlsEndpoint(invalidStore, null).errorCode)
+        .assertEqual('E-VNC-ENDPOINT-OWNER');
+      const noTlsGateway: VncTlsGatewayInput = gateway();
+      noTlsGateway.tls = false;
+      expect(resolveVncTlsEndpoint(host('ultravnc_repeater'), noTlsGateway).errorCode)
+        .assertEqual('E-VNC-TLS-REQUIRED');
+      const disabledGateway: VncTlsGatewayInput = gateway();
+      disabledGateway.enabled = false;
+      expect(resolveVncTlsEndpoint(host('ultravnc_repeater'), disabledGateway).errorCode)
+        .assertEqual('E-VNC-GATEWAY-DISABLED');
+      const wrongMode: VncTlsGatewayInput = gateway();
+      wrongMode.repeaterMode = 'mode2';
+      expect(resolveVncTlsEndpoint(host('ultravnc_repeater'), wrongMode).errorCode)
+        .assertEqual('E-VNC-GATEWAY-TRANSPORT');
+      const noTarget: VncTlsHostInput = host('ultravnc_repeater');
+      noTarget.targetId = '';
+      expect(resolveVncTlsEndpoint(noTarget, gateway()).errorCode)
+        .assertEqual('E-VNC-REPEATER-TARGET');
     });
 
     it('uses_legacy_gateway_target_only_as_a_compatibility_fallback', 0, (): void => {

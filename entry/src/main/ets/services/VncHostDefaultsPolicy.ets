@@ -36,7 +36,9 @@ function directDefaults(port: number, usedFallback: boolean,
 
 export function isSelectableVncDefaultGateway(gateway: VncSelectableGateway,
   userId: string): boolean {
-  return gateway.id.trim() !== '' && gateway.userId.trim() === userId.trim() &&
+  const normalizedUserId: string = userId.trim();
+  return normalizedUserId !== '' && gateway.id.trim() !== '' &&
+    gateway.userId.trim() !== '' && gateway.userId.trim() === normalizedUserId &&
     gateway.transport === 'ultravnc_repeater' && gateway.repeaterMode === 'mode12' &&
     gateway.enabled;
 }
@@ -45,6 +47,9 @@ export function isSelectableVncDefaultGateway(gateway: VncSelectableGateway,
 export function resolveVncHostDefaults(settings: VncSettingsValues,
   userId: string, gateways: VncSelectableGateway[]): VncHostDefaultsResolution {
   const port: number = validVncPort(settings.defaultPort) ? Math.floor(settings.defaultPort) : 5900;
+  if (userId.trim() === '') {
+    return directDefaults(port, true, 'E-VNC-DEFAULT-OWNER');
+  }
   if (settings.defaultTransport === 'direct_tcp') {
     return directDefaults(port, false, '');
   }

@@ -48,5 +48,16 @@ export default function vncHostDefaultsPolicyTest(): void {
       expect(result.fallbackCode).assertEqual('E-VNC-DEFAULT-GATEWAY');
       expect(resolveVncHostDefaults(values, 'other-user', [gateway()]).usedFallback).assertTrue();
     });
+
+    it('rejects_blank_account_scope_before_gateway_selection', 0, (): void => {
+      const values: VncSettingsValues = settings();
+      values.defaultTransport = 'ultravnc_repeater';
+      values.defaultGatewayId = 'gateway-1';
+      const result = resolveVncHostDefaults(values, '  ', [gateway()]);
+      expect(result.transport).assertEqual('direct_tcp');
+      expect(result.gatewayId).assertEqual('');
+      expect(result.usedFallback).assertTrue();
+      expect(result.fallbackCode).assertEqual('E-VNC-DEFAULT-OWNER');
+    });
   });
 }
