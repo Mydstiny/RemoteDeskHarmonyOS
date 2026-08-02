@@ -61,6 +61,9 @@ constexpr size_t kMaxResolvedAddresses = 16;
 constexpr int kMaxPeerChainDepth = 8;
 constexpr int kMinTimeoutMs = 100;
 constexpr int kMaxTimeoutMs = 120000;
+constexpr int kMaxConcurrentResolvers = 8;
+
+std::atomic<int> g_activeResolvers {0};
 
 using Clock = std::chrono::steady_clock;
 
@@ -161,8 +164,18 @@ bool setNonBlocking(int fd) {
 WaitStatus connectAddress(int fd, const sockaddr* address, socklen_t addressLength,
                           const ProbeDeadline& deadline,
                           const std::shared_ptr<std::atomic_bool>& token) {
+    if (isCancelled(token)) {
+        return WaitStatus::Cancelled;
+    }
+    int remainingMs = 0;
+    if (!hasTimeRemaining(deadline, remainingMs)) {
+        return WaitStatus::TimedOut;
+    }
     if (::connect(fd, address, addressLength) == 0) {
-        return WaitStatus::Ready;
+        if (isCancelled(token)) {
+            return WaitStatus::Cancelled;
+        }
+        return hasTimeRemaining(deadline, remainingMs) ? WaitStatus::Ready : WaitStatus::TimedOut;
     }
     if (errno != EINPROGRESS) {
         return WaitStatus::Failed;
@@ -201,8 +214,19 @@ WaitStatus resolveAddresses(const std::string& host, const std::string& port,
                             const ProbeDeadline& deadline,
                             const std::shared_ptr<std::atomic_bool>& token,
                             std::vector<ResolvedAddress>& addresses, int& lookupResult) {
+    const int previousResolvers = g_activeResolvers.fetch_add(1, std::memory_order_acq_rel);
+    if (previousResolvers >= kMaxConcurrentResolvers) {
+        g_activeResolvers.fetch_sub(1, std::memory_order_acq_rel);
+        lookupResult = EAI_AGAIN;
+        return WaitStatus::Failed;
+    }
     auto state = std::make_shared<ResolveState>();
-    std::thread resolver([state, host, port]() {
+    std::thread resolver;
+    try {
+        resolver = std::thread([state, host, port]() {
+        struct ResolverCounter {
+            ~ResolverCounter() { g_activeResolvers.fetch_sub(1, std::memory_order_acq_rel); }
+        } resolverCounter;
         addrinfo hints {};
         hints.ai_family = AF_UNSPEC;
         hints.ai_socktype = SOCK_STREAM;
@@ -239,7 +263,12 @@ WaitStatus resolveAddresses(const std::string& host, const std::string& port,
             state->done = true;
         }
         state->condition.notify_one();
-    });
+        });
+    } catch (...) {
+        g_activeResolvers.fetch_sub(1, std::memory_order_acq_rel);
+        lookupResult = EAI_MEMORY;
+        return WaitStatus::Failed;
+    }
 
     WaitStatus status = WaitStatus::Ready;
     {
@@ -267,14 +296,15 @@ WaitStatus resolveAddresses(const std::string& host, const std::string& port,
             }
         }
     }
-    if (status == WaitStatus::Ready || state->done) {
-        resolver.join();
-    } else {
-        // A platform resolver may remain in libc after the caller's deadline.
-        // Detach only that resolver; its shared state owns all copied results
-        // and frees the native addrinfo before publishing completion.
-        resolver.detach();
-    }
+        if (status == WaitStatus::Ready || state->done) {
+            resolver.join();
+        } else {
+            // A platform resolver may remain in libc after the caller's deadline.
+            // Detach only that resolver; its shared state owns all copied results
+            // and frees the native addrinfo before publishing completion. The
+            // bounded in-flight gate prevents unbounded detached-thread growth.
+            resolver.detach();
+        }
     return status;
 }
 
@@ -395,6 +425,27 @@ std::string tlsVersionCategory(const char* version) {
         return "TLS1.3";
     }
     return "unsupported";
+}
+
+bool tlsHandshakeErrorIsVersionFailure() {
+    const unsigned long error = ERR_peek_last_error();
+    if (error == 0) {
+        return false;
+    }
+    const int reason = ERR_GET_REASON(error);
+#ifdef SSL_R_UNSUPPORTED_PROTOCOL
+    if (reason == SSL_R_UNSUPPORTED_PROTOCOL) return true;
+#endif
+#ifdef SSL_R_VERSION_TOO_LOW
+    if (reason == SSL_R_VERSION_TOO_LOW) return true;
+#endif
+#ifdef SSL_R_TLSV1_ALERT_PROTOCOL_VERSION
+    if (reason == SSL_R_TLSV1_ALERT_PROTOCOL_VERSION) return true;
+#endif
+#ifdef SSL_R_PROTOCOL_VERSION
+    if (reason == SSL_R_PROTOCOL_VERSION) return true;
+#endif
+    return false;
 }
 
 std::string cipherCategory(const SSL_CIPHER* cipher) {
@@ -644,9 +695,15 @@ VncCertificateInfo probeVncCertificate(const VncCertificateProbeConfig& config) 
             tlsStatus = WaitStatus::Cancelled;
             break;
         }
+        int remainingMs = 0;
+        if (!hasTimeRemaining(deadline, remainingMs)) {
+            tlsStatus = WaitStatus::TimedOut;
+            break;
+        }
         const int result = SSL_connect(ssl);
         if (result == 1) {
-            tlsStatus = WaitStatus::Ready;
+            tlsStatus = hasTimeRemaining(deadline, remainingMs) ?
+                WaitStatus::Ready : WaitStatus::TimedOut;
             break;
         }
         const int sslError = SSL_get_error(ssl, result);
@@ -662,9 +719,16 @@ VncCertificateInfo probeVncCertificate(const VncCertificateProbeConfig& config) 
         }
     }
     if (tlsStatus != WaitStatus::Ready) {
+        X509* partialCertificate = SSL_get_peer_certificate(ssl);
+        const bool noPeerCertificate = partialCertificate == nullptr;
+        if (partialCertificate != nullptr) {
+            X509_free(partialCertificate);
+        }
         const VncCertificateProbeErrorCode code =
             tlsStatus == WaitStatus::Cancelled ? VncCertificateProbeErrorCode::Cancelled :
             tlsStatus == WaitStatus::TimedOut ? VncCertificateProbeErrorCode::TlsTimeout :
+            tlsHandshakeErrorIsVersionFailure() ? VncCertificateProbeErrorCode::TlsVersionRejected :
+            noPeerCertificate ? VncCertificateProbeErrorCode::NoCertificate :
             VncCertificateProbeErrorCode::TlsHandshakeFailed;
         SSL_free(ssl);
         SSL_CTX_free(context);

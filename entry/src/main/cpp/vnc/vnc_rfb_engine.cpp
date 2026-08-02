@@ -435,6 +435,8 @@ void VncRfbEngine::run() {
     transportConfig.repeaterTarget = config_.vncRepeaterTarget;
     transportConfig.expectedCertificateFingerprintSha256 =
         config_.vncExpectedCertificateFingerprintSha256;
+    transportConfig.cancelled = std::shared_ptr<std::atomic_bool>(
+        &stopRequested_, [](std::atomic_bool*) {});
     if (config_.vncTransport == "ultravnc_repeater") {
         if (!config_.vncGatewayHost.empty()) transportConfig.host = config_.vncGatewayHost;
         if (config_.vncGatewayPort > 0) transportConfig.port = config_.vncGatewayPort;

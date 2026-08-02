@@ -64,18 +64,25 @@ class LocalTlsFixture final {
 public:
     explicit LocalTlsFixture(std::string commonName = "localhost", int holdHandshakeMs = 0,
                              bool ipv6 = false, bool expired = false,
-                             bool noCertificate = false, bool trustedRoot = false)
+                             bool noCertificate = false, bool trustedRoot = false,
+                             int protocolVersion = 0)
         : commonName_(std::move(commonName)), holdHandshakeMs_(holdHandshakeMs),
           ipv6_(ipv6), expired_(expired), noCertificate_(noCertificate),
-          trustedRoot_(trustedRoot) {}
+          trustedRoot_(trustedRoot), protocolVersion_(protocolVersion) {}
 
     ~LocalTlsFixture() { stop(); }
 
     bool start() {
         (void)std::signal(SIGPIPE, SIG_IGN);
         context_ = SSL_CTX_new(TLS_server_method());
-        if (context_ == nullptr || SSL_CTX_set_min_proto_version(context_, TLS1_2_VERSION) != 1) {
+        const int minimumVersion = protocolVersion_ == 0 ? TLS1_2_VERSION : protocolVersion_;
+        if (context_ == nullptr || SSL_CTX_set_min_proto_version(context_, minimumVersion) != 1) {
             return false;
+        }
+        if (protocolVersion_ != 0) {
+            (void)SSL_CTX_set_max_proto_version(context_, protocolVersion_);
+            (void)SSL_CTX_set_security_level(context_, 0);
+            (void)SSL_CTX_set_cipher_list(context_, "DEFAULT:@SECLEVEL=0");
         }
         if (noCertificate_) {
             // OpenSSL will reject the handshake before a peer certificate is
@@ -314,6 +321,7 @@ private:
     bool expired_ = false;
     bool noCertificate_ = false;
     bool trustedRoot_ = false;
+    int protocolVersion_ = 0;
     SSL_CTX* context_ = nullptr;
     X509* certificate_ = nullptr;
     EVP_PKEY* privateKey_ = nullptr;
@@ -429,8 +437,43 @@ RDP_TEST_CASE(vnc_certificate_probe_handles_a_server_without_a_peer_certificate)
     config.timeoutMs = 1000;
     const VncCertificateInfo result = probeVncCertificate(config);
     RDP_ASSERT(!result.ok);
-    RDP_ASSERT(result.errorCode == static_cast<int>(VncCertificateProbeErrorCode::NoCertificate) ||
-               result.errorCode == static_cast<int>(VncCertificateProbeErrorCode::TlsHandshakeFailed));
+    RDP_ASSERT(result.errorCode == static_cast<int>(VncCertificateProbeErrorCode::NoCertificate));
+}
+
+RDP_TEST_CASE(vnc_certificate_probe_rejects_legacy_tls_versions_with_stable_code) {
+    for (const int version : {TLS1_VERSION, TLS1_1_VERSION}) {
+        LocalTlsFixture fixture("legacy.local", 0, false, false, false, false, version);
+        RDP_ASSERT(fixture.start());
+        VncCertificateProbeConfig config;
+        config.host = "127.0.0.1";
+        config.port = fixture.port();
+        config.serverName = "legacy.local";
+        config.timeoutMs = 2000;
+        const VncCertificateInfo result = probeVncCertificate(config);
+        RDP_ASSERT(!result.ok);
+        RDP_ASSERT(result.errorCode ==
+                   static_cast<int>(VncCertificateProbeErrorCode::TlsVersionRejected));
+        RDP_ASSERT(result.errorMessage.find("E-VNC-CERT-TLS-VERSION") != std::string::npos);
+    }
+}
+
+RDP_TEST_CASE(vnc_transport_rejects_legacy_tls_versions_with_stable_code) {
+    for (const int version : {TLS1_VERSION, TLS1_1_VERSION}) {
+        LocalTlsFixture fixture("legacy.local", 0, false, false, false, false, version);
+        RDP_ASSERT(fixture.start());
+        VncTransportConfig config;
+        config.transport = "direct_tcp";
+        config.host = "127.0.0.1";
+        config.serverName = "legacy.local";
+        config.port = fixture.port();
+        config.tls = true;
+        config.connectTimeoutMs = 2000;
+        VncTransport transport;
+        std::string error;
+        RDP_ASSERT(!transport.connect(config, error));
+        RDP_ASSERT(error == "E-VNC-CERT-TLS-VERSION");
+        transport.close();
+    }
 }
 
 RDP_TEST_CASE(vnc_transport_local_tls_fixture_enforces_pin_and_rotation) {
@@ -524,6 +567,29 @@ RDP_TEST_CASE(vnc_certificate_probe_tls_timeout_and_cancel_are_bounded) {
     RDP_ASSERT(!cancelledResult.ok);
     RDP_ASSERT(cancelledResult.errorCode ==
                static_cast<int>(VncCertificateProbeErrorCode::Cancelled));
+}
+
+RDP_TEST_CASE(vnc_transport_tls_cancel_returns_a_stable_code) {
+    LocalTlsFixture fixture("localhost", 500);
+    RDP_ASSERT(fixture.start());
+    VncTransportConfig config;
+    config.transport = "direct_tcp";
+    config.host = "127.0.0.1";
+    config.serverName = "localhost";
+    config.port = fixture.port();
+    config.tls = true;
+    config.connectTimeoutMs = 2000;
+    config.cancelled = std::make_shared<std::atomic_bool>(false);
+    VncTransport transport;
+    std::string error;
+    bool connected = true;
+    std::thread worker([&]() { connected = transport.connect(config, error); });
+    std::this_thread::sleep_for(std::chrono::milliseconds(30));
+    config.cancelled->store(true, std::memory_order_release);
+    worker.join();
+    RDP_ASSERT(!connected);
+    RDP_ASSERT(error == "E-VNC-CERT-CANCELLED");
+    transport.close();
 }
 
 RDP_TEST_CASE(vnc_certificate_probe_dns_resolution_is_bounded) {

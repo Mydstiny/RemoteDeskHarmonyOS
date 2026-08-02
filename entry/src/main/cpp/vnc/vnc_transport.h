@@ -10,6 +10,8 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <atomic>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -27,6 +29,9 @@ struct VncTransportConfig {
     bool tls = false;
     int connectTimeoutMs = 10000;
     std::string expectedCertificateFingerprintSha256;
+    // Shared with the owning connection attempt so close/cancel can produce a
+    // stable certificate cancellation code instead of a generic I/O error.
+    std::shared_ptr<std::atomic_bool> cancelled;
 };
 
 class VncTransport {
@@ -44,7 +49,9 @@ public:
     bool isOpen() const;
 
 private:
-    bool connectTcp(const std::string& host, int port, int timeoutMs, std::string& error);
+    bool connectTcp(const std::string& host, int port, int timeoutMs,
+                    const std::shared_ptr<std::atomic_bool>& cancelled,
+                    std::string& error);
     bool enableTls(const VncTransportConfig& config, std::string& error);
     bool validatePeerCertificate(const std::string& expectedFingerprint, std::string& error);
     bool websocketHandshake(const VncTransportConfig& config, std::string& error);

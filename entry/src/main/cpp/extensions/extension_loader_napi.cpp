@@ -438,12 +438,21 @@ static std::atomic<uint64_t> g_nextSessionOwnerToken {1};
 static std::atomic<int> g_pendingSshConnectId {-1};
 static std::atomic<uint64_t> g_nextVncCertificateProbeRequestId {1};
 static std::mutex g_vncCertificateProbeMutex;
+struct VncCertificateProbeEnvironmentState {
+    std::mutex mutex;
+    std::condition_variable condition;
+    bool closing = false;
+    size_t activeWorks = 0;
+};
 struct VncCertificateProbeRegistration {
     std::shared_ptr<std::atomic_bool> cancelled;
+    std::shared_ptr<VncCertificateProbeEnvironmentState> environmentState;
     napi_env env = nullptr;
     napi_async_work work = nullptr;
 };
 static std::map<uint64_t, VncCertificateProbeRegistration> g_vncCertificateProbeTokens;
+static std::map<napi_env, std::shared_ptr<VncCertificateProbeEnvironmentState>>
+    g_vncCertificateProbeEnvironments;
 static std::atomic<uint64_t> g_napiWheelSendCount {0};
 static std::atomic<uint64_t> g_napiTextSendCount {0};
 static std::atomic<uint64_t> g_napiFileSendCount {0};
@@ -776,9 +785,50 @@ static napi_value CreateVncCertificateInfoValue(napi_env env, const VncCertifica
     return result;
 }
 
-static void RemoveVncCertificateProbeToken(uint64_t requestId) {
+static std::shared_ptr<VncCertificateProbeEnvironmentState>
+GetVncCertificateProbeEnvironmentState(napi_env env) {
     std::lock_guard<std::mutex> lock(g_vncCertificateProbeMutex);
-    g_vncCertificateProbeTokens.erase(requestId);
+    auto it = g_vncCertificateProbeEnvironments.find(env);
+    if (it != g_vncCertificateProbeEnvironments.end()) {
+        return it->second;
+    }
+    auto state = std::make_shared<VncCertificateProbeEnvironmentState>();
+    g_vncCertificateProbeEnvironments.emplace(env, state);
+    return state;
+}
+
+static void RemoveVncCertificateProbeToken(uint64_t requestId) {
+    std::shared_ptr<VncCertificateProbeEnvironmentState> state;
+    napi_env env = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(g_vncCertificateProbeMutex);
+        auto it = g_vncCertificateProbeTokens.find(requestId);
+        if (it == g_vncCertificateProbeTokens.end()) {
+            return;
+        }
+        state = it->second.environmentState;
+        env = it->second.env;
+        g_vncCertificateProbeTokens.erase(it);
+    }
+    if (state != nullptr) {
+        bool eraseEnvironment = false;
+        {
+            std::lock_guard<std::mutex> lock(state->mutex);
+            if (state->activeWorks > 0) {
+                --state->activeWorks;
+            }
+            eraseEnvironment = state->closing && state->activeWorks == 0;
+            state->condition.notify_all();
+        }
+        if (eraseEnvironment) {
+            std::lock_guard<std::mutex> registryLock(g_vncCertificateProbeMutex);
+            auto environment = g_vncCertificateProbeEnvironments.find(env);
+            if (environment != g_vncCertificateProbeEnvironments.end() &&
+                environment->second == state) {
+                g_vncCertificateProbeEnvironments.erase(environment);
+            }
+        }
+    }
 }
 
 static void SetVncCertificateProbeWork(uint64_t requestId, napi_env env,
@@ -794,9 +844,15 @@ static void SetVncCertificateProbeWork(uint64_t requestId, napi_env env,
 static void CancelVncCertificateProbesForEnvironment(void* rawEnv) {
     const napi_env env = reinterpret_cast<napi_env>(rawEnv);
     std::vector<napi_async_work> works;
-    std::vector<uint64_t> requestIds;
+    std::vector<std::shared_ptr<VncCertificateProbeEnvironmentState>> states;
     {
         std::lock_guard<std::mutex> lock(g_vncCertificateProbeMutex);
+        auto environment = g_vncCertificateProbeEnvironments.find(env);
+        if (environment != g_vncCertificateProbeEnvironments.end()) {
+            std::lock_guard<std::mutex> stateLock(environment->second->mutex);
+            environment->second->closing = true;
+            states.push_back(environment->second);
+        }
         for (const auto& entry : g_vncCertificateProbeTokens) {
             if (entry.second.env != env) {
                 continue;
@@ -807,15 +863,20 @@ static void CancelVncCertificateProbesForEnvironment(void* rawEnv) {
             if (entry.second.work != nullptr) {
                 works.push_back(entry.second.work);
             }
-            requestIds.push_back(entry.first);
         }
     }
     for (napi_async_work work : works) {
-        (void)napi_cancel_async_work(env, work);
+        const napi_status status = napi_cancel_async_work(env, work);
+        if (status != napi_ok && status != napi_cancelled) {
+            OH_LOG_WARN(LOG_APP, "[VNC-CERT-ASYNC] cleanup cancel status=%{public}d", status);
+        }
     }
-    std::lock_guard<std::mutex> lock(g_vncCertificateProbeMutex);
-    for (uint64_t requestId : requestIds) {
-        g_vncCertificateProbeTokens.erase(requestId);
+    // Do not erase registrations while work may still be executing. Completion
+    // owns removal; wait for every completion callback before the environment
+    // can be destroyed, so no callback can retain a stale napi_env.
+    for (const auto& state : states) {
+        std::unique_lock<std::mutex> lock(state->mutex);
+        state->condition.wait(lock, [&state]() { return state->activeWorks == 0; });
     }
 }
 
@@ -1042,6 +1103,7 @@ struct VncCertificateProbeAsyncData {
     uint64_t requestId = 0;
     VncCertificateProbeConfig config;
     VncCertificateInfo result;
+    std::shared_ptr<VncCertificateProbeEnvironmentState> environmentState;
     std::string errorMessage;
     napi_deferred deferred = nullptr;
     napi_async_work work = nullptr;
@@ -1069,7 +1131,13 @@ static void CompleteVncCertificateProbeAsync(napi_env env, napi_status status, v
     if (data == nullptr) {
         return;
     }
-    if (status != napi_ok || data->workerFailed) {
+    if (status == napi_cancelled ||
+        (data->config.cancelled && data->config.cancelled->load(std::memory_order_acquire))) {
+        data->result.ok = false;
+        data->result.errorCode = static_cast<int>(VncCertificateProbeErrorCode::Cancelled);
+        data->result.errorMessageCategory = vncCertificateProbeErrorCategory(data->result.errorCode);
+        data->result.errorMessage = vncCertificateProbeErrorMessage(data->result.errorCode);
+    } else if (status != napi_ok || data->workerFailed) {
         data->result.ok = false;
         data->result.errorCode = static_cast<int>(VncCertificateProbeErrorCode::MetadataFailed);
         data->result.errorMessageCategory = vncCertificateProbeErrorCategory(data->result.errorCode);
@@ -1077,10 +1145,21 @@ static void CompleteVncCertificateProbeAsync(napi_env env, napi_status status, v
         OH_LOG_ERROR(LOG_APP, "[VNC-CERT-ASYNC] category=%{public}s status=%{public}d",
                      data->result.errorMessageCategory.c_str(), status);
     }
-    napi_value result = CreateVncCertificateInfoValue(env, data->result);
-    napi_resolve_deferred(env, data->deferred, result);
+    bool closing = true;
+    if (data->environmentState != nullptr) {
+        // Serialize the closing decision with the cleanup hook. Once closing
+        // is observed, no N-API value or Promise operation may touch env.
+        std::unique_lock<std::mutex> lock(data->environmentState->mutex);
+        closing = data->environmentState->closing;
+        if (!closing && env != nullptr && data->deferred != nullptr) {
+            napi_value result = CreateVncCertificateInfoValue(env, data->result);
+            napi_resolve_deferred(env, data->deferred, result);
+        }
+    }
     RemoveVncCertificateProbeToken(data->requestId);
-    napi_delete_async_work(env, data->work);
+    if (env != nullptr && data->work != nullptr) {
+        napi_delete_async_work(env, data->work);
+    }
     delete data;
 }
 
@@ -1110,10 +1189,21 @@ napi_value NapiProbeVncCertificateAsync(napi_env env, napi_callback_info info) {
         data->requestId = g_nextVncCertificateProbeRequestId.fetch_add(1, std::memory_order_relaxed);
     }
     data->config.cancelled = std::make_shared<std::atomic_bool>(false);
+    data->environmentState = GetVncCertificateProbeEnvironmentState(env);
+    {
+        std::lock_guard<std::mutex> lock(data->environmentState->mutex);
+        if (data->environmentState->closing) {
+            delete data;
+            napi_throw_error(env, nullptr, "VNC certificate environment is closing");
+            return nullptr;
+        }
+        ++data->environmentState->activeWorks;
+    }
     {
         std::lock_guard<std::mutex> lock(g_vncCertificateProbeMutex);
         g_vncCertificateProbeTokens[data->requestId] =
-            VncCertificateProbeRegistration {data->config.cancelled, env, nullptr};
+            VncCertificateProbeRegistration {data->config.cancelled, data->environmentState,
+                                              env, nullptr};
     }
 
     napi_value promise;
