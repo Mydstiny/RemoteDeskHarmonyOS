@@ -17,7 +17,15 @@ export interface TotpCode {
   remaining: number;  // 剩余秒数
   total: number;      // 总周期秒数 (30 或 60)
   progress: number;   // 进度 0.0 ~ 1.0
+  /** Runtime-only RFC 4226 moving counter; never serialized with TotpEntry. */
+  counter: number
+  /** Runtime-only wall-clock deadline for this counter. */
+  validUntilMs: number
+  /** Runtime-only validity at the generation instant. */
+  valid: boolean
 }
+
+export type TotpAvatarMode = 'logo' | 'initials';
 
 export interface TotpEntryJSON {
   id: string

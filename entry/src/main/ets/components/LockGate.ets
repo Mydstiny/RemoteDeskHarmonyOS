@@ -22,65 +22,62 @@ export function showLockGate(label: string, lockType: string): Promise<LockGateR
       const title: string = label || '验证身份';
       const challenge: Uint8Array = new Uint8Array(16);
       for (let i = 0; i < 16; i++) { challenge[i] = (i + 1) as number; }
-
-      // 检测设备支持的认证类型
-      const types: userAuth.UserAuthType[] = [];
-      let hasBio: boolean = false;
-      let pinOk: boolean = false;
-
-      try {
-        userAuth.getAvailableStatus(userAuth.UserAuthType.FACE, userAuth.AuthTrustLevel.ATL1);
-        types.push(userAuth.UserAuthType.FACE);
-        hasBio = true;
-      } catch { /* FACE不可用 */ }
-      try {
-        userAuth.getAvailableStatus(userAuth.UserAuthType.FINGERPRINT, userAuth.AuthTrustLevel.ATL1);
-        types.push(userAuth.UserAuthType.FINGERPRINT);
-        hasBio = true;
-      } catch { /* FINGERPRINT不可用 */ }
-      try {
-        userAuth.getAvailableStatus(userAuth.UserAuthType.PIN, userAuth.AuthTrustLevel.ATL1);
-        types.push(userAuth.UserAuthType.PIN);
-        pinOk = true;
-      } catch { /* PIN不可用 */ }
-
-      // 三个都没有 → 未录入
-      if (types.length === 0) {
-        resolve({ ok: false, code: 12500010, errMsg: '[showLockGate] 未录入认证信息' });
-        return;
-      }
-
-      // 一次性传入所有可用类型, 系统Widget原生处理级联
-      const typesStr: string = '[' + types.map((t: userAuth.UserAuthType) => t as number).join(',') + ']';
-      const ap: userAuth.AuthParam = {
-        challenge: challenge,
-        authType: types,
-        authTrustLevel: userAuth.AuthTrustLevel.ATL1
-      };
       const wp: userAuth.WidgetParam = { title: title };
 
-      try {
-        const inst = userAuth.getUserAuthInstance(ap, wp);
-        if (!inst || typeof inst.start !== 'function') {
-          resolve({ ok: false, code: -1, errMsg: '[showLockGate] getInstance null types=' + typesStr });
+      // Do not build one mixed FACE/FINGERPRINT/PIN request. On API 23
+      // getAvailableStatus can be asynchronous or return a non-success
+      // status without throwing; the old code consequently passed unsupported
+      // types into getUserAuthInstance and surfaced the raw showLockGate
+      // exception. Try one concrete type at a time and fall back to PIN.
+      const candidates: userAuth.UserAuthType[] = [
+        userAuth.UserAuthType.FACE,
+        userAuth.UserAuthType.FINGERPRINT,
+        userAuth.UserAuthType.PIN
+      ];
+      const tryNext = (index: number, lastCode: number, lastMessage: string): void => {
+        if (index >= candidates.length) {
+          resolve({ ok: false, code: lastCode, errMsg: lastMessage });
           return;
         }
-        inst.on('result', {
-          onResult: (result: userAuth.UserAuthResult) => {
-            if (result.result === userAuth.UserAuthResultCode.SUCCESS) {
-              resolve({ ok: true, code: 0, errMsg: '' });
-            } else {
-              resolve({ ok: false, code: result.result as number,
-                errMsg: '[showLockGate] code=' + (result.result as number) + ' types=' + typesStr });
-            }
+        const authType: userAuth.UserAuthType = candidates[index];
+        const ap: userAuth.AuthParam = {
+          challenge: challenge,
+          authType: [authType],
+          authTrustLevel: userAuth.AuthTrustLevel.ATL1
+        };
+        try {
+          const inst = userAuth.getUserAuthInstance(ap, wp);
+          if (!inst || typeof inst.start !== 'function') {
+            tryNext(index + 1, -1, '');
+            return;
           }
-        });
-        inst.start();
-      } catch (err) {
-        const be: BusinessError = err as BusinessError;
-        resolve({ ok: false, code: -1,
-          errMsg: '[showLockGate] getInstance: code=' + be.code + ' msg=' + be.message + ' types=' + typesStr });
-      }
+          let settled: boolean = false;
+          inst.on('result', {
+            onResult: (result: userAuth.UserAuthResult) => {
+              if (settled) { return; }
+              settled = true;
+              const code: number = result.result as number;
+              if (code === userAuth.UserAuthResultCode.SUCCESS) {
+                resolve({ ok: true, code: 0, errMsg: '' });
+                return;
+              }
+              // Unsupported type/level is a probe failure, not a user
+              // cancellation; continue to the next system authenticator.
+              if (code === 12500005 || code === 12500006 || code === 12500010) {
+                tryNext(index + 1, code, '');
+                return;
+              }
+              resolve({ ok: false, code: code, errMsg: '' });
+            }
+          });
+          inst.start();
+        } catch (err) {
+          const be: BusinessError = err as BusinessError;
+          const code: number = typeof be.code === 'number' ? be.code : -1;
+          tryNext(index + 1, code, '');
+        }
+      };
+      tryNext(0, 12500010, '');
     } else {
       resolve({ ok: true, code: 0, errMsg: '' });
     }
@@ -89,10 +86,9 @@ export function showLockGate(label: string, lockType: string): Promise<LockGateR
 
 /** 根据认证失败的错误码返回用户友好的提示消息 */
 export function lockGateErrorMessage(r: LockGateResult): string {
-  if (r.errMsg !== '') { return r.errMsg; }
   const code: number = r.code;
   switch (code) {
-    case -1: return r.errMsg !== '' ? r.errMsg : '认证服务启动失败';
+    case -1: return '系统身份认证启动失败，请检查设备 PIN/生物识别设置后重试';
     case 12500003: return ''; // 用户取消
     case 12500004: return '认证超时';
     case 12500005: return '设备不支持该认证方式';
@@ -101,7 +97,7 @@ export function lockGateErrorMessage(r: LockGateResult): string {
     case 12500009: return '认证器已锁定，请稍后重试';
     case 12500010: return '未录入认证信息，请先在设置中录入';
     case 12500013: return 'PIN码已过期';
-    default: return '认证失败 (code: ' + code + ')';
+    default: return r.errMsg !== '' ? r.errMsg : '认证失败 (code: ' + code + ')';
   }
 }
 

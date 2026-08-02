@@ -271,6 +271,11 @@ static int pemPassphraseCallback(char* buf, int size, int, void* userdata) {
     return len;
 }
 
+#if defined(__clang__)
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+#endif
+
 /**
  * 将原始公钥字节编码为 OpenSSH authorized_keys 格式行
  *
@@ -478,6 +483,10 @@ static std::string sshKeyTypeForPkey(EVP_PKEY* pkey) {
     }
     return "";
 }
+
+#if defined(__clang__)
+#pragma clang diagnostic pop
+#endif
 
 /**
  * 计算 OpenSSH 风格 SHA256 fingerprint。

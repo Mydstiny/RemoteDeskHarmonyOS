@@ -6,40 +6,114 @@ import { TotpEngine } from '../services/TotpEngine';
 import { Palette, buildDark, buildLight, AppTheme } from '../common/Theme';
 import { promptAction } from '@kit.ArkUI';
 import { pasteboard } from '@kit.BasicServicesKit';
+import { common } from '@kit.AbilityKit';
+import { image } from '@kit.ImageKit';
 import {
-  TotpBrandVisual, totpBrandLogoUrl, totpBrandVisual, totpInitialOf
+  TotpBrandVisual, totpBrandVisualForEntry
 } from '../services/TotpBrandService';
+import { shouldRunTotpBrandTicker, TotpBrandTicker } from '../services/TotpBrandTicker';
+import {
+  TOTP_BRAND_CACHE,
+  TotpBrandAssetLease,
+  TotpDecodedAsset
+} from '../services/TotpBrandCache';
+import {
+  configureTotpBrandResourceDecoder,
+  decodeTotpBrandAsset,
+  TOTP_BRAND_DECODE_MAX_BYTES
+} from '../services/TotpBrandResourceDecoder';
+import {
+  TotpBrandAvatarState,
+  TotpBrandAvatarToken,
+  totpBrandAssetVisibility
+} from '../services/TotpBrandAvatarState';
 
 @Component
 export struct TotpCodeCard {
-  @Prop entry: TotpEntry;
+  @Prop @Watch('onEntryChanged') entry: TotpEntry;
   @StorageLink('currentTheme') theme: string = 'light';
   @StorageProp('accentColor') accentColor: string = '#007DFF';
   @StorageProp('totpLogoMode') totpLogoMode: string = 'logo';
   @StorageProp('currentBreakpoint') breakpoint: string = 'sm';
-  @Prop pageLocked: boolean = false;
+  @StorageProp('remoteDesktopBgFlag') @Watch('onCardLifecycleChanged') appInBackground: boolean = false;
+  @Prop @Watch('onCardLifecycleChanged') pageLocked: boolean = false;
   @Prop showCheckbox: boolean = false;
   @Prop checkboxSelected: boolean = false;
   onCheckChange?: (checked: boolean) => void;
   @State codeStr: string = '------';
   @State remaining: number = 30;
-  @State logoFailed: boolean = false;
-  private timer: number = -1;
+  @State brandReady: boolean = false;
+  @State brandFailed: boolean = false;
+  @State brandPixelMap: image.PixelMap | null = null;
+  private tickerUnsubscribe: (() => void) | null = null;
+  private avatarState: TotpBrandAvatarState = new TotpBrandAvatarState();
+  private avatarToken: TotpBrandAvatarToken | null = null;
+  private brandLease: TotpBrandAssetLease | null = null;
+  private avatarKey: string = '';
+  private resourceDecoderConfigured: boolean = false;
 
   private pal(): Palette {
     return this.theme === 'light' ? buildLight(this.accentColor) : buildDark(this.accentColor);
   }
 
   aboutToAppear(): void {
-    this.logoFailed = false;
-    if (!this.pageLocked && !this.entry.locked) {
-      this.refresh();
-      this.timer = setInterval(() => { this.refresh(); }, 1000);
-    }
+    this.resetBrandState();
+    this.updateTickerSubscription();
   }
 
   aboutToDisappear(): void {
-    if (this.timer !== -1) { clearInterval(this.timer); this.timer = -1; }
+    this.stopTicker();
+    this.releaseBrandAsset();
+    this.avatarState.invalidate();
+    this.avatarToken = null;
+    this.brandPixelMap = null;
+  }
+
+  private onEntryChanged(): void {
+    this.resetBrandState();
+    this.updateTickerSubscription();
+  }
+
+  private onCardLifecycleChanged(): void {
+    if (!shouldRunTotpBrandTicker(this.pageLocked, this.entry.locked, this.appInBackground)) {
+      // A background/locked page must not retain native PixelMaps or continue
+      // a decode that could repopulate the cache after the clear.
+      this.releaseBrandAsset();
+      this.avatarState.invalidate();
+      this.avatarToken = null;
+      this.brandPixelMap = null;
+      TOTP_BRAND_CACHE.clear();
+    }
+    this.updateTickerSubscription();
+  }
+
+  private stopTicker(): void {
+    if (this.tickerUnsubscribe !== null) {
+      this.tickerUnsubscribe();
+      this.tickerUnsubscribe = null;
+    }
+  }
+
+  private updateTickerSubscription(): void {
+    if (!shouldRunTotpBrandTicker(this.pageLocked, this.entry.locked, this.appInBackground)) {
+      this.stopTicker();
+      this.releaseBrandAsset();
+      this.avatarState.invalidate();
+      this.avatarToken = null;
+      this.brandPixelMap = null;
+      TOTP_BRAND_CACHE.clear();
+      return;
+    }
+    if (this.tickerUnsubscribe !== null) { return; }
+    if (this.avatarToken === null) { this.resetBrandState(); }
+    this.refresh();
+    this.tickerUnsubscribe = TotpBrandTicker.sharedTicker().subscribe((): void => {
+      if (shouldRunTotpBrandTicker(this.pageLocked, this.entry.locked, this.appInBackground)) {
+        this.refresh();
+      } else {
+        this.stopTicker();
+      }
+    });
   }
 
   private refresh(): void {
@@ -60,7 +134,171 @@ export struct TotpCodeCard {
   }
 
   private avatarVisual(): TotpBrandVisual {
-    return totpBrandVisual(this.entry.issuer, this.entry.account);
+    return totpBrandVisualForEntry(this.entry, this.totpLogoMode === 'initials' ? 'initials' : 'logo');
+  }
+
+  private resetBrandState(): void {
+    this.releaseBrandAsset();
+    this.brandPixelMap = null;
+    const visual: TotpBrandVisual = this.avatarVisual();
+    this.avatarKey = this.brandKey(visual);
+    this.brandReady = false;
+    this.brandFailed = false;
+    this.avatarToken = this.avatarState.begin(
+      this.entry.id, visual.slug + ':' + visual.sha256);
+    if (this.avatarToken !== null) {
+      this.preloadDecodedBrandAsset(visual, this.avatarToken);
+    }
+  }
+
+  private preloadDecodedBrandAsset(
+    visual: TotpBrandVisual,
+    token: TotpBrandAvatarToken
+  ): void {
+    if (visual.avatarMode !== 'local' || visual.localAsset.length === 0 ||
+      !shouldRunTotpBrandTicker(this.pageLocked, this.entry.locked, this.appInBackground)) {
+      return;
+    }
+    const cached: TotpBrandAssetLease | null = TOTP_BRAND_CACHE.acquire(
+      visual.slug, visual.sha256);
+    if (cached !== null) {
+      if (cached.asset.pixelMap !== undefined) {
+        this.brandLease = cached;
+        this.brandPixelMap = cached.asset.pixelMap;
+        return;
+      }
+      cached.release();
+    }
+    const cachedRecord = TOTP_BRAND_CACHE.get(visual.slug, visual.sha256);
+    if (cachedRecord !== null && cachedRecord.state === 'failed') { return; }
+    if (!this.resourceDecoderConfigured) {
+      try {
+        configureTotpBrandResourceDecoder(getContext(this) as common.UIAbilityContext);
+        this.resourceDecoderConfigured = true;
+      } catch (_error) {
+        return;
+      }
+    }
+    TOTP_BRAND_CACHE.acquireOrDecode(
+      visual.slug,
+      visual.sha256,
+      TOTP_BRAND_DECODE_MAX_BYTES,
+      (): Promise<TotpDecodedAsset | null> =>
+        decodeTotpBrandAsset(visual.localAsset)
+    ).then((lease): void => {
+      // Budget pressure, lifecycle clear, and decoder failure all keep the
+      // first-frame initials visible. They must not poison the cache as a
+      // permanent decode failure.
+      if (lease === null) { return; }
+      const current = this.avatarState.snapshot();
+      const tokenStillCurrent: boolean = current.entryKey === token.entryKey &&
+        current.brandId === token.brandId && current.generation === token.generation &&
+        this.avatarKey === this.brandKey(visual) &&
+        shouldRunTotpBrandTicker(this.pageLocked, this.entry.locked, this.appInBackground);
+      if (!tokenStillCurrent) {
+        lease.release();
+        return;
+      }
+      if (lease.asset.pixelMap === undefined) {
+        lease.release();
+        this.handleBrandDecodeError(visual, token);
+        return;
+      }
+      this.brandLease = lease;
+      this.brandPixelMap = lease.asset.pixelMap;
+    }).catch((): void => {
+      this.handleBrandDecodeError(visual, token);
+    });
+  }
+
+  private handleBrandDecodeError(visual: TotpBrandVisual,
+    token: TotpBrandAvatarToken): void {
+    const current = this.avatarState.snapshot();
+    if (current.entryKey !== token.entryKey || current.brandId !== token.brandId ||
+      current.generation !== token.generation || this.avatarKey !== this.brandKey(visual)) {
+      return;
+    }
+    if (this.avatarState.onError(token)) {
+      this.releaseBrandAsset();
+      this.brandPixelMap = null;
+      this.brandReady = false;
+      this.brandFailed = true;
+      TOTP_BRAND_CACHE.markFailed(visual.slug, visual.sha256);
+    }
+  }
+
+  private releaseBrandAsset(): void {
+    if (this.brandLease !== null) {
+      this.brandLease.release();
+      this.brandLease = null;
+    }
+  }
+
+  private brandKey(visual: TotpBrandVisual): string {
+    return this.entry.id + '|' + this.entry.issuer + '|' + this.entry.account + '|' +
+      visual.slug + '|' + visual.sha256 + '|' + visual.localAsset + '|' +
+      visual.avatarMode;
+  }
+
+  private localBrandFailed(visual: TotpBrandVisual): boolean {
+    if (this.brandFailed) { return true; }
+    const cached = TOTP_BRAND_CACHE.get(visual.slug, visual.sha256);
+    return cached !== null && cached.state === 'failed';
+  }
+
+  private visualForBuild(): TotpBrandVisual {
+    const visual: TotpBrandVisual = this.avatarVisual();
+    if (this.avatarKey !== this.brandKey(visual)) {
+      this.resetBrandState();
+    }
+    return visual;
+  }
+
+  private shouldRenderBrandAsset(visual: TotpBrandVisual): boolean {
+    return visual.avatarMode === 'local' && this.brandPixelMap !== null &&
+      !this.localBrandFailed(visual);
+  }
+
+  @Builder
+  private brandAvatar(
+    visual: TotpBrandVisual,
+    token: TotpBrandAvatarToken | null
+  ) {
+    Stack({ alignContent: Alignment.Center }) {
+      Text(visual.initials)
+        .fontSize(18).fontWeight(FontWeight.Bold)
+        .fontColor(visual.foreground)
+        .fontFamily(AppTheme.fontFamily)
+        .textAlign(TextAlign.Center)
+        .maxLines(1)
+      if (this.shouldRenderBrandAsset(visual)) {
+        Image(this.brandPixelMap as image.PixelMap)
+          .width(42).height(42).padding(9).borderRadius(21)
+          .backgroundColor(this.pal().surface)
+          .objectFit(ImageFit.Contain)
+          .opacity(totpBrandAssetVisibility(
+            this.avatarState.snapshot(), this.brandPixelMap !== null) === 'asset' ? 1 : 0)
+          .onComplete((): void => {
+            if (token !== null && this.avatarState.onComplete(token)) {
+              this.brandReady = true;
+              this.brandFailed = false;
+            }
+          })
+          .onError((): void => {
+            if (token !== null && this.avatarState.onError(token)) {
+              this.releaseBrandAsset();
+              this.brandPixelMap = null;
+              this.brandReady = false;
+              this.brandFailed = true;
+              TOTP_BRAND_CACHE.markFailed(visual.slug, visual.sha256);
+            }
+          })
+      }
+    }
+    .width(42).height(42)
+    .borderRadius(21)
+    .backgroundColor(visual.background)
+    .margin({ right: 10 })
   }
 
   build() {
@@ -72,30 +310,10 @@ export struct TotpCodeCard {
           .margin({ right: 8 })
           .onChange((v: boolean) => { if (this.onCheckChange) { this.onCheckChange(v); } })
       }
-      // Logo 模式只请求经过 issuer 白名单映射的 Simple Icons URL；失败时
-      // 自动回退到本地首字母，不会因为网络或主题色导致卡片不可读。
-      if (this.totpLogoMode === 'logo' && !this.logoFailed &&
-        totpBrandLogoUrl(this.entry.issuer, this.entry.account) !== '') {
-        Image(totpBrandLogoUrl(this.entry.issuer, this.entry.account))
-          .width(42).height(42).padding(9).borderRadius(21)
-          .backgroundColor(this.pal().surface)
-          .objectFit(ImageFit.Contain)
-          .onError(() => { this.logoFailed = true; })
-          .margin({ right: 10 })
-      } else {
-        Stack({ alignContent: Alignment.Center }) {
-          Text(totpInitialOf(this.entry.issuer))
-            .fontSize(18).fontWeight(FontWeight.Bold)
-            .fontColor(this.avatarVisual().foreground)
-            .fontFamily(AppTheme.fontFamily)
-            .textAlign(TextAlign.Center)
-            .maxLines(1)
-        }
-        .width(42).height(42)
-        .borderRadius(21)
-        .backgroundColor(this.avatarVisual().background)
-        .margin({ right: 10 })
-      }
+      // Initials are always the first paint. A local SVG can replace them only
+      // after it is ready; an asset error leaves the initials visible. No
+      // legacy URL or runtime URL is consulted here.
+      this.brandAvatar(this.visualForBuild(), this.avatarToken)
 
       Column() {
         Row() {

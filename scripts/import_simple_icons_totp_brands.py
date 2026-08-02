@@ -1,0 +1,564 @@
+#!/usr/bin/env python3
+"""Import a fixed, auditable Simple Icons batch into the TOTP manifest.
+
+This is an explicit maintainer-time importer. Runtime validation never calls
+the network. The generated JSON is the single source used by the ArkTS
+manifest/registry generator.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import io
+import json
+import re
+import tarfile
+import unicodedata
+import urllib.request
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[1]
+ASSET_ROOT = ROOT / "entry/src/main/resources/rawfile/totp-brands"
+MANIFEST_PATH = ROOT / "entry/src/main/resources/rawfile/totp_brand_manifest.json"
+VERSION = "16.21.0"
+REPOSITORY = "https://github.com/simple-icons/simple-icons"
+LICENSE_URL = f"{REPOSITORY}/blob/{VERSION}/LICENSE.md"
+DISCLAIMER_URL = f"{REPOSITORY}/blob/{VERSION}/DISCLAIMER.md"
+TARGET_ASSETS = 250
+IMPORT_ASSETS = 261
+TARGET_ALIASES = 500
+METADATA_SOURCE = f"{REPOSITORY}/blob/{VERSION}/data/simple-icons.json"
+
+
+# Curated high-signal names. Entries not found in this list are only used as
+# fixed-version, provenance-complete fillers after this list is exhausted;
+# they are never fabricated aliases or placeholder files.
+POPULAR_TITLES = [
+    "Apple", "iCloud", "Google", "Google Cloud", "Microsoft", "Microsoft Azure",
+    "Microsoft 365", "Amazon", "Amazon Web Services", "AWS", "Oracle", "IBM",
+    "Red Hat", "Linux", "Ubuntu", "Debian", "Android", "Samsung", "Huawei",
+    "Xiaomi", "Sony", "GitHub", "GitLab", "Bitbucket", "Docker", "Kubernetes",
+    "NPM", "Node.js", "Python", "Rust", "Go", "Java", "C", "C++", "Swift",
+    "TypeScript", "Visual Studio Code", "JetBrains", "IntelliJ IDEA", "Vercel",
+    "Netlify", "Heroku", "DigitalOcean", "Cloudflare", "Sentry", "Datadog",
+    "Grafana", "Prometheus", "Jenkins", "CircleCI", "Travis CI", "GitHub Actions",
+    "Slack", "Discord", "Zoom", "Microsoft Teams", "Notion", "Figma", "Trello",
+    "Jira", "Confluence", "Atlassian", "Asana", "Linear", "Monday.com", "Airtable",
+    "Dropbox", "Box", "Evernote", "Canva", "Adobe", "Miro", "ClickUp", "Basecamp",
+    "Facebook", "Instagram", "WhatsApp", "X", "Twitter", "LinkedIn", "TikTok",
+    "Reddit", "Pinterest", "Snapchat", "Telegram", "WeChat", "Weibo", "YouTube",
+    "Twitch", "Tumblr", "Mastodon", "Threads", "Bilibili", "Douban", "Vimeo",
+    "Netflix", "Spotify", "Apple Music", "SoundCloud", "Deezer", "Tidal", "Steam",
+    "Epic Games", "PlayStation", "Xbox", "Nintendo", "Roku", "HBO", "Disney+",
+    "PayPal", "Stripe", "Visa", "Mastercard", "American Express", "Square",
+    "Shopify", "eBay", "Walmart", "Target", "Costco", "Coinbase", "Binance",
+    "Kraken", "OKX", "Alipay", "Taobao", "Alibaba Cloud", "Baidu", "DingTalk",
+    "Feishu", "Tencent", "Tencent QQ", "JD.com", "Pinduoduo", "Meituan", "NetEase",
+    "1Password", "Bitwarden", "Authy", "Okta", "LastPass", "Proton", "Proton Mail",
+    "NordVPN", "ExpressVPN", "OpenVPN", "WireGuard", "Tailscale", "Tor", "Duo Security",
+    "RustDesk", "TeamViewer", "AnyDesk", "Remote Desktop", "VNC", "OpenSSH", "PuTTY",
+    "Let’s Encrypt", "Yubico", "YubiKey", "Kaspersky", "Norton", "McAfee", "CrowdStrike",
+    "Uber", "Lyft", "Airbnb", "Booking.com", "Expedia", "Tripadvisor", "DoorDash",
+    "McDonald's", "Starbucks", "Nike", "Adidas", "Coca-Cola", "Pepsi", "IKEA",
+    "Lego", "Puma", "Zara", "H&M", "Uniqlo", "Toyota", "Tesla", "BMW", "Mercedes-Benz",
+    "Ford", "General Motors", "Uber Eats", "DHL", "FedEx", "UPS", "USPS",
+    "Wikipedia", "Wikimedia", "The New York Times", "BBC", "CNN", "The Guardian",
+    "Reuters", "Medium", "Substack", "Product Hunt", "Hacker News", "Stack Overflow",
+    "Stack Exchange", "Kaggle", "Coursera", "Udemy", "edX", "Duolingo", "Wikipedia",
+    "WordPress", "Ghost", "Drupal", "Wix", "Squarespace", "Webflow", "Mailchimp",
+    "SendGrid", "Twilio", "HubSpot", "Salesforce", "SAP", "ServiceNow", "Zendesk",
+    "Freshdesk", "Intercom", "Pipedrive", "ZoomInfo", "Snowflake", "MongoDB", "MySQL",
+    "PostgreSQL", "Redis", "SQLite", "MariaDB", "Elastic", "Elasticsearch", "Apache",
+    "NGINX", "Terraform", "Ansible", "Puppet", "Chef", "Pulumi", "Rancher", "Istio",
+    "Argo", "Flux", "Home Assistant", "Raspberry Pi", "Arduino", "NVIDIA", "AMD", "Intel",
+    "Qualcomm", "OpenAI", "Hugging Face", "Mistral AI", "DeepMind", "Perplexity",
+    "Midjourney", "DALL-E", "Unity", "Unreal Engine", "Blender", "Godot", "Figma",
+    "Sketch", "Framer", "Dribbble", "Behance", "Unsplash", "Google Drive", "Google Docs",
+    "Google Sheets", "Google Meet", "Google Analytics", "Google Play", "App Store",
+    "Huawei Cloud", "Aliyun", "Tencent Cloud", "Bing", "DuckDuckGo", "Brave", "Firefox",
+    "Google Chrome", "Safari", "Opera", "Microsoft Edge", "RustDesk Server", "HestiaCP",
+    "Cloudron", "Plesk", "cPanel", "Homebrew", "MacPorts", "Chocolatey", "Scoop",
+]
+
+
+# Login domains are an explicit audit result, never a projection of the
+# Simple Icons artwork/source URL.  A missing entry is intentional: the
+# issuer may have a website, but no reliable evidence that its root domain is
+# the domain users put in an authenticator account field.  The URLs below are
+# official login/account pages captured at import time and are reviewed again
+# by the manifest validator; they are not fetched at runtime.
+AUDITED_LOGIN_DOMAINS: dict[str, dict[str, object]] = {
+    "apple": {
+        "domains": ["apple.com"],
+        "sourceUrl": "https://account.apple.com/",
+        "evidence": "Apple Account login is served by Apple's account scope; apple.com is the exact issuer domain.",
+    },
+    "icloud": {
+        "domains": ["icloud.com"],
+        "sourceUrl": "https://www.icloud.com/",
+        "evidence": "iCloud web sign-in is served by icloud.com; Wikimedia is artwork provenance only and is not an issuer domain.",
+    },
+    "google": {
+        "domains": ["google.com", "gmail.com"],
+        "sourceUrl": "https://accounts.google.com/",
+        "evidence": "Google Account sign-in covers google.com accounts and Gmail addresses; both domains are exact, reviewed issuer domains.",
+    },
+    "googlecloud": {
+        "domains": ["cloud.google.com"],
+        "sourceUrl": "https://console.cloud.google.com/",
+        "evidence": "Google Cloud Console is the official account entry point for Google Cloud users.",
+    },
+    "github": {
+        "domains": ["github.com"],
+        "sourceUrl": "https://github.com/login",
+        "evidence": "GitHub's official login is on github.com.",
+    },
+    "gitlab": {
+        "domains": ["gitlab.com"],
+        "sourceUrl": "https://gitlab.com/users/sign_in",
+        "evidence": "GitLab.com sign-in is on gitlab.com.",
+    },
+    "docker": {
+        "domains": ["docker.com"],
+        "sourceUrl": "https://hub.docker.com/login",
+        "evidence": "Docker Hub is Docker's official account/login service; docker.com is the reviewed issuer domain.",
+    },
+    "npm": {
+        "domains": ["npmjs.com"],
+        "sourceUrl": "https://www.npmjs.com/login",
+        "evidence": "npm's official web login is on npmjs.com.",
+    },
+    "cloudflare": {
+        "domains": ["cloudflare.com"],
+        "sourceUrl": "https://dash.cloudflare.com/login",
+        "evidence": "Cloudflare dashboard login is the official account entry point for cloudflare.com customers.",
+    },
+    "discord": {
+        "domains": ["discord.com"],
+        "sourceUrl": "https://discord.com/login",
+        "evidence": "Discord's official login is on discord.com.",
+    },
+    "zoom": {
+        "domains": ["zoom.us"],
+        "sourceUrl": "https://zoom.us/signin",
+        "evidence": "Zoom's official account sign-in is on zoom.us.",
+    },
+    "notion": {
+        "domains": ["notion.so"],
+        "sourceUrl": "https://www.notion.so/login",
+        "evidence": "Notion's official login is on notion.so.",
+    },
+    "figma": {
+        "domains": ["figma.com"],
+        "sourceUrl": "https://www.figma.com/login",
+        "evidence": "Figma's official login is on figma.com.",
+    },
+    "asana": {
+        "domains": ["asana.com"],
+        "sourceUrl": "https://app.asana.com/-/login",
+        "evidence": "Asana's official account login is served under asana.com.",
+    },
+    "linear": {
+        "domains": ["linear.app"],
+        "sourceUrl": "https://linear.app/login",
+        "evidence": "Linear's official login is on linear.app.",
+    },
+    "dropbox": {
+        "domains": ["dropbox.com"],
+        "sourceUrl": "https://www.dropbox.com/login",
+        "evidence": "Dropbox's official account login is on dropbox.com.",
+    },
+    "facebook": {
+        "domains": ["facebook.com"],
+        "sourceUrl": "https://www.facebook.com/login/",
+        "evidence": "Facebook's official login is on facebook.com.",
+    },
+    "instagram": {
+        "domains": ["instagram.com"],
+        "sourceUrl": "https://www.instagram.com/accounts/login/",
+        "evidence": "Instagram's official login is on instagram.com.",
+    },
+    "whatsapp": {
+        "domains": ["whatsapp.com"],
+        "sourceUrl": "https://web.whatsapp.com/",
+        "evidence": "WhatsApp's official web account entry point is on whatsapp.com.",
+    },
+    "tiktok": {
+        "domains": ["tiktok.com"],
+        "sourceUrl": "https://www.tiktok.com/login",
+        "evidence": "TikTok's official login is on tiktok.com.",
+    },
+    "reddit": {
+        "domains": ["reddit.com"],
+        "sourceUrl": "https://www.reddit.com/login/",
+        "evidence": "Reddit's official login is on reddit.com; redditinc.com is corporate brand provenance only.",
+    },
+    "telegram": {
+        "domains": ["telegram.org"],
+        "sourceUrl": "https://web.telegram.org/",
+        "evidence": "Telegram's official web account entry point is on telegram.org.",
+    },
+    "youtube": {
+        "domains": ["youtube.com"],
+        "sourceUrl": "https://accounts.google.com/",
+        "evidence": "YouTube account sign-in uses Google's official account entry point; youtube.com is the exact service domain.",
+    },
+    "paypal": {
+        "domains": ["paypal.com"],
+        "sourceUrl": "https://www.paypal.com/signin",
+        "evidence": "PayPal's official account login is on paypal.com.",
+    },
+    "stripe": {
+        "domains": ["stripe.com"],
+        "sourceUrl": "https://dashboard.stripe.com/login",
+        "evidence": "Stripe Dashboard login is the official account entry point under stripe.com.",
+    },
+    "shopify": {
+        "domains": ["shopify.com"],
+        "sourceUrl": "https://accounts.shopify.com/",
+        "evidence": "Shopify's official account entry point is under shopify.com.",
+    },
+    "coinbase": {
+        "domains": ["coinbase.com"],
+        "sourceUrl": "https://login.coinbase.com/",
+        "evidence": "Coinbase's official account login is under coinbase.com.",
+    },
+    "binance": {
+        "domains": ["binance.com"],
+        "sourceUrl": "https://accounts.binance.com/login",
+        "evidence": "Binance's official account login is under binance.com.",
+    },
+    "okta": {
+        "domains": ["okta.com"],
+        "sourceUrl": "https://login.okta.com/",
+        "evidence": "Okta's official login/account service is under okta.com.",
+    },
+    "proton": {
+        "domains": ["proton.me"],
+        "sourceUrl": "https://account.proton.me/login",
+        "evidence": "Proton's official account login is under proton.me.",
+    },
+    "tailscale": {
+        "domains": ["tailscale.com"],
+        "sourceUrl": "https://login.tailscale.com/admin",
+        "evidence": "Tailscale's official account service is under tailscale.com.",
+    },
+    "rustdesk": {
+        "domains": ["rustdesk.com"],
+        "sourceUrl": "https://rustdesk.com/",
+        "evidence": "RustDesk's official account/service domain is rustdesk.com; no community-hosted source is used.",
+    },
+    "teamviewer": {
+        "domains": ["teamviewer.com"],
+        "sourceUrl": "https://login.teamviewer.com/",
+        "evidence": "TeamViewer's official account login is under teamviewer.com.",
+    },
+    "anydesk": {
+        "domains": ["anydesk.com"],
+        "sourceUrl": "https://my.anydesk.com/",
+        "evidence": "AnyDesk's official account service is under anydesk.com.",
+    },
+    "duolingo": {
+        "domains": ["duolingo.com"],
+        "sourceUrl": "https://www.duolingo.com/log-in",
+        "evidence": "Duolingo's official login is on duolingo.com; a Duo issuer must never match this by substring.",
+    },
+    "wordpress": {
+        "domains": ["wordpress.com"],
+        "sourceUrl": "https://wordpress.com/log-in",
+        "evidence": "WordPress.com's official account login is on wordpress.com; wordpress.org is project provenance only.",
+    },
+    "wix": {
+        "domains": ["wix.com"],
+        "sourceUrl": "https://users.wix.com/signin",
+        "evidence": "Wix's official account entry point is under wix.com.",
+    },
+    "twilio": {
+        "domains": ["twilio.com"],
+        "sourceUrl": "https://console.twilio.com/",
+        "evidence": "Twilio Console login is the official account entry point under twilio.com.",
+    },
+    "hubspot": {
+        "domains": ["hubspot.com"],
+        "sourceUrl": "https://app.hubspot.com/login",
+        "evidence": "HubSpot's official account login is under hubspot.com.",
+    },
+    "mongodb": {
+        "domains": ["mongodb.com"],
+        "sourceUrl": "https://account.mongodb.com/account/login",
+        "evidence": "MongoDB's official account login is under mongodb.com.",
+    },
+    "redis": {
+        "domains": ["redis.io"],
+        "sourceUrl": "https://cloud.redis.io/",
+        "evidence": "Redis Cloud's official account entry point is the redis.io service domain.",
+    },
+    "openai": {
+        "domains": ["openai.com"],
+        "sourceUrl": "https://auth.openai.com/",
+        "evidence": "OpenAI's official account service is under openai.com.",
+    },
+    "huggingface": {
+        "domains": ["huggingface.co"],
+        "sourceUrl": "https://huggingface.co/login",
+        "evidence": "Hugging Face's official login is on huggingface.co.",
+    },
+    "blender": {
+        "domains": ["blender.org"],
+        "sourceUrl": "https://www.blender.org/login/",
+        "evidence": "Blender's official account/login service is under blender.org.",
+    },
+}
+
+
+def norm(value: str) -> str:
+    value = unicodedata.normalize("NFKC", value).strip().lower()
+    value = re.sub(r"[._-]+", " ", value)
+    return re.sub(r"\s+", " ", value)
+
+
+def compact(value: str) -> str:
+    return re.sub(r"\s+", "", value)
+
+
+def safe_alias(value: str) -> bool:
+    return len(compact(norm(value))) >= 3
+
+
+def add_unique(values: list[str], value: str) -> None:
+    if not value or not safe_alias(value):
+        return
+    if norm(value) not in {norm(existing) for existing in values}:
+        values.append(value)
+
+
+def load_upstream() -> tuple[list[dict], dict[str, tuple[str, bytes]]]:
+    metadata_url = f"{REPOSITORY}/raw/{VERSION}/data/simple-icons.json"
+    metadata = json.loads(urllib.request.urlopen(metadata_url).read().decode("utf-8"))
+    tar_url = f"https://codeload.github.com/simple-icons/simple-icons/tar.gz/refs/tags/{VERSION}"
+    archive_bytes = urllib.request.urlopen(tar_url).read()
+    icons: dict[str, tuple[str, bytes]] = {}
+    with tarfile.open(fileobj=io.BytesIO(archive_bytes), mode="r:gz") as archive:
+        for member in archive.getmembers():
+            if not member.isfile() or "/icons/" not in member.name or not member.name.endswith(".svg"):
+                continue
+            match = re.search(r"/icons/([^/]+)\.svg$", member.name)
+            if not match:
+                continue
+            raw = archive.extractfile(member).read()
+            title_match = re.search(rb"<title>(.*?)</title>", raw)
+            if title_match:
+                title = title_match.group(1).decode("utf-8")
+                icons[norm(title)] = (match.group(1), raw)
+    return metadata, icons
+
+
+def index_metadata(metadata: list[dict]) -> dict[str, dict]:
+    index: dict[str, dict] = {}
+    # Direct upstream titles win over another brand's historical aka value.
+    # This keeps independent brands such as Terraform and OpenTofu distinct.
+    for entry in metadata:
+        title = entry.get("title", "")
+        if title:
+            index[norm(title)] = entry
+    for entry in metadata:
+        keys = []
+        keys.extend(entry.get("aliases", {}).get("aka", []))
+        for key in keys:
+            if key:
+                index.setdefault(norm(key), entry)
+    return index
+
+
+def eligible(entry: dict) -> bool:
+    license_data = entry.get("license")
+    return license_data is None or license_data.get("type") == "CC0-1.0"
+
+
+def make_entry(metadata: dict, slug: str, data: bytes) -> dict:
+    title = metadata["title"]
+    aliases: list[str] = []
+    add_unique(aliases, title)
+    for alias in metadata.get("aliases", {}).get("aka", []):
+        add_unique(aliases, alias)
+    for alias in metadata.get("aliases", {}).get("old", []):
+        add_unique(aliases, alias)
+    for alias in metadata.get("aliases", {}).get("loc", {}).values():
+        add_unique(aliases, alias)
+    # OpenTofu and Terraform are independent brands. Never turn a Terraform
+    # title/metadata alias into an OpenTofu resolver match or a fake asset.
+    if slug == "opentofu":
+        aliases = [alias for alias in aliases if norm(alias) != norm("Terraform")]
+    source = metadata.get("source") or f"{REPOSITORY}/blob/{VERSION}/icons/{slug}.svg"
+    guidelines = metadata.get("guidelines") or source
+    domain_audit = AUDITED_LOGIN_DOMAINS.get(slug)
+    if domain_audit is None:
+        domains: list[str] = []
+        # The pinned metadata is the audit record for a reviewed *absence*;
+        # artwork/brand-source URLs must never masquerade as login evidence.
+        domain_source = METADATA_SOURCE
+        domain_evidence = (
+            "Reviewed at import time: no reliable official login-domain evidence was identified; "
+            "exactDomains intentionally empty."
+        )
+    else:
+        domains = [str(domain) for domain in domain_audit["domains"]]
+        domain_source = str(domain_audit["sourceUrl"])
+        domain_evidence = str(domain_audit["evidence"])
+    payload = data if data.endswith(b"\n") else data + b"\n"
+    asset = f"totp-brands/{slug}.svg"
+    return {
+        "brandId": slug,
+        "displayName": title,
+        "aliases": aliases,
+        "exactDomains": domains,
+        "aliasReviewed": True,
+        "aliasSourceUrl": METADATA_SOURCE,
+        "aliasEvidence": (
+            "Aliases are limited to the title and pinned Simple Icons metadata aka/old/loc values; "
+            "slug-derived variants are excluded."
+        ),
+        "domainReviewed": True,
+        "domainSourceUrl": domain_source,
+        "domainEvidence": domain_evidence,
+        "localAsset": asset,
+        "assetBytes": len(payload),
+        "sourceType": "simple-icons",
+        "sourceUrl": f"{REPOSITORY}/blob/{VERSION}/icons/{slug}.svg",
+        "brandSourceUrl": source,
+        "brandGuidelines": guidelines,
+        "upstreamVersion": VERSION,
+        "sha256": hashlib.sha256(payload).hexdigest(),
+        "licenseType": "CC0-1.0",
+        "licenseUrl": LICENSE_URL,
+        "trademarkGuidelines": (
+            f"{DISCLAIMER_URL}; community brand glyph only; not an official logo; "
+            "consult brandGuidelines before distribution"
+        ),
+        "officialAssetVerified": False,
+        "remoteFallbackSlug": slug,
+        "brandColor": "#" + metadata["hex"].upper(),
+        "_payload": payload,
+    }
+
+
+def main() -> int:
+    metadata, icons = load_upstream()
+    by_name = index_metadata(metadata)
+    selected: list[dict] = []
+    selected_ids: set[str] = set()
+    missing_popular: list[str] = []
+
+    for requested in POPULAR_TITLES:
+        meta = by_name.get(norm(requested))
+        if meta is None or not eligible(meta):
+            missing_popular.append(requested)
+            continue
+        icon = icons.get(norm(meta.get("title", "")))
+        if icon is None:
+            missing_popular.append(requested)
+            continue
+        slug, data = icon
+        if slug in selected_ids:
+            continue
+        item = make_entry(meta, slug, data)
+        if not item["aliases"]:
+            continue
+        selected.append(item)
+        selected_ids.add(slug)
+
+    # Fill only with actual upstream entries that satisfy the same license and
+    # provenance checks. This is deterministic in upstream catalog order.
+    for meta in metadata:
+        if len(selected) >= IMPORT_ASSETS:
+            break
+        if not eligible(meta):
+            continue
+        icon = icons.get(norm(meta.get("title", "")))
+        if icon is None:
+            continue
+        slug, data = icon
+        if slug in selected_ids:
+            continue
+        item = make_entry(meta, slug, data)
+        if not item["aliases"]:
+            continue
+        selected.append(item)
+        selected_ids.add(slug)
+
+    if len(selected) < IMPORT_ASSETS:
+        raise SystemExit(f"only {len(selected)} eligible upstream assets resolved")
+
+    for item in selected:
+        item.pop("_payload")
+    # Keep explicitly audited domains disjoint from aliases: the resolver's
+    # namespace is one exact-key namespace, so a domain that is already an
+    # alias would make the match ambiguous. This is the only domain filtering
+    # performed here; no source host is ever promoted to a login domain.
+    used_aliases_domains: set[str] = {
+        norm(alias) for item in selected for alias in item["aliases"]
+    }
+    removed_audited_domains: list[dict[str, str]] = []
+    for item in selected:
+        unique_domains: list[str] = []
+        for domain in item["exactDomains"]:
+            key = norm(domain)
+            if key not in used_aliases_domains:
+                unique_domains.append(domain)
+                used_aliases_domains.add(key)
+            else:
+                removed_audited_domains.append({
+                    "brandId": item["brandId"],
+                    "domain": domain,
+                    "reason": "alias/domain namespace collision",
+                })
+        item["exactDomains"] = unique_domains
+    manifest = {
+        "manifestVersion": f"totp-brand-manifest-2026.08.01-si-{VERSION}-r4",
+        "hashScope": "SHA-256 of the packaged local asset bytes, including the final newline",
+        "upstream": {
+            "name": "simple-icons",
+            "version": VERSION,
+            "repository": REPOSITORY,
+            "license": "CC0-1.0",
+            "licenseUrl": LICENSE_URL,
+            "disclaimerUrl": DISCLAIMER_URL,
+        },
+        "completionTargets": {
+            "uniqueLocalAssets": TARGET_ASSETS,
+            "aliasesAndDomains": TARGET_ALIASES,
+            "policy": (
+                "Only fixed-version provenance-complete assets; no official-logo claim for community glyphs; "
+                "login domains are independently audited and may be intentionally empty; quantity targets are "
+                "reported separately from semantic validity."
+            ),
+        },
+        "entries": selected,
+    }
+
+    ASSET_ROOT.mkdir(parents=True, exist_ok=True)
+    # Re-read bytes from the upstream archive map to avoid any generated or
+    # user-provided asset being silently included in the hash.
+    for item in selected:
+        slug = item["remoteFallbackSlug"]
+        raw = icons[norm(item["displayName"])][1]
+        payload = raw if raw.endswith(b"\n") else raw + b"\n"
+        (ASSET_ROOT / f"{slug}.svg").write_bytes(payload)
+    MANIFEST_PATH.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    alias_count = len({norm(alias) for item in selected for alias in item["aliases"]})
+    domain_count = len({norm(domain) for item in selected for domain in item["exactDomains"]})
+    print(json.dumps({
+        "selected": len(selected),
+        "aliasNames": sum(len(item["aliases"]) for item in selected),
+        "exactDomains": domain_count,
+        "aliasesAndDomains": alias_count + domain_count,
+        "auditedDomainEntries": sum(1 for item in selected if item["exactDomains"]),
+        "removedAuditedDomains": removed_audited_domains,
+        "missingCuratedNames": missing_popular,
+    }, ensure_ascii=False, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
