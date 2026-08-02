@@ -55,6 +55,11 @@ class TcpTestResult {
   lat: number = 0;
 }
 
+interface ProSyncToastResult {
+  message: string;
+  capabilityReady: boolean;
+}
+
 @Component
 export struct RustDeskRelayPage {
   @StorageLink('currentTheme') theme: string = 'light';
@@ -531,7 +536,7 @@ export struct RustDeskRelayPage {
     accountId: string,
     count: number,
     loginFlow: boolean
-  ): { message: string; capabilityReady: boolean } {
+  ): ProSyncToastResult {
     const status = this.proSync.getConnectionCapabilityStatus(accountId);
     if (status !== undefined && status.tokenProjected) {
       return {
