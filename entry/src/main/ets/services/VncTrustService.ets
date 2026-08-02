@@ -45,6 +45,30 @@ export function vncStoreIdentityFingerprint(storeIdentity: string): string {
   return normalized === '' ? '' : vncPayloadHashSha256(VNC_STORE_FINGERPRINT_PREFIX + normalized);
 }
 
+export function vncTrustStoreMatchesCurrent(recordStoreIdentityFingerprint: string,
+  currentStoreIdentityFingerprint: string): boolean {
+  const recordStore: string = recordStoreIdentityFingerprint.trim().toLowerCase();
+  const currentStore: string = currentStoreIdentityFingerprint.trim().toLowerCase();
+  return /^[0-9a-f]{64}$/.test(recordStore) &&
+    /^[0-9a-f]{64}$/.test(currentStore) && recordStore === currentStore;
+}
+
+export interface VncTrustViewState {
+  confirmed: boolean;
+  cloudCandidate: boolean;
+}
+
+export function vncTrustViewStateForStore(recordConfirmed: boolean, localMarkerConfirmed: boolean,
+  recordStoreIdentityFingerprint: string, currentStoreIdentityFingerprint: string): VncTrustViewState {
+  const confirmed: boolean = vncTrustStoreMatchesCurrent(
+    recordStoreIdentityFingerprint, currentStoreIdentityFingerprint) &&
+    recordConfirmed && localMarkerConfirmed;
+  return {
+    confirmed: confirmed,
+    cloudCandidate: recordConfirmed && !confirmed
+  };
+}
+
 /**
  * Endpoint-bound trust is the only write contract. Keep this pure so the
  * host/gateway owner and account/store boundary can be tested without a
@@ -149,26 +173,15 @@ export class VncTrustService {
     return result;
   }
 
-  isTrusted(ownerId: string, fingerprintSha256: string): boolean {
+  isTrusted(endpoint: VncTrustEndpoint, fingerprintSha256: string): boolean {
     const normalized: string = fingerprintSha256.trim().toLowerCase();
-    const values: VncTrustView[] = this.list();
-    for (let i = 0; i < values.length; i++) {
-      if (values[i].ownerId === ownerId && values[i].fingerprintSha256 === normalized && values[i].confirmed) {
-        return true;
-      }
-    }
-    return false;
+    const trust: VncTrustView | null = this.trustForEndpoint(endpoint);
+    return trust !== null && trust.confirmed && trust.fingerprintSha256 === normalized;
   }
 
-  /** Returns the single confirmed fingerprint for an owner, if present. */
-  trustedFingerprint(ownerId: string): string {
-    const values: VncTrustView[] = this.list();
-    for (let i = 0; i < values.length; i++) {
-      if (values[i].ownerId === ownerId && values[i].confirmed) {
-        return values[i].fingerprintSha256;
-      }
-    }
-    return '';
+  /** Returns the confirmed fingerprint for one exact endpoint, if present. */
+  trustedFingerprint(endpoint: VncTrustEndpoint): string {
+    return this.trustedFingerprintForEndpoint(endpoint);
   }
 
   /** Return a candidate or locally-confirmed row for one exact TLS endpoint. */
@@ -283,8 +296,11 @@ export class VncTrustService {
         endpointBindingFingerprint = (values['endpointBindingFingerprint'] as string).trim().toLowerCase();
       }
     } catch (_e) {}
-    const locallyConfirmed: boolean = confirmed && this.hasLocalConfirmation(
-      record.ownerId, fingerprint, endpointBindingFingerprint);
+    const viewState: VncTrustViewState = vncTrustViewStateForStore(
+      confirmed,
+      this.hasLocalConfirmation(record.ownerId, fingerprint, endpointBindingFingerprint),
+      storeIdentityFingerprint,
+      this.currentStoreIdentityFingerprint());
     return {
       id: record.id, userId: record.userId, ownerId: record.ownerId,
       fingerprintSha256: fingerprint,
@@ -292,8 +308,8 @@ export class VncTrustService {
       // only a candidate on a new device. The local confirmation marker is
       // written after an interactive current-connection confirmation.
       ownerType, storeIdentityFingerprint, endpointBindingFingerprint,
-      confirmed: locallyConfirmed,
-      cloudCandidate: confirmed && !locallyConfirmed,
+      confirmed: viewState.confirmed,
+      cloudCandidate: viewState.cloudCandidate,
       confirmedAt, createdAt: record.createdAt,
       syncVersion: record.syncVersion
     };

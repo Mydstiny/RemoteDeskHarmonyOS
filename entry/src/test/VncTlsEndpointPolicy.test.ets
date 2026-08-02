@@ -81,6 +81,19 @@ export default function vncTlsEndpointPolicyTest(): void {
       }
     });
 
+    it('changes_repeater_binding_when_gateway_tls_changes', 0, (): void => {
+      const repeaterHost: VncTlsHostInput = host('ultravnc_repeater');
+      repeaterHost.securityPolicy = 'allow_plaintext';
+      const secureGateway: VncTlsGatewayInput = gateway();
+      const secure = resolveVncTlsEndpoint(repeaterHost, secureGateway);
+      expect(secure.ok).assertTrue();
+      secureGateway.tls = false;
+      const plaintext = resolveVncTlsEndpoint(repeaterHost, secureGateway);
+      expect(plaintext.ok).assertTrue();
+      expect(secure.endpointBindingFingerprint === plaintext.endpointBindingFingerprint)
+        .assertFalse();
+    });
+
     it('does_not_accept_a_gateway_from_another_scope_or_transport', 0, (): void => {
       const otherScope: VncTlsGatewayInput = gateway();
       otherScope.userId = 'other-user';
