@@ -7,8 +7,8 @@ This file is the compact startup resume card. Historical checkpoints remain in
 
 - Task: `rustdesk-complete-repair` (active branch retained; current scope is VNC V3 only)
 - Branch: `codex/rustdesk-complete-repair`
-- Checkpoint: `3167f610a`, based on `main@34946adbc`; branch is ahead by 19 and not behind.
-- Phase: VNC V3 stage B passed; stage C implementation is next.
+- Checkpoint: `36a8cbe57`, based on `main@34946adbc`; branch is ahead by 22 and not behind.
+- Phase: VNC V3 stage C first segment implemented; independent review pending.
 - Worktree: clean. Do not stage unrelated changes.
 
 ## Stage A Result
@@ -32,7 +32,10 @@ This file is the compact startup resume card. Historical checkpoints remain in
 
 ## Next
 
-- Implement VNC V3 stage C: certificate Sheet and connection state machine.
+- Stage C first segment: pure certificate Sheet action/lifecycle policy and
+  registered Hypium suites are implemented at `36a8cbe57`.
+- Next segment: wire the policy into `RemoteDesktop` probe, bindSheet,
+  generation, password ordering, and one-shot pin handoff.
 - Keep the same reviewer task for the next segment; request one read-only
   review only after the segment checkpoint and required verification.
 - Keep all VNC callers fail-closed until the probe and expected-pin handoff are
@@ -40,11 +43,12 @@ This file is the compact startup resume card. Historical checkpoints remain in
 
 ## Verification
 
-- `rdp_native_tests`: 249 passed, 0 failed; loopback TLS fixtures ran with host
-  socket permission on 2026-08-02, including the trickle-handshake deadline case.
-- `default@OhosTestCompileArkTS`: passed after `3167f610a` on 2026-08-02.
-- `assembleHap`: passed after `3167f610a` on 2026-08-02.
-- `git diff --check`: passed after `3167f610a`.
+- `rdp_native_tests`: 248 passed, 0 failed with host socket permission on
+  2026-08-03; the sandbox-only run failed 13 loopback fixture starts and is
+  not used as final evidence.
+- `default@OhosTestCompileArkTS`: passed after `36a8cbe57` on 2026-08-03.
+- `assembleHap`: passed after `36a8cbe57` on 2026-08-03.
+- `git diff --check`: passed after `36a8cbe57`.
 - `ohosTest@OhosTestCompileArkTS`: unavailable; task is not registered
   (`00306054`). New ArkTS tests therefore have compile/build evidence only.
 
@@ -58,12 +62,14 @@ This file is the compact startup resume card. Historical checkpoints remain in
   handoff, and the final transport deadline. NAPI runtime, Promise/environment teardown, Sheet lifecycle,
   TrustService migration, real Repeater, cloud, and device matrices remain
   unverified and are not release evidence.
+- Stage C Sheet policy is static/build-tested only until `ohosTest` is
+  registered and a real device is available; no UI runtime evidence is claimed.
 
 ## Review Protocol
 
 - Machine state: `docs/codex/STATE.json`.
 - Receipts: `docs/codex/REVIEW_RECEIPTS.jsonl`.
-- `scripts/sync_workspace.sh status` should recognize the stage B PASS receipt;
-  new stage C code changes will create a new incremental review scope.
+- `scripts/sync_workspace.sh status` should report an incremental stage C
+  review requirement for `36a8cbe57`; the existing reviewer task is reused.
 - Reuse the existing independent review session and do not redispatch duplicate
   messages for the same segment.

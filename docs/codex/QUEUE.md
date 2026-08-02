@@ -1,12 +1,14 @@
 # Shared Queue
 
-Updated: 2026-08-02 Asia/Shanghai
+Updated: 2026-08-03 Asia/Shanghai
 
 ## Now
 
-- Implement VNC V3 stage C certificate Sheet and connection state machine,
-  preserving fail-closed probe/pin handoff and VNC-only scope.
-- Preserve the stage A review receipt and keep probe/pin failures fail-closed.
+- Request review for VNC V3 stage C first segment `36a8cbe57` (Sheet policy,
+  lifecycle generation, action gate, and registered tests).
+- Implement the next VNC V3 stage C segment: connect `RemoteDesktop` to the
+  probe, Sheet lifecycle, password ordering, and one-shot pin handoff.
+- Preserve stage A/B review receipts and keep probe/pin failures fail-closed.
 - Restore `hdc` connectivity and capture current VNC `hilog` when the device is
   available; do not convert static source evidence into device evidence.
 
