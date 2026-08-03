@@ -27,6 +27,13 @@ function sampleRecord(): ActiveRemoteSessionRecord {
 
 export default function activeRemoteSessionRegistryTest(): void {
   describe('ActiveRemoteSessionRegistry', (): void => {
+    it('rejects_active_session_before_account_scope_is_bound', 0, (): void => {
+      const registry = ActiveRemoteSessionRegistry.getInstance();
+      registry.resetForTest();
+      expect(registry.setActive(sampleRecord())).assertFalse();
+      expect(registry.getActive() === null).assertTrue();
+    });
+
     it('set_active_should_be_visible_from_next_instance_reference', 0, (): void => {
       const registry = ActiveRemoteSessionRegistry.getInstance();
       registry.resetForTest();

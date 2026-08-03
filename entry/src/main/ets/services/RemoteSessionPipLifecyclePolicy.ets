@@ -55,6 +55,19 @@ export function hasRemoteSessionPipVideo(
 }
 
 /**
+ * RustDesk PIP migration must be based on a frame that reached the renderer.
+ * A received/decoded frame alone can still be queued against the old Surface.
+ */
+export function hasRustDeskPresentedFrame(
+  receivedFrames: number,
+  presentedFrames: number,
+  width: number,
+  height: number
+): boolean {
+  return receivedFrames > 0 && presentedFrames > 0 && width > 0 && height > 0;
+}
+
+/**
  * GDI readiness is based on an owned pixel buffer, not graphics metadata.
  * Some RDP fallback sessions publish desktop dimensions after the first
  * paint, even though the frame pump can already resubmit that frame to PIP.

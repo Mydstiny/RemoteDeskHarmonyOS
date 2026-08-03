@@ -62,6 +62,7 @@ export const VERSION: SessionVersionInfo;
   export function getRdpRenderStats(sessionId: number): RdpRenderStats;
   export function getSessionDiagnostics(sessionId: number): RustDeskDiagnosticsSnapshot;
   export function getRustDeskDiagnostics(sessionId: number): RustDeskDiagnosticsSnapshot;
+  export function replayPendingRustDeskFrame(sessionId: number): boolean;
   export function getRustDeskDisplayCapabilities(sessionId: number): RustDeskDisplayCapabilities;
   export function beginRustDeskDisplaySwitch(sessionId: number,
     display: number): RustDeskDisplaySwitchRequest;

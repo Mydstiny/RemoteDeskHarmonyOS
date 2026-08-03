@@ -349,6 +349,13 @@ struct SessionDiagnosticsCounters {
     }
 };
 
+constexpr size_t kMaxPendingRustDeskFrameBytes = 32 * 1024 * 1024;
+
+struct PendingRustDeskFrame {
+    VideoFrame frame;
+    std::vector<uint8_t> bytes;
+};
+
 // 连接会话上下文
 struct SessionContext {
     enum class Lifecycle : uint8_t {
@@ -384,6 +391,8 @@ struct SessionContext {
     uint64_t lastDecoderGeneration = 0;
     uint64_t lastDisplayGeneration = 0;
     uint64_t lastDropCounterGeneration = 0;
+    mutable std::mutex pendingRustDeskFrameMutex;
+    std::unique_ptr<PendingRustDeskFrame> pendingRustDeskFrame;
     std::string vncConnectionPath = "unknown";
     std::string vncRequestedColorDepth = "auto";
 
@@ -399,6 +408,79 @@ static bool IsSessionCallbackActive(const std::shared_ptr<SessionContext>& sessi
             SessionContext::Lifecycle::Active &&
         Render::SharedSessionSinkOwnerLease().accepts(session->identity()) &&
         DecoderNapi::IsActiveSessionOwner(session->identity());
+}
+
+static void RememberPendingRustDeskKeyFrame(
+    const std::shared_ptr<SessionContext>& session, const VideoFrame& frame) {
+    if (!session || session->protocolName != "rustdesk" || !frame.isKeyFrame ||
+        frame.data == nullptr || frame.size == 0 || frame.size > kMaxPendingRustDeskFrameBytes) {
+        return;
+    }
+    auto pending = std::make_unique<PendingRustDeskFrame>();
+    pending->bytes.assign(frame.data, frame.data + frame.size);
+    pending->frame = frame;
+    pending->frame.data = pending->bytes.data();
+    {
+        std::lock_guard<std::mutex> lock(session->pendingRustDeskFrameMutex);
+        // Keep the newest keyframe. A delta frame cannot make a cold decoder
+        // usable, while replacing a newer keyframe with an older one can make
+        // replay fail after a slow renderer bind.
+        if (session->pendingRustDeskFrame != nullptr &&
+            session->pendingRustDeskFrame->frame.timestamp > pending->frame.timestamp) {
+            return;
+        }
+        session->pendingRustDeskFrame = std::move(pending);
+    }
+    OH_LOG_INFO(LOG_APP,
+                "[ExtLoader] retained RustDesk keyframe until video pipeline bind size=%{public}zu",
+                frame.size);
+}
+
+static void RequeuePendingRustDeskFrame(
+    const std::shared_ptr<SessionContext>& session,
+    std::unique_ptr<PendingRustDeskFrame> pending) {
+    if (!session || !pending) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(session->pendingRustDeskFrameMutex);
+    if (!session->pendingRustDeskFrame) {
+        session->pendingRustDeskFrame = std::move(pending);
+    }
+}
+
+static bool ReplayPendingRustDeskFrame(const std::shared_ptr<SessionContext>& session) {
+    if (!session || session->protocolName != "rustdesk") {
+        return false;
+    }
+    std::unique_ptr<PendingRustDeskFrame> pending;
+    {
+        std::lock_guard<std::mutex> lock(session->pendingRustDeskFrameMutex);
+        if (!session->pendingRustDeskFrame) {
+            return true;
+        }
+        pending = std::move(session->pendingRustDeskFrame);
+    }
+    if (!IsSessionCallbackActive(session)) {
+        RequeuePendingRustDeskFrame(session, std::move(pending));
+        return false;
+    }
+    pending->frame.data = pending->bytes.data();
+    const int ret = DecoderNapi::DecodeActiveNative(session->identity(), pending->frame);
+    if (ret == 0) {
+        session->diagnostics.decodeOk.fetch_add(1, std::memory_order_relaxed);
+        OH_LOG_INFO(LOG_APP,
+                    "[ExtLoader] replayed retained RustDesk keyframe session=%{public}llu",
+                    static_cast<unsigned long long>(session->sessionId));
+        return true;
+    }
+    if (ret < 0 || ret == DecoderNapi::kDecodeInactiveSession) {
+        session->diagnostics.decodeErrors.fetch_add(1, std::memory_order_relaxed);
+        RequeuePendingRustDeskFrame(session, std::move(pending));
+    }
+    OH_LOG_WARN(LOG_APP,
+                "[ExtLoader] retained RustDesk keyframe replay deferred ret=%{public}d session=%{public}llu",
+                ret, static_cast<unsigned long long>(session->sessionId));
+    return false;
 }
 
 static bool ReportVideoPressureForSession(
@@ -1981,6 +2063,24 @@ napi_value NapiGetSessionDiagnostics(napi_env env, napi_callback_info info) {
     return result;
 }
 
+napi_value NapiReplayPendingRustDeskFrame(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value args[1];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    int32_t sessionId = 0;
+    if (argc > 0) {
+        napi_get_value_int32(env, args[0], &sessionId);
+    }
+    bool ok = false;
+    const auto it = g_sessionRegistry.find(sessionId);
+    if (it != g_sessionRegistry.end() && it->second) {
+        ok = ReplayPendingRustDeskFrame(it->second);
+    }
+    napi_value result;
+    napi_get_boolean(env, ok, &result);
+    return result;
+}
+
 static bool ReadProcCpuTicks(uint64_t& processTicks, uint64_t& totalTicks) {
     std::ifstream processFile("/proc/self/stat");
     std::string processLine;
@@ -2865,6 +2965,13 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
         int ret = DecoderNapi::DecodeActiveNative(session->identity(), frame);
         const int64_t decodeElapsedUs = std::chrono::duration_cast<std::chrono::microseconds>(
             std::chrono::steady_clock::now() - decodeStartedAt).count();
+        if (ret < 0 || ret == DecoderNapi::kDecodeInactiveSession) {
+            // connect() starts the RustDesk stream worker before ArkTS can
+            // create/bind the shared decoder. Retain a keyframe across that
+            // short owner-pipeline gap so the first visible frame is not
+            // dependent on a later remote refresh.
+            RememberPendingRustDeskKeyFrame(session, frame);
+        }
         if (ret == DecoderNapi::kDecodeInactiveDisplay ||
             ret == DecoderNapi::kDecodeInactiveSession) {
             return;
@@ -6720,6 +6827,9 @@ napi_value ExtensionLoaderNapi::Init(napi_env env, napi_value exports) {
     napi_create_function(env, "getRustDeskDiagnostics", NAPI_AUTO_LENGTH,
                          NapiGetSessionDiagnostics, nullptr, &fn);
     napi_set_named_property(env, exports, "getRustDeskDiagnostics", fn);
+    napi_create_function(env, "replayPendingRustDeskFrame", NAPI_AUTO_LENGTH,
+                         NapiReplayPendingRustDeskFrame, nullptr, &fn);
+    napi_set_named_property(env, exports, "replayPendingRustDeskFrame", fn);
     napi_create_function(env, "getLocalResourceStats", NAPI_AUTO_LENGTH,
                          NapiGetLocalResourceStats, nullptr, &fn);
     napi_set_named_property(env, exports, "getLocalResourceStats", fn);

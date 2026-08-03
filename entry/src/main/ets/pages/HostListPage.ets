@@ -564,7 +564,7 @@ struct HostListPage {
   // Mobile-only enhancement. Permission is requested asynchronously after the
   // host list has rendered; it is not a prerequisite for the home page.
   @StorageLink('gripAlignmentEnabled') gripAlignmentEnabled: boolean = true;
-  @StorageLink('liveViewEnabled') liveViewEnabled: boolean = false;
+  @StorageLink('liveViewEnabled') liveViewEnabled: boolean = true;
   @StorageLink('liveViewMode') liveViewMode: number = 1; // 0=关闭, 1=AVSession, 2=后台通知
   @State ambientLightIntensity: number = 0.5;
   @State showHaloColor: boolean = false;
@@ -4105,6 +4105,13 @@ struct HostListPage {
       return;
     }
     const generation: number = ++this.rustDeskProPreflightGeneration;
+    const accountScopeReady: boolean = await AccountSessionCoordinator.getInstance().init(
+      getContext(this) as common.Context);
+    if (!accountScopeReady) {
+      this.rustDeskProPreflightState = RustDeskProPreflightState.ERROR;
+      this.rustDeskProPreflightError = '账号数据域初始化失败，无法安全保留后台会话。';
+      return;
+    }
     const connectionScope = AccountSessionCoordinator.getInstance().currentScope();
     const host: RemoteHost = RemoteHost.fromJSON(stored.toJSON());
     const relay: RustDeskRelayConfig | undefined = this.srv.getAllRelays()
@@ -4194,7 +4201,9 @@ struct HostListPage {
             hostAddress: host.host, protocolConnected: true, renderAttached: false,
             restoreNeeded: true, latestSurfaceId: '', createdAtMs: now, updatedAtMs: now
           };
-          ActiveRemoteSessionRegistry.getInstance().setActive(record);
+          if (!ActiveRemoteSessionRegistry.getInstance().setActive(record)) {
+            throw new Error('远程会话账号作用域未登记，无法交接预鉴权会话。');
+          }
           this.srv.updateHost(saved);
           const params: Record<string, Object> = {};
           params['hostId'] = host.id;

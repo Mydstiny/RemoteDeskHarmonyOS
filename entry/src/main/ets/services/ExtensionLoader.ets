@@ -479,7 +479,17 @@ export class ExtensionLoader {
 
   bindVideoPipeline(decoderHandle: number, rendererHandle: number): boolean {
     try {
-      return rdpnapi.bindVideoPipeline(decoderHandle, rendererHandle) as boolean;
+      const bound: boolean = rdpnapi.bindVideoPipeline(decoderHandle, rendererHandle) as boolean;
+      if (bound && this.currentSessionId > 0) {
+        // RustDesk may deliver its first keyframe while connect() is
+        // publishing the session but before ArkTS can bind the decoder. The
+        // native loader retains that keyframe and replays it at this barrier.
+        const replayed: boolean = rdpnapi.replayPendingRustDeskFrame(
+          this.currentSessionId) as boolean;
+        hilog.info(DOMAIN, TAG, '[ExtensionLoader] replayPendingRustDeskFrame: ' +
+          replayed.toString());
+      }
+      return bound;
     } catch (err) {
       hilog.error(DOMAIN, TAG, '[ExtensionLoader] bindVideoPipeline: ' + JSON.stringify(err));
       return false;

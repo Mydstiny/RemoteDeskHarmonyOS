@@ -7,6 +7,7 @@ import {
   RemoteSessionPipLifecycleAction,
   hasRemoteSessionPipVideo,
   hasRdpRemoteSessionPipFrame,
+  hasRustDeskPresentedFrame,
   shouldPrepareRemoteSessionPip,
   shouldCreatePreauthenticatedRustDeskPipeline,
   resolveRemoteSessionPipLifecycle,
@@ -53,6 +54,12 @@ export default function remoteSessionPipLifecyclePolicyTest(): void {
     it('keeps_decoder_requirement_for_rustdesk', 0, (): void => {
       expect(hasRemoteSessionPipVideo('rustdesk', true, true, true, false)).assertTrue();
       expect(hasRemoteSessionPipVideo('rustdesk', true, true, false, true)).assertFalse();
+    });
+
+    it('requires_a_presented_rustdesk_frame_before_pip_transfer', 0, (): void => {
+      expect(hasRustDeskPresentedFrame(1, 0, 1920, 1080)).assertFalse();
+      expect(hasRustDeskPresentedFrame(1, 1, 0, 1080)).assertFalse();
+      expect(hasRustDeskPresentedFrame(1, 1, 1920, 1080)).assertTrue();
     });
 
     it('creates_the_pre_authenticated_pipeline_only_once', 0, (): void => {

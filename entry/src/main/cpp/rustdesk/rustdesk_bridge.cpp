@@ -48,6 +48,16 @@ extern "C" {
         void (*on_display)(const void*, void*),
         void (*on_auth)(int, const char*, void*),
         void* user_data);
+    void* rustdesk_connect_v4(
+        const void* cfg,
+        void (*on_frame)(const void*, void*),
+        void (*on_audio)(const void*, void*),
+        void (*on_cursor)(const void*, void*),
+        void (*on_disconnect)(int, const char*, void*),
+        void (*on_display)(const void*, void*),
+        void (*on_auth)(int, const char*, void*),
+        void (*on_progress)(int, const char*, void*),
+        void* user_data);
     void  rustdesk_disconnect(void* handle);
     void  rustdesk_cancel_pending_connect();
     void  rustdesk_cancel_pending_connect_for_session(uint64_t session_id);
@@ -981,6 +991,21 @@ void RustDeskBridge::onFfiAuth(int state, const char* message, void* userData) {
     impl->setState(ConnectionState::AUTHENTICATING, eventMessage);
 }
 
+void RustDeskBridge::onFfiProgress(int stage, const char* message, void* userData) {
+    auto* context = static_cast<RustDeskFfiCallbackContext*>(userData);
+    auto* impl = context ? static_cast<RustDeskBridge::Impl*>(context->impl) : nullptr;
+    if (!context || !impl || context->generation == 0 ||
+        context->generation != impl->cursorGeneration.load(std::memory_order_acquire) ||
+        impl->disconnectRequested.load(std::memory_order_acquire) ||
+        impl->ffiStreamEnded.load(std::memory_order_acquire)) {
+        return;
+    }
+    const char* progressMessage = message ? message : "RustDesk: 正在连接";
+    OH_LOG_INFO(LOG_APP, "[RustDesk-FFI] handshake stage=%{public}d msg=%{public}s",
+                stage, progressMessage);
+    impl->setState(ConnectionState::CONNECTING, progressMessage);
+}
+
 void RustDeskBridge::onFfiDisconnect(int state, const char* message, void* userData) {
     auto* context = static_cast<RustDeskFfiCallbackContext*>(userData);
     auto* impl = context ? static_cast<RustDeskBridge::Impl*>(context->impl) : nullptr;
@@ -1688,9 +1713,9 @@ int RustDeskBridge::connect(const ConnectionConfig& cfg) {
                 ffiCfg.fps,
                 ffiCfg.relay_fallback_port);
 
-            void* ffiHandle = rustdesk_connect_v3(
+            void* ffiHandle = rustdesk_connect_v4(
                 &ffiCfg, onFfiFrame, onFfiAudio, onFfiCursor, onFfiDisconnect,
-                onFfiDisplay, onFfiAuth, callbackUserData);
+                onFfiDisplay, onFfiAuth, onFfiProgress, callbackUserData);
             bool discardHandle = serial != impl->connectSerial.load() ||
                 impl->disconnectRequested.load() || impl->ffiStreamEnded.load();
             if (!discardHandle) {

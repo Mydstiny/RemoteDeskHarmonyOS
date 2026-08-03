@@ -144,6 +144,7 @@ import {
   RemoteSessionPipContentSize,
   hasRemoteSessionPipVideo,
   hasRdpRemoteSessionPipFrame,
+  hasRustDeskPresentedFrame,
   shouldPrepareRemoteSessionPip,
   shouldCreatePreauthenticatedRustDeskPipeline,
   resolveRemoteSessionPipContentSize,
@@ -425,6 +426,7 @@ const REMOTE_CURSOR_PIXELMAP_RETIRE_GRACE_MS = REMOTE_CURSOR_RENDER_FRAME_MS * 2
 const REMOTE_CURSOR_PIXELMAP_RETIRE_RETRY_MS = REMOTE_CURSOR_RENDER_FRAME_MS;
 const REMOTE_CURSOR_MAX_RETIRED_PIXELMAPS = 8;
 const VNC_CERTIFICATE_PROBE_TIMEOUT_MS = 10000;
+const RUSTDESK_FIRST_FRAME_TIMEOUT_MS = 15000;
 const REMOTE_GEOMETRY_SYNC_MS = 500;
 const REMOTE_DESKTOP_DISAPPEAR_BACKGROUND_SIGNAL_WAIT_MS = 500;
 const TOUCHPAD_MAX_LOCAL_STEP_RATIO = 0.75;
@@ -698,6 +700,7 @@ struct RemoteDesktop {
   @StorageLink('remoteDesktopBgFlag') @Watch('onRemoteDesktopBgFlagChange') remoteDesktopBgFlag: boolean = false;
   @State @Watch('onRemoteConnectionStateChange') connected: boolean = false;
   @State connecting: boolean = true;
+  @State connectionProgressMessage: string = '';
   @State connectionError: string = '';
   @State connectionErrorDetail: string = '';
   @State showRdpSessionErrorSheet: boolean = false;
@@ -5231,6 +5234,16 @@ struct RemoteDesktop {
     this.restoreRemoteDisplayScalePreference();
     this.registerInputDeviceWatcher();
     this.registerKeyboardAvoidListener();
+    const accountScopeReady: boolean = await AccountSessionCoordinator.getInstance().init(
+      getContext(this) as common.Context);
+    if (!accountScopeReady) {
+      this.connecting = false;
+      this.connectionError = '账号数据域初始化失败';
+      this.connectionErrorDetail = '远程会话未启动，避免后台恢复绑定到未确认的账号作用域 [E-ACCOUNT-SCOPE]';
+      hilog.error(RD_DOMAIN, RD_TAG,
+        'aboutToAppear: account scope is not ready; remote session startup blocked');
+      return;
+    }
     const params: Object = router.getParams();
     if (params) {
       const p: Record<string, Object> = params as Record<string, Object>;
@@ -5592,11 +5605,11 @@ struct RemoteDesktop {
     return RemoteProtocol.rdp;
   }
 
-  private recordActiveSession(host: RemoteHost, sessionId: number, renderAttached: boolean): void {
+  private recordActiveSession(host: RemoteHost, sessionId: number, renderAttached: boolean): boolean {
     if (host.protocol === 'vnc') {
       // VNC deliberately does not enter the shared PIP/background registry;
       // its raw framebuffer has no decoder-safe background migration path.
-      return;
+      return true;
     }
     const now: number = Date.now();
     const activeScope = AccountSessionCoordinator.getInstance().currentScope();
@@ -5614,7 +5627,13 @@ struct RemoteDesktop {
       createdAtMs: now,
       updatedAtMs: now
     };
-    this.activeSessionRegistry.setActive(record);
+    const registered: boolean = this.activeSessionRegistry.setActive(record);
+    if (!registered) {
+      hilog.error(RD_DOMAIN, RD_TAG,
+        'recordActiveSession: registry scope rejected session=' + sessionId.toString() +
+        ' owner=' + activeScope.ownerScopeId + ' generation=' + activeScope.generation.toString());
+    }
+    return registered;
   }
 
   /**
@@ -5807,6 +5826,9 @@ struct RemoteDesktop {
     if (protocol === 'vnc') {
       return false;
     }
+    if (protocol === 'rustdesk') {
+      return this.isRustDeskPresentedFrameReady();
+    }
     return hasRemoteSessionPipVideo(
       protocol,
       this.rendererHandle > 0,
@@ -5826,8 +5848,24 @@ struct RemoteDesktop {
     }
     try {
       const diagnostics: RustDeskDiagnosticsSnapshot = this.loader.getRustDeskDiagnostics(this.sessionId);
-      return diagnostics.videoSeen && diagnostics.receivedFrames > 0 &&
-        diagnostics.width > 0 && diagnostics.height > 0;
+      return hasRustDeskPresentedFrame(
+        diagnostics.receivedFrames, diagnostics.presentedFrames,
+        diagnostics.width, diagnostics.height);
+    } catch (_e) {
+      return false;
+    }
+  }
+
+  private isRustDeskPresentedFrameReady(): boolean {
+    if (this.pendingHost === null || this.pendingHost.protocol !== 'rustdesk' || this.sessionId <= 0) {
+      return false;
+    }
+    try {
+      const diagnostics: RustDeskDiagnosticsSnapshot =
+        this.loader.getRustDeskDiagnostics(this.sessionId);
+      return hasRustDeskPresentedFrame(
+        diagnostics.receivedFrames, diagnostics.presentedFrames,
+        diagnostics.width, diagnostics.height);
     } catch (_e) {
       return false;
     }
@@ -5856,7 +5894,8 @@ struct RemoteDesktop {
   private currentRemoteMediaSnapshot(): RemoteSessionMediaSnapshot {
     return {
       hasAudio: this.loader.isAudioActive(),
-      hasVideo: this.isRdpRemoteSession() ? this.isRdpVideoFrameReady() : this.loader.isVideoActive()
+      hasVideo: this.isRdpRemoteSession() ? this.isRdpVideoFrameReady() :
+        (this.isRustDeskSession() ? this.isRustDeskPresentedFrameReady() : this.loader.isVideoActive())
     };
   }
 
@@ -6884,6 +6923,75 @@ struct RemoteDesktop {
     this.loader.sendMouse(this.sessionId, src['x'], src['y'], sendButton, pressed);
   }
 
+  /**
+   * Native CONNECTED means authentication and stream setup completed; it
+   * does not mean a decoded frame has reached the current Surface. Keep the
+   * loading layer until the renderer reports the first presented frame and
+   * actively request a keyframe when the peer's initial frame was raced by
+   * decoder startup.
+   */
+  private async waitForRustDeskFirstPresentedFrame(
+    sessionId: number,
+    timeoutMs: number,
+    attemptId: number,
+    operationGeneration: number = -1
+  ): Promise<boolean> {
+    const startedAtMs: number = Date.now();
+    let lastRefreshAtMs: number = 0;
+    while (Date.now() - startedAtMs < timeoutMs) {
+      if (attemptId !== this.connectAttemptId || this.sessionId !== sessionId) {
+        hilog.info(RD_DOMAIN, RD_TAG, 'RustDesk first-frame wait canceled');
+        return false;
+      }
+      if (operationGeneration > 0 &&
+        !RemoteSessionPipService.getInstance().isOperationCurrent(operationGeneration)) {
+        hilog.info(RD_DOMAIN, RD_TAG, 'RustDesk first-frame wait canceled by PIP operation');
+        return false;
+      }
+      const state: number = this.loader.getConnectionState(sessionId);
+      const nativeMessage: string = this.loader.getConnectionLastMessage(sessionId);
+      if (nativeMessage.length > 0) {
+        this.connectionProgressMessage = nativeMessage;
+      }
+      if (state === 4 || state === 0) {
+        const ffiError: string = this.loader.getRustDeskLastError();
+        const detail: string = ffiError.length > 0 ? ffiError : nativeMessage;
+        throw new Error('RustDesk 首帧接收失败' +
+          (detail.length > 0 ? '：' + detail : '') + ' [E-RUSTDESK-FIRST-FRAME-STATE]');
+      }
+      const diagnostics: RustDeskDiagnosticsSnapshot =
+        this.loader.getRustDeskDiagnostics(sessionId);
+      if (hasRustDeskPresentedFrame(
+        diagnostics.receivedFrames, diagnostics.presentedFrames,
+        diagnostics.width, diagnostics.height)) {
+        this.connectionProgressMessage = 'RustDesk: 首帧已显示';
+        hilog.info(RD_DOMAIN, RD_TAG, 'RustDesk first frame presented session=' +
+          sessionId.toString() + ' frames=' + diagnostics.presentedFrames.toString());
+        return true;
+      }
+      const elapsedMs: number = Date.now() - startedAtMs;
+      if (elapsedMs >= 150 && (lastRefreshAtMs === 0 || Date.now() - lastRefreshAtMs >= 1200)) {
+        const recoveryArmed: boolean = this.loader.requestDecoderRecovery();
+        const refresh = this.loader.requestFrameRefresh();
+        lastRefreshAtMs = Date.now();
+        hilog.info(RD_DOMAIN, RD_TAG, 'RustDesk first-frame refresh requested recovery=' +
+          (recoveryArmed ? 'true' : 'false') + ' refresh=' + refresh.ok.toString());
+      }
+      this.connectionProgressMessage = 'RustDesk: 已完成鉴权，正在等待远端首帧';
+      await new Promise<void>((resolve: () => void): void => {
+        setTimeout(resolve, 100);
+      });
+    }
+    if (attemptId !== this.connectAttemptId || this.sessionId !== sessionId) {
+      return false;
+    }
+    if (operationGeneration > 0 &&
+      !RemoteSessionPipService.getInstance().isOperationCurrent(operationGeneration)) {
+      return false;
+    }
+    throw new Error('RustDesk 首帧显示超时，请检查远端画面编码或网络 [E-RUSTDESK-FIRST-FRAME-TIMEOUT]');
+  }
+
   private rdpCredentialParts(host: RemoteHost): RdpCredentialParts {
     if (host.protocol !== 'rdp') {
       return { username: host.username, domain: '' };
@@ -6951,6 +7059,10 @@ struct RemoteDesktop {
       const state: number = this.loader.getConnectionState(sessionId);
       const transferStatus: SessionTransferStatus = this.loader.getSessionTransferStatus(sessionId);
       this.rdpDriveMounted = transferStatus.rdpDriveMounted;
+      const nativeMessage: string = this.loader.getConnectionLastMessage(sessionId);
+      if (protocol === 'rustdesk' && nativeMessage.length > 0) {
+        this.connectionProgressMessage = nativeMessage;
+      }
       if (state === 1) { observedConnecting = true; }
       if (state === 2) {
         if (protocol === 'rustdesk' && this.showRustDeskTwoFactorSheet) {
@@ -6976,11 +7088,11 @@ struct RemoteDesktop {
           hilog.info(RD_DOMAIN, RD_TAG, 'Native connection state ignored after cancel: ' + state.toString());
           return false;
         }
-        const nativeMessage: string = this.loader.getConnectionLastMessage(sessionId);
+        const terminalMessage: string = this.loader.getConnectionLastMessage(sessionId);
         if (protocol === 'rustdesk') {
           const ffiError: string = this.loader.getRustDeskLastError();
           const detail: string = ffiError.length > 0 ? '：' + ffiError :
-            (nativeMessage.length > 0 ? '：' + nativeMessage : '');
+            (terminalMessage.length > 0 ? '：' + terminalMessage : '');
           if (ffiError.indexOf('remote approval timed out') >= 0) {
             throw new Error('等待被控端批准超时，请确认对方已启用点击批准' + detail +
               ' [E-RUSTDESK-APPROVAL-TIMEOUT]');
@@ -6992,15 +7104,15 @@ struct RemoteDesktop {
             ' [E-RUSTDESK-STATE-' + state.toString() + ']');
         }
         if (protocol === 'rdp') {
-          const detail: string = nativeMessage.length > 0 ? '：' + nativeMessage : '';
+          const detail: string = terminalMessage.length > 0 ? '：' + terminalMessage : '';
           throw new Error('RDP 连接失败或被服务器拒绝' + detail +
             ' [E-RDP-STATE-' + state.toString() + ']');
         }
         if (protocol === 'vnc') {
-          const diagnosis = diagnoseVncConnectionError(nativeMessage);
+          const diagnosis = diagnoseVncConnectionError(terminalMessage);
           throw new Error(diagnosis.title + '：' + diagnosis.detail + ' [' + diagnosis.code + ']');
         }
-        const detail: string = nativeMessage.length > 0 ? '：' + nativeMessage : '';
+        const detail: string = terminalMessage.length > 0 ? '：' + terminalMessage : '';
         throw new Error('远程连接失败或已断开' + detail +
           ' [E-CONNECT-STATE-' + state.toString() + ']');
       }
@@ -8130,7 +8242,7 @@ struct RemoteDesktop {
   // XComponent 就绪后初始化渲染管线并连接
   private async doConnect(host: RemoteHost): Promise<void> {
     const attemptId: number = ++this.connectAttemptId;
-    const connectionScope = AccountSessionCoordinator.getInstance().currentScope();
+    let connectionScope = AccountSessionCoordinator.getInstance().currentScope();
     const vncHost: VncHostView | null = this.pendingVncHost;
     const isVnc: boolean = host.protocol === 'vnc' && vncHost !== null;
     let rdpRestrictedAdminHash: string = '';
@@ -8139,7 +8251,15 @@ struct RemoteDesktop {
     let rdAccountId: string = '';
     let rustDeskRelay: RustDeskRelayConfig | undefined;
     let rustDeskConnection: RustDeskConnectionContext | null = null;
+    this.connectionProgressMessage = host.protocol === 'rustdesk'
+      ? 'RustDesk: 正在准备连接' : '';
     try {
+      const accountScopeReady: boolean = await AccountSessionCoordinator.getInstance().init(
+        getContext(this) as common.Context);
+      if (!accountScopeReady) {
+        throw new Error('账号数据域初始化失败，无法安全登记远程会话 [E-ACCOUNT-SCOPE]');
+      }
+      connectionScope = AccountSessionCoordinator.getInstance().currentScope();
       if (!(await this.loader.waitForPendingTeardown())) {
         throw new Error('上一会话资源清理未完成 [E-TEARDOWN-PENDING]');
       }
@@ -8632,6 +8752,13 @@ struct RemoteDesktop {
         if (!bindOk) {
           throw new Error('视频管线绑定失败 [E-DECODER-BIND]');
         }
+        if (host.protocol === 'rustdesk') {
+          this.connectionProgressMessage = 'RustDesk: 正在等待视频首帧';
+          const recoveryArmed: boolean = this.loader.requestDecoderRecovery();
+          const refresh = this.loader.requestFrameRefresh();
+          hilog.info(RD_DOMAIN, RD_TAG, 'initial RustDesk video recovery armed=' +
+            (recoveryArmed ? 'true' : 'false') + ' refresh=' + refresh.ok.toString());
+        }
       }
       const rustDeskApprovalWait: boolean = host.protocol === 'rustdesk' &&
         rustDeskAuthModeForConnection(host.rustdeskDirectEnabled, host.rustdeskAuthMode) ===
@@ -8642,6 +8769,13 @@ struct RemoteDesktop {
       if (!nativeReady) {
         return;
       }
+      if (host.protocol === 'rustdesk') {
+        const firstFrameReady: boolean = await this.waitForRustDeskFirstPresentedFrame(
+          sid, RUSTDESK_FIRST_FRAME_TIMEOUT_MS, attemptId);
+        if (!firstFrameReady) {
+          return;
+        }
+      }
       const scopeAfterConnect = AccountSessionCoordinator.getInstance().currentScope();
       if (scopeAfterConnect.ownerScopeId !== connectionScope.ownerScopeId ||
         scopeAfterConnect.generation !== connectionScope.generation) {
@@ -8651,6 +8785,7 @@ struct RemoteDesktop {
       this.nativeHandles.attachConnectedSession(sid, this.remoteProtocolOf(host));
       this.connected = true;
       this.connecting = false;
+      this.connectionProgressMessage = '';
       if (host.protocol === 'vnc') {
         this.vncToolbarCollapsed = false;
         this.scheduleVncToolbarAutoCollapse(sid);
@@ -8664,7 +8799,9 @@ struct RemoteDesktop {
         }
       }
       this.startRemoteCursorPolling(sid);
-      this.recordActiveSession(host, sid, true);
+      if (!this.recordActiveSession(host, sid, true)) {
+        throw new Error('远程会话账号作用域未登记，已拒绝启动后台接续 [E-SESSION-REGISTRY]');
+      }
       await this.prepareRemoteSessionPipForForeground(host, sid);
       this.persistRustDeskSessionAuth(host);
       // T-171: 连接成功后显示悬浮胶囊
@@ -9117,6 +9254,8 @@ struct RemoteDesktop {
       }
       this.connected = false;
       this.connectStarted = false;
+      this.connecting = false;
+      this.connectionProgressMessage = '';
       hilog.info(RD_DOMAIN, RD_TAG, '[RDP-SHUTDOWN] phase=arkts-return elapsedMs=' +
         (Date.now() - cleanupStartedAtMs).toString() + ' reason=' + reason);
     } catch (err) {
@@ -9233,8 +9372,17 @@ struct RemoteDesktop {
           this.releasePipRenderer('rustdesk-pip-bind-failed');
           return false;
         }
-        this.loader.requestDecoderRecovery();
-        this.loader.requestFrameRefresh();
+        const recoveryArmed: boolean = this.loader.requestDecoderRecovery();
+        const refresh = this.loader.requestFrameRefresh();
+        hilog.info(RD_DOMAIN, RD_TAG, 'attachRendererToPipSurface: RustDesk recovery armed=' +
+          (recoveryArmed ? 'true' : 'false') + ' refresh=' + refresh.ok.toString());
+        const firstFrameReady: boolean = await this.waitForRustDeskFirstPresentedFrame(
+          this.sessionId, RUSTDESK_FIRST_FRAME_TIMEOUT_MS, this.connectAttemptId,
+          operationGeneration);
+        if (!firstFrameReady) {
+          this.releasePipRenderer('rustdesk-pip-first-frame-cancelled');
+          return false;
+        }
       }
       if (this.restoreInProgress || !this.cleanupStarted ||
         !pipService.isOperationCurrent(operationGeneration)) {
@@ -9295,7 +9443,24 @@ struct RemoteDesktop {
     if (this.cleanupStarted) {
       return;
     }
-    const activeSession: ActiveRemoteSessionRecord | null = this.activeSessionRegistry.getActive();
+    const accountScopeReady: boolean = await AccountSessionCoordinator.getInstance().init(
+      getContext(this) as common.Context);
+    if (!accountScopeReady) {
+      hilog.error(RD_DOMAIN, RD_TAG,
+        'detachForBackground: account scope unavailable; preserving native session and renderer');
+      return;
+    }
+    let activeSession: ActiveRemoteSessionRecord | null = this.activeSessionRegistry.getActive();
+    if (this.connected && this.sessionId > 0 && this.pendingHost !== null &&
+      (activeSession === null || activeSession.sessionId !== this.sessionId ||
+        activeSession.hostId !== this.pendingHost.id || !activeSession.protocolConnected)) {
+      const repaired: boolean = this.recordActiveSession(
+        this.pendingHost, this.sessionId, this.rendererHandle > 0 || this.pipRendererHandle > 0);
+      activeSession = repaired ? this.activeSessionRegistry.getActive() : null;
+      hilog.info(RD_DOMAIN, RD_TAG,
+        'detachForBackground: repaired missing registry record=' + (repaired ? 'true' : 'false') +
+        ' sessionId=' + this.sessionId.toString());
+    }
     if (!this.connected || this.sessionId <= 0 || this.pendingHost === null || activeSession === null ||
       activeSession.sessionId !== this.sessionId || activeSession.hostId !== this.pendingHost.id ||
       !activeSession.protocolConnected) {
@@ -9359,7 +9524,7 @@ struct RemoteDesktop {
       const liveViewEnabled: boolean = AppStorage.get<boolean>('liveViewEnabled') ?? true;
       const liveViewMode: number = AppStorage.get<number>('liveViewMode') ?? 1;
       const pipLifecycleAction: RemoteSessionPipLifecycleAction = resolveRemoteSessionPipLifecycle(
-        liveViewEnabled, liveViewMode, true,
+        liveViewEnabled, liveViewMode, backgroundMedia.hasVideo,
         this.connected && this.sessionId > 0, true, false);
       if (pipContext !== null && this.pendingHost !== null &&
         pipService.isPrepared() &&
@@ -9620,7 +9785,7 @@ struct RemoteDesktop {
   /**
    * 后台恢复 — 仅重建渲染器, 不新建协议连接。
    */
-  private doBackgroundRestoreRender(): void {
+  private async doBackgroundRestoreRender(): Promise<void> {
     if (this.restoreInProgress) {
       hilog.warn(RD_DOMAIN, RD_TAG, 'doBackgroundRestoreRender: restore teardown is still in progress');
       return;
@@ -9630,8 +9795,15 @@ struct RemoteDesktop {
       hilog.warn(RD_DOMAIN, RD_TAG, 'doBackgroundRestoreRender: cleanupStarted=true, aborting');
       return;
     }
+    const restoreSessionId: number = this.sessionId;
+    const restoreAttemptId: number = this.connectAttemptId;
+    const restoringRustDesk: boolean = this.pendingHost !== null &&
+      this.pendingHost.protocol === 'rustdesk';
     this.bgRestorePending = false; // 防止重入
     this.connectStarted = true;
+    this.connecting = true;
+    this.connectionProgressMessage = restoringRustDesk
+      ? 'RustDesk: 正在恢复远程画面' : '';
     try {
       const desktop: DesktopSize = this.desktopSize(this.pendingHost);
       const pageSurface: RemoteSessionPipContentSize = this.currentPageSurfaceSize(desktop.width, desktop.height);
@@ -9674,10 +9846,28 @@ struct RemoteDesktop {
         if (!this.loader.bindVideoPipeline(decoder, renderer)) {
           throw new Error('后台恢复视频管线绑定失败 [E-DECODER-RESTORE-BIND]');
         }
-        this.loader.requestDecoderRecovery();
+        const recoveryArmed: boolean = this.loader.requestDecoderRecovery();
+        const refresh = this.loader.requestFrameRefresh();
+        hilog.info(RD_DOMAIN, RD_TAG, 'doBackgroundRestoreRender: preauthenticated RustDesk recovery armed=' +
+          (recoveryArmed ? 'true' : 'false') + ' refresh=' + refresh.ok.toString());
+        const firstFrameReady: boolean = await this.waitForRustDeskFirstPresentedFrame(
+          restoreSessionId, RUSTDESK_FIRST_FRAME_TIMEOUT_MS, restoreAttemptId);
+        if (!firstFrameReady) {
+          if (this.sessionId === restoreSessionId && this.connectAttemptId === restoreAttemptId) {
+            this.connecting = false;
+            this.connectStarted = false;
+            this.connectionProgressMessage = '';
+            AppStorage.setOrCreate<boolean>('remoteDesktopBgFlag', false);
+          }
+          return;
+        }
+        if (!this.activeSessionRegistry.markRenderAttached(surfaceId)) {
+          throw new Error('后台恢复会话账号作用域未登记 [E-SESSION-REGISTRY-RESTORE]');
+        }
         this.nativeHandles.attachConnectedSession(this.sessionId, RemoteProtocol.rustdesk);
         this.connected = true;
         this.connecting = false;
+        this.connectionProgressMessage = '';
         this.applyRustDeskOrientationPolicy('background-preauthenticated').catch((err: Error): void => {
           hilog.warn(RD_DOMAIN, RD_TAG, 'background-preauthenticated orientation failed: ' +
             (err.message ? err.message : JSON.stringify(err)));
@@ -9686,7 +9876,6 @@ struct RemoteDesktop {
         this.startRemoteCursorPolling(this.sessionId);
         this.inputForwardReady = true;
         this.scheduleRemoteInputFocus('background-preauthenticated');
-        this.activeSessionRegistry.markRenderAttached(surfaceId);
         this.setRemoteKeepScreenOn(true);
         this.setRemoteNavigationHidden(true, 'preauthenticated-session-handoff');
         this.loader.requestFrameRefresh();
@@ -9724,14 +9913,36 @@ struct RemoteDesktop {
 
         // 重新绑定 decoder pipeline (如果 decoder 仍活跃)
         if (this.decoderHandle > 0 && this.rendererHandle > 0) {
-          this.loader.bindVideoPipeline(this.decoderHandle, this.rendererHandle);
+          const bindOk: boolean = this.loader.bindVideoPipeline(this.decoderHandle, this.rendererHandle);
+          if (!bindOk) {
+            throw new Error('前台恢复视频管线绑定失败 [E-DECODER-RESTORE-BIND]');
+          }
           const recoveryArmed: boolean = this.loader.requestDecoderRecovery();
+          const refresh = this.loader.requestFrameRefresh();
           hilog.info(RD_DOMAIN, RD_TAG, 'doBackgroundRestoreRender: decoder recovery armed=' +
-            (recoveryArmed ? 'true' : 'false'));
+            (recoveryArmed ? 'true' : 'false') + ' refresh=' + refresh.ok.toString());
+        }
+        if (restoringRustDesk) {
+          const firstFrameReady: boolean = await this.waitForRustDeskFirstPresentedFrame(
+            restoreSessionId, RUSTDESK_FIRST_FRAME_TIMEOUT_MS, restoreAttemptId);
+          if (!firstFrameReady) {
+            if (this.sessionId === restoreSessionId && this.connectAttemptId === restoreAttemptId) {
+              this.connecting = false;
+              this.connectStarted = false;
+              this.connectionProgressMessage = '';
+              AppStorage.setOrCreate<boolean>('remoteDesktopBgFlag', false);
+            }
+            return;
+          }
+        }
+        if (!this.activeSessionRegistry.markRenderAttached(surfaceId)) {
+          throw new Error('前台恢复会话账号作用域未登记 [E-SESSION-REGISTRY-RESTORE]');
         }
 
         // 恢复状态
         this.connected = true;
+        this.connecting = false;
+        this.connectionProgressMessage = '';
         this.applyRustDeskOrientationPolicy('background-restore').catch((err: Error): void => {
           hilog.warn(RD_DOMAIN, RD_TAG, 'background-restore orientation failed: ' +
             (err.message ? err.message : JSON.stringify(err)));
@@ -9740,7 +9951,6 @@ struct RemoteDesktop {
         this.inputForwardReady = true;
         this.startRemoteCursorPolling(this.sessionId);
         this.scheduleRemoteInputFocus('background-restore');
-        this.activeSessionRegistry.markRenderAttached(surfaceId);
         this.setRemoteKeepScreenOn(true);
         if (shouldReapplyRemoteNavigation(this.currentProtocolName(), this.connected, true)) {
           this.setRemoteNavigationHidden(true, 'foreground-restore');
@@ -12597,9 +12807,15 @@ struct RemoteDesktop {
         Column() {
           if (this.connecting) {
             LoadingProgress().width(40).height(40).color(this.accentColor)
-            Text($r('app.string.connecting')).fontSize(15)
-              .fontColor('rgba(255,255,255,0.6)')
-              .margin({ top: 16 })
+            if (this.connectionProgressMessage.length > 0) {
+              Text(this.connectionProgressMessage).fontSize(15)
+                .fontColor('rgba(255,255,255,0.6)')
+                .margin({ top: 16 })
+            } else {
+              Text($r('app.string.connecting')).fontSize(15)
+                .fontColor('rgba(255,255,255,0.6)')
+                .margin({ top: 16 })
+            }
             if (this.hostLabel !== '') {
               Text(this.hostLabel).fontSize(12)
                 .fontColor('rgba(255,255,255,0.35)')

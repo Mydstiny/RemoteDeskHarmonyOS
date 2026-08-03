@@ -36,9 +36,11 @@ use crate::protocol::session::{AuthEventCallback, Session};
 use crate::protocol::wire;
 use protobuf::{Message as ProtoMessage, ProtobufEnum};
 
+use std::ffi::{c_char, c_void, CString};
 use std::io;
 use std::io::ErrorKind;
 use std::net::TcpStream;
+use std::os::raw::c_int;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -170,6 +172,13 @@ pub enum ConnState {
     Error(String),
 }
 
+/// Progress emitted while the synchronous RustDesk handshake is running.
+/// The FFI entry point executes this work on a native worker thread, so the
+/// callback is deliberately small and carries only a short, owned C string
+/// valid for the duration of the call.
+pub type ConnectProgressCallback =
+    extern "C" fn(stage: c_int, message: *const c_char, user_data: *mut c_void);
+
 /// RustDesk `-k` is an access credential, not necessarily the server signing
 /// public key.  Keeping both values separate lets an administrator use an
 /// arbitrary shared value without pretending that it verifies identities.
@@ -194,6 +203,7 @@ pub struct RustDeskConnector {
     peer_pk: Option<[u8; 32]>,
     crypto_channel: Option<CryptoChannel>,
     session: Session,
+    progress_callback: Option<(ConnectProgressCallback, usize)>,
     /// streaming 消息统计 — 诊断对端停止发送前的行为
     pub stream_stats: String,
 }
@@ -234,7 +244,38 @@ impl RustDeskConnector {
             peer_pk: None,
             crypto_channel: None,
             session: Session::new_with_connection_id(connection_id, connect_epoch),
+            progress_callback: None,
             stream_stats: String::new(),
+        }
+    }
+
+    pub fn set_progress_callback(
+        &mut self,
+        callback: Option<ConnectProgressCallback>,
+        user_data: *mut std::ffi::c_void,
+    ) {
+        self.progress_callback = callback.map(|cb| (cb, user_data as usize));
+    }
+
+    fn set_connect_state(&mut self, state: ConnState) {
+        let (stage, message) = match &state {
+            ConnState::RendezvousConnecting => (0, "RustDesk: 正在连接协调服务器"),
+            ConnState::RegisteringPeer => (0, "RustDesk: 正在登记远端身份"),
+            ConnState::RegisteringPk => (0, "RustDesk: 正在交换服务器密钥"),
+            ConnState::RequestingRelay => (1, "RustDesk: 正在请求中继路径"),
+            ConnState::ConnectingToPeer => (2, "RustDesk: 正在连接远端设备"),
+            ConnState::KeyExchanging => (3, "RustDesk: 正在建立加密通道"),
+            ConnState::LoggingIn => (4, "RustDesk: 正在验证设备凭据"),
+            ConnState::Connected => (5, "RustDesk: 认证完成，正在等待首帧"),
+            ConnState::Disconnected | ConnState::Error(_) => (-1, ""),
+        };
+        self.state = state;
+        if stage < 0 {
+            return;
+        }
+        if let Some((callback, user_data)) = self.progress_callback {
+            let c_message = CString::new(message).unwrap_or_else(|_| CString::new("").unwrap());
+            callback(stage, c_message.as_ptr(), user_data as *mut std::ffi::c_void);
         }
     }
 
@@ -272,14 +313,14 @@ impl RustDeskConnector {
         let rendezvous_secure = !shared_access_key && !server_key.trim().is_empty() &&
             !api_token.trim().is_empty();
         // === Phase 1: Rendezvous 握手 ===
-        self.state = ConnState::RendezvousConnecting;
+        self.set_connect_state(ConnState::RendezvousConnecting);
         let mut rd = RendezvousClient::new();
         // 客户端连接远端 ID 时不要 RegisterPeer；RegisterPeer 是被控端注册自己的 ID。
         // Server Pro 的控制端会话 token 必须进入 PunchHoleRequest/RequestRelay。
         // 只有同时拥有真实公钥和 token 时才启用 upstream 的 rendezvous secure_tcp。
         rd.connect(rendezvous_host, rendezvous_port, server_key, rendezvous_secure)?;
 
-        self.state = ConnState::RequestingRelay;
+        self.set_connect_state(ConnState::RequestingRelay);
         let punch = rd.request_force_relay(peer_id, credentials.access_key, api_token)?;
 
         // === Phase 2: Peer TCP + 加密通道 ===
@@ -292,7 +333,7 @@ impl RustDeskConnector {
         );
 
         let mut peer_stream = if let Some(relay_uuid) = punch.relay_uuid {
-            self.state = ConnState::ConnectingToPeer;
+            self.set_connect_state(ConnState::ConnectingToPeer);
             eprintln!(
                 "[RustDesk-FFI] force-relay ticket accepted relay_endpoint=present"
             );
@@ -304,7 +345,7 @@ impl RustDeskConnector {
                 credentials.access_key,
             )?
         } else if !punch.relay_server.trim().is_empty() {
-            self.state = ConnState::RequestingRelay;
+            self.set_connect_state(ConnState::RequestingRelay);
             let mut relay_rd = RendezvousClient::new();
             relay_rd.connect(rendezvous_host, rendezvous_port, server_key, rendezvous_secure)?;
             let relay_uuid = relay_rd.request_relay_uuid(
@@ -313,7 +354,7 @@ impl RustDeskConnector {
                 !punch.signed_pk.is_empty(),
                 api_token,
             )?;
-            self.state = ConnState::ConnectingToPeer;
+            self.set_connect_state(ConnState::ConnectingToPeer);
             eprintln!(
                 "[RustDesk-FFI] force-relay request approved relay_endpoint=present"
             );
@@ -327,7 +368,7 @@ impl RustDeskConnector {
         } else if let Some(peer_addr) = punch.peer_addr {
             // OSS hbbs answered a direct peer address and no relay endpoint.
             // Connect it directly instead of failing the whole pipeline.
-            self.state = ConnState::ConnectingToPeer;
+            self.set_connect_state(ConnState::ConnectingToPeer);
             eprintln!(
                 "[RustDesk-FFI] punch response direct peer endpoint present"
             );
@@ -340,7 +381,7 @@ impl RustDeskConnector {
         };
 
         // KeyExchange: 发送自己的公钥，接收对端公钥
-        self.state = ConnState::KeyExchanging;
+        self.set_connect_state(ConnState::KeyExchanging);
         let channel_key = self.secure_peer_connection(
             &mut peer_stream,
             peer_id,
@@ -360,7 +401,7 @@ impl RustDeskConnector {
         self.crypto_channel = Some(crypto);
 
         // === Phase 3: Login ===
-        self.state = ConnState::LoggingIn;
+        self.set_connect_state(ConnState::LoggingIn);
         let crypto = self.crypto_channel.as_mut().unwrap();
         self.session.login_encrypted(
             crypto,
@@ -374,7 +415,7 @@ impl RustDeskConnector {
             request_approval,
         )?;
 
-        self.state = ConnState::Connected;
+        self.set_connect_state(ConnState::Connected);
         Ok(())
     }
 
@@ -404,7 +445,7 @@ impl RustDeskConnector {
         fps: u32,
     ) -> io::Result<()> {
         // === Phase 1: TCP 直连 peer ===
-        self.state = ConnState::ConnectingToPeer;
+        self.set_connect_state(ConnState::ConnectingToPeer);
         eprintln!(
             "[RustDesk-FFI] direct connect endpoint=provided port={}",
             peer_port
@@ -422,7 +463,7 @@ impl RustDeskConnector {
         // The first frame is the Hash challenge sent by Connection::on_open;
         // Session::login_encrypted only describes the existing API name and
         // works with either encrypted or plain CryptoChannel frames.
-        self.state = ConnState::LoggingIn;
+        self.set_connect_state(ConnState::LoggingIn);
         let crypto = CryptoChannel::new_plain(stream);
         self.crypto_channel = Some(crypto);
 
@@ -442,7 +483,7 @@ impl RustDeskConnector {
             false,
         )?;
 
-        self.state = ConnState::Connected;
+        self.set_connect_state(ConnState::Connected);
         eprintln!("[RustDesk-FFI] direct plain connection established");
         Ok(())
     }
@@ -467,12 +508,12 @@ impl RustDeskConnector {
             "file-transfer rendezvous connecting port={} strategy=force_relay",
             rendezvous_port
         ));
-        self.state = ConnState::RendezvousConnecting;
+        self.set_connect_state(ConnState::RendezvousConnecting);
         let mut rd = RendezvousClient::new();
         rd.connect(rendezvous_host, rendezvous_port, server_key, rendezvous_secure)?;
 
         crate::set_last_error("file-transfer requesting force relay".to_string());
-        self.state = ConnState::RequestingRelay;
+        self.set_connect_state(ConnState::RequestingRelay);
         let punch = rd.request_force_relay(peer_id, credentials.access_key, api_token)?;
         crate::set_last_error(format!(
             "file-transfer force-relay response relay_endpoint={} relay_ticket={} signed_pk_len={}",
@@ -489,7 +530,7 @@ impl RustDeskConnector {
 
         let mut peer_stream = if let Some(relay_uuid) = punch.relay_uuid {
             crate::set_last_error("file-transfer connecting approved relay".to_string());
-            self.state = ConnState::ConnectingToPeer;
+            self.set_connect_state(ConnState::ConnectingToPeer);
             rd.create_relay(
                 peer_id,
                 &relay_uuid,
@@ -498,7 +539,7 @@ impl RustDeskConnector {
                 credentials.access_key,
             )?
         } else if !punch.relay_server.trim().is_empty() {
-            self.state = ConnState::RequestingRelay;
+            self.set_connect_state(ConnState::RequestingRelay);
             let mut relay_rd = RendezvousClient::new();
             crate::set_last_error("file-transfer requesting relay ticket".to_string());
             relay_rd.connect(rendezvous_host, rendezvous_port, server_key, rendezvous_secure)?;
@@ -509,7 +550,7 @@ impl RustDeskConnector {
                 api_token,
             )?;
             crate::set_last_error("file-transfer connecting approved relay".to_string());
-            self.state = ConnState::ConnectingToPeer;
+            self.set_connect_state(ConnState::ConnectingToPeer);
             relay_rd.create_relay(
                 peer_id,
                 &relay_uuid,
@@ -518,7 +559,7 @@ impl RustDeskConnector {
                 credentials.access_key,
             )?
         } else if let Some(peer_addr) = punch.peer_addr {
-            self.state = ConnState::ConnectingToPeer;
+            self.set_connect_state(ConnState::ConnectingToPeer);
             eprintln!(
                 "[RustDesk-FFI] file-transfer punch response direct peer endpoint present"
             );
@@ -531,7 +572,7 @@ impl RustDeskConnector {
         };
 
         crate::set_last_error("file-transfer key exchanging".to_string());
-        self.state = ConnState::KeyExchanging;
+        self.set_connect_state(ConnState::KeyExchanging);
         let channel_key = self.secure_peer_connection(
             &mut peer_stream,
             peer_id,
@@ -546,12 +587,12 @@ impl RustDeskConnector {
         self.crypto_channel = Some(crypto);
 
         crate::set_last_error("file-transfer peer login".to_string());
-        self.state = ConnState::LoggingIn;
+        self.set_connect_state(ConnState::LoggingIn);
         let crypto = self.crypto_channel.as_mut().unwrap();
         self.session
             .login_file_transfer_encrypted(crypto, peer_id, password, remote_dir, request_approval)?;
         crate::set_last_error("file-transfer peer login complete".to_string());
-        self.state = ConnState::Connected;
+        self.set_connect_state(ConnState::Connected);
         Ok(())
     }
 

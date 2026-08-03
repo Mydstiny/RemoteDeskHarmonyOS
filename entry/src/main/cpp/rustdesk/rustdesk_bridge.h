@@ -210,6 +210,7 @@ private:
     static void onFfiCursor(const void* cursor, void* userData);
     static void onFfiDisplay(const void* snapshot, void* userData);
     static void onFfiAuth(int state, const char* message, void* userData);
+    static void onFfiProgress(int stage, const char* message, void* userData);
     static void onFfiDisconnect(int state, const char* message, void* userData);
 #endif
 

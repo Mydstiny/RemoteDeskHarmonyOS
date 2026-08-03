@@ -1234,6 +1234,7 @@ fn rustdesk_connect_impl(
     on_disconnect: Option<DisconnectCallback>,
     on_display: Option<DisplayCallback>,
     on_auth: Option<AuthEventCallback>,
+    on_progress: Option<connector::ConnectProgressCallback>,
     user_data: *mut c_void,
 ) -> *mut c_void {
     clear_last_error();
@@ -1331,6 +1332,7 @@ fn rustdesk_connect_impl(
     // 运行完整连接管线
     let mut c = connector::RustDeskConnector::new_with_connection_id(connection_id, connect_epoch);
     c.set_auth_callback(on_auth, user_data);
+    c.set_progress_callback(on_progress, user_data);
     let result = if config.direct_connection {
         // 直连模式: host=peer IP, port=peer port, 跳过 rendezvous
         eprintln!(
@@ -1548,6 +1550,7 @@ pub extern "C" fn rustdesk_connect(
         on_disconnect,
         None,
         None,
+        None,
         user_data,
     )
 }
@@ -1570,6 +1573,7 @@ pub extern "C" fn rustdesk_connect_v2(
         on_cursor,
         on_disconnect,
         on_display,
+        None,
         None,
         user_data,
     )
@@ -1595,6 +1599,35 @@ pub extern "C" fn rustdesk_connect_v3(
         on_disconnect,
         on_display,
         on_auth,
+        None,
+        user_data,
+    )
+}
+
+/// Create a RustDesk connection using V2 frame/display callbacks, auth events,
+/// and per-handshake progress messages. This extends v3 without changing the
+/// older entry points used by existing integrations.
+#[no_mangle]
+pub extern "C" fn rustdesk_connect_v4(
+    cfg: *const RustDeskConfig,
+    on_frame: Option<FrameCallbackV2>,
+    on_audio: Option<AudioCallback>,
+    on_cursor: Option<CursorCallback>,
+    on_disconnect: Option<DisconnectCallback>,
+    on_display: Option<DisplayCallback>,
+    on_auth: Option<AuthEventCallback>,
+    on_progress: Option<connector::ConnectProgressCallback>,
+    user_data: *mut c_void,
+) -> *mut c_void {
+    rustdesk_connect_impl(
+        cfg,
+        on_frame.map(FrameCallbackKind::V2),
+        on_audio,
+        on_cursor,
+        on_disconnect,
+        on_display,
+        on_auth,
+        on_progress,
         user_data,
     )
 }
