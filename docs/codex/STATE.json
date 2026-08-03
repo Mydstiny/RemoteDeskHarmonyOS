@@ -3,10 +3,10 @@
   "task": "rustdesk-complete-repair",
   "branch": "codex/rustdesk-complete-repair",
   "base": "34946adbc",
-  "head": "f16b673e2",
-  "phase": "vnc-v3-stage-d-follow-up",
+  "head": "590a5639c",
+  "phase": "vnc-v3-stage-e-settings-consistency",
   "status": "active",
-  "next": "Stage D follow-up checkpoint f16b673e2 passed independent review; retain the current VNC-only gate and evidence gaps before any next segment.",
+  "next": "Stage E checkpoint 590a5639c applies default transport/Gateway consistently and clears invalid default references; reuse the existing reviewer once before entering Stage F.",
   "blockers": [
     "hdc list targets and hdc shell return Connect server failed; no current hilog evidence.",
     "ohosTest@OhosTestCompileArkTS is not registered (00306054); ArkTS tests have compile/build evidence only.",
@@ -17,32 +17,23 @@
     "docs/superpowers/plans/2026-08-01-vnc-certificate-settings-relay-complete-repair-plan-v3.md"
   ],
   "review": {
-    "status": "PASS",
+    "status": "BLOCKED",
     "taskId": "019fc333-6789-7633-bf6f-3fea1cb2ad4d",
     "scope": [
-      "entry/src/main/ets/pages/HostListPage.ets",
+      "entry/src/main/ets/components/hostadd/VncAddFlow.ets",
       "entry/src/main/ets/pages/VncSettingsPage.ets",
-      "entry/src/main/ets/services/BackupManifestV3.ets",
-      "entry/src/main/ets/services/LocalBackupPolicy.ets",
-      "entry/src/main/ets/services/VncGatewayService.ets",
-      "entry/src/main/ets/services/VncHostService.ets",
-      "entry/src/main/ets/services/VncRecordPolicy.ets",
-      "entry/src/main/ets/services/VncTrustInvalidationPolicy.ets",
-      "entry/src/main/ets/services/VncTrustService.ets",
-      "entry/src/ohosTest/ets/test/List.test.ets",
-      "entry/src/test/List.test.ets",
-      "entry/src/test/LocalBackupPolicy.test.ets",
-      "entry/src/test/VncTrustInvalidationPolicy.test.ets",
-      "entry/src/test/VncTrustService.test.ets"
+      "entry/src/main/ets/services/VncHostDefaultsPolicy.ets",
+      "entry/src/main/ets/services/VncSettingsService.ets",
+      "entry/src/test/VncHostDefaultsPolicy.test.ets"
     ],
-    "reason": "Stage D follow-up checkpoint f16b673e2 passed the existing independent read-only reviewer with no P0/P1/P2 findings; no next segment or FreeRDP evaluation started."
+    "reason": "Stage E checkpoint 590a5639c is ready for the single existing independent read-only reviewer; scope is limited to VNC defaults, Gateway reference cleanup, and their policy tests."
   },
   "lastVerification": {
-    "rdp_native_tests": "249-pass-0-fail-loopback-fixtures-host-socket-f16b673e2-2026-08-03",
-    "default@OhosTestCompileArkTS": "pass-after-f16b673e2-2026-08-03",
-    "assembleHap": "pass-after-f16b673e2-2026-08-03",
+    "rdp_native_tests": "249-pass-0-fail-loopback-fixtures-host-socket-590a5639c-2026-08-03",
+    "default@OhosTestCompileArkTS": "pass-after-590a5639c-2026-08-03",
+    "assembleHap": "pass-after-590a5639c-2026-08-03",
     "ohosTest@OhosTestCompileArkTS": "blocked-task-00306054-2026-08-02",
-    "diffCheck": "pass-after-f16b673e2-2026-08-03"
+    "diffCheck": "pass-after-590a5639c-2026-08-03"
   },
   "archives": [
     "docs/codex/archive/2026-08/README.md",
@@ -50,5 +41,5 @@
     "docs/codex/archive/2026-08/QUEUE-legacy.md",
     "docs/codex/archive/2026-08/HANDOFF-legacy.md"
   ],
-  "updated": "2026-08-02 Asia/Shanghai"
+  "updated": "2026-08-03 Asia/Shanghai"
 }

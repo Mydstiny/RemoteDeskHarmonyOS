@@ -1,11 +1,12 @@
 # Shared Queue
 
-Updated: 2026-08-02 Asia/Shanghai
+Updated: 2026-08-03 Asia/Shanghai
 
 ## Now
 
-- Stage D follow-up checkpoint `f16b673e2` passed the unique VNC-only review;
-  retain the current gate and its evidence gaps before any next segment.
+- Stage E checkpoint `590a5639c` applies default transport/Gateway consistently
+  and clears deleted or disabled default Gateway references; wait for the
+  existing VNC-only reviewer before Stage F.
 - Preserve stage A/B and C-first review receipts; keep probe/pin failures
   fail-closed.
 - Restore `hdc` connectivity and capture current VNC `hilog` when the device is
@@ -13,9 +14,9 @@ Updated: 2026-08-02 Asia/Shanghai
 
 ## Next
 
-- Stage D follow-up review: PASS recorded for `f16b673e2`; do not advance or
-  start FreeRDP until the VNC V3 closure gate explicitly permits it.
-- Stage E/F: VNC settings consistency and Repeater mode12 deep checks.
+- Stage E review: consume the single existing reviewer result for `590a5639c`;
+  repair any findings before advancing.
+- Stage F: VNC Gateway deep checks and Repeater mode12 cross-gates.
 
 ## Later
 
