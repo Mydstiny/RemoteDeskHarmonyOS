@@ -4,10 +4,10 @@ Updated: 2026-08-02 Asia/Shanghai
 
 ## Now
 
-- Stage D follow-up checkpoint `bb2352fcc` makes marker persistence fail-closed,
-  binds invalidation to the physical store, and verifies full-backup restore
-  keeps local markers device-local; request the existing reviewer once and wait
-  for PASS before the next segment.
+- Stage D follow-up checkpoint `1a21488a7` preserves the recovery sentinel until
+  marker clearing succeeds and covers Preferences failures through the injected
+  adapter; reuse the existing reviewer once and wait for PASS before the next
+  segment.
 - Preserve stage A/B and C-first review receipts; keep probe/pin failures
   fail-closed.
 - Restore `hdc` connectivity and capture current VNC `hilog` when the device is
@@ -16,7 +16,7 @@ Updated: 2026-08-02 Asia/Shanghai
 ## Next
 
 - Stage D follow-up review: consume the single existing reviewer result for
-  `bb2352fcc`; repair any findings before advancing.
+  `1a21488a7`; repair any findings before advancing.
 - Stage E/F: VNC settings consistency and Repeater mode12 deep checks.
 
 ## Later
