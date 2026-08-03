@@ -512,6 +512,31 @@ export class ExtensionLoader {
     }
   }
 
+  /**
+   * Re-activate the surviving decoder and bind it to the current renderer
+   * after a background/PIP surface transfer. A plain bind cannot acquire a
+   * decoder that was intentionally deactivated during the transfer.
+   */
+  rebindActiveVideoPipeline(): boolean {
+    try {
+      const rebound: boolean = rdpnapi.rebindActiveVideoPipeline() as boolean;
+      if (rebound && this.currentSessionId > 0) {
+        const replayed: boolean = rdpnapi.replayPendingRustDeskFrame(
+          this.currentSessionId) as boolean;
+        hilog.info(DOMAIN, TAG, '[ExtensionLoader] rebindActiveVideoPipeline: ' +
+          rebound.toString() + ' replayed=' + replayed.toString());
+      } else {
+        hilog.info(DOMAIN, TAG, '[ExtensionLoader] rebindActiveVideoPipeline: ' +
+          rebound.toString());
+      }
+      return rebound;
+    } catch (err) {
+      hilog.error(DOMAIN, TAG, '[ExtensionLoader] rebindActiveVideoPipeline: ' +
+        JSON.stringify(err));
+      return false;
+    }
+  }
+
   detachVideoPipelineForBackground(): boolean {
     if (this.decoderHandle <= 0) {
       return false;

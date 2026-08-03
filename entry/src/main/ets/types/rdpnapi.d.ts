@@ -128,6 +128,7 @@ declare module 'librdpnapi.so' {
   export function bindVideoPipeline(decoderHandle: number, rendererHandle: number): boolean;
   export function detachVideoPipeline(decoderHandle: number): boolean;
   export function requestDecoderRecovery(decoderHandle: number): boolean;
+  export function rebindActiveVideoPipeline(): boolean;
 
   export function initAudioPlayer(sampleRate?: number, channels?: number): number;
   export function destroyAudioPlayer(handle: number): void;

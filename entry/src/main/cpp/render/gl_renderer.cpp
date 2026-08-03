@@ -1460,14 +1460,19 @@ napi_value NapiInitRenderer(napi_env env, napi_callback_info info) {
     napi_create_int64(env, handleVal, &handle);
 
     // The owner lease is intentionally held while the token enters the active
-    // map, so an S1->S2 transition cannot publish a half-bound renderer. For a
-    // cold start the token is active but owner-pending; SetActiveSessionOwner()
-    // binds it when connect() publishes the new session.
-    RendererNapi::SetActiveRenderer(handleVal);
+    // map, so an S1->S2 transition cannot publish a half-bound renderer. When
+    // restoring an existing session, bind the active owner in the same
+    // transaction. The ownerless overload only updates the handle; using it
+    // here leaves g_activeRendererOwner empty after PIP/background teardown
+    // and the owner check below rejects the renderer immediately.
     bool active = false;
     if (owner.valid()) {
-        active = RendererNapi::IsActiveRendererForOwnerUnderLease(handleVal, owner);
+        active = RendererNapi::SetActiveRenderer(handleVal, owner);
+        if (active) {
+            active = RendererNapi::IsActiveRendererForOwnerUnderLease(handleVal, owner);
+        }
     } else {
+        RendererNapi::SetActiveRenderer(handleVal);
         std::lock_guard<std::mutex> lock(g_activeRendererMutex);
         active = IsActiveRendererHandleLocked(handleVal);
     }

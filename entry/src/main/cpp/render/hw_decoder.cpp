@@ -2476,6 +2476,27 @@ napi_value NapiRequestDecoderRecovery(napi_env env, napi_callback_info info) {
     return ret;
 }
 
+/**
+ * NAPI: rebindActiveVideoPipeline(): boolean
+ *
+ * Background/PIP transfer deliberately deactivates the surviving decoder
+ * token. A normal bind cannot acquire that token until it is activated again;
+ * keep that lifecycle transaction in native code so every foreground/PIP
+ * restore path uses the same owner and renderer validation.
+ */
+napi_value NapiRebindActiveVideoPipeline(napi_env env, napi_callback_info info) {
+    (void)info;
+    DecoderSessionIdentity owner;
+    {
+        std::lock_guard<std::mutex> ownerLock(g_activeDecoderOwnerMutex);
+        owner = g_activeDecoderOwner;
+    }
+    const bool rebound = DecoderNapi::RebindActiveVideoPipeline(owner);
+    napi_value ret;
+    napi_get_boolean(env, rebound, &ret);
+    return ret;
+}
+
 int DecoderNapi::DecodeNative(int64_t handle, const VideoFrame& frame) {
     DecoderSessionIdentity owner;
     {
@@ -3216,6 +3237,10 @@ napi_value DecoderNapi::Init(napi_env env, napi_value exports) {
     napi_create_function(env, "requestDecoderRecovery", NAPI_AUTO_LENGTH,
                          NapiRequestDecoderRecovery, nullptr, &fn);
     napi_set_named_property(env, exports, "requestDecoderRecovery", fn);
+
+    napi_create_function(env, "rebindActiveVideoPipeline", NAPI_AUTO_LENGTH,
+                         NapiRebindActiveVideoPipeline, nullptr, &fn);
+    napi_set_named_property(env, exports, "rebindActiveVideoPipeline", fn);
 
     return exports;
 }

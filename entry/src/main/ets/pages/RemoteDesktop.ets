@@ -5929,6 +5929,15 @@ struct RemoteDesktop {
       liveViewEnabled, liveViewMode, sessionActive,
       this.rendererHandle > 0, this.surfaceReady);
     if (!canPrepare) {
+      hilog.info(RD_DOMAIN, RD_TAG, 'prepareRemoteSessionPipForForeground: skipped' +
+        ' enabled=' + liveViewEnabled.toString() +
+        ' mode=' + liveViewMode.toString() +
+        ' connected=' + this.connected.toString() +
+        ' sessionId=' + sessionId.toString() +
+        ' activeSession=' + sessionActive.toString() +
+        ' renderer=' + this.rendererHandle.toString() +
+        ' surfaceReady=' + this.surfaceReady.toString() +
+        ' prepared=' + RemoteSessionPipService.getInstance().isPreparedOrPreparing().toString());
       // A transient frame gap during connection must not revoke a controller
       // that the next background transition still needs.
       if (!sessionActive || !liveViewEnabled || liveViewMode !== LiveViewMode.AVSESSION) {
@@ -6308,7 +6317,7 @@ struct RemoteDesktop {
         }
         this.nativeHandles.markSurfaceAttached(this.rendererHandle);
         if (this.decoderHandle > 0) {
-          this.loader.bindVideoPipeline(this.decoderHandle, this.rendererHandle);
+          this.loader.rebindActiveVideoPipeline();
           const recoveryArmed: boolean = this.loader.requestDecoderRecovery();
           hilog.info(RD_DOMAIN, RD_TAG, 'runRestoreFrameRefresh: decoder recovery armed=' +
             (recoveryArmed ? 'true' : 'false') + ' delay=' + delayMs.toString());
@@ -6322,7 +6331,7 @@ struct RemoteDesktop {
       }
     } else if (action === RestoreRefreshAction.REBIND_SURFACE && this.rendererHandle > 0) {
       if (this.decoderHandle > 0) {
-        this.loader.bindVideoPipeline(this.decoderHandle, this.rendererHandle);
+        this.loader.rebindActiveVideoPipeline();
         const recoveryArmed: boolean = this.loader.requestDecoderRecovery();
         hilog.info(RD_DOMAIN, RD_TAG, 'runRestoreFrameRefresh: decoder recovery armed=' +
           (recoveryArmed ? 'true' : 'false') + ' delay=' + delayMs.toString());
@@ -9735,7 +9744,7 @@ struct RemoteDesktop {
       this.nativeHandles.markSurfaceAttached(this.rendererHandle);
 
       if (requiresDecoder) {
-        if (!this.loader.bindVideoPipeline(this.decoderHandle, this.rendererHandle)) {
+        if (!this.loader.rebindActiveVideoPipeline()) {
           hilog.warn(RD_DOMAIN, RD_TAG, 'attachRendererToPipSurface: decoder pipeline bind failed');
           this.releasePipRenderer('attach-decoder-bind');
           return false;
@@ -10357,7 +10366,7 @@ struct RemoteDesktop {
 
         // 重新绑定 decoder pipeline (如果 decoder 仍活跃)
         if (this.decoderHandle > 0 && this.rendererHandle > 0) {
-          const bindOk: boolean = this.loader.bindVideoPipeline(this.decoderHandle, this.rendererHandle);
+          const bindOk: boolean = this.loader.rebindActiveVideoPipeline();
           if (!bindOk) {
             throw new Error('前台恢复视频管线绑定失败 [E-DECODER-RESTORE-BIND]');
           }
