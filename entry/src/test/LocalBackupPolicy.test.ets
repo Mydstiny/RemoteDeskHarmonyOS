@@ -159,6 +159,14 @@ export default function localBackupPolicyTest(): void {
         expect(document.manifest?.trust.deviceTrustIncluded).assertTrue();
         expect(document.manifest?.trust.vncTrustCandidatesIncluded).assertTrue();
         expect(document.manifest?.trust.vncLocalConfirmationMarkerIncluded).assertFalse();
+        const preview = createLocalBackupRestorePreview(document);
+        expect(preview.vncTrustCandidatesIncluded).assertTrue();
+        expect(preview.vncLocalConfirmationMarkerIncluded).assertFalse();
+        const restorePlan = adaptLocalBackupDocumentForRestore(
+          document, 'owner-test', false);
+        expect(restorePlan !== null).assertTrue();
+        expect((restorePlan?.tables['vncrecordv2'] || []).length).assertEqual(1);
+        expect((restorePlan?.localTables['vnclocalrecords'] || []).length).assertEqual(0);
         expect(document.manifest?.trust.plaintextConsentIncluded)
           .assertFalse();
         expect(document.tables['cryptoparams'] !== undefined)

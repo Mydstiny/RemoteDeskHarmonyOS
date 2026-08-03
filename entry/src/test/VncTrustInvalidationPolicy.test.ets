@@ -4,7 +4,9 @@ import {
   removeVncTrustMarkersForOwner,
   vncGatewayTrustEndpointChanged,
   vncHostTrustEndpointChanged,
-  vncTrustMarkerKey
+  vncTrustMarkerKey,
+  vncTrustMarkerLoadState,
+  vncTrustPersistenceCommitState
 } from '../main/ets/services/VncTrustInvalidationPolicy';
 import { VncGatewayValues, VncHostValues } from '../main/ets/services/VncModelPolicy';
 
@@ -48,8 +50,9 @@ export default function vncTrustInvalidationPolicyTest(): void {
       expect(marker.split('|').length).assertEqual(6);
       const legacy: string = 'user-1|' + STORE + '|gateway-1|' + ROTATED + '|' + BINDING;
       const old: string = 'user-1|gateway-1|' + ROTATED;
-      expect(removeVncTrustMarkersForOwner([marker, legacy, old], 'user-1', 'gateway', 'gateway-1').length)
-        .assertEqual(0);
+      expect(removeVncTrustMarkersForOwner(
+        [marker, legacy, old], 'user-1', 'gateway', 'gateway-1', STORE).length)
+        .assertEqual(1);
     });
 
     it('removes_only_the_rotated_endpoint_and_keeps_other_bindings', 0, (): void => {
@@ -62,9 +65,54 @@ export default function vncTrustInvalidationPolicyTest(): void {
         fingerprintSha256: ROTATED, endpointBindingFingerprint: 'd'.repeat(64)
       });
       const kept = removeVncTrustMarkersForEndpoint(
-        [first, otherBinding], 'user-1', 'host', 'host-1', BINDING);
+        [first, otherBinding], 'user-1', 'host', 'host-1', BINDING, STORE);
       expect(kept.length).assertEqual(1);
       expect(kept[0]).assertEqual(otherBinding);
+    });
+
+    it('never_removes_a_marker_from_another_physical_store', 0, (): void => {
+      const stale: string = vncTrustMarkerKey({
+        userId: 'user-1', storeIdentityFingerprint: 'd'.repeat(64), ownerType: 'host',
+        ownerId: 'host-1', fingerprintSha256: ROTATED, endpointBindingFingerprint: BINDING
+      });
+      const current: string = vncTrustMarkerKey({
+        userId: 'user-1', storeIdentityFingerprint: STORE, ownerType: 'host',
+        ownerId: 'host-1', fingerprintSha256: ROTATED, endpointBindingFingerprint: BINDING
+      });
+      const kept = removeVncTrustMarkersForEndpoint(
+        [stale, current], 'user-1', 'host', 'host-1', BINDING, STORE);
+      expect(kept.length).assertEqual(1);
+      expect(kept[0]).assertEqual(stale);
+    });
+
+    it('keeps_restart_fail_closed_when_an_invalidation_journal_survives', 0, (): void => {
+      const marker: string = vncTrustMarkerKey({
+        userId: 'user-1', storeIdentityFingerprint: STORE, ownerType: 'gateway',
+        ownerId: 'gateway-1', fingerprintSha256: ROTATED, endpointBindingFingerprint: BINDING
+      });
+      const loaded = vncTrustMarkerLoadState(JSON.stringify([marker]),
+        '{"ownerType":"gateway","ownerId":"gateway-1"}');
+      expect(loaded.failClosed).assertTrue();
+      expect(loaded.markers.length).assertEqual(0);
+      const clean = vncTrustMarkerLoadState(JSON.stringify([marker]), '');
+      expect(clean.failClosed).assertFalse();
+      expect(clean.markers.length).assertEqual(1);
+    });
+
+    it('treats_every_preferences_write_failure_as_fail_closed', 0, (): void => {
+      const journalFailure = vncTrustPersistenceCommitState(false, false, false);
+      expect(journalFailure.ok).assertFalse();
+      expect(journalFailure.failClosed).assertTrue();
+      expect(journalFailure.restorePrevious).assertTrue();
+      const markerFailure = vncTrustPersistenceCommitState(true, false, false);
+      expect(markerFailure.ok).assertFalse();
+      expect(markerFailure.failClosed).assertTrue();
+      expect(markerFailure.restorePrevious).assertTrue();
+      const clearFailure = vncTrustPersistenceCommitState(true, true, false);
+      expect(clearFailure.ok).assertFalse();
+      expect(clearFailure.failClosed).assertTrue();
+      expect(clearFailure.restorePrevious).assertFalse();
+      expect(vncTrustMarkerLoadState('{malformed', '').failClosed).assertTrue();
     });
 
     it('changes_direct_host_identity_but_not_repeater_target', 0, (): void => {

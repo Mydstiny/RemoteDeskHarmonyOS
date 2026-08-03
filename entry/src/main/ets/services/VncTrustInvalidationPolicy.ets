@@ -14,6 +14,57 @@ export interface VncTrustMarkerIdentity {
   endpointBindingFingerprint: string;
 }
 
+export interface VncTrustMarkerLoadState {
+  markers: string[];
+  failClosed: boolean;
+}
+
+export interface VncTrustPersistenceCommitState {
+  ok: boolean;
+  failClosed: boolean;
+  restorePrevious: boolean;
+}
+
+/** Explicit outcome contract for journal -> markers -> journal-clear writes. */
+export function vncTrustPersistenceCommitState(journalWritten: boolean,
+  markersWritten: boolean, journalCleared: boolean): VncTrustPersistenceCommitState {
+  if (!journalWritten || !markersWritten) {
+    return { ok: false, failClosed: true, restorePrevious: true };
+  }
+  if (!journalCleared) {
+    return { ok: false, failClosed: true, restorePrevious: false };
+  }
+  return { ok: true, failClosed: false, restorePrevious: false };
+}
+
+/**
+ * A pending invalidation journal means the process may have stopped between
+ * marker writes. Never reload those markers as trusted after a restart.
+ */
+export function vncTrustMarkerLoadState(rawMarkers: string,
+  pendingInvalidationJournal: string): VncTrustMarkerLoadState {
+  if (pendingInvalidationJournal.trim() !== '') {
+    return { markers: [], failClosed: true };
+  }
+  if (rawMarkers.trim() === '') {
+    return { markers: [], failClosed: false };
+  }
+  try {
+    const parsed: string[] = JSON.parse(rawMarkers) as string[];
+    if (!Array.isArray(parsed)) { return { markers: [], failClosed: true }; }
+    const markers: string[] = [];
+    for (let i = 0; i < parsed.length; i++) {
+      if (typeof parsed[i] === 'string' && parsed[i].trim() !== '' &&
+        markers.indexOf(parsed[i]) < 0) {
+        markers.push(parsed[i]);
+      }
+    }
+    return { markers, failClosed: false };
+  } catch (_e) {
+    return { markers: [], failClosed: true };
+  }
+}
+
 function markerParts(marker: string): string[] {
   return marker.split('|');
 }
@@ -76,18 +127,25 @@ function parsedMarker(marker: string): VncTrustMarkerIdentity | null {
 }
 
 export function vncTrustMarkerMatchesOwner(marker: string, userId: string,
-  ownerType: 'host' | 'gateway', ownerId: string): boolean {
+  ownerType: 'host' | 'gateway', ownerId: string,
+  storeIdentityFingerprint: string): boolean {
   const parsed: VncTrustMarkerIdentity | null = parsedMarker(marker);
-  return parsed !== null && parsed.userId === userId.trim() &&
+  const store: string = storeIdentityFingerprint.trim().toLowerCase();
+  return parsed !== null && /^[0-9a-f]{64}$/.test(store) &&
+    /^[0-9a-f]{64}$/.test(parsed.storeIdentityFingerprint) &&
+    parsed.storeIdentityFingerprint === store && parsed.userId === userId.trim() &&
     parsed.ownerId === ownerId.trim() &&
     (parsed.ownerType === '' || parsed.ownerType === ownerType);
 }
 
 export function vncTrustMarkerMatchesEndpoint(marker: string, userId: string,
   ownerType: 'host' | 'gateway', ownerId: string, endpointBindingFingerprint: string,
-  fingerprintSha256: string = ''): boolean {
+  storeIdentityFingerprint: string, fingerprintSha256: string = ''): boolean {
   const parsed: VncTrustMarkerIdentity | null = parsedMarker(marker);
-  if (parsed === null || parsed.userId !== userId.trim() ||
+  const store: string = storeIdentityFingerprint.trim().toLowerCase();
+  if (parsed === null || !/^[0-9a-f]{64}$/.test(store) ||
+    !/^[0-9a-f]{64}$/.test(parsed.storeIdentityFingerprint) ||
+    parsed.storeIdentityFingerprint !== store || parsed.userId !== userId.trim() ||
     parsed.ownerId !== ownerId.trim() ||
     (parsed.ownerType !== '' && parsed.ownerType !== ownerType)) {
     return false;
@@ -102,19 +160,21 @@ export function vncTrustMarkerMatchesEndpoint(marker: string, userId: string,
 }
 
 export function removeVncTrustMarkersForOwner(markers: string[], userId: string,
-  ownerType: 'host' | 'gateway', ownerId: string): string[] {
+  ownerType: 'host' | 'gateway', ownerId: string,
+  storeIdentityFingerprint: string): string[] {
   return markers.filter((marker: string): boolean =>
-    !vncTrustMarkerMatchesOwner(marker, userId, ownerType, ownerId));
+    !vncTrustMarkerMatchesOwner(marker, userId, ownerType, ownerId,
+      storeIdentityFingerprint));
 }
 
 /** Remove old endpoint markers while retaining an optional newly-confirmed pin. */
 export function removeVncTrustMarkersForEndpoint(markers: string[], userId: string,
   ownerType: 'host' | 'gateway', ownerId: string, endpointBindingFingerprint: string,
-  keepFingerprintSha256: string = ''): string[] {
+  storeIdentityFingerprint: string, keepFingerprintSha256: string = ''): string[] {
   const keep: string = keepFingerprintSha256.trim().toLowerCase();
   return markers.filter((marker: string): boolean => {
     if (!vncTrustMarkerMatchesEndpoint(marker, userId, ownerType, ownerId,
-      endpointBindingFingerprint)) { return true; }
+      endpointBindingFingerprint, storeIdentityFingerprint)) { return true; }
     if (keep !== '') {
       const parsed: VncTrustMarkerIdentity | null = parsedMarker(marker);
       return parsed !== null && parsed.fingerprintSha256 === keep;

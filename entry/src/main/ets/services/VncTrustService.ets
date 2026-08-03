@@ -17,12 +17,78 @@ import {
 import {
   removeVncTrustMarkersForEndpoint,
   removeVncTrustMarkersForOwner,
-  vncTrustMarkerKey
+  vncTrustMarkerKey,
+  vncTrustMarkerLoadState,
+  vncTrustPersistenceCommitState
 } from './VncTrustInvalidationPolicy';
 
 const TRUST_PREFS_NAME: string = 'RemoteDesktopVncTrustPrefs';
 const LOCAL_TRUST_CONFIRMATIONS_KEY: string = 'locallyConfirmedVncTrust';
+const LOCAL_TRUST_INVALIDATION_JOURNAL_KEY: string = 'locallyConfirmedVncTrustInvalidationJournal';
 const VNC_STORE_FINGERPRINT_PREFIX: string = 'RemoteDeskHarmonyOS:vnctls-store:v1:';
+
+export interface VncTrustPreferenceRead {
+  ok: boolean;
+  value: string;
+}
+
+/** Small seam for deterministic persistence-failure tests. */
+export interface VncTrustPreferenceAdapter {
+  read(context: common.Context, storeName: string, key: string): VncTrustPreferenceRead;
+  write(context: common.Context, storeName: string, key: string, value: string): boolean;
+  remove(context: common.Context, storeName: string, key: string): boolean;
+}
+
+class HarmonyVncTrustPreferenceAdapter implements VncTrustPreferenceAdapter {
+  read(context: common.Context, storeName: string, key: string): VncTrustPreferenceRead {
+    try {
+      const prefs = preferences.getPreferencesSync(context, { name: storeName });
+      const value = prefs.getSync(key, '') as Object;
+      return typeof value === 'string'
+        ? { ok: true, value: value as string }
+        : { ok: false, value: '' };
+    } catch (_e) {
+      return { ok: false, value: '' };
+    }
+  }
+
+  write(context: common.Context, storeName: string, key: string, value: string): boolean {
+    try {
+      const prefs = preferences.getPreferencesSync(context, { name: storeName });
+      prefs.putSync(key, value);
+      prefs.flushSync();
+      return true;
+    } catch (_e) {
+      return false;
+    }
+  }
+
+  remove(context: common.Context, storeName: string, key: string): boolean {
+    try {
+      const prefs = preferences.getPreferencesSync(context, { name: storeName });
+      prefs.deleteSync(key);
+      prefs.flushSync();
+      return true;
+    } catch (_e) {
+      return false;
+    }
+  }
+}
+
+let vncTrustPreferenceAdapter: VncTrustPreferenceAdapter =
+  new HarmonyVncTrustPreferenceAdapter();
+
+export function setVncTrustPreferenceAdapterForTest(
+  adapter: VncTrustPreferenceAdapter | null): void {
+  vncTrustPreferenceAdapter = adapter === null
+    ? new HarmonyVncTrustPreferenceAdapter() : adapter;
+}
+
+export interface VncTrustInvalidationResult {
+  ok: boolean;
+  changed: boolean;
+  message: string;
+}
 
 export interface VncTrustView {
   id: string;
@@ -158,6 +224,8 @@ export class VncTrustService {
   private context: common.Context | null = null;
   private locallyConfirmed: string[] = [];
   private activeStoreIdentityFingerprint: string = '';
+  /** Any uncertain Preferences write disables trust until it is repaired. */
+  private localConfirmationPersistenceHealthy: boolean = true;
 
   static getInstance(): VncTrustService {
     if (!VncTrustService.instance) { VncTrustService.instance = new VncTrustService(); }
@@ -218,7 +286,12 @@ export class VncTrustService {
     this.context = context;
     this.userId = this.currentUserId();
     this.locallyConfirmed = [];
-    this.persistLocalConfirmations();
+    // A reset is the explicit recovery path after a failed Preferences write.
+    // Bypass the normal healthy-state admission gate so stale markers can be
+    // removed and the service can re-enter a known fail-closed state.
+    const markersCleared: boolean = this.persistLocalConfirmations(true);
+    const journalCleared: boolean = this.clearInvalidationJournal(true);
+    this.localConfirmationPersistenceHealthy = markersCleared && journalCleared;
     this.emitChange();
   }
 
@@ -355,23 +428,38 @@ export class VncTrustService {
         return result;
       }
     }
+    const previousMarkers: string[] = this.locallyConfirmed.slice();
     this.locallyConfirmed = removeVncTrustMarkersForEndpoint(
       this.locallyConfirmed, this.currentUserId(), ownerType, ownerId,
-      endpointBindingFingerprint, normalized);
+      endpointBindingFingerprint, storeIdentityFingerprint, normalized);
     this.rememberLocalConfirmation(ownerType, record.ownerId, normalized, endpointBindingFingerprint);
-    this.persistLocalConfirmations();
+    if (!this.persistLocalConfirmations()) {
+      this.locallyConfirmed = previousMarkers;
+      this.rollbackV2Mutation(resolvedUserId, result.id, previousV2);
+      result.message = 'VNC trust 本地确认写入失败，已回滚';
+      return result;
+    }
     result.ok = true;
     this.emitChange();
     return result;
   }
 
   remove(id: string): boolean {
+    const previousRecord: VncRecord | null = this.findRecord(id);
     const trust: VncTrustView | null = this.find(id);
     const ok: boolean = this.cloud.deleteVncRecord(this.currentUserId(), id);
     if (ok) {
       if (trust !== null) {
-        this.forgetLocalConfirmation(trust.ownerType, trust.ownerId, trust.fingerprintSha256,
-          trust.endpointBindingFingerprint);
+        const previousMarkers: string[] = this.locallyConfirmed.slice();
+        this.locallyConfirmed = removeVncTrustMarkersForEndpoint(
+          this.locallyConfirmed, this.currentUserId(), trust.ownerType, trust.ownerId,
+          trust.endpointBindingFingerprint, this.currentStoreIdentityFingerprint(),
+          trust.fingerprintSha256);
+        if (!this.persistLocalConfirmations()) {
+          this.locallyConfirmed = previousMarkers;
+          if (previousRecord !== null) { this.cloud.upsertVncRecord(previousRecord); }
+          return false;
+        }
       }
       this.emitChange();
     }
@@ -383,37 +471,40 @@ export class VncTrustService {
    * Historical trust rows remain visible as candidates, while every local
    * confirmation for the owner is invalidated before a connection can use it.
    */
-  invalidateOwner(ownerType: 'host' | 'gateway', ownerId: string): boolean {
+  invalidateOwner(ownerType: 'host' | 'gateway', ownerId: string): VncTrustInvalidationResult {
     const normalizedOwner: string = ownerId.trim();
     const currentUser: string = this.currentUserId();
-    if (normalizedOwner === '' || currentUser.trim() === '') { return false; }
-    const next: string[] = removeVncTrustMarkersForOwner(
-      this.locallyConfirmed, currentUser, ownerType, normalizedOwner);
-    const changed: boolean = next.length !== this.locallyConfirmed.length;
-    if (changed) {
-      this.locallyConfirmed = next;
-      this.persistLocalConfirmations();
-      this.emitChange();
+    const currentStore: string = this.currentStoreIdentityFingerprint();
+    if (normalizedOwner === '' || currentUser.trim() === '' ||
+      !/^[0-9a-f]{64}$/.test(currentStore) ||
+      !this.localConfirmationPersistenceHealthy) {
+      return { ok: false, changed: false, message: 'VNC trust 失效边界无效' };
     }
-    return changed;
+    const next: string[] = removeVncTrustMarkersForOwner(
+      this.locallyConfirmed, currentUser, ownerType, normalizedOwner, currentStore);
+    const changed: boolean = next.length !== this.locallyConfirmed.length;
+    if (!changed) { return { ok: true, changed: false, message: '' }; }
+    return this.persistInvalidation(currentUser, currentStore, ownerType, normalizedOwner,
+      '', next);
   }
 
   /** Invalidate one exact endpoint while leaving other owners untouched. */
-  invalidateEndpoint(endpoint: VncTrustEndpoint): boolean {
+  invalidateEndpoint(endpoint: VncTrustEndpoint): VncTrustInvalidationResult {
     const currentUser: string = this.currentUserId();
-    if (!vncTrustEndpointIsValid(endpoint, currentUser, this.currentStoreIdentityFingerprint())) {
-      return false;
+    const currentStore: string = this.currentStoreIdentityFingerprint();
+    if (!vncTrustEndpointIsValid(endpoint, currentUser, currentStore)) {
+      return { ok: false, changed: false, message: 'VNC trust endpoint 失效边界无效' };
+    }
+    if (!this.localConfirmationPersistenceHealthy) {
+      return { ok: false, changed: false, message: 'VNC trust marker 存储状态不安全' };
     }
     const next: string[] = removeVncTrustMarkersForEndpoint(
       this.locallyConfirmed, currentUser, endpoint.ownerType, endpoint.ownerId,
-      endpoint.endpointBindingFingerprint);
+      endpoint.endpointBindingFingerprint, currentStore);
     const changed: boolean = next.length !== this.locallyConfirmed.length;
-    if (changed) {
-      this.locallyConfirmed = next;
-      this.persistLocalConfirmations();
-      this.emitChange();
-    }
-    return changed;
+    if (!changed) { return { ok: true, changed: false, message: '' }; }
+    return this.persistInvalidation(currentUser, currentStore, endpoint.ownerType,
+      endpoint.ownerId, endpoint.endpointBindingFingerprint, next);
   }
 
   private find(id: string): VncTrustView | null {
@@ -549,6 +640,7 @@ export class VncTrustService {
 
   private hasLocalConfirmation(ownerType: 'host' | 'gateway', ownerId: string, fingerprintSha256: string,
     endpointBindingFingerprint: string = '', storeIdentityFingerprint: string = ''): boolean {
+    if (!this.localConfirmationPersistenceHealthy) { return false; }
     const key: string = this.localTrustKey(ownerType, ownerId, fingerprintSha256,
       endpointBindingFingerprint, storeIdentityFingerprint);
     if (ownerId.trim() === '' || fingerprintSha256.trim() === '' || key === '') { return false; }
@@ -567,49 +659,89 @@ export class VncTrustService {
     const key: string = this.localTrustKey(ownerType, ownerId, fingerprintSha256, endpointBindingFingerprint);
     if (key === '') { return; }
     if (this.locallyConfirmed.indexOf(key) < 0) { this.locallyConfirmed.push(key); }
-    this.persistLocalConfirmations();
-  }
-
-  private forgetLocalConfirmation(ownerType: 'host' | 'gateway', ownerId: string,
-    fingerprintSha256: string, endpointBindingFingerprint: string = ''): void {
-    const currentUser: string = this.currentUserId();
-    const normalizedOwner: string = ownerId.trim();
-    const normalizedFingerprint: string = fingerprintSha256.trim().toLowerCase();
-    this.locallyConfirmed = removeVncTrustMarkersForEndpoint(
-      this.locallyConfirmed, currentUser, ownerType, normalizedOwner,
-      endpointBindingFingerprint, normalizedFingerprint);
-    this.persistLocalConfirmations();
   }
 
   private loadLocalConfirmations(context: common.Context): void {
     this.locallyConfirmed = [];
-    try {
-      const prefs = preferences.getPreferencesSync(context, { name: TRUST_PREFS_NAME });
-      const stored: string = prefs.getSync(this.confirmationPreferenceKey(), '') as string;
-      if (stored === '') { return; }
-      const parsed: string[] = JSON.parse(stored) as string[];
-      if (!Array.isArray(parsed)) { return; }
-      for (let i = 0; i < parsed.length; i++) {
-        if (typeof parsed[i] === 'string' && parsed[i].trim() !== '' &&
-          this.locallyConfirmed.indexOf(parsed[i]) < 0) {
-          this.locallyConfirmed.push(parsed[i]);
-        }
-      }
-    } catch (_e) {
-      this.locallyConfirmed = [];
+    this.localConfirmationPersistenceHealthy = true;
+    const adapter: VncTrustPreferenceAdapter = vncTrustPreferenceAdapter;
+    const markerRead: VncTrustPreferenceRead = adapter.read(
+      context, TRUST_PREFS_NAME, this.confirmationPreferenceKey());
+    const journalRead: VncTrustPreferenceRead = adapter.read(
+      context, TRUST_PREFS_NAME, LOCAL_TRUST_INVALIDATION_JOURNAL_KEY);
+    if (!markerRead.ok || !journalRead.ok) {
+      this.localConfirmationPersistenceHealthy = false;
+      return;
     }
+    const loaded = vncTrustMarkerLoadState(markerRead.value, journalRead.value);
+    this.locallyConfirmed = loaded.markers;
+    this.localConfirmationPersistenceHealthy = !loaded.failClosed;
   }
 
-  private persistLocalConfirmations(): void {
-    if (this.context === null) { return; }
-    try {
-      const prefs = preferences.getPreferencesSync(this.context, { name: TRUST_PREFS_NAME });
-      prefs.putSync(this.confirmationPreferenceKey(), JSON.stringify(this.locallyConfirmed));
-      prefs.flushSync();
-    } catch (_e) {
-      // Losing the local marker is fail-closed: the next connection asks for
-      // confirmation again rather than trusting a cloud-restored fingerprint.
+  private persistLocalConfirmations(allowRecovery: boolean = false): boolean {
+    if (this.context === null || (!allowRecovery && !this.localConfirmationPersistenceHealthy)) {
+      this.localConfirmationPersistenceHealthy = false;
+      return false;
     }
+    const ok: boolean = vncTrustPreferenceAdapter.write(
+      this.context, TRUST_PREFS_NAME, this.confirmationPreferenceKey(),
+      JSON.stringify(this.locallyConfirmed));
+    if (!ok) { this.localConfirmationPersistenceHealthy = false; }
+    return ok;
+  }
+
+  private writeInvalidationJournal(userId: string, storeIdentityFingerprint: string,
+    ownerType: 'host' | 'gateway', ownerId: string,
+    endpointBindingFingerprint: string): boolean {
+    if (this.context === null || !this.localConfirmationPersistenceHealthy) {
+      this.localConfirmationPersistenceHealthy = false;
+      return false;
+    }
+    const journal: string = JSON.stringify({
+      userId, storeIdentityFingerprint, ownerType, ownerId, endpointBindingFingerprint
+    });
+    const ok: boolean = vncTrustPreferenceAdapter.write(
+      this.context, TRUST_PREFS_NAME, LOCAL_TRUST_INVALIDATION_JOURNAL_KEY, journal);
+    if (!ok) { this.localConfirmationPersistenceHealthy = false; }
+    return ok;
+  }
+
+  private clearInvalidationJournal(allowRecovery: boolean = false): boolean {
+    if (this.context === null || (!allowRecovery && !this.localConfirmationPersistenceHealthy)) {
+      this.localConfirmationPersistenceHealthy = false;
+      return false;
+    }
+    const ok: boolean = vncTrustPreferenceAdapter.remove(
+      this.context, TRUST_PREFS_NAME, LOCAL_TRUST_INVALIDATION_JOURNAL_KEY);
+    if (!ok) { this.localConfirmationPersistenceHealthy = false; }
+    return ok;
+  }
+
+  private persistInvalidation(userId: string, storeIdentityFingerprint: string,
+    ownerType: 'host' | 'gateway', ownerId: string, endpointBindingFingerprint: string,
+    next: string[]): VncTrustInvalidationResult {
+    const previous: string[] = this.locallyConfirmed.slice();
+    const journalWritten: boolean = this.writeInvalidationJournal(
+      userId, storeIdentityFingerprint, ownerType, ownerId, endpointBindingFingerprint);
+    if (!journalWritten) {
+      return { ok: false, changed: false, message: 'VNC trust 失效日志写入失败' };
+    }
+    this.locallyConfirmed = next;
+    const markersWritten: boolean = this.persistLocalConfirmations();
+    if (!markersWritten) {
+      this.locallyConfirmed = previous;
+      return { ok: false, changed: false, message: 'VNC trust marker 写入失败' };
+    }
+    const journalCleared: boolean = this.clearInvalidationJournal();
+    if (!journalCleared) {
+      return { ok: false, changed: true, message: 'VNC trust 失效日志清理失败' };
+    }
+    const decision = vncTrustPersistenceCommitState(true, true, true);
+    if (!decision.ok || decision.failClosed) {
+      return { ok: false, changed: true, message: 'VNC trust marker 状态不安全' };
+    }
+    this.emitChange();
+    return { ok: true, changed: true, message: '' };
   }
 
   private confirmationPreferenceKey(): string {
