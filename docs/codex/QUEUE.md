@@ -4,23 +4,23 @@ Updated: 2026-08-03 Asia/Shanghai
 
 ## Now
 
-- Stage F checkpoint `f4f4760` passed the existing VNC-only reviewer:
+- Stage F checkpoint `ef4c33a` passed the existing VNC-only reviewer:
   TCP reachability is separated from deep mode12/TLS/RFB protocol readiness,
   both policy runners are registered, and native mode12 handoff fixtures cover
   fragmented banner/250-byte pairing/RFB handoff and invalid-banner zero-write
   rejection.
 - Preserve stage A/B and C-first review receipts; keep probe/pin failures
   fail-closed.
-- Checkpoint `ef4c33a` fences deep-check Promise results by requestId and
-  attempt generation, binds Repeater target changes, revalidates pending trust
-  against the live endpoint, and preserves all stable VNC certificate errors.
+- Stage F deep-check Promise results are fenced by requestId/attempt generation,
+  Repeater target changes invalidate old work, pending trust is live-bound, and
+  all stable VNC certificate errors are preserved.
 - Restore `hdc` connectivity and capture current VNC `hilog` when the device is
   available; do not convert static source evidence into device evidence.
 
 ## Next
 
-- Request the one existing reviewer task once to audit checkpoint `ef4c33a`; do
-  not advance to Stage G or start FreeRDP before its result.
+- Stage G: restore hdc and collect real direct/Repeater/device evidence; until
+  then keep the evidence gap explicit and do not start FreeRDP.
 
 ## Later
 

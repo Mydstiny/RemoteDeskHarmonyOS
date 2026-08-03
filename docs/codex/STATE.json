@@ -6,7 +6,7 @@
   "head": "ef4c33a",
   "phase": "vnc-v3-stage-f-gateway-deep-checks",
   "status": "active",
-  "next": "Stage F checkpoint ef4c33a fences Promise request/attempt generations, Repeater target binding, live certificate handoff, and all stable VNC certificate errors; await the single existing reviewer before Stage G.",
+  "next": "Stage F checkpoint ef4c33a passed independent review; continue VNC Stage G device/direct/Repeater evidence when hdc is available. Do not start FreeRDP.",
   "blockers": [
     "hdc list targets and hdc shell return Connect server failed; no current hilog evidence.",
     "ohosTest@OhosTestCompileArkTS is not registered (00306054); ArkTS tests have compile/build evidence only.",
@@ -17,7 +17,7 @@
     "docs/superpowers/plans/2026-08-01-vnc-certificate-settings-relay-complete-repair-plan-v3.md"
   ],
   "review": {
-    "status": "RESUME_REVIEW",
+    "status": "PASS",
     "taskId": "019fc333-6789-7633-bf6f-3fea1cb2ad4d",
     "scope": [
       "entry/src/main/ets/pages/RustDeskRelayPage.ets",
@@ -31,7 +31,7 @@
       "entry/src/test/List.test.ets",
       "entry/src/test/VncGatewayHealthPolicy.test.ets"
     ],
-    "reason": "Checkpoint ef4c33a fixes the existing VNC-only review findings for request/attempt fencing, Repeater target binding, live trust handoff validation, and stable certificate error preservation; reuse the existing reviewer for one incremental read-only audit."
+    "reason": "Independent read-only review of 44b83ef to ef4c33a passed with no P0/P1/P2. Request/attempt fencing, Repeater target binding, live trust handoff validation, and complete E-VNC-CERT-* preservation were verified; remaining gaps are real endpoint, hdc, OHOS runtime, and direct ArkTS/NAPI tests."
   },
   "lastVerification": {
     "rdp_native_tests": "252-pass-0-fail-loopback-fixtures-host-socket-ef4c33a-2026-08-03",
