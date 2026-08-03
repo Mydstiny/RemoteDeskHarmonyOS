@@ -7,9 +7,9 @@ This file is the compact startup resume card. Historical checkpoints remain in
 
 - Task: `rustdesk-complete-repair` (active branch retained; current scope is VNC V3 only)
 - Branch: `codex/rustdesk-complete-repair`
-- Checkpoint: `f4f4760`, based on `main@34946adbc`; branch is ahead by 61 and not behind.
-- Phase: VNC V3 stage F Gateway deep-check boundary. TCP reachability is local-only and explicitly not protocol readiness; deep mode12/TLS/RFB stages require an explicit native probe result.
-- Worktree: Stage F code and native loopback fixture are committed. Preserve unrelated user changes.
+- Checkpoint: `38be271`, based on `main@34946adbc`; branch is ahead by 66 and not behind.
+- Phase: VNC V3 stage F native/endpoint deep-check integration. TCP reachability is local-only; the VNC Gateway UI now invokes a bounded native mode12/TLS/RFB probe and remains fail-closed on missing trust, cancellation, or invalid handoff.
+- Worktree: Stage F deep-check integration is committed. Preserve unrelated user changes.
 
 ## Stage A Result
 
@@ -46,13 +46,10 @@ This file is the compact startup resume card. Historical checkpoints remain in
   `7d26f3716` checkpoint downgrades stale-store list views and makes legacy
   trust queries endpoint-bound, with Repeater TLS binding coverage.
 - The existing reviewer task `019fc333-6789-7633-bf6f-3fea1cb2ad4d` passed the
-  `fc9daa13f` manager endpoint/migration segment; reuse it for the next VNC-only
-  segment and do not duplicate
-  the task or start FreeRDP evaluation before VNC V3 closes.
-- Stage D checkpoint `fc9daa13f` passed independent review with endpoint-bound manager lookup/status,
-  multi-target recheck routing, v1 candidate migration cleanup/read-back and
-  before-image rollback on failed writes. The next segment covers backup/cloud
-  wording and endpoint deletion/rotation invalidation; the code remains VNC-only.
+  `fc9daa13f` manager segment; reuse it and do not start FreeRDP before VNC V3 closes.
+- Stage D checkpoints cover endpoint-bound manager lookup, multi-target recheck,
+  v1 migration read-back/rollback, endpoint invalidation, and backup/cloud marker
+  separation; all remain VNC-only.
 - Stage D follow-up checkpoint `8f45bbf37` invalidates device-local VNC confirmation
   markers after committed host/Gateway endpoint changes or deletion, keeps old
   trust rows as unconfirmed candidates, and makes backup/cloud manifests explicit
@@ -84,15 +81,21 @@ This file is the compact startup resume card. Historical checkpoints remain in
   banner reads, exact 250-byte pairing, RFB handoff, and invalid-banner
   fail-closed behavior, and asserts invalid banners cause zero pairing bytes;
   no native deep-test API is fabricated.
+- Checkpoint `38be271` adds the native `probeVncGatewayDeepAsync`/
+  `cancelVncGatewayDeep` contract, shared N-API cleanup fencing, strict
+  mode12/target validation, TLS pin-required/changed/cancelled result mapping,
+  RFB banner-only handoff, and a VNC Gateway management-page deep-test action
+  bound to the live account/store endpoint resolver. It never sends credentials,
+  ClientInit, or framebuffer data.
 - Keep every VNC caller fail-closed when the probe, Sheet lifecycle, owner
   binding, or expected-pin handoff is missing or stale.
 ## Verification
 
 - `rdp_native_tests`: 251 passed, 0 failed with loopback fixtures on
-  `f4f4760`, 2026-08-03 (sandbox-only runs cannot bind host sockets).
-- `default@OhosTestCompileArkTS`: passed after `f4f4760` on 2026-08-03.
-- `assembleHap`: passed after `f4f4760` on 2026-08-03.
-- `git diff --check`: passed after `f4f4760` on 2026-08-03.
+  `38be271`, 2026-08-03 (requires host-socket permission).
+- `default@OhosTestCompileArkTS`: passed after `38be271` on 2026-08-03.
+- `assembleHap`: passed after `38be271` on 2026-08-03.
+- `git diff --check`: passed after `38be271` on 2026-08-03.
 - `ohosTest@OhosTestCompileArkTS`: unavailable; task is not registered
   (`00306054`). New ArkTS tests therefore have compile/build evidence only.
 ## Blockers
@@ -105,15 +108,13 @@ This file is the compact startup resume card. Historical checkpoints remain in
   handoff, and the final transport deadline. NAPI runtime, Promise/environment teardown, Sheet lifecycle,
   TrustService migration, real Repeater, cloud, and device matrices remain
   unverified and are not release evidence.
-- Stage C RemoteDesktop probe/Sheet/password integration is static/build-tested
-  only until `ohosTest` is registered and a real device is available; no UI or
-  endpoint runtime evidence is claimed. Stage D trust migration, manager,
-  invalidation and backup policy have host/build coverage but no live
-  CloudStore/device evidence; stage E still lacks live
-  `ohosTest`/device/Preferences restart evidence.
+- Stage C/D/E UI, CloudStore, Preferences restart, and Stage F deep-check runtime
+  behavior remain static/build-tested only; no device evidence is claimed.
 
 ## Review Protocol
 
 - Machine state: `docs/codex/STATE.json`.
 - Receipts: `docs/codex/REVIEW_RECEIPTS.jsonl`.
-- `scripts/sync_workspace.sh status` should retain Stage E/F PASS and keep active VNC-only work at Stage F native/endpoint integration; reuse the existing reviewer for the next declared segment.
+- `scripts/sync_workspace.sh status` should keep active VNC-only work at Stage F
+  native/endpoint integration and reuse the existing reviewer for the single
+  incremental review of `38be271`.

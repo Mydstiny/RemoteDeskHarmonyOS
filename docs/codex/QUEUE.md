@@ -11,12 +11,16 @@ Updated: 2026-08-03 Asia/Shanghai
   rejection.
 - Preserve stage A/B and C-first review receipts; keep probe/pin failures
   fail-closed.
+- Checkpoint `38be271` wires the bounded native deep-check Promise and
+  cancellation into the VNC Gateway management page using the live
+  endpoint/trust binding.
 - Restore `hdc` connectivity and capture current VNC `hilog` when the device is
   available; do not convert static source evidence into device evidence.
 
 ## Next
 
-- Continue only the planned native/endpoint deep-check integration before Stage G device matrices.
+- Request the one existing reviewer task to audit checkpoint `38be271` for the
+  planned native/endpoint deep-check integration before Stage G device matrices.
 
 ## Later
 
