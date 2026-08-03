@@ -4,9 +4,9 @@ Updated: 2026-08-03 Asia/Shanghai
 
 ## Now
 
-- Stage E checkpoint `68f5253` passed the existing VNC-only reviewer: both
-  settings surfaces validate current-account mode12 defaults and cleanup gates
-  Gateway deletion/disable.
+- Stage F checkpoint `9c96b33` is ready for the existing VNC-only reviewer:
+  TCP reachability is separated from deep mode12/TLS/RFB protocol readiness,
+  and the new policy suite is registered in both runners.
 - Preserve stage A/B and C-first review receipts; keep probe/pin failures
   fail-closed.
 - Restore `hdc` connectivity and capture current VNC `hilog` when the device is
@@ -14,8 +14,8 @@ Updated: 2026-08-03 Asia/Shanghai
 
 ## Next
 
-- Stage F: distinguish Gateway TCP reachability from deep mode12/TLS/RFB
-  health, reusing the endpoint resolver and certificate Sheet.
+- Stage F reviewer result; then continue only the planned native/endpoint
+  deep-check integration before Stage G device matrices.
 
 ## Later
 
