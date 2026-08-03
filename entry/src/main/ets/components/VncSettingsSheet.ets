@@ -2,6 +2,8 @@ import { promptAction } from '@kit.ArkUI';
 import { common } from '@kit.AbilityKit';
 import { DataCrypto } from '../services/DataCrypto';
 import { VncSettingsService } from '../services/VncSettingsService';
+import { VncGatewayService, VncGatewayView } from '../services/VncGatewayService';
+import { isSelectableVncDefaultGateway, VncSelectableGateway } from '../services/VncHostDefaultsPolicy';
 import { VncCloudSyncScope, vncCloudSyncScopes } from '../services/VncCloudSyncSelectionPolicy';
 import {
   VncSettingsValues,
@@ -84,13 +86,16 @@ export struct VncSettingsSheet {
   @State syncGateways: boolean = true;
   @State syncSecrets: boolean = false;
   @State syncTrust: boolean = false;
+  @State gateways: VncGatewayView[] = [];
   @State cryptoReady: boolean = false;
   @State errorText: string = '';
   @State dirty: boolean = false;
   @State saving: boolean = false;
 
   private readonly settings: VncSettingsService = VncSettingsService.getInstance();
+  private readonly gatewayService: VncGatewayService = VncGatewayService.getInstance();
   private settingsUnsubscribe: (() => void) | null = null;
+  private gatewayUnsubscribe: (() => void) | null = null;
   private cryptoUnsubscribe: (() => void) | null = null;
   private pal(): Palette {
     return this.theme === 'light' ? buildLight(this.accentColor) : buildDark(this.accentColor);
@@ -99,15 +104,19 @@ export struct VncSettingsSheet {
   aboutToAppear(): void {
     const context: common.Context = getContext(this) as common.Context;
     this.settings.init(context);
+    this.gatewayService.init(context);
     this.settingsUnsubscribe = this.settings.onChange((): void => { this.load(); });
+    this.gatewayUnsubscribe = this.gatewayService.onChange((): void => { this.loadGateways(); });
     this.cryptoUnsubscribe = DataCrypto.getInstance().onStateChange((_ready: boolean, _configured: boolean): void => {
       this.cryptoReady = DataCrypto.getInstance().isReady();
     });
     this.load();
+    this.loadGateways();
   }
 
   aboutToDisappear(): void {
     if (this.settingsUnsubscribe) { this.settingsUnsubscribe(); this.settingsUnsubscribe = null; }
+    if (this.gatewayUnsubscribe) { this.gatewayUnsubscribe(); this.gatewayUnsubscribe = null; }
     if (this.cryptoUnsubscribe) { this.cryptoUnsubscribe(); this.cryptoUnsubscribe = null; }
   }
 
@@ -155,6 +164,20 @@ export struct VncSettingsSheet {
       this.dirty = true;
       this.onDirtyChanged(true);
     }
+  }
+
+  private loadGateways(): void {
+    this.gateways = this.gatewayService.list();
+  }
+
+  private selectableGateways(): VncGatewayView[] {
+    return this.gateways.filter((gateway: VncGatewayView): boolean => {
+      const selectable: VncSelectableGateway = {
+        id: gateway.id, userId: gateway.userId, transport: gateway.transport,
+        repeaterMode: gateway.repeaterMode, enabled: gateway.enabled
+      };
+      return isSelectableVncDefaultGateway(selectable, this.gatewayService.currentUserId());
+    });
   }
 
   private numberValue(text: string, fallback: number): number {
@@ -366,9 +389,46 @@ export struct VncSettingsSheet {
       this.field('默认端口', '5900', this.defaultPortText, (value: string): void => {
         this.defaultPortText = value; this.markDirty();
       })
+      if (this.defaultTransport === 'ultravnc_repeater') {
+        this.defaultGatewayChoices()
+      }
       Text('WebSocket Gateway 和 SSH tunnel 仍处于 fail-closed，部署并验证服务端契约后才会开放。')
         .fontSize(11).fontColor(this.pal().text3).lineHeight(18).width('100%').margin({ top: 2 })
     }.width('100%')
+  }
+
+  @Builder private defaultGatewayChoices() {
+    const selectable: VncGatewayView[] = this.selectableGateways();
+    Column() {
+      Text('默认 Gateway').fontSize(12).fontColor(this.pal().text3).margin({ top: 2, bottom: 7 })
+      if (selectable.length === 0) {
+        Text('当前账号没有可用的 mode12 Gateway；请先添加并启用 Gateway。')
+          .fontSize(11).fontColor(this.pal().danger).lineHeight(17).margin({ bottom: 8 })
+        Button('打开 Gateway 管理').width('100%').height(38).borderRadius(9)
+          .backgroundColor(this.pal().surface).fontColor(this.accentColor)
+          .onClick((): void => { this.onOpenGatewayManager(); })
+      } else {
+        ForEach(selectable, (gateway: VncGatewayView) => {
+          Row() {
+            Column() {
+              Text(gateway.label === '' ? gateway.host : gateway.label)
+                .fontSize(13).fontColor(this.pal().text)
+              Text(gateway.host + ':' + gateway.port.toString() + ' · mode12')
+                .fontSize(10).fontColor(this.pal().text3).margin({ top: 2 })
+            }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+            if (this.defaultGatewayId === gateway.id) {
+              SymbolGlyph($r('sys.symbol.checkmark')).fontSize(17).fontColor([this.accentColor])
+            }
+          }.width('100%').padding(10).borderRadius(9)
+            .backgroundColor(this.defaultGatewayId === gateway.id ? this.pal().surface : this.pal().card)
+            .margin({ bottom: 6 })
+            .onClick((): void => {
+              this.defaultGatewayId = gateway.id;
+              this.markDirty();
+            })
+        }, (gateway: VncGatewayView): string => gateway.id + ':' + gateway.updatedAt.toString())
+      }
+    }.width('100%').margin({ bottom: 10 })
   }
 
   @Builder private timeoutContent() {

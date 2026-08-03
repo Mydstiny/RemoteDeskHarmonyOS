@@ -28,6 +28,8 @@ import {
 import { VncCloudSyncService } from './VncCloudSyncService';
 import { VncCloudSyncScope } from './VncCloudSyncSelectionPolicy';
 import { VNC_CLOUD_TABLE } from './VncRecordPolicy';
+import { VncGatewayService, VncGatewayView } from './VncGatewayService';
+import { isSelectableVncDefaultGateway, VncSelectableGateway } from './VncHostDefaultsPolicy';
 import {
   CloudSelectionReenablePhase,
   cloudSelectionTransitionNeedsCloudFirst
@@ -135,6 +137,11 @@ export class VncSettingsService {
   ): Promise<VncSettingsSaveResult> {
     const result: VncSettingsSaveResult = { ok: false, message: '' };
     const normalized: VncSettingsValues = this.normalize(next);
+    if (normalized.defaultTransport === 'ultravnc_repeater' &&
+      !this.isSelectableDefaultGateway(normalized.defaultGatewayId)) {
+      result.message = 'VNC Repeater 默认必须选择当前账号下已启用的 mode12 Gateway';
+      return result;
+    }
     if (!validVncPort(normalized.defaultPort)) {
       result.message = 'VNC 默认端口必须在 1-65535 之间';
       return result;
@@ -296,6 +303,18 @@ export class VncSettingsService {
   async manualUpload(): Promise<boolean> { return (await this.sync.requestManualUpload()).ok; }
 
   async manualDownload(): Promise<boolean> { return (await this.sync.requestManualDownload()).ok; }
+
+  private isSelectableDefaultGateway(gatewayId: string): boolean {
+    const normalizedId: string = gatewayId.trim();
+    if (normalizedId === '') { return false; }
+    const gateway: VncGatewayView | null = VncGatewayService.getInstance().find(normalizedId);
+    if (gateway === null) { return false; }
+    const selectable: VncSelectableGateway = {
+      id: gateway.id, userId: gateway.userId, transport: gateway.transport,
+      repeaterMode: gateway.repeaterMode, enabled: gateway.enabled
+    };
+    return isSelectableVncDefaultGateway(selectable, this.getUserId());
+  }
 
   private load(): void {
     const record: VncRecord | null = this.settingsRecord();
