@@ -40,6 +40,7 @@ export struct RemoteSessionTopBar {
     maxVisibleButtons: 7,
     menuWidth: 360
   };
+  @Prop @Watch('onEdgeRailChanged') edgeRail: boolean = false;
   @Prop privacyMode: boolean = false;
   @Prop audioEnabled: boolean = true;
   @Prop clipboardEnabled: boolean = true;
@@ -143,7 +144,17 @@ export struct RemoteSessionTopBar {
     }
   }
 
+  private onEdgeRailChanged(): void {
+    this.clearAutoCollapseTimer();
+    this.activeMenu = '';
+    this.collapsed = false;
+    this.pinned = false;
+    this.scheduleAutoCollapse();
+  }
+
   aboutToAppear(): void {
+    this.collapsed = false;
+    this.activeMenu = '';
     this.scheduleAutoCollapse();
   }
 
@@ -156,9 +167,40 @@ export struct RemoteSessionTopBar {
     return count * this.layout.iconSize + (count + 1) * this.layout.itemGap;
   }
 
-  private menuLeft(): number {
+  private menuLeft(width: number = this.layout.menuWidth): number {
+    if (this.edgeRail) {
+      return 0;
+    }
     const fullWidth: number = this.toolbarWidth();
-    return Math.max(0, (fullWidth - this.layout.menuWidth) / 2);
+    return Math.max(0, (fullWidth - width) / 2);
+  }
+
+  private menuTop(): number {
+    return this.edgeRail ? 0 : this.layout.iconSize + 12;
+  }
+
+  private edgeRailWidth(): number {
+    return this.layout.iconSize + 12;
+  }
+
+  private edgeRailButtonCount(): number {
+    return this.layout.deviceClass === 'phone' ? 5 : 6;
+  }
+
+  private edgeRailHeight(): number {
+    const buttonCount: number = this.edgeRailButtonCount();
+    return buttonCount * this.layout.iconSize +
+      Math.max(0, buttonCount - 1) * this.layout.itemGap + 12 +
+      this.layout.itemGap + 30;
+  }
+
+  private edgeRailCanvasHeight(): number {
+    return Math.max(520, this.edgeRailHeight());
+
+  }
+
+  private edgeRailOffsetY(): number {
+    return Math.max(0, (this.edgeRailCanvasHeight() - this.edgeRailHeight()) / 2);
   }
 
   private qualityLabel(value: number): string {
@@ -243,7 +285,7 @@ export struct RemoteSessionTopBar {
     .backgroundColor('rgba(255,255,255,0.96)')
     .borderRadius(10)
     .shadow({ radius: 10, color: 'rgba(0,0,0,0.22)', offsetY: 2 })
-    .position({ x: this.menuLeft(), y: this.layout.iconSize + 12 })
+    .position({ x: this.menuLeft(), y: this.menuTop() })
   }
 
   @Builder
@@ -300,7 +342,7 @@ export struct RemoteSessionTopBar {
     .backgroundColor('rgba(255,255,255,0.96)')
     .borderRadius(10)
     .shadow({ radius: 10, color: 'rgba(0,0,0,0.22)', offsetY: 2 })
-    .position({ x: this.menuLeft(), y: this.layout.iconSize + 12 })
+    .position({ x: this.menuLeft(), y: this.menuTop() })
   }
 
   @Builder
@@ -334,7 +376,7 @@ export struct RemoteSessionTopBar {
     .backgroundColor('rgba(255,255,255,0.96)')
     .borderRadius(10)
     .shadow({ radius: 10, color: 'rgba(0,0,0,0.22)', offsetY: 2 })
-    .position({ x: this.menuLeft(), y: this.layout.iconSize + 12 })
+    .position({ x: this.menuLeft(), y: this.menuTop() })
   }
 
   @Builder
@@ -348,7 +390,7 @@ export struct RemoteSessionTopBar {
     .backgroundColor('rgba(255,255,255,0.96)')
     .borderRadius(10)
     .shadow({ radius: 10, color: 'rgba(0,0,0,0.22)', offsetY: 2 })
-    .position({ x: Math.max(0, (this.toolbarWidth() - 180) / 2), y: this.layout.iconSize + 12 })
+    .position({ x: this.menuLeft(180), y: this.menuTop() })
   }
 
   @Builder
@@ -429,31 +471,140 @@ export struct RemoteSessionTopBar {
     })
   }
 
-  build() {
-    Stack({ alignContent: Alignment.Top }) {
-      if (this.collapsed) {
-        Row() {
-          SymbolGlyph($r('sys.symbol.ellipsis_bubble'))
-            .fontSize(18)
-            .fontColor(['#444444'])
+  @Builder
+  private edgeRailBody() {
+    Stack() {
+      Column() {
+        this.iconButton(this.pinned ? $r('sys.symbol.lock_fill') : $r('sys.symbol.ohos_lock'),
+          this.pinned ? '#3A3A3A' : this.accentColor, (): void => {
+            this.pinned = !this.pinned;
+            this.scheduleAutoCollapse();
+          })
+        Blank().height(this.layout.itemGap)
+        this.iconButton($r('sys.symbol.bolt_fill'), this.accentColor, (): void => {
+          this.toggleMenu('control');
+        })
+        Blank().height(this.layout.itemGap)
+        this.iconButton($r('sys.symbol.desktop_fill'), this.accentColor, (): void => {
+          this.toggleMenu('display');
+        })
+        Blank().height(this.layout.itemGap)
+        this.iconButton($r('sys.symbol.keyboard'), this.keyboardOpen ? '#2A9D8F' : this.accentColor,
+          (): void => { this.toggleMenu('keyboardMouse'); })
+        if (this.layout.deviceClass !== 'phone') {
+          Blank().height(this.layout.itemGap)
+          this.iconButton($r('sys.symbol.message'), this.accentColor, (): void => {
+            this.toggleMenu('chat');
+          })
         }
-        .width(58)
-        .height(28)
+        Blank().height(this.layout.itemGap)
+        this.iconButton($r('sys.symbol.xmark'), '#FF5353', (): void => {
+          this.actions.onDisconnect();
+        }, 18)
+        Blank().height(this.layout.itemGap)
+        Row() {
+          SymbolGlyph($r('sys.symbol.chevron_right'))
+            .fontSize(16)
+            .fontColor(['#444444'])
+          Text('隐藏').fontSize(10).fontColor('#444444').margin({ left: 4 })
+        }
+        .height(30)
+        .width(this.edgeRailWidth() - 12)
         .justifyContent(FlexAlign.Center)
         .backgroundColor('rgba(255,255,255,0.92)')
-        .borderRadius({ topLeft: 0, topRight: 0, bottomLeft: 8, bottomRight: 8 })
-        .shadow({ radius: 8, color: 'rgba(0,0,0,0.22)', offsetY: 2 })
+        .borderRadius(7)
+        .accessibilityText('隐藏 RustDesk 贴边栏')
         .onClick((): void => {
-          this.collapsed = false;
-          this.scheduleAutoCollapse();
+          this.collapsed = true;
+          this.closeMenus();
         })
+      }
+      .width(this.edgeRailWidth())
+      .padding(6)
+      .backgroundColor('rgba(255,255,255,0.94)')
+      .borderRadius({ topLeft: 10, bottomLeft: 10, topRight: 0, bottomRight: 0 })
+      .shadow({ radius: 10, color: 'rgba(0,0,0,0.24)', offsetX: -2 })
+      .position({ x: this.layout.menuWidth + this.layout.itemGap, y: this.edgeRailOffsetY() })
+
+      if (this.activeMenu === 'control') {
+        this.controlMenu()
+      }
+      if (this.activeMenu === 'display') {
+        this.displayMenu()
+      }
+      if (this.activeMenu === 'keyboardMouse') {
+        this.keyboardMouseMenu()
+      }
+      if (this.activeMenu === 'chat') {
+        this.chatMenu()
+      }
+    }
+    .width(this.layout.menuWidth + this.edgeRailWidth() + this.layout.itemGap)
+    .height(this.edgeRailCanvasHeight())
+    .position({ x: '100%', y: '50%' })
+    .markAnchor({ x: '100%', y: '50%' })
+  }
+
+  @Builder
+  private edgeRailHandle() {
+    Row() {
+      SymbolGlyph($r('sys.symbol.chevron_left'))
+        .fontSize(18)
+        .fontColor(['#444444'])
+    }
+    .width(30)
+    .height(72)
+    .justifyContent(FlexAlign.Center)
+    .backgroundColor('rgba(255,255,255,0.92)')
+    .borderRadius({ topLeft: 10, bottomLeft: 10, topRight: 0, bottomRight: 0 })
+    .shadow({ radius: 8, color: 'rgba(0,0,0,0.22)', offsetX: -2 })
+    .accessibilityText('展开 RustDesk 贴边栏')
+    .position({ x: '100%', y: '50%' })
+    .markAnchor({ x: '100%', y: '50%' })
+    .onClick((): void => {
+      this.collapsed = false;
+      this.scheduleAutoCollapse();
+    })
+  }
+
+  build() {
+    Stack() {
+      if (this.edgeRail) {
+        if (this.collapsed) {
+          this.edgeRailHandle()
+        } else {
+          this.edgeRailBody()
+        }
       } else {
-        this.toolbarBody()
+        Stack({ alignContent: Alignment.Top }) {
+          if (this.collapsed) {
+            Row() {
+              SymbolGlyph($r('sys.symbol.ellipsis_bubble'))
+                .fontSize(18)
+                .fontColor(['#444444'])
+            }
+            .width(58)
+            .height(28)
+            .justifyContent(FlexAlign.Center)
+            .backgroundColor('rgba(255,255,255,0.92)')
+            .borderRadius({ topLeft: 0, topRight: 0, bottomLeft: 8, bottomRight: 8 })
+            .shadow({ radius: 8, color: 'rgba(0,0,0,0.22)', offsetY: 2 })
+            .onClick((): void => {
+              this.collapsed = false;
+              this.scheduleAutoCollapse();
+            })
+          } else {
+            this.toolbarBody()
+          }
+        }
+        .width('100%')
+        .height(this.collapsed ? 32 : 540)
+        .position({ x: 0, y: this.layout.topOffset })
+        .hitTestBehavior(HitTestMode.Transparent)
       }
     }
     .width('100%')
-    .height(this.collapsed ? 32 : 540)
-    .position({ x: 0, y: this.layout.topOffset })
+    .height('100%')
     .hitTestBehavior(HitTestMode.Transparent)
   }
 }

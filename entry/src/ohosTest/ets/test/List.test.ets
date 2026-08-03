@@ -177,6 +177,7 @@ function focusedDescribeNames(scope: string): string[] {
       'RemoteSessionTopBarPolicy',
       'RemoteSessionTopBarPolicy_visibility',
       'RemoteSessionTopBarPolicy_layout',
+      'RemoteSessionTopBarPolicy_edgeRail',
       'RemoteSessionTopBarPolicy_actions',
       'RemoteSessionTopBarPolicy_autoCollapse',
       'RemoteSessionTopBarPolicy_preferences'
@@ -209,7 +210,7 @@ function expectedFocusedCount(scope: string): number {
   if (scope === 'RemoteCanvasInteractionPolicy_real_surface_contract') { return 3; }
   if (scope === 'RemoteKeyboardLayoutSelection_owner_session_generation') { return 3; }
   if (scope === 'RemoteModifierStateController_lifecycle_mirror') { return 1; }
-  if (scope === 'RemoteSessionTopBarPolicy') { return 19; }
+  if (scope === 'RemoteSessionTopBarPolicy') { return 21; }
   if (scope === 'TotpBrandService') { return 22; }
   return 0;
 }

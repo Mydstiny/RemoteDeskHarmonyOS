@@ -11,6 +11,15 @@ export function shouldHideRemoteNavigation(protocol: string, connected: boolean)
   return connected && isRemoteDesktopProtocol(protocol);
 }
 
+/**
+ * Hiding the status bar prevents a mobile/Pad mouse pointer from entering the
+ * notification shade hit area while the remote canvas owns keyboard/mouse input.
+ */
+export function shouldHideRemoteStatusBar(protocol: string, connected: boolean,
+  isDesktopDevice: boolean, _breakpoint: string, rustdeskControlMode: number): boolean {
+  return connected && protocol === 'rustdesk' && !isDesktopDevice && rustdeskControlMode === 2;
+}
+
 export function shouldReapplyRemoteNavigation(protocol: string, connected: boolean,
   backgroundPreserved: boolean): boolean {
   return backgroundPreserved && shouldHideRemoteNavigation(protocol, connected);

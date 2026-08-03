@@ -176,6 +176,7 @@ import {
 } from '../services/VncRendererSurfacePolicy';
 import {
   shouldHideRemoteNavigation,
+  shouldHideRemoteStatusBar,
   shouldReapplyRemoteNavigation,
   shouldRestoreRemoteNavigation
 } from '../services/RemoteImmersivePolicy';
@@ -316,7 +317,8 @@ import { createTransferSnapshot, TransferProtocol, TransferState } from '../serv
 import { isRemoteCompletionConfirmed } from '../services/TransferSessionPolicy';
 import {
   remoteTopBarLayout,
-  shouldShowRustDeskTopBar
+  shouldShowRustDeskTopBar,
+  shouldUseRustDeskEdgeRail
 } from '../services/RemoteSessionTopBarPolicy';
 import { RemoteSessionCapabilities, resolveSessionCapabilities } from '../services/RemoteSessionCapabilityPolicy';
 import {
@@ -826,6 +828,9 @@ struct RemoteDesktop {
   private rustDeskSessionRememberPassword: boolean = false;
   private rustDeskSessionPasswordMode: number = 0;
   private remoteNavigationHidden: boolean = false;
+  private remoteStatusBarHidden: boolean = false;
+  private remoteSystemBarRequestId: number = 0;
+  private remoteSystemBarUpdate: Promise<void> = Promise.resolve();
   private backgroundAudioPollTimer: number = -1;
   private pendingDisappearDecisionTimer: number = -1;
   private disappearDecisionGeneration: number = 0;
@@ -1302,6 +1307,13 @@ struct RemoteDesktop {
     const host: RemoteHost | null = this.pendingHost;
     if (!host) { return false; }
     return shouldShowRustDeskTopBar(host.protocol, this.isDesktopDevice, this.breakpoint, this.rustdeskControlMode);
+  }
+
+  private shouldUseRustDeskSessionEdgeRail(): boolean {
+    const host: RemoteHost | null = this.pendingHost;
+    if (!host) { return false; }
+    return shouldUseRustDeskEdgeRail(host.protocol, this.isDesktopDevice, this.breakpoint,
+      this.rustdeskControlMode);
   }
 
   private shouldShowVncSessionToolbar(): boolean {
@@ -3152,12 +3164,14 @@ struct RemoteDesktop {
       this.restoreRemoteSystemPointer('connection-state');
       this.stopRustDeskDiagnosticsPolling(true);
     }
+    void this.setRemoteNavigationHidden(this.connected, 'connection-state');
     this.publishRemoteCursorOverlay();
   }
 
   private onRemoteControlModeChange(): void {
     this.releaseCanvasPinchInput('control-mode-change');
     this.syncRemoteSystemPointer('control-mode');
+    void this.setRemoteNavigationHidden(this.connected, 'control-mode-change');
     this.requestRemoteCursorViewRefresh(true);
   }
 
@@ -9270,39 +9284,83 @@ struct RemoteDesktop {
 
   // 底部边缘上滑的“唤起导航/返回主页”由系统仲裁；远程 XComponent 不注册自定义上滑，避免吞掉远程触控。
   private async setRemoteNavigationHidden(hidden: boolean, reason: string): Promise<void> {
-    const protocol: string = this.currentProtocolName();
-    const targetHidden: boolean = hidden && shouldHideRemoteNavigation(protocol, this.connected);
-    const forceApply: boolean = reason === 'foreground-restore';
-    if (!forceApply && this.remoteNavigationHidden === targetHidden) {
-      return;
-    }
-    try {
-      const ctx = this.getUIContext().getHostContext();
-      if (!ctx) {
+    const requestId: number = ++this.remoteSystemBarRequestId;
+    const update: Promise<void> = this.remoteSystemBarUpdate
+      .catch((err: Error): void => {
         hilog.warn(RD_DOMAIN, RD_TAG,
-          (targetHidden ? 'E-IMMERSIVE-NAV-HIDE' : 'E-IMMERSIVE-NAV-RESTORE') +
-            ': host context is null reason=' + reason);
-        return;
-      }
-      const win: window.Window = await window.getLastWindow(ctx);
-      await win.setSpecificSystemBarEnabled('navigation', !targetHidden, false);
-      try {
-        // API 23 documents this name, but some device families do not support it.
-        await win.setSpecificSystemBarEnabled('navigationIndicator', !targetHidden, false);
-      } catch (indicatorErr) {
-        hilog.warn(RD_DOMAIN, RD_TAG,
-          'E-IMMERSIVE-NAV-INDICATOR: unsupported or failed reason=' + reason +
-            ' err=' + JSON.stringify(indicatorErr));
-      }
-      this.remoteNavigationHidden = targetHidden;
-      hilog.info(RD_DOMAIN, RD_TAG,
-        'remote navigation ' + (targetHidden ? 'hidden' : 'restored') +
-          ' protocol=' + protocol + ' reason=' + reason);
-    } catch (err) {
-      hilog.warn(RD_DOMAIN, RD_TAG,
-        (targetHidden ? 'E-IMMERSIVE-NAV-HIDE' : 'E-IMMERSIVE-NAV-RESTORE') +
-          ': failed reason=' + reason + ' err=' + JSON.stringify(err));
-    }
+          'E-IMMERSIVE-SERIAL-UPDATE: previous system-bar update failed err=' +
+            (err.message ? err.message : JSON.stringify(err)));
+      })
+      .then(async (): Promise<void> => {
+        if (requestId !== this.remoteSystemBarRequestId) {
+          return;
+        }
+        const protocol: string = this.currentProtocolName();
+        const targetNavigationHidden: boolean = hidden &&
+          shouldHideRemoteNavigation(protocol, this.connected);
+        const targetStatusBarHidden: boolean = hidden && shouldHideRemoteStatusBar(protocol, this.connected,
+          this.isDesktopDevice, this.breakpoint, this.rustdeskControlMode);
+        const forceApply: boolean = reason === 'foreground-restore';
+        if (!forceApply && this.remoteNavigationHidden === targetNavigationHidden &&
+          this.remoteStatusBarHidden === targetStatusBarHidden) {
+          return;
+        }
+        try {
+          const ctx = this.getUIContext().getHostContext();
+          if (!ctx) {
+            hilog.warn(RD_DOMAIN, RD_TAG,
+              (targetNavigationHidden ? 'E-IMMERSIVE-NAV-HIDE' : 'E-IMMERSIVE-NAV-RESTORE') +
+                ': host context is null reason=' + reason);
+            return;
+          }
+          const win: window.Window = await window.getLastWindow(ctx);
+          let statusBarApplied: boolean = true;
+          if (forceApply || this.remoteStatusBarHidden !== targetStatusBarHidden) {
+            try {
+              await win.setSpecificSystemBarEnabled('status', !targetStatusBarHidden, false);
+            } catch (statusErr) {
+              statusBarApplied = false;
+              hilog.warn(RD_DOMAIN, RD_TAG,
+                'E-IMMERSIVE-STATUS: failed reason=' + reason + ' err=' + JSON.stringify(statusErr));
+            }
+          }
+
+          let navigationApplied: boolean = true;
+          if (forceApply || this.remoteNavigationHidden !== targetNavigationHidden) {
+            try {
+              await win.setSpecificSystemBarEnabled('navigation', !targetNavigationHidden, false);
+            } catch (navigationErr) {
+              navigationApplied = false;
+              hilog.warn(RD_DOMAIN, RD_TAG,
+                (targetNavigationHidden ? 'E-IMMERSIVE-NAV-HIDE' : 'E-IMMERSIVE-NAV-RESTORE') +
+                  ': failed reason=' + reason + ' err=' + JSON.stringify(navigationErr));
+            }
+            try {
+              // API 23 documents this name, but some device families do not support it.
+              await win.setSpecificSystemBarEnabled('navigationIndicator', !targetNavigationHidden, false);
+            } catch (indicatorErr) {
+              hilog.warn(RD_DOMAIN, RD_TAG,
+                'E-IMMERSIVE-NAV-INDICATOR: unsupported or failed reason=' + reason +
+                  ' err=' + JSON.stringify(indicatorErr));
+            }
+          }
+          if (statusBarApplied) {
+            this.remoteStatusBarHidden = targetStatusBarHidden;
+          }
+          if (navigationApplied) {
+            this.remoteNavigationHidden = targetNavigationHidden;
+          }
+          hilog.info(RD_DOMAIN, RD_TAG,
+            'remote system bars navigation=' + (targetNavigationHidden ? 'hidden' : 'restored') +
+              ' status=' + (targetStatusBarHidden ? 'hidden' : 'restored') +
+              ' protocol=' + protocol + ' reason=' + reason);
+        } catch (err) {
+          hilog.warn(RD_DOMAIN, RD_TAG,
+            'E-IMMERSIVE-SYSTEM-BARS: failed reason=' + reason + ' err=' + JSON.stringify(err));
+        }
+      });
+    this.remoteSystemBarUpdate = update;
+    await update;
   }
 
   private disconnectAndCleanup(reason: string): void {
@@ -13282,6 +13340,7 @@ struct RemoteDesktop {
       if (this.connected && this.shouldShowRustDeskSessionTopBar()) {
         RemoteSessionTopBar({
           layout: remoteTopBarLayout(this.isDesktopDevice, this.breakpoint),
+          edgeRail: this.shouldUseRustDeskSessionEdgeRail(),
           privacyMode: this.rustdeskPrivacyMode,
           audioEnabled: this.rustdeskAudioEnabled,
           clipboardEnabled: this.rustdeskClipboardEnabled,

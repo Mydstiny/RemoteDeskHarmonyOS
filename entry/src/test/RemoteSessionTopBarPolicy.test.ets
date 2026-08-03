@@ -6,7 +6,8 @@ import {
   remoteTopBarLayout,
   rustDeskTopBarAutoCollapseDelayMs,
   rustDeskActionAvailability,
-  shouldShowRustDeskTopBar
+  shouldShowRustDeskTopBar,
+  shouldUseRustDeskEdgeRail
 } from '../main/ets/services/RemoteSessionTopBarPolicy';
 
 export default function remoteSessionTopBarPolicyTest(): void {
@@ -60,6 +61,20 @@ export default function remoteSessionTopBarPolicyTest(): void {
       expect(layout.deviceClass).assertEqual('phone');
       expect(layout.iconSize).assertEqual(40);
       expect(layout.maxVisibleButtons).assertEqual(5);
+    });
+  });
+
+  describe('RemoteSessionTopBarPolicy_edgeRail', (): void => {
+    it('phone_and_pad_keyboard_mouse_sessions_should_use_edge_rail', 0, (): void => {
+      expect(shouldUseRustDeskEdgeRail('rustdesk', false, 'sm', 2)).assertTrue();
+      expect(shouldUseRustDeskEdgeRail('rustdesk', false, 'lg', 2)).assertTrue();
+    });
+
+    it('touch_modes_and_desktop_sessions_should_keep_top_bar', 0, (): void => {
+      expect(shouldUseRustDeskEdgeRail('rustdesk', false, 'sm', 0)).assertFalse();
+      expect(shouldUseRustDeskEdgeRail('rustdesk', false, 'sm', 1)).assertFalse();
+      expect(shouldUseRustDeskEdgeRail('rustdesk', true, 'xl', 2)).assertFalse();
+      expect(shouldUseRustDeskEdgeRail('rdp', false, 'sm', 2)).assertFalse();
     });
   });
 

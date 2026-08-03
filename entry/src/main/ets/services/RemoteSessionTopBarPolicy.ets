@@ -69,6 +69,16 @@ export function shouldShowRustDeskTopBar(
   return true;
 }
 
+/** Mobile keyboard/mouse sessions keep controls off the system-bar edges. */
+export function shouldUseRustDeskEdgeRail(protocol: string, isDesktopDevice: boolean,
+  breakpoint: string, rustdeskControlMode: number): boolean {
+  if (protocol !== 'rustdesk' || isDesktopDevice || rustdeskControlMode !== 2) {
+    return false;
+  }
+  const deviceClass: RemoteTopBarDeviceClass = remoteTopBarDeviceClass(isDesktopDevice, breakpoint);
+  return deviceClass === 'phone' || deviceClass === 'pad';
+}
+
 export function remoteTopBarLayout(isDesktopDevice: boolean, breakpoint: string): RemoteTopBarLayout {
   const deviceClass: RemoteTopBarDeviceClass = remoteTopBarDeviceClass(isDesktopDevice, breakpoint);
   if (deviceClass === 'pc') {
