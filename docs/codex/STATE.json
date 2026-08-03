@@ -3,10 +3,10 @@
   "task": "rustdesk-complete-repair",
   "branch": "codex/rustdesk-complete-repair",
   "base": "34946adbc",
-  "head": "590a5639c",
+  "head": "68f5253",
   "phase": "vnc-v3-stage-e-settings-consistency",
   "status": "active",
-  "next": "Stage E checkpoint 590a5639c applies default transport/Gateway consistently and clears invalid default references; reuse the existing reviewer once before entering Stage F.",
+  "next": "Stage E checkpoint 68f5253 exposes and validates current-account mode12 default Gateways and gates deletion/disable on reference cleanup with retry; reuse the existing reviewer once before entering Stage F.",
   "blockers": [
     "hdc list targets and hdc shell return Connect server failed; no current hilog evidence.",
     "ohosTest@OhosTestCompileArkTS is not registered (00306054); ArkTS tests have compile/build evidence only.",
@@ -21,19 +21,22 @@
     "taskId": "019fc333-6789-7633-bf6f-3fea1cb2ad4d",
     "scope": [
       "entry/src/main/ets/components/hostadd/VncAddFlow.ets",
+      "entry/src/main/ets/components/VncSettingsSheet.ets",
       "entry/src/main/ets/pages/VncSettingsPage.ets",
       "entry/src/main/ets/services/VncHostDefaultsPolicy.ets",
       "entry/src/main/ets/services/VncSettingsService.ets",
+      "entry/src/ohosTest/ets/test/List.test.ets",
+      "entry/src/test/List.test.ets",
       "entry/src/test/VncHostDefaultsPolicy.test.ets"
     ],
-    "reason": "Stage E checkpoint 590a5639c is ready for the single existing independent read-only reviewer; scope is limited to VNC defaults, Gateway reference cleanup, and their policy tests."
+    "reason": "Stage E checkpoint 68f5253 fixes the prior reviewer P1/P2: both VNC settings surfaces can select a valid current-account mode12 Gateway, service save rejects invalid Repeater defaults, and deletion/disable gates on reference cleanup with a retryable failure state. Awaiting the single existing independent read-only reviewer."
   },
   "lastVerification": {
-    "rdp_native_tests": "249-pass-0-fail-loopback-fixtures-host-socket-590a5639c-2026-08-03",
-    "default@OhosTestCompileArkTS": "pass-after-590a5639c-2026-08-03",
-    "assembleHap": "pass-after-590a5639c-2026-08-03",
+    "rdp_native_tests": "249-pass-0-fail-loopback-fixtures-host-socket-68f5253-2026-08-03",
+    "default@OhosTestCompileArkTS": "pass-after-68f5253-2026-08-03",
+    "assembleHap": "pass-after-68f5253-2026-08-03",
     "ohosTest@OhosTestCompileArkTS": "blocked-task-00306054-2026-08-02",
-    "diffCheck": "pass-after-590a5639c-2026-08-03"
+    "diffCheck": "pass-after-68f5253-2026-08-03"
   },
   "archives": [
     "docs/codex/archive/2026-08/README.md",

@@ -7,8 +7,8 @@ This file is the compact startup resume card. Historical checkpoints remain in
 
 - Task: `rustdesk-complete-repair` (active branch retained; current scope is VNC V3 only)
 - Branch: `codex/rustdesk-complete-repair`
-- Checkpoint: `590a5639c`, based on `main@34946adbc`; branch is ahead by 48 and not behind.
-- Phase: VNC V3 stage E settings consistency; modern VNC add flow applies default transport/Gateway and deletion/disable clears default references, awaiting review.
+- Checkpoint: `68f5253`, based on `main@34946adbc`; branch is ahead by 53 and not behind.
+- Phase: VNC V3 stage E settings consistency; default Gateway selection is available in both VNC settings surfaces, service validation is fail-closed, and Gateway deletion/disable clears references before mutation with retryable failure state, awaiting re-review.
 - Worktree: clean after the code checkpoint. Do not stage unrelated changes.
 
 ## Stage A Result
@@ -71,16 +71,25 @@ This file is the compact startup resume card. Historical checkpoints remain in
 - Checkpoint `590a5639c` applies the shared default resolver to modern VNC
   creation and clears default Gateway references when a Gateway is removed or
   disabled; invalid references still fail closed to direct TCP.
+- Checkpoint `1b5eba5` adds a current-account mode12 Gateway selector to the
+  settings page, blocks saving an invalid Repeater default, and prevents
+  Gateway deletion/disable when reference cleanup fails.
+- Checkpoint `c4d5bef` adds the same selector to the compact settings Sheet and
+  enforces the valid Gateway invariant in `VncSettingsService.save()`.
+- Checkpoint `f6e0c8e` makes cleanup failures durable in the settings page with
+  an explicit retry action while keeping Gateway mutation blocked.
+- Checkpoint `68f5253` keeps the compact settings Sheet Builder compliant with
+  ArkTS UI syntax after adding the Gateway selector.
 - Keep every VNC caller fail-closed when the probe, Sheet lifecycle, owner
   binding, or expected-pin handoff is missing or stale.
 
 ## Verification
 
 - `rdp_native_tests`: 249 passed, 0 failed with host socket permission on
-  `590a5639c`, 2026-08-03.
-- `default@OhosTestCompileArkTS`: passed after `590a5639c` on 2026-08-03.
-- `assembleHap`: passed after `590a5639c` on 2026-08-03.
-- `git diff --check`: passed after `590a5639c` on 2026-08-03.
+  `68f5253`, 2026-08-03.
+- `default@OhosTestCompileArkTS`: passed after `68f5253` on 2026-08-03.
+- `assembleHap`: passed after `68f5253` on 2026-08-03.
+- `git diff --check`: passed after `68f5253` on 2026-08-03.
 - `ohosTest@OhosTestCompileArkTS`: unavailable; task is not registered
   (`00306054`). New ArkTS tests therefore have compile/build evidence only.
 
@@ -106,6 +115,6 @@ This file is the compact startup resume card. Historical checkpoints remain in
 - Machine state: `docs/codex/STATE.json`.
 - Receipts: `docs/codex/REVIEW_RECEIPTS.jsonl`.
 - `scripts/sync_workspace.sh status` should report RESUME_REVIEW for the
-  `590a5639c` Stage E increment until the existing reviewer returns a receipt.
+  `68f5253` Stage E increment until the existing reviewer returns a receipt.
 - Reuse the existing independent review session and do not redispatch duplicate
   messages for the same segment.
