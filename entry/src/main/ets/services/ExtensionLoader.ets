@@ -26,6 +26,7 @@ import {
   RemoteCursorSnapshot,
   SessionTransferStatus,
   SshCommandResult,
+  SshTerminalDiagnosticsSnapshot,
   SftpListAsyncResult,
   SftpReadAsyncResult,
   SftpWriteAsyncResult,
@@ -985,6 +986,50 @@ export class ExtensionLoader {
     } catch (err) {
       hilog.error(DOMAIN, TAG, '[ExtensionLoader] readData: ' + JSON.stringify(err));
       return '';
+    }
+  }
+
+  getSshTerminalDiagnostics(sessionId: number): SshTerminalDiagnosticsSnapshot {
+    try {
+      return rdpnapi.getSshTerminalDiagnostics(sessionId) as SshTerminalDiagnosticsSnapshot;
+    } catch (err) {
+      hilog.warn(DOMAIN, TAG, '[ExtensionLoader] getSshTerminalDiagnostics: ' + JSON.stringify(err));
+      return {
+        supported: false,
+        sessionActive: false,
+        schemaVersion: 1,
+        sessionId,
+        sessionGeneration: 0,
+        channelId: 'pty',
+        inputEvents: 0,
+        inputBytes: 0,
+        nativeEnqueueEvents: 0,
+        writeAttempts: 0,
+        writeCompleteEvents: 0,
+        writeBytes: 0,
+        writeEagain: 0,
+        remoteReadEvents: 0,
+        remoteReadBytes: 0,
+        callbackAcceptedEvents: 0,
+        callbackAcceptedBytes: 0,
+        callbackQueueFull: 0,
+        inputDuplicate: 0,
+        inputLoss: 0,
+        inputReorder: 0,
+        ownerStallEvents: 0,
+        inputQueueDepth: 0,
+        inputQueueBytes: 0,
+        inputQueueMaxDepth: 0,
+        inputQueueMaxBytes: 0,
+        lastInputSequence: 0,
+        lastInputCapturedAtNs: 0,
+        lastNativeEnqueueAtNs: 0,
+        lastWriteAttemptAtNs: 0,
+        lastWriteCompleteAtNs: 0,
+        lastRemoteReadAtNs: 0,
+        maxInputToWriteAttemptNs: 0,
+        maxInputToWriteCompleteNs: 0
+      };
     }
   }
 

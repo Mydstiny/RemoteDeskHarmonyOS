@@ -2653,6 +2653,9 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
     session->generation = g_nextSessionGeneration.fetch_add(1, std::memory_order_acq_rel);
     session->ownerToken = g_nextSessionOwnerToken.fetch_add(1, std::memory_order_acq_rel);
     adapter->setSessionIdentity(static_cast<uint64_t>(sessionId));
+    if (auto* ssh = dynamic_cast<SshAdapter*>(adapter.get())) {
+        ssh->setSessionGeneration(session->generation.load(std::memory_order_acquire));
+    }
     if (auto* rustdesk = dynamic_cast<RustDeskBridge*>(adapter.get())) {
         session->generation = rustdesk->sessionGeneration();
         rustdesk->setSessionOwnerToken(session->ownerToken);
@@ -3335,6 +3338,7 @@ static bool RegisterSshConnectSession(SshConnectAsyncData& data) {
     data.session->generation = g_nextSessionGeneration.fetch_add(1, std::memory_order_acq_rel);
     data.session->ownerToken = g_nextSessionOwnerToken.fetch_add(1, std::memory_order_acq_rel);
     data.adapter->setSessionIdentity(static_cast<uint64_t>(data.sessionId));
+    data.adapter->setSessionGeneration(data.session->generation.load(std::memory_order_acquire));
     g_sessionRegistry.insertOrAssign(data.sessionId, data.session);
 
     const std::weak_ptr<SessionContext> weakSession = data.session;
@@ -5731,6 +5735,98 @@ napi_value NapiReadData(napi_env env, napi_callback_info info) {
 }
 
 /**
+ * NAPI: getSshTerminalDiagnostics(sessionId: number): object
+ *
+ * Exposes counters/timestamps for the SSH PTY pipeline only.  The snapshot
+ * deliberately contains no terminal bytes, command text, credentials, or
+ * rendered output.
+ */
+napi_value NapiGetSshTerminalDiagnostics(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value args[1] = {nullptr};
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+
+    int32_t sessionId = 0;
+    if (argc > 0) {
+        napi_get_value_int32(env, args[0], &sessionId);
+    }
+
+    SshTerminalDiagnosticsSnapshot snapshot;
+    bool supported = false;
+    bool sessionActive = false;
+    const auto it = g_sessionRegistry.find(sessionId);
+    if (it != g_sessionRegistry.end() && it->second && it->second->adapter) {
+        auto sshAdapter = std::dynamic_pointer_cast<SshAdapter>(it->second->adapter);
+        if (sshAdapter) {
+            snapshot = sshAdapter->terminalDiagnostics();
+            supported = true;
+            sessionActive = it->second->lifecycle.load(std::memory_order_acquire) ==
+                SessionContext::Lifecycle::Active;
+        }
+    }
+
+    napi_value result;
+    napi_create_object(env, &result);
+    SetObjectBool(env, result, "supported", supported);
+    SetObjectBool(env, result, "sessionActive", sessionActive);
+    SetObjectInt64(env, result, "schemaVersion", static_cast<int64_t>(snapshot.schemaVersion));
+    SetObjectInt64(env, result, "sessionId", static_cast<int64_t>(snapshot.sessionId));
+    SetObjectInt64(env, result, "sessionGeneration",
+                   static_cast<int64_t>(snapshot.sessionGeneration));
+    SetObjectString(env, result, "channelId", snapshot.channelId);
+    SetObjectInt64(env, result, "inputEvents", static_cast<int64_t>(snapshot.inputEvents));
+    SetObjectInt64(env, result, "inputBytes", static_cast<int64_t>(snapshot.inputBytes));
+    SetObjectInt64(env, result, "nativeEnqueueEvents",
+                   static_cast<int64_t>(snapshot.nativeEnqueueEvents));
+    SetObjectInt64(env, result, "writeAttempts", static_cast<int64_t>(snapshot.writeAttempts));
+    SetObjectInt64(env, result, "writeCompleteEvents",
+                   static_cast<int64_t>(snapshot.writeCompleteEvents));
+    SetObjectInt64(env, result, "writeBytes", static_cast<int64_t>(snapshot.writeBytes));
+    SetObjectInt64(env, result, "writeEagain", static_cast<int64_t>(snapshot.writeEagain));
+    SetObjectInt64(env, result, "remoteReadEvents",
+                   static_cast<int64_t>(snapshot.remoteReadEvents));
+    SetObjectInt64(env, result, "remoteReadBytes",
+                   static_cast<int64_t>(snapshot.remoteReadBytes));
+    SetObjectInt64(env, result, "callbackAcceptedEvents",
+                   static_cast<int64_t>(snapshot.callbackAcceptedEvents));
+    SetObjectInt64(env, result, "callbackAcceptedBytes",
+                   static_cast<int64_t>(snapshot.callbackAcceptedBytes));
+    SetObjectInt64(env, result, "callbackQueueFull",
+                   static_cast<int64_t>(snapshot.callbackQueueFull));
+    SetObjectInt64(env, result, "inputDuplicate",
+                   static_cast<int64_t>(snapshot.inputDuplicate));
+    SetObjectInt64(env, result, "inputLoss", static_cast<int64_t>(snapshot.inputLoss));
+    SetObjectInt64(env, result, "inputReorder", static_cast<int64_t>(snapshot.inputReorder));
+    SetObjectInt64(env, result, "ownerStallEvents",
+                   static_cast<int64_t>(snapshot.ownerStallEvents));
+    SetObjectInt64(env, result, "inputQueueDepth",
+                   static_cast<int64_t>(snapshot.inputQueueDepth));
+    SetObjectInt64(env, result, "inputQueueBytes",
+                   static_cast<int64_t>(snapshot.inputQueueBytes));
+    SetObjectInt64(env, result, "inputQueueMaxDepth",
+                   static_cast<int64_t>(snapshot.inputQueueMaxDepth));
+    SetObjectInt64(env, result, "inputQueueMaxBytes",
+                   static_cast<int64_t>(snapshot.inputQueueMaxBytes));
+    SetObjectInt64(env, result, "lastInputSequence",
+                   static_cast<int64_t>(snapshot.lastInputSequence));
+    SetObjectInt64(env, result, "lastInputCapturedAtNs",
+                   static_cast<int64_t>(snapshot.lastInputCapturedAtNs));
+    SetObjectInt64(env, result, "lastNativeEnqueueAtNs",
+                   static_cast<int64_t>(snapshot.lastNativeEnqueueAtNs));
+    SetObjectInt64(env, result, "lastWriteAttemptAtNs",
+                   static_cast<int64_t>(snapshot.lastWriteAttemptAtNs));
+    SetObjectInt64(env, result, "lastWriteCompleteAtNs",
+                   static_cast<int64_t>(snapshot.lastWriteCompleteAtNs));
+    SetObjectInt64(env, result, "lastRemoteReadAtNs",
+                   static_cast<int64_t>(snapshot.lastRemoteReadAtNs));
+    SetObjectInt64(env, result, "maxInputToWriteAttemptNs",
+                   static_cast<int64_t>(snapshot.maxInputToWriteAttemptNs));
+    SetObjectInt64(env, result, "maxInputToWriteCompleteNs",
+                   static_cast<int64_t>(snapshot.maxInputToWriteCompleteNs));
+    return result;
+}
+
+/**
  * NAPI: execSshCommand(sessionId: number, command: string, timeoutMs?: number): object
  *
  * 在独立 channel 执行命令，返回原始 stdout/stderr、退出码和错误码。
@@ -7074,6 +7170,10 @@ napi_value ExtensionLoaderNapi::Init(napi_env env, napi_value exports) {
     napi_create_function(env, "readData", NAPI_AUTO_LENGTH,
                          NapiReadData, nullptr, &fn);
     napi_set_named_property(env, exports, "readData", fn);
+
+    napi_create_function(env, "getSshTerminalDiagnostics", NAPI_AUTO_LENGTH,
+                         NapiGetSshTerminalDiagnostics, nullptr, &fn);
+    napi_set_named_property(env, exports, "getSshTerminalDiagnostics", fn);
 
     napi_create_function(env, "execSshCommand", NAPI_AUTO_LENGTH,
                          NapiExecSshCommand, nullptr, &fn);

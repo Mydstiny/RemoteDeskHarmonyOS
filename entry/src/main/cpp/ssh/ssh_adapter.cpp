@@ -114,6 +114,18 @@ std::string SshAdapter::protocolVersion() {
     return SSH_ADAPTER_VERSION;
 }
 
+void SshAdapter::setSessionIdentity(uint64_t sessionId) {
+    diagnostics_.setSessionIdentity(sessionId);
+}
+
+void SshAdapter::setSessionGeneration(uint64_t generation) {
+    diagnostics_.setSessionGeneration(generation);
+}
+
+SshTerminalDiagnosticsSnapshot SshAdapter::terminalDiagnostics() const {
+    return diagnostics_.snapshot();
+}
+
 // ============================================================
 // 内部辅助方法
 // ============================================================
@@ -1467,6 +1479,9 @@ void SshAdapter::setConnectionStateCallback(ConnectionStateCallback callback) {
 
 int SshAdapter::sendData(const uint8_t* data, size_t len) {
     if (data == nullptr && len > 0) { return ERR_SSH_WRITE_FAILED; }
+    if (len == 0) { return 0; }
+    const uint64_t sequence = diagnostics_.beginInput(len);
+    diagnostics_.recordNativeEnqueue(sequence);
     std::lock_guard<std::mutex> sessionLock(sessionMutex_);
     if (!channel_ || sockFd_ < 0 ||
         state_.load(std::memory_order_acquire) != ConnectionState::CONNECTED) {
@@ -1474,9 +1489,11 @@ int SshAdapter::sendData(const uint8_t* data, size_t len) {
     }
     ssize_t total = 0;
     while (total < static_cast<ssize_t>(len)) {
+        diagnostics_.recordWriteAttempt(sequence);
         ssize_t rc = libssh2_channel_write(channel_,
             reinterpret_cast<const char*>(data) + total, len - total);
         if (rc == LIBSSH2_ERROR_EAGAIN) {
+            diagnostics_.recordWriteEagain();
             if (waitSocket(1, 1) != 0) {
                 return ERR_SSH_WRITE_FAILED;
             }
@@ -1488,6 +1505,7 @@ int SshAdapter::sendData(const uint8_t* data, size_t len) {
         }
         total += rc;
     }
+    diagnostics_.recordWriteComplete(sequence, static_cast<size_t>(total));
     return static_cast<int>(total);
 }
 
@@ -1710,6 +1728,7 @@ int SshAdapter::readData(uint8_t* buf, size_t bufSize) {
             }
         } else {
             result = static_cast<int>(n);
+            diagnostics_.recordRemoteBytesRead(static_cast<size_t>(n));
         }
     }
     if (eof) {
@@ -1903,6 +1922,7 @@ void SshAdapter::readerLoop() {
         }
 
         if (gotData && !accumulated.empty()) {
+            diagnostics_.recordRemoteBytesRead(accumulated.size());
             DataCallback cb;
             {
                 std::lock_guard<std::mutex> lk(callbackMutex_);
@@ -1911,6 +1931,7 @@ void SshAdapter::readerLoop() {
                 }
             }
             if (cb) {
+                diagnostics_.recordCallbackAccepted(accumulated.size());
                 try { cb(accumulated); } catch (...) { /* 静默, 不中断 reader */ }
             }
         }

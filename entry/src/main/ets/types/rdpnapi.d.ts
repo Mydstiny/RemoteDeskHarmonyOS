@@ -80,6 +80,7 @@ declare module 'librdpnapi.so' {
   export function presentRdpCachedFrame(sessionId: number): boolean;
 
   export function readData(sessionId: number): string;
+  export function getSshTerminalDiagnostics(sessionId: number): SshTerminalDiagnosticsSnapshot;
   export function execSshCommand(sessionId: number, command: string,
     timeoutMs?: number): SshCommandResult;
   export function execSshCommandAsync(sessionId: number, command: string,
@@ -548,6 +549,43 @@ export interface SftpWriteAsyncResult {
 
 export interface SftpMutationAsyncResult {
   errorCode: number;
+}
+
+export interface SshTerminalDiagnosticsSnapshot {
+  supported: boolean;
+  sessionActive: boolean;
+  schemaVersion: number;
+  sessionId: number;
+  sessionGeneration: number;
+  channelId: string;
+  inputEvents: number;
+  inputBytes: number;
+  nativeEnqueueEvents: number;
+  writeAttempts: number;
+  writeCompleteEvents: number;
+  writeBytes: number;
+  writeEagain: number;
+  remoteReadEvents: number;
+  remoteReadBytes: number;
+  callbackAcceptedEvents: number;
+  callbackAcceptedBytes: number;
+  callbackQueueFull: number;
+  inputDuplicate: number;
+  inputLoss: number;
+  inputReorder: number;
+  ownerStallEvents: number;
+  inputQueueDepth: number;
+  inputQueueBytes: number;
+  inputQueueMaxDepth: number;
+  inputQueueMaxBytes: number;
+  lastInputSequence: number;
+  lastInputCapturedAtNs: number;
+  lastNativeEnqueueAtNs: number;
+  lastWriteAttemptAtNs: number;
+  lastWriteCompleteAtNs: number;
+  lastRemoteReadAtNs: number;
+  maxInputToWriteAttemptNs: number;
+  maxInputToWriteCompleteNs: number;
 }
 
 export interface SshCommandResult {

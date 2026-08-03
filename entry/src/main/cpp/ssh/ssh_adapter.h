@@ -8,6 +8,7 @@
 #define SSH_ADAPTER_H
 
 #include "protocol_adapter.h"
+#include "ssh_terminal_diagnostics.h"
 #include <libssh2.h>
 #include <libssh2_sftp.h>
 #include <string>
@@ -100,6 +101,8 @@ public:
     void setVideoCallback(VideoFrameCallback callback) override;
     void setAudioCallback(AudioDataCallback callback) override;
     void setConnectionStateCallback(ConnectionStateCallback callback) override;
+    void setSessionIdentity(uint64_t sessionId) override;
+    void setSessionGeneration(uint64_t generation);
 
     bool supportsNatTraversal() override { return false; }
     bool supportsFileTransfer() override { return true; }
@@ -120,6 +123,9 @@ public:
 
     /** 获取 socket fd (用于 select/poll 轮询) */
     int getSocketFd() const;
+
+    /** 返回不含终端 payload 的 SSH 输入/输出诊断快照。 */
+    SshTerminalDiagnosticsSnapshot terminalDiagnostics() const;
 
     // ---- 认证方法 (供 NAPI 调用) ----
 
@@ -224,6 +230,7 @@ private:
     mutable std::mutex sessionMutex_;           // 串行化 libssh2 session/channel 操作
     std::recursive_mutex lifecycleMutex_;       // 串行化 connect/disconnect 生命周期
     std::atomic<bool> connectCancelRequested_{false};
+    SshTerminalDiagnostics diagnostics_;
 
     /** 后台循环: select(100ms) → libssh2_channel_read → cb(bytes) */
     void readerLoop();
