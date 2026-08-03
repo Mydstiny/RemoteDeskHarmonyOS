@@ -3,10 +3,10 @@
   "task": "rustdesk-complete-repair",
   "branch": "codex/rustdesk-complete-repair",
   "base": "34946adbc",
-  "head": "8f45bbf37",
+  "head": "bb2352fcc",
   "phase": "vnc-v3-stage-d-follow-up",
   "status": "active",
-  "next": "Stage D follow-up checkpoint 8f45bbf37 implements endpoint deletion/rotation invalidation and backup/cloud trust boundaries; reuse the existing reviewer once before entering the next VNC segment.",
+  "next": "Stage D follow-up checkpoint bb2352fcc makes marker persistence fail-closed and binds invalidation to the physical store; reuse the existing reviewer once before entering the next VNC segment.",
   "blockers": [
     "hdc list targets and hdc shell return Connect server failed; no current hilog evidence.",
     "ohosTest@OhosTestCompileArkTS is not registered (00306054); ArkTS tests have compile/build evidence only.",
@@ -35,14 +35,14 @@
       "entry/src/test/VncTrustInvalidationPolicy.test.ets",
       "entry/src/test/VncTrustService.test.ets"
     ],
-    "reason": "Stage D follow-up checkpoint 8f45bbf37 awaits the existing independent read-only reviewer; reuse the task once for this VNC-only increment."
+    "reason": "Stage D follow-up checkpoint bb2352fcc awaits the existing independent read-only reviewer; reuse the task once for this VNC-only increment."
   },
   "lastVerification": {
-    "rdp_native_tests": "249-pass-0-fail-loopback-fixtures-host-socket-8f45bbf37-2026-08-02",
-    "default@OhosTestCompileArkTS": "pass-after-8f45bbf37-2026-08-02",
-    "assembleHap": "pass-after-8f45bbf37-2026-08-02",
+    "rdp_native_tests": "249-pass-0-fail-loopback-fixtures-host-socket-bb2352fcc-2026-08-02",
+    "default@OhosTestCompileArkTS": "pass-after-bb2352fcc-2026-08-02",
+    "assembleHap": "pass-after-bb2352fcc-2026-08-02",
     "ohosTest@OhosTestCompileArkTS": "blocked-task-00306054-2026-08-02",
-    "diffCheck": "pass-after-8f45bbf37-2026-08-02"
+    "diffCheck": "pass-after-bb2352fcc-2026-08-02"
   },
   "archives": [
     "docs/codex/archive/2026-08/README.md",

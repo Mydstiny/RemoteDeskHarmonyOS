@@ -7,8 +7,8 @@ This file is the compact startup resume card. Historical checkpoints remain in
 
 - Task: `rustdesk-complete-repair` (active branch retained; current scope is VNC V3 only)
 - Branch: `codex/rustdesk-complete-repair`
-- Checkpoint: `8f45bbf37`, based on `main@34946adbc`; branch is ahead by 37 and not behind.
-- Phase: VNC V3 stage D follow-up; endpoint deletion/rotation invalidation and backup/cloud trust boundaries are implemented and awaiting the existing reviewer.
+- Checkpoint: `bb2352fcc`, based on `main@34946adbc`; branch is ahead by 41 and not behind.
+- Phase: VNC V3 stage D follow-up; endpoint invalidation persistence is fail-closed and the new checkpoint awaits the existing reviewer.
 - Worktree: clean after the code checkpoint. Do not stage unrelated changes.
 
 ## Stage A Result
@@ -58,17 +58,20 @@ This file is the compact startup resume card. Historical checkpoints remain in
   trust rows as unconfirmed candidates, and makes backup/cloud manifests explicit
   that VNC candidates may be carried only in full mode while local markers never
   cross the device boundary. New policy tests are registered in both suites.
+- Checkpoint `bb2352fcc` closes the follow-up review findings: Preferences marker
+  writes now return explicit outcomes, invalidation uses a journal/marker/journal-
+  clear commit contract, stale journals fail closed on restart, store-bound marker
+  removal is explicit, and full-backup restore tests keep local markers device-local.
 - Keep every VNC caller fail-closed when the probe, Sheet lifecycle, owner
   binding, or expected-pin handoff is missing or stale.
 
 ## Verification
 
 - `rdp_native_tests`: 249 passed, 0 failed with host socket permission on
-  `8f45bbf37`, 2026-08-02. The sandbox-only run was terminated with exit 137
-  before producing test output; it is not used as final evidence.
-- `default@OhosTestCompileArkTS`: passed after `8f45bbf37` on 2026-08-02.
-- `assembleHap`: passed after `8f45bbf37` on 2026-08-02.
-- `git diff --check`: passed for `HEAD^..HEAD` after `8f45bbf37` on 2026-08-02.
+  `bb2352fcc`, 2026-08-02.
+- `default@OhosTestCompileArkTS`: passed after `bb2352fcc` on 2026-08-02.
+- `assembleHap`: passed after `bb2352fcc` on 2026-08-02.
+- `git diff --check`: passed after `bb2352fcc` on 2026-08-02.
 - `ohosTest@OhosTestCompileArkTS`: unavailable; task is not registered
   (`00306054`). New ArkTS tests therefore have compile/build evidence only.
 
@@ -86,13 +89,13 @@ This file is the compact startup resume card. Historical checkpoints remain in
   only until `ohosTest` is registered and a real device is available; no UI or
   endpoint runtime evidence is claimed. Stage D trust migration, manager,
   invalidation and backup policy have host/build coverage but no live
-  CloudStore/device evidence; the follow-up remains pending independent review.
+  CloudStore/device evidence; the `bb2352fcc` follow-up remains pending independent review.
 
 ## Review Protocol
 
 - Machine state: `docs/codex/STATE.json`.
 - Receipts: `docs/codex/REVIEW_RECEIPTS.jsonl`.
 - `scripts/sync_workspace.sh status` should report RESUME_REVIEW for the
-  `8f45bbf37` Stage D follow-up until the existing reviewer returns a receipt.
+  `bb2352fcc` Stage D follow-up until the existing reviewer returns a receipt.
 - Reuse the existing independent review session and do not redispatch duplicate
   messages for the same segment.
