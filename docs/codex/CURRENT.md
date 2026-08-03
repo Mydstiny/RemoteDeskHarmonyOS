@@ -10,15 +10,14 @@ This file is the compact startup resume card. Historical checkpoints remain in
 - Checkpoint: `5885588`, based on `main@34946adbc`; branch is ahead by 76 and not behind.
 - Phase: VNC V3 stage F follow-up renderer Surface gate. TCP reachability is local-only; the VNC Gateway UI invokes a bounded native mode12/TLS/RFB probe and remains fail-closed on missing trust, cancellation, invalid handoff, or an unavailable page Surface.
 - Worktree: VNC Surface gate is committed and awaiting the existing VNC-only incremental review. Preserve unrelated user changes.
-
 ## Stage A Result
 
 - Frozen VNC endpoint/trust owner, certificate preflight, probe lifecycle,
   host defaults, shared-wheel authority, and one-shot pin policies.
 - Stage A review: `PASS` at `73334a260` by independent review session
   `019fc333-6789-7633-bf6f-3fea1cb2ad4d`.
-- Review scope is limited to the 12 VNC policy/test files declared in
-  `STATE.json`; no RDP, RustDesk, SSH, renderer, or video-performance files.
+- Review scope is limited to VNC policy/test files declared in `STATE.json`;
+  no RDP, RustDesk, SSH, renderer, or video-performance files.
 
 ## Stage B Result
 
@@ -27,9 +26,8 @@ This file is the compact startup resume card. Historical checkpoints remain in
 - Verified async DNS, unified DNS/TCP/TLS deadline, TLS cancellation/error
   codes, bounded certificate metadata, worker-only teardown, N-API cleanup
   fencing, resolver exception boundaries, and trickle-handshake regression.
-- Remaining evidence gaps are OHOS NAPI runtime teardown, `ohosTest`, `hdc`,
-  real direct/Repeater endpoints, and later Sheet/TrustService integration.
-
+- Remaining evidence gaps are OHOS NAPI teardown, `ohosTest`, `hdc`, real
+  direct/Repeater endpoints, and later Sheet/TrustService integration.
 ## Next
 
 - Stage C first segment: pure certificate Sheet action/lifecycle policy and
@@ -91,10 +89,8 @@ This file is the compact startup resume card. Historical checkpoints remain in
   monotonic attempt generation, binds Repeater target changes, revalidates the
   live endpoint before saving pending certificate trust, and preserves every
   stable `E-VNC-CERT-*` error code. Scope remains VNC-only.
-- Checkpoint `5885588` gates VNC renderer startup on a ready, non-empty current
-  SurfaceId before and after teardown; transient Surface loss resets the VNC
-  connect attempt and polls for a replacement instead of invoking the native
-  Pbuffer fallback. The policy and both test registrations remain VNC-only.
+- Checkpoint `5885588` gates VNC renderer startup on a ready current SurfaceId;
+  transient loss resets the connect attempt and polls instead of using Pbuffer.
 - Keep every VNC caller fail-closed when the probe, Sheet lifecycle, owner
   binding, or expected-pin handoff is missing or stale.
 ## Verification
@@ -120,6 +116,5 @@ This file is the compact startup resume card. Historical checkpoints remain in
 
 ## Review Protocol
 - Machine state: `docs/codex/STATE.json`; receipts: `docs/codex/REVIEW_RECEIPTS.jsonl`.
-- `scripts/sync_workspace.sh status` records the existing review task in
-  RESUME_REVIEW for the `ef4c33a..5885588` VNC-only increment; keep active work
-  VNC-only and proceed to Stage G evidence when hdc is available.
+- `scripts/sync_workspace.sh status` records RESUME_REVIEW for the
+  `ef4c33a..5885588` VNC-only increment; keep work VNC-only.
