@@ -31,8 +31,8 @@
   },
   "lastVerification": {
     "rdp_native_tests": "251-pass-0-fail-loopback-fixtures-host-socket-6ad115f-2026-08-03",
-    "default@OhosTestCompileArkTS": "pass-after-9c96b33-2026-08-03",
-    "assembleHap": "pass-after-9c96b33-2026-08-03",
+    "default@OhosTestCompileArkTS": "pass-after-6ad115f-2026-08-03",
+    "assembleHap": "pass-after-6ad115f-2026-08-03",
     "ohosTest@OhosTestCompileArkTS": "blocked-task-00306054-2026-08-02",
     "diffCheck": "pass-after-6ad115f-2026-08-03"
   },
