@@ -398,17 +398,16 @@ export struct VncSettingsSheet {
   }
 
   @Builder private defaultGatewayChoices() {
-    const selectable: VncGatewayView[] = this.selectableGateways();
     Column() {
       Text('默认 Gateway').fontSize(12).fontColor(this.pal().text3).margin({ top: 2, bottom: 7 })
-      if (selectable.length === 0) {
+      if (this.selectableGateways().length === 0) {
         Text('当前账号没有可用的 mode12 Gateway；请先添加并启用 Gateway。')
           .fontSize(11).fontColor(this.pal().danger).lineHeight(17).margin({ bottom: 8 })
         Button('打开 Gateway 管理').width('100%').height(38).borderRadius(9)
           .backgroundColor(this.pal().surface).fontColor(this.accentColor)
           .onClick((): void => { this.onOpenGatewayManager(); })
       } else {
-        ForEach(selectable, (gateway: VncGatewayView) => {
+        ForEach(this.selectableGateways(), (gateway: VncGatewayView) => {
           Row() {
             Column() {
               Text(gateway.label === '' ? gateway.host : gateway.label)
