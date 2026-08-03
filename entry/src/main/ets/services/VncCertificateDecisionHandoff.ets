@@ -20,7 +20,16 @@ function isPositiveGeneration(value: number): boolean {
 
 /** Process-memory, one-shot pin handoff. It is never serialized or synced. */
 export class VncCertificateDecisionHandoff {
+  private static instance: VncCertificateDecisionHandoff;
   private pending: PendingVncCertificateDecision[] = [];
+
+  /** Shared process-memory handoff used when the preflight Sheet owns routing. */
+  static getInstance(): VncCertificateDecisionHandoff {
+    if (!VncCertificateDecisionHandoff.instance) {
+      VncCertificateDecisionHandoff.instance = new VncCertificateDecisionHandoff();
+    }
+    return VncCertificateDecisionHandoff.instance;
+  }
 
   put(userId: string, attemptId: string, generation: number,
     endpointBindingFingerprint: string, fingerprintSha256: string,

@@ -445,6 +445,10 @@ const REMOTE_CURSOR_PIXELMAP_RETIRE_GRACE_MS = REMOTE_CURSOR_RENDER_FRAME_MS * 2
 const REMOTE_CURSOR_PIXELMAP_RETIRE_RETRY_MS = REMOTE_CURSOR_RENDER_FRAME_MS;
 const REMOTE_CURSOR_MAX_RETIRED_PIXELMAPS = 8;
 const VNC_CERTIFICATE_PROBE_TIMEOUT_MS = 10000;
+// RDP keeps its certificate Sheet visible briefly before starting the native
+// probe. VNC needs the same settle window because its preflight starts during
+// RemoteDesktop.aboutToAppear rather than from an already-rendered list page.
+const VNC_CERTIFICATE_SHEET_SETTLE_MS = 160;
 const RUSTDESK_FIRST_FRAME_TIMEOUT_MS = 15000;
 const REMOTE_GEOMETRY_SYNC_MS = 500;
 const REMOTE_DESKTOP_DISAPPEAR_BACKGROUND_SIGNAL_WAIT_MS = 500;
@@ -836,7 +840,9 @@ struct RemoteDesktop {
   private vncCertificateEndpoint: VncTlsEndpointResolution | null = null;
   private vncCertificateTrustOwner: VncTrustEndpoint | null = null;
   private vncCertificateProbeIdentity: VncCertificateProbeIdentity | null = null;
-  private vncCertificateHandoff: VncCertificateDecisionHandoff = new VncCertificateDecisionHandoff();
+  private vncCertificateHandoff: VncCertificateDecisionHandoff =
+    VncCertificateDecisionHandoff.getInstance();
+  private vncCertificateHandoffGeneration: number = 0;
   private vncCertificateLastAttempt: VncCertificateSheetAttempt | null = null;
   private vncCertificateAccountOwnerScopeId: string = '';
   private vncCertificateAccountStoreIdentityFingerprint: string = '';
@@ -2545,6 +2551,23 @@ struct RemoteDesktop {
     return warnings.join('；');
   }
 
+  private vncCertificateOwnerLabel(): string {
+    if (this.vncCertificateEndpoint !== null &&
+      this.vncCertificateEndpoint.endpointOwnerType === 'gateway') {
+      return 'VNC Gateway 证书';
+    }
+    return 'VNC 主机证书';
+  }
+
+  private vncCertificateTransportLabel(): string {
+    const transport: string = this.vncCertificateEndpoint === null
+      ? '' : this.vncCertificateEndpoint.transport;
+    if (transport === 'ultravnc_repeater') { return 'UltraVNC Repeater'; }
+    if (transport === 'websocket_gateway') { return 'WebSocket Gateway'; }
+    if (transport === 'direct_tcp') { return 'Direct TCP'; }
+    return transport === '' ? '未知传输' : transport;
+  }
+
   private setVncCertificateSheetState(state: VncCertificatePreflightState): void {
     this.vncCertificateState = state;
     this.showVncCertificateSheet = state !== VncCertificatePreflightState.IDLE &&
@@ -2589,6 +2612,25 @@ struct RemoteDesktop {
         this.vncCertificateTrustOwner.storeIdentityFingerprint;
       this.vncCertificateAccountGeneration = scope.generation;
     }
+    if (this.vncCertificateHandoffGeneration > 0 && this.vncCertificateEndpoint.ok &&
+      this.vncCertificateTrustOwner !== null) {
+      const scope = AccountSessionCoordinator.getInstance().currentScope();
+      const handedOffFingerprint: string = this.vncCertificateHandoff.take(
+        host.userId,
+        this.vncCertificateAttemptId(host),
+        this.vncCertificateHandoffGeneration,
+        this.vncCertificateTrustOwner.endpointBindingFingerprint,
+        scope.ownerScopeId.trim(),
+        this.vncCertificateTrustOwner.storeIdentityFingerprint,
+        scope.generation);
+      this.vncCertificateHandoffGeneration = 0;
+      if (isVncSha256Fingerprint(handedOffFingerprint)) {
+        this.vncCertificateExpectedFingerprint = handedOffFingerprint;
+        this.vncCertificateState = VncCertificatePreflightState.TRUSTED_MATCH;
+        this.finishVncCertificatePreflight();
+        return;
+      }
+    }
     if (!this.vncCertificateEndpoint.ok) {
       this.vncCertificateState = VncCertificatePreflightState.ERROR;
       this.vncCertificateError = this.vncCertificateEndpoint.errorCode || 'E-VNC-ENDPOINT-INVALID';
@@ -2600,11 +2642,25 @@ struct RemoteDesktop {
       this.finishVncCertificatePreflight();
       return;
     }
-    this.vncCertificateState = VncCertificatePreflightState.PROBING;
-    this.setVncCertificateSheetState(VncCertificatePreflightState.PROBING);
     const generation: number = this.vncCertificateProbeGeneration;
     const connectionGeneration: number = this.vncCertificateConnectionAttemptGeneration;
     const identity: VncCertificateProbeIdentity = this.vncCertificateProbeIdentity;
+    this.vncCertificateState = VncCertificatePreflightState.PROBING;
+    this.setVncCertificateSheetState(VncCertificatePreflightState.PROBING);
+    // Let the page attach the bindSheet host before the native Promise can
+    // resolve and transition through TRUSTED_MATCH/ERROR. This mirrors the
+    // RDP preflight's visible-first lifecycle and prevents a fast probe from
+    // being swallowed during the route transition.
+    await new Promise<void>((resolve): void => {
+      setTimeout(resolve, VNC_CERTIFICATE_SHEET_SETTLE_MS);
+    });
+    if (this.vncCertificateProbeGeneration !== generation ||
+      this.vncCertificateConnectionAttemptGeneration !== connectionGeneration ||
+      this.vncCertificateProbeIdentity !== identity ||
+      !this.vncCertificateAccountBindingIsCurrent(identity) ||
+      !this.vncCertificateLiveBindingIsCurrent(identity)) {
+      return;
+    }
     try {
       const probe = this.loader.probeVncCertificateAsync(
         this.vncCertificateEndpoint.connectHost,
@@ -2699,6 +2755,7 @@ struct RemoteDesktop {
     VncSessionCredentialHandoff.getInstance().clearAll();
     this.vncCertificatePendingRoute = false;
     this.vncCertificateExpectedFingerprint = '';
+    this.vncCertificateHandoffGeneration = 0;
     this.vncCertificateEndpoint = null;
     this.vncCertificateTrustOwner = null;
     this.vncCertificateProbeIdentity = null;
@@ -5824,6 +5881,9 @@ struct RemoteDesktop {
       const p: Record<string, Object> = params as Record<string, Object>;
       const vncHostId: string = (p['vncHostId'] as string) || '';
       if (vncHostId !== '') {
+        const handoffGeneration: number = p['vncCertificateHandoffGeneration'] as number;
+        this.vncCertificateHandoffGeneration = Number.isSafeInteger(handoffGeneration) &&
+          handoffGeneration > 0 ? handoffGeneration : 0;
         const context: common.Context = getContext(this) as common.Context;
         this.vncSettings.init(context);
         this.vncHosts.init(context);
@@ -5879,7 +5939,15 @@ struct RemoteDesktop {
           this.vncAuthResolved = true;
           this.restoreFromBackground();
         } else {
-          void this.beginVncCertificatePreflight();
+          // Start after the first page frame so the certificate Sheet's
+          // bindSheet host is mounted before the preflight state changes.
+          const pendingVncHostId: string = vncHost.id;
+          setTimeout((): void => {
+            if (this.pendingVncHost !== null && this.pendingVncHost.id === pendingVncHostId &&
+              !this.connected && !this.cleanupStarted) {
+              void this.beginVncCertificatePreflight();
+            }
+          }, 0);
         }
         return;
       }
@@ -8740,22 +8808,36 @@ struct RemoteDesktop {
     Column() {
       Row() {
         SymbolGlyph(this.vncCertificateState === VncCertificatePreflightState.ERROR ?
-          $r('sys.symbol.exclamationmark_triangle') : $r('sys.symbol.lock'))
-          .fontSize(28)
+          $r('sys.symbol.exclamationmark_triangle') : $r('sys.symbol.lock_shield_fill'))
+          .fontSize(42)
           .fontColor([this.vncCertificateState === VncCertificatePreflightState.ERROR ?
-            '#F0B429' : this.accentColor])
-          .margin({ right: 10 })
+            '#F0B429' : '#A87300'])
+          .margin({ right: 16 })
         Column() {
           Text(this.vncCertificateState === VncCertificatePreflightState.CERTIFICATE_CHANGED ?
-            'VNC TLS 证书已变化' : '确认 VNC TLS 证书')
-            .fontSize(20).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
+            'VNC TLS 证书已变化' : this.vncCertificateOwnerLabel())
+            .fontSize(19).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
           Text(this.pendingVncHost ? this.pendingVncHost.label : 'VNC endpoint')
             .fontSize(13).fontColor(this.pal().text2).margin({ top: 4 })
+          Text(this.vncCertificateTransportLabel())
+            .fontSize(11).fontColor(this.pal().text3).margin({ top: 3 })
         }.alignItems(HorizontalAlign.Start).layoutWeight(1)
       }.width('100%').margin({ bottom: 12 })
       if (this.vncCertificateState === VncCertificatePreflightState.PROBING) {
-        LoadingProgress().width(34).height(34).color(this.accentColor).margin({ top: 18, bottom: 14 })
-        Text('正在检查 VNC TLS 证书，不会发送 RFB、密码或剪贴板数据。')
+        Row() {
+          LoadingProgress().width(32).height(32).color(this.accentColor)
+          Text('正在检查 VNC TLS 证书…')
+            .fontSize(16).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
+            .margin({ left: 12 }).layoutWeight(1)
+        }.width('100%').margin({ bottom: 12 })
+        Text('不会发送 RFB、密码或剪贴板数据。')
+          .fontSize(13).fontColor(this.pal().text2).lineHeight(19).width('100%')
+      } else if (this.vncCertificateState === VncCertificatePreflightState.ERROR &&
+        this.vncCertificateInfo === null) {
+        Text('VNC TLS 证书检查失败')
+          .fontSize(16).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
+          .width('100%').margin({ bottom: 8 })
+        Text(this.vncCertificateError || '无法读取 VNC endpoint 证书')
           .fontSize(13).fontColor(this.pal().text2).lineHeight(19).width('100%')
       } else if (this.vncCertificateInfo !== null) {
         Text(this.vncCertificateState === VncCertificatePreflightState.CERTIFICATE_CHANGED ?
@@ -8763,6 +8845,10 @@ struct RemoteDesktop {
           '这是该 endpoint 的首次证书确认。仅精确 SHA-256 指纹会用于连接校验。')
           .fontSize(13).fontColor(this.pal().text2).lineHeight(19).width('100%')
         Column({ space: 6 }) {
+          Text('endpoint  ' + (this.vncCertificateEndpoint === null ? '未知' :
+            this.vncCertificateEndpoint.connectHost + ':' +
+            this.vncCertificateEndpoint.connectPort.toString()))
+            .fontSize(12).fontColor(this.pal().text).width('100%')
           Text('CN  ' + (this.vncCertificateInfo.commonName || '未提供')).fontSize(12)
             .fontColor(this.pal().text).width('100%')
           Text('颁发者  ' + (this.vncCertificateInfo.issuer || '未提供')).fontSize(12)
@@ -8790,7 +8876,7 @@ struct RemoteDesktop {
             })
         }.width('100%').padding({ top: 12, bottom: 12 })
       }
-      if (this.vncCertificateError !== '') {
+      if (this.vncCertificateError !== '' && this.vncCertificateInfo !== null) {
         Text('检查失败：' + this.vncCertificateError).fontSize(12)
           .fontColor(this.pal().danger).lineHeight(17).width('100%').margin({ bottom: 10 })
       }
@@ -8819,11 +8905,15 @@ struct RemoteDesktop {
             })
         }
       }.width('100%').margin({ top: 10 })
-    }.width('100%').constraintSize({ maxWidth: 560 })
+    }.width('100%').constraintSize({ maxWidth: 760 })
       .padding({ left: 22, right: 22, top: 20, bottom: 22 })
-      .backgroundColor(this.pal().bg).borderRadius(20)
+      .backgroundColor(this.pal().bg)
+      .backgroundBlurStyle(BlurStyle.Regular)
+      .borderRadius(this.breakpoint === 'sm' ?
+        { topLeft: 20, topRight: 20, bottomLeft: 0, bottomRight: 0 } : 20)
       .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
       .shadow({ radius: 24, color: 'rgba(0,0,0,0.24)', offsetY: 8 })
+      .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.BOTTOM])
   }
 
   @Builder vncPasswordSheetBuilder() {
