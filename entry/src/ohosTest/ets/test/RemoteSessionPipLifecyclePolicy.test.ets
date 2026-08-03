@@ -8,6 +8,7 @@ import {
   hasRemoteSessionPipVideo,
   hasRdpRemoteSessionPipFrame,
   hasRustDeskPresentedFrame,
+  hasVncPresentedFrame,
   shouldPrepareRemoteSessionPip,
   shouldCreatePreauthenticatedRustDeskPipeline,
   resolveRemoteSessionPipLifecycle,
@@ -60,6 +61,12 @@ export default function remoteSessionPipLifecyclePolicyTest(): void {
       expect(hasRustDeskPresentedFrame(1, 0, 1920, 1080)).assertFalse();
       expect(hasRustDeskPresentedFrame(1, 1, 0, 1080)).assertFalse();
       expect(hasRustDeskPresentedFrame(1, 1, 1920, 1080)).assertTrue();
+    });
+
+    it('requires_a_presented_vnc_frame_before_pip_transfer', 0, (): void => {
+      expect(hasVncPresentedFrame(0, 1920, 1080)).assertFalse();
+      expect(hasVncPresentedFrame(1, 0, 1080)).assertFalse();
+      expect(hasVncPresentedFrame(1, 1920, 1080)).assertTrue();
     });
 
     it('creates_the_pre_authenticated_pipeline_only_once', 0, (): void => {

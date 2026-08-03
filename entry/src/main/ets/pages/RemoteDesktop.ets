@@ -145,6 +145,7 @@ import {
   hasRemoteSessionPipVideo,
   hasRdpRemoteSessionPipFrame,
   hasRustDeskPresentedFrame,
+  hasVncPresentedFrame,
   shouldPrepareRemoteSessionPip,
   shouldCreatePreauthenticatedRustDeskPipeline,
   resolveRemoteSessionPipContentSize,
@@ -5130,14 +5131,15 @@ struct RemoteDesktop {
     let sourceWidth: number = 0;
     let sourceHeight: number = 0;
     const isRustDesk: boolean = this.pendingHost?.protocol === 'rustdesk';
+    const isVnc: boolean = this.pendingHost?.protocol === 'vnc';
 
     // The first RustDesk request can be an adaptive display size (for example
     // 742x1600) while the peer's first real frame is 2560x1600. Prefer the
     // observed media dimensions so PIP does not lock onto the request ratio.
-    if (isRustDesk && this.sessionId > 0) {
+    if ((isRustDesk || isVnc) && this.sessionId > 0) {
       try {
-        const diagnostics: RustDeskDiagnosticsSnapshot = this.loader.getRustDeskDiagnostics(this.sessionId);
-        if (diagnostics.videoSeen && diagnostics.width > 0 && diagnostics.height > 0) {
+        const diagnostics: RustDeskDiagnosticsSnapshot = this.loader.getSessionDiagnostics(this.sessionId);
+        if (diagnostics.width > 0 && diagnostics.height > 0) {
           sourceWidth = diagnostics.width;
           sourceHeight = diagnostics.height;
         }
@@ -5281,7 +5283,8 @@ struct RemoteDesktop {
         this.vncDiagnosticsMetricMask = effective.diagnosticsMetricMask;
         this.hostId = 'vnc:' + vncHost.id;
         this.pendingVncHost = vncHost;
-        this.pendingHost = this.transientRemoteHostForVnc(vncHost);
+        const vncRemoteHost: RemoteHost = this.transientRemoteHostForVnc(vncHost);
+        this.pendingHost = vncRemoteHost;
         this.vncAuthResolved = false;
         this.vncTransientPassword = '';
         this.hostLabel = vncHost.label;
@@ -5292,7 +5295,20 @@ struct RemoteDesktop {
         this.vncCertificateEndpoint = null;
         this.vncCertificateTrustOwner = null;
         this.vncCertificatePendingRoute = false;
-        void this.beginVncCertificatePreflight();
+        const restoring: boolean = this.prepareRegistryRestore(vncRemoteHost);
+        if (restoring) {
+          // Background teardown intentionally clears certificate/password
+          // handoffs. A restored native session is already authenticated and
+          // must not trigger a new probe or credential sheet.
+          const restoreScope = AccountSessionCoordinator.getInstance().currentScope();
+          this.vncCertificateAccountOwnerScopeId = restoreScope.ownerScopeId.trim();
+          this.vncCertificateAccountStoreIdentityFingerprint = this.vncCertificateStoreFingerprint();
+          this.vncCertificateAccountGeneration = restoreScope.generation;
+          this.vncAuthResolved = true;
+          this.restoreFromBackground();
+        } else {
+          void this.beginVncCertificatePreflight();
+        }
         return;
       }
       const id: string = p['hostId'] as string;
@@ -5607,11 +5623,6 @@ struct RemoteDesktop {
   }
 
   private recordActiveSession(host: RemoteHost, sessionId: number, renderAttached: boolean): boolean {
-    if (host.protocol === 'vnc') {
-      // VNC deliberately does not enter the shared PIP/background registry;
-      // its raw framebuffer has no decoder-safe background migration path.
-      return true;
-    }
     const now: number = Date.now();
     const activeScope = AccountSessionCoordinator.getInstance().currentScope();
     const record: ActiveRemoteSessionRecord = {
@@ -5643,9 +5654,6 @@ struct RemoteDesktop {
    */
   private async prepareRemoteSessionPipForForeground(host: RemoteHost,
     sessionId: number): Promise<void> {
-    if (host.protocol === 'vnc') {
-      return;
-    }
     const liveViewEnabled: boolean = AppStorage.get<boolean>('liveViewEnabled') ?? true;
     const liveViewMode: number = AppStorage.get<number>('liveViewMode') ?? 1;
     const activeSession: ActiveRemoteSessionRecord | null = this.activeSessionRegistry.getActive();
@@ -5822,10 +5830,34 @@ struct RemoteDesktop {
     }
   }
 
+  private vncPresentedFrameCount(): number {
+    if (!this.isVncSession() || this.sessionId <= 0) {
+      return 0;
+    }
+    try {
+      const diagnostics: RustDeskDiagnosticsSnapshot = this.loader.getSessionDiagnostics(this.sessionId);
+      return Math.max(0, Math.floor(diagnostics.presentedFrames));
+    } catch (_e) {
+      return 0;
+    }
+  }
+
+  private isVncPresentedFrameReady(): boolean {
+    if (!this.isVncSession() || this.sessionId <= 0) {
+      return false;
+    }
+    try {
+      const diagnostics: RustDeskDiagnosticsSnapshot = this.loader.getSessionDiagnostics(this.sessionId);
+      return hasVncPresentedFrame(diagnostics.presentedFrames, diagnostics.width, diagnostics.height);
+    } catch (_e) {
+      return false;
+    }
+  }
+
   private isCurrentVideoReadyForPip(): boolean {
     const protocol: string = this.pendingHost !== null ? this.pendingHost.protocol : '';
     if (protocol === 'vnc') {
-      return false;
+      return this.rendererHandle > 0 && this.surfaceReady && this.isVncPresentedFrameReady();
     }
     if (protocol === 'rustdesk') {
       return this.isRustDeskPresentedFrameReady();
@@ -5843,6 +5875,9 @@ struct RemoteDesktop {
   private isPipFrameReady(): boolean {
     if (this.isRdpRemoteSession()) {
       return this.isRdpVideoFrameReady();
+    }
+    if (this.isVncSession()) {
+      return this.isVncPresentedFrameReady();
     }
     if (this.pendingHost === null || this.pendingHost.protocol !== 'rustdesk' || this.sessionId <= 0) {
       return false;
@@ -5892,11 +5927,49 @@ struct RemoteDesktop {
       pipService.isOperationCurrent(operationGeneration) && this.isPipFrameReady();
   }
 
+  private async waitForVncPresentedFrame(sessionId: number,
+    previousPresentedFrames: number,
+    attemptId: number,
+    operationGeneration: number = -1,
+    timeoutMs: number = 5000): Promise<boolean> {
+    const startedAtMs: number = Date.now();
+    const pipService: RemoteSessionPipService = RemoteSessionPipService.getInstance();
+    while (Date.now() - startedAtMs < timeoutMs) {
+      if (this.sessionId !== sessionId || this.connectAttemptId !== attemptId) {
+        return false;
+      }
+      if (operationGeneration > 0 && !pipService.isOperationCurrent(operationGeneration)) {
+        return false;
+      }
+      try {
+        const diagnostics: RustDeskDiagnosticsSnapshot = this.loader.getSessionDiagnostics(sessionId);
+        if (diagnostics.presentedFrames > previousPresentedFrames &&
+          hasVncPresentedFrame(diagnostics.presentedFrames, diagnostics.width, diagnostics.height)) {
+          return true;
+        }
+      } catch (_e) {
+        // The native session may be between framebuffer callbacks.
+      }
+      await new Promise<void>((resolve: () => void): void => {
+        setTimeout(resolve, 50);
+      });
+    }
+    if (this.sessionId !== sessionId || this.connectAttemptId !== attemptId) {
+      return false;
+    }
+    if (operationGeneration > 0 && !pipService.isOperationCurrent(operationGeneration)) {
+      return false;
+    }
+    return this.vncPresentedFrameCount() > previousPresentedFrames &&
+      this.isVncPresentedFrameReady();
+  }
+
   private currentRemoteMediaSnapshot(): RemoteSessionMediaSnapshot {
     return {
       hasAudio: this.loader.isAudioActive(),
       hasVideo: this.isRdpRemoteSession() ? this.isRdpVideoFrameReady() :
-        (this.isRustDeskSession() ? this.isRustDeskPresentedFrameReady() : this.loader.isVideoActive())
+        (this.isRustDeskSession() ? this.isRustDeskPresentedFrameReady() :
+          (this.isVncSession() ? this.isVncPresentedFrameReady() : this.loader.isVideoActive()))
     };
   }
 
@@ -5976,6 +6049,10 @@ struct RemoteDesktop {
       const result = this.loader.reattachRenderForForeground(surfaceId, pageSurface.width, pageSurface.height);
       if (result.ok && result.value !== undefined && result.value > 0) {
         this.rendererHandle = result.value;
+        if (this.pendingHost !== null) {
+          this.nativeHandles.attachConnectedSession(
+            this.sessionId, this.remoteProtocolOf(this.pendingHost));
+        }
         this.nativeHandles.markSurfaceAttached(this.rendererHandle);
         if (this.decoderHandle > 0) {
           this.loader.bindVideoPipeline(this.decoderHandle, this.rendererHandle);
@@ -9282,7 +9359,7 @@ struct RemoteDesktop {
       return;
     }
     const currentHandle: number = this.rendererHandle;
-    if (!this.isRdpRemoteSession() && this.decoderHandle > 0 &&
+    if (!this.isRdpRemoteSession() && !this.isVncSession() && this.decoderHandle > 0 &&
       (this.renderPreservedInPip || ownedHandle === currentHandle)) {
       const detached: boolean = this.loader.detachVideoPipelineForBackground();
       hilog.info(RD_DOMAIN, RD_TAG, 'releasePipRenderer: decoder detached=' +
@@ -9309,10 +9386,11 @@ struct RemoteDesktop {
     this.releaseCanvasPinchInput('pip-surface-transfer');
     const activeSession: ActiveRemoteSessionRecord | null = this.activeSessionRegistry.getActive();
     const isRdp: boolean = this.isRdpRemoteSession();
+    const isVnc: boolean = this.isVncSession();
     const pipService: RemoteSessionPipService = RemoteSessionPipService.getInstance();
     if (!this.cleanupStarted || !this.connected || this.sessionId <= 0 || this.pendingHost === null ||
       this.restoreInProgress || !pipService.isOperationCurrent(operationGeneration) ||
-      this.rendererHandle <= 0 || (!isRdp && this.decoderHandle <= 0) ||
+      this.rendererHandle <= 0 || (!isRdp && !isVnc && this.decoderHandle <= 0) ||
       activeSession === null ||
       activeSession.sessionId !== this.sessionId || activeSession.hostId !== this.pendingHost.id ||
       !activeSession.protocolConnected || surface.surfaceId.length === 0 ||
@@ -9340,10 +9418,11 @@ struct RemoteDesktop {
       // After destroyRenderer() the native viewport is intentionally no longer
       // readable, and falling back to the rotated page surface would crop PIP.
       const pipSize: RemoteSessionPipContentSize = this.currentPipContentSize();
+      const vncPresentedBeforeRebind: number = isVnc ? this.vncPresentedFrameCount() : 0;
       // The page renderer is bound to the page XComponent.  Move the native
       // renderer to the free-node surface before the PIP controller reports
       // success; otherwise the PIP window only retains the last page frame.
-      if (!isRdp && this.decoderHandle > 0) {
+      if (!isRdp && !isVnc && this.decoderHandle > 0) {
         const detached: boolean = this.loader.detachVideoPipelineForBackground();
         hilog.info(RD_DOMAIN, RD_TAG, 'attachRendererToPipSurface: decoder pipeline detached=' +
           (detached ? 'true' : 'false'));
@@ -9373,6 +9452,20 @@ struct RemoteDesktop {
           cachedPresented.toString() + ' refresh=' + refresh.ok.toString());
         if (!cachedPresented && !refresh.ok) {
           this.releasePipRenderer('rdp-pip-present-failed');
+          return false;
+        }
+      } else if (isVnc) {
+        const refresh = this.loader.requestFrameRefresh();
+        hilog.info(RD_DOMAIN, RD_TAG, 'attachRendererToPipSurface: VNC framebuffer refresh=' +
+          refresh.ok.toString() + ' previousPresented=' + vncPresentedBeforeRebind.toString());
+        if (!refresh.ok) {
+          this.releasePipRenderer('vnc-pip-refresh-failed');
+          return false;
+        }
+        const frameReady: boolean = await this.waitForVncPresentedFrame(
+          this.sessionId, vncPresentedBeforeRebind, this.connectAttemptId, operationGeneration);
+        if (!frameReady) {
+          this.releasePipRenderer('vnc-pip-frame-not-presented');
           return false;
         }
       } else {
@@ -9430,6 +9523,11 @@ struct RemoteDesktop {
       }
       this.loader.resizeRenderer(this.pipRendererHandle, surface.surfaceWidth, surface.surfaceHeight);
       this.invalidateRendererViewportCache();
+      if (this.isVncSession()) {
+        const refresh = this.loader.requestFrameRefresh();
+        hilog.info(RD_DOMAIN, RD_TAG, 'handlePipSurfaceChanged: VNC framebuffer refresh=' +
+          refresh.ok.toString());
+      }
       hilog.info(RD_DOMAIN, RD_TAG, 'handlePipSurfaceChanged: renderer=' +
         this.rendererHandle.toString() + ' surface=' + surface.surfaceWidth.toString() + 'x' +
         surface.surfaceHeight.toString());
@@ -9440,13 +9538,6 @@ struct RemoteDesktop {
 
   private async detachForBackground(): Promise<void> {
     this.releaseCanvasPinchInput('background-detach');
-    if (this.isVncSession()) {
-      // VNC has no audio/decoder/PIP migration contract. Disconnecting on
-      // background keeps the raw renderer and RFB worker out of RustDesk's
-      // shared lifecycle path; the user can reconnect from the VNC owner page.
-      this.disconnectAndCleanup('vnc-background-no-pip');
-      return;
-    }
     if (this.cleanupStarted) {
       return;
     }
@@ -9581,7 +9672,7 @@ struct RemoteDesktop {
     // 仅脱附渲染, 不触碰协议连接、解码器和音频.
     // 注意: 不销毁解码器 — destroyDecoder 会级联断开协议连接.
     if (!pipPreserved) {
-      if (this.decoderHandle > 0 && !this.isRdpRemoteSession()) {
+      if (this.decoderHandle > 0 && !this.isRdpRemoteSession() && !this.isVncSession()) {
         this.loader.detachVideoPipelineForBackground();
       }
       const rendererHandleBeforeDetach: number = this.rendererHandle;
@@ -9609,7 +9700,8 @@ struct RemoteDesktop {
           hostId: this.pendingHost.id,
           sessionId: this.sessionId,
           resumeRemoteSession: true,
-          protocolLabel: this.pendingHost.protocol === 'rdp' ? 'RDP' : 'RustDesk',
+          protocolLabel: this.pendingHost.protocol === 'rdp' ? 'RDP' :
+            (this.pendingHost.protocol === 'vnc' ? 'VNC' : 'RustDesk'),
           hostAddress: this.pendingHost.host,
           hasAudio: backgroundMedia.hasAudio,
           hasVideo: backgroundMedia.hasVideo
@@ -9712,7 +9804,7 @@ struct RemoteDesktop {
     this.clearRestoreFrameRefreshPump();
     const failedRenderer: number = this.rendererHandle > 0
       ? this.rendererHandle : this.loader.getRendererHandle();
-    if (this.decoderHandle > 0) {
+    if (this.decoderHandle > 0 && !this.isRdpRemoteSession() && !this.isVncSession()) {
       const detached: boolean = this.loader.detachVideoPipelineForBackground();
       hilog.info(RD_DOMAIN, RD_TAG,
         'releaseFailedBackgroundRenderer: decoder detached=' + detached.toString() +
@@ -9743,7 +9835,8 @@ struct RemoteDesktop {
     this.bgRestorePending = true;
     this.connectStarted = false;
     this.connecting = false;
-    this.connectionProgressMessage = 'RustDesk: 正在重新绑定远程画面';
+    this.connectionProgressMessage = this.isVncSession() ?
+      'VNC: 正在重新绑定远程画面' : 'RustDesk: 正在重新绑定远程画面';
     this.surfaceReady = false;
     this.latestSurfaceId = '';
     AppStorage.setOrCreate<boolean>('remoteDesktopBgFlag', false);
@@ -9872,11 +9965,13 @@ struct RemoteDesktop {
     const restoreAttemptId: number = this.connectAttemptId;
     const restoringRustDesk: boolean = this.pendingHost !== null &&
       this.pendingHost.protocol === 'rustdesk';
+    const restoringVnc: boolean = this.isVncSession();
+    const vncPresentedBeforeRestore: number = restoringVnc ? this.vncPresentedFrameCount() : 0;
     this.bgRestorePending = false; // 防止重入
     this.connectStarted = true;
     this.connecting = true;
-    this.connectionProgressMessage = restoringRustDesk
-      ? 'RustDesk: 正在恢复远程画面' : '';
+    this.connectionProgressMessage = restoringRustDesk ? 'RustDesk: 正在恢复远程画面' :
+      (restoringVnc ? 'VNC: 正在恢复远程画面' : '');
     try {
       const desktop: DesktopSize = this.desktopSize(this.pendingHost);
       const pageSurface: RemoteSessionPipContentSize = this.currentPageSurfaceSize(desktop.width, desktop.height);
@@ -9970,6 +10065,10 @@ struct RemoteDesktop {
         surfaceId, pageSurface.width, pageSurface.height);
       if (result.ok && result.value !== undefined && result.value > 0) {
         this.rendererHandle = result.value;
+        if (this.pendingHost !== null) {
+          this.nativeHandles.attachConnectedSession(
+            this.sessionId, this.remoteProtocolOf(this.pendingHost));
+        }
         this.nativeHandles.markSurfaceAttached(this.rendererHandle);
         this.applyCanvasTransform();
         hilog.info(RD_DOMAIN, RD_TAG, 'doBackgroundRestoreRender: renderer reattached handle=' +
@@ -9999,6 +10098,22 @@ struct RemoteDesktop {
           if (!firstFrameReady) {
             if (this.sessionId === restoreSessionId && this.connectAttemptId === restoreAttemptId) {
               throw new Error('RustDesk 后台恢复首帧未显示');
+            }
+            return;
+          }
+        }
+        if (restoringVnc) {
+          const refresh = this.loader.requestFrameRefresh();
+          hilog.info(RD_DOMAIN, RD_TAG, 'doBackgroundRestoreRender: VNC framebuffer refresh=' +
+            refresh.ok.toString() + ' previousPresented=' + vncPresentedBeforeRestore.toString());
+          if (!refresh.ok) {
+            throw new Error('VNC 后台恢复刷新请求失败 [E-VNC-RESTORE-REFRESH]');
+          }
+          const frameReady: boolean = await this.waitForVncPresentedFrame(
+            restoreSessionId, vncPresentedBeforeRestore, restoreAttemptId);
+          if (!frameReady) {
+            if (this.sessionId === restoreSessionId && this.connectAttemptId === restoreAttemptId) {
+              throw new Error('VNC 后台恢复首帧未显示 [E-VNC-RESTORE-FRAME]');
             }
             return;
           }

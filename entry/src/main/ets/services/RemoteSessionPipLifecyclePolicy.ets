@@ -68,6 +68,19 @@ export function hasRustDeskPresentedFrame(
 }
 
 /**
+ * VNC delivers complete RAW BGRA frames directly to the renderer. Its
+ * presentation counter is therefore the source of truth; no decoder or
+ * received-frame counter is involved in VNC readiness.
+ */
+export function hasVncPresentedFrame(
+  presentedFrames: number,
+  width: number,
+  height: number
+): boolean {
+  return presentedFrames > 0 && width > 0 && height > 0;
+}
+
+/**
  * GDI readiness is based on an owned pixel buffer, not graphics metadata.
  * Some RDP fallback sessions publish desktop dimensions after the first
  * paint, even though the frame pump can already resubmit that frame to PIP.
