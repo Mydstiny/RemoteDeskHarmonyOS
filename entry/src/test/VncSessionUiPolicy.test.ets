@@ -3,7 +3,11 @@ import {
   nextVncControlMode,
   nextVncDisplayScaleMode,
   shouldShowVncSessionToolbar,
-  vncToolbarAutoCollapseDelayMs
+  vncToolbarAutoCollapseDelayMs,
+  vncToolbarDefaultSide,
+  vncToolbarPositionPreferenceKey,
+  vncToolbarRailHeight,
+  vncToolbarRailWidth
 } from '../main/ets/services/VncSessionUiPolicy';
 
 export default function vncSessionUiPolicyTest(): void {
@@ -32,6 +36,33 @@ export default function vncSessionUiPolicyTest(): void {
       expect(vncToolbarAutoCollapseDelayMs(true, false)).assertEqual(20000);
       expect(vncToolbarAutoCollapseDelayMs(true, true)).assertEqual(0);
       expect(vncToolbarAutoCollapseDelayMs(false, false)).assertEqual(0);
+    });
+
+    it('keeps_pc_on_legacy_toolbar_geometry', 0, (): void => {
+      expect(vncToolbarRailWidth('pc', false)).assertEqual(0);
+      expect(vncToolbarRailWidth('pc', true)).assertEqual(0);
+      expect(vncToolbarRailHeight('pc', false, false)).assertEqual(0);
+      expect(vncToolbarDefaultSide('pc')).assertEqual('right');
+    });
+
+    it('uses_edge_rail_dimensions_for_phone_and_pad', 0, (): void => {
+      expect(vncToolbarRailWidth('phone', false)).assertEqual(76);
+      expect(vncToolbarRailWidth('phone', true)).assertEqual(44);
+      expect(vncToolbarRailHeight('phone', false, false)).assertEqual(252);
+      expect(vncToolbarRailHeight('phone', false, true)).assertEqual(44);
+      expect(vncToolbarRailWidth('pad', false)).assertEqual(76);
+      expect(vncToolbarRailHeight('pad', false, false)).assertEqual(301);
+      expect(vncToolbarRailHeight('pad', true, false)).assertEqual(330);
+      expect(vncToolbarRailHeight('pad', true, true)).assertEqual(44);
+    });
+
+    it('isolates_vnc_position_preferences_by_device_and_orientation', 0, (): void => {
+      expect(vncToolbarPositionPreferenceKey('phone', 'portrait', 'side'))
+        .assertEqual('vncSessionToolbar:phone:portrait:side');
+      expect(vncToolbarPositionPreferenceKey('pad', 'landscape', 'yRatio'))
+        .assertEqual('vncSessionToolbar:pad:landscape:yRatio');
+      expect(vncToolbarPositionPreferenceKey('pc', 'portrait', 'side'))
+        .assertEqual('vncSessionToolbar:pc:portrait:side');
     });
   });
 }

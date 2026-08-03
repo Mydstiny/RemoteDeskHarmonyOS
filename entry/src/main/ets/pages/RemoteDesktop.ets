@@ -218,8 +218,24 @@ import {
   nextVncControlMode,
   nextVncDisplayScaleMode,
   shouldShowVncSessionToolbar,
-  vncToolbarAutoCollapseDelayMs
+  vncToolbarAutoCollapseDelayMs,
+  vncToolbarDefaultSide,
+  vncToolbarPositionPreferenceKey,
+  vncToolbarRailHeight,
+  vncToolbarRailWidth,
+  VncToolbarDeviceClass,
+  VncToolbarOrientation,
+  VncToolbarSide
 } from '../services/VncSessionUiPolicy';
+import {
+  OverlayPlacement,
+  OverlayPlacementRequest,
+  OverlayRect,
+  OverlayViewport,
+  emptyOverlayPlacement,
+  resolveOverlayDragPreference,
+  resolveOverlayPlacement
+} from '../services/RemoteOverlayViewportPolicy';
 import {
   advanceRemoteCursorMotion,
   applyLocalCursorTarget,
@@ -1018,6 +1034,17 @@ struct RemoteDesktop {
   @State vncDiagnosticsDockSide: string = 'right';
   @State vncDiagnosticsDockY: number = 360;
   @State vncToolbarCollapsed: boolean = false;
+  @State vncToolbarPlacement: OverlayPlacement = emptyOverlayPlacement('vnc-toolbar', 0);
+  private vncToolbarPlacementGeneration: number = 0;
+  private vncToolbarPreferenceScope: string = '';
+  private vncToolbarPreferredSide: VncToolbarSide = 'right';
+  private vncToolbarPreferredYRatio: number = 0.5;
+  private vncToolbarSystemTop: number = 0;
+  private vncToolbarSystemBottom: number = 0;
+  private vncToolbarSystemLeft: number = 0;
+  private vncToolbarSystemRight: number = 0;
+  private vncToolbarCutoutRects: Array<OverlayRect> = [];
+  private vncToolbarKeyboardRect: OverlayRect | null = null;
   @State modifierPanelMounted: boolean = false;
   @State modifierPanelVisible: boolean = false;
   @State shortcutPanelVisible: boolean = false;
@@ -1327,6 +1354,217 @@ struct RemoteDesktop {
     return shouldShowVncSessionToolbar(this.currentProtocolName(), this.connected, this.sessionId);
   }
 
+  private vncToolbarDeviceClass(): VncToolbarDeviceClass {
+    return remoteTopBarLayout(this.isDesktopDevice, this.breakpoint).deviceClass;
+  }
+
+  private vncToolbarOrientation(): VncToolbarOrientation {
+    const width: number = this.surfaceWidth > 0 ? this.surfaceWidth : 360;
+    const height: number = this.surfaceHeight > 0 ? this.surfaceHeight : 640;
+    return width >= height ? 'landscape' : 'portrait';
+  }
+
+  private vncToolbarPreferenceScopeKey(): string {
+    return this.vncToolbarDeviceClass() + ':' + this.vncToolbarOrientation();
+  }
+
+  private syncVncToolbarPreferenceScope(): void {
+    const scope: string = this.vncToolbarPreferenceScopeKey();
+    if (scope === this.vncToolbarPreferenceScope) {
+      return;
+    }
+    this.vncToolbarPreferenceScope = scope;
+    const deviceClass: VncToolbarDeviceClass = this.vncToolbarDeviceClass();
+    const orientation: VncToolbarOrientation = this.vncToolbarOrientation();
+    const sideKey: string = vncToolbarPositionPreferenceKey(deviceClass, orientation, 'side');
+    const yKey: string = vncToolbarPositionPreferenceKey(deviceClass, orientation, 'yRatio');
+    const storedSide: string = AppStorage.get<string>(sideKey) ?? '';
+    this.vncToolbarPreferredSide = storedSide === 'left' || storedSide === 'right' ?
+      storedSide as VncToolbarSide : vncToolbarDefaultSide(deviceClass);
+    const storedYRatio: number = AppStorage.get<number>(yKey) ?? -1;
+    this.vncToolbarPreferredYRatio = Number.isFinite(storedYRatio) && storedYRatio >= 0 && storedYRatio <= 1 ?
+      storedYRatio : 0.5;
+  }
+
+  private vncToolbarPxToVp(value: number): number {
+    if (!Number.isFinite(value)) {
+      return 0;
+    }
+    try {
+      const d: display.Display = display.getDefaultDisplaySync();
+      return value / Math.max(1, d.densityPixels);
+    } catch (_e) {
+      return value;
+    }
+  }
+
+  private vncToolbarRectToVp(rect: window.Rect): OverlayRect {
+    return {
+      x: this.vncToolbarPxToVp(rect.left),
+      y: this.vncToolbarPxToVp(rect.top),
+      width: Math.max(0, this.vncToolbarPxToVp(rect.width)),
+      height: Math.max(0, this.vncToolbarPxToVp(rect.height))
+    };
+  }
+
+  private vncToolbarOccupiedRects(): Array<OverlayRect> {
+    const occupied: Array<OverlayRect> = [];
+    if (this.vncDiagnosticsDockExpanded) {
+      occupied.push({
+        x: this.vncDiagnosticsDockPanelX(),
+        y: this.vncDiagnosticsDockY,
+        width: this.vncDiagnosticsDockWidth(),
+        height: this.vncDiagnosticsDockHeight()
+      });
+    }
+    if (this.modifierPanelVisible) {
+      occupied.push({
+        x: this.modifierPanelX,
+        y: this.modifierPanelY,
+        width: this.modifierPanelWidth(),
+        height: this.modifierPanelMeasuredHeight
+      });
+    }
+    if (this.shortcutPanelVisible) {
+      occupied.push({
+        x: this.shortcutPanelX,
+        y: this.shortcutPanelY,
+        width: this.modifierPanelWidth(),
+        height: this.shortcutPanelMeasuredHeight
+      });
+    }
+    return occupied;
+  }
+
+  private currentVncToolbarViewport(): OverlayViewport {
+    const width: number = this.surfaceWidth > 0 ? this.surfaceWidth : 360;
+    const height: number = this.surfaceHeight > 0 ? this.surfaceHeight : 640;
+    this.vncToolbarPlacementGeneration += 1;
+    return {
+      width,
+      height,
+      systemTop: this.vncToolbarSystemTop,
+      systemBottom: this.vncToolbarSystemBottom,
+      systemLeft: this.vncToolbarSystemLeft,
+      systemRight: this.vncToolbarSystemRight,
+      cutoutRects: this.vncToolbarCutoutRects.slice(0),
+      keyboardRect: this.vncToolbarKeyboardRect,
+      orientation: this.vncToolbarOrientation(),
+      deviceClass: this.vncToolbarDeviceClass(),
+      occupiedRects: this.vncToolbarOccupiedRects(),
+      generation: this.vncToolbarPlacementGeneration
+    };
+  }
+
+  private recomputeVncToolbarPlacement(_reason: string): void {
+    if (!this.isVncSession()) {
+      return;
+    }
+    const deviceClass: VncToolbarDeviceClass = this.vncToolbarDeviceClass();
+    if (deviceClass === 'pc') {
+      // PC remains on the legacy component path and must not inherit mobile
+      // rail geometry or safe-area persistence.
+      this.vncToolbarPlacement = emptyOverlayPlacement('vnc-toolbar', 0);
+      return;
+    }
+    this.syncVncToolbarPreferenceScope();
+    const collapsed: boolean = this.vncToolbarCollapsed;
+    const viewport: OverlayViewport = this.currentVncToolbarViewport();
+    const request: OverlayPlacementRequest = {
+      ownerId: 'vnc-toolbar',
+      preferredSide: this.vncToolbarPreferredSide,
+      yRatio: this.vncToolbarPreferredYRatio,
+      handleSize: vncToolbarRailWidth(deviceClass, true),
+      railWidth: vncToolbarRailWidth(deviceClass, collapsed),
+      railHeight: vncToolbarRailHeight(deviceClass, this.isVncViewOnlySession(), collapsed),
+      menuWidth: 0,
+      menuHeight: 0,
+      // VNC actions are rendered by the rail itself; there is no secondary
+      // placement menu to resolve here.
+      expanded: false
+    };
+    this.vncToolbarPlacement = resolveOverlayPlacement(viewport, request);
+  }
+
+  private handleVncToolbarDrag(offsetX: number, offsetY: number): void {
+    if (this.vncToolbarDeviceClass() === 'pc' || this.vncToolbarPlacement.railRect.width <= 0) {
+      return;
+    }
+    const viewport: OverlayViewport = this.currentVncToolbarViewport();
+    const moved = resolveOverlayDragPreference(viewport, this.vncToolbarPlacement, offsetX, offsetY);
+    this.vncToolbarPreferredSide = moved.side as VncToolbarSide;
+    this.vncToolbarPreferredYRatio = moved.yRatio;
+    const orientation: VncToolbarOrientation = this.vncToolbarOrientation();
+    const deviceClass: VncToolbarDeviceClass = this.vncToolbarDeviceClass();
+    AppStorage.setOrCreate(vncToolbarPositionPreferenceKey(deviceClass, orientation, 'side'),
+      this.vncToolbarPreferredSide);
+    AppStorage.setOrCreate(vncToolbarPositionPreferenceKey(deviceClass, orientation, 'yRatio'),
+      this.vncToolbarPreferredYRatio);
+    this.recomputeVncToolbarPlacement('drag');
+    this.scheduleVncToolbarAutoCollapse();
+  }
+
+  private syncVncToolbarAvoidAreas(w: window.Window): void {
+    if (!this.isVncSession()) {
+      return;
+    }
+    this.vncToolbarSystemTop = 0;
+    this.vncToolbarSystemBottom = 0;
+    this.vncToolbarSystemLeft = 0;
+    this.vncToolbarSystemRight = 0;
+    this.vncToolbarCutoutRects = [];
+    this.vncToolbarKeyboardRect = null;
+    try {
+      const systemArea: window.AvoidArea = w.getWindowAvoidArea(window.AvoidAreaType.TYPE_SYSTEM);
+      if (systemArea.visible) {
+        this.vncToolbarSystemTop = this.vncToolbarPxToVp(systemArea.topRect.height);
+        this.vncToolbarSystemBottom = this.vncToolbarPxToVp(systemArea.bottomRect.height);
+        this.vncToolbarSystemLeft = this.vncToolbarPxToVp(systemArea.leftRect.width);
+        this.vncToolbarSystemRight = this.vncToolbarPxToVp(systemArea.rightRect.width);
+      }
+    } catch (_e) {
+      // Some window modes do not expose a system avoid area.
+    }
+    try {
+      const navigationArea: window.AvoidArea =
+        w.getWindowAvoidArea(window.AvoidAreaType.TYPE_NAVIGATION_INDICATOR);
+      if (navigationArea.visible) {
+        this.vncToolbarSystemBottom = Math.max(this.vncToolbarSystemBottom,
+          this.vncToolbarPxToVp(navigationArea.bottomRect.height));
+        this.vncToolbarSystemLeft = Math.max(this.vncToolbarSystemLeft,
+          this.vncToolbarPxToVp(navigationArea.leftRect.width));
+        this.vncToolbarSystemRight = Math.max(this.vncToolbarSystemRight,
+          this.vncToolbarPxToVp(navigationArea.rightRect.width));
+      }
+    } catch (_e) {
+      // Navigation indicator avoidance is optional on some device families.
+    }
+    try {
+      const cutoutArea: window.AvoidArea = w.getWindowAvoidArea(window.AvoidAreaType.TYPE_CUTOUT);
+      if (cutoutArea.visible) {
+        const rects: Array<OverlayRect> = [
+          this.vncToolbarRectToVp(cutoutArea.leftRect),
+          this.vncToolbarRectToVp(cutoutArea.topRect),
+          this.vncToolbarRectToVp(cutoutArea.rightRect),
+          this.vncToolbarRectToVp(cutoutArea.bottomRect)
+        ];
+        this.vncToolbarCutoutRects = rects.filter((rect: OverlayRect): boolean =>
+          rect.width > 0 && rect.height > 0);
+      }
+    } catch (_e) {
+      // Cutout avoidance is optional on flat displays.
+    }
+    try {
+      const keyboardArea: window.AvoidArea = w.getWindowAvoidArea(window.AvoidAreaType.TYPE_KEYBOARD);
+      if (keyboardArea.visible && keyboardArea.bottomRect.height > 0) {
+        this.vncToolbarKeyboardRect = this.vncToolbarRectToVp(keyboardArea.bottomRect);
+      }
+    } catch (_e) {
+      // Keyboard state is also updated by the existing avoid-area callback.
+    }
+    this.recomputeVncToolbarPlacement('avoid-area');
+  }
+
   private clearVncToolbarAutoCollapse(): void {
     if (this.vncToolbarCollapseTimer >= 0) {
       clearTimeout(this.vncToolbarCollapseTimer);
@@ -1345,6 +1583,7 @@ struct RemoteDesktop {
       this.vncToolbarCollapseTimer = -1;
       if (this.connected && this.isVncSession() && this.sessionId === sessionId) {
         this.vncToolbarCollapsed = true;
+        this.recomputeVncToolbarPlacement('auto-collapse');
         this.clampModifierPanelsIntoView();
       }
     }, delayMs);
@@ -1352,6 +1591,7 @@ struct RemoteDesktop {
 
   private expandVncToolbar(): void {
     this.vncToolbarCollapsed = false;
+    this.recomputeVncToolbarPlacement('expand');
     this.clampModifierPanelsIntoView();
     this.scheduleVncToolbarAutoCollapse();
   }
@@ -1359,6 +1599,7 @@ struct RemoteDesktop {
   private markVncToolbarInteraction(): void {
     if (this.vncToolbarCollapsed) {
       this.vncToolbarCollapsed = false;
+      this.recomputeVncToolbarPlacement('interaction-expand');
     }
     this.scheduleVncToolbarAutoCollapse();
   }
@@ -4684,6 +4925,7 @@ struct RemoteDesktop {
     animateTo({ duration: 180, curve: Curve.EaseOut }, (): void => {
       this.vncDiagnosticsDockSide = side;
       this.vncDiagnosticsDockY = clampedY;
+      this.recomputeVncToolbarPlacement('diagnostics-drag');
     });
     AppStorage.setOrCreate('vncDiagnosticsDockSide', side);
     const screenH: number = this.surfaceHeight > 0 ? this.surfaceHeight : 640;
@@ -4696,6 +4938,7 @@ struct RemoteDesktop {
       this.vncDiagnosticsDockY = this.avoidVncDiagnosticsDockCollision(
         this.vncDiagnosticsDockSide, this.vncDiagnosticsDockY);
     }
+    this.recomputeVncToolbarPlacement('diagnostics-toggle');
   }
 
   private updateVncDiagnosticsDockForKeyboard(): void {
@@ -4711,6 +4954,7 @@ struct RemoteDesktop {
     }
     this.vncDiagnosticsDockY = this.avoidVncDiagnosticsDockCollision(
       this.vncDiagnosticsDockSide, this.vncDiagnosticsDockY);
+    this.recomputeVncToolbarPlacement('diagnostics-keyboard');
   }
 
   private modifierPanelWidth(): number {
@@ -4755,7 +4999,8 @@ struct RemoteDesktop {
 
   private floatingPanelViewport(): FloatingPanelViewport {
     const vncToolbarMargin: number =
-      this.isVncSession() && !this.vncToolbarCollapsed ? 70 : 48;
+      this.isVncSession() && !this.vncToolbarCollapsed &&
+        this.vncToolbarDeviceClass() === 'pc' ? 70 : 48;
     return {
       width: this.surfaceWidth > 0 ? this.surfaceWidth : 360,
       height: this.surfaceHeight > 0 ? this.surfaceHeight : 640,
@@ -5206,6 +5451,9 @@ struct RemoteDesktop {
       }
       window.getLastWindow(ctx).then((w: window.Window): void => {
         this.kbWin = w;
+        if (this.isVncSession()) {
+          this.syncVncToolbarAvoidAreas(w);
+        }
         try {
           const keyboardArea: window.AvoidArea =
             w.getWindowAvoidArea(window.AvoidAreaType.TYPE_KEYBOARD);
@@ -5230,6 +5478,12 @@ struct RemoteDesktop {
               this.markKeyboardClosed('avoid-area');
             }
           }
+          if (this.isVncSession() && (data.type === window.AvoidAreaType.TYPE_SYSTEM ||
+            data.type === window.AvoidAreaType.TYPE_CUTOUT ||
+            data.type === window.AvoidAreaType.TYPE_NAVIGATION_INDICATOR ||
+            data.type === window.AvoidAreaType.TYPE_KEYBOARD)) {
+            this.syncVncToolbarAvoidAreas(w);
+          }
         };
         w.on('avoidAreaChange', this.kbAvoidCb);
       }).catch((err: Error): void => {
@@ -5253,6 +5507,12 @@ struct RemoteDesktop {
     this.kbWin = null;
     this.kbAvoidCb = null;
     this.kbHeight = 0;
+    this.vncToolbarSystemTop = 0;
+    this.vncToolbarSystemBottom = 0;
+    this.vncToolbarSystemLeft = 0;
+    this.vncToolbarSystemRight = 0;
+    this.vncToolbarCutoutRects = [];
+    this.vncToolbarKeyboardRect = null;
   }
 
   private cancelPendingDisappearDecision(): void {
@@ -5491,6 +5751,11 @@ struct RemoteDesktop {
   async aboutToAppear(): Promise<void> {
     this.cancelPendingDisappearDecision();
     if (this.connected && this.isVncSession()) {
+      if (this.kbWin !== null) {
+        this.syncVncToolbarAvoidAreas(this.kbWin);
+      } else {
+        this.recomputeVncToolbarPlacement('page-appear');
+      }
       this.scheduleVncToolbarAutoCollapse();
     }
     this.restoreRemoteSystemPointer('page-appear');
@@ -9168,6 +9433,13 @@ struct RemoteDesktop {
           this.initRustDeskDiagnosticsDock();
         }
         this.startRustDeskDiagnosticsPolling();
+      }
+      if (host.protocol === 'vnc') {
+        if (this.kbWin !== null) {
+          this.syncVncToolbarAvoidAreas(this.kbWin);
+        } else {
+          this.recomputeVncToolbarPlacement('connect-success');
+        }
       }
       this.promptPhysicalKeyboardLayout();
       if (host.protocol === 'rdp') {
@@ -13240,6 +13512,9 @@ struct RemoteDesktop {
         this.touchpadAnchorValid = false;
         this.resetTouchpadPointerCurve();
         this.restoreModifierPanelPositions(previousSurfaceWidth, previousSurfaceHeight);
+        if (this.isVncSession()) {
+          this.recomputeVncToolbarPlacement('surface-resize');
+        }
         if (this.handleVisible) {
           this.handleX = this.handleSide === 'left' ?
             this.modifierHiddenLeftX() : this.modifierHiddenRightX(this.surfaceWidth);
@@ -13398,7 +13673,13 @@ struct RemoteDesktop {
           displayScaleLabel: this.vncDisplayScaleLabel(),
           diagnosticsEnabled: this.vncShowDiagnostics,
           collapsed: this.vncToolbarCollapsed,
-          actions: this.vncToolbarActions()
+          placement: this.vncToolbarPlacement,
+          actions: this.vncToolbarActions(),
+          placementActions: {
+            onDrag: (offsetX: number, offsetY: number): void => {
+              this.handleVncToolbarDrag(offsetX, offsetY);
+            }
+          }
         })
       }
 

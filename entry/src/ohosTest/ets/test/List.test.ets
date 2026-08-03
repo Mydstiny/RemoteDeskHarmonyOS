@@ -42,6 +42,7 @@ import remoteHostSheetLifecyclePolicyTest from './RemoteHostSheetLifecyclePolicy
 import vncSessionGeometryPolicyTest from './VncSessionGeometryPolicy.test';
 import remoteFloatingPanelPlacementPolicyTest from './RemoteFloatingPanelPlacementPolicy.test';
 import vncSessionSettingsPolicyTest from './VncSessionSettingsPolicy.test';
+import vncSessionUiPolicyTest from '../../../test/VncSessionUiPolicy.test';
 import remoteWheelPolicyTest from './RemoteWheelPolicy.test';
 import vncCertificateDecisionHandoffTest from '../../../test/VncCertificateDecisionHandoff.test';
 import vncCertificateSheetPolicyTest from '../../../test/VncCertificateSheetPolicy.test';
@@ -285,6 +286,7 @@ export default function testsuite() {
   vncSessionGeometryPolicyTest();
   remoteFloatingPanelPlacementPolicyTest();
   vncSessionSettingsPolicyTest();
+  vncSessionUiPolicyTest();
   remoteWheelPolicyTest();
   vncCertificateDecisionHandoffTest();
   vncCertificateSheetPolicyTest();
