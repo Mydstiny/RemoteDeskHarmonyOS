@@ -658,6 +658,7 @@ struct RustDeskBridge::Impl {
     std::atomic<int>        callbackWidth {0};
     std::atomic<int>        callbackHeight {0};
     std::atomic<uint64_t>   lastFrameAtMs {0};
+    std::atomic<uint64_t>   callbackAdmissionRejects {0};
     RemoteCursorStore       cursorStore;
     int                     ipcFd = -1;   // IPC socket fd (IPC 模式)
     int                     sockFd = -1;  // TCP socket fd (实验模式)
@@ -836,17 +837,44 @@ void RustDeskBridge::onFfiFrame(const void* framePtr, void* userData) {
                             &impl->ffiCallbackCv);
     }
     auto* ffiFrame = static_cast<const RustDeskFfiVideoFrameV2*>(framePtr);
-    if (!context || !impl ||
-        context->generation != impl->cursorGeneration.load(std::memory_order_acquire) ||
-        context->ownerToken == 0 ||
-        context->ownerToken != impl->ownerToken.load(std::memory_order_acquire) ||
-        context->admissionEpoch == 0 ||
-        context->admissionEpoch != impl->ffiAdmissionEpoch.load(std::memory_order_acquire) ||
-        impl->disconnectRequested.load(std::memory_order_acquire) ||
-        impl->ffiStreamEnded.load(std::memory_order_acquire) ||
-        !impl->continuityQuiesce.decoderAllowed() ||
-        !IsRustDeskCallbackOwnerActive(impl, context) ||
-        !ffiFrame || !ffiFrame->data || ffiFrame->size == 0) {
+    const char* rejectReason = nullptr;
+    if (!context) {
+        rejectReason = "missing_context";
+    } else if (!impl) {
+        rejectReason = "missing_impl";
+    } else if (context->generation != impl->cursorGeneration.load(std::memory_order_acquire)) {
+        rejectReason = "generation_mismatch";
+    } else if (context->ownerToken == 0 ||
+               context->ownerToken != impl->ownerToken.load(std::memory_order_acquire)) {
+        rejectReason = "owner_mismatch";
+    } else if (context->admissionEpoch == 0 ||
+               context->admissionEpoch != impl->ffiAdmissionEpoch.load(std::memory_order_acquire)) {
+        rejectReason = "admission_epoch_mismatch";
+    } else if (impl->disconnectRequested.load(std::memory_order_acquire)) {
+        rejectReason = "disconnect_requested";
+    } else if (impl->ffiStreamEnded.load(std::memory_order_acquire)) {
+        rejectReason = "stream_ended";
+    } else if (!impl->continuityQuiesce.decoderAllowed()) {
+        rejectReason = "decoder_quiesced";
+    } else if (!IsRustDeskCallbackOwnerActive(impl, context)) {
+        rejectReason = "inactive_callback_owner";
+    } else if (!ffiFrame || !ffiFrame->data || ffiFrame->size == 0) {
+        rejectReason = "empty_frame";
+    }
+    if (rejectReason != nullptr) {
+        if (impl) {
+            const uint64_t rejected = impl->callbackAdmissionRejects.fetch_add(
+                1, std::memory_order_relaxed) + 1;
+            if (rejected <= 8 || rejected % 300 == 0) {
+                OH_LOG_WARN(LOG_APP,
+                    "[RustDesk-FFI] frame rejected before dispatch reason=%{public}s count=%{public}llu generation=%{public}llu owner=%{public}llu epoch=%{public}llu",
+                    rejectReason,
+                    static_cast<unsigned long long>(rejected),
+                    static_cast<unsigned long long>(context ? context->generation : 0),
+                    static_cast<unsigned long long>(context ? context->ownerToken : 0),
+                    static_cast<unsigned long long>(context ? context->admissionEpoch : 0));
+            }
+        }
         return;
     }
 

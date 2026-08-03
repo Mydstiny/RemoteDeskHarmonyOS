@@ -1979,7 +1979,18 @@ int DecodeNativeForOwner(int64_t handle, const DecoderSessionIdentity& owner,
     // decoder transition that is waiting for a worker callback.
     sinkLease = {};
 
-    std::unique_lock<std::mutex> pipelineLock(decoderLease->pipelineMutex);
+    // The RustDesk stream callback is a transport-facing path. A decoder
+    // transition may take the same mutex while stopping/recreating workers;
+    // waiting here would turn that transition into a network receive stall.
+    // Drop this frame and let the retained-keyframe/refresh path recover once
+    // the new pipeline is published.
+    std::unique_lock<std::mutex> pipelineLock(
+        decoderLease->pipelineMutex, std::try_to_lock);
+    if (!pipelineLock.owns_lock()) {
+        OH_LOG_DEBUG(LOG_APP,
+                     "[Decoder] native decode skipped: pipeline busy, retry via next frame");
+        return -1;
+    }
     if (g_activeDecoderHandle.load(std::memory_order_acquire) != handle) {
         return DecoderNapi::kDecodeInactiveSession;
     }

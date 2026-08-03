@@ -18,7 +18,7 @@ use std::os::raw::c_int;
 use std::ptr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use std::collections::{HashMap, HashSet, VecDeque};
 
 pub mod connector;
@@ -39,7 +39,7 @@ use protocol::message_proto::{
 use protocol::session::AuthEventCallback;
 use control_inbox::ControlInbox;
 use cursor_state::CursorStreamUpdate;
-use std::sync::mpsc::Sender;
+use std::sync::mpsc::{Sender, SyncSender, TrySendError};
 
 static LAST_ERROR: Mutex<String> = Mutex::new(String::new());
 // 每个连接尝试都有独立 epoch。取消一个 session 只标记它自己的 epoch，
@@ -689,6 +689,100 @@ enum FrameCallbackKind {
     V2(FrameCallbackV2),
 }
 
+const VIDEO_CALLBACK_QUEUE_CAPACITY: usize = 4;
+
+struct QueuedVideoFrame {
+    data: Vec<u8>,
+    width: c_int,
+    height: c_int,
+    codec: c_int,
+    timestamp: u64,
+    is_key_frame: bool,
+    display: c_int,
+}
+
+/// Keep the network/ACK loop independent from native decode and render work.
+/// The queue is intentionally small: a slow decoder must not turn into a
+/// growing latency buffer. Dropping a frame requests a fresh keyframe through
+/// the existing coalesced control path.
+struct VideoCallbackWorker {
+    sender: Option<SyncSender<QueuedVideoFrame>>,
+    handle: Option<std::thread::JoinHandle<()>>,
+    controls: Arc<ControlInbox>,
+    queued: u64,
+    dropped: u64,
+}
+
+impl VideoCallbackWorker {
+    fn start(
+        on_frame: Option<FrameCallbackKind>,
+        user_data: usize,
+        controls: Arc<ControlInbox>,
+    ) -> Self {
+        let Some(on_frame) = on_frame else {
+            return Self {
+                sender: None,
+                handle: None,
+                controls,
+                queued: 0,
+                dropped: 0,
+            };
+        };
+        let (sender, receiver) = std::sync::mpsc::sync_channel(VIDEO_CALLBACK_QUEUE_CAPACITY);
+        let handle = std::thread::spawn(move || {
+            while let Ok(frame) = receiver.recv() {
+                dispatch_queued_video_frame(&frame, on_frame, user_data as *mut c_void);
+            }
+        });
+        Self {
+            sender: Some(sender),
+            handle: Some(handle),
+            controls,
+            queued: 0,
+            dropped: 0,
+        }
+    }
+
+    fn enqueue(&mut self, frame: QueuedVideoFrame) {
+        let Some(sender) = self.sender.as_ref() else {
+            return;
+        };
+        match sender.try_send(frame) {
+            Ok(()) => {
+                self.queued += 1;
+            }
+            Err(TrySendError::Full(frame)) => {
+                self.dropped += 1;
+                let _ = self.controls.enqueue(ControlMsg::RefreshVideo);
+                if self.dropped <= 5 || self.dropped % 60 == 0 {
+                    eprintln!(
+                        "[RustDesk-FFI] video callback queue full dropped={} queued={} keyframe={} -> refresh",
+                        self.dropped,
+                        self.queued,
+                        frame.is_key_frame,
+                    );
+                }
+            }
+            Err(TrySendError::Disconnected(_frame)) => {
+                self.dropped += 1;
+            }
+        }
+    }
+
+    fn stop(&mut self) {
+        self.sender.take();
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+        if self.dropped > 0 {
+            eprintln!(
+                "[RustDesk-FFI] video callback worker stopped queued={} dropped={}",
+                self.queued, self.dropped,
+            );
+        }
+    }
+}
+
 // ============================================================
 // 内部类型: RustDesk 客户端句柄
 // ============================================================
@@ -823,68 +917,89 @@ fn split_remote_file_path(remote_path: &str) -> (&str, &str) {
     }
 }
 
+fn dispatch_queued_video_frame(
+    frame: &QueuedVideoFrame,
+    on_frame: FrameCallbackKind,
+    user_data: *mut c_void,
+) {
+    static FFI_FRAME_CB_COUNT: AtomicU64 = AtomicU64::new(0);
+    static FFI_SUBFRAME_TOTAL: AtomicU64 = AtomicU64::new(0);
+
+    let callback_started = Instant::now();
+    match on_frame {
+        FrameCallbackKind::V1(callback) => {
+            let ffi_frame = FfiVideoFrame {
+                data: frame.data.as_ptr(),
+                size: frame.data.len(),
+                width: frame.width,
+                height: frame.height,
+                codec: frame.codec,
+                timestamp: frame.timestamp,
+                is_key_frame: frame.is_key_frame,
+            };
+            callback(&ffi_frame, user_data);
+        }
+        FrameCallbackKind::V2(callback) => {
+            let ffi_frame = FfiVideoFrameV2 {
+                data: frame.data.as_ptr(),
+                size: frame.data.len(),
+                width: frame.width,
+                height: frame.height,
+                codec: frame.codec,
+                timestamp: frame.timestamp,
+                is_key_frame: frame.is_key_frame,
+                display: frame.display,
+                abi_version: RUSTDESK_VIDEO_FRAME_ABI_VERSION,
+                struct_size: std::mem::size_of::<FfiVideoFrameV2>() as u32,
+            };
+            callback(&ffi_frame, user_data);
+        }
+    }
+    let callback_elapsed = callback_started.elapsed();
+    if callback_elapsed >= Duration::from_millis(50) {
+        eprintln!(
+            "[RustDesk-FFI] native video callback slow elapsed_ms={} codec={} size={} keyframe={} display={}",
+            callback_elapsed.as_millis(),
+            frame.codec,
+            frame.data.len(),
+            frame.is_key_frame,
+            frame.display,
+        );
+    }
+    FFI_FRAME_CB_COUNT.fetch_add(1, Ordering::Relaxed);
+    FFI_SUBFRAME_TOTAL.fetch_add(1, Ordering::Relaxed);
+}
+
 fn dispatch_encoded_frames(
     frames: &EncodedVideoFrames,
     codec: c_int,
     width: c_int,
     height: c_int,
     display: c_int,
-    on_frame: FrameCallbackKind,
-    user_data: *mut c_void,
+    video_worker: &mut VideoCallbackWorker,
 ) {
-    static FFI_FRAME_CB_COUNT: AtomicU64 = AtomicU64::new(0);
-    static FFI_SUBFRAME_TOTAL: AtomicU64 = AtomicU64::new(0);
     for frame in frames.get_frames() {
         let data = frame.get_data();
         if data.is_empty() {
             continue;
         }
-        let timestamp = frame.get_pts().max(0) as u64;
-        let is_key_frame = frame.get_key();
-        match on_frame {
-            FrameCallbackKind::V1(callback) => {
-                let ffi_frame = FfiVideoFrame {
-                    data: data.as_ptr(),
-                    size: data.len(),
-                    width,
-                    height,
-                    codec,
-                    timestamp,
-                    is_key_frame,
-                };
-                callback(&ffi_frame, user_data);
-            }
-            FrameCallbackKind::V2(callback) => {
-                let ffi_frame = FfiVideoFrameV2 {
-                    data: data.as_ptr(),
-                    size: data.len(),
-                    width,
-                    height,
-                    codec,
-                    timestamp,
-                    is_key_frame,
-                    display,
-                    abi_version: RUSTDESK_VIDEO_FRAME_ABI_VERSION,
-                    struct_size: std::mem::size_of::<FfiVideoFrameV2>() as u32,
-                };
-                callback(&ffi_frame, user_data);
-            }
-        }
-        // Fast-path counters only (no format/IO in hot path)
-        FFI_FRAME_CB_COUNT.fetch_add(1, Ordering::Relaxed);
-        FFI_SUBFRAME_TOTAL.fetch_add(1, Ordering::Relaxed);
+        video_worker.enqueue(QueuedVideoFrame {
+            data: data.to_vec(),
+            width,
+            height,
+            codec,
+            timestamp: frame.get_pts().max(0) as u64,
+            is_key_frame: frame.get_key(),
+            display,
+        });
     }
 }
 
 fn dispatch_video_frame(
     frame: &VideoFrame,
     display_state: &Arc<Mutex<RustDeskDisplayState>>,
-    on_frame: Option<FrameCallbackKind>,
-    user_data: *mut c_void,
+    video_worker: &mut VideoCallbackWorker,
 ) {
-    let Some(on_frame) = on_frame else {
-        return;
-    };
     let display = frame.get_display();
     let (width, height) = display_state
         .lock()
@@ -900,19 +1015,19 @@ fn dispatch_video_frame(
 
     match frame.union {
         Some(VideoFrame_oneof_union::h264s(ref frames)) => {
-            dispatch_encoded_frames(frames, 0, width, height, display, on_frame, user_data);
+            dispatch_encoded_frames(frames, 0, width, height, display, video_worker);
         }
         Some(VideoFrame_oneof_union::h265s(ref frames)) => {
-            dispatch_encoded_frames(frames, 1, width, height, display, on_frame, user_data);
+            dispatch_encoded_frames(frames, 1, width, height, display, video_worker);
         }
         Some(VideoFrame_oneof_union::vp8s(ref frames)) => {
-            dispatch_encoded_frames(frames, 2, width, height, display, on_frame, user_data);
+            dispatch_encoded_frames(frames, 2, width, height, display, video_worker);
         }
         Some(VideoFrame_oneof_union::vp9s(ref frames)) => {
-            dispatch_encoded_frames(frames, 3, width, height, display, on_frame, user_data);
+            dispatch_encoded_frames(frames, 3, width, height, display, video_worker);
         }
         Some(VideoFrame_oneof_union::av1s(ref frames)) => {
-            dispatch_encoded_frames(frames, 4, width, height, display, on_frame, user_data);
+            dispatch_encoded_frames(frames, 4, width, height, display, video_worker);
         }
         Some(VideoFrame_oneof_union::rgb(_)) | Some(VideoFrame_oneof_union::yuv(_)) | None => {}
     }
@@ -1450,6 +1565,11 @@ fn rustdesk_connect_impl(
             let stream_handle = std::thread::spawn(move || {
                 let callback_user_data = callback_user_data as *mut c_void;
                 let audio_pipeline = RefCell::new(AudioPipeline::new());
+                let mut video_worker = VideoCallbackWorker::start(
+                    on_frame,
+                    callback_user_data as usize,
+                    Arc::clone(&stream_controls),
+                );
                 let result = c.run_streaming(
                     preferred_codec,
                     image_quality,
@@ -1463,8 +1583,7 @@ fn rustdesk_connect_impl(
                         dispatch_video_frame(
                             frame,
                             &frame_display_state,
-                            on_frame,
-                            callback_user_data,
+                            &mut video_worker,
                         )
                     },
                     |format| {
@@ -1501,6 +1620,11 @@ fn rustdesk_connect_impl(
                     },
                 );
 
+                // Drain the bounded callback queue before the stream thread
+                // reports disconnect. This preserves FIFO frame order and
+                // keeps callback context lifetime valid through the final
+                // native callback.
+                video_worker.stop();
                 // Stop audio worker
                 audio_pipeline.borrow_mut().stop();
 
@@ -2440,13 +2564,18 @@ mod tests {
         encoded.mut_frames().push(encoded_frame);
         frame.union = Some(VideoFrame_oneof_union::h264s(encoded));
         let mut received = Vec::new();
+        let mut video_worker = VideoCallbackWorker::start(
+            Some(FrameCallbackKind::V1(collect_legacy_frame)),
+            &mut received as *mut Vec<(i32, i32)> as usize,
+            Arc::new(ControlInbox::default()),
+        );
 
         dispatch_video_frame(
             &frame,
             &display_state,
-            Some(FrameCallbackKind::V1(collect_legacy_frame)),
-            &mut received as *mut Vec<(i32, i32)> as *mut c_void,
+            &mut video_worker,
         );
+        video_worker.stop();
 
         assert_eq!(received, vec![(2560, 1440)]);
     }
@@ -2481,13 +2610,18 @@ mod tests {
         encoded.mut_frames().push(encoded_frame);
         frame.union = Some(VideoFrame_oneof_union::h264s(encoded));
         let mut received = Vec::new();
+        let mut video_worker = VideoCallbackWorker::start(
+            Some(FrameCallbackKind::V2(collect_display_frame)),
+            &mut received as *mut Vec<(i32, i32, i32, u32)> as usize,
+            Arc::new(ControlInbox::default()),
+        );
 
         dispatch_video_frame(
             &frame,
             &display_state,
-            Some(FrameCallbackKind::V2(collect_display_frame)),
-            &mut received as *mut Vec<(i32, i32, i32, u32)> as *mut c_void,
+            &mut video_worker,
         );
+        video_worker.stop();
 
         assert_eq!(received, vec![(1, 2560, 1440, RUSTDESK_VIDEO_FRAME_ABI_VERSION)]);
     }
