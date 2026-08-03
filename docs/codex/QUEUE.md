@@ -4,27 +4,19 @@ Updated: 2026-08-03 Asia/Shanghai
 
 ## Now
 
-- Stage F checkpoint `ef4c33a` passed the existing VNC-only reviewer:
-  TCP reachability is separated from deep mode12/TLS/RFB protocol readiness,
-  both policy runners are registered, and native mode12 handoff fixtures cover
-  fragmented banner/250-byte pairing/RFB handoff and invalid-banner zero-write
-  rejection.
-- Preserve stage A/B and C-first review receipts; keep probe/pin failures
-  fail-closed.
-- Stage F deep-check Promise results are fenced by requestId/attempt generation,
-  Repeater target changes invalidate old work, pending trust is live-bound, and
-  all stable VNC certificate errors are preserved.
-- Checkpoint `5885588` adds a VNC-only renderer Surface gate: startup waits for
-  a ready current SurfaceId after teardown, retries transient rebind failures,
-  and registers the policy in both suites. The existing reviewer must inspect
-  this increment before the task advances.
+- Checkpoint `fa886f37d`/`763dc35d1` fixes RustDesk first-frame startup,
+  authenticated-session restoration, and audio continuity.
+- Checkpoint `f03c9b4ca` fixes VNC background retention and PIP renderer
+  transfer/rebind, including raw framebuffer refresh and presented-frame gating.
+- Preserve fail-closed VNC probe, trust, and Surface policies; no duplicate
+  reviewer task is being created for the committed repair.
 - Restore `hdc` connectivity and capture current VNC `hilog` when the device is
   available; do not convert static source evidence into device evidence.
 
 ## Next
 
-- Stage G: restore hdc and collect real direct/Repeater/device evidence; until
-  then keep the evidence gap explicit and do not start FreeRDP.
+- Stage G: restore hdc and collect real RustDesk/VNC direct/Repeater/device
+  evidence; until then keep the evidence gap explicit.
 
 ## Later
 
@@ -34,8 +26,8 @@ Updated: 2026-08-03 Asia/Shanghai
 
 ## Queue Rules
 
-- Keep one active branch and limit product edits to the VNC V3 plan scope.
-- Do not mix RDP, RustDesk, SSH, renderer, or video-performance work into this
-  VNC task.
+- Keep one active branch and limit product edits to the RustDesk/VNC repair
+  scope.
+- Do not mix RDP or SSH work into this task.
 - A missing device or endpoint blocks only the corresponding evidence, not
   static VNC policy work.

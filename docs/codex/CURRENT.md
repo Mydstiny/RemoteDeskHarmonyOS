@@ -5,11 +5,11 @@ This file is the compact startup resume card. Historical checkpoints remain in
 
 ## Active Task
 
-- Task: `rustdesk-complete-repair` (active branch retained; current scope is VNC V3 only)
+- Task: `rustdesk-complete-repair` (active branch retained; RustDesk/VNC background, PIP, and audio continuity)
 - Branch: `codex/rustdesk-complete-repair`
-- Checkpoint: `5885588`, based on `main@34946adbc`; branch is ahead by 76 and not behind.
-- Phase: VNC V3 stage F follow-up renderer Surface gate. TCP reachability is local-only; the VNC Gateway UI invokes a bounded native mode12/TLS/RFB probe and remains fail-closed on missing trust, cancellation, invalid handoff, or an unavailable page Surface.
-- Worktree: VNC Surface gate is committed and awaiting the existing VNC-only incremental review. Preserve unrelated user changes.
+- Checkpoint: `f03c9b4ca`, based on `main@34946adbc`; branch is ahead by 82 and not behind.
+- Phase: background continuity closure. RustDesk waits for a presented first frame and keeps the authenticated native session/audio alive; VNC now uses the shared active-session registry, PIP renderer transfer, raw framebuffer refresh, and foreground rebind.
+- Worktree: repair commits are present and the worktree is clean. No duplicate reviewer task was started; preserve unrelated user changes.
 ## Stage A Result
 
 - Frozen VNC endpoint/trust owner, certificate preflight, probe lifecycle,
@@ -85,36 +85,35 @@ This file is the compact startup resume card. Historical checkpoints remain in
   RFB banner-only handoff, and a VNC Gateway management-page deep-test action
   bound to the live account/store endpoint resolver. It never sends credentials,
   ClientInit, or framebuffer data; the action can cancel an in-flight check.
-- Checkpoint `ef4c33a` fences deep-check Promise results with requestId and a
-  monotonic attempt generation, binds Repeater target changes, revalidates the
-  live endpoint before saving pending certificate trust, and preserves every
-  stable `E-VNC-CERT-*` error code. Scope remains VNC-only.
+- Checkpoint `ef4c33a` fences deep-check results by request/attempt generation,
+  revalidates live endpoints, and preserves stable `E-VNC-CERT-*` errors.
 - Checkpoint `5885588` gates VNC renderer startup on a ready current SurfaceId;
   transient loss resets the connect attempt and polls instead of using Pbuffer.
+- Checkpoint `fa886f37d`/`763dc35d1` closes RustDesk first-frame, session-registry,
+  background restore, and audio continuity gaps. Checkpoint `f03c9b4ca` extends
+  the same lifecycle to VNC, including raw BGRA renderer/PIP transfer and a
+  presented-frame gate before declaring restore complete.
 - Keep every VNC caller fail-closed when the probe, Sheet lifecycle, owner
   binding, or expected-pin handoff is missing or stale.
 ## Verification
-- `rdp_native_tests`: 252 passed, 0 failed with loopback fixtures on
-  `5885588`, 2026-08-03 (requires host-socket permission).
-- `default@OhosTestCompileArkTS`: passed after `5885588` on 2026-08-03.
-- `assembleHap`: passed after `5885588` on 2026-08-03.
-- `git diff --check`: passed after `5885588` on 2026-08-03.
+- `rdp_native_tests`: 251 passed, 0 failed with loopback fixtures on
+  `f03c9b4ca`, 2026-08-03 (requires host-socket permission).
+- `default@OhosTestCompileArkTS`: passed after `f03c9b4ca` on 2026-08-03.
+- `assembleHap`: passed after `f03c9b4ca` on 2026-08-03.
+- `git diff --check`: passed after `f03c9b4ca` on 2026-08-03.
 - `ohosTest@OhosTestCompileArkTS`: unavailable; task is not registered
   (`00306054`). New ArkTS tests therefore have compile/build evidence only.
 ## Blockers
 - `hdc list targets`/`hdc shell` remain unavailable (no target/current hilog
   evidence); real-device/endpoint evidence is not claimed.
-- Stage B native probe is covered by host fixtures for self-signed, trusted
-  root, name mismatch, expiry, rotation, no certificate, TLS 1.0/1.1 rejection,
-  IPv4/IPv6/SNI, timeout/cancel, DNS bound, pin match/mismatch, no RFB
-  handoff, and the final transport deadline. NAPI runtime, Promise/environment teardown, Sheet lifecycle,
-  TrustService migration, real Repeater, cloud, and device matrices remain
-  unverified and are not release evidence.
-- Stage C/D/E UI, CloudStore, Preferences restart, Stage F deep-check, and the
-  new VNC Surface lifecycle behavior remain static/build-tested only; no device
-  evidence is claimed.
+- Stage B native probe has host fixtures for certificate, TLS, DNS, pin, RFB,
+  timeout, and cancellation paths. NAPI teardown, Sheet lifecycle, TrustService
+  migration, real Repeater, cloud, and device matrices remain unverified.
+- Stage C/D/E UI, CloudStore, Preferences restart, Stage F deep-check, RustDesk
+  audio, and RustDesk/VNC background/PIP lifecycle behavior remain
+  static/build-tested only; no device evidence is claimed.
 
 ## Review Protocol
 - Machine state: `docs/codex/STATE.json`; receipts: `docs/codex/REVIEW_RECEIPTS.jsonl`.
-- `scripts/sync_workspace.sh status` records RESUME_REVIEW for the
-  `ef4c33a..5885588` VNC-only increment; keep work VNC-only.
+- `scripts/sync_workspace.sh status` records RESUME_REVIEW for the existing task
+  owner; no duplicate audit was dispatched.

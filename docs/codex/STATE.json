@@ -3,45 +3,57 @@
   "task": "rustdesk-complete-repair",
   "branch": "codex/rustdesk-complete-repair",
   "base": "34946adbc",
-  "head": "5885588",
-  "phase": "vnc-v3-stage-f-gateway-deep-checks",
+  "head": "f03c9b4ca",
+  "phase": "rustdesk-vnc-background-pip-audio-closure",
   "status": "active",
-  "next": "VNC renderer Surface gate checkpoint 5885588 is awaiting the existing VNC-only incremental review; continue Stage G device/direct/Repeater evidence only when hdc is available. Do not start FreeRDP.",
+  "next": "Code repair is committed at f03c9b4ca. Run the final local gates and keep real-device validation pending until hdc is available; do not dispatch a duplicate reviewer task.",
   "blockers": [
     "hdc list targets and hdc shell return Connect server failed; no current hilog evidence.",
     "ohosTest@OhosTestCompileArkTS is not registered (00306054); ArkTS tests have compile/build evidence only.",
     "VNC native/endpoint/device evidence remains outstanding; hdc list targets and hdc shell return Connect server failed.",
-    "Stage C RemoteDesktop Sheet/probe/password runtime behavior has only static/build evidence; no device or ohosTest runtime evidence."
+    "Stage C RemoteDesktop Sheet/probe/password runtime behavior has only static/build evidence; no device or ohosTest runtime evidence.",
+    "RustDesk/VNC background restore, PIP surface transfer, and audio continuity have no real-device/hilog evidence."
   ],
   "planPaths": [
     "docs/superpowers/plans/2026-08-01-vnc-certificate-settings-relay-complete-repair-plan-v3.md"
   ],
   "review": {
-    "status": "PASS",
+    "status": "BLOCKED",
     "taskId": "019fc333-6789-7633-bf6f-3fea1cb2ad4d",
     "scope": [
-      "entry/src/main/ets/pages/RustDeskRelayPage.ets",
+      "entry/src/main/cpp/audio/audio_player.cpp",
       "entry/src/main/cpp/extensions/extension_loader_napi.cpp",
-      "entry/src/main/cpp/types/librdpnapi/index.d.ts",
-      "entry/src/main/ets/services/ExtensionLoader.ets",
-      "entry/src/main/ets/types/rdpnapi.d.ts",
-      "entry/src/main/ets/services/VncGatewayHealthPolicy.ets",
-      "entry/src/main/ets/pages/RemoteDesktop.ets",
-      "entry/src/main/ets/services/VncRendererSurfacePolicy.ets",
+      "entry/src/main/cpp/rustdesk/rustdesk_bridge.cpp",
+      "entry/src/main/cpp/rustdesk/rustdesk_bridge.h",
       "entry/src/main/cpp/test/vnc_certificate_probe_test.cpp",
+      "entry/src/main/cpp/types/librdpnapi/index.d.ts",
+      "entry/src/main/cpp/vnc/vnc_rfb_protocol.cpp",
+      "entry/src/main/cpp/vnc/vnc_rfb_protocol.h",
+      "entry/src/main/ets/components/VncCertificateTrustManagerSheet.ets",
+      "entry/src/main/ets/pages/HostListPage.ets",
+      "entry/src/main/ets/pages/RemoteDesktop.ets",
+      "entry/src/main/ets/pages/RustDeskRelayPage.ets",
+      "entry/src/main/ets/services/ActiveRemoteSessionRegistry.ets",
+      "entry/src/main/ets/services/ExtensionLoader.ets",
+      "entry/src/main/ets/services/RemoteSessionPipLifecyclePolicy.ets",
+      "entry/src/main/ets/services/VncGatewayHealthPolicy.ets",
+      "entry/src/main/ets/services/VncRendererSurfacePolicy.ets",
+      "entry/src/main/ets/types/rdpnapi.d.ts",
+      "entry/src/ohosTest/ets/test/ActiveRemoteSessionRegistry.test.ets",
       "entry/src/ohosTest/ets/test/List.test.ets",
+      "entry/src/ohosTest/ets/test/RemoteSessionPipLifecyclePolicy.test.ets",
       "entry/src/test/List.test.ets",
       "entry/src/test/VncGatewayHealthPolicy.test.ets",
       "entry/src/test/VncRendererSurfacePolicy.test.ets"
     ],
-    "reason": "Existing read-only review passed 44b83ef to ef4c33a; checkpoint 5885588 adds a VNC-only live Surface renderer gate and awaits one incremental review. Remaining gaps are real endpoint, hdc, OHOS runtime, and direct ArkTS/NAPI tests."
+    "reason": "Existing review task 019fc333-6789-7633-bf6f-3fea1cb2ad4d remains the only review owner. The f03c9b4ca cross-protocol background/PIP/audio closure is committed without starting a duplicate audit; remaining gaps are real endpoint, hdc, OHOS runtime, and direct ArkTS/NAPI tests."
   },
   "lastVerification": {
-    "rdp_native_tests": "252-pass-0-fail-loopback-fixtures-host-socket-5885588-2026-08-03",
-    "default@OhosTestCompileArkTS": "pass-after-5885588-2026-08-03",
-    "assembleHap": "pass-after-5885588-2026-08-03",
+    "rdp_native_tests": "251-pass-0-fail-loopback-fixtures-host-socket-f03c9b4ca-2026-08-03",
+    "default@OhosTestCompileArkTS": "pass-after-f03c9b4ca-2026-08-03",
+    "assembleHap": "pass-after-f03c9b4ca-2026-08-03",
     "ohosTest@OhosTestCompileArkTS": "blocked-task-00306054-2026-08-02",
-    "diffCheck": "pass-after-5885588-2026-08-03"
+    "diffCheck": "pass-after-f03c9b4ca-2026-08-03"
   },
   "archives": [
     "docs/codex/archive/2026-08/README.md",
