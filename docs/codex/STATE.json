@@ -3,10 +3,10 @@
   "task": "rustdesk-complete-repair",
   "branch": "codex/rustdesk-complete-repair",
   "base": "34946adbc",
-  "head": "fc9daa13f",
+  "head": "8f45bbf37",
   "phase": "vnc-v3-stage-d-follow-up",
   "status": "active",
-  "next": "Stage D manager endpoint/migration segment fc9daa13f passed; implement endpoint deletion/rotation invalidation and backup/cloud wording within VNC-only scope, then reuse the existing reviewer once.",
+  "next": "Stage D follow-up checkpoint 8f45bbf37 implements endpoint deletion/rotation invalidation and backup/cloud trust boundaries; reuse the existing reviewer once before entering the next VNC segment.",
   "blockers": [
     "hdc list targets and hdc shell return Connect server failed; no current hilog evidence.",
     "ohosTest@OhosTestCompileArkTS is not registered (00306054); ArkTS tests have compile/build evidence only.",
@@ -17,27 +17,32 @@
     "docs/superpowers/plans/2026-08-01-vnc-certificate-settings-relay-complete-repair-plan-v3.md"
   ],
   "review": {
-    "status": "PASS",
+    "status": "BLOCKED",
     "taskId": "019fc333-6789-7633-bf6f-3fea1cb2ad4d",
     "scope": [
-      "entry/src/main/ets/components/VncCertificateTrustManagerSheet.ets",
       "entry/src/main/ets/pages/HostListPage.ets",
       "entry/src/main/ets/pages/VncSettingsPage.ets",
-      "entry/src/main/ets/services/VncTrustEndpointDirectory.ets",
+      "entry/src/main/ets/services/BackupManifestV3.ets",
+      "entry/src/main/ets/services/LocalBackupPolicy.ets",
+      "entry/src/main/ets/services/VncGatewayService.ets",
+      "entry/src/main/ets/services/VncHostService.ets",
+      "entry/src/main/ets/services/VncRecordPolicy.ets",
+      "entry/src/main/ets/services/VncTrustInvalidationPolicy.ets",
       "entry/src/main/ets/services/VncTrustService.ets",
       "entry/src/ohosTest/ets/test/List.test.ets",
       "entry/src/test/List.test.ets",
-      "entry/src/test/VncTrustEndpointDirectory.test.ets",
+      "entry/src/test/LocalBackupPolicy.test.ets",
+      "entry/src/test/VncTrustInvalidationPolicy.test.ets",
       "entry/src/test/VncTrustService.test.ets"
     ],
-    "reason": "Stage D manager endpoint/migration checkpoint fc9daa13f passed the existing independent read-only reviewer; reuse the task for the next VNC-only increment."
+    "reason": "Stage D follow-up checkpoint 8f45bbf37 awaits the existing independent read-only reviewer; reuse the task once for this VNC-only increment."
   },
   "lastVerification": {
-    "rdp_native_tests": "249-pass-0-fail-loopback-fixtures-host-socket-fc9daa13f-2026-08-02",
-    "default@OhosTestCompileArkTS": "pass-after-fc9daa13f-2026-08-02",
-    "assembleHap": "pass-after-fc9daa13f-2026-08-02",
+    "rdp_native_tests": "249-pass-0-fail-loopback-fixtures-host-socket-8f45bbf37-2026-08-02",
+    "default@OhosTestCompileArkTS": "pass-after-8f45bbf37-2026-08-02",
+    "assembleHap": "pass-after-8f45bbf37-2026-08-02",
     "ohosTest@OhosTestCompileArkTS": "blocked-task-00306054-2026-08-02",
-    "diffCheck": "pass-after-fc9daa13f-2026-08-02"
+    "diffCheck": "pass-after-8f45bbf37-2026-08-02"
   },
   "archives": [
     "docs/codex/archive/2026-08/README.md",

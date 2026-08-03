@@ -4,9 +4,9 @@ Updated: 2026-08-02 Asia/Shanghai
 
 ## Now
 
-- Stage D manager endpoint/migration segment `fc9daa13f` passed the single
-  independent incremental review. Continue with endpoint deletion/rotation
-  invalidation and backup/cloud wording within VNC-only scope.
+- Stage D follow-up checkpoint `8f45bbf37` implements endpoint deletion/rotation
+  invalidation and backup/cloud wording within VNC-only scope; request the
+  existing reviewer once and wait for PASS before the next segment.
 - Preserve stage A/B and C-first review receipts; keep probe/pin failures
   fail-closed.
 - Restore `hdc` connectivity and capture current VNC `hilog` when the device is
@@ -14,8 +14,8 @@ Updated: 2026-08-02 Asia/Shanghai
 
 ## Next
 
-- Stage D follow-up: backup/cloud wording and endpoint deletion/rotation
-  invalidation, then request the same reviewer once for the increment.
+- Stage D follow-up review: consume the single existing reviewer result for
+  `8f45bbf37`; repair any findings before advancing.
 - Stage E/F: VNC settings consistency and Repeater mode12 deep checks.
 
 ## Later
