@@ -3,10 +3,10 @@
   "task": "rustdesk-complete-repair",
   "branch": "codex/rustdesk-complete-repair",
   "base": "34946adbc",
-  "head": "75c7da0",
+  "head": "ef4c33a",
   "phase": "vnc-v3-stage-f-gateway-deep-checks",
   "status": "active",
-  "next": "Stage F checkpoint c31607c wires the bounded native mode12/TLS/RFB deep-check Promise and cancellation into the VNC Gateway page; await the single existing reviewer before Stage G.",
+  "next": "Stage F checkpoint ef4c33a fences Promise request/attempt generations, Repeater target binding, live certificate handoff, and all stable VNC certificate errors; await the single existing reviewer before Stage G.",
   "blockers": [
     "hdc list targets and hdc shell return Connect server failed; no current hilog evidence.",
     "ohosTest@OhosTestCompileArkTS is not registered (00306054); ArkTS tests have compile/build evidence only.",
@@ -31,14 +31,14 @@
       "entry/src/test/List.test.ets",
       "entry/src/test/VncGatewayHealthPolicy.test.ets"
     ],
-    "reason": "Checkpoint c31607c adds the planned VNC-only native/endpoint deep-check integration and user cancellation after the f4f476068 fixture PASS; reuse the existing reviewer for one incremental read-only audit."
+    "reason": "Checkpoint ef4c33a fixes the existing VNC-only review findings for request/attempt fencing, Repeater target binding, live trust handoff validation, and stable certificate error preservation; reuse the existing reviewer for one incremental read-only audit."
   },
   "lastVerification": {
-    "rdp_native_tests": "251-pass-0-fail-loopback-fixtures-host-socket-c31607c-2026-08-03",
-    "default@OhosTestCompileArkTS": "pass-after-c31607c-2026-08-03",
-    "assembleHap": "pass-after-c31607c-2026-08-03",
+    "rdp_native_tests": "252-pass-0-fail-loopback-fixtures-host-socket-ef4c33a-2026-08-03",
+    "default@OhosTestCompileArkTS": "pass-after-ef4c33a-2026-08-03",
+    "assembleHap": "pass-after-ef4c33a-2026-08-03",
     "ohosTest@OhosTestCompileArkTS": "blocked-task-00306054-2026-08-02",
-    "diffCheck": "pass-after-c31607c-2026-08-03"
+    "diffCheck": "pass-after-ef4c33a-2026-08-03"
   },
   "archives": [
     "docs/codex/archive/2026-08/README.md",

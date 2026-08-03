@@ -7,7 +7,7 @@ This file is the compact startup resume card. Historical checkpoints remain in
 
 - Task: `rustdesk-complete-repair` (active branch retained; current scope is VNC V3 only)
 - Branch: `codex/rustdesk-complete-repair`
-- Checkpoint: `c31607c`, based on `main@34946adbc`; branch is ahead by 68 and not behind.
+- Checkpoint: `ef4c33a`, based on `main@34946adbc`; branch is ahead by 72 and not behind.
 - Phase: VNC V3 stage F native/endpoint deep-check integration. TCP reachability is local-only; the VNC Gateway UI now invokes a bounded native mode12/TLS/RFB probe and remains fail-closed on missing trust, cancellation, or invalid handoff.
 - Worktree: Stage F deep-check integration is committed. Preserve unrelated user changes.
 
@@ -87,15 +87,19 @@ This file is the compact startup resume card. Historical checkpoints remain in
   RFB banner-only handoff, and a VNC Gateway management-page deep-test action
   bound to the live account/store endpoint resolver. It never sends credentials,
   ClientInit, or framebuffer data; the action can cancel an in-flight check.
+- Checkpoint `ef4c33a` fences deep-check Promise results with requestId and a
+  monotonic attempt generation, binds Repeater target changes, revalidates the
+  live endpoint before saving pending certificate trust, and preserves every
+  stable `E-VNC-CERT-*` error code. Scope remains VNC-only.
 - Keep every VNC caller fail-closed when the probe, Sheet lifecycle, owner
   binding, or expected-pin handoff is missing or stale.
 ## Verification
 
-- `rdp_native_tests`: 251 passed, 0 failed with loopback fixtures on
-  `c31607c`, 2026-08-03 (requires host-socket permission).
-- `default@OhosTestCompileArkTS`: passed after `c31607c` on 2026-08-03.
-- `assembleHap`: passed after `c31607c` on 2026-08-03.
-- `git diff --check`: passed after `c31607c` on 2026-08-03.
+- `rdp_native_tests`: 252 passed, 0 failed with loopback fixtures on
+  `ef4c33a`, 2026-08-03 (requires host-socket permission).
+- `default@OhosTestCompileArkTS`: passed after `ef4c33a` on 2026-08-03.
+- `assembleHap`: passed after `ef4c33a` on 2026-08-03.
+- `git diff --check`: passed after `ef4c33a` on 2026-08-03.
 - `ohosTest@OhosTestCompileArkTS`: unavailable; task is not registered
   (`00306054`). New ArkTS tests therefore have compile/build evidence only.
 ## Blockers
@@ -117,4 +121,4 @@ This file is the compact startup resume card. Historical checkpoints remain in
 - Receipts: `docs/codex/REVIEW_RECEIPTS.jsonl`.
 - `scripts/sync_workspace.sh status` should keep active VNC-only work at Stage F
   native/endpoint integration and reuse the existing reviewer for the single
-  incremental review of `c31607c`.
+  incremental review of `ef4c33a`.

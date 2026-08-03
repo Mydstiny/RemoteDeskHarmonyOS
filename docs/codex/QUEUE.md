@@ -11,16 +11,16 @@ Updated: 2026-08-03 Asia/Shanghai
   rejection.
 - Preserve stage A/B and C-first review receipts; keep probe/pin failures
   fail-closed.
-- Checkpoint `c31607c` wires the bounded native deep-check Promise and
-  cancellation into the VNC Gateway management page using the live
-  endpoint/trust binding.
+- Checkpoint `ef4c33a` fences deep-check Promise results by requestId and
+  attempt generation, binds Repeater target changes, revalidates pending trust
+  against the live endpoint, and preserves all stable VNC certificate errors.
 - Restore `hdc` connectivity and capture current VNC `hilog` when the device is
   available; do not convert static source evidence into device evidence.
 
 ## Next
 
-- Request the one existing reviewer task to audit checkpoint `c31607c` for the
-  planned native/endpoint deep-check integration before Stage G device matrices.
+- Request the one existing reviewer task once to audit checkpoint `ef4c33a`; do
+  not advance to Stage G or start FreeRDP before its result.
 
 ## Later
 
