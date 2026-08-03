@@ -169,6 +169,10 @@ import {
   shouldPollSurfaceAfterForegroundRestore
 } from '../services/RemoteForegroundRestorePolicy';
 import {
+  isVncRendererSurfaceReady,
+  shouldDeferVncRendererUntilSurface
+} from '../services/VncRendererSurfacePolicy';
+import {
   shouldHideRemoteNavigation,
   shouldReapplyRemoteNavigation,
   shouldRestoreRemoteNavigation
@@ -5500,8 +5504,15 @@ struct RemoteDesktop {
       return;
     }
     this.resetRemoteImeSession('session-connect');
-    if (!this.surfaceReady) {
-      hilog.info(RD_DOMAIN, RD_TAG, 'tryStartConnect: surfaceReady=false, 等待 SurfaceId 回调');
+    const vncSurfaceReady: boolean = !this.isVncSession() ||
+      isVncRendererSurfaceReady(this.surfaceReady, this.latestSurfaceId);
+    if (!this.surfaceReady || !vncSurfaceReady) {
+      hilog.info(RD_DOMAIN, RD_TAG, 'tryStartConnect: surface unavailable, waiting for SurfaceId' +
+        ' ready=' + (this.surfaceReady ? 'true' : 'false') +
+        ' hasId=' + (this.latestSurfaceId.trim().length > 0 ? 'true' : 'false'));
+      if (this.isVncSession()) {
+        this.pollSurfaceId(0);
+      }
       return;
     }
     this.connectStarted = true;
@@ -8137,6 +8148,19 @@ struct RemoteDesktop {
         scopeAfterTeardown.generation !== connectionScope.generation) {
         throw new Error('账号已切换，旧账号连接已取消。');
       }
+      if (shouldDeferVncRendererUntilSurface(
+        isVnc,
+        this.surfaceReady,
+        this.latestSurfaceId,
+        this.restoreInProgress,
+        this.cleanupStarted)) {
+        this.connectStarted = false;
+        this.surfaceReady = false;
+        hilog.warn(RD_DOMAIN, RD_TAG,
+          'doConnect: VNC surface lost while waiting for teardown; retrying after SurfaceId');
+        this.pollSurfaceId(0);
+        return;
+      }
       this.rendererSourceWidth = 0;
       this.rendererSourceHeight = 0;
       this.vncGeometryReady = !isVnc;
@@ -8172,19 +8196,41 @@ struct RemoteDesktop {
       // 断开清理会把 native surface 标记为 detached；马上重连时
       // initRenderer 之前必须重新绑定最新 SurfaceId，否则新会话的
       // 每一帧都会被 SurfaceDetached 拒绝，表现为“断线后立刻重连失败”。
-      if (this.latestSurfaceId.length > 0) {
+      if (isVnc && !isVncRendererSurfaceReady(this.surfaceReady, this.latestSurfaceId)) {
+        this.connectStarted = false;
+        this.surfaceReady = false;
+        hilog.warn(RD_DOMAIN, RD_TAG,
+          'doConnect: VNC SurfaceId invalid before renderer bind; retrying after SurfaceId');
+        this.pollSurfaceId(0);
+        return;
+      }
+      if (this.latestSurfaceId.trim().length > 0) {
+        const surfaceId: string = this.latestSurfaceId.trim();
         const rebound: boolean = rdpnapi.setXComponentSurfaceId(
-          this.latestSurfaceId, pageSurface.width, pageSurface.height) as boolean;
+          surfaceId, pageSurface.width, pageSurface.height) as boolean;
         hilog.info(RD_DOMAIN, RD_TAG,
-          'doConnect: surface rebound before initRenderer id=' + this.latestSurfaceId +
+          'doConnect: surface rebound before initRenderer id=' + surfaceId +
             ' ok=' + (rebound ? 'true' : 'false'));
         if (!rebound) {
+          if (isVnc) {
+            this.connectStarted = false;
+            this.surfaceReady = false;
+            hilog.warn(RD_DOMAIN, RD_TAG,
+              'doConnect: VNC SurfaceId rebind failed; retrying after SurfaceId');
+            this.pollSurfaceId(0);
+            return;
+          }
           throw new Error('渲染器 Surface 重新绑定失败 [E-RENDERER-SURFACE-REBIND]');
+        }
+        if (isVnc) {
+          this.surfaceReady = true;
         }
       }
       console.info('[RD-DIAG] initRenderer: xcId=' + this.xcId + ' w=' + pageSurface.width +
         ' h=' + pageSurface.height + ' remote=' + w + 'x' + h);
-      const rHandle: number = this.loader.initRenderer(this.xcId, pageSurface.width, pageSurface.height);
+      const rHandle: number = this.loader.initRenderer(
+        isVnc && this.latestSurfaceId.trim().length > 0 ? this.latestSurfaceId.trim() : this.xcId,
+        pageSurface.width, pageSurface.height);
       console.info('[RD-DIAG] initRenderer returned: ' + rHandle);
       if (rHandle <= 0) {
         throw new Error('渲染器初始化失败 [E-RENDERER-INIT] rc=' + rHandle);
@@ -9837,7 +9883,9 @@ struct RemoteDesktop {
 
   // 轮询获取 surfaceId (onSurfaceCreated 回调在 API 23 不可用)
   private pollSurfaceId(attempt: number): void {
-    if (this.surfaceReady || (this.connectStarted && !this.bgRestorePending)) {
+    const currentSurfaceReady: boolean = this.surfaceReady &&
+      (!this.isVncSession() || isVncRendererSurfaceReady(this.surfaceReady, this.latestSurfaceId));
+    if (currentSurfaceReady || (this.connectStarted && !this.bgRestorePending)) {
       return;
     }
     try {
