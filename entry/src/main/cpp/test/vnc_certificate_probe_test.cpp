@@ -2,9 +2,12 @@
 #include "test_runner.h"
 #include "vnc/vnc_certificate_probe.h"
 #include "vnc/vnc_rfb_engine.h"
+#include "vnc/vnc_rfb_protocol.h"
 #include "vnc/vnc_transport.h"
 
 #include <arpa/inet.h>
+#include <array>
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <csignal>
@@ -337,6 +340,109 @@ private:
     std::atomic<bool> sawServerName_ {false};
 };
 
+/** A byte-level UltraVNC mode12 peer used only for bounded handoff tests. */
+class LocalRepeaterFixture final {
+public:
+    explicit LocalRepeaterFixture(bool validBanner = true) : validBanner_(validBanner) {}
+    ~LocalRepeaterFixture() { stop(); }
+
+    bool start() {
+        (void)::signal(SIGPIPE, SIG_IGN);
+        listenFd_ = ::socket(AF_INET, SOCK_STREAM, 0);
+        if (listenFd_ < 0) return false;
+        const int reuse = 1;
+        (void)::setsockopt(listenFd_, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
+        sockaddr_in address {};
+        address.sin_family = AF_INET;
+        address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        address.sin_port = htons(0);
+        if (::bind(listenFd_, reinterpret_cast<const sockaddr*>(&address), sizeof(address)) != 0 ||
+            ::listen(listenFd_, 1) != 0) return false;
+        socklen_t length = sizeof(address);
+        if (::getsockname(listenFd_, reinterpret_cast<sockaddr*>(&address), &length) != 0) return false;
+        port_ = ntohs(address.sin_port);
+        stopRequested_.store(false, std::memory_order_release);
+        worker_ = std::thread(&LocalRepeaterFixture::serve, this);
+        return true;
+    }
+
+    void stop() {
+        stopRequested_.store(true, std::memory_order_release);
+        const int client = clientFd_.exchange(-1, std::memory_order_acq_rel);
+        if (client >= 0) {
+            (void)::shutdown(client, SHUT_RDWR);
+            (void)::close(client);
+        }
+        const int listener = std::exchange(listenFd_, -1);
+        if (listener >= 0) {
+            (void)::shutdown(listener, SHUT_RDWR);
+            (void)::close(listener);
+        }
+        if (worker_.joinable()) worker_.join();
+    }
+
+    int port() const { return port_; }
+    bool pairingReceived() const { return pairingReceived_.load(std::memory_order_acquire); }
+    const std::array<uint8_t, 250>& pairing() const { return pairing_; }
+
+private:
+    static bool sendChunks(int fd, const uint8_t* data, size_t size) {
+        size_t offset = 0;
+        while (offset < size) {
+            const size_t chunk = std::min<size_t>(3, size - offset);
+            const ssize_t written = ::send(fd, data + offset, chunk, MSG_NOSIGNAL);
+            if (written <= 0) return false;
+            offset += static_cast<size_t>(written);
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+        return true;
+    }
+
+    static bool recvExactSlow(int fd, uint8_t* data, size_t size) {
+        size_t offset = 0;
+        while (offset < size) {
+            const ssize_t received = ::recv(fd, data + offset, std::min<size_t>(7, size - offset), 0);
+            if (received <= 0) return false;
+            offset += static_cast<size_t>(received);
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        return true;
+    }
+
+    void serve() {
+        const int listener = listenFd_;
+        pollfd descriptor {listener, POLLIN, 0};
+        while (!stopRequested_.load(std::memory_order_acquire) && ::poll(&descriptor, 1, 50) > 0) {
+            const int client = ::accept(listener, nullptr, nullptr);
+            if (client < 0) return;
+            clientFd_.store(client, std::memory_order_release);
+            static constexpr char valid[] = "RFB 000.000\n";
+            static constexpr char invalid[] = "RFB 003.008\n";
+            const char* banner = validBanner_ ? valid : invalid;
+            if (!sendChunks(client, reinterpret_cast<const uint8_t*>(banner), 12)) return;
+            if (!recvExactSlow(client, pairing_.data(), pairing_.size())) return;
+            pairingReceived_.store(true, std::memory_order_release);
+            static constexpr char rfb[] = "RFB 003.008\n";
+            (void)sendChunks(client, reinterpret_cast<const uint8_t*>(rfb), 12);
+            while (!stopRequested_.load(std::memory_order_acquire)) {
+                pollfd clientDescriptor {client, POLLIN, 0};
+                if (::poll(&clientDescriptor, 1, 50) < 0) break;
+                if ((clientDescriptor.revents & (POLLHUP | POLLERR | POLLNVAL)) != 0) break;
+            }
+            return;
+        }
+    }
+
+    bool validBanner_ = true;
+    std::atomic<bool> stopRequested_ {false};
+    std::atomic<int> clientFd_ {-1};
+    std::atomic<bool> pairingReceived_ {false};
+    std::array<uint8_t, 250> pairing_ {};
+    int listenFd_ = -1;
+    int port_ = 0;
+    std::thread worker_;
+};
+
 } // namespace
 
 RDP_TEST_CASE(vnc_certificate_probe_error_categories_are_stable) {
@@ -615,6 +721,48 @@ RDP_TEST_CASE(vnc_transport_tls_deadline_covers_a_trickle_handshake) {
     RDP_ASSERT(error == "E-VNC-CERT-TLS-TIMEOUT");
     RDP_ASSERT(elapsed < 350);
     transport.close();
+}
+
+RDP_TEST_CASE(vnc_repeater_transport_deep_handoff_reads_banner_and_exact_pairing) {
+    LocalRepeaterFixture fixture;
+    RDP_ASSERT(fixture.start());
+    VncTransportConfig config;
+    config.transport = "ultravnc_repeater";
+    config.host = "127.0.0.1";
+    config.port = fixture.port();
+    config.repeaterMode = "mode12";
+    config.repeaterTarget = "office-1";
+    config.connectTimeoutMs = 2000;
+    VncTransport transport;
+    std::string error;
+    RDP_ASSERT(transport.connect(config, error));
+    std::array<uint8_t, VncRfbProtocol::kProtocolVersionBytes> rfbBanner {};
+    RDP_ASSERT(transport.readExact(rfbBanner.data(), rfbBanner.size(), 1000, error));
+    RDP_ASSERT(std::memcmp(rfbBanner.data(), "RFB 003.008\n", rfbBanner.size()) == 0);
+    transport.close();
+    RDP_ASSERT(fixture.pairingReceived());
+    std::string target;
+    RDP_ASSERT(VncRfbProtocol::parseRepeaterTargetField(
+        fixture.pairing().data(), fixture.pairing().size(), target, error));
+    RDP_ASSERT(target == "office-1");
+}
+
+RDP_TEST_CASE(vnc_repeater_transport_rejects_invalid_banner_before_pairing) {
+    LocalRepeaterFixture fixture(false);
+    RDP_ASSERT(fixture.start());
+    VncTransportConfig config;
+    config.transport = "ultravnc_repeater";
+    config.host = "127.0.0.1";
+    config.port = fixture.port();
+    config.repeaterMode = "mode12";
+    config.repeaterTarget = "office-1";
+    config.connectTimeoutMs = 1000;
+    VncTransport transport;
+    std::string error;
+    RDP_ASSERT(!transport.connect(config, error));
+    RDP_ASSERT(error.find("banner is invalid") != std::string::npos);
+    transport.close();
+    RDP_ASSERT(!fixture.pairingReceived());
 }
 
 RDP_TEST_CASE(vnc_rfb_engine_stop_during_tls_keeps_ssl_teardown_on_worker) {
