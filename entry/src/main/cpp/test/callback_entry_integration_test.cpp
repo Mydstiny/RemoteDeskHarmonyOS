@@ -1013,7 +1013,7 @@ void RunRustDeskPreparedTicketTransitionBarriers() {
         });
         bridge.SetContinuityConnectResultHookForTesting(
             [&](uint64_t generation, uint64_t attemptToken) {
-                RDP_ASSERT(generation != owner.generation);
+                RDP_ASSERT_EQ(generation, owner.generation);
                 RDP_ASSERT(attemptToken != 0);
                 return 0;
             });
@@ -1027,6 +1027,7 @@ void RunRustDeskPreparedTicketTransitionBarriers() {
         }
         RDP_ASSERT_EQ(bridge.continuityConnectCallCountForTesting(), before + 1);
         RDP_ASSERT_EQ(visibleSuccess.load(std::memory_order_acquire), 1);
+        RDP_ASSERT_EQ(bridge.sessionGeneration(), owner.generation);
         bridge.SetContinuityConnectResultHookForTesting(nullptr);
         bridge.disconnect();
         DeactivateOwner(owner);

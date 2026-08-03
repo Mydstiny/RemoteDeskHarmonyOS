@@ -1623,8 +1623,6 @@ RustDeskBridge::prepareContinuityAttempt(
     }
 #endif
 
-    const uint64_t nextGeneration =
-        g_nextRustDeskCursorGeneration.fetch_add(1, std::memory_order_relaxed);
     const uint64_t attemptToken =
         impl_->nextContinuityAttemptToken.fetch_add(1, std::memory_order_relaxed);
     RustDeskConnectionContinuityExecutor::PreparedAttemptTicket prepared;
@@ -1639,23 +1637,28 @@ RustDeskBridge::prepareContinuityAttempt(
             return std::nullopt;
         }
         const uint64_t sessionId = source.sessionId;
+        const uint64_t sessionGeneration = source.sessionGeneration;
         const uint64_t ownerToken = source.ownerToken;
-        const uint64_t admissionEpoch = source.admissionEpoch;
-        impl_->cursorGeneration.store(nextGeneration, std::memory_order_release);
+        // A transport reconnect is a new FFI stream, not a new native sink
+        // owner. Keep the decoder/renderer owner stable and rotate only the
+        // FFI admission epoch so callbacks from the retired stream are still
+        // rejected without dropping the active video pipeline.
+        const uint64_t admissionEpoch =
+            impl_->ffiAdmissionEpoch.fetch_add(1, std::memory_order_acq_rel) + 1;
         impl_->continuityAttemptToken.store(attemptToken, std::memory_order_release);
         impl_->ffiStreamEnded.store(true, std::memory_order_release);
         impl_->awaitingFirstGenerationFrame.store(
             mode_ == RustDeskMode::FFI, std::memory_order_release);
         impl_->continuityNetworkCallCancelled.store(false, std::memory_order_release);
         prepared.sessionId = sessionId;
-        prepared.sessionGeneration = nextGeneration;
+        prepared.sessionGeneration = sessionGeneration;
         prepared.ownerToken = ownerToken;
         prepared.admissionEpoch = admissionEpoch;
         prepared.attemptToken = attemptToken;
-        prepared.validator = [impl = impl_, sessionId, nextGeneration,
+        prepared.validator = [impl = impl_, sessionId, sessionGeneration,
                               ownerToken, admissionEpoch, attemptToken]() {
             return impl->sessionId.load(std::memory_order_acquire) == sessionId &&
-                impl->cursorGeneration.load(std::memory_order_acquire) == nextGeneration &&
+                impl->cursorGeneration.load(std::memory_order_acquire) == sessionGeneration &&
                 impl->ownerToken.load(std::memory_order_acquire) == ownerToken &&
                 impl->ffiAdmissionEpoch.load(std::memory_order_acquire) == admissionEpoch &&
                 impl->continuityAttemptToken.load(std::memory_order_acquire) == attemptToken &&
