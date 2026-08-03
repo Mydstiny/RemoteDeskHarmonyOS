@@ -949,6 +949,12 @@ export struct RustDeskRelayPage {
     }
   }
 
+  private cancelDeepTestVncGateway(): void {
+    if (this.testingVncGatewayRequestId <= 0) { return; }
+    this.extensionLoader.cancelVncGatewayDeep(this.testingVncGatewayRequestId);
+    this.vncTestResult = '⏳ 正在取消 VNC 深度检查…';
+  }
+
   private doDeleteRelay(id: string): void {
     promptAction.showDialog({
       title: '确认删除', message: '确定要删除此中继服务器及其所有账户吗？',
@@ -1521,10 +1527,21 @@ export struct RustDeskRelayPage {
               .fontSize(13).height(36).backgroundColor(this.accentColor).fontColor(Color.White).borderRadius(8)
               .padding({ left: 14, right: 14 }).enabled(this.testingVncGatewayId === '')
               .onClick((): void => { void this.doTestVncGateway(this.selectedPcVncGateway as VncGatewayView); })
-            Button('深度测试').fontSize(13).height(36).backgroundColor(this.pal().surface)
+            Button(this.testingVncGatewayId === (this.selectedPcVncGateway as VncGatewayView).id
+              && this.testingVncGatewayRequestId > 0 ? '取消深度' : '深度测试')
+              .fontSize(13).height(36).backgroundColor(this.pal().surface)
               .fontColor(this.accentColor).borderRadius(8).margin({ left: 8 })
-              .padding({ left: 14, right: 14 }).enabled(this.testingVncGatewayId === '')
-              .onClick((): void => { void this.doDeepTestVncGateway(this.selectedPcVncGateway as VncGatewayView); })
+              .padding({ left: 14, right: 14 })
+              .enabled(this.testingVncGatewayId === '' ||
+                (this.testingVncGatewayId === (this.selectedPcVncGateway as VncGatewayView).id &&
+                this.testingVncGatewayRequestId > 0))
+              .onClick((): void => {
+                if (this.testingVncGatewayRequestId > 0) {
+                  this.cancelDeepTestVncGateway();
+                } else {
+                  void this.doDeepTestVncGateway(this.selectedPcVncGateway as VncGatewayView);
+                }
+              })
             Button('编辑').fontSize(13).height(36).backgroundColor(this.pal().surface).fontColor(this.pal().text2)
               .borderRadius(8).margin({ left: 8 }).padding({ left: 14, right: 14 })
               .onClick((): void => { this.openEditVncGatewaySheet(this.selectedPcVncGateway as VncGatewayView); })
@@ -1764,11 +1781,19 @@ export struct RustDeskRelayPage {
           .backgroundColor(this.pal().surface).fontColor(this.accentColor)
           .enabled(this.testingVncGatewayId === '')
           .onClick((): void => { void this.doTestVncGateway(gateway); })
-        Button('深度测试')
+        Button(this.testingVncGatewayId === gateway.id && this.testingVncGatewayRequestId > 0
+          ? '取消深度' : '深度测试')
           .layoutWeight(1).height(32).fontSize(11).borderRadius(8)
           .backgroundColor(this.pal().surface).fontColor(this.accentColor)
-          .enabled(this.testingVncGatewayId === '')
-          .onClick((): void => { void this.doDeepTestVncGateway(gateway); })
+          .enabled(this.testingVncGatewayId === '' ||
+            (this.testingVncGatewayId === gateway.id && this.testingVncGatewayRequestId > 0))
+          .onClick((): void => {
+            if (this.testingVncGatewayRequestId > 0) {
+              this.cancelDeepTestVncGateway();
+            } else {
+              void this.doDeepTestVncGateway(gateway);
+            }
+          })
         Button('删除').layoutWeight(1).height(32).fontSize(11).borderRadius(8)
           .backgroundColor(this.pal().surface).fontColor(this.pal().danger).margin({ left: 7 })
           .onClick((): void => { this.doDeleteVncGateway(gateway); })
