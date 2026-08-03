@@ -14,6 +14,10 @@ Updated: 2026-08-03 Asia/Shanghai
 - Stage F deep-check Promise results are fenced by requestId/attempt generation,
   Repeater target changes invalidate old work, pending trust is live-bound, and
   all stable VNC certificate errors are preserved.
+- Checkpoint `5885588` adds a VNC-only renderer Surface gate: startup waits for
+  a ready current SurfaceId after teardown, retries transient rebind failures,
+  and registers the policy in both suites. The existing reviewer must inspect
+  this increment before the task advances.
 - Restore `hdc` connectivity and capture current VNC `hilog` when the device is
   available; do not convert static source evidence into device evidence.
 

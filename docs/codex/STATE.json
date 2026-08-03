@@ -3,10 +3,10 @@
   "task": "rustdesk-complete-repair",
   "branch": "codex/rustdesk-complete-repair",
   "base": "34946adbc",
-  "head": "ef4c33a",
+  "head": "5885588",
   "phase": "vnc-v3-stage-f-gateway-deep-checks",
   "status": "active",
-  "next": "Stage F checkpoint ef4c33a passed independent review; continue VNC Stage G device/direct/Repeater evidence when hdc is available. Do not start FreeRDP.",
+  "next": "VNC renderer Surface gate checkpoint 5885588 is awaiting the existing VNC-only incremental review; continue Stage G device/direct/Repeater evidence only when hdc is available. Do not start FreeRDP.",
   "blockers": [
     "hdc list targets and hdc shell return Connect server failed; no current hilog evidence.",
     "ohosTest@OhosTestCompileArkTS is not registered (00306054); ArkTS tests have compile/build evidence only.",
@@ -26,19 +26,22 @@
       "entry/src/main/ets/services/ExtensionLoader.ets",
       "entry/src/main/ets/types/rdpnapi.d.ts",
       "entry/src/main/ets/services/VncGatewayHealthPolicy.ets",
+      "entry/src/main/ets/pages/RemoteDesktop.ets",
+      "entry/src/main/ets/services/VncRendererSurfacePolicy.ets",
       "entry/src/main/cpp/test/vnc_certificate_probe_test.cpp",
       "entry/src/ohosTest/ets/test/List.test.ets",
       "entry/src/test/List.test.ets",
-      "entry/src/test/VncGatewayHealthPolicy.test.ets"
+      "entry/src/test/VncGatewayHealthPolicy.test.ets",
+      "entry/src/test/VncRendererSurfacePolicy.test.ets"
     ],
     "reason": "Independent read-only review of 44b83ef to ef4c33a passed with no P0/P1/P2. Request/attempt fencing, Repeater target binding, live trust handoff validation, and complete E-VNC-CERT-* preservation were verified; remaining gaps are real endpoint, hdc, OHOS runtime, and direct ArkTS/NAPI tests."
   },
   "lastVerification": {
-    "rdp_native_tests": "252-pass-0-fail-loopback-fixtures-host-socket-ef4c33a-2026-08-03",
-    "default@OhosTestCompileArkTS": "pass-after-ef4c33a-2026-08-03",
-    "assembleHap": "pass-after-ef4c33a-2026-08-03",
+    "rdp_native_tests": "252-pass-0-fail-loopback-fixtures-host-socket-5885588-2026-08-03",
+    "default@OhosTestCompileArkTS": "pass-after-5885588-2026-08-03",
+    "assembleHap": "pass-after-5885588-2026-08-03",
     "ohosTest@OhosTestCompileArkTS": "blocked-task-00306054-2026-08-02",
-    "diffCheck": "pass-after-ef4c33a-2026-08-03"
+    "diffCheck": "pass-after-5885588-2026-08-03"
   },
   "archives": [
     "docs/codex/archive/2026-08/README.md",

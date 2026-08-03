@@ -7,9 +7,9 @@ This file is the compact startup resume card. Historical checkpoints remain in
 
 - Task: `rustdesk-complete-repair` (active branch retained; current scope is VNC V3 only)
 - Branch: `codex/rustdesk-complete-repair`
-- Checkpoint: `ef4c33a`, based on `main@34946adbc`; branch is ahead by 72 and not behind.
-- Phase: VNC V3 stage F native/endpoint deep-check integration. TCP reachability is local-only; the VNC Gateway UI now invokes a bounded native mode12/TLS/RFB probe and remains fail-closed on missing trust, cancellation, or invalid handoff.
-- Worktree: Stage F deep-check integration is committed. Preserve unrelated user changes.
+- Checkpoint: `5885588`, based on `main@34946adbc`; branch is ahead by 76 and not behind.
+- Phase: VNC V3 stage F follow-up renderer Surface gate. TCP reachability is local-only; the VNC Gateway UI invokes a bounded native mode12/TLS/RFB probe and remains fail-closed on missing trust, cancellation, invalid handoff, or an unavailable page Surface.
+- Worktree: VNC Surface gate is committed and awaiting the existing VNC-only incremental review. Preserve unrelated user changes.
 
 ## Stage A Result
 
@@ -91,29 +91,35 @@ This file is the compact startup resume card. Historical checkpoints remain in
   monotonic attempt generation, binds Repeater target changes, revalidates the
   live endpoint before saving pending certificate trust, and preserves every
   stable `E-VNC-CERT-*` error code. Scope remains VNC-only.
+- Checkpoint `5885588` gates VNC renderer startup on a ready, non-empty current
+  SurfaceId before and after teardown; transient Surface loss resets the VNC
+  connect attempt and polls for a replacement instead of invoking the native
+  Pbuffer fallback. The policy and both test registrations remain VNC-only.
 - Keep every VNC caller fail-closed when the probe, Sheet lifecycle, owner
   binding, or expected-pin handoff is missing or stale.
 ## Verification
 - `rdp_native_tests`: 252 passed, 0 failed with loopback fixtures on
-  `ef4c33a`, 2026-08-03 (requires host-socket permission).
-- `default@OhosTestCompileArkTS`: passed after `ef4c33a` on 2026-08-03.
-- `assembleHap`: passed after `ef4c33a` on 2026-08-03.
-- `git diff --check`: passed after `ef4c33a` on 2026-08-03.
+  `5885588`, 2026-08-03 (requires host-socket permission).
+- `default@OhosTestCompileArkTS`: passed after `5885588` on 2026-08-03.
+- `assembleHap`: passed after `5885588` on 2026-08-03.
+- `git diff --check`: passed after `5885588` on 2026-08-03.
 - `ohosTest@OhosTestCompileArkTS`: unavailable; task is not registered
   (`00306054`). New ArkTS tests therefore have compile/build evidence only.
 ## Blockers
-- `hdc list targets`/`hdc shell` still return `Connect server failed`; no
-  current hilog or real-device/endpoint evidence is available.
+- `hdc list targets`/`hdc shell` remain unavailable (no target/current hilog
+  evidence); real-device/endpoint evidence is not claimed.
 - Stage B native probe is covered by host fixtures for self-signed, trusted
   root, name mismatch, expiry, rotation, no certificate, TLS 1.0/1.1 rejection,
   IPv4/IPv6/SNI, timeout/cancel, DNS bound, pin match/mismatch, no RFB
   handoff, and the final transport deadline. NAPI runtime, Promise/environment teardown, Sheet lifecycle,
   TrustService migration, real Repeater, cloud, and device matrices remain
   unverified and are not release evidence.
-- Stage C/D/E UI, CloudStore, Preferences restart, and Stage F deep-check runtime
-  behavior remain static/build-tested only; no device evidence is claimed.
+- Stage C/D/E UI, CloudStore, Preferences restart, Stage F deep-check, and the
+  new VNC Surface lifecycle behavior remain static/build-tested only; no device
+  evidence is claimed.
 
 ## Review Protocol
 - Machine state: `docs/codex/STATE.json`; receipts: `docs/codex/REVIEW_RECEIPTS.jsonl`.
-- `scripts/sync_workspace.sh status` records Stage F PASS at `ef4c33a`; keep
-  active work VNC-only and proceed to Stage G evidence when hdc is available.
+- `scripts/sync_workspace.sh status` records the existing review task in
+  RESUME_REVIEW for the `ef4c33a..5885588` VNC-only increment; keep active work
+  VNC-only and proceed to Stage G evidence when hdc is available.
