@@ -134,19 +134,22 @@ import { clipboardSyncEnabledForProtocol } from '../services/ClipboardSyncPolicy
 import { FileTransferLiveTaskService } from '../services/FileTransferLiveTaskService';
 import { RemoteSessionBackgroundTaskService, RemoteSessionBgInfo } from '../services/RemoteSessionBackgroundTaskService';
 import { RemoteSessionLiveViewService, LiveViewConnectionInfo } from '../services/RemoteSessionLiveViewService';
+import { LiveViewMode } from '../services/LiveViewTypes';
 import {
   RemoteSessionPipService,
   type RemoteSessionPipSurface
 } from '../services/RemoteSessionPipService';
-import { shouldStartRemoteSessionPip } from '../services/RemoteSessionPipPolicy';
 import {
   RemoteSessionPipContentSize,
+  RemoteSessionPipLifecycleAction,
   hasRemoteSessionPipVideo,
   hasRdpRemoteSessionPipFrame,
   hasRustDeskPresentedFrame,
   hasVncPresentedFrame,
+  shouldPrepareRemoteSessionPip,
   shouldCreatePreauthenticatedRustDeskPipeline,
-  resolveRemoteSessionPipContentSize
+  resolveRemoteSessionPipContentSize,
+  resolveRemoteSessionPipLifecycle
 } from '../services/RemoteSessionPipLifecyclePolicy';
 import { ActiveRemoteSessionRegistry, ActiveRemoteSessionRecord } from '../services/ActiveRemoteSessionRegistry';
 import { AccountSessionCoordinator } from '../services/AccountSessionCoordinator';
@@ -5910,6 +5913,45 @@ struct RemoteDesktop {
     return registered;
   }
 
+  /**
+   * Register PIP while the foreground page is still visible. The background
+   * lifecycle only waits for HarmonyOS to auto-start the prepared controller.
+   */
+  private async prepareRemoteSessionPipForForeground(host: RemoteHost,
+    sessionId: number): Promise<void> {
+    const liveViewEnabled: boolean = AppStorage.get<boolean>('liveViewEnabled') ?? true;
+    const liveViewMode: number = AppStorage.get<number>('liveViewMode') ?? LiveViewMode.AVSESSION;
+    const activeSession: ActiveRemoteSessionRecord | null = this.activeSessionRegistry.getActive();
+    const sessionActive: boolean = this.connected && this.sessionId === sessionId &&
+      activeSession !== null && activeSession.sessionId === sessionId &&
+      activeSession.hostId === host.id && activeSession.protocolConnected;
+    const canPrepare: boolean = shouldPrepareRemoteSessionPip(
+      liveViewEnabled, liveViewMode, sessionActive,
+      this.rendererHandle > 0, this.surfaceReady);
+    if (!canPrepare) {
+      // A transient frame gap during connection must not revoke a controller
+      // that the next background transition still needs.
+      if (!sessionActive || !liveViewEnabled || liveViewMode !== LiveViewMode.AVSESSION) {
+        await RemoteSessionPipService.getInstance().stop();
+      }
+      return;
+    }
+    try {
+      const uiContext = this.getUIContext();
+      const context: common.UIAbilityContext = uiContext.getHostContext() as common.UIAbilityContext;
+      const pipSize: RemoteSessionPipContentSize = this.currentPipContentSize();
+      const prepared: boolean = await RemoteSessionPipService.getInstance().prepare(
+        context, uiContext, pipSize.width, pipSize.height,
+        (reason: string): void => this.handleRemoteSessionPipStopped(reason),
+        (surface: RemoteSessionPipSurface): void => this.handlePipSurfaceChanged(surface));
+      hilog.info(RD_DOMAIN, RD_TAG, 'prepareRemoteSessionPipForForeground: prepared=' +
+        prepared.toString() + ' sessionId=' + sessionId.toString());
+    } catch (err) {
+      hilog.warn(RD_DOMAIN, RD_TAG, 'prepareRemoteSessionPipForForeground: failed ' +
+        JSON.stringify(err));
+    }
+  }
+
   private async startRemoteSessionBackgroundTask(ctx: common.UIAbilityContext,
     info: RemoteSessionBgInfo): Promise<boolean> {
     const started: boolean = await RemoteSessionBackgroundTaskService.getInstance().startSessionTask(ctx, info);
@@ -5997,7 +6039,12 @@ struct RemoteDesktop {
       hilog.warn(RD_DOMAIN, RD_TAG, 'stopSessionLiveView: failed: ' + JSON.stringify(err));
     }
     // PIP teardown is part of the same foreground handoff as AVSession stop.
-    await RemoteSessionPipService.getInstance().stop();
+    // Do not release the native renderer until WMS has emitted a terminal PIP
+    // state; otherwise the late surface callback can tear down the session.
+    const stopped: boolean = await RemoteSessionPipService.getInstance().stop();
+    if (!stopped) {
+      throw new Error('PIP controller stop failed [E-PIP-STOP]');
+    }
   }
 
   private startBackgroundAudioPolling(ctx: common.UIAbilityContext, info: RemoteSessionBgInfo): void {
@@ -6082,6 +6129,38 @@ struct RemoteDesktop {
       this.surfaceReady,
       this.decoderHandle > 0,
       this.isRdpVideoFrameReady());
+  }
+
+  /** A PIP transfer must not detach the foreground renderer before a real
+   * remote frame has reached the protocol-specific frame store. */
+  private isPipFrameReady(): boolean {
+    if (this.isRdpRemoteSession()) {
+      return this.isRdpVideoFrameReady();
+    }
+    if (this.isVncSession()) {
+      return this.isVncPresentedFrameReady();
+    }
+    return this.isRustDeskPresentedFrameReady();
+  }
+
+  private async waitForPipFrameReady(operationGeneration: number,
+    timeoutMs: number = 5000): Promise<boolean> {
+    const startedAtMs: number = Date.now();
+    const pipService: RemoteSessionPipService = RemoteSessionPipService.getInstance();
+    while (Date.now() - startedAtMs < timeoutMs) {
+      if (this.restoreInProgress || !this.cleanupStarted ||
+        !pipService.isOperationCurrent(operationGeneration)) {
+        return false;
+      }
+      if (this.isPipFrameReady()) {
+        return true;
+      }
+      await new Promise<void>((resolve: () => void): void => {
+        setTimeout(resolve, 50);
+      });
+    }
+    return !this.restoreInProgress && this.cleanupStarted &&
+      pipService.isOperationCurrent(operationGeneration) && this.isPipFrameReady();
   }
 
   private isRustDeskPresentedFrameReady(): boolean {
@@ -9056,6 +9135,7 @@ struct RemoteDesktop {
       if (!this.recordActiveSession(host, sid, true)) {
         throw new Error('远程会话账号作用域未登记，已拒绝启动后台接续 [E-SESSION-REGISTRY]');
       }
+      await this.prepareRemoteSessionPipForForeground(host, sid);
       this.persistRustDeskSessionAuth(host);
       // T-171: 连接成功后显示悬浮胶囊
       this.initHandlePosition();
@@ -9606,6 +9686,10 @@ struct RemoteDesktop {
     }
 
     try {
+      if (!(await this.waitForPipFrameReady(operationGeneration))) {
+        hilog.warn(RD_DOMAIN, RD_TAG, 'attachRendererToPipSurface: no real remote frame before timeout');
+        return false;
+      }
       // Capture the remote media ratio while the page renderer is still alive.
       // After destroyRenderer() the native viewport is intentionally no longer
       // readable, and falling back to the rotated page surface would crop PIP.
@@ -9770,11 +9854,15 @@ struct RemoteDesktop {
     try {
       pipContext = this.getUIContext().getHostContext() as common.UIAbilityContext;
       const liveViewEnabled: boolean = AppStorage.get<boolean>('liveViewEnabled') ?? true;
-      const liveViewMode: number = AppStorage.get<number>('liveViewMode') ?? 1;
+      const liveViewMode: number = AppStorage.get<number>('liveViewMode') ?? LiveViewMode.AVSESSION;
+      const pipLifecycleAction: RemoteSessionPipLifecycleAction = resolveRemoteSessionPipLifecycle(
+        // 1.0.8 registers PIP before the first frame. The renderer attach
+        // barrier below still waits for a presented frame before moving it.
+        liveViewEnabled, liveViewMode, true,
+        this.connected && this.sessionId > 0, true, false);
       if (pipContext !== null && this.pendingHost !== null &&
-        this.rendererHandle > 0 && this.decoderHandle > 0 && this.surfaceReady &&
-        shouldStartRemoteSessionPip(liveViewEnabled, liveViewMode, backgroundMedia.hasVideo,
-          this.connected && this.sessionId > 0)) {
+        pipService.isPreparedOrPreparing() &&
+        pipLifecycleAction === RemoteSessionPipLifecycleAction.WAIT_FOR_AUTO_START) {
         const pipSize: RemoteSessionPipContentSize = this.currentPipContentSize();
         pipPreserved = await pipService.start(
           pipContext, this.getUIContext(), pipSize.width, pipSize.height,
@@ -9791,7 +9879,11 @@ struct RemoteDesktop {
       pipPreserved = false;
     }
     if (!pipPreserved) {
-      await pipService.stop();
+      const stopped: boolean = await pipService.stop();
+      if (!stopped) {
+        this.pipSurfaceTransferInProgress = false;
+        throw new Error('PIP controller did not reach terminal state before renderer fallback');
+      }
     }
     this.renderPreservedInPip = pipPreserved;
     this.pipSurfaceTransferInProgress = false;
@@ -10017,6 +10109,11 @@ struct RemoteDesktop {
     this.restoreInProgress = true;
     const operationId: number = ++this.restoreOperationId;
     this.cleanupStarted = false; // 允许重新 attach
+    // The free-node PIP surface replaced the page surface while the app was
+    // backgrounded. Reacquire the current page SurfaceId after the terminal
+    // PIP state instead of rebinding the decoder to a stale surface.
+    this.surfaceReady = false;
+    this.latestSurfaceId = '';
     // bgFlag 保留到清理完成后 → doBackgroundRestoreRender 使用
     this.stopBackgroundAudioPolling();
     this.clearRestoreFrameRefreshPump();
@@ -10143,8 +10240,14 @@ struct RemoteDesktop {
         const refresh = this.loader.requestFrameRefresh();
         hilog.info(RD_DOMAIN, RD_TAG, 'doBackgroundRestoreRender: preauthenticated RustDesk recovery armed=' +
           (recoveryArmed ? 'true' : 'false') + ' refresh=' + refresh.ok.toString());
-        hilog.info(RD_DOMAIN, RD_TAG,
-          'doBackgroundRestoreRender: preauthenticated RustDesk first frame requested asynchronously');
+        const firstFrameReady: boolean = await this.waitForRustDeskFirstPresentedFrame(
+          restoreSessionId, RUSTDESK_FIRST_FRAME_TIMEOUT_MS, restoreAttemptId);
+        if (!firstFrameReady) {
+          if (this.sessionId === restoreSessionId && this.connectAttemptId === restoreAttemptId) {
+            throw new Error('RustDesk 后台恢复首帧未显示');
+          }
+          return;
+        }
         if (!this.activeSessionRegistry.markRenderAttached(surfaceId)) {
           throw new Error('后台恢复会话账号作用域未登记 [E-SESSION-REGISTRY-RESTORE]');
         }
@@ -10170,6 +10273,9 @@ struct RemoteDesktop {
         // first keyframe; scheduling the restore watchdog here would recreate a
         // healthy decoder at 7 seconds and cause a visible video stall.
         this.clearRestoreFrameRefreshPump();
+        if (this.pendingHost !== null) {
+          await this.prepareRemoteSessionPipForForeground(this.pendingHost, this.sessionId);
+        }
         AppStorage.setOrCreate<boolean>('remoteDesktopBgFlag', false);
         hilog.info(RD_DOMAIN, RD_TAG, 'doBackgroundRestoreRender: preauthenticated session attached');
         return;
@@ -10206,12 +10312,14 @@ struct RemoteDesktop {
             (recoveryArmed ? 'true' : 'false') + ' refresh=' + refresh.ok.toString());
         }
         if (restoringRustDesk) {
-          // Rebinding the decoder pipeline is the restore barrier. The first
-          // RustDesk frame can arrive after the native session is resumed;
-          // the bounded refresh pump below handles that timing without
-          // destroying the renderer or retrying the whole session.
-          hilog.info(RD_DOMAIN, RD_TAG,
-            'doBackgroundRestoreRender: RustDesk first frame requested asynchronously');
+          const firstFrameReady: boolean = await this.waitForRustDeskFirstPresentedFrame(
+            restoreSessionId, RUSTDESK_FIRST_FRAME_TIMEOUT_MS, restoreAttemptId);
+          if (!firstFrameReady) {
+            if (this.sessionId === restoreSessionId && this.connectAttemptId === restoreAttemptId) {
+              throw new Error('RustDesk 后台恢复首帧未显示');
+            }
+            return;
+          }
         }
         if (restoringVnc) {
           const refresh = this.loader.requestFrameRefresh();
@@ -10255,6 +10363,9 @@ struct RemoteDesktop {
           this.startClipboardBridgeBestEffort(this.sessionId, this.connectAttemptId, clipboardEnabled);
         }
         this.scheduleRestoreFrameRefreshPump();
+        if (this.pendingHost !== null) {
+          await this.prepareRemoteSessionPipForForeground(this.pendingHost, this.sessionId);
+        }
         hilog.info(RD_DOMAIN, RD_TAG, 'doBackgroundRestoreRender: complete, session resumed');
       } else {
         hilog.error(RD_DOMAIN, RD_TAG, 'doBackgroundRestoreRender: reattachRenderForForeground failed code=' +
