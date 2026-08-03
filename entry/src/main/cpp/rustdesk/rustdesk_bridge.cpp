@@ -933,6 +933,11 @@ void RustDeskBridge::onFfiFrame(const void* framePtr, void* userData) {
     impl->callbackWidth.store(ffiFrame->width, std::memory_order_relaxed);
     impl->callbackHeight.store(ffiFrame->height, std::memory_order_relaxed);
     impl->lastFrameAtMs.store(rdSteadyNowMs(), std::memory_order_release);
+    VideoFrameCallback cb;
+    {
+        std::lock_guard<std::mutex> lock(impl->mutex);
+        cb = impl->videoCallback;
+    }
     {
         using Clock = std::chrono::steady_clock;
         static std::mutex cadenceMutex;
@@ -996,14 +1001,9 @@ void RustDeskBridge::onFfiFrame(const void* framePtr, void* userData) {
             ffiFrame->size,
             ffiFrame->isKeyFrame ? "yes" : "no",
             static_cast<unsigned long long>(ffiFrame->timestamp),
-            impl->videoCallback ? "yes" : "no");
+            cb ? "yes" : "no");
     }
 
-    VideoFrameCallback cb;
-    {
-        std::lock_guard<std::mutex> lock(impl->mutex);
-        cb = impl->videoCallback;
-    }
     if (cb) {
         VideoFrame frame;
         frame.data = ffiFrame->data;
