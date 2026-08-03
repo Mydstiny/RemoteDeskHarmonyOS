@@ -5,11 +5,11 @@ This file is the compact startup resume card. Historical checkpoints remain in
 
 ## Active Task
 
-- Task: `rustdesk-complete-repair` (active branch retained; RustDesk/VNC background, PIP, and audio continuity)
+- Task: `rustdesk-complete-repair` (active branch retained; RustDesk/VNC continuity plus mobile RustDesk rail/system-bar behavior)
 - Branch: `codex/rustdesk-complete-repair`
-- Checkpoint: `d29e754db`, based on `main@34946adbc`; branch is ahead by 85 and not behind.
-- Phase: background continuity closure. RustDesk classifies transient transport failures, reconnects after network recovery with a presented-first-frame gate, and fences stale callbacks; VNC uses the shared active-session registry, PIP renderer transfer, raw framebuffer refresh, and foreground rebind.
-- Worktree: repair commits are present and the worktree is clean. No duplicate reviewer task was started; preserve unrelated user changes.
+- Checkpoint: `6a4b35d1f`, based on `main@34946adbc`; branch is ahead by 88 and not behind.
+- Phase: mobile RustDesk rail/system-bar closure. RustDesk classifies transient transport failures, reconnects after network recovery with a presented-first-frame gate, and fences stale callbacks; VNC uses the shared active-session registry, PIP renderer transfer, raw framebuffer refresh, and foreground rebind.
+- Worktree: this checkpoint is committed; unrelated TOTP/CloudStore/PIP changes remain uncommitted. No duplicate reviewer task was started; preserve unrelated user changes.
 ## Stage A Result
 
 - Frozen VNC endpoint/trust owner, certificate preflight, probe lifecycle,
@@ -95,14 +95,15 @@ This file is the compact startup resume card. Historical checkpoints remain in
   presented-frame gate before declaring restore complete.
 - Checkpoint `28f8608f6` closes RustDesk transient network continuity and stale-callback fencing.
 - Checkpoint `d29e754db` serializes PIP operations, preserves native sessions, and adds temporary local TOTP selection to both auth surfaces.
+- Checkpoint `6a4b35d1f` adds a right-edge RustDesk rail for mobile/Pad keyboard-mouse sessions, a persistent wake handle after hiding, and serialized status/navigation-bar transitions on mode and lifecycle changes.
 - Keep every VNC caller fail-closed when the probe, Sheet lifecycle, owner
   binding, or expected-pin handoff is missing or stale.
 ## Verification
 - `rdp_native_tests`: 251 passed, 0 failed with loopback fixtures on `f03c9b4ca`, 2026-08-03 (requires host-socket permission).
 - RustDesk native/callback tests: 216 passed, 0 failed on `28f8608f6`, 2026-08-03.
-- `default@OhosTestCompileArkTS`: passed after `d29e754db` on 2026-08-03; host Cargo was exposed to CMake program search.
-- `assembleHap`: passed after `d29e754db` on 2026-08-03.
-- `git diff --check`: passed after `d29e754db` on 2026-08-03.
+- `default@OhosTestCompileArkTS`: passed after `6a4b35d1f` on 2026-08-03; host Cargo was exposed to CMake program search.
+- `assembleHap`: passed after `6a4b35d1f` on 2026-08-03.
+- `git diff --check`: passed after `6a4b35d1f` on 2026-08-03.
 - `ohosTest@OhosTestCompileArkTS`: unavailable; task is not registered (`00306054`); new ArkTS tests have compile/build evidence only.
 ## Blockers
 - `hdc list targets`/`hdc shell` remain unavailable (no target/current hilog
@@ -111,8 +112,8 @@ This file is the compact startup resume card. Historical checkpoints remain in
   timeout, and cancellation paths. NAPI teardown, Sheet lifecycle, TrustService
   migration, real Repeater, cloud, and device matrices remain unverified.
 - Stage C/D/E UI, CloudStore, Preferences restart, Stage F deep-check, RustDesk
-  audio, and RustDesk/VNC background/PIP lifecycle behavior remain
-  static/build-tested only; no device evidence is claimed.
+  audio, RustDesk/VNC background/PIP lifecycle, and mobile RustDesk rail/system-
+  bar behavior remain static/build-tested only; no device evidence is claimed.
 
 ## Review Protocol
 - Machine state: `docs/codex/STATE.json`; receipts: `docs/codex/REVIEW_RECEIPTS.jsonl`.

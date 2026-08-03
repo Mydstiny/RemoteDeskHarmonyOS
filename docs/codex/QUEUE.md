@@ -4,6 +4,8 @@ Updated: 2026-08-03 Asia/Shanghai
 
 ## Now
 
+- Checkpoint `6a4b35d1f` adds the mobile/Pad RustDesk keyboard-mouse edge rail,
+  hide/wake handle, and serialized system-bar transitions.
 - Checkpoint `d29e754db` fixes PIP operation races, renderer/PIP session
   continuity, and temporary TOTP selection in RustDesk authentication.
 - Checkpoint `28f8608f6` fixes RustDesk transient network reconnect,
