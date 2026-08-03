@@ -265,6 +265,8 @@ namespace RendererNapi {
     // reacquire the non-reentrant shared lease.
     bool IsActiveRendererForOwnerUnderLease(
         int64_t handle, const Render::DecoderSessionIdentity& owner);
+    /** Return the live renderer token for an exact session owner, or zero. */
+    int64_t GetActiveRendererHandle(const Render::DecoderSessionIdentity& owner);
     void SetActiveSessionOwner(const Render::DecoderSessionIdentity& owner);
     void ClearActiveSessionOwner(const Render::DecoderSessionIdentity& owner);
     void SetRendererRedrawCallback(int64_t handle, std::function<void()> callback);

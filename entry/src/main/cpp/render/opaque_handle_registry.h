@@ -193,6 +193,29 @@ public:
                          entry->generation, entry->boundOwner};
     }
 
+    /** Find a decoder/renderer-owned token without exposing registry entries. */
+    int64_t findTokenByOwner(const Render::DecoderSessionIdentity& owner) const {
+        if (!owner.valid()) {
+            return 0;
+        }
+        std::lock_guard<std::mutex> lock(registryMutex_);
+        int64_t detachedCandidate = 0;
+        for (const auto& item : entries_) {
+            const int64_t token = item.first;
+            const auto& entry = item.second;
+            if (!entry || entry->destroying || entry->boundOwner != owner) {
+                continue;
+            }
+            if (entry->active && !entry->detached) {
+                return token;
+            }
+            if (detachedCandidate == 0) {
+                detachedCandidate = token;
+            }
+        }
+        return detachedCandidate;
+    }
+
     /** Destroy by token identity; the token's immutable bound owner is the validation key. */
     std::shared_ptr<T> destroy(int64_t token) {
         return destroyInternal(token, nullptr);

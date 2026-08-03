@@ -2722,6 +2722,29 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
                 }
                 const uint64_t previousGeneration =
                     session->generation.load(std::memory_order_acquire);
+                if (reconnectGeneration == previousGeneration) {
+                    // Transport continuity keeps the native owner stable, but
+                    // a prior surface/decoder transition may have cleared the
+                    // active pipeline handle. Repair only a still-live pair;
+                    // a destroyed renderer remains a foreground lifecycle job.
+                    const DecoderSessionIdentity stableOwner = session->identity();
+                    auto ownerLease = Render::SharedSessionSinkOwnerLease().acquire(
+                        stableOwner);
+                    if (!ownerLease || !DecoderNapi::IsActiveSessionOwner(stableOwner)) {
+                        return false;
+                    }
+                    const bool videoRebound = DecoderNapi::RebindActiveVideoPipeline(
+                        stableOwner);
+                    if (videoRebound) {
+                        adapter->requestFrameRefresh();
+                    }
+                    OH_LOG_INFO(LOG_APP,
+                        "[ExtLoader] RustDesk continuity reused owner session=%{public}llu generation=%{public}llu videoRebound=%{public}s",
+                        static_cast<unsigned long long>(reconnectSessionId),
+                        static_cast<unsigned long long>(reconnectGeneration),
+                        videoRebound ? "true" : "false");
+                    return true;
+                }
                 session->generation.store(reconnectGeneration, std::memory_order_release);
                 const bool activated = ActivateSessionContext(
                     adapter, session->identity());

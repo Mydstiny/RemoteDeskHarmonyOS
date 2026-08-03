@@ -333,6 +333,8 @@ namespace DecoderNapi {
     void ClearActiveSessionId(const DecoderSessionIdentity& owner);
     bool SetActiveDisplay(const DecoderSessionIdentity& owner, int display);
     bool RequestActiveDecoderRecovery(const DecoderSessionIdentity& owner);
+    /** Rebind a surviving decoder to the current renderer after transport continuity. */
+    bool RebindActiveVideoPipeline(const DecoderSessionIdentity& owner);
     bool BindVideoPipeline(int64_t decoderHandle, int64_t rendererHandle);
     bool BindVideoPipeline(int64_t decoderHandle, int64_t rendererHandle,
                            const DecoderSessionIdentity& owner);

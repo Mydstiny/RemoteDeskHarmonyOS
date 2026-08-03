@@ -1871,6 +1871,17 @@ bool RendererNapi::IsActiveRendererForOwnerUnderLease(
     return IsActiveRendererOwnerAndHandleLocked(handle, owner);
 }
 
+int64_t RendererNapi::GetActiveRendererHandle(
+    const Render::DecoderSessionIdentity& owner) {
+    auto sinkLease = Render::SharedSessionSinkOwnerLease().acquire(owner);
+    if (!sinkLease) {
+        return 0;
+    }
+    std::lock_guard<std::mutex> lock(g_activeRendererMutex);
+    const int64_t handle = g_activeRendererHandle.load(std::memory_order_acquire);
+    return IsActiveRendererOwnerAndHandleLocked(handle, owner) ? handle : 0;
+}
+
 void RendererNapi::SetActiveSessionOwner(const Render::DecoderSessionIdentity& owner) {
     std::shared_ptr<GLRenderer> staleRenderer;
     {

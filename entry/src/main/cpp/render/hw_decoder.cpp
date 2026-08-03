@@ -2673,6 +2673,12 @@ DecoderTelemetrySnapshot DecoderNapi::GetActiveTelemetry(
 
 void DecoderNapi::SetActiveSessionId(const DecoderSessionIdentity& owner) {
     std::lock_guard<std::mutex> lock(g_activeDecoderOwnerMutex);
+    if (Render::SessionOwnerMatches(g_activeDecoderOwner, owner)) {
+        // A RustDesk transport reconnect keeps the native sink owner stable;
+        // changing only its FFI admission epoch must not discard the active
+        // decoder handle or selected display.
+        return;
+    }
     g_activeDecoderOwner = owner;
     g_activeDecoderHandle.store(0, std::memory_order_release);
     g_activeDisplay.store(-1, std::memory_order_release);
@@ -3089,6 +3095,85 @@ bool DecoderNapi::RequestActiveDecoderRecovery(const DecoderSessionIdentity& own
     }
     decoderLease->recoveryRequested.store(true, std::memory_order_release);
     return true;
+}
+
+bool DecoderNapi::RebindActiveVideoPipeline(const DecoderSessionIdentity& owner) {
+    if (!owner.valid() || !Render::SharedSessionSinkOwnerLease().accepts(owner)) {
+        return false;
+    }
+
+    int64_t decoderHandle = 0;
+    {
+        std::lock_guard<std::mutex> ownerLock(g_activeDecoderOwnerMutex);
+        if (!Render::SessionOwnerMatches(g_activeDecoderOwner, owner)) {
+            return false;
+        }
+        decoderHandle = g_activeDecoderHandle.load(std::memory_order_acquire);
+    }
+
+    const int64_t rendererHandle = RendererNapi::GetActiveRendererHandle(owner);
+    if (rendererHandle <= 0) {
+        OH_LOG_INFO(LOG_APP,
+                    "[Decoder] continuity video rebind skipped: no live renderer owner");
+        return false;
+    }
+
+    auto pipelineMatchesRenderer = [&](int64_t candidate) {
+        if (candidate <= 0) {
+            return false;
+        }
+        auto lease = g_decoderRegistry.acquire(candidate, owner);
+        if (!lease) {
+            return false;
+        }
+        std::lock_guard<std::mutex> pipelineLock(lease->pipelineMutex);
+        return !lease->pipelineTransitioning.load(std::memory_order_acquire) &&
+            lease->videoPipelineAttached.load(std::memory_order_acquire) &&
+            lease->rendererHandle == rendererHandle &&
+            Render::SessionOwnerMatches(lease->owner, owner);
+    };
+
+    if (pipelineMatchesRenderer(decoderHandle)) {
+        return true;
+    }
+
+    const auto metadata = g_decoderRegistry.snapshot(decoderHandle);
+    if (!metadata.found || metadata.boundOwner != owner) {
+        decoderHandle = g_decoderRegistry.findTokenByOwner(owner);
+    }
+    if (decoderHandle <= 0) {
+        OH_LOG_INFO(LOG_APP,
+                    "[Decoder] continuity video rebind skipped: no surviving decoder owner");
+        return false;
+    }
+
+    const auto candidateMetadata = g_decoderRegistry.snapshot(decoderHandle);
+    if (!candidateMetadata.found || candidateMetadata.boundOwner != owner) {
+        OH_LOG_WARN(LOG_APP,
+                    "[Decoder] continuity video rebind rejected stale decoder=%{public}lld",
+                    static_cast<long long>(decoderHandle));
+        return false;
+    }
+
+    const bool wasDetached = !candidateMetadata.active || candidateMetadata.detached;
+    if (wasDetached && !g_decoderRegistry.activate(decoderHandle, owner)) {
+        OH_LOG_WARN(LOG_APP,
+                    "[Decoder] continuity video rebind could not reactivate decoder=%{public}lld",
+                    static_cast<long long>(decoderHandle));
+        return false;
+    }
+
+    const bool rebound = BindVideoPipeline(decoderHandle, rendererHandle, owner);
+    if (!rebound && wasDetached) {
+        g_decoderRegistry.deactivate(decoderHandle, owner);
+    }
+    if (rebound) {
+        OH_LOG_INFO(LOG_APP,
+                    "[Decoder] continuity video pipeline rebound decoder=%{public}lld renderer=%{public}lld",
+                    static_cast<long long>(decoderHandle),
+                    static_cast<long long>(rendererHandle));
+    }
+    return rebound;
 }
 
 // ============================================================
