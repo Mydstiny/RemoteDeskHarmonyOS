@@ -7,8 +7,8 @@ This file is the compact startup resume card. Historical checkpoints remain in
 
 - Task: `rustdesk-complete-repair` (active branch retained; current scope is VNC V3 only)
 - Branch: `codex/rustdesk-complete-repair`
-- Checkpoint: `1a21488a7`, based on `main@34946adbc`; branch is ahead by 43 and not behind.
-- Phase: VNC V3 stage D follow-up; recovery sentinel ordering and injected Preferences failure coverage are committed and await the existing reviewer.
+- Checkpoint: `f16b673e2`, based on `main@34946adbc`; branch is ahead by 45 and not behind.
+- Phase: VNC V3 stage D follow-up; journal-first-write failure now still clears markers and has restart coverage, awaiting the existing reviewer.
 - Worktree: clean after the code checkpoint. Do not stage unrelated changes.
 
 ## Stage A Result
@@ -65,16 +65,19 @@ This file is the compact startup resume card. Historical checkpoints remain in
 - Checkpoint `1a21488a7` preserves the recovery sentinel until marker clearing is
   confirmed, and adds adapter-backed marker-write, journal-remove, retry, and
   restart fail-closed tests.
+- Checkpoint `f16b673e2` continues marker clearing when the recovery journal's
+  first write fails, then derives health from the durable marker/journal end
+  state and tests clean restart recovery.
 - Keep every VNC caller fail-closed when the probe, Sheet lifecycle, owner
   binding, or expected-pin handoff is missing or stale.
 
 ## Verification
 
 - `rdp_native_tests`: 249 passed, 0 failed with host socket permission on
-  `1a21488a7`, 2026-08-03.
-- `default@OhosTestCompileArkTS`: passed after `1a21488a7` on 2026-08-03.
-- `assembleHap`: passed after `1a21488a7` on 2026-08-03.
-- `git diff --check`: passed after `1a21488a7` on 2026-08-03.
+  `f16b673e2`, 2026-08-03.
+- `default@OhosTestCompileArkTS`: passed after `f16b673e2` on 2026-08-03.
+- `assembleHap`: passed after `f16b673e2` on 2026-08-03.
+- `git diff --check`: passed after `f16b673e2` on 2026-08-03.
 - `ohosTest@OhosTestCompileArkTS`: unavailable; task is not registered
   (`00306054`). New ArkTS tests therefore have compile/build evidence only.
 
@@ -92,13 +95,13 @@ This file is the compact startup resume card. Historical checkpoints remain in
   only until `ohosTest` is registered and a real device is available; no UI or
   endpoint runtime evidence is claimed. Stage D trust migration, manager,
   invalidation and backup policy have host/build coverage but no live
-  CloudStore/device evidence; the `1a21488a7` follow-up remains pending independent review.
+  CloudStore/device evidence; the `f16b673e2` follow-up remains pending independent review.
 
 ## Review Protocol
 
 - Machine state: `docs/codex/STATE.json`.
 - Receipts: `docs/codex/REVIEW_RECEIPTS.jsonl`.
 - `scripts/sync_workspace.sh status` should report RESUME_REVIEW for the
-  `1a21488a7` Stage D follow-up until the existing reviewer returns a receipt.
+  `f16b673e2` Stage D follow-up until the existing reviewer returns a receipt.
 - Reuse the existing independent review session and do not redispatch duplicate
   messages for the same segment.
