@@ -309,6 +309,12 @@ import { util } from '@kit.ArkTS';
 interface WallpaperItem { color: string; uri: string; }
 interface AccountInfo { name: string; rdpCount: number; rustdeskCount: number; sshCount: number; }
 interface SshKeyMaterial { privateKey: string; encryptedHint: boolean; }
+interface RustDeskTwoFactorEntryOption {
+  id: string;
+  label: string;
+  detail: string;
+  locked: boolean;
+}
 
 const ENV_COLOR_MODE_UNKNOWN = -1;
 const ENV_COLOR_MODE_LIGHT = 0;
@@ -479,6 +485,8 @@ struct HostListPage {
   @State rustDeskProTwoFactorInput: string = '';
   @State rustDeskProTwoFactorError: string = '';
   @State rustDeskProTwoFactorSubmitting: boolean = false;
+  @State rustDeskProTwoFactorEntryOptions: RustDeskTwoFactorEntryOption[] = [];
+  @State rustDeskProTwoFactorSelectedEntryId: string = '';
   private rustDeskProTwoFactorSessionId: number = -1;
   private rustDeskProTwoFactorAutoAttemptSessionId: number = -1;
   private rustDeskProPreflightGeneration: number = 0;
@@ -3788,6 +3796,14 @@ struct HostListPage {
     this.rustDeskProRememberPassword = true;
     this.rustDeskProPreflightError = '';
     this.rustDeskProPreflightState = RustDeskProPreflightState.IDLE;
+    this.rustDeskProTwoFactorActive = false;
+    this.rustDeskProTwoFactorSessionId = -1;
+    this.rustDeskProTwoFactorAutoAttemptSessionId = -1;
+    this.rustDeskProTwoFactorInput = '';
+    this.rustDeskProTwoFactorError = '';
+    this.rustDeskProTwoFactorSubmitting = false;
+    this.rustDeskProTwoFactorEntryOptions = [];
+    this.rustDeskProTwoFactorSelectedEntryId = '';
     return generation;
   }
 
@@ -3823,6 +3839,14 @@ struct HostListPage {
     if (this.rustDeskProPreflightState === RustDeskProPreflightState.CONNECTING) {
       this.loader.disconnect();
     }
+    this.rustDeskProTwoFactorActive = false;
+    this.rustDeskProTwoFactorSessionId = -1;
+    this.rustDeskProTwoFactorAutoAttemptSessionId = -1;
+    this.rustDeskProTwoFactorInput = '';
+    this.rustDeskProTwoFactorError = '';
+    this.rustDeskProTwoFactorSubmitting = false;
+    this.rustDeskProTwoFactorEntryOptions = [];
+    this.rustDeskProTwoFactorSelectedEntryId = '';
     this.rustDeskProPreflightPendingRouteParams = null;
     this.rustDeskProPreflightClosingHostId = hostId;
     this.rustDeskProPreflightClosing = true;
@@ -3851,6 +3875,14 @@ struct HostListPage {
     this.rustDeskProPreflightState = RustDeskProPreflightState.IDLE;
     this.rustDeskProPreflightError = '';
     this.rustDeskProPassword = '';
+    this.rustDeskProTwoFactorActive = false;
+    this.rustDeskProTwoFactorSessionId = -1;
+    this.rustDeskProTwoFactorAutoAttemptSessionId = -1;
+    this.rustDeskProTwoFactorInput = '';
+    this.rustDeskProTwoFactorError = '';
+    this.rustDeskProTwoFactorSubmitting = false;
+    this.rustDeskProTwoFactorEntryOptions = [];
+    this.rustDeskProTwoFactorSelectedEntryId = '';
     this.releaseConnectionAttempt(closingHostId);
 
     if (routeParams !== null) {
@@ -3993,13 +4025,122 @@ struct HostListPage {
       this.rustDeskProTwoFactorInput = '';
       this.rustDeskProTwoFactorError = '';
       this.rustDeskProTwoFactorSubmitting = false;
+      this.rustDeskProTwoFactorEntryOptions = [];
+      this.rustDeskProTwoFactorSelectedEntryId = '';
     }
     this.rustDeskProTwoFactorSessionId = sessionId;
     this.rustDeskProTwoFactorActive = true;
     if (message.indexOf('Wrong 2FA Code') >= 0) {
       this.rustDeskProTwoFactorError = '验证码错误，请输入远端设备当前显示的 2FA 验证码。';
       this.rustDeskProTwoFactorSubmitting = false;
+    } else if (message.length > 0 && message !== '2FA Required' &&
+      message !== '2FA code submitted') {
+      this.rustDeskProTwoFactorError = message;
     }
+    this.refreshRustDeskProTwoFactorEntries(sessionId).catch((err: Error): void => {
+      hilog.warn(0x0001, 'HostList', 'load RustDesk temporary 2FA entries failed: ' +
+        (err.message ? err.message : JSON.stringify(err)));
+    });
+  }
+
+  private async refreshRustDeskProTwoFactorEntries(sessionId: number): Promise<void> {
+    if (this.rustDeskProTwoFactorSessionId !== sessionId ||
+      !this.rustDeskProTwoFactorActive) {
+      return;
+    }
+    if (!this.keyVault.isReady()) {
+      await this.keyVault.init(getContext(this) as common.Context);
+      await this.keyVault.whenReady();
+    }
+    if (this.rustDeskProTwoFactorSessionId !== sessionId ||
+      !this.rustDeskProTwoFactorActive) {
+      return;
+    }
+    const entries: TotpEntry[] = this.keyVault.getAllTotpEntries();
+    const options: RustDeskTwoFactorEntryOption[] = [];
+    for (let index = 0; index < entries.length; index++) {
+      const entry: TotpEntry = entries[index];
+      options.push({
+        id: entry.id,
+        label: entry.displayLabel(),
+        detail: TotpEntry.algoLabel(entry.algorithm) + ' · ' + entry.digits.toString() + ' 位',
+        locked: entry.locked
+      });
+    }
+    this.rustDeskProTwoFactorEntryOptions = options;
+    let selectedExists: boolean = false;
+    for (let index = 0; index < options.length; index++) {
+      if (options[index].id === this.rustDeskProTwoFactorSelectedEntryId) {
+        selectedExists = true;
+        break;
+      }
+    }
+    if (!selectedExists) {
+      const host: RemoteHost | undefined = this.srv.getHost(this.rustDeskProPreflightHostId);
+      const preferredId: string = host === undefined ? '' : host.rustdeskTotpEntryId;
+      for (let index = 0; index < options.length; index++) {
+        if (options[index].id === preferredId) {
+          this.rustDeskProTwoFactorSelectedEntryId = preferredId;
+          selectedExists = true;
+          break;
+        }
+      }
+      if (!selectedExists) {
+        this.rustDeskProTwoFactorSelectedEntryId = '';
+      }
+    }
+  }
+
+  private async authorizeRustDeskProTwoFactorEntry(entry: TotpEntry): Promise<boolean> {
+    if (!this.totpPageLocked && !entry.locked) {
+      return true;
+    }
+    const message: string = entry.locked
+      ? '此 2FA 条目已锁定，请验证系统身份后临时使用。'
+      : 'TOTP 隐私保护已开启，请验证系统身份后临时使用 RustDesk 2FA。';
+    const gate = await showLockGate(message, 'biometric');
+    return gate.ok;
+  }
+
+  private async submitSelectedRustDeskProTwoFactor(): Promise<void> {
+    const sessionId: number = this.rustDeskProTwoFactorSessionId;
+    if (sessionId <= 0 || !this.rustDeskProTwoFactorActive ||
+      this.rustDeskProPreflightState !== RustDeskProPreflightState.CONNECTING) {
+      this.rustDeskProTwoFactorError = '2FA 会话已失效，请重新连接。';
+      return;
+    }
+    const entry: TotpEntry | undefined = this.keyVault.getTotpEntry(
+      this.rustDeskProTwoFactorSelectedEntryId.trim());
+    if (entry === undefined || entry.secret.length === 0) {
+      this.rustDeskProTwoFactorError = '所选 2FA 条目不可用，请重新选择。';
+      return;
+    }
+    if (!(await this.authorizeRustDeskProTwoFactorEntry(entry))) {
+      if (this.rustDeskProTwoFactorSessionId === sessionId && this.rustDeskProTwoFactorActive) {
+        this.rustDeskProTwoFactorError = '系统身份认证未通过，请手动输入验证码。';
+      }
+      return;
+    }
+    if (this.rustDeskProTwoFactorSessionId !== sessionId ||
+      !this.rustDeskProTwoFactorActive ||
+      this.rustDeskProPreflightState !== RustDeskProPreflightState.CONNECTING) {
+      return;
+    }
+    const generated = TotpEngine.generateCode(entry);
+    const autoSubmitError: string = rustDeskPeerTwoFactorAutoSubmitError(entry, generated);
+    if (autoSubmitError !== '') {
+      this.rustDeskProTwoFactorError = autoSubmitError;
+      return;
+    }
+    if (!this.loader.submitRustDesk2FA(sessionId, generated.code)) {
+      this.rustDeskProTwoFactorError = this.loader.getRustDeskLastError() ||
+        '验证码提交失败，请重新选择或手动输入。';
+      this.rustDeskProTwoFactorSubmitting = false;
+      return;
+    }
+    this.rustDeskProTwoFactorInput = '';
+    this.rustDeskProTwoFactorError = '';
+    this.rustDeskProTwoFactorSubmitting = true;
   }
 
   private async tryAutoSubmitRustDeskProTwoFactor(sessionId: number, host: RemoteHost): Promise<boolean> {
@@ -4039,6 +4180,10 @@ struct HostListPage {
       this.openRustDeskProTwoFactorPrompt(sessionId, '已绑定的 2FA 条目不可用，请手动输入验证码。');
       return true;
     }
+    if (entry.locked && !(await this.authorizeRustDeskProTwoFactorEntry(entry))) {
+      this.openRustDeskProTwoFactorPrompt(sessionId, '此 2FA 条目已锁定，请手动输入验证码或临时选择其他条目。');
+      return true;
+    }
     const generated = TotpEngine.generateCode(entry);
     const autoSubmitError: string = rustDeskPeerTwoFactorAutoSubmitError(entry, generated);
     if (autoSubmitError !== '') {
@@ -4064,7 +4209,10 @@ struct HostListPage {
     this.rustDeskProTwoFactorSessionId = -1;
     this.rustDeskProTwoFactorAutoAttemptSessionId = -1;
     this.rustDeskProTwoFactorInput = '';
+    this.rustDeskProTwoFactorError = '';
     this.rustDeskProTwoFactorSubmitting = false;
+    this.rustDeskProTwoFactorEntryOptions = [];
+    this.rustDeskProTwoFactorSelectedEntryId = '';
     this.rustDeskProPreflightState = RustDeskProPreflightState.ERROR;
     this.rustDeskProPreflightError = '连接已取消。';
   }
@@ -4139,6 +4287,8 @@ struct HostListPage {
     this.rustDeskProTwoFactorInput = '';
     this.rustDeskProTwoFactorError = '';
     this.rustDeskProTwoFactorSubmitting = false;
+    this.rustDeskProTwoFactorEntryOptions = [];
+    this.rustDeskProTwoFactorSelectedEntryId = '';
     this.rustDeskProPreflightState = RustDeskProPreflightState.CONNECTING;
     try {
       if (!await this.loader.waitForPendingTeardown(5000)) {
@@ -4186,6 +4336,11 @@ struct HostListPage {
           this.rustDeskProTwoFactorActive = false;
           this.rustDeskProTwoFactorSessionId = -1;
           this.rustDeskProTwoFactorAutoAttemptSessionId = -1;
+          this.rustDeskProTwoFactorInput = '';
+          this.rustDeskProTwoFactorError = '';
+          this.rustDeskProTwoFactorSubmitting = false;
+          this.rustDeskProTwoFactorEntryOptions = [];
+          this.rustDeskProTwoFactorSelectedEntryId = '';
           this.rustDeskProPreflightState = RustDeskProPreflightState.AUTHENTICATED;
           const saved: RemoteHost = RemoteHost.fromJSON(stored.toJSON());
           saved.rustdeskAuthMode = host.rustdeskAuthMode;
@@ -4244,7 +4399,10 @@ struct HostListPage {
       this.rustDeskProTwoFactorSessionId = -1;
       this.rustDeskProTwoFactorAutoAttemptSessionId = -1;
       this.rustDeskProTwoFactorInput = '';
+      this.rustDeskProTwoFactorError = '';
       this.rustDeskProTwoFactorSubmitting = false;
+      this.rustDeskProTwoFactorEntryOptions = [];
+      this.rustDeskProTwoFactorSelectedEntryId = '';
       this.rustDeskProPreflightState = RustDeskProPreflightState.ERROR;
       const detail: string = err instanceof Error ? err.message : JSON.stringify(err);
       let kind: RustDeskProNativeErrorKind = classifyRustDeskProNativeError(detail);
@@ -10358,6 +10516,47 @@ struct HostListPage {
       if (this.rustDeskProTwoFactorActive) {
         Text('远端设备要求 2FA 验证，请输入当前动态验证码。')
           .fontSize(14).fontColor(this.pal().text2).width('100%')
+        if (this.rustDeskProTwoFactorEntryOptions.length > 0) {
+          Text('本机 2FA 验证器（仅本次连接）')
+            .fontSize(12).fontColor(this.pal().text2).width('100%')
+          Scroll() {
+            Column({ space: 6 }) {
+              ForEach(this.rustDeskProTwoFactorEntryOptions,
+                (option: RustDeskTwoFactorEntryOption) => {
+                  Row({ space: 8 }) {
+                    Column() {
+                      Text(option.label).fontSize(13).fontColor(this.pal().text)
+                        .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+                      Text(option.locked ? option.detail + ' · 需身份认证' : option.detail)
+                        .fontSize(10).fontColor(this.pal().text3)
+                    }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+                    Button(this.rustDeskProTwoFactorSelectedEntryId === option.id ? '已选择' : '选择')
+                      .height(30).fontSize(11)
+                      .backgroundColor(this.rustDeskProTwoFactorSelectedEntryId === option.id
+                        ? this.accentColor : this.pal().surface)
+                      .fontColor(this.rustDeskProTwoFactorSelectedEntryId === option.id
+                        ? Color.White : this.pal().text2)
+                      .enabled(!this.rustDeskProTwoFactorSubmitting)
+                      .onClick((): void => {
+                        this.rustDeskProTwoFactorSelectedEntryId = option.id;
+                        this.rustDeskProTwoFactorError = '';
+                      })
+                  }.width('100%').padding({ left: 10, right: 8, top: 6, bottom: 6 })
+                    .backgroundColor(this.pal().surface).borderRadius(8)
+                }, (option: RustDeskTwoFactorEntryOption): string => option.id)
+            }.width('100%')
+          }.width('100%').height(126)
+          Button('填入所选验证码').width('100%').height(38).fontSize(12)
+            .backgroundColor(this.accentColor).fontColor(Color.White).borderRadius(9)
+            .enabled(!this.rustDeskProTwoFactorSubmitting &&
+              this.rustDeskProTwoFactorSelectedEntryId.length > 0)
+            .onClick((): void => {
+              this.submitSelectedRustDeskProTwoFactor().catch((err: Error): void => {
+                hilog.warn(0x0001, 'HostList', 'temporary RustDesk Pro 2FA submit failed: ' +
+                  (err.message ? err.message : JSON.stringify(err)));
+              });
+            })
+        }
         TextInput({ text: this.rustDeskProTwoFactorInput, placeholder: '输入 2FA 验证码' })
           .type(InputType.Normal).height(48).width('100%')
           .backgroundColor(this.pal().surface).borderRadius(10).maxLength(8)

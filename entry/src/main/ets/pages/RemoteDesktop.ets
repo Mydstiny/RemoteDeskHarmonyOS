@@ -577,6 +577,13 @@ type RustDeskAuthDismissReason = 'none' | 'confirm' | 'cancel';
 type RustDeskTwoFactorDismissReason = 'none' | 'cancel' | 'success' | 'failure';
 type VncPasswordDismissReason = 'none' | 'confirm' | 'cancel';
 
+interface RustDeskTwoFactorEntryOption {
+  id: string;
+  label: string;
+  detail: string;
+  locked: boolean;
+}
+
 const EMPTY_RUSTDESK_DIAGNOSTICS: RustDeskDiagnosticsSnapshot = {
   supported: false, sessionActive: false, protocolSnapshotAvailable: false,
   videoSeen: false, receivedRateAvailable: false, presentedRateAvailable: false,
@@ -730,6 +737,8 @@ struct RemoteDesktop {
   @State rustDeskTwoFactorInput: string = '';
   @State rustDeskTwoFactorError: string = '';
   @State rustDeskTwoFactorSubmitting: boolean = false;
+  @State rustDeskTwoFactorEntryOptions: RustDeskTwoFactorEntryOption[] = [];
+  @State rustDeskTwoFactorSelectedEntryId: string = '';
   @State vncPasswordInput: string = '';
   @State vncRememberPassword: boolean = false;
   @State vncPasswordError: string = '';
@@ -1762,6 +1771,8 @@ struct RemoteDesktop {
       this.rustDeskTwoFactorInput = '';
       this.rustDeskTwoFactorError = '';
       this.rustDeskTwoFactorSubmitting = false;
+      this.rustDeskTwoFactorEntryOptions = [];
+      this.rustDeskTwoFactorSelectedEntryId = '';
     }
     this.rustDeskTwoFactorSessionId = sessionId;
     if (message.indexOf('Wrong 2FA Code') >= 0) {
@@ -1772,6 +1783,110 @@ struct RemoteDesktop {
       this.rustDeskTwoFactorError = message;
     }
     this.showRustDeskTwoFactorSheet = true;
+    this.refreshRustDeskTwoFactorEntries(sessionId).catch((err: Error): void => {
+      hilog.warn(RD_DOMAIN, RD_TAG, 'load RustDesk temporary 2FA entries failed: ' +
+        (err.message ? err.message : JSON.stringify(err)));
+    });
+  }
+
+  private async refreshRustDeskTwoFactorEntries(sessionId: number): Promise<void> {
+    if (this.rustDeskTwoFactorSessionId !== sessionId || this.rustDeskTwoFactorSheetClosing) {
+      return;
+    }
+    if (!this.keyVault.isReady()) {
+      await this.keyVault.init(getContext(this) as common.Context);
+      await this.keyVault.whenReady();
+    }
+    if (this.rustDeskTwoFactorSessionId !== sessionId || this.rustDeskTwoFactorSheetClosing) {
+      return;
+    }
+    const entries: TotpEntry[] = this.keyVault.getAllTotpEntries();
+    const options: RustDeskTwoFactorEntryOption[] = [];
+    for (let index = 0; index < entries.length; index++) {
+      const entry: TotpEntry = entries[index];
+      options.push({
+        id: entry.id,
+        label: entry.displayLabel(),
+        detail: TotpEntry.algoLabel(entry.algorithm) + ' · ' + entry.digits.toString() + ' 位',
+        locked: entry.locked
+      });
+    }
+    this.rustDeskTwoFactorEntryOptions = options;
+    let selectedExists: boolean = false;
+    for (let index = 0; index < options.length; index++) {
+      if (options[index].id === this.rustDeskTwoFactorSelectedEntryId) {
+        selectedExists = true;
+        break;
+      }
+    }
+    if (!selectedExists) {
+      let preferredId: string = '';
+      if (this.pendingHost !== null) {
+        preferredId = this.pendingHost.rustdeskTotpEntryId;
+      }
+      for (let index = 0; index < options.length; index++) {
+        if (options[index].id === preferredId) {
+          this.rustDeskTwoFactorSelectedEntryId = preferredId;
+          selectedExists = true;
+          break;
+        }
+      }
+      if (!selectedExists) {
+        this.rustDeskTwoFactorSelectedEntryId = '';
+      }
+    }
+  }
+
+  private async authorizeRustDeskTwoFactorEntry(entry: TotpEntry,
+    includePageLock: boolean = true): Promise<boolean> {
+    const pageLocked: boolean = AppStorage.get<boolean>('totpLocked') ?? false;
+    if ((!includePageLock || !pageLocked) && !entry.locked) {
+      return true;
+    }
+    const message: string = entry.locked
+      ? '此 2FA 条目已锁定，请验证系统身份后临时使用。'
+      : 'TOTP 隐私保护已开启，请验证系统身份后临时使用 RustDesk 2FA。';
+    const gate = await showLockGate(message, 'biometric');
+    return gate.ok;
+  }
+
+  private async submitSelectedRustDeskTwoFactor(): Promise<void> {
+    const sessionId: number = this.rustDeskTwoFactorSessionId;
+    if (sessionId <= 0) {
+      this.rustDeskTwoFactorError = '2FA 会话已失效，请重新连接。';
+      return;
+    }
+    const entryId: string = this.rustDeskTwoFactorSelectedEntryId.trim();
+    const entry: TotpEntry | undefined = this.keyVault.getTotpEntry(entryId);
+    if (entry === undefined || entry.secret.length === 0) {
+      this.rustDeskTwoFactorError = '所选 2FA 条目不可用，请重新选择。';
+      return;
+    }
+    if (!(await this.authorizeRustDeskTwoFactorEntry(entry))) {
+      if (this.sessionId === sessionId && !this.rustDeskTwoFactorSheetClosing) {
+        this.rustDeskTwoFactorError = '系统身份认证未通过，请手动输入验证码。';
+      }
+      return;
+    }
+    if (this.sessionId !== sessionId || this.rustDeskTwoFactorSessionId !== sessionId ||
+      this.rustDeskTwoFactorSheetClosing) {
+      return;
+    }
+    const generated = TotpEngine.generateCode(entry);
+    const autoSubmitError: string = rustDeskPeerTwoFactorAutoSubmitError(entry, generated);
+    if (autoSubmitError !== '') {
+      this.rustDeskTwoFactorError = autoSubmitError;
+      return;
+    }
+    if (!this.loader.submitRustDesk2FA(sessionId, generated.code)) {
+      this.rustDeskTwoFactorError = this.loader.getRustDeskLastError() ||
+        '验证码提交失败，请重新选择或手动输入。';
+      this.rustDeskTwoFactorSubmitting = false;
+      return;
+    }
+    this.rustDeskTwoFactorInput = '';
+    this.rustDeskTwoFactorError = '';
+    this.rustDeskTwoFactorSubmitting = true;
   }
 
   private async tryAutoSubmitRustDeskTwoFactor(sessionId: number, host: RemoteHost): Promise<boolean> {
@@ -1813,6 +1928,10 @@ struct RemoteDesktop {
       this.openRustDeskTwoFactorPrompt(sessionId, '已绑定的 2FA 条目不可用，请手动输入验证码。');
       return true;
     }
+    if (entry.locked && !(await this.authorizeRustDeskTwoFactorEntry(entry, false))) {
+      this.openRustDeskTwoFactorPrompt(sessionId, '此 2FA 条目已锁定，请手动输入验证码或临时选择其他条目。');
+      return true;
+    }
     const generated = TotpEngine.generateCode(entry);
     const autoSubmitError: string = rustDeskPeerTwoFactorAutoSubmitError(entry, generated);
     if (autoSubmitError !== '') {
@@ -1849,6 +1968,8 @@ struct RemoteDesktop {
     this.rustDeskTwoFactorSessionId = -1;
     this.rustDeskTwoFactorAutoAttemptSessionId = -1;
     this.rustDeskTwoFactorInput = '';
+    this.rustDeskTwoFactorEntryOptions = [];
+    this.rustDeskTwoFactorSelectedEntryId = '';
     this.rustDeskTwoFactorSubmitting = false;
     if (invalidateSession) {
       this.connectStarted = false;
@@ -1873,6 +1994,8 @@ struct RemoteDesktop {
     this.rustDeskTwoFactorSessionId = -1;
     this.rustDeskTwoFactorAutoAttemptSessionId = -1;
     this.rustDeskTwoFactorInput = '';
+    this.rustDeskTwoFactorEntryOptions = [];
+    this.rustDeskTwoFactorSelectedEntryId = '';
     this.rustDeskTwoFactorError = '';
     this.rustDeskTwoFactorSubmitting = false;
     this.rustDeskTwoFactorDismissReason = 'none';
@@ -1893,6 +2016,8 @@ struct RemoteDesktop {
     this.rustDeskTwoFactorSessionId = -1;
     this.rustDeskTwoFactorAutoAttemptSessionId = -1;
     this.rustDeskTwoFactorInput = '';
+    this.rustDeskTwoFactorEntryOptions = [];
+    this.rustDeskTwoFactorSelectedEntryId = '';
     this.rustDeskTwoFactorError = '';
     this.rustDeskTwoFactorSubmitting = false;
     this.rustDeskTwoFactorDismissReason = 'none';
@@ -1940,6 +2065,48 @@ struct RemoteDesktop {
         Text('取消').fontSize(13).fontColor(this.pal().text2)
           .onClick((): void => { this.cancelRustDeskTwoFactor(); })
       }.width('100%')
+
+      if (this.rustDeskTwoFactorEntryOptions.length > 0) {
+        Text('本机 2FA 验证器（仅本次连接）').fontSize(12).fontColor(this.pal().text2)
+          .width('100%')
+        Scroll() {
+          Column({ space: 6 }) {
+            ForEach(this.rustDeskTwoFactorEntryOptions,
+              (option: RustDeskTwoFactorEntryOption) => {
+                Row({ space: 8 }) {
+                  Column() {
+                    Text(option.label).fontSize(13).fontColor(this.pal().text)
+                      .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+                    Text(option.locked ? option.detail + ' · 需身份认证' : option.detail)
+                      .fontSize(10).fontColor(this.pal().text3)
+                  }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+                  Button(this.rustDeskTwoFactorSelectedEntryId === option.id ? '已选择' : '选择')
+                    .height(30).fontSize(11)
+                    .backgroundColor(this.rustDeskTwoFactorSelectedEntryId === option.id
+                      ? this.accentColor : this.pal().surface)
+                    .fontColor(this.rustDeskTwoFactorSelectedEntryId === option.id
+                      ? Color.White : this.pal().text2)
+                    .enabled(!this.rustDeskTwoFactorSubmitting)
+                    .onClick((): void => {
+                      this.rustDeskTwoFactorSelectedEntryId = option.id;
+                      this.rustDeskTwoFactorError = '';
+                    })
+                }.width('100%').padding({ left: 10, right: 8, top: 6, bottom: 6 })
+                  .backgroundColor(this.pal().surface).borderRadius(8)
+              }, (option: RustDeskTwoFactorEntryOption): string => option.id)
+          }.width('100%')
+        }.width('100%').height(126)
+        Button('填入所选验证码').width('100%').height(38).fontSize(12)
+          .backgroundColor(this.accentColor).fontColor(Color.White).borderRadius(9)
+          .enabled(!this.rustDeskTwoFactorSubmitting &&
+            this.rustDeskTwoFactorSelectedEntryId.length > 0)
+          .onClick((): void => {
+            this.submitSelectedRustDeskTwoFactor().catch((err: Error): void => {
+              hilog.warn(RD_DOMAIN, RD_TAG, 'temporary RustDesk 2FA submit failed: ' +
+                (err.message ? err.message : JSON.stringify(err)));
+            });
+          })
+      }
 
       TextInput({ placeholder: '输入 2FA 验证码', text: this.rustDeskTwoFactorInput })
         .type(InputType.Normal)
@@ -9622,10 +9789,13 @@ struct RemoteDesktop {
       const liveViewEnabled: boolean = AppStorage.get<boolean>('liveViewEnabled') ?? true;
       const liveViewMode: number = AppStorage.get<number>('liveViewMode') ?? 1;
       const pipLifecycleAction: RemoteSessionPipLifecycleAction = resolveRemoteSessionPipLifecycle(
-        liveViewEnabled, liveViewMode, backgroundMedia.hasVideo,
+        // 1.0.8 registered PIP before the first frame. The renderer attach
+        // barrier below still waits for a presented frame; using the snapshot
+        // here disables auto-start during the exact cold-frame window.
+        liveViewEnabled, liveViewMode, true,
         this.connected && this.sessionId > 0, true, false);
       if (pipContext !== null && this.pendingHost !== null &&
-        pipService.isPrepared() &&
+        pipService.isPreparedOrPreparing() &&
         pipLifecycleAction === RemoteSessionPipLifecycleAction.WAIT_FOR_AUTO_START) {
         const pipSize: RemoteSessionPipContentSize = this.currentPipContentSize();
         pipPreserved = await pipService.start(
@@ -9731,15 +9901,11 @@ struct RemoteDesktop {
         JSON.stringify(err));
     }
 
-    // PIP 使用独立 free-node surface。保持 connected=true，避免 ArkUI
-    // 重建页面 XComponent 后把远端会话误判成已断开。
-    // 只有旧的 detached fallback 才把页面标为未连接；PIP 停止后再执行同样的脱附。
-    if (!pipPreserved) {
-      this.connected = false;
-      this.connectStarted = false;
-    } else {
-      hilog.info(RD_DOMAIN, RD_TAG, 'detachForBackground: keep connected UI state for PIP free-node source');
-    }
+    // A renderer fallback is not a protocol disconnect. Keep the ArkUI
+    // connection state aligned with the native session so a PIP/Surface
+    // transition cannot trigger a new connection or an exit cleanup.
+    hilog.info(RD_DOMAIN, RD_TAG, 'detachForBackground: protocol state preserved pip=' +
+      (pipPreserved ? 'true' : 'false'));
     this.bgRestorePending = true;
     hilog.info(RD_DOMAIN, RD_TAG, 'detachForBackground: bgRestorePending=true, awaiting foreground');
   }
@@ -9779,8 +9945,9 @@ struct RemoteDesktop {
       this.recordActiveSession(this.pendingHost, this.sessionId, false);
       this.activeSessionRegistry.markRenderDetached();
     }
-    this.connected = false;
-    this.connectStarted = false;
+    // Closing PIP only releases its renderer. The native protocol session is
+    // still owned by the background task and must remain reconnectable.
+    hilog.info(RD_DOMAIN, RD_TAG, 'PIP stopped: protocol session preserved reason=' + reason);
   }
 
   /**
