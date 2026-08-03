@@ -1,6 +1,6 @@
 import { promptAction } from '@kit.ArkUI';
 import { common } from '@kit.AbilityKit';
-import { VncTrustService, VncTrustView } from '../services/VncTrustService';
+import { VncTrustEndpoint, VncTrustService, VncTrustView } from '../services/VncTrustService';
 import { VncGatewayService } from '../services/VncGatewayService';
 import { VncHostService } from '../services/VncHostService';
 import { buildVncTrustDirectory, VncTrustDirectoryItem } from '../services/VncTrustEndpointDirectory';
@@ -19,6 +19,9 @@ export struct VncCertificateTrustManagerSheet {
   onClose: () => void = (): void => {};
   onRecheck: (trust: VncTrustView, hostId: string) => void =
     (_trust: VncTrustView, _hostId: string): void => {};
+  pendingEndpoint: VncTrustEndpoint | null = null;
+  pendingFingerprintSha256: string = '';
+  onConfirmed: () => void = (): void => {};
 
   @State trustItems: VncTrustDirectoryItem[] = [];
   @State revision: number = 0;
@@ -133,6 +136,24 @@ export struct VncCertificateTrustManagerSheet {
     promptAction.showToast({ message: 'VNC TLS 信任已删除', duration: 1500 });
   }
 
+  private async confirmPendingTrust(): Promise<void> {
+    if (this.pendingEndpoint === null || this.pendingFingerprintSha256.trim() === '') { return; }
+    const gate = await showLockGate('确认 VNC TLS 证书', 'biometric');
+    if (!gate.ok) {
+      const message: string = lockGateErrorMessage(gate);
+      if (message !== '') { promptAction.showToast({ message, duration: 2000 }); }
+      return;
+    }
+    const result = this.trustService.saveForEndpoint(
+      this.pendingEndpoint, this.pendingFingerprintSha256, null);
+    if (!result.ok) {
+      this.errorText = result.message || '证书确认未完成';
+      return;
+    }
+    promptAction.showToast({ message: 'VNC TLS 证书已确认', duration: 1500 });
+    this.onConfirmed();
+  }
+
   @Builder private trustCard(item: VncTrustDirectoryItem) {
     Column() {
       Row() {
@@ -210,6 +231,18 @@ export struct VncCertificateTrustManagerSheet {
     Column() {
       Text('云同步记录不会自动取得本机信任；每次 endpoint、账号或设备变化都需要重新确认。')
         .fontSize(12).fontColor(this.pal().text3).lineHeight(19).width('100%').margin({ bottom: 14 })
+      if (this.pendingEndpoint !== null && this.pendingFingerprintSha256 !== '') {
+        Column() {
+          Text('当前 Gateway 需要本机确认证书').fontSize(13).fontWeight(FontWeight.Medium)
+            .fontColor(this.pal().text).width('100%')
+          Text('SHA-256 ' + this.pendingFingerprintSha256).fontSize(10).fontFamily('monospace')
+            .fontColor(this.pal().text2).width('100%').lineHeight(16).margin({ top: 6 })
+          Button('确认此证书').height(34).fontSize(12).padding({ left: 12, right: 12 })
+            .backgroundColor(this.accentColor).fontColor(Color.White).borderRadius(8)
+            .margin({ top: 10 }).onClick((): void => { void this.confirmPendingTrust(); })
+        }.width('100%').padding(12).borderRadius(10).backgroundColor(this.pal().surface)
+          .margin({ bottom: 10 })
+      }
       if (this.errorText !== '') {
         Text(this.errorText).fontSize(12).fontColor(this.pal().danger).lineHeight(18)
           .width('100%').padding(10).borderRadius(10).backgroundColor(this.pal().surface).margin({ bottom: 10 })

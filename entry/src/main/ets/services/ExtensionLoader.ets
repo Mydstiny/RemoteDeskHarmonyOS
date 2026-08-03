@@ -250,14 +250,20 @@ export class ExtensionLoader {
 
   probeVncGatewayDeepAsync(host: string, port: number, transport: string,
     repeaterMode: string, target: string, tls: boolean, expectedFingerprint: string,
-    timeoutMs: number = 10000): VncGatewayDeepHealthPromise {
+    timeoutMs: number, ownerType: string, ownerId: string, userId: string,
+    storeIdentityFingerprint: string, endpointBindingFingerprint: string,
+    accountGeneration: number, enabled: boolean): VncGatewayDeepHealthPromise {
     try {
       return rdpnapi.probeVncGatewayDeepAsync(host, port, transport, repeaterMode, target,
-        tls, expectedFingerprint, timeoutMs) as VncGatewayDeepHealthPromise;
+        tls, expectedFingerprint, timeoutMs, ownerType, ownerId, userId,
+        storeIdentityFingerprint, endpointBindingFingerprint, accountGeneration,
+        enabled) as VncGatewayDeepHealthPromise;
     } catch (err) {
       hilog.error(DOMAIN, TAG, '[ExtensionLoader] probeVncGatewayDeepAsync: ' + JSON.stringify(err));
       const failure: VncGatewayDeepHealthResult = {
-        stage: 'FAILED', code: 'E-VNC-GATEWAY-DEEP', message: 'Gateway 深度检查失败', protocolReady: false
+        stage: 'FAILED', code: 'E-VNC-GATEWAY-DEEP', message: 'Gateway 深度检查失败', protocolReady: false,
+        certificateFingerprintSha256: '', ownerType: '', ownerId: '', userId: '',
+        storeIdentityFingerprint: '', endpointBindingFingerprint: '', accountGeneration: 0
       };
       const promise: VncGatewayDeepHealthPromise = Promise.resolve(failure) as VncGatewayDeepHealthPromise;
       promise.requestId = 0;

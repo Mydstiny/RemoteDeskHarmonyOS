@@ -791,10 +791,22 @@ static napi_value CreateVncCertificateInfoValue(napi_env env, const VncCertifica
 }
 
 struct VncGatewayDeepHealthResult {
+    VncGatewayDeepHealthResult() = default;
+    VncGatewayDeepHealthResult(std::string stageValue, std::string codeValue,
+                               std::string messageValue, bool ready)
+        : stage(std::move(stageValue)), code(std::move(codeValue)),
+          message(std::move(messageValue)), protocolReady(ready) {}
     std::string stage = "FAILED";
     std::string code = "E-VNC-GATEWAY-DEEP";
     std::string message = "VNC Gateway 深度检查失败";
     bool protocolReady = false;
+    std::string certificateFingerprintSha256;
+    std::string ownerType;
+    std::string ownerId;
+    std::string userId;
+    std::string storeIdentityFingerprint;
+    std::string endpointBindingFingerprint;
+    int64_t accountGeneration = 0;
 };
 
 static napi_value CreateVncGatewayDeepHealthValue(
@@ -805,6 +817,13 @@ static napi_value CreateVncGatewayDeepHealthValue(
     SetObjectString(env, value, "code", result.code);
     SetObjectString(env, value, "message", result.message);
     SetObjectBool(env, value, "protocolReady", result.protocolReady);
+    SetObjectString(env, value, "certificateFingerprintSha256", result.certificateFingerprintSha256);
+    SetObjectString(env, value, "ownerType", result.ownerType);
+    SetObjectString(env, value, "ownerId", result.ownerId);
+    SetObjectString(env, value, "userId", result.userId);
+    SetObjectString(env, value, "storeIdentityFingerprint", result.storeIdentityFingerprint);
+    SetObjectString(env, value, "endpointBindingFingerprint", result.endpointBindingFingerprint);
+    SetObjectInt64(env, value, "accountGeneration", result.accountGeneration);
     return value;
 }
 
@@ -1223,21 +1242,37 @@ struct VncGatewayDeepAsyncData {
     VncGatewayDeepHealthResult result;
     std::shared_ptr<VncCertificateProbeEnvironmentState> environmentState;
     bool workerFailed = false;
+    std::string ownerType;
+    std::string ownerId;
+    std::string userId;
+    std::string storeIdentityFingerprint;
+    std::string endpointBindingFingerprint;
+    int64_t accountGeneration = 0;
+    bool enabled = false;
     napi_deferred deferred = nullptr;
     napi_async_work work = nullptr;
 };
 
-static bool IsRfbProtocolBanner(const uint8_t* data, size_t size) {
-    if (data == nullptr || size != VncRfbProtocol::kProtocolVersionBytes ||
-        std::memcmp(data, "RFB ", 4) != 0 || data[11] != '\n') {
-        return false;
+static void CopyVncGatewayDeepBinding(VncGatewayDeepHealthResult& result,
+                                      const VncGatewayDeepAsyncData& data) {
+    result.ownerType = data.ownerType;
+    result.ownerId = data.ownerId;
+    result.userId = data.userId;
+    result.storeIdentityFingerprint = data.storeIdentityFingerprint;
+    result.endpointBindingFingerprint = data.endpointBindingFingerprint;
+    result.accountGeneration = data.accountGeneration;
+}
+
+static std::string ExtractVncCertificateFingerprint(const std::string& error) {
+    const char* markers[] = {"VNC_TRUST_REQUIRED:", "VNC_CERT_CHANGED:"};
+    for (const char* marker : markers) {
+        const size_t start = error.find(marker);
+        if (start == std::string::npos) { continue; }
+        const size_t valueStart = start + std::strlen(marker);
+        const std::string value = error.substr(valueStart, 64);
+        if (vncCertificateFingerprintIsCanonical(value)) { return value; }
     }
-    for (size_t i = 4; i < 11; ++i) {
-        if (data[i] < '0' || data[i] > '9') {
-            return false;
-        }
-    }
-    return true;
+    return "";
 }
 
 static void ExecuteVncGatewayDeepAsync(napi_env /*env*/, void* rawData) {
@@ -1246,6 +1281,16 @@ static void ExecuteVncGatewayDeepAsync(napi_env /*env*/, void* rawData) {
         return;
     }
     try {
+        CopyVncGatewayDeepBinding(data->result, *data);
+        if (!data->enabled || data->ownerType != "gateway" || data->ownerId.empty() ||
+            data->userId.empty() ||
+            !vncCertificateFingerprintIsCanonical(data->storeIdentityFingerprint) ||
+            !vncCertificateFingerprintIsCanonical(data->endpointBindingFingerprint) ||
+            data->accountGeneration <= 0) {
+            data->result = {"FAILED", "E-VNC-GATEWAY-BINDING", "Gateway 绑定已失效", false};
+            CopyVncGatewayDeepBinding(data->result, *data);
+            return;
+        }
         if (data->config.transport != "ultravnc_repeater") {
             data->result = {"FAILED", "E-VNC-GATEWAY-TRANSPORT",
                             "当前仅支持 UltraVNC Repeater mode12", false};
@@ -1264,14 +1309,11 @@ static void ExecuteVncGatewayDeepAsync(napi_env /*env*/, void* rawData) {
                             "深度测试 target 无效", false};
             return;
         }
-        if (data->config.tls && data->config.expectedCertificateFingerprintSha256.empty()) {
-            data->result = {"TLS_CERT_CONFIRMATION_REQUIRED", "E-VNC-CERT-TRUST-REQUIRED",
-                            "TLS Gateway 需要先完成证书确认", false};
-            return;
-        }
         VncTransport transport;
         std::string error;
         if (!transport.connect(data->config, error)) {
+            CopyVncGatewayDeepBinding(data->result, *data);
+            data->result.certificateFingerprintSha256 = ExtractVncCertificateFingerprint(error);
             if (error.find("E-VNC-CERT-CANCELLED") != std::string::npos) {
                 data->result = {"FAILED", "E-VNC-CERT-CANCELLED", "Gateway 深度检查已取消", false};
             } else if (error.find("E-VNC-CERT-TRUST-REQUIRED") != std::string::npos) {
@@ -1280,8 +1322,12 @@ static void ExecuteVncGatewayDeepAsync(napi_env /*env*/, void* rawData) {
             } else if (error.find("E-VNC-CERT-CHANGED") != std::string::npos) {
                 data->result = {"FAILED", "E-VNC-CERT-CHANGED",
                                 "TLS Gateway 证书与已确认指纹不匹配", false};
-            } else if (error.find("E-VNC-CERT-TLS") != std::string::npos) {
-                data->result = {"FAILED", "E-VNC-CERT-TLS",
+            } else if (error.find("E-VNC-CERT-TLS-") != std::string::npos) {
+                const size_t codeStart = error.find("E-VNC-CERT-TLS-");
+                const size_t codeEnd = error.find_first_of("; ", codeStart);
+                const std::string code = error.substr(codeStart,
+                    codeEnd == std::string::npos ? std::string::npos : codeEnd - codeStart);
+                data->result = {"FAILED", code,
                                 "TLS Gateway 握手失败", false};
             } else if (error.find("banner") != std::string::npos) {
                 data->result = {"FAILED", "E-VNC-REPEATER-BANNER",
@@ -1289,6 +1335,8 @@ static void ExecuteVncGatewayDeepAsync(napi_env /*env*/, void* rawData) {
             } else {
                 data->result = {"FAILED", "E-VNC-GATEWAY-DEEP", "Gateway 深度检查失败", false};
             }
+            CopyVncGatewayDeepBinding(data->result, *data);
+            data->result.certificateFingerprintSha256 = ExtractVncCertificateFingerprint(error);
             transport.close();
             return;
         }
@@ -1300,16 +1348,18 @@ static void ExecuteVncGatewayDeepAsync(napi_env /*env*/, void* rawData) {
             transport.close();
             return;
         }
-        if (!IsRfbProtocolBanner(banner.data(), banner.size())) {
+        if (!VncRfbProtocol::protocolBannerIsSupported(banner.data(), banner.size())) {
             data->result = {"FAILED", "E-VNC-RFB-BANNER", "RFB banner 无效", false};
             transport.close();
             return;
         }
         data->result = {"RFB_BANNER_READY", "", "VNC 协议链路已验证", true};
+        CopyVncGatewayDeepBinding(data->result, *data);
         transport.close();
     } catch (...) {
         data->workerFailed = true;
         data->result = {"FAILED", "E-VNC-GATEWAY-DEEP", "Gateway 深度检查失败", false};
+        CopyVncGatewayDeepBinding(data->result, *data);
     }
 }
 
@@ -1324,6 +1374,7 @@ static void CompleteVncGatewayDeepAsync(napi_env env, napi_status status, void* 
     } else if (status != napi_ok || data->workerFailed) {
         data->result = {"FAILED", "E-VNC-GATEWAY-DEEP", "Gateway 深度检查失败", false};
     }
+    CopyVncGatewayDeepBinding(data->result, *data);
     bool closing = true;
     if (data->environmentState != nullptr) {
         std::unique_lock<std::mutex> lock(data->environmentState->mutex);
@@ -1347,10 +1398,11 @@ static void CompleteVncGatewayDeepAsync(napi_env env, napi_status status, void* 
     delete data;
 }
 
-/** NAPI: probeVncGatewayDeepAsync(host, port, transport, mode, target, tls, pin, timeoutMs). */
+/** NAPI: probeVncGatewayDeepAsync(host, port, transport, mode, target, tls, pin, timeoutMs,
+ * ownerType, ownerId, userId, storeFingerprint, endpointBinding, accountGeneration, enabled). */
 napi_value NapiProbeVncGatewayDeepAsync(napi_env env, napi_callback_info info) {
-    size_t argc = 8;
-    napi_value args[8];
+    size_t argc = 15;
+    napi_value args[15];
     napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
     auto* data = new (std::nothrow) VncGatewayDeepAsyncData();
     if (data == nullptr) {
@@ -1365,6 +1417,13 @@ napi_value NapiProbeVncGatewayDeepAsync(napi_env env, napi_callback_info info) {
     if (argc > 5) napi_get_value_bool(env, args[5], &data->config.tls);
     if (argc > 6) data->config.expectedCertificateFingerprintSha256 = GetNapiString(env, args[6]);
     if (argc > 7) napi_get_value_int32(env, args[7], &data->config.connectTimeoutMs);
+    if (argc > 8) data->ownerType = GetNapiString(env, args[8]);
+    if (argc > 9) data->ownerId = GetNapiString(env, args[9]);
+    if (argc > 10) data->userId = GetNapiString(env, args[10]);
+    if (argc > 11) data->storeIdentityFingerprint = GetNapiString(env, args[11]);
+    if (argc > 12) data->endpointBindingFingerprint = GetNapiString(env, args[12]);
+    if (argc > 13) napi_get_value_int64(env, args[13], &data->accountGeneration);
+    if (argc > 14) napi_get_value_bool(env, args[14], &data->enabled);
     data->config.serverName = data->config.host;
     data->cancelled = std::make_shared<std::atomic_bool>(false);
     data->config.cancelled = data->cancelled;

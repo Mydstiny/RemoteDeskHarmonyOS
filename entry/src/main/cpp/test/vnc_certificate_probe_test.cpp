@@ -32,6 +32,16 @@
 
 namespace {
 
+RDP_TEST_CASE(vnc_rfb_protocol_banner_rejects_unsupported_versions) {
+    const std::array<uint8_t, VncRfbProtocol::kProtocolVersionBytes> oldBanner =
+        {'R', 'F', 'B', ' ', '0', '0', '3', '.', '0', '0', '2', '\n'};
+    const std::array<uint8_t, VncRfbProtocol::kProtocolVersionBytes> supportedBanner =
+        {'R', 'F', 'B', ' ', '0', '0', '3', '.', '0', '0', '8', '\n'};
+    RDP_ASSERT(!VncRfbProtocol::protocolBannerIsSupported(oldBanner.data(), oldBanner.size()));
+    RDP_ASSERT(VncRfbProtocol::protocolBannerIsSupported(
+        supportedBanner.data(), supportedBanner.size()));
+}
+
 class ScopedEnvironment final {
 public:
     ScopedEnvironment(const char* name, const std::string& value)

@@ -24,6 +24,9 @@ constexpr int kRawEncoding = 0;
 constexpr int kCopyRectEncoding = 1;
 constexpr int kZrleEncoding = 16;
 constexpr size_t kMaxTextInputCodepoints = 4096;
+
+/** Accept only the RFB 3.x banner versions supported by the engine. */
+bool protocolBannerIsSupported(const uint8_t* data, size_t size);
 /** The RFB ClientInit shared flag. A viewer always sends one byte. */
 uint8_t clientInitSharedFlag();
 

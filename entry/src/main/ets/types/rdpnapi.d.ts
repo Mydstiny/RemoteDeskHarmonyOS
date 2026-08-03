@@ -58,7 +58,9 @@ declare module 'librdpnapi.so' {
   export function cancelVncCertificateProbe(requestId: number): boolean;
   export function probeVncGatewayDeepAsync(host: string, port: number, transport: string,
     repeaterMode: string, target: string, tls: boolean, expectedFingerprint: string,
-    timeoutMs?: number): VncGatewayDeepHealthPromise;
+    timeoutMs: number, ownerType: string, ownerId: string, userId: string,
+    storeIdentityFingerprint: string, endpointBindingFingerprint: string,
+    accountGeneration: number, enabled: boolean): VncGatewayDeepHealthPromise;
   export function cancelVncGatewayDeep(requestId: number): boolean;
   export function getRdpRenderStats(sessionId: number): RdpRenderStats;
   export function getSessionDiagnostics(sessionId: number): RustDeskDiagnosticsSnapshot;
@@ -226,6 +228,13 @@ export interface VncGatewayDeepHealthResult {
   code: string;
   message: string;
   protocolReady: boolean;
+  certificateFingerprintSha256: string;
+  ownerType: string;
+  ownerId: string;
+  userId: string;
+  storeIdentityFingerprint: string;
+  endpointBindingFingerprint: string;
+  accountGeneration: number;
 }
 
 export interface VncGatewayDeepHealthPromise extends Promise<VncGatewayDeepHealthResult> {
