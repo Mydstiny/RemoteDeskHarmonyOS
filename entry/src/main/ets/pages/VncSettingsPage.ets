@@ -112,6 +112,7 @@ export struct VncSettingsPage {
   @State gatewayEnabled: boolean = true;
   @State editingGatewayId: string = '';
   @State errorMessage: string = '';
+  @State pendingDefaultGatewayCleanupId: string = '';
   @State cloudStatus: string = '本机数据加载中';
   @State cryptoReady: boolean = false;
   @State revision: number = 0;
@@ -226,6 +227,28 @@ export struct VncSettingsPage {
   private loadGateways(): void {
     this.gateways = this.gatewayService.list();
     this.revision += 1;
+  }
+
+  private async clearDefaultGatewayReference(gatewayId: string): Promise<boolean> {
+    const normalizedId: string = gatewayId.trim();
+    if (normalizedId === '') { return true; }
+    const ok: boolean = await this.settings.clearDefaultGatewayIf(normalizedId);
+    if (ok) {
+      if (this.defaultGatewayId.trim() === normalizedId) { this.defaultGatewayId = ''; }
+      if (this.pendingDefaultGatewayCleanupId.trim() === normalizedId) {
+        this.pendingDefaultGatewayCleanupId = '';
+        this.errorMessage = '';
+      }
+      return true;
+    }
+    this.pendingDefaultGatewayCleanupId = normalizedId;
+    this.errorMessage = '默认 Gateway 引用清理失败，请重试；连接默认值仍保持待清理状态';
+    return false;
+  }
+
+  private async retryDefaultGatewayCleanup(): Promise<void> {
+    if (this.pendingDefaultGatewayCleanupId === '') { return; }
+    await this.clearDefaultGatewayReference(this.pendingDefaultGatewayCleanupId);
   }
 
   private selectableDefaultGateways(): VncGatewayView[] {
@@ -390,11 +413,7 @@ export struct VncSettingsPage {
   }
 
   private async clearDefaultGatewayBeforeMutation(gatewayId: string): Promise<boolean> {
-    const cleared: boolean = await this.settings.clearDefaultGatewayIf(gatewayId);
-    if (!cleared) {
-      this.errorMessage = 'VNC Gateway 已保留；默认 Gateway 引用清理失败，请重试';
-    }
-    return cleared;
+    return await this.clearDefaultGatewayReference(gatewayId);
   }
 
   private saveGateway(): void {
@@ -963,6 +982,11 @@ export struct VncSettingsPage {
           if (this.errorMessage !== '') {
             Text(this.errorMessage).fontSize(12).fontColor(this.pal().danger).fontFamily(this.font())
               .width('100%').padding(12).borderRadius(12).backgroundColor(this.pal().surface)
+            if (this.pendingDefaultGatewayCleanupId !== '') {
+              Button('重试清理默认 Gateway 引用').width('100%').height(38).borderRadius(9)
+                .backgroundColor(this.pal().surface).fontColor(this.accentColor)
+                .onClick((): void => { void this.retryDefaultGatewayCleanup(); })
+            }
           }
           Text('主机、Gateway 与 trust 由 VNC owner 独立管理；默认设置和云同步范围请从主设置页的 VNC 分组进入。')
             .fontSize(12).fontColor(this.pal().text3).lineHeight(19).width('100%')
