@@ -5152,6 +5152,9 @@ struct RemoteDesktop {
       this.shortcutPanelY = shortcut.y;
     }
     this.persistModifierPanelPositions();
+    if (this.isVncSession()) {
+      this.recomputeVncToolbarPlacement('modifier-panel-drag');
+    }
   }
 
   private moveShortcutPanel(x: number, y: number): void {
@@ -5159,6 +5162,9 @@ struct RemoteDesktop {
     this.shortcutPanelY = this.clampModifierPanelY(y, this.shortcutPanelMeasuredHeight);
     this.shortcutPanelUserPositioned = true;
     this.persistModifierPanelPositions();
+    if (this.isVncSession()) {
+      this.recomputeVncToolbarPlacement('shortcut-panel-drag');
+    }
   }
 
   private openModifierPanel(): void {
@@ -5170,12 +5176,18 @@ struct RemoteDesktop {
     }
     this.modifierPanelMounted = true;
     this.modifierPanelVisible = true;
+    if (this.isVncSession()) {
+      this.recomputeVncToolbarPlacement('modifier-panel-open');
+    }
   }
 
   private closeModifierPanel(): void {
     this.modifierPanelPrepareOnly = false;
     this.modifierPanelVisible = false;
     this.shortcutPanelVisible = false;
+    if (this.isVncSession()) {
+      this.recomputeVncToolbarPlacement('modifier-panel-close');
+    }
     setTimeout((): void => {
       if (!this.modifierPanelVisible && !this.shortcutPanelVisible) {
         this.modifierPanelMounted = false;
@@ -5195,6 +5207,9 @@ struct RemoteDesktop {
 
   private closeShortcutPanel(): void {
     this.shortcutPanelVisible = false;
+    if (this.isVncSession()) {
+      this.recomputeVncToolbarPlacement('shortcut-panel-close');
+    }
   }
 
   private toggleShortcutPanel(): void {
@@ -5208,6 +5223,9 @@ struct RemoteDesktop {
       this.shortcutPanelY = shortcut.y;
     }
     this.shortcutPanelVisible = opening;
+    if (this.isVncSession()) {
+      this.recomputeVncToolbarPlacement(opening ? 'shortcut-panel-open' : 'shortcut-panel-close');
+    }
   }
 
   private updateModifierPanelMeasuredSize(width: number, height: number, shortcut: boolean): void {
@@ -5226,12 +5244,16 @@ struct RemoteDesktop {
       } else {
         this.shortcutPanelY = this.clampModifierPanelY(this.shortcutPanelY, height);
       }
+      if (this.isVncSession() && this.shortcutPanelVisible) {
+        this.recomputeVncToolbarPlacement('shortcut-panel-measure');
+      }
       return;
     }
     if (Math.abs(this.modifierPanelMeasuredHeight - height) < 1) {
       if (this.modifierPanelPrepareOnly && this.isVncSession()) {
         this.modifierPanelPrepareOnly = false;
         this.modifierPanelVisible = true;
+        this.recomputeVncToolbarPlacement('modifier-panel-measure');
       }
       return;
     }
@@ -5251,6 +5273,9 @@ struct RemoteDesktop {
     if (this.modifierPanelPrepareOnly && this.isVncSession()) {
       this.modifierPanelPrepareOnly = false;
       this.modifierPanelVisible = true;
+      this.recomputeVncToolbarPlacement('modifier-panel-measure');
+    } else if (this.isVncSession() && this.modifierPanelVisible) {
+      this.recomputeVncToolbarPlacement('modifier-panel-measure');
     }
   }
 
