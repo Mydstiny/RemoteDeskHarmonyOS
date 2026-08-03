@@ -3,8 +3,9 @@
  *
  * AVSession supplies the system media identity and controls; PiPWindow owns
  * the actual XComponent surface shown in the floating video window. The
- * controller is prepared while the main window is visible and the system
- * performs the background auto-start transition.
+ * The 1.0.8 runtime creates the free node and explicitly starts VIDEO_PLAY
+ * during the background handoff. Auto-start remains armed for Home gestures,
+ * but it is not the only way the controller can be registered.
  */
 import { common } from '@kit.AbilityKit';
 import { PiPWindow, typeNode, UIContext } from '@kit.ArkUI';
@@ -14,7 +15,7 @@ import { hilog } from '@kit.PerformanceAnalysisKit';
 const TAG = 'RemoteSessionPip';
 const DOMAIN = 0x0015;
 const PIP_TERMINAL_STATE_TIMEOUT_MS = 5000;
-const PIP_SURFACE_WAIT_TIMEOUT_MS = 6000;
+const PIP_SURFACE_WAIT_TIMEOUT_MS = 2500;
 
 export interface RemoteSessionPipSurface {
   surfaceId: string;
@@ -103,20 +104,20 @@ class RemoteSessionPipXComponentController extends XComponentController {
     while (Date.now() - startedAtMs < timeoutMs) {
       if (this.currentSurfaceId.length > 0) {
         this.refreshSurfaceRect();
-        if (this.hasSurfaceRect()) {
-          this.publishSurfaceInfo();
-          return this.surfaceInfo();
-        }
+        this.publishSurfaceInfo();
+        // 1.0.8 only required the free-node SurfaceId here. Some API 23
+        // builds publish the final SurfaceRect later, after VIDEO_PLAY has
+        // already started; waiting for dimensions makes registration appear
+        // to fail even though the native surface is valid.
+        return this.surfaceInfo();
       }
       try {
         const surfaceId: string = this.getXComponentSurfaceId();
         if (surfaceId.length > 0) {
           this.currentSurfaceId = surfaceId;
           this.refreshSurfaceRect();
-          if (this.hasSurfaceRect()) {
-            this.publishSurfaceInfo();
-            return this.surfaceInfo();
-          }
+          this.publishSurfaceInfo();
+          return this.surfaceInfo();
         }
       } catch (_e) {
         // The free node may not have been mounted yet.
@@ -351,9 +352,9 @@ export class RemoteSessionPipService {
   }
 
   /**
-   * Wait for the system-created PIP surface after the app enters background.
-   * This method never calls startPiP(): doing so after the main window is
-   * hidden is rejected by WMS with 1300013 and leaves auto-start armed.
+   * Create/start the VIDEO_PLAY controller during the background handoff.
+   * This is the 1.0.8 initial ordering: create the free node, arm auto-start,
+   * explicitly startPiP, then move the native renderer after the surface exists.
    */
   async start(context: common.UIAbilityContext, uiContext: UIContext,
     contentWidth: number, contentHeight: number,
@@ -376,47 +377,89 @@ export class RemoteSessionPipService {
     }
     this.stoppedHandler = onStopped;
     this.surfaceChangedHandler = onSurfaceChanged;
-    if (!this.prepared || this.controller === null || this.pipComponentController === null) {
-      // A background call may be queued immediately after the foreground
-      // prepare request. The queue lets that prepare finish, but start must
-      // never create a new controller after the main window is hidden.
-      hilog.warn(DOMAIN, TAG, '[PIP-AUTOSTART] no foreground-prepared controller');
-      return false;
+    if (this.active && this.controller !== null) {
+      return true;
+    }
+    if (this.controller !== null) {
+      const stopped: boolean = await this.stopInternal();
+      if (!stopped) {
+        hilog.warn(DOMAIN, TAG, '[PIP-START] previous controller did not stop');
+        return false;
+      }
+      this.stoppedHandler = onStopped;
     }
 
     const generation: number = this.operationGeneration;
-    const owner: PiPWindow.PiPController | null = this.controller;
-    const pipController: RemoteSessionPipXComponentController | null = this.pipComponentController;
-    if (owner === null || pipController === null || !this.prepared) {
-      return false;
-    }
-    pipController.setSurfaceChangedHandler(onSurfaceChanged);
-    this.updateContentSize(contentWidth, contentHeight);
-
+    let created: PiPWindow.PiPController | null = null;
+    let createdNode: typeNode.XComponent | null = null;
     try {
-      hilog.info(DOMAIN, TAG, 'PIP waiting for system autoStart after background transition');
+      const width: number = Math.max(1, Math.round(contentWidth));
+      const height: number = Math.max(1, Math.round(contentHeight));
+      this.contentWidth = width;
+      this.contentHeight = height;
+      const pipController: RemoteSessionPipXComponentController =
+        new RemoteSessionPipXComponentController();
+      pipController.setSurfaceChangedHandler(onSurfaceChanged);
+      const config: PiPWindow.PiPConfiguration = {
+        context: context,
+        componentController: pipController,
+        templateType: PiPWindow.PiPTemplateType.VIDEO_PLAY,
+        contentWidth: width,
+        contentHeight: height,
+        defaultWindowSizeType: 1,
+        cornerAdsorptionEnabled: true
+      };
+      createdNode = typeNode.createNode(uiContext, 'XComponent', {
+        type: XComponentType.SURFACE,
+        controller: pipController
+      });
+      created = await PiPWindow.create(config, createdNode);
+      if (generation !== this.operationGeneration) {
+        await this.disposeCreatedController(created, createdNode, null);
+        return false;
+      }
+      this.controller = created;
+      this.contentNode = createdNode;
+      this.pipComponentController = pipController;
+      this.prepared = true;
+      this.active = true;
+      this.windowStarted = false;
+      this.lastState = null;
+      const stateCallback: PipStateHandler =
+        (state: PiPWindow.PiPState, reason: string): void => {
+          this.handleStateChange(created as PiPWindow.PiPController, state, reason);
+        };
+      this.stateCallback = stateCallback;
+      created.on('stateChange', stateCallback);
+      // Keep Home/background auto-start armed, then explicitly enter VIDEO_PLAY
+      // in this same handoff. This is the 1.0.8 registration order.
+      created.setAutoStartEnabled(true);
+      await created.startPiP();
+      this.windowStarted = true;
+      hilog.info(DOMAIN, TAG, 'PIP VIDEO_PLAY startPiP requested');
+
       const surface: RemoteSessionPipSurface | null = await pipController.waitForSurface(
         PIP_SURFACE_WAIT_TIMEOUT_MS);
-      if (generation !== this.operationGeneration || this.controller !== owner || !this.prepared) {
+      if (generation !== this.operationGeneration || this.controller !== created || !this.prepared) {
         return false;
       }
-      if (surface === null || surface.surfaceId.length === 0 ||
-        surface.surfaceWidth <= 0 || surface.surfaceHeight <= 0) {
-        throw new Error('PIP XComponent surface was not created by system autoStart');
+      if (surface === null || surface.surfaceId.length === 0) {
+        throw new Error('PIP XComponent surface was not created');
       }
-      if (onSurfaceReady !== null && !(await onSurfaceReady(surface, generation))) {
+      const attachSurface: RemoteSessionPipSurface = {
+        surfaceId: surface.surfaceId,
+        surfaceWidth: surface.surfaceWidth > 0 ? surface.surfaceWidth : this.contentWidth,
+        surfaceHeight: surface.surfaceHeight > 0 ? surface.surfaceHeight : this.contentHeight
+      };
+      if (onSurfaceReady !== null && !(await onSurfaceReady(attachSurface, generation))) {
         throw new Error('native renderer could not attach to PIP surface');
       }
-      if (generation !== this.operationGeneration || this.controller !== owner || !this.prepared) {
+      if (generation !== this.operationGeneration || this.controller !== created || !this.prepared) {
         return false;
       }
-      // The first SurfaceRect can be the full-display placeholder. Re-read
-      // after renderer attach so a real 1239x774-style window size cannot be
-      // lost in the handoff race.
-      pipController.notifyCurrentSurface();
       this.active = true;
       this.windowStarted = true;
-      hilog.info(DOMAIN, TAG, 'PIP VIDEO_PLAY autoStart attached size=' +
+      hilog.info(DOMAIN, TAG, 'PIP VIDEO_PLAY started size=' +
         Math.max(1, Math.round(contentWidth)).toString() + 'x' +
         Math.max(1, Math.round(contentHeight)).toString() +
         ' surface=' + surface.surfaceWidth.toString() + 'x' +
@@ -424,12 +467,20 @@ export class RemoteSessionPipService {
       return this.isActive();
     } catch (err) {
       const be: BusinessError = err as BusinessError;
-      hilog.warn(DOMAIN, TAG, '[PIP-AUTOSTART] failed code=' + this.errorCode(be) +
+      hilog.warn(DOMAIN, TAG, '[PIP-START] failed code=' + this.errorCode(be) +
         ' message=' + this.errorMessage(be));
-      const stopped: boolean = await this.stopInternal();
-      if (!stopped) {
-        hilog.warn(DOMAIN, TAG, '[PIP-AUTOSTART] controller teardown is still pending');
+      if (created !== null && this.controller === created) {
+        this.cleanupController(created, 'start-failed', false);
+      } else if (created !== null) {
+        await this.disposeCreatedController(created, createdNode, null);
+      } else if (createdNode !== null) {
+        try {
+          createdNode.dispose();
+        } catch (_e) {
+          // Best-effort node cleanup.
+        }
       }
+      this.clearState();
       return false;
     }
   }
@@ -496,12 +547,10 @@ export class RemoteSessionPipService {
       return;
     }
     if (state === PiPWindow.PiPState.ABOUT_TO_START) {
-      this.active = false;
       return;
     }
     if (state === PiPWindow.PiPState.ABOUT_TO_STOP ||
       state === PiPWindow.PiPState.ABOUT_TO_RESTORE) {
-      this.active = false;
       return;
     }
     if (state === PiPWindow.PiPState.STOPPED || state === PiPWindow.PiPState.ERROR) {
