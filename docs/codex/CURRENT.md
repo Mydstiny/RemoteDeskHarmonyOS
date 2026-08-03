@@ -116,4 +116,4 @@ This file is the compact startup resume card. Historical checkpoints remain in
 
 - Machine state: `docs/codex/STATE.json`.
 - Receipts: `docs/codex/REVIEW_RECEIPTS.jsonl`.
-- `scripts/sync_workspace.sh status` should retain Stage E PASS and keep active VNC-only work at Stage F until review returns for `f4f4760`; reuse the existing reviewer.
+- `scripts/sync_workspace.sh status` should retain Stage E/F PASS and keep active VNC-only work at Stage F native/endpoint integration; reuse the existing reviewer for the next declared segment.

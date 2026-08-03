@@ -4,7 +4,7 @@ Updated: 2026-08-03 Asia/Shanghai
 
 ## Now
 
-- Stage F checkpoint `f4f4760` is awaiting the existing VNC-only reviewer:
+- Stage F checkpoint `f4f4760` passed the existing VNC-only reviewer:
   TCP reachability is separated from deep mode12/TLS/RFB protocol readiness,
   both policy runners are registered, and native mode12 handoff fixtures cover
   fragmented banner/250-byte pairing/RFB handoff and invalid-banner zero-write
@@ -16,8 +16,7 @@ Updated: 2026-08-03 Asia/Shanghai
 
 ## Next
 
-- Stage F fixture reviewer result; then continue only the planned native/endpoint
-  deep-check integration before Stage G device matrices.
+- Continue only the planned native/endpoint deep-check integration before Stage G device matrices.
 
 ## Later
 
