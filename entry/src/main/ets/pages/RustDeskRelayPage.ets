@@ -35,6 +35,10 @@ import { VncGatewayAddFlow } from '../components/resourceadd/VncGatewayAddFlow';
 import { VncGatewayService, VncGatewayView } from '../services/VncGatewayService';
 import { VncGatewayValues } from '../services/VncModelPolicy';
 import { vncGatewayAvailability } from '../services/VncGatewayProtocolPolicy';
+import {
+  classifyVncGatewayHealth,
+  VncGatewayHealthResult
+} from '../services/VncGatewayHealthPolicy';
 import { protocolIcon } from '../services/ProtocolIconPolicy';
 import {
   RustDeskRelayCloudSyncOutcome,
@@ -325,7 +329,7 @@ export struct RustDeskRelayPage {
     if (this.vncTestResultId === gateway.id && this.vncTestResult.startsWith('✗')) {
       return '端口异常';
     }
-    return '可用 · 未检测';
+    return '未检测 · 协议未验证';
   }
 
   private vncGatewayStatusColor(gateway: VncGatewayView): string {
@@ -804,9 +808,39 @@ export struct RustDeskRelayPage {
     this.vncTestResult = '⏳ TCP 端口检测中…';
     const result = await this.tcpTest(gateway.host, gateway.port);
     if (result.ok) {
-      this.vncTestResult = '✓ TCP 端口可达 (' + result.lat.toString() + 'ms)';
+      const health: VncGatewayHealthResult = classifyVncGatewayHealth({
+        transport: gateway.transport,
+        enabled: gateway.enabled,
+        repeaterMode: gateway.repeaterMode,
+        target: gateway.targetId,
+        tcpReachable: true,
+        tlsRequired: gateway.tls,
+        certificateConfirmed: false,
+        pinMatched: false,
+        repeaterBannerOk: false,
+        targetPaired: false,
+        rfbBannerReady: false,
+        deepCheckAttempted: false,
+        errorCode: ''
+      });
+      this.vncTestResult = '✓ ' + health.message + ' (' + result.lat.toString() + 'ms)';
     } else {
-      this.vncTestResult = '✗ TCP 端口不可达';
+      const health: VncGatewayHealthResult = classifyVncGatewayHealth({
+        transport: gateway.transport,
+        enabled: gateway.enabled,
+        repeaterMode: gateway.repeaterMode,
+        target: gateway.targetId,
+        tcpReachable: false,
+        tlsRequired: gateway.tls,
+        certificateConfirmed: false,
+        pinMatched: false,
+        repeaterBannerOk: false,
+        targetPaired: false,
+        rfbBannerReady: false,
+        deepCheckAttempted: false,
+        errorCode: 'E-VNC-GATEWAY-TCP'
+      });
+      this.vncTestResult = '✗ ' + health.message;
     }
     this.testingVncGatewayId = '';
   }
@@ -1415,7 +1449,8 @@ export struct RustDeskRelayPage {
           Text(vncGatewayAvailability((this.selectedPcVncGateway as VncGatewayView).transport,
             (this.selectedPcVncGateway as VncGatewayView).tls,
             (this.selectedPcVncGateway as VncGatewayView).tokenConfigured,
-            (this.selectedPcVncGateway as VncGatewayView).repeaterMode).message || '尚未执行 TCP 检测')
+            (this.selectedPcVncGateway as VncGatewayView).repeaterMode).message ||
+            '尚未执行 Gateway 检查；TCP 端口测试不等于协议链路就绪')
             .fontSize(12).fontColor(this.pal().text3).width('100%').padding(12)
             .borderRadius(10).backgroundColor(this.pal().surface)
         }

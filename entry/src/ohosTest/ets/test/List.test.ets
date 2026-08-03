@@ -52,6 +52,7 @@ import vncTrustEndpointDirectoryTest from '../../../test/VncTrustEndpointDirecto
 import vncTlsEndpointPolicyTest from '../../../test/VncTlsEndpointPolicy.test';
 import vncTrustInvalidationPolicyTest from '../../../test/VncTrustInvalidationPolicy.test';
 import vncHostDefaultsPolicyTest from '../../../test/VncHostDefaultsPolicy.test';
+import vncGatewayHealthPolicyTest from '../../../test/VncGatewayHealthPolicy.test';
 import localBackupPolicyTest from '../../../test/LocalBackupPolicy.test';
 // Reuse the same source-of-truth unit suites in the on-device runner.  These
 // imports intentionally avoid a second copy that could drift from entry/src/test.
@@ -292,6 +293,7 @@ export default function testsuite() {
   vncTlsEndpointPolicyTest();
   vncTrustInvalidationPolicyTest();
   vncHostDefaultsPolicyTest();
+  vncGatewayHealthPolicyTest();
   localBackupPolicyTest();
   rustDeskProAddressBookTest();
   rustDeskProAddressBookApiServiceTest();
