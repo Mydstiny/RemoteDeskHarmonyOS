@@ -142,6 +142,9 @@ export default function localBackupPolicyTest(): void {
           id: 'totp-1', userid: 'owner-test',
           secret: 'totp-secret'
         });
+        tables['vncrecordv2'].push({
+          id: 'vnc-trust-1', userid: 'owner-test', recordtype: 'trust', deletedat: '0'
+        });
         const document = createLocalBackupDocument(
           tables, 100, '1.0.10', [{
             id: 'remotehosts:host-1', tablename: 'remotehosts',
@@ -154,6 +157,8 @@ export default function localBackupPolicyTest(): void {
         expect(document.manifest?.crypto.mode).assertEqual('full');
         expect(document.manifest?.crypto.verifierIncluded).assertTrue();
         expect(document.manifest?.trust.deviceTrustIncluded).assertTrue();
+        expect(document.manifest?.trust.vncTrustCandidatesIncluded).assertTrue();
+        expect(document.manifest?.trust.vncLocalConfirmationMarkerIncluded).assertFalse();
         expect(document.manifest?.trust.plaintextConsentIncluded)
           .assertFalse();
         expect(document.tables['cryptoparams'] !== undefined)
@@ -411,6 +416,8 @@ export default function localBackupPolicyTest(): void {
         tables, 100, '1.0.8', [], {
           vnclocalrecords: [secret, trust]
         }, owner);
+      expect(document.manifest?.trust.vncTrustCandidatesIncluded).assertFalse();
+      expect(document.manifest?.trust.vncLocalConfirmationMarkerIncluded).assertFalse();
       expect(document.tables['vncrecordv2'].length).assertEqual(1);
       expect(document.tables['vncrecordv2'][0]['id'])
         .assertEqual('vnc-host');

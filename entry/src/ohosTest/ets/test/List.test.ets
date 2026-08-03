@@ -50,6 +50,7 @@ import vncCertificateProbeLifecyclePolicyTest from '../../../test/VncCertificate
 import vncTrustServiceTest from '../../../test/VncTrustService.test';
 import vncTrustEndpointDirectoryTest from '../../../test/VncTrustEndpointDirectory.test';
 import vncTlsEndpointPolicyTest from '../../../test/VncTlsEndpointPolicy.test';
+import vncTrustInvalidationPolicyTest from '../../../test/VncTrustInvalidationPolicy.test';
 // Reuse the same source-of-truth unit suites in the on-device runner.  These
 // imports intentionally avoid a second copy that could drift from entry/src/test.
 import remoteOverlayViewportPolicyTest from '../../../test/RemoteOverlayViewportPolicy.test';
@@ -287,6 +288,7 @@ export default function testsuite() {
   vncTrustServiceTest();
   vncTrustEndpointDirectoryTest();
   vncTlsEndpointPolicyTest();
+  vncTrustInvalidationPolicyTest();
   rustDeskProAddressBookTest();
   rustDeskProAddressBookApiServiceTest();
   rustDeskProAddressBookSyncServiceTest();

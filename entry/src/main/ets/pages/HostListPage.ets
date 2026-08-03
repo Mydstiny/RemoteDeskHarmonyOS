@@ -6724,7 +6724,7 @@ struct HostListPage {
                 Row() { SymbolGlyph($r('sys.symbol.doc_plaintext')).fontSize(20).fontColor([this.accentColor]) }
                   .width(40).height(40).borderRadius(20).backgroundColor(this.pal().card).justifyContent(FlexAlign.Center)
                 Column() { Text('本地备份').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font());
-                  Text('可导出脱敏配置或含密码、私钥、2FA 与设备信任的完整备份').fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
+                  Text('可导出脱敏配置或完整备份；VNC trust 只作为候选元数据，本机确认标记不导出').fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
                 }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 12 })
                 SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(16).fontColor([this.pal().text3])
               }.width('100%').height(68).padding({ left: 14, right: 16 })
@@ -7864,7 +7864,7 @@ struct HostListPage {
               Column() {
                 Text(table === 'usersettings' ? '个性化与协议设置' : table === 'remotehosts' ? '远程主机' : table === 'rdpcredentials' ? 'Windows 登录凭据' : table === 'rustdeskrelays' ? 'RustDesk 中继配置' : table === 'sshkeys' ? 'SSH 密钥' : table === 'totpentries' ? '双重验证动态口令' : 'VNC 记录（vncrecord）')
                   .fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font())
-                Text(table === 'usersettings' ? '主题、外观和协议偏好' : table === 'vncrecordv2' ? '物理表开关；逻辑范围和 secrets 仍在 VNC 设置中选择' : '包含敏感数据，启用时自动同步加密参数')
+                Text(table === 'usersettings' ? '主题、外观和协议偏好' : table === 'vncrecordv2' ? '物理表开关；VNC 逻辑范围在设置中选择，trust 只同步候选元数据' : '包含敏感数据，启用时自动同步加密参数')
                   .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font()).margin({ top: 3 })
               }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 10 })
             }.width('100%').padding(14).borderRadius(14).backgroundColor(this.pal().surface).margin({ bottom: 8 })
@@ -7956,7 +7956,7 @@ struct HostListPage {
                   .fontSize(18).fontColor([this.backupFullMode ? this.pal().text3 : this.accentColor])
                 Column() {
                   Text('脱敏配置（推荐）').fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font())
-                  Text('不含密码、SSH 私钥、2FA 与登录令牌；保留设备信任（SSH 公钥/RDP 证书）')
+                  Text('不含密码、SSH 私钥、2FA 与登录令牌；保留 SSH/RDP 设备信任，VNC trust 候选和本机确认标记均不导出')
                     .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font()).lineHeight(17).margin({ top: 2 })
                 }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 10 })
               }.width('100%').padding(12).borderRadius(14).backgroundColor(this.pal().surface)
@@ -7968,7 +7968,7 @@ struct HostListPage {
                   .fontSize(18).fontColor([this.backupFullMode ? this.accentColor : this.pal().text3])
                 Column() {
                   Text('完整备份').fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font())
-                  Text('包含密码、SSH 私钥、2FA、VNC 与设备信任；源已加密则携带加密参数（恢复需相同主密码），未加密则按你的选择以明文保存')
+                  Text('包含密码、SSH 私钥、2FA、VNC 配置与 trust 候选；本机 confirmation marker 不导出。源已加密则携带加密参数（恢复需相同主密码），未加密则按你的选择以明文保存')
                     .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font()).lineHeight(17).margin({ top: 2 })
                 }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 10 })
               }.width('100%').padding(12).borderRadius(14).backgroundColor(this.pal().surface).margin({ top: 8 })
@@ -7979,8 +7979,8 @@ struct HostListPage {
             Text('影响范围').fontSize(12).fontWeight(FontWeight.Medium).fontColor(this.pal().text2).fontFamily(this.font())
             Text(this.cloudSyncStep === CLOUD_SYNC_SHEET_BACKUP_CONFIRM
               ? (this.backupFullMode
-                ? '全部连接配置、密码、私钥、2FA、VNC、设备信任与个性化设置'
-                : '连接配置与个性化设置；保留设备信任（SSH 公钥/RDP 证书），不含密码、私钥、2FA 与登录令牌')
+                ? '全部连接配置、密码、私钥、2FA、VNC 配置与 trust 候选；不含本机 confirmation marker'
+                : '连接配置与个性化设置；保留 SSH/RDP 设备信任，不含密码、私钥、2FA、登录令牌和 VNC trust marker')
               : (this.cloudSyncStep === CLOUD_SYNC_SHEET_RESTORE_CONFIRM
                 ? this.localRestorePreviewSummary()
                 : '主机、RDP 凭据、RustDesk 中继、SSH 密钥、2FA、加密参数和个性化设置'))

@@ -145,6 +145,16 @@ export default function vncTrustServiceTest(): void {
         'd'.repeat(64), STORE, BINDING)).assertTrue();
       expect(vncTrustV2ReadBackMatches(legacy, 'gateway', 'gateway-1', 'user-1',
         'd'.repeat(64), STORE, BINDING)).assertFalse();
+
+      const markerPayload: Record<string, Object> = JSON.parse(upgraded) as Record<string, Object>;
+      markerPayload['localConfirmationMarker'] = true;
+      const markerRecord = new VncRecord();
+      markerRecord.id = 'marker-trust'; markerRecord.userId = 'user-1';
+      markerRecord.recordType = 'trust'; markerRecord.ownerId = 'gateway-1';
+      markerRecord.ownerType = 'gateway'; markerRecord.payload = JSON.stringify(markerPayload);
+      markerRecord.createdAt = 1700000000000; markerRecord.updatedAt = 1700000000000;
+      finalizeVncRecord(markerRecord);
+      expect(vncRecordIsValid(markerRecord)).assertFalse();
     });
   });
 }

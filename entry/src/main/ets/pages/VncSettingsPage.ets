@@ -282,7 +282,7 @@ export struct VncSettingsPage {
             : DataCrypto.getInstance().isSetupComplete()
               ? '应用加密已锁定。现有 AES-GCM 密文会保留并等待解锁；未解锁时不会覆盖云端。新密码可关闭“记住密码”后临时使用。'
               : '应用加密未启用。明确选择记住密码的 VNC 凭据可能以未加密形式进入 vncrecordv2；请确认风险。')
-          : 'trust 指纹只同步记录，不会自动信任新设备；每台新设备仍须人工确认。',
+          : '只同步 VNC 证书候选和元数据，不同步本机 confirmation marker；新设备仍须人工确认。',
         buttons: [{ text: '取消', color: this.pal().text2 }, { text: '确认开启', color: this.accentColor }]
       }).then((result: Object): void => {
         const values: Record<string, number> = result as Record<string, number>;
@@ -573,7 +573,7 @@ export struct VncSettingsPage {
     if (scope === 'hosts') { return '不包含明文密码'; }
     if (scope === 'gateways') { return '端点和配对能力，不包含令牌'; }
     if (scope === 'secrets') { return '默认关闭；按“记住密码”策略保存，明文需再次确认'; }
-    return '只同步指纹记录，新设备不自动信任';
+    return '同步证书候选和元数据；不上传本机 confirmation marker，新设备不自动信任';
   }
 
   private toggleScope(scope: VncCloudSyncScope): void {
@@ -875,7 +875,7 @@ export struct VncSettingsPage {
   @Builder private trustCardSection() {
     Column() {
       this.cardTitle('VNC TLS 证书信任', '统一在数据安全中查看、忘记和重新检查')
-      Text('主机与 Gateway 使用各自的 endpoint-bound 信任记录；云恢复候选不会自动获得本机确认。')
+      Text('主机与 Gateway 使用各自的 endpoint-bound 信任记录；云恢复只带候选和元数据，本机 confirmation marker 永不上传。')
         .fontSize(12).fontColor(this.pal().text3).lineHeight(19).width('100%').margin({ bottom: 12 })
       Button('打开 VNC TLS 证书信任管理').width('100%').height(42).borderRadius(10)
         .backgroundColor(this.accentColor).fontColor(Color.White)
@@ -899,7 +899,7 @@ export struct VncSettingsPage {
           this.hostCardSection()
           this.gatewayDirectorySection()
           this.trustCardSection()
-          Text('VNC trust：首次 TLS/VeNCrypt 指纹必须由用户确认；云端恢复的 trust 记录不会自动变成信任。')
+          Text('VNC trust：首次 TLS/VeNCrypt 指纹必须由用户确认；云端恢复的候选记录不会自动变成信任。')
             .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font()).width('100%').padding({ left: 4, right: 4, bottom: 20 })
         }.width('100%').padding({ left: 16, right: 16, bottom: 24 })
       }.layoutWeight(1).scrollBar(BarState.Auto).edgeEffect(EdgeEffect.Spring)

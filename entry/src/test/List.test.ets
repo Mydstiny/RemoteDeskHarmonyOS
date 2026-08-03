@@ -59,6 +59,7 @@ import vncCertificateProbeLifecyclePolicyTest from './VncCertificateProbeLifecyc
 import vncTrustServiceTest from './VncTrustService.test';
 import vncTrustEndpointDirectoryTest from './VncTrustEndpointDirectory.test';
 import vncTlsEndpointPolicyTest from './VncTlsEndpointPolicy.test';
+import vncTrustInvalidationPolicyTest from './VncTrustInvalidationPolicy.test';
 import cloudSyncCoordinatorPolicyTest from './CloudSyncCoordinatorPolicy.test';
 import localBackupPolicyTest from './LocalBackupPolicy.test';
 import cloudStoreMutationPolicyTest from './CloudStoreMutationPolicy.test';
@@ -187,6 +188,7 @@ export default function testsuite() {
   vncTrustServiceTest();
   vncTrustEndpointDirectoryTest();
   vncTlsEndpointPolicyTest();
+  vncTrustInvalidationPolicyTest();
   cloudSyncCoordinatorPolicyTest();
   localBackupPolicyTest();
   cloudStoreMutationPolicyTest();

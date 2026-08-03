@@ -8,6 +8,8 @@ import {
 } from './VncModelPolicy';
 import { VncCloudSyncService } from './VncCloudSyncService';
 import { VncSecretLoadResult, VncSecretSaveResult, VncSecretService } from './VncSecretService';
+import { VncTrustService } from './VncTrustService';
+import { vncHostTrustEndpointChanged } from './VncTrustInvalidationPolicy';
 
 export interface VncHostView extends VncHostValues {
   id: string;
@@ -29,6 +31,7 @@ export class VncHostService {
   private static instance: VncHostService;
   private readonly cloud: CloudStore = CloudStore.getInstance();
   private readonly secrets: VncSecretService = VncSecretService.getInstance();
+  private readonly trust: VncTrustService = VncTrustService.getInstance();
   private userId: string = 'device-local';
   private initialized: boolean = false;
   private listenerBound: boolean = false;
@@ -136,6 +139,11 @@ export class VncHostService {
         return result;
       }
     }
+    if (current !== null && vncHostTrustEndpointChanged(current, values)) {
+      // Keep the historical trust row for review, but remove the device-local
+      // confirmation so the changed endpoint cannot reconnect silently.
+      this.trust.invalidateOwner('host', record.id);
+    }
     result.ok = true;
     this.emitChange();
     return result;
@@ -145,6 +153,7 @@ export class VncHostService {
     const removed: boolean = this.cloud.deleteVncRecord(this.getUserId(), id);
     if (removed) {
       this.secrets.remove(this.getUserId(), id, 'vnc_password');
+      this.trust.invalidateOwner('host', id);
       this.emitChange();
     }
     return removed;

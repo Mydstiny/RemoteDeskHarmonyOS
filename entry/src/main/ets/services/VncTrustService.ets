@@ -14,6 +14,11 @@ import {
   vncPayloadObject,
   vncTrustPayloadIsLegacy
 } from './VncRecordPolicy';
+import {
+  removeVncTrustMarkersForEndpoint,
+  removeVncTrustMarkersForOwner,
+  vncTrustMarkerKey
+} from './VncTrustInvalidationPolicy';
 
 const TRUST_PREFS_NAME: string = 'RemoteDesktopVncTrustPrefs';
 const LOCAL_TRUST_CONFIRMATIONS_KEY: string = 'locallyConfirmedVncTrust';
@@ -138,8 +143,10 @@ export function vncTrustLegacyRowIsCleaned(records: VncRecord[], legacyId: strin
 }
 
 /**
- * VNC trust owner. A cloud-restored fingerprint is data only; callers must
- * invoke save after an interactive, current-connection confirmation.
+ * VNC trust owner. A cloud-restored fingerprint is candidate data only;
+ * callers must invoke save after an interactive, current-connection
+ * confirmation. The confirmation marker lives in device Preferences and is
+ * never written into the cloud/backup payload.
  */
 export class VncTrustService {
   private static instance: VncTrustService;
@@ -267,15 +274,20 @@ export class VncTrustService {
       return null;
     }
     const values: VncTrustView[] = this.list();
+    let candidate: VncTrustView | null = null;
     for (let i = 0; i < values.length; i++) {
       const value: VncTrustView = values[i];
       if (value.ownerType === endpoint.ownerType && value.ownerId === ownerId &&
         value.userId === userId && value.storeIdentityFingerprint === store &&
         value.endpointBindingFingerprint === binding) {
-        return value;
+        // A rotated certificate creates a new row for the same endpoint. A
+        // locally confirmed row must win over historical cloud candidates,
+        // even if cloud ordering later replays an older row.
+        if (value.confirmed) { return value; }
+        if (candidate === null) { candidate = value; }
       }
     }
-    return null;
+    return candidate;
   }
 
   trustedFingerprintForEndpoint(endpoint: VncTrustEndpoint): string {
@@ -343,7 +355,11 @@ export class VncTrustService {
         return result;
       }
     }
-    this.rememberLocalConfirmation(record.ownerId, normalized, endpointBindingFingerprint);
+    this.locallyConfirmed = removeVncTrustMarkersForEndpoint(
+      this.locallyConfirmed, this.currentUserId(), ownerType, ownerId,
+      endpointBindingFingerprint, normalized);
+    this.rememberLocalConfirmation(ownerType, record.ownerId, normalized, endpointBindingFingerprint);
+    this.persistLocalConfirmations();
     result.ok = true;
     this.emitChange();
     return result;
@@ -353,10 +369,51 @@ export class VncTrustService {
     const trust: VncTrustView | null = this.find(id);
     const ok: boolean = this.cloud.deleteVncRecord(this.currentUserId(), id);
     if (ok) {
-      if (trust !== null) { this.forgetLocalConfirmation(trust.ownerId, trust.fingerprintSha256); }
+      if (trust !== null) {
+        this.forgetLocalConfirmation(trust.ownerType, trust.ownerId, trust.fingerprintSha256,
+          trust.endpointBindingFingerprint);
+      }
       this.emitChange();
     }
     return ok;
+  }
+
+  /**
+   * Endpoint owners call this after a committed delete or endpoint mutation.
+   * Historical trust rows remain visible as candidates, while every local
+   * confirmation for the owner is invalidated before a connection can use it.
+   */
+  invalidateOwner(ownerType: 'host' | 'gateway', ownerId: string): boolean {
+    const normalizedOwner: string = ownerId.trim();
+    const currentUser: string = this.currentUserId();
+    if (normalizedOwner === '' || currentUser.trim() === '') { return false; }
+    const next: string[] = removeVncTrustMarkersForOwner(
+      this.locallyConfirmed, currentUser, ownerType, normalizedOwner);
+    const changed: boolean = next.length !== this.locallyConfirmed.length;
+    if (changed) {
+      this.locallyConfirmed = next;
+      this.persistLocalConfirmations();
+      this.emitChange();
+    }
+    return changed;
+  }
+
+  /** Invalidate one exact endpoint while leaving other owners untouched. */
+  invalidateEndpoint(endpoint: VncTrustEndpoint): boolean {
+    const currentUser: string = this.currentUserId();
+    if (!vncTrustEndpointIsValid(endpoint, currentUser, this.currentStoreIdentityFingerprint())) {
+      return false;
+    }
+    const next: string[] = removeVncTrustMarkersForEndpoint(
+      this.locallyConfirmed, currentUser, endpoint.ownerType, endpoint.ownerId,
+      endpoint.endpointBindingFingerprint);
+    const changed: boolean = next.length !== this.locallyConfirmed.length;
+    if (changed) {
+      this.locallyConfirmed = next;
+      this.persistLocalConfirmations();
+      this.emitChange();
+    }
+    return changed;
   }
 
   private find(id: string): VncTrustView | null {
@@ -458,7 +515,7 @@ export class VncTrustService {
     } catch (_e) {}
     const viewState: VncTrustViewState = vncTrustViewStateForStore(
       confirmed,
-      this.hasLocalConfirmation(record.ownerId, fingerprint, endpointBindingFingerprint,
+      this.hasLocalConfirmation(ownerType, record.ownerId, fingerprint, endpointBindingFingerprint,
         storeIdentityFingerprint),
       storeIdentityFingerprint,
       this.currentStoreIdentityFingerprint());
@@ -477,44 +534,50 @@ export class VncTrustService {
     };
   }
 
-  private localTrustKey(ownerId: string, fingerprintSha256: string,
+  private localTrustKey(ownerType: 'host' | 'gateway', ownerId: string, fingerprintSha256: string,
     endpointBindingFingerprint: string = '', storeIdentityFingerprint: string = ''): string {
     const store: string = (storeIdentityFingerprint === ''
       ? this.currentStoreIdentityFingerprint() : storeIdentityFingerprint).trim().toLowerCase();
     if (!/^[0-9a-f]{64}$/.test(store)) { return ''; }
     const binding: string = endpointBindingFingerprint.trim().toLowerCase();
-    return this.currentUserId() + '|' + store + '|' + ownerId.trim() + '|' + fingerprintSha256.trim().toLowerCase() +
-      (binding === '' ? '' : '|' + binding);
+    return vncTrustMarkerKey({
+      userId: this.currentUserId(), storeIdentityFingerprint: store,
+      ownerType, ownerId, fingerprintSha256,
+      endpointBindingFingerprint: binding
+    });
   }
 
-  private hasLocalConfirmation(ownerId: string, fingerprintSha256: string,
+  private hasLocalConfirmation(ownerType: 'host' | 'gateway', ownerId: string, fingerprintSha256: string,
     endpointBindingFingerprint: string = '', storeIdentityFingerprint: string = ''): boolean {
-    const key: string = this.localTrustKey(ownerId, fingerprintSha256,
+    const key: string = this.localTrustKey(ownerType, ownerId, fingerprintSha256,
       endpointBindingFingerprint, storeIdentityFingerprint);
-    return ownerId.trim() !== '' && fingerprintSha256.trim() !== '' && key !== '' &&
-      this.locallyConfirmed.indexOf(key) >= 0;
+    if (ownerId.trim() === '' || fingerprintSha256.trim() === '' || key === '') { return false; }
+    if (this.locallyConfirmed.indexOf(key) >= 0) { return true; }
+    // Accept the prior endpoint-bound marker format during one-way migration;
+    // a later successful save writes the ownerType-aware key.
+    const legacyKey: string = this.currentUserId() + '|' +
+      (storeIdentityFingerprint === '' ? this.currentStoreIdentityFingerprint() : storeIdentityFingerprint)
+        .trim().toLowerCase() + '|' + ownerId.trim() + '|' + fingerprintSha256.trim().toLowerCase() +
+      (endpointBindingFingerprint.trim() === '' ? '' : '|' + endpointBindingFingerprint.trim().toLowerCase());
+    return this.locallyConfirmed.indexOf(legacyKey) >= 0;
   }
 
-  private rememberLocalConfirmation(ownerId: string, fingerprintSha256: string,
+  private rememberLocalConfirmation(ownerType: 'host' | 'gateway', ownerId: string, fingerprintSha256: string,
     endpointBindingFingerprint: string = ''): void {
-    const key: string = this.localTrustKey(ownerId, fingerprintSha256, endpointBindingFingerprint);
+    const key: string = this.localTrustKey(ownerType, ownerId, fingerprintSha256, endpointBindingFingerprint);
     if (key === '') { return; }
     if (this.locallyConfirmed.indexOf(key) < 0) { this.locallyConfirmed.push(key); }
     this.persistLocalConfirmations();
   }
 
-  private forgetLocalConfirmation(ownerId: string, fingerprintSha256: string): void {
+  private forgetLocalConfirmation(ownerType: 'host' | 'gateway', ownerId: string,
+    fingerprintSha256: string, endpointBindingFingerprint: string = ''): void {
     const currentUser: string = this.currentUserId();
     const normalizedOwner: string = ownerId.trim();
     const normalizedFingerprint: string = fingerprintSha256.trim().toLowerCase();
-    this.locallyConfirmed = this.locallyConfirmed.filter((value: string): boolean => {
-      const parts: string[] = value.split('|');
-      const currentFormat: boolean = parts.length >= 4 && parts[0] === currentUser &&
-        parts[2] === normalizedOwner && parts[3] === normalizedFingerprint;
-      const legacyFormat: boolean = parts.length >= 3 && parts[0] === currentUser &&
-        parts[1] === normalizedOwner && parts[2] === normalizedFingerprint;
-      return !currentFormat && !legacyFormat;
-    });
+    this.locallyConfirmed = removeVncTrustMarkersForEndpoint(
+      this.locallyConfirmed, currentUser, ownerType, normalizedOwner,
+      endpointBindingFingerprint, normalizedFingerprint);
     this.persistLocalConfirmations();
   }
 

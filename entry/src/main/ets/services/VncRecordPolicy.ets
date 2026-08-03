@@ -44,6 +44,10 @@ const VNC_REPEATER_MODES: string[] = ['mode2', 'mode12'];
 const FORBIDDEN_SECRET_KEYS: string[] = [
   'password', 'passwd', 'token', 'secret', 'privatekey', 'privateKey', 'ciphertext'
 ];
+const FORBIDDEN_VNC_LOCAL_MARKER_KEYS: string[] = [
+  'localConfirmationMarker', 'localConfirmationMarkerAt',
+  'confirmationMarker', 'confirmationMarkerAt'
+];
 
 export function vncRecordColumns(): string[] {
   return VNC_RECORD_COLUMNS.slice();
@@ -275,6 +279,14 @@ export function vncRecordPayloadSemanticallyValid(record: VncRecord): boolean {
       isBooleanValue(values, 'enabled') && endpointSpecificFieldsValid;
   }
   if (record.recordType === 'trust') {
+    const trustKeys: string[] = Object.keys(values);
+    for (let i = 0; i < trustKeys.length; i++) {
+      if (FORBIDDEN_VNC_LOCAL_MARKER_KEYS.indexOf(trustKeys[i]) >= 0) {
+        // Device-local confirmation is stored in Preferences and must never
+        // cross the cloud or backup row boundary.
+        return false;
+      }
+    }
     const fingerprint: string = typeof values['fingerprintSha256'] === 'string' ?
       (values['fingerprintSha256'] as string).trim().toLowerCase() : '';
     const payloadOwnerType: string = typeof values['ownerType'] === 'string' ?

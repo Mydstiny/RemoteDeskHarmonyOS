@@ -9,6 +9,8 @@ import {
 import { VncCloudSyncService } from './VncCloudSyncService';
 import { VncSecretService } from './VncSecretService';
 import { vncGatewayAvailability } from './VncGatewayProtocolPolicy';
+import { VncTrustService } from './VncTrustService';
+import { vncGatewayTrustEndpointChanged } from './VncTrustInvalidationPolicy';
 
 export interface VncGatewayView extends VncGatewayValues {
   id: string;
@@ -30,6 +32,7 @@ export class VncGatewayService {
   private static instance: VncGatewayService;
   private readonly cloud: CloudStore = CloudStore.getInstance();
   private readonly secrets: VncSecretService = VncSecretService.getInstance();
+  private readonly trust: VncTrustService = VncTrustService.getInstance();
   private userId: string = 'device-local';
   private initialized: boolean = false;
   private listenerBound: boolean = false;
@@ -140,6 +143,11 @@ export class VncGatewayService {
         return result;
       }
     }
+    if (current !== null && vncGatewayTrustEndpointChanged(current, values)) {
+      // Gateway TLS endpoint changes invalidate local confirmation while the
+      // old trust row remains available as an unconfirmed history candidate.
+      this.trust.invalidateOwner('gateway', record.id);
+    }
     result.ok = true;
     this.emitChange();
     return result;
@@ -149,6 +157,7 @@ export class VncGatewayService {
     const ok: boolean = this.cloud.deleteVncRecord(this.getUserId(), id);
     if (ok) {
       this.secrets.remove(this.getUserId(), id, 'gateway_token');
+      this.trust.invalidateOwner('gateway', id);
       this.emitChange();
     }
     return ok;

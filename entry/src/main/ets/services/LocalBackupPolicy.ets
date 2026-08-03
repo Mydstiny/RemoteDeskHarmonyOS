@@ -203,6 +203,22 @@ function sectionManifest(
   };
 }
 
+function hasActiveVncTrustRows(data: PortableBackupData): boolean {
+  const tables: Array<Array<Record<string, string>>> = [
+    data.tables['vncrecordv2'] || [],
+    data.localTables['vnclocalrecords'] || []
+  ];
+  for (let t = 0; t < tables.length; t++) {
+    for (let r = 0; r < tables[t].length; r++) {
+      if (tables[t][r]['recordtype'] === 'trust' &&
+        Number(tables[t][r]['deletedat'] || '0') <= 0) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 function createBackupManifestV3(
   data: PortableBackupRedactionResult, createdAt: number,
   appVersion: string, accountScope: string, rdbSchemaVersion: number,
@@ -249,6 +265,10 @@ function createBackupManifestV3(
     },
     trust: {
       deviceTrustIncluded: true,
+      vncTrustCandidatesIncluded: sensitivityMode === 'full' && hasActiveVncTrustRows(data),
+      // The confirmation marker is stored only in device-local Preferences;
+      // it is never present in either localTables or the cloud table.
+      vncLocalConfirmationMarkerIncluded: false,
       plaintextConsentIncluded:
         sensitivityMode === 'full' && !sourceCryptoConfigured,
       loginTokensIncluded: sensitivityMode === 'full'
@@ -593,8 +613,10 @@ function validateRedactedV3Rows(
 /**
  * Full-backup validation: rows must keep the exact owner and known columns
  * (already enforced by backupRowsContainOnlyKnownColumns/normalize), VNC rows
- * may include secret/trust rows, and cryptoparams rows are expected when the
- * source was encrypted. There is deliberately no redaction-equality check.
+ * may include secret rows and trust candidate metadata, and cryptoparams rows
+ * are expected when the source was encrypted. The device-local confirmation
+ * marker is not a row and is never accepted from a backup. There is
+ * deliberately no redaction-equality check.
  */
 function validateFullV3Rows(
   document: LocalBackupDocument,
@@ -691,9 +713,10 @@ function validPortableVncRows(
 }
 
 /**
- * Full-backup VNC filter: keeps secret/trust rows (ciphertext or plaintext by
- * the user's explicit choice) and only drops tombstoned rows. Owner rebinding
- * happens before this filter, so rows already carry the target owner.
+ * Full-backup VNC filter: keeps secret rows and trust candidate metadata
+ * (ciphertext or plaintext by the user's explicit choice) and only drops
+ * tombstoned rows. Owner rebinding happens before this filter, so rows already
+ * carry the target owner. Device-local confirmation markers are not rows.
  */
 function validFullVncRows(
   rows: Array<Record<string, string>>, owner: string
@@ -739,7 +762,12 @@ export function createLocalBackupRestorePreview(
     tombstoneCount,
     secretsIncluded: document.manifest?.crypto.mode === 'full',
     deviceTrustIncluded:
-      document.manifest?.trust.deviceTrustIncluded === true
+      document.manifest?.trust.deviceTrustIncluded === true,
+    vncTrustCandidatesIncluded:
+      document.manifest?.trust.vncTrustCandidatesIncluded === true,
+    // A valid document can never transport this marker. Keep the preview
+    // explicit so callers cannot accidentally imply that restore re-trusts.
+    vncLocalConfirmationMarkerIncluded: false
   };
 }
 
