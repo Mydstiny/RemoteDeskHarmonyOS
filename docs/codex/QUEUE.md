@@ -4,6 +4,8 @@ Updated: 2026-08-03 Asia/Shanghai
 
 ## Now
 
+- Checkpoint `d29e754db` fixes PIP operation races, renderer/PIP session
+  continuity, and temporary TOTP selection in RustDesk authentication.
 - Checkpoint `28f8608f6` fixes RustDesk transient network reconnect,
   first-frame admission, stale-callback fencing, and cleanup continuity.
 - Checkpoint `fa886f37d`/`763dc35d1` fixes RustDesk first-frame startup,
