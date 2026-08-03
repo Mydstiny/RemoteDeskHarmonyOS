@@ -3,7 +3,7 @@
 import { totpOfficialBrandAssetPath, totpOfficialBrandAssetResource } from './TotpBrandOfficialAssetRegistry';
 
 export const TOTP_BRAND_ASSET_REGISTRY_MANIFEST_VERSION: string = "totp-brand-manifest-2026.08.03-si-16.21.0-r7-mainstream-logo-catalog";
-export const TOTP_BRAND_ASSET_REGISTRY_SOURCE_SHA256: string = "82dd94d4a82a910e97b50e8a72227eb78cec299035fb99681fa6c829fc39bc91";
+export const TOTP_BRAND_ASSET_REGISTRY_SOURCE_SHA256: string = "c24f56da54a4aafdb5a66413c3d730c42b14f35e3bec4848ec78d074122b1d33";
 export const TOTP_BRAND_ASSET_REGISTRY_IDS: string[] = [
   "apple",
   "icloud",

@@ -5269,6 +5269,22 @@
       ],
       "copyrightText": "NOASSERTION",
       "comment": "sourceUrl=https://github.com/gilbarbara/logos/blob/4de741f8503d5e81abf5dfa05214690e938296bf/logos/zapier.svg; brandSourceUrl=https://zapier.com/; brandGuidelines=https://zapier.com/brand; license=CC0-1.0; licenseUrl=https://github.com/gilbarbara/logos/blob/4de741f8503d5e81abf5dfa05214690e938296bf/LICENSE.txt; trademarkGuidelines=https://github.com/gilbarbara/logos/blob/4de741f8503d5e81abf5dfa05214690e938296bf/README.md; CC0 catalog vector; not an official brand-kit assertion; use only for supplier identification; officialAssetVerified=false; assetSha256=920ebb57c753e9c4cf5763966e4f06897641851de403667d33945a3313b3043c"
+    },
+    {
+      "SPDXID": "SPDXRef-File-TotpOfficialBrand-authy",
+      "fileName": "entry/src/main/resources/rawfile/totp-brands/catalog/authy.svg",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "fe77d7d1ca1169a02e3c8d5daeb687e897bbbe392f934c87aee8f242cce6c73d"
+        }
+      ],
+      "licenseConcluded": "CC0-1.0",
+      "licenseInfoInFiles": [
+        "CC0-1.0"
+      ],
+      "copyrightText": "NOASSERTION",
+      "comment": "sourceUrl=https://github.com/gilbarbara/logos/blob/4de741f8503d5e81abf5dfa05214690e938296bf/logos/authy.svg; brandSourceUrl=https://www.authy.com/; brandGuidelines=https://www.twilio.com/en-us/legal/trademark-list; license=CC0-1.0; licenseUrl=https://github.com/gilbarbara/logos/blob/4de741f8503d5e81abf5dfa05214690e938296bf/LICENSE.txt; trademarkGuidelines=https://github.com/gilbarbara/logos/blob/4de741f8503d5e81abf5dfa05214690e938296bf/README.md; CC0 catalog vector; not an official brand-kit assertion; use only for supplier identification; officialAssetVerified=false; assetSha256=fe77d7d1ca1169a02e3c8d5daeb687e897bbbe392f934c87aee8f242cce6c73d"
     }
   ],
   "relationships": [
@@ -6676,6 +6692,11 @@
       "spdxElementId": "SPDXRef-Package-TOTP-Official-Brand-Assets",
       "relationshipType": "CONTAINS",
       "relatedSpdxElement": "SPDXRef-File-TotpOfficialBrand-zapier"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-TOTP-Official-Brand-Assets",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-TotpOfficialBrand-authy"
     }
   ]
 }

@@ -195,6 +195,9 @@ export default function totpBrandServiceTest(): number {
       expect(resolveTotpBrand('QQ', 'alice@example.com').brandId).assertEqual('qq');
       expect(resolveTotpBrand('Auth0 by Okta', 'alice@example.com').localAsset)
         .assertEqual('totp-brands/catalog/auth0.svg');
+      expect(resolveTotpBrand('Authy', 'alice@example.com').localAsset)
+        .assertEqual('totp-brands/catalog/authy.svg');
+      expect(resolveTotpBrand('', 'alice@authy.com').brandId).assertEqual('authy');
       expect(resolveTotpBrand('', 'alice@zoho.com').brandId).assertEqual('zoho');
       expect(resolveTotpBrand('Zapier', 'alice@example.com').localAsset)
         .assertEqual('totp-brands/catalog/zapier.svg');

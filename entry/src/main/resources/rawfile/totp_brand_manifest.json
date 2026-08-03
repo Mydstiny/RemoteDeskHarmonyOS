@@ -739,6 +739,30 @@
       "licenseUrl": "https://github.com/gilbarbara/logos/blob/4de741f8503d5e81abf5dfa05214690e938296bf/LICENSE.txt",
       "trademarkGuidelines": "https://github.com/gilbarbara/logos/blob/4de741f8503d5e81abf5dfa05214690e938296bf/README.md; CC0 catalog vector; not an official brand-kit assertion; use only for supplier identification",
       "officialAssetVerified": false
+    },
+    {
+      "brandId": "authy",
+      "displayName": "Authy",
+      "aliases": [
+        "Authy",
+        "Twilio Authy"
+      ],
+      "exactDomains": [
+        "authy.com"
+      ],
+      "localAsset": "totp-brands/catalog/authy.svg",
+      "assetBytes": 2397,
+      "sha256": "fe77d7d1ca1169a02e3c8d5daeb687e897bbbe392f934c87aee8f242cce6c73d",
+      "brandColor": "#F22E46",
+      "sourceType": "svglogos-catalog",
+      "sourceUrl": "https://github.com/gilbarbara/logos/blob/4de741f8503d5e81abf5dfa05214690e938296bf/logos/authy.svg",
+      "brandSourceUrl": "https://www.authy.com/",
+      "brandGuidelines": "https://www.twilio.com/en-us/legal/trademark-list",
+      "upstreamVersion": "4de741f8503d5e81abf5dfa05214690e938296bf",
+      "licenseType": "CC0-1.0",
+      "licenseUrl": "https://github.com/gilbarbara/logos/blob/4de741f8503d5e81abf5dfa05214690e938296bf/LICENSE.txt",
+      "trademarkGuidelines": "https://github.com/gilbarbara/logos/blob/4de741f8503d5e81abf5dfa05214690e938296bf/README.md; CC0 catalog vector; not an official brand-kit assertion; use only for supplier identification",
+      "officialAssetVerified": false
     }
   ],
   "entries": [

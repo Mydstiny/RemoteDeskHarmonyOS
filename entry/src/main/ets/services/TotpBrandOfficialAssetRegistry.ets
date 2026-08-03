@@ -1,6 +1,6 @@
 /** GENERATED FILE. Edit totp_brand_manifest.json and rerun the generator. */
 
-export const TOTP_OFFICIAL_BRAND_SOURCE_SHA256: string = "82dd94d4a82a910e97b50e8a72227eb78cec299035fb99681fa6c829fc39bc91";
+export const TOTP_OFFICIAL_BRAND_SOURCE_SHA256: string = "c24f56da54a4aafdb5a66413c3d730c42b14f35e3bec4848ec78d074122b1d33";
 
 export interface TotpOfficialBrandEntry {
   brandId: string;
@@ -344,6 +344,17 @@ export const TOTP_OFFICIAL_BRANDS: TotpOfficialBrandEntry[] = [
     sha256: "920ebb57c753e9c4cf5763966e4f06897641851de403667d33945a3313b3043c",
     sourceType: "svglogos-catalog",
     brandColor: "#FF4F00"
+  },
+  {
+    brandId: "authy",
+    displayName: "Authy",
+    aliases: ["Authy", "Twilio Authy"],
+    exactDomains: ["authy.com"],
+    localAsset: "totp-brands/catalog/authy.svg",
+    assetBytes: 2397,
+    sha256: "fe77d7d1ca1169a02e3c8d5daeb687e897bbbe392f934c87aee8f242cce6c73d",
+    sourceType: "svglogos-catalog",
+    brandColor: "#F22E46"
   }
 ];
 
@@ -389,6 +400,7 @@ export function totpOfficialBrandAssetPath(brandId: string): string {
     case "auth0": return "totp-brands/catalog/auth0.svg";
     case "zoho": return "totp-brands/catalog/zoho.svg";
     case "zapier": return "totp-brands/catalog/zapier.svg";
+    case "authy": return "totp-brands/catalog/authy.svg";
     default: return '';
   }
 }
@@ -425,6 +437,7 @@ export function totpOfficialBrandAssetResource(brandId: string): Resource | null
     case "auth0": return $rawfile("totp-brands/catalog/auth0.svg");
     case "zoho": return $rawfile("totp-brands/catalog/zoho.svg");
     case "zapier": return $rawfile("totp-brands/catalog/zapier.svg");
+    case "authy": return $rawfile("totp-brands/catalog/authy.svg");
     default: return null;
   }
 }

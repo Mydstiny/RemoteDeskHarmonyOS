@@ -263,6 +263,16 @@ CATALOG_BRANDS: list[dict[str, object]] = [
         "brandGuidelines": "https://zapier.com/brand",
         "brandColor": "#FF4F00",
     },
+    {
+        "brandId": "authy",
+        "displayName": "Authy",
+        "sourceAsset": "authy.svg",
+        "aliases": ["Authy", "Twilio Authy"],
+        "exactDomains": ["authy.com"],
+        "brandSourceUrl": "https://www.authy.com/",
+        "brandGuidelines": "https://www.twilio.com/en-us/legal/trademark-list",
+        "brandColor": "#F22E46",
+    },
 ]
 
 
