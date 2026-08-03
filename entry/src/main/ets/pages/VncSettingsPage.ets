@@ -374,6 +374,7 @@ export struct VncSettingsPage {
       const result = this.gatewayService.save(values, this.editingGatewayId, this.gatewayToken,
         allowPlaintext);
       if (!result.ok) { this.errorMessage = result.message; return; }
+      if (!values.enabled) { void this.settings.clearDefaultGatewayIf(result.id); }
       this.errorMessage = '';
       this.resetGatewayForm();
       promptAction.showToast({ message: 'VNC 网关已保存', duration: 1600 });
@@ -413,7 +414,10 @@ export struct VncSettingsPage {
       buttons: [{ text: '取消', color: this.pal().text2 }, { text: '删除', color: this.pal().danger }]
     }).then((result: Object): void => {
       const values: Record<string, number> = result as Record<string, number>;
-      if (values['index'] === 1 && this.gatewayService.remove(gateway.id)) { this.loadGateways(); }
+      if (values['index'] === 1 && this.gatewayService.remove(gateway.id)) {
+        void this.settings.clearDefaultGatewayIf(gateway.id);
+        this.loadGateways();
+      }
     });
   }
 

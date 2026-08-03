@@ -117,6 +117,19 @@ export class VncSettingsService {
     };
   }
 
+  /** Remove a deleted or disabled Gateway from the default connection draft. */
+  async clearDefaultGatewayIf(gatewayId: string): Promise<boolean> {
+    const normalizedId: string = gatewayId.trim();
+    const current: VncSettingsValues = this.get();
+    if (normalizedId === '' || current.defaultGatewayId.trim() !== normalizedId) {
+      return true;
+    }
+    current.defaultGatewayId = '';
+    current.defaultTransport = 'direct_tcp';
+    const result: VncSettingsSaveResult = await this.save(current);
+    return result.ok;
+  }
+
   async save(
     next: VncSettingsValues
   ): Promise<VncSettingsSaveResult> {
