@@ -383,6 +383,8 @@ public:
 
     int port() const { return port_; }
     bool pairingReceived() const { return pairingReceived_.load(std::memory_order_acquire); }
+    size_t pairingBytesReceived() const { return pairingBytesReceived_.load(std::memory_order_acquire); }
+    size_t pairingReadChunks() const { return pairingReadChunks_.load(std::memory_order_acquire); }
     const std::array<uint8_t, 250>& pairing() const { return pairing_; }
 
 private:
@@ -398,12 +400,14 @@ private:
         return true;
     }
 
-    static bool recvExactSlow(int fd, uint8_t* data, size_t size) {
+    bool recvExactSlow(int fd, uint8_t* data, size_t size) {
         size_t offset = 0;
         while (offset < size) {
             const ssize_t received = ::recv(fd, data + offset, std::min<size_t>(7, size - offset), 0);
             if (received <= 0) return false;
             offset += static_cast<size_t>(received);
+            pairingBytesReceived_.fetch_add(static_cast<size_t>(received), std::memory_order_acq_rel);
+            pairingReadChunks_.fetch_add(1, std::memory_order_acq_rel);
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
         return true;
@@ -437,6 +441,8 @@ private:
     std::atomic<bool> stopRequested_ {false};
     std::atomic<int> clientFd_ {-1};
     std::atomic<bool> pairingReceived_ {false};
+    std::atomic<size_t> pairingBytesReceived_ {0};
+    std::atomic<size_t> pairingReadChunks_ {0};
     std::array<uint8_t, 250> pairing_ {};
     int listenFd_ = -1;
     int port_ = 0;
@@ -741,6 +747,7 @@ RDP_TEST_CASE(vnc_repeater_transport_deep_handoff_reads_banner_and_exact_pairing
     RDP_ASSERT(std::memcmp(rfbBanner.data(), "RFB 003.008\n", rfbBanner.size()) == 0);
     transport.close();
     RDP_ASSERT(fixture.pairingReceived());
+    RDP_ASSERT(fixture.pairingReadChunks() > 1);
     std::string target;
     RDP_ASSERT(VncRfbProtocol::parseRepeaterTargetField(
         fixture.pairing().data(), fixture.pairing().size(), target, error));
@@ -763,6 +770,8 @@ RDP_TEST_CASE(vnc_repeater_transport_rejects_invalid_banner_before_pairing) {
     RDP_ASSERT(error.find("banner is invalid") != std::string::npos);
     transport.close();
     RDP_ASSERT(!fixture.pairingReceived());
+    RDP_ASSERT(fixture.pairingBytesReceived() == 0);
+    RDP_ASSERT(fixture.pairingReadChunks() == 0);
 }
 
 RDP_TEST_CASE(vnc_rfb_engine_stop_during_tls_keeps_ssl_teardown_on_worker) {
