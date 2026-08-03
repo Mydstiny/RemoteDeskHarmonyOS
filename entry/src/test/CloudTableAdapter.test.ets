@@ -126,7 +126,7 @@ describe('CloudTableAdapter', (): void => {
 
   it('keeps_totpentries_schema_exact_and_brand_fields_local_only', (): void => {
     const expected: string[] = [
-      'id', 'userid', 'issuer', 'account', 'secret', 'algorithm', 'digits',
+      'id', 'userid', 'issuer', 'account', 'displayname', 'secret', 'algorithm', 'digits',
       'period', 'iconurl', 'locked', 'locktype', 'syncversion', 'createdat', 'updatedat'
     ];
     const actual: string[] = cloudTableColumns('totpentries');

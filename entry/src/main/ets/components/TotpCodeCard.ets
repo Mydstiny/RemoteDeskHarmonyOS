@@ -9,7 +9,7 @@ import { pasteboard } from '@kit.BasicServicesKit';
 import { common } from '@kit.AbilityKit';
 import { image } from '@kit.ImageKit';
 import {
-  TotpBrandVisual, totpBrandVisualForEntry
+  TotpBrandVisual, totpBrandVisualForEntry, totpCustomAvatarUrl
 } from '../services/TotpBrandService';
 import { shouldRunTotpBrandTicker, TotpBrandTicker } from '../services/TotpBrandTicker';
 import {
@@ -46,6 +46,8 @@ export struct TotpCodeCard {
   @State brandReady: boolean = false;
   @State brandFailed: boolean = false;
   @State brandResourceFailed: boolean = false;
+  @State customAvatarFailed: boolean = false;
+  @State customAvatarReady: boolean = false;
   @State brandPixelMap: image.PixelMap | null = null;
   private tickerUnsubscribe: (() => void) | null = null;
   private avatarState: TotpBrandAvatarState = new TotpBrandAvatarState();
@@ -147,6 +149,8 @@ export struct TotpCodeCard {
     this.brandReady = false;
     this.brandFailed = false;
     this.brandResourceFailed = false;
+    this.customAvatarFailed = false;
+    this.customAvatarReady = false;
     this.avatarToken = this.avatarState.begin(
       this.entry.id, visual.slug + ':' + visual.sha256);
     if (this.avatarToken !== null) {
@@ -158,7 +162,7 @@ export struct TotpCodeCard {
     visual: TotpBrandVisual,
     token: TotpBrandAvatarToken
   ): void {
-    if (visual.avatarMode !== 'local' || visual.localAsset.length === 0 ||
+    if (this.customAvatarUrl() !== '' || visual.avatarMode !== 'local' || visual.localAsset.length === 0 ||
       !shouldRunTotpBrandTicker(this.pageLocked, this.entry.locked, this.appInBackground)) {
       return;
     }
@@ -239,8 +243,31 @@ export struct TotpCodeCard {
 
   private brandKey(visual: TotpBrandVisual): string {
     return this.entry.id + '|' + this.entry.issuer + '|' + this.entry.account + '|' +
+      this.entry.iconUrl + '|' +
       visual.slug + '|' + visual.sha256 + '|' + visual.localAsset + '|' +
       visual.avatarMode;
+  }
+
+  private customAvatarUrl(): string {
+    return totpCustomAvatarUrl(this.entry.iconUrl);
+  }
+
+  private shouldRenderCustomAvatar(): boolean {
+    return this.customAvatarUrl() !== '' && !this.customAvatarFailed;
+  }
+
+  private primaryLabel(): string {
+    const customName: string = this.entry.displayName.trim();
+    if (customName !== '') { return customName; }
+    return this.entry.issuer || this.entry.account || 'Unknown';
+  }
+
+  private secondaryLabel(): string {
+    if (this.entry.displayName.trim() === '') { return this.entry.account; }
+    if (this.entry.issuer !== '' && this.entry.account !== '') {
+      return this.entry.issuer + ' / ' + this.entry.account;
+    }
+    return this.entry.issuer || this.entry.account;
   }
 
   private localBrandFailed(visual: TotpBrandVisual): boolean {
@@ -258,7 +285,7 @@ export struct TotpCodeCard {
   }
 
   private shouldRenderBrandAsset(visual: TotpBrandVisual): boolean {
-    return visual.avatarMode === 'local' && this.brandPixelMap !== null &&
+    return !this.shouldRenderCustomAvatar() && visual.avatarMode === 'local' && this.brandPixelMap !== null &&
       (this.directBrandResource(visual) === null || this.brandResourceFailed) &&
       !this.localBrandFailed(visual);
   }
@@ -269,7 +296,13 @@ export struct TotpCodeCard {
   }
 
   private shouldRenderDirectBrandResource(visual: TotpBrandVisual): boolean {
-    return this.directBrandResource(visual) !== null && !this.brandResourceFailed;
+    return !this.shouldRenderCustomAvatar() && this.directBrandResource(visual) !== null && !this.brandResourceFailed;
+  }
+
+  private shouldShowInitials(visual: TotpBrandVisual): boolean {
+    const decodedAssetVisible: boolean = this.shouldRenderBrandAsset(visual) &&
+      totpBrandAssetVisibility(this.avatarState.snapshot(), this.brandPixelMap !== null) === 'asset';
+    return !this.customAvatarReady && !this.brandReady && !decodedAssetVisible;
   }
 
   @Builder
@@ -278,7 +311,7 @@ export struct TotpCodeCard {
     token: TotpBrandAvatarToken | null
   ) {
     Stack({ alignContent: Alignment.Center }) {
-      if (!this.shouldRenderDirectBrandResource(visual) && !this.shouldRenderBrandAsset(visual)) {
+      if (this.shouldShowInitials(visual)) {
         Text(visual.initials)
           .fontSize(18).fontWeight(FontWeight.Bold)
           .fontColor(visual.foreground)
@@ -330,6 +363,25 @@ export struct TotpCodeCard {
             }
           })
       }
+      if (this.shouldRenderCustomAvatar()) {
+        Image(this.customAvatarUrl())
+          .width(42).height(42).borderRadius(21)
+          .backgroundColor(this.pal().surface)
+          .objectFit(ImageFit.Cover)
+          .onComplete((): void => {
+            if (this.avatarKey === this.brandKey(visual)) {
+              this.customAvatarFailed = false;
+              this.customAvatarReady = true;
+            }
+          })
+          .onError((): void => {
+            if (this.avatarKey === this.brandKey(visual)) {
+              this.customAvatarFailed = true;
+              this.customAvatarReady = false;
+              this.brandReady = false;
+            }
+          })
+      }
     }
     .width(42).height(42)
     .borderRadius(21)
@@ -346,14 +398,13 @@ export struct TotpCodeCard {
           .margin({ right: 8 })
           .onChange((v: boolean) => { if (this.onCheckChange) { this.onCheckChange(v); } })
       }
-      // Known brands use the bundled rawfile resource directly.  Initials are
-      // reserved for explicit initials mode or a real local-asset failure;
-      // no legacy URL or runtime URL is consulted here.
+      // An explicitly stored avatar wins; otherwise known brands use the
+      // bundled rawfile resource and initials remain the final fallback.
       this.brandAvatar(this.visualForBuild(), this.avatarToken)
 
       Column() {
         Row() {
-          Text(this.entry.issuer || 'Unknown')
+          Text(this.primaryLabel())
             .fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
             .fontColor(this.pal().text).fontFamily(AppTheme.fontFamily)
             .maxLines(1).layoutWeight(1)
@@ -365,8 +416,8 @@ export struct TotpCodeCard {
               .margin({ left: 6 })
           }
         }
-        if (this.entry.account !== '') {
-          Text(this.entry.account)
+        if (this.secondaryLabel() !== '') {
+          Text(this.secondaryLabel())
             .fontSize(12).fontColor(this.pal().text2)
             .fontFamily(AppTheme.fontFamily)
             .margin({ top: 2 }).maxLines(1)

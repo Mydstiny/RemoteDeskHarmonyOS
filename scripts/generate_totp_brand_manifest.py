@@ -131,7 +131,7 @@ def render_manifest_ets(manifest: dict) -> str:
         "];",
         "",
     ])
-    return "\n".join(lines) + "\n"
+    return "\n".join(lines)
 
 
 def render_registry_ets(manifest: dict) -> str:

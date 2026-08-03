@@ -48,12 +48,13 @@ export struct KeyVaultPage {
   @State selectionMode: boolean = false;
   // 统一 Sheet: 单 bindSheet + mode 切换内容 (KeyVaultPage 非 @Entry, 限 1 个 bindSheet)
   @State showSheet: boolean = false;
-  @State sheetMode: number = 0; // 0=classic form, 1/5=legacy choice, 2-4=manage, 6=isolated modern add flow
+  @State sheetMode: number = 0; // 0=classic form, 1/5=legacy choice, 2-4=manage, 6=isolated modern add flow, 7=TOTP name
   @State modernResourceKind: string = 'ssh_key';
   @State sheetKey: SshKey = new SshKey();
   @State selectedIds: Set<string> = new Set();
   @State editingSshKey: SshKey = new SshKey();
   @State editingTotpEntry: TotpEntry = new TotpEntry();
+  @State editingTotpName: string = '';
   @State sshKeys: SshKey[] = [];
   @State totpEntries: TotpEntry[] = [];
   @State keyViewRevision: number = 0;
@@ -175,6 +176,32 @@ export struct KeyVaultPage {
     this.showSheet = true;
   }
 
+  private handleTotpEdit(entry: TotpEntry): void {
+    if (this.totpPageLocked && !this.totpUnlocked) {
+      promptAction.showToast({ message: '请先验证身份', duration: 1500 });
+      return;
+    }
+    // Edit a snapshot so a cancelled Sheet never mutates the live card.
+    this.editingTotpEntry = TotpEntry.fromJSON(entry.toJSON());
+    this.editingTotpName = entry.displayName;
+    this.sheetMode = 7;
+    this.showSheet = true;
+  }
+
+  private saveTotpName(): void {
+    const updated: TotpEntry = TotpEntry.fromJSON(this.editingTotpEntry.toJSON());
+    updated.displayName = this.editingTotpName.trim();
+    if (!this.kvs.updateTotpEntry(updated)) {
+      promptAction.showToast({ message: '2FA 名称保存失败', duration: 1800 });
+      return;
+    }
+    this.showSheet = false;
+    this.editingTotpEntry = new TotpEntry();
+    this.editingTotpName = '';
+    this.load();
+    promptAction.showToast({ message: '2FA 名称已保存', duration: 1500 });
+  }
+
   // SshKeyManagerSheet 回调: 保存更新
   private onKeyManagerChange(updated: SshKey): void {
     this.kvs.updateSshKey(updated);
@@ -257,16 +284,7 @@ export struct KeyVaultPage {
       .width(48).height(48).borderRadius(12)
       .backgroundColor(this.pal().editColor)
       .onClick(() => {
-        if (this.totpPageLocked && !this.totpUnlocked) {
-          promptAction.showToast({ message: '请先验证身份', duration: 1500 });
-        } else {
-          // 编辑 TOTP 名称
-          promptAction.showDialog({
-            title: '编辑 2FA',
-            message: '发行方: ' + entry.issuer + '\n账户: ' + entry.account,
-            buttons: [{ text: '关闭', color: this.accentColor }]
-          });
-        }
+        this.handleTotpEdit(entry);
       })
     }
     .height('100%').alignItems(VerticalAlign.Center)
@@ -336,7 +354,7 @@ export struct KeyVaultPage {
         promptAction.showToast({ message: '请先验证身份', duration: 1500 });
         return;
       }
-      const label: string = entry.issuer || entry.account || '2FA';
+      const label: string = entry.displayLabel() || '2FA';
       promptAction.showDialog({
         title: '确认删除',
         message: '确定要删除 "' + label + '" 吗？此操作不可恢复。',
@@ -864,6 +882,8 @@ export struct KeyVaultPage {
         onClose: (): void => { this.showSheet = false; },
         onSaved: (_resourceId: string): void => { this.load(); }
       })
+    } else if (this.sheetMode === 7) {
+      this.totpNameEditWrapper()
     }
   }
 
@@ -987,6 +1007,47 @@ export struct KeyVaultPage {
     .border(this.breakpoint === 'sm'
       ? { width: 0, color: Color.Transparent, style: BorderStyle.Solid }
       : { width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
+  }
+
+  @Builder totpNameEditWrapper() {
+    Column() {
+      Row() {
+        Text('编辑 2FA 名称')
+          .fontSize(16).fontWeight(FontWeight.Bold)
+          .fontColor(this.pal().text).fontFamily(this.font())
+          .layoutWeight(1)
+        Text('取消').fontSize(13).fontColor(this.accentColor)
+          .fontFamily(this.font()).onClick(() => { this.showSheet = false; })
+      }.width('100%').margin({ bottom: 14 })
+
+      this._f('显示名称（可选）', '例如：公司 GitHub', this.editingTotpName,
+        (v: string) => { this.editingTotpName = v; })
+
+      Column() {
+        if (this.editingTotpEntry.issuer !== '') {
+          Text('发行方：' + this.editingTotpEntry.issuer)
+            .fontSize(12).fontColor(this.pal().text2).fontFamily(this.font())
+            .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+        }
+        if (this.editingTotpEntry.account !== '') {
+          Text('账户：' + this.editingTotpEntry.account)
+            .fontSize(12).fontColor(this.pal().text2).fontFamily(this.font())
+            .margin({ top: 4 }).maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+        }
+      }.width('100%').padding({ left: 10, right: 10, top: 8, bottom: 8 })
+        .backgroundColor(this.pal().surface).borderRadius(8)
+        .margin({ bottom: 14 })
+
+      Button('保存名称')
+        .width('100%').height(42).fontSize(14).fontWeight(FontWeight.Medium)
+        .backgroundColor(this.accentColor).fontColor('#FFFFFF').borderRadius(10)
+        .onClick(() => { this.saveTotpName(); })
+    }
+    .padding({ left: 24, right: 24, top: 24, bottom: 40 }).width('100%')
+    .constraintSize({ maxWidth: 760 })
+    .borderRadius(this.breakpoint === 'sm' ? { topLeft: 20, topRight: 20, bottomLeft: 0, bottomRight: 0 } : 20)
+    .backgroundColor(this.pal().sheetBg).backgroundBlurStyle(BlurStyle.Regular)
   }
 
   /** 沉浸顶栏 (参照设置页: 常驻透明overlay, 无模糊切换) */

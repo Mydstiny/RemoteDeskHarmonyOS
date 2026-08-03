@@ -27,7 +27,7 @@ const CLOUD_COLUMNS: Record<string, string[]> = {
     'locked', 'locktype', 'syncversion', 'createdat', 'updatedat'
   ],
   'totpentries': [
-    'id', 'userid', 'issuer', 'account', 'secret', 'algorithm', 'digits', 'period', 'iconurl',
+    'id', 'userid', 'issuer', 'account', 'displayname', 'secret', 'algorithm', 'digits', 'period', 'iconurl',
     'locked', 'locktype', 'syncversion', 'createdat', 'updatedat'
   ],
   'usersettings': ['id', 'userid', 'payload', 'schemaversion', 'updatedat'],

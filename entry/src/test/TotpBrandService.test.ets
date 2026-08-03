@@ -14,6 +14,7 @@ import {
   resolveTotpBrandForEntry,
   totpBrandAvatarMode,
   totpBrandLogoUrl,
+  totpCustomAvatarUrl,
   totpBrandVisualForEntry,
   totpContrastRatio,
   totpForegroundForBackground,
@@ -194,10 +195,27 @@ export default function totpBrandServiceTest(): number {
       entry.id = 'entry-local-derived';
       entry.issuer = 'GitHub';
       entry.account = 'alice@example.com';
+      entry.displayName = 'Work GitHub';
       const derived = resolveTotpBrandForEntry(entry);
       expect(derived.brandId).assertEqual('github');
       expect(derived.avatarMode).assertEqual('local');
       expect(totpBrandVisualForEntry(entry).slug).assertEqual('github');
+      expect(totpCustomAvatarUrl('https://example.com/avatar.png'))
+        .assertEqual('https://example.com/avatar.png');
+      expect(totpCustomAvatarUrl('  HTTPS://example.com/avatar.png  '))
+        .assertEqual('HTTPS://example.com/avatar.png');
+      expect(totpCustomAvatarUrl('http://example.com/avatar.png')).assertEqual('');
+      expect(totpCustomAvatarUrl('data:image/png;base64,invalid')).assertEqual('');
+      expect(entry.displayLabel()).assertEqual('Work GitHub');
+
+      const named = TotpEntry.fromJSON({
+        id: 'named-row', userId: 'owner-a', issuer: 'GitHub', account: 'bob@example.com',
+        displayName: 'Personal GitHub', secret: 'secret', algorithm: 0, digits: 6, period: 30,
+        iconUrl: '', locked: false, lockType: 0, createdAt: 1, syncVersion: 1
+      });
+      expect(named.displayName).assertEqual('Personal GitHub');
+      expect(named.displayLabel()).assertEqual('Personal GitHub');
+      expect(named.toJSON().displayName).assertEqual('Personal GitHub');
 
       const serialized: string = JSON.stringify(entry.toJSON());
       expect(serialized.indexOf('"brandId"') < 0).assertTrue();
@@ -213,7 +231,7 @@ export default function totpBrandServiceTest(): number {
       const cloudColumns = cloudTableColumns('totpentries');
       const backupColumns = localBackupColumnsForTable('totpentries');
       const fixedColumns: string[] = [
-        'id', 'userid', 'issuer', 'account', 'secret', 'algorithm', 'digits', 'period', 'iconurl',
+        'id', 'userid', 'issuer', 'account', 'displayname', 'secret', 'algorithm', 'digits', 'period', 'iconurl',
         'locked', 'locktype', 'syncversion', 'createdat', 'updatedat'
       ];
       expect(cloudColumns.length).assertEqual(fixedColumns.length);

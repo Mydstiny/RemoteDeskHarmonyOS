@@ -1,8 +1,8 @@
 /**
  * Public TOTP brand facade.
  *
- * Local assets are the only default visual source. The optional URL helper is
- * retained for an explicit, future opt-in path and is never used by the card.
+ * Local assets are the default visual source. An explicitly stored HTTPS
+ * avatar may override them for entries that provide one.
  */
 import { TotpBrandResolution, resolveTotpBrand as resolveBrand,
   resolveTotpBrandForEntry as resolveBrandForEntry,
@@ -68,4 +68,10 @@ export function totpBrandLogoUrl(
   allowRemoteFallback: boolean = false
 ): string {
   return allowRemoteFallback ? pinnedTotpBrandLogoUrl(issuer, account) : '';
+}
+
+/** Only an explicitly stored HTTPS avatar may introduce network image I/O. */
+export function totpCustomAvatarUrl(iconUrl: string): string {
+  const value: string = iconUrl.trim();
+  return /^https:\/\/[^\s]+$/i.test(value) ? value : '';
 }

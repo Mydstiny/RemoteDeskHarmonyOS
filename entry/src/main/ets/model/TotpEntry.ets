@@ -32,6 +32,8 @@ export interface TotpEntryJSON {
   userId: string
   issuer: string
   account: string
+  /** Optional user label; empty means use the issuer/account fallback. */
+  displayName?: string
   secret: string
   algorithm: number
   digits: number
@@ -48,6 +50,7 @@ export class TotpEntry {
   userId: string = '';
   issuer: string = '';       // 发行方, 如 "GitHub"
   account: string = '';      // 账户名, 如 "user@example.com"
+  displayName: string = '';  // 用户自定义名称, 不参与品牌识别
   secret: string = '';       // Base32 密钥 (HUKS 加密存储)
   algorithm: TotpAlgorithm = TotpAlgorithm.SHA1;
   digits: number = 6;        // 验证码位数 (6 或 8)
@@ -72,6 +75,7 @@ export class TotpEntry {
       userId: this.userId,
       issuer: this.issuer,
       account: this.account,
+      displayName: this.displayName,
       secret: this.secret,
       algorithm: this.algorithm,
       digits: this.digits,
@@ -90,6 +94,7 @@ export class TotpEntry {
     if (json.userId) { entry.userId = json.userId; }
     if (json.issuer) { entry.issuer = json.issuer; }
     if (json.account) { entry.account = json.account; }
+    if (json.displayName !== undefined) { entry.displayName = json.displayName; }
     if (json.secret) { entry.secret = json.secret; }
     if (json.algorithm !== undefined) { entry.algorithm = json.algorithm; }
     if (json.digits) { entry.digits = json.digits; }
@@ -110,11 +115,14 @@ export class TotpEntry {
     return 'SHA1';
   }
 
-  /** 显示标签: issuer (account) 或仅 issuer */
+  /** 显示标签: 自定义名称优先，否则 issuer (account) 或仅 issuer/account。 */
   displayLabel(): string {
-    if (this.account !== '') {
+    const customName: string = this.displayName.trim();
+    if (customName !== '') { return customName; }
+    if (this.issuer !== '' && this.account !== '') {
       return this.issuer + " (" + this.account + ")";
     }
-    return this.issuer;
+    if (this.issuer !== '') { return this.issuer; }
+    return this.account;
   }
 }

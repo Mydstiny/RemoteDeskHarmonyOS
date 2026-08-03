@@ -295,7 +295,7 @@ const LOCAL_METADATA_TABLE: string = 'localmetadata';
 const LOCAL_MUTATION_JOURNAL_TABLE: string = 'localmutationjournal';
 const MIGRATION_RECEIPT_TABLE: string = 'migrationreceipts';
 const MIGRATION_QUARANTINE_TABLE: string = 'migrationquarantine';
-const ACCOUNT_STORE_SCHEMA_VERSION: number = 3;
+const ACCOUNT_STORE_SCHEMA_VERSION: number = 4;
 const CANONICAL_SECRET_STORAGE_VERSION_KEY: string = 'canonical_secret_storage_version';
 const CANONICAL_SECRET_STORAGE_VERSION: string = '3';
 const DEVICE_LOCAL_HOST_TRUST_MIGRATION_KEY: string =
@@ -4584,6 +4584,7 @@ export class CloudStore implements CryptoCloudStore {
         userid TEXT,
         issuer TEXT,
         account TEXT,
+        displayname TEXT,
         secret TEXT,
         algorithm INTEGER,
         digits INTEGER,
@@ -4596,6 +4597,7 @@ export class CloudStore implements CryptoCloudStore {
         updatedat INTEGER
       )
     `);
+    await this.ensureColumn('totpentries', 'displayname TEXT');
     // 密码学参数表 (盐值+验证器, 云同步以实现跨设备解密)
     this.schemaStep = 'create:cryptoparams';
     await this.store.executeSql(`
@@ -9480,6 +9482,7 @@ export class CloudStore implements CryptoCloudStore {
     e.userId = rs.getString(rs.getColumnIndex('userid'));
     e.issuer = rs.getString(rs.getColumnIndex('issuer'));
     e.account = rs.getString(rs.getColumnIndex('account'));
+    e.displayName = rs.getString(rs.getColumnIndex('displayname'));
     e.secret = rs.getString(rs.getColumnIndex('secret')); // raw
     e.algorithm = rs.getLong(rs.getColumnIndex('algorithm'));
     e.digits = rs.getLong(rs.getColumnIndex('digits'));
@@ -9617,7 +9620,7 @@ export class CloudStore implements CryptoCloudStore {
   private totpToBucketRaw(e: TotpEntry): relationalStore.ValuesBucket {
     const vb: relationalStore.ValuesBucket = {};
     vb['id'] = e.id; vb['userid'] = this.currentOwnerScopeId(); vb['issuer'] = e.issuer;
-    vb['account'] = e.account; vb['secret'] = e.secret;
+    vb['account'] = e.account; vb['displayname'] = e.displayName; vb['secret'] = e.secret;
     vb['algorithm'] = e.algorithm; vb['digits'] = e.digits; vb['period'] = e.period;
     vb['iconurl'] = e.iconUrl; vb['locked'] = e.locked ? 1 : 0;
     vb['locktype'] = e.lockType; vb['syncversion'] = e.syncVersion;
@@ -9747,6 +9750,7 @@ export class CloudStore implements CryptoCloudStore {
     vb['userid'] = this.currentOwnerScopeId();
     vb['issuer'] = e.issuer;
     vb['account'] = e.account;
+    vb['displayname'] = e.displayName;
     vb['secret'] = this.encryptIfReady(
       crypto, 'totpentries', e.id, 'secret', e.secret);
     vb['algorithm'] = e.algorithm;
@@ -9762,12 +9766,16 @@ export class CloudStore implements CryptoCloudStore {
 
   private rowToTotpEntry(rs: relationalStore.ResultSet): TotpEntry {
     const crypto = DataCrypto.getInstance();
-    const getStr = (col: string): string => rs.getString(rs.getColumnIndex(col));
+    const getStr = (col: string): string => {
+      const index: number = rs.getColumnIndex(col);
+      return index >= 0 ? rs.getString(index) : '';
+    };
     const e = new TotpEntry();
     e.id = getStr('id');
     e.userId = getStr('userid');
     e.issuer = getStr('issuer');
     e.account = getStr('account');
+    e.displayName = getStr('displayname');
     e.secret = this.decryptIfReady(
       crypto, 'totpentries', e.id, 'secret', getStr('secret'));
     e.algorithm = rs.getLong(rs.getColumnIndex('algorithm'));
