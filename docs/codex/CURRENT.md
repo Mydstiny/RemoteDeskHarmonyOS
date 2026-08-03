@@ -8,7 +8,7 @@ This file is the compact startup resume card. Historical checkpoints remain in
 - Task: `rustdesk-complete-repair` (active branch retained; current scope is VNC V3 only)
 - Branch: `codex/rustdesk-complete-repair`
 - Checkpoint: `f16b673e2`, based on `main@34946adbc`; branch is ahead by 45 and not behind.
-- Phase: VNC V3 stage D follow-up; journal-first-write failure now still clears markers and has restart coverage, awaiting the existing reviewer.
+- Phase: VNC V3 stage D follow-up; journal-first-write failure now still clears markers and has restart coverage, independently PASS.
 - Worktree: clean after the code checkpoint. Do not stage unrelated changes.
 
 ## Stage A Result
@@ -95,13 +95,14 @@ This file is the compact startup resume card. Historical checkpoints remain in
   only until `ohosTest` is registered and a real device is available; no UI or
   endpoint runtime evidence is claimed. Stage D trust migration, manager,
   invalidation and backup policy have host/build coverage but no live
-  CloudStore/device evidence; the `f16b673e2` follow-up remains pending independent review.
+  CloudStore/device evidence; the `f16b673e2` follow-up PASS still lacks live
+  `ohosTest`/device/Preferences restart evidence.
 
 ## Review Protocol
 
 - Machine state: `docs/codex/STATE.json`.
 - Receipts: `docs/codex/REVIEW_RECEIPTS.jsonl`.
-- `scripts/sync_workspace.sh status` should report RESUME_REVIEW for the
-  `f16b673e2` Stage D follow-up until the existing reviewer returns a receipt.
+- `scripts/sync_workspace.sh status` should retain the f16b673e2 PASS receipt
+  while the VNC-only task remains on its current stage gate.
 - Reuse the existing independent review session and do not redispatch duplicate
   messages for the same segment.

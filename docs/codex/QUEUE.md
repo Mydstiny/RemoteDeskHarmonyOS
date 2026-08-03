@@ -4,9 +4,8 @@ Updated: 2026-08-02 Asia/Shanghai
 
 ## Now
 
-- Stage D follow-up checkpoint `f16b673e2` also clears markers when recovery
-  journal first-write fails, with injected adapter coverage; reuse the existing
-  reviewer once and wait for PASS before the next segment.
+- Stage D follow-up checkpoint `f16b673e2` passed the unique VNC-only review;
+  retain the current gate and its evidence gaps before any next segment.
 - Preserve stage A/B and C-first review receipts; keep probe/pin failures
   fail-closed.
 - Restore `hdc` connectivity and capture current VNC `hilog` when the device is
@@ -14,8 +13,8 @@ Updated: 2026-08-02 Asia/Shanghai
 
 ## Next
 
-- Stage D follow-up review: consume the single existing reviewer result for
-  `f16b673e2`; repair any findings before advancing.
+- Stage D follow-up review: PASS recorded for `f16b673e2`; do not advance or
+  start FreeRDP until the VNC V3 closure gate explicitly permits it.
 - Stage E/F: VNC settings consistency and Repeater mode12 deep checks.
 
 ## Later

@@ -6,7 +6,7 @@
   "head": "f16b673e2",
   "phase": "vnc-v3-stage-d-follow-up",
   "status": "active",
-  "next": "Stage D follow-up checkpoint f16b673e2 clears markers even when recovery journal first-write fails and adds restart coverage; reuse the existing reviewer once before entering the next VNC segment.",
+  "next": "Stage D follow-up checkpoint f16b673e2 passed independent review; retain the current VNC-only gate and evidence gaps before any next segment.",
   "blockers": [
     "hdc list targets and hdc shell return Connect server failed; no current hilog evidence.",
     "ohosTest@OhosTestCompileArkTS is not registered (00306054); ArkTS tests have compile/build evidence only.",
@@ -17,7 +17,7 @@
     "docs/superpowers/plans/2026-08-01-vnc-certificate-settings-relay-complete-repair-plan-v3.md"
   ],
   "review": {
-    "status": "BLOCKED",
+    "status": "PASS",
     "taskId": "019fc333-6789-7633-bf6f-3fea1cb2ad4d",
     "scope": [
       "entry/src/main/ets/pages/HostListPage.ets",
@@ -35,7 +35,7 @@
       "entry/src/test/VncTrustInvalidationPolicy.test.ets",
       "entry/src/test/VncTrustService.test.ets"
     ],
-    "reason": "Stage D follow-up checkpoint f16b673e2 awaits the existing independent read-only reviewer; reuse the task once for this VNC-only increment."
+    "reason": "Stage D follow-up checkpoint f16b673e2 passed the existing independent read-only reviewer with no P0/P1/P2 findings; no next segment or FreeRDP evaluation started."
   },
   "lastVerification": {
     "rdp_native_tests": "249-pass-0-fail-loopback-fixtures-host-socket-f16b673e2-2026-08-03",
