@@ -148,6 +148,57 @@ export default function totpBrandServiceTest(): number {
       expect(resolveTotpBrand('', 'alice@partnermarketinghub.withgoogle.com').brandId).assertEqual('');
       expect(resolveTotpBrand('', 'alice@googleusercontent.com').brandId).assertEqual('');
     });
+
+    it('prefers_reviewed_official_supplier_assets', 0, (): void => {
+      const google = resolveTotpBrand('Google', 'alice@gmail.com');
+      expect(google.sourceType).assertEqual('official');
+      expect(google.localAsset).assertEqual('totp-brands/official/google.svg');
+      expect(resolveTotpBrand('Google Authenticator', 'alice@example.com').brandId)
+        .assertEqual('google');
+
+      const x = resolveTotpBrand('X', 'alice@x.com');
+      expect(x.sourceType).assertEqual('official');
+      expect(x.localAsset).assertEqual('totp-brands/official/x.svg');
+
+      const microsoft = resolveTotpBrand('', 'alice@outlook.com');
+      expect(microsoft.brandId).assertEqual('microsoft');
+      expect(microsoft.localAsset).assertEqual('totp-brands/official/microsoft.svg');
+      expect(resolveTotpBrand('Microsoft Authenticator', 'alice@example.com').brandId)
+        .assertEqual('microsoft');
+
+      const linkedin = resolveTotpBrand('LinkedIn', 'alice@example.com');
+      expect(linkedin.localAsset).assertEqual('totp-brands/official/linkedin.svg');
+
+      const rustdesk = resolveTotpBrand('Rust Desk', 'alice@example.com');
+      expect(rustdesk.localAsset).assertEqual('totp-brands/official/rustdesk.svg');
+
+      const baota = resolveTotpBrand('宝塔面板', 'alice@example.com');
+      expect(baota.brandId).assertEqual('baota');
+      expect(baota.localAsset).assertEqual('totp-brands/official/baota.png');
+      expect(resolveTotpBrand('BT', 'alice@example.com').brandId).assertEqual('');
+      expect(resolveTotpBrand('', 'alice@bt.cn').brandId).assertEqual('baota');
+
+      const aws = resolveTotpBrand('Amazon Web Services', 'alice@amazonaws.com');
+      expect(aws.brandId).assertEqual('aws');
+      expect(aws.sourceType).assertEqual('svglogos-catalog');
+      expect(aws.localAsset).assertEqual('totp-brands/catalog/aws.svg');
+
+      const azure = resolveTotpBrand('Microsoft Azure', 'alice@azure.com');
+      expect(azure.brandId).assertEqual('microsoftazure');
+      expect(azure.localAsset).assertEqual('totp-brands/catalog/microsoftazure.svg');
+
+      expect(resolveTotpBrand('OpenAI', 'alice@example.com').localAsset)
+        .assertEqual('totp-brands/catalog/openai.svg');
+      expect(resolveTotpBrand('支付宝', 'alice@example.com').brandId).assertEqual('alipay');
+      expect(resolveTotpBrand('新浪微博', 'alice@example.com').brandId).assertEqual('sinaweibo');
+      expect(resolveTotpBrand('小红书', 'alice@example.com').brandId).assertEqual('xiaohongshu');
+      expect(resolveTotpBrand('QQ', 'alice@example.com').brandId).assertEqual('qq');
+      expect(resolveTotpBrand('Auth0 by Okta', 'alice@example.com').localAsset)
+        .assertEqual('totp-brands/catalog/auth0.svg');
+      expect(resolveTotpBrand('', 'alice@zoho.com').brandId).assertEqual('zoho');
+      expect(resolveTotpBrand('Zapier', 'alice@example.com').localAsset)
+        .assertEqual('totp-brands/catalog/zapier.svg');
+    });
   });
 
   describe('TotpBrandAvatar_fallback_and_privacy', (): void => {
@@ -471,10 +522,10 @@ export default function totpBrandServiceTest(): number {
       expect(report.uniqueAssetCount >= 250).assertTrue();
       expect(report.coverageGap.uniqueAssets).assertEqual(0);
       expect(report.domainSemanticValid).assertTrue();
-      expect(report.coverageStatus).assertEqual('domain semantics pass; quantity gap');
+      expect(report.coverageStatus).assertEqual('domain semantics pass; quantity target met');
       expect(report.domainCount > 0).assertTrue();
       expect(report.aliasCount < 500).assertTrue();
-      expect(report.coverageGap.aliases).assertEqual(193);
+      expect(report.coverageGap.aliases).assertEqual(0);
       expect(TOTP_BRAND_ASSET_REGISTRY_MANIFEST_VERSION).assertEqual(TOTP_BRAND_MANIFEST_VERSION);
       expect(TOTP_BRAND_ASSET_REGISTRY_SOURCE_SHA256).assertEqual(TOTP_BRAND_MANIFEST_SOURCE_SHA256);
       expect(TOTP_BRAND_MANIFEST_SOURCE_SHA256.length).assertEqual(64);
@@ -519,5 +570,5 @@ export default function totpBrandServiceTest(): number {
     });
   });
   });
-  return 22;
+  return 23;
 }

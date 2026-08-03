@@ -18,6 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]
 MANIFEST_PATH = ROOT / "entry/src/main/resources/rawfile/totp_brand_manifest.json"
 MANIFEST_ETS_PATH = ROOT / "entry/src/main/ets/services/TotpBrandManifest.ets"
 REGISTRY_ETS_PATH = ROOT / "entry/src/main/ets/services/TotpBrandAssetRegistry.ets"
+OFFICIAL_REGISTRY_ETS_PATH = ROOT / "entry/src/main/ets/services/TotpBrandOfficialAssetRegistry.ets"
 
 
 def load_manifest(path: Path = MANIFEST_PATH) -> dict:
@@ -31,6 +32,7 @@ def source_digest(manifest: dict) -> str:
         "upstream": manifest.get("upstream"),
         "completionTargets": manifest.get("completionTargets"),
         "runtimePolicy": manifest.get("runtimePolicy"),
+        "officialOverrides": manifest.get("officialOverrides", []),
         "entries": manifest.get("entries", []),
     }
     encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
@@ -139,6 +141,8 @@ def render_registry_ets(manifest: dict) -> str:
     lines = [
         "/** GENERATED FILE. Edit totp_brand_manifest.json and rerun the generator. */",
         "",
+        "import { totpOfficialBrandAssetPath, totpOfficialBrandAssetResource } from './TotpBrandOfficialAssetRegistry';",
+        "",
         f"export const TOTP_BRAND_ASSET_REGISTRY_MANIFEST_VERSION: string = {ts_string(manifest['manifestVersion'])};",
         f"export const TOTP_BRAND_ASSET_REGISTRY_SOURCE_SHA256: string = {ts_string(digest)};",
         "export const TOTP_BRAND_ASSET_REGISTRY_IDS: string[] = [",
@@ -150,6 +154,8 @@ def render_registry_ets(manifest: dict) -> str:
         "];",
         "",
         "export function totpBrandAssetPath(brandId: string): string {",
+        "  const officialPath: string = totpOfficialBrandAssetPath(brandId);",
+        "  if (officialPath !== '') { return officialPath; }",
         "  switch (brandId) {",
     ])
     for entry in entries:
@@ -162,6 +168,89 @@ def render_registry_ets(manifest: dict) -> str:
         "}",
         "",
         "export function totpBrandAssetResource(brandId: string): Resource | null {",
+        "  const officialResource: Resource | null = totpOfficialBrandAssetResource(brandId);",
+        "  if (officialResource !== null) { return officialResource; }",
+        "  switch (brandId) {",
+    ])
+    for entry in entries:
+        lines.append(
+            f"    case {ts_string(entry['brandId'])}: return $rawfile({ts_string(entry['localAsset'])});"
+        )
+    lines.extend([
+        "    default: return null;",
+        "  }",
+        "}",
+        "",
+    ])
+    return "\n".join(lines)
+
+
+def render_official_registry_ets(manifest: dict) -> str:
+    entries = manifest.get("officialOverrides", [])
+    digest = source_digest(manifest)
+    lines = [
+        "/** GENERATED FILE. Edit totp_brand_manifest.json and rerun the generator. */",
+        "",
+        f"export const TOTP_OFFICIAL_BRAND_SOURCE_SHA256: string = {ts_string(digest)};",
+        "",
+        "export interface TotpOfficialBrandEntry {",
+        "  brandId: string;",
+        "  displayName: string;",
+        "  aliases: string[];",
+        "  exactDomains: string[];",
+        "  localAsset: string;",
+        "  assetBytes: number;",
+        "  sha256: string;",
+        "  sourceType: 'official' | 'svglogos-catalog';",
+        "  brandColor: string;",
+        "}",
+        "",
+        "export const TOTP_OFFICIAL_BRANDS: TotpOfficialBrandEntry[] = [",
+    ]
+    rendered_entries: list[str] = []
+    for entry in entries:
+        rendered_entries.extend([
+            "  {",
+            f"    brandId: {ts_string(entry['brandId'])},",
+            f"    displayName: {ts_string(entry['displayName'])},",
+            f"    aliases: {ts_array(entry['aliases'])},",
+            f"    exactDomains: {ts_array(entry['exactDomains'])},",
+            f"    localAsset: {ts_string(entry['localAsset'])},",
+            f"    assetBytes: {int(entry['assetBytes'])},",
+            f"    sha256: {ts_string(entry['sha256'])},",
+            f"    sourceType: {ts_string(entry['sourceType'])},",
+            f"    brandColor: {ts_string(entry['brandColor'])}",
+            "  },",
+        ])
+    if rendered_entries:
+        rendered_entries[-1] = "  }"
+    lines.extend(rendered_entries)
+    lines.extend([
+        "];",
+        "",
+        "export function findTotpOfficialBrand(issuerKey: string, domainKey: string): TotpOfficialBrandEntry | null {",
+        "  for (let index = 0; index < TOTP_OFFICIAL_BRANDS.length; index++) {",
+        "    const entry: TotpOfficialBrandEntry = TOTP_OFFICIAL_BRANDS[index];",
+        "    if (entry.aliases.indexOf(issuerKey) >= 0 || entry.exactDomains.indexOf(domainKey) >= 0) {",
+        "      return entry;",
+        "    }",
+        "  }",
+        "  return null;",
+        "}",
+        "",
+        "export function totpOfficialBrandAssetPath(brandId: string): string {",
+        "  switch (brandId) {",
+    ])
+    for entry in entries:
+        lines.append(
+            f"    case {ts_string(entry['brandId'])}: return {ts_string(entry['localAsset'])};"
+        )
+    lines.extend([
+        "    default: return '';",
+        "  }",
+        "}",
+        "",
+        "export function totpOfficialBrandAssetResource(brandId: string): Resource | null {",
         "  switch (brandId) {",
     ])
     for entry in entries:
@@ -199,7 +288,9 @@ def main() -> int:
     manifest = load_manifest()
     manifest_ok = check_or_write(MANIFEST_ETS_PATH, render_manifest_ets(manifest), write)
     registry_ok = check_or_write(REGISTRY_ETS_PATH, render_registry_ets(manifest), write)
-    if not (manifest_ok and registry_ok):
+    official_registry_ok = check_or_write(
+        OFFICIAL_REGISTRY_ETS_PATH, render_official_registry_ets(manifest), write)
+    if not (manifest_ok and registry_ok and official_registry_ok):
         print("generated TOTP ArkTS artifacts drift from the JSON manifest", file=sys.stderr)
         return 1
     if check:

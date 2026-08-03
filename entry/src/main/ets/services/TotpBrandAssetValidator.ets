@@ -12,6 +12,9 @@ import {
   TOTP_BRAND_ASSET_REGISTRY_SOURCE_SHA256,
   totpBrandAssetPath
 } from './TotpBrandAssetRegistry';
+import {
+  totpOfficialBrandAssetPath
+} from './TotpBrandOfficialAssetRegistry';
 import { totpContrastRatio, totpForegroundForBackground } from './TotpBrandResolver';
 
 export interface TotpBrandCoverageGap {
@@ -72,7 +75,21 @@ function uniqueCount(values: string[]): number {
 }
 
 function isShort(value: string): boolean {
-  return value.replace(/\s+/g, '').length < 3;
+  const compact: string = value.replace(/\s+/g, '');
+  if (compact === 'qq' || compact === 'b站') { return false; }
+  if (compact.length >= 3) { return false; }
+  if (compact.length >= 2) {
+    let allCjk: boolean = true;
+    for (let index = 0; index < compact.length; index++) {
+      const code: number = compact.charCodeAt(index);
+      if (code < 0x4E00 || code > 0x9FFF) {
+        allCjk = false;
+        break;
+      }
+    }
+    if (allCjk) { return false; }
+  }
+  return true;
 }
 
 export function validateTotpBrandManifest(
@@ -200,7 +217,9 @@ export function validateTotpBrandManifest(
     if (TOTP_BRAND_ASSET_REGISTRY_IDS[index] !== rawBrandId) {
       errors.push(prefix + '.registry brandId order mismatch');
     }
-    if (totpBrandAssetPath(rawBrandId) !== asset) {
+    const officialAsset: string = totpOfficialBrandAssetPath(rawBrandId);
+    const expectedRegistryAsset: string = officialAsset !== '' ? officialAsset : asset;
+    if (totpBrandAssetPath(rawBrandId) !== expectedRegistryAsset) {
       errors.push(prefix + '.registry asset path mismatch');
     }
   }

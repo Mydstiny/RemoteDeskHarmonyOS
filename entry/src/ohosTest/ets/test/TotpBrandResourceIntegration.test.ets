@@ -65,7 +65,7 @@ export default function totpBrandResourceIntegrationTest(): number {
         configureTotpBrandResourceDecoder(context);
         TOTP_BRAND_CACHE.clear();
         const visual = totpBrandVisual('GitHub', 'alice@example.com');
-        expect(visual.localAsset).assertEqual('totp-brands/github.png');
+        expect(visual.localAsset).assertEqual('totp-brands/github.svg');
         const observation = new DecodeObservation();
         let lease: TotpBrandAssetLease | null = null;
         try {

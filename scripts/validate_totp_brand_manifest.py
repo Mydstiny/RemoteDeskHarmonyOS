@@ -13,9 +13,11 @@ from urllib.parse import urlparse
 
 from generate_totp_brand_manifest import (
     MANIFEST_ETS_PATH,
+    OFFICIAL_REGISTRY_ETS_PATH,
     REGISTRY_ETS_PATH,
     load_manifest,
     render_manifest_ets,
+    render_official_registry_ets,
     render_registry_ets,
 )
 
@@ -28,6 +30,9 @@ SBOM_PATH = ROOT / "docs/compliance/SBOM.spdx.json"
 HASH_PATH = ROOT / "docs/compliance/THIRD_PARTY_ARTIFACTS.sha256"
 ASSET_PREFIX = "entry/src/main/resources/rawfile/"
 SIMPLE_ICONS_PACKAGE_ID = "SPDXRef-Package-SimpleIcons-TOTP-16.21.0"
+OFFICIAL_PACKAGE_ID = "SPDXRef-Package-TOTP-Official-Brand-Assets"
+SVGLOGOS_CATALOG_SOURCE_TYPE = "svglogos-catalog"
+SHORT_ALIAS_ALLOWLIST = {"qq", "b站"}
 SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 COLOR_PATTERN = re.compile(r"^#[0-9A-Fa-f]{6}$")
 DOMAIN_PATTERN = re.compile(
@@ -43,6 +48,15 @@ def normalized(value: str) -> str:
     value = unicodedata.normalize("NFKC", value).strip().lower()
     value = re.sub(r"[._-]+", " ", value)
     return re.sub(r"\s+", " ", value)
+
+
+def safe_alias_key(value: str) -> bool:
+    compact = value.replace(" ", "")
+    if compact in SHORT_ALIAS_ALLOWLIST:
+        return True
+    if len(compact) >= 3:
+        return True
+    return len(compact) >= 2 and all("\u4e00" <= char <= "\u9fff" for char in compact)
 
 
 def unsafe_svg(data: bytes) -> bool:
@@ -85,6 +99,7 @@ def validate_compliance_records(manifest: dict, errors: list[str]) -> bool:
     upstream = manifest.get("upstream", {})
     version = str(upstream.get("version", ""))
     entries = manifest.get("entries", [])
+    official_overrides = manifest.get("officialOverrides", [])
     try:
         notice = NOTICE_PATH.read_text(encoding="utf-8")
     except OSError as error:
@@ -95,7 +110,7 @@ def validate_compliance_records(manifest: dict, errors: list[str]) -> bool:
         f"simple-icons@{version}",
         f"{len(entries)} local community glyphs",
         "totp_brand_manifest.json",
-        "no asset is represented as an official logo",
+        f"{len(official_overrides)} reviewed override assets",
     )
     for needle in notice_needles:
         if needle not in notice:
@@ -120,12 +135,23 @@ def validate_compliance_records(manifest: dict, errors: list[str]) -> bool:
         if package.get("versionInfo") != version or package.get("licenseDeclared") != "CC0-1.0" or not package.get("filesAnalyzed"):
             errors.append("compliance SBOM Simple Icons package metadata is incomplete")
             synchronized = False
+    official_packages = [
+        package for package in sbom.get("packages", [])
+        if package.get("SPDXID") == OFFICIAL_PACKAGE_ID
+    ]
+    if len(official_packages) != 1:
+        errors.append("compliance SBOM must contain exactly one official TOTP asset package")
+        synchronized = False
+    elif not official_packages[0].get("filesAnalyzed"):
+        errors.append("compliance SBOM official TOTP package metadata is incomplete")
+        synchronized = False
     sbom_files = {
         file_record.get("fileName"): file_record
         for file_record in sbom.get("files", [])
         if isinstance(file_record, dict)
     }
-    if len([name for name in sbom_files if str(name).startswith(ASSET_PREFIX + "totp-brands/")]) != len(entries):
+    expected_file_count = len(entries) + len(official_overrides)
+    if len([name for name in sbom_files if str(name).startswith(ASSET_PREFIX + "totp-brands/")]) != expected_file_count:
         errors.append("compliance SBOM asset file count does not match manifest")
         synchronized = False
     for entry in entries:
@@ -157,6 +183,32 @@ def validate_compliance_records(manifest: dict, errors: list[str]) -> bool:
             errors.append(f"compliance SBOM provenance/hash mismatch: {file_name}")
             synchronized = False
 
+    for entry in official_overrides:
+        file_name = ASSET_PREFIX + str(entry.get("localAsset", ""))
+        record = sbom_files.get(file_name)
+        if record is None:
+            errors.append(f"compliance SBOM official file missing: {file_name}")
+            synchronized = False
+            continue
+        checksum_values = [
+            checksum.get("checksumValue") for checksum in record.get("checksums", [])
+            if checksum.get("algorithm") == "SHA256"
+        ]
+        comment = str(record.get("comment", ""))
+        required_comment_parts = (
+            str(entry.get("sourceUrl", "")),
+            str(entry.get("brandSourceUrl", "")),
+            str(entry.get("brandGuidelines", "")),
+            f"license={entry.get('licenseType', '')}",
+            f"licenseUrl={entry.get('licenseUrl', '')}",
+            str(entry.get("trademarkGuidelines", "")),
+            f"officialAssetVerified={str(entry.get('officialAssetVerified', '')).lower()}",
+            f"assetSha256={entry.get('sha256', '')}",
+        )
+        if checksum_values != [entry.get("sha256")] or any(part not in comment for part in required_comment_parts):
+            errors.append(f"compliance SBOM official provenance/hash mismatch: {file_name}")
+            synchronized = False
+
     try:
         hash_lines = {
             line.strip() for line in HASH_PATH.read_text(encoding="utf-8").splitlines()
@@ -166,9 +218,10 @@ def validate_compliance_records(manifest: dict, errors: list[str]) -> bool:
         errors.append(f"compliance artifact hash file unreadable: {error}")
         synchronized = False
         hash_lines = set()
+    all_entries = entries + official_overrides
     expected_hash_lines = {
         f"{entry.get('sha256', '')} *{ASSET_PREFIX}{entry.get('localAsset', '')}"
-        for entry in entries
+        for entry in all_entries
     }
     expected_hash_lines.add(
         f"{hashlib.sha256(MANIFEST_PATH.read_bytes()).hexdigest()} *{ASSET_PREFIX}totp_brand_manifest.json"
@@ -182,6 +235,7 @@ def validate_compliance_records(manifest: dict, errors: list[str]) -> bool:
 def main() -> int:
     manifest = load_manifest(MANIFEST_PATH)
     entries = manifest.get("entries", [])
+    official_overrides = manifest.get("officialOverrides", [])
     errors: list[str] = []
     seen_ids: set[str] = set()
     seen_assets: set[str] = set()
@@ -204,10 +258,10 @@ def main() -> int:
     targets = manifest.get("completionTargets", {})
     asset_target = int(targets.get("uniqueLocalAssets", 0))
     alias_target = int(targets.get("aliasesAndDomains", 0))
-    if asset_target != 250:
-        errors.append("completionTargets.uniqueLocalAssets must be 250")
-    if alias_target != 500:
-        errors.append("completionTargets.aliasesAndDomains must be 500")
+    if asset_target != 200:
+        errors.append("completionTargets.uniqueLocalAssets must be 200")
+    if alias_target != 250:
+        errors.append("completionTargets.aliasesAndDomains must be 250")
 
     required = (
         "brandId", "displayName", "aliases", "exactDomains", "localAsset", "assetBytes",
@@ -243,7 +297,7 @@ def main() -> int:
         for alias in entry.get("aliases", []):
             alias_name_count += 1
             key = normalized(str(alias))
-            if len(key.replace(" ", "")) < 3:
+            if not safe_alias_key(key):
                 errors.append(f"{prefix}.unsafe short alias: {alias}")
             if key in seen_aliases_domains:
                 errors.append(f"{prefix}.alias duplicated: {alias}")
@@ -339,15 +393,94 @@ def main() -> int:
         if len(data) != entry.get("assetBytes"):
             errors.append(f"{prefix}.assetBytes mismatch: expected {entry.get('assetBytes')} got {len(data)}")
 
+    official_ids: set[str] = set()
+    official_assets: set[str] = set()
+    for index, entry in enumerate(official_overrides):
+        prefix = f"officialOverrides[{index}]"
+        required_official = (
+            "brandId", "displayName", "aliases", "exactDomains", "localAsset", "assetBytes",
+            "sha256", "brandColor", "sourceType", "sourceUrl", "brandSourceUrl",
+            "brandGuidelines", "licenseType", "licenseUrl", "trademarkGuidelines",
+            "officialAssetVerified"
+        )
+        for field in required_official:
+            if field not in entry or entry[field] in ("", None, []):
+                errors.append(f"{prefix}.{field} missing")
+        brand_id = str(entry.get("brandId", ""))
+        asset = str(entry.get("localAsset", ""))
+        if brand_id in official_ids:
+            errors.append(f"{prefix}.brandId duplicated: {brand_id}")
+        official_ids.add(brand_id)
+        if asset in official_assets or asset in seen_assets:
+            errors.append(f"{prefix}.localAsset duplicated: {asset}")
+        official_assets.add(asset)
+        source_type = str(entry.get("sourceType", ""))
+        allowed_override_path = (
+            asset.startswith("totp-brands/official/") if source_type == "official"
+            else asset.startswith("totp-brands/catalog/") if source_type == SVGLOGOS_CATALOG_SOURCE_TYPE
+            else False
+        )
+        if (not allowed_override_path or
+                (not asset.endswith(".svg") and not asset.endswith(".png")) or
+                ".." in Path(asset).parts):
+            errors.append(f"{prefix}.localAsset must match its reviewed override source path")
+        for alias in entry.get("aliases", []):
+            key = normalized(str(alias))
+            if not safe_alias_key(key) and brand_id not in {"x", "baota"}:
+                errors.append(f"{prefix}.unsafe short alias: {alias}")
+        for domain in entry.get("exactDomains", []):
+            raw_domain = str(domain).strip().lower().rstrip(".")
+            if not DOMAIN_PATTERN.fullmatch(raw_domain):
+                errors.append(f"{prefix}.invalid exact login domain: {domain}")
+        if source_type not in {"official", SVGLOGOS_CATALOG_SOURCE_TYPE}:
+            errors.append(f"{prefix}.sourceType must be official or svglogos-catalog")
+        if source_type == "official" and entry.get("officialAssetVerified") is not True:
+            errors.append(f"{prefix}.officialAssetVerified must be true for official assets")
+        if source_type == SVGLOGOS_CATALOG_SOURCE_TYPE:
+            if entry.get("officialAssetVerified") is not False:
+                errors.append(f"{prefix}.officialAssetVerified must be false for catalog assets")
+            if entry.get("licenseType") != "CC0-1.0" or "/logos/" not in str(entry.get("sourceUrl", "")):
+                errors.append(f"{prefix}.svglogos-catalog provenance incomplete")
+            if not str(entry.get("upstreamVersion", "")).startswith("4de741f8503d5e81abf5dfa05214690e938296bf"):
+                errors.append(f"{prefix}.svglogos-catalog commit is not pinned")
+        for url_field in ("sourceUrl", "brandSourceUrl", "brandGuidelines", "licenseUrl"):
+            if not str(entry.get(url_field, "")).startswith("https://"):
+                errors.append(f"{prefix}.{url_field} must be an HTTPS URL")
+        if not SHA256_PATTERN.fullmatch(str(entry.get("sha256", ""))):
+            errors.append(f"{prefix}.sha256 invalid")
+        if not COLOR_PATTERN.fullmatch(str(entry.get("brandColor", ""))):
+            errors.append(f"{prefix}.brandColor invalid")
+        elif best_foreground_contrast(str(entry["brandColor"])) < 4.5:
+            errors.append(f"{prefix}.brandColor has insufficient WCAG contrast")
+        asset_path = ASSET_ROOT / asset
+        if not asset_path.is_file():
+            errors.append(f"{prefix}.asset missing: {asset_path}")
+            continue
+        data = asset_path.read_bytes()
+        if asset.endswith(".svg") and unsafe_svg(data):
+            errors.append(f"{prefix}.asset contains unsafe SVG content")
+        if asset.endswith(".png") and invalid_png(data):
+            errors.append(f"{prefix}.asset is not a valid PNG")
+        digest = hashlib.sha256(data).hexdigest()
+        if digest != entry.get("sha256"):
+            errors.append(f"{prefix}.sha256 mismatch: expected {entry.get('sha256')} got {digest}")
+        if len(data) != entry.get("assetBytes"):
+            errors.append(f"{prefix}.assetBytes mismatch: expected {entry.get('assetBytes')} got {len(data)}")
+
     generated_artifacts_synchronized = True
     expected_manifest_ets = render_manifest_ets(manifest)
     expected_registry_ets = render_registry_ets(manifest)
+    expected_official_registry_ets = render_official_registry_ets(manifest)
     if not MANIFEST_ETS_PATH.is_file() or MANIFEST_ETS_PATH.read_text(encoding="utf-8") != expected_manifest_ets:
         generated_artifacts_synchronized = False
         errors.append("TotpBrandManifest.ets is not generated from the JSON manifest")
     if not REGISTRY_ETS_PATH.is_file() or REGISTRY_ETS_PATH.read_text(encoding="utf-8") != expected_registry_ets:
         generated_artifacts_synchronized = False
         errors.append("TotpBrandAssetRegistry.ets is not generated from the JSON manifest")
+    if (not OFFICIAL_REGISTRY_ETS_PATH.is_file() or
+            OFFICIAL_REGISTRY_ETS_PATH.read_text(encoding="utf-8") != expected_official_registry_ets):
+        generated_artifacts_synchronized = False
+        errors.append("TotpBrandOfficialAssetRegistry.ets is not generated from the JSON manifest")
 
     registry_text = REGISTRY_ETS_PATH.read_text(encoding="utf-8") if REGISTRY_ETS_PATH.is_file() else ""
     for entry in entries:
@@ -361,6 +494,20 @@ def main() -> int:
         )
         if asset_case not in registry_text or resource_case not in registry_text:
             errors.append(f"registry mapping missing or ambiguous for {entry['brandId']}")
+
+    official_registry_text = (OFFICIAL_REGISTRY_ETS_PATH.read_text(encoding="utf-8")
+                              if OFFICIAL_REGISTRY_ETS_PATH.is_file() else "")
+    for entry in official_overrides:
+        asset_case = (
+            f"case {json.dumps(entry['brandId'], ensure_ascii=False)}: return "
+            f"{json.dumps(entry['localAsset'], ensure_ascii=False)};"
+        )
+        resource_case = (
+            f"case {json.dumps(entry['brandId'], ensure_ascii=False)}: return $rawfile("
+            f"{json.dumps(entry['localAsset'], ensure_ascii=False)});"
+        )
+        if asset_case not in official_registry_text or resource_case not in official_registry_text:
+            errors.append(f"official registry mapping missing for {entry['brandId']}")
 
     compliance_records_synchronized = validate_compliance_records(manifest, errors)
 

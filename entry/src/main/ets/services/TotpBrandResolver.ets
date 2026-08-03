@@ -1,4 +1,5 @@
 import { TOTP_BRAND_MANIFEST, TotpBrandManifestEntry } from './TotpBrandManifest';
+import { findTotpOfficialBrand, TotpOfficialBrandEntry } from './TotpBrandOfficialAssetRegistry';
 import { TotpAvatarMode, TotpEntry } from '../model/TotpEntry';
 
 export type TotpBrandAvatarMode = 'local' | 'initials';
@@ -14,6 +15,16 @@ export interface TotpBrandResolution {
   foreground: string;
   initials: string;
   avatarMode: TotpBrandAvatarMode;
+}
+
+interface TotpBrandCandidate {
+  brandId: string;
+  displayName: string;
+  localAsset: string;
+  assetBytes: number;
+  sha256: string;
+  sourceType: string;
+  brandColor: string;
 }
 
 const FALLBACK_COLORS: string[] = [
@@ -69,9 +80,11 @@ function accountDomain(account: string): string {
 function findEntry(
   issuer: string,
   account: string
-): TotpBrandManifestEntry | null {
+): TotpBrandCandidate | null {
   const issuerKey: string = normalizeAlias(issuer);
   const domainKey: string = accountDomain(account);
+  const official: TotpOfficialBrandEntry | null = findTotpOfficialBrand(issuerKey, domainKey);
+  if (official !== null) { return official; }
   for (let index = 0; index < TOTP_BRAND_MANIFEST.length; index++) {
     const entry: TotpBrandManifestEntry = TOTP_BRAND_MANIFEST[index];
     for (let aliasIndex = 0; aliasIndex < entry.aliases.length; aliasIndex++) {
@@ -137,7 +150,7 @@ export function totpBrandAvatarMode(localAsset: string, localFailed: boolean): T
 }
 
 function resolutionFor(
-  entry: TotpBrandManifestEntry | null,
+  entry: TotpBrandCandidate | null,
   issuer: string,
   account: string,
   requestedMode: TotpAvatarMode

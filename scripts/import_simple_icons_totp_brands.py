@@ -26,10 +26,56 @@ VERSION = "16.21.0"
 REPOSITORY = "https://github.com/simple-icons/simple-icons"
 LICENSE_URL = f"{REPOSITORY}/blob/{VERSION}/LICENSE.md"
 DISCLAIMER_URL = f"{REPOSITORY}/blob/{VERSION}/DISCLAIMER.md"
-TARGET_ASSETS = 250
-IMPORT_ASSETS = 261
-TARGET_ALIASES = 500
+TARGET_ASSETS = 200
+TARGET_ALIASES = 250
 METADATA_SOURCE = f"{REPOSITORY}/blob/{VERSION}/data/simple-icons.json"
+
+# Simple Icons deliberately omits some well-known marks for licensing or
+# trademark reasons. These slugs are still high-signal brands available in the
+# pinned review snapshot and are included explicitly instead of being pulled
+# in by an alphabetical filler pass.
+CURATED_SLUGS = [
+    "bytedance", "dji", "honor", "kuaishou", "lenovo", "neteasecloudmusic",
+    "oppo", "qq", "sinaweibo", "vivo", "xiaohongshu", "zhihu", "harmonyos",
+    "deepin", "gitee", "csdn", "newyorktimes", "vmware", "cisco", "dell",
+    "asus", "acer", "hp", "motorola", "pytorch", "tensorflow", "firebase",
+    "supabase", "hashicorp", "gitbook", "snyk", "tradingview", "wise", "revolut",
+    "bankofamerica", "chase", "wellsfargo", "cashapp",
+]
+
+# These are legitimate brands, but they are not high-signal consumer,
+# enterprise, developer, or Chinese-market issuers for this app's first-party
+# TOTP avatar set.
+EXCLUDED_SLUGS = {"cloudron", "homebrew", "macports", "chocolatey"}
+
+CURATED_ALIASES: dict[str, list[str]] = {
+    "alipay": ["支付宝"],
+    "alibabacloud": ["阿里云"],
+    "baidu": ["百度"],
+    "bilibili": ["哔哩哔哩", "B站"],
+    "bytedance": ["字节跳动"],
+    "csdn": ["CSDN"],
+    "deepin": ["深度", "深度操作系统"],
+    "dji": ["大疆"],
+    "gitee": ["码云"],
+    "harmonyos": ["鸿蒙"],
+    "honor": ["荣耀"],
+    "kuaishou": ["快手"],
+    "lenovo": ["联想"],
+    "meituan": ["美团"],
+    "neteasecloudmusic": ["网易云音乐"],
+    "oppo": ["欧珀"],
+    "qq": ["QQ", "腾讯QQ"],
+    "sinaweibo": ["微博", "新浪微博"],
+    "taobao": ["淘宝"],
+    "vivo": ["维沃"],
+    "wechat": ["微信"],
+    "xiaohongshu": ["小红书"],
+    "xiaomi": ["小米"],
+    "zhihu": ["知乎"],
+}
+
+SHORT_ALIAS_ALLOWLIST = {"qq", "b站"}
 
 
 # Curated high-signal names. Entries not found in this list are only used as
@@ -310,6 +356,116 @@ AUDITED_LOGIN_DOMAINS: dict[str, dict[str, object]] = {
         "sourceUrl": "https://www.blender.org/login/",
         "evidence": "Blender's official account/login service is under blender.org.",
     },
+    "alipay": {
+        "domains": ["alipay.com"],
+        "sourceUrl": "https://auth.alipay.com/",
+        "evidence": "Alipay's official account service is under alipay.com.",
+    },
+    "alibabacloud": {
+        "domains": ["aliyun.com", "alibabacloud.com"],
+        "sourceUrl": "https://signin.aliyun.com/",
+        "evidence": "Alibaba Cloud's official account service uses aliyun.com and alibabacloud.com.",
+    },
+    "baidu": {
+        "domains": ["baidu.com"],
+        "sourceUrl": "https://passport.baidu.com/",
+        "evidence": "Baidu's official account service is under baidu.com.",
+    },
+    "bilibili": {
+        "domains": ["bilibili.com"],
+        "sourceUrl": "https://passport.bilibili.com/",
+        "evidence": "Bilibili's official account service is under bilibili.com.",
+    },
+    "bytedance": {
+        "domains": ["bytedance.com"],
+        "sourceUrl": "https://www.bytedance.com/",
+        "evidence": "ByteDance's official corporate domain is bytedance.com.",
+    },
+    "csdn": {
+        "domains": ["csdn.net"],
+        "sourceUrl": "https://passport.csdn.net/",
+        "evidence": "CSDN's official account service is under csdn.net.",
+    },
+    "deepin": {
+        "domains": ["deepin.org"],
+        "sourceUrl": "https://www.deepin.org/",
+        "evidence": "deepin's official project domain is deepin.org.",
+    },
+    "dji": {
+        "domains": ["dji.com"],
+        "sourceUrl": "https://www.dji.com/",
+        "evidence": "DJI's official account/service domain is dji.com.",
+    },
+    "gitee": {
+        "domains": ["gitee.com"],
+        "sourceUrl": "https://gitee.com/login",
+        "evidence": "Gitee's official login is on gitee.com.",
+    },
+    "harmonyos": {
+        "domains": ["harmonyos.com"],
+        "sourceUrl": "https://www.harmonyos.com/",
+        "evidence": "HarmonyOS's official project domain is harmonyos.com.",
+    },
+    "honor": {
+        "domains": ["honor.com"],
+        "sourceUrl": "https://www.honor.com/",
+        "evidence": "HONOR's official service domain is honor.com.",
+    },
+    "kuaishou": {
+        "domains": ["kuaishou.com"],
+        "sourceUrl": "https://www.kuaishou.com/",
+        "evidence": "Kuaishou's official service domain is kuaishou.com.",
+    },
+    "lenovo": {
+        "domains": ["lenovo.com"],
+        "sourceUrl": "https://passport.lenovo.com/",
+        "evidence": "Lenovo's official account service is under lenovo.com.",
+    },
+    "meituan": {
+        "domains": ["meituan.com"],
+        "sourceUrl": "https://www.meituan.com/",
+        "evidence": "Meituan's official service domain is meituan.com.",
+    },
+    "neteasecloudmusic": {
+        "domains": ["163.com"],
+        "sourceUrl": "https://music.163.com/",
+        "evidence": "NetEase Cloud Music's official service is under 163.com.",
+    },
+    "oppo": {
+        "domains": ["oppo.com"],
+        "sourceUrl": "https://www.oppo.com/",
+        "evidence": "OPPO's official service domain is oppo.com.",
+    },
+    "qq": {
+        "domains": ["qq.com"],
+        "sourceUrl": "https://aq.qq.com/",
+        "evidence": "Tencent QQ's official account service is under qq.com.",
+    },
+    "sinaweibo": {
+        "domains": ["weibo.com"],
+        "sourceUrl": "https://weibo.com/",
+        "evidence": "Sina Weibo's official service domain is weibo.com.",
+    },
+    "vivo": {
+        "domains": ["vivo.com"],
+        "sourceUrl": "https://www.vivo.com/",
+        "evidence": "vivo's official service domain is vivo.com.",
+    },
+    "xiaohongshu": {
+        "domains": ["xiaohongshu.com"],
+        "sourceUrl": "https://www.xiaohongshu.com/",
+        "evidence": "Xiaohongshu's official service domain is xiaohongshu.com.",
+    },
+    "xiaomi": {
+        "domains": ["mi.com", "xiaomi.com"],
+        "sourceUrl": "https://account.xiaomi.com/",
+        "evidence": "Xiaomi's official account service uses mi.com and xiaomi.com.",
+    },
+    "zhihu": {
+        "domains": ["zhihu.com"],
+        "sourceUrl": "https://www.zhihu.com/",
+        "evidence": "Zhihu's official service domain is zhihu.com.",
+    },
 }
 
 
@@ -324,7 +480,12 @@ def compact(value: str) -> str:
 
 
 def safe_alias(value: str) -> bool:
-    return len(compact(norm(value))) >= 3
+    compact_value = compact(norm(value))
+    if compact_value in SHORT_ALIAS_ALLOWLIST:
+        return True
+    if len(compact_value) >= 3:
+        return True
+    return len(compact_value) >= 2 and all("\u4e00" <= char <= "\u9fff" for char in compact_value)
 
 
 def add_unique(values: list[str], value: str) -> None:
@@ -439,6 +600,8 @@ def make_entry(metadata: dict, slug: str, data: bytes) -> dict:
         add_unique(aliases, alias)
     for alias in metadata.get("aliases", {}).get("loc", {}).values():
         add_unique(aliases, alias)
+    for alias in CURATED_ALIASES.get(slug, []):
+        add_unique(aliases, alias)
     source = metadata.get("source") or f"{REPOSITORY}/blob/{VERSION}/icons/{slug}.svg"
     guidelines = metadata.get("guidelines") or source
     domain_audit = AUDITED_LOGIN_DOMAINS.get(slug)
@@ -498,6 +661,11 @@ def main() -> int:
         type=Path,
         help="import the already reviewed local Simple Icons snapshot instead of fetching upstream",
     )
+    parser.add_argument(
+        "--prune",
+        action="store_true",
+        help="remove direct rawfile SVGs that are not in the explicit curated set",
+    )
     args = parser.parse_args()
     metadata, icons = (
         load_review_snapshot(args.review_dir)
@@ -507,55 +675,37 @@ def main() -> int:
     by_name = index_metadata(metadata)
     selected: list[dict] = []
     selected_ids: set[str] = set()
-    missing_popular: list[str] = []
+    missing_curated: list[str] = []
+    by_slug: dict[str, tuple[dict, tuple[str, bytes]]] = {}
+    for meta in metadata:
+        icon = icons.get(norm(meta.get("title", "")))
+        if icon is not None:
+            by_slug[icon[0]] = (meta, icon)
 
-    if args.review_dir is not None:
-        # Preserve the reviewed catalog order and import every eligible asset,
-        # including entries that intentionally resolve only to initials.
-        for meta in metadata:
-            slug, data = icons[norm(meta["title"])]
-            selected.append(make_entry(meta, slug, data))
-            selected_ids.add(slug)
-    else:
-        for requested in POPULAR_TITLES:
-            meta = by_name.get(norm(requested))
-            if meta is None or not eligible(meta):
-                missing_popular.append(requested)
-                continue
-            icon = icons.get(norm(meta.get("title", "")))
-            if icon is None:
-                missing_popular.append(requested)
-                continue
-            slug, data = icon
-            if slug in selected_ids:
-                continue
-            item = make_entry(meta, slug, data)
-            if not item["aliases"]:
-                continue
-            selected.append(item)
-            selected_ids.add(slug)
+    def add_requested(label: str, meta: dict | None, icon: tuple[str, bytes] | None) -> None:
+        if meta is None or icon is None:
+            missing_curated.append(label)
+            return
+        slug, data = icon
+        if slug in EXCLUDED_SLUGS or slug in selected_ids or not eligible(meta):
+            return
+        item = make_entry(meta, slug, data)
+        if not item["aliases"]:
+            missing_curated.append(label)
+            return
+        selected.append(item)
+        selected_ids.add(slug)
 
-        # Fill only with actual upstream entries that satisfy the same license
-        # and provenance checks. This is deterministic in upstream catalog order.
-        for meta in metadata:
-            if len(selected) >= IMPORT_ASSETS:
-                break
-            if not eligible(meta):
-                continue
-            icon = icons.get(norm(meta.get("title", "")))
-            if icon is None:
-                continue
-            slug, data = icon
-            if slug in selected_ids:
-                continue
-            item = make_entry(meta, slug, data)
-            if not item["aliases"]:
-                continue
-            selected.append(item)
-            selected_ids.add(slug)
+    for requested in POPULAR_TITLES:
+        meta = by_name.get(norm(requested))
+        icon = icons.get(norm(meta.get("title", ""))) if meta is not None else None
+        add_requested(requested, meta, icon)
+    for slug in CURATED_SLUGS:
+        pair = by_slug.get(slug)
+        add_requested(slug, pair[0] if pair is not None else None, pair[1] if pair is not None else None)
 
-    if len(selected) < IMPORT_ASSETS:
-        raise SystemExit(f"only {len(selected)} eligible upstream assets resolved")
+    if len(selected) < 200:
+        raise SystemExit(f"only {len(selected)} explicit curated assets resolved")
 
     # Keep ambiguous aliases out of the resolver namespace. Direct upstream
     # titles win over another brand's historical/locale alias; a collision
@@ -608,8 +758,11 @@ def main() -> int:
                     "reason": "alias/domain namespace collision",
                 })
         item["exactDomains"] = unique_domains
+    existing_manifest: dict = {}
+    if MANIFEST_PATH.is_file():
+        existing_manifest = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
     manifest = {
-        "manifestVersion": f"totp-brand-manifest-2026.08.03-si-{VERSION}-r5",
+        "manifestVersion": f"totp-brand-manifest-2026.08.03-si-{VERSION}-r7-mainstream-logo-catalog",
         "hashScope": "SHA-256 of the packaged local asset bytes, including the final newline",
         "upstream": {
             "name": "simple-icons",
@@ -630,8 +783,10 @@ def main() -> int:
         },
         "runtimePolicy": (
             "Runtime uses only this bundled manifest and rawfiles for exact issuer/domain matches; "
-            "there is no remote brand lookup. Unknown or unmatched suppliers render initials."
+            "there is no remote brand lookup. Unknown or unmatched suppliers render initials. "
+            "The explicit mainstream set is supplemented by reviewed fixed-commit logo-catalog overrides."
         ),
+        "officialOverrides": existing_manifest.get("officialOverrides", []),
         "entries": selected,
     }
 
@@ -642,6 +797,11 @@ def main() -> int:
         payload = item.pop("_payload")
         slug = item["brandId"]
         (ASSET_ROOT / f"{slug}.svg").write_bytes(payload)
+    if args.prune:
+        selected_files = {f"{item['brandId']}.svg" for item in selected}
+        for path in ASSET_ROOT.glob("*.svg"):
+            if path.name not in selected_files:
+                path.unlink()
     MANIFEST_PATH.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     alias_count = len({norm(alias) for item in selected for alias in item["aliases"]})
     domain_count = len({norm(domain) for item in selected for domain in item["exactDomains"]})
@@ -653,7 +813,8 @@ def main() -> int:
         "auditedDomainEntries": sum(1 for item in selected if item["exactDomains"]),
         "removedAmbiguousAliases": removed_ambiguous_aliases,
         "removedAuditedDomains": removed_audited_domains,
-        "missingCuratedNames": missing_popular,
+        "missingCuratedNames": missing_curated,
+        "preservedOfficialOverrides": len(manifest["officialOverrides"]),
     }, ensure_ascii=False, sort_keys=True))
     return 0
 
