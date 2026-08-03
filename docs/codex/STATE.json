@@ -34,7 +34,7 @@
       "entry/src/test/VncGatewayHealthPolicy.test.ets",
       "entry/src/test/VncRendererSurfacePolicy.test.ets"
     ],
-    "reason": "Independent read-only review of 44b83ef to ef4c33a passed with no P0/P1/P2. Request/attempt fencing, Repeater target binding, live trust handoff validation, and complete E-VNC-CERT-* preservation were verified; remaining gaps are real endpoint, hdc, OHOS runtime, and direct ArkTS/NAPI tests."
+    "reason": "Existing read-only review passed 44b83ef to ef4c33a; checkpoint 5885588 adds a VNC-only live Surface renderer gate and awaits one incremental review. Remaining gaps are real endpoint, hdc, OHOS runtime, and direct ArkTS/NAPI tests."
   },
   "lastVerification": {
     "rdp_native_tests": "252-pass-0-fail-loopback-fixtures-host-socket-5885588-2026-08-03",
