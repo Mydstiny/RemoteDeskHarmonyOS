@@ -5,8 +5,7 @@
  * avatar may override them for entries that provide one.
  */
 import { TotpBrandResolution, resolveTotpBrand as resolveBrand,
-  resolveTotpBrandForEntry as resolveBrandForEntry,
-  pinnedTotpBrandLogoUrl } from './TotpBrandResolver';
+  resolveTotpBrandForEntry as resolveBrandForEntry } from './TotpBrandResolver';
 import { TotpEntry } from '../model/TotpEntry';
 
 export interface TotpBrandVisual {
@@ -62,12 +61,13 @@ export function totpBrandVisualForEntry(
   };
 }
 
+/** Kept as a compatibility surface; supplier lookup and avatar I/O are local-only. */
 export function totpBrandLogoUrl(
-  issuer: string,
-  account: string,
-  allowRemoteFallback: boolean = false
+  _issuer: string,
+  _account: string,
+  _allowRemoteFallback: boolean = false
 ): string {
-  return allowRemoteFallback ? pinnedTotpBrandLogoUrl(issuer, account) : '';
+  return '';
 }
 
 /** Only an explicitly stored HTTPS avatar may introduce network image I/O. */

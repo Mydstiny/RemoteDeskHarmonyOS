@@ -115,7 +115,6 @@ export function validateTotpBrandManifest(
     assets.push(asset);
     if (entry.assetBytes <= 0) { errors.push(prefix + '.assetBytes must be positive'); }
 
-    if (entry.aliases.length === 0) { errors.push(prefix + '.aliases missing'); }
     for (let aliasIndex = 0; aliasIndex < entry.aliases.length; aliasIndex++) {
       const alias: string = normalize(entry.aliases[aliasIndex]);
       if (!hasText(alias) || isShort(alias)) {
@@ -183,8 +182,8 @@ export function validateTotpBrandManifest(
       errors.push(prefix + '.empty exactDomains must document intentional absence of evidence');
       domainSemanticErrorCount++;
     }
-    if (!hasText(entry.remoteFallbackSlug) || !COLOR_PATTERN.test(entry.brandColor)) {
-      errors.push(prefix + '.fallback/color metadata incomplete');
+    if (!COLOR_PATTERN.test(entry.brandColor)) {
+      errors.push(prefix + '.color metadata incomplete');
     } else {
       const foreground: string = totpForegroundForBackground(entry.brandColor);
       if (totpContrastRatio(foreground, entry.brandColor) < 4.5) {

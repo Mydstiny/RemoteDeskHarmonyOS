@@ -215,9 +215,12 @@ def main() -> int:
         "domainReviewed", "domainSourceUrl", "domainEvidence",
         "sourceType", "sourceUrl", "brandSourceUrl", "brandGuidelines", "upstreamVersion",
         "sha256", "licenseType", "licenseUrl", "trademarkGuidelines",
-        "officialAssetVerified", "remoteFallbackSlug", "brandColor"
+        "officialAssetVerified", "brandColor"
     )
-    required_nonempty = set(required) - {"exactDomains"}
+    # Some reviewed brands have intentionally unsafe-short titles (for
+    # example C or 42). They remain packaged, but cannot be exact issuer
+    # aliases and therefore correctly fall back to initials.
+    required_nonempty = set(required) - {"exactDomains", "aliases"}
     for index, entry in enumerate(entries):
         prefix = f"entries[{index}]"
         for field in required:

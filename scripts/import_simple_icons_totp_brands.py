@@ -15,6 +15,7 @@ import re
 import tarfile
 import unicodedata
 import urllib.request
+import argparse
 from pathlib import Path
 
 
@@ -354,6 +355,58 @@ def load_upstream() -> tuple[list[dict], dict[str, tuple[str, bytes]]]:
     return metadata, icons
 
 
+def load_review_snapshot(review_dir: Path) -> tuple[list[dict], dict[str, tuple[str, bytes]]]:
+    """Load only the maintainer-reviewed local snapshot; never fetches assets."""
+    catalog_path = review_dir / "catalog.json"
+    icons_root = review_dir / "icons"
+    if not catalog_path.is_file() or not icons_root.is_dir():
+        raise SystemExit(f"invalid review snapshot: {review_dir}")
+    catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
+    upstream = catalog.get("upstream", {})
+    if upstream.get("name") != "simple-icons" or upstream.get("version") != VERSION:
+        raise SystemExit("review snapshot must be Simple Icons 16.21.0")
+    reviewed_entries = [
+        entry for entry in catalog.get("entries", [])
+        if entry.get("packagingEligible") is True
+    ]
+    expected_count = int(catalog.get("packagingEligibleCount", len(reviewed_entries)))
+    if len(reviewed_entries) != expected_count:
+        raise SystemExit(
+            f"review snapshot eligible count mismatch: {len(reviewed_entries)} != {expected_count}"
+        )
+
+    metadata: list[dict] = []
+    icons: dict[str, tuple[str, bytes]] = {}
+    for review_entry in reviewed_entries:
+        slug = str(review_entry.get("slug", ""))
+        title = str(review_entry.get("title", ""))
+        icon_path = icons_root / f"{slug}.svg"
+        if not slug or not title or not icon_path.is_file():
+            raise SystemExit(f"review snapshot entry is incomplete: {slug}")
+        raw = icon_path.read_bytes()
+        expected_bytes = int(review_entry.get("bytes", 0))
+        expected_sha256 = str(review_entry.get("sha256", ""))
+        actual_sha256 = hashlib.sha256(raw).hexdigest()
+        if len(raw) != expected_bytes or actual_sha256 != expected_sha256:
+            raise SystemExit(f"reviewed asset hash/size mismatch: {icon_path}")
+        title_key = norm(title)
+        if title_key in icons:
+            raise SystemExit(f"review snapshot title collision: {title}")
+        source_url = str(review_entry.get("sourceUrl", ""))
+        metadata.append({
+            "title": title,
+            "slug": slug,
+            "hex": str(review_entry.get("hex", "")).upper(),
+            "aliases": review_entry.get("aliases") or {},
+            # The reviewed snapshot records the fixed community-artwork source;
+            # no official-logo claim is inferred when brand guidance is absent.
+            "source": source_url,
+            "guidelines": source_url,
+        })
+        icons[title_key] = (slug, raw)
+    return metadata, icons
+
+
 def index_metadata(metadata: list[dict]) -> dict[str, dict]:
     index: dict[str, dict] = {}
     # Direct upstream titles win over another brand's historical aka value.
@@ -386,10 +439,6 @@ def make_entry(metadata: dict, slug: str, data: bytes) -> dict:
         add_unique(aliases, alias)
     for alias in metadata.get("aliases", {}).get("loc", {}).values():
         add_unique(aliases, alias)
-    # OpenTofu and Terraform are independent brands. Never turn a Terraform
-    # title/metadata alias into an OpenTofu resolver match or a fake asset.
-    if slug == "opentofu":
-        aliases = [alias for alias in aliases if norm(alias) != norm("Terraform")]
     source = metadata.get("source") or f"{REPOSITORY}/blob/{VERSION}/icons/{slug}.svg"
     guidelines = metadata.get("guidelines") or source
     domain_audit = AUDITED_LOGIN_DOMAINS.get(slug)
@@ -437,61 +486,106 @@ def make_entry(metadata: dict, slug: str, data: bytes) -> dict:
             "consult brandGuidelines before distribution"
         ),
         "officialAssetVerified": False,
-        "remoteFallbackSlug": slug,
         "brandColor": "#" + metadata["hex"].upper(),
         "_payload": payload,
     }
 
 
 def main() -> int:
-    metadata, icons = load_upstream()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--review-dir",
+        type=Path,
+        help="import the already reviewed local Simple Icons snapshot instead of fetching upstream",
+    )
+    args = parser.parse_args()
+    metadata, icons = (
+        load_review_snapshot(args.review_dir)
+        if args.review_dir is not None
+        else load_upstream()
+    )
     by_name = index_metadata(metadata)
     selected: list[dict] = []
     selected_ids: set[str] = set()
     missing_popular: list[str] = []
 
-    for requested in POPULAR_TITLES:
-        meta = by_name.get(norm(requested))
-        if meta is None or not eligible(meta):
-            missing_popular.append(requested)
-            continue
-        icon = icons.get(norm(meta.get("title", "")))
-        if icon is None:
-            missing_popular.append(requested)
-            continue
-        slug, data = icon
-        if slug in selected_ids:
-            continue
-        item = make_entry(meta, slug, data)
-        if not item["aliases"]:
-            continue
-        selected.append(item)
-        selected_ids.add(slug)
+    if args.review_dir is not None:
+        # Preserve the reviewed catalog order and import every eligible asset,
+        # including entries that intentionally resolve only to initials.
+        for meta in metadata:
+            slug, data = icons[norm(meta["title"])]
+            selected.append(make_entry(meta, slug, data))
+            selected_ids.add(slug)
+    else:
+        for requested in POPULAR_TITLES:
+            meta = by_name.get(norm(requested))
+            if meta is None or not eligible(meta):
+                missing_popular.append(requested)
+                continue
+            icon = icons.get(norm(meta.get("title", "")))
+            if icon is None:
+                missing_popular.append(requested)
+                continue
+            slug, data = icon
+            if slug in selected_ids:
+                continue
+            item = make_entry(meta, slug, data)
+            if not item["aliases"]:
+                continue
+            selected.append(item)
+            selected_ids.add(slug)
 
-    # Fill only with actual upstream entries that satisfy the same license and
-    # provenance checks. This is deterministic in upstream catalog order.
-    for meta in metadata:
-        if len(selected) >= IMPORT_ASSETS:
-            break
-        if not eligible(meta):
-            continue
-        icon = icons.get(norm(meta.get("title", "")))
-        if icon is None:
-            continue
-        slug, data = icon
-        if slug in selected_ids:
-            continue
-        item = make_entry(meta, slug, data)
-        if not item["aliases"]:
-            continue
-        selected.append(item)
-        selected_ids.add(slug)
+        # Fill only with actual upstream entries that satisfy the same license
+        # and provenance checks. This is deterministic in upstream catalog order.
+        for meta in metadata:
+            if len(selected) >= IMPORT_ASSETS:
+                break
+            if not eligible(meta):
+                continue
+            icon = icons.get(norm(meta.get("title", "")))
+            if icon is None:
+                continue
+            slug, data = icon
+            if slug in selected_ids:
+                continue
+            item = make_entry(meta, slug, data)
+            if not item["aliases"]:
+                continue
+            selected.append(item)
+            selected_ids.add(slug)
 
     if len(selected) < IMPORT_ASSETS:
         raise SystemExit(f"only {len(selected)} eligible upstream assets resolved")
 
+    # Keep ambiguous aliases out of the resolver namespace. Direct upstream
+    # titles win over another brand's historical/locale alias; a collision
+    # without a direct title is removed from every brand.
+    alias_owners: dict[str, set[str]] = {}
+    title_owners: dict[str, set[str]] = {}
     for item in selected:
-        item.pop("_payload")
+        title_key = norm(item["displayName"])
+        title_owners.setdefault(title_key, set()).add(item["brandId"])
+        for alias in item["aliases"]:
+            alias_owners.setdefault(norm(alias), set()).add(item["brandId"])
+    ambiguous_aliases = {
+        key for key, owners in alias_owners.items() if len(owners) > 1
+    }
+    removed_ambiguous_aliases: list[dict[str, str]] = []
+    for item in selected:
+        kept_aliases: list[str] = []
+        for alias in item["aliases"]:
+            key = norm(alias)
+            owners = title_owners.get(key, set())
+            if key not in ambiguous_aliases or owners == {item["brandId"]}:
+                kept_aliases.append(alias)
+            else:
+                removed_ambiguous_aliases.append({
+                    "brandId": item["brandId"],
+                    "alias": alias,
+                    "reason": "ambiguous exact alias; direct title retained for its owner",
+                })
+        item["aliases"] = kept_aliases
+
     # Keep explicitly audited domains disjoint from aliases: the resolver's
     # namespace is one exact-key namespace, so a domain that is already an
     # alias would make the match ambiguous. This is the only domain filtering
@@ -515,7 +609,7 @@ def main() -> int:
                 })
         item["exactDomains"] = unique_domains
     manifest = {
-        "manifestVersion": f"totp-brand-manifest-2026.08.01-si-{VERSION}-r4",
+        "manifestVersion": f"totp-brand-manifest-2026.08.03-si-{VERSION}-r5",
         "hashScope": "SHA-256 of the packaged local asset bytes, including the final newline",
         "upstream": {
             "name": "simple-icons",
@@ -534,16 +628,19 @@ def main() -> int:
                 "reported separately from semantic validity."
             ),
         },
+        "runtimePolicy": (
+            "Runtime uses only this bundled manifest and rawfiles for exact issuer/domain matches; "
+            "there is no remote brand lookup. Unknown or unmatched suppliers render initials."
+        ),
         "entries": selected,
     }
 
     ASSET_ROOT.mkdir(parents=True, exist_ok=True)
-    # Re-read bytes from the upstream archive map to avoid any generated or
-    # user-provided asset being silently included in the hash.
+    # Write the bytes that were reviewed and hash-checked above. No generated
+    # or user-provided asset can silently enter the packaged set.
     for item in selected:
-        slug = item["remoteFallbackSlug"]
-        raw = icons[norm(item["displayName"])][1]
-        payload = raw if raw.endswith(b"\n") else raw + b"\n"
+        payload = item.pop("_payload")
+        slug = item["brandId"]
         (ASSET_ROOT / f"{slug}.svg").write_bytes(payload)
     MANIFEST_PATH.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     alias_count = len({norm(alias) for item in selected for alias in item["aliases"]})
@@ -554,6 +651,7 @@ def main() -> int:
         "exactDomains": domain_count,
         "aliasesAndDomains": alias_count + domain_count,
         "auditedDomainEntries": sum(1 for item in selected if item["exactDomains"]),
+        "removedAmbiguousAliases": removed_ambiguous_aliases,
         "removedAuditedDomains": removed_audited_domains,
         "missingCuratedNames": missing_popular,
     }, ensure_ascii=False, sort_keys=True))

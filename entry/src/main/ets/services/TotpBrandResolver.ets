@@ -9,7 +9,6 @@ export interface TotpBrandResolution {
   localAsset: string;
   localAssetBytes: number;
   sha256: string;
-  remoteFallbackSlug: string;
   sourceType: string;
   background: string;
   foreground: string;
@@ -152,7 +151,6 @@ function resolutionFor(
       localAsset: '',
       localAssetBytes: 0,
       sha256: '',
-      remoteFallbackSlug: '',
       sourceType: 'initials',
       background,
       foreground: totpForegroundForBackground(background),
@@ -166,7 +164,6 @@ function resolutionFor(
     localAsset: entry.localAsset,
     localAssetBytes: entry.assetBytes,
     sha256: entry.sha256,
-    remoteFallbackSlug: entry.remoteFallbackSlug,
     sourceType: entry.sourceType,
     background: entry.brandColor,
     foreground: totpForegroundForBackground(entry.brandColor),
@@ -188,11 +185,4 @@ export function resolveTotpBrandForEntry(
   globalMode: TotpAvatarMode = 'logo'
 ): TotpBrandResolution {
   return resolveTotpBrand(entry.issuer, entry.account, globalMode);
-}
-
-export function pinnedTotpBrandLogoUrl(issuer: string, account: string): string {
-  const resolution: TotpBrandResolution = resolveTotpBrand(issuer, account);
-  if (resolution.remoteFallbackSlug.length === 0) { return ''; }
-  return 'https://cdn.jsdelivr.net/npm/simple-icons@16.21.0/icons/' +
-    resolution.remoteFallbackSlug + '.svg';
 }

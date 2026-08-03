@@ -49,8 +49,10 @@ source and license files before redistribution.
 
 
 
+
+
 <!-- TOTP_BRAND_NOTICE_BEGIN -->
-| Simple Icons TOTP brand batch | `simple-icons@16.21.0`; https://github.com/simple-icons/simple-icons/tree/16.21.0 | CC0-1.0 | 261 local community glyphs under `entry/src/main/resources/rawfile/totp-brands/`; per-asset source, revision, SHA-256 and trademark guidance are authoritative in `entry/src/main/resources/rawfile/totp_brand_manifest.json`; no asset is represented as an official logo. 43 exact login domains and 264 reviewed issuer aliases are recorded separately; unproven domains remain empty. |
+| Simple Icons TOTP brand batch | `simple-icons@16.21.0`; https://github.com/simple-icons/simple-icons/tree/16.21.0 | CC0-1.0 | 3063 local community glyphs under `entry/src/main/resources/rawfile/totp-brands/`; per-asset source, revision, SHA-256 and trademark guidance are authoritative in `entry/src/main/resources/rawfile/totp_brand_manifest.json`; no asset is represented as an official logo. 43 exact login domains and 3163 reviewed issuer aliases are recorded separately; unproven domains remain empty. |
 <!-- TOTP_BRAND_NOTICE_END -->
 
 Artifact hashes are generated in `docs/compliance/THIRD_PARTY_ARTIFACTS.sha256`.

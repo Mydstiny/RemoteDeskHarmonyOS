@@ -159,8 +159,7 @@ export default function totpBrandServiceTest(): number {
 
     it('does_not_request_network_by_default', 0, (): void => {
       expect(totpBrandLogoUrl('GitHub', 'alice@example.com')).assertEqual('');
-      expect(totpBrandLogoUrl('GitHub', 'alice@example.com', true).indexOf(
-        'simple-icons@16.21.0') >= 0).assertTrue();
+      expect(totpBrandLogoUrl('GitHub', 'alice@example.com', true)).assertEqual('');
     });
 
     it('waits_for_current_asset_ready_and_rejects_stale_callbacks', 0, (): void => {

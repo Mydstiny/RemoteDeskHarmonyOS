@@ -30,6 +30,7 @@ def source_digest(manifest: dict) -> str:
         "hashScope": manifest.get("hashScope"),
         "upstream": manifest.get("upstream"),
         "completionTargets": manifest.get("completionTargets"),
+        "runtimePolicy": manifest.get("runtimePolicy"),
         "entries": manifest.get("entries", []),
     }
     encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
@@ -82,7 +83,6 @@ def render_manifest_ets(manifest: dict) -> str:
         "  licenseUrl: string;",
         "  trademarkGuidelines: string;",
         "  officialAssetVerified: boolean;",
-        "  remoteFallbackSlug: string;",
         "  brandColor: string;",
         "}",
         "",
@@ -118,7 +118,6 @@ def render_manifest_ets(manifest: dict) -> str:
             ("licenseUrl", ts_string(entry["licenseUrl"])),
             ("trademarkGuidelines", ts_string(entry["trademarkGuidelines"])),
             ("officialAssetVerified", "false" if not entry["officialAssetVerified"] else "true"),
-            ("remoteFallbackSlug", ts_string(entry["remoteFallbackSlug"])),
             ("brandColor", ts_string(entry["brandColor"])),
         ]
         rendered_entries.extend(f"    {key}: {value}," for key, value in ordered[:-1])
