@@ -15,6 +15,8 @@ import {
   SshProxyConfig,
   RdpCertificateInfo,
   VncCertificateProbePromise,
+  VncGatewayDeepHealthPromise,
+  VncGatewayDeepHealthResult,
   RdpRenderStats,
   RendererViewport,
   RustDeskDisplayCapabilities,
@@ -242,6 +244,32 @@ export class ExtensionLoader {
       return rdpnapi.cancelVncCertificateProbe(requestId) as boolean;
     } catch (err) {
       hilog.error(DOMAIN, TAG, '[ExtensionLoader] cancelVncCertificateProbe: ' + JSON.stringify(err));
+      return false;
+    }
+  }
+
+  probeVncGatewayDeepAsync(host: string, port: number, transport: string,
+    repeaterMode: string, target: string, tls: boolean, expectedFingerprint: string,
+    timeoutMs: number = 10000): VncGatewayDeepHealthPromise {
+    try {
+      return rdpnapi.probeVncGatewayDeepAsync(host, port, transport, repeaterMode, target,
+        tls, expectedFingerprint, timeoutMs) as VncGatewayDeepHealthPromise;
+    } catch (err) {
+      hilog.error(DOMAIN, TAG, '[ExtensionLoader] probeVncGatewayDeepAsync: ' + JSON.stringify(err));
+      const failure: VncGatewayDeepHealthResult = {
+        stage: 'FAILED', code: 'E-VNC-GATEWAY-DEEP', message: 'Gateway 深度检查失败', protocolReady: false
+      };
+      const promise: VncGatewayDeepHealthPromise = Promise.resolve(failure) as VncGatewayDeepHealthPromise;
+      promise.requestId = 0;
+      return promise;
+    }
+  }
+
+  cancelVncGatewayDeep(requestId: number): boolean {
+    try {
+      return rdpnapi.cancelVncGatewayDeep(requestId) as boolean;
+    } catch (err) {
+      hilog.error(DOMAIN, TAG, '[ExtensionLoader] cancelVncGatewayDeep: ' + JSON.stringify(err));
       return false;
     }
   }

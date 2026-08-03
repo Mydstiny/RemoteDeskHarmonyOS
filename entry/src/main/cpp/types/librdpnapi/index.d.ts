@@ -53,6 +53,10 @@ export const VERSION: SessionVersionInfo;
   export function probeVncCertificateAsync(host: string, port: number,
     serverName: string, timeoutMs?: number): VncCertificateProbePromise;
   export function cancelVncCertificateProbe(requestId: number): boolean;
+  export function probeVncGatewayDeepAsync(host: string, port: number, transport: string,
+    repeaterMode: string, target: string, tls: boolean, expectedFingerprint: string,
+    timeoutMs?: number): VncGatewayDeepHealthPromise;
+  export function cancelVncGatewayDeep(requestId: number): boolean;
   export function getRdpRenderStats(sessionId: number): RdpRenderStats;
   export function getSessionDiagnostics(sessionId: number): RustDeskDiagnosticsSnapshot;
   export function getRustDeskDiagnostics(sessionId: number): RustDeskDiagnosticsSnapshot;

@@ -34,7 +34,21 @@ import { RustDeskRelayConfigPasteSheet } from '../components/resourceadd/modern/
 import { VncGatewayAddFlow } from '../components/resourceadd/VncGatewayAddFlow';
 import { VncGatewayService, VncGatewayView } from '../services/VncGatewayService';
 import { VncGatewayValues } from '../services/VncModelPolicy';
+import { VncHostValues } from '../services/VncModelPolicy';
 import { vncGatewayAvailability } from '../services/VncGatewayProtocolPolicy';
+import { AccountSessionCoordinator } from '../services/AccountSessionCoordinator';
+import { ExtensionLoader } from '../services/ExtensionLoader';
+import {
+  VncTrustEndpoint,
+  VncTrustService,
+  vncStoreIdentityFingerprint
+} from '../services/VncTrustService';
+import {
+  resolveVncTlsEndpoint,
+  vncTlsGatewayInput,
+  vncTlsHostInput,
+  VncTlsEndpointResolution
+} from '../services/VncTlsEndpointPolicy';
 import {
   classifyVncGatewayHealth,
   VncGatewayHealthResult
@@ -130,12 +144,15 @@ export struct RustDeskRelayPage {
   @State vncViewRevision: number = 0;
   @State editingVncGateway: VncGatewayView | null = null;
   @State testingVncGatewayId: string = '';
+  @State testingVncGatewayRequestId: number = 0;
   @State vncTestResultId: string = '';
   @State vncTestResult: string = '';
   private pendingHostAddReturnRelayId: string = '';
   private srv: HostSyncService = HostSyncService.getInstance();
   private proSync: RustDeskProSyncService = RustDeskProSyncService.getInstance();
   private vncGatewayService: VncGatewayService = VncGatewayService.getInstance();
+  private vncTrustService: VncTrustService = VncTrustService.getInstance();
+  private extensionLoader: ExtensionLoader = ExtensionLoader.getInstance();
   private relayImporter: RustDeskRelayImportService = new RustDeskRelayImportService();
   private relaySetup: RustDeskRelaySetupCoordinator =
     RustDeskRelaySetupCoordinator.getInstance();
@@ -155,7 +172,9 @@ export struct RustDeskRelayPage {
 
   aboutToAppear(): void {
     this.pageActive = true;
-    this.vncGatewayService.init(getContext(this) as common.Context);
+    const context = getContext(this) as common.Context;
+    this.vncGatewayService.init(context);
+    this.vncTrustService.init(context);
     this.proSync.init(getContext(this) as common.Context);
     this.registerDataRefreshListener();
     this.load();
@@ -167,6 +186,10 @@ export struct RustDeskRelayPage {
   onPageShow(): void { this.load(); }
   aboutToDisappear(): void {
     this.pageActive = false;
+    if (this.testingVncGatewayRequestId > 0) {
+      this.extensionLoader.cancelVncGatewayDeep(this.testingVncGatewayRequestId);
+      this.testingVncGatewayRequestId = 0;
+    }
     if (this.dataUnsubscribe) {
       this.dataUnsubscribe();
       this.dataUnsubscribe = null;
@@ -845,6 +868,87 @@ export struct RustDeskRelayPage {
     this.testingVncGatewayId = '';
   }
 
+  /** Resolve the exact gateway endpoint used by trust and native deep checks. */
+  private resolveVncGatewayEndpoint(gateway: VncGatewayView): VncTlsEndpointResolution {
+    const scope = AccountSessionCoordinator.getInstance().currentScope();
+    const store: string = vncStoreIdentityFingerprint(scope.storeIdentity);
+    const hostValues: VncHostValues = {
+      label: gateway.label,
+      host: gateway.host,
+      port: gateway.port,
+      username: '',
+      gatewayId: gateway.id,
+      transport: 'ultravnc_repeater',
+      repeaterMode: 'mode12',
+      rememberPassword: false,
+      viewOnly: false,
+      displayOverrideEnabled: false,
+      scalingMode: 'fit',
+      clipboardEnabled: false,
+      securityPolicy: gateway.tls ? 'secure_only' : 'trusted_network',
+      tls: gateway.tls,
+      locked: false,
+      lockType: 0
+    };
+    return resolveVncTlsEndpoint(
+      vncTlsHostInput(gateway.id, scope.ownerScopeId, hostValues, gateway.targetId, store),
+      vncTlsGatewayInput(gateway.id, scope.ownerScopeId, gateway, store));
+  }
+
+  private async doDeepTestVncGateway(gateway: VncGatewayView): Promise<void> {
+    const availability = vncGatewayAvailability(gateway.transport, gateway.tls,
+      gateway.tokenConfigured, gateway.repeaterMode);
+    if (!availability.enabled) {
+      this.vncTestResultId = gateway.id;
+      this.vncTestResult = '✗ ' + availability.message;
+      return;
+    }
+    const endpoint = this.resolveVncGatewayEndpoint(gateway);
+    if (!endpoint.ok || endpoint.trustOwner === null) {
+      this.vncTestResultId = gateway.id;
+      this.vncTestResult = '✗ ' + (endpoint.errorCode || 'E-VNC-ENDPOINT-INVALID');
+      return;
+    }
+    const trustEndpoint: VncTrustEndpoint = {
+      ownerType: endpoint.trustOwner.ownerType,
+      ownerId: endpoint.trustOwner.ownerId,
+      userId: endpoint.trustOwner.userId,
+      storeIdentityFingerprint: endpoint.trustOwner.storeIdentityFingerprint,
+      endpointBindingFingerprint: endpoint.trustOwner.endpointBindingFingerprint
+    };
+    const expectedFingerprint: string = gateway.tls
+      ? this.vncTrustService.trustedFingerprintForEndpoint(trustEndpoint) : '';
+    if (gateway.tls && expectedFingerprint === '') {
+      this.vncTestResultId = gateway.id;
+      this.vncTestResult = '✗ E-VNC-CERT-TRUST-REQUIRED · 请先确认当前 Gateway 证书';
+      return;
+    }
+    this.testingVncGatewayId = gateway.id;
+    this.vncTestResultId = gateway.id;
+    this.vncTestResult = '⏳ VNC 深度协议检查中…';
+    try {
+      const probe = this.extensionLoader.probeVncGatewayDeepAsync(
+        endpoint.connectHost, endpoint.connectPort, endpoint.transport,
+        gateway.repeaterMode, endpoint.repeaterTarget, endpoint.tlsRequired,
+        expectedFingerprint, 10000);
+      this.testingVncGatewayRequestId = probe.requestId;
+      const result = await probe;
+      if (!this.pageActive || this.vncTestResultId !== gateway.id) { return; }
+      this.vncTestResult = result.protocolReady
+        ? '✓ ' + result.message
+        : '✗ ' + result.code + (result.message === '' ? '' : ' · ' + result.message);
+    } catch (_error) {
+      if (this.pageActive && this.vncTestResultId === gateway.id) {
+        this.vncTestResult = '✗ E-VNC-GATEWAY-DEEP · 深度检查失败';
+      }
+    } finally {
+      if (this.vncTestResultId === gateway.id) {
+        this.testingVncGatewayRequestId = 0;
+        this.testingVncGatewayId = '';
+      }
+    }
+  }
+
   private doDeleteRelay(id: string): void {
     promptAction.showDialog({
       title: '确认删除', message: '确定要删除此中继服务器及其所有账户吗？',
@@ -1417,6 +1521,10 @@ export struct RustDeskRelayPage {
               .fontSize(13).height(36).backgroundColor(this.accentColor).fontColor(Color.White).borderRadius(8)
               .padding({ left: 14, right: 14 }).enabled(this.testingVncGatewayId === '')
               .onClick((): void => { void this.doTestVncGateway(this.selectedPcVncGateway as VncGatewayView); })
+            Button('深度测试').fontSize(13).height(36).backgroundColor(this.pal().surface)
+              .fontColor(this.accentColor).borderRadius(8).margin({ left: 8 })
+              .padding({ left: 14, right: 14 }).enabled(this.testingVncGatewayId === '')
+              .onClick((): void => { void this.doDeepTestVncGateway(this.selectedPcVncGateway as VncGatewayView); })
             Button('编辑').fontSize(13).height(36).backgroundColor(this.pal().surface).fontColor(this.pal().text2)
               .borderRadius(8).margin({ left: 8 }).padding({ left: 14, right: 14 })
               .onClick((): void => { this.openEditVncGatewaySheet(this.selectedPcVncGateway as VncGatewayView); })
@@ -1656,6 +1764,11 @@ export struct RustDeskRelayPage {
           .backgroundColor(this.pal().surface).fontColor(this.accentColor)
           .enabled(this.testingVncGatewayId === '')
           .onClick((): void => { void this.doTestVncGateway(gateway); })
+        Button('深度测试')
+          .layoutWeight(1).height(32).fontSize(11).borderRadius(8)
+          .backgroundColor(this.pal().surface).fontColor(this.accentColor)
+          .enabled(this.testingVncGatewayId === '')
+          .onClick((): void => { void this.doDeepTestVncGateway(gateway); })
         Button('删除').layoutWeight(1).height(32).fontSize(11).borderRadius(8)
           .backgroundColor(this.pal().surface).fontColor(this.pal().danger).margin({ left: 7 })
           .onClick((): void => { this.doDeleteVncGateway(gateway); })

@@ -24,6 +24,8 @@
 #include "rustdesk/rustdesk_bridge.h"
 #include "vnc/vnc_adapter.h"
 #include "vnc/vnc_certificate_probe.h"
+#include "vnc/vnc_rfb_protocol.h"
+#include "vnc/vnc_transport.h"
 #include <napi/native_api.h>
 #include <hilog/log.h>
 #include <map>
@@ -31,6 +33,7 @@
 #include <mutex>
 #include <string>
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <atomic>
 #include <chrono>
@@ -787,6 +790,24 @@ static napi_value CreateVncCertificateInfoValue(napi_env env, const VncCertifica
     return result;
 }
 
+struct VncGatewayDeepHealthResult {
+    std::string stage = "FAILED";
+    std::string code = "E-VNC-GATEWAY-DEEP";
+    std::string message = "VNC Gateway 深度检查失败";
+    bool protocolReady = false;
+};
+
+static napi_value CreateVncGatewayDeepHealthValue(
+    napi_env env, const VncGatewayDeepHealthResult& result) {
+    napi_value value;
+    napi_create_object(env, &value);
+    SetObjectString(env, value, "stage", result.stage);
+    SetObjectString(env, value, "code", result.code);
+    SetObjectString(env, value, "message", result.message);
+    SetObjectBool(env, value, "protocolReady", result.protocolReady);
+    return value;
+}
+
 static std::shared_ptr<VncCertificateProbeEnvironmentState>
 GetVncCertificateProbeEnvironmentState(napi_env env) {
     std::lock_guard<std::mutex> lock(g_vncCertificateProbeMutex);
@@ -1193,6 +1214,232 @@ static void CompleteVncCertificateProbeAsync(napi_env env, napi_status status, v
         (void)napi_remove_async_cleanup_hook(cleanupHandle);
     }
     delete data;
+}
+
+struct VncGatewayDeepAsyncData {
+    uint64_t requestId = 0;
+    VncTransportConfig config;
+    std::shared_ptr<std::atomic_bool> cancelled;
+    VncGatewayDeepHealthResult result;
+    std::shared_ptr<VncCertificateProbeEnvironmentState> environmentState;
+    bool workerFailed = false;
+    napi_deferred deferred = nullptr;
+    napi_async_work work = nullptr;
+};
+
+static bool IsRfbProtocolBanner(const uint8_t* data, size_t size) {
+    if (data == nullptr || size != VncRfbProtocol::kProtocolVersionBytes ||
+        std::memcmp(data, "RFB ", 4) != 0 || data[11] != '\n') {
+        return false;
+    }
+    for (size_t i = 4; i < 11; ++i) {
+        if (data[i] < '0' || data[i] > '9') {
+            return false;
+        }
+    }
+    return true;
+}
+
+static void ExecuteVncGatewayDeepAsync(napi_env /*env*/, void* rawData) {
+    auto* data = static_cast<VncGatewayDeepAsyncData*>(rawData);
+    if (data == nullptr) {
+        return;
+    }
+    try {
+        if (data->config.transport != "ultravnc_repeater") {
+            data->result = {"FAILED", "E-VNC-GATEWAY-TRANSPORT",
+                            "当前仅支持 UltraVNC Repeater mode12", false};
+            return;
+        }
+        if (data->config.repeaterMode != "mode12") {
+            data->result = {"FAILED", "E-VNC-REPEATER-MODE2-ROLE",
+                            "mode2 是服务端监听角色，不能作为 Viewer 深度测试", false};
+            return;
+        }
+        std::array<uint8_t, VncRfbProtocol::kUltraVncRepeaterFieldBytes> targetField {};
+        std::string validationError;
+        if (!VncRfbProtocol::buildRepeaterTargetField(
+                data->config.repeaterTarget, targetField, validationError)) {
+            data->result = {"FAILED", "E-VNC-REPEATER-TARGET",
+                            "深度测试 target 无效", false};
+            return;
+        }
+        if (data->config.tls && data->config.expectedCertificateFingerprintSha256.empty()) {
+            data->result = {"TLS_CERT_CONFIRMATION_REQUIRED", "E-VNC-CERT-TRUST-REQUIRED",
+                            "TLS Gateway 需要先完成证书确认", false};
+            return;
+        }
+        VncTransport transport;
+        std::string error;
+        if (!transport.connect(data->config, error)) {
+            if (error.find("E-VNC-CERT-CANCELLED") != std::string::npos) {
+                data->result = {"FAILED", "E-VNC-CERT-CANCELLED", "Gateway 深度检查已取消", false};
+            } else if (error.find("E-VNC-CERT-TRUST-REQUIRED") != std::string::npos) {
+                data->result = {"TLS_CERT_CONFIRMATION_REQUIRED", "E-VNC-CERT-TRUST-REQUIRED",
+                                "TLS Gateway 需要先完成证书确认", false};
+            } else if (error.find("E-VNC-CERT-CHANGED") != std::string::npos) {
+                data->result = {"FAILED", "E-VNC-CERT-CHANGED",
+                                "TLS Gateway 证书与已确认指纹不匹配", false};
+            } else if (error.find("E-VNC-CERT-TLS") != std::string::npos) {
+                data->result = {"FAILED", "E-VNC-CERT-TLS",
+                                "TLS Gateway 握手失败", false};
+            } else if (error.find("banner") != std::string::npos) {
+                data->result = {"FAILED", "E-VNC-REPEATER-BANNER",
+                                "Repeater banner 无效或读取不完整", false};
+            } else {
+                data->result = {"FAILED", "E-VNC-GATEWAY-DEEP", "Gateway 深度检查失败", false};
+            }
+            transport.close();
+            return;
+        }
+        std::array<uint8_t, VncRfbProtocol::kProtocolVersionBytes> banner {};
+        if (!transport.readExact(banner.data(), banner.size(), data->config.connectTimeoutMs, error)) {
+            const bool cancelled = error.find("E-VNC-CERT-CANCELLED") != std::string::npos;
+            data->result = {"FAILED", cancelled ? "E-VNC-CERT-CANCELLED" : "E-VNC-RFB-BANNER",
+                            cancelled ? "Gateway 深度检查已取消" : "RFB banner 无效或读取超时", false};
+            transport.close();
+            return;
+        }
+        if (!IsRfbProtocolBanner(banner.data(), banner.size())) {
+            data->result = {"FAILED", "E-VNC-RFB-BANNER", "RFB banner 无效", false};
+            transport.close();
+            return;
+        }
+        data->result = {"RFB_BANNER_READY", "", "VNC 协议链路已验证", true};
+        transport.close();
+    } catch (...) {
+        data->workerFailed = true;
+        data->result = {"FAILED", "E-VNC-GATEWAY-DEEP", "Gateway 深度检查失败", false};
+    }
+}
+
+static void CompleteVncGatewayDeepAsync(napi_env env, napi_status status, void* rawData) {
+    auto* data = static_cast<VncGatewayDeepAsyncData*>(rawData);
+    if (data == nullptr) {
+        return;
+    }
+    if (status == napi_cancelled ||
+        (data->cancelled && data->cancelled->load(std::memory_order_acquire))) {
+        data->result = {"FAILED", "E-VNC-CERT-CANCELLED", "Gateway 深度检查已取消", false};
+    } else if (status != napi_ok || data->workerFailed) {
+        data->result = {"FAILED", "E-VNC-GATEWAY-DEEP", "Gateway 深度检查失败", false};
+    }
+    bool closing = true;
+    if (data->environmentState != nullptr) {
+        std::unique_lock<std::mutex> lock(data->environmentState->mutex);
+        closing = data->environmentState->closing;
+        if (!closing && env != nullptr && data->deferred != nullptr) {
+            napi_resolve_deferred(env, data->deferred,
+                                  CreateVncGatewayDeepHealthValue(env, data->result));
+        }
+    }
+    napi_async_cleanup_hook_handle cleanupHandle = nullptr;
+    {
+        std::lock_guard<std::mutex> registryLock(g_vncCertificateProbeMutex);
+        if (env != nullptr && data->work != nullptr) {
+            napi_delete_async_work(env, data->work);
+        }
+        RemoveVncCertificateProbeTokenLocked(data->requestId, cleanupHandle);
+    }
+    if (cleanupHandle != nullptr) {
+        (void)napi_remove_async_cleanup_hook(cleanupHandle);
+    }
+    delete data;
+}
+
+/** NAPI: probeVncGatewayDeepAsync(host, port, transport, mode, target, tls, pin, timeoutMs). */
+napi_value NapiProbeVncGatewayDeepAsync(napi_env env, napi_callback_info info) {
+    size_t argc = 8;
+    napi_value args[8];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    auto* data = new (std::nothrow) VncGatewayDeepAsyncData();
+    if (data == nullptr) {
+        napi_throw_error(env, nullptr, "VNC Gateway deep async allocation failed");
+        return nullptr;
+    }
+    if (argc > 0) data->config.host = GetNapiString(env, args[0]);
+    if (argc > 1) napi_get_value_int32(env, args[1], &data->config.port);
+    if (argc > 2) data->config.transport = GetNapiString(env, args[2]);
+    if (argc > 3) data->config.repeaterMode = GetNapiString(env, args[3]);
+    if (argc > 4) data->config.repeaterTarget = GetNapiString(env, args[4]);
+    if (argc > 5) napi_get_value_bool(env, args[5], &data->config.tls);
+    if (argc > 6) data->config.expectedCertificateFingerprintSha256 = GetNapiString(env, args[6]);
+    if (argc > 7) napi_get_value_int32(env, args[7], &data->config.connectTimeoutMs);
+    data->config.serverName = data->config.host;
+    data->cancelled = std::make_shared<std::atomic_bool>(false);
+    data->config.cancelled = data->cancelled;
+    data->environmentState = GetVncCertificateProbeEnvironmentState(env);
+    data->requestId = g_nextVncCertificateProbeRequestId.fetch_add(1, std::memory_order_relaxed);
+    if (data->requestId == 0) {
+        data->requestId = g_nextVncCertificateProbeRequestId.fetch_add(1, std::memory_order_relaxed);
+    }
+    napi_value promise;
+    napi_status status = napi_create_promise(env, &data->deferred, &promise);
+    if (status != napi_ok) {
+        delete data;
+        napi_throw_error(env, nullptr, "VNC Gateway deep promise creation failed");
+        return nullptr;
+    }
+    napi_value requestIdValue;
+    napi_create_int64(env, static_cast<int64_t>(data->requestId), &requestIdValue);
+    napi_set_named_property(env, promise, "requestId", requestIdValue);
+    napi_value resourceName;
+    status = napi_create_string_utf8(env, "VncGatewayDeepAsync", NAPI_AUTO_LENGTH, &resourceName);
+    if (status != napi_ok) {
+        delete data;
+        napi_throw_error(env, nullptr, "VNC Gateway deep resource creation failed");
+        return nullptr;
+    }
+    {
+        std::unique_lock<std::mutex> registryLock(g_vncCertificateProbeMutex);
+        std::unique_lock<std::mutex> stateLock(data->environmentState->mutex);
+        if (data->environmentState->closing || !data->environmentState->cleanupHookRegistered) {
+            stateLock.unlock();
+            registryLock.unlock();
+            delete data;
+            napi_throw_error(env, nullptr, "VNC Gateway environment is closing");
+            return nullptr;
+        }
+        ++data->environmentState->activeWorks;
+        g_vncCertificateProbeTokens[data->requestId] =
+            VncCertificateProbeRegistration {data->cancelled, data->environmentState, env, nullptr};
+        stateLock.unlock();
+        status = napi_create_async_work(env, resourceName, resourceName,
+                                        ExecuteVncGatewayDeepAsync, CompleteVncGatewayDeepAsync,
+                                        data, &data->work);
+        if (status != napi_ok) {
+            g_vncCertificateProbeTokens.erase(data->requestId);
+            std::lock_guard<std::mutex> rollbackState(data->environmentState->mutex);
+            --data->environmentState->activeWorks;
+            registryLock.unlock();
+            delete data;
+            napi_throw_error(env, nullptr, "VNC Gateway deep work creation failed");
+            return nullptr;
+        }
+        auto registration = g_vncCertificateProbeTokens.find(data->requestId);
+        if (registration == g_vncCertificateProbeTokens.end()) {
+            napi_delete_async_work(env, data->work);
+            std::lock_guard<std::mutex> rollbackState(data->environmentState->mutex);
+            --data->environmentState->activeWorks;
+            registryLock.unlock();
+            delete data;
+            napi_throw_error(env, nullptr, "VNC Gateway deep admission failed");
+            return nullptr;
+        }
+        registration->second.work = data->work;
+        status = napi_queue_async_work(env, data->work);
+        if (status != napi_ok) {
+            napi_delete_async_work(env, data->work);
+            g_vncCertificateProbeTokens.erase(registration);
+            std::lock_guard<std::mutex> rollbackState(data->environmentState->mutex);
+            --data->environmentState->activeWorks;
+            registryLock.unlock();
+            delete data;
+            napi_throw_error(env, nullptr, "VNC Gateway deep work queue failed");
+            return nullptr;
+        }
+    }
+    return promise;
 }
 
 /**
@@ -6379,9 +6626,15 @@ napi_value ExtensionLoaderNapi::Init(napi_env env, napi_value exports) {
     napi_create_function(env, "probeVncCertificateAsync", NAPI_AUTO_LENGTH,
                          NapiProbeVncCertificateAsync, nullptr, &fn);
     napi_set_named_property(env, exports, "probeVncCertificateAsync", fn);
+    napi_create_function(env, "probeVncGatewayDeepAsync", NAPI_AUTO_LENGTH,
+                         NapiProbeVncGatewayDeepAsync, nullptr, &fn);
+    napi_set_named_property(env, exports, "probeVncGatewayDeepAsync", fn);
     napi_create_function(env, "cancelVncCertificateProbe", NAPI_AUTO_LENGTH,
                          NapiCancelVncCertificateProbe, nullptr, &fn);
     napi_set_named_property(env, exports, "cancelVncCertificateProbe", fn);
+    napi_create_function(env, "cancelVncGatewayDeep", NAPI_AUTO_LENGTH,
+                         NapiCancelVncCertificateProbe, nullptr, &fn);
+    napi_set_named_property(env, exports, "cancelVncGatewayDeep", fn);
 
     napi_create_function(env, "getRdpRenderStats", NAPI_AUTO_LENGTH,
                          NapiGetRdpRenderStats, nullptr, &fn);
