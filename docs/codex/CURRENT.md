@@ -94,7 +94,6 @@ This file is the compact startup resume card. Historical checkpoints remain in
 - Keep every VNC caller fail-closed when the probe, Sheet lifecycle, owner
   binding, or expected-pin handoff is missing or stale.
 ## Verification
-
 - `rdp_native_tests`: 252 passed, 0 failed with loopback fixtures on
   `ef4c33a`, 2026-08-03 (requires host-socket permission).
 - `default@OhosTestCompileArkTS`: passed after `ef4c33a` on 2026-08-03.
@@ -103,7 +102,6 @@ This file is the compact startup resume card. Historical checkpoints remain in
 - `ohosTest@OhosTestCompileArkTS`: unavailable; task is not registered
   (`00306054`). New ArkTS tests therefore have compile/build evidence only.
 ## Blockers
-
 - `hdc list targets`/`hdc shell` still return `Connect server failed`; no
   current hilog or real-device/endpoint evidence is available.
 - Stage B native probe is covered by host fixtures for self-signed, trusted
@@ -116,9 +114,7 @@ This file is the compact startup resume card. Historical checkpoints remain in
   behavior remain static/build-tested only; no device evidence is claimed.
 
 ## Review Protocol
-
-- Machine state: `docs/codex/STATE.json`.
-- Receipts: `docs/codex/REVIEW_RECEIPTS.jsonl`.
+- Machine state: `docs/codex/STATE.json`; receipts: `docs/codex/REVIEW_RECEIPTS.jsonl`.
 - `scripts/sync_workspace.sh status` should keep active VNC-only work at Stage F
   native/endpoint integration and reuse the existing reviewer for the single
   incremental review of `ef4c33a`.
