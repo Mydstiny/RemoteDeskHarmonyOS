@@ -28,8 +28,10 @@ export function vncToolbarRailHeight(deviceClass: VncToolbarDeviceClass,
   const actionCount: number = deviceClass === 'phone' ? 5 : 6;
   const actionHeight: number = actionCount * 44;
   const actionGaps: number = Math.max(0, actionCount - 1) * 5;
+  const collapseHandleHeight: number = 44;
+  const collapseHandleGap: number = 5;
   const viewOnlyHeader: number = viewOnly ? 24 + 5 : 0;
-  return 12 + actionHeight + actionGaps + viewOnlyHeader;
+  return 12 + collapseHandleHeight + collapseHandleGap + actionHeight + actionGaps + viewOnlyHeader;
 }
 
 export function vncToolbarDefaultSide(_deviceClass: VncToolbarDeviceClass): VncToolbarSide {

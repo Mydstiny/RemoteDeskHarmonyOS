@@ -2,6 +2,7 @@ import { OverlayPlacement, emptyOverlayPlacement } from '../services/RemoteOverl
 
 export interface VncSessionToolbarActions {
   onExpand: () => void;
+  onCollapse: () => void;
   onToggleKeyboard: () => void;
   onCycleControlMode: () => void;
   onOpenShortcuts: () => void;
@@ -31,6 +32,7 @@ export struct VncSessionToolbar {
   };
   actions: VncSessionToolbarActions = {
     onExpand: (): void => {},
+    onCollapse: (): void => {},
     onToggleKeyboard: (): void => {},
     onCycleControlMode: (): void => {},
     onOpenShortcuts: (): void => {},
@@ -94,6 +96,23 @@ export struct VncSessionToolbar {
   @Builder
   private mobileExpandedRail() {
     Column({ space: 5 }) {
+      Stack() {
+        Row() {
+          if (this.placement.side === 'left') {
+            SymbolGlyph($r('sys.symbol.arrow_left')).fontSize(16).fontColor(['#FFFFFF'])
+          } else {
+            SymbolGlyph($r('sys.symbol.arrow_right')).fontSize(16).fontColor(['#FFFFFF'])
+          }
+        }
+        .width(28).height(28)
+        .justifyContent(FlexAlign.Center)
+        .backgroundColor(this.viewOnly ? 'rgba(92,96,104,0.90)' : 'rgba(20,24,32,0.90)')
+        .borderRadius(14)
+        .position({ x: this.placement.side === 'left' ? 0 : 48, y: 8 })
+      }
+      .width('100%').height(44)
+      .accessibilityText('收起 VNC 会话工具栏')
+      .onClick((): void => { this.actions.onCollapse(); })
       if (this.viewOnly) {
         Row() {
           SymbolGlyph($r('sys.symbol.eye')).fontSize(13).fontColor(['#FFFFFF'])

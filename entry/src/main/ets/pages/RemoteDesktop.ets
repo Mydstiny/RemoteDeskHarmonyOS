@@ -1351,7 +1351,19 @@ struct RemoteDesktop {
   }
 
   private shouldShowVncSessionToolbar(): boolean {
-    return shouldShowVncSessionToolbar(this.currentProtocolName(), this.connected, this.sessionId);
+    if (!shouldShowVncSessionToolbar(this.currentProtocolName(), this.connected, this.sessionId)) {
+      return false;
+    }
+    if (this.vncToolbarDeviceClass() === 'pc') {
+      return true;
+    }
+    // Never publish a fallback at (0,0) while safe-area/collision geometry is
+    // unavailable. The next real avoid-area or surface resize retries layout.
+    return this.vncToolbarPlacement.railRect.width > 0 &&
+      this.vncToolbarPlacement.railRect.height > 0 &&
+      this.vncToolbarPlacement.handleRect.width >= 44 &&
+      this.vncToolbarPlacement.handleRect.height >= 44 &&
+      this.vncToolbarPlacement.recovery === 'none';
   }
 
   private vncToolbarDeviceClass(): VncToolbarDeviceClass {
@@ -1689,6 +1701,11 @@ struct RemoteDesktop {
   private vncToolbarActions(): VncSessionToolbarActions {
     return {
       onExpand: (): void => { this.expandVncToolbar(); },
+      onCollapse: (): void => {
+        this.vncToolbarCollapsed = true;
+        this.recomputeVncToolbarPlacement('manual-collapse');
+        this.scheduleVncToolbarAutoCollapse();
+      },
       onToggleKeyboard: (): void => {
         this.markVncToolbarInteraction();
         if (this.isVncViewOnlySession()) {
