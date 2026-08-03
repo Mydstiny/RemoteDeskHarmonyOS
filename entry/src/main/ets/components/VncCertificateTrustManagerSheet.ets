@@ -22,6 +22,7 @@ export struct VncCertificateTrustManagerSheet {
   pendingEndpoint: VncTrustEndpoint | null = null;
   pendingFingerprintSha256: string = '';
   onConfirmed: () => void = (): void => {};
+  canConfirmPending: () => boolean = (): boolean => true;
 
   @State trustItems: VncTrustDirectoryItem[] = [];
   @State revision: number = 0;
@@ -142,6 +143,10 @@ export struct VncCertificateTrustManagerSheet {
     if (!gate.ok) {
       const message: string = lockGateErrorMessage(gate);
       if (message !== '') { promptAction.showToast({ message, duration: 2000 }); }
+      return;
+    }
+    if (!this.canConfirmPending()) {
+      this.errorText = '当前 endpoint、账号或存储已变化，请重新执行证书检查';
       return;
     }
     const result = this.trustService.saveForEndpoint(

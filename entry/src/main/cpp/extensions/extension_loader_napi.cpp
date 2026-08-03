@@ -1275,6 +1275,21 @@ static std::string ExtractVncCertificateFingerprint(const std::string& error) {
     return "";
 }
 
+static std::string ExtractVncCertificateErrorCode(const std::string& error) {
+    const std::string prefix = "E-VNC-CERT-";
+    const size_t start = error.find(prefix);
+    if (start == std::string::npos) { return ""; }
+    const size_t end = error.find_first_of("; \r\n", start);
+    const std::string code = error.substr(start,
+        end == std::string::npos ? std::string::npos : end - start);
+    if (code.size() <= prefix.size() || code.size() > 96) { return ""; }
+    for (size_t i = prefix.size(); i < code.size(); ++i) {
+        const unsigned char c = static_cast<unsigned char>(code[i]);
+        if (!(std::isdigit(c) || (c >= 'A' && c <= 'Z') || c == '-')) { return ""; }
+    }
+    return code;
+}
+
 static void ExecuteVncGatewayDeepAsync(napi_env /*env*/, void* rawData) {
     auto* data = static_cast<VncGatewayDeepAsyncData*>(rawData);
     if (data == nullptr) {
@@ -1322,18 +1337,17 @@ static void ExecuteVncGatewayDeepAsync(napi_env /*env*/, void* rawData) {
             } else if (error.find("E-VNC-CERT-CHANGED") != std::string::npos) {
                 data->result = {"FAILED", "E-VNC-CERT-CHANGED",
                                 "TLS Gateway 证书与已确认指纹不匹配", false};
-            } else if (error.find("E-VNC-CERT-TLS-") != std::string::npos) {
-                const size_t codeStart = error.find("E-VNC-CERT-TLS-");
-                const size_t codeEnd = error.find_first_of("; ", codeStart);
-                const std::string code = error.substr(codeStart,
-                    codeEnd == std::string::npos ? std::string::npos : codeEnd - codeStart);
-                data->result = {"FAILED", code,
-                                "TLS Gateway 握手失败", false};
-            } else if (error.find("banner") != std::string::npos) {
-                data->result = {"FAILED", "E-VNC-REPEATER-BANNER",
-                                "Repeater banner 无效或读取不完整", false};
             } else {
-                data->result = {"FAILED", "E-VNC-GATEWAY-DEEP", "Gateway 深度检查失败", false};
+                const std::string code = ExtractVncCertificateErrorCode(error);
+                if (!code.empty()) {
+                    data->result = {"FAILED", code,
+                                    "TLS Gateway 证书校验失败", false};
+                } else if (error.find("banner") != std::string::npos) {
+                    data->result = {"FAILED", "E-VNC-REPEATER-BANNER",
+                                    "Repeater banner 无效或读取不完整", false};
+                } else {
+                    data->result = {"FAILED", "E-VNC-GATEWAY-DEEP", "Gateway 深度检查失败", false};
+                }
             }
             CopyVncGatewayDeepBinding(data->result, *data);
             data->result.certificateFingerprintSha256 = ExtractVncCertificateFingerprint(error);
@@ -1342,9 +1356,11 @@ static void ExecuteVncGatewayDeepAsync(napi_env /*env*/, void* rawData) {
         }
         std::array<uint8_t, VncRfbProtocol::kProtocolVersionBytes> banner {};
         if (!transport.readExact(banner.data(), banner.size(), data->config.connectTimeoutMs, error)) {
-            const bool cancelled = error.find("E-VNC-CERT-CANCELLED") != std::string::npos;
-            data->result = {"FAILED", cancelled ? "E-VNC-CERT-CANCELLED" : "E-VNC-RFB-BANNER",
-                            cancelled ? "Gateway 深度检查已取消" : "RFB banner 无效或读取超时", false};
+            const std::string certificateCode = ExtractVncCertificateErrorCode(error);
+            const bool cancelled = certificateCode == "E-VNC-CERT-CANCELLED";
+            data->result = {"FAILED", certificateCode.empty() ? "E-VNC-RFB-BANNER" : certificateCode,
+                            cancelled ? "Gateway 深度检查已取消" :
+                            (certificateCode.empty() ? "RFB banner 无效或读取超时" : "TLS Gateway 证书校验失败"), false};
             transport.close();
             return;
         }

@@ -89,6 +89,7 @@ interface VncDeepCheckBinding {
   accountGeneration: number;
   tlsRequired: boolean;
   enabled: boolean;
+  repeaterTarget: string;
 }
 
 @Component
@@ -175,6 +176,8 @@ export struct RustDeskRelayPage {
   private vncDeepBinding: VncDeepCheckBinding | null = null;
   private pendingVncTrustEndpoint: VncTrustEndpoint | null = null;
   private pendingVncTrustFingerprint: string = '';
+  private pendingVncTrustBinding: VncDeepCheckBinding | null = null;
+  private vncDeepAttemptGeneration: number = 0;
   private pageActive: boolean = false;
 
   private pal(): Palette {
@@ -202,6 +205,7 @@ export struct RustDeskRelayPage {
   onPageShow(): void { this.load(); }
   aboutToDisappear(): void {
     this.pageActive = false;
+    this.vncDeepAttemptGeneration += 1;
     if (this.testingVncGatewayRequestId > 0) {
       this.extensionLoader.cancelVncGatewayDeep(this.testingVncGatewayRequestId);
       this.testingVncGatewayRequestId = 0;
@@ -212,6 +216,7 @@ export struct RustDeskRelayPage {
     this.vncTestResult = '';
     this.pendingVncTrustEndpoint = null;
     this.pendingVncTrustFingerprint = '';
+    this.pendingVncTrustBinding = null;
     if (this.dataUnsubscribe) {
       this.dataUnsubscribe();
       this.dataUnsubscribe = null;
@@ -925,7 +930,7 @@ export struct RustDeskRelayPage {
       left.userId === right.userId && left.storeIdentityFingerprint === right.storeIdentityFingerprint &&
       left.endpointBindingFingerprint === right.endpointBindingFingerprint &&
       left.accountGeneration === right.accountGeneration && left.tlsRequired === right.tlsRequired &&
-      left.enabled === right.enabled;
+      left.enabled === right.enabled && left.repeaterTarget === right.repeaterTarget;
   }
 
   private deepBindingStillCurrent(binding: VncDeepCheckBinding): boolean {
@@ -937,20 +942,24 @@ export struct RustDeskRelayPage {
     if (store !== binding.storeIdentityFingerprint) { return false; }
     const gateway = this.vncGatewayService.find(binding.gatewayId);
     if (gateway === null || gateway.userId !== binding.userId || gateway.enabled !== binding.enabled ||
-      gateway.tls !== binding.tlsRequired) { return false; }
+      gateway.tls !== binding.tlsRequired || gateway.targetId !== binding.repeaterTarget) { return false; }
     const endpoint = this.resolveVncGatewayEndpoint(gateway);
     return endpoint.ok && endpoint.endpointBindingFingerprint === binding.endpointBindingFingerprint;
   }
 
   private invalidateVncDeepCheck(): void {
-    const binding = this.vncDeepBinding;
+    const binding = this.vncDeepBinding === null ? this.pendingVncTrustBinding : this.vncDeepBinding;
     if (binding === null || this.deepBindingStillCurrent(binding)) { return; }
+    this.vncDeepAttemptGeneration += 1;
     if (this.testingVncGatewayRequestId > 0) {
       this.extensionLoader.cancelVncGatewayDeep(this.testingVncGatewayRequestId);
     }
     this.testingVncGatewayRequestId = 0;
     this.testingVncGatewayId = '';
     this.vncDeepBinding = null;
+    this.pendingVncTrustBinding = null;
+    this.pendingVncTrustEndpoint = null;
+    this.pendingVncTrustFingerprint = '';
     this.vncTestResultId = binding.gatewayId;
     this.vncTestResult = '✗ E-VNC-GATEWAY-BINDING · 账号、存储或端点已变化，请重新检查';
   }
@@ -987,17 +996,23 @@ export struct RustDeskRelayPage {
       endpointBindingFingerprint: endpoint.trustOwner.endpointBindingFingerprint,
       accountGeneration: scope.generation,
       tlsRequired: endpoint.tlsRequired,
-      enabled: gateway.enabled
+      enabled: gateway.enabled,
+      repeaterTarget: endpoint.repeaterTarget
     };
     if (!this.deepBindingStillCurrent(binding)) {
       this.vncTestResultId = gateway.id;
       this.vncTestResult = '✗ E-VNC-GATEWAY-BINDING · 当前 Gateway 已变化';
       return;
     }
+    this.pendingVncTrustEndpoint = null;
+    this.pendingVncTrustFingerprint = '';
+    this.pendingVncTrustBinding = null;
     this.vncDeepBinding = binding;
+    const attemptGeneration: number = ++this.vncDeepAttemptGeneration;
     this.testingVncGatewayId = gateway.id;
     this.vncTestResultId = gateway.id;
     this.vncTestResult = '⏳ VNC 深度协议检查中…';
+    let requestId: number = 0;
     try {
       const probe = this.extensionLoader.probeVncGatewayDeepAsync(
         endpoint.connectHost, endpoint.connectPort, endpoint.transport,
@@ -1005,9 +1020,11 @@ export struct RustDeskRelayPage {
         expectedFingerprint, 10000, endpoint.trustOwner.ownerType, endpoint.trustOwner.ownerId,
         endpoint.trustOwner.userId, endpoint.trustOwner.storeIdentityFingerprint,
         endpoint.trustOwner.endpointBindingFingerprint, scope.generation, gateway.enabled);
-      this.testingVncGatewayRequestId = probe.requestId;
+      requestId = probe.requestId;
+      this.testingVncGatewayRequestId = requestId;
       const result = await probe;
-      if (!this.pageActive || this.vncTestResultId !== gateway.id ||
+      if (!this.pageActive || this.vncDeepAttemptGeneration !== attemptGeneration ||
+        this.testingVncGatewayRequestId !== requestId || this.vncTestResultId !== gateway.id ||
         !this.sameVncDeepBinding(this.vncDeepBinding, binding) ||
         !this.deepBindingStillCurrent(binding) || result.ownerId !== binding.ownerId ||
         result.userId !== binding.userId || result.storeIdentityFingerprint !== binding.storeIdentityFingerprint ||
@@ -1018,6 +1035,7 @@ export struct RustDeskRelayPage {
       if (result.code === 'E-VNC-CERT-TRUST-REQUIRED' || result.code === 'E-VNC-CERT-CHANGED') {
         this.pendingVncTrustEndpoint = trustEndpoint;
         this.pendingVncTrustFingerprint = result.certificateFingerprintSha256;
+        this.pendingVncTrustBinding = binding;
         this.vncTestResult = '✗ ' + result.code + ' · 请在证书信任 Sheet 中确认当前指纹';
         if (result.certificateFingerprintSha256 !== '') {
           this.sheetContent = 11;
@@ -1029,11 +1047,14 @@ export struct RustDeskRelayPage {
         ? '✓ ' + result.message
         : '✗ ' + result.code + (result.message === '' ? '' : ' · ' + result.message);
     } catch (_error) {
-      if (this.pageActive && this.vncTestResultId === gateway.id) {
+      if (this.pageActive && this.vncDeepAttemptGeneration === attemptGeneration &&
+        this.testingVncGatewayRequestId === requestId && this.vncTestResultId === gateway.id) {
         this.vncTestResult = '✗ E-VNC-GATEWAY-DEEP · 深度检查失败';
       }
     } finally {
-      if (this.vncTestResultId === gateway.id && this.sameVncDeepBinding(this.vncDeepBinding, binding)) {
+      if (this.vncDeepAttemptGeneration === attemptGeneration &&
+        this.testingVncGatewayRequestId === requestId &&
+        this.vncTestResultId === gateway.id && this.sameVncDeepBinding(this.vncDeepBinding, binding)) {
         this.testingVncGatewayRequestId = 0;
         this.testingVncGatewayId = '';
         this.vncDeepBinding = null;
@@ -1043,8 +1064,47 @@ export struct RustDeskRelayPage {
 
   private cancelDeepTestVncGateway(): void {
     if (this.testingVncGatewayRequestId <= 0) { return; }
-    this.extensionLoader.cancelVncGatewayDeep(this.testingVncGatewayRequestId);
+    const requestId: number = this.testingVncGatewayRequestId;
+    this.vncDeepAttemptGeneration += 1;
+    this.extensionLoader.cancelVncGatewayDeep(requestId);
+    this.testingVncGatewayRequestId = 0;
+    this.testingVncGatewayId = '';
+    this.vncDeepBinding = null;
     this.vncTestResult = '⏳ 正在取消 VNC 深度检查…';
+  }
+
+  private canConfirmPendingVncTrust(): boolean {
+    const binding = this.pendingVncTrustBinding;
+    const pending = this.pendingVncTrustEndpoint;
+    if (binding === null || pending === null || this.pendingVncTrustFingerprint === '') { return false; }
+    if (!this.deepBindingStillCurrent(binding)) {
+      this.pendingVncTrustBinding = null;
+      this.pendingVncTrustEndpoint = null;
+      this.pendingVncTrustFingerprint = '';
+      this.vncTestResult = '✗ E-VNC-GATEWAY-BINDING · endpoint 已变化，请重新检查';
+      return false;
+    }
+    const gateway = this.vncGatewayService.find(binding.gatewayId);
+    if (gateway === null) { return false; }
+    const endpoint = this.resolveVncGatewayEndpoint(gateway);
+    const owner = endpoint.trustOwner;
+    if (!endpoint.ok || owner === null || owner.endpointBindingFingerprint !== binding.endpointBindingFingerprint ||
+      owner.storeIdentityFingerprint !== pending.storeIdentityFingerprint || owner.userId !== pending.userId ||
+      owner.ownerId !== pending.ownerId || owner.ownerType !== pending.ownerType) {
+      this.pendingVncTrustBinding = null;
+      this.pendingVncTrustEndpoint = null;
+      this.pendingVncTrustFingerprint = '';
+      this.vncTestResult = '✗ E-VNC-GATEWAY-BINDING · endpoint 已变化，请重新检查';
+      return false;
+    }
+    this.pendingVncTrustEndpoint = {
+      ownerType: owner.ownerType,
+      ownerId: owner.ownerId,
+      userId: owner.userId,
+      storeIdentityFingerprint: owner.storeIdentityFingerprint,
+      endpointBindingFingerprint: owner.endpointBindingFingerprint
+    };
+    return true;
   }
 
   private openPendingVncCertificateTrust(): void {
@@ -2474,10 +2534,12 @@ export struct RustDeskRelayPage {
       VncCertificateTrustManagerSheet({
         pendingEndpoint: this.pendingVncTrustEndpoint,
         pendingFingerprintSha256: this.pendingVncTrustFingerprint,
+        canConfirmPending: (): boolean => this.canConfirmPendingVncTrust(),
         onClose: (): void => { this.closeSheet(); },
         onConfirmed: (): void => {
           this.pendingVncTrustEndpoint = null;
           this.pendingVncTrustFingerprint = '';
+          this.pendingVncTrustBinding = null;
           this.closeSheet();
         },
         onRecheck: (_trust: VncTrustView, _hostId: string): void => { this.closeSheet(); }
