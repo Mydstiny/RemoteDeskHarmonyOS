@@ -3,7 +3,7 @@
   "task": "rustdesk-complete-repair",
   "branch": "codex/rustdesk-complete-repair",
   "base": "34946adbc",
-  "head": "c31607c",
+  "head": "75c7da0",
   "phase": "vnc-v3-stage-f-gateway-deep-checks",
   "status": "active",
   "next": "Stage F checkpoint c31607c wires the bounded native mode12/TLS/RFB deep-check Promise and cancellation into the VNC Gateway page; await the single existing reviewer before Stage G.",
