@@ -3,10 +3,10 @@
   "task": "rustdesk-complete-repair",
   "branch": "codex/rustdesk-complete-repair",
   "base": "34946adbc",
-  "head": "6ad115f",
+  "head": "f4f4760",
   "phase": "vnc-v3-stage-f-gateway-deep-checks",
   "status": "active",
-  "next": "Stage F checkpoint 6ad115f separates local TCP reachability from deep mode12/TLS/RFB health and adds native handoff fixtures; await the single existing reviewer before Stage G.",
+  "next": "Stage F checkpoint f4f4760 separates local TCP reachability from deep mode12/TLS/RFB health and proves banner-gated pairing writes; await the single existing reviewer before Stage G.",
   "blockers": [
     "hdc list targets and hdc shell return Connect server failed; no current hilog evidence.",
     "ohosTest@OhosTestCompileArkTS is not registered (00306054); ArkTS tests have compile/build evidence only.",
@@ -27,14 +27,14 @@
       "entry/src/test/List.test.ets",
       "entry/src/test/VncGatewayHealthPolicy.test.ets"
     ],
-    "reason": "Stage F VNC-only checkpoint 6ad115f adds fail-closed local Gateway health stages, keeps TCP reachability separate from deep protocol readiness, registers the policy suite in both runners, and covers mode12 banner/pairing/RFB handoff with loopback fixtures. Awaiting the single existing independent incremental review."
+    "reason": "Stage F VNC-only checkpoint f4f4760 adds fail-closed local Gateway health stages, keeps TCP reachability separate from deep protocol readiness, registers the policy suite in both runners, and proves banner-gated mode12 pairing/RFB handoff with loopback fixtures. Awaiting the single existing independent incremental review."
   },
   "lastVerification": {
-    "rdp_native_tests": "251-pass-0-fail-loopback-fixtures-host-socket-6ad115f-2026-08-03",
-    "default@OhosTestCompileArkTS": "pass-after-6ad115f-2026-08-03",
-    "assembleHap": "pass-after-6ad115f-2026-08-03",
+    "rdp_native_tests": "251-pass-0-fail-loopback-fixtures-host-socket-f4f4760-2026-08-03",
+    "default@OhosTestCompileArkTS": "pass-after-f4f4760-2026-08-03",
+    "assembleHap": "pass-after-f4f4760-2026-08-03",
     "ohosTest@OhosTestCompileArkTS": "blocked-task-00306054-2026-08-02",
-    "diffCheck": "pass-after-6ad115f-2026-08-03"
+    "diffCheck": "pass-after-f4f4760-2026-08-03"
   },
   "archives": [
     "docs/codex/archive/2026-08/README.md",

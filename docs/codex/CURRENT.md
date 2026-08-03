@@ -7,7 +7,7 @@ This file is the compact startup resume card. Historical checkpoints remain in
 
 - Task: `rustdesk-complete-repair` (active branch retained; current scope is VNC V3 only)
 - Branch: `codex/rustdesk-complete-repair`
-- Checkpoint: `6ad115f`, based on `main@34946adbc`; branch is ahead by 59 and not behind.
+- Checkpoint: `f4f4760`, based on `main@34946adbc`; branch is ahead by 61 and not behind.
 - Phase: VNC V3 stage F Gateway deep-check boundary. TCP reachability is local-only and explicitly not protocol readiness; deep mode12/TLS/RFB stages require an explicit native probe result.
 - Worktree: Stage F code and native loopback fixture are committed. Preserve unrelated user changes.
 
@@ -76,22 +76,23 @@ This file is the compact startup resume card. Historical checkpoints remain in
 - Stage E final review: `PASS` at `68f5253a` by the existing independent
   reviewer; no P0/P1/P2 findings. Remaining gaps are live device/ohosTest
   evidence and runtime tests for service rejection/cleanup rollback.
-- Stage F checkpoint `6ad115f` adds `VncGatewayHealthPolicy` with local-only
+- Stage F checkpoint `f4f4760` adds `VncGatewayHealthPolicy` with local-only
   `UNTESTED`/`TCP_REACHABLE`/TLS/banner/pairing/RFB stages, requires
   `deepCheckAttempted` before protocol claims, registers both test suites, and
   updates the Gateway TCP UI wording to state that a reachable port is not a
   verified protocol path. Native loopback fixtures cover fragmented mode12
   banner reads, exact 250-byte pairing, RFB handoff, and invalid-banner
-  fail-closed behavior; no native deep-test API is fabricated.
+  fail-closed behavior, and asserts invalid banners cause zero pairing bytes;
+  no native deep-test API is fabricated.
 - Keep every VNC caller fail-closed when the probe, Sheet lifecycle, owner
   binding, or expected-pin handoff is missing or stale.
 ## Verification
 
 - `rdp_native_tests`: 251 passed, 0 failed with loopback fixtures on
-  `6ad115f`, 2026-08-03 (sandbox-only runs cannot bind host sockets).
-- `default@OhosTestCompileArkTS`: passed after `6ad115f` on 2026-08-03.
-- `assembleHap`: passed after `6ad115f` on 2026-08-03.
-- `git diff --check`: passed after `6ad115f` on 2026-08-03.
+  `f4f4760`, 2026-08-03 (sandbox-only runs cannot bind host sockets).
+- `default@OhosTestCompileArkTS`: passed after `f4f4760` on 2026-08-03.
+- `assembleHap`: passed after `f4f4760` on 2026-08-03.
+- `git diff --check`: passed after `f4f4760` on 2026-08-03.
 - `ohosTest@OhosTestCompileArkTS`: unavailable; task is not registered
   (`00306054`). New ArkTS tests therefore have compile/build evidence only.
 ## Blockers
@@ -115,4 +116,4 @@ This file is the compact startup resume card. Historical checkpoints remain in
 
 - Machine state: `docs/codex/STATE.json`.
 - Receipts: `docs/codex/REVIEW_RECEIPTS.jsonl`.
-- `scripts/sync_workspace.sh status` should retain Stage E PASS and keep active VNC-only work at Stage F until review returns for `6ad115f`; reuse the existing reviewer.
+- `scripts/sync_workspace.sh status` should retain Stage E PASS and keep active VNC-only work at Stage F until review returns for `f4f4760`; reuse the existing reviewer.

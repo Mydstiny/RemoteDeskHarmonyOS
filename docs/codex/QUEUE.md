@@ -4,10 +4,11 @@ Updated: 2026-08-03 Asia/Shanghai
 
 ## Now
 
-- Stage F checkpoint `6ad115f` is awaiting the existing VNC-only reviewer:
+- Stage F checkpoint `f4f4760` is awaiting the existing VNC-only reviewer:
   TCP reachability is separated from deep mode12/TLS/RFB protocol readiness,
   both policy runners are registered, and native mode12 handoff fixtures cover
-  fragmented banner/250-byte pairing/RFB handoff and invalid-banner rejection.
+  fragmented banner/250-byte pairing/RFB handoff and invalid-banner zero-write
+  rejection.
 - Preserve stage A/B and C-first review receipts; keep probe/pin failures
   fail-closed.
 - Restore `hdc` connectivity and capture current VNC `hilog` when the device is
