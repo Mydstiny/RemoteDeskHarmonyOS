@@ -156,6 +156,7 @@ struct Worker {
     std::thread thread;
     std::shared_ptr<void> keepAlive;
     std::shared_ptr<std::atomic<bool>> done;
+    std::function<void()> afterJoin;
 };
 
 class Owner {
@@ -163,14 +164,16 @@ public:
     Owner() : thread_([this]() { run(); }) {}
 
     void enqueue(std::thread thread, std::shared_ptr<void> keepAlive,
-                 std::shared_ptr<std::atomic<bool>> done) {
+                 std::shared_ptr<std::atomic<bool>> done,
+                 std::function<void()> afterJoin = {}) {
         if (!thread.joinable()) {
             return;
         }
         {
             std::lock_guard<std::mutex> lock(mutex_);
             pending_.push_back(Worker {
-                std::move(thread), std::move(keepAlive), std::move(done)});
+                std::move(thread), std::move(keepAlive), std::move(done),
+                std::move(afterJoin)});
         }
         cv_.notify_one();
     }
@@ -236,6 +239,9 @@ private:
                 continue;
             }
             worker.thread.join();
+            if (worker.afterJoin) {
+                worker.afterJoin();
+            }
             worker.keepAlive.reset();
             {
                 std::lock_guard<std::mutex> lock(mutex_);
@@ -298,8 +304,10 @@ inline std::size_t remaining() {
 }
 
 inline void enqueue(std::thread thread, std::shared_ptr<void> keepAlive,
-                    std::shared_ptr<std::atomic<bool>> done) {
-    getOwner().enqueue(std::move(thread), std::move(keepAlive), std::move(done));
+                    std::shared_ptr<std::atomic<bool>> done,
+                    std::function<void()> afterJoin = {}) {
+    getOwner().enqueue(std::move(thread), std::move(keepAlive), std::move(done),
+                       std::move(afterJoin));
 }
 
 } // namespace RustDeskContinuityDeferred

@@ -15,10 +15,12 @@
 #define RUSTDESK_BRIDGE_H
 
 #include "extensions/protocol_adapter.h"
+#include "rustdesk_connection_continuity_executor.h"
 #include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <vector>
 
 /** Non-destructive RustDesk stream diagnostics returned to the NAPI layer. */
@@ -185,6 +187,7 @@ public:
     void sendClipboardData(const uint8_t* data, uint32_t len) override;
     std::string getClipboardText() override;
     bool isClipboardReceiveReady() override;
+    RustDeskContinuityQuiesceSnapshot continuityQuiesceSnapshot() const;
 
     // ---- 编码能力 ----
     bool supportsCodec(CodecType codec) override;
@@ -195,14 +198,46 @@ public:
     void setAudioCallback(AudioDataCallback callback) override;
     void setConnectionStateCallback(ConnectionStateCallback callback) override;
 
+#ifdef RDP_NATIVE_CALLBACK_TESTING
+    bool InvokeVideoCallbackForTesting(const uint8_t* data, size_t size,
+                                       int width, int height, int codec,
+                                       uint64_t timestamp, bool isKeyFrame,
+                                       int display, uint64_t generation,
+                                       uint64_t ownerToken);
+    bool InvokeTransportCallbackForTesting(int state, const char* errorClass,
+                                           uint64_t networkGeneration,
+                                           bool userInitiated, uint64_t generation,
+                                           uint64_t ownerToken);
+    void SetAttemptDequeuedHookForTesting(std::function<void()> hook);
+    void SetFirstFrameClaimHookForTesting(std::function<void()> hook);
+    void SetContinuityAttemptStageHookForTesting(std::function<void(int)> hook);
+    void SetContinuityConnectResultHookForTesting(
+        std::function<int(uint64_t, uint64_t)> hook);
+    void SetContinuityConfigForTesting(const ConnectionConfig& config);
+    uint32_t continuityConnectCallCountForTesting() const;
+    void ArmFirstGenerationFrameForTesting();
+#endif
+
     // ---- 扩展功能 ----
     bool supportsNatTraversal() override;
     bool supportsFileTransfer() override;
 
 private:
     struct Impl;
-    std::unique_ptr<Impl> impl_;
+    std::shared_ptr<Impl> impl_;
     RustDeskMode mode_;
+
+    std::optional<RustDeskConnectionContinuityExecutor::PreparedAttemptTicket>
+        prepareContinuityAttempt(
+            const RustDeskConnectionContinuityExecutor::AttemptTicket& source);
+    bool startContinuityAttempt(
+        const RustDeskConnectionContinuityExecutor::PreparedAttemptTicket& ticket);
+    int connectInternal(
+        const ConnectionConfig& cfg,
+        const RustDeskConnectionContinuityExecutor::PreparedAttemptTicket* continuityTicket);
+    void applyContinuityFastQuiesce();
+    void onContinuityMaintenance(uint64_t nowMs);
+    void disconnectImpl(bool cancelContinuity);
 
 #ifdef RUSTDESK_USE_REAL_CORE
     static void onFfiFrame(const void* frame, void* userData);
