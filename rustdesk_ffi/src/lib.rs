@@ -19,7 +19,7 @@ use std::ptr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 pub mod connector;
 pub mod crypto;
@@ -1063,9 +1063,12 @@ struct AudioPipeline {
     sample_rate: u32,
     channels: u32,
     format_received: bool,
+    pending_frames: VecDeque<Vec<u8>>,
     frames_pushed: u64,
     frames_dropped: u64,
 }
+
+const MAX_PENDING_AUDIO_FRAMES: usize = 16;
 
 impl AudioPipeline {
     fn new() -> Self {
@@ -1074,6 +1077,7 @@ impl AudioPipeline {
             sample_rate: 48000,
             channels: 2,
             format_received: false,
+            pending_frames: VecDeque::with_capacity(MAX_PENDING_AUDIO_FRAMES),
             frames_pushed: 0,
             frames_dropped: 0,
         }
@@ -1105,10 +1109,26 @@ impl AudioPipeline {
         self.worker = AudioWorker::start(sr, ch, on_audio, user_data);
         self.format_received = self.worker.is_some();
         if self.format_received {
+            // RustDesk can deliver audio_frame before misc.audio_format on a
+            // cold stream. Replay the bounded pre-format queue in order once
+            // the decoder has the real sample format.
+            let pending = std::mem::take(&mut self.pending_frames);
+            if let Some(ref worker) = self.worker {
+                for frame in pending {
+                    if worker.push(&frame) {
+                        self.frames_pushed += 1;
+                    } else {
+                        self.frames_dropped += 1;
+                    }
+                }
+            }
             eprintln!(
-                "[RustDesk-FFI] audio pipeline {}Hz {}ch worker=started",
-                sr, ch
+                "[RustDesk-FFI] audio pipeline {}Hz {}ch worker=started pending_replayed={}",
+                sr, ch, self.frames_pushed
             );
+        } else {
+            // Keep the frames until a later format notification can start the
+            // worker; this is still bounded by MAX_PENDING_AUDIO_FRAMES.
         }
     }
 
@@ -1118,10 +1138,18 @@ impl AudioPipeline {
             return;
         }
         let Some(ref worker) = self.worker else {
-            if self.frames_dropped == 0 {
-                eprintln!("[RustDesk-FFI] audio push: no worker yet, dropping frame");
+            if self.pending_frames.len() >= MAX_PENDING_AUDIO_FRAMES {
+                self.pending_frames.pop_front();
+                self.frames_dropped += 1;
+                if self.frames_dropped <= 5 || self.frames_dropped % 100 == 0 {
+                    eprintln!(
+                        "[RustDesk-FFI] audio format pending: bounded queue dropped={} buffered={}",
+                        self.frames_dropped,
+                        self.pending_frames.len()
+                    );
+                }
             }
-            self.frames_dropped += 1;
+            self.pending_frames.push_back(data.to_vec());
             return;
         };
         if worker.push(data) {
@@ -1143,6 +1171,7 @@ impl AudioPipeline {
             w.stop();
         }
         self.worker = None;
+        self.pending_frames.clear();
     }
 }
 

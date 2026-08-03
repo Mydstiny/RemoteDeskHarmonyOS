@@ -839,6 +839,7 @@ struct RemoteDesktop {
   private restoreInProgress: boolean = false;
   private restoreOperationId: number = 0;
   private pipRestoreRetryTimer: number = -1;
+  private backgroundRenderRetryTimer: number = -1;
   private nativeDisconnectPending: boolean = false;
   private nativeDisconnectRetryTimer: number = -1;
   private pipContentSizeRefreshTimers: number[] = [];
@@ -9082,6 +9083,7 @@ struct RemoteDesktop {
     // the user has already disconnected or left the app.
     this.restoreInProgress = false;
     this.clearPipRestoreRetry();
+    this.clearBackgroundRenderRetry();
     this.restoreOperationId += 1;
     this.clearPipContentSizeRefresh();
     if (this.cleanupStarted && !this.renderPreservedInPip && !this.bgRestorePending) {
@@ -9270,8 +9272,15 @@ struct RemoteDesktop {
    */
   private releasePipRenderer(reason: string): void {
     this.releaseCanvasPinchInput('pip-renderer-release-' + reason);
-    const ownedHandle: number = this.pipRendererHandle > 0
-      ? this.pipRendererHandle : this.rendererHandle;
+    // A page renderer is never a PIP fallback. If the PIP owner was already
+    // cleared by a stale lifecycle callback, leave the current page renderer
+    // untouched and only clear the bookkeeping flag.
+    const ownedHandle: number = this.pipRendererHandle;
+    if (ownedHandle <= 0) {
+      this.renderPreservedInPip = false;
+      hilog.warn(RD_DOMAIN, RD_TAG, 'releasePipRenderer: no PIP-owned renderer reason=' + reason);
+      return;
+    }
     const currentHandle: number = this.rendererHandle;
     if (!this.isRdpRemoteSession() && this.decoderHandle > 0 &&
       (this.renderPreservedInPip || ownedHandle === currentHandle)) {
@@ -9405,8 +9414,8 @@ struct RemoteDesktop {
   }
 
   private handlePipSurfaceChanged(surface: RemoteSessionPipSurface): void {
-    if ((!this.renderPreservedInPip && this.pipRendererHandle <= 0) ||
-      this.restoreInProgress || this.rendererHandle <= 0 ||
+    if (this.pipRendererHandle <= 0 || this.rendererHandle !== this.pipRendererHandle ||
+      this.restoreInProgress ||
       surface.surfaceId.length === 0 || surface.surfaceWidth <= 0 || surface.surfaceHeight <= 0) {
       return;
     }
@@ -9419,9 +9428,7 @@ struct RemoteDesktop {
           surface.surfaceId);
         return;
       }
-      const renderer: number = this.pipRendererHandle > 0
-        ? this.pipRendererHandle : this.rendererHandle;
-      this.loader.resizeRenderer(renderer, surface.surfaceWidth, surface.surfaceHeight);
+      this.loader.resizeRenderer(this.pipRendererHandle, surface.surfaceWidth, surface.surfaceHeight);
       this.invalidateRendererViewportCache();
       hilog.info(RD_DOMAIN, RD_TAG, 'handlePipSurfaceChanged: renderer=' +
         this.rendererHandle.toString() + ' surface=' + surface.surfaceWidth.toString() + 'x' +
@@ -9646,8 +9653,8 @@ struct RemoteDesktop {
   }
 
   private handleRemoteSessionPipStopped(reason: string): void {
-    const ownsPipRenderer: boolean = this.renderPreservedInPip || this.pipRendererHandle > 0;
-    if (!ownsPipRenderer) {
+    if (this.pipRendererHandle <= 0) {
+      this.renderPreservedInPip = false;
       return;
     }
     // Foreground restore owns the renderer teardown. A terminal PIP callback
@@ -9671,8 +9678,7 @@ struct RemoteDesktop {
       this.releasePipRenderer('pip-stopped-' + reason);
       return;
     }
-    const rendererHandleBeforeDetach: number = this.pipRendererHandle > 0
-      ? this.pipRendererHandle : this.rendererHandle;
+    const rendererHandleBeforeDetach: number = this.pipRendererHandle;
     this.releasePipRenderer('pip-stopped-background');
     if (shouldInvalidateSurfaceAfterBackgroundDetach(rendererHandleBeforeDetach, this.sessionId)) {
       this.surfaceReady = false;
@@ -9693,6 +9699,71 @@ struct RemoteDesktop {
       clearTimeout(this.pipRestoreRetryTimer);
       this.pipRestoreRetryTimer = -1;
     }
+  }
+
+  private clearBackgroundRenderRetry(): void {
+    if (this.backgroundRenderRetryTimer >= 0) {
+      clearTimeout(this.backgroundRenderRetryTimer);
+      this.backgroundRenderRetryTimer = -1;
+    }
+  }
+
+  private releaseFailedBackgroundRenderer(reason: string): void {
+    this.clearRestoreFrameRefreshPump();
+    const failedRenderer: number = this.rendererHandle > 0
+      ? this.rendererHandle : this.loader.getRendererHandle();
+    if (this.decoderHandle > 0) {
+      const detached: boolean = this.loader.detachVideoPipelineForBackground();
+      hilog.info(RD_DOMAIN, RD_TAG,
+        'releaseFailedBackgroundRenderer: decoder detached=' + detached.toString() +
+        ' reason=' + reason);
+    }
+    if (failedRenderer > 0) {
+      if (this.nativeHandles.isRenderAttached() && this.rendererHandle === failedRenderer) {
+        this.nativeHandles.detachRenderForBackground();
+      } else {
+        this.loader.destroyRendererHandle(failedRenderer);
+      }
+    }
+    if (this.rendererHandle === failedRenderer) {
+      this.rendererHandle = -1;
+    }
+    this.invalidateRendererViewportCache();
+    if (this.pendingHost !== null && this.sessionId > 0) {
+      this.activeSessionRegistry.markRenderDetached();
+    }
+  }
+
+  private scheduleBackgroundRenderRetry(sessionId: number, attemptId: number,
+    reason: string): void {
+    if (this.sessionId !== sessionId || this.connectAttemptId !== attemptId || this.cleanupStarted) {
+      return;
+    }
+    this.releaseFailedBackgroundRenderer(reason);
+    this.bgRestorePending = true;
+    this.connectStarted = false;
+    this.connecting = false;
+    this.connectionProgressMessage = 'RustDesk: 正在重新绑定远程画面';
+    this.surfaceReady = false;
+    this.latestSurfaceId = '';
+    AppStorage.setOrCreate<boolean>('remoteDesktopBgFlag', false);
+    if (this.backgroundRenderRetryTimer >= 0) {
+      return;
+    }
+    this.backgroundRenderRetryTimer = setTimeout((): void => {
+      this.backgroundRenderRetryTimer = -1;
+      if (this.sessionId !== sessionId || this.connectAttemptId !== attemptId ||
+        this.cleanupStarted || !this.bgRestorePending || this.restoreInProgress) {
+        return;
+      }
+      if (!this.surfaceReady) {
+        this.pollSurfaceId(0);
+        return;
+      }
+      this.doBackgroundRestoreRender();
+    }, 300);
+    hilog.warn(RD_DOMAIN, RD_TAG,
+      'scheduleBackgroundRenderRetry: preserving session reason=' + reason);
   }
 
   private schedulePipRestoreRetry(operationId: number): void {
@@ -9717,6 +9788,7 @@ struct RemoteDesktop {
       return;
     }
     this.clearPipRestoreRetry();
+    this.clearBackgroundRenderRetry();
     this.restoreInProgress = true;
     const operationId: number = ++this.restoreOperationId;
     this.cleanupStarted = false; // 允许重新 attach
@@ -9795,6 +9867,7 @@ struct RemoteDesktop {
       hilog.warn(RD_DOMAIN, RD_TAG, 'doBackgroundRestoreRender: cleanupStarted=true, aborting');
       return;
     }
+    this.clearBackgroundRenderRetry();
     const restoreSessionId: number = this.sessionId;
     const restoreAttemptId: number = this.connectAttemptId;
     const restoringRustDesk: boolean = this.pendingHost !== null &&
@@ -9854,10 +9927,7 @@ struct RemoteDesktop {
           restoreSessionId, RUSTDESK_FIRST_FRAME_TIMEOUT_MS, restoreAttemptId);
         if (!firstFrameReady) {
           if (this.sessionId === restoreSessionId && this.connectAttemptId === restoreAttemptId) {
-            this.connecting = false;
-            this.connectStarted = false;
-            this.connectionProgressMessage = '';
-            AppStorage.setOrCreate<boolean>('remoteDesktopBgFlag', false);
+            throw new Error('RustDesk 后台恢复首帧未显示');
           }
           return;
         }
@@ -9866,6 +9936,7 @@ struct RemoteDesktop {
         }
         this.nativeHandles.attachConnectedSession(this.sessionId, RemoteProtocol.rustdesk);
         this.connected = true;
+        this.connectStarted = false;
         this.connecting = false;
         this.connectionProgressMessage = '';
         this.applyRustDeskOrientationPolicy('background-preauthenticated').catch((err: Error): void => {
@@ -9927,10 +9998,7 @@ struct RemoteDesktop {
             restoreSessionId, RUSTDESK_FIRST_FRAME_TIMEOUT_MS, restoreAttemptId);
           if (!firstFrameReady) {
             if (this.sessionId === restoreSessionId && this.connectAttemptId === restoreAttemptId) {
-              this.connecting = false;
-              this.connectStarted = false;
-              this.connectionProgressMessage = '';
-              AppStorage.setOrCreate<boolean>('remoteDesktopBgFlag', false);
+              throw new Error('RustDesk 后台恢复首帧未显示');
             }
             return;
           }
@@ -9941,6 +10009,7 @@ struct RemoteDesktop {
 
         // 恢复状态
         this.connected = true;
+        this.connectStarted = false;
         this.connecting = false;
         this.connectionProgressMessage = '';
         this.applyRustDeskOrientationPolicy('background-restore').catch((err: Error): void => {
@@ -9970,12 +10039,12 @@ struct RemoteDesktop {
       } else {
         hilog.error(RD_DOMAIN, RD_TAG, 'doBackgroundRestoreRender: reattachRenderForForeground failed code=' +
           result.code + ' msg=' + result.message);
-        // 重新初始化渲染器失败 — 回退到完全断连
-        this.disconnectAndCleanup('bg-restore-render-failed');
+        this.scheduleBackgroundRenderRetry(restoreSessionId, restoreAttemptId,
+          'renderer-failed-' + result.code);
       }
     } catch (err) {
       hilog.error(RD_DOMAIN, RD_TAG, 'doBackgroundRestoreRender: exception ' + JSON.stringify(err));
-      this.disconnectAndCleanup('bg-restore-exception');
+      this.scheduleBackgroundRenderRetry(restoreSessionId, restoreAttemptId, 'restore-exception');
     }
     // 清除后台标志
     AppStorage.setOrCreate<boolean>('remoteDesktopBgFlag', false);

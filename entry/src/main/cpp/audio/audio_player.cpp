@@ -946,7 +946,11 @@ int AudioPlayerNapi::DispatchActiveNative(
     int64_t handle = 0;
     {
         std::lock_guard<std::mutex> lock(g_activeAudioMutex);
-        if (g_activeAudioOwner != owner || g_activeAudioHandle <= 0) {
+        // RustDesk audio is intentionally lazy: SetActiveSessionOwner installs
+        // the session identity before the first PCM arrives, while the player
+        // handle is still zero. Reject only a stale owner and let the normal
+        // create/install path handle that first frame.
+        if (g_activeAudioOwner != owner) {
             return -1;
         }
         handle = g_activeAudioHandle;
