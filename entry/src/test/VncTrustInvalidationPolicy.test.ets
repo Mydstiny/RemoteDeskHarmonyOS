@@ -25,6 +25,7 @@ class MemoryVncTrustPreferenceAdapter implements VncTrustPreferenceAdapter {
   marker: string = '';
   journal: string = '';
   failWrite: boolean = false;
+  failJournalWrite: boolean = false;
   failMarkerWrite: boolean = false;
   failRemove: boolean = false;
   removeCount: number = 0;
@@ -37,6 +38,7 @@ class MemoryVncTrustPreferenceAdapter implements VncTrustPreferenceAdapter {
   write(_context: common.Context, _storeName: string, key: string, value: string): boolean {
     if (this.failWrite) { return false; }
     if (key.indexOf('InvalidationJournal') >= 0) {
+      if (this.failJournalWrite) { return false; }
       this.journal = value;
     } else {
       if (this.failMarkerWrite) { return false; }
@@ -182,6 +184,20 @@ export default function vncTrustInvalidationPolicyTest(): void {
       expect(adapter.marker).assertEqual('[]');
       expect(adapter.journal).assertEqual('');
       expect(vncTrustMarkerLoadState(adapter.marker, adapter.journal).failClosed).assertFalse();
+      setVncTrustPreferenceAdapterForTest(null);
+    });
+
+    it('clears_markers_when_recovery_journal_first_write_fails_and_restarts_clean', 0, (): void => {
+      const adapter = new MemoryVncTrustPreferenceAdapter();
+      adapter.marker = JSON.stringify(['stale-marker']);
+      adapter.failJournalWrite = true;
+      setVncTrustPreferenceAdapterForTest(adapter);
+      new VncTrustService().clearLocalConfirmationState({} as common.Context);
+      expect(adapter.marker).assertEqual('[]');
+      expect(adapter.journal).assertEqual('');
+      const restart = vncTrustMarkerLoadState(adapter.marker, adapter.journal);
+      expect(restart.failClosed).assertFalse();
+      expect(restart.markers.length).assertEqual(0);
       setVncTrustPreferenceAdapterForTest(null);
     });
 

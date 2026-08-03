@@ -288,11 +288,13 @@ export class VncTrustService {
     this.locallyConfirmed = [];
     // Write a recovery sentinel before clearing markers. If marker persistence
     // fails, the sentinel must survive so a restart cannot reload old trust.
-    const journalWritten: boolean = this.writeRecoveryJournal();
-    const markersCleared: boolean = journalWritten && this.persistLocalConfirmations(true);
-    const journalCleared: boolean = journalWritten && markersCleared &&
-      this.clearInvalidationJournal(true);
-    this.localConfirmationPersistenceHealthy = journalWritten && markersCleared && journalCleared;
+    this.writeRecoveryJournal();
+    // A journal write can fail while the marker store remains writable. Still
+    // clear the marker so a restart cannot recover stale trust from an empty
+    // journal; the final health decision is based on the durable end state.
+    const markersCleared: boolean = this.persistLocalConfirmations(true);
+    const journalCleared: boolean = markersCleared && this.clearInvalidationJournal(true);
+    this.localConfirmationPersistenceHealthy = markersCleared && journalCleared;
     this.emitChange();
   }
 
