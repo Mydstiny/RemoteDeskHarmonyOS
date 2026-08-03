@@ -286,12 +286,13 @@ export class VncTrustService {
     this.context = context;
     this.userId = this.currentUserId();
     this.locallyConfirmed = [];
-    // A reset is the explicit recovery path after a failed Preferences write.
-    // Bypass the normal healthy-state admission gate so stale markers can be
-    // removed and the service can re-enter a known fail-closed state.
-    const markersCleared: boolean = this.persistLocalConfirmations(true);
-    const journalCleared: boolean = this.clearInvalidationJournal(true);
-    this.localConfirmationPersistenceHealthy = markersCleared && journalCleared;
+    // Write a recovery sentinel before clearing markers. If marker persistence
+    // fails, the sentinel must survive so a restart cannot reload old trust.
+    const journalWritten: boolean = this.writeRecoveryJournal();
+    const markersCleared: boolean = journalWritten && this.persistLocalConfirmations(true);
+    const journalCleared: boolean = journalWritten && markersCleared &&
+      this.clearInvalidationJournal(true);
+    this.localConfirmationPersistenceHealthy = journalWritten && markersCleared && journalCleared;
     this.emitChange();
   }
 
@@ -699,6 +700,23 @@ export class VncTrustService {
     }
     const journal: string = JSON.stringify({
       userId, storeIdentityFingerprint, ownerType, ownerId, endpointBindingFingerprint
+    });
+    const ok: boolean = vncTrustPreferenceAdapter.write(
+      this.context, TRUST_PREFS_NAME, LOCAL_TRUST_INVALIDATION_JOURNAL_KEY, journal);
+    if (!ok) { this.localConfirmationPersistenceHealthy = false; }
+    return ok;
+  }
+
+  /** Recovery sentinel used before an explicit crypto-reset marker clear. */
+  private writeRecoveryJournal(): boolean {
+    if (this.context === null) {
+      this.localConfirmationPersistenceHealthy = false;
+      return false;
+    }
+    const journal: string = JSON.stringify({
+      recovery: true,
+      userId: this.currentUserId(),
+      storeIdentityFingerprint: this.currentStoreIdentityFingerprint()
     });
     const ok: boolean = vncTrustPreferenceAdapter.write(
       this.context, TRUST_PREFS_NAME, LOCAL_TRUST_INVALIDATION_JOURNAL_KEY, journal);

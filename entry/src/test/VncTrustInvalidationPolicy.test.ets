@@ -1,4 +1,5 @@
 import { describe, it, expect } from '@ohos/hypium';
+import { common } from '@kit.AbilityKit';
 import {
   removeVncTrustMarkersForEndpoint,
   removeVncTrustMarkersForOwner,
@@ -8,11 +9,49 @@ import {
   vncTrustMarkerLoadState,
   vncTrustPersistenceCommitState
 } from '../main/ets/services/VncTrustInvalidationPolicy';
+import {
+  VncTrustPreferenceAdapter,
+  VncTrustPreferenceRead,
+  VncTrustService,
+  setVncTrustPreferenceAdapterForTest
+} from '../main/ets/services/VncTrustService';
 import { VncGatewayValues, VncHostValues } from '../main/ets/services/VncModelPolicy';
 
 const STORE: string = 'a'.repeat(64);
 const BINDING: string = 'b'.repeat(64);
 const ROTATED: string = 'c'.repeat(64);
+
+class MemoryVncTrustPreferenceAdapter implements VncTrustPreferenceAdapter {
+  marker: string = '';
+  journal: string = '';
+  failWrite: boolean = false;
+  failMarkerWrite: boolean = false;
+  failRemove: boolean = false;
+  removeCount: number = 0;
+
+  read(_context: common.Context, _storeName: string, key: string): VncTrustPreferenceRead {
+    return key.indexOf('InvalidationJournal') >= 0
+      ? { ok: true, value: this.journal } : { ok: true, value: this.marker };
+  }
+
+  write(_context: common.Context, _storeName: string, key: string, value: string): boolean {
+    if (this.failWrite) { return false; }
+    if (key.indexOf('InvalidationJournal') >= 0) {
+      this.journal = value;
+    } else {
+      if (this.failMarkerWrite) { return false; }
+      this.marker = value;
+    }
+    return true;
+  }
+
+  remove(_context: common.Context, _storeName: string, key: string): boolean {
+    this.removeCount++;
+    if (this.failRemove) { return false; }
+    if (key.indexOf('InvalidationJournal') >= 0) { this.journal = ''; }
+    return true;
+  }
+}
 
 function host(): VncHostValues {
   return {
@@ -113,6 +152,37 @@ export default function vncTrustInvalidationPolicyTest(): void {
       expect(clearFailure.failClosed).assertTrue();
       expect(clearFailure.restorePrevious).assertFalse();
       expect(vncTrustMarkerLoadState('{malformed', '').failClosed).assertTrue();
+    });
+
+    it('keeps_recovery_journal_when_marker_clear_fails_and_fails_closed_after_restart', 0, (): void => {
+      const adapter = new MemoryVncTrustPreferenceAdapter();
+      adapter.marker = JSON.stringify(['stale-marker']);
+      adapter.journal = '{"ownerType":"host","ownerId":"host-1"}';
+      adapter.failMarkerWrite = true;
+      setVncTrustPreferenceAdapterForTest(adapter);
+      new VncTrustService().clearLocalConfirmationState({} as common.Context);
+      expect(adapter.removeCount).assertEqual(0);
+      expect(vncTrustMarkerLoadState(adapter.marker, adapter.journal).failClosed).assertTrue();
+      setVncTrustPreferenceAdapterForTest(null);
+    });
+
+    it('keeps_recovery_journal_when_journal_clear_fails_and_clears_both_on_retry', 0, (): void => {
+      const adapter = new MemoryVncTrustPreferenceAdapter();
+      adapter.marker = JSON.stringify(['stale-marker']);
+      adapter.journal = '{"ownerType":"gateway","ownerId":"gateway-1"}';
+      adapter.failRemove = true;
+      setVncTrustPreferenceAdapterForTest(adapter);
+      const service = new VncTrustService();
+      service.clearLocalConfirmationState({} as common.Context);
+      expect(adapter.marker).assertEqual('[]');
+      expect(adapter.journal.length > 0).assertTrue();
+      expect(vncTrustMarkerLoadState(adapter.marker, adapter.journal).failClosed).assertTrue();
+      adapter.failRemove = false;
+      service.clearLocalConfirmationState({} as common.Context);
+      expect(adapter.marker).assertEqual('[]');
+      expect(adapter.journal).assertEqual('');
+      expect(vncTrustMarkerLoadState(adapter.marker, adapter.journal).failClosed).assertFalse();
+      setVncTrustPreferenceAdapterForTest(null);
     });
 
     it('changes_direct_host_identity_but_not_repeater_target', 0, (): void => {
