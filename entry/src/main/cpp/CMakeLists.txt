@@ -187,6 +187,7 @@ if(RDP_BUILD_TESTS)
         test/rdp_gl_upload_gate_test.cpp
         test/rdp_graphics_lifecycle_test.cpp
         test/rdp_certificate_policy_test.cpp
+        test/rdp_negotiation_parser_test.cpp
         test/rdp_auth_identity_policy_test.cpp
         test/rdp_auth_mode_policy_test.cpp
         test/rdp_performance_policy_test.cpp

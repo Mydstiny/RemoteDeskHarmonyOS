@@ -22,6 +22,7 @@
 #include "rdp_file_clipboard_bridge.h"
 #include "rdp_graphics_lifecycle.h"
 #include "rdp_keymap.h"
+#include "rdp_negotiation_parser.h"
 #include "rdp_performance_policy.h"
 #include "rdp_redraw_notifier.h"
 #include "rdp_input_queue.h"
@@ -58,6 +59,7 @@
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
+#include <vector>
 
 #undef LOG_DOMAIN
 #undef LOG_TAG
@@ -182,6 +184,42 @@ RdpCertificateInfo makeProbeError(const std::string& host, int port, int code,
     return info;
 }
 
+std::string openSslErrorStack() {
+    std::ostringstream details;
+    bool first = true;
+    for (unsigned long error = ERR_get_error(); error != 0; error = ERR_get_error()) {
+        char buffer[256] = {0};
+        ERR_error_string_n(error, buffer, sizeof(buffer));
+        if (!first) {
+            details << "; ";
+        }
+        details << buffer;
+        first = false;
+    }
+    return details.str();
+}
+
+const char* sslErrorName(int sslError) {
+    switch (sslError) {
+        case SSL_ERROR_NONE:
+            return "SSL_ERROR_NONE";
+        case SSL_ERROR_WANT_READ:
+            return "SSL_ERROR_WANT_READ";
+        case SSL_ERROR_WANT_WRITE:
+            return "SSL_ERROR_WANT_WRITE";
+        case SSL_ERROR_WANT_X509_LOOKUP:
+            return "SSL_ERROR_WANT_X509_LOOKUP";
+        case SSL_ERROR_SYSCALL:
+            return "SSL_ERROR_SYSCALL";
+        case SSL_ERROR_SSL:
+            return "SSL_ERROR_SSL";
+        case SSL_ERROR_ZERO_RETURN:
+            return "SSL_ERROR_ZERO_RETURN";
+        default:
+            return "SSL_ERROR_UNKNOWN";
+    }
+}
+
 int connectWithTimeout(int fd, const sockaddr* addr, socklen_t addrLen, int timeoutMs) {
     const int oldFlags = fcntl(fd, F_GETFL, 0);
     if (oldFlags < 0) {
@@ -230,6 +268,63 @@ bool sendAll(int fd, const uint8_t* data, size_t size) {
             return false;
         }
         sent += static_cast<size_t>(n);
+    }
+    return true;
+}
+
+bool waitForReadableUntil(int fd, std::chrono::steady_clock::time_point deadline,
+                          int& errorCode) {
+    for (;;) {
+        const auto now = std::chrono::steady_clock::now();
+        if (now >= deadline) {
+            errorCode = ETIMEDOUT;
+            return false;
+        }
+        const auto remainingMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+            deadline - now).count();
+        timeval timeout {};
+        timeout.tv_sec = static_cast<long>(remainingMs / 1000);
+        timeout.tv_usec = static_cast<long>((remainingMs % 1000) * 1000);
+        fd_set readSet;
+        FD_ZERO(&readSet);
+        FD_SET(fd, &readSet);
+        const int result = select(fd + 1, &readSet, nullptr, nullptr, &timeout);
+        if (result > 0) {
+            return true;
+        }
+        if (result == 0) {
+            errorCode = ETIMEDOUT;
+            return false;
+        }
+        if (errno != EINTR) {
+            errorCode = errno;
+            return false;
+        }
+    }
+}
+
+bool recvExactWithDeadline(int fd, uint8_t* data, size_t size, int timeoutMs,
+                           int& errorCode) {
+    const auto deadline = std::chrono::steady_clock::now() +
+        std::chrono::milliseconds(timeoutMs);
+    size_t received = 0;
+    while (received < size) {
+        if (!waitForReadableUntil(fd, deadline, errorCode)) {
+            return false;
+        }
+        const ssize_t count = recv(fd, data + received, size - received, 0);
+        if (count > 0) {
+            received += static_cast<size_t>(count);
+            continue;
+        }
+        if (count == 0) {
+            errorCode = ECONNRESET;
+            return false;
+        }
+        if (errno != EINTR) {
+            errorCode = errno;
+            return false;
+        }
     }
     return true;
 }
@@ -303,14 +398,94 @@ RdpCertificateInfo probeRdpCertificateOverTls(const std::string& host, int port,
     OH_LOG_INFO(LOG_APP, "[RDP-CERT] negotiation request sent host=%{public}s:%{public}d",
                 logHost.c_str(), effectivePort);
 
-    uint8_t response[64] = {0};
-    const ssize_t received = recv(fd, response, sizeof(response), 0);
-    if (received < 11 || response[0] != 0x03) {
+    constexpr int kNegotiationReadTimeoutMs = 8000;
+    RdpNegotiation::RdpTpktAccumulator accumulator;
+    uint8_t tpktHeader[RdpNegotiation::RdpTpktAccumulator::kHeaderSize] = {0};
+    int readError = 0;
+    if (!recvExactWithDeadline(fd, tpktHeader, sizeof(tpktHeader),
+                               kNegotiationReadTimeoutMs, readError) ||
+        !accumulator.append(tpktHeader, sizeof(tpktHeader))) {
         close(fd);
-        return makeProbeError(host, effectivePort, -14, "RDP negotiation response is invalid");
+        std::ostringstream message;
+        message << "Unable to read RDP negotiation response";
+        if (readError != 0) {
+            message << " (errno=" << readError << ":" << std::strerror(readError) << ")";
+        }
+        return makeProbeError(host, effectivePort, -14, message.str());
     }
-    OH_LOG_INFO(LOG_APP, "[RDP-CERT] negotiation response received host=%{public}s:%{public}d bytes=%{public}zd",
-                logHost.c_str(), effectivePort, received);
+
+    const size_t expectedLength = accumulator.expectedLength();
+    const auto headerResult = accumulator.parse();
+    if (headerResult.status == RdpNegotiation::ParseStatus::Invalid ||
+        expectedLength < RdpNegotiation::RdpTpktAccumulator::kHeaderSize) {
+        close(fd);
+        return makeProbeError(host, effectivePort, -21,
+                              "RDP negotiation TPKT header is invalid: " + headerResult.error);
+    }
+    if (expectedLength > RdpNegotiation::RdpTpktAccumulator::kHeaderSize) {
+        std::vector<uint8_t> body(expectedLength -
+                                  RdpNegotiation::RdpTpktAccumulator::kHeaderSize);
+        if (!recvExactWithDeadline(fd, body.data(), body.size(),
+                                   kNegotiationReadTimeoutMs, readError) ||
+            !accumulator.append(body.data(), body.size())) {
+            close(fd);
+            std::ostringstream message;
+            message << "Unable to read complete RDP negotiation response";
+            if (readError != 0) {
+                message << " (errno=" << readError << ":" << std::strerror(readError) << ")";
+            }
+            return makeProbeError(host, effectivePort, -14, message.str());
+        }
+    }
+
+    const auto negotiation = accumulator.parse();
+    if (negotiation.status != RdpNegotiation::ParseStatus::Complete) {
+        close(fd);
+        return makeProbeError(host, effectivePort, -21,
+                              "RDP negotiation response is invalid: " + negotiation.error);
+    }
+    OH_LOG_INFO(LOG_APP,
+                "[RDP-CERT] negotiation response received host=%{public}s:%{public}d bytes=%{public}zu kind=%{public}d",
+                logHost.c_str(), effectivePort, accumulator.size(),
+                static_cast<int>(negotiation.kind));
+
+    if (negotiation.kind == RdpNegotiation::ResponseKind::NoNegotiationData) {
+        close(fd);
+        return makeProbeError(
+            host, effectivePort, -18,
+            "RDP server selected Standard RDP Security; TLS certificate probe is unavailable");
+    }
+    if (negotiation.kind == RdpNegotiation::ResponseKind::NegotiationFailure) {
+        std::ostringstream message;
+        message << "RDP security negotiation failed: "
+                << RdpNegotiation::failureCodeName(negotiation.failureCode)
+                << " (0x" << std::hex << negotiation.failureCode << ")";
+        close(fd);
+        return makeProbeError(host, effectivePort, -19, message.str());
+    }
+    if (negotiation.kind != RdpNegotiation::ResponseKind::NegotiationResponse) {
+        close(fd);
+        return makeProbeError(host, effectivePort, -21,
+                              "RDP negotiation response has an unsupported type");
+    }
+    OH_LOG_INFO(LOG_APP,
+                "[RDP-CERT] selected security protocol host=%{public}s:%{public}d protocol=0x%{public}08X name=%{public}s",
+                logHost.c_str(), effectivePort, negotiation.selectedProtocol,
+                RdpNegotiation::selectedProtocolName(negotiation.selectedProtocol));
+    if (!RdpNegotiation::isTlsProtocol(negotiation.selectedProtocol)) {
+        std::ostringstream message;
+        if (negotiation.selectedProtocol == RdpNegotiation::kProtocolRdp) {
+            message << "RDP server selected Standard RDP Security; TLS certificate probe is unavailable";
+        } else {
+            message << "RDP server selected unsupported security protocol "
+                    << RdpNegotiation::selectedProtocolName(negotiation.selectedProtocol)
+                    << " (0x" << std::hex << negotiation.selectedProtocol << ")";
+        }
+        close(fd);
+        return makeProbeError(host, effectivePort,
+                              negotiation.selectedProtocol == RdpNegotiation::kProtocolRdp ? -18 : -20,
+                              message.str());
+    }
 
     SSL_CTX* sslCtx = SSL_CTX_new(TLS_client_method());
     if (!sslCtx) {
@@ -324,19 +499,57 @@ RdpCertificateInfo probeRdpCertificateOverTls(const std::string& host, int port,
         close(fd);
         return makeProbeError(host, effectivePort, -16, "Unable to create TLS session");
     }
-    SSL_set_fd(ssl, fd);
-    if (!verifyName.empty()) {
-        SSL_set_tlsext_host_name(ssl, verifyName.c_str());
-    }
-    if (SSL_connect(ssl) != 1) {
-        const unsigned long err = ERR_get_error();
+    ERR_clear_error();
+    errno = 0;
+    if (SSL_set_fd(ssl, fd) != 1) {
+        const std::string opensslDetails = openSslErrorStack();
         SSL_free(ssl);
         SSL_CTX_free(sslCtx);
         close(fd);
-        OH_LOG_WARN(LOG_APP, "[RDP-CERT] tls handshake failed host=%{public}s:%{public}d sslErr=%{public}lu",
-                    logHost.c_str(), effectivePort, err);
-        return makeProbeError(host, effectivePort, static_cast<int>(err),
-                              "RDP TLS handshake failed");
+        const std::string message = opensslDetails.empty()
+            ? "Unable to bind RDP TLS socket"
+            : "Unable to bind RDP TLS socket (openssl=" + opensslDetails + ")";
+        return makeProbeError(host, effectivePort, -23, message);
+    }
+    if (!verifyName.empty()) {
+        ERR_clear_error();
+        errno = 0;
+        if (SSL_set_tlsext_host_name(ssl, verifyName.c_str()) != 1) {
+            const std::string opensslDetails = openSslErrorStack();
+            SSL_free(ssl);
+            SSL_CTX_free(sslCtx);
+            close(fd);
+            const std::string message = opensslDetails.empty()
+                ? "Unable to set RDP TLS server name"
+                : "Unable to set RDP TLS server name (openssl=" + opensslDetails + ")";
+            return makeProbeError(host, effectivePort, -24, message);
+        }
+    }
+    ERR_clear_error();
+    errno = 0;
+    const int tlsResult = SSL_connect(ssl);
+    if (tlsResult != 1) {
+        const int sslError = SSL_get_error(ssl, tlsResult);
+        const int socketError = sslError == SSL_ERROR_SYSCALL ? errno : 0;
+        const std::string opensslDetails = openSslErrorStack();
+        std::ostringstream message;
+        message << "RDP TLS handshake failed (sslError=" << sslErrorName(sslError)
+                << ":" << sslError;
+        if (!opensslDetails.empty()) {
+            message << ", openssl=" << opensslDetails;
+        }
+        if (socketError != 0) {
+            message << ", errno=" << socketError << ":" << std::strerror(socketError);
+        }
+        message << ")";
+        SSL_free(ssl);
+        SSL_CTX_free(sslCtx);
+        close(fd);
+        OH_LOG_WARN(LOG_APP,
+                    "[RDP-CERT] tls handshake failed host=%{public}s:%{public}d sslError=%{public}d errno=%{public}d detail=%{public}s",
+                    logHost.c_str(), effectivePort, sslError, socketError,
+                    message.str().c_str());
+        return makeProbeError(host, effectivePort, -22, message.str());
     }
     OH_LOG_INFO(LOG_APP, "[RDP-CERT] tls handshake ok host=%{public}s:%{public}d",
                 logHost.c_str(), effectivePort);
