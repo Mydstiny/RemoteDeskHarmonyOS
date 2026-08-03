@@ -6,6 +6,9 @@ Updated: 2026-08-03 Asia/Shanghai
 
 - Checkpoint `6a4b35d1f` adds the mobile/Pad RustDesk keyboard-mouse edge rail,
   hide/wake handle, and serialized system-bar transitions.
+- Commit `410a6a0` restores the real 1.0.8 PIP order: foreground controller
+  preparation, system auto-start, presented-frame-gated renderer transfer, and
+  terminal-state foreground rebind.
 - Checkpoint `d29e754db` fixes PIP operation races, renderer/PIP session
   continuity, and temporary TOTP selection in RustDesk authentication.
 - Checkpoint `28f8608f6` fixes RustDesk transient network reconnect,
@@ -16,8 +19,9 @@ Updated: 2026-08-03 Asia/Shanghai
   transfer/rebind, including raw framebuffer refresh and presented-frame gating.
 - Preserve fail-closed VNC probe, trust, and Surface policies; no duplicate
   reviewer task is being created for the committed repair.
-- Restore `hdc` connectivity and capture current VNC `hilog` when the device is
-  available; do not convert static source evidence into device evidence.
+- Restore `hdc` connectivity and capture current RustDesk/VNC `hilog` when the
+  device is available; do not convert static source evidence into device
+  evidence.
 
 ## Next
 
