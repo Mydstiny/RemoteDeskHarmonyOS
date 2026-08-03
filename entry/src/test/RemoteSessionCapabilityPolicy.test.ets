@@ -60,5 +60,15 @@ export default function remoteSessionCapabilityPolicyTest(): void {
       expect(capabilities.clipboardReceive.enabled).assertFalse();
       expect(capabilities.fileUpload.enabled).assertFalse();
     });
+
+    it('rustdesk_should_expose_display_control_after_native_catalog_is_ready', 0, (): void => {
+      const capabilities = resolveSessionCapabilities({
+        protocol: 'rustdesk', connected: true, rdpDriveMounted: false, rdpClipboardReady: false, sftpConnected: false,
+        rustDeskVerifiedPeer: true, rustDeskInboundClipboard: true, rustDeskTransferConfirmed: true,
+        rustDeskDisplaySupported: true,
+        vncClipboardEnabled: false, vncClipboardReady: false, vncViewOnly: true
+      });
+      expect(capabilities.multiDisplay.enabled).assertTrue();
+    });
   });
 }

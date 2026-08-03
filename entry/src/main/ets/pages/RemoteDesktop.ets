@@ -619,7 +619,12 @@ const EMPTY_RUSTDESK_DISPLAY_CAPABILITIES: RustDeskDisplayCapabilities = {
   resolutions: [],
   displays: []
 };
+const EMPTY_RUSTDESK_DISPLAY_RESOLUTION: RustDeskDisplayResolution = {
+  width: 0,
+  height: 0
+};
 const RUSTDESK_DISPLAY_SWITCH_TIMEOUT_MS: number = 5000;
+const RUSTDESK_DISPLAY_RESOLUTION_TIMEOUT_MS: number = 5000;
 
 const EMPTY_LOCAL_RESOURCE_STATS: LocalResourceStats = {
   supported: false, cpuAvailable: false, cpuPercent: -1, memoryBytes: 0,
@@ -725,6 +730,7 @@ struct RemoteDesktop {
   @State vncCertificateWarning: string = '';
   @State rustDeskDiagnostics: RustDeskDiagnosticsSnapshot = EMPTY_RUSTDESK_DIAGNOSTICS;
   @State rustDeskDisplayCapabilities: RustDeskDisplayCapabilities = EMPTY_RUSTDESK_DISPLAY_CAPABILITIES;
+  @State rustDeskDisplayPendingResolution: RustDeskDisplayResolution = EMPTY_RUSTDESK_DISPLAY_RESOLUTION;
   @State showRustDeskDisplayResolutionMenu: boolean = false;
   @State localResourceStats: LocalResourceStats = EMPTY_LOCAL_RESOURCE_STATS;
   @State rustDeskAuthChoice: RustDeskAuthChoice = 'password';
@@ -1097,8 +1103,9 @@ struct RemoteDesktop {
   private remoteCursorPollTimer: number = -1;
   private rustDeskGeometrySyncTimer: number = -1;
   private vncGeometrySyncTimer: number = -1;
-  private rustDeskDisplaySwitchState: RustDeskDisplaySwitchState =
+  @State rustDeskDisplaySwitchState: RustDeskDisplaySwitchState =
     idleRustDeskDisplaySwitchState();
+  private rustDeskDisplayResolutionPendingSinceMs: number = 0;
   private lastBrowseModeBlockedToastMs: number = 0;
   private lastVncViewOnlyBlockedToastMs: number = 0;
 
@@ -2972,6 +2979,9 @@ struct RemoteDesktop {
   private currentSessionCapabilities(): RemoteSessionCapabilities {
     const clipboardReady: boolean = this.sessionId > 0 && this.connected &&
       this.loader.isSessionClipboardReady(this.sessionId);
+    const rustDeskDisplaySupported: boolean = this.rustDeskDisplayCapabilities.supported &&
+      (this.rustDeskDisplayCapabilities.displays.length > 0 ||
+        this.rustDeskDisplayCapabilities.resolutions.length > 0);
     return resolveSessionCapabilities({
       protocol: this.currentProtocolName(),
       connected: this.connected,
@@ -2981,6 +2991,7 @@ struct RemoteDesktop {
       rustDeskVerifiedPeer: this.connected && this.currentProtocolName() === 'rustdesk',
       rustDeskInboundClipboard: clipboardReady && this.currentProtocolName() === 'rustdesk',
       rustDeskTransferConfirmed: this.connected && this.currentProtocolName() === 'rustdesk',
+      rustDeskDisplaySupported,
       vncClipboardEnabled: this.isVncSession() &&
         this.pendingVncHost !== null && this.pendingVncHost.clipboardEnabled,
       vncClipboardReady: this.isVncSession() && clipboardReady,
@@ -3288,11 +3299,19 @@ struct RemoteDesktop {
 
   private changeRustDeskDisplayResolution(width: number, height: number): void {
     const capabilities: RustDeskDisplayCapabilities = this.rustDeskDisplayCapabilities;
-    if (!this.loader.changeRustDeskDisplayResolution(this.sessionId, capabilities.currentDisplay,
+    if (this.rustDeskDisplaySwitchState.inputBlocked || capabilities.inputBlocked) {
+      promptAction.showToast({ message: '显示器仍在切换，请等待切换完成', duration: 1600 });
+      return;
+    }
+    const targetDisplay: number = capabilities.pendingDisplay >= 0
+      ? capabilities.pendingDisplay : capabilities.currentDisplay;
+    if (!this.loader.changeRustDeskDisplayResolution(this.sessionId, targetDisplay,
       width, height)) {
       promptAction.showToast({ message: '分辨率请求未被远端会话接受', duration: 1800 });
       return;
     }
+    this.rustDeskDisplayPendingResolution = { width, height };
+    this.rustDeskDisplayResolutionPendingSinceMs = Date.now();
     this.showRustDeskDisplayResolutionMenu = false;
     promptAction.showToast({ message: '已请求远端切换为 ' + width.toString() + ' × ' + height.toString(), duration: 1800 });
   }
@@ -3309,6 +3328,26 @@ struct RemoteDesktop {
       }
     }
     return null;
+  }
+
+  private selectRustDeskDisplayById(displayId: number): void {
+    const display: RustDeskDisplayInfo | null = this.rustDeskDisplayById(displayId);
+    if (display === null) {
+      promptAction.showToast({ message: '远端显示器列表尚未同步完成', duration: 1600 });
+      return;
+    }
+    this.selectRustDeskDisplay(display);
+  }
+
+  private rustDeskDisplayTargetId(): number {
+    if (this.rustDeskDisplaySwitchState.inputBlocked &&
+      this.rustDeskDisplaySwitchState.pendingDisplay >= 0) {
+      return this.rustDeskDisplaySwitchState.pendingDisplay;
+    }
+    if (this.rustDeskDisplayCapabilities.pendingDisplay >= 0) {
+      return this.rustDeskDisplayCapabilities.pendingDisplay;
+    }
+    return this.rustDeskDisplayCapabilities.currentDisplay;
   }
 
   private resetRustDeskInputAfterGeometryChange(reason: string): void {
@@ -3400,6 +3439,9 @@ struct RemoteDesktop {
       return;
     }
 
+    this.rustDeskDisplayPendingResolution = EMPTY_RUSTDESK_DISPLAY_RESOLUTION;
+    this.rustDeskDisplayResolutionPendingSinceMs = 0;
+
     promptAction.showToast({
       message: '正在切换到 ' + this.rustDeskDisplayLabel(display),
       duration: 1400
@@ -3412,8 +3454,29 @@ struct RemoteDesktop {
     }
     const capabilities: RustDeskDisplayCapabilities =
       this.loader.getRustDeskDisplayCapabilities(this.sessionId);
-    if (!capabilities.supported || capabilities.displays.length === 0) {
+    const nowMs: number = Date.now();
+    if (!capabilities.supported ||
+      (capabilities.displays.length === 0 && capabilities.resolutions.length === 0)) {
+      if (this.rustDeskDisplayPendingResolution.width > 0 &&
+        this.rustDeskDisplayResolutionPendingSinceMs > 0 &&
+        nowMs - this.rustDeskDisplayResolutionPendingSinceMs >= RUSTDESK_DISPLAY_RESOLUTION_TIMEOUT_MS) {
+        this.rustDeskDisplayPendingResolution = EMPTY_RUSTDESK_DISPLAY_RESOLUTION;
+        this.rustDeskDisplayResolutionPendingSinceMs = 0;
+        promptAction.showToast({ message: '远端分辨率切换未返回确认', duration: 1800 });
+      }
       return;
+    }
+    if (this.rustDeskDisplayPendingResolution.width > 0 &&
+      capabilities.width === this.rustDeskDisplayPendingResolution.width &&
+      capabilities.height === this.rustDeskDisplayPendingResolution.height) {
+      this.rustDeskDisplayPendingResolution = EMPTY_RUSTDESK_DISPLAY_RESOLUTION;
+      this.rustDeskDisplayResolutionPendingSinceMs = 0;
+    } else if (this.rustDeskDisplayPendingResolution.width > 0 &&
+      this.rustDeskDisplayResolutionPendingSinceMs > 0 &&
+      nowMs - this.rustDeskDisplayResolutionPendingSinceMs >= RUSTDESK_DISPLAY_RESOLUTION_TIMEOUT_MS) {
+      this.rustDeskDisplayPendingResolution = EMPTY_RUSTDESK_DISPLAY_RESOLUTION;
+      this.rustDeskDisplayResolutionPendingSinceMs = 0;
+      promptAction.showToast({ message: '远端分辨率切换未返回确认', duration: 1800 });
     }
     const observation = observeRustDeskDisplaySwitch(
       this.rustDeskDisplaySwitchState,
@@ -3423,7 +3486,7 @@ struct RemoteDesktop {
         pendingDisplay: capabilities.pendingDisplay,
         inputBlocked: capabilities.inputBlocked
       },
-      Date.now(),
+      nowMs,
       RUSTDESK_DISPLAY_SWITCH_TIMEOUT_MS);
     this.rustDeskDisplaySwitchState = observation.state;
     if (observation.notifyTimeout) {
@@ -3461,8 +3524,23 @@ struct RemoteDesktop {
   }
 
   private isRustDeskDisplayResolutionSelected(resolution: RustDeskDisplayResolution): boolean {
+    if (this.rustDeskDisplayPendingResolution.width > 0 &&
+      this.rustDeskDisplayPendingResolution.height > 0) {
+      return resolution.width === this.rustDeskDisplayPendingResolution.width &&
+        resolution.height === this.rustDeskDisplayPendingResolution.height;
+    }
     return resolution.width === this.rustDeskDisplayCapabilities.width &&
       resolution.height === this.rustDeskDisplayCapabilities.height;
+  }
+
+  private rustDeskDisplayResolutionStatusLabel(): string {
+    if (this.rustDeskDisplayPendingResolution.width > 0 &&
+      this.rustDeskDisplayPendingResolution.height > 0) {
+      return '待应用：' + this.rustDeskDisplayPendingResolution.width.toString() + ' × ' +
+        this.rustDeskDisplayPendingResolution.height.toString();
+    }
+    return this.rustDeskDisplayCapabilities.width.toString() + ' × ' +
+      this.rustDeskDisplayCapabilities.height.toString();
   }
 
   private refreshCanvasViewportSnapshot(forceRendererRead: boolean = false): CanvasViewport {
@@ -4314,6 +4392,12 @@ struct RemoteDesktop {
       },
       onOpenRustDeskResolution: (): void => {
         this.openRustDeskDisplayResolutionMenu();
+      },
+      onSelectRustDeskDisplay: (display: number): void => {
+        this.selectRustDeskDisplayById(display);
+      },
+      onSetRustDeskDisplayResolution: (width: number, height: number): void => {
+        this.changeRustDeskDisplayResolution(width, height);
       },
       onSetRustDeskImageQuality: (quality: number): void => {
         this.setRustDeskImageQualityPref(quality);
@@ -8451,6 +8535,10 @@ struct RemoteDesktop {
       this.rendererSourceHeight = 0;
       this.vncGeometryReady = !isVnc;
       this.rustDeskDisplaySwitchState = idleRustDeskDisplaySwitchState();
+      this.rustDeskDisplayCapabilities = EMPTY_RUSTDESK_DISPLAY_CAPABILITIES;
+      this.rustDeskDisplayPendingResolution = EMPTY_RUSTDESK_DISPLAY_RESOLUTION;
+      this.rustDeskDisplayResolutionPendingSinceMs = 0;
+      this.showRustDeskDisplayResolutionMenu = false;
       this.invalidateRendererViewportCache();
       const rdpAuthMode: RdpAuthMode = normalizeRdpAuthMode(host.rdpAuthMode);
       const rdpRestrictedAdminSecretSource: RdpRestrictedAdminSecretSource =
@@ -9046,6 +9134,8 @@ struct RemoteDesktop {
         this.loader.disconnect();
         this.sessionId = -1;
         this.rustDeskDisplaySwitchState = idleRustDeskDisplaySwitchState();
+        this.rustDeskDisplayPendingResolution = EMPTY_RUSTDESK_DISPLAY_RESOLUTION;
+        this.rustDeskDisplayResolutionPendingSinceMs = 0;
       } else if (this.rendererHandle > 0) {
         // initRenderer() intentionally precedes connect() so the first frame
         // has a target. If connect() fails before publishing a session, the
@@ -9414,6 +9504,8 @@ struct RemoteDesktop {
           (Date.now() - nativeDisconnectStartedAtMs).toString());
         this.sessionId = -1;
         this.rustDeskDisplaySwitchState = idleRustDeskDisplaySwitchState();
+        this.rustDeskDisplayPendingResolution = EMPTY_RUSTDESK_DISPLAY_RESOLUTION;
+        this.rustDeskDisplayResolutionPendingSinceMs = 0;
         this.rendererHandle = -1;
         this.decoderHandle = -1;
         this.pipRendererHandle = -1;
@@ -12848,8 +12940,7 @@ struct RemoteDesktop {
       Row() {
         Column() {
           Text('远端显示器与分辨率').fontSize(15).fontWeight(FontWeight.Medium).fontColor('#1B1B1B')
-          Text(this.rustDeskDisplayCapabilities.width.toString() + ' × ' +
-            this.rustDeskDisplayCapabilities.height.toString())
+          Text(this.rustDeskDisplayResolutionStatusLabel())
             .fontSize(11).fontColor('#6B7280').margin({ top: 2 })
         }.alignItems(HorizontalAlign.Start).layoutWeight(1)
         Button() {
@@ -12869,22 +12960,22 @@ struct RemoteDesktop {
                   Column() {
                     Text(this.rustDeskDisplayLabel(display))
                       .fontSize(13)
-                      .fontColor(display.display === this.rustDeskDisplayCapabilities.currentDisplay ?
+                      .fontColor(display.display === this.rustDeskDisplayTargetId() ?
                         '#FFFFFF' : '#374151')
                       .maxLines(1)
                     Text(display.width.toString() + ' × ' + display.height.toString() +
                       '  ' + display.x.toString() + ', ' + display.y.toString())
                       .fontSize(10)
-                      .fontColor(display.display === this.rustDeskDisplayCapabilities.currentDisplay ?
+                      .fontColor(display.display === this.rustDeskDisplayTargetId() ?
                         'rgba(255,255,255,0.78)' : '#6B7280')
                       .margin({ top: 2 })
                   }.alignItems(HorizontalAlign.Start).layoutWeight(1)
-                  if (display.display === this.rustDeskDisplayCapabilities.currentDisplay) {
+                  if (display.display === this.rustDeskDisplayTargetId()) {
                     SymbolGlyph($r('sys.symbol.checkmark')).fontSize(15).fontColor(['#FFFFFF'])
                   }
                 }
                 .width('100%').height(44).padding({ left: 12, right: 12, top: 6, bottom: 6 })
-                .backgroundColor(display.display === this.rustDeskDisplayCapabilities.currentDisplay ?
+                .backgroundColor(display.display === this.rustDeskDisplayTargetId() ?
                   this.accentColor : '#F3F4F6')
                 .borderRadius(6)
                 .onClick((): void => { this.selectRustDeskDisplay(display); })
@@ -13143,6 +13234,9 @@ struct RemoteDesktop {
           swapMouseButtons: this.rustdeskSwapMouseButtons,
           touchpadSpeed: this.rustdeskTouchpadSpeed,
           keyboardOpen: this.keyboardOpen,
+          rustDeskDisplayCapabilities: this.rustDeskDisplayCapabilities,
+          rustDeskDisplaySwitchState: this.rustDeskDisplaySwitchState,
+          pendingDisplayResolution: this.rustDeskDisplayPendingResolution,
           capabilities: this.currentSessionCapabilities(),
           actions: this.rustDeskTopBarActions()
         })

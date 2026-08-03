@@ -7,6 +7,7 @@ export interface SessionCapabilityState {
   rustDeskVerifiedPeer: boolean;
   rustDeskInboundClipboard: boolean;
   rustDeskTransferConfirmed: boolean;
+  rustDeskDisplaySupported?: boolean;
   vncClipboardEnabled: boolean;
   vncClipboardReady: boolean;
   vncViewOnly: boolean;
@@ -113,13 +114,15 @@ export function resolveSessionCapabilities(state: SessionCapabilityState): Remot
     const transfer = state.rustDeskVerifiedPeer && state.rustDeskTransferConfirmed
       ? available()
       : unavailable('RustDesk 文件传输尚未获得远端确认');
+    const display = state.rustDeskDisplaySupported === true
+      ? available() : unavailable('当前 RustDesk 会话尚未提供显示器能力');
     return {
       connect,
       clipboardSend: peer,
       clipboardReceive: inbound,
       fileUpload: transfer,
       fileDownload: unavailable('当前 RustDesk 会话未验证文件下载能力'),
-      multiDisplay: unavailable('当前 RustDesk 会话未验证多显示器控制能力')
+      multiDisplay: display
     };
   }
 

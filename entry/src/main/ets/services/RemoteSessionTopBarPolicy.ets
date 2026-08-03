@@ -30,7 +30,7 @@ const RUSTDESK_DISABLED_REASONS: Record<string, string> = {
   'textChat': '文字聊天需要 RustDesk 会话消息通道接入后启用',
   'voiceCall': '语音通话需要 RustDesk 音频输入和通话信令接入后启用',
   'recordSession': '录制需要本地录屏/编码保存链路接入后启用',
-  'resolutionSettings': '分辨率切换需要 RustDesk 显示枚举和 resize 协议接入后启用',
+  'resolutionSettings': '远端显示器能力尚未同步完成',
   'virtualDisplay': '虚拟显示器需要 RustDesk 虚拟显示控制协议接入后启用',
   'remoteCamera': '查看摄像头需要 RustDesk 摄像头流接入后启用',
   'terminal': '终端需要 RustDesk 远程 shell 能力接入后启用',
@@ -111,6 +111,9 @@ export function rustDeskActionAvailability(actionId: string,
     actionId === 'keyboardMouseSettings' || actionId === 'browseMode' ||
     actionId === 'togglePrivacyMode' || actionId === 'toggleAudio') {
     return capabilities.connect;
+  }
+  if (actionId === 'resolutionSettings') {
+    return capabilities.multiDisplay;
   }
   const reason: string = RUSTDESK_DISABLED_REASONS[actionId] ?? '当前版本尚未接入该 RustDesk 官方能力';
   return { enabled: false, reason };
