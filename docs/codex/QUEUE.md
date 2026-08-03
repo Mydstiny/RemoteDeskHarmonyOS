@@ -4,6 +4,9 @@ Updated: 2026-08-03 Asia/Shanghai
 
 ## Now
 
+- Checkpoint `d48c12471` implements the user-authorized RDP P0 TLS preflight
+  repair: complete TPKT reads, negotiation classification, stable TLS errors,
+  and native parser coverage. It does not add Gateway or legacy fallback.
 - Checkpoint `6a4b35d1f` adds the mobile/Pad RustDesk keyboard-mouse edge rail,
   hide/wake handle, and serialized system-bar transitions.
 - Commit `410a6a0` restores the real 1.0.8 PIP order: foreground controller
@@ -27,6 +30,8 @@ Updated: 2026-08-03 Asia/Shanghai
 
 - Stage G: restore hdc and collect real RustDesk/VNC direct/Repeater/device
   evidence; until then keep the evidence gap explicit.
+- Collect one real bastion endpoint with its port, Gateway/vendor mode, and a
+  same-network Windows mstsc result before starting RDP P1.
 
 ## Later
 
@@ -36,8 +41,8 @@ Updated: 2026-08-03 Asia/Shanghai
 
 ## Queue Rules
 
-- Keep one active branch and limit product edits to the RustDesk/VNC repair
-  scope.
-- Do not mix RDP or SSH work into this task.
+- Keep one active branch. RDP P0 is the explicit user-authorized exception;
+  do not silently expand it into Gateway, vendor proxy, or legacy TLS support.
+- Do not mix additional RDP P1/P2/P3 or SSH work into this checkpoint.
 - A missing device or endpoint blocks only the corresponding evidence, not
   static VNC policy work.
