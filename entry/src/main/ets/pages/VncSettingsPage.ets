@@ -31,6 +31,7 @@ import { VncAddFlow } from '../components/hostadd/VncAddFlow';
 import { VncCertificateTrustManagerSheet } from '../components/VncCertificateTrustManagerSheet';
 import { buildVncTrustDirectory, VncTrustDirectoryItem } from '../services/VncTrustEndpointDirectory';
 import { SETTINGS_PANEL_DISMISS_TO_LEAF_OPEN_MS } from '../services/SettingsSheetRoutePolicy';
+import { isSelectableVncDefaultGateway, VncSelectableGateway } from '../services/VncHostDefaultsPolicy';
 
 @Entry
 @Component
@@ -227,6 +228,30 @@ export struct VncSettingsPage {
     this.revision += 1;
   }
 
+  private selectableDefaultGateways(): VncGatewayView[] {
+    const userId: string = this.settings.getUserId();
+    const result: VncGatewayView[] = [];
+    for (let i = 0; i < this.gateways.length; i++) {
+      const gateway: VncGatewayView = this.gateways[i];
+      const selectable: VncSelectableGateway = {
+        id: gateway.id, userId: gateway.userId, transport: gateway.transport,
+        repeaterMode: gateway.repeaterMode, enabled: gateway.enabled
+      };
+      if (isSelectableVncDefaultGateway(selectable, userId)) { result.push(gateway); }
+    }
+    return result;
+  }
+
+  private defaultGatewayIsSelectable(): boolean {
+    const selected: string = this.defaultGatewayId.trim();
+    if (selected === '') { return false; }
+    const gateways: VncGatewayView[] = this.selectableDefaultGateways();
+    for (let i = 0; i < gateways.length; i++) {
+      if (gateways[i].id === selected) { return true; }
+    }
+    return false;
+  }
+
   private numberValue(text: string, fallback: number): number {
     const value: number = Number(text);
     return Number.isFinite(value) ? Math.floor(value) : fallback;
@@ -296,6 +321,12 @@ export struct VncSettingsPage {
   }
 
   private async persistSettings(): Promise<void> {
+    if (this.defaultTransport === 'ultravnc_repeater' && !this.defaultGatewayIsSelectable()) {
+      this.errorMessage = this.selectableDefaultGateways().length === 0
+        ? '没有可用的 mode12 Gateway；请先启用一个 VNC Gateway，或改用 TCP'
+        : '请选择当前账号下已启用的 mode12 Gateway，或改用 TCP';
+      return;
+    }
     const result =
       await this.settings.save(
         this.settingsValues());
@@ -358,6 +389,14 @@ export struct VncSettingsPage {
     saveWithPlaintextConsent(false);
   }
 
+  private async clearDefaultGatewayBeforeMutation(gatewayId: string): Promise<boolean> {
+    const cleared: boolean = await this.settings.clearDefaultGatewayIf(gatewayId);
+    if (!cleared) {
+      this.errorMessage = 'VNC Gateway 已保留；默认 Gateway 引用清理失败，请重试';
+    }
+    return cleared;
+  }
+
   private saveGateway(): void {
     const values: VncGatewayValues = {
       label: this.gatewayLabel,
@@ -370,11 +409,12 @@ export struct VncSettingsPage {
       tls: this.gatewayTls,
       enabled: this.gatewayEnabled
     };
-    const saveWithPlaintextConsent = (allowPlaintext: boolean): void => {
+    const saveWithPlaintextConsent = async (allowPlaintext: boolean): Promise<void> => {
+      if (!values.enabled && this.editingGatewayId.trim() !== '' &&
+        !await this.clearDefaultGatewayBeforeMutation(this.editingGatewayId)) { return; }
       const result = this.gatewayService.save(values, this.editingGatewayId, this.gatewayToken,
         allowPlaintext);
       if (!result.ok) { this.errorMessage = result.message; return; }
-      if (!values.enabled) { void this.settings.clearDefaultGatewayIf(result.id); }
       this.errorMessage = '';
       this.resetGatewayForm();
       promptAction.showToast({ message: 'VNC 网关已保存', duration: 1600 });
@@ -387,7 +427,7 @@ export struct VncSettingsPage {
         buttons: [{ text: '取消', color: this.pal().text2 }, { text: '确认保存', color: this.pal().danger }]
       }).then((dialog: Object): void => {
         const values: Record<string, number> = dialog as Record<string, number>;
-        if (values['index'] === 1) { saveWithPlaintextConsent(true); }
+        if (values['index'] === 1) { void saveWithPlaintextConsent(true); }
       });
       return;
     }
@@ -395,7 +435,7 @@ export struct VncSettingsPage {
       this.errorMessage = '应用加密已锁定；请先解锁后保存 Gateway 令牌，或留空保留现有令牌';
       return;
     }
-    saveWithPlaintextConsent(false);
+    void saveWithPlaintextConsent(false);
   }
 
   private deleteHost(host: VncHostView): void {
@@ -414,11 +454,18 @@ export struct VncSettingsPage {
       buttons: [{ text: '取消', color: this.pal().text2 }, { text: '删除', color: this.pal().danger }]
     }).then((result: Object): void => {
       const values: Record<string, number> = result as Record<string, number>;
-      if (values['index'] === 1 && this.gatewayService.remove(gateway.id)) {
-        void this.settings.clearDefaultGatewayIf(gateway.id);
-        this.loadGateways();
-      }
+      if (values['index'] === 1) { void this.removeGatewayAfterConfirmation(gateway); }
     });
+  }
+
+  private async removeGatewayAfterConfirmation(gateway: VncGatewayView): Promise<void> {
+    if (!await this.clearDefaultGatewayBeforeMutation(gateway.id)) { return; }
+    if (!this.gatewayService.remove(gateway.id)) {
+      this.errorMessage = 'VNC Gateway 删除失败；默认引用已清除为直连，请重试';
+      return;
+    }
+    this.errorMessage = '';
+    this.loadGateways();
   }
 
   private editGateway(gateway: VncGatewayView): void {
@@ -651,7 +698,27 @@ export struct VncSettingsPage {
     Column() {
       this.cardTitle('连接与显示', '只影响 VNC；RDP、RustDesk 和 SSH 使用自己的设置')
       Text('默认传输').fontSize(12).fontColor(this.pal().text3).margin({ bottom: 6 })
-      this.transportChoices(this.defaultTransport, (value: VncTransport): void => { this.defaultTransport = value; })
+      this.transportChoices(this.defaultTransport, (value: VncTransport): void => {
+        this.defaultTransport = value;
+        if (value !== 'ultravnc_repeater') { this.defaultGatewayId = ''; }
+      })
+      if (this.defaultTransport === 'ultravnc_repeater') {
+        Text('默认 Gateway').fontSize(12).fontColor(this.pal().text3).margin({ top: 2, bottom: 6 })
+        if (this.selectableDefaultGateways().length === 0) {
+          Text('暂无可用的 mode12 Gateway；保存 Repeater 默认前请先启用 Gateway。')
+            .fontSize(11).fontColor(this.pal().danger).margin({ bottom: 8 })
+        } else {
+          Column() {
+            ForEach(this.selectableDefaultGateways(), (gateway: VncGatewayView): void => {
+              Button(gateway.label.trim() === '' ? gateway.host + ':' + gateway.port.toString() : gateway.label)
+                .width('100%').height(36).fontSize(12).borderRadius(8)
+                .backgroundColor(this.defaultGatewayId === gateway.id ? this.accentColor : this.pal().surface)
+                .fontColor(this.defaultGatewayId === gateway.id ? Color.White : this.pal().text2)
+                .onClick((): void => { this.defaultGatewayId = gateway.id; });
+            }, (gateway: VncGatewayView): string => gateway.id + ':' + this.revision.toString())
+          }.width('100%').margin({ bottom: 8 })
+        }
+      }
       this.input('默认端口', '5900', this.defaultPortText, (value: string): void => { this.defaultPortText = value; })
       this.input('连接超时', '10000 ms', this.connectTimeoutText, (value: string): void => { this.connectTimeoutText = value; })
       this.input('认证超时', '15000 ms', this.authTimeoutText, (value: string): void => { this.authTimeoutText = value; })

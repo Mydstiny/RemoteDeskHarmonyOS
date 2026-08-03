@@ -2,7 +2,8 @@ import { describe, it, expect } from '@ohos/hypium';
 import { defaultVncSettings, VncSettingsValues } from '../main/ets/services/VncModelPolicy';
 import {
   resolveVncHostDefaults,
-  VncSelectableGateway
+  VncSelectableGateway,
+  isSelectableVncDefaultGateway
 } from '../main/ets/services/VncHostDefaultsPolicy';
 
 function settings(): VncSettingsValues {
@@ -58,6 +59,20 @@ export default function vncHostDefaultsPolicyTest(): void {
       expect(result.gatewayId).assertEqual('');
       expect(result.usedFallback).assertTrue();
       expect(result.fallbackCode).assertEqual('E-VNC-DEFAULT-OWNER');
+    });
+
+    it('only_exposes_enabled_mode12_gateways_for_default_selection', 0, (): void => {
+      const valid: VncSelectableGateway = gateway();
+      const disabled: VncSelectableGateway = gateway();
+      disabled.id = 'disabled';
+      disabled.enabled = false;
+      const wrongMode: VncSelectableGateway = gateway();
+      wrongMode.id = 'mode2';
+      wrongMode.repeaterMode = 'mode2';
+      expect(isSelectableVncDefaultGateway(valid, 'user-1')).assertTrue();
+      expect(isSelectableVncDefaultGateway(disabled, 'user-1')).assertFalse();
+      expect(isSelectableVncDefaultGateway(wrongMode, 'user-1')).assertFalse();
+      expect(isSelectableVncDefaultGateway(valid, 'other-user')).assertFalse();
     });
   });
 }
