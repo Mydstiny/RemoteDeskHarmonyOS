@@ -7,8 +7,8 @@ This file is the compact startup resume card. Historical checkpoints remain in
 
 - Task: `rustdesk-complete-repair` (active branch retained; RustDesk/VNC background, PIP, and audio continuity)
 - Branch: `codex/rustdesk-complete-repair`
-- Checkpoint: `f03c9b4ca`, based on `main@34946adbc`; branch is ahead by 82 and not behind.
-- Phase: background continuity closure. RustDesk waits for a presented first frame and keeps the authenticated native session/audio alive; VNC now uses the shared active-session registry, PIP renderer transfer, raw framebuffer refresh, and foreground rebind.
+- Checkpoint: `28f8608f6`, based on `main@34946adbc`; branch is ahead by 84 and not behind.
+- Phase: background continuity closure. RustDesk classifies transient transport failures, reconnects after network recovery with a presented-first-frame gate, and fences stale callbacks; VNC uses the shared active-session registry, PIP renderer transfer, raw framebuffer refresh, and foreground rebind.
 - Worktree: repair commits are present and the worktree is clean. No duplicate reviewer task was started; preserve unrelated user changes.
 ## Stage A Result
 
@@ -93,16 +93,18 @@ This file is the compact startup resume card. Historical checkpoints remain in
   background restore, and audio continuity gaps. Checkpoint `f03c9b4ca` extends
   the same lifecycle to VNC, including raw BGRA renderer/PIP transfer and a
   presented-frame gate before declaring restore complete.
+- Checkpoint `28f8608f6` closes RustDesk transient network continuity: abort,
+  reset, broken-pipe, timeout, and unreachable failures reconnect after network
+  recovery; generation/owner/admission fencing prevents stale callbacks reviving old sessions.
 - Keep every VNC caller fail-closed when the probe, Sheet lifecycle, owner
   binding, or expected-pin handoff is missing or stale.
 ## Verification
-- `rdp_native_tests`: 251 passed, 0 failed with loopback fixtures on
-  `f03c9b4ca`, 2026-08-03 (requires host-socket permission).
-- `default@OhosTestCompileArkTS`: passed after `f03c9b4ca` on 2026-08-03.
-- `assembleHap`: passed after `f03c9b4ca` on 2026-08-03.
-- `git diff --check`: passed after `f03c9b4ca` on 2026-08-03.
-- `ohosTest@OhosTestCompileArkTS`: unavailable; task is not registered
-  (`00306054`). New ArkTS tests therefore have compile/build evidence only.
+- `rdp_native_tests`: 251 passed, 0 failed with loopback fixtures on `f03c9b4ca`, 2026-08-03 (requires host-socket permission).
+- RustDesk native/callback tests: 216 passed, 0 failed on `28f8608f6`, 2026-08-03.
+- `default@OhosTestCompileArkTS`: passed after `28f8608f6` on 2026-08-03; host Cargo was exposed to CMake program search.
+- `assembleHap`: passed after `28f8608f6` on 2026-08-03.
+- `git diff --check`: passed after `28f8608f6` on 2026-08-03.
+- `ohosTest@OhosTestCompileArkTS`: unavailable; task is not registered (`00306054`); new ArkTS tests have compile/build evidence only.
 ## Blockers
 - `hdc list targets`/`hdc shell` remain unavailable (no target/current hilog
   evidence); real-device/endpoint evidence is not claimed.
@@ -115,5 +117,4 @@ This file is the compact startup resume card. Historical checkpoints remain in
 
 ## Review Protocol
 - Machine state: `docs/codex/STATE.json`; receipts: `docs/codex/REVIEW_RECEIPTS.jsonl`.
-- `scripts/sync_workspace.sh status` records RESUME_REVIEW for the existing task
-  owner; no duplicate audit was dispatched.
+- `scripts/sync_workspace.sh status` records RESUME_REVIEW for the existing task owner; no duplicate audit was dispatched.

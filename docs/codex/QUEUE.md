@@ -4,6 +4,8 @@ Updated: 2026-08-03 Asia/Shanghai
 
 ## Now
 
+- Checkpoint `28f8608f6` fixes RustDesk transient network reconnect,
+  first-frame admission, stale-callback fencing, and cleanup continuity.
 - Checkpoint `fa886f37d`/`763dc35d1` fixes RustDesk first-frame startup,
   authenticated-session restoration, and audio continuity.
 - Checkpoint `f03c9b4ca` fixes VNC background retention and PIP renderer

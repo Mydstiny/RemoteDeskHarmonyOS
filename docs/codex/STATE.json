@@ -3,10 +3,10 @@
   "task": "rustdesk-complete-repair",
   "branch": "codex/rustdesk-complete-repair",
   "base": "34946adbc",
-  "head": "f03c9b4ca",
+  "head": "28f8608f6",
   "phase": "rustdesk-vnc-background-pip-audio-closure",
   "status": "active",
-  "next": "Code repair is committed at f03c9b4ca. Run the final local gates and keep real-device validation pending until hdc is available; do not dispatch a duplicate reviewer task.",
+  "next": "Code repair is committed at 28f8608f6 and the final local gates pass. Keep real-device validation pending until hdc is available; do not dispatch a duplicate reviewer task.",
   "blockers": [
     "hdc list targets and hdc shell return Connect server failed; no current hilog evidence.",
     "ohosTest@OhosTestCompileArkTS is not registered (00306054); ArkTS tests have compile/build evidence only.",
@@ -46,14 +46,15 @@
       "entry/src/test/VncGatewayHealthPolicy.test.ets",
       "entry/src/test/VncRendererSurfacePolicy.test.ets"
     ],
-    "reason": "Existing review task 019fc333-6789-7633-bf6f-3fea1cb2ad4d remains the only review owner. The f03c9b4ca cross-protocol background/PIP/audio closure is committed without starting a duplicate audit; remaining gaps are real endpoint, hdc, OHOS runtime, and direct ArkTS/NAPI tests."
+    "reason": "Existing review task 019fc333-6789-7633-bf6f-3fea1cb2ad4d remains the only review owner. The 28f8608f6 RustDesk continuity repair is committed without starting a duplicate audit; remaining gaps are real endpoint, hdc, OHOS runtime, and direct ArkTS/NAPI tests."
   },
   "lastVerification": {
     "rdp_native_tests": "251-pass-0-fail-loopback-fixtures-host-socket-f03c9b4ca-2026-08-03",
-    "default@OhosTestCompileArkTS": "pass-after-f03c9b4ca-2026-08-03",
-    "assembleHap": "pass-after-f03c9b4ca-2026-08-03",
+    "rustdesk_native_callback_tests": "216-pass-0-fail-28f8608f6-2026-08-03",
+    "default@OhosTestCompileArkTS": "pass-after-28f8608f6-2026-08-03-cmake-host-cargo-search-path",
+    "assembleHap": "pass-after-28f8608f6-2026-08-03",
     "ohosTest@OhosTestCompileArkTS": "blocked-task-00306054-2026-08-02",
-    "diffCheck": "pass-after-f03c9b4ca-2026-08-03"
+    "diffCheck": "pass-after-28f8608f6-2026-08-03"
   },
   "archives": [
     "docs/codex/archive/2026-08/README.md",
