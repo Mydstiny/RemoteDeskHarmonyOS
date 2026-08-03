@@ -123,6 +123,7 @@ export const VERSION: SessionVersionInfo;
   export function markXComponentSurfaceDestroyed(): void;
   export function requestFrameRefresh(): void;
   export function getRendererViewport(handle: number): RendererViewport | null;
+  export function bindRendererToSession(rendererHandle: number, sessionId: number): boolean;
 
   export function initDecoder(width: number, height: number, codecType: number,
     rendererHandle?: number): number;

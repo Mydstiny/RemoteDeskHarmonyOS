@@ -6128,7 +6128,8 @@ struct RemoteDesktop {
       this.rendererHandle > 0,
       this.surfaceReady,
       this.decoderHandle > 0,
-      this.isRdpVideoFrameReady());
+      this.isRdpVideoFrameReady(),
+      this.isVncPresentedFrameReady());
   }
 
   /** A PIP transfer must not detach the foreground renderer before a real
@@ -6297,7 +6298,8 @@ struct RemoteDesktop {
     if (shouldRebindSurfaceForRestore(action, this.rendererHandle)) {
       const desktop: DesktopSize = this.desktopSize(this.pendingHost);
       const surfaceId: string = this.latestSurfaceId.length > 0 ? this.latestSurfaceId : this.xcId;
-      const result = this.loader.reattachRenderForForeground(surfaceId, desktop.width, desktop.height);
+      const result = this.loader.reattachRenderForForeground(
+        surfaceId, desktop.width, desktop.height, this.sessionId);
       if (result.ok && result.value !== undefined && result.value > 0) {
         this.rendererHandle = result.value;
         if (this.pendingHost !== null) {
@@ -9119,6 +9121,8 @@ struct RemoteDesktop {
       this.connected = true;
       this.connecting = false;
       this.connectionProgressMessage = '';
+      this.connectionError = '';
+      this.connectionErrorDetail = '';
       if (host.protocol === 'vnc') {
         this.vncToolbarCollapsed = false;
         this.scheduleVncToolbarAutoCollapse(sid);
@@ -9440,6 +9444,13 @@ struct RemoteDesktop {
   }
 
   private disconnectAndCleanup(reason: string): void {
+    const explicitUserDisconnect: boolean = reason.indexOf('explicit') >= 0 ||
+      reason.indexOf('toolbar') >= 0 || reason.indexOf('topbar') >= 0 ||
+      reason.indexOf('remote-back') >= 0;
+    if (explicitUserDisconnect) {
+      this.connectionError = '';
+      this.connectionErrorDetail = '';
+    }
     // VNC passwords are connection-scoped memory only. The native session has
     // already received its copy; never retain the transient value across a
     // page/session teardown.
@@ -9675,9 +9686,13 @@ struct RemoteDesktop {
     this.releaseCanvasPinchInput('pip-surface-transfer');
     const activeSession: ActiveRemoteSessionRecord | null = this.activeSessionRegistry.getActive();
     const pipService: RemoteSessionPipService = RemoteSessionPipService.getInstance();
+    const protocol: string = this.pendingHost === null ? '' : this.pendingHost.protocol;
+    const requiresDecoder: boolean = protocol === 'rustdesk';
+    const isVnc: boolean = protocol === 'vnc';
+    const isRdp: boolean = protocol === 'rdp';
     if (!this.cleanupStarted || !this.connected || this.sessionId <= 0 || this.pendingHost === null ||
       this.restoreInProgress || !pipService.isOperationCurrent(operationGeneration) ||
-      this.rendererHandle <= 0 || this.decoderHandle <= 0 ||
+      this.rendererHandle <= 0 || (requiresDecoder && this.decoderHandle <= 0) ||
       activeSession === null ||
       activeSession.sessionId !== this.sessionId || activeSession.hostId !== this.pendingHost.id ||
       !activeSession.protocolConnected || surface.surfaceId.length === 0) {
@@ -9690,6 +9705,7 @@ struct RemoteDesktop {
         hilog.warn(RD_DOMAIN, RD_TAG, 'attachRendererToPipSurface: no real remote frame before timeout');
         return false;
       }
+      const vncPresentedBeforeTransfer: number = isVnc ? this.vncPresentedFrameCount() : 0;
       // Capture the remote media ratio while the page renderer is still alive.
       // After destroyRenderer() the native viewport is intentionally no longer
       // readable, and falling back to the rotated page surface would crop PIP.
@@ -9707,7 +9723,7 @@ struct RemoteDesktop {
       const height: number = this.renderHeightPx > 0 ? this.renderHeightPx : this.remoteHeight;
 
       const result = this.loader.reattachRenderForForeground(
-        surface.surfaceId, width, height);
+        surface.surfaceId, width, height, this.sessionId);
       if (!result.ok || result.value === undefined || result.value <= 0) {
         hilog.warn(RD_DOMAIN, RD_TAG, 'attachRendererToPipSurface: renderer init failed code=' +
           result.code + ' msg=' + result.message);
@@ -9717,16 +9733,43 @@ struct RemoteDesktop {
       this.rendererHandle = result.value;
       this.pipRendererHandle = result.value;
       this.nativeHandles.markSurfaceAttached(this.rendererHandle);
-      if (!this.loader.bindVideoPipeline(this.decoderHandle, this.rendererHandle)) {
-        hilog.warn(RD_DOMAIN, RD_TAG, 'attachRendererToPipSurface: decoder pipeline bind failed');
-        this.nativeHandles.detachRenderForBackground();
-        this.rendererHandle = -1;
-        this.pipRendererHandle = -1;
+
+      if (requiresDecoder) {
+        if (!this.loader.bindVideoPipeline(this.decoderHandle, this.rendererHandle)) {
+          hilog.warn(RD_DOMAIN, RD_TAG, 'attachRendererToPipSurface: decoder pipeline bind failed');
+          this.releasePipRenderer('attach-decoder-bind');
+          return false;
+        }
+        this.loader.requestDecoderRecovery();
+        this.loader.requestFrameRefresh();
+      } else if (isVnc) {
+        // VNC is a raw framebuffer stream. It has no decoder to bind; the
+        // first request after owner/surface transfer is what makes the new PIP
+        // surface receive a fresh RAW frame instead of retaining a stale page
+        // texture.
+        const refresh = this.loader.requestFrameRefresh();
+        hilog.info(RD_DOMAIN, RD_TAG, 'attachRendererToPipSurface: VNC refresh=' +
+          refresh.ok.toString() + ' previousPresented=' +
+          vncPresentedBeforeTransfer.toString());
+        if (!refresh.ok || !(await this.waitForVncPresentedFrame(
+          this.sessionId, vncPresentedBeforeTransfer, this.connectAttemptId,
+          operationGeneration))) {
+          hilog.warn(RD_DOMAIN, RD_TAG,
+            'attachRendererToPipSurface: VNC did not present a frame on the PIP surface');
+          this.releasePipRenderer('attach-vnc-frame-timeout');
+          return false;
+        }
+      } else if (isRdp) {
+        const presented: boolean = this.loader.presentRdpCachedFrame(this.sessionId);
+        const refresh = this.loader.requestFrameRefresh();
+        hilog.info(RD_DOMAIN, RD_TAG, 'attachRendererToPipSurface: RDP cached=' +
+          presented.toString() + ' refresh=' + refresh.ok.toString());
+      } else {
+        hilog.warn(RD_DOMAIN, RD_TAG, 'attachRendererToPipSurface: unsupported protocol=' + protocol);
+        this.releasePipRenderer('attach-unsupported-protocol');
         return false;
       }
       this.activeSessionRegistry.markRenderDetached();
-      this.loader.requestDecoderRecovery();
-      this.loader.requestFrameRefresh();
       hilog.info(RD_DOMAIN, RD_TAG, 'attachRendererToPipSurface: renderer=' +
         this.rendererHandle.toString() + ' media=' + pipSize.width.toString() + 'x' +
         pipSize.height.toString() + ' surface=' + surface.surfaceId);
@@ -10057,6 +10100,11 @@ struct RemoteDesktop {
     }
     this.releaseFailedBackgroundRenderer(reason);
     this.bgRestorePending = true;
+    // A renderer/surface retry is not a protocol failure. Do not leave a
+    // stale red connection error visible while the same native session is
+    // waiting for the next foreground SurfaceId.
+    this.connectionError = '';
+    this.connectionErrorDetail = '';
     this.connectStarted = false;
     this.connecting = false;
     this.connectionProgressMessage = this.isVncSession() ?
@@ -10183,6 +10231,11 @@ struct RemoteDesktop {
       hilog.warn(RD_DOMAIN, RD_TAG, 'doBackgroundRestoreRender: cleanupStarted=true, aborting');
       return;
     }
+    // Background/PIP restoration never creates a new protocol attempt. Any
+    // renderer error from a previous retry must stay out of the connection
+    // error surface while this live session is being rebound.
+    this.connectionError = '';
+    this.connectionErrorDetail = '';
     this.clearBackgroundRenderRetry();
     const restoreSessionId: number = this.sessionId;
     const restoreAttemptId: number = this.connectAttemptId;
@@ -10256,6 +10309,8 @@ struct RemoteDesktop {
         this.connectStarted = false;
         this.connecting = false;
         this.connectionProgressMessage = '';
+        this.connectionError = '';
+        this.connectionErrorDetail = '';
         this.applyRustDeskOrientationPolicy('background-preauthenticated').catch((err: Error): void => {
           hilog.warn(RD_DOMAIN, RD_TAG, 'background-preauthenticated orientation failed: ' +
             (err.message ? err.message : JSON.stringify(err)));
@@ -10281,7 +10336,7 @@ struct RemoteDesktop {
         return;
       }
       const result = this.loader.reattachRenderForForeground(
-        surfaceId, desktop.width, desktop.height);
+        surfaceId, desktop.width, desktop.height, this.sessionId);
       if (result.ok && result.value !== undefined && result.value > 0) {
         this.rendererHandle = result.value;
         if (this.pendingHost !== null) {
@@ -10346,6 +10401,8 @@ struct RemoteDesktop {
         this.connectStarted = false;
         this.connecting = false;
         this.connectionProgressMessage = '';
+        this.connectionError = '';
+        this.connectionErrorDetail = '';
         this.applyRustDeskOrientationPolicy('background-restore').catch((err: Error): void => {
           hilog.warn(RD_DOMAIN, RD_TAG, 'background-restore orientation failed: ' +
             (err.message ? err.message : JSON.stringify(err)));

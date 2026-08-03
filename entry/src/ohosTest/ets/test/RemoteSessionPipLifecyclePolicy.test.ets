@@ -46,6 +46,11 @@ export default function remoteSessionPipLifecyclePolicyTest(): void {
       expect(hasRemoteSessionPipVideo('rdp', true, true, false, false)).assertFalse();
     });
 
+    it('uses_the_vnc_presented_frame_instead_of_a_decoder_handle', 0, (): void => {
+      expect(hasRemoteSessionPipVideo('vnc', true, true, false, false, true)).assertTrue();
+      expect(hasRemoteSessionPipVideo('vnc', true, true, false, false, false)).assertFalse();
+    });
+
     it('accepts_rdp_owned_frame_before_graphics_metadata', 0, (): void => {
       expect(hasRdpRemoteSessionPipFrame(1, 4096)).assertTrue();
       expect(hasRdpRemoteSessionPipFrame(1, 0)).assertFalse();

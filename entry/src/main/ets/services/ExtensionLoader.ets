@@ -475,6 +475,22 @@ export class ExtensionLoader {
   getRendererHandle(): number { return this.rendererHandle; }
   getDecoderHandle(): number { return this.decoderHandle; }
 
+  bindRendererToSession(rendererHandle: number, sessionId: number): boolean {
+    if (rendererHandle <= 0 || sessionId <= 0) {
+      return false;
+    }
+    try {
+      const bound: boolean = rdpnapi.bindRendererToSession(rendererHandle, sessionId) as boolean;
+      hilog.info(DOMAIN, TAG, '[ExtensionLoader] bindRendererToSession renderer=' +
+        rendererHandle.toString() + ' session=' + sessionId.toString() +
+        ' bound=' + bound.toString());
+      return bound;
+    } catch (err) {
+      hilog.error(DOMAIN, TAG, '[ExtensionLoader] bindRendererToSession: ' + JSON.stringify(err));
+      return false;
+    }
+  }
+
   // ====== 渲染管线操作 ======
 
   bindVideoPipeline(decoderHandle: number, rendererHandle: number): boolean {
@@ -1284,7 +1300,7 @@ export class ExtensionLoader {
    * 重新初始化 renderer 并绑定 surface。
    */
   reattachRenderForForeground(surfaceId: string, width: number,
-    height: number): ExtensionResult<number> {
+    height: number, sessionId: number = this.currentSessionId): ExtensionResult<number> {
     try {
       if (!shouldBindSurfaceBeforeForegroundRenderer(surfaceId, width, height)) {
         return errResult(ExtensionErrorCode.ERR_SURFACE_INVALID,
@@ -1296,13 +1312,22 @@ export class ExtensionLoader {
           'setXComponentSurfaceId 失败', 'surfaceId=' + surfaceId);
       }
       hilog.info(DOMAIN, TAG, '[ExtensionLoader] reattachRenderForForeground: surface rebound id=' + surfaceId);
-      this.rendererHandle = rdpnapi.initRenderer(surfaceId, width, height) as number;
-      if (this.rendererHandle <= 0) {
+      const rendererHandle: number = rdpnapi.initRenderer(surfaceId, width, height) as number;
+      if (rendererHandle <= 0) {
         return errResult(ExtensionErrorCode.ERR_SURFACE_INVALID,
           'initRenderer 失败', 'surfaceId=' + surfaceId);
       }
+      if (sessionId > 0 && !this.bindRendererToSession(rendererHandle, sessionId)) {
+        // The protocol session is still alive, so a renderer that could not be
+        // admitted to its owner must not remain as an unowned active target.
+        try { rdpnapi.destroyRenderer(rendererHandle); } catch (_e) { /* best effort */ }
+        return errResult(ExtensionErrorCode.ERR_NATIVE_CALL_FAILED,
+          'renderer owner 绑定失败', 'renderer=' + rendererHandle.toString() +
+          ' session=' + sessionId.toString());
+      }
+      this.rendererHandle = rendererHandle;
       hilog.info(DOMAIN, TAG, '[ExtensionLoader] reattachRenderForForeground: handle=' +
-        this.rendererHandle.toString());
+        rendererHandle.toString() + ' session=' + sessionId.toString());
       return okResult(this.rendererHandle);
     } catch (err) {
       hilog.error(DOMAIN, TAG, '[ExtensionLoader] reattachRenderForForeground: ' + JSON.stringify(err));

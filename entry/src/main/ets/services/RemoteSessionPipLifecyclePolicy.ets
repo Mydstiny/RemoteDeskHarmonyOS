@@ -43,13 +43,17 @@ export function hasRemoteSessionPipVideo(
   rendererReady: boolean,
   surfaceReady: boolean,
   decoderReady: boolean,
-  rdpFrameReady: boolean
+  rdpFrameReady: boolean,
+  vncFrameReady: boolean = false
 ): boolean {
   if (!rendererReady || !surfaceReady) {
     return false;
   }
   if (protocol === 'rdp') {
     return rdpFrameReady;
+  }
+  if (protocol === 'vnc') {
+    return vncFrameReady;
   }
   return decoderReady;
 }

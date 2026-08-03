@@ -2880,6 +2880,9 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
                 std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::steady_clock::now().time_since_epoch()).count()),
                 std::memory_order_release);
+            // VNC is a raw framebuffer path, but it still counts as active
+            // remote video for the background media/PIP registration layer.
+            recordRemoteVideoFrame(frame.size, frame.width, frame.height);
             RendererNapi::SetActiveSourceSize(session->identity(), frame.width, frame.height);
             const RdpPresentationTarget target =
                 RendererNapi::GetActivePresentationTarget(session->identity());
@@ -6753,6 +6756,53 @@ static napi_value NapiIsVideoPlaybackActive(napi_env env, napi_callback_info /*i
     return active;
 }
 
+/**
+ * NAPI: bindRendererToSession(rendererHandle, sessionId): boolean
+ *
+ * Renderer recreation is a surface lifecycle operation, not a protocol
+ * reconnect. initRenderer() can only see the process-wide owner that is
+ * active at that instant; after a background/PIP renderer is destroyed that
+ * renderer owner is intentionally cleared. Rebind the new renderer to the
+ * still-live SessionContext so raw VNC/RDP callbacks are admitted again.
+ */
+static napi_value NapiBindRendererToSession(napi_env env, napi_callback_info info) {
+    size_t argc = 2;
+    napi_value args[2] = {nullptr, nullptr};
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+
+    int64_t rendererHandle = 0;
+    int32_t sessionId = 0;
+    if (argc >= 1) {
+        napi_get_value_int64(env, args[0], &rendererHandle);
+    }
+    if (argc >= 2) {
+        napi_get_value_int32(env, args[1], &sessionId);
+    }
+
+    bool bound = false;
+    if (rendererHandle > 0 && sessionId > 0) {
+        const auto it = g_sessionRegistry.find(sessionId);
+        if (it != g_sessionRegistry.end() && it->second &&
+            it->second->lifecycle.load(std::memory_order_acquire) ==
+                SessionContext::Lifecycle::Active) {
+            const std::shared_ptr<SessionContext> session = it->second;
+            const DecoderSessionIdentity owner = session->identity();
+            if (owner.valid() &&
+                Render::SharedSessionSinkOwnerLease().accepts(owner) &&
+                DecoderNapi::IsActiveSessionOwner(owner)) {
+                bound = RendererNapi::SetActiveRenderer(rendererHandle, owner);
+            }
+        }
+    }
+
+    OH_LOG_INFO(LOG_APP,
+        "[ExtLoader] bindRendererToSession renderer=%{public}lld session=%{public}d bound=%{public}s",
+        static_cast<long long>(rendererHandle), sessionId, bound ? "true" : "false");
+    napi_value result;
+    napi_get_boolean(env, bound, &result);
+    return result;
+}
+
 // ============================================================
 // ExtensionLoaderNapi::Init
 // ============================================================
@@ -7076,6 +7126,10 @@ napi_value ExtensionLoaderNapi::Init(napi_env env, napi_value exports) {
     napi_create_function(env, "isVideoPlaybackActive", NAPI_AUTO_LENGTH,
                          NapiIsVideoPlaybackActive, nullptr, &fn);
     napi_set_named_property(env, exports, "isVideoPlaybackActive", fn);
+
+    napi_create_function(env, "bindRendererToSession", NAPI_AUTO_LENGTH,
+                         NapiBindRendererToSession, nullptr, &fn);
+    napi_set_named_property(env, exports, "bindRendererToSession", fn);
 
     // SSH 密钥工具
     napi_create_function(env, "generateSshKeyPair", NAPI_AUTO_LENGTH,
