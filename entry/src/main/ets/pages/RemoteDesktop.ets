@@ -6306,9 +6306,11 @@ struct RemoteDesktop {
     const action: RestoreRefreshAction = restoreRefreshActionForDelay(delayMs);
     if (shouldRebindSurfaceForRestore(action, this.rendererHandle)) {
       const desktop: DesktopSize = this.desktopSize(this.pendingHost);
+      const pageSurface: RemoteSessionPipContentSize = this.currentPageSurfaceSize(
+        desktop.width, desktop.height);
       const surfaceId: string = this.latestSurfaceId.length > 0 ? this.latestSurfaceId : this.xcId;
       const result = this.loader.reattachRenderForForeground(
-        surfaceId, desktop.width, desktop.height, this.sessionId);
+        surfaceId, pageSurface.width, pageSurface.height, this.sessionId);
       if (result.ok && result.value !== undefined && result.value > 0) {
         this.rendererHandle = result.value;
         if (this.pendingHost !== null) {
@@ -9728,11 +9730,11 @@ struct RemoteDesktop {
         this.loader.destroyRenderer();
       }
       this.rendererHandle = -1;
-      const width: number = this.renderWidthPx > 0 ? this.renderWidthPx : this.remoteWidth;
-      const height: number = this.renderHeightPx > 0 ? this.renderHeightPx : this.remoteHeight;
-
+      // The PIP controller has already published the real free-node SurfaceRect.
+      // Rebinding with the page or remote logical size changes the native window
+      // dimensions and makes the PIP image appear cropped or quarter-sized.
       const result = this.loader.reattachRenderForForeground(
-        surface.surfaceId, width, height, this.sessionId);
+        surface.surfaceId, surface.surfaceWidth, surface.surfaceHeight, this.sessionId);
       if (!result.ok || result.value === undefined || result.value <= 0) {
         hilog.warn(RD_DOMAIN, RD_TAG, 'attachRendererToPipSurface: renderer init failed code=' +
           result.code + ' msg=' + result.message);
@@ -10259,6 +10261,8 @@ struct RemoteDesktop {
       (restoringVnc ? 'VNC: 正在恢复远程画面' : '');
     try {
       const desktop: DesktopSize = this.desktopSize(this.pendingHost);
+      const pageSurface: RemoteSessionPipContentSize = this.currentPageSurfaceSize(
+        desktop.width, desktop.height);
       const surfaceId: string = this.latestSurfaceId.length > 0 ? this.latestSurfaceId : this.xcId;
       // Pro 主机从列表页完成真实鉴权后交接的是“无画布会话”。此时不能走
       // reattach 路径，必须在远程页首次创建 renderer/decoder，再绑定到同一 session。
@@ -10275,7 +10279,8 @@ struct RemoteDesktop {
         this.preAuthenticatedSessionPending = false;
       }
       if (preAuthenticatedAttach) {
-        const renderer: number = this.loader.initRenderer(surfaceId, desktop.width, desktop.height);
+        const renderer: number = this.loader.initRenderer(
+          surfaceId, pageSurface.width, pageSurface.height);
         if (renderer <= 0) {
           throw new Error('预鉴权会话画布初始化失败 [E-RUSTDESK-PREFLIGHT-RENDERER]');
         }
@@ -10345,7 +10350,7 @@ struct RemoteDesktop {
         return;
       }
       const result = this.loader.reattachRenderForForeground(
-        surfaceId, desktop.width, desktop.height, this.sessionId);
+        surfaceId, pageSurface.width, pageSurface.height, this.sessionId);
       if (result.ok && result.value !== undefined && result.value > 0) {
         this.rendererHandle = result.value;
         if (this.pendingHost !== null) {
@@ -10428,7 +10433,11 @@ struct RemoteDesktop {
           const clipboardEnabled: boolean = this.clipboardBridgeEnabledForSession();
           this.startClipboardBridgeBestEffort(this.sessionId, this.connectAttemptId, clipboardEnabled);
         }
-        this.scheduleRestoreFrameRefreshPump();
+        // waitForRustDeskFirstPresentedFrame()/waitForVncPresentedFrame() have
+        // already completed before this state transition. A delayed watchdog
+        // here would rebind a healthy renderer and recreate the decoder again at
+        // 3/5/7 seconds, which is the visible foreground recovery delay.
+        this.clearRestoreFrameRefreshPump();
         if (this.pendingHost !== null) {
           await this.prepareRemoteSessionPipForForeground(this.pendingHost, this.sessionId);
         }
