@@ -4,9 +4,9 @@
   "branch": "codex/rustdesk-complete-repair",
   "base": "34946adbc",
   "head": "68f5253",
-  "phase": "vnc-v3-stage-e-settings-consistency",
+  "phase": "vnc-v3-stage-f-gateway-deep-checks",
   "status": "active",
-  "next": "Stage E checkpoint 68f5253 exposes and validates current-account mode12 default Gateways and gates deletion/disable on reference cleanup with retry; reuse the existing reviewer once before entering Stage F.",
+  "next": "Stage E passed at 68f5253; begin the VNC-only Stage F Gateway TCP/deep mode12 health separation and resolver cross-gates.",
   "blockers": [
     "hdc list targets and hdc shell return Connect server failed; no current hilog evidence.",
     "ohosTest@OhosTestCompileArkTS is not registered (00306054); ArkTS tests have compile/build evidence only.",
@@ -17,7 +17,7 @@
     "docs/superpowers/plans/2026-08-01-vnc-certificate-settings-relay-complete-repair-plan-v3.md"
   ],
   "review": {
-    "status": "BLOCKED",
+    "status": "PASS",
     "taskId": "019fc333-6789-7633-bf6f-3fea1cb2ad4d",
     "scope": [
       "entry/src/main/ets/components/hostadd/VncAddFlow.ets",
@@ -29,7 +29,7 @@
       "entry/src/test/List.test.ets",
       "entry/src/test/VncHostDefaultsPolicy.test.ets"
     ],
-    "reason": "Stage E checkpoint 68f5253 fixes the prior reviewer P1/P2: both VNC settings surfaces can select a valid current-account mode12 Gateway, service save rejects invalid Repeater defaults, and deletion/disable gates on reference cleanup with a retryable failure state. Awaiting the single existing independent read-only reviewer."
+    "reason": "Independent read-only VNC V3 Stage E review passed at 68f5253 with no P0/P1/P2 findings. Both settings surfaces expose valid current-account mode12 Gateway selection, service save rejects invalid Repeater defaults, and deletion/disable gates on reference cleanup with retryable failure state."
   },
   "lastVerification": {
     "rdp_native_tests": "249-pass-0-fail-loopback-fixtures-host-socket-68f5253-2026-08-03",

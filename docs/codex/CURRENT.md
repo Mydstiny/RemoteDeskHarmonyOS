@@ -8,7 +8,7 @@ This file is the compact startup resume card. Historical checkpoints remain in
 - Task: `rustdesk-complete-repair` (active branch retained; current scope is VNC V3 only)
 - Branch: `codex/rustdesk-complete-repair`
 - Checkpoint: `68f5253`, based on `main@34946adbc`; branch is ahead by 53 and not behind.
-- Phase: VNC V3 stage E settings consistency; default Gateway selection is available in both VNC settings surfaces, service validation is fail-closed, and Gateway deletion/disable clears references before mutation with retryable failure state, awaiting re-review.
+- Phase: VNC V3 stage E settings consistency PASS; both VNC settings surfaces expose valid mode12 Gateway selection, service validation is fail-closed, and Gateway deletion/disable clears references before mutation with retryable failure state. Preparing stage F.
 - Worktree: clean after the code checkpoint. Do not stage unrelated changes.
 
 ## Stage A Result
@@ -71,15 +71,11 @@ This file is the compact startup resume card. Historical checkpoints remain in
 - Checkpoint `590a5639c` applies the shared default resolver to modern VNC
   creation and clears default Gateway references when a Gateway is removed or
   disabled; invalid references still fail closed to direct TCP.
-- Checkpoint `1b5eba5` adds a current-account mode12 Gateway selector to the
-  settings page, blocks saving an invalid Repeater default, and prevents
-  Gateway deletion/disable when reference cleanup fails.
-- Checkpoint `c4d5bef` adds the same selector to the compact settings Sheet and
-  enforces the valid Gateway invariant in `VncSettingsService.save()`.
-- Checkpoint `f6e0c8e` makes cleanup failures durable in the settings page with
-  an explicit retry action while keeping Gateway mutation blocked.
-- Checkpoint `68f5253` keeps the compact settings Sheet Builder compliant with
-  ArkTS UI syntax after adding the Gateway selector.
+- Checkpoints `1b5eba5`–`68f5253` add current-account mode12 Gateway selectors
+  to both settings surfaces, service validation, and retryable cleanup gating.
+- Stage E final review: `PASS` at `68f5253a` by the existing independent
+  reviewer; no P0/P1/P2 findings. Remaining gaps are live device/ohosTest
+  evidence and runtime tests for service rejection/cleanup rollback.
 - Keep every VNC caller fail-closed when the probe, Sheet lifecycle, owner
   binding, or expected-pin handoff is missing or stale.
 
@@ -114,7 +110,7 @@ This file is the compact startup resume card. Historical checkpoints remain in
 
 - Machine state: `docs/codex/STATE.json`.
 - Receipts: `docs/codex/REVIEW_RECEIPTS.jsonl`.
-- `scripts/sync_workspace.sh status` should report RESUME_REVIEW for the
-  `68f5253` Stage E increment until the existing reviewer returns a receipt.
+- `scripts/sync_workspace.sh status` should retain the Stage E PASS receipt and
+  move the active VNC-only work to Stage F Gateway deep checks.
 - Reuse the existing independent review session and do not redispatch duplicate
   messages for the same segment.

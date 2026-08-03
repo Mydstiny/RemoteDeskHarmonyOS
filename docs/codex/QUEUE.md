@@ -4,9 +4,9 @@ Updated: 2026-08-03 Asia/Shanghai
 
 ## Now
 
-- Stage E checkpoint `68f5253` exposes and validates current-account mode12
-  default Gateways in both VNC settings surfaces; cleanup now gates Gateway
-  deletion/disable and waits for the existing VNC-only reviewer.
+- Stage E checkpoint `68f5253` passed the existing VNC-only reviewer: both
+  settings surfaces validate current-account mode12 defaults and cleanup gates
+  Gateway deletion/disable.
 - Preserve stage A/B and C-first review receipts; keep probe/pin failures
   fail-closed.
 - Restore `hdc` connectivity and capture current VNC `hilog` when the device is
@@ -14,9 +14,8 @@ Updated: 2026-08-03 Asia/Shanghai
 
 ## Next
 
-- Stage E review: consume the single existing reviewer result for `68f5253`;
-  repair any findings before advancing.
-- Stage F: VNC Gateway deep checks and Repeater mode12 cross-gates.
+- Stage F: distinguish Gateway TCP reachability from deep mode12/TLS/RFB
+  health, reusing the endpoint resolver and certificate Sheet.
 
 ## Later
 
