@@ -7,10 +7,9 @@ This file is the compact startup resume card for the active SSH terminal task.
 - Task: `ssh-terminal-complete-upgrade`
 - Base: `main@d2769ad4b`
 - Branch: `codex/ssh-terminal-complete-upgrade`
-- Code checkpoint: `757d099` (Alacritty, reactor keepalive and PiP lifecycle
-  checkpoint committed)
-- Phase: Alacritty is default; session callback/resume ordering and PiP start
-  gating are checkpointed, with review and the full device matrix pending.
+- Code checkpoint: `b6ed084` (Alacritty, lifecycle and VT parity checkpoint committed)
+- Phase: Alacritty is default; lifecycle, VT/Unicode/resize/TUI/large-output
+  parity and damage checks pass, with device acceptance still pending.
 - Scope: migrate VT behind terminalCore, keep appearance settings in-core, and
   verify IME/input/Canvas behavior. Homepage work is not current focus.
 
@@ -84,13 +83,14 @@ This file is the compact startup resume card for the active SSH terminal task.
   path `57 passed, 0 failed`.
 - OHOS Rust checks: `aarch64-unknown-linux-ohos` and
   `x86_64-unknown-linux-ohos` passed with the Alacritty feature.
+- Terminal parity: Alacritty `67 passed`, fallback `57 passed`; shared
+  Unicode/ANSI, TUI/alternate-screen, resize/large-output and damage fixtures
+  match on visible cells and required metadata.
 - `ohosTest@OhosTestCompileArkTS`: blocked; task is not registered (`00306054`).
 - Light compliance: blocked by baseline SBOM package
   `totp-reviewed-brand-assets` with `licenseDeclared=NOASSERTION`.
-- HDC target `5KLBB25928203528` is connected; direct SSH input, keepalive,
-  large output, background/foreground return and Canvas rendering were checked
-  on device. Full IME/physical-keyboard, PiP/background-task and SFTP provider
-  matrices still need dedicated acceptance.
+- HDC target `5KLBB25928203528` accepted the signed HAP install, but launch is
+  blocked by screen lock (`10106102`); no new device PASS is claimed.
 
 ## Review
 
@@ -103,7 +103,8 @@ This file is the compact startup resume card for the active SSH terminal task.
 
 ## Next
 
-1. Install the `757d099` HAP and complete the SSH terminal device matrix.
+1. Unlock HDC target `5KLBB25928203528`, launch `b6ed084`, and complete the
+   SSH terminal device matrix.
 2. Run shared VT/Unicode/resize/TUI/large-output fixtures through the default
    Alacritty C ABI and compare snapshots/damage with the old core.
 3. Capture a terminal pipeline timeline and reproduce input, IME, command and
