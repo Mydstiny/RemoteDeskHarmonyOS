@@ -6,10 +6,13 @@ Updated: 2026-08-04 Asia/Shanghai
 
 - SFTP checkpoint is closed for the implemented integrity, durable metadata,
   local-provider and Pad/PC workspace scope; do not expand it in this pass.
-- Alacritty `0.26.0` is now the default VT core behind terminalCore; finish
+- Alacritty `0.26.0` is now the default VT core behind terminalCore; the
+  reactor keepalive and lifecycle checkpoint is committed; finish
   snapshot/damage comparison and keep the old core as an explicit fallback.
 - Diagnose terminal input stalls, IME/physical-keyboard churn, commands that do
   not execute, Canvas misalignment and output/frame backpressure.
+- Complete the full device matrix for IME/physical keyboard, PiP/background
+  continuity and Canvas stress; keep basic SSH command acceptance recorded.
 - Run shared VT/Unicode/resize/TUI/large-output fixtures through the default
   Alacritty C ABI and compare snapshots/damage with the old core.
 - Keep the current review state `REVIEW_REQUIRED`; do not claim full background
@@ -32,8 +35,9 @@ Updated: 2026-08-04 Asia/Shanghai
 
 ## Evidence Gaps
 
-- HDC target `5KLBB25928203528` is connected and the homepage follow-on was
-  checked; SFTP workspace and physical-device acceptance are still pending.
+- HDC target `5KLBB25928203528` is connected; basic SSH command, keepalive,
+  large-output and foreground-return checks passed. Full IME/PiP/SFTP provider
+  acceptance is still pending.
 - `ohosTest@OhosTestCompileArkTS` is unregistered (`00306054`).
 - Light compliance is blocked by baseline SBOM package
   `totp-reviewed-brand-assets` with `licenseDeclared=NOASSERTION`.

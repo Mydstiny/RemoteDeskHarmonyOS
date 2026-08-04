@@ -7,50 +7,46 @@ This file is the compact startup resume card for the active SSH terminal task.
 - Task: `ssh-terminal-complete-upgrade`
 - Base: `main@d2769ad4b`
 - Branch: `codex/ssh-terminal-complete-upgrade`
-- Code checkpoint: `5bceef20d` (Alacritty migration committed)
-- Phase: Alacritty terminal core is the default production route; device
-  renderer/input acceptance is still pending
-- Scope: migrate the VT state machine behind the existing terminalCore ABI,
-  keep personalized appearance settings in-core, then verify IME/input and
-  Canvas behavior. Homepage work is not the current focus.
+- Code checkpoint: `8e6326aab` (Alacritty and SSH lifecycle checkpoint committed)
+- Phase: Alacritty is default; reactor keepalive/background lifecycle are
+  checkpointed, with review and the full device matrix pending.
+- Scope: migrate VT behind terminalCore, keep appearance settings in-core, and
+  verify IME/input/Canvas behavior. Homepage work is not current focus.
 
 ## Progress
 
 - WP-T0 diagnostics baseline is implemented: schema v2, payload-free counters,
-  ordered timestamp sampling, explicit queue/callback coverage and no per-key
-  INFO logging.
-- WP-T1 native writer path is implemented: bounded FIFO, reserved control quota,
-  generation checks, queue-full status, teardown admission gate, and paste
-  chunking/retry queues.
+  ordered sampling, queue/callback coverage and no per-key INFO logging.
+- WP-T1 native writer path is implemented: bounded FIFO/control quota,
+  generation checks, queue-full status, teardown gate and paste retry queues.
 - WP-T2 uses one SSH session-owner reactor for terminal input, reader, SFTP,
   command channels, signal/EOF, PTY resize and keepalive.
 - Physical-keyboard/IME policy covers device-aware Unicode/CJK/emoji, CapsLock,
   AltGr, focus and duplicate-change suppression.
-- WP-S0 SFTP integrity floor is implemented: zero-byte transfers, remote/local
-  `.partial` staging, identity-bound resume, fsync/size verification, atomic
-  commit and partial retention on cancel/failure.
-- Current SFTP checkpoint adds bounded durable task metadata, ordered/coalesced
-  persistence, restore/pause/resume/cancel/detach transitions, capability-aware
-  local-provider selection, folder authorization and remote/local file views.
-- Local provider now keeps the persisted Picker URI separate from the FileIO
-  path; API 23 directory listing and child operations use the authorized path.
+- WP-S0 SFTP integrity floor is implemented: zero-byte transfers, `.partial`
+  staging, identity-bound resume, fsync/size verification and atomic commit.
+- Current SFTP checkpoint adds durable task metadata, lifecycle transitions,
+  capability-aware provider selection, authorization and file views.
+- Local provider separates persisted Picker URI from FileIO path; API 23 child
+  operations use the authorized path.
 - Pad/PC SFTP uses a full-screen in-page workspace; `sm` keeps the original
   bottom Sheet and original virtual-key-bar behavior. Input-device mode is
   scoped to Pad/PC.
-- Wide Pad/PC SFTP now keeps remote navigation, path jump, rename and remote
-  actions in the left column; local authorization, listing and upload actions
-  remain in the right column.
+- Wide Pad/PC SFTP keeps remote navigation/path jump/rename/actions left and
+  local authorization/listing/upload actions right.
 - The SFTP checkpoint is closed for the implemented integrity, task metadata,
   local-provider and Pad/PC workspace scope. It is not a complete background
   transfer engine: payload execution remains page-owned and real provider/
   endpoint acceptance is pending.
-- WP-T4 first migration slice is implemented: `alacritty_terminal` `0.26.0`
-  is enabled by default, and the existing terminalCore C ABI now owns an
-  Alacritty terminal handle while the old Rust core remains a no-default
-  feature fallback.
+- WP-T4 first migration slice is implemented: `alacritty_terminal` `0.26.0` is
+  default behind terminalCore; the old Rust core remains a no-default fallback.
 - `sshTerminalForegroundColor` is converted to ARGB in ArkTS and applied
   through NAPI into the core; explicit ANSI colors remain independent. Font
   size stays in the Canvas renderer because it controls cell geometry.
+- The SSH owner reactor now sends bounded non-blocking libssh2 keepalives and
+  retries transient failures without taking a second session owner.
+- SSH background continuity and custom PiP ownership are isolated from the
+  RDP/RustDesk/VNC services; teardown is serialized on foreground/Ability exit.
 - SBOM, NOTICE and third-party scope now include Alacritty and its locked
   transitive crates.
 
@@ -74,13 +70,16 @@ This file is the compact startup resume card for the active SSH terminal task.
 ## Verification
 
 - `git diff --check`: passed on 2026-08-04.
-- Host native tests: `253 passed, 16 failed, 269 total`; all failures are the
-  existing VNC TLS fixture startup failures; SSH diagnostics/queue tests pass.
+- Host native tests: `254 passed, 16 failed, 270 total`; all failures are the
+  existing VNC TLS fixture startup failures; the keepalive/SSH diagnostics
+  tests pass.
 - Rust `cargo test --manifest-path rustdesk_ffi/Cargo.toml --lib
   --no-default-features`: `156 passed, 1 failed, 157 total`; the remaining
   failure is the existing rendezvous fixture's public-address assertion.
-- `default@OhosTestCompileArkTS`: passed on 2026-08-04, warnings only.
-- `assembleHap`: passed on 2026-08-04 with `BUILD SUCCESSFUL` and signing.
+- `default@OhosTestCompileArkTS`: passed after the lifecycle checkpoint on
+  2026-08-04, warnings only.
+- `assembleHap`: passed after the lifecycle checkpoint on 2026-08-04 with
+  `BUILD SUCCESSFUL` and signing.
 - Terminal-core Rust tests: Alacritty path `63 passed, 0 failed`; fallback
   path `57 passed, 0 failed`.
 - OHOS Rust checks: `aarch64-unknown-linux-ohos` and
@@ -88,9 +87,10 @@ This file is the compact startup resume card for the active SSH terminal task.
 - `ohosTest@OhosTestCompileArkTS`: blocked; task is not registered (`00306054`).
 - Light compliance: blocked by baseline SBOM package
   `totp-reviewed-brand-assets` with `licenseDeclared=NOASSERTION`.
-- HDC: target `5KLBB25928203528` is connected; homepage UI was installed and
-  checked on the 2560x1600 device. Terminal latency/IME/rendering and SFTP
-  provider acceptance still need the dedicated device matrix.
+- HDC target `5KLBB25928203528` is connected; direct SSH input, keepalive,
+  large output, background/foreground return and Canvas rendering were checked
+  on device. Full IME/physical-keyboard, PiP/background-task and SFTP provider
+  matrices still need dedicated acceptance.
 
 ## Review
 
@@ -114,7 +114,7 @@ This file is the compact startup resume card for the active SSH terminal task.
 
 ## Blockers
 
-- HDC is connected and homepage evidence is available; terminal latency,
-  keyboard/IME, Canvas and SFTP lifecycle/provider acceptance remains pending.
+- Full IME/physical-keyboard, PiP/background-task and SFTP lifecycle/provider
+  acceptance remains pending; basic terminal device checks have passed.
 - No real OpenSSH bastion/ProxyJump, forwarding or FRP endpoint is available.
 - `ohosTest@OhosTestCompileArkTS` is unregistered (`00306054`).

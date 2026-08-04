@@ -3,12 +3,12 @@
   "task": "ssh-terminal-complete-upgrade",
   "branch": "codex/ssh-terminal-complete-upgrade",
   "base": "d2769ad4b",
-  "head": "5bceef20d",
-  "phase": "alacritty-core-migrated-device-acceptance-pending",
+  "head": "8e6326aab",
+  "phase": "alacritty-core-runtime-lifecycle-checkpointed-review-pending",
   "status": "active",
-  "next": "Run shared VT/Unicode/resize/TUI/large-output fixtures through the default Alacritty C ABI, then verify device input/IME/Canvas behavior; keep Level A/B connectivity gated.",
+  "next": "Run shared VT/Unicode/resize/TUI/large-output fixtures through the default Alacritty C ABI, complete the IME/physical-keyboard/PiP device matrix, and keep Level A/B connectivity gated.",
   "blockers": [
-    "HDC target 5KLBB25928203528 is connected; terminal latency, keyboard/IME, Canvas and SFTP lifecycle/provider evidence remain pending.",
+    "HDC target 5KLBB25928203528 is connected; basic SSH command, keepalive, large-output and foreground-return checks passed, while the full IME/PiP/SFTP provider matrix remains pending.",
     "ohosTest@OhosTestCompileArkTS is not registered (00306054).",
     "Host native suite has 16 pre-existing VNC TLS fixture startup failures; SSH tests pass.",
     "No bastion/forwarding endpoint is available; ProxyJump and port forwarding remain gated plan items.",
@@ -29,9 +29,12 @@
       "entry/src/main/cpp/ssh/ssh_adapter.h",
       "entry/src/main/cpp/ssh/ssh_terminal_diagnostics.h",
       "entry/src/main/cpp/ssh/ssh_terminal_input_queue_policy.h",
+      "entry/src/main/cpp/ssh/ssh_terminal_keepalive_policy.h",
       "entry/src/main/cpp/test/ssh_terminal_diagnostics_test.cpp",
       "entry/src/main/cpp/types/librdpnapi/index.d.ts",
       "entry/src/main/ets/pages/SshTerminal.ets",
+      "entry/src/main/ets/services/SshTerminalBackgroundTaskService.ets",
+      "entry/src/main/ets/services/SshTerminalPipService.ets",
       "entry/src/main/ets/services/ExtensionLoader.ets",
       "entry/src/main/ets/types/rdpnapi.d.ts",
       "entry/src/main/ets/services/SshTerminalInputPolicy.ets",
@@ -62,18 +65,18 @@
       "rustdesk_ffi/src/terminal_core/mod.rs",
       "rustdesk_ffi/src/terminal_core/tests.rs"
     ],
-    "reason": "Alacritty migration checkpoint is committed and build/test validated; independent review plus terminal fixture and real-device evidence are still pending."
+    "reason": "Alacritty migration, reactor keepalive and SSH lifecycle checkpoint are committed and build/native/device-basic validated; independent review, full device matrix and endpoint evidence remain pending."
   },
   "lastVerification": {
-    "host_native_tests": "253-pass-16-preexisting-vnc-fixture-startup-failures-269-total-2026-08-04",
+    "host_native_tests": "254-pass-16-preexisting-vnc-fixture-startup-failures-270-total-2026-08-04",
     "rust_terminal_core_tests": "focused-alacritty-63-pass-fallback-57-pass-2026-08-04; full-no-default-features-156-pass-1-preexisting-rendezvous-fixture-public-address-failure-157-total",
-    "default@OhosTestCompileArkTS": "pass-alacritty-migration-2026-08-04",
-    "assembleHap": "pass-build-successful-signed-alacritty-migration-2026-08-04",
+    "default@OhosTestCompileArkTS": "pass-ssh-lifecycle-checkpoint-2026-08-04",
+    "assembleHap": "pass-build-successful-signed-ssh-lifecycle-checkpoint-2026-08-04",
     "gitDiffCheck": "pass-2026-08-04",
     "sbom": "pass-totp-validator-96-packages-282-files-282-relationships-2026-08-04",
     "ohosTest": "blocked-task-00306054",
     "lightCompliance": "blocked-baseline-sbom-NOASSERTION-totp-reviewed-brand-assets",
-    "hdc": "connected-5KLBB25928203528-homepage-screenshot-2560x1600-2026-08-04",
+    "hdc": "connected-5KLBB25928203528-basic-ssh-keepalive-large-output-foreground-checks-2026-08-04",
     "homepagePresenceToggle": "pass-installed-signed-hap-classic-home-no-presence-text-2026-08-04"
   },
   "updated": "2026-08-04 Asia/Shanghai"
