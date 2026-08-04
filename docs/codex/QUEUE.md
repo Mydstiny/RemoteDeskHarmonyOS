@@ -4,10 +4,14 @@ Updated: 2026-08-04 Asia/Shanghai
 
 ## Now
 
-- Commit the SSH-only T0-T3/WP-S0 checkpoint after self-review and the two
-  mandatory Hvigor gates.
-- Preserve strict module isolation: no RDP, RustDesk, VNC, CloudStore or TOTP
-  changes in this task.
+- Homepage grouped-card follow-on is implemented and concentrated self-reviewed
+  at `e877d12c2`; the switch affects Phone, Pad and PC small-window modes only,
+  while PC large-window mode stays unchanged.
+- Both mandatory Hvigor gates pass on the current homepage implementation.
+- Checkpoint `d4731b790` commits the SSH-only T0-T3/WP-S0 implementation after
+  self-review and both mandatory Hvigor gates.
+- Preserve protocol owners: homepage changes consume read-only projections and
+  do not alter RustDesk transport, VNC storage, SSH transport or cloud schemas.
 
 ## Next
 
@@ -24,8 +28,11 @@ Updated: 2026-08-04 Asia/Shanghai
 
 ## Evidence Gaps
 
-- No HDC device is listed; Phone/Pad/PC physical keyboard, orientation,
-  background/reconnect, SFTP workspace and drag/drop evidence is pending.
+- No HDC device is listed; Phone/Pad/PC geometry, RustDesk presence, physical
+  keyboard, orientation, background/reconnect, SFTP workspace and drag/drop
+  evidence is pending.
 - `ohosTest@OhosTestCompileArkTS` is unregistered (`00306054`).
+- Light compliance is blocked by baseline SBOM package
+  `totp-reviewed-brand-assets` with `licenseDeclared=NOASSERTION`.
 - Host native suite has 16 pre-existing VNC TLS fixture startup failures; all
   251 non-fixture tests, including SSH queue/diagnostics tests, pass.

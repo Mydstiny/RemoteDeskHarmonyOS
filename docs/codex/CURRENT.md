@@ -1,16 +1,20 @@
 # Shared Current State
 
-This file is the compact startup resume card for the active SSH-only task.
+This file is the compact startup resume card for the active branch. The branch
+contains the completed SSH checkpoint and the user-authorized RustDesk host
+homepage card follow-on.
 
 ## Active Task
 
 - Task: `ssh-terminal-complete-upgrade`
 - Base: `main@d2769ad4b`
 - Branch: `codex/ssh-terminal-complete-upgrade`
-- HEAD: `1976c4aeb` plus uncommitted WP-T0-T3/WP-S0 changes
-- Phase: SSH-only self-review checkpoint after WP-S0 integrity floor
-- Scope: SSH terminal input/diagnostics/N-API/ArkTS only; RDP, RustDesk, VNC,
-  CloudStore and TOTP owners are out of scope.
+- HEAD: `e877d12c2` (SSH checkpoint plus homepage card implementation committed
+  on this same branch)
+- Phase: RustDesk host homepage grouped-card implementation reviewed; device
+  acceptance remains open
+- Scope: user-authorized HostListPage grouped-card UI and strategy tests, while
+  preserving the completed SSH checkpoint and existing protocol owners.
 
 ## Progress
 
@@ -35,38 +39,49 @@ This file is the compact startup resume card for the active SSH-only task.
   mutation-versioned/coalesced durable writes, and fail-closed unknown-size
   records. It is not the complete background task engine or provider layer.
 
+## Homepage Follow-on
+
+- Added the local `groupedHostCards` personalization switch; it is active only
+  on Phone, Pad and PC small-window modes.
+- PC large-window mode (`isDesktopDevice && breakpoint === 'xl'`) keeps the
+  existing left protocol sidebar and categorized host list even when the switch
+  is on.
+- Added fixed RDP/RustDesk/SSH/VNC projections, RustDesk ID display, conservative
+  presence labels, explicit host actions and no swipe actions in grouped mode.
+- Phone uses one settings-style card per type; Pad and PC small-window use two
+  equal 220vp cards per row. Details stay below the selected row and span the
+  content width.
+
 ## Verification
 
-- `git diff --check`: passed after the latest fixes.
+- `git diff --check`: passed on `e877d12c2` and after final state preparation.
 - Host native tests: `253 passed, 16 failed, 269 total`; all failures are the
   existing VNC TLS fixture startup failures; SSH diagnostics and queue policy
   tests pass.
-- `default@OhosTestCompileArkTS`: passed after WP-S0 fixes on 2026-08-04
-  (warnings only).
-- `assembleHap`: passed after WP-S0 fixes on 2026-08-04 (`BUILD SUCCESSFUL`,
-  native Ninja rebuilt).
-- HDC: no device currently listed; no physical keyboard, Pad SFTP or PC drag
-  evidence is available yet.
+- `default@OhosTestCompileArkTS`: passed on 2026-08-04 after the homepage
+  implementation (warnings only).
+- `assembleHap`: passed on 2026-08-04 with `BUILD SUCCESSFUL` and signing.
+- `ohosTest@OhosTestCompileArkTS`: blocked; task is not registered (`00306054`).
+- Light compliance: blocked by baseline SBOM package
+  `totp-reviewed-brand-assets` declaring `NOASSERTION`; no SBOM/dependency
+  change was made in this task.
+- HDC: no device currently listed; grouped-card geometry, RustDesk presence,
+  and Phone/Pad/PC runtime evidence remain unavailable.
 
 ## Review
 
-- Review mode: user-authorized self-review in the primary session; the
-  independent review session and child agent are stopped and will not be used.
-- Self-review covered input ordering/IME/focus, generation guards, TSFN/reader
-  teardown, output backpressure, SFTP path/URI/partial identity, cancel/commit
-  races, Task Store unknown-size handling and serialized flushes.
+- Review mode: user-authorized concentrated homepage self-review PASS on
+  `e877d12c2`; no P0/P1/P2 findings in the reviewed scope.
+- The previous SSH self-review PASS remains valid for the committed SSH
+  checkpoint; this receipt adds the homepage scope and does not claim an
+  independent reviewer or device acceptance.
 - No device PASS is claimed: HDC is unavailable and `ohosTest` is unregistered.
 
 ## Next
 
-1. Commit the SSH-only checkpoint after the current self-review and mandatory
-   build gates.
-2. Hand WP-S1/S2 durable transfer tasks and capability-aware local providers to
-   the next session.
-3. Hand WP-S3/S4 Pad/PC dual-pane workspace and UDMF drag/drop to the next
-   session.
-4. Restore HDC and run the Phone/Pad/PC SSH/SFTP acceptance matrix in a later
-   session.
+1. Restore HDC for Phone/Pad/PC geometry and RustDesk presence acceptance.
+2. Resolve the baseline Light SBOM `NOASSERTION` entry before release checks.
+3. Resume WP-S1/S2 durable transfer tasks after this follow-on closes.
 
 ## Blockers
 
@@ -74,5 +89,7 @@ This file is the compact startup resume card for the active SSH-only task.
   lifecycle, Pad layout and PC/2in1 drag/drop remain unverified.
 - `ohosTest@OhosTestCompileArkTS` is not registered in this project; native and
   default ArkTS compile/build evidence is available instead.
+- Light open-source compliance is blocked by the pre-existing
+  `totp-reviewed-brand-assets` SBOM `NOASSERTION` license entry.
 - A real OpenSSH bastion/ProxyJump and forwarding endpoint is not available;
   those Level B capabilities remain planned/gated and are not enabled here.
