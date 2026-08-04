@@ -60,6 +60,9 @@ void* terminal_core_create(size_t cols, size_t rows);
 /** 销毁终端实例 */
 void terminal_core_destroy(void* handle);
 
+/** 设置终端默认前景色 (ARGB, 显式 ANSI 颜色不受影响) */
+void terminal_core_set_default_foreground(void* handle, uint32_t foreground);
+
 /** 写入原始字节到终端 (ANSI/VT 解析) */
 void terminal_core_write(void* handle, const uint8_t* data, size_t len);
 

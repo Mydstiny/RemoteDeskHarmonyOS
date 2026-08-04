@@ -7,11 +7,12 @@ This file is the compact startup resume card for the active SSH terminal task.
 - Task: `ssh-terminal-complete-upgrade`
 - Base: `main@d2769ad4b`
 - Branch: `codex/ssh-terminal-complete-upgrade`
-- Code checkpoint: `fd5065b7d`
-- Phase: SFTP checkpoint closed; SSH terminal diagnosis and core-route decision
-- Scope: investigate terminal input stalls, IME/focus churn, command delivery,
-  Canvas damage/frame errors and mature terminal-core migration. Homepage work
-  is not the current focus.
+- Code checkpoint: `728c39c3a` plus uncommitted terminal-core migration slice
+- Phase: Alacritty terminal core is the default production route; device
+  renderer/input acceptance is still pending
+- Scope: migrate the VT state machine behind the existing terminalCore ABI,
+  keep personalized appearance settings in-core, then verify IME/input and
+  Canvas behavior. Homepage work is not the current focus.
 
 ## Progress
 
@@ -43,6 +44,15 @@ This file is the compact startup resume card for the active SSH terminal task.
   local-provider and Pad/PC workspace scope. It is not a complete background
   transfer engine: payload execution remains page-owned and real provider/
   endpoint acceptance is pending.
+- WP-T4 first migration slice is implemented: `alacritty_terminal` `0.26.0`
+  is enabled by default, and the existing terminalCore C ABI now owns an
+  Alacritty terminal handle while the old Rust core remains a no-default
+  feature fallback.
+- `sshTerminalForegroundColor` is converted to ARGB in ArkTS and applied
+  through NAPI into the core; explicit ANSI colors remain independent. Font
+  size stays in the Canvas renderer because it controls cell geometry.
+- SBOM, NOTICE and third-party scope now include Alacritty and its locked
+  transitive crates.
 
 ## Homepage Follow-on
 
@@ -71,6 +81,10 @@ This file is the compact startup resume card for the active SSH terminal task.
   failure is the existing rendezvous fixture's public-address assertion.
 - `default@OhosTestCompileArkTS`: passed on 2026-08-04, warnings only.
 - `assembleHap`: passed on 2026-08-04 with `BUILD SUCCESSFUL` and signing.
+- Terminal-core Rust tests: Alacritty path `63 passed, 0 failed`; fallback
+  path `57 passed, 0 failed`.
+- OHOS Rust checks: `aarch64-unknown-linux-ohos` and
+  `x86_64-unknown-linux-ohos` passed with the Alacritty feature.
 - `ohosTest@OhosTestCompileArkTS`: blocked; task is not registered (`00306054`).
 - Light compliance: blocked by baseline SBOM package
   `totp-reviewed-brand-assets` with `licenseDeclared=NOASSERTION`.
@@ -89,10 +103,10 @@ This file is the compact startup resume card for the active SSH terminal task.
 
 ## Next
 
-1. Capture a terminal pipeline timeline and reproduce input, IME, command and
+1. Run shared VT/Unicode/resize/TUI/large-output fixtures through the default
+   Alacritty C ABI and compare snapshots/damage with the old core.
+2. Capture a terminal pipeline timeline and reproduce input, IME, command and
    Canvas failures with the existing diagnostics hooks.
-2. Build the WP-T4 terminal-core spike/ADR comparison using shared VT, Unicode,
-   resize, TUI and large-output fixtures.
 3. Keep ProxyJump, forwarding and FRP disabled until contracts and endpoints
    exist; implement them as a separate Level B task.
 4. Re-run device and remote-endpoint acceptance when the terminal fixtures and
@@ -104,5 +118,3 @@ This file is the compact startup resume card for the active SSH terminal task.
   keyboard/IME, Canvas and SFTP lifecycle/provider acceptance remains pending.
 - No real OpenSSH bastion/ProxyJump, forwarding or FRP endpoint is available.
 - `ohosTest@OhosTestCompileArkTS` is unregistered (`00306054`).
-- Host native suite has 16 pre-existing VNC TLS fixture startup failures.
-- Light open-source compliance is blocked by the baseline SBOM `NOASSERTION`.

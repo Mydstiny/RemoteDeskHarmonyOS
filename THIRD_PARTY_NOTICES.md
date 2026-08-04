@@ -15,6 +15,7 @@ source and license files before redistribution.
 | Opus | built by `scripts/build_opus_ohos.sh` | BSD-3-Clause | RustDesk audio decode |
 | zlib | platform/API 23 system library; see `docs/compliance/ZLIB_SYSTEM_PROVENANCE.md` | Zlib | VNC ZRLE and FreeRDP compression |
 | Rust crates | versions locked in `rustdesk_ffi/Cargo.lock` | per-crate, recorded in SBOM | RustDesk bridge and terminal support |
+| Alacritty terminal | `alacritty_terminal` `0.26.0`; crates.io registry; transitive crates are listed individually in the SBOM | Apache-2.0; per-crate licenses for transitives | Rust VT/ANSI terminal state machine |
 | `@hw-agconnect/auth` | `entry/oh-package.json5` / lockfile | Huawei package terms | authentication/cloud integration |
 | Hypium / Hamock | root package lock | OpenHarmony package terms | tests only |
 

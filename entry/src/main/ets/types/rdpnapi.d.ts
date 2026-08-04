@@ -154,6 +154,7 @@ declare module 'librdpnapi.so' {
 
   export function terminalCoreCreate(cols: number, rows: number): number;
   export function terminalCoreDestroy(handle: number): void;
+  export function terminalCoreSetDefaultForeground(handle: number, foreground: number): void;
   export function terminalCoreWrite(handle: number, data: string): void;
   export function terminalCoreWriteBytes(handle: number, data: ArrayBuffer): void;
   export function terminalCoreResize(handle: number, cols: number, rows: number): void;

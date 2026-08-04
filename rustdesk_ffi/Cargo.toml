@@ -7,8 +7,9 @@ license = "AGPL-3.0-or-later"
 authors = ["RemoteDesktop Team"]
 
 [features]
-default = ["opus-audio"]
+default = ["opus-audio", "alacritty_terminal"]
 opus-audio = []
+alacritty_terminal = ["dep:alacritty_terminal"]
 # Audio: Opus decode is built-in (src/opus_ffi.rs)
 # Requires libopus.a built via scripts/build_opus_ohos.sh
 # Set OPUS_LIB_DIR to point to the built libopus.a directory
@@ -54,6 +55,7 @@ base64 = "0.22"
 ed25519-dalek = "2"
 sha2 = "0.10"
 zstd = { version = "0.13", default-features = false, features = ["no_asm"] }
+alacritty_terminal = { version = "0.26.0", default-features = false, optional = true }
 
 [build-dependencies]
 protobuf-codegen-pure = "2.28"       # build.rs 中编译 .proto → Rust (无需 protoc 二进制)

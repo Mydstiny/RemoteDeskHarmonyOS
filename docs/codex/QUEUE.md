@@ -6,17 +6,18 @@ Updated: 2026-08-04 Asia/Shanghai
 
 - SFTP checkpoint is closed for the implemented integrity, durable metadata,
   local-provider and Pad/PC workspace scope; do not expand it in this pass.
+- Alacritty `0.26.0` is now the default VT core behind terminalCore; finish
+  snapshot/damage comparison and keep the old core as an explicit fallback.
 - Diagnose terminal input stalls, IME/physical-keyboard churn, commands that do
   not execute, Canvas misalignment and output/frame backpressure.
-- Compare the current Rust core, a native Rust terminal engine and ArkWeb plus
-  xterm.js using the same correctness and performance fixtures.
 - Run the mandatory Hvigor gates and record the current native/test blockers.
 - Keep the current review state `REVIEW_REQUIRED`; do not claim full background
   SFTP execution, Level A, or Level B connectivity.
 
 ## Next
 
-- WP-T4 terminal-core route decision and a small proof-of-concept benchmark.
+- WP-T4 default Alacritty route acceptance and a small proof-of-concept
+  benchmark using shared terminal fixtures.
 - WP-T5/WP-T6 terminal correctness and damage-frame renderer implementation.
 - Real SFTP, bastion, forwarding and FRP endpoint interoperability tests when
   the corresponding services and HDC/device are available.

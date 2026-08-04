@@ -108,6 +108,7 @@ export struct NativeTerminalRenderer {
     this.lastRows = this.rows;
     this.calcCellSize();
     this.handle = this.bridge.create(this.cols, this.rows);
+    this.applyForegroundColorToCore();
     // 光标 530ms 闪烁
     this.blinkTimer = setInterval((): void => {
       this.cursorVisible = !this.cursorVisible;
@@ -183,7 +184,26 @@ export struct NativeTerminalRenderer {
 
   /** 前景色设置变更 → 全量重绘 (光标+文字都需要刷新) */
   private onFgColorChange(): void {
+    this.applyForegroundColorToCore();
     this.renderFull();
+  }
+
+  /**
+   * Keep the persisted SSH appearance in the VT core. The renderer still
+   * consumes the same setting for cursor paint and as a compatibility fallback
+   * when an older native library is loaded.
+   */
+  private applyForegroundColorToCore(): void {
+    if (this.handle <= 0) { return; }
+    const color: string = this.terminalFgColor.trim();
+    if (color.length !== 7 || color.charAt(0) !== '#') { return; }
+    const red: number = parseInt(color.substring(1, 3), 16);
+    const green: number = parseInt(color.substring(3, 5), 16);
+    const blue: number = parseInt(color.substring(5, 7), 16);
+    if (!Number.isFinite(red) || !Number.isFinite(green) || !Number.isFinite(blue)) { return; }
+    const foreground: number = 0xFF000000 + red * 0x10000 + green * 0x100 + blue;
+    this.bridge.setDefaultForeground(this.handle, foreground);
+    this.lastSnapshot = this.bridge.snapshot(this.handle);
   }
 
   /** 父页面请求回到底部 — 键盘弹起/终端高度变化后保证最新行可见 */

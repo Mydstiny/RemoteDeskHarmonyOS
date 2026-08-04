@@ -2,7 +2,16 @@ use std::ptr;
 use std::slice;
 
 use super::snapshot::{SnapshotCell, TerminalSnapshot};
+#[cfg(not(feature = "alacritty_terminal"))]
 use super::Terminal;
+#[cfg(feature = "alacritty_terminal")]
+use super::{AlacrittyTerminal, AlacrittyTerminalConfig};
+
+#[cfg(feature = "alacritty_terminal")]
+pub type TerminalHandle = AlacrittyTerminal;
+
+#[cfg(not(feature = "alacritty_terminal"))]
+pub type TerminalHandle = Terminal;
 
 #[repr(C)]
 pub struct FfiSnapshotCell {
@@ -40,19 +49,29 @@ pub struct FfiTerminalSnapshot {
 }
 
 #[no_mangle]
-pub extern "C" fn terminal_core_create(cols: usize, rows: usize) -> *mut Terminal {
-    Box::into_raw(Box::new(Terminal::new(cols, rows)))
+pub extern "C" fn terminal_core_create(cols: usize, rows: usize) -> *mut TerminalHandle {
+    #[cfg(feature = "alacritty_terminal")]
+    let terminal = AlacrittyTerminal::new(cols, rows, AlacrittyTerminalConfig::default());
+
+    #[cfg(not(feature = "alacritty_terminal"))]
+    let terminal = Terminal::new(cols, rows);
+
+    Box::into_raw(Box::new(terminal))
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn terminal_core_destroy(handle: *mut Terminal) {
+pub unsafe extern "C" fn terminal_core_destroy(handle: *mut TerminalHandle) {
     if !handle.is_null() {
         let _ = Box::from_raw(handle);
     }
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn terminal_core_write(handle: *mut Terminal, data: *const u8, len: usize) {
+pub unsafe extern "C" fn terminal_core_write(
+    handle: *mut TerminalHandle,
+    data: *const u8,
+    len: usize,
+) {
     if handle.is_null() || data.is_null() {
         return;
     }
@@ -61,29 +80,56 @@ pub unsafe extern "C" fn terminal_core_write(handle: *mut Terminal, data: *const
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn terminal_core_resize(handle: *mut Terminal, cols: usize, rows: usize) {
+pub unsafe extern "C" fn terminal_core_resize(
+    handle: *mut TerminalHandle,
+    cols: usize,
+    rows: usize,
+) {
     if !handle.is_null() {
         (*handle).resize(cols, rows);
     }
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn terminal_core_scroll_view(handle: *mut Terminal, delta_lines: isize) {
+pub unsafe extern "C" fn terminal_core_scroll_view(
+    handle: *mut TerminalHandle,
+    delta_lines: isize,
+) {
     if !handle.is_null() {
         (*handle).scroll_view(delta_lines);
     }
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn terminal_core_scroll_to_bottom(handle: *mut Terminal) {
+pub unsafe extern "C" fn terminal_core_scroll_to_bottom(handle: *mut TerminalHandle) {
     if !handle.is_null() {
         (*handle).scroll_to_bottom();
     }
 }
 
+/// Applies the user-configured default foreground color to the active core.
+///
+/// ANSI/SGR colors remain authoritative for explicitly colored cells. The
+/// adapter resolves only the terminal's default foreground through this value.
+#[no_mangle]
+pub unsafe extern "C" fn terminal_core_set_default_foreground(
+    handle: *mut TerminalHandle,
+    foreground: u32,
+) {
+    if handle.is_null() {
+        return;
+    }
+
+    #[cfg(feature = "alacritty_terminal")]
+    (*handle).set_default_foreground(foreground);
+
+    #[cfg(not(feature = "alacritty_terminal"))]
+    let _ = foreground;
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn terminal_core_snapshot(
-    handle: *const Terminal,
+    handle: *const TerminalHandle,
 ) -> *mut FfiTerminalSnapshot {
     if handle.is_null() {
         return ptr::null_mut();
@@ -93,7 +139,7 @@ pub unsafe extern "C" fn terminal_core_snapshot(
 
 #[no_mangle]
 pub unsafe extern "C" fn terminal_core_dirty_snapshot(
-    handle: *mut Terminal,
+    handle: *mut TerminalHandle,
 ) -> *mut FfiTerminalSnapshot {
     if handle.is_null() {
         return ptr::null_mut();

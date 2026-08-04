@@ -3,6 +3,8 @@ use super::ffi::{
     terminal_core_create, terminal_core_destroy, terminal_core_free_snapshot,
     terminal_core_snapshot, terminal_core_write,
 };
+#[cfg(feature = "alacritty_terminal")]
+use super::ffi::terminal_core_set_default_foreground;
 use super::Terminal;
 
 fn screen_text(term: &Terminal) -> Vec<String> {
@@ -478,6 +480,24 @@ fn ffi_snapshot_roundtrip_exposes_cells_and_metadata() {
         assert_eq!((*snapshot).cells_len, 16);
         assert!(!(*snapshot).cells_ptr.is_null());
         assert_eq!((*(*snapshot).cells_ptr).ch, 'o' as u32);
+
+        terminal_core_free_snapshot(snapshot);
+        terminal_core_destroy(handle);
+    }
+}
+
+#[cfg(feature = "alacritty_terminal")]
+#[test]
+fn ffi_foreground_setting_reaches_the_active_alacritty_core() {
+    unsafe {
+        let handle = terminal_core_create(8, 2);
+        assert!(!handle.is_null());
+
+        terminal_core_write(handle, b"N".as_ptr(), 1);
+        terminal_core_set_default_foreground(handle, 0xFF11_2233);
+        let snapshot = terminal_core_snapshot(handle);
+        assert!(!snapshot.is_null());
+        assert_eq!((*snapshot).cells_ptr.read().fg, 0xFF11_2233);
 
         terminal_core_free_snapshot(snapshot);
         terminal_core_destroy(handle);
