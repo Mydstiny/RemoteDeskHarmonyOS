@@ -140,6 +140,21 @@ import {
   nextWorkspaceGroupId
 } from '../services/HostWorkspacePolicy';
 import {
+  buildHostGroupCards,
+  hostGroupColumnsForBreakpoint,
+  hostGroupTitle,
+  hostGroupTypeForHost,
+  hostIdentifier,
+  hostIdentifierLabel,
+  hostPresenceLabel,
+  hostPresenceLastSeenAt,
+  hostPresenceState,
+  shouldUseGroupedHostCards,
+  HostGroupCardModel,
+  HostGroupType,
+  HostPresenceState
+} from '../services/HostGroupCardPolicy';
+import {
   resolveRustDeskHostEndpoint,
   rustDeskCardEndpoint,
   shouldAdoptRustDeskDirectPort,
@@ -397,6 +412,9 @@ struct HostListPage {
   @State hostViewRevision: number = 0;
   @State hostPageTitle: string = '远程主机';
   @State loginRefreshKey: number = 0;
+  @StorageLink('groupedHostCards') groupedHostCards: boolean = false;
+  @State expandedHostGroup: string = '';
+  @State activeRemoteHostId: string = '';
   @State accountDisplayName: string = '';
   @State accountAvatarUrl: string = '';
   @State hostSelectionMode: boolean = false;
@@ -851,6 +869,12 @@ struct HostListPage {
       this.hostSelectionMode = false;
       this.hostSelectedIds = new Set();
     }
+    if (this.groupedHostCardsActive()) {
+      this.curTab = 0;
+      this.hostPageTitle = '远程主机';
+      this.updateHostFilter();
+      return;
+    }
     // xl→非xl: curTab 越界修正 + 标题重置
     if (this.breakpoint !== 'xl') {
       if (this.curTab > 3) { this.curTab = 0; }
@@ -895,6 +919,7 @@ struct HostListPage {
       const savedHostAddMode: string = prefs.getSync('hostAddMode', 'modern') as string;
       const savedVirtualMouseStyle: string = prefs.getSync('virtualMouseStyle', 'circle') as string;
       const savedTotpLogoMode: string = prefs.getSync('totpLogoMode', 'logo') as string;
+      const savedGroupedHostCards: boolean = prefs.getSync('groupedHostCards', false) as boolean;
       const savedWallpaper: string = prefs.getSync('wallpaperColor', '') as string;
       const savedUseNativeCore: boolean = prefs.getSync('useNativeTerminalCore', true) as boolean;
       if (!savedFollowSystem && savedTheme !== '') {
@@ -928,6 +953,8 @@ struct HostListPage {
       AppStorage.setOrCreate('virtualMouseStyle', this.virtualMouseStyle);
       this.totpLogoMode = savedTotpLogoMode === 'initials' ? 'initials' : 'logo';
       AppStorage.setOrCreate('totpLogoMode', this.totpLogoMode);
+      this.groupedHostCards = savedGroupedHostCards;
+      AppStorage.setOrCreate('groupedHostCards', this.groupedHostCards);
       if (savedWallpaper !== '') { AppStorage.setOrCreate('wallpaperColor', savedWallpaper); }
       const savedWallIdx: number = prefs.getSync('wallpaperIdx', -1) as number;
       if (savedWallIdx >= 0 && savedWallIdx < this.wallpaperItems.length) {
@@ -2715,6 +2742,8 @@ struct HostListPage {
   private refreshHostListView(): void {
     // 用新对象快照驱动列表和详情，避免服务层原地更新同一 RemoteHost
     // 引用时，LazyForEach/卡片内部只收到 reload 却继续显示旧字段。
+    const activeSession: ActiveRemoteSessionRecord | null = ActiveRemoteSessionRegistry.getInstance().getActive();
+    this.activeRemoteHostId = activeSession === null ? '' : activeSession.hostId;
     const nextHosts: RemoteHost[] = this.srv.getAllHosts().map((host: RemoteHost): RemoteHost =>
       RemoteHost.fromJSON(host.toJSON()));
     const vncViews: VncHostView[] = this.vncHosts.list();
@@ -2743,6 +2772,9 @@ struct HostListPage {
   }
 
   private visibleHostsForCurrentMode(): RemoteHost[] {
+    if (this.groupedHostCardsActive()) {
+      return searchHosts(this.hosts, this.searchText);
+    }
     let visible = visibleHostsForHostListMode(
       this.hosts,
       this.searchText,
@@ -5187,6 +5219,11 @@ struct HostListPage {
 
   /** RustDesk diagnostics are device-local UI preferences; never cloud-sync them. */
   private persistLocalRustDeskBooleanPref(key: string, value: boolean): void {
+    this.persistLocalBooleanPref(key, value);
+  }
+
+  /** Device-local preference; layout choices do not enter cloud host settings. */
+  private persistLocalBooleanPref(key: string, value: boolean): void {
     AppStorage.setOrCreate(key, value);
     try {
       const prefs = preferences.getPreferencesSync(getContext(this), { name: 'RemoteDesktopAppPrefs' });
@@ -5238,7 +5275,8 @@ struct HostListPage {
       for (let i = 0; i < keys.length; i++) {
         const key: string = keys[i];
         if (key === 'sshTerminalForegroundColor' || key === 'sshTerminalFontSize' ||
-          key === 'terminalFgColor' || key === 'terminalFontSize') { continue; }
+          key === 'terminalFgColor' || key === 'terminalFontSize' ||
+          key === 'groupedHostCards') { continue; }
         if (key === 'virtualMouseStyle' && !applyVirtualMouseStyle) { continue; }
         const value = settings[key];
         prefs.putSync(key, value);
@@ -5311,6 +5349,18 @@ struct HostListPage {
   private saveTotpLogoMode(mode: string): void {
     this.totpLogoMode = mode === 'initials' ? 'initials' : 'logo';
     this.persistPref('totpLogoMode', this.totpLogoMode);
+  }
+
+  private saveGroupedHostCards(on: boolean): void {
+    this.groupedHostCards = on;
+    this.expandedHostGroup = '';
+    if (this.groupedHostCardsActive()) {
+      this.workspaceGroupId = '';
+      this.activeFilterProto = '';
+    }
+    AppStorage.setOrCreate('groupedHostCards', this.groupedHostCards);
+    this.persistLocalBooleanPref('groupedHostCards', this.groupedHostCards);
+    this.updateHostFilter();
   }
 
   private saveRustDeskLanDiscovery(on: boolean): void {
@@ -5916,10 +5966,14 @@ struct HostListPage {
             Column() {
               Row().width('100%').height(44)
               Column() {
-                this.sidebarTab('RDP 远程桌面', protocolIcon('rdp'), 0)
-                this.sidebarTab('RustDesk', protocolIcon('rustdesk'), 1)
-                this.sidebarTab('SSH 终端', protocolIcon('ssh'), 2)
-                this.sidebarTab('VNC 主机', protocolIcon('vnc'), 3)
+                if (this.groupedHostCardsActive()) {
+                  this.sidebarTab('远程主机', protocolIcon('rdp'), 0)
+                } else {
+                  this.sidebarTab('RDP 远程桌面', protocolIcon('rdp'), 0)
+                  this.sidebarTab('RustDesk', protocolIcon('rustdesk'), 1)
+                  this.sidebarTab('SSH 终端', protocolIcon('ssh'), 2)
+                  this.sidebarTab('VNC 主机', protocolIcon('vnc'), 3)
+                }
                 this.sidebarTab('密钥保险库', protocolIcon('key_vault'), 4)
                 this.sidebarTab('2FA 验证器', protocolIcon('totp'), 5)
                 this.sidebarRelayTab('中继服务器', 6)
@@ -6184,8 +6238,12 @@ struct HostListPage {
 
   private activeFilterProto: string = '';
 
+  private groupedHostCardsActive(): boolean {
+    return shouldUseGroupedHostCards(this.groupedHostCards, this.isDesktopDevice, this.breakpoint);
+  }
+
   private updateHostFilter(): void {
-    this.activeFilterProto = this.isDesktopDevice && this.breakpoint === 'xl' ?
+    this.activeFilterProto = !this.groupedHostCardsActive() && this.isDesktopDevice && this.breakpoint === 'xl' ?
       hostListProtocolForTab(this.curTab) : '';
     this.filteredHosts = this.visibleHostsForCurrentMode();
     this.hostDataSource.replaceAll(this.filteredHosts);
@@ -6230,13 +6288,302 @@ struct HostListPage {
     }
   }
 
+  private hostGroupCardsSnapshot(): HostGroupCardModel[] {
+    return buildHostGroupCards(this.filteredHosts, Date.now(), this.activeRemoteHostId);
+  }
+
+  private hostGroupCardForType(type: HostGroupType): HostGroupCardModel {
+    const cards: HostGroupCardModel[] = this.hostGroupCardsSnapshot();
+    let selected: HostGroupCardModel = cards[0];
+    for (let i = 0; i < cards.length; i++) {
+      if (cards[i].type === type) {
+        selected = cards[i];
+        break;
+      }
+    }
+    return selected;
+  }
+
+  private hostGroupCardHeight(): number {
+    return this.breakpoint === 'sm' ? 100 : 220;
+  }
+
+  private hostGroupHostCardHeight(): number {
+    return this.breakpoint === 'sm' ? 150 : 174;
+  }
+
+  private hostGroupHostGridHeight(count: number): number {
+    const columns: number = hostGroupColumnsForBreakpoint(this.breakpoint);
+    const rows: number = Math.max(1, Math.ceil(count / columns));
+    return rows * this.hostGroupHostCardHeight() + Math.max(0, rows - 1) * 10;
+  }
+
+  private hostGroupStatusColor(state: HostPresenceState): string {
+    if (state === 'online') { return this.pal().success; }
+    if (state === 'offline') { return this.pal().danger; }
+    if (state === 'recently_online') { return this.accentColor; }
+    return this.pal().text3;
+  }
+
+  private hostGroupSummaryText(card: HostGroupCardModel): string {
+    if (card.hosts.length === 0) { return '暂无主机'; }
+    const parts: string[] = [];
+    if (card.summary.online > 0) { parts.push(card.summary.online.toString() + ' 在线'); }
+    if (card.summary.recentlyOnline > 0) {
+      parts.push(card.summary.recentlyOnline.toString() + ' 最近在线');
+    }
+    if (card.summary.offline > 0) { parts.push(card.summary.offline.toString() + ' 离线'); }
+    if (card.summary.unknown > 0) { parts.push(card.summary.unknown.toString() + ' 未知'); }
+    if (card.summary.checking > 0) { parts.push(card.summary.checking.toString() + ' 检测中'); }
+    return parts.length > 0 ? parts.join(' · ') : '未检测';
+  }
+
+  private hostGroupLastSeenText(host: RemoteHost): string {
+    const timestamp: number = hostPresenceLastSeenAt(host);
+    if (timestamp <= 0) { return '未检测'; }
+    const elapsedMs: number = Math.max(0, Date.now() - timestamp);
+    if (elapsedMs < 60 * 1000) { return '刚刚'; }
+    if (elapsedMs < 60 * 60 * 1000) {
+      return Math.floor(elapsedMs / (60 * 1000)).toString() + ' 分钟前';
+    }
+    if (elapsedMs < 24 * 60 * 60 * 1000) {
+      return Math.floor(elapsedMs / (60 * 60 * 1000)).toString() + ' 小时前';
+    }
+    return Math.floor(elapsedMs / (24 * 60 * 60 * 1000)).toString() + ' 天前';
+  }
+
+  private hostGroupIconForHost(host: RemoteHost): Resource {
+    const type: HostGroupType | null = hostGroupTypeForHost(host);
+    if (type === 'rustdesk') { return protocolIcon('rustdesk'); }
+    if (type === 'ssh') { return protocolIcon('ssh'); }
+    if (type === 'vnc') { return protocolIcon('vnc'); }
+    return protocolIcon('rdp');
+  }
+
+  private hostGroupPresenceForHost(host: RemoteHost): HostPresenceState {
+    return hostPresenceState(host, Date.now(), host.id === this.activeRemoteHostId);
+  }
+
+  private toggleHostGroup(type: HostGroupType): void {
+    this.expandedHostGroup = this.expandedHostGroup === type ? '' : type;
+  }
+
+  @Builder hostGroupTypeCard(card: HostGroupCardModel) {
+    Column() {
+      Row() {
+        Column() {
+          SymbolGlyph(protocolIcon(card.type)).fontSize(this.breakpoint === 'sm' ? 22 : 30)
+            .fontColor([this.accentColor])
+        }
+        .width(this.breakpoint === 'sm' ? 42 : 52)
+        .height(this.breakpoint === 'sm' ? 42 : 52)
+        .borderRadius(this.breakpoint === 'sm' ? 21 : 16)
+        .backgroundColor(this.pal().surface)
+        .justifyContent(FlexAlign.Center)
+        Column() {
+          Text(card.title).fontSize(this.breakpoint === 'sm' ? 17 : 22)
+            .fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font())
+            .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+          Text(card.subtitle).fontSize(this.breakpoint === 'sm' ? 11 : 13)
+            .fontColor(this.pal().text3).fontFamily(this.font()).margin({ top: 3 })
+            .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+        }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: this.breakpoint === 'sm' ? 10 : 12 })
+        SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(this.breakpoint === 'sm' ? 17 : 21)
+          .fontColor([this.pal().text3])
+          .rotate({ angle: this.expandedHostGroup === card.type ? 90 : 0 })
+          .animation({ duration: 220, curve: Curve.FastOutSlowIn })
+      }.width('100%')
+      Row() {
+        Text(card.hosts.length.toString() + ' 台主机').fontSize(this.breakpoint === 'sm' ? 12 : 14)
+          .fontColor(this.pal().text2).fontFamily(this.font())
+        Blank()
+        Text(this.hostGroupSummaryText(card)).fontSize(this.breakpoint === 'sm' ? 11 : 12)
+          .fontColor(this.pal().text3).fontFamily(this.font()).maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+      }.width('100%').margin({ top: this.breakpoint === 'sm' ? 12 : 18 })
+    }
+    .layoutWeight(1).height(this.hostGroupCardHeight())
+    .padding(this.breakpoint === 'sm' ? 14 : 18)
+    .borderRadius(this.breakpoint === 'sm' ? 22 : 20)
+    .backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
+    .border({ width: this.expandedHostGroup === card.type ? 1.5 : 0.5,
+      color: this.expandedHostGroup === card.type ? this.accentColor : this.pal().cardBorder,
+      style: BorderStyle.Solid })
+    .onClick((): void => { this.toggleHostGroup(card.type); })
+  }
+
+  @Builder hostGroupedHostCard(host: RemoteHost) {
+    Column() {
+      Row() {
+        if (this.hostSelectionMode) {
+          Checkbox()
+            .select(this.hostSelectedIds.has(host.id)).selectedColor(this.accentColor)
+            .margin({ right: 7 })
+            .onChange((checked: boolean): void => { this.toggleHostSelect(host.id, checked); })
+        }
+        Row() {
+          Column() {
+            SymbolGlyph(this.hostGroupIconForHost(host)).fontSize(this.breakpoint === 'sm' ? 22 : 25)
+              .fontColor([Color.White])
+          }
+          .width(this.breakpoint === 'sm' ? 42 : 48)
+          .height(this.breakpoint === 'sm' ? 42 : 48)
+          .borderRadius(this.breakpoint === 'sm' ? 14 : 15)
+          .backgroundColor(this.hostGroupStatusColor(this.hostGroupPresenceForHost(host)))
+          .justifyContent(FlexAlign.Center)
+          Column() {
+            Text(host.label === '' ? '未命名主机' : host.label).fontSize(this.breakpoint === 'sm' ? 15 : 16)
+              .fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font())
+              .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+            Text(hostPresenceLabel(this.hostGroupPresenceForHost(host))).fontSize(11)
+              .fontColor(this.hostGroupStatusColor(this.hostGroupPresenceForHost(host)))
+              .fontFamily(this.font()).margin({ top: 3 })
+          }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 10 })
+        }
+        .layoutWeight(1)
+        .onClick((): void => { this.handleHostCardClick(host); })
+        Button() {
+          SymbolGlyph($r('sys.symbol.bolt_fill')).fontSize(15).fontColor([this.accentColor])
+        }
+        .width(32).height(32).borderRadius(16).padding(0)
+        .backgroundColor(this.pal().surface).accessibilityText('连接')
+        .onClick((): void => { this.handleHostCardClick(host); })
+      }.width('100%')
+      Row() {
+        Text(hostIdentifierLabel(host)).fontSize(11).fontColor(this.pal().text3).fontFamily(this.font()).width(40)
+        Text(hostIdentifier(host)).fontSize(this.breakpoint === 'sm' ? 12 : 13)
+          .fontColor(this.pal().text2).fontFamily(this.font()).layoutWeight(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis }).maxLines(1)
+          .accessibilityText(hostIdentifier(host))
+      }.width('100%').margin({ top: 12 })
+      Row() {
+        Text('最近检查 · ' + this.hostGroupLastSeenText(host)).fontSize(10).fontColor(this.pal().text3)
+          .fontFamily(this.font()).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+        Blank()
+        Button() {
+          SymbolGlyph($r('sys.symbol.square_and_pencil')).fontSize(14).fontColor([this.pal().text2])
+        }
+        .width(30).height(30).borderRadius(15).padding(0).backgroundColor(this.pal().surface)
+        .accessibilityText('编辑').onClick((): void => { void this.editHost(host); })
+        Button() {
+          SymbolGlyph(host.locked ? $r('sys.symbol.lock_open') : $r('sys.symbol.ohos_lock'))
+            .fontSize(14).fontColor([this.pal().text2])
+        }
+        .width(30).height(30).borderRadius(15).padding(0).backgroundColor(this.pal().surface)
+        .margin({ left: 6 }).accessibilityText(host.locked ? '解锁' : '上锁')
+        .onClick((): void => { void this.toggleLock(host); })
+        Button() {
+          SymbolGlyph($r('sys.symbol.ohos_trash')).fontSize(14).fontColor([this.pal().danger])
+        }
+        .width(30).height(30).borderRadius(15).padding(0).backgroundColor(this.pal().surface)
+        .margin({ left: 6 }).accessibilityText('删除').onClick((): void => { void this.doDeleteHost(host); })
+      }.width('100%').margin({ top: 10 })
+    }
+    .width('100%').height(this.hostGroupHostCardHeight()).padding(this.breakpoint === 'sm' ? 12 : 14)
+    .borderRadius(16).backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
+    .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
+    .gesture(LongPressGesture().onAction((): void => {
+      if (!this.hostSelectionMode) {
+        this.hostSelectionMode = true;
+        this.hostSelectedIds = new Set<string>();
+        this.hostSelectedIds.add(host.id);
+      }
+    }))
+  }
+
+  @Builder hostGroupedDetailPanel(card: HostGroupCardModel) {
+    Column() {
+      Row() {
+        Column() {
+          Text(card.title + ' 主机').fontSize(this.breakpoint === 'sm' ? 17 : 20)
+            .fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font())
+          Text(card.hosts.length.toString() + ' 台 · ' + this.hostGroupSummaryText(card))
+            .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font()).margin({ top: 4 })
+        }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+        Button() {
+          SymbolGlyph($r('sys.symbol.bolt_fill')).fontSize(15).fontColor([this.accentColor])
+        }
+        .width(32).height(32).borderRadius(16).padding(0).backgroundColor(this.pal().surface)
+        .accessibilityText('刷新主机状态').onClick((): void => { void this.load(); })
+      }.width('100%')
+      if (card.hosts.length === 0) {
+        Column() {
+          SymbolGlyph(protocolIcon(card.type)).fontSize(32).fontColor([this.pal().text3])
+          Text('暂无 ' + hostGroupTitle(card.type) + ' 主机').fontSize(14).fontColor(this.pal().text2)
+            .fontFamily(this.font()).margin({ top: 10 })
+          Text('点击底部 + 添加主机').fontSize(11).fontColor(this.pal().text3)
+            .fontFamily(this.font()).margin({ top: 4 })
+        }.width('100%').height(116).justifyContent(FlexAlign.Center).alignItems(HorizontalAlign.Center)
+      } else {
+        Grid() {
+          ForEach(card.hosts, (host: RemoteHost): void => {
+            GridItem() { this.hostGroupedHostCard(host) }
+          }, (host: RemoteHost): string => host.id)
+        }
+        .columnsTemplate(hostGroupColumnsForBreakpoint(this.breakpoint) === 1 ? '1fr' : '1fr 1fr')
+        .rowsGap(10).columnsGap(10).width('100%')
+        .height(this.hostGroupHostGridHeight(card.hosts.length)).margin({ top: 14 })
+      }
+    }
+    .width('100%').padding(this.breakpoint === 'sm' ? 14 : 18)
+    .borderRadius(this.breakpoint === 'sm' ? 20 : 18)
+    .backgroundColor(this.pal().surface).backgroundBlurStyle(BlurStyle.Regular)
+    .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
+    .margin({ top: 10, bottom: 12 })
+  }
+
+  @Builder hostGroupedPhoneGroup(type: HostGroupType) {
+    Column() {
+      Row() {
+        this.hostGroupTypeCard(this.hostGroupCardForType(type))
+      }.width('100%').height(this.hostGroupCardHeight())
+      if (this.expandedHostGroup === type) {
+        this.hostGroupedDetailPanel(this.hostGroupCardForType(type))
+      }
+    }
+    .width('100%').margin({ bottom: 10 })
+  }
+
+  @Builder hostGroupedDesktopRow(first: HostGroupType, second: HostGroupType) {
+    Column() {
+      Row() {
+        this.hostGroupTypeCard(this.hostGroupCardForType(first))
+        Blank().width(10)
+        this.hostGroupTypeCard(this.hostGroupCardForType(second))
+      }.width('100%').height(this.hostGroupCardHeight()).alignItems(VerticalAlign.Top)
+      if (this.expandedHostGroup === first) {
+        this.hostGroupedDetailPanel(this.hostGroupCardForType(first))
+      } else if (this.expandedHostGroup === second) {
+        this.hostGroupedDetailPanel(this.hostGroupCardForType(second))
+      }
+    }
+    .width('100%').margin({ bottom: 10 })
+  }
+
+  @Builder hostGroupedContent() {
+    Column() {
+      if (this.breakpoint === 'sm') {
+        this.hostGroupedPhoneGroup('rdp')
+        this.hostGroupedPhoneGroup('rustdesk')
+        this.hostGroupedPhoneGroup('ssh')
+        this.hostGroupedPhoneGroup('vnc')
+      } else {
+        this.hostGroupedDesktopRow('rdp', 'rustdesk')
+        this.hostGroupedDesktopRow('ssh', 'vnc')
+      }
+    }
+    .width('100%').padding({ top: 8, bottom: 140 })
+  }
+
   @Builder hostContent() {
     Column() {
       Stack() {
         List({ space: 8 }) {
           // 顶栏占位: 跟随真实系统避让区, 与渐变玻璃层高度一致
           ListItem() { Column().height(this.hostTopBarHeight() + 8) }
-          ListItem() { this.HostWorkspaceFilterBar() }
+          if (!this.groupedHostCardsActive()) {
+            ListItem() { this.HostWorkspaceFilterBar() }
+          }
 
         // 批量选择工具栏 (带出入动画)
         if (this.hostSelectionMode) {
@@ -6322,6 +6669,8 @@ struct HostListPage {
             Column() { LoadingProgress().width(32).height(32).color(this.accentColor) }
             .width('100%').height(300).justifyContent(FlexAlign.Center)
           }
+        } else if (this.groupedHostCardsActive()) {
+          ListItem() { this.hostGroupedContent() }
         } else if (this.filteredHosts.length === 0) {
           ListItem() {
             Column() {
@@ -7114,6 +7463,20 @@ struct HostListPage {
                     .borderRadius(10).onClick((): void => { this.saveFabAddStyle('classic'); })
                 }.width('100%').padding({ left: 16, right: 16, bottom: 12 })
               }
+              this.cardDivider()
+              Row() {
+                Row() { SymbolGlyph($r('sys.symbol.list_bullet')).fontSize(22).fontColor([this.pal().text]) }
+                  .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
+                Column() {
+                  Text('按主机类型分组').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
+                    .fontColor(this.pal().text).fontFamily(this.font())
+                  Text('手机、Pad 和 PC 小屏固定显示四张类型卡；PC 大屏保留侧栏分类')
+                    .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
+                }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
+                Toggle({ type: ToggleType.Switch, isOn: this.groupedHostCards })
+                  .selectedColor(this.accentColor).scale({ x: 0.88, y: 0.88 })
+                  .onChange((on: boolean): void => { this.saveGroupedHostCards(on); })
+              }.width('100%').height(66).padding({ left: 16, right: 16 })
               this.cardDivider()
               Column() {
                 Row() {

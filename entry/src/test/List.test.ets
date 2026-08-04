@@ -20,6 +20,7 @@ import remoteSessionMediaStatePolicyTest from './RemoteSessionMediaStatePolicy.t
 import haloColorPolicyTest from './HaloColorPolicy.test';
 import remoteSessionCapabilityPolicyTest from './RemoteSessionCapabilityPolicy.test';
 import hostWorkspacePolicyTest from './HostWorkspacePolicy.test';
+import hostGroupCardPolicyTest from './HostGroupCardPolicy.test';
 import transferSessionPolicyTest from './TransferSessionPolicy.test';
 import clipboardSyncPolicyTest from './ClipboardSyncPolicy.test';
 import releaseNotesPolicyTest from './ReleaseNotesPolicy.test';
@@ -153,6 +154,7 @@ export default function testsuite() {
   haloColorPolicyTest();
   remoteSessionCapabilityPolicyTest();
   hostWorkspacePolicyTest();
+  hostGroupCardPolicyTest();
   transferSessionPolicyTest();
   clipboardSyncPolicyTest();
   releaseNotesPolicyTest();
