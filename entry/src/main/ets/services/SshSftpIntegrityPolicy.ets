@@ -1,0 +1,65 @@
+/**
+ * SSH-only SFTP integrity rules shared by the page transfer coordinator.
+ *
+ * This is deliberately a small, pure policy layer. It does not retain
+ * credentials, picker grants, or file contents; those stay in the page/native
+ * operation that owns the current transfer.
+ */
+export type SshSftpTransferDirection = 'upload' | 'download';
+
+export interface SshSftpFileIdentity {
+  size: number;
+  mtime: number;
+}
+
+export interface SshSftpCheckpoint {
+  direction: SshSftpTransferDirection;
+  sourceRef: string;
+  targetRef: string;
+  sourceSize: number;
+  sourceMtime: number;
+  confirmedOffset: number;
+  partialRef: string;
+  partialSize: number;
+  partialMtime: number;
+  generation: number;
+}
+
+/** Resume is fail-closed when either the source or the partial identity changed. */
+export function sshSftpIdentityMatches(expected: SshSftpFileIdentity,
+  observed: SshSftpFileIdentity): boolean {
+  return Number.isFinite(expected.size) && Number.isFinite(observed.size) &&
+    expected.size >= 0 && observed.size >= 0 && observed.size === expected.size &&
+    Number.isFinite(expected.mtime) && Number.isFinite(observed.mtime) &&
+    expected.mtime >= 0 && observed.mtime >= 0 && observed.mtime === expected.mtime;
+}
+
+/** A 0-byte file is a valid transfer; only negative or oversized values fail. */
+export function sshSftpOffsetIsValid(offset: number, totalSize: number): boolean {
+  return Number.isFinite(offset) && Number.isFinite(totalSize) &&
+    offset >= 0 && totalSize >= 0 && offset <= totalSize;
+}
+
+export function sshSftpCommitSizeMatches(actualSize: number, expectedSize: number): boolean {
+  return Number.isFinite(actualSize) && Number.isFinite(expectedSize) &&
+    actualSize >= 0 && expectedSize >= 0 && actualSize === expectedSize;
+}
+
+export function sshSftpPartialSuffix(taskId: string): string {
+  let safe: string = '';
+  for (let index = 0; index < taskId.length; index++) {
+    const code: number = taskId.charCodeAt(index);
+    const asciiLetter: boolean = (code >= 65 && code <= 90) || (code >= 97 && code <= 122);
+    const digit: boolean = code >= 48 && code <= 57;
+    if (asciiLetter || digit || taskId.charAt(index) === '-' || taskId.charAt(index) === '_') {
+      safe += taskId.charAt(index);
+    }
+  }
+  return '.partial.' + (safe.length > 0 ? safe : 'task');
+}
+
+/** Remove only the generated suffix; an unknown URI is never treated as final. */
+export function sshSftpFinalUriFromPartial(partialUri: string, suffix: string): string {
+  if (partialUri.length <= suffix.length || !partialUri.endsWith(suffix)) { return ''; }
+  return partialUri.substring(0, partialUri.length - suffix.length);
+}

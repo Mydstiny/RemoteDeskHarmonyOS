@@ -15,8 +15,14 @@
 #include <functional>
 #include <thread>
 #include <atomic>
+#include <condition_variable>
+#include <deque>
+#include <future>
 #include <mutex>
+#include <utility>
+#include <type_traits>
 #include <sys/select.h>
+#include "ssh_terminal_input_queue_policy.h"
 
 #define SSH_ADAPTER_VERSION "2.0.0"
 #define SSH_BUFFER_SIZE 65536
@@ -63,6 +69,8 @@ enum SshError {
     ERR_SSH_WRITE_FAILED        = -52,
     ERR_SSH_SESSION_CLOSED      = -53,
     ERR_SSH_OUTPUT_LIMIT        = -54,
+    ERR_SSH_REACTOR_QUEUE_FULL  = -55,
+    ERR_SSH_SFTP_DURABILITY_UNSUPPORTED = -56,
 };
 
 struct SshCommandResult {
@@ -71,6 +79,26 @@ struct SshCommandResult {
     std::string signal;
     std::vector<uint8_t> stdoutBytes;
     std::vector<uint8_t> stderrBytes;
+};
+
+enum class SshTerminalInputStatus {
+    ACCEPTED,
+    QUEUE_FULL,
+    SESSION_CLOSED,
+    STALE_GENERATION,
+    INVALID,
+};
+
+struct SshTerminalInputResult {
+    SshTerminalInputStatus status = SshTerminalInputStatus::INVALID;
+    uint64_t sequence = 0;
+    uint64_t generation = 0;
+    uint64_t queueDepth = 0;
+    uint64_t queueBytes = 0;
+
+    bool accepted() const noexcept {
+        return status == SshTerminalInputStatus::ACCEPTED;
+    }
 };
 
 class SshAdapter : public ProtocolAdapter {
@@ -112,6 +140,13 @@ public:
     /** 写入终端数据 (通过加密通道发送) */
     int sendData(const uint8_t* data, size_t len);
 
+    /** 非阻塞地把终端输入交给 SSH writer。control 输入使用保留容量。 */
+    SshTerminalInputResult enqueueTerminalInput(const uint8_t* data, size_t len,
+                                                bool control, uint64_t expectedGeneration,
+                                                bool ordered = false, bool orderedEnd = false);
+    /** Reject new terminal input before asynchronous session teardown begins. */
+    void rejectTerminalInput();
+
     /** 读取终端输出 (非阻塞, 返回读取字节数; 0=无数据; -1=通道关闭) */
     int readData(uint8_t* buf, size_t bufSize);
 
@@ -126,6 +161,13 @@ public:
 
     /** 返回不含终端 payload 的 SSH 输入/输出诊断快照。 */
     SshTerminalDiagnosticsSnapshot terminalDiagnostics() const;
+    /** TSFN producer reports the result of the bounded callback enqueue. */
+    void recordTerminalCallbackAccepted(size_t byteCount);
+    void recordTerminalCallbackQueueFull();
+    void recordTerminalCallbackDeliveryError(bool closing);
+    void markTerminalCallbackInstrumentation();
+    /** Fail closed when the JS output consumer cannot preserve terminal bytes. */
+    void failTerminalOutput(const std::string& reason);
 
     // ---- 认证方法 (供 NAPI 调用) ----
 
@@ -168,9 +210,18 @@ public:
     int removeRemoteDir(const std::string& remotePath) override;
     int makeRemoteDir(const std::string& remotePath) override;
     int renameRemotePath(const std::string& oldPath, const std::string& newPath) override;
+    /** OpenSSH POSIX rename used only for an integrity-checked commit. */
+    int renameRemotePathAtomic(const std::string& oldPath, const std::string& newPath);
 
 private:
+    int connectInternal(const ConnectionConfig& cfg);
+    bool assertSessionOwner(const char* operation) const noexcept;
+
     int sockFd_;
+    // Incremented whenever the socket/channel ownership changes. Reader
+    // snapshots this before poll and revalidates it after reacquiring the
+    // session lock, so fd reuse cannot turn a stale poll into a channel read.
+    std::atomic<uint64_t> ioGeneration_{0};
     std::atomic<ConnectionState> state_;
     ConnectionStateCallback stateCallback_;
     std::string serverBanner_;
@@ -180,6 +231,9 @@ private:
     LIBSSH2_SESSION* session_;
     LIBSSH2_CHANNEL* channel_;
     LIBSSH2_SFTP* sftp_;
+    // Serializes SFTP handle ownership and gives disconnect a stable outer
+    // lifetime fence while individual network slices release sessionMutex_.
+    std::mutex sftpOperationMutex_;
     ConnectionConfig savedCfg_;
 
     void setState(ConnectionState s, const std::string& message = "");
@@ -220,10 +274,22 @@ private:
 
     /** 非阻塞等待并重试 libssh2 操作 (0=读 1=写) */
     int waitSocket(int direction, int timeoutSec);
+    int waitSocketMilliseconds(int direction, int timeoutMs);
 
     // ---- 后台 reader 线程 (推送式) ----
     std::thread        readerThread_;
+    // Serializes thread object creation/reclamation with stopReader(). The
+    // owner flag alone is insufficient while std::thread is being assigned.
+    std::mutex          readerLifecycleMutex_;
     std::atomic<bool>  readerRunning_{false};
+    std::atomic<bool>  reactorAlive_{false};
+    // The reader thread is the per-session libssh2 owner after connect. All
+    // terminal, SFTP, PTY and command work is dispatched to this thread; no
+    // other worker may call libssh2 directly once the owner is running.
+    std::thread::id     reactorThreadId_;
+    std::mutex          reactorCommandMutex_;
+    std::condition_variable reactorCommandCondition_;
+    std::deque<std::function<void()>> reactorCommands_;
     DataCallback       onDataCallback_;
     std::mutex         callbackMutex_;          // 保护 onDataCallback_
     std::mutex         stateCallbackMutex_;     // 保护 stateCallback_
@@ -232,15 +298,185 @@ private:
     std::atomic<bool> connectCancelRequested_{false};
     SshTerminalDiagnostics diagnostics_;
 
-    /** 后台循环: select(100ms) → libssh2_channel_read → cb(bytes) */
+    /** session owner loop: short poll → input/commands → channel read/callback */
     void readerLoop();
+    void drainReactorCommands();
+    void drainInputQueueOnReactor();
+    /** Read interactive-shell output while an owner command (SFTP/latency) yields. */
+    void drainShellOutputOnReactor();
+    bool isReactorThread() const;
 
-    /** 启动 / 停止 reader 线程 */
+    template <typename Fn>
+    auto runOnReactor(Fn&& fn) -> decltype(fn()) {
+        using Result = decltype(fn());
+        if (isReactorThread()) {
+            return fn();
+        }
+        auto waitForReactorStopped = [this]() {
+            if (!reactorAlive_.load(std::memory_order_acquire)) {
+                return;
+            }
+            std::unique_lock<std::mutex> waitLock(reactorCommandMutex_);
+            reactorCommandCondition_.wait(waitLock, [this]() {
+                return !reactorAlive_.load(std::memory_order_acquire);
+            });
+        };
+        if (!readerRunning_.load(std::memory_order_acquire)) {
+            // stopReader() flips readerRunning_ before join(). Wait for the
+            // owner to finish before falling back to a direct call, otherwise
+            // two threads could enter libssh2 during teardown.
+            waitForReactorStopped();
+            return fn();
+        }
+        // 0 = queued, 1 = executing, 2 = cancelled by a reactor stop. The
+        // state CAS prevents a caller from running the same operation while
+        // the owner is just about to dequeue it.
+        auto commandState = std::make_shared<std::atomic<uint8_t>>(0);
+        auto task = std::make_shared<std::packaged_task<Result()>>(
+            std::forward<Fn>(fn));
+        auto future = task->get_future();
+        bool stoppedBeforePublish = false;
+        bool queueFull = false;
+        {
+            std::lock_guard<std::mutex> lock(reactorCommandMutex_);
+            if (!readerRunning_.load(std::memory_order_acquire)) {
+                stoppedBeforePublish = true;
+            } else if (reactorCommands_.size() >= kMaxReactorCommands) {
+                queueFull = true;
+            } else {
+                reactorCommands_.emplace_back([task, commandState]() mutable {
+                    uint8_t expected = 0;
+                    if (!commandState->compare_exchange_strong(
+                            expected, static_cast<uint8_t>(1),
+                            std::memory_order_acq_rel)) {
+                        return;
+                    }
+                    (*task)();
+                });
+            }
+        }
+        if (queueFull) {
+            if constexpr (std::is_void_v<Result>) {
+                return;
+            } else if constexpr (std::is_same_v<Result, int>) {
+                return ERR_SSH_REACTOR_QUEUE_FULL;
+            } else {
+                return Result{};
+            }
+        }
+        if (stoppedBeforePublish) {
+            waitForReactorStopped();
+            return fn();
+        }
+        reactorCommandCondition_.notify_one();
+        while (future.wait_for(std::chrono::milliseconds(5)) !=
+               std::future_status::ready) {
+            if (!readerRunning_.load(std::memory_order_acquire)) {
+                uint8_t expected = 0;
+                if (commandState->compare_exchange_strong(
+                        expected, static_cast<uint8_t>(2),
+                        std::memory_order_acq_rel)) {
+                    // The command may still be queued behind a long-running
+                    // owner operation. Do not execute the fallback until the
+                    // owner thread has fully stopped.
+                    waitForReactorStopped();
+                    return fn();
+                }
+            }
+        }
+        return future.get();
+    }
+
+    /** 启动 / 停止 session owner reactor */
     void startReader();
     void stopReader();
+    void processPendingResize();
+
+    template <typename Fn>
+    bool postOnReactor(Fn&& fn) {
+        if (isReactorThread()) {
+            fn();
+            return true;
+        }
+        if (!readerRunning_.load(std::memory_order_acquire)) {
+            return false;
+        }
+        {
+            std::lock_guard<std::mutex> lock(reactorCommandMutex_);
+            if (!readerRunning_.load(std::memory_order_acquire) ||
+                reactorCommands_.size() >= kMaxReactorCommands) {
+                return false;
+            }
+            reactorCommands_.emplace_back(std::forward<Fn>(fn));
+        }
+        reactorCommandCondition_.notify_one();
+        return true;
+    }
+
+    struct TerminalInputItem {
+        uint64_t sequence = 0;
+        uint64_t generation = 0;
+        bool control = false;
+        bool ordered = false;
+        bool orderedEnd = false;
+        std::vector<uint8_t> bytes;
+    };
+
+    // Terminal input is admitted by any producer but drained only by the
+    // session owner reactor. This flag is an admission/lifecycle gate, not a
+    // second worker thread.
+    std::atomic<bool> terminalInputRunning_{false};
+    std::mutex inputQueueMutex_;
+    std::condition_variable inputQueueCondition_;
+    // Serializes the final admission check with each libssh2 channel write.
+    // Teardown takes the same fence before freeing the channel, establishing
+    // a linearization point with no post-close write.
+    std::mutex inputWriteFenceMutex_;
+    std::deque<TerminalInputItem> inputQueue_;
+    size_t inputQueueBytes_ = 0;
+    size_t inputQueueControlItems_ = 0;
+    size_t inputQueueControlBytes_ = 0;
+    size_t inputQueueDataItems_ = 0;
+    size_t inputQueueDataBytes_ = 0;
+    static constexpr size_t kInputQueueMaxItems = SshTerminalInputQueuePolicy::kMaxItems;
+    static constexpr size_t kInputQueueMaxBytes = SshTerminalInputQueuePolicy::kMaxBytes;
+    static constexpr size_t kInputQueueMaxControlItems =
+        SshTerminalInputQueuePolicy::kMaxControlItems;
+    static constexpr size_t kInputQueueMaxControlBytes =
+        SshTerminalInputQueuePolicy::kMaxControlBytes;
+    static constexpr size_t kInputQueueMaxDataItems =
+        SshTerminalInputQueuePolicy::kMaxDataItems;
+    static constexpr size_t kInputQueueMaxDataBytes =
+        SshTerminalInputQueuePolicy::kMaxDataBytes;
+
+    void startTerminalInput();
+    void stopTerminalInput();
+    void clearInputQueueLocked(bool recordLoss);
+    int writeTerminalData(const uint8_t* data, size_t len, uint64_t sequence,
+                          bool fromTerminalInput = false);
+    std::atomic<bool> terminalInputAccepting_{false};
+    // Set only by the session owner reactor while a paste transaction is
+    // being drained; atomic teardown makes clearing the queue race-safe.
+    std::atomic<bool> orderedInputActive_{false};
+
+    static constexpr size_t kMaxReactorCommands = 256;
+    static constexpr int kReactorWaitSliceMs = 5;
+    std::mutex resizeMutex_;
+    bool resizePending_ = false;
+    bool resizeCommandPosted_ = false;
+    int pendingResizeCols_ = 0;
+    int pendingResizeRows_ = 0;
 
     /** 确保 SFTP 子系统已初始化。调用方必须持有 sessionMutex_。 */
-    int ensureSftpLocked();
+    int ensureSftpLocked(std::unique_lock<std::mutex>& sessionLock);
+    /** Cooperative wait/yield for an SFTP slice while retaining handle ownership. */
+    bool yieldSftpSlice(std::unique_lock<std::mutex>& sessionLock,
+                        int direction, int timeoutSec);
+
+    // Keep each SFTP ownership slice below the terminal input latency budget.
+    // The session mutex is released between slices; the outer SFTP mutex keeps
+    // the libssh2 SFTP handle alive while the terminal writer/reader run.
+    static constexpr size_t kSftpSliceBytes = 32 * 1024;
 
     int executeChannelRequest(const std::string& request, bool subsystem,
                               SshCommandResult& result, int timeoutMs);

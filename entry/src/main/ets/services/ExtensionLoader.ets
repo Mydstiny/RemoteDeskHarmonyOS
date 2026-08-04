@@ -27,6 +27,7 @@ import {
   SessionTransferStatus,
   SshCommandResult,
   SshTerminalDiagnosticsSnapshot,
+  SshTerminalInputEnqueueResult,
   SftpListAsyncResult,
   SftpReadAsyncResult,
   SftpWriteAsyncResult,
@@ -807,6 +808,24 @@ export class ExtensionLoader {
     }
   }
 
+  enqueueTerminalInput(sessionId: number, data: string, expectedGeneration: number = 0,
+    control: boolean = false, ordered: boolean = false, orderedEnd: boolean = false): SshTerminalInputEnqueueResult {
+    try {
+      return rdpnapi.enqueueSshTerminalInput(
+        sessionId, data, expectedGeneration, control, ordered, orderedEnd) as SshTerminalInputEnqueueResult;
+    } catch (err) {
+      hilog.error(DOMAIN, TAG, '[ExtensionLoader] enqueueTerminalInput: ' + JSON.stringify(err));
+      return {
+        accepted: false,
+        status: 'sessionClosed',
+        sequence: 0,
+        generation: 0,
+        queueDepth: 0,
+        queueBytes: 0
+      };
+    }
+  }
+
   sendText(sessionId: number, text: string): void {
     try {
       rdpnapi.sendText(sessionId, text);
@@ -953,9 +972,10 @@ export class ExtensionLoader {
   }
 
   async renameRemotePathAsync(sessionId: number, oldPath: string,
-    newPath: string): Promise<SftpMutationAsyncResult> {
+    newPath: string, atomic: boolean = false): Promise<SftpMutationAsyncResult> {
     try {
-      return await (rdpnapi.renameRemotePathAsync(sessionId, oldPath, newPath) as Promise<SftpMutationAsyncResult>);
+      return await (rdpnapi.renameRemotePathAsync(
+        sessionId, oldPath, newPath, atomic) as Promise<SftpMutationAsyncResult>);
     } catch (err) {
       hilog.error(DOMAIN, TAG, '[ExtensionLoader] renameRemotePathAsync: ' + JSON.stringify(err));
       return { errorCode: -1 };
@@ -997,7 +1017,7 @@ export class ExtensionLoader {
       return {
         supported: false,
         sessionActive: false,
-        schemaVersion: 1,
+        schemaVersion: 2,
         sessionId,
         sessionGeneration: 0,
         channelId: 'pty',
@@ -1013,10 +1033,14 @@ export class ExtensionLoader {
         callbackAcceptedEvents: 0,
         callbackAcceptedBytes: 0,
         callbackQueueFull: 0,
+        callbackDeliveryErrors: 0,
+        callbackClosed: 0,
         inputDuplicate: 0,
         inputLoss: 0,
         inputReorder: 0,
         ownerStallEvents: 0,
+        coverageMask: 0,
+        coverageComplete: false,
         inputQueueDepth: 0,
         inputQueueBytes: 0,
         inputQueueMaxDepth: 0,

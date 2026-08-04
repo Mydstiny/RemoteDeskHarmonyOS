@@ -23,6 +23,8 @@
 #include <chrono>
 #include <cstdlib>
 #include <vector>
+#include <algorithm>
+#include <limits>
 
 #undef LOG_DOMAIN
 #undef LOG_TAG
@@ -126,6 +128,30 @@ SshTerminalDiagnosticsSnapshot SshAdapter::terminalDiagnostics() const {
     return diagnostics_.snapshot();
 }
 
+void SshAdapter::recordTerminalCallbackAccepted(size_t byteCount) {
+    diagnostics_.recordCallbackAccepted(byteCount);
+}
+
+void SshAdapter::recordTerminalCallbackQueueFull() {
+    diagnostics_.recordCallbackQueueFull();
+}
+
+void SshAdapter::recordTerminalCallbackDeliveryError(bool closing) {
+    diagnostics_.recordCallbackDeliveryError(closing);
+}
+
+void SshAdapter::markTerminalCallbackInstrumentation() {
+    diagnostics_.markCallbackInstrumentation();
+}
+
+void SshAdapter::failTerminalOutput(const std::string& reason) {
+    diagnostics_.recordCallbackDeliveryError(false);
+    terminalInputAccepting_.store(false, std::memory_order_release);
+    readerRunning_.store(false, std::memory_order_release);
+    reactorCommandCondition_.notify_all();
+    setState(ConnectionState::ERROR, reason);
+}
+
 // ============================================================
 // 内部辅助方法
 // ============================================================
@@ -182,6 +208,37 @@ int SshAdapter::waitSocket(int direction, int timeoutSec) {
         }
         if (ret < 0) { return -1; }
         if (ret > 0) { return 0; }
+    }
+}
+
+int SshAdapter::waitSocketMilliseconds(int direction, int timeoutMs) {
+    if (sockFd_ < 0) { return -1; }
+    if (connectCancelRequested_.load(std::memory_order_acquire)) { return -3; }
+    const int boundedMs = std::max(1, std::min(timeoutMs, 100));
+    const auto deadline = std::chrono::steady_clock::now() +
+        std::chrono::milliseconds(boundedMs);
+    while (true) {
+        if (connectCancelRequested_.load(std::memory_order_acquire)) { return -3; }
+        const auto remaining = std::chrono::duration_cast<std::chrono::microseconds>(
+            deadline - std::chrono::steady_clock::now()).count();
+        if (remaining <= 0) { return -2; }
+        const int fd = sockFd_;
+        if (fd < 0) { return -1; }
+        fd_set rfds;
+        fd_set wfds;
+        FD_ZERO(&rfds);
+        FD_ZERO(&wfds);
+        if (direction == 0 || direction == 2) { FD_SET(fd, &rfds); }
+        if (direction == 1 || direction == 2) { FD_SET(fd, &wfds); }
+        const auto boundedRemaining = std::min<int64_t>(remaining, 100'000);
+        struct timeval tv = {
+            static_cast<long>(boundedRemaining / 1'000'000),
+            static_cast<long>((boundedRemaining % 1'000'000) / 1'000)
+        };
+        const int ret = select(fd + 1, &rfds, &wfds, nullptr, &tv);
+        if (ret < 0 && errno == EINTR) { continue; }
+        if (ret < 0) { return -1; }
+        return ret > 0 ? 0 : -2;
     }
 }
 
@@ -512,6 +569,9 @@ int SshAdapter::connectThroughProxy(const ConnectionConfig& cfg) {
 // ============================================================
 
 int SshAdapter::sshHandshake() {
+    if (!assertSessionOwner("handshake")) {
+        return ERR_SSH_SESSION_INIT;
+    }
     session_ = libssh2_session_init();
     if (!session_) {
         OH_LOG_ERROR(LOG_APP, "[SSH] libssh2_session_init 失败");
@@ -619,6 +679,9 @@ int SshAdapter::sshHandshake() {
 }
 
 int SshAdapter::authenticatePassword() {
+    if (!assertSessionOwner("password_auth")) {
+        return ERR_SSH_AUTH_FAILED;
+    }
     if (!session_) { return ERR_SSH_AUTH_FAILED; }
 
     // 查询服务器支持的认证方法
@@ -708,6 +771,9 @@ void SshAdapter::keyboardInteractiveCallback(
 }
 
 int SshAdapter::authenticateKeyboardInteractive() {
+    if (!assertSessionOwner("keyboard_interactive_auth")) {
+        return ERR_SSH_AUTH_FAILED;
+    }
     if (!session_) { return ERR_SSH_AUTH_FAILED; }
 
     char* userList = nullptr;
@@ -758,6 +824,9 @@ int SshAdapter::authenticateKeyboardInteractive() {
 int SshAdapter::authenticatePublicKey(const std::string& username,
                                        const std::string& privateKeyPem,
                                        const std::string& passphrase) {
+    if (!assertSessionOwner("publickey_auth")) {
+        return ERR_SSH_AUTH_FAILED;
+    }
     if (!session_) { return ERR_SSH_AUTH_FAILED; }
 
     // 诊断: 仅输出密钥长度, 不泄露内容
@@ -792,6 +861,9 @@ int SshAdapter::authenticatePublicKey(const std::string& username,
 }
 
 int SshAdapter::openChannel() {
+    if (!assertSessionOwner("open_channel")) {
+        return ERR_SSH_CHANNEL_OPEN;
+    }
     if (!session_) { return ERR_SSH_CHANNEL_OPEN; }
 
     while ((channel_ = libssh2_channel_open_session(session_)) == nullptr) {
@@ -814,6 +886,9 @@ int SshAdapter::openChannel() {
 }
 
 int SshAdapter::requestPty(int cols, int rows) {
+    if (!assertSessionOwner("request_pty")) {
+        return ERR_SSH_PTY_FAILED;
+    }
     if (!channel_) { return ERR_SSH_PTY_FAILED; }
 
     int rc;
@@ -848,6 +923,9 @@ int SshAdapter::requestPty(int cols, int rows) {
 }
 
 int SshAdapter::startShell() {
+    if (!assertSessionOwner("start_shell")) {
+        return ERR_SSH_SHELL_FAILED;
+    }
     if (!channel_) { return ERR_SSH_SHELL_FAILED; }
 
     int rc;
@@ -871,25 +949,48 @@ int SshAdapter::startShell() {
 // ============================================================
 
 int SshAdapter::connect(const ConnectionConfig& cfg) {
-    std::lock_guard<std::recursive_mutex> lifecycleLock(lifecycleMutex_);
+    if (isReactorThread()) {
+        return connectInternal(cfg);
+    }
+
+    // The session owner is created before any socket, libssh2 session, or
+    // authentication state is touched. The async N-API worker only waits for
+    // this owner command and never enters libssh2 itself.
     const bool hadPreviousState =
         state_.load(std::memory_order_acquire) != ConnectionState::DISCONNECTED;
     if (hadPreviousState) {
         OH_LOG_WARN(LOG_APP, "[SSH] 已连接, 先断开");
         disconnect();
-        // A deliberate reconnect after a completed session is allowed. A
-        // disconnect that happened before the first async worker acquired
-        // this lock leaves the cancellation flag set and must not be erased.
+        // An explicit reconnect after a completed session clears the old
+        // cancellation request. A cancellation received while the new async
+        // request was still pending keeps the flag set and is honored below.
         connectCancelRequested_.store(false, std::memory_order_release);
     }
+    startReader();
+    return runOnReactor([this, cfg]() {
+        return connectInternal(cfg);
+    });
+}
+
+int SshAdapter::connectInternal(const ConnectionConfig& cfg) {
+    if (!assertSessionOwner("connect")) {
+        return ERR_SSH_SESSION_INIT;
+    }
+    std::lock_guard<std::recursive_mutex> lifecycleLock(lifecycleMutex_);
     if (connectCancelRequested_.load(std::memory_order_acquire)) {
         OH_LOG_INFO(LOG_APP, "[SSH] 连接在开始前已取消");
+        stopTerminalInput();
+        // connect() starts the owner before publishing this command. A
+        // cancellation that wins before DNS must also stop that otherwise
+        // idle owner; the async completion path may still join it later.
+        stopReader();
         setState(ConnectionState::ERROR, "SSH connect cancelled");
         return ERR_SSH_SESSION_CLOSED;
     }
 
     // 保存配置 (用于后续认证和重连)
     savedCfg_ = cfg;
+    ioGeneration_.fetch_add(1, std::memory_order_acq_rel);
 
     setState(ConnectionState::CONNECTING, "SSH connecting");
 
@@ -958,7 +1059,13 @@ int SshAdapter::connect(const ConnectionConfig& cfg) {
         return ret;
     }
 
+    startTerminalInput();
     setState(ConnectionState::CONNECTED, "SSH connected");
+    // Start the per-session owner before the page publishes its push
+    // callback. The reactor can accept early terminal input without creating
+    // a second writer; it simply waits for the callback before consuming
+    // remote output.
+    startReader();
     const std::string logHost = SafeLog::MaskHost(cfg.host);
     OH_LOG_INFO(LOG_APP, "[SSH] SSH 连接建立完成 (libssh2 完整握手, %{public}s:%{public}d)",
                 logHost.c_str(), cfg.port);
@@ -967,14 +1074,21 @@ int SshAdapter::connect(const ConnectionConfig& cfg) {
 }
 
 void SshAdapter::disconnect() {
+    // Close the input admission gate before the asynchronous teardown task is
+    // published. The registry may remain visible until that task starts.
+    rejectTerminalInput();
     // Set the flag before taking lifecycleMutex_: an async connect worker may
     // currently be blocked in DNS/proxy/KEX waitSocket(). The worker observes
     // cancellation in <=100 ms, while this method then serializes all handle
     // destruction behind the same lifecycle lock.
     requestConnectCancel();
-    std::lock_guard<std::recursive_mutex> lifecycleLock(lifecycleMutex_);
-    // 先停 reader 线程, 避免后续 channel/session free 时的竞态
+    // Stop producers before taking the lifecycle lock. Reactor commands hold
+    // that lock for their libssh2 slice; joining while holding it would make
+    // teardown wait forever for a command that cannot acquire the lock.
+    stopTerminalInput();
     stopReader();
+
+    std::lock_guard<std::recursive_mutex> lifecycleLock(lifecycleMutex_);
 
     {
         std::lock_guard<std::mutex> callbackLock(callbackMutex_);
@@ -982,7 +1096,13 @@ void SshAdapter::disconnect() {
     }
 
     {
-        std::lock_guard<std::mutex> sessionLock(sessionMutex_);
+        // Keep the lock order identical to writeTerminalData(): session first,
+        // then the write fence. Once this point is reached no channel write
+        // can start after teardown begins, and no writer can retain the
+        // channel while it is freed below.
+        std::lock_guard<std::mutex> sftpLock(sftpOperationMutex_);
+        std::unique_lock<std::mutex> sessionLock(sessionMutex_);
+        std::lock_guard<std::mutex> writeFence(inputWriteFenceMutex_);
         if (sftp_) {
             libssh2_sftp_shutdown(sftp_);
             sftp_ = nullptr;
@@ -1002,6 +1122,7 @@ void SshAdapter::disconnect() {
             sockFd_ = -1;
             OH_LOG_INFO(LOG_APP, "[SSH] TCP 连接已断开");
         }
+        ioGeneration_.fetch_add(1, std::memory_order_acq_rel);
         authenticated_ = false;
         secureClearString(savedCfg_.password);
         secureClearString(savedCfg_.privateKeyPem);
@@ -1043,7 +1164,8 @@ void SshAdapter::sendMouseWheel(int x, int y, int delta) {
 }
 
 void SshAdapter::sendText(const std::string& text) {
-    sendData(reinterpret_cast<const uint8_t*>(text.c_str()), text.size());
+    (void)enqueueTerminalInput(reinterpret_cast<const uint8_t*>(text.data()),
+                               text.size(), false, 0);
 }
 
 // ============================================================
@@ -1063,7 +1185,10 @@ std::vector<CodecType> SshAdapter::supportedCodecs() {
 // SFTP 文件传输
 // ============================================================
 
-int SshAdapter::ensureSftpLocked() {
+int SshAdapter::ensureSftpLocked(std::unique_lock<std::mutex>& sessionLock) {
+    if (!assertSessionOwner("sftp")) {
+        return ERR_SSH_SESSION_CLOSED;
+    }
     if (!session_ || state_.load(std::memory_order_acquire) != ConnectionState::CONNECTED) {
         return ERR_SSH_SESSION_CLOSED;
     }
@@ -1072,8 +1197,7 @@ int SshAdapter::ensureSftpLocked() {
     while ((sftp_ = libssh2_sftp_init(session_)) == nullptr) {
         int err = libssh2_session_last_errno(session_);
         if (err == LIBSSH2_ERROR_EAGAIN) {
-            int w = waitSocket(2, 15);
-            if (w != 0) {
+            if (!yieldSftpSlice(sessionLock, 2, 1)) {
                 OH_LOG_ERROR(LOG_APP, "[SFTP] 初始化超时");
                 return ERR_SSH_CHANNEL_OPEN;
             }
@@ -1090,13 +1214,62 @@ int SshAdapter::ensureSftpLocked() {
     return 0;
 }
 
+bool SshAdapter::yieldSftpSlice(std::unique_lock<std::mutex>& sessionLock,
+                                int direction, int timeoutSec) {
+    if (!sessionLock.owns_lock()) {
+        return false;
+    }
+    sessionLock.unlock();
+    int waitResult = 0;
+    const bool onReactor = isReactorThread();
+    if (direction >= 0) {
+        // The owner reactor must remain responsive to terminal input while an
+        // SFTP packet is waiting. Poll in <=5ms slices and drain one input
+        // item between polls; no other thread enters libssh2.
+        if (onReactor) {
+            waitResult = waitSocketMilliseconds(direction, kReactorWaitSliceMs);
+            drainInputQueueOnReactor();
+            drainShellOutputOnReactor();
+        } else {
+            waitResult = waitSocket(direction, std::min(timeoutSec, 1));
+        }
+    } else {
+        if (onReactor) {
+            drainInputQueueOnReactor();
+            drainShellOutputOnReactor();
+        } else {
+            std::this_thread::yield();
+        }
+    }
+    sessionLock.lock();
+    // sftp_ is intentionally allowed to be null while ensureSftpLocked() is
+    // completing its first handshake. All other callers already own a live
+    // handle and will fail their next libssh2 operation if it disappeared.
+    // A reactor slice is intentionally only a cooperative yield. A short
+    // poll timeout is not an SFTP failure; the caller retries the original
+    // libssh2 operation while input remains prioritized between polls.
+    const bool socketReady = onReactor ? waitResult != -1 && waitResult != -3
+                                       : waitResult == 0;
+    return socketReady && session_ != nullptr &&
+        (!onReactor || readerRunning_.load(std::memory_order_acquire)) &&
+        state_.load(std::memory_order_acquire) == ConnectionState::CONNECTED &&
+        !connectCancelRequested_.load(std::memory_order_acquire);
+}
+
 int SshAdapter::sendFileData(const std::string& remotePath, const uint8_t* data, uint32_t len) {
     if (remotePath.empty() || (data == nullptr && len > 0)) {
         return -1;
     }
+    if (!isReactorThread() && readerRunning_.load(std::memory_order_acquire)) {
+        return runOnReactor([this, remotePath, data, len]() {
+            return sendFileData(remotePath, data, len);
+        });
+    }
     const std::string pathId = SafeLog::HashForLog(remotePath);
-    std::lock_guard<std::mutex> sessionLock(sessionMutex_);
-    int rc = ensureSftpLocked();
+    std::lock_guard<std::recursive_mutex> lifecycleLock(lifecycleMutex_);
+    std::lock_guard<std::mutex> sftpLock(sftpOperationMutex_);
+    std::unique_lock<std::mutex> sessionLock(sessionMutex_);
+    int rc = ensureSftpLocked(sessionLock);
     if (rc != 0) { return rc; }
 
     LIBSSH2_SFTP_HANDLE* handle = nullptr;
@@ -1106,8 +1279,9 @@ int SshAdapter::sendFileData(const std::string& remotePath, const uint8_t* data,
         LIBSSH2_SFTP_S_IRGRP | LIBSSH2_SFTP_S_IROTH)) == nullptr) {
         int err = libssh2_session_last_errno(session_);
         if (err == LIBSSH2_ERROR_EAGAIN) {
-            int w = waitSocket(2, 15);
-            if (w != 0) { return ERR_SSH_WRITE_FAILED; }
+            if (!yieldSftpSlice(sessionLock, 2, 1)) {
+                return ERR_SSH_WRITE_FAILED;
+            }
             continue;
         }
         OH_LOG_ERROR(LOG_APP, "[SFTP] 打开远端写文件失败: pathId=%{public}s err=%{public}d",
@@ -1117,12 +1291,11 @@ int SshAdapter::sendFileData(const std::string& remotePath, const uint8_t* data,
 
     uint32_t total = 0;
     while (total < len) {
-        size_t chunk = std::min<size_t>(32768, len - total);
+        size_t chunk = std::min<size_t>(kSftpSliceBytes, len - total);
         ssize_t written = libssh2_sftp_write(handle,
             reinterpret_cast<const char*>(data + total), chunk);
         if (written == LIBSSH2_ERROR_EAGAIN) {
-            int w = waitSocket(1, 15);
-            if (w != 0) {
+            if (!yieldSftpSlice(sessionLock, 1, 1)) {
                 libssh2_sftp_close(handle);
                 return ERR_SSH_WRITE_FAILED;
             }
@@ -1135,10 +1308,33 @@ int SshAdapter::sendFileData(const std::string& remotePath, const uint8_t* data,
             return ERR_SSH_WRITE_FAILED;
         }
         total += static_cast<uint32_t>(written);
+        if (total < len && !yieldSftpSlice(sessionLock, -1, 0)) {
+            libssh2_sftp_close(handle);
+            return ERR_SSH_WRITE_FAILED;
+        }
+    }
+
+    // A partial is eligible for atomic commit only after the server has
+    // flushed its file handle. Treat an unsupported fsync extension as an
+    // explicit capability failure instead of silently claiming durability.
+    int syncRc = LIBSSH2_ERROR_EAGAIN;
+    while ((syncRc = libssh2_sftp_fsync(handle)) == LIBSSH2_ERROR_EAGAIN) {
+        if (!yieldSftpSlice(sessionLock, 2, 1)) {
+            libssh2_sftp_close(handle);
+            return ERR_SSH_WRITE_FAILED;
+        }
+    }
+    if (syncRc != 0) {
+        const unsigned long sftpError = libssh2_sftp_last_error(sftp_);
+        while (libssh2_sftp_close(handle) == LIBSSH2_ERROR_EAGAIN) {
+            if (!yieldSftpSlice(sessionLock, 2, 1)) { break; }
+        }
+        return sftpError == LIBSSH2_FX_OP_UNSUPPORTED
+            ? ERR_SSH_SFTP_DURABILITY_UNSUPPORTED : ERR_SSH_WRITE_FAILED;
     }
 
     while ((rc = libssh2_sftp_close(handle)) == LIBSSH2_ERROR_EAGAIN) {
-        if (waitSocket(2, 5) != 0) {
+        if (!yieldSftpSlice(sessionLock, 2, 1)) {
             libssh2_sftp_close(handle);
             return ERR_SSH_WRITE_FAILED;
         }
@@ -1153,9 +1349,16 @@ int SshAdapter::writeRemoteFileChunk(const std::string& remotePath, const uint8_
     if (remotePath.empty() || (data == nullptr && len > 0)) {
         return -1;
     }
+    if (!isReactorThread() && readerRunning_.load(std::memory_order_acquire)) {
+        return runOnReactor([this, remotePath, data, len, offset, truncate]() {
+            return writeRemoteFileChunk(remotePath, data, len, offset, truncate);
+        });
+    }
     const std::string pathId = SafeLog::HashForLog(remotePath);
-    std::lock_guard<std::mutex> sessionLock(sessionMutex_);
-    int rc = ensureSftpLocked();
+    std::lock_guard<std::recursive_mutex> lifecycleLock(lifecycleMutex_);
+    std::lock_guard<std::mutex> sftpLock(sftpOperationMutex_);
+    std::unique_lock<std::mutex> sessionLock(sessionMutex_);
+    int rc = ensureSftpLocked(sessionLock);
     if (rc != 0) { return rc; }
 
     unsigned long flags = LIBSSH2_FXF_WRITE | LIBSSH2_FXF_CREAT;
@@ -1166,8 +1369,9 @@ int SshAdapter::writeRemoteFileChunk(const std::string& remotePath, const uint8_
         LIBSSH2_SFTP_S_IRGRP | LIBSSH2_SFTP_S_IROTH)) == nullptr) {
         int err = libssh2_session_last_errno(session_);
         if (err == LIBSSH2_ERROR_EAGAIN) {
-            int w = waitSocket(2, 15);
-            if (w != 0) { return ERR_SSH_WRITE_FAILED; }
+            if (!yieldSftpSlice(sessionLock, 2, 1)) {
+                return ERR_SSH_WRITE_FAILED;
+            }
             continue;
         }
         OH_LOG_ERROR(LOG_APP, "[SFTP] 打开分块写文件失败: pathId=%{public}s err=%{public}d",
@@ -1178,12 +1382,11 @@ int SshAdapter::writeRemoteFileChunk(const std::string& remotePath, const uint8_
     libssh2_sftp_seek64(handle, offset);
     uint32_t total = 0;
     while (total < len) {
-        size_t chunk = std::min<size_t>(32768, len - total);
+        size_t chunk = std::min<size_t>(kSftpSliceBytes, len - total);
         ssize_t written = libssh2_sftp_write(handle,
             reinterpret_cast<const char*>(data + total), chunk);
         if (written == LIBSSH2_ERROR_EAGAIN) {
-            int w = waitSocket(1, 15);
-            if (w != 0) {
+            if (!yieldSftpSlice(sessionLock, 1, 1)) {
                 libssh2_sftp_close(handle);
                 return ERR_SSH_WRITE_FAILED;
             }
@@ -1198,10 +1401,30 @@ int SshAdapter::writeRemoteFileChunk(const std::string& remotePath, const uint8_
             return ERR_SSH_WRITE_FAILED;
         }
         total += static_cast<uint32_t>(written);
+        if (total < len && !yieldSftpSlice(sessionLock, -1, 0)) {
+            libssh2_sftp_close(handle);
+            return ERR_SSH_WRITE_FAILED;
+        }
+    }
+
+    int syncRc = LIBSSH2_ERROR_EAGAIN;
+    while ((syncRc = libssh2_sftp_fsync(handle)) == LIBSSH2_ERROR_EAGAIN) {
+        if (!yieldSftpSlice(sessionLock, 2, 1)) {
+            libssh2_sftp_close(handle);
+            return ERR_SSH_WRITE_FAILED;
+        }
+    }
+    if (syncRc != 0) {
+        const unsigned long sftpError = libssh2_sftp_last_error(sftp_);
+        while (libssh2_sftp_close(handle) == LIBSSH2_ERROR_EAGAIN) {
+            if (!yieldSftpSlice(sessionLock, 2, 1)) { break; }
+        }
+        return sftpError == LIBSSH2_FX_OP_UNSUPPORTED
+            ? ERR_SSH_SFTP_DURABILITY_UNSUPPORTED : ERR_SSH_WRITE_FAILED;
     }
 
     while ((rc = libssh2_sftp_close(handle)) == LIBSSH2_ERROR_EAGAIN) {
-        if (waitSocket(2, 5) != 0) {
+        if (!yieldSftpSlice(sessionLock, 2, 1)) {
             libssh2_sftp_close(handle);
             return ERR_SSH_WRITE_FAILED;
         }
@@ -1211,8 +1434,15 @@ int SshAdapter::writeRemoteFileChunk(const std::string& remotePath, const uint8_
 
 int SshAdapter::listRemoteDir(const std::string& remotePath, std::vector<SftpFileEntry>& entries) {
     entries.clear();
-    std::lock_guard<std::mutex> sessionLock(sessionMutex_);
-    int rc = ensureSftpLocked();
+    if (!isReactorThread() && readerRunning_.load(std::memory_order_acquire)) {
+        return runOnReactor([this, remotePath, &entries]() {
+            return listRemoteDir(remotePath, entries);
+        });
+    }
+    std::lock_guard<std::recursive_mutex> lifecycleLock(lifecycleMutex_);
+    std::lock_guard<std::mutex> sftpLock(sftpOperationMutex_);
+    std::unique_lock<std::mutex> sessionLock(sessionMutex_);
+    int rc = ensureSftpLocked(sessionLock);
     if (rc != 0) { return rc; }
 
     std::string dirPath = remotePath.empty() ? "." : remotePath;
@@ -1221,8 +1451,9 @@ int SshAdapter::listRemoteDir(const std::string& remotePath, std::vector<SftpFil
     while ((handle = libssh2_sftp_opendir(sftp_, dirPath.c_str())) == nullptr) {
         int err = libssh2_session_last_errno(session_);
         if (err == LIBSSH2_ERROR_EAGAIN) {
-            int w = waitSocket(2, 15);
-            if (w != 0) { return ERR_SSH_READ_FAILED; }
+            if (!yieldSftpSlice(sessionLock, 2, 1)) {
+                return ERR_SSH_READ_FAILED;
+            }
             continue;
         }
         OH_LOG_ERROR(LOG_APP, "[SFTP] 打开目录失败: pathId=%{public}s err=%{public}d",
@@ -1239,7 +1470,7 @@ int SshAdapter::listRemoteDir(const std::string& remotePath, std::vector<SftpFil
         int n = libssh2_sftp_readdir_ex(handle, nameBuf, sizeof(nameBuf) - 1,
             longEntryBuf, sizeof(longEntryBuf) - 1, &attrs);
         if (n == LIBSSH2_ERROR_EAGAIN) {
-            if (waitSocket(2, 5) != 0) {
+            if (!yieldSftpSlice(sessionLock, 2, 1)) {
                 libssh2_sftp_closedir(handle);
                 return ERR_SSH_READ_FAILED;
             }
@@ -1264,13 +1495,23 @@ int SshAdapter::listRemoteDir(const std::string& remotePath, std::vector<SftpFil
         }
         entry.isDirectory = (attrs.flags & LIBSSH2_SFTP_ATTR_PERMISSIONS) &&
             LIBSSH2_SFTP_S_ISDIR(attrs.permissions);
-        entry.size = (attrs.flags & LIBSSH2_SFTP_ATTR_SIZE) ? attrs.filesize : 0;
-        entry.mtime = (attrs.flags & LIBSSH2_SFTP_ATTR_ACMODTIME) ? attrs.mtime : 0;
+        entry.size = (attrs.flags & LIBSSH2_SFTP_ATTR_SIZE) &&
+                attrs.filesize <= static_cast<uint64_t>(std::numeric_limits<int64_t>::max())
+            ? static_cast<int64_t>(attrs.filesize) : -1;
+        // A missing mtime is not an epoch timestamp. Preserve the unknown
+        // state so resume identity checks can fail closed instead of treating
+        // an unavailable server attribute as a valid identity.
+        entry.mtime = (attrs.flags & LIBSSH2_SFTP_ATTR_ACMODTIME)
+            ? static_cast<int64_t>(attrs.mtime) : -1;
         entries.push_back(entry);
+        if (!yieldSftpSlice(sessionLock, -1, 0)) {
+            libssh2_sftp_closedir(handle);
+            return ERR_SSH_READ_FAILED;
+        }
     }
 
     while ((rc = libssh2_sftp_closedir(handle)) == LIBSSH2_ERROR_EAGAIN) {
-        if (waitSocket(2, 5) != 0) {
+        if (!yieldSftpSlice(sessionLock, 2, 1)) {
             return ERR_SSH_READ_FAILED;
         }
     }
@@ -1283,17 +1524,25 @@ int SshAdapter::listRemoteDir(const std::string& remotePath, std::vector<SftpFil
 int SshAdapter::readRemoteFile(const std::string& remotePath, std::vector<uint8_t>& out) {
     out.clear();
     if (remotePath.empty()) { return -1; }
+    if (!isReactorThread() && readerRunning_.load(std::memory_order_acquire)) {
+        return runOnReactor([this, remotePath, &out]() {
+            return readRemoteFile(remotePath, out);
+        });
+    }
     const std::string pathId = SafeLog::HashForLog(remotePath);
-    std::lock_guard<std::mutex> sessionLock(sessionMutex_);
-    int rc = ensureSftpLocked();
+    std::lock_guard<std::recursive_mutex> lifecycleLock(lifecycleMutex_);
+    std::lock_guard<std::mutex> sftpLock(sftpOperationMutex_);
+    std::unique_lock<std::mutex> sessionLock(sessionMutex_);
+    int rc = ensureSftpLocked(sessionLock);
     if (rc != 0) { return rc; }
 
     LIBSSH2_SFTP_HANDLE* handle = nullptr;
     while ((handle = libssh2_sftp_open(sftp_, remotePath.c_str(), LIBSSH2_FXF_READ, 0)) == nullptr) {
         int err = libssh2_session_last_errno(session_);
         if (err == LIBSSH2_ERROR_EAGAIN) {
-            int w = waitSocket(2, 15);
-            if (w != 0) { return ERR_SSH_READ_FAILED; }
+            if (!yieldSftpSlice(sessionLock, 2, 1)) {
+                return ERR_SSH_READ_FAILED;
+            }
             continue;
         }
         OH_LOG_ERROR(LOG_APP, "[SFTP] 打开远端读文件失败: pathId=%{public}s err=%{public}d",
@@ -1301,12 +1550,11 @@ int SshAdapter::readRemoteFile(const std::string& remotePath, std::vector<uint8_
         return ERR_SSH_READ_FAILED;
     }
 
-    std::vector<uint8_t> buf(32768);
+    std::vector<uint8_t> buf(kSftpSliceBytes);
     while (true) {
         ssize_t n = libssh2_sftp_read(handle, reinterpret_cast<char*>(buf.data()), buf.size());
         if (n == LIBSSH2_ERROR_EAGAIN) {
-            int w = waitSocket(0, 15);
-            if (w != 0) {
+            if (!yieldSftpSlice(sessionLock, 0, 1)) {
                 libssh2_sftp_close(handle);
                 return ERR_SSH_READ_FAILED;
             }
@@ -1326,10 +1574,15 @@ int SshAdapter::readRemoteFile(const std::string& remotePath, std::vector<uint8_
             out.clear();
             return -2;
         }
+        if (!yieldSftpSlice(sessionLock, -1, 0)) {
+            libssh2_sftp_close(handle);
+            out.clear();
+            return ERR_SSH_READ_FAILED;
+        }
     }
 
     while ((rc = libssh2_sftp_close(handle)) == LIBSSH2_ERROR_EAGAIN) {
-        if (waitSocket(2, 5) != 0) {
+        if (!yieldSftpSlice(sessionLock, 2, 1)) {
             out.clear();
             return ERR_SSH_READ_FAILED;
         }
@@ -1343,17 +1596,25 @@ int SshAdapter::readRemoteFileChunk(const std::string& remotePath, uint64_t offs
                                     uint32_t maxLen, std::vector<uint8_t>& out) {
     out.clear();
     if (remotePath.empty() || maxLen == 0 || maxLen > 8 * 1024 * 1024) { return -1; }
+    if (!isReactorThread() && readerRunning_.load(std::memory_order_acquire)) {
+        return runOnReactor([this, remotePath, offset, maxLen, &out]() {
+            return readRemoteFileChunk(remotePath, offset, maxLen, out);
+        });
+    }
     const std::string pathId = SafeLog::HashForLog(remotePath);
-    std::lock_guard<std::mutex> sessionLock(sessionMutex_);
-    int rc = ensureSftpLocked();
+    std::lock_guard<std::recursive_mutex> lifecycleLock(lifecycleMutex_);
+    std::lock_guard<std::mutex> sftpLock(sftpOperationMutex_);
+    std::unique_lock<std::mutex> sessionLock(sessionMutex_);
+    int rc = ensureSftpLocked(sessionLock);
     if (rc != 0) { return rc; }
 
     LIBSSH2_SFTP_HANDLE* handle = nullptr;
     while ((handle = libssh2_sftp_open(sftp_, remotePath.c_str(), LIBSSH2_FXF_READ, 0)) == nullptr) {
         int err = libssh2_session_last_errno(session_);
         if (err == LIBSSH2_ERROR_EAGAIN) {
-            int w = waitSocket(2, 15);
-            if (w != 0) { return ERR_SSH_READ_FAILED; }
+            if (!yieldSftpSlice(sessionLock, 2, 1)) {
+                return ERR_SSH_READ_FAILED;
+            }
             continue;
         }
         OH_LOG_ERROR(LOG_APP, "[SFTP] 打开远端分块读文件失败: pathId=%{public}s err=%{public}d",
@@ -1362,14 +1623,13 @@ int SshAdapter::readRemoteFileChunk(const std::string& remotePath, uint64_t offs
     }
 
     libssh2_sftp_seek64(handle, offset);
-    std::vector<uint8_t> buf(std::min<uint32_t>(32768, maxLen));
+    std::vector<uint8_t> buf(std::min<size_t>(kSftpSliceBytes, maxLen));
     while (out.size() < maxLen) {
         const size_t remain = static_cast<size_t>(maxLen) - out.size();
         const size_t want = std::min(buf.size(), remain);
         ssize_t n = libssh2_sftp_read(handle, reinterpret_cast<char*>(buf.data()), want);
         if (n == LIBSSH2_ERROR_EAGAIN) {
-            int w = waitSocket(0, 15);
-            if (w != 0) {
+            if (!yieldSftpSlice(sessionLock, 0, 1)) {
                 libssh2_sftp_close(handle);
                 return ERR_SSH_READ_FAILED;
             }
@@ -1385,10 +1645,15 @@ int SshAdapter::readRemoteFileChunk(const std::string& remotePath, uint64_t offs
         }
         if (n == 0) { break; }
         out.insert(out.end(), buf.begin(), buf.begin() + n);
+        if (out.size() < maxLen && !yieldSftpSlice(sessionLock, -1, 0)) {
+            libssh2_sftp_close(handle);
+            out.clear();
+            return ERR_SSH_READ_FAILED;
+        }
     }
 
     while ((rc = libssh2_sftp_close(handle)) == LIBSSH2_ERROR_EAGAIN) {
-        if (waitSocket(2, 5) != 0) {
+        if (!yieldSftpSlice(sessionLock, 2, 1)) {
             out.clear();
             return ERR_SSH_READ_FAILED;
         }
@@ -1398,13 +1663,21 @@ int SshAdapter::readRemoteFileChunk(const std::string& remotePath, uint64_t offs
 
 int SshAdapter::removeRemoteFile(const std::string& remotePath) {
     if (remotePath.empty()) { return ERR_SSH_WRITE_FAILED; }
+    if (!isReactorThread() && readerRunning_.load(std::memory_order_acquire)) {
+        return runOnReactor([this, remotePath]() {
+            return removeRemoteFile(remotePath);
+        });
+    }
     const std::string pathId = SafeLog::HashForLog(remotePath);
-    std::lock_guard<std::mutex> sessionLock(sessionMutex_);
-    int rc = ensureSftpLocked();
+    std::lock_guard<std::recursive_mutex> lifecycleLock(lifecycleMutex_);
+    std::lock_guard<std::mutex> sftpLock(sftpOperationMutex_);
+    std::unique_lock<std::mutex> sessionLock(sessionMutex_);
+    int rc = ensureSftpLocked(sessionLock);
     if (rc != 0) { return rc; }
     while ((rc = libssh2_sftp_unlink(sftp_, remotePath.c_str())) == LIBSSH2_ERROR_EAGAIN) {
-        int w = waitSocket(2, 10);
-        if (w != 0) { return ERR_SSH_WRITE_FAILED; }
+        if (!yieldSftpSlice(sessionLock, 2, 1)) {
+            return ERR_SSH_WRITE_FAILED;
+        }
     }
     OH_LOG_INFO(LOG_APP, "[SFTP] 删除文件: pathId=%{public}s rc=%{public}d", pathId.c_str(), rc);
     return rc == 0 ? 0 : ERR_SSH_WRITE_FAILED;
@@ -1412,13 +1685,21 @@ int SshAdapter::removeRemoteFile(const std::string& remotePath) {
 
 int SshAdapter::removeRemoteDir(const std::string& remotePath) {
     if (remotePath.empty()) { return ERR_SSH_WRITE_FAILED; }
+    if (!isReactorThread() && readerRunning_.load(std::memory_order_acquire)) {
+        return runOnReactor([this, remotePath]() {
+            return removeRemoteDir(remotePath);
+        });
+    }
     const std::string pathId = SafeLog::HashForLog(remotePath);
-    std::lock_guard<std::mutex> sessionLock(sessionMutex_);
-    int rc = ensureSftpLocked();
+    std::lock_guard<std::recursive_mutex> lifecycleLock(lifecycleMutex_);
+    std::lock_guard<std::mutex> sftpLock(sftpOperationMutex_);
+    std::unique_lock<std::mutex> sessionLock(sessionMutex_);
+    int rc = ensureSftpLocked(sessionLock);
     if (rc != 0) { return rc; }
     while ((rc = libssh2_sftp_rmdir(sftp_, remotePath.c_str())) == LIBSSH2_ERROR_EAGAIN) {
-        int w = waitSocket(2, 10);
-        if (w != 0) { return ERR_SSH_WRITE_FAILED; }
+        if (!yieldSftpSlice(sessionLock, 2, 1)) {
+            return ERR_SSH_WRITE_FAILED;
+        }
     }
     OH_LOG_INFO(LOG_APP, "[SFTP] 删除目录: pathId=%{public}s rc=%{public}d", pathId.c_str(), rc);
     return rc == 0 ? 0 : ERR_SSH_WRITE_FAILED;
@@ -1426,15 +1707,23 @@ int SshAdapter::removeRemoteDir(const std::string& remotePath) {
 
 int SshAdapter::makeRemoteDir(const std::string& remotePath) {
     if (remotePath.empty()) { return ERR_SSH_WRITE_FAILED; }
+    if (!isReactorThread() && readerRunning_.load(std::memory_order_acquire)) {
+        return runOnReactor([this, remotePath]() {
+            return makeRemoteDir(remotePath);
+        });
+    }
     const std::string pathId = SafeLog::HashForLog(remotePath);
-    std::lock_guard<std::mutex> sessionLock(sessionMutex_);
-    int rc = ensureSftpLocked();
+    std::lock_guard<std::recursive_mutex> lifecycleLock(lifecycleMutex_);
+    std::lock_guard<std::mutex> sftpLock(sftpOperationMutex_);
+    std::unique_lock<std::mutex> sessionLock(sessionMutex_);
+    int rc = ensureSftpLocked(sessionLock);
     if (rc != 0) { return rc; }
     while ((rc = libssh2_sftp_mkdir(sftp_, remotePath.c_str(),
         LIBSSH2_SFTP_S_IRWXU | LIBSSH2_SFTP_S_IRGRP |
         LIBSSH2_SFTP_S_IXGRP | LIBSSH2_SFTP_S_IROTH | LIBSSH2_SFTP_S_IXOTH)) == LIBSSH2_ERROR_EAGAIN) {
-        int w = waitSocket(2, 10);
-        if (w != 0) { return ERR_SSH_WRITE_FAILED; }
+        if (!yieldSftpSlice(sessionLock, 2, 1)) {
+            return ERR_SSH_WRITE_FAILED;
+        }
     }
     OH_LOG_INFO(LOG_APP, "[SFTP] 创建目录: pathId=%{public}s rc=%{public}d", pathId.c_str(), rc);
     return rc == 0 ? 0 : ERR_SSH_WRITE_FAILED;
@@ -1442,18 +1731,55 @@ int SshAdapter::makeRemoteDir(const std::string& remotePath) {
 
 int SshAdapter::renameRemotePath(const std::string& oldPath, const std::string& newPath) {
     if (oldPath.empty() || newPath.empty()) { return ERR_SSH_WRITE_FAILED; }
+    if (!isReactorThread() && readerRunning_.load(std::memory_order_acquire)) {
+        return runOnReactor([this, oldPath, newPath]() {
+            return renameRemotePath(oldPath, newPath);
+        });
+    }
     const std::string oldPathId = SafeLog::HashForLog(oldPath);
     const std::string newPathId = SafeLog::HashForLog(newPath);
-    std::lock_guard<std::mutex> sessionLock(sessionMutex_);
-    int rc = ensureSftpLocked();
+    std::lock_guard<std::recursive_mutex> lifecycleLock(lifecycleMutex_);
+    std::lock_guard<std::mutex> sftpLock(sftpOperationMutex_);
+    std::unique_lock<std::mutex> sessionLock(sessionMutex_);
+    int rc = ensureSftpLocked(sessionLock);
     if (rc != 0) { return rc; }
     while ((rc = libssh2_sftp_rename(sftp_, oldPath.c_str(), newPath.c_str())) == LIBSSH2_ERROR_EAGAIN) {
-        int w = waitSocket(2, 10);
-        if (w != 0) { return ERR_SSH_WRITE_FAILED; }
+        if (!yieldSftpSlice(sessionLock, 2, 1)) {
+            return ERR_SSH_WRITE_FAILED;
+        }
     }
     OH_LOG_INFO(LOG_APP, "[SFTP] 重命名: %{public}s -> %{public}s rc=%{public}d",
                 oldPathId.c_str(), newPathId.c_str(), rc);
     return rc == 0 ? 0 : ERR_SSH_WRITE_FAILED;
+}
+
+int SshAdapter::renameRemotePathAtomic(const std::string& oldPath,
+                                       const std::string& newPath) {
+    if (oldPath.empty() || newPath.empty()) { return ERR_SSH_WRITE_FAILED; }
+    if (!isReactorThread() && readerRunning_.load(std::memory_order_acquire)) {
+        return runOnReactor([this, oldPath, newPath]() {
+            return renameRemotePathAtomic(oldPath, newPath);
+        });
+    }
+    const std::string oldPathId = SafeLog::HashForLog(oldPath);
+    const std::string newPathId = SafeLog::HashForLog(newPath);
+    std::lock_guard<std::recursive_mutex> lifecycleLock(lifecycleMutex_);
+    std::lock_guard<std::mutex> sftpLock(sftpOperationMutex_);
+    std::unique_lock<std::mutex> sessionLock(sessionMutex_);
+    int rc = ensureSftpLocked(sessionLock);
+    if (rc != 0) { return rc; }
+    while ((rc = libssh2_sftp_posix_rename(sftp_, oldPath.c_str(), newPath.c_str())) ==
+           LIBSSH2_ERROR_EAGAIN) {
+        if (!yieldSftpSlice(sessionLock, 2, 1)) {
+            return ERR_SSH_WRITE_FAILED;
+        }
+    }
+    const unsigned long sftpError = libssh2_sftp_last_error(sftp_);
+    OH_LOG_INFO(LOG_APP, "[SFTP] 原子重命名: %{public}s -> %{public}s rc=%{public}d sftp=%{public}lu",
+                oldPathId.c_str(), newPathId.c_str(), rc, sftpError);
+    if (rc == 0) { return 0; }
+    return sftpError == LIBSSH2_FX_OP_UNSUPPORTED
+        ? ERR_SSH_SFTP_DURABILITY_UNSUPPORTED : ERR_SSH_WRITE_FAILED;
 }
 
 // ============================================================
@@ -1480,21 +1806,165 @@ void SshAdapter::setConnectionStateCallback(ConnectionStateCallback callback) {
 int SshAdapter::sendData(const uint8_t* data, size_t len) {
     if (data == nullptr && len > 0) { return ERR_SSH_WRITE_FAILED; }
     if (len == 0) { return 0; }
-    const uint64_t sequence = diagnostics_.beginInput(len);
-    diagnostics_.recordNativeEnqueue(sequence);
-    std::lock_guard<std::mutex> sessionLock(sessionMutex_);
-    if (!channel_ || sockFd_ < 0 ||
+    const SshTerminalInputResult result = enqueueTerminalInput(
+        data, len, false, diagnostics_.sessionGeneration());
+    return result.accepted() ? static_cast<int>(len) : ERR_SSH_WRITE_FAILED;
+}
+
+SshTerminalInputResult SshAdapter::enqueueTerminalInput(
+    const uint8_t* data, size_t len, bool control, uint64_t expectedGeneration,
+    bool ordered, bool orderedEnd) {
+    SshTerminalInputResult result;
+    result.generation = diagnostics_.sessionGeneration();
+    if (data == nullptr || len == 0 || len > kInputQueueMaxBytes) {
+        result.status = SshTerminalInputStatus::INVALID;
+        return result;
+    }
+    if (expectedGeneration != 0 && expectedGeneration != result.generation) {
+        result.status = SshTerminalInputStatus::STALE_GENERATION;
+        return result;
+    }
+    if (!terminalInputAccepting_.load(std::memory_order_acquire) ||
+        !terminalInputRunning_.load(std::memory_order_acquire) ||
+        !readerRunning_.load(std::memory_order_acquire) ||
+        state_.load(std::memory_order_acquire) != ConnectionState::CONNECTED) {
+        result.status = SshTerminalInputStatus::SESSION_CLOSED;
+        return result;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(inputQueueMutex_);
+        if (!terminalInputAccepting_.load(std::memory_order_acquire) ||
+            !terminalInputRunning_.load(std::memory_order_acquire) ||
+            !readerRunning_.load(std::memory_order_acquire) ||
+            state_.load(std::memory_order_acquire) != ConnectionState::CONNECTED) {
+            result.status = SshTerminalInputStatus::SESSION_CLOSED;
+            result.queueDepth = inputQueue_.size();
+            result.queueBytes = inputQueueBytes_;
+            return result;
+        }
+        const auto admission = SshTerminalInputQueuePolicy::admit(
+            inputQueue_.size(), inputQueueBytes_, inputQueueControlItems_,
+            inputQueueControlBytes_, inputQueueDataItems_, inputQueueDataBytes_,
+            len, control, expectedGeneration, result.generation);
+        if (admission != SshTerminalInputQueuePolicy::Admission::ACCEPTED) {
+            result.status = admission == SshTerminalInputQueuePolicy::Admission::STALE_GENERATION
+                ? SshTerminalInputStatus::STALE_GENERATION
+                : SshTerminalInputStatus::QUEUE_FULL;
+            result.queueDepth = inputQueue_.size();
+            result.queueBytes = inputQueueBytes_;
+            return result;
+        }
+
+        TerminalInputItem item;
+        item.sequence = diagnostics_.beginInput(len);
+        item.generation = result.generation;
+        item.control = control;
+        item.ordered = ordered;
+        item.orderedEnd = orderedEnd;
+        try {
+            item.bytes.assign(data, data + len);
+        } catch (...) {
+            result.status = SshTerminalInputStatus::QUEUE_FULL;
+            result.queueDepth = inputQueue_.size();
+            result.queueBytes = inputQueueBytes_;
+            return result;
+        }
+        inputQueue_.push_back(std::move(item));
+        inputQueueBytes_ += len;
+        if (control) {
+            inputQueueControlItems_++;
+            inputQueueControlBytes_ += len;
+        } else {
+            inputQueueDataItems_++;
+            inputQueueDataBytes_ += len;
+        }
+        diagnostics_.recordInputQueue(inputQueue_.size(), inputQueueBytes_);
+        // Queue insertion and its diagnostic publication share one
+        // linearization point. Producers cannot report sequence N+1 before N
+        // has become visible in the FIFO, so reorder counters reflect the
+        // actual admission order rather than scheduler timing.
+        result.sequence = inputQueue_.back().sequence;
+        diagnostics_.recordNativeEnqueue(result.sequence);
+        result.status = SshTerminalInputStatus::ACCEPTED;
+        result.queueDepth = inputQueue_.size();
+        result.queueBytes = inputQueueBytes_;
+        inputQueueCondition_.notify_one();
+    }
+    reactorCommandCondition_.notify_one();
+    return result;
+}
+
+int SshAdapter::writeTerminalData(const uint8_t* data, size_t len, uint64_t sequence,
+                                  bool fromTerminalInput) {
+    if (data == nullptr && len > 0) { return ERR_SSH_WRITE_FAILED; }
+    if (len == 0) { return 0; }
+    if (readerRunning_.load(std::memory_order_acquire) &&
+        !assertSessionOwner("channel_write")) {
+        return ERR_SSH_SESSION_CLOSED;
+    }
+    const auto lockWaitStartedAt = std::chrono::steady_clock::now();
+    std::unique_lock<std::mutex> sessionLock(sessionMutex_);
+    const auto lockWaitNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now() - lockWaitStartedAt).count();
+    if (lockWaitNs >= 8'000'000) {
+        diagnostics_.recordOwnerStall();
+    }
+    if ((fromTerminalInput &&
+         (!terminalInputAccepting_.load(std::memory_order_acquire) ||
+          !terminalInputRunning_.load(std::memory_order_acquire))) ||
+        !channel_ || sockFd_ < 0 ||
         state_.load(std::memory_order_acquire) != ConnectionState::CONNECTED) {
         return ERR_SSH_SESSION_CLOSED;
     }
     ssize_t total = 0;
     while (total < static_cast<ssize_t>(len)) {
-        diagnostics_.recordWriteAttempt(sequence);
-        ssize_t rc = libssh2_channel_write(channel_,
-            reinterpret_cast<const char*>(data) + total, len - total);
+        if (fromTerminalInput &&
+            (!terminalInputAccepting_.load(std::memory_order_acquire) ||
+             !terminalInputRunning_.load(std::memory_order_acquire))) {
+            return ERR_SSH_SESSION_CLOSED;
+        }
+        ssize_t rc = 0;
+        {
+            // This fence is the write-side half of disconnect()'s
+            // linearization point. Recheck admission while holding it so a
+            // teardown request cannot slip between the check and the actual
+            // libssh2 call.
+            std::lock_guard<std::mutex> writeFence(inputWriteFenceMutex_);
+            if (fromTerminalInput &&
+                (!terminalInputAccepting_.load(std::memory_order_acquire) ||
+                 !terminalInputRunning_.load(std::memory_order_acquire))) {
+                return ERR_SSH_SESSION_CLOSED;
+            }
+            if (!channel_ || sockFd_ < 0 ||
+                state_.load(std::memory_order_acquire) != ConnectionState::CONNECTED) {
+                return ERR_SSH_SESSION_CLOSED;
+            }
+            diagnostics_.recordWriteAttempt(sequence);
+            rc = libssh2_channel_write(channel_,
+                reinterpret_cast<const char*>(data) + total, len - total);
+        }
         if (rc == LIBSSH2_ERROR_EAGAIN) {
             diagnostics_.recordWriteEagain();
-            if (waitSocket(1, 1) != 0) {
+            if (fromTerminalInput &&
+                (!terminalInputAccepting_.load(std::memory_order_acquire) ||
+                 !terminalInputRunning_.load(std::memory_order_acquire))) {
+                return ERR_SSH_SESSION_CLOSED;
+            }
+            sessionLock.unlock();
+            int waitResult = 0;
+            if (isReactorThread()) {
+                waitResult = waitSocketMilliseconds(1, kReactorWaitSliceMs);
+                // The write loop is the only place where the owner can be
+                // waiting for channel writability. Give a control key one
+                // chance between each short socket slice.
+                drainInputQueueOnReactor();
+            } else {
+                waitResult = waitSocket(1, 1);
+            }
+            sessionLock.lock();
+            if (waitResult == -1 || waitResult == -3 ||
+                (!isReactorThread() && waitResult != 0)) {
                 return ERR_SSH_WRITE_FAILED;
             }
             continue;
@@ -1509,13 +1979,231 @@ int SshAdapter::sendData(const uint8_t* data, size_t len) {
     return static_cast<int>(total);
 }
 
+void SshAdapter::startTerminalInput() {
+    bool expected = false;
+    if (!terminalInputRunning_.compare_exchange_strong(expected, true,
+                                                     std::memory_order_acq_rel)) {
+        return;
+    }
+    {
+        std::lock_guard<std::mutex> lock(inputQueueMutex_);
+        terminalInputAccepting_.store(true, std::memory_order_release);
+    }
+    diagnostics_.markInputQueueInstrumentation();
+    // Input is drained by the session owner (reader/reactor) thread. Keeping
+    // a second libssh2 writer thread would reintroduce cross-thread channel
+    // calls and make SFTP fairness depend on mutex timing.
+    reactorCommandCondition_.notify_one();
+    OH_LOG_INFO(LOG_APP, "[SSH] input writer 已并入 session owner reactor");
+}
+
+void SshAdapter::stopTerminalInput() {
+    terminalInputAccepting_.store(false, std::memory_order_release);
+    terminalInputRunning_.store(false, std::memory_order_release);
+    inputQueueCondition_.notify_all();
+    reactorCommandCondition_.notify_all();
+    std::lock_guard<std::mutex> lock(inputQueueMutex_);
+    clearInputQueueLocked(true);
+}
+
+void SshAdapter::rejectTerminalInput() {
+    std::lock_guard<std::mutex> lock(inputQueueMutex_);
+    terminalInputAccepting_.store(false, std::memory_order_release);
+}
+
+void SshAdapter::clearInputQueueLocked(bool recordLoss) {
+    if (recordLoss) {
+        for (const TerminalInputItem& item : inputQueue_) {
+            (void)item;
+            diagnostics_.recordLoss();
+        }
+    }
+    inputQueue_.clear();
+    inputQueueBytes_ = 0;
+    inputQueueControlItems_ = 0;
+    inputQueueControlBytes_ = 0;
+    inputQueueDataItems_ = 0;
+    inputQueueDataBytes_ = 0;
+    orderedInputActive_.store(false, std::memory_order_release);
+    diagnostics_.recordInputQueue(0, 0);
+}
+
+bool SshAdapter::isReactorThread() const {
+    return reactorThreadId_ == std::this_thread::get_id();
+}
+
+bool SshAdapter::assertSessionOwner(const char* operation) const noexcept {
+    if (isReactorThread()) {
+        return true;
+    }
+    OH_LOG_ERROR(LOG_APP,
+        "[SSH] libssh2 owner violation operation=%{public}s running=%{public}s alive=%{public}s",
+        operation != nullptr ? operation : "unknown",
+        readerRunning_.load(std::memory_order_acquire) ? "yes" : "no",
+        reactorAlive_.load(std::memory_order_acquire) ? "yes" : "no");
+    return false;
+}
+
+void SshAdapter::drainInputQueueOnReactor() {
+    if (!terminalInputRunning_.load(std::memory_order_acquire)) { return; }
+    TerminalInputItem item;
+    {
+        std::lock_guard<std::mutex> lock(inputQueueMutex_);
+        if (inputQueue_.empty()) { return; }
+        // A bracketed paste is one ordered transaction. Controls/data that
+        // were already queued before its first item may still run first, but
+        // once the transaction starts select the next ordered item explicitly.
+        // The ordered item may be temporarily absent while ArkTS is retrying
+        // a queue-full closing marker; never let a later control split it.
+        auto selected = inputQueue_.begin();
+        if (orderedInputActive_.load(std::memory_order_acquire)) {
+            selected = std::find_if(inputQueue_.begin(), inputQueue_.end(),
+                [](const TerminalInputItem& queued) { return queued.ordered; });
+            if (selected == inputQueue_.end()) {
+                return;
+            }
+        } else {
+            const auto firstOrdered = std::find_if(inputQueue_.begin(), inputQueue_.end(),
+                [](const TerminalInputItem& queued) { return queued.ordered; });
+            if (firstOrdered != inputQueue_.end()) {
+                // Preserve FIFO for all input admitted before the paste.
+                selected = std::min_element(inputQueue_.begin(), firstOrdered,
+                    [](const TerminalInputItem& left, const TerminalInputItem& right) {
+                        return left.sequence < right.sequence;
+                    });
+            } else {
+                // Outside a paste transaction controls retain the low-latency
+                // reserved lane and may preempt ordinary data.
+                selected = std::find_if(inputQueue_.begin(), inputQueue_.end(),
+                    [](const TerminalInputItem& queued) { return queued.control; });
+                if (selected == inputQueue_.end()) {
+                    selected = inputQueue_.begin();
+                }
+            }
+        }
+        item = std::move(*selected);
+        inputQueue_.erase(selected);
+        inputQueueBytes_ -= item.bytes.size();
+        if (item.control) {
+            if (inputQueueControlItems_ > 0) { inputQueueControlItems_--; }
+            inputQueueControlBytes_ = inputQueueControlBytes_ >= item.bytes.size()
+                ? inputQueueControlBytes_ - item.bytes.size() : 0;
+        } else {
+            if (inputQueueDataItems_ > 0) { inputQueueDataItems_--; }
+            inputQueueDataBytes_ = inputQueueDataBytes_ >= item.bytes.size()
+                ? inputQueueDataBytes_ - item.bytes.size() : 0;
+        }
+        diagnostics_.recordInputQueue(inputQueue_.size(), inputQueueBytes_);
+    }
+    if (item.ordered) {
+        orderedInputActive_.store(!item.orderedEnd, std::memory_order_release);
+    }
+    if (!terminalInputAccepting_.load(std::memory_order_acquire) ||
+        !terminalInputRunning_.load(std::memory_order_acquire) ||
+        item.generation != diagnostics_.sessionGeneration() ||
+        state_.load(std::memory_order_acquire) != ConnectionState::CONNECTED) {
+        diagnostics_.recordLoss();
+        return;
+    }
+    const int result = writeTerminalData(item.bytes.data(), item.bytes.size(), item.sequence, true);
+    if (result < 0) {
+        diagnostics_.recordLoss();
+    }
+}
+
+void SshAdapter::drainShellOutputOnReactor() {
+    if (!isReactorThread() || !readerRunning_.load(std::memory_order_acquire)) {
+        return;
+    }
+    DataCallback cb;
+    {
+        std::lock_guard<std::mutex> callbackLock(callbackMutex_);
+        cb = onDataCallback_;
+    }
+    if (!cb) { return; }
+
+    constexpr size_t kBufSize = SSH_BUFFER_SIZE;
+    std::vector<uint8_t> buffer(kBufSize);
+    std::vector<uint8_t> accumulated;
+    accumulated.reserve(kBufSize * 2);
+    bool gotData = false;
+    bool eofDetected = false;
+    bool readError = false;
+    ssize_t readErrorCode = 0;
+    {
+        std::unique_lock<std::mutex> sessionLock(sessionMutex_);
+        if (!channel_ || sockFd_ < 0 ||
+            state_.load(std::memory_order_acquire) != ConnectionState::CONNECTED) {
+            return;
+        }
+        while (readerRunning_.load(std::memory_order_acquire)) {
+            const ssize_t n = libssh2_channel_read(
+                channel_, reinterpret_cast<char*>(buffer.data()), buffer.size());
+            if (n == LIBSSH2_ERROR_EAGAIN) { break; }
+            if (n < 0) {
+                readError = true;
+                readErrorCode = n;
+                readerRunning_.store(false, std::memory_order_release);
+                break;
+            }
+            if (n == 0) {
+                if (libssh2_channel_eof(channel_) != 0) {
+                    eofDetected = true;
+                    readerRunning_.store(false, std::memory_order_release);
+                }
+                break;
+            }
+            accumulated.insert(accumulated.end(), buffer.begin(), buffer.begin() + n);
+            gotData = true;
+            // Keep a cooperative SFTP/latency slice bounded like readerLoop.
+            if (accumulated.size() >= kBufSize * 4) { break; }
+        }
+    }
+
+    if (readError) {
+        setState(ConnectionState::ERROR,
+            "SSH terminal read failed: " + std::to_string(readErrorCode));
+    } else if (eofDetected) {
+        setState(ConnectionState::DISCONNECTED, "SSH remote channel closed");
+    }
+    if (gotData && !accumulated.empty()) {
+        diagnostics_.recordRemoteBytesRead(accumulated.size());
+        try { cb(accumulated); } catch (...) { /* keep the owner reactor alive */ }
+    }
+}
+
+void SshAdapter::drainReactorCommands() {
+    // Run one command per turn. This preserves a chance for terminal input
+    // and channel reads between long SFTP/command operations.
+    std::function<void()> command;
+    {
+        std::lock_guard<std::mutex> lock(reactorCommandMutex_);
+        if (reactorCommands_.empty()) { return; }
+        command = std::move(reactorCommands_.front());
+        reactorCommands_.pop_front();
+    }
+    if (command) {
+        try { command(); } catch (...) { /* packaged_task stores exceptions */ }
+    }
+}
+
 int SshAdapter::executeCommand(const std::string& command, SshCommandResult& result,
                                int timeoutMs) {
+    if (!isReactorThread() && readerRunning_.load(std::memory_order_acquire)) {
+        return runOnReactor([this, command, &result, timeoutMs]() {
+            return executeCommand(command, result, timeoutMs);
+        });
+    }
     return executeChannelRequest(command, false, result, timeoutMs);
 }
 
 int SshAdapter::executeSubsystem(const std::string& subsystem, SshCommandResult& result,
                                  int timeoutMs) {
+    if (!isReactorThread() && readerRunning_.load(std::memory_order_acquire)) {
+        return runOnReactor([this, subsystem, &result, timeoutMs]() {
+            return executeSubsystem(subsystem, result, timeoutMs);
+        });
+    }
     return executeChannelRequest(subsystem, true, result, timeoutMs);
 }
 
@@ -1524,10 +2212,16 @@ int SshAdapter::executeChannelRequest(const std::string& request, bool subsystem
     result = SshCommandResult {};
     if (request.empty()) { return ERR_SSH_SUBSYSTEM_FAILED; }
     if (timeoutMs <= 0) { timeoutMs = 30000; }
+    if (!isReactorThread() && readerRunning_.load(std::memory_order_acquire)) {
+        return runOnReactor([this, request, subsystem, &result, timeoutMs]() {
+            return executeChannelRequest(request, subsystem, result, timeoutMs);
+        });
+    }
     const auto deadline = std::chrono::steady_clock::now() +
         std::chrono::milliseconds(timeoutMs);
 
-    std::lock_guard<std::mutex> sessionLock(sessionMutex_);
+    std::lock_guard<std::recursive_mutex> lifecycleLock(lifecycleMutex_);
+    std::unique_lock<std::mutex> sessionLock(sessionMutex_);
     if (!session_ || state_.load(std::memory_order_acquire) != ConnectionState::CONNECTED) {
         return ERR_SSH_SESSION_CLOSED;
     }
@@ -1535,8 +2229,25 @@ int SshAdapter::executeChannelRequest(const std::string& request, bool subsystem
         const auto remainingMs = std::chrono::duration_cast<std::chrono::milliseconds>(
             deadline - std::chrono::steady_clock::now()).count();
         if (remainingMs <= 0) { return false; }
-        const int waitSeconds = static_cast<int>((remainingMs + 999) / 1000);
-        return waitSocket(2, std::min(waitSeconds, 15)) == 0;
+        if (isReactorThread() && !readerRunning_.load(std::memory_order_acquire)) {
+            return false;
+        }
+        sessionLock.unlock();
+        bool ready = false;
+        if (isReactorThread()) {
+            const int waitMs = static_cast<int>(std::min<int64_t>(remainingMs, 50));
+            const int waitResult = waitSocketMilliseconds(2, waitMs);
+            // A short timeout is expected. Keep retrying until the command
+            // deadline, servicing terminal input between packet polls.
+            ready = waitResult != -1 && waitResult != -3;
+            drainInputQueueOnReactor();
+        } else {
+            const int waitSeconds = static_cast<int>((remainingMs + 999) / 1000);
+            ready = waitSocket(2, std::min(waitSeconds, 15)) == 0;
+        }
+        sessionLock.lock();
+        return ready && session_ != nullptr &&
+            !connectCancelRequested_.load(std::memory_order_acquire);
     };
 
     LIBSSH2_CHANNEL* commandChannel = nullptr;
@@ -1555,7 +2266,7 @@ int SshAdapter::executeChannelRequest(const std::string& request, bool subsystem
         while (closeResult == LIBSSH2_ERROR_EAGAIN) {
             closeResult = libssh2_channel_close(commandChannel);
             if (closeResult == LIBSSH2_ERROR_EAGAIN) {
-                if (waitSocket(2, 1) != 0) { break; }
+                if (!waitForRequest()) { break; }
             }
         }
         libssh2_channel_free(commandChannel);
@@ -1580,6 +2291,12 @@ int SshAdapter::executeChannelRequest(const std::string& request, bool subsystem
     std::vector<uint8_t> buffer(32768);
     bool stdoutDone = false;
     bool stderrDone = false;
+    auto serviceTerminalInput = [&]() {
+        if (!isReactorThread()) { return; }
+        sessionLock.unlock();
+        drainInputQueueOnReactor();
+        sessionLock.lock();
+    };
     auto appendOutput = [&](std::vector<uint8_t>& destination,
                             const uint8_t* source, size_t length) -> bool {
         const size_t currentSize = result.stdoutBytes.size() + result.stderrBytes.size();
@@ -1591,6 +2308,11 @@ int SshAdapter::executeChannelRequest(const std::string& request, bool subsystem
         return true;
     };
     while (!(stdoutDone && stderrDone)) {
+        if (isReactorThread() && !readerRunning_.load(std::memory_order_acquire)) {
+            closeChannel();
+            return ERR_SSH_SESSION_CLOSED;
+        }
+        serviceTerminalInput();
         bool progressed = false;
         if (!stdoutDone) {
             ssize_t readResult = libssh2_channel_read(
@@ -1639,13 +2361,7 @@ int SshAdapter::executeChannelRequest(const std::string& request, bool subsystem
             return ERR_SSH_COMMAND_TIMEOUT;
         }
         if (!progressed) {
-            const auto remainingMs = std::chrono::duration_cast<std::chrono::milliseconds>(
-                deadline - std::chrono::steady_clock::now()).count();
-            const int waitSeconds = remainingMs <= 1000 ? 1 :
-                static_cast<int>((remainingMs + 999) / 1000);
-            const int waitResult = waitSocket(2, std::min(waitSeconds, 2));
-            if (waitResult == -3 ||
-                (waitResult < 0 && std::chrono::steady_clock::now() >= deadline)) {
+            if (!waitForRequest()) {
                 closeChannel();
                 return ERR_SSH_COMMAND_TIMEOUT;
             }
@@ -1667,49 +2383,84 @@ int SshAdapter::executeChannelRequest(const std::string& request, bool subsystem
 
 int SshAdapter::sendChannelSignal(const std::string& signal) {
     if (signal.empty()) { return ERR_SSH_SUBSYSTEM_FAILED; }
-    std::lock_guard<std::mutex> sessionLock(sessionMutex_);
+    if (!isReactorThread() && readerRunning_.load(std::memory_order_acquire)) {
+        return runOnReactor([this, signal]() {
+            return sendChannelSignal(signal);
+        });
+    }
+    std::lock_guard<std::recursive_mutex> lifecycleLock(lifecycleMutex_);
+    std::unique_lock<std::mutex> sessionLock(sessionMutex_);
     if (!channel_ || state_.load(std::memory_order_acquire) != ConnectionState::CONNECTED) {
         return ERR_SSH_SESSION_CLOSED;
     }
     int rc;
     while ((rc = libssh2_channel_signal(channel_, signal.c_str())) == LIBSSH2_ERROR_EAGAIN) {
-        if (waitSocket(2, 5) != 0) { return ERR_SSH_COMMAND_TIMEOUT; }
+        sessionLock.unlock();
+        const int waitResult = isReactorThread()
+            ? waitSocketMilliseconds(2, kReactorWaitSliceMs) : waitSocket(2, 5);
+        if (isReactorThread()) { drainInputQueueOnReactor(); }
+        sessionLock.lock();
+        if (isReactorThread() && !readerRunning_.load(std::memory_order_acquire)) {
+            return ERR_SSH_SESSION_CLOSED;
+        }
+        if (waitResult == -1 || waitResult == -3 ||
+            (!isReactorThread() && waitResult != 0)) {
+            return ERR_SSH_COMMAND_TIMEOUT;
+        }
     }
     return rc == 0 ? 0 : ERR_SSH_SUBSYSTEM_FAILED;
 }
 
 int SshAdapter::sendChannelEof() {
-    std::lock_guard<std::mutex> sessionLock(sessionMutex_);
+    if (!isReactorThread() && readerRunning_.load(std::memory_order_acquire)) {
+        return runOnReactor([this]() {
+            return sendChannelEof();
+        });
+    }
+    std::lock_guard<std::recursive_mutex> lifecycleLock(lifecycleMutex_);
+    std::unique_lock<std::mutex> sessionLock(sessionMutex_);
     if (!channel_ || state_.load(std::memory_order_acquire) != ConnectionState::CONNECTED) {
         return ERR_SSH_SESSION_CLOSED;
     }
     int rc;
     while ((rc = libssh2_channel_send_eof(channel_)) == LIBSSH2_ERROR_EAGAIN) {
-        if (waitSocket(2, 5) != 0) { return ERR_SSH_COMMAND_TIMEOUT; }
+        sessionLock.unlock();
+        const int waitResult = isReactorThread()
+            ? waitSocketMilliseconds(2, kReactorWaitSliceMs) : waitSocket(2, 5);
+        if (isReactorThread()) { drainInputQueueOnReactor(); }
+        sessionLock.lock();
+        if (isReactorThread() && !readerRunning_.load(std::memory_order_acquire)) {
+            return ERR_SSH_SESSION_CLOSED;
+        }
+        if (waitResult == -1 || waitResult == -3 ||
+            (!isReactorThread() && waitResult != 0)) {
+            return ERR_SSH_COMMAND_TIMEOUT;
+        }
     }
     return rc == 0 ? 0 : ERR_SSH_SUBSYSTEM_FAILED;
 }
 
 int SshAdapter::readData(uint8_t* buf, size_t bufSize) {
     if (buf == nullptr && bufSize > 0) { return ERR_SSH_READ_FAILED; }
+    if (bufSize == 0) { return 0; }
+    if (!isReactorThread() && readerRunning_.load(std::memory_order_acquire)) {
+        return runOnReactor([this, buf, bufSize]() {
+            return readData(buf, bufSize);
+        });
+    }
     bool eof = false;
     int result = 0;
     {
+        std::lock_guard<std::recursive_mutex> lifecycleLock(lifecycleMutex_);
         std::lock_guard<std::mutex> sessionLock(sessionMutex_);
         if (!channel_ || sockFd_ < 0 ||
             state_.load(std::memory_order_acquire) != ConnectionState::CONNECTED) {
             return ERR_SSH_SESSION_CLOSED;
         }
 
-        // 非阻塞快速轮询 (50ms)
-        fd_set rfds;
-        FD_ZERO(&rfds);
-        FD_SET(sockFd_, &rfds);
-        struct timeval tv = {0, 50000};
-        int ret = select(sockFd_ + 1, &rfds, nullptr, nullptr, &tv);
-        if (ret <= 0) { return 0; }
-
-        // 从加密通道读取 (可能解密后返回 EAGAIN 即使 socket 可读)
+        // Push mode owns the socket poll. The legacy readData API is a
+        // non-blocking compatibility read and must never select while holding
+        // sessionMutex_ or on the ArkUI thread.
         ssize_t n = libssh2_channel_read(channel_, reinterpret_cast<char*>(buf), bufSize);
         if (n == LIBSSH2_ERROR_EAGAIN) {
             return 0;
@@ -1739,13 +2490,52 @@ int SshAdapter::readData(uint8_t* buf, size_t bufSize) {
 }
 
 void SshAdapter::resizePty(int cols, int rows) {
-    std::lock_guard<std::mutex> sessionLock(sessionMutex_);
+    if (cols <= 0 || rows <= 0) { return; }
+    if (!isReactorThread() && readerRunning_.load(std::memory_order_acquire)) {
+        bool publishCommand = false;
+        {
+            std::lock_guard<std::mutex> resizeLock(resizeMutex_);
+            pendingResizeCols_ = cols;
+            pendingResizeRows_ = rows;
+            if (!resizePending_) {
+                resizePending_ = true;
+            }
+            // A failed post leaves the latest dimensions pending. The owner
+            // retries them on its next turn instead of silently losing the
+            // only SIGWINCH for a new keyboard/orientation geometry.
+            if (!resizeCommandPosted_) {
+                resizeCommandPosted_ = true;
+                publishCommand = true;
+            }
+        }
+        if (publishCommand && !postOnReactor([this]() { processPendingResize(); })) {
+            std::lock_guard<std::mutex> resizeLock(resizeMutex_);
+            resizeCommandPosted_ = false;
+        }
+        // Window/layout callbacks are fire-and-forget. Coalescing keeps a
+        // resize storm from occupying the reactor command queue or blocking
+        // the ArkUI input path.
+        return;
+    }
+    std::lock_guard<std::recursive_mutex> lifecycleLock(lifecycleMutex_);
+    std::unique_lock<std::mutex> sessionLock(sessionMutex_);
     if (channel_ && state_.load(std::memory_order_acquire) == ConnectionState::CONNECTED) {
         int rc = LIBSSH2_ERROR_EAGAIN;
         while (rc == LIBSSH2_ERROR_EAGAIN) {
             rc = libssh2_channel_request_pty_size(channel_, cols, rows);
-            if (rc == LIBSSH2_ERROR_EAGAIN && waitSocket(2, 5) != 0) {
-                break;
+            if (rc == LIBSSH2_ERROR_EAGAIN) {
+                sessionLock.unlock();
+                const int waitResult = isReactorThread()
+                    ? waitSocketMilliseconds(2, kReactorWaitSliceMs) : waitSocket(2, 5);
+                if (isReactorThread()) { drainInputQueueOnReactor(); }
+                sessionLock.lock();
+                if (isReactorThread() && !readerRunning_.load(std::memory_order_acquire)) {
+                    break;
+                }
+                if (waitResult == -1 || waitResult == -3 ||
+                    (!isReactorThread() && waitResult != 0)) {
+                    break;
+                }
             }
         }
         if (rc == 0) {
@@ -1758,30 +2548,77 @@ void SshAdapter::resizePty(int cols, int rows) {
     }
 }
 
+void SshAdapter::processPendingResize() {
+    int cols = 0;
+    int rows = 0;
+    {
+        std::lock_guard<std::mutex> resizeLock(resizeMutex_);
+        cols = pendingResizeCols_;
+        rows = pendingResizeRows_;
+        resizePending_ = false;
+        resizeCommandPosted_ = false;
+    }
+    if (cols > 0 && rows > 0) {
+        resizePty(cols, rows);
+    }
+}
+
 int SshAdapter::getSocketFd() const {
     std::lock_guard<std::mutex> sessionLock(sessionMutex_);
     return sockFd_;
 }
 
 int SshAdapter::measureLatencyMs() {
-    std::lock_guard<std::mutex> sessionLock(sessionMutex_);
+    if (!isReactorThread() && readerRunning_.load(std::memory_order_acquire)) {
+        return runOnReactor([this]() {
+            return measureLatencyMs();
+        });
+    }
+    std::lock_guard<std::recursive_mutex> lifecycleLock(lifecycleMutex_);
+    std::unique_lock<std::mutex> sessionLock(sessionMutex_);
     if (!session_ || sockFd_ < 0 ||
         state_.load(std::memory_order_acquire) != ConnectionState::CONNECTED) {
         return -1;
     }
     auto start = std::chrono::steady_clock::now();
+    // Keep the owner reactor responsive to shell output and keyboard input.
+    // A keepalive probe is a health hint, not a reason to stall the terminal
+    // for the old three-second timeout.
+    constexpr auto kProbeBudget = std::chrono::milliseconds(50);
+    const auto deadline = start + kProbeBudget;
     int secondsToNext = 0;
     int rc = LIBSSH2_ERROR_EAGAIN;
     while ((rc = libssh2_keepalive_send(session_, &secondsToNext)) == LIBSSH2_ERROR_EAGAIN) {
-        int w = waitSocket(2, 3);
-        if (w != 0) {
-            OH_LOG_WARN(LOG_APP, "[SSH] keepalive 等待超时: wait=%{public}d", w);
+        if (std::chrono::steady_clock::now() >= deadline) {
+            return -2;
+        }
+        sessionLock.unlock();
+        const int waitResult = isReactorThread()
+            ? waitSocketMilliseconds(2, kReactorWaitSliceMs) : waitSocket(2, 3);
+        if (isReactorThread()) {
+            drainInputQueueOnReactor();
+            drainShellOutputOnReactor();
+        }
+        sessionLock.lock();
+        if (isReactorThread() && !readerRunning_.load(std::memory_order_acquire)) {
+            return -2;
+        }
+        if (waitResult == -1 || waitResult == -3 ||
+            (!isReactorThread() && waitResult != 0)) {
+            OH_LOG_WARN(LOG_APP, "[SSH] keepalive 等待超时: wait=%{public}d", waitResult);
             return -2;
         }
     }
     if (rc != 0) {
         OH_LOG_WARN(LOG_APP, "[SSH] keepalive 失败: rc=%{public}d", rc);
         return -3;
+    }
+    if (isReactorThread()) {
+        // A keepalive can complete immediately while shell bytes are already
+        // readable. Give the callback path one bounded read before returning.
+        sessionLock.unlock();
+        drainShellOutputOnReactor();
+        sessionLock.lock();
     }
     auto end = std::chrono::steady_clock::now();
     return static_cast<int>(
@@ -1806,8 +2643,8 @@ void SshAdapter::setOnDataCallback(DataCallback cb) {
             onDataCallback_ = std::move(cb);
             hasCallback = true;
         }
-        // The connect call no longer starts the reader before ArkTS has a
-        // callback. This removes the pre-registration output-loss window.
+        // connect() starts the owner early; this call only wakes it and
+        // publishes the consumer that is allowed to receive remote bytes.
         startReader();
     }
     OH_LOG_INFO(LOG_APP, "[SSH] onDataCallback %{public}s",
@@ -1815,18 +2652,36 @@ void SshAdapter::setOnDataCallback(DataCallback cb) {
 }
 
 void SshAdapter::startReader() {
+    std::lock_guard<std::mutex> lifecycleLock(readerLifecycleMutex_);
     bool expected = false;
     if (!readerRunning_.compare_exchange_strong(expected, true)) { return; }
+    // A failed connect can stop the owner from inside its own command. The
+    // thread remains joinable until the async completion/next caller reclaims
+    // it; never overwrite that std::thread object while it is still joinable.
+    if (readerThread_.joinable()) {
+        if (isReactorThread()) {
+            readerRunning_.store(false, std::memory_order_release);
+            return;
+        }
+        readerThread_.join();
+    }
     readerThread_ = std::thread(&SshAdapter::readerLoop, this);
     OH_LOG_INFO(LOG_APP, "[SSH] reader 线程已启动");
 }
 
 void SshAdapter::stopReader() {
+    std::lock_guard<std::mutex> lifecycleLock(readerLifecycleMutex_);
+    if (isReactorThread()) {
+        readerRunning_.store(false, std::memory_order_release);
+        reactorCommandCondition_.notify_all();
+        return;
+    }
     if (!readerRunning_.load()) {
         if (readerThread_.joinable()) { readerThread_.join(); }
         return;
     }
     readerRunning_.store(false);
+    reactorCommandCondition_.notify_all();
     if (readerThread_.joinable()) {
         readerThread_.join();
     }
@@ -1836,59 +2691,99 @@ void SshAdapter::stopReader() {
 void SshAdapter::readerLoop() {
     constexpr size_t kBufSize = SSH_BUFFER_SIZE;
     std::vector<uint8_t> buf(kBufSize);
+    reactorThreadId_ = std::this_thread::get_id();
+    reactorAlive_.store(true, std::memory_order_release);
 
-    while (readerRunning_.load()) {
+    while (readerRunning_.load(std::memory_order_acquire)) {
+        // Control/data admission is already bounded. One item per turn keeps
+        // a paste from monopolizing the owner while the channel is readable.
+        drainInputQueueOnReactor();
+        // If a resize command could not enter the bounded reactor queue, the
+        // owner itself retries it here. This also recovers a command that was
+        // discarded when a prior reactor stopped during teardown.
+        bool retryResize = false;
+        {
+            std::lock_guard<std::mutex> resizeLock(resizeMutex_);
+            if (resizePending_ && !resizeCommandPosted_ &&
+                state_.load(std::memory_order_acquire) == ConnectionState::CONNECTED) {
+                resizeCommandPosted_ = true;
+                retryResize = true;
+            }
+        }
+        if (retryResize) {
+            processPendingResize();
+        }
+        // Terminal input has priority over queued SFTP/command work. Each
+        // long operation also yields back through this same drain path.
+        drainReactorCommands();
         {
             std::lock_guard<std::mutex> callbackLock(callbackMutex_);
             if (!onDataCallback_) {
-                readerRunning_.store(false, std::memory_order_release);
-                break;
+                std::unique_lock<std::mutex> waitLock(reactorCommandMutex_);
+                reactorCommandCondition_.wait_for(waitLock, std::chrono::milliseconds(10));
+                continue;
             }
         }
-        // Keep the session lock across select/read. The previous snapshot-only
-        // approach could leave a stale channel pointer between select() and
-        // libssh2_channel_read() while disconnect freed the channel.
-        std::unique_lock<std::mutex> sessionLock(sessionMutex_);
-        int fd = sockFd_;
-        LIBSSH2_CHANNEL* ch = channel_;
+        // Snapshot only the poll identity. Waiting in select() must not hold
+        // sessionMutex_: otherwise a quiet SSH channel stalls terminal writes
+        // and every SFTP operation for the full poll interval.
+        int fd = -1;
+        LIBSSH2_CHANNEL* ch = nullptr;
+        uint64_t generation = 0;
+        {
+            std::lock_guard<std::mutex> sessionLock(sessionMutex_);
+            fd = sockFd_;
+            ch = channel_;
+            generation = ioGeneration_.load(std::memory_order_acquire);
+        }
         if (fd < 0 || ch == nullptr ||
             state_.load(std::memory_order_acquire) != ConnectionState::CONNECTED) {
-            sessionLock.unlock();
-            // 句柄无效, 短暂休眠后再判断 (避免 busy-loop)
-            struct timeval tv = {0, 100 * 1000};  // 100ms
-            select(0, nullptr, nullptr, nullptr, &tv);
+            std::unique_lock<std::mutex> waitLock(reactorCommandMutex_);
+            reactorCommandCondition_.wait_for(waitLock, std::chrono::milliseconds(10));
             continue;
         }
 
-        // 100ms select 等待 socket 可读
+        // A short poll bounds command/input latency while retaining a single
+        // libssh2 owner. The old 100ms poll was visible as keyboard lag.
         fd_set rfds;
         FD_ZERO(&rfds);
         FD_SET(fd, &rfds);
-        struct timeval tv = {0, 100 * 1000};  // 100ms
+        struct timeval tv = {0, 10 * 1000};
         int sret = select(fd + 1, &rfds, nullptr, nullptr, &tv);
         if (sret < 0) {
-            sessionLock.unlock();
             if (errno == EINTR) { continue; }
+            if (!readerRunning_.load(std::memory_order_acquire)) { break; }
             OH_LOG_WARN(LOG_APP, "[SSH] reader select 错误: errno=%{public}d", errno);
-            break;
+            continue;
         }
         if (sret == 0) {
-            sessionLock.unlock();
             continue;
         }  // 超时, 继续循环
 
+        // Reacquire only for the actual libssh2 read and validate the whole
+        // snapshot. disconnect/reconnect increments ioGeneration_ while
+        // clearing the channel, so an fd reuse cannot read a stale pointer.
+        std::unique_lock<std::mutex> sessionLock(sessionMutex_);
+        if (!readerRunning_.load(std::memory_order_acquire) ||
+            fd != sockFd_ || ch != channel_ ||
+            generation != ioGeneration_.load(std::memory_order_acquire) ||
+            state_.load(std::memory_order_acquire) != ConnectionState::CONNECTED) {
+            continue;
+        }
         {
             std::lock_guard<std::mutex> callbackLock(callbackMutex_);
             if (!onDataCallback_) {
-                readerRunning_.store(false, std::memory_order_release);
-                sessionLock.unlock();
-                break;
+                std::unique_lock<std::mutex> waitLock(reactorCommandMutex_);
+                reactorCommandCondition_.wait_for(waitLock, std::chrono::milliseconds(10));
+                continue;
             }
         }
 
         // 反复读直到 EAGAIN, 减少 select 次数 (大输出场景)
         bool gotData = false;
         bool eofDetected = false;
+        bool readError = false;
+        ssize_t readErrorCode = 0;
         std::vector<uint8_t> accumulated;
         accumulated.reserve(kBufSize * 2);
         while (readerRunning_.load()) {
@@ -1896,6 +2791,8 @@ void SshAdapter::readerLoop() {
             if (n == LIBSSH2_ERROR_EAGAIN) { break; }
             if (n < 0) {
                 OH_LOG_ERROR(LOG_APP, "[SSH] reader libssh2_channel_read 失败: %{public}zd", n);
+                readError = terminalInputAccepting_.load(std::memory_order_acquire);
+                readErrorCode = n;
                 readerRunning_.store(false);
                 break;
             }
@@ -1917,7 +2814,10 @@ void SshAdapter::readerLoop() {
         }
         sessionLock.unlock();
 
-        if (eofDetected) {
+        if (readError) {
+            setState(ConnectionState::ERROR,
+                "SSH terminal read failed: " + std::to_string(readErrorCode));
+        } else if (eofDetected) {
             setState(ConnectionState::DISCONNECTED, "SSH remote channel closed");
         }
 
@@ -1931,14 +2831,27 @@ void SshAdapter::readerLoop() {
                 }
             }
             if (cb) {
-                diagnostics_.recordCallbackAccepted(accumulated.size());
                 try { cb(accumulated); } catch (...) { /* 静默, 不中断 reader */ }
             }
         }
     }
 
+    reactorThreadId_ = std::thread::id {};
+    reactorAlive_.store(false, std::memory_order_release);
     readerRunning_.store(false, std::memory_order_release);
-    OH_LOG_INFO(LOG_APP, "[SSH] readerLoop 结束");
+    {
+        std::lock_guard<std::mutex> commandLock(reactorCommandMutex_);
+        reactorCommands_.clear();
+    }
+    {
+        std::lock_guard<std::mutex> resizeLock(resizeMutex_);
+        // Keep resizePending_ intact so the next owner can publish the latest
+        // dimensions after a reconnect; only the dropped command marker is
+        // cleared here.
+        resizeCommandPosted_ = false;
+    }
+    reactorCommandCondition_.notify_all();
+    OH_LOG_INFO(LOG_APP, "[SSH] session owner reactor 结束");
 }
 
 // ============================================================

@@ -1,76 +1,55 @@
 {
   "schema": 1,
-  "task": "rustdesk-complete-repair",
-  "branch": "codex/rustdesk-complete-repair",
-  "base": "34946adbc",
-  "head": "d48c12471",
-  "phase": "rdp-p0-tls-negotiation",
+  "task": "ssh-terminal-complete-upgrade",
+  "branch": "codex/ssh-terminal-complete-upgrade",
+  "base": "d2769ad4b",
+  "head": "1976c4aeb",
+  "phase": "ssh-self-review-checkpoint",
   "status": "active",
-  "next": "RDP P0 negotiation/TLS preflight repair is committed at d48c12471 and local native/ArkTS/HAP gates pass. Collect a real endpoint and HDC evidence before starting RDP P1; keep the existing VNC/RustDesk reviewer owner.",
+  "next": "Commit the SSH-only T0-T3/WP-S0 checkpoint after user-authorized self-review and mandatory Hvigor gates; hand S1/S2+ to the next session.",
   "blockers": [
-    "hdc list targets returns no device; no current PIP/background/foreground hilog evidence.",
-    "ohosTest@OhosTestCompileArkTS is not registered (00306054); ArkTS tests have compile/build evidence only.",
-    "VNC native/endpoint/device evidence remains outstanding; no HDC device is currently listed.",
-    "Stage C RemoteDesktop Sheet/probe/password runtime behavior has only static/build evidence; no device or ohosTest runtime evidence.",
-    "RustDesk/VNC background restore, PIP surface transfer, audio continuity, and the mobile RustDesk rail/system-bar behavior have no real-device/hilog evidence.",
-    "No real RDP/bastion endpoint is available, so direct RDP, RD Gateway, vendor proxy, and legacy TLS causes are not distinguished.",
-    "No HDC device or RDP hilog is available for selected-protocol, TLS-alert, or FreeRDP error-code evidence."
+    "No HDC device is listed; physical keyboard, Phone/Pad/PC layout, lifecycle, and drag/drop evidence remain pending.",
+    "ohosTest@OhosTestCompileArkTS is not registered (00306054).",
+    "Host native suite has 16 pre-existing VNC TLS fixture startup failures; SSH tests pass.",
+    "No bastion/forwarding endpoint is available; ProxyJump and port forwarding remain gated plan items."
   ],
   "planPaths": [
-    "docs/superpowers/plans/2026-08-01-vnc-certificate-settings-relay-complete-repair-plan-v3.md",
-    "docs/codex/plans/2026-08-03-rdp-tls-handshake-fix-plan.md"
+    "docs/SSH_MODULE_UPGRADE_PLAN_V2.md",
+    "docs/SSH_TERMINAL_TEST_CASES.md"
   ],
   "review": {
-    "status": "BLOCKED",
-    "taskId": "019fc333-6789-7633-bf6f-3fea1cb2ad4d",
+    "status": "PASS",
+    "taskId": "self-review",
     "scope": [
-      "entry/src/main/cpp/audio/audio_player.cpp",
       "entry/src/main/cpp/extensions/extension_loader_napi.cpp",
-      "entry/src/main/cpp/rustdesk/rustdesk_bridge.cpp",
-      "entry/src/main/cpp/rustdesk/rustdesk_bridge.h",
-      "entry/src/main/cpp/test/vnc_certificate_probe_test.cpp",
+      "entry/src/main/cpp/extensions/protocol_adapter.h",
+      "entry/src/main/cpp/ssh/ssh_adapter.cpp",
+      "entry/src/main/cpp/ssh/ssh_adapter.h",
+      "entry/src/main/cpp/ssh/ssh_terminal_diagnostics.h",
+      "entry/src/main/cpp/ssh/ssh_terminal_input_queue_policy.h",
+      "entry/src/main/cpp/test/ssh_terminal_diagnostics_test.cpp",
       "entry/src/main/cpp/types/librdpnapi/index.d.ts",
-      "entry/src/main/cpp/vnc/vnc_rfb_protocol.cpp",
-      "entry/src/main/cpp/vnc/vnc_rfb_protocol.h",
-      "entry/src/main/ets/components/VncCertificateTrustManagerSheet.ets",
-      "entry/src/main/ets/components/RemoteSessionTopBar.ets",
-      "entry/src/main/ets/pages/HostListPage.ets",
-      "entry/src/main/ets/pages/RemoteDesktop.ets",
-      "entry/src/main/ets/pages/RustDeskRelayPage.ets",
-      "entry/src/main/ets/services/ActiveRemoteSessionRegistry.ets",
+      "entry/src/main/ets/pages/SshTerminal.ets",
       "entry/src/main/ets/services/ExtensionLoader.ets",
-      "entry/src/main/ets/services/RemoteSessionPipLifecyclePolicy.ets",
-      "entry/src/main/ets/services/RemoteImmersivePolicy.ets",
-      "entry/src/main/ets/services/RemoteSessionTopBarPolicy.ets",
-      "entry/src/main/ets/services/VncGatewayHealthPolicy.ets",
-      "entry/src/main/ets/services/VncRendererSurfacePolicy.ets",
       "entry/src/main/ets/types/rdpnapi.d.ts",
-      "entry/src/test/RemoteImmersivePolicy.test.ets",
-      "entry/src/test/RemoteSessionTopBarPolicy.test.ets",
-      "entry/src/ohosTest/ets/test/ActiveRemoteSessionRegistry.test.ets",
-      "entry/src/ohosTest/ets/test/List.test.ets",
-      "entry/src/ohosTest/ets/test/RemoteImmersivePolicy.test.ets",
-      "entry/src/ohosTest/ets/test/RemoteSessionPipLifecyclePolicy.test.ets",
+      "entry/src/main/ets/services/SshTerminalInputPolicy.ets",
+      "entry/src/test/SshTerminalInputPolicy.test.ets",
       "entry/src/test/List.test.ets",
-      "entry/src/test/VncGatewayHealthPolicy.test.ets",
-      "entry/src/test/VncRendererSurfacePolicy.test.ets"
+      "entry/src/main/ets/services/SshSftpIntegrityPolicy.ets",
+      "entry/src/test/SshSftpIntegrityPolicy.test.ets",
+      "entry/src/main/ets/services/SshSftpTaskPolicy.ets",
+      "entry/src/main/ets/services/SshSftpTaskStore.ets",
+      "entry/src/test/SshSftpTaskPolicy.test.ets"
     ],
-    "reason": "Existing review task 019fc333-6789-7633-bf6f-3fea1cb2ad4d remains the VNC/RustDesk review owner. RDP P0 has a separate read-only review and is outside that existing scope; remaining gaps are real endpoint, HDC, OHOS runtime, and direct ArkTS/NAPI tests."
+    "reason": "User-authorized self-review completed in the primary session. Independent review session and child agent are stopped; no other session is used."
   },
   "lastVerification": {
-    "rdp_native_tests": "242-pass-16-existing-vnc-fixture-start-failures-rdp-parser-pass-d48c12471-2026-08-03",
-    "rustdesk_native_callback_tests": "216-pass-0-fail-28f8608f6-2026-08-03",
-    "rustdesk_ffi_all": "pass-after-410a6a0-2026-08-03-arm64-x86_64-required-symbols",
-    "default@OhosTestCompileArkTS": "pass-after-d48c12471-2026-08-03",
-    "assembleHap": "pass-after-d48c12471-2026-08-03",
-    "ohosTest@OhosTestCompileArkTS": "blocked-task-00306054-2026-08-02",
-    "diffCheck": "pass-after-d48c12471-2026-08-03"
+    "host_native_tests": "253-pass-16-preexisting-vnc-fixture-startup-failures-269-total-2026-08-04",
+    "default@OhosTestCompileArkTS": "pass-after-wp-s0-2026-08-04",
+    "assembleHap": "pass-after-wp-s0-build-successful-2026-08-04",
+    "gitDiffCheck": "pass-2026-08-04",
+    "ohosTest": "blocked-task-00306054",
+    "hdc": "blocked-no-target"
   },
-  "archives": [
-    "docs/codex/archive/2026-08/README.md",
-    "docs/codex/archive/2026-08/CURRENT-legacy.md",
-    "docs/codex/archive/2026-08/QUEUE-legacy.md",
-    "docs/codex/archive/2026-08/HANDOFF-legacy.md"
-  ],
-  "updated": "2026-08-03 Asia/Shanghai"
+  "updated": "2026-08-04 Asia/Shanghai"
 }

@@ -9,7 +9,14 @@ import {
   encodePhysicalKey,
   encodeSoftDelete,
   encodeSpecialKey,
-  encodeTextInput
+  encodeTextInput,
+  createSshImeCallbackState,
+  recordSshImeWillInsert,
+  consumeSshImeDidInsert,
+  recordSshImeWillDelete,
+  consumeSshImeDidDelete,
+  inspectSshImeChange,
+  resetSshImeShadow
 } from '../main/ets/services/SshTerminalInputPolicy';
 
 const NONE: TerminalModifierState = { ctrl: false, alt: false, shift: false };
@@ -95,6 +102,39 @@ export default function sshTerminalInputPolicyTest(): void {
         .assertEqual('\u001bx');
     });
 
+    it('should_consume_unicode_physical_text_without_ime', 0, (): void => {
+      const cjk = encodePhysicalKey({
+        keyCode: KeyCode.KEYCODE_A, unicode: 0x4E2D, ctrl: false, alt: false, shift: false
+      });
+      expect(cjk.consume).assertTrue();
+      expect(cjk.sequence).assertEqual('中');
+      const emoji = encodePhysicalKey({
+        keyCode: KeyCode.KEYCODE_A, unicode: 0x1F600, ctrl: false, alt: false, shift: false
+      });
+      expect(emoji.sequence).assertEqual('😀');
+    });
+
+    it('should_use_keycode_fallback_when_physical_unicode_is_missing', 0, (): void => {
+      const plain = encodePhysicalKey({
+        keyCode: KeyCode.KEYCODE_A, unicode: undefined, ctrl: false, alt: false, shift: false,
+        allowKeyCodeFallback: true
+      });
+      expect(plain.consume).assertTrue();
+      expect(plain.sequence).assertEqual('a');
+      const caps = encodePhysicalKey({
+        keyCode: KeyCode.KEYCODE_A, unicode: undefined, ctrl: false, alt: false, shift: false,
+        capsLock: true, allowKeyCodeFallback: true
+      });
+      expect(caps.sequence).assertEqual('A');
+    });
+
+    it('should_keep_altgr_composed_unicode_as_text', 0, (): void => {
+      expect(encodePhysicalKey({
+        keyCode: KeyCode.KEYCODE_2, unicode: 0x40, ctrl: true, alt: true, shift: false,
+        altGraph: true
+      }).sequence).assertEqual('@');
+    });
+
     it('should_request_refocus_after_tab_sequences', 0, (): void => {
       const tab = encodePhysicalKey({ keyCode: KeyCode.KEYCODE_TAB, unicode: undefined, ctrl: false, alt: false, shift: false });
       expect(tab.sequence).assertEqual('\t');
@@ -103,6 +143,67 @@ export default function sshTerminalInputPolicyTest(): void {
       const shiftTab = encodePhysicalKey({ keyCode: KeyCode.KEYCODE_TAB, unicode: undefined, ctrl: false, alt: false, shift: true });
       expect(shiftTab.sequence).assertEqual('\u001b[Z');
       expect(shiftTab.refocusAfterTab).assertTrue();
+    });
+
+    it('should_commit_ime_insert_once_after_will_and_did_callbacks', 0, (): void => {
+      const state = createSshImeCallbackState();
+      expect(recordSshImeWillInsert(state, 'ni')).assertTrue();
+      const preview = inspectSshImeChange(state, 'ni', 2);
+      expect(preview.updateShadow).assertTrue();
+      expect(preview.sendRemote).assertFalse();
+      expect(preview.resetLocal).assertFalse();
+      expect(consumeSshImeDidInsert(state, '你')).assertEqual('你');
+      expect(consumeSshImeDidInsert(state, '你')).assertEqual('');
+    });
+
+    it('should_commit_ime_delete_once_and_keep_change_local', 0, (): void => {
+      const state = createSshImeCallbackState();
+      expect(recordSshImeWillDelete(state, '字')).assertTrue();
+      expect(consumeSshImeDidDelete(state, '字')).assertEqual('字');
+      expect(consumeSshImeDidDelete(state, '字')).assertEqual(null);
+      const change = inspectSshImeChange(state, '', 0);
+      expect(change.updateShadow).assertTrue();
+      expect(change.sendRemote).assertFalse();
+      expect(change.resetLocal).assertFalse();
+    });
+
+    it('should_not_reset_or_send_while_ime_preview_is_active', 0, (): void => {
+      const state = createSshImeCallbackState();
+      expect(recordSshImeWillInsert(state, '拼音')).assertTrue();
+      const decision = inspectSshImeChange(state, '拼音', 2);
+      expect(decision.sendRemote).assertFalse();
+      expect(decision.resetLocal).assertFalse();
+    });
+
+    it('should_fallback_commit_non_system_ime_change_once', 0, (): void => {
+      const state = createSshImeCallbackState();
+      const committed = inspectSshImeChange(state, '你😀', 0);
+      expect(committed.sendRemote).assertTrue();
+      expect(committed.remoteInsert).assertEqual('你😀');
+      expect(committed.remoteDelete).assertEqual('');
+      const duplicate = inspectSshImeChange(state, '你😀', 0);
+      expect(duplicate.sendRemote).assertFalse();
+    });
+
+    it('should_allow_the_same_character_after_editor_reset', 0, (): void => {
+      const state = createSshImeCallbackState();
+      resetSshImeShadow(state, 'x');
+      const resetChange = inspectSshImeChange(state, '', 0);
+      expect(resetChange.sendRemote).assertFalse();
+      const repeated = inspectSshImeChange(state, 'x', 0);
+      expect(repeated.sendRemote).assertTrue();
+      expect(repeated.remoteInsert).assertEqual('x');
+    });
+
+    it('should_ignore_preview_then_send_only_committed_candidate', 0, (): void => {
+      const state = createSshImeCallbackState();
+      // Third-party IMEs may omit onWill/onDid while still reporting preview
+      // metadata through onChange.
+      const preview = inspectSshImeChange(state, 'ni', 2);
+      expect(preview.sendRemote).assertFalse();
+      const committed = inspectSshImeChange(state, '你', 0);
+      expect(committed.sendRemote).assertTrue();
+      expect(committed.remoteInsert).assertEqual('你');
     });
   });
 }

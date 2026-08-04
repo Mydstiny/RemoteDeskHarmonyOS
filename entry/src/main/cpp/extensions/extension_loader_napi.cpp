@@ -45,6 +45,7 @@
 #include <new>
 #include <sstream>
 #include <stdexcept>
+#include <thread>
 #include <vector>
 #include <unistd.h>
 
@@ -368,6 +369,10 @@ struct SessionContext {
     std::shared_ptr<ProtocolAdapter> adapter;
     std::string protocolName;
     mutable std::mutex adapterMutex;
+    // Serializes SSH data-callback publication with the teardown lifecycle
+    // claim. A callback registration must either publish before teardown owns
+    // the session (and be reclaimed by it) or be rejected after the claim.
+    mutable std::mutex callbackRegistrationMutex;
     // The numeric session id is retained for the public N-API surface; the
     // generation and owner token are the identities used by callback and
     // decoder telemetry gates. All video counters/controllers die with this
@@ -541,7 +546,6 @@ static std::map<uint64_t, VncCertificateProbeRegistration> g_vncCertificateProbe
 static std::map<napi_env, std::shared_ptr<VncCertificateProbeEnvironmentState>>
     g_vncCertificateProbeEnvironments;
 static std::atomic<uint64_t> g_napiWheelSendCount {0};
-static std::atomic<uint64_t> g_napiTextSendCount {0};
 static std::atomic<uint64_t> g_napiFileSendCount {0};
 static std::atomic<uint64_t> g_napiKeySendCount {0};
 static std::atomic<uint64_t> g_napiMouseSendCount {0};
@@ -731,13 +735,96 @@ static void ClearNativeNetworkObserver(
 // disconnect 维护。registration 先停止生产者，再释放 TSFN，避免 reader 线程
 // 在 N-API handle 已释放后仍调用 napi_call_threadsafe_function。
 struct SshDataTsfnRegistration {
+    static constexpr size_t kMaxPendingChunks = 512;
+    static constexpr size_t kMaxPendingBytes = 8 * 1024 * 1024;
+
     napi_threadsafe_function tsfn = nullptr;
+    int32_t sessionId = 0;
     std::atomic<bool> accepting {true};
-    std::mutex waitMutex;
-    std::condition_variable waitCondition;
+    std::mutex pendingMutex;
+    std::condition_variable pendingCondition;
+    std::deque<std::vector<uint8_t>*> pending;
+    size_t pendingBytes = 0;
+    std::thread pumpThread;
+    // Keep the adapter alive until the callback is explicitly detached. This
+    // makes orphan-registration cleanup reliable even after the session map
+    // has already erased its owner.
+    std::shared_ptr<SshAdapter> adapter;
+
+    ~SshDataTsfnRegistration() {
+        accepting.store(false, std::memory_order_release);
+        pendingCondition.notify_all();
+        if (pumpThread.joinable()) {
+            if (pumpThread.get_id() == std::this_thread::get_id()) {
+                pumpThread.detach();
+            } else {
+                pumpThread.join();
+            }
+        }
+        std::lock_guard<std::mutex> lock(pendingMutex);
+        while (!pending.empty()) {
+            delete pending.front();
+            pending.pop_front();
+        }
+        pendingBytes = 0;
+    }
 };
 static std::map<int, std::shared_ptr<SshDataTsfnRegistration>> g_dataTsfnMap;
 static std::mutex g_dataTsfnMutex;
+
+static void StopSshDataRegistrationInstance(
+    const std::shared_ptr<SshDataTsfnRegistration>& registration);
+
+// Used by the TSFN pump when N-API is closing and the normal page disconnect
+// path is no longer available. Detach the adapter first so the callback lambda
+// cannot keep the registration alive through adapter -> callback -> registration.
+static void DetachSshDataRegistrationOnClose(
+    const std::shared_ptr<SshDataTsfnRegistration>& registration) {
+    if (!registration) {
+        return;
+    }
+    registration->accepting.store(false, std::memory_order_release);
+    registration->pendingCondition.notify_all();
+    const std::shared_ptr<SshAdapter> adapter = registration->adapter;
+    if (adapter) {
+        adapter->setOnDataCallback(nullptr);
+    }
+    std::lock_guard<std::mutex> lock(g_dataTsfnMutex);
+    auto it = g_dataTsfnMap.find(registration->sessionId);
+    if (it != g_dataTsfnMap.end() && it->second == registration) {
+        g_dataTsfnMap.erase(it);
+    }
+}
+
+static std::shared_ptr<SshDataTsfnRegistration> TakeSshDataRegistration(int32_t sessionId) {
+    std::lock_guard<std::mutex> lock(g_dataTsfnMutex);
+    auto it = g_dataTsfnMap.find(sessionId);
+    if (it == g_dataTsfnMap.end()) {
+        return nullptr;
+    }
+    std::shared_ptr<SshDataTsfnRegistration> registration = it->second;
+    g_dataTsfnMap.erase(it);
+    return registration;
+}
+
+static void StopSshDataRegistration(
+    int32_t sessionId, const std::shared_ptr<SshAdapter>& adapter) {
+    std::shared_ptr<SshDataTsfnRegistration> registration =
+        TakeSshDataRegistration(sessionId);
+    if (registration) {
+        StopSshDataRegistrationInstance(registration);
+    }
+    std::shared_ptr<SshAdapter> effectiveAdapter = adapter;
+    if (!effectiveAdapter && registration) {
+        effectiveAdapter = registration->adapter;
+    }
+    if (effectiveAdapter) {
+        effectiveAdapter->setOnDataCallback(nullptr);
+    }
+    if (registration && registration->tsfn != nullptr) {
+        napi_release_threadsafe_function(registration->tsfn, napi_tsfn_release);
+    }
+}
 
 // ============================================================
 // 内部辅助函数
@@ -3317,8 +3404,18 @@ static void CleanupSshConnectFailure(SshConnectAsyncData& data) {
         DeactivateSessionContextIfActive(data.adapter, data.session->identity());
     }
     if (data.adapter) {
-        PrepareAdapterForTeardown(data.adapter, data.session ? data.session->identity() :
-            DecoderSessionIdentity {});
+        // Keep callback registration and adapter teardown in the same gate as
+        // normal disconnect. A failed async connect can still race a late
+        // setOnDataCallback(nullptr) from the page; calling the adapter
+        // directly here would let reader stop/join overlap callback publish.
+        if (data.session) {
+            std::lock_guard<std::mutex> callbackRegistrationLock(
+                data.session->callbackRegistrationMutex);
+            StopSshDataRegistration(data.sessionId, data.adapter);
+            PrepareAdapterForTeardown(data.adapter, data.session->identity());
+        } else {
+            PrepareAdapterForTeardown(data.adapter, DecoderSessionIdentity {});
+        }
         data.adapter->disconnect();
     }
 }
@@ -3565,6 +3662,7 @@ static void PrepareAdapterForTeardown(
     if (auto* ssh = dynamic_cast<SshAdapter*>(adapter.get())) {
         // Cancel before enqueueing the potentially blocking disconnect task;
         // this also covers an async SSH worker that has not started yet.
+        ssh->rejectTerminalInput();
         ssh->requestConnectCancel();
     }
     if (auto* rustdesk = dynamic_cast<RustDeskBridge*>(adapter.get())) {
@@ -3592,6 +3690,10 @@ static uint64_t BeginSessionTeardown(
         session = it->second;
     }
     if (!session) {
+        // The registry may already have been erased by an earlier teardown.
+        // No new registration can pass the lookup in that state, so reclaim
+        // any remaining TSFN before handling resource-only teardown.
+        StopSshDataRegistration(sessionId, nullptr);
         if (!HasNativeResources(resources)) {
             return 0;
         }
@@ -3613,6 +3715,14 @@ static uint64_t BeginSessionTeardown(
         }
         return resourceRequestId;
     }
+    std::shared_ptr<ProtocolAdapter> adapter;
+    {
+        std::lock_guard<std::mutex> lock(session->adapterMutex);
+        adapter = session->adapter;
+    }
+    auto sshAdapter = std::dynamic_pointer_cast<SshAdapter>(adapter);
+    std::unique_lock<std::mutex> callbackRegistrationLock(
+        session->callbackRegistrationMutex);
     SessionContext::Lifecycle expected = SessionContext::Lifecycle::Active;
     if (!session->lifecycle.compare_exchange_strong(
             expected, SessionContext::Lifecycle::Disconnecting)) {
@@ -3627,11 +3737,12 @@ static uint64_t BeginSessionTeardown(
         return session->teardownRequestId.load(std::memory_order_acquire);
     }
 
-    std::shared_ptr<ProtocolAdapter> adapter;
-    {
-        std::lock_guard<std::mutex> lock(session->adapterMutex);
-        adapter = session->adapter;
-    }
+    // The lifecycle claim and TSFN removal share callbackRegistrationMutex.
+    // A setOnDataCallback call that published before this claim is removed
+    // here; a call after the claim is rejected before creating a TSFN.
+    StopSshDataRegistration(sessionId, sshAdapter);
+    callbackRegistrationLock.unlock();
+
     if (session->protocolName == "rustdesk") {
         ClearNativeNetworkObserver(
             sessionId, session->generation.load(std::memory_order_acquire));
@@ -3737,35 +3848,6 @@ static uint64_t BeginSessionTeardown(
 // second teardown implementation.
 static uint64_t ExecuteNapiDisconnectCore(
     int32_t sessionId, TeardownNativeResources resources) {
-    std::shared_ptr<SshDataTsfnRegistration> dataRegistration;
-    {
-        std::lock_guard<std::mutex> lk(g_dataTsfnMutex);
-        auto tit = g_dataTsfnMap.find(sessionId);
-        if (tit != g_dataTsfnMap.end()) {
-            dataRegistration = tit->second;
-            g_dataTsfnMap.erase(tit);
-        }
-    }
-    if (dataRegistration) {
-        dataRegistration->accepting.store(false, std::memory_order_release);
-        dataRegistration->waitCondition.notify_all();
-    }
-    auto dataSession = g_sessionRegistry.find(sessionId);
-    if (dataSession != g_sessionRegistry.end() && dataSession->second) {
-        std::shared_ptr<ProtocolAdapter> dataAdapter;
-        {
-            std::lock_guard<std::mutex> lock(dataSession->second->adapterMutex);
-            dataAdapter = dataSession->second->adapter;
-        }
-        auto sshAdapter = std::dynamic_pointer_cast<SshAdapter>(dataAdapter);
-        if (sshAdapter) {
-            sshAdapter->setOnDataCallback(nullptr);
-        }
-    }
-    if (dataRegistration && dataRegistration->tsfn != nullptr) {
-        napi_release_threadsafe_function(dataRegistration->tsfn, napi_tsfn_release);
-    }
-
     if (!resources.owner.valid()) {
         if (const auto it = g_sessionRegistry.find(sessionId);
             it != g_sessionRegistry.end() && it->second) {
@@ -3949,46 +4031,38 @@ napi_value NapiDisconnectAll(napi_env env, napi_callback_info info) {
         if (!item.second) {
             continue;
         }
+        std::shared_ptr<ProtocolAdapter> adapter;
+        {
+            std::lock_guard<std::mutex> lock(item.second->adapterMutex);
+            adapter = item.second->adapter;
+        }
+        std::unique_lock<std::mutex> callbackRegistrationLock(
+            item.second->callbackRegistrationMutex);
         SessionContext::Lifecycle expected = SessionContext::Lifecycle::Active;
         if (item.second->lifecycle.compare_exchange_strong(
                 expected, SessionContext::Lifecycle::Disconnecting,
                 std::memory_order_acq_rel, std::memory_order_acquire)) {
+            const auto sshAdapter = std::dynamic_pointer_cast<SshAdapter>(adapter);
+            StopSshDataRegistration(item.first, sshAdapter);
             teardownSessions.push_back(item);
         }
     }
 
-    std::vector<std::shared_ptr<SshDataTsfnRegistration>> dataRegistrations;
+    // A session absent from the registry cannot race a new registration. It
+    // may still have a stale map entry from an interrupted earlier teardown;
+    // reclaim only those orphan ids and leave Disconnecting owners untouched.
+    std::vector<int32_t> orphanRegistrationIds;
     {
         std::lock_guard<std::mutex> lock(g_dataTsfnMutex);
-        dataRegistrations.reserve(g_dataTsfnMap.size());
+        orphanRegistrationIds.reserve(g_dataTsfnMap.size());
         for (const auto& entry : g_dataTsfnMap) {
-            dataRegistrations.push_back(entry.second);
-        }
-        g_dataTsfnMap.clear();
-    }
-    for (const auto& registration : dataRegistrations) {
-        if (registration) {
-            registration->accepting.store(false, std::memory_order_release);
-            registration->waitCondition.notify_all();
-        }
-    }
-    for (const auto& item : teardownSessions) {
-        if (item.second) {
-            std::shared_ptr<ProtocolAdapter> adapter;
-            {
-                std::lock_guard<std::mutex> lock(item.second->adapterMutex);
-                adapter = item.second->adapter;
-            }
-            const auto sshAdapter = std::dynamic_pointer_cast<SshAdapter>(adapter);
-            if (sshAdapter) {
-                sshAdapter->setOnDataCallback(nullptr);
+            if (g_sessionRegistry.find(entry.first) == g_sessionRegistry.end()) {
+                orphanRegistrationIds.push_back(entry.first);
             }
         }
     }
-    for (const auto& registration : dataRegistrations) {
-        if (registration && registration->tsfn != nullptr) {
-            napi_release_threadsafe_function(registration->tsfn, napi_tsfn_release);
-        }
+    for (const int32_t orphanId : orphanRegistrationIds) {
+        StopSshDataRegistration(orphanId, nullptr);
     }
 
     TeardownNativeResources resources;
@@ -4500,33 +4574,107 @@ napi_value NapiSendText(napi_env env, napi_callback_info info) {
         napi_get_undefined(env, &undefined);
         return undefined;
     }
-    const size_t textLen = text.size();
-
     auto it = g_sessionRegistry.find(sessionId);
     if (it != g_sessionRegistry.end() && it->second->adapter) {
         if (it->second->protocolName == "vnc") {
             it->second->diagnostics.inputEventsSent.fetch_add(1, std::memory_order_relaxed);
         }
-        uint64_t index = ++g_napiTextSendCount;
-        OH_LOG_INFO(LOG_APP,
-            "[ExtLoader] NapiSendText #%{public}llu session=%{public}d len=%{public}zu found=yes",
-            static_cast<unsigned long long>(index),
-            sessionId,
-            textLen);
         it->second->adapter->sendText(text);
     } else {
         if (it != g_sessionRegistry.end() && it->second->protocolName == "vnc") {
             it->second->diagnostics.inputEventsDropped.fetch_add(1, std::memory_order_relaxed);
         }
-        OH_LOG_WARN(LOG_APP,
-            "[ExtLoader] NapiSendText session=%{public}d len=%{public}zu found=no",
-            sessionId,
-            textLen);
     }
 
     napi_value undefined;
     napi_get_undefined(env, &undefined);
     return undefined;
+}
+
+static const char* SshTerminalInputStatusName(SshTerminalInputStatus status) {
+    switch (status) {
+        case SshTerminalInputStatus::ACCEPTED: return "accepted";
+        case SshTerminalInputStatus::QUEUE_FULL: return "queueFull";
+        case SshTerminalInputStatus::SESSION_CLOSED: return "sessionClosed";
+        case SshTerminalInputStatus::STALE_GENERATION: return "staleGeneration";
+        case SshTerminalInputStatus::INVALID: return "invalid";
+    }
+    return "invalid";
+}
+
+/**
+ * NAPI: enqueueSshTerminalInput(sessionId, text, expectedGeneration, control,
+ *                              ordered, orderedEnd)
+ *
+ * The call only copies into the SSH adapter's bounded queue. It never enters
+ * the libssh2 write loop on the ArkUI thread.
+ */
+napi_value NapiEnqueueSshTerminalInput(napi_env env, napi_callback_info info) {
+    size_t argc = 6;
+    napi_value args[6] = {nullptr};
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+
+    SshTerminalInputResult result;
+    int32_t sessionId = 0;
+    if (argc < 2 || napi_get_value_int32(env, args[0], &sessionId) != napi_ok) {
+        result.status = SshTerminalInputStatus::INVALID;
+    } else {
+        std::string text = GetNapiString(env, args[1]);
+        int64_t expectedGenerationValue = 0;
+        if (argc > 2) {
+            (void)napi_get_value_int64(env, args[2], &expectedGenerationValue);
+        }
+        bool control = false;
+        if (argc > 3) {
+            (void)napi_get_value_bool(env, args[3], &control);
+        }
+        bool ordered = false;
+        if (argc > 4) {
+            (void)napi_get_value_bool(env, args[4], &ordered);
+        }
+        bool orderedEnd = false;
+        if (argc > 5) {
+            (void)napi_get_value_bool(env, args[5], &orderedEnd);
+        }
+        const auto it = g_sessionRegistry.find(sessionId);
+        const std::shared_ptr<SessionContext> session =
+            it == g_sessionRegistry.end() ? nullptr : it->second;
+        if (!session) {
+            result.status = SshTerminalInputStatus::SESSION_CLOSED;
+        } else if (session->lifecycle.load(std::memory_order_acquire) !=
+                   SessionContext::Lifecycle::Active) {
+            // BeginSessionTeardown marks Disconnecting before the executor
+            // reaches adapter->disconnect(). Reject in this window so a late
+            // key cannot enter a session that is already being closed.
+            result.status = SshTerminalInputStatus::SESSION_CLOSED;
+        } else {
+            std::shared_ptr<ProtocolAdapter> adapter;
+            {
+                std::lock_guard<std::mutex> lock(session->adapterMutex);
+                adapter = session->adapter;
+            }
+            auto sshAdapter = std::dynamic_pointer_cast<SshAdapter>(adapter);
+            if (!sshAdapter) {
+                result.status = SshTerminalInputStatus::INVALID;
+            } else {
+                result = sshAdapter->enqueueTerminalInput(
+                    reinterpret_cast<const uint8_t*>(text.data()), text.size(), control,
+                    expectedGenerationValue > 0 ?
+                        static_cast<uint64_t>(expectedGenerationValue) : 0,
+                    ordered, orderedEnd);
+            }
+        }
+    }
+
+    napi_value output;
+    napi_create_object(env, &output);
+    SetObjectBool(env, output, "accepted", result.accepted());
+    SetObjectString(env, output, "status", SshTerminalInputStatusName(result.status));
+    SetObjectInt64(env, output, "sequence", static_cast<int64_t>(result.sequence));
+    SetObjectInt64(env, output, "generation", static_cast<int64_t>(result.generation));
+    SetObjectInt64(env, output, "queueDepth", static_cast<int64_t>(result.queueDepth));
+    SetObjectInt64(env, output, "queueBytes", static_cast<int64_t>(result.queueBytes));
+    return output;
 }
 
 /**
@@ -4802,6 +4950,7 @@ struct SftpAsyncData {
     uint64_t offset = 0;
     uint32_t maxLen = 0;
     bool truncate = false;
+    bool atomicRename = false;
     int errorCode = ERR_SSH_SESSION_CLOSED;
     int bytesWritten = 0;
     bool workerFailed = false;
@@ -4849,8 +4998,9 @@ static void ExecuteSftpAsync(napi_env /*env*/, void* rawData) {
                 data->errorCode = sshAdapter->makeRemoteDir(data->remotePath);
                 break;
             case SftpAsyncOperation::RenamePath:
-                data->errorCode = sshAdapter->renameRemotePath(
-                    data->remotePath, data->newRemotePath);
+                data->errorCode = data->atomicRename
+                    ? sshAdapter->renameRemotePathAtomic(data->remotePath, data->newRemotePath)
+                    : sshAdapter->renameRemotePath(data->remotePath, data->newRemotePath);
                 break;
         }
     } catch (const std::exception& ex) {
@@ -4905,6 +5055,18 @@ static napi_value CreateSftpAsyncResult(napi_env env, const SftpAsyncData& data)
         napi_value bytesWritten;
         napi_create_int32(env, data.bytesWritten, &bytesWritten);
         napi_set_named_property(env, result, "bytesWritten", bytesWritten);
+        if (data.operation == SftpAsyncOperation::WriteChunk) {
+            napi_value durability;
+            const char* durabilityName = data.errorCode == 0 ? "durable" :
+                (data.errorCode == ERR_SSH_SFTP_DURABILITY_UNSUPPORTED ? "unsupported" : "failed");
+            napi_create_string_utf8(env, durabilityName, NAPI_AUTO_LENGTH, &durability);
+            napi_set_named_property(env, result, "durability", durability);
+        }
+        if (data.operation == SftpAsyncOperation::RenamePath) {
+            napi_value atomic;
+            napi_get_boolean(env, data.atomicRename && data.errorCode == 0, &atomic);
+            napi_set_named_property(env, result, "atomic", atomic);
+        }
     }
     return result;
 }
@@ -5103,8 +5265,8 @@ napi_value NapiMakeRemoteDirAsync(napi_env env, napi_callback_info info) {
 }
 
 napi_value NapiRenameRemotePathAsync(napi_env env, napi_callback_info info) {
-    size_t argc = 3;
-    napi_value args[3] = {nullptr, nullptr, nullptr};
+    size_t argc = 4;
+    napi_value args[4] = {nullptr, nullptr, nullptr, nullptr};
     napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
     auto* data = new (std::nothrow) SftpAsyncData();
     if (data == nullptr) {
@@ -5114,6 +5276,7 @@ napi_value NapiRenameRemotePathAsync(napi_env env, napi_callback_info info) {
     if (argc > 0) { napi_get_value_int32(env, args[0], &data->sessionId); }
     if (argc > 1) { data->remotePath = GetNapiString(env, args[1]); }
     if (argc > 2) { data->newRemotePath = GetNapiString(env, args[2]); }
+    if (argc > 3) { napi_get_value_bool(env, args[3], &data->atomicRename); }
     if (data->remotePath.empty() || data->newRemotePath.empty()) {
         delete data;
         napi_throw_type_error(env, nullptr, "SFTP rename paths must not be empty");
@@ -5752,6 +5915,7 @@ napi_value NapiGetSshTerminalDiagnostics(napi_env env, napi_callback_info info) 
     }
 
     SshTerminalDiagnosticsSnapshot snapshot;
+    snapshot.sessionId = static_cast<uint64_t>(sessionId);
     bool supported = false;
     bool sessionActive = false;
     const auto it = g_sessionRegistry.find(sessionId);
@@ -5793,12 +5957,19 @@ napi_value NapiGetSshTerminalDiagnostics(napi_env env, napi_callback_info info) 
                    static_cast<int64_t>(snapshot.callbackAcceptedBytes));
     SetObjectInt64(env, result, "callbackQueueFull",
                    static_cast<int64_t>(snapshot.callbackQueueFull));
+    SetObjectInt64(env, result, "callbackDeliveryErrors",
+                   static_cast<int64_t>(snapshot.callbackDeliveryErrors));
+    SetObjectInt64(env, result, "callbackClosed",
+                   static_cast<int64_t>(snapshot.callbackClosed));
     SetObjectInt64(env, result, "inputDuplicate",
                    static_cast<int64_t>(snapshot.inputDuplicate));
     SetObjectInt64(env, result, "inputLoss", static_cast<int64_t>(snapshot.inputLoss));
     SetObjectInt64(env, result, "inputReorder", static_cast<int64_t>(snapshot.inputReorder));
     SetObjectInt64(env, result, "ownerStallEvents",
                    static_cast<int64_t>(snapshot.ownerStallEvents));
+    SetObjectInt64(env, result, "coverageMask",
+                   static_cast<int64_t>(snapshot.coverageMask));
+    SetObjectBool(env, result, "coverageComplete", snapshot.coverageComplete);
     SetObjectInt64(env, result, "inputQueueDepth",
                    static_cast<int64_t>(snapshot.inputQueueDepth));
     SetObjectInt64(env, result, "inputQueueBytes",
@@ -6352,6 +6523,83 @@ static void DataTsfnCallJs(napi_env env, napi_value jsCallback,
     }
 }
 
+static void SshDataTsfnPump(
+    const std::shared_ptr<SshDataTsfnRegistration>& registration) {
+    while (true) {
+        std::vector<uint8_t>* heapBytes = nullptr;
+        {
+            std::unique_lock<std::mutex> lock(registration->pendingMutex);
+            registration->pendingCondition.wait(lock, [&registration]() {
+                return !registration->accepting.load(std::memory_order_acquire) ||
+                    !registration->pending.empty();
+            });
+            if (registration->pending.empty() &&
+                !registration->accepting.load(std::memory_order_acquire)) {
+                break;
+            }
+            if (registration->pending.empty()) {
+                continue;
+            }
+            heapBytes = registration->pending.front();
+            registration->pending.pop_front();
+            registration->pendingBytes -= heapBytes->size();
+        }
+
+        bool delivered = false;
+        bool closing = false;
+        while (registration->accepting.load(std::memory_order_acquire)) {
+            const napi_status status = napi_call_threadsafe_function(
+                registration->tsfn, heapBytes, napi_tsfn_nonblocking);
+            if (status == napi_ok) {
+                delivered = true;
+                if (registration->adapter) {
+                    registration->adapter->recordTerminalCallbackAccepted(heapBytes->size());
+                }
+                break;
+            }
+            if (status != napi_queue_full) {
+                closing = status == napi_closing;
+                if (closing) {
+                    registration->accepting.store(false, std::memory_order_release);
+                    registration->pendingCondition.notify_all();
+                    DetachSshDataRegistrationOnClose(registration);
+                }
+                if (registration->adapter) {
+                    registration->adapter->recordTerminalCallbackDeliveryError(closing);
+                }
+                break;
+            }
+            if (registration->adapter) {
+                registration->adapter->recordTerminalCallbackQueueFull();
+            }
+            // Only the pump waits for the JS queue; the SSH reader owner never
+            // waits and can continue servicing terminal input and SFTP slices.
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+
+        if (!delivered) {
+            if (!registration->accepting.load(std::memory_order_acquire) && !closing) {
+                if (registration->adapter) {
+                    registration->adapter->recordTerminalCallbackDeliveryError(true);
+                }
+            }
+            delete heapBytes;
+        }
+    }
+}
+
+static void StopSshDataRegistrationInstance(
+    const std::shared_ptr<SshDataTsfnRegistration>& registration) {
+    if (!registration) {
+        return;
+    }
+    registration->accepting.store(false, std::memory_order_release);
+    registration->pendingCondition.notify_all();
+    if (registration->pumpThread.joinable()) {
+        registration->pumpThread.join();
+    }
+}
+
 /**
  * NAPI: setOnDataCallback(sessionId: number, cb: (data: ArrayBuffer) => void | null): void
  *
@@ -6372,13 +6620,36 @@ napi_value NapiSetOnDataCallback(napi_env env, napi_callback_info info) {
     }
 
     auto it = g_sessionRegistry.find(sessionId);
-    if (it == g_sessionRegistry.end() || !it->second->adapter) {
+    if (it == g_sessionRegistry.end() || !it->second) {
         OH_LOG_WARN(LOG_APP, "[ExtLoader] setOnDataCallback: 会话不存在 id=%{public}d", sessionId);
         napi_value undefined;
         napi_get_undefined(env, &undefined);
         return undefined;
     }
-    auto sshAdapter = std::dynamic_pointer_cast<SshAdapter>(it->second->adapter);
+    const std::shared_ptr<SessionContext> session = it->second;
+    std::shared_ptr<ProtocolAdapter> adapter;
+    {
+        std::lock_guard<std::mutex> adapterLock(session->adapterMutex);
+        adapter = session->adapter;
+    }
+    if (!adapter) {
+        OH_LOG_WARN(LOG_APP, "[ExtLoader] setOnDataCallback: 会话适配器不存在 id=%{public}d", sessionId);
+        napi_value undefined;
+        napi_get_undefined(env, &undefined);
+        return undefined;
+    }
+    std::unique_lock<std::mutex> callbackRegistrationLock(
+        session->callbackRegistrationMutex);
+    if (session->lifecycle.load(std::memory_order_acquire) !=
+        SessionContext::Lifecycle::Active) {
+        OH_LOG_INFO(LOG_APP,
+            "[ExtLoader] setOnDataCallback: teardown 已开始, 拒绝注册 id=%{public}d",
+            sessionId);
+        napi_value undefined;
+        napi_get_undefined(env, &undefined);
+        return undefined;
+    }
+    auto sshAdapter = std::dynamic_pointer_cast<SshAdapter>(adapter);
     if (!sshAdapter) {
         OH_LOG_WARN(LOG_APP, "[ExtLoader] setOnDataCallback: 非 SSH 会话 id=%{public}d", sessionId);
         napi_value undefined;
@@ -6401,8 +6672,7 @@ napi_value NapiSetOnDataCallback(napi_env env, napi_callback_info info) {
         }
     }
     if (oldRegistration) {
-        oldRegistration->accepting.store(false, std::memory_order_release);
-        oldRegistration->waitCondition.notify_all();
+        StopSshDataRegistrationInstance(oldRegistration);
     }
     sshAdapter->setOnDataCallback(nullptr);
     if (oldRegistration && oldRegistration->tsfn != nullptr) {
@@ -6442,34 +6712,82 @@ napi_value NapiSetOnDataCallback(napi_env env, napi_callback_info info) {
 
     auto registration = std::make_shared<SshDataTsfnRegistration>();
     registration->tsfn = tsfn;
+    registration->sessionId = sessionId;
+    registration->adapter = sshAdapter;
+    sshAdapter->markTerminalCallbackInstrumentation();
     {
         std::lock_guard<std::mutex> lk(g_dataTsfnMutex);
         g_dataTsfnMap[sessionId] = registration;
     }
 
     // 绑定到 adapter — 每次 reader 拿到数据时调用
-    sshAdapter->setOnDataCallback([registration](const std::vector<uint8_t>& data) {
+    const std::weak_ptr<SshAdapter> weakAdapter = sshAdapter;
+    sshAdapter->setOnDataCallback([registration, weakAdapter](const std::vector<uint8_t>& data) {
         if (data.empty()) { return; }
-        if (!registration->accepting.load(std::memory_order_acquire)) { return; }
-        auto* heapBytes = new std::vector<uint8_t>(data);
-        while (registration->accepting.load(std::memory_order_acquire)) {
-            const napi_status r = napi_call_threadsafe_function(
-                registration->tsfn, heapBytes, napi_tsfn_nonblocking);
-            if (r == napi_ok) {
-                return;
+        if (!registration->accepting.load(std::memory_order_acquire)) {
+            if (auto adapter = weakAdapter.lock()) {
+                adapter->recordTerminalCallbackDeliveryError(true);
             }
-            if (r != napi_queue_full) {
-                break;
-            }
-            std::unique_lock<std::mutex> waitLock(registration->waitMutex);
-            registration->waitCondition.wait_for(
-                waitLock, std::chrono::milliseconds(10), [&registration]() {
-                    return !registration->accepting.load(std::memory_order_acquire);
-                });
+            return;
         }
-        // 关闭/TSFN 错误时释放尚未入队的字节；已入队数据由 DataTsfnCallJs 释放。
+        auto* heapBytes = new std::vector<uint8_t>(data);
+        bool queued = false;
+        {
+            std::lock_guard<std::mutex> lock(registration->pendingMutex);
+            if (registration->accepting.load(std::memory_order_acquire) &&
+                registration->pending.size() < SshDataTsfnRegistration::kMaxPendingChunks &&
+                registration->pendingBytes + heapBytes->size() <=
+                    SshDataTsfnRegistration::kMaxPendingBytes) {
+                registration->pendingBytes += heapBytes->size();
+                registration->pending.push_back(heapBytes);
+                queued = true;
+            }
+        }
+        if (queued) {
+            registration->pendingCondition.notify_one();
+            return;
+        }
+        if (auto adapter = weakAdapter.lock()) {
+            adapter->recordTerminalCallbackQueueFull();
+            adapter->recordTerminalCallbackDeliveryError(
+                !registration->accepting.load(std::memory_order_acquire));
+            if (registration->accepting.load(std::memory_order_acquire)) {
+                // A full bounded queue would otherwise silently lose terminal
+                // bytes. Stop the SSH owner and expose ERROR so the page can
+                // offer an explicit reconnect instead of rendering a corrupt
+                // shell transcript.
+                adapter->failTerminalOutput("SSH terminal output queue overflow");
+            }
+        }
+        // The bounded pending queue is deliberately non-blocking.  Reaching
+        // the cap is observable through callback diagnostics instead of
+        // freezing the SSH reader owner behind a JS queue.
         delete heapBytes;
     });
+
+    try {
+        registration->pumpThread = std::thread([registration]() {
+            SshDataTsfnPump(registration);
+        });
+    } catch (const std::exception&) {
+        registration->accepting.store(false, std::memory_order_release);
+        registration->pendingCondition.notify_all();
+        sshAdapter->setOnDataCallback(nullptr);
+        registration->adapter.reset();
+        {
+            std::lock_guard<std::mutex> lk(g_dataTsfnMutex);
+            auto it = g_dataTsfnMap.find(sessionId);
+            if (it != g_dataTsfnMap.end() && it->second == registration) {
+                g_dataTsfnMap.erase(it);
+            }
+        }
+        napi_release_threadsafe_function(registration->tsfn, napi_tsfn_release);
+        OH_LOG_ERROR(LOG_APP, "[ExtLoader] setOnDataCallback: 启动 SSH 回调泵失败 id=%{public}d",
+            sessionId);
+        napi_value undefined;
+        napi_get_undefined(env, &undefined);
+        return undefined;
+    }
 
     OH_LOG_INFO(LOG_APP, "[ExtLoader] setOnDataCallback: 已注册 id=%{public}d", sessionId);
     napi_value undefined;
@@ -7069,6 +7387,10 @@ napi_value ExtensionLoaderNapi::Init(napi_env env, napi_value exports) {
     napi_create_function(env, "sendText", NAPI_AUTO_LENGTH,
                          NapiSendText, nullptr, &fn);
     napi_set_named_property(env, exports, "sendText", fn);
+
+    napi_create_function(env, "enqueueSshTerminalInput", NAPI_AUTO_LENGTH,
+                         NapiEnqueueSshTerminalInput, nullptr, &fn);
+    napi_set_named_property(env, exports, "enqueueSshTerminalInput", fn);
 
     napi_create_function(env, "sendFile", NAPI_AUTO_LENGTH,
                          NapiSendFile, nullptr, &fn);

@@ -18,6 +18,9 @@ declare module 'librdpnapi.so' {
   export function sendMouse(sessionId: number, x: number, y: number, button: number, pressed: boolean): void;
   export function sendMouseWheel(sessionId: number, x: number, y: number, delta: number): void;
   export function sendText(sessionId: number, text: string): void;
+  export function enqueueSshTerminalInput(sessionId: number, text: string,
+    expectedGeneration?: number, control?: boolean, ordered?: boolean,
+    orderedEnd?: boolean): SshTerminalInputEnqueueResult;
   export function sendFile(sessionId: number, remotePath: string, data: ArrayBuffer): number;
   export function writeRemoteFileChunk(sessionId: number, remotePath: string, data: ArrayBuffer, offset: number, truncate: boolean): number;
   export function writeRemoteFileChunkAsync(sessionId: number, remotePath: string, data: ArrayBuffer,
@@ -36,7 +39,7 @@ declare module 'librdpnapi.so' {
   export function makeRemoteDirAsync(sessionId: number, remotePath: string): Promise<SftpMutationAsyncResult>;
   export function renameRemotePath(sessionId: number, oldPath: string, newPath: string): number;
   export function renameRemotePathAsync(sessionId: number, oldPath: string,
-    newPath: string): Promise<SftpMutationAsyncResult>;
+    newPath: string, atomic?: boolean): Promise<SftpMutationAsyncResult>;
   export function sendClipboard(sessionId: number, data: ArrayBuffer): void;
   export function setSessionClipboardFiles(sessionId: number, paths: string[]): boolean;
   export function getSessionClipboardText(sessionId: number): string;
@@ -545,10 +548,12 @@ export interface SftpReadAsyncResult {
 export interface SftpWriteAsyncResult {
   errorCode: number;
   bytesWritten: number;
+  durability?: 'durable' | 'unsupported' | 'failed';
 }
 
 export interface SftpMutationAsyncResult {
   errorCode: number;
+  atomic?: boolean;
 }
 
 export interface SshTerminalDiagnosticsSnapshot {
@@ -570,10 +575,14 @@ export interface SshTerminalDiagnosticsSnapshot {
   callbackAcceptedEvents: number;
   callbackAcceptedBytes: number;
   callbackQueueFull: number;
+  callbackDeliveryErrors: number;
+  callbackClosed: number;
   inputDuplicate: number;
   inputLoss: number;
   inputReorder: number;
   ownerStallEvents: number;
+  coverageMask: number;
+  coverageComplete: boolean;
   inputQueueDepth: number;
   inputQueueBytes: number;
   inputQueueMaxDepth: number;
@@ -586,6 +595,15 @@ export interface SshTerminalDiagnosticsSnapshot {
   lastRemoteReadAtNs: number;
   maxInputToWriteAttemptNs: number;
   maxInputToWriteCompleteNs: number;
+}
+
+export interface SshTerminalInputEnqueueResult {
+  accepted: boolean;
+  status: 'accepted' | 'queueFull' | 'sessionClosed' | 'staleGeneration' | 'invalid';
+  sequence: number;
+  generation: number;
+  queueDepth: number;
+  queueBytes: number;
 }
 
 export interface SshCommandResult {

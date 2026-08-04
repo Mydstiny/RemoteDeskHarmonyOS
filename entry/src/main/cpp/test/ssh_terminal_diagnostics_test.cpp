@@ -5,10 +5,55 @@
 
 #include "test_runner.h"
 #include "ssh/ssh_terminal_diagnostics.h"
+#include "ssh/ssh_terminal_input_queue_policy.h"
 
 #include <chrono>
 #include <thread>
 #include <vector>
+
+RDP_TEST_CASE(ssh_terminal_input_queue_policy_reserves_control_capacity) {
+    using Policy = SshTerminalInputQueuePolicy;
+    const auto dataFull = Policy::admit(
+        Policy::kMaxDataItems, Policy::kMaxDataBytes,
+        0, 0, Policy::kMaxDataItems, Policy::kMaxDataBytes,
+        1, false, 7, 7);
+    RDP_ASSERT(dataFull == Policy::Admission::QUEUE_FULL);
+
+    const auto controlAccepted = Policy::admit(
+        Policy::kMaxDataItems, Policy::kMaxDataBytes,
+        0, 0, Policy::kMaxDataItems, Policy::kMaxDataBytes,
+        2, true, 7, 7);
+    RDP_ASSERT(controlAccepted == Policy::Admission::ACCEPTED);
+
+    const auto controlFull = Policy::admit(
+        Policy::kMaxItems, Policy::kMaxBytes,
+        Policy::kMaxControlItems, Policy::kMaxControlBytes,
+        0, 0, 1, true, 7, 7);
+    RDP_ASSERT(controlFull == Policy::Admission::QUEUE_FULL);
+}
+
+RDP_TEST_CASE(ssh_terminal_input_queue_policy_rejects_stale_and_invalid) {
+    using Policy = SshTerminalInputQueuePolicy;
+    const auto stale = Policy::admit(0, 0, 0, 0, 0, 0,
+                                     1, false, 9, 10);
+    RDP_ASSERT(stale == Policy::Admission::STALE_GENERATION);
+    const auto invalid = Policy::admit(0, 0, 0, 0, 0, 0,
+                                       0, false, 10, 10);
+    RDP_ASSERT(invalid == Policy::Admission::INVALID);
+}
+
+RDP_TEST_CASE(ssh_terminal_input_queue_policy_rejects_oversized_quota_item) {
+    using Policy = SshTerminalInputQueuePolicy;
+    const auto oversizedControl = Policy::admit(
+        0, 0, 0, 0, 0, 0, Policy::kMaxControlBytes + 1,
+        true, 11, 11);
+    RDP_ASSERT(oversizedControl == Policy::Admission::QUEUE_FULL);
+
+    const auto oversizedData = Policy::admit(
+        0, 0, 0, 0, 0, 0, Policy::kMaxDataBytes + 1,
+        false, 11, 11);
+    RDP_ASSERT(oversizedData == Policy::Admission::QUEUE_FULL);
+}
 
 RDP_TEST_CASE(ssh_terminal_diagnostics_preserves_session_identity) {
     SshTerminalDiagnostics diagnostics;
@@ -16,7 +61,7 @@ RDP_TEST_CASE(ssh_terminal_diagnostics_preserves_session_identity) {
     diagnostics.setSessionGeneration(9001);
 
     const SshTerminalDiagnosticsSnapshot snapshot = diagnostics.snapshot();
-    RDP_ASSERT_EQ(snapshot.schemaVersion, 1ULL);
+    RDP_ASSERT_EQ(snapshot.schemaVersion, 2ULL);
     RDP_ASSERT_EQ(snapshot.sessionId, 42ULL);
     RDP_ASSERT_EQ(snapshot.sessionGeneration, 9001ULL);
     RDP_ASSERT(snapshot.channelId == "pty");
@@ -32,12 +77,16 @@ RDP_TEST_CASE(ssh_terminal_diagnostics_tracks_input_write_and_read_counters) {
     diagnostics.recordWriteEagain();
     diagnostics.recordWriteComplete(sequence, 3);
     diagnostics.recordRemoteBytesRead(5);
+    diagnostics.markCallbackInstrumentation();
     diagnostics.recordCallbackAccepted(5);
     diagnostics.recordCallbackQueueFull();
+    diagnostics.recordCallbackDeliveryError(false);
+    diagnostics.recordCallbackDeliveryError(true);
     diagnostics.recordDuplicate();
     diagnostics.recordLoss();
     diagnostics.recordReorder();
     diagnostics.recordOwnerStall();
+    diagnostics.markInputQueueInstrumentation();
     diagnostics.recordInputQueue(2, 7);
     diagnostics.recordInputQueue(1, 4);
 
@@ -54,10 +103,20 @@ RDP_TEST_CASE(ssh_terminal_diagnostics_tracks_input_write_and_read_counters) {
     RDP_ASSERT_EQ(snapshot.callbackAcceptedEvents, 1ULL);
     RDP_ASSERT_EQ(snapshot.callbackAcceptedBytes, 5ULL);
     RDP_ASSERT_EQ(snapshot.callbackQueueFull, 1ULL);
+    RDP_ASSERT_EQ(snapshot.callbackDeliveryErrors, 2ULL);
+    RDP_ASSERT_EQ(snapshot.callbackClosed, 1ULL);
     RDP_ASSERT_EQ(snapshot.inputDuplicate, 1ULL);
     RDP_ASSERT_EQ(snapshot.inputLoss, 1ULL);
     RDP_ASSERT_EQ(snapshot.inputReorder, 1ULL);
     RDP_ASSERT_EQ(snapshot.ownerStallEvents, 1ULL);
+    RDP_ASSERT((snapshot.coverageMask & SshTerminalDiagnostics::kCoverageInputCapture) != 0);
+    RDP_ASSERT((snapshot.coverageMask & SshTerminalDiagnostics::kCoverageNativeEnqueue) != 0);
+    RDP_ASSERT((snapshot.coverageMask & SshTerminalDiagnostics::kCoverageWriteAttempt) != 0);
+    RDP_ASSERT((snapshot.coverageMask & SshTerminalDiagnostics::kCoverageRemoteRead) != 0);
+    RDP_ASSERT((snapshot.coverageMask & SshTerminalDiagnostics::kCoverageCallbackAccepted) != 0);
+    RDP_ASSERT((snapshot.coverageMask & SshTerminalDiagnostics::kCoverageCallbackQueueFull) != 0);
+    RDP_ASSERT((snapshot.coverageMask & SshTerminalDiagnostics::kCoverageInputQueue) != 0);
+    RDP_ASSERT(snapshot.coverageComplete);
     RDP_ASSERT_EQ(snapshot.inputQueueDepth, 1ULL);
     RDP_ASSERT_EQ(snapshot.inputQueueBytes, 4ULL);
     RDP_ASSERT_EQ(snapshot.inputQueueMaxDepth, 2ULL);
@@ -69,6 +128,20 @@ RDP_TEST_CASE(ssh_terminal_diagnostics_tracks_input_write_and_read_counters) {
     RDP_ASSERT(snapshot.lastWriteCompleteAtNs > 0);
     RDP_ASSERT(snapshot.lastRemoteReadAtNs > 0);
     RDP_ASSERT(snapshot.maxInputToWriteAttemptNs <= snapshot.maxInputToWriteCompleteNs);
+}
+
+RDP_TEST_CASE(ssh_terminal_diagnostics_tracks_older_concurrent_input_age) {
+    SshTerminalDiagnostics diagnostics;
+    const uint64_t first = diagnostics.beginInput(1);
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    const uint64_t second = diagnostics.beginInput(1);
+    diagnostics.recordWriteAttempt(second);
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    diagnostics.recordWriteAttempt(first);
+
+    const SshTerminalDiagnosticsSnapshot snapshot = diagnostics.snapshot();
+    RDP_ASSERT(second > first);
+    RDP_ASSERT(snapshot.maxInputToWriteAttemptNs >= 4'000'000ULL);
 }
 
 RDP_TEST_CASE(ssh_terminal_diagnostics_sequences_are_monotonic_and_payload_free) {
@@ -91,6 +164,54 @@ RDP_TEST_CASE(ssh_terminal_diagnostics_sequences_are_monotonic_and_payload_free)
     // The contract intentionally has counters/timestamps only: no input or
     // output byte buffer is retained by SshTerminalDiagnostics.
     RDP_ASSERT(secondSnapshot.channelId == "pty");
+}
+
+RDP_TEST_CASE(ssh_terminal_adapter_enqueue_publishes_assigned_sequence) {
+    // SshAdapter::enqueueTerminalInput assigns the sequence returned by
+    // beginInput() to the accepted queue item before publishing the native
+    // enqueue event. Keep two accepted events here so publishing the default
+    // result value (zero) regresses as a duplicate immediately.
+    SshTerminalDiagnostics diagnostics;
+    const uint64_t first = diagnostics.beginInput(1);
+    const uint64_t second = diagnostics.beginInput(1);
+    diagnostics.recordNativeEnqueue(first);
+    diagnostics.recordNativeEnqueue(second);
+
+    const SshTerminalDiagnosticsSnapshot snapshot = diagnostics.snapshot();
+    RDP_ASSERT_EQ(snapshot.nativeEnqueueEvents, 2ULL);
+    RDP_ASSERT_EQ(snapshot.inputDuplicate, 0ULL);
+    RDP_ASSERT_EQ(snapshot.inputReorder, 0ULL);
+    RDP_ASSERT_EQ(snapshot.lastInputSequence, second);
+}
+
+RDP_TEST_CASE(ssh_terminal_diagnostics_does_not_infer_loss_from_concurrent_order) {
+    SshTerminalDiagnostics diagnostics;
+    const uint64_t first = diagnostics.beginInput(1);
+    const uint64_t second = diagnostics.beginInput(1);
+    const uint64_t third = diagnostics.beginInput(1);
+    diagnostics.recordNativeEnqueue(first);
+    diagnostics.recordNativeEnqueue(third);
+    diagnostics.recordNativeEnqueue(second);
+    diagnostics.recordNativeEnqueue(second);
+
+    const SshTerminalDiagnosticsSnapshot snapshot = diagnostics.snapshot();
+    RDP_ASSERT_EQ(snapshot.inputLoss, 0ULL);
+    RDP_ASSERT_EQ(snapshot.inputReorder, 1ULL);
+    RDP_ASSERT_EQ(snapshot.inputDuplicate, 1ULL);
+}
+
+RDP_TEST_CASE(ssh_terminal_diagnostics_rejects_wrapped_timestamp_slot) {
+    SshTerminalDiagnostics diagnostics;
+    const uint64_t first = diagnostics.beginInput(1);
+    constexpr size_t kSlots = 4096;
+    for (size_t index = 0; index < kSlots; ++index) {
+        diagnostics.beginInput(1);
+    }
+    diagnostics.recordWriteAttempt(first);
+    const SshTerminalDiagnosticsSnapshot snapshot = diagnostics.snapshot();
+    // The first sequence's slot has been reused. A timestamp from the newer
+    // event must not be attributed to the old event.
+    RDP_ASSERT_EQ(snapshot.maxInputToWriteAttemptNs, 0ULL);
 }
 
 RDP_TEST_CASE(ssh_terminal_diagnostics_keeps_sequence_and_clock_monotonic_under_concurrency) {
