@@ -75,9 +75,9 @@ This file is the compact startup resume card for the active SSH terminal task.
 - Rust `cargo test --manifest-path rustdesk_ffi/Cargo.toml --lib
   --no-default-features`: `156 passed, 1 failed, 157 total`; the remaining
   failure is the existing rendezvous fixture's public-address assertion.
-- `default@OhosTestCompileArkTS`: passed after the PiP lifecycle checkpoint on
+- `default@OhosTestCompileArkTS`: passed after the VT parity checkpoint on
   2026-08-04, warnings only.
-- `assembleHap`: passed after the PiP lifecycle checkpoint on 2026-08-04 with
+- `assembleHap`: passed after the VT parity checkpoint on 2026-08-04 with
   `BUILD SUCCESSFUL` and signing.
 - Terminal-core Rust tests: Alacritty path `63 passed, 0 failed`; fallback
   path `57 passed, 0 failed`.
@@ -105,11 +105,9 @@ This file is the compact startup resume card for the active SSH terminal task.
 
 1. Unlock HDC target `5KLBB25928203528`, launch `b6ed084`, and complete the
    SSH terminal device matrix.
-2. Run shared VT/Unicode/resize/TUI/large-output fixtures through the default
-   Alacritty C ABI and compare snapshots/damage with the old core.
-3. Capture a terminal pipeline timeline and reproduce input, IME, command and
+2. Capture a terminal pipeline timeline and reproduce input, IME, command and
    Canvas failures with the existing diagnostics hooks.
-4. Keep ProxyJump, forwarding and FRP disabled until contracts and endpoints
+3. Keep ProxyJump, forwarding and FRP disabled until contracts and endpoints
    exist; implement them as a separate Level B task.
 
 ## Blockers
