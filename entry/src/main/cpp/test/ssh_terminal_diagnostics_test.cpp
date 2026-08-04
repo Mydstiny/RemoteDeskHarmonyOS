@@ -6,10 +6,20 @@
 #include "test_runner.h"
 #include "ssh/ssh_terminal_diagnostics.h"
 #include "ssh/ssh_terminal_input_queue_policy.h"
+#include "ssh/ssh_terminal_keepalive_policy.h"
 
 #include <chrono>
 #include <thread>
 #include <vector>
+
+RDP_TEST_CASE(ssh_terminal_keepalive_uses_interval_and_retries_transient_failures) {
+    using Policy = SshTerminalKeepalivePolicy;
+    RDP_ASSERT_EQ(Policy::intervalSeconds(0), Policy::kIntervalSeconds);
+    RDP_ASSERT_EQ(Policy::intervalSeconds(12), 12);
+    RDP_ASSERT(Policy::retryableFailure(1));
+    RDP_ASSERT(Policy::retryableFailure(2));
+    RDP_ASSERT(!Policy::retryableFailure(Policy::kMaxConsecutiveFailures));
+}
 
 RDP_TEST_CASE(ssh_terminal_input_queue_policy_reserves_control_capacity) {
     using Policy = SshTerminalInputQueuePolicy;

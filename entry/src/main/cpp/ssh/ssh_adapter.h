@@ -21,8 +21,10 @@
 #include <mutex>
 #include <utility>
 #include <type_traits>
+#include <chrono>
 #include <sys/select.h>
 #include "ssh_terminal_input_queue_policy.h"
+#include "ssh_terminal_keepalive_policy.h"
 
 #define SSH_ADAPTER_VERSION "2.0.0"
 #define SSH_BUFFER_SIZE 65536
@@ -309,6 +311,8 @@ private:
     void drainInputQueueOnReactor();
     /** Read interactive-shell output while an owner command (SFTP/latency) yields. */
     void drainShellOutputOnReactor();
+    /** Send an idle-session keepalive without creating a second libssh2 owner. */
+    void serviceKeepaliveOnReactor();
     bool isReactorThread() const;
 
     template <typename Fn>
@@ -466,6 +470,9 @@ private:
 
     static constexpr size_t kMaxReactorCommands = 256;
     static constexpr int kReactorWaitSliceMs = 5;
+    std::chrono::steady_clock::time_point keepaliveNextDue_ =
+        std::chrono::steady_clock::time_point::max();
+    uint32_t keepaliveConsecutiveFailures_ = 0;
     std::mutex resizeMutex_;
     bool resizePending_ = false;
     bool resizeCommandPosted_ = false;

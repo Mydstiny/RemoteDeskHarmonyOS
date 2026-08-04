@@ -580,8 +580,13 @@ int SshAdapter::sshHandshake() {
 
     // 非阻塞模式
     libssh2_session_set_blocking(session_, 0);
-    // 开启需要回复的 SSH keepalive, 供 UI 延迟检测复用协议级往返.
-    libssh2_keepalive_config(session_, 1, 1);
+    // Non-blocking applications must call libssh2_keepalive_send() themselves.
+    // The reader reactor does that even while the page callback is detached,
+    // so an idle background session does not rely on the UI latency probe.
+    libssh2_keepalive_config(session_, 1, SshTerminalKeepalivePolicy::kIntervalSeconds);
+    keepaliveNextDue_ = std::chrono::steady_clock::now() +
+        std::chrono::seconds(SshTerminalKeepalivePolicy::kIntervalSeconds);
+    keepaliveConsecutiveFailures_ = 0;
 
     applySshAlgorithmPreferences(session_);
     OH_LOG_INFO(LOG_APP, "[SSH] 算法偏好已设置");
@@ -1133,6 +1138,8 @@ void SshAdapter::disconnect() {
         }
         savedCfg_.sshKeyboardInteractiveResponses.clear();
     }
+    keepaliveNextDue_ = std::chrono::steady_clock::time_point::max();
+    keepaliveConsecutiveFailures_ = 0;
     // Do not invoke user code while sessionMutex_ is held. A state callback
     // can synchronously update the page and call back into disconnect/send.
     setState(ConnectionState::DISCONNECTED, "SSH disconnected");
@@ -2660,6 +2667,85 @@ int SshAdapter::measureLatencyMs() {
         std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count());
 }
 
+void SshAdapter::serviceKeepaliveOnReactor() {
+    if (!isReactorThread() || !readerRunning_.load(std::memory_order_acquire)) {
+        return;
+    }
+    const auto now = std::chrono::steady_clock::now();
+    if (now < keepaliveNextDue_) {
+        return;
+    }
+
+    std::unique_lock<std::mutex> sessionLock(sessionMutex_);
+    if (!session_ || sockFd_ < 0 ||
+        state_.load(std::memory_order_acquire) != ConnectionState::CONNECTED) {
+        return;
+    }
+
+    int secondsToNext = 0;
+    int rc = LIBSSH2_ERROR_EAGAIN;
+    // A non-blocking keepalive may need one short writable/readable poll. Keep
+    // this bounded so keyboard input and queued terminal commands stay ahead
+    // of a congested socket.
+    for (int attempt = 0; attempt < 2; ++attempt) {
+        if (!readerRunning_.load(std::memory_order_acquire)) {
+            return;
+        }
+        rc = libssh2_keepalive_send(session_, &secondsToNext);
+        if (rc != LIBSSH2_ERROR_EAGAIN) {
+            break;
+        }
+        const int blockDirections = libssh2_session_block_directions(session_);
+        int waitDirection = 2;
+        if (blockDirections == LIBSSH2_SESSION_BLOCK_INBOUND) {
+            waitDirection = 0;
+        } else if (blockDirections == LIBSSH2_SESSION_BLOCK_OUTBOUND) {
+            waitDirection = 1;
+        }
+        sessionLock.unlock();
+        const int waitResult = waitSocketMilliseconds(
+            waitDirection, SshTerminalKeepalivePolicy::kRetryWaitMilliseconds);
+        sessionLock.lock();
+        if (waitResult == -1 || waitResult == -3 ||
+            !readerRunning_.load(std::memory_order_acquire) ||
+            !session_ || sockFd_ < 0 ||
+            state_.load(std::memory_order_acquire) != ConnectionState::CONNECTED) {
+            return;
+        }
+    }
+
+    const auto retryAt = std::chrono::steady_clock::now() +
+        std::chrono::milliseconds(SshTerminalKeepalivePolicy::kRetryDelayMilliseconds);
+    if (rc == 0) {
+        const int interval = SshTerminalKeepalivePolicy::intervalSeconds(secondsToNext);
+        keepaliveNextDue_ = std::chrono::steady_clock::now() +
+            std::chrono::seconds(interval);
+        keepaliveConsecutiveFailures_ = 0;
+        return;
+    }
+    if (rc == LIBSSH2_ERROR_EAGAIN) {
+        // A short readiness timeout is not a dead SSH session. Try again on
+        // the next bounded reactor turn without changing connection state.
+        keepaliveNextDue_ = retryAt;
+        return;
+    }
+
+    ++keepaliveConsecutiveFailures_;
+    if (SshTerminalKeepalivePolicy::retryableFailure(keepaliveConsecutiveFailures_)) {
+        keepaliveNextDue_ = retryAt;
+        OH_LOG_WARN(LOG_APP, "[SSH] keepalive 暂时失败 rc=%{public}d retry=%{public}u",
+                    rc, keepaliveConsecutiveFailures_);
+        return;
+    }
+
+    sessionLock.unlock();
+    terminalInputAccepting_.store(false, std::memory_order_release);
+    readerRunning_.store(false, std::memory_order_release);
+    reactorCommandCondition_.notify_all();
+    setState(ConnectionState::ERROR,
+             "SSH keepalive failed: " + std::to_string(rc));
+}
+
 // ============================================================
 // 推送式数据回调 (后台 reader 线程)
 // ============================================================
@@ -2743,6 +2829,10 @@ void SshAdapter::readerLoop() {
         // Control/data admission is already bounded. One item per turn keeps
         // a paste from monopolizing the owner while the channel is readable.
         drainInputQueueOnReactor();
+        serviceKeepaliveOnReactor();
+        if (!readerRunning_.load(std::memory_order_acquire)) {
+            break;
+        }
         // If a resize command could not enter the bounded reactor queue, the
         // owner itself retries it here. This also recovers a command that was
         // discarded when a prior reactor stopped during teardown.

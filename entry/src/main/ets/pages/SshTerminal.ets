@@ -49,6 +49,14 @@ import {
 } from '../types/rdpnapi';
 import { SshPreflightService } from '../services/SshPreflightService';
 import {
+  SshTerminalBackgroundInfo,
+  SshTerminalBackgroundTaskService
+} from '../services/SshTerminalBackgroundTaskService';
+import {
+  SshTerminalPipInfo,
+  SshTerminalPipService
+} from '../services/SshTerminalPipService';
+import {
   terminalLogicalViewportHeight,
   terminalRowsBottomOffset,
   terminalTouchDragScrollLines,
@@ -310,6 +318,9 @@ struct SshTerminal {
   private sftpDetached: boolean = false;
   private sftpWaitingForConnection: boolean = false;
   private explicitSessionClose: boolean = false;
+  private sshBackgroundTaskService: SshTerminalBackgroundTaskService =
+    SshTerminalBackgroundTaskService.getInstance();
+  private sshPipService: SshTerminalPipService = SshTerminalPipService.getInstance();
   /** 功能开关: true=使用 Rust terminal_core 渲染 (NativeTerminalRenderer), false=旧 TerminalEmulator */
   @StorageProp('useNativeTerminalCore') useNativeTerminalCore: boolean = true;
 
@@ -2049,6 +2060,8 @@ struct SshTerminal {
     this.sftpEngineUnsubscribe = null;
     try {
       const taskContext: common.Context = this.getUIContext().getHostContext() as common.Context;
+      await this.sshPipService.stop();
+      await this.sshBackgroundTaskService.stop(taskContext as common.UIAbilityContext);
       this.sftpTaskStore.init(taskContext);
       this.sftpLocalProvider.init(taskContext as common.UIAbilityContext);
       await this.sftpTaskEngine.init(taskContext as common.UIAbilityContext);
@@ -2228,6 +2241,42 @@ struct SshTerminal {
   aboutToDisappear(): void {
     ++this.pageGeneration;
     this.terminalClosing = true;
+    const preserveSshInBackground: boolean =
+      (AppStorage.get<boolean>('remoteDesktopBgFlag') ?? false) &&
+      !this.explicitSessionClose && this.connected && this.sessionId > 0 &&
+      this.hostId.length > 0;
+    let backgroundContext: common.UIAbilityContext | null = null;
+    try {
+      backgroundContext = this.getUIContext().getHostContext() as common.UIAbilityContext;
+    } catch (err) {
+      hilog.warn(0x0016, 'SshTerminal', 'background context unavailable: ' + JSON.stringify(err));
+    }
+    if (preserveSshInBackground) {
+      if (backgroundContext !== null) {
+        const backgroundInfo: SshTerminalBackgroundInfo = {
+          hostId: this.hostId,
+          sessionId: this.sessionId,
+          hostLabel: this.hostLabel,
+          hostAddress: this.userAtHost.length > 0 ? this.userAtHost : this.sshHost
+        };
+        this.sshPipService.update(this.makeSshPipInfo('后台保留'));
+        void this.sshPipService.start().then((started: boolean): void => {
+          hilog.info(0x0017, 'SshTerminal', 'SSH PiP auto-start=' + started.toString());
+        });
+        void this.sshBackgroundTaskService.start(backgroundContext, backgroundInfo).then(
+          (started: boolean): void => {
+            hilog.info(0x0016, 'SshTerminal', 'background preserve task started=' +
+              started.toString() + ' session=' + this.sessionId.toString());
+          });
+      } else {
+        hilog.warn(0x0016, 'SshTerminal', 'SSH session detached without background task context');
+      }
+    } else {
+      void this.sshPipService.stop();
+      if (backgroundContext !== null) {
+        void this.sshBackgroundTaskService.stop(backgroundContext);
+      }
+    }
     this.invalidateSftpRefreshRequest();
     this.sftpDetached = true;
     if (this.sftpTransferSession !== null && this.sftpBusy) {
@@ -2824,6 +2873,8 @@ struct SshTerminal {
       generation: sessionGeneration
     });
 
+    void this.prepareSshPip(pageGeneration);
+
     if (this.isDesktopDevice) {
       setTimeout((): void => {
         if (this.isPageGenerationActive(pageGeneration) && this.sessionId === connectedSessionId) {
@@ -2832,6 +2883,35 @@ struct SshTerminal {
       }, 100);
     }
     return true;
+  }
+
+  private makeSshPipInfo(status: string = '已连接'): SshTerminalPipInfo {
+    return {
+      hostLabel: this.hostLabel,
+      hostAddress: this.userAtHost.length > 0 ? this.userAtHost :
+        (this.sshHost + ':' + this.sshPort.toString()),
+      status: status,
+      outputSummary: this.termOutput
+    };
+  }
+
+  private async prepareSshPip(pageGeneration: number): Promise<void> {
+    if (!this.isPageGenerationActive(pageGeneration) || this.sessionId <= 0) {
+      return;
+    }
+    try {
+      const context: common.UIAbilityContext =
+        this.getUIContext().getHostContext() as common.UIAbilityContext;
+      const prepared: boolean = await this.sshPipService.prepare(
+        context, this.makeSshPipInfo(), (reason: string): void => {
+          hilog.info(0x0017, 'SshTerminal', 'SSH PiP stopped reason=' + reason);
+        });
+      if (prepared && this.isPageGenerationActive(pageGeneration)) {
+        hilog.info(0x0017, 'SshTerminal', 'SSH PiP prepared session=' + this.sessionId.toString());
+      }
+    } catch (err) {
+      hilog.warn(0x0017, 'SshTerminal', 'SSH PiP prepare failed: ' + JSON.stringify(err));
+    }
   }
 
   private async retryConnection(): Promise<void> {
