@@ -10,7 +10,8 @@ Updated: 2026-08-04 Asia/Shanghai
   snapshot/damage comparison and keep the old core as an explicit fallback.
 - Diagnose terminal input stalls, IME/physical-keyboard churn, commands that do
   not execute, Canvas misalignment and output/frame backpressure.
-- Run the mandatory Hvigor gates and record the current native/test blockers.
+- Run shared VT/Unicode/resize/TUI/large-output fixtures through the default
+  Alacritty C ABI and compare snapshots/damage with the old core.
 - Keep the current review state `REVIEW_REQUIRED`; do not claim full background
   SFTP execution, Level A, or Level B connectivity.
 

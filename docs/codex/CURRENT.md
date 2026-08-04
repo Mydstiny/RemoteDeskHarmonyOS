@@ -7,7 +7,7 @@ This file is the compact startup resume card for the active SSH terminal task.
 - Task: `ssh-terminal-complete-upgrade`
 - Base: `main@d2769ad4b`
 - Branch: `codex/ssh-terminal-complete-upgrade`
-- Code checkpoint: `728c39c3a` plus uncommitted terminal-core migration slice
+- Code checkpoint: `5bceef20d` (Alacritty migration committed)
 - Phase: Alacritty terminal core is the default production route; device
   renderer/input acceptance is still pending
 - Scope: migrate the VT state machine behind the existing terminalCore ABI,
