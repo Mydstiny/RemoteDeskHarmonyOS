@@ -79,6 +79,23 @@ namespace {
         }
         value.clear();
     }
+
+    /**
+     * libssh2 reports a short non-blocking receive race as
+     * LIBSSH2_ERROR_SOCKET_RECV. Peek without consuming bytes so the reactor
+     * can distinguish EAGAIN/EINTR from an actual socket close/error.
+     */
+    bool isTransientSocketReceive(int socketFd) {
+        if (socketFd < 0) { return false; }
+        char probe = 0;
+        while (true) {
+            const ssize_t peeked = ::recv(socketFd, &probe, sizeof(probe), MSG_PEEK);
+            if (peeked > 0) { return true; }
+            if (peeked == 0) { return false; }
+            if (errno == EINTR) { continue; }
+            return errno == EAGAIN || errno == EWOULDBLOCK;
+        }
+    }
 }
 
 // ============================================================
@@ -2183,6 +2200,19 @@ void SshAdapter::drainShellOutputOnReactor() {
                 channel_, reinterpret_cast<char*>(buffer.data()), buffer.size());
             if (n == LIBSSH2_ERROR_EAGAIN) { break; }
             if (n < 0) {
+                if (n == LIBSSH2_ERROR_SOCKET_RECV) {
+                    if (libssh2_channel_eof(channel_) != 0) {
+                        eofDetected = true;
+                        readerRunning_.store(false, std::memory_order_release);
+                        break;
+                    }
+                    if (isTransientSocketReceive(sockFd_)) {
+                        // The channel is still open and the non-blocking
+                        // socket has no consumable bytes. Let the owner return
+                        // to poll.
+                        break;
+                    }
+                }
                 readError = true;
                 readErrorCode = n;
                 readerRunning_.store(false, std::memory_order_release);
@@ -2925,6 +2955,20 @@ void SshAdapter::readerLoop() {
             ssize_t n = libssh2_channel_read(ch, reinterpret_cast<char*>(buf.data()), kBufSize);
             if (n == LIBSSH2_ERROR_EAGAIN) { break; }
             if (n < 0) {
+                if (n == LIBSSH2_ERROR_SOCKET_RECV) {
+                    if (libssh2_channel_eof(ch) != 0) {
+                        eofDetected = true;
+                        readerRunning_.store(false);
+                        break;
+                    }
+                    if (isTransientSocketReceive(fd)) {
+                        // A readiness edge can race with libssh2's encrypted
+                        // receive. Keep the reactor alive and wait for the
+                        // next socket edge instead of converting it into a
+                        // disconnect.
+                        break;
+                    }
+                }
                 OH_LOG_ERROR(LOG_APP, "[SSH] reader libssh2_channel_read 失败: %{public}zd", n);
                 readError = terminalInputAccepting_.load(std::memory_order_acquire);
                 readErrorCode = n;
