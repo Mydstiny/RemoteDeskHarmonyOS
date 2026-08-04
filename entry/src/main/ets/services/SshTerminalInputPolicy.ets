@@ -72,6 +72,27 @@ export function createSshImeCallbackState(): SshImeCallbackState {
   };
 }
 
+/**
+ * IME commit is text input, not the terminal submit action. Keep Enter in the
+ * explicit onSubmit path and prevent CR/LF reported by an IME from becoming a
+ * second command delimiter. Clipboard paste deliberately does not use this
+ * helper because multi-line paste must preserve its original contents.
+ */
+function stripSshImeLineBreaks(text: string): string {
+  if (text.length === 0) { return text; }
+  let result: string = '';
+  let changed: boolean = false;
+  for (let index: number = 0; index < text.length; index++) {
+    const code: number = text.charCodeAt(index);
+    if (code === 0x0A || code === 0x0D) {
+      changed = true;
+      continue;
+    }
+    result += text.substring(index, index + 1);
+  }
+  return changed ? result : text;
+}
+
 /** Reset the hidden editor shadow after a committed terminal event. */
 export function resetSshImeShadow(state: SshImeCallbackState, committedValue: string = ''): void {
   state.pendingInsert = null;
@@ -79,7 +100,7 @@ export function resetSshImeShadow(state: SshImeCallbackState, committedValue: st
   state.shadowValue = '';
   state.previewActive = false;
   state.ignoreNextEmptyChange = true;
-  state.lastCommittedValue = committedValue;
+  state.lastCommittedValue = stripSshImeLineBreaks(committedValue);
 }
 
 export function recordSshImeWillInsert(
@@ -103,8 +124,9 @@ export function consumeSshImeDidInsert(
   state.shadowValue = '';
   state.previewActive = false;
   state.ignoreNextEmptyChange = true;
-  state.lastCommittedValue = insertValue;
-  return insertValue;
+  const committed: string = stripSshImeLineBreaks(insertValue);
+  state.lastCommittedValue = committed;
+  return committed;
 }
 
 export function recordSshImeWillDelete(
@@ -161,6 +183,7 @@ export function inspectSshImeChange(
   value: string,
   previewUnits: number
 ): SshImeChangeDecision {
+  const normalizedValue: string = stripSshImeLineBreaks(value);
   if (state.ignoreNextEmptyChange && value.length === 0) {
     state.ignoreNextEmptyChange = false;
     // resetKeyboardBuffer() can emit an empty onChange before the next real
@@ -172,8 +195,8 @@ export function inspectSshImeChange(
     return { updateShadow: true, sendRemote: false, resetLocal: false,
       remoteInsert: '', remoteDelete: '' };
   }
-  if (state.lastCommittedValue.length > 0 && value === state.lastCommittedValue) {
-    state.shadowValue = value;
+  if (state.lastCommittedValue.length > 0 && normalizedValue === state.lastCommittedValue) {
+    state.shadowValue = normalizedValue;
     state.lastCommittedValue = '';
     state.ignoreNextEmptyChange = true;
     return { updateShadow: true, sendRemote: false, resetLocal: false,
@@ -189,8 +212,8 @@ export function inspectSshImeChange(
       remoteInsert: '', remoteDelete: '' };
   }
 
-  const changed = textChange(state.shadowValue, value);
-  state.shadowValue = value;
+  const changed = textChange(state.shadowValue, normalizedValue);
+  state.shadowValue = normalizedValue;
   state.previewActive = false;
   if (changed.inserted.length === 0 && changed.deleted.length === 0) {
     return { updateShadow: true, sendRemote: false, resetLocal: value.length > 0,
@@ -200,8 +223,8 @@ export function inspectSshImeChange(
     updateShadow: true,
     sendRemote: true,
     resetLocal: value.length > 0,
-    remoteInsert: changed.inserted,
-    remoteDelete: changed.deleted
+    remoteInsert: stripSshImeLineBreaks(changed.inserted),
+    remoteDelete: stripSshImeLineBreaks(changed.deleted)
   };
 }
 

@@ -100,21 +100,28 @@ namespace {
         if (socketFd < 0) { return result; }
         char probe = 0;
         while (true) {
+            // errno is only meaningful for this exact recv result. Clear it
+            // before each retry so EINTR cannot leak into a later success.
+            result.peekErrno = 0;
             result.peeked = ::recv(socketFd, &probe, sizeof(probe), MSG_PEEK);
             if (result.peeked >= 0) { break; }
             result.peekErrno = errno;
             if (result.peekErrno == EINTR) { continue; }
             break;
         }
+        result.transient = result.peeked > 0 ||
+            (result.peeked < 0 &&
+             (result.peekErrno == EAGAIN || result.peekErrno == EWOULDBLOCK));
+        // SO_ERROR is a read-and-clear socket option. Do not inspect it for a
+        // transient peek result, otherwise a pending error can disappear
+        // before libssh2 gets the chance to observe it on the retry.
+        if (result.transient) { return result; }
         socklen_t errorLength = sizeof(result.socketError);
         if (::getsockopt(socketFd, SOL_SOCKET, SO_ERROR,
                          &result.socketError, &errorLength) != 0) {
             result.socketErrorErrno = errno;
             result.socketError = 0;
         }
-        result.transient = result.peeked > 0 ||
-            (result.peeked < 0 &&
-             (result.peekErrno == EAGAIN || result.peekErrno == EWOULDBLOCK));
         return result;
     }
 }

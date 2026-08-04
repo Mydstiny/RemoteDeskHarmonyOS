@@ -156,6 +156,12 @@ export default function sshTerminalInputPolicyTest(): void {
       expect(consumeSshImeDidInsert(state, '你')).assertEqual('');
     });
 
+    it('should_strip_line_breaks_from_ime_commit', 0, (): void => {
+      const state = createSshImeCallbackState();
+      expect(recordSshImeWillInsert(state, '候选')).assertTrue();
+      expect(consumeSshImeDidInsert(state, '第一行\r\n第二行')).assertEqual('第一行第二行');
+    });
+
     it('should_commit_ime_delete_once_and_keep_change_local', 0, (): void => {
       const state = createSshImeCallbackState();
       expect(recordSshImeWillDelete(state, '字')).assertTrue();
@@ -183,6 +189,16 @@ export default function sshTerminalInputPolicyTest(): void {
       expect(committed.remoteDelete).assertEqual('');
       const duplicate = inspectSshImeChange(state, '你😀', 0);
       expect(duplicate.sendRemote).assertFalse();
+    });
+
+    it('should_strip_line_breaks_from_ime_diff_and_keep_paste_text', 0, (): void => {
+      const state = createSshImeCallbackState();
+      const committed = inspectSshImeChange(state, '第一行\r\n第二行', 0);
+      expect(committed.sendRemote).assertTrue();
+      expect(committed.remoteInsert).assertEqual('第一行第二行');
+      const duplicate = inspectSshImeChange(state, '第一行\r\n第二行', 0);
+      expect(duplicate.sendRemote).assertFalse();
+      expect(encodeTextInput('第一行\r\n第二行', NONE)).assertEqual('第一行\r\n第二行');
     });
 
     it('should_allow_the_same_character_after_editor_reset', 0, (): void => {
