@@ -3,6 +3,7 @@ import { VncTlsEndpointOwnerType } from './VncTlsEndpointPolicy';
 export enum VncCertificatePreflightState {
   IDLE = 'IDLE',
   PROBING = 'PROBING',
+  PLAINTEXT_WARNING = 'PLAINTEXT_WARNING',
   TRUST_FIRST_TIME = 'TRUST_FIRST_TIME',
   TRUSTED_MATCH = 'TRUSTED_MATCH',
   CERTIFICATE_CHANGED = 'CERTIFICATE_CHANGED',
@@ -12,6 +13,7 @@ export enum VncCertificatePreflightState {
 
 export enum VncCertificatePreflightDecision {
   CANCEL = 'CANCEL',
+  CONTINUE_PLAINTEXT = 'CONTINUE_PLAINTEXT',
   CONTINUE_ONCE = 'CONTINUE_ONCE',
   TRUST = 'TRUST',
   UPDATE_TRUST = 'UPDATE_TRUST'
@@ -129,6 +131,9 @@ export function vncCertificateDecisionAllowed(
   decision: VncCertificatePreflightDecision
 ): boolean {
   if (decision === VncCertificatePreflightDecision.CANCEL) { return true; }
+  if (state === VncCertificatePreflightState.PLAINTEXT_WARNING) {
+    return decision === VncCertificatePreflightDecision.CONTINUE_PLAINTEXT;
+  }
   if (state === VncCertificatePreflightState.TRUST_FIRST_TIME) {
     return decision === VncCertificatePreflightDecision.CONTINUE_ONCE ||
       decision === VncCertificatePreflightDecision.TRUST;

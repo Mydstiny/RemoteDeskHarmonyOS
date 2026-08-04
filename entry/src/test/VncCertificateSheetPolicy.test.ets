@@ -43,6 +43,8 @@ export default function vncCertificateSheetPolicyTest(): void {
     it('opens_only_for_actionable_preflight_states', 0, (): void => {
       expect(shouldShowVncCertificateSheet(VncCertificatePreflightState.PROBING, false, false))
         .assertTrue();
+      expect(shouldShowVncCertificateSheet(VncCertificatePreflightState.PLAINTEXT_WARNING, false, false))
+        .assertTrue();
       expect(shouldShowVncCertificateSheet(VncCertificatePreflightState.TRUST_FIRST_TIME, false, false))
         .assertTrue();
       expect(shouldShowVncCertificateSheet(VncCertificatePreflightState.CERTIFICATE_CHANGED, false, false))
@@ -82,6 +84,12 @@ export default function vncCertificateSheetPolicyTest(): void {
       expect(vncCertificateSheetActionAllowed(
         VncCertificatePreflightState.TRUST_FIRST_TIME, VncCertificateSheetAction.CONTINUE_ONCE)).assertTrue();
       expect(vncCertificateSheetActionAllowed(
+        VncCertificatePreflightState.PLAINTEXT_WARNING,
+        VncCertificateSheetAction.CONTINUE_PLAINTEXT)).assertTrue();
+      expect(vncCertificateSheetActionAllowed(
+        VncCertificatePreflightState.PLAINTEXT_WARNING,
+        VncCertificateSheetAction.TRUST)).assertFalse();
+      expect(vncCertificateSheetActionAllowed(
         VncCertificatePreflightState.TRUST_FIRST_TIME, VncCertificateSheetAction.TRUST)).assertTrue();
       expect(vncCertificateSheetActionAllowed(
         VncCertificatePreflightState.CERTIFICATE_CHANGED, VncCertificateSheetAction.TRUST)).assertFalse();
@@ -100,6 +108,10 @@ export default function vncCertificateSheetPolicyTest(): void {
         VncCertificatePreflightState.TRUST_FIRST_TIME,
         VncCertificateSheetAction.TRUST))
         .assertEqual(VncCertificatePreflightDecision.TRUST);
+      expect(vncCertificateDecisionForSheetAction(
+        VncCertificatePreflightState.PLAINTEXT_WARNING,
+        VncCertificateSheetAction.CONTINUE_PLAINTEXT))
+        .assertEqual(VncCertificatePreflightDecision.CONTINUE_PLAINTEXT);
       expect(vncCertificateDecisionForSheetAction(
         VncCertificatePreflightState.CERTIFICATE_CHANGED,
         VncCertificateSheetAction.TRUST)).assertEqual(null);
@@ -124,6 +136,14 @@ export default function vncCertificateSheetPolicyTest(): void {
       expect(shouldClearVncCertificateSensitiveHandoffs(false, true, false)).assertTrue();
       expect(shouldClearVncCertificateSensitiveHandoffs(false, false, true)).assertTrue();
       expect(shouldClearVncCertificateSensitiveHandoffs(false, false, false)).assertFalse();
+    });
+
+    it('keeps_a_programmatic_close_from_becoming_a_cancel', 0, (): void => {
+      // A closing Sheet must not route while its native disappear callback is
+      // still pending; the owner keeps the route until that callback runs.
+      expect(shouldRouteVncAfterCertificateSheetDisappear(false, true, true)).assertFalse();
+      expect(shouldKeepVncCertificateSheetOpen(VncCertificatePreflightState.CLOSING, true))
+        .assertTrue();
     });
   });
 }

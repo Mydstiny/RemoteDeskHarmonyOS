@@ -2476,6 +2476,7 @@ struct HostListPage {
       this.vncCertificateProbeRequestId = 0;
     }
     this.vncCertificatePendingRouteParams = null;
+    this.vncCertificatePendingHostId = '';
     if (this.pendingSheetOpenTimer !== -1) {
       clearTimeout(this.pendingSheetOpenTimer);
       this.pendingSheetOpenTimer = -1;
@@ -3747,7 +3748,15 @@ struct HostListPage {
       return;
     }
     if (!this.vncCertificateEndpoint.tlsRequired) {
-      this.routeVncCertificatePreflight(false);
+      // Plaintext VNC still requires an explicit, endpoint-bound confirmation.
+      // Do not model it as certificate trust: no pin or trust record is created.
+      this.vncCertificateState = VncCertificatePreflightState.PLAINTEXT_WARNING;
+      this.vncCertificateWarning = '当前 endpoint 未启用 TLS，仅在确认网络可信时继续。';
+      this.openSheetSafely((): void => {
+        this.openRemoteHostSheet(REMOTE_HOST_SHEET_VNC_CERTIFICATE, (): void => {
+          this.showVncCertificatePreflight = true;
+        });
+      }, true);
       return;
     }
     this.vncCertificateState = VncCertificatePreflightState.PROBING;
@@ -3814,6 +3823,12 @@ struct HostListPage {
   }
 
   private cancelVncCertificatePreflight(closeSheet: boolean = true): void {
+    // A decision already started the programmatic Sheet close. ArkUI invokes
+    // onWillDismiss for that transition too; do not reinterpret it as a user
+    // cancel or clear the pending RemoteDesktop route before onDisappear.
+    if (this.vncCertificateClosing) {
+      return;
+    }
     const hostId: string = this.vncCertificateClosingHostId.length > 0
       ? this.vncCertificateClosingHostId : this.vncCertificateHostId;
     this.vncCertificateProbeGeneration = nextVncCertificateProbeGeneration(
@@ -3899,7 +3914,19 @@ struct HostListPage {
     this.routeVncCertificatePreflight(true);
   }
 
-  private routeVncCertificatePreflight(tlsHandoff: boolean): void {
+  private continueVncPlaintextPreflight(): void {
+    if (this.vncCertificateState !== VncCertificatePreflightState.PLAINTEXT_WARNING ||
+      this.vncCertificateEndpoint === null || !this.vncCertificateEndpoint.ok ||
+      this.vncCertificateEndpoint.tlsRequired || this.vncCertificateProbeIdentity === null ||
+      !this.vncCertificateCurrentIdentity(this.vncCertificateProbeIdentity,
+        this.vncCertificateAttemptGeneration)) {
+      return;
+    }
+    this.routeVncCertificatePreflight(false, true);
+  }
+
+  private routeVncCertificatePreflight(tlsHandoff: boolean,
+    plaintextConfirmed: boolean = false): void {
     const hostId: string = this.vncCertificateClosingHostId.length > 0
       ? this.vncCertificateClosingHostId : this.vncCertificateHostId;
     const vncHostId: string = this.vncCertificateHostId;
@@ -3914,6 +3941,7 @@ struct HostListPage {
       return;
     }
     if (tlsHandoff) { params['vncCertificateHandoffGeneration'] = this.vncCertificateProbeGeneration; }
+    if (plaintextConfirmed) { params['vncPlaintextPreflightConfirmed'] = true; }
     this.vncCertificatePendingRouteParams = params;
     if (this.showRemoteHostSheet && !this.vncCertificateClosing) {
       this.vncCertificateClosing = true;
@@ -6208,6 +6236,11 @@ struct HostListPage {
       nextMode = REMOTE_HOST_SHEET_RUSTDESK_PREFLIGHT;
       nextHostId = this.rustDeskProPreflightPendingHostId;
       this.rustDeskProPreflightPendingHostId = '';
+    } else if (dismissedMode !== REMOTE_HOST_SHEET_VNC_CERTIFICATE &&
+      this.vncCertificatePendingHostId !== '') {
+      nextMode = REMOTE_HOST_SHEET_VNC_CERTIFICATE;
+      nextHostId = this.vncCertificatePendingHostId;
+      this.vncCertificatePendingHostId = '';
     }
     if (nextMode === REMOTE_HOST_SHEET_NONE || nextHostId === '') {
       return;
@@ -6222,6 +6255,16 @@ struct HostListPage {
         this.openSshPreflight(nextHost);
       } else if (nextMode === REMOTE_HOST_SHEET_RDP_CERTIFICATE) {
         this.openRdpCertificatePreflight(nextHost);
+      } else if (nextMode === REMOTE_HOST_SHEET_VNC_CERTIFICATE) {
+        const nextVncHostId: string = this.vncRecordIdForHost(nextHost);
+        const nextVncHost: VncHostView | null = nextVncHostId === ''
+          ? null : this.vncHosts.find(nextVncHostId);
+        if (nextVncHost === null) {
+          this.releaseConnectionAttempt(nextHostId);
+          return;
+        }
+        this.openVncCertificatePreflight(nextVncHost, nextHost.id,
+          this.connectionAttemptGeneration);
       } else {
         this.openRustDeskProPreflight(nextHost);
       }
@@ -9126,6 +9169,22 @@ struct HostListPage {
         Text('确认前不会发送 RFB、密码或剪贴板数据。')
           .fontSize(13).fontColor(this.pal().text2).fontFamily(this.font())
           .width('100%')
+      } else if (this.vncCertificateState === VncCertificatePreflightState.PLAINTEXT_WARNING) {
+        Row() {
+          SymbolGlyph($r('sys.symbol.exclamationmark_triangle'))
+            .fontSize(42).fontColor(['#F0B429'])
+          Column() {
+            Text('确认 VNC 明文连接')
+              .fontSize(17).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
+              .fontFamily(this.font())
+            Text(this.vncCertificateWarning || '当前 endpoint 未启用 TLS。')
+              .fontSize(13).fontColor(this.pal().text2).fontFamily(this.font())
+              .lineHeight(19).margin({ top: 8 })
+          }.layoutWeight(1).margin({ left: 16 })
+        }.width('100%').alignItems(VerticalAlign.Top)
+        Text('明文连接不会发送证书指纹；请确认当前网络可信后再继续。')
+          .fontSize(13).fontColor(this.pal().text2).fontFamily(this.font())
+          .lineHeight(19).width('100%').margin({ top: 12 })
       } else if (this.vncCertificateState === VncCertificatePreflightState.ERROR) {
         Row() {
           SymbolGlyph($r('sys.symbol.exclamationmark_triangle'))
@@ -9191,6 +9250,15 @@ struct HostListPage {
           Button('重试').height(40).layoutWeight(1).fontSize(14)
             .backgroundColor(this.accentColor).fontColor(Color.White).borderRadius(10)
             .margin({ left: 12 }).onClick((): void => { this.retryVncCertificatePreflight(); })
+          }.width('100%').margin({ top: 20 })
+      } else if (this.vncCertificateState === VncCertificatePreflightState.PLAINTEXT_WARNING) {
+        Row() {
+          Button('取消').height(40).layoutWeight(1).fontSize(14)
+            .backgroundColor(this.pal().surface).fontColor(this.pal().text2).borderRadius(10)
+            .onClick((): void => { this.cancelVncCertificatePreflight(); })
+          Button('继续明文连接').height(40).layoutWeight(1).fontSize(14)
+            .backgroundColor(this.accentColor).fontColor(Color.White).borderRadius(10)
+            .margin({ left: 12 }).onClick((): void => { this.continueVncPlaintextPreflight(); })
         }.width('100%').margin({ top: 20 })
       } else {
         Row() {

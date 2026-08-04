@@ -10,6 +10,7 @@ export enum VncCertificateSheetAction {
   RETRY = 'RETRY',
   SHOW_DETAILS = 'SHOW_DETAILS',
   HIDE_DETAILS = 'HIDE_DETAILS',
+  CONTINUE_PLAINTEXT = 'CONTINUE_PLAINTEXT',
   CONTINUE_ONCE = 'CONTINUE_ONCE',
   TRUST = 'TRUST',
   UPDATE_TRUST = 'UPDATE_TRUST'
@@ -52,6 +53,7 @@ export function shouldShowVncCertificateSheet(
 ): boolean {
   if (closing || sheetVisible) { return false; }
   return state === VncCertificatePreflightState.PROBING ||
+    state === VncCertificatePreflightState.PLAINTEXT_WARNING ||
     state === VncCertificatePreflightState.TRUST_FIRST_TIME ||
     state === VncCertificatePreflightState.CERTIFICATE_CHANGED ||
     state === VncCertificatePreflightState.ERROR;
@@ -85,6 +87,10 @@ export function vncCertificateSheetActionAllowed(
     action === VncCertificateSheetAction.HIDE_DETAILS) {
     return true;
   }
+  if (action === VncCertificateSheetAction.CONTINUE_PLAINTEXT) {
+    return vncCertificateDecisionAllowed(
+      state, VncCertificatePreflightDecision.CONTINUE_PLAINTEXT);
+  }
   if (action === VncCertificateSheetAction.CONTINUE_ONCE) {
     return vncCertificateDecisionAllowed(
       state, VncCertificatePreflightDecision.CONTINUE_ONCE);
@@ -105,6 +111,9 @@ export function vncCertificateDecisionForSheetAction(
   if (!vncCertificateSheetActionAllowed(state, action)) { return null; }
   if (action === VncCertificateSheetAction.CANCEL) {
     return VncCertificatePreflightDecision.CANCEL;
+  }
+  if (action === VncCertificateSheetAction.CONTINUE_PLAINTEXT) {
+    return VncCertificatePreflightDecision.CONTINUE_PLAINTEXT;
   }
   if (action === VncCertificateSheetAction.CONTINUE_ONCE) {
     return VncCertificatePreflightDecision.CONTINUE_ONCE;

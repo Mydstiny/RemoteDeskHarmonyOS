@@ -110,5 +110,17 @@ export default function vncCertificatePreflightPolicyTest(): void {
       expect(shouldRequireVncCertificateConfirmation(
         VncCertificatePreflightState.CERTIFICATE_CHANGED)).assertTrue();
     });
+
+    it('requires_an_explicit_decision_for_plaintext_endpoints', 0, (): void => {
+      expect(vncCertificateDecisionAllowed(
+        VncCertificatePreflightState.PLAINTEXT_WARNING,
+        VncCertificatePreflightDecision.CONTINUE_PLAINTEXT)).assertTrue();
+      expect(vncCertificateDecisionAllowed(
+        VncCertificatePreflightState.PLAINTEXT_WARNING,
+        VncCertificatePreflightDecision.CONTINUE_ONCE)).assertFalse();
+      expect(vncCertificateDecisionAllowed(
+        VncCertificatePreflightState.PLAINTEXT_WARNING,
+        VncCertificatePreflightDecision.TRUST)).assertFalse();
+    });
   });
 }

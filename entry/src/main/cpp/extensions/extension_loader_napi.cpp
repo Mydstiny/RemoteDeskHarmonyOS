@@ -24,6 +24,7 @@
 #include "rustdesk/rustdesk_bridge.h"
 #include "vnc/vnc_adapter.h"
 #include "vnc/vnc_certificate_probe.h"
+#include "vnc/vnc_rfb_engine.h"
 #include "vnc/vnc_rfb_protocol.h"
 #include "vnc/vnc_transport.h"
 #include <napi/native_api.h>
@@ -78,6 +79,14 @@ namespace ExtensionLoaderNapi {
 static void PrepareAdapterForTeardown(
     const std::shared_ptr<ProtocolAdapter>& adapter,
     const DecoderSessionIdentity& owner);
+
+// VncAdapter::disconnect() is deliberately bounded so a callback-originated
+// stop cannot block the caller. A normal teardown executor must nevertheless
+// keep the session non-reusable until any deferred worker has crossed its done
+// fence; otherwise ArkTS can start a new connection while the old socket is
+// still owned by the reaper.
+static bool DisconnectAdapterAndDrainVnc(
+    const std::shared_ptr<ProtocolAdapter>& adapter);
 
 namespace {
 
@@ -2914,7 +2923,7 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
                                      std::memory_order_release);
             PrepareAdapterForTeardown(adapter, session->identity());
             try {
-                adapter->disconnect();
+                (void)DisconnectAdapterAndDrainVnc(adapter);
             } catch (...) {
                 OH_LOG_ERROR(LOG_APP,
                     "[ExtLoader] adapter disconnect after activation failure threw");
@@ -3380,7 +3389,7 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
         // restricting this to SSH left failed RDP/RustDesk/VNC attempts with
         // live sockets, workers, or callback registrations.
         try {
-            adapter->disconnect();
+            (void)DisconnectAdapterAndDrainVnc(adapter);
         } catch (...) {
             OH_LOG_ERROR(LOG_APP,
                 "[ExtLoader] adapter disconnect after connect failure threw");
@@ -3803,6 +3812,24 @@ static void PrepareAdapterForTeardown(
     }
 }
 
+static bool DisconnectAdapterAndDrainVnc(
+    const std::shared_ptr<ProtocolAdapter>& adapter) {
+    if (!adapter) {
+        return true;
+    }
+    adapter->disconnect();
+    if (dynamic_cast<VncAdapter*>(adapter.get()) == nullptr) {
+        return true;
+    }
+    const bool drained = VncRfbEngine::drainDeferredJoinsWithin(
+        std::chrono::seconds(10));
+    if (!drained) {
+        OH_LOG_ERROR(LOG_APP,
+            "[ExtLoader][SHUTDOWN] VNC deferred worker did not reach done fence");
+    }
+    return drained;
+}
+
 static bool HasNativeResources(const TeardownNativeResources& resources) {
     return resources.rendererHandle > 0 || resources.decoderHandle > 0 ||
         resources.audioHandle > 0;
@@ -3905,7 +3932,9 @@ static uint64_t BeginSessionTeardown(
         bool failed = false;
         try {
             if (adapter) {
-                adapter->disconnect();
+                if (!DisconnectAdapterAndDrainVnc(adapter)) {
+                    failed = true;
+                }
             }
         } catch (...) {
             failed = true;
@@ -4242,7 +4271,10 @@ napi_value NapiDisconnectAll(napi_env env, napi_callback_info info) {
             }
             try {
                 if (adapter) {
-                    adapter->disconnect();
+                    if (!DisconnectAdapterAndDrainVnc(adapter)) {
+                        failed = true;
+                        sessionFailed = true;
+                    }
                 }
             } catch (...) {
                 failed = true;
