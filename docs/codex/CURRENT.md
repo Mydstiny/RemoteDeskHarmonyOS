@@ -7,7 +7,7 @@ This file is the compact startup resume card for the active SSH terminal task.
 - Task: `ssh-terminal-complete-upgrade`
 - Base: `main@d2769ad4b`
 - Branch: `codex/ssh-terminal-complete-upgrade`
-- Code checkpoint: `da4a2489f`
+- Code checkpoint: `fd5065b7d`
 - Phase: SFTP checkpoint closed; SSH terminal diagnosis and core-route decision
 - Scope: investigate terminal input stalls, IME/focus churn, command delivery,
   Canvas damage/frame errors and mature terminal-core migration. Homepage work

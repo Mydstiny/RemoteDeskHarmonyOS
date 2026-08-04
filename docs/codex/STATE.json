@@ -3,7 +3,7 @@
   "task": "ssh-terminal-complete-upgrade",
   "branch": "codex/ssh-terminal-complete-upgrade",
   "base": "d2769ad4b",
-  "head": "da4a2489f",
+  "head": "fd5065b7d",
   "phase": "sftp-checkpoint-closed-terminal-diagnosis",
   "status": "active",
   "next": "Diagnose terminal input/IME/Canvas failures and run the WP-T4 terminal-core route spike; keep Level A/B connectivity gated.",
