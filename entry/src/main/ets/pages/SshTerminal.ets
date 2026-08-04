@@ -2259,10 +2259,14 @@ struct SshTerminal {
           hostLabel: this.hostLabel,
           hostAddress: this.userAtHost.length > 0 ? this.userAtHost : this.sshHost
         };
-        this.sshPipService.update(this.makeSshPipInfo('后台保留'));
-        void this.sshPipService.start().then((started: boolean): void => {
-          hilog.info(0x0017, 'SshTerminal', 'SSH PiP auto-start=' + started.toString());
-        });
+        if (this.sshPipService.isPreparedOrPreparing()) {
+          this.sshPipService.update(this.makeSshPipInfo('后台保留'));
+          void this.sshPipService.start().then((started: boolean): void => {
+            hilog.info(0x0017, 'SshTerminal', 'SSH PiP auto-start=' + started.toString());
+          });
+        } else {
+          hilog.info(0x0017, 'SshTerminal', 'SSH PiP skipped: prepare was not requested');
+        }
         void this.sshBackgroundTaskService.start(backgroundContext, backgroundInfo).then(
           (started: boolean): void => {
             hilog.info(0x0016, 'SshTerminal', 'background preserve task started=' +
@@ -2834,16 +2838,12 @@ struct SshTerminal {
       return false;
     }
     this.sshSessionGeneration = sessionGeneration;
-    this.connected = true;
-    this.connecting = false;
     await this.srv.updateLastConnected(this.hostId);
     if (!this.isPageGenerationActive(pageGeneration) || this.sessionId !== connectedSessionId) {
       this.loader.disconnectSshSession(connectedSessionId);
       this.sessionId = -1;
       return false;
     }
-    this.startLatencyProbe();
-
     // 推送式数据接收: C++ reader 线程读到数据 → TSFN → 这里
     let dataChunkCount: number = 0;
     this.loader.setOnDataCallback(connectedSessionId, (data: ArrayBuffer): void => {
@@ -2873,6 +2873,13 @@ struct SshTerminal {
       generation: sessionGeneration
     });
 
+    // Do not advertise a session as connected until the page-owned callback
+    // and the detached-session resume gate are both installed. This keeps an
+    // Ability exit during the preceding await from starting PiP for a session
+    // that was never fully rebound to the page.
+    this.connected = true;
+    this.connecting = false;
+    this.startLatencyProbe();
     void this.prepareSshPip(pageGeneration);
 
     if (this.isDesktopDevice) {
