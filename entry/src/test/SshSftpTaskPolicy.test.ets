@@ -2,6 +2,8 @@ import { describe, it, expect } from '@ohos/hypium';
 import {
   SshSftpTaskRecord,
   canTransitionSshSftpTask,
+  isMonotonicSshSftpTaskProgress,
+  isNewerSshSftpTaskUpdate,
   normalizeSshSftpTaskRecord,
   sshSftpResumeDisposition,
   upsertSshSftpTask
@@ -64,10 +66,48 @@ export default function sshSftpTaskPolicyTest(): void {
 
     it('keeps task transitions explicit and replaces by id', 0, (): void => {
       expect(canTransitionSshSftpTask('transferring', 'waitingForConnection')).assertTrue();
+      expect(canTransitionSshSftpTask('queued', 'inspecting')).assertTrue();
+      expect(canTransitionSshSftpTask('transferring', 'verifying')).assertTrue();
+      expect(canTransitionSshSftpTask('verifying', 'committing')).assertTrue();
+      expect(canTransitionSshSftpTask('committing', 'completed')).assertTrue();
+      expect(canTransitionSshSftpTask('transferring', 'completed')).assertFalse();
       expect(canTransitionSshSftpTask('completed', 'queued')).assertFalse();
       const replaced = upsertSshSftpTask([task('task-1', 1)], task('task-1', 2));
       expect(replaced.length).assertEqual(1);
       expect(replaced[0].sequence).assertEqual(2);
+    });
+
+    it('rejects stale or regressive durable updates', 0, (): void => {
+      const current: SshSftpTaskRecord = task('task-1', 4);
+      const stale: SshSftpTaskRecord = {
+        taskId: current.taskId, hostId: current.hostId, direction: current.direction,
+        remotePath: current.remotePath, fileName: current.fileName, totalBytes: current.totalBytes,
+        verifiedOffset: current.verifiedOffset, sourceSize: current.sourceSize,
+        sourceMtime: current.sourceMtime, partialSize: current.partialSize,
+        partialMtime: current.partialMtime, sessionGeneration: current.sessionGeneration,
+        sequence: 3, stage: current.stage, updatedAt: 99
+      };
+      const regressive: SshSftpTaskRecord = {
+        taskId: current.taskId, hostId: current.hostId, direction: current.direction,
+        remotePath: current.remotePath, fileName: current.fileName, totalBytes: current.totalBytes,
+        verifiedOffset: 20, sourceSize: current.sourceSize, sourceMtime: current.sourceMtime,
+        partialSize: 20, partialMtime: current.partialMtime,
+        sessionGeneration: current.sessionGeneration, sequence: 5, stage: current.stage, updatedAt: 5
+      };
+      const newer: SshSftpTaskRecord = {
+        taskId: current.taskId, hostId: current.hostId, direction: current.direction,
+        remotePath: current.remotePath, fileName: current.fileName, totalBytes: current.totalBytes,
+        verifiedOffset: 75, sourceSize: current.sourceSize, sourceMtime: current.sourceMtime,
+        partialSize: 75, partialMtime: current.partialMtime,
+        sessionGeneration: current.sessionGeneration, sequence: 5, stage: current.stage, updatedAt: 6
+      };
+      expect(isNewerSshSftpTaskUpdate(current, stale)).assertFalse();
+      expect(isNewerSshSftpTaskUpdate(current, newer)).assertTrue();
+      expect(isMonotonicSshSftpTaskProgress(current, regressive)).assertFalse();
+      expect(isMonotonicSshSftpTaskProgress(current, newer)).assertTrue();
+      expect(upsertSshSftpTask([current], stale)[0].sequence).assertEqual(4);
+      expect(upsertSshSftpTask([current], regressive)[0].verifiedOffset).assertEqual(50);
+      expect(upsertSshSftpTask([current], newer)[0].verifiedOffset).assertEqual(75);
     });
   });
 }

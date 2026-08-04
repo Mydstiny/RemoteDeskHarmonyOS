@@ -6,8 +6,13 @@ export type SshSftpTaskDirection = 'upload' | 'download';
 
 export type SshSftpTaskStage =
   | 'queued'
+  | 'inspecting'
+  | 'awaitingConflictDecision'
   | 'transferring'
+  | 'paused'
   | 'waitingForConnection'
+  | 'verifying'
+  | 'committing'
   | 'needsAuthorization'
   | 'needsAuthentication'
   | 'failed'
@@ -52,7 +57,8 @@ const MAX_REMOTE_PATH_LENGTH: number = 2048;
 const MAX_FILE_NAME_LENGTH: number = 255;
 
 const STAGES: SshSftpTaskStage[] = [
-  'queued', 'transferring', 'waitingForConnection', 'needsAuthorization',
+  'queued', 'inspecting', 'awaitingConflictDecision', 'transferring', 'paused',
+  'waitingForConnection', 'verifying', 'committing', 'needsAuthorization',
   'needsAuthentication', 'failed', 'cancelled', 'completed'
 ];
 
@@ -123,11 +129,28 @@ export function canTransitionSshSftpTask(from: SshSftpTaskStage,
   if (from === 'failed') { return to === 'queued' || to === 'needsAuthorization' || to === 'needsAuthentication'; }
   if (from === 'needsAuthorization') { return to === 'queued' || to === 'cancelled'; }
   if (from === 'needsAuthentication') { return to === 'queued' || to === 'cancelled'; }
+  if (from === 'committing') { return to === 'completed' || to === 'failed'; }
+  if (from === 'verifying') { return to === 'committing' || to === 'failed' || to === 'cancelled'; }
+  if (from === 'paused') {
+    return to === 'queued' || to === 'transferring' || to === 'waitingForConnection' || to === 'cancelled';
+  }
   if (from === 'waitingForConnection') {
     return to === 'queued' || to === 'transferring' || to === 'cancelled' || to === 'needsAuthentication';
   }
-  if (from === 'queued') { return to === 'transferring' || to === 'cancelled' || to === 'needsAuthorization' || to === 'needsAuthentication'; }
-  return to === 'waitingForConnection' || to === 'failed' || to === 'cancelled' || to === 'completed';
+  if (from === 'queued') {
+    return to === 'inspecting' || to === 'cancelled' || to === 'needsAuthorization' || to === 'needsAuthentication';
+  }
+  if (from === 'inspecting') {
+    return to === 'awaitingConflictDecision' || to === 'transferring' ||
+      to === 'waitingForConnection' || to === 'needsAuthorization' ||
+      to === 'needsAuthentication' || to === 'failed' || to === 'cancelled';
+  }
+  if (from === 'awaitingConflictDecision') {
+    return to === 'queued' || to === 'transferring' || to === 'cancelled' ||
+      to === 'failed' || to === 'needsAuthorization' || to === 'needsAuthentication';
+  }
+  return to === 'paused' || to === 'waitingForConnection' || to === 'verifying' ||
+    to === 'failed' || to === 'cancelled';
 }
 
 export function sshSftpResumeDisposition(record: SshSftpTaskRecord,
@@ -144,14 +167,48 @@ export function sshSftpResumeDisposition(record: SshSftpTaskRecord,
   return 'ReadyToResume';
 }
 
+/**
+ * A durable update is ordered by the task sequence first and wall-clock time
+ * second. Equal timestamps are intentionally not allowed to replace a record:
+ * a late callback must not win merely because it arrived last.
+ */
+export function isNewerSshSftpTaskUpdate(current: SshSftpTaskRecord,
+  next: SshSftpTaskRecord): boolean {
+  if (next.sequence !== current.sequence) { return next.sequence > current.sequence; }
+  return next.updatedAt > current.updatedAt;
+}
+
+/** Progress may pause, but a durable checkpoint must never move backwards. */
+export function isMonotonicSshSftpTaskProgress(current: SshSftpTaskRecord,
+  next: SshSftpTaskRecord): boolean {
+  if (current.verifiedOffset >= 0 && next.verifiedOffset >= 0 &&
+    next.verifiedOffset < current.verifiedOffset) {
+    return false;
+  }
+  if (next.totalBytes >= 0 && next.verifiedOffset > next.totalBytes) { return false; }
+  return true;
+}
+
 /** Replace by id, keep newest sequence first, and cap durable growth. */
 export function upsertSshSftpTask(records: SshSftpTaskRecord[],
   next: SshSftpTaskRecord): SshSftpTaskRecord[] {
   const result: SshSftpTaskRecord[] = [];
+  let replaced: boolean = false;
   for (let index = 0; index < records.length; index++) {
-    if (records[index].taskId !== next.taskId) { result.push(records[index]); }
+    const current: SshSftpTaskRecord = records[index];
+    if (current.taskId !== next.taskId) {
+      result.push(current);
+      continue;
+    }
+    if (isNewerSshSftpTaskUpdate(current, next) &&
+      isMonotonicSshSftpTaskProgress(current, next)) {
+      result.push(next);
+    } else {
+      result.push(current);
+    }
+    replaced = true;
   }
-  result.push(next);
+  if (!replaced) { result.push(next); }
   result.sort((a: SshSftpTaskRecord, b: SshSftpTaskRecord): number => b.sequence - a.sequence);
   return result.slice(0, MAX_TASKS);
 }

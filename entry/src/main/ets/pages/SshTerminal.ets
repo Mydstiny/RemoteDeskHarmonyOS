@@ -1931,7 +1931,10 @@ struct SshTerminal {
     const partialSize: number = checkpoint === null ? -1 : checkpoint.partialSize;
     const partialMtime: number = checkpoint === null ? -1 : checkpoint.partialMtime;
     const offset: number = checkpoint === null ? session.transferredBytes : checkpoint.confirmedOffset;
-    if (this.sftpTaskSequence <= 0) { this.sftpTaskSequence = Date.now(); }
+    // Each durable checkpoint gets a new sequence. Date.now() keeps sequence
+    // ordering stable across page instances while the increment handles
+    // multiple checkpoints created within one millisecond.
+    this.sftpTaskSequence = Math.max(this.sftpTaskSequence + 1, Date.now());
     const record: SshSftpTaskRecord = {
       taskId: session.id,
       hostId: this.hostId.trim(),

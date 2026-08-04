@@ -6,6 +6,7 @@ import sshTerminalScrollPolicyTest from './SshTerminalScrollPolicy.test';
 import sshTerminalInputPolicyTest from './SshTerminalInputPolicy.test';
 import sshSftpIntegrityPolicyTest from './SshSftpIntegrityPolicy.test';
 import sshSftpTaskPolicyTest from './SshSftpTaskPolicy.test';
+import sshLocalProviderPolicyTest from './SshLocalProviderPolicy.test';
 import remoteSessionTopBarPolicyTest from './RemoteSessionTopBarPolicy.test';
 import rdpCertificatePreflightPolicyTest from './RdpCertificatePreflightPolicy.test';
 import rdpSessionErrorPolicyTest from './RdpSessionErrorPolicy.test';
@@ -140,6 +141,8 @@ export default function testsuite() {
   sshTerminalScrollPolicyTest();
   sshTerminalInputPolicyTest();
   sshSftpIntegrityPolicyTest();
+  sshSftpTaskPolicyTest();
+  sshLocalProviderPolicyTest();
   remoteSessionTopBarPolicyTest();
   rdpCertificatePreflightPolicyTest();
   rdpSessionErrorPolicyTest();
