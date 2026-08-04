@@ -4,6 +4,7 @@ import {
   SETTINGS_SECTION_APPEARANCE,
   SETTINGS_SECTION_CONNECTION_LIVE,
   SETTINGS_SECTION_FEEDBACK,
+  SETTINGS_SECTION_HOME,
   SETTINGS_SECTION_NONE,
   SETTINGS_SECTION_RATING,
   SETTINGS_SECTION_TUTORIAL,
@@ -38,7 +39,9 @@ export default function settingsAccordionPolicyTest() {
     it('accordion_sections_expand_one_at_a_time_and_collapse_when_reselected', 0, (): void => {
       expect(settingsNextExpandedSection(SETTINGS_SECTION_NONE, SETTINGS_SECTION_APPEARANCE))
         .assertEqual(SETTINGS_SECTION_APPEARANCE);
-      expect(settingsNextExpandedSection(SETTINGS_SECTION_APPEARANCE, SETTINGS_SECTION_CONNECTION_LIVE))
+      expect(settingsNextExpandedSection(SETTINGS_SECTION_APPEARANCE, SETTINGS_SECTION_HOME))
+        .assertEqual(SETTINGS_SECTION_HOME);
+      expect(settingsNextExpandedSection(SETTINGS_SECTION_HOME, SETTINGS_SECTION_CONNECTION_LIVE))
         .assertEqual(SETTINGS_SECTION_CONNECTION_LIVE);
       expect(settingsNextExpandedSection(SETTINGS_SECTION_CONNECTION_LIVE, SETTINGS_SECTION_TUTORIAL))
         .assertEqual(SETTINGS_SECTION_TUTORIAL);

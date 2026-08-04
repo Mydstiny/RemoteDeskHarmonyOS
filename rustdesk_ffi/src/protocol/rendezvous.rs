@@ -136,12 +136,23 @@ impl RendezvousClient {
         server_key: &str,
         secure: bool,
     ) -> io::Result<()> {
+        self.connect_with_timeout(host, port, server_key, secure, Duration::from_secs(10))
+    }
+
+    pub fn connect_with_timeout(
+        &mut self,
+        host: &str,
+        port: u16,
+        server_key: &str,
+        secure: bool,
+        timeout: Duration,
+    ) -> io::Result<()> {
         self.state = RdState::Connecting;
 
-        let stream = net::connect_tcp_host(host, port, "rendezvous", Duration::from_secs(10))?;
+        let stream = net::connect_tcp_host(host, port, "rendezvous", timeout)?;
 
-        stream.set_read_timeout(Some(Duration::from_secs(30)))?;
-        stream.set_write_timeout(Some(Duration::from_secs(10)))?;
+        stream.set_read_timeout(Some(timeout))?;
+        stream.set_write_timeout(Some(timeout))?;
 
         self.stream = Some(stream);
         if secure {

@@ -133,6 +133,11 @@ export class HostSyncService {
           next.lastConnected = local.lastConnected;
           next.lastHealth = local.lastHealth;
           next.lastLatency = local.lastLatency;
+          // RustDesk presence is also a local observation. Keep the complete
+          // presence tuple together so a stale cloud callback cannot restore
+          // “检测中” or an older online/offline result.
+          next.rustdeskProLastSeenAt = local.rustdeskProLastSeenAt;
+          next.rustdeskProSyncError = local.rustdeskProSyncError;
         }
         this.hosts.set(next.id, next);
       }
@@ -513,6 +518,17 @@ export class HostSyncService {
       return;
     }
     this.persistLocalHostObservation(hostId, next, markConnected);
+  }
+
+  /**
+   * Store a presence probe locally before attempting a throttled cloud write.
+   * Presence contains more than latency, so callers use this for RustDesk
+   * pending/online/offline transitions as one atomic UI observation.
+   */
+  updateLocalHostObservation(host: RemoteHost): void {
+    if (!this.hosts.has(host.id)) { return; }
+    const next: RemoteHost = RemoteHost.fromJSON(host.toJSON());
+    this.persistLocalHostObservation(host.id, next, false);
   }
 
   private persistLocalHostObservation(hostId: string, next: RemoteHost, forceCloud: boolean): void {

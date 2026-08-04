@@ -63,7 +63,8 @@ export default function rustDeskProSyncPolicyTest() {
       expect(second.updatedIds.length).assertEqual(1);
       expect(second.hosts[0].label).assertEqual('我的别名');
       expect(second.hosts[0].groupId).assertEqual('ops');
-      expect(second.hosts[0].rustdeskProLastSeenAt).assertEqual(200);
+      expect(second.hosts[0].rustdeskProLastSeenAt).assertEqual(0);
+      expect(second.hosts[0].rustdeskProSyncError).assertEqual('probe_pending');
     });
 
     it('marks_missing_peer_without_deleting_it', 0, () => {

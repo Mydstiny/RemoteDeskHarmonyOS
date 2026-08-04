@@ -119,6 +119,13 @@ struct RustDeskFfiConfig {
     int         relay_fallback_port;
 };
 
+/** Result of a non-authenticating RustDesk peer presence probe. */
+struct RustDeskPresenceResult {
+    int state = 0;      // 0=unknown, 1=online, 2=offline
+    int latencyMs = -1;
+    int errorCode = 0;
+};
+
 static_assert(offsetof(RustDeskFfiConfig, relay_fallback_port) == 96,
               "RustDeskConfig ABI tail offset changed; update Rust and C++ together");
 static_assert(sizeof(RustDeskFfiConfig) == 104,

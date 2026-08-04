@@ -36,6 +36,7 @@ pub mod terminal_core;
 use protocol::message_proto::{
     AudioFormat, AudioFrame, EncodedVideoFrames, VideoFrame, VideoFrame_oneof_union,
 };
+use protocol::rendezvous::RendezvousClient;
 use protocol::session::AuthEventCallback;
 use control_inbox::ControlInbox;
 use cursor_state::CursorStreamUpdate;
@@ -336,6 +337,16 @@ pub struct RustDeskConfig {
     /// explicit port when one is advertised.
     /// Appended to preserve the established C ABI field order.
     pub relay_fallback_port: c_int,
+}
+
+/// Result of a non-authenticating RustDesk liveness probe.
+/// state: 0=unknown, 1=online, 2=offline.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RustDeskPresenceResult {
+    pub state: c_int,
+    pub latency_ms: c_int,
+    pub error_code: c_int,
 }
 
 const DEFAULT_RELAY_PORT: u16 = 21117;
@@ -1874,6 +1885,102 @@ pub extern "C" fn rustdesk_last_error(buffer: *mut c_char, buffer_len: usize) ->
         }
     }
     bytes.len()
+}
+
+/// Probe a RustDesk peer without opening a desktop session.
+///
+/// Rendezvous responses are authoritative for relay/ID mode: a route response
+/// means the peer is currently registered, while an explicit refusal means it
+/// is offline or unknown to the server. Network and protocol failures remain
+/// unknown so the homepage does not turn a broken client/server path into a
+/// false offline result. Direct mode only checks the configured peer listener.
+#[no_mangle]
+pub extern "C" fn rustdesk_probe_presence(
+    cfg: *const RustDeskConfig,
+    out_result: *mut RustDeskPresenceResult,
+) -> bool {
+    if out_result.is_null() {
+        return false;
+    }
+    let mut result = RustDeskPresenceResult {
+        state: 0,
+        latency_ms: -1,
+        error_code: 3,
+    };
+    if cfg.is_null() {
+        unsafe { *out_result = result; }
+        return true;
+    }
+
+    let config = unsafe { &*cfg };
+    let started = Instant::now();
+    let host = ffi_string(config.host);
+    let peer_id = ffi_string(config.username);
+    let server_key = ffi_string(config.key);
+    let api_token = ffi_string(config.token);
+    let port = if config.port > 0 {
+        config.port as u16
+    } else if config.direct_connection {
+        21118
+    } else {
+        21116
+    };
+
+    let probe = if host.trim().is_empty() || (!config.direct_connection && peer_id.trim().is_empty()) {
+        Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "RustDesk presence endpoint or peer identity is missing",
+        ))
+    } else if config.direct_connection {
+        net::connect_tcp_host(
+            &host,
+            port,
+            "rustdesk_presence_direct",
+            Duration::from_secs(3),
+        )
+        .map(|_| ())
+    } else {
+        let shared_access_key = config.key_mode == 2;
+        let rendezvous_secure = !shared_access_key &&
+            !server_key.trim().is_empty() && !api_token.trim().is_empty();
+        let mut rendezvous = RendezvousClient::new();
+        rendezvous
+            .connect_with_timeout(
+                &host,
+                port,
+                &server_key,
+                rendezvous_secure,
+                Duration::from_secs(3),
+            )
+            .and_then(|_| rendezvous.request_force_relay(&peer_id, &server_key, &api_token))
+            .map(|_| ())
+    };
+
+    result.latency_ms = started
+        .elapsed()
+        .as_millis()
+        .min(i32::MAX as u128) as c_int;
+    match probe {
+        Ok(()) => {
+            result.state = 1;
+            result.error_code = 0;
+        }
+        Err(error) if error.kind() == io::ErrorKind::ConnectionRefused => {
+            result.state = 2;
+            result.error_code = 1;
+        }
+        Err(error) if error.kind() == io::ErrorKind::TimedOut => {
+            result.error_code = 2;
+        }
+        Err(error) if matches!(error.kind(), io::ErrorKind::InvalidInput | io::ErrorKind::InvalidData) => {
+            result.error_code = 3;
+        }
+        Err(_) => {
+            result.error_code = 4;
+        }
+    }
+    unsafe { *out_result = result; }
+    true
 }
 
 /// Copy a non-destructive stream telemetry snapshot for one FFI connection.

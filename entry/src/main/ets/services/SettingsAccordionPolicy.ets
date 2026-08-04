@@ -1,5 +1,6 @@
 export const SETTINGS_SECTION_NONE: string = '';
 export const SETTINGS_SECTION_APPEARANCE: string = 'appearance';
+export const SETTINGS_SECTION_HOME: string = 'homeLayout';
 export const SETTINGS_SECTION_CLOUD_SYNC: string = 'cloudSync';
 export const SETTINGS_SECTION_CONNECTION_LIVE: string = 'connectionLive';
 export const SETTINGS_SECTION_DISPLAY_INTERACTION: string = 'displayInteraction';

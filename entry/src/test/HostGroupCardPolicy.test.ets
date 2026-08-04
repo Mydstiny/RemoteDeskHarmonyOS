@@ -72,7 +72,7 @@ export default function hostGroupCardPolicyTest(): void {
       host.rustdeskProLastSeenAt = 100000 - HOST_PRESENCE_ONLINE_TTL_MS - 1000;
       expect(hostPresenceState(host, 100000, false)).assertEqual('recently_online');
       host.rustdeskProLastSeenAt = 100000 - HOST_PRESENCE_RECENT_WINDOW_MS - 1000;
-      host.rustdeskProSyncError = 'not_seen';
+      host.rustdeskProSyncError = 'probe_offline';
       expect(hostPresenceState(host, 100000, false)).assertEqual('offline');
       expect(hostPresenceState(host, 100000, true)).assertEqual('online');
     });
@@ -82,7 +82,7 @@ export default function hostGroupCardPolicyTest(): void {
       rdp.lastConnected = 100000 - 1000;
       rdp.lastHealth = ConnectionHealth.GOOD;
       const rustdesk: RemoteHost = makeHost('rustdesk-a', 'rustdesk');
-      rustdesk.rustdeskProSyncError = 'not_seen';
+      rustdesk.rustdeskProSyncError = 'probe_offline';
       const cards = buildHostGroupCards([rdp, rustdesk], 100000, 'rdp-a');
       expect(cards[0].summary.online).assertEqual(1);
       expect(cards[1].summary.offline).assertEqual(1);

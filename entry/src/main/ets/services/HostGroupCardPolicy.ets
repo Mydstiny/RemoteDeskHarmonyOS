@@ -21,6 +21,9 @@ export interface HostGroupCardModel {
 
 export const HOST_PRESENCE_ONLINE_TTL_MS: number = 60 * 1000;
 export const HOST_PRESENCE_RECENT_WINDOW_MS: number = 15 * 60 * 1000;
+export const HOST_PRESENCE_PROBE_PENDING: string = 'probe_pending';
+export const HOST_PRESENCE_PROBE_OFFLINE: string = 'probe_offline';
+export const HOST_PRESENCE_PROBE_UNKNOWN: string = 'probe_unknown';
 
 const HOST_GROUP_TYPES: HostGroupType[] = ['rdp', 'rustdesk', 'ssh', 'vnc'];
 
@@ -111,10 +114,19 @@ export function hostPresenceState(host: RemoteHost, nowMs: number = Date.now(), 
     return 'online';
   }
 
-  // A Pro address-book timestamp is the only stored RustDesk peer observation.
-  // Relay health and a generic TCP failure are deliberately not treated as
-  // peer presence.
+  // Address-book synchronization is metadata, not peer presence. Only a
+  // successful rendezvous/direct probe may write rustdeskProLastSeenAt.
   if (host.protocol === 'rustdesk') {
+    const probeState: string = host.rustdeskProSyncError.trim();
+    if (probeState === HOST_PRESENCE_PROBE_PENDING) {
+      return 'checking';
+    }
+    if (probeState === HOST_PRESENCE_PROBE_OFFLINE) {
+      return 'offline';
+    }
+    if (probeState === HOST_PRESENCE_PROBE_UNKNOWN) {
+      return 'unknown';
+    }
     const lastPeerSeenAt: number = validTimestamp(host.rustdeskProLastSeenAt);
     if (lastPeerSeenAt > 0) {
       const peerAge: number = ageMs(lastPeerSeenAt, nowMs);
@@ -125,9 +137,8 @@ export function hostPresenceState(host: RemoteHost, nowMs: number = Date.now(), 
         return 'recently_online';
       }
     }
-    if (host.rustdeskProSyncError.trim() === 'not_seen') {
-      return 'offline';
-    }
+    // A peer missing from an address-book response is not evidence that the
+    // device is offline. It may be a server-side permission or sync issue.
   }
 
   // Other protocols and manual RustDesk hosts only have a successful local
