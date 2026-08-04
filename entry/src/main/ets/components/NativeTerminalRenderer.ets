@@ -45,7 +45,34 @@ const SELECTION_BG: string = 'rgba(90,140,255,0.40)';
  * 仍由 @Prop @Watch 驱动消费。
  */
 export class TerminalInputBuffer {
-  buffer: ArrayBuffer = new ArrayBuffer(0);
+  private pendingBuffers: ArrayBuffer[] = [];
+  private pendingBytes: number = 0;
+
+  enqueue(buffer: ArrayBuffer): void {
+    if (buffer.byteLength === 0) { return; }
+    this.pendingBuffers.push(buffer);
+    this.pendingBytes += buffer.byteLength;
+  }
+
+  drain(): ArrayBuffer[] {
+    const buffers: ArrayBuffer[] = this.pendingBuffers;
+    this.pendingBuffers = [];
+    this.pendingBytes = 0;
+    return buffers;
+  }
+
+  clear(): void {
+    this.pendingBuffers = [];
+    this.pendingBytes = 0;
+  }
+
+  size(): number {
+    return this.pendingBuffers.length;
+  }
+
+  byteLength(): number {
+    return this.pendingBytes;
+  }
 }
 
 @Component
@@ -102,6 +129,8 @@ export struct NativeTerminalRenderer {
   /** 上一次绘制使用的顶部偏移, 偏移变化时需要全量重绘避免残影 */
   private lastGridTop: number = 0;
   private lastCanvasArea: string = '';
+  /** 输入可能先于 Canvas onReady 到达；ready 前保留在 inputBuffer 中。 */
+  private canvasReady: boolean = false;
 
   aboutToAppear(): void {
     this.resetLifecycleState();
@@ -141,6 +170,7 @@ export struct NativeTerminalRenderer {
     this.lastViewportHeight = 0;
     this.lastCanvasArea = '';
     this.lastModeSignature = '';
+    this.canvasReady = false;
   }
 
   private notifyTerminalMode(snapshot: TerminalCoreSnapshot): void {
@@ -267,11 +297,25 @@ export struct NativeTerminalRenderer {
   // ============================================================
 
   private onInputSequenceChange(): void {
-    if (this.handle <= 0) { return; }
-    if (this.inputBuffer.buffer.byteLength === 0) { return; }
-    // inputData is one ordered SSH byte chunk. The Rust core owns bounded
-    // scrollback and parses UTF-8/VT sequences without a lossy JS conversion.
-    this.bridge.writeBytes(this.handle, this.inputBuffer.buffer);
+    this.consumeInputQueue();
+  }
+
+  /**
+   * Consume every output batch admitted before this frame. Keeping the queue
+   * in the stable parent-owned object prevents a later @Watch event from
+   * replacing an earlier ArrayBuffer while the Canvas is still initializing.
+   */
+  private consumeInputQueue(): void {
+    if (this.handle <= 0 || !this.canvasReady) { return; }
+    const buffers: ArrayBuffer[] = this.inputBuffer.drain();
+    if (buffers.length === 0) { return; }
+    for (let index = 0; index < buffers.length; index++) {
+      const buffer: ArrayBuffer = buffers[index];
+      if (buffer.byteLength === 0) { continue; }
+      // Each item is an ordered SSH byte chunk. The Rust core owns bounded
+      // scrollback and parses UTF-8/VT sequences without a lossy JS conversion.
+      this.bridge.writeBytes(this.handle, buffer);
+    }
     if (this.followBottom) {
       this.bridge.scrollToBottom(this.handle);
     }
@@ -585,7 +629,7 @@ export struct NativeTerminalRenderer {
     if (!snap) { return; }
     const cursorViewY: number = this.cursorViewY(snap);
     const cursorX: number = snap.cursorX;
-    if (this.cursorVisible && cursorViewY >= 0 && cursorViewY < this.rows &&
+    if (this.cursorVisible && snap.cursorVisible && cursorViewY >= 0 && cursorViewY < this.rows &&
       cursorX >= 0 && cursorX < this.cols) {
       const ctx: CanvasRenderingContext2D = this.ctx;
       const cx: number = cursorX * this.cellW;
@@ -619,12 +663,14 @@ export struct NativeTerminalRenderer {
   build() {
     Canvas(this.ctx)
       .onReady((): void => {
+        this.canvasReady = true;
         this.calcCellSize();
         if (this.handle > 0) {
           this.lastSnapshot = this.bridge.snapshot(this.handle);
           this.notifyTerminalMode(this.lastSnapshot);
         }
         this.renderFull();
+        this.consumeInputQueue();
       })
       .width('100%')
       .height('100%')

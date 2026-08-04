@@ -714,7 +714,7 @@ struct SshTerminal {
     }
     this.terminalOutputQueue.splice(0, batchCount);
     this.terminalOutputQueueBytes -= batchBytes;
-    this.terminalInputBuffer.buffer = merged;
+    this.terminalInputBuffer.enqueue(merged);
     this.termOutput = this.decodeTerminalChunk(merged);
     this.termOutputSequence++;
     if (this.terminalOutputQueue.length > 0) {
@@ -2077,7 +2077,7 @@ struct SshTerminal {
     this.orientationApplied = false;
     // ArkUI 可能复用页面实例；每次进入都必须从全新的会话输出开始。
     this.termOutput = '';
-    this.terminalInputBuffer.buffer = new ArrayBuffer(0);
+    this.terminalInputBuffer.clear();
     this.clearTerminalOutputQueue();
     this.clearTerminalInputQueue();
     this.terminalDecodeRemainder = new Uint8Array(0);
@@ -2336,7 +2336,7 @@ struct SshTerminal {
     this.sessionId = -1;
     this.connected = false;
     this.termOutput = '';
-    this.terminalInputBuffer.buffer = new ArrayBuffer(0);
+    this.terminalInputBuffer.clear();
     this.clearTerminalOutputQueue();
     this.clearTerminalInputQueue();
     this.terminalDecodeRemainder = new Uint8Array(0);
