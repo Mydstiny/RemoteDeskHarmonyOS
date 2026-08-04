@@ -21,7 +21,7 @@
   ],
   "review": {
     "status": "REVIEW_REQUIRED",
-    "taskId": null,
+    "taskId": "ssh_t0_reviewer",
     "scope": [
       "entry/src/main/cpp/extensions/extension_loader_napi.cpp",
       "entry/src/main/cpp/extensions/protocol_adapter.h",
