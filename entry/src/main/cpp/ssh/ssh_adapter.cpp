@@ -83,18 +83,39 @@ namespace {
     /**
      * libssh2 reports a short non-blocking receive race as
      * LIBSSH2_ERROR_SOCKET_RECV. Peek without consuming bytes so the reactor
-     * can distinguish EAGAIN/EINTR from an actual socket close/error.
+     * can distinguish EAGAIN/EINTR from an actual socket close/error. Keep the
+     * raw probe values for diagnostics; a boolean alone cannot explain a
+     * long-lived connection failure.
      */
-    bool isTransientSocketReceive(int socketFd) {
-        if (socketFd < 0) { return false; }
+    struct SocketReceiveProbe {
+        ssize_t peeked = -1;
+        int peekErrno = 0;
+        int socketError = 0;
+        int socketErrorErrno = 0;
+        bool transient = false;
+    };
+
+    SocketReceiveProbe probeSocketReceive(int socketFd) {
+        SocketReceiveProbe result;
+        if (socketFd < 0) { return result; }
         char probe = 0;
         while (true) {
-            const ssize_t peeked = ::recv(socketFd, &probe, sizeof(probe), MSG_PEEK);
-            if (peeked > 0) { return true; }
-            if (peeked == 0) { return false; }
-            if (errno == EINTR) { continue; }
-            return errno == EAGAIN || errno == EWOULDBLOCK;
+            result.peeked = ::recv(socketFd, &probe, sizeof(probe), MSG_PEEK);
+            if (result.peeked >= 0) { break; }
+            result.peekErrno = errno;
+            if (result.peekErrno == EINTR) { continue; }
+            break;
         }
+        socklen_t errorLength = sizeof(result.socketError);
+        if (::getsockopt(socketFd, SOL_SOCKET, SO_ERROR,
+                         &result.socketError, &errorLength) != 0) {
+            result.socketErrorErrno = errno;
+            result.socketError = 0;
+        }
+        result.transient = result.peeked > 0 ||
+            (result.peeked < 0 &&
+             (result.peekErrno == EAGAIN || result.peekErrno == EWOULDBLOCK));
+        return result;
     }
 }
 
@@ -2206,12 +2227,19 @@ void SshAdapter::drainShellOutputOnReactor() {
                         readerRunning_.store(false, std::memory_order_release);
                         break;
                     }
-                    if (isTransientSocketReceive(sockFd_)) {
+                    const SocketReceiveProbe probe = probeSocketReceive(sockFd_);
+                    if (probe.transient) {
                         // The channel is still open and the non-blocking
                         // socket has no consumable bytes. Let the owner return
                         // to poll.
                         break;
                     }
+                    OH_LOG_ERROR(LOG_APP,
+                        "[SSH] terminal recv probe failed: rc=%{public}zd fd=%{public}d "
+                        "peek=%{public}zd peekErrno=%{public}d soError=%{public}d "
+                        "soErrno=%{public}d sessionErr=%{public}d",
+                        n, sockFd_, probe.peeked, probe.peekErrno, probe.socketError,
+                        probe.socketErrorErrno, libssh2_session_last_errno(session_));
                 }
                 readError = true;
                 readErrorCode = n;
@@ -2961,13 +2989,20 @@ void SshAdapter::readerLoop() {
                         readerRunning_.store(false);
                         break;
                     }
-                    if (isTransientSocketReceive(fd)) {
+                    const SocketReceiveProbe probe = probeSocketReceive(fd);
+                    if (probe.transient) {
                         // A readiness edge can race with libssh2's encrypted
                         // receive. Keep the reactor alive and wait for the
                         // next socket edge instead of converting it into a
                         // disconnect.
                         break;
                     }
+                    OH_LOG_ERROR(LOG_APP,
+                        "[SSH] reader recv probe failed: rc=%{public}zd fd=%{public}d "
+                        "peek=%{public}zd peekErrno=%{public}d soError=%{public}d "
+                        "soErrno=%{public}d sessionErr=%{public}d",
+                        n, fd, probe.peeked, probe.peekErrno, probe.socketError,
+                        probe.socketErrorErrno, libssh2_session_last_errno(session_));
                 }
                 OH_LOG_ERROR(LOG_APP, "[SSH] reader libssh2_channel_read 失败: %{public}zd", n);
                 readError = terminalInputAccepting_.load(std::memory_order_acquire);
