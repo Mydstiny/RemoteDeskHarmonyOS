@@ -3,12 +3,12 @@
   "task": "ssh-terminal-complete-upgrade",
   "branch": "codex/ssh-terminal-complete-upgrade",
   "base": "d2769ad4b",
-  "head": "b6ed084",
-  "phase": "alacritty-core-vt-parity-checkpoint-device-acceptance-pending",
+  "head": "e51e371",
+  "phase": "alacritty-core-vt-parity-device-acceptance-checkpoint",
   "status": "active",
-  "next": "Unlock HDC target 5KLBB25928203528, launch b6ed084, complete the IME/physical-keyboard/PiP device matrix, and keep Level A/B connectivity gated.",
+  "next": "Use the signed e51e371 HAP for user acceptance of IME/physical-keyboard behavior, then keep Level A/B connectivity gated until real endpoints exist.",
   "blockers": [
-    "HDC target 5KLBB25928203528 accepted the b6ed084 HAP install, but launch is blocked by screen lock (10106102); no new device PASS is claimed.",
+    "HDC target 5KLBB25928203528 passed cold SSH, 300 KiB output, Home background retention, PiP/re-entry and a resumed command; true external-keyboard and third-party-IME coverage remains open.",
     "ohosTest@OhosTestCompileArkTS is not registered (00306054).",
     "Host native suite has 16 pre-existing VNC TLS fixture startup failures; SSH tests pass.",
     "No bastion/forwarding endpoint is available; ProxyJump and port forwarding remain gated plan items.",
@@ -20,7 +20,7 @@
     "docs/SSH_TERMINAL_TEST_CASES.md"
   ],
   "review": {
-    "status": "REVIEW_REQUIRED",
+    "status": "PASS",
     "taskId": "ssh_t0_reviewer",
     "scope": [
       "entry/src/main/cpp/extensions/extension_loader_napi.cpp",
@@ -65,20 +65,20 @@
       "rustdesk_ffi/src/terminal_core/mod.rs",
       "rustdesk_ffi/src/terminal_core/tests.rs"
     ],
-    "reason": "Alacritty migration, reactor keepalive, SSH/PiP lifecycle and shared VT parity checkpoint are committed and build/native validated; device launch, independent review and endpoint evidence remain pending."
+    "reason": "Alacritty migration, reactor keepalive, SSH/PiP lifecycle, bounded Canvas consumption and shared VT parity are committed; the existing independent reviewer passed the final output-queue increment and the signed HAP passed the available device acceptance matrix."
   },
   "lastVerification": {
     "host_native_tests": "254-pass-16-preexisting-vnc-fixture-startup-failures-270-total-2026-08-04",
     "rust_terminal_core_tests": "focused-alacritty-63-pass-fallback-57-pass-2026-08-04; full-no-default-features-156-pass-1-preexisting-rendezvous-fixture-public-address-failure-157-total",
     "terminalParity": "alacritty-67-pass-fallback-57-pass-unicode-ansi-tui-resize-large-output-damage-2026-08-04",
-    "default@OhosTestCompileArkTS": "pass-vt-parity-checkpoint-b6ed084-2026-08-04",
-    "assembleHap": "pass-build-successful-signed-vt-parity-checkpoint-b6ed084-2026-08-04",
-    "gitDiffCheck": "pass-2026-08-04",
+    "default@OhosTestCompileArkTS": "pass-e51e371-2026-08-05",
+    "assembleHap": "pass-build-successful-signed-e51e371-2026-08-05",
+    "gitDiffCheck": "pass-2026-08-05",
     "sbom": "pass-totp-validator-96-packages-282-files-282-relationships-2026-08-04",
     "ohosTest": "blocked-task-00306054",
     "lightCompliance": "blocked-baseline-sbom-NOASSERTION-totp-reviewed-brand-assets",
-    "hdc": "install-success-b6ed084-5KLBB25928203528-launch-blocked-screen-lock-10106102-2026-08-04",
+    "hdc": "pass-e51e371-5KLBB25928203528-cold-large-output-home-background-pip-reentry-resumed-command-2026-08-05",
     "homepagePresenceToggle": "pass-installed-signed-hap-classic-home-no-presence-text-2026-08-04"
   },
-  "updated": "2026-08-04 Asia/Shanghai"
+  "updated": "2026-08-05 Asia/Shanghai"
 }

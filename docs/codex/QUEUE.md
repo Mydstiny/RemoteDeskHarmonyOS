@@ -1,25 +1,22 @@
 # Shared Queue
 
-Updated: 2026-08-04 Asia/Shanghai
+Updated: 2026-08-05 Asia/Shanghai
 
 ## Now
 
 - SFTP checkpoint is closed for the implemented integrity, durable metadata,
   local-provider and Pad/PC workspace scope; do not expand it in this pass.
 - Alacritty `0.26.0` is now the default VT core behind terminalCore; the
-  reactor keepalive and PiP/session lifecycle checkpoint is committed; finish
-  device acceptance while keeping the old core as an explicit fallback.
-- Diagnose terminal input stalls, IME/physical-keyboard churn, commands that do
-  not execute, Canvas misalignment and output/frame backpressure.
-- Complete the full device matrix for IME/physical keyboard, PiP/background
-  continuity and Canvas stress; keep basic SSH command acceptance recorded.
-- Keep the current review state `REVIEW_REQUIRED`; do not claim full background
-  SFTP execution, Level A, or Level B connectivity.
+  reactor keepalive, PiP/session lifecycle and bounded Canvas consumption are
+  committed; cold/large-output/background/re-entry acceptance is recorded.
+- User-accept the remaining external-keyboard/third-party-IME paths on the
+  signed HAP, while keeping the old Rust core as an explicit fallback.
+- Keep the review state at the matching PASS receipt; do not claim full
+  background SFTP execution, Level A, or Level B connectivity.
 
 ## Next
 
-- WP-T4 default Alacritty route acceptance and a small proof-of-concept
-  benchmark using shared terminal fixtures.
+- WP-T4 user acceptance and benchmark using shared terminal fixtures.
 - WP-T5/WP-T6 terminal correctness and damage-frame renderer implementation.
 - Real SFTP, bastion, forwarding and FRP endpoint interoperability tests when
   the corresponding services and HDC/device are available.
@@ -33,8 +30,9 @@ Updated: 2026-08-04 Asia/Shanghai
 
 ## Evidence Gaps
 
-- HDC target `5KLBB25928203528` accepted the HAP install; launch is blocked by
-  screen lock (`10106102`), so the full device matrix remains pending.
+- HDC target `5KLBB25928203528` passed cold SSH, large output, Home retention,
+  PiP/re-entry and resumed-command checks; real external keyboard/IME coverage
+  remains an evidence gap.
 - `ohosTest@OhosTestCompileArkTS` is unregistered (`00306054`).
 - Light compliance is blocked by baseline SBOM package
   `totp-reviewed-brand-assets` with `licenseDeclared=NOASSERTION`.
