@@ -688,6 +688,7 @@ struct HostListPage {
   @StorageLink('sshTerminalForegroundColor') terminalFgColor: string = '#33FF33';
   @State showTerminalFgColor: boolean = false;
   @StorageLink('sshTerminalFontSize') terminalFontSize: number = 18;
+  @StorageLink('sshInputMode') sshInputMode: number = 0; // 0=自动, 1=虚拟键盘, 2=实体键鼠
   @State showTerminalFontSize: boolean = false;
   @State showRdpCredentialSheet: boolean = false;
   @State showRdpCredentialEditorSheet: boolean = false;
@@ -2210,13 +2211,13 @@ struct HostListPage {
       return 980;
     }
     if (section === SETTINGS_SECTION_SSH) {
-      return 540;
+      return 640;
     }
     if (section === SETTINGS_SECTION_VNC) {
       return settingsVncExpandedMaxHeight(SETTINGS_VNC_ACTION_ROW_COUNT);
     }
     if (section === SETTINGS_SECTION_SECURITY) {
-      return 420;
+      return 560;
     }
     if (section === SETTINGS_SECTION_TUTORIAL) {
       return 240;
@@ -5759,6 +5760,15 @@ struct HostListPage {
     this.persistPref('rustdeskReverseWheel', on);
   }
 
+  private saveSshInputMode(mode: number): void {
+    this.sshInputMode = this.clampSshInputMode(mode);
+    this.persistPref('sshInputMode', this.sshInputMode);
+  }
+
+  private clampSshInputMode(mode: number): number {
+    return mode >= 0 && mode <= 2 ? Math.floor(mode) : 0;
+  }
+
   private saveRustDeskControlMode(mode: number): void {
     this.rustdeskControlMode = this.clampRustDeskControlMode(mode);
     this.persistRustDeskNumberPref('rustdeskControlMode', this.rustdeskControlMode);
@@ -8587,6 +8597,8 @@ struct HostListPage {
               }.width('100%').height(60).padding({ left: 16, right: 16 })
                 .onClick(() => { this.openSettingsLeafSheet(SETTINGS_SHEET_TERMINAL_FONT_SIZE); })
               this.cardDivider()
+              this.sshInputModeRow()
+              this.cardDivider()
               Row() {
                 Column() {
                   Text('终端预览').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
@@ -10705,6 +10717,75 @@ struct HostListPage {
     .onClick((): void => {
       this.openRdpCredentialManager();
     })
+  }
+
+  @Builder sshInputModeRow() {
+    if (this.breakpoint === 'md' || this.breakpoint === 'lg') {
+      Row() {
+        this.sshInputModeLabel()
+        this.sshInputModeSlider()
+      }.width('100%').height(64).padding({ left: 16, right: 16 })
+    } else {
+      Column() {
+        Row() {
+          this.sshInputModeLabel()
+        }.width('100%')
+        Row() {
+          Blank().layoutWeight(1)
+          this.sshInputModeSlider()
+        }.width('100%').margin({ top: 10 })
+      }.width('100%').height(92).padding({ left: 16, right: 16, top: 14, bottom: 12 })
+    }
+  }
+
+  private sshInputModeDetail(): string {
+    if (this.sshInputMode === 1) { return '始终显示虚拟功能栏并使用软键盘'; }
+    if (this.sshInputMode === 2) { return '隐藏虚拟功能栏，使用实体键盘和鼠标'; }
+    return '自动检测：有实体键盘时隐藏虚拟功能栏';
+  }
+
+  @Builder sshInputModeLabel() {
+    Row() {
+      Row() { Image($r('app.media.icon_terminal')).width(22).height(22).fillColor(this.pal().text3) }
+        .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
+      Column() {
+        Text('输入设备').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
+          .fontColor(this.pal().text).fontFamily(this.font())
+        Text(this.sshInputModeDetail()).fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
+          .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+      }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
+    }.layoutWeight(1)
+  }
+
+  @Builder sshInputModeSlider() {
+    Stack({ alignContent: Alignment.Start }) {
+      Column()
+        .width(72).height(30).borderRadius(8)
+        .backgroundColor(this.accentColor)
+        .translate({ x: this.sshInputMode * 76, y: 0 })
+        .animation({ duration: 260, curve: Curve.FastOutSlowIn })
+      Row() {
+        this._sshInputModeChip('自动', 0)
+        Blank().width(4)
+        this._sshInputModeChip('虚拟键盘', 1)
+        Blank().width(4)
+        this._sshInputModeChip('实体键鼠', 2)
+      }
+    }.padding(3).borderRadius(11).backgroundColor(this.pal().surface)
+  }
+
+  @Builder _sshInputModeChip(label: string, mode: number) {
+    Column() {
+      Text(label)
+        .fontSize(11)
+        .fontColor(this.sshInputMode === mode ? '#FFFFFF' : this.pal().text2)
+        .fontWeight(this.sshInputMode === mode ? FontWeight.Medium : FontWeight.Normal)
+        .textAlign(TextAlign.Center)
+        .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+        .padding({ left: 8, right: 8, top: 6, bottom: 6 })
+        .borderRadius(8)
+        .onClick((): void => { this.saveSshInputMode(mode); })
+    }.width(72).justifyContent(FlexAlign.Center)
   }
 
   @Builder rustdeskControlModeRow() {

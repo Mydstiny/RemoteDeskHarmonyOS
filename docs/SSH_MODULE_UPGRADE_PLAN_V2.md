@@ -1618,7 +1618,7 @@ hvigorw --mode module -p module=entry -p product=default assembleHap --analyze=n
 
 ## 16. 执行清单
 
-> 2026-08-04 SSH-only checkpoint：WP-T0～WP-T3 与 WP-S0 已完成代码实现、定向测试和宿主构建门禁；设备矩阵尚未完成。WP-S1 仅完成恢复元数据 Task Store 基础，不能表述为完整任务引擎。其余工作包保持未完成，交由后续 session。
+> 2026-08-04 SSH/SFTP checkpoint：WP-T0～WP-T3、WP-S0，以及 SFTP 的持久元数据、本地 provider 和 Pad/PC 工作区基线已完成代码实现、定向测试和宿主构建门禁；本次 SFTP checkpoint 可标记完成。它不等同于完整后台任务引擎：真实 provider/endpoint 真机验收、UDMF 拖放、后台恢复和 Level A 全量条件仍保持未完成，交由后续专项处理。
 
 ### 开始前
 
@@ -1647,6 +1647,7 @@ hvigorw --mode module -p module=entry -p product=default assembleHap --analyze=n
 - [x] WP-T2 单 owner SSH reactor 和 SFTP 公平调度（代码/宿主测试完成，设备指标待测）。
 - [x] WP-T3 物理键盘/IME 单提交和焦点逃逸（代码/宿主测试完成，实体键盘真机待测）。
 - [x] WP-S0 partial/resume identity/verify/atomic commit 数据完整性底线（代码/策略测试完成，API 23 provider/网络故障矩阵待测）。
+- [x] SFTP checkpoint：持久任务元数据、本地 provider/目录授权、Pad/PC 双栏工作区和远端/本地操作布局（页面集成完成，真实 provider/endpoint、后台 payload、UDMF 和生命周期矩阵待测）。
 - [ ] 其他模组回归。
 
 ### P1
@@ -2043,6 +2044,15 @@ record 只携带短期 opaque drag token、来源 pane、item count、允许动�
 - 取消后说明 partial 是否保留用于恢复；清理 partial 是独立可恢复/可确认动作。
 
 ### 18.6 SFTP 可靠性工作包
+
+#### 当前 SFTP checkpoint 状态（2026-08-04）
+
+- [x] WP-S0：`.partial`、resume identity、verify、atomic commit、0B 和取消/失败保留语义。
+- [x] WP-S1/S2 checkpoint：持久任务元数据、恢复状态、本地 provider 能力选择、目录授权和远端/本地文件视图。
+- [x] Pad/PC workspace baseline：全屏双栏布局、远端操作集中左侧、本地授权/文件操作集中右侧；Phone 保持原始 Sheet/虚拟键栏行为。
+- [ ] 完整后台 payload 执行、全局 transfer queue、UDMF 拖放、后台连续任务和 Level A 真机/endpoint 矩阵。
+
+本状态只关闭本次已实现的 SFTP checkpoint，不提前宣称第 15.1 节的完整生产级 SSH/SFTP。
 
 #### WP-S0：现有单文件路径的数据完整性封口（P0）
 

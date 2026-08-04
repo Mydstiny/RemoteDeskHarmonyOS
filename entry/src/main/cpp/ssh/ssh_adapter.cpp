@@ -1495,14 +1495,30 @@ int SshAdapter::listRemoteDir(const std::string& remotePath, std::vector<SftpFil
         }
         entry.isDirectory = (attrs.flags & LIBSSH2_SFTP_ATTR_PERMISSIONS) &&
             LIBSSH2_SFTP_S_ISDIR(attrs.permissions);
+        if (attrs.flags & LIBSSH2_SFTP_ATTR_PERMISSIONS) {
+            entry.isSymbolicLink = LIBSSH2_SFTP_S_ISLNK(attrs.permissions);
+            entry.isSpecialFile = !entry.isDirectory && !entry.isSymbolicLink &&
+                !LIBSSH2_SFTP_S_ISREG(attrs.permissions);
+            entry.mode = static_cast<int64_t>(attrs.permissions);
+        }
         entry.size = (attrs.flags & LIBSSH2_SFTP_ATTR_SIZE) &&
                 attrs.filesize <= static_cast<uint64_t>(std::numeric_limits<int64_t>::max())
             ? static_cast<int64_t>(attrs.filesize) : -1;
+        if (attrs.flags & LIBSSH2_SFTP_ATTR_UIDGID) {
+            entry.uid = attrs.uid <= static_cast<unsigned long>(std::numeric_limits<int64_t>::max())
+                ? static_cast<int64_t>(attrs.uid) : -1;
+            entry.gid = attrs.gid <= static_cast<unsigned long>(std::numeric_limits<int64_t>::max())
+                ? static_cast<int64_t>(attrs.gid) : -1;
+        }
         // A missing mtime is not an epoch timestamp. Preserve the unknown
         // state so resume identity checks can fail closed instead of treating
         // an unavailable server attribute as a valid identity.
-        entry.mtime = (attrs.flags & LIBSSH2_SFTP_ATTR_ACMODTIME)
-            ? static_cast<int64_t>(attrs.mtime) : -1;
+        if (attrs.flags & LIBSSH2_SFTP_ATTR_ACMODTIME) {
+            entry.atime = attrs.atime <= static_cast<unsigned long>(std::numeric_limits<int64_t>::max())
+                ? static_cast<int64_t>(attrs.atime) : -1;
+            entry.mtime = attrs.mtime <= static_cast<unsigned long>(std::numeric_limits<int64_t>::max())
+                ? static_cast<int64_t>(attrs.mtime) : -1;
+        }
         entries.push_back(entry);
         if (!yieldSftpSlice(sessionLock, -1, 0)) {
             libssh2_sftp_closedir(handle);
@@ -1995,6 +2011,25 @@ void SshAdapter::startTerminalInput() {
     // calls and make SFTP fairness depend on mutex timing.
     reactorCommandCondition_.notify_one();
     OH_LOG_INFO(LOG_APP, "[SSH] input writer 已并入 session owner reactor");
+}
+
+void SshAdapter::suspendTerminalInput() {
+    terminalInputAccepting_.store(false, std::memory_order_release);
+    std::lock_guard<std::mutex> lock(inputQueueMutex_);
+    clearInputQueueLocked(true);
+    reactorCommandCondition_.notify_all();
+}
+
+void SshAdapter::resumeTerminalInput() {
+    if (state_.load(std::memory_order_acquire) != ConnectionState::CONNECTED) {
+        return;
+    }
+    if (!terminalInputRunning_.load(std::memory_order_acquire)) {
+        startTerminalInput();
+        return;
+    }
+    terminalInputAccepting_.store(true, std::memory_order_release);
+    reactorCommandCondition_.notify_one();
 }
 
 void SshAdapter::stopTerminalInput() {
@@ -2649,6 +2684,16 @@ void SshAdapter::setOnDataCallback(DataCallback cb) {
     }
     OH_LOG_INFO(LOG_APP, "[SSH] onDataCallback %{public}s",
                 hasCallback ? "已注册" : "已清除");
+}
+
+void SshAdapter::detachOnDataCallback() {
+    {
+        std::lock_guard<std::mutex> lk(callbackMutex_);
+        onDataCallback_ = nullptr;
+    }
+    // The owner reactor remains alive and can be rebound by a later page.
+    reactorCommandCondition_.notify_one();
+    OH_LOG_INFO(LOG_APP, "[SSH] onDataCallback 已脱离, session reactor 保持");
 }
 
 void SshAdapter::startReader() {

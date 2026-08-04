@@ -197,6 +197,11 @@ public:
 
     /** 设置推送回调 — 后台 reader 线程读到数据后立即调用. nullptr 关闭推送. */
     void setOnDataCallback(DataCallback cb);
+    /** Detach the consumer without stopping the session owner reactor. */
+    void detachOnDataCallback();
+    /** Suspend/resume terminal input while a page view is detached. */
+    void suspendTerminalInput();
+    void resumeTerminalInput();
 
     // ---- SFTP 文件传输 ----
     int sendFileData(const std::string& remotePath, const uint8_t* data, uint32_t len) override;

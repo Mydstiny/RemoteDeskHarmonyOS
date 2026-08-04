@@ -53,6 +53,8 @@ export const VERSION: SessionVersionInfo;
   export function probeRdpCertificate(host: string, port: number, serverName: string): RdpCertificateInfo;
   export function probeRdpCertificateAsync(host: string, port: number,
     serverName: string): Promise<RdpCertificateInfo>;
+  export function probeRustDeskPresenceAsync(host: string, port: number, serverKey: string,
+    peerId: string, token: string, direct: boolean, keyMode: number): Promise<RustDeskPresenceResult>;
   export function probeVncCertificateAsync(host: string, port: number,
     serverName: string, timeoutMs?: number): VncCertificateProbePromise;
   export function cancelVncCertificateProbe(requestId: number): boolean;
@@ -103,6 +105,8 @@ export const VERSION: SessionVersionInfo;
   export function measureSshLatency(sessionId: number): number;
   export function measureSshLatencyAsync(sessionId: number): Promise<number>;
   export function setOnDataCallback(sessionId: number, cb: ((data: ArrayBuffer) => void) | null): void;
+  export function detachSshSession(sessionId: number): boolean;
+  export function resumeSshSession(sessionId: number): boolean;
   export function setHelperSocketPath(socketPath: string, binPath: string): void;
 
   // SSH 密钥工具 (函数声明)
@@ -208,6 +212,12 @@ export interface RdpCertificateInfo {
   hostMismatch: boolean;
   errorCode: number;
   errorMessage: string;
+}
+
+export interface RustDeskPresenceResult {
+  state: number;
+  latencyMs: number;
+  errorCode: number;
 }
 
 export interface VncCertificateInfo {
@@ -500,7 +510,13 @@ export interface SftpFileEntry {
   name: string;
   path: string;
   isDirectory: boolean;
+  isSymbolicLink: boolean;
+  isSpecialFile: boolean;
   size: number;
+  mode: number;
+  uid: number;
+  gid: number;
+  atime: number;
   mtime: number;
 }
 

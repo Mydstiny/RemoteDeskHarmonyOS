@@ -3,26 +3,25 @@
   "task": "ssh-terminal-complete-upgrade",
   "branch": "codex/ssh-terminal-complete-upgrade",
   "base": "d2769ad4b",
-  "head": "25983e2d0",
-  "phase": "rustdesk-host-home-card-reviewed",
+  "head": "da4a2489f",
+  "phase": "sftp-checkpoint-closed-terminal-diagnosis",
   "status": "active",
-  "next": "Restore HDC for Phone/Pad/PC acceptance and resolve the baseline Light SBOM blocker.",
+  "next": "Diagnose terminal input/IME/Canvas failures and run the WP-T4 terminal-core route spike; keep Level A/B connectivity gated.",
   "blockers": [
-    "No HDC device is listed; grouped-card geometry, RustDesk presence, physical keyboard, Phone/Pad/PC layout, lifecycle, and drag/drop evidence remain pending.",
+    "HDC target 5KLBB25928203528 is connected; terminal latency, keyboard/IME, Canvas and SFTP lifecycle/provider evidence remain pending.",
     "ohosTest@OhosTestCompileArkTS is not registered (00306054).",
     "Host native suite has 16 pre-existing VNC TLS fixture startup failures; SSH tests pass.",
     "No bastion/forwarding endpoint is available; ProxyJump and port forwarding remain gated plan items.",
-    "No real RustDesk presence endpoint is available for device-level online/offline acceptance.",
+    "No real OpenSSH bastion/ProxyJump, port-forwarding or FRP endpoint is available for interoperability acceptance.",
     "Light compliance is blocked by baseline SBOM package totp-reviewed-brand-assets with licenseDeclared=NOASSERTION."
   ],
   "planPaths": [
     "docs/SSH_MODULE_UPGRADE_PLAN_V2.md",
-    "docs/SSH_TERMINAL_TEST_CASES.md",
-    "docs/codex/plans/2026-08-04-rustdesk-host-home-card-upgrade-plan.md"
+    "docs/SSH_TERMINAL_TEST_CASES.md"
   ],
   "review": {
-    "status": "PASS",
-    "taskId": "self-review-homepage",
+    "status": "REVIEW_REQUIRED",
+    "taskId": null,
     "scope": [
       "entry/src/main/cpp/extensions/extension_loader_napi.cpp",
       "entry/src/main/cpp/extensions/protocol_adapter.h",
@@ -40,24 +39,30 @@
       "entry/src/test/List.test.ets",
       "entry/src/main/ets/services/SshSftpIntegrityPolicy.ets",
       "entry/src/test/SshSftpIntegrityPolicy.test.ets",
+      "entry/src/main/ets/services/SshLocalFileProvider.ets",
+      "entry/src/main/ets/services/SshLocalProviderPolicy.ets",
       "entry/src/main/ets/services/SshSftpTaskPolicy.ets",
       "entry/src/main/ets/services/SshSftpTaskStore.ets",
+      "entry/src/main/ets/services/TransferSessionPolicy.ets",
+      "entry/src/main/module.json5",
+      "entry/src/test/List.test.ets",
+      "entry/src/test/SshLocalProviderPolicy.test.ets",
+      "entry/src/test/SshSftpIntegrityPolicy.test.ets",
       "entry/src/test/SshSftpTaskPolicy.test.ets",
-      "entry/src/main/ets/pages/HostListPage.ets",
-      "entry/src/main/ets/services/HostGroupCardPolicy.ets",
-      "entry/src/test/HostGroupCardPolicy.test.ets",
-      "entry/src/test/List.test.ets"
+      "entry/src/test/TransferSessionPolicy.test.ets"
     ],
-    "reason": "User-authorized concentrated homepage self-review completed after both mandatory Hvigor gates; no independent reviewer or device PASS is claimed."
+    "reason": "SFTP checkpoint scope is closed after build/policy validation; terminal diagnosis and the remaining real-device/endpoint evidence are still unreviewed."
   },
   "lastVerification": {
     "host_native_tests": "253-pass-16-preexisting-vnc-fixture-startup-failures-269-total-2026-08-04",
-    "default@OhosTestCompileArkTS": "pass-after-homepage-layout-and-policy-tests-2026-08-04",
-    "assembleHap": "pass-build-successful-signed-after-homepage-2026-08-04",
+    "rust_terminal_core_tests": "156-pass-1-preexisting-rendezvous-fixture-public-address-failure-157-total-2026-08-04",
+    "default@OhosTestCompileArkTS": "pass-after-sftp-provider-padpc-layout-2026-08-04",
+    "assembleHap": "pass-build-successful-signed-after-sftp-provider-padpc-layout-2026-08-04",
     "gitDiffCheck": "pass-2026-08-04",
     "ohosTest": "blocked-task-00306054",
     "lightCompliance": "blocked-baseline-sbom-NOASSERTION-totp-reviewed-brand-assets",
-    "hdc": "blocked-no-target"
+    "hdc": "connected-5KLBB25928203528-homepage-screenshot-2560x1600-2026-08-04",
+    "homepagePresenceToggle": "pass-installed-signed-hap-classic-home-no-presence-text-2026-08-04"
   },
   "updated": "2026-08-04 Asia/Shanghai"
 }

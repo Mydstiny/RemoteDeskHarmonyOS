@@ -4,35 +4,35 @@ Updated: 2026-08-04 Asia/Shanghai
 
 ## Now
 
-- Homepage grouped-card follow-on is implemented and concentrated self-reviewed
-  at `e877d12c2`; the switch affects Phone, Pad and PC small-window modes only,
-  while PC large-window mode stays unchanged.
-- Both mandatory Hvigor gates pass on the current homepage implementation.
-- Checkpoint `d4731b790` commits the SSH-only T0-T3/WP-S0 implementation after
-  self-review and both mandatory Hvigor gates.
-- Preserve protocol owners: homepage changes consume read-only projections and
-  do not alter RustDesk transport, VNC storage, SSH transport or cloud schemas.
+- SFTP checkpoint is closed for the implemented integrity, durable metadata,
+  local-provider and Pad/PC workspace scope; do not expand it in this pass.
+- Diagnose terminal input stalls, IME/physical-keyboard churn, commands that do
+  not execute, Canvas misalignment and output/frame backpressure.
+- Compare the current Rust core, a native Rust terminal engine and ArkWeb plus
+  xterm.js using the same correctness and performance fixtures.
+- Run the mandatory Hvigor gates and record the current native/test blockers.
+- Keep the current review state `REVIEW_REQUIRED`; do not claim full background
+  SFTP execution, Level A, or Level B connectivity.
 
 ## Next
 
-- WP-S1/S2 complete durable transfer tasks and capability-aware local providers;
-  current Task Store is metadata foundation only.
-- WP-S3/S4 Pad/PC dual-pane workspace, UDMF token drag/drop and transfer queue.
+- WP-T4 terminal-core route decision and a small proof-of-concept benchmark.
+- WP-T5/WP-T6 terminal correctness and damage-frame renderer implementation.
+- Real SFTP, bastion, forwarding and FRP endpoint interoperability tests when
+  the corresponding services and HDC/device are available.
+- Implement a separate Level B contract for ProxyJump, port forwarding and FRP.
 
 ## Later
 
-- WP-T4 terminal core route decision, WP-T5 Unicode/reflow/mode correctness,
-  WP-T6 damage-frame renderer and WP-T7 accessibility/lifecycle recovery.
-- Level B ProxyJump, local/remote/dynamic forwarding and enterprise auth remain
-  gated until contracts and endpoint evidence exist.
+- Complete the background transfer engine, UDMF drag/drop and SFTP lifecycle
+  acceptance beyond the current page-owned execution path.
+- WP-T7 terminal accessibility/lifecycle recovery and Level A acceptance.
 
 ## Evidence Gaps
 
-- No HDC device is listed; Phone/Pad/PC geometry, RustDesk presence, physical
-  keyboard, orientation, background/reconnect, SFTP workspace and drag/drop
-  evidence is pending.
+- HDC target `5KLBB25928203528` is connected and the homepage follow-on was
+  checked; SFTP workspace and physical-device acceptance are still pending.
 - `ohosTest@OhosTestCompileArkTS` is unregistered (`00306054`).
 - Light compliance is blocked by baseline SBOM package
   `totp-reviewed-brand-assets` with `licenseDeclared=NOASSERTION`.
-- Host native suite has 16 pre-existing VNC TLS fixture startup failures; all
-  251 non-fixture tests, including SSH queue/diagnostics tests, pass.
+- Host native suite has 16 pre-existing VNC TLS fixture startup failures.

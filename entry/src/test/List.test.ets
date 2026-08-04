@@ -5,6 +5,7 @@ import hostSyncServiceTest from './HostSyncService.test';
 import sshTerminalScrollPolicyTest from './SshTerminalScrollPolicy.test';
 import sshTerminalInputPolicyTest from './SshTerminalInputPolicy.test';
 import sshSftpIntegrityPolicyTest from './SshSftpIntegrityPolicy.test';
+import sshSftpBatchPolicyTest from './SshSftpBatchPolicy.test';
 import sshSftpTaskPolicyTest from './SshSftpTaskPolicy.test';
 import sshLocalProviderPolicyTest from './SshLocalProviderPolicy.test';
 import remoteSessionTopBarPolicyTest from './RemoteSessionTopBarPolicy.test';
@@ -141,6 +142,7 @@ export default function testsuite() {
   sshTerminalScrollPolicyTest();
   sshTerminalInputPolicyTest();
   sshSftpIntegrityPolicyTest();
+  sshSftpBatchPolicyTest();
   sshSftpTaskPolicyTest();
   sshLocalProviderPolicyTest();
   remoteSessionTopBarPolicyTest();

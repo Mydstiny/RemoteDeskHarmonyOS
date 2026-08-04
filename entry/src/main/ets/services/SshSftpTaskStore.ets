@@ -1,14 +1,40 @@
 import { common } from '@kit.AbilityKit';
 import { preferences } from '@kit.ArkData';
 import {
+  SshSftpBatchPlan,
+  SshSftpTreeItem,
+  joinSshSftpRelativeRemotePath,
+  normalizeSshSftpRemotePath
+} from './SshSftpBatchPolicy';
+import {
+  SshSftpTaskDirection,
   SshSftpTaskRecord,
+  SshSftpTaskStage,
+  SshSftpResumeContext,
+  SshSftpResumeDisposition,
+  SshSftpTaskCommand,
+  SshSftpTaskCommandResult,
+  SshSftpTaskEvent,
+  SshSftpTaskListener,
   normalizeSshSftpTaskRecord,
-  upsertSshSftpTask
+  canTransitionSshSftpTask,
+  sshSftpResumeDisposition,
+  sshSftpTaskCommandTarget,
+  upsertSshSftpTask,
+  sshSftpTaskMaxCount
 } from './SshSftpTaskPolicy';
 
 const PREFS_NAME: string = 'RemoteDesktopSshSftpPrefs';
 const TASKS_KEY: string = 'ssh.sftp.tasks.v1';
 const FLUSH_DELAY_MS: number = 300;
+const MAX_BATCH_ID_LENGTH: number = 64;
+
+export interface SshSftpBatchTaskEnqueueResult {
+  accepted: boolean;
+  reason: string;
+  batchId: string;
+  records: SshSftpTaskRecord[];
+}
 
 /**
  * SSH-only durable metadata owner. It never persists credentials, Picker
@@ -23,6 +49,9 @@ export class SshSftpTaskStore {
   private dirty: boolean = false;
   private mutationVersion: number = 0;
   private flushInFlight: Promise<boolean> | null = null;
+  private listeners: SshSftpTaskListener[] = [];
+  private batchSequence: number = 0;
+  private taskSequence: number = 0;
 
   static getInstance(): SshSftpTaskStore {
     if (SshSftpTaskStore.instance === null) {
@@ -38,6 +67,7 @@ export class SshSftpTaskStore {
     }
     this.context = context;
     this.records = [];
+    this.taskSequence = 0;
     this.dirty = false;
     this.mutationVersion++;
     try {
@@ -57,6 +87,27 @@ export class SshSftpTaskStore {
       this.records = [];
     }
     this.dirty = false;
+    this.publishRestoredRecords();
+  }
+
+  /** Subscribe to durable task changes without exposing the preferences layer. */
+  subscribe(listener: SshSftpTaskListener, replayRestored: boolean = true): () => void {
+    this.listeners.push(listener);
+    if (replayRestored) {
+      const restored: SshSftpTaskRecord[] = this.records.slice();
+      for (let index = 0; index < restored.length; index++) {
+        try { listener({ kind: 'restored', record: restored[index] }); } catch (_err) {
+          // Observers cannot break task subscription or persistence.
+        }
+      }
+    }
+    let active: boolean = true;
+    return (): void => {
+      if (!active) { return; }
+      active = false;
+      this.listeners = this.listeners.filter(
+        (candidate: SshSftpTaskListener): boolean => candidate !== listener);
+    };
   }
 
   list(hostId: string = ''): SshSftpTaskRecord[] {
@@ -65,25 +116,179 @@ export class SshSftpTaskStore {
       filter.length === 0 || record.hostId === filter);
   }
 
-  upsert(record: SshSftpTaskRecord): void {
+  listBatch(hostId: string, batchId: string): SshSftpTaskRecord[] {
+    const owner: string = hostId.trim();
+    const id: string = batchId.trim();
+    if (owner.length === 0 || id.length === 0) { return []; }
+    return this.records.filter((record: SshSftpTaskRecord): boolean =>
+      record.hostId === owner && record.batchId === id);
+  }
+
+  get(taskId: string): SshSftpTaskRecord | null {
+    const id: string = taskId.trim();
+    for (let index = 0; index < this.records.length; index++) {
+      if (this.records[index].taskId === id) { return this.records[index]; }
+    }
+    return null;
+  }
+
+  resumeDisposition(taskId: string, context: SshSftpResumeContext): SshSftpResumeDisposition {
+    const record: SshSftpTaskRecord | null = this.get(taskId);
+    return record === null ? 'NotResumable' : sshSftpResumeDisposition(record, context);
+  }
+
+  upsert(record: SshSftpTaskRecord): boolean {
     const normalized: SshSftpTaskRecord | null = normalizeSshSftpTaskRecord(record as Object);
-    if (normalized === null) { return; }
-    this.records = upsertSshSftpTask(this.records, normalized);
+    if (normalized === null) { return false; }
+    const current: SshSftpTaskRecord | null = this.get(normalized.taskId);
+    const nextRecords: SshSftpTaskRecord[] = upsertSshSftpTask(this.records, normalized);
+    let stored: SshSftpTaskRecord | null = null;
+    for (let index = 0; index < nextRecords.length; index++) {
+      if (nextRecords[index].taskId === normalized.taskId) {
+        stored = nextRecords[index];
+        break;
+      }
+    }
+    if (stored === null || (current !== null && stored === current)) { return false; }
+    this.records = nextRecords;
     this.mutationVersion++;
     this.dirty = true;
     this.scheduleFlush();
+    this.publish({ kind: 'changed', record: stored });
+    return true;
   }
 
   remove(taskId: string): void {
     const id: string = taskId.trim();
     if (id.length === 0) { return; }
+    const removed: SshSftpTaskRecord | null = this.get(id);
+    if (removed === null) { return; }
     const next: SshSftpTaskRecord[] = this.records.filter(
       (record: SshSftpTaskRecord): boolean => record.taskId !== id);
-    if (next.length === this.records.length) { return; }
     this.records = next;
     this.mutationVersion++;
     this.dirty = true;
     this.scheduleFlush();
+    this.publish({ kind: 'removed', record: removed });
+  }
+
+  /**
+   * Apply a command through the durable transition policy. The returned record
+   * is the store-owned snapshot; network/file I/O remains outside this class.
+   */
+  command(taskId: string, command: SshSftpTaskCommand): SshSftpTaskCommandResult {
+    const current: SshSftpTaskRecord | null = this.get(taskId);
+    if (current === null) {
+      return { accepted: false, reason: 'task-not-found', record: null };
+    }
+    if (command.kind === 'complete' && !current.isDirectory) {
+      return { accepted: false, reason: 'directory-task-required', record: current };
+    }
+    const target: SshSftpTaskStage | null =
+      sshSftpTaskCommandTarget(current.stage, command);
+    if (target === null) {
+      return { accepted: false, reason: 'command-not-applicable', record: current };
+    }
+    if (!canTransitionSshSftpTask(current.stage, target)) {
+      return { accepted: false, reason: 'invalid-stage-transition', record: current };
+    }
+    const now: number = Date.now();
+    const next: SshSftpTaskRecord = {
+      taskId: current.taskId,
+      batchId: current.batchId,
+      relativePath: current.relativePath,
+      hostId: current.hostId,
+      direction: current.direction,
+      isDirectory: current.isDirectory,
+      remotePath: current.remotePath,
+      fileName: current.fileName,
+      totalBytes: current.totalBytes,
+      verifiedOffset: current.verifiedOffset,
+      sourceSize: current.sourceSize,
+      sourceMtime: current.sourceMtime,
+      partialSize: current.partialSize,
+      partialMtime: current.partialMtime,
+      sessionGeneration: current.sessionGeneration,
+      sequence: Math.max(current.sequence + 1, now),
+      stage: target,
+      updatedAt: now
+    };
+    if (!this.upsert(next)) {
+      return { accepted: false, reason: 'stale-update', record: current };
+    }
+    return { accepted: true, reason: 'accepted', record: this.get(next.taskId) };
+  }
+
+  /** Create one durable task per item, including empty directories, in a validated batch plan. */
+  enqueueBatch(hostId: string, direction: SshSftpTaskDirection, remoteRoot: string,
+    plan: SshSftpBatchPlan, requestedBatchId: string = ''): SshSftpBatchTaskEnqueueResult {
+    const owner: string = hostId.trim();
+    const root: string | null = normalizeSshSftpRemotePath(remoteRoot);
+    if (owner.length === 0 || root === null) {
+      return { accepted: false, reason: 'invalid-batch-owner-or-root', batchId: '', records: [] };
+    }
+    if (!plan.accepted) {
+      return { accepted: false, reason: 'invalid-batch-plan', batchId: '', records: [] };
+    }
+    const items: SshSftpTreeItem[] = plan.items;
+    if (items.length === 0) {
+      return { accepted: false, reason: 'batch-has-no-items', batchId: '', records: [] };
+    }
+    if (items.length > sshSftpTaskMaxCount() || this.records.length + items.length > sshSftpTaskMaxCount()) {
+      return { accepted: false, reason: 'task-limit', batchId: '', records: [] };
+    }
+    const batchId: string = requestedBatchId.trim().length > 0
+      ? requestedBatchId.trim() : this.nextBatchId();
+    if (batchId.length > MAX_BATCH_ID_LENGTH || !/^[A-Za-z0-9_-]+$/.test(batchId)) {
+      return { accepted: false, reason: 'invalid-batch-id', batchId: '', records: [] };
+    }
+
+    const records: SshSftpTaskRecord[] = [];
+    for (let index = 0; index < items.length; index++) {
+      const item: SshSftpTreeItem = items[index];
+      if (item.isSymbolicLink || item.isSpecialFile || item.name.trim().length === 0 ||
+        item.name.indexOf('/') >= 0 || item.name.indexOf('\\') >= 0 || item.name.indexOf('\0') >= 0 ||
+        (!item.isDirectory && (!Number.isFinite(item.size) || item.size < 0))) {
+        return { accepted: false, reason: 'invalid-batch-item', batchId: '', records: [] };
+      }
+      const remotePath: string | null = joinSshSftpRelativeRemotePath(root, item.relativePath);
+      if (remotePath === null) {
+        return { accepted: false, reason: 'invalid-batch-path', batchId: '', records: [] };
+      }
+      const taskId: string = batchId + '-' + (index + 1).toString();
+      if (this.get(taskId) !== null) {
+        return { accepted: false, reason: 'duplicate-batch-task', batchId: '', records: [] };
+      }
+      const sequence: number = this.nextTaskSequence();
+      records.push({
+        taskId,
+        batchId,
+        relativePath: item.relativePath,
+        hostId: owner,
+        direction,
+        isDirectory: item.isDirectory,
+        remotePath,
+        fileName: item.name.trim(),
+        totalBytes: item.isDirectory ? 0 : item.size,
+        verifiedOffset: 0,
+        sourceSize: item.isDirectory ? 0 : item.size,
+        sourceMtime: Number.isFinite(item.mtime) && item.mtime >= 0 ? item.mtime : -1,
+        partialSize: -1,
+        partialMtime: -1,
+        sessionGeneration: 0,
+        sequence,
+        stage: 'queued',
+        updatedAt: sequence
+      });
+    }
+    for (let index = 0; index < records.length; index++) {
+      if (!this.upsert(records[index])) {
+        return { accepted: false, reason: 'batch-task-write-failed', batchId, records: [] };
+      }
+    }
+    const stored: SshSftpTaskRecord[] = records.map((record: SshSftpTaskRecord): SshSftpTaskRecord =>
+      this.get(record.taskId) as SshSftpTaskRecord);
+    return { accepted: true, reason: 'accepted', batchId, records: stored };
   }
 
   async flushNow(): Promise<boolean> {
@@ -136,5 +341,28 @@ export class SshSftpTaskStore {
     })();
     this.flushInFlight = operation;
     return await operation;
+  }
+
+  private publishRestoredRecords(): void {
+    for (let index = 0; index < this.records.length; index++) {
+      this.publish({ kind: 'restored', record: this.records[index] });
+    }
+  }
+
+  private publish(event: SshSftpTaskEvent): void {
+    const listeners: SshSftpTaskListener[] = this.listeners.slice();
+    for (let index = 0; index < listeners.length; index++) {
+      try { listeners[index](event); } catch (_err) { /* observers cannot break persistence */ }
+    }
+  }
+
+  private nextBatchId(): string {
+    this.batchSequence = (this.batchSequence + 1) % 1000000;
+    return 'sftp-batch-' + Date.now().toString() + '-' + this.batchSequence.toString();
+  }
+
+  private nextTaskSequence(): number {
+    this.taskSequence = Math.max(this.taskSequence + 1, Date.now());
+    return this.taskSequence;
   }
 }

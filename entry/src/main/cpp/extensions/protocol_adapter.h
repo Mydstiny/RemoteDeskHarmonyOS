@@ -288,16 +288,23 @@ struct SftpFileEntry {
     std::string name;
     std::string path;
     bool isDirectory;
+    bool isSymbolicLink;
+    bool isSpecialFile;
     // -1 means the server did not provide a size. Keep this signed all the
     // way through N-API so an unavailable identity cannot become a valid
     // zero-byte file.
     int64_t size;
+    int64_t mode;
+    int64_t uid;
+    int64_t gid;
+    int64_t atime;
     // -1 means the server did not provide an mtime. Keep this signed all the
     // way through N-API so an unavailable identity cannot become UINT64_MAX.
     int64_t mtime;
 
     SftpFileEntry()
-        : isDirectory(false), size(-1), mtime(-1) {}
+        : isDirectory(false), isSymbolicLink(false), isSpecialFile(false), size(-1),
+          mode(-1), uid(-1), gid(-1), atime(-1), mtime(-1) {}
 };
 
 // ============================================================

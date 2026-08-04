@@ -56,6 +56,7 @@
 #ifdef RUSTDESK_USE_REAL_CORE
 extern "C" {
     size_t rustdesk_last_error(char* buffer, size_t buffer_len);
+    bool rustdesk_probe_presence(const RustDeskFfiConfig* cfg, RustDeskPresenceResult* result);
 }
 #endif
 
@@ -826,6 +827,27 @@ static void StopSshDataRegistration(
     }
 }
 
+// Remove only the JS consumer. A detached SSH session keeps its owner reactor
+// and socket alive so a later page can attach a fresh callback and resume input.
+static void DetachSshDataRegistration(
+    int32_t sessionId, const std::shared_ptr<SshAdapter>& adapter) {
+    std::shared_ptr<SshDataTsfnRegistration> registration =
+        TakeSshDataRegistration(sessionId);
+    if (registration) {
+        StopSshDataRegistrationInstance(registration);
+    }
+    std::shared_ptr<SshAdapter> effectiveAdapter = adapter;
+    if (!effectiveAdapter && registration) {
+        effectiveAdapter = registration->adapter;
+    }
+    if (effectiveAdapter) {
+        effectiveAdapter->detachOnDataCallback();
+    }
+    if (registration && registration->tsfn != nullptr) {
+        napi_release_threadsafe_function(registration->tsfn, napi_tsfn_release);
+    }
+}
+
 // ============================================================
 // 内部辅助函数
 // ============================================================
@@ -1324,6 +1346,117 @@ napi_value NapiProbeRdpCertificateAsync(napi_env env, napi_callback_info info) {
         return nullptr;
     }
 
+    return promise;
+}
+
+struct RustDeskPresenceProbeAsyncData {
+    std::string host;
+    int32_t port = 21116;
+    std::string serverKey;
+    std::string peerId;
+    std::string token;
+    bool direct = false;
+    int32_t keyMode = 1;
+    RustDeskPresenceResult result;
+    napi_deferred deferred = nullptr;
+    napi_async_work work = nullptr;
+};
+
+static void ExecuteRustDeskPresenceProbeAsync(napi_env /*env*/, void* rawData) {
+    auto* data = static_cast<RustDeskPresenceProbeAsyncData*>(rawData);
+    if (data == nullptr) {
+        return;
+    }
+    RustDeskFfiConfig config = {};
+    config.host = data->host.c_str();
+    config.port = data->port;
+    config.key = data->serverKey.c_str();
+    config.username = data->peerId.c_str();
+    config.token = data->token.c_str();
+    config.direct_connection = data->direct;
+    config.key_mode = data->keyMode;
+#ifdef RUSTDESK_USE_REAL_CORE
+    if (!rustdesk_probe_presence(&config, &data->result)) {
+        data->result.state = 0;
+        data->result.latencyMs = -1;
+        data->result.errorCode = 5;
+    }
+#else
+    data->result.state = 0;
+    data->result.latencyMs = -1;
+    data->result.errorCode = 5;
+#endif
+}
+
+static napi_value CreateRustDeskPresenceResultValue(
+    napi_env env, const RustDeskPresenceResult& value) {
+    napi_value result;
+    napi_create_object(env, &result);
+    SetObjectInt32(env, result, "state", value.state);
+    SetObjectInt32(env, result, "latencyMs", value.latencyMs);
+    SetObjectInt32(env, result, "errorCode", value.errorCode);
+    return result;
+}
+
+static void CompleteRustDeskPresenceProbeAsync(
+    napi_env env, napi_status /*status*/, void* rawData) {
+    auto* data = static_cast<RustDeskPresenceProbeAsyncData*>(rawData);
+    if (data == nullptr) {
+        return;
+    }
+    napi_value result = CreateRustDeskPresenceResultValue(env, data->result);
+    napi_resolve_deferred(env, data->deferred, result);
+    napi_delete_async_work(env, data->work);
+    delete data;
+}
+
+/** NAPI: probeRustDeskPresenceAsync(host, port, key, peerId, token, direct, keyMode) */
+napi_value NapiProbeRustDeskPresenceAsync(napi_env env, napi_callback_info info) {
+    size_t argc = 7;
+    napi_value args[7] = {nullptr};
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    auto* data = new (std::nothrow) RustDeskPresenceProbeAsyncData();
+    if (data == nullptr) {
+        napi_throw_error(env, nullptr, "RustDesk presence probe allocation failed");
+        return nullptr;
+    }
+    if (argc > 0) { data->host = GetNapiString(env, args[0]); }
+    if (argc > 1) { napi_get_value_int32(env, args[1], &data->port); }
+    if (argc > 2) { data->serverKey = GetNapiString(env, args[2]); }
+    if (argc > 3) { data->peerId = GetNapiString(env, args[3]); }
+    if (argc > 4) { data->token = GetNapiString(env, args[4]); }
+    if (argc > 5) { napi_get_value_bool(env, args[5], &data->direct); }
+    if (argc > 6) { napi_get_value_int32(env, args[6], &data->keyMode); }
+
+    napi_value promise;
+    napi_status status = napi_create_promise(env, &data->deferred, &promise);
+    if (status != napi_ok) {
+        delete data;
+        napi_throw_error(env, nullptr, "RustDesk presence probe promise creation failed");
+        return nullptr;
+    }
+    napi_value resource;
+    status = napi_create_string_utf8(env, "RustDeskPresenceProbeAsync", NAPI_AUTO_LENGTH, &resource);
+    if (status != napi_ok) {
+        delete data;
+        napi_throw_error(env, nullptr, "RustDesk presence probe resource creation failed");
+        return nullptr;
+    }
+    status = napi_create_async_work(env, resource, resource,
+        ExecuteRustDeskPresenceProbeAsync, CompleteRustDeskPresenceProbeAsync,
+        data, &data->work);
+    if (status != napi_ok) {
+        delete data;
+        napi_throw_error(env, nullptr, "RustDesk presence probe async work creation failed");
+        return nullptr;
+    }
+    status = napi_queue_async_work(env, data->work);
+    if (status != napi_ok) {
+        napi_delete_async_work(env, data->work);
+        delete data;
+        napi_throw_error(env, nullptr, "RustDesk presence probe async work queue failed");
+        return nullptr;
+    }
     return promise;
 }
 
@@ -4830,8 +4963,20 @@ napi_value NapiListRemoteDir(napi_env env, napi_callback_info info) {
         napi_set_named_property(env, item, "path", val);
         napi_get_boolean(env, entries[i].isDirectory, &val);
         napi_set_named_property(env, item, "isDirectory", val);
+        napi_get_boolean(env, entries[i].isSymbolicLink, &val);
+        napi_set_named_property(env, item, "isSymbolicLink", val);
+        napi_get_boolean(env, entries[i].isSpecialFile, &val);
+        napi_set_named_property(env, item, "isSpecialFile", val);
         napi_create_double(env, static_cast<double>(entries[i].size), &val);
         napi_set_named_property(env, item, "size", val);
+        napi_create_double(env, static_cast<double>(entries[i].mode), &val);
+        napi_set_named_property(env, item, "mode", val);
+        napi_create_double(env, static_cast<double>(entries[i].uid), &val);
+        napi_set_named_property(env, item, "uid", val);
+        napi_create_double(env, static_cast<double>(entries[i].gid), &val);
+        napi_set_named_property(env, item, "gid", val);
+        napi_create_double(env, static_cast<double>(entries[i].atime), &val);
+        napi_set_named_property(env, item, "atime", val);
         napi_create_double(env, static_cast<double>(entries[i].mtime), &val);
         napi_set_named_property(env, item, "mtime", val);
 
@@ -5020,8 +5165,20 @@ static void SetSftpEntryValue(napi_env env, napi_value item, const SftpFileEntry
     napi_set_named_property(env, item, "path", value);
     napi_get_boolean(env, entry.isDirectory, &value);
     napi_set_named_property(env, item, "isDirectory", value);
+    napi_get_boolean(env, entry.isSymbolicLink, &value);
+    napi_set_named_property(env, item, "isSymbolicLink", value);
+    napi_get_boolean(env, entry.isSpecialFile, &value);
+    napi_set_named_property(env, item, "isSpecialFile", value);
     napi_create_double(env, static_cast<double>(entry.size), &value);
     napi_set_named_property(env, item, "size", value);
+    napi_create_double(env, static_cast<double>(entry.mode), &value);
+    napi_set_named_property(env, item, "mode", value);
+    napi_create_double(env, static_cast<double>(entry.uid), &value);
+    napi_set_named_property(env, item, "uid", value);
+    napi_create_double(env, static_cast<double>(entry.gid), &value);
+    napi_set_named_property(env, item, "gid", value);
+    napi_create_double(env, static_cast<double>(entry.atime), &value);
+    napi_set_named_property(env, item, "atime", value);
     napi_create_double(env, static_cast<double>(entry.mtime), &value);
     napi_set_named_property(env, item, "mtime", value);
 }
@@ -6674,7 +6831,13 @@ napi_value NapiSetOnDataCallback(napi_env env, napi_callback_info info) {
     if (oldRegistration) {
         StopSshDataRegistrationInstance(oldRegistration);
     }
-    sshAdapter->setOnDataCallback(nullptr);
+    // A detached session has already removed its registration. Reattaching a
+    // fresh callback must reuse the live owner reactor instead of stopping
+    // and restarting it unnecessarily. Explicit null/undefined still tears
+    // down the producer below.
+    if (cbType != napi_function || oldRegistration) {
+        sshAdapter->setOnDataCallback(nullptr);
+    }
     if (oldRegistration && oldRegistration->tsfn != nullptr) {
         napi_release_threadsafe_function(oldRegistration->tsfn, napi_tsfn_release);
     }
@@ -6793,6 +6956,80 @@ napi_value NapiSetOnDataCallback(napi_env env, napi_callback_info info) {
     napi_value undefined;
     napi_get_undefined(env, &undefined);
     return undefined;
+}
+
+/** Detach an SSH page consumer while retaining the connected session. */
+napi_value NapiDetachSshSession(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value args[1];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    int32_t sessionId = 0;
+    bool detached = false;
+    if (argc > 0 && napi_get_value_int32(env, args[0], &sessionId) == napi_ok && sessionId > 0) {
+        auto it = g_sessionRegistry.find(sessionId);
+        if (it != g_sessionRegistry.end() && it->second) {
+            const std::shared_ptr<SessionContext> session = it->second;
+            std::shared_ptr<ProtocolAdapter> adapter;
+            {
+                std::lock_guard<std::mutex> adapterLock(session->adapterMutex);
+                adapter = session->adapter;
+            }
+            const std::shared_ptr<SshAdapter> sshAdapter =
+                std::dynamic_pointer_cast<SshAdapter>(adapter);
+            std::unique_lock<std::mutex> callbackRegistrationLock(
+                session->callbackRegistrationMutex);
+            if (sshAdapter && session->lifecycle.load(std::memory_order_acquire) ==
+                    SessionContext::Lifecycle::Active) {
+                sshAdapter->suspendTerminalInput();
+                DetachSshDataRegistration(sessionId, sshAdapter);
+                detached = true;
+            }
+        }
+    }
+    napi_value result;
+    napi_get_boolean(env, detached, &result);
+    return result;
+}
+
+/** Re-enable terminal input for an SSH session whose page has reattached. */
+napi_value NapiResumeSshSession(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value args[1];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    int32_t sessionId = 0;
+    bool resumed = false;
+    if (argc > 0 && napi_get_value_int32(env, args[0], &sessionId) == napi_ok && sessionId > 0) {
+        auto it = g_sessionRegistry.find(sessionId);
+        if (it != g_sessionRegistry.end() && it->second) {
+            const std::shared_ptr<SessionContext> session = it->second;
+            std::unique_lock<std::mutex> callbackRegistrationLock(
+                session->callbackRegistrationMutex);
+            std::shared_ptr<ProtocolAdapter> adapter;
+            {
+                std::lock_guard<std::mutex> adapterLock(session->adapterMutex);
+                adapter = session->adapter;
+            }
+            const std::shared_ptr<SshAdapter> sshAdapter =
+                std::dynamic_pointer_cast<SshAdapter>(adapter);
+            if (sshAdapter && session->lifecycle.load(std::memory_order_acquire) ==
+                    SessionContext::Lifecycle::Active) {
+                bool hasRegistration = false;
+                {
+                    std::lock_guard<std::mutex> registrationLock(g_dataTsfnMutex);
+                    auto registration = g_dataTsfnMap.find(sessionId);
+                    hasRegistration = registration != g_dataTsfnMap.end() && registration->second &&
+                        registration->second->accepting.load(std::memory_order_acquire);
+                }
+                if (hasRegistration) {
+                    sshAdapter->resumeTerminalInput();
+                    resumed = sshAdapter->getState() == ConnectionState::CONNECTED;
+                }
+            }
+        }
+    }
+    napi_value result;
+    napi_get_boolean(env, resumed, &result);
+    return result;
 }
 
 // ============================================================
@@ -7292,6 +7529,10 @@ napi_value ExtensionLoaderNapi::Init(napi_env env, napi_value exports) {
                          NapiProbeRdpCertificateAsync, nullptr, &fn);
     napi_set_named_property(env, exports, "probeRdpCertificateAsync", fn);
 
+    napi_create_function(env, "probeRustDeskPresenceAsync", NAPI_AUTO_LENGTH,
+                         NapiProbeRustDeskPresenceAsync, nullptr, &fn);
+    napi_set_named_property(env, exports, "probeRustDeskPresenceAsync", fn);
+
     napi_create_function(env, "probeVncCertificateAsync", NAPI_AUTO_LENGTH,
                          NapiProbeVncCertificateAsync, nullptr, &fn);
     napi_set_named_property(env, exports, "probeVncCertificateAsync", fn);
@@ -7536,6 +7777,14 @@ napi_value ExtensionLoaderNapi::Init(napi_env env, napi_value exports) {
     napi_create_function(env, "setOnDataCallback", NAPI_AUTO_LENGTH,
                          NapiSetOnDataCallback, nullptr, &fn);
     napi_set_named_property(env, exports, "setOnDataCallback", fn);
+
+    napi_create_function(env, "detachSshSession", NAPI_AUTO_LENGTH,
+                         NapiDetachSshSession, nullptr, &fn);
+    napi_set_named_property(env, exports, "detachSshSession", fn);
+
+    napi_create_function(env, "resumeSshSession", NAPI_AUTO_LENGTH,
+                         NapiResumeSshSession, nullptr, &fn);
+    napi_set_named_property(env, exports, "resumeSshSession", fn);
 
     napi_create_function(env, "setHelperSocketPath", NAPI_AUTO_LENGTH,
                          NapiSetHelperSocketPath, nullptr, &fn);

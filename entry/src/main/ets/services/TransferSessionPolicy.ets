@@ -1,4 +1,11 @@
-export type TransferStage = 'preparing' | 'transferring' | 'waitingRemote' | 'completed' | 'failed' | 'cancelled';
+export type TransferStage =
+  | 'preparing'
+  | 'transferring'
+  | 'paused'
+  | 'waitingRemote'
+  | 'completed'
+  | 'failed'
+  | 'cancelled';
 
 export interface TransferSession {
   id: string;
@@ -17,10 +24,14 @@ export function canTransition(from: TransferStage, to: TransferStage): boolean {
     return to === 'transferring' || to === 'failed' || to === 'cancelled';
   }
   if (from === 'transferring') {
-    return to === 'waitingRemote' || to === 'completed' || to === 'failed' || to === 'cancelled';
+    return to === 'paused' || to === 'waitingRemote' || to === 'completed' ||
+      to === 'failed' || to === 'cancelled';
+  }
+  if (from === 'paused') {
+    return to === 'transferring' || to === 'cancelled' || to === 'failed';
   }
   if (from === 'waitingRemote') {
-    return to === 'completed' || to === 'failed' || to === 'cancelled';
+    return to === 'transferring' || to === 'completed' || to === 'failed' || to === 'cancelled';
   }
   return false;
 }
@@ -41,16 +52,38 @@ export function cancelTransfer(session: TransferSession): TransferSession {
   };
 }
 
+export function pauseTransfer(session: TransferSession): TransferSession {
+  if (!session.canCancel || !canTransition(session.stage, 'paused')) { return session; }
+  return {
+    id: session.id, protocol: session.protocol, direction: session.direction, fileName: session.fileName,
+    totalBytes: session.totalBytes, transferredBytes: session.transferredBytes, stage: 'paused',
+    canCancel: true, diagnosticCode: 'paused-by-user'
+  };
+}
+
+export function resumeTransfer(session: TransferSession): TransferSession {
+  if (!canTransition(session.stage, 'transferring')) { return session; }
+  return {
+    id: session.id, protocol: session.protocol, direction: session.direction, fileName: session.fileName,
+    totalBytes: session.totalBytes, transferredBytes: session.transferredBytes, stage: 'transferring',
+    canCancel: true, diagnosticCode: ''
+  };
+}
+
 /** 可取消传输需要为操作按钮保留额外垂直空间，避免在进度容器中被裁剪。 */
 export function transferProgressPanelHeight(session: TransferSession | null): number {
-  if (session !== null && session.canCancel && session.stage === 'transferring') {
+  if (session !== null && session.canCancel &&
+    (session.stage === 'transferring' || session.stage === 'paused' ||
+      session.stage === 'waitingRemote')) {
     return 116;
   }
   return 70;
 }
 
 export function shouldShowTransferCancelAction(session: TransferSession | null): boolean {
-  return session !== null && session.canCancel && session.stage === 'transferring';
+  return session !== null && session.canCancel &&
+    (session.stage === 'transferring' || session.stage === 'paused' ||
+      session.stage === 'waitingRemote');
 }
 
 /**

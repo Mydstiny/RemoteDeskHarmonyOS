@@ -14,6 +14,7 @@ import {
   SshHostKeyInfo,
   SshProxyConfig,
   RdpCertificateInfo,
+  RustDeskPresenceResult,
   VncCertificateProbePromise,
   VncGatewayDeepHealthPromise,
   VncGatewayDeepHealthResult,
@@ -47,6 +48,12 @@ import { shouldBindSurfaceBeforeForegroundRenderer } from './RemoteForegroundRes
 const TAG = 'ExtensionLoader';
 const DOMAIN = 0x0013;
 
+interface DetachedSshSession {
+  sessionId: number;
+  hostId: string;
+  detachedAt: number;
+}
+
 export class ExtensionLoader {
   private static instance: ExtensionLoader;
   private currentSessionId: number = -1;
@@ -56,6 +63,7 @@ export class ExtensionLoader {
   private audioPlayerHandle: number = -1;
   private teardownRequestId: number = 0;
   private diagnosticsLastErrorAtMs: number = 0;
+  private detachedSshSessions: DetachedSshSession[] = [];
 
   static getInstance(): ExtensionLoader {
     if (!ExtensionLoader.instance) { ExtensionLoader.instance = new ExtensionLoader(); }
@@ -99,6 +107,75 @@ export class ExtensionLoader {
       }
       return -1;
     }
+  }
+
+  /** Detach only the SSH view consumer; the native session remains live. */
+  detachSshSession(sessionId: number, hostId: string): boolean {
+    const normalizedHostId: string = hostId.trim();
+    if (sessionId <= 0 || normalizedHostId.length === 0) { return false; }
+    try {
+      const detached: boolean = rdpnapi.detachSshSession(sessionId) as boolean;
+      if (!detached) { return false; }
+      let replaced: boolean = false;
+      for (let index = 0; index < this.detachedSshSessions.length; index++) {
+        if (this.detachedSshSessions[index].sessionId === sessionId) {
+          this.detachedSshSessions[index] = {
+            sessionId, hostId: normalizedHostId, detachedAt: Date.now()
+          };
+          replaced = true;
+          break;
+        }
+      }
+      if (!replaced) {
+        this.detachedSshSessions.push({ sessionId, hostId: normalizedHostId, detachedAt: Date.now() });
+      }
+      if (this.currentSessionId === sessionId) { this.currentSessionId = -1; }
+      return true;
+    } catch (err) {
+      hilog.warn(DOMAIN, TAG, '[ExtensionLoader] detachSshSession: ' + JSON.stringify(err));
+      return false;
+    }
+  }
+
+  /** Find a live detached SSH session for the host and make it the facade target. */
+  adoptDetachedSshSession(hostId: string): number {
+    const normalizedHostId: string = hostId.trim();
+    if (normalizedHostId.length === 0) { return -1; }
+    for (let index = this.detachedSshSessions.length - 1; index >= 0; index--) {
+      const candidate: DetachedSshSession = this.detachedSshSessions[index];
+      if (candidate.hostId !== normalizedHostId) { continue; }
+      let state: number = 0;
+      try { state = rdpnapi.getConnectionState(candidate.sessionId) as number; } catch (_err) { state = 0; }
+      if (state !== 2 && state !== 3) {
+        this.detachedSshSessions.splice(index, 1);
+        continue;
+      }
+      this.detachedSshSessions.splice(index, 1);
+      this.currentSessionId = candidate.sessionId;
+      return candidate.sessionId;
+    }
+    return -1;
+  }
+
+  /** Re-enable input after a detached SSH view has installed its callback. */
+  resumeSshSession(sessionId: number): boolean {
+    if (sessionId <= 0) { return false; }
+    try { return rdpnapi.resumeSshSession(sessionId) as boolean; } catch (_err) { return false; }
+  }
+
+  /** Explicitly close one SSH session, including a detached session. */
+  disconnectSshSession(sessionId: number): number {
+    if (sessionId <= 0) { return 0; }
+    this.sshConnectGeneration++;
+    this.detachedSshSessions = this.detachedSshSessions.filter(
+      (candidate: DetachedSshSession): boolean => candidate.sessionId !== sessionId);
+    let requestId: number = 0;
+    try { requestId = rdpnapi.disconnect(sessionId, -1, -1, -1) as number; } catch (err) {
+      hilog.warn(DOMAIN, TAG, '[ExtensionLoader] disconnectSshSession: ' + JSON.stringify(err));
+    }
+    if (this.currentSessionId === sessionId) { this.currentSessionId = -1; }
+    if (requestId > 0) { this.teardownRequestId = requestId; }
+    return requestId;
   }
 
   disconnect(): number {
@@ -225,6 +302,17 @@ export class ExtensionLoader {
         errorCode: -1,
         errorMessage: 'RDP 证书探测异常 [E-RDP-CERT-ASYNC]'
       };
+    }
+  }
+
+  async probeRustDeskPresenceAsync(host: string, port: number, serverKey: string,
+    peerId: string, token: string, direct: boolean, keyMode: number): Promise<RustDeskPresenceResult> {
+    try {
+      return await rdpnapi.probeRustDeskPresenceAsync(host, port, serverKey, peerId, token,
+        direct, keyMode) as RustDeskPresenceResult;
+    } catch (err) {
+      hilog.error(DOMAIN, TAG, '[ExtensionLoader] probeRustDeskPresenceAsync: ' + JSON.stringify(err));
+      return { state: 0, latencyMs: -1, errorCode: 5 };
     }
   }
 

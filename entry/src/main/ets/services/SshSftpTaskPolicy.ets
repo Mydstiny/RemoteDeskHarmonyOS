@@ -25,10 +25,42 @@ export type SshSftpResumeDisposition =
   | 'ReadyToResume'
   | 'NotResumable';
 
+export type SshSftpTaskCommandKind =
+  | 'pause'
+  | 'resume'
+  | 'cancel'
+  | 'retry'
+  | 'authorize'
+  | 'authenticate'
+  | 'detach'
+  | 'complete';
+
+export interface SshSftpTaskCommand {
+  kind: SshSftpTaskCommandKind;
+}
+
+export type SshSftpTaskEventKind = 'restored' | 'changed' | 'removed';
+
+export interface SshSftpTaskEvent {
+  kind: SshSftpTaskEventKind;
+  record: SshSftpTaskRecord;
+}
+
+export type SshSftpTaskListener = (event: SshSftpTaskEvent) => void;
+
+export interface SshSftpTaskCommandResult {
+  accepted: boolean;
+  reason: string;
+  record: SshSftpTaskRecord | null;
+}
+
 export interface SshSftpTaskRecord {
   taskId: string;
+  batchId: string;
+  relativePath: string;
   hostId: string;
   direction: SshSftpTaskDirection;
+  isDirectory: boolean;
   remotePath: string;
   fileName: string;
   totalBytes: number;
@@ -52,6 +84,7 @@ export interface SshSftpResumeContext {
 
 const MAX_TASKS: number = 64;
 const MAX_TASK_ID_LENGTH: number = 96;
+const MAX_BATCH_ID_LENGTH: number = 64;
 const MAX_HOST_ID_LENGTH: number = 160;
 const MAX_REMOTE_PATH_LENGTH: number = 2048;
 const MAX_FILE_NAME_LENGTH: number = 255;
@@ -90,6 +123,8 @@ export function normalizeSshSftpTaskRecord(value: Object): SshSftpTaskRecord | n
   if (value === null || typeof value !== 'object') { return null; }
   const raw: Record<string, Object> = value as Record<string, Object>;
   const taskId: string = boundedText(raw['taskId'], MAX_TASK_ID_LENGTH);
+  const batchId: string = boundedText(raw['batchId'], MAX_BATCH_ID_LENGTH);
+  const relativePath: string = boundedText(raw['relativePath'], MAX_REMOTE_PATH_LENGTH);
   const hostId: string = boundedText(raw['hostId'], MAX_HOST_ID_LENGTH);
   const remotePath: string = boundedText(raw['remotePath'], MAX_REMOTE_PATH_LENGTH);
   const fileName: string = boundedText(raw['fileName'], MAX_FILE_NAME_LENGTH);
@@ -104,8 +139,11 @@ export function normalizeSshSftpTaskRecord(value: Object): SshSftpTaskRecord | n
   const safeOffset: number = safeTotal < 0 ? -1 : Math.min(verifiedOffset, safeTotal);
   return {
     taskId,
+    batchId,
+    relativePath,
     hostId,
     direction: directionValue(raw['direction']),
+    isDirectory: raw['isDirectory'] === true,
     remotePath,
     fileName,
     totalBytes: safeTotal,
@@ -126,7 +164,10 @@ export function canTransitionSshSftpTask(from: SshSftpTaskStage,
   if (from === to) { return true; }
   if (from === 'completed') { return false; }
   if (from === 'cancelled') { return to === 'queued'; }
-  if (from === 'failed') { return to === 'queued' || to === 'needsAuthorization' || to === 'needsAuthentication'; }
+  if (from === 'failed') {
+    return to === 'queued' || to === 'needsAuthorization' || to === 'needsAuthentication' ||
+      to === 'cancelled';
+  }
   if (from === 'needsAuthorization') { return to === 'queued' || to === 'cancelled'; }
   if (from === 'needsAuthentication') { return to === 'queued' || to === 'cancelled'; }
   if (from === 'committing') { return to === 'completed' || to === 'failed'; }
@@ -138,7 +179,8 @@ export function canTransitionSshSftpTask(from: SshSftpTaskStage,
     return to === 'queued' || to === 'transferring' || to === 'cancelled' || to === 'needsAuthentication';
   }
   if (from === 'queued') {
-    return to === 'inspecting' || to === 'cancelled' || to === 'needsAuthorization' || to === 'needsAuthentication';
+    return to === 'inspecting' || to === 'waitingForConnection' || to === 'cancelled' ||
+      to === 'needsAuthorization' || to === 'needsAuthentication' || to === 'completed';
   }
   if (from === 'inspecting') {
     return to === 'awaitingConflictDecision' || to === 'transferring' ||
@@ -151,6 +193,39 @@ export function canTransitionSshSftpTask(from: SshSftpTaskStage,
   }
   return to === 'paused' || to === 'waitingForConnection' || to === 'verifying' ||
     to === 'failed' || to === 'cancelled';
+}
+
+/** Map a user/lifecycle command to one explicit durable stage transition. */
+export function sshSftpTaskCommandTarget(stage: SshSftpTaskStage,
+  command: SshSftpTaskCommand): SshSftpTaskStage | null {
+  if (command.kind === 'complete') {
+    return stage === 'queued' ? 'completed' : null;
+  }
+  if (command.kind === 'cancel') {
+    return stage === 'completed' || stage === 'cancelled' ? null : 'cancelled';
+  }
+  if (command.kind === 'pause') {
+    return stage === 'transferring' ? 'paused' : null;
+  }
+  if (command.kind === 'resume') {
+    return stage === 'paused' || stage === 'waitingForConnection' ? 'queued' : null;
+  }
+  if (command.kind === 'retry') {
+    return stage === 'failed' || stage === 'cancelled' || stage === 'paused' ||
+      stage === 'waitingForConnection' || stage === 'needsAuthorization' ||
+      stage === 'needsAuthentication' || stage === 'awaitingConflictDecision' ? 'queued' : null;
+  }
+  if (command.kind === 'authorize') {
+    return stage === 'needsAuthorization' ? 'queued' : null;
+  }
+  if (command.kind === 'authenticate') {
+    return stage === 'needsAuthentication' ? 'queued' : null;
+  }
+  if (command.kind === 'detach') {
+    return stage === 'queued' || stage === 'inspecting' || stage === 'transferring' ||
+      stage === 'paused' || stage === 'awaitingConflictDecision' ? 'waitingForConnection' : null;
+  }
+  return null;
 }
 
 export function sshSftpResumeDisposition(record: SshSftpTaskRecord,
