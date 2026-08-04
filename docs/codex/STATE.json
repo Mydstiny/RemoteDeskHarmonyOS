@@ -3,7 +3,7 @@
   "task": "ssh-terminal-complete-upgrade",
   "branch": "codex/ssh-terminal-complete-upgrade",
   "base": "d2769ad4b",
-  "head": "e877d12c2",
+  "head": "25983e2d0",
   "phase": "rustdesk-host-home-card-reviewed",
   "status": "active",
   "next": "Restore HDC for Phone/Pad/PC acceptance and resolve the baseline Light SBOM blocker.",

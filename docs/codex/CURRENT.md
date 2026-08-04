@@ -9,8 +9,8 @@ homepage card follow-on.
 - Task: `ssh-terminal-complete-upgrade`
 - Base: `main@d2769ad4b`
 - Branch: `codex/ssh-terminal-complete-upgrade`
-- HEAD: `e877d12c2` (SSH checkpoint plus homepage card implementation committed
-  on this same branch)
+- HEAD: `25983e2d0` (SSH checkpoint plus homepage card implementation and review
+  closure committed on this same branch)
 - Phase: RustDesk host homepage grouped-card implementation reviewed; device
   acceptance remains open
 - Scope: user-authorized HostListPage grouped-card UI and strategy tests, while
