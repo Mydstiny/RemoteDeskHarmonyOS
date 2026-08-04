@@ -33,6 +33,8 @@ const DEFAULT_BG: number = 0xFF0B0F14;
 const TERMINAL_BG_CSS: string = '#0D0D0D';
 /** 选区高亮底色 */
 const SELECTION_BG: string = 'rgba(90,140,255,0.40)';
+/** 单次 Canvas 更新的最大 SSH 输出量, 避免长输出阻塞 ArkUI 帧循环。 */
+const TERMINAL_INPUT_FRAME_BUDGET_BYTES: number = 256 * 1024;
 
 /**
  * SSH 输出字节的稳定传输载体。
@@ -54,11 +56,38 @@ export class TerminalInputBuffer {
     this.pendingBytes += buffer.byteLength;
   }
 
-  drain(): ArrayBuffer[] {
-    const buffers: ArrayBuffer[] = this.pendingBuffers;
-    this.pendingBuffers = [];
-    this.pendingBytes = 0;
-    return buffers;
+  drain(maxBytes: number = -1): ArrayBuffer[] {
+    if (this.pendingBuffers.length === 0) { return []; }
+    if (!Number.isFinite(maxBytes) || maxBytes <= 0) {
+      const buffers: ArrayBuffer[] = this.pendingBuffers;
+      this.pendingBuffers = [];
+      this.pendingBytes = 0;
+      return buffers;
+    }
+
+    const limit: number = Math.max(1, Math.floor(maxBytes));
+    let selectedBytes: number = 0;
+    const selected: ArrayBuffer[] = [];
+    while (this.pendingBuffers.length > 0 && selectedBytes < limit) {
+      const next: ArrayBuffer = this.pendingBuffers[0];
+      const remaining: number = limit - selectedBytes;
+      if (next.byteLength <= remaining) {
+        selected.push(next);
+        this.pendingBuffers.shift();
+        selectedBytes += next.byteLength;
+        continue;
+      }
+      // A single native callback can exceed the frame budget. Split only
+      // that boundary; the terminal parser accepts partial UTF-8/VT input
+      // and the remainder stays at the head of the ordered queue.
+      const prefix: ArrayBuffer = next.slice(0, remaining);
+      this.pendingBuffers[0] = next.slice(remaining);
+      selected.push(prefix);
+      selectedBytes += prefix.byteLength;
+      break;
+    }
+    this.pendingBytes = Math.max(0, this.pendingBytes - selectedBytes);
+    return selected;
   }
 
   clear(): void {
@@ -131,6 +160,11 @@ export struct NativeTerminalRenderer {
   private lastCanvasArea: string = '';
   /** 输入可能先于 Canvas onReady 到达；ready 前保留在 inputBuffer 中。 */
   private canvasReady: boolean = false;
+  /** 页面复用时 Canvas 可能不再触发 onReady, 记录该组件曾完成过表面初始化。 */
+  private surfaceEverReady: boolean = false;
+  /** 复用页面预初始化后, 等待新 surface 的 ready/area 回调再确认一次。 */
+  private surfaceReadyProbePending: boolean = false;
+  private inputDrainTimer: number = -1;
 
   aboutToAppear(): void {
     this.resetLifecycleState();
@@ -138,6 +172,10 @@ export struct NativeTerminalRenderer {
     this.calcCellSize();
     this.handle = this.bridge.create(this.cols, this.rows);
     this.applyForegroundColorToCore();
+    if (this.surfaceEverReady) {
+      this.markCanvasReady();
+      this.surfaceReadyProbePending = true;
+    }
     // 光标 530ms 闪烁
     this.blinkTimer = setInterval((): void => {
       this.cursorVisible = !this.cursorVisible;
@@ -149,6 +187,10 @@ export struct NativeTerminalRenderer {
     if (this.blinkTimer !== -1) {
       clearInterval(this.blinkTimer);
       this.blinkTimer = -1;
+    }
+    if (this.inputDrainTimer !== -1) {
+      clearTimeout(this.inputDrainTimer);
+      this.inputDrainTimer = -1;
     }
     if (this.handle > 0) {
       this.bridge.destroy(this.handle);
@@ -171,6 +213,7 @@ export struct NativeTerminalRenderer {
     this.lastCanvasArea = '';
     this.lastModeSignature = '';
     this.canvasReady = false;
+    this.surfaceReadyProbePending = false;
   }
 
   private notifyTerminalMode(snapshot: TerminalCoreSnapshot): void {
@@ -300,6 +343,19 @@ export struct NativeTerminalRenderer {
     this.consumeInputQueue();
   }
 
+  private scheduleInputDrain(): void {
+    if (this.inputDrainTimer !== -1 || this.terminalInputIsEmpty() ||
+      this.handle <= 0 || !this.canvasReady) { return; }
+    this.inputDrainTimer = setTimeout((): void => {
+      this.inputDrainTimer = -1;
+      this.consumeInputQueue();
+    }, 0);
+  }
+
+  private terminalInputIsEmpty(): boolean {
+    return this.inputBuffer.size() === 0;
+  }
+
   /**
    * Consume every output batch admitted before this frame. Keeping the queue
    * in the stable parent-owned object prevents a later @Watch event from
@@ -307,7 +363,7 @@ export struct NativeTerminalRenderer {
    */
   private consumeInputQueue(): void {
     if (this.handle <= 0 || !this.canvasReady) { return; }
-    const buffers: ArrayBuffer[] = this.inputBuffer.drain();
+    const buffers: ArrayBuffer[] = this.inputBuffer.drain(TERMINAL_INPUT_FRAME_BUDGET_BYTES);
     if (buffers.length === 0) { return; }
     for (let index = 0; index < buffers.length; index++) {
       const buffer: ArrayBuffer = buffers[index];
@@ -320,6 +376,30 @@ export struct NativeTerminalRenderer {
       this.bridge.scrollToBottom(this.handle);
     }
     this.applyDirtySnapshot();
+    this.scheduleInputDrain();
+  }
+
+  private markCanvasReady(): void {
+    if (this.handle <= 0) { return; }
+    this.surfaceReadyProbePending = false;
+    if (this.canvasReady) {
+      // A reused component can receive onReady for a newly allocated surface
+      // after aboutToAppear optimistically restored the previous surface.
+      // Refresh the backing canvas before consuming any pending output.
+      this.calcCellSize();
+      this.lastSnapshot = this.bridge.snapshot(this.handle);
+      this.notifyTerminalMode(this.lastSnapshot);
+      this.renderFull();
+      this.consumeInputQueue();
+      return;
+    }
+    this.canvasReady = true;
+    this.surfaceEverReady = true;
+    this.calcCellSize();
+    this.lastSnapshot = this.bridge.snapshot(this.handle);
+    this.notifyTerminalMode(this.lastSnapshot);
+    this.renderFull();
+    this.consumeInputQueue();
   }
 
   /** 获取脏快照并增量渲染 */
@@ -663,14 +743,7 @@ export struct NativeTerminalRenderer {
   build() {
     Canvas(this.ctx)
       .onReady((): void => {
-        this.canvasReady = true;
-        this.calcCellSize();
-        if (this.handle > 0) {
-          this.lastSnapshot = this.bridge.snapshot(this.handle);
-          this.notifyTerminalMode(this.lastSnapshot);
-        }
-        this.renderFull();
-        this.consumeInputQueue();
+        this.markCanvasReady();
       })
       .width('100%')
       .height('100%')
@@ -682,6 +755,12 @@ export struct NativeTerminalRenderer {
         if (area !== this.lastCanvasArea) {
           this.lastCanvasArea = area;
           hilog.info(0x0000, 'NativeTerminal', `[areaDiag] canvas ${area}`);
+        }
+        if (n.width > 0 && n.height > 0 &&
+          (!this.canvasReady || this.surfaceReadyProbePending)) {
+          // Reused ArkUI surfaces can skip a second onReady callback; a
+          // positive laid-out canvas is safe to render and consume into.
+          this.markCanvasReady();
         }
       })
       .focusable(false)

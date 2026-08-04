@@ -696,23 +696,48 @@ struct SshTerminal {
     if (this.terminalClosing || this.terminalOutputQueue.length === 0) { return; }
     // Keep each ArkTS state update small enough for Canvas and the fallback
     // renderer while preserving every queued chunk's order.
-    const maxBatchBytes: number = 512 * 1024;
+    // Keep one page-to-Canvas batch within the renderer's per-frame budget.
+    // Additional queued chunks are scheduled on the next event-loop turn.
+    const maxBatchBytes: number = 256 * 1024;
     let batchBytes: number = 0;
     let batchCount: number = 0;
-    while (batchCount < this.terminalOutputQueue.length &&
-      (batchBytes === 0 || batchBytes + this.terminalOutputQueue[batchCount].byteLength <= maxBatchBytes)) {
-      batchBytes += this.terminalOutputQueue[batchCount].byteLength;
-      batchCount++;
+    let queuedChunksConsumed: number = 0;
+    const firstChunk: ArrayBuffer = this.terminalOutputQueue[0];
+    if (firstChunk.byteLength > maxBatchBytes) {
+      // A native callback may exceed the page budget by itself. Keep the
+      // remainder at the queue head so output order and queue accounting stay
+      // exact while the renderer receives bounded updates.
+      const boundedChunk: ArrayBuffer = firstChunk.slice(0, maxBatchBytes);
+      this.terminalOutputQueue[0] = firstChunk.slice(maxBatchBytes);
+      batchBytes = boundedChunk.byteLength;
+      batchCount = 1;
+    } else {
+      while (batchCount < this.terminalOutputQueue.length &&
+        batchBytes + this.terminalOutputQueue[batchCount].byteLength <= maxBatchBytes) {
+        batchBytes += this.terminalOutputQueue[batchCount].byteLength;
+        batchCount++;
+      }
+      queuedChunksConsumed = batchCount;
     }
-    const merged: ArrayBuffer = new ArrayBuffer(batchBytes);
-    const mergedView: Uint8Array = new Uint8Array(merged);
-    let offset: number = 0;
-    for (let index: number = 0; index < batchCount; index++) {
-      const chunk: Uint8Array = new Uint8Array(this.terminalOutputQueue[index]);
-      mergedView.set(chunk, offset);
-      offset += chunk.length;
+    let merged: ArrayBuffer;
+    if (firstChunk.byteLength > maxBatchBytes) {
+      merged = firstChunk.slice(0, maxBatchBytes);
+    } else {
+      merged = new ArrayBuffer(batchBytes);
+      const mergedView: Uint8Array = new Uint8Array(merged);
+      let offset: number = 0;
+      for (let index: number = 0; index < batchCount; index++) {
+        const chunk: Uint8Array = new Uint8Array(this.terminalOutputQueue[index]);
+        mergedView.set(chunk, offset);
+        offset += chunk.length;
+      }
     }
-    this.terminalOutputQueue.splice(0, batchCount);
+    // A bounded prefix from an oversized first chunk is already represented
+    // by the replacement at queue[0]; remove only whole chunks consumed by
+    // this batch so the remainder cannot be dropped.
+    if (queuedChunksConsumed > 0) {
+      this.terminalOutputQueue.splice(0, queuedChunksConsumed);
+    }
     this.terminalOutputQueueBytes -= batchBytes;
     this.terminalInputBuffer.enqueue(merged);
     this.termOutput = this.decodeTerminalChunk(merged);
