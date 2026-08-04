@@ -3,10 +3,10 @@
   "task": "ssh-terminal-complete-upgrade",
   "branch": "codex/ssh-terminal-complete-upgrade",
   "base": "d2769ad4b",
-  "head": "8e6326aab",
-  "phase": "alacritty-core-runtime-lifecycle-checkpointed-review-pending",
+  "head": "757d099",
+  "phase": "alacritty-core-pip-lifecycle-checkpoint-device-acceptance-pending",
   "status": "active",
-  "next": "Run shared VT/Unicode/resize/TUI/large-output fixtures through the default Alacritty C ABI, complete the IME/physical-keyboard/PiP device matrix, and keep Level A/B connectivity gated.",
+  "next": "Install the 757d099 HAP, complete the IME/physical-keyboard/PiP device matrix, run shared VT/Unicode/resize/TUI/large-output fixtures, and keep Level A/B connectivity gated.",
   "blockers": [
     "HDC target 5KLBB25928203528 is connected; basic SSH command, keepalive, large-output and foreground-return checks passed, while the full IME/PiP/SFTP provider matrix remains pending.",
     "ohosTest@OhosTestCompileArkTS is not registered (00306054).",
@@ -65,13 +65,13 @@
       "rustdesk_ffi/src/terminal_core/mod.rs",
       "rustdesk_ffi/src/terminal_core/tests.rs"
     ],
-    "reason": "Alacritty migration, reactor keepalive and SSH lifecycle checkpoint are committed and build/native/device-basic validated; independent review, full device matrix and endpoint evidence remain pending."
+    "reason": "Alacritty migration, reactor keepalive and SSH/PiP lifecycle checkpoint are committed and build/native/device-basic validated; independent review, full device matrix and endpoint evidence remain pending."
   },
   "lastVerification": {
     "host_native_tests": "254-pass-16-preexisting-vnc-fixture-startup-failures-270-total-2026-08-04",
     "rust_terminal_core_tests": "focused-alacritty-63-pass-fallback-57-pass-2026-08-04; full-no-default-features-156-pass-1-preexisting-rendezvous-fixture-public-address-failure-157-total",
-    "default@OhosTestCompileArkTS": "pass-ssh-lifecycle-checkpoint-2026-08-04",
-    "assembleHap": "pass-build-successful-signed-ssh-lifecycle-checkpoint-2026-08-04",
+    "default@OhosTestCompileArkTS": "pass-pip-lifecycle-checkpoint-757d099-2026-08-04",
+    "assembleHap": "pass-build-successful-signed-pip-lifecycle-checkpoint-757d099-2026-08-04",
     "gitDiffCheck": "pass-2026-08-04",
     "sbom": "pass-totp-validator-96-packages-282-files-282-relationships-2026-08-04",
     "ohosTest": "blocked-task-00306054",

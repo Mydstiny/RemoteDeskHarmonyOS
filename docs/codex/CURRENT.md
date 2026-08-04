@@ -7,9 +7,10 @@ This file is the compact startup resume card for the active SSH terminal task.
 - Task: `ssh-terminal-complete-upgrade`
 - Base: `main@d2769ad4b`
 - Branch: `codex/ssh-terminal-complete-upgrade`
-- Code checkpoint: `8e6326aab` (Alacritty and SSH lifecycle checkpoint committed)
-- Phase: Alacritty is default; reactor keepalive/background lifecycle are
-  checkpointed, with review and the full device matrix pending.
+- Code checkpoint: `757d099` (Alacritty, reactor keepalive and PiP lifecycle
+  checkpoint committed)
+- Phase: Alacritty is default; session callback/resume ordering and PiP start
+  gating are checkpointed, with review and the full device matrix pending.
 - Scope: migrate VT behind terminalCore, keep appearance settings in-core, and
   verify IME/input/Canvas behavior. Homepage work is not current focus.
 
@@ -21,8 +22,7 @@ This file is the compact startup resume card for the active SSH terminal task.
   generation checks, queue-full status, teardown gate and paste retry queues.
 - WP-T2 uses one SSH session-owner reactor for terminal input, reader, SFTP,
   command channels, signal/EOF, PTY resize and keepalive.
-- Physical-keyboard/IME policy covers device-aware Unicode/CJK/emoji, CapsLock,
-  AltGr, focus and duplicate-change suppression.
+- Physical-keyboard/IME policy covers device-aware Unicode/CJK/emoji, CapsLock, AltGr, focus and duplicate-change suppression.
 - WP-S0 SFTP integrity floor is implemented: zero-byte transfers, `.partial`
   staging, identity-bound resume, fsync/size verification and atomic commit.
 - Current SFTP checkpoint adds durable task metadata, lifecycle transitions,
@@ -34,19 +34,19 @@ This file is the compact startup resume card for the active SSH terminal task.
   scoped to Pad/PC.
 - Wide Pad/PC SFTP keeps remote navigation/path jump/rename/actions left and
   local authorization/listing/upload actions right.
-- The SFTP checkpoint is closed for the implemented integrity, task metadata,
-  local-provider and Pad/PC workspace scope. It is not a complete background
-  transfer engine: payload execution remains page-owned and real provider/
-  endpoint acceptance is pending.
+- The SFTP checkpoint is closed for integrity, task metadata, local-provider
+  and Pad/PC workspace; background payload execution remains page-owned and
+  real provider/endpoint acceptance is pending.
 - WP-T4 first migration slice is implemented: `alacritty_terminal` `0.26.0` is
   default behind terminalCore; the old Rust core remains a no-default fallback.
-- `sshTerminalForegroundColor` is converted to ARGB in ArkTS and applied
-  through NAPI into the core; explicit ANSI colors remain independent. Font
-  size stays in the Canvas renderer because it controls cell geometry.
+- `sshTerminalForegroundColor` is ARGB through NAPI; ANSI colors remain independent, and font size stays in Canvas for cell geometry.
 - The SSH owner reactor now sends bounded non-blocking libssh2 keepalives and
   retries transient failures without taking a second session owner.
 - SSH background continuity and custom PiP ownership are isolated from the
   RDP/RustDesk/VNC services; teardown is serialized on foreground/Ability exit.
+- PiP auto-start now requires an explicitly prepared/preparing PiP session, and
+  SSH becomes connected only after the callback and detached-session resume gate
+  are installed.
 - SBOM, NOTICE and third-party scope now include Alacritty and its locked
   transitive crates.
 
@@ -76,9 +76,9 @@ This file is the compact startup resume card for the active SSH terminal task.
 - Rust `cargo test --manifest-path rustdesk_ffi/Cargo.toml --lib
   --no-default-features`: `156 passed, 1 failed, 157 total`; the remaining
   failure is the existing rendezvous fixture's public-address assertion.
-- `default@OhosTestCompileArkTS`: passed after the lifecycle checkpoint on
+- `default@OhosTestCompileArkTS`: passed after the PiP lifecycle checkpoint on
   2026-08-04, warnings only.
-- `assembleHap`: passed after the lifecycle checkpoint on 2026-08-04 with
+- `assembleHap`: passed after the PiP lifecycle checkpoint on 2026-08-04 with
   `BUILD SUCCESSFUL` and signing.
 - Terminal-core Rust tests: Alacritty path `63 passed, 0 failed`; fallback
   path `57 passed, 0 failed`.
@@ -103,14 +103,13 @@ This file is the compact startup resume card for the active SSH terminal task.
 
 ## Next
 
-1. Run shared VT/Unicode/resize/TUI/large-output fixtures through the default
+1. Install the `757d099` HAP and complete the SSH terminal device matrix.
+2. Run shared VT/Unicode/resize/TUI/large-output fixtures through the default
    Alacritty C ABI and compare snapshots/damage with the old core.
-2. Capture a terminal pipeline timeline and reproduce input, IME, command and
+3. Capture a terminal pipeline timeline and reproduce input, IME, command and
    Canvas failures with the existing diagnostics hooks.
-3. Keep ProxyJump, forwarding and FRP disabled until contracts and endpoints
+4. Keep ProxyJump, forwarding and FRP disabled until contracts and endpoints
    exist; implement them as a separate Level B task.
-4. Re-run device and remote-endpoint acceptance when the terminal fixtures and
-   corresponding test services exist.
 
 ## Blockers
 

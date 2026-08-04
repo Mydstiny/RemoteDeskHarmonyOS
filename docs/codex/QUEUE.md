@@ -7,8 +7,9 @@ Updated: 2026-08-04 Asia/Shanghai
 - SFTP checkpoint is closed for the implemented integrity, durable metadata,
   local-provider and Pad/PC workspace scope; do not expand it in this pass.
 - Alacritty `0.26.0` is now the default VT core behind terminalCore; the
-  reactor keepalive and lifecycle checkpoint is committed; finish
-  snapshot/damage comparison and keep the old core as an explicit fallback.
+  reactor keepalive and PiP/session lifecycle checkpoint is committed; finish
+  device acceptance and snapshot/damage comparison while keeping the old core
+  as an explicit fallback.
 - Diagnose terminal input stalls, IME/physical-keyboard churn, commands that do
   not execute, Canvas misalignment and output/frame backpressure.
 - Complete the full device matrix for IME/physical keyboard, PiP/background
