@@ -83,9 +83,20 @@ export struct GpuTerminalRenderer {
   private surfaceAttachRetryTimer: number = -1;
   private surfaceAttachRetryCount: number = 0;
   private attachedCoreKey: string = '';
+  private attachedOwnerId: string = '';
   private disposed: boolean = false;
   private unavailableReported: boolean = false;
   private lifecycleToken: number = 0;
+
+  /** The registry uses this identity to reject stale component callbacks. */
+  private rendererOwnerId(): string {
+    const identity: string = this.surfaceIdentity.trim();
+    return identity.length > 0 ? identity : this.coreKey.trim();
+  }
+
+  private attachedRendererOwnerId(): string {
+    return this.attachedOwnerId.length > 0 ? this.attachedOwnerId : this.rendererOwnerId();
+  }
 
   aboutToAppear(): void {
     const lifecycleToken: number = ++this.lifecycleToken;
@@ -112,7 +123,7 @@ export struct GpuTerminalRenderer {
       this.currentSurfaceId = '';
       this.surfaceReady = false;
       const key: string = this.attachedCoreKey.length > 0 ? this.attachedCoreKey : this.coreKey;
-      this.registry.detach(key, this.bridge);
+      this.registry.detach(key, this.bridge, this.attachedRendererOwnerId());
       // ArkUI may destroy the old surface before it emits a replacement
       // callback. Keep the identity and let the bounded rebind retry recover
       // the retained VT core instead of leaving a connected tab blank.
@@ -140,7 +151,7 @@ export struct GpuTerminalRenderer {
     }
     if (this.handle > 0) {
       const key: string = this.attachedCoreKey.length > 0 ? this.attachedCoreKey : this.coreKey;
-      this.registry.detach(key, this.bridge);
+      this.registry.detach(key, this.bridge, this.attachedRendererOwnerId());
     }
     this.surfaceReady = false;
     this.currentSurfaceId = '';
@@ -148,6 +159,7 @@ export struct GpuTerminalRenderer {
     // 句柄归 SSH 标签所有，由页面在关闭标签/退出全部连接时经 registry 销毁。
     this.handle = 0;
     this.attachedCoreKey = '';
+    this.attachedOwnerId = '';
     this.unavailableReported = false;
     this.xcController.onSurfaceReady = null;
     this.xcController.onSurfaceGone = null;
@@ -181,9 +193,10 @@ export struct GpuTerminalRenderer {
       if (this.disposed || token !== this.surfaceRebindToken) { return; }
       const previousKey: string = this.attachedCoreKey;
       if (previousKey.length > 0) {
-        this.registry.detach(previousKey, this.bridge);
+        this.registry.detach(previousKey, this.bridge, this.attachedRendererOwnerId());
       }
       this.attachedCoreKey = '';
+      this.attachedOwnerId = '';
       this.handle = this.registry.handleFor(this.coreKey);
       const surfaceId: string = this.currentSurfaceId.length > 0
         ? this.currentSurfaceId : this.lastKnownSurfaceId;
@@ -236,7 +249,7 @@ export struct GpuTerminalRenderer {
     };
     let handle: number = 0;
     try {
-      handle = this.registry.attach(this.coreKey, config, this.bridge);
+      handle = this.registry.attach(this.coreKey, config, this.bridge, this.rendererOwnerId());
     } catch (err) {
       hilog.warn(0x0000, 'GpuTerminal', 'attach exception: %{public}s', JSON.stringify(err));
       this.reportUnavailable();
@@ -255,6 +268,7 @@ export struct GpuTerminalRenderer {
     this.unavailableReported = false;
     this.handle = handle;
     this.attachedCoreKey = this.coreKey;
+    this.attachedOwnerId = this.rendererOwnerId();
     this.currentSurfaceId = surfaceId;
     this.lastKnownSurfaceId = surfaceId;
     this.surfaceReady = true;

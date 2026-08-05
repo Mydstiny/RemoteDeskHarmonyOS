@@ -11,6 +11,8 @@ import { SshTerminalRendererBridge, SshTerminalRendererConfig } from '../napi/Ss
 interface SshTerminalRendererEntry {
   handle: number;
   surfaceId: string;
+  /** Binding identity of the component that currently owns the surface. */
+  ownerId: string;
 }
 
 export class SshTerminalRendererRegistry {
@@ -34,8 +36,10 @@ export class SshTerminalRendererRegistry {
    * 绑定 key 到一个 surface：已有句柄则 rebind，否则创建。
    * 返回可用句柄，失败返回 0（调用方回退 Canvas 渲染器）。
    */
-  attach(key: string, config: SshTerminalRendererConfig, bridge: SshTerminalRendererBridge): number {
+  attach(key: string, config: SshTerminalRendererConfig, bridge: SshTerminalRendererBridge,
+    ownerId: string = ''): number {
     const normalizedKey: string = key.trim();
+    const normalizedOwnerId: string = ownerId.trim();
     const existing: SshTerminalRendererEntry | undefined =
       normalizedKey.length === 0 ? undefined : this.entries.get(normalizedKey);
     if (existing !== undefined && existing.handle > 0) {
@@ -45,30 +49,45 @@ export class SshTerminalRendererRegistry {
           // core and mark it detached so the next surface callback can retry;
           // destroying here would lose the hidden tab's scrollback.
           existing.surfaceId = '';
+          // The new component owns the recovery attempt. Prevent an old
+          // component from detaching this handle while the new surface is
+          // between destruction and recreation.
+          existing.ownerId = normalizedOwnerId;
           return 0;
         } else {
           existing.surfaceId = config.surfaceId;
+          existing.ownerId = normalizedOwnerId;
           return existing.handle;
         }
       } else {
+        existing.ownerId = normalizedOwnerId;
         return existing.handle;
       }
     }
     const handle: number = bridge.create(config);
     if (handle > 0 && normalizedKey.length > 0) {
-      this.entries.set(normalizedKey, { handle, surfaceId: config.surfaceId });
+      this.entries.set(normalizedKey, {
+        handle,
+        surfaceId: config.surfaceId,
+        ownerId: normalizedOwnerId
+      });
     }
     return handle;
   }
 
   /** Release the current XComponent surface while retaining the per-tab VT core. */
-  detach(key: string, bridge: SshTerminalRendererBridge): void {
+  detach(key: string, bridge: SshTerminalRendererBridge, ownerId: string = ''): void {
     const normalizedKey: string = key.trim();
     if (normalizedKey.length === 0) { return; }
     const entry: SshTerminalRendererEntry | undefined = this.entries.get(normalizedKey);
     if (entry !== undefined && entry.handle > 0) {
+      const normalizedOwnerId: string = ownerId.trim();
+      if (normalizedOwnerId.length > 0 && entry.ownerId !== normalizedOwnerId) {
+        return;
+      }
       bridge.detachSurface(entry.handle);
       entry.surfaceId = '';
+      entry.ownerId = normalizedOwnerId;
     }
   }
 

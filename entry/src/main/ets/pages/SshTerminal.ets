@@ -164,6 +164,7 @@ const SSH_INPUT_PENDING_DATA_MAX_BYTES: number = 512 * 1024;
 const SSH_INPUT_PENDING_CONTROL_MAX_BYTES: number = 32 * 1024;
 const SSH_OUTPUT_QUEUE_MAX_CHUNKS: number = 512;
 const SSH_OUTPUT_QUEUE_MAX_BYTES: number = 8 * 1024 * 1024;
+const SSH_NATIVE_RENDERER_READY_TIMEOUT_MS: number = 1500;
 
 interface PendingTerminalInput {
   /** Monotonic ArkUI admission order used to keep a later paste behind older input. */
@@ -379,6 +380,8 @@ struct SshTerminal {
   private terminalSurfaceMountToken: number = 0;
   /** Prevents repeated connected-state probes from starving one mount turn. */
   private terminalSurfacePendingBindingKey: string = '';
+  /** Bounds a native surface that never reports ready; xterm is the fallback. */
+  private terminalRendererReadyTimer: number = -1;
   /** 功能开关: true=使用 Rust terminal_core 渲染 (NativeTerminalRenderer), false=旧 TerminalEmulator */
 
   // cellH/cellW 由字号推算, 与 Canvas 字体单位保持一致
@@ -611,6 +614,10 @@ struct SshTerminal {
       clearTimeout(this.terminalSurfaceMountTimer);
       this.terminalSurfaceMountTimer = -1;
     }
+    if (this.terminalRendererReadyTimer !== -1) {
+      clearTimeout(this.terminalRendererReadyTimer);
+      this.terminalRendererReadyTimer = -1;
+    }
     this.terminalSurfacePendingBindingKey = '';
     this.terminalSurfaceBindingKey = '';
     this.terminalSurfaceMounted = false;
@@ -659,6 +666,20 @@ struct SshTerminal {
       }
       this.terminalSurfaceBindingKey = bindingKey;
       this.terminalSurfaceMounted = true;
+      if (this.terminalRendererReadyTimer !== -1) {
+        clearTimeout(this.terminalRendererReadyTimer);
+      }
+      this.terminalRendererReadyTimer = setTimeout((): void => {
+        this.terminalRendererReadyTimer = -1;
+        if (this.isSshBindingActive(pageGeneration, bindingGeneration, bindingHostId) &&
+          this.sessionId === bindingSessionId && this.terminalSurfaceMounted &&
+          this.terminalSurfaceBindingKey === bindingKey && this.shouldUseNativeTerminal() &&
+          !this.xtermReady) {
+          hilog.warn(0x0000, 'SshTerminal',
+            '[terminal] native renderer ready timeout, fallback host=' + bindingHostId);
+          this.onNativeRendererUnavailable(bindingHostId, bindingKey);
+        }
+      }, SSH_NATIVE_RENDERER_READY_TIMEOUT_MS);
     }, 32);
   }
 
@@ -3788,11 +3809,10 @@ struct SshTerminal {
     if (normalizedHostId.length === 0) { return; }
     const buffer: TerminalInputBuffer | undefined =
       this.nativeTerminalInputBuffers.get(normalizedHostId);
-    if (buffer === undefined || buffer.byteLength() === 0) { return; }
     // Every raw chunk placed in this buffer is also committed to the bounded
-    // transcript. Rebuild the xterm document from that single source instead
-    // of appending the same bytes a second time.
-    buffer.clear();
+    // transcript. Rebuild the xterm document from that single source even if
+    // the native renderer already drained the byte buffer before it failed.
+    if (buffer !== undefined) { buffer.clear(); }
     this.terminalFallbackDecodeRemainders.set(normalizedHostId, new Uint8Array(0));
     this.xtermOutputBuffer.clear();
     const transcript: string = this.sshTranscriptStore.snapshot(normalizedHostId);
@@ -3805,6 +3825,10 @@ struct SshTerminal {
       this.terminalSurfaceBindingKey.trim() !== surfaceIdentity.trim() ||
       !this.terminalSurfaceMounted ||
       !this.shouldUseNativeTerminal()) { return; }
+    if (this.terminalRendererReadyTimer !== -1) {
+      clearTimeout(this.terminalRendererReadyTimer);
+      this.terminalRendererReadyTimer = -1;
+    }
     this.xtermReady = true;
     this.focusKeyboard(false);
     this.requestTerminalScrollToBottomSettled();
@@ -3815,6 +3839,10 @@ struct SshTerminal {
       this.terminalSurfaceBindingKey.trim() !== surfaceIdentity.trim() ||
       !this.terminalSurfaceMounted ||
       !this.nativeTerminalFormFactor()) { return; }
+    if (this.terminalRendererReadyTimer !== -1) {
+      clearTimeout(this.terminalRendererReadyTimer);
+      this.terminalRendererReadyTimer = -1;
+    }
     if (this.nativeRendererUnavailable) { return; }
     hilog.warn(0x0000, 'SshTerminal',
       '[terminal] native renderer unavailable, fallback host=' + hostId);
