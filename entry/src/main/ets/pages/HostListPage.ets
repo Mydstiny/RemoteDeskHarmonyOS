@@ -2814,7 +2814,9 @@ struct HostListPage {
     // 用新对象快照驱动列表和详情，避免服务层原地更新同一 RemoteHost
     // 引用时，LazyForEach/卡片内部只收到 reload 却继续显示旧字段。
     const activeSession: ActiveRemoteSessionRecord | null = ActiveRemoteSessionRegistry.getInstance().getActive();
-    this.activeRemoteHostId = activeSession === null ? '' : activeSession.hostId;
+    const nextActiveRemoteHostId: string = activeSession === null ? '' : activeSession.hostId;
+    const activeSessionChanged: boolean = this.activeRemoteHostId !== nextActiveRemoteHostId;
+    this.activeRemoteHostId = nextActiveRemoteHostId;
     const nextHosts: RemoteHost[] = this.srv.getAllHosts().map((host: RemoteHost): RemoteHost =>
       RemoteHost.fromJSON(host.toJSON()));
     const vncViews: VncHostView[] = this.vncHosts.list();
@@ -2832,14 +2834,21 @@ struct HostListPage {
     this.vncCount = vncViews.length;
     const nextSignature: string = JSON.stringify(
       nextHosts.map((host: RemoteHost): Object => host.toJSON()));
-    if (!force && nextSignature === this.hostDataSignature) { return; }
+    if (!force && nextSignature === this.hostDataSignature && !activeSessionChanged) { return; }
     this.hostDataSignature = nextSignature;
     this.hosts = nextHosts;
+    this.refreshFilteredHostView();
+    this.refreshSshTrustedHostsView();
+    this.refreshRdpTrustedHostsView();
+  }
+
+  // The classic list is invalidated by HostDataSource.reload. Grouped cards
+  // live inside a ListItem and need the same explicit revision to rebuild
+  // their header and detail snapshots.
+  private refreshFilteredHostView(): void {
     this.filteredHosts = this.visibleHostsForCurrentMode();
     this.hostDataSource.replaceAll(this.filteredHosts);
     this.hostViewRevision += 1;
-    this.refreshSshTrustedHostsView();
-    this.refreshRdpTrustedHostsView();
   }
 
   // CRUD handlers use the same immediate snapshot refresh as the classic list.
@@ -3157,8 +3166,7 @@ struct HostListPage {
     this.searchText = value;
     if (this.searchTimer !== -1) { clearTimeout(this.searchTimer); }
     this.searchTimer = setTimeout(() => {
-      this.filteredHosts = this.visibleHostsForCurrentMode();
-      this.hostDataSource.replaceAll(this.filteredHosts);
+      this.refreshFilteredHostView();
     }, 300);
   }
 
@@ -6625,13 +6633,11 @@ struct HostListPage {
   private updateHostFilter(): void {
     this.activeFilterProto = !this.groupedHostCardsActive() && this.isDesktopDevice && this.breakpoint === 'xl' ?
       hostListProtocolForTab(this.curTab) : '';
-    this.filteredHosts = this.visibleHostsForCurrentMode();
-    this.hostDataSource.replaceAll(this.filteredHosts);
+    this.refreshFilteredHostView();
   }
 
   private refreshWorkspaceView(): void {
-    this.filteredHosts = this.visibleHostsForCurrentMode();
-    this.hostDataSource.replaceAll(this.filteredHosts);
+    this.refreshFilteredHostView();
   }
 
   @Builder HostWorkspaceFilterBar() {
@@ -7529,8 +7535,7 @@ struct HostListPage {
                   Text('✕').fontSize(14).fontColor(this.pal().text3).margin({ right: 14 })
                     .onClick(() => {
                       this.searchText = '';
-                      this.filteredHosts = this.visibleHostsForCurrentMode();
-                      this.hostDataSource.replaceAll(this.filteredHosts);
+                      this.refreshFilteredHostView();
                     })
                 }
               }.width('50%').constraintSize({ maxWidth: 480 })
@@ -7552,8 +7557,7 @@ struct HostListPage {
                 Text('✕').fontSize(14).fontColor(this.pal().text3).margin({ right: 14 })
                   .onClick(() => {
                     this.searchText = '';
-                    this.filteredHosts = this.visibleHostsForCurrentMode();
-                    this.hostDataSource.replaceAll(this.filteredHosts);
+                    this.refreshFilteredHostView();
                   })
               }
             }.width('92%')
