@@ -9,16 +9,19 @@ Updated: 2026-08-06 Asia/Shanghai
 - Alacritty `0.26.0` is now the default VT core behind terminalCore on all form
   factors; the reactor keepalive, PiP/session lifecycle, bounded Canvas
   consumption and IME/socket diagnostics are committed. The keyed surface
-  mount now deduplicates repeated connected-state probes so a second host's
-  renderer is not starved; the fresh signed HAP passed both code-only gates.
+  mount deduplicates repeated probes, the native registry rejects stale
+  surface owners, a bounded ready fallback restores transcript-backed xterm,
+  and an independent ArkUI render revision forces stale surface recreation;
+  the fresh signed HAP passed both code-only gates.
 - Same-page SSH host switching now rejects stale async connect/attach/data/PiP
   continuations using an independent binding generation, cancels pending
   handshakes before switching, and retains detach-race output per host. The
   visible xterm WebView has an explicit detach/rebind gate; the page publishes
   an observable host/binding identity, and Pad/PC native VT rebinds a retained
   XComponent surface when ArkUI does not emit a new surface callback. A last
-  known surface retry and per-document xterm bridge now close the destroy /
-  recreate race that could leave the second host connected but visually stale.
+  known surface retry, owner-checked detach, per-document xterm bridge and an
+  independent render revision now close the destroy/recreate race that could
+  leave the second host connected but visually stale.
   Both code-only Hvigor gates passed on 2026-08-06; device validation is deferred.
 - Keep the review state at the matching PASS receipt; do not claim full
   background SFTP execution, Level A, or Level B connectivity.
@@ -30,7 +33,7 @@ Updated: 2026-08-06 Asia/Shanghai
 
 - WP-T4 user acceptance and benchmark using shared terminal fixtures.
 - Independently review the committed same-page SSH binding-generation,
-  initial-UI view-remount and surface-recovery fix.
+  initial-UI view-remount, surface-owner, fallback and render-revision fix.
 - WP-T5/WP-T6 terminal correctness and damage-frame renderer implementation.
 - Real SFTP, bastion, forwarding and FRP endpoint interoperability tests when
   the corresponding services and HDC/device are available.
