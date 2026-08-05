@@ -266,6 +266,8 @@ struct SshTerminal {
   @State terminalSurfaceMounted: boolean = false;
   /** Forces the xterm surface to observe every same-page SSH host switch. */
   @State terminalSurfaceGeneration: number = 0;
+  /** Observable identity for the currently mounted xterm document. */
+  @State terminalSurfaceBindingKey: string = '';
   /** 选区模式 — 长按菜单"选择"开启, 传给 TerminalEmulator 改变 touch 行为 */
   @State selectMode: boolean = false;
   /** 复制请求计数器 — ++ 触发 TerminalEmulator 把文本写入 copiedText */
@@ -352,6 +354,9 @@ struct SshTerminal {
   private tabNavigationPending: boolean = false;
   /** Serializes same-page SSH tab activation and prevents overlapping rebinds. */
   private tabSwitchInFlight: boolean = false;
+  /** Separates old-surface teardown from the next surface mount by one frame. */
+  private terminalSurfaceMountTimer: number = -1;
+  private terminalSurfaceMountToken: number = 0;
   /** 功能开关: true=使用 Rust terminal_core 渲染 (NativeTerminalRenderer), false=旧 TerminalEmulator */
 
   // cellH/cellW 由字号推算, 与 Canvas 字体单位保持一致
@@ -543,6 +548,55 @@ struct SshTerminal {
     this.sshTabViews = this.sshTabStore.views();
   }
 
+  /**
+   * Invalidate the visible terminal before adopting another SSH binding. The
+   * binding key is observable; hostId itself is intentionally page-owned and
+   * is not sufficient to drive an ArkUI rebuild.
+   */
+  private resetTerminalSurfaceBinding(): void {
+    this.terminalSurfaceMountToken++;
+    if (this.terminalSurfaceMountTimer !== -1) {
+      clearTimeout(this.terminalSurfaceMountTimer);
+      this.terminalSurfaceMountTimer = -1;
+    }
+    this.terminalSurfaceBindingKey = '';
+    this.terminalSurfaceMounted = false;
+    this.xtermReady = false;
+  }
+
+  /**
+   * Mount the new WebView on a later UI turn. This makes the old WebView's
+   * aboutToDisappear and the new document's aboutToAppear separate commits,
+   * which prevents a fast tab switch from being coalesced into one stale DOM.
+   */
+  private scheduleTerminalSurfaceMount(pageGeneration: number, bindingGeneration: number,
+    bindingHostId: string, bindingSessionId: number): void {
+    if (bindingSessionId <= 0 || !this.isSshBindingActive(pageGeneration, bindingGeneration, bindingHostId) ||
+      this.terminalClosing) {
+      return;
+    }
+    const bindingKey: string = bindingHostId + ':' + this.terminalSurfaceGeneration.toString() + ':' +
+      bindingGeneration.toString() + ':' + bindingSessionId.toString();
+    if (this.terminalSurfaceMounted && this.terminalSurfaceBindingKey === bindingKey) {
+      return;
+    }
+    if (this.terminalSurfaceMountTimer !== -1) { return; }
+    this.terminalSurfaceMounted = false;
+    this.xtermReady = false;
+    this.terminalSurfaceBindingKey = '';
+    const mountToken: number = ++this.terminalSurfaceMountToken;
+    this.terminalSurfaceMountTimer = setTimeout((): void => {
+      this.terminalSurfaceMountTimer = -1;
+      if (mountToken !== this.terminalSurfaceMountToken ||
+        !this.isSshBindingActive(pageGeneration, bindingGeneration, bindingHostId) ||
+        this.sessionId !== bindingSessionId || !this.connected || this.terminalClosing) {
+        return;
+      }
+      this.terminalSurfaceBindingKey = bindingKey;
+      this.terminalSurfaceMounted = true;
+    }, 32);
+  }
+
   private tabStateLabel(state: SshTerminalTabState): string {
     if (state === 'connecting') { return '连接中'; }
     if (state === 'reconnecting') { return '恢复中'; }
@@ -566,8 +620,7 @@ struct SshTerminal {
     void this.switchSshTab(host).catch((err: Error): void => {
       if (this.terminalClosing || this.hostId !== targetHostId) { return; }
       const message: string = err?.message || 'SSH 主机切换失败';
-      this.terminalSurfaceMounted = false;
-      this.xtermReady = false;
+      this.resetTerminalSurfaceBinding();
       this.connected = false;
       this.connecting = false;
       this.connectionError = message;
@@ -665,7 +718,7 @@ struct SshTerminal {
     this.terminalDecodeRemainder = new Uint8Array(0);
     this.terminalOutputQueueOverflowed = false;
     this.termOutput = '';
-    this.terminalSurfaceMounted = false;
+    this.resetTerminalSurfaceBinding();
     this.xtermOutputBuffer.clear();
     const targetTranscript: string = this.sshTranscriptStore.snapshot(targetHostId);
     if (targetTranscript.length > 0) {
@@ -1037,8 +1090,7 @@ struct SshTerminal {
         this.sessionId = -1;
         this.sshSessionGeneration = 0;
         this.clearTerminalInputQueue();
-        this.terminalSurfaceMounted = false;
-        this.xtermReady = false;
+        this.resetTerminalSurfaceBinding();
         this.connected = false;
         this.connecting = false;
       }
@@ -2544,8 +2596,7 @@ struct SshTerminal {
     this.terminalFocusMode = true;
     this.softKeyboardRequested = false;
     this.terminalFocusRequest = 0;
-    this.xtermReady = false;
-    this.terminalSurfaceMounted = false;
+    this.resetTerminalSurfaceBinding();
     this.terminalSurfaceGeneration = this.terminalSurfaceGeneration + 1;
     this.showSftpPanel = false;
     this.showSftpSheet = false;
@@ -2698,8 +2749,7 @@ struct SshTerminal {
     this.terminalClosing = true;
     // Hide the virtual-key layer before the old route is detached so it cannot
     // flash above the next SSH page during router replacement.
-    this.xtermReady = false;
-    this.terminalSurfaceMounted = false;
+    this.resetTerminalSurfaceBinding();
     const switchingSshTab: boolean = !this.explicitSessionClose &&
       (this.tabNavigationPending || this.sshTabStore.isNavigationPending());
     const preserveSshInBackground: boolean =
@@ -2825,8 +2875,7 @@ struct SshTerminal {
     this.clearTerminalInputQueue();
     this.terminalDecodeRemainder = new Uint8Array(0);
     this.sshSessionGeneration = 0;
-    this.xtermReady = false;
-    this.terminalSurfaceMounted = false;
+    this.resetTerminalSurfaceBinding();
     this.termOutputSequence++;
     if (this.orientationApplied) {
       const restoreGeneration: number = this.pageGeneration;
@@ -3101,9 +3150,10 @@ struct SshTerminal {
       if (!this.terminalClosing) {
         // Native SSH recovery keeps the same session id and callback. Restore
         // the page state when the owner has completed the new handshake.
-        this.terminalSurfaceMounted = true;
         this.connected = true;
         this.connecting = false;
+        this.scheduleTerminalSurfaceMount(this.pageGeneration, this.sshBindingGeneration,
+          this.hostId, this.sessionId);
       }
       this.sshTabStore.update(this.hostId, 'connected', this.sessionId);
       return !this.terminalClosing;
@@ -3400,8 +3450,7 @@ struct SshTerminal {
     if (!this.loader.resumeSshSession(connectedSessionId)) {
       this.loader.disconnectSshSession(connectedSessionId);
       this.sessionId = -1;
-      this.terminalSurfaceMounted = false;
-      this.xtermReady = false;
+      this.resetTerminalSurfaceBinding();
       this.connected = false;
       this.connecting = false;
       return false;
@@ -3424,9 +3473,10 @@ struct SshTerminal {
     // and the detached-session resume gate are both installed. This keeps an
     // Ability exit during the preceding await from starting PiP for a session
     // that was never fully rebound to the page.
-    this.terminalSurfaceMounted = true;
     this.connected = true;
     this.connecting = false;
+    this.scheduleTerminalSurfaceMount(pageGeneration, bindingGeneration, bindingHostId,
+      connectedSessionId);
     this.startLatencyProbe();
     void this.prepareSshPip(pageGeneration, bindingGeneration, bindingHostId);
 
@@ -3485,8 +3535,7 @@ struct SshTerminal {
     this.connecting = true;
     this.connectionError = '';
     this.terminalSurfaceGeneration = this.terminalSurfaceGeneration + 1;
-    this.terminalSurfaceMounted = false;
-    this.xtermReady = false;
+    this.resetTerminalSurfaceBinding();
     this.sshTabStore.update(this.hostId, 'connecting');
     this.refreshSshTabViews();
     this.terminalOutputQueueOverflowed = false;
@@ -6252,7 +6301,7 @@ struct SshTerminal {
           // 终端内容顶部对齐, 虚拟键栏通过 position 绝对定位在底部
           Stack({ alignContent: Alignment.TopStart }) {
             SshXtermSurface({
-              coreKey: this.hostId + ':' + this.terminalSurfaceGeneration.toString(),
+              coreKey: this.terminalSurfaceBindingKey,
               cols: this.termCols,
               rows: this.termRows,
               viewportWidth: this.termAreaW,

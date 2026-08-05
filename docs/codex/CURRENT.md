@@ -5,8 +5,8 @@
 - Task: `ssh-terminal-complete-upgrade`
 - Base: `main@d2769ad4b`
 - Branch: `codex/ssh-terminal-complete-upgrade`
-- Code checkpoint: `27a17fa18` (`feat(ssh): stabilize same-page terminal rebinding`).
-- Phase: Alacritty default; lifecycle, VT/Unicode/resize/TUI/large-output parity and code-only host-switch/initial-UI refresh validation ready.
+- Code checkpoint: `3dfc7b0dc` (`fix(ssh): force terminal surface remount on tab switch`).
+- Phase: Alacritty default; lifecycle, VT/Unicode/resize/TUI/large-output parity and code-only host-switch/initial-UI two-phase surface remount ready.
 - Scope: migrate VT behind terminalCore, keep appearance settings in-core, verify IME/input/Canvas behavior. Homepage work is not current focus.
 
 ## Progress
@@ -47,9 +47,10 @@
   remains tied to the target host.
 - Same-page host switching now has an explicit `terminalSurfaceMounted` gate:
   the old WebView is removed before a new host is rebound, target output is
-  queued until its fresh xterm document is ready, dynamic WebView identity
-  covers ArkUI state coalescing, and persistence failures cannot strand a live
-  session behind the loading view.
+  queued until its fresh xterm document is ready, and persistence failures
+  cannot strand a live session behind the loading view. The surface binding
+  key is observable and the next WebView is mounted on a later UI turn, so a
+  fast second-host switch cannot reuse the first host's DOM.
 
 ## SSH Connectivity Boundary
 
@@ -70,11 +71,11 @@
 - Rust `cargo test --manifest-path rustdesk_ffi/Cargo.toml --lib
   --no-default-features`: `156 passed, 1 failed, 157 total`; the remaining
   failure is the existing rendezvous fixture's public-address assertion.
-- `default@OhosTestCompileArkTS`: passed for the initial-UI/view-remount fix
+- `default@OhosTestCompileArkTS`: passed for the two-phase surface-remount fix
   on 2026-08-05, warnings only.
-- `assembleHap`: passed for the initial-UI/view-remount fix on 2026-08-05
+- `assembleHap`: passed for the two-phase surface-remount fix on 2026-08-05
   with `BUILD SUCCESSFUL` and signing; current HAP SHA-256 is
-  `9ff982ced62c6e0cd846a8ec0b55e49015c788a38e9f9586391c1aabf016b820`.
+  `82391a4829bd87a3102fc0b67197a25b07b56ab733527b7a5e8d276e3678f54f`.
 - Terminal-core Rust tests: Alacritty path `63 passed, 0 failed`; fallback
   path `57 passed, 0 failed`.
 - OHOS Rust checks: `aarch64-unknown-linux-ohos` and
@@ -93,8 +94,8 @@
 
 - The existing independent reviewer passed the final bounded-output increment
   and the later IME/socket diagnostic increment. The committed same-page
-  binding/initial-UI increment remains `REVIEW_REQUIRED` until independently
-  reviewed.
+  binding/initial-UI increment and this surface-remount increment remain
+  `REVIEW_REQUIRED` until independently reviewed.
 - SFTP scope is closed for this pass; real-device/endpoint evidence is not a
   Level A completion claim.
 - Device evidence covers injected input and lifecycle; external keyboard/IME, GPU re-enable, bastion/forwarding/FRP evidence remain open.
