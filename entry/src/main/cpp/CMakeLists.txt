@@ -171,6 +171,7 @@ if(RDP_BUILD_TESTS)
         test/video_perf_counters_test.cpp
         test/ssh_terminal_diagnostics_test.cpp
         test/ssh_auth_policy_test.cpp
+        test/ssh_pty_recovery_policy_test.cpp
         test/ssh_route_policy_test.cpp
         test/video_activity_state_test.cpp
         test/rdp_audio_policy_test.cpp

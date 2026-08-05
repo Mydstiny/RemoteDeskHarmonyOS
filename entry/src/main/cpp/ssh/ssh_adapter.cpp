@@ -126,6 +126,27 @@ namespace {
         }
         return result;
     }
+
+    SshPtyFailureClass classifyPtyFailure(int libssh2Error) {
+        switch (libssh2Error) {
+            case LIBSSH2_ERROR_SOCKET_SEND:
+            case LIBSSH2_ERROR_SOCKET_RECV:
+            case LIBSSH2_ERROR_SOCKET_DISCONNECT:
+            case LIBSSH2_ERROR_SOCKET_TIMEOUT:
+            case LIBSSH2_ERROR_TIMEOUT:
+                return SshPtyFailureClass::TRANSIENT_TRANSPORT;
+            case LIBSSH2_ERROR_CHANNEL_CLOSED:
+            case LIBSSH2_ERROR_CHANNEL_FAILURE:
+                return SshPtyFailureClass::TRANSIENT_CHANNEL;
+            case LIBSSH2_ERROR_CHANNEL_REQUEST_DENIED:
+            case LIBSSH2_ERROR_REQUEST_DENIED:
+            case LIBSSH2_ERROR_METHOD_NOT_SUPPORTED:
+            case LIBSSH2_ERROR_INVAL:
+                return SshPtyFailureClass::SERVER_REJECTED;
+            default:
+                return SshPtyFailureClass::PERMANENT;
+        }
+    }
 }
 
 // ============================================================
@@ -950,22 +971,34 @@ int SshAdapter::openChannel() {
 }
 
 int SshAdapter::requestPty(int cols, int rows) {
+    lastPtyLibssh2Error_ = 0;
+    lastPtyFailureClass_ = SshPtyFailureClass::NONE;
     if (!assertSessionOwner("request_pty")) {
+        lastPtyFailureClass_ = SshPtyFailureClass::PERMANENT;
         return ERR_SSH_PTY_FAILED;
     }
-    if (!channel_) { return ERR_SSH_PTY_FAILED; }
+    if (!channel_) {
+        lastPtyFailureClass_ = SshPtyFailureClass::PERMANENT;
+        return ERR_SSH_PTY_FAILED;
+    }
+
+    auto failPty = [this](int libssh2Error) {
+        lastPtyLibssh2Error_ = libssh2Error;
+        lastPtyFailureClass_ = classifyPtyFailure(libssh2Error);
+        return ERR_SSH_PTY_FAILED;
+    };
 
     int rc;
     while ((rc = libssh2_channel_request_pty(channel_, "xterm-256color")) == LIBSSH2_ERROR_EAGAIN) {
         int w = waitSocket(2, 15);
         if (w != 0) {
             OH_LOG_ERROR(LOG_APP, "[SSH] PTY 请求超时");
-            return ERR_SSH_PTY_FAILED;
+            return failPty(LIBSSH2_ERROR_TIMEOUT);
         }
     }
     if (rc) {
         OH_LOG_ERROR(LOG_APP, "[SSH] PTY 请求失败: rc=%{public}d", rc);
-        return ERR_SSH_PTY_FAILED;
+        return failPty(rc);
     }
 
     // 设置初始窗口大小；该请求同样可能返回 EAGAIN，不能把失败
@@ -975,12 +1008,12 @@ int SshAdapter::requestPty(int cols, int rows) {
         int w = waitSocket(2, 15);
         if (w != 0) {
             OH_LOG_ERROR(LOG_APP, "[SSH] PTY 尺寸请求超时");
-            return ERR_SSH_PTY_FAILED;
+            return failPty(LIBSSH2_ERROR_TIMEOUT);
         }
     }
     if (rc != 0) {
         OH_LOG_ERROR(LOG_APP, "[SSH] PTY 尺寸请求失败: rc=%{public}d", rc);
-        return ERR_SSH_PTY_FAILED;
+        return failPty(rc);
     }
     OH_LOG_INFO(LOG_APP, "[SSH] PTY 已分配 %{public}dx%{public}d (term=xterm-256color)", cols, rows);
     return 0;
@@ -1070,91 +1103,126 @@ int SshAdapter::connectInternal(const ConnectionConfig& cfg, bool preserveOwner)
 
     // 保存配置 (用于后续认证和重连)
     savedCfg_ = cfg;
-    ioGeneration_.fetch_add(1, std::memory_order_acq_rel);
+    auto attemptConnect = [this, &cfg]() -> std::pair<int, std::string> {
+        ioGeneration_.fetch_add(1, std::memory_order_acq_rel);
+        setState(ConnectionState::CONNECTING, "SSH connecting");
 
-    setState(ConnectionState::CONNECTING, "SSH connecting");
-
-    // Step 1: TCP 连接
-    int ret = connectThroughProxy(cfg);
-    if (ret < 0) {
-        // Proxy validation/handshake may fail after a TCP socket has already
-        // been opened. Always tear down the partial transport before exposing
-        // the error to the caller.
-        return failConnect(ret,
-            "SSH transport connection failed [" + std::to_string(ret) + "]");
-    }
-
-    // Step 2: KEX 密钥交换 (libssh2内部处理Banner,无需手动预读)
-    ret = sshHandshake();
-    if (ret < 0) {
-        return failConnect(ret,
-            "SSH handshake failed [" + std::to_string(ret) + "]");
-    }
-
-    // Step 4: 用户认证 (公钥优先, 失败时回退密码)
-    OH_LOG_INFO(LOG_APP, "[SSH] 认证方式=%{public}s", cfg.authMethod.c_str());
-    auto authenticatePasswordWithFallback = [this]() {
-        const int passwordResult = authenticatePassword();
-        if (!sshPasswordFallbackAllowsKeyboardInteractive(
-                advertisedAuthMethods_, passwordResult)) {
-            return passwordResult;
+        // Step 1: TCP 连接
+        int ret = connectThroughProxy(cfg);
+        if (ret < 0) {
+            // Proxy validation/handshake may fail after a TCP socket has
+            // already been opened. The caller owns cleanup and retry policy.
+            return {ret, "SSH transport connection failed [" + std::to_string(ret) + "]"};
         }
-        OH_LOG_WARN(LOG_APP,
-                    "[SSH] password method failed; trying advertised keyboard-interactive fallback");
-        const int interactiveResult = authenticateKeyboardInteractive();
-        return interactiveResult == 0 ? 0 : passwordResult;
-    };
-    if (cfg.authMethod == "kbd-interactive" || cfg.authMethod == "keyboard-interactive") {
-        ret = authenticateKeyboardInteractive();
-    } else if (cfg.authMethod == "publickey" && !cfg.privateKeyPem.empty()) {
-        ret = authenticatePublicKey(cfg.username, cfg.privateKeyPem, cfg.privateKeyPassphrase);
-        if (ret < 0 && !cfg.password.empty()) {
-            OH_LOG_WARN(LOG_APP, "[SSH] 公钥认证失败, 回退到密码认证");
+
+        // Step 2: KEX 密钥交换 (libssh2内部处理Banner,无需手动预读)
+        ret = sshHandshake();
+        if (ret < 0) {
+            return {ret, "SSH handshake failed [" + std::to_string(ret) + "]"};
+        }
+
+        // Step 4: 用户认证 (公钥优先, 失败时回退密码)
+        OH_LOG_INFO(LOG_APP, "[SSH] 认证方式=%{public}s", cfg.authMethod.c_str());
+        auto authenticatePasswordWithFallback = [this]() {
+            const int passwordResult = authenticatePassword();
+            if (!sshPasswordFallbackAllowsKeyboardInteractive(
+                    advertisedAuthMethods_, passwordResult)) {
+                return passwordResult;
+            }
+            OH_LOG_WARN(LOG_APP,
+                        "[SSH] password method failed; trying advertised keyboard-interactive fallback");
+            const int interactiveResult = authenticateKeyboardInteractive();
+            return interactiveResult == 0 ? 0 : passwordResult;
+        };
+        if (cfg.authMethod == "kbd-interactive" || cfg.authMethod == "keyboard-interactive") {
+            ret = authenticateKeyboardInteractive();
+        } else if (cfg.authMethod == "publickey" && !cfg.privateKeyPem.empty()) {
+            ret = authenticatePublicKey(cfg.username, cfg.privateKeyPem, cfg.privateKeyPassphrase);
+            if (ret < 0 && !cfg.password.empty()) {
+                OH_LOG_WARN(LOG_APP, "[SSH] 公钥认证失败, 回退到密码认证");
+                ret = authenticatePasswordWithFallback();
+            }
+        } else {
             ret = authenticatePasswordWithFallback();
         }
-    } else {
-        ret = authenticatePasswordWithFallback();
-    }
-    if (ret < 0) {
-        return failConnect(ret,
-            "SSH authentication failed [" + std::to_string(ret) + "]");
+        if (ret < 0) {
+            return {ret, "SSH authentication failed [" + std::to_string(ret) + "]"};
+        }
+
+        // Step 5: 打开 SSH 会话通道
+        ret = openChannel();
+        if (ret < 0) {
+            return {ret, "SSH channel open failed [" + std::to_string(ret) + "]"};
+        }
+
+        // Step 6: 请求 PTY (SSH 调用方将 cfg.width/height 传为终端 cols/rows)
+        int ptyCols = cfg.width > 0 ? cfg.width : 80;
+        int ptyRows = cfg.height > 0 ? cfg.height : 24;
+        ret = requestPty(ptyCols, ptyRows);
+        if (ret < 0) {
+            return {ret,
+                "SSH PTY request failed [" + std::to_string(ret) + "] libssh2=[" +
+                std::to_string(lastPtyLibssh2Error_) + "]"};
+        }
+
+        // Step 7: 启动远程 Shell
+        ret = startShell();
+        if (ret < 0) {
+            return {ret, "SSH shell start failed [" + std::to_string(ret) + "]"};
+        }
+
+        startTerminalInput();
+        setState(ConnectionState::CONNECTED, "SSH connected");
+        // Start the per-session owner before the page publishes its push
+        // callback. The reactor can accept early terminal input without
+        // creating a second writer; it simply waits for the callback before
+        // consuming remote output.
+        startReader();
+        const std::string logHost = SafeLog::MaskHost(cfg.host);
+        OH_LOG_INFO(LOG_APP, "[SSH] SSH 连接建立完成 (libssh2 完整握手, %{public}s:%{public}d)",
+                    logHost.c_str(), cfg.port);
+        return {0, ""};
+    };
+
+    // An initial connection can lose the socket between authentication and
+    // PTY negotiation. Rebuild the complete transport a bounded number of
+    // times. A recovery already has its own three-attempt loop, so it gets one
+    // PTY attempt per outer recovery cycle instead of multiplying retries.
+    const uint32_t maxAttempts = preserveOwner
+        ? 1U : SshPtyRecoveryPolicy::kMaxInitialAttempts;
+    for (uint32_t attempt = 0; attempt < maxAttempts; ++attempt) {
+        const auto outcome = attemptConnect();
+        if (outcome.first == 0) {
+            return 0;
+        }
+        const bool canRetry = outcome.first == ERR_SSH_PTY_FAILED &&
+            SshPtyRecoveryPolicy::retryable(lastPtyFailureClass_) &&
+            attempt + 1 < maxAttempts &&
+            !connectCancelRequested_.load(std::memory_order_acquire);
+        if (!canRetry) {
+            return failConnect(outcome.first, outcome.second);
+        }
+
+        OH_LOG_WARN(LOG_APP,
+                    "[SSH] PTY 瞬态失败, 重建 SSH 传输 attempt=%{public}u/%{public}u "
+                    "libssh2=%{public}d",
+                    attempt + 1, maxAttempts, lastPtyLibssh2Error_);
+        resetTransportForRecovery();
+        std::unique_lock<std::mutex> retryLock(reactorCommandMutex_);
+        reactorCommandCondition_.wait_for(
+            retryLock,
+            std::chrono::milliseconds(SshPtyRecoveryPolicy::kRetryDelayMilliseconds),
+            [this]() {
+                return connectCancelRequested_.load(std::memory_order_acquire) ||
+                    !readerRunning_.load(std::memory_order_acquire);
+            });
+        if (connectCancelRequested_.load(std::memory_order_acquire) ||
+            !readerRunning_.load(std::memory_order_acquire)) {
+            return failConnect(ERR_SSH_SESSION_CLOSED, "SSH connect cancelled during PTY recovery");
+        }
     }
 
-    // Step 5: 打开 SSH 会话通道
-    ret = openChannel();
-    if (ret < 0) {
-        return failConnect(ret,
-            "SSH channel open failed [" + std::to_string(ret) + "]");
-    }
-
-    // Step 6: 请求 PTY (SSH 调用方将 cfg.width/height 传为终端 cols/rows)
-    int ptyCols = cfg.width > 0 ? cfg.width : 80;
-    int ptyRows = cfg.height > 0 ? cfg.height : 24;
-    ret = requestPty(ptyCols, ptyRows);
-    if (ret < 0) {
-        return failConnect(ret,
-            "SSH PTY request failed [" + std::to_string(ret) + "]");
-    }
-
-    // Step 7: 启动远程 Shell
-    ret = startShell();
-    if (ret < 0) {
-        return failConnect(ret,
-            "SSH shell start failed [" + std::to_string(ret) + "]");
-    }
-
-    startTerminalInput();
-    setState(ConnectionState::CONNECTED, "SSH connected");
-    // Start the per-session owner before the page publishes its push
-    // callback. The reactor can accept early terminal input without creating
-    // a second writer; it simply waits for the callback before consuming
-    // remote output.
-    startReader();
-    const std::string logHost = SafeLog::MaskHost(cfg.host);
-    OH_LOG_INFO(LOG_APP, "[SSH] SSH 连接建立完成 (libssh2 完整握手, %{public}s:%{public}d)",
-                logHost.c_str(), cfg.port);
-
-    return 0;
+    return failConnect(ERR_SSH_PTY_FAILED, "SSH PTY recovery exhausted");
 }
 
 void SshAdapter::disconnect() {

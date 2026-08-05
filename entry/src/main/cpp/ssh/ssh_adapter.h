@@ -25,6 +25,7 @@
 #include <sys/select.h>
 #include "ssh_terminal_input_queue_policy.h"
 #include "ssh_terminal_keepalive_policy.h"
+#include "ssh_pty_recovery_policy.h"
 
 #define SSH_ADAPTER_VERSION "2.0.0"
 #define SSH_BUFFER_SIZE 65536
@@ -247,6 +248,8 @@ private:
     // lifetime fence while individual network slices release sessionMutex_.
     std::mutex sftpOperationMutex_;
     ConnectionConfig savedCfg_;
+    int lastPtyLibssh2Error_ = 0;
+    SshPtyFailureClass lastPtyFailureClass_ = SshPtyFailureClass::NONE;
 
     void setState(ConnectionState s, const std::string& message = "");
 
