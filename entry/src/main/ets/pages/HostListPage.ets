@@ -12093,12 +12093,19 @@ struct HostListPage {
 
   private sshProxyTypeLabel(): string {
     if (this.sheetProxyType === 'socks5') { return 'SOCKS5'; }
+    if (this.sheetProxyType === 'frp_tcp') { return 'FRP TCP'; }
     if (this.sheetProxyType === 'legacy_gateway') { return '旧跳板机（需改）'; }
     return 'HTTP CONNECT';
   }
 
   private cycleSshProxyType(): void {
-    this.sheetProxyType = this.sheetProxyType === 'http_connect' ? 'socks5' : 'http_connect';
+    if (this.sheetProxyType === 'http_connect') {
+      this.sheetProxyType = 'socks5';
+    } else if (this.sheetProxyType === 'socks5') {
+      this.sheetProxyType = 'frp_tcp';
+    } else {
+      this.sheetProxyType = 'http_connect';
+    }
   }
 
   @Builder rustDeskTotpBindingSection() {
@@ -12875,8 +12882,9 @@ struct HostListPage {
           this.sheetErr = '代理地址或端口无效';
           return;
         }
-        if (this.sheetProxyType !== 'http_connect' && this.sheetProxyType !== 'socks5') {
-          this.sheetErr = '旧版跳板机字段不再直连，请选择 HTTP CONNECT 或 SOCKS5';
+        if (this.sheetProxyType !== 'http_connect' && this.sheetProxyType !== 'socks5' &&
+          this.sheetProxyType !== 'frp_tcp') {
+          this.sheetErr = '当前传输类型不可用，请选择 HTTP CONNECT、SOCKS5 或 FRP TCP';
           return;
         }
         h.proxyHost = this.sheetProxyHost; h.proxyPort = this.sheetProxyPort;

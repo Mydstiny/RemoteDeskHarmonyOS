@@ -7,6 +7,7 @@
  */
 #include "ssh_adapter.h"
 #include "ssh_auth_policy.h"
+#include "ssh_route_policy.h"
 #include "extension_registry.h"
 #include "common/safe_log.h"
 #include "ssh_algorithm_prefs.h"
@@ -458,6 +459,17 @@ int SshAdapter::connectThroughProxy(const ConnectionConfig& cfg) {
     const std::string type = cfg.sshProxyType.empty() ? "direct" : cfg.sshProxyType;
     if (type == "direct") {
         return tcpConnect(cfg.host, cfg.port > 0 ? cfg.port : 22);
+    }
+    if (type == "frp_tcp") {
+        if (cfg.sshProxyHost.empty() || cfg.sshProxyPort <= 0 || cfg.sshProxyPort > 65535) {
+            OH_LOG_ERROR(LOG_APP, "[SSH] FRP TCP 映射端点参数无效 host=%{public}s port=%{public}d",
+                         SafeLog::MaskHost(cfg.sshProxyHost).c_str(), cfg.sshProxyPort);
+            return ERR_SSH_PROXY_INVALID;
+        }
+        // FRP TCP mode is an already-exposed raw SSH endpoint. There is no
+        // FRP control-plane handshake inside the client and no proxy protocol
+        // to send; the SSH handshake starts on the mapped socket directly.
+        return tcpConnect(cfg.sshProxyHost, cfg.sshProxyPort);
     }
     if (type != "http_connect" && type != "socks5") {
         OH_LOG_ERROR(LOG_APP, "[SSH] 不支持的代理类型: %{public}s", type.c_str());

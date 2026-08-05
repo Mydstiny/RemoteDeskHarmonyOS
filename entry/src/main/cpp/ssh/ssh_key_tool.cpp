@@ -1078,6 +1078,11 @@ static bool connectThroughProxy(
     if (proxyType == "direct") {
         return true;
     }
+    if (proxyType == "frp_tcp") {
+        // The socket was opened against the FRP mapped endpoint by
+        // connectForSshOperation; no HTTP/SOCKS handshake belongs here.
+        return proxy.host.size() <= 255 && proxy.port > 0 && proxy.port <= 65535;
+    }
     if ((proxyType != "http_connect" && proxyType != "socks5") ||
         proxy.host.empty() || proxy.port <= 0 || proxy.port > 65535 ||
         targetHost.empty() || targetPort <= 0 || targetPort > 65535 ||

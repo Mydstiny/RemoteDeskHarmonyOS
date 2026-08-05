@@ -21,6 +21,9 @@ export struct SshAddFlow {
   @State password: string = '';
   @State keyId: string = '';
   @State passphrase: string = '';
+  @State routeType: 'direct' | 'frp_tcp' = 'direct';
+  @State routeHost: string = '';
+  @State routePortText: string = '22';
   @State addingKey: boolean = false;
   @State newlyAddedKeys: SshKey[] = [];
   @State errorText: string = '';
@@ -46,6 +49,9 @@ export struct SshAddFlow {
     host.password = this.useKey ? '' : this.password; host.sshUseKey = this.useKey;
     host.sshKeyId = this.useKey ? this.keyId : ''; host.sshKeyPassphrase = this.useKey ? this.passphrase : '';
     host.sshKeyData = ''; host.sshKeyPath = '';
+    host.sshProxyType = this.routeType;
+    host.proxyHost = this.routeType === 'frp_tcp' ? this.routeHost.trim() : '';
+    host.proxyPort = this.routeType === 'frp_tcp' ? parseInt(this.routePortText) : 0;
     return host;
   }
 
@@ -104,11 +110,32 @@ export struct SshAddFlow {
         this.field('地址', this.address, 'IP 地址或域名', (v: string): void => { this.address = v; })
         this.field('端口', this.portText, '22', (v: string): void => { this.portText = v; })
         this.field('用户名', this.username, 'SSH 登录用户名', (v: string): void => { this.username = v; })
+        Row() {
+          Button('直连').layoutWeight(1).height(36).borderRadius(9)
+            .backgroundColor(this.routeType === 'direct' ? this.accentColor : this.pal().surface)
+            .fontColor(this.routeType === 'direct' ? Color.White : this.pal().text2)
+            .onClick((): void => { this.routeType = 'direct'; })
+          Button('FRP TCP').layoutWeight(1).height(36).borderRadius(9).margin({ left: 8 })
+            .backgroundColor(this.routeType === 'frp_tcp' ? this.accentColor : this.pal().surface)
+            .fontColor(this.routeType === 'frp_tcp' ? Color.White : this.pal().text2)
+            .onClick((): void => { this.routeType = 'frp_tcp'; })
+        }.width('100%').margin({ bottom: 12 })
+        if (this.routeType === 'frp_tcp') {
+          this.field('FRP 映射地址', this.routeHost, 'FRP 暴露的 SSH 地址',
+            (v: string): void => { this.routeHost = v; })
+          this.field('FRP 映射端口', this.routePortText, '例如：60022',
+            (v: string): void => { this.routePortText = v; })
+        }
         Button('下一步').width('100%').height(44).borderRadius(12).backgroundColor(this.accentColor)
           .fontColor(Color.White).onClick((): void => {
             const port: number = parseInt(this.portText);
+            const routePort: number = parseInt(this.routePortText);
             if (this.label.trim() === '' || this.address.trim() === '' || this.username.trim() === '' ||
               isNaN(port) || port <= 0 || port > 65535) { this.errorText = '请完整填写基础信息和有效端口'; return; }
+            if (this.routeType === 'frp_tcp' && (this.routeHost.trim() === '' ||
+              isNaN(routePort) || routePort <= 0 || routePort > 65535)) {
+              this.errorText = '请填写有效的 FRP 映射地址和端口'; return;
+            }
             this.errorText = ''; this.step = 2;
           })
       } else {

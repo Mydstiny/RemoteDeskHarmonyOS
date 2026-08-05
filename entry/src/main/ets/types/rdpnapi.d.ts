@@ -485,7 +485,7 @@ export interface SessionConfig {
   privateKeyPem: string;
   privateKeyPassphrase: string;
   keyboardInteractiveResponses?: string[];
-  sshProxyType?: 'direct' | 'http_connect' | 'socks5' | 'legacy_gateway';
+  sshProxyType?: 'direct' | 'http_connect' | 'socks5' | 'frp_tcp' | 'ssh_jump' | 'legacy_gateway';
   sshProxyHost?: string;
   sshProxyPort?: number;
   sshProxyUsername?: string;
