@@ -41,6 +41,7 @@ import { SshXtermSurface, XtermOutputBuffer } from '../components/SshXtermSurfac
 import { GpuTerminalRenderer } from '../components/GpuTerminalRenderer';
 import { TerminalInputBuffer } from '../components/SshTerminalSurface';
 import { TerminalCoreBridge } from '../napi/TerminalCoreBridge';
+import { SshTerminalRendererBridge } from '../napi/SshTerminalRendererBridge';
 import { SshTerminalTranscriptStore } from '../services/SshTerminalTranscriptStore';
 import {
   SessionConfig,
@@ -91,6 +92,7 @@ import {
   SshTerminalTabState
 } from '../services/SshTerminalTabStore';
 import { TerminalCoreRegistry } from '../services/TerminalCoreRegistry';
+import { SshTerminalRendererRegistry } from '../services/SshTerminalRendererRegistry';
 import { VirtualKeyBar } from '../components/VirtualKeyBar';
 import { normalizeSshTerminalLineSpacing } from '../services/SshSettingsPolicy';
 import {
@@ -367,6 +369,8 @@ struct SshTerminal {
   private sshTranscriptStore: SshTerminalTranscriptStore =
     SshTerminalTranscriptStore.getInstance();
   private terminalCoreRegistry: TerminalCoreRegistry = TerminalCoreRegistry.getInstance();
+  private sshTerminalRendererRegistry: SshTerminalRendererRegistry =
+    SshTerminalRendererRegistry.getInstance();
   /** Native VT input queues are retained per host while its surface is hidden. */
   private nativeTerminalInputBuffers: Map<string, TerminalInputBuffer> =
     new Map<string, TerminalInputBuffer>();
@@ -3028,6 +3032,10 @@ struct SshTerminal {
       }
       this.clearNativeTerminalBuffers();
       this.terminalCoreRegistry.destroyAll(new TerminalCoreBridge());
+      // Native GPU renderers outlive the transient XComponent while tabs are
+      // switched, but they must not outlive the SSH page's final teardown.
+      // Otherwise a later entry can inherit a handle bound to a dead surface.
+      this.sshTerminalRendererRegistry.destroyAll(new SshTerminalRendererBridge());
       if (requestSessionId > 0) {
         this.loader.disconnectSshSession(requestSessionId);
       } else {

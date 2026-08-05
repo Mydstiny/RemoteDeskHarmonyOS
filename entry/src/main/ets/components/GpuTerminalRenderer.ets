@@ -19,6 +19,9 @@ import { TerminalInputBuffer } from './SshTerminalSurface';
 const GPU_INPUT_FRAME_BUDGET_BYTES: number = 256 * 1024;
 const TERMINAL_BG_ARGB: number = 0xFF0D0D0D;
 const DEFAULT_FG_ARGB: number = 0xFFE8EAED;
+/** API 23 may omit XComponentController.onSurfaceCreated during a remount. */
+const GPU_SURFACE_POLL_INTERVAL_MS: number = 100;
+const GPU_SURFACE_POLL_MAX_ATTEMPTS: number = 60;
 
 class GpuTerminalSurfaceController extends XComponentController {
   onSurfaceReady: ((surfaceId: string) => void) | null = null;
@@ -71,6 +74,9 @@ export struct GpuTerminalRenderer {
   private surfaceReady: boolean = false;
   private surfaceWidthPx: number = 0;
   private surfaceHeightPx: number = 0;
+  /** Dimensions used by the last native surface allocation. */
+  private boundSurfaceWidthPx: number = 0;
+  private boundSurfaceHeightPx: number = 0;
   /** The XComponent can survive an ArkUI prop update without a new create callback. */
   private currentSurfaceId: string = '';
   /** Keep the last surface identity for a destroy/recreate race. */
@@ -83,6 +89,8 @@ export struct GpuTerminalRenderer {
   private surfaceRebindToken: number = 0;
   private surfaceAttachRetryTimer: number = -1;
   private surfaceAttachRetryCount: number = 0;
+  private surfacePollTimer: number = -1;
+  private surfacePollToken: number = 0;
   private attachedCoreKey: string = '';
   private attachedOwnerId: string = '';
   private disposed: boolean = false;
@@ -123,15 +131,21 @@ export struct GpuTerminalRenderer {
       this.lastKnownSurfaceId = surfaceId;
       this.currentSurfaceId = '';
       this.surfaceReady = false;
+      this.boundSurfaceWidthPx = 0;
+      this.boundSurfaceHeightPx = 0;
       const key: string = this.attachedCoreKey.length > 0 ? this.attachedCoreKey : this.coreKey;
       this.registry.detach(key, this.bridge, this.attachedRendererOwnerId());
       // ArkUI may destroy the old surface before it emits a replacement
       // callback. Keep the identity and let the bounded rebind retry recover
       // the retained VT core instead of leaving a connected tab blank.
       this.scheduleSurfaceRebind();
+      this.startSurfaceIdPolling();
     };
     // 同一标签切回时 registry 里可能已有句柄；等 surface ready 后 rebind。
     this.handle = this.registry.handleFor(this.coreKey);
+    // Keep the callback fast path, but do not make rendering depend on it.
+    // API 23 can create the surface without dispatching onSurfaceCreated.
+    this.startSurfaceIdPolling();
   }
 
   aboutToDisappear(): void {
@@ -146,6 +160,7 @@ export struct GpuTerminalRenderer {
       clearTimeout(this.surfaceAttachRetryTimer);
       this.surfaceAttachRetryTimer = -1;
     }
+    this.stopSurfaceIdPolling();
     if (this.inputDrainTimer !== -1) {
       clearTimeout(this.inputDrainTimer);
       this.inputDrainTimer = -1;
@@ -157,6 +172,8 @@ export struct GpuTerminalRenderer {
     this.surfaceReady = false;
     this.currentSurfaceId = '';
     this.lastKnownSurfaceId = '';
+    this.boundSurfaceWidthPx = 0;
+    this.boundSurfaceHeightPx = 0;
     // 句柄归 SSH 标签所有，由页面在关闭标签/退出全部连接时经 registry 销毁。
     this.handle = 0;
     this.attachedCoreKey = '';
@@ -168,14 +185,61 @@ export struct GpuTerminalRenderer {
 
   private onCoreKeyChange(): void {
     this.scheduleSurfaceRebind();
+    this.startSurfaceIdPolling();
   }
 
   private onSurfaceIdentityChange(): void {
     this.scheduleSurfaceRebind();
+    this.startSurfaceIdPolling();
   }
 
   private onInputBufferChange(): void {
     this.consumeInputQueue();
+  }
+
+  private stopSurfaceIdPolling(): void {
+    this.surfacePollToken++;
+    if (this.surfacePollTimer !== -1) {
+      clearTimeout(this.surfacePollTimer);
+      this.surfacePollTimer = -1;
+    }
+  }
+
+  private startSurfaceIdPolling(): void {
+    if (this.disposed) { return; }
+    this.stopSurfaceIdPolling();
+    const token: number = this.surfacePollToken;
+    this.pollSurfaceId(token, 0);
+  }
+
+  /** Reconcile the surface even when the platform skips lifecycle callbacks. */
+  private pollSurfaceId(token: number, attempt: number): void {
+    if (this.disposed || token !== this.surfacePollToken) { return; }
+    let surfaceId: string = '';
+    try {
+      surfaceId = this.xcController.getXComponentSurfaceId();
+    } catch (_err) {
+      surfaceId = '';
+    }
+    if (surfaceId.length > 0) {
+      const changed: boolean = this.currentSurfaceId !== surfaceId;
+      this.currentSurfaceId = surfaceId;
+      this.lastKnownSurfaceId = surfaceId;
+      if (changed || !this.surfaceReady) {
+        this.scheduleSurfaceRebind();
+      }
+      // The attach/rebind retry owns the remainder of this transaction. A
+      // second polling loop would only keep invalidating its pending turn.
+      return;
+    }
+    if (attempt >= GPU_SURFACE_POLL_MAX_ATTEMPTS) {
+      hilog.warn(0x0000, 'GpuTerminal', 'surface id poll timed out');
+      return;
+    }
+    this.surfacePollTimer = setTimeout((): void => {
+      this.surfacePollTimer = -1;
+      this.pollSurfaceId(token, attempt + 1);
+    }, GPU_SURFACE_POLL_INTERVAL_MS);
   }
 
   /**
@@ -276,6 +340,8 @@ export struct GpuTerminalRenderer {
     this.attachedOwnerId = this.rendererOwnerId();
     this.currentSurfaceId = surfaceId;
     this.lastKnownSurfaceId = surfaceId;
+    this.boundSurfaceWidthPx = config.widthPx;
+    this.boundSurfaceHeightPx = config.heightPx;
     this.surfaceReady = true;
     this.applyGeometry();
     this.applyViewport();
@@ -430,9 +496,24 @@ export struct GpuTerminalRenderer {
       .width('100%')
       .height('100%')
       .backgroundColor('#0D0D0D')
+      .onLoad((): void => { this.startSurfaceIdPolling(); })
       .onAreaChange((_o: Area, n: Area): void => {
-        this.surfaceWidthPx = vp2px(n.width as number);
-        this.surfaceHeightPx = vp2px(n.height as number);
+        const nextWidthPx: number = vp2px(n.width as number);
+        const nextHeightPx: number = vp2px(n.height as number);
+        const sizeChanged: boolean = Math.abs(nextWidthPx - this.surfaceWidthPx) >= 1 ||
+          Math.abs(nextHeightPx - this.surfaceHeightPx) >= 1;
+        this.surfaceWidthPx = nextWidthPx;
+        this.surfaceHeightPx = nextHeightPx;
+        // The first surface callback can race the first area callback and use
+        // a cols*cell fallback size. Recreate the native drawing surface once
+        // the real pixel dimensions are known so the new host is not clipped
+        // into the old surface's buffer geometry.
+        if (sizeChanged && this.surfaceReady && this.currentSurfaceId.length > 0 &&
+          this.boundSurfaceWidthPx > 0 && this.boundSurfaceHeightPx > 0 &&
+          (Math.abs(this.boundSurfaceWidthPx - nextWidthPx) >= 1 ||
+           Math.abs(this.boundSurfaceHeightPx - nextHeightPx) >= 1)) {
+          this.scheduleSurfaceRebind();
+        }
       })
       .focusable(false)
   }
