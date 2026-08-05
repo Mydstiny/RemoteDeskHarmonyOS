@@ -4,6 +4,7 @@ import keyVaultServiceTest from './KeyVaultService.test';
 import hostSyncServiceTest from './HostSyncService.test';
 import sshTerminalScrollPolicyTest from './SshTerminalScrollPolicy.test';
 import sshTerminalInputPolicyTest from './SshTerminalInputPolicy.test';
+import sshTerminalTabStoreTest from './SshTerminalTabStore.test';
 import sshSftpIntegrityPolicyTest from './SshSftpIntegrityPolicy.test';
 import sshSftpBatchPolicyTest from './SshSftpBatchPolicy.test';
 import sshSftpTaskPolicyTest from './SshSftpTaskPolicy.test';
@@ -144,6 +145,7 @@ export default function testsuite() {
   hostSyncServiceTest();
   sshTerminalScrollPolicyTest();
   sshTerminalInputPolicyTest();
+  sshTerminalTabStoreTest();
   sshSftpIntegrityPolicyTest();
   sshSftpBatchPolicyTest();
   sshSftpTaskPolicyTest();

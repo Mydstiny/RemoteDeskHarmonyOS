@@ -29,6 +29,7 @@ import {
   terminalDimensionsMatchSnapshot,
   terminalGridDimension
 } from '../services/TerminalRendererPolicy';
+import { TerminalCoreRegistry } from '../services/TerminalCoreRegistry';
 
 /** 默认前景色 (与 Rust DEFAULT_FG = 0xFFE8EAED 一致, 用于 cell.fg 比较) */
 const DEFAULT_FG: number = 0xFFE8EAED;
@@ -120,6 +121,8 @@ export struct NativeTerminalRenderer {
   @Prop @Watch('onCellSizeChange') cellWvp: number = 9;
   @Prop @Watch('onCellSizeChange') cellHvp: number = 20;
   @Prop @Watch('onFontChange') fontSize: number = 18;
+  /** Stable SSH tab key; keeps the VT core alive across visible-page swaps. */
+  @Prop coreKey: string = '';
   /** 由 SshTerminal 在构造时传入的稳定引用（普通字段，不参与状态观察）。 */
   inputBuffer: TerminalInputBuffer = new TerminalInputBuffer();
   @Prop @Watch('onInputSequenceChange') inputSequence: number = 0;
@@ -138,6 +141,7 @@ export struct NativeTerminalRenderer {
   /** 终端核心句柄 (Rust heap 分配) */
   private handle: number = 0;
   private bridge: TerminalCoreBridge = new TerminalCoreBridge();
+  private coreRegistry: TerminalCoreRegistry = TerminalCoreRegistry.getInstance();
   private ctx: CanvasRenderingContext2D =
     new CanvasRenderingContext2D(new RenderingContextSettings(true));
   @State cellW: number = 9;
@@ -177,7 +181,7 @@ export struct NativeTerminalRenderer {
     this.resetLifecycleState();
     this.lastRows = this.rows;
     this.calcCellSize();
-    this.handle = this.bridge.create(this.cols, this.rows);
+    this.handle = this.coreRegistry.acquire(this.coreKey, this.cols, this.rows, this.bridge);
     this.applyForegroundColorToCore();
     if (this.surfaceEverReady) {
       this.markCanvasReady();
@@ -203,10 +207,9 @@ export struct NativeTerminalRenderer {
       clearTimeout(this.resizeTimer);
       this.resizeTimer = -1;
     }
-    if (this.handle > 0) {
-      this.bridge.destroy(this.handle);
-      this.handle = 0;
-    }
+    // The VT core belongs to the SSH tab, not the transient visible page. It
+    // is destroyed by SshTerminal only when the user exits all SSH tabs.
+    this.handle = 0;
     this.resetLifecycleState();
   }
 

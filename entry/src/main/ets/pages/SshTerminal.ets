@@ -39,6 +39,7 @@ import { Palette, buildDark, buildLight } from '../common/Theme';
 import { showLockGate, lockGateErrorMessage } from '../components/LockGate';
 import { TerminalEmulator } from '../components/TerminalEmulator';
 import { NativeTerminalRenderer, TerminalInputBuffer } from '../components/NativeTerminalRenderer';
+import { TerminalCoreBridge } from '../napi/TerminalCoreBridge';
 import {
   SessionConfig,
   SftpFileEntry,
@@ -83,6 +84,12 @@ import {
   SshTerminalOrientation,
   toggleSshTerminalOrientation
 } from '../services/SshTerminalOrientationPolicy';
+import {
+  SshTerminalTabStore,
+  SshTerminalTabView,
+  SshTerminalTabState
+} from '../services/SshTerminalTabStore';
+import { TerminalCoreRegistry } from '../services/TerminalCoreRegistry';
 import { VirtualKeyBar } from '../components/VirtualKeyBar';
 import {
   TransferSession,
@@ -198,6 +205,8 @@ struct SshTerminal {
   @State connectionError: string = '';
   @State hostLabel: string = '';
   @State userAtHost: string = '';
+  @State sshTabViews: SshTerminalTabView[] = [];
+  @State showSshTabPicker: boolean = false;
   /** 当前 SSH 输出 chunk；终端核心拥有 scrollback，不在页面累计完整历史。 */
   @State termOutput: string = '';
   /**
@@ -321,6 +330,11 @@ struct SshTerminal {
   private sshBackgroundTaskService: SshTerminalBackgroundTaskService =
     SshTerminalBackgroundTaskService.getInstance();
   private sshPipService: SshTerminalPipService = SshTerminalPipService.getInstance();
+  private sshTabStore: SshTerminalTabStore = SshTerminalTabStore.getInstance();
+  private terminalCoreRegistry: TerminalCoreRegistry = TerminalCoreRegistry.getInstance();
+  private sshTabStoreUnsubscribe: (() => void) | null = null;
+  /** Replacing the visible route is a tab switch, not an SSH exit. */
+  private tabNavigationPending: boolean = false;
   /** 功能开关: true=使用 Rust terminal_core 渲染 (NativeTerminalRenderer), false=旧 TerminalEmulator */
   @StorageProp('useNativeTerminalCore') useNativeTerminalCore: boolean = true;
 
@@ -494,6 +508,143 @@ struct SshTerminal {
 
   private isPageGenerationActive(generation: number): boolean {
     return !this.terminalClosing && this.pageGeneration === generation;
+  }
+
+  private refreshSshTabViews(): void {
+    this.sshTabViews = this.sshTabStore.views();
+  }
+
+  private tabStateLabel(state: SshTerminalTabState): string {
+    if (state === 'connecting') { return '连接中'; }
+    if (state === 'reconnecting') { return '恢复中'; }
+    if (state === 'error') { return '错误'; }
+    return '已连接';
+  }
+
+  private sshTabHosts(): RemoteHost[] {
+    return this.srv.getAllHosts().filter((host: RemoteHost): boolean => host.protocol === 'ssh');
+  }
+
+  private navigateToSshTab(host: RemoteHost): void {
+    if (host.id.trim().length === 0) { return; }
+    this.sshTabStore.open(host.id, host.label, host.username + '@' + host.host + ':' + host.port.toString());
+    this.sshTabStore.activate(host.id);
+    this.refreshSshTabViews();
+    this.showSshTabPicker = false;
+    this.tabNavigationPending = true;
+    void router.replaceUrl({ url: 'pages/SshTerminal', params: { hostId: host.id } }).catch((): void => {
+      this.tabNavigationPending = false;
+    });
+  }
+
+  private closeAllSshTabs(): void {
+    const sessionIds: number[] = this.sshTabStore.closeAll();
+    for (let index = 0; index < sessionIds.length; index++) {
+      this.loader.disconnectSshSession(sessionIds[index]);
+    }
+    // This also cancels a connect whose native session id is still pending and
+    // is intentionally scoped to the SSH facade's current pending request.
+    this.loader.disconnect();
+  }
+
+  private openSshTabPicker(): void {
+    this.showSshTabPicker = true;
+  }
+
+  @Builder
+  private sshTabButton(tab: SshTerminalTabView) {
+    Row() {
+      Column() {
+        Text(tab.label.length > 0 ? tab.label : tab.address)
+          .fontSize(12).fontColor(tab.active ? '#F4F7FA' : 'rgba(242,244,247,0.76)')
+          .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+        Text(this.tabStateLabel(tab.state))
+          .fontSize(9).fontColor(tab.state === 'error' ? '#FF7777' : 'rgba(242,244,247,0.48)')
+          .maxLines(1)
+      }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+      if (tab.active) {
+        Column().width(5).height(5).borderRadius(3).backgroundColor('#34C759')
+      }
+    }
+    .height(34)
+    .width(142)
+    .padding({ left: 10, right: 10 })
+    .borderRadius(8)
+    .backgroundColor(tab.active ? 'rgba(0,125,255,0.34)' : 'rgba(255,255,255,0.07)')
+    .onClick((): void => {
+      const host: RemoteHost | undefined = this.srv.getHost(tab.hostId);
+      if (host !== undefined) { this.navigateToSshTab(host); }
+    })
+  }
+
+  @Builder
+  private sshTabStrip() {
+    Scroll() {
+      Row({ space: 6 }) {
+        ForEach(this.sshTabViews, (tab: SshTerminalTabView): void => {
+          this.sshTabButton(tab);
+        }, (tab: SshTerminalTabView): string => tab.tabId)
+        Row() {
+          SymbolGlyph($r('sys.symbol.plus')).fontSize(17).fontColor(['rgba(242,244,247,0.86)'])
+        }
+        .width(34).height(34).justifyContent(FlexAlign.Center).borderRadius(8)
+        .backgroundColor('rgba(255,255,255,0.07)')
+        .onClick((): void => { this.openSshTabPicker(); })
+      }
+      .height(40).padding({ left: 10, right: 10 })
+    }
+    .scrollable(ScrollDirection.Horizontal)
+    .scrollBar(BarState.Off)
+    .width('100%').height(40)
+    .backgroundColor(this.chromeBg())
+  }
+
+  @Builder
+  private sshTabPickerOverlay() {
+    Stack({ alignContent: Alignment.Center }) {
+      Column()
+        .width('100%').height('100%')
+        .backgroundColor('rgba(0,0,0,0.56)')
+        .onClick((): void => { this.showSshTabPicker = false; })
+      Column() {
+        Row() {
+          Text('选择 SSH 主机').fontSize(17).fontWeight(FontWeight.Medium)
+            .fontColor('#F4F7FA').layoutWeight(1)
+          SymbolGlyph($r('sys.symbol.xmark')).fontSize(18).fontColor(['rgba(242,244,247,0.78)'])
+            .width(34).height(34).onClick((): void => { this.showSshTabPicker = false; })
+        }.width('100%').height(42)
+        Scroll() {
+          Column({ space: 8 }) {
+            ForEach(this.sshTabHosts(), (host: RemoteHost): void => {
+              Row() {
+                Column() {
+                  Text(host.label).fontSize(14).fontColor('#F4F7FA')
+                    .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+                  Text(host.username + '@' + host.host + ':' + host.port.toString())
+                    .fontSize(11).fontColor('rgba(242,244,247,0.56)')
+                    .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+                }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+                if (this.sshTabStore.has(host.id)) {
+                  Text('已打开').fontSize(10).fontColor(this.accentColor)
+                }
+              }
+              .width('100%').height(52).padding({ left: 12, right: 12 })
+              .borderRadius(8).backgroundColor('rgba(255,255,255,0.07)')
+              .onClick((): void => { this.navigateToSshTab(host); })
+            }, (host: RemoteHost): string => host.id)
+          }.width('100%')
+        }
+        .layoutWeight(1).width('100%')
+        .scrollBar(BarState.Off)
+      }
+      .width(this.isDesktopDevice ? 500 : '92%')
+      .height(this.isDesktopDevice ? 430 : '62%')
+      .padding({ left: 16, right: 16, top: 12, bottom: 14 })
+      .borderRadius(12).backgroundColor('#171D25')
+      .shadow({ radius: 24, color: 'rgba(0,0,0,0.46)', offsetY: 8 })
+      .onClick((): void => { /* keep the scrim handler from receiving panel taps */ })
+    }
+    .width('100%').height('100%').zIndex(200)
   }
 
   private isSftpRequestActive(pageGeneration: number, sessionId: number,
@@ -2077,6 +2228,18 @@ struct SshTerminal {
   async aboutToAppear(): Promise<void> {
     const pageGeneration: number = ++this.pageGeneration;
     this.terminalClosing = false;
+    this.tabNavigationPending = false;
+    this.showSshTabPicker = false;
+    if (this.sshTabStoreUnsubscribe !== null) {
+      this.sshTabStoreUnsubscribe();
+      this.sshTabStoreUnsubscribe = null;
+    }
+    this.sshTabStoreUnsubscribe = this.sshTabStore.subscribe((): void => {
+      if (this.isPageGenerationActive(pageGeneration)) {
+        this.refreshSshTabViews();
+      }
+    });
+    this.refreshSshTabViews();
     this.invalidateSftpRefreshRequest();
     this.explicitSessionClose = false;
     this.sftpDetached = false;
@@ -2235,6 +2398,9 @@ struct SshTerminal {
         if (host) {
           this.hostLabel = host.label;
           this.userAtHost = host.username + '@' + host.host + ':' + host.port;
+          this.sshTabStore.open(this.hostId, this.hostLabel, this.userAtHost);
+          this.sshTabStore.activate(this.hostId);
+          this.refreshSshTabViews();
           const recoveredTasks: SshSftpTaskRecord[] = this.sftpTaskStore.list(this.hostId).filter(
             (task: SshSftpTaskRecord): boolean => task.stage !== 'completed' && task.stage !== 'cancelled');
           this.refreshRecoveredSftpTasks();
@@ -2266,9 +2432,10 @@ struct SshTerminal {
   aboutToDisappear(): void {
     ++this.pageGeneration;
     this.terminalClosing = true;
+    const switchingSshTab: boolean = this.tabNavigationPending && !this.explicitSessionClose;
     const preserveSshInBackground: boolean =
       (AppStorage.get<boolean>('remoteDesktopBgFlag') ?? false) &&
-      !this.explicitSessionClose && this.connected && this.sessionId > 0 &&
+      !switchingSshTab && !this.explicitSessionClose && this.connected && this.sessionId > 0 &&
       this.hostId.length > 0;
     let backgroundContext: common.UIAbilityContext | null = null;
     try {
@@ -2323,6 +2490,10 @@ struct SshTerminal {
       this.sftpEngineUnsubscribe();
       this.sftpEngineUnsubscribe = null;
     }
+    if (this.sshTabStoreUnsubscribe !== null) {
+      this.sshTabStoreUnsubscribe();
+      this.sshTabStoreUnsubscribe = null;
+    }
     if (this.resizePtyTimer !== -1) {
       clearTimeout(this.resizePtyTimer);
       this.resizePtyTimer = -1;
@@ -2348,16 +2519,29 @@ struct SshTerminal {
     // 恢复系统状态栏颜色到进入前的值
     this.restoreStatusBar();
     const requestSessionId: number = this.sessionId;
-    if (requestSessionId > 0) {
-      this.sftpTaskEngine.detachSession(this.hostId, requestSessionId);
-      if (this.explicitSessionClose) {
+    const shouldCloseAllSshSessions: boolean = !switchingSshTab && !preserveSshInBackground;
+    if (shouldCloseAllSshSessions) {
+      const allSessionIds: number[] = this.sshTabStore.closeAll();
+      for (let index = 0; index < allSessionIds.length; index++) {
+        if (allSessionIds[index] !== requestSessionId) {
+          this.loader.disconnectSshSession(allSessionIds[index]);
+        }
+      }
+      this.terminalCoreRegistry.destroyAll(new TerminalCoreBridge());
+      if (requestSessionId > 0) {
         this.loader.disconnectSshSession(requestSessionId);
-      } else if (!this.loader.detachSshSession(requestSessionId, this.hostId)) {
+      } else {
+        this.loader.disconnect();
+      }
+    } else if (requestSessionId > 0) {
+      this.sshTabStore.update(this.hostId, 'connected', requestSessionId);
+      this.sftpTaskEngine.detachSession(this.hostId, requestSessionId);
+      if (!this.loader.detachSshSession(requestSessionId, this.hostId)) {
         // If the native session is already leaving, explicit cleanup is safer
         // than leaving an unowned socket behind.
         this.loader.disconnectSshSession(requestSessionId);
       }
-    } else if (this.explicitSessionClose || this.connecting) {
+    } else if (this.connecting) {
       // A pending async connect has a reserved native id held by the facade.
       // It cannot be safely detached because no page-owned session exists yet.
       this.loader.disconnect();
@@ -2647,6 +2831,7 @@ struct SshTerminal {
         this.connected = true;
         this.connecting = false;
       }
+      this.sshTabStore.update(this.hostId, 'connected', this.sessionId);
       return !this.terminalClosing;
     }
     if (state === SSH_STATE_RECONNECTING) {
@@ -2654,17 +2839,20 @@ struct SshTerminal {
       // the latency timer can observe the eventual CONNECTED state. Do not
       // turn a transient reconnect into the page's terminal error screen.
       if (!this.connected) { this.connecting = true; }
+      this.sshTabStore.update(this.hostId, 'reconnecting', this.sessionId);
       return false;
     }
     if (state === SSH_STATE_CONNECTING) {
       this.connected = false;
       this.connecting = true;
+      this.sshTabStore.update(this.hostId, 'connecting', this.sessionId);
       return false;
     }
     this.connected = false;
     this.connecting = false;
     const message: string = this.loader.getConnectionLastMessage(this.sessionId);
     this.connectionError = message.length > 0 ? message : 'SSH 会话已断开';
+    this.sshTabStore.update(this.hostId, 'error', this.sessionId, this.connectionError);
     return false;
   }
 
@@ -2776,6 +2964,10 @@ struct SshTerminal {
 
   private async connect(host: RemoteHost): Promise<void> {
     const pageGeneration: number = this.pageGeneration;
+    this.sshTabStore.open(host.id, host.label, host.username + '@' + host.host + ':' + host.port.toString());
+    this.sshTabStore.activate(host.id);
+    this.sshTabStore.update(host.id, 'connecting');
+    this.refreshSshTabViews();
     try {
       if (!(await this.loader.waitForPendingTeardown())) {
         throw new Error('上一会话资源清理未完成 [E-TEARDOWN-PENDING]');
@@ -2864,6 +3056,8 @@ struct SshTerminal {
       if (!this.isPageGenerationActive(pageGeneration)) { return; }
       hilog.error(0x0001, 'SshTerminal', '[connect] 异常: ' + msg);
       this.connectionError = msg;
+      this.sshTabStore.update(this.hostId, 'error', -1, msg);
+      this.refreshSshTabViews();
     }
   }
 
@@ -2879,6 +3073,8 @@ struct SshTerminal {
       return false;
     }
     this.sshSessionGeneration = sessionGeneration;
+    this.sshTabStore.update(this.hostId, 'connected', connectedSessionId);
+    this.refreshSshTabViews();
     await this.srv.updateLastConnected(this.hostId);
     if (!this.isPageGenerationActive(pageGeneration) || this.sessionId !== connectedSessionId) {
       this.loader.disconnectSshSession(connectedSessionId);
@@ -2971,6 +3167,8 @@ struct SshTerminal {
     }
     this.connecting = true;
     this.connectionError = '';
+    this.sshTabStore.update(this.hostId, 'connecting');
+    this.refreshSshTabViews();
     this.terminalOutputQueueOverflowed = false;
     this.clearTerminalInputQueue();
     // A reconnect pauses an in-flight SFTP continuation at its last durable
@@ -5647,6 +5845,13 @@ struct SshTerminal {
 
         }
         Row() {
+          SymbolGlyph($r('sys.symbol.plus'))
+            .fontSize(18).fontColor(['rgba(242,244,247,0.86)'])
+        }
+        .width(34).height(34).justifyContent(FlexAlign.Center)
+        .borderRadius(17).backgroundColor(this.chromeChipBg()).margin({ right: 8 })
+        .onClick((): void => { this.openSshTabPicker(); })
+        Row() {
           Column().width(8).height(8).borderRadius(4)
             .backgroundColor(this.connectionDotColor())
             .shadow({ radius: 8, color: this.connectionDotColor() + '66', offsetY: 0 })
@@ -5668,6 +5873,10 @@ struct SshTerminal {
         colors: [['rgba(255,255,255,0.09)', 0], ['rgba(255,255,255,0.00)', 1]]
       })
 
+      if (this.sshTabViews.length > 0) {
+        this.sshTabStrip()
+      }
+
       // 加载/错误态
       if (!this.connected) {
         Column() {
@@ -5688,6 +5897,7 @@ struct SshTerminal {
           Stack({ alignContent: Alignment.TopStart }) {
             if (this.useNativeTerminalCore) {
               NativeTerminalRenderer({
+                coreKey: this.hostId,
                 cols: this.termCols,
                 rows: this.termRows,
                 viewportWidth: this.termAreaW,
@@ -5974,6 +6184,9 @@ struct SshTerminal {
         .backgroundColor(this.sshPal().bg)
         .clip(true)
         .zIndex(100)
+      }
+      if (this.showSshTabPicker) {
+        this.sshTabPickerOverlay()
       }
     }
     .width('100%').height('100%')
