@@ -25,7 +25,7 @@ Updated: 2026-08-05 Asia/Shanghai
 ## Next
 
 - WP-T4 user acceptance and benchmark using shared terminal fixtures.
-- Commit and independently review the same-page SSH binding-generation and
+- Independently review the committed same-page SSH binding-generation and
   initial-UI view-remount fix.
 - WP-T5/WP-T6 terminal correctness and damage-frame renderer implementation.
 - Real SFTP, bastion, forwarding and FRP endpoint interoperability tests when

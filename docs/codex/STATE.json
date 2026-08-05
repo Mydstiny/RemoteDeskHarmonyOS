@@ -3,7 +3,7 @@
   "task": "ssh-terminal-complete-upgrade",
   "branch": "codex/ssh-terminal-complete-upgrade",
   "base": "d2769ad4b",
-  "head": "f4251835ef97e585adc700494f184ecb87775a13",
+  "head": "27a17fa18e80b265bdaec1d8ff494fdbd79c3b98",
   "phase": "alacritty-core-vt-parity-code-only-host-switch-initial-ui-refresh-ready",
   "status": "active",
   "next": "Commit and independently review the same-page SSH binding-generation and initial-UI view-remount fix; device validation is deferred per user instruction, then keep Level A/B connectivity gated until real endpoints exist.",
@@ -70,7 +70,7 @@
       "rustdesk_ffi/src/terminal_core/mod.rs",
       "rustdesk_ffi/src/terminal_core/tests.rs"
     ],
-    "reason": "The committed Alacritty/SSH lifecycle scope has a PASS receipt; the current same-page SSH binding-generation and xterm refresh increment is uncommitted and requires independent review."
+    "reason": "The committed Alacritty/SSH lifecycle scope has a PASS receipt; the committed same-page SSH binding-generation and xterm refresh increment requires independent review."
   },
   "lastVerification": {
     "host_native_tests": "254-pass-16-preexisting-vnc-fixture-startup-failures-270-total-2026-08-04",

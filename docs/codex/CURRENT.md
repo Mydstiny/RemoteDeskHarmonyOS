@@ -1,13 +1,11 @@
 # Shared Current State
 
-This file is the compact startup resume card for the active SSH terminal task.
-
 ## Active Task
 
 - Task: `ssh-terminal-complete-upgrade`
 - Base: `main@d2769ad4b`
 - Branch: `codex/ssh-terminal-complete-upgrade`
-- Code checkpoint: `f4251835e` plus the current uncommitted same-page SSH view-remount fix.
+- Code checkpoint: `27a17fa18` (`feat(ssh): stabilize same-page terminal rebinding`).
 - Phase: Alacritty default; lifecycle, VT/Unicode/resize/TUI/large-output parity and code-only host-switch/initial-UI refresh validation ready.
 - Scope: migrate VT behind terminalCore, keep appearance settings in-core, verify IME/input/Canvas behavior. Homepage work is not current focus.
 
@@ -72,13 +70,6 @@ This file is the compact startup resume card for the active SSH terminal task.
 - Rust `cargo test --manifest-path rustdesk_ffi/Cargo.toml --lib
   --no-default-features`: `156 passed, 1 failed, 157 total`; the remaining
   failure is the existing rendezvous fixture's public-address assertion.
-- `default@OhosTestCompileArkTS`: passed for the GPU crash guard on 2026-08-05, warnings only.
-- `assembleHap`: passed for the GPU crash guard on 2026-08-05 with `BUILD SUCCESSFUL`
-  and signing; HAP SHA-256 is `2881d295dcdae98c6e7502008acde4a3768b52bc34b74f287303ce4da3ad1405`.
-- `default@OhosTestCompileArkTS`: passed for the same-page SSH binding fix on
-  2026-08-05, warnings only.
-- `assembleHap`: passed for the same-page SSH binding fix on 2026-08-05 with
-  `BUILD SUCCESSFUL` and signing.
 - `default@OhosTestCompileArkTS`: passed for the initial-UI/view-remount fix
   on 2026-08-05, warnings only.
 - `assembleHap`: passed for the initial-UI/view-remount fix on 2026-08-05
@@ -95,23 +86,22 @@ This file is the compact startup resume card for the active SSH terminal task.
 - Light compliance: blocked by baseline SBOM package
   `totp-reviewed-brand-assets` with `licenseDeclared=NOASSERTION`.
 - Provided MatePad log confirms a device-lost abort in `OH_Drawing_SurfaceFlush` from `SshTerminalRenderer::DrawSnapshot`; the default SSH page now avoids this GPU path.
-- HDC target `5KLBB25928203528`: fresh crash-guard HAP installed; live SSH
-  entered with Alacritty core plus Canvas renderer, PTY resize/data render
-  completed, process stayed alive, and no `GPU`/`SurfaceFlush`/`SIGABRT` log appeared.
+- Prior HDC target `5KLBB25928203528` passed cold SSH, lifecycle and idle checks;
+  no new device evidence is claimed for this code-only pass.
 
 ## Review
 
 - The existing independent reviewer passed the final bounded-output increment
-  and the later IME/socket diagnostic increment. The current same-page
-  binding/initial-UI increment is `REVIEW_REQUIRED` until its checkpoint is
-  committed and independently reviewed.
-- The SFTP checkpoint is scope-complete for this pass, but its real-device and
-  endpoint evidence is not a completion claim for Level A.
+  and the later IME/socket diagnostic increment. The committed same-page
+  binding/initial-UI increment remains `REVIEW_REQUIRED` until independently
+  reviewed.
+- SFTP scope is closed for this pass; real-device/endpoint evidence is not a
+  Level A completion claim.
 - Device evidence covers injected input and lifecycle; external keyboard/IME, GPU re-enable, bastion/forwarding/FRP evidence remain open.
 
 ## Next
 
-1. Commit and independently review the same-page SSH binding/initial-UI checkpoint.
+1. Independently review the committed same-page SSH binding/initial-UI checkpoint.
 2. Verify ProxyJump against a real OpenSSH bastion and bind its host key.
 3. Add SSH-scoped local/remote/dynamic forwarding and FRP visitor modes.
 
