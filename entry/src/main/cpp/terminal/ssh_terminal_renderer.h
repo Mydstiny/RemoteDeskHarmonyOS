@@ -52,6 +52,16 @@ public:
     void ScrollToBottom();
     std::string Content() const;
 
+    struct Mode {
+        bool bracketedPaste = false;
+        uint16_t mouseTracking = 0;
+        bool sgrMouse = false;
+        bool applicationCursorKeys = false;
+        bool applicationKeypad = false;
+        bool autoWrap = true;
+    };
+    Mode CurrentMode() const;
+
 private:
     bool InitGraphics(const std::string& surfaceId, int widthPx, int heightPx);
     void DestroyGraphics();
@@ -92,6 +102,7 @@ private:
     bool bottomAlign_ = false;
     uint32_t foreground_ = 0xFFE8EAED;
     uint32_t background_ = 0xFF0D0D0D;
+    Mode mode_;
 };
 
 namespace SshTerminalRendererNapi {

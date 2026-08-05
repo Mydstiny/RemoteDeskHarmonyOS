@@ -188,6 +188,29 @@ napi_value NapiContent(napi_env env, napi_callback_info info) {
         ? GetRenderer(env, args[0])->Content() : std::string();
     napi_value result; napi_create_string_utf8(env, content.c_str(), content.size(), &result); return result;
 }
+
+napi_value NapiMode(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value args[1] = {};
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    SshTerminalRenderer::Mode mode {};
+    if (argc > 0 && GetRenderer(env, args[0]) != nullptr) {
+        mode = GetRenderer(env, args[0])->CurrentMode();
+    }
+    napi_value result;
+    napi_create_object(env, &result);
+    auto setBool = [env, result](const char* name, bool value) {
+        napi_value v; napi_get_boolean(env, value, &v); napi_set_named_property(env, result, name, v);
+    };
+    setBool("bracketedPaste", mode.bracketedPaste);
+    napi_value mouse; napi_create_uint32(env, mode.mouseTracking, &mouse);
+    napi_set_named_property(env, result, "mouseTracking", mouse);
+    setBool("sgrMouse", mode.sgrMouse);
+    setBool("applicationCursorKeys", mode.applicationCursorKeys);
+    setBool("applicationKeypad", mode.applicationKeypad);
+    setBool("autoWrap", mode.autoWrap);
+    return result;
+}
 }
 
 namespace SshTerminalRendererNapi {
@@ -202,7 +225,8 @@ napi_value Init(napi_env env, napi_value exports) {
         { "sshTerminalRendererSetViewport", nullptr, NapiViewport, nullptr, nullptr, nullptr, napi_default, nullptr },
         { "sshTerminalRendererScrollView", nullptr, NapiScroll, nullptr, nullptr, nullptr, napi_default, nullptr },
         { "sshTerminalRendererScrollToBottom", nullptr, NapiScrollToBottom, nullptr, nullptr, nullptr, napi_default, nullptr },
-        { "sshTerminalRendererContent", nullptr, NapiContent, nullptr, nullptr, nullptr, napi_default, nullptr }
+        { "sshTerminalRendererContent", nullptr, NapiContent, nullptr, nullptr, nullptr, napi_default, nullptr },
+        { "sshTerminalRendererMode", nullptr, NapiMode, nullptr, nullptr, nullptr, napi_default, nullptr }
     };
     napi_define_properties(env, exports, sizeof(properties) / sizeof(properties[0]), properties);
     return exports;

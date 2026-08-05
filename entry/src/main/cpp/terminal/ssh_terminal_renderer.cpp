@@ -360,8 +360,19 @@ void SshTerminalRenderer::RenderFull() {
     if (snapshot == nullptr) {
         return;
     }
+    mode_.bracketedPaste = snapshot->bracketed_paste;
+    mode_.mouseTracking = snapshot->mouse_tracking;
+    mode_.sgrMouse = snapshot->sgr_mouse;
+    mode_.applicationCursorKeys = snapshot->application_cursor_keys;
+    mode_.applicationKeypad = snapshot->application_keypad;
+    mode_.autoWrap = snapshot->auto_wrap;
     DrawSnapshot(snapshot);
     terminal_core_free_snapshot(snapshot);
+}
+
+SshTerminalRenderer::Mode SshTerminalRenderer::CurrentMode() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return mode_;
 }
 
 void SshTerminalRenderer::DrawSnapshot(const FfiTerminalSnapshot* snapshot) {

@@ -17,7 +17,7 @@
 #include <napi/native_api.h>
 #include <hilog/log.h>
 #include "terminal/terminal_core_napi.h"
-#include "terminal/ssh_terminal_renderer_napi.h"
+#include "terminal/ssh_terminal_renderer.h"
 
 #undef LOG_DOMAIN
 #undef LOG_TAG

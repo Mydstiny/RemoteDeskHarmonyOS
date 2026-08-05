@@ -168,6 +168,25 @@ export const VERSION: SessionVersionInfo;
   export function terminalCoreSnapshot(handle: number): TerminalCoreSnapshot;
   export function terminalCoreDirtySnapshot(handle: number): TerminalCoreSnapshot;
 
+  export function sshTerminalRendererCreate(surfaceId: string, widthPx: number,
+    heightPx: number, cols: number, rows: number, cellWidthPx: number,
+    cellHeightPx: number, fontSizePx: number, foreground: number, background: number,
+    viewportHeightPx: number, visibleHeightPx: number, bottomAlign: boolean): number;
+  export function sshTerminalRendererDestroy(handle: number): void;
+  export function sshTerminalRendererBindSurface(handle: number, surfaceId: string,
+    widthPx: number, heightPx: number): boolean;
+  export function sshTerminalRendererWriteBytes(handle: number, data: ArrayBuffer): void;
+  export function sshTerminalRendererResize(handle: number, cols: number, rows: number,
+    cellWidthPx: number, cellHeightPx: number, fontSizePx: number): void;
+  export function sshTerminalRendererSetAppearance(handle: number, fontSizePx: number,
+    foreground: number, background: number): void;
+  export function sshTerminalRendererSetViewport(handle: number, viewportHeightPx: number,
+    visibleHeightPx: number, bottomAlign: boolean): void;
+  export function sshTerminalRendererScrollView(handle: number, deltaLines: number): void;
+  export function sshTerminalRendererScrollToBottom(handle: number): void;
+  export function sshTerminalRendererContent(handle: number): string;
+  export function sshTerminalRendererMode(handle: number): TerminalCoreMode;
+
 interface SessionVersionInfo {
   moduleName: string;
   version: string;
