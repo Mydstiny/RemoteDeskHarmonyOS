@@ -5,7 +5,7 @@
 - Task: `ssh-terminal-complete-upgrade`
 - Base: `main@d2769ad4b`
 - Branch: `codex/ssh-terminal-complete-upgrade`
-- Code checkpoint: `6573a1d` (`fix(ssh): recover terminal surface after host switch`).
+- Code checkpoint: `4b5f0dc` (`fix(ssh): prevent host switch surface mount starvation`).
 - Phase: Alacritty default; lifecycle, VT/Unicode/resize/TUI/large-output parity, per-host output isolation and code-only host-switch/surface refresh recovery.
 - Scope: migrate VT behind terminalCore, keep appearance settings in-core, verify IME/input/Canvas behavior. Homepage work is not current focus.
 
@@ -21,7 +21,7 @@
 - Pad/PC SFTP uses a full-screen in-page workspace; `sm` keeps the original bottom Sheet and original virtual-key-bar behavior. Input-device mode is scoped to Pad/PC.
 - Wide Pad/PC SFTP keeps remote navigation/path jump/rename/actions left and local authorization/listing/upload actions right.
 - The SFTP checkpoint is closed for integrity, task metadata, local-provider and Pad/PC workspace; background payload execution remains page-owned and real provider/endpoint acceptance is pending.
-- WP-T4 first migration slice is implemented: `alacritty_terminal` `0.26.0` is default behind terminalCore; the old Rust core remains a no-default fallback. Pad/PC use native XComponent with bounded xterm fallback; phone keeps the original xterm WebView path.
+- WP-T4 first migration slice is implemented: `alacritty_terminal` `0.26.0` is default behind terminalCore; the old Rust core remains a no-default fallback. All form factors use native XComponent with bounded xterm fallback.
 - `sshTerminalForegroundColor` is ARGB through NAPI; ANSI colors remain independent, and font size stays in Canvas for cell geometry.
 - The SSH owner reactor now sends bounded non-blocking libssh2 keepalives and retries transient failures without taking a second session owner.
 - SSH background continuity and custom PiP ownership are isolated from the
@@ -59,6 +59,7 @@
   rebinds the selected host core to its retained surface, retries a destroy /
   recreate race from the last known surface, and xterm gives each document an
   isolated JavaScript bridge so late callbacks cannot freeze the new page.
+- Mount requests retain a pending binding key; repeated connected-state probes cannot starve the second-host renderer.
 
 ## SSH Connectivity Boundary
 
@@ -79,11 +80,10 @@
 - Rust `cargo test --manifest-path rustdesk_ffi/Cargo.toml --lib
   --no-default-features`: `156 passed, 1 failed, 157 total`; the remaining
   failure is the existing rendezvous fixture's public-address assertion.
-- `default@OhosTestCompileArkTS`: passed for the host-switch surface recovery
-  checkpoint on 2026-08-06; warnings only.
-- `assembleHap`: host-switch surface recovery checkpoint passed with
-  `BUILD SUCCESSFUL` and signing; current HAP SHA-256 is
-  `4d08b3cae1b1394d9cb3fdae862cb2bf7ef1b2d0c9a1cd3c573c6ec29a2e69cf`.
+- `default@OhosTestCompileArkTS`: passed for the host-switch surface mount
+  guard checkpoint on 2026-08-06; warnings only.
+- `assembleHap`: host-switch surface mount guard passed with
+  `BUILD SUCCESSFUL` and signing on 2026-08-06.
 - Terminal-core Rust tests: Alacritty path `63 passed, 0 failed`; fallback
   path `57 passed, 0 failed`.
 - OHOS Rust checks: `aarch64-unknown-linux-ohos` and
@@ -98,7 +98,7 @@
 ## Review
 
 - Existing independent review passed the bounded-output and IME/socket
-  increments; checkpoint `6573a1d` remains `REVIEW_REQUIRED` until review.
+  increments; checkpoint `4b5f0dc` remains `REVIEW_REQUIRED` until review.
 - SFTP scope is closed for this pass; real-device/endpoint evidence is not a
   Level A completion claim.
 - Device evidence covers injected input and lifecycle; external keyboard/IME, GPU re-enable, bastion/forwarding/FRP evidence remain open.
@@ -116,5 +116,4 @@
   checks passed.
 - Real-device validation for the current initial-UI/host-switch/native-renderer
   pass is intentionally deferred by the user; only code-level gates were requested.
-- No real OpenSSH bastion, forwarding service or FRP endpoint is currently available; HDC target is also offline for device acceptance.
-- ProxyJump preflight can receive target password or transient key material; explicit bastion host-key trust binding remains pending. `ohosTest@OhosTestCompileArkTS` is unregistered (`00306054`).
+- No real OpenSSH bastion, forwarding service or FRP endpoint is available; HDC is offline; ProxyJump host-key binding and `ohosTest@OhosTestCompileArkTS` (`00306054`) remain pending.

@@ -6,10 +6,11 @@ Updated: 2026-08-06 Asia/Shanghai
 
 - SFTP checkpoint is closed for the implemented integrity, durable metadata,
   local-provider and Pad/PC workspace scope; do not expand it in this pass.
-- Alacritty `0.26.0` is now the default VT core behind terminalCore; the
-  reactor keepalive, PiP/session lifecycle, bounded Canvas consumption and
-  IME/socket diagnostics are committed; the fresh signed HAP passed cold,
-  large-output, background/re-entry and 90-second idle acceptance.
+- Alacritty `0.26.0` is now the default VT core behind terminalCore on all form
+  factors; the reactor keepalive, PiP/session lifecycle, bounded Canvas
+  consumption and IME/socket diagnostics are committed. The keyed surface
+  mount now deduplicates repeated connected-state probes so a second host's
+  renderer is not starved; the fresh signed HAP passed both code-only gates.
 - Same-page SSH host switching now rejects stale async connect/attach/data/PiP
   continuations using an independent binding generation, cancels pending
   handshakes before switching, and retains detach-race output per host. The
