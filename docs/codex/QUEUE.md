@@ -12,10 +12,11 @@ Updated: 2026-08-05 Asia/Shanghai
   large-output, background/re-entry and 90-second idle acceptance.
 - Same-page SSH host switching now rejects stale async connect/attach/data/PiP
   continuations using an independent binding generation, cancels pending
-  handshakes before switching. The visible xterm WebView now also has an
-  explicit detach/rebind gate and per-binding identity so the page refreshes
-  when the second host is selected. Both code-only Hvigor gates passed on
-  2026-08-05; device validation is deferred for this pass.
+  handshakes before switching, and retains detach-race output per host. The
+  visible xterm WebView has an explicit detach/rebind gate and per-binding
+  identity; Pad/PC native VT state uses stable host IDs with xterm fallback,
+  while phone remains on the original WebView. Both code-only Hvigor gates
+  passed on 2026-08-05; device validation is deferred for this pass.
 - Keep the review state at the matching PASS receipt; do not claim full
   background SFTP execution, Level A, or Level B connectivity.
 - The first ProxyJump implementation and matching key preflight relay are
@@ -25,8 +26,8 @@ Updated: 2026-08-05 Asia/Shanghai
 ## Next
 
 - WP-T4 user acceptance and benchmark using shared terminal fixtures.
-- Independently review the committed same-page SSH binding-generation and
-  initial-UI view-remount fix.
+- Independently review the committed same-page SSH binding-generation,
+  initial-UI view-remount and per-host renderer fallback fix.
 - WP-T5/WP-T6 terminal correctness and damage-frame renderer implementation.
 - Real SFTP, bastion, forwarding and FRP endpoint interoperability tests when
   the corresponding services and HDC/device are available.

@@ -5,8 +5,8 @@
 - Task: `ssh-terminal-complete-upgrade`
 - Base: `main@d2769ad4b`
 - Branch: `codex/ssh-terminal-complete-upgrade`
-- Code checkpoint: `3dfc7b0dc` (`fix(ssh): force terminal surface remount on tab switch`).
-- Phase: Alacritty default; lifecycle, VT/Unicode/resize/TUI/large-output parity and code-only host-switch/initial-UI two-phase surface remount ready.
+- Code checkpoint: `404ccde` (`fix(ssh): isolate terminal output across host switches`).
+- Phase: Alacritty default; lifecycle, VT/Unicode/resize/TUI/large-output parity, per-host output isolation and code-only host-switch/initial-UI refresh ready.
 - Scope: migrate VT behind terminalCore, keep appearance settings in-core, verify IME/input/Canvas behavior. Homepage work is not current focus.
 
 ## Progress
@@ -21,7 +21,7 @@
 - Pad/PC SFTP uses a full-screen in-page workspace; `sm` keeps the original bottom Sheet and original virtual-key-bar behavior. Input-device mode is scoped to Pad/PC.
 - Wide Pad/PC SFTP keeps remote navigation/path jump/rename/actions left and local authorization/listing/upload actions right.
 - The SFTP checkpoint is closed for integrity, task metadata, local-provider and Pad/PC workspace; background payload execution remains page-owned and real provider/endpoint acceptance is pending.
-- WP-T4 first migration slice is implemented: `alacritty_terminal` `0.26.0` is default behind terminalCore; the old Rust core remains a no-default fallback. GPU XComponent output is now opt-in; Canvas remains the safe device default.
+- WP-T4 first migration slice is implemented: `alacritty_terminal` `0.26.0` is default behind terminalCore; the old Rust core remains a no-default fallback. Pad/PC use native XComponent with bounded xterm fallback; phone keeps the original xterm WebView path.
 - `sshTerminalForegroundColor` is ARGB through NAPI; ANSI colors remain independent, and font size stays in Canvas for cell geometry.
 - The SSH owner reactor now sends bounded non-blocking libssh2 keepalives and retries transient failures without taking a second session owner.
 - SSH background continuity and custom PiP ownership are isolated from the
@@ -50,7 +50,9 @@
   queued until its fresh xterm document is ready, and persistence failures
   cannot strand a live session behind the loading view. The surface binding
   key is observable and the next WebView is mounted on a later UI turn, so a
-  fast second-host switch cannot reuse the first host's DOM.
+  fast second-host switch cannot reuse the first host's DOM. Detach-race
+  output is retained per host; native keys use stable host IDs and fallback
+  rebuilds from one bounded host transcript.
 
 ## SSH Connectivity Boundary
 
@@ -71,11 +73,11 @@
 - Rust `cargo test --manifest-path rustdesk_ffi/Cargo.toml --lib
   --no-default-features`: `156 passed, 1 failed, 157 total`; the remaining
   failure is the existing rendezvous fixture's public-address assertion.
-- `default@OhosTestCompileArkTS`: passed for the two-phase surface-remount fix
-  on 2026-08-05, warnings only.
-- `assembleHap`: passed for the two-phase surface-remount fix on 2026-08-05
-  with `BUILD SUCCESSFUL` and signing; current HAP SHA-256 is
-  `82391a4829bd87a3102fc0b67197a25b07b56ab733527b7a5e8d276e3678f54f`.
+- `default@OhosTestCompileArkTS`: passed for the per-host output/native-fallback
+  increment on 2026-08-05, warnings only.
+- `assembleHap`: passed for the per-host output/native-fallback increment on
+  2026-08-05 with `BUILD SUCCESSFUL` and signing; current HAP SHA-256 is
+  `e148bf692c8c07d761c3d33e14903759d0895aa4c19d085b356a6a4d12638b5c`.
 - Terminal-core Rust tests: Alacritty path `63 passed, 0 failed`; fallback
   path `57 passed, 0 failed`.
 - OHOS Rust checks: `aarch64-unknown-linux-ohos` and
@@ -86,7 +88,7 @@
 - `ohosTest@OhosTestCompileArkTS`: blocked; task is not registered (`00306054`).
 - Light compliance: blocked by baseline SBOM package
   `totp-reviewed-brand-assets` with `licenseDeclared=NOASSERTION`.
-- Provided MatePad log confirms a device-lost abort in `OH_Drawing_SurfaceFlush` from `SshTerminalRenderer::DrawSnapshot`; the default SSH page now avoids this GPU path.
+- Provided MatePad log confirms a device-lost abort in `OH_Drawing_SurfaceFlush` from `SshTerminalRenderer::DrawSnapshot`; the native path now has lifecycle fallback but this pass has no new device evidence.
 - Prior HDC target `5KLBB25928203528` passed cold SSH, lifecycle and idle checks;
   no new device evidence is claimed for this code-only pass.
 
@@ -94,8 +96,7 @@
 
 - The existing independent reviewer passed the final bounded-output increment
   and the later IME/socket diagnostic increment. The committed same-page
-  binding/initial-UI increment and this surface-remount increment remain
-  `REVIEW_REQUIRED` until independently reviewed.
+  binding/initial-UI, surface-remount and per-host output/native-fallback increments remain `REVIEW_REQUIRED` until independently reviewed.
 - SFTP scope is closed for this pass; real-device/endpoint evidence is not a
   Level A completion claim.
 - Device evidence covers injected input and lifecycle; external keyboard/IME, GPU re-enable, bastion/forwarding/FRP evidence remain open.
@@ -111,10 +112,8 @@
 - Full external-keyboard/third-party-IME and SFTP lifecycle/provider acceptance
   remains pending; cold/large-output/background/PiP/re-entry and 90-second idle
   checks passed.
-- Real-device validation for the current initial-UI/host-switch pass is
-  intentionally deferred by the user; only code-level gates were requested.
+- Real-device validation for the current initial-UI/host-switch/native-renderer
+  pass is intentionally deferred by the user; only code-level gates were requested.
 - No real OpenSSH bastion, forwarding service or FRP endpoint is currently
   available; HDC target is also offline for device acceptance.
-- ProxyJump preflight can receive target password or transient key material,
-  but still needs explicit bastion host-key trust binding.
-- `ohosTest@OhosTestCompileArkTS` is unregistered (`00306054`).
+- ProxyJump preflight can receive target password or transient key material; explicit bastion host-key trust binding remains pending. `ohosTest@OhosTestCompileArkTS` is unregistered (`00306054`).
