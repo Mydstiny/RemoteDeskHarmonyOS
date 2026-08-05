@@ -1022,21 +1022,37 @@ int SshAdapter::connect(const ConnectionConfig& cfg) {
     });
 }
 
-int SshAdapter::connectInternal(const ConnectionConfig& cfg) {
+int SshAdapter::connectInternal(const ConnectionConfig& cfg, bool preserveOwner) {
     if (!assertSessionOwner("connect")) {
         return ERR_SSH_SESSION_INIT;
     }
     std::lock_guard<std::recursive_mutex> lifecycleLock(lifecycleMutex_);
     if (connectCancelRequested_.load(std::memory_order_acquire)) {
         OH_LOG_INFO(LOG_APP, "[SSH] 连接在开始前已取消");
-        stopTerminalInput();
-        // connect() starts the owner before publishing this command. A
-        // cancellation that wins before DNS must also stop that otherwise
-        // idle owner; the async completion path may still join it later.
-        stopReader();
+        if (preserveOwner) {
+            resetTransportForRecovery();
+        } else {
+            stopTerminalInput();
+            // connect() starts the owner before publishing this command. A
+            // cancellation that wins before DNS must also stop that otherwise
+            // idle owner; the async completion path may still join it later.
+            stopReader();
+        }
         setState(ConnectionState::ERROR, "SSH connect cancelled");
         return ERR_SSH_SESSION_CLOSED;
     }
+
+    auto failConnect = [this, preserveOwner](int code, const std::string& message) {
+        if (preserveOwner) {
+            // Keep the owner reactor and saved configuration alive so the
+            // recovery loop can retry without replaying terminal input.
+            resetTransportForRecovery();
+        } else {
+            disconnect();
+        }
+        setState(ConnectionState::ERROR, message);
+        return code;
+    };
 
     // 保存配置 (用于后续认证和重连)
     savedCfg_ = cfg;
@@ -1050,18 +1066,15 @@ int SshAdapter::connectInternal(const ConnectionConfig& cfg) {
         // Proxy validation/handshake may fail after a TCP socket has already
         // been opened. Always tear down the partial transport before exposing
         // the error to the caller.
-        disconnect();
-        setState(ConnectionState::ERROR,
-                 "SSH transport connection failed [" + std::to_string(ret) + "]");
-        return ret;
+        return failConnect(ret,
+            "SSH transport connection failed [" + std::to_string(ret) + "]");
     }
 
     // Step 2: KEX 密钥交换 (libssh2内部处理Banner,无需手动预读)
     ret = sshHandshake();
     if (ret < 0) {
-        disconnect();
-        setState(ConnectionState::ERROR, "SSH handshake failed [" + std::to_string(ret) + "]");
-        return ret;
+        return failConnect(ret,
+            "SSH handshake failed [" + std::to_string(ret) + "]");
     }
 
     // Step 4: 用户认证 (公钥优先, 失败时回退密码)
@@ -1078,17 +1091,15 @@ int SshAdapter::connectInternal(const ConnectionConfig& cfg) {
         ret = authenticatePassword();
     }
     if (ret < 0) {
-        disconnect();
-        setState(ConnectionState::ERROR, "SSH authentication failed [" + std::to_string(ret) + "]");
-        return ret;
+        return failConnect(ret,
+            "SSH authentication failed [" + std::to_string(ret) + "]");
     }
 
     // Step 5: 打开 SSH 会话通道
     ret = openChannel();
     if (ret < 0) {
-        disconnect();
-        setState(ConnectionState::ERROR, "SSH channel open failed [" + std::to_string(ret) + "]");
-        return ret;
+        return failConnect(ret,
+            "SSH channel open failed [" + std::to_string(ret) + "]");
     }
 
     // Step 6: 请求 PTY (SSH 调用方将 cfg.width/height 传为终端 cols/rows)
@@ -1096,17 +1107,15 @@ int SshAdapter::connectInternal(const ConnectionConfig& cfg) {
     int ptyRows = cfg.height > 0 ? cfg.height : 24;
     ret = requestPty(ptyCols, ptyRows);
     if (ret < 0) {
-        disconnect();
-        setState(ConnectionState::ERROR, "SSH PTY request failed [" + std::to_string(ret) + "]");
-        return ret;
+        return failConnect(ret,
+            "SSH PTY request failed [" + std::to_string(ret) + "]");
     }
 
     // Step 7: 启动远程 Shell
     ret = startShell();
     if (ret < 0) {
-        disconnect();
-        setState(ConnectionState::ERROR, "SSH shell start failed [" + std::to_string(ret) + "]");
-        return ret;
+        return failConnect(ret,
+            "SSH shell start failed [" + std::to_string(ret) + "]");
     }
 
     startTerminalInput();
@@ -1185,9 +1194,92 @@ void SshAdapter::disconnect() {
     }
     keepaliveNextDue_ = std::chrono::steady_clock::time_point::max();
     keepaliveConsecutiveFailures_ = 0;
+    transportRecoveryRequested_.store(false, std::memory_order_release);
     // Do not invoke user code while sessionMutex_ is held. A state callback
     // can synchronously update the page and call back into disconnect/send.
     setState(ConnectionState::DISCONNECTED, "SSH disconnected");
+}
+
+void SshAdapter::resetTransportForRecovery() {
+    // This is called only by the session owner, or while connectInternal holds
+    // the recursive lifecycle gate. Keep savedCfg_ and the data callback: the
+    // next handshake must use the same explicit host-key policy and consumer.
+    stopTerminalInput();
+
+    std::lock_guard<std::recursive_mutex> lifecycleLock(lifecycleMutex_);
+    std::lock_guard<std::mutex> sftpLock(sftpOperationMutex_);
+    std::unique_lock<std::mutex> sessionLock(sessionMutex_);
+    std::lock_guard<std::mutex> writeFence(inputWriteFenceMutex_);
+    if (sftp_) {
+        libssh2_sftp_shutdown(sftp_);
+        sftp_ = nullptr;
+    }
+    if (channel_) {
+        libssh2_channel_free(channel_);
+        channel_ = nullptr;
+    }
+    if (session_) {
+        libssh2_session_disconnect(session_, "SSH transport recovery");
+        libssh2_session_free(session_);
+        session_ = nullptr;
+    }
+    if (sockFd_ >= 0) {
+        shutdown(sockFd_, SHUT_RDWR);
+        close(sockFd_);
+        sockFd_ = -1;
+    }
+    ioGeneration_.fetch_add(1, std::memory_order_acq_rel);
+    authenticated_ = false;
+    keepaliveNextDue_ = std::chrono::steady_clock::time_point::max();
+    keepaliveConsecutiveFailures_ = 0;
+}
+
+bool SshAdapter::reconnectAfterTransportFailure() {
+    if (!isReactorThread() || !readerRunning_.load(std::memory_order_acquire) ||
+        savedCfg_.host.empty()) {
+        return false;
+    }
+
+    constexpr uint32_t kMaxAttempts = SshTerminalKeepalivePolicy::kMaxConsecutiveFailures;
+    for (uint32_t attempt = 0; attempt < kMaxAttempts; ++attempt) {
+        if (!readerRunning_.load(std::memory_order_acquire) ||
+            connectCancelRequested_.load(std::memory_order_acquire)) {
+            return false;
+        }
+
+        setState(ConnectionState::RECONNECTING,
+                 "SSH transport lost, reconnecting [" +
+                 std::to_string(attempt + 1) + "/" + std::to_string(kMaxAttempts) + "]");
+        resetTransportForRecovery();
+        const int ret = connectInternal(savedCfg_, true);
+        if (ret == 0) {
+            transportRecoveryRequested_.store(false, std::memory_order_release);
+            OH_LOG_INFO(LOG_APP, "[SSH] transport recovery succeeded attempt=%{public}u",
+                        attempt + 1);
+            return true;
+        }
+
+        OH_LOG_WARN(LOG_APP,
+                    "[SSH] transport recovery failed attempt=%{public}u rc=%{public}d",
+                    attempt + 1, ret);
+        if (attempt + 1 < kMaxAttempts) {
+            std::unique_lock<std::mutex> waitLock(reactorCommandMutex_);
+            reactorCommandCondition_.wait_for(
+                waitLock,
+                std::chrono::milliseconds(SshTerminalKeepalivePolicy::kRetryDelayMilliseconds),
+                [this]() {
+                    return !readerRunning_.load(std::memory_order_acquire) ||
+                        connectCancelRequested_.load(std::memory_order_acquire);
+                });
+        }
+    }
+
+    stopTerminalInput();
+    readerRunning_.store(false, std::memory_order_release);
+    transportRecoveryRequested_.store(false, std::memory_order_release);
+    setState(ConnectionState::ERROR, "SSH transport recovery failed");
+    reactorCommandCondition_.notify_all();
+    return false;
 }
 
 ConnectionState SshAdapter::getState() {
@@ -2250,7 +2342,6 @@ void SshAdapter::drainShellOutputOnReactor() {
                 }
                 readError = true;
                 readErrorCode = n;
-                readerRunning_.store(false, std::memory_order_release);
                 break;
             }
             if (n == 0) {
@@ -2268,8 +2359,9 @@ void SshAdapter::drainShellOutputOnReactor() {
     }
 
     if (readError) {
-        setState(ConnectionState::ERROR,
-            "SSH terminal read failed: " + std::to_string(readErrorCode));
+        transportRecoveryRequested_.store(true, std::memory_order_release);
+        OH_LOG_WARN(LOG_APP, "[SSH] terminal read failed during owner command rc=%{public}zd",
+                    readErrorCode);
     } else if (eofDetected) {
         setState(ConnectionState::DISCONNECTED, "SSH remote channel closed");
     }
@@ -2805,10 +2897,10 @@ void SshAdapter::serviceKeepaliveOnReactor() {
 
     sessionLock.unlock();
     terminalInputAccepting_.store(false, std::memory_order_release);
-    readerRunning_.store(false, std::memory_order_release);
+    transportRecoveryRequested_.store(true, std::memory_order_release);
+    OH_LOG_WARN(LOG_APP, "[SSH] keepalive exhausted, requesting transport recovery rc=%{public}d",
+                rc);
     reactorCommandCondition_.notify_all();
-    setState(ConnectionState::ERROR,
-             "SSH keepalive failed: " + std::to_string(rc));
 }
 
 // ============================================================
@@ -2891,12 +2983,20 @@ void SshAdapter::readerLoop() {
     reactorAlive_.store(true, std::memory_order_release);
 
     while (readerRunning_.load(std::memory_order_acquire)) {
+        if (transportRecoveryRequested_.exchange(false, std::memory_order_acq_rel)) {
+            if (!reconnectAfterTransportFailure()) { break; }
+            continue;
+        }
         // Control/data admission is already bounded. One item per turn keeps
         // a paste from monopolizing the owner while the channel is readable.
         drainInputQueueOnReactor();
         serviceKeepaliveOnReactor();
         if (!readerRunning_.load(std::memory_order_acquire)) {
             break;
+        }
+        if (transportRecoveryRequested_.exchange(false, std::memory_order_acq_rel)) {
+            if (!reconnectAfterTransportFailure()) { break; }
+            continue;
         }
         // If a resize command could not enter the bounded reactor queue, the
         // owner itself retries it here. This also recovers a command that was
@@ -2916,6 +3016,10 @@ void SshAdapter::readerLoop() {
         // Terminal input has priority over queued SFTP/command work. Each
         // long operation also yields back through this same drain path.
         drainReactorCommands();
+        if (transportRecoveryRequested_.exchange(false, std::memory_order_acq_rel)) {
+            if (!reconnectAfterTransportFailure()) { break; }
+            continue;
+        }
         {
             std::lock_guard<std::mutex> callbackLock(callbackMutex_);
             if (!onDataCallback_) {
@@ -3003,8 +3107,8 @@ void SshAdapter::readerLoop() {
                         // next socket edge instead of converting it into a
                         // disconnect.
                         break;
-                    }
-                    OH_LOG_ERROR(LOG_APP,
+                }
+                OH_LOG_ERROR(LOG_APP,
                         "[SSH] reader recv probe failed: rc=%{public}zd fd=%{public}d "
                         "peek=%{public}zd peekErrno=%{public}d soError=%{public}d "
                         "soErrno=%{public}d sessionErr=%{public}d",
@@ -3012,9 +3116,8 @@ void SshAdapter::readerLoop() {
                         probe.socketErrorErrno, libssh2_session_last_errno(session_));
                 }
                 OH_LOG_ERROR(LOG_APP, "[SSH] reader libssh2_channel_read 失败: %{public}zd", n);
-                readError = terminalInputAccepting_.load(std::memory_order_acquire);
+                readError = true;
                 readErrorCode = n;
-                readerRunning_.store(false);
                 break;
             }
             if (n == 0) {
@@ -3036,8 +3139,9 @@ void SshAdapter::readerLoop() {
         sessionLock.unlock();
 
         if (readError) {
-            setState(ConnectionState::ERROR,
-                "SSH terminal read failed: " + std::to_string(readErrorCode));
+            transportRecoveryRequested_.store(true, std::memory_order_release);
+            OH_LOG_WARN(LOG_APP, "[SSH] terminal transport failure requests recovery rc=%{public}zd",
+                        readErrorCode);
         } else if (eofDetected) {
             setState(ConnectionState::DISCONNECTED, "SSH remote channel closed");
         }

@@ -2640,8 +2640,23 @@ struct SshTerminal {
   private syncNativeConnectionState(): boolean {
     if (this.sessionId <= 0) { return false; }
     const state: number = this.loader.getConnectionState(this.sessionId);
-    if (state === SSH_STATE_CONNECTED) { return true; }
-    if (state === SSH_STATE_CONNECTING || state === SSH_STATE_RECONNECTING) {
+    if (state === SSH_STATE_CONNECTED) {
+      if (!this.terminalClosing) {
+        // Native SSH recovery keeps the same session id and callback. Restore
+        // the page state when the owner has completed the new handshake.
+        this.connected = true;
+        this.connecting = false;
+      }
+      return !this.terminalClosing;
+    }
+    if (state === SSH_STATE_RECONNECTING) {
+      // Keep the live terminal surface during a short transport recovery so
+      // the latency timer can observe the eventual CONNECTED state. Do not
+      // turn a transient reconnect into the page's terminal error screen.
+      if (!this.connected) { this.connecting = true; }
+      return false;
+    }
+    if (state === SSH_STATE_CONNECTING) {
       this.connected = false;
       this.connecting = true;
       return false;
@@ -2677,6 +2692,7 @@ struct SshTerminal {
       }
       this.latencyMs = -1;
       this.latencyProbeRunning = false;
+      this.syncNativeConnectionState();
       this.srv.updateConnectionHealth(this.hostId, -1, false);
       hilog.warn(0x0001, 'SshTerminal', '[latency] TCP 检测失败: ' + err.message);
     });

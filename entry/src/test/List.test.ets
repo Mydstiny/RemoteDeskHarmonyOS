@@ -134,6 +134,7 @@ import remoteCanvasInteractionPolicyTest from './RemoteCanvasInteractionPolicy.t
 import remoteKeyboardLayoutSelectionPolicyTest from './RemoteKeyboardLayoutSelectionPolicy.test';
 import remoteModifierStateControllerTest from './RemoteModifierStateController.test';
 import terminalInputBufferTest from './TerminalInputBuffer.test';
+import terminalRendererPolicyTest from './TerminalRendererPolicy.test';
 
 export default function testsuite() {
   localUnitTest();
@@ -272,4 +273,5 @@ export default function testsuite() {
   remoteKeyboardLayoutSelectionPolicyTest();
   remoteModifierStateControllerTest();
   terminalInputBufferTest();
+  terminalRendererPolicyTest();
 }

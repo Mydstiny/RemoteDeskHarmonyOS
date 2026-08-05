@@ -24,6 +24,11 @@ import {
   shouldHonorAutoScrollToBottom,
   terminalGridTop
 } from '../services/SshTerminalScrollPolicy';
+import {
+  terminalCellIndex,
+  terminalDimensionsMatchSnapshot,
+  terminalGridDimension
+} from '../services/TerminalRendererPolicy';
 
 /** 默认前景色 (与 Rust DEFAULT_FG = 0xFFE8EAED 一致, 用于 cell.fg 比较) */
 const DEFAULT_FG: number = 0xFFE8EAED;
@@ -165,6 +170,8 @@ export struct NativeTerminalRenderer {
   /** 复用页面预初始化后, 等待新 surface 的 ready/area 回调再确认一次。 */
   private surfaceReadyProbePending: boolean = false;
   private inputDrainTimer: number = -1;
+  /** Coalesce cols/rows updates so a transient mixed-size grid is never drawn. */
+  private resizeTimer: number = -1;
 
   aboutToAppear(): void {
     this.resetLifecycleState();
@@ -191,6 +198,10 @@ export struct NativeTerminalRenderer {
     if (this.inputDrainTimer !== -1) {
       clearTimeout(this.inputDrainTimer);
       this.inputDrainTimer = -1;
+    }
+    if (this.resizeTimer !== -1) {
+      clearTimeout(this.resizeTimer);
+      this.resizeTimer = -1;
     }
     if (this.handle > 0) {
       this.bridge.destroy(this.handle);
@@ -307,14 +318,29 @@ export struct NativeTerminalRenderer {
 
   private onResize(): void {
     if (this.cols <= 0 || this.rows <= 0) { return; }
+    this.scheduleResize();
+  }
+
+  private scheduleResize(): void {
+    if (this.resizeTimer !== -1) { return; }
+    this.resizeTimer = setTimeout((): void => {
+      this.resizeTimer = -1;
+      this.applyResize();
+    }, 0);
+  }
+
+  private applyResize(): void {
+    if (this.cols <= 0 || this.rows <= 0) { return; }
     if (this.handle > 0) {
-      this.bridge.resize(this.handle, this.cols, this.rows);
+      const nextCols: number = terminalGridDimension(this.cols);
+      const nextRows: number = terminalGridDimension(this.rows);
+      this.bridge.resize(this.handle, nextCols, nextRows);
       if (this.followBottom) {
         this.bridge.scrollToBottom(this.handle);
       }
       this.lastSnapshot = this.bridge.snapshot(this.handle);
     }
-    this.lastRows = this.rows;
+    this.lastRows = terminalGridDimension(this.rows);
     this.renderFull();
   }
 
@@ -502,6 +528,7 @@ export struct NativeTerminalRenderer {
     }
     if (bottomRow < 0) { bottomRow = 0; }
     const contentH: number = (bottomRow + 1) * this.cellH;
+    const gridRows: number = snap ? snap.rows : terminalGridDimension(this.rows);
     const visibleH: number = this.visibleViewportHeight > 0 ? this.visibleViewportHeight : this.viewportHeight;
     const topInset: number = Math.max(0, this.viewportHeight - visibleH);
     // screenTop > 0 只说明缓冲区存在历史内容，不代表当前可见区正在浏览历史。
@@ -514,7 +541,7 @@ export struct NativeTerminalRenderer {
       this.bottomAlignSparseContent,
       topInset,
       visibleH,
-      this.rows * this.cellH,
+      gridRows * this.cellH,
       contentH,
       sparseLimit,
       hasScrollback
@@ -530,11 +557,15 @@ export struct NativeTerminalRenderer {
   }
 
   private canvasWidth(): number {
-    return Math.max(this.cols * this.cellW, Math.ceil(this.viewportWidth));
+    const snap: TerminalCoreSnapshot | null = this.lastSnapshot;
+    const gridCols: number = snap ? snap.cols : terminalGridDimension(this.cols);
+    return Math.max(gridCols * this.cellW, Math.ceil(this.viewportWidth));
   }
 
   private canvasHeight(): number {
-    return Math.max(this.rows * this.cellH, Math.ceil(this.viewportHeight));
+    const snap: TerminalCoreSnapshot | null = this.lastSnapshot;
+    const gridRows: number = snap ? snap.rows : terminalGridDimension(this.rows);
+    return Math.max(gridRows * this.cellH, Math.ceil(this.viewportHeight));
   }
 
   // ============================================================
@@ -560,13 +591,20 @@ export struct NativeTerminalRenderer {
   // ============================================================
 
   private renderFull(): void {
-    if (this.cellW <= 0 || this.cellH <= 0 || this.cols <= 0 || this.rows <= 0) { return; }
+    const snap: TerminalCoreSnapshot | null = this.lastSnapshot;
+    if (this.cellW <= 0 || this.cellH <= 0 || this.cols <= 0 || this.rows <= 0 || !snap) {
+      return;
+    }
+    if (!terminalDimensionsMatchSnapshot(this.cols, this.rows, snap.cols, snap.rows)) {
+      this.scheduleResize();
+      return;
+    }
     const top: number = this.gridTop();
     const ctx: CanvasRenderingContext2D = this.ctx;
     ctx.fillStyle = TERMINAL_BG_CSS;
     ctx.fillRect(0, 0, this.canvasWidth(), this.canvasHeight());
     this.clearTopInset();
-    for (let r = 0; r < this.rows; r++) {
+    for (let r = 0; r < snap.rows; r++) {
       this.drawRow(r);
     }
     this.drawCursor();
@@ -575,7 +613,12 @@ export struct NativeTerminalRenderer {
   }
 
   private renderIncremental(): void {
-    if (this.cellW <= 0 || this.cellH <= 0) { return; }
+    const snap: TerminalCoreSnapshot | null = this.lastSnapshot;
+    if (this.cellW <= 0 || this.cellH <= 0 || !snap) { return; }
+    if (!terminalDimensionsMatchSnapshot(this.cols, this.rows, snap.cols, snap.rows)) {
+      this.scheduleResize();
+      return;
+    }
     const top: number = this.gridTop();
     if (top !== this.lastGridTop) {
       this.renderFull();
@@ -584,7 +627,7 @@ export struct NativeTerminalRenderer {
     this.eraseOldCursor();
     this.dirtyRows.forEach((absR: number): void => {
       // dirtyRows 是快照中的视口行号 (0..rows-1)
-      if (absR >= 0 && absR < this.rows) {
+      if (absR >= 0 && absR < snap.rows) {
         this.drawRow(absR);
       }
     });
@@ -593,7 +636,12 @@ export struct NativeTerminalRenderer {
   }
 
   private renderCursorOnly(): void {
-    if (this.cellW <= 0 || this.cellH <= 0) { return; }
+    const snap: TerminalCoreSnapshot | null = this.lastSnapshot;
+    if (this.cellW <= 0 || this.cellH <= 0 || !snap) { return; }
+    if (!terminalDimensionsMatchSnapshot(this.cols, this.rows, snap.cols, snap.rows)) {
+      this.scheduleResize();
+      return;
+    }
     this.eraseOldCursor();
     this.drawCursor();
   }
@@ -618,19 +666,22 @@ export struct NativeTerminalRenderer {
 
   /** 画一整行 */
   private drawRow(r: number): void {
-    if (r < 0 || r >= this.rows) { return; }
     const snap: TerminalCoreSnapshot | null = this.lastSnapshot;
-    if (!snap) { return; }
+    if (!snap || r < 0 || r >= snap.rows) { return; }
     const ctx: CanvasRenderingContext2D = this.ctx;
     const y: number = this.gridTop() + r * this.cellH;
     // 清整行 — 使用统一终端背景色
     ctx.fillStyle = TERMINAL_BG_CSS;
     ctx.fillRect(0, y, this.canvasWidth(), this.cellH);
-    for (let c = 0; c < this.cols; c++) {
-      const idx: number = r * snap.cols + c;
+    for (let c = 0; c < snap.cols; c++) {
+      const idx: number = terminalCellIndex(snap.cols, snap.rows, r, c);
       if (idx >= snap.cells.length) { continue; }
       const cell: TerminalCoreCell = snap.cells[idx];
+      // The wide head paints both cells. Painting the continuation again can
+      // overwrite the glyph or create a one-cell seam on some Canvas backends.
+      if (cell.wideContinuation) { continue; }
       const x: number = c * this.cellW;
+      const paintWidth: number = cell.wide ? this.cellW * 2 : this.cellW;
       let fg: number = cell.fg;
       let bg: number = cell.bg;
       if (cell.inverse) {
@@ -641,7 +692,7 @@ export struct NativeTerminalRenderer {
       // 背景 (非默认色)
       if (bg !== DEFAULT_BG) {
         ctx.fillStyle = NativeTerminalRenderer.rgbaToCss(bg);
-        ctx.fillRect(x, y, this.cellW, this.cellH);
+        ctx.fillRect(x, y, paintWidth, this.cellH);
       }
       // 前景字符
       if (cell.ch === ' ' || cell.ch === '\x00') { continue; }
@@ -655,7 +706,7 @@ export struct NativeTerminalRenderer {
         ctx.lineWidth = Math.max(1, this.cellH * 0.06);
         ctx.beginPath();
         ctx.moveTo(x, y + this.cellH - Math.max(1, this.cellH * 0.12));
-        ctx.lineTo(x + this.cellW, y + this.cellH - Math.max(1, this.cellH * 0.12));
+        ctx.lineTo(x + paintWidth, y + this.cellH - Math.max(1, this.cellH * 0.12));
         ctx.stroke();
       }
     }
@@ -663,42 +714,47 @@ export struct NativeTerminalRenderer {
 
   /** 画单个 cell — 用于 eraseOldCursor */
   private drawCellAt(r: number, c: number): void {
-    if (r < 0 || r >= this.rows || c < 0 || c >= this.cols) { return; }
     const snap: TerminalCoreSnapshot | null = this.lastSnapshot;
+    if (!snap) { return; }
+    let cellCol: number = c;
+    let idx: number = terminalCellIndex(snap.cols, snap.rows, r, cellCol);
+    if (idx < 0 || idx >= snap.cells.length) { return; }
+    if (snap.cells[idx].wideContinuation && cellCol > 0) {
+      cellCol -= 1;
+      idx = terminalCellIndex(snap.cols, snap.rows, r, cellCol);
+    }
+    if (idx < 0 || idx >= snap.cells.length) { return; }
+    const cell: TerminalCoreCell = snap.cells[idx];
     const ctx: CanvasRenderingContext2D = this.ctx;
-    const x: number = c * this.cellW;
+    const x: number = cellCol * this.cellW;
     const y: number = this.gridTop() + r * this.cellH;
+    const paintWidth: number = cell.wide ? this.cellW * 2 : this.cellW;
     // 清该格 — 使用统一终端背景色
     ctx.fillStyle = TERMINAL_BG_CSS;
-    ctx.fillRect(x, y, this.cellW, this.cellH);
-    if (!snap) { return; }
-    const idx: number = r * snap.cols + c;
-    if (idx < snap.cells.length) {
-      const cell: TerminalCoreCell = snap.cells[idx];
-      let fg: number = cell.fg;
-      let bg: number = cell.bg;
-      if (cell.inverse) {
-        const swapped: number = fg;
-        fg = bg;
-        bg = swapped;
-      }
-      if (bg !== DEFAULT_BG) {
-        ctx.fillStyle = NativeTerminalRenderer.rgbaToCss(bg);
-        ctx.fillRect(x, y, this.cellW, this.cellH);
-      }
-      if (cell.ch !== ' ' && cell.ch !== '\x00') {
-        ctx.fillStyle = (fg === DEFAULT_FG) ? this.terminalFgColor : NativeTerminalRenderer.rgbaToCss(fg);
-        ctx.font = this.canvasFont(cell.bold, cell.italic);
-        ctx.textBaseline = 'middle';
-        ctx.fillText(cell.ch, x, y + this.cellH * 0.50);
-        if (cell.underline) {
-          ctx.strokeStyle = ctx.fillStyle;
-          ctx.lineWidth = Math.max(1, this.cellH * 0.06);
-          ctx.beginPath();
-          ctx.moveTo(x, y + this.cellH - Math.max(1, this.cellH * 0.12));
-          ctx.lineTo(x + this.cellW, y + this.cellH - Math.max(1, this.cellH * 0.12));
-          ctx.stroke();
-        }
+    ctx.fillRect(x, y, paintWidth, this.cellH);
+    let fg: number = cell.fg;
+    let bg: number = cell.bg;
+    if (cell.inverse) {
+      const swapped: number = fg;
+      fg = bg;
+      bg = swapped;
+    }
+    if (bg !== DEFAULT_BG) {
+      ctx.fillStyle = NativeTerminalRenderer.rgbaToCss(bg);
+      ctx.fillRect(x, y, paintWidth, this.cellH);
+    }
+    if (cell.ch !== ' ' && cell.ch !== '\x00' && !cell.wideContinuation) {
+      ctx.fillStyle = (fg === DEFAULT_FG) ? this.terminalFgColor : NativeTerminalRenderer.rgbaToCss(fg);
+      ctx.font = this.canvasFont(cell.bold, cell.italic);
+      ctx.textBaseline = 'middle';
+      ctx.fillText(cell.ch, x, y + this.cellH * 0.50);
+      if (cell.underline) {
+        ctx.strokeStyle = ctx.fillStyle;
+        ctx.lineWidth = Math.max(1, this.cellH * 0.06);
+        ctx.beginPath();
+        ctx.moveTo(x, y + this.cellH - Math.max(1, this.cellH * 0.12));
+        ctx.lineTo(x + paintWidth, y + this.cellH - Math.max(1, this.cellH * 0.12));
+        ctx.stroke();
       }
     }
   }
@@ -709,8 +765,8 @@ export struct NativeTerminalRenderer {
     if (!snap) { return; }
     const cursorViewY: number = this.cursorViewY(snap);
     const cursorX: number = snap.cursorX;
-    if (this.cursorVisible && snap.cursorVisible && cursorViewY >= 0 && cursorViewY < this.rows &&
-      cursorX >= 0 && cursorX < this.cols) {
+    if (this.cursorVisible && snap.cursorVisible && cursorViewY >= 0 && cursorViewY < snap.rows &&
+      cursorX >= 0 && cursorX < snap.cols) {
       const ctx: CanvasRenderingContext2D = this.ctx;
       const cx: number = cursorX * this.cellW;
       const cy: number = this.gridTop() + cursorViewY * this.cellH;

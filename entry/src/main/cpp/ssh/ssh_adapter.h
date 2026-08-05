@@ -221,7 +221,9 @@ public:
     int renameRemotePathAtomic(const std::string& oldPath, const std::string& newPath);
 
 private:
-    int connectInternal(const ConnectionConfig& cfg);
+    int connectInternal(const ConnectionConfig& cfg, bool preserveOwner = false);
+    void resetTransportForRecovery();
+    bool reconnectAfterTransportFailure();
     bool assertSessionOwner(const char* operation) const noexcept;
 
     int sockFd_;
@@ -304,6 +306,7 @@ private:
     std::recursive_mutex lifecycleMutex_;       // 串行化 connect/disconnect 生命周期
     std::atomic<bool> connectCancelRequested_{false};
     SshTerminalDiagnostics diagnostics_;
+    std::atomic<bool> transportRecoveryRequested_{false};
 
     /** session owner loop: short poll → input/commands → channel read/callback */
     void readerLoop();
