@@ -48,7 +48,7 @@ export struct GpuTerminalRenderer {
   @Prop @Watch('onViewportChange') viewportHeight: number = 0;
   @Prop @Watch('onViewportChange') visibleViewportHeight: number = 0;
   /** Stable SSH tab key; keeps the native renderer alive across tab swaps. */
-  @Prop coreKey: string = '';
+  @Prop @Watch('onCoreKeyChange') coreKey: string = '';
   @Prop bottomAlignSparseContent: boolean = false;
   inputBuffer: TerminalInputBuffer = new TerminalInputBuffer();
   @Prop @Watch('onInputSequenceChange') inputSequence: number = 0;
@@ -60,6 +60,8 @@ export struct GpuTerminalRenderer {
   @Link @Watch('onCopyRequest') copyRequest: number;
   @Link copiedText: string;
   onTerminalModeChange?: (mode: TerminalCoreMode) => void;
+  onRendererReady?: () => void;
+  onRendererUnavailable?: () => void;
 
   private bridge: SshTerminalRendererBridge = new SshTerminalRendererBridge();
   private registry: SshTerminalRendererRegistry = SshTerminalRendererRegistry.getInstance();
@@ -71,29 +73,59 @@ export struct GpuTerminalRenderer {
   private followBottom: boolean = true;
   private lastModeSignature: string = '';
   private inputDrainTimer: number = -1;
+  private attachedCoreKey: string = '';
+  private disposed: boolean = false;
+  private unavailableReported: boolean = false;
 
   aboutToAppear(): void {
+    this.disposed = false;
+    this.unavailableReported = false;
     this.xcController.onSurfaceReady = (surfaceId: string): void => {
-      this.attachSurface(surfaceId);
+      if (!this.disposed) { this.attachSurface(surfaceId); }
     };
     this.xcController.onSurfaceGone = (): void => {
       this.surfaceReady = false;
+      const key: string = this.attachedCoreKey.length > 0 ? this.attachedCoreKey : this.coreKey;
+      this.registry.detach(key, this.bridge);
     };
     // 同一标签切回时 registry 里可能已有句柄；等 surface ready 后 rebind。
     this.handle = this.registry.handleFor(this.coreKey);
   }
 
   aboutToDisappear(): void {
+    this.disposed = true;
     if (this.inputDrainTimer !== -1) {
       clearTimeout(this.inputDrainTimer);
       this.inputDrainTimer = -1;
     }
     if (this.handle > 0) {
-      this.registry.detach(this.coreKey, this.bridge);
+      const key: string = this.attachedCoreKey.length > 0 ? this.attachedCoreKey : this.coreKey;
+      this.registry.detach(key, this.bridge);
     }
     this.surfaceReady = false;
     // 句柄归 SSH 标签所有，由页面在关闭标签/退出全部连接时经 registry 销毁。
     this.handle = 0;
+    this.attachedCoreKey = '';
+    this.unavailableReported = false;
+    this.xcController.onSurfaceReady = null;
+    this.xcController.onSurfaceGone = null;
+  }
+
+  private onCoreKeyChange(): void {
+    if (this.disposed || this.attachedCoreKey === this.coreKey) { return; }
+    if (this.attachedCoreKey.length > 0) {
+      this.registry.detach(this.attachedCoreKey, this.bridge);
+    }
+    this.handle = this.registry.handleFor(this.coreKey);
+    this.surfaceReady = false;
+    this.lastModeSignature = '';
+    this.unavailableReported = false;
+  }
+
+  private reportUnavailable(): void {
+    if (this.unavailableReported || this.disposed) { return; }
+    this.unavailableReported = true;
+    if (this.onRendererUnavailable) { this.onRendererUnavailable(); }
   }
 
   private fgArgb(): number {
@@ -109,7 +141,11 @@ export struct GpuTerminalRenderer {
   }
 
   private attachSurface(surfaceId: string): void {
-    if (!this.bridge.isAvailable()) { return; }
+    if (this.disposed) { return; }
+    if (!this.bridge.isAvailable()) {
+      this.reportUnavailable();
+      return;
+    }
     const config: SshTerminalRendererConfig = {
       surfaceId: surfaceId,
       widthPx: this.surfaceWidthPx > 0 ? this.surfaceWidthPx : vp2px(this.cols * this.cellWvp),
@@ -125,18 +161,28 @@ export struct GpuTerminalRenderer {
       visibleHeightPx: Math.max(0, vp2px(this.visibleViewportHeight)),
       bottomAlign: this.bottomAlignSparseContent
     };
-    const handle: number = this.registry.attach(this.coreKey, config, this.bridge);
+    let handle: number = 0;
+    try {
+      handle = this.registry.attach(this.coreKey, config, this.bridge);
+    } catch (err) {
+      hilog.warn(0x0000, 'GpuTerminal', 'attach exception: %{public}s', JSON.stringify(err));
+      this.reportUnavailable();
+      return;
+    }
     if (handle <= 0) {
       hilog.warn(0x0000, 'GpuTerminal', 'attach failed for key %{public}s', this.coreKey);
+      this.reportUnavailable();
       return;
     }
     this.handle = handle;
+    this.attachedCoreKey = this.coreKey;
     this.surfaceReady = true;
     this.applyGeometry();
     this.applyViewport();
     this.applyAppearance();
     this.consumeInputQueue();
     this.notifyMode();
+    if (this.onRendererReady) { this.onRendererReady(); }
   }
 
   private applyGeometry(): void {

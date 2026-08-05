@@ -38,6 +38,8 @@ import { RemoteHost } from '../model/RemoteHost';
 import { Palette, buildDark, buildLight } from '../common/Theme';
 import { showLockGate, lockGateErrorMessage } from '../components/LockGate';
 import { SshXtermSurface, XtermOutputBuffer } from '../components/SshXtermSurface';
+import { GpuTerminalRenderer } from '../components/GpuTerminalRenderer';
+import { TerminalInputBuffer } from '../components/SshTerminalSurface';
 import { TerminalCoreBridge } from '../napi/TerminalCoreBridge';
 import { SshTerminalTranscriptStore } from '../services/SshTerminalTranscriptStore';
 import {
@@ -195,6 +197,11 @@ interface SftpLocalConflictPlan {
   targetPath: string;
 }
 
+interface TerminalDecodedChunk {
+  text: string;
+  remainder: Uint8Array;
+}
+
 @Entry
 @Component
 struct SshTerminal {
@@ -268,6 +275,8 @@ struct SshTerminal {
   @State terminalSurfaceGeneration: number = 0;
   /** Observable identity for the currently mounted xterm document. */
   @State terminalSurfaceBindingKey: string = '';
+  /** Pad/PC native renderer failure is scoped to this visible binding only. */
+  @State nativeRendererUnavailable: boolean = false;
   /** 选区模式 — 长按菜单"选择"开启, 传给 TerminalEmulator 改变 touch 行为 */
   @State selectMode: boolean = false;
   /** 复制请求计数器 — ++ 触发 TerminalEmulator 把文本写入 copiedText */
@@ -349,6 +358,15 @@ struct SshTerminal {
   private sshTranscriptStore: SshTerminalTranscriptStore =
     SshTerminalTranscriptStore.getInstance();
   private terminalCoreRegistry: TerminalCoreRegistry = TerminalCoreRegistry.getInstance();
+  /** Native VT input queues are retained per host while its surface is hidden. */
+  private nativeTerminalInputBuffers: Map<string, TerminalInputBuffer> =
+    new Map<string, TerminalInputBuffer>();
+  /** Transcript decoding is independent from the xterm fallback decoder. */
+  private terminalTranscriptDecodeRemainders: Map<string, Uint8Array> =
+    new Map<string, Uint8Array>();
+  /** Fallback decoding is also kept per host so a hidden tab cannot split UTF-8. */
+  private terminalFallbackDecodeRemainders: Map<string, Uint8Array> =
+    new Map<string, Uint8Array>();
   private sshTabStoreUnsubscribe: (() => void) | null = null;
   /** Kept for compatibility with route-entry cleanup; tab clicks stay in-page. */
   private tabNavigationPending: boolean = false;
@@ -544,6 +562,34 @@ struct SshTerminal {
       this.hostId.trim() === hostId.trim();
   }
 
+  /** 手机继续使用原有 ArkWeb/xterm；Pad/PC 使用 native XComponent。 */
+  private nativeTerminalFormFactor(): boolean {
+    return this.isDesktopDevice || this.breakpoint !== 'sm';
+  }
+
+  private shouldUseNativeTerminal(): boolean {
+    return this.nativeTerminalFormFactor() && !this.nativeRendererUnavailable;
+  }
+
+  private nativeTerminalInputBuffer(hostId: string): TerminalInputBuffer {
+    const normalizedHostId: string = hostId.trim();
+    let buffer: TerminalInputBuffer | undefined = this.nativeTerminalInputBuffers.get(normalizedHostId);
+    if (buffer === undefined) {
+      buffer = new TerminalInputBuffer();
+      this.nativeTerminalInputBuffers.set(normalizedHostId, buffer);
+    }
+    return buffer;
+  }
+
+  private clearNativeTerminalBuffers(): void {
+    this.nativeTerminalInputBuffers.forEach((buffer: TerminalInputBuffer): void => {
+      buffer.clear();
+    });
+    this.nativeTerminalInputBuffers.clear();
+    this.terminalTranscriptDecodeRemainders.clear();
+    this.terminalFallbackDecodeRemainders.clear();
+  }
+
   private refreshSshTabViews(): void {
     this.sshTabViews = this.sshTabStore.views();
   }
@@ -713,16 +759,21 @@ struct SshTerminal {
     this.connectionError = '';
     this.latencyMs = -1;
     this.stopLatencyProbe();
+    this.preserveTerminalOutputQueue(previousHostId);
     this.clearTerminalOutputQueue();
     this.clearTerminalInputQueue();
     this.terminalDecodeRemainder = new Uint8Array(0);
     this.terminalOutputQueueOverflowed = false;
     this.termOutput = '';
+    this.nativeRendererUnavailable = false;
     this.resetTerminalSurfaceBinding();
     this.xtermOutputBuffer.clear();
     const targetTranscript: string = this.sshTranscriptStore.snapshot(targetHostId);
     if (targetTranscript.length > 0) {
       this.xtermOutputBuffer.enqueue(targetTranscript);
+    }
+    if (!this.nativeTerminalFormFactor()) {
+      this.replayNativeOutputToXterm(targetHostId);
     }
     this.termOutputSequence++;
     this.bracketedPasteEnabled = false;
@@ -1062,6 +1113,41 @@ struct SshTerminal {
     this.terminalOutputQueueBytes = 0;
   }
 
+  /** Preserve bytes admitted for the old host before its visible binding moves. */
+  private preserveTerminalOutputQueue(hostId: string): void {
+    const normalizedHostId: string = hostId.trim();
+    if (normalizedHostId.length === 0 || this.terminalOutputQueue.length === 0) { return; }
+    if (this.terminalOutputFlushTimer !== -1) {
+      clearTimeout(this.terminalOutputFlushTimer);
+      this.terminalOutputFlushTimer = -1;
+    }
+    const pending: ArrayBuffer[] = this.terminalOutputQueue;
+    this.terminalOutputQueue = [];
+    this.terminalOutputQueueBytes = 0;
+    const replayBuffer: TerminalInputBuffer = this.nativeTerminalInputBuffer(normalizedHostId);
+    for (let index = 0; index < pending.length; index++) {
+      const chunk: ArrayBuffer = pending[index];
+      if (chunk.byteLength === 0) { continue; }
+      replayBuffer.enqueue(chunk);
+      const transcript: string = this.decodeTranscriptChunk(normalizedHostId, chunk);
+      if (transcript.length > 0) {
+        this.sshTranscriptStore.append(normalizedHostId, transcript);
+      }
+    }
+  }
+
+  /** A callback can finish after detach; route that final chunk to its host. */
+  private enqueueDetachedTerminalOutput(hostId: string, data: ArrayBuffer): void {
+    const normalizedHostId: string = hostId.trim();
+    if (this.terminalClosing || normalizedHostId.length === 0 || data.byteLength === 0 ||
+      !this.sshTabStore.has(normalizedHostId)) { return; }
+    this.nativeTerminalInputBuffer(normalizedHostId).enqueue(data);
+    const transcript: string = this.decodeTranscriptChunk(normalizedHostId, data);
+    if (transcript.length > 0) {
+      this.sshTranscriptStore.append(normalizedHostId, transcript);
+    }
+  }
+
   private scheduleTerminalOutputFlush(): void {
     if (this.terminalOutputFlushTimer !== -1) { return; }
     this.terminalOutputFlushTimer = setTimeout((): void => {
@@ -1148,10 +1234,19 @@ struct SshTerminal {
       this.terminalOutputQueue.splice(0, queuedChunksConsumed);
     }
     this.terminalOutputQueueBytes -= batchBytes;
-    const decodedOutput: string = this.decodeTerminalChunk(merged);
-    this.sshTranscriptStore.append(this.hostId, decodedOutput);
-    this.xtermOutputBuffer.enqueue(decodedOutput);
-    this.termOutput = decodedOutput;
+    const outputHostId: string = this.hostId.trim();
+    const transcriptOutput: string = this.decodeTranscriptChunk(outputHostId, merged);
+    if (transcriptOutput.length > 0) {
+      this.sshTranscriptStore.append(outputHostId, transcriptOutput);
+    }
+    if (this.shouldUseNativeTerminal()) {
+      this.nativeTerminalInputBuffer(outputHostId).enqueue(merged);
+      this.termOutput = transcriptOutput;
+    } else {
+      const decodedOutput: string = this.decodeTerminalChunk(merged);
+      this.xtermOutputBuffer.enqueue(decodedOutput);
+      this.termOutput = decodedOutput;
+    }
     this.termOutputSequence++;
     if (this.terminalOutputQueue.length > 0) {
       this.scheduleTerminalOutputFlush();
@@ -2528,6 +2623,7 @@ struct SshTerminal {
     const pageGeneration: number = ++this.pageGeneration;
     const bindingGeneration: number = ++this.sshBindingGeneration;
     this.terminalClosing = false;
+    this.nativeRendererUnavailable = false;
     this.clearPreflightBinding();
     this.tabNavigationPending = false;
     this.showSshTabPicker = false;
@@ -2675,6 +2771,9 @@ struct SshTerminal {
         const transcript: string = this.sshTranscriptStore.snapshot(this.hostId);
         if (transcript.length > 0) {
           this.xtermOutputBuffer.enqueue(transcript);
+        }
+        if (!this.nativeTerminalFormFactor()) {
+          this.replayNativeOutputToXterm(this.hostId);
         }
         this.sftpTaskUnsubscribe = this.sftpTaskStore.subscribe((event): void => {
           if (event.record.hostId !== this.hostId || this.sftpBusy) { return; }
@@ -2847,6 +2946,7 @@ struct SshTerminal {
           this.loader.disconnectSshSession(allSessionIds[index]);
         }
       }
+      this.clearNativeTerminalBuffers();
       this.terminalCoreRegistry.destroyAll(new TerminalCoreBridge());
       if (requestSessionId > 0) {
         this.loader.disconnectSshSession(requestSessionId);
@@ -3435,17 +3535,24 @@ struct SshTerminal {
     // 推送式数据接收: C++ reader 线程读到数据 → TSFN → 这里
     let dataChunkCount: number = 0;
     this.loader.setOnDataCallback(connectedSessionId, (data: ArrayBuffer): void => {
-      if (!data || data.byteLength === 0 ||
-        !this.isSshBindingActive(pageGeneration, bindingGeneration, bindingHostId) ||
-        this.sessionId !== connectedSessionId ||
-        this.sshSessionGeneration !== sessionGeneration) { return; }
+      if (!data || data.byteLength === 0 || !this.isPageGenerationActive(pageGeneration) ||
+        this.terminalClosing) { return; }
+      const currentBinding: boolean = this.isSshBindingActive(
+        pageGeneration, bindingGeneration, bindingHostId) &&
+        this.sessionId === connectedSessionId &&
+        this.sshSessionGeneration === sessionGeneration;
       dataChunkCount++;
       if (dataChunkCount <= 5 || dataChunkCount % 100 === 0) {
         hilog.info(0x0000, 'SshTerminal',
           'SSH data #' + dataChunkCount.toString() + ' len=' + data.byteLength.toString() +
+          ' host=' + bindingHostId + ' active=' + (currentBinding ? '1' : '0') +
           ' seq=' + (this.termOutputSequence + 1).toString());
       }
-      this.enqueueTerminalOutput(data);
+      if (currentBinding) {
+        this.enqueueTerminalOutput(data);
+      } else {
+        this.enqueueDetachedTerminalOutput(bindingHostId, data);
+      }
     });
     if (!this.loader.resumeSshSession(connectedSessionId)) {
       this.loader.disconnectSshSession(connectedSessionId);
@@ -3534,6 +3641,7 @@ struct SshTerminal {
     }
     this.connecting = true;
     this.connectionError = '';
+    this.nativeRendererUnavailable = false;
     this.terminalSurfaceGeneration = this.terminalSurfaceGeneration + 1;
     this.resetTerminalSurfaceBinding();
     this.sshTabStore.update(this.hostId, 'connecting');
@@ -3572,11 +3680,30 @@ struct SshTerminal {
    * UTF-8 尾部。Native renderer 不使用该字符串，而是直接消费 bytes。
    */
   private decodeTerminalChunk(data: ArrayBuffer): string {
+    const hostId: string = this.hostId.trim();
+    const previous: Uint8Array = this.terminalFallbackDecodeRemainders.get(hostId) ??
+      new Uint8Array(0);
+    const decoded: TerminalDecodedChunk = this.decodeTerminalBytes(data, previous);
+    this.terminalFallbackDecodeRemainders.set(hostId, decoded.remainder);
+    this.terminalDecodeRemainder = decoded.remainder;
+    return decoded.text;
+  }
+
+  private decodeTranscriptChunk(hostId: string, data: ArrayBuffer): string {
+    const normalizedHostId: string = hostId.trim();
+    const previous: Uint8Array = this.terminalTranscriptDecodeRemainders.get(normalizedHostId) ??
+      new Uint8Array(0);
+    const decoded: TerminalDecodedChunk = this.decodeTerminalBytes(data, previous);
+    this.terminalTranscriptDecodeRemainders.set(normalizedHostId, decoded.remainder);
+    return decoded.text;
+  }
+
+  private decodeTerminalBytes(data: ArrayBuffer, remainder: Uint8Array): TerminalDecodedChunk {
     const incoming: Uint8Array = new Uint8Array(data);
     const merged: Uint8Array = new Uint8Array(
-      this.terminalDecodeRemainder.length + incoming.length);
-    merged.set(this.terminalDecodeRemainder, 0);
-    merged.set(incoming, this.terminalDecodeRemainder.length);
+      remainder.length + incoming.length);
+    merged.set(remainder, 0);
+    merged.set(incoming, remainder.length);
 
     let continuationCount: number = 0;
     let leadIndex: number = merged.length;
@@ -3599,9 +3726,14 @@ struct SshTerminal {
     const incompleteSuffix: boolean = leadIndex < merged.length && expectedLength > 0 &&
       continuationCount + 1 < expectedLength;
     const prefixLength: number = incompleteSuffix ? leadIndex : merged.length;
-    this.terminalDecodeRemainder = merged.slice(prefixLength);
-    if (prefixLength === 0) { return ''; }
-    return this.terminalDecoder.decodeToString(merged.slice(0, prefixLength));
+    const nextRemainder: Uint8Array = merged.slice(prefixLength);
+    if (prefixLength === 0) {
+      return { text: '', remainder: nextRemainder };
+    }
+    return {
+      text: this.terminalDecoder.decodeToString(merged.slice(0, prefixLength)),
+      remainder: nextRemainder
+    };
   }
 
   private virtualModifiers(): TerminalModifierState {
@@ -3618,6 +3750,43 @@ struct SshTerminal {
     this.terminalSgrMouse = mode.sgrMouse;
     this.terminalApplicationCursorKeys = mode.applicationCursorKeys;
     this.terminalApplicationKeypad = mode.applicationKeypad;
+  }
+
+  private replayNativeOutputToXterm(hostId: string): void {
+    const normalizedHostId: string = hostId.trim();
+    if (normalizedHostId.length === 0) { return; }
+    const buffer: TerminalInputBuffer | undefined =
+      this.nativeTerminalInputBuffers.get(normalizedHostId);
+    if (buffer === undefined || buffer.byteLength() === 0) { return; }
+    // Every raw chunk placed in this buffer is also committed to the bounded
+    // transcript. Rebuild the xterm document from that single source instead
+    // of appending the same bytes a second time.
+    buffer.clear();
+    this.terminalFallbackDecodeRemainders.set(normalizedHostId, new Uint8Array(0));
+    this.xtermOutputBuffer.clear();
+    const transcript: string = this.sshTranscriptStore.snapshot(normalizedHostId);
+    if (transcript.length > 0) { this.xtermOutputBuffer.enqueue(transcript); }
+    this.termOutputSequence++;
+  }
+
+  private onNativeRendererReady(hostId: string): void {
+    if (this.terminalClosing || this.hostId.trim() !== hostId.trim() ||
+      !this.shouldUseNativeTerminal()) { return; }
+    this.xtermReady = true;
+    this.focusKeyboard(false);
+    this.requestTerminalScrollToBottomSettled();
+  }
+
+  private onNativeRendererUnavailable(hostId: string): void {
+    if (this.terminalClosing || this.hostId.trim() !== hostId.trim() ||
+      !this.nativeTerminalFormFactor()) { return; }
+    if (this.nativeRendererUnavailable) { return; }
+    hilog.warn(0x0000, 'SshTerminal',
+      '[terminal] native renderer unavailable, fallback host=' + hostId);
+    this.nativeRendererUnavailable = true;
+    this.xtermReady = false;
+    this.replayNativeOutputToXterm(hostId);
+    this.requestTerminalScrollToBottomSettled();
   }
 
   /** 发送文本到 SSH 服务端; 修饰键 active 时由统一策略编码组合。 */
@@ -6298,34 +6467,65 @@ struct SshTerminal {
         }.width('100%').layoutWeight(1).justifyContent(FlexAlign.Center).backgroundColor('#0D0D0D')
       } else {
         Stack({ alignContent: Alignment.TopStart }) {
-          // 终端内容顶部对齐, 虚拟键栏通过 position 绝对定位在底部
-          Stack({ alignContent: Alignment.TopStart }) {
-            SshXtermSurface({
-              coreKey: this.terminalSurfaceBindingKey,
-              cols: this.termCols,
-              rows: this.termRows,
-              viewportWidth: this.termAreaW,
-              fontSize: this.fontSize,
-              lineSpacing: normalizeSshTerminalLineSpacing(this.lineSpacing),
-              bottomAlignSparseContent: !this.isDesktopDevice,
-              viewportHeight: this.terminalPaneHeight(),
-              outputBuffer: this.xtermOutputBuffer,
-              outputSequence: this.termOutputSequence,
-              focusRequest: this.terminalFocusRequest,
-              copyRequest: this.copyRequest,
-              copiedText: this.copiedText,
-              scrollToBottomRequest: this.scrollToBottomRequest,
-              forceScrollToBottomRequest: this.forceScrollToBottomRequest,
-              externalScrollLines: this.terminalExternalScrollLines,
-              externalScrollRequest: this.terminalExternalScrollRequest,
-              onData: (data: string): void => { this.onXtermData(data); },
-              onResize: (cols: number, rows: number): void => {
-                this.onXtermResize(cols, rows);
-              },
-              onReady: (): void => { this.onXtermReady(); }
-            })
-            .width('100%')
-            .height(this.terminalPaneHeight())
+            // 终端内容顶部对齐, 虚拟键栏通过 position 绝对定位在底部
+            Stack({ alignContent: Alignment.TopStart }) {
+            if (this.shouldUseNativeTerminal()) {
+              GpuTerminalRenderer({
+                coreKey: this.hostId,
+                cols: this.termCols,
+                rows: this.termRows,
+                cellWvp: this.cellWvp,
+                cellHvp: this.cellHvp,
+                fontSize: this.fontSize,
+                viewportHeight: this.terminalPaneHeight(),
+                visibleViewportHeight: this.terminalRowsViewportHeight(),
+                bottomAlignSparseContent: !this.isDesktopDevice,
+                inputBuffer: this.nativeTerminalInputBuffer(this.hostId),
+                inputSequence: this.termOutputSequence,
+                copyRequest: $copyRequest,
+                copiedText: $copiedText,
+                scrollToBottomRequest: this.scrollToBottomRequest,
+                forceScrollToBottomRequest: this.forceScrollToBottomRequest,
+                externalScrollLines: this.terminalExternalScrollLines,
+                externalScrollRequest: this.terminalExternalScrollRequest,
+                onTerminalModeChange: (mode: TerminalCoreMode): void => {
+                  this.onTerminalModeChange(mode);
+                },
+                onRendererReady: (): void => { this.onNativeRendererReady(this.hostId); },
+                onRendererUnavailable: (): void => {
+                  this.onNativeRendererUnavailable(this.hostId);
+                }
+              })
+              .width('100%')
+              .height(this.terminalPaneHeight())
+            } else {
+              SshXtermSurface({
+                coreKey: this.terminalSurfaceBindingKey,
+                cols: this.termCols,
+                rows: this.termRows,
+                viewportWidth: this.termAreaW,
+                fontSize: this.fontSize,
+                lineSpacing: normalizeSshTerminalLineSpacing(this.lineSpacing),
+                bottomAlignSparseContent: !this.isDesktopDevice,
+                viewportHeight: this.terminalPaneHeight(),
+                outputBuffer: this.xtermOutputBuffer,
+                outputSequence: this.termOutputSequence,
+                focusRequest: this.terminalFocusRequest,
+                copyRequest: this.copyRequest,
+                copiedText: this.copiedText,
+                scrollToBottomRequest: this.scrollToBottomRequest,
+                forceScrollToBottomRequest: this.forceScrollToBottomRequest,
+                externalScrollLines: this.terminalExternalScrollLines,
+                externalScrollRequest: this.terminalExternalScrollRequest,
+                onData: (data: string): void => { this.onXtermData(data); },
+                onResize: (cols: number, rows: number): void => {
+                  this.onXtermResize(cols, rows);
+                },
+                onReady: (): void => { this.onXtermReady(); }
+              })
+              .width('100%')
+              .height(this.terminalPaneHeight())
+            }
 
             // 隐藏 TextInput — 1×1 可点击, 软键盘锚点
             TextInput({ text: this.kbInput, controller: this.kbCtrl })
