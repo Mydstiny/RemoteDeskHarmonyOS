@@ -12098,6 +12098,7 @@ struct HostListPage {
   private sshProxyTypeLabel(): string {
     if (this.sheetProxyType === 'socks5') { return 'SOCKS5'; }
     if (this.sheetProxyType === 'frp_tcp') { return 'FRP TCP'; }
+    if (this.sheetProxyType === 'ssh_jump') { return 'ProxyJump'; }
     if (this.sheetProxyType === 'legacy_gateway') { return '旧跳板机（需改）'; }
     return 'HTTP CONNECT';
   }
@@ -12107,6 +12108,8 @@ struct HostListPage {
       this.sheetProxyType = 'socks5';
     } else if (this.sheetProxyType === 'socks5') {
       this.sheetProxyType = 'frp_tcp';
+    } else if (this.sheetProxyType === 'frp_tcp') {
+      this.sheetProxyType = 'ssh_jump';
     } else {
       this.sheetProxyType = 'http_connect';
     }
@@ -12887,8 +12890,8 @@ struct HostListPage {
           return;
         }
         if (this.sheetProxyType !== 'http_connect' && this.sheetProxyType !== 'socks5' &&
-          this.sheetProxyType !== 'frp_tcp') {
-          this.sheetErr = '当前传输类型不可用，请选择 HTTP CONNECT、SOCKS5 或 FRP TCP';
+          this.sheetProxyType !== 'frp_tcp' && this.sheetProxyType !== 'ssh_jump') {
+          this.sheetErr = '当前传输类型不可用，请选择 HTTP CONNECT、SOCKS5、FRP TCP 或 ProxyJump';
           return;
         }
         h.proxyHost = this.sheetProxyHost; h.proxyPort = this.sheetProxyPort;

@@ -3017,15 +3017,15 @@ struct SshTerminal {
         width: this.termCols,
         height: this.termRows,
         customHostname: host.customHostname,
-        // SSH proxy is an explicit HTTP CONNECT/SOCKS5 transport choice. A
-        // legacy jump-host record remains rejected until the user selects a
-        // supported proxy type; it is never silently bypassed.
+        // SSH route is explicit. ProxyJump reuses the host credential/key for
+        // the bastion and is never silently downgraded to direct TCP.
         gatewayHost: '',
         gatewayPort: 0,
         sshProxyType: host.proxyHost.length > 0 ? host.sshProxyType : 'direct',
         sshProxyHost: host.proxyHost,
         sshProxyPort: host.proxyPort,
         sshProxyUsername: host.proxyUsername,
+        sshProxyPassword: host.sshProxyType === 'ssh_jump' ? host.password : '',
         domain: '',
         codec: '',
         multiMonitor: false,

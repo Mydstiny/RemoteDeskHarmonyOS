@@ -48,6 +48,11 @@ This file is the compact startup resume card for the active SSH terminal task.
   across an oversized callback.
 - SBOM, NOTICE and third-party scope now include Alacritty and its locked
   transitive crates.
+- ProxyJump route slice is now wired through the SSH-only add/edit flows and
+  native libssh2: a bastion SSH session authenticates with the configured
+  proxy user (or target user) and opens a direct-tcpip channel to the target;
+  a bounded socketpair relay feeds the existing target terminal session.
+  Teardown/recovery joins the relay before freeing the jump session.
 
 ## Homepage Follow-on
 
@@ -62,9 +67,10 @@ This file is the compact startup resume card for the active SSH terminal task.
 - Native SSH currently supports `direct`, `http_connect` and `socks5`.
 - Legacy generic gateway fields fail closed; they are never silently converted
   into a direct SSH connection.
-- SSH ProxyJump/bastion multi-hop, local/remote/dynamic forwarding, FRP
-  `frp_tcp`, Visitor/STCP/SUDP/XTCP and real endpoint interoperability are not
-  implemented in this checkpoint.
+- SSH ProxyJump/bastion now has a native route slice, but real bastion
+  interoperability and host-key/preflight coverage are still pending. Local,
+  remote and dynamic forwarding, FRP Visitor/STCP/SUDP/XTCP and real endpoint
+  interoperability remain unimplemented.
 
 ## Verification
 
@@ -117,4 +123,7 @@ This file is the compact startup resume card for the active SSH terminal task.
   remains pending; cold/large-output/background/PiP/re-entry and 90-second idle
   checks passed.
 - No real OpenSSH bastion/ProxyJump, forwarding or FRP endpoint is available.
+- ProxyJump preflight currently still uses the standalone SSH key-tool path,
+  which does not yet relay through `ssh_jump`; password/terminal route wiring
+  must be verified against a real bastion before claiming completion.
 - `ohosTest@OhosTestCompileArkTS` is unregistered (`00306054`).

@@ -14,6 +14,9 @@ Updated: 2026-08-05 Asia/Shanghai
   signed `4a7642d` HAP, while keeping the old Rust core as an explicit fallback.
 - Keep the review state at the matching PASS receipt; do not claim full
   background SFTP execution, Level A, or Level B connectivity.
+- The first ProxyJump implementation slice is committed, but keep it pending
+  until key preflight, bastion host-key policy and a real OpenSSH endpoint are
+  verified.
 
 ## Next
 
@@ -22,6 +25,8 @@ Updated: 2026-08-05 Asia/Shanghai
 - Real SFTP, bastion, forwarding and FRP endpoint interoperability tests when
   the corresponding services and HDC/device are available.
 - Implement a separate Level B contract for ProxyJump, port forwarding and FRP.
+- Finish ProxyJump preflight/host-key binding, then add local/remote/dynamic
+  forwarding and FRP Visitor/STCP/SUDP/XTCP contracts with endpoint tests.
 
 ## Later
 

@@ -4,11 +4,12 @@
  * wire protocol when a host is saved.
  */
 
-export type SshEndpointTransport = 'http_connect' | 'socks5' | 'frp_tcp';
+export type SshEndpointTransport = 'http_connect' | 'socks5' | 'frp_tcp' | 'ssh_jump';
 
 export function normalizeSshEndpointTransport(value: string): SshEndpointTransport {
   if (value === 'socks5') { return 'socks5'; }
   if (value === 'frp_tcp') { return 'frp_tcp'; }
+  if (value === 'ssh_jump') { return 'ssh_jump'; }
   return 'http_connect';
 }
 

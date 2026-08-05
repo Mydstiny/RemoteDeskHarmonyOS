@@ -9,6 +9,7 @@ export default function sshTransportPolicyTest(): void {
     it('preserves FRP TCP as a raw endpoint when saving', 0, (): void => {
       expect(normalizeSshEndpointTransport('frp_tcp')).assertEqual('frp_tcp');
       expect(normalizeSshEndpointTransport('socks5')).assertEqual('socks5');
+      expect(normalizeSshEndpointTransport('ssh_jump')).assertEqual('ssh_jump');
       expect(normalizeSshEndpointTransport('unknown')).assertEqual('http_connect');
     });
 
@@ -19,6 +20,8 @@ export default function sshTransportPolicyTest(): void {
         .assertEqual('frp_tcp');
       expect(sshEditorTransportForStoredHost('', 'frp_tcp'))
         .assertEqual('http_connect');
+      expect(sshEditorTransportForStoredHost('jump.example', 'ssh_jump'))
+        .assertEqual('ssh_jump');
     });
   });
 }

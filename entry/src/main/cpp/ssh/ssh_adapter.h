@@ -244,6 +244,16 @@ private:
     LIBSSH2_SESSION* session_;
     LIBSSH2_CHANNEL* channel_;
     LIBSSH2_SFTP* sftp_;
+    // ProxyJump owns a second libssh2 session. Its direct-tcpip channel is
+    // pumped by a dedicated relay thread; the target session only sees the
+    // local socketpair endpoint in sockFd_.
+    LIBSSH2_SESSION* jumpSession_ = nullptr;
+    LIBSSH2_CHANNEL* jumpChannel_ = nullptr;
+    int jumpSockFd_ = -1;
+    int jumpRelayFd_ = -1;
+    std::thread jumpRelayThread_;
+    std::atomic<bool> jumpRelayRunning_{false};
+    std::atomic<bool> jumpRelayStopRequested_{false};
     // Serializes SFTP handle ownership and gives disconnect a stable outer
     // lifetime fence while individual network slices release sessionMutex_.
     std::mutex sftpOperationMutex_;
@@ -260,6 +270,10 @@ private:
 
     /** 在已连接的代理 socket 上完成 HTTP CONNECT/SOCKS5 握手。 */
     int connectThroughProxy(const ConnectionConfig& cfg);
+    int connectThroughSshJump(const ConnectionConfig& cfg);
+    void sshJumpRelayLoop();
+    void stopSshJumpRelay();
+    int waitSocketOnFd(int fd, int direction, int timeoutSec);
     int sendSocketBytes(const uint8_t* data, size_t len, int timeoutSec);
     int receiveSocketBytes(uint8_t* data, size_t len, int timeoutSec);
     int receiveProxyHeaders(std::string& headers, size_t maxLen, int timeoutSec);

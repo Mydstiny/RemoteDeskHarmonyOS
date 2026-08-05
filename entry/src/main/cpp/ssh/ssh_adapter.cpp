@@ -24,6 +24,7 @@
 #include <mutex>
 #include <chrono>
 #include <cstdlib>
+#include <array>
 #include <vector>
 #include <algorithm>
 #include <limits>
@@ -310,6 +311,31 @@ int SshAdapter::waitSocketMilliseconds(int direction, int timeoutMs) {
     }
 }
 
+int SshAdapter::waitSocketOnFd(int fd, int direction, int timeoutSec) {
+    if (fd < 0) { return -1; }
+    const int timeoutMilliseconds = std::max(1, timeoutSec) * 1000;
+    const auto deadline = std::chrono::steady_clock::now() +
+        std::chrono::milliseconds(timeoutMilliseconds);
+    while (true) {
+        if (connectCancelRequested_.load(std::memory_order_acquire)) { return -3; }
+        const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+            deadline - std::chrono::steady_clock::now()).count();
+        if (remaining <= 0) { return -2; }
+        fd_set rfds;
+        fd_set wfds;
+        FD_ZERO(&rfds);
+        FD_ZERO(&wfds);
+        if (direction == 0 || direction == 2) { FD_SET(fd, &rfds); }
+        if (direction == 1 || direction == 2) { FD_SET(fd, &wfds); }
+        const int sliceMs = static_cast<int>(std::min<int64_t>(remaining, 100));
+        struct timeval tv = { sliceMs / 1000, (sliceMs % 1000) * 1000 };
+        const int ret = select(fd + 1, &rfds, &wfds, nullptr, &tv);
+        if (ret < 0 && errno == EINTR) { continue; }
+        if (ret < 0) { return -1; }
+        if (ret > 0) { return 0; }
+    }
+}
+
 // ============================================================
 // TCP 连接
 // ============================================================
@@ -492,6 +518,9 @@ int SshAdapter::connectThroughProxy(const ConnectionConfig& cfg) {
         // to send; the SSH handshake starts on the mapped socket directly.
         return tcpConnect(cfg.sshProxyHost, cfg.sshProxyPort);
     }
+    if (type == "ssh_jump") {
+        return connectThroughSshJump(cfg);
+    }
     if (type != "http_connect" && type != "socks5") {
         OH_LOG_ERROR(LOG_APP, "[SSH] 不支持的代理类型: %{public}s", type.c_str());
         return ERR_SSH_PROXY_INVALID;
@@ -639,6 +668,216 @@ int SshAdapter::connectThroughProxy(const ConnectionConfig& cfg) {
     OH_LOG_INFO(LOG_APP, "[SSH] SOCKS5 代理握手成功 target=%{public}s:%{public}d",
                 SafeLog::MaskHost(targetHost).c_str(), targetPort);
     return 0;
+}
+
+int SshAdapter::connectThroughSshJump(const ConnectionConfig& cfg) {
+    if (cfg.sshProxyHost.empty() || cfg.sshProxyPort <= 0 || cfg.sshProxyPort > 65535 ||
+        cfg.host.empty() || cfg.port <= 0 || cfg.port > 65535) {
+        return ERR_SSH_PROXY_INVALID;
+    }
+
+    const int ret = tcpConnect(cfg.sshProxyHost, cfg.sshProxyPort);
+    if (ret != 0) { return ret; }
+    jumpSockFd_ = sockFd_;
+    sockFd_ = -1;
+
+    auto fail = [this](int code) {
+        if (jumpChannel_ != nullptr) {
+            libssh2_channel_free(jumpChannel_);
+            jumpChannel_ = nullptr;
+        }
+        if (jumpSession_ != nullptr) {
+            libssh2_session_disconnect(jumpSession_, "ProxyJump setup failed");
+            libssh2_session_free(jumpSession_);
+            jumpSession_ = nullptr;
+        }
+        if (jumpSockFd_ >= 0) {
+            shutdown(jumpSockFd_, SHUT_RDWR);
+            close(jumpSockFd_);
+            jumpSockFd_ = -1;
+        }
+        return code;
+    };
+
+    jumpSession_ = libssh2_session_init();
+    if (jumpSession_ == nullptr) { return fail(ERR_SSH_SESSION_INIT); }
+    libssh2_session_set_blocking(jumpSession_, 0);
+
+    int rc = 0;
+    while ((rc = libssh2_session_handshake(jumpSession_, jumpSockFd_)) ==
+           LIBSSH2_ERROR_EAGAIN) {
+        if (waitSocketOnFd(jumpSockFd_, 2, 30) != 0) {
+            return fail(ERR_SSH_KEX_TIMEOUT);
+        }
+    }
+    if (rc != 0) {
+        OH_LOG_ERROR(LOG_APP, "[SSH] ProxyJump 跳板机握手失败 rc=%{public}d", rc);
+        return fail(ERR_SSH_KEX_FAILED);
+    }
+
+    const std::string jumpUsername = cfg.sshProxyUsername.empty()
+        ? cfg.username : cfg.sshProxyUsername;
+    const std::string jumpPassword = cfg.sshProxyPassword.empty()
+        ? cfg.password : cfg.sshProxyPassword;
+    if (jumpUsername.empty()) { return fail(ERR_SSH_PROXY_INVALID); }
+    if (cfg.authMethod == "publickey" && !cfg.privateKeyPem.empty()) {
+        const char* passphrase = cfg.privateKeyPassphrase.empty()
+            ? nullptr : cfg.privateKeyPassphrase.c_str();
+        while ((rc = libssh2_userauth_publickey_frommemory(
+                    jumpSession_, jumpUsername.c_str(), jumpUsername.size(),
+                    nullptr, 0, cfg.privateKeyPem.c_str(), cfg.privateKeyPem.size(),
+                    passphrase)) == LIBSSH2_ERROR_EAGAIN) {
+            if (waitSocketOnFd(jumpSockFd_, 2, 30) != 0) {
+                return fail(ERR_SSH_AUTH_TIMEOUT);
+            }
+        }
+    } else {
+        while ((rc = libssh2_userauth_password(
+                    jumpSession_, jumpUsername.c_str(), jumpPassword.c_str())) ==
+               LIBSSH2_ERROR_EAGAIN) {
+            if (waitSocketOnFd(jumpSockFd_, 2, 30) != 0) {
+                return fail(ERR_SSH_AUTH_TIMEOUT);
+            }
+        }
+    }
+    if (rc != 0 || !libssh2_userauth_authenticated(jumpSession_)) {
+        OH_LOG_ERROR(LOG_APP, "[SSH] ProxyJump 跳板机认证失败 rc=%{public}d", rc);
+        return fail(ERR_SSH_PROXY_AUTH);
+    }
+
+    std::string targetHost = cfg.host;
+    if (targetHost.size() >= 2 && targetHost.front() == '[' && targetHost.back() == ']') {
+        targetHost = targetHost.substr(1, targetHost.size() - 2);
+    }
+    while ((jumpChannel_ = libssh2_channel_direct_tcpip_ex(
+                jumpSession_, targetHost.c_str(), cfg.port, "127.0.0.1", 22)) == nullptr) {
+        if (libssh2_session_last_errno(jumpSession_) != LIBSSH2_ERROR_EAGAIN) {
+            return fail(ERR_SSH_PROXY_FAILED);
+        }
+        if (waitSocketOnFd(jumpSockFd_, 2, 30) != 0) {
+            return fail(ERR_SSH_CONNECT_TIMEOUT);
+        }
+    }
+
+    int socketPair[2] = {-1, -1};
+    if (socketpair(AF_UNIX, SOCK_STREAM, 0, socketPair) != 0) {
+        return fail(ERR_SSH_SOCKET_CREATE);
+    }
+    for (int fd : socketPair) {
+        const int flags = fcntl(fd, F_GETFL, 0);
+        if (flags < 0 || fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0) {
+            close(socketPair[0]);
+            close(socketPair[1]);
+            return fail(ERR_SSH_SOCKET_CREATE);
+        }
+    }
+    sockFd_ = socketPair[0];
+    jumpRelayFd_ = socketPair[1];
+    jumpRelayStopRequested_.store(false, std::memory_order_release);
+    jumpRelayRunning_.store(true, std::memory_order_release);
+    jumpRelayThread_ = std::thread(&SshAdapter::sshJumpRelayLoop, this);
+    OH_LOG_INFO(LOG_APP, "[SSH] ProxyJump 路由已建立 target=%{public}s:%{public}d",
+                SafeLog::MaskHost(targetHost).c_str(), cfg.port);
+    return 0;
+}
+
+void SshAdapter::sshJumpRelayLoop() {
+    constexpr size_t kRelayBufferLimit = 512 * 1024;
+    std::vector<uint8_t> toChannel;
+    std::vector<uint8_t> toLocal;
+    bool localEof = false;
+    bool channelEof = false;
+    std::array<uint8_t, SSH_BUFFER_SIZE> buffer {};
+
+    while (!jumpRelayStopRequested_.load(std::memory_order_acquire)) {
+        bool progress = false;
+        if (!localEof && toChannel.size() < kRelayBufferLimit) {
+            const ssize_t received = recv(jumpRelayFd_, buffer.data(), buffer.size(), MSG_DONTWAIT);
+            if (received > 0) {
+                toChannel.insert(toChannel.end(), buffer.begin(), buffer.begin() + received);
+                progress = true;
+            } else if (received == 0) {
+                localEof = true;
+                libssh2_channel_send_eof(jumpChannel_);
+            } else if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) {
+                break;
+            }
+        }
+        if (!toChannel.empty()) {
+            const ssize_t written = libssh2_channel_write(
+                jumpChannel_, reinterpret_cast<const char*>(toChannel.data()), toChannel.size());
+            if (written > 0) {
+                toChannel.erase(toChannel.begin(), toChannel.begin() + written);
+                progress = true;
+            } else if (written < 0 && written != LIBSSH2_ERROR_EAGAIN) {
+                break;
+            }
+        }
+        if (!channelEof && toLocal.size() < kRelayBufferLimit) {
+            const ssize_t received = libssh2_channel_read(
+                jumpChannel_, reinterpret_cast<char*>(buffer.data()), buffer.size());
+            if (received > 0) {
+                toLocal.insert(toLocal.end(), buffer.begin(), buffer.begin() + received);
+                progress = true;
+            } else if (received == 0 && libssh2_channel_eof(jumpChannel_)) {
+                channelEof = true;
+                shutdown(jumpRelayFd_, SHUT_WR);
+            } else if (received < 0 && received != LIBSSH2_ERROR_EAGAIN) {
+                break;
+            }
+        }
+        if (!toLocal.empty()) {
+            const ssize_t written = send(jumpRelayFd_, toLocal.data(), toLocal.size(), MSG_DONTWAIT);
+            if (written > 0) {
+                toLocal.erase(toLocal.begin(), toLocal.begin() + written);
+                progress = true;
+            } else if (written < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) {
+                break;
+            }
+        }
+        if (localEof && channelEof && toChannel.empty() && toLocal.empty()) { break; }
+        if (progress) { continue; }
+
+        fd_set readSet;
+        fd_set writeSet;
+        FD_ZERO(&readSet);
+        FD_ZERO(&writeSet);
+        FD_SET(jumpRelayFd_, &readSet);
+        if (!toLocal.empty()) { FD_SET(jumpRelayFd_, &writeSet); }
+        FD_SET(jumpSockFd_, &readSet);
+        FD_SET(jumpSockFd_, &writeSet);
+        const int maxFd = std::max(jumpRelayFd_, jumpSockFd_);
+        struct timeval tv = {0, 100000};
+        const int selected = select(maxFd + 1, &readSet, &writeSet, nullptr, &tv);
+        if (selected < 0 && errno != EINTR) { break; }
+    }
+    jumpRelayRunning_.store(false, std::memory_order_release);
+}
+
+void SshAdapter::stopSshJumpRelay() {
+    jumpRelayStopRequested_.store(true, std::memory_order_release);
+    if (jumpRelayFd_ >= 0) { shutdown(jumpRelayFd_, SHUT_RDWR); }
+    if (jumpSockFd_ >= 0) { shutdown(jumpSockFd_, SHUT_RDWR); }
+    if (jumpRelayThread_.joinable() && jumpRelayThread_.get_id() != std::this_thread::get_id()) {
+        jumpRelayThread_.join();
+    }
+    jumpRelayRunning_.store(false, std::memory_order_release);
+    if (jumpChannel_ != nullptr) {
+        libssh2_channel_free(jumpChannel_);
+        jumpChannel_ = nullptr;
+    }
+    if (jumpSession_ != nullptr) {
+        libssh2_session_free(jumpSession_);
+        jumpSession_ = nullptr;
+    }
+    if (jumpRelayFd_ >= 0) {
+        close(jumpRelayFd_);
+        jumpRelayFd_ = -1;
+    }
+    if (jumpSockFd_ >= 0) {
+        close(jumpSockFd_);
+        jumpSockFd_ = -1;
+    }
 }
 
 // exchangeBanner() 已移除 — libssh2_session_handshake 内部处理 banner 交换
@@ -1239,6 +1478,7 @@ void SshAdapter::disconnect() {
     // teardown wait forever for a command that cannot acquire the lock.
     stopTerminalInput();
     stopReader();
+    stopSshJumpRelay();
 
     std::lock_guard<std::recursive_mutex> lifecycleLock(lifecycleMutex_);
 
@@ -1298,6 +1538,7 @@ void SshAdapter::resetTransportForRecovery() {
     // the recursive lifecycle gate. Keep savedCfg_ and the data callback: the
     // next handshake must use the same explicit host-key policy and consumer.
     stopTerminalInput();
+    stopSshJumpRelay();
 
     std::lock_guard<std::recursive_mutex> lifecycleLock(lifecycleMutex_);
     std::lock_guard<std::mutex> sftpLock(sftpOperationMutex_);
