@@ -278,6 +278,12 @@ struct SshTerminal {
   @State terminalSurfaceGeneration: number = 0;
   /** Observable identity for the currently mounted xterm document. */
   @State terminalSurfaceBindingKey: string = '';
+  /**
+   * Explicit ArkUI subtree revision. A new binding can have the same host and
+   * session after a surface recovery, so the binding identity alone is not a
+   * sufficient child key for a full component lifecycle restart.
+   */
+  @State terminalSurfaceRenderRevision: number = 0;
   /** Pad/PC native renderer failure is scoped to this visible binding only. */
   @State nativeRendererUnavailable: boolean = false;
   /** 选区模式 — 长按菜单"选择"开启, 传给 TerminalEmulator 改变 touch 行为 */
@@ -665,6 +671,10 @@ struct SshTerminal {
         return;
       }
       this.terminalSurfaceBindingKey = bindingKey;
+      // Keep the revision independent from the host/session identity. This
+      // forces ArkUI to replace a stale XComponent/WebView even when the
+      // native session is intentionally retained across a view rebind.
+      this.terminalSurfaceRenderRevision = this.terminalSurfaceRenderRevision + 1;
       this.terminalSurfaceMounted = true;
       if (this.terminalRendererReadyTimer !== -1) {
         clearTimeout(this.terminalRendererReadyTimer);
@@ -6537,11 +6547,15 @@ struct SshTerminal {
             // ArkUI 的 id 只用于查询，不是子树复用键。让 binding key
             // 直接控制终端组件实例，切换主机时不复用旧画布。
             Stack({ alignContent: Alignment.TopStart }) {
-            ForEach([this.terminalSurfaceBindingKey], (surfaceKey: string): void => {
+            ForEach([
+              this.visibleSshHostId + ':' + this.terminalSurfaceBindingKey + ':' +
+                this.terminalSurfaceRenderRevision.toString() + ':' +
+                (this.shouldUseNativeTerminal() ? 'native' : 'xterm')
+            ], (_surfaceRenderKey: string): void => {
             if (this.shouldUseNativeTerminal()) {
               GpuTerminalRenderer({
                 coreKey: this.visibleSshHostId,
-                surfaceIdentity: surfaceKey,
+                surfaceIdentity: this.terminalSurfaceBindingKey,
                 cols: this.termCols,
                 rows: this.termRows,
                 cellWvp: this.cellWvp,
@@ -6572,7 +6586,7 @@ struct SshTerminal {
               .height(this.terminalPaneHeight())
             } else {
               SshXtermSurface({
-                coreKey: surfaceKey,
+                coreKey: this.terminalSurfaceBindingKey,
                 cols: this.termCols,
                 rows: this.termRows,
                 viewportWidth: this.termAreaW,
@@ -6602,7 +6616,7 @@ struct SshTerminal {
               .width('100%')
               .height(this.terminalPaneHeight())
             }
-            }, (surfaceKey: string): string => surfaceKey)
+            }, (surfaceRenderKey: string): string => surfaceRenderKey)
 
             // 隐藏 TextInput — 1×1 可点击, 软键盘锚点
             TextInput({ text: this.kbInput, controller: this.kbCtrl })
@@ -6796,7 +6810,8 @@ struct SshTerminal {
     }
       .width('100%').height('100%').backgroundColor('#0D0D0D')
       .id('ssh-terminal-pane-' + this.visibleSshHostId + ':' +
-        this.terminalSurfaceGeneration.toString() + ':' + this.terminalSurfaceBindingKey)
+        this.terminalSurfaceGeneration.toString() + ':' + this.terminalSurfaceBindingKey + ':' +
+        this.terminalSurfaceRenderRevision.toString())
       if (this.showSftpPanel && this.sftpWideLayout()) {
         Column() {
           this.SftpTransferSheet()
