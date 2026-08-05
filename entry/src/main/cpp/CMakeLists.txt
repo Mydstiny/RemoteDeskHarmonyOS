@@ -101,6 +101,8 @@ set(VNC_SOURCES
 # -- 终端核心 (Rust terminal_core NAPI bridge) --
 set(TERMINAL_SOURCES
     terminal/terminal_core_napi.cpp
+    terminal/ssh_terminal_renderer.cpp
+    terminal/ssh_terminal_renderer_napi.cpp
 )
 
 # -- 安全管理 --
@@ -414,6 +416,7 @@ target_link_libraries(rdpnapi PUBLIC
     libGLESv3.so           # OpenGL ES 3.0
     libnative_image.so     # NativeImage 零拷贝纹理
     libnative_window.so    # SurfaceId -> OHNativeWindow
+    libnative_drawing.so   # OH_Drawing 终端画布
 )
 
 # 多媒体 (硬件解码)
