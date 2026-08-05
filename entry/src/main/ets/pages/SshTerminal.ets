@@ -377,6 +377,8 @@ struct SshTerminal {
   /** Separates old-surface teardown from the next surface mount by one frame. */
   private terminalSurfaceMountTimer: number = -1;
   private terminalSurfaceMountToken: number = 0;
+  /** Prevents repeated connected-state probes from starving one mount turn. */
+  private terminalSurfacePendingBindingKey: string = '';
   /** 功能开关: true=使用 Rust terminal_core 渲染 (NativeTerminalRenderer), false=旧 TerminalEmulator */
 
   // cellH/cellW 由字号推算, 与 Canvas 字体单位保持一致
@@ -564,9 +566,9 @@ struct SshTerminal {
       this.hostId.trim() === hostId.trim();
   }
 
-  /** 手机继续使用原有 ArkWeb/xterm；Pad/PC 使用 native XComponent。 */
+  /** All SSH form factors use the native VT renderer; xterm is failure-only fallback. */
   private nativeTerminalFormFactor(): boolean {
-    return this.isDesktopDevice || this.breakpoint !== 'sm';
+    return true;
   }
 
   private shouldUseNativeTerminal(): boolean {
@@ -609,6 +611,7 @@ struct SshTerminal {
       clearTimeout(this.terminalSurfaceMountTimer);
       this.terminalSurfaceMountTimer = -1;
     }
+    this.terminalSurfacePendingBindingKey = '';
     this.terminalSurfaceBindingKey = '';
     this.terminalSurfaceMounted = false;
     this.xtermReady = false;
@@ -630,6 +633,10 @@ struct SshTerminal {
     if (this.terminalSurfaceMounted && this.terminalSurfaceBindingKey === bindingKey) {
       return;
     }
+    if (this.terminalSurfaceMountTimer !== -1 &&
+      this.terminalSurfacePendingBindingKey === bindingKey) {
+      return;
+    }
     // A native state probe can request the same binding while the previous
     // mount turn is still pending. Replace that turn with the newest binding
     // instead of silently leaving the page behind the loading view.
@@ -641,8 +648,10 @@ struct SshTerminal {
     this.xtermReady = false;
     this.terminalSurfaceBindingKey = '';
     const mountToken: number = ++this.terminalSurfaceMountToken;
+    this.terminalSurfacePendingBindingKey = bindingKey;
     this.terminalSurfaceMountTimer = setTimeout((): void => {
       this.terminalSurfaceMountTimer = -1;
+      this.terminalSurfacePendingBindingKey = '';
       if (mountToken !== this.terminalSurfaceMountToken ||
         !this.isSshBindingActive(pageGeneration, bindingGeneration, bindingHostId) ||
         this.sessionId !== bindingSessionId || !this.connected || this.terminalClosing) {
@@ -6497,12 +6506,14 @@ struct SshTerminal {
         }.width('100%').layoutWeight(1).justifyContent(FlexAlign.Center).backgroundColor('#0D0D0D')
       } else {
         Stack({ alignContent: Alignment.TopStart }) {
-            // 终端内容顶部对齐, 虚拟键栏通过 position 绝对定位在底部
+            // ArkUI 的 id 只用于查询，不是子树复用键。让 binding key
+            // 直接控制终端组件实例，切换主机时不复用旧画布。
             Stack({ alignContent: Alignment.TopStart }) {
+            ForEach([this.terminalSurfaceBindingKey], (surfaceKey: string): void => {
             if (this.shouldUseNativeTerminal()) {
               GpuTerminalRenderer({
                 coreKey: this.visibleSshHostId,
-                surfaceIdentity: this.terminalSurfaceBindingKey,
+                surfaceIdentity: surfaceKey,
                 cols: this.termCols,
                 rows: this.termRows,
                 cellWvp: this.cellWvp,
@@ -6533,7 +6544,7 @@ struct SshTerminal {
               .height(this.terminalPaneHeight())
             } else {
               SshXtermSurface({
-                coreKey: this.terminalSurfaceBindingKey,
+                coreKey: surfaceKey,
                 cols: this.termCols,
                 rows: this.termRows,
                 viewportWidth: this.termAreaW,
@@ -6563,6 +6574,7 @@ struct SshTerminal {
               .width('100%')
               .height(this.terminalPaneHeight())
             }
+            }, (surfaceKey: string): string => surfaceKey)
 
             // 隐藏 TextInput — 1×1 可点击, 软键盘锚点
             TextInput({ text: this.kbInput, controller: this.kbCtrl })
