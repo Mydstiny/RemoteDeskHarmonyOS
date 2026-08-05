@@ -40,6 +40,9 @@ import { showLockGate, lockGateErrorMessage } from '../components/LockGate';
 import { TerminalEmulator } from '../components/TerminalEmulator';
 import { NativeTerminalRenderer, TerminalInputBuffer } from '../components/NativeTerminalRenderer';
 import { TerminalCoreBridge } from '../napi/TerminalCoreBridge';
+import { GpuTerminalRenderer } from '../components/GpuTerminalRenderer';
+import { SshTerminalRendererBridge } from '../napi/SshTerminalRendererBridge';
+import { SshTerminalRendererRegistry } from '../services/SshTerminalRendererRegistry';
 import {
   SessionConfig,
   SftpFileEntry,
@@ -337,6 +340,9 @@ struct SshTerminal {
   private tabNavigationPending: boolean = false;
   /** 功能开关: true=使用 Rust terminal_core 渲染 (NativeTerminalRenderer), false=旧 TerminalEmulator */
   @StorageProp('useNativeTerminalCore') useNativeTerminalCore: boolean = true;
+  /** 原生 GPU 渲染器 (XComponent + OH_Drawing); native 符号缺失时回退 Canvas 渲染器 */
+  private gpuTerminalBridge: SshTerminalRendererBridge = new SshTerminalRendererBridge();
+  private gpuRendererRegistry: SshTerminalRendererRegistry = SshTerminalRendererRegistry.getInstance();
 
   // cellH/cellW 由字号推算, 与 Canvas 字体单位保持一致
   @State cellHvp: number = 20;
@@ -2528,6 +2534,7 @@ struct SshTerminal {
         }
       }
       this.terminalCoreRegistry.destroyAll(new TerminalCoreBridge());
+      this.gpuRendererRegistry.destroyAll(this.gpuTerminalBridge);
       if (requestSessionId > 0) {
         this.loader.disconnectSshSession(requestSessionId);
       } else {
@@ -5896,31 +5903,56 @@ struct SshTerminal {
           // 终端内容顶部对齐, 虚拟键栏通过 position 绝对定位在底部
           Stack({ alignContent: Alignment.TopStart }) {
             if (this.useNativeTerminalCore) {
-              NativeTerminalRenderer({
-                coreKey: this.hostId,
-                cols: this.termCols,
-                rows: this.termRows,
-                viewportWidth: this.termAreaW,
-                cellWvp: this.cellWvp,
-                cellHvp: this.cellHvp,
-                fontSize: this.renderFontVp,
-                viewportHeight: this.terminalPaneHeight(),
-                visibleViewportHeight: this.terminalRowsViewportHeight(),
-                inputBuffer: this.terminalInputBuffer,
-                inputSequence: this.termOutputSequence,
-                selectMode: this.selectMode,
-                bottomAlignSparseContent: !this.isDesktopDevice,
-                copyRequest: this.copyRequest,
-                copiedText: this.copiedText,
-                scrollToBottomRequest: this.scrollToBottomRequest,
-                forceScrollToBottomRequest: this.forceScrollToBottomRequest,
-                externalScrollLines: this.terminalExternalScrollLines,
-                externalScrollRequest: this.terminalExternalScrollRequest,
-                onData: (data: string): void => { this.onTerminalData(data); },
-                onTerminalModeChange: (mode: TerminalCoreMode): void => {
-                  this.onTerminalModeChange(mode);
-                }
-              })
+              if (this.gpuTerminalBridge.isAvailable()) {
+                GpuTerminalRenderer({
+                  coreKey: this.hostId,
+                  cols: this.termCols,
+                  rows: this.termRows,
+                  cellWvp: this.cellWvp,
+                  cellHvp: this.cellHvp,
+                  fontSize: this.renderFontVp,
+                  viewportHeight: this.terminalPaneHeight(),
+                  visibleViewportHeight: this.terminalRowsViewportHeight(),
+                  inputBuffer: this.terminalInputBuffer,
+                  inputSequence: this.termOutputSequence,
+                  bottomAlignSparseContent: !this.isDesktopDevice,
+                  copyRequest: this.copyRequest,
+                  copiedText: this.copiedText,
+                  scrollToBottomRequest: this.scrollToBottomRequest,
+                  forceScrollToBottomRequest: this.forceScrollToBottomRequest,
+                  externalScrollLines: this.terminalExternalScrollLines,
+                  externalScrollRequest: this.terminalExternalScrollRequest,
+                  onTerminalModeChange: (mode: TerminalCoreMode): void => {
+                    this.onTerminalModeChange(mode);
+                  }
+                })
+              } else {
+                NativeTerminalRenderer({
+                  coreKey: this.hostId,
+                  cols: this.termCols,
+                  rows: this.termRows,
+                  viewportWidth: this.termAreaW,
+                  cellWvp: this.cellWvp,
+                  cellHvp: this.cellHvp,
+                  fontSize: this.renderFontVp,
+                  viewportHeight: this.terminalPaneHeight(),
+                  visibleViewportHeight: this.terminalRowsViewportHeight(),
+                  inputBuffer: this.terminalInputBuffer,
+                  inputSequence: this.termOutputSequence,
+                  selectMode: this.selectMode,
+                  bottomAlignSparseContent: !this.isDesktopDevice,
+                  copyRequest: this.copyRequest,
+                  copiedText: this.copiedText,
+                  scrollToBottomRequest: this.scrollToBottomRequest,
+                  forceScrollToBottomRequest: this.forceScrollToBottomRequest,
+                  externalScrollLines: this.terminalExternalScrollLines,
+                  externalScrollRequest: this.terminalExternalScrollRequest,
+                  onData: (data: string): void => { this.onTerminalData(data); },
+                  onTerminalModeChange: (mode: TerminalCoreMode): void => {
+                    this.onTerminalModeChange(mode);
+                  }
+                })
+              }
             } else {
               TerminalEmulator({
                 cols: this.termCols,
