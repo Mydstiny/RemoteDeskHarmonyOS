@@ -7,10 +7,11 @@ Updated: 2026-08-05 Asia/Shanghai
 - SFTP checkpoint is closed for the implemented integrity, durable metadata,
   local-provider and Pad/PC workspace scope; do not expand it in this pass.
 - Alacritty `0.26.0` is now the default VT core behind terminalCore; the
-  reactor keepalive, PiP/session lifecycle and bounded Canvas consumption are
-  committed; cold/large-output/background/re-entry acceptance is recorded.
+  reactor keepalive, PiP/session lifecycle, bounded Canvas consumption and
+  IME/socket diagnostics are committed; the fresh signed HAP passed cold,
+  large-output, background/re-entry and 90-second idle acceptance.
 - User-accept the remaining external-keyboard/third-party-IME paths on the
-  signed HAP, while keeping the old Rust core as an explicit fallback.
+  signed `4a7642d` HAP, while keeping the old Rust core as an explicit fallback.
 - Keep the review state at the matching PASS receipt; do not claim full
   background SFTP execution, Level A, or Level B connectivity.
 
@@ -30,9 +31,9 @@ Updated: 2026-08-05 Asia/Shanghai
 
 ## Evidence Gaps
 
-- HDC target `5KLBB25928203528` passed cold SSH, large output, Home retention,
-  PiP/re-entry and resumed-command checks; real external keyboard/IME coverage
-  remains an evidence gap.
+- HDC target `5KLBB25928203528` passed cold SSH, ordered input, large output,
+  Home retention, PiP/re-entry and 90-second idle command checks; real external
+  keyboard/IME coverage remains an evidence gap.
 - `ohosTest@OhosTestCompileArkTS` is unregistered (`00306054`).
 - Light compliance is blocked by baseline SBOM package
   `totp-reviewed-brand-assets` with `licenseDeclared=NOASSERTION`.

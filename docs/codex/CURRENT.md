@@ -7,10 +7,9 @@ This file is the compact startup resume card for the active SSH terminal task.
 - Task: `ssh-terminal-complete-upgrade`
 - Base: `main@d2769ad4b`
 - Branch: `codex/ssh-terminal-complete-upgrade`
-- Code checkpoint: `e51e371` (bounded output/frame consumption on Alacritty/lifecycle/VT parity).
-- Phase: Alacritty default; lifecycle, VT/Unicode/resize/TUI/large-output parity, damage checks and available device acceptance pass.
-- Scope: migrate VT behind terminalCore, keep appearance settings in-core, and
-  verify IME/input/Canvas behavior. Homepage work is not current focus.
+- Code checkpoint: `4a7642d` (IME line-break isolation and socket diagnostics on top of bounded output/frame consumption).
+- Phase: Alacritty default; lifecycle, VT/Unicode/resize/TUI/large-output parity, damage checks and available device acceptance ready.
+- Scope: migrate VT behind terminalCore, keep appearance settings in-core, verify IME/input/Canvas behavior. Homepage work is not current focus.
 
 ## Progress
 
@@ -35,11 +34,9 @@ This file is the compact startup resume card for the active SSH terminal task.
 - The SFTP checkpoint is closed for integrity, task metadata, local-provider
   and Pad/PC workspace; background payload execution remains page-owned and
   real provider/endpoint acceptance is pending.
-- WP-T4 first migration slice is implemented: `alacritty_terminal` `0.26.0` is
-  default behind terminalCore; the old Rust core remains a no-default fallback.
+- WP-T4 first migration slice is implemented: `alacritty_terminal` `0.26.0` is default behind terminalCore; the old Rust core remains a no-default fallback.
 - `sshTerminalForegroundColor` is ARGB through NAPI; ANSI colors remain independent, and font size stays in Canvas for cell geometry.
-- The SSH owner reactor now sends bounded non-blocking libssh2 keepalives and
-  retries transient failures without taking a second session owner.
+- The SSH owner reactor now sends bounded non-blocking libssh2 keepalives and retries transient failures without taking a second session owner.
 - SSH background continuity and custom PiP ownership are isolated from the
   RDP/RustDesk/VNC services; teardown is serialized on foreground/Ability exit.
 - PiP auto-start now requires an explicitly prepared/preparing PiP session, and
@@ -78,10 +75,9 @@ This file is the compact startup resume card for the active SSH terminal task.
 - Rust `cargo test --manifest-path rustdesk_ffi/Cargo.toml --lib
   --no-default-features`: `156 passed, 1 failed, 157 total`; the remaining
   failure is the existing rendezvous fixture's public-address assertion.
-- `default@OhosTestCompileArkTS`: passed for `e51e371` on 2026-08-05, warnings
-  only.
-- `assembleHap`: passed for `e51e371` on 2026-08-05 with `BUILD SUCCESSFUL`
-  and signing.
+- `default@OhosTestCompileArkTS`: passed for `4a7642d` on 2026-08-05, warnings only.
+- `assembleHap`: passed for `4a7642d` on 2026-08-05 with `BUILD SUCCESSFUL`
+  and signing; HAP SHA-256 is `313ceb321cc1767ef245d801808e7b1864c0b40c3aa28969324f3d1574d46696`.
 - Terminal-core Rust tests: Alacritty path `63 passed, 0 failed`; fallback
   path `57 passed, 0 failed`.
 - OHOS Rust checks: `aarch64-unknown-linux-ohos` and
@@ -92,14 +88,17 @@ This file is the compact startup resume card for the active SSH terminal task.
 - `ohosTest@OhosTestCompileArkTS`: blocked; task is not registered (`00306054`).
 - Light compliance: blocked by baseline SBOM package
   `totp-reviewed-brand-assets` with `licenseDeclared=NOASSERTION`.
-- HDC target `5KLBB25928203528`: cold SSH connected, `yes A | head -c
-  300000; echo LARGE_OK` completed, Home showed the retained SSH session, the
-  app re-entered the same terminal/PiP state, and `echo RESUMED_OK` executed.
+- HDC target `5KLBB25928203528`: cold SSH connected; injected `ORDER_A` and
+  `yes A | head -c 300000; echo LARGE_OK` completed; second entry matched the
+  first; Home showed the retained SSH PiP; `RESUMED_OK`, `IDLE_OK` and
+  `IDLE_90_OK` executed after about 90 seconds idle; fresh `4a7642d` HAP
+  executed `FRESH_4A_OK`.
 
 ## Review
 
-- The existing independent reviewer passed the final bounded-output increment;
-  the committed scope now matches the PASS receipt and can skip full review.
+- The existing independent reviewer passed the final bounded-output increment
+  and the later IME/socket diagnostic increment; the committed scope now
+  matches the PASS receipt and can skip full review.
 - The SFTP checkpoint is scope-complete for this pass, but its real-device and
   endpoint evidence is not a completion claim for Level A.
 - Device evidence covers injected input and the available lifecycle path; true
@@ -108,13 +107,14 @@ This file is the compact startup resume card for the active SSH terminal task.
 
 ## Next
 
-1. User-accept IME/physical-keyboard behavior on the signed `e51e371` HAP.
+1. User-accept IME/physical-keyboard behavior on the signed `4a7642d` HAP.
 2. Keep ProxyJump, forwarding and FRP disabled until contracts and real
    endpoints exist; implement them as a separate Level B task.
 
 ## Blockers
 
 - Full external-keyboard/third-party-IME and SFTP lifecycle/provider acceptance
-  remains pending; cold/large-output/background/PiP/re-entry checks passed.
+  remains pending; cold/large-output/background/PiP/re-entry and 90-second idle
+  checks passed.
 - No real OpenSSH bastion/ProxyJump, forwarding or FRP endpoint is available.
 - `ohosTest@OhosTestCompileArkTS` is unregistered (`00306054`).
