@@ -34,6 +34,7 @@ interface SshTerminalRendererNativeModule {
     widthPx: number, heightPx: number) => boolean;
   sshTerminalRendererDetachSurface?: (handle: number) => void;
   sshTerminalRendererWriteBytes?: (handle: number, data: ArrayBuffer) => void;
+  sshTerminalRendererRefresh?: (handle: number) => void;
   sshTerminalRendererResize?: (handle: number, cols: number, rows: number,
     cellWidthPx: number, cellHeightPx: number, fontSizePx: number) => void;
   sshTerminalRendererSetAppearance?: (handle: number, fontSizePx: number,
@@ -93,6 +94,11 @@ export class SshTerminalRendererBridge {
   writeBytes(handle: number, data: ArrayBuffer): void {
     if (handle === 0) { return; }
     this.native.sshTerminalRendererWriteBytes?.(handle, data);
+  }
+
+  refresh(handle: number): void {
+    if (handle === 0) { return; }
+    this.native.sshTerminalRendererRefresh?.(handle);
   }
 
   resize(handle: number, cols: number, rows: number,

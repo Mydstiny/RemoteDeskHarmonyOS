@@ -176,6 +176,7 @@ export const VERSION: SessionVersionInfo;
   export function sshTerminalRendererBindSurface(handle: number, surfaceId: string,
     widthPx: number, heightPx: number): boolean;
   export function sshTerminalRendererWriteBytes(handle: number, data: ArrayBuffer): void;
+  export function sshTerminalRendererRefresh(handle: number): void;
   export function sshTerminalRendererResize(handle: number, cols: number, rows: number,
     cellWidthPx: number, cellHeightPx: number, fontSizePx: number): void;
   export function sshTerminalRendererSetAppearance(handle: number, fontSizePx: number,

@@ -47,6 +47,8 @@ public:
 
     bool IsReady() const;
     void WriteBytes(const uint8_t* data, std::size_t length);
+    /** Repaint the retained VT snapshot after a surface or EGL context rebind. */
+    void Refresh();
     void Resize(std::size_t cols, std::size_t rows, float cellWpx, float cellHpx,
                 float fontSizePx);
     void SetAppearance(float fontSizePx, uint32_t foreground, uint32_t background);
@@ -68,7 +70,8 @@ public:
 private:
     bool InitGraphics(const std::string& surfaceId, int widthPx, int heightPx);
     void DestroyGraphics();
-    bool CanDraw() const;
+    bool EnsureGraphicsCurrent();
+    bool CanDraw();
     void RenderFull();
     void RenderDirty();
     void DrawSnapshot(const FfiTerminalSnapshot* snapshot, bool fullFrame);

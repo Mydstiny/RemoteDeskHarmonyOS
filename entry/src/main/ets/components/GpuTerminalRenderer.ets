@@ -276,6 +276,10 @@ export struct GpuTerminalRenderer {
     this.applyViewport();
     this.applyAppearance();
     this.consumeInputQueue();
+    // The VT core may already contain the host's prompt while the surface was
+    // detached. Repaint the retained snapshot even when no new SSH bytes
+    // arrive after this component is mounted.
+    this.bridge.refresh(this.handle);
     this.notifyMode();
     if (this.onRendererReady) {
       this.onRendererReady(this.coreKey, this.surfaceIdentity);
@@ -349,10 +353,23 @@ export struct GpuTerminalRenderer {
     if (this.handle <= 0 || !this.surfaceReady) { return; }
     const buffers: ArrayBuffer[] = this.inputBuffer.drain(GPU_INPUT_FRAME_BUDGET_BYTES);
     if (buffers.length === 0) { return; }
+    // One native write owns one VT parse and one dirty-frame render. Merge the
+    // bounded batch first so a burst split across callback chunks cannot cause
+    // dozens of synchronous SurfaceFlush calls in one ArkUI turn.
+    let totalBytes: number = 0;
     for (let index = 0; index < buffers.length; index++) {
-      const buffer: ArrayBuffer = buffers[index];
-      if (buffer.byteLength === 0) { continue; }
-      this.bridge.writeBytes(this.handle, buffer);
+      totalBytes += buffers[index].byteLength;
+    }
+    if (totalBytes > 0) {
+      const merged: Uint8Array = new Uint8Array(totalBytes);
+      let offset: number = 0;
+      for (let index = 0; index < buffers.length; index++) {
+        const source: Uint8Array = new Uint8Array(buffers[index]);
+        merged.set(source, offset);
+        offset += source.length;
+      }
+      const mergedBuffer: ArrayBuffer = merged.buffer as ArrayBuffer;
+      this.bridge.writeBytes(this.handle, mergedBuffer);
     }
     if (this.followBottom) {
       this.bridge.scrollToBottom(this.handle);

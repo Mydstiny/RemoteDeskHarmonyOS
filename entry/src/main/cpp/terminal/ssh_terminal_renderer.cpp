@@ -135,15 +135,28 @@ void SshTerminalRenderer::WriteBytes(const uint8_t* data, std::size_t length) {
     }
 }
 
+void SshTerminalRenderer::Refresh() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (terminal_ != nullptr && ready_) {
+        RenderFull();
+    }
+}
+
 void SshTerminalRenderer::Resize(std::size_t cols, std::size_t rows, float cellWpx,
                                  float cellHpx, float fontSizePx) {
     std::lock_guard<std::mutex> lock(mutex_);
-    cols_ = std::max<std::size_t>(1, cols);
-    rows_ = std::max<std::size_t>(1, rows);
+    const std::size_t nextCols = std::max<std::size_t>(1, cols);
+    const std::size_t nextRows = std::max<std::size_t>(1, rows);
+    const bool terminalDimensionsChanged = nextCols != cols_ || nextRows != rows_;
+    cols_ = nextCols;
+    rows_ = nextRows;
     cellWpx_ = std::max(kMinimumCellWidth, cellWpx);
     cellHpx_ = std::max(kMinimumCellHeight, cellHpx);
     fontSizePx_ = IsFinitePositive(fontSizePx) ? fontSizePx : cellHpx_ * 0.78F;
-    if (terminal_ != nullptr) {
+    // A font/line-spacing update changes only the native metrics and glyph
+    // cache. Do not turn a visual preference change into a VT resize/reflow;
+    // resize the terminal core only when the actual grid dimensions changed.
+    if (terminal_ != nullptr && terminalDimensionsChanged) {
         terminal_core_resize(terminal_, cols_, rows_);
     }
     RecreateFonts();
@@ -375,17 +388,34 @@ void SshTerminalRenderer::DestroyGraphics() {
     }
 }
 
-bool SshTerminalRenderer::CanDraw() const {
+bool SshTerminalRenderer::EnsureGraphicsCurrent() {
     if (!ready_ || terminal_ == nullptr || canvas_ == nullptr || drawingSurface_ == nullptr ||
         eglDisplay_ == EGL_NO_DISPLAY || eglContext_ == EGL_NO_CONTEXT ||
         eglSurface_ == EGL_NO_SURFACE) {
         return false;
     }
-    // OH_Drawing_SurfaceFlush can abort when an XComponent surface has already
-    // lost its EGL binding. Treat that state as detached until ArkUI provides a
-    // new surface instead of touching the stale GPU object.
+    const EGLContext currentContext = eglGetCurrentContext();
+    const EGLSurface currentSurface = eglGetCurrentSurface(EGL_DRAW);
+    if (currentContext == eglContext_ && currentSurface == eglSurface_) {
+        return true;
+    }
+    // NAPI callbacks and ArkUI drawing can run on different turns while the
+    // native renderer retains the same XComponent surface. EGL current state
+    // is thread-local, so a valid surface can otherwise look detached and
+    // every later frame is silently skipped.
+    if (!eglMakeCurrent(eglDisplay_, eglSurface_, eglSurface_, eglContext_)) {
+        OH_LOG_WARN(LOG_APP, "[SSH] failed to restore EGL current surface");
+        return false;
+    }
     return eglGetCurrentContext() == eglContext_ &&
         eglGetCurrentSurface(EGL_DRAW) == eglSurface_;
+}
+
+bool SshTerminalRenderer::CanDraw() {
+    // OH_Drawing_SurfaceFlush can abort when an XComponent surface has already
+    // lost its EGL binding. Restore the binding when the surface is still
+    // valid; only treat it as detached when that recovery fails.
+    return EnsureGraphicsCurrent();
 }
 
 void SshTerminalRenderer::RenderFull() {
@@ -556,10 +586,7 @@ void SshTerminalRenderer::DrawSnapshot(const FfiTerminalSnapshot* snapshot, bool
     lastCursorColumn_ = currentCursorColumn;
     lastCursorVisible_ = snapshot->cursor_visible;
     hasRenderedFrame_ = true;
-    if (drawingSurface_ != nullptr && eglDisplay_ != EGL_NO_DISPLAY &&
-        eglContext_ != EGL_NO_CONTEXT && eglSurface_ != EGL_NO_SURFACE &&
-        eglGetCurrentContext() == eglContext_ &&
-        eglGetCurrentSurface(EGL_DRAW) == eglSurface_) {
+    if (drawingSurface_ != nullptr && EnsureGraphicsCurrent()) {
         (void)OH_Drawing_SurfaceFlush(drawingSurface_);
     }
 }
