@@ -135,6 +135,7 @@ import remoteKeyboardLayoutSelectionPolicyTest from './RemoteKeyboardLayoutSelec
 import remoteModifierStateControllerTest from './RemoteModifierStateController.test';
 import terminalInputBufferTest from './TerminalInputBuffer.test';
 import terminalRendererPolicyTest from './TerminalRendererPolicy.test';
+import sshTransportPolicyTest from './SshTransportPolicy.test';
 
 export default function testsuite() {
   localUnitTest();
@@ -274,4 +275,5 @@ export default function testsuite() {
   remoteModifierStateControllerTest();
   terminalInputBufferTest();
   terminalRendererPolicyTest();
+  sshTransportPolicyTest();
 }

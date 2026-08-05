@@ -104,6 +104,10 @@ import { ExtensionLoader } from '../services/ExtensionLoader';
 import { SshKeyImportService, SshKeyImportResult } from '../services/SshKeyImportService';
 import { SshSettingsService } from '../services/SshSettingsService';
 import {
+  normalizeSshEndpointTransport,
+  sshEditorTransportForStoredHost
+} from '../services/SshTransportPolicy';
+import {
   nextRdpCertificateProbeGeneration,
   shouldApplyRdpCertificateProbeResult
 } from '../services/RdpCertificateProbeLifecyclePolicy';
@@ -5302,8 +5306,8 @@ struct HostListPage {
     this.sheetProxyHost = latestHost.proxyHost;
     this.sheetProxyPort = latestHost.proxyPort;
     this.sheetProxyUser = latestHost.proxyUsername;
-    this.sheetProxyType = latestHost.proxyHost === '' ? 'http_connect' :
-      (latestHost.sshProxyType === 'direct' ? 'legacy_gateway' : latestHost.sshProxyType);
+    this.sheetProxyType = sshEditorTransportForStoredHost(
+      latestHost.proxyHost, latestHost.sshProxyType);
     this.sheetUseProxy = (latestHost.proxyHost !== '');
     this.openSheetSafely((): void => { this.showAddSheet = true; });
   }
@@ -12889,7 +12893,9 @@ struct HostListPage {
         }
         h.proxyHost = this.sheetProxyHost; h.proxyPort = this.sheetProxyPort;
         h.proxyUsername = this.sheetProxyUser;
-        h.sshProxyType = this.sheetProxyType === 'socks5' ? 'socks5' : 'http_connect';
+        // Keep the selected transport identity intact. FRP TCP is a raw SSH
+        // endpoint and must never be persisted as an HTTP CONNECT proxy.
+        h.sshProxyType = normalizeSshEndpointTransport(this.sheetProxyType);
       }
     }
     const e: string[] = h.getValidationErrors();
