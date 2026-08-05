@@ -15,8 +15,10 @@ Updated: 2026-08-06 Asia/Shanghai
   handshakes before switching, and retains detach-race output per host. The
   visible xterm WebView has an explicit detach/rebind gate; the page publishes
   an observable host/binding identity, and Pad/PC native VT rebinds a retained
-  XComponent surface when ArkUI does not emit a new surface callback. Both
-  code-only Hvigor gates passed on 2026-08-06; device validation is deferred.
+  XComponent surface when ArkUI does not emit a new surface callback. A last
+  known surface retry and per-document xterm bridge now close the destroy /
+  recreate race that could leave the second host connected but visually stale.
+  Both code-only Hvigor gates passed on 2026-08-06; device validation is deferred.
 - Keep the review state at the matching PASS receipt; do not claim full
   background SFTP execution, Level A, or Level B connectivity.
 - The first ProxyJump implementation and matching key preflight relay are
@@ -27,7 +29,7 @@ Updated: 2026-08-06 Asia/Shanghai
 
 - WP-T4 user acceptance and benchmark using shared terminal fixtures.
 - Independently review the committed same-page SSH binding-generation,
-  initial-UI view-remount and per-host renderer fallback fix.
+  initial-UI view-remount and surface-recovery fix.
 - WP-T5/WP-T6 terminal correctness and damage-frame renderer implementation.
 - Real SFTP, bastion, forwarding and FRP endpoint interoperability tests when
   the corresponding services and HDC/device are available.

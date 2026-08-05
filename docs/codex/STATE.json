@@ -3,10 +3,10 @@
   "task": "ssh-terminal-complete-upgrade",
   "branch": "codex/ssh-terminal-complete-upgrade",
   "base": "d2769ad4b",
-  "head": "1a0dbbcb0",
-  "phase": "alacritty-core-vt-parity-code-only-host-switch-surface-refresh-hardened",
+  "head": "6573a1d",
+  "phase": "alacritty-core-vt-parity-code-only-host-switch-surface-refresh-recovered",
   "status": "active",
-  "next": "Independently review the same-page SSH binding-generation, visible-host identity and native-surface rebind fix; device validation is deferred per user instruction, then implement Level B connectivity contracts.",
+  "next": "Independently review the same-page SSH binding-generation, visible-host identity and native-surface recovery fix; device validation is deferred per user instruction, then implement Level B connectivity contracts.",
   "blockers": [
     "HDC target 5KLBB25928203528 passed cold SSH, ordered input, 300 KiB output, Home background retention, PiP/re-entry and 90-second idle commands; true external-keyboard and third-party-IME coverage remains open.",
     "ohosTest@OhosTestCompileArkTS is not registered (00306054).",
@@ -80,14 +80,14 @@
       "rustdesk_ffi/src/terminal_core/mod.rs",
       "rustdesk_ffi/src/terminal_core/tests.rs"
     ],
-    "reason": "The committed Alacritty/SSH lifecycle scope has a PASS receipt; checkpoint 1a0dbbcb0 adds same-page SSH binding-generation, xterm/native surface refresh hardening and ProxyJump endpoint trust fields, and requires independent review."
+    "reason": "The committed Alacritty/SSH lifecycle scope has a PASS receipt; checkpoint 6573a1d adds same-page SSH binding-generation, xterm/native surface refresh recovery and ProxyJump endpoint trust fields, and requires independent review."
   },
   "lastVerification": {
     "host_native_tests": "254-pass-16-preexisting-vnc-fixture-startup-failures-270-total-2026-08-04",
     "rust_terminal_core_tests": "focused-alacritty-63-pass-fallback-57-pass-2026-08-04; full-no-default-features-156-pass-1-preexisting-rendezvous-fixture-public-address-failure-157-total",
     "terminalParity": "alacritty-67-pass-fallback-57-pass-unicode-ansi-tui-resize-large-output-damage-2026-08-04",
-    "default@OhosTestCompileArkTS": "pass-committed-visible-host-gpu-rebind-2026-08-06",
-    "assembleHap": "pass-build-successful-signed-committed-visible-host-gpu-rebind-2026-08-06-hap-sha256-ca9f92c043567cddc4f3950cbab15d46c1a2c76b19554a1470e692260cdb9f2c",
+    "default@OhosTestCompileArkTS": "pass-host-switch-surface-recovery-2026-08-06",
+    "assembleHap": "pass-build-successful-signed-host-switch-surface-recovery-2026-08-06-hap-sha256-4d08b3cae1b1394d9cb3fdae862cb2bf7ef1b2d0c9a1cd3c573c6ec29a2e69cf",
     "gitDiffCheck": "pass-2026-08-06",
     "sbom": "pass-totp-validator-96-packages-282-files-282-relationships-2026-08-04",
     "ohosTest": "blocked-task-00306054",

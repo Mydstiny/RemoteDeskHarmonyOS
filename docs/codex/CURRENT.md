@@ -5,8 +5,8 @@
 - Task: `ssh-terminal-complete-upgrade`
 - Base: `main@d2769ad4b`
 - Branch: `codex/ssh-terminal-complete-upgrade`
-- Code checkpoint: `1a0dbbcb0` (`fix(ssh): harden terminal surface rebinding`).
-- Phase: Alacritty default; lifecycle, VT/Unicode/resize/TUI/large-output parity, per-host output isolation and code-only host-switch/surface refresh hardening.
+- Code checkpoint: `6573a1d` (`fix(ssh): recover terminal surface after host switch`).
+- Phase: Alacritty default; lifecycle, VT/Unicode/resize/TUI/large-output parity, per-host output isolation and code-only host-switch/surface refresh recovery.
 - Scope: migrate VT behind terminalCore, keep appearance settings in-core, verify IME/input/Canvas behavior. Homepage work is not current focus.
 
 ## Progress
@@ -56,8 +56,9 @@
 - Switched-session rendering no longer waits for last-connected persistence;
   fresh tab arrays, an observable host/binding identity and an identity-keyed
   pane keep stale surfaces from freezing the second host's page. GPU XComponent
-  rebinds the selected host core to its retained surface and ignores late
-  destruction from an old surface.
+  rebinds the selected host core to its retained surface, retries a destroy /
+  recreate race from the last known surface, and xterm gives each document an
+  isolated JavaScript bridge so late callbacks cannot freeze the new page.
 
 ## SSH Connectivity Boundary
 
@@ -78,11 +79,11 @@
 - Rust `cargo test --manifest-path rustdesk_ffi/Cargo.toml --lib
   --no-default-features`: `156 passed, 1 failed, 157 total`; the remaining
   failure is the existing rendezvous fixture's public-address assertion.
-- `default@OhosTestCompileArkTS`: passed for the committed visible-host/GPU
-  rebind checkpoint on 2026-08-06; warnings only.
-- `assembleHap`: committed visible-host/GPU-rebind checkpoint passed with
+- `default@OhosTestCompileArkTS`: passed for the host-switch surface recovery
+  checkpoint on 2026-08-06; warnings only.
+- `assembleHap`: host-switch surface recovery checkpoint passed with
   `BUILD SUCCESSFUL` and signing; current HAP SHA-256 is
-  `ca9f92c043567cddc4f3950cbab15d46c1a2c76b19554a1470e692260cdb9f2c`.
+  `4d08b3cae1b1394d9cb3fdae862cb2bf7ef1b2d0c9a1cd3c573c6ec29a2e69cf`.
 - Terminal-core Rust tests: Alacritty path `63 passed, 0 failed`; fallback
   path `57 passed, 0 failed`.
 - OHOS Rust checks: `aarch64-unknown-linux-ohos` and
@@ -97,14 +98,14 @@
 ## Review
 
 - Existing independent review passed the bounded-output and IME/socket
-  increments; checkpoint `1a0dbbcb0` remains `REVIEW_REQUIRED` until review.
+  increments; checkpoint `6573a1d` remains `REVIEW_REQUIRED` until review.
 - SFTP scope is closed for this pass; real-device/endpoint evidence is not a
   Level A completion claim.
 - Device evidence covers injected input and lifecycle; external keyboard/IME, GPU re-enable, bastion/forwarding/FRP evidence remain open.
 
 ## Next
 
-1. Independently review the committed same-page SSH binding/initial-UI checkpoint.
+1. Independently review the committed same-page SSH binding/initial-UI surface-recovery checkpoint.
 2. Verify ProxyJump against a real OpenSSH bastion and bind its host key.
 3. Add SSH-scoped local/remote/dynamic forwarding and FRP visitor modes.
 
