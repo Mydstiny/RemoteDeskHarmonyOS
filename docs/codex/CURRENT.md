@@ -6,7 +6,7 @@
 - Base: `main@d2769ad4b`
 - Branch: `codex/ssh-terminal-complete-upgrade`
 - Code checkpoint: `853dcaa` (`fix(ssh): force refresh of switched terminal surface`).
-- Phase: Alacritty default; lifecycle, VT/Unicode/resize/TUI/large-output parity, per-host output isolation and code-only host-switch/surface refresh ready.
+- Phase: Alacritty default; lifecycle, VT/Unicode/resize/TUI/large-output parity, per-host output isolation and code-only host-switch/surface refresh hardening.
 - Scope: migrate VT behind terminalCore, keep appearance settings in-core, verify IME/input/Canvas behavior. Homepage work is not current focus.
 
 ## Progress
@@ -54,8 +54,10 @@
   output is retained per host; native keys use stable host IDs and fallback
   rebuilds from one bounded host transcript.
 - Switched-session rendering no longer waits for last-connected persistence;
-  fresh tab arrays, identity-carrying callbacks and an identity-keyed pane keep
-  stale surfaces from freezing the second host's page.
+  fresh tab arrays, an observable host/binding identity and an identity-keyed
+  pane keep stale surfaces from freezing the second host's page. GPU XComponent
+  rebinds the selected host core to its retained surface and ignores late
+  destruction from an old surface.
 
 ## SSH Connectivity Boundary
 
@@ -76,12 +78,11 @@
 - Rust `cargo test --manifest-path rustdesk_ffi/Cargo.toml --lib
   --no-default-features`: `156 passed, 1 failed, 157 total`; the remaining
   failure is the existing rendezvous fixture's public-address assertion.
-- `default@OhosTestCompileArkTS`: passed for the previous increment on
-  2026-08-05 and the switched-terminal surface refresh increment on 2026-08-06;
-  warnings only.
-- `assembleHap`: previous and switched-terminal surface refresh increments
-  passed with `BUILD SUCCESSFUL` and signing; current HAP SHA-256 is
-  `d06415fb78161bc55e7039ac8963231d8559e454d152c4544f731a818ef2ed5e`.
+- `default@OhosTestCompileArkTS`: passed for the switched-terminal surface
+  refresh and current visible-host/GPU-rebind increment on 2026-08-06; warnings only.
+- `assembleHap`: current visible-host/GPU-rebind increment passed with
+  `BUILD SUCCESSFUL` and signing; current HAP SHA-256 is
+  `940d4ad5f934271897c8ad032b466c1c9fef0fcde5674d4acbc7d404582f1b20`.
 - Terminal-core Rust tests: Alacritty path `63 passed, 0 failed`; fallback
   path `57 passed, 0 failed`.
 - OHOS Rust checks: `aarch64-unknown-linux-ohos` and
@@ -97,7 +98,7 @@
 
 - The existing independent reviewer passed the final bounded-output increment
   and the later IME/socket diagnostic increment. The committed same-page
-  binding/initial-UI, surface-remount and per-host output/native-fallback increments remain `REVIEW_REQUIRED` until independently reviewed.
+  binding/initial-UI, surface-remount and per-host output/native-fallback increments, plus the current visible-host/GPU-rebind working-tree patch, remain `REVIEW_REQUIRED` until independently reviewed.
 - SFTP scope is closed for this pass; real-device/endpoint evidence is not a
   Level A completion claim.
 - Device evidence covers injected input and lifecycle; external keyboard/IME, GPU re-enable, bastion/forwarding/FRP evidence remain open.
@@ -115,6 +116,5 @@
   checks passed.
 - Real-device validation for the current initial-UI/host-switch/native-renderer
   pass is intentionally deferred by the user; only code-level gates were requested.
-- No real OpenSSH bastion, forwarding service or FRP endpoint is currently
-  available; HDC target is also offline for device acceptance.
+- No real OpenSSH bastion, forwarding service or FRP endpoint is currently available; HDC target is also offline for device acceptance.
 - ProxyJump preflight can receive target password or transient key material; explicit bastion host-key trust binding remains pending. `ohosTest@OhosTestCompileArkTS` is unregistered (`00306054`).

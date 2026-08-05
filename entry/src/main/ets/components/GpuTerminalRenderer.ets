@@ -22,7 +22,7 @@ const DEFAULT_FG_ARGB: number = 0xFFE8EAED;
 
 class GpuTerminalSurfaceController extends XComponentController {
   onSurfaceReady: ((surfaceId: string) => void) | null = null;
-  onSurfaceGone: (() => void) | null = null;
+  onSurfaceGone: ((surfaceId: string) => void) | null = null;
 
   onSurfaceCreated(surfaceId: string): void {
     if (this.onSurfaceReady !== null) {
@@ -32,9 +32,7 @@ class GpuTerminalSurfaceController extends XComponentController {
 
   onSurfaceDestroyed(surfaceId: string): void {
     hilog.info(0x0000, 'GpuTerminal', 'surface destroyed: %{public}s', surfaceId);
-    if (this.onSurfaceGone !== null) {
-      this.onSurfaceGone();
-    }
+    if (this.onSurfaceGone !== null) { this.onSurfaceGone(surfaceId); }
   }
 }
 
@@ -72,20 +70,42 @@ export struct GpuTerminalRenderer {
   private surfaceReady: boolean = false;
   private surfaceWidthPx: number = 0;
   private surfaceHeightPx: number = 0;
+  /** The XComponent can survive an ArkUI prop update without a new create callback. */
+  private currentSurfaceId: string = '';
   private followBottom: boolean = true;
   private lastModeSignature: string = '';
   private inputDrainTimer: number = -1;
+  /** Coalesce core/surface prop watches into one binding transaction. */
+  private surfaceRebindTimer: number = -1;
+  private surfaceRebindToken: number = 0;
+  private surfaceAttachRetryTimer: number = -1;
+  private surfaceAttachRetryCount: number = 0;
   private attachedCoreKey: string = '';
   private disposed: boolean = false;
   private unavailableReported: boolean = false;
+  private lifecycleToken: number = 0;
 
   aboutToAppear(): void {
+    const lifecycleToken: number = ++this.lifecycleToken;
     this.disposed = false;
     this.unavailableReported = false;
+    this.surfaceAttachRetryCount = 0;
     this.xcController.onSurfaceReady = (surfaceId: string): void => {
-      if (!this.disposed) { this.attachSurface(surfaceId); }
+      if (this.disposed || lifecycleToken !== this.lifecycleToken) { return; }
+      this.currentSurfaceId = surfaceId;
+      if (this.surfaceAttachRetryTimer !== -1) {
+        clearTimeout(this.surfaceAttachRetryTimer);
+        this.surfaceAttachRetryTimer = -1;
+      }
+      this.surfaceAttachRetryCount = 0;
+      this.scheduleSurfaceRebind();
     };
-    this.xcController.onSurfaceGone = (): void => {
+    this.xcController.onSurfaceGone = (surfaceId: string): void => {
+      // An old surface may report destruction after a replacement surface is
+      // already attached. Do not detach the replacement from the registry.
+      if (lifecycleToken !== this.lifecycleToken || this.currentSurfaceId.length === 0 ||
+        this.currentSurfaceId !== surfaceId) { return; }
+      this.currentSurfaceId = '';
       this.surfaceReady = false;
       const key: string = this.attachedCoreKey.length > 0 ? this.attachedCoreKey : this.coreKey;
       this.registry.detach(key, this.bridge);
@@ -95,7 +115,17 @@ export struct GpuTerminalRenderer {
   }
 
   aboutToDisappear(): void {
+    this.lifecycleToken++;
     this.disposed = true;
+    this.surfaceRebindToken++;
+    if (this.surfaceRebindTimer !== -1) {
+      clearTimeout(this.surfaceRebindTimer);
+      this.surfaceRebindTimer = -1;
+    }
+    if (this.surfaceAttachRetryTimer !== -1) {
+      clearTimeout(this.surfaceAttachRetryTimer);
+      this.surfaceAttachRetryTimer = -1;
+    }
     if (this.inputDrainTimer !== -1) {
       clearTimeout(this.inputDrainTimer);
       this.inputDrainTimer = -1;
@@ -105,6 +135,7 @@ export struct GpuTerminalRenderer {
       this.registry.detach(key, this.bridge);
     }
     this.surfaceReady = false;
+    this.currentSurfaceId = '';
     // 句柄归 SSH 标签所有，由页面在关闭标签/退出全部连接时经 registry 销毁。
     this.handle = 0;
     this.attachedCoreKey = '';
@@ -114,25 +145,41 @@ export struct GpuTerminalRenderer {
   }
 
   private onCoreKeyChange(): void {
-    if (this.disposed || this.attachedCoreKey === this.coreKey) { return; }
-    if (this.attachedCoreKey.length > 0) {
-      this.registry.detach(this.attachedCoreKey, this.bridge);
-    }
-    this.handle = this.registry.handleFor(this.coreKey);
-    this.surfaceReady = false;
-    this.lastModeSignature = '';
-    this.unavailableReported = false;
+    this.scheduleSurfaceRebind();
   }
 
   private onSurfaceIdentityChange(): void {
+    this.scheduleSurfaceRebind();
+  }
+
+  /**
+   * ArkUI can deliver coreKey and surfaceIdentity watches in either order.
+   * Wait one event-loop turn so the native binding always observes the pair
+   * from the same visible page revision.
+   */
+  private scheduleSurfaceRebind(): void {
     if (this.disposed) { return; }
-    if (this.attachedCoreKey.length > 0) {
-      this.registry.detach(this.attachedCoreKey, this.bridge);
+    if (this.surfaceRebindTimer !== -1) {
+      clearTimeout(this.surfaceRebindTimer);
+      this.surfaceRebindTimer = -1;
     }
-    this.handle = this.registry.handleFor(this.coreKey);
     this.surfaceReady = false;
     this.lastModeSignature = '';
     this.unavailableReported = false;
+    const token: number = ++this.surfaceRebindToken;
+    this.surfaceRebindTimer = setTimeout((): void => {
+      this.surfaceRebindTimer = -1;
+      if (this.disposed || token !== this.surfaceRebindToken) { return; }
+      const previousKey: string = this.attachedCoreKey;
+      if (previousKey.length > 0) {
+        this.registry.detach(previousKey, this.bridge);
+      }
+      this.attachedCoreKey = '';
+      this.handle = this.registry.handleFor(this.coreKey);
+      if (this.currentSurfaceId.length > 0) {
+        this.attachSurface(this.currentSurfaceId);
+      }
+    }, 0);
   }
 
   private reportUnavailable(): void {
@@ -156,7 +203,7 @@ export struct GpuTerminalRenderer {
   }
 
   private attachSurface(surfaceId: string): void {
-    if (this.disposed) { return; }
+    if (this.disposed || surfaceId.length === 0) { return; }
     if (!this.bridge.isAvailable()) {
       this.reportUnavailable();
       return;
@@ -186,9 +233,15 @@ export struct GpuTerminalRenderer {
     }
     if (handle <= 0) {
       hilog.warn(0x0000, 'GpuTerminal', 'attach failed for key %{public}s', this.coreKey);
-      this.reportUnavailable();
+      this.scheduleSurfaceAttachRetry();
       return;
     }
+    this.surfaceAttachRetryCount = 0;
+    if (this.surfaceAttachRetryTimer !== -1) {
+      clearTimeout(this.surfaceAttachRetryTimer);
+      this.surfaceAttachRetryTimer = -1;
+    }
+    this.unavailableReported = false;
     this.handle = handle;
     this.attachedCoreKey = this.coreKey;
     this.surfaceReady = true;
@@ -200,6 +253,24 @@ export struct GpuTerminalRenderer {
     if (this.onRendererReady) {
       this.onRendererReady(this.coreKey, this.surfaceIdentity);
     }
+  }
+
+  /** A surface can be between destruction and recreation during a tab swap. */
+  private scheduleSurfaceAttachRetry(): void {
+    if (this.disposed || this.surfaceAttachRetryTimer !== -1 || this.currentSurfaceId.length === 0) {
+      return;
+    }
+    if (this.surfaceAttachRetryCount >= 5) {
+      this.reportUnavailable();
+      return;
+    }
+    this.surfaceAttachRetryCount++;
+    this.surfaceAttachRetryTimer = setTimeout((): void => {
+      this.surfaceAttachRetryTimer = -1;
+      if (!this.disposed && this.currentSurfaceId.length > 0) {
+        this.scheduleSurfaceRebind();
+      }
+    }, 32);
   }
 
   private applyGeometry(): void {

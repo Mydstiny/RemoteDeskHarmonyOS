@@ -715,6 +715,13 @@ int SshAdapter::connectThroughSshJump(const ConnectionConfig& cfg) {
         return fail(ERR_SSH_KEX_FAILED);
     }
 
+    const int jumpHostKeyResult = verifyHostKey(
+        jumpSession_, cfg.sshJumpHostKeyRawBase64,
+        cfg.sshJumpHostKeyFingerprintSha256, true, "ProxyJump 跳板机");
+    if (jumpHostKeyResult != 0) {
+        return fail(jumpHostKeyResult);
+    }
+
     const std::string jumpUsername = cfg.sshProxyUsername.empty()
         ? cfg.username : cfg.sshProxyUsername;
     const std::string jumpPassword = cfg.sshProxyPassword.empty()
@@ -886,6 +893,75 @@ void SshAdapter::stopSshJumpRelay() {
 // SSH 协议方法 (libssh2 集成)
 // ============================================================
 
+int SshAdapter::verifyHostKey(LIBSSH2_SESSION* session,
+                              const std::string& expectedRawBase64,
+                              const std::string& expectedFingerprintSha256,
+                              bool required, const char* endpointLabel) {
+    if (session == nullptr) {
+        return ERR_SSH_SESSION_INIT;
+    }
+    if (expectedRawBase64.empty() && expectedFingerprintSha256.empty()) {
+        if (required) {
+            OH_LOG_ERROR(LOG_APP, "[SSH] %{public}s 缺少 host-key trust binding",
+                         endpointLabel ? endpointLabel : "SSH endpoint");
+            return ERR_SSH_HOSTKEY_MISMATCH;
+        }
+        return 0;
+    }
+
+    const char* fingerprint = libssh2_hostkey_hash(session, LIBSSH2_HOSTKEY_HASH_SHA256);
+    if (!expectedRawBase64.empty()) {
+        size_t keyLen = 0;
+        int keyType = LIBSSH2_HOSTKEY_TYPE_UNKNOWN;
+        const char* rawKey = libssh2_session_hostkey(session, &keyLen, &keyType);
+        if (!rawKey || keyLen == 0) {
+            OH_LOG_ERROR(LOG_APP, "[SSH] %{public}s host key raw 读取失败",
+                         endpointLabel ? endpointLabel : "SSH endpoint");
+            return ERR_SSH_HOSTKEY_MISMATCH;
+        }
+        const std::string currentRaw = encodeBase64(
+            reinterpret_cast<const unsigned char*>(rawKey), keyLen);
+        if (currentRaw != expectedRawBase64) {
+            std::string currentFp;
+            if (fingerprint) {
+                std::string fpB64 = encodeBase64(
+                    reinterpret_cast<const unsigned char*>(fingerprint), 32);
+                while (!fpB64.empty() && fpB64.back() == '=') { fpB64.pop_back(); }
+                currentFp = "SHA256:" + fpB64;
+            }
+            OH_LOG_ERROR(LOG_APP,
+                "[SSH] %{public}s host key raw mismatch keyType=%{public}d algorithm=%{public}s currentFp=%{public}s expectedFp=%{public}s",
+                endpointLabel ? endpointLabel : "SSH endpoint", keyType,
+                sshHostKeyTypeName(keyType), currentFp.c_str(),
+                expectedFingerprintSha256.c_str());
+            return ERR_SSH_HOSTKEY_MISMATCH;
+        }
+        OH_LOG_INFO(LOG_APP, "[SSH] %{public}s host key raw 校验通过",
+                    endpointLabel ? endpointLabel : "SSH endpoint");
+        return 0;
+    }
+
+    if (!fingerprint) {
+        OH_LOG_ERROR(LOG_APP, "[SSH] %{public}s SHA256 host key fingerprint 读取失败",
+                     endpointLabel ? endpointLabel : "SSH endpoint");
+        return ERR_SSH_HOSTKEY_MISMATCH;
+    }
+    std::string currentFpB64 = encodeBase64(
+        reinterpret_cast<const unsigned char*>(fingerprint), 32);
+    while (!currentFpB64.empty() && currentFpB64.back() == '=') { currentFpB64.pop_back(); }
+    const std::string currentFp = "SHA256:" + currentFpB64;
+    if (currentFp != expectedFingerprintSha256) {
+        OH_LOG_ERROR(LOG_APP,
+            "[SSH] %{public}s host key mismatch expected=%{public}s current=%{public}s",
+            endpointLabel ? endpointLabel : "SSH endpoint",
+            expectedFingerprintSha256.c_str(), currentFp.c_str());
+        return ERR_SSH_HOSTKEY_MISMATCH;
+    }
+    OH_LOG_INFO(LOG_APP, "[SSH] %{public}s host key fingerprint 校验通过",
+                endpointLabel ? endpointLabel : "SSH endpoint");
+    return 0;
+}
+
 int SshAdapter::sshHandshake() {
     if (!assertSessionOwner("handshake")) {
         return ERR_SSH_SESSION_INIT;
@@ -942,59 +1018,13 @@ int SshAdapter::sshHandshake() {
     }
 
     // 二次校验 expected host key (防 probe/connect 间 TOCTOU)。
-    // 优先比对 raw host key blob, 与 HostList 信任判断使用同一字段。
-    if (!savedCfg_.expectedHostKeyRawBase64.empty()) {
-        size_t keyLen = 0;
-        int keyType = LIBSSH2_HOSTKEY_TYPE_UNKNOWN;
-        const char* rawKey = libssh2_session_hostkey(session_, &keyLen, &keyType);
-        if (!rawKey || keyLen == 0) {
-            OH_LOG_ERROR(LOG_APP, "[SSH] 主机密钥二次校验失败: 无法读取 raw host key");
-            libssh2_session_free(session_);
-            session_ = nullptr;
-            return ERR_SSH_HOSTKEY_MISMATCH;
-        }
-        std::string currentRaw = encodeBase64(reinterpret_cast<const unsigned char*>(rawKey), keyLen);
-        if (currentRaw != savedCfg_.expectedHostKeyRawBase64) {
-            std::string currentFp = "";
-            if (fingerprint) {
-                std::string fpB64 = encodeBase64(reinterpret_cast<const unsigned char*>(fingerprint), 32);
-                while (!fpB64.empty() && fpB64.back() == '=') {
-                    fpB64.pop_back();
-                }
-                currentFp = "SHA256:" + fpB64;
-            }
-            OH_LOG_ERROR(LOG_APP,
-                "[SSH] 主机密钥 raw 不匹配! expectedLen=%{public}zu currentLen=%{public}zu keyType=%{public}d algorithm=%{public}s currentFp=%{public}s expectedFp=%{public}s",
-                savedCfg_.expectedHostKeyRawBase64.size(), currentRaw.size(), keyType,
-                sshHostKeyTypeName(keyType), currentFp.c_str(),
-                savedCfg_.expectedHostKeyFingerprintSha256.c_str());
-            libssh2_session_free(session_);
-            session_ = nullptr;
-            return ERR_SSH_HOSTKEY_MISMATCH;
-        }
-        OH_LOG_INFO(LOG_APP, "[SSH] 主机密钥 raw 二次校验通过");
-    } else if (!savedCfg_.expectedHostKeyFingerprintSha256.empty()) {
-        if (!fingerprint) {
-            OH_LOG_ERROR(LOG_APP, "[SSH] 主机密钥二次校验失败: 无法计算 SHA256 指纹");
-            libssh2_session_free(session_);
-            session_ = nullptr;
-            return ERR_SSH_HOSTKEY_MISMATCH;
-        }
-        std::string currentFpB64 = encodeBase64(reinterpret_cast<const unsigned char*>(fingerprint), 32);
-        // 去尾部 '=' (OpenSSH 风格)
-        while (!currentFpB64.empty() && currentFpB64.back() == '=') {
-            currentFpB64.pop_back();
-        }
-        std::string currentFp = "SHA256:" + currentFpB64;
-        if (currentFp != savedCfg_.expectedHostKeyFingerprintSha256) {
-            OH_LOG_ERROR(LOG_APP,
-                "[SSH] 主机密钥不匹配! expected=%{public}s current=%{public}s",
-                savedCfg_.expectedHostKeyFingerprintSha256.c_str(), currentFp.c_str());
-            libssh2_session_free(session_);
-            session_ = nullptr;
-            return ERR_SSH_HOSTKEY_MISMATCH;
-        }
-        OH_LOG_INFO(LOG_APP, "[SSH] 主机密钥二次校验通过");
+    const int hostKeyResult = verifyHostKey(
+        session_, savedCfg_.expectedHostKeyRawBase64,
+        savedCfg_.expectedHostKeyFingerprintSha256, false, "目标主机");
+    if (hostKeyResult != 0) {
+        libssh2_session_free(session_);
+        session_ = nullptr;
+        return hostKeyResult;
     }
 
     OH_LOG_INFO(LOG_APP, "[SSH] KEX 握手完成");

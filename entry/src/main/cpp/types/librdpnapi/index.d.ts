@@ -498,6 +498,8 @@ export interface SessionConfig {
   sshProxyPassword?: string;
   expectedHostKeyRawBase64?: string;
   expectedHostKeyFingerprintSha256?: string;
+  sshJumpHostKeyRawBase64?: string;
+  sshJumpHostKeyFingerprintSha256?: string;
   expectedRdpCertificateFingerprintSha256?: string;
   rdpAllowUntrustedRoot?: boolean;
   rdpAllowHostMismatch?: boolean;

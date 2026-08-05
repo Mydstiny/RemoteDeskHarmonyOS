@@ -99,6 +99,9 @@ struct ConnectionConfig {
     std::string sshProxyPassword;      // transient proxy password
     std::string expectedHostKeyRawBase64;       // 🆕 SSH 预期主机密钥 raw blob base64 (二次校验)
     std::string expectedHostKeyFingerprintSha256; // 🆕 SSH 预期主机指纹 SHA256
+    // ProxyJump 的跳板机与目标机是两个独立的 SSH endpoint，必须分别绑定 key。
+    std::string sshJumpHostKeyRawBase64;
+    std::string sshJumpHostKeyFingerprintSha256;
     int         rdImageQuality;    // RustDesk: 0=速度, 1=平衡, 2=画质
     bool        rdDirectIp;        // RustDesk: 直连 IP 模式
     std::string rdConnectionStrategy; // force_relay | direct_ip | auto (auto currently fail-closed)

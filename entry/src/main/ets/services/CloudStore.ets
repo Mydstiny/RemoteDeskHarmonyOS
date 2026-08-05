@@ -5736,6 +5736,16 @@ export class CloudStore implements CryptoCloudStore {
     host.sshHostKeyTrustMode = Number(
       get('sshhostkeytrustmode',
         host.sshHostKeyTrustMode.toString()));
+    host.sshJumpHostKeyAlgorithm =
+      get('sshjumphostkeyalgorithm', host.sshJumpHostKeyAlgorithm);
+    host.sshJumpHostKeyFingerprintSha256 =
+      get('sshjumphostkeyfingerprintsha256', host.sshJumpHostKeyFingerprintSha256);
+    host.sshJumpHostKeyRawBase64 =
+      get('sshjumphostkeyrawbase64', host.sshJumpHostKeyRawBase64);
+    host.sshJumpHostKeyTrustedAt = Number(
+      get('sshjumphostkeytrustedat', host.sshJumpHostKeyTrustedAt.toString()));
+    host.sshJumpHostKeyTrustMode = Number(
+      get('sshjumphostkeytrustmode', host.sshJumpHostKeyTrustMode.toString()));
     host.rdpCertificateFingerprintSha256 =
       get('rdpcertificatefingerprintsha256',
         host.rdpCertificateFingerprintSha256);
@@ -5818,6 +5828,16 @@ export class CloudStore implements CryptoCloudStore {
       host.sshHostKeyTrustedAt.toString();
     values['sshhostkeytrustmode'] =
       host.sshHostKeyTrustMode.toString();
+    values['sshjumphostkeyalgorithm'] =
+      host.sshJumpHostKeyAlgorithm;
+    values['sshjumphostkeyfingerprintsha256'] =
+      host.sshJumpHostKeyFingerprintSha256;
+    values['sshjumphostkeyrawbase64'] =
+      host.sshJumpHostKeyRawBase64;
+    values['sshjumphostkeytrustedat'] =
+      host.sshJumpHostKeyTrustedAt.toString();
+    values['sshjumphostkeytrustmode'] =
+      host.sshJumpHostKeyTrustMode.toString();
     values['rdpcertificatefingerprintsha256'] =
       host.rdpCertificateFingerprintSha256;
     values['rdpcertificatesubject'] =

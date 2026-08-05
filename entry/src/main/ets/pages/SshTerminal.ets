@@ -212,6 +212,8 @@ struct SshTerminal {
   @State connectionError: string = '';
   @State hostLabel: string = '';
   @State userAtHost: string = '';
+  /** Observable identity of the host currently rendered by this page. */
+  @State visibleSshHostId: string = '';
   @State sshTabViews: SshTerminalTabView[] = [];
   @State showSshTabPicker: boolean = false;
   /** 当前 SSH 输出 chunk；终端核心拥有 scrollback，不在页面累计完整历史。 */
@@ -628,7 +630,13 @@ struct SshTerminal {
     if (this.terminalSurfaceMounted && this.terminalSurfaceBindingKey === bindingKey) {
       return;
     }
-    if (this.terminalSurfaceMountTimer !== -1) { return; }
+    // A native state probe can request the same binding while the previous
+    // mount turn is still pending. Replace that turn with the newest binding
+    // instead of silently leaving the page behind the loading view.
+    if (this.terminalSurfaceMountTimer !== -1) {
+      clearTimeout(this.terminalSurfaceMountTimer);
+      this.terminalSurfaceMountTimer = -1;
+    }
     this.terminalSurfaceMounted = false;
     this.xtermReady = false;
     this.terminalSurfaceBindingKey = '';
@@ -742,6 +750,7 @@ struct SshTerminal {
     }
 
     this.hostId = targetHostId;
+    this.visibleSshHostId = targetHostId;
     this.hostLabel = host.label;
     this.userAtHost = host.username + '@' + host.host + ':' + host.port.toString();
     this.sshHost = host.host;
@@ -2682,6 +2691,7 @@ struct SshTerminal {
     this.connected = false;
     this.connecting = true;
     this.connectionError = '';
+    this.visibleSshHostId = '';
     this.latencyMs = -1;
     this.sessionId = -1;
     this.sshSessionGeneration = 0;
@@ -2770,6 +2780,7 @@ struct SshTerminal {
       const id: string = p['hostId'] as string;
       if (id) {
         this.hostId = id;
+        this.visibleSshHostId = id.trim();
         const transcript: string = this.sshTranscriptStore.snapshot(this.hostId);
         if (transcript.length > 0) {
           this.xtermOutputBuffer.enqueue(transcript);
@@ -2799,6 +2810,8 @@ struct SshTerminal {
             this.preflightPassphrase = tokenData.privateKeyPassphrase;
             this.preflightExpectedHostKeyRaw = tokenData.expectedHostKeyRawBase64;
             this.preflightExpectedHostKeyFp = tokenData.expectedHostKeyFingerprintSha256;
+            this.preflightExpectedJumpHostKeyRaw = tokenData.expectedJumpHostKeyRawBase64;
+            this.preflightExpectedJumpHostKeyFp = tokenData.expectedJumpHostKeyFingerprintSha256;
             hilog.info(0x0001, 'SshTerminal', 'preflight token consumed ok');
           } else {
             hilog.warn(0x0001, 'SshTerminal', 'preflight token expired or missing');
@@ -2971,6 +2984,7 @@ struct SshTerminal {
     if (switchingSshTab) { this.sshTabStore.completeNavigation(); }
     this.sessionId = -1;
     this.connected = false;
+    this.visibleSshHostId = '';
     this.termOutput = '';
     this.xtermOutputBuffer.clear();
     this.clearTerminalOutputQueue();
@@ -3338,12 +3352,16 @@ struct SshTerminal {
   private preflightPassphrase: string = '';
   private preflightExpectedHostKeyRaw: string = '';
   private preflightExpectedHostKeyFp: string = '';
+  private preflightExpectedJumpHostKeyRaw: string = '';
+  private preflightExpectedJumpHostKeyFp: string = '';
 
   private clearPreflightBinding(): void {
     this.preflightHostId = '';
     this.preflightPassphrase = '';
     this.preflightExpectedHostKeyRaw = '';
     this.preflightExpectedHostKeyFp = '';
+    this.preflightExpectedJumpHostKeyRaw = '';
+    this.preflightExpectedJumpHostKeyFp = '';
   }
 
   private promptPassphrase(): Promise<string> {
@@ -3469,7 +3487,11 @@ struct SshTerminal {
         expectedHostKeyRawBase64: (preflightMatchesHost ? this.preflightExpectedHostKeyRaw : '') ||
           host.sshHostKeyRawBase64,
         expectedHostKeyFingerprintSha256: (preflightMatchesHost ? this.preflightExpectedHostKeyFp : '') ||
-          host.sshHostKeyFingerprintSha256
+          host.sshHostKeyFingerprintSha256,
+        sshJumpHostKeyRawBase64: (preflightMatchesHost ? this.preflightExpectedJumpHostKeyRaw : '') ||
+          host.sshJumpHostKeyRawBase64,
+        sshJumpHostKeyFingerprintSha256: (preflightMatchesHost ? this.preflightExpectedJumpHostKeyFp : '') ||
+          host.sshJumpHostKeyFingerprintSha256
       };
       const connectedSessionId: number = await this.loader.connectSshAsync(cfg);
       if (!this.isSshBindingActive(pageGeneration, bindingGeneration, bindingHostId)) {
@@ -6479,7 +6501,7 @@ struct SshTerminal {
             Stack({ alignContent: Alignment.TopStart }) {
             if (this.shouldUseNativeTerminal()) {
               GpuTerminalRenderer({
-                coreKey: this.hostId,
+                coreKey: this.visibleSshHostId,
                 surfaceIdentity: this.terminalSurfaceBindingKey,
                 cols: this.termCols,
                 rows: this.termRows,
@@ -6489,7 +6511,7 @@ struct SshTerminal {
                 viewportHeight: this.terminalPaneHeight(),
                 visibleViewportHeight: this.terminalRowsViewportHeight(),
                 bottomAlignSparseContent: !this.isDesktopDevice,
-                inputBuffer: this.nativeTerminalInputBuffer(this.hostId),
+                inputBuffer: this.nativeTerminalInputBuffer(this.visibleSshHostId),
                 inputSequence: this.termOutputSequence,
                 copyRequest: $copyRequest,
                 copiedText: $copiedText,
@@ -6733,7 +6755,8 @@ struct SshTerminal {
       }
     }
       .width('100%').height('100%').backgroundColor('#0D0D0D')
-      .id('ssh-terminal-pane-' + this.terminalSurfaceBindingKey)
+      .id('ssh-terminal-pane-' + this.visibleSshHostId + ':' +
+        this.terminalSurfaceGeneration.toString() + ':' + this.terminalSurfaceBindingKey)
       if (this.showSftpPanel && this.sftpWideLayout()) {
         Column() {
           this.SftpTransferSheet()

@@ -2663,6 +2663,8 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
     getString("privateKeyPassphrase", cfg.privateKeyPassphrase);
     getString("expectedHostKeyRawBase64", cfg.expectedHostKeyRawBase64);
     getString("expectedHostKeyFingerprintSha256", cfg.expectedHostKeyFingerprintSha256);
+    getString("sshJumpHostKeyRawBase64", cfg.sshJumpHostKeyRawBase64);
+    getString("sshJumpHostKeyFingerprintSha256", cfg.sshJumpHostKeyFingerprintSha256);
     if (protocolName == "ssh") {
         getString("sshProxyType", cfg.sshProxyType);
         getString("sshProxyHost", cfg.sshProxyHost);
@@ -3465,6 +3467,8 @@ static bool ParseSshConnectionConfig(napi_env env, napi_value value,
     getString("privateKeyPassphrase", config.privateKeyPassphrase);
     getString("expectedHostKeyRawBase64", config.expectedHostKeyRawBase64);
     getString("expectedHostKeyFingerprintSha256", config.expectedHostKeyFingerprintSha256);
+    getString("sshJumpHostKeyRawBase64", config.sshJumpHostKeyRawBase64);
+    getString("sshJumpHostKeyFingerprintSha256", config.sshJumpHostKeyFingerprintSha256);
     getString("sshProxyType", config.sshProxyType);
     getString("sshProxyHost", config.sshProxyHost);
     getInt("sshProxyPort", config.sshProxyPort);

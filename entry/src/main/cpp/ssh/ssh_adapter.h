@@ -283,6 +283,11 @@ private:
     /** KEX 密钥交换 + 主机密钥验证 */
     int sshHandshake();
 
+    /** 验证指定 SSH endpoint 的 host key；ProxyJump 跳板机要求必须有预期 key。 */
+    int verifyHostKey(LIBSSH2_SESSION* session, const std::string& expectedRawBase64,
+                      const std::string& expectedFingerprintSha256, bool required,
+                      const char* endpointLabel);
+
     /** 密码认证 */
     int authenticatePassword();
 

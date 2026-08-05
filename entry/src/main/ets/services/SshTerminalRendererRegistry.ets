@@ -41,8 +41,11 @@ export class SshTerminalRendererRegistry {
     if (existing !== undefined && existing.handle > 0) {
       if (existing.surfaceId !== config.surfaceId) {
         if (!bridge.bindSurface(existing.handle, config.surfaceId, config.widthPx, config.heightPx)) {
-          bridge.destroy(existing.handle);
-          this.entries.delete(normalizedKey);
+          // Rebinding can race XComponent surface destruction. Keep the VT
+          // core and mark it detached so the next surface callback can retry;
+          // destroying here would lose the hidden tab's scrollback.
+          existing.surfaceId = '';
+          return 0;
         } else {
           existing.surfaceId = config.surfaceId;
           return existing.handle;

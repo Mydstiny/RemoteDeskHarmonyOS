@@ -13,12 +13,10 @@ Updated: 2026-08-06 Asia/Shanghai
 - Same-page SSH host switching now rejects stale async connect/attach/data/PiP
   continuations using an independent binding generation, cancels pending
   handshakes before switching, and retains detach-race output per host. The
-  visible xterm WebView has an explicit detach/rebind gate and per-binding
-  identity; Pad/PC native VT state uses stable host IDs with xterm fallback,
-  while phone remains on the original WebView. Connection binding no longer
-  waits for ancillary last-connected persistence; native/Xterm surfaces and the
-  parent pane share an explicit binding identity. Both code-only Hvigor gates
-  passed on 2026-08-06; device validation is deferred for this pass.
+  visible xterm WebView has an explicit detach/rebind gate; the page publishes
+  an observable host/binding identity, and Pad/PC native VT rebinds a retained
+  XComponent surface when ArkUI does not emit a new surface callback. Both
+  code-only Hvigor gates passed on 2026-08-06; device validation is deferred.
 - Keep the review state at the matching PASS receipt; do not claim full
   background SFTP execution, Level A, or Level B connectivity.
 - The first ProxyJump implementation and matching key preflight relay are

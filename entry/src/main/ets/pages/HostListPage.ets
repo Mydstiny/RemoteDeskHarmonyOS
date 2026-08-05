@@ -533,6 +533,8 @@ struct HostListPage {
   @State sshPreflightHostLabel: string = '';
   @State sshPreflightSavedAlgorithm: string = '';
   @State sshPreflightHostKeyInfo: SshHostKeyInfo | null = null;
+  @State sshPreflightJumpHostLabel: string = '';
+  @State sshPreflightJumpHostKeyInfo: SshHostKeyInfo | null = null;
   @State sshPreflightError: string = '';
   @State sshPreflightPassphraseInput: string = '';
   @State sshPreflightPassphraseShowPw: boolean = false;
@@ -4048,8 +4050,11 @@ struct HostListPage {
     this.sshPreflightHostId = host.id;
     this.sshPreflightHostLabel = host.username + '@' + host.host + ':' + host.port.toString();
     this.sshPreflightSavedAlgorithm = host.sshHostKeyAlgorithm;
+    this.sshPreflightJumpHostLabel = host.sshProxyType === 'ssh_jump' && host.proxyHost.trim() !== ''
+      ? host.proxyHost + ':' + host.proxyPort.toString() : '';
     this.sshPreflightState = SshPreflightState.PROBING;
     this.sshPreflightHostKeyInfo = null;
+    this.sshPreflightJumpHostKeyInfo = null;
     this.sshPreflightError = '';
     this.sshPreflightPassphraseInput = '';
     this.sshPreflightPendingRouteParams = null;
@@ -4095,6 +4100,8 @@ struct HostListPage {
     this.sshPreflightHostId = '';
     this.sshPreflightHostLabel = '';
     this.sshPreflightHostKeyInfo = null;
+    this.sshPreflightJumpHostLabel = '';
+    this.sshPreflightJumpHostKeyInfo = null;
     this.sshPreflightError = '';
     if (routeParams !== null) {
       setTimeout((): void => {
@@ -4136,6 +4143,11 @@ struct HostListPage {
       privateKeyPem: keyMaterial,
       privateKeyPassphrase: host.sshProxyType === 'ssh_jump' ? host.sshKeyPassphrase : ''
     };
+  }
+
+  private sshPreflightUsesJump(host: RemoteHost): boolean {
+    return host.sshProxyType === 'ssh_jump' && host.proxyHost.trim() !== '' &&
+      host.proxyPort > 0 && host.proxyPort <= 65535;
   }
 
   private resolveSshKeyMaterial(host: RemoteHost): SshKeyMaterial {
@@ -4193,13 +4205,32 @@ struct HostListPage {
         this.sshPreflightError = info.errorMessage || '无法读取 SSH 主机指纹';
         return;
       }
+      let jumpInfo: SshHostKeyInfo | null = null;
+      if (this.sshPreflightUsesJump(host)) {
+        jumpInfo = this.loader.probeSshHostKey(host.proxyHost, host.proxyPort);
+        if (!this.isCurrentSshPreflight(host, generation)) { return; }
+        if (!jumpInfo.ok) {
+          this.sshPreflightState = SshPreflightState.ERROR;
+          this.sshPreflightError = '无法读取跳板机 SSH 主机指纹: ' +
+            (jumpInfo.errorMessage || '跳板机 KEX 握手失败');
+          return;
+        }
+      }
       this.sshPreflightHostKeyInfo = info;
-      const savedRaw = host.sshHostKeyRawBase64;
-      const trustMode = host.sshHostKeyTrustMode;
-      if (trustMode === 1 && savedRaw === info.rawBase64) {
-        this.sshPreflightState = SshPreflightState.TRUSTED_MATCH;
-      } else if (trustMode === 1 && savedRaw !== '' && savedRaw !== info.rawBase64) {
+      this.sshPreflightJumpHostKeyInfo = jumpInfo;
+      const targetChanged = host.sshHostKeyTrustMode === 1 && host.sshHostKeyRawBase64 !== '' &&
+        host.sshHostKeyRawBase64 !== info.rawBase64;
+      const jumpChanged = jumpInfo !== null && host.sshJumpHostKeyTrustMode === 1 &&
+        host.sshJumpHostKeyRawBase64 !== '' && host.sshJumpHostKeyRawBase64 !== jumpInfo.rawBase64;
+      const targetNeedsTrust = host.sshHostKeyTrustMode !== 1 || host.sshHostKeyRawBase64 === '' ||
+        host.sshHostKeyRawBase64 !== info.rawBase64;
+      const jumpNeedsTrust = jumpInfo !== null &&
+        (host.sshJumpHostKeyTrustMode !== 1 || host.sshJumpHostKeyRawBase64 === '' ||
+          host.sshJumpHostKeyRawBase64 !== jumpInfo.rawBase64);
+      if (targetChanged || jumpChanged) {
         this.sshPreflightState = SshPreflightState.HOST_KEY_CHANGED;
+      } else if (!targetNeedsTrust && !jumpNeedsTrust) {
+        this.sshPreflightState = SshPreflightState.TRUSTED_MATCH;
       } else {
         this.sshPreflightState = SshPreflightState.TRUST_FIRST_TIME;
       }
@@ -4214,12 +4245,9 @@ struct HostListPage {
   private doSshPreflightTrustFirst(host: RemoteHost, generation: number): void {
     if (!this.isCurrentSshPreflight(host, generation) || !this.sshPreflightHostKeyInfo) { return; }
     const info = this.sshPreflightHostKeyInfo;
+    if (this.sshPreflightUsesJump(host) && !this.sshPreflightJumpHostKeyInfo) { return; }
     const updated: RemoteHost = RemoteHost.fromJSON(host.toJSON());
-    updated.sshHostKeyAlgorithm = info.algorithm;
-    updated.sshHostKeyFingerprintSha256 = info.fingerprintSha256;
-    updated.sshHostKeyRawBase64 = info.rawBase64;
-    updated.sshHostKeyTrustedAt = Date.now();
-    updated.sshHostKeyTrustMode = 1;
+    this.applySshPreflightTrust(updated, info, this.sshPreflightJumpHostKeyInfo);
     this.srv.updateHost(updated);
     this.doSshPreflightCheckPassphrase(updated, generation);
   }
@@ -4228,14 +4256,28 @@ struct HostListPage {
   private doSshPreflightUpdateTrust(host: RemoteHost, generation: number): void {
     if (!this.isCurrentSshPreflight(host, generation) || !this.sshPreflightHostKeyInfo) { return; }
     const info = this.sshPreflightHostKeyInfo;
+    if (this.sshPreflightUsesJump(host) && !this.sshPreflightJumpHostKeyInfo) { return; }
     const updated: RemoteHost = RemoteHost.fromJSON(host.toJSON());
-    updated.sshHostKeyAlgorithm = info.algorithm;
-    updated.sshHostKeyFingerprintSha256 = info.fingerprintSha256;
-    updated.sshHostKeyRawBase64 = info.rawBase64;
-    updated.sshHostKeyTrustedAt = Date.now();
-    updated.sshHostKeyTrustMode = 1;
+    this.applySshPreflightTrust(updated, info, this.sshPreflightJumpHostKeyInfo);
     this.srv.updateHost(updated);
     this.doSshPreflightCheckPassphrase(updated, generation);
+  }
+
+  private applySshPreflightTrust(host: RemoteHost, targetInfo: SshHostKeyInfo,
+    jumpInfo: SshHostKeyInfo | null): void {
+    const trustedAt: number = Date.now();
+    host.sshHostKeyAlgorithm = targetInfo.algorithm;
+    host.sshHostKeyFingerprintSha256 = targetInfo.fingerprintSha256;
+    host.sshHostKeyRawBase64 = targetInfo.rawBase64;
+    host.sshHostKeyTrustedAt = trustedAt;
+    host.sshHostKeyTrustMode = 1;
+    if (jumpInfo !== null) {
+      host.sshJumpHostKeyAlgorithm = jumpInfo.algorithm;
+      host.sshJumpHostKeyFingerprintSha256 = jumpInfo.fingerprintSha256;
+      host.sshJumpHostKeyRawBase64 = jumpInfo.rawBase64;
+      host.sshJumpHostKeyTrustedAt = trustedAt;
+      host.sshJumpHostKeyTrustMode = 1;
+    }
   }
 
   /** T-210: 检查私钥密码 */
@@ -4344,10 +4386,15 @@ struct HostListPage {
     const passphrase = this.sshPreflightPassphraseInput || host.sshKeyPassphrase;
     const rawBase64 = this.sshPreflightHostKeyInfo?.rawBase64 || host.sshHostKeyRawBase64;
     const fp = this.sshPreflightHostKeyInfo?.fingerprintSha256 || host.sshHostKeyFingerprintSha256;
+    const jumpRawBase64 = this.sshPreflightJumpHostKeyInfo?.rawBase64 || host.sshJumpHostKeyRawBase64;
+    const jumpFp = this.sshPreflightJumpHostKeyInfo?.fingerprintSha256 ||
+      host.sshJumpHostKeyFingerprintSha256;
     const tokenId = svc.createToken({
       hostId: host.id,
       expectedHostKeyRawBase64: rawBase64,
       expectedHostKeyFingerprintSha256: fp,
+      expectedJumpHostKeyRawBase64: jumpRawBase64,
+      expectedJumpHostKeyFingerprintSha256: jumpFp,
       privateKeyPassphrase: passphrase
     });
     const params: Record<string, Object> = {};
@@ -9441,9 +9488,11 @@ struct HostListPage {
   @Builder sshPreflightTrustFirstContent() {
     Column() {
       this.sshHostKeyInfoCard()
-      Text('这是首次连接该 SSH 主机。请确认此指纹与服务器管理员提供的一致。')
+      Text(this.sshPreflightJumpHostKeyInfo ?
+        '这是首次连接该 SSH 主机或跳板机。请分别确认指纹与服务器管理员提供的一致。' :
+        '这是首次连接该 SSH 主机。请确认此指纹与服务器管理员提供的一致。')
         .fontSize(13).fontColor(this.pal().text2).margin({ top: 16 }).fontFamily(this.font())
-      Text('确认后, RemoteDesktop 会保存此主机指纹, 后续连接会自动校验。')
+      Text('确认后, RemoteDesktop 会分别保存 endpoint 指纹, 后续连接会自动校验。')
         .fontSize(12).fontColor(this.pal().text3).margin({ top: 8 }).fontFamily(this.font())
     }.width('100%')
   }
@@ -9532,6 +9581,23 @@ struct HostListPage {
         Row() {
           Text('SHA256:').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text2).fontFamily(this.font())
           Text(this.sshPreflightHostKeyInfo.fingerprintSha256)
+            .fontSize(12).fontColor(this.pal().text).fontFamily('monospace').margin({ left: 6 }).layoutWeight(1)
+        }.width('100%')
+      }
+      if (this.sshPreflightJumpHostKeyInfo) {
+        Divider().margin({ top: 12, bottom: 12 }).color(this.pal().divider)
+        Text('跳板机: ' + this.sshPreflightJumpHostLabel)
+          .fontSize(13).fontColor(this.pal().text).fontFamily(this.font()).fontWeight(FontWeight.Medium)
+          .margin({ top: 2, bottom: 8 })
+        Row() {
+          Text('算法: ').fontSize(13).fontColor(this.pal().text3).fontFamily(this.font())
+          Text(this.sshPreflightJumpHostKeyInfo.algorithm).fontSize(13).fontColor(this.pal().text)
+            .fontFamily('monospace').fontWeight(FontWeight.Medium)
+        }.width('100%').margin({ bottom: 4 })
+        Row() {
+          Text('SHA256:').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text2)
+            .fontFamily(this.font())
+          Text(this.sshPreflightJumpHostKeyInfo.fingerprintSha256)
             .fontSize(12).fontColor(this.pal().text).fontFamily('monospace').margin({ left: 6 }).layoutWeight(1)
         }.width('100%')
       }
@@ -13298,6 +13364,11 @@ struct HostListPage {
       updated.sshHostKeyRawBase64 = '';
       updated.sshHostKeyTrustedAt = 0;
       updated.sshHostKeyTrustMode = 0;
+      updated.sshJumpHostKeyAlgorithm = '';
+      updated.sshJumpHostKeyFingerprintSha256 = '';
+      updated.sshJumpHostKeyRawBase64 = '';
+      updated.sshJumpHostKeyTrustedAt = 0;
+      updated.sshJumpHostKeyTrustMode = 0;
       this.srv.updateHost(updated);
       promptAction.showToast({ message: '已忘记 SSH 指纹', duration: 1500 });
     });
@@ -13324,12 +13395,19 @@ struct HostListPage {
         });
         return;
       }
+      let jumpInfo: SshHostKeyInfo | null = null;
+      if (this.sshPreflightUsesJump(host)) {
+        jumpInfo = this.loader.probeSshHostKey(host.proxyHost, host.proxyPort);
+        if (!jumpInfo.ok) {
+          promptAction.showToast({
+            message: '跳板机指纹获取失败: ' + (jumpInfo.errorMessage || '无法读取 SSH 主机指纹'),
+            duration: 2500
+          });
+          return;
+        }
+      }
       const updated: RemoteHost = RemoteHost.fromJSON(host.toJSON());
-      updated.sshHostKeyAlgorithm = info.algorithm;
-      updated.sshHostKeyFingerprintSha256 = info.fingerprintSha256;
-      updated.sshHostKeyRawBase64 = info.rawBase64;
-      updated.sshHostKeyTrustedAt = Date.now();
-      updated.sshHostKeyTrustMode = 1;
+      this.applySshPreflightTrust(updated, info, jumpInfo);
       this.srv.updateHost(updated);
       promptAction.showToast({ message: 'SSH 指纹已更新', duration: 1500 });
     } catch (err) {
