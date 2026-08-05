@@ -340,6 +340,12 @@ struct SshTerminal {
   private tabNavigationPending: boolean = false;
   /** 功能开关: true=使用 Rust terminal_core 渲染 (NativeTerminalRenderer), false=旧 TerminalEmulator */
   @StorageProp('useNativeTerminalCore') useNativeTerminalCore: boolean = true;
+  /**
+   * GPU XComponent renderer is opt-in until it passes the device matrix.
+   * Some API 23 devices abort the process from OH_Drawing_SurfaceFlush after
+   * the surface buffer is lost; the Canvas renderer keeps the VT core usable.
+   */
+  @StorageProp('useNativeGpuTerminal') useNativeGpuTerminal: boolean = false;
   /** 原生 GPU 渲染器 (XComponent + OH_Drawing); native 符号缺失时回退 Canvas 渲染器 */
   private gpuTerminalBridge: SshTerminalRendererBridge = new SshTerminalRendererBridge();
   private gpuRendererRegistry: SshTerminalRendererRegistry = SshTerminalRendererRegistry.getInstance();
@@ -5903,7 +5909,7 @@ struct SshTerminal {
           // 终端内容顶部对齐, 虚拟键栏通过 position 绝对定位在底部
           Stack({ alignContent: Alignment.TopStart }) {
             if (this.useNativeTerminalCore) {
-              if (this.gpuTerminalBridge.isAvailable()) {
+              if (this.useNativeGpuTerminal && this.gpuTerminalBridge.isAvailable()) {
                 GpuTerminalRenderer({
                   coreKey: this.hostId,
                   cols: this.termCols,

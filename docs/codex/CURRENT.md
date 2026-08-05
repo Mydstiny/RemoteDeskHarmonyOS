@@ -34,7 +34,7 @@ This file is the compact startup resume card for the active SSH terminal task.
 - The SFTP checkpoint is closed for integrity, task metadata, local-provider
   and Pad/PC workspace; background payload execution remains page-owned and
   real provider/endpoint acceptance is pending.
-- WP-T4 first migration slice is implemented: `alacritty_terminal` `0.26.0` is default behind terminalCore; the old Rust core remains a no-default fallback.
+- WP-T4 first migration slice is implemented: `alacritty_terminal` `0.26.0` is default behind terminalCore; the old Rust core remains a no-default fallback. GPU XComponent output is now opt-in; Canvas remains the safe device default.
 - `sshTerminalForegroundColor` is ARGB through NAPI; ANSI colors remain independent, and font size stays in Canvas for cell geometry.
 - The SSH owner reactor now sends bounded non-blocking libssh2 keepalives and retries transient failures without taking a second session owner.
 - SSH background continuity and custom PiP ownership are isolated from the
@@ -54,23 +54,15 @@ This file is the compact startup resume card for the active SSH terminal task.
   a bounded socketpair relay feeds the existing target terminal session.
   Teardown/recovery joins the relay before freeing the jump session.
 
-## Homepage Follow-on
-
-- With RustDesk online monitoring disabled, classic and grouped home cards omit
-  presence status text and empty status separators; ordinary relay hosts also
-  omit the default `中继` badge while Pro/direct labels remain.
-- The signed HAP was installed to HDC target `5KLBB25928203528`; a 2560x1600
-  real-device screenshot confirms the classic homepage result.
-
 ## SSH Connectivity Boundary
 
-- Native SSH currently supports `direct`, `http_connect` and `socks5`.
+- Native SSH currently supports `direct`, `http_connect`, `socks5`, raw
+  `frp_tcp` and the new `ssh_jump` route slice.
 - Legacy generic gateway fields fail closed; they are never silently converted
   into a direct SSH connection.
-- SSH ProxyJump/bastion now has a native route slice, but real bastion
-  interoperability and host-key/preflight coverage are still pending. Local,
-  remote and dynamic forwarding, FRP Visitor/STCP/SUDP/XTCP and real endpoint
-  interoperability remain unimplemented.
+- SSH ProxyJump/bastion has a native route and matching key preflight relay,
+  but real bastion interoperability and host-key binding remain pending.
+  Local/remote/dynamic forwarding and FRP Visitor/STCP/SUDP/XTCP remain open.
 
 ## Verification
 
@@ -81,9 +73,9 @@ This file is the compact startup resume card for the active SSH terminal task.
 - Rust `cargo test --manifest-path rustdesk_ffi/Cargo.toml --lib
   --no-default-features`: `156 passed, 1 failed, 157 total`; the remaining
   failure is the existing rendezvous fixture's public-address assertion.
-- `default@OhosTestCompileArkTS`: passed for `4a7642d` on 2026-08-05, warnings only.
-- `assembleHap`: passed for `4a7642d` on 2026-08-05 with `BUILD SUCCESSFUL`
-  and signing; HAP SHA-256 is `313ceb321cc1767ef245d801808e7b1864c0b40c3aa28969324f3d1574d46696`.
+- `default@OhosTestCompileArkTS`: passed for the GPU crash guard on 2026-08-05, warnings only.
+- `assembleHap`: passed for the GPU crash guard on 2026-08-05 with `BUILD SUCCESSFUL`
+  and signing; HAP SHA-256 is `2881d295dcdae98c6e7502008acde4a3768b52bc34b74f287303ce4da3ad1405`.
 - Terminal-core Rust tests: Alacritty path `63 passed, 0 failed`; fallback
   path `57 passed, 0 failed`.
 - OHOS Rust checks: `aarch64-unknown-linux-ohos` and
@@ -94,11 +86,10 @@ This file is the compact startup resume card for the active SSH terminal task.
 - `ohosTest@OhosTestCompileArkTS`: blocked; task is not registered (`00306054`).
 - Light compliance: blocked by baseline SBOM package
   `totp-reviewed-brand-assets` with `licenseDeclared=NOASSERTION`.
-- HDC target `5KLBB25928203528`: cold SSH connected; injected `ORDER_A` and
-  `yes A | head -c 300000; echo LARGE_OK` completed; second entry matched the
-  first; Home showed the retained SSH PiP; `RESUMED_OK`, `IDLE_OK` and
-  `IDLE_90_OK` executed after about 90 seconds idle; fresh `4a7642d` HAP
-  executed `FRESH_4A_OK`.
+- Provided MatePad log confirms a device-lost abort in `OH_Drawing_SurfaceFlush` from `SshTerminalRenderer::DrawSnapshot`; the default SSH page now avoids this GPU path.
+- HDC target `5KLBB25928203528`: fresh crash-guard HAP installed; live SSH
+  entered with Alacritty core plus Canvas renderer, PTY resize/data render
+  completed, process stayed alive, and no `GPU`/`SurfaceFlush`/`SIGABRT` log appeared.
 
 ## Review
 
@@ -107,24 +98,20 @@ This file is the compact startup resume card for the active SSH terminal task.
   matches the PASS receipt and can skip full review.
 - The SFTP checkpoint is scope-complete for this pass, but its real-device and
   endpoint evidence is not a completion claim for Level A.
-- Device evidence covers injected input and the available lifecycle path; true
-  external-keyboard/third-party-IME coverage and all bastion/forwarding/FRP
-  endpoint evidence remain open.
+- Device evidence covers injected input and lifecycle; external keyboard/IME, GPU re-enable, bastion/forwarding/FRP evidence remain open.
 
 ## Next
 
-1. User-accept IME/physical-keyboard behavior on the signed `4a7642d` HAP.
-2. Keep ProxyJump, forwarding and FRP disabled until contracts and real
-   endpoints exist; implement them as a separate Level B task.
+1. Verify ProxyJump against a real OpenSSH bastion and bind its host key.
+2. Add SSH-scoped local/remote/dynamic forwarding and FRP visitor modes.
 
 ## Blockers
 
 - Full external-keyboard/third-party-IME and SFTP lifecycle/provider acceptance
   remains pending; cold/large-output/background/PiP/re-entry and 90-second idle
   checks passed.
-- No real OpenSSH bastion/ProxyJump, forwarding or FRP endpoint is available.
-- ProxyJump preflight now uses a matching standalone direct-tcpip relay and can
-  receive the target password or transient key material for the bastion. It
-  still needs real endpoint verification and an explicit bastion host-key trust
-  binding before claiming completion.
+- No real OpenSSH bastion, forwarding service or FRP endpoint is currently
+  available; HDC target is also offline for device acceptance.
+- ProxyJump preflight can receive target password or transient key material,
+  but still needs explicit bastion host-key trust binding.
 - `ohosTest@OhosTestCompileArkTS` is unregistered (`00306054`).
