@@ -1,6 +1,6 @@
 # Shared Queue
 
-Updated: 2026-08-05 Asia/Shanghai
+Updated: 2026-08-06 Asia/Shanghai
 
 ## Now
 
@@ -15,8 +15,10 @@ Updated: 2026-08-05 Asia/Shanghai
   handshakes before switching, and retains detach-race output per host. The
   visible xterm WebView has an explicit detach/rebind gate and per-binding
   identity; Pad/PC native VT state uses stable host IDs with xterm fallback,
-  while phone remains on the original WebView. Both code-only Hvigor gates
-  passed on 2026-08-05; device validation is deferred for this pass.
+  while phone remains on the original WebView. Connection binding no longer
+  waits for ancillary last-connected persistence; native/Xterm surfaces and the
+  parent pane share an explicit binding identity. Both code-only Hvigor gates
+  passed on 2026-08-06; device validation is deferred for this pass.
 - Keep the review state at the matching PASS receipt; do not claim full
   background SFTP execution, Level A, or Level B connectivity.
 - The first ProxyJump implementation and matching key preflight relay are

@@ -3,10 +3,10 @@
   "task": "ssh-terminal-complete-upgrade",
   "branch": "codex/ssh-terminal-complete-upgrade",
   "base": "d2769ad4b",
-  "head": "404ccde725dffdc5c88dddade81c6c7dcd2d904f",
-  "phase": "alacritty-core-vt-parity-code-only-host-switch-per-host-renderer-fallback-ready",
+  "head": "853dcaa",
+  "phase": "alacritty-core-vt-parity-code-only-host-switch-surface-refresh-ready",
   "status": "active",
-  "next": "Independently review the same-page SSH binding-generation, two-phase surface-remount and per-host renderer fallback fix; device validation is deferred per user instruction, then keep Level A/B connectivity gated until real endpoints exist.",
+  "next": "Independently review the same-page SSH binding-generation, surface-identity refresh and per-host renderer fallback fix; device validation is deferred per user instruction, then implement Level B connectivity contracts.",
   "blockers": [
     "HDC target 5KLBB25928203528 passed cold SSH, ordered input, 300 KiB output, Home background retention, PiP/re-entry and 90-second idle commands; true external-keyboard and third-party-IME coverage remains open.",
     "ohosTest@OhosTestCompileArkTS is not registered (00306054).",
@@ -80,14 +80,14 @@
     "host_native_tests": "254-pass-16-preexisting-vnc-fixture-startup-failures-270-total-2026-08-04",
     "rust_terminal_core_tests": "focused-alacritty-63-pass-fallback-57-pass-2026-08-04; full-no-default-features-156-pass-1-preexisting-rendezvous-fixture-public-address-failure-157-total",
     "terminalParity": "alacritty-67-pass-fallback-57-pass-unicode-ansi-tui-resize-large-output-damage-2026-08-04",
-    "default@OhosTestCompileArkTS": "pass-per-host-output-native-fallback-2026-08-05",
-    "assembleHap": "pass-build-successful-signed-per-host-output-native-fallback-2026-08-05-hap-sha256-e148bf692c8c07d761c3d33e14903759d0895aa4c19d085b356a6a4d12638b5c",
-    "gitDiffCheck": "pass-2026-08-05",
+    "default@OhosTestCompileArkTS": "pass-switched-terminal-surface-refresh-2026-08-06",
+    "assembleHap": "pass-build-successful-signed-switched-terminal-surface-refresh-2026-08-06-hap-sha256-d06415fb78161bc55e7039ac8963231d8559e454d152c4544f731a818ef2ed5e",
+    "gitDiffCheck": "pass-2026-08-06",
     "sbom": "pass-totp-validator-96-packages-282-files-282-relationships-2026-08-04",
     "ohosTest": "blocked-task-00306054",
     "lightCompliance": "blocked-baseline-sbom-NOASSERTION-totp-reviewed-brand-assets",
     "hdc": "pass-4a7642d-5KLBB25928203528-ordered-input-cold-large-output-second-entry-home-pip-reentry-90s-idle-fresh-command-2026-08-05",
     "homepagePresenceToggle": "pass-installed-signed-hap-classic-home-no-presence-text-2026-08-04"
   },
-  "updated": "2026-08-05 Asia/Shanghai"
+  "updated": "2026-08-06 Asia/Shanghai"
 }

@@ -5,8 +5,8 @@
 - Task: `ssh-terminal-complete-upgrade`
 - Base: `main@d2769ad4b`
 - Branch: `codex/ssh-terminal-complete-upgrade`
-- Code checkpoint: `404ccde` (`fix(ssh): isolate terminal output across host switches`).
-- Phase: Alacritty default; lifecycle, VT/Unicode/resize/TUI/large-output parity, per-host output isolation and code-only host-switch/initial-UI refresh ready.
+- Code checkpoint: `853dcaa` (`fix(ssh): force refresh of switched terminal surface`).
+- Phase: Alacritty default; lifecycle, VT/Unicode/resize/TUI/large-output parity, per-host output isolation and code-only host-switch/surface refresh ready.
 - Scope: migrate VT behind terminalCore, keep appearance settings in-core, verify IME/input/Canvas behavior. Homepage work is not current focus.
 
 ## Progress
@@ -53,6 +53,9 @@
   fast second-host switch cannot reuse the first host's DOM. Detach-race
   output is retained per host; native keys use stable host IDs and fallback
   rebuilds from one bounded host transcript.
+- Switched-session rendering no longer waits for last-connected persistence;
+  fresh tab arrays, identity-carrying callbacks and an identity-keyed pane keep
+  stale surfaces from freezing the second host's page.
 
 ## SSH Connectivity Boundary
 
@@ -66,18 +69,19 @@
 
 ## Verification
 
-- `git diff --check`: passed on 2026-08-05.
+- `git diff --check`: passed on 2026-08-06.
 - Host native tests: `254 passed, 16 failed, 270 total`; all failures are the
   existing VNC TLS fixture startup failures; the keepalive/SSH diagnostics
   tests pass.
 - Rust `cargo test --manifest-path rustdesk_ffi/Cargo.toml --lib
   --no-default-features`: `156 passed, 1 failed, 157 total`; the remaining
   failure is the existing rendezvous fixture's public-address assertion.
-- `default@OhosTestCompileArkTS`: passed for the per-host output/native-fallback
-  increment on 2026-08-05, warnings only.
-- `assembleHap`: passed for the per-host output/native-fallback increment on
-  2026-08-05 with `BUILD SUCCESSFUL` and signing; current HAP SHA-256 is
-  `e148bf692c8c07d761c3d33e14903759d0895aa4c19d085b356a6a4d12638b5c`.
+- `default@OhosTestCompileArkTS`: passed for the previous increment on
+  2026-08-05 and the switched-terminal surface refresh increment on 2026-08-06;
+  warnings only.
+- `assembleHap`: previous and switched-terminal surface refresh increments
+  passed with `BUILD SUCCESSFUL` and signing; current HAP SHA-256 is
+  `d06415fb78161bc55e7039ac8963231d8559e454d152c4544f731a818ef2ed5e`.
 - Terminal-core Rust tests: Alacritty path `63 passed, 0 failed`; fallback
   path `57 passed, 0 failed`.
 - OHOS Rust checks: `aarch64-unknown-linux-ohos` and
@@ -88,9 +92,6 @@
 - `ohosTest@OhosTestCompileArkTS`: blocked; task is not registered (`00306054`).
 - Light compliance: blocked by baseline SBOM package
   `totp-reviewed-brand-assets` with `licenseDeclared=NOASSERTION`.
-- Provided MatePad log confirms a device-lost abort in `OH_Drawing_SurfaceFlush` from `SshTerminalRenderer::DrawSnapshot`; the native path now has lifecycle fallback but this pass has no new device evidence.
-- Prior HDC target `5KLBB25928203528` passed cold SSH, lifecycle and idle checks;
-  no new device evidence is claimed for this code-only pass.
 
 ## Review
 
