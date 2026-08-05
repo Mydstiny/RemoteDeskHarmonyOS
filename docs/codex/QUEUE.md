@@ -14,9 +14,9 @@ Updated: 2026-08-05 Asia/Shanghai
   signed `4a7642d` HAP, while keeping the old Rust core as an explicit fallback.
 - Keep the review state at the matching PASS receipt; do not claim full
   background SFTP execution, Level A, or Level B connectivity.
-- The first ProxyJump implementation slice is committed, but keep it pending
-  until key preflight, bastion host-key policy and a real OpenSSH endpoint are
-  verified.
+- The first ProxyJump implementation and matching key preflight relay are
+  committed, but keep them pending until bastion host-key policy and a real
+  OpenSSH endpoint are verified.
 
 ## Next
 

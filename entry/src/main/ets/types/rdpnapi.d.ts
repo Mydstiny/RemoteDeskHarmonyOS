@@ -746,6 +746,8 @@ export interface SshProxyConfig {
   port?: number;
   username?: string;
   password?: string;
+  privateKeyPem?: string;
+  privateKeyPassphrase?: string;
 }
 
 export interface SshHostKeyInfo {

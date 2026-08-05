@@ -123,7 +123,8 @@ This file is the compact startup resume card for the active SSH terminal task.
   remains pending; cold/large-output/background/PiP/re-entry and 90-second idle
   checks passed.
 - No real OpenSSH bastion/ProxyJump, forwarding or FRP endpoint is available.
-- ProxyJump preflight currently still uses the standalone SSH key-tool path,
-  which does not yet relay through `ssh_jump`; password/terminal route wiring
-  must be verified against a real bastion before claiming completion.
+- ProxyJump preflight now uses a matching standalone direct-tcpip relay and can
+  receive the target password or transient key material for the bastion. It
+  still needs real endpoint verification and an explicit bastion host-key trust
+  binding before claiming completion.
 - `ohosTest@OhosTestCompileArkTS` is unregistered (`00306054`).

@@ -64,6 +64,8 @@ struct SshProxyOptions {
     int port = 0;
     std::string username;
     std::string password;
+    std::string privateKeyPem;
+    std::string privateKeyPassphrase;
 };
 
 struct SshHostKeyInfo {

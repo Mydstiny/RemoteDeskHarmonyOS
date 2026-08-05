@@ -23,6 +23,9 @@
 #include <chrono>
 #include <cerrno>
 #include <cstdlib>
+#include <array>
+#include <memory>
+#include <sys/select.h>
 
 #ifdef __OHOS__
 #include <sys/socket.h>
@@ -963,6 +966,175 @@ static void closeSocketFd(int sock) {
 #endif
 }
 
+static bool setSocketIoTimeout(int sock, int timeoutSec);
+
+struct SshJumpOperationState {
+    int bastionSock = -1;
+    int relayFd = -1;
+    LIBSSH2_SESSION* session = nullptr;
+    LIBSSH2_CHANNEL* channel = nullptr;
+};
+
+static void closeSshJumpOperationState(const std::shared_ptr<SshJumpOperationState>& state) {
+    if (state->channel != nullptr) {
+        libssh2_channel_free(state->channel);
+        state->channel = nullptr;
+    }
+    if (state->session != nullptr) {
+        libssh2_session_free(state->session);
+        state->session = nullptr;
+    }
+    if (state->relayFd >= 0) {
+        closeSocketFd(state->relayFd);
+        state->relayFd = -1;
+    }
+    if (state->bastionSock >= 0) {
+        closeSocketFd(state->bastionSock);
+        state->bastionSock = -1;
+    }
+}
+
+static void runSshJumpOperationRelay(const std::shared_ptr<SshJumpOperationState>& state) {
+    constexpr size_t kRelayLimit = 512 * 1024;
+    std::vector<uint8_t> toChannel;
+    std::vector<uint8_t> toLocal;
+    std::array<uint8_t, 64 * 1024> buffer {};
+    bool localEof = false;
+    bool channelEof = false;
+
+    while (true) {
+        bool progress = false;
+        if (!localEof && toChannel.size() < kRelayLimit) {
+            const ssize_t received = recv(state->relayFd, buffer.data(), buffer.size(), 0);
+            if (received > 0) {
+                toChannel.insert(toChannel.end(), buffer.begin(), buffer.begin() + received);
+                progress = true;
+            } else if (received == 0) {
+                localEof = true;
+                libssh2_channel_send_eof(state->channel);
+            } else if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) {
+                break;
+            }
+        }
+        if (!toChannel.empty()) {
+            const ssize_t written = libssh2_channel_write(
+                state->channel, reinterpret_cast<const char*>(toChannel.data()), toChannel.size());
+            if (written > 0) {
+                toChannel.erase(toChannel.begin(), toChannel.begin() + written);
+                progress = true;
+            } else if (written < 0 && written != LIBSSH2_ERROR_EAGAIN) {
+                break;
+            }
+        }
+        if (!channelEof && toLocal.size() < kRelayLimit) {
+            const ssize_t received = libssh2_channel_read(
+                state->channel, reinterpret_cast<char*>(buffer.data()), buffer.size());
+            if (received > 0) {
+                toLocal.insert(toLocal.end(), buffer.begin(), buffer.begin() + received);
+                progress = true;
+            } else if (received == 0 && libssh2_channel_eof(state->channel)) {
+                channelEof = true;
+                shutdown(state->relayFd, SHUT_WR);
+            } else if (received < 0 && received != LIBSSH2_ERROR_EAGAIN) {
+                break;
+            }
+        }
+        if (!toLocal.empty()) {
+            const ssize_t written = send(state->relayFd, toLocal.data(), toLocal.size(), 0);
+            if (written > 0) {
+                toLocal.erase(toLocal.begin(), toLocal.begin() + written);
+                progress = true;
+            } else if (written < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) {
+                break;
+            }
+        }
+        if (localEof && channelEof && toChannel.empty() && toLocal.empty()) { break; }
+        if (progress) { continue; }
+
+        fd_set readSet;
+        fd_set writeSet;
+        FD_ZERO(&readSet);
+        FD_ZERO(&writeSet);
+        FD_SET(state->relayFd, &readSet);
+        if (!toLocal.empty()) { FD_SET(state->relayFd, &writeSet); }
+        FD_SET(state->bastionSock, &readSet);
+        FD_SET(state->bastionSock, &writeSet);
+        const int maxFd = std::max(state->relayFd, state->bastionSock);
+        struct timeval tv = {0, 100000};
+        const int selected = select(maxFd + 1, &readSet, &writeSet, nullptr, &tv);
+        if (selected < 0 && errno != EINTR) { break; }
+    }
+    closeSshJumpOperationState(state);
+}
+
+static int connectThroughSshJumpOperation(
+    const std::string& host, int port, const SshProxyOptions& proxy) {
+    if (proxy.host.empty() || proxy.port <= 0 || proxy.port > 65535 ||
+        proxy.username.empty() ||
+        (proxy.password.empty() && proxy.privateKeyPem.empty())) {
+        return -2;
+    }
+    const int bastionSock = tcpConnectWithTimeout(proxy.host, proxy.port, 10);
+    if (bastionSock < 0) { return -1; }
+    if (!setSocketIoTimeout(bastionSock, 10)) {
+        closeSocketFd(bastionSock);
+        return -1;
+    }
+
+    const std::shared_ptr<SshJumpOperationState> state =
+        std::make_shared<SshJumpOperationState>();
+    state->bastionSock = bastionSock;
+    state->session = libssh2_session_init();
+    if (state->session == nullptr) {
+        closeSshJumpOperationState(state);
+        return -1;
+    }
+    libssh2_session_set_blocking(state->session, 1);
+    applySshAlgorithmPreferences(state->session);
+    int rc = libssh2_session_handshake(state->session, state->bastionSock);
+    if (rc != 0) {
+        closeSshJumpOperationState(state);
+        return -2;
+    }
+    if (!proxy.privateKeyPem.empty()) {
+        rc = libssh2_userauth_publickey_frommemory(
+            state->session, proxy.username.c_str(), proxy.username.size(),
+            nullptr, 0, proxy.privateKeyPem.c_str(), proxy.privateKeyPem.size(),
+            proxy.privateKeyPassphrase.empty() ? nullptr : proxy.privateKeyPassphrase.c_str());
+    } else {
+        rc = libssh2_userauth_password(state->session, proxy.username.c_str(), proxy.password.c_str());
+    }
+    if (rc != 0) {
+        closeSshJumpOperationState(state);
+        return -2;
+    }
+    state->channel = libssh2_channel_direct_tcpip(state->session, host.c_str(), port);
+    if (state->channel == nullptr) {
+        closeSshJumpOperationState(state);
+        return -2;
+    }
+
+    int socketPair[2] = {-1, -1};
+    if (socketpair(AF_UNIX, SOCK_STREAM, 0, socketPair) != 0) {
+        closeSshJumpOperationState(state);
+        return -1;
+    }
+    for (int fd : socketPair) {
+        const int flags = fcntl(fd, F_GETFL, 0);
+        if (flags < 0 || fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0) {
+            close(socketPair[0]);
+            close(socketPair[1]);
+            closeSshJumpOperationState(state);
+            return -1;
+        }
+    }
+    const int targetSock = socketPair[0];
+    state->relayFd = socketPair[1];
+    libssh2_session_set_blocking(state->session, 0);
+    std::thread([state]() { runSshJumpOperationRelay(state); }).detach();
+    return targetSock;
+}
+
 static bool setSocketIoTimeout(int sock, int timeoutSec) {
     if (sock < 0 || timeoutSec <= 0) {
         return false;
@@ -1232,6 +1404,9 @@ static bool connectThroughProxy(
 static int connectForSshOperation(
     const std::string& host, int port, const SshProxyOptions& proxy) {
     const std::string proxyType = proxy.type.empty() ? "direct" : proxy.type;
+    if (proxyType == "ssh_jump") {
+        return connectThroughSshJumpOperation(host, port, proxy);
+    }
     const bool direct = proxyType == "direct";
     const std::string connectHost = direct ? host : proxy.host;
     const int connectPort = direct ? port : proxy.port;

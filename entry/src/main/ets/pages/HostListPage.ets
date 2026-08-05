@@ -4082,12 +4082,18 @@ struct HostListPage {
    * 端点和用户名；若代理要求密码，native 会返回明确的代理认证错误。
    */
   private sshPreflightProxy(host: RemoteHost): SshProxyConfig {
+    const keyMaterial = host.sshProxyType === 'ssh_jump' && host.sshUseKey
+      ? this.resolveSshKeyMaterial(host).privateKey : '';
     return {
       type: host.proxyHost.length > 0 ? host.sshProxyType : 'direct',
       host: host.proxyHost,
       port: host.proxyPort,
       username: host.proxyUsername,
-      password: ''
+      // ProxyJump uses the target host credential for the bastion in this
+      // route slice; keep it transient and never persist it as proxy data.
+      password: host.sshProxyType === 'ssh_jump' ? host.password : '',
+      privateKeyPem: keyMaterial,
+      privateKeyPassphrase: host.sshProxyType === 'ssh_jump' ? host.sshKeyPassphrase : ''
     };
   }
 

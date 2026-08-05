@@ -7317,6 +7317,12 @@ napi_value NapiTestSshKeyAuth(napi_env env, napi_callback_info info) {
         if (napi_get_named_property(env, args[5], "password", &proxyValue) == napi_ok) {
             proxy.password = GetNapiString(env, proxyValue);
         }
+        if (napi_get_named_property(env, args[5], "privateKeyPem", &proxyValue) == napi_ok) {
+            proxy.privateKeyPem = GetNapiString(env, proxyValue);
+        }
+        if (napi_get_named_property(env, args[5], "privateKeyPassphrase", &proxyValue) == napi_ok) {
+            proxy.privateKeyPassphrase = GetNapiString(env, proxyValue);
+        }
         (void)napi_typeof(env, args[5], &proxyType);
         if (proxyType != napi_object) {
             proxy = SshProxyOptions();
@@ -7327,6 +7333,8 @@ napi_value NapiTestSshKeyAuth(napi_env env, napi_callback_info info) {
         std::string(hostBuf), port, std::string(userBuf),
         privateKeyPem, std::string(passphraseBuf), proxy);
     secureClearString(proxy.password);
+    secureClearString(proxy.privateKeyPem);
+    secureClearString(proxy.privateKeyPassphrase);
 
     napi_value result;
     napi_create_object(env, &result);
@@ -7377,6 +7385,12 @@ napi_value NapiProbeSshHostKey(napi_env env, napi_callback_info info) {
         if (napi_get_named_property(env, args[2], "password", &proxyValue) == napi_ok) {
             proxy.password = GetNapiString(env, proxyValue);
         }
+        if (napi_get_named_property(env, args[2], "privateKeyPem", &proxyValue) == napi_ok) {
+            proxy.privateKeyPem = GetNapiString(env, proxyValue);
+        }
+        if (napi_get_named_property(env, args[2], "privateKeyPassphrase", &proxyValue) == napi_ok) {
+            proxy.privateKeyPassphrase = GetNapiString(env, proxyValue);
+        }
         (void)napi_typeof(env, args[2], &proxyType);
         if (proxyType != napi_object) {
             proxy = SshProxyOptions();
@@ -7385,6 +7399,8 @@ napi_value NapiProbeSshHostKey(napi_env env, napi_callback_info info) {
 
     SshHostKeyInfo res = probeSshHostKey(std::string(hostBuf), port, proxy);
     secureClearString(proxy.password);
+    secureClearString(proxy.privateKeyPem);
+    secureClearString(proxy.privateKeyPassphrase);
 
     napi_value result;
     napi_create_object(env, &result);
