@@ -12,9 +12,9 @@ Updated: 2026-08-06 Asia/Shanghai
   mount deduplicates repeated probes, the native registry rejects stale
   surface owners, a bounded ready fallback restores transcript-backed xterm,
   an independent ArkUI render revision forces stale surface recreation, and
-  native rendering restores EGL context plus explicitly repaints retained
-  snapshots after a host rebind; the fresh signed HAP passed both code-only
-  gates.
+  native rendering restores EGL context, explicitly repaints retained snapshots
+  after a host rebind, and acknowledges surface-flush failure before retrying;
+  the fresh signed HAP passed both code-only gates.
 - Same-page SSH host switching now rejects stale async connect/attach/data/PiP
   continuations using an independent binding generation, cancels pending
   handshakes before switching, and retains detach-race output per host. The

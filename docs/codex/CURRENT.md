@@ -5,7 +5,7 @@
 - Task: `ssh-terminal-complete-upgrade`
 - Base: `main@d2769ad4b`
 - Branch: `codex/ssh-terminal-complete-upgrade`
-- Code checkpoint: `8554376` (`fix(ssh): restore terminal surface rendering`).
+- Code checkpoint: `d53725d` (`fix(ssh): acknowledge terminal surface refresh`).
 - Phase: Alacritty default; lifecycle, VT/Unicode/resize/TUI/large-output parity, per-host output isolation and code-only host-switch/surface refresh recovery.
 - Scope: migrate VT behind terminalCore, keep appearance settings in-core, verify IME/input/Canvas behavior. Homepage work is not current focus.
 
@@ -61,7 +61,7 @@
   isolated JavaScript bridge so late callbacks cannot freeze the new page.
 - Mount requests retain a pending binding key; repeated connected-state probes cannot starve the second-host renderer. The native registry now rejects stale owners, and a bounded ready timeout falls back from a blank native surface to transcript-backed xterm.
 - A separate ArkUI render revision now keys the visible terminal subtree, so a remount with the same host/session identity still destroys and recreates the stale XComponent/WebView.
-- Native surface rendering now restores the EGL current context before drawing or flushing and exposes an explicit retained-snapshot refresh after host rebind; a host with no new SSH bytes can still repaint its existing terminal state.
+- Native surface rendering now restores the EGL current context before drawing or flushing, exposes an explicit retained-snapshot refresh after host rebind, and acknowledges `OH_DRAWING_SurfaceFlush`; a host with no new SSH bytes can still repaint its existing terminal state or enter the bounded retry path.
 
 ## SSH Connectivity Boundary
 
@@ -75,7 +75,7 @@
 
 ## Verification
 
-- `git diff --check`: passed on 2026-08-06.
+- `git diff --check`: passed after the final refresh fix on 2026-08-06.
 - Host native tests: `254 passed, 16 failed, 270 total`; all failures are the
   existing VNC TLS fixture startup failures; the keepalive/SSH diagnostics
   tests pass.
@@ -100,7 +100,7 @@
 ## Review
 
 - Existing independent review passed the bounded-output and IME/socket
-  increments; checkpoint `8554376` remains `REVIEW_REQUIRED` until review.
+  increments; checkpoint `d53725d` remains `REVIEW_REQUIRED` until review.
 - SFTP scope is closed for this pass; real-device/endpoint evidence is not a Level A completion claim.
 - Device evidence covers injected input and lifecycle; external keyboard/IME, GPU re-enable, bastion/forwarding/FRP evidence remain open.
 
