@@ -50,7 +50,8 @@ export struct GpuTerminalRenderer {
   /** Visible surface identity; changes whenever the page binds a new terminal view. */
   @Prop @Watch('onSurfaceIdentityChange') surfaceIdentity: string = '';
   @Prop bottomAlignSparseContent: boolean = false;
-  inputBuffer: TerminalInputBuffer = new TerminalInputBuffer();
+  /** Parent-owned per-host queue; it must follow a reused component instance. */
+  @Prop @Watch('onInputBufferChange') inputBuffer: TerminalInputBuffer = new TerminalInputBuffer();
   @Prop @Watch('onInputSequenceChange') inputSequence: number = 0;
   @StorageProp('sshTerminalForegroundColor') @Watch('onAppearanceChange') terminalFgColor: string = '#33FF33';
   @Prop @Watch('onScrollToBottomRequest') scrollToBottomRequest: number = 0;
@@ -173,6 +174,10 @@ export struct GpuTerminalRenderer {
     this.scheduleSurfaceRebind();
   }
 
+  private onInputBufferChange(): void {
+    this.consumeInputQueue();
+  }
+
   /**
    * ArkUI can deliver coreKey and surfaceIdentity watches in either order.
    * Wait one event-loop turn so the native binding always observes the pair
@@ -279,7 +284,12 @@ export struct GpuTerminalRenderer {
     // The VT core may already contain the host's prompt while the surface was
     // detached. Repaint the retained snapshot even when no new SSH bytes
     // arrive after this component is mounted.
-    this.bridge.refresh(this.handle);
+    if (!this.bridge.refresh(this.handle)) {
+      this.surfaceReady = false;
+      this.registry.detach(this.coreKey, this.bridge, this.attachedRendererOwnerId());
+      this.scheduleSurfaceAttachRetry();
+      return;
+    }
     this.notifyMode();
     if (this.onRendererReady) {
       this.onRendererReady(this.coreKey, this.surfaceIdentity);

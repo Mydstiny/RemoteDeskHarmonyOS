@@ -34,7 +34,7 @@ interface SshTerminalRendererNativeModule {
     widthPx: number, heightPx: number) => boolean;
   sshTerminalRendererDetachSurface?: (handle: number) => void;
   sshTerminalRendererWriteBytes?: (handle: number, data: ArrayBuffer) => void;
-  sshTerminalRendererRefresh?: (handle: number) => void;
+  sshTerminalRendererRefresh?: (handle: number) => boolean;
   sshTerminalRendererResize?: (handle: number, cols: number, rows: number,
     cellWidthPx: number, cellHeightPx: number, fontSizePx: number) => void;
   sshTerminalRendererSetAppearance?: (handle: number, fontSizePx: number,
@@ -96,9 +96,12 @@ export class SshTerminalRendererBridge {
     this.native.sshTerminalRendererWriteBytes?.(handle, data);
   }
 
-  refresh(handle: number): void {
-    if (handle === 0) { return; }
-    this.native.sshTerminalRendererRefresh?.(handle);
+  refresh(handle: number): boolean {
+    if (handle === 0) { return false; }
+    const fn = this.native.sshTerminalRendererRefresh;
+    // Older signed HAPs may not expose the optional acknowledgement. Keep
+    // their existing rendering behavior while new native builds report it.
+    return fn === undefined ? true : fn(handle);
   }
 
   resize(handle: number, cols: number, rows: number,

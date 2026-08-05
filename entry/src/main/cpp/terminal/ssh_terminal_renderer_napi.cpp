@@ -126,11 +126,12 @@ napi_value NapiRefresh(napi_env env, napi_callback_info info) {
     size_t argc = 1;
     napi_value args[1] = {};
     napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    bool ok = false;
     if (argc > 0) {
         SshTerminalRenderer* renderer = GetRenderer(env, args[0]);
-        if (renderer != nullptr) { renderer->Refresh(); }
+        if (renderer != nullptr) { ok = renderer->Refresh(); }
     }
-    napi_value undefined; napi_get_undefined(env, &undefined); return undefined;
+    napi_value result; napi_get_boolean(env, ok, &result); return result;
 }
 
 napi_value NapiResize(napi_env env, napi_callback_info info) {

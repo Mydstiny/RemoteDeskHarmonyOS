@@ -384,6 +384,8 @@ struct SshTerminal {
   /** Separates old-surface teardown from the next surface mount by one frame. */
   private terminalSurfaceMountTimer: number = -1;
   private terminalSurfaceMountToken: number = 0;
+  /** Retries a mount that observes the live session during a state transition. */
+  private terminalSurfaceMountRetryCount: number = 0;
   /** Prevents repeated connected-state probes from starving one mount turn. */
   private terminalSurfacePendingBindingKey: string = '';
   /** Bounds a native surface that never reports ready; xterm is the fallback. */
@@ -625,6 +627,7 @@ struct SshTerminal {
       this.terminalRendererReadyTimer = -1;
     }
     this.terminalSurfacePendingBindingKey = '';
+    this.terminalSurfaceMountRetryCount = 0;
     this.terminalSurfaceBindingKey = '';
     this.terminalSurfaceMounted = false;
     this.xtermReady = false;
@@ -660,16 +663,38 @@ struct SshTerminal {
     this.terminalSurfaceMounted = false;
     this.xtermReady = false;
     this.terminalSurfaceBindingKey = '';
+    if (this.terminalSurfacePendingBindingKey !== bindingKey) {
+      this.terminalSurfaceMountRetryCount = 0;
+    }
     const mountToken: number = ++this.terminalSurfaceMountToken;
     this.terminalSurfacePendingBindingKey = bindingKey;
     this.terminalSurfaceMountTimer = setTimeout((): void => {
       this.terminalSurfaceMountTimer = -1;
       this.terminalSurfacePendingBindingKey = '';
-      if (mountToken !== this.terminalSurfaceMountToken ||
-        !this.isSshBindingActive(pageGeneration, bindingGeneration, bindingHostId) ||
-        this.sessionId !== bindingSessionId || !this.connected || this.terminalClosing) {
+      if (mountToken !== this.terminalSurfaceMountToken || this.terminalClosing) {
         return;
       }
+      if (!this.isSshBindingActive(pageGeneration, bindingGeneration, bindingHostId) ||
+        this.sessionId !== bindingSessionId) {
+        return;
+      }
+      // Native connection state and ArkUI state can settle on adjacent turns.
+      // Keep the binding pending while the current session is still connecting
+      // instead of leaving the page permanently behind the loading view.
+      if (!this.connected) {
+        if (!this.connecting || this.terminalSurfaceMountRetryCount >= 120) {
+          return;
+        }
+        this.terminalSurfaceMountRetryCount++;
+        this.terminalSurfacePendingBindingKey = bindingKey;
+        this.terminalSurfaceMountTimer = setTimeout((): void => {
+          this.terminalSurfaceMountTimer = -1;
+          this.scheduleTerminalSurfaceMount(pageGeneration, bindingGeneration,
+            bindingHostId, bindingSessionId);
+        }, 32);
+        return;
+      }
+      this.terminalSurfaceMountRetryCount = 0;
       this.terminalSurfaceBindingKey = bindingKey;
       // Keep the revision independent from the host/session identity. This
       // forces ArkUI to replace a stale XComponent/WebView even when the

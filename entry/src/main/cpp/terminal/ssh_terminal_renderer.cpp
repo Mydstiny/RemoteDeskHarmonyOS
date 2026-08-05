@@ -78,7 +78,13 @@ int SshTerminalRenderer::Init(const std::string& surfaceId, int widthPx, int hei
     }
     ready_ = true;
     hasRenderedFrame_ = false;
-    RenderFull();
+    if (!RenderFull()) {
+        ready_ = false;
+        DestroyGraphics();
+        terminal_core_destroy(terminal_);
+        terminal_ = nullptr;
+        return -4;
+    }
     OH_LOG_INFO(LOG_APP, "[SSH] Native Drawing renderer initialized %{public}zux%{public}zu",
                 cols_, rows_);
     return 0;
@@ -96,7 +102,11 @@ int SshTerminalRenderer::RebindSurface(const std::string& surfaceId, int widthPx
     }
     ready_ = true;
     hasRenderedFrame_ = false;
-    RenderFull();
+    if (!RenderFull()) {
+        ready_ = false;
+        DestroyGraphics();
+        return -3;
+    }
     return 0;
 }
 
@@ -135,11 +145,12 @@ void SshTerminalRenderer::WriteBytes(const uint8_t* data, std::size_t length) {
     }
 }
 
-void SshTerminalRenderer::Refresh() {
+bool SshTerminalRenderer::Refresh() {
     std::lock_guard<std::mutex> lock(mutex_);
     if (terminal_ != nullptr && ready_) {
-        RenderFull();
+        return RenderFull();
     }
+    return false;
 }
 
 void SshTerminalRenderer::Resize(std::size_t cols, std::size_t rows, float cellWpx,
@@ -418,13 +429,13 @@ bool SshTerminalRenderer::CanDraw() {
     return EnsureGraphicsCurrent();
 }
 
-void SshTerminalRenderer::RenderFull() {
+bool SshTerminalRenderer::RenderFull() {
     if (!CanDraw()) {
-        return;
+        return false;
     }
     FfiTerminalSnapshot* snapshot = terminal_core_snapshot(terminal_);
     if (snapshot == nullptr) {
-        return;
+        return false;
     }
     mode_.bracketedPaste = snapshot->bracketed_paste;
     mode_.mouseTracking = snapshot->mouse_tracking;
@@ -432,8 +443,9 @@ void SshTerminalRenderer::RenderFull() {
     mode_.applicationCursorKeys = snapshot->application_cursor_keys;
     mode_.applicationKeypad = snapshot->application_keypad;
     mode_.autoWrap = snapshot->auto_wrap;
-    DrawSnapshot(snapshot, true);
+    const bool rendered = DrawSnapshot(snapshot, true);
     terminal_core_free_snapshot(snapshot);
+    return rendered;
 }
 
 void SshTerminalRenderer::RenderDirty() {
@@ -459,10 +471,10 @@ SshTerminalRenderer::Mode SshTerminalRenderer::CurrentMode() const {
     return mode_;
 }
 
-void SshTerminalRenderer::DrawSnapshot(const FfiTerminalSnapshot* snapshot, bool fullFrame) {
+bool SshTerminalRenderer::DrawSnapshot(const FfiTerminalSnapshot* snapshot, bool fullFrame) {
     if (snapshot == nullptr || !CanDraw() || brush_ == nullptr || rect_ == nullptr ||
         fonts_[0] == nullptr || snapshot->rows == 0 || snapshot->cols == 0) {
-        return;
+        return false;
     }
     const float top = GridTop(snapshot);
     const bool gridMoved = !hasRenderedFrame_ || std::fabs(top - lastGridTop_) > 0.5F;
@@ -507,7 +519,7 @@ void SshTerminalRenderer::DrawSnapshot(const FfiTerminalSnapshot* snapshot, bool
         }
         if (rowsToDraw.empty()) {
             lastGridTop_ = top;
-            return;
+            return true;
         }
     }
 
@@ -581,14 +593,21 @@ void SshTerminalRenderer::DrawSnapshot(const FfiTerminalSnapshot* snapshot, bool
             OH_Drawing_CanvasDrawRect(canvas_, rect_);
         }
     }
+    if (drawingSurface_ == nullptr || !EnsureGraphicsCurrent()) {
+        return false;
+    }
+    const OH_Drawing_ErrorCode flushStatus = OH_Drawing_SurfaceFlush(drawingSurface_);
+    if (flushStatus != OH_DRAWING_SUCCESS) {
+        OH_LOG_WARN(LOG_APP, "[SSH] terminal surface flush failed: %{public}d",
+                    static_cast<int>(flushStatus));
+        return false;
+    }
     lastGridTop_ = top;
     lastCursorRow_ = currentCursorRow;
     lastCursorColumn_ = currentCursorColumn;
     lastCursorVisible_ = snapshot->cursor_visible;
     hasRenderedFrame_ = true;
-    if (drawingSurface_ != nullptr && EnsureGraphicsCurrent()) {
-        (void)OH_Drawing_SurfaceFlush(drawingSurface_);
-    }
+    return true;
 }
 
 float SshTerminalRenderer::GridTop(const FfiTerminalSnapshot* snapshot) const {

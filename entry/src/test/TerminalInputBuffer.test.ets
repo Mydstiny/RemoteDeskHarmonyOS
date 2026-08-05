@@ -1,4 +1,4 @@
-import { TerminalInputBuffer } from '../main/ets/components/NativeTerminalRenderer';
+import { TerminalInputBuffer } from '../main/ets/components/SshTerminalSurface';
 
 export default function terminalInputBufferTest(): void {
   const queue: TerminalInputBuffer = new TerminalInputBuffer();

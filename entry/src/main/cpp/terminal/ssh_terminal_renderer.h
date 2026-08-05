@@ -48,7 +48,7 @@ public:
     bool IsReady() const;
     void WriteBytes(const uint8_t* data, std::size_t length);
     /** Repaint the retained VT snapshot after a surface or EGL context rebind. */
-    void Refresh();
+    bool Refresh();
     void Resize(std::size_t cols, std::size_t rows, float cellWpx, float cellHpx,
                 float fontSizePx);
     void SetAppearance(float fontSizePx, uint32_t foreground, uint32_t background);
@@ -72,9 +72,9 @@ private:
     void DestroyGraphics();
     bool EnsureGraphicsCurrent();
     bool CanDraw();
-    void RenderFull();
+    bool RenderFull();
     void RenderDirty();
-    void DrawSnapshot(const FfiTerminalSnapshot* snapshot, bool fullFrame);
+    bool DrawSnapshot(const FfiTerminalSnapshot* snapshot, bool fullFrame);
     float GridTop(const FfiTerminalSnapshot* snapshot) const;
     OH_Drawing_Font* FontForCell(bool bold, bool italic) const;
     void RecreateFonts();
