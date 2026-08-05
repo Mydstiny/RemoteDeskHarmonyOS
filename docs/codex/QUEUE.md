@@ -13,8 +13,9 @@ Updated: 2026-08-06 Asia/Shanghai
   surface owners, a bounded ready fallback restores transcript-backed xterm,
   an independent ArkUI render revision forces stale surface recreation, and
   native rendering restores EGL context, explicitly repaints retained snapshots
-  after a host rebind, and acknowledges surface-flush failure before retrying;
-  the fresh signed HAP passed both code-only gates.
+  after a host rebind, acknowledges surface-flush failure before retrying, and
+  polls the surface ID when API 23 skips the lifecycle callback; the fresh signed
+  HAP passed both code-only gates.
 - Same-page SSH host switching now rejects stale async connect/attach/data/PiP
   continuations using an independent binding generation, cancels pending
   handshakes before switching, and retains detach-race output per host. The
@@ -35,8 +36,8 @@ Updated: 2026-08-06 Asia/Shanghai
 
 - WP-T4 user acceptance and benchmark using shared terminal fixtures.
 - Independently review the committed same-page SSH binding-generation,
-  initial-UI view-remount, surface-owner, fallback, render-revision and EGL
-  refresh fix.
+  initial-UI view-remount, surface-owner, fallback, render-revision, EGL
+  refresh, surface-ID polling and measured-size rebind fix.
 - WP-T5/WP-T6 terminal correctness and damage-frame renderer implementation.
 - Real SFTP, bastion, forwarding and FRP endpoint interoperability tests when
   the corresponding services and HDC/device are available.

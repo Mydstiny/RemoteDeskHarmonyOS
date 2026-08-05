@@ -3,7 +3,7 @@
   "task": "ssh-terminal-complete-upgrade",
   "branch": "codex/ssh-terminal-complete-upgrade",
   "base": "d2769ad4b",
-  "head": "d53725d",
+  "head": "ffa0f9e",
   "phase": "alacritty-core-vt-parity-code-only-host-switch-surface-refresh-guarded",
   "status": "active",
   "next": "Independently review the same-page SSH binding-generation, surface-owner guard, bounded native-ready fallback, render-revision remount and EGL refresh; device validation is deferred per user instruction, then implement Level B connectivity contracts.",
@@ -80,7 +80,7 @@
       "rustdesk_ffi/src/terminal_core/mod.rs",
       "rustdesk_ffi/src/terminal_core/tests.rs"
     ],
-    "reason": "The committed Alacritty/SSH lifecycle scope has a PASS receipt; checkpoints 6573a1d, a2016df, 2e6163d, 8554376 and d53725d add same-page SSH binding-generation, xterm/native surface refresh recovery, surface ownership, bounded fallback, forced remount, EGL refresh and explicit surface-flush acknowledgement, and require independent review."
+    "reason": "The committed Alacritty/SSH lifecycle scope has a PASS receipt; checkpoints 6573a1d, a2016df, 2e6163d, 8554376, d53725d and ffa0f9e add same-page SSH binding-generation, xterm/native surface refresh recovery, surface ownership, bounded fallback, forced remount, EGL refresh, explicit surface-flush acknowledgement, surface-ID polling, measured-size rebind and final renderer teardown, and require independent review."
   },
   "lastVerification": {
     "host_native_tests": "254-pass-16-preexisting-vnc-fixture-startup-failures-270-total-2026-08-04",
