@@ -5,8 +5,8 @@
 - Task: `ssh-terminal-complete-upgrade`
 - Base: `main@d2769ad4b`
 - Branch: `codex/ssh-terminal-complete-upgrade`
-- Code checkpoint: `2e6163d` (`fix(ssh): force terminal surface recreation on remount`).
-- Phase: Alacritty default; lifecycle, VT/Unicode/resize/TUI/large-output parity, per-host output isolation and code-only host-switch/surface remount recovery.
+- Code checkpoint: `8554376` (`fix(ssh): restore terminal surface rendering`).
+- Phase: Alacritty default; lifecycle, VT/Unicode/resize/TUI/large-output parity, per-host output isolation and code-only host-switch/surface refresh recovery.
 - Scope: migrate VT behind terminalCore, keep appearance settings in-core, verify IME/input/Canvas behavior. Homepage work is not current focus.
 
 ## Progress
@@ -61,6 +61,7 @@
   isolated JavaScript bridge so late callbacks cannot freeze the new page.
 - Mount requests retain a pending binding key; repeated connected-state probes cannot starve the second-host renderer. The native registry now rejects stale owners, and a bounded ready timeout falls back from a blank native surface to transcript-backed xterm.
 - A separate ArkUI render revision now keys the visible terminal subtree, so a remount with the same host/session identity still destroys and recreates the stale XComponent/WebView.
+- Native surface rendering now restores the EGL current context before drawing or flushing and exposes an explicit retained-snapshot refresh after host rebind; a host with no new SSH bytes can still repaint its existing terminal state.
 
 ## SSH Connectivity Boundary
 
@@ -81,10 +82,10 @@
 - Rust `cargo test --manifest-path rustdesk_ffi/Cargo.toml --lib
   --no-default-features`: `156 passed, 1 failed, 157 total`; the remaining
   failure is the existing rendezvous fixture's public-address assertion.
-- `default@OhosTestCompileArkTS`: passed for the host-switch surface owner/
-  fallback/remount checkpoint on 2026-08-06; warnings only.
-- `assembleHap`: host-switch surface owner/fallback/remount passed with
-  `BUILD SUCCESSFUL` and signing on 2026-08-06.
+- `default@OhosTestCompileArkTS`: passed for the host-switch surface refresh
+  checkpoint on 2026-08-06; warnings only.
+- `assembleHap`: host-switch surface refresh passed with `BUILD SUCCESSFUL`
+  and signing on 2026-08-06.
 - Terminal-core Rust tests: Alacritty path `63 passed, 0 failed`; fallback
   path `57 passed, 0 failed`.
 - OHOS Rust checks: `aarch64-unknown-linux-ohos` and
@@ -99,14 +100,13 @@
 ## Review
 
 - Existing independent review passed the bounded-output and IME/socket
-  increments; checkpoint `2e6163d` remains `REVIEW_REQUIRED` until review.
-- SFTP scope is closed for this pass; real-device/endpoint evidence is not a
-  Level A completion claim.
+  increments; checkpoint `8554376` remains `REVIEW_REQUIRED` until review.
+- SFTP scope is closed for this pass; real-device/endpoint evidence is not a Level A completion claim.
 - Device evidence covers injected input and lifecycle; external keyboard/IME, GPU re-enable, bastion/forwarding/FRP evidence remain open.
 
 ## Next
 
-1. Independently review the committed same-page SSH binding/initial-UI surface-owner, fallback and remount checkpoint.
+1. Independently review the committed same-page SSH binding/initial-UI surface-owner, fallback, remount and EGL refresh checkpoint.
 2. Verify ProxyJump against a real OpenSSH bastion and bind its host key.
 3. Add SSH-scoped local/remote/dynamic forwarding and FRP visitor modes.
 
