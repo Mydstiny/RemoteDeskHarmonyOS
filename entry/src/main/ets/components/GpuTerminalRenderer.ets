@@ -72,6 +72,8 @@ export struct GpuTerminalRenderer {
   private surfaceHeightPx: number = 0;
   /** The XComponent can survive an ArkUI prop update without a new create callback. */
   private currentSurfaceId: string = '';
+  /** Keep the last surface identity for a destroy/recreate race. */
+  private lastKnownSurfaceId: string = '';
   private followBottom: boolean = true;
   private lastModeSignature: string = '';
   private inputDrainTimer: number = -1;
@@ -93,6 +95,7 @@ export struct GpuTerminalRenderer {
     this.xcController.onSurfaceReady = (surfaceId: string): void => {
       if (this.disposed || lifecycleToken !== this.lifecycleToken) { return; }
       this.currentSurfaceId = surfaceId;
+      this.lastKnownSurfaceId = surfaceId;
       if (this.surfaceAttachRetryTimer !== -1) {
         clearTimeout(this.surfaceAttachRetryTimer);
         this.surfaceAttachRetryTimer = -1;
@@ -101,14 +104,19 @@ export struct GpuTerminalRenderer {
       this.scheduleSurfaceRebind();
     };
     this.xcController.onSurfaceGone = (surfaceId: string): void => {
-      // An old surface may report destruction after a replacement surface is
-      // already attached. Do not detach the replacement from the registry.
-      if (lifecycleToken !== this.lifecycleToken || this.currentSurfaceId.length === 0 ||
-        this.currentSurfaceId !== surfaceId) { return; }
+      // Ignore a destroy callback for a different, newer surface. A callback
+      // for the current/last surface must detach and enter the rebind retry.
+      if (lifecycleToken !== this.lifecycleToken || surfaceId.length === 0 ||
+        (this.currentSurfaceId.length > 0 && this.currentSurfaceId !== surfaceId)) { return; }
+      this.lastKnownSurfaceId = surfaceId;
       this.currentSurfaceId = '';
       this.surfaceReady = false;
       const key: string = this.attachedCoreKey.length > 0 ? this.attachedCoreKey : this.coreKey;
       this.registry.detach(key, this.bridge);
+      // ArkUI may destroy the old surface before it emits a replacement
+      // callback. Keep the identity and let the bounded rebind retry recover
+      // the retained VT core instead of leaving a connected tab blank.
+      this.scheduleSurfaceRebind();
     };
     // 同一标签切回时 registry 里可能已有句柄；等 surface ready 后 rebind。
     this.handle = this.registry.handleFor(this.coreKey);
@@ -136,6 +144,7 @@ export struct GpuTerminalRenderer {
     }
     this.surfaceReady = false;
     this.currentSurfaceId = '';
+    this.lastKnownSurfaceId = '';
     // 句柄归 SSH 标签所有，由页面在关闭标签/退出全部连接时经 registry 销毁。
     this.handle = 0;
     this.attachedCoreKey = '';
@@ -176,8 +185,10 @@ export struct GpuTerminalRenderer {
       }
       this.attachedCoreKey = '';
       this.handle = this.registry.handleFor(this.coreKey);
-      if (this.currentSurfaceId.length > 0) {
-        this.attachSurface(this.currentSurfaceId);
+      const surfaceId: string = this.currentSurfaceId.length > 0
+        ? this.currentSurfaceId : this.lastKnownSurfaceId;
+      if (surfaceId.length > 0) {
+        this.attachSurface(surfaceId);
       }
     }, 0);
   }
@@ -244,6 +255,8 @@ export struct GpuTerminalRenderer {
     this.unavailableReported = false;
     this.handle = handle;
     this.attachedCoreKey = this.coreKey;
+    this.currentSurfaceId = surfaceId;
+    this.lastKnownSurfaceId = surfaceId;
     this.surfaceReady = true;
     this.applyGeometry();
     this.applyViewport();
@@ -257,7 +270,8 @@ export struct GpuTerminalRenderer {
 
   /** A surface can be between destruction and recreation during a tab swap. */
   private scheduleSurfaceAttachRetry(): void {
-    if (this.disposed || this.surfaceAttachRetryTimer !== -1 || this.currentSurfaceId.length === 0) {
+    if (this.disposed || this.surfaceAttachRetryTimer !== -1 ||
+      (this.currentSurfaceId.length === 0 && this.lastKnownSurfaceId.length === 0)) {
       return;
     }
     if (this.surfaceAttachRetryCount >= 5) {
@@ -267,7 +281,7 @@ export struct GpuTerminalRenderer {
     this.surfaceAttachRetryCount++;
     this.surfaceAttachRetryTimer = setTimeout((): void => {
       this.surfaceAttachRetryTimer = -1;
-      if (!this.disposed && this.currentSurfaceId.length > 0) {
+      if (!this.disposed && (this.currentSurfaceId.length > 0 || this.lastKnownSurfaceId.length > 0)) {
         this.scheduleSurfaceRebind();
       }
     }, 32);

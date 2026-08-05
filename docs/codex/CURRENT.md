@@ -5,7 +5,7 @@
 - Task: `ssh-terminal-complete-upgrade`
 - Base: `main@d2769ad4b`
 - Branch: `codex/ssh-terminal-complete-upgrade`
-- Code checkpoint: `853dcaa` (`fix(ssh): force refresh of switched terminal surface`).
+- Code checkpoint: `1a0dbbcb0` (`fix(ssh): harden terminal surface rebinding`).
 - Phase: Alacritty default; lifecycle, VT/Unicode/resize/TUI/large-output parity, per-host output isolation and code-only host-switch/surface refresh hardening.
 - Scope: migrate VT behind terminalCore, keep appearance settings in-core, verify IME/input/Canvas behavior. Homepage work is not current focus.
 
@@ -78,11 +78,11 @@
 - Rust `cargo test --manifest-path rustdesk_ffi/Cargo.toml --lib
   --no-default-features`: `156 passed, 1 failed, 157 total`; the remaining
   failure is the existing rendezvous fixture's public-address assertion.
-- `default@OhosTestCompileArkTS`: passed for the switched-terminal surface
-  refresh and current visible-host/GPU-rebind increment on 2026-08-06; warnings only.
-- `assembleHap`: current visible-host/GPU-rebind increment passed with
+- `default@OhosTestCompileArkTS`: passed for the committed visible-host/GPU
+  rebind checkpoint on 2026-08-06; warnings only.
+- `assembleHap`: committed visible-host/GPU-rebind checkpoint passed with
   `BUILD SUCCESSFUL` and signing; current HAP SHA-256 is
-  `940d4ad5f934271897c8ad032b466c1c9fef0fcde5674d4acbc7d404582f1b20`.
+  `ca9f92c043567cddc4f3950cbab15d46c1a2c76b19554a1470e692260cdb9f2c`.
 - Terminal-core Rust tests: Alacritty path `63 passed, 0 failed`; fallback
   path `57 passed, 0 failed`.
 - OHOS Rust checks: `aarch64-unknown-linux-ohos` and
@@ -96,9 +96,8 @@
 
 ## Review
 
-- The existing independent reviewer passed the final bounded-output increment
-  and the later IME/socket diagnostic increment. The committed same-page
-  binding/initial-UI, surface-remount and per-host output/native-fallback increments, plus the current visible-host/GPU-rebind working-tree patch, remain `REVIEW_REQUIRED` until independently reviewed.
+- Existing independent review passed the bounded-output and IME/socket
+  increments; checkpoint `1a0dbbcb0` remains `REVIEW_REQUIRED` until review.
 - SFTP scope is closed for this pass; real-device/endpoint evidence is not a
   Level A completion claim.
 - Device evidence covers injected input and lifecycle; external keyboard/IME, GPU re-enable, bastion/forwarding/FRP evidence remain open.

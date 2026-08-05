@@ -124,6 +124,9 @@ export struct SshXtermSurface {
     this.readyReported = false;
     this.pendingCoreReset = false;
     this.documentReloadPending = false;
+    // Give every document its own proxy. A late callback from the previous
+    // document must not satisfy the readiness gate of the new host.
+    this.bridge = new SshXtermBridgeProxy();
     this.installBridgeCallbacks(lifecycleToken);
     // The first attempt may run before Web is bound; onPageBegin retries after
     // the controller is attached to the component.
@@ -324,10 +327,13 @@ export struct SshXtermSurface {
     this.readyReported = false;
     this.pendingCoreReset = false;
     this.documentReloadPending = true;
-    this.installBridgeCallbacks(lifecycleToken);
     try { this.controller.deleteJavaScriptRegister('sshTerminalBridge'); } catch (_err) {
       // The old document may already have been detached.
     }
+    // Do not reuse the proxy registered by the old document. ArkWeb can finish
+    // dispatching one of its callbacks after loadUrl() has started.
+    this.bridge = new SshXtermBridgeProxy();
+    this.installBridgeCallbacks(lifecycleToken);
     try {
       this.controller.loadUrl($rawfile('ssh-terminal/index.html'));
     } catch (err) {
