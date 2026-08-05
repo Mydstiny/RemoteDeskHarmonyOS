@@ -3073,7 +3073,9 @@ struct HostListPage {
   }
 
   private hostTopBarHeight(): number {
-    return this.topSafeHeightVp() + (this.breakpoint === 'xl' ? 104 : 96);
+    // On xl the title and search field share one compact header row. Keep the
+    // list spacer in sync so the first host card starts below that row.
+    return this.topSafeHeightVp() + (this.breakpoint === 'xl' ? 72 : 96);
   }
 
   private titleTopBarHeight(): number {
@@ -7510,20 +7512,13 @@ struct HostListPage {
 
         // 沉浸顶栏 — Stack内绝对定位, 标题穿透, 搜索栏可交互
         Column() {
-          Column() {
-            Row().width('100%').height(this.topSafeHeightVp() + this.titleOffsetY())
-            Row() {
-              Text(this.hostPageTitle).fontSize(27).fontWeight(FontWeight.Bold)
-                .fontColor(this.pal().text).fontFamily(this.font())
-              Blank()
-            }.width('100%').padding({ left: 24, right: 24, bottom: 8 })
-          }
-          .width('100%').backgroundColor(Color.Transparent)
-
-          // xl: 搜索框右上角; 非xl: 居中
+          // xl: 标题和搜索框同排，标题固定在内容区左侧，搜索框靠右。
           if (this.breakpoint === 'xl') {
-            Row() {
-              Blank()
+            Column() {
+              Row().width('100%').height(this.topSafeHeightVp() + this.titleOffsetY())
+              Row() {
+                Text(this.hostPageTitle).fontSize(27).fontWeight(FontWeight.Bold)
+                  .fontColor(this.pal().text).fontFamily(this.font()).layoutWeight(1)
               Row() {
                 Text('⌕').fontSize(18).fontColor(this.pal().text3).margin({ left: 14, right: 8 })
                 TextInput({ placeholder: '搜索主机...', text: this.searchText })
@@ -7544,28 +7539,36 @@ struct HostListPage {
                 .alignItems(VerticalAlign.Center)
                 .shadow({ radius: 12, color: 'rgba(0,0,0,0.06)', offsetY: 2 })
                 .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
-            }.width('100%')
+              }.width('100%').height(52).padding({ left: 8, right: 8, bottom: 8 })
+            }.width('100%').backgroundColor(Color.Transparent)
           } else {
-            Row() {
-              Text('⌕').fontSize(18).fontColor(this.pal().text3).margin({ left: 14, right: 8 })
-              TextInput({ placeholder: '搜索主机...', text: this.searchText })
-                .backgroundColor(Color.Transparent).height(40)
-                .fontColor(this.pal().text).placeholderColor(this.pal().text3)
-                .fontFamily(this.font()).layoutWeight(1)
-                .onChange((v: string) => { this.onSearchChange(v); })
-              if (this.searchText !== '') {
-                Text('✕').fontSize(14).fontColor(this.pal().text3).margin({ right: 14 })
-                  .onClick(() => {
-                    this.searchText = '';
-                    this.refreshFilteredHostView();
-                  })
-              }
-            }.width('92%')
-              .height(44).borderRadius(22)
-              .backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
-              .alignItems(VerticalAlign.Center)
-              .shadow({ radius: 12, color: 'rgba(0,0,0,0.06)', offsetY: 2 })
-              .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
+            Column() {
+              Row().width('100%').height(this.topSafeHeightVp() + this.titleOffsetY())
+              Row() {
+                Text(this.hostPageTitle).fontSize(27).fontWeight(FontWeight.Bold)
+                  .fontColor(this.pal().text).fontFamily(this.font())
+              }.width('100%').padding({ left: 24, right: 24, bottom: 8 })
+              Row() {
+                Text('⌕').fontSize(18).fontColor(this.pal().text3).margin({ left: 14, right: 8 })
+                TextInput({ placeholder: '搜索主机...', text: this.searchText })
+                  .backgroundColor(Color.Transparent).height(40)
+                  .fontColor(this.pal().text).placeholderColor(this.pal().text3)
+                  .fontFamily(this.font()).layoutWeight(1)
+                  .onChange((v: string) => { this.onSearchChange(v); })
+                if (this.searchText !== '') {
+                  Text('✕').fontSize(14).fontColor(this.pal().text3).margin({ right: 14 })
+                    .onClick(() => {
+                      this.searchText = '';
+                      this.refreshFilteredHostView();
+                    })
+                }
+              }.width('92%')
+                .height(44).borderRadius(22)
+                .backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
+                .alignItems(VerticalAlign.Center)
+                .shadow({ radius: 12, color: 'rgba(0,0,0,0.06)', offsetY: 2 })
+                .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
+            }.width('100%').backgroundColor(Color.Transparent)
           }
         }
         .width('100%')

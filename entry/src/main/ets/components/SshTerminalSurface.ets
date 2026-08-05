@@ -1,5 +1,5 @@
 /**
- * NativeTerminalRenderer.ets — Rust terminal_core 驱动的 Canvas 渲染器
+ * SshTerminalSurface.ets — Alacritty terminal_core 驱动的终端表面
  *
  * 将 ANSI/VT 解析完全交给 Rust terminal_core, ArkTS 只负责 Canvas 绘制 snapshot。
  *
@@ -111,7 +111,7 @@ export class TerminalInputBuffer {
 }
 
 @Component
-export struct NativeTerminalRenderer {
+export struct SshTerminalSurface {
   @Prop @Watch('onResize') cols: number = 80;
   @Prop @Watch('onResize') rows: number = 24;
   @Prop @Watch('onViewportSizeChange') viewportWidth: number = 0;
@@ -694,13 +694,13 @@ export struct NativeTerminalRenderer {
       }
       // 背景 (非默认色)
       if (bg !== DEFAULT_BG) {
-        ctx.fillStyle = NativeTerminalRenderer.rgbaToCss(bg);
+        ctx.fillStyle = SshTerminalSurface.rgbaToCss(bg);
         ctx.fillRect(x, y, paintWidth, this.cellH);
       }
       // 前景字符
       if (cell.ch === ' ' || cell.ch === '\x00') { continue; }
       // 默认前景色用 SSH 终端设置替代 Rust 硬编码灰色
-      ctx.fillStyle = (fg === DEFAULT_FG) ? this.terminalFgColor : NativeTerminalRenderer.rgbaToCss(fg);
+      ctx.fillStyle = (fg === DEFAULT_FG) ? this.terminalFgColor : SshTerminalSurface.rgbaToCss(fg);
       ctx.font = this.canvasFont(cell.bold, cell.italic);
       ctx.textBaseline = 'middle';
       ctx.fillText(cell.ch, x, y + this.cellH * 0.50);
@@ -743,11 +743,11 @@ export struct NativeTerminalRenderer {
       bg = swapped;
     }
     if (bg !== DEFAULT_BG) {
-      ctx.fillStyle = NativeTerminalRenderer.rgbaToCss(bg);
+      ctx.fillStyle = SshTerminalSurface.rgbaToCss(bg);
       ctx.fillRect(x, y, paintWidth, this.cellH);
     }
     if (cell.ch !== ' ' && cell.ch !== '\x00' && !cell.wideContinuation) {
-      ctx.fillStyle = (fg === DEFAULT_FG) ? this.terminalFgColor : NativeTerminalRenderer.rgbaToCss(fg);
+      ctx.fillStyle = (fg === DEFAULT_FG) ? this.terminalFgColor : SshTerminalSurface.rgbaToCss(fg);
       ctx.font = this.canvasFont(cell.bold, cell.italic);
       ctx.textBaseline = 'middle';
       ctx.fillText(cell.ch, x, y + this.cellH * 0.50);

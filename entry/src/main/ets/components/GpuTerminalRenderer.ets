@@ -13,7 +13,7 @@ import { hilog } from '@kit.PerformanceAnalysisKit';
 import { SshTerminalRendererBridge, SshTerminalRendererConfig } from '../napi/SshTerminalRendererBridge';
 import { TerminalCoreMode } from '../napi/TerminalCoreBridge';
 import { SshTerminalRendererRegistry } from '../services/SshTerminalRendererRegistry';
-import { TerminalInputBuffer } from './NativeTerminalRenderer';
+import { TerminalInputBuffer } from './SshTerminalSurface';
 
 /** 与 NativeTerminalRenderer 一致的单帧输入预算。 */
 const GPU_INPUT_FRAME_BUDGET_BYTES: number = 256 * 1024;

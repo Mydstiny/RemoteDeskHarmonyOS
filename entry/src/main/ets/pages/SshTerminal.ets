@@ -37,12 +37,8 @@ import { KeyVaultService } from '../services/KeyVaultService';
 import { RemoteHost } from '../model/RemoteHost';
 import { Palette, buildDark, buildLight } from '../common/Theme';
 import { showLockGate, lockGateErrorMessage } from '../components/LockGate';
-import { TerminalEmulator } from '../components/TerminalEmulator';
-import { NativeTerminalRenderer, TerminalInputBuffer } from '../components/NativeTerminalRenderer';
+import { SshTerminalSurface, TerminalInputBuffer } from '../components/SshTerminalSurface';
 import { TerminalCoreBridge } from '../napi/TerminalCoreBridge';
-import { GpuTerminalRenderer } from '../components/GpuTerminalRenderer';
-import { SshTerminalRendererBridge } from '../napi/SshTerminalRendererBridge';
-import { SshTerminalRendererRegistry } from '../services/SshTerminalRendererRegistry';
 import {
   SessionConfig,
   SftpFileEntry,
@@ -339,16 +335,6 @@ struct SshTerminal {
   /** Replacing the visible route is a tab switch, not an SSH exit. */
   private tabNavigationPending: boolean = false;
   /** 功能开关: true=使用 Rust terminal_core 渲染 (NativeTerminalRenderer), false=旧 TerminalEmulator */
-  @StorageProp('useNativeTerminalCore') useNativeTerminalCore: boolean = true;
-  /**
-   * GPU XComponent renderer is opt-in until it passes the device matrix.
-   * Some API 23 devices abort the process from OH_Drawing_SurfaceFlush after
-   * the surface buffer is lost; the Canvas renderer keeps the VT core usable.
-   */
-  @StorageProp('useNativeGpuTerminal') useNativeGpuTerminal: boolean = false;
-  /** 原生 GPU 渲染器 (XComponent + OH_Drawing); native 符号缺失时回退 Canvas 渲染器 */
-  private gpuTerminalBridge: SshTerminalRendererBridge = new SshTerminalRendererBridge();
-  private gpuRendererRegistry: SshTerminalRendererRegistry = SshTerminalRendererRegistry.getInstance();
 
   // cellH/cellW 由字号推算, 与 Canvas 字体单位保持一致
   @State cellHvp: number = 20;
@@ -590,73 +576,94 @@ struct SshTerminal {
   }
 
   @Builder
-  private sshTabStrip() {
-    Scroll() {
-      Row({ space: 6 }) {
-        ForEach(this.sshTabViews, (tab: SshTerminalTabView): void => {
-          this.sshTabButton(tab);
-        }, (tab: SshTerminalTabView): string => tab.tabId)
-        Row() {
-          SymbolGlyph($r('sys.symbol.plus')).fontSize(17).fontColor(['rgba(242,244,247,0.86)'])
-        }
-        .width(34).height(34).justifyContent(FlexAlign.Center).borderRadius(8)
-        .backgroundColor('rgba(255,255,255,0.07)')
-        .onClick((): void => { this.openSshTabPicker(); })
+  private sshTabStripItems() {
+    Row({ space: 6 }) {
+      ForEach(this.sshTabViews, (tab: SshTerminalTabView): void => {
+        this.sshTabButton(tab);
+      }, (tab: SshTerminalTabView): string => tab.tabId)
+      Row() {
+        SymbolGlyph($r('sys.symbol.plus')).fontSize(17).fontColor(['rgba(242,244,247,0.86)'])
       }
-      .height(40).padding({ left: 10, right: 10 })
+      .width(34).height(34).justifyContent(FlexAlign.Center).borderRadius(8)
+      .backgroundColor('rgba(255,255,255,0.07)')
+      .onClick((): void => { this.openSshTabPicker(); })
     }
-    .scrollable(ScrollDirection.Horizontal)
-    .scrollBar(BarState.Off)
-    .width('100%').height(40)
-    .backgroundColor(this.chromeBg())
+    .height(40).padding({ left: 10, right: 10 })
   }
 
   @Builder
-  private sshTabPickerOverlay() {
-    Stack({ alignContent: Alignment.Center }) {
-      Column()
-        .width('100%').height('100%')
-        .backgroundColor('rgba(0,0,0,0.56)')
-        .onClick((): void => { this.showSshTabPicker = false; })
-      Column() {
-        Row() {
-          Text('选择 SSH 主机').fontSize(17).fontWeight(FontWeight.Medium)
-            .fontColor('#F4F7FA').layoutWeight(1)
-          SymbolGlyph($r('sys.symbol.xmark')).fontSize(18).fontColor(['rgba(242,244,247,0.78)'])
-            .width(34).height(34).onClick((): void => { this.showSshTabPicker = false; })
-        }.width('100%').height(42)
-        Scroll() {
-          Column({ space: 8 }) {
-            ForEach(this.sshTabHosts(), (host: RemoteHost): void => {
-              Row() {
-                Column() {
-                  Text(host.label).fontSize(14).fontColor('#F4F7FA')
-                    .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-                  Text(host.username + '@' + host.host + ':' + host.port.toString())
-                    .fontSize(11).fontColor('rgba(242,244,247,0.56)')
-                    .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-                }.alignItems(HorizontalAlign.Start).layoutWeight(1)
-                if (this.sshTabStore.has(host.id)) {
-                  Text('已打开').fontSize(10).fontColor(this.accentColor)
-                }
-              }
-              .width('100%').height(52).padding({ left: 12, right: 12 })
-              .borderRadius(8).backgroundColor('rgba(255,255,255,0.07)')
-              .onClick((): void => { this.navigateToSshTab(host); })
-            }, (host: RemoteHost): string => host.id)
-          }.width('100%')
-        }
-        .layoutWeight(1).width('100%')
-        .scrollBar(BarState.Off)
+  private sshTabStrip() {
+    Column() {
+      Scroll() {
+        this.sshTabStripItems()
       }
-      .width(this.isDesktopDevice ? 500 : '92%')
-      .height(this.isDesktopDevice ? 430 : '62%')
-      .padding({ left: 16, right: 16, top: 12, bottom: 14 })
-      .borderRadius(12).backgroundColor('#171D25')
-      .shadow({ radius: 24, color: 'rgba(0,0,0,0.46)', offsetY: 8 })
-      .onClick((): void => { /* keep the scrim handler from receiving panel taps */ })
+      .scrollable(ScrollDirection.Horizontal)
+      .scrollBar(BarState.Off)
+      .width('100%').height(40)
     }
-    .width('100%').height('100%').zIndex(200)
+    .width('100%').height(40 + this.topChromeOffset())
+    .padding({ top: this.topChromeOffset() })
+    .backgroundColor(this.chromeBg())
+    .border({ width: { bottom: 0.5 }, color: 'rgba(255,255,255,0.08)' })
+  }
+
+  @Builder
+  private sshTabStripInline() {
+    Row() {
+      Scroll() {
+        this.sshTabStripItems()
+      }
+      .scrollable(ScrollDirection.Horizontal)
+      .scrollBar(BarState.Off)
+      .width('100%').height(40)
+    }
+    .layoutWeight(1)
+    .height(40)
+    .borderRadius(10)
+    .backgroundColor(this.chromeBg())
+    .border({ width: { bottom: 0.5 }, color: 'rgba(255,255,255,0.08)' })
+    .margin({ left: 10, right: 8 })
+  }
+
+  @Builder
+  private sshTabPickerSheet() {
+    Column() {
+      Row() {
+        Text('选择 SSH 主机').fontSize(17).fontWeight(FontWeight.Medium)
+          .fontColor('#F4F7FA').layoutWeight(1)
+        SymbolGlyph($r('sys.symbol.xmark')).fontSize(18).fontColor(['rgba(242,244,247,0.78)'])
+          .width(34).height(34).onClick((): void => { this.showSshTabPicker = false; })
+      }.width('100%').height(42)
+      Scroll() {
+        Column({ space: 8 }) {
+          ForEach(this.sshTabHosts(), (host: RemoteHost): void => {
+            Row() {
+              Column() {
+                Text(host.label).fontSize(14).fontColor('#F4F7FA')
+                  .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+                Text(host.username + '@' + host.host + ':' + host.port.toString())
+                  .fontSize(11).fontColor('rgba(242,244,247,0.56)')
+                  .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+              }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+              if (this.sshTabStore.has(host.id)) {
+                Text('已打开').fontSize(10).fontColor(this.accentColor)
+              }
+            }
+            .width('100%').height(52).padding({ left: 12, right: 12 })
+            .borderRadius(8).backgroundColor('rgba(255,255,255,0.07)')
+            .onClick((): void => { this.navigateToSshTab(host); })
+          }, (host: RemoteHost): string => host.id)
+        }.width('100%')
+      }
+      .layoutWeight(1).width('100%')
+      .scrollBar(BarState.Off)
+    }
+    .width('100%').height(this.breakpoint === 'sm' ? '62%' : 420)
+    .padding({ left: 16, right: 16, top: 12, bottom: 14 })
+    .backgroundColor('#171D25')
+    .borderRadius(this.breakpoint === 'sm'
+      ? { topLeft: 20, topRight: 20, bottomLeft: 0, bottomRight: 0 } : 20)
+    .constraintSize({ maxWidth: 620 })
   }
 
   private isSftpRequestActive(pageGeneration: number, sessionId: number,
@@ -1005,8 +1012,24 @@ struct SshTerminal {
     return Math.max(8, this.topSafeHeight);
   }
 
+  private sshTabsInline(): boolean {
+    // 手机继续使用原始独立标签条; Pad/PC 将标签嵌入连接顶栏。
+    return this.sshTabViews.length > 0 && (this.isDesktopDevice || this.breakpoint !== 'sm');
+  }
+
+  private sshInlineHostWidth(): number {
+    if (this.isDesktopDevice) { return 220; }
+    return this.breakpoint === 'md' ? 160 : 200;
+  }
+
+  private headerTopOffset(): number {
+    // The phone-only standalone strip owns the system top inset. Inline tabs
+    // stay inside the toolbar, so the toolbar keeps the inset on Pad/PC.
+    return this.sshTabViews.length > 0 && !this.sshTabsInline() ? 0 : this.topChromeOffset();
+  }
+
   private headerHeight(): number {
-    return 56 + this.topChromeOffset();
+    return 56 + this.headerTopOffset();
   }
 
   private barTop(): number {
@@ -2540,7 +2563,6 @@ struct SshTerminal {
         }
       }
       this.terminalCoreRegistry.destroyAll(new TerminalCoreBridge());
-      this.gpuRendererRegistry.destroyAll(this.gpuTerminalBridge);
       if (requestSessionId > 0) {
         this.loader.disconnectSshSession(requestSessionId);
       } else {
@@ -5800,6 +5822,11 @@ struct SshTerminal {
   build() {
     Stack({ alignContent: Alignment.TopStart }) {
       Column() {
+      // 手机保留原始独立标签条; Pad/PC 的标签条嵌入连接顶栏。
+      if (this.sshTabViews.length > 0 && !this.sshTabsInline()) {
+        this.sshTabStrip()
+      }
+
       // 顶栏 — SSH 终端始终深色模式, 固定深色背景+亮色文字, 不跟随系统主题
       Row() {
         if (this.isDesktopDevice) {
@@ -5824,7 +5851,13 @@ struct SshTerminal {
             .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
           Text(this.userAtHost).fontSize(11).fontColor('rgba(242,244,247,0.58)')
             .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-        }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 10 })
+        }.alignItems(HorizontalAlign.Start)
+          .layoutWeight(this.sshTabsInline() ? 0 : 1)
+          .width(this.sshTabsInline() ? this.sshInlineHostWidth() : 'auto')
+          .margin({ left: 10 })
+        if (this.sshTabsInline()) {
+          this.sshTabStripInline()
+        }
         if (this.isDesktopDevice) {
           Text('Ctrl+Shift+Q 退出')
             .fontSize(11).fontColor('rgba(242,244,247,0.54)')
@@ -5857,13 +5890,15 @@ struct SshTerminal {
           .onClick((): void => { this.openSftpPanel(); })
 
         }
-        Row() {
-          SymbolGlyph($r('sys.symbol.plus'))
-            .fontSize(18).fontColor(['rgba(242,244,247,0.86)'])
+        if (!this.sshTabsInline()) {
+          Row() {
+            SymbolGlyph($r('sys.symbol.plus'))
+              .fontSize(18).fontColor(['rgba(242,244,247,0.86)'])
+          }
+          .width(34).height(34).justifyContent(FlexAlign.Center)
+          .borderRadius(17).backgroundColor(this.chromeChipBg()).margin({ right: 8 })
+          .onClick((): void => { this.openSshTabPicker(); })
         }
-        .width(34).height(34).justifyContent(FlexAlign.Center)
-        .borderRadius(17).backgroundColor(this.chromeChipBg()).margin({ right: 8 })
-        .onClick((): void => { this.openSshTabPicker(); })
         Row() {
           Column().width(8).height(8).borderRadius(4)
             .backgroundColor(this.connectionDotColor())
@@ -5878,17 +5913,13 @@ struct SshTerminal {
       }
       .width('100%')
       .height(this.headerHeight())
-      .padding({ left: 10, right: 16, top: 6 + this.topChromeOffset(), bottom: 6 })
+      .padding({ left: 10, right: 16, top: 6 + this.headerTopOffset(), bottom: 6 })
       .backgroundColor(this.chromeBg())
       .backgroundBlurStyle(BlurStyle.NONE)
       .linearGradient({
         direction: GradientDirection.Bottom,
         colors: [['rgba(255,255,255,0.09)', 0], ['rgba(255,255,255,0.00)', 1]]
       })
-
-      if (this.sshTabViews.length > 0) {
-        this.sshTabStrip()
-      }
 
       // 加载/错误态
       if (!this.connected) {
@@ -5908,80 +5939,31 @@ struct SshTerminal {
         Stack({ alignContent: Alignment.TopStart }) {
           // 终端内容顶部对齐, 虚拟键栏通过 position 绝对定位在底部
           Stack({ alignContent: Alignment.TopStart }) {
-            if (this.useNativeTerminalCore) {
-              if (this.useNativeGpuTerminal && this.gpuTerminalBridge.isAvailable()) {
-                GpuTerminalRenderer({
-                  coreKey: this.hostId,
-                  cols: this.termCols,
-                  rows: this.termRows,
-                  cellWvp: this.cellWvp,
-                  cellHvp: this.cellHvp,
-                  fontSize: this.renderFontVp,
-                  viewportHeight: this.terminalPaneHeight(),
-                  visibleViewportHeight: this.terminalRowsViewportHeight(),
-                  inputBuffer: this.terminalInputBuffer,
-                  inputSequence: this.termOutputSequence,
-                  bottomAlignSparseContent: !this.isDesktopDevice,
-                  copyRequest: this.copyRequest,
-                  copiedText: this.copiedText,
-                  scrollToBottomRequest: this.scrollToBottomRequest,
-                  forceScrollToBottomRequest: this.forceScrollToBottomRequest,
-                  externalScrollLines: this.terminalExternalScrollLines,
-                  externalScrollRequest: this.terminalExternalScrollRequest,
-                  onTerminalModeChange: (mode: TerminalCoreMode): void => {
-                    this.onTerminalModeChange(mode);
-                  }
-                })
-              } else {
-                NativeTerminalRenderer({
-                  coreKey: this.hostId,
-                  cols: this.termCols,
-                  rows: this.termRows,
-                  viewportWidth: this.termAreaW,
-                  cellWvp: this.cellWvp,
-                  cellHvp: this.cellHvp,
-                  fontSize: this.renderFontVp,
-                  viewportHeight: this.terminalPaneHeight(),
-                  visibleViewportHeight: this.terminalRowsViewportHeight(),
-                  inputBuffer: this.terminalInputBuffer,
-                  inputSequence: this.termOutputSequence,
-                  selectMode: this.selectMode,
-                  bottomAlignSparseContent: !this.isDesktopDevice,
-                  copyRequest: this.copyRequest,
-                  copiedText: this.copiedText,
-                  scrollToBottomRequest: this.scrollToBottomRequest,
-                  forceScrollToBottomRequest: this.forceScrollToBottomRequest,
-                  externalScrollLines: this.terminalExternalScrollLines,
-                  externalScrollRequest: this.terminalExternalScrollRequest,
-                  onData: (data: string): void => { this.onTerminalData(data); },
-                  onTerminalModeChange: (mode: TerminalCoreMode): void => {
-                    this.onTerminalModeChange(mode);
-                  }
-                })
+            SshTerminalSurface({
+              coreKey: this.hostId,
+              cols: this.termCols,
+              rows: this.termRows,
+              viewportWidth: this.termAreaW,
+              cellWvp: this.cellWvp,
+              cellHvp: this.cellHvp,
+              fontSize: this.renderFontVp,
+              viewportHeight: this.terminalPaneHeight(),
+              visibleViewportHeight: this.terminalRowsViewportHeight(),
+              inputBuffer: this.terminalInputBuffer,
+              inputSequence: this.termOutputSequence,
+              selectMode: this.selectMode,
+              bottomAlignSparseContent: !this.isDesktopDevice,
+              copyRequest: this.copyRequest,
+              copiedText: this.copiedText,
+              scrollToBottomRequest: this.scrollToBottomRequest,
+              forceScrollToBottomRequest: this.forceScrollToBottomRequest,
+              externalScrollLines: this.terminalExternalScrollLines,
+              externalScrollRequest: this.terminalExternalScrollRequest,
+              onData: (data: string): void => { this.onTerminalData(data); },
+              onTerminalModeChange: (mode: TerminalCoreMode): void => {
+                this.onTerminalModeChange(mode);
               }
-            } else {
-              TerminalEmulator({
-                cols: this.termCols,
-                rows: this.termRows,
-                viewportWidth: this.termAreaW,
-                cellWvp: this.cellWvp,
-                cellHvp: this.cellHvp,
-                fontSize: this.renderFontVp,
-                viewportHeight: this.terminalPaneHeight(),
-                visibleViewportHeight: this.terminalRowsViewportHeight(),
-                inputData: this.termOutput,
-                inputSequence: this.termOutputSequence,
-                selectMode: this.selectMode,
-                bottomAlignSparseContent: !this.isDesktopDevice,
-                copyRequest: this.copyRequest,
-                copiedText: this.copiedText,
-                scrollToBottomRequest: this.scrollToBottomRequest,
-                forceScrollToBottomRequest: this.forceScrollToBottomRequest,
-                externalScrollLines: this.terminalExternalScrollLines,
-                externalScrollRequest: this.terminalExternalScrollRequest,
-                onData: (data: string): void => { this.onTerminalData(data); }
-              })
-            }
+            })
 
             // 隐藏 TextInput — 1×1 可点击, 软键盘锚点
             TextInput({ text: this.kbInput, controller: this.kbCtrl })
@@ -6223,9 +6205,6 @@ struct SshTerminal {
         .clip(true)
         .zIndex(100)
       }
-      if (this.showSshTabPicker) {
-        this.sshTabPickerOverlay()
-      }
     }
     .width('100%').height('100%')
     .bindSheet($$this.showPassphraseSheet, this.passphraseSheet(), {
@@ -6251,6 +6230,14 @@ struct SshTerminal {
       blurStyle: BlurStyle.NONE,
       showClose: false,
       onWillDismiss: (action: DismissSheetAction): void => { this.handleSftpSheetDismiss(action); }
+    })
+    .bindSheet($$this.showSshTabPicker, this.sshTabPickerSheet(), {
+      height: this.breakpoint === 'sm' ? SheetSize.LARGE : SheetSize.FIT_CONTENT,
+      preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
+      dragBar: this.breakpoint === 'sm',
+      backgroundColor: '#171D25',
+      blurStyle: BlurStyle.NONE,
+      showClose: false
     })
   }
 }

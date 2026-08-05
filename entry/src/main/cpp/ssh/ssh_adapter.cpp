@@ -3391,7 +3391,13 @@ void SshAdapter::readerLoop() {
         if (sret < 0) {
             if (errno == EINTR) { continue; }
             if (!readerRunning_.load(std::memory_order_acquire)) { break; }
-            OH_LOG_WARN(LOG_APP, "[SSH] reader select 错误: errno=%{public}d", errno);
+            // A non-EINTR select failure means the poll identity is no longer
+            // trustworthy. Let the single owner rebuild the transport instead
+            // of spinning on a dead fd and leaving the page looking connected.
+            transportRecoveryRequested_.store(true, std::memory_order_release);
+            OH_LOG_WARN(LOG_APP,
+                        "[SSH] reader select 错误, 请求传输恢复: errno=%{public}d",
+                        errno);
             continue;
         }
         if (sret == 0) {
@@ -3431,7 +3437,6 @@ void SshAdapter::readerLoop() {
                 if (n == LIBSSH2_ERROR_SOCKET_RECV) {
                     if (libssh2_channel_eof(ch) != 0) {
                         eofDetected = true;
-                        readerRunning_.store(false);
                         break;
                     }
                     const SocketReceiveProbe probe = probeSocketReceive(fd);
@@ -3461,7 +3466,6 @@ void SshAdapter::readerLoop() {
                 if (libssh2_channel_eof(ch) != 0) {
                     OH_LOG_INFO(LOG_APP, "[SSH] reader 检测到 EOF, 通道关闭");
                     eofDetected = true;
-                    readerRunning_.store(false);
                 }
                 break;
             }
@@ -3477,7 +3481,13 @@ void SshAdapter::readerLoop() {
             OH_LOG_WARN(LOG_APP, "[SSH] terminal transport failure requests recovery rc=%{public}zd",
                         readErrorCode);
         } else if (eofDetected) {
-            setState(ConnectionState::DISCONNECTED, "SSH remote channel closed");
+            // Remote shell EOF is a transport loss in an otherwise live
+            // session. Keep the owner alive so reconnectAfterTransportFailure
+            // can rebuild the channel without making the page discard its
+            // session binding.
+            transportRecoveryRequested_.store(true, std::memory_order_release);
+            setState(ConnectionState::RECONNECTING,
+                     "SSH remote channel closed, reconnecting");
         }
 
         if (gotData && !accumulated.empty()) {
