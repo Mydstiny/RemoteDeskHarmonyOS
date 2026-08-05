@@ -591,7 +591,9 @@ struct SshTerminal {
   }
 
   private refreshSshTabViews(): void {
-    this.sshTabViews = this.sshTabStore.views();
+    // Always publish a fresh array. The store can notify several times during
+    // one attach, and ArkUI must observe each state transition independently.
+    this.sshTabViews = this.sshTabStore.views().slice();
   }
 
   /**
@@ -3517,15 +3519,6 @@ struct SshTerminal {
     this.sshSessionGeneration = sessionGeneration;
     this.sshTabStore.update(bindingHostId, 'connected', connectedSessionId);
     this.refreshSshTabViews();
-    try {
-      await this.srv.updateLastConnected(bindingHostId);
-    } catch (err) {
-      // Last-connected persistence is ancillary to the live binding. A cloud
-      // or database hiccup must not leave a successfully adopted SSH session
-      // stuck behind the loading view.
-      hilog.warn(0x0001, 'SshTerminal',
-        '[tab] last-connected persistence failed: ' + JSON.stringify(err));
-    }
     if (!this.isSshBindingActive(pageGeneration, bindingGeneration, bindingHostId) ||
       this.sessionId !== connectedSessionId) {
       this.loader.disconnectSshSession(connectedSessionId);
@@ -3582,6 +3575,13 @@ struct SshTerminal {
     // that was never fully rebound to the page.
     this.connected = true;
     this.connecting = false;
+    // Persisting the last-connected timestamp is ancillary. It must never sit
+    // in front of the visible binding or prevent the new tab from rendering.
+    void this.srv.updateLastConnected(bindingHostId).catch((err: Error): void => {
+      hilog.warn(0x0001, 'SshTerminal',
+        '[tab] last-connected persistence failed: ' + JSON.stringify(err));
+    });
+    this.refreshSshTabViews();
     this.scheduleTerminalSurfaceMount(pageGeneration, bindingGeneration, bindingHostId,
       connectedSessionId);
     this.startLatencyProbe();
@@ -3769,16 +3769,20 @@ struct SshTerminal {
     this.termOutputSequence++;
   }
 
-  private onNativeRendererReady(hostId: string): void {
+  private onNativeRendererReady(hostId: string, surfaceIdentity: string): void {
     if (this.terminalClosing || this.hostId.trim() !== hostId.trim() ||
+      this.terminalSurfaceBindingKey.trim() !== surfaceIdentity.trim() ||
+      !this.terminalSurfaceMounted ||
       !this.shouldUseNativeTerminal()) { return; }
     this.xtermReady = true;
     this.focusKeyboard(false);
     this.requestTerminalScrollToBottomSettled();
   }
 
-  private onNativeRendererUnavailable(hostId: string): void {
+  private onNativeRendererUnavailable(hostId: string, surfaceIdentity: string): void {
     if (this.terminalClosing || this.hostId.trim() !== hostId.trim() ||
+      this.terminalSurfaceBindingKey.trim() !== surfaceIdentity.trim() ||
+      !this.terminalSurfaceMounted ||
       !this.nativeTerminalFormFactor()) { return; }
     if (this.nativeRendererUnavailable) { return; }
     hilog.warn(0x0000, 'SshTerminal',
@@ -3796,19 +3800,23 @@ struct SshTerminal {
   }
 
   /** xterm owns physical keyboard/IME encoding; forward its wire bytes as-is. */
-  private onXtermData(data: string): void {
-    if (data.length === 0) { return; }
+  private onXtermData(data: string, surfaceIdentity: string): void {
+    if (data.length === 0 || this.terminalSurfaceBindingKey.trim() !== surfaceIdentity.trim() ||
+      !this.terminalSurfaceMounted) { return; }
     this.sendTerminalBytes(data, this.isTerminalControlSequence(data));
   }
 
-  private onXtermReady(): void {
-    if (!this.terminalClosing) {
+  private onXtermReady(surfaceIdentity: string): void {
+    if (!this.terminalClosing && this.terminalSurfaceBindingKey.trim() === surfaceIdentity.trim() &&
+      this.terminalSurfaceMounted) {
       this.xtermReady = true;
       this.focusKeyboard(false);
     }
   }
 
-  private onXtermResize(cols: number, rows: number): void {
+  private onXtermResize(cols: number, rows: number, surfaceIdentity: string): void {
+    if (this.terminalSurfaceBindingKey.trim() !== surfaceIdentity.trim() ||
+      !this.terminalSurfaceMounted) { return; }
     const nextCols: number = Math.max(20, Math.min(300, Math.floor(cols)));
     const nextRows: number = Math.max(3, Math.min(80, Math.floor(rows)));
     if (nextCols === this.termCols && nextRows === this.termRows) { return; }
@@ -6472,6 +6480,7 @@ struct SshTerminal {
             if (this.shouldUseNativeTerminal()) {
               GpuTerminalRenderer({
                 coreKey: this.hostId,
+                surfaceIdentity: this.terminalSurfaceBindingKey,
                 cols: this.termCols,
                 rows: this.termRows,
                 cellWvp: this.cellWvp,
@@ -6491,9 +6500,11 @@ struct SshTerminal {
                 onTerminalModeChange: (mode: TerminalCoreMode): void => {
                   this.onTerminalModeChange(mode);
                 },
-                onRendererReady: (): void => { this.onNativeRendererReady(this.hostId); },
-                onRendererUnavailable: (): void => {
-                  this.onNativeRendererUnavailable(this.hostId);
+                onRendererReady: (hostId: string, surfaceIdentity: string): void => {
+                  this.onNativeRendererReady(hostId, surfaceIdentity);
+                },
+                onRendererUnavailable: (hostId: string, surfaceIdentity: string): void => {
+                  this.onNativeRendererUnavailable(hostId, surfaceIdentity);
                 }
               })
               .width('100%')
@@ -6517,11 +6528,15 @@ struct SshTerminal {
                 forceScrollToBottomRequest: this.forceScrollToBottomRequest,
                 externalScrollLines: this.terminalExternalScrollLines,
                 externalScrollRequest: this.terminalExternalScrollRequest,
-                onData: (data: string): void => { this.onXtermData(data); },
-                onResize: (cols: number, rows: number): void => {
-                  this.onXtermResize(cols, rows);
+                onData: (data: string, surfaceIdentity: string): void => {
+                  this.onXtermData(data, surfaceIdentity);
                 },
-                onReady: (): void => { this.onXtermReady(); }
+                onResize: (cols: number, rows: number, surfaceIdentity: string): void => {
+                  this.onXtermResize(cols, rows, surfaceIdentity);
+                },
+                onReady: (surfaceIdentity: string): void => {
+                  this.onXtermReady(surfaceIdentity);
+                }
               })
               .width('100%')
               .height(this.terminalPaneHeight())
@@ -6718,6 +6733,7 @@ struct SshTerminal {
       }
     }
       .width('100%').height('100%').backgroundColor('#0D0D0D')
+      .id('ssh-terminal-pane-' + this.terminalSurfaceBindingKey)
       if (this.showSftpPanel && this.sftpWideLayout()) {
         Column() {
           this.SftpTransferSheet()

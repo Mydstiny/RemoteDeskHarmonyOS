@@ -84,9 +84,9 @@ export struct SshXtermSurface {
   /** Ordinary reference: it is deliberately outside ArkUI observation. */
   outputBuffer: XtermOutputBuffer = new XtermOutputBuffer();
   @Link copiedText: string;
-  onData?: (data: string) => void;
-  onResize?: (cols: number, rows: number) => void;
-  onReady?: () => void;
+  onData?: (data: string, surfaceKey: string) => void;
+  onResize?: (cols: number, rows: number, surfaceKey: string) => void;
+  onReady?: (surfaceKey: string) => void;
 
   private controller: webview.WebviewController = new webview.WebviewController();
   private bridge: SshXtermBridgeProxy = new SshXtermBridgeProxy();
@@ -174,12 +174,12 @@ export struct SshXtermSurface {
     };
     this.bridge.onInputCallback = (data: string): void => {
       if (lifecycleToken === this.lifecycleToken && this.onData && data.length > 0 && !this.disposed) {
-        this.onData(data);
+        this.onData(data, this.coreKey);
       }
     };
     this.bridge.onResizeCallback = (cols: number, rows: number): void => {
       if (lifecycleToken === this.lifecycleToken && this.onResize && !this.disposed) {
-        this.onResize(cols, rows);
+        this.onResize(cols, rows, this.coreKey);
       }
     };
     this.bridge.onSelectionCallback = (_text: string): void => {};
@@ -271,13 +271,15 @@ export struct SshXtermSurface {
     // onPageEnd can queue output before xterm has called onReady. Starting
     // the pump again here releases that first prompt and preserves ordering.
     this.pumpOutput();
-    if (this.onResize && cols > 0 && rows > 0) { this.onResize(cols, rows); }
+    if (this.onResize && cols > 0 && rows > 0) {
+      this.onResize(cols, rows, this.coreKey);
+    }
   }
 
   private reportReadyOnce(): void {
     if (this.readyReported) { return; }
     this.readyReported = true;
-    if (this.onReady) { this.onReady(); }
+    if (this.onReady) { this.onReady(this.coreKey); }
   }
 
   private handlePageEnd(): void {

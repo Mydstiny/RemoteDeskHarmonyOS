@@ -49,6 +49,8 @@ export struct GpuTerminalRenderer {
   @Prop @Watch('onViewportChange') visibleViewportHeight: number = 0;
   /** Stable SSH tab key; keeps the native renderer alive across tab swaps. */
   @Prop @Watch('onCoreKeyChange') coreKey: string = '';
+  /** Visible surface identity; changes whenever the page binds a new terminal view. */
+  @Prop @Watch('onSurfaceIdentityChange') surfaceIdentity: string = '';
   @Prop bottomAlignSparseContent: boolean = false;
   inputBuffer: TerminalInputBuffer = new TerminalInputBuffer();
   @Prop @Watch('onInputSequenceChange') inputSequence: number = 0;
@@ -60,8 +62,8 @@ export struct GpuTerminalRenderer {
   @Link @Watch('onCopyRequest') copyRequest: number;
   @Link copiedText: string;
   onTerminalModeChange?: (mode: TerminalCoreMode) => void;
-  onRendererReady?: () => void;
-  onRendererUnavailable?: () => void;
+  onRendererReady?: (hostId: string, surfaceIdentity: string) => void;
+  onRendererUnavailable?: (hostId: string, surfaceIdentity: string) => void;
 
   private bridge: SshTerminalRendererBridge = new SshTerminalRendererBridge();
   private registry: SshTerminalRendererRegistry = SshTerminalRendererRegistry.getInstance();
@@ -122,10 +124,23 @@ export struct GpuTerminalRenderer {
     this.unavailableReported = false;
   }
 
+  private onSurfaceIdentityChange(): void {
+    if (this.disposed) { return; }
+    if (this.attachedCoreKey.length > 0) {
+      this.registry.detach(this.attachedCoreKey, this.bridge);
+    }
+    this.handle = this.registry.handleFor(this.coreKey);
+    this.surfaceReady = false;
+    this.lastModeSignature = '';
+    this.unavailableReported = false;
+  }
+
   private reportUnavailable(): void {
     if (this.unavailableReported || this.disposed) { return; }
     this.unavailableReported = true;
-    if (this.onRendererUnavailable) { this.onRendererUnavailable(); }
+    if (this.onRendererUnavailable) {
+      this.onRendererUnavailable(this.coreKey, this.surfaceIdentity);
+    }
   }
 
   private fgArgb(): number {
@@ -182,7 +197,9 @@ export struct GpuTerminalRenderer {
     this.applyAppearance();
     this.consumeInputQueue();
     this.notifyMode();
-    if (this.onRendererReady) { this.onRendererReady(); }
+    if (this.onRendererReady) {
+      this.onRendererReady(this.coreKey, this.surfaceIdentity);
+    }
   }
 
   private applyGeometry(): void {
@@ -280,7 +297,9 @@ export struct GpuTerminalRenderer {
   }
 
   build() {
-    XComponent({ id: `gpu-terminal-${this.coreKey}`, type: XComponentType.SURFACE,
+    XComponent({
+      id: `gpu-terminal-${this.surfaceIdentity.length > 0 ? this.surfaceIdentity : this.coreKey}`,
+      type: XComponentType.SURFACE,
       controller: this.xcController })
       .width('100%')
       .height('100%')
