@@ -245,7 +245,10 @@ function statusLines() {
     .filter(Boolean)
     .filter((candidate) => Number(git(["rev-list", "--count", `main..${candidate}`])) > 0);
   const stateHead = String(currentState.head || "");
-  const stateHeadMatch = stateHead.length === 0 || head.startsWith(stateHead) || git(["rev-parse", "HEAD"]).startsWith(stateHead);
+  const stateHeadRevision = stateHead.length > 0 ? git(["rev-parse", stateHead], true) : "";
+  const stateHeadIsAncestor = stateHeadRevision.length > 0 &&
+    git(["merge-base", stateHeadRevision, "HEAD"], true) === stateHeadRevision;
+  const stateHeadMatch = stateHead.length === 0 || head.startsWith(stateHead) || stateHeadIsAncestor;
   const stateBranch = String(currentState.branch || "");
   const stateBranchMatch = stateBranch.length === 0 || stateBranch === branch;
   const compact = compactStateLines();
