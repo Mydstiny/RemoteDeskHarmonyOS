@@ -6,6 +6,7 @@
  * 所有 libssh2 调用使用非阻塞模式 + select() 轮询.
  */
 #include "ssh_adapter.h"
+#include "ssh_auth_policy.h"
 #include "extension_registry.h"
 #include "common/safe_log.h"
 #include "ssh_algorithm_prefs.h"
@@ -746,6 +747,7 @@ int SshAdapter::authenticatePassword() {
     }
     OH_LOG_INFO(LOG_APP, "[SSH] 服务器认证方法: %{public}s",
                 userList ? userList : "(none)");
+    advertisedAuthMethods_ = userList == nullptr ? std::string() : std::string(userList);
 
     // 密码认证 (非阻塞)
     int rc;
@@ -1079,16 +1081,27 @@ int SshAdapter::connectInternal(const ConnectionConfig& cfg, bool preserveOwner)
 
     // Step 4: 用户认证 (公钥优先, 失败时回退密码)
     OH_LOG_INFO(LOG_APP, "[SSH] 认证方式=%{public}s", cfg.authMethod.c_str());
+    auto authenticatePasswordWithFallback = [this]() {
+        const int passwordResult = authenticatePassword();
+        if (!sshPasswordFallbackAllowsKeyboardInteractive(
+                advertisedAuthMethods_, passwordResult)) {
+            return passwordResult;
+        }
+        OH_LOG_WARN(LOG_APP,
+                    "[SSH] password method failed; trying advertised keyboard-interactive fallback");
+        const int interactiveResult = authenticateKeyboardInteractive();
+        return interactiveResult == 0 ? 0 : passwordResult;
+    };
     if (cfg.authMethod == "kbd-interactive" || cfg.authMethod == "keyboard-interactive") {
         ret = authenticateKeyboardInteractive();
     } else if (cfg.authMethod == "publickey" && !cfg.privateKeyPem.empty()) {
         ret = authenticatePublicKey(cfg.username, cfg.privateKeyPem, cfg.privateKeyPassphrase);
         if (ret < 0 && !cfg.password.empty()) {
             OH_LOG_WARN(LOG_APP, "[SSH] 公钥认证失败, 回退到密码认证");
-            ret = authenticatePassword();
+            ret = authenticatePasswordWithFallback();
         }
     } else {
-        ret = authenticatePassword();
+        ret = authenticatePasswordWithFallback();
     }
     if (ret < 0) {
         return failConnect(ret,

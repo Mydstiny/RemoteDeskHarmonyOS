@@ -235,6 +235,9 @@ private:
     ConnectionStateCallback stateCallback_;
     std::string serverBanner_;
     bool authenticated_;
+    // Non-secret method list returned by libssh2_userauth_list. It controls
+    // password -> keyboard-interactive fallback for PAM-style servers.
+    std::string advertisedAuthMethods_;
 
     // ---- libssh2 会话和通道 ----
     LIBSSH2_SESSION* session_;
