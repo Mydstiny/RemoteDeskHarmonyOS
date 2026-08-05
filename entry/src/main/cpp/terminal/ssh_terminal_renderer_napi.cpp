@@ -94,6 +94,21 @@ napi_value NapiBindSurface(napi_env env, napi_callback_info info) {
     napi_value result; napi_get_boolean(env, ok, &result); return result;
 }
 
+napi_value NapiDetachSurface(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value args[1] = {};
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    if (argc > 0) {
+        SshTerminalRenderer* renderer = GetRenderer(env, args[0]);
+        if (renderer != nullptr) {
+            renderer->DetachSurface();
+        }
+    }
+    napi_value undefined;
+    napi_get_undefined(env, &undefined);
+    return undefined;
+}
+
 napi_value NapiWriteBytes(napi_env env, napi_callback_info info) {
     size_t argc = 2;
     napi_value args[2] = {};
@@ -219,6 +234,7 @@ napi_value Init(napi_env env, napi_value exports) {
         { "sshTerminalRendererCreate", nullptr, NapiCreate, nullptr, nullptr, nullptr, napi_default, nullptr },
         { "sshTerminalRendererDestroy", nullptr, NapiDestroy, nullptr, nullptr, nullptr, napi_default, nullptr },
         { "sshTerminalRendererBindSurface", nullptr, NapiBindSurface, nullptr, nullptr, nullptr, napi_default, nullptr },
+        { "sshTerminalRendererDetachSurface", nullptr, NapiDetachSurface, nullptr, nullptr, nullptr, napi_default, nullptr },
         { "sshTerminalRendererWriteBytes", nullptr, NapiWriteBytes, nullptr, nullptr, nullptr, napi_default, nullptr },
         { "sshTerminalRendererResize", nullptr, NapiResize, nullptr, nullptr, nullptr, napi_default, nullptr },
         { "sshTerminalRendererSetAppearance", nullptr, NapiAppearance, nullptr, nullptr, nullptr, napi_default, nullptr },

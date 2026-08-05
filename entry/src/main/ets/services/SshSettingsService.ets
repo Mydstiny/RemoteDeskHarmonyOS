@@ -5,13 +5,16 @@ import { CloudUserSettingValue } from './CloudSyncSettingsPolicy';
 import {
   SSH_LEGACY_FONT_SIZE_KEY,
   SSH_LEGACY_FOREGROUND_COLOR_KEY,
+  SSH_LEGACY_LINE_SPACING_KEY,
   SSH_SETTINGS_SCHEMA_VERSION,
   SSH_SETTINGS_SCHEMA_VERSION_KEY,
   SSH_TERMINAL_FONT_SIZE_KEY,
   SSH_TERMINAL_FOREGROUND_COLOR_KEY,
+  SSH_TERMINAL_LINE_SPACING_KEY,
   SshTerminalAppearance,
   defaultSshTerminalAppearance,
   hasSshTerminalAppearanceCloudSettings,
+  normalizeSshTerminalLineSpacing,
   normalizeSshTerminalFontSize,
   normalizeSshTerminalForegroundColor,
   resolveSshTerminalAppearance,
@@ -42,14 +45,21 @@ export class SshSettingsService {
       const storedLegacyColor: Object = prefs.getSync(SSH_LEGACY_FOREGROUND_COLOR_KEY, '') as Object;
       const storedPreferredFontSize: Object = prefs.getSync(SSH_TERMINAL_FONT_SIZE_KEY, 0) as Object;
       const storedLegacyFontSize: Object = prefs.getSync(SSH_LEGACY_FONT_SIZE_KEY, 0) as Object;
+      const storedPreferredLineSpacing: Object = prefs.getSync(SSH_TERMINAL_LINE_SPACING_KEY, 0) as Object;
+      const storedLegacyLineSpacing: Object = prefs.getSync(SSH_LEGACY_LINE_SPACING_KEY, 0) as Object;
       const preferredColor: string = typeof storedPreferredColor === 'string' ? storedPreferredColor as string : '';
       const legacyColor: string = typeof storedLegacyColor === 'string' ? storedLegacyColor as string : '';
       const preferredFontSize: number = typeof storedPreferredFontSize === 'number'
         ? storedPreferredFontSize as number : 0;
       const legacyFontSize: number = typeof storedLegacyFontSize === 'number'
         ? storedLegacyFontSize as number : 0;
+      const preferredLineSpacing: number = typeof storedPreferredLineSpacing === 'number'
+        ? storedPreferredLineSpacing as number : 0;
+      const legacyLineSpacing: number = typeof storedLegacyLineSpacing === 'number'
+        ? storedLegacyLineSpacing as number : 0;
       this.values = resolveSshTerminalAppearance(
-        preferredColor, legacyColor, preferredFontSize, legacyFontSize);
+        preferredColor, legacyColor, preferredFontSize, legacyFontSize,
+        preferredLineSpacing, legacyLineSpacing);
       this.writeRuntimeAndLocal(prefs);
     } catch (_e) {
       this.values = defaultSshTerminalAppearance();
@@ -62,7 +72,8 @@ export class SshSettingsService {
   get(): SshTerminalAppearance {
     return {
       foregroundColor: this.values.foregroundColor,
-      fontSize: this.values.fontSize
+      fontSize: this.values.fontSize,
+      lineSpacing: this.values.lineSpacing
     };
   }
 
@@ -88,6 +99,15 @@ export class SshSettingsService {
     return this.values.fontSize;
   }
 
+  saveLineSpacing(value: number): number {
+    this.syncValuesFromRuntime();
+    this.values.lineSpacing = normalizeSshTerminalLineSpacing(value);
+    this.writeRuntimeAndLocal(null);
+    this.publishCloudSetting(SSH_TERMINAL_LINE_SPACING_KEY, this.values.lineSpacing);
+    this.publishCloudSetting(SSH_LEGACY_LINE_SPACING_KEY, this.values.lineSpacing);
+    return this.values.lineSpacing;
+  }
+
   /** Apply cloud values with the namespaced key taking precedence over legacy data. */
   applyCloudSettings(settings: Record<string, CloudUserSettingValue>): void {
     if (!hasSshTerminalAppearanceCloudSettings(settings)) { return; }
@@ -102,28 +122,36 @@ export class SshSettingsService {
     const runtimeLegacyColor: Object = AppStorage.get<string>(SSH_LEGACY_FOREGROUND_COLOR_KEY) as Object;
     const runtimePreferredFontSize: Object = AppStorage.get<number>(SSH_TERMINAL_FONT_SIZE_KEY) as Object;
     const runtimeLegacyFontSize: Object = AppStorage.get<number>(SSH_LEGACY_FONT_SIZE_KEY) as Object;
+    const runtimePreferredLineSpacing: Object = AppStorage.get<number>(SSH_TERMINAL_LINE_SPACING_KEY) as Object;
+    const runtimeLegacyLineSpacing: Object = AppStorage.get<number>(SSH_LEGACY_LINE_SPACING_KEY) as Object;
     this.values = resolveSshTerminalAppearance(
       typeof runtimePreferredColor === 'string' ? runtimePreferredColor as string : '',
       typeof runtimeLegacyColor === 'string' ? runtimeLegacyColor as string : '',
       typeof runtimePreferredFontSize === 'number' ? runtimePreferredFontSize as number : 0,
-      typeof runtimeLegacyFontSize === 'number' ? runtimeLegacyFontSize as number : 0
+      typeof runtimeLegacyFontSize === 'number' ? runtimeLegacyFontSize as number : 0,
+      typeof runtimePreferredLineSpacing === 'number' ? runtimePreferredLineSpacing as number : 0,
+      typeof runtimeLegacyLineSpacing === 'number' ? runtimeLegacyLineSpacing as number : 0
     );
   }
 
   private writeRuntimeAndLocal(existingPrefs: preferences.Preferences | null): void {
     AppStorage.setOrCreate(SSH_TERMINAL_FOREGROUND_COLOR_KEY, this.values.foregroundColor);
     AppStorage.setOrCreate(SSH_TERMINAL_FONT_SIZE_KEY, this.values.fontSize);
+    AppStorage.setOrCreate(SSH_TERMINAL_LINE_SPACING_KEY, this.values.lineSpacing);
     // Keep aliases synchronized for older releases during the migration cycle.
     AppStorage.setOrCreate(SSH_LEGACY_FOREGROUND_COLOR_KEY, this.values.foregroundColor);
     AppStorage.setOrCreate(SSH_LEGACY_FONT_SIZE_KEY, this.values.fontSize);
+    AppStorage.setOrCreate(SSH_LEGACY_LINE_SPACING_KEY, this.values.lineSpacing);
     try {
       const prefs = existingPrefs ?? (this.context === null ? null :
         preferences.getPreferencesSync(this.context, { name: SSH_PREFERENCES_NAME }));
       if (prefs === null) { return; }
       prefs.putSync(SSH_TERMINAL_FOREGROUND_COLOR_KEY, this.values.foregroundColor);
       prefs.putSync(SSH_TERMINAL_FONT_SIZE_KEY, this.values.fontSize);
+      prefs.putSync(SSH_TERMINAL_LINE_SPACING_KEY, this.values.lineSpacing);
       prefs.putSync(SSH_LEGACY_FOREGROUND_COLOR_KEY, this.values.foregroundColor);
       prefs.putSync(SSH_LEGACY_FONT_SIZE_KEY, this.values.fontSize);
+      prefs.putSync(SSH_LEGACY_LINE_SPACING_KEY, this.values.lineSpacing);
       prefs.putSync(SSH_SETTINGS_SCHEMA_VERSION_KEY, SSH_SETTINGS_SCHEMA_VERSION);
       prefs.flushSync();
     } catch (_e) { /* AppStorage remains usable if local persistence is unavailable. */ }

@@ -88,6 +88,9 @@ export struct GpuTerminalRenderer {
       clearTimeout(this.inputDrainTimer);
       this.inputDrainTimer = -1;
     }
+    if (this.handle > 0) {
+      this.registry.detach(this.coreKey, this.bridge);
+    }
     this.surfaceReady = false;
     // 句柄归 SSH 标签所有，由页面在关闭标签/退出全部连接时经 registry 销毁。
     this.handle = 0;

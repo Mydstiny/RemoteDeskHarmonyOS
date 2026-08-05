@@ -7,33 +7,22 @@ This file is the compact startup resume card for the active SSH terminal task.
 - Task: `ssh-terminal-complete-upgrade`
 - Base: `main@d2769ad4b`
 - Branch: `codex/ssh-terminal-complete-upgrade`
-- Code checkpoint: `4a7642d` (IME line-break isolation and socket diagnostics on top of bounded output/frame consumption).
-- Phase: Alacritty default; lifecycle, VT/Unicode/resize/TUI/large-output parity, damage checks and available device acceptance ready.
+- Code checkpoint: `f4251835e` plus the current uncommitted same-page SSH view-remount fix.
+- Phase: Alacritty default; lifecycle, VT/Unicode/resize/TUI/large-output parity and code-only host-switch/initial-UI refresh validation ready.
 - Scope: migrate VT behind terminalCore, keep appearance settings in-core, verify IME/input/Canvas behavior. Homepage work is not current focus.
 
 ## Progress
 
-- WP-T0 diagnostics baseline is implemented: schema v2, payload-free counters,
-  ordered sampling, queue/callback coverage and no per-key INFO logging.
-- WP-T1 native writer path is implemented: bounded FIFO/control quota,
-  generation checks, queue-full status, teardown gate and paste retry queues.
-- WP-T2 uses one SSH session-owner reactor for terminal input, reader, SFTP,
-  command channels, signal/EOF, PTY resize and keepalive.
+- WP-T0 diagnostics baseline is implemented: schema v2, payload-free counters, ordered sampling, queue/callback coverage and no per-key INFO logging.
+- WP-T1 native writer path is implemented: bounded FIFO/control quota, generation checks, queue-full status, teardown gate and paste retry queues.
+- WP-T2 uses one SSH session-owner reactor for terminal input, reader, SFTP, command channels, signal/EOF, PTY resize and keepalive.
 - Physical-keyboard/IME policy covers device-aware Unicode/CJK/emoji, CapsLock, AltGr, focus and duplicate-change suppression.
-- WP-S0 SFTP integrity floor is implemented: zero-byte transfers, `.partial`
-  staging, identity-bound resume, fsync/size verification and atomic commit.
-- Current SFTP checkpoint adds durable task metadata, lifecycle transitions,
-  capability-aware provider selection, authorization and file views.
-- Local provider separates persisted Picker URI from FileIO path; API 23 child
-  operations use the authorized path.
-- Pad/PC SFTP uses a full-screen in-page workspace; `sm` keeps the original
-  bottom Sheet and original virtual-key-bar behavior. Input-device mode is
-  scoped to Pad/PC.
-- Wide Pad/PC SFTP keeps remote navigation/path jump/rename/actions left and
-  local authorization/listing/upload actions right.
-- The SFTP checkpoint is closed for integrity, task metadata, local-provider
-  and Pad/PC workspace; background payload execution remains page-owned and
-  real provider/endpoint acceptance is pending.
+- WP-S0 SFTP integrity floor is implemented: zero-byte transfers, `.partial` staging, identity-bound resume, fsync/size verification and atomic commit.
+- Current SFTP checkpoint adds durable task metadata, lifecycle transitions, capability-aware provider selection, authorization and file views.
+- Local provider separates persisted Picker URI from FileIO path; API 23 child operations use the authorized path.
+- Pad/PC SFTP uses a full-screen in-page workspace; `sm` keeps the original bottom Sheet and original virtual-key-bar behavior. Input-device mode is scoped to Pad/PC.
+- Wide Pad/PC SFTP keeps remote navigation/path jump/rename/actions left and local authorization/listing/upload actions right.
+- The SFTP checkpoint is closed for integrity, task metadata, local-provider and Pad/PC workspace; background payload execution remains page-owned and real provider/endpoint acceptance is pending.
 - WP-T4 first migration slice is implemented: `alacritty_terminal` `0.26.0` is default behind terminalCore; the old Rust core remains a no-default fallback. GPU XComponent output is now opt-in; Canvas remains the safe device default.
 - `sshTerminalForegroundColor` is ARGB through NAPI; ANSI colors remain independent, and font size stays in Canvas for cell geometry.
 - The SSH owner reactor now sends bounded non-blocking libssh2 keepalives and retries transient failures without taking a second session owner.
@@ -53,6 +42,16 @@ This file is the compact startup resume card for the active SSH terminal task.
   proxy user (or target user) and opens a direct-tcpip channel to the target;
   a bounded socketpair relay feeds the existing target terminal session.
   Teardown/recovery joins the relay before freeing the jump session.
+- Same-page SSH host switching now has an independent binding generation. An
+  old async connect, session attach, data callback or PiP continuation is
+  rejected after the visible host changes; a pending native handshake is
+  cancelled before the target host starts, and the xterm surface generation
+  remains tied to the target host.
+- Same-page host switching now has an explicit `terminalSurfaceMounted` gate:
+  the old WebView is removed before a new host is rebound, target output is
+  queued until its fresh xterm document is ready, dynamic WebView identity
+  covers ArkUI state coalescing, and persistence failures cannot strand a live
+  session behind the loading view.
 
 ## SSH Connectivity Boundary
 
@@ -76,6 +75,15 @@ This file is the compact startup resume card for the active SSH terminal task.
 - `default@OhosTestCompileArkTS`: passed for the GPU crash guard on 2026-08-05, warnings only.
 - `assembleHap`: passed for the GPU crash guard on 2026-08-05 with `BUILD SUCCESSFUL`
   and signing; HAP SHA-256 is `2881d295dcdae98c6e7502008acde4a3768b52bc34b74f287303ce4da3ad1405`.
+- `default@OhosTestCompileArkTS`: passed for the same-page SSH binding fix on
+  2026-08-05, warnings only.
+- `assembleHap`: passed for the same-page SSH binding fix on 2026-08-05 with
+  `BUILD SUCCESSFUL` and signing.
+- `default@OhosTestCompileArkTS`: passed for the initial-UI/view-remount fix
+  on 2026-08-05, warnings only.
+- `assembleHap`: passed for the initial-UI/view-remount fix on 2026-08-05
+  with `BUILD SUCCESSFUL` and signing; current HAP SHA-256 is
+  `9ff982ced62c6e0cd846a8ec0b55e49015c788a38e9f9586391c1aabf016b820`.
 - Terminal-core Rust tests: Alacritty path `63 passed, 0 failed`; fallback
   path `57 passed, 0 failed`.
 - OHOS Rust checks: `aarch64-unknown-linux-ohos` and
@@ -94,22 +102,26 @@ This file is the compact startup resume card for the active SSH terminal task.
 ## Review
 
 - The existing independent reviewer passed the final bounded-output increment
-  and the later IME/socket diagnostic increment; the committed scope now
-  matches the PASS receipt and can skip full review.
+  and the later IME/socket diagnostic increment. The current same-page
+  binding/initial-UI increment is `REVIEW_REQUIRED` until its checkpoint is
+  committed and independently reviewed.
 - The SFTP checkpoint is scope-complete for this pass, but its real-device and
   endpoint evidence is not a completion claim for Level A.
 - Device evidence covers injected input and lifecycle; external keyboard/IME, GPU re-enable, bastion/forwarding/FRP evidence remain open.
 
 ## Next
 
-1. Verify ProxyJump against a real OpenSSH bastion and bind its host key.
-2. Add SSH-scoped local/remote/dynamic forwarding and FRP visitor modes.
+1. Commit and independently review the same-page SSH binding/initial-UI checkpoint.
+2. Verify ProxyJump against a real OpenSSH bastion and bind its host key.
+3. Add SSH-scoped local/remote/dynamic forwarding and FRP visitor modes.
 
 ## Blockers
 
 - Full external-keyboard/third-party-IME and SFTP lifecycle/provider acceptance
   remains pending; cold/large-output/background/PiP/re-entry and 90-second idle
   checks passed.
+- Real-device validation for the current initial-UI/host-switch pass is
+  intentionally deferred by the user; only code-level gates were requested.
 - No real OpenSSH bastion, forwarding service or FRP endpoint is currently
   available; HDC target is also offline for device acceptance.
 - ProxyJump preflight can receive target password or transient key material,

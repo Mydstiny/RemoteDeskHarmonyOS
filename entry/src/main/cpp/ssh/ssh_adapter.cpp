@@ -1486,6 +1486,7 @@ void SshAdapter::disconnect() {
         std::lock_guard<std::mutex> callbackLock(callbackMutex_);
         onDataCallback_ = nullptr;
     }
+    clearDetachedTerminalOutput();
 
     {
         // Keep the lock order identical to writeTerminalData(): session first,
@@ -2628,12 +2629,6 @@ void SshAdapter::drainShellOutputOnReactor() {
     if (!isReactorThread() || !readerRunning_.load(std::memory_order_acquire)) {
         return;
     }
-    DataCallback cb;
-    {
-        std::lock_guard<std::mutex> callbackLock(callbackMutex_);
-        cb = onDataCallback_;
-    }
-    if (!cb) { return; }
 
     constexpr size_t kBufSize = SSH_BUFFER_SIZE;
     std::vector<uint8_t> buffer(kBufSize);
@@ -2701,7 +2696,7 @@ void SshAdapter::drainShellOutputOnReactor() {
     }
     if (gotData && !accumulated.empty()) {
         diagnostics_.recordRemoteBytesRead(accumulated.size());
-        try { cb(accumulated); } catch (...) { /* keep the owner reactor alive */ }
+        deliverTerminalOutput(accumulated);
     }
 }
 
@@ -3247,12 +3242,32 @@ void SshAdapter::setOnDataCallback(DataCallback cb) {
         // Stop before clearing the callback so an in-flight reader can
         // deliver bytes it has already consumed instead of dropping them.
         stopReader();
+        std::lock_guard<std::mutex> deliveryLock(callbackDeliveryMutex_);
         std::lock_guard<std::mutex> lk(callbackMutex_);
         onDataCallback_ = nullptr;
     } else {
         {
-            std::lock_guard<std::mutex> lk(callbackMutex_);
-            onDataCallback_ = std::move(cb);
+            std::lock_guard<std::mutex> deliveryLock(callbackDeliveryMutex_);
+            {
+                std::lock_guard<std::mutex> lk(callbackMutex_);
+                onDataCallback_ = std::move(cb);
+            }
+            std::deque<std::vector<uint8_t>> replay;
+            {
+                std::lock_guard<std::mutex> outputLock(detachedTerminalMutex_);
+                replay.swap(detachedTerminalOutput_);
+                detachedTerminalOutputBytes_ = 0;
+            }
+            DataCallback replayCallback;
+            {
+                std::lock_guard<std::mutex> lk(callbackMutex_);
+                replayCallback = onDataCallback_;
+            }
+            if (replayCallback) {
+                for (const std::vector<uint8_t>& bytes : replay) {
+                    try { replayCallback(bytes); } catch (...) { /* keep the owner alive */ }
+                }
+            }
             hasCallback = true;
         }
         // connect() starts the owner early; this call only wakes it and
@@ -3264,13 +3279,51 @@ void SshAdapter::setOnDataCallback(DataCallback cb) {
 }
 
 void SshAdapter::detachOnDataCallback() {
-    {
-        std::lock_guard<std::mutex> lk(callbackMutex_);
-        onDataCallback_ = nullptr;
-    }
+    std::lock_guard<std::mutex> deliveryLock(callbackDeliveryMutex_);
+    std::lock_guard<std::mutex> lk(callbackMutex_);
+    onDataCallback_ = nullptr;
     // The owner reactor remains alive and can be rebound by a later page.
     reactorCommandCondition_.notify_one();
     OH_LOG_INFO(LOG_APP, "[SSH] onDataCallback 已脱离, session reactor 保持");
+}
+
+void SshAdapter::deliverTerminalOutput(const std::vector<uint8_t>& data) {
+    if (data.empty()) {
+        return;
+    }
+    std::lock_guard<std::mutex> deliveryLock(callbackDeliveryMutex_);
+    DataCallback callback;
+    {
+        std::lock_guard<std::mutex> callbackLock(callbackMutex_);
+        callback = onDataCallback_;
+    }
+    if (callback) {
+        try { callback(data); } catch (...) { /* keep the owner reactor alive */ }
+        return;
+    }
+
+    bool overflowed = false;
+    {
+        std::lock_guard<std::mutex> outputLock(detachedTerminalMutex_);
+        if (detachedTerminalOutput_.size() >= kDetachedTerminalMaxChunks ||
+            detachedTerminalOutputBytes_ + data.size() > kDetachedTerminalMaxBytes) {
+            overflowed = true;
+        } else {
+            detachedTerminalOutput_.push_back(data);
+            detachedTerminalOutputBytes_ += data.size();
+        }
+    }
+    if (overflowed) {
+        OH_LOG_ERROR(LOG_APP,
+                     "[SSH] detached terminal output FIFO overflow, closing session");
+        failTerminalOutput("SSH detached terminal output queue overflow");
+    }
+}
+
+void SshAdapter::clearDetachedTerminalOutput() {
+    std::lock_guard<std::mutex> outputLock(detachedTerminalMutex_);
+    detachedTerminalOutput_.clear();
+    detachedTerminalOutputBytes_ = 0;
 }
 
 void SshAdapter::startReader() {
@@ -3354,14 +3407,6 @@ void SshAdapter::readerLoop() {
             if (!reconnectAfterTransportFailure()) { break; }
             continue;
         }
-        {
-            std::lock_guard<std::mutex> callbackLock(callbackMutex_);
-            if (!onDataCallback_) {
-                std::unique_lock<std::mutex> waitLock(reactorCommandMutex_);
-                reactorCommandCondition_.wait_for(waitLock, std::chrono::milliseconds(10));
-                continue;
-            }
-        }
         // Snapshot only the poll identity. Waiting in select() must not hold
         // sessionMutex_: otherwise a quiet SSH channel stalls terminal writes
         // and every SFTP operation for the full poll interval.
@@ -3414,15 +3459,6 @@ void SshAdapter::readerLoop() {
             state_.load(std::memory_order_acquire) != ConnectionState::CONNECTED) {
             continue;
         }
-        {
-            std::lock_guard<std::mutex> callbackLock(callbackMutex_);
-            if (!onDataCallback_) {
-                std::unique_lock<std::mutex> waitLock(reactorCommandMutex_);
-                reactorCommandCondition_.wait_for(waitLock, std::chrono::milliseconds(10));
-                continue;
-            }
-        }
-
         // 反复读直到 EAGAIN, 减少 select 次数 (大输出场景)
         bool gotData = false;
         bool eofDetected = false;
@@ -3492,16 +3528,7 @@ void SshAdapter::readerLoop() {
 
         if (gotData && !accumulated.empty()) {
             diagnostics_.recordRemoteBytesRead(accumulated.size());
-            DataCallback cb;
-            {
-                std::lock_guard<std::mutex> lk(callbackMutex_);
-                if (onDataCallback_) {
-                    cb = onDataCallback_;
-                }
-            }
-            if (cb) {
-                try { cb(accumulated); } catch (...) { /* 静默, 不中断 reader */ }
-            }
+            deliverTerminalOutput(accumulated);
         }
     }
 

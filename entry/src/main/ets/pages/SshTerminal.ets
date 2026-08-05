@@ -37,8 +37,9 @@ import { KeyVaultService } from '../services/KeyVaultService';
 import { RemoteHost } from '../model/RemoteHost';
 import { Palette, buildDark, buildLight } from '../common/Theme';
 import { showLockGate, lockGateErrorMessage } from '../components/LockGate';
-import { SshTerminalSurface, TerminalInputBuffer } from '../components/SshTerminalSurface';
+import { SshXtermSurface, XtermOutputBuffer } from '../components/SshXtermSurface';
 import { TerminalCoreBridge } from '../napi/TerminalCoreBridge';
+import { SshTerminalTranscriptStore } from '../services/SshTerminalTranscriptStore';
 import {
   SessionConfig,
   SftpFileEntry,
@@ -61,7 +62,6 @@ import {
   terminalRowsBottomOffset,
   terminalTouchDragScrollLines,
   terminalVisualBottomOffset,
-  terminalTouchSurfaceOffsetY
 } from '../services/SshTerminalScrollPolicy';
 import {
   SshEncodedKey,
@@ -90,6 +90,7 @@ import {
 } from '../services/SshTerminalTabStore';
 import { TerminalCoreRegistry } from '../services/TerminalCoreRegistry';
 import { VirtualKeyBar } from '../components/VirtualKeyBar';
+import { normalizeSshTerminalLineSpacing } from '../services/SshSettingsPolicy';
 import {
   TransferSession,
   TransferStage,
@@ -213,10 +214,11 @@ struct SshTerminal {
    * UTF-8/VT 损坏。必须是普通字段：ArrayBuffer 不能进 @State/@Prop（观察代理
    * 会让 byteLength 访问抛 “don't have internal slot” 闪退）。
    */
-  private terminalInputBuffer: TerminalInputBuffer = new TerminalInputBuffer();
+  /** xterm 页面未完成加载时的有序输出 FIFO。 */
+  private xtermOutputBuffer: XtermOutputBuffer = new XtermOutputBuffer();
   /** 即使连续两个 chunk 文本相同，也用序号触发终端核心消费。 */
   @State termOutputSequence: number = 0;
-  /** 由 Rust terminal_core 的 DECSET/DECRST 状态驱动粘贴与输入保护。 */
+  /** 由成熟终端前端/VT 状态驱动的输入模式；保留给虚拟功能栏策略。 */
   @State bracketedPasteEnabled: boolean = false;
   @State terminalMouseTracking: number = 0;
   @State terminalSgrMouse: boolean = false;
@@ -225,6 +227,7 @@ struct SshTerminal {
   @StorageLink('currentBreakpoint') @Watch('onFontSizeChange') breakpoint: string = 'sm';
   @StorageProp('isDesktopDevice') isDesktopDevice: boolean = false;
   @StorageLink('sshTerminalFontSize') @Watch('onFontSizeChange') fontSize: number = 18;
+  @StorageLink('sshTerminalLineSpacing') @Watch('onLineSpacingChange') lineSpacing: number = 1.12;
   /** 0=自动, 1=虚拟键盘, 2=实体键鼠; persisted from the SSH settings card. */
   @StorageLink('sshInputMode') @Watch('onSshInputModeChange') sshInputMode: number = 0;
   @State termRows: number = 24;
@@ -252,6 +255,17 @@ struct SshTerminal {
   /** 终端焦点模式：Tab 发送给远端；Shift+Tab 退出并交回应用焦点链。 */
   @State terminalFocusMode: boolean = true;
   @State softKeyboardRequested: boolean = false;
+  @State terminalFocusRequest: number = 0;
+  @State xtermReady: boolean = false;
+  /**
+   * The SSH socket can stay alive while the visible terminal is rebound to a
+   * different host. Keep the WebView mounted only after that binding has
+   * installed its callback and replay buffer; this prevents ArkUI from
+   * coalescing an old and new host into one stale document.
+   */
+  @State terminalSurfaceMounted: boolean = false;
+  /** Forces the xterm surface to observe every same-page SSH host switch. */
+  @State terminalSurfaceGeneration: number = 0;
   /** 选区模式 — 长按菜单"选择"开启, 传给 TerminalEmulator 改变 touch 行为 */
   @State selectMode: boolean = false;
   /** 复制请求计数器 — ++ 触发 TerminalEmulator 把文本写入 copiedText */
@@ -330,10 +344,14 @@ struct SshTerminal {
     SshTerminalBackgroundTaskService.getInstance();
   private sshPipService: SshTerminalPipService = SshTerminalPipService.getInstance();
   private sshTabStore: SshTerminalTabStore = SshTerminalTabStore.getInstance();
+  private sshTranscriptStore: SshTerminalTranscriptStore =
+    SshTerminalTranscriptStore.getInstance();
   private terminalCoreRegistry: TerminalCoreRegistry = TerminalCoreRegistry.getInstance();
   private sshTabStoreUnsubscribe: (() => void) | null = null;
-  /** Replacing the visible route is a tab switch, not an SSH exit. */
+  /** Kept for compatibility with route-entry cleanup; tab clicks stay in-page. */
   private tabNavigationPending: boolean = false;
+  /** Serializes same-page SSH tab activation and prevents overlapping rebinds. */
+  private tabSwitchInFlight: boolean = false;
   /** 功能开关: true=使用 Rust terminal_core 渲染 (NativeTerminalRenderer), false=旧 TerminalEmulator */
 
   // cellH/cellW 由字号推算, 与 Canvas 字体单位保持一致
@@ -390,6 +408,8 @@ struct SshTerminal {
   private sshSessionGeneration: number = 0;
   /** Invalidates connect/dialog/callback continuations when the page is rebuilt. */
   private pageGeneration: number = 0;
+  /** Invalidates async SSH work when the visible host changes in-place. */
+  private sshBindingGeneration: number = 0;
   private terminalOutputQueueOverflowed: boolean = false;
   private inputDeviceListenerRegistered: boolean = false;
   private inputDeviceRefreshEpoch: number = 0;
@@ -508,6 +528,17 @@ struct SshTerminal {
     return !this.terminalClosing && this.pageGeneration === generation;
   }
 
+  private isSshBindingGenerationActive(pageGeneration: number, bindingGeneration: number): boolean {
+    return this.isPageGenerationActive(pageGeneration) &&
+      this.sshBindingGeneration === bindingGeneration;
+  }
+
+  private isSshBindingActive(pageGeneration: number, bindingGeneration: number,
+    hostId: string): boolean {
+    return this.isSshBindingGenerationActive(pageGeneration, bindingGeneration) &&
+      this.hostId.trim() === hostId.trim();
+  }
+
   private refreshSshTabViews(): void {
     this.sshTabViews = this.sshTabStore.views();
   }
@@ -524,15 +555,167 @@ struct SshTerminal {
   }
 
   private navigateToSshTab(host: RemoteHost): void {
-    if (host.id.trim().length === 0) { return; }
-    this.sshTabStore.open(host.id, host.label, host.username + '@' + host.host + ':' + host.port.toString());
-    this.sshTabStore.activate(host.id);
-    this.refreshSshTabViews();
+    const targetHostId: string = host.id.trim();
+    if (targetHostId.length === 0 || this.terminalClosing || this.tabSwitchInFlight) { return; }
+    if (targetHostId === this.hostId) {
+      this.showSshTabPicker = false;
+      return;
+    }
     this.showSshTabPicker = false;
-    this.tabNavigationPending = true;
-    void router.replaceUrl({ url: 'pages/SshTerminal', params: { hostId: host.id } }).catch((): void => {
-      this.tabNavigationPending = false;
+    this.tabSwitchInFlight = true;
+    void this.switchSshTab(host).catch((err: Error): void => {
+      if (this.terminalClosing || this.hostId !== targetHostId) { return; }
+      const message: string = err?.message || 'SSH 主机切换失败';
+      this.terminalSurfaceMounted = false;
+      this.xtermReady = false;
+      this.connected = false;
+      this.connecting = false;
+      this.connectionError = message;
+      this.sshTabStore.update(targetHostId, 'error', -1, message);
+      this.refreshSshTabViews();
+      hilog.error(0x0001, 'SshTerminal', '[tab] switch failed: ' + message);
+    }).finally((): void => {
+      this.tabSwitchInFlight = false;
     });
+  }
+
+  /**
+   * Switch the visible SSH binding without rebuilding the route/WebView.
+   * Detached native sessions remain connected and are adopted again when the
+   * corresponding tab is selected. The renderer bridge can therefore keep a
+   * stable page lifecycle while the native session owner keeps the socket.
+   */
+  private async switchSshTab(host: RemoteHost): Promise<void> {
+    const targetHostId: string = host.id.trim();
+    if (targetHostId.length === 0 || targetHostId === this.hostId) { return; }
+    const pageGeneration: number = this.pageGeneration;
+    const previousBindingGeneration: number = this.sshBindingGeneration;
+    const previousHostId: string = this.hostId;
+
+    if (host.locked) {
+      const lockResult = await showLockGate(host.label, 'biometric');
+      if (!this.isSshBindingGenerationActive(pageGeneration, previousBindingGeneration)) { return; }
+      if (!lockResult.ok) {
+        this.connectionError = lockGateErrorMessage(lockResult) || '验证未通过';
+        this.connecting = false;
+        this.connected = true;
+        this.sshTabStore.activate(previousHostId);
+        this.refreshSshTabViews();
+        return;
+      }
+    }
+    if (!this.isSshBindingGenerationActive(pageGeneration, previousBindingGeneration)) { return; }
+
+    // The old host may finish its first async handshake while the lock gate
+    // is open. Capture the session only after that await so it is detached
+    // before the new binding is committed.
+    const previousSessionId: number = this.sessionId;
+    const bindingGeneration: number = previousBindingGeneration + 1;
+    this.sshBindingGeneration = bindingGeneration;
+
+    // Preflight credentials are page-local, but their trust is host-specific.
+    // Clear the previous host's binding before opening a different tab so its
+    // host key can never be used to validate the new SSH endpoint.
+    this.clearPreflightBinding();
+
+    if (previousSessionId > 0 && previousHostId.length > 0) {
+      this.sftpTaskEngine.detachSession(previousHostId, previousSessionId);
+      if (!this.loader.detachSshSession(previousSessionId, previousHostId)) {
+        hilog.warn(0x0001, 'SshTerminal',
+          '[tab] detach failed host=' + previousHostId + ' session=' + previousSessionId.toString());
+        if (this.sshBindingGeneration === bindingGeneration) {
+          this.sshBindingGeneration = previousBindingGeneration;
+        }
+        return;
+      }
+      this.sshTabStore.update(previousHostId, 'connected', previousSessionId);
+    } else {
+      // A connect still in DNS/KEX has no page session yet. Cancel its
+      // reserved native session before starting the target host.
+      const pendingSessionId: number = this.loader.getSessionId();
+      if (pendingSessionId > 0) {
+        this.loader.disconnectSshSession(pendingSessionId);
+        await this.loader.waitForPendingTeardown();
+        if (!this.isSshBindingGenerationActive(pageGeneration, bindingGeneration)) { return; }
+      }
+    }
+
+    this.hostId = targetHostId;
+    this.hostLabel = host.label;
+    this.userAtHost = host.username + '@' + host.host + ':' + host.port.toString();
+    this.sshHost = host.host;
+    this.sshPort = host.port;
+    this.terminalSurfaceGeneration = this.terminalSurfaceGeneration + 1;
+    this.sshTabStore.open(targetHostId, this.hostLabel, this.userAtHost);
+    this.sshTabStore.activate(targetHostId);
+    this.refreshSshTabViews();
+
+    // Reset only view-local state. The native session/core for the target tab
+    // is adopted below, so the connection itself is never recreated on a tab
+    // switch.
+    this.sessionId = -1;
+    this.sshSessionGeneration = 0;
+    this.connected = false;
+    this.connecting = true;
+    this.connectionError = '';
+    this.latencyMs = -1;
+    this.stopLatencyProbe();
+    this.clearTerminalOutputQueue();
+    this.clearTerminalInputQueue();
+    this.terminalDecodeRemainder = new Uint8Array(0);
+    this.terminalOutputQueueOverflowed = false;
+    this.termOutput = '';
+    this.terminalSurfaceMounted = false;
+    this.xtermOutputBuffer.clear();
+    const targetTranscript: string = this.sshTranscriptStore.snapshot(targetHostId);
+    if (targetTranscript.length > 0) {
+      this.xtermOutputBuffer.enqueue(targetTranscript);
+    }
+    this.termOutputSequence++;
+    this.bracketedPasteEnabled = false;
+    this.terminalMouseTracking = 0;
+    this.terminalSgrMouse = false;
+    this.terminalApplicationCursorKeys = false;
+    this.terminalApplicationKeypad = false;
+    this.ctrlActive = false;
+    this.altActive = false;
+    this.shiftActive = false;
+    this.kbInput = '';
+    this.terminalFocusMode = true;
+    this.softKeyboardRequested = false;
+    this.xtermReady = false;
+    this.showSftpPanel = false;
+    this.showSftpSheet = false;
+    this.sftpPath = '.';
+    this.sftpEntries = [];
+    this.sftpSelectedPath = '';
+    this.sftpSelectedName = '';
+    this.sftpSelectedIsDir = false;
+    this.sftpLocalEntries = [];
+    this.sftpRecoveredTasks = [];
+    this.sftpBusy = false;
+    this.sftpProgress = -1;
+    this.sftpEngineBatchId = '';
+    this.sftpWaitingForConnection = false;
+    this.sftpDetached = false;
+    this.refreshRecoveredSftpTasks();
+
+    const adoptedSessionId: number = this.loader.adoptDetachedSshSession(targetHostId);
+    if (adoptedSessionId > 0) {
+      if (!await this.attachSshSession(pageGeneration, bindingGeneration, adoptedSessionId, targetHostId)) {
+        if (this.isSshBindingActive(pageGeneration, bindingGeneration, targetHostId)) {
+          await this.connect(host, pageGeneration, bindingGeneration);
+        }
+      }
+      return;
+    }
+
+    const knownSessionId: number = this.sshTabStore.sessionId(targetHostId);
+    if (knownSessionId > 0 &&
+      await this.attachSshSession(pageGeneration, bindingGeneration, knownSessionId, targetHostId)) {
+      return;
+    }
+    await this.connect(host, pageGeneration, bindingGeneration);
   }
 
   private closeAllSshTabs(): void {
@@ -588,7 +771,9 @@ struct SshTerminal {
       .backgroundColor('rgba(255,255,255,0.07)')
       .onClick((): void => { this.openSshTabPicker(); })
     }
-    .height(40).padding({ left: 10, right: 10 })
+    .height(40).width('100%')
+    .padding({ left: 10, right: 10 })
+    .justifyContent(FlexAlign.Start)
   }
 
   @Builder
@@ -852,6 +1037,8 @@ struct SshTerminal {
         this.sessionId = -1;
         this.sshSessionGeneration = 0;
         this.clearTerminalInputQueue();
+        this.terminalSurfaceMounted = false;
+        this.xtermReady = false;
         this.connected = false;
         this.connecting = false;
       }
@@ -909,8 +1096,10 @@ struct SshTerminal {
       this.terminalOutputQueue.splice(0, queuedChunksConsumed);
     }
     this.terminalOutputQueueBytes -= batchBytes;
-    this.terminalInputBuffer.enqueue(merged);
-    this.termOutput = this.decodeTerminalChunk(merged);
+    const decodedOutput: string = this.decodeTerminalChunk(merged);
+    this.sshTranscriptStore.append(this.hostId, decodedOutput);
+    this.xtermOutputBuffer.enqueue(decodedOutput);
+    this.termOutput = decodedOutput;
     this.termOutputSequence++;
     if (this.terminalOutputQueue.length > 0) {
       this.scheduleTerminalOutputFlush();
@@ -920,7 +1109,7 @@ struct SshTerminal {
   private updateCellSize(): void {
     const normalized: number = Math.max(12, Math.min(32, this.fontSize));
     this.renderFontVp = normalized;
-    const rowRatio: number = normalized <= 16 ? 1.18 : normalized <= 24 ? 1.13 : normalized <= 32 ? 1.09 : 1.06;
+    const rowRatio: number = normalizeSshTerminalLineSpacing(this.lineSpacing);
     const widthRatio: number =
       this.breakpoint === 'sm' ? 0.54 :
         this.breakpoint === 'md' ? 0.56 :
@@ -930,6 +1119,11 @@ struct SshTerminal {
   }
 
   private onFontSizeChange(): void {
+    this.updateCellSize();
+    this.recalcGrid();
+  }
+
+  private onLineSpacingChange(): void {
     this.updateCellSize();
     this.recalcGrid();
   }
@@ -990,7 +1184,7 @@ struct SshTerminal {
     return terminalVisualBottomOffset(this.isDesktopDevice, this.kbHeight, this.navHeight);
   }
 
-  private virtualKeyBarVisible(): boolean {
+  private virtualKeyBarRequested(): boolean {
     if (this.isDesktopDevice) { return false; }
     // 手机保持原有输入和底部栏逻辑；设置项只作用于 Pad/PC。
     if (this.breakpoint === 'sm') { return !this.physicalKeyboardConnected; }
@@ -999,8 +1193,15 @@ struct SshTerminal {
     return !this.physicalKeyboardConnected;
   }
 
+  private virtualKeyBarVisible(): boolean {
+    // Keep the bar out of the route replacement and xterm boot windows. The
+    // viewport still reserves its height, so xterm does not resize twice when
+    // the bar becomes interactive.
+    return this.xtermReady && this.virtualKeyBarRequested();
+  }
+
   private virtualKeyBarHeight(): number {
-    return this.virtualKeyBarVisible() ? VirtualKeyBar.TOTAL_H : 0;
+    return this.virtualKeyBarRequested() ? VirtualKeyBar.TOTAL_H : 0;
   }
 
   private rowsBottomOffset(): number {
@@ -1033,12 +1234,17 @@ struct SshTerminal {
   }
 
   private barTop(): number {
-    return Math.max(0, this.shellAreaH - this.barBottomOffset() - this.virtualKeyBarHeight());
+    return Math.max(0, this.shellViewportHeight() - this.barBottomOffset() - this.virtualKeyBarHeight());
+  }
+
+  private shellViewportHeight(): number {
+    if (this.shellAreaH > 0) { return this.shellAreaH; }
+    return Math.max(this.cellHvp * 3, this.calcRowsFallback() * this.cellHvp);
   }
 
   private terminalPaneHeight(): number {
-    if (this.shellAreaH <= 0) { return this.calcRowsFallback() * this.cellHvp; }
-    return Math.max(this.cellHvp * 3, this.shellAreaH);
+    return Math.max(this.cellHvp * 3,
+      this.shellViewportHeight() - this.barBottomOffset() - this.virtualKeyBarHeight());
   }
 
   private terminalRowsViewportHeight(): number {
@@ -1054,8 +1260,10 @@ struct SshTerminal {
   }
 
   private terminalCanvasOffsetY(): number {
-    return terminalTouchSurfaceOffsetY(this.isDesktopDevice, this.barBottomOffset(),
-      this.virtualKeyBarHeight());
+    // xterm is laid out in its actual viewport. The old Canvas surface used a
+    // negative offset to hide the system bar and virtual key bar, which moves
+    // a WebView twice when those bars are already excluded from its height.
+    return 0;
   }
 
   private requestTerminalScrollToBottom(): void {
@@ -1235,6 +1443,10 @@ struct SshTerminal {
       try { this.kbCtrl.stopEditing(); } catch (_err) { /* input may not be mounted */ }
     }
     this.recalcGrid();
+    if (this.connected) {
+      this.forceScrollToBottomRequest = this.forceScrollToBottomRequest + 1;
+      this.requestTerminalScrollToBottomSettled();
+    }
   }
 
   private async restoreSshLocalProvider(pageGeneration: number): Promise<void> {
@@ -2262,7 +2474,9 @@ struct SshTerminal {
 
   async aboutToAppear(): Promise<void> {
     const pageGeneration: number = ++this.pageGeneration;
+    const bindingGeneration: number = ++this.sshBindingGeneration;
     this.terminalClosing = false;
+    this.clearPreflightBinding();
     this.tabNavigationPending = false;
     this.showSshTabPicker = false;
     if (this.sshTabStoreUnsubscribe !== null) {
@@ -2297,10 +2511,14 @@ struct SshTerminal {
     }
     this.lastTermAreaPosition = '';
     this.lastShellAreaPosition = '';
+    this.termAreaH = 0;
+    this.termAreaW = 0;
+    this.shellAreaH = 0;
+    this.shellAreaW = 0;
     this.orientationApplied = false;
     // ArkUI 可能复用页面实例；每次进入都必须从全新的会话输出开始。
     this.termOutput = '';
-    this.terminalInputBuffer.clear();
+    this.xtermOutputBuffer.clear();
     this.clearTerminalOutputQueue();
     this.clearTerminalInputQueue();
     this.terminalDecodeRemainder = new Uint8Array(0);
@@ -2325,6 +2543,10 @@ struct SshTerminal {
     this.terminalMouseDownButton = -1;
     this.terminalFocusMode = true;
     this.softKeyboardRequested = false;
+    this.terminalFocusRequest = 0;
+    this.xtermReady = false;
+    this.terminalSurfaceMounted = false;
+    this.terminalSurfaceGeneration = this.terminalSurfaceGeneration + 1;
     this.showSftpPanel = false;
     this.showSftpSheet = false;
     this.sftpPath = '.';
@@ -2399,6 +2621,10 @@ struct SshTerminal {
       const id: string = p['hostId'] as string;
       if (id) {
         this.hostId = id;
+        const transcript: string = this.sshTranscriptStore.snapshot(this.hostId);
+        if (transcript.length > 0) {
+          this.xtermOutputBuffer.enqueue(transcript);
+        }
         this.sftpTaskUnsubscribe = this.sftpTaskStore.subscribe((event): void => {
           if (event.record.hostId !== this.hostId || this.sftpBusy) { return; }
           this.refreshRecoveredSftpTasks();
@@ -2417,6 +2643,7 @@ struct SshTerminal {
           const tokenSvc = SshPreflightService.getInstance();
           const tokenData = tokenSvc.consume(preflightTokenId);
           if (tokenData) {
+            this.preflightHostId = tokenData.hostId.trim() || this.hostId;
             this.preflightPassphrase = tokenData.privateKeyPassphrase;
             this.preflightExpectedHostKeyRaw = tokenData.expectedHostKeyRawBase64;
             this.preflightExpectedHostKeyFp = tokenData.expectedHostKeyFingerprintSha256;
@@ -2446,18 +2673,19 @@ struct SshTerminal {
           const authenticated: boolean = (p['authenticated'] as boolean) === true;
           if (host.locked && !authenticated) {
             const r = await showLockGate(host.label, 'biometric');
-            if (!this.isPageGenerationActive(pageGeneration)) { return; }
+            if (!this.isSshBindingActive(pageGeneration, bindingGeneration, this.hostId)) { return; }
             if (!r.ok) { this.connecting = false; this.connectionError = lockGateErrorMessage(r) || '验证未通过'; return; }
           }
-          if (!this.isPageGenerationActive(pageGeneration)) { return; }
+          if (!this.isSshBindingActive(pageGeneration, bindingGeneration, this.hostId)) { return; }
           const detachedSessionId: number = this.loader.adoptDetachedSshSession(this.hostId);
           if (detachedSessionId > 0) {
-            const attached: boolean = await this.attachSshSession(pageGeneration, detachedSessionId);
-            if (!attached && this.isPageGenerationActive(pageGeneration)) {
-              await this.connect(host);
+            const attached: boolean = await this.attachSshSession(
+              pageGeneration, bindingGeneration, detachedSessionId, this.hostId);
+            if (!attached && this.isSshBindingActive(pageGeneration, bindingGeneration, this.hostId)) {
+              await this.connect(host, pageGeneration, bindingGeneration);
             }
           } else {
-            await this.connect(host);
+            await this.connect(host, pageGeneration, bindingGeneration);
           }
         }
       }
@@ -2466,8 +2694,14 @@ struct SshTerminal {
 
   aboutToDisappear(): void {
     ++this.pageGeneration;
+    ++this.sshBindingGeneration;
     this.terminalClosing = true;
-    const switchingSshTab: boolean = this.tabNavigationPending && !this.explicitSessionClose;
+    // Hide the virtual-key layer before the old route is detached so it cannot
+    // flash above the next SSH page during router replacement.
+    this.xtermReady = false;
+    this.terminalSurfaceMounted = false;
+    const switchingSshTab: boolean = !this.explicitSessionClose &&
+      (this.tabNavigationPending || this.sshTabStore.isNavigationPending());
     const preserveSshInBackground: boolean =
       (AppStorage.get<boolean>('remoteDesktopBgFlag') ?? false) &&
       !switchingSshTab && !this.explicitSessionClose && this.connected && this.sessionId > 0 &&
@@ -2557,6 +2791,7 @@ struct SshTerminal {
     const shouldCloseAllSshSessions: boolean = !switchingSshTab && !preserveSshInBackground;
     if (shouldCloseAllSshSessions) {
       const allSessionIds: number[] = this.sshTabStore.closeAll();
+      this.sshTranscriptStore.clearAll();
       for (let index = 0; index < allSessionIds.length; index++) {
         if (allSessionIds[index] !== requestSessionId) {
           this.loader.disconnectSshSession(allSessionIds[index]);
@@ -2581,14 +2816,17 @@ struct SshTerminal {
       // It cannot be safely detached because no page-owned session exists yet.
       this.loader.disconnect();
     }
+    if (switchingSshTab) { this.sshTabStore.completeNavigation(); }
     this.sessionId = -1;
     this.connected = false;
     this.termOutput = '';
-    this.terminalInputBuffer.clear();
+    this.xtermOutputBuffer.clear();
     this.clearTerminalOutputQueue();
     this.clearTerminalInputQueue();
     this.terminalDecodeRemainder = new Uint8Array(0);
     this.sshSessionGeneration = 0;
+    this.xtermReady = false;
+    this.terminalSurfaceMounted = false;
     this.termOutputSequence++;
     if (this.orientationApplied) {
       const restoreGeneration: number = this.pageGeneration;
@@ -2863,6 +3101,7 @@ struct SshTerminal {
       if (!this.terminalClosing) {
         // Native SSH recovery keeps the same session id and callback. Restore
         // the page state when the owner has completed the new handshake.
+        this.terminalSurfaceMounted = true;
         this.connected = true;
         this.connecting = false;
       }
@@ -2943,9 +3182,17 @@ struct SshTerminal {
   @State passphraseInput: string = '';
   @State passphraseShowPw: boolean = false;
   // T-210: preflight token 数据 (从 HostList 传递)
+  private preflightHostId: string = '';
   private preflightPassphrase: string = '';
   private preflightExpectedHostKeyRaw: string = '';
   private preflightExpectedHostKeyFp: string = '';
+
+  private clearPreflightBinding(): void {
+    this.preflightHostId = '';
+    this.preflightPassphrase = '';
+    this.preflightExpectedHostKeyRaw = '';
+    this.preflightExpectedHostKeyFp = '';
+  }
 
   private promptPassphrase(): Promise<string> {
     return new Promise<string>((resolve: (v: string) => void) => {
@@ -2997,17 +3244,20 @@ struct SshTerminal {
     }.padding(20)
   }
 
-  private async connect(host: RemoteHost): Promise<void> {
-    const pageGeneration: number = this.pageGeneration;
-    this.sshTabStore.open(host.id, host.label, host.username + '@' + host.host + ':' + host.port.toString());
-    this.sshTabStore.activate(host.id);
-    this.sshTabStore.update(host.id, 'connecting');
+  private async connect(host: RemoteHost, pageGeneration: number,
+    bindingGeneration: number): Promise<void> {
+    const bindingHostId: string = host.id.trim();
+    if (!this.isSshBindingActive(pageGeneration, bindingGeneration, bindingHostId)) { return; }
+    this.sshTabStore.open(bindingHostId, host.label,
+      host.username + '@' + host.host + ':' + host.port.toString());
+    this.sshTabStore.activate(bindingHostId);
+    this.sshTabStore.update(bindingHostId, 'connecting');
     this.refreshSshTabViews();
     try {
       if (!(await this.loader.waitForPendingTeardown())) {
         throw new Error('上一会话资源清理未完成 [E-TEARDOWN-PENDING]');
       }
-      if (!this.isPageGenerationActive(pageGeneration)) { return; }
+      if (!this.isSshBindingActive(pageGeneration, bindingGeneration, bindingHostId)) { return; }
       this.sshHost = host.host;
       this.sshPort = host.port;
       // 密钥解析: sshKeyId 优先 (引用 KeyVault), 回退 sshKeyData (旧副本)
@@ -3023,7 +3273,9 @@ struct SshTerminal {
       }
       const useKey: boolean = host.sshUseKey && keyData.length > 0;
       // T-210: 优先使用 preflight token 中的 passphrase; 否则用 host 保存的; 最后才弹窗
-      let keyPassphrase: string = this.preflightPassphrase || host.sshKeyPassphrase || '';
+      const preflightMatchesHost: boolean = this.preflightHostId === host.id;
+      let keyPassphrase: string = (preflightMatchesHost ? this.preflightPassphrase : '') ||
+        host.sshKeyPassphrase || '';
       if (useKey) {
         const keyInfo: SshPrivateKeyInfo = this.loader.inspectSshPrivateKey(keyData, keyPassphrase);
         if (keyInfo.ok && !keyInfo.encrypted) {
@@ -3031,10 +3283,10 @@ struct SshTerminal {
         } else if (keyPassphrase === '' && (keyEncryptedHint || keyInfo.encrypted)) {
           // fallback: 无 preflight token 时弹窗 (兼容直接路由进入的旧路径)
           keyPassphrase = await this.promptPassphrase();
-          if (!this.isPageGenerationActive(pageGeneration)) { return; }
+          if (!this.isSshBindingActive(pageGeneration, bindingGeneration, bindingHostId)) { return; }
         }
       }
-      if (!this.isPageGenerationActive(pageGeneration)) { return; }
+      if (!this.isSshBindingActive(pageGeneration, bindingGeneration, bindingHostId)) { return; }
 
       const cfg: SessionConfig = {
         protocol: 'ssh',
@@ -3062,11 +3314,13 @@ struct SshTerminal {
         authMethod: useKey ? 'publickey' : 'password',
         privateKeyPem: useKey ? keyData : '',
         privateKeyPassphrase: keyPassphrase,
-        expectedHostKeyRawBase64: this.preflightExpectedHostKeyRaw || host.sshHostKeyRawBase64,
-        expectedHostKeyFingerprintSha256: this.preflightExpectedHostKeyFp || host.sshHostKeyFingerprintSha256
+        expectedHostKeyRawBase64: (preflightMatchesHost ? this.preflightExpectedHostKeyRaw : '') ||
+          host.sshHostKeyRawBase64,
+        expectedHostKeyFingerprintSha256: (preflightMatchesHost ? this.preflightExpectedHostKeyFp : '') ||
+          host.sshHostKeyFingerprintSha256
       };
       const connectedSessionId: number = await this.loader.connectSshAsync(cfg);
-      if (!this.isPageGenerationActive(pageGeneration)) {
+      if (!this.isSshBindingActive(pageGeneration, bindingGeneration, bindingHostId)) {
         // ExtensionLoader cancels an in-flight connect during page teardown;
         // only disconnect a resolved session if it is still the current one.
         if (connectedSessionId > 0) { this.loader.disconnectSshSession(connectedSessionId); }
@@ -3077,41 +3331,53 @@ struct SshTerminal {
       if (connectedSessionId <= 0) {
         throw new Error('连接失败 (code=' + connectedSessionId.toString() + ')');
       }
-      if (!await this.attachSshSession(pageGeneration, connectedSessionId)) {
-        if (this.isPageGenerationActive(pageGeneration)) {
+      if (!await this.attachSshSession(
+        pageGeneration, bindingGeneration, connectedSessionId, bindingHostId)) {
+        if (this.isSshBindingActive(pageGeneration, bindingGeneration, bindingHostId)) {
           throw new Error('SSH 会话重新绑定失败');
         }
         return;
       }
     } catch (err) {
       const msg: string = (err as Error).message || 'SSH 连接失败';
-      if (!this.isPageGenerationActive(pageGeneration)) { return; }
+      if (!this.isSshBindingActive(pageGeneration, bindingGeneration, bindingHostId)) { return; }
       this.connecting = false;
-      await this.srv.updateConnectionHealth(this.hostId, -1, false);
-      if (!this.isPageGenerationActive(pageGeneration)) { return; }
+      await this.srv.updateConnectionHealth(bindingHostId, -1, false);
+      if (!this.isSshBindingActive(pageGeneration, bindingGeneration, bindingHostId)) { return; }
       hilog.error(0x0001, 'SshTerminal', '[connect] 异常: ' + msg);
       this.connectionError = msg;
-      this.sshTabStore.update(this.hostId, 'error', -1, msg);
+      this.sshTabStore.update(bindingHostId, 'error', -1, msg);
       this.refreshSshTabViews();
     }
   }
 
   /** Bind page-owned rendering/input state to a live native SSH session. */
-  private async attachSshSession(pageGeneration: number, connectedSessionId: number): Promise<boolean> {
-    if (connectedSessionId <= 0 || !this.isPageGenerationActive(pageGeneration)) { return false; }
+  private async attachSshSession(pageGeneration: number, bindingGeneration: number,
+    connectedSessionId: number, bindingHostId: string): Promise<boolean> {
+    if (connectedSessionId <= 0 ||
+      !this.isSshBindingActive(pageGeneration, bindingGeneration, bindingHostId)) { return false; }
     this.sessionId = connectedSessionId;
     const sessionGeneration: number = this.loader.getSshTerminalDiagnostics(
       connectedSessionId).sessionGeneration;
-    if (!this.isPageGenerationActive(pageGeneration)) {
+    if (!this.isSshBindingActive(pageGeneration, bindingGeneration, bindingHostId)) {
       this.loader.disconnectSshSession(connectedSessionId);
       this.sessionId = -1;
       return false;
     }
     this.sshSessionGeneration = sessionGeneration;
-    this.sshTabStore.update(this.hostId, 'connected', connectedSessionId);
+    this.sshTabStore.update(bindingHostId, 'connected', connectedSessionId);
     this.refreshSshTabViews();
-    await this.srv.updateLastConnected(this.hostId);
-    if (!this.isPageGenerationActive(pageGeneration) || this.sessionId !== connectedSessionId) {
+    try {
+      await this.srv.updateLastConnected(bindingHostId);
+    } catch (err) {
+      // Last-connected persistence is ancillary to the live binding. A cloud
+      // or database hiccup must not leave a successfully adopted SSH session
+      // stuck behind the loading view.
+      hilog.warn(0x0001, 'SshTerminal',
+        '[tab] last-connected persistence failed: ' + JSON.stringify(err));
+    }
+    if (!this.isSshBindingActive(pageGeneration, bindingGeneration, bindingHostId) ||
+      this.sessionId !== connectedSessionId) {
       this.loader.disconnectSshSession(connectedSessionId);
       this.sessionId = -1;
       return false;
@@ -3120,7 +3386,7 @@ struct SshTerminal {
     let dataChunkCount: number = 0;
     this.loader.setOnDataCallback(connectedSessionId, (data: ArrayBuffer): void => {
       if (!data || data.byteLength === 0 ||
-        !this.isPageGenerationActive(pageGeneration) ||
+        !this.isSshBindingActive(pageGeneration, bindingGeneration, bindingHostId) ||
         this.sessionId !== connectedSessionId ||
         this.sshSessionGeneration !== sessionGeneration) { return; }
       dataChunkCount++;
@@ -3134,29 +3400,40 @@ struct SshTerminal {
     if (!this.loader.resumeSshSession(connectedSessionId)) {
       this.loader.disconnectSshSession(connectedSessionId);
       this.sessionId = -1;
+      this.terminalSurfaceMounted = false;
+      this.xtermReady = false;
       this.connected = false;
       this.connecting = false;
       return false;
     }
 
     this.sftpTaskEngine.attachSession({
-      hostId: this.hostId,
+      hostId: bindingHostId,
       sessionId: connectedSessionId,
       generation: sessionGeneration
     });
+
+    if (!this.isSshBindingActive(pageGeneration, bindingGeneration, bindingHostId) ||
+      this.sessionId !== connectedSessionId) {
+      this.loader.disconnectSshSession(connectedSessionId);
+      this.sessionId = -1;
+      return false;
+    }
 
     // Do not advertise a session as connected until the page-owned callback
     // and the detached-session resume gate are both installed. This keeps an
     // Ability exit during the preceding await from starting PiP for a session
     // that was never fully rebound to the page.
+    this.terminalSurfaceMounted = true;
     this.connected = true;
     this.connecting = false;
     this.startLatencyProbe();
-    void this.prepareSshPip(pageGeneration);
+    void this.prepareSshPip(pageGeneration, bindingGeneration, bindingHostId);
 
     if (this.isDesktopDevice) {
       setTimeout((): void => {
-        if (this.isPageGenerationActive(pageGeneration) && this.sessionId === connectedSessionId) {
+        if (this.isSshBindingActive(pageGeneration, bindingGeneration, bindingHostId) &&
+          this.sessionId === connectedSessionId) {
           this.focusKeyboard();
         }
       }, 100);
@@ -3174,8 +3451,10 @@ struct SshTerminal {
     };
   }
 
-  private async prepareSshPip(pageGeneration: number): Promise<void> {
-    if (!this.isPageGenerationActive(pageGeneration) || this.sessionId <= 0) {
+  private async prepareSshPip(pageGeneration: number, bindingGeneration: number,
+    bindingHostId: string): Promise<void> {
+    if (!this.isSshBindingActive(pageGeneration, bindingGeneration, bindingHostId) ||
+      this.sessionId <= 0) {
       return;
     }
     try {
@@ -3185,7 +3464,7 @@ struct SshTerminal {
         context, this.makeSshPipInfo(), (reason: string): void => {
           hilog.info(0x0017, 'SshTerminal', 'SSH PiP stopped reason=' + reason);
         });
-      if (prepared && this.isPageGenerationActive(pageGeneration)) {
+      if (prepared && this.isSshBindingActive(pageGeneration, bindingGeneration, bindingHostId)) {
         hilog.info(0x0017, 'SshTerminal', 'SSH PiP prepared session=' + this.sessionId.toString());
       }
     } catch (err) {
@@ -3195,6 +3474,9 @@ struct SshTerminal {
 
   private async retryConnection(): Promise<void> {
     if (this.terminalClosing || this.connecting || this.hostId.length === 0) { return; }
+    const pageGeneration: number = this.pageGeneration;
+    const bindingHostId: string = this.hostId;
+    const bindingGeneration: number = ++this.sshBindingGeneration;
     const host: RemoteHost | undefined = this.srv.getHost(this.hostId);
     if (!host) {
       this.connectionError = '主机记录不存在';
@@ -3202,6 +3484,9 @@ struct SshTerminal {
     }
     this.connecting = true;
     this.connectionError = '';
+    this.terminalSurfaceGeneration = this.terminalSurfaceGeneration + 1;
+    this.terminalSurfaceMounted = false;
+    this.xtermReady = false;
     this.sshTabStore.update(this.hostId, 'connecting');
     this.refreshSshTabViews();
     this.terminalOutputQueueOverflowed = false;
@@ -3222,7 +3507,8 @@ struct SshTerminal {
     this.sessionId = -1;
     this.sshSessionGeneration = 0;
     this.connected = false;
-    await this.connect(host);
+    if (!this.isSshBindingActive(pageGeneration, bindingGeneration, bindingHostId)) { return; }
+    await this.connect(host, pageGeneration, bindingGeneration);
   }
 
   /** Explicit page exit owns the SSH session; ordinary page disposal only detaches the view. */
@@ -3291,6 +3577,28 @@ struct SshTerminal {
     this.sendTerminalBytes(encoded, this.isTerminalControlSequence(encoded));
   }
 
+  /** xterm owns physical keyboard/IME encoding; forward its wire bytes as-is. */
+  private onXtermData(data: string): void {
+    if (data.length === 0) { return; }
+    this.sendTerminalBytes(data, this.isTerminalControlSequence(data));
+  }
+
+  private onXtermReady(): void {
+    if (!this.terminalClosing) {
+      this.xtermReady = true;
+      this.focusKeyboard(false);
+    }
+  }
+
+  private onXtermResize(cols: number, rows: number): void {
+    const nextCols: number = Math.max(20, Math.min(300, Math.floor(cols)));
+    const nextRows: number = Math.max(3, Math.min(80, Math.floor(rows)));
+    if (nextCols === this.termCols && nextRows === this.termRows) { return; }
+    this.termCols = nextCols;
+    this.termRows = nextRows;
+    this.schedulePtyResize();
+  }
+
   private setVirtualModifier(modifier: string, active: boolean): void {
     if (modifier === 'ctrl') { this.ctrlActive = active; }
     else if (modifier === 'alt') { this.altActive = active; }
@@ -3302,6 +3610,9 @@ struct SshTerminal {
     if (openSoftwareKeyboard && this.virtualKeyBarVisible()) {
       this.softKeyboardRequested = true;
     }
+    // ArkWeb's helper textarea is not a reliable HarmonyOS IME anchor. Keep
+    // the existing native TextInput as the single input owner after xterm is
+    // ready; its key/IME policy handles both physical and virtual keyboards.
     try {
       this.getUIContext().getFocusController().requestFocus('sshKbInput');
     } catch (_e) {
@@ -5912,6 +6223,7 @@ struct SshTerminal {
         .backgroundColor(this.chromeChipBg())
       }
       .width('100%')
+      .justifyContent(FlexAlign.Start)
       .height(this.headerHeight())
       .padding({ left: 10, right: 16, top: 6 + this.headerTopOffset(), bottom: 6 })
       .backgroundColor(this.chromeBg())
@@ -5922,9 +6234,9 @@ struct SshTerminal {
       })
 
       // 加载/错误态
-      if (!this.connected) {
+      if (!this.connected || !this.terminalSurfaceMounted) {
         Column() {
-          if (this.connecting) {
+          if (this.connecting || (this.connected && !this.terminalSurfaceMounted)) {
             LoadingProgress().width(32).height(32).color(this.accentColor)
             Text('Connecting...').fontSize(13).fontColor('#888').margin({ top: 10 })
           } else {
@@ -5939,31 +6251,32 @@ struct SshTerminal {
         Stack({ alignContent: Alignment.TopStart }) {
           // 终端内容顶部对齐, 虚拟键栏通过 position 绝对定位在底部
           Stack({ alignContent: Alignment.TopStart }) {
-            SshTerminalSurface({
-              coreKey: this.hostId,
+            SshXtermSurface({
+              coreKey: this.hostId + ':' + this.terminalSurfaceGeneration.toString(),
               cols: this.termCols,
               rows: this.termRows,
               viewportWidth: this.termAreaW,
-              cellWvp: this.cellWvp,
-              cellHvp: this.cellHvp,
-              fontSize: this.renderFontVp,
-              viewportHeight: this.terminalPaneHeight(),
-              visibleViewportHeight: this.terminalRowsViewportHeight(),
-              inputBuffer: this.terminalInputBuffer,
-              inputSequence: this.termOutputSequence,
-              selectMode: this.selectMode,
+              fontSize: this.fontSize,
+              lineSpacing: normalizeSshTerminalLineSpacing(this.lineSpacing),
               bottomAlignSparseContent: !this.isDesktopDevice,
+              viewportHeight: this.terminalPaneHeight(),
+              outputBuffer: this.xtermOutputBuffer,
+              outputSequence: this.termOutputSequence,
+              focusRequest: this.terminalFocusRequest,
               copyRequest: this.copyRequest,
               copiedText: this.copiedText,
               scrollToBottomRequest: this.scrollToBottomRequest,
               forceScrollToBottomRequest: this.forceScrollToBottomRequest,
               externalScrollLines: this.terminalExternalScrollLines,
               externalScrollRequest: this.terminalExternalScrollRequest,
-              onData: (data: string): void => { this.onTerminalData(data); },
-              onTerminalModeChange: (mode: TerminalCoreMode): void => {
-                this.onTerminalModeChange(mode);
-              }
+              onData: (data: string): void => { this.onXtermData(data); },
+              onResize: (cols: number, rows: number): void => {
+                this.onXtermResize(cols, rows);
+              },
+              onReady: (): void => { this.onXtermReady(); }
             })
+            .width('100%')
+            .height(this.terminalPaneHeight())
 
             // 隐藏 TextInput — 1×1 可点击, 软键盘锚点
             TextInput({ text: this.kbInput, controller: this.kbCtrl })
@@ -5980,9 +6293,11 @@ struct SshTerminal {
               .caretColor('#00000000')
               .border({ width: 0 })
               .width(1).height(1)
+              .opacity(0)
+              .position({ x: 0, y: 0 })
               .hitTestBehavior(HitTestMode.Transparent)  // 透明命中, 不拦截父 onClick
-              .defaultFocus(this.isDesktopDevice || this.physicalKeyboardConnected ||
-                (this.breakpoint !== 'sm' && this.sshInputMode === 2))
+              .defaultFocus(!this.xtermReady && (this.isDesktopDevice || this.physicalKeyboardConnected ||
+                (this.breakpoint !== 'sm' && this.sshInputMode === 2)))
               .focusOnTouch(true)
               .enableKeyboardOnFocus(!this.isDesktopDevice && this.virtualKeyBarVisible() &&
                 (!this.physicalKeyboardConnected || this.softKeyboardRequested))
@@ -6070,8 +6385,8 @@ struct SshTerminal {
               })
           }
           .width('100%')
-          .height(this.terminalPaneHeight())
-          .position({ x: 0, y: this.terminalCanvasOffsetY() })
+          .height(this.shellViewportHeight())
+          .position({ x: 0, y: 0 })
           .onClick(() => {
             // 点击终端显式进入终端焦点；移动端同时请求软键盘。
             this.focusKeyboard(this.virtualKeyBarVisible());
@@ -6101,47 +6416,6 @@ struct SshTerminal {
             }
           })
           .bindContextMenu(this.TermMenu(), ResponseType.LongPress)
-
-          if (!this.selectMode) {
-            Stack() {
-              Text(' ')
-                .width('100%')
-                .height('100%')
-                .fontSize(1)
-                .fontColor('rgba(0,0,0,0.01)')
-            }
-            .width('100%')
-            .height(this.terminalPaneHeight())
-            .position({ x: 0, y: this.terminalCanvasOffsetY() })
-            .backgroundColor('rgba(0,0,0,0.01)')
-            .zIndex(10)
-            .hitTestBehavior(this.showSftpPanel && this.sftpWideLayout()
-              ? HitTestMode.Transparent : HitTestMode.Block)
-            .onMouse(this.handleTerminalMouse)
-            .onAxisEvent(this.handleTerminalAxis)
-            .gesture(
-              GestureGroup(GestureMode.Exclusive,
-                TapGesture({ count: 1 })
-                  .onAction((): void => {
-                    this.focusKeyboard(this.virtualKeyBarVisible());
-                  }),
-                PanGesture({ direction: PanDirection.Vertical, distance: 2 })
-                  .onActionStart((event: GestureEvent): void => {
-                    this.handleTerminalPanStart(event);
-                  })
-                  .onActionUpdate((event: GestureEvent): void => {
-                    this.handleTerminalPanUpdate(event);
-                  })
-                  .onActionEnd((): void => {
-                    this.handleTerminalPanEnd();
-                  })
-                  .onActionCancel((): void => {
-                    this.handleTerminalPanEnd();
-                  })
-              )
-            )
-            .bindContextMenu(this.TermMenu(), ResponseType.LongPress)
-          }
 
           // 虚拟键盘栏 — 仅手机/平板, 悬浮到系统键盘或导航栏上边缘。
           if (this.virtualKeyBarVisible()) {

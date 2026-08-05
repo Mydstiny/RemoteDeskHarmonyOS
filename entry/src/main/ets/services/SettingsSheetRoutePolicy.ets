@@ -21,6 +21,7 @@ export const SETTINGS_SHEET_VNC_GATEWAY: number = 19;
 export const SETTINGS_SHEET_VNC_INPUT: number = 20;
 export const SETTINGS_SHEET_VNC_PERFORMANCE: number = 21;
 export const SETTINGS_SHEET_VNC_CLIPBOARD: number = 22;
+export const SETTINGS_SHEET_TERMINAL_LINE_SPACING: number = 23;
 
 export const SETTINGS_PANEL_DISMISS_TO_LEAF_OPEN_MS: number = 360;
 

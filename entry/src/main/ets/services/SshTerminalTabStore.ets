@@ -27,6 +27,7 @@ export class SshTerminalTabStore {
   private static instance: SshTerminalTabStore;
   private records: Map<string, SshTerminalTabRecord> = new Map<string, SshTerminalTabRecord>();
   private activeHostId: string = '';
+  private pendingNavigationHostId: string = '';
   private listeners: Array<() => void> = [];
 
   static getInstance(): SshTerminalTabStore {
@@ -83,6 +84,28 @@ export class SshTerminalTabStore {
     this.notify();
   }
 
+  beginNavigation(hostId: string): boolean {
+    const normalizedHostId: string = hostId.trim();
+    if (normalizedHostId.length === 0 || this.pendingNavigationHostId.length > 0) { return false; }
+    this.pendingNavigationHostId = normalizedHostId;
+    return true;
+  }
+
+  isNavigationPending(): boolean {
+    return this.pendingNavigationHostId.length > 0;
+  }
+
+  cancelNavigation(hostId: string): void {
+    const normalizedHostId: string = hostId.trim();
+    if (normalizedHostId.length === 0 || this.pendingNavigationHostId === normalizedHostId) {
+      this.pendingNavigationHostId = '';
+    }
+  }
+
+  completeNavigation(): void {
+    this.pendingNavigationHostId = '';
+  }
+
   update(hostId: string, state: SshTerminalTabState, sessionId: number = -1,
     error: string = ''): void {
     const record: SshTerminalTabRecord | undefined = this.records.get(hostId);
@@ -129,6 +152,7 @@ export class SshTerminalTabStore {
     const sessionIds: number[] = this.sessionIds();
     this.records.clear();
     this.activeHostId = '';
+    this.pendingNavigationHostId = '';
     this.notify();
     return sessionIds;
   }

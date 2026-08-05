@@ -17,6 +17,7 @@
 #include <cstdint>
 #include <mutex>
 #include <string>
+#include <vector>
 
 struct OH_Drawing_Brush;
 struct OH_Drawing_Canvas;
@@ -40,6 +41,8 @@ public:
              float fontSizePx, uint32_t foreground, uint32_t background,
              float viewportHeightPx, float visibleHeightPx, bool bottomAlign);
     int RebindSurface(const std::string& surfaceId, int widthPx, int heightPx);
+    /** Release only the native surface; keep the VT core and its scrollback. */
+    void DetachSurface();
     void Destroy();
 
     bool IsReady() const;
@@ -65,8 +68,10 @@ public:
 private:
     bool InitGraphics(const std::string& surfaceId, int widthPx, int heightPx);
     void DestroyGraphics();
+    bool CanDraw() const;
     void RenderFull();
-    void DrawSnapshot(const FfiTerminalSnapshot* snapshot);
+    void RenderDirty();
+    void DrawSnapshot(const FfiTerminalSnapshot* snapshot, bool fullFrame);
     float GridTop(const FfiTerminalSnapshot* snapshot) const;
     OH_Drawing_Font* FontForCell(bool bold, bool italic) const;
     void RecreateFonts();
@@ -103,6 +108,11 @@ private:
     uint32_t foreground_ = 0xFFE8EAED;
     uint32_t background_ = 0xFF0D0D0D;
     Mode mode_;
+    bool hasRenderedFrame_ = false;
+    float lastGridTop_ = 0.0F;
+    int lastCursorRow_ = -1;
+    int lastCursorColumn_ = -1;
+    bool lastCursorVisible_ = false;
 };
 
 namespace SshTerminalRendererNapi {

@@ -77,6 +77,7 @@ int SshTerminalRenderer::Init(const std::string& surfaceId, int widthPx, int hei
         return -3;
     }
     ready_ = true;
+    hasRenderedFrame_ = false;
     RenderFull();
     OH_LOG_INFO(LOG_APP, "[SSH] Native Drawing renderer initialized %{public}zux%{public}zu",
                 cols_, rows_);
@@ -94,8 +95,18 @@ int SshTerminalRenderer::RebindSurface(const std::string& surfaceId, int widthPx
         return -2;
     }
     ready_ = true;
+    hasRenderedFrame_ = false;
     RenderFull();
     return 0;
+}
+
+void SshTerminalRenderer::DetachSurface() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    ready_ = false;
+    hasRenderedFrame_ = false;
+    // The terminal core deliberately survives this call. A hidden SSH tab
+    // must continue parsing output while its XComponent surface is gone.
+    DestroyGraphics();
 }
 
 void SshTerminalRenderer::Destroy() {
@@ -115,11 +126,13 @@ bool SshTerminalRenderer::IsReady() const {
 
 void SshTerminalRenderer::WriteBytes(const uint8_t* data, std::size_t length) {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (!ready_ || terminal_ == nullptr || data == nullptr || length == 0) {
+    if (terminal_ == nullptr || data == nullptr || length == 0) {
         return;
     }
     terminal_core_write(terminal_, data, length);
-    RenderFull();
+    if (ready_) {
+        RenderDirty();
+    }
 }
 
 void SshTerminalRenderer::Resize(std::size_t cols, std::size_t rows, float cellWpx,
@@ -134,7 +147,9 @@ void SshTerminalRenderer::Resize(std::size_t cols, std::size_t rows, float cellW
         terminal_core_resize(terminal_, cols_, rows_);
     }
     RecreateFonts();
-    RenderFull();
+    if (ready_) {
+        RenderFull();
+    }
 }
 
 void SshTerminalRenderer::SetAppearance(float fontSizePx, uint32_t foreground,
@@ -149,7 +164,9 @@ void SshTerminalRenderer::SetAppearance(float fontSizePx, uint32_t foreground,
         terminal_core_set_default_foreground(terminal_, foreground_);
     }
     RecreateFonts();
-    RenderFull();
+    if (ready_) {
+        RenderFull();
+    }
 }
 
 void SshTerminalRenderer::SetViewport(float viewportHeightPx, float visibleHeightPx,
@@ -158,25 +175,31 @@ void SshTerminalRenderer::SetViewport(float viewportHeightPx, float visibleHeigh
     viewportHeightPx_ = std::max(0.0F, viewportHeightPx);
     visibleHeightPx_ = std::max(0.0F, visibleHeightPx);
     bottomAlign_ = bottomAlign;
-    RenderFull();
+    if (ready_) {
+        RenderFull();
+    }
 }
 
 void SshTerminalRenderer::ScrollView(int64_t deltaLines) {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (!ready_ || terminal_ == nullptr) {
+    if (terminal_ == nullptr) {
         return;
     }
     terminal_core_scroll_view(terminal_, deltaLines);
-    RenderFull();
+    if (ready_) {
+        RenderFull();
+    }
 }
 
 void SshTerminalRenderer::ScrollToBottom() {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (!ready_ || terminal_ == nullptr) {
+    if (terminal_ == nullptr) {
         return;
     }
     terminal_core_scroll_to_bottom(terminal_);
-    RenderFull();
+    if (ready_) {
+        RenderFull();
+    }
 }
 
 std::string SshTerminalRenderer::Content() const {
@@ -352,8 +375,21 @@ void SshTerminalRenderer::DestroyGraphics() {
     }
 }
 
+bool SshTerminalRenderer::CanDraw() const {
+    if (!ready_ || terminal_ == nullptr || canvas_ == nullptr || drawingSurface_ == nullptr ||
+        eglDisplay_ == EGL_NO_DISPLAY || eglContext_ == EGL_NO_CONTEXT ||
+        eglSurface_ == EGL_NO_SURFACE) {
+        return false;
+    }
+    // OH_Drawing_SurfaceFlush can abort when an XComponent surface has already
+    // lost its EGL binding. Treat that state as detached until ArkUI provides a
+    // new surface instead of touching the stale GPU object.
+    return eglGetCurrentContext() == eglContext_ &&
+        eglGetCurrentSurface(EGL_DRAW) == eglSurface_;
+}
+
 void SshTerminalRenderer::RenderFull() {
-    if (!ready_ || terminal_ == nullptr || canvas_ == nullptr) {
+    if (!CanDraw()) {
         return;
     }
     FfiTerminalSnapshot* snapshot = terminal_core_snapshot(terminal_);
@@ -366,7 +402,25 @@ void SshTerminalRenderer::RenderFull() {
     mode_.applicationCursorKeys = snapshot->application_cursor_keys;
     mode_.applicationKeypad = snapshot->application_keypad;
     mode_.autoWrap = snapshot->auto_wrap;
-    DrawSnapshot(snapshot);
+    DrawSnapshot(snapshot, true);
+    terminal_core_free_snapshot(snapshot);
+}
+
+void SshTerminalRenderer::RenderDirty() {
+    if (!CanDraw()) {
+        return;
+    }
+    FfiTerminalSnapshot* snapshot = terminal_core_dirty_snapshot(terminal_);
+    if (snapshot == nullptr) {
+        return;
+    }
+    mode_.bracketedPaste = snapshot->bracketed_paste;
+    mode_.mouseTracking = snapshot->mouse_tracking;
+    mode_.sgrMouse = snapshot->sgr_mouse;
+    mode_.applicationCursorKeys = snapshot->application_cursor_keys;
+    mode_.applicationKeypad = snapshot->application_keypad;
+    mode_.autoWrap = snapshot->auto_wrap;
+    DrawSnapshot(snapshot, false);
     terminal_core_free_snapshot(snapshot);
 }
 
@@ -375,17 +429,71 @@ SshTerminalRenderer::Mode SshTerminalRenderer::CurrentMode() const {
     return mode_;
 }
 
-void SshTerminalRenderer::DrawSnapshot(const FfiTerminalSnapshot* snapshot) {
-    if (snapshot == nullptr || canvas_ == nullptr || brush_ == nullptr || rect_ == nullptr) {
+void SshTerminalRenderer::DrawSnapshot(const FfiTerminalSnapshot* snapshot, bool fullFrame) {
+    if (snapshot == nullptr || !CanDraw() || brush_ == nullptr || rect_ == nullptr ||
+        fonts_[0] == nullptr || snapshot->rows == 0 || snapshot->cols == 0) {
         return;
     }
-    OH_Drawing_CanvasClear(canvas_, background_);
     const float top = GridTop(snapshot);
+    const bool gridMoved = !hasRenderedFrame_ || std::fabs(top - lastGridTop_) > 0.5F;
+    const bool repaintFull = fullFrame || gridMoved || snapshot->cols != cols_ || snapshot->rows != rows_;
+
+    const int currentCursorRow = snapshot->cursor_visible &&
+        snapshot->cursor_x < snapshot->cols && snapshot->cursor_y < snapshot->rows
+        ? static_cast<int>(snapshot->screen_top + snapshot->cursor_y) -
+            static_cast<int>(snapshot->view_top)
+        : -1;
+    const int currentCursorColumn = snapshot->cursor_visible &&
+        snapshot->cursor_x < snapshot->cols ? static_cast<int>(snapshot->cursor_x) : -1;
+    const bool cursorChanged = currentCursorRow != lastCursorRow_ ||
+        currentCursorColumn != lastCursorColumn_ ||
+        snapshot->cursor_visible != lastCursorVisible_;
+
+    std::vector<std::size_t> rowsToDraw;
+    rowsToDraw.reserve(repaintFull ? snapshot->rows : snapshot->dirty_rows_len + 2);
+    const auto appendRow = [&rowsToDraw, snapshot](int row) {
+        if (row < 0 || static_cast<std::size_t>(row) >= snapshot->rows) {
+            return;
+        }
+        const std::size_t normalized = static_cast<std::size_t>(row);
+        if (std::find(rowsToDraw.begin(), rowsToDraw.end(), normalized) == rowsToDraw.end()) {
+            rowsToDraw.push_back(normalized);
+        }
+    };
+    if (repaintFull) {
+        for (std::size_t row = 0; row < snapshot->rows; ++row) {
+            rowsToDraw.push_back(row);
+        }
+        OH_Drawing_CanvasClear(canvas_, background_);
+    } else {
+        for (std::size_t index = 0; index < snapshot->dirty_rows_len; ++index) {
+            if (snapshot->dirty_rows_ptr != nullptr) {
+                appendRow(static_cast<int>(snapshot->dirty_rows_ptr[index]));
+            }
+        }
+        if (cursorChanged) {
+            appendRow(lastCursorRow_);
+            appendRow(currentCursorRow);
+        }
+        if (rowsToDraw.empty()) {
+            lastGridTop_ = top;
+            return;
+        }
+    }
+
     OH_Drawing_Font_Metrics metrics {};
     OH_Drawing_FontGetMetrics(fonts_[0], &metrics);
     const float baselineOffset = (cellHpx_ - (metrics.descent - metrics.ascent)) * 0.5F - metrics.ascent;
-    for (std::size_t row = 0; row < snapshot->rows; ++row) {
+    for (const std::size_t row : rowsToDraw) {
         const float y = top + static_cast<float>(row) * cellHpx_;
+        if (!repaintFull) {
+            SetBrushColor(background_);
+            OH_Drawing_RectSetLeft(rect_, 0.0F);
+            OH_Drawing_RectSetTop(rect_, y);
+            OH_Drawing_RectSetRight(rect_, static_cast<float>(snapshot->cols) * cellWpx_);
+            OH_Drawing_RectSetBottom(rect_, y + cellHpx_);
+            OH_Drawing_CanvasDrawRect(canvas_, rect_);
+        }
         for (std::size_t col = 0; col < snapshot->cols; ++col) {
             const std::size_t index = row * snapshot->cols + col;
             if (index >= snapshot->cells_len) {
@@ -430,11 +538,9 @@ void SshTerminalRenderer::DrawSnapshot(const FfiTerminalSnapshot* snapshot) {
             }
         }
     }
-    if (snapshot->cursor_visible && snapshot->cursor_y < snapshot->rows &&
-        snapshot->cursor_x < snapshot->cols) {
-        const float cursorY = static_cast<float>(snapshot->screen_top + snapshot->cursor_y) -
-            static_cast<float>(snapshot->view_top);
-        if (cursorY >= 0.0F && cursorY < static_cast<float>(snapshot->rows)) {
+    if (currentCursorRow >= 0 && currentCursorRow < static_cast<int>(snapshot->rows)) {
+        const float cursorY = static_cast<float>(currentCursorRow);
+        if (snapshot->cursor_visible) {
             SetBrushColor(foreground_);
             const float cursorX = static_cast<float>(snapshot->cursor_x) * cellWpx_;
             OH_Drawing_RectSetLeft(rect_, cursorX + 1.0F);
@@ -445,7 +551,15 @@ void SshTerminalRenderer::DrawSnapshot(const FfiTerminalSnapshot* snapshot) {
             OH_Drawing_CanvasDrawRect(canvas_, rect_);
         }
     }
-    if (drawingSurface_ != nullptr) {
+    lastGridTop_ = top;
+    lastCursorRow_ = currentCursorRow;
+    lastCursorColumn_ = currentCursorColumn;
+    lastCursorVisible_ = snapshot->cursor_visible;
+    hasRenderedFrame_ = true;
+    if (drawingSurface_ != nullptr && eglDisplay_ != EGL_NO_DISPLAY &&
+        eglContext_ != EGL_NO_CONTEXT && eglSurface_ != EGL_NO_SURFACE &&
+        eglGetCurrentContext() == eglContext_ &&
+        eglGetCurrentSurface(EGL_DRAW) == eglSurface_) {
         (void)OH_Drawing_SurfaceFlush(drawingSurface_);
     }
 }

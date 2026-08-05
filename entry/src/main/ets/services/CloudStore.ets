@@ -119,10 +119,12 @@ import {
 import {
   SSH_LEGACY_FONT_SIZE_KEY,
   SSH_LEGACY_FOREGROUND_COLOR_KEY,
+  SSH_LEGACY_LINE_SPACING_KEY,
   SSH_SETTINGS_SCHEMA_VERSION,
   SSH_SETTINGS_SCHEMA_VERSION_KEY,
   SSH_TERMINAL_FONT_SIZE_KEY,
   SSH_TERMINAL_FOREGROUND_COLOR_KEY,
+  SSH_TERMINAL_LINE_SPACING_KEY,
   SshTerminalAppearance,
   hasSshTerminalAppearanceCloudSettings,
   isSshTerminalAppearanceKey,
@@ -3939,11 +3941,15 @@ export class CloudStore implements CryptoCloudStore {
       const storedLegacySshColor: Object = prefs.getSync(SSH_LEGACY_FOREGROUND_COLOR_KEY, '') as Object;
       const storedSshFontSize: Object = prefs.getSync(SSH_TERMINAL_FONT_SIZE_KEY, 0) as Object;
       const storedLegacySshFontSize: Object = prefs.getSync(SSH_LEGACY_FONT_SIZE_KEY, 0) as Object;
+      const storedSshLineSpacing: Object = prefs.getSync(SSH_TERMINAL_LINE_SPACING_KEY, 0) as Object;
+      const storedLegacySshLineSpacing: Object = prefs.getSync(SSH_LEGACY_LINE_SPACING_KEY, 0) as Object;
       const currentSshAppearance: SshTerminalAppearance = resolveSshTerminalAppearance(
         typeof storedSshColor === 'string' ? storedSshColor as string : '',
         typeof storedLegacySshColor === 'string' ? storedLegacySshColor as string : '',
         typeof storedSshFontSize === 'number' ? storedSshFontSize as number : 0,
-        typeof storedLegacySshFontSize === 'number' ? storedLegacySshFontSize as number : 0
+        typeof storedLegacySshFontSize === 'number' ? storedLegacySshFontSize as number : 0,
+        typeof storedSshLineSpacing === 'number' ? storedSshLineSpacing as number : 0,
+        typeof storedLegacySshLineSpacing === 'number' ? storedLegacySshLineSpacing as number : 0
       );
       const hasSshSettings: boolean = hasSshTerminalAppearanceCloudSettings(settings);
       const nextSshAppearance: SshTerminalAppearance = hasSshSettings
@@ -3960,13 +3966,17 @@ export class CloudStore implements CryptoCloudStore {
       if (hasSshSettings) {
         prefs.putSync(SSH_TERMINAL_FOREGROUND_COLOR_KEY, nextSshAppearance.foregroundColor);
         prefs.putSync(SSH_TERMINAL_FONT_SIZE_KEY, nextSshAppearance.fontSize);
+        prefs.putSync(SSH_TERMINAL_LINE_SPACING_KEY, nextSshAppearance.lineSpacing);
         prefs.putSync(SSH_LEGACY_FOREGROUND_COLOR_KEY, nextSshAppearance.foregroundColor);
         prefs.putSync(SSH_LEGACY_FONT_SIZE_KEY, nextSshAppearance.fontSize);
+        prefs.putSync(SSH_LEGACY_LINE_SPACING_KEY, nextSshAppearance.lineSpacing);
         prefs.putSync(SSH_SETTINGS_SCHEMA_VERSION_KEY, SSH_SETTINGS_SCHEMA_VERSION);
         AppStorage.setOrCreate(SSH_TERMINAL_FOREGROUND_COLOR_KEY, nextSshAppearance.foregroundColor);
         AppStorage.setOrCreate(SSH_TERMINAL_FONT_SIZE_KEY, nextSshAppearance.fontSize);
+        AppStorage.setOrCreate(SSH_TERMINAL_LINE_SPACING_KEY, nextSshAppearance.lineSpacing);
         AppStorage.setOrCreate(SSH_LEGACY_FOREGROUND_COLOR_KEY, nextSshAppearance.foregroundColor);
         AppStorage.setOrCreate(SSH_LEGACY_FONT_SIZE_KEY, nextSshAppearance.fontSize);
+        AppStorage.setOrCreate(SSH_LEGACY_LINE_SPACING_KEY, nextSshAppearance.lineSpacing);
       }
       prefs.flushSync();
     } catch (err) {

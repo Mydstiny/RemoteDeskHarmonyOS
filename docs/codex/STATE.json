@@ -3,16 +3,17 @@
   "task": "ssh-terminal-complete-upgrade",
   "branch": "codex/ssh-terminal-complete-upgrade",
   "base": "d2769ad4b",
-  "head": "4a7642d83c35f15f391412e653c6a2e11a7f5025",
-  "phase": "alacritty-core-vt-parity-device-acceptance-ready",
+  "head": "f4251835ef97e585adc700494f184ecb87775a13",
+  "phase": "alacritty-core-vt-parity-code-only-host-switch-initial-ui-refresh-ready",
   "status": "active",
-  "next": "Use the signed 4a7642d HAP for direct user acceptance of IME/physical-keyboard behavior, then keep Level A/B connectivity gated until real endpoints exist.",
+  "next": "Commit and independently review the same-page SSH binding-generation and initial-UI view-remount fix; device validation is deferred per user instruction, then keep Level A/B connectivity gated until real endpoints exist.",
   "blockers": [
     "HDC target 5KLBB25928203528 passed cold SSH, ordered input, 300 KiB output, Home background retention, PiP/re-entry and 90-second idle commands; true external-keyboard and third-party-IME coverage remains open.",
     "ohosTest@OhosTestCompileArkTS is not registered (00306054).",
     "Host native suite has 16 pre-existing VNC TLS fixture startup failures; SSH tests pass.",
     "No bastion/forwarding endpoint is available; ProxyJump and port forwarding remain gated plan items.",
     "No real OpenSSH bastion/ProxyJump, port-forwarding or FRP endpoint is available for interoperability acceptance.",
+    "Current host-switch/initial-UI changes have no new real-device evidence by explicit user instruction; code-level gates are the active acceptance boundary.",
     "Light compliance is blocked by baseline SBOM package totp-reviewed-brand-assets with licenseDeclared=NOASSERTION."
   ],
   "planPaths": [
@@ -20,7 +21,7 @@
     "docs/SSH_TERMINAL_TEST_CASES.md"
   ],
   "review": {
-    "status": "PASS",
+    "status": "REVIEW_REQUIRED",
     "taskId": "ssh_t0_reviewer",
     "scope": [
       "entry/src/main/cpp/extensions/extension_loader_napi.cpp",
@@ -56,8 +57,12 @@
       "entry/src/main/cpp/terminal/terminal_core_napi.cpp",
       "entry/src/main/cpp/terminal/terminal_core_napi.h",
       "entry/src/main/ets/components/NativeTerminalRenderer.ets",
+      "entry/src/main/ets/components/SshXtermSurface.ets",
       "entry/src/main/ets/napi/TerminalCoreBridge.ets",
       "entry/src/main/ets/types/rdpnapi.d.ts",
+      "entry/src/main/ets/services/SshTerminalTabStore.ets",
+      "entry/src/main/ets/services/SshTerminalTranscriptStore.ets",
+      "entry/src/main/resources/rawfile/ssh-terminal/index.html",
       "rustdesk_ffi/Cargo.lock",
       "rustdesk_ffi/Cargo.toml",
       "rustdesk_ffi/src/terminal_core/alacritty_adapter.rs",
@@ -65,14 +70,14 @@
       "rustdesk_ffi/src/terminal_core/mod.rs",
       "rustdesk_ffi/src/terminal_core/tests.rs"
     ],
-    "reason": "Alacritty migration, reactor keepalive, SSH/PiP lifecycle, bounded Canvas consumption and shared VT parity are committed; the existing independent reviewer passed the final output-queue increment and the signed HAP passed the available device acceptance matrix."
+    "reason": "The committed Alacritty/SSH lifecycle scope has a PASS receipt; the current same-page SSH binding-generation and xterm refresh increment is uncommitted and requires independent review."
   },
   "lastVerification": {
     "host_native_tests": "254-pass-16-preexisting-vnc-fixture-startup-failures-270-total-2026-08-04",
     "rust_terminal_core_tests": "focused-alacritty-63-pass-fallback-57-pass-2026-08-04; full-no-default-features-156-pass-1-preexisting-rendezvous-fixture-public-address-failure-157-total",
     "terminalParity": "alacritty-67-pass-fallback-57-pass-unicode-ansi-tui-resize-large-output-damage-2026-08-04",
     "default@OhosTestCompileArkTS": "pass-4a7642d-2026-08-05",
-    "assembleHap": "pass-build-successful-signed-4a7642d-2026-08-05-hap-sha256-313ceb321cc1767ef245d801808e7b1864c0b40c3aa28969324f3d1574d46696",
+    "assembleHap": "pass-build-successful-signed-initial-ui-view-remount-fix-2026-08-05-hap-sha256-9ff982ced62c6e0cd846a8ec0b55e49015c788a38e9f9586391c1aabf016b820",
     "gitDiffCheck": "pass-2026-08-05",
     "sbom": "pass-totp-validator-96-packages-282-files-282-relationships-2026-08-04",
     "ohosTest": "blocked-task-00306054",

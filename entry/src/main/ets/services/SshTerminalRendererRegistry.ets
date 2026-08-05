@@ -58,6 +58,17 @@ export class SshTerminalRendererRegistry {
     return handle;
   }
 
+  /** Release the current XComponent surface while retaining the per-tab VT core. */
+  detach(key: string, bridge: SshTerminalRendererBridge): void {
+    const normalizedKey: string = key.trim();
+    if (normalizedKey.length === 0) { return; }
+    const entry: SshTerminalRendererEntry | undefined = this.entries.get(normalizedKey);
+    if (entry !== undefined && entry.handle > 0) {
+      bridge.detachSurface(entry.handle);
+      entry.surfaceId = '';
+    }
+  }
+
   destroy(key: string, bridge: SshTerminalRendererBridge): void {
     const normalizedKey: string = key.trim();
     if (normalizedKey.length === 0) { return; }

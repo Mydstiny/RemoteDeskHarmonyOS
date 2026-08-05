@@ -10,8 +10,12 @@ Updated: 2026-08-05 Asia/Shanghai
   reactor keepalive, PiP/session lifecycle, bounded Canvas consumption and
   IME/socket diagnostics are committed; the fresh signed HAP passed cold,
   large-output, background/re-entry and 90-second idle acceptance.
-- User-accept the remaining external-keyboard/third-party-IME paths on the
-  signed `4a7642d` HAP, while keeping the old Rust core as an explicit fallback.
+- Same-page SSH host switching now rejects stale async connect/attach/data/PiP
+  continuations using an independent binding generation, cancels pending
+  handshakes before switching. The visible xterm WebView now also has an
+  explicit detach/rebind gate and per-binding identity so the page refreshes
+  when the second host is selected. Both code-only Hvigor gates passed on
+  2026-08-05; device validation is deferred for this pass.
 - Keep the review state at the matching PASS receipt; do not claim full
   background SFTP execution, Level A, or Level B connectivity.
 - The first ProxyJump implementation and matching key preflight relay are
@@ -21,6 +25,8 @@ Updated: 2026-08-05 Asia/Shanghai
 ## Next
 
 - WP-T4 user acceptance and benchmark using shared terminal fixtures.
+- Commit and independently review the same-page SSH binding-generation and
+  initial-UI view-remount fix.
 - WP-T5/WP-T6 terminal correctness and damage-frame renderer implementation.
 - Real SFTP, bastion, forwarding and FRP endpoint interoperability tests when
   the corresponding services and HDC/device are available.
@@ -39,6 +45,9 @@ Updated: 2026-08-05 Asia/Shanghai
 - HDC target `5KLBB25928203528` passed cold SSH, ordered input, large output,
   Home retention, PiP/re-entry and 90-second idle command checks; real external
   keyboard/IME coverage remains an evidence gap.
+- Current host-switch/initial-UI changes have no new real-device evidence by
+  explicit user instruction; code-level validation is the active acceptance
+  boundary.
 - `ohosTest@OhosTestCompileArkTS` is unregistered (`00306054`).
 - Light compliance is blocked by baseline SBOM package
   `totp-reviewed-brand-assets` with `licenseDeclared=NOASSERTION`.

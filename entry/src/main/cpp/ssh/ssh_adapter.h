@@ -321,6 +321,9 @@ private:
     std::deque<std::function<void()>> reactorCommands_;
     DataCallback       onDataCallback_;
     std::mutex         callbackMutex_;          // 保护 onDataCallback_
+    // Serializes callback delivery with detach/reattach replay so bytes read
+    // while a tab is hidden cannot overtake the retained FIFO.
+    std::mutex         callbackDeliveryMutex_;
     std::mutex         stateCallbackMutex_;     // 保护 stateCallback_
     mutable std::mutex sessionMutex_;           // 串行化 libssh2 session/channel 操作
     std::recursive_mutex lifecycleMutex_;       // 串行化 connect/disconnect 生命周期
@@ -328,12 +331,21 @@ private:
     SshTerminalDiagnostics diagnostics_;
     std::atomic<bool> transportRecoveryRequested_{false};
 
+    static constexpr size_t kDetachedTerminalMaxChunks = 512;
+    static constexpr size_t kDetachedTerminalMaxBytes = 8 * 1024 * 1024;
+    std::mutex detachedTerminalMutex_;
+    std::deque<std::vector<uint8_t>> detachedTerminalOutput_;
+    size_t detachedTerminalOutputBytes_ = 0;
+
     /** session owner loop: short poll → input/commands → channel read/callback */
     void readerLoop();
     void drainReactorCommands();
     void drainInputQueueOnReactor();
     /** Read interactive-shell output while an owner command (SFTP/latency) yields. */
     void drainShellOutputOnReactor();
+    /** Deliver to the visible consumer or retain bytes for a detached tab. */
+    void deliverTerminalOutput(const std::vector<uint8_t>& data);
+    void clearDetachedTerminalOutput();
     /** Send an idle-session keepalive without creating a second libssh2 owner. */
     void serviceKeepaliveOnReactor();
     bool isReactorThread() const;

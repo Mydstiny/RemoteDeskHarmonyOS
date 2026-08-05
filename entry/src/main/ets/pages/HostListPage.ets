@@ -225,6 +225,7 @@ import {
   SETTINGS_SHEET_RDP_CREDENTIALS,
   SETTINGS_SHEET_TERMINAL_FG_COLOR,
   SETTINGS_SHEET_TERMINAL_FONT_SIZE,
+  SETTINGS_SHEET_TERMINAL_LINE_SPACING,
   SETTINGS_SHEET_VNC_CLOUD_SYNC,
   SETTINGS_SHEET_VNC_CLIPBOARD,
   SETTINGS_SHEET_VNC_CONNECTION,
@@ -692,6 +693,7 @@ struct HostListPage {
   @StorageLink('sshTerminalForegroundColor') terminalFgColor: string = '#33FF33';
   @State showTerminalFgColor: boolean = false;
   @StorageLink('sshTerminalFontSize') terminalFontSize: number = 18;
+  @StorageLink('sshTerminalLineSpacing') terminalLineSpacing: number = 1.12;
   @StorageLink('sshInputMode') sshInputMode: number = 0; // 0=自动, 1=虚拟键盘, 2=实体键鼠
   @State showTerminalFontSize: boolean = false;
   @State showRdpCredentialSheet: boolean = false;
@@ -711,6 +713,7 @@ struct HostListPage {
   private rustDeskHostAddReturnTab: number = 0;
   private lastVncRelayRouteRequestId: string = '';
   private terminalFontSizes: number[] = [12, 13, 14, 15, 16, 17, 18, 20, 22, 24, 26, 28, 30, 32];
+  private terminalLineSpacings: number[] = [1.00, 1.05, 1.10, 1.12, 1.20, 1.30, 1.40, 1.50];
   private terminalColorPresets: string[] = [
     '#33FF33','#F0F0F0','#FFB000','#00FFFF',
     '#00FF00','#C0C0C0','#FF6600','#00CCFF',
@@ -2188,7 +2191,35 @@ struct HostListPage {
   private resetSshTerminalAppearance(): void {
     this.terminalFgColor = this.sshSettings.saveForegroundColor('#33FF33');
     this.terminalFontSize = this.sshSettings.saveFontSize(18);
+    this.terminalLineSpacing = this.sshSettings.saveLineSpacing(1.12);
     promptAction.showToast({ message: 'SSH 终端显示已恢复默认', duration: 1500 });
+  }
+
+  private normalizedTerminalLineSpacing(): number {
+    const value: number = this.terminalLineSpacing;
+    if (!Number.isFinite(value)) { return 1.12; }
+    return Math.max(1.0, Math.min(1.6, Math.round(value * 100) / 100));
+  }
+
+  private terminalLineSpacingLabel(): string {
+    return Math.round(this.normalizedTerminalLineSpacing() * 100).toString() + '%';
+  }
+
+  private terminalPreviewLineHeight(): number {
+    return Math.ceil(Math.max(12, Math.min(32, this.terminalFontSize)) *
+      this.normalizedTerminalLineSpacing());
+  }
+
+  private terminalPreviewWidth(): number {
+    const fontSize: number = Math.max(12, Math.min(32, this.terminalFontSize));
+    const desired: number = Math.ceil(fontSize * 0.62 * 12 + 24);
+    const minimum: number = this.breakpoint === 'sm' ? 150 : 188;
+    const maximum: number = this.breakpoint === 'sm' ? 196 : 280;
+    return Math.max(minimum, Math.min(maximum, desired));
+  }
+
+  private terminalPreviewHeight(): number {
+    return Math.max(88, this.terminalPreviewLineHeight() * 2 + 24);
   }
 
   private settingsSectionExpanded(section: string): boolean {
@@ -2215,7 +2246,7 @@ struct HostListPage {
       return 980;
     }
     if (section === SETTINGS_SECTION_SSH) {
-      return 640;
+      return 760;
     }
     if (section === SETTINGS_SECTION_VNC) {
       return settingsVncExpandedMaxHeight(SETTINGS_VNC_ACTION_ROW_COUNT);
@@ -5628,7 +5659,8 @@ struct HostListPage {
       for (let i = 0; i < keys.length; i++) {
         const key: string = keys[i];
         if (key === 'sshTerminalForegroundColor' || key === 'sshTerminalFontSize' ||
-          key === 'terminalFgColor' || key === 'terminalFontSize' ||
+          key === 'sshTerminalLineSpacing' || key === 'terminalFgColor' ||
+          key === 'terminalFontSize' || key === 'terminalLineSpacing' ||
           key === 'groupedHostCards') { continue; }
         if (key === 'virtualMouseStyle' && !applyVirtualMouseStyle) { continue; }
         const value = settings[key];
@@ -5811,6 +5843,10 @@ struct HostListPage {
   private saveSshInputMode(mode: number): void {
     this.sshInputMode = this.clampSshInputMode(mode);
     this.persistPref('sshInputMode', this.sshInputMode);
+  }
+
+  private saveSshLineSpacing(value: number): void {
+    this.terminalLineSpacing = this.sshSettings.saveLineSpacing(value);
   }
 
   private clampSshInputMode(mode: number): number {
@@ -7918,6 +7954,8 @@ struct HostListPage {
       this.terminalFgColorSheet()
     } else if (this.settingsLeafSheetMode === SETTINGS_SHEET_TERMINAL_FONT_SIZE) {
       this.terminalFontSizeSheet()
+    } else if (this.settingsLeafSheetMode === SETTINGS_SHEET_TERMINAL_LINE_SPACING) {
+      this.terminalLineSpacingSheet()
     } else if (this.settingsLeafSheetMode === SETTINGS_SHEET_POPUP) {
       this.unifiedPopupSheet()
     } else if (this.settingsLeafSheetMode === SETTINGS_SHEET_RDP_CREDENTIALS) {
@@ -8657,24 +8695,44 @@ struct HostListPage {
               }.width('100%').height(60).padding({ left: 16, right: 16 })
                 .onClick(() => { this.openSettingsLeafSheet(SETTINGS_SHEET_TERMINAL_FONT_SIZE); })
               this.cardDivider()
+              Row() {
+                Row() {
+                  Column() {
+                    SymbolGlyph($r('sys.symbol.arrow_up')).fontSize(9).fontColor([this.pal().text])
+                    SymbolGlyph($r('sys.symbol.arrow_down')).fontSize(9).fontColor([this.pal().text])
+                  }
+                }
+                  .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
+                Text('终端行距').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
+                  .fontColor(this.pal().text).fontFamily(this.font()).layoutWeight(1).margin({ left: 4 })
+                Text(this.terminalLineSpacingLabel()).fontSize(13).fontColor(this.pal().text2)
+                Text(' >').fontSize(14).fontColor(this.pal().text3).margin({ left: 6 })
+              }.width('100%').height(60).padding({ left: 16, right: 16 })
+                .onClick(() => { this.openSettingsLeafSheet(SETTINGS_SHEET_TERMINAL_LINE_SPACING); })
+              this.cardDivider()
               this.sshInputModeRow()
               this.cardDivider()
               Row() {
                 Column() {
                   Text('终端预览').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
                     .fontColor(this.pal().text).fontFamily(this.font())
-                  Text('显示当前颜色和字号，不影响已建立会话的 PTY 尺寸')
+                  Text('显示当前颜色、字号和行距，实时映射终端外观')
                     .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
                     .maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
                 }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 16 })
                 Column() {
-                  Text('user@host:~$ ls -la').fontSize(Math.max(12, Math.min(18, this.terminalFontSize)))
-                    .fontColor(this.terminalFgColor).fontFamily('monospace')
-                  Text('drwxr-xr-x  4 user  staff').fontSize(10)
-                    .fontColor(this.terminalFgColor).fontFamily('monospace').margin({ top: 4 })
-                }.width(188).alignItems(HorizontalAlign.Start).padding({ left: 10, right: 10, top: 8, bottom: 8 })
+                  Text('user@host:$ ls -la').fontSize(Math.max(12, Math.min(32, this.terminalFontSize)))
+                    .lineHeight(this.terminalPreviewLineHeight())
+                    .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+                    .fontColor(this.terminalFgColor).fontFamily('monospace').width('100%')
+                  Text('drwxr-xr-x  4 user').fontSize(Math.max(10, Math.min(24, this.terminalFontSize - 4)))
+                    .lineHeight(this.terminalPreviewLineHeight())
+                    .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+                    .fontColor(this.terminalFgColor).fontFamily('monospace').width('100%')
+                }.width(this.terminalPreviewWidth()).height(this.terminalPreviewHeight())
+                  .alignItems(HorizontalAlign.Start).padding({ left: 10, right: 10, top: 8, bottom: 8 })
                   .backgroundColor('#0D0D0D').borderRadius(8)
-              }.width('100%').height(88).padding({ left: 0, right: 16 })
+              }.width('100%').height(this.terminalPreviewHeight()).padding({ left: 0, right: 16 })
               this.cardDivider()
               this.cardActionRow($r('app.media.icon_terminal'), '管理 SSH 主机',
                 this.sshCount.toString() + ' 台主机 · 地址、认证和代理仍按主机配置',
@@ -12585,6 +12643,42 @@ struct HostListPage {
             .onClick(() => {
               this.terminalFontSize = this.sshSettings.saveFontSize(sz);
             })
+          }
+        })
+      }
+      .columnsTemplate('1fr 1fr 1fr 1fr').rowsGap(12).columnsGap(10)
+      .width('100%').padding({ left: 24, right: 24 })
+      Blank().height(24)
+    }
+    .width('100%').backgroundColor(this.pal().bg).borderRadius(20).constraintSize({ maxWidth: 720 })
+  }
+
+  // ==================== 终端行距选择 Sheet ====================
+  @Builder terminalLineSpacingSheet() {
+    Column() {
+      Row() {
+        Text('终端行距').fontSize(19).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
+        Blank()
+        Text(this.terminalLineSpacingLabel()).fontSize(16).fontWeight(FontWeight.Bold)
+          .fontColor(this.pal().primary)
+      }.width('100%').padding({ left: 24, right: 24, top: 20 }).margin({ bottom: 14 })
+
+      Grid() {
+        ForEach(this.terminalLineSpacings, (spacing: number) => {
+          GridItem() {
+            Column() {
+              Text(Math.round(spacing * 100).toString() + '%')
+                .fontSize(12)
+                .fontColor(this.normalizedTerminalLineSpacing() === spacing ? '#FFFFFF' : this.pal().text)
+            }
+            .width(56).height(48).borderRadius(12).justifyContent(FlexAlign.Center)
+            .backgroundColor(this.normalizedTerminalLineSpacing() === spacing
+              ? this.accentColor : this.pal().card)
+            .border({
+              width: this.normalizedTerminalLineSpacing() === spacing ? 0 : 1,
+              color: this.pal().cardBorder
+            })
+            .onClick((): void => { this.saveSshLineSpacing(spacing); })
           }
         })
       }
