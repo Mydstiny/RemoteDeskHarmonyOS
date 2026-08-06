@@ -4,7 +4,7 @@
 - Task: `ssh-terminal-complete-upgrade`
 - Base: `main@d2769ad4b`
 - Branch: `codex/ssh-terminal-complete-upgrade`
-- Code checkpoint: `903ea762e` (`feat(ssh): bind forwarding lifecycle to session reactor`); the keyed surface commit, guarded next-turn FIFO drain, retained-frame refresh recovery, bounded post-commit wake, forwarding lifecycle contract, and adapter reactor binding are committed.
+- Code checkpoint: `26b7cad` (`feat(ssh): expose guarded forwarding lifecycle bridge`); keyed surface recovery, forwarding lifecycle, adapter reactor binding, and the generation-guarded NAPI/ArkTS bridge are committed.
 - Phase: Alacritty default; lifecycle, VT/Unicode/resize/TUI/large-output parity, per-host output isolation, code-only host-switch/surface refresh recovery, and native forwarding contract.
 - Scope: migrate VT behind terminalCore, keep appearance settings in-core, verify IME/input/Canvas behavior. Homepage work is not current focus.
 
@@ -23,8 +23,9 @@
   profiles, loopback/public binding policy, bounded connections, generations and
   start/listen/fail/stop transitions. `SshAdapter` now owns the manager and
   dispatches runtime transitions through the session-owner reactor, including
-  transport teardown reset; real libssh2 socket/channel forwarding and NAPI are
-  still open.
+  transport teardown reset. NAPI/ArkTS now exposes configure/remove/start/
+  listen/fail/stop/acquire/release/snapshot with explicit SSH, lifecycle and
+  generation gates; real libssh2 socket/channel forwarding is still open.
 - WP-T4 uses `alacritty_terminal` `0.26.0` by default behind terminalCore,
   with the old core as a no-default fallback and bounded xterm fallback.
   Appearance settings remain in-core; ARGB foreground, ANSI colors and Canvas
@@ -71,20 +72,21 @@
 
 ## Verification
 
-- `git diff --check`: passed after the forwarding adapter checkpoint documentation update on 2026-08-06.
-- Host native tests: `268 passed, 16 failed, 284 total`; all failures are the
+- `git diff --check`: passed after the guarded forwarding bridge checkpoint on 2026-08-06.
+- Host native tests: `269 passed, 16 failed, 285 total`; all failures are the
   existing VNC TLS fixture startup failures; the keepalive/SSH diagnostics
   tests pass.
 - Rust `cargo test --manifest-path rustdesk_ffi/Cargo.toml --lib
   --no-default-features`: `156 passed, 1 failed, 157 total`; the remaining
   failure is the existing rendezvous fixture's public-address assertion.
-- `default@OhosTestCompileArkTS`: passed for the host-switch surface refresh and
+- `default@OhosTestCompileArkTS`: passed for the guarded forwarding bridge,
+  host-switch surface refresh and
   bounded post-commit wake,
   transient-`CONNECTING` mount wake, deterministic keyed remount,
   revision-aware renderer owner/document correction, explicit surface-commit
   sequence, synchronous GPU lease detach, and retained dirty/full-frame refresh
   recovery on 2026-08-06; warnings only.
-- `assembleHap`: the same code-only correction passed with `BUILD SUCCESSFUL`
+- `assembleHap`: the forwarding bridge and same code-only correction passed with `BUILD SUCCESSFUL`
   and signing on 2026-08-06 after the bounded refresh wake correction.
 - Terminal-core Rust tests: Alacritty path `63 passed, 0 failed`; fallback
   path `57 passed, 0 failed`.
@@ -93,7 +95,7 @@
 - Terminal parity: Alacritty `67 passed`, fallback `57 passed`; shared
   Unicode/ANSI, TUI/alternate-screen, resize/large-output and damage fixtures
   match on visible cells and required metadata.
-- Native forwarding manager standalone test: `5 passed, 0 failed`; host CMake
+- Native forwarding manager tests: `5 passed, 0 failed`; host CMake
   is unavailable because `cmake` is not installed; the existing Makefile
   binary and production `BuildNativeWithNinja` compiled manager and adapter.
 - `ohosTest@OhosTestCompileArkTS`: blocked; task is not registered (`00306054`).
@@ -101,16 +103,14 @@
   `totp-reviewed-brand-assets` with `licenseDeclared=NOASSERTION`.
 
 ## Review
-
 - Existing independent review passed the bounded-output and IME/socket increments; checkpoint `ffa0f9e` plus the current keyed-surface, mount-wake, deterministic keyed remount, renderer-owner lease, revision-aware document, GPU refresh owner-lease, dirty/full-frame recovery, and bounded wake correction remains `REVIEW_REQUIRED` until review.
 - SFTP scope is closed for this pass; real-device/endpoint evidence is not a Level A completion claim.
 - Device evidence covers injected input and lifecycle; external keyboard/IME, GPU re-enable, bastion/forwarding/FRP evidence remain open.
 
 ## Next
-
 1. Independently review the same-page SSH binding commit, initial-UI surface-owner, fallback, deterministic keyed remount, renderer-owner lease, revision-aware document, GPU binding lease, and EGL refresh scope.
-2. Expose the guarded forwarding lifecycle through NAPI/ArkTS types and keep
-   stale-generation errors explicit.
+2. Independently review the guarded forwarding NAPI/ArkTS bridge and its
+   session/generation error mapping.
 3. Add real local/remote/dynamic libssh2 socket/channel transport, then finish
    ProxyJump host-key binding and FRP Visitor/STCP/SUDP/XTCP contracts.
 

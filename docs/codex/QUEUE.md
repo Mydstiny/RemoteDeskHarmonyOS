@@ -56,10 +56,12 @@ Updated: 2026-08-06 Asia/Shanghai
 - The first ProxyJump implementation and matching key preflight relay are
   committed, but keep them pending until bastion host-key policy and a real
   OpenSSH endpoint are verified.
-- The native forwarding lifecycle contract is now committed for local, remote
-  and dynamic modes, and `SshAdapter` binds its runtime transitions to the
-  session-owner reactor with transport-reset cleanup. It still needs real SSH
-  socket/channel wiring, NAPI/ArkTS entry points and endpoint interoperability.
+- The native forwarding lifecycle contract is committed for local, remote and
+  dynamic modes; `SshAdapter` binds runtime transitions to the session-owner
+  reactor with transport-reset cleanup, and the guarded NAPI/ArkTS bridge now
+  exposes configure/remove/start/listen/fail/stop/acquire/release/snapshot with
+  explicit generation and SSH-type gates. Real SSH socket/channel wiring and
+  endpoint interoperability remain open.
 
 ## Next
 
@@ -68,7 +70,8 @@ Updated: 2026-08-06 Asia/Shanghai
   initial-UI deterministic host/binding/revision keyed remount, surface-owner lease, fallback, render-revision,
   revision-aware document reload, GPU binding-lease invalidation, EGL refresh, surface-ID polling, measured-size rebind, mount-wake fix, and
   reused-renderer rebind/reload.
-- Add the guarded forwarding NAPI/ArkTS lifecycle bridge and TypeScript types.
+- Independently review the guarded forwarding NAPI/ArkTS bridge and its stale,
+  non-SSH and teardown error mapping.
 - Implement local/remote/dynamic libssh2 socket/channel transport behind that
   bridge, with endpoint-facing error propagation.
 - WP-T5/WP-T6 terminal correctness and damage-frame renderer implementation.
@@ -79,13 +82,11 @@ Updated: 2026-08-06 Asia/Shanghai
   forwarding and FRP Visitor/STCP/SUDP/XTCP contracts with endpoint tests.
 
 ## Later
-
 - Complete the background transfer engine, UDMF drag/drop and SFTP lifecycle
   acceptance beyond the current page-owned execution path.
 - WP-T7 terminal accessibility/lifecycle recovery and Level A acceptance.
 
 ## Evidence Gaps
-
 - HDC target `5KLBB25928203528` passed cold SSH, ordered input, large output,
   Home retention, PiP/re-entry and 90-second idle command checks; real external
   keyboard/IME coverage remains an evidence gap.
@@ -95,5 +96,5 @@ Updated: 2026-08-06 Asia/Shanghai
 - `ohosTest@OhosTestCompileArkTS` is unregistered (`00306054`).
 - Light compliance is blocked by baseline SBOM package
   `totp-reviewed-brand-assets` with `licenseDeclared=NOASSERTION`.
-- Host native suite has 268 passing tests and 16 pre-existing VNC TLS fixture
-  startup failures (284 total).
+- Host native suite has 269 passing tests and 16 pre-existing VNC TLS fixture
+  startup failures (285 total).
