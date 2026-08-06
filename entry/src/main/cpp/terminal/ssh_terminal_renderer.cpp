@@ -448,22 +448,30 @@ bool SshTerminalRenderer::RenderFull() {
     return rendered;
 }
 
-void SshTerminalRenderer::RenderDirty() {
-    if (!CanDraw()) {
-        return;
+bool SshTerminalRenderer::RenderDirty() {
+    bool rendered = false;
+    FfiTerminalSnapshot* snapshot = nullptr;
+    if (CanDraw()) {
+        snapshot = terminal_core_dirty_snapshot(terminal_);
+        if (snapshot != nullptr) {
+            mode_.bracketedPaste = snapshot->bracketed_paste;
+            mode_.mouseTracking = snapshot->mouse_tracking;
+            mode_.sgrMouse = snapshot->sgr_mouse;
+            mode_.applicationCursorKeys = snapshot->application_cursor_keys;
+            mode_.applicationKeypad = snapshot->application_keypad;
+            mode_.autoWrap = snapshot->auto_wrap;
+            rendered = DrawSnapshot(snapshot, false);
+            terminal_core_free_snapshot(snapshot);
+        }
     }
-    FfiTerminalSnapshot* snapshot = terminal_core_dirty_snapshot(terminal_);
-    if (snapshot == nullptr) {
-        return;
+    if (rendered) {
+        return true;
     }
-    mode_.bracketedPaste = snapshot->bracketed_paste;
-    mode_.mouseTracking = snapshot->mouse_tracking;
-    mode_.sgrMouse = snapshot->sgr_mouse;
-    mode_.applicationCursorKeys = snapshot->application_cursor_keys;
-    mode_.applicationKeypad = snapshot->application_keypad;
-    mode_.autoWrap = snapshot->auto_wrap;
-    DrawSnapshot(snapshot, false);
-    terminal_core_free_snapshot(snapshot);
+    // dirty_snapshot() consumes the dirty rows. If drawing or the EGL state
+    // failed after that point, redraw the retained full snapshot immediately
+    // so the next SSH chunk cannot leave the surface permanently stale.
+    OH_LOG_WARN(LOG_APP, "[SSH] dirty terminal frame failed; retrying full frame");
+    return RenderFull();
 }
 
 SshTerminalRenderer::Mode SshTerminalRenderer::CurrentMode() const {

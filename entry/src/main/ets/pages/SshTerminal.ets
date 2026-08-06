@@ -288,6 +288,8 @@ struct SshTerminal {
   @State terminalSurfaceRenderRevision: number = 0;
   /** Stable page-owned slot; the host binding changes in place. */
   @State terminalSurfaceViewKey: string = '';
+  /** Host id captured by the same commit that publishes the visible surface. */
+  @State terminalSurfaceCommittedHostId: string = '';
   /** Monotonic commit id used as the actual ArkUI renderer-list identity. */
   @State terminalSurfaceCommitSequence: number = 0;
   /** Explicit repaint fence for a committed visible host binding. */
@@ -594,6 +596,18 @@ struct SshTerminal {
     return this.nativeTerminalFormFactor() && !this.nativeRendererUnavailable;
   }
 
+  /**
+   * Renderer props are valid only after host, binding key and mount state have
+   * crossed the same page-owned commit. This prevents an intermediate ArkUI
+   * turn from pairing a new surface with the previous host's input buffer.
+   */
+  private terminalSurfaceBindingReady(): boolean {
+    const committedHostId: string = this.terminalSurfaceCommittedHostId.trim();
+    return this.terminalSurfaceMounted && this.terminalSurfaceBindingKey.trim().length > 0 &&
+      committedHostId.length > 0 && committedHostId === this.hostId.trim() &&
+      committedHostId === this.visibleSshHostId.trim();
+  }
+
   private nativeTerminalInputBuffer(hostId: string): TerminalInputBuffer {
     const normalizedHostId: string = hostId.trim();
     let buffer: TerminalInputBuffer | undefined = this.nativeTerminalInputBuffers.get(normalizedHostId);
@@ -644,6 +658,7 @@ struct SshTerminal {
     this.terminalSurfaceRenderRevision = this.terminalSurfaceRenderRevision + 1;
     this.terminalSurfaceCommitSequence = this.terminalSurfaceCommitSequence + 1;
     this.terminalSurfaceViewKey = '';
+    this.terminalSurfaceCommittedHostId = '';
     this.terminalSurfaceMounted = false;
     this.xtermReady = false;
   }
@@ -665,6 +680,7 @@ struct SshTerminal {
     this.terminalSurfaceRenderRevision = nextRenderRevision;
     this.terminalSurfaceCommitSequence = this.terminalSurfaceCommitSequence + 1;
     this.terminalSurfaceViewKey = nextViewKey;
+    this.terminalSurfaceCommittedHostId = normalizedHostId;
     this.termOutputSequence = this.termOutputSequence + 1;
     this.terminalSurfaceRefreshRequest = this.terminalSurfaceRefreshRequest + 1;
     this.terminalSurfaceMounted = true;
@@ -6624,7 +6640,7 @@ struct SshTerminal {
       // Keep a committed renderer slot alive across a host switch. Its active
       // prop is the lifecycle gate; the loading layer masks the old frame
       // until the target binding has been committed.
-      if ((!this.connected || !this.terminalSurfaceMounted) &&
+      if ((!this.connected || !this.terminalSurfaceBindingReady()) &&
         this.terminalSurfaceViewKey.length === 0) {
         Column() {
           if (this.connecting || (this.connected && !this.terminalSurfaceMounted)) {
@@ -6640,7 +6656,7 @@ struct SshTerminal {
         }.width('100%').layoutWeight(1).justifyContent(FlexAlign.Center).backgroundColor('#0D0D0D')
       } else {
         Stack({ alignContent: Alignment.TopStart }) {
-            if (!this.connected || !this.terminalSurfaceMounted) {
+            if (!this.connected || !this.terminalSurfaceBindingReady()) {
               Column() {
                 if (this.connecting || (this.connected && !this.terminalSurfaceMounted)) {
                   LoadingProgress().width(32).height(32).color(this.accentColor)
@@ -6669,9 +6685,9 @@ struct SshTerminal {
               Stack({ alignContent: Alignment.TopStart }) {
                 if (this.shouldUseNativeTerminal()) {
                   GpuTerminalRenderer({
-                    coreKey: this.visibleSshHostId,
+                    coreKey: this.terminalSurfaceCommittedHostId,
                     surfaceIdentity: this.terminalSurfaceBindingKey,
-                    active: this.connected && this.terminalSurfaceMounted,
+                    active: this.connected && this.terminalSurfaceBindingReady(),
                     renderRevision: this.terminalSurfaceRenderRevision,
                     surfaceRefreshRequest: this.terminalSurfaceRefreshRequest,
                     cols: this.termCols,
@@ -6682,7 +6698,7 @@ struct SshTerminal {
                     viewportHeight: this.terminalPaneHeight(),
                     visibleViewportHeight: this.terminalRowsViewportHeight(),
                     bottomAlignSparseContent: !this.isDesktopDevice,
-                    inputBuffer: this.nativeTerminalInputBuffer(this.visibleSshHostId),
+                    inputBuffer: this.nativeTerminalInputBuffer(this.terminalSurfaceCommittedHostId),
                     inputSequence: this.termOutputSequence,
                     copyRequest: $copyRequest,
                     copiedText: $copiedText,
@@ -6705,7 +6721,7 @@ struct SshTerminal {
                 } else {
                   SshXtermSurface({
                     coreKey: this.terminalSurfaceBindingKey,
-                    active: this.connected && this.terminalSurfaceMounted,
+                    active: this.connected && this.terminalSurfaceBindingReady(),
                     renderRevision: this.terminalSurfaceRenderRevision,
                     surfaceRefreshRequest: this.terminalSurfaceRefreshRequest,
                     cols: this.termCols,

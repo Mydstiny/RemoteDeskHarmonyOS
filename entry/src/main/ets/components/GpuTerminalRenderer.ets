@@ -106,6 +106,8 @@ export struct GpuTerminalRenderer {
   private disposed: boolean = false;
   private unavailableReported: boolean = false;
   private lifecycleToken: number = 0;
+  /** A new visible binding must receive one acknowledged full repaint. */
+  private fullRefreshPending: boolean = true;
 
   /** Identifies the visible host/revision pair that may own this surface. */
   private surfaceBindingLease(): string {
@@ -132,6 +134,7 @@ export struct GpuTerminalRenderer {
     const lifecycleToken: number = ++this.lifecycleToken;
     this.disposed = false;
     this.unavailableReported = false;
+    this.fullRefreshPending = true;
     this.surfaceAttachRetryCount = 0;
     this.xcController.onSurfaceReady = (surfaceId: string): void => {
       if (this.disposed || lifecycleToken !== this.lifecycleToken) { return; }
@@ -156,6 +159,7 @@ export struct GpuTerminalRenderer {
       this.lastKnownSurfaceId = surfaceId;
       this.currentSurfaceId = '';
       this.surfaceReady = false;
+      this.fullRefreshPending = true;
       this.boundSurfaceWidthPx = 0;
       this.boundSurfaceHeightPx = 0;
       const key: string = this.attachedCoreKey.length > 0 ? this.attachedCoreKey : this.coreKey;
@@ -214,6 +218,7 @@ export struct GpuTerminalRenderer {
   }
 
   private onCoreKeyChange(): void {
+    this.fullRefreshPending = true;
     // Detach synchronously before ArkUI delivers the remaining prop watches;
     // otherwise the old host can keep painting through the reused XComponent
     // for one frame while the new host binding is being assembled.
@@ -225,6 +230,7 @@ export struct GpuTerminalRenderer {
   }
 
   private onSurfaceIdentityChange(): void {
+    this.fullRefreshPending = true;
     this.deactivateRenderer();
     if (this.active) {
       this.scheduleSurfaceRebind();
@@ -233,6 +239,7 @@ export struct GpuTerminalRenderer {
   }
 
   private onRenderRevisionChange(): void {
+    this.fullRefreshPending = true;
     this.deactivateRenderer();
     if (!this.active) {
       this.stopSurfaceIdPolling();
@@ -252,6 +259,7 @@ export struct GpuTerminalRenderer {
       this.stopSurfaceIdPolling();
       return;
     }
+    this.fullRefreshPending = true;
     this.invalidateSurfaceObservation();
     this.unavailableReported = false;
     this.startSurfaceIdPolling();
@@ -265,41 +273,8 @@ export struct GpuTerminalRenderer {
   /** Repaint or rebind the retained core after the page commits a new host view. */
   private onSurfaceRefreshRequestChange(): void {
     if (!this.hasUsableBinding()) { return; }
-    // ArkUI may deliver the repaint fence before the core/surface prop watches.
-    // Never acknowledge a refresh from the previous host as ready for the new
-    // owner; let the normal lease-checked rebind transaction adopt it first.
-    if (this.attachedCoreKey !== this.coreKey ||
-      this.attachedOwnerId !== this.rendererOwnerId()) {
-      this.deactivateRenderer();
-      this.scheduleSurfaceRebind();
-      this.startSurfaceIdPolling();
-      return;
-    }
-    if (this.handle <= 0 || !this.surfaceReady) {
-      this.startSurfaceIdPolling();
-      this.scheduleSurfaceRebind();
-      return;
-    }
-    let refreshed: boolean = false;
-    try {
-      refreshed = this.bridge.refresh(this.handle);
-    } catch (err) {
-      hilog.warn(0x0000, 'GpuTerminal',
-        'surface refresh exception: %{public}s', JSON.stringify(err));
-    }
-    if (refreshed) {
-      this.notifyMode();
-      if (this.onRendererReady) {
-        this.onRendererReady(this.coreKey, this.surfaceIdentity);
-      }
-      return;
-    }
-    this.surfaceReady = false;
-    const attachedKey: string = this.attachedCoreKey.length > 0
-      ? this.attachedCoreKey : this.coreKey;
-    this.registry.detach(attachedKey, this.bridge, this.attachedRendererOwnerId());
-    this.scheduleSurfaceAttachRetry();
-    this.startSurfaceIdPolling();
+    this.fullRefreshPending = true;
+    this.refreshVisibleSurface();
   }
 
   /** Detach only the visible surface; the per-host VT core stays in the registry. */
@@ -314,6 +289,7 @@ export struct GpuTerminalRenderer {
     this.surfaceReady = false;
     this.lastModeSignature = '';
     this.unavailableReported = false;
+    this.fullRefreshPending = true;
     this.invalidateSurfaceObservation();
   }
 
@@ -413,6 +389,7 @@ export struct GpuTerminalRenderer {
     this.surfaceReady = false;
     this.lastModeSignature = '';
     this.unavailableReported = false;
+    this.fullRefreshPending = true;
     const token: number = ++this.surfaceRebindToken;
     const bindingLease: string = this.surfaceBindingLease();
     this.surfaceRebindTimer = setTimeout((): void => {
@@ -502,30 +479,61 @@ export struct GpuTerminalRenderer {
     this.boundSurfaceWidthPx = config.widthPx;
     this.boundSurfaceHeightPx = config.heightPx;
     this.surfaceReady = true;
+    this.fullRefreshPending = true;
     this.applyGeometry();
     this.applyViewport();
     this.applyAppearance();
     this.consumeInputQueue();
-    // The VT core may already contain the host's prompt while the surface was
-    // detached. Repaint the retained snapshot even when no new SSH bytes
-    // arrive after this component is mounted.
+    this.refreshVisibleSurface();
+  }
+
+  /**
+   * A visible binding is not ready until its retained VT snapshot has been
+   * acknowledged by native drawing. Failed flushes release only the surface
+   * and reuse the bounded rebind/poll recovery path.
+   */
+  private refreshVisibleSurface(): boolean {
+    if (!this.hasUsableBinding()) { return false; }
+    // Geometry, viewport and appearance changes already repaint synchronously;
+    // this helper owns the explicit page repaint fence.
+    if (!this.fullRefreshPending) { return this.surfaceReady && this.handle > 0; }
+    // ArkUI may deliver the refresh fence before the new core/surface props.
+    // Never report the previous host as ready for this binding.
+    if (this.attachedCoreKey !== this.coreKey ||
+      this.attachedOwnerId !== this.rendererOwnerId()) {
+      this.deactivateRenderer();
+      this.scheduleSurfaceRebind();
+      this.startSurfaceIdPolling();
+      return false;
+    }
+    if (this.handle <= 0 || !this.surfaceReady) {
+      this.startSurfaceIdPolling();
+      this.scheduleSurfaceRebind();
+      return false;
+    }
     let refreshed: boolean = false;
     try {
       refreshed = this.bridge.refresh(this.handle);
     } catch (err) {
       hilog.warn(0x0000, 'GpuTerminal',
-        'initial surface refresh exception: %{public}s', JSON.stringify(err));
+        'surface refresh exception: %{public}s', JSON.stringify(err));
     }
-    if (!refreshed) {
-      this.surfaceReady = false;
-      this.registry.detach(this.coreKey, this.bridge, this.attachedRendererOwnerId());
-      this.scheduleSurfaceAttachRetry();
-      return;
+    if (refreshed) {
+      this.fullRefreshPending = false;
+      this.notifyMode();
+      if (this.onRendererReady) {
+        this.onRendererReady(this.coreKey, this.surfaceIdentity);
+      }
+      return true;
     }
-    this.notifyMode();
-    if (this.onRendererReady) {
-      this.onRendererReady(this.coreKey, this.surfaceIdentity);
-    }
+    this.fullRefreshPending = true;
+    this.surfaceReady = false;
+    const attachedKey: string = this.attachedCoreKey.length > 0
+      ? this.attachedCoreKey : this.coreKey;
+    this.registry.detach(attachedKey, this.bridge, this.attachedRendererOwnerId());
+    this.scheduleSurfaceAttachRetry();
+    this.startSurfaceIdPolling();
+    return false;
   }
 
   /** A surface can be between destruction and recreation during a tab swap. */

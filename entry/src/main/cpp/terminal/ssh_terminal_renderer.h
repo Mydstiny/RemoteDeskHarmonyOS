@@ -73,7 +73,7 @@ private:
     bool EnsureGraphicsCurrent();
     bool CanDraw();
     bool RenderFull();
-    void RenderDirty();
+    bool RenderDirty();
     bool DrawSnapshot(const FfiTerminalSnapshot* snapshot, bool fullFrame);
     float GridTop(const FfiTerminalSnapshot* snapshot) const;
     OH_Drawing_Font* FontForCell(bool bold, bool italic) const;
