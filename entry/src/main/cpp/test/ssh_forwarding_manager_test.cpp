@@ -82,6 +82,39 @@ RDP_TEST_CASE(ssh_forwarding_manager_enforces_generation_and_connection_limit) {
     RDP_ASSERT_EQ(snapshot.activeConnections, 0U);
 }
 
+RDP_TEST_CASE(ssh_forwarding_manager_supports_remote_and_dynamic_runtime_profiles) {
+    SshForwardingManager manager;
+
+    SshForwardingConfig remote = localConfig("remote-shell");
+    remote.mode = SshForwardingMode::Remote;
+    remote.bindHost = "127.0.0.1";
+    remote.bindPort = 9022;
+    remote.targetHost = "127.0.0.1";
+    remote.targetPort = 22;
+    RDP_ASSERT(manager.upsert(remote) == SshForwardingResult::Ok);
+    RDP_ASSERT(manager.start(remote.id, 41) == SshForwardingResult::Ok);
+    RDP_ASSERT(manager.markListening(remote.id, 41) == SshForwardingResult::Ok);
+    RDP_ASSERT(manager.acquireConnection(remote.id, 41) == SshForwardingResult::Ok);
+    RDP_ASSERT(manager.requestStop(remote.id, 41) == SshForwardingResult::Ok);
+    RDP_ASSERT(manager.releaseConnection(remote.id, 41) == SshForwardingResult::Ok);
+    RDP_ASSERT(manager.completeStop(remote.id) == SshForwardingResult::Ok);
+
+    SshForwardingConfig dynamic;
+    dynamic.id = "dynamic-shell";
+    dynamic.mode = SshForwardingMode::Dynamic;
+    dynamic.bindPort = 1080;
+    dynamic.maxConnections = 1;
+    RDP_ASSERT(manager.upsert(dynamic) == SshForwardingResult::Ok);
+    RDP_ASSERT(manager.start(dynamic.id, 42) == SshForwardingResult::Ok);
+    RDP_ASSERT(manager.markListening(dynamic.id, 42) == SshForwardingResult::Ok);
+    RDP_ASSERT(manager.acquireConnection(dynamic.id, 42) == SshForwardingResult::Ok);
+    RDP_ASSERT(manager.acquireConnection(dynamic.id, 42) ==
+               SshForwardingResult::ConnectionLimit);
+    RDP_ASSERT(manager.releaseConnection(dynamic.id, 42) == SshForwardingResult::Ok);
+    RDP_ASSERT(manager.requestStop(dynamic.id, 42) == SshForwardingResult::Ok);
+    RDP_ASSERT(manager.completeStop(dynamic.id) == SshForwardingResult::Ok);
+}
+
 RDP_TEST_CASE(ssh_forwarding_manager_rejects_mutation_while_active) {
     SshForwardingManager manager;
     SshForwardingConfig config = localConfig();

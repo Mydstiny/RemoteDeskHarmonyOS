@@ -163,6 +163,9 @@ SshForwardingResult SshForwardingManager::markListening(const std::string& id,
     if (!generationMatches(entry->second, sessionGeneration)) {
         return SshForwardingResult::StaleSession;
     }
+    if (entry->second.state == SshForwardingState::Listening) {
+        return SshForwardingResult::Ok;
+    }
     if (entry->second.state != SshForwardingState::Starting) {
         return SshForwardingResult::InvalidState;
     }

@@ -18,11 +18,13 @@
 #include <condition_variable>
 #include <deque>
 #include <future>
+#include <map>
 #include <mutex>
 #include <utility>
 #include <type_traits>
 #include <chrono>
 #include <sys/select.h>
+#include <vector>
 #include "ssh_terminal_input_queue_policy.h"
 #include "ssh_terminal_keepalive_policy.h"
 #include "ssh_pty_recovery_policy.h"
@@ -242,6 +244,36 @@ public:
     int renameRemotePathAtomic(const std::string& oldPath, const std::string& newPath);
 
 private:
+    struct LocalForwardListener {
+        std::string profileId;
+        uint64_t sessionGeneration = 0;
+        SshForwardingMode mode = SshForwardingMode::Local;
+        int fd = -1;
+        LIBSSH2_LISTENER* remoteListener = nullptr;
+        int boundPort = 0;
+    };
+
+    struct LocalForwardConnection {
+        std::string profileId;
+        uint64_t sessionGeneration = 0;
+        SshForwardingMode mode = SshForwardingMode::Local;
+        int localFd = -1;
+        LIBSSH2_CHANNEL* channel = nullptr;
+        bool localConnecting = false;
+        bool localEof = false;
+        bool channelEof = false;
+        bool channelEofSent = false;
+        bool localWriteShutdown = false;
+        bool socksGreetingComplete = false;
+        bool socksRequestComplete = false;
+        bool socksConnectResponseQueued = false;
+        std::string dynamicTargetHost;
+        int dynamicTargetPort = 0;
+        std::vector<uint8_t> socksInput;
+        std::vector<uint8_t> toChannel;
+        std::vector<uint8_t> toLocal;
+    };
+
     int connectInternal(const ConnectionConfig& cfg, bool preserveOwner = false);
     void resetTransportForRecovery();
     bool reconnectAfterTransportFailure();
@@ -279,6 +311,8 @@ private:
     std::mutex sftpOperationMutex_;
     ConnectionConfig savedCfg_;
     SshForwardingManager forwardingManager_;
+    std::map<std::string, LocalForwardListener> localForwardListeners_;
+    std::vector<LocalForwardConnection> localForwardConnections_;
     int lastPtyLibssh2Error_ = 0;
     SshPtyFailureClass lastPtyFailureClass_ = SshPtyFailureClass::NONE;
 
@@ -298,6 +332,24 @@ private:
     int sendSocketBytes(const uint8_t* data, size_t len, int timeoutSec);
     int receiveSocketBytes(uint8_t* data, size_t len, int timeoutSec);
     int receiveProxyHeaders(std::string& headers, size_t maxLen, int timeoutSec);
+
+    // All forwarding modes are owned by the same reactor as the terminal
+    // session. Local/dynamic use a local listener; remote uses a libssh2
+    // remote listener and relays its accepted channels to a local target.
+    int createLocalForwardListener(const SshForwardingConfig& config, int& errorCode);
+    LIBSSH2_LISTENER* createRemoteForwardListener(const SshForwardingConfig& config,
+                                                  int& boundPort, int& errorCode);
+    int createForwardTargetSocket(const std::string& host, int port,
+                                  bool& connecting, int& errorCode);
+    int pumpDynamicSocksHandshakeLocked(LocalForwardConnection& connection);
+    int openLocalForwardChannelLocked(LocalForwardConnection& connection,
+                                      const SshForwardingConfig& config);
+    bool pumpLocalForwardConnectionLocked(LocalForwardConnection& connection,
+                                           const SshForwardingConfig& config);
+    void serviceForwardingOnReactor();
+    void closeLocalForwardConnectionLocked(LocalForwardConnection& connection);
+    void closeLocalForwardRuntimeLocked(const std::string& id);
+    void closeAllForwardingRuntimeLocked();
 
     // ---- SSH 协议方法 (libssh2 集成) ----
 
@@ -533,6 +585,8 @@ private:
 
     static constexpr size_t kMaxReactorCommands = 256;
     static constexpr int kReactorWaitSliceMs = 5;
+    static constexpr size_t kForwardBufferLimit = 512 * 1024;
+    static constexpr size_t kForwardAcceptBatch = 8;
     std::chrono::steady_clock::time_point keepaliveNextDue_ =
         std::chrono::steady_clock::time_point::max();
     uint32_t keepaliveConsecutiveFailures_ = 0;

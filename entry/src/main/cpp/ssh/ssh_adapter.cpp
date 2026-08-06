@@ -13,6 +13,7 @@
 #include "ssh_algorithm_prefs.h"
 #include <hilog/log.h>
 #include <sys/socket.h>
+#include <poll.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <netdb.h>
@@ -215,7 +216,59 @@ SshForwardingResult SshAdapter::startForwarding(const std::string& id,
             state_.load(std::memory_order_acquire) != ConnectionState::CONNECTED) {
             return SshForwardingResult::InvalidState;
         }
-        return forwardingManager_.start(id, currentGeneration);
+        SshForwardingSnapshot snapshot;
+        if (!forwardingManager_.snapshot(id, snapshot)) {
+            return SshForwardingResult::NotFound;
+        }
+        const SshForwardingResult started = forwardingManager_.start(id, currentGeneration);
+        if (started != SshForwardingResult::Ok) {
+            return started;
+        }
+        int errorCode = 0;
+        LocalForwardListener listener;
+        listener.profileId = id;
+        listener.sessionGeneration = currentGeneration;
+        listener.mode = snapshot.config.mode;
+        if (snapshot.config.mode == SshForwardingMode::Remote) {
+            int boundPort = snapshot.config.bindPort;
+            listener.remoteListener = createRemoteForwardListener(
+                snapshot.config, boundPort, errorCode);
+            listener.boundPort = boundPort;
+            if (listener.remoteListener == nullptr) {
+                forwardingManager_.fail(id, currentGeneration, errorCode);
+                OH_LOG_ERROR(LOG_APP,
+                             "[SSH] remote forwarding listener 创建失败 id=%{public}s rc=%{public}d",
+                             id.c_str(), errorCode);
+                return SshForwardingResult::TransportFailure;
+            }
+        } else {
+            const int listenerFd = createLocalForwardListener(snapshot.config, errorCode);
+            if (listenerFd < 0) {
+                forwardingManager_.fail(id, currentGeneration, errorCode);
+                OH_LOG_ERROR(LOG_APP,
+                             "[SSH] local forwarding listener 创建失败 id=%{public}s errno=%{public}d",
+                             id.c_str(), errorCode);
+                return SshForwardingResult::TransportFailure;
+            }
+            listener.fd = listenerFd;
+        }
+        localForwardListeners_[id] = std::move(listener);
+        const SshForwardingResult listening =
+            forwardingManager_.markListening(id, currentGeneration);
+        if (listening != SshForwardingResult::Ok) {
+            closeLocalForwardRuntimeLocked(id);
+            forwardingManager_.fail(id, currentGeneration, EINVAL);
+            return listening;
+        }
+        OH_LOG_INFO(LOG_APP,
+                    "[SSH] forwarding listening id=%{public}s mode=%{public}d bind=%{public}s:%{public}d "
+                    "target=%{public}s:%{public}d fd=%{public}d remote=%{public}d",
+                    id.c_str(), static_cast<int>(snapshot.config.mode),
+                    snapshot.config.bindHost.c_str(), snapshot.config.bindPort,
+                    SafeLog::MaskHost(snapshot.config.targetHost).c_str(),
+                    snapshot.config.targetPort, listener.fd,
+                    listener.remoteListener != nullptr ? 1 : 0);
+        return SshForwardingResult::Ok;
     };
     if (isReactorThread()) {
         return operation();
@@ -248,7 +301,13 @@ SshForwardingResult SshAdapter::failForwarding(const std::string& id,
             expectedGeneration != currentGeneration) {
             return SshForwardingResult::StaleSession;
         }
-        return forwardingManager_.fail(id, currentGeneration, error);
+        const SshForwardingResult result =
+            forwardingManager_.fail(id, currentGeneration, error);
+        if (result == SshForwardingResult::Ok) {
+            std::unique_lock<std::mutex> sessionLock(sessionMutex_);
+            closeLocalForwardRuntimeLocked(id);
+        }
+        return result;
     };
     if (isReactorThread()) {
         return operation();
@@ -259,7 +318,13 @@ SshForwardingResult SshAdapter::failForwarding(const std::string& id,
 SshForwardingResult SshAdapter::requestForwardingStop(
     const std::string& id, uint64_t expectedGeneration) {
     auto operation = [this, id, expectedGeneration]() {
-        return forwardingManager_.requestStop(id, expectedGeneration);
+        const SshForwardingResult result =
+            forwardingManager_.requestStop(id, expectedGeneration);
+        if (result == SshForwardingResult::Ok) {
+            std::unique_lock<std::mutex> sessionLock(sessionMutex_);
+            closeLocalForwardRuntimeLocked(id);
+        }
+        return result;
     };
     if (isReactorThread()) {
         return operation();
@@ -269,6 +334,8 @@ SshForwardingResult SshAdapter::requestForwardingStop(
 
 SshForwardingResult SshAdapter::completeForwardingStop(const std::string& id) {
     auto operation = [this, id]() {
+        std::unique_lock<std::mutex> sessionLock(sessionMutex_);
+        closeLocalForwardRuntimeLocked(id);
         return forwardingManager_.completeStop(id);
     };
     if (isReactorThread()) {
@@ -301,6 +368,669 @@ SshForwardingResult SshAdapter::releaseForwardingConnection(
 
 std::vector<SshForwardingSnapshot> SshAdapter::forwardingSnapshots() const {
     return forwardingManager_.snapshots();
+}
+
+int SshAdapter::createLocalForwardListener(const SshForwardingConfig& config,
+                                           int& errorCode) {
+    errorCode = 0;
+    if (!isReactorThread()) {
+        errorCode = EPERM;
+        return -1;
+    }
+
+    std::string bindHost = config.bindHost;
+    if (bindHost.size() >= 2 && bindHost.front() == '[' && bindHost.back() == ']') {
+        bindHost = bindHost.substr(1, bindHost.size() - 2);
+    }
+    char portString[16] = {0};
+    snprintf(portString, sizeof(portString), "%d", config.bindPort);
+
+    addrinfo hints {};
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_protocol = IPPROTO_TCP;
+    addrinfo* addresses = nullptr;
+    const int resolveResult = getaddrinfo(bindHost.c_str(), portString, &hints, &addresses);
+    if (resolveResult != 0 || addresses == nullptr) {
+        errorCode = EADDRNOTAVAIL;
+        return -1;
+    }
+
+    int listenerFd = -1;
+    int lastError = EADDRNOTAVAIL;
+    for (addrinfo* address = addresses; address != nullptr; address = address->ai_next) {
+        const int candidate = socket(address->ai_family, address->ai_socktype,
+                                     address->ai_protocol);
+        if (candidate < 0) {
+            lastError = errno;
+            continue;
+        }
+        int reuse = 1;
+        (void)setsockopt(candidate, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
+        const int flags = fcntl(candidate, F_GETFL, 0);
+        if (flags < 0 || fcntl(candidate, F_SETFL, flags | O_NONBLOCK) < 0) {
+            lastError = errno;
+            close(candidate);
+            continue;
+        }
+        const int descriptorFlags = fcntl(candidate, F_GETFD, 0);
+        if (descriptorFlags >= 0) {
+            (void)fcntl(candidate, F_SETFD, descriptorFlags | FD_CLOEXEC);
+        }
+        if (bind(candidate, address->ai_addr, address->ai_addrlen) != 0) {
+            lastError = errno;
+            close(candidate);
+            continue;
+        }
+        if (listen(candidate, static_cast<int>(SshForwardingManager::kMaxConnections)) != 0) {
+            lastError = errno;
+            close(candidate);
+            continue;
+        }
+        listenerFd = candidate;
+        break;
+    }
+    freeaddrinfo(addresses);
+    if (listenerFd < 0) {
+        errorCode = lastError;
+        return -1;
+    }
+    return listenerFd;
+}
+
+LIBSSH2_LISTENER* SshAdapter::createRemoteForwardListener(
+    const SshForwardingConfig& config, int& boundPort, int& errorCode) {
+    errorCode = 0;
+    boundPort = config.bindPort;
+    if (!isReactorThread()) {
+        errorCode = EPERM;
+        return nullptr;
+    }
+    if (session_ == nullptr || sockFd_ < 0) {
+        errorCode = ENOTCONN;
+        return nullptr;
+    }
+
+    std::string bindHost = config.bindHost;
+    if (bindHost.size() >= 2 && bindHost.front() == '[' && bindHost.back() == ']') {
+        bindHost = bindHost.substr(1, bindHost.size() - 2);
+    }
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+    while (std::chrono::steady_clock::now() < deadline) {
+        LIBSSH2_LISTENER* listener = libssh2_channel_forward_listen_ex(
+            session_, bindHost.c_str(), config.bindPort, &boundPort,
+            static_cast<int>(config.maxConnections));
+        if (listener != nullptr) {
+            return listener;
+        }
+        const int libssh2Error = libssh2_session_last_errno(session_);
+        if (libssh2Error != LIBSSH2_ERROR_EAGAIN) {
+            errorCode = libssh2Error;
+            return nullptr;
+        }
+        const int waitResult = waitSocket(2, 1);
+        if (waitResult == -3 || connectCancelRequested_.load(std::memory_order_acquire)) {
+            errorCode = ECANCELED;
+            return nullptr;
+        }
+        if (waitResult == -1) {
+            errorCode = errno != 0 ? errno : EIO;
+            return nullptr;
+        }
+    }
+    errorCode = ETIMEDOUT;
+    return nullptr;
+}
+
+int SshAdapter::createForwardTargetSocket(const std::string& host, int port,
+                                          bool& connecting, int& errorCode) {
+    connecting = false;
+    errorCode = 0;
+    if (!isReactorThread()) {
+        errorCode = EPERM;
+        return -1;
+    }
+    if (host.empty() || port <= 0 || port > 65535) {
+        errorCode = EINVAL;
+        return -1;
+    }
+    std::string normalizedHost = host;
+    if (normalizedHost.size() >= 2 && normalizedHost.front() == '[' &&
+        normalizedHost.back() == ']') {
+        normalizedHost = normalizedHost.substr(1, normalizedHost.size() - 2);
+    }
+    addrinfo hints {};
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_protocol = IPPROTO_TCP;
+    addrinfo* addresses = nullptr;
+    const int resolveResult = getaddrinfo(normalizedHost.c_str(), std::to_string(port).c_str(),
+                                          &hints, &addresses);
+    if (resolveResult != 0 || addresses == nullptr) {
+        errorCode = EHOSTUNREACH;
+        return -1;
+    }
+
+    int lastError = EHOSTUNREACH;
+    int socketFd = -1;
+    for (addrinfo* address = addresses; address != nullptr; address = address->ai_next) {
+        const int candidate = socket(address->ai_family, address->ai_socktype,
+                                      address->ai_protocol);
+        if (candidate < 0) {
+            lastError = errno;
+            continue;
+        }
+        const int flags = fcntl(candidate, F_GETFL, 0);
+        const int descriptorFlags = fcntl(candidate, F_GETFD, 0);
+        if (flags < 0 || fcntl(candidate, F_SETFL, flags | O_NONBLOCK) < 0) {
+            lastError = errno;
+            close(candidate);
+            continue;
+        }
+        if (descriptorFlags >= 0) {
+            (void)fcntl(candidate, F_SETFD, descriptorFlags | FD_CLOEXEC);
+        }
+        const int connectResult = ::connect(candidate, address->ai_addr, address->ai_addrlen);
+        if (connectResult == 0) {
+            socketFd = candidate;
+            connecting = false;
+            break;
+        }
+        if (errno == EINPROGRESS || errno == EALREADY || errno == EINTR) {
+            socketFd = candidate;
+            connecting = true;
+            break;
+        }
+        lastError = errno;
+        close(candidate);
+    }
+    freeaddrinfo(addresses);
+    if (socketFd < 0) {
+        errorCode = lastError;
+        return -1;
+    }
+    return socketFd;
+}
+
+int SshAdapter::pumpDynamicSocksHandshakeLocked(LocalForwardConnection& connection) {
+    if (connection.localFd < 0 || connection.mode != SshForwardingMode::Dynamic) {
+        return -1;
+    }
+    std::array<uint8_t, 4096> buffer {};
+    if (!connection.localEof && connection.socksInput.size() < 8192) {
+        const ssize_t received = recv(connection.localFd, buffer.data(), buffer.size(),
+                                      MSG_DONTWAIT);
+        if (received > 0) {
+            connection.socksInput.insert(connection.socksInput.end(), buffer.begin(),
+                                         buffer.begin() + received);
+        } else if (received == 0) {
+            connection.localEof = true;
+        } else if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) {
+            return -1;
+        }
+    }
+    if (connection.socksInput.size() > 8192) {
+        return -1;
+    }
+
+    if (!connection.socksGreetingComplete) {
+        if (connection.socksInput.size() < 2) {
+            return connection.localEof ? -1 : 0;
+        }
+        const uint8_t version = connection.socksInput[0];
+        const size_t methodCount = connection.socksInput[1];
+        const size_t greetingSize = 2 + methodCount;
+        if (version != 5 || connection.socksInput.size() < greetingSize) {
+            return -1;
+        }
+        bool noAuthentication = false;
+        for (size_t index = 0; index < methodCount; ++index) {
+            if (connection.socksInput[2 + index] == 0x00) {
+                noAuthentication = true;
+                break;
+            }
+        }
+        connection.socksInput.erase(connection.socksInput.begin(),
+                                    connection.socksInput.begin() + greetingSize);
+        if (!noAuthentication) {
+            connection.toLocal.insert(connection.toLocal.end(), {0x05, 0xFF});
+            return -1;
+        }
+        connection.toLocal.insert(connection.toLocal.end(), {0x05, 0x00});
+        connection.socksGreetingComplete = true;
+    }
+
+    if (!connection.socksRequestComplete) {
+        if (connection.socksInput.size() < 4) {
+            return connection.localEof ? -1 : 0;
+        }
+        if (connection.socksInput[0] != 0x05 || connection.socksInput[2] != 0x00) {
+            return -1;
+        }
+        const uint8_t command = connection.socksInput[1];
+        const uint8_t addressType = connection.socksInput[3];
+        size_t addressLength = 0;
+        size_t requestSize = 0;
+        if (addressType == 0x01) {
+            addressLength = 4;
+            requestSize = 4 + addressLength + 2;
+        } else if (addressType == 0x03) {
+            if (connection.socksInput.size() < 5) {
+                return connection.localEof ? -1 : 0;
+            }
+            addressLength = connection.socksInput[4];
+            if (addressLength == 0 || addressLength > 255) { return -1; }
+            requestSize = 4 + 1 + addressLength + 2;
+        } else if (addressType == 0x04) {
+            addressLength = 16;
+            requestSize = 4 + addressLength + 2;
+        } else {
+            return -1;
+        }
+        if (connection.socksInput.size() < requestSize) {
+            return connection.localEof ? -1 : 0;
+        }
+        if (command != 0x01) {
+            return -1;
+        }
+
+        size_t addressOffset = 4;
+        if (addressType == 0x03) { addressOffset = 5; }
+        if (addressType == 0x01 || addressType == 0x04) {
+            char addressText[INET6_ADDRSTRLEN] = {0};
+            const void* addressBytes = connection.socksInput.data() + addressOffset;
+            const int addressFamily = addressType == 0x01 ? AF_INET : AF_INET6;
+            if (inet_ntop(addressFamily, addressBytes, addressText,
+                          sizeof(addressText)) == nullptr) {
+                return -1;
+            }
+            connection.dynamicTargetHost = addressText;
+        } else {
+            connection.dynamicTargetHost.assign(
+                reinterpret_cast<const char*>(connection.socksInput.data() + addressOffset),
+                addressLength);
+        }
+        const size_t portOffset = addressOffset + addressLength;
+        connection.dynamicTargetPort =
+            (static_cast<int>(connection.socksInput[portOffset]) << 8) |
+            static_cast<int>(connection.socksInput[portOffset + 1]);
+        if (connection.dynamicTargetHost.empty() || connection.dynamicTargetPort <= 0 ||
+            connection.dynamicTargetPort > 65535) {
+            return -1;
+        }
+        connection.socksInput.erase(connection.socksInput.begin(),
+                                    connection.socksInput.begin() + requestSize);
+        connection.toChannel.insert(connection.toChannel.end(), connection.socksInput.begin(),
+                                    connection.socksInput.end());
+        connection.socksInput.clear();
+        connection.socksRequestComplete = true;
+    }
+    return 1;
+}
+
+int SshAdapter::openLocalForwardChannelLocked(LocalForwardConnection& connection,
+                                              const SshForwardingConfig& config) {
+    if (connection.mode == SshForwardingMode::Remote) {
+        return connection.channel != nullptr ? 1 : -1;
+    }
+    if (connection.channel != nullptr) {
+        return 1;
+    }
+    if (session_ == nullptr || connection.localFd < 0) {
+        return -1;
+    }
+    std::string targetHost = connection.mode == SshForwardingMode::Dynamic
+        ? connection.dynamicTargetHost : config.targetHost;
+    const int targetPort = connection.mode == SshForwardingMode::Dynamic
+        ? connection.dynamicTargetPort : config.targetPort;
+    if (targetHost.empty() || targetPort <= 0 || targetPort > 65535) {
+        return -1;
+    }
+    if (targetHost.size() >= 2 && targetHost.front() == '[' && targetHost.back() == ']') {
+        targetHost = targetHost.substr(1, targetHost.size() - 2);
+    }
+    connection.channel = libssh2_channel_direct_tcpip_ex(
+        session_, targetHost.c_str(), targetPort, "127.0.0.1", 0);
+    if (connection.channel != nullptr) {
+        return 1;
+    }
+    const int error = libssh2_session_last_errno(session_);
+    if (error == LIBSSH2_ERROR_EAGAIN) {
+        return 0;
+    }
+    OH_LOG_ERROR(LOG_APP,
+                 "[SSH] local forwarding direct-tcpip 打开失败 id=%{public}s rc=%{public}d",
+                 connection.profileId.c_str(), error);
+    return -1;
+}
+
+bool SshAdapter::pumpLocalForwardConnectionLocked(LocalForwardConnection& connection,
+                                                   const SshForwardingConfig& config) {
+    if (connection.localFd < 0 || connection.sessionGeneration != diagnostics_.sessionGeneration()) {
+        return false;
+    }
+    if (connection.localConnecting) {
+        struct pollfd pollDescriptor {
+            connection.localFd, POLLOUT | POLLERR | POLLHUP, 0
+        };
+        const int pollResult = poll(&pollDescriptor, 1, 0);
+        if (pollResult < 0 && errno != EINTR) { return false; }
+        if (pollResult == 0) { return true; }
+        int socketError = 0;
+        socklen_t errorLength = sizeof(socketError);
+        if (getsockopt(connection.localFd, SOL_SOCKET, SO_ERROR,
+                       &socketError, &errorLength) != 0 || socketError != 0) {
+            return false;
+        }
+        connection.localConnecting = false;
+    }
+
+    if (connection.mode == SshForwardingMode::Dynamic &&
+        !connection.socksRequestComplete) {
+        const int handshakeResult = pumpDynamicSocksHandshakeLocked(connection);
+        if (handshakeResult < 0) { return false; }
+        if (handshakeResult == 0) {
+            if (!connection.toLocal.empty()) {
+                int sendFlags = MSG_DONTWAIT;
+#ifdef MSG_NOSIGNAL
+                sendFlags |= MSG_NOSIGNAL;
+#endif
+                const ssize_t written = send(connection.localFd, connection.toLocal.data(),
+                                              connection.toLocal.size(), sendFlags);
+                if (written > 0) {
+                    connection.toLocal.erase(connection.toLocal.begin(),
+                                             connection.toLocal.begin() + written);
+                } else if (written < 0 && errno != EAGAIN && errno != EWOULDBLOCK &&
+                           errno != EINTR) {
+                    return false;
+                }
+            }
+            return true;
+        }
+    }
+
+    const int openResult = openLocalForwardChannelLocked(connection, config);
+    if (openResult < 0) {
+        return false;
+    }
+    if (connection.mode == SshForwardingMode::Dynamic && openResult > 0 &&
+        !connection.socksConnectResponseQueued) {
+        // The SOCKS5 success response is emitted only after the SSH
+        // direct-tcpip channel has been accepted. This prevents a client from
+        // sending application bytes into a channel that failed to open.
+        connection.toLocal.insert(connection.toLocal.end(),
+                                  {0x05, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00});
+        connection.socksConnectResponseQueued = true;
+    }
+
+    std::array<uint8_t, SSH_BUFFER_SIZE> buffer {};
+    if (!connection.localEof && connection.toChannel.size() < kForwardBufferLimit) {
+        const ssize_t received = recv(connection.localFd, buffer.data(), buffer.size(), MSG_DONTWAIT);
+        if (received > 0) {
+            try {
+                connection.toChannel.insert(connection.toChannel.end(),
+                                            buffer.begin(), buffer.begin() + received);
+            } catch (...) {
+                return false;
+            }
+        } else if (received == 0) {
+            connection.localEof = true;
+        } else if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) {
+            return false;
+        }
+    }
+
+    if (connection.channel != nullptr && !connection.toChannel.empty()) {
+        const ssize_t written = libssh2_channel_write(
+            connection.channel, reinterpret_cast<const char*>(connection.toChannel.data()),
+            connection.toChannel.size());
+        if (written > 0) {
+            connection.toChannel.erase(connection.toChannel.begin(),
+                                       connection.toChannel.begin() + written);
+        } else if (written < 0 && written != LIBSSH2_ERROR_EAGAIN) {
+            return false;
+        }
+    }
+
+    if (connection.channel != nullptr && connection.localEof &&
+        connection.toChannel.empty() && !connection.channelEofSent) {
+        const int eofResult = libssh2_channel_send_eof(connection.channel);
+        if (eofResult == 0) {
+            connection.channelEofSent = true;
+        } else if (eofResult != LIBSSH2_ERROR_EAGAIN) {
+            return false;
+        }
+    }
+
+    if (connection.channel != nullptr && connection.toLocal.size() < kForwardBufferLimit) {
+        for (size_t attempt = 0; attempt < 4; ++attempt) {
+            const ssize_t received = libssh2_channel_read(
+                connection.channel, reinterpret_cast<char*>(buffer.data()), buffer.size());
+            if (received > 0) {
+                try {
+                    connection.toLocal.insert(connection.toLocal.end(),
+                                              buffer.begin(), buffer.begin() + received);
+                } catch (...) {
+                    return false;
+                }
+                continue;
+            }
+            if (received == LIBSSH2_ERROR_EAGAIN) {
+                break;
+            }
+            if (received == 0) {
+                if (libssh2_channel_eof(connection.channel) != 0) {
+                    connection.channelEof = true;
+                }
+                break;
+            }
+            return false;
+        }
+    }
+
+    if (connection.localFd >= 0 && !connection.toLocal.empty()) {
+        int sendFlags = MSG_DONTWAIT;
+#ifdef MSG_NOSIGNAL
+        sendFlags |= MSG_NOSIGNAL;
+#endif
+        const ssize_t written = send(connection.localFd, connection.toLocal.data(),
+                                     connection.toLocal.size(), sendFlags);
+        if (written > 0) {
+            connection.toLocal.erase(connection.toLocal.begin(),
+                                     connection.toLocal.begin() + written);
+        } else if (written < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) {
+            return false;
+        }
+    }
+
+    if (connection.channelEof && connection.toLocal.empty()) {
+        if (!connection.localWriteShutdown) {
+            (void)shutdown(connection.localFd, SHUT_WR);
+            connection.localWriteShutdown = true;
+        }
+        return false;
+    }
+    return true;
+}
+
+void SshAdapter::closeLocalForwardConnectionLocked(LocalForwardConnection& connection) {
+    if (connection.channel != nullptr) {
+        libssh2_channel_free(connection.channel);
+        connection.channel = nullptr;
+    }
+    if (connection.localFd >= 0) {
+        shutdown(connection.localFd, SHUT_RDWR);
+        close(connection.localFd);
+        connection.localFd = -1;
+    }
+    if (connection.sessionGeneration != 0) {
+        (void)forwardingManager_.releaseConnection(connection.profileId,
+                                                    connection.sessionGeneration);
+    }
+    connection.toChannel.clear();
+    connection.toLocal.clear();
+}
+
+void SshAdapter::closeLocalForwardRuntimeLocked(const std::string& id) {
+    const auto listener = localForwardListeners_.find(id);
+    if (listener != localForwardListeners_.end()) {
+        if (listener->second.fd >= 0) {
+            close(listener->second.fd);
+        }
+        if (listener->second.remoteListener != nullptr) {
+            (void)libssh2_channel_forward_cancel(listener->second.remoteListener);
+            listener->second.remoteListener = nullptr;
+        }
+        localForwardListeners_.erase(listener);
+    }
+    for (auto connection = localForwardConnections_.begin();
+         connection != localForwardConnections_.end();) {
+        if (connection->profileId != id) {
+            ++connection;
+            continue;
+        }
+        closeLocalForwardConnectionLocked(*connection);
+        connection = localForwardConnections_.erase(connection);
+    }
+}
+
+void SshAdapter::closeAllForwardingRuntimeLocked() {
+    while (!localForwardListeners_.empty()) {
+        closeLocalForwardRuntimeLocked(localForwardListeners_.begin()->first);
+    }
+    while (!localForwardConnections_.empty()) {
+        closeLocalForwardConnectionLocked(localForwardConnections_.back());
+        localForwardConnections_.pop_back();
+    }
+}
+
+void SshAdapter::serviceForwardingOnReactor() {
+    if (!isReactorThread() || !readerRunning_.load(std::memory_order_acquire) ||
+        state_.load(std::memory_order_acquire) != ConnectionState::CONNECTED) {
+        return;
+    }
+    std::unique_lock<std::mutex> sessionLock(sessionMutex_);
+    if (session_ == nullptr || sockFd_ < 0) {
+        return;
+    }
+
+    for (auto& [id, listener] : localForwardListeners_) {
+        (void)id;
+        SshForwardingSnapshot snapshot;
+        if (!forwardingManager_.snapshot(listener.profileId, snapshot) ||
+            snapshot.state != SshForwardingState::Listening ||
+            snapshot.sessionGeneration != listener.sessionGeneration) {
+            continue;
+        }
+
+        if (listener.mode == SshForwardingMode::Remote) {
+            for (size_t accepted = 0; accepted < kForwardAcceptBatch; ++accepted) {
+                LIBSSH2_CHANNEL* channel = libssh2_channel_forward_accept(listener.remoteListener);
+                if (channel == nullptr) {
+                    const int libssh2Error = libssh2_session_last_errno(session_);
+                    if (libssh2Error != LIBSSH2_ERROR_EAGAIN) {
+                        OH_LOG_WARN(LOG_APP,
+                                    "[SSH] remote forwarding accept 失败 id=%{public}s rc=%{public}d",
+                                    listener.profileId.c_str(), libssh2Error);
+                    }
+                    break;
+                }
+                const SshForwardingResult acquired = forwardingManager_.acquireConnection(
+                    listener.profileId, listener.sessionGeneration);
+                if (acquired != SshForwardingResult::Ok) {
+                    libssh2_channel_free(channel);
+                    continue;
+                }
+                bool connecting = false;
+                int errorCode = 0;
+                const int targetFd = createForwardTargetSocket(
+                    snapshot.config.targetHost, snapshot.config.targetPort,
+                    connecting, errorCode);
+                if (targetFd < 0) {
+                    (void)forwardingManager_.releaseConnection(listener.profileId,
+                                                                listener.sessionGeneration);
+                    libssh2_channel_free(channel);
+                    OH_LOG_WARN(LOG_APP,
+                                "[SSH] remote forwarding target 连接失败 id=%{public}s errno=%{public}d",
+                                listener.profileId.c_str(), errorCode);
+                    continue;
+                }
+                try {
+                    LocalForwardConnection connection;
+                    connection.profileId = listener.profileId;
+                    connection.sessionGeneration = listener.sessionGeneration;
+                    connection.mode = SshForwardingMode::Remote;
+                    connection.localFd = targetFd;
+                    connection.localConnecting = connecting;
+                    connection.channel = channel;
+                    localForwardConnections_.push_back(std::move(connection));
+                } catch (...) {
+                    (void)forwardingManager_.releaseConnection(listener.profileId,
+                                                                listener.sessionGeneration);
+                    close(targetFd);
+                    libssh2_channel_free(channel);
+                }
+            }
+            continue;
+        }
+
+        for (size_t accepted = 0; accepted < kForwardAcceptBatch; ++accepted) {
+            sockaddr_storage address {};
+            socklen_t addressLength = sizeof(address);
+            const int clientFd = accept(listener.fd, reinterpret_cast<sockaddr*>(&address),
+                                        &addressLength);
+            if (clientFd < 0) {
+                if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) {
+                    OH_LOG_WARN(LOG_APP,
+                                "[SSH] local forwarding accept 失败 id=%{public}s errno=%{public}d",
+                                listener.profileId.c_str(), errno);
+                }
+                break;
+            }
+            const int flags = fcntl(clientFd, F_GETFL, 0);
+            const int descriptorFlags = fcntl(clientFd, F_GETFD, 0);
+            if (flags < 0 || fcntl(clientFd, F_SETFL, flags | O_NONBLOCK) < 0) {
+                close(clientFd);
+                continue;
+            }
+            if (descriptorFlags >= 0) {
+                (void)fcntl(clientFd, F_SETFD, descriptorFlags | FD_CLOEXEC);
+            }
+            const SshForwardingResult acquired = forwardingManager_.acquireConnection(
+                listener.profileId, listener.sessionGeneration);
+            if (acquired != SshForwardingResult::Ok) {
+                close(clientFd);
+                continue;
+            }
+            try {
+                LocalForwardConnection connection;
+                connection.profileId = listener.profileId;
+                connection.sessionGeneration = listener.sessionGeneration;
+                connection.mode = listener.mode;
+                connection.localFd = clientFd;
+                localForwardConnections_.push_back(std::move(connection));
+            } catch (...) {
+                (void)forwardingManager_.releaseConnection(listener.profileId,
+                                                            listener.sessionGeneration);
+                close(clientFd);
+            }
+        }
+    }
+
+    for (auto connection = localForwardConnections_.begin();
+         connection != localForwardConnections_.end();) {
+        SshForwardingSnapshot snapshot;
+        const bool valid = forwardingManager_.snapshot(connection->profileId, snapshot) &&
+            snapshot.config.mode == connection->mode &&
+            snapshot.state == SshForwardingState::Listening &&
+            snapshot.sessionGeneration == connection->sessionGeneration;
+        if (!valid || !pumpLocalForwardConnectionLocked(*connection, snapshot.config)) {
+            closeLocalForwardConnectionLocked(*connection);
+            connection = localForwardConnections_.erase(connection);
+        } else {
+            ++connection;
+        }
+    }
 }
 
 SshTerminalDiagnosticsSnapshot SshAdapter::terminalDiagnostics() const {
@@ -1643,6 +2373,7 @@ void SshAdapter::disconnect() {
         std::lock_guard<std::mutex> sftpLock(sftpOperationMutex_);
         std::unique_lock<std::mutex> sessionLock(sessionMutex_);
         std::lock_guard<std::mutex> writeFence(inputWriteFenceMutex_);
+        closeAllForwardingRuntimeLocked();
         if (sftp_) {
             libssh2_sftp_shutdown(sftp_);
             sftp_ = nullptr;
@@ -1693,6 +2424,7 @@ void SshAdapter::resetTransportForRecovery() {
     std::lock_guard<std::mutex> sftpLock(sftpOperationMutex_);
     std::unique_lock<std::mutex> sessionLock(sessionMutex_);
     std::lock_guard<std::mutex> writeFence(inputWriteFenceMutex_);
+    closeAllForwardingRuntimeLocked();
     if (sftp_) {
         libssh2_sftp_shutdown(sftp_);
         sftp_ = nullptr;
@@ -3526,6 +4258,7 @@ void SshAdapter::readerLoop() {
         // Control/data admission is already bounded. One item per turn keeps
         // a paste from monopolizing the owner while the channel is readable.
         drainInputQueueOnReactor();
+        serviceForwardingOnReactor();
         serviceKeepaliveOnReactor();
         if (!readerRunning_.load(std::memory_order_acquire)) {
             break;

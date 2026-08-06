@@ -43,6 +43,8 @@ enum class SshForwardingResult : int {
     Disabled = -76,
     ConnectionLimit = -77,
     MissingGeneration = -78,
+    UnsupportedMode = -79,
+    TransportFailure = -80,
 };
 
 struct SshForwardingConfig {
