@@ -7281,9 +7281,6 @@ struct HostListPage {
         this.hostGroupedDesktopRow('ssh', 'vnc')
       }
     }
-    // Recreate the grouped root for each host snapshot so a ListItem cannot
-    // retain stale header counts after a CRUD event.
-    .id('host-grouped-content-' + this.hostViewRevision.toString())
     .width('100%').padding({ top: 8, bottom: 140 })
   }
 
@@ -7382,7 +7379,12 @@ struct HostListPage {
             .width('100%').height(300).justifyContent(FlexAlign.Center)
           }
         } else if (this.groupedHostCardsActive()) {
-          ListItem() { this.hostGroupedContent() }
+          // Match the classic LazyForEach invalidation boundary: the grouped
+          // subtree owns one ListItem, so its key must change at that item
+          // rather than only on a nested Column builder.
+          ForEach([this.hostViewRevision], (_revision: number): void => {
+            ListItem() { this.hostGroupedContent() }
+          }, (revision: number): string => 'host-grouped-item-' + revision.toString())
         } else if (this.filteredHosts.length === 0) {
           ListItem() {
             Column() {
