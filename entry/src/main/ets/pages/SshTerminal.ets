@@ -5427,7 +5427,10 @@ struct SshTerminal {
   }
 
   private sftpUsesRootBindSheet(): boolean {
-    return !this.isDesktopDevice;
+    // A Pad owns the complete two-pane SFTP workspace in a wide root sheet.
+    // Phones keep the same root sheet but use the original bottom-sheet flow;
+    // PC/2in1 keeps SFTP inline in the resizable desktop workspace.
+    return this.isPadDevice || !this.isDesktopDevice;
   }
 
   private sftpHeaderTopPadding(): number {
@@ -8473,12 +8476,13 @@ struct SshTerminal {
       }
     })
     .bindSheet($$this.showSftpSheet, this.SftpTransferSheet(), {
-      height: this.sftpSheetHeight(),
-      preferType: this.sftpWideLayout() ? SheetType.CENTER : SheetType.BOTTOM,
-      // Center sheets otherwise use a platform default width, which makes
-      // the Pad two-pane workspace collapse into a narrow dialog.
-      width: this.sftpWideLayout() ? '96%' : '100%',
-      dragBar: !this.sftpWideLayout(),
+      // The Pad root surface is the complete SFTP workspace, not an inline
+      // terminal overlay. Keep its sheet geometry independent from the PC
+      // wide-layout branch so a device-class update cannot narrow the sheet.
+      height: this.isPadDevice ? SheetSize.LARGE : SheetSize.FIT_CONTENT,
+      preferType: this.isPadDevice ? SheetType.CENTER : SheetType.BOTTOM,
+      width: this.isPadDevice ? '96%' : '100%',
+      dragBar: !this.isPadDevice,
       backgroundColor: this.pal().sheetBg,
       blurStyle: BlurStyle.NONE,
       showClose: false,
