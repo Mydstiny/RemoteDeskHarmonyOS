@@ -288,6 +288,8 @@ struct SshTerminal {
   @State terminalSurfaceRenderRevision: number = 0;
   /** Stable page-owned slot; the host binding changes in place. */
   @State terminalSurfaceViewKey: string = '';
+  /** Monotonic commit id used as the actual ArkUI renderer-list identity. */
+  @State terminalSurfaceCommitSequence: number = 0;
   /** Explicit repaint fence for a committed visible host binding. */
   @State terminalSurfaceRefreshRequest: number = 0;
   /** Pad/PC native renderer failure is scoped to this visible binding only. */
@@ -385,8 +387,6 @@ struct SshTerminal {
   private terminalFallbackDecodeRemainders: Map<string, Uint8Array> =
     new Map<string, Uint8Array>();
   private sshTabStoreUnsubscribe: (() => void) | null = null;
-  /** Kept for compatibility with route-entry cleanup; tab clicks stay in-page. */
-  private tabNavigationPending: boolean = false;
   /** Serializes same-page SSH tab activation and prevents overlapping rebinds. */
   private tabSwitchInFlight: boolean = false;
   /** Separates old-surface teardown from the next surface mount by one frame. */
@@ -642,9 +642,33 @@ struct SshTerminal {
     // the transient XComponent/WebView surface and makes the next document
     // lifecycle deterministic.
     this.terminalSurfaceRenderRevision = this.terminalSurfaceRenderRevision + 1;
+    this.terminalSurfaceCommitSequence = this.terminalSurfaceCommitSequence + 1;
     this.terminalSurfaceViewKey = '';
     this.terminalSurfaceMounted = false;
     this.xtermReady = false;
+  }
+
+  /** Commit one visible host binding after the session callback is installed. */
+  private commitTerminalSurfaceBinding(bindingHostId: string, bindingKey: string): boolean {
+    const normalizedHostId: string = bindingHostId.trim();
+    const normalizedBindingKey: string = bindingKey.trim();
+    if (normalizedHostId.length === 0 || normalizedBindingKey.length === 0) { return false; }
+    const nextRenderRevision: number = this.terminalSurfaceRenderRevision + 1;
+    const nextViewKey: string = makeSshTerminalSurfaceRenderKey(normalizedHostId,
+      normalizedBindingKey, nextRenderRevision, this.shouldUseNativeTerminal());
+    if (nextViewKey.length === 0) { return false; }
+
+    // Keep all renderer-driving state in one commit. ArkUI can observe several
+    // assignments in one turn; the commit sequence makes the renderer list
+    // identity independent from host/session strings that may be reused.
+    this.terminalSurfaceBindingKey = normalizedBindingKey;
+    this.terminalSurfaceRenderRevision = nextRenderRevision;
+    this.terminalSurfaceCommitSequence = this.terminalSurfaceCommitSequence + 1;
+    this.terminalSurfaceViewKey = nextViewKey;
+    this.termOutputSequence = this.termOutputSequence + 1;
+    this.terminalSurfaceRefreshRequest = this.terminalSurfaceRefreshRequest + 1;
+    this.terminalSurfaceMounted = true;
+    return true;
   }
 
   /**
@@ -725,25 +749,7 @@ struct SshTerminal {
         return;
       }
       this.terminalSurfaceMountRetryCount = 0;
-      this.terminalSurfaceBindingKey = bindingKey;
-      // Keep this independent from the host/session key. A renderer can be
-      // rebound to the same retained core after a surface recovery, and ArkUI
-      // must still reconcile the renderer props in that case.
-      const nextRenderRevision: number = this.terminalSurfaceRenderRevision + 1;
-      const nextViewKey: string = makeSshTerminalSurfaceRenderKey(bindingHostId, bindingKey,
-        nextRenderRevision, this.shouldUseNativeTerminal());
-      if (nextViewKey.length === 0) { return; }
-      this.terminalSurfaceRenderRevision = nextRenderRevision;
-      this.terminalSurfaceViewKey = nextViewKey;
-      // Wake both renderer paths after the visible binding is committed. The
-      // target host may have received bytes while its surface was detached;
-      // the sequence change makes a reused child drain its host-local buffer
-      // even when ArkUI coalesces the loading-to-surface transition.
-      this.termOutputSequence = this.termOutputSequence + 1;
-      // Output may be quiet while a retained native core is rebound. Keep the
-      // visual repaint contract independent from SSH byte arrival.
-      this.terminalSurfaceRefreshRequest = this.terminalSurfaceRefreshRequest + 1;
-      this.terminalSurfaceMounted = true;
+      if (!this.commitTerminalSurfaceBinding(bindingHostId, bindingKey)) { return; }
       if (this.terminalRendererReadyTimer !== -1) {
         clearTimeout(this.terminalRendererReadyTimer);
       }
@@ -779,27 +785,22 @@ struct SshTerminal {
       this.showSshTabPicker = false;
       return;
     }
-    // A route replacement gives ArkUI a real page lifecycle boundary. The old
-    // page detaches its SSH consumer, while the new page adopts the target
-    // session and rebuilds the terminal surface from its host-local state.
-    // This avoids relying on a same-page XComponent/WebView subtree diff to
-    // refresh a visible terminal after a host switch.
-    if (!this.sshTabStore.beginNavigation(targetHostId)) { return; }
     this.showSshTabPicker = false;
-    this.sshTabStore.open(targetHostId, host.label,
-      host.username + '@' + host.host + ':' + host.port.toString());
-    this.sshTabStore.activate(targetHostId);
-    this.refreshSshTabViews();
-    this.tabNavigationPending = true;
-    void router.replaceUrl({ url: 'pages/SshTerminal', params: { hostId: targetHostId } })
+    // Keep one page alive for the whole SSH workspace. The switch operation
+    // detaches only the old session callback, adopts the target session and
+    // rebinds the visible renderer; it must never route-replace the page.
+    this.tabSwitchInFlight = true;
+    void this.switchSshTab(host)
       .catch((err: Error): void => {
-        this.sshTabStore.cancelNavigation(targetHostId);
-        this.tabNavigationPending = false;
-        this.sshTabStore.activate(this.hostId);
+        if (this.terminalClosing) { return; }
+        const message: string = err?.message || 'SSH 主机切换失败';
+        this.connecting = false;
+        this.connectionError = message;
+        this.sshTabStore.update(targetHostId, 'error', -1, message);
         this.refreshSshTabViews();
-        hilog.error(0x0001, 'SshTerminal', '[tab] route switch failed: ' +
-          (err?.message || 'SSH 主机切换失败'));
-      });
+        hilog.error(0x0001, 'SshTerminal', '[tab] in-page switch failed: ' + message);
+      })
+      .finally((): void => { this.tabSwitchInFlight = false; });
   }
 
   /**
@@ -2753,7 +2754,6 @@ struct SshTerminal {
     this.terminalClosing = false;
     this.nativeRendererUnavailable = false;
     this.clearPreflightBinding();
-    this.tabNavigationPending = false;
     this.showSshTabPicker = false;
     if (this.sshTabStoreUnsubscribe !== null) {
       this.sshTabStoreUnsubscribe();
@@ -2981,11 +2981,9 @@ struct SshTerminal {
     // Hide the virtual-key layer before the old route is detached so it cannot
     // flash above the next SSH page during router replacement.
     this.resetTerminalSurfaceBinding();
-    const switchingSshTab: boolean = !this.explicitSessionClose &&
-      (this.tabNavigationPending || this.sshTabStore.isNavigationPending());
     const preserveSshInBackground: boolean =
       (AppStorage.get<boolean>('remoteDesktopBgFlag') ?? false) &&
-      !switchingSshTab && !this.explicitSessionClose && this.connected && this.sessionId > 0 &&
+      !this.explicitSessionClose && this.connected && this.sessionId > 0 &&
       this.hostId.length > 0;
     let backgroundContext: common.UIAbilityContext | null = null;
     try {
@@ -3069,7 +3067,7 @@ struct SshTerminal {
     // 恢复系统状态栏颜色到进入前的值
     this.restoreStatusBar();
     const requestSessionId: number = this.sessionId;
-    const shouldCloseAllSshSessions: boolean = !switchingSshTab && !preserveSshInBackground;
+    const shouldCloseAllSshSessions: boolean = !preserveSshInBackground;
     if (shouldCloseAllSshSessions) {
       const allSessionIds: number[] = this.sshTabStore.closeAll();
       this.sshTranscriptStore.clearAll();
@@ -3102,7 +3100,6 @@ struct SshTerminal {
       // It cannot be safely detached because no page-owned session exists yet.
       this.loader.disconnect();
     }
-    if (switchingSshTab) { this.sshTabStore.completeNavigation(); }
     this.sessionId = -1;
     this.connected = false;
     this.visibleSshHostId = '';
@@ -3951,6 +3948,7 @@ struct SshTerminal {
       '[terminal] native renderer unavailable, fallback host=' + hostId);
     this.nativeRendererUnavailable = true;
     this.xtermReady = false;
+    this.terminalSurfaceCommitSequence = this.terminalSurfaceCommitSequence + 1;
     this.terminalSurfaceViewKey = makeSshTerminalSurfaceRenderKey(hostId,
       surfaceIdentity, this.terminalSurfaceRenderRevision, false);
     this.replayNativeOutputToXterm(hostId);
@@ -6663,7 +6661,8 @@ struct SshTerminal {
             // Keep the native VT core/session alive in the registry; the
             // renderer itself receives an explicit inactive -> active rebind.
             Stack({ alignContent: Alignment.TopStart }) {
-            ForEach([this.terminalSurfaceViewKey], (surfaceRenderKey: string): void => {
+            ForEach([this.terminalSurfaceViewKey + ':commit-' +
+              this.terminalSurfaceCommitSequence.toString()], (surfaceRenderKey: string): void => {
               // The keyed wrapper owns the visual lifecycle. The renderer
               // component below may otherwise be reused after a host switch
               // even when the page has already committed a new binding.

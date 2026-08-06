@@ -26,8 +26,9 @@ Updated: 2026-08-06 Asia/Shanghai
 - Same-page SSH host switching now rejects stale async connect/attach/data/PiP
   continuations using an independent binding generation, cancels pending
   handshakes before switching, and retains detach-race output per host. The
-  top-tab switch serializes route replacement, detaches the old page and adopts
-  the retained target session. The visible xterm WebView has an explicit
+  top-tab switch stays in one persistent page, serializes the binding handoff,
+  detaches the old session callback and adopts the retained target session. The
+  visible xterm WebView has an explicit
   detach/rebind gate; during a host switch the old XComponent/WebView is removed
   and the target surface is mounted only after the new binding is committed;
   the page publishes an observable host/binding identity, and Pad/PC native VT rebinds a retained
@@ -38,6 +39,11 @@ Updated: 2026-08-06 Asia/Shanghai
   stale. An adopted session's transient native `CONNECTING` state no longer
   hides the newly bound page, and mount retries re-probe native state immediately.
   Both code-only Hvigor gates passed on 2026-08-06; device validation is deferred.
+- The visible renderer now commits host, binding, revision, output wake and
+  repaint fence through one page-owned sequence. GPU host/surface/revision
+  changes synchronously detach the previous lease before rebind, and the stale
+  `SshTerminalTabStore` navigation field/reference has been removed. Both
+  code-only Hvigor gates passed on 2026-08-06; device validation is deferred.
 - Keep the current review state at `REVIEW_REQUIRED` until the host-switch
   surface-gate, renderer-owner lease, and revision-aware document corrections are independently reviewed; do not claim full
   background SFTP execution, Level A, or Level B connectivity.
@@ -48,7 +54,7 @@ Updated: 2026-08-06 Asia/Shanghai
 ## Next
 
 - WP-T4 user acceptance and benchmark using shared terminal fixtures.
-- Independently review the current same-page SSH binding-generation,
+- Independently review the current same-page SSH binding-generation and commit,
   initial-UI deterministic host/binding/revision keyed remount, surface-owner lease, fallback, render-revision,
   revision-aware document reload, GPU binding-lease invalidation, EGL refresh, surface-ID polling, measured-size rebind, mount-wake fix, and
   reused-renderer rebind/reload.

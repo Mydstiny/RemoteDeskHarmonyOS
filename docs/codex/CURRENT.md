@@ -4,7 +4,7 @@
 - Task: `ssh-terminal-complete-upgrade`
 - Base: `main@d2769ad4b`
 - Branch: `codex/ssh-terminal-complete-upgrade`
-- Code checkpoint: `972987fcb` (`fix(ssh): refresh retained host surface on route switch`); the host-switch surface gate, transient-`CONNECTING` mount wake, deterministic host/binding/revision keyed remount, revision-aware owner/document correction, and GPU surface-binding lease invalidation are committed.
+- Code checkpoint: `d72c84d` (`fix(ssh): refresh retained host surface on route switch`); the current same-page binding-commit and synchronous GPU lease-detach correction is the next checkpoint.
 - Phase: Alacritty default; lifecycle, VT/Unicode/resize/TUI/large-output parity, per-host output isolation and code-only host-switch/surface refresh recovery.
 - Scope: migrate VT behind terminalCore, keep appearance settings in-core, verify IME/input/Canvas behavior. Homepage work is not current focus.
 
@@ -30,9 +30,9 @@
   host-key binding and real endpoint acceptance.
 - Same-page switching rejects stale async connect/attach/data/PiP callbacks,
   cancels pending handshakes and retains detach-race output per host. The
-  top-tab switch now serializes `beginNavigation`, replaces the route, detaches
-  the old page and adopts the retained target session, so a second host can
-  refresh its page without dropping its SSH connection.
+  top-tab switch stays inside one persistent SSH page, serializes the binding
+  handoff, detaches only the old session callback and adopts the retained target
+  session, so a second host can refresh without dropping either SSH socket.
 - The terminal surface has an explicit detach/rebind gate. A deterministic
   host/binding/revision key removes stale XComponent/WebView instances; native
   owner leases and renderer view IDs reject stale owners, while xterm documents
@@ -41,7 +41,9 @@
   surface-flush failures, polls surface IDs when API 23 skips callbacks, uses
   measured size for the first bind, and invalidates retries on host/revision
   changes. Adopted sessions with transient `CONNECTING` stay visible and wake
-  mount retry synchronously.
+  mount retry synchronously. A monotonic surface-commit sequence now drives the
+  ArkUI renderer-list identity, and host/surface/revision prop changes detach
+  the old GPU lease synchronously before the new bind is scheduled.
 
 ## SSH Connectivity Boundary
 
@@ -64,8 +66,8 @@
   failure is the existing rendezvous fixture's public-address assertion.
 - `default@OhosTestCompileArkTS`: passed for the host-switch surface refresh,
   transient-`CONNECTING` mount wake, deterministic keyed remount,
-  revision-aware renderer owner/document correction, and GPU refresh owner-lease
-  correction on 2026-08-06; warnings only.
+  revision-aware renderer owner/document correction, explicit surface-commit
+  sequence, and synchronous GPU lease detach on 2026-08-06; warnings only.
 - `assembleHap`: the same code-only correction passed with `BUILD SUCCESSFUL`
   and signing on 2026-08-06.
 - Terminal-core Rust tests: Alacritty path `63 passed, 0 failed`; fallback
@@ -87,7 +89,7 @@
 
 ## Next
 
-1. Independently review the same-page SSH binding/initial-UI surface-owner, fallback, deterministic keyed remount, renderer-owner lease, revision-aware document, GPU binding lease, and EGL refresh scope.
+1. Independently review the same-page SSH binding commit, initial-UI surface-owner, fallback, deterministic keyed remount, renderer-owner lease, revision-aware document, GPU binding lease, and EGL refresh scope.
 2. Verify ProxyJump against a real OpenSSH bastion and bind its host key.
 3. Add SSH-scoped local/remote/dynamic forwarding and FRP visitor modes.
 

@@ -214,29 +214,27 @@ export struct GpuTerminalRenderer {
   }
 
   private onCoreKeyChange(): void {
-    this.invalidateSurfaceObservation();
+    // Detach synchronously before ArkUI delivers the remaining prop watches;
+    // otherwise the old host can keep painting through the reused XComponent
+    // for one frame while the new host binding is being assembled.
+    this.deactivateRenderer();
     if (this.active) {
       this.scheduleSurfaceRebind();
       this.startSurfaceIdPolling();
-    } else {
-      this.deactivateRenderer();
     }
   }
 
   private onSurfaceIdentityChange(): void {
-    this.invalidateSurfaceObservation();
+    this.deactivateRenderer();
     if (this.active) {
       this.scheduleSurfaceRebind();
       this.startSurfaceIdPolling();
-    } else {
-      this.deactivateRenderer();
     }
   }
 
   private onRenderRevisionChange(): void {
-    this.invalidateSurfaceObservation();
+    this.deactivateRenderer();
     if (!this.active) {
-      this.deactivateRenderer();
       this.stopSurfaceIdPolling();
       return;
     }
@@ -272,6 +270,7 @@ export struct GpuTerminalRenderer {
     // owner; let the normal lease-checked rebind transaction adopt it first.
     if (this.attachedCoreKey !== this.coreKey ||
       this.attachedOwnerId !== this.rendererOwnerId()) {
+      this.deactivateRenderer();
       this.scheduleSurfaceRebind();
       this.startSurfaceIdPolling();
       return;
