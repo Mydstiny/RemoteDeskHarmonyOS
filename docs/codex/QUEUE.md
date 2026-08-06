@@ -57,8 +57,9 @@ Updated: 2026-08-06 Asia/Shanghai
   committed, but keep them pending until bastion host-key policy and a real
   OpenSSH endpoint are verified.
 - The native forwarding lifecycle contract is now committed for local, remote
-  and dynamic modes; it still needs SSH session-owner socket/channel wiring,
-  NAPI/ArkTS entry points and endpoint interoperability.
+  and dynamic modes, and `SshAdapter` binds its runtime transitions to the
+  session-owner reactor with transport-reset cleanup. It still needs real SSH
+  socket/channel wiring, NAPI/ArkTS entry points and endpoint interoperability.
 
 ## Next
 
@@ -67,8 +68,9 @@ Updated: 2026-08-06 Asia/Shanghai
   initial-UI deterministic host/binding/revision keyed remount, surface-owner lease, fallback, render-revision,
   revision-aware document reload, GPU binding-lease invalidation, EGL refresh, surface-ID polling, measured-size rebind, mount-wake fix, and
   reused-renderer rebind/reload.
-- Wire `SshForwardingManager` into the SSH session-owner reactor and add the
-  guarded NAPI/ArkTS lifecycle bridge.
+- Add the guarded forwarding NAPI/ArkTS lifecycle bridge and TypeScript types.
+- Implement local/remote/dynamic libssh2 socket/channel transport behind that
+  bridge, with endpoint-facing error propagation.
 - WP-T5/WP-T6 terminal correctness and damage-frame renderer implementation.
 - Real SFTP, bastion, forwarding and FRP endpoint interoperability tests when
   the corresponding services and HDC/device are available.
@@ -93,5 +95,5 @@ Updated: 2026-08-06 Asia/Shanghai
 - `ohosTest@OhosTestCompileArkTS` is unregistered (`00306054`).
 - Light compliance is blocked by baseline SBOM package
   `totp-reviewed-brand-assets` with `licenseDeclared=NOASSERTION`.
-- Host native suite has 260 passing tests and 16 pre-existing VNC TLS fixture
-  startup failures (276 total).
+- Host native suite has 268 passing tests and 16 pre-existing VNC TLS fixture
+  startup failures (284 total).
