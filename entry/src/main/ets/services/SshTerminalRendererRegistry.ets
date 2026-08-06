@@ -35,7 +35,8 @@ export class SshTerminalRendererRegistry {
 
   /**
    * 绑定 key 到一个 surface：已有句柄则 rebind，否则创建。
-   * 返回可用句柄，失败返回 0（调用方回退 Canvas 渲染器）。
+   * 返回可用句柄；普通 surface 失败返回 0，GPU flush 失败返回负值，
+   * 调用方据此立即回退到 xterm/transcript 渲染器。
    */
   attach(key: string, config: SshTerminalRendererConfig, bridge: SshTerminalRendererBridge,
     ownerId: string = ''): number {
@@ -46,7 +47,9 @@ export class SshTerminalRendererRegistry {
     if (existing !== undefined && existing.handle > 0) {
       if (shouldRebindSshTerminalSurface(existing.surfaceId, config.surfaceId,
         existing.ownerId, normalizedOwnerId)) {
-        if (!bridge.bindSurface(existing.handle, config.surfaceId, config.widthPx, config.heightPx)) {
+        const bindStatus: number = bridge.bindSurface(existing.handle, config.surfaceId,
+          config.widthPx, config.heightPx);
+        if (bindStatus !== 0) {
           // Rebinding can race XComponent surface destruction or be required
           // for a reused platform surface ID. Keep the VT core and mark it
           // detached so the next surface callback can retry; destroying here
@@ -56,7 +59,7 @@ export class SshTerminalRendererRegistry {
           // component from detaching this handle while the new surface is
           // between destruction and recreation.
           existing.ownerId = normalizedOwnerId;
-          return 0;
+          return bindStatus < 0 || bridge.hasSurfaceFlushFailure(existing.handle) ? -1 : 0;
         } else {
           existing.surfaceId = config.surfaceId;
           existing.ownerId = normalizedOwnerId;

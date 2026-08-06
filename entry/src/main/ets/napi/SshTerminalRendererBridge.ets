@@ -31,8 +31,9 @@ interface SshTerminalRendererNativeModule {
     viewportHeightPx: number, visibleHeightPx: number, bottomAlign: boolean) => number;
   sshTerminalRendererDestroy?: (handle: number) => void;
   sshTerminalRendererBindSurface?: (handle: number, surfaceId: string,
-    widthPx: number, heightPx: number) => boolean;
+    widthPx: number, heightPx: number) => number | boolean;
   sshTerminalRendererDetachSurface?: (handle: number) => void;
+  sshTerminalRendererHasSurfaceFlushFailure?: (handle: number) => boolean;
   sshTerminalRendererWriteBytes?: (handle: number, data: ArrayBuffer) => void;
   sshTerminalRendererRefresh?: (handle: number) => boolean;
   sshTerminalRendererResize?: (handle: number, cols: number, rows: number,
@@ -80,10 +81,19 @@ export class SshTerminalRendererBridge {
     this.native.sshTerminalRendererDestroy?.(handle);
   }
 
-  bindSurface(handle: number, surfaceId: string, widthPx: number, heightPx: number): boolean {
+  bindSurface(handle: number, surfaceId: string, widthPx: number, heightPx: number): number {
     const fn = this.native.sshTerminalRendererBindSurface;
-    if (fn === undefined || handle === 0) { return false; }
-    return fn(handle, surfaceId, widthPx, heightPx);
+    if (fn === undefined || handle === 0) { return 1; }
+    const status: number | boolean = fn(handle, surfaceId, widthPx, heightPx);
+    // Older HAP/native pairs exposed boolean success. Normalize that ABI at
+    // the boundary so true remains success when mixed with a newer ArkTS UI.
+    if (typeof status === 'boolean') { return status ? 0 : 1; }
+    return status;
+  }
+
+  hasSurfaceFlushFailure(handle: number): boolean {
+    if (handle === 0) { return false; }
+    return this.native.sshTerminalRendererHasSurfaceFlushFailure?.(handle) === true;
   }
 
   detachSurface(handle: number): void {

@@ -30,6 +30,13 @@ struct OH_Drawing_Typeface;
 
 class SshTerminalRenderer {
 public:
+    /**
+     * OH_Drawing_SurfaceFlush can turn a recoverable BufferQueue error into a
+     * process-wide GPU abort on some API 23 devices. Once that call reports a
+     * failure, the renderer must stay detached and let ArkTS switch to xterm.
+     */
+    static constexpr int kSurfaceFlushFailure = -5;
+
     SshTerminalRenderer() = default;
     ~SshTerminalRenderer();
 
@@ -46,6 +53,7 @@ public:
     void Destroy();
 
     bool IsReady() const;
+    bool HasSurfaceFlushFailure() const;
     void WriteBytes(const uint8_t* data, std::size_t length);
     /** Repaint the retained VT snapshot after a surface or EGL context rebind. */
     bool Refresh();
@@ -84,6 +92,10 @@ private:
     mutable std::mutex mutex_;
     void* terminal_ = nullptr;
     bool ready_ = false;
+    // Latched for the lifetime of this native renderer. Retrying the same
+    // OH_Drawing GPU backend after a failed flush is the path that previously
+    // ended in DDGR::Context::Panic and SIGABRT.
+    bool surfaceFlushFailed_ = false;
 
     EGLDisplay eglDisplay_ = EGL_NO_DISPLAY;
     EGLContext eglContext_ = EGL_NO_CONTEXT;

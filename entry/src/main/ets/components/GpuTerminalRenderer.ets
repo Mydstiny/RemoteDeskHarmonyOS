@@ -23,6 +23,10 @@ const DEFAULT_FG_ARGB: number = 0xFFE8EAED;
 /** API 23 may omit XComponentController.onSurfaceCreated during a remount. */
 const GPU_SURFACE_POLL_INTERVAL_MS: number = 100;
 const GPU_SURFACE_POLL_MAX_ATTEMPTS: number = 60;
+// API 23 can expose a numeric surface ID a few turns before its BufferQueue
+// is attached. Do not create OH_Drawing_SurfaceOnScreen during that window;
+// the old eager poll produced 41207000 before onSurfaceCreated was delivered.
+const GPU_SURFACE_STABILIZATION_ATTEMPTS: number = 3;
 
 class GpuTerminalSurfaceController extends XComponentController {
   onSurfaceReady: ((surfaceId: string) => void) | null = null;
@@ -91,6 +95,8 @@ export struct GpuTerminalRenderer {
   private currentSurfaceId: string = '';
   /** Keep the last surface identity for a destroy/recreate race. */
   private lastKnownSurfaceId: string = '';
+  /** True only after the platform create callback or bounded stabilization. */
+  private surfaceLifecycleReady: boolean = false;
   private followBottom: boolean = true;
   private lastModeSignature: string = '';
   private inputDrainTimer: number = -1;
@@ -136,17 +142,37 @@ export struct GpuTerminalRenderer {
     this.unavailableReported = false;
     this.fullRefreshPending = true;
     this.surfaceAttachRetryCount = 0;
+    this.surfaceLifecycleReady = false;
     this.xcController.onSurfaceReady = (surfaceId: string): void => {
       if (this.disposed || lifecycleToken !== this.lifecycleToken) { return; }
       if (!this.active) { return; }
+      const changed: boolean = this.currentSurfaceId !== surfaceId;
+      // onSurfaceCreated only confirms that ArkUI allocated an ID. On API 23
+      // the BufferQueue can still reject its first producer flush for a few
+      // frames, so let pollSurfaceId() perform the same bounded stabilization
+      // for callback-driven and polling-driven surface discovery.
+      this.surfaceLifecycleReady = false;
+      if (this.surfaceRebindTimer !== -1) {
+        clearTimeout(this.surfaceRebindTimer);
+        this.surfaceRebindTimer = -1;
+      }
+      // Invalidate a rebind callback that may already be queued behind the
+      // platform surface callback; it must not bypass stabilization.
+      this.surfaceRebindToken += 1;
       this.currentSurfaceId = surfaceId;
       this.lastKnownSurfaceId = surfaceId;
+      if (changed) {
+        this.surfaceReady = false;
+        this.fullRefreshPending = true;
+        this.boundSurfaceWidthPx = 0;
+        this.boundSurfaceHeightPx = 0;
+      }
       if (this.surfaceAttachRetryTimer !== -1) {
         clearTimeout(this.surfaceAttachRetryTimer);
         this.surfaceAttachRetryTimer = -1;
       }
       this.surfaceAttachRetryCount = 0;
-      if (this.hasUsableBinding()) { this.scheduleSurfaceRebind(); }
+      if (this.hasUsableBinding()) { this.startSurfaceIdPolling(); }
     };
     this.xcController.onSurfaceGone = (surfaceId: string): void => {
       // Ignore a destroy callback for a different, newer surface. A callback
@@ -158,6 +184,7 @@ export struct GpuTerminalRenderer {
       if (!this.active) { return; }
       this.lastKnownSurfaceId = surfaceId;
       this.currentSurfaceId = '';
+      this.surfaceLifecycleReady = false;
       this.surfaceReady = false;
       this.fullRefreshPending = true;
       this.boundSurfaceWidthPx = 0;
@@ -206,6 +233,7 @@ export struct GpuTerminalRenderer {
     this.surfaceReady = false;
     this.currentSurfaceId = '';
     this.lastKnownSurfaceId = '';
+    this.surfaceLifecycleReady = false;
     this.boundSurfaceWidthPx = 0;
     this.boundSurfaceHeightPx = 0;
     // 句柄归 SSH 标签所有，由页面在关闭标签/退出全部连接时经 registry 销毁。
@@ -314,6 +342,7 @@ export struct GpuTerminalRenderer {
     this.stopSurfaceIdPolling();
     this.currentSurfaceId = '';
     this.lastKnownSurfaceId = '';
+    this.surfaceLifecycleReady = false;
     this.surfaceReady = false;
     this.boundSurfaceWidthPx = 0;
     this.boundSurfaceHeightPx = 0;
@@ -361,6 +390,14 @@ export struct GpuTerminalRenderer {
       const changed: boolean = this.currentSurfaceId !== surfaceId;
       this.currentSurfaceId = surfaceId;
       this.lastKnownSurfaceId = surfaceId;
+      if (!this.surfaceLifecycleReady && attempt < GPU_SURFACE_STABILIZATION_ATTEMPTS) {
+        this.surfacePollTimer = setTimeout((): void => {
+          this.surfacePollTimer = -1;
+          this.pollSurfaceId(token, attempt + 1);
+        }, GPU_SURFACE_POLL_INTERVAL_MS);
+        return;
+      }
+      this.surfaceLifecycleReady = true;
       if (changed || !this.surfaceReady) {
         this.scheduleSurfaceRebind();
       }
@@ -368,6 +405,7 @@ export struct GpuTerminalRenderer {
       // second polling loop would only keep invalidating its pending turn.
       return;
     }
+    this.surfaceLifecycleReady = false;
     if (attempt >= GPU_SURFACE_POLL_MAX_ATTEMPTS) {
       hilog.warn(0x0000, 'GpuTerminal', 'surface id poll timed out');
       return;
@@ -389,6 +427,10 @@ export struct GpuTerminalRenderer {
       this.deactivateRenderer();
       return;
     }
+    if (!this.surfaceLifecycleReady) {
+      this.startSurfaceIdPolling();
+      return;
+    }
     if (this.surfaceRebindTimer !== -1) {
       clearTimeout(this.surfaceRebindTimer);
       this.surfaceRebindTimer = -1;
@@ -401,8 +443,8 @@ export struct GpuTerminalRenderer {
     const bindingLease: string = this.surfaceBindingLease();
     this.surfaceRebindTimer = setTimeout((): void => {
       this.surfaceRebindTimer = -1;
-      if (this.disposed || !this.hasUsableBinding() || token !== this.surfaceRebindToken ||
-        bindingLease !== this.surfaceBindingLease()) { return; }
+      if (this.disposed || !this.hasUsableBinding() || !this.surfaceLifecycleReady ||
+        token !== this.surfaceRebindToken || bindingLease !== this.surfaceBindingLease()) { return; }
       const previousKey: string = this.attachedCoreKey;
       if (previousKey.length > 0) {
         this.registry.detach(previousKey, this.bridge, this.attachedRendererOwnerId());
@@ -468,6 +510,13 @@ export struct GpuTerminalRenderer {
       return;
     }
     if (handle <= 0) {
+      if (handle < 0) {
+        // A negative handle is the native renderer's latched GPU-flush
+        // failure. Retrying would call OH_Drawing_SurfaceFlush again on the
+        // same lost backend and can abort the entire application.
+        this.reportUnavailable();
+        return;
+      }
       hilog.warn(0x0000, 'GpuTerminal', 'attach failed for key %{public}s', this.coreKey);
       this.scheduleSurfaceAttachRetry();
       return;
@@ -497,7 +546,8 @@ export struct GpuTerminalRenderer {
   /**
    * A visible binding is not ready until its retained VT snapshot has been
    * acknowledged by native drawing. Failed flushes release only the surface
-   * and reuse the bounded rebind/poll recovery path.
+   * and reuse the bounded rebind/poll recovery path. A latched native GPU
+   * flush failure is terminal for this renderer and switches to xterm.
    */
   private refreshVisibleSurface(): boolean {
     if (!this.hasUsableBinding()) { return false; }
@@ -538,6 +588,12 @@ export struct GpuTerminalRenderer {
     const attachedKey: string = this.attachedCoreKey.length > 0
       ? this.attachedCoreKey : this.coreKey;
     this.registry.detach(attachedKey, this.bridge, this.attachedRendererOwnerId());
+    if (this.bridge.hasSurfaceFlushFailure(this.handle)) {
+      // The native renderer has already latched the failure and will reject
+      // every later bind. Switch to the retained transcript immediately.
+      this.reportUnavailable();
+      return false;
+    }
     this.scheduleSurfaceAttachRetry();
     this.startSurfaceIdPolling();
     return false;
@@ -687,9 +743,6 @@ export struct GpuTerminalRenderer {
       .onLoad((): void => {
         if (!this.hasUsableBinding()) { return; }
         this.startSurfaceIdPolling();
-        // onLoad is also the recovery signal when API 23 recreates a surface
-        // without dispatching onSurfaceCreated.
-        this.scheduleSurfaceRebind();
       })
       .onAreaChange((_o: Area, n: Area): void => {
         const nextWidthPx: number = vp2px(n.width as number);

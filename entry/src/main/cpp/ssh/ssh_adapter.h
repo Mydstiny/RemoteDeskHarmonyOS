@@ -29,6 +29,7 @@
 #include "ssh_terminal_keepalive_policy.h"
 #include "ssh_pty_recovery_policy.h"
 #include "ssh_forwarding_manager.h"
+#include "ssh_route_policy.h"
 
 #define SSH_ADAPTER_VERSION "2.0.0"
 #define SSH_BUFFER_SIZE 65536
@@ -49,6 +50,7 @@ enum SshError {
     ERR_SSH_PROXY_INVALID       = -16,
     ERR_SSH_PROXY_AUTH          = -17,
     ERR_SSH_PROXY_FAILED        = -18,
+    ERR_SSH_PROXY_UNSUPPORTED   = kSshProxyUnsupportedError,
 
     // SSH 协议层 (-2x)
     ERR_SSH_SESSION_INIT        = -21,
@@ -150,7 +152,8 @@ public:
                                        uint64_t expectedGeneration, int error);
     SshForwardingResult requestForwardingStop(const std::string& id,
                                               uint64_t expectedGeneration);
-    SshForwardingResult completeForwardingStop(const std::string& id);
+    SshForwardingResult completeForwardingStop(const std::string& id,
+                                               uint64_t expectedGeneration);
     SshForwardingResult acquireForwardingConnection(const std::string& id,
                                                     uint64_t expectedGeneration);
     SshForwardingResult releaseForwardingConnection(const std::string& id,
@@ -264,6 +267,7 @@ private:
         bool channelEof = false;
         bool channelEofSent = false;
         bool localWriteShutdown = false;
+        bool closeAfterLocalFlush = false;
         bool socksGreetingComplete = false;
         bool socksRequestComplete = false;
         bool socksConnectResponseQueued = false;
@@ -342,6 +346,8 @@ private:
     int createForwardTargetSocket(const std::string& host, int port,
                                   bool& connecting, int& errorCode);
     int pumpDynamicSocksHandshakeLocked(LocalForwardConnection& connection);
+    bool queueDynamicSocksFailureLocked(LocalForwardConnection& connection,
+                                        uint8_t replyCode);
     int openLocalForwardChannelLocked(LocalForwardConnection& connection,
                                       const SshForwardingConfig& config);
     bool pumpLocalForwardConnectionLocked(LocalForwardConnection& connection,

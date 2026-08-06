@@ -5779,7 +5779,9 @@ export class CloudStore implements CryptoCloudStore {
     host.sshKeyId = get('sshkeyid', host.sshKeyId);
     const sshProxyType: string = get('sshproxytype', host.sshProxyType);
     if (sshProxyType === 'http_connect' || sshProxyType === 'socks5' ||
-      sshProxyType === 'frp_tcp' || sshProxyType === 'ssh_jump' ||
+      sshProxyType === 'frp_tcp' || sshProxyType === 'frp_visitor' ||
+      sshProxyType === 'frp_stcp' || sshProxyType === 'frp_sudp' ||
+      sshProxyType === 'frp_xtcp' || sshProxyType === 'ssh_jump' ||
       sshProxyType === 'legacy_gateway' || sshProxyType === 'direct') {
       host.sshProxyType = sshProxyType;
     }

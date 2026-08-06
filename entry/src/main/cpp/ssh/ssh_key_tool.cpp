@@ -7,6 +7,7 @@
  */
 #include "ssh_key_tool.h"
 #include "ssh_algorithm_prefs.h"
+#include "ssh_route_policy.h"
 
 #include <openssl/evp.h>
 #include <openssl/pem.h>
@@ -1404,6 +1405,10 @@ static bool connectThroughProxy(
 static int connectForSshOperation(
     const std::string& host, int port, const SshProxyOptions& proxy) {
     const std::string proxyType = proxy.type.empty() ? "direct" : proxy.type;
+    if (!sshRouteTypeIsKnown(proxyType) || proxyType == "legacy_gateway" ||
+        sshRouteTypeNeedsFrpControlPlane(proxyType)) {
+        return -3;
+    }
     if (proxyType == "ssh_jump") {
         return connectThroughSshJumpOperation(host, port, proxy);
     }
@@ -1653,8 +1658,9 @@ SshAuthTestResult testSshKeyAuth(
 
     int sock = connectForSshOperation(host, port, proxy);
     if (sock < 0) {
-        result.code = -1;
-        result.message = sock == -2 ? "SSH proxy handshake failed" : "TCP connect failed";
+        result.code = sock == -3 ? kSshProxyUnsupportedError : -1;
+        result.message = sock == -3 ? "SSH route is unsupported" :
+            (sock == -2 ? "SSH proxy handshake failed" : "TCP connect failed");
         return result;
     }
 
@@ -1732,9 +1738,10 @@ SshHostKeyInfo probeSshHostKey(
     // Step 1: TCP connect
     int sock = connectForSshOperation(host, port, proxy);
     if (sock < 0) {
-        result.errorCode = -1;
-        result.errorMessage = (sock == -2 ? "SSH proxy handshake failed: " :
-            "TCP connect failed: ") + host + ":" + std::to_string(port);
+        result.errorCode = sock == -3 ? -5 : -1;
+        result.errorMessage = (sock == -3 ? "SSH route is unsupported: " :
+            (sock == -2 ? "SSH proxy handshake failed: " : "TCP connect failed: ")) +
+            host + ":" + std::to_string(port);
         return result;
     }
 

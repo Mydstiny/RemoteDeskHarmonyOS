@@ -6061,7 +6061,7 @@ napi_value NapiCompleteSshForwardingStop(napi_env env, napi_callback_info info) 
         sessionId, generationValue > 0 ? static_cast<uint64_t>(generationValue) : 0,
         access);
     if (resultCode == SshForwardingResult::Ok) {
-        resultCode = access.adapter->completeForwardingStop(id);
+        resultCode = access.adapter->completeForwardingStop(id, access.generation);
     }
     return CreateSshForwardingResultValue(env, resultCode);
 }

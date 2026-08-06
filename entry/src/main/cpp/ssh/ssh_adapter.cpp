@@ -41,6 +41,7 @@
 
 namespace {
     std::once_flag g_libssh2_init_flag;
+    constexpr int kSocksCloseAfterFlush = -2;
 
     std::string encodeBase64(const unsigned char* data, size_t len) {
         static const char b64chars[] =
@@ -332,8 +333,14 @@ SshForwardingResult SshAdapter::requestForwardingStop(
     return runOnReactor(operation);
 }
 
-SshForwardingResult SshAdapter::completeForwardingStop(const std::string& id) {
-    auto operation = [this, id]() {
+SshForwardingResult SshAdapter::completeForwardingStop(const std::string& id,
+                                                       uint64_t expectedGeneration) {
+    auto operation = [this, id, expectedGeneration]() {
+        const uint64_t currentGeneration = diagnostics_.sessionGeneration();
+        if (expectedGeneration == 0 || currentGeneration == 0 ||
+            expectedGeneration != currentGeneration) {
+            return SshForwardingResult::StaleSession;
+        }
         std::unique_lock<std::mutex> sessionLock(sessionMutex_);
         closeLocalForwardRuntimeLocked(id);
         return forwardingManager_.completeStop(id);
@@ -552,6 +559,19 @@ int SshAdapter::createForwardTargetSocket(const std::string& host, int port,
     return socketFd;
 }
 
+bool SshAdapter::queueDynamicSocksFailureLocked(LocalForwardConnection& connection,
+                                                uint8_t replyCode) {
+    try {
+        connection.toLocal.insert(connection.toLocal.end(),
+                                  {0x05, replyCode, 0x00, 0x01,
+                                   0x00, 0x00, 0x00, 0x00, 0x00, 0x00});
+    } catch (...) {
+        return false;
+    }
+    connection.closeAfterLocalFlush = true;
+    return true;
+}
+
 int SshAdapter::pumpDynamicSocksHandshakeLocked(LocalForwardConnection& connection) {
     if (connection.localFd < 0 || connection.mode != SshForwardingMode::Dynamic) {
         return -1;
@@ -561,8 +581,12 @@ int SshAdapter::pumpDynamicSocksHandshakeLocked(LocalForwardConnection& connecti
         const ssize_t received = recv(connection.localFd, buffer.data(), buffer.size(),
                                       MSG_DONTWAIT);
         if (received > 0) {
-            connection.socksInput.insert(connection.socksInput.end(), buffer.begin(),
-                                         buffer.begin() + received);
+            try {
+                connection.socksInput.insert(connection.socksInput.end(), buffer.begin(),
+                                             buffer.begin() + received);
+            } catch (...) {
+                return -1;
+            }
         } else if (received == 0) {
             connection.localEof = true;
         } else if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) {
@@ -580,8 +604,11 @@ int SshAdapter::pumpDynamicSocksHandshakeLocked(LocalForwardConnection& connecti
         const uint8_t version = connection.socksInput[0];
         const size_t methodCount = connection.socksInput[1];
         const size_t greetingSize = 2 + methodCount;
-        if (version != 5 || connection.socksInput.size() < greetingSize) {
+        if (version != 5) {
             return -1;
+        }
+        if (connection.socksInput.size() < greetingSize) {
+            return connection.localEof ? -1 : 0;
         }
         bool noAuthentication = false;
         for (size_t index = 0; index < methodCount; ++index) {
@@ -593,10 +620,14 @@ int SshAdapter::pumpDynamicSocksHandshakeLocked(LocalForwardConnection& connecti
         connection.socksInput.erase(connection.socksInput.begin(),
                                     connection.socksInput.begin() + greetingSize);
         if (!noAuthentication) {
-            connection.toLocal.insert(connection.toLocal.end(), {0x05, 0xFF});
+            return queueDynamicSocksFailureLocked(connection, 0xFF)
+                ? kSocksCloseAfterFlush : -1;
+        }
+        try {
+            connection.toLocal.insert(connection.toLocal.end(), {0x05, 0x00});
+        } catch (...) {
             return -1;
         }
-        connection.toLocal.insert(connection.toLocal.end(), {0x05, 0x00});
         connection.socksGreetingComplete = true;
     }
 
@@ -605,7 +636,9 @@ int SshAdapter::pumpDynamicSocksHandshakeLocked(LocalForwardConnection& connecti
             return connection.localEof ? -1 : 0;
         }
         if (connection.socksInput[0] != 0x05 || connection.socksInput[2] != 0x00) {
-            return -1;
+            return connection.socksInput[0] == 0x05 &&
+                queueDynamicSocksFailureLocked(connection, 0x01)
+                ? kSocksCloseAfterFlush : -1;
         }
         const uint8_t command = connection.socksInput[1];
         const uint8_t addressType = connection.socksInput[3];
@@ -619,19 +652,24 @@ int SshAdapter::pumpDynamicSocksHandshakeLocked(LocalForwardConnection& connecti
                 return connection.localEof ? -1 : 0;
             }
             addressLength = connection.socksInput[4];
-            if (addressLength == 0 || addressLength > 255) { return -1; }
+            if (addressLength == 0 || addressLength > 255) {
+                return queueDynamicSocksFailureLocked(connection, 0x08)
+                    ? kSocksCloseAfterFlush : -1;
+            }
             requestSize = 4 + 1 + addressLength + 2;
         } else if (addressType == 0x04) {
             addressLength = 16;
             requestSize = 4 + addressLength + 2;
         } else {
-            return -1;
+            return queueDynamicSocksFailureLocked(connection, 0x08)
+                ? kSocksCloseAfterFlush : -1;
         }
         if (connection.socksInput.size() < requestSize) {
             return connection.localEof ? -1 : 0;
         }
         if (command != 0x01) {
-            return -1;
+            return queueDynamicSocksFailureLocked(connection, 0x07)
+                ? kSocksCloseAfterFlush : -1;
         }
 
         size_t addressOffset = 4;
@@ -642,7 +680,8 @@ int SshAdapter::pumpDynamicSocksHandshakeLocked(LocalForwardConnection& connecti
             const int addressFamily = addressType == 0x01 ? AF_INET : AF_INET6;
             if (inet_ntop(addressFamily, addressBytes, addressText,
                           sizeof(addressText)) == nullptr) {
-                return -1;
+                return queueDynamicSocksFailureLocked(connection, 0x01)
+                    ? kSocksCloseAfterFlush : -1;
             }
             connection.dynamicTargetHost = addressText;
         } else {
@@ -656,12 +695,17 @@ int SshAdapter::pumpDynamicSocksHandshakeLocked(LocalForwardConnection& connecti
             static_cast<int>(connection.socksInput[portOffset + 1]);
         if (connection.dynamicTargetHost.empty() || connection.dynamicTargetPort <= 0 ||
             connection.dynamicTargetPort > 65535) {
-            return -1;
+            return queueDynamicSocksFailureLocked(connection, 0x04)
+                ? kSocksCloseAfterFlush : -1;
         }
         connection.socksInput.erase(connection.socksInput.begin(),
                                     connection.socksInput.begin() + requestSize);
-        connection.toChannel.insert(connection.toChannel.end(), connection.socksInput.begin(),
-                                    connection.socksInput.end());
+        try {
+            connection.toChannel.insert(connection.toChannel.end(), connection.socksInput.begin(),
+                                        connection.socksInput.end());
+        } catch (...) {
+            return -1;
+        }
         connection.socksInput.clear();
         connection.socksRequestComplete = true;
     }
@@ -725,9 +769,56 @@ bool SshAdapter::pumpLocalForwardConnectionLocked(LocalForwardConnection& connec
         connection.localConnecting = false;
     }
 
+    // A SOCKS5 protocol error owns the connection only until its failure
+    // reply is flushed. Never re-enter the handshake while a partial reply is
+    // waiting, otherwise the active-connection limit can be held forever.
+    if (connection.closeAfterLocalFlush) {
+        if (connection.toLocal.empty()) {
+            connection.closeAfterLocalFlush = false;
+            return false;
+        }
+        int sendFlags = MSG_DONTWAIT;
+#ifdef MSG_NOSIGNAL
+        sendFlags |= MSG_NOSIGNAL;
+#endif
+        const ssize_t written = send(connection.localFd, connection.toLocal.data(),
+                                     connection.toLocal.size(), sendFlags);
+        if (written > 0) {
+            connection.toLocal.erase(connection.toLocal.begin(),
+                                     connection.toLocal.begin() + written);
+            if (connection.toLocal.empty()) {
+                connection.closeAfterLocalFlush = false;
+                return false;
+            }
+            return true;
+        }
+        if (written < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) {
+            return false;
+        }
+        return true;
+    }
+
     if (connection.mode == SshForwardingMode::Dynamic &&
         !connection.socksRequestComplete) {
         const int handshakeResult = pumpDynamicSocksHandshakeLocked(connection);
+        if (handshakeResult == kSocksCloseAfterFlush) {
+            if (!connection.toLocal.empty()) {
+                int sendFlags = MSG_DONTWAIT;
+#ifdef MSG_NOSIGNAL
+                sendFlags |= MSG_NOSIGNAL;
+#endif
+                const ssize_t written = send(connection.localFd, connection.toLocal.data(),
+                                              connection.toLocal.size(), sendFlags);
+                if (written > 0) {
+                    connection.toLocal.erase(connection.toLocal.begin(),
+                                             connection.toLocal.begin() + written);
+                } else if (written < 0 && errno != EAGAIN && errno != EWOULDBLOCK &&
+                           errno != EINTR) {
+                    return false;
+                }
+            }
+            return !connection.toLocal.empty();
+        }
         if (handshakeResult < 0) { return false; }
         if (handshakeResult == 0) {
             if (!connection.toLocal.empty()) {
@@ -914,6 +1005,12 @@ void SshAdapter::serviceForwardingOnReactor() {
         return;
     }
 
+    struct ForwardListenerFailure {
+        std::string id;
+        uint64_t generation;
+        int error;
+    };
+    std::vector<ForwardListenerFailure> failedListeners;
     for (auto& [id, listener] : localForwardListeners_) {
         (void)id;
         SshForwardingSnapshot snapshot;
@@ -932,6 +1029,9 @@ void SshAdapter::serviceForwardingOnReactor() {
                         OH_LOG_WARN(LOG_APP,
                                     "[SSH] remote forwarding accept 失败 id=%{public}s rc=%{public}d",
                                     listener.profileId.c_str(), libssh2Error);
+                        failedListeners.push_back({listener.profileId,
+                                                   listener.sessionGeneration,
+                                                   libssh2Error});
                     }
                     break;
                 }
@@ -984,6 +1084,9 @@ void SshAdapter::serviceForwardingOnReactor() {
                     OH_LOG_WARN(LOG_APP,
                                 "[SSH] local forwarding accept 失败 id=%{public}s errno=%{public}d",
                                 listener.profileId.c_str(), errno);
+                    failedListeners.push_back({listener.profileId,
+                                               listener.sessionGeneration,
+                                               errno});
                 }
                 break;
             }
@@ -1015,6 +1118,11 @@ void SshAdapter::serviceForwardingOnReactor() {
                 close(clientFd);
             }
         }
+    }
+
+    for (const auto& failure : failedListeners) {
+        (void)forwardingManager_.fail(failure.id, failure.generation, failure.error);
+        closeLocalForwardRuntimeLocked(failure.id);
     }
 
     for (auto connection = localForwardConnections_.begin();
@@ -1344,6 +1452,16 @@ int SshAdapter::receiveProxyHeaders(std::string& headers, size_t maxLen, int tim
 
 int SshAdapter::connectThroughProxy(const ConnectionConfig& cfg) {
     const std::string type = cfg.sshProxyType.empty() ? "direct" : cfg.sshProxyType;
+    if (!sshRouteTypeIsKnown(type)) {
+        OH_LOG_ERROR(LOG_APP, "[SSH] 未知的代理类型: %{public}s", type.c_str());
+        return ERR_SSH_PROXY_INVALID;
+    }
+    if (sshRouteTypeNeedsFrpControlPlane(type)) {
+        OH_LOG_ERROR(LOG_APP,
+                     "[SSH] FRP %{public}s 需要 FRP 控制面，当前 native 仅支持已映射的 frp_tcp",
+                     type.c_str());
+        return ERR_SSH_PROXY_UNSUPPORTED;
+    }
     if (type == "direct") {
         return tcpConnect(cfg.host, cfg.port > 0 ? cfg.port : 22);
     }

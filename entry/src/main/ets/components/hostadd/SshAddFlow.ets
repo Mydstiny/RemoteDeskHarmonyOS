@@ -21,7 +21,7 @@ export struct SshAddFlow {
   @State password: string = '';
   @State keyId: string = '';
   @State passphrase: string = '';
-  @State routeType: 'direct' | 'frp_tcp' | 'ssh_jump' = 'direct';
+  @State routeType: 'direct' | 'frp_tcp' | 'frp_visitor' | 'frp_stcp' | 'frp_sudp' | 'frp_xtcp' | 'ssh_jump' = 'direct';
   @State routeHost: string = '';
   @State routePortText: string = '22';
   @State routeUsername: string = '';
@@ -33,6 +33,31 @@ export struct SshAddFlow {
 
   private onKeysChanged(): void {
     this.newlyAddedKeys = [];
+  }
+
+  private isFrpControlPlaneRoute(): boolean {
+    return this.routeType === 'frp_visitor' || this.routeType === 'frp_stcp' ||
+      this.routeType === 'frp_sudp' || this.routeType === 'frp_xtcp';
+  }
+
+  private frpRouteLabel(): string {
+    if (this.routeType === 'frp_visitor') { return 'FRP Visitor'; }
+    if (this.routeType === 'frp_stcp') { return 'FRP STCP'; }
+    if (this.routeType === 'frp_sudp') { return 'FRP SUDP'; }
+    if (this.routeType === 'frp_xtcp') { return 'FRP XTCP'; }
+    return 'FRP 模式';
+  }
+
+  private cycleFrpControlPlaneRoute(): void {
+    if (this.routeType === 'frp_visitor') {
+      this.routeType = 'frp_stcp';
+    } else if (this.routeType === 'frp_stcp') {
+      this.routeType = 'frp_sudp';
+    } else if (this.routeType === 'frp_sudp') {
+      this.routeType = 'frp_xtcp';
+    } else {
+      this.routeType = 'frp_visitor';
+    }
   }
 
   private pal(): Palette { return this.theme === 'light' ? buildLight(this.accentColor) : buildDark(this.accentColor); }
@@ -121,6 +146,10 @@ export struct SshAddFlow {
             .backgroundColor(this.routeType === 'frp_tcp' ? this.accentColor : this.pal().surface)
             .fontColor(this.routeType === 'frp_tcp' ? Color.White : this.pal().text2)
             .onClick((): void => { this.routeType = 'frp_tcp'; })
+          Button(this.frpRouteLabel()).layoutWeight(1).height(36).borderRadius(9).margin({ left: 8 })
+            .backgroundColor(this.isFrpControlPlaneRoute() ? this.accentColor : this.pal().surface)
+            .fontColor(this.isFrpControlPlaneRoute() ? Color.White : this.pal().text2)
+            .onClick((): void => { this.cycleFrpControlPlaneRoute(); })
           Button('ProxyJump').layoutWeight(1).height(36).borderRadius(9).margin({ left: 8 })
             .backgroundColor(this.routeType === 'ssh_jump' ? this.accentColor : this.pal().surface)
             .fontColor(this.routeType === 'ssh_jump' ? Color.White : this.pal().text2)

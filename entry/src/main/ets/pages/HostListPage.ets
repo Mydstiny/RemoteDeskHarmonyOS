@@ -12251,6 +12251,10 @@ struct HostListPage {
   private sshProxyTypeLabel(): string {
     if (this.sheetProxyType === 'socks5') { return 'SOCKS5'; }
     if (this.sheetProxyType === 'frp_tcp') { return 'FRP TCP'; }
+    if (this.sheetProxyType === 'frp_visitor') { return 'FRP Visitor'; }
+    if (this.sheetProxyType === 'frp_stcp') { return 'FRP STCP'; }
+    if (this.sheetProxyType === 'frp_sudp') { return 'FRP SUDP'; }
+    if (this.sheetProxyType === 'frp_xtcp') { return 'FRP XTCP'; }
     if (this.sheetProxyType === 'ssh_jump') { return 'ProxyJump'; }
     if (this.sheetProxyType === 'legacy_gateway') { return '旧跳板机（需改）'; }
     return 'HTTP CONNECT';
@@ -12262,6 +12266,14 @@ struct HostListPage {
     } else if (this.sheetProxyType === 'socks5') {
       this.sheetProxyType = 'frp_tcp';
     } else if (this.sheetProxyType === 'frp_tcp') {
+      this.sheetProxyType = 'frp_visitor';
+    } else if (this.sheetProxyType === 'frp_visitor') {
+      this.sheetProxyType = 'frp_stcp';
+    } else if (this.sheetProxyType === 'frp_stcp') {
+      this.sheetProxyType = 'frp_sudp';
+    } else if (this.sheetProxyType === 'frp_sudp') {
+      this.sheetProxyType = 'frp_xtcp';
+    } else if (this.sheetProxyType === 'frp_xtcp') {
       this.sheetProxyType = 'ssh_jump';
     } else {
       this.sheetProxyType = 'http_connect';
@@ -13079,8 +13091,10 @@ struct HostListPage {
           return;
         }
         if (this.sheetProxyType !== 'http_connect' && this.sheetProxyType !== 'socks5' &&
-          this.sheetProxyType !== 'frp_tcp' && this.sheetProxyType !== 'ssh_jump') {
-          this.sheetErr = '当前传输类型不可用，请选择 HTTP CONNECT、SOCKS5、FRP TCP 或 ProxyJump';
+          this.sheetProxyType !== 'frp_tcp' && this.sheetProxyType !== 'frp_visitor' &&
+          this.sheetProxyType !== 'frp_stcp' && this.sheetProxyType !== 'frp_sudp' &&
+          this.sheetProxyType !== 'frp_xtcp' && this.sheetProxyType !== 'ssh_jump') {
+          this.sheetErr = '当前传输类型不可用，请选择已列出的 SSH 或 FRP 模式';
           return;
         }
         h.proxyHost = this.sheetProxyHost; h.proxyPort = this.sheetProxyPort;

@@ -65,6 +65,7 @@ int SshTerminalRenderer::Init(const std::string& surfaceId, int widthPx, int hei
     viewportHeightPx_ = std::max(0.0F, viewportHeightPx);
     visibleHeightPx_ = std::max(0.0F, visibleHeightPx);
     bottomAlign_ = bottomAlign;
+    surfaceFlushFailed_ = false;
 
     terminal_ = terminal_core_create(cols_, rows_);
     if (terminal_ == nullptr) {
@@ -79,11 +80,12 @@ int SshTerminalRenderer::Init(const std::string& surfaceId, int widthPx, int hei
     ready_ = true;
     hasRenderedFrame_ = false;
     if (!RenderFull()) {
+        const bool flushFailed = surfaceFlushFailed_;
         ready_ = false;
         DestroyGraphics();
         terminal_core_destroy(terminal_);
         terminal_ = nullptr;
-        return -4;
+        return flushFailed ? kSurfaceFlushFailure : -4;
     }
     OH_LOG_INFO(LOG_APP, "[SSH] Native Drawing renderer initialized %{public}zux%{public}zu",
                 cols_, rows_);
@@ -95,6 +97,9 @@ int SshTerminalRenderer::RebindSurface(const std::string& surfaceId, int widthPx
     if (terminal_ == nullptr) {
         return -1;
     }
+    if (surfaceFlushFailed_) {
+        return kSurfaceFlushFailure;
+    }
     DestroyGraphics();
     if (!InitGraphics(surfaceId, widthPx, heightPx)) {
         ready_ = false;
@@ -103,9 +108,10 @@ int SshTerminalRenderer::RebindSurface(const std::string& surfaceId, int widthPx
     ready_ = true;
     hasRenderedFrame_ = false;
     if (!RenderFull()) {
+        const bool flushFailed = surfaceFlushFailed_;
         ready_ = false;
         DestroyGraphics();
-        return -3;
+        return flushFailed ? kSurfaceFlushFailure : -3;
     }
     return 0;
 }
@@ -132,6 +138,11 @@ void SshTerminalRenderer::Destroy() {
 bool SshTerminalRenderer::IsReady() const {
     std::lock_guard<std::mutex> lock(mutex_);
     return ready_ && terminal_ != nullptr && canvas_ != nullptr;
+}
+
+bool SshTerminalRenderer::HasSurfaceFlushFailure() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return surfaceFlushFailed_;
 }
 
 void SshTerminalRenderer::WriteBytes(const uint8_t* data, std::size_t length) {
@@ -423,6 +434,9 @@ bool SshTerminalRenderer::EnsureGraphicsCurrent() {
 }
 
 bool SshTerminalRenderer::CanDraw() {
+    if (surfaceFlushFailed_) {
+        return false;
+    }
     // OH_Drawing_SurfaceFlush can abort when an XComponent surface has already
     // lost its EGL binding. Restore the binding when the surface is still
     // valid; only treat it as detached when that recovery fails.
@@ -606,6 +620,13 @@ bool SshTerminalRenderer::DrawSnapshot(const FfiTerminalSnapshot* snapshot, bool
     }
     const OH_Drawing_ErrorCode flushStatus = OH_Drawing_SurfaceFlush(drawingSurface_);
     if (flushStatus != OH_DRAWING_SUCCESS) {
+        // Do not retry or call scroll/repaint after this point. On the target
+        // device the first BufferQueue failure is followed by a DDGR device
+        // lost panic if the same surface is flushed again. ArkTS observes this
+        // latched state through the NAPI bridge and preserves the VT core in
+        // the xterm fallback instead.
+        surfaceFlushFailed_ = true;
+        ready_ = false;
         OH_LOG_WARN(LOG_APP, "[SSH] terminal surface flush failed: %{public}d",
                     static_cast<int>(flushStatus));
         return false;

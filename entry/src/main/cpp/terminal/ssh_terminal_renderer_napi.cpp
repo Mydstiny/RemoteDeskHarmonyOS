@@ -65,7 +65,12 @@ napi_value NapiCreate(napi_env env, napi_callback_info info) {
         static_cast<uint32_t>(values[8]), static_cast<float>(values[9]),
         static_cast<float>(values[10]), bottomAlign);
     if (rc != 0) {
-        napi_value result; SetHandleResult(env, 0, &result); return result;
+        // Preserve only the fatal GPU-flush classification across the NAPI
+        // boundary. Other surface setup failures remain retryable and are
+        // represented as handle 0 for the bounded ArkTS retry path.
+        napi_value result;
+        SetHandleResult(env, rc == SshTerminalRenderer::kSurfaceFlushFailure ? rc : 0, &result);
+        return result;
     }
     const int64_t handle = reinterpret_cast<int64_t>(renderer.release());
     napi_value result; SetHandleResult(env, handle, &result); return result;
@@ -88,10 +93,19 @@ napi_value NapiBindSurface(napi_env env, napi_callback_info info) {
     if (argc < 4) { return nullptr; }
     SshTerminalRenderer* renderer = GetRenderer(env, args[0]);
     std::string surfaceId; double width = 0; double height = 0;
-    const bool ok = renderer != nullptr && ReadString(env, args[1], surfaceId) &&
-        ReadNumber(env, args[2], width) && ReadNumber(env, args[3], height) &&
-        renderer->RebindSurface(surfaceId, static_cast<int>(width), static_cast<int>(height)) == 0;
-    napi_value result; napi_get_boolean(env, ok, &result); return result;
+    int status = 1;
+    if (renderer != nullptr && ReadString(env, args[1], surfaceId) &&
+        ReadNumber(env, args[2], width) && ReadNumber(env, args[3], height)) {
+        status = renderer->RebindSurface(surfaceId, static_cast<int>(width),
+                                          static_cast<int>(height));
+    }
+    // 0 = success, 1 = bounded retryable surface failure, negative = the
+    // latched GPU-flush failure. Keep the native detail private to ArkTS.
+    const int exposedStatus = status == SshTerminalRenderer::kSurfaceFlushFailure
+        ? status : (status == 0 ? 0 : 1);
+    napi_value result;
+    napi_create_int32(env, exposedStatus, &result);
+    return result;
 }
 
 napi_value NapiDetachSurface(napi_env env, napi_callback_info info) {
@@ -107,6 +121,17 @@ napi_value NapiDetachSurface(napi_env env, napi_callback_info info) {
     napi_value undefined;
     napi_get_undefined(env, &undefined);
     return undefined;
+}
+
+napi_value NapiHasSurfaceFlushFailure(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value args[1] = {};
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    SshTerminalRenderer* renderer = argc > 0 ? GetRenderer(env, args[0]) : nullptr;
+    const bool failed = renderer != nullptr && renderer->HasSurfaceFlushFailure();
+    napi_value result;
+    napi_get_boolean(env, failed, &result);
+    return result;
 }
 
 napi_value NapiWriteBytes(napi_env env, napi_callback_info info) {
@@ -247,6 +272,7 @@ napi_value Init(napi_env env, napi_value exports) {
         { "sshTerminalRendererDestroy", nullptr, NapiDestroy, nullptr, nullptr, nullptr, napi_default, nullptr },
         { "sshTerminalRendererBindSurface", nullptr, NapiBindSurface, nullptr, nullptr, nullptr, napi_default, nullptr },
         { "sshTerminalRendererDetachSurface", nullptr, NapiDetachSurface, nullptr, nullptr, nullptr, napi_default, nullptr },
+        { "sshTerminalRendererHasSurfaceFlushFailure", nullptr, NapiHasSurfaceFlushFailure, nullptr, nullptr, nullptr, napi_default, nullptr },
         { "sshTerminalRendererWriteBytes", nullptr, NapiWriteBytes, nullptr, nullptr, nullptr, napi_default, nullptr },
         { "sshTerminalRendererRefresh", nullptr, NapiRefresh, nullptr, nullptr, nullptr, napi_default, nullptr },
         { "sshTerminalRendererResize", nullptr, NapiResize, nullptr, nullptr, nullptr, napi_default, nullptr },

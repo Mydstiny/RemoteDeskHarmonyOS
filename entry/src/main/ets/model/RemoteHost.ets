@@ -27,7 +27,8 @@ export interface PresetItem { label: string; width: number; height: number }
 export type RdpAuthMode = 'password' | 'blank_password' | 'restricted_admin';
 /** Restricted Admin always requires the user's real NTLM password hash. */
 export type RdpRestrictedAdminSecretSource = 'ntlm_hash';
-export type SshProxyType = 'direct' | 'http_connect' | 'socks5' | 'frp_tcp' | 'ssh_jump' | 'legacy_gateway';
+export type SshProxyType = 'direct' | 'http_connect' | 'socks5' | 'frp_tcp' |
+  'frp_visitor' | 'frp_stcp' | 'frp_sudp' | 'frp_xtcp' | 'ssh_jump' | 'legacy_gateway';
 
 export function normalizeRdpAuthMode(value: string | undefined): RdpAuthMode {
   if (value === 'blank_password' || value === 'restricted_admin') { return value; }
@@ -569,7 +570,9 @@ export class RemoteHost {
     if (json.proxyPort) { host.proxyPort = json.proxyPort; }
     if (json.proxyUsername) { host.proxyUsername = json.proxyUsername; }
     if (json.sshProxyType === 'http_connect' || json.sshProxyType === 'socks5' ||
-      json.sshProxyType === 'frp_tcp' || json.sshProxyType === 'ssh_jump' ||
+      json.sshProxyType === 'frp_tcp' || json.sshProxyType === 'frp_visitor' ||
+      json.sshProxyType === 'frp_stcp' || json.sshProxyType === 'frp_sudp' ||
+      json.sshProxyType === 'frp_xtcp' || json.sshProxyType === 'ssh_jump' ||
       json.sshProxyType === 'legacy_gateway' || json.sshProxyType === 'direct') {
       host.sshProxyType = json.sshProxyType;
     }

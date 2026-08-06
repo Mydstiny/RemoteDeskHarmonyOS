@@ -23,7 +23,7 @@ RDP_TEST_CASE(ssh_terminal_keepalive_uses_interval_and_retries_transient_failure
 }
 
 RDP_TEST_CASE(ssh_terminal_resume_policy_keeps_reconnecting_page_bound) {
-    using Policy = SshTerminalResumePolicy;
+    namespace Policy = SshTerminalResumePolicy;
     RDP_ASSERT(!Policy::acceptsPageBinding(ConnectionState::CONNECTED, false));
     RDP_ASSERT(Policy::acceptsPageBinding(ConnectionState::CONNECTING, true));
     RDP_ASSERT(Policy::acceptsPageBinding(ConnectionState::CONNECTED, true));

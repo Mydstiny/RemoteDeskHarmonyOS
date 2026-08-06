@@ -45,11 +45,6 @@ Updated: 2026-08-06 Asia/Shanghai
   host's retained output FIFO and repaints until the new surface acknowledges
   its first frame.
   Both code-only Hvigor gates passed on 2026-08-06; device validation is deferred.
-- The visible renderer now commits host, binding, revision, output wake and
-  repaint fence through one page-owned sequence. GPU host/surface/revision
-  changes synchronously detach the previous lease before rebind, and the stale
-  `SshTerminalTabStore` navigation field/reference has been removed. Both
-  code-only Hvigor gates passed on 2026-08-06; device validation is deferred.
 - Keep the current review state at `REVIEW_REQUIRED` until the host-switch
   surface-gate, renderer-owner lease, and revision-aware document corrections are independently reviewed; do not claim full
   background SFTP execution, Level A, or Level B connectivity.
@@ -60,8 +55,14 @@ Updated: 2026-08-06 Asia/Shanghai
   dynamic modes; `SshAdapter` binds runtime transitions to the session-owner
   reactor with transport-reset cleanup, and the guarded NAPI/ArkTS bridge now
   exposes configure/remove/start/listen/fail/stop/acquire/release/snapshot with
-  explicit generation and SSH-type gates. Real SSH socket/channel wiring and
-  endpoint interoperability remain open.
+  explicit generation and SSH-type gates. SOCKS5 failure replies are flushed
+  before close, listener failures clean runtime state, and FRP Visitor/STCP/
+  SUDP/XTCP remain explicit fail-closed routes. Real SSH socket/channel wiring
+  and endpoint interoperability remain open.
+- The current code-only closeout passed `default@OhosTestCompileArkTS`, signed
+  `assembleHap`, `git diff --check`, and the Makefile native rebuild; the host
+  suite is `273 passed, 16 pre-existing VNC TLS fixture startup failures, 289 total`.
+  Keep review at `REVIEW_REQUIRED` until the current independent read-only review is recorded.
 
 ## Next
 
@@ -70,14 +71,13 @@ Updated: 2026-08-06 Asia/Shanghai
   initial-UI deterministic host/binding/revision keyed remount, surface-owner lease, fallback, render-revision,
   revision-aware document reload, GPU binding-lease invalidation, EGL refresh, surface-ID polling, measured-size rebind, mount-wake fix, and
   reused-renderer rebind/reload.
-- Independently review the guarded forwarding NAPI/ArkTS bridge and its stale,
-  non-SSH and teardown error mapping.
+- Record the independent review of guarded forwarding NAPI/ArkTS error mapping,
+  surface-flush fallback and explicit FRP route behavior.
 - Implement local/remote/dynamic libssh2 socket/channel transport behind that
   bridge, with endpoint-facing error propagation.
 - WP-T5/WP-T6 terminal correctness and damage-frame renderer implementation.
 - Real SFTP, bastion, forwarding and FRP endpoint interoperability tests when
   the corresponding services and HDC/device are available.
-- Implement a separate Level B contract for ProxyJump, port forwarding and FRP.
 - Finish ProxyJump preflight/host-key binding, then add local/remote/dynamic
   forwarding and FRP Visitor/STCP/SUDP/XTCP contracts with endpoint tests.
 
@@ -96,5 +96,5 @@ Updated: 2026-08-06 Asia/Shanghai
 - `ohosTest@OhosTestCompileArkTS` is unregistered (`00306054`).
 - Light compliance is blocked by baseline SBOM package
   `totp-reviewed-brand-assets` with `licenseDeclared=NOASSERTION`.
-- Host native suite has 269 passing tests and 16 pre-existing VNC TLS fixture
-  startup failures (285 total).
+- Host native suite has 273 passing tests and 16 pre-existing VNC TLS fixture
+  startup failures (289 total).
