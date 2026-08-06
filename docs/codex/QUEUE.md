@@ -9,23 +9,22 @@ Updated: 2026-08-07 Asia/Shanghai
   isolated from RustDesk. Keep the existing single-monitor and drive capability
   boundaries explicit in UI and capability reasons. RustDesk PC 实体触控板限定
   为 `SourceTool.TOUCHPAD` 的二维滚轮/Pinch，Windows/macOS 分别使用 Ctrl/Command，虚拟路径不变。
-- RDP startup is fail-closed: input worker, frame pump, redraw callback and
-  event loop failures cannot publish a false `CONNECTED` state; cliprdr carrier
-  lifetime is serialized through reconnect and cleanup. Keep device long-
-  connection validation pending until the SSH build blocker is cleared.
-- SFTP checkpoint is closed for the implemented integrity, durable metadata,
-  local-provider and Pad/PC workspace scope; Pad uses a wide centered root
-  bindSheet selected by `isPadDevice`; Phone (including landscape) keeps the bottom-sheet interaction.
-- Checkpoint `caefd47` makes the Pad root-sheet choice explicit, keeps the
-  initial right pane chooser-only after every close/reopen, and applies the
-  sheet-safe close-button offset; code gates pass, while device screenshots and
-  real endpoint transfers remain open.
+- RDP startup is fail-closed: input worker, frame pump, redraw callback and event
+  loop failures cannot publish false `CONNECTED`; cliprdr lifetime is serialized
+  through reconnect/cleanup. Keep device long-connection validation pending.
+- SFTP checkpoint is closed for integrity, durable metadata, local-provider and
+  Pad/PC workspace; Pad uses a centered root bindSheet selected by `isPadDevice`,
+  `cc68965` keeps the root-sheet geometry explicit, `caefd47` keeps the right pane chooser-only with a sheet-safe close offset,
+  and Phone (including landscape) keeps the bottom-sheet interaction.
 - Mobile SFTP endpoint selection is now part of that closed UI scope: the right
   side has local-file and SSH-host buttons, host selection stays inside the
   mounted SFTP surface, the initial right pane remains chooser-only on every
   open, and the add-host Sheet waits for SFTP native exit. The Pad surface is a
   wide root bindSheet; the close affordance respects the sheet inset, and the
   mobile empty-state hint no longer duplicates the floating add symbol.
+- SSH keyboard-interactive/MFA prompts use a page-owned broker bindSheet with
+  echo-aware multi-prompts, hop/round metadata, cancel/expiry and stale-request
+  fencing; checkpoint `f72b5fb` is code-only pending the existing reviewer.
 - Alacritty `0.26.0` remains the VT core behind terminalCore, with lifecycle,
   PiP/session, bounded input and xterm fallback behavior implemented. The
   API 23 device reproduction showed that the custom Native Drawing surface can
@@ -69,36 +68,29 @@ Updated: 2026-08-07 Asia/Shanghai
   before close, listener failures clean runtime state, and FRP Visitor/STCP/
   SUDP/XTCP remain explicit fail-closed routes. Real SSH socket/channel wiring
   and endpoint interoperability remain open.
-- The current RDP increment passes `default@OhosTestCompileArkTS`,
-  `git diff --check`, direct real-FreeRDP object builds, and the host suite
-  (`280 passed, 16 pre-existing VNC TLS fixture startup failures, 296 total`).
-  `assembleHap` is `BUILD SUCCESSFUL`; the OHOS callback binary requires a
-  target device and is not executable on macOS.
-  Keep review at `REVIEW_REQUIRED` while preserved user RDP hunks in mixed `protocol_adapter.h` and `HostListPage.ets` remain dirty; the current surface/forwarding/FRP review receipt is recorded.
+- RDP-only checkpoint passed `default@OhosTestCompileArkTS`, `git diff --check`,
+  direct FreeRDP builds and the host suite (`289 passed, 16 pre-existing VNC
+  TLS fixture startup failures, 305 total`); the 2026-08-07 full rerun returned
+  exit 0 and `assembleHap` is `BUILD SUCCESSFUL`. Gateway stages stay separate;
+  Restricted Admin + RD Gateway fails closed with `E-RDP-GATEWAY-AUTH`.
+  OHOS callback/device evidence and mixed-worktree review remain open.
 ## Next
 - WP-T4 canvas user acceptance and benchmark using shared terminal fixtures; the
   code-only ACK/reload/rebind review and commit are complete.
 - Keep device acceptance pending until the user lifts the current no-device/code-only boundary; retain mature xterm.js as the visible SSH renderer while the API 23 GPU backend is unsafe.
-- Do not dispatch a duplicate reviewer; the guarded forwarding NAPI/ArkTS error
-  mapping, surface-flush fallback and explicit FRP route behavior are covered by
-  the recorded independent PASS receipt.
 - Implement local/remote/dynamic libssh2 socket/channel transport behind that bridge, with endpoint-facing error propagation.
 - WP-T5/WP-T6 terminal correctness and damage-frame renderer implementation.
 - Real SFTP, bastion, forwarding and FRP endpoint interoperability tests when
-  the corresponding services and HDC/device are available.
-- Finish ProxyJump preflight/host-key binding, then add local/remote/dynamic
-  forwarding and FRP Visitor/STCP/SUDP/XTCP contracts with endpoint tests.
+  services and HDC/device are available; finish ProxyJump host-key binding and
+  local/remote/dynamic plus FRP Visitor/STCP/SUDP/XTCP endpoint contracts.
 ## Later
 - Complete background transfer restart/authentication recovery, UDMF drag/drop and
   SFTP lifecycle acceptance beyond the current code-level handoff path.
 - WP-T7 terminal accessibility/lifecycle recovery and Level A acceptance.
 ## Evidence Gaps
 - HDC target `5KLBB25928203528` passed cold SSH, ordered input, large output,
-  Home retention, PiP/re-entry and 90-second idle command checks; real external
-  keyboard/IME coverage remains an evidence gap. A later reproduction captured
-  the native GPU abort described above; the visible path is now xterm.js.
-- Current host-switch/initial-UI changes have no new real-device evidence by
-  explicit user instruction; code-level validation is the active acceptance
-  boundary.
-- `ohosTest@OhosTestCompileArkTS` is unregistered (`00306054`).
-- Light compliance blocker: baseline SBOM package `totp-reviewed-brand-assets` has `licenseDeclared=NOASSERTION`.
+  Home retention, PiP/re-entry and 90-second idle command checks; external
+  keyboard/IME remains an evidence gap. A later reproduction captured the native
+  GPU abort; the visible path is now xterm.js.
+- Current host-switch/initial-UI changes have no new real-device evidence by explicit user instruction; code-level validation is the active boundary.
+- `ohosTest@OhosTestCompileArkTS` is unregistered (`00306054`); Light compliance is blocked by baseline SBOM package `totp-reviewed-brand-assets` with `licenseDeclared=NOASSERTION`.
