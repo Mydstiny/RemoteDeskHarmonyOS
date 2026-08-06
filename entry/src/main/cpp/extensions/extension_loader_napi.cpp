@@ -950,6 +950,195 @@ static void SetObjectBool(napi_env env, napi_value object, const char* key, bool
     napi_set_named_property(env, object, key, item);
 }
 
+struct SshForwardingSessionAccess {
+    std::shared_ptr<SessionContext> session;
+    std::shared_ptr<SshAdapter> adapter;
+    uint64_t generation = 0;
+};
+
+// Forwarding is a session-owned capability. Keep this gate in one place so
+// every NAPI operation rejects a reused id, a non-SSH adapter, and teardown
+// callbacks before touching the adapter-owned manager.
+static SshForwardingResult ResolveSshForwardingSession(
+    int32_t sessionId, uint64_t expectedGeneration,
+    SshForwardingSessionAccess& out) {
+    if (sessionId <= 0) {
+        return SshForwardingResult::NotFound;
+    }
+    if (expectedGeneration == 0) {
+        return SshForwardingResult::MissingGeneration;
+    }
+    const auto it = g_sessionRegistry.find(sessionId);
+    if (it == g_sessionRegistry.end() || !it->second) {
+        return SshForwardingResult::NotFound;
+    }
+    const std::shared_ptr<SessionContext>& session = it->second;
+    if (session->lifecycle.load(std::memory_order_acquire) !=
+        SessionContext::Lifecycle::Active) {
+        return SshForwardingResult::InvalidState;
+    }
+    const uint64_t currentGeneration =
+        session->generation.load(std::memory_order_acquire);
+    if (currentGeneration == 0) {
+        return SshForwardingResult::MissingGeneration;
+    }
+    if (currentGeneration != expectedGeneration) {
+        return SshForwardingResult::StaleSession;
+    }
+    if (session->protocolName != "ssh" || !session->adapter) {
+        return SshForwardingResult::InvalidState;
+    }
+    const std::shared_ptr<SshAdapter> adapter =
+        std::dynamic_pointer_cast<SshAdapter>(session->adapter);
+    if (!adapter) {
+        return SshForwardingResult::InvalidState;
+    }
+    out.session = session;
+    out.adapter = adapter;
+    out.generation = currentGeneration;
+    return SshForwardingResult::Ok;
+}
+
+static bool ReadNapiNamedString(
+    napi_env env, napi_value object, const char* name,
+    std::string& out, bool required) {
+    napi_value value;
+    if (napi_get_named_property(env, object, name, &value) != napi_ok) {
+        return !required;
+    }
+    napi_valuetype type = napi_undefined;
+    if (napi_typeof(env, value, &type) != napi_ok) {
+        return false;
+    }
+    if (type == napi_undefined || type == napi_null) {
+        return !required;
+    }
+    if (type != napi_string) {
+        return false;
+    }
+    out = GetNapiString(env, value);
+    return true;
+}
+
+static bool ReadNapiNamedInt32(
+    napi_env env, napi_value object, const char* name,
+    int32_t& out, bool required) {
+    napi_value value;
+    if (napi_get_named_property(env, object, name, &value) != napi_ok) {
+        return !required;
+    }
+    napi_valuetype type = napi_undefined;
+    if (napi_typeof(env, value, &type) != napi_ok) {
+        return false;
+    }
+    if (type == napi_undefined || type == napi_null) {
+        return !required;
+    }
+    if (type != napi_number || napi_get_value_int32(env, value, &out) != napi_ok) {
+        return false;
+    }
+    return true;
+}
+
+static bool ReadNapiNamedBool(
+    napi_env env, napi_value object, const char* name,
+    bool& out, bool required) {
+    napi_value value;
+    if (napi_get_named_property(env, object, name, &value) != napi_ok) {
+        return !required;
+    }
+    napi_valuetype type = napi_undefined;
+    if (napi_typeof(env, value, &type) != napi_ok) {
+        return false;
+    }
+    if (type == napi_undefined || type == napi_null) {
+        return !required;
+    }
+    if (type != napi_boolean || napi_get_value_bool(env, value, &out) != napi_ok) {
+        return false;
+    }
+    return true;
+}
+
+static bool ReadSshForwardingConfig(
+    napi_env env, napi_value value, SshForwardingConfig& config) {
+    napi_valuetype type = napi_undefined;
+    bool isArray = false;
+    if (napi_typeof(env, value, &type) != napi_ok || type != napi_object ||
+        napi_is_array(env, value, &isArray) != napi_ok || isArray) {
+        return false;
+    }
+
+    int32_t mode = static_cast<int32_t>(config.mode);
+    int32_t bindPort = config.bindPort;
+    int32_t targetPort = config.targetPort;
+    int32_t maxConnections = static_cast<int32_t>(config.maxConnections);
+    if (!ReadNapiNamedString(env, value, "id", config.id, true) ||
+        !ReadNapiNamedString(env, value, "bindHost", config.bindHost, false) ||
+        !ReadNapiNamedString(env, value, "targetHost", config.targetHost, false) ||
+        !ReadNapiNamedInt32(env, value, "mode", mode, false) ||
+        !ReadNapiNamedInt32(env, value, "bindPort", bindPort, false) ||
+        !ReadNapiNamedInt32(env, value, "targetPort", targetPort, false) ||
+        !ReadNapiNamedInt32(env, value, "maxConnections", maxConnections, false) ||
+        !ReadNapiNamedBool(env, value, "enabled", config.enabled, false) ||
+        !ReadNapiNamedBool(env, value, "allowPublicBind", config.allowPublicBind, false)) {
+        return false;
+    }
+    config.mode = static_cast<SshForwardingMode>(mode);
+    config.bindPort = bindPort;
+    config.targetPort = targetPort;
+    config.maxConnections = maxConnections < 0 ? 0 : static_cast<uint32_t>(maxConnections);
+    return true;
+}
+
+static napi_value CreateSshForwardingSnapshotValue(
+    napi_env env, const SshForwardingSnapshot& snapshot) {
+    napi_value result;
+    napi_create_object(env, &result);
+    SetObjectString(env, result, "id", snapshot.config.id);
+    SetObjectInt32(env, result, "mode", static_cast<int32_t>(snapshot.config.mode));
+    SetObjectString(env, result, "bindHost", snapshot.config.bindHost);
+    SetObjectInt32(env, result, "bindPort", snapshot.config.bindPort);
+    SetObjectString(env, result, "targetHost", snapshot.config.targetHost);
+    SetObjectInt32(env, result, "targetPort", snapshot.config.targetPort);
+    SetObjectInt64(env, result, "maxConnections",
+                   static_cast<int64_t>(snapshot.config.maxConnections));
+    SetObjectBool(env, result, "enabled", snapshot.config.enabled);
+    SetObjectBool(env, result, "allowPublicBind", snapshot.config.allowPublicBind);
+    SetObjectInt32(env, result, "state", static_cast<int32_t>(snapshot.state));
+    SetObjectInt64(env, result, "sessionGeneration",
+                   static_cast<int64_t>(snapshot.sessionGeneration));
+    SetObjectInt64(env, result, "activeConnections",
+                   static_cast<int64_t>(snapshot.activeConnections));
+    SetObjectInt32(env, result, "lastError", snapshot.lastError);
+    return result;
+}
+
+static napi_value CreateSshForwardingSnapshotsValue(
+    napi_env env, int32_t sessionId, SshForwardingResult errorCode,
+    uint64_t generation, const std::vector<SshForwardingSnapshot>& snapshots) {
+    napi_value result;
+    napi_create_object(env, &result);
+    SetObjectInt32(env, result, "errorCode", static_cast<int32_t>(errorCode));
+    SetObjectInt32(env, result, "sessionId", sessionId);
+    SetObjectInt64(env, result, "sessionGeneration", static_cast<int64_t>(generation));
+    napi_value array;
+    napi_create_array_with_length(env, snapshots.size(), &array);
+    for (size_t index = 0; index < snapshots.size(); ++index) {
+        napi_value item = CreateSshForwardingSnapshotValue(env, snapshots[index]);
+        napi_set_element(env, array, static_cast<uint32_t>(index), item);
+    }
+    napi_set_named_property(env, result, "snapshots", array);
+    return result;
+}
+
+static napi_value CreateSshForwardingResultValue(
+    napi_env env, SshForwardingResult resultCode) {
+    napi_value result;
+    napi_create_int32(env, static_cast<int32_t>(resultCode), &result);
+    return result;
+}
+
 static napi_value CreateRdpCertificateInfoValue(napi_env env, const RdpCertificateInfo& cert) {
     napi_value result;
     napi_create_object(env, &result);
@@ -5693,6 +5882,266 @@ napi_value NapiGetConnectionState(napi_env env, napi_callback_info info) {
 }
 
 /**
+ * NAPI forwarding bridge.
+ *
+ * Every operation takes the session generation captured from
+ * getSshTerminalDiagnostics(). The adapter remains the single owner of the
+ * forwarding manager; NAPI only validates the session and forwards the
+ * lifecycle request.
+ */
+napi_value NapiConfigureSshForwarding(napi_env env, napi_callback_info info) {
+    size_t argc = 3;
+    napi_value args[3] = {nullptr, nullptr, nullptr};
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+
+    int32_t sessionId = 0;
+    int64_t generationValue = 0;
+    SshForwardingResult resultCode = SshForwardingResult::MissingGeneration;
+    if (argc > 0) {
+        (void)napi_get_value_int32(env, args[0], &sessionId);
+    }
+    if (argc > 1) {
+        (void)napi_get_value_int64(env, args[1], &generationValue);
+    }
+    SshForwardingSessionAccess access;
+    resultCode = ResolveSshForwardingSession(
+        sessionId, generationValue > 0 ? static_cast<uint64_t>(generationValue) : 0,
+        access);
+    if (resultCode == SshForwardingResult::Ok) {
+        SshForwardingConfig config;
+        if (argc < 3 || !ReadSshForwardingConfig(env, args[2], config)) {
+            resultCode = SshForwardingResult::InvalidId;
+        } else {
+            resultCode = access.adapter->configureForwarding(config);
+        }
+    }
+    return CreateSshForwardingResultValue(env, resultCode);
+}
+
+napi_value NapiRemoveSshForwarding(napi_env env, napi_callback_info info) {
+    size_t argc = 3;
+    napi_value args[3] = {nullptr, nullptr, nullptr};
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+
+    int32_t sessionId = 0;
+    int64_t generationValue = 0;
+    if (argc > 0) {
+        (void)napi_get_value_int32(env, args[0], &sessionId);
+    }
+    if (argc > 1) {
+        (void)napi_get_value_int64(env, args[1], &generationValue);
+    }
+    const std::string id = argc > 2 ? GetNapiString(env, args[2]) : "";
+    SshForwardingSessionAccess access;
+    SshForwardingResult resultCode = ResolveSshForwardingSession(
+        sessionId, generationValue > 0 ? static_cast<uint64_t>(generationValue) : 0,
+        access);
+    if (resultCode == SshForwardingResult::Ok) {
+        resultCode = access.adapter->removeForwarding(id);
+    }
+    return CreateSshForwardingResultValue(env, resultCode);
+}
+
+napi_value NapiStartSshForwarding(napi_env env, napi_callback_info info) {
+    size_t argc = 3;
+    napi_value args[3] = {nullptr, nullptr, nullptr};
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+
+    int32_t sessionId = 0;
+    int64_t generationValue = 0;
+    if (argc > 0) {
+        (void)napi_get_value_int32(env, args[0], &sessionId);
+    }
+    if (argc > 1) {
+        (void)napi_get_value_int64(env, args[1], &generationValue);
+    }
+    const std::string id = argc > 2 ? GetNapiString(env, args[2]) : "";
+    SshForwardingSessionAccess access;
+    SshForwardingResult resultCode = ResolveSshForwardingSession(
+        sessionId, generationValue > 0 ? static_cast<uint64_t>(generationValue) : 0,
+        access);
+    if (resultCode == SshForwardingResult::Ok) {
+        resultCode = access.adapter->startForwarding(id, access.generation);
+    }
+    return CreateSshForwardingResultValue(env, resultCode);
+}
+
+napi_value NapiMarkSshForwardingListening(napi_env env, napi_callback_info info) {
+    size_t argc = 3;
+    napi_value args[3] = {nullptr, nullptr, nullptr};
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+
+    int32_t sessionId = 0;
+    int64_t generationValue = 0;
+    if (argc > 0) {
+        (void)napi_get_value_int32(env, args[0], &sessionId);
+    }
+    if (argc > 1) {
+        (void)napi_get_value_int64(env, args[1], &generationValue);
+    }
+    const std::string id = argc > 2 ? GetNapiString(env, args[2]) : "";
+    SshForwardingSessionAccess access;
+    SshForwardingResult resultCode = ResolveSshForwardingSession(
+        sessionId, generationValue > 0 ? static_cast<uint64_t>(generationValue) : 0,
+        access);
+    if (resultCode == SshForwardingResult::Ok) {
+        resultCode = access.adapter->markForwardingListening(id, access.generation);
+    }
+    return CreateSshForwardingResultValue(env, resultCode);
+}
+
+napi_value NapiFailSshForwarding(napi_env env, napi_callback_info info) {
+    size_t argc = 4;
+    napi_value args[4] = {nullptr, nullptr, nullptr, nullptr};
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+
+    int32_t sessionId = 0;
+    int64_t generationValue = 0;
+    int32_t error = 0;
+    if (argc > 0) {
+        (void)napi_get_value_int32(env, args[0], &sessionId);
+    }
+    if (argc > 1) {
+        (void)napi_get_value_int64(env, args[1], &generationValue);
+    }
+    const std::string id = argc > 2 ? GetNapiString(env, args[2]) : "";
+    if (argc > 3) {
+        (void)napi_get_value_int32(env, args[3], &error);
+    }
+    SshForwardingSessionAccess access;
+    SshForwardingResult resultCode = ResolveSshForwardingSession(
+        sessionId, generationValue > 0 ? static_cast<uint64_t>(generationValue) : 0,
+        access);
+    if (resultCode == SshForwardingResult::Ok) {
+        resultCode = access.adapter->failForwarding(id, access.generation, error);
+    }
+    return CreateSshForwardingResultValue(env, resultCode);
+}
+
+napi_value NapiStopSshForwarding(napi_env env, napi_callback_info info) {
+    size_t argc = 3;
+    napi_value args[3] = {nullptr, nullptr, nullptr};
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+
+    int32_t sessionId = 0;
+    int64_t generationValue = 0;
+    if (argc > 0) {
+        (void)napi_get_value_int32(env, args[0], &sessionId);
+    }
+    if (argc > 1) {
+        (void)napi_get_value_int64(env, args[1], &generationValue);
+    }
+    const std::string id = argc > 2 ? GetNapiString(env, args[2]) : "";
+    SshForwardingSessionAccess access;
+    SshForwardingResult resultCode = ResolveSshForwardingSession(
+        sessionId, generationValue > 0 ? static_cast<uint64_t>(generationValue) : 0,
+        access);
+    if (resultCode == SshForwardingResult::Ok) {
+        resultCode = access.adapter->requestForwardingStop(id, access.generation);
+    }
+    return CreateSshForwardingResultValue(env, resultCode);
+}
+
+napi_value NapiCompleteSshForwardingStop(napi_env env, napi_callback_info info) {
+    size_t argc = 3;
+    napi_value args[3] = {nullptr, nullptr, nullptr};
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+
+    int32_t sessionId = 0;
+    int64_t generationValue = 0;
+    if (argc > 0) {
+        (void)napi_get_value_int32(env, args[0], &sessionId);
+    }
+    if (argc > 1) {
+        (void)napi_get_value_int64(env, args[1], &generationValue);
+    }
+    const std::string id = argc > 2 ? GetNapiString(env, args[2]) : "";
+    SshForwardingSessionAccess access;
+    SshForwardingResult resultCode = ResolveSshForwardingSession(
+        sessionId, generationValue > 0 ? static_cast<uint64_t>(generationValue) : 0,
+        access);
+    if (resultCode == SshForwardingResult::Ok) {
+        resultCode = access.adapter->completeForwardingStop(id);
+    }
+    return CreateSshForwardingResultValue(env, resultCode);
+}
+
+napi_value NapiAcquireSshForwardingConnection(napi_env env, napi_callback_info info) {
+    size_t argc = 3;
+    napi_value args[3] = {nullptr, nullptr, nullptr};
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+
+    int32_t sessionId = 0;
+    int64_t generationValue = 0;
+    if (argc > 0) {
+        (void)napi_get_value_int32(env, args[0], &sessionId);
+    }
+    if (argc > 1) {
+        (void)napi_get_value_int64(env, args[1], &generationValue);
+    }
+    const std::string id = argc > 2 ? GetNapiString(env, args[2]) : "";
+    SshForwardingSessionAccess access;
+    SshForwardingResult resultCode = ResolveSshForwardingSession(
+        sessionId, generationValue > 0 ? static_cast<uint64_t>(generationValue) : 0,
+        access);
+    if (resultCode == SshForwardingResult::Ok) {
+        resultCode = access.adapter->acquireForwardingConnection(id, access.generation);
+    }
+    return CreateSshForwardingResultValue(env, resultCode);
+}
+
+napi_value NapiReleaseSshForwardingConnection(napi_env env, napi_callback_info info) {
+    size_t argc = 3;
+    napi_value args[3] = {nullptr, nullptr, nullptr};
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+
+    int32_t sessionId = 0;
+    int64_t generationValue = 0;
+    if (argc > 0) {
+        (void)napi_get_value_int32(env, args[0], &sessionId);
+    }
+    if (argc > 1) {
+        (void)napi_get_value_int64(env, args[1], &generationValue);
+    }
+    const std::string id = argc > 2 ? GetNapiString(env, args[2]) : "";
+    SshForwardingSessionAccess access;
+    SshForwardingResult resultCode = ResolveSshForwardingSession(
+        sessionId, generationValue > 0 ? static_cast<uint64_t>(generationValue) : 0,
+        access);
+    if (resultCode == SshForwardingResult::Ok) {
+        resultCode = access.adapter->releaseForwardingConnection(id, access.generation);
+    }
+    return CreateSshForwardingResultValue(env, resultCode);
+}
+
+napi_value NapiGetSshForwardingSnapshots(napi_env env, napi_callback_info info) {
+    size_t argc = 2;
+    napi_value args[2] = {nullptr, nullptr};
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+
+    int32_t sessionId = 0;
+    int64_t generationValue = 0;
+    if (argc > 0) {
+        (void)napi_get_value_int32(env, args[0], &sessionId);
+    }
+    if (argc > 1) {
+        (void)napi_get_value_int64(env, args[1], &generationValue);
+    }
+    SshForwardingSessionAccess access;
+    SshForwardingResult resultCode = ResolveSshForwardingSession(
+        sessionId, generationValue > 0 ? static_cast<uint64_t>(generationValue) : 0,
+        access);
+    std::vector<SshForwardingSnapshot> snapshots;
+    const uint64_t generation = resultCode == SshForwardingResult::Ok
+        ? access.generation : 0;
+    if (resultCode == SshForwardingResult::Ok) {
+        snapshots = access.adapter->forwardingSnapshots();
+    }
+    return CreateSshForwardingSnapshotsValue(
+        env, sessionId, resultCode, generation, snapshots);
+}
+
+/**
  * Native network observer ingress for RustDesk continuity.  This only feeds
  * the native continuity owner; it never starts a second ArkTS reconnect loop.
  * sessionGeneration is the SessionContext generation captured by the single
@@ -7766,6 +8215,37 @@ napi_value ExtensionLoaderNapi::Init(napi_env env, napi_value exports) {
     napi_create_function(env, "getConnectionState", NAPI_AUTO_LENGTH,
                          NapiGetConnectionState, nullptr, &fn);
     napi_set_named_property(env, exports, "getConnectionState", fn);
+
+    napi_create_function(env, "configureSshForwarding", NAPI_AUTO_LENGTH,
+                         NapiConfigureSshForwarding, nullptr, &fn);
+    napi_set_named_property(env, exports, "configureSshForwarding", fn);
+    napi_create_function(env, "removeSshForwarding", NAPI_AUTO_LENGTH,
+                         NapiRemoveSshForwarding, nullptr, &fn);
+    napi_set_named_property(env, exports, "removeSshForwarding", fn);
+    napi_create_function(env, "startSshForwarding", NAPI_AUTO_LENGTH,
+                         NapiStartSshForwarding, nullptr, &fn);
+    napi_set_named_property(env, exports, "startSshForwarding", fn);
+    napi_create_function(env, "markSshForwardingListening", NAPI_AUTO_LENGTH,
+                         NapiMarkSshForwardingListening, nullptr, &fn);
+    napi_set_named_property(env, exports, "markSshForwardingListening", fn);
+    napi_create_function(env, "failSshForwarding", NAPI_AUTO_LENGTH,
+                         NapiFailSshForwarding, nullptr, &fn);
+    napi_set_named_property(env, exports, "failSshForwarding", fn);
+    napi_create_function(env, "stopSshForwarding", NAPI_AUTO_LENGTH,
+                         NapiStopSshForwarding, nullptr, &fn);
+    napi_set_named_property(env, exports, "stopSshForwarding", fn);
+    napi_create_function(env, "completeSshForwardingStop", NAPI_AUTO_LENGTH,
+                         NapiCompleteSshForwardingStop, nullptr, &fn);
+    napi_set_named_property(env, exports, "completeSshForwardingStop", fn);
+    napi_create_function(env, "acquireSshForwardingConnection", NAPI_AUTO_LENGTH,
+                         NapiAcquireSshForwardingConnection, nullptr, &fn);
+    napi_set_named_property(env, exports, "acquireSshForwardingConnection", fn);
+    napi_create_function(env, "releaseSshForwardingConnection", NAPI_AUTO_LENGTH,
+                         NapiReleaseSshForwardingConnection, nullptr, &fn);
+    napi_set_named_property(env, exports, "releaseSshForwardingConnection", fn);
+    napi_create_function(env, "getSshForwardingSnapshots", NAPI_AUTO_LENGTH,
+                         NapiGetSshForwardingSnapshots, nullptr, &fn);
+    napi_set_named_property(env, exports, "getSshForwardingSnapshots", fn);
 
     napi_create_function(env, "onRustDeskNetworkChanged", NAPI_AUTO_LENGTH,
                          NapiOnRustDeskNetworkChanged, nullptr, &fn);

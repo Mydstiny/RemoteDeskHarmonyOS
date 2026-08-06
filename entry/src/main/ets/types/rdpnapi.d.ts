@@ -46,6 +46,26 @@ declare module 'librdpnapi.so' {
   export function isSessionClipboardReady(sessionId: number): boolean;
 
   export function getConnectionState(sessionId: number): number;
+  export function configureSshForwarding(sessionId: number, sessionGeneration: number,
+    config: SshForwardingConfig): number;
+  export function removeSshForwarding(sessionId: number, sessionGeneration: number,
+    id: string): number;
+  export function startSshForwarding(sessionId: number, sessionGeneration: number,
+    id: string): number;
+  export function markSshForwardingListening(sessionId: number, sessionGeneration: number,
+    id: string): number;
+  export function failSshForwarding(sessionId: number, sessionGeneration: number,
+    id: string, error: number): number;
+  export function stopSshForwarding(sessionId: number, sessionGeneration: number,
+    id: string): number;
+  export function completeSshForwardingStop(sessionId: number, sessionGeneration: number,
+    id: string): number;
+  export function acquireSshForwardingConnection(sessionId: number, sessionGeneration: number,
+    id: string): number;
+  export function releaseSshForwardingConnection(sessionId: number, sessionGeneration: number,
+    id: string): number;
+  export function getSshForwardingSnapshots(sessionId: number,
+    sessionGeneration: number): SshForwardingSnapshotsResult;
   export function onRustDeskNetworkChanged(sessionId: number, sessionGeneration: number,
     available: boolean, networkGeneration: number): boolean;
   export function submitRustDesk2FA(sessionId: number, code: string): boolean;
@@ -593,6 +613,41 @@ export interface SftpWriteAsyncResult {
 export interface SftpMutationAsyncResult {
   errorCode: number;
   atomic?: boolean;
+}
+
+export interface SshForwardingConfig {
+  id: string;
+  mode: number; // 0=local, 1=remote, 2=dynamic
+  bindHost?: string;
+  bindPort: number;
+  targetHost?: string;
+  targetPort?: number;
+  maxConnections?: number;
+  enabled?: boolean;
+  allowPublicBind?: boolean;
+}
+
+export interface SshForwardingSnapshot {
+  id: string;
+  mode: number;
+  bindHost: string;
+  bindPort: number;
+  targetHost: string;
+  targetPort: number;
+  maxConnections: number;
+  enabled: boolean;
+  allowPublicBind: boolean;
+  state: number; // 0=stopped, 1=starting, 2=listening, 3=stopping, 4=failed
+  sessionGeneration: number;
+  activeConnections: number;
+  lastError: number;
+}
+
+export interface SshForwardingSnapshotsResult {
+  errorCode: number;
+  sessionId: number;
+  sessionGeneration: number;
+  snapshots: SshForwardingSnapshot[];
 }
 
 export interface SshTerminalDiagnosticsSnapshot {

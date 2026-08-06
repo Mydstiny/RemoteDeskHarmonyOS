@@ -29,6 +29,8 @@ import {
   SshCommandResult,
   SshTerminalDiagnosticsSnapshot,
   SshTerminalInputEnqueueResult,
+  SshForwardingConfig,
+  SshForwardingSnapshotsResult,
   SftpListAsyncResult,
   SftpReadAsyncResult,
   SftpWriteAsyncResult,
@@ -1221,6 +1223,105 @@ export class ExtensionLoader {
     } catch (err) {
       hilog.error(DOMAIN, TAG, '[ExtensionLoader] getConnectionState: ' + JSON.stringify(err));
       return 0;
+    }
+  }
+
+  configureSshForwarding(sessionId: number, sessionGeneration: number,
+    config: SshForwardingConfig): number {
+    try {
+      return rdpnapi.configureSshForwarding(sessionId, sessionGeneration, config) as number;
+    } catch (err) {
+      hilog.error(DOMAIN, TAG, '[ExtensionLoader] configureSshForwarding: ' + JSON.stringify(err));
+      return -74;
+    }
+  }
+
+  removeSshForwarding(sessionId: number, sessionGeneration: number, id: string): number {
+    try {
+      return rdpnapi.removeSshForwarding(sessionId, sessionGeneration, id) as number;
+    } catch (err) {
+      hilog.error(DOMAIN, TAG, '[ExtensionLoader] removeSshForwarding: ' + JSON.stringify(err));
+      return -74;
+    }
+  }
+
+  startSshForwarding(sessionId: number, sessionGeneration: number, id: string): number {
+    try {
+      return rdpnapi.startSshForwarding(sessionId, sessionGeneration, id) as number;
+    } catch (err) {
+      hilog.error(DOMAIN, TAG, '[ExtensionLoader] startSshForwarding: ' + JSON.stringify(err));
+      return -74;
+    }
+  }
+
+  markSshForwardingListening(sessionId: number, sessionGeneration: number, id: string): number {
+    try {
+      return rdpnapi.markSshForwardingListening(sessionId, sessionGeneration, id) as number;
+    } catch (err) {
+      hilog.error(DOMAIN, TAG,
+        '[ExtensionLoader] markSshForwardingListening: ' + JSON.stringify(err));
+      return -74;
+    }
+  }
+
+  failSshForwarding(sessionId: number, sessionGeneration: number,
+    id: string, error: number): number {
+    try {
+      return rdpnapi.failSshForwarding(sessionId, sessionGeneration, id, error) as number;
+    } catch (err) {
+      hilog.error(DOMAIN, TAG, '[ExtensionLoader] failSshForwarding: ' + JSON.stringify(err));
+      return -74;
+    }
+  }
+
+  stopSshForwarding(sessionId: number, sessionGeneration: number, id: string): number {
+    try {
+      return rdpnapi.stopSshForwarding(sessionId, sessionGeneration, id) as number;
+    } catch (err) {
+      hilog.error(DOMAIN, TAG, '[ExtensionLoader] stopSshForwarding: ' + JSON.stringify(err));
+      return -74;
+    }
+  }
+
+  completeSshForwardingStop(sessionId: number, sessionGeneration: number, id: string): number {
+    try {
+      return rdpnapi.completeSshForwardingStop(sessionId, sessionGeneration, id) as number;
+    } catch (err) {
+      hilog.error(DOMAIN, TAG,
+        '[ExtensionLoader] completeSshForwardingStop: ' + JSON.stringify(err));
+      return -74;
+    }
+  }
+
+  acquireSshForwardingConnection(sessionId: number, sessionGeneration: number, id: string): number {
+    try {
+      return rdpnapi.acquireSshForwardingConnection(sessionId, sessionGeneration, id) as number;
+    } catch (err) {
+      hilog.error(DOMAIN, TAG,
+        '[ExtensionLoader] acquireSshForwardingConnection: ' + JSON.stringify(err));
+      return -74;
+    }
+  }
+
+  releaseSshForwardingConnection(sessionId: number, sessionGeneration: number, id: string): number {
+    try {
+      return rdpnapi.releaseSshForwardingConnection(sessionId, sessionGeneration, id) as number;
+    } catch (err) {
+      hilog.error(DOMAIN, TAG,
+        '[ExtensionLoader] releaseSshForwardingConnection: ' + JSON.stringify(err));
+      return -74;
+    }
+  }
+
+  getSshForwardingSnapshots(sessionId: number,
+    sessionGeneration: number): SshForwardingSnapshotsResult {
+    try {
+      return rdpnapi.getSshForwardingSnapshots(
+        sessionId, sessionGeneration) as SshForwardingSnapshotsResult;
+    } catch (err) {
+      hilog.error(DOMAIN, TAG,
+        '[ExtensionLoader] getSshForwardingSnapshots: ' + JSON.stringify(err));
+      return { errorCode: -74, sessionId, sessionGeneration: 0, snapshots: [] };
     }
   }
 
