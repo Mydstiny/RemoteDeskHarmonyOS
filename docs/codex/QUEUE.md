@@ -1,5 +1,5 @@
 # Shared Queue
-Updated: 2026-08-06 Asia/Shanghai
+Updated: 2026-08-07 Asia/Shanghai
 ## Now
 - RDP setting lifecycle hardening is complete for this increment: clipboard
   toggles, file paste/drop, delayed bridges and cliprdr callbacks are guarded by
@@ -15,11 +15,17 @@ Updated: 2026-08-06 Asia/Shanghai
   connection validation pending until the SSH build blocker is cleared.
 - SFTP checkpoint is closed for the implemented integrity, durable metadata,
   local-provider and Pad/PC workspace scope; Pad uses a wide centered root
-  bindSheet and Phone keeps the bottom-sheet interaction.
+  bindSheet selected by `isPadDevice`; Phone (including landscape) keeps the bottom-sheet interaction.
+- Checkpoint `caefd47` makes the Pad root-sheet choice explicit, keeps the
+  initial right pane chooser-only after every close/reopen, and applies the
+  sheet-safe close-button offset; code gates pass, while device screenshots and
+  real endpoint transfers remain open.
 - Mobile SFTP endpoint selection is now part of that closed UI scope: the right
   side has local-file and SSH-host buttons, host selection stays inside the
-  mounted SFTP surface, the initial right pane remains chooser-only, and the
-  add-host Sheet waits for SFTP native exit.
+  mounted SFTP surface, the initial right pane remains chooser-only on every
+  open, and the add-host Sheet waits for SFTP native exit. The Pad surface is a
+  wide root bindSheet; the close affordance respects the sheet inset, and the
+  mobile empty-state hint no longer duplicates the floating add symbol.
 - Alacritty `0.26.0` remains the VT core behind terminalCore, with lifecycle,
   PiP/session, bounded input and xterm fallback behavior implemented. The
   API 23 device reproduction showed that the custom Native Drawing surface can
@@ -51,7 +57,7 @@ Updated: 2026-08-06 Asia/Shanghai
   `3 passed, 0 failed`; inline xterm parse and ordered-batch protocol checks pass;
   `assembleHap` is `BUILD SUCCESSFUL` on the final checkout. Device installation/acceptance
   remains deferred by the current code-only rule.
-- The current surface fallback, SOCKS5 flush, listener/FRP route and ArkTS/native ABI increment has an independent PASS receipt; the strict xterm ACK/reload/watchdog increment also has an independent PASS receipt `ssh-terminal-xterm-ack-reload-pass-2026-08-06`. Do not claim full background SFTP execution, Level A, or Level B connectivity. The status command remains `REVIEW_REQUIRED` only because preserved unrelated mixed-worktree changes remain dirty.
+- The current surface fallback, SOCKS5 flush, listener/FRP route and ArkTS/native ABI increment has an independent PASS receipt; the strict xterm ACK/reload/watchdog increment also has an independent PASS receipt `ssh-terminal-xterm-ack-reload-pass-2026-08-06`. Background SSH now owns a session collection and the page-independent SFTP engine can reattach retained tabs, but real background transfer/restart evidence is still open; do not claim Level A or Level B connectivity. The status command remains `REVIEW_REQUIRED` only because preserved mixed-worktree changes remain dirty.
 - The first ProxyJump implementation and matching key preflight relay are
   committed, but keep them pending until bastion host-key policy and a real
   OpenSSH endpoint are verified.
@@ -83,8 +89,8 @@ Updated: 2026-08-06 Asia/Shanghai
 - Finish ProxyJump preflight/host-key binding, then add local/remote/dynamic
   forwarding and FRP Visitor/STCP/SUDP/XTCP contracts with endpoint tests.
 ## Later
-- Complete the background transfer engine, UDMF drag/drop and SFTP lifecycle
-  acceptance beyond the current page-owned execution path.
+- Complete background transfer restart/authentication recovery, UDMF drag/drop and
+  SFTP lifecycle acceptance beyond the current code-level handoff path.
 - WP-T7 terminal accessibility/lifecycle recovery and Level A acceptance.
 ## Evidence Gaps
 - HDC target `5KLBB25928203528` passed cold SSH, ordered input, large output,
@@ -95,6 +101,4 @@ Updated: 2026-08-06 Asia/Shanghai
   explicit user instruction; code-level validation is the active acceptance
   boundary.
 - `ohosTest@OhosTestCompileArkTS` is unregistered (`00306054`).
-- Light compliance is blocked by baseline SBOM package
-  `totp-reviewed-brand-assets` with `licenseDeclared=NOASSERTION`.
-- Host native suite has 276 passing tests and 16 pre-existing VNC TLS fixture startup failures (292 total).
+- Light compliance blocker: baseline SBOM package `totp-reviewed-brand-assets` has `licenseDeclared=NOASSERTION`.

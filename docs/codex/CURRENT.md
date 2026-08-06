@@ -3,17 +3,17 @@
 - Task: `ssh-terminal-complete-upgrade`
 - Base: `main@d2769ad4b`
 - Branch: `codex/ssh-terminal-complete-upgrade`
-- Code checkpoint: `f6ef9559a` (`fix(ssh): size SFTP bind sheets`), following `9eb54c7f2` (`feat(ssh): refine SFTP endpoint workspace`); keyed surface recovery, forwarding lifecycle, adapter reactor binding, and the generation-guarded NAPI/ArkTS bridge are committed.
-- Phase: Alacritty core and xterm-safe visible fallback; lifecycle, VT/Unicode/resize/TUI/large-output parity, per-host output isolation, strict ACK-gated canvas presentation, code-only host-switch/surface refresh recovery, guarded surface fallback, and native forwarding contract.
+- Code checkpoint: `caefd47` (`fix(ssh): keep Pad SFTP in wide root sheet`), following `5e4b563` (`fix(ssh): bind wide SFTP layout to Pad devices`), `f6ef9559a` (`fix(ssh): size SFTP bind sheets`) and `9eb54c7f2` (`feat(ssh): refine SFTP endpoint workspace`); keyed surface recovery, forwarding lifecycle, adapter reactor binding, and the generation-guarded NAPI/ArkTS bridge are committed.
+- Phase: Alacritty core and xterm-safe visible fallback; lifecycle, VT/Unicode/resize/TUI/large-output parity, per-host output isolation, strict ACK-gated canvas presentation, SFTP Pad/phone workspace and background-session handoff, code-only host-switch/surface refresh recovery, guarded surface fallback, and native forwarding contract.
 - Scope: migrate VT behind terminalCore, keep appearance settings in-core, verify IME/input/Canvas behavior. Homepage work is not current focus.
 ## Progress
 - WP-T0/T1/T2 are implemented: diagnostics, bounded native input, one SSH session-owner reactor, PTY resize, SFTP and keepalive share generation/teardown rules; physical-keyboard/IME policy covers Unicode/CJK/emoji, CapsLock, AltGr, focus and duplicate-change suppression.
-- SFTP integrity, durable task metadata, capability-aware provider selection, API 23 authorized local-provider operations and the Pad/PC full-screen workspace are implemented; background payload execution and endpoint acceptance remain pending.
-- Mobile SFTP now keeps the current SSH host on the left and exposes exactly two right-endpoint choices: local files or an SSH host. The SSH choice switches the workspace immediately, keeps the current host selectable, and renders host selection inside the existing mobile SFTP surface instead of stacking a second native Sheet. Phone stays on the bottom bindSheet; Pad uses the wide centered bindSheet with explicit 96% SFTP width and 88% host-picker width. A shared 320 ms exit guard delays the host-list add-host Sheet during cross-route back navigation.
+- SFTP integrity, durable task metadata, capability-aware provider selection, API 23 authorized local-provider operations and the Pad/PC full-screen workspace are implemented; Pad uses the root wide bindSheet while phone landscape remains on the original bottom-sheet interaction. Background handoff now reattaches retained SSH sessions to the page-independent SFTP engine, keeps active work running only after background continuity is accepted, and pauses/cleans up when the system reports `backgroundLimited`; real endpoint/device acceptance remains pending.
+- Mobile SFTP keeps the current SSH host on the left and exposes exactly two right-endpoint choices: local files or an SSH host. The initial right pane is chooser-only; selection is committed only after a button/host choice, and host selection uses a nested bindSheet inside the existing SFTP surface. Each newly opened SFTP surface resets the right endpoint to chooser-only. Phone stays on the bottom bindSheet; Pad uses explicit 96% SFTP width and 88% host-picker width, with the header close affordance lowered below the sheet edge inset. A shared 320 ms exit guard delays the host-list add-host Sheet during cross-route back navigation, and the inactive host-list FAB is hidden during route teardown so it cannot duplicate the SSH-page affordance.
 - SSH forwarding validates local/remote/dynamic profiles, binding policy, bounded connections, generations and start/listen/fail/stop transitions. `SshAdapter` owns the manager and reactor reset; NAPI/ArkTS exposes the guarded lifecycle API, while real libssh2 socket/channel forwarding remains open.
 - Dynamic SOCKS5 rejects unsupported methods/commands/address types, flushes failure replies, and protects handshake buffers. Listener errors clean runtime state; stale stop completion is generation-rejected. FRP Visitor/STCP/SUDP/XTCP fail closed until their control plane exists.
 - WP-T4 uses `alacritty_terminal` `0.26.0` behind terminalCore with a fallback core and bounded xterm path. Appearance/geometry remain independent; output is capped at 256 KiB per turn and ordered remainders are retained. SBOM/NOTICE include Alacritty.
-- SSH background/PiP ownership is isolated and serialized; PiP auto-start requires prepared callback/resume gates. ProxyJump has a native `ssh_jump` route and bounded bastion relay, pending host-key binding and endpoint acceptance.
+- SSH background/PiP ownership is isolated and serialized; the background service aggregates all open SSH tabs into one OS continuous task, rejects invalid task IDs explicitly, and reports connection count/host summary. PiP auto-start requires prepared callback/resume gates. ProxyJump has a native `ssh_jump` route and bounded bastion relay, pending host-key binding and endpoint acceptance.
 - Same-page switching rejects stale async callbacks, cancels pending handshakes, retains detach-race output per host, and serializes tab handoff without dropping either SSH socket.
 - The terminal surface has an explicit detach/rebind gate, deterministic host/binding/revision keys, owner leases, isolated xterm bridges, host-scoped FIFOs and strict frame ACK; xterm writes are serialized by callback, failed/timeout batches are fully replayed into a fresh document, lifecycle retries use new bridges, inactive surfaces cancel reload timers, and the visible layer stays masked until xterm-ready.
 - The current SSH canvas follow-up keeps the terminal shell at the full post-header height, reserves the virtual-key bar height in xterm, anchors the bar to the complete shell, adds a 6px xterm bottom safety inset, and refreshes keyboard plus keyboard/mouse presence at the SSH connection boundary using the RDP-aligned device snapshot.
@@ -36,7 +36,7 @@
 ## Verification
 - `git diff --check`: passed for the xterm ACK/reload recovery and PC physical-touchpad checkpoint on 2026-08-06.
 - Inline xterm JavaScript parse and stubbed ordered-batch/error protocol checks: passed on 2026-08-06.
-- Host native tests: `280 passed, 16 failed, 296 total`; failures are existing
+- Host native tests: `288 passed, 16 failed, 304 total`; failures are existing
   VNC TLS fixture startups. RDP/SSH/forwarding/diagnostics tests pass; the OHOS
   callback binary needs a target device, while production Ninja compilation passed.
 - Rust `cargo test --manifest-path rustdesk_ffi/Cargo.toml --lib --no-default-features`:
@@ -45,10 +45,19 @@
 - `default@OhosTestCompileArkTS`: passed on the current checkout on 2026-08-06; warnings only after strict xterm ACK/reload recovery and active lifecycle gates; the physical-touchpad ArkTS policy tests are included and pass.
 - `assembleHap`: `BUILD SUCCESSFUL` on the final physical-touchpad checkout on 2026-08-06; existing warnings only.
 - Current canvas follow-up: `default@OhosTestCompileArkTS` passed and `assembleHap` returned `BUILD SUCCESSFUL` after the shell/bar/keyboard changes on 2026-08-06; `git diff --check` passed.
-- Mobile SFTP endpoint/sheet handoff follow-up: `default@OhosTestCompileArkTS` passed; Pad wide bindSheet and SSH host-picker widths are compiled; `assembleHap` returned `BUILD SUCCESSFUL`; `git diff --check` passed on 2026-08-06. Phone remains bottom-sheet and the initial right endpoint remains chooser-only; no device screenshot or real endpoint transfer evidence is claimed.
+- Mobile SFTP endpoint/sheet handoff follow-up: `default@OhosTestCompileArkTS` passed; Pad wide bindSheet and SSH host-picker widths are compiled; explicit `isPadDevice` layout gating keeps phone landscape on the bottom-sheet path; `assembleHap` returned `BUILD SUCCESSFUL`; `git diff --check` passed on 2026-08-06. Phone remains bottom-sheet and the initial right endpoint remains chooser-only; no device screenshot or real endpoint transfer evidence is claimed.
+- Mobile SFTP UI polish follow-up: right endpoint state resets on each new surface, the SFTP close affordance is moved down for the Pad/phone sheet inset, the empty host-list hint no longer renders a second `+`, and the inactive host-list FAB is hidden during route teardown. Final `default@OhosTestCompileArkTS` passed and `assembleHap` returned `BUILD SUCCESSFUL` after the minimal RDP gateway-transport type normalization; `git diff --check` passed on 2026-08-06.
+- SFTP background handoff follow-up: `default@OhosTestCompileArkTS` passed and `assembleHap` returned `BUILD SUCCESSFUL` after the invalid continuous-task ID, context fallback, retained-tab reattach and page-teardown changes on 2026-08-06; `git diff --check` passed. This is code-level evidence only; no background transfer or process-restart endpoint evidence is claimed.
 - Direct real-FreeRDP OHOS objects (`freerdp_adapter.cpp` and
   `rdp_file_clipboard_bridge.cpp`) compile successfully; the fresh HAP also
   passes the production assemble gate above.
+- RustDesk renderer regression fix: raw BGRA/VP8/VP9 keeps the established
+  texture-size Fit path; OES/H.264/H.265 uses separately staged output
+  dimensions, and logical source updates no longer overwrite OES state.
+  `default@OhosTestCompileArkTS`, `assembleHap`, and `git diff --check` passed
+  on 2026-08-06. The signed HAP installed to HDC target `127.0.0.1:5555`;
+  no three-codec frame evidence was captured because the prior device target
+  is offline.
 - HDC reproduction: SSH TCP/KEX/public-key auth/PTY/shell all completed; the
   crash was `DrawSnapshot -> OH_Drawing_SurfaceFlush -> Device lost -> SIGABRT`
   on PID 18229 at 2026-08-06 17:36:30. The old `log.rtf` shows the same stack.
@@ -60,25 +69,28 @@
   Unicode/ANSI, TUI/alternate-screen, resize/large-output and damage fixtures
   match on visible cells and required metadata.
 - Native forwarding manager tests are included in the host run and pass; the
-  standalone target also rebuilt through Makefiles. Host CMake is unavailable
-  because `cmake` is not installed; production Ninja compilation passed.
+  standalone target rebuilt with the SDK-bundled CMake and production Ninja
+  compilation passed.
 - `ohosTest@OhosTestCompileArkTS`: blocked; task is not registered (`00306054`).
 - Light compliance: blocked by baseline SBOM package
   `totp-reviewed-brand-assets` with `licenseDeclared=NOASSERTION`.
 ## Review
 - Existing independent review passed the bounded-output and IME/socket increments. The current surface fallback, SOCKS5 flush, listener/FRP route and ArkTS/native ABI increment also passed with no P0/P1/P2 findings; receipt `ssh-terminal-surface-forwarding-frp-pass-2026-08-06` is recorded. The strict xterm ACK/reload/watchdog increment passed Dalton review with no P0/P1/P2/P3 findings; receipt `ssh-terminal-xterm-ack-reload-pass-2026-08-06` is recorded. The status command remains `REVIEW_REQUIRED` because unrelated mixed-worktree changes remain; no destructive cleanup was performed.
 - The PC physical-touchpad increment received independent PASS review with no P0-P3 findings; Windows/macOS modifier mapping, cumulative Pinch accounting, gesture reset, and virtual-path isolation were checked.
-- SFTP scope is closed for this pass; real-device/endpoint evidence is not a Level A completion claim.
+- SFTP UI scope is closed for this pass; background handoff is implemented at code level, while real-device/endpoint/process-restart evidence is not a Level A completion claim.
+- Pad SFTP root-sheet follow-up `caefd47` keeps the complete wide workspace in the Pad `bindSheet`, resets a newly opened right pane to chooser-only, and moves the close affordance below the sheet inset. `default@OhosTestCompileArkTS`, `assembleHap`, native forwarding tests and `git diff --check` passed on 2026-08-07; no device screenshot is claimed.
 - Device evidence covers injected input and lifecycle; external keyboard/IME, GPU re-enable, bastion/forwarding/FRP evidence remain open.
-- HDC target `5KLBB25928203528` is online, but the current HAP was not installed and no new device screenshot is claimed under the code-only acceptance boundary.
+- HDC target `5KLBB25928203528` is offline; signed HAP installation succeeded
+  on the currently visible `127.0.0.1:5555` target, but no three-codec frame
+  log or physical-device screenshot is claimed yet.
 - The mobile SFTP endpoint and cross-route Sheet guard have code-level coverage only; no new device screenshot or real endpoint transfer evidence is claimed.
 
 ## Next
-1. Perform SSH canvas device acceptance and benchmark when the current code-only boundary is lifted; keep the xterm path as the visible renderer until safe GPU evidence exists.
+1. Perform SSH canvas and background-SFTP device acceptance when the current code-only boundary is lifted; keep the xterm path as the visible renderer until safe GPU evidence exists.
 
 ## Blockers
 
-- Full external-keyboard/third-party-IME and SFTP lifecycle acceptance remains pending; cold/large-output/background/PiP/re-entry and 90-second idle checks passed.
+- Full external-keyboard/third-party-IME, background-SFTP transfer/restart and SFTP endpoint lifecycle acceptance remains pending; cold/large-output/background/PiP/re-entry and 90-second idle checks passed.
 - Native GPU re-enable is blocked until a backend that cannot abort on a stale
   API 23 BufferQueue is available; no real OpenSSH bastion, forwarding or FRP
   endpoint is available, and `ohosTest@OhosTestCompileArkTS` (`00306054`) remains

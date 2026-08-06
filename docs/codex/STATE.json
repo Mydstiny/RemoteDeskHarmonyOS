@@ -3,20 +3,21 @@
   "task": "ssh-terminal-complete-upgrade",
   "branch": "codex/ssh-terminal-complete-upgrade",
   "base": "d2769ad4b",
-  "head": "f6ef9559a",
-  "phase": "ssh-canvas-bottom-safe-area-virtual-bar-keyboard-code-only-pass",
+  "head": "caefd47",
+  "phase": "ssh-sftp-pad-sheet-background-handoff-code-only-pass",
   "status": "active",
-  "next": "Perform SSH canvas device acceptance and benchmark when the code-only boundary is lifted; do not expand this increment to SFTP, forwarding or FRP.",
+  "next": "Perform SSH canvas and background-SFTP device/endpoint acceptance when the code-only boundary is lifted; keep xterm.js visible until a safe GPU backend exists.",
   "blockers": [
     "HDC target 5KLBB25928203528 passed cold SSH, ordered input, 300 KiB output, Home background retention, PiP/re-entry and 90-second idle commands; true external-keyboard and third-party-IME coverage remains open.",
     "ohosTest@OhosTestCompileArkTS is not registered (00306054).",
-    "Host native suite has 280 passing tests and 16 pre-existing VNC TLS fixture startup failures; SSH route and forwarding tests pass.",
+    "Host native suite has 288 passing tests and 16 pre-existing VNC TLS fixture startup failures; SSH route and forwarding tests pass.",
     "No bastion/forwarding endpoint is available; ProxyJump and port forwarding remain gated plan items.",
     "No real OpenSSH bastion/ProxyJump, port-forwarding or FRP endpoint is available for interoperability acceptance.",
     "Current host-switch/initial-UI changes have no new real-device evidence by explicit user instruction; code-level gates are the active acceptance boundary.",
+    "Background SFTP transfer, process-restart recovery and real SFTP endpoint acceptance remain unverified; the code path is gated by backgroundLimited when the OS refuses continuous execution.",
     "Native Drawing GPU rendering is disabled for visible SSH surfaces after the API 23 41207000 Device lost/SIGABRT reproduction; re-enable requires a safe backend.",
     "Light compliance is blocked by baseline SBOM package totp-reviewed-brand-assets with licenseDeclared=NOASSERTION.",
-    "Host CMake is unavailable because cmake is not installed; the existing Makefile target rebuilt and production BuildNativeWithNinja passed."
+    "SDK-bundled CMake rebuilt the host native target and production BuildNativeWithNinja passed."
   ],
   "planPaths": [
     "docs/SSH_MODULE_UPGRADE_PLAN_V2.md",
@@ -99,14 +100,15 @@
     "reason": "The strict xterm callback-ordered ACK, full-batch recovery, reload watchdog and inactive lifecycle increment has an independent PASS receipt. The status remains REVIEW_REQUIRED only because unrelated mixed-worktree changes remain dirty; no duplicate review is required for the canvas increment."
   },
   "lastVerification": {
-    "host_native_tests": "280-pass-16-preexisting-vnc-fixture-startup-failures-296-total-2026-08-06",
+    "host_native_tests": "288-pass-16-preexisting-vnc-fixture-startup-failures-304-total-2026-08-07",
     "rust_terminal_core_tests": "focused-alacritty-63-pass-fallback-57-pass-2026-08-04; full-no-default-features-156-pass-1-preexisting-rendezvous-fixture-public-address-failure-157-total",
     "rustdeskPhysicalTouchpad": "focused-no-default-features-3-pass-0-fail-2026-08-06",
     "terminalParity": "alacritty-67-pass-fallback-57-pass-unicode-ansi-tui-resize-large-output-damage-2026-08-04",
-    "default@OhosTestCompileArkTS": "pass-sftp-pad-wide-bind-sheet-2026-08-06",
-    "assembleHap": "pass-build-successful-sftp-pad-wide-bind-sheet-2026-08-06",
-    "gitDiffCheck": "pass-sftp-pad-wide-bind-sheet-2026-08-06",
-    "mobileSftpSheetHandoff": "pass-phone-bottom-pad-wide-bind-sheet-picker-width-code-only-2026-08-06",
+    "default@OhosTestCompileArkTS": "pass-pad-root-bind-sheet-chooser-reset-close-safe-area-2026-08-07",
+    "assembleHap": "pass-build-successful-pad-root-bind-sheet-chooser-reset-close-safe-area-2026-08-07",
+    "gitDiffCheck": "pass-pad-root-bind-sheet-chooser-reset-close-safe-area-2026-08-07",
+    "mobileSftpSheetHandoff": "pass-phone-bottom-pad-wide-bind-sheet-picker-width-isPadDevice-reset-chooser-close-inset-code-only-2026-08-06",
+    "backgroundSftpHandoff": "pass-invalid-task-id-context-fallback-retained-tab-reattach-code-only-2026-08-06",
     "inlineJavaScript": "pass-2026-08-06",
     "xtermBatchProtocol": "pass-ordered-ack-and-error-recovery-2026-08-06",
     "xtermIndependentReview": "pass-no-P0-P1-P2-P3-2026-08-06",
@@ -114,8 +116,9 @@
     "sbom": "pass-totp-validator-96-packages-282-files-282-relationships-2026-08-04",
     "ohosTest": "blocked-task-00306054",
     "lightCompliance": "blocked-baseline-sbom-NOASSERTION-totp-reviewed-brand-assets",
-    "hdc": "online-5KLBB25928203528-no-new-install-or-screenshot-code-only-boundary-2026-08-06",
+    "hdc": "5KLBB25928203528-offline; signed-hap-installed-127.0.0.1:5555; no-three-codec-frame-evidence-2026-08-06",
+    "rustDeskRendererGeometry": "raw-bg-viewport-restored-to-texture-fit;-oes-output-size-isolated; compile-and-assemble-pass-2026-08-06",
     "homepagePresenceToggle": "pass-installed-signed-hap-classic-home-no-presence-text-2026-08-04"
   },
-  "updated": "2026-08-06 Asia/Shanghai"
+  "updated": "2026-08-07 Asia/Shanghai"
 }
