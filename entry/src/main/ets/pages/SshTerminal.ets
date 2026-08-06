@@ -5396,13 +5396,19 @@ struct SshTerminal {
     this.sftpPeerHostPicker = true;
   }
 
-  private sftpSheetHeight(): SheetSize | number {
-    // Pad/PC have enough horizontal room for the transfer workspace, but a
-    // FIT_CONTENT sheet grows past the usable viewport once the directory,
-    // progress and action rows are all mounted. Use the system large sheet on
-    // those breakpoints; keep the phone surface compact and bottom anchored.
-    return this.sftpWideLayout()
-      ? SheetSize.LARGE : SheetSize.FIT_CONTENT;
+  private sftpRootSheetHeight(): SheetSize | number {
+    // The Pad root surface is the complete two-pane workspace. Keep its
+    // geometry independent from the desktop breakpoint so it cannot collapse
+    // into a phone-sized sheet during a window-class update.
+    return this.isPadDevice ? SheetSize.LARGE : SheetSize.FIT_CONTENT;
+  }
+
+  private sftpRootSheetType(): SheetType {
+    return this.isPadDevice ? SheetType.CENTER : SheetType.BOTTOM;
+  }
+
+  private sftpRootSheetWidth(): Dimension {
+    return this.isPadDevice ? '96%' : '100%';
   }
 
   private sftpSheetMaxHeight(): number {
@@ -5436,6 +5442,13 @@ struct SshTerminal {
   private sftpHeaderTopPadding(): number {
     if (this.isPadDevice) { return 24; }
     return this.sftpWideLayout() ? 16 : 18;
+  }
+
+  private sftpHeaderCloseTopMargin(): number {
+    // The header already has a sheet-safe top inset. A small independent
+    // offset keeps the close affordance below that inset instead of hugging
+    // the top edge of the Pad root sheet.
+    return this.isPadDevice ? 12 : 6;
   }
 
   private handleSftpPeerHostPickerDismiss(action: DismissSheetAction): void {
@@ -7315,6 +7328,7 @@ struct SshTerminal {
         SymbolGlyph($r('sys.symbol.xmark')).fontSize(18)
           .fontColor(['rgba(242,244,247,0.78)'])
           .width(34).height(34)
+          .margin({ top: this.sftpHeaderCloseTopMargin() })
           .onClick((): void => { this.sftpPeerHostPicker = false; })
       }.width('100%').alignItems(VerticalAlign.Center)
       Scroll() {
@@ -7723,6 +7737,7 @@ struct SshTerminal {
         }
         .width(36).height(36).justifyContent(FlexAlign.Center)
         .borderRadius(18).backgroundColor(this.sshPal().surface)
+        .margin({ top: this.sftpHeaderCloseTopMargin() })
         .onClick((): void => { this.closeSftpPanel(); })
       }.width('100%').alignItems(VerticalAlign.Center)
     }
@@ -8477,11 +8492,10 @@ struct SshTerminal {
     })
     .bindSheet($$this.showSftpSheet, this.SftpTransferSheet(), {
       // The Pad root surface is the complete SFTP workspace, not an inline
-      // terminal overlay. Keep its sheet geometry independent from the PC
-      // wide-layout branch so a device-class update cannot narrow the sheet.
-      height: this.isPadDevice ? SheetSize.LARGE : SheetSize.FIT_CONTENT,
-      preferType: this.isPadDevice ? SheetType.CENTER : SheetType.BOTTOM,
-      width: this.isPadDevice ? '96%' : '100%',
+      // terminal overlay. Keep its sheet geometry explicit and wide.
+      height: this.sftpRootSheetHeight(),
+      preferType: this.sftpRootSheetType(),
+      width: this.sftpRootSheetWidth(),
       dragBar: !this.isPadDevice,
       backgroundColor: this.pal().sheetBg,
       blurStyle: BlurStyle.NONE,
