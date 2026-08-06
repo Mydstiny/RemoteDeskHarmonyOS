@@ -259,6 +259,7 @@ struct SshTerminal {
   @State terminalApplicationKeypad: boolean = false;
   @StorageLink('currentBreakpoint') @Watch('onFontSizeChange') breakpoint: string = 'sm';
   @StorageProp('isDesktopDevice') isDesktopDevice: boolean = false;
+  @StorageProp('isPadDevice') isPadDevice: boolean = false;
   @StorageLink('sshTerminalFontSize') @Watch('onFontSizeChange') fontSize: number = 18;
   @StorageLink('sshTerminalLineSpacing') @Watch('onLineSpacingChange') lineSpacing: number = 1.12;
   /** 0=自动, 1=虚拟键盘, 2=实体键鼠; persisted from the SSH settings card. */
@@ -5060,7 +5061,10 @@ struct SshTerminal {
   }
 
   private sftpWideLayout(): boolean {
-    return this.isDesktopDevice || this.breakpoint !== 'sm';
+    // Width alone cannot distinguish a phone in landscape from a Pad. Keep
+    // the phone workflow on its original bottom sheet and reserve the
+    // two-pane workspace for actual Pad/desktop surfaces.
+    return this.isDesktopDevice || this.isPadDevice;
   }
 
   private handleSftpPeerHostPickerDismiss(action: DismissSheetAction): void {
