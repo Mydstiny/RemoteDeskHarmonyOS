@@ -4416,9 +4416,13 @@ struct HostListPage {
   }
 
   private setHostPresenceProbeBusy(hostId: string, busy: boolean): void {
+    const wasBusy: boolean = this.hostPresenceProbeBusyIds.has(hostId);
     const next: Set<string> = new Set(this.hostPresenceProbeBusyIds);
     if (busy) { next.add(hostId); } else { next.delete(hostId); }
     this.hostPresenceProbeBusyIds = next;
+    // Grouped cards are cached inside one ListItem. Invalidate that root on
+    // both edges so the completed probe is rendered after "checking" clears.
+    if (wasBusy !== busy) { this.hostViewRevision += 1; }
   }
 
   private updateLocalPresenceObservation(host: RemoteHost): void {
@@ -4510,6 +4514,9 @@ struct HostListPage {
         // host object instead of mutating the object captured by the card.
         await this.srv.updateConnectionHealth(host.id, ok ? latencyMs : -1, ok);
       }
+      // VNC owns a separate record and cannot persist health in remotehosts.
+      // Keep all three non-RustDesk protocols on the same immediate card path.
+      this.setHostPresenceOverride(host.id, ok ? 'online' : 'unknown', ok ? latencyMs : -1);
       this.refreshHostListView(true);
       promptAction.showToast({
         message: ok ? host.protocol.toUpperCase() + ' 可达 · ' + latencyMs.toString() + ' ms' :
@@ -4517,6 +4524,7 @@ struct HostListPage {
         duration: 1800
       });
     } catch (_err) {
+      this.setHostPresenceOverride(host.id, 'unknown');
       promptAction.showToast({ message: host.protocol.toUpperCase() + ' 检测失败', duration: 1800 });
     } finally {
       this.setHostPresenceProbeBusy(host.id, false);
@@ -6786,6 +6794,7 @@ struct HostListPage {
     } else if (override.state === 'online') {
       next.rustdeskProLastSeenAt = override.observedAt;
       next.rustdeskProSyncError = '';
+      next.lastConnected = override.observedAt;
       next.lastLatency = override.latencyMs > 0 ? override.latencyMs : 0;
       next.lastHealth = override.latencyMs >= 0 ? this.hostHealthForLatency(override.latencyMs) :
         ConnectionHealth.UNKNOWN;
